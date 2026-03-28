@@ -4,6 +4,7 @@ daemon/bin/
 # Dependencies
 app/node_modules/
 app/dist/
+dist-download/
 
 # IDE
 .idea/
