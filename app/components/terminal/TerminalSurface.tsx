@@ -1,6 +1,7 @@
 import React, { forwardRef, useEffect, useImperativeHandle, useMemo, useRef, useState } from 'react';
-import { ActivityIndicator, StyleSheet, View } from 'react-native';
+import { ActivityIndicator, StyleSheet, TouchableOpacity, View } from 'react-native';
 import { WebView, WebViewMessageEvent } from 'react-native-webview';
+import { Ionicons } from '@expo/vector-icons';
 import { Colors } from '../../constants/tokens';
 import {
   DefaultTerminalThemeName,
@@ -43,6 +44,7 @@ export const TerminalSurface = forwardRef<TerminalSurfaceHandle, {
   const pendingRef = useRef<NativeToTerminalMessage[]>([]);
   const initialSizeRef = useRef<{ cols: number; rows: number } | null>(null);
   const [ready, setReady] = useState(false);
+  const [scrolledUp, setScrolledUp] = useState(false);
   const theme = useMemo(() => resolveTerminalTheme(themeName, themeOverrides), [themeName, themeOverrides]);
 
   const html = useMemo(() => buildTerminalHtml(theme), [theme]);
@@ -120,8 +122,8 @@ export const TerminalSurface = forwardRef<TerminalSurfaceHandle, {
   useImperativeHandle(ref, () => ({
     sendInput(data: string) {
       session.sendInput(data);
+      setScrolledUp(false);
       focusTerminal();
-      scrollToBottom();
     },
     focus() {
       focusTerminal();
@@ -153,6 +155,7 @@ export const TerminalSurface = forwardRef<TerminalSurfaceHandle, {
       }
       if (payload.type === 'scroll') {
         session.scroll(payload.lines);
+        if (!scrolledUp) setScrolledUp(true);
         return;
       }
     } catch {
@@ -180,6 +183,17 @@ export const TerminalSurface = forwardRef<TerminalSurfaceHandle, {
           <ActivityIndicator color={Colors.accent} />
         </View>
       )}
+      {scrolledUp && ready && (
+        <TouchableOpacity
+          style={styles.jumpButton}
+          onPress={() => {
+            session.cancelScroll();
+            setScrolledUp(false);
+          }}
+        >
+          <Ionicons name="chevron-down" size={20} color="#dcecff" />
+        </TouchableOpacity>
+      )}
     </View>
   );
 });
@@ -198,6 +212,19 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
     backgroundColor: Colors.bgPrimary,
+  },
+  jumpButton: {
+    position: 'absolute',
+    right: 14,
+    bottom: 14,
+    backgroundColor: '#10263f',
+    borderColor: '#2f5d95',
+    borderWidth: 1,
+    borderRadius: 999,
+    width: 40,
+    height: 40,
+    alignItems: 'center',
+    justifyContent: 'center',
   },
 });
 
@@ -273,13 +300,52 @@ function buildTerminalHtml(theme: TerminalThemePalette) {
         } catch (_) {}
       };
 
+      // ── Text selection overlay ─────────────────────────────
+      // On long-press, a native-selectable <pre> is placed over the
+      // canvas so the WebView's built-in text selection (Android system
+      // handles + toolbar: copy / translate / share) works natively.
+      const selectionOverlay = document.createElement('div');
+      selectionOverlay.id = 'selection-overlay';
+      selectionOverlay.style.cssText = 'display:none;position:absolute;inset:0;z-index:9999;background:${theme.background};overflow-y:auto;-webkit-overflow-scrolling:touch;';
+      const selectionPre = document.createElement('pre');
+      selectionPre.style.cssText = 'margin:0;padding:4px;font-family:Menlo,Consolas,monospace;font-size:' + FONT_SIZE + 'px;line-height:' + LINE_HEIGHT_RATIO + ';color:${theme.foreground};white-space:pre-wrap;word-break:break-all;-webkit-user-select:text;user-select:text;';
+      const selectionClose = document.createElement('div');
+      selectionClose.style.cssText = 'position:sticky;top:4px;float:right;width:28px;height:28px;line-height:28px;text-align:center;background:rgba(255,255,255,0.15);border-radius:14px;cursor:pointer;color:#ccc;font-size:16px;z-index:10000;margin:4px;';
+      selectionClose.textContent = '✕';
+      selectionOverlay.appendChild(selectionClose);
+      selectionOverlay.appendChild(selectionPre);
+      document.getElementById('terminal').appendChild(selectionOverlay);
+
+      let selectMode = false;
+
+      const showSelectionOverlay = () => {
+        try {
+          const buf = terminal.buffer.active;
+          const lines = [];
+          for (let i = 0; i < terminal.rows; i++) {
+            const line = buf.getLine(buf.viewportY + i);
+            lines.push(line ? line.translateToString(true) : '');
+          }
+          while (lines.length > 0 && lines[lines.length - 1].trim() === '') lines.pop();
+          selectionPre.textContent = lines.join('\\n');
+        } catch(_) { return; }
+        selectMode = true;
+        selectionOverlay.style.display = 'block';
+      };
+
+      const hideSelectionOverlay = () => {
+        selectMode = false;
+        selectionOverlay.style.display = 'none';
+        window.getSelection()?.removeAllRanges();
+      };
+
+      selectionClose.addEventListener('click', hideSelectionOverlay);
+
       // ── Touch scroll engine ─────────────────────────────────
       //
-      // All scrolling is delegated to the daemon via tmux copy-mode.
-      // tmux is the ONLY entity that has scrollback — xterm.js never
-      // accumulates it because tmux renders via cursor positioning.
-      // Touch gestures are converted to line counts and sent as bridge
-      // messages → React Native → WebSocket → daemon → tmux copy-mode.
+      // Scrolling: delegated to daemon via tmux copy-mode.
+      // Long-press (500ms): shows selectable text overlay for native
+      // OS-level text selection (copy/translate/share).
       //
       (function initTouchScroll() {
         let scrolling = false;
@@ -296,11 +362,37 @@ function buildTerminalHtml(theme: TerminalThemePalette) {
         const FRICTION = 0.93;
         const STOP_V = 0.3;
         const MAX_FRAMES = 180;
+        const THROTTLE_MS = 60;
+        const LONG_PRESS_MS = 500;
 
-        // Send scroll request to daemon (negative = up/older, positive = down/newer)
+        // ── Throttled scroll sender ──
+        let pendingLines = 0;
+        let throttleTimer = null;
+
+        const flushScroll = () => {
+          throttleTimer = null;
+          if (pendingLines === 0) return;
+          send({ type: 'scroll', lines: pendingLines });
+          pendingLines = 0;
+        };
+
         const doScroll = (lines) => {
           if (lines === 0) return;
-          send({ type: 'scroll', lines: lines });
+          pendingLines += lines;
+          if (!throttleTimer) {
+            throttleTimer = setTimeout(flushScroll, THROTTLE_MS);
+          }
+        };
+
+        const flushScrollNow = () => {
+          if (throttleTimer) {
+            clearTimeout(throttleTimer);
+            throttleTimer = null;
+          }
+          if (pendingLines !== 0) {
+            send({ type: 'scroll', lines: pendingLines });
+            pendingLines = 0;
+          }
         };
 
         const cancelMomentum = () => {
@@ -310,20 +402,44 @@ function buildTerminalHtml(theme: TerminalThemePalette) {
           }
         };
 
+        let longPressTimer = null;
+
+        const cancelLongPress = () => {
+          if (longPressTimer) {
+            clearTimeout(longPressTimer);
+            longPressTimer = null;
+          }
+        };
+
         document.addEventListener('touchstart', (e) => {
+          // If selection overlay is showing, let native selection work
+          if (selectMode) return;
+
           cancelMomentum();
           scrolling = false;
           scrollAccum = 0;
           velocity = 0;
           startY = lastY = e.touches[0].clientY;
           lastTime = performance.now();
+
+          cancelLongPress();
+          longPressTimer = setTimeout(() => {
+            longPressTimer = null;
+            if (!scrolling) {
+              showSelectionOverlay();
+            }
+          }, LONG_PRESS_MS);
         }, { capture: true, passive: true });
 
         document.addEventListener('touchmove', (e) => {
+          // If selection overlay is showing, let native selection work
+          if (selectMode) return;
+
           const y = e.touches[0].clientY;
           if (!scrolling && Math.abs(startY - y) > THRESHOLD) {
             scrolling = true;
             scrollAccum = 0;
+            cancelLongPress();
           }
           if (!scrolling) return;
 
@@ -349,8 +465,13 @@ function buildTerminalHtml(theme: TerminalThemePalette) {
         }, { capture: true, passive: false });
 
         document.addEventListener('touchend', () => {
+          if (selectMode) return;
+          cancelLongPress();
+
           if (!scrolling) return;
           scrolling = false;
+
+          flushScrollNow();
 
           let v = Math.max(-MAX_VELOCITY, Math.min(MAX_VELOCITY, velocity));
           if (Math.abs(v) < MIN_MOMENTUM) {
@@ -366,6 +487,7 @@ function buildTerminalHtml(theme: TerminalThemePalette) {
             frames++;
             if (Math.abs(frameV) < STOP_V || frames > MAX_FRAMES) {
               momentumRAF = null;
+              flushScrollNow();
               return;
             }
             accum += frameV;
@@ -381,8 +503,11 @@ function buildTerminalHtml(theme: TerminalThemePalette) {
         }, { capture: true, passive: true });
 
         document.addEventListener('touchcancel', () => {
+          if (selectMode) return;
           scrolling = false;
+          cancelLongPress();
           cancelMomentum();
+          flushScrollNow();
         }, { capture: true, passive: true });
       })();
 

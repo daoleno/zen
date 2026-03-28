@@ -154,6 +154,18 @@ func (m *Manager) Scroll(ownerID, sessionID string, lines int) error {
 	return fmt.Errorf("session does not support scrolling")
 }
 
+// ScrollCancel exits tmux copy-mode and returns to the live view.
+func (m *Manager) ScrollCancel(ownerID, sessionID string) error {
+	ms, err := m.withSession(ownerID, sessionID)
+	if err != nil {
+		return err
+	}
+	if scroller, ok := ms.session.(Scroller); ok {
+		return scroller.CancelScroll()
+	}
+	return nil
+}
+
 // Resize updates a terminal session's dimensions.
 func (m *Manager) Resize(ownerID, sessionID string, cols, rows int) error {
 	ms, err := m.withSession(ownerID, sessionID)

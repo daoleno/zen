@@ -205,6 +205,16 @@ func (s *Server) handleClientMessage(conn *websocket.Conn, msg []byte) {
 			})
 		}
 
+	case "terminal_scroll_cancel":
+		if err := s.terminal.ScrollCancel(clientID(conn), raw.SessionID); err != nil {
+			s.sendJSON(conn, map[string]any{
+				"type":       "terminal_error",
+				"session_id": raw.SessionID,
+				"code":       "scroll_cancel_failed",
+				"message":    err.Error(),
+			})
+		}
+
 	case "terminal_close":
 		if err := s.terminal.Close(clientID(conn), raw.SessionID); err != nil {
 			s.sendJSON(conn, map[string]any{

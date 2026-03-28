@@ -80,6 +80,11 @@ export function useTerminalSession(targetId: string, backend: string, handlers: 
       if (!sessionId) return;
       wsClient.scrollTerminal(sessionId, lines);
     },
+    cancelScroll() {
+      const sessionId = sessionIdRef.current;
+      if (!sessionId) return;
+      wsClient.cancelTerminalScroll(sessionId);
+    },
     resize(cols: number, rows: number) {
       const sessionId = sessionIdRef.current;
       if (!sessionId) {

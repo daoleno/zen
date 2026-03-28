@@ -201,6 +201,19 @@ func (s *tmuxSession) Scroll(lines int) error {
 	return nil
 }
 
+func (s *tmuxSession) CancelScroll() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if !s.inCopyMode {
+		return nil
+	}
+	if err := exec.Command("tmux", "send-keys", "-t", s.targetID, "-X", "cancel").Run(); err != nil {
+		return fmt.Errorf("cancel copy-mode: %w", err)
+	}
+	s.inCopyMode = false
+	return nil
+}
+
 func (s *tmuxSession) Resize(cols, rows int) error {
 	if cols <= 0 || rows <= 0 {
 		return nil

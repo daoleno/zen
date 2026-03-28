@@ -46,6 +46,7 @@ type Session interface {
 // Scroller is optionally implemented by sessions that support tmux copy-mode scrolling.
 type Scroller interface {
 	Scroll(lines int) error
+	CancelScroll() error
 }
 
 // Backend opens terminal sessions for a given target.

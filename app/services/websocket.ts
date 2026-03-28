@@ -63,6 +63,10 @@ class WebSocketClient {
     this.send({ type: 'terminal_scroll', session_id: sessionId, lines });
   }
 
+  cancelTerminalScroll(sessionId: string) {
+    this.send({ type: 'terminal_scroll_cancel', session_id: sessionId });
+  }
+
   closeTerminal(sessionId: string) {
     this.send({ type: 'terminal_close', session_id: sessionId });
   }
