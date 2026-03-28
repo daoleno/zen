@@ -9,9 +9,12 @@ import (
 	"regexp"
 	"strings"
 	"sync"
+	"sync/atomic"
 
 	"github.com/creack/pty"
 )
+
+var sessionCounter atomic.Int64
 
 // TmuxBackend attaches a dedicated tmux client to an existing tmux session
 // and streams the client's PTY output directly to the mobile terminal.
@@ -38,9 +41,10 @@ func (b *TmuxBackend) Open(targetID string, opts OpenOptions) (Session, error) {
 }
 
 type tmuxSession struct {
-	id       string
-	targetID string
-	size     Size
+	id            string
+	targetID      string
+	linkedSession string // grouped session name, cleaned up on close
+	size          Size
 
 	mu         sync.Mutex
 	events     chan Event
@@ -68,12 +72,13 @@ func (s *tmuxSession) Start(ctx context.Context) error {
 	runCtx, cancel := context.WithCancel(ctx)
 	s.cancel = cancel
 
-	cmd, err := tmuxAttachCommand(s.targetID)
+	linkedName, cmd, err := tmuxGroupedSession(s.targetID, s.size)
 	if err != nil {
 		s.mu.Unlock()
 		cancel()
 		return err
 	}
+	s.linkedSession = linkedName
 	cmd.Env = append(os.Environ(), "TERM=xterm-256color")
 
 	ptmx, err := pty.StartWithSize(cmd, &pty.Winsize{
@@ -250,6 +255,10 @@ func (s *tmuxSession) Close() error {
 	if s.cmd != nil && s.cmd.Process != nil {
 		_ = s.cmd.Process.Kill()
 	}
+	// Kill the grouped session so it doesn't linger
+	if s.linkedSession != "" {
+		_ = exec.Command("tmux", "kill-session", "-t", s.linkedSession).Run()
+	}
 	return nil
 }
 
@@ -266,22 +275,47 @@ func (s *tmuxSession) closeEvents() {
 	})
 }
 
-func tmuxAttachCommand(targetID string) (*exec.Cmd, error) {
+// tmuxGroupedSession creates a linked/grouped tmux session that shares the
+// same windows as the target but has its own independent client size. This
+// prevents the mobile client from constraining the desktop terminal's size
+// (tmux defaults to the smallest client across all clients of a session).
+// tmuxGroupedSession creates a linked/grouped tmux session that shares the
+// same windows as the target but has its own independent client size. This
+// prevents the mobile client from constraining the desktop terminal's size
+// (tmux defaults to the smallest client across all clients of a session).
+func tmuxGroupedSession(targetID string, size Size) (string, *exec.Cmd, error) {
 	targetID = strings.TrimSpace(targetID)
 	if targetID == "" {
-		return nil, fmt.Errorf("empty tmux target")
+		return "", nil, fmt.Errorf("empty tmux target")
 	}
 
 	sessionName := targetID
+	windowTarget := ""
 	if idx := strings.Index(targetID, ":"); idx > 0 {
 		sessionName = targetID[:idx]
+		windowTarget = targetID
 	}
 
-	args := []string{"attach-session", "-t", sessionName}
-	if strings.Contains(targetID, ":") {
-		args = append(args, ";", "select-window", "-t", targetID)
+	// Unique name per open (PID + counter)
+	id := sessionCounter.Add(1)
+	linkedName := fmt.Sprintf("zen-%d-%d", os.Getpid(), id)
+
+	// Create grouped session (shares windows, independent size)
+	createCmd := exec.Command("tmux", "new-session", "-d",
+		"-t", sessionName,
+		"-s", linkedName,
+		"-x", fmt.Sprintf("%d", size.Cols),
+		"-y", fmt.Sprintf("%d", size.Rows))
+	if err := createCmd.Run(); err != nil {
+		return "", nil, fmt.Errorf("create grouped tmux session: %w", err)
 	}
-	return exec.Command("tmux", args...), nil
+
+	// Select the correct window in the linked session before attaching
+	if windowTarget != "" {
+		_ = exec.Command("tmux", "select-window", "-t", linkedName+":"+strings.SplitN(windowTarget, ":", 2)[1]).Run()
+	}
+
+	return linkedName, exec.Command("tmux", "attach-session", "-t", linkedName), nil
 }
 
 func tmuxCaptureHistory(targetID string, lines int) (string, error) {

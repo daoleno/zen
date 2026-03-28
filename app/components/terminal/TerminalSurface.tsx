@@ -512,6 +512,25 @@ function buildTerminalHtml(theme: TerminalThemePalette) {
       })();
 
       // ── Write queue (chunked output) ────────────────────────
+      // Initial buffering: when tmux attach-session runs, it redraws
+      // the entire screen via cursor positioning. Without buffering
+      // the user sees a top-to-bottom "scroll" effect. We accumulate
+      // all output for the first 300ms, then write it in one shot so
+      // the terminal appears instantly with the final state.
+      const INITIAL_BUFFER_MS = 300;
+      let initialBuffer = '';
+      let initialBuffering = true;
+      let initialTimer = null;
+
+      const flushInitialBuffer = () => {
+        initialBuffering = false;
+        initialTimer = null;
+        if (initialBuffer) {
+          terminal.write(initialBuffer);
+          initialBuffer = '';
+        }
+      };
+
       const flushWriteQueue = () => {
         if (isWriting) return;
         const chunk = writeQueue.shift();
@@ -529,6 +548,16 @@ function buildTerminalHtml(theme: TerminalThemePalette) {
 
       const enqueueOutput = (data) => {
         if (!data) return;
+
+        // During initial buffering, accumulate everything
+        if (initialBuffering) {
+          initialBuffer += data;
+          if (!initialTimer) {
+            initialTimer = setTimeout(flushInitialBuffer, INITIAL_BUFFER_MS);
+          }
+          return;
+        }
+
         const maxChunkSize = 4096;
         for (let i = 0; i < data.length; i += maxChunkSize) {
           writeQueue.push(data.slice(i, i + maxChunkSize));
