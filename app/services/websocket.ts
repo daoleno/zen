@@ -47,6 +47,26 @@ class WebSocketClient {
     this.send({ type: 'send_input', agent_id: agentId, text });
   }
 
+  openTerminal(targetId: string, backend: string = 'tmux', cols?: number, rows?: number) {
+    this.send({ type: 'terminal_open', target_id: targetId, backend, cols, rows });
+  }
+
+  sendTerminalInput(sessionId: string, data: string) {
+    this.send({ type: 'terminal_input', session_id: sessionId, data });
+  }
+
+  resizeTerminal(sessionId: string, cols: number, rows: number) {
+    this.send({ type: 'terminal_resize', session_id: sessionId, cols, rows });
+  }
+
+  scrollTerminal(sessionId: string, lines: number) {
+    this.send({ type: 'terminal_scroll', session_id: sessionId, lines });
+  }
+
+  closeTerminal(sessionId: string) {
+    this.send({ type: 'terminal_close', session_id: sessionId });
+  }
+
   sendAction(agentId: string, action: string) {
     this.send({ type: 'send_action', agent_id: agentId, action });
   }

@@ -1,49 +1,66 @@
-import React, { useRef, useState, useEffect } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import {
   View,
   Text,
-  FlatList,
-  TextInput,
   TouchableOpacity,
   StyleSheet,
   SafeAreaView,
   ScrollView,
-  KeyboardAvoidingView,
-  Platform,
   Alert,
 } from 'react-native';
 import * as Haptics from 'expo-haptics';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import { Colors, Spacing, Typography, statusColor } from '../../constants/tokens';
+import { DefaultTerminalThemeName, TerminalThemeName } from '../../constants/terminalThemes';
 import { useAgents } from '../../store/agents';
+import { getTerminalTheme } from '../../services/storage';
 import { wsClient } from '../../services/websocket';
-import { AnsiLine } from '../../services/ansi';
+import { TerminalSurface, TerminalSurfaceHandle } from '../../components/terminal/TerminalSurface';
 
 const QUICK_ACTIONS = ['yes', 'no', 'show diff', 'pause', 'run tests', 'git status'];
+const TERMINAL_KEYS = [
+  { label: 'Focus', sequence: '__focus__' },
+  { label: 'Space', sequence: ' ' },
+  { label: 'Esc', sequence: '\x1b' },
+  { label: 'Tab', sequence: '\t' },
+  { label: 'Ctrl-C', sequence: '\x03' },
+  { label: 'Ctrl-D', sequence: '\x04' },
+  { label: 'Ctrl-L', sequence: '\x0c' },
+  { label: '⌫', sequence: '\x7f' },
+  { label: 'Enter', sequence: '\r' },
+  { label: '←', sequence: '\x1b[D' },
+  { label: '↑', sequence: '\x1b[A' },
+  { label: '↓', sequence: '\x1b[B' },
+  { label: '→', sequence: '\x1b[C' },
+  { label: 'Home', sequence: '\x1b[H' },
+  { label: 'End', sequence: '\x1b[F' },
+  { label: 'PgUp', sequence: '\x1b[5~' },
+  { label: 'PgDn', sequence: '\x1b[6~' },
+] as const;
 
 export default function TerminalScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
   const { state } = useAgents();
   const router = useRouter();
-  const [input, setInput] = useState('');
-  const flatListRef = useRef<FlatList>(null);
-  const [autoScroll, setAutoScroll] = useState(true);
+  const [themeName, setThemeName] = useState<TerminalThemeName>(DefaultTerminalThemeName);
+  const [ctrlArmed, setCtrlArmed] = useState(false);
+  const [altArmed, setAltArmed] = useState(false);
+  const terminalRef = useRef<TerminalSurfaceHandle>(null);
 
   const agent = state.agents.find(a => a.id === id);
-  const lines = agent?.last_output_lines || [];
 
   useEffect(() => {
-    if (autoScroll && flatListRef.current && lines.length > 0) {
-      flatListRef.current.scrollToEnd({ animated: false });
-    }
-  }, [lines.length, autoScroll]);
-
-  const handleSend = () => {
-    if (!input.trim() || !id) return;
-    wsClient.sendInput(id, input + '\n');
-    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-    setInput('');
-  };
+    let cancelled = false;
+    (async () => {
+      const stored = await getTerminalTheme();
+      if (!cancelled) {
+        setThemeName(stored);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   const handleQuickAction = (action: string) => {
     if (!id) return;
@@ -67,9 +84,40 @@ export default function TerminalScreen() {
     }
   };
 
-  const renderLine = ({ item, index }: { item: string; index: number }) => (
-    <AnsiLine text={item} key={index} />
-  );
+  const applyModifiers = (sequence: string) => {
+    let next = sequence;
+
+    if (ctrlArmed && sequence.length === 1) {
+      const code = sequence.toUpperCase().charCodeAt(0);
+      if (code >= 64 && code <= 95) {
+        next = String.fromCharCode(code - 64);
+      }
+      setCtrlArmed(false);
+    }
+
+    if (altArmed) {
+      next = '\x1b' + next;
+      setAltArmed(false);
+    }
+
+    return next;
+  };
+
+  const handleTerminalKey = (sequence: string) => {
+    if (sequence === '__focus__') {
+      terminalRef.current?.focus();
+      return;
+    }
+    terminalRef.current?.sendInput(applyModifiers(sequence));
+  };
+
+  const toggleCtrl = () => {
+    setCtrlArmed(value => !value);
+  };
+
+  const toggleAlt = () => {
+    setAltArmed(value => !value);
+  };
 
   return (
     <SafeAreaView style={styles.container}>
@@ -85,36 +133,36 @@ export default function TerminalScreen() {
         )}
       </View>
 
-      <FlatList
-        ref={flatListRef}
-        data={lines}
-        renderItem={renderLine}
-        keyExtractor={(_, i) => String(i)}
-        style={styles.output}
-        onScrollBeginDrag={() => setAutoScroll(false)}
-        onEndReached={() => setAutoScroll(true)}
-        onEndReachedThreshold={0.1}
-        initialNumToRender={50}
-        maxToRenderPerBatch={50}
-        windowSize={21}
-      />
+      <View style={styles.output}>
+        {id ? <TerminalSurface ref={terminalRef} targetId={id} themeName={themeName} /> : null}
+      </View>
 
-      {!autoScroll && lines.length > 50 && (
-        <TouchableOpacity
-          style={styles.scrollPill}
-          onPress={() => {
-            setAutoScroll(true);
-            flatListRef.current?.scrollToEnd({ animated: true });
-          }}
-        >
-          <Text style={styles.scrollPillText}>↓ Scroll to bottom</Text>
-        </TouchableOpacity>
-      )}
+      <View style={styles.inputArea}>
+        <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.terminalKeyRow}>
+          <TouchableOpacity
+            style={[styles.modifierBtn, ctrlArmed && styles.modifierBtnActive]}
+            onPress={toggleCtrl}
+          >
+            <Text style={[styles.modifierText, ctrlArmed && styles.modifierTextActive]}>Ctrl</Text>
+          </TouchableOpacity>
+          <TouchableOpacity
+            style={[styles.modifierBtn, altArmed && styles.modifierBtnActive]}
+            onPress={toggleAlt}
+          >
+            <Text style={[styles.modifierText, altArmed && styles.modifierTextActive]}>Alt</Text>
+          </TouchableOpacity>
 
-      <KeyboardAvoidingView
-        behavior={Platform.OS === 'ios' ? 'padding' : undefined}
-        style={styles.inputArea}
-      >
+          {TERMINAL_KEYS.map(key => (
+            <TouchableOpacity
+              key={key.label}
+              style={styles.terminalKeyBtn}
+              onPress={() => handleTerminalKey(key.sequence)}
+            >
+              <Text style={styles.terminalKeyText}>{key.label}</Text>
+            </TouchableOpacity>
+          ))}
+        </ScrollView>
+
         <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.quickRow}>
           {QUICK_ACTIONS.map(action => (
             <TouchableOpacity
@@ -126,22 +174,7 @@ export default function TerminalScreen() {
             </TouchableOpacity>
           ))}
         </ScrollView>
-
-        <View style={styles.inputRow}>
-          <TextInput
-            style={styles.textInput}
-            value={input}
-            onChangeText={setInput}
-            placeholder="Tell agent what to do..."
-            placeholderTextColor={Colors.textSecondary}
-            onSubmitEditing={handleSend}
-            returnKeyType="send"
-          />
-          <TouchableOpacity style={styles.sendBtn} onPress={handleSend}>
-            <Text style={styles.sendBtnText}>↑</Text>
-          </TouchableOpacity>
-        </View>
-      </KeyboardAvoidingView>
+      </View>
     </SafeAreaView>
   );
 }
@@ -163,31 +196,58 @@ const styles = StyleSheet.create({
   statusText: { fontSize: 11, fontWeight: '500' },
   output: {
     flex: 1,
-    paddingHorizontal: Spacing.screenMargin,
     paddingTop: 8,
   },
-  outputLine: {
-    color: Colors.textPrimary,
-    fontFamily: Typography.terminalFont,
-    fontSize: Typography.terminalSize,
-    lineHeight: Typography.terminalSize * 1.6,
-  },
-  scrollPill: {
-    position: 'absolute',
-    bottom: 160,
-    alignSelf: 'center',
-    backgroundColor: Colors.bgElevated,
-    paddingHorizontal: 16,
-    paddingVertical: 8,
-    borderRadius: 20,
-    borderWidth: 1,
-    borderColor: Colors.textSecondary,
-  },
-  scrollPillText: { color: Colors.textPrimary, fontSize: 12 },
   inputArea: {
     borderTopWidth: 1,
     borderTopColor: Colors.bgSurface,
     backgroundColor: Colors.bgElevated,
+  },
+  terminalKeyRow: {
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    maxHeight: 50,
+  },
+  terminalKeyBtn: {
+    paddingHorizontal: 12,
+    paddingVertical: 7,
+    borderRadius: 10,
+    backgroundColor: '#121c28',
+    marginRight: 6,
+    minHeight: 34,
+    justifyContent: 'center',
+    borderWidth: 1,
+    borderColor: '#27364a',
+  },
+  terminalKeyText: {
+    color: Colors.textPrimary,
+    fontSize: 12,
+    fontFamily: Typography.terminalFont,
+    fontWeight: '600',
+  },
+  modifierBtn: {
+    paddingHorizontal: 12,
+    paddingVertical: 7,
+    borderRadius: 10,
+    backgroundColor: '#1b2634',
+    marginRight: 6,
+    minHeight: 34,
+    justifyContent: 'center',
+    borderWidth: 1,
+    borderColor: '#31445d',
+  },
+  modifierBtnActive: {
+    backgroundColor: Colors.accent,
+    borderColor: Colors.accent,
+  },
+  modifierText: {
+    color: Colors.textPrimary,
+    fontSize: 12,
+    fontFamily: Typography.terminalFont,
+    fontWeight: '700',
+  },
+  modifierTextActive: {
+    color: Colors.bgPrimary,
   },
   quickRow: {
     paddingHorizontal: 12,
@@ -204,32 +264,4 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
   },
   quickBtnText: { color: Colors.textSecondary, fontSize: 12, fontFamily: Typography.terminalFont },
-  inputRow: {
-    flexDirection: 'row',
-    paddingHorizontal: 12,
-    paddingVertical: 10,
-    gap: 8,
-    alignItems: 'center',
-  },
-  textInput: {
-    flex: 1,
-    backgroundColor: Colors.bgSurface,
-    borderRadius: 12,
-    paddingHorizontal: 14,
-    paddingVertical: 10,
-    color: Colors.textPrimary,
-    fontFamily: Typography.terminalFont,
-    fontSize: 14,
-    borderWidth: 1,
-    borderColor: Colors.bgElevated,
-  },
-  sendBtn: {
-    width: 40,
-    height: 40,
-    borderRadius: 10,
-    backgroundColor: Colors.accent,
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
-  sendBtnText: { color: Colors.bgPrimary, fontSize: 18, fontWeight: '700' },
 });

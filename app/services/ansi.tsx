@@ -30,7 +30,7 @@ const ANSI_COLORS: Record<number, string> = {
 export function parseAnsiLine(raw: string): AnsiSegment[] {
   const segments: AnsiSegment[] = [];
   let bold = false;
-  let color = Colors.textPrimary;
+  let color: string = Colors.textPrimary;
   let buffer = '';
 
   const regex = /\x1b\[([0-9;]*)m/g;

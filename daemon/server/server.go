@@ -11,6 +11,7 @@ import (
 
 	"github.com/daoleno/zen/daemon/auth"
 	"github.com/daoleno/zen/daemon/push"
+	"github.com/daoleno/zen/daemon/terminal"
 	"github.com/daoleno/zen/daemon/watcher"
 	"github.com/gorilla/websocket"
 )
@@ -21,20 +22,24 @@ var upgrader = websocket.Upgrader{
 
 // Server handles WebSocket connections from the zen mobile app.
 type Server struct {
-	secret  *auth.Secret
-	watcher *watcher.Watcher
-	pusher  *push.Client
-	clients map[*websocket.Conn]bool
-	mu      sync.Mutex
+	secret   *auth.Secret
+	watcher  *watcher.Watcher
+	terminal *terminal.Manager
+	pusher   *push.Client
+	clients  map[*websocket.Conn]bool
+	writes   map[*websocket.Conn]*sync.Mutex
+	mu       sync.Mutex
 }
 
 // New creates a WebSocket server.
 func New(secret *auth.Secret, w *watcher.Watcher, pusher *push.Client) *Server {
 	return &Server{
-		secret:  secret,
-		watcher: w,
-		pusher:  pusher,
-		clients: make(map[*websocket.Conn]bool),
+		secret:   secret,
+		watcher:  w,
+		terminal: terminal.NewManager(&terminal.TmuxBackend{}),
+		pusher:   pusher,
+		clients:  make(map[*websocket.Conn]bool),
+		writes:   make(map[*websocket.Conn]*sync.Mutex),
 	}
 }
 
@@ -76,9 +81,11 @@ func (s *Server) handleWS(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer conn.Close()
+	defer s.terminal.CloseAll(clientID(conn))
 
 	s.mu.Lock()
 	s.clients[conn] = true
+	s.writes[conn] = &sync.Mutex{}
 	s.mu.Unlock()
 
 	log.Printf("client connected (%d total)", len(s.clients))
@@ -94,6 +101,7 @@ func (s *Server) handleWS(w http.ResponseWriter, r *http.Request) {
 
 	s.mu.Lock()
 	delete(s.clients, conn)
+	delete(s.writes, conn)
 	s.mu.Unlock()
 	log.Printf("client disconnected (%d remaining)", len(s.clients))
 }
@@ -102,10 +110,17 @@ func (s *Server) handleClientMessage(conn *websocket.Conn, msg []byte) {
 	var raw struct {
 		Type         string `json:"type"`
 		AgentID      string `json:"agent_id"`
+		TargetID     string `json:"target_id"`
+		Backend      string `json:"backend"`
+		SessionID    string `json:"session_id"`
 		Text         string `json:"text"`
+		Data         string `json:"data"`
 		Action       string `json:"action"`
 		StateVersion int64  `json:"state_version"`
 		PushToken    string `json:"push_token"`
+		Cols         int    `json:"cols"`
+		Rows         int    `json:"rows"`
+		Lines        int    `json:"lines"`
 	}
 	if err := json.Unmarshal(msg, &raw); err != nil {
 		log.Printf("invalid message: %v", err)
@@ -126,6 +141,78 @@ func (s *Server) handleClientMessage(conn *websocket.Conn, msg []byte) {
 		if err := s.watcher.SendInput(raw.AgentID, raw.Text); err != nil {
 			log.Printf("send_input error: %v", err)
 			s.sendError(conn, "send_input_failed", err.Error())
+		}
+
+	case "terminal_open":
+		backend := raw.Backend
+		if backend == "" {
+			backend = "tmux"
+		}
+		targetID := raw.TargetID
+		if targetID == "" {
+			targetID = raw.AgentID
+		}
+		session, err := s.terminal.Open(clientID(conn), backend, targetID, terminal.OpenOptions{
+			Cols: raw.Cols,
+			Rows: raw.Rows,
+		}, func(v any) {
+			s.sendJSON(conn, v)
+		})
+		if err != nil {
+			s.sendJSON(conn, map[string]any{
+				"type":    "terminal_error",
+				"code":    "open_failed",
+				"message": err.Error(),
+			})
+			return
+		}
+		size := session.Size()
+		s.sendJSON(conn, map[string]any{
+			"type":       "terminal_opened",
+			"session_id": session.ID(),
+			"backend":    backend,
+			"cols":       size.Cols,
+			"rows":       size.Rows,
+		})
+
+	case "terminal_input":
+		if err := s.terminal.Input(clientID(conn), raw.SessionID, raw.Data); err != nil {
+			s.sendJSON(conn, map[string]any{
+				"type":       "terminal_error",
+				"session_id": raw.SessionID,
+				"code":       "input_failed",
+				"message":    err.Error(),
+			})
+		}
+
+	case "terminal_resize":
+		if err := s.terminal.Resize(clientID(conn), raw.SessionID, raw.Cols, raw.Rows); err != nil {
+			s.sendJSON(conn, map[string]any{
+				"type":       "terminal_error",
+				"session_id": raw.SessionID,
+				"code":       "resize_failed",
+				"message":    err.Error(),
+			})
+		}
+
+	case "terminal_scroll":
+		if err := s.terminal.Scroll(clientID(conn), raw.SessionID, raw.Lines); err != nil {
+			s.sendJSON(conn, map[string]any{
+				"type":       "terminal_error",
+				"session_id": raw.SessionID,
+				"code":       "scroll_failed",
+				"message":    err.Error(),
+			})
+		}
+
+	case "terminal_close":
+		if err := s.terminal.Close(clientID(conn), raw.SessionID); err != nil {
+			s.sendJSON(conn, map[string]any{
+				"type":       "terminal_error",
+				"session_id": raw.SessionID,
+				"code":       "close_failed",
+				"message":    err.Error(),
+			})
 		}
 
 	case "send_action":
@@ -163,7 +250,7 @@ func (s *Server) sendAgentList(conn *websocket.Conn) {
 
 func (s *Server) sendJSON(conn *websocket.Conn, v any) {
 	data, _ := json.Marshal(v)
-	conn.WriteMessage(websocket.TextMessage, data)
+	s.writeMessage(conn, websocket.TextMessage, data)
 }
 
 func (s *Server) sendError(conn *websocket.Conn, code, message string) {
@@ -218,11 +305,19 @@ func (s *Server) heartbeat(ctx context.Context) {
 
 func (s *Server) broadcast(data []byte) {
 	s.mu.Lock()
-	defer s.mu.Unlock()
+	conns := make([]*websocket.Conn, 0, len(s.clients))
 	for conn := range s.clients {
-		if err := conn.WriteMessage(websocket.TextMessage, data); err != nil {
+		conns = append(conns, conn)
+	}
+	s.mu.Unlock()
+
+	for _, conn := range conns {
+		if err := s.writeMessage(conn, websocket.TextMessage, data); err != nil {
+			s.mu.Lock()
 			conn.Close()
 			delete(s.clients, conn)
+			delete(s.writes, conn)
+			s.mu.Unlock()
 		}
 	}
 }
@@ -231,4 +326,21 @@ func (s *Server) broadcast(data []byte) {
 func (s *Server) PairingInfo(addr string) string {
 	return fmt.Sprintf(`{"url":"ws://%s/ws","code":"%s","secret":"%s"}`,
 		addr, s.secret.PairingCode(), s.secret.Hex())
+}
+
+func clientID(conn *websocket.Conn) string {
+	return fmt.Sprintf("%p", conn)
+}
+
+func (s *Server) writeMessage(conn *websocket.Conn, messageType int, data []byte) error {
+	s.mu.Lock()
+	writeMu, ok := s.writes[conn]
+	s.mu.Unlock()
+	if !ok {
+		return fmt.Errorf("connection is closed")
+	}
+
+	writeMu.Lock()
+	defer writeMu.Unlock()
+	return conn.WriteMessage(messageType, data)
 }

@@ -5,7 +5,10 @@ const KEYS = {
   secret: 'zen:secret',
   nightMode: 'zen:night_mode',
   onboarded: 'zen:onboarded',
+  terminalTheme: 'zen:terminal_theme',
 } as const;
+
+export type StoredTerminalTheme = 'zen-midnight' | 'zen-amber';
 
 export async function getServerUrl(): Promise<string> {
   return (await AsyncStorage.getItem(KEYS.serverUrl)) || '';
@@ -37,4 +40,13 @@ export async function isOnboarded(): Promise<boolean> {
 
 export async function markOnboarded(): Promise<void> {
   await AsyncStorage.setItem(KEYS.onboarded, 'true');
+}
+
+export async function getTerminalTheme(): Promise<StoredTerminalTheme> {
+  const value = await AsyncStorage.getItem(KEYS.terminalTheme);
+  return value === 'zen-amber' ? 'zen-amber' : 'zen-midnight';
+}
+
+export async function setTerminalTheme(theme: StoredTerminalTheme): Promise<void> {
+  await AsyncStorage.setItem(KEYS.terminalTheme, theme);
 }

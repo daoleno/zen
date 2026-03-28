@@ -59,8 +59,8 @@ function AppContent() {
   const router = useRouter();
   const segments = useSegments();
   const { dispatch } = useAgents();
-  const notificationListener = useRef<Notifications.EventSubscription>();
-  const responseListener = useRef<Notifications.EventSubscription>();
+  const notificationListener = useRef<Notifications.EventSubscription | null>(null);
+  const responseListener = useRef<Notifications.EventSubscription | null>(null);
 
   // Auto-connect on app start.
   useEffect(() => {

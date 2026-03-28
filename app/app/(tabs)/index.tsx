@@ -7,7 +7,6 @@ import {
   StyleSheet,
   SafeAreaView,
 } from 'react-native';
-import * as Haptics from 'expo-haptics';
 import { useRouter } from 'expo-router';
 import { Colors, Spacing, Typography, statusColor, AgentStatus } from '../../constants/tokens';
 import { useAgents, Agent } from '../../store/agents';
@@ -25,7 +24,6 @@ export default function InboxScreen() {
   const { state, dispatch } = useAgents();
   const router = useRouter();
   const [filter, setFilter] = useState<'active' | 'all'>('active');
-  const [selectedId, setSelectedId] = useState<string | null>(null);
 
   useEffect(() => {
     const onAgentList = (data: any) => {
@@ -70,11 +68,10 @@ export default function InboxScreen() {
   const zenBanner = showZen && filter === 'active';
 
   const renderAgent = ({ item }: { item: Agent }) => {
-    const isSelected = selectedId === item.id;
     return (
       <TouchableOpacity
-        style={[styles.row, isSelected && styles.rowSelected]}
-        onPress={() => setSelectedId(isSelected ? null : item.id)}
+        style={styles.row}
+        onPress={() => router.push(`/terminal/${item.id}`)}
         activeOpacity={0.7}
       >
         <View style={[styles.dot, { backgroundColor: statusColor(item.status) }]} />
@@ -134,39 +131,7 @@ export default function InboxScreen() {
           ItemSeparatorComponent={() => <View style={styles.separator} />}
         />
       )}
-
-      {selectedId && (
-        <View style={styles.actionBar}>
-          <ActionButton label="Approve" onPress={() => { wsClient.sendAction(selectedId, 'approve'); Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium); setSelectedId(null); }} />
-          <ActionButton label="Reply" onPress={() => router.push(`/terminal/${selectedId}`)} />
-          <ActionButton label="Reject" danger onPress={() => { wsClient.sendAction(selectedId, 'reject'); Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Heavy); setSelectedId(null); }} />
-          <ActionButton label="Terminal" accent onPress={() => router.push(`/terminal/${selectedId}`)} />
-        </View>
-      )}
     </SafeAreaView>
-  );
-}
-
-function ActionButton({ label, onPress, danger, accent }: {
-  label: string; onPress: () => void; danger?: boolean; accent?: boolean;
-}) {
-  return (
-    <TouchableOpacity
-      style={[
-        styles.actionBtn,
-        danger && { borderColor: Colors.statusFailed },
-        accent && { backgroundColor: Colors.accent },
-      ]}
-      onPress={onPress}
-    >
-      <Text style={[
-        styles.actionBtnText,
-        danger && { color: Colors.statusFailed },
-        accent && { color: Colors.bgPrimary },
-      ]}>
-        {label}
-      </Text>
-    </TouchableOpacity>
   );
 }
 
@@ -186,7 +151,6 @@ const styles = StyleSheet.create({
     paddingHorizontal: Spacing.rowPaddingH,
     paddingVertical: Spacing.rowPaddingV,
   },
-  rowSelected: { backgroundColor: Colors.bgSurface },
   dot: { width: 8, height: 8, borderRadius: 4, marginRight: 12 },
   rowContent: { flex: 1, marginRight: 8 },
   agentName: { color: Colors.textPrimary, fontSize: Typography.agentNameSize, fontWeight: '600' },
@@ -197,26 +161,6 @@ const styles = StyleSheet.create({
   emptyIcon: { fontSize: 48, color: Colors.textSecondary, marginBottom: 16 },
   emptyText: { color: Colors.textPrimary, fontSize: 18, fontWeight: '600' },
   emptySubtext: { color: Colors.textSecondary, fontSize: 14, marginTop: 8 },
-  actionBar: {
-    flexDirection: 'row',
-    backgroundColor: Colors.bgElevated,
-    height: Spacing.actionBarHeight,
-    alignItems: 'center',
-    justifyContent: 'space-around',
-    paddingHorizontal: 8,
-    borderTopWidth: 1,
-    borderTopColor: Colors.bgSurface,
-  },
-  actionBtn: {
-    paddingHorizontal: 14,
-    paddingVertical: 8,
-    borderRadius: 10,
-    borderWidth: 1,
-    borderColor: Colors.textSecondary,
-    minHeight: 44,
-    justifyContent: 'center',
-  },
-  actionBtnText: { color: Colors.textPrimary, fontSize: 13, fontWeight: '500' },
   zenBanner: { backgroundColor: Colors.bgSurface, paddingVertical: 10, alignItems: 'center', marginHorizontal: Spacing.screenMargin, borderRadius: 8, marginBottom: 8 },
   zenBannerText: { color: Colors.statusRunning, fontSize: 13, fontWeight: '500' },
 });
