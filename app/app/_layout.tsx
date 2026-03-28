@@ -2,6 +2,7 @@ import { useEffect, useRef } from 'react';
 import { Platform } from 'react-native';
 import { Stack, useRouter, useSegments } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
+import { useFonts } from 'expo-font';
 import * as Notifications from 'expo-notifications';
 import * as Device from 'expo-device';
 import Constants from 'expo-constants';
@@ -134,6 +135,17 @@ function AppContent() {
 }
 
 export default function RootLayout() {
+  const [fontsLoaded] = useFonts({
+    'SourceHanSansSC-Regular': require('../assets/fonts/SourceHanSansSC-Regular.otf'),
+    'SourceHanSansSC-Medium': require('../assets/fonts/SourceHanSansSC-Medium.otf'),
+    'MapleMono-CN-Regular': require('../assets/fonts/MapleMono-CN-Regular.ttf'),
+    'MapleMono-CN-SemiBold': require('../assets/fonts/MapleMono-CN-SemiBold.ttf'),
+  });
+
+  if (!fontsLoaded) {
+    return null;
+  }
+
   return (
     <AgentProvider>
       <StatusBar style="light" />

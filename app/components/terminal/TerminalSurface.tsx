@@ -1,8 +1,9 @@
 import React, { forwardRef, useEffect, useImperativeHandle, useMemo, useRef, useState } from 'react';
-import { ActivityIndicator, StyleSheet, TouchableOpacity, View } from 'react-native';
+import { ActivityIndicator, Modal, ScrollView, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
+import { Asset } from 'expo-asset';
 import { WebView, WebViewMessageEvent } from 'react-native-webview';
 import { Ionicons } from '@expo/vector-icons';
-import { Colors } from '../../constants/tokens';
+import { Colors, Typography } from '../../constants/tokens';
 import {
   DefaultTerminalThemeName,
   resolveTerminalTheme,
@@ -16,7 +17,9 @@ type BridgeMessage =
   | { type: 'ready' }
   | { type: 'input'; data: string }
   | { type: 'resize'; cols: number; rows: number }
-  | { type: 'scroll'; lines: number };
+  | { type: 'scroll'; lines: number }
+  | { type: 'select_snapshot'; data: string }
+  | { type: 'tap' };
 
 type NativeToTerminalMessage =
   | { type: 'output'; data: string }
@@ -34,20 +37,42 @@ export const TerminalSurface = forwardRef<TerminalSurfaceHandle, {
   backend?: string;
   themeName?: TerminalThemeName;
   themeOverrides?: Partial<TerminalThemePalette>;
+  onTap?: () => void;
 }>(({
   targetId,
   backend = 'tmux',
   themeName = DefaultTerminalThemeName,
   themeOverrides,
+  onTap,
 }, ref) => {
   const webviewRef = useRef<WebView>(null);
   const pendingRef = useRef<NativeToTerminalMessage[]>([]);
   const initialSizeRef = useRef<{ cols: number; rows: number } | null>(null);
+  const [fontUri, setFontUri] = useState<string | null>(null);
   const [ready, setReady] = useState(false);
   const [scrolledUp, setScrolledUp] = useState(false);
+  const [selectionSnapshot, setSelectionSnapshot] = useState<string | null>(null);
   const theme = useMemo(() => resolveTerminalTheme(themeName, themeOverrides), [themeName, themeOverrides]);
 
-  const html = useMemo(() => buildTerminalHtml(theme), [theme]);
+  const html = useMemo(() => buildTerminalHtml(theme, fontUri), [theme, fontUri]);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    (async () => {
+      const asset = Asset.fromModule(require('../../assets/fonts/MapleMono-CN-Regular.ttf'));
+      if (!asset.localUri) {
+        await asset.downloadAsync();
+      }
+      if (!cancelled) {
+        setFontUri(asset.localUri ?? asset.uri);
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   const postToTerminal = (payload: NativeToTerminalMessage) => {
     if (!ready) {
@@ -158,6 +183,14 @@ export const TerminalSurface = forwardRef<TerminalSurfaceHandle, {
         if (!scrolledUp) setScrolledUp(true);
         return;
       }
+      if (payload.type === 'select_snapshot') {
+        setSelectionSnapshot(payload.data);
+        return;
+      }
+      if (payload.type === 'tap') {
+        onTap?.();
+        return;
+      }
     } catch {
       // Ignore malformed bridge messages
     }
@@ -194,6 +227,32 @@ export const TerminalSurface = forwardRef<TerminalSurfaceHandle, {
           <Ionicons name="chevron-down" size={20} color="#dcecff" />
         </TouchableOpacity>
       )}
+      <Modal
+        visible={selectionSnapshot !== null}
+        animationType="slide"
+        presentationStyle="fullScreen"
+        onRequestClose={() => setSelectionSnapshot(null)}
+      >
+        <View style={styles.selectionModal}>
+          <View style={styles.selectionHeader}>
+            <Text style={styles.selectionTitle}>Select text</Text>
+            <TouchableOpacity
+              style={styles.selectionClose}
+              onPress={() => setSelectionSnapshot(null)}
+            >
+              <Ionicons name="close" size={20} color={Colors.textPrimary} />
+            </TouchableOpacity>
+          </View>
+          <ScrollView
+            style={styles.selectionBody}
+            contentContainerStyle={styles.selectionBodyContent}
+          >
+            <Text selectable style={styles.selectionText}>
+              {selectionSnapshot ?? ''}
+            </Text>
+          </ScrollView>
+        </View>
+      </Modal>
     </View>
   );
 });
@@ -226,9 +285,61 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
   },
+  selectionModal: {
+    flex: 1,
+    backgroundColor: Colors.bgPrimary,
+  },
+  selectionHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingHorizontal: 14,
+    paddingVertical: 12,
+    borderBottomWidth: 1,
+    borderBottomColor: 'rgba(255,255,255,0.08)',
+    backgroundColor: Colors.bgPrimary,
+  },
+  selectionTitle: {
+    color: Colors.textPrimary,
+    fontSize: 14,
+    fontFamily: Typography.uiFontMedium,
+  },
+  selectionClose: {
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: Colors.bgSurface,
+  },
+  selectionBody: {
+    flex: 1,
+  },
+  selectionBodyContent: {
+    paddingHorizontal: 14,
+    paddingVertical: 16,
+  },
+  selectionText: {
+    color: Colors.textPrimary,
+    fontSize: 13,
+    lineHeight: 18,
+    fontFamily: Typography.terminalFont,
+    width: '100%',
+    alignSelf: 'stretch',
+    flexShrink: 1,
+  },
 });
 
-function buildTerminalHtml(theme: TerminalThemePalette) {
+function buildTerminalHtml(theme: TerminalThemePalette, fontUri: string | null) {
+  const fontFace = fontUri
+    ? `
+      @font-face {
+        font-family: 'ZenTerm';
+        src: url('${fontUri}') format('truetype');
+        font-display: swap;
+      }
+    `
+    : '';
   return String.raw`<!DOCTYPE html>
 <html>
   <head>
@@ -239,6 +350,7 @@ function buildTerminalHtml(theme: TerminalThemePalette) {
     />
     <style>
       ${xtermCss}
+      ${fontFace}
       html, body {
         margin: 0;
         padding: 0;
@@ -267,17 +379,18 @@ function buildTerminalHtml(theme: TerminalThemePalette) {
     <script>${xtermJs}</script>
     <script>${xtermFitAddonJs}</script>
     <script>
-      const FONT_SIZE = 14;
-      const LINE_HEIGHT_RATIO = 1.25;
+      const FONT_SIZE = 13;
+      const LINE_HEIGHT_RATIO = 1.28;
       const LINE_HEIGHT_PX = Math.ceil(FONT_SIZE * LINE_HEIGHT_RATIO);
 
       const terminal = new Terminal({
         convertEol: false,
         cursorBlink: true,
         allowTransparency: false,
-        fontFamily: 'Menlo, Consolas, monospace',
+        fontFamily: ${JSON.stringify(fontUri ? 'ZenTerm, monospace' : 'monospace')},
         fontSize: FONT_SIZE,
         lineHeight: LINE_HEIGHT_RATIO,
+        letterSpacing: 0,
         theme: ${JSON.stringify(theme)},
         scrollback: 5000
       });
@@ -300,25 +413,7 @@ function buildTerminalHtml(theme: TerminalThemePalette) {
         } catch (_) {}
       };
 
-      // ── Text selection overlay ─────────────────────────────
-      // On long-press, a native-selectable <pre> is placed over the
-      // canvas so the WebView's built-in text selection (Android system
-      // handles + toolbar: copy / translate / share) works natively.
-      const selectionOverlay = document.createElement('div');
-      selectionOverlay.id = 'selection-overlay';
-      selectionOverlay.style.cssText = 'display:none;position:absolute;inset:0;z-index:9999;background:${theme.background};overflow-y:auto;-webkit-overflow-scrolling:touch;';
-      const selectionPre = document.createElement('pre');
-      selectionPre.style.cssText = 'margin:0;padding:4px;font-family:Menlo,Consolas,monospace;font-size:' + FONT_SIZE + 'px;line-height:' + LINE_HEIGHT_RATIO + ';color:${theme.foreground};white-space:pre-wrap;word-break:break-all;-webkit-user-select:text;user-select:text;';
-      const selectionClose = document.createElement('div');
-      selectionClose.style.cssText = 'position:sticky;top:4px;float:right;width:28px;height:28px;line-height:28px;text-align:center;background:rgba(255,255,255,0.15);border-radius:14px;cursor:pointer;color:#ccc;font-size:16px;z-index:10000;margin:4px;';
-      selectionClose.textContent = '✕';
-      selectionOverlay.appendChild(selectionClose);
-      selectionOverlay.appendChild(selectionPre);
-      document.getElementById('terminal').appendChild(selectionOverlay);
-
-      let selectMode = false;
-
-      const showSelectionOverlay = () => {
+      const sendSelectionSnapshot = () => {
         try {
           const buf = terminal.buffer.active;
           const lines = [];
@@ -327,28 +422,19 @@ function buildTerminalHtml(theme: TerminalThemePalette) {
             lines.push(line ? line.translateToString(true) : '');
           }
           while (lines.length > 0 && lines[lines.length - 1].trim() === '') lines.pop();
-          selectionPre.textContent = lines.join('\\n');
+          send({ type: 'select_snapshot', data: lines.join('\n') });
         } catch(_) { return; }
-        selectMode = true;
-        selectionOverlay.style.display = 'block';
       };
-
-      const hideSelectionOverlay = () => {
-        selectMode = false;
-        selectionOverlay.style.display = 'none';
-        window.getSelection()?.removeAllRanges();
-      };
-
-      selectionClose.addEventListener('click', hideSelectionOverlay);
 
       // ── Touch scroll engine ─────────────────────────────────
       //
       // Scrolling: delegated to daemon via tmux copy-mode.
-      // Long-press (500ms): shows selectable text overlay for native
-      // OS-level text selection (copy/translate/share).
+      // Long-press (500ms): sends the visible terminal snapshot to the
+      // native layer, which presents a real OS text-selection UI.
       //
       (function initTouchScroll() {
         let scrolling = false;
+        let longPressTriggered = false;
         let startY = 0;
         let lastY = 0;
         let lastTime = 0;
@@ -412,11 +498,9 @@ function buildTerminalHtml(theme: TerminalThemePalette) {
         };
 
         document.addEventListener('touchstart', (e) => {
-          // If selection overlay is showing, let native selection work
-          if (selectMode) return;
-
           cancelMomentum();
           scrolling = false;
+          longPressTriggered = false;
           scrollAccum = 0;
           velocity = 0;
           startY = lastY = e.touches[0].clientY;
@@ -426,15 +510,13 @@ function buildTerminalHtml(theme: TerminalThemePalette) {
           longPressTimer = setTimeout(() => {
             longPressTimer = null;
             if (!scrolling) {
-              showSelectionOverlay();
+              longPressTriggered = true;
+              sendSelectionSnapshot();
             }
           }, LONG_PRESS_MS);
         }, { capture: true, passive: true });
 
         document.addEventListener('touchmove', (e) => {
-          // If selection overlay is showing, let native selection work
-          if (selectMode) return;
-
           const y = e.touches[0].clientY;
           if (!scrolling && Math.abs(startY - y) > THRESHOLD) {
             scrolling = true;
@@ -465,10 +547,18 @@ function buildTerminalHtml(theme: TerminalThemePalette) {
         }, { capture: true, passive: false });
 
         document.addEventListener('touchend', () => {
-          if (selectMode) return;
           cancelLongPress();
+          if (longPressTriggered) {
+            scrolling = false;
+            longPressTriggered = false;
+            return;
+          }
 
-          if (!scrolling) return;
+          // Short tap (no scroll, no long-press) → notify React Native
+          if (!scrolling) {
+            send({ type: 'tap' });
+            return;
+          }
           scrolling = false;
 
           flushScrollNow();
@@ -503,8 +593,8 @@ function buildTerminalHtml(theme: TerminalThemePalette) {
         }, { capture: true, passive: true });
 
         document.addEventListener('touchcancel', () => {
-          if (selectMode) return;
           scrolling = false;
+          longPressTriggered = false;
           cancelLongPress();
           cancelMomentum();
           flushScrollNow();

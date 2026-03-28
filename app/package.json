@@ -16,6 +16,8 @@
     "expo-camera": "~55.0.11",
     "expo-constants": "~55.0.9",
     "expo-device": "^55.0.11-canary-20260327-0789fbc",
+    "expo-document-picker": "~55.0.9",
+    "expo-file-system": "~55.0.12",
     "expo-font": "^55.0.5-canary-20260327-0789fbc",
     "expo-haptics": "~55.0.9",
     "expo-linking": "~55.0.8",

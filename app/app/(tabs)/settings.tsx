@@ -9,7 +9,7 @@ import {
   ScrollView,
   TouchableOpacity,
 } from 'react-native';
-import { Colors, Spacing } from '../../constants/tokens';
+import { Colors, Spacing, Typography } from '../../constants/tokens';
 import { DefaultTerminalThemeName, TerminalThemeName, TerminalThemes } from '../../constants/terminalThemes';
 import { wsClient } from '../../services/websocket';
 import { useAgents } from '../../store/agents';
@@ -162,14 +162,14 @@ const styles = StyleSheet.create({
   sectionTitle: {
     color: Colors.textSecondary,
     fontSize: 13,
-    fontWeight: '600',
+    fontFamily: Typography.uiFontMedium,
     textTransform: 'uppercase',
     letterSpacing: 1,
     marginTop: 24,
     marginBottom: 8,
   },
   card: { backgroundColor: Colors.bgSurface, borderRadius: 12, padding: 16 },
-  label: { color: Colors.textSecondary, fontSize: 13, marginBottom: 8 },
+  label: { color: Colors.textSecondary, fontSize: 13, fontFamily: Typography.uiFont, marginBottom: 8 },
   input: {
     backgroundColor: Colors.bgElevated,
     borderRadius: 10,
@@ -177,7 +177,7 @@ const styles = StyleSheet.create({
     paddingVertical: 10,
     color: Colors.textPrimary,
     fontSize: 14,
-    fontFamily: 'monospace',
+    fontFamily: Typography.terminalFont,
     borderWidth: 1,
     borderColor: Colors.bgElevated,
   },
@@ -190,18 +190,18 @@ const styles = StyleSheet.create({
     minHeight: 44,
     justifyContent: 'center',
   },
-  connectBtnText: { color: Colors.bgPrimary, fontWeight: '600', fontSize: 15 },
+  connectBtnText: { color: Colors.bgPrimary, fontFamily: Typography.uiFontMedium, fontSize: 15 },
   statusRow: { flexDirection: 'row', alignItems: 'center', marginTop: 12 },
   statusDot: { width: 8, height: 8, borderRadius: 4, marginRight: 8 },
-  statusLabel: { color: Colors.textSecondary, fontSize: 13 },
+  statusLabel: { color: Colors.textSecondary, fontSize: 13, fontFamily: Typography.uiFont },
   settingRow: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
     paddingVertical: 8,
   },
-  settingLabel: { color: Colors.textPrimary, fontSize: 15 },
-  settingSublabel: { color: Colors.textSecondary, fontSize: 12, marginTop: 2 },
+  settingLabel: { color: Colors.textPrimary, fontSize: 15, fontFamily: Typography.uiFont },
+  settingSublabel: { color: Colors.textSecondary, fontSize: 12, fontFamily: Typography.uiFont, marginTop: 2 },
   themeList: { gap: 12 },
   themeCard: {
     borderRadius: 12,
@@ -231,14 +231,14 @@ const styles = StyleSheet.create({
   },
   themePreviewText: {
     fontSize: 13,
-    fontFamily: 'monospace',
+    fontFamily: Typography.terminalFont,
   },
   themeName: {
     color: Colors.textPrimary,
     fontSize: 13,
-    fontWeight: '600',
+    fontFamily: Typography.uiFontMedium,
     marginTop: 10,
     textTransform: 'capitalize',
   },
-  version: { color: Colors.textSecondary, fontSize: 12, textAlign: 'center', marginTop: 32 },
+  version: { color: Colors.textSecondary, fontSize: 12, fontFamily: Typography.uiFont, textAlign: 'center', marginTop: 32 },
 });

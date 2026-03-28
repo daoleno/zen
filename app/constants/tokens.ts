@@ -23,7 +23,10 @@ export const Spacing = {
 } as const;
 
 export const Typography = {
-  terminalFont: 'monospace',
+  uiFont: 'SourceHanSansSC-Regular',
+  uiFontMedium: 'SourceHanSansSC-Medium',
+  terminalFont: 'MapleMono-CN-Regular',
+  terminalFontBold: 'MapleMono-CN-SemiBold',
   terminalSize: 13,
   agentNameSize: 15,
   statusTextSize: 13,

@@ -1,51 +1,31 @@
 import React, { useEffect, useRef, useState } from 'react';
 import {
+  Keyboard,
+  KeyboardEvent,
   View,
   Text,
   TouchableOpacity,
   StyleSheet,
   SafeAreaView,
-  ScrollView,
-  Alert,
 } from 'react-native';
-import * as Haptics from 'expo-haptics';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import { Colors, Spacing, Typography, statusColor } from '../../constants/tokens';
 import { DefaultTerminalThemeName, TerminalThemeName } from '../../constants/terminalThemes';
 import { useAgents } from '../../store/agents';
 import { getTerminalTheme } from '../../services/storage';
-import { wsClient } from '../../services/websocket';
 import { TerminalSurface, TerminalSurfaceHandle } from '../../components/terminal/TerminalSurface';
-
-const QUICK_ACTIONS = ['yes', 'no', 'show diff', 'pause', 'run tests', 'git status'];
-const TERMINAL_KEYS = [
-  { label: 'Focus', sequence: '__focus__' },
-  { label: 'Space', sequence: ' ' },
-  { label: 'Esc', sequence: '\x1b' },
-  { label: 'Tab', sequence: '\t' },
-  { label: 'Ctrl-C', sequence: '\x03' },
-  { label: 'Ctrl-D', sequence: '\x04' },
-  { label: 'Ctrl-L', sequence: '\x0c' },
-  { label: '⌫', sequence: '\x7f' },
-  { label: 'Enter', sequence: '\r' },
-  { label: '←', sequence: '\x1b[D' },
-  { label: '↑', sequence: '\x1b[A' },
-  { label: '↓', sequence: '\x1b[B' },
-  { label: '→', sequence: '\x1b[C' },
-  { label: 'Home', sequence: '\x1b[H' },
-  { label: 'End', sequence: '\x1b[F' },
-  { label: 'PgUp', sequence: '\x1b[5~' },
-  { label: 'PgDn', sequence: '\x1b[6~' },
-] as const;
+import { InputBar, InputBarHandle } from '../../components/terminal/InputBar';
 
 export default function TerminalScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
   const { state } = useAgents();
   const router = useRouter();
   const [themeName, setThemeName] = useState<TerminalThemeName>(DefaultTerminalThemeName);
-  const [ctrlArmed, setCtrlArmed] = useState(false);
-  const [altArmed, setAltArmed] = useState(false);
+  const [keyboardVisible, setKeyboardVisible] = useState(false);
+  const [keyboardHeight, setKeyboardHeight] = useState(0);
+  const [inputBarHeight, setInputBarHeight] = useState(54);
   const terminalRef = useRef<TerminalSurfaceHandle>(null);
+  const inputBarRef = useRef<InputBarHandle>(null);
 
   const agent = state.agents.find(a => a.id === id);
 
@@ -62,62 +42,27 @@ export default function TerminalScreen() {
     };
   }, []);
 
-  const handleQuickAction = (action: string) => {
-    if (!id) return;
-    const needsConfirm = action === 'no' || action === 'pause';
-    const doAction = () => {
-      if (action === 'yes') wsClient.sendAction(id, 'approve');
-      else if (action === 'no') wsClient.sendAction(id, 'reject');
-      else if (action === 'pause') wsClient.sendAction(id, 'pause');
-      else if (action === 'show diff') wsClient.sendAction(id, 'show_diff');
-      else if (action === 'run tests') wsClient.sendAction(id, 'run_tests');
-      else if (action === 'git status') wsClient.sendAction(id, 'git_status');
-      Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+  useEffect(() => {
+    const handleShow = (event: KeyboardEvent) => {
+      setKeyboardVisible(true);
+      setKeyboardHeight(event.endCoordinates?.height ?? 0);
     };
-    if (needsConfirm) {
-      Alert.alert('Confirm', `Are you sure you want to ${action}?`, [
-        { text: 'Cancel', style: 'cancel' },
-        { text: action, style: action === 'no' ? 'destructive' : 'default', onPress: doAction },
-      ]);
-    } else {
-      doAction();
-    }
-  };
+    const handleHide = () => {
+      setKeyboardVisible(false);
+      setKeyboardHeight(0);
+    };
 
-  const applyModifiers = (sequence: string) => {
-    let next = sequence;
+    const showSub = Keyboard.addListener('keyboardDidShow', handleShow);
+    const hideSub = Keyboard.addListener('keyboardDidHide', handleHide);
 
-    if (ctrlArmed && sequence.length === 1) {
-      const code = sequence.toUpperCase().charCodeAt(0);
-      if (code >= 64 && code <= 95) {
-        next = String.fromCharCode(code - 64);
-      }
-      setCtrlArmed(false);
-    }
+    return () => {
+      showSub.remove();
+      hideSub.remove();
+    };
+  }, []);
 
-    if (altArmed) {
-      next = '\x1b' + next;
-      setAltArmed(false);
-    }
-
-    return next;
-  };
-
-  const handleTerminalKey = (sequence: string) => {
-    if (sequence === '__focus__') {
-      terminalRef.current?.focus();
-      return;
-    }
-    terminalRef.current?.sendInput(applyModifiers(sequence));
-  };
-
-  const toggleCtrl = () => {
-    setCtrlArmed(value => !value);
-  };
-
-  const toggleAlt = () => {
-    setAltArmed(value => !value);
-  };
+  const toolbarBottom = keyboardVisible ? keyboardHeight + 18 : 14;
+  const outputBottomInset = inputBarHeight + toolbarBottom + 8;
 
   return (
     <SafeAreaView style={styles.container}>
@@ -133,48 +78,27 @@ export default function TerminalScreen() {
         )}
       </View>
 
-      <View style={styles.output}>
-        {id ? <TerminalSurface ref={terminalRef} targetId={id} themeName={themeName} /> : null}
+      <View style={[styles.output, { paddingBottom: outputBottomInset }]}>
+        {id ? (
+          <TerminalSurface
+            ref={terminalRef}
+            targetId={id}
+            themeName={themeName}
+            onTap={() => inputBarRef.current?.focus()}
+          />
+        ) : null}
       </View>
 
-      <View style={styles.inputArea}>
-        <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.terminalKeyRow}>
-          <TouchableOpacity
-            style={[styles.modifierBtn, ctrlArmed && styles.modifierBtnActive]}
-            onPress={toggleCtrl}
-          >
-            <Text style={[styles.modifierText, ctrlArmed && styles.modifierTextActive]}>Ctrl</Text>
-          </TouchableOpacity>
-          <TouchableOpacity
-            style={[styles.modifierBtn, altArmed && styles.modifierBtnActive]}
-            onPress={toggleAlt}
-          >
-            <Text style={[styles.modifierText, altArmed && styles.modifierTextActive]}>Alt</Text>
-          </TouchableOpacity>
-
-          {TERMINAL_KEYS.map(key => (
-            <TouchableOpacity
-              key={key.label}
-              style={styles.terminalKeyBtn}
-              onPress={() => handleTerminalKey(key.sequence)}
-            >
-              <Text style={styles.terminalKeyText}>{key.label}</Text>
-            </TouchableOpacity>
-          ))}
-        </ScrollView>
-
-        <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.quickRow}>
-          {QUICK_ACTIONS.map(action => (
-            <TouchableOpacity
-              key={action}
-              style={styles.quickBtn}
-              onPress={() => handleQuickAction(action)}
-            >
-              <Text style={styles.quickBtnText}>{action}</Text>
-            </TouchableOpacity>
-          ))}
-        </ScrollView>
-      </View>
+      {id ? (
+        <View
+          style={[styles.inputShell, { bottom: toolbarBottom }]}
+          onLayout={(event) => {
+            setInputBarHeight(event.nativeEvent.layout.height);
+          }}
+        >
+          <InputBar ref={inputBarRef} terminalRef={terminalRef} />
+        </View>
+      ) : null}
     </SafeAreaView>
   );
 }
@@ -191,77 +115,18 @@ const styles = StyleSheet.create({
   },
   backBtn: { marginRight: 12 },
   backText: { color: Colors.textSecondary, fontSize: 14 },
-  agentName: { color: Colors.accent, fontSize: 15, fontWeight: '600', fontFamily: Typography.terminalFont },
+  agentName: { color: Colors.accent, fontSize: 15, fontFamily: Typography.uiFontMedium },
   statusBadge: { marginLeft: 8, paddingHorizontal: 8, paddingVertical: 2, borderRadius: 8 },
   statusText: { fontSize: 11, fontWeight: '500' },
   output: {
     flex: 1,
     paddingTop: 8,
   },
-  inputArea: {
-    borderTopWidth: 1,
-    borderTopColor: Colors.bgSurface,
-    backgroundColor: Colors.bgElevated,
-  },
-  terminalKeyRow: {
+  inputShell: {
+    position: 'absolute',
+    left: 0,
+    right: 0,
     paddingHorizontal: 12,
-    paddingVertical: 8,
-    maxHeight: 50,
+    backgroundColor: 'transparent',
   },
-  terminalKeyBtn: {
-    paddingHorizontal: 12,
-    paddingVertical: 7,
-    borderRadius: 10,
-    backgroundColor: '#121c28',
-    marginRight: 6,
-    minHeight: 34,
-    justifyContent: 'center',
-    borderWidth: 1,
-    borderColor: '#27364a',
-  },
-  terminalKeyText: {
-    color: Colors.textPrimary,
-    fontSize: 12,
-    fontFamily: Typography.terminalFont,
-    fontWeight: '600',
-  },
-  modifierBtn: {
-    paddingHorizontal: 12,
-    paddingVertical: 7,
-    borderRadius: 10,
-    backgroundColor: '#1b2634',
-    marginRight: 6,
-    minHeight: 34,
-    justifyContent: 'center',
-    borderWidth: 1,
-    borderColor: '#31445d',
-  },
-  modifierBtnActive: {
-    backgroundColor: Colors.accent,
-    borderColor: Colors.accent,
-  },
-  modifierText: {
-    color: Colors.textPrimary,
-    fontSize: 12,
-    fontFamily: Typography.terminalFont,
-    fontWeight: '700',
-  },
-  modifierTextActive: {
-    color: Colors.bgPrimary,
-  },
-  quickRow: {
-    paddingHorizontal: 12,
-    paddingVertical: 6,
-    maxHeight: 40,
-  },
-  quickBtn: {
-    paddingHorizontal: 12,
-    paddingVertical: 6,
-    borderRadius: 8,
-    backgroundColor: Colors.bgSurface,
-    marginRight: 6,
-    minHeight: 32,
-    justifyContent: 'center',
-  },
-  quickBtnText: { color: Colors.textSecondary, fontSize: 12, fontFamily: Typography.terminalFont },
 });

@@ -1,7 +1,7 @@
 import React from 'react';
 import { View, Text, TouchableOpacity, StyleSheet, SafeAreaView } from 'react-native';
 import { useRouter } from 'expo-router';
-import { Colors, Spacing } from '../constants/tokens';
+import { Colors, Spacing, Typography } from '../constants/tokens';
 import { markOnboarded } from '../services/storage';
 
 export default function OnboardingScreen() {
@@ -58,25 +58,25 @@ const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: Colors.bgPrimary },
   content: { flex: 1, padding: Spacing.screenMargin * 2, justifyContent: 'center' },
   logo: { fontSize: 56, textAlign: 'center', marginBottom: 16 },
-  title: { color: Colors.textPrimary, fontSize: 28, fontWeight: '700', textAlign: 'center' },
-  subtitle: { color: Colors.textSecondary, fontSize: 15, textAlign: 'center', marginTop: 8, marginBottom: 40 },
+  title: { color: Colors.textPrimary, fontSize: 28, fontFamily: Typography.uiFontMedium, textAlign: 'center' },
+  subtitle: { color: Colors.textSecondary, fontSize: 15, fontFamily: Typography.uiFont, textAlign: 'center', marginTop: 8, marginBottom: 40 },
   step: { flexDirection: 'row', marginBottom: 24 },
   stepNum: {
     color: Colors.accent,
     fontSize: 20,
-    fontWeight: '700',
+    fontFamily: Typography.uiFontMedium,
     width: 32,
     marginTop: 2,
   },
   stepContent: { flex: 1 },
-  stepTitle: { color: Colors.textPrimary, fontSize: 16, fontWeight: '600', marginBottom: 8 },
-  stepHint: { color: Colors.textSecondary, fontSize: 13, marginTop: 6 },
+  stepTitle: { color: Colors.textPrimary, fontSize: 16, fontFamily: Typography.uiFontMedium, marginBottom: 8 },
+  stepHint: { color: Colors.textSecondary, fontSize: 13, fontFamily: Typography.uiFont, marginTop: 6 },
   codeBlock: {
     backgroundColor: Colors.bgSurface,
     borderRadius: 8,
     padding: 12,
   },
-  code: { color: Colors.accent, fontFamily: 'monospace', fontSize: 12 },
+  code: { color: Colors.accent, fontFamily: Typography.terminalFont, fontSize: 12 },
   doneBtn: {
     backgroundColor: Colors.accent,
     borderRadius: 12,
@@ -86,5 +86,5 @@ const styles = StyleSheet.create({
     minHeight: 52,
     justifyContent: 'center',
   },
-  doneBtnText: { color: Colors.bgPrimary, fontWeight: '700', fontSize: 17 },
+  doneBtnText: { color: Colors.bgPrimary, fontFamily: Typography.uiFontMedium, fontSize: 17 },
 });

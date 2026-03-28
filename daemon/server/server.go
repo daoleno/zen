@@ -4,10 +4,15 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
+	"os"
+	"path/filepath"
 	"sync"
 	"time"
+
+	"github.com/google/uuid"
 
 	"github.com/daoleno/zen/daemon/auth"
 	"github.com/daoleno/zen/daemon/push"
@@ -47,6 +52,7 @@ func New(secret *auth.Secret, w *watcher.Watcher, pusher *push.Client) *Server {
 func (s *Server) Run(ctx context.Context, addr string) error {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/ws", s.handleWS)
+	mux.HandleFunc("/upload", s.handleUpload)
 	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		w.Write([]byte(`{"status":"ok"}`))
@@ -330,6 +336,45 @@ func (s *Server) broadcast(data []byte) {
 			s.mu.Unlock()
 		}
 	}
+}
+
+func (s *Server) handleUpload(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if err := r.ParseMultipartForm(32 << 20); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	file, header, err := r.FormFile("file")
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	defer file.Close()
+
+	dir := "/tmp/zen-uploads"
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	ext := filepath.Ext(header.Filename)
+	name := uuid.New().String() + ext
+	path := filepath.Join(dir, name)
+	dst, err := os.Create(path)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	defer dst.Close()
+	if _, err := io.Copy(dst, file); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]string{"path": path, "name": header.Filename})
 }
 
 // PairingInfo returns connection information for display/QR code.

@@ -193,6 +193,11 @@ func listTmuxWindows() ([]tmuxWindow, error) {
 		}
 		parts := strings.SplitN(line, " ", 2)
 		target := parts[0]
+		// Skip grouped sessions created by the terminal backend (zen-<pid>-<counter>).
+		sessionName := strings.SplitN(target, ":", 2)[0]
+		if strings.HasPrefix(sessionName, "zen-") {
+			continue
+		}
 		name := target
 		if len(parts) == 2 {
 			name = parts[1]

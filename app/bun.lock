@@ -12,6 +12,8 @@
         "expo-camera": "~55.0.11",
         "expo-constants": "~55.0.9",
         "expo-device": "^55.0.11-canary-20260327-0789fbc",
+        "expo-document-picker": "~55.0.9",
+        "expo-file-system": "~55.0.12",
         "expo-font": "^55.0.5-canary-20260327-0789fbc",
         "expo-haptics": "~55.0.9",
         "expo-linking": "~55.0.8",
@@ -617,6 +619,8 @@
     "expo-constants": ["expo-constants@55.0.9", "https://registry.npmmirror.com/expo-constants/-/expo-constants-55.0.9.tgz", { "dependencies": { "@expo/config": "~55.0.10", "@expo/env": "~2.1.1" }, "peerDependencies": { "expo": "*", "react-native": "*" } }, "sha512-iBiXjZeuU5S/8docQeNzsVvtDy4w0zlmXBpFEi1ypwugceEpdQQab65TVRbusXAcwpNVxCPMpNlDssYp0Pli2g=="],
 
     "expo-device": ["expo-device@55.0.11-canary-20260327-0789fbc", "https://registry.npmmirror.com/expo-device/-/expo-device-55.0.11-canary-20260327-0789fbc.tgz", { "dependencies": { "ua-parser-js": "^0.7.33" }, "peerDependencies": { "expo": "55.0.10-canary-20260327-0789fbc" } }, "sha512-PixvHxB7eNc0LFswYL/Bl9iS3BAq182hqKKnGMWTvkWZrF/ZXZEkOaG3Lh9NthW8UCpEwYTfgJE87bSyBX9EZQ=="],
+
+    "expo-document-picker": ["expo-document-picker@55.0.9", "https://registry.npmmirror.com/expo-document-picker/-/expo-document-picker-55.0.9.tgz", { "peerDependencies": { "expo": "*" } }, "sha512-XtkhmZ9alOj1n2Ok782lK9qtfk9TbaBoOJotSDK0pvq5oa+3UyHlLLTUmnC5UPMmFKoLGLJC3R2fLBFEiN5jCQ=="],
 
     "expo-file-system": ["expo-file-system@55.0.12", "https://registry.npmmirror.com/expo-file-system/-/expo-file-system-55.0.12.tgz", { "peerDependencies": { "expo": "*", "react-native": "*" } }, "sha512-MFN/3L3gm174nxP2HqKQsSsPbjAj92wuidKFGSbl3Lt6oJTS09EbTwszX5BhYeeVSprcsw8pnlxYSmhkSqGEFw=="],
 

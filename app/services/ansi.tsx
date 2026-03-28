@@ -92,7 +92,7 @@ export function AnsiLine({ text }: { text: string }) {
       {segments.map((seg, i) => (
         <Text key={i} style={{
           color: seg.color,
-          fontWeight: seg.bold ? '700' : '400',
+          fontFamily: seg.bold ? Typography.terminalFontBold : Typography.terminalFont,
         }}>
           {seg.text}
         </Text>

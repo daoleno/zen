@@ -310,6 +310,11 @@ func tmuxGroupedSession(targetID string, size Size) (string, *exec.Cmd, error) {
 		return "", nil, fmt.Errorf("create grouped tmux session: %w", err)
 	}
 
+	// Make window size follow the most recently active session.
+	// Without this, tmux uses the SMALLEST session's size, so the
+	// phone would constrain the desktop or vice versa.
+	_ = exec.Command("tmux", "set-option", "-t", linkedName, "window-size", "latest").Run()
+
 	// Select the correct window in the linked session before attaching
 	if windowTarget != "" {
 		_ = exec.Command("tmux", "select-window", "-t", linkedName+":"+strings.SplitN(windowTarget, ":", 2)[1]).Run()
