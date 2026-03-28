@@ -6,6 +6,11 @@ app/node_modules/
 app/dist/
 dist-download/
 
+# Local build artifacts
+*.apk
+*.aab
+*.ipa
+
 # IDE
 .idea/
 .vscode/
