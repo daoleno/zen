@@ -1,0 +1,40 @@
+import AsyncStorage from '@react-native-async-storage/async-storage';
+
+const KEYS = {
+  serverUrl: 'zen:server_url',
+  secret: 'zen:secret',
+  nightMode: 'zen:night_mode',
+  onboarded: 'zen:onboarded',
+} as const;
+
+export async function getServerUrl(): Promise<string> {
+  return (await AsyncStorage.getItem(KEYS.serverUrl)) || '';
+}
+
+export async function setServerUrl(url: string): Promise<void> {
+  await AsyncStorage.setItem(KEYS.serverUrl, url);
+}
+
+export async function getSecret(): Promise<string> {
+  return (await AsyncStorage.getItem(KEYS.secret)) || '';
+}
+
+export async function setSecret(secret: string): Promise<void> {
+  await AsyncStorage.setItem(KEYS.secret, secret);
+}
+
+export async function getNightMode(): Promise<boolean> {
+  return (await AsyncStorage.getItem(KEYS.nightMode)) === 'true';
+}
+
+export async function setNightMode(enabled: boolean): Promise<void> {
+  await AsyncStorage.setItem(KEYS.nightMode, String(enabled));
+}
+
+export async function isOnboarded(): Promise<boolean> {
+  return (await AsyncStorage.getItem(KEYS.onboarded)) === 'true';
+}
+
+export async function markOnboarded(): Promise<void> {
+  await AsyncStorage.setItem(KEYS.onboarded, 'true');
+}

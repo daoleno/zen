@@ -1,0 +1,28 @@
+{
+  "expo": {
+    "name": "zen",
+    "slug": "zen",
+    "version": "0.1.0",
+    "orientation": "portrait",
+    "icon": "./assets/icon.png",
+    "userInterfaceStyle": "dark",
+    "scheme": "zen",
+    "splash": {
+      "image": "./assets/splash-icon.png",
+      "resizeMode": "contain",
+      "backgroundColor": "#0F0F14"
+    },
+    "android": {
+      "adaptiveIcon": {
+        "backgroundColor": "#0F0F14",
+        "foregroundImage": "./assets/android-icon-foreground.png",
+        "backgroundImage": "./assets/android-icon-background.png",
+        "monochromeImage": "./assets/android-icon-monochrome.png"
+      },
+      "package": "com.anonymous.zen"
+    },
+    "plugins": [
+      "expo-router"
+    ]
+  }
+}
