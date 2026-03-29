@@ -12,6 +12,7 @@ type SendFunc func(v any)
 
 type managedSession struct {
 	owner   string
+	target  string
 	session Session
 	cancel  context.CancelFunc
 }
@@ -39,9 +40,20 @@ func NewManager(backends ...Backend) *Manager {
 func (m *Manager) Open(ownerID, backendName, targetID string, opts OpenOptions, send SendFunc) (Session, error) {
 	m.mu.Lock()
 	backend, ok := m.backends[backendName]
+	existing := make([]string, 0)
+	for id, ms := range m.sessions {
+		if ms.owner == ownerID && ms.target == targetID {
+			existing = append(existing, id)
+		}
+	}
 	m.mu.Unlock()
 	if !ok {
 		return nil, fmt.Errorf("unknown terminal backend: %s", backendName)
+	}
+	for _, id := range existing {
+		if err := m.Close(ownerID, id); err != nil {
+			log.Printf("close existing terminal session %s for target %s: %v", id, targetID, err)
+		}
 	}
 
 	session, err := backend.Open(targetID, opts)
@@ -58,6 +70,7 @@ func (m *Manager) Open(ownerID, backendName, targetID string, opts OpenOptions, 
 	m.mu.Lock()
 	m.sessions[session.ID()] = &managedSession{
 		owner:   ownerID,
+		target:  targetID,
 		session: session,
 		cancel:  cancel,
 	}

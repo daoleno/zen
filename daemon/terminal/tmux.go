@@ -15,6 +15,7 @@ import (
 )
 
 var sessionCounter atomic.Int64
+var terminalIDCounter atomic.Int64
 
 // TmuxBackend attaches a dedicated tmux client to an existing tmux session
 // and streams the client's PTY output directly to the mobile terminal.
@@ -32,8 +33,9 @@ func (b *TmuxBackend) Open(targetID string, opts OpenOptions) (Session, error) {
 	if opts.Rows > 0 {
 		size.Rows = opts.Rows
 	}
+	id := terminalIDCounter.Add(1)
 	return &tmuxSession{
-		id:       targetID,
+		id:       fmt.Sprintf("%s#%d", targetID, id),
 		targetID: targetID,
 		size:     size,
 		events:   make(chan Event, 128),
@@ -276,13 +278,11 @@ func (s *tmuxSession) closeEvents() {
 }
 
 // tmuxGroupedSession creates a linked/grouped tmux session that shares the
-// same windows as the target but has its own independent client size. This
-// prevents the mobile client from constraining the desktop terminal's size
-// (tmux defaults to the smallest client across all clients of a session).
-// tmuxGroupedSession creates a linked/grouped tmux session that shares the
-// same windows as the target but has its own independent client size. This
-// prevents the mobile client from constraining the desktop terminal's size
-// (tmux defaults to the smallest client across all clients of a session).
+// same windows as the target, but with a separate client attachment. This
+// lets us attach a dedicated mobile client without hijacking the user's
+// original desktop client process. It does NOT create an independent pane
+// geometry model: tmux still chooses a single effective window size across
+// attached clients according to window-size/aggressive-resize.
 func tmuxGroupedSession(targetID string, size Size) (string, *exec.Cmd, error) {
 	targetID = strings.TrimSpace(targetID)
 	if targetID == "" {
@@ -300,7 +300,7 @@ func tmuxGroupedSession(targetID string, size Size) (string, *exec.Cmd, error) {
 	id := sessionCounter.Add(1)
 	linkedName := fmt.Sprintf("zen-%d-%d", os.Getpid(), id)
 
-	// Create grouped session (shares windows, independent size)
+	// Create grouped session with its own attached client process.
 	createCmd := exec.Command("tmux", "new-session", "-d",
 		"-t", sessionName,
 		"-s", linkedName,
@@ -310,9 +310,8 @@ func tmuxGroupedSession(targetID string, size Size) (string, *exec.Cmd, error) {
 		return "", nil, fmt.Errorf("create grouped tmux session: %w", err)
 	}
 
-	// Make window size follow the most recently active session.
-	// Without this, tmux uses the SMALLEST session's size, so the
-	// phone would constrain the desktop or vice versa.
+	// Prefer the most recently active client size for the shared window.
+	// This still means the pane geometry is shared across attached clients.
 	_ = exec.Command("tmux", "set-option", "-t", linkedName, "window-size", "latest").Run()
 
 	// Select the correct window in the linked session before attaching
