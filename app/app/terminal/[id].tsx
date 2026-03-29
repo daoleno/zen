@@ -31,6 +31,7 @@ import {
   StoredAgentAliases,
   StoredRecentAgentOpens,
   StoredTerminalTabs,
+  syncTerminalTabsWithLiveSessions,
   touchTerminalTab,
 } from '../../services/storage';
 import { makeSessionKey, parseSessionKey } from '../../services/sessionKeys';
@@ -85,6 +86,16 @@ export default function TerminalScreen() {
   const agentByKey = useMemo(
     () => new Map(state.agents.map(agent => [agent.key, agent])),
     [state.agents],
+  );
+  const hydratedServerIds = useMemo(
+    () => Object.entries(state.hydratedServers)
+      .filter(([, hydrated]) => hydrated)
+      .map(([serverId]) => serverId),
+    [state.hydratedServers],
+  );
+  const hydratedServerIdSet = useMemo(
+    () => new Set(hydratedServerIds),
+    [hydratedServerIds],
   );
   const agent = sessionKey ? agentByKey.get(sessionKey) : undefined;
   const activePinned = sessionKey ? terminalTabs.pinned.includes(sessionKey) : false;
@@ -157,6 +168,26 @@ export default function TerminalScreen() {
   }, [sessionKey]);
 
   useEffect(() => {
+    if (hydratedServerIds.length === 0) return;
+
+    let cancelled = false;
+
+    (async () => {
+      const nextTabs = await syncTerminalTabsWithLiveSessions(
+        state.agents.map(currentAgent => currentAgent.key),
+        hydratedServerIds,
+      );
+      if (!cancelled) {
+        setTerminalTabs(nextTabs);
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [hydratedServerIds, state.agents]);
+
+  useEffect(() => {
     const handleShow = (event: KeyboardEvent) => {
       setKeyboardVisible(true);
       setKeyboardHeight(event.endCoordinates?.height ?? 0);
@@ -177,7 +208,15 @@ export default function TerminalScreen() {
 
   const tabs = useMemo(() => {
     const order = buildDisplayTabOrder(sessionKey, terminalTabs);
-    return order.map(currentSessionKey => {
+    return order
+      .filter(currentSessionKey => {
+        if (currentSessionKey === sessionKey) return true;
+        if (agentByKey.has(currentSessionKey)) return true;
+
+        const parsed = parseSessionKey(currentSessionKey);
+        return parsed ? !hydratedServerIdSet.has(parsed.serverId) : false;
+      })
+      .map(currentSessionKey => {
       const tabAgent = agentByKey.get(currentSessionKey);
       const parsed = parseSessionKey(currentSessionKey);
       const serverLabel = tabAgent?.serverName || parsed?.serverId || 'server';
@@ -188,8 +227,8 @@ export default function TerminalScreen() {
         pinned: terminalTabs.pinned.includes(currentSessionKey),
         active: currentSessionKey === sessionKey,
       } satisfies TerminalTabDescriptor;
-    });
-  }, [agentAliases, agentByKey, sessionKey, terminalTabs]);
+      });
+  }, [agentAliases, agentByKey, hydratedServerIdSet, sessionKey, terminalTabs]);
 
   const sortedAgents = useMemo(() => {
     const openTabs = new Set(terminalTabs.order);
@@ -235,13 +274,19 @@ export default function TerminalScreen() {
     setRenameVisible(true);
   };
 
-  const openAgentTab = (agentId: string) => {
+  const openAgentTab = async (agentId: string) => {
     setPickerVisible(false);
     closeMenu();
 
     if (!agentId || agentId === sessionKey) return;
     const parsed = parseSessionKey(agentId);
     if (!parsed) return;
+    if (!agentByKey.has(agentId) && hydratedServerIdSet.has(parsed.serverId)) {
+      const nextTabs = await closeTerminalTab(agentId);
+      setTerminalTabs(nextTabs);
+      return;
+    }
+
     router.replace({
       pathname: '/terminal/[id]',
       params: { id: parsed.agentId, serverId: parsed.serverId },

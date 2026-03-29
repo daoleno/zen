@@ -21,6 +21,7 @@ export type ConnectionState = 'offline' | 'connecting' | 'connected';
 interface State {
   agents: Agent[];
   serverConnections: Record<string, ConnectionState>;
+  hydratedServers: Record<string, boolean>;
   selectedAgentKey: string | null;
 }
 
@@ -51,6 +52,7 @@ type Action =
 const initialState: State = {
   agents: [],
   serverConnections: {},
+  hydratedServers: {},
   selectedAgentKey: null,
 };
 
@@ -67,6 +69,10 @@ function reducer(state: State, action: Action): State {
           ...state.agents.filter(agent => agent.serverId !== action.serverId),
           ...nextAgents,
         ],
+        hydratedServers: {
+          ...state.hydratedServers,
+          [action.serverId]: true,
+        },
       };
     }
     case 'UPDATE_OUTPUT': {
@@ -107,6 +113,9 @@ function reducer(state: State, action: Action): State {
         agents: state.agents.filter(agent => agent.serverId !== action.serverId),
         serverConnections: Object.fromEntries(
           Object.entries(state.serverConnections).filter(([serverId]) => serverId !== action.serverId),
+        ),
+        hydratedServers: Object.fromEntries(
+          Object.entries(state.hydratedServers).filter(([serverId]) => serverId !== action.serverId),
         ),
         selectedAgentKey:
           state.selectedAgentKey && parseServerIdFromKey(state.selectedAgentKey) === action.serverId

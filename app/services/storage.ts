@@ -1,4 +1,5 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import { parseSessionKey } from './sessionKeys';
 
 const KEYS = {
   servers: 'zen:servers',
@@ -84,6 +85,7 @@ export async function removeServer(serverID: string): Promise<void> {
   const servers = await getServers();
   const nextServers = servers.filter(server => server.id !== serverID);
   await AsyncStorage.setItem(KEYS.servers, JSON.stringify(nextServers));
+  await pruneTerminalTabsForServers([serverID]);
 }
 
 export async function getServerById(serverId: string): Promise<StoredServer | null> {
@@ -209,6 +211,32 @@ export async function setTerminalTabPinned(
   return next;
 }
 
+export async function syncTerminalTabsWithLiveSessions(
+  liveSessionKeys: string[],
+  hydratedServerIds: string[],
+): Promise<StoredTerminalTabs> {
+  const current = await getTerminalTabs();
+  const liveSessions = new Set(liveSessionKeys);
+  const hydratedServers = new Set(hydratedServerIds);
+
+  const next = normalizeTerminalTabs({
+    order: current.order.filter(sessionKey => shouldKeepSessionKey(sessionKey, liveSessions, hydratedServers)),
+    pinned: current.pinned.filter(sessionKey => shouldKeepSessionKey(sessionKey, liveSessions, hydratedServers)),
+  });
+
+  if (
+    next.order.length === current.order.length &&
+    next.pinned.length === current.pinned.length &&
+    next.order.every((value, index) => value === current.order[index]) &&
+    next.pinned.every((value, index) => value === current.pinned[index])
+  ) {
+    return current;
+  }
+
+  await AsyncStorage.setItem(KEYS.terminalTabs, JSON.stringify(next));
+  return next;
+}
+
 export async function getAgentAliases(): Promise<StoredAgentAliases> {
   const value = await AsyncStorage.getItem(KEYS.agentAliases);
   if (!value) return {};
@@ -257,6 +285,34 @@ function normalizeIdList(value: unknown): string[] {
     normalized.push(item);
   }
   return normalized;
+}
+
+async function pruneTerminalTabsForServers(serverIds: string[]): Promise<void> {
+  const blockedServers = new Set(serverIds);
+  const current = await getTerminalTabs();
+  const next = normalizeTerminalTabs({
+    order: current.order.filter(sessionKey => {
+      const parsed = parseSessionKey(sessionKey);
+      return parsed ? !blockedServers.has(parsed.serverId) : false;
+    }),
+    pinned: current.pinned.filter(sessionKey => {
+      const parsed = parseSessionKey(sessionKey);
+      return parsed ? !blockedServers.has(parsed.serverId) : false;
+    }),
+  });
+
+  await AsyncStorage.setItem(KEYS.terminalTabs, JSON.stringify(next));
+}
+
+function shouldKeepSessionKey(
+  sessionKey: string,
+  liveSessions: Set<string>,
+  hydratedServers: Set<string>,
+): boolean {
+  const parsed = parseSessionKey(sessionKey);
+  if (!parsed) return false;
+  if (!hydratedServers.has(parsed.serverId)) return true;
+  return liveSessions.has(sessionKey);
 }
 
 function createServerID(): string {
