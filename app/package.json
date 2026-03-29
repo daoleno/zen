@@ -14,6 +14,7 @@
     "@xterm/addon-fit": "^0.11.0",
     "expo": "~55.0.8",
     "expo-camera": "~55.0.11",
+    "expo-clipboard": "~55.0.9",
     "expo-constants": "~55.0.9",
     "expo-device": "^55.0.11-canary-20260327-0789fbc",
     "expo-document-picker": "~55.0.9",

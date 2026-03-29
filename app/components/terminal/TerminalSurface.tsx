@@ -1,8 +1,10 @@
 import React, { forwardRef, useEffect, useImperativeHandle, useMemo, useRef, useState } from 'react';
-import { ActivityIndicator, Modal, ScrollView, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
+import { ActivityIndicator, Platform, StyleSheet, Text, ToastAndroid, TouchableOpacity, View } from 'react-native';
 import { Asset } from 'expo-asset';
 import { WebView, WebViewMessageEvent } from 'react-native-webview';
 import { Ionicons } from '@expo/vector-icons';
+import * as Clipboard from 'expo-clipboard';
+import * as Haptics from 'expo-haptics';
 import { Colors, Typography } from '../../constants/tokens';
 import {
   DefaultTerminalThemeName,
@@ -51,7 +53,6 @@ export const TerminalSurface = forwardRef<TerminalSurfaceHandle, {
   const [fontUri, setFontUri] = useState<string | null>(null);
   const [ready, setReady] = useState(false);
   const [scrolledUp, setScrolledUp] = useState(false);
-  const [selectionSnapshot, setSelectionSnapshot] = useState<string | null>(null);
   const theme = useMemo(() => resolveTerminalTheme(themeName, themeOverrides), [themeName, themeOverrides]);
 
   const html = useMemo(() => buildTerminalHtml(theme, fontUri), [theme, fontUri]);
@@ -102,6 +103,18 @@ export const TerminalSurface = forwardRef<TerminalSurfaceHandle, {
 
   const scrollToBottom = () => {
     webviewRef.current?.injectJavaScript('window.__zenScrollToBottom && window.__zenScrollToBottom(); true;');
+  };
+
+  const copyVisibleTerminalText = (value: string) => {
+    const text = value.trim();
+    if (!text) return;
+
+    void Clipboard.setStringAsync(text);
+    void Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+
+    if (Platform.OS === 'android') {
+      ToastAndroid.show('Copied terminal text', ToastAndroid.SHORT);
+    }
   };
 
   useEffect(() => {
@@ -184,7 +197,7 @@ export const TerminalSurface = forwardRef<TerminalSurfaceHandle, {
         return;
       }
       if (payload.type === 'select_snapshot') {
-        setSelectionSnapshot(payload.data);
+        copyVisibleTerminalText(payload.data);
         return;
       }
       if (payload.type === 'tap') {
@@ -227,32 +240,6 @@ export const TerminalSurface = forwardRef<TerminalSurfaceHandle, {
           <Ionicons name="chevron-down" size={20} color="#dcecff" />
         </TouchableOpacity>
       )}
-      <Modal
-        visible={selectionSnapshot !== null}
-        animationType="slide"
-        presentationStyle="fullScreen"
-        onRequestClose={() => setSelectionSnapshot(null)}
-      >
-        <View style={styles.selectionModal}>
-          <View style={styles.selectionHeader}>
-            <Text style={styles.selectionTitle}>Select text</Text>
-            <TouchableOpacity
-              style={styles.selectionClose}
-              onPress={() => setSelectionSnapshot(null)}
-            >
-              <Ionicons name="close" size={20} color={Colors.textPrimary} />
-            </TouchableOpacity>
-          </View>
-          <ScrollView
-            style={styles.selectionBody}
-            contentContainerStyle={styles.selectionBodyContent}
-          >
-            <Text selectable style={styles.selectionText}>
-              {selectionSnapshot ?? ''}
-            </Text>
-          </ScrollView>
-        </View>
-      </Modal>
     </View>
   );
 });
@@ -284,49 +271,6 @@ const styles = StyleSheet.create({
     height: 40,
     alignItems: 'center',
     justifyContent: 'center',
-  },
-  selectionModal: {
-    flex: 1,
-    backgroundColor: Colors.bgPrimary,
-  },
-  selectionHeader: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    paddingHorizontal: 14,
-    paddingVertical: 12,
-    borderBottomWidth: 1,
-    borderBottomColor: 'rgba(255,255,255,0.08)',
-    backgroundColor: Colors.bgPrimary,
-  },
-  selectionTitle: {
-    color: Colors.textPrimary,
-    fontSize: 14,
-    fontFamily: Typography.uiFontMedium,
-  },
-  selectionClose: {
-    width: 36,
-    height: 36,
-    borderRadius: 18,
-    alignItems: 'center',
-    justifyContent: 'center',
-    backgroundColor: Colors.bgSurface,
-  },
-  selectionBody: {
-    flex: 1,
-  },
-  selectionBodyContent: {
-    paddingHorizontal: 14,
-    paddingVertical: 16,
-  },
-  selectionText: {
-    color: Colors.textPrimary,
-    fontSize: 13,
-    lineHeight: 18,
-    fontFamily: Typography.terminalFont,
-    width: '100%',
-    alignSelf: 'stretch',
-    flexShrink: 1,
   },
 });
 
@@ -430,7 +374,7 @@ function buildTerminalHtml(theme: TerminalThemePalette, fontUri: string | null) 
       //
       // Scrolling: delegated to daemon via tmux copy-mode.
       // Long-press (500ms): sends the visible terminal snapshot to the
-      // native layer, which presents a real OS text-selection UI.
+      // native layer, which copies it to the system clipboard.
       //
       (function initTouchScroll() {
         let scrolling = false;

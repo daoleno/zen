@@ -1,15 +1,24 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import {
-  View,
-  Text,
   FlatList,
-  TouchableOpacity,
-  StyleSheet,
   SafeAreaView,
+  StyleSheet,
+  Text,
+  TouchableOpacity,
+  View,
 } from 'react-native';
 import { useRouter } from 'expo-router';
-import { Colors, Spacing, Typography, statusColor, AgentStatus } from '../../constants/tokens';
-import { useAgents, Agent } from '../../store/agents';
+import { Ionicons } from '@expo/vector-icons';
+import { Agent, useAgents } from '../../store/agents';
+import { AgentStatus, Colors, Spacing, Typography, statusColor } from '../../constants/tokens';
+import {
+  getInboxViewMode,
+  getRecentAgentOpens,
+  markAgentOpened,
+  setInboxViewMode,
+  StoredInboxViewMode,
+  StoredRecentAgentOpens,
+} from '../../services/storage';
 import { wsClient } from '../../services/websocket';
 
 const STATUS_PRIORITY: Record<AgentStatus, number> = {
@@ -23,7 +32,27 @@ const STATUS_PRIORITY: Record<AgentStatus, number> = {
 export default function InboxScreen() {
   const { state, dispatch } = useAgents();
   const router = useRouter();
-  const [filter, setFilter] = useState<'active' | 'all'>('active');
+  const [viewMode, setViewModeState] = useState<StoredInboxViewMode>('list');
+  const [recentAgentOpens, setRecentAgentOpens] = useState<StoredRecentAgentOpens>({});
+
+  useEffect(() => {
+    let cancelled = false;
+
+    (async () => {
+      const [storedViewMode, storedRecentOpens] = await Promise.all([
+        getInboxViewMode(),
+        getRecentAgentOpens(),
+      ]);
+      if (!cancelled) {
+        setViewModeState(storedViewMode);
+        setRecentAgentOpens(storedRecentOpens);
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   useEffect(() => {
     const onAgentList = (data: any) => {
@@ -53,38 +82,85 @@ export default function InboxScreen() {
     };
   }, [dispatch]);
 
-  const sortedAgents = [...state.agents]
-    .filter(a => filter === 'all' || (a.status !== 'done' && a.status !== 'failed'))
-    .sort((a, b) => {
-      const pa = STATUS_PRIORITY[a.status] ?? 5;
-      const pb = STATUS_PRIORITY[b.status] ?? 5;
-      if (pa !== pb) return pa - pb;
-      return (b.updated_at || 0) - (a.updated_at || 0);
+  const sortedAgents = useMemo(() => {
+    return [...state.agents].sort((left, right) => {
+      const leftOpenedAt = recentAgentOpens[left.id] ?? 0;
+      const rightOpenedAt = recentAgentOpens[right.id] ?? 0;
+      if (leftOpenedAt !== rightOpenedAt) return rightOpenedAt - leftOpenedAt;
+
+      const leftPriority = STATUS_PRIORITY[left.status] ?? 5;
+      const rightPriority = STATUS_PRIORITY[right.status] ?? 5;
+      if (leftPriority !== rightPriority) return leftPriority - rightPriority;
+      return (right.updated_at || 0) - (left.updated_at || 0);
     });
+  }, [recentAgentOpens, state.agents]);
 
-  const needsAttention = state.agents.some(a => a.status === 'blocked' || a.status === 'failed');
-  const showZen = state.connected && !needsAttention && state.agents.length > 0;
+  const runningCount = state.agents.filter(agent => agent.status === 'running').length;
 
-  const zenBanner = showZen && filter === 'active';
-
-  const renderAgent = ({ item }: { item: Agent }) => {
-    return (
-      <TouchableOpacity
-        style={styles.row}
-        onPress={() => router.push(`/terminal/${item.id}`)}
-        activeOpacity={0.7}
-      >
-        <View style={[styles.dot, { backgroundColor: statusColor(item.status) }]} />
-        <View style={styles.rowContent}>
-          <Text style={styles.agentName} numberOfLines={1}>{item.name}</Text>
-          <Text style={styles.summary} numberOfLines={1}>
-            {item.project ? `${item.project} · ` : ''}{item.summary}
-          </Text>
-        </View>
-        <Text style={styles.statusText}>{item.status}</Text>
-      </TouchableOpacity>
-    );
+  const setViewMode = async (mode: StoredInboxViewMode) => {
+    setViewModeState(mode);
+    await setInboxViewMode(mode);
   };
+
+  const openAgent = (agentId: string) => {
+    const openedAt = Date.now();
+    setRecentAgentOpens(previous => ({
+      ...previous,
+      [agentId]: openedAt,
+    }));
+    void markAgentOpened(agentId, openedAt);
+    router.push(`/terminal/${agentId}`);
+  };
+
+  const renderListAgent = ({ item }: { item: Agent }) => (
+    <TouchableOpacity
+      style={styles.listCard}
+      onPress={() => openAgent(item.id)}
+      activeOpacity={0.82}
+    >
+      <View style={styles.listHeader}>
+        <View style={styles.listTitleBlock}>
+          <View style={styles.inlineStatus}>
+            <View style={[styles.statusDot, { backgroundColor: statusColor(item.status) }]} />
+            <Text style={styles.inlineStatusText}>{getStatusLabel(item.status)}</Text>
+          </View>
+          <Text style={styles.listTitle} numberOfLines={1}>{item.name}</Text>
+        </View>
+      </View>
+
+      {item.project ? <Text style={styles.listProject} numberOfLines={1}>{item.project}</Text> : null}
+
+      <Text style={styles.listPreview} numberOfLines={2}>
+        {buildCompactPreview(item)}
+      </Text>
+    </TouchableOpacity>
+  );
+
+  const renderGridAgent = ({ item, index }: { item: Agent; index: number }) => (
+    <TouchableOpacity
+      style={[
+        styles.previewCard,
+        index % 2 === 0 ? styles.previewCardLeft : styles.previewCardRight,
+      ]}
+      onPress={() => openAgent(item.id)}
+      activeOpacity={0.84}
+    >
+      <View style={styles.previewTopRow}>
+        <View style={styles.previewTitleWrap}>
+          <Text style={styles.previewTitle} numberOfLines={1}>{item.name}</Text>
+          {item.project ? <Text style={styles.previewProject} numberOfLines={1}>{item.project}</Text> : null}
+        </View>
+        <View style={[styles.previewStatusPill, { borderColor: statusColor(item.status) + '55' }]}>
+          <View style={[styles.previewStatusDot, { backgroundColor: statusColor(item.status) }]} />
+          <Text style={styles.previewStatusText}>{getStatusLabel(item.status)}</Text>
+        </View>
+      </View>
+
+      <Text style={styles.previewBody} numberOfLines={4}>
+        {buildPreviewBody(item)}
+      </Text>
+    </TouchableOpacity>
+  );
 
   return (
     <SafeAreaView style={styles.container}>
@@ -94,28 +170,25 @@ export default function InboxScreen() {
         </View>
       )}
 
-      <View style={styles.filterRow}>
-        <TouchableOpacity
-          style={[styles.filterBtn, filter === 'active' && styles.filterBtnActive]}
-          onPress={() => setFilter('active')}
-        >
-          <Text style={[styles.filterText, filter === 'active' && styles.filterTextActive]}>Active</Text>
-        </TouchableOpacity>
-        <TouchableOpacity
-          style={[styles.filterBtn, filter === 'all' && styles.filterBtnActive]}
-          onPress={() => setFilter('all')}
-        >
-          <Text style={[styles.filterText, filter === 'all' && styles.filterTextActive]}>All</Text>
-        </TouchableOpacity>
-      </View>
-
-      {zenBanner && (
-        <View style={styles.zenBanner}>
-          <Text style={styles.zenBannerText}>
-            ☯ All clear · {state.agents.filter(a => a.status === 'running').length} running
-          </Text>
+      <View style={styles.header}>
+        <View style={styles.headerCopy}>
+          <Text style={styles.title}>Agents</Text>
+          <Text style={styles.subtitle}>{runningCount} running</Text>
         </View>
-      )}
+
+        <View style={styles.viewToggle}>
+          <IconToggleButton
+            icon="reorder-three-outline"
+            selected={viewMode === 'list'}
+            onPress={() => setViewMode('list')}
+          />
+          <IconToggleButton
+            icon="grid-outline"
+            selected={viewMode === 'grid'}
+            onPress={() => setViewMode('grid')}
+          />
+        </View>
+      </View>
 
       {sortedAgents.length === 0 ? (
         <View style={styles.emptyContainer}>
@@ -123,44 +196,327 @@ export default function InboxScreen() {
           <Text style={styles.emptyText}>No agents running</Text>
           <Text style={styles.emptySubtext}>Start an agent on your homelab</Text>
         </View>
+      ) : viewMode === 'list' ? (
+        <FlatList
+          data={sortedAgents}
+          key="list"
+          keyExtractor={item => item.id}
+          renderItem={renderListAgent}
+          contentContainerStyle={styles.listContent}
+          ItemSeparatorComponent={() => <View style={styles.listGap} />}
+        />
       ) : (
         <FlatList
           data={sortedAgents}
+          key="grid"
           keyExtractor={item => item.id}
-          renderItem={renderAgent}
-          ItemSeparatorComponent={() => <View style={styles.separator} />}
+          renderItem={renderGridAgent}
+          numColumns={2}
+          columnWrapperStyle={styles.gridRow}
+          contentContainerStyle={styles.gridContent}
         />
       )}
     </SafeAreaView>
   );
 }
 
+function IconToggleButton({
+  icon,
+  selected,
+  onPress,
+}: {
+  icon: React.ComponentProps<typeof Ionicons>['name'];
+  selected: boolean;
+  onPress: () => void;
+}) {
+  return (
+    <TouchableOpacity
+      style={[styles.viewBtn, selected && styles.viewBtnActive]}
+      onPress={onPress}
+      activeOpacity={0.82}
+    >
+      <Ionicons
+        name={icon}
+        size={18}
+        color={selected ? Colors.textPrimary : Colors.textSecondary}
+      />
+    </TouchableOpacity>
+  );
+}
+
+function buildCompactPreview(agent: Agent): string {
+  const preview = extractPreviewLines(agent).join('  ·  ');
+  return preview || agent.summary || 'No recent output';
+}
+
+function buildPreviewBody(agent: Agent): string {
+  const lines = extractPreviewLines(agent);
+  if (lines.length > 0) return lines.join('\n');
+  return agent.summary || 'No recent output';
+}
+
+function extractPreviewLines(agent: Agent): string[] {
+  const cleaned = agent.last_output_lines
+    .map(line => stripAnsi(line).replace(/\s+/g, ' ').trim())
+    .filter(Boolean);
+
+  const collected: string[] = [];
+  for (let index = cleaned.length - 1; index >= 0; index -= 1) {
+    const line = cleaned[index];
+    if (!isMeaningfulPreviewLine(line, agent)) continue;
+    collected.push(line);
+    if (collected.length === 3) break;
+  }
+
+  return collected;
+}
+
+function isMeaningfulPreviewLine(line: string, agent: Agent): boolean {
+  if (!line) return false;
+
+  if (line === agent.summary.trim()) return false;
+  if (line.includes('background terminal running')) return false;
+  if (line.includes('/ps to vie')) return false;
+  if (line.includes('gpt-') && line.includes('left')) return false;
+  if (line.includes('~/workspace/')) return false;
+  if (/^\[[^\]]+\]/.test(line) && line.includes('node') && line.includes('c')) return false;
+  if (/^[>$#]\s/.test(line)) return false;
+  if (/^[A-Za-z0-9._-]+@[A-Za-z0-9._-]+:/.test(line)) return false;
+  if (/^tmux\s*\(/i.test(line)) return false;
+  if (/@filename\b/.test(line)) return false;
+
+  return true;
+}
+
+function stripAnsi(value: string): string {
+  return value.replace(/\x1b\[[0-9;?]*[ -/]*[@-~]/g, '');
+}
+
+function getStatusLabel(status: AgentStatus): string {
+  switch (status) {
+    case 'running':
+      return 'Running';
+    case 'blocked':
+      return 'Needs Input';
+    case 'failed':
+      return 'Error';
+    case 'done':
+      return 'Done';
+    case 'unknown':
+      return 'Waiting';
+  }
+}
+
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: Colors.bgPrimary },
-  banner: { backgroundColor: Colors.statusUnknown, padding: 8, alignItems: 'center' },
-  bannerText: { color: Colors.bgPrimary, fontFamily: Typography.uiFontMedium, fontSize: 13 },
-  filterRow: { flexDirection: 'row', padding: Spacing.screenMargin, gap: 8 },
-  filterBtn: { paddingHorizontal: 16, paddingVertical: 6, borderRadius: 16, backgroundColor: Colors.bgSurface },
-  filterBtnActive: { backgroundColor: Colors.bgElevated },
-  filterText: { color: Colors.textSecondary, fontSize: 13, fontFamily: Typography.uiFont },
-  filterTextActive: { color: Colors.textPrimary, fontFamily: Typography.uiFontMedium },
-  row: {
+  container: {
+    flex: 1,
+    backgroundColor: '#0B1118',
+  },
+  banner: {
+    backgroundColor: Colors.statusUnknown,
+    padding: 8,
+    alignItems: 'center',
+  },
+  bannerText: {
+    color: Colors.bgPrimary,
+    fontFamily: Typography.uiFontMedium,
+    fontSize: 13,
+  },
+  header: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'flex-start',
+    paddingHorizontal: Spacing.screenMargin,
+    paddingTop: 16,
+    paddingBottom: 14,
+  },
+  headerCopy: {
+    flex: 1,
+    paddingRight: 12,
+  },
+  title: {
+    color: Colors.textPrimary,
+    fontSize: 24,
+    fontFamily: Typography.uiFontMedium,
+    letterSpacing: -0.3,
+  },
+  subtitle: {
+    marginTop: 4,
+    color: '#7C8A9B',
+    fontSize: 12,
+    fontFamily: Typography.uiFont,
+  },
+  viewToggle: {
+    flexDirection: 'row',
+    padding: 4,
+    borderRadius: 18,
+    backgroundColor: '#111923',
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.06)',
+    gap: 4,
+  },
+  viewBtn: {
+    width: 34,
+    height: 34,
+    borderRadius: 14,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  viewBtnActive: {
+    backgroundColor: '#1C2734',
+  },
+  listContent: {
+    paddingHorizontal: Spacing.screenMargin,
+    paddingBottom: 28,
+  },
+  listGap: {
+    height: 10,
+  },
+  listCard: {
+    borderRadius: 18,
+    paddingHorizontal: 14,
+    paddingVertical: 14,
+    backgroundColor: '#121B25',
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.05)',
+  },
+  listHeader: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    justifyContent: 'space-between',
+    gap: 10,
+  },
+  listTitleBlock: {
+    flex: 1,
+  },
+  inlineStatus: {
     flexDirection: 'row',
     alignItems: 'center',
-    height: Spacing.rowHeight,
-    paddingHorizontal: Spacing.rowPaddingH,
-    paddingVertical: Spacing.rowPaddingV,
+    gap: 6,
+    marginBottom: 8,
   },
-  dot: { width: 8, height: 8, borderRadius: 4, marginRight: 12 },
-  rowContent: { flex: 1, marginRight: 8 },
-  agentName: { color: Colors.textPrimary, fontSize: Typography.agentNameSize, fontFamily: Typography.uiFontMedium },
-  summary: { color: Colors.textSecondary, fontSize: Typography.metadataSize, fontFamily: Typography.uiFont, marginTop: 2 },
-  statusText: { color: Colors.textSecondary, fontSize: Typography.metadataSize, fontFamily: Typography.uiFont },
-  separator: { height: 1, backgroundColor: Colors.bgSurface, marginLeft: Spacing.rowPaddingH + 20 },
-  emptyContainer: { flex: 1, justifyContent: 'center', alignItems: 'center' },
-  emptyIcon: { fontSize: 48, color: Colors.textSecondary, marginBottom: 16 },
-  emptyText: { color: Colors.textPrimary, fontSize: 18, fontFamily: Typography.uiFontMedium },
-  emptySubtext: { color: Colors.textSecondary, fontSize: 14, fontFamily: Typography.uiFont, marginTop: 8 },
-  zenBanner: { backgroundColor: Colors.bgSurface, paddingVertical: 10, alignItems: 'center', marginHorizontal: Spacing.screenMargin, borderRadius: 8, marginBottom: 8 },
-  zenBannerText: { color: Colors.statusRunning, fontSize: 13, fontFamily: Typography.uiFontMedium },
+  statusDot: {
+    width: 7,
+    height: 7,
+    borderRadius: 4,
+  },
+  inlineStatusText: {
+    color: '#8A98AA',
+    fontSize: 10,
+    fontFamily: Typography.uiFontMedium,
+    textTransform: 'uppercase',
+    letterSpacing: 0.6,
+  },
+  listTitle: {
+    color: Colors.textPrimary,
+    fontSize: 16,
+    fontFamily: Typography.uiFontMedium,
+  },
+  listProject: {
+    marginTop: 6,
+    color: '#5B9DFF',
+    fontSize: 12,
+    fontFamily: Typography.uiFont,
+  },
+  listPreview: {
+    marginTop: 10,
+    color: '#C4CFDB',
+    fontSize: 12,
+    lineHeight: 18,
+    fontFamily: Typography.terminalFont,
+  },
+  gridContent: {
+    paddingHorizontal: Spacing.screenMargin,
+    paddingBottom: 28,
+  },
+  gridRow: {
+    gap: 12,
+    marginBottom: 12,
+  },
+  previewCard: {
+    flex: 1,
+    minHeight: 152,
+    borderRadius: 18,
+    paddingHorizontal: 14,
+    paddingVertical: 14,
+    backgroundColor: '#121B25',
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.05)',
+  },
+  previewCardLeft: {
+    marginRight: 0,
+  },
+  previewCardRight: {
+    marginLeft: 0,
+  },
+  previewTopRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'flex-start',
+    gap: 8,
+    marginBottom: 12,
+  },
+  previewTitleWrap: {
+    flex: 1,
+  },
+  previewTitle: {
+    color: Colors.textPrimary,
+    fontSize: 15,
+    fontFamily: Typography.uiFontMedium,
+    marginBottom: 4,
+  },
+  previewProject: {
+    color: '#5B9DFF',
+    fontSize: 11,
+    fontFamily: Typography.uiFont,
+  },
+  previewStatusPill: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 5,
+    height: 24,
+    paddingHorizontal: 8,
+    borderRadius: 999,
+    backgroundColor: 'rgba(255,255,255,0.03)',
+    borderWidth: 1,
+  },
+  previewStatusDot: {
+    width: 6,
+    height: 6,
+    borderRadius: 3,
+  },
+  previewStatusText: {
+    color: '#D7E1EB',
+    fontSize: 10,
+    fontFamily: Typography.uiFontMedium,
+    textTransform: 'uppercase',
+  },
+  previewBody: {
+    flex: 1,
+    color: '#C8D3DE',
+    fontSize: 11.5,
+    lineHeight: 17,
+    fontFamily: Typography.terminalFont,
+  },
+  emptyContainer: {
+    flex: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  emptyIcon: {
+    fontSize: 48,
+    color: Colors.textSecondary,
+    marginBottom: 16,
+  },
+  emptyText: {
+    color: Colors.textPrimary,
+    fontSize: 18,
+    fontFamily: Typography.uiFontMedium,
+  },
+  emptySubtext: {
+    color: Colors.textSecondary,
+    fontSize: 14,
+    fontFamily: Typography.uiFont,
+    marginTop: 8,
+  },
 });
