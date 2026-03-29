@@ -13,8 +13,7 @@ export default function TabLayout() {
         },
         tabBarActiveTintColor: Colors.textPrimary,
         tabBarInactiveTintColor: Colors.textSecondary,
-        headerStyle: { backgroundColor: Colors.bgPrimary },
-        headerTintColor: Colors.textPrimary,
+        headerShown: false,
       }}
     >
       <Tabs.Screen
@@ -22,7 +21,6 @@ export default function TabLayout() {
         options={{
           title: 'Inbox',
           tabBarIcon: ({ color }) => <TabIcon name="●" color={color} />,
-          headerTitle: 'zen',
         }}
       />
       <Tabs.Screen

@@ -9,7 +9,7 @@ type Handlers = {
   onError?: (payload: { session_id?: string; code?: string; message: string }) => void;
 };
 
-export function useTerminalSession(targetId: string, backend: string, handlers: Handlers) {
+export function useTerminalSession(serverId: string, targetId: string, backend: string, handlers: Handlers) {
   const sessionIdRef = useRef<string | null>(null);
   const handlersRef = useRef(handlers);
   const openedRef = useRef(false);
@@ -23,36 +23,41 @@ export function useTerminalSession(targetId: string, backend: string, handlers: 
     const requestOpen = () => {
       const size = sizeRef.current;
       if (!size) return;
-      wsClient.openTerminal(targetId, backend, size.cols, size.rows);
+      wsClient.openTerminal(serverId, targetId, backend, size.cols, size.rows);
     };
 
-    const handleOpened = (payload: { session_id: string; cols: number; rows: number; backend: string }) => {
+    const handleOpened = (payload: { serverId: string; session_id: string; cols: number; rows: number; backend: string }) => {
+      if (payload.serverId !== serverId) return;
       sessionIdRef.current = payload.session_id;
       reopenOnConnectRef.current = false;
       setConnected(true);
       handlersRef.current.onOpen?.(payload);
     };
-    const handleOutput = (payload: { session_id: string; data: string }) => {
+    const handleOutput = (payload: { serverId: string; session_id: string; data: string }) => {
+      if (payload.serverId !== serverId) return;
       if (sessionIdRef.current && payload.session_id !== sessionIdRef.current) return;
       handlersRef.current.onOutput?.(payload);
     };
-    const handleHistory = (payload: { session_id: string; data: string }) => {
+    const handleHistory = (payload: { serverId: string; session_id: string; data: string }) => {
+      if (payload.serverId !== serverId) return;
       if (sessionIdRef.current && payload.session_id !== sessionIdRef.current) return;
       handlersRef.current.onHistory?.(payload);
     };
-    const handleExit = (payload: { session_id: string; exit_code: number }) => {
+    const handleExit = (payload: { serverId: string; session_id: string; exit_code: number }) => {
+      if (payload.serverId !== serverId) return;
       if (sessionIdRef.current && payload.session_id !== sessionIdRef.current) return;
       sessionIdRef.current = null;
       reopenOnConnectRef.current = false;
       setConnected(false);
       handlersRef.current.onExit?.(payload);
     };
-    const handleError = (payload: { session_id?: string; code?: string; message: string }) => {
+    const handleError = (payload: { serverId: string; session_id?: string; code?: string; message: string }) => {
+      if (payload.serverId !== serverId) return;
       if (payload.session_id && sessionIdRef.current && payload.session_id !== sessionIdRef.current) return;
       if (payload.code === 'input_failed' && payload.message.includes('unknown terminal session')) {
         sessionIdRef.current = null;
         setConnected(false);
-        if (openedRef.current && wsClient.isConnected) {
+        if (openedRef.current && wsClient.isConnected(serverId)) {
           requestOpen();
         } else if (openedRef.current) {
           reopenOnConnectRef.current = true;
@@ -60,11 +65,13 @@ export function useTerminalSession(targetId: string, backend: string, handlers: 
       }
       handlersRef.current.onError?.(payload);
     };
-    const handleConnected = () => {
+    const handleConnected = (payload: { serverId: string }) => {
+      if (payload.serverId !== serverId) return;
       if (!reopenOnConnectRef.current || !openedRef.current) return;
       requestOpen();
     };
-    const handleDisconnected = () => {
+    const handleDisconnected = (payload: { serverId: string }) => {
+      if (payload.serverId !== serverId) return;
       if (!openedRef.current) return;
       sessionIdRef.current = null;
       reopenOnConnectRef.current = true;
@@ -94,10 +101,10 @@ export function useTerminalSession(targetId: string, backend: string, handlers: 
       sessionIdRef.current = null;
       setConnected(false);
       if (sessionId) {
-        wsClient.closeTerminal(sessionId);
+        wsClient.closeTerminal(serverId, sessionId);
       }
     };
-  }, [targetId, backend]);
+  }, [serverId, targetId, backend]);
 
   return {
     connected,
@@ -105,22 +112,22 @@ export function useTerminalSession(targetId: string, backend: string, handlers: 
       sizeRef.current = { cols, rows };
       if (openedRef.current) return;
       openedRef.current = true;
-      wsClient.openTerminal(targetId, backend, cols, rows);
+      wsClient.openTerminal(serverId, targetId, backend, cols, rows);
     },
     sendInput(data: string) {
       const sessionId = sessionIdRef.current;
       if (!sessionId) return;
-      wsClient.sendTerminalInput(sessionId, data);
+      wsClient.sendTerminalInput(serverId, sessionId, data);
     },
     scroll(lines: number) {
       const sessionId = sessionIdRef.current;
       if (!sessionId) return;
-      wsClient.scrollTerminal(sessionId, lines);
+      wsClient.scrollTerminal(serverId, sessionId, lines);
     },
     cancelScroll() {
       const sessionId = sessionIdRef.current;
       if (!sessionId) return;
-      wsClient.cancelTerminalScroll(sessionId);
+      wsClient.cancelTerminalScroll(serverId, sessionId);
     },
     resize(cols: number, rows: number) {
       sizeRef.current = { cols, rows };
@@ -128,11 +135,11 @@ export function useTerminalSession(targetId: string, backend: string, handlers: 
       if (!sessionId) {
         if (!openedRef.current) {
           openedRef.current = true;
-          wsClient.openTerminal(targetId, backend, cols, rows);
+          wsClient.openTerminal(serverId, targetId, backend, cols, rows);
         }
         return;
       }
-      wsClient.resizeTerminal(sessionId, cols, rows);
+      wsClient.resizeTerminal(serverId, sessionId, cols, rows);
     },
   };
 }

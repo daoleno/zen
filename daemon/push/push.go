@@ -15,6 +15,7 @@ const expoPushURL = "https://exp.host/--/api/v2/push/send"
 type Client struct {
 	httpClient *http.Client
 	token      string // Expo push token from mobile app
+	serverRef  string // Opaque client-side server identifier for notification routing
 }
 
 // New creates a push notification client.
@@ -24,9 +25,10 @@ func New() *Client {
 	}
 }
 
-// SetToken sets the Expo push token received from the mobile app.
-func (c *Client) SetToken(token string) {
+// SetRegistration sets the Expo push token and client-provided server reference.
+func (c *Client) SetRegistration(token, serverRef string) {
 	c.token = token
+	c.serverRef = serverRef
 	log.Printf("push token registered: %s", token[:20]+"...")
 }
 
@@ -98,7 +100,11 @@ func (c *Client) NotifyAgentBlocked(agentID, agentName, summary string) {
 		Title:    fmt.Sprintf("%s needs you", agentName),
 		Body:     summary,
 		Priority: "high",
-		Data:     map[string]string{"agent_id": agentID, "screen": "terminal"},
+		Data: map[string]string{
+			"agent_id":  agentID,
+			"screen":    "terminal",
+			"server_id": c.serverRef,
+		},
 	})
 }
 
@@ -111,7 +117,11 @@ func (c *Client) NotifyAgentFailed(agentID, agentName, summary string) {
 		Title:    fmt.Sprintf("%s failed", agentName),
 		Body:     summary,
 		Priority: "high",
-		Data:     map[string]string{"agent_id": agentID, "screen": "terminal"},
+		Data: map[string]string{
+			"agent_id":  agentID,
+			"screen":    "terminal",
+			"server_id": c.serverRef,
+		},
 	})
 }
 
@@ -124,6 +134,10 @@ func (c *Client) NotifyAgentDone(agentID, agentName string) {
 		Title:    fmt.Sprintf("%s done", agentName),
 		Body:     "Task completed successfully",
 		Priority: "default",
-		Data:     map[string]string{"agent_id": agentID, "screen": "inbox"},
+		Data: map[string]string{
+			"agent_id":  agentID,
+			"screen":    "terminal",
+			"server_id": c.serverRef,
+		},
 	})
 }

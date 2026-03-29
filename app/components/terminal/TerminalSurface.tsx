@@ -1,10 +1,8 @@
 import React, { forwardRef, useEffect, useImperativeHandle, useMemo, useRef, useState } from 'react';
-import { ActivityIndicator, Platform, StyleSheet, Text, ToastAndroid, TouchableOpacity, View } from 'react-native';
+import { ActivityIndicator, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import { Asset } from 'expo-asset';
 import { WebView, WebViewMessageEvent } from 'react-native-webview';
 import { Ionicons } from '@expo/vector-icons';
-import * as Clipboard from 'expo-clipboard';
-import * as Haptics from 'expo-haptics';
 import { Colors, Typography } from '../../constants/tokens';
 import {
   DefaultTerminalThemeName,
@@ -20,7 +18,6 @@ type BridgeMessage =
   | { type: 'input'; data: string }
   | { type: 'resize'; cols: number; rows: number }
   | { type: 'scroll'; lines: number }
-  | { type: 'select_snapshot'; data: string }
   | { type: 'tap' };
 
 type NativeToTerminalMessage =
@@ -35,12 +32,14 @@ export interface TerminalSurfaceHandle {
 }
 
 export const TerminalSurface = forwardRef<TerminalSurfaceHandle, {
+  serverId: string;
   targetId: string;
   backend?: string;
   themeName?: TerminalThemeName;
   themeOverrides?: Partial<TerminalThemePalette>;
   onTap?: () => void;
 }>(({
+  serverId,
   targetId,
   backend = 'tmux',
   themeName = DefaultTerminalThemeName,
@@ -105,18 +104,6 @@ export const TerminalSurface = forwardRef<TerminalSurfaceHandle, {
     webviewRef.current?.injectJavaScript('window.__zenScrollToBottom && window.__zenScrollToBottom(); true;');
   };
 
-  const copyVisibleTerminalText = (value: string) => {
-    const text = value.trim();
-    if (!text) return;
-
-    void Clipboard.setStringAsync(text);
-    void Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-
-    if (Platform.OS === 'android') {
-      ToastAndroid.show('Copied terminal text', ToastAndroid.SHORT);
-    }
-  };
-
   useEffect(() => {
     if (!ready || pendingRef.current.length === 0) return;
     for (const message of pendingRef.current) {
@@ -129,7 +116,7 @@ export const TerminalSurface = forwardRef<TerminalSurfaceHandle, {
     postToTerminal({ type: 'theme', theme });
   }, [theme]);
 
-  const session = useTerminalSession(targetId, backend, {
+  const session = useTerminalSession(serverId, targetId, backend, {
     onOpen: ({ cols, rows }) => {
       postToTerminal({ type: 'session', cols, rows });
     },
@@ -194,10 +181,6 @@ export const TerminalSurface = forwardRef<TerminalSurfaceHandle, {
       if (payload.type === 'scroll') {
         session.scroll(payload.lines);
         if (!scrolledUp) setScrolledUp(true);
-        return;
-      }
-      if (payload.type === 'select_snapshot') {
-        copyVisibleTerminalText(payload.data);
         return;
       }
       if (payload.type === 'tap') {
@@ -316,10 +299,84 @@ function buildTerminalHtml(theme: TerminalThemePalette, fontUri: string | null) 
       .xterm-viewport::-webkit-scrollbar {
         display: none;
       }
+      .xterm .xterm-helpers {
+        left: 0;
+        right: 0;
+        bottom: 0;
+        overflow: hidden;
+      }
+      /*
+       * Show the active IME composition inline, but keep it visually
+       * lightweight and clipped inside the terminal viewport.
+       */
+      .xterm .composition-view {
+        background: transparent !important;
+        color: ${theme.foreground} !important;
+        border-bottom: 1px solid ${theme.cursor};
+        pointer-events: none !important;
+        white-space: pre-wrap !important;
+        overflow-wrap: anywhere !important;
+        word-break: break-word !important;
+        overflow: hidden !important;
+        padding: 0 1px;
+        box-sizing: border-box;
+      }
+      .xterm .composition-view.active {
+        display: block !important;
+        visibility: visible !important;
+      }
+      #selection-layer {
+        display: none;
+        position: fixed;
+        inset: 0;
+        z-index: 20;
+        background: ${theme.background};
+        color: ${theme.foreground};
+        overflow: auto;
+        padding: 14px 14px 22px;
+        box-sizing: border-box;
+        user-select: text;
+        -webkit-user-select: text;
+        overscroll-behavior: contain;
+      }
+      #selection-layer.active {
+        display: block;
+      }
+      #selection-close {
+        position: sticky;
+        top: 0;
+        margin-left: auto;
+        margin-bottom: 12px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        width: 36px;
+        height: 36px;
+        border: 0;
+        border-radius: 18px;
+        background: rgba(255,255,255,0.08);
+        color: ${theme.foreground};
+        font-size: 18px;
+      }
+      #selection-text {
+        margin: 0;
+        white-space: pre-wrap;
+        overflow-wrap: break-word;
+        word-break: break-word;
+        user-select: text;
+        -webkit-user-select: text;
+        font-family: ${JSON.stringify(fontUri ? 'ZenTerm, monospace' : 'monospace')};
+        font-size: ${Typography.terminalSize}px;
+        line-height: ${Math.round(Typography.terminalSize * 1.6)}px;
+      }
     </style>
   </head>
   <body>
     <div id="terminal"></div>
+    <div id="selection-layer">
+      <button id="selection-close" type="button" aria-label="Close selection">×</button>
+      <pre id="selection-text"></pre>
+    </div>
     <script>${xtermJs}</script>
     <script>${xtermFitAddonJs}</script>
     <script>
@@ -341,10 +398,105 @@ function buildTerminalHtml(theme: TerminalThemePalette, fontUri: string | null) 
       const fitAddon = new FitAddon.FitAddon();
       terminal.loadAddon(fitAddon);
       terminal.open(document.getElementById('terminal'));
+      const patchCompositionLayout = () => {
+        try {
+          const core = terminal._core;
+          const helper = core && core._compositionHelper;
+          const compositionView = core && core._compositionView;
+          const helperContainer = terminal.element && terminal.element.querySelector('.xterm-helpers');
+          const textarea = terminal.textarea;
+
+          if (!helper || !compositionView || !helperContainer || helper.__zenCompositionPatched) {
+            return;
+          }
+
+          const originalUpdate = helper.updateCompositionElements.bind(helper);
+          helper.updateCompositionElements = (dontRecurse) => {
+            originalUpdate(dontRecurse);
+
+            try {
+              if (!helper.isComposing) return;
+
+              const containerWidth = helperContainer.clientWidth || terminal.element.clientWidth || 0;
+              const left = Number.parseFloat(compositionView.style.left || '0');
+              const gutter = 6;
+              const minWidth = 24;
+              const availableWidth = Math.max(minWidth, containerWidth - left - gutter);
+              const cellHeight =
+                core &&
+                core._renderService &&
+                core._renderService.dimensions &&
+                core._renderService.dimensions.css &&
+                core._renderService.dimensions.css.cell
+                  ? core._renderService.dimensions.css.cell.height
+                  : FONT_SIZE * LINE_HEIGHT_RATIO;
+
+              compositionView.style.maxWidth = availableWidth + 'px';
+              compositionView.style.width = 'auto';
+              compositionView.style.height = 'auto';
+              compositionView.style.minHeight = cellHeight + 'px';
+              compositionView.style.lineHeight = cellHeight + 'px';
+
+              const compositionRect = compositionView.getBoundingClientRect();
+
+              if (textarea) {
+                textarea.style.maxWidth = availableWidth + 'px';
+                textarea.style.width = Math.max(Math.min(compositionRect.width, availableWidth), 1) + 'px';
+                textarea.style.height = Math.max(compositionRect.height, cellHeight) + 'px';
+                textarea.style.lineHeight = Math.max(compositionRect.height, cellHeight) + 'px';
+              }
+            } catch (_) {}
+          };
+
+          helper.__zenCompositionPatched = true;
+        } catch (_) {}
+      };
+      patchCompositionLayout();
       let writeQueue = [];
       let writeScheduled = false;
       let isWriting = false;
       let initialized = false;
+      let selectionMode = false;
+      const selectionLayer = document.getElementById('selection-layer');
+      const selectionText = document.getElementById('selection-text');
+      const selectionClose = document.getElementById('selection-close');
+      const dispatchTouchCursorMove = (clientX, clientY) => {
+        if (!Number.isFinite(clientX) || !Number.isFinite(clientY)) return;
+
+        try {
+          terminal.clearSelection();
+          terminal.focus();
+
+          const terminalElement = terminal.element;
+          const fallbackTarget =
+            (terminalElement && terminalElement.querySelector('.xterm-screen')) ||
+            terminalElement ||
+            document.getElementById('terminal');
+          const target = document.elementFromPoint(clientX, clientY) || fallbackTarget;
+          if (!target) return;
+
+          const common = {
+            bubbles: true,
+            cancelable: true,
+            composed: true,
+            view: window,
+            clientX,
+            clientY,
+            button: 0,
+            detail: 1,
+            altKey: true,
+          };
+
+          target.dispatchEvent(new MouseEvent('mousedown', {
+            ...common,
+            buttons: 1,
+          }));
+          target.dispatchEvent(new MouseEvent('mouseup', {
+            ...common,
+            buttons: 0,
+          }));
+        } catch (_) {}
+      };
 
       const send = (payload) => {
         try { window.ReactNativeWebView.postMessage(JSON.stringify(payload)); }
@@ -357,7 +509,7 @@ function buildTerminalHtml(theme: TerminalThemePalette, fontUri: string | null) 
         } catch (_) {}
       };
 
-      const sendSelectionSnapshot = () => {
+      const snapshotVisibleText = () => {
         try {
           const buf = terminal.buffer.active;
           const lines = [];
@@ -366,15 +518,61 @@ function buildTerminalHtml(theme: TerminalThemePalette, fontUri: string | null) 
             lines.push(line ? line.translateToString(true) : '');
           }
           while (lines.length > 0 && lines[lines.length - 1].trim() === '') lines.pop();
-          send({ type: 'select_snapshot', data: lines.join('\n') });
-        } catch(_) { return; }
+          return lines.join('\n');
+        } catch(_) {
+          return '';
+        }
       };
+
+      const closeSelectionMode = () => {
+        selectionMode = false;
+        if (selectionLayer) selectionLayer.classList.remove('active');
+        if (selectionText) selectionText.textContent = '';
+        const selection = window.getSelection();
+        if (selection) selection.removeAllRanges();
+      };
+
+      const openSelectionMode = () => {
+        const text = snapshotVisibleText().trimEnd();
+        if (!text || !selectionLayer || !selectionText) return;
+
+        selectionMode = true;
+        selectionText.textContent = text;
+        selectionLayer.classList.add('active');
+
+        requestAnimationFrame(() => {
+          try {
+            const selection = window.getSelection();
+            if (!selection) return;
+            const range = document.createRange();
+            range.selectNodeContents(selectionText);
+            selection.removeAllRanges();
+            selection.addRange(range);
+          } catch (_) {}
+        });
+      };
+
+      if (selectionClose) {
+        selectionClose.addEventListener('click', (e) => {
+          e.preventDefault();
+          e.stopPropagation();
+          closeSelectionMode();
+        });
+      }
+
+      if (selectionLayer) {
+        selectionLayer.addEventListener('click', (e) => {
+          if (e.target === selectionLayer) {
+            closeSelectionMode();
+          }
+        });
+      }
 
       // ── Touch scroll engine ─────────────────────────────────
       //
       // Scrolling: delegated to daemon via tmux copy-mode.
-      // Long-press (500ms): sends the visible terminal snapshot to the
-      // native layer, which copies it to the system clipboard.
+      // Long-press (500ms): swaps in a selectable text layer so Android's
+      // native text-selection toolbar can handle copy.
       //
       (function initTouchScroll() {
         let scrolling = false;
@@ -442,6 +640,7 @@ function buildTerminalHtml(theme: TerminalThemePalette, fontUri: string | null) 
         };
 
         document.addEventListener('touchstart', (e) => {
+          if (selectionMode) return;
           cancelMomentum();
           scrolling = false;
           longPressTriggered = false;
@@ -455,12 +654,13 @@ function buildTerminalHtml(theme: TerminalThemePalette, fontUri: string | null) 
             longPressTimer = null;
             if (!scrolling) {
               longPressTriggered = true;
-              sendSelectionSnapshot();
+              openSelectionMode();
             }
           }, LONG_PRESS_MS);
         }, { capture: true, passive: true });
 
         document.addEventListener('touchmove', (e) => {
+          if (selectionMode) return;
           const y = e.touches[0].clientY;
           if (!scrolling && Math.abs(startY - y) > THRESHOLD) {
             scrolling = true;
@@ -490,7 +690,8 @@ function buildTerminalHtml(theme: TerminalThemePalette, fontUri: string | null) 
           }
         }, { capture: true, passive: false });
 
-        document.addEventListener('touchend', () => {
+        document.addEventListener('touchend', (e) => {
+          if (selectionMode) return;
           cancelLongPress();
           if (longPressTriggered) {
             scrolling = false;
@@ -500,6 +701,10 @@ function buildTerminalHtml(theme: TerminalThemePalette, fontUri: string | null) 
 
           // Short tap (no scroll, no long-press) → notify React Native
           if (!scrolling) {
+            const touch = e.changedTouches && e.changedTouches[0];
+            if (touch) {
+              dispatchTouchCursorMove(touch.clientX, touch.clientY);
+            }
             send({ type: 'tap' });
             return;
           }
@@ -537,6 +742,7 @@ function buildTerminalHtml(theme: TerminalThemePalette, fontUri: string | null) 
         }, { capture: true, passive: true });
 
         document.addEventListener('touchcancel', () => {
+          if (selectionMode) return;
           scrolling = false;
           longPressTriggered = false;
           cancelLongPress();

@@ -1,41 +1,94 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 
 const KEYS = {
-  serverUrl: 'zen:server_url',
-  secret: 'zen:secret',
-  nightMode: 'zen:night_mode',
+  servers: 'zen:servers',
   onboarded: 'zen:onboarded',
   terminalTheme: 'zen:terminal_theme',
   inboxViewMode: 'zen:inbox_view_mode',
   recentAgentOpens: 'zen:recent_agent_opens',
+  terminalTabs: 'zen:terminal_tabs',
+  agentAliases: 'zen:agent_aliases',
 } as const;
 
 export type StoredTerminalTheme = 'zen-midnight' | 'zen-amber';
 export type StoredInboxViewMode = 'list' | 'grid';
 export type StoredRecentAgentOpens = Record<string, number>;
-
-export async function getServerUrl(): Promise<string> {
-  return (await AsyncStorage.getItem(KEYS.serverUrl)) || '';
+export type StoredAgentAliases = Record<string, string>;
+export interface StoredServer {
+  id: string;
+  name: string;
+  url: string;
+}
+export interface StoredTerminalTabs {
+  order: string[];
+  pinned: string[];
 }
 
-export async function setServerUrl(url: string): Promise<void> {
-  await AsyncStorage.setItem(KEYS.serverUrl, url);
+const MAX_TERMINAL_TABS = 12;
+
+export async function getServers(): Promise<StoredServer[]> {
+  const value = await AsyncStorage.getItem(KEYS.servers);
+  if (!value) return [];
+
+  try {
+    const parsed = JSON.parse(value) as unknown;
+    if (!Array.isArray(parsed)) return [];
+
+    const normalized: StoredServer[] = [];
+    for (const item of parsed) {
+      if (!item || typeof item !== 'object') continue;
+      const candidate = item as Record<string, unknown>;
+      const id = typeof candidate.id === 'string' ? candidate.id.trim() : '';
+      const rawName = typeof candidate.name === 'string' ? candidate.name.trim() : '';
+      const rawURL = typeof candidate.url === 'string' ? normalizeServerURL(candidate.url) : '';
+      if (!id || !rawURL) continue;
+
+      normalized.push({
+        id,
+        name: rawName || deriveServerName(rawURL),
+        url: rawURL,
+      });
+    }
+
+    return dedupeServers(normalized);
+  } catch {
+    return [];
+  }
 }
 
-export async function getSecret(): Promise<string> {
-  return (await AsyncStorage.getItem(KEYS.secret)) || '';
+export async function saveServer(input: {
+  id?: string;
+  name: string;
+  url: string;
+}): Promise<StoredServer> {
+  const servers = await getServers();
+  const normalizedURL = normalizeServerURL(input.url);
+  const normalizedName = input.name.trim() || deriveServerName(normalizedURL);
+
+  const nextServer: StoredServer = {
+    id: input.id?.trim() || createServerID(),
+    name: normalizedName,
+    url: normalizedURL,
+  };
+
+  const nextServers = dedupeServers([
+    nextServer,
+    ...servers.filter(server => server.id !== nextServer.id),
+  ]);
+
+  await AsyncStorage.setItem(KEYS.servers, JSON.stringify(nextServers));
+  return nextServer;
 }
 
-export async function setSecret(secret: string): Promise<void> {
-  await AsyncStorage.setItem(KEYS.secret, secret);
+export async function removeServer(serverID: string): Promise<void> {
+  const servers = await getServers();
+  const nextServers = servers.filter(server => server.id !== serverID);
+  await AsyncStorage.setItem(KEYS.servers, JSON.stringify(nextServers));
 }
 
-export async function getNightMode(): Promise<boolean> {
-  return (await AsyncStorage.getItem(KEYS.nightMode)) === 'true';
-}
-
-export async function setNightMode(enabled: boolean): Promise<void> {
-  await AsyncStorage.setItem(KEYS.nightMode, String(enabled));
+export async function getServerById(serverId: string): Promise<StoredServer | null> {
+  const servers = await getServers();
+  return servers.find(server => server.id === serverId) || null;
 }
 
 export async function isOnboarded(): Promise<boolean> {
@@ -94,4 +147,196 @@ export async function markAgentOpened(agentId: string, openedAt: number = Date.n
     .slice(0, 100);
 
   await AsyncStorage.setItem(KEYS.recentAgentOpens, JSON.stringify(Object.fromEntries(entries)));
+}
+
+export async function getTerminalTabs(): Promise<StoredTerminalTabs> {
+  const value = await AsyncStorage.getItem(KEYS.terminalTabs);
+  if (!value) return { order: [], pinned: [] };
+
+  try {
+    const parsed = JSON.parse(value) as { order?: unknown; pinned?: unknown };
+    return normalizeTerminalTabs({
+      order: normalizeIdList(parsed.order),
+      pinned: normalizeIdList(parsed.pinned),
+    });
+  } catch {
+    return { order: [], pinned: [] };
+  }
+}
+
+export async function touchTerminalTab(agentId: string): Promise<StoredTerminalTabs> {
+  const current = await getTerminalTabs();
+  const next = normalizeTerminalTabs({
+    order: current.order.includes(agentId) ? current.order : [...current.order, agentId],
+    pinned: current.pinned,
+  });
+  await AsyncStorage.setItem(KEYS.terminalTabs, JSON.stringify(next));
+  return next;
+}
+
+export async function closeTerminalTab(agentId: string): Promise<StoredTerminalTabs> {
+  const current = await getTerminalTabs();
+  const next = normalizeTerminalTabs({
+    order: current.order.filter(id => id !== agentId),
+    pinned: current.pinned.filter(id => id !== agentId),
+  });
+  await AsyncStorage.setItem(KEYS.terminalTabs, JSON.stringify(next));
+  return next;
+}
+
+export async function closeOtherTerminalTabs(agentId: string): Promise<StoredTerminalTabs> {
+  const current = await getTerminalTabs();
+  const next = normalizeTerminalTabs({
+    order: [agentId],
+    pinned: current.pinned.includes(agentId) ? [agentId] : [],
+  });
+  await AsyncStorage.setItem(KEYS.terminalTabs, JSON.stringify(next));
+  return next;
+}
+
+export async function setTerminalTabPinned(
+  agentId: string,
+  pinned: boolean,
+): Promise<StoredTerminalTabs> {
+  const current = await getTerminalTabs();
+  const next = normalizeTerminalTabs({
+    order: current.order.includes(agentId) ? current.order : [...current.order, agentId],
+    pinned: pinned
+      ? [agentId, ...current.pinned.filter(id => id !== agentId)]
+      : current.pinned.filter(id => id !== agentId),
+  });
+  await AsyncStorage.setItem(KEYS.terminalTabs, JSON.stringify(next));
+  return next;
+}
+
+export async function getAgentAliases(): Promise<StoredAgentAliases> {
+  const value = await AsyncStorage.getItem(KEYS.agentAliases);
+  if (!value) return {};
+
+  try {
+    const parsed = JSON.parse(value) as Record<string, unknown>;
+    const normalized: StoredAgentAliases = {};
+    for (const [agentId, alias] of Object.entries(parsed)) {
+      if (typeof agentId !== 'string' || agentId.trim().length === 0) continue;
+      if (typeof alias !== 'string') continue;
+
+      const trimmed = alias.trim();
+      if (!trimmed) continue;
+      normalized[agentId] = trimmed;
+    }
+    return normalized;
+  } catch {
+    return {};
+  }
+}
+
+export async function setAgentAlias(
+  agentId: string,
+  alias: string,
+): Promise<StoredAgentAliases> {
+  const current = await getAgentAliases();
+  const next: StoredAgentAliases = { ...current };
+  const trimmed = alias.trim();
+
+  if (trimmed) {
+    next[agentId] = trimmed;
+  } else {
+    delete next[agentId];
+  }
+
+  await AsyncStorage.setItem(KEYS.agentAliases, JSON.stringify(next));
+  return next;
+}
+
+function normalizeIdList(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+
+  const normalized: string[] = [];
+  for (const item of value) {
+    if (typeof item !== 'string' || item.trim().length === 0 || normalized.includes(item)) continue;
+    normalized.push(item);
+  }
+  return normalized;
+}
+
+function createServerID(): string {
+  return `server_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
+}
+
+function dedupeServers(servers: StoredServer[]): StoredServer[] {
+  const seen = new Set<string>();
+  const normalized: StoredServer[] = [];
+
+  for (const server of servers) {
+    if (!server.id || !server.url || seen.has(server.id)) continue;
+    seen.add(server.id);
+    normalized.push(server);
+  }
+
+  return normalized;
+}
+
+function deriveServerName(url: string): string {
+  try {
+    const parsed = new URL(url);
+    return parsed.hostname || url;
+  } catch {
+    return url;
+  }
+}
+
+export function normalizeServerURL(rawValue: string): string {
+  const trimmed = rawValue.trim();
+  if (!trimmed) return '';
+
+  const withProtocol = /^[a-z]+:\/\//i.test(trimmed) ? trimmed : `ws://${trimmed}`;
+
+  try {
+    const parsed = new URL(withProtocol);
+    if (parsed.protocol === 'http:') parsed.protocol = 'ws:';
+    if (parsed.protocol === 'https:') parsed.protocol = 'wss:';
+
+    if (parsed.pathname === '' || parsed.pathname === '/') {
+      parsed.pathname = '/ws';
+    }
+
+    parsed.hash = '';
+    return parsed.toString();
+  } catch {
+    return trimmed;
+  }
+}
+
+function normalizeTerminalTabs(state: StoredTerminalTabs): StoredTerminalTabs {
+  const normalizedOrder = normalizeIdList(state.order);
+  const normalizedPinned = normalizeIdList(state.pinned).filter(id => normalizedOrder.includes(id));
+  const order = trimTerminalTabOrder(normalizedOrder, normalizedPinned);
+  const pinned = normalizedPinned.filter(id => order.includes(id));
+  return { order, pinned };
+}
+
+function trimTerminalTabOrder(order: string[], pinned: string[]): string[] {
+  if (order.length <= MAX_TERMINAL_TABS) return order;
+
+  const next = [...order];
+  const pinnedSet = new Set(pinned);
+
+  while (next.length > MAX_TERMINAL_TABS) {
+    let removableIndex = -1;
+
+    for (let index = next.length - 1; index >= 0; index -= 1) {
+      if (pinnedSet.has(next[index])) continue;
+      removableIndex = index;
+      break;
+    }
+
+    if (removableIndex === -1) {
+      next.length = MAX_TERMINAL_TABS;
+      break;
+    }
+
+    next.splice(removableIndex, 1);
+  }
+
+  return next;
 }

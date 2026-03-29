@@ -32,6 +32,7 @@ type Server struct {
 	terminal *terminal.Manager
 	pusher   *push.Client
 	clients  map[*websocket.Conn]bool
+	active   map[*websocket.Conn]string
 	writes   map[*websocket.Conn]*sync.Mutex
 	mu       sync.Mutex
 }
@@ -44,6 +45,7 @@ func New(secret *auth.Secret, w *watcher.Watcher, pusher *push.Client) *Server {
 		terminal: terminal.NewManager(&terminal.TmuxBackend{}),
 		pusher:   pusher,
 		clients:  make(map[*websocket.Conn]bool),
+		active:   make(map[*websocket.Conn]string),
 		writes:   make(map[*websocket.Conn]*sync.Mutex),
 	}
 }
@@ -91,6 +93,7 @@ func (s *Server) handleWS(w http.ResponseWriter, r *http.Request) {
 
 	s.mu.Lock()
 	s.clients[conn] = true
+	s.active[conn] = ""
 	s.writes[conn] = &sync.Mutex{}
 	s.mu.Unlock()
 
@@ -107,6 +110,7 @@ func (s *Server) handleWS(w http.ResponseWriter, r *http.Request) {
 
 	s.mu.Lock()
 	delete(s.clients, conn)
+	delete(s.active, conn)
 	delete(s.writes, conn)
 	s.mu.Unlock()
 	log.Printf("client disconnected (%d remaining)", len(s.clients))
@@ -124,6 +128,7 @@ func (s *Server) handleClientMessage(conn *websocket.Conn, msg []byte) {
 		Action       string `json:"action"`
 		StateVersion int64  `json:"state_version"`
 		PushToken    string `json:"push_token"`
+		ServerRef    string `json:"server_ref"`
 		Cols         int    `json:"cols"`
 		Rows         int    `json:"rows"`
 		Lines        int    `json:"lines"`
@@ -139,9 +144,14 @@ func (s *Server) handleClientMessage(conn *websocket.Conn, msg []byte) {
 
 	case "register_push":
 		if raw.PushToken != "" {
-			s.pusher.SetToken(raw.PushToken)
+			s.pusher.SetRegistration(raw.PushToken, raw.ServerRef)
 			s.sendJSON(conn, map[string]any{"type": "push_registered", "ok": true})
 		}
+
+	case "set_active_agent":
+		s.mu.Lock()
+		s.active[conn] = raw.AgentID
+		s.mu.Unlock()
 
 	case "send_input":
 		if err := s.watcher.SendInput(raw.AgentID, raw.Text); err != nil {
@@ -291,6 +301,9 @@ func (s *Server) broadcastEvents(ctx context.Context) {
 				if agent == nil {
 					continue
 				}
+				if s.hasActiveViewer(ev.AgentID) {
+					continue
+				}
 				switch ev.NewState {
 				case "blocked":
 					s.pusher.NotifyAgentBlocked(ev.AgentID, agent.Name, agent.Summary)
@@ -332,6 +345,7 @@ func (s *Server) broadcast(data []byte) {
 			s.mu.Lock()
 			conn.Close()
 			delete(s.clients, conn)
+			delete(s.active, conn)
 			delete(s.writes, conn)
 			s.mu.Unlock()
 		}
@@ -385,6 +399,19 @@ func (s *Server) PairingInfo(addr string) string {
 
 func clientID(conn *websocket.Conn) string {
 	return fmt.Sprintf("%p", conn)
+}
+
+func (s *Server) hasActiveViewer(agentID string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	for _, activeAgentID := range s.active {
+		if activeAgentID == agentID {
+			return true
+		}
+	}
+
+	return false
 }
 
 func (s *Server) writeMessage(conn *websocket.Conn, messageType int, data []byte) error {

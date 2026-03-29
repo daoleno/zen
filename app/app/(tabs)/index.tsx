@@ -1,25 +1,26 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import {
   FlatList,
-  SafeAreaView,
   StyleSheet,
   Text,
   TouchableOpacity,
   View,
 } from 'react-native';
-import { useRouter } from 'expo-router';
+import { useFocusEffect, useRouter } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
+import { SafeAreaView } from 'react-native-safe-area-context';
 import { Agent, useAgents } from '../../store/agents';
 import { AgentStatus, Colors, Spacing, Typography, statusColor } from '../../constants/tokens';
 import {
   getInboxViewMode,
+  getAgentAliases,
   getRecentAgentOpens,
   markAgentOpened,
   setInboxViewMode,
+  StoredAgentAliases,
   StoredInboxViewMode,
   StoredRecentAgentOpens,
 } from '../../services/storage';
-import { wsClient } from '../../services/websocket';
 
 const STATUS_PRIORITY: Record<AgentStatus, number> = {
   failed: 0,
@@ -30,22 +31,25 @@ const STATUS_PRIORITY: Record<AgentStatus, number> = {
 };
 
 export default function InboxScreen() {
-  const { state, dispatch } = useAgents();
+  const { state } = useAgents();
   const router = useRouter();
   const [viewMode, setViewModeState] = useState<StoredInboxViewMode>('list');
+  const [agentAliases, setAgentAliases] = useState<StoredAgentAliases>({});
   const [recentAgentOpens, setRecentAgentOpens] = useState<StoredRecentAgentOpens>({});
 
   useEffect(() => {
     let cancelled = false;
 
     (async () => {
-      const [storedViewMode, storedRecentOpens] = await Promise.all([
+      const [storedViewMode, storedRecentOpens, storedAliases] = await Promise.all([
         getInboxViewMode(),
         getRecentAgentOpens(),
+        getAgentAliases(),
       ]);
       if (!cancelled) {
         setViewModeState(storedViewMode);
         setRecentAgentOpens(storedRecentOpens);
+        setAgentAliases(storedAliases);
       }
     })();
 
@@ -54,38 +58,32 @@ export default function InboxScreen() {
     };
   }, []);
 
-  useEffect(() => {
-    const onAgentList = (data: any) => {
-      dispatch({ type: 'SET_AGENTS', agents: data.agents || [] });
-    };
-    const onStateChange = (data: any) => {
-      dispatch({ type: 'STATE_CHANGE', agent_id: data.agent_id, old: data.old, new_state: data.new });
-    };
-    const onOutput = (data: any) => {
-      dispatch({ type: 'UPDATE_OUTPUT', agent_id: data.agent_id, lines: data.lines || [] });
-    };
-    const onConnected = () => dispatch({ type: 'SET_CONNECTED', connected: true });
-    const onDisconnected = () => dispatch({ type: 'SET_CONNECTED', connected: false });
+  useFocusEffect(
+    React.useCallback(() => {
+      let cancelled = false;
 
-    wsClient.on('agent_list', onAgentList);
-    wsClient.on('agent_state_change', onStateChange);
-    wsClient.on('agent_output', onOutput);
-    wsClient.on('connected', onConnected);
-    wsClient.on('disconnected', onDisconnected);
+      (async () => {
+        const [storedRecentOpens, storedAliases] = await Promise.all([
+          getRecentAgentOpens(),
+          getAgentAliases(),
+        ]);
 
-    return () => {
-      wsClient.off('agent_list', onAgentList);
-      wsClient.off('agent_state_change', onStateChange);
-      wsClient.off('agent_output', onOutput);
-      wsClient.off('connected', onConnected);
-      wsClient.off('disconnected', onDisconnected);
-    };
-  }, [dispatch]);
+        if (!cancelled) {
+          setRecentAgentOpens(storedRecentOpens);
+          setAgentAliases(storedAliases);
+        }
+      })();
+
+      return () => {
+        cancelled = true;
+      };
+    }, []),
+  );
 
   const sortedAgents = useMemo(() => {
     return [...state.agents].sort((left, right) => {
-      const leftOpenedAt = recentAgentOpens[left.id] ?? 0;
-      const rightOpenedAt = recentAgentOpens[right.id] ?? 0;
+      const leftOpenedAt = recentAgentOpens[left.key] ?? 0;
+      const rightOpenedAt = recentAgentOpens[right.key] ?? 0;
       if (leftOpenedAt !== rightOpenedAt) return rightOpenedAt - leftOpenedAt;
 
       const leftPriority = STATUS_PRIORITY[left.status] ?? 5;
@@ -95,27 +93,28 @@ export default function InboxScreen() {
     });
   }, [recentAgentOpens, state.agents]);
 
-  const runningCount = state.agents.filter(agent => agent.status === 'running').length;
-
   const setViewMode = async (mode: StoredInboxViewMode) => {
     setViewModeState(mode);
     await setInboxViewMode(mode);
   };
 
-  const openAgent = (agentId: string) => {
+  const openAgent = (agent: Agent) => {
     const openedAt = Date.now();
     setRecentAgentOpens(previous => ({
       ...previous,
-      [agentId]: openedAt,
+      [agent.key]: openedAt,
     }));
-    void markAgentOpened(agentId, openedAt);
-    router.push(`/terminal/${agentId}`);
+    void markAgentOpened(agent.key, openedAt);
+    router.push({
+      pathname: '/terminal/[id]',
+      params: { id: agent.id, serverId: agent.serverId },
+    });
   };
 
   const renderListAgent = ({ item }: { item: Agent }) => (
     <TouchableOpacity
       style={styles.listCard}
-      onPress={() => openAgent(item.id)}
+      onPress={() => openAgent(item)}
       activeOpacity={0.82}
     >
       <View style={styles.listHeader}>
@@ -124,11 +123,13 @@ export default function InboxScreen() {
             <View style={[styles.statusDot, { backgroundColor: statusColor(item.status) }]} />
             <Text style={styles.inlineStatusText}>{getStatusLabel(item.status)}</Text>
           </View>
-          <Text style={styles.listTitle} numberOfLines={1}>{item.name}</Text>
+          <Text style={styles.listTitle} numberOfLines={1}>{resolveAgentName(item, agentAliases)}</Text>
         </View>
       </View>
 
-      {item.project ? <Text style={styles.listProject} numberOfLines={1}>{item.project}</Text> : null}
+      <Text style={styles.listProject} numberOfLines={1}>
+        {item.serverName}{item.project ? ` · ${item.project}` : ''}
+      </Text>
 
       <Text style={styles.listPreview} numberOfLines={2}>
         {buildCompactPreview(item)}
@@ -142,13 +143,15 @@ export default function InboxScreen() {
         styles.previewCard,
         index % 2 === 0 ? styles.previewCardLeft : styles.previewCardRight,
       ]}
-      onPress={() => openAgent(item.id)}
+      onPress={() => openAgent(item)}
       activeOpacity={0.84}
     >
       <View style={styles.previewTopRow}>
         <View style={styles.previewTitleWrap}>
-          <Text style={styles.previewTitle} numberOfLines={1}>{item.name}</Text>
-          {item.project ? <Text style={styles.previewProject} numberOfLines={1}>{item.project}</Text> : null}
+          <Text style={styles.previewTitle} numberOfLines={1}>{resolveAgentName(item, agentAliases)}</Text>
+          <Text style={styles.previewProject} numberOfLines={1}>
+            {item.serverName}{item.project ? ` · ${item.project}` : ''}
+          </Text>
         </View>
         <View style={[styles.previewStatusPill, { borderColor: statusColor(item.status) + '55' }]}>
           <View style={[styles.previewStatusDot, { backgroundColor: statusColor(item.status) }]} />
@@ -164,16 +167,18 @@ export default function InboxScreen() {
 
   return (
     <SafeAreaView style={styles.container}>
-      {!state.connected && (
+      {Object.keys(state.serverConnections).length > 0 &&
+      !Object.values(state.serverConnections).includes('connected') && (
         <View style={styles.banner}>
-          <Text style={styles.bannerText}>Connecting...</Text>
+          <Text style={styles.bannerText}>
+            {Object.values(state.serverConnections).includes('connecting') ? 'Connecting...' : 'Offline'}
+          </Text>
         </View>
       )}
 
       <View style={styles.header}>
         <View style={styles.headerCopy}>
           <Text style={styles.title}>Agents</Text>
-          <Text style={styles.subtitle}>{runningCount} running</Text>
         </View>
 
         <View style={styles.viewToggle}>
@@ -200,7 +205,7 @@ export default function InboxScreen() {
         <FlatList
           data={sortedAgents}
           key="list"
-          keyExtractor={item => item.id}
+          keyExtractor={item => item.key}
           renderItem={renderListAgent}
           contentContainerStyle={styles.listContent}
           ItemSeparatorComponent={() => <View style={styles.listGap} />}
@@ -209,7 +214,7 @@ export default function InboxScreen() {
         <FlatList
           data={sortedAgents}
           key="grid"
-          keyExtractor={item => item.id}
+          keyExtractor={item => item.key}
           renderItem={renderGridAgent}
           numColumns={2}
           columnWrapperStyle={styles.gridRow}
@@ -218,6 +223,10 @@ export default function InboxScreen() {
       )}
     </SafeAreaView>
   );
+}
+
+function resolveAgentName(agent: Agent, aliases: StoredAgentAliases): string {
+  return aliases[agent.key] || agent.name;
 }
 
 function IconToggleButton({
@@ -325,9 +334,9 @@ const styles = StyleSheet.create({
   header: {
     flexDirection: 'row',
     justifyContent: 'space-between',
-    alignItems: 'flex-start',
+    alignItems: 'center',
     paddingHorizontal: Spacing.screenMargin,
-    paddingTop: 16,
+    paddingTop: 12,
     paddingBottom: 14,
   },
   headerCopy: {
@@ -339,12 +348,6 @@ const styles = StyleSheet.create({
     fontSize: 24,
     fontFamily: Typography.uiFontMedium,
     letterSpacing: -0.3,
-  },
-  subtitle: {
-    marginTop: 4,
-    color: '#7C8A9B',
-    fontSize: 12,
-    fontFamily: Typography.uiFont,
   },
   viewToggle: {
     flexDirection: 'row',

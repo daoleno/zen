@@ -11,7 +11,6 @@ import { Ionicons } from '@expo/vector-icons';
 import * as DocumentPicker from 'expo-document-picker';
 import * as Haptics from 'expo-haptics';
 import { Colors, Typography } from '../../constants/tokens';
-import { getServerUrl } from '../../services/storage';
 import type { TerminalSurfaceHandle } from './TerminalSurface';
 
 const SHORTCUT_KEYS = [
@@ -31,10 +30,11 @@ export interface InputBarHandle {
 
 interface InputBarProps {
   terminalRef: React.RefObject<TerminalSurfaceHandle | null>;
+  serverUrl: string;
 }
 
 export const InputBar = forwardRef<InputBarHandle, InputBarProps>(
-  ({ terminalRef }, ref) => {
+  ({ terminalRef, serverUrl }, ref) => {
     const [ctrlArmed, setCtrlArmed] = useState(false);
 
     useImperativeHandle(ref, () => ({
@@ -76,7 +76,6 @@ export const InputBar = forwardRef<InputBarHandle, InputBarProps>(
         if (result.canceled || !result.assets?.length) return;
 
         const asset = result.assets[0];
-        const serverUrl = await getServerUrl();
         const uploadUrl = buildUploadUrl(serverUrl);
         if (!uploadUrl) {
           throw new Error('Server URL is not configured');
