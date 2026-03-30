@@ -1,8 +1,10 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import {
   FlatList,
+  Modal,
   StyleSheet,
   Text,
+  TextInput,
   TouchableOpacity,
   View,
 } from 'react-native';
@@ -11,11 +13,15 @@ import { Ionicons } from '@expo/vector-icons';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Agent, useAgents } from '../../store/agents';
 import { AgentStatus, Colors, Spacing, Typography, statusColor } from '../../constants/tokens';
+import { TerminalPreview } from '../../components/terminal/TerminalPreview';
+import { TerminalThemeName, DefaultTerminalThemeName } from '../../constants/terminalThemes';
 import {
   getInboxViewMode,
   getAgentAliases,
   getRecentAgentOpens,
+  getTerminalTheme,
   markAgentOpened,
+  setAgentAlias,
   setInboxViewMode,
   StoredAgentAliases,
   StoredInboxViewMode,
@@ -36,47 +42,46 @@ export default function InboxScreen() {
   const [viewMode, setViewModeState] = useState<StoredInboxViewMode>('list');
   const [agentAliases, setAgentAliases] = useState<StoredAgentAliases>({});
   const [recentAgentOpens, setRecentAgentOpens] = useState<StoredRecentAgentOpens>({});
+  const [terminalTheme, setTerminalTheme] = useState<TerminalThemeName>(DefaultTerminalThemeName);
+
+  // Context menu state
+  const [menuAgent, setMenuAgent] = useState<Agent | null>(null);
+  const [renameVisible, setRenameVisible] = useState(false);
+  const [renameDraft, setRenameDraft] = useState('');
 
   useEffect(() => {
     let cancelled = false;
-
     (async () => {
-      const [storedViewMode, storedRecentOpens, storedAliases] = await Promise.all([
+      const [storedViewMode, storedRecentOpens, storedAliases, storedTheme] = await Promise.all([
         getInboxViewMode(),
         getRecentAgentOpens(),
         getAgentAliases(),
+        getTerminalTheme(),
       ]);
       if (!cancelled) {
         setViewModeState(storedViewMode);
         setRecentAgentOpens(storedRecentOpens);
         setAgentAliases(storedAliases);
+        setTerminalTheme(storedTheme as TerminalThemeName);
       }
     })();
-
-    return () => {
-      cancelled = true;
-    };
+    return () => { cancelled = true; };
   }, []);
 
   useFocusEffect(
     React.useCallback(() => {
       let cancelled = false;
-
       (async () => {
         const [storedRecentOpens, storedAliases] = await Promise.all([
           getRecentAgentOpens(),
           getAgentAliases(),
         ]);
-
         if (!cancelled) {
           setRecentAgentOpens(storedRecentOpens);
           setAgentAliases(storedAliases);
         }
       })();
-
-      return () => {
-        cancelled = true;
-      };
+      return () => { cancelled = true; };
     }, []),
   );
 
@@ -111,83 +116,97 @@ export default function InboxScreen() {
     });
   };
 
+  const openContextMenu = (agent: Agent) => {
+    setMenuAgent(agent);
+  };
+
+  const closeContextMenu = () => {
+    setMenuAgent(null);
+  };
+
+  const openRename = () => {
+    if (!menuAgent) return;
+    setRenameDraft(agentAliases[menuAgent.key] || menuAgent.name);
+    setMenuAgent(null);
+    setRenameVisible(true);
+  };
+
+  const handleRename = async () => {
+    if (!menuAgent) return;
+    const updated = await setAgentAlias(menuAgent.key, renameDraft);
+    setAgentAliases(updated);
+    setRenameVisible(false);
+    setMenuAgent(null);
+  };
+
+  const closeRename = () => {
+    setRenameVisible(false);
+    setMenuAgent(null);
+  };
+
+  const hasConnection = Object.keys(state.serverConnections).length > 0;
+  const anyConnected = Object.values(state.serverConnections).includes('connected');
+  const anyConnecting = Object.values(state.serverConnections).includes('connecting');
+
+  // ── List: compact row ──
   const renderListAgent = ({ item }: { item: Agent }) => (
     <TouchableOpacity
-      style={styles.listCard}
+      style={styles.listRow}
       onPress={() => openAgent(item)}
+      onLongPress={() => openContextMenu(item)}
       activeOpacity={0.82}
+      delayLongPress={400}
     >
-      <View style={styles.listHeader}>
-        <View style={styles.listTitleBlock}>
-          <View style={styles.inlineStatus}>
-            <View style={[styles.statusDot, { backgroundColor: statusColor(item.status) }]} />
-            <Text style={styles.inlineStatusText}>{getStatusLabel(item.status)}</Text>
-          </View>
-          <Text style={styles.listTitle} numberOfLines={1}>{resolveAgentName(item, agentAliases)}</Text>
-        </View>
-      </View>
-
-      <Text style={styles.listProject} numberOfLines={1}>
-        {item.serverName}{item.project ? ` · ${item.project}` : ''}
-      </Text>
-
-      <Text style={styles.listPreview} numberOfLines={2}>
-        {buildCompactPreview(item)}
+      <View style={[styles.statusDot, { backgroundColor: statusColor(item.status) }]} />
+      <Text style={styles.listName} numberOfLines={1}>{resolveAgentName(item, agentAliases)}</Text>
+      <Text style={styles.listMeta} numberOfLines={1}>
+        {item.project || item.serverName}
       </Text>
     </TouchableOpacity>
   );
 
-  const renderGridAgent = ({ item, index }: { item: Agent; index: number }) => (
+  // ── Grid: terminal preview card ──
+  const renderGridAgent = ({ item }: { item: Agent }) => (
     <TouchableOpacity
-      style={[
-        styles.previewCard,
-        index % 2 === 0 ? styles.previewCardLeft : styles.previewCardRight,
-      ]}
+      style={styles.gridCard}
       onPress={() => openAgent(item)}
+      onLongPress={() => openContextMenu(item)}
       activeOpacity={0.84}
+      delayLongPress={400}
     >
-      <View style={styles.previewTopRow}>
-        <View style={styles.previewTitleWrap}>
-          <Text style={styles.previewTitle} numberOfLines={1}>{resolveAgentName(item, agentAliases)}</Text>
-          <Text style={styles.previewProject} numberOfLines={1}>
-            {item.serverName}{item.project ? ` · ${item.project}` : ''}
-          </Text>
-        </View>
-        <View style={[styles.previewStatusPill, { borderColor: statusColor(item.status) + '55' }]}>
-          <View style={[styles.previewStatusDot, { backgroundColor: statusColor(item.status) }]} />
-          <Text style={styles.previewStatusText}>{getStatusLabel(item.status)}</Text>
-        </View>
+      <View style={styles.gridHeader}>
+        <View style={[styles.statusDot, { backgroundColor: statusColor(item.status) }]} />
+        <Text style={styles.gridTitle} numberOfLines={1}>{resolveAgentName(item, agentAliases)}</Text>
+        <Text style={styles.gridMeta} numberOfLines={1}>
+          {item.project || item.serverName}
+        </Text>
       </View>
-
-      <Text style={styles.previewBody} numberOfLines={4}>
-        {buildPreviewBody(item)}
-      </Text>
+      <View style={styles.gridPreview}>
+        <TerminalPreview key={item.key} lines={item.last_output_lines} themeName={terminalTheme} />
+      </View>
     </TouchableOpacity>
   );
 
   return (
     <SafeAreaView style={styles.container}>
-      {Object.keys(state.serverConnections).length > 0 &&
-      !Object.values(state.serverConnections).includes('connected') && (
+      {hasConnection && !anyConnected && (
         <View style={styles.banner}>
+          <View style={[styles.bannerDot, { backgroundColor: anyConnecting ? Colors.statusUnknown : '#65758A' }]} />
           <Text style={styles.bannerText}>
-            {Object.values(state.serverConnections).includes('connecting') ? 'Connecting...' : 'Offline'}
+            {anyConnecting ? 'Connecting' : 'Offline'}
           </Text>
         </View>
       )}
 
       <View style={styles.header}>
-        <View style={styles.headerCopy}>
-          <Text style={styles.title}>Agents</Text>
-        </View>
-
+        <Text style={styles.title}>zen</Text>
         <View style={styles.viewToggle}>
-          <IconToggleButton
+          <ToggleButton
             icon="reorder-three-outline"
             selected={viewMode === 'list'}
             onPress={() => setViewMode('list')}
           />
-          <IconToggleButton
+          <ToggleButton
             icon="grid-outline"
             selected={viewMode === 'grid'}
             onPress={() => setViewMode('grid')}
@@ -197,9 +216,9 @@ export default function InboxScreen() {
 
       {sortedAgents.length === 0 ? (
         <View style={styles.emptyContainer}>
-          <Text style={styles.emptyIcon}>◉</Text>
-          <Text style={styles.emptyText}>No agents running</Text>
-          <Text style={styles.emptySubtext}>Start an agent on your homelab</Text>
+          <Text style={styles.emptyIcon}>☯</Text>
+          <Text style={styles.emptyText}>All is calm</Text>
+          <Text style={styles.emptySubtext}>No agents running</Text>
         </View>
       ) : viewMode === 'list' ? (
         <FlatList
@@ -208,7 +227,6 @@ export default function InboxScreen() {
           keyExtractor={item => item.key}
           renderItem={renderListAgent}
           contentContainerStyle={styles.listContent}
-          ItemSeparatorComponent={() => <View style={styles.listGap} />}
         />
       ) : (
         <FlatList
@@ -216,11 +234,89 @@ export default function InboxScreen() {
           key="grid"
           keyExtractor={item => item.key}
           renderItem={renderGridAgent}
-          numColumns={2}
-          columnWrapperStyle={styles.gridRow}
           contentContainerStyle={styles.gridContent}
+          ItemSeparatorComponent={() => <View style={styles.gridGap} />}
+          removeClippedSubviews={false}
+          windowSize={21}
         />
       )}
+
+      {/* Context Menu */}
+      <Modal
+        visible={menuAgent !== null && !renameVisible}
+        transparent
+        animationType="fade"
+        onRequestClose={closeContextMenu}
+      >
+        <View style={styles.menuRoot}>
+          <TouchableOpacity
+            style={styles.menuBackdrop}
+            activeOpacity={1}
+            onPress={closeContextMenu}
+          />
+          <View style={styles.menuCard}>
+            <Text style={styles.menuTitle} numberOfLines={1}>
+              {menuAgent ? resolveAgentName(menuAgent, agentAliases) : ''}
+            </Text>
+
+            <TouchableOpacity style={styles.menuItem} onPress={openRename} activeOpacity={0.82}>
+              <Ionicons name="pencil-outline" size={16} color={Colors.textPrimary} />
+              <Text style={styles.menuItemText}>Rename</Text>
+            </TouchableOpacity>
+
+            <TouchableOpacity
+              style={styles.menuItem}
+              onPress={() => { if (menuAgent) openAgent(menuAgent); closeContextMenu(); }}
+              activeOpacity={0.82}
+            >
+              <Ionicons name="terminal-outline" size={16} color={Colors.textPrimary} />
+              <Text style={styles.menuItemText}>Open Terminal</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      </Modal>
+
+      {/* Rename Modal */}
+      <Modal
+        visible={renameVisible}
+        transparent
+        animationType="fade"
+        onRequestClose={closeRename}
+      >
+        <View style={styles.menuRoot}>
+          <TouchableOpacity
+            style={styles.menuBackdrop}
+            activeOpacity={1}
+            onPress={closeRename}
+          />
+          <View style={styles.renameCard}>
+            <Text style={styles.renameTitle}>Rename</Text>
+            <TextInput
+              style={styles.renameInput}
+              value={renameDraft}
+              onChangeText={setRenameDraft}
+              placeholder="Agent name"
+              placeholderTextColor="rgba(255,255,255,0.2)"
+              autoCapitalize="none"
+              autoCorrect={false}
+              autoFocus
+              selectTextOnFocus
+            />
+            <View style={styles.renameActions}>
+              <TouchableOpacity style={styles.renameBtn} onPress={closeRename} activeOpacity={0.82}>
+                <Text style={styles.renameBtnText}>Cancel</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={[styles.renameBtn, styles.renameBtnPrimary]}
+                onPress={handleRename}
+                activeOpacity={0.82}
+              >
+                <Text style={[styles.renameBtnText, styles.renameBtnPrimaryText]}>Save</Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+        </View>
+      </Modal>
     </SafeAreaView>
   );
 }
@@ -229,7 +325,7 @@ function resolveAgentName(agent: Agent, aliases: StoredAgentAliases): string {
   return aliases[agent.key] || agent.name;
 }
 
-function IconToggleButton({
+function ToggleButton({
   icon,
   selected,
   onPress,
@@ -246,280 +342,271 @@ function IconToggleButton({
     >
       <Ionicons
         name={icon}
-        size={18}
+        size={17}
         color={selected ? Colors.textPrimary : Colors.textSecondary}
       />
     </TouchableOpacity>
   );
 }
 
-function buildCompactPreview(agent: Agent): string {
-  const preview = extractPreviewLines(agent).join('  ·  ');
-  return preview || agent.summary || 'No recent output';
-}
-
-function buildPreviewBody(agent: Agent): string {
-  const lines = extractPreviewLines(agent);
-  if (lines.length > 0) return lines.join('\n');
-  return agent.summary || 'No recent output';
-}
-
-function extractPreviewLines(agent: Agent): string[] {
-  const cleaned = agent.last_output_lines
-    .map(line => stripAnsi(line).replace(/\s+/g, ' ').trim())
-    .filter(Boolean);
-
-  const collected: string[] = [];
-  for (let index = cleaned.length - 1; index >= 0; index -= 1) {
-    const line = cleaned[index];
-    if (!isMeaningfulPreviewLine(line, agent)) continue;
-    collected.push(line);
-    if (collected.length === 3) break;
-  }
-
-  return collected;
-}
-
-function isMeaningfulPreviewLine(line: string, agent: Agent): boolean {
-  if (!line) return false;
-
-  if (line === agent.summary.trim()) return false;
-  if (line.includes('background terminal running')) return false;
-  if (line.includes('/ps to vie')) return false;
-  if (line.includes('gpt-') && line.includes('left')) return false;
-  if (line.includes('~/workspace/')) return false;
-  if (/^\[[^\]]+\]/.test(line) && line.includes('node') && line.includes('c')) return false;
-  if (/^[>$#]\s/.test(line)) return false;
-  if (/^[A-Za-z0-9._-]+@[A-Za-z0-9._-]+:/.test(line)) return false;
-  if (/^tmux\s*\(/i.test(line)) return false;
-  if (/@filename\b/.test(line)) return false;
-
-  return true;
-}
-
 function stripAnsi(value: string): string {
   return value.replace(/\x1b\[[0-9;?]*[ -/]*[@-~]/g, '');
-}
-
-function getStatusLabel(status: AgentStatus): string {
-  switch (status) {
-    case 'running':
-      return 'Running';
-    case 'blocked':
-      return 'Needs Input';
-    case 'failed':
-      return 'Error';
-    case 'done':
-      return 'Done';
-    case 'unknown':
-      return 'Waiting';
-  }
 }
 
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: '#0B1118',
+    backgroundColor: Colors.bgPrimary,
   },
+
+  // Banner
   banner: {
-    backgroundColor: Colors.statusUnknown,
-    padding: 8,
+    flexDirection: 'row',
     alignItems: 'center',
+    justifyContent: 'center',
+    gap: 6,
+    paddingVertical: 6,
+    backgroundColor: 'rgba(255,255,255,0.03)',
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: 'rgba(255,255,255,0.06)',
+  },
+  bannerDot: {
+    width: 6,
+    height: 6,
+    borderRadius: 3,
   },
   bannerText: {
-    color: Colors.bgPrimary,
-    fontFamily: Typography.uiFontMedium,
-    fontSize: 13,
+    color: Colors.textSecondary,
+    fontFamily: Typography.uiFont,
+    fontSize: 12,
   },
+
+  // Header
   header: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
-    paddingHorizontal: Spacing.screenMargin,
-    paddingTop: 12,
-    paddingBottom: 14,
-  },
-  headerCopy: {
-    flex: 1,
-    paddingRight: 12,
+    paddingHorizontal: 20,
+    paddingTop: 16,
+    paddingBottom: 20,
   },
   title: {
     color: Colors.textPrimary,
-    fontSize: 24,
+    fontSize: 22,
     fontFamily: Typography.uiFontMedium,
-    letterSpacing: -0.3,
+    letterSpacing: 1,
+    opacity: 0.9,
   },
   viewToggle: {
     flexDirection: 'row',
-    padding: 4,
-    borderRadius: 18,
-    backgroundColor: '#111923',
-    borderWidth: 1,
-    borderColor: 'rgba(255,255,255,0.06)',
-    gap: 4,
+    gap: 2,
+    borderRadius: 12,
+    backgroundColor: 'rgba(255,255,255,0.04)',
+    padding: 3,
   },
   viewBtn: {
-    width: 34,
-    height: 34,
-    borderRadius: 14,
+    width: 32,
+    height: 32,
+    borderRadius: 10,
     alignItems: 'center',
     justifyContent: 'center',
   },
   viewBtnActive: {
-    backgroundColor: '#1C2734',
+    backgroundColor: 'rgba(255,255,255,0.08)',
   },
+
+  // ── List: compact rows ──
   listContent: {
-    paddingHorizontal: Spacing.screenMargin,
-    paddingBottom: 28,
+    paddingHorizontal: 20,
+    paddingBottom: 32,
   },
-  listGap: {
-    height: 10,
-  },
-  listCard: {
-    borderRadius: 18,
-    paddingHorizontal: 14,
-    paddingVertical: 14,
-    backgroundColor: '#121B25',
-    borderWidth: 1,
-    borderColor: 'rgba(255,255,255,0.05)',
-  },
-  listHeader: {
-    flexDirection: 'row',
-    alignItems: 'flex-start',
-    justifyContent: 'space-between',
-    gap: 10,
-  },
-  listTitleBlock: {
-    flex: 1,
-  },
-  inlineStatus: {
+  listRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 6,
-    marginBottom: 8,
+    gap: 10,
+    paddingVertical: 12,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: 'rgba(255,255,255,0.04)',
   },
   statusDot: {
     width: 7,
     height: 7,
     borderRadius: 4,
   },
-  inlineStatusText: {
-    color: '#8A98AA',
-    fontSize: 10,
-    fontFamily: Typography.uiFontMedium,
-    textTransform: 'uppercase',
-    letterSpacing: 0.6,
-  },
-  listTitle: {
+  listName: {
+    flex: 1,
     color: Colors.textPrimary,
-    fontSize: 16,
+    fontSize: 14,
     fontFamily: Typography.uiFontMedium,
   },
-  listProject: {
-    marginTop: 6,
-    color: '#5B9DFF',
+  listMeta: {
+    color: Colors.textSecondary,
     fontSize: 12,
     fontFamily: Typography.uiFont,
+    opacity: 0.5,
+    maxWidth: '40%',
+    textAlign: 'right',
   },
-  listPreview: {
-    marginTop: 10,
-    color: '#C4CFDB',
-    fontSize: 12,
-    lineHeight: 18,
-    fontFamily: Typography.terminalFont,
-  },
+
+  // ── Grid: terminal preview cards ──
   gridContent: {
-    paddingHorizontal: Spacing.screenMargin,
-    paddingBottom: 28,
+    paddingHorizontal: 20,
+    paddingBottom: 32,
   },
-  gridRow: {
-    gap: 12,
-    marginBottom: 12,
+  gridGap: {
+    height: 12,
   },
-  previewCard: {
-    flex: 1,
-    minHeight: 152,
-    borderRadius: 18,
-    paddingHorizontal: 14,
-    paddingVertical: 14,
-    backgroundColor: '#121B25',
-    borderWidth: 1,
-    borderColor: 'rgba(255,255,255,0.05)',
+  gridCard: {
+    borderRadius: 14,
+    backgroundColor: 'rgba(255,255,255,0.03)',
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: 'rgba(255,255,255,0.06)',
+    overflow: 'hidden',
   },
-  previewCardLeft: {
-    marginRight: 0,
-  },
-  previewCardRight: {
-    marginLeft: 0,
-  },
-  previewTopRow: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'flex-start',
-    gap: 8,
-    marginBottom: 12,
-  },
-  previewTitleWrap: {
-    flex: 1,
-  },
-  previewTitle: {
-    color: Colors.textPrimary,
-    fontSize: 15,
-    fontFamily: Typography.uiFontMedium,
-    marginBottom: 4,
-  },
-  previewProject: {
-    color: '#5B9DFF',
-    fontSize: 11,
-    fontFamily: Typography.uiFont,
-  },
-  previewStatusPill: {
+  gridHeader: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 5,
-    height: 24,
-    paddingHorizontal: 8,
-    borderRadius: 999,
-    backgroundColor: 'rgba(255,255,255,0.03)',
-    borderWidth: 1,
+    gap: 8,
+    paddingHorizontal: 14,
+    paddingVertical: 10,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: 'rgba(255,255,255,0.04)',
   },
-  previewStatusDot: {
-    width: 6,
-    height: 6,
-    borderRadius: 3,
-  },
-  previewStatusText: {
-    color: '#D7E1EB',
-    fontSize: 10,
+  gridTitle: {
+    color: Colors.textPrimary,
+    fontSize: 13,
     fontFamily: Typography.uiFontMedium,
-    textTransform: 'uppercase',
+    flexShrink: 1,
   },
-  previewBody: {
-    flex: 1,
-    color: '#C8D3DE',
-    fontSize: 11.5,
-    lineHeight: 17,
-    fontFamily: Typography.terminalFont,
+  gridMeta: {
+    color: Colors.textSecondary,
+    fontSize: 11,
+    fontFamily: Typography.uiFont,
+    marginLeft: 'auto',
+    opacity: 0.5,
   },
+  gridPreview: {
+    height: 220,
+  },
+
+  // Empty state
   emptyContainer: {
     flex: 1,
     justifyContent: 'center',
     alignItems: 'center',
   },
   emptyIcon: {
-    fontSize: 48,
+    fontSize: 44,
     color: Colors.textSecondary,
     marginBottom: 16,
+    opacity: 0.6,
   },
   emptyText: {
     color: Colors.textPrimary,
-    fontSize: 18,
+    fontSize: 17,
     fontFamily: Typography.uiFontMedium,
+    opacity: 0.8,
   },
   emptySubtext: {
     color: Colors.textSecondary,
-    fontSize: 14,
+    fontSize: 13,
     fontFamily: Typography.uiFont,
-    marginTop: 8,
+    marginTop: 6,
+    opacity: 0.6,
+  },
+
+  // Context menu
+  menuRoot: {
+    flex: 1,
+    justifyContent: 'flex-end',
+  },
+  menuBackdrop: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: 'rgba(0,0,0,0.6)',
+  },
+  menuCard: {
+    marginHorizontal: 12,
+    marginBottom: 32,
+    borderRadius: 16,
+    backgroundColor: '#1A1A22',
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: 'rgba(255,255,255,0.08)',
+    overflow: 'hidden',
+  },
+  menuTitle: {
+    color: Colors.textSecondary,
+    fontSize: 12,
+    fontFamily: Typography.uiFontMedium,
+    paddingHorizontal: 18,
+    paddingTop: 16,
+    paddingBottom: 10,
+    opacity: 0.6,
+  },
+  menuItem: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+    paddingHorizontal: 18,
+    paddingVertical: 14,
+    borderTopWidth: StyleSheet.hairlineWidth,
+    borderTopColor: 'rgba(255,255,255,0.05)',
+  },
+  menuItemText: {
+    color: Colors.textPrimary,
+    fontSize: 15,
+    fontFamily: Typography.uiFont,
+  },
+
+  // Rename modal
+  renameCard: {
+    marginHorizontal: 24,
+    marginBottom: 100,
+    borderRadius: 16,
+    padding: 20,
+    backgroundColor: '#141418',
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: 'rgba(255,255,255,0.08)',
+  },
+  renameTitle: {
+    color: Colors.textPrimary,
+    fontSize: 16,
+    fontFamily: Typography.uiFontMedium,
+    marginBottom: 16,
+  },
+  renameInput: {
+    backgroundColor: 'rgba(255,255,255,0.04)',
+    borderRadius: 10,
+    paddingHorizontal: 14,
+    paddingVertical: 10,
+    color: Colors.textPrimary,
+    fontSize: 14,
+    fontFamily: Typography.terminalFont,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: 'rgba(255,255,255,0.08)',
+  },
+  renameActions: {
+    flexDirection: 'row',
+    justifyContent: 'flex-end',
+    gap: 10,
+    marginTop: 20,
+  },
+  renameBtn: {
+    minWidth: 70,
+    height: 36,
+    borderRadius: 10,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: 'rgba(255,255,255,0.05)',
+  },
+  renameBtnPrimary: {
+    backgroundColor: Colors.accent,
+  },
+  renameBtnText: {
+    color: Colors.textPrimary,
+    fontSize: 13,
+    fontFamily: Typography.uiFontMedium,
+  },
+  renameBtnPrimaryText: {
+    color: Colors.bgPrimary,
   },
 });

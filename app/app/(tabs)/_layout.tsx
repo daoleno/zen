@@ -1,5 +1,6 @@
+import { Text as RNText } from 'react-native';
 import { Tabs } from 'expo-router';
-import { Colors } from '../../constants/tokens';
+import { Colors, Typography } from '../../constants/tokens';
 
 export default function TabLayout() {
   return (
@@ -7,37 +8,42 @@ export default function TabLayout() {
       screenOptions={{
         tabBarStyle: {
           backgroundColor: Colors.bgPrimary,
-          borderTopColor: Colors.bgSurface,
-          height: 70,
-          paddingBottom: 10,
+          borderTopColor: 'rgba(255,255,255,0.04)',
+          borderTopWidth: 0.5,
+          height: 60,
+          paddingBottom: 8,
+          paddingTop: 4,
         },
         tabBarActiveTintColor: Colors.textPrimary,
-        tabBarInactiveTintColor: Colors.textSecondary,
+        tabBarInactiveTintColor: 'rgba(255,255,255,0.25)',
+        tabBarLabelStyle: {
+          fontFamily: Typography.uiFont,
+          fontSize: 11,
+          letterSpacing: 0.3,
+        },
         headerShown: false,
       }}
     >
       <Tabs.Screen
         name="index"
         options={{
-          title: 'Inbox',
-          tabBarIcon: ({ color }) => <TabIcon name="●" color={color} />,
+          title: 'Agents',
+          tabBarIcon: ({ color }) => <TabDot color={color} />,
         }}
       />
       <Tabs.Screen
         name="settings"
         options={{
           title: 'Settings',
-          tabBarIcon: ({ color }) => <TabIcon name="⚙" color={color} />,
+          tabBarIcon: ({ color }) => <RNText style={{ fontSize: 18, color, opacity: 0.8 }}>{'///'}</RNText>,
         }}
       />
     </Tabs>
   );
 }
 
-function TabIcon({ name, color }: { name: string; color: string }) {
+function TabDot({ color }: { color: string }) {
   return (
-    <RNText style={{ fontSize: 22, color }}>{name}</RNText>
+    <RNText style={{ fontSize: 8, color }}>{'●'}</RNText>
   );
 }
-
-import { Text as RNText } from 'react-native';
