@@ -5,6 +5,7 @@ type Handlers = {
   onOpen?: (payload: { session_id: string; cols: number; rows: number; backend: string }) => void;
   onHistory?: (payload: { session_id: string; data: string }) => void;
   onOutput?: (payload: { session_id: string; data: string }) => void;
+  onScrollState?: (payload: { session_id: string; at_bottom: boolean; in_copy_mode: boolean; scroll_position: number }) => void;
   onExit?: (payload: { session_id: string; exit_code: number }) => void;
   onError?: (payload: { session_id?: string; code?: string; message: string }) => void;
 };
@@ -51,6 +52,17 @@ export function useTerminalSession(serverId: string, targetId: string, backend: 
       setConnected(false);
       handlersRef.current.onExit?.(payload);
     };
+    const handleScrollState = (payload: {
+      serverId: string;
+      session_id: string;
+      at_bottom: boolean;
+      in_copy_mode: boolean;
+      scroll_position: number;
+    }) => {
+      if (payload.serverId !== serverId) return;
+      if (sessionIdRef.current && payload.session_id !== sessionIdRef.current) return;
+      handlersRef.current.onScrollState?.(payload);
+    };
     const handleError = (payload: { serverId: string; session_id?: string; code?: string; message: string }) => {
       if (payload.serverId !== serverId) return;
       if (payload.session_id && sessionIdRef.current && payload.session_id !== sessionIdRef.current) return;
@@ -83,6 +95,7 @@ export function useTerminalSession(serverId: string, targetId: string, backend: 
     wsClient.on('terminal_opened', handleOpened);
     wsClient.on('terminal_history', handleHistory);
     wsClient.on('terminal_output', handleOutput);
+    wsClient.on('terminal_scroll_state', handleScrollState);
     wsClient.on('terminal_exit', handleExit);
     wsClient.on('terminal_error', handleError);
 
@@ -92,6 +105,7 @@ export function useTerminalSession(serverId: string, targetId: string, backend: 
       wsClient.off('terminal_opened', handleOpened);
       wsClient.off('terminal_history', handleHistory);
       wsClient.off('terminal_output', handleOutput);
+      wsClient.off('terminal_scroll_state', handleScrollState);
       wsClient.off('terminal_exit', handleExit);
       wsClient.off('terminal_error', handleError);
       openedRef.current = false;

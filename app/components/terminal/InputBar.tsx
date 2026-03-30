@@ -1,4 +1,4 @@
-import React, { forwardRef, useImperativeHandle, useState } from 'react';
+import React, { useState } from 'react';
 import {
   Alert,
   ScrollView,
@@ -24,124 +24,112 @@ const SHORTCUT_KEYS = [
   { label: '→', sequence: '\x1b[C' },
 ] as const;
 
-export interface InputBarHandle {
-  focus(): void;
-}
-
 interface InputBarProps {
   terminalRef: React.RefObject<TerminalSurfaceHandle | null>;
   serverUrl: string;
 }
 
-export const InputBar = forwardRef<InputBarHandle, InputBarProps>(
-  ({ terminalRef, serverUrl }, ref) => {
-    const [ctrlArmed, setCtrlArmed] = useState(false);
+export function InputBar({ terminalRef, serverUrl }: InputBarProps) {
+  const [ctrlArmed, setCtrlArmed] = useState(false);
 
-    useImperativeHandle(ref, () => ({
-      focus() {
-        terminalRef.current?.focus();
-      },
-    }));
+  const sendInput = (data: string) => {
+    terminalRef.current?.sendInput(data);
+  };
 
-    const sendInput = (data: string) => {
-      terminalRef.current?.sendInput(data);
-    };
-
-    const applyModifiers = (sequence: string) => {
-      let next = sequence;
-      if (ctrlArmed && sequence.length === 1) {
-        const code = sequence.toUpperCase().charCodeAt(0);
-        if (code >= 64 && code <= 95) {
-          next = String.fromCharCode(code - 64);
-        }
-        setCtrlArmed(false);
+  const applyModifiers = (sequence: string) => {
+    let next = sequence;
+    if (ctrlArmed && sequence.length === 1) {
+      const code = sequence.toUpperCase().charCodeAt(0);
+      if (code >= 64 && code <= 95) {
+        next = String.fromCharCode(code - 64);
       }
-      return next;
-    };
+      setCtrlArmed(false);
+    }
+    return next;
+  };
 
-    const handleShortcut = (sequence: string) => {
-      if (sequence === '__ctrl__') {
-        setCtrlArmed(v => !v);
-        return;
+  const handleShortcut = (sequence: string) => {
+    if (sequence === '__ctrl__') {
+      setCtrlArmed(v => !v);
+      return;
+    }
+    sendInput(applyModifiers(sequence));
+  };
+
+  const handleFilePick = async () => {
+    try {
+      const result = await DocumentPicker.getDocumentAsync({
+        type: ['*/*'],
+        copyToCacheDirectory: true,
+      });
+      if (result.canceled || !result.assets?.length) return;
+
+      const asset = result.assets[0];
+      const uploadUrl = buildUploadUrl(serverUrl);
+      if (!uploadUrl) {
+        throw new Error('Server URL is not configured');
       }
-      sendInput(applyModifiers(sequence));
-    };
 
-    const handleFilePick = async () => {
-      try {
-        const result = await DocumentPicker.getDocumentAsync({
-          type: ['*/*'],
-          copyToCacheDirectory: true,
-        });
-        if (result.canceled || !result.assets?.length) return;
+      const formData = new FormData();
+      formData.append('file', {
+        uri: asset.uri,
+        name: asset.name || 'upload',
+        type: asset.mimeType || 'application/octet-stream',
+      } as any);
 
-        const asset = result.assets[0];
-        const uploadUrl = buildUploadUrl(serverUrl);
-        if (!uploadUrl) {
-          throw new Error('Server URL is not configured');
-        }
-
-        const formData = new FormData();
-        formData.append('file', {
-          uri: asset.uri,
-          name: asset.name || 'upload',
-          type: asset.mimeType || 'application/octet-stream',
-        } as any);
-
-        const response = await fetch(uploadUrl, {
-          method: 'POST',
-          body: formData,
-        });
-        if (!response.ok) {
-          throw new Error(`Upload failed (${response.status})`);
-        }
-
-        const payload = await response.json() as { path?: string };
-        if (!payload.path) {
-          throw new Error('Upload response missing file path');
-        }
-
-        const uploadedPath = payload.path;
-        sendInput(appendShellPath('', uploadedPath));
-        terminalRef.current?.focus();
-        Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-      } catch (err: any) {
-        Alert.alert('Error', err?.message || 'Failed to upload file');
+      const response = await fetch(uploadUrl, {
+        method: 'POST',
+        body: formData,
+      });
+      if (!response.ok) {
+        throw new Error(`Upload failed (${response.status})`);
       }
-    };
 
-    return (
-      <View style={styles.container}>
-        <ScrollView
-          horizontal
-          showsHorizontalScrollIndicator={false}
-          style={styles.shortcutRow}
-          contentContainerStyle={styles.shortcutRowContent}
-        >
-          <TouchableOpacity style={styles.attachBtn} onPress={handleFilePick}>
-            <Ionicons name="attach-outline" size={18} color={Colors.textPrimary} />
-          </TouchableOpacity>
+      const payload = await response.json() as { path?: string };
+      if (!payload.path) {
+        throw new Error('Upload response missing file path');
+      }
 
-          {SHORTCUT_KEYS.map(key => {
-            const isCtrl = key.sequence === '__ctrl__';
-            const active = isCtrl && ctrlArmed;
-            return (
-              <TouchableOpacity
-                key={key.label}
-                style={[styles.shortcutBtn, active && styles.shortcutBtnActive]}
-                onPress={() => handleShortcut(key.sequence)}
-              >
-                <Text style={[styles.shortcutText, active && styles.shortcutTextActive]}>
-                  {key.label}
-                </Text>
-              </TouchableOpacity>
-            );
-          })}
-        </ScrollView>
-      </View>
-    );
-  },
-);
+      const uploadedPath = payload.path;
+      sendInput(appendShellPath('', uploadedPath));
+      terminalRef.current?.focus();
+      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+    } catch (err: any) {
+      Alert.alert('Error', err?.message || 'Failed to upload file');
+    }
+  };
+
+  return (
+    <View style={styles.container}>
+      <ScrollView
+        horizontal
+        showsHorizontalScrollIndicator={false}
+        style={styles.shortcutRow}
+        contentContainerStyle={styles.shortcutRowContent}
+      >
+        <TouchableOpacity style={styles.attachBtn} onPress={handleFilePick}>
+          <Ionicons name="attach-outline" size={18} color={Colors.textPrimary} />
+        </TouchableOpacity>
+
+        {SHORTCUT_KEYS.map(key => {
+          const isCtrl = key.sequence === '__ctrl__';
+          const active = isCtrl && ctrlArmed;
+          return (
+            <TouchableOpacity
+              key={key.label}
+              style={[styles.shortcutBtn, active && styles.shortcutBtnActive]}
+              onPress={() => handleShortcut(key.sequence)}
+            >
+              <Text style={[styles.shortcutText, active && styles.shortcutTextActive]}>
+                {key.label}
+              </Text>
+            </TouchableOpacity>
+          );
+        })}
+      </ScrollView>
+    </View>
+  );
+}
 
 function buildUploadUrl(serverUrl: string): string | null {
   if (!serverUrl) return null;

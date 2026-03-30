@@ -36,7 +36,7 @@ import {
 } from '../../services/storage';
 import { makeSessionKey, parseSessionKey } from '../../services/sessionKeys';
 import { TerminalSurface, TerminalSurfaceHandle } from '../../components/terminal/TerminalSurface';
-import { InputBar, InputBarHandle } from '../../components/terminal/InputBar';
+import { InputBar } from '../../components/terminal/InputBar';
 
 const EMPTY_TABS: StoredTerminalTabs = { order: [], pinned: [] };
 const MENU_POPOVER_WIDTH = 168;
@@ -80,7 +80,6 @@ export default function TerminalScreen() {
   const [keyboardHeight, setKeyboardHeight] = useState(0);
   const [inputBarHeight, setInputBarHeight] = useState(54);
   const terminalRef = useRef<TerminalSurfaceHandle>(null);
-  const inputBarRef = useRef<InputBarHandle>(null);
   const menuAnchorRef = useRef<View | null>(null);
 
   const agentByKey = useMemo(
@@ -222,7 +221,7 @@ export default function TerminalScreen() {
       const serverLabel = tabAgent?.serverName || parsed?.serverId || 'server';
       return {
         id: currentSessionKey,
-        name: formatTabLabel(serverLabel, resolveAgentName(tabAgent, currentSessionKey, agentAliases)),
+        name: formatTabLabel(resolveAgentName(tabAgent, currentSessionKey, agentAliases), serverLabel),
         status: tabAgent?.status || 'unknown',
         pinned: terminalTabs.pinned.includes(currentSessionKey),
         active: currentSessionKey === sessionKey,
@@ -444,7 +443,6 @@ export default function TerminalScreen() {
             serverId={serverId}
             targetId={agentId}
             themeName={themeName}
-            onTap={() => inputBarRef.current?.focus()}
           />
         ) : null}
       </View>
@@ -457,7 +455,6 @@ export default function TerminalScreen() {
           }}
         >
           <InputBar
-            ref={inputBarRef}
             terminalRef={terminalRef}
             serverUrl={serverUrl}
           />
@@ -736,8 +733,10 @@ function resolveAgentName(
   return '';
 }
 
-function formatTabLabel(serverName: string, title: string): string {
-  return `${serverName} · ${title}`;
+function formatTabLabel(title: string, serverName: string): string {
+  if (!title) return serverName;
+  if (!serverName) return title;
+  return `${title} · ${serverName}`;
 }
 
 const styles = StyleSheet.create({

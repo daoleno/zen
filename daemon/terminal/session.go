@@ -7,17 +7,25 @@ type EventType string
 
 const (
 	EventHistory EventType = "history"
-	EventOutput EventType = "output"
-	EventExit   EventType = "exit"
-	EventError  EventType = "error"
+	EventOutput  EventType = "output"
+	EventScroll  EventType = "scroll"
+	EventExit    EventType = "exit"
+	EventError   EventType = "error"
 )
+
+type ScrollState struct {
+	AtBottom   bool
+	InCopyMode bool
+	Position   int
+}
 
 // Event is emitted by a terminal session.
 type Event struct {
-	Type     EventType
-	Data     string
-	ExitCode int
-	Err      error
+	Type        EventType
+	Data        string
+	ExitCode    int
+	Err         error
+	ScrollState ScrollState
 }
 
 // OpenOptions configures a terminal session.

@@ -17,13 +17,13 @@ type BridgeMessage =
   | { type: 'ready' }
   | { type: 'input'; data: string }
   | { type: 'resize'; cols: number; rows: number }
-  | { type: 'scroll'; lines: number }
-  | { type: 'tap' };
+  | { type: 'scroll'; lines: number };
 
 type NativeToTerminalMessage =
   | { type: 'output'; data: string }
   | { type: 'theme'; theme: TerminalThemePalette }
-  | { type: 'session'; cols: number; rows: number };
+  | { type: 'session'; cols: number; rows: number }
+  | { type: 'scrollState'; atBottom: boolean };
 
 export interface TerminalSurfaceHandle {
   sendInput(data: string): void;
@@ -37,14 +37,12 @@ export const TerminalSurface = forwardRef<TerminalSurfaceHandle, {
   backend?: string;
   themeName?: TerminalThemeName;
   themeOverrides?: Partial<TerminalThemePalette>;
-  onTap?: () => void;
 }>(({
   serverId,
   targetId,
   backend = 'tmux',
   themeName = DefaultTerminalThemeName,
   themeOverrides,
-  onTap,
 }, ref) => {
   const webviewRef = useRef<WebView>(null);
   const pendingRef = useRef<NativeToTerminalMessage[]>([]);
@@ -90,6 +88,8 @@ export const TerminalSurface = forwardRef<TerminalSurfaceHandle, {
       script = `window.__zenTheme && window.__zenTheme(${JSON.stringify(payload.theme)}); true;`;
     } else if (payload.type === 'session') {
       script = `window.__zenSession && window.__zenSession(${JSON.stringify({ cols: payload.cols, rows: payload.rows })}); true;`;
+    } else if (payload.type === 'scrollState') {
+      script = `window.__zenScrollState && window.__zenScrollState(${JSON.stringify({ atBottom: payload.atBottom })}); true;`;
     }
     if (script) {
       webviewRef.current?.injectJavaScript(script);
@@ -116,6 +116,10 @@ export const TerminalSurface = forwardRef<TerminalSurfaceHandle, {
     postToTerminal({ type: 'theme', theme });
   }, [theme]);
 
+  useEffect(() => {
+    postToTerminal({ type: 'scrollState', atBottom: !scrolledUp });
+  }, [scrolledUp]);
+
   const session = useTerminalSession(serverId, targetId, backend, {
     onOpen: ({ cols, rows }) => {
       postToTerminal({ type: 'session', cols, rows });
@@ -129,6 +133,9 @@ export const TerminalSurface = forwardRef<TerminalSurfaceHandle, {
     },
     onOutput: ({ data }) => {
       postToTerminal({ type: 'output', data });
+    },
+    onScrollState: ({ at_bottom }) => {
+      setScrolledUp(!at_bottom);
     },
     onExit: ({ exit_code }) => {
       postToTerminal({
@@ -147,7 +154,6 @@ export const TerminalSurface = forwardRef<TerminalSurfaceHandle, {
   useImperativeHandle(ref, () => ({
     sendInput(data: string) {
       session.sendInput(data);
-      setScrolledUp(false);
       focusTerminal();
     },
     focus() {
@@ -180,11 +186,6 @@ export const TerminalSurface = forwardRef<TerminalSurfaceHandle, {
       }
       if (payload.type === 'scroll') {
         session.scroll(payload.lines);
-        if (!scrolledUp) setScrolledUp(true);
-        return;
-      }
-      if (payload.type === 'tap') {
-        onTap?.();
         return;
       }
     } catch {
@@ -217,10 +218,11 @@ export const TerminalSurface = forwardRef<TerminalSurfaceHandle, {
           style={styles.jumpButton}
           onPress={() => {
             session.cancelScroll();
-            setScrolledUp(false);
+            scrollToBottom();
           }}
+          activeOpacity={0.7}
         >
-          <Ionicons name="chevron-down" size={20} color="#dcecff" />
+          <Ionicons name="arrow-down" size={16} color="rgba(255,255,255,0.8)" />
         </TouchableOpacity>
       )}
     </View>
@@ -244,14 +246,14 @@ const styles = StyleSheet.create({
   },
   jumpButton: {
     position: 'absolute',
-    right: 14,
-    bottom: 14,
-    backgroundColor: '#10263f',
-    borderColor: '#2f5d95',
+    right: 16,
+    bottom: 16,
+    backgroundColor: 'rgba(30,50,80,0.85)',
     borderWidth: 1,
+    borderColor: 'rgba(91,157,255,0.3)',
     borderRadius: 999,
-    width: 40,
-    height: 40,
+    width: 38,
+    height: 38,
     alignItems: 'center',
     justifyContent: 'center',
   },
@@ -306,19 +308,20 @@ function buildTerminalHtml(theme: TerminalThemePalette, fontUri: string | null) 
         overflow: hidden;
       }
       /*
-       * Show the active IME composition inline, but keep it visually
-       * lightweight and clipped inside the terminal viewport.
+       * IME composition overlay — opaque background prevents
+       * underlying terminal text from bleeding through on multiline.
+       * Position is managed by JS patch (drops to the next line on overflow).
        */
       .xterm .composition-view {
-        background: transparent !important;
+        background: ${theme.background} !important;
         color: ${theme.foreground} !important;
         border-bottom: 1px solid ${theme.cursor};
         pointer-events: none !important;
         white-space: pre-wrap !important;
         overflow-wrap: anywhere !important;
         word-break: break-word !important;
-        overflow: hidden !important;
-        padding: 0 1px;
+        overflow: visible !important;
+        padding: 0 2px;
         box-sizing: border-box;
       }
       .xterm .composition-view.active {
@@ -418,10 +421,8 @@ function buildTerminalHtml(theme: TerminalThemePalette, fontUri: string | null) 
               if (!helper.isComposing) return;
 
               const containerWidth = helperContainer.clientWidth || terminal.element.clientWidth || 0;
-              const left = Number.parseFloat(compositionView.style.left || '0');
-              const gutter = 6;
-              const minWidth = 24;
-              const availableWidth = Math.max(minWidth, containerWidth - left - gutter);
+              const cursorLeft = Number.parseFloat(compositionView.style.left || '0');
+              const cursorTop = Number.parseFloat(compositionView.style.top || '0');
               const cellHeight =
                 core &&
                 core._renderService &&
@@ -431,19 +432,41 @@ function buildTerminalHtml(theme: TerminalThemePalette, fontUri: string | null) 
                   ? core._renderService.dimensions.css.cell.height
                   : FONT_SIZE * LINE_HEIGHT_RATIO;
 
-              compositionView.style.maxWidth = availableWidth + 'px';
+              // Allow composition to use full container width.
+              // When the caret is near the right edge, promote the IME block
+              // to the next visual line so wraps restart from column 0.
               compositionView.style.width = 'auto';
+              compositionView.style.maxWidth = containerWidth + 'px';
               compositionView.style.height = 'auto';
               compositionView.style.minHeight = cellHeight + 'px';
               compositionView.style.lineHeight = cellHeight + 'px';
+              compositionView.style.textIndent = '0px';
 
-              const compositionRect = compositionView.getBoundingClientRect();
+              const availableWidth = Math.max(24, containerWidth - cursorLeft);
+              const naturalWidth = compositionView.scrollWidth;
+              const wrapFromNextLine = cursorLeft > 0 && naturalWidth > availableWidth;
+
+              if (wrapFromNextLine) {
+                compositionView.style.left = '0px';
+                compositionView.style.top = cursorTop + cellHeight + 'px';
+                compositionView.style.width = containerWidth + 'px';
+                compositionView.style.maxWidth = containerWidth + 'px';
+              } else {
+                compositionView.style.left = cursorLeft + 'px';
+                compositionView.style.top = cursorTop + 'px';
+              }
 
               if (textarea) {
-                textarea.style.maxWidth = availableWidth + 'px';
-                textarea.style.width = Math.max(Math.min(compositionRect.width, availableWidth), 1) + 'px';
-                textarea.style.height = Math.max(compositionRect.height, cellHeight) + 'px';
-                textarea.style.lineHeight = Math.max(compositionRect.height, cellHeight) + 'px';
+                const textareaLeft = wrapFromNextLine ? 0 : cursorLeft;
+                const textareaTop = wrapFromNextLine ? cursorTop + cellHeight : cursorTop;
+                const textareaWidth = wrapFromNextLine ? containerWidth : availableWidth;
+
+                textarea.style.left = textareaLeft + 'px';
+                textarea.style.top = textareaTop + 'px';
+                textarea.style.maxWidth = textareaWidth + 'px';
+                textarea.style.width = Math.max(Math.min(naturalWidth, textareaWidth), 1) + 'px';
+                textarea.style.height = Math.max(compositionView.offsetHeight, cellHeight) + 'px';
+                textarea.style.lineHeight = cellHeight + 'px';
               }
             } catch (_) {}
           };
@@ -457,9 +480,30 @@ function buildTerminalHtml(theme: TerminalThemePalette, fontUri: string | null) 
       let isWriting = false;
       let initialized = false;
       let selectionMode = false;
+      let remoteAtBottom = true;
       const selectionLayer = document.getElementById('selection-layer');
       const selectionText = document.getElementById('selection-text');
       const selectionClose = document.getElementById('selection-close');
+      const suppressDetachedInteraction = (event) => {
+        if (selectionMode || remoteAtBottom) return false;
+
+        try {
+          if (terminal.textarea && document.activeElement === terminal.textarea) {
+            terminal.textarea.blur();
+          }
+        } catch (_) {}
+
+        if (event && event.cancelable) {
+          event.preventDefault();
+        }
+        if (event && typeof event.stopImmediatePropagation === 'function') {
+          event.stopImmediatePropagation();
+        }
+        if (event && typeof event.stopPropagation === 'function') {
+          event.stopPropagation();
+        }
+        return true;
+      };
       const dispatchTouchCursorMove = (clientX, clientY) => {
         if (!Number.isFinite(clientX) || !Number.isFinite(clientY)) return;
 
@@ -567,6 +611,21 @@ function buildTerminalHtml(theme: TerminalThemePalette, fontUri: string | null) 
           }
         });
       }
+
+      for (const eventName of ['pointerdown', 'pointerup', 'mousedown', 'mouseup', 'click']) {
+        document.addEventListener(eventName, (event) => {
+          suppressDetachedInteraction(event);
+        }, { capture: true, passive: false });
+      }
+
+      document.addEventListener('focusin', () => {
+        if (selectionMode || remoteAtBottom) return;
+        try {
+          if (terminal.textarea && document.activeElement === terminal.textarea) {
+            terminal.textarea.blur();
+          }
+        } catch (_) {}
+      }, { capture: true });
 
       // ── Touch scroll engine ─────────────────────────────────
       //
@@ -699,13 +758,19 @@ function buildTerminalHtml(theme: TerminalThemePalette, fontUri: string | null) 
             return;
           }
 
-          // Short tap (no scroll, no long-press) → notify React Native
+          // Short tap (no scroll, no long-press) should only reach React Native
+          // when the terminal is already at the live bottom. Otherwise RN focuses
+          // the hidden textarea, which exits copy-mode and pops the keyboard.
           if (!scrolling) {
-            const touch = e.changedTouches && e.changedTouches[0];
-            if (touch) {
-              dispatchTouchCursorMove(touch.clientX, touch.clientY);
+            if (suppressDetachedInteraction(e)) {
+              return;
             }
-            send({ type: 'tap' });
+            if (remoteAtBottom) {
+              const touch = e.changedTouches && e.changedTouches[0];
+              if (touch) {
+                dispatchTouchCursorMove(touch.clientX, touch.clientY);
+              }
+            }
             return;
           }
           scrolling = false;
@@ -739,7 +804,7 @@ function buildTerminalHtml(theme: TerminalThemePalette, fontUri: string | null) 
             momentumRAF = requestAnimationFrame(tick);
           };
           momentumRAF = requestAnimationFrame(tick);
-        }, { capture: true, passive: true });
+        }, { capture: true, passive: false });
 
         document.addEventListener('touchcancel', () => {
           if (selectionMode) return;
@@ -807,9 +872,22 @@ function buildTerminalHtml(theme: TerminalThemePalette, fontUri: string | null) 
 
       // ── Bridge API ──────────────────────────────────────────
       window.__zenOutput = (data) => enqueueOutput(data);
-      window.__zenFocus = () => terminal.focus();
+      window.__zenFocus = () => {
+        if (!remoteAtBottom) return;
+        terminal.focus();
+      };
       window.__zenScrollToBottom = () => {
         terminal.scrollToBottom();
+      };
+      window.__zenScrollState = (state) => {
+        remoteAtBottom = !!(state && state.atBottom);
+        terminal.options.disableStdin = !remoteAtBottom;
+        if (terminal.textarea) {
+          terminal.textarea.readOnly = !remoteAtBottom;
+          if (!remoteAtBottom && document.activeElement === terminal.textarea) {
+            terminal.textarea.blur();
+          }
+        }
       };
       window.__zenTheme = (t) => {
         terminal.options.theme = t;

@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -103,6 +104,7 @@ func (s *tmuxSession) Start(ctx context.Context) error {
 			Data: sanitizeTmuxHistory(history),
 		})
 	}
+	s.emitScrollState()
 
 	go s.readLoop(runCtx, ptmx)
 	go s.waitLoop()
@@ -155,17 +157,23 @@ func (s *tmuxSession) waitLoop() {
 
 func (s *tmuxSession) Write(data string) error {
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	if s.pty == nil {
+		s.mu.Unlock()
 		return fmt.Errorf("tmux session is not started")
 	}
+	emitScrollState := false
 	// Exit copy-mode before sending user input so the terminal
 	// returns to the live view.
 	if s.inCopyMode {
 		_ = exec.Command("tmux", "send-keys", "-t", s.targetID, "-X", "cancel").Run()
 		s.inCopyMode = false
+		emitScrollState = true
 	}
 	_, err := s.pty.Write([]byte(data))
+	s.mu.Unlock()
+	if emitScrollState {
+		s.emitScrollState()
+	}
 	if err != nil {
 		return fmt.Errorf("write tmux client pty: %w", err)
 	}
@@ -180,10 +188,21 @@ func (s *tmuxSession) Write(data string) error {
 // tmux's internal scrollback is the only source of history.
 func (s *tmuxSession) Scroll(lines int) error {
 	s.mu.Lock()
-	defer s.mu.Unlock()
+
+	if lines == 0 {
+		s.mu.Unlock()
+		s.emitScrollState()
+		return nil
+	}
 
 	if !s.inCopyMode {
-		if err := exec.Command("tmux", "copy-mode", "-t", s.targetID).Run(); err != nil {
+		if lines > 0 {
+			s.mu.Unlock()
+			s.emitScrollState()
+			return nil
+		}
+		if err := exec.Command("tmux", "copy-mode", "-e", "-t", s.targetID).Run(); err != nil {
+			s.mu.Unlock()
 			return fmt.Errorf("enter copy-mode: %w", err)
 		}
 		s.inCopyMode = true
@@ -194,30 +213,37 @@ func (s *tmuxSession) Scroll(lines int) error {
 		absLines = -absLines
 	}
 
-	// Use tmux copy-mode commands via send-keys -X.
-	// -N flag sets repeat count (tmux 3.1+).
-	cmd := "cursor-up"
+	// Use copy-mode scroll commands, not cursor movement commands.
+	// We need to move the viewport through history, not just the copy-mode cursor.
+	cmd := "scroll-up"
 	if lines > 0 {
-		cmd = "cursor-down"
+		cmd = "scroll-down-and-cancel"
 	}
 
 	if err := exec.Command("tmux", "send-keys", "-t", s.targetID,
 		"-X", "-N", fmt.Sprintf("%d", absLines), cmd).Run(); err != nil {
+		s.mu.Unlock()
 		return fmt.Errorf("scroll copy-mode: %w", err)
 	}
+	s.mu.Unlock()
+	s.emitScrollState()
 	return nil
 }
 
 func (s *tmuxSession) CancelScroll() error {
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	if !s.inCopyMode {
+		s.mu.Unlock()
+		s.emitScrollState()
 		return nil
 	}
 	if err := exec.Command("tmux", "send-keys", "-t", s.targetID, "-X", "cancel").Run(); err != nil {
+		s.mu.Unlock()
 		return fmt.Errorf("cancel copy-mode: %w", err)
 	}
 	s.inCopyMode = false
+	s.mu.Unlock()
+	s.emitScrollState()
 	return nil
 }
 
@@ -275,6 +301,43 @@ func (s *tmuxSession) closeEvents() {
 	s.closeOnce.Do(func() {
 		close(s.events)
 	})
+}
+
+func (s *tmuxSession) emitScrollState() {
+	s.mu.Lock()
+	state := s.readScrollStateLocked()
+	s.inCopyMode = state.InCopyMode
+	s.mu.Unlock()
+	s.sendEvent(Event{
+		Type:        EventScroll,
+		ScrollState: state,
+	})
+}
+
+func (s *tmuxSession) readScrollStateLocked() ScrollState {
+	state := ScrollState{
+		AtBottom:   !s.inCopyMode,
+		InCopyMode: s.inCopyMode,
+		Position:   0,
+	}
+
+	out, err := exec.Command("tmux", "display-message", "-p", "-t", s.targetID,
+		"#{pane_in_mode}:#{scroll_position}").Output()
+	if err != nil {
+		return state
+	}
+
+	parts := strings.SplitN(strings.TrimSpace(string(out)), ":", 2)
+	if len(parts) > 0 {
+		state.InCopyMode = strings.TrimSpace(parts[0]) != "" && strings.TrimSpace(parts[0]) != "0"
+	}
+	if len(parts) > 1 {
+		if position, err := strconv.Atoi(strings.TrimSpace(parts[1])); err == nil {
+			state.Position = position
+		}
+	}
+	state.AtBottom = !state.InCopyMode
+	return state
 }
 
 // tmuxGroupedSession creates a linked/grouped tmux session that shares the

@@ -96,6 +96,14 @@ func (m *Manager) forward(ownerID string, session Session, send SendFunc) {
 				"session_id": session.ID(),
 				"data":       ev.Data,
 			})
+		case EventScroll:
+			send(map[string]any{
+				"type":            "terminal_scroll_state",
+				"session_id":      session.ID(),
+				"at_bottom":       ev.ScrollState.AtBottom,
+				"in_copy_mode":    ev.ScrollState.InCopyMode,
+				"scroll_position": ev.ScrollState.Position,
+			})
 		case EventExit:
 			send(map[string]any{
 				"type":       "terminal_exit",
