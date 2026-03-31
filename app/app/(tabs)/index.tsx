@@ -2,6 +2,8 @@ import React, { useEffect, useMemo, useState } from 'react';
 import {
   FlatList,
   Modal,
+  Platform,
+  StatusBar,
   StyleSheet,
   Text,
   TextInput,
@@ -10,7 +12,7 @@ import {
 } from 'react-native';
 import { useFocusEffect, useRouter } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
-import { SafeAreaView } from 'react-native-safe-area-context';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Agent, useAgents } from '../../store/agents';
 import { AgentStatus, Colors, Spacing, Typography, statusColor } from '../../constants/tokens';
 import { TerminalPreview } from '../../components/terminal/TerminalPreview';
@@ -19,6 +21,7 @@ import {
   getInboxViewMode,
   getAgentAliases,
   getRecentAgentOpens,
+  getServers,
   getTerminalTheme,
   markAgentOpened,
   setAgentAlias,
@@ -39,10 +42,15 @@ const STATUS_PRIORITY: Record<AgentStatus, number> = {
 export default function InboxScreen() {
   const { state } = useAgents();
   const router = useRouter();
+  const insets = useSafeAreaInsets();
+  const topPadding = Platform.OS === 'android'
+    ? (StatusBar.currentHeight || 0) + 4
+    : insets.top;
   const [viewMode, setViewModeState] = useState<StoredInboxViewMode>('list');
   const [agentAliases, setAgentAliases] = useState<StoredAgentAliases>({});
   const [recentAgentOpens, setRecentAgentOpens] = useState<StoredRecentAgentOpens>({});
   const [terminalTheme, setTerminalTheme] = useState<TerminalThemeName>(DefaultTerminalThemeName);
+  const [configuredServerCount, setConfiguredServerCount] = useState(0);
 
   // Context menu state
   const [menuAgent, setMenuAgent] = useState<Agent | null>(null);
@@ -52,17 +60,19 @@ export default function InboxScreen() {
   useEffect(() => {
     let cancelled = false;
     (async () => {
-      const [storedViewMode, storedRecentOpens, storedAliases, storedTheme] = await Promise.all([
+      const [storedViewMode, storedRecentOpens, storedAliases, storedTheme, storedServers] = await Promise.all([
         getInboxViewMode(),
         getRecentAgentOpens(),
         getAgentAliases(),
         getTerminalTheme(),
+        getServers(),
       ]);
       if (!cancelled) {
         setViewModeState(storedViewMode);
         setRecentAgentOpens(storedRecentOpens);
         setAgentAliases(storedAliases);
         setTerminalTheme(storedTheme as TerminalThemeName);
+        setConfiguredServerCount(storedServers.length);
       }
     })();
     return () => { cancelled = true; };
@@ -72,13 +82,15 @@ export default function InboxScreen() {
     React.useCallback(() => {
       let cancelled = false;
       (async () => {
-        const [storedRecentOpens, storedAliases] = await Promise.all([
+        const [storedRecentOpens, storedAliases, storedServers] = await Promise.all([
           getRecentAgentOpens(),
           getAgentAliases(),
+          getServers(),
         ]);
         if (!cancelled) {
           setRecentAgentOpens(storedRecentOpens);
           setAgentAliases(storedAliases);
+          setConfiguredServerCount(storedServers.length);
         }
       })();
       return () => { cancelled = true; };
@@ -144,6 +156,14 @@ export default function InboxScreen() {
     setMenuAgent(null);
   };
 
+  const openServerSettings = (addServer: boolean) => {
+    router.push({
+      pathname: '/settings',
+      params: addServer ? { addServer: Date.now().toString() } : {},
+    });
+  };
+
+  const hasConfiguredServers = configuredServerCount > 0;
   const hasConnection = Object.keys(state.serverConnections).length > 0;
   const anyConnected = Object.values(state.serverConnections).includes('connected');
   const anyConnecting = Object.values(state.serverConnections).includes('connecting');
@@ -188,7 +208,7 @@ export default function InboxScreen() {
   );
 
   return (
-    <SafeAreaView style={styles.container}>
+    <View style={[styles.container, { paddingTop: topPadding }]}>
       {hasConnection && !anyConnected && (
         <View style={styles.banner}>
           <View style={[styles.bannerDot, { backgroundColor: anyConnecting ? Colors.statusUnknown : '#65758A' }]} />
@@ -217,8 +237,38 @@ export default function InboxScreen() {
       {sortedAgents.length === 0 ? (
         <View style={styles.emptyContainer}>
           <Text style={styles.emptyIcon}>☯</Text>
-          <Text style={styles.emptyText}>All is calm</Text>
-          <Text style={styles.emptySubtext}>No agents running</Text>
+          <Text style={styles.emptyText}>
+            {hasConfiguredServers ? (anyConnecting ? 'Connecting to servers' : 'No agents available') : 'No servers configured'}
+          </Text>
+          <Text style={styles.emptySubtext}>
+            {hasConfiguredServers
+              ? (anyConnected
+                ? 'All is calm'
+                : anyConnecting
+                  ? 'zen is trying to reconnect. You can still change servers now.'
+                  : 'Your saved servers are offline. You can edit them or add another one.')
+              : 'Add your first server before zen can load agents.'}
+          </Text>
+          <View style={styles.emptyActions}>
+            <TouchableOpacity
+              style={[styles.emptyActionBtn, styles.emptyActionBtnPrimary]}
+              onPress={() => openServerSettings(!hasConfiguredServers)}
+              activeOpacity={0.82}
+            >
+              <Text style={[styles.emptyActionText, styles.emptyActionTextPrimary]}>
+                {hasConfiguredServers ? 'Open Server Settings' : 'Add Server'}
+              </Text>
+            </TouchableOpacity>
+            {hasConfiguredServers ? (
+              <TouchableOpacity
+                style={styles.emptyActionBtn}
+                onPress={() => openServerSettings(true)}
+                activeOpacity={0.82}
+              >
+                <Text style={styles.emptyActionText}>Add Another Server</Text>
+              </TouchableOpacity>
+            ) : null}
+          </View>
         </View>
       ) : viewMode === 'list' ? (
         <FlatList
@@ -317,7 +367,7 @@ export default function InboxScreen() {
           </View>
         </View>
       </Modal>
-    </SafeAreaView>
+    </View>
   );
 }
 
@@ -387,8 +437,8 @@ const styles = StyleSheet.create({
     justifyContent: 'space-between',
     alignItems: 'center',
     paddingHorizontal: 20,
-    paddingTop: 16,
-    paddingBottom: 20,
+    paddingTop: 8,
+    paddingBottom: 12,
   },
   title: {
     color: Colors.textPrimary,
@@ -494,6 +544,7 @@ const styles = StyleSheet.create({
     flex: 1,
     justifyContent: 'center',
     alignItems: 'center',
+    paddingHorizontal: 24,
   },
   emptyIcon: {
     fontSize: 44,
@@ -512,7 +563,39 @@ const styles = StyleSheet.create({
     fontSize: 13,
     fontFamily: Typography.uiFont,
     marginTop: 6,
+    maxWidth: 280,
+    textAlign: 'center',
     opacity: 0.6,
+  },
+  emptyActions: {
+    width: '100%',
+    maxWidth: 280,
+    gap: 10,
+    marginTop: 22,
+  },
+  emptyActionBtn: {
+    width: '100%',
+    minHeight: 40,
+    paddingHorizontal: 14,
+    borderRadius: 12,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: 'rgba(255,255,255,0.12)',
+    backgroundColor: 'rgba(255,255,255,0.04)',
+  },
+  emptyActionBtnPrimary: {
+    backgroundColor: Colors.accent,
+    borderColor: Colors.accent,
+  },
+  emptyActionText: {
+    color: Colors.textPrimary,
+    fontSize: 13,
+    fontFamily: Typography.uiFontMedium,
+    textAlign: 'center',
+  },
+  emptyActionTextPrimary: {
+    color: Colors.bgPrimary,
   },
 
   // Context menu

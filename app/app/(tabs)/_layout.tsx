@@ -1,8 +1,12 @@
 import { Text as RNText } from 'react-native';
 import { Tabs } from 'expo-router';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Colors, Typography } from '../../constants/tokens';
 
 export default function TabLayout() {
+  const insets = useSafeAreaInsets();
+  const tabBarBottom = Math.max(insets.bottom, 8);
+
   return (
     <Tabs
       screenOptions={{
@@ -10,8 +14,8 @@ export default function TabLayout() {
           backgroundColor: Colors.bgPrimary,
           borderTopColor: 'rgba(255,255,255,0.04)',
           borderTopWidth: 0.5,
-          height: 60,
-          paddingBottom: 8,
+          height: 52 + tabBarBottom,
+          paddingBottom: tabBarBottom,
           paddingTop: 4,
         },
         tabBarActiveTintColor: Colors.textPrimary,

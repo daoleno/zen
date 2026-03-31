@@ -2,15 +2,18 @@ import React, { useEffect, useMemo, useState } from 'react';
 import {
   Alert,
   Modal,
+  Platform,
   ScrollView,
+  StatusBar,
   StyleSheet,
   Text,
   TextInput,
   TouchableOpacity,
   View,
 } from 'react-native';
+import { useLocalSearchParams } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
-import { SafeAreaView } from 'react-native-safe-area-context';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Colors, Spacing, Typography } from '../../constants/tokens';
 import {
   DefaultTerminalThemeName,
@@ -23,6 +26,7 @@ import * as Storage from '../../services/storage';
 
 export default function SettingsScreen() {
   const { state, dispatch } = useAgents();
+  const params = useLocalSearchParams<{ addServer?: string }>();
   const [servers, setServers] = useState<Storage.StoredServer[]>([]);
   const [terminalTheme, setTerminalTheme] = useState<TerminalThemeName>(DefaultTerminalThemeName);
   const [loaded, setLoaded] = useState(false);
@@ -31,6 +35,7 @@ export default function SettingsScreen() {
   const [draftName, setDraftName] = useState('');
   const [draftUrl, setDraftUrl] = useState('');
   const [expandedServer, setExpandedServer] = useState<string | null>(null);
+  const [handledAutoOpenToken, setHandledAutoOpenToken] = useState<string | null>(null);
 
   const connectedCount = useMemo(
     () => servers.filter(server => state.serverConnections[server.id] === 'connected').length,
@@ -48,6 +53,12 @@ export default function SettingsScreen() {
       setLoaded(true);
     })();
   }, []);
+
+  useEffect(() => {
+    if (!loaded || !params.addServer || handledAutoOpenToken === params.addServer) return;
+    openCreateServer();
+    setHandledAutoOpenToken(params.addServer);
+  }, [handledAutoOpenToken, loaded, params.addServer]);
 
   const refreshServers = async () => {
     setServers(await Storage.getServers());
@@ -135,10 +146,15 @@ export default function SettingsScreen() {
     setExpandedServer(prev => prev === serverId ? null : serverId);
   };
 
+  const insets = useSafeAreaInsets();
+  const topPadding = Platform.OS === 'android'
+    ? (StatusBar.currentHeight || 0) + 4
+    : insets.top;
+
   if (!loaded) return null;
 
   return (
-    <SafeAreaView style={styles.container}>
+    <View style={[styles.container, { paddingTop: topPadding }]}>
       <ScrollView contentContainerStyle={styles.content}>
         <Text style={styles.pageTitle}>Settings</Text>
 
@@ -298,7 +314,7 @@ export default function SettingsScreen() {
           </View>
         </View>
       </Modal>
-    </SafeAreaView>
+    </View>
   );
 }
 
@@ -333,7 +349,7 @@ const styles = StyleSheet.create({
     fontSize: 22,
     fontFamily: Typography.uiFontMedium,
     letterSpacing: 0.5,
-    marginBottom: 28,
+    marginBottom: 8,
     opacity: 0.9,
   },
 
@@ -350,8 +366,8 @@ const styles = StyleSheet.create({
     fontFamily: Typography.uiFontMedium,
     textTransform: 'uppercase',
     letterSpacing: 1.2,
-    marginBottom: 12,
-    marginTop: 28,
+    marginBottom: 10,
+    marginTop: 20,
     opacity: 0.7,
   },
   sectionCount: {

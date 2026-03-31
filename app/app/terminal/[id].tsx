@@ -1,8 +1,10 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   Keyboard,
+  KeyboardAvoidingView,
   KeyboardEvent,
   Modal,
+  Platform,
   ScrollView,
   StyleSheet,
   Text,
@@ -36,7 +38,7 @@ import {
 } from '../../services/storage';
 import { makeSessionKey, parseSessionKey } from '../../services/sessionKeys';
 import { TerminalSurface, TerminalSurfaceHandle } from '../../components/terminal/TerminalSurface';
-import { InputBar } from '../../components/terminal/InputBar';
+import { TerminalAccessoryBar } from '../../components/terminal/TerminalAccessoryBar';
 
 const EMPTY_TABS: StoredTerminalTabs = { order: [], pinned: [] };
 const MENU_POPOVER_WIDTH = 168;
@@ -65,7 +67,7 @@ export default function TerminalScreen() {
   const { state, dispatch } = useAgents();
   const router = useRouter();
   const insets = useSafeAreaInsets();
-  const { width: windowWidth } = useWindowDimensions();
+  const { width: windowWidth, height: windowHeight } = useWindowDimensions();
   const [themeName, setThemeName] = useState<TerminalThemeName>(DefaultTerminalThemeName);
   const [agentAliases, setAgentAliases] = useState<StoredAgentAliases>({});
   const [recentAgentOpens, setRecentAgentOpens] = useState<StoredRecentAgentOpens>({});
@@ -77,9 +79,11 @@ export default function TerminalScreen() {
   const [renameVisible, setRenameVisible] = useState(false);
   const [renameDraft, setRenameDraft] = useState('');
   const [keyboardVisible, setKeyboardVisible] = useState(false);
-  const [keyboardHeight, setKeyboardHeight] = useState(0);
-  const [inputBarHeight, setInputBarHeight] = useState(54);
+  const [keyboardInset, setKeyboardInset] = useState(0);
+  const [ctrlArmed, setCtrlArmed] = useState(false);
   const terminalRef = useRef<TerminalSurfaceHandle>(null);
+  const keyboardHeightRef = useRef(0);
+  const baseWindowHeightRef = useRef(windowHeight);
   const menuAnchorRef = useRef<View | null>(null);
 
   const agentByKey = useMemo(
@@ -188,22 +192,60 @@ export default function TerminalScreen() {
 
   useEffect(() => {
     const handleShow = (event: KeyboardEvent) => {
+      if (Platform.OS === 'android') {
+        keyboardHeightRef.current = event.endCoordinates.height;
+      }
       setKeyboardVisible(true);
-      setKeyboardHeight(event.endCoordinates?.height ?? 0);
     };
     const handleHide = () => {
       setKeyboardVisible(false);
-      setKeyboardHeight(0);
+      keyboardHeightRef.current = 0;
+      setKeyboardInset(0);
     };
 
     const showSub = Keyboard.addListener('keyboardDidShow', handleShow);
     const hideSub = Keyboard.addListener('keyboardDidHide', handleHide);
-
     return () => {
       showSub.remove();
       hideSub.remove();
     };
   }, []);
+
+  // Track base window height when keyboard is hidden
+  useEffect(() => {
+    if (!keyboardVisible) {
+      baseWindowHeightRef.current = windowHeight;
+    }
+  }, [keyboardVisible, windowHeight]);
+
+  // Compute Android keyboard inset: keyboardHeight minus what adjustResize handled.
+  // windowHeight is reactive — when adjustResize completes, it updates and this
+  // re-runs, converging to the correct padding automatically.
+  useEffect(() => {
+    if (!keyboardVisible || Platform.OS !== 'android') return;
+    const kbHeight = keyboardHeightRef.current;
+    if (!kbHeight) return;
+
+    const adjustResizeHandled = Math.max(0, baseWindowHeightRef.current - windowHeight);
+    const remaining = Math.max(0, kbHeight - adjustResizeHandled);
+    setKeyboardInset(prev => (Math.abs(prev - remaining) <= 1 ? prev : remaining));
+  }, [keyboardVisible, windowHeight]);
+
+  useEffect(() => {
+    if (!keyboardVisible) {
+      setCtrlArmed(false);
+    }
+  }, [keyboardVisible]);
+
+  useEffect(() => {
+    setCtrlArmed(false);
+  }, [sessionKey]);
+
+  useEffect(() => {
+    if (renameVisible) {
+      setCtrlArmed(false);
+    }
+  }, [renameVisible]);
 
   const tabs = useMemo(() => {
     const order = buildDisplayTabOrder(sessionKey, terminalTabs);
@@ -259,8 +301,7 @@ export default function TerminalScreen() {
     [menuAnchor, windowWidth],
   );
 
-  const toolbarBottom = keyboardVisible ? keyboardHeight + 18 : Math.max(insets.bottom + 10, 14);
-  const outputBottomInset = inputBarHeight + toolbarBottom + 8;
+  const accessoryVisible = Boolean(sessionKey && serverId && agentId);
 
   const closeMenu = () => {
     setMenuVisible(false);
@@ -357,6 +398,10 @@ export default function TerminalScreen() {
     setRenameVisible(false);
   };
 
+  const handleCtrlArmedChange = (next: boolean) => {
+    setCtrlArmed(next);
+  };
+
   return (
     <SafeAreaView style={styles.container} edges={['top']}>
       <View style={styles.topBar}>
@@ -436,30 +481,41 @@ export default function TerminalScreen() {
         </TouchableOpacity>
       </View>
 
-      <View style={[styles.output, { paddingBottom: outputBottomInset }]}>
-        {sessionKey && serverId && agentId ? (
-          <TerminalSurface
-            ref={terminalRef}
-            serverId={serverId}
-            targetId={agentId}
-            themeName={themeName}
-          />
-        ) : null}
-      </View>
-
-      {sessionKey && serverId && agentId && serverUrl ? (
-        <View
-          style={[styles.inputShell, { bottom: toolbarBottom }]}
-          onLayout={(event) => {
-            setInputBarHeight(event.nativeEvent.layout.height);
-          }}
+      <View
+        style={[
+          styles.terminalShell,
+          Platform.OS === 'android' && keyboardInset > 0 ? { paddingBottom: keyboardInset } : null,
+        ]}
+      >
+        <KeyboardAvoidingView
+          style={styles.terminalContent}
+          behavior={Platform.OS === 'ios' ? 'padding' : undefined}
         >
-          <InputBar
-            terminalRef={terminalRef}
-            serverUrl={serverUrl}
-          />
-        </View>
-      ) : null}
+          <View style={styles.output}>
+            {sessionKey && serverId && agentId ? (
+              <TerminalSurface
+                ref={terminalRef}
+                serverId={serverId}
+                targetId={agentId}
+                themeName={themeName}
+                ctrlArmed={ctrlArmed}
+                onCtrlArmedChange={handleCtrlArmedChange}
+              />
+            ) : null}
+          </View>
+
+          {accessoryVisible ? (
+            <View style={[styles.inputShell, { paddingBottom: keyboardVisible ? 6 : Math.max(insets.bottom + 8, 12), marginBottom: keyboardVisible ? 4 : 0 }]}>
+              <TerminalAccessoryBar
+                terminalRef={terminalRef}
+                serverUrl={serverUrl}
+                ctrlArmed={ctrlArmed}
+                onCtrlArmedChange={handleCtrlArmedChange}
+              />
+            </View>
+          ) : null}
+        </KeyboardAvoidingView>
+      </View>
 
       <Modal
         visible={pickerVisible}
@@ -754,6 +810,14 @@ const styles = StyleSheet.create({
     borderBottomColor: '#161E2A',
     backgroundColor: '#11161F',
   },
+  terminalShell: {
+    flex: 1,
+    minHeight: 0,
+  },
+  terminalContent: {
+    flex: 1,
+    minHeight: 0,
+  },
   chromeButton: {
     width: 38,
     height: 38,
@@ -824,14 +888,13 @@ const styles = StyleSheet.create({
   },
   output: {
     flex: 1,
+    minHeight: 0,
     paddingTop: 4,
   },
   inputShell: {
-    position: 'absolute',
-    left: 0,
-    right: 0,
     paddingHorizontal: 12,
-    backgroundColor: 'transparent',
+    paddingTop: 6,
+    backgroundColor: '#0B1118',
   },
   modalRoot: {
     flex: 1,

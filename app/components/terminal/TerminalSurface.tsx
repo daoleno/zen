@@ -17,17 +17,22 @@ type BridgeMessage =
   | { type: 'ready' }
   | { type: 'input'; data: string }
   | { type: 'resize'; cols: number; rows: number }
-  | { type: 'scroll'; lines: number };
+  | { type: 'scroll'; lines: number }
+  | { type: 'ctrlConsumed' };
 
 type NativeToTerminalMessage =
   | { type: 'output'; data: string }
   | { type: 'theme'; theme: TerminalThemePalette }
   | { type: 'session'; cols: number; rows: number }
-  | { type: 'scrollState'; atBottom: boolean };
+  | { type: 'scrollState'; atBottom: boolean }
+  | { type: 'ctrlState'; armed: boolean };
+
+let cachedTerminalFontUri: string | null = null;
 
 export interface TerminalSurfaceHandle {
-  sendInput(data: string): void;
+  sendInput(data: string, options?: { focus?: boolean }): void;
   focus(): void;
+  blur(): void;
   scrollToBottom(): void;
 }
 
@@ -37,24 +42,33 @@ export const TerminalSurface = forwardRef<TerminalSurfaceHandle, {
   backend?: string;
   themeName?: TerminalThemeName;
   themeOverrides?: Partial<TerminalThemePalette>;
+  ctrlArmed?: boolean;
+  onCtrlArmedChange?: (next: boolean) => void;
 }>(({
   serverId,
   targetId,
   backend = 'tmux',
   themeName = DefaultTerminalThemeName,
   themeOverrides,
+  ctrlArmed = false,
+  onCtrlArmedChange,
 }, ref) => {
   const webviewRef = useRef<WebView>(null);
   const pendingRef = useRef<NativeToTerminalMessage[]>([]);
   const initialSizeRef = useRef<{ cols: number; rows: number } | null>(null);
-  const [fontUri, setFontUri] = useState<string | null>(null);
+  const [fontUri, setFontUri] = useState<string | null>(cachedTerminalFontUri);
   const [ready, setReady] = useState(false);
   const [scrolledUp, setScrolledUp] = useState(false);
   const theme = useMemo(() => resolveTerminalTheme(themeName, themeOverrides), [themeName, themeOverrides]);
 
-  const html = useMemo(() => buildTerminalHtml(theme, fontUri), [theme, fontUri]);
+  const html = useMemo(() => (fontUri ? buildTerminalHtml(theme, fontUri) : ''), [theme, fontUri]);
 
   useEffect(() => {
+    if (cachedTerminalFontUri) {
+      setFontUri(cachedTerminalFontUri);
+      return;
+    }
+
     let cancelled = false;
 
     (async () => {
@@ -63,7 +77,8 @@ export const TerminalSurface = forwardRef<TerminalSurfaceHandle, {
         await asset.downloadAsync();
       }
       if (!cancelled) {
-        setFontUri(asset.localUri ?? asset.uri);
+        cachedTerminalFontUri = asset.localUri ?? asset.uri;
+        setFontUri(cachedTerminalFontUri);
       }
     })();
 
@@ -90,6 +105,8 @@ export const TerminalSurface = forwardRef<TerminalSurfaceHandle, {
       script = `window.__zenSession && window.__zenSession(${JSON.stringify({ cols: payload.cols, rows: payload.rows })}); true;`;
     } else if (payload.type === 'scrollState') {
       script = `window.__zenScrollState && window.__zenScrollState(${JSON.stringify({ atBottom: payload.atBottom })}); true;`;
+    } else if (payload.type === 'ctrlState') {
+      script = `window.__zenCtrlState && window.__zenCtrlState(${JSON.stringify({ armed: payload.armed })}); true;`;
     }
     if (script) {
       webviewRef.current?.injectJavaScript(script);
@@ -98,6 +115,10 @@ export const TerminalSurface = forwardRef<TerminalSurfaceHandle, {
 
   const focusTerminal = () => {
     webviewRef.current?.injectJavaScript('window.__zenFocus && window.__zenFocus(); true;');
+  };
+
+  const blurTerminal = () => {
+    webviewRef.current?.injectJavaScript('window.__zenBlur && window.__zenBlur(); true;');
   };
 
   const scrollToBottom = () => {
@@ -119,6 +140,10 @@ export const TerminalSurface = forwardRef<TerminalSurfaceHandle, {
   useEffect(() => {
     postToTerminal({ type: 'scrollState', atBottom: !scrolledUp });
   }, [scrolledUp]);
+
+  useEffect(() => {
+    postToTerminal({ type: 'ctrlState', armed: ctrlArmed });
+  }, [ctrlArmed]);
 
   const session = useTerminalSession(serverId, targetId, backend, {
     onOpen: ({ cols, rows }) => {
@@ -152,12 +177,17 @@ export const TerminalSurface = forwardRef<TerminalSurfaceHandle, {
   });
 
   useImperativeHandle(ref, () => ({
-    sendInput(data: string) {
+    sendInput(data: string, options?: { focus?: boolean }) {
       session.sendInput(data);
-      focusTerminal();
+      if (options?.focus !== false) {
+        focusTerminal();
+      }
     },
     focus() {
       focusTerminal();
+    },
+    blur() {
+      blurTerminal();
     },
     scrollToBottom() {
       scrollToBottom();
@@ -178,6 +208,10 @@ export const TerminalSurface = forwardRef<TerminalSurfaceHandle, {
         session.sendInput(payload.data);
         return;
       }
+      if (payload.type === 'ctrlConsumed') {
+        onCtrlArmedChange?.(false);
+        return;
+      }
       if (payload.type === 'resize') {
         initialSizeRef.current = { cols: payload.cols, rows: payload.rows };
         if (!ready) return;
@@ -195,20 +229,22 @@ export const TerminalSurface = forwardRef<TerminalSurfaceHandle, {
 
   return (
     <View style={styles.container}>
-      <WebView
-        ref={webviewRef}
-        originWhitelist={['*']}
-        source={{ html, baseUrl: 'https://zen.local/' }}
-        onMessage={onMessage}
-        javaScriptEnabled
-        domStorageEnabled
-        allowFileAccess
-        scrollEnabled={false}
-        bounces={false}
-        overScrollMode="never"
-        style={styles.webview}
-      />
-      {!ready && (
+      {fontUri && (
+        <WebView
+          ref={webviewRef}
+          originWhitelist={['*']}
+          source={{ html, baseUrl: 'https://zen.local/' }}
+          onMessage={onMessage}
+          javaScriptEnabled
+          domStorageEnabled
+          allowFileAccess
+          scrollEnabled={false}
+          bounces={false}
+          overScrollMode="never"
+          style={styles.webview}
+        />
+      )}
+      {(!fontUri || !ready) && (
         <View style={styles.loading}>
           <ActivityIndicator color={Colors.accent} />
         </View>
@@ -259,16 +295,14 @@ const styles = StyleSheet.create({
   },
 });
 
-function buildTerminalHtml(theme: TerminalThemePalette, fontUri: string | null) {
-  const fontFace = fontUri
-    ? `
+function buildTerminalHtml(theme: TerminalThemePalette, fontUri: string) {
+  const fontFace = `
       @font-face {
         font-family: 'ZenTerm';
         src: url('${fontUri}') format('truetype');
         font-display: swap;
       }
-    `
-    : '';
+    `;
   return String.raw`<!DOCTYPE html>
 <html>
   <head>
@@ -368,7 +402,7 @@ function buildTerminalHtml(theme: TerminalThemePalette, fontUri: string | null) 
         word-break: break-word;
         user-select: text;
         -webkit-user-select: text;
-        font-family: ${JSON.stringify(fontUri ? 'ZenTerm, monospace' : 'monospace')};
+        font-family: ${JSON.stringify('ZenTerm, monospace')};
         font-size: ${Typography.terminalSize}px;
         line-height: ${Math.round(Typography.terminalSize * 1.6)}px;
       }
@@ -387,171 +421,271 @@ function buildTerminalHtml(theme: TerminalThemePalette, fontUri: string | null) 
       const LINE_HEIGHT_RATIO = 1.28;
       const LINE_HEIGHT_PX = Math.ceil(FONT_SIZE * LINE_HEIGHT_RATIO);
 
-      const terminal = new Terminal({
-        convertEol: false,
-        cursorBlink: true,
-        allowTransparency: false,
-        fontFamily: ${JSON.stringify(fontUri ? 'ZenTerm, monospace' : 'monospace')},
-        fontSize: FONT_SIZE,
-        lineHeight: LINE_HEIGHT_RATIO,
-        letterSpacing: 0,
-        theme: ${JSON.stringify(theme)},
-        scrollback: 5000
-      });
-      const fitAddon = new FitAddon.FitAddon();
-      terminal.loadAddon(fitAddon);
-      terminal.open(document.getElementById('terminal'));
-      const patchCompositionLayout = () => {
-        try {
-          const core = terminal._core;
-          const helper = core && core._compositionHelper;
-          const compositionView = core && core._compositionView;
-          const helperContainer = terminal.element && terminal.element.querySelector('.xterm-helpers');
-          const textarea = terminal.textarea;
+      (async () => {
+        if (document.fonts && typeof document.fonts.load === 'function') {
+          try {
+            await document.fonts.load(FONT_SIZE + 'px "ZenTerm"');
+            await document.fonts.ready;
+          } catch (_) {}
+        }
 
-          if (!helper || !compositionView || !helperContainer || helper.__zenCompositionPatched) {
-            return;
-          }
+        const terminal = new Terminal({
+          convertEol: false,
+          cursorBlink: true,
+          allowTransparency: false,
+          fontFamily: ${JSON.stringify('ZenTerm, monospace')},
+          fontSize: FONT_SIZE,
+          lineHeight: LINE_HEIGHT_RATIO,
+          letterSpacing: 0,
+          theme: ${JSON.stringify(theme)},
+          scrollback: 0
+        });
+        const fitAddon = new FitAddon.FitAddon();
+        terminal.loadAddon(fitAddon);
+        terminal.open(document.getElementById('terminal'));
+        let ctrlArmed = false;
+        const patchCompositionLayout = () => {
+          try {
+            const core = terminal._core;
+            const helper = core && core._compositionHelper;
+            const compositionView = core && core._compositionView;
+            const helperContainer = terminal.element && terminal.element.querySelector('.xterm-helpers');
+            const textarea = terminal.textarea;
 
-          const originalUpdate = helper.updateCompositionElements.bind(helper);
-          helper.updateCompositionElements = (dontRecurse) => {
-            originalUpdate(dontRecurse);
+            if (!helper || !compositionView || !helperContainer || helper.__zenCompositionPatched) {
+              return;
+            }
 
-            try {
-              if (!helper.isComposing) return;
+            const originalUpdate = helper.updateCompositionElements.bind(helper);
+            helper.updateCompositionElements = (dontRecurse) => {
+              originalUpdate(dontRecurse);
 
-              const containerWidth = helperContainer.clientWidth || terminal.element.clientWidth || 0;
-              const cursorLeft = Number.parseFloat(compositionView.style.left || '0');
-              const cursorTop = Number.parseFloat(compositionView.style.top || '0');
-              const cellHeight =
-                core &&
-                core._renderService &&
-                core._renderService.dimensions &&
-                core._renderService.dimensions.css &&
-                core._renderService.dimensions.css.cell
-                  ? core._renderService.dimensions.css.cell.height
-                  : FONT_SIZE * LINE_HEIGHT_RATIO;
+              try {
+                if (!helper.isComposing) return;
 
-              // Allow composition to use full container width.
-              // When the caret is near the right edge, promote the IME block
-              // to the next visual line so wraps restart from column 0.
-              compositionView.style.width = 'auto';
-              compositionView.style.maxWidth = containerWidth + 'px';
-              compositionView.style.height = 'auto';
-              compositionView.style.minHeight = cellHeight + 'px';
-              compositionView.style.lineHeight = cellHeight + 'px';
-              compositionView.style.textIndent = '0px';
+                const containerWidth = helperContainer.clientWidth || terminal.element.clientWidth || 0;
+                const cursorLeft = Number.parseFloat(compositionView.style.left || '0');
+                const cursorTop = Number.parseFloat(compositionView.style.top || '0');
+                const cellHeight =
+                  core &&
+                  core._renderService &&
+                  core._renderService.dimensions &&
+                  core._renderService.dimensions.css &&
+                  core._renderService.dimensions.css.cell
+                    ? core._renderService.dimensions.css.cell.height
+                    : FONT_SIZE * LINE_HEIGHT_RATIO;
 
-              const availableWidth = Math.max(24, containerWidth - cursorLeft);
-              const naturalWidth = compositionView.scrollWidth;
-              const wrapFromNextLine = cursorLeft > 0 && naturalWidth > availableWidth;
-
-              if (wrapFromNextLine) {
-                compositionView.style.left = '0px';
-                compositionView.style.top = cursorTop + cellHeight + 'px';
-                compositionView.style.width = containerWidth + 'px';
+                // Allow composition to use full container width.
+                // When the caret is near the right edge, promote the IME block
+                // to the next visual line so wraps restart from column 0.
+                compositionView.style.width = 'auto';
                 compositionView.style.maxWidth = containerWidth + 'px';
-              } else {
-                compositionView.style.left = cursorLeft + 'px';
-                compositionView.style.top = cursorTop + 'px';
-              }
+                compositionView.style.height = 'auto';
+                compositionView.style.minHeight = cellHeight + 'px';
+                compositionView.style.lineHeight = cellHeight + 'px';
+                compositionView.style.textIndent = '0px';
 
-              if (textarea) {
-                const textareaLeft = wrapFromNextLine ? 0 : cursorLeft;
-                const textareaTop = wrapFromNextLine ? cursorTop + cellHeight : cursorTop;
-                const textareaWidth = wrapFromNextLine ? containerWidth : availableWidth;
+                const availableWidth = Math.max(24, containerWidth - cursorLeft);
+                const naturalWidth = compositionView.scrollWidth;
+                const wrapFromNextLine = cursorLeft > 0 && naturalWidth > availableWidth;
 
-                textarea.style.left = textareaLeft + 'px';
-                textarea.style.top = textareaTop + 'px';
-                textarea.style.maxWidth = textareaWidth + 'px';
-                textarea.style.width = Math.max(Math.min(naturalWidth, textareaWidth), 1) + 'px';
-                textarea.style.height = Math.max(compositionView.offsetHeight, cellHeight) + 'px';
-                textarea.style.lineHeight = cellHeight + 'px';
-              }
-            } catch (_) {}
-          };
+                if (wrapFromNextLine) {
+                  compositionView.style.left = '0px';
+                  compositionView.style.top = cursorTop + cellHeight + 'px';
+                  compositionView.style.width = containerWidth + 'px';
+                  compositionView.style.maxWidth = containerWidth + 'px';
+                } else {
+                  compositionView.style.left = cursorLeft + 'px';
+                  compositionView.style.top = cursorTop + 'px';
+                }
 
-          helper.__zenCompositionPatched = true;
-        } catch (_) {}
-      };
-      patchCompositionLayout();
-      let writeQueue = [];
-      let writeScheduled = false;
-      let isWriting = false;
-      let initialized = false;
-      let selectionMode = false;
-      let remoteAtBottom = true;
-      const selectionLayer = document.getElementById('selection-layer');
-      const selectionText = document.getElementById('selection-text');
-      const selectionClose = document.getElementById('selection-close');
-      const suppressDetachedInteraction = (event) => {
-        if (selectionMode || remoteAtBottom) return false;
+                if (textarea) {
+                  const textareaLeft = wrapFromNextLine ? 0 : cursorLeft;
+                  const textareaTop = wrapFromNextLine ? cursorTop + cellHeight : cursorTop;
+                  const textareaWidth = wrapFromNextLine ? containerWidth : availableWidth;
 
-        try {
-          if (terminal.textarea && document.activeElement === terminal.textarea) {
-            terminal.textarea.blur();
+                  textarea.style.left = textareaLeft + 'px';
+                  textarea.style.top = textareaTop + 'px';
+                  textarea.style.maxWidth = textareaWidth + 'px';
+                  textarea.style.width = Math.max(Math.min(naturalWidth, textareaWidth), 1) + 'px';
+                  textarea.style.height = Math.max(compositionView.offsetHeight, cellHeight) + 'px';
+                  textarea.style.lineHeight = cellHeight + 'px';
+                }
+              } catch (_) {}
+            };
+
+            helper.__zenCompositionPatched = true;
+          } catch (_) {}
+        };
+        patchCompositionLayout();
+        let writeQueue = [];
+        let writeScheduled = false;
+        let isWriting = false;
+        let initialized = false;
+        let selectionMode = false;
+        let remoteAtBottom = true;
+        const selectionLayer = document.getElementById('selection-layer');
+        const selectionText = document.getElementById('selection-text');
+        const selectionClose = document.getElementById('selection-close');
+        const suppressDetachedInteraction = (event) => {
+          if (selectionMode || remoteAtBottom) return false;
+
+          try {
+            if (terminal.textarea && document.activeElement === terminal.textarea) {
+              terminal.textarea.blur();
+            }
+          } catch (_) {}
+
+          if (event && event.cancelable) {
+            event.preventDefault();
           }
-        } catch (_) {}
+          if (event && typeof event.stopImmediatePropagation === 'function') {
+            event.stopImmediatePropagation();
+          }
+          if (event && typeof event.stopPropagation === 'function') {
+            event.stopPropagation();
+          }
+          return true;
+        };
+        const dispatchTouchCursorMove = (clientX, clientY) => {
+          if (!Number.isFinite(clientX) || !Number.isFinite(clientY)) return;
 
-        if (event && event.cancelable) {
-          event.preventDefault();
-        }
-        if (event && typeof event.stopImmediatePropagation === 'function') {
-          event.stopImmediatePropagation();
-        }
-        if (event && typeof event.stopPropagation === 'function') {
-          event.stopPropagation();
-        }
-        return true;
-      };
-      const dispatchTouchCursorMove = (clientX, clientY) => {
-        if (!Number.isFinite(clientX) || !Number.isFinite(clientY)) return;
+          try {
+            terminal.clearSelection();
+            terminal.focus();
 
-        try {
-          terminal.clearSelection();
-          terminal.focus();
+            const terminalElement = terminal.element;
+            const fallbackTarget =
+              (terminalElement && terminalElement.querySelector('.xterm-screen')) ||
+              terminalElement ||
+              document.getElementById('terminal');
+            const target = document.elementFromPoint(clientX, clientY) || fallbackTarget;
+            if (!target) return;
 
-          const terminalElement = terminal.element;
-          const fallbackTarget =
-            (terminalElement && terminalElement.querySelector('.xterm-screen')) ||
-            terminalElement ||
-            document.getElementById('terminal');
-          const target = document.elementFromPoint(clientX, clientY) || fallbackTarget;
-          if (!target) return;
+            const common = {
+              bubbles: true,
+              cancelable: true,
+              composed: true,
+              view: window,
+              clientX,
+              clientY,
+              button: 0,
+              detail: 1,
+              altKey: true,
+            };
 
-          const common = {
-            bubbles: true,
-            cancelable: true,
-            composed: true,
-            view: window,
-            clientX,
-            clientY,
-            button: 0,
-            detail: 1,
-            altKey: true,
+            target.dispatchEvent(new MouseEvent('mousedown', {
+              ...common,
+              buttons: 1,
+            }));
+            target.dispatchEvent(new MouseEvent('mouseup', {
+              ...common,
+              buttons: 0,
+            }));
+          } catch (_) {}
+        };
+
+        const send = (payload) => {
+          try { window.ReactNativeWebView.postMessage(JSON.stringify(payload)); }
+          catch(_) {}
+        };
+        const reportSize = () => {
+          try {
+            fitAddon.fit();
+            send({ type: 'resize', cols: terminal.cols, rows: terminal.rows });
+          } catch (_) {}
+        };
+        const clearCtrlArmed = () => {
+          if (!ctrlArmed) return;
+          ctrlArmed = false;
+          send({ type: 'ctrlConsumed' });
+        };
+        const toCtrlSequence = (value) => {
+          if (typeof value !== 'string' || value.length !== 1) return null;
+          if (value === ' ') return '\x00';
+          if (value === '?') return '\x7f';
+
+          const code = value.charCodeAt(0);
+          const upperCode = code >= 97 && code <= 122 ? code - 32 : code;
+          if (upperCode >= 64 && upperCode <= 95) {
+            return String.fromCharCode(upperCode - 64);
+          }
+          return null;
+        };
+        const flushCtrlCandidate = (value) => {
+          if (!ctrlArmed || typeof value !== 'string' || value.length === 0) {
+            return null;
+          }
+          const ctrlValue = toCtrlSequence(value);
+          clearCtrlArmed();
+          return ctrlValue ?? value;
+        };
+        const core = terminal._core;
+        const coreService = core && core.coreService;
+        if (coreService && typeof coreService.triggerDataEvent === 'function') {
+          const originalTriggerDataEvent = coreService.triggerDataEvent.bind(coreService);
+          coreService.triggerDataEvent = (data, wasUserInput) => {
+            const nextData = flushCtrlCandidate(data);
+            return originalTriggerDataEvent(nextData ?? data, wasUserInput);
           };
+        }
+        if (typeof terminal._inputEvent === 'function') {
+          const originalInputEvent = terminal._inputEvent.bind(terminal);
+          terminal._inputEvent = (ev) => {
+            const nextData = flushCtrlCandidate(ev && typeof ev.data === 'string' ? ev.data : '');
+            if (nextData != null) {
+              try {
+                if (terminal.textarea) {
+                  terminal.textarea.value = '';
+                }
+                if (core && core._compositionView) {
+                  core._compositionView.textContent = '';
+                  core._compositionView.classList.remove('active');
+                }
+              } catch (_) {}
+              send({ type: 'input', data: nextData });
+              if (ev) {
+                if (typeof terminal.cancel === 'function') {
+                  terminal.cancel(ev);
+                } else {
+                  if (ev.preventDefault) ev.preventDefault();
+                  if (ev.stopPropagation) ev.stopPropagation();
+                }
+              }
+              return true;
+            }
+            return originalInputEvent(ev);
+          };
+        }
+        if (core && core._compositionHelper && typeof core._compositionHelper.compositionend === 'function') {
+          const helper = core._compositionHelper;
+          helper.compositionend = () => {
+            if (!ctrlArmed) {
+              helper._finalizeComposition(true);
+              return;
+            }
 
-          target.dispatchEvent(new MouseEvent('mousedown', {
-            ...common,
-            buttons: 1,
-          }));
-          target.dispatchEvent(new MouseEvent('mouseup', {
-            ...common,
-            buttons: 0,
-          }));
-        } catch (_) {}
-      };
+            const start = helper._compositionPosition && typeof helper._compositionPosition.start === 'number'
+              ? helper._compositionPosition.start
+              : 0;
+            helper._compositionView.classList.remove('active');
+            helper._isComposing = false;
+            helper._isSendingComposition = false;
 
-      const send = (payload) => {
-        try { window.ReactNativeWebView.postMessage(JSON.stringify(payload)); }
-        catch(_) {}
-      };
-      const reportSize = () => {
-        try {
-          fitAddon.fit();
-          send({ type: 'resize', cols: terminal.cols, rows: terminal.rows });
-        } catch (_) {}
-      };
+            setTimeout(() => {
+              const textarea = terminal.textarea;
+              const value = textarea ? textarea.value.substring(start) : '';
+              const nextData = flushCtrlCandidate(value);
+              if (textarea) {
+                textarea.value = '';
+              }
+              helper._compositionView.textContent = '';
+              if (nextData != null) {
+                send({ type: 'input', data: nextData });
+              }
+            }, 0);
+          };
+        }
 
       const snapshotVisibleText = () => {
         try {
@@ -876,6 +1010,13 @@ function buildTerminalHtml(theme: TerminalThemePalette, fontUri: string | null) 
         if (!remoteAtBottom) return;
         terminal.focus();
       };
+      window.__zenBlur = () => {
+        try {
+          if (terminal.textarea) {
+            terminal.textarea.blur();
+          }
+        } catch (_) {}
+      };
       window.__zenScrollToBottom = () => {
         terminal.scrollToBottom();
       };
@@ -894,6 +1035,18 @@ function buildTerminalHtml(theme: TerminalThemePalette, fontUri: string | null) 
         document.body.style.background = t.background;
         document.documentElement.style.background = t.background;
       };
+      window.__zenCtrlState = (state) => {
+        ctrlArmed = !!(state && state.armed);
+        try {
+          if (terminal.textarea) {
+            terminal.textarea.value = '';
+          }
+          if (core && core._compositionView) {
+            core._compositionView.textContent = '';
+            core._compositionView.classList.remove('active');
+          }
+        } catch (_) {}
+      };
       window.__zenSession = () => {
         if (!initialized) {
           initialized = true;
@@ -904,10 +1057,11 @@ function buildTerminalHtml(theme: TerminalThemePalette, fontUri: string | null) 
       terminal.onData((data) => send({ type: 'input', data }));
       window.addEventListener('resize', reportSize);
 
-      setTimeout(() => {
+      requestAnimationFrame(() => {
         reportSize();
         send({ type: 'ready' });
-      }, 0);
+      });
+      })();
     </script>
   </body>
 </html>`;
