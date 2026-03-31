@@ -4,7 +4,6 @@ import { normalizeServerSecret } from './auth';
 import {
   buildServerURL,
   ConnectionProvider,
-  deriveEndpointFromURL,
   normalizeConnectionProvider,
   normalizeServerURL as normalizeConnectionURL,
 } from './connection';
@@ -373,9 +372,6 @@ function deriveServerName(url: string): string {
     return url;
   }
 }
-
-export { deriveEndpointFromURL };
-export const normalizeServerURL = normalizeConnectionURL;
 
 function normalizeTerminalTabs(state: StoredTerminalTabs): StoredTerminalTabs {
   const normalizedOrder = normalizeIdList(state.order);

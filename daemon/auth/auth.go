@@ -7,7 +7,6 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"fmt"
-	"math/big"
 	"strconv"
 	"strings"
 	"time"
@@ -42,13 +41,6 @@ func LoadSecret(hexKey string) (*Secret, error) {
 // Hex returns the hex-encoded secret string.
 func (s *Secret) Hex() string {
 	return hex.EncodeToString(s.key)
-}
-
-// PairingCode returns a short human-readable pairing code (6 digits).
-func (s *Secret) PairingCode() string {
-	n := new(big.Int).SetBytes(s.key)
-	code := new(big.Int).Mod(n, big.NewInt(1000000))
-	return fmt.Sprintf("%06d", code)
 }
 
 // Sign creates an HMAC-SHA256 signature for the given message with a timestamp.

@@ -20,11 +20,12 @@ import {
   TerminalThemeName,
   TerminalThemes,
 } from '../../constants/terminalThemes';
+import { deriveEndpointFromURL, type ConnectionProvider } from '../../services/connection';
+import { importConnection } from '../../services/importConnection';
 import { wsClient } from '../../services/websocket';
 import { ConnectionState, useAgents } from '../../store/agents';
 import * as Storage from '../../services/storage';
 import { normalizeServerSecret } from '../../services/auth';
-import { parseConnectLink, type ConnectionProvider } from '../../services/connection';
 
 export default function SettingsScreen() {
   const { state, dispatch } = useAgents();
@@ -111,7 +112,7 @@ export default function SettingsScreen() {
     setEditingServerId(server.id);
     setDraftName(server.name);
     setDraftProvider(server.provider);
-    setDraftEndpoint(Storage.deriveEndpointFromURL(server.provider, server.url));
+    setDraftEndpoint(deriveEndpointFromURL(server.provider, server.url));
     setDraftSecret(server.secret || '');
     setEditorVisible(true);
   };
@@ -218,25 +219,13 @@ export default function SettingsScreen() {
     setImportDraft(clipboardValue);
   };
 
-  const importConnectionPayload = async (rawValue: string): Promise<Storage.StoredServer | null> => {
-    const payload = parseConnectLink(rawValue);
-    if (!payload) {
-      return null;
-    }
-
-    const savedServer = await Storage.saveServer({
-      name: payload.name || '',
-      provider: payload.provider,
-      endpoint: payload.endpoint,
-      secret: payload.secret,
+  const importConnectionPayload = async (rawValue: string): Promise<Storage.StoredServer | null> =>
+    importConnection(rawValue, {
+      onImported: async savedServer => {
+        await refreshServers();
+        setExpandedServer(savedServer.id);
+      },
     });
-
-    await Storage.markOnboarded();
-    await refreshServers();
-    setExpandedServer(savedServer.id);
-    wsClient.connectServer(savedServer);
-    return savedServer;
-  };
 
   const handleImportConnection = async () => {
     const savedServer = await importConnectionPayload(importDraft);

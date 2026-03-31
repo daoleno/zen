@@ -69,14 +69,6 @@ func TestLoadSecret(t *testing.T) {
 	}
 }
 
-func TestPairingCode(t *testing.T) {
-	secret, _ := GenerateSecret()
-	code := secret.PairingCode()
-	if len(code) != 6 {
-		t.Errorf("pairing code should be 6 digits, got %q", code)
-	}
-}
-
 func TestVerifyRaw(t *testing.T) {
 	secret, _ := GenerateSecret()
 	if !secret.VerifyRaw(secret.Hex()) {

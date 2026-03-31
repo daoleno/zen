@@ -11,9 +11,9 @@ import { SafeAreaProvider } from 'react-native-safe-area-context';
 import { Agent, AgentProvider, useAgents } from '../store/agents';
 import { Colors } from '../constants/tokens';
 import { wsClient } from '../services/websocket';
-import { getServers, isOnboarded, markOnboarded, saveServer } from '../services/storage';
+import { getServers, isOnboarded } from '../services/storage';
 import { parseSessionKey } from '../services/sessionKeys';
-import { parseConnectLink } from '../services/connection';
+import { importConnection } from '../services/importConnection';
 
 Notifications.setNotificationHandler({
   handleNotification: async () => ({
@@ -107,27 +107,21 @@ function AppContent() {
       return false;
     }
 
-    const payload = parseConnectLink(trimmed);
-    if (!payload) {
-      return false;
-    }
-
     handledConnectLinksRef.current.add(trimmed);
 
     try {
-      const savedServer = await saveServer({
-        name: payload.name || '',
-        provider: payload.provider,
-        endpoint: payload.endpoint,
-        secret: payload.secret,
+      const savedServer = await importConnection(trimmed, {
+        onImported: () => {
+          router.replace({
+            pathname: '/settings',
+            params: { refresh: Date.now().toString() },
+          });
+        },
       });
-
-      await markOnboarded();
-      wsClient.connectServer(savedServer);
-      router.replace({
-        pathname: '/settings',
-        params: { refresh: Date.now().toString() },
-      });
+      if (!savedServer) {
+        handledConnectLinksRef.current.delete(trimmed);
+        return false;
+      }
       return true;
     } catch (error) {
       handledConnectLinksRef.current.delete(trimmed);

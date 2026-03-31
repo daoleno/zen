@@ -78,24 +78,6 @@ export function deriveEndpointFromURL(provider: ConnectionProvider, url: string)
   }
 }
 
-export function buildConnectLink(payload: ConnectionImportPayload): string {
-  const params = new URLSearchParams();
-  params.set('provider', payload.provider);
-  params.set('endpoint', payload.endpoint.trim());
-
-  const name = payload.name?.trim();
-  if (name) {
-    params.set('name', name);
-  }
-
-  const secret = normalizeServerSecret(payload.secret);
-  if (secret) {
-    params.set('secret', secret);
-  }
-
-  return `zen://settings?${params.toString()}`;
-}
-
 export function parseConnectLink(rawValue: string): ConnectionImportPayload | null {
   const trimmed = rawValue.trim();
   if (!trimmed) return null;

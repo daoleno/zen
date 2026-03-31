@@ -398,15 +398,6 @@ func (s *Server) handleUpload(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(map[string]string{"path": path, "name": header.Filename})
 }
 
-// PairingInfo returns connection information for display/QR code.
-func (s *Server) PairingInfo(addr string) string {
-	if s.secret == nil {
-		return fmt.Sprintf(`{"url":"ws://%s/ws"}`, addr)
-	}
-	return fmt.Sprintf(`{"url":"ws://%s/ws","secret":"%s"}`,
-		addr, s.secret.Hex())
-}
-
 func clientID(conn *websocket.Conn) string {
 	return fmt.Sprintf("%p", conn)
 }
