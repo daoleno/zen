@@ -18,10 +18,21 @@ import (
 
 func main() {
 	addr := flag.String("addr", ":9876", "listen address")
-	secretHex := flag.String("secret", "", "hex-encoded pairing secret (generated if empty)")
+	secretHex := flag.String("secret", "", "hex-encoded auth secret for protecting the daemon")
+	advertiseURL := flag.String("advertise-url", "", "public ws/wss/http/https URL to advertise for pairing")
+	genSecret := flag.Bool("gen-secret", false, "generate a random 32-byte secret and exit")
 	flag.Parse()
 
-	// Load or generate secret.
+	if *genSecret {
+		secret, err := auth.GenerateSecret()
+		if err != nil {
+			log.Fatalf("generating secret: %v", err)
+		}
+		fmt.Println(secret.Hex())
+		return
+	}
+
+	// Load optional secret.
 	var secret *auth.Secret
 	var err error
 	if *secretHex != "" {
@@ -29,21 +40,26 @@ func main() {
 		if err != nil {
 			log.Fatalf("invalid secret: %v", err)
 		}
-	} else {
-		secret, err = auth.GenerateSecret()
-		if err != nil {
-			log.Fatalf("generating secret: %v", err)
-		}
 	}
 
 	fmt.Fprintln(os.Stderr, "╔══════════════════════════════════════╗")
 	fmt.Fprintln(os.Stderr, "║         zen-daemon v0.1.0            ║")
 	fmt.Fprintln(os.Stderr, "╠══════════════════════════════════════╣")
-	fmt.Fprintf(os.Stderr,  "║  Listening on %-22s ║\n", *addr)
-	fmt.Fprintf(os.Stderr,  "║  Pairing code: %-21s ║\n", secret.PairingCode())
-	fmt.Fprintln(os.Stderr, "╠══════════════════════════════════════╣")
-	fmt.Fprintf(os.Stderr,  "║  Secret: %-27s ║\n", secret.Hex()[:16]+"...")
+	fmt.Fprintf(os.Stderr, "║  Listening on %-22s ║\n", *addr)
+	if secret != nil {
+		fmt.Fprintf(os.Stderr, "║  Auth: %-28s ║\n", "enabled")
+		fmt.Fprintln(os.Stderr, "╠══════════════════════════════════════╣")
+		fmt.Fprintf(os.Stderr, "║  Secret: %-27s ║\n", secret.Hex()[:16]+"...")
+	} else {
+		fmt.Fprintf(os.Stderr, "║  Auth: %-28s ║\n", "disabled")
+	}
 	fmt.Fprintln(os.Stderr, "╚══════════════════════════════════════╝")
+
+	offers, err := buildConnectionOffers(*addr, *advertiseURL, secret)
+	if err != nil {
+		log.Fatalf("building connection info: %v", err)
+	}
+	printConnectionInfo(os.Stderr, offers)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()

@@ -75,9 +75,9 @@ func (s *Server) Run(ctx context.Context, addr string) error {
 }
 
 func (s *Server) handleWS(w http.ResponseWriter, r *http.Request) {
-	token := r.Header.Get("Authorization")
-	if token != "" {
-		if !s.secret.Verify(token, []byte("zen-connect"), 5*time.Minute) {
+	if s.secret != nil {
+		token := r.Header.Get("Authorization")
+		if !s.secret.VerifyAuthorization(token, []byte("zen-connect"), 5*time.Minute) {
 			http.Error(w, "unauthorized", http.StatusUnauthorized)
 			return
 		}
@@ -353,6 +353,13 @@ func (s *Server) broadcast(data []byte) {
 }
 
 func (s *Server) handleUpload(w http.ResponseWriter, r *http.Request) {
+	if s.secret != nil {
+		token := r.Header.Get("Authorization")
+		if !s.secret.VerifyAuthorization(token, []byte("zen-upload"), 5*time.Minute) {
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+	}
 	if r.Method != http.MethodPost {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
@@ -393,8 +400,11 @@ func (s *Server) handleUpload(w http.ResponseWriter, r *http.Request) {
 
 // PairingInfo returns connection information for display/QR code.
 func (s *Server) PairingInfo(addr string) string {
-	return fmt.Sprintf(`{"url":"ws://%s/ws","code":"%s","secret":"%s"}`,
-		addr, s.secret.PairingCode(), s.secret.Hex())
+	if s.secret == nil {
+		return fmt.Sprintf(`{"url":"ws://%s/ws"}`, addr)
+	}
+	return fmt.Sprintf(`{"url":"ws://%s/ws","secret":"%s"}`,
+		addr, s.secret.Hex())
 }
 
 func clientID(conn *websocket.Conn) string {

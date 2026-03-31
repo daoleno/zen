@@ -9,9 +9,11 @@ import {
   TouchableOpacity,
   View,
 } from 'react-native';
-import { useLocalSearchParams } from 'expo-router';
+import { useFocusEffect, useLocalSearchParams } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { SafeAreaView } from 'react-native-safe-area-context';
+import * as Clipboard from 'expo-clipboard';
+import { BarcodeScanningResult, CameraView, useCameraPermissions } from 'expo-camera';
 import { Colors, Spacing, Typography } from '../../constants/tokens';
 import {
   DefaultTerminalThemeName,
@@ -21,42 +23,68 @@ import {
 import { wsClient } from '../../services/websocket';
 import { ConnectionState, useAgents } from '../../store/agents';
 import * as Storage from '../../services/storage';
+import { normalizeServerSecret } from '../../services/auth';
+import { parseConnectLink, type ConnectionProvider } from '../../services/connection';
 
 export default function SettingsScreen() {
   const { state, dispatch } = useAgents();
-  const params = useLocalSearchParams<{ addServer?: string }>();
+  const params = useLocalSearchParams<{ addServer?: string; refresh?: string }>();
   const [servers, setServers] = useState<Storage.StoredServer[]>([]);
   const [terminalTheme, setTerminalTheme] = useState<TerminalThemeName>(DefaultTerminalThemeName);
   const [loaded, setLoaded] = useState(false);
   const [editorVisible, setEditorVisible] = useState(false);
+  const [importVisible, setImportVisible] = useState(false);
+  const [scannerVisible, setScannerVisible] = useState(false);
+  const [scannerLocked, setScannerLocked] = useState(false);
   const [editingServerId, setEditingServerId] = useState<string | null>(null);
   const [draftName, setDraftName] = useState('');
-  const [draftUrl, setDraftUrl] = useState('');
+  const [draftProvider, setDraftProvider] = useState<ConnectionProvider>('local-lan');
+  const [draftEndpoint, setDraftEndpoint] = useState('');
+  const [draftSecret, setDraftSecret] = useState('');
+  const [importDraft, setImportDraft] = useState('');
   const [expandedServer, setExpandedServer] = useState<string | null>(null);
   const [handledAutoOpenToken, setHandledAutoOpenToken] = useState<string | null>(null);
+  const [handledRefreshToken, setHandledRefreshToken] = useState<string | null>(null);
+  const [cameraPermission, requestCameraPermission] = useCameraPermissions();
 
   const connectedCount = useMemo(
     () => servers.filter(server => state.serverConnections[server.id] === 'connected').length,
     [servers, state.serverConnections],
   );
 
-  useEffect(() => {
-    (async () => {
-      const [savedServers, theme] = await Promise.all([
-        Storage.getServers(),
-        Storage.getTerminalTheme(),
-      ]);
-      setServers(savedServers);
-      setTerminalTheme(theme);
-      setLoaded(true);
-    })();
-  }, []);
+  useFocusEffect(
+    React.useCallback(() => {
+      let cancelled = false;
+
+      (async () => {
+        const [savedServers, theme] = await Promise.all([
+          Storage.getServers(),
+          Storage.getTerminalTheme(),
+        ]);
+        if (cancelled) return;
+
+        setServers(savedServers);
+        setTerminalTheme(theme);
+        setLoaded(true);
+      })();
+
+      return () => {
+        cancelled = true;
+      };
+    }, []),
+  );
 
   useEffect(() => {
     if (!loaded || !params.addServer || handledAutoOpenToken === params.addServer) return;
     openCreateServer();
     setHandledAutoOpenToken(params.addServer);
   }, [handledAutoOpenToken, loaded, params.addServer]);
+
+  useEffect(() => {
+    if (!loaded || !params.refresh || handledRefreshToken === params.refresh) return;
+    void refreshServers();
+    setHandledRefreshToken(params.refresh);
+  }, [handledRefreshToken, loaded, params.refresh]);
 
   const refreshServers = async () => {
     setServers(await Storage.getServers());
@@ -73,14 +101,18 @@ export default function SettingsScreen() {
   const openCreateServer = () => {
     setEditingServerId(null);
     setDraftName('');
-    setDraftUrl('');
+    setDraftProvider('local-lan');
+    setDraftEndpoint('');
+    setDraftSecret('');
     setEditorVisible(true);
   };
 
   const openEditServer = (server: Storage.StoredServer) => {
     setEditingServerId(server.id);
     setDraftName(server.name);
-    setDraftUrl(server.url);
+    setDraftProvider(server.provider);
+    setDraftEndpoint(Storage.deriveEndpointFromURL(server.provider, server.url));
+    setDraftSecret(server.secret || '');
     setEditorVisible(true);
   };
 
@@ -88,13 +120,44 @@ export default function SettingsScreen() {
     setEditorVisible(false);
     setEditingServerId(null);
     setDraftName('');
-    setDraftUrl('');
+    setDraftProvider('local-lan');
+    setDraftEndpoint('');
+    setDraftSecret('');
+  };
+
+  const openImport = () => {
+    setImportDraft('');
+    setImportVisible(true);
+  };
+
+  const closeImport = () => {
+    setImportVisible(false);
+    setImportDraft('');
+  };
+
+  const openScanner = () => {
+    setScannerLocked(false);
+    setScannerVisible(true);
+  };
+
+  const closeScanner = () => {
+    setScannerVisible(false);
+    setScannerLocked(false);
   };
 
   const handleSaveServer = async () => {
-    const normalizedURL = draftUrl.trim();
-    if (!normalizedURL) {
-      Alert.alert('Server URL required', 'Enter a WebSocket URL like ws://host:9876/ws.');
+    const normalizedEndpoint = draftEndpoint.trim();
+    if (!normalizedEndpoint) {
+      Alert.alert(
+        draftProvider === 'local-lan' ? 'Host or IP required' : 'Server URL required',
+        draftProvider === 'local-lan'
+          ? 'Enter a host or IP like 192.168.1.10 or zen-box.local.'
+          : 'Enter a WebSocket URL like wss://zen.example.com/ws.',
+      );
+      return;
+    }
+    if (draftSecret.trim().length > 0 && !normalizeServerSecret(draftSecret)) {
+      Alert.alert('Invalid secret', 'Pairing secret must be a 64-character hex string.');
       return;
     }
 
@@ -104,7 +167,9 @@ export default function SettingsScreen() {
     const savedServer = await Storage.saveServer({
       id: editingServerId || undefined,
       name: draftName,
-      url: normalizedURL,
+      provider: draftProvider,
+      endpoint: normalizedEndpoint,
+      secret: draftSecret,
     });
 
     await refreshServers();
@@ -142,6 +207,61 @@ export default function SettingsScreen() {
 
   const toggleServerExpand = (serverId: string) => {
     setExpandedServer(prev => prev === serverId ? null : serverId);
+  };
+
+  const handlePasteClipboard = async () => {
+    const clipboardValue = await Clipboard.getStringAsync();
+    if (!clipboardValue.trim()) {
+      Alert.alert('Clipboard is empty', 'Copy a zen:// link or JSON payload first.');
+      return;
+    }
+    setImportDraft(clipboardValue);
+  };
+
+  const importConnectionPayload = async (rawValue: string): Promise<Storage.StoredServer | null> => {
+    const payload = parseConnectLink(rawValue);
+    if (!payload) {
+      return null;
+    }
+
+    const savedServer = await Storage.saveServer({
+      name: payload.name || '',
+      provider: payload.provider,
+      endpoint: payload.endpoint,
+      secret: payload.secret,
+    });
+
+    await Storage.markOnboarded();
+    await refreshServers();
+    setExpandedServer(savedServer.id);
+    wsClient.connectServer(savedServer);
+    return savedServer;
+  };
+
+  const handleImportConnection = async () => {
+    const savedServer = await importConnectionPayload(importDraft);
+    if (!savedServer) {
+      Alert.alert('Invalid import link', 'Paste a zen://settings link or a JSON payload from zen-daemon.');
+      return;
+    }
+
+    closeImport();
+  };
+
+  const handleScanResult = async ({ data }: BarcodeScanningResult) => {
+    if (scannerLocked) return;
+    setScannerLocked(true);
+
+    const savedServer = await importConnectionPayload(data || '');
+    if (!savedServer) {
+      Alert.alert(
+        'Unsupported QR code',
+        'Scan a zen-daemon pairing QR, or use Import Link to paste the payload manually.',
+      );
+      return;
+    }
+
+    closeScanner();
   };
 
   if (!loaded) return null;
@@ -223,6 +343,14 @@ export default function SettingsScreen() {
           <Ionicons name="add" size={16} color={Colors.textSecondary} />
           <Text style={styles.addBtnText}>Add Server</Text>
         </TouchableOpacity>
+        <TouchableOpacity style={styles.addBtn} onPress={openImport} activeOpacity={0.82}>
+          <Ionicons name="download-outline" size={16} color={Colors.textSecondary} />
+          <Text style={styles.addBtnText}>Import Link</Text>
+        </TouchableOpacity>
+        <TouchableOpacity style={styles.addBtn} onPress={openScanner} activeOpacity={0.82}>
+          <Ionicons name="qr-code-outline" size={16} color={Colors.textSecondary} />
+          <Text style={styles.addBtnText}>Scan QR</Text>
+        </TouchableOpacity>
 
         {/* Theme */}
         <Text style={styles.sectionLabel}>Theme</Text>
@@ -281,15 +409,50 @@ export default function SettingsScreen() {
               autoCorrect={false}
             />
 
-            <Text style={[styles.fieldLabel, { marginTop: 16 }]}>WebSocket URL</Text>
+            <Text style={[styles.fieldLabel, { marginTop: 16 }]}>Connection Type</Text>
+            <View style={styles.providerList}>
+              <ProviderButton
+                label="Local LAN"
+                description="Host or IP on your LAN or tailnet"
+                active={draftProvider === 'local-lan'}
+                onPress={() => setDraftProvider('local-lan')}
+              />
+              <ProviderButton
+                label="Custom Endpoint"
+                description="Reverse proxy, tunnel, or public URL"
+                active={draftProvider === 'custom-endpoint'}
+                onPress={() => setDraftProvider('custom-endpoint')}
+              />
+            </View>
+
+            <Text style={[styles.fieldLabel, { marginTop: 16 }]}>
+              {draftProvider === 'local-lan' ? 'Host or IP' : 'WebSocket URL'}
+            </Text>
             <TextInput
               style={styles.input}
-              value={draftUrl}
-              onChangeText={setDraftUrl}
-              placeholder="ws://your-server:9876"
+              value={draftEndpoint}
+              onChangeText={setDraftEndpoint}
+              placeholder={draftProvider === 'local-lan' ? '192.168.1.10 or zen-box.local' : 'wss://zen.example.com/ws'}
               placeholderTextColor="rgba(255,255,255,0.2)"
               autoCapitalize="none"
               autoCorrect={false}
+            />
+            <Text style={styles.fieldHint}>
+              {draftProvider === 'local-lan'
+                ? 'Default format is ws://host:9876/ws. Include :port if your daemon is not on 9876.'
+                : 'Supports ws://, wss://, http://, or https://. Root paths normalize to /ws.'}
+            </Text>
+
+            <Text style={[styles.fieldLabel, { marginTop: 16 }]}>Pairing Secret (Optional)</Text>
+            <TextInput
+              style={styles.input}
+              value={draftSecret}
+              onChangeText={setDraftSecret}
+              placeholder="64-char hex secret"
+              placeholderTextColor="rgba(255,255,255,0.2)"
+              autoCapitalize="none"
+              autoCorrect={false}
+              autoComplete="off"
             />
 
             <View style={styles.modalActions}>
@@ -307,7 +470,167 @@ export default function SettingsScreen() {
           </View>
         </View>
       </Modal>
+
+      <Modal
+        visible={importVisible}
+        transparent
+        animationType="fade"
+        onRequestClose={closeImport}
+      >
+        <View style={styles.modalRoot}>
+          <TouchableOpacity
+            style={styles.modalBackdrop}
+            activeOpacity={1}
+            onPress={closeImport}
+          />
+          <View style={styles.modalCard}>
+            <Text style={styles.modalTitle}>Import Connection</Text>
+            <Text style={styles.fieldHint}>
+              Paste a `zen://settings?...` link or JSON payload exported by `zen-daemon`.
+            </Text>
+            <TextInput
+              style={[styles.input, styles.importInput]}
+              value={importDraft}
+              onChangeText={setImportDraft}
+              placeholder="zen://settings?provider=local-lan&endpoint=192.168.1.10"
+              placeholderTextColor="rgba(255,255,255,0.2)"
+              autoCapitalize="none"
+              autoCorrect={false}
+              multiline
+              textAlignVertical="top"
+            />
+
+            <TouchableOpacity
+              style={styles.importClipboardBtn}
+              onPress={handlePasteClipboard}
+              activeOpacity={0.82}
+            >
+              <Ionicons name="clipboard-outline" size={15} color={Colors.textSecondary} />
+              <Text style={styles.importClipboardText}>Paste Clipboard</Text>
+            </TouchableOpacity>
+
+            <View style={styles.modalActions}>
+              <TouchableOpacity style={styles.modalBtn} onPress={closeImport} activeOpacity={0.82}>
+                <Text style={styles.modalBtnText}>Cancel</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={[styles.modalBtn, styles.modalBtnPrimary]}
+                onPress={handleImportConnection}
+                activeOpacity={0.82}
+              >
+                <Text style={[styles.modalBtnText, styles.modalBtnPrimaryText]}>Import</Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+        </View>
+      </Modal>
+
+      <Modal
+        visible={scannerVisible}
+        animationType="slide"
+        onRequestClose={closeScanner}
+      >
+        <View style={styles.scannerScreen}>
+          <View style={styles.scannerHeader}>
+            <Text style={styles.scannerTitle}>Scan Pairing QR</Text>
+            <TouchableOpacity onPress={closeScanner} activeOpacity={0.82}>
+              <Ionicons name="close" size={24} color={Colors.textPrimary} />
+            </TouchableOpacity>
+          </View>
+
+          {!cameraPermission ? (
+            <View style={styles.scannerNoticeCard}>
+              <Text style={styles.scannerNoticeTitle}>Loading camera</Text>
+            </View>
+          ) : !cameraPermission.granted ? (
+            <View style={styles.scannerNoticeCard}>
+              <Text style={styles.scannerNoticeTitle}>Camera permission required</Text>
+              <Text style={styles.scannerNoticeText}>
+                Allow camera access to scan a `zen-daemon` pairing QR code.
+              </Text>
+              <TouchableOpacity
+                style={styles.scannerPrimaryBtn}
+                onPress={() => void requestCameraPermission()}
+                activeOpacity={0.82}
+              >
+                <Text style={styles.scannerPrimaryBtnText}>Grant Camera Access</Text>
+              </TouchableOpacity>
+            </View>
+          ) : (
+            <>
+              <View style={styles.scannerViewport}>
+                <CameraView
+                  style={styles.scannerCamera}
+                  facing="back"
+                  barcodeScannerSettings={{ barcodeTypes: ['qr'] }}
+                  onBarcodeScanned={scannerLocked ? undefined : handleScanResult}
+                />
+                <View pointerEvents="none" style={styles.scannerOverlay}>
+                  <View style={styles.scannerMaskTop} />
+                  <View style={styles.scannerMaskMiddle}>
+                    <View style={styles.scannerMaskSide} />
+                    <View style={styles.scannerFrame}>
+                      <View style={styles.scannerFrameCornerTopLeft} />
+                      <View style={styles.scannerFrameCornerTopRight} />
+                      <View style={styles.scannerFrameCornerBottomLeft} />
+                      <View style={styles.scannerFrameCornerBottomRight} />
+                    </View>
+                    <View style={styles.scannerMaskSide} />
+                  </View>
+                  <View style={styles.scannerMaskBottom} />
+                </View>
+              </View>
+
+              <Text style={styles.scannerHelpText}>
+                Point the camera at the QR printed by `zen-daemon`.
+              </Text>
+
+              <View style={styles.scannerActions}>
+                <TouchableOpacity
+                  style={styles.scannerSecondaryBtn}
+                  onPress={() => setScannerLocked(false)}
+                  activeOpacity={0.82}
+                >
+                  <Text style={styles.scannerSecondaryBtnText}>Scan Again</Text>
+                </TouchableOpacity>
+                <TouchableOpacity
+                  style={styles.scannerPrimaryBtn}
+                  onPress={closeScanner}
+                  activeOpacity={0.82}
+                >
+                  <Text style={styles.scannerPrimaryBtnText}>Done</Text>
+                </TouchableOpacity>
+              </View>
+            </>
+          )}
+        </View>
+      </Modal>
     </SafeAreaView>
+  );
+}
+
+function ProviderButton({
+  label,
+  description,
+  active,
+  onPress,
+}: {
+  label: string;
+  description: string;
+  active: boolean;
+  onPress: () => void;
+}) {
+  return (
+    <TouchableOpacity
+      style={[styles.providerBtn, active && styles.providerBtnActive]}
+      onPress={onPress}
+      activeOpacity={0.82}
+    >
+      <Text style={[styles.providerTitle, active && styles.providerTitleActive]}>{label}</Text>
+      <Text style={[styles.providerDescription, active && styles.providerDescriptionActive]}>
+        {description}
+      </Text>
+    </TouchableOpacity>
   );
 }
 
@@ -557,6 +880,237 @@ const styles = StyleSheet.create({
     fontFamily: Typography.terminalFont,
     borderWidth: StyleSheet.hairlineWidth,
     borderColor: 'rgba(255,255,255,0.08)',
+  },
+  importInput: {
+    minHeight: 128,
+    marginTop: 12,
+    paddingTop: 12,
+  },
+  fieldHint: {
+    marginTop: 8,
+    color: Colors.textSecondary,
+    fontSize: 12,
+    lineHeight: 18,
+    fontFamily: Typography.uiFont,
+    opacity: 0.65,
+  },
+  providerList: {
+    gap: 8,
+    marginTop: 8,
+  },
+  providerBtn: {
+    borderRadius: 10,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: 'rgba(255,255,255,0.08)',
+    backgroundColor: 'rgba(255,255,255,0.03)',
+    paddingHorizontal: 12,
+    paddingVertical: 11,
+  },
+  providerBtnActive: {
+    borderColor: 'rgba(91,157,255,0.35)',
+    backgroundColor: 'rgba(91,157,255,0.08)',
+  },
+  providerTitle: {
+    color: Colors.textPrimary,
+    fontSize: 13,
+    fontFamily: Typography.uiFontMedium,
+  },
+  providerTitleActive: {
+    color: Colors.accent,
+  },
+  providerDescription: {
+    marginTop: 3,
+    color: Colors.textSecondary,
+    fontSize: 12,
+    lineHeight: 17,
+    fontFamily: Typography.uiFont,
+    opacity: 0.65,
+  },
+  providerDescriptionActive: {
+    opacity: 0.9,
+  },
+  importClipboardBtn: {
+    marginTop: 12,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 6,
+    paddingVertical: 10,
+    borderRadius: 10,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: 'rgba(255,255,255,0.08)',
+    backgroundColor: 'rgba(255,255,255,0.03)',
+  },
+  importClipboardText: {
+    color: Colors.textSecondary,
+    fontSize: 13,
+    fontFamily: Typography.uiFontMedium,
+  },
+  scannerScreen: {
+    flex: 1,
+    backgroundColor: '#0A0C10',
+    paddingTop: 64,
+    paddingHorizontal: 20,
+    paddingBottom: 28,
+  },
+  scannerHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginBottom: 18,
+  },
+  scannerTitle: {
+    color: Colors.textPrimary,
+    fontSize: 20,
+    fontFamily: Typography.uiFontMedium,
+  },
+  scannerViewport: {
+    borderRadius: 24,
+    overflow: 'hidden',
+    backgroundColor: '#050608',
+    minHeight: 440,
+  },
+  scannerCamera: {
+    flex: 1,
+    minHeight: 440,
+  },
+  scannerOverlay: {
+    ...StyleSheet.absoluteFillObject,
+  },
+  scannerMaskTop: {
+    flex: 1,
+    backgroundColor: 'rgba(5,8,12,0.52)',
+  },
+  scannerMaskMiddle: {
+    height: 240,
+    flexDirection: 'row',
+  },
+  scannerMaskSide: {
+    flex: 1,
+    backgroundColor: 'rgba(5,8,12,0.52)',
+  },
+  scannerFrame: {
+    width: 240,
+    borderRadius: 20,
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.18)',
+  },
+  scannerMaskBottom: {
+    flex: 1,
+    backgroundColor: 'rgba(5,8,12,0.52)',
+  },
+  scannerFrameCornerTopLeft: {
+    position: 'absolute',
+    top: -1,
+    left: -1,
+    width: 32,
+    height: 32,
+    borderTopWidth: 4,
+    borderLeftWidth: 4,
+    borderColor: Colors.accent,
+    borderTopLeftRadius: 20,
+  },
+  scannerFrameCornerTopRight: {
+    position: 'absolute',
+    top: -1,
+    right: -1,
+    width: 32,
+    height: 32,
+    borderTopWidth: 4,
+    borderRightWidth: 4,
+    borderColor: Colors.accent,
+    borderTopRightRadius: 20,
+  },
+  scannerFrameCornerBottomLeft: {
+    position: 'absolute',
+    bottom: -1,
+    left: -1,
+    width: 32,
+    height: 32,
+    borderBottomWidth: 4,
+    borderLeftWidth: 4,
+    borderColor: Colors.accent,
+    borderBottomLeftRadius: 20,
+  },
+  scannerFrameCornerBottomRight: {
+    position: 'absolute',
+    bottom: -1,
+    right: -1,
+    width: 32,
+    height: 32,
+    borderBottomWidth: 4,
+    borderRightWidth: 4,
+    borderColor: Colors.accent,
+    borderBottomRightRadius: 20,
+  },
+  scannerHelpText: {
+    marginTop: 18,
+    color: Colors.textSecondary,
+    fontSize: 13,
+    lineHeight: 20,
+    fontFamily: Typography.uiFont,
+    textAlign: 'center',
+    opacity: 0.8,
+  },
+  scannerActions: {
+    flexDirection: 'row',
+    gap: 10,
+    marginTop: 20,
+  },
+  scannerNoticeCard: {
+    marginTop: 24,
+    borderRadius: 18,
+    padding: 20,
+    backgroundColor: 'rgba(255,255,255,0.04)',
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: 'rgba(255,255,255,0.08)',
+    alignItems: 'center',
+  },
+  scannerNoticeTitle: {
+    color: Colors.textPrimary,
+    fontSize: 16,
+    fontFamily: Typography.uiFontMedium,
+  },
+  scannerNoticeText: {
+    marginTop: 8,
+    color: Colors.textSecondary,
+    fontSize: 13,
+    lineHeight: 20,
+    fontFamily: Typography.uiFont,
+    textAlign: 'center',
+    opacity: 0.8,
+  },
+  scannerPrimaryBtn: {
+    flex: 1,
+    marginTop: 16,
+    minHeight: 44,
+    borderRadius: 12,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: Colors.accent,
+    paddingHorizontal: 16,
+  },
+  scannerPrimaryBtnText: {
+    color: Colors.bgPrimary,
+    fontSize: 13,
+    fontFamily: Typography.uiFontMedium,
+  },
+  scannerSecondaryBtn: {
+    flex: 1,
+    marginTop: 16,
+    minHeight: 44,
+    borderRadius: 12,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: 'rgba(255,255,255,0.06)',
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: 'rgba(255,255,255,0.08)',
+    paddingHorizontal: 16,
+  },
+  scannerSecondaryBtnText: {
+    color: Colors.textPrimary,
+    fontSize: 13,
+    fontFamily: Typography.uiFontMedium,
   },
   modalActions: {
     flexDirection: 'row',

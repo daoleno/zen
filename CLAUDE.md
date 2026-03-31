@@ -3,15 +3,16 @@
 ## Project
 - Monorepo: `daemon/` (Go) + `app/` (Expo/React Native)
 - Daemon polls tmux sessions, classifies agent state, serves WebSocket
-- App connects via WSS through Tailscale Funnel or Cloudflare Tunnel
+- App connects to any user-provided endpoint: LAN, tailnet, reverse proxy, or tunnel
 
 ## Testing
 - Daemon: `cd daemon && go test ./...`
 - App: `cd app && npx expo export --platform android` (build check)
 
 ## Architecture
-- Connection: WSS via Tailscale Funnel or Cloudflare Tunnel (no custom relay)
-- Auth: HMAC-SHA256 with pairing secret
+- Connection: self-hosted endpoint chosen by the user, no hosted relay required
+- Pairing: daemon can export `zen://...` deep links and QR codes for OSS onboarding
+- Auth: optional shared secret on WebSocket and upload endpoints
 - Push: Expo Push API (HTTP POST from daemon)
 - State classification: regex pattern matching on tmux capture-pane output
 - Terminal rendering: React Native FlatList + ANSI color parser

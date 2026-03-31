@@ -3,6 +3,7 @@ import { AppState, AppStateStatus, Platform } from 'react-native';
 import { Stack, useRouter, useSegments } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
 import { useFonts } from 'expo-font';
+import * as Linking from 'expo-linking';
 import * as Notifications from 'expo-notifications';
 import * as Device from 'expo-device';
 import Constants from 'expo-constants';
@@ -10,8 +11,9 @@ import { SafeAreaProvider } from 'react-native-safe-area-context';
 import { Agent, AgentProvider, useAgents } from '../store/agents';
 import { Colors } from '../constants/tokens';
 import { wsClient } from '../services/websocket';
-import { getServers, isOnboarded } from '../services/storage';
+import { getServers, isOnboarded, markOnboarded, saveServer } from '../services/storage';
 import { parseSessionKey } from '../services/sessionKeys';
+import { parseConnectLink } from '../services/connection';
 
 Notifications.setNotificationHandler({
   handleNotification: async () => ({
@@ -97,6 +99,42 @@ function AppContent() {
   const appStateRef = useRef<AppStateStatus>(AppState.currentState);
   const notificationsEnabledRef = useRef(false);
   const previousAgentStatesRef = useRef(new Map<string, Agent['status']>());
+  const handledConnectLinksRef = useRef(new Set<string>());
+
+  const importConnectLink = async (rawValue: string | null | undefined): Promise<boolean> => {
+    const trimmed = rawValue?.trim() || '';
+    if (!trimmed || handledConnectLinksRef.current.has(trimmed)) {
+      return false;
+    }
+
+    const payload = parseConnectLink(trimmed);
+    if (!payload) {
+      return false;
+    }
+
+    handledConnectLinksRef.current.add(trimmed);
+
+    try {
+      const savedServer = await saveServer({
+        name: payload.name || '',
+        provider: payload.provider,
+        endpoint: payload.endpoint,
+        secret: payload.secret,
+      });
+
+      await markOnboarded();
+      wsClient.connectServer(savedServer);
+      router.replace({
+        pathname: '/settings',
+        params: { refresh: Date.now().toString() },
+      });
+      return true;
+    } catch (error) {
+      handledConnectLinksRef.current.delete(trimmed);
+      console.log('Failed to import connect link:', error);
+      return false;
+    }
+  };
 
   // Auto-connect on app start.
   useEffect(() => {
@@ -150,19 +188,29 @@ function AppContent() {
     wsClient.on('disconnected', onDisconnected);
 
     (async () => {
-      const onboarded = await isOnboarded();
-      if (!onboarded && segments[0] !== 'onboarding') {
-        router.replace('/onboarding');
-        return;
+      try {
+        const initialURL = await Linking.getInitialURL();
+        const imported = await importConnectLink(initialURL);
+        if (imported) {
+          return;
+        }
+
+        const onboarded = await isOnboarded();
+        if (!onboarded && segments[0] !== 'onboarding') {
+          router.replace('/onboarding');
+          return;
+        }
+
+        const servers = await getServers();
+        servers.forEach(server => {
+          wsClient.connectServer(server);
+        });
+      } catch (error) {
+        console.log('Failed to bootstrap app:', error);
+      } finally {
+        const selected = state.selectedAgentKey ? parseSessionKey(state.selectedAgentKey) : null;
+        wsClient.clearActiveAgentsExcept(selected);
       }
-
-      const servers = await getServers();
-      servers.forEach(server => {
-        wsClient.connectServer(server);
-      });
-
-      const selected = state.selectedAgentKey ? parseSessionKey(state.selectedAgentKey) : null;
-      wsClient.clearActiveAgentsExcept(selected);
     })();
 
     return () => {
@@ -175,6 +223,16 @@ function AppContent() {
       wsClient.disconnectAll();
     };
   }, []);
+
+  useEffect(() => {
+    const subscription = Linking.addEventListener('url', event => {
+      void importConnectLink(event.url);
+    });
+
+    return () => {
+      subscription.remove();
+    };
+  }, [router]);
 
   useEffect(() => {
     const syncActiveAgent = (appState: AppStateStatus) => {
@@ -327,14 +385,20 @@ function AppContent() {
 }
 
 export default function RootLayout() {
-  const [fontsLoaded] = useFonts({
+  const [fontsLoaded, fontError] = useFonts({
     'SourceHanSansSC-Regular': require('../assets/fonts/SourceHanSansSC-Regular.otf'),
     'SourceHanSansSC-Medium': require('../assets/fonts/SourceHanSansSC-Medium.otf'),
     'MapleMono-CN-Regular': require('../assets/fonts/MapleMono-CN-Regular.ttf'),
     'MapleMono-CN-SemiBold': require('../assets/fonts/MapleMono-CN-SemiBold.ttf'),
   });
 
-  if (!fontsLoaded) {
+  useEffect(() => {
+    if (fontError) {
+      console.log('Failed to load fonts:', fontError);
+    }
+  }, [fontError]);
+
+  if (!fontsLoaded && !fontError) {
     return null;
   }
 

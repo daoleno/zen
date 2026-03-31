@@ -75,6 +75,7 @@ export default function TerminalScreen() {
   const [recentAgentOpens, setRecentAgentOpens] = useState<StoredRecentAgentOpens>({});
   const [terminalTabs, setTerminalTabs] = useState<StoredTerminalTabs>(EMPTY_TABS);
   const [serverUrl, setServerUrl] = useState('');
+  const [serverSecret, setServerSecret] = useState('');
   const [pickerVisible, setPickerVisible] = useState(false);
   const [menuVisible, setMenuVisible] = useState(false);
   const [menuAnchor, setMenuAnchor] = useState<{ x: number; y: number; width: number; height: number } | null>(null);
@@ -139,6 +140,7 @@ export default function TerminalScreen() {
           setRecentAgentOpens(storedRecentOpens);
           setTerminalTabs(storedTabs);
           setServerUrl(storedServer?.url || '');
+          setServerSecret(storedServer?.secret || '');
         }
         return;
       }
@@ -156,6 +158,7 @@ export default function TerminalScreen() {
         });
         setTerminalTabs(nextTabs);
         setServerUrl(storedServer?.url || '');
+        setServerSecret(storedServer?.secret || '');
       }
     })();
 
@@ -679,6 +682,7 @@ export default function TerminalScreen() {
                 <TerminalAccessoryBar
                   terminalRef={terminalRef}
                   serverUrl={serverUrl}
+                  authSecret={serverSecret}
                   ctrlArmed={ctrlArmed}
                   onCtrlArmedChange={handleCtrlArmedChange}
                 />

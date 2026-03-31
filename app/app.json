@@ -23,7 +23,13 @@
       "package": "com.anonymous.zen"
     },
     "plugins": [
-      "expo-router"
+      "expo-router",
+      [
+        "expo-camera",
+        {
+          "cameraPermission": "Allow $(PRODUCT_NAME) to access your camera to scan zen pairing QR codes."
+        }
+      ]
     ]
   }
 }

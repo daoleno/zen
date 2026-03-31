@@ -1,5 +1,13 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { parseSessionKey } from './sessionKeys';
+import { normalizeServerSecret } from './auth';
+import {
+  buildServerURL,
+  ConnectionProvider,
+  deriveEndpointFromURL,
+  normalizeConnectionProvider,
+  normalizeServerURL as normalizeConnectionURL,
+} from './connection';
 
 const KEYS = {
   servers: 'zen:servers',
@@ -18,7 +26,9 @@ export type StoredAgentAliases = Record<string, string>;
 export interface StoredServer {
   id: string;
   name: string;
+  provider: ConnectionProvider;
   url: string;
+  secret?: string;
 }
 export interface StoredTerminalTabs {
   order: string[];
@@ -41,13 +51,20 @@ export async function getServers(): Promise<StoredServer[]> {
       const candidate = item as Record<string, unknown>;
       const id = typeof candidate.id === 'string' ? candidate.id.trim() : '';
       const rawName = typeof candidate.name === 'string' ? candidate.name.trim() : '';
-      const rawURL = typeof candidate.url === 'string' ? normalizeServerURL(candidate.url) : '';
+      const rawURL = typeof candidate.url === 'string' ? normalizeConnectionURL(candidate.url) : '';
+      const rawSecret = typeof candidate.secret === 'string' ? normalizeServerSecret(candidate.secret) : '';
+      const provider = normalizeConnectionProvider(
+        typeof candidate.provider === 'string' ? candidate.provider : '',
+        rawURL,
+      );
       if (!id || !rawURL) continue;
 
       normalized.push({
         id,
         name: rawName || deriveServerName(rawURL),
+        provider,
         url: rawURL,
+        secret: rawSecret || undefined,
       });
     }
 
@@ -60,16 +77,32 @@ export async function getServers(): Promise<StoredServer[]> {
 export async function saveServer(input: {
   id?: string;
   name: string;
-  url: string;
+  provider?: ConnectionProvider;
+  endpoint?: string;
+  url?: string;
+  secret?: string;
 }): Promise<StoredServer> {
   const servers = await getServers();
-  const normalizedURL = normalizeServerURL(input.url);
+  const rawEndpoint = input.endpoint?.trim() || input.url?.trim() || '';
+  const provider = normalizeConnectionProvider(input.provider, rawEndpoint);
+  const normalizedURL = input.url?.trim()
+    ? normalizeConnectionURL(input.url)
+    : buildServerURL(provider, rawEndpoint);
   const normalizedName = input.name.trim() || deriveServerName(normalizedURL);
+  const normalizedSecret = normalizeServerSecret(input.secret);
+  const existingMatch = input.id?.trim()
+    ? null
+    : servers.find(server =>
+      server.provider === provider &&
+      server.url === normalizedURL &&
+      (server.secret || '') === (normalizedSecret || ''));
 
   const nextServer: StoredServer = {
-    id: input.id?.trim() || createServerID(),
+    id: input.id?.trim() || existingMatch?.id || createServerID(),
     name: normalizedName,
+    provider,
     url: normalizedURL,
+    secret: normalizedSecret || undefined,
   };
 
   const nextServers = dedupeServers([
@@ -341,27 +374,8 @@ function deriveServerName(url: string): string {
   }
 }
 
-export function normalizeServerURL(rawValue: string): string {
-  const trimmed = rawValue.trim();
-  if (!trimmed) return '';
-
-  const withProtocol = /^[a-z]+:\/\//i.test(trimmed) ? trimmed : `ws://${trimmed}`;
-
-  try {
-    const parsed = new URL(withProtocol);
-    if (parsed.protocol === 'http:') parsed.protocol = 'ws:';
-    if (parsed.protocol === 'https:') parsed.protocol = 'wss:';
-
-    if (parsed.pathname === '' || parsed.pathname === '/') {
-      parsed.pathname = '/ws';
-    }
-
-    parsed.hash = '';
-    return parsed.toString();
-  } catch {
-    return trimmed;
-  }
-}
+export { deriveEndpointFromURL };
+export const normalizeServerURL = normalizeConnectionURL;
 
 function normalizeTerminalTabs(state: StoredTerminalTabs): StoredTerminalTabs {
   const normalizedOrder = normalizeIdList(state.order);

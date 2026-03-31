@@ -1,4 +1,5 @@
 import type { StoredServer } from './storage';
+import { buildAuthorizationHeader } from './auth';
 
 type MessageHandler = (data: any) => void;
 
@@ -6,11 +7,11 @@ interface ConnectionMeta {
   serverId: string;
   serverName: string;
   serverUrl: string;
+  authSecret?: string;
 }
 
 class ServerSocket {
   private ws: WebSocket | null = null;
-  private token = '';
   private reconnectDelay = 1000;
   private readonly maxReconnectDelay = 30000;
   private readonly pendingQueue: string[] = [];
@@ -25,8 +26,7 @@ class ServerSocket {
     this.meta = toConnectionMeta(server);
   }
 
-  connect(token: string = '') {
-    this.token = token;
+  connect() {
     this.shouldReconnect = true;
     this.reconnectDelay = 1000;
     this.emit('connecting', {});
@@ -54,15 +54,17 @@ class ServerSocket {
 
   private doConnect() {
     try {
-      this.ws = new WebSocket(this.meta.serverUrl);
+      const authHeader = buildAuthorizationHeader(this.meta.authSecret);
+      const wsOptions = authHeader ? { headers: { Authorization: authHeader } } : undefined;
+      const WebSocketCtor = WebSocket as any;
+      const ws = wsOptions
+        ? new WebSocketCtor(this.meta.serverUrl, [], wsOptions)
+        : new WebSocketCtor(this.meta.serverUrl);
+      this.ws = ws;
 
-      this.ws.onopen = () => {
+      ws.onopen = () => {
         this.reconnectDelay = 1000;
         this.emit('connected', {});
-
-        if (this.token) {
-          this.ws?.send(JSON.stringify({ type: 'auth', token: this.token }));
-        }
 
         while (this.pendingQueue.length > 0) {
           const msg = this.pendingQueue.shift()!;
@@ -70,7 +72,7 @@ class ServerSocket {
         }
       };
 
-      this.ws.onmessage = event => {
+      ws.onmessage = (event: any) => {
         try {
           const data = JSON.parse(event.data);
           this.emit(data.type, data);
@@ -79,7 +81,7 @@ class ServerSocket {
         }
       };
 
-      this.ws.onclose = () => {
+      ws.onclose = () => {
         this.emit('disconnected', {});
         if (!this.shouldReconnect) {
           return;
@@ -88,7 +90,7 @@ class ServerSocket {
         this.reconnectDelay = Math.min(this.reconnectDelay * 2, this.maxReconnectDelay);
       };
 
-      this.ws.onerror = () => {
+      ws.onerror = () => {
         this.ws?.close();
       };
     } catch {
@@ -106,7 +108,7 @@ class MultiServerWebSocketClient {
   private readonly connections = new Map<string, ServerSocket>();
   private readonly serverMeta = new Map<string, ConnectionMeta>();
 
-  connectServer(server: StoredServer, token: string = '') {
+  connectServer(server: StoredServer) {
     const meta = toConnectionMeta(server);
     this.serverMeta.set(server.id, meta);
 
@@ -120,7 +122,7 @@ class MultiServerWebSocketClient {
       this.emit(type, server.id, payload);
     });
     this.connections.set(server.id, socket);
-    socket.connect(token);
+    socket.connect();
   }
 
   disconnectServer(serverId: string) {
@@ -226,6 +228,7 @@ function toConnectionMeta(server: StoredServer): ConnectionMeta {
     serverId: server.id,
     serverName: server.name,
     serverUrl: server.url,
+    authSecret: server.secret,
   };
 }
 

@@ -89,3 +89,39 @@ func (s *Secret) Verify(token string, message []byte, maxAge time.Duration) bool
 
 	return hmac.Equal([]byte(parts[1]), []byte(expected))
 }
+
+// VerifyRaw checks a raw hex-encoded secret value.
+func (s *Secret) VerifyRaw(hexKey string) bool {
+	key, err := hex.DecodeString(strings.TrimSpace(hexKey))
+	if err != nil {
+		return false
+	}
+	return hmac.Equal(key, s.key)
+}
+
+// VerifyAuthorization checks an Authorization header value. Supports either
+// a raw hex secret or the existing timestamp:signature token format.
+func (s *Secret) VerifyAuthorization(value string, message []byte, maxAge time.Duration) bool {
+	token := strings.TrimSpace(value)
+	if token == "" {
+		return false
+	}
+
+	lower := strings.ToLower(token)
+	switch {
+	case strings.HasPrefix(lower, "bearer "):
+		token = strings.TrimSpace(token[len("bearer "):])
+	case strings.HasPrefix(lower, "token "):
+		token = strings.TrimSpace(token[len("token "):])
+	}
+
+	if token == "" {
+		return false
+	}
+
+	if strings.Contains(token, ":") {
+		return s.Verify(token, message, maxAge)
+	}
+
+	return s.VerifyRaw(token)
+}

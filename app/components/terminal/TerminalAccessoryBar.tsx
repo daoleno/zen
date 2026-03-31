@@ -12,6 +12,7 @@ import * as DocumentPicker from 'expo-document-picker';
 import * as Haptics from 'expo-haptics';
 import { Colors, Typography } from '../../constants/tokens';
 import type { TerminalSurfaceHandle } from './TerminalSurface';
+import { buildAuthorizationHeader } from '../../services/auth';
 
 type ShortcutKey =
   | { label: 'Ctrl'; type: 'modifier' }
@@ -31,6 +32,7 @@ const SHORTCUT_KEYS: readonly ShortcutKey[] = [
 interface TerminalAccessoryBarProps {
   terminalRef: React.RefObject<TerminalSurfaceHandle | null>;
   serverUrl: string;
+  authSecret?: string;
   ctrlArmed: boolean;
   onCtrlArmedChange(next: boolean): void;
 }
@@ -38,6 +40,7 @@ interface TerminalAccessoryBarProps {
 export function TerminalAccessoryBar({
   terminalRef,
   serverUrl,
+  authSecret,
   ctrlArmed,
   onCtrlArmedChange,
 }: TerminalAccessoryBarProps) {
@@ -79,6 +82,7 @@ export function TerminalAccessoryBar({
 
       const response = await fetch(uploadUrl, {
         method: 'POST',
+        headers: buildRequestHeaders(authSecret),
         body: formData,
       });
       if (!response.ok) {
@@ -158,6 +162,12 @@ export function TerminalAccessoryBar({
       </ScrollView>
     </View>
   );
+}
+
+function buildRequestHeaders(secret: string | undefined): Record<string, string> | undefined {
+  const authHeader = buildAuthorizationHeader(secret);
+  if (!authHeader) return undefined;
+  return { Authorization: authHeader };
 }
 
 function buildUploadUrl(serverUrl: string): string | null {

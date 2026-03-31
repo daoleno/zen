@@ -76,3 +76,31 @@ func TestPairingCode(t *testing.T) {
 		t.Errorf("pairing code should be 6 digits, got %q", code)
 	}
 }
+
+func TestVerifyRaw(t *testing.T) {
+	secret, _ := GenerateSecret()
+	if !secret.VerifyRaw(secret.Hex()) {
+		t.Error("raw secret should verify")
+	}
+	if secret.VerifyRaw("deadbeef") {
+		t.Error("wrong raw secret should not verify")
+	}
+}
+
+func TestVerifyAuthorization(t *testing.T) {
+	secret, _ := GenerateSecret()
+	message := []byte("zen-connect")
+
+	if !secret.VerifyAuthorization("Bearer "+secret.Hex(), message, 5*time.Minute) {
+		t.Error("bearer raw secret should verify")
+	}
+
+	token := secret.Sign(message)
+	if !secret.VerifyAuthorization("Bearer "+token, message, 5*time.Minute) {
+		t.Error("bearer signed token should verify")
+	}
+
+	if secret.VerifyAuthorization("Bearer wrong", message, 5*time.Minute) {
+		t.Error("invalid authorization header should not verify")
+	}
+}

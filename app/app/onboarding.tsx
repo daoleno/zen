@@ -32,21 +32,24 @@ export default function OnboardingScreen() {
             <View style={styles.codeBlock}>
               <Text style={styles.code}>zen-daemon</Text>
             </View>
-            <Text style={styles.stepHint}>Note the pairing code displayed</Text>
+            <Text style={styles.stepHint}>By default it listens locally on :9876, prints reachable endpoints, and shows a QR/deep link with no hosted relay required.</Text>
           </View>
         </View>
 
         <View style={styles.step}>
           <Text style={styles.stepNum}>3</Text>
           <View style={styles.stepContent}>
-            <Text style={styles.stepTitle}>Enter the server URL in Settings</Text>
-            <Text style={styles.stepHint}>Use your Tailscale Funnel or Cloudflare Tunnel URL</Text>
+            <Text style={styles.stepTitle}>Import or enter your own endpoint</Text>
+            <Text style={styles.stepHint}>Scan the daemon QR or use LAN, Tailscale, your own reverse proxy, or a tunnel URL. Add a secret only if you protected the daemon with one.</Text>
           </View>
         </View>
 
         <TouchableOpacity style={styles.doneBtn} onPress={async () => {
           await markOnboarded();
-          router.replace('/(tabs)');
+          router.replace({
+            pathname: '/settings',
+            params: { addServer: Date.now().toString() },
+          });
         }}>
           <Text style={styles.doneBtnText}>Get Started</Text>
         </TouchableOpacity>
