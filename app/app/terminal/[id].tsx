@@ -1,5 +1,7 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
+  Animated,
+  Easing,
   Keyboard,
   KeyboardAvoidingView,
   KeyboardEvent,
@@ -82,6 +84,8 @@ export default function TerminalScreen() {
   const [keyboardInset, setKeyboardInset] = useState(0);
   const [ctrlArmed, setCtrlArmed] = useState(false);
   const terminalRef = useRef<TerminalSurfaceHandle>(null);
+  const tabSwipeTranslateX = useRef(new Animated.Value(0)).current;
+  const tabSwipeAnimatingRef = useRef(false);
   const keyboardHeightRef = useRef(0);
   const baseWindowHeightRef = useRef(windowHeight);
   const menuAnchorRef = useRef<View | null>(null);
@@ -242,6 +246,12 @@ export default function TerminalScreen() {
   }, [sessionKey]);
 
   useEffect(() => {
+    tabSwipeAnimatingRef.current = false;
+    tabSwipeTranslateX.stopAnimation();
+    tabSwipeTranslateX.setValue(0);
+  }, [sessionKey, tabSwipeTranslateX]);
+
+  useEffect(() => {
     if (renameVisible) {
       setCtrlArmed(false);
     }
@@ -271,6 +281,15 @@ export default function TerminalScreen() {
       });
   }, [agentAliases, agentByKey, hydratedServerIdSet, sessionKey, terminalTabs]);
 
+  const previousTab = useMemo(
+    () => getAdjacentTab(tabs, sessionKey, 'prev'),
+    [sessionKey, tabs],
+  );
+  const nextTab = useMemo(
+    () => getAdjacentTab(tabs, sessionKey, 'next'),
+    [sessionKey, tabs],
+  );
+
   const sortedAgents = useMemo(() => {
     const openTabs = new Set(terminalTabs.order);
     const pinnedTabs = new Set(terminalTabs.pinned);
@@ -299,6 +318,54 @@ export default function TerminalScreen() {
   const menuPosition = useMemo(
     () => buildMenuPosition(menuAnchor, windowWidth),
     [menuAnchor, windowWidth],
+  );
+  const previousHintOpacity = useMemo(
+    () => tabSwipeTranslateX.interpolate({
+      inputRange: [0, 14, 80],
+      outputRange: [0, 0.3, 1],
+      extrapolate: 'clamp',
+    }),
+    [tabSwipeTranslateX],
+  );
+  const nextHintOpacity = useMemo(
+    () => tabSwipeTranslateX.interpolate({
+      inputRange: [-80, -14, 0],
+      outputRange: [1, 0.3, 0],
+      extrapolate: 'clamp',
+    }),
+    [tabSwipeTranslateX],
+  );
+  const previousHintTranslate = useMemo(
+    () => tabSwipeTranslateX.interpolate({
+      inputRange: [0, 80],
+      outputRange: [-12, 0],
+      extrapolate: 'clamp',
+    }),
+    [tabSwipeTranslateX],
+  );
+  const terminalSwipeScale = useMemo(
+    () => tabSwipeTranslateX.interpolate({
+      inputRange: [-180, 0, 180],
+      outputRange: [0.982, 1, 0.982],
+      extrapolate: 'clamp',
+    }),
+    [tabSwipeTranslateX],
+  );
+  const terminalSwipeOpacity = useMemo(
+    () => tabSwipeTranslateX.interpolate({
+      inputRange: [-180, 0, 180],
+      outputRange: [0.96, 1, 0.96],
+      extrapolate: 'clamp',
+    }),
+    [tabSwipeTranslateX],
+  );
+  const nextHintTranslate = useMemo(
+    () => tabSwipeTranslateX.interpolate({
+      inputRange: [-80, 0],
+      outputRange: [0, 12],
+      extrapolate: 'clamp',
+    }),
+    [tabSwipeTranslateX],
   );
 
   const accessoryVisible = Boolean(sessionKey && serverId && agentId);
@@ -402,6 +469,59 @@ export default function TerminalScreen() {
     setCtrlArmed(next);
   };
 
+  const animateTabSwipeBack = () => {
+    tabSwipeAnimatingRef.current = false;
+    Animated.spring(tabSwipeTranslateX, {
+      toValue: 0,
+      useNativeDriver: true,
+      damping: 22,
+      stiffness: 240,
+      mass: 0.8,
+    }).start();
+  };
+
+  const handleTabSwipeProgress = (deltaX: number, active: boolean) => {
+    if (tabSwipeAnimatingRef.current) return;
+
+    if (!active) {
+      animateTabSwipeBack();
+      return;
+    }
+
+    const direction = deltaX < 0 ? 'next' : 'prev';
+    const targetExists = direction === 'next' ? Boolean(nextTab) : Boolean(previousTab);
+    const maxOffset = targetExists ? Math.min(windowWidth * 0.24, 110) : 56;
+    const resistance = targetExists ? 0.34 : 0.16;
+    const previewOffset = clamp(
+      deltaX * resistance,
+      -maxOffset,
+      maxOffset,
+    );
+
+    tabSwipeTranslateX.setValue(previewOffset);
+  };
+
+  const handleTabSwipe = (direction: 'next' | 'prev') => {
+    if (tabSwipeAnimatingRef.current || pickerVisible || menuVisible || renameVisible || !sessionKey || tabs.length <= 1) return;
+
+    const targetTab = direction === 'next' ? nextTab : previousTab;
+    if (!targetTab) {
+      animateTabSwipeBack();
+      return;
+    }
+
+    tabSwipeAnimatingRef.current = true;
+    setCtrlArmed(false);
+    Animated.timing(tabSwipeTranslateX, {
+      toValue: direction === 'next' ? -(windowWidth + 24) : windowWidth + 24,
+      duration: 230,
+      easing: Easing.bezier(0.22, 1, 0.36, 1),
+      useNativeDriver: true,
+    }).start(() => {
+      void openAgentTab(targetTab.id);
+    });
+  };
+
   return (
     <SafeAreaView style={styles.container} edges={['top']}>
       <View style={styles.topBar}>
@@ -481,40 +601,91 @@ export default function TerminalScreen() {
         </TouchableOpacity>
       </View>
 
-      <View
-        style={[
-          styles.terminalShell,
-          Platform.OS === 'android' && keyboardInset > 0 ? { paddingBottom: keyboardInset } : null,
-        ]}
-      >
-        <KeyboardAvoidingView
-          style={styles.terminalContent}
-          behavior={Platform.OS === 'ios' ? 'padding' : undefined}
-        >
-          <View style={styles.output}>
-            {sessionKey && serverId && agentId ? (
-              <TerminalSurface
-                ref={terminalRef}
-                serverId={serverId}
-                targetId={agentId}
-                themeName={themeName}
-                ctrlArmed={ctrlArmed}
-                onCtrlArmedChange={handleCtrlArmedChange}
-              />
-            ) : null}
-          </View>
+      <View style={styles.terminalStage}>
+        {previousTab ? (
+          <Animated.View
+            pointerEvents="none"
+            style={[
+              styles.swipeHint,
+              styles.swipeHintLeft,
+              {
+                opacity: previousHintOpacity,
+                transform: [{ translateX: previousHintTranslate }],
+              },
+            ]}
+          >
+            <Ionicons name="chevron-back" size={15} color="#DDE5F2" />
+            <Text style={styles.swipeHintText} numberOfLines={1}>
+              {previousTab.name}
+            </Text>
+          </Animated.View>
+        ) : null}
 
-          {accessoryVisible ? (
-            <View style={[styles.inputShell, { paddingBottom: keyboardVisible ? 6 : Math.max(insets.bottom + 8, 12), marginBottom: keyboardVisible ? 4 : 0 }]}>
-              <TerminalAccessoryBar
-                terminalRef={terminalRef}
-                serverUrl={serverUrl}
-                ctrlArmed={ctrlArmed}
-                onCtrlArmedChange={handleCtrlArmedChange}
-              />
+        {nextTab ? (
+          <Animated.View
+            pointerEvents="none"
+            style={[
+              styles.swipeHint,
+              styles.swipeHintRight,
+              {
+                opacity: nextHintOpacity,
+                transform: [{ translateX: nextHintTranslate }],
+              },
+            ]}
+          >
+            <Text style={styles.swipeHintText} numberOfLines={1}>
+              {nextTab.name}
+            </Text>
+            <Ionicons name="chevron-forward" size={15} color="#DDE5F2" />
+          </Animated.View>
+        ) : null}
+
+        <Animated.View
+          renderToHardwareTextureAndroid
+          shouldRasterizeIOS
+          style={[
+            styles.terminalShell,
+            Platform.OS === 'android' && keyboardInset > 0 ? { paddingBottom: keyboardInset } : null,
+            {
+              opacity: terminalSwipeOpacity,
+              transform: [
+                { translateX: tabSwipeTranslateX },
+                { scale: terminalSwipeScale },
+              ],
+            },
+          ]}
+        >
+          <KeyboardAvoidingView
+            style={styles.terminalContent}
+            behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+          >
+            <View style={styles.output}>
+              {sessionKey && serverId && agentId ? (
+                <TerminalSurface
+                  ref={terminalRef}
+                  serverId={serverId}
+                  targetId={agentId}
+                  themeName={themeName}
+                  ctrlArmed={ctrlArmed}
+                  onCtrlArmedChange={handleCtrlArmedChange}
+                  onTabSwipeProgress={handleTabSwipeProgress}
+                  onTabSwipe={handleTabSwipe}
+                />
+              ) : null}
             </View>
-          ) : null}
-        </KeyboardAvoidingView>
+
+            {accessoryVisible ? (
+              <View style={[styles.inputShell, { paddingBottom: keyboardVisible ? 6 : Math.max(insets.bottom + 8, 12), marginBottom: keyboardVisible ? 4 : 0 }]}>
+                <TerminalAccessoryBar
+                  terminalRef={terminalRef}
+                  serverUrl={serverUrl}
+                  ctrlArmed={ctrlArmed}
+                  onCtrlArmedChange={handleCtrlArmedChange}
+                />
+              </View>
+            ) : null}
+          </KeyboardAvoidingView>
+        </Animated.View>
       </View>
 
       <Modal
@@ -728,6 +899,19 @@ function buildDisplayTabOrder(currentId: string | null | undefined, tabs: Stored
   return tabs.order.includes(currentId) ? tabs.order : [...tabs.order, currentId];
 }
 
+function getAdjacentTab(
+  tabs: TerminalTabDescriptor[],
+  currentId: string | null | undefined,
+  direction: 'next' | 'prev',
+): TerminalTabDescriptor | null {
+  if (!currentId) return null;
+
+  const currentIndex = tabs.findIndex(tab => tab.id === currentId);
+  if (currentIndex === -1) return null;
+
+  return tabs[direction === 'next' ? currentIndex + 1 : currentIndex - 1] ?? null;
+}
+
 function buildMenuPosition(
   anchor: { x: number; y: number; width: number; height: number } | null,
   windowWidth: number,
@@ -810,9 +994,46 @@ const styles = StyleSheet.create({
     borderBottomColor: '#161E2A',
     backgroundColor: '#11161F',
   },
+  terminalStage: {
+    flex: 1,
+    minHeight: 0,
+    overflow: 'hidden',
+    justifyContent: 'center',
+  },
   terminalShell: {
     flex: 1,
     minHeight: 0,
+  },
+  swipeHint: {
+    position: 'absolute',
+    top: '50%',
+    zIndex: 1,
+    maxWidth: '46%',
+    minHeight: 40,
+    paddingHorizontal: 12,
+    borderRadius: 16,
+    backgroundColor: 'rgba(20, 30, 44, 0.92)',
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.08)',
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    shadowColor: '#000',
+    shadowOpacity: 0.18,
+    shadowRadius: 14,
+    shadowOffset: { width: 0, height: 8 },
+  },
+  swipeHintLeft: {
+    left: 12,
+  },
+  swipeHintRight: {
+    right: 12,
+  },
+  swipeHintText: {
+    flexShrink: 1,
+    color: '#DDE5F2',
+    fontSize: 12,
+    fontFamily: Typography.uiFontMedium,
   },
   terminalContent: {
     flex: 1,

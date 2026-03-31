@@ -18,7 +18,9 @@ type BridgeMessage =
   | { type: 'input'; data: string }
   | { type: 'resize'; cols: number; rows: number }
   | { type: 'scroll'; lines: number }
-  | { type: 'ctrlConsumed' };
+  | { type: 'ctrlConsumed' }
+  | { type: 'tabSwipeProgress'; deltaX: number; active: boolean }
+  | { type: 'tabSwipe'; direction: 'next' | 'prev' };
 
 type NativeToTerminalMessage =
   | { type: 'output'; data: string }
@@ -45,6 +47,8 @@ export const TerminalSurface = forwardRef<TerminalSurfaceHandle, {
   themeOverrides?: Partial<TerminalThemePalette>;
   ctrlArmed?: boolean;
   onCtrlArmedChange?: (next: boolean) => void;
+  onTabSwipeProgress?: (deltaX: number, active: boolean) => void;
+  onTabSwipe?: (direction: 'next' | 'prev') => void;
 }>(({
   serverId,
   targetId,
@@ -53,6 +57,8 @@ export const TerminalSurface = forwardRef<TerminalSurfaceHandle, {
   themeOverrides,
   ctrlArmed = false,
   onCtrlArmedChange,
+  onTabSwipeProgress,
+  onTabSwipe,
 }, ref) => {
   const webviewRef = useRef<WebView>(null);
   const pendingRef = useRef<NativeToTerminalMessage[]>([]);
@@ -220,6 +226,14 @@ export const TerminalSurface = forwardRef<TerminalSurfaceHandle, {
       }
       if (payload.type === 'ctrlConsumed') {
         onCtrlArmedChange?.(false);
+        return;
+      }
+      if (payload.type === 'tabSwipeProgress') {
+        onTabSwipeProgress?.(payload.deltaX, payload.active);
+        return;
+      }
+      if (payload.type === 'tabSwipe') {
+        onTabSwipe?.(payload.direction);
         return;
       }
       if (payload.type === 'resize') {
@@ -651,6 +665,23 @@ function buildTerminalHtml(theme: TerminalThemePalette, fontUri: string) {
           try { window.ReactNativeWebView.postMessage(JSON.stringify(payload)); }
           catch(_) {}
         };
+        let swipeProgressDeltaX = 0;
+        let swipeProgressActive = false;
+        let swipeProgressRAF = null;
+        const flushSwipeProgress = () => {
+          swipeProgressRAF = null;
+          send({
+            type: 'tabSwipeProgress',
+            deltaX: swipeProgressDeltaX,
+            active: swipeProgressActive,
+          });
+        };
+        const reportSwipeProgress = (deltaX, active) => {
+          swipeProgressDeltaX = deltaX;
+          swipeProgressActive = active;
+          if (swipeProgressRAF != null) return;
+          swipeProgressRAF = requestAnimationFrame(flushSwipeProgress);
+        };
         const reportSize = () => {
           try {
             fitAddon.fit();
@@ -837,7 +868,9 @@ function buildTerminalHtml(theme: TerminalThemePalette, fontUri: string) {
       //
       (function initTouchScroll() {
         let scrolling = false;
+        let horizontalSwiping = false;
         let longPressTriggered = false;
+        let startX = 0;
         let startY = 0;
         let lastY = 0;
         let lastTime = 0;
@@ -845,7 +878,11 @@ function buildTerminalHtml(theme: TerminalThemePalette, fontUri: string) {
         let scrollAccum = 0;
         let momentumRAF = null;
 
-        const THRESHOLD = 5;
+        const VERTICAL_START_THRESHOLD = 12;
+        const HORIZONTAL_START_THRESHOLD = 16;
+        const HORIZONTAL_COMMIT_THRESHOLD = 64;
+        const HORIZONTAL_LOCK_RATIO = 1.0;
+        const VERTICAL_LOCK_RATIO = 1.1;
         const MAX_VELOCITY = 8;
         const MIN_MOMENTUM = 0.12;
         const FRICTION = 0.93;
@@ -904,16 +941,18 @@ function buildTerminalHtml(theme: TerminalThemePalette, fontUri: string) {
           if (selectionMode) return;
           cancelMomentum();
           scrolling = false;
+          horizontalSwiping = false;
           longPressTriggered = false;
           scrollAccum = 0;
           velocity = 0;
+          startX = e.touches[0].clientX;
           startY = lastY = e.touches[0].clientY;
           lastTime = performance.now();
 
           cancelLongPress();
           longPressTimer = setTimeout(() => {
             longPressTimer = null;
-            if (!scrolling) {
+            if (!scrolling && !horizontalSwiping) {
               longPressTriggered = true;
               openSelectionMode();
             }
@@ -922,12 +961,39 @@ function buildTerminalHtml(theme: TerminalThemePalette, fontUri: string) {
 
         document.addEventListener('touchmove', (e) => {
           if (selectionMode) return;
+          const x = e.touches[0].clientX;
           const y = e.touches[0].clientY;
-          if (!scrolling && Math.abs(startY - y) > THRESHOLD) {
-            scrolling = true;
-            scrollAccum = 0;
-            cancelLongPress();
+          const deltaXFromStart = x - startX;
+          const deltaYFromStart = y - startY;
+          const absDeltaX = Math.abs(deltaXFromStart);
+          const absDeltaY = Math.abs(deltaYFromStart);
+
+          if (!scrolling && !horizontalSwiping) {
+            // Give diagonal gestures a fair chance before vertical scroll
+            // claims the interaction.
+            if (
+              absDeltaX > HORIZONTAL_START_THRESHOLD &&
+              absDeltaX >= absDeltaY * HORIZONTAL_LOCK_RATIO
+            ) {
+              horizontalSwiping = true;
+              cancelLongPress();
+            } else if (
+              absDeltaY > VERTICAL_START_THRESHOLD &&
+              absDeltaY > absDeltaX * VERTICAL_LOCK_RATIO
+            ) {
+              scrolling = true;
+              scrollAccum = 0;
+              cancelLongPress();
+            }
           }
+
+          if (horizontalSwiping) {
+            reportSwipeProgress(deltaXFromStart, true);
+            e.preventDefault();
+            e.stopPropagation();
+            return;
+          }
+
           if (!scrolling) return;
 
           e.preventDefault();
@@ -956,7 +1022,27 @@ function buildTerminalHtml(theme: TerminalThemePalette, fontUri: string) {
           cancelLongPress();
           if (longPressTriggered) {
             scrolling = false;
+            horizontalSwiping = false;
             longPressTriggered = false;
+            reportSwipeProgress(0, false);
+            return;
+          }
+
+          if (horizontalSwiping) {
+            const touch = e.changedTouches && e.changedTouches[0];
+            const totalDeltaX = touch ? touch.clientX - startX : 0;
+            horizontalSwiping = false;
+
+            if (Math.abs(totalDeltaX) >= HORIZONTAL_COMMIT_THRESHOLD) {
+              if (e.cancelable) e.preventDefault();
+              if (typeof e.stopPropagation === 'function') e.stopPropagation();
+              send({
+                type: 'tabSwipe',
+                direction: totalDeltaX < 0 ? 'next' : 'prev',
+              });
+            } else {
+              reportSwipeProgress(0, false);
+            }
             return;
           }
 
@@ -1008,10 +1094,12 @@ function buildTerminalHtml(theme: TerminalThemePalette, fontUri: string) {
         document.addEventListener('touchcancel', () => {
           if (selectionMode) return;
           scrolling = false;
+          horizontalSwiping = false;
           longPressTriggered = false;
           cancelLongPress();
           cancelMomentum();
           flushScrollNow();
+          reportSwipeProgress(0, false);
         }, { capture: true, passive: true });
       })();
 
