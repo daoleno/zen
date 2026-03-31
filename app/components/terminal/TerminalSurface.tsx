@@ -33,6 +33,7 @@ export interface TerminalSurfaceHandle {
   sendInput(data: string, options?: { focus?: boolean }): void;
   focus(): void;
   blur(): void;
+  resumeInput(): void;
   scrollToBottom(): void;
 }
 
@@ -121,6 +122,10 @@ export const TerminalSurface = forwardRef<TerminalSurfaceHandle, {
     webviewRef.current?.injectJavaScript('window.__zenBlur && window.__zenBlur(); true;');
   };
 
+  const resumeTerminalInput = () => {
+    webviewRef.current?.injectJavaScript('window.__zenResumeInput && window.__zenResumeInput(); true;');
+  };
+
   const scrollToBottom = () => {
     webviewRef.current?.injectJavaScript('window.__zenScrollToBottom && window.__zenScrollToBottom(); true;');
   };
@@ -188,6 +193,11 @@ export const TerminalSurface = forwardRef<TerminalSurfaceHandle, {
     },
     blur() {
       blurTerminal();
+    },
+    resumeInput() {
+      session.cancelScroll();
+      setScrolledUp(false);
+      resumeTerminalInput();
     },
     scrollToBottom() {
       scrollToBottom();
@@ -337,9 +347,18 @@ function buildTerminalHtml(theme: TerminalThemePalette, fontUri: string) {
       }
       .xterm .xterm-helpers {
         left: 0;
+        top: 0;
         right: 0;
-        bottom: 0;
-        overflow: hidden;
+        bottom: auto;
+        height: 100%;
+        overflow: visible;
+        pointer-events: none;
+      }
+      .xterm .xterm-helper-textarea {
+        opacity: 0 !important;
+        background: transparent !important;
+        color: transparent !important;
+        caret-color: transparent !important;
       }
       /*
        * IME composition overlay — opaque background prevents
@@ -443,10 +462,48 @@ function buildTerminalHtml(theme: TerminalThemePalette, fontUri: string) {
         const fitAddon = new FitAddon.FitAddon();
         terminal.loadAddon(fitAddon);
         terminal.open(document.getElementById('terminal'));
+        const core = terminal._core;
+        const coreService = core && core.coreService;
         let ctrlArmed = false;
+        const hideTextarea = () => {
+          const textarea = terminal.textarea;
+          if (!textarea) return;
+
+          textarea.style.left = '-9999em';
+          textarea.style.top = '0px';
+          textarea.style.maxWidth = '0px';
+          textarea.style.width = '0px';
+          textarea.style.height = '0px';
+          textarea.style.lineHeight = '';
+          textarea.style.opacity = '0';
+          textarea.style.pointerEvents = 'none';
+          textarea.style.background = 'transparent';
+          textarea.style.color = 'transparent';
+          textarea.style.caretColor = 'transparent';
+        };
+        const clearCompositionArtifacts = () => {
+          try {
+            if (terminal.textarea) {
+              terminal.textarea.value = '';
+              hideTextarea();
+            }
+            if (core && core._compositionView) {
+              core._compositionView.textContent = '';
+              core._compositionView.classList.remove('active');
+              core._compositionView.style.left = '0px';
+              core._compositionView.style.top = '0px';
+              core._compositionView.style.width = 'auto';
+              core._compositionView.style.maxWidth = '';
+              core._compositionView.style.height = 'auto';
+              core._compositionView.style.minHeight = '';
+              core._compositionView.style.lineHeight = '';
+              core._compositionView.style.textIndent = '';
+            }
+          } catch (_) {}
+        };
+        hideTextarea();
         const patchCompositionLayout = () => {
           try {
-            const core = terminal._core;
             const helper = core && core._compositionHelper;
             const compositionView = core && core._compositionView;
             const helperContainer = terminal.element && terminal.element.querySelector('.xterm-helpers');
@@ -510,6 +567,11 @@ function buildTerminalHtml(theme: TerminalThemePalette, fontUri: string) {
                   textarea.style.width = Math.max(Math.min(naturalWidth, textareaWidth), 1) + 'px';
                   textarea.style.height = Math.max(compositionView.offsetHeight, cellHeight) + 'px';
                   textarea.style.lineHeight = cellHeight + 'px';
+                  textarea.style.opacity = '0';
+                  textarea.style.pointerEvents = 'none';
+                  textarea.style.background = 'transparent';
+                  textarea.style.color = 'transparent';
+                  textarea.style.caretColor = 'transparent';
                 }
               } catch (_) {}
             };
@@ -620,8 +682,6 @@ function buildTerminalHtml(theme: TerminalThemePalette, fontUri: string) {
           clearCtrlArmed();
           return ctrlValue ?? value;
         };
-        const core = terminal._core;
-        const coreService = core && core.coreService;
         if (coreService && typeof coreService.triggerDataEvent === 'function') {
           const originalTriggerDataEvent = coreService.triggerDataEvent.bind(coreService);
           coreService.triggerDataEvent = (data, wasUserInput) => {
@@ -634,15 +694,7 @@ function buildTerminalHtml(theme: TerminalThemePalette, fontUri: string) {
           terminal._inputEvent = (ev) => {
             const nextData = flushCtrlCandidate(ev && typeof ev.data === 'string' ? ev.data : '');
             if (nextData != null) {
-              try {
-                if (terminal.textarea) {
-                  terminal.textarea.value = '';
-                }
-                if (core && core._compositionView) {
-                  core._compositionView.textContent = '';
-                  core._compositionView.classList.remove('active');
-                }
-              } catch (_) {}
+              clearCompositionArtifacts();
               send({ type: 'input', data: nextData });
               if (ev) {
                 if (typeof terminal.cancel === 'function') {
@@ -659,9 +711,11 @@ function buildTerminalHtml(theme: TerminalThemePalette, fontUri: string) {
         }
         if (core && core._compositionHelper && typeof core._compositionHelper.compositionend === 'function') {
           const helper = core._compositionHelper;
-          helper.compositionend = () => {
+          const originalCompositionEnd = helper.compositionend.bind(helper);
+          helper.compositionend = (...args) => {
             if (!ctrlArmed) {
-              helper._finalizeComposition(true);
+              originalCompositionEnd(...args);
+              setTimeout(clearCompositionArtifacts, 0);
               return;
             }
 
@@ -679,7 +733,7 @@ function buildTerminalHtml(theme: TerminalThemePalette, fontUri: string) {
               if (textarea) {
                 textarea.value = '';
               }
-              helper._compositionView.textContent = '';
+              clearCompositionArtifacts();
               if (nextData != null) {
                 send({ type: 'input', data: nextData });
               }
@@ -708,6 +762,20 @@ function buildTerminalHtml(theme: TerminalThemePalette, fontUri: string) {
         if (selectionText) selectionText.textContent = '';
         const selection = window.getSelection();
         if (selection) selection.removeAllRanges();
+      };
+      const resumeLiveInput = () => {
+        remoteAtBottom = true;
+        terminal.options.disableStdin = false;
+        clearCompositionArtifacts();
+        terminal.scrollToBottom();
+        if (terminal.textarea) {
+          terminal.textarea.readOnly = false;
+        }
+        requestAnimationFrame(() => {
+          try {
+            terminal.focus();
+          } catch (_) {}
+        });
       };
 
       const openSelectionMode = () => {
@@ -892,18 +960,15 @@ function buildTerminalHtml(theme: TerminalThemePalette, fontUri: string) {
             return;
           }
 
-          // Short tap (no scroll, no long-press) should only reach React Native
-          // when the terminal is already at the live bottom. Otherwise RN focuses
-          // the hidden textarea, which exits copy-mode and pops the keyboard.
+          // While reading scrollback, keep short taps inert so the view
+          // doesn't unexpectedly snap back to live output.
           if (!scrolling) {
             if (suppressDetachedInteraction(e)) {
               return;
             }
-            if (remoteAtBottom) {
-              const touch = e.changedTouches && e.changedTouches[0];
-              if (touch) {
-                dispatchTouchCursorMove(touch.clientX, touch.clientY);
-              }
+            const touch = e.changedTouches && e.changedTouches[0];
+            if (touch) {
+              dispatchTouchCursorMove(touch.clientX, touch.clientY);
             }
             return;
           }
@@ -1016,6 +1081,10 @@ function buildTerminalHtml(theme: TerminalThemePalette, fontUri: string) {
             terminal.textarea.blur();
           }
         } catch (_) {}
+        clearCompositionArtifacts();
+      };
+      window.__zenResumeInput = () => {
+        resumeLiveInput();
       };
       window.__zenScrollToBottom = () => {
         terminal.scrollToBottom();
@@ -1029,6 +1098,9 @@ function buildTerminalHtml(theme: TerminalThemePalette, fontUri: string) {
             terminal.textarea.blur();
           }
         }
+        if (!remoteAtBottom) {
+          clearCompositionArtifacts();
+        }
       };
       window.__zenTheme = (t) => {
         terminal.options.theme = t;
@@ -1037,15 +1109,7 @@ function buildTerminalHtml(theme: TerminalThemePalette, fontUri: string) {
       };
       window.__zenCtrlState = (state) => {
         ctrlArmed = !!(state && state.armed);
-        try {
-          if (terminal.textarea) {
-            terminal.textarea.value = '';
-          }
-          if (core && core._compositionView) {
-            core._compositionView.textContent = '';
-            core._compositionView.classList.remove('active');
-          }
-        } catch (_) {}
+        clearCompositionArtifacts();
       };
       window.__zenSession = () => {
         if (!initialized) {
@@ -1055,6 +1119,9 @@ function buildTerminalHtml(theme: TerminalThemePalette, fontUri: string) {
       };
 
       terminal.onData((data) => send({ type: 'input', data }));
+      if (terminal.textarea && typeof terminal.textarea.addEventListener === 'function') {
+        terminal.textarea.addEventListener('blur', clearCompositionArtifacts);
+      }
       window.addEventListener('resize', reportSize);
 
       requestAnimationFrame(() => {

@@ -2,9 +2,7 @@ import React, { useEffect, useMemo, useState } from 'react';
 import {
   Alert,
   Modal,
-  Platform,
   ScrollView,
-  StatusBar,
   StyleSheet,
   Text,
   TextInput,
@@ -13,7 +11,7 @@ import {
 } from 'react-native';
 import { useLocalSearchParams } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
-import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { SafeAreaView } from 'react-native-safe-area-context';
 import { Colors, Spacing, Typography } from '../../constants/tokens';
 import {
   DefaultTerminalThemeName,
@@ -146,15 +144,10 @@ export default function SettingsScreen() {
     setExpandedServer(prev => prev === serverId ? null : serverId);
   };
 
-  const insets = useSafeAreaInsets();
-  const topPadding = Platform.OS === 'android'
-    ? (StatusBar.currentHeight || 0) + 4
-    : insets.top;
-
   if (!loaded) return null;
 
   return (
-    <View style={[styles.container, { paddingTop: topPadding }]}>
+    <SafeAreaView style={styles.container} edges={['top']}>
       <ScrollView contentContainerStyle={styles.content}>
         <Text style={styles.pageTitle}>Settings</Text>
 
@@ -314,7 +307,7 @@ export default function SettingsScreen() {
           </View>
         </View>
       </Modal>
-    </View>
+    </SafeAreaView>
   );
 }
 

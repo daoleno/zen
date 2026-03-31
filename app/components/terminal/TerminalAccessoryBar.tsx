@@ -109,6 +109,16 @@ export function TerminalAccessoryBar({
         contentContainerStyle={styles.shortcutRowContent}
       >
         <TouchableOpacity
+          style={styles.attachBtn}
+          onPress={() => {
+            onCtrlArmedChange(false);
+            terminalRef.current?.resumeInput();
+          }}
+        >
+          <Ionicons name="keypad-outline" size={18} color={Colors.textPrimary} />
+        </TouchableOpacity>
+
+        <TouchableOpacity
           style={[styles.attachBtn, !uploadEnabled && styles.attachBtnDisabled]}
           onPress={handleFilePick}
           disabled={!uploadEnabled}

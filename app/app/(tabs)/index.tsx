@@ -2,8 +2,6 @@ import React, { useEffect, useMemo, useState } from 'react';
 import {
   FlatList,
   Modal,
-  Platform,
-  StatusBar,
   StyleSheet,
   Text,
   TextInput,
@@ -12,7 +10,7 @@ import {
 } from 'react-native';
 import { useFocusEffect, useRouter } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
-import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { SafeAreaView } from 'react-native-safe-area-context';
 import { Agent, useAgents } from '../../store/agents';
 import { AgentStatus, Colors, Spacing, Typography, statusColor } from '../../constants/tokens';
 import { TerminalPreview } from '../../components/terminal/TerminalPreview';
@@ -42,10 +40,6 @@ const STATUS_PRIORITY: Record<AgentStatus, number> = {
 export default function InboxScreen() {
   const { state } = useAgents();
   const router = useRouter();
-  const insets = useSafeAreaInsets();
-  const topPadding = Platform.OS === 'android'
-    ? (StatusBar.currentHeight || 0) + 4
-    : insets.top;
   const [viewMode, setViewModeState] = useState<StoredInboxViewMode>('list');
   const [agentAliases, setAgentAliases] = useState<StoredAgentAliases>({});
   const [recentAgentOpens, setRecentAgentOpens] = useState<StoredRecentAgentOpens>({});
@@ -208,7 +202,7 @@ export default function InboxScreen() {
   );
 
   return (
-    <View style={[styles.container, { paddingTop: topPadding }]}>
+    <SafeAreaView style={styles.container} edges={['top']}>
       {hasConnection && !anyConnected && (
         <View style={styles.banner}>
           <View style={[styles.bannerDot, { backgroundColor: anyConnecting ? Colors.statusUnknown : '#65758A' }]} />
@@ -367,7 +361,7 @@ export default function InboxScreen() {
           </View>
         </View>
       </Modal>
-    </View>
+    </SafeAreaView>
   );
 }
 
@@ -443,9 +437,11 @@ const styles = StyleSheet.create({
   title: {
     color: Colors.textPrimary,
     fontSize: 22,
+    lineHeight: 28,
     fontFamily: Typography.uiFontMedium,
     letterSpacing: 1,
     opacity: 0.9,
+    paddingRight: 4,
   },
   viewToggle: {
     flexDirection: 'row',
@@ -518,21 +514,28 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     gap: 8,
     paddingHorizontal: 14,
-    paddingVertical: 10,
+    paddingVertical: 11,
+    minHeight: 44,
     borderBottomWidth: StyleSheet.hairlineWidth,
     borderBottomColor: 'rgba(255,255,255,0.04)',
   },
   gridTitle: {
+    flex: 1,
+    minWidth: 0,
     color: Colors.textPrimary,
     fontSize: 13,
+    lineHeight: 18,
     fontFamily: Typography.uiFontMedium,
-    flexShrink: 1,
   },
   gridMeta: {
     color: Colors.textSecondary,
     fontSize: 11,
+    lineHeight: 16,
     fontFamily: Typography.uiFont,
-    marginLeft: 'auto',
+    flexShrink: 1,
+    maxWidth: '42%',
+    marginLeft: 12,
+    textAlign: 'right',
     opacity: 0.5,
   },
   gridPreview: {
