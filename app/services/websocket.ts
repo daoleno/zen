@@ -1,5 +1,6 @@
 import type { StoredServer } from './storage';
 import { buildAuthorizationHeader } from './auth';
+import { diagnoseConnectionIssue } from './connectionIssue';
 
 type MessageHandler = (data: any) => void;
 
@@ -16,6 +17,8 @@ class ServerSocket {
   private readonly maxReconnectDelay = 30000;
   private readonly pendingQueue: string[] = [];
   private shouldReconnect = true;
+  private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+  private attemptSequence = 0;
 
   constructor(
     private meta: ConnectionMeta,
@@ -29,14 +32,23 @@ class ServerSocket {
   connect() {
     this.shouldReconnect = true;
     this.reconnectDelay = 1000;
-    this.emit('connecting', {});
-    this.doConnect();
+    this.startConnectAttempt();
   }
 
   disconnect() {
     this.shouldReconnect = false;
-    this.ws?.close();
+    this.attemptSequence += 1;
+
+    if (this.reconnectTimer) {
+      clearTimeout(this.reconnectTimer);
+      this.reconnectTimer = null;
+    }
+
+    this.emit('connection_issue', { issue: null });
+
+    const ws = this.ws;
     this.ws = null;
+    ws?.close();
   }
 
   send(msg: object) {
@@ -52,7 +64,54 @@ class ServerSocket {
     return this.ws?.readyState === WebSocket.OPEN;
   }
 
-  private doConnect() {
+  private startConnectAttempt() {
+    const attemptId = ++this.attemptSequence;
+    this.emit('connecting', {});
+    this.doConnect(attemptId);
+  }
+
+  private scheduleReconnect() {
+    if (!this.shouldReconnect) {
+      return;
+    }
+
+    if (this.reconnectTimer) {
+      clearTimeout(this.reconnectTimer);
+    }
+
+    const delay = this.reconnectDelay;
+    this.reconnectTimer = setTimeout(() => {
+      this.reconnectTimer = null;
+      if (!this.shouldReconnect) {
+        return;
+      }
+      this.startConnectAttempt();
+    }, delay);
+    this.reconnectDelay = Math.min(this.reconnectDelay * 2, this.maxReconnectDelay);
+  }
+
+  private async reportConnectionIssue(attemptId: number) {
+    const issue = await diagnoseConnectionIssue({
+      serverUrl: this.meta.serverUrl,
+      secret: this.meta.authSecret,
+    });
+
+    if (attemptId !== this.attemptSequence) {
+      return;
+    }
+    if (!this.shouldReconnect) {
+      return;
+    }
+    if (this.ws?.readyState === WebSocket.OPEN) {
+      return;
+    }
+
+    this.emit('connection_issue', { issue });
+  }
+
+  private doConnect(attemptId: number) {
+    let opened = false;
+
     try {
       const authHeader = buildAuthorizationHeader(this.meta.authSecret);
       const wsOptions = authHeader ? { headers: { Authorization: authHeader } } : undefined;
@@ -63,7 +122,14 @@ class ServerSocket {
       this.ws = ws;
 
       ws.onopen = () => {
+        if (attemptId !== this.attemptSequence) {
+          ws.close();
+          return;
+        }
+
+        opened = true;
         this.reconnectDelay = 1000;
+        this.emit('connection_issue', { issue: null });
         this.emit('connected', {});
 
         while (this.pendingQueue.length > 0) {
@@ -82,23 +148,36 @@ class ServerSocket {
       };
 
       ws.onclose = () => {
-        this.emit('disconnected', {});
-        if (!this.shouldReconnect) {
+        if (this.ws === ws) {
+          this.ws = null;
+        }
+        if (attemptId !== this.attemptSequence) {
           return;
         }
-        setTimeout(() => this.doConnect(), this.reconnectDelay);
-        this.reconnectDelay = Math.min(this.reconnectDelay * 2, this.maxReconnectDelay);
+
+        this.emit('disconnected', {});
+        if (!opened) {
+          void this.reportConnectionIssue(attemptId);
+        }
+        this.scheduleReconnect();
       };
 
       ws.onerror = () => {
-        this.ws?.close();
+        try {
+          ws.close();
+        } catch {
+          // Ignore close errors from failed handshake attempts.
+        }
       };
     } catch {
-      if (!this.shouldReconnect) {
+      if (attemptId !== this.attemptSequence) {
         return;
       }
-      setTimeout(() => this.doConnect(), this.reconnectDelay);
-      this.reconnectDelay = Math.min(this.reconnectDelay * 2, this.maxReconnectDelay);
+
+      this.ws = null;
+      this.emit('disconnected', {});
+      void this.reportConnectionIssue(attemptId);
+      this.scheduleReconnect();
     }
   }
 }
@@ -130,6 +209,7 @@ class MultiServerWebSocketClient {
     this.connections.delete(serverId);
     this.serverMeta.delete(serverId);
     this.emit('disconnected', serverId, {});
+    this.emit('connection_issue', serverId, { issue: null });
   }
 
   disconnectAll() {

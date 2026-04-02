@@ -20,7 +20,11 @@
         "backgroundImage": "./assets/android-icon-background.png",
         "monochromeImage": "./assets/android-icon-monochrome.png"
       },
-      "package": "com.anonymous.zen"
+      "package": "com.anonymous.zen",
+      "permissions": [
+        "android.permission.CAMERA",
+        "android.permission.RECORD_AUDIO"
+      ]
     },
     "plugins": [
       "expo-router",
@@ -30,6 +34,13 @@
           "cameraPermission": "Allow $(PRODUCT_NAME) to access your camera to scan zen pairing QR codes."
         }
       ]
-    ]
+    ],
+    "extra": {
+      "router": {},
+      "eas": {
+        "projectId": "7aacdb53-cf7a-41b7-8d24-c3d1c526a929"
+      }
+    },
+    "owner": "getzen"
   }
 }

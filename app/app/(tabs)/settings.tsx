@@ -26,6 +26,7 @@ import { wsClient } from '../../services/websocket';
 import { ConnectionState, useAgents } from '../../store/agents';
 import * as Storage from '../../services/storage';
 import { normalizeServerSecret } from '../../services/auth';
+import { connectionIssueAccent } from '../../services/connectionIssue';
 
 export default function SettingsScreen() {
   const { state, dispatch } = useAgents();
@@ -52,6 +53,13 @@ export default function SettingsScreen() {
     () => servers.filter(server => state.serverConnections[server.id] === 'connected').length,
     [servers, state.serverConnections],
   );
+  const agentCountByServer = useMemo(() => {
+    const counts: Record<string, number> = {};
+    for (const agent of state.agents) {
+      counts[agent.serverId] = (counts[agent.serverId] || 0) + 1;
+    }
+    return counts;
+  }, [state.agents]);
 
   useFocusEffect(
     React.useCallback(() => {
@@ -276,7 +284,19 @@ export default function SettingsScreen() {
           ) : (
             servers.map(server => {
               const connectionState = state.serverConnections[server.id] || 'offline';
+              const connectionIssue = state.serverConnectionIssues[server.id] || null;
               const expanded = expandedServer === server.id;
+              const agentCount = agentCountByServer[server.id] || 0;
+              const hydrated = Boolean(state.hydratedServers[server.id]);
+              const waitingForAgents =
+                connectionState === 'connected' && (!hydrated || agentCount === 0);
+              const actionLabel =
+                connectionState === 'connected'
+                  ? 'Disconnect'
+                  : connectionState === 'connecting' || connectionIssue
+                    ? 'Retry'
+                    : 'Connect';
+
               return (
                 <TouchableOpacity
                   key={server.id}
@@ -296,31 +316,55 @@ export default function SettingsScreen() {
                   </View>
 
                   {expanded && (
-                    <View style={styles.serverActions}>
-                      <TouchableOpacity
-                        style={styles.actionBtn}
-                        onPress={() => connectionState !== 'offline' ? disconnectServer(server.id) : connectServer(server)}
-                        activeOpacity={0.82}
-                      >
-                        <Text style={styles.actionBtnText}>
-                          {connectionState === 'connected' ? 'Disconnect' : connectionState === 'connecting' ? 'Retry' : 'Connect'}
-                        </Text>
-                      </TouchableOpacity>
-                      <TouchableOpacity
-                        style={styles.actionBtn}
-                        onPress={() => openEditServer(server)}
-                        activeOpacity={0.82}
-                      >
-                        <Text style={styles.actionBtnText}>Edit</Text>
-                      </TouchableOpacity>
-                      <TouchableOpacity
-                        style={[styles.actionBtn, styles.actionBtnDanger]}
-                        onPress={() => handleDeleteServer(server)}
-                        activeOpacity={0.82}
-                      >
-                        <Text style={[styles.actionBtnText, styles.actionBtnDangerText]}>Remove</Text>
-                      </TouchableOpacity>
-                    </View>
+                    <>
+                      {connectionIssue ? (
+                        <ServerNoticeCard
+                          icon="alert-circle-outline"
+                          accent={connectionIssueAccent(connectionIssue)}
+                          title={connectionIssue.title}
+                          detail={connectionIssue.detail}
+                          hint={connectionIssue.hint}
+                        />
+                      ) : null}
+
+                      {waitingForAgents ? (
+                        <ServerNoticeCard
+                          icon="information-circle-outline"
+                          accent={Colors.accent}
+                          title={hydrated ? 'Connected, no active agents yet' : 'Connected, waiting for agent data'}
+                          detail={
+                            hydrated
+                              ? 'zen is connected to this daemon, but it has not reported any live agents yet.'
+                              : 'zen is connected to this daemon and waiting for the first agent list to arrive.'
+                          }
+                          hint="Start Claude or Codex on that machine, or verify the watcher/tmux bridge is forwarding sessions."
+                        />
+                      ) : null}
+
+                      <View style={styles.serverActions}>
+                        <TouchableOpacity
+                          style={styles.actionBtn}
+                          onPress={() => connectionState === 'connected' ? disconnectServer(server.id) : connectServer(server)}
+                          activeOpacity={0.82}
+                        >
+                          <Text style={styles.actionBtnText}>{actionLabel}</Text>
+                        </TouchableOpacity>
+                        <TouchableOpacity
+                          style={styles.actionBtn}
+                          onPress={() => openEditServer(server)}
+                          activeOpacity={0.82}
+                        >
+                          <Text style={styles.actionBtnText}>Edit</Text>
+                        </TouchableOpacity>
+                        <TouchableOpacity
+                          style={[styles.actionBtn, styles.actionBtnDanger]}
+                          onPress={() => handleDeleteServer(server)}
+                          activeOpacity={0.82}
+                        >
+                          <Text style={[styles.actionBtnText, styles.actionBtnDangerText]}>Remove</Text>
+                        </TouchableOpacity>
+                      </View>
+                    </>
                   )}
                 </TouchableOpacity>
               );
@@ -623,6 +667,31 @@ function ProviderButton({
   );
 }
 
+function ServerNoticeCard({
+  icon,
+  accent,
+  title,
+  detail,
+  hint,
+}: {
+  icon: React.ComponentProps<typeof Ionicons>['name'];
+  accent: string;
+  title: string;
+  detail: string;
+  hint: string;
+}) {
+  return (
+    <View style={[styles.noticeCard, { borderColor: accent }]}>
+      <View style={styles.noticeHeader}>
+        <Ionicons name={icon} size={15} color={accent} />
+        <Text style={styles.noticeTitle}>{title}</Text>
+      </View>
+      <Text style={styles.noticeDetail}>{detail}</Text>
+      <Text style={styles.noticeHint}>{hint}</Text>
+    </View>
+  );
+}
+
 function connectionLabel(state: ConnectionState): string {
   switch (state) {
     case 'connected': return 'Connected';
@@ -728,6 +797,40 @@ const styles = StyleSheet.create({
   connectionLabelActive: {
     color: Colors.statusRunning,
     opacity: 0.8,
+  },
+  noticeCard: {
+    marginTop: 12,
+    padding: 12,
+    borderRadius: 10,
+    borderWidth: StyleSheet.hairlineWidth,
+    backgroundColor: 'rgba(255,255,255,0.03)',
+  },
+  noticeHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  noticeTitle: {
+    flex: 1,
+    color: Colors.textPrimary,
+    fontSize: 13,
+    fontFamily: Typography.uiFontMedium,
+  },
+  noticeDetail: {
+    marginTop: 8,
+    color: Colors.textSecondary,
+    fontSize: 12,
+    lineHeight: 18,
+    fontFamily: Typography.uiFont,
+    opacity: 0.86,
+  },
+  noticeHint: {
+    marginTop: 8,
+    color: Colors.textSecondary,
+    fontSize: 12,
+    lineHeight: 18,
+    fontFamily: Typography.uiFont,
+    opacity: 0.62,
   },
   serverActions: {
     flexDirection: 'row',

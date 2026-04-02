@@ -28,6 +28,7 @@ import {
   StoredInboxViewMode,
   StoredRecentAgentOpens,
 } from '../../services/storage';
+import { connectionIssueAccent } from '../../services/connectionIssue';
 
 const STATUS_PRIORITY: Record<AgentStatus, number> = {
   failed: 0,
@@ -104,6 +105,19 @@ export default function InboxScreen() {
     });
   }, [recentAgentOpens, state.agents]);
 
+  const primaryIssue = useMemo(() => {
+    let nextIssue: (typeof state.serverConnectionIssues)[string] | null = null;
+    for (const issue of Object.values(state.serverConnectionIssues)) {
+      if (!issue) {
+        continue;
+      }
+      if (!nextIssue || issue.checkedAt > nextIssue.checkedAt) {
+        nextIssue = issue;
+      }
+    }
+    return nextIssue;
+  }, [state.serverConnectionIssues]);
+
   const setViewMode = async (mode: StoredInboxViewMode) => {
     setViewModeState(mode);
     await setInboxViewMode(mode);
@@ -161,6 +175,26 @@ export default function InboxScreen() {
   const hasConnection = Object.keys(state.serverConnections).length > 0;
   const anyConnected = Object.values(state.serverConnections).includes('connected');
   const anyConnecting = Object.values(state.serverConnections).includes('connecting');
+  const bannerAccent = primaryIssue
+    ? connectionIssueAccent(primaryIssue)
+    : anyConnecting
+      ? Colors.statusUnknown
+      : '#65758A';
+  const bannerText = primaryIssue?.title || (anyConnecting ? 'Connecting' : 'Offline');
+  const emptyTitle = !hasConfiguredServers
+    ? 'No servers configured'
+    : anyConnected
+      ? 'Connected, waiting for agent data'
+      : primaryIssue?.title || (anyConnecting ? 'Connecting to servers' : 'No agents available');
+  const emptySubtext = !hasConfiguredServers
+    ? 'Add your first server before zen can load agents.'
+    : anyConnected
+      ? 'zen is connected to your daemon, but no agent data has arrived yet. Start Claude or Codex, or check the tmux watcher.'
+      : primaryIssue
+        ? `${primaryIssue.detail} ${primaryIssue.hint}`
+        : anyConnecting
+          ? 'zen is trying to reconnect. You can still change servers now.'
+          : 'Your saved servers are offline. You can edit them or add another one.';
 
   // ── List: compact row ──
   const renderListAgent = ({ item }: { item: Agent }) => (
@@ -205,10 +239,8 @@ export default function InboxScreen() {
     <SafeAreaView style={styles.container} edges={['top']}>
       {hasConnection && !anyConnected && (
         <View style={styles.banner}>
-          <View style={[styles.bannerDot, { backgroundColor: anyConnecting ? Colors.statusUnknown : '#65758A' }]} />
-          <Text style={styles.bannerText}>
-            {anyConnecting ? 'Connecting' : 'Offline'}
-          </Text>
+          <View style={[styles.bannerDot, { backgroundColor: bannerAccent }]} />
+          <Text style={styles.bannerText}>{bannerText}</Text>
         </View>
       )}
 
@@ -231,18 +263,8 @@ export default function InboxScreen() {
       {sortedAgents.length === 0 ? (
         <View style={styles.emptyContainer}>
           <Text style={styles.emptyIcon}>☯</Text>
-          <Text style={styles.emptyText}>
-            {hasConfiguredServers ? (anyConnecting ? 'Connecting to servers' : 'No agents available') : 'No servers configured'}
-          </Text>
-          <Text style={styles.emptySubtext}>
-            {hasConfiguredServers
-              ? (anyConnected
-                ? 'All is calm'
-                : anyConnecting
-                  ? 'zen is trying to reconnect. You can still change servers now.'
-                  : 'Your saved servers are offline. You can edit them or add another one.')
-              : 'Add your first server before zen can load agents.'}
-          </Text>
+          <Text style={styles.emptyText}>{emptyTitle}</Text>
+          <Text style={styles.emptySubtext}>{emptySubtext}</Text>
           <View style={styles.emptyActions}>
             <TouchableOpacity
               style={[styles.emptyActionBtn, styles.emptyActionBtnPrimary]}

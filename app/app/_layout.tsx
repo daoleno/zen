@@ -173,6 +173,12 @@ function AppContent() {
         serverId: data.serverId,
         connectionState: 'offline',
       });
+    const onConnectionIssue = (data: any) =>
+      dispatch({
+        type: 'SET_SERVER_CONNECTION_ISSUE',
+        serverId: data.serverId,
+        issue: data.issue || null,
+      });
 
     wsClient.on('agent_list', onAgentList);
     wsClient.on('agent_state_change', onStateChange);
@@ -180,6 +186,7 @@ function AppContent() {
     wsClient.on('connecting', onConnecting);
     wsClient.on('connected', onConnected);
     wsClient.on('disconnected', onDisconnected);
+    wsClient.on('connection_issue', onConnectionIssue);
 
     (async () => {
       try {
@@ -214,6 +221,7 @@ function AppContent() {
       wsClient.off('connecting', onConnecting);
       wsClient.off('connected', onConnected);
       wsClient.off('disconnected', onDisconnected);
+      wsClient.off('connection_issue', onConnectionIssue);
       wsClient.disconnectAll();
     };
   }, []);
