@@ -1,5 +1,6 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import {
+  Alert,
   FlatList,
   Modal,
   StyleSheet,
@@ -16,6 +17,7 @@ import { AgentStatus, Colors, Spacing, Typography, statusColor } from '../../con
 import { TerminalPreview } from '../../components/terminal/TerminalPreview';
 import { TerminalThemeName, DefaultTerminalThemeName } from '../../constants/terminalThemes';
 import {
+  closeTerminalTab,
   getInboxViewMode,
   getAgentAliases,
   getRecentAgentOpens,
@@ -29,6 +31,7 @@ import {
   StoredRecentAgentOpens,
 } from '../../services/storage';
 import { connectionIssueAccent } from '../../services/connectionIssue';
+import { wsClient } from '../../services/websocket';
 
 const STATUS_PRIORITY: Record<AgentStatus, number> = {
   failed: 0,
@@ -163,6 +166,37 @@ export default function InboxScreen() {
     setRenameVisible(false);
     setMenuAgent(null);
   };
+  const handleExitSession = () => {
+    if (!menuAgent) return;
+
+    const target = menuAgent;
+    closeContextMenu();
+
+    if (state.serverConnections[target.serverId] !== 'connected') {
+      Alert.alert(
+        'Daemon unavailable',
+        'Reconnect to that daemon before exiting the session.',
+      );
+      return;
+    }
+
+    Alert.alert(
+      'Exit Session?',
+      'This will terminate ' + resolveAgentName(target, agentAliases) + ' on ' + target.serverName + '. It does more than closing the tab.',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Exit Session',
+          style: 'destructive',
+          onPress: () => {
+            void closeTerminalTab(target.key);
+            wsClient.killAgent(target.serverId, target.id);
+          },
+        },
+      ],
+    );
+  };
+
 
   const openServerSettings = (addServer: boolean) => {
     router.push({
@@ -337,6 +371,11 @@ export default function InboxScreen() {
             >
               <Ionicons name="terminal-outline" size={16} color={Colors.textPrimary} />
               <Text style={styles.menuItemText}>Open Terminal</Text>
+            </TouchableOpacity>
+
+            <TouchableOpacity style={styles.menuItem} onPress={handleExitSession} activeOpacity={0.82}>
+              <Ionicons name="power-outline" size={16} color="#F09999" />
+              <Text style={[styles.menuItemText, styles.menuItemTextDestructive]}>Exit Session</Text>
             </TouchableOpacity>
           </View>
         </View>
@@ -663,6 +702,9 @@ const styles = StyleSheet.create({
     color: Colors.textPrimary,
     fontSize: 15,
     fontFamily: Typography.uiFont,
+  },
+  menuItemTextDestructive: {
+    color: '#F09999',
   },
 
   // Rename modal

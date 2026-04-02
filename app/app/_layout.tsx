@@ -46,12 +46,16 @@ async function registerForPushNotificationsAsync(): Promise<string | undefined> 
   }
   if (finalStatus !== 'granted') return;
 
+  const projectId =
+    Constants?.expoConfig?.extra?.eas?.projectId
+    ?? Constants?.easConfig?.projectId;
+
+  if (!projectId) {
+    console.log('Push notifications disabled: Expo project ID is not configured.');
+    return;
+  }
+
   try {
-    const projectId =
-      Constants?.expoConfig?.extra?.eas?.projectId ?? Constants?.easConfig?.projectId;
-    if (!projectId) {
-      throw new Error('Project ID not found');
-    }
     const token = (await Notifications.getExpoPushTokenAsync({ projectId })).data;
     return token;
   } catch (e) {
@@ -61,33 +65,68 @@ async function registerForPushNotificationsAsync(): Promise<string | undefined> 
 }
 
 function buildNotificationContent(agent: Agent): Notifications.NotificationContentInput | null {
-  const bodyPrefix = agent.serverName ? `${agent.serverName} · ` : '';
+  const label = formatNotificationAgentLabel(agent);
+  const context = [agent.project, agent.serverName].filter(Boolean).join(' · ');
+  const summary = normalizeNotificationSummary(agent.summary);
 
   switch (agent.status) {
     case 'blocked':
       return {
-        title: `${agent.name} needs you`,
-        body: `${bodyPrefix}${agent.summary || 'Waiting for input'}`,
+        title: label ? `Input needed · ${label}` : 'Input needed',
+        body: buildNotificationBody(context, summary, 'Open zen to respond.'),
         data: { agent_id: agent.id, server_id: agent.serverId, screen: 'terminal' },
         sound: 'default',
       };
     case 'failed':
       return {
-        title: `${agent.name} failed`,
-        body: `${bodyPrefix}${agent.summary || 'The session hit an error'}`,
+        title: label ? `Task failed · ${label}` : 'Task failed',
+        body: buildNotificationBody(context, summary, 'Open zen to inspect the last output.'),
         data: { agent_id: agent.id, server_id: agent.serverId, screen: 'terminal' },
         sound: 'default',
       };
     case 'done':
       return {
-        title: `${agent.name} done`,
-        body: `${bodyPrefix}${agent.summary || 'Task completed successfully'}`,
+        title: label ? `Finished · ${label}` : 'Finished',
+        body: buildNotificationBody(context, summary, 'Session finished.'),
         data: { agent_id: agent.id, server_id: agent.serverId, screen: 'terminal' },
         sound: 'default',
       };
     default:
       return null;
   }
+}
+
+function formatNotificationAgentLabel(agent: Agent): string {
+  const raw = agent.project?.trim() || agent.name?.trim() || agent.id;
+  if (!raw) {
+    return '';
+  }
+
+  const withoutSessionSuffix = raw.replace(/\s+\([^)]+\)\s*$/, '');
+  const parts = withoutSessionSuffix.split(/[\\/]/).filter(Boolean);
+  return parts[parts.length - 1] || withoutSessionSuffix;
+}
+
+function normalizeNotificationSummary(summary: string | undefined): string {
+  if (!summary) {
+    return '';
+  }
+
+  const collapsed = summary
+    .replace(/^\d{4}[/-]\d{2}[/-]\d{2}[ T]\d{2}:\d{2}:\d{2}\s*/, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+
+  if (collapsed.length <= 110) {
+    return collapsed;
+  }
+
+  return `${collapsed.slice(0, 107)}...`;
+}
+
+function buildNotificationBody(context: string, summary: string, fallback: string): string {
+  const parts = [context, summary].filter(Boolean);
+  return parts.length > 0 ? parts.join(' · ') : fallback;
 }
 
 function AppContent() {
@@ -340,7 +379,12 @@ function AppContent() {
     })();
 
     notificationListener.current = Notifications.addNotificationReceivedListener(notification => {
-      console.log('Notification received:', notification);
+      const content = notification.request.content;
+      console.log('Notification received:', {
+        title: content.title,
+        body: content.body,
+        data: content.data,
+      });
     });
 
     responseListener.current = Notifications.addNotificationResponseReceivedListener(response => {

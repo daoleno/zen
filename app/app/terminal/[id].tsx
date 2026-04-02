@@ -1,5 +1,7 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
+  ActivityIndicator,
+  Alert,
   Animated,
   Easing,
   Keyboard,
@@ -39,6 +41,8 @@ import {
   touchTerminalTab,
 } from '../../services/storage';
 import { makeSessionKey, parseSessionKey } from '../../services/sessionKeys';
+import { wsClient } from '../../services/websocket';
+import { connectionIssueAccent } from '../../services/connectionIssue';
 import { TerminalSurface, TerminalSurfaceHandle } from '../../components/terminal/TerminalSurface';
 import { TerminalAccessoryBar } from '../../components/terminal/TerminalAccessoryBar';
 
@@ -111,6 +115,29 @@ export default function TerminalScreen() {
     () => resolveAgentName(agent, sessionKey, agentAliases),
     [agent, agentAliases, sessionKey],
   );
+  const connectionState = serverId ? state.serverConnections[serverId] || 'offline' : 'offline';
+  const connectionIssue = serverId ? state.serverConnectionIssues[serverId] || null : null;
+  const hasTerminalRoute = Boolean(sessionKey && serverId && agentId);
+  const canRenderTerminal = hasTerminalRoute && connectionState === 'connected';
+  const terminalStateAccent = connectionIssue
+    ? connectionIssueAccent(connectionIssue)
+    : connectionState === 'connecting'
+      ? '#E7B65C'
+      : '#65758A';
+  const terminalStateBusy = hasTerminalRoute && connectionState === 'connecting' && !connectionIssue;
+  const terminalStateTitle = !hasTerminalRoute
+    ? 'Session unavailable'
+    : connectionIssue?.title || (connectionState === 'connecting' ? 'Reconnecting to daemon' : 'Daemon unavailable');
+  const terminalStateDetail = !hasTerminalRoute
+    ? 'Open this session again from the Agents tab.'
+    : connectionIssue?.detail || (
+      connectionState === 'connecting'
+        ? 'zen is reconnecting before reopening this terminal.'
+        : 'Start zen-daemon on that machine, or bring the network or tunnel back.'
+    );
+  const terminalStateHint = !hasTerminalRoute
+    ? 'The app kept your route, but the live session is not ready yet.'
+    : connectionIssue?.hint || 'This terminal will reopen automatically once the daemon is reachable again.';
 
   useFocusEffect(
     React.useCallback(() => {
@@ -371,7 +398,7 @@ export default function TerminalScreen() {
     [tabSwipeTranslateX],
   );
 
-  const accessoryVisible = Boolean(sessionKey && serverId && agentId);
+  const accessoryVisible = canRenderTerminal;
 
   const closeMenu = () => {
     setMenuVisible(false);
@@ -461,6 +488,58 @@ export default function TerminalScreen() {
     closeMenu();
   };
 
+  const handleExitSession = () => {
+    if (!sessionKey || !serverId || !agentId) return;
+
+    closeMenu();
+
+    if (connectionState !== 'connected') {
+      Alert.alert(
+        'Daemon unavailable',
+        'Reconnect to that daemon before exiting the session.',
+      );
+      return;
+    }
+
+    Alert.alert(
+      'Exit Session?',
+      'This will terminate ' + (displayName || agentId) + ' on ' + (agent?.serverName || serverId) + '. It does more than closing the tab.',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Exit Session',
+          style: 'destructive',
+          onPress: () => {
+            void performExitSession();
+          },
+        },
+      ],
+    );
+  };
+
+  const performExitSession = async () => {
+    if (!sessionKey || !serverId || !agentId) return;
+
+    const currentTabs = terminalTabs;
+    const nextTabs = await closeTerminalTab(sessionKey);
+    setTerminalTabs(nextTabs);
+    wsClient.killAgent(serverId, agentId);
+
+    const nextSessionKey = pickNextTabAfterClose(sessionKey, currentTabs, nextTabs);
+    if (nextSessionKey) {
+      const parsed = parseSessionKey(nextSessionKey);
+      if (parsed) {
+        router.replace({
+          pathname: '/terminal/[id]',
+          params: { id: parsed.agentId, serverId: parsed.serverId },
+        });
+        return;
+      }
+    }
+
+    router.replace('/');
+  };
+
   const handleSaveRename = async () => {
     if (!sessionKey) return;
     const nextAliases = await setAgentAlias(sessionKey, renameDraft);
@@ -470,6 +549,16 @@ export default function TerminalScreen() {
 
   const handleCtrlArmedChange = (next: boolean) => {
     setCtrlArmed(next);
+  };
+
+  const retryServerConnection = async () => {
+    if (!serverId) return;
+    const storedServer = await getServerById(serverId);
+    if (!storedServer) return;
+
+    setServerUrl(storedServer.url);
+    setServerSecret(storedServer.secret || '');
+    wsClient.connectServer(storedServer);
   };
 
   const animateTabSwipeBack = () => {
@@ -663,7 +752,7 @@ export default function TerminalScreen() {
             behavior={Platform.OS === 'ios' ? 'padding' : undefined}
           >
             <View style={styles.output}>
-              {sessionKey && serverId && agentId ? (
+              {canRenderTerminal && sessionKey && serverId && agentId ? (
                 <TerminalSurface
                   ref={terminalRef}
                   serverId={serverId}
@@ -674,7 +763,29 @@ export default function TerminalScreen() {
                   onTabSwipeProgress={handleTabSwipeProgress}
                   onTabSwipe={handleTabSwipe}
                 />
-              ) : null}
+              ) : (
+                <View style={styles.terminalState}>
+                  <View style={[styles.terminalStateCard, { borderColor: terminalStateAccent }]}>
+                    {terminalStateBusy ? (
+                      <ActivityIndicator color={terminalStateAccent} />
+                    ) : (
+                      <View style={[styles.terminalStateDot, { backgroundColor: terminalStateAccent }]} />
+                    )}
+                    <Text style={styles.terminalStateTitle}>{terminalStateTitle}</Text>
+                    <Text style={styles.terminalStateDetail}>{terminalStateDetail}</Text>
+                    <Text style={styles.terminalStateHint}>{terminalStateHint}</Text>
+                    {hasTerminalRoute ? (
+                      <TouchableOpacity
+                        style={styles.terminalStateAction}
+                        onPress={() => void retryServerConnection()}
+                        activeOpacity={0.84}
+                      >
+                        <Text style={styles.terminalStateActionText}>Retry Connection</Text>
+                      </TouchableOpacity>
+                    ) : null}
+                  </View>
+                </View>
+              )}
             </View>
 
             {accessoryVisible ? (
@@ -684,6 +795,7 @@ export default function TerminalScreen() {
                   serverUrl={serverUrl}
                   authSecret={serverSecret}
                   ctrlArmed={ctrlArmed}
+                  agentStatus={agent?.status}
                   onCtrlArmedChange={handleCtrlArmedChange}
                 />
               </View>
@@ -812,6 +924,11 @@ export default function TerminalScreen() {
               label="Close Tab"
               onPress={handleCloseCurrentTab}
             />
+            <MenuAction
+              label="Exit Session"
+              onPress={handleExitSession}
+              destructive
+            />
           </View>
         </View>
       </Modal>
@@ -879,10 +996,12 @@ function MenuAction({
   label,
   onPress,
   disabled = false,
+  destructive = false,
 }: {
   label: string;
   onPress: () => void;
   disabled?: boolean;
+  destructive?: boolean;
 }) {
   return (
     <TouchableOpacity
@@ -891,7 +1010,13 @@ function MenuAction({
       disabled={disabled}
       activeOpacity={0.84}
     >
-      <Text style={[styles.menuActionText, disabled && styles.menuActionTextDisabled]}>
+      <Text
+        style={[
+          styles.menuActionText,
+          destructive && styles.menuActionTextDestructive,
+          disabled && styles.menuActionTextDisabled,
+        ]}
+      >
         {label}
       </Text>
     </TouchableOpacity>
@@ -1116,6 +1241,65 @@ const styles = StyleSheet.create({
     minHeight: 0,
     paddingTop: 4,
   },
+  terminalState: {
+    flex: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingHorizontal: 18,
+    paddingBottom: 32,
+  },
+  terminalStateCard: {
+    width: '100%',
+    maxWidth: 360,
+    alignItems: 'center',
+    paddingHorizontal: 18,
+    paddingVertical: 20,
+    borderRadius: 20,
+    borderWidth: 1,
+    backgroundColor: 'rgba(17,22,31,0.9)',
+  },
+  terminalStateDot: {
+    width: 10,
+    height: 10,
+    borderRadius: 5,
+  },
+  terminalStateTitle: {
+    marginTop: 12,
+    color: Colors.textPrimary,
+    fontSize: 18,
+    fontFamily: Typography.uiFontMedium,
+    textAlign: 'center',
+  },
+  terminalStateDetail: {
+    marginTop: 8,
+    color: '#D6DFEC',
+    fontSize: 13,
+    lineHeight: 19,
+    fontFamily: Typography.uiFont,
+    textAlign: 'center',
+  },
+  terminalStateHint: {
+    marginTop: 8,
+    color: '#8E9DB2',
+    fontSize: 12,
+    lineHeight: 18,
+    fontFamily: Typography.uiFont,
+    textAlign: 'center',
+  },
+  terminalStateAction: {
+    marginTop: 16,
+    minHeight: 38,
+    paddingHorizontal: 14,
+    borderRadius: 12,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: Colors.accent,
+  },
+  terminalStateActionText: {
+    color: Colors.bgPrimary,
+    fontSize: 13,
+    fontFamily: Typography.uiFontMedium,
+  },
   inputShell: {
     paddingHorizontal: 12,
     paddingTop: 6,
@@ -1278,6 +1462,9 @@ const styles = StyleSheet.create({
   },
   menuActionTextDisabled: {
     color: '#556176',
+  },
+  menuActionTextDestructive: {
+    color: '#F09999',
   },
   renameRoot: {
     flex: 1,

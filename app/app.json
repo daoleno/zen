@@ -36,10 +36,7 @@
       ]
     ],
     "extra": {
-      "router": {},
-      "eas": {
-        "projectId": "7aacdb53-cf7a-41b7-8d24-c3d1c526a929"
-      }
+      "router": {}
     },
     "owner": "getzen"
   }

@@ -5,11 +5,15 @@ daemon/bin/
 app/node_modules/
 app/dist/
 dist-download/
+coverage/
 
 # Local build artifacts
 *.apk
 *.aab
 *.ipa
+*.log
+*.tmp
+*.temp
 
 # IDE
 .idea/
@@ -22,7 +26,10 @@ Thumbs.db
 
 # Environment
 .env
+.env.*
 .env.local
+!.env.example
+!.env.*.example
 
 # Android build
 app/android/
@@ -39,3 +46,8 @@ app/bun.lockb
 
 # Playwright
 .playwright-mcp/
+
+# Caches
+.cache/
+.turbo/
+.next/

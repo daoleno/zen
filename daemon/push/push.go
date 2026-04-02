@@ -6,10 +6,17 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"regexp"
+	"strings"
 	"time"
 )
 
 const expoPushURL = "https://exp.host/--/api/v2/push/send"
+
+var (
+	notificationSessionSuffixPattern = regexp.MustCompile(`\s+\([^)]+\)\s*$`)
+	notificationTimestampPrefix      = regexp.MustCompile(`^\d{4}[/-]\d{2}[/-]\d{2}[ T]\d{2}:\d{2}:\d{2}\s*`)
+)
 
 // Client sends push notifications via Expo Push API.
 type Client struct {
@@ -91,20 +98,75 @@ func (c *Client) Send(msg Message) error {
 	return nil
 }
 
+func formatNotificationAgentLabel(agentName, agentID string) string {
+	raw := strings.TrimSpace(agentName)
+	if raw == "" {
+		raw = strings.TrimSpace(agentID)
+	}
+	if raw == "" {
+		return ""
+	}
+
+	withoutSessionSuffix := notificationSessionSuffixPattern.ReplaceAllString(raw, "")
+	parts := strings.FieldsFunc(withoutSessionSuffix, func(r rune) bool {
+		return r == '/' || r == '\\'
+	})
+	if len(parts) == 0 {
+		return withoutSessionSuffix
+	}
+
+	return parts[len(parts)-1]
+}
+
+func normalizeNotificationSummary(summary string) string {
+	collapsed := notificationTimestampPrefix.ReplaceAllString(strings.Join(strings.Fields(summary), " "), "")
+	if collapsed == "" {
+		return ""
+	}
+
+	runes := []rune(collapsed)
+	if len(runes) <= 110 {
+		return collapsed
+	}
+
+	return string(runes[:107]) + "..."
+}
+
+func buildNotificationBody(summary, fallback string) string {
+	normalized := normalizeNotificationSummary(summary)
+	if normalized != "" {
+		return normalized
+	}
+	return fallback
+}
+
+func notificationTitle(kind, label string) string {
+	if label == "" {
+		return kind
+	}
+	return fmt.Sprintf("%s · %s", kind, label)
+}
+
+func notificationData(agentID, serverRef string) map[string]string {
+	return map[string]string{
+		"agent_id":  agentID,
+		"screen":    "terminal",
+		"server_id": serverRef,
+	}
+}
+
 // NotifyAgentBlocked sends a high-priority notification for a blocked agent.
 func (c *Client) NotifyAgentBlocked(agentID, agentName, summary string) {
 	if !c.HasToken() {
 		return
 	}
+
+	label := formatNotificationAgentLabel(agentName, agentID)
 	c.Send(Message{
-		Title:    fmt.Sprintf("%s needs you", agentName),
-		Body:     summary,
+		Title:    notificationTitle("Input needed", label),
+		Body:     buildNotificationBody(summary, "Open zen to respond."),
 		Priority: "high",
-		Data: map[string]string{
-			"agent_id":  agentID,
-			"screen":    "terminal",
-			"server_id": c.serverRef,
-		},
+		Data:     notificationData(agentID, c.serverRef),
 	})
 }
 
@@ -113,31 +175,27 @@ func (c *Client) NotifyAgentFailed(agentID, agentName, summary string) {
 	if !c.HasToken() {
 		return
 	}
+
+	label := formatNotificationAgentLabel(agentName, agentID)
 	c.Send(Message{
-		Title:    fmt.Sprintf("%s failed", agentName),
-		Body:     summary,
+		Title:    notificationTitle("Task failed", label),
+		Body:     buildNotificationBody(summary, "Open zen to inspect the last output."),
 		Priority: "high",
-		Data: map[string]string{
-			"agent_id":  agentID,
-			"screen":    "terminal",
-			"server_id": c.serverRef,
-		},
+		Data:     notificationData(agentID, c.serverRef),
 	})
 }
 
-// NotifyAgentDone sends a normal-priority notification for a completed agent.
-func (c *Client) NotifyAgentDone(agentID, agentName string) {
+// NotifyAgentDone sends a low-priority neutral completion notification.
+func (c *Client) NotifyAgentDone(agentID, agentName, summary string) {
 	if !c.HasToken() {
 		return
 	}
+
+	label := formatNotificationAgentLabel(agentName, agentID)
 	c.Send(Message{
-		Title:    fmt.Sprintf("%s done", agentName),
-		Body:     "Task completed successfully",
+		Title:    notificationTitle("Finished", label),
+		Body:     buildNotificationBody(summary, "Session finished."),
 		Priority: "default",
-		Data: map[string]string{
-			"agent_id":  agentID,
-			"screen":    "terminal",
-			"server_id": c.serverRef,
-		},
+		Data:     notificationData(agentID, c.serverRef),
 	})
 }

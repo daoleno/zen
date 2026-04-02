@@ -83,6 +83,8 @@ If you are running the app inside Expo Go, add the endpoint manually in Settings
 You can also paste the generated `zen://...` link or JSON payload directly into Settings -> Import Link.
 The app also includes an in-app QR scanner in Settings -> Scan QR.
 
+Remote push registration is optional in OSS builds. To test Expo push with your own EAS project, set `ZEN_EXPO_PROJECT_ID` in `app/.env.local` or your shell before starting Expo. See `app/.env.example`.
+
 ## Project Structure
 
 ```

@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useMemo } from 'react';
 import {
   Alert,
   ScrollView,
@@ -8,20 +8,28 @@ import {
   View,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
+import * as Clipboard from 'expo-clipboard';
 import * as DocumentPicker from 'expo-document-picker';
 import * as Haptics from 'expo-haptics';
-import { Colors, Typography } from '../../constants/tokens';
-import type { TerminalSurfaceHandle } from './TerminalSurface';
+import { AgentStatus, Colors, Typography } from '../../constants/tokens';
 import { buildAuthorizationHeader } from '../../services/auth';
+import type { TerminalSurfaceHandle } from './TerminalSurface';
 
 type ShortcutKey =
   | { label: 'Ctrl'; type: 'modifier' }
   | { label: string; type: 'sequence'; sequence: string };
 
+type QuickAction = {
+  label: string;
+  prompt: string;
+  tone?: 'primary' | 'neutral';
+};
+
 const SHORTCUT_KEYS: readonly ShortcutKey[] = [
   { label: 'Ctrl', type: 'modifier' },
   { label: 'Esc', type: 'sequence', sequence: '\x1b' },
   { label: 'Tab', type: 'sequence', sequence: '\t' },
+  { label: 'Enter', type: 'sequence', sequence: '\r' },
   { label: 'Ctrl-C', type: 'sequence', sequence: '\x03' },
   { label: '←', type: 'sequence', sequence: '\x1b[D' },
   { label: '↑', type: 'sequence', sequence: '\x1b[A' },
@@ -34,6 +42,7 @@ interface TerminalAccessoryBarProps {
   serverUrl: string;
   authSecret?: string;
   ctrlArmed: boolean;
+  agentStatus?: AgentStatus;
   onCtrlArmedChange(next: boolean): void;
 }
 
@@ -42,12 +51,19 @@ export function TerminalAccessoryBar({
   serverUrl,
   authSecret,
   ctrlArmed,
+  agentStatus,
   onCtrlArmedChange,
 }: TerminalAccessoryBarProps) {
   const uploadEnabled = !!buildUploadUrl(serverUrl);
+  const quickActions = useMemo(() => buildQuickActions(agentStatus), [agentStatus]);
 
   const sendInput = (data: string) => {
     terminalRef.current?.sendInput(data);
+  };
+
+  const focusInput = () => {
+    onCtrlArmedChange(false);
+    terminalRef.current?.resumeInput();
   };
 
   const handleCtrlToggle = () => {
@@ -57,6 +73,28 @@ export function TerminalAccessoryBar({
   const handleShortcut = (sequence: string) => {
     onCtrlArmedChange(false);
     sendInput(sequence);
+  };
+
+  const handleQuickAction = async (prompt: string) => {
+    focusInput();
+    sendInput(prompt);
+    await Haptics.selectionAsync();
+  };
+
+  const handlePasteClipboard = async () => {
+    try {
+      const clipboardValue = await Clipboard.getStringAsync();
+      if (!clipboardValue) {
+        Alert.alert('Clipboard is empty', 'Copy text first, then tap Paste.');
+        return;
+      }
+
+      focusInput();
+      sendInput(clipboardValue);
+      await Haptics.selectionAsync();
+    } catch (error: any) {
+      Alert.alert('Paste failed', error?.message || 'Unable to read clipboard text.');
+    }
   };
 
   const handleFilePick = async () => {
@@ -94,10 +132,9 @@ export function TerminalAccessoryBar({
         throw new Error('Upload response missing file path');
       }
 
-      const uploadedPath = payload.path;
-      onCtrlArmedChange(false);
-      sendInput(appendShellPath('', uploadedPath));
-      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+      focusInput();
+      sendInput(appendShellPath('', payload.path));
+      await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
     } catch (err: any) {
       Alert.alert('Error', err?.message || 'Failed to upload file');
     }
@@ -105,6 +142,37 @@ export function TerminalAccessoryBar({
 
   return (
     <View style={styles.container}>
+      {quickActions.length > 0 ? (
+        <ScrollView
+          horizontal
+          showsHorizontalScrollIndicator={false}
+          keyboardShouldPersistTaps="handled"
+          style={styles.quickRow}
+          contentContainerStyle={styles.quickRowContent}
+        >
+          {quickActions.map(action => (
+            <TouchableOpacity
+              key={action.label}
+              style={[
+                styles.quickAction,
+                action.tone === 'primary' && styles.quickActionPrimary,
+              ]}
+              onPress={() => void handleQuickAction(action.prompt)}
+              activeOpacity={0.82}
+            >
+              <Text
+                style={[
+                  styles.quickActionText,
+                  action.tone === 'primary' && styles.quickActionTextPrimary,
+                ]}
+              >
+                {action.label}
+              </Text>
+            </TouchableOpacity>
+          ))}
+        </ScrollView>
+      ) : null}
+
       <ScrollView
         horizontal
         showsHorizontalScrollIndicator={false}
@@ -114,18 +182,25 @@ export function TerminalAccessoryBar({
       >
         <TouchableOpacity
           style={styles.attachBtn}
-          onPress={() => {
-            onCtrlArmedChange(false);
-            terminalRef.current?.resumeInput();
-          }}
+          onPress={focusInput}
+          activeOpacity={0.82}
         >
           <Ionicons name="keypad-outline" size={18} color={Colors.textPrimary} />
         </TouchableOpacity>
 
         <TouchableOpacity
+          style={styles.attachBtn}
+          onPress={() => void handlePasteClipboard()}
+          activeOpacity={0.82}
+        >
+          <Ionicons name="clipboard-outline" size={18} color={Colors.textPrimary} />
+        </TouchableOpacity>
+
+        <TouchableOpacity
           style={[styles.attachBtn, !uploadEnabled && styles.attachBtnDisabled]}
-          onPress={handleFilePick}
+          onPress={() => void handleFilePick()}
           disabled={!uploadEnabled}
+          activeOpacity={0.82}
         >
           <Ionicons name="attach-outline" size={18} color={Colors.textPrimary} />
         </TouchableOpacity>
@@ -147,6 +222,7 @@ export function TerminalAccessoryBar({
                 }
                 handleShortcut(key.sequence);
               }}
+              activeOpacity={0.82}
             >
               <Text
                 style={[
@@ -162,6 +238,51 @@ export function TerminalAccessoryBar({
       </ScrollView>
     </View>
   );
+}
+
+function buildQuickActions(status: AgentStatus | undefined): QuickAction[] {
+  switch (status) {
+    case 'blocked':
+      return [
+        {
+          label: 'Approve',
+          prompt: 'Approved. Continue with the safest next step.\n',
+          tone: 'primary',
+        },
+        {
+          label: 'Clarify',
+          prompt: 'Summarize the blocker, the exact command you want to run, and the expected risk.\n',
+        },
+        {
+          label: 'Plan',
+          prompt: 'Pause and give me the smallest safe plan from here.\n',
+        },
+      ];
+    case 'failed':
+      return [
+        {
+          label: 'Explain',
+          prompt: 'Explain the failure, likely root cause, and the smallest fix.\n',
+          tone: 'primary',
+        },
+        {
+          label: 'Retry',
+          prompt: 'Retry from the last stable point and call out anything risky first.\n',
+        },
+      ];
+    case 'done':
+      return [
+        {
+          label: 'Summary',
+          prompt: 'Summarize what changed, how you verified it, and any follow-up risks.\n',
+          tone: 'primary',
+        },
+      ];
+    case 'running':
+    case 'unknown':
+    default:
+      return [];
+  }
 }
 
 function buildRequestHeaders(secret: string | undefined): Record<string, string> | undefined {
@@ -195,13 +316,43 @@ function appendShellPath(current: string, path: string): string {
 }
 
 function shellQuote(value: string): string {
-  return `'${value.replace(/'/g, `'\"'\"'`)}'`;
+  return `'${value.replace(/'/g, `'"'"'`)}'`;
 }
 
 const styles = StyleSheet.create({
   container: {
     backgroundColor: Colors.bgPrimary,
     paddingBottom: 4,
+  },
+  quickRow: {
+    paddingTop: 4,
+    paddingBottom: 4,
+  },
+  quickRowContent: {
+    paddingRight: 18,
+  },
+  quickAction: {
+    minHeight: 34,
+    paddingHorizontal: 12,
+    borderRadius: 999,
+    marginRight: 8,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.09)',
+    backgroundColor: 'rgba(255,255,255,0.05)',
+  },
+  quickActionPrimary: {
+    backgroundColor: 'rgba(91,157,255,0.16)',
+    borderColor: 'rgba(91,157,255,0.38)',
+  },
+  quickActionText: {
+    color: Colors.textPrimary,
+    fontSize: 12,
+    fontFamily: Typography.uiFontMedium,
+  },
+  quickActionTextPrimary: {
+    color: '#DCEBFF',
   },
   shortcutRow: {
     paddingTop: 8,

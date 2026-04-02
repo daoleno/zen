@@ -310,7 +310,7 @@ func (s *Server) broadcastEvents(ctx context.Context) {
 				case "failed":
 					s.pusher.NotifyAgentFailed(ev.AgentID, agent.Name, agent.Summary)
 				case "done":
-					s.pusher.NotifyAgentDone(ev.AgentID, agent.Name)
+					s.pusher.NotifyAgentDone(ev.AgentID, agent.Name, agent.Summary)
 				}
 			}
 		}
