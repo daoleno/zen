@@ -253,9 +253,11 @@ func (w *Watcher) SendAction(sessionID, action string) error {
 	return exec.Command("tmux", args...).Run()
 }
 
-// KillSession terminates a tmux session.
+// KillSession terminates the tmux window backing a single agent.
+// Agent IDs use the form session:window_index, so killing the window
+// exits only that agent instead of the whole tmux session.
 func (w *Watcher) KillSession(sessionID string) error {
-	return exec.Command("tmux", "kill-session", "-t", sessionID).Run()
+	return exec.Command("tmux", "kill-window", "-t", sessionID).Run()
 }
 
 func lastN(s []string, n int) []string {
