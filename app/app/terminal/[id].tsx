@@ -88,12 +88,14 @@ export default function TerminalScreen() {
   const [keyboardVisible, setKeyboardVisible] = useState(false);
   const [keyboardInset, setKeyboardInset] = useState(0);
   const [ctrlArmed, setCtrlArmed] = useState(false);
+  const [showTerminalFallback, setShowTerminalFallback] = useState(!Boolean(sessionKey && serverId && agentId));
   const terminalRef = useRef<TerminalSurfaceHandle>(null);
   const tabSwipeTranslateX = useRef(new Animated.Value(0)).current;
   const tabSwipeAnimatingRef = useRef(false);
   const keyboardHeightRef = useRef(0);
   const baseWindowHeightRef = useRef(windowHeight);
   const menuAnchorRef = useRef<View | null>(null);
+  const reconnectFallbackTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const agentByKey = useMemo(
     () => new Map(state.agents.map(agent => [agent.key, agent])),
@@ -118,7 +120,7 @@ export default function TerminalScreen() {
   const connectionState = serverId ? state.serverConnections[serverId] || 'offline' : 'offline';
   const connectionIssue = serverId ? state.serverConnectionIssues[serverId] || null : null;
   const hasTerminalRoute = Boolean(sessionKey && serverId && agentId);
-  const canRenderTerminal = hasTerminalRoute && connectionState === 'connected';
+  const canRenderTerminal = hasTerminalRoute && !showTerminalFallback;
   const terminalStateAccent = connectionIssue
     ? connectionIssueAccent(connectionIssue)
     : connectionState === 'connecting'
@@ -286,6 +288,41 @@ export default function TerminalScreen() {
       setCtrlArmed(false);
     }
   }, [renameVisible]);
+
+  useEffect(() => {
+    if (reconnectFallbackTimerRef.current) {
+      clearTimeout(reconnectFallbackTimerRef.current);
+      reconnectFallbackTimerRef.current = null;
+    }
+
+    if (!hasTerminalRoute) {
+      setShowTerminalFallback(true);
+      return;
+    }
+
+    if (connectionState === 'connected') {
+      setShowTerminalFallback(false);
+      return;
+    }
+
+    if (connectionIssue) {
+      setShowTerminalFallback(true);
+      return;
+    }
+
+    setShowTerminalFallback(false);
+    reconnectFallbackTimerRef.current = setTimeout(() => {
+      setShowTerminalFallback(true);
+      reconnectFallbackTimerRef.current = null;
+    }, 1500);
+
+    return () => {
+      if (reconnectFallbackTimerRef.current) {
+        clearTimeout(reconnectFallbackTimerRef.current);
+        reconnectFallbackTimerRef.current = null;
+      }
+    };
+  }, [connectionIssue, connectionState, hasTerminalRoute]);
 
   const tabs = useMemo(() => {
     const order = buildDisplayTabOrder(sessionKey, terminalTabs);

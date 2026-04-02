@@ -8,7 +8,6 @@ import {
   View,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
-import * as Clipboard from 'expo-clipboard';
 import * as DocumentPicker from 'expo-document-picker';
 import * as Haptics from 'expo-haptics';
 import { AgentStatus, Colors, Typography } from '../../constants/tokens';
@@ -29,7 +28,7 @@ const SHORTCUT_KEYS: readonly ShortcutKey[] = [
   { label: 'Ctrl', type: 'modifier' },
   { label: 'Esc', type: 'sequence', sequence: '\x1b' },
   { label: 'Tab', type: 'sequence', sequence: '\t' },
-  { label: 'Enter', type: 'sequence', sequence: '\r' },
+  { label: 'Ctrl-B', type: 'sequence', sequence: '\x02' },
   { label: 'Ctrl-C', type: 'sequence', sequence: '\x03' },
   { label: '←', type: 'sequence', sequence: '\x1b[D' },
   { label: '↑', type: 'sequence', sequence: '\x1b[A' },
@@ -61,11 +60,6 @@ export function TerminalAccessoryBar({
     terminalRef.current?.sendInput(data);
   };
 
-  const focusInput = () => {
-    onCtrlArmedChange(false);
-    terminalRef.current?.resumeInput();
-  };
-
   const handleCtrlToggle = () => {
     onCtrlArmedChange(!ctrlArmed);
   };
@@ -76,25 +70,10 @@ export function TerminalAccessoryBar({
   };
 
   const handleQuickAction = async (prompt: string) => {
-    focusInput();
+    onCtrlArmedChange(false);
+    terminalRef.current?.resumeInput();
     sendInput(prompt);
     await Haptics.selectionAsync();
-  };
-
-  const handlePasteClipboard = async () => {
-    try {
-      const clipboardValue = await Clipboard.getStringAsync();
-      if (!clipboardValue) {
-        Alert.alert('Clipboard is empty', 'Copy text first, then tap Paste.');
-        return;
-      }
-
-      focusInput();
-      sendInput(clipboardValue);
-      await Haptics.selectionAsync();
-    } catch (error: any) {
-      Alert.alert('Paste failed', error?.message || 'Unable to read clipboard text.');
-    }
   };
 
   const handleFilePick = async () => {
@@ -132,7 +111,8 @@ export function TerminalAccessoryBar({
         throw new Error('Upload response missing file path');
       }
 
-      focusInput();
+      onCtrlArmedChange(false);
+      terminalRef.current?.resumeInput();
       sendInput(appendShellPath('', payload.path));
       await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
     } catch (err: any) {
@@ -180,22 +160,6 @@ export function TerminalAccessoryBar({
         style={styles.shortcutRow}
         contentContainerStyle={styles.shortcutRowContent}
       >
-        <TouchableOpacity
-          style={styles.attachBtn}
-          onPress={focusInput}
-          activeOpacity={0.82}
-        >
-          <Ionicons name="keypad-outline" size={18} color={Colors.textPrimary} />
-        </TouchableOpacity>
-
-        <TouchableOpacity
-          style={styles.attachBtn}
-          onPress={() => void handlePasteClipboard()}
-          activeOpacity={0.82}
-        >
-          <Ionicons name="clipboard-outline" size={18} color={Colors.textPrimary} />
-        </TouchableOpacity>
-
         <TouchableOpacity
           style={[styles.attachBtn, !uploadEnabled && styles.attachBtnDisabled]}
           onPress={() => void handleFilePick()}
