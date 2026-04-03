@@ -326,7 +326,7 @@ func (s *Server) broadcastEvents(ctx context.Context) {
 				if agent == nil {
 					continue
 				}
-				if s.hasActiveViewer(ev.AgentID) {
+				if s.hasAnyActiveViewer() {
 					continue
 				}
 				switch ev.NewState {
@@ -427,12 +427,12 @@ func clientID(conn *websocket.Conn) string {
 	return fmt.Sprintf("%p", conn)
 }
 
-func (s *Server) hasActiveViewer(agentID string) bool {
+func (s *Server) hasAnyActiveViewer() bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	for _, activeAgentID := range s.active {
-		if activeAgentID == agentID {
+		if activeAgentID != "" {
 			return true
 		}
 	}

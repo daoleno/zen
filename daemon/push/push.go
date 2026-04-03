@@ -140,13 +140,6 @@ func buildNotificationBody(summary, fallback string) string {
 	return fallback
 }
 
-func notificationTitle(kind, label string) string {
-	if label == "" {
-		return kind
-	}
-	return fmt.Sprintf("%s · %s", kind, label)
-}
-
 func notificationData(agentID, serverRef string) map[string]string {
 	return map[string]string{
 		"agent_id":  agentID,
@@ -162,9 +155,13 @@ func (c *Client) NotifyAgentBlocked(agentID, agentName, summary string) {
 	}
 
 	label := formatNotificationAgentLabel(agentName, agentID)
+	title := label + " needs input"
+	if label == "" {
+		title = "Agent needs input"
+	}
 	c.Send(Message{
-		Title:    notificationTitle("Input needed", label),
-		Body:     buildNotificationBody(summary, "Open zen to respond."),
+		Title:    title,
+		Body:     buildNotificationBody(summary, "Waiting for your response."),
 		Priority: "high",
 		Data:     notificationData(agentID, c.serverRef),
 	})
@@ -177,9 +174,13 @@ func (c *Client) NotifyAgentFailed(agentID, agentName, summary string) {
 	}
 
 	label := formatNotificationAgentLabel(agentName, agentID)
+	title := label + " failed"
+	if label == "" {
+		title = "Agent failed"
+	}
 	c.Send(Message{
-		Title:    notificationTitle("Task failed", label),
-		Body:     buildNotificationBody(summary, "Open zen to inspect the last output."),
+		Title:    title,
+		Body:     buildNotificationBody(summary, "Check the terminal for details."),
 		Priority: "high",
 		Data:     notificationData(agentID, c.serverRef),
 	})
@@ -192,9 +193,13 @@ func (c *Client) NotifyAgentDone(agentID, agentName, summary string) {
 	}
 
 	label := formatNotificationAgentLabel(agentName, agentID)
+	title := label + " finished"
+	if label == "" {
+		title = "Agent finished"
+	}
 	c.Send(Message{
-		Title:    notificationTitle("Finished", label),
-		Body:     buildNotificationBody(summary, "Session finished."),
+		Title:    title,
+		Body:     buildNotificationBody(summary, "Session completed."),
 		Priority: "default",
 		Data:     notificationData(agentID, c.serverRef),
 	})

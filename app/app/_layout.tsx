@@ -66,28 +66,27 @@ async function registerForPushNotificationsAsync(): Promise<string | undefined> 
 
 function buildNotificationContent(agent: Agent): Notifications.NotificationContentInput | null {
   const label = formatNotificationAgentLabel(agent);
-  const context = [agent.project, agent.serverName].filter(Boolean).join(' · ');
   const summary = normalizeNotificationSummary(agent.summary);
 
   switch (agent.status) {
     case 'blocked':
       return {
-        title: label ? `Input needed · ${label}` : 'Input needed',
-        body: buildNotificationBody(context, summary, 'Open zen to respond.'),
+        title: label ? `${label} needs input` : 'Agent needs input',
+        body: summary || 'Waiting for your response.',
         data: { agent_id: agent.id, server_id: agent.serverId, screen: 'terminal' },
         sound: 'default',
       };
     case 'failed':
       return {
-        title: label ? `Task failed · ${label}` : 'Task failed',
-        body: buildNotificationBody(context, summary, 'Open zen to inspect the last output.'),
+        title: label ? `${label} failed` : 'Agent failed',
+        body: summary || 'Check the terminal for details.',
         data: { agent_id: agent.id, server_id: agent.serverId, screen: 'terminal' },
         sound: 'default',
       };
     case 'done':
       return {
-        title: label ? `Finished · ${label}` : 'Finished',
-        body: buildNotificationBody(context, summary, 'Terminal finished.'),
+        title: label ? `${label} finished` : 'Agent finished',
+        body: summary || 'Session completed.',
         data: { agent_id: agent.id, server_id: agent.serverId, screen: 'terminal' },
         sound: 'default',
       };
@@ -122,11 +121,6 @@ function normalizeNotificationSummary(summary: string | undefined): string {
   }
 
   return `${collapsed.slice(0, 107)}...`;
-}
-
-function buildNotificationBody(context: string, summary: string, fallback: string): string {
-  const parts = [context, summary].filter(Boolean);
-  return parts.length > 0 ? parts.join(' · ') : fallback;
 }
 
 function AppContent() {
@@ -319,12 +313,15 @@ function AppContent() {
       return;
     }
 
+    // Suppress all local notifications while user is in any terminal session.
+    if (state.selectedAgentKey) {
+      previousAgentStatesRef.current = nextAgentStates;
+      return;
+    }
+
     for (const agent of state.agents) {
       const previousState = previousAgentStates.get(agent.key);
       if (!previousState || previousState === agent.status) {
-        continue;
-      }
-      if (agent.key === state.selectedAgentKey) {
         continue;
       }
 
