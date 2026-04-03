@@ -21,6 +21,9 @@ const (
 type Agent struct {
 	ID            string     `json:"id"`
 	Name          string     `json:"name"`
+	Project       string     `json:"project,omitempty"`
+	Cwd           string     `json:"cwd,omitempty"`
+	Command       string     `json:"command,omitempty"`
 	State         AgentState `json:"status"`
 	Summary       string     `json:"summary"`
 	LastLines     []string   `json:"last_output_lines"`

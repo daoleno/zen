@@ -337,7 +337,7 @@ export default function SettingsScreen() {
                               ? 'zen is connected to this daemon, but it has not reported any live agents yet.'
                               : 'zen is connected to this daemon and waiting for the first agent list to arrive.'
                           }
-                          hint="Start Claude or Codex on that machine, or verify the watcher/tmux bridge is forwarding sessions."
+                          hint="Start Claude or Codex on that machine, or verify the watcher/tmux bridge is forwarding terminals."
                         />
                       ) : null}
 

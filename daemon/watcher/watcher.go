@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 	"os/exec"
+	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -90,6 +92,7 @@ func (w *Watcher) poll() {
 	if err != nil {
 		return
 	}
+	processes := snapshotProcesses()
 
 	w.mu.Lock()
 	defer w.mu.Unlock()
@@ -114,6 +117,9 @@ func (w *Watcher) poll() {
 			}
 			w.agents[win.target] = agent
 		}
+		agent.Cwd = win.cwd
+		agent.Project = projectNameFromPath(win.cwd)
+		agent.Command = detectAgentCommand(win.command, win.panePID, processes)
 
 		if contentChanged {
 			agent.StaleCount = 0
@@ -174,13 +180,16 @@ func (w *Watcher) poll() {
 
 // tmuxWindow represents a single tmux window target.
 type tmuxWindow struct {
-	target string // "session:window_index" — usable as tmux -t target
-	name   string // window name (e.g. "claude", "node")
+	target  string // "session:window_index" — usable as tmux -t target
+	name    string // window name (e.g. "claude", "node")
+	cwd     string // active pane cwd
+	command string // active pane command
+	panePID int
 }
 
 // listTmuxWindows returns all windows across all tmux sessions.
 func listTmuxWindows() ([]tmuxWindow, error) {
-	cmd := exec.Command("tmux", "list-windows", "-a", "-F", "#{session_name}:#{window_index} #{window_name}")
+	cmd := exec.Command("tmux", "list-windows", "-a", "-F", "#{session_name}:#{window_index}\t#{window_name}\t#{pane_current_path}\t#{pane_current_command}\t#{pane_pid}")
 	out, err := cmd.Output()
 	if err != nil {
 		return nil, fmt.Errorf("tmux list-windows: %w", err)
@@ -191,7 +200,7 @@ func listTmuxWindows() ([]tmuxWindow, error) {
 		if line == "" {
 			continue
 		}
-		parts := strings.SplitN(line, " ", 2)
+		parts := strings.SplitN(line, "\t", 5)
 		target := parts[0]
 		// Skip grouped sessions created by the terminal backend (zen-<pid>-<counter>).
 		sessionName := strings.SplitN(target, ":", 2)[0]
@@ -199,10 +208,22 @@ func listTmuxWindows() ([]tmuxWindow, error) {
 			continue
 		}
 		name := target
-		if len(parts) == 2 {
+		if len(parts) >= 2 {
 			name = parts[1]
 		}
-		windows = append(windows, tmuxWindow{target: target, name: name})
+		cwd := ""
+		if len(parts) >= 3 {
+			cwd = strings.TrimSpace(parts[2])
+		}
+		command := ""
+		if len(parts) >= 4 {
+			command = strings.TrimSpace(parts[3])
+		}
+		panePID := 0
+		if len(parts) == 5 {
+			panePID, _ = strconv.Atoi(strings.TrimSpace(parts[4]))
+		}
+		windows = append(windows, tmuxWindow{target: target, name: name, cwd: cwd, command: command, panePID: panePID})
 	}
 	return windows, nil
 }
@@ -253,11 +274,225 @@ func (w *Watcher) SendAction(sessionID, action string) error {
 	return exec.Command("tmux", args...).Run()
 }
 
+type CreateSessionOptions struct {
+	Cwd     string
+	Command string
+	Name    string
+}
+
+// CreateSession creates a new tmux window and returns its target id.
+// If preferredTarget is set, the new window is created in the same tmux
+// session as that target. Otherwise the first non-zen tmux session is used.
+func (w *Watcher) CreateSession(preferredTarget string, opts CreateSessionOptions) (string, error) {
+	sessionName := baseSessionName(preferredTarget)
+	if sessionName == "" {
+		sessions, err := listTmuxSessions()
+		if err != nil {
+			return "", err
+		}
+		if len(sessions) == 0 {
+			return "", fmt.Errorf("no tmux sessions available")
+		}
+		sessionName = sessions[0]
+	}
+
+	cwd := strings.TrimSpace(opts.Cwd)
+	if cwd == "" && preferredTarget != "" {
+		currentPath, err := currentPathForTarget(preferredTarget)
+		if err == nil {
+			cwd = currentPath
+		}
+	}
+
+	args := []string{
+		"new-window",
+		"-P",
+		"-F",
+		"#{session_name}:#{window_index}",
+		"-t",
+		sessionName,
+	}
+	if name := strings.TrimSpace(opts.Name); name != "" {
+		args = append(args, "-n", name)
+	}
+	if cwd != "" {
+		args = append(args, "-c", cwd)
+	}
+	if command := strings.TrimSpace(opts.Command); command != "" {
+		args = append(args, command)
+	}
+
+	out, err := exec.Command("tmux", args...).Output()
+	if err != nil {
+		return "", fmt.Errorf("create tmux window: %w", err)
+	}
+
+	target := strings.TrimSpace(string(out))
+	if target == "" {
+		return "", fmt.Errorf("tmux returned empty window target")
+	}
+	return target, nil
+}
+
 // KillSession terminates the tmux window backing a single agent.
 // Agent IDs use the form session:window_index, so killing the window
 // exits only that agent instead of the whole tmux session.
 func (w *Watcher) KillSession(sessionID string) error {
 	return exec.Command("tmux", "kill-window", "-t", sessionID).Run()
+}
+
+func listTmuxSessions() ([]string, error) {
+	out, err := exec.Command("tmux", "list-sessions", "-F", "#{session_name}").Output()
+	if err != nil {
+		return nil, fmt.Errorf("tmux list-sessions: %w", err)
+	}
+
+	sessions := make([]string, 0)
+	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+		sessionName := strings.TrimSpace(line)
+		if sessionName == "" || strings.HasPrefix(sessionName, "zen-") {
+			continue
+		}
+		sessions = append(sessions, sessionName)
+	}
+	return sessions, nil
+}
+
+func baseSessionName(target string) string {
+	target = strings.TrimSpace(target)
+	if target == "" {
+		return ""
+	}
+
+	sessionName, _, ok := strings.Cut(target, ":")
+	if !ok {
+		return ""
+	}
+	if strings.HasPrefix(sessionName, "zen-") {
+		return ""
+	}
+	return sessionName
+}
+
+func currentPathForTarget(target string) (string, error) {
+	out, err := exec.Command("tmux", "display-message", "-p", "-t", target, "#{pane_current_path}").Output()
+	if err != nil {
+		return "", fmt.Errorf("tmux current path: %w", err)
+	}
+	return strings.TrimSpace(string(out)), nil
+}
+
+type processInfo struct {
+	pid  int
+	ppid int
+	comm string
+	args string
+}
+
+func snapshotProcesses() map[int]processInfo {
+	out, err := exec.Command("ps", "-eo", "pid=,ppid=,comm=,args=").Output()
+	if err != nil {
+		return nil
+	}
+
+	processes := make(map[int]processInfo)
+	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		fields := strings.Fields(line)
+		if len(fields) < 3 {
+			continue
+		}
+		pid, err1 := strconv.Atoi(fields[0])
+		ppid, err2 := strconv.Atoi(fields[1])
+		if err1 != nil || err2 != nil {
+			continue
+		}
+
+		args := ""
+		if len(fields) > 3 {
+			args = strings.Join(fields[3:], " ")
+		}
+
+		processes[pid] = processInfo{
+			pid:  pid,
+			ppid: ppid,
+			comm: fields[2],
+			args: args,
+		}
+	}
+	return processes
+}
+
+func detectAgentCommand(baseCommand string, panePID int, processes map[int]processInfo) string {
+	command := normalizeCommand(baseCommand)
+	if command == "claude" || command == "codex" {
+		return command
+	}
+	if panePID <= 0 || len(processes) == 0 {
+		return command
+	}
+
+	descendants := descendantProcesses(panePID, processes)
+	for _, proc := range descendants {
+		lowerComm := normalizeCommand(proc.comm)
+		lowerArgs := strings.ToLower(proc.args)
+
+		if lowerComm == "claude" || strings.Contains(lowerArgs, " claude") || strings.HasPrefix(lowerArgs, "claude ") {
+			return "claude"
+		}
+		if lowerComm == "codex" || strings.Contains(lowerArgs, "/bin/codex") || strings.Contains(lowerArgs, " codex ") || strings.HasPrefix(lowerArgs, "codex ") {
+			return "codex"
+		}
+	}
+
+	return command
+}
+
+func descendantProcesses(rootPID int, processes map[int]processInfo) []processInfo {
+	if rootPID <= 0 || len(processes) == 0 {
+		return nil
+	}
+
+	children := make(map[int][]processInfo)
+	for _, proc := range processes {
+		children[proc.ppid] = append(children[proc.ppid], proc)
+	}
+
+	var result []processInfo
+	queue := append([]processInfo(nil), children[rootPID]...)
+	for len(queue) > 0 {
+		proc := queue[0]
+		queue = queue[1:]
+		result = append(result, proc)
+		queue = append(queue, children[proc.pid]...)
+	}
+
+	return result
+}
+
+func normalizeCommand(value string) string {
+	value = strings.TrimSpace(strings.ToLower(value))
+	value = strings.TrimPrefix(value, "./")
+	if idx := strings.LastIndex(value, "/"); idx >= 0 {
+		value = value[idx+1:]
+	}
+	return value
+}
+
+func projectNameFromPath(cwd string) string {
+	cwd = strings.TrimSpace(cwd)
+	if cwd == "" {
+		return ""
+	}
+
+	base := filepath.Base(cwd)
+	if base == "." || base == string(filepath.Separator) {
+		return cwd
+	}
+	return base
 }
 
 func lastN(s []string, n int) []string {

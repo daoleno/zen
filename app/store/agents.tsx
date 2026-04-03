@@ -12,6 +12,8 @@ export interface Agent {
   name: string;
   status: AgentStatus;
   project?: string;
+  cwd?: string;
+  command?: string;
   summary: string;
   last_output_lines: string[];
   updated_at: number;
@@ -32,6 +34,8 @@ type RawAgent = {
   name: string;
   status: AgentStatus;
   project?: string;
+  cwd?: string;
+  command?: string;
   summary?: string;
   last_output_lines?: string[];
   updated_at?: string | number | Date;
@@ -159,6 +163,8 @@ function normalizeAgent(
     name: agent.name,
     status: agent.status,
     project: agent.project,
+    cwd: agent.cwd,
+    command: agent.command,
     summary: agent.summary || '',
     last_output_lines: Array.isArray(agent.last_output_lines) ? agent.last_output_lines : [],
     updated_at: normalizeTimestamp(agent.updated_at),

@@ -87,7 +87,7 @@ function buildNotificationContent(agent: Agent): Notifications.NotificationConte
     case 'done':
       return {
         title: label ? `Finished · ${label}` : 'Finished',
-        body: buildNotificationBody(context, summary, 'Session finished.'),
+        body: buildNotificationBody(context, summary, 'Terminal finished.'),
         data: { agent_id: agent.id, server_id: agent.serverId, screen: 'terminal' },
         sound: 'default',
       };

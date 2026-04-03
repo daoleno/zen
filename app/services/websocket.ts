@@ -232,6 +232,52 @@ class MultiServerWebSocketClient {
     this.connections.get(serverId)?.send(msg);
   }
 
+  createSession(serverId: string, options?: { targetId?: string; cwd?: string; command?: string; name?: string }) {
+    const requestId = `${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
+
+    return new Promise<string>((resolve, reject) => {
+      const cleanup = () => {
+        if (timer) {
+          clearTimeout(timer);
+        }
+        this.off('session_created', handleCreated);
+        this.off('error', handleError);
+      };
+
+      const handleCreated = (payload: any) => {
+        if (payload.serverId !== serverId || payload.request_id !== requestId) return;
+        cleanup();
+        if (typeof payload.agent_id === 'string' && payload.agent_id) {
+          resolve(payload.agent_id);
+          return;
+        }
+        reject(new Error('Daemon returned an invalid session id.'));
+      };
+
+      const handleError = (payload: any) => {
+        if (payload.serverId !== serverId || payload.request_id !== requestId) return;
+        cleanup();
+        reject(new Error(payload.message || 'Failed to create terminal.'));
+      };
+
+      const timer = setTimeout(() => {
+        cleanup();
+        reject(new Error('Timed out while creating a new terminal.'));
+      }, 10000);
+
+      this.on('session_created', handleCreated);
+      this.on('error', handleError);
+      this.send(serverId, {
+        type: 'create_session',
+        request_id: requestId,
+        target_id: options?.targetId,
+        cwd: options?.cwd,
+        command: options?.command,
+        name: options?.name,
+      });
+    });
+  }
+
   openTerminal(serverId: string, targetId: string, backend: string = 'tmux', cols?: number, rows?: number) {
     this.send(serverId, { type: 'terminal_open', target_id: targetId, backend, cols, rows });
   }

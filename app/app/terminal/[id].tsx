@@ -45,6 +45,9 @@ import { wsClient } from '../../services/websocket';
 import { connectionIssueAccent } from '../../services/connectionIssue';
 import { TerminalSurface, TerminalSurfaceHandle } from '../../components/terminal/TerminalSurface';
 import { TerminalAccessoryBar } from '../../components/terminal/TerminalAccessoryBar';
+import { AgentKindIcon } from '../../components/terminal/AgentKindIcon';
+import { NewTerminalSheet } from '../../components/terminal/NewTerminalSheet';
+import { presentAgent } from '../../services/agentPresentation';
 
 const EMPTY_TABS: StoredTerminalTabs = { order: [], pinned: [] };
 const MENU_POPOVER_WIDTH = 168;
@@ -61,6 +64,7 @@ interface TerminalTabDescriptor {
   id: string;
   name: string;
   status: AgentStatus;
+  kind: 'terminal' | 'claude' | 'codex';
   pinned: boolean;
   active: boolean;
 }
@@ -88,6 +92,8 @@ export default function TerminalScreen() {
   const [keyboardVisible, setKeyboardVisible] = useState(false);
   const [keyboardInset, setKeyboardInset] = useState(0);
   const [ctrlArmed, setCtrlArmed] = useState(false);
+  const [newTerminalVisible, setNewTerminalVisible] = useState(false);
+  const [creatingSession, setCreatingSession] = useState(false);
   const [showTerminalFallback, setShowTerminalFallback] = useState(!Boolean(sessionKey && serverId && agentId));
   const terminalRef = useRef<TerminalSurfaceHandle>(null);
   const tabSwipeTranslateX = useRef(new Animated.Value(0)).current;
@@ -114,7 +120,7 @@ export default function TerminalScreen() {
   const agent = sessionKey ? agentByKey.get(sessionKey) : undefined;
   const activePinned = sessionKey ? terminalTabs.pinned.includes(sessionKey) : false;
   const displayName = useMemo(
-    () => resolveAgentName(agent, sessionKey, agentAliases),
+    () => presentAgent(agent || { name: '', summary: '', last_output_lines: [] }, sessionKey ? agentAliases[sessionKey] : undefined).title,
     [agent, agentAliases, sessionKey],
   );
   const connectionState = serverId ? state.serverConnections[serverId] || 'offline' : 'offline';
@@ -128,17 +134,17 @@ export default function TerminalScreen() {
       : '#65758A';
   const terminalStateBusy = hasTerminalRoute && connectionState === 'connecting' && !connectionIssue;
   const terminalStateTitle = !hasTerminalRoute
-    ? 'Session unavailable'
+    ? 'Terminal unavailable'
     : connectionIssue?.title || (connectionState === 'connecting' ? 'Reconnecting to daemon' : 'Daemon unavailable');
   const terminalStateDetail = !hasTerminalRoute
-    ? 'Open this session again from the Agents tab.'
+    ? 'Open this terminal again from the Agents tab.'
     : connectionIssue?.detail || (
       connectionState === 'connecting'
         ? 'zen is reconnecting before reopening this terminal.'
         : 'Start zen-daemon on that machine, or bring the network or tunnel back.'
     );
   const terminalStateHint = !hasTerminalRoute
-    ? 'The app kept your route, but the live session is not ready yet.'
+    ? 'The app kept your route, but the live terminal is not ready yet.'
     : connectionIssue?.hint || 'This terminal will reopen automatically once the daemon is reachable again.';
 
   useFocusEffect(
@@ -338,10 +344,15 @@ export default function TerminalScreen() {
       const tabAgent = agentByKey.get(currentSessionKey);
       const parsed = parseSessionKey(currentSessionKey);
       const serverLabel = tabAgent?.serverName || parsed?.serverId || 'server';
+      const presented = presentAgent(
+        tabAgent || { name: parsed?.agentId || '', summary: '', last_output_lines: [] },
+        currentSessionKey ? agentAliases[currentSessionKey] : undefined,
+      );
       return {
         id: currentSessionKey,
-        name: formatTabLabel(resolveAgentName(tabAgent, currentSessionKey, agentAliases), serverLabel),
+        name: formatTabLabel(presented.shortTitle, serverLabel),
         status: tabAgent?.status || 'unknown',
+        kind: presented.kind,
         pinned: terminalTabs.pinned.includes(currentSessionKey),
         active: currentSessionKey === sessionKey,
       } satisfies TerminalTabDescriptor;
@@ -525,7 +536,7 @@ export default function TerminalScreen() {
     closeMenu();
   };
 
-  const handleExitSession = () => {
+  const handleTerminateAgent = () => {
     if (!sessionKey || !serverId || !agentId) return;
 
     closeMenu();
@@ -533,28 +544,28 @@ export default function TerminalScreen() {
     if (connectionState !== 'connected') {
       Alert.alert(
         'Daemon unavailable',
-        'Reconnect to that daemon before exiting the session.',
+        'Reconnect to that daemon before terminating the agent.',
       );
       return;
     }
 
     Alert.alert(
-      'Exit Session?',
+      'Terminate Agent?',
       'This will terminate ' + (displayName || agentId) + ' on ' + (agent?.serverName || serverId) + '. It does more than closing the tab.',
       [
         { text: 'Cancel', style: 'cancel' },
         {
-          text: 'Exit Session',
+          text: 'Terminate Agent',
           style: 'destructive',
           onPress: () => {
-            void performExitSession();
+            void performTerminateAgent();
           },
         },
       ],
     );
   };
 
-  const performExitSession = async () => {
+  const performTerminateAgent = async () => {
     if (!sessionKey || !serverId || !agentId) return;
 
     const currentTabs = terminalTabs;
@@ -586,6 +597,53 @@ export default function TerminalScreen() {
 
   const handleCtrlArmedChange = (next: boolean) => {
     setCtrlArmed(next);
+  };
+
+  const createTerminal = async (input: { cwd: string; command: string; name: string }) => {
+    if (!serverId || connectionState !== 'connected' || creatingSession) {
+      if (connectionState !== 'connected') {
+        Alert.alert('Daemon unavailable', 'Reconnect to that daemon before creating a new terminal.');
+      }
+      return;
+    }
+
+    setNewTerminalVisible(false);
+    setPickerVisible(false);
+    closeMenu();
+    setCreatingSession(true);
+    try {
+      const nextAgentId = await wsClient.createSession(serverId, {
+        targetId: agentId,
+        cwd: input.cwd,
+        command: input.command,
+        name: input.name,
+      });
+      const nextSessionKey = makeSessionKey(serverId, nextAgentId);
+      const openedAt = Date.now();
+      const nextTabs = await touchTerminalTab(nextSessionKey);
+      setTerminalTabs(nextTabs);
+      void markAgentOpened(nextSessionKey, openedAt);
+      setRecentAgentOpens(previous => ({
+        ...previous,
+        [nextSessionKey]: openedAt,
+      }));
+      router.replace({
+        pathname: '/terminal/[id]',
+        params: { id: nextAgentId, serverId },
+      });
+    } catch (error: any) {
+      Alert.alert('Could not create terminal', error?.message || 'Try reconnecting to that daemon first.');
+    } finally {
+      setCreatingSession(false);
+    }
+  };
+
+  const openNewTerminal = () => {
+    if (connectionState !== 'connected') {
+      Alert.alert('Daemon unavailable', 'Reconnect to that daemon before creating a new terminal.');
+      return;
+    }
+    setNewTerminalVisible(true);
   };
 
   const retryServerConnection = async () => {
@@ -682,6 +740,7 @@ export default function TerminalScreen() {
                 onPress={() => openAgentTab(tab.id)}
                 activeOpacity={0.84}
               >
+                <AgentKindIcon kind={tab.kind} size={13} />
                 <View
                   style={[
                     styles.tabStatusDot,
@@ -856,10 +915,22 @@ export default function TerminalScreen() {
 
           <View style={styles.sheetCard}>
             <View style={styles.sheetHandle} />
-            <Text style={styles.sheetTitle}>Switch Agent</Text>
+            <Text style={styles.sheetTitle}>Terminals</Text>
             <Text style={styles.sheetSubtitle}>
-              Keep one live terminal, jump between recent agents instantly.
+              Open a new terminal here, or jump between recent terminals instantly.
             </Text>
+
+            <TouchableOpacity
+              style={[styles.sheetCreateButton, creatingSession && styles.sheetCreateButtonDisabled]}
+              onPress={openNewTerminal}
+              disabled={creatingSession}
+              activeOpacity={0.84}
+            >
+              <Ionicons name="add" size={16} color={Colors.bgPrimary} />
+              <Text style={styles.sheetCreateButtonText}>
+                {creatingSession ? 'Starting Terminal…' : 'New Terminal'}
+              </Text>
+            </TouchableOpacity>
 
             <ScrollView
               style={styles.sheetScroll}
@@ -873,6 +944,7 @@ export default function TerminalScreen() {
                   const isActive = item.key === sessionKey;
                   const isOpen = terminalTabs.order.includes(item.key);
                   const isPinned = terminalTabs.pinned.includes(item.key);
+                  const presented = presentAgent(item, agentAliases[item.key]);
 
                   return (
                     <TouchableOpacity
@@ -886,6 +958,7 @@ export default function TerminalScreen() {
                     >
                       <View style={styles.agentRowCopy}>
                         <View style={styles.agentRowStatus}>
+                          <AgentKindIcon kind={presented.kind} size={15} />
                           <View
                             style={[
                               styles.agentRowStatusDot,
@@ -897,10 +970,10 @@ export default function TerminalScreen() {
                           </Text>
                         </View>
                         <Text style={styles.agentRowTitle} numberOfLines={1}>
-                          {resolveAgentName(item, item.key, agentAliases)}
+                          {presented.title}
                         </Text>
                         <Text style={styles.agentRowMeta} numberOfLines={1}>
-                          {item.serverName}{item.project ? ` · ${item.project}` : ` · ${item.id}`}
+                          {item.serverName}{presented.subtitle ? ` · ${presented.subtitle}` : ` · ${item.id}`}
                         </Text>
                       </View>
 
@@ -945,6 +1018,11 @@ export default function TerminalScreen() {
             ]}
           >
             <MenuAction
+              label={creatingSession ? 'Starting Terminal…' : 'New Terminal'}
+              onPress={openNewTerminal}
+              disabled={creatingSession || connectionState !== 'connected'}
+            />
+            <MenuAction
               label="Rename"
               onPress={openRenameModal}
             />
@@ -962,13 +1040,29 @@ export default function TerminalScreen() {
               onPress={handleCloseCurrentTab}
             />
             <MenuAction
-              label="Exit Session"
-              onPress={handleExitSession}
+              label="Terminate Agent"
+              onPress={handleTerminateAgent}
               destructive
             />
           </View>
         </View>
       </Modal>
+
+      <NewTerminalSheet
+        visible={newTerminalVisible}
+        title="New Terminal"
+        subtitle="Start a plain shell here, or launch Claude/Codex in the current project."
+        initialCwd={agent?.cwd || ''}
+        submitting={creatingSession}
+        onClose={() => setNewTerminalVisible(false)}
+        onSubmit={input => {
+          void createTerminal({
+            cwd: input.cwd,
+            command: input.command,
+            name: input.name,
+          });
+        }}
+      />
 
       <Modal
         visible={renameVisible}
@@ -984,7 +1078,7 @@ export default function TerminalScreen() {
           />
 
           <View style={styles.renameCard}>
-            <Text style={styles.renameTitle}>Rename Session</Text>
+            <Text style={styles.renameTitle}>Rename Terminal</Text>
             <Text style={styles.renameHint}>Only changes the local display name on this device.</Text>
             <TextInput
               style={styles.renameInput}
@@ -1123,20 +1217,6 @@ function pickNextTabAfterClose(
   if (closedIndex === -1) return nextOrder[0] || null;
 
   return currentOrder[closedIndex + 1] || currentOrder[closedIndex - 1] || null;
-}
-
-function resolveAgentName(
-  agent: Agent | undefined,
-  sessionKey: string | null,
-  aliases: StoredAgentAliases,
-): string {
-  if (sessionKey && aliases[sessionKey]) return aliases[sessionKey];
-  if (agent?.name) return agent.name;
-  if (sessionKey) {
-    const parsed = parseSessionKey(sessionKey);
-    if (parsed) return parsed.agentId;
-  }
-  return '';
 }
 
 function formatTabLabel(title: string, serverName: string): string {
@@ -1386,6 +1466,24 @@ const styles = StyleSheet.create({
     color: '#7D8CA0',
     fontSize: 12,
     fontFamily: Typography.uiFont,
+  },
+  sheetCreateButton: {
+    marginTop: 16,
+    height: 42,
+    borderRadius: 14,
+    backgroundColor: Colors.accent,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 8,
+  },
+  sheetCreateButtonDisabled: {
+    opacity: 0.7,
+  },
+  sheetCreateButtonText: {
+    color: Colors.bgPrimary,
+    fontSize: 14,
+    fontFamily: Typography.uiFontMedium,
   },
   sheetScroll: {
     marginTop: 18,

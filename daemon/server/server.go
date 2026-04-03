@@ -119,8 +119,12 @@ func (s *Server) handleWS(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleClientMessage(conn *websocket.Conn, msg []byte) {
 	var raw struct {
 		Type         string `json:"type"`
+		RequestID    string `json:"request_id"`
 		AgentID      string `json:"agent_id"`
 		TargetID     string `json:"target_id"`
+		Cwd          string `json:"cwd"`
+		Command      string `json:"command"`
+		Name         string `json:"name"`
 		Backend      string `json:"backend"`
 		SessionID    string `json:"session_id"`
 		Text         string `json:"text"`
@@ -158,6 +162,27 @@ func (s *Server) handleClientMessage(conn *websocket.Conn, msg []byte) {
 			log.Printf("send_input error: %v", err)
 			s.sendError(conn, "send_input_failed", err.Error())
 		}
+
+	case "create_session":
+		agentID, err := s.watcher.CreateSession(raw.TargetID, watcher.CreateSessionOptions{
+			Cwd:     raw.Cwd,
+			Command: raw.Command,
+			Name:    raw.Name,
+		})
+		if err != nil {
+			s.sendJSON(conn, map[string]any{
+				"type":       "error",
+				"code":       "create_session_failed",
+				"message":    err.Error(),
+				"request_id": raw.RequestID,
+			})
+			return
+		}
+		s.sendJSON(conn, map[string]any{
+			"type":       "session_created",
+			"request_id": raw.RequestID,
+			"agent_id":   agentID,
+		})
 
 	case "terminal_open":
 		backend := raw.Backend

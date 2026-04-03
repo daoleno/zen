@@ -13,8 +13,10 @@ import { useFocusEffect, useRouter } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Agent, useAgents } from '../../store/agents';
-import { AgentStatus, Colors, Spacing, Typography, statusColor } from '../../constants/tokens';
+import { AgentStatus, Colors, Typography, statusColor } from '../../constants/tokens';
 import { TerminalPreview } from '../../components/terminal/TerminalPreview';
+import { AgentKindIcon } from '../../components/terminal/AgentKindIcon';
+import { NewTerminalSheet } from '../../components/terminal/NewTerminalSheet';
 import { TerminalThemeName, DefaultTerminalThemeName } from '../../constants/terminalThemes';
 import {
   closeTerminalTab,
@@ -26,12 +28,16 @@ import {
   markAgentOpened,
   setAgentAlias,
   setInboxViewMode,
+  touchTerminalTab,
   StoredAgentAliases,
   StoredInboxViewMode,
   StoredRecentAgentOpens,
+  StoredServer,
 } from '../../services/storage';
 import { connectionIssueAccent } from '../../services/connectionIssue';
 import { wsClient } from '../../services/websocket';
+import { makeSessionKey } from '../../services/sessionKeys';
+import { presentAgent } from '../../services/agentPresentation';
 
 const STATUS_PRIORITY: Record<AgentStatus, number> = {
   failed: 0,
@@ -49,6 +55,10 @@ export default function InboxScreen() {
   const [recentAgentOpens, setRecentAgentOpens] = useState<StoredRecentAgentOpens>({});
   const [terminalTheme, setTerminalTheme] = useState<TerminalThemeName>(DefaultTerminalThemeName);
   const [configuredServerCount, setConfiguredServerCount] = useState(0);
+  const [servers, setServers] = useState<StoredServer[]>([]);
+  const [createSheetVisible, setCreateSheetVisible] = useState(false);
+  const [selectedCreateServerId, setSelectedCreateServerId] = useState<string | null>(null);
+  const [creatingServerId, setCreatingServerId] = useState<string | null>(null);
 
   // Context menu state
   const [menuAgent, setMenuAgent] = useState<Agent | null>(null);
@@ -71,6 +81,7 @@ export default function InboxScreen() {
         setAgentAliases(storedAliases);
         setTerminalTheme(storedTheme as TerminalThemeName);
         setConfiguredServerCount(storedServers.length);
+        setServers(storedServers);
       }
     })();
     return () => { cancelled = true; };
@@ -89,6 +100,7 @@ export default function InboxScreen() {
           setRecentAgentOpens(storedRecentOpens);
           setAgentAliases(storedAliases);
           setConfiguredServerCount(storedServers.length);
+          setServers(storedServers);
         }
       })();
       return () => { cancelled = true; };
@@ -120,6 +132,15 @@ export default function InboxScreen() {
     }
     return nextIssue;
   }, [state.serverConnectionIssues]);
+
+  const connectedServers = useMemo(
+    () => servers.filter(server => state.serverConnections[server.id] === 'connected'),
+    [servers, state.serverConnections],
+  );
+  const createServerOptions = useMemo(
+    () => connectedServers.map(server => ({ id: server.id, name: server.name })),
+    [connectedServers],
+  );
 
   const setViewMode = async (mode: StoredInboxViewMode) => {
     setViewModeState(mode);
@@ -166,7 +187,70 @@ export default function InboxScreen() {
     setRenameVisible(false);
     setMenuAgent(null);
   };
-  const handleExitSession = () => {
+
+  const finishCreateTerminal = async (serverId: string, agentId: string) => {
+    const sessionKey = makeSessionKey(serverId, agentId);
+    const openedAt = Date.now();
+    await touchTerminalTab(sessionKey);
+    void markAgentOpened(sessionKey, openedAt);
+    setRecentAgentOpens(previous => ({
+      ...previous,
+      [sessionKey]: openedAt,
+    }));
+    router.push({
+      pathname: '/terminal/[id]',
+      params: { id: agentId, serverId },
+    });
+  };
+
+  const findSuggestedCwd = (serverId: string): string => {
+    const onServer = sortedAgents.filter(agent => agent.serverId === serverId && agent.cwd);
+    return onServer[0]?.cwd?.trim() || '';
+  };
+
+  const createTerminalOnServer = async (input: {
+    serverId: string;
+    cwd: string;
+    command: string;
+    name: string;
+  }) => {
+    const server = connectedServers.find(item => item.id === input.serverId);
+    if (!server) {
+      Alert.alert('Daemon unavailable', 'Connect to a daemon before creating a new terminal.');
+      return;
+    }
+
+    setCreateSheetVisible(false);
+    setCreatingServerId(server.id);
+    try {
+      const agentId = await wsClient.createSession(server.id, {
+        cwd: input.cwd,
+        command: input.command,
+        name: input.name,
+      });
+      await finishCreateTerminal(server.id, agentId);
+    } catch (error: any) {
+      Alert.alert('Could not create terminal', error?.message || 'Try reconnecting to that daemon first.');
+    } finally {
+      setCreatingServerId(null);
+    }
+  };
+
+  const openCreateTerminal = () => {
+    if (connectedServers.length === 0) {
+      Alert.alert(
+        'Daemon unavailable',
+        'Connect to a daemon before creating a new terminal.',
+      );
+      return;
+    }
+    setSelectedCreateServerId(previous => previous && connectedServers.some(server => server.id === previous)
+      ? previous
+      : connectedServers[0].id);
+    setCreateSheetVisible(true);
+  };
+
+  const handleTerminateAgent = () => {
     if (!menuAgent) return;
 
     const target = menuAgent;
@@ -175,18 +259,18 @@ export default function InboxScreen() {
     if (state.serverConnections[target.serverId] !== 'connected') {
       Alert.alert(
         'Daemon unavailable',
-        'Reconnect to that daemon before exiting the session.',
+        'Reconnect to that daemon before terminating the agent.',
       );
       return;
     }
 
     Alert.alert(
-      'Exit Session?',
-      'This will terminate ' + resolveAgentName(target, agentAliases) + ' on ' + target.serverName + '. It does more than closing the tab.',
+      'Terminate Agent?',
+      'This will terminate ' + presentAgent(target, agentAliases[target.key]).title + ' on ' + target.serverName + '. It does more than closing the tab.',
       [
         { text: 'Cancel', style: 'cancel' },
         {
-          text: 'Exit Session',
+          text: 'Terminate Agent',
           style: 'destructive',
           onPress: () => {
             void closeTerminalTab(target.key);
@@ -231,43 +315,51 @@ export default function InboxScreen() {
           : 'Your saved servers are offline. You can edit them or add another one.';
 
   // ── List: compact row ──
-  const renderListAgent = ({ item }: { item: Agent }) => (
-    <TouchableOpacity
-      style={styles.listRow}
-      onPress={() => openAgent(item)}
-      onLongPress={() => openContextMenu(item)}
-      activeOpacity={0.82}
-      delayLongPress={400}
-    >
-      <View style={[styles.statusDot, { backgroundColor: statusColor(item.status) }]} />
-      <Text style={styles.listName} numberOfLines={1}>{resolveAgentName(item, agentAliases)}</Text>
-      <Text style={styles.listMeta} numberOfLines={1}>
-        {item.project || item.serverName}
-      </Text>
-    </TouchableOpacity>
-  );
+  const renderListAgent = ({ item }: { item: Agent }) => {
+    const presented = presentAgent(item, agentAliases[item.key]);
+    return (
+      <TouchableOpacity
+        style={styles.listRow}
+        onPress={() => openAgent(item)}
+        onLongPress={() => openContextMenu(item)}
+        activeOpacity={0.82}
+        delayLongPress={400}
+      >
+        <AgentKindIcon kind={presented.kind} size={15} />
+        <View style={[styles.statusDot, { backgroundColor: statusColor(item.status) }]} />
+        <Text style={styles.listName} numberOfLines={1}>{presented.title}</Text>
+        <Text style={styles.listMeta} numberOfLines={1}>
+          {presented.cwdBase || item.serverName}
+        </Text>
+      </TouchableOpacity>
+    );
+  };
 
   // ── Grid: terminal preview card ──
-  const renderGridAgent = ({ item }: { item: Agent }) => (
-    <TouchableOpacity
-      style={styles.gridCard}
-      onPress={() => openAgent(item)}
-      onLongPress={() => openContextMenu(item)}
-      activeOpacity={0.84}
-      delayLongPress={400}
-    >
-      <View style={styles.gridHeader}>
-        <View style={[styles.statusDot, { backgroundColor: statusColor(item.status) }]} />
-        <Text style={styles.gridTitle} numberOfLines={1}>{resolveAgentName(item, agentAliases)}</Text>
-        <Text style={styles.gridMeta} numberOfLines={1}>
-          {item.project || item.serverName}
-        </Text>
-      </View>
-      <View style={styles.gridPreview}>
-        <TerminalPreview key={item.key} lines={item.last_output_lines} themeName={terminalTheme} />
-      </View>
-    </TouchableOpacity>
-  );
+  const renderGridAgent = ({ item }: { item: Agent }) => {
+    const presented = presentAgent(item, agentAliases[item.key]);
+    return (
+      <TouchableOpacity
+        style={styles.gridCard}
+        onPress={() => openAgent(item)}
+        onLongPress={() => openContextMenu(item)}
+        activeOpacity={0.84}
+        delayLongPress={400}
+      >
+        <View style={styles.gridHeader}>
+          <AgentKindIcon kind={presented.kind} size={16} />
+          <View style={[styles.statusDot, { backgroundColor: statusColor(item.status) }]} />
+          <Text style={styles.gridTitle} numberOfLines={1}>{presented.title}</Text>
+          <Text style={styles.gridMeta} numberOfLines={1}>
+            {presented.cwdBase || item.serverName}
+          </Text>
+        </View>
+        <View style={styles.gridPreview}>
+          <TerminalPreview key={item.key} lines={item.last_output_lines} themeName={terminalTheme} />
+        </View>
+      </TouchableOpacity>
+    );
+  };
 
   return (
     <SafeAreaView style={styles.container} edges={['top']}>
@@ -280,7 +372,19 @@ export default function InboxScreen() {
 
       <View style={styles.header}>
         <Text style={styles.title}>zen</Text>
-        <View style={styles.viewToggle}>
+        <View style={styles.headerActions}>
+          <TouchableOpacity
+            style={[styles.createButton, creatingServerId && styles.createButtonDisabled]}
+            onPress={openCreateTerminal}
+            disabled={!!creatingServerId}
+            activeOpacity={0.82}
+          >
+            <Ionicons name="add" size={16} color={Colors.bgPrimary} />
+            <Text style={styles.createButtonText}>
+              {creatingServerId ? 'Starting…' : 'New Terminal'}
+            </Text>
+          </TouchableOpacity>
+          <View style={styles.viewToggle}>
           <ToggleButton
             icon="reorder-three-outline"
             selected={viewMode === 'list'}
@@ -291,6 +395,7 @@ export default function InboxScreen() {
             selected={viewMode === 'grid'}
             onPress={() => setViewMode('grid')}
           />
+          </View>
         </View>
       </View>
 
@@ -300,12 +405,30 @@ export default function InboxScreen() {
           <Text style={styles.emptyText}>{emptyTitle}</Text>
           <Text style={styles.emptySubtext}>{emptySubtext}</Text>
           <View style={styles.emptyActions}>
+            {connectedServers.length > 0 ? (
+              <TouchableOpacity
+                style={[styles.emptyActionBtn, styles.emptyActionBtnPrimary]}
+                onPress={openCreateTerminal}
+                disabled={!!creatingServerId}
+                activeOpacity={0.82}
+              >
+                <Text style={[styles.emptyActionText, styles.emptyActionTextPrimary]}>
+                  {creatingServerId ? 'Starting Terminal…' : 'New Terminal'}
+                </Text>
+              </TouchableOpacity>
+            ) : null}
             <TouchableOpacity
-              style={[styles.emptyActionBtn, styles.emptyActionBtnPrimary]}
+              style={[
+                styles.emptyActionBtn,
+                connectedServers.length === 0 && styles.emptyActionBtnPrimary,
+              ]}
               onPress={() => openServerSettings(!hasConfiguredServers)}
               activeOpacity={0.82}
             >
-              <Text style={[styles.emptyActionText, styles.emptyActionTextPrimary]}>
+              <Text style={[
+                styles.emptyActionText,
+                connectedServers.length === 0 && styles.emptyActionTextPrimary,
+              ]}>
                 {hasConfiguredServers ? 'Open Server Settings' : 'Add Server'}
               </Text>
             </TouchableOpacity>
@@ -341,7 +464,27 @@ export default function InboxScreen() {
         />
       )}
 
-      {/* Context Menu */}
+      <NewTerminalSheet
+        visible={createSheetVisible}
+        title="New Terminal"
+        subtitle="Open a plain shell, or launch Claude/Codex in a real working directory."
+        initialCwd={selectedCreateServerId ? findSuggestedCwd(selectedCreateServerId) : ''}
+        serverOptions={createServerOptions}
+        selectedServerId={selectedCreateServerId}
+        onSelectServer={setSelectedCreateServerId}
+        submitting={!!creatingServerId}
+        onClose={() => setCreateSheetVisible(false)}
+        onSubmit={input => {
+          if (!input.serverId) return;
+          void createTerminalOnServer({
+            serverId: input.serverId,
+            cwd: input.cwd,
+            command: input.command,
+            name: input.name,
+          });
+        }}
+      />
+
       <Modal
         visible={menuAgent !== null && !renameVisible}
         transparent
@@ -356,7 +499,7 @@ export default function InboxScreen() {
           />
           <View style={styles.menuCard}>
             <Text style={styles.menuTitle} numberOfLines={1}>
-              {menuAgent ? resolveAgentName(menuAgent, agentAliases) : ''}
+              {menuAgent ? presentAgent(menuAgent, agentAliases[menuAgent.key]).title : ''}
             </Text>
 
             <TouchableOpacity style={styles.menuItem} onPress={openRename} activeOpacity={0.82}>
@@ -373,9 +516,9 @@ export default function InboxScreen() {
               <Text style={styles.menuItemText}>Open Terminal</Text>
             </TouchableOpacity>
 
-            <TouchableOpacity style={styles.menuItem} onPress={handleExitSession} activeOpacity={0.82}>
+            <TouchableOpacity style={styles.menuItem} onPress={handleTerminateAgent} activeOpacity={0.82}>
               <Ionicons name="power-outline" size={16} color="#F09999" />
-              <Text style={[styles.menuItemText, styles.menuItemTextDestructive]}>Exit Session</Text>
+              <Text style={[styles.menuItemText, styles.menuItemTextDestructive]}>Terminate Agent</Text>
             </TouchableOpacity>
           </View>
         </View>
@@ -424,10 +567,6 @@ export default function InboxScreen() {
       </Modal>
     </SafeAreaView>
   );
-}
-
-function resolveAgentName(agent: Agent, aliases: StoredAgentAliases): string {
-  return aliases[agent.key] || agent.name;
 }
 
 function ToggleButton({
@@ -503,6 +642,28 @@ const styles = StyleSheet.create({
     letterSpacing: 1,
     opacity: 0.9,
     paddingRight: 4,
+  },
+  headerActions: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+  },
+  createButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    height: 32,
+    paddingHorizontal: 12,
+    borderRadius: 10,
+    backgroundColor: Colors.accent,
+  },
+  createButtonDisabled: {
+    opacity: 0.7,
+  },
+  createButtonText: {
+    color: Colors.bgPrimary,
+    fontSize: 13,
+    fontFamily: Typography.uiFontMedium,
   },
   viewToggle: {
     flexDirection: 'row',
