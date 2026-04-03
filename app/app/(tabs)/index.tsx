@@ -64,6 +64,7 @@ export default function InboxScreen() {
   const [menuAgent, setMenuAgent] = useState<Agent | null>(null);
   const [renameVisible, setRenameVisible] = useState(false);
   const [renameDraft, setRenameDraft] = useState('');
+  const [renameAgentKey, setRenameAgentKey] = useState<string | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -170,22 +171,23 @@ export default function InboxScreen() {
 
   const openRename = () => {
     if (!menuAgent) return;
+    setRenameAgentKey(menuAgent.key);
     setRenameDraft(agentAliases[menuAgent.key] || menuAgent.name);
     setMenuAgent(null);
     setRenameVisible(true);
   };
 
   const handleRename = async () => {
-    if (!menuAgent) return;
-    const updated = await setAgentAlias(menuAgent.key, renameDraft);
+    if (!renameAgentKey) return;
+    const updated = await setAgentAlias(renameAgentKey, renameDraft);
     setAgentAliases(updated);
     setRenameVisible(false);
-    setMenuAgent(null);
+    setRenameAgentKey(null);
   };
 
   const closeRename = () => {
     setRenameVisible(false);
-    setMenuAgent(null);
+    setRenameAgentKey(null);
   };
 
   const finishCreateTerminal = async (serverId: string, agentId: string) => {
@@ -265,12 +267,12 @@ export default function InboxScreen() {
     }
 
     Alert.alert(
-      'Terminate Agent?',
+      'Terminate?',
       'This will terminate ' + presentAgent(target, agentAliases[target.key]).title + ' on ' + target.serverName + '. It does more than closing the tab.',
       [
         { text: 'Cancel', style: 'cancel' },
         {
-          text: 'Terminate Agent',
+          text: 'Terminate',
           style: 'destructive',
           onPress: () => {
             void closeTerminalTab(target.key);
@@ -326,11 +328,11 @@ export default function InboxScreen() {
         delayLongPress={400}
       >
         <AgentKindIcon kind={presented.kind} size={15} />
+        <Text style={styles.listName} numberOfLines={1}>{presented.cwdBase || presented.title}</Text>
+        {item.serverName ? (
+          <Text style={styles.listMeta} numberOfLines={1}>{item.serverName}</Text>
+        ) : null}
         <View style={[styles.statusDot, { backgroundColor: statusColor(item.status) }]} />
-        <Text style={styles.listName} numberOfLines={1}>{presented.title}</Text>
-        <Text style={styles.listMeta} numberOfLines={1}>
-          {presented.cwdBase || item.serverName}
-        </Text>
       </TouchableOpacity>
     );
   };
@@ -348,11 +350,11 @@ export default function InboxScreen() {
       >
         <View style={styles.gridHeader}>
           <AgentKindIcon kind={presented.kind} size={16} />
+          <Text style={styles.gridTitle} numberOfLines={1}>{presented.cwdBase || presented.title}</Text>
+          {item.serverName ? (
+            <Text style={styles.gridMeta} numberOfLines={1}>{item.serverName}</Text>
+          ) : null}
           <View style={[styles.statusDot, { backgroundColor: statusColor(item.status) }]} />
-          <Text style={styles.gridTitle} numberOfLines={1}>{presented.title}</Text>
-          <Text style={styles.gridMeta} numberOfLines={1}>
-            {presented.cwdBase || item.serverName}
-          </Text>
         </View>
         <View style={styles.gridPreview}>
           <TerminalPreview key={item.key} lines={item.last_output_lines} themeName={terminalTheme} />
@@ -374,15 +376,12 @@ export default function InboxScreen() {
         <Text style={styles.title}>zen</Text>
         <View style={styles.headerActions}>
           <TouchableOpacity
-            style={[styles.createButton, creatingServerId && styles.createButtonDisabled]}
+            style={[styles.viewBtn, creatingServerId && { opacity: 0.5 }]}
             onPress={openCreateTerminal}
             disabled={!!creatingServerId}
             activeOpacity={0.82}
           >
-            <Ionicons name="add" size={16} color={Colors.bgPrimary} />
-            <Text style={styles.createButtonText}>
-              {creatingServerId ? 'Starting…' : 'New Terminal'}
-            </Text>
+            <Ionicons name="add" size={19} color={Colors.textPrimary} />
           </TouchableOpacity>
           <View style={styles.viewToggle}>
           <ToggleButton
@@ -518,7 +517,7 @@ export default function InboxScreen() {
 
             <TouchableOpacity style={styles.menuItem} onPress={handleTerminateAgent} activeOpacity={0.82}>
               <Ionicons name="power-outline" size={16} color="#F09999" />
-              <Text style={[styles.menuItemText, styles.menuItemTextDestructive]}>Terminate Agent</Text>
+              <Text style={[styles.menuItemText, styles.menuItemTextDestructive]}>Terminate</Text>
             </TouchableOpacity>
           </View>
         </View>
@@ -648,23 +647,6 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     gap: 10,
   },
-  createButton: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 6,
-    height: 32,
-    paddingHorizontal: 12,
-    borderRadius: 10,
-    backgroundColor: Colors.accent,
-  },
-  createButtonDisabled: {
-    opacity: 0.7,
-  },
-  createButtonText: {
-    color: Colors.bgPrimary,
-    fontSize: 13,
-    fontFamily: Typography.uiFontMedium,
-  },
   viewToggle: {
     flexDirection: 'row',
     gap: 2,
@@ -712,8 +694,6 @@ const styles = StyleSheet.create({
     fontSize: 12,
     fontFamily: Typography.uiFont,
     opacity: 0.5,
-    maxWidth: '40%',
-    textAlign: 'right',
   },
 
   // ── Grid: terminal preview cards ──

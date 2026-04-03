@@ -14,13 +14,13 @@ import { Ionicons } from '@expo/vector-icons';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import * as Clipboard from 'expo-clipboard';
 import { BarcodeScanningResult, CameraView, useCameraPermissions } from 'expo-camera';
-import { Colors, Spacing, Typography } from '../../constants/tokens';
+import { Colors, Typography } from '../../constants/tokens';
 import {
   DefaultTerminalThemeName,
   TerminalThemeName,
   TerminalThemes,
 } from '../../constants/terminalThemes';
-import { deriveEndpointFromURL, type ConnectionProvider } from '../../services/connection';
+import { deriveEndpointFromURL, normalizeConnectionProvider } from '../../services/connection';
 import { importConnection } from '../../services/importConnection';
 import { wsClient } from '../../services/websocket';
 import { ConnectionState, useAgents } from '../../store/agents';
@@ -35,15 +35,12 @@ export default function SettingsScreen() {
   const [terminalTheme, setTerminalTheme] = useState<TerminalThemeName>(DefaultTerminalThemeName);
   const [loaded, setLoaded] = useState(false);
   const [editorVisible, setEditorVisible] = useState(false);
-  const [importVisible, setImportVisible] = useState(false);
   const [scannerVisible, setScannerVisible] = useState(false);
   const [scannerLocked, setScannerLocked] = useState(false);
   const [editingServerId, setEditingServerId] = useState<string | null>(null);
   const [draftName, setDraftName] = useState('');
-  const [draftProvider, setDraftProvider] = useState<ConnectionProvider>('local-lan');
   const [draftEndpoint, setDraftEndpoint] = useState('');
   const [draftSecret, setDraftSecret] = useState('');
-  const [importDraft, setImportDraft] = useState('');
   const [expandedServer, setExpandedServer] = useState<string | null>(null);
   const [handledAutoOpenToken, setHandledAutoOpenToken] = useState<string | null>(null);
   const [handledRefreshToken, setHandledRefreshToken] = useState<string | null>(null);
@@ -110,7 +107,6 @@ export default function SettingsScreen() {
   const openCreateServer = () => {
     setEditingServerId(null);
     setDraftName('');
-    setDraftProvider('local-lan');
     setDraftEndpoint('');
     setDraftSecret('');
     setEditorVisible(true);
@@ -119,7 +115,6 @@ export default function SettingsScreen() {
   const openEditServer = (server: Storage.StoredServer) => {
     setEditingServerId(server.id);
     setDraftName(server.name);
-    setDraftProvider(server.provider);
     setDraftEndpoint(deriveEndpointFromURL(server.provider, server.url));
     setDraftSecret(server.secret || '');
     setEditorVisible(true);
@@ -129,19 +124,8 @@ export default function SettingsScreen() {
     setEditorVisible(false);
     setEditingServerId(null);
     setDraftName('');
-    setDraftProvider('local-lan');
     setDraftEndpoint('');
     setDraftSecret('');
-  };
-
-  const openImport = () => {
-    setImportDraft('');
-    setImportVisible(true);
-  };
-
-  const closeImport = () => {
-    setImportVisible(false);
-    setImportDraft('');
   };
 
   const openScanner = () => {
@@ -157,12 +141,7 @@ export default function SettingsScreen() {
   const handleSaveServer = async () => {
     const normalizedEndpoint = draftEndpoint.trim();
     if (!normalizedEndpoint) {
-      Alert.alert(
-        draftProvider === 'local-lan' ? 'Host or IP required' : 'Server URL required',
-        draftProvider === 'local-lan'
-          ? 'Enter a host or IP like 192.168.1.10 or zen-box.local.'
-          : 'Enter a WebSocket URL like wss://zen.example.com/ws.',
-      );
+      Alert.alert('Endpoint required', 'Enter a LAN host/IP or a WebSocket URL.');
       return;
     }
     if (draftSecret.trim().length > 0 && !normalizeServerSecret(draftSecret)) {
@@ -170,13 +149,14 @@ export default function SettingsScreen() {
       return;
     }
 
+    const provider = normalizeConnectionProvider(undefined, normalizedEndpoint);
     const wasConnected =
       editingServerId ? Boolean(state.serverConnections[editingServerId]) : true;
 
     const savedServer = await Storage.saveServer({
       id: editingServerId || undefined,
       name: draftName,
-      provider: draftProvider,
+      provider,
       endpoint: normalizedEndpoint,
       secret: draftSecret,
     });
@@ -218,47 +198,49 @@ export default function SettingsScreen() {
     setExpandedServer(prev => prev === serverId ? null : serverId);
   };
 
-  const handlePasteClipboard = async () => {
+  const handlePasteImport = async () => {
     const clipboardValue = await Clipboard.getStringAsync();
     if (!clipboardValue.trim()) {
       Alert.alert('Clipboard is empty', 'Copy a zen:// link or JSON payload first.');
       return;
     }
-    setImportDraft(clipboardValue);
-  };
 
-  const importConnectionPayload = async (rawValue: string): Promise<Storage.StoredServer | null> =>
-    importConnection(rawValue, {
-      onImported: async savedServer => {
+    const savedServer = await importConnection(clipboardValue, {
+      onImported: async importedServer => {
         await refreshServers();
-        setExpandedServer(savedServer.id);
+        setExpandedServer(importedServer.id);
       },
     });
 
-  const handleImportConnection = async () => {
-    const savedServer = await importConnectionPayload(importDraft);
     if (!savedServer) {
-      Alert.alert('Invalid import link', 'Paste a zen://settings link or a JSON payload from zen-daemon.');
+      Alert.alert('Invalid import', 'Could not parse the clipboard content as a zen connection.');
       return;
     }
 
-    closeImport();
+    closeEditor();
   };
 
   const handleScanResult = async ({ data }: BarcodeScanningResult) => {
     if (scannerLocked) return;
     setScannerLocked(true);
 
-    const savedServer = await importConnectionPayload(data || '');
+    const savedServer = await importConnection(data || '', {
+      onImported: async importedServer => {
+        await refreshServers();
+        setExpandedServer(importedServer.id);
+      },
+    });
+
     if (!savedServer) {
       Alert.alert(
         'Unsupported QR code',
-        'Scan a zen-daemon pairing QR, or use Import Link to paste the payload manually.',
+        'Scan a zen-daemon pairing QR code.',
       );
       return;
     }
 
     closeScanner();
+    closeEditor();
   };
 
   if (!loaded) return null;
@@ -376,14 +358,6 @@ export default function SettingsScreen() {
           <Ionicons name="add" size={16} color={Colors.textSecondary} />
           <Text style={styles.addBtnText}>Add Server</Text>
         </TouchableOpacity>
-        <TouchableOpacity style={styles.addBtn} onPress={openImport} activeOpacity={0.82}>
-          <Ionicons name="download-outline" size={16} color={Colors.textSecondary} />
-          <Text style={styles.addBtnText}>Import Link</Text>
-        </TouchableOpacity>
-        <TouchableOpacity style={styles.addBtn} onPress={openScanner} activeOpacity={0.82}>
-          <Ionicons name="qr-code-outline" size={16} color={Colors.textSecondary} />
-          <Text style={styles.addBtnText}>Scan QR</Text>
-        </TouchableOpacity>
 
         {/* Theme */}
         <Text style={styles.sectionLabel}>Theme</Text>
@@ -414,6 +388,7 @@ export default function SettingsScreen() {
         <Text style={styles.version}>zen v0.1.0</Text>
       </ScrollView>
 
+      {/* Unified Add/Edit Server modal */}
       <Modal
         visible={editorVisible}
         transparent
@@ -442,41 +417,21 @@ export default function SettingsScreen() {
               autoCorrect={false}
             />
 
-            <Text style={[styles.fieldLabel, { marginTop: 16 }]}>Connection Type</Text>
-            <View style={styles.providerList}>
-              <ProviderButton
-                label="Local LAN"
-                description="Host or IP on your LAN or tailnet"
-                active={draftProvider === 'local-lan'}
-                onPress={() => setDraftProvider('local-lan')}
-              />
-              <ProviderButton
-                label="Custom Endpoint"
-                description="Reverse proxy, tunnel, or public URL"
-                active={draftProvider === 'custom-endpoint'}
-                onPress={() => setDraftProvider('custom-endpoint')}
-              />
-            </View>
-
-            <Text style={[styles.fieldLabel, { marginTop: 16 }]}>
-              {draftProvider === 'local-lan' ? 'Host or IP' : 'WebSocket URL'}
-            </Text>
+            <Text style={[styles.fieldLabel, { marginTop: 16 }]}>Endpoint</Text>
             <TextInput
               style={styles.input}
               value={draftEndpoint}
               onChangeText={setDraftEndpoint}
-              placeholder={draftProvider === 'local-lan' ? '192.168.1.10 or zen-box.local' : 'wss://zen.example.com/ws'}
+              placeholder="192.168.1.10 or wss://zen.example.com/ws"
               placeholderTextColor="rgba(255,255,255,0.2)"
               autoCapitalize="none"
               autoCorrect={false}
             />
             <Text style={styles.fieldHint}>
-              {draftProvider === 'local-lan'
-                ? 'Default format is ws://host:9876/ws. Include :port if your daemon is not on 9876.'
-                : 'Supports ws://, wss://, http://, or https://. Root paths normalize to /ws.'}
+              Enter a LAN host/IP or a full WebSocket URL.
             </Text>
 
-            <Text style={[styles.fieldLabel, { marginTop: 16 }]}>Pairing Secret (Optional)</Text>
+            <Text style={[styles.fieldLabel, { marginTop: 16 }]}>Secret (Optional)</Text>
             <TextInput
               style={styles.input}
               value={draftSecret}
@@ -500,64 +455,41 @@ export default function SettingsScreen() {
                 <Text style={[styles.modalBtnText, styles.modalBtnPrimaryText]}>Save</Text>
               </TouchableOpacity>
             </View>
+
+            {/* Quick import section */}
+            {!editingServerId ? (
+              <>
+                <View style={styles.divider}>
+                  <View style={styles.dividerLine} />
+                  <Text style={styles.dividerText}>or import</Text>
+                  <View style={styles.dividerLine} />
+                </View>
+
+                <View style={styles.importRow}>
+                  <TouchableOpacity
+                    style={styles.importBtn}
+                    onPress={handlePasteImport}
+                    activeOpacity={0.82}
+                  >
+                    <Ionicons name="clipboard-outline" size={15} color={Colors.textSecondary} />
+                    <Text style={styles.importBtnText}>Paste Link</Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity
+                    style={styles.importBtn}
+                    onPress={openScanner}
+                    activeOpacity={0.82}
+                  >
+                    <Ionicons name="qr-code-outline" size={15} color={Colors.textSecondary} />
+                    <Text style={styles.importBtnText}>Scan QR</Text>
+                  </TouchableOpacity>
+                </View>
+              </>
+            ) : null}
           </View>
         </View>
       </Modal>
 
-      <Modal
-        visible={importVisible}
-        transparent
-        animationType="fade"
-        onRequestClose={closeImport}
-      >
-        <View style={styles.modalRoot}>
-          <TouchableOpacity
-            style={styles.modalBackdrop}
-            activeOpacity={1}
-            onPress={closeImport}
-          />
-          <View style={styles.modalCard}>
-            <Text style={styles.modalTitle}>Import Connection</Text>
-            <Text style={styles.fieldHint}>
-              Paste a `zen://settings?...` link or JSON payload exported by `zen-daemon`.
-            </Text>
-            <TextInput
-              style={[styles.input, styles.importInput]}
-              value={importDraft}
-              onChangeText={setImportDraft}
-              placeholder="zen://settings?provider=local-lan&endpoint=192.168.1.10"
-              placeholderTextColor="rgba(255,255,255,0.2)"
-              autoCapitalize="none"
-              autoCorrect={false}
-              multiline
-              textAlignVertical="top"
-            />
-
-            <TouchableOpacity
-              style={styles.importClipboardBtn}
-              onPress={handlePasteClipboard}
-              activeOpacity={0.82}
-            >
-              <Ionicons name="clipboard-outline" size={15} color={Colors.textSecondary} />
-              <Text style={styles.importClipboardText}>Paste Clipboard</Text>
-            </TouchableOpacity>
-
-            <View style={styles.modalActions}>
-              <TouchableOpacity style={styles.modalBtn} onPress={closeImport} activeOpacity={0.82}>
-                <Text style={styles.modalBtnText}>Cancel</Text>
-              </TouchableOpacity>
-              <TouchableOpacity
-                style={[styles.modalBtn, styles.modalBtnPrimary]}
-                onPress={handleImportConnection}
-                activeOpacity={0.82}
-              >
-                <Text style={[styles.modalBtnText, styles.modalBtnPrimaryText]}>Import</Text>
-              </TouchableOpacity>
-            </View>
-          </View>
-        </View>
-      </Modal>
-
+      {/* QR Scanner */}
       <Modal
         visible={scannerVisible}
         animationType="slide"
@@ -579,7 +511,7 @@ export default function SettingsScreen() {
             <View style={styles.scannerNoticeCard}>
               <Text style={styles.scannerNoticeTitle}>Camera permission required</Text>
               <Text style={styles.scannerNoticeText}>
-                Allow camera access to scan a `zen-daemon` pairing QR code.
+                Allow camera access to scan a zen-daemon pairing QR code.
               </Text>
               <TouchableOpacity
                 style={styles.scannerPrimaryBtn}
@@ -615,7 +547,7 @@ export default function SettingsScreen() {
               </View>
 
               <Text style={styles.scannerHelpText}>
-                Point the camera at the QR printed by `zen-daemon`.
+                Point the camera at the QR printed by zen-daemon.
               </Text>
 
               <View style={styles.scannerActions}>
@@ -639,31 +571,6 @@ export default function SettingsScreen() {
         </View>
       </Modal>
     </SafeAreaView>
-  );
-}
-
-function ProviderButton({
-  label,
-  description,
-  active,
-  onPress,
-}: {
-  label: string;
-  description: string;
-  active: boolean;
-  onPress: () => void;
-}) {
-  return (
-    <TouchableOpacity
-      style={[styles.providerBtn, active && styles.providerBtnActive]}
-      onPress={onPress}
-      activeOpacity={0.82}
-    >
-      <Text style={[styles.providerTitle, active && styles.providerTitleActive]}>{label}</Text>
-      <Text style={[styles.providerDescription, active && styles.providerDescriptionActive]}>
-        {description}
-      </Text>
-    </TouchableOpacity>
   );
 }
 
@@ -973,11 +880,6 @@ const styles = StyleSheet.create({
     borderWidth: StyleSheet.hairlineWidth,
     borderColor: 'rgba(255,255,255,0.08)',
   },
-  importInput: {
-    minHeight: 128,
-    marginTop: 12,
-    paddingTop: 12,
-  },
   fieldHint: {
     marginTop: 8,
     color: Colors.textSecondary,
@@ -986,58 +888,72 @@ const styles = StyleSheet.create({
     fontFamily: Typography.uiFont,
     opacity: 0.65,
   },
-  providerList: {
-    gap: 8,
-    marginTop: 8,
+  modalActions: {
+    flexDirection: 'row',
+    justifyContent: 'flex-end',
+    gap: 10,
+    marginTop: 24,
   },
-  providerBtn: {
+  modalBtn: {
+    minWidth: 70,
+    height: 36,
     borderRadius: 10,
-    borderWidth: StyleSheet.hairlineWidth,
-    borderColor: 'rgba(255,255,255,0.08)',
-    backgroundColor: 'rgba(255,255,255,0.03)',
-    paddingHorizontal: 12,
-    paddingVertical: 11,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: 'rgba(255,255,255,0.05)',
   },
-  providerBtnActive: {
-    borderColor: 'rgba(91,157,255,0.35)',
-    backgroundColor: 'rgba(91,157,255,0.08)',
+  modalBtnPrimary: {
+    backgroundColor: Colors.accent,
   },
-  providerTitle: {
+  modalBtnText: {
     color: Colors.textPrimary,
     fontSize: 13,
     fontFamily: Typography.uiFontMedium,
   },
-  providerTitleActive: {
-    color: Colors.accent,
+  modalBtnPrimaryText: {
+    color: Colors.bgPrimary,
   },
-  providerDescription: {
-    marginTop: 3,
+  divider: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+    marginTop: 20,
+    marginBottom: 16,
+  },
+  dividerLine: {
+    flex: 1,
+    height: StyleSheet.hairlineWidth,
+    backgroundColor: 'rgba(255,255,255,0.08)',
+  },
+  dividerText: {
     color: Colors.textSecondary,
     fontSize: 12,
-    lineHeight: 17,
     fontFamily: Typography.uiFont,
-    opacity: 0.65,
+    opacity: 0.5,
   },
-  providerDescriptionActive: {
-    opacity: 0.9,
+  importRow: {
+    flexDirection: 'row',
+    gap: 10,
   },
-  importClipboardBtn: {
-    marginTop: 12,
+  importBtn: {
+    flex: 1,
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
     gap: 6,
-    paddingVertical: 10,
+    height: 40,
     borderRadius: 10,
     borderWidth: StyleSheet.hairlineWidth,
     borderColor: 'rgba(255,255,255,0.08)',
     backgroundColor: 'rgba(255,255,255,0.03)',
   },
-  importClipboardText: {
+  importBtnText: {
     color: Colors.textSecondary,
     fontSize: 13,
     fontFamily: Typography.uiFontMedium,
   },
+
+  // Scanner
   scannerScreen: {
     flex: 1,
     backgroundColor: '#0A0C10',
@@ -1203,30 +1119,5 @@ const styles = StyleSheet.create({
     color: Colors.textPrimary,
     fontSize: 13,
     fontFamily: Typography.uiFontMedium,
-  },
-  modalActions: {
-    flexDirection: 'row',
-    justifyContent: 'flex-end',
-    gap: 10,
-    marginTop: 24,
-  },
-  modalBtn: {
-    minWidth: 70,
-    height: 36,
-    borderRadius: 10,
-    alignItems: 'center',
-    justifyContent: 'center',
-    backgroundColor: 'rgba(255,255,255,0.05)',
-  },
-  modalBtnPrimary: {
-    backgroundColor: Colors.accent,
-  },
-  modalBtnText: {
-    color: Colors.textPrimary,
-    fontSize: 13,
-    fontFamily: Typography.uiFontMedium,
-  },
-  modalBtnPrimaryText: {
-    color: Colors.bgPrimary,
   },
 });

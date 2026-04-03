@@ -96,6 +96,8 @@ export default function TerminalScreen() {
   const [creatingSession, setCreatingSession] = useState(false);
   const [showTerminalFallback, setShowTerminalFallback] = useState(!Boolean(sessionKey && serverId && agentId));
   const terminalRef = useRef<TerminalSurfaceHandle>(null);
+  const tabScrollRef = useRef<ScrollView>(null);
+  const tabLayoutsRef = useRef<Map<string, { x: number; width: number }>>(new Map());
   const tabSwipeTranslateX = useRef(new Animated.Value(0)).current;
   const tabSwipeAnimatingRef = useRef(false);
   const keyboardHeightRef = useRef(0);
@@ -343,14 +345,13 @@ export default function TerminalScreen() {
       .map(currentSessionKey => {
       const tabAgent = agentByKey.get(currentSessionKey);
       const parsed = parseSessionKey(currentSessionKey);
-      const serverLabel = tabAgent?.serverName || parsed?.serverId || 'server';
       const presented = presentAgent(
         tabAgent || { name: parsed?.agentId || '', summary: '', last_output_lines: [] },
         currentSessionKey ? agentAliases[currentSessionKey] : undefined,
       );
       return {
         id: currentSessionKey,
-        name: formatTabLabel(presented.shortTitle, serverLabel),
+        name: presented.cwdBase || presented.shortTitle,
         status: tabAgent?.status || 'unknown',
         kind: presented.kind,
         pinned: terminalTabs.pinned.includes(currentSessionKey),
@@ -358,6 +359,16 @@ export default function TerminalScreen() {
       } satisfies TerminalTabDescriptor;
       });
   }, [agentAliases, agentByKey, hydratedServerIdSet, sessionKey, terminalTabs]);
+
+  // Auto-scroll to keep the active tab visible
+  useEffect(() => {
+    if (!sessionKey) return;
+    const layout = tabLayoutsRef.current.get(sessionKey);
+    if (layout && tabScrollRef.current) {
+      const scrollTo = Math.max(0, layout.x - 40);
+      tabScrollRef.current.scrollTo({ x: scrollTo, animated: true });
+    }
+  }, [sessionKey]);
 
   const previousTab = useMemo(
     () => getAdjacentTab(tabs, sessionKey, 'prev'),
@@ -550,12 +561,12 @@ export default function TerminalScreen() {
     }
 
     Alert.alert(
-      'Terminate Agent?',
+      'Terminate?',
       'This will terminate ' + (displayName || agentId) + ' on ' + (agent?.serverName || serverId) + '. It does more than closing the tab.',
       [
         { text: 'Cancel', style: 'cancel' },
         {
-          text: 'Terminate Agent',
+          text: 'Terminate',
           style: 'destructive',
           onPress: () => {
             void performTerminateAgent();
@@ -721,6 +732,7 @@ export default function TerminalScreen() {
         </TouchableOpacity>
 
         <ScrollView
+          ref={tabScrollRef}
           horizontal
           showsHorizontalScrollIndicator={false}
           style={styles.tabScroller}
@@ -734,6 +746,10 @@ export default function TerminalScreen() {
                 tab.active && styles.tabPillActive,
                 tab.pinned && styles.tabPillPinned,
               ]}
+              onLayout={(e) => {
+                const { x, width } = e.nativeEvent.layout;
+                tabLayoutsRef.current.set(tab.id, { x, width });
+              }}
             >
               <TouchableOpacity
                 style={styles.tabMainButton}
@@ -741,12 +757,6 @@ export default function TerminalScreen() {
                 activeOpacity={0.84}
               >
                 <AgentKindIcon kind={tab.kind} size={13} />
-                <View
-                  style={[
-                    styles.tabStatusDot,
-                    { backgroundColor: statusColor(tab.status) },
-                  ]}
-                />
                 <Text
                   style={[
                     styles.tabLabel,
@@ -763,6 +773,12 @@ export default function TerminalScreen() {
                     color={tab.active ? Colors.textPrimary : '#73839A'}
                   />
                 ) : null}
+                <View
+                  style={[
+                    styles.tabStatusDot,
+                    { backgroundColor: statusColor(tab.status) },
+                  ]}
+                />
               </TouchableOpacity>
 
               {tab.active ? (
@@ -891,7 +907,6 @@ export default function TerminalScreen() {
                   serverUrl={serverUrl}
                   authSecret={serverSecret}
                   ctrlArmed={ctrlArmed}
-                  agentStatus={agent?.status}
                   onCtrlArmedChange={handleCtrlArmedChange}
                 />
               </View>
@@ -915,22 +930,6 @@ export default function TerminalScreen() {
 
           <View style={styles.sheetCard}>
             <View style={styles.sheetHandle} />
-            <Text style={styles.sheetTitle}>Terminals</Text>
-            <Text style={styles.sheetSubtitle}>
-              Open a new terminal here, or jump between recent terminals instantly.
-            </Text>
-
-            <TouchableOpacity
-              style={[styles.sheetCreateButton, creatingSession && styles.sheetCreateButtonDisabled]}
-              onPress={openNewTerminal}
-              disabled={creatingSession}
-              activeOpacity={0.84}
-            >
-              <Ionicons name="add" size={16} color={Colors.bgPrimary} />
-              <Text style={styles.sheetCreateButtonText}>
-                {creatingSession ? 'Starting Terminal…' : 'New Terminal'}
-              </Text>
-            </TouchableOpacity>
 
             <ScrollView
               style={styles.sheetScroll}
@@ -938,12 +937,10 @@ export default function TerminalScreen() {
               showsVerticalScrollIndicator={false}
             >
               {sortedAgents.length === 0 ? (
-                <Text style={styles.sheetEmpty}>No agents available right now.</Text>
+                <Text style={styles.sheetEmpty}>No agents available.</Text>
               ) : (
                 sortedAgents.map(item => {
                   const isActive = item.key === sessionKey;
-                  const isOpen = terminalTabs.order.includes(item.key);
-                  const isPinned = terminalTabs.pinned.includes(item.key);
                   const presented = presentAgent(item, agentAliases[item.key]);
 
                   return (
@@ -956,40 +953,38 @@ export default function TerminalScreen() {
                       onPress={() => openAgentTab(item.key)}
                       activeOpacity={0.84}
                     >
-                      <View style={styles.agentRowCopy}>
-                        <View style={styles.agentRowStatus}>
-                          <AgentKindIcon kind={presented.kind} size={15} />
-                          <View
-                            style={[
-                              styles.agentRowStatusDot,
-                              { backgroundColor: statusColor(item.status) },
-                            ]}
-                          />
-                          <Text style={styles.agentRowStatusText}>
-                            {getStatusLabel(item.status)}
-                          </Text>
-                        </View>
-                        <Text style={styles.agentRowTitle} numberOfLines={1}>
-                          {presented.title}
-                        </Text>
+                      <AgentKindIcon kind={presented.kind} size={15} />
+                      <Text style={styles.agentRowTitle} numberOfLines={1}>
+                        {presented.cwdBase || presented.title}
+                      </Text>
+                      {item.serverName ? (
                         <Text style={styles.agentRowMeta} numberOfLines={1}>
-                          {item.serverName}{presented.subtitle ? ` · ${presented.subtitle}` : ` · ${item.id}`}
+                          {item.serverName}
                         </Text>
-                      </View>
-
-                      <View style={styles.agentRowBadges}>
-                        {isPinned ? <Badge label="Pinned" active={false} /> : null}
-                        {isActive ? (
-                          <Badge label="Current" active />
-                        ) : isOpen ? (
-                          <Badge label="Open" active={false} />
-                        ) : null}
-                      </View>
+                      ) : null}
+                      <View
+                        style={[
+                          styles.agentRowStatusDot,
+                          { backgroundColor: statusColor(item.status) },
+                        ]}
+                      />
                     </TouchableOpacity>
                   );
                 })
               )}
             </ScrollView>
+
+            <TouchableOpacity
+              style={[styles.sheetCreateButton, creatingSession && styles.sheetCreateButtonDisabled]}
+              onPress={openNewTerminal}
+              disabled={creatingSession}
+              activeOpacity={0.84}
+            >
+              <Ionicons name="add" size={16} color={Colors.textSecondary} />
+              <Text style={styles.sheetCreateButtonText}>
+                {creatingSession ? 'Starting…' : 'New Terminal'}
+              </Text>
+            </TouchableOpacity>
           </View>
         </View>
       </Modal>
@@ -1040,7 +1035,7 @@ export default function TerminalScreen() {
               onPress={handleCloseCurrentTab}
             />
             <MenuAction
-              label="Terminate Agent"
+              label="Terminate"
               onPress={handleTerminateAgent}
               destructive
             />
@@ -1115,14 +1110,6 @@ export default function TerminalScreen() {
   );
 }
 
-function Badge({ label, active }: { label: string; active: boolean }) {
-  return (
-    <View style={[styles.badge, active && styles.badgeActive]}>
-      <Text style={[styles.badgeText, active && styles.badgeTextActive]}>{label}</Text>
-    </View>
-  );
-}
-
 function MenuAction({
   label,
   onPress,
@@ -1186,21 +1173,6 @@ function buildMenuPosition(
   };
 }
 
-function getStatusLabel(status: AgentStatus): string {
-  switch (status) {
-    case 'running':
-      return 'Running';
-    case 'blocked':
-      return 'Needs Input';
-    case 'failed':
-      return 'Error';
-    case 'done':
-      return 'Done';
-    case 'unknown':
-      return 'Waiting';
-  }
-}
-
 function clamp(value: number, min: number, max: number): number {
   return Math.min(Math.max(value, min), max);
 }
@@ -1217,12 +1189,6 @@ function pickNextTabAfterClose(
   if (closedIndex === -1) return nextOrder[0] || null;
 
   return currentOrder[closedIndex + 1] || currentOrder[closedIndex - 1] || null;
-}
-
-function formatTabLabel(title: string, serverName: string): string {
-  if (!title) return serverName;
-  if (!serverName) return title;
-  return `${title} · ${serverName}`;
 }
 
 const styles = StyleSheet.create({
@@ -1303,8 +1269,8 @@ const styles = StyleSheet.create({
     paddingRight: 2,
   },
   tabPill: {
-    minWidth: 112,
-    maxWidth: 176,
+    minWidth: 140,
+    maxWidth: 220,
     height: 38,
     borderRadius: 13,
     paddingLeft: 10,
@@ -1329,12 +1295,13 @@ const styles = StyleSheet.create({
     flex: 1,
     flexDirection: 'row',
     alignItems: 'center',
+    gap: 6,
   },
   tabStatusDot: {
     width: 6,
     height: 6,
     borderRadius: 3,
-    marginRight: 8,
+    marginLeft: 8,
   },
   tabLabel: {
     flex: 1,
@@ -1456,37 +1423,29 @@ const styles = StyleSheet.create({
     backgroundColor: '#3A475B',
     marginBottom: 14,
   },
-  sheetTitle: {
-    color: Colors.textPrimary,
-    fontSize: 20,
-    fontFamily: Typography.uiFontMedium,
-  },
-  sheetSubtitle: {
-    marginTop: 6,
-    color: '#7D8CA0',
-    fontSize: 12,
-    fontFamily: Typography.uiFont,
-  },
   sheetCreateButton: {
-    marginTop: 16,
-    height: 42,
-    borderRadius: 14,
-    backgroundColor: Colors.accent,
+    marginTop: 12,
+    height: 40,
+    borderRadius: 12,
+    backgroundColor: 'rgba(255,255,255,0.04)',
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: 'rgba(255,255,255,0.08)',
+    borderStyle: 'dashed' as const,
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
-    gap: 8,
+    gap: 6,
   },
   sheetCreateButtonDisabled: {
-    opacity: 0.7,
+    opacity: 0.5,
   },
   sheetCreateButtonText: {
-    color: Colors.bgPrimary,
-    fontSize: 14,
-    fontFamily: Typography.uiFontMedium,
+    color: Colors.textSecondary,
+    fontSize: 13,
+    fontFamily: Typography.uiFont,
   },
   sheetScroll: {
-    marginTop: 18,
+    marginTop: 4,
   },
   sheetScrollContent: {
     paddingBottom: 8,
@@ -1500,74 +1459,30 @@ const styles = StyleSheet.create({
   agentRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    justifyContent: 'space-between',
-    paddingHorizontal: 14,
-    paddingVertical: 14,
-    marginBottom: 10,
-    borderRadius: 18,
-    backgroundColor: '#18222F',
-    borderWidth: 1,
-    borderColor: 'rgba(255,255,255,0.05)',
+    gap: 10,
+    paddingVertical: 12,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: 'rgba(255,255,255,0.04)',
   },
   agentRowActive: {
-    borderColor: 'rgba(91,157,255,0.38)',
-    backgroundColor: '#1B2735',
-  },
-  agentRowCopy: {
-    flex: 1,
-    paddingRight: 12,
-  },
-  agentRowStatus: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    marginBottom: 8,
+    opacity: 1,
   },
   agentRowStatusDot: {
     width: 7,
     height: 7,
     borderRadius: 4,
-    marginRight: 6,
-  },
-  agentRowStatusText: {
-    color: '#8A98AA',
-    fontSize: 10,
-    fontFamily: Typography.uiFontMedium,
-    textTransform: 'uppercase',
-    letterSpacing: 0.5,
   },
   agentRowTitle: {
+    flex: 1,
     color: Colors.textPrimary,
-    fontSize: 16,
+    fontSize: 14,
     fontFamily: Typography.uiFontMedium,
   },
   agentRowMeta: {
-    marginTop: 4,
-    color: '#7D8CA0',
+    color: Colors.textSecondary,
     fontSize: 12,
     fontFamily: Typography.uiFont,
-  },
-  agentRowBadges: {
-    alignItems: 'flex-end',
-  },
-  badge: {
-    paddingHorizontal: 10,
-    paddingVertical: 5,
-    borderRadius: 999,
-    backgroundColor: '#202A38',
-    marginTop: 6,
-  },
-  badgeActive: {
-    backgroundColor: 'rgba(91,157,255,0.18)',
-    borderWidth: 1,
-    borderColor: 'rgba(91,157,255,0.35)',
-  },
-  badgeText: {
-    color: '#A4B0C2',
-    fontSize: 11,
-    fontFamily: Typography.uiFontMedium,
-  },
-  badgeTextActive: {
-    color: '#B9D6FF',
+    opacity: 0.5,
   },
   menuPopover: {
     position: 'absolute',

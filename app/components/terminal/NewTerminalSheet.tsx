@@ -19,13 +19,15 @@ type ServerOption = {
 type LaunchPreset = {
   key: string;
   label: string;
+  description: string;
+  icon: React.ComponentProps<typeof Ionicons>['name'];
   command: string;
 };
 
 const PRESETS: readonly LaunchPreset[] = [
-  { key: 'shell', label: 'Shell', command: '' },
-  { key: 'claude', label: 'Claude', command: 'claude' },
-  { key: 'codex', label: 'Codex', command: 'codex' },
+  { key: 'shell', label: 'Shell', description: 'Plain terminal session', icon: 'terminal-outline', command: '' },
+  { key: 'claude', label: 'Claude', description: 'Claude Code agent', icon: 'sparkles-outline', command: 'claude' },
+  { key: 'codex', label: 'Codex', description: 'OpenAI Codex agent', icon: 'code-slash-outline', command: 'codex' },
 ];
 
 interface NewTerminalSheetProps {
@@ -45,8 +47,8 @@ interface NewTerminalSheetProps {
 
 export function NewTerminalSheet({
   visible,
-  title,
-  subtitle,
+  title: _title,
+  subtitle: _subtitle,
   initialCwd = '',
   initialCommand = '',
   initialName = '',
@@ -60,21 +62,37 @@ export function NewTerminalSheet({
   const [cwd, setCwd] = useState(initialCwd);
   const [command, setCommand] = useState(initialCommand);
   const [name, setName] = useState(initialName);
+  const [advanced, setAdvanced] = useState(false);
 
   useEffect(() => {
     if (!visible) return;
     setCwd(initialCwd);
     setCommand(initialCommand);
     setName(initialName);
+    setAdvanced(false);
   }, [initialCommand, initialCwd, initialName, visible]);
 
-  const activePreset = useMemo(
-    () => PRESETS.find(preset => preset.command === command.trim())?.key ?? null,
-    [command],
-  );
-
-  const submitLabel = command.trim() ? 'Launch Terminal' : 'Create Terminal';
   const canSubmit = !submitting && (!serverOptions.length || Boolean(selectedServerId));
+
+  const handlePresetTap = (preset: LaunchPreset) => {
+    if (!canSubmit) return;
+    onSubmit({
+      cwd: cwd.trim() || initialCwd.trim(),
+      command: preset.command,
+      name: '',
+      serverId: selectedServerId ?? undefined,
+    });
+  };
+
+  const handleAdvancedSubmit = () => {
+    if (!canSubmit) return;
+    onSubmit({
+      cwd: cwd.trim(),
+      command: command.trim(),
+      name: name.trim(),
+      serverId: selectedServerId ?? undefined,
+    });
+  };
 
   return (
     <Modal
@@ -91,12 +109,10 @@ export function NewTerminalSheet({
         />
         <View style={styles.card}>
           <View style={styles.handle} />
-          <Text style={styles.title}>{title}</Text>
-          <Text style={styles.subtitle}>{subtitle}</Text>
 
+          {/* Server selector when multiple servers */}
           {serverOptions.length > 1 ? (
-            <View style={styles.section}>
-              <Text style={styles.sectionLabel}>Server</Text>
+            <View style={styles.serverSection}>
               <ScrollView horizontal showsHorizontalScrollIndicator={false}>
                 <View style={styles.serverRow}>
                   {serverOptions.map(server => {
@@ -119,98 +135,100 @@ export function NewTerminalSheet({
             </View>
           ) : null}
 
-          <View style={styles.section}>
-            <Text style={styles.sectionLabel}>Launch</Text>
-            <View style={styles.presetRow}>
-              {PRESETS.map(preset => {
-                const active = preset.key === activePreset;
-                return (
-                  <TouchableOpacity
-                    key={preset.key}
-                    style={[styles.presetChip, active && styles.presetChipActive]}
-                    onPress={() => setCommand(preset.command)}
-                    activeOpacity={0.84}
-                  >
-                    <Text style={[styles.presetChipText, active && styles.presetChipTextActive]}>
-                      {preset.label}
-                    </Text>
-                  </TouchableOpacity>
-                );
-              })}
+          {/* Preset cards */}
+          <View style={styles.presetList}>
+            {PRESETS.map(preset => (
+              <TouchableOpacity
+                key={preset.key}
+                style={[styles.presetCard, submitting && styles.presetCardDisabled]}
+                onPress={() => handlePresetTap(preset)}
+                disabled={!canSubmit}
+                activeOpacity={0.78}
+              >
+                <Ionicons name={preset.icon} size={20} color={Colors.textPrimary} />
+                <View style={styles.presetCardText}>
+                  <Text style={styles.presetLabel}>{preset.label}</Text>
+                  <Text style={styles.presetDesc}>{preset.description}</Text>
+                </View>
+                <Ionicons name="chevron-forward" size={16} color="rgba(255,255,255,0.2)" />
+              </TouchableOpacity>
+            ))}
+          </View>
+
+          {/* Advanced toggle */}
+          <TouchableOpacity
+            style={styles.advancedToggle}
+            onPress={() => setAdvanced(!advanced)}
+            activeOpacity={0.82}
+          >
+            <Ionicons
+              name={advanced ? 'chevron-down' : 'chevron-forward'}
+              size={14}
+              color={Colors.textSecondary}
+            />
+            <Text style={styles.advancedToggleText}>Advanced</Text>
+          </TouchableOpacity>
+
+          {/* Advanced fields */}
+          {advanced ? (
+            <View style={styles.advancedSection}>
+              <Text style={styles.fieldLabel}>Working Directory</Text>
+              <TextInput
+                style={styles.input}
+                value={cwd}
+                onChangeText={setCwd}
+                placeholder="Leave empty for shell default"
+                placeholderTextColor="#6E7D90"
+                autoCapitalize="none"
+                autoCorrect={false}
+                autoComplete="off"
+              />
+
+              <Text style={styles.fieldLabel}>Command</Text>
+              <TextInput
+                style={styles.input}
+                value={command}
+                onChangeText={setCommand}
+                placeholder="e.g. claude or codex --approval-mode auto"
+                placeholderTextColor="#6E7D90"
+                autoCapitalize="none"
+                autoCorrect={false}
+                autoComplete="off"
+              />
+
+              <Text style={styles.fieldLabel}>Window Title</Text>
+              <TextInput
+                style={styles.input}
+                value={name}
+                onChangeText={setName}
+                placeholder="Optional"
+                placeholderTextColor="#6E7D90"
+                autoCapitalize="none"
+                autoCorrect={false}
+                autoComplete="off"
+              />
+
+              <TouchableOpacity
+                style={[styles.launchBtn, !canSubmit && styles.launchBtnDisabled]}
+                onPress={handleAdvancedSubmit}
+                disabled={!canSubmit}
+                activeOpacity={0.82}
+              >
+                <Text style={styles.launchBtnText}>
+                  {submitting ? 'Starting…' : 'Launch'}
+                </Text>
+              </TouchableOpacity>
             </View>
-          </View>
+          ) : null}
 
-          <View style={styles.section}>
-            <Text style={styles.sectionLabel}>Working Directory</Text>
-            <TextInput
-              style={styles.input}
-              value={cwd}
-              onChangeText={setCwd}
-              placeholder="Optional. Leave empty to use the shell default."
-              placeholderTextColor="#6E7D90"
-              autoCapitalize="none"
-              autoCorrect={false}
-              autoComplete="off"
-            />
-          </View>
-
-          <View style={styles.section}>
-            <Text style={styles.sectionLabel}>Command</Text>
-            <TextInput
-              style={styles.input}
-              value={command}
-              onChangeText={setCommand}
-              placeholder="Optional. Example: claude or codex --approval-mode auto"
-              placeholderTextColor="#6E7D90"
-              autoCapitalize="none"
-              autoCorrect={false}
-              autoComplete="off"
-            />
-          </View>
-
-          <View style={styles.section}>
-            <Text style={styles.sectionLabel}>Window Title</Text>
-            <TextInput
-              style={styles.input}
-              value={name}
-              onChangeText={setName}
-              placeholder="Optional. Example: claude-api"
-              placeholderTextColor="#6E7D90"
-              autoCapitalize="none"
-              autoCorrect={false}
-              autoComplete="off"
-            />
-          </View>
-
-          <Text style={styles.note}>
-            Leave the command empty to open a plain shell. If a directory is set, tmux starts the new terminal there.
-          </Text>
-
-          <View style={styles.actions}>
-            <TouchableOpacity
-              style={styles.secondaryButton}
-              onPress={onClose}
-              activeOpacity={0.84}
-            >
-              <Text style={styles.secondaryButtonText}>Cancel</Text>
-            </TouchableOpacity>
-            <TouchableOpacity
-              style={[styles.primaryButton, !canSubmit && styles.primaryButtonDisabled]}
-              onPress={() => onSubmit({
-                cwd: cwd.trim(),
-                command: command.trim(),
-                name: name.trim(),
-                serverId: selectedServerId ?? undefined,
-              })}
-              disabled={!canSubmit}
-              activeOpacity={0.84}
-            >
-              <Ionicons name={command.trim() ? 'rocket-outline' : 'add'} size={16} color={Colors.bgPrimary} />
-              <Text style={styles.primaryButtonText}>
-                {submitting ? 'Starting…' : submitLabel}
-              </Text>
-            </TouchableOpacity>
-          </View>
+          {/* Cancel */}
+          <TouchableOpacity
+            style={styles.cancelBtn}
+            onPress={onClose}
+            activeOpacity={0.82}
+          >
+            <Text style={styles.cancelBtnText}>Cancel</Text>
+          </TouchableOpacity>
         </View>
       </View>
     </Modal>
@@ -242,27 +260,12 @@ const styles = StyleSheet.create({
     height: 4,
     borderRadius: 2,
     backgroundColor: '#3A475B',
+    marginBottom: 18,
+  },
+
+  // Server chips
+  serverSection: {
     marginBottom: 14,
-  },
-  title: {
-    color: Colors.textPrimary,
-    fontSize: 20,
-    fontFamily: Typography.uiFontMedium,
-  },
-  subtitle: {
-    marginTop: 6,
-    color: '#7D8CA0',
-    fontSize: 12,
-    fontFamily: Typography.uiFont,
-  },
-  section: {
-    marginTop: 16,
-  },
-  sectionLabel: {
-    color: Colors.textPrimary,
-    fontSize: 12,
-    fontFamily: Typography.uiFontMedium,
-    marginBottom: 8,
   },
   serverRow: {
     flexDirection: 'row',
@@ -289,34 +292,68 @@ const styles = StyleSheet.create({
   serverChipTextActive: {
     color: Colors.textPrimary,
   },
-  presetRow: {
-    flexDirection: 'row',
+
+  // Preset cards
+  presetList: {
     gap: 8,
   },
-  presetChip: {
-    paddingHorizontal: 12,
-    height: 34,
-    borderRadius: 12,
-    justifyContent: 'center',
+  presetCard: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 14,
+    paddingVertical: 14,
+    paddingHorizontal: 16,
+    borderRadius: 14,
     backgroundColor: '#18222F',
     borderWidth: 1,
     borderColor: 'rgba(255,255,255,0.06)',
   },
-  presetChipActive: {
-    backgroundColor: 'rgba(214, 177, 106, 0.14)',
-    borderColor: 'rgba(214, 177, 106, 0.42)',
+  presetCardDisabled: {
+    opacity: 0.5,
   },
-  presetChipText: {
-    color: Colors.textSecondary,
-    fontSize: 13,
+  presetCardText: {
+    flex: 1,
+  },
+  presetLabel: {
+    color: Colors.textPrimary,
+    fontSize: 15,
     fontFamily: Typography.uiFontMedium,
   },
-  presetChipTextActive: {
-    color: Colors.textPrimary,
+  presetDesc: {
+    color: Colors.textSecondary,
+    fontSize: 12,
+    fontFamily: Typography.uiFont,
+    marginTop: 2,
+    opacity: 0.7,
+  },
+
+  // Advanced
+  advancedToggle: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    marginTop: 16,
+    paddingVertical: 8,
+  },
+  advancedToggleText: {
+    color: Colors.textSecondary,
+    fontSize: 13,
+    fontFamily: Typography.uiFont,
+  },
+  advancedSection: {
+    marginTop: 4,
+    gap: 4,
+  },
+  fieldLabel: {
+    color: Colors.textSecondary,
+    fontSize: 12,
+    fontFamily: Typography.uiFontMedium,
+    marginTop: 8,
+    marginBottom: 4,
   },
   input: {
-    minHeight: 44,
-    borderRadius: 14,
+    minHeight: 42,
+    borderRadius: 12,
     paddingHorizontal: 14,
     color: Colors.textPrimary,
     fontSize: 14,
@@ -325,49 +362,35 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: 'rgba(255,255,255,0.06)',
   },
-  note: {
-    marginTop: 14,
-    color: '#7D8CA0',
-    fontSize: 12,
-    lineHeight: 17,
-    fontFamily: Typography.uiFont,
-  },
-  actions: {
-    flexDirection: 'row',
-    justifyContent: 'flex-end',
-    gap: 10,
-    marginTop: 20,
-  },
-  secondaryButton: {
-    minWidth: 84,
-    height: 40,
-    borderRadius: 12,
-    alignItems: 'center',
-    justifyContent: 'center',
-    backgroundColor: '#18222F',
-  },
-  secondaryButtonText: {
-    color: Colors.textPrimary,
-    fontSize: 13,
-    fontFamily: Typography.uiFontMedium,
-  },
-  primaryButton: {
-    minWidth: 150,
+  launchBtn: {
     height: 40,
     borderRadius: 12,
     alignItems: 'center',
     justifyContent: 'center',
     backgroundColor: Colors.accent,
-    flexDirection: 'row',
-    gap: 8,
-    paddingHorizontal: 14,
+    marginTop: 12,
   },
-  primaryButtonDisabled: {
-    opacity: 0.6,
+  launchBtnDisabled: {
+    opacity: 0.5,
   },
-  primaryButtonText: {
+  launchBtnText: {
     color: Colors.bgPrimary,
-    fontSize: 13,
+    fontSize: 14,
+    fontFamily: Typography.uiFontMedium,
+  },
+
+  // Cancel
+  cancelBtn: {
+    height: 40,
+    borderRadius: 12,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginTop: 12,
+    backgroundColor: 'rgba(255,255,255,0.04)',
+  },
+  cancelBtnText: {
+    color: Colors.textSecondary,
+    fontSize: 14,
     fontFamily: Typography.uiFontMedium,
   },
 });
