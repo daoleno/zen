@@ -13,6 +13,7 @@ import (
 	"github.com/daoleno/zen/daemon/auth"
 	"github.com/daoleno/zen/daemon/push"
 	"github.com/daoleno/zen/daemon/server"
+	"github.com/daoleno/zen/daemon/stats"
 	"github.com/daoleno/zen/daemon/watcher"
 )
 
@@ -75,8 +76,11 @@ func main() {
 	w := watcher.New(500 * time.Millisecond)
 	go w.Run(ctx)
 
+	sc := stats.NewCollector()
+	go sc.Start(ctx)
+
 	pusher := push.New()
-	srv := server.New(secret, w, pusher)
+	srv := server.New(secret, w, pusher, sc)
 	if err := srv.Run(ctx, *addr); err != nil && err.Error() != "http: Server closed" {
 		log.Fatalf("server error: %v", err)
 	}

@@ -278,6 +278,43 @@ class MultiServerWebSocketClient {
     });
   }
 
+  listDir(serverId: string, path?: string) {
+    const requestId = `${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
+
+    return new Promise<{ path: string; entries: { name: string; path: string }[] }>((resolve, reject) => {
+      const cleanup = () => {
+        if (timer) clearTimeout(timer);
+        this.off('dir_list', handleList);
+        this.off('error', handleError);
+      };
+
+      const handleList = (payload: any) => {
+        if (payload.serverId !== serverId || payload.request_id !== requestId) return;
+        cleanup();
+        resolve({ path: payload.path, entries: payload.entries ?? [] });
+      };
+
+      const handleError = (payload: any) => {
+        if (payload.serverId !== serverId || payload.request_id !== requestId) return;
+        cleanup();
+        reject(new Error(payload.message || 'Failed to list directory.'));
+      };
+
+      const timer = setTimeout(() => {
+        cleanup();
+        reject(new Error('Timed out while listing directory.'));
+      }, 10000);
+
+      this.on('dir_list', handleList);
+      this.on('error', handleError);
+      this.send(serverId, {
+        type: 'list_dir',
+        request_id: requestId,
+        cwd: path ?? '',
+      });
+    });
+  }
+
   openTerminal(serverId: string, targetId: string, backend: string = 'tmux', cols?: number, rows?: number) {
     this.send(serverId, { type: 'terminal_open', target_id: targetId, backend, cols, rows });
   }
@@ -318,6 +355,29 @@ class MultiServerWebSocketClient {
         this.setActiveAgent(serverId, null);
       }
     }
+  }
+
+  getStats(serverId: string): Promise<any> {
+    return new Promise((resolve, reject) => {
+      const cleanup = () => {
+        if (timer) clearTimeout(timer);
+        this.off('stats_data', handleStats);
+      };
+
+      const handleStats = (payload: any) => {
+        if (payload.serverId !== serverId) return;
+        cleanup();
+        resolve(payload);
+      };
+
+      const timer = setTimeout(() => {
+        cleanup();
+        reject(new Error('Stats request timed out.'));
+      }, 15000);
+
+      this.on('stats_data', handleStats);
+      this.send(serverId, { type: 'get_stats' });
+    });
   }
 
   killAgent(serverId: string, agentId: string) {

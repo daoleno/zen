@@ -16,6 +16,7 @@ import (
 
 	"github.com/daoleno/zen/daemon/auth"
 	"github.com/daoleno/zen/daemon/push"
+	"github.com/daoleno/zen/daemon/stats"
 	"github.com/daoleno/zen/daemon/terminal"
 	"github.com/daoleno/zen/daemon/watcher"
 	"github.com/gorilla/websocket"
@@ -31,6 +32,7 @@ type Server struct {
 	watcher  *watcher.Watcher
 	terminal *terminal.Manager
 	pusher   *push.Client
+	stats    *stats.Collector
 	clients  map[*websocket.Conn]bool
 	active   map[*websocket.Conn]string
 	writes   map[*websocket.Conn]*sync.Mutex
@@ -38,12 +40,13 @@ type Server struct {
 }
 
 // New creates a WebSocket server.
-func New(secret *auth.Secret, w *watcher.Watcher, pusher *push.Client) *Server {
+func New(secret *auth.Secret, w *watcher.Watcher, pusher *push.Client, sc *stats.Collector) *Server {
 	return &Server{
 		secret:   secret,
 		watcher:  w,
 		terminal: terminal.NewManager(&terminal.TmuxBackend{}),
 		pusher:   pusher,
+		stats:    sc,
 		clients:  make(map[*websocket.Conn]bool),
 		active:   make(map[*websocket.Conn]string),
 		writes:   make(map[*websocket.Conn]*sync.Mutex),
@@ -287,6 +290,60 @@ func (s *Server) handleClientMessage(conn *websocket.Conn, msg []byte) {
 		if err := s.watcher.KillSession(raw.AgentID); err != nil {
 			log.Printf("kill_agent error: %v", err)
 			s.sendError(conn, "kill_failed", err.Error())
+		}
+
+	case "list_dir":
+		dirPath := raw.Cwd
+		if dirPath == "" {
+			home, err := os.UserHomeDir()
+			if err != nil {
+				s.sendJSON(conn, map[string]any{
+					"type":       "error",
+					"code":       "list_dir_failed",
+					"message":    err.Error(),
+					"request_id": raw.RequestID,
+				})
+				return
+			}
+			dirPath = home
+		}
+		dirPath = filepath.Clean(dirPath)
+		entries, err := os.ReadDir(dirPath)
+		if err != nil {
+			s.sendJSON(conn, map[string]any{
+				"type":       "error",
+				"code":       "list_dir_failed",
+				"message":    err.Error(),
+				"request_id": raw.RequestID,
+			})
+			return
+		}
+		dirs := make([]map[string]string, 0)
+		for _, e := range entries {
+			if !e.IsDir() {
+				continue
+			}
+			name := e.Name()
+			if len(name) > 0 && name[0] == '.' {
+				continue
+			}
+			dirs = append(dirs, map[string]string{
+				"name": name,
+				"path": filepath.Join(dirPath, name),
+			})
+		}
+		s.sendJSON(conn, map[string]any{
+			"type":       "dir_list",
+			"request_id": raw.RequestID,
+			"path":       dirPath,
+			"entries":    dirs,
+		})
+
+	case "get_stats":
+		if resp := s.stats.Stats(); resp != nil {
+			s.sendJSON(conn, resp)
+		} else {
+			s.sendJSON(conn, map[string]any{"type": "stats_data", "ranges": map[string]any{}})
 		}
 
 	default:
