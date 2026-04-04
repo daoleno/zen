@@ -19,16 +19,22 @@ type TimeRange = 'day' | 'week' | 'month' | 'all';
 
 interface DayCell {
   date: string;
+  totalTokens: number;
   inputTokens: number;
   outputTokens: number;
+  reasoningTokens: number;
+  cacheRead: number;
+  cacheCreate: number;
   cost: number;
   sessions: number;
 }
 
 interface ModelStat {
   name: string;
+  totalTokens: number;
   inputTokens: number;
   outputTokens: number;
+  reasoningTokens: number;
   cacheRead: number;
   cacheCreate: number;
   cost: number;
@@ -37,8 +43,12 @@ interface ModelStat {
 
 interface ProjectStat {
   name: string;
+  totalTokens: number;
   inputTokens: number;
   outputTokens: number;
+  reasoningTokens: number;
+  cacheRead: number;
+  cacheCreate: number;
   cost: number;
   sessions: number;
 }
@@ -56,8 +66,10 @@ interface ToolStat {
 
 interface RangeData {
   cost: number;
+  totalTokens: number;
   inputTokens: number;
   outputTokens: number;
+  reasoningTokens: number;
   cacheRead: number;
   cacheCreate: number;
   sessions: number;
@@ -75,7 +87,7 @@ interface StatsPayload {
 // ── Constants ──────────────────────────────────────────────
 
 const EMPTY_RANGE: RangeData = {
-  cost: 0, inputTokens: 0, outputTokens: 0, cacheRead: 0, cacheCreate: 0,
+  cost: 0, totalTokens: 0, inputTokens: 0, outputTokens: 0, reasoningTokens: 0, cacheRead: 0, cacheCreate: 0,
   sessions: 0, models: [], projects: [], skills: [], tools: [], days: [],
 };
 
@@ -116,6 +128,23 @@ function fmtCost(n: number): string {
   return '$' + n.toFixed(2);
 }
 
+function tokenSummary(item: {
+  totalTokens: number;
+  inputTokens: number;
+  outputTokens: number;
+  cacheRead: number;
+  reasoningTokens: number;
+}): string {
+  const parts = [
+    `${fmt(item.totalTokens)} total`,
+    `${fmt(item.inputTokens)} in`,
+  ];
+  if (item.cacheRead > 0) parts.push(`${fmt(item.cacheRead)} cache`);
+  parts.push(`${fmt(item.outputTokens)} out`);
+  if (item.reasoningTokens > 0) parts.push(`${fmt(item.reasoningTokens)} reason`);
+  return parts.join(' · ');
+}
+
 function shortDate(dateStr: string): string {
   // "2026-04-04" -> "4/4"
   const parts = dateStr.split('-');
@@ -131,11 +160,13 @@ function mergeModelStats(items: ModelStat[]): ModelStat[] {
   const merged = new Map<string, ModelStat>();
   for (const item of items) {
     const current = merged.get(item.name) ?? {
-      name: item.name, inputTokens: 0, outputTokens: 0,
-      cacheRead: 0, cacheCreate: 0, cost: 0, sessions: 0,
+      name: item.name, totalTokens: 0, inputTokens: 0, outputTokens: 0,
+      reasoningTokens: 0, cacheRead: 0, cacheCreate: 0, cost: 0, sessions: 0,
     };
+    current.totalTokens += item.totalTokens;
     current.inputTokens += item.inputTokens;
     current.outputTokens += item.outputTokens;
+    current.reasoningTokens += item.reasoningTokens;
     current.cacheRead += item.cacheRead;
     current.cacheCreate += item.cacheCreate;
     current.cost += item.cost;
@@ -149,10 +180,15 @@ function mergeProjectStats(items: ProjectStat[]): ProjectStat[] {
   const merged = new Map<string, ProjectStat>();
   for (const item of items) {
     const current = merged.get(item.name) ?? {
-      name: item.name, inputTokens: 0, outputTokens: 0, cost: 0, sessions: 0,
+      name: item.name, totalTokens: 0, inputTokens: 0, outputTokens: 0,
+      reasoningTokens: 0, cacheRead: 0, cacheCreate: 0, cost: 0, sessions: 0,
     };
+    current.totalTokens += item.totalTokens;
     current.inputTokens += item.inputTokens;
     current.outputTokens += item.outputTokens;
+    current.reasoningTokens += item.reasoningTokens;
+    current.cacheRead += item.cacheRead;
+    current.cacheCreate += item.cacheCreate;
     current.cost += item.cost;
     current.sessions += item.sessions;
     merged.set(item.name, current);
@@ -185,9 +221,16 @@ function mergeDays(arrays: DayCell[][]): DayCell[] {
   const merged = new Map<string, DayCell>();
   for (const arr of arrays) {
     for (const d of arr ?? []) {
-      const c = merged.get(d.date) ?? { date: d.date, inputTokens: 0, outputTokens: 0, cost: 0, sessions: 0 };
+      const c = merged.get(d.date) ?? {
+        date: d.date, totalTokens: 0, inputTokens: 0, outputTokens: 0,
+        reasoningTokens: 0, cacheRead: 0, cacheCreate: 0, cost: 0, sessions: 0,
+      };
+      c.totalTokens += d.totalTokens;
       c.inputTokens += d.inputTokens;
       c.outputTokens += d.outputTokens;
+      c.reasoningTokens += d.reasoningTokens;
+      c.cacheRead += d.cacheRead;
+      c.cacheCreate += d.cacheCreate;
       c.cost += d.cost;
       c.sessions += d.sessions;
       merged.set(d.date, c);
@@ -200,8 +243,10 @@ function mergeRangeData(items: RangeData[]): RangeData {
   if (items.length === 0) return EMPTY_RANGE;
   return {
     cost: items.reduce((s, i) => s + i.cost, 0),
+    totalTokens: items.reduce((s, i) => s + i.totalTokens, 0),
     inputTokens: items.reduce((s, i) => s + i.inputTokens, 0),
     outputTokens: items.reduce((s, i) => s + i.outputTokens, 0),
+    reasoningTokens: items.reduce((s, i) => s + i.reasoningTokens, 0),
     cacheRead: items.reduce((s, i) => s + i.cacheRead, 0),
     cacheCreate: items.reduce((s, i) => s + i.cacheCreate, 0),
     sessions: items.reduce((s, i) => s + i.sessions, 0),
@@ -264,7 +309,7 @@ export default function StatsScreen() {
 
   const maxModelCost = useMemo(() => Math.max(...(data.models?.map(m => m.cost) ?? [0]), 0.01), [data.models]);
   const maxProjectCost = useMemo(() => Math.max(...(data.projects?.map(p => p.cost) ?? [0]), 0.01), [data.projects]);
-  const maxProjectTokens = useMemo(() => Math.max(...(data.projects?.map(p => p.inputTokens + p.outputTokens) ?? [0]), 1), [data.projects]);
+  const maxProjectTokens = useMemo(() => Math.max(...(data.projects?.map(p => p.totalTokens) ?? [0]), 1), [data.projects]);
   const maxSkillCalls = useMemo(() => Math.max(...(data.skills?.map(s => s.calls) ?? [0]), 1), [data.skills]);
   const maxToolCalls = useMemo(() => Math.max(...(data.tools?.map(t => t.calls) ?? [0]), 1), [data.tools]);
   const totalSkills = data.skills?.length ?? 0;
@@ -315,12 +360,16 @@ export default function StatsScreen() {
       ) : (
         <ScrollView contentContainerStyle={s.scroll} showsVerticalScrollIndicator={false}>
 
-          {/* ── Cost ── */}
+          {/* ── Estimated cost ── */}
           <View style={s.card}>
             <View style={s.costRow}>
               <Text style={s.costBig}>{fmtCost(data.cost)}</Text>
               <View style={s.costRight}>
-                <Text style={s.costMeta}>{fmt(data.inputTokens + data.outputTokens)} tokens</Text>
+                <Text style={s.costMeta}>Estimated Cost</Text>
+                <Text style={s.costMeta}>{fmt(data.totalTokens)} tokens</Text>
+                {data.reasoningTokens > 0 && (
+                  <Text style={s.costMeta}>{fmt(data.reasoningTokens)} reasoning</Text>
+                )}
                 <Text style={s.costMeta}>{data.sessions} sessions</Text>
               </View>
             </View>
@@ -382,7 +431,7 @@ export default function StatsScreen() {
                 <View key={i} style={s.row}>
                   <View style={s.rowInfo}>
                     <Text style={s.rowName} numberOfLines={1}>{m.name}</Text>
-                    <Text style={s.rowMeta}>{fmt(m.inputTokens)} in · {fmt(m.outputTokens)} out · {m.sessions} sessions</Text>
+                    <Text style={s.rowMeta}>{tokenSummary(m)} · {m.sessions} sessions</Text>
                   </View>
                   <Text style={s.rowCost}>{fmtCost(m.cost)}</Text>
                   <Bar ratio={m.cost / maxModelCost} color={Colors.accent} />
@@ -402,10 +451,10 @@ export default function StatsScreen() {
                 <View key={i} style={s.row}>
                   <View style={s.rowInfo}>
                     <Text style={s.rowName} numberOfLines={1}>{p.name}</Text>
-                    <Text style={s.rowMeta}>{p.sessions} sessions</Text>
+                    <Text style={s.rowMeta}>{fmt(p.totalTokens)} tokens · {p.sessions} sessions</Text>
                   </View>
-                  <Text style={s.rowCost}>{p.cost > 0 ? fmtCost(p.cost) : fmt(p.inputTokens + p.outputTokens)}</Text>
-                  <Bar ratio={p.cost > 0 ? p.cost / maxProjectCost : (p.inputTokens + p.outputTokens) / maxProjectTokens} color={Colors.accent} />
+                  <Text style={s.rowCost}>{p.cost > 0 ? fmtCost(p.cost) : fmt(p.totalTokens)}</Text>
+                  <Bar ratio={p.cost > 0 ? p.cost / maxProjectCost : p.totalTokens / maxProjectTokens} color={Colors.accent} />
                 </View>
               ))}
               {data.projects.length > MAX_LIST_ITEMS && (
@@ -476,8 +525,11 @@ export default function StatsScreen() {
               <View style={s.detailGrid}>
                 <DItem label="Cost" value={fmtCost(selectedDay.cost)} accent />
                 <DItem label="Sessions" value={`${selectedDay.sessions}`} />
+                <DItem label="Total" value={fmt(selectedDay.totalTokens)} />
                 <DItem label="Input" value={fmt(selectedDay.inputTokens)} />
+                <DItem label="Cache" value={fmt(selectedDay.cacheRead)} />
                 <DItem label="Output" value={fmt(selectedDay.outputTokens)} />
+                <DItem label="Reason" value={fmt(selectedDay.reasoningTokens)} />
               </View>
             </View>
           )}

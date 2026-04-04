@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"fmt"
 	"log"
 	"os"
 	"os/exec"
@@ -24,20 +25,36 @@ type Collector struct {
 
 // NewCollector creates a stats collector.
 func NewCollector() *Collector {
+	loadPricingCache(homeDir())
 	return &Collector{}
 }
 
 // Start begins periodic background scanning. The first scan runs immediately.
 func (c *Collector) Start(ctx context.Context) {
+	home := homeDir()
+	if pricingIsStale() {
+		go func() {
+			if err := syncPricing(ctx, home); err == nil {
+				c.refresh()
+			}
+		}()
+	}
+
 	c.refresh()
 	ticker := time.NewTicker(5 * time.Minute)
 	defer ticker.Stop()
+	pricingTicker := time.NewTicker(pricingSyncEvery)
+	defer pricingTicker.Stop()
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
 			c.refresh()
+		case <-pricingTicker.C:
+			if err := syncPricing(ctx, home); err == nil {
+				c.refresh()
+			}
 		}
 	}
 }
@@ -59,77 +76,48 @@ type modelPricing struct {
 	cacheCreate float64
 }
 
-var pricing = map[string]modelPricing{
+var staticPricing = map[string]modelPricing{
 	// Anthropic current models (2026)
-	"claude-opus-4-6":            {displayName: "Claude Opus 4.6", input: 5, output: 25, cacheRead: 0.50, cacheCreate: 6.25},
-	"claude-sonnet-4-6":          {displayName: "Claude Sonnet 4.6", input: 3, output: 15, cacheRead: 0.30, cacheCreate: 3.75},
-	"claude-haiku-4-5-20251001":  {displayName: "Claude Haiku 4.5", input: 1, output: 5, cacheRead: 0.10, cacheCreate: 1.25},
+	"claude-opus-4-6":           {displayName: "Claude Opus 4.6", input: 5, output: 25, cacheRead: 0.50, cacheCreate: 6.25},
+	"claude-sonnet-4-6":         {displayName: "Claude Sonnet 4.6", input: 3, output: 15, cacheRead: 0.30, cacheCreate: 3.75},
+	"claude-haiku-4-5-20251001": {displayName: "Claude Haiku 4.5", input: 1, output: 5, cacheRead: 0.10, cacheCreate: 1.25},
 	// Anthropic legacy models
 	"claude-opus-4-5-20251101":   {displayName: "Claude Opus 4.5", input: 15, output: 75, cacheRead: 1.50, cacheCreate: 18.75},
 	"claude-sonnet-4-5-20250929": {displayName: "Claude Sonnet 4.5", input: 3, output: 15, cacheRead: 0.30, cacheCreate: 3.75},
 	// OpenAI GPT models
-	"gpt-4.1":       {displayName: "GPT-4.1", input: 2, output: 8, cacheRead: 0.50, cacheCreate: 2},
-	"gpt-4.1-mini":  {displayName: "GPT-4.1 Mini", input: 0.40, output: 1.60, cacheRead: 0.10, cacheCreate: 0.40},
-	"gpt-4.1-nano":  {displayName: "GPT-4.1 Nano", input: 0.10, output: 0.40, cacheRead: 0.025, cacheCreate: 0.10},
-	"gpt-4o":        {displayName: "GPT-4o", input: 2.50, output: 10, cacheRead: 1.25, cacheCreate: 2.50},
-	"gpt-4o-mini":   {displayName: "GPT-4o Mini", input: 0.15, output: 0.60, cacheRead: 0.075, cacheCreate: 0.15},
+	"gpt-4.1":      {displayName: "GPT-4.1", input: 2, output: 8, cacheRead: 0.50, cacheCreate: 2},
+	"gpt-4.1-mini": {displayName: "GPT-4.1 Mini", input: 0.40, output: 1.60, cacheRead: 0.10, cacheCreate: 0.40},
+	"gpt-4.1-nano": {displayName: "GPT-4.1 Nano", input: 0.10, output: 0.40, cacheRead: 0.025, cacheCreate: 0.10},
+	"gpt-4o":       {displayName: "GPT-4o", input: 2.50, output: 10, cacheRead: 1.25, cacheCreate: 2.50},
+	"gpt-4o-mini":  {displayName: "GPT-4o Mini", input: 0.15, output: 0.60, cacheRead: 0.075, cacheCreate: 0.15},
 	// OpenAI reasoning models
-	"o3":            {displayName: "o3", input: 2, output: 8, cacheRead: 0.50, cacheCreate: 2},
-	"o3-mini":       {displayName: "o3-mini", input: 1.10, output: 4.40, cacheRead: 0.275, cacheCreate: 1.10},
-	"o4-mini":       {displayName: "o4-mini", input: 1.10, output: 4.40, cacheRead: 0.275, cacheCreate: 1.10},
+	"o3":      {displayName: "o3", input: 2, output: 8, cacheRead: 0.50, cacheCreate: 2},
+	"o3-mini": {displayName: "o3-mini", input: 1.10, output: 4.40, cacheRead: 0.55, cacheCreate: 1.10},
+	"o4-mini": {displayName: "o4-mini", input: 1.10, output: 4.40, cacheRead: 0.275, cacheCreate: 1.10},
 	// OpenAI GPT-5.x models
-	"gpt-5.4":       {displayName: "GPT-5.4", input: 2.50, output: 15, cacheRead: 0.25, cacheCreate: 2.50},
-	"gpt-5.4-mini":  {displayName: "GPT-5.4 Mini", input: 0.30, output: 1.80, cacheRead: 0.03, cacheCreate: 0.30},
-	"gpt-5.4-nano":  {displayName: "GPT-5.4 Nano", input: 0.05, output: 0.20, cacheRead: 0.005, cacheCreate: 0.05},
+	"gpt-5.4":      {displayName: "GPT-5.4", input: 2.50, output: 15, cacheRead: 0.25, cacheCreate: 2.50},
+	"gpt-5.4-mini": {displayName: "GPT-5.4 Mini", input: 0.75, output: 4.50, cacheRead: 0.075, cacheCreate: 0.75},
+	"gpt-5.4-nano": {displayName: "GPT-5.4 Nano", input: 0.20, output: 1.25, cacheRead: 0.02, cacheCreate: 0.20},
 	// OpenAI Codex
 	"codex-mini-latest": {displayName: "Codex Mini", input: 1.50, output: 6, cacheRead: 0.375, cacheCreate: 1.50},
 }
 
-func computeCost(modelID string, input, output, cacheRead, cacheCreate int64) float64 {
-	p, ok := pricing[modelID]
+func computeCost(modelID string, input, output, reasoning, cacheRead, cacheCreate int64) float64 {
+	p, ok := currentPricing(modelID)
 	if !ok {
 		return 0
 	}
 	return float64(input)/1e6*p.input +
-		float64(output)/1e6*p.output +
+		float64(output+reasoning)/1e6*p.output +
 		float64(cacheRead)/1e6*p.cacheRead +
 		float64(cacheCreate)/1e6*p.cacheCreate
 }
 
 func displayName(modelID string) string {
-	if p, ok := pricing[modelID]; ok {
+	if p, ok := currentPricing(modelID); ok {
 		return p.displayName
 	}
 	return modelID
-}
-
-// ── JSON structures for Claude Code files ──────────────────
-
-type claudeStatsCache struct {
-	DailyActivity    []claudeDailyActivity       `json:"dailyActivity"`
-	DailyModelTokens []claudeDailyModelTokens    `json:"dailyModelTokens"`
-	ModelUsage       map[string]claudeModelUsage `json:"modelUsage"`
-	TotalSessions    int                         `json:"totalSessions"`
-	HourCounts       map[string]int              `json:"hourCounts"`
-}
-
-type claudeDailyActivity struct {
-	Date          string `json:"date"`
-	MessageCount  int    `json:"messageCount"`
-	SessionCount  int    `json:"sessionCount"`
-	ToolCallCount int    `json:"toolCallCount"`
-}
-
-type claudeDailyModelTokens struct {
-	Date          string           `json:"date"`
-	TokensByModel map[string]int64 `json:"tokensByModel"`
-}
-
-type claudeModelUsage struct {
-	InputTokens              int64 `json:"inputTokens"`
-	OutputTokens             int64 `json:"outputTokens"`
-	CacheReadInputTokens     int64 `json:"cacheReadInputTokens"`
-	CacheCreationInputTokens int64 `json:"cacheCreationInputTokens"`
 }
 
 type dateAgg struct {
@@ -141,16 +129,20 @@ type dateAgg struct {
 }
 
 type slotAgg struct {
+	totalTokens  int64
 	inputTokens  int64
 	outputTokens int64
+	reasoning    int64
 	cacheRead    int64
 	cacheCreate  int64
 	sessions     int
 }
 
 type projectAggEntry struct {
+	totalTokens  int64
 	inputTokens  int64
 	outputTokens int64
+	reasoning    int64
 	cacheRead    int64
 	cacheCreate  int64
 	cost         float64
@@ -172,22 +164,13 @@ func (c *Collector) refresh() {
 		return
 	}
 
-	// Collect daily session counts from Claude Code stats-cache.json.
-	dailyMap, _ := c.collectClaudeStats(home)
-
 	// Collect range-scoped Claude usage from timestamped session JSONLs.
 	claudeByDate := c.collectClaudeSessionStats(home)
 
 	// Collect Codex CLI data.
 	codexDaily, codexModelsByDate, codexProjectsByDate := c.collectCodexStats(home)
 
-	// Merge codex daily data into dailyMap
-	for date, cd := range codexDaily {
-		d := dailyMap[date]
-		d.sessions += cd.sessions
-		d.inputTokens += cd.inputTokens
-		dailyMap[date] = d
-	}
+	dailyMap := buildDailySessions(claudeByDate, codexDaily)
 
 	// Build time-range aggregates
 	now := time.Now()
@@ -242,58 +225,14 @@ func (c *Collector) refresh() {
 // ── dailyEntry holds per-date aggregated data ──────────────
 
 type dailyEntry struct {
-	sessions      int
-	inputTokens   int64
-	outputTokens  int64
-	toolCalls     int
-	tokensByModel map[string]int64
-}
-
-func (c *Collector) collectClaudeStats(home string) (map[string]dailyEntry, map[string]int) {
-	dailyMap := make(map[string]dailyEntry)
-	hourCounts := make(map[string]int)
-
-	path := filepath.Join(home, ".claude", "stats-cache.json")
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return dailyMap, hourCounts
-	}
-
-	var cache claudeStatsCache
-	if err := json.Unmarshal(data, &cache); err != nil {
-		log.Printf("[stats] failed to parse stats-cache.json: %v", err)
-		return dailyMap, hourCounts
-	}
-
-	// Daily activity
-	for _, da := range cache.DailyActivity {
-		d := dailyMap[da.Date]
-		d.sessions += da.SessionCount
-		d.toolCalls += da.ToolCallCount
-		dailyMap[da.Date] = d
-	}
-
-	// Daily model tokens (these are total output tokens per model per day,
-	// not a split of input/output — used only for per-model breakdown).
-	for _, dmt := range cache.DailyModelTokens {
-		d := dailyMap[dmt.Date]
-		if d.tokensByModel == nil {
-			d.tokensByModel = make(map[string]int64)
-		}
-		for modelID, tokens := range dmt.TokensByModel {
-			d.tokensByModel[modelID] += tokens
-		}
-		dailyMap[dmt.Date] = d
-	}
-
-	hourCounts = cache.HourCounts
-
-	return dailyMap, hourCounts
+	sessions int
 }
 
 type modelAggEntry struct {
+	totalTokens  int64
 	inputTokens  int64
 	outputTokens int64
+	reasoning    int64
 	cacheRead    int64
 	cacheCreate  int64
 	sessions     int
@@ -305,33 +244,34 @@ func (c *Collector) collectClaudeSessionStats(home string) map[string]*dateAgg {
 	byDate := make(map[string]*dateAgg)
 
 	projectsDir := filepath.Join(home, ".claude", "projects")
-	projectDirs, err := os.ReadDir(projectsDir)
-	if err != nil {
+	if _, err := os.Stat(projectsDir); err != nil {
 		return byDate
 	}
 
-	for _, pd := range projectDirs {
-		if !pd.IsDir() {
-			// Top-level JSONL files (not in a project subdir)
-			if strings.HasSuffix(pd.Name(), ".jsonl") {
-				projectName := decodeProjectDir(pd.Name())
-				c.scanSessionJSONL(filepath.Join(projectsDir, pd.Name()), projectName, byDate)
-			}
-			continue
+	err := filepath.WalkDir(projectsDir, func(path string, d os.DirEntry, err error) error {
+		if err != nil {
+			return nil
+		}
+		if d.IsDir() || !strings.HasSuffix(d.Name(), ".jsonl") {
+			return nil
 		}
 
-		projectName := decodeProjectDir(pd.Name())
-		dir := filepath.Join(projectsDir, pd.Name())
-		entries, err := os.ReadDir(dir)
+		rel, err := filepath.Rel(projectsDir, path)
 		if err != nil {
-			continue
+			return nil
 		}
-		for _, e := range entries {
-			if !strings.HasSuffix(e.Name(), ".jsonl") {
-				continue
-			}
-			c.scanSessionJSONL(filepath.Join(dir, e.Name()), projectName, byDate)
+		parts := strings.Split(rel, string(os.PathSeparator))
+		projectName := ""
+		if len(parts) == 1 {
+			projectName = decodeProjectDir(parts[0])
+		} else {
+			projectName = decodeProjectDir(parts[0])
 		}
+		c.scanSessionJSONL(path, projectName, byDate)
+		return nil
+	})
+	if err != nil {
+		return byDate
 	}
 
 	return byDate
@@ -365,16 +305,18 @@ func (c *Collector) scanSessionJSONL(path, projectName string, byDate map[string
 		hour         int // 0-23, for heatmap slot bucketing
 		projectName  string
 		modelID      string
+		totalTokens  int64
 		inputTokens  int64
 		outputTokens int64
+		reasoning    int64
 		cacheRead    int64
 		cacheCreate  int64
 	}
 
 	scanner := bufio.NewScanner(f)
-	scanner.Buffer(make([]byte, 1024*1024), 1024*1024) // 1MB line buffer
+	scanner.Buffer(make([]byte, 1024*1024), 16*1024*1024)
 	messageUsage := make(map[string]*usageRecord)
-	sessionDate := ""
+	projectDates := make(map[string]map[string]bool)
 
 	for scanner.Scan() {
 		line := scanner.Bytes()
@@ -387,13 +329,16 @@ func (c *Collector) scanSessionJSONL(path, projectName string, byDate map[string
 		if date == "" {
 			continue
 		}
-		if sessionDate == "" {
-			sessionDate = date
-		}
 
 		lineProjectName := projectName
 		if entry.Cwd != "" {
 			lineProjectName = filepath.Base(entry.Cwd)
+		}
+		if lineProjectName != "" {
+			if projectDates[lineProjectName] == nil {
+				projectDates[lineProjectName] = make(map[string]bool)
+			}
+			projectDates[lineProjectName][date] = true
 		}
 
 		if entry.Type == "assistant" {
@@ -416,6 +361,10 @@ func (c *Collector) scanSessionJSONL(path, projectName string, byDate map[string
 				rec.outputTokens = max64(rec.outputTokens, entry.Message.Usage.OutputTokens)
 				rec.cacheRead = max64(rec.cacheRead, entry.Message.Usage.CacheReadInputTokens)
 				rec.cacheCreate = max64(rec.cacheCreate, entry.Message.Usage.CacheCreationInputTokens)
+				rec.totalTokens = max64(rec.totalTokens, entry.Message.Usage.InputTokens+
+					entry.Message.Usage.OutputTokens+
+					entry.Message.Usage.CacheReadInputTokens+
+					entry.Message.Usage.CacheCreationInputTokens)
 			}
 
 			if !strings.Contains(string(line), "tool_use") {
@@ -458,19 +407,19 @@ func (c *Collector) scanSessionJSONL(path, projectName string, byDate map[string
 		}
 	}
 
-	if sessionDate != "" && projectName != "" {
-		agg := ensureDateAgg(byDate, sessionDate)
-		pe := agg.projects[projectName]
-		if pe == nil {
-			pe = &projectAggEntry{}
-			agg.projects[projectName] = pe
+	for name, dates := range projectDates {
+		for date := range dates {
+			agg := ensureDateAgg(byDate, date)
+			pe := agg.projects[name]
+			if pe == nil {
+				pe = &projectAggEntry{}
+				agg.projects[name] = pe
+			}
+			pe.sessions++
 		}
-		pe.sessions++
 	}
 
-	// Track which models were used in this session file — each model gets
-	// at most 1 session count per file, not per message.
-	modelsInSession := make(map[string]bool)
+	modelSessionsByDate := make(map[string]map[string]bool)
 
 	for _, rec := range messageUsage {
 		if rec.date == "" || rec.modelID == "" {
@@ -478,13 +427,18 @@ func (c *Collector) scanSessionJSONL(path, projectName string, byDate map[string
 		}
 		agg := ensureDateAgg(byDate, rec.date)
 		m := agg.models[rec.modelID]
+		m.totalTokens += rec.totalTokens
 		m.inputTokens += rec.inputTokens
 		m.outputTokens += rec.outputTokens
+		m.reasoning += rec.reasoning
 		m.cacheRead += rec.cacheRead
 		m.cacheCreate += rec.cacheCreate
-		if !modelsInSession[rec.modelID] {
+		if modelSessionsByDate[rec.date] == nil {
+			modelSessionsByDate[rec.date] = make(map[string]bool)
+		}
+		if !modelSessionsByDate[rec.date][rec.modelID] {
 			m.sessions++
-			modelsInSession[rec.modelID] = true
+			modelSessionsByDate[rec.date][rec.modelID] = true
 		}
 		agg.models[rec.modelID] = m
 
@@ -493,8 +447,10 @@ func (c *Collector) scanSessionJSONL(path, projectName string, byDate map[string
 		if slot > 3 {
 			slot = 3
 		}
+		agg.slots[slot].totalTokens += rec.totalTokens
 		agg.slots[slot].inputTokens += rec.inputTokens
 		agg.slots[slot].outputTokens += rec.outputTokens
+		agg.slots[slot].reasoning += rec.reasoning
 		agg.slots[slot].cacheRead += rec.cacheRead
 		agg.slots[slot].cacheCreate += rec.cacheCreate
 		agg.slots[slot].sessions++
@@ -507,11 +463,13 @@ func (c *Collector) scanSessionJSONL(path, projectName string, byDate map[string
 			p = &projectAggEntry{}
 			agg.projects[rec.projectName] = p
 		}
+		p.totalTokens += rec.totalTokens
 		p.inputTokens += rec.inputTokens
 		p.outputTokens += rec.outputTokens
+		p.reasoning += rec.reasoning
 		p.cacheRead += rec.cacheRead
 		p.cacheCreate += rec.cacheCreate
-		p.cost += computeCost(rec.modelID, rec.inputTokens, rec.outputTokens, rec.cacheRead, rec.cacheCreate)
+		p.cost += computeCost(rec.modelID, rec.inputTokens, rec.outputTokens, rec.reasoning, rec.cacheRead, rec.cacheCreate)
 	}
 }
 
@@ -537,8 +495,12 @@ func decodeProjectDir(name string) string {
 // ── Codex CLI collection ───────────────────────────────────
 
 type codexDailyEntry struct {
-	sessions    int
-	inputTokens int64
+	sessions        int
+	totalTokens     int64
+	inputTokens     int64
+	outputTokens    int64
+	reasoningTokens int64
+	cacheRead       int64
 }
 
 func (c *Collector) collectCodexStats(home string) (map[string]codexDailyEntry, map[string]map[string]modelAggEntry, map[string]map[string]*projectAggEntry) {
@@ -559,18 +521,19 @@ func (c *Collector) collectCodexStats(home string) (map[string]codexDailyEntry, 
 	}
 
 	out, err := exec.Command(sqlite3, "-json", dbPath,
-		"SELECT id, cwd, model, tokens_used, created_at FROM threads WHERE tokens_used > 0").Output()
+		"SELECT id, cwd, model, tokens_used, created_at, rollout_path FROM threads WHERE tokens_used > 0").Output()
 	if err != nil {
 		log.Printf("[stats] sqlite3 query failed: %v", err)
 		return daily, modelsByDate, projectsByDate
 	}
 
 	var threads []struct {
-		ID         string `json:"id"`
-		Cwd        string `json:"cwd"`
-		Model      string `json:"model"`
-		TokensUsed int64  `json:"tokens_used"`
-		CreatedAt  int64  `json:"created_at"`
+		ID          string `json:"id"`
+		Cwd         string `json:"cwd"`
+		Model       string `json:"model"`
+		TokensUsed  int64  `json:"tokens_used"`
+		CreatedAt   int64  `json:"created_at"`
+		RolloutPath string `json:"rollout_path"`
 	}
 	if err := json.Unmarshal(out, &threads); err != nil {
 		log.Printf("[stats] failed to parse sqlite3 output: %v", err)
@@ -580,9 +543,21 @@ func (c *Collector) collectCodexStats(home string) (map[string]codexDailyEntry, 
 	for _, t := range threads {
 		// created_at is Unix timestamp in seconds
 		date := time.Unix(t.CreatedAt, 0).Format("2006-01-02")
+		usage, err := readCodexUsage(t.RolloutPath)
+		if err != nil {
+			usage = codexUsage{
+				totalTokens: t.TokensUsed,
+				inputTokens: t.TokensUsed,
+			}
+		}
+
 		d := daily[date]
 		d.sessions++
-		d.inputTokens += t.TokensUsed
+		d.totalTokens += usage.totalTokens
+		d.inputTokens += usage.inputTokens
+		d.outputTokens += usage.outputTokens
+		d.reasoningTokens += usage.reasoningTokens
+		d.cacheRead += usage.cacheRead
 		daily[date] = d
 
 		modelID := t.Model
@@ -595,7 +570,11 @@ func (c *Collector) collectCodexStats(home string) (map[string]codexDailyEntry, 
 			modelsByDate[date] = models
 		}
 		m := models[modelID]
-		m.inputTokens += t.TokensUsed
+		m.totalTokens += usage.totalTokens
+		m.inputTokens += usage.inputTokens
+		m.outputTokens += usage.outputTokens
+		m.reasoning += usage.reasoningTokens
+		m.cacheRead += usage.cacheRead
 		m.sessions++
 		models[modelID] = m
 
@@ -613,12 +592,96 @@ func (c *Collector) collectCodexStats(home string) (map[string]codexDailyEntry, 
 			p = &projectAggEntry{}
 			projects[projectName] = p
 		}
-		p.inputTokens += t.TokensUsed
-		p.cost += computeCost(modelID, t.TokensUsed, 0, 0, 0)
+		p.totalTokens += usage.totalTokens
+		p.inputTokens += usage.inputTokens
+		p.outputTokens += usage.outputTokens
+		p.reasoning += usage.reasoningTokens
+		p.cacheRead += usage.cacheRead
+		p.cost += computeCost(modelID, usage.inputTokens, usage.outputTokens, usage.reasoningTokens, usage.cacheRead, 0)
 		p.sessions++
 	}
 
 	return daily, modelsByDate, projectsByDate
+}
+
+type codexUsage struct {
+	totalTokens     int64
+	inputTokens     int64
+	outputTokens    int64
+	reasoningTokens int64
+	cacheRead       int64
+}
+
+func readCodexUsage(path string) (codexUsage, error) {
+	if path == "" {
+		return codexUsage{}, fmt.Errorf("empty rollout path")
+	}
+
+	f, err := os.Open(path)
+	if err != nil {
+		return codexUsage{}, err
+	}
+	defer f.Close()
+
+	type tokenCountLine struct {
+		Type    string `json:"type"`
+		Payload struct {
+			Type string `json:"type"`
+			Info *struct {
+				TotalTokenUsage *struct {
+					InputTokens           int64 `json:"input_tokens"`
+					CachedInputTokens     int64 `json:"cached_input_tokens"`
+					OutputTokens          int64 `json:"output_tokens"`
+					ReasoningOutputTokens int64 `json:"reasoning_output_tokens"`
+					TotalTokens           int64 `json:"total_tokens"`
+				} `json:"total_token_usage"`
+			} `json:"info"`
+		} `json:"payload"`
+	}
+
+	var usage codexUsage
+	found := false
+
+	scanner := bufio.NewScanner(f)
+	scanner.Buffer(make([]byte, 1024*1024), 1024*1024)
+	for scanner.Scan() {
+		var line tokenCountLine
+		if err := json.Unmarshal(scanner.Bytes(), &line); err != nil {
+			continue
+		}
+		if line.Type != "event_msg" || line.Payload.Type != "token_count" {
+			continue
+		}
+		if line.Payload.Info == nil || line.Payload.Info.TotalTokenUsage == nil {
+			continue
+		}
+
+		total := line.Payload.Info.TotalTokenUsage
+		uncachedInput := total.InputTokens - total.CachedInputTokens
+		if uncachedInput < 0 {
+			uncachedInput = total.InputTokens
+		}
+		totalTokens := total.TotalTokens
+		if totalTokens <= 0 {
+			totalTokens = total.InputTokens + total.OutputTokens
+		}
+
+		usage = codexUsage{
+			totalTokens:     totalTokens,
+			inputTokens:     uncachedInput,
+			outputTokens:    total.OutputTokens,
+			reasoningTokens: total.ReasoningOutputTokens,
+			cacheRead:       total.CachedInputTokens,
+		}
+		found = true
+	}
+	if err := scanner.Err(); err != nil {
+		return codexUsage{}, err
+	}
+	if !found {
+		return codexUsage{}, fmt.Errorf("no token_count event found")
+	}
+	return usage, nil
 }
 
 // ── Aggregation helpers ────────────────────────────────────
@@ -634,18 +697,42 @@ func (c *Collector) aggregateRange(dailyMap map[string]dailyEntry, fromDate, toD
 	return rd
 }
 
+func buildDailySessions(claudeByDate map[string]*dateAgg, codexDaily map[string]codexDailyEntry) map[string]dailyEntry {
+	dailyMap := make(map[string]dailyEntry)
+	for date, agg := range claudeByDate {
+		d := dailyMap[date]
+		seenProjects := make(map[string]bool)
+		for name, project := range agg.projects {
+			if project.sessions <= 0 || seenProjects[name] {
+				continue
+			}
+			d.sessions += project.sessions
+			seenProjects[name] = true
+		}
+		dailyMap[date] = d
+	}
+	for date, cd := range codexDaily {
+		d := dailyMap[date]
+		d.sessions += cd.sessions
+		dailyMap[date] = d
+	}
+	return dailyMap
+}
+
 func buildModelStats(modelAgg map[string]modelAggEntry) []ModelStat {
 	var result []ModelStat
 	for modelID, m := range modelAgg {
-		cost := computeCost(modelID, m.inputTokens, m.outputTokens, m.cacheRead, m.cacheCreate)
+		cost := computeCost(modelID, m.inputTokens, m.outputTokens, m.reasoning, m.cacheRead, m.cacheCreate)
 		result = append(result, ModelStat{
-			Name:         displayName(modelID),
-			InputTokens:  m.inputTokens,
-			OutputTokens: m.outputTokens,
-			CacheRead:    m.cacheRead,
-			CacheCreate:  m.cacheCreate,
-			Cost:         cost,
-			Sessions:     m.sessions,
+			Name:            displayName(modelID),
+			TotalTokens:     m.totalTokens,
+			InputTokens:     m.inputTokens,
+			OutputTokens:    m.outputTokens,
+			ReasoningTokens: m.reasoning,
+			CacheRead:       m.cacheRead,
+			CacheCreate:     m.cacheCreate,
+			Cost:            cost,
+			Sessions:        m.sessions,
 		})
 	}
 	sort.Slice(result, func(i, j int) bool { return result[i].Cost > result[j].Cost })
@@ -660,11 +747,15 @@ func buildProjectStats(projectAgg map[string]*projectAggEntry, extra ...map[stri
 	var result []ProjectStat
 	for name, p := range projectAgg {
 		result = append(result, ProjectStat{
-			Name:         name,
-			InputTokens:  p.inputTokens,
-			OutputTokens: p.outputTokens,
-			Cost:         p.cost,
-			Sessions:     p.sessions,
+			Name:            name,
+			TotalTokens:     p.totalTokens,
+			InputTokens:     p.inputTokens,
+			OutputTokens:    p.outputTokens,
+			ReasoningTokens: p.reasoning,
+			CacheRead:       p.cacheRead,
+			CacheCreate:     p.cacheCreate,
+			Cost:            p.cost,
+			Sessions:        p.sessions,
 		})
 	}
 	sort.Slice(result, func(i, j int) bool {
@@ -701,17 +792,21 @@ func buildSkillStats(skills map[string]*skillEntry) []SkillStat {
 
 func attachRangeTotals(rd *RangeData) {
 	var totalCost float64
-	var totalInput, totalOutput, totalCacheRead, totalCacheCreate int64
+	var totalTokens, totalInput, totalOutput, totalReasoning, totalCacheRead, totalCacheCreate int64
 	for _, m := range rd.Models {
 		totalCost += m.Cost
+		totalTokens += m.TotalTokens
 		totalInput += m.InputTokens
 		totalOutput += m.OutputTokens
+		totalReasoning += m.ReasoningTokens
 		totalCacheRead += m.CacheRead
 		totalCacheCreate += m.CacheCreate
 	}
 	rd.Cost = totalCost
+	rd.TotalTokens = totalTokens
 	rd.InputTokens = totalInput
 	rd.OutputTokens = totalOutput
+	rd.ReasoningTokens = totalReasoning
 	rd.CacheRead = totalCacheRead
 	rd.CacheCreate = totalCacheCreate
 }
@@ -731,10 +826,14 @@ func buildDayCells(claudeByDate map[string]*dateAgg, codexModelsByDate map[strin
 			dayCosts[date] = dc
 		}
 		for modelID, m := range agg.models {
+			dc.TotalTokens += m.totalTokens
 			dc.InputTokens += m.inputTokens
 			dc.OutputTokens += m.outputTokens
+			dc.ReasoningTokens += m.reasoning
+			dc.CacheRead += m.cacheRead
+			dc.CacheCreate += m.cacheCreate
 			dc.Sessions += m.sessions
-			dc.Cost += computeCost(modelID, m.inputTokens, m.outputTokens, m.cacheRead, m.cacheCreate)
+			dc.Cost += computeCost(modelID, m.inputTokens, m.outputTokens, m.reasoning, m.cacheRead, m.cacheCreate)
 		}
 	}
 
@@ -749,9 +848,13 @@ func buildDayCells(claudeByDate map[string]*dateAgg, codexModelsByDate map[strin
 			dayCosts[date] = dc
 		}
 		for modelID, m := range models {
+			dc.TotalTokens += m.totalTokens
 			dc.InputTokens += m.inputTokens
+			dc.OutputTokens += m.outputTokens
+			dc.ReasoningTokens += m.reasoning
+			dc.CacheRead += m.cacheRead
 			dc.Sessions += m.sessions
-			dc.Cost += computeCost(modelID, m.inputTokens, 0, 0, 0)
+			dc.Cost += computeCost(modelID, m.inputTokens, m.outputTokens, m.reasoning, m.cacheRead, m.cacheCreate)
 		}
 	}
 
@@ -911,8 +1014,10 @@ func aggregateCodexProjectsByDate(byDate map[string]map[string]*projectAggEntry,
 func mergeModelAgg(dst, src map[string]modelAggEntry) {
 	for modelID, item := range src {
 		current := dst[modelID]
+		current.totalTokens += item.totalTokens
 		current.inputTokens += item.inputTokens
 		current.outputTokens += item.outputTokens
+		current.reasoning += item.reasoning
 		current.cacheRead += item.cacheRead
 		current.cacheCreate += item.cacheCreate
 		current.sessions += item.sessions
@@ -927,10 +1032,13 @@ func mergeProjectAgg(dst, src map[string]*projectAggEntry) {
 			current = &projectAggEntry{}
 			dst[name] = current
 		}
+		current.totalTokens += item.totalTokens
 		current.inputTokens += item.inputTokens
 		current.outputTokens += item.outputTokens
+		current.reasoning += item.reasoning
 		current.cacheRead += item.cacheRead
 		current.cacheCreate += item.cacheCreate
+		current.cost += item.cost
 		current.sessions += item.sessions
 	}
 }

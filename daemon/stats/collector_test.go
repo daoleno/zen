@@ -1,18 +1,15 @@
 package stats
 
 import (
-	"context"
 	"fmt"
+	"os"
+	"path/filepath"
 	"testing"
-	"time"
 )
 
 func TestCollectorSmoke(t *testing.T) {
 	c := NewCollector()
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-	go c.Start(ctx)
-	time.Sleep(2 * time.Second)
+	c.refresh()
 
 	resp := c.Stats()
 	if resp == nil {
@@ -138,5 +135,116 @@ func TestRangeAggregatesStayScoped(t *testing.T) {
 	}
 	if len(allProjects) != 2 {
 		t.Fatalf("all projects should include both date buckets, got %+v", allProjects)
+	}
+}
+
+func TestReadCodexUsageFromRollout(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "rollout.jsonl")
+	content := `{"timestamp":"2026-04-04T09:15:41.759Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":107939,"cached_input_tokens":72960,"output_tokens":1313,"reasoning_output_tokens":211,"total_tokens":109252}}}}
+{"timestamp":"2026-04-04T09:15:50.723Z","type":"event_msg","payload":{"type":"token_count","info":null}}
+{"timestamp":"2026-04-04T09:16:10.723Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":148323,"cached_input_tokens":111232,"output_tokens":1528,"reasoning_output_tokens":243,"total_tokens":149851}}}}
+`
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatalf("write rollout: %v", err)
+	}
+
+	usage, err := readCodexUsage(path)
+	if err != nil {
+		t.Fatalf("readCodexUsage: %v", err)
+	}
+
+	if usage.totalTokens != 149851 {
+		t.Fatalf("expected total 149851, got %d", usage.totalTokens)
+	}
+	if usage.inputTokens != 37091 {
+		t.Fatalf("expected uncached input 37091, got %d", usage.inputTokens)
+	}
+	if usage.cacheRead != 111232 {
+		t.Fatalf("expected cached input 111232, got %d", usage.cacheRead)
+	}
+	if usage.outputTokens != 1528 {
+		t.Fatalf("expected output 1528, got %d", usage.outputTokens)
+	}
+	if usage.reasoningTokens != 243 {
+		t.Fatalf("expected reasoning 243, got %d", usage.reasoningTokens)
+	}
+}
+
+func TestScanSessionJSONLCrossDayBucketsSessionsPerDay(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "session.jsonl")
+	content := `{"type":"assistant","timestamp":"2026-04-04T23:59:00.000Z","cwd":"/tmp/zen","message":{"id":"m1","model":"claude-sonnet-4-6","content":[{"type":"text","text":"a"}],"usage":{"input_tokens":10,"output_tokens":5,"cache_read_input_tokens":2,"cache_creation_input_tokens":1}}}
+{"type":"assistant","timestamp":"2026-04-05T00:01:00.000Z","cwd":"/tmp/zen","message":{"id":"m2","model":"claude-sonnet-4-6","content":[{"type":"text","text":"b"}],"usage":{"input_tokens":20,"output_tokens":7,"cache_read_input_tokens":3,"cache_creation_input_tokens":0}}}
+`
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatalf("write session: %v", err)
+	}
+
+	c := NewCollector()
+	byDate := make(map[string]*dateAgg)
+	c.scanSessionJSONL(path, "zen", byDate)
+
+	day1 := byDate["2026-04-04"]
+	if day1 == nil {
+		t.Fatal("missing day 1 bucket")
+	}
+	day2 := byDate["2026-04-05"]
+	if day2 == nil {
+		t.Fatal("missing day 2 bucket")
+	}
+
+	if got := day1.models["claude-sonnet-4-6"].sessions; got != 1 {
+		t.Fatalf("day1 model sessions = %d, want 1", got)
+	}
+	if got := day2.models["claude-sonnet-4-6"].sessions; got != 1 {
+		t.Fatalf("day2 model sessions = %d, want 1", got)
+	}
+	if got := day1.projects["zen"].sessions; got != 1 {
+		t.Fatalf("day1 project sessions = %d, want 1", got)
+	}
+	if got := day2.projects["zen"].sessions; got != 1 {
+		t.Fatalf("day2 project sessions = %d, want 1", got)
+	}
+}
+
+func TestCollectClaudeSessionStatsIncludesSubagents(t *testing.T) {
+	home := t.TempDir()
+	subagentDir := filepath.Join(home, ".claude", "projects", "-tmp-zen", "session-a", "subagents")
+	if err := os.MkdirAll(subagentDir, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	path := filepath.Join(subagentDir, "agent-1.jsonl")
+	content := `{"type":"assistant","timestamp":"2026-04-04T10:00:00.000Z","cwd":"/tmp/zen","message":{"id":"m1","model":"claude-sonnet-4-6","content":[{"type":"tool_use","name":"Read","input":{"file_path":"x"}}],"usage":{"input_tokens":10,"output_tokens":5,"cache_read_input_tokens":0,"cache_creation_input_tokens":0}}}
+`
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatalf("write subagent session: %v", err)
+	}
+
+	c := NewCollector()
+	byDate := c.collectClaudeSessionStats(home)
+	day := byDate["2026-04-04"]
+	if day == nil {
+		t.Fatal("missing aggregated day")
+	}
+	if got := day.models["claude-sonnet-4-6"].totalTokens; got != 15 {
+		t.Fatalf("subagent model total = %d, want 15", got)
+	}
+	if got := day.tools["Read"]; got != 1 {
+		t.Fatalf("subagent tool calls = %d, want 1", got)
+	}
+}
+
+func TestComputeCostUsesReasoningAndUpdatedPricing(t *testing.T) {
+	got := computeCost("gpt-5.4-mini", 1_000_000, 1_000_000, 1_000_000, 1_000_000, 0)
+	want := 0.75 + 9.0 + 0.075
+	if got != want {
+		t.Fatalf("cost = %v, want %v", got, want)
+	}
+
+	got = computeCost("o3-mini", 0, 0, 0, 1_000_000, 0)
+	want = 0.55
+	if got != want {
+		t.Fatalf("o3-mini cache read cost = %v, want %v", got, want)
 	}
 }
