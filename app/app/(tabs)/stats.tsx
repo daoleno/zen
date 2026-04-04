@@ -360,17 +360,12 @@ export default function StatsScreen() {
       ) : (
         <ScrollView contentContainerStyle={s.scroll} showsVerticalScrollIndicator={false}>
 
-          {/* ── Estimated cost ── */}
+          {/* ── Cost ── */}
           <View style={s.card}>
             <View style={s.costRow}>
               <Text style={s.costBig}>{fmtCost(data.cost)}</Text>
               <View style={s.costRight}>
-                <Text style={s.costMeta}>Estimated Cost</Text>
-                <Text style={s.costMeta}>{fmt(data.totalTokens)} tokens</Text>
-                {data.reasoningTokens > 0 && (
-                  <Text style={s.costMeta}>{fmt(data.reasoningTokens)} reasoning</Text>
-                )}
-                <Text style={s.costMeta}>{data.sessions} sessions</Text>
+                <Text style={s.costMeta}>{fmt(data.totalTokens)} tokens · {data.sessions} sessions</Text>
               </View>
             </View>
           </View>
