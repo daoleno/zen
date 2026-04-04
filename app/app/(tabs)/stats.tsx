@@ -431,7 +431,7 @@ export default function StatsScreen() {
                 <View key={i} style={s.row}>
                   <View style={s.rowInfo}>
                     <Text style={s.rowName} numberOfLines={1}>{m.name}</Text>
-                    <Text style={s.rowMeta}>{tokenSummary(m)} · {m.sessions} sessions</Text>
+                    <Text style={s.rowMeta}>{fmt(m.totalTokens)} tokens · {m.sessions} sessions</Text>
                   </View>
                   <Text style={s.rowCost}>{fmtCost(m.cost)}</Text>
                   <Bar ratio={m.cost / maxModelCost} color={Colors.accent} />
@@ -451,7 +451,7 @@ export default function StatsScreen() {
                 <View key={i} style={s.row}>
                   <View style={s.rowInfo}>
                     <Text style={s.rowName} numberOfLines={1}>{p.name}</Text>
-                    <Text style={s.rowMeta}>{fmt(p.totalTokens)} tokens · {p.sessions} sessions</Text>
+                    <Text style={s.rowMeta}>{p.sessions} sessions</Text>
                   </View>
                   <Text style={s.rowCost}>{p.cost > 0 ? fmtCost(p.cost) : fmt(p.totalTokens)}</Text>
                   <Bar ratio={p.cost > 0 ? p.cost / maxProjectCost : p.totalTokens / maxProjectTokens} color={Colors.accent} />
