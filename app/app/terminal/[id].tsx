@@ -1048,6 +1048,7 @@ export default function TerminalScreen() {
         title="New Terminal"
         subtitle="Start a plain shell here, or launch Claude/Codex in the current project."
         initialCwd={agent?.cwd || ''}
+        selectedServerId={serverId}
         submitting={creatingSession}
         onClose={() => setNewTerminalVisible(false)}
         onSubmit={input => {

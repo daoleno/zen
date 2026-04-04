@@ -3,6 +3,8 @@ package watcher
 import (
 	"context"
 	"fmt"
+	"os"
+	"os/user"
 	"os/exec"
 	"path/filepath"
 	"strconv"
@@ -318,8 +320,10 @@ func (w *Watcher) CreateSession(preferredTarget string, opts CreateSessionOption
 	if cwd != "" {
 		args = append(args, "-c", cwd)
 	}
-	if command := strings.TrimSpace(opts.Command); command != "" {
-		args = append(args, command)
+	if shellCommand, err := buildWindowCommand(strings.TrimSpace(opts.Command)); err != nil {
+		return "", err
+	} else if shellCommand != "" {
+		args = append(args, shellCommand)
 	}
 
 	out, err := exec.Command("tmux", args...).Output()
@@ -332,6 +336,65 @@ func (w *Watcher) CreateSession(preferredTarget string, opts CreateSessionOption
 		return "", fmt.Errorf("tmux returned empty window target")
 	}
 	return target, nil
+}
+
+func buildWindowCommand(command string) (string, error) {
+	shellPath, err := currentLoginShell()
+	if err != nil {
+		return "", err
+	}
+
+	quotedShell := shellQuote(shellPath)
+	if command == "" {
+		return "exec " + quotedShell + " -l", nil
+	}
+	return "exec " + quotedShell + " -l -c " + shellQuote(command), nil
+}
+
+func currentLoginShell() (string, error) {
+	if shell := loginShellFromPasswd(); shell != "" {
+		return shell, nil
+	}
+	if shell := strings.TrimSpace(os.Getenv("SHELL")); shell != "" {
+		return shell, nil
+	}
+	return "/bin/sh", nil
+}
+
+func loginShellFromPasswd() string {
+	currentUser, err := user.Current()
+	if err != nil {
+		return ""
+	}
+
+	passwd, err := os.ReadFile("/etc/passwd")
+	if err != nil {
+		return ""
+	}
+
+	username := strings.TrimSpace(currentUser.Username)
+	uid := strings.TrimSpace(currentUser.Uid)
+	for _, line := range strings.Split(string(passwd), "\n") {
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		fields := strings.Split(line, ":")
+		if len(fields) < 7 {
+			continue
+		}
+		if fields[0] != username && fields[2] != uid {
+			continue
+		}
+		shell := strings.TrimSpace(fields[6])
+		if shell != "" {
+			return shell
+		}
+	}
+	return ""
+}
+
+func shellQuote(value string) string {
+	return "'" + strings.ReplaceAll(value, "'", `'"'"'`) + "'"
 }
 
 // KillSession terminates the tmux window backing a single agent.
