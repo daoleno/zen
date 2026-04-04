@@ -668,6 +668,9 @@ function buildTerminalHtml(theme: TerminalThemePalette, fontUri: string) {
         let swipeProgressDeltaX = 0;
         let swipeProgressActive = false;
         let swipeProgressRAF = null;
+        let lastReportedCols = 0;
+        let lastReportedRows = 0;
+        let armRedrawBuffer = () => {};
         const flushSwipeProgress = () => {
           swipeProgressRAF = null;
           send({
@@ -685,6 +688,17 @@ function buildTerminalHtml(theme: TerminalThemePalette, fontUri: string) {
         const reportSize = () => {
           try {
             fitAddon.fit();
+            if (terminal.cols <= 0 || terminal.rows <= 0) {
+              return;
+            }
+            if (terminal.cols === lastReportedCols && terminal.rows === lastReportedRows) {
+              return;
+            }
+            if (initialized) {
+              armRedrawBuffer();
+            }
+            lastReportedCols = terminal.cols;
+            lastReportedRows = terminal.rows;
             send({ type: 'resize', cols: terminal.cols, rows: terminal.rows });
           } catch (_) {}
         };
@@ -1104,24 +1118,17 @@ function buildTerminalHtml(theme: TerminalThemePalette, fontUri: string) {
       })();
 
       // ── Write queue (chunked output) ────────────────────────
-      // Initial buffering: when tmux attach-session runs, it redraws
-      // the entire screen via cursor positioning. Without buffering
-      // the user sees a top-to-bottom "scroll" effect. We accumulate
-      // all output for the first 300ms, then write it in one shot so
-      // the terminal appears instantly with the final state.
-      const INITIAL_BUFFER_MS = 300;
-      let initialBuffer = '';
-      let initialBuffering = true;
-      let initialTimer = null;
-
-      const flushInitialBuffer = () => {
-        initialBuffering = false;
-        initialTimer = null;
-        if (initialBuffer) {
-          terminal.write(initialBuffer);
-          initialBuffer = '';
-        }
-      };
+      // tmux redraws the whole visible screen on attach and on resize.
+      // If we stream that redraw chunk-by-chunk, the user sees the screen
+      // repaint from the top. Buffering the redraw briefly and flushing it
+      // as a single write makes the terminal appear stable.
+      const REDRAW_IDLE_MS = 72;
+      const INITIAL_REDRAW_MAX_MS = 900;
+      const RESIZE_REDRAW_MAX_MS = 320;
+      let redrawBuffer = '';
+      let redrawMode = 'initial';
+      let redrawIdleTimer = null;
+      let redrawDeadlineTimer = null;
 
       const flushWriteQueue = () => {
         if (isWriting) return;
@@ -1138,23 +1145,70 @@ function buildTerminalHtml(theme: TerminalThemePalette, fontUri: string) {
         });
       };
 
-      const enqueueOutput = (data) => {
-        if (!data) return;
+      const clearRedrawTimers = () => {
+        if (redrawIdleTimer) {
+          clearTimeout(redrawIdleTimer);
+          redrawIdleTimer = null;
+        }
+        if (redrawDeadlineTimer) {
+          clearTimeout(redrawDeadlineTimer);
+          redrawDeadlineTimer = null;
+        }
+      };
 
-        // During initial buffering, accumulate everything
-        if (initialBuffering) {
-          initialBuffer += data;
-          if (!initialTimer) {
-            initialTimer = setTimeout(flushInitialBuffer, INITIAL_BUFFER_MS);
-          }
+      const flushRedrawBuffer = () => {
+        const buffered = redrawBuffer;
+        redrawBuffer = '';
+        redrawMode = null;
+        clearRedrawTimers();
+        if (!buffered) {
           return;
         }
+        writeQueue.push(buffered);
+        if (!writeScheduled) {
+          requestAnimationFrame(flushWriteQueue);
+        }
+      };
 
+      const scheduleRedrawFlush = () => {
+        if (!redrawMode) {
+          return;
+        }
+        if (redrawIdleTimer) {
+          clearTimeout(redrawIdleTimer);
+        }
+        redrawIdleTimer = setTimeout(flushRedrawBuffer, REDRAW_IDLE_MS);
+        if (!redrawDeadlineTimer) {
+          const maxDelay = redrawMode === 'resize' ? RESIZE_REDRAW_MAX_MS : INITIAL_REDRAW_MAX_MS;
+          redrawDeadlineTimer = setTimeout(flushRedrawBuffer, maxDelay);
+        }
+      };
+
+      armRedrawBuffer = () => {
+        redrawMode = initialized ? 'resize' : 'initial';
+        clearRedrawTimers();
+      };
+
+      const enqueueChunkedWrite = (data) => {
         const maxChunkSize = 4096;
         for (let i = 0; i < data.length; i += maxChunkSize) {
           writeQueue.push(data.slice(i, i + maxChunkSize));
         }
-        if (!writeScheduled) requestAnimationFrame(flushWriteQueue);
+        if (!writeScheduled) {
+          requestAnimationFrame(flushWriteQueue);
+        }
+      };
+
+      const enqueueOutput = (data) => {
+        if (!data) return;
+
+        if (redrawMode) {
+          redrawBuffer += data;
+          scheduleRedrawFlush();
+          return;
+        }
+
+        enqueueChunkedWrite(data);
       };
 
       // ── Bridge API ──────────────────────────────────────────

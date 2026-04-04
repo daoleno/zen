@@ -30,6 +30,7 @@ export function useTerminalSession(serverId: string, targetId: string, backend: 
     const handleOpened = (payload: { serverId: string; session_id: string; cols: number; rows: number; backend: string }) => {
       if (payload.serverId !== serverId) return;
       sessionIdRef.current = payload.session_id;
+      sizeRef.current = { cols: payload.cols, rows: payload.rows };
       reopenOnConnectRef.current = false;
       setConnected(true);
       handlersRef.current.onOpen?.(payload);
@@ -144,6 +145,10 @@ export function useTerminalSession(serverId: string, targetId: string, backend: 
       wsClient.cancelTerminalScroll(serverId, sessionId);
     },
     resize(cols: number, rows: number) {
+      const previousSize = sizeRef.current;
+      if (previousSize && previousSize.cols === cols && previousSize.rows === rows) {
+        return;
+      }
       sizeRef.current = { cols, rows };
       const sessionId = sessionIdRef.current;
       if (!sessionId) {
