@@ -249,12 +249,14 @@ export default function SettingsScreen() {
 
   return (
     <SafeAreaView style={styles.container} edges={['top']}>
-      <ScrollView contentContainerStyle={styles.content}>
+      <View style={styles.header}>
         <Text style={styles.pageTitle}>Settings</Text>
+      </View>
+      <ScrollView contentContainerStyle={styles.content}>
 
         {/* Servers */}
         <View style={styles.sectionHeader}>
-          <Text style={styles.sectionLabel}>Servers</Text>
+          <Text style={[styles.sectionLabel, { marginTop: 0 }]}>Servers</Text>
           {servers.length > 0 && (
             <Text style={styles.sectionCount}>{connectedCount}/{servers.length}</Text>
           )}
@@ -631,17 +633,20 @@ const styles = StyleSheet.create({
     flex: 1,
     backgroundColor: Colors.bgPrimary,
   },
+  header: {
+    paddingHorizontal: 20,
+    paddingTop: 8,
+    paddingBottom: 12,
+  },
   content: {
     paddingHorizontal: 20,
-    paddingTop: 16,
     paddingBottom: 40,
   },
   pageTitle: {
     color: Colors.textPrimary,
     fontSize: 22,
     fontFamily: Typography.uiFontMedium,
-    letterSpacing: 0.5,
-    marginBottom: 8,
+    letterSpacing: 1,
     opacity: 0.9,
   },
 
@@ -650,7 +655,7 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'baseline',
     justifyContent: 'space-between',
-    marginBottom: 12,
+    marginBottom: 10,
   },
   sectionLabel: {
     color: Colors.textSecondary,

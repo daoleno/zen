@@ -20,11 +20,7 @@ export default function TabLayout() {
         },
         tabBarActiveTintColor: Colors.textPrimary,
         tabBarInactiveTintColor: 'rgba(255,255,255,0.25)',
-        tabBarLabelStyle: {
-          fontFamily: Typography.uiFont,
-          fontSize: 11,
-          letterSpacing: 0.3,
-        },
+        tabBarShowLabel: false,
         headerShown: false,
       }}
     >
@@ -39,14 +35,14 @@ export default function TabLayout() {
         name="stats"
         options={{
           title: 'Stats',
-          tabBarIcon: ({ color }) => <RNText style={{ fontSize: 10, color, opacity: 0.8 }}>{'∷'}</RNText>,
+          tabBarIcon: ({ color }) => <RNText style={{ fontSize: 20, color, opacity: 0.8, lineHeight: 22 }}>{'∷'}</RNText>,
         }}
       />
       <Tabs.Screen
         name="settings"
         options={{
           title: 'Settings',
-          tabBarIcon: ({ color }) => <RNText style={{ fontSize: 18, color, opacity: 0.8 }}>{'///'}</RNText>,
+          tabBarIcon: ({ color }) => <RNText style={{ fontSize: 16, color, opacity: 0.8, lineHeight: 22 }}>{'///'}</RNText>,
         }}
       />
     </Tabs>
@@ -55,6 +51,6 @@ export default function TabLayout() {
 
 function TabDot({ color }: { color: string }) {
   return (
-    <RNText style={{ fontSize: 8, color }}>{'●'}</RNText>
+    <RNText style={{ fontSize: 14, color, lineHeight: 22 }}>{'●'}</RNText>
   );
 }
