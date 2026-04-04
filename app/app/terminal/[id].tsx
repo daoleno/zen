@@ -1066,7 +1066,10 @@ export default function TerminalScreen() {
         animationType="fade"
         onRequestClose={() => setRenameVisible(false)}
       >
-        <View style={styles.renameRoot}>
+        <KeyboardAvoidingView
+          style={styles.renameRoot}
+          behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+        >
           <TouchableOpacity
             style={styles.modalBackdrop}
             activeOpacity={1}
@@ -1105,7 +1108,7 @@ export default function TerminalScreen() {
               </TouchableOpacity>
             </View>
           </View>
-        </View>
+        </KeyboardAvoidingView>
       </Modal>
     </SafeAreaView>
   );

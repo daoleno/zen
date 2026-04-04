@@ -1,6 +1,8 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import {
+  KeyboardAvoidingView,
   Modal,
+  Platform,
   ScrollView,
   StyleSheet,
   Text,
@@ -10,6 +12,9 @@ import {
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { Colors, Typography } from '../../constants/tokens';
+import { AgentKindIcon } from './AgentKindIcon';
+import { DirectoryPicker } from './DirectoryPicker';
+import type { AgentKind } from '../../services/agentPresentation';
 
 type ServerOption = {
   id: string;
@@ -18,16 +23,16 @@ type ServerOption = {
 
 type LaunchPreset = {
   key: string;
+  kind: AgentKind;
   label: string;
   description: string;
-  icon: React.ComponentProps<typeof Ionicons>['name'];
   command: string;
 };
 
 const PRESETS: readonly LaunchPreset[] = [
-  { key: 'shell', label: 'Shell', description: 'Plain terminal session', icon: 'terminal-outline', command: '' },
-  { key: 'claude', label: 'Claude', description: 'Claude Code agent', icon: 'sparkles-outline', command: 'claude' },
-  { key: 'codex', label: 'Codex', description: 'OpenAI Codex agent', icon: 'code-slash-outline', command: 'codex' },
+  { key: 'shell', kind: 'terminal', label: 'Shell', description: 'Plain terminal session', command: '' },
+  { key: 'claude', kind: 'claude', label: 'Claude', description: 'Claude Code agent', command: 'claude' },
+  { key: 'codex', kind: 'codex', label: 'Codex', description: 'OpenAI Codex agent', command: 'codex' },
 ];
 
 interface NewTerminalSheetProps {
@@ -63,6 +68,7 @@ export function NewTerminalSheet({
   const [command, setCommand] = useState(initialCommand);
   const [name, setName] = useState(initialName);
   const [advanced, setAdvanced] = useState(false);
+  const [dirPickerOpen, setDirPickerOpen] = useState(false);
 
   useEffect(() => {
     if (!visible) return;
@@ -74,14 +80,22 @@ export function NewTerminalSheet({
 
   const canSubmit = !submitting && (!serverOptions.length || Boolean(selectedServerId));
 
+  const activePreset = useMemo(
+    () => PRESETS.find(p => p.command === command.trim())?.key ?? null,
+    [command],
+  );
+
   const handlePresetTap = (preset: LaunchPreset) => {
     if (!canSubmit) return;
-    onSubmit({
-      cwd: cwd.trim() || initialCwd.trim(),
-      command: preset.command,
-      name: '',
-      serverId: selectedServerId ?? undefined,
-    });
+    setCommand(preset.command);
+    if (!advanced) {
+      onSubmit({
+        cwd: cwd.trim() || initialCwd.trim(),
+        command: preset.command,
+        name: '',
+        serverId: selectedServerId ?? undefined,
+      });
+    }
   };
 
   const handleAdvancedSubmit = () => {
@@ -101,7 +115,10 @@ export function NewTerminalSheet({
       animationType="fade"
       onRequestClose={onClose}
     >
-      <View style={styles.root}>
+      <KeyboardAvoidingView
+        style={styles.root}
+        behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+      >
         <TouchableOpacity
           style={styles.backdrop}
           activeOpacity={1}
@@ -110,127 +127,161 @@ export function NewTerminalSheet({
         <View style={styles.card}>
           <View style={styles.handle} />
 
-          {/* Server selector when multiple servers */}
-          {serverOptions.length > 1 ? (
-            <View style={styles.serverSection}>
-              <ScrollView horizontal showsHorizontalScrollIndicator={false}>
-                <View style={styles.serverRow}>
-                  {serverOptions.map(server => {
-                    const active = server.id === selectedServerId;
-                    return (
-                      <TouchableOpacity
-                        key={server.id}
-                        style={[styles.serverChip, active && styles.serverChipActive]}
-                        onPress={() => onSelectServer?.(server.id)}
-                        activeOpacity={0.84}
-                      >
-                        <Text style={[styles.serverChipText, active && styles.serverChipTextActive]}>
-                          {server.name}
-                        </Text>
-                      </TouchableOpacity>
-                    );
-                  })}
-                </View>
-              </ScrollView>
-            </View>
-          ) : null}
-
-          {/* Preset cards */}
-          <View style={styles.presetList}>
-            {PRESETS.map(preset => (
-              <TouchableOpacity
-                key={preset.key}
-                style={[styles.presetCard, submitting && styles.presetCardDisabled]}
-                onPress={() => handlePresetTap(preset)}
-                disabled={!canSubmit}
-                activeOpacity={0.78}
-              >
-                <Ionicons name={preset.icon} size={20} color={Colors.textPrimary} />
-                <View style={styles.presetCardText}>
-                  <Text style={styles.presetLabel}>{preset.label}</Text>
-                  <Text style={styles.presetDesc}>{preset.description}</Text>
-                </View>
-                <Ionicons name="chevron-forward" size={16} color="rgba(255,255,255,0.2)" />
-              </TouchableOpacity>
-            ))}
-          </View>
-
-          {/* Advanced toggle */}
-          <TouchableOpacity
-            style={styles.advancedToggle}
-            onPress={() => setAdvanced(!advanced)}
-            activeOpacity={0.82}
+          <ScrollView
+            showsVerticalScrollIndicator={false}
+            keyboardShouldPersistTaps="handled"
+            bounces={false}
           >
-            <Ionicons
-              name={advanced ? 'chevron-down' : 'chevron-forward'}
-              size={14}
-              color={Colors.textSecondary}
-            />
-            <Text style={styles.advancedToggleText}>Advanced</Text>
-          </TouchableOpacity>
+            {/* Server selector when multiple servers */}
+            {serverOptions.length > 1 ? (
+              <View style={styles.serverSection}>
+                <ScrollView horizontal showsHorizontalScrollIndicator={false}>
+                  <View style={styles.serverRow}>
+                    {serverOptions.map(server => {
+                      const active = server.id === selectedServerId;
+                      return (
+                        <TouchableOpacity
+                          key={server.id}
+                          style={[styles.serverChip, active && styles.serverChipActive]}
+                          onPress={() => onSelectServer?.(server.id)}
+                          activeOpacity={0.84}
+                        >
+                          <Text style={[styles.serverChipText, active && styles.serverChipTextActive]}>
+                            {server.name}
+                          </Text>
+                        </TouchableOpacity>
+                      );
+                    })}
+                  </View>
+                </ScrollView>
+              </View>
+            ) : null}
 
-          {/* Advanced fields */}
-          {advanced ? (
-            <View style={styles.advancedSection}>
-              <Text style={styles.fieldLabel}>Working Directory</Text>
-              <TextInput
-                style={styles.input}
-                value={cwd}
-                onChangeText={setCwd}
-                placeholder="Leave empty for shell default"
-                placeholderTextColor="#6E7D90"
-                autoCapitalize="none"
-                autoCorrect={false}
-                autoComplete="off"
-              />
-
-              <Text style={styles.fieldLabel}>Command</Text>
-              <TextInput
-                style={styles.input}
-                value={command}
-                onChangeText={setCommand}
-                placeholder="e.g. claude or codex --approval-mode auto"
-                placeholderTextColor="#6E7D90"
-                autoCapitalize="none"
-                autoCorrect={false}
-                autoComplete="off"
-              />
-
-              <Text style={styles.fieldLabel}>Window Title</Text>
-              <TextInput
-                style={styles.input}
-                value={name}
-                onChangeText={setName}
-                placeholder="Optional"
-                placeholderTextColor="#6E7D90"
-                autoCapitalize="none"
-                autoCorrect={false}
-                autoComplete="off"
-              />
-
-              <TouchableOpacity
-                style={[styles.launchBtn, !canSubmit && styles.launchBtnDisabled]}
-                onPress={handleAdvancedSubmit}
-                disabled={!canSubmit}
-                activeOpacity={0.82}
-              >
-                <Text style={styles.launchBtnText}>
-                  {submitting ? 'Starting…' : 'Launch'}
-                </Text>
-              </TouchableOpacity>
+            {/* Preset cards */}
+            <View style={styles.presetList}>
+              {PRESETS.map(preset => (
+                <TouchableOpacity
+                  key={preset.key}
+                  style={[
+                    styles.presetCard,
+                    activePreset === preset.key && styles.presetCardActive,
+                    submitting && styles.presetCardDisabled,
+                  ]}
+                  onPress={() => handlePresetTap(preset)}
+                  disabled={!canSubmit}
+                  activeOpacity={0.78}
+                >
+                  <AgentKindIcon kind={preset.kind} size={18} />
+                  <View style={styles.presetCardText}>
+                    <Text style={styles.presetLabel}>{preset.label}</Text>
+                    <Text style={styles.presetDesc}>{preset.description}</Text>
+                  </View>
+                  <Ionicons name="chevron-forward" size={16} color="rgba(255,255,255,0.2)" />
+                </TouchableOpacity>
+              ))}
             </View>
-          ) : null}
 
-          {/* Cancel */}
-          <TouchableOpacity
-            style={styles.cancelBtn}
-            onPress={onClose}
-            activeOpacity={0.82}
-          >
-            <Text style={styles.cancelBtnText}>Cancel</Text>
-          </TouchableOpacity>
+            {/* Advanced toggle */}
+            <TouchableOpacity
+              style={styles.advancedToggle}
+              onPress={() => setAdvanced(!advanced)}
+              activeOpacity={0.82}
+            >
+              <Ionicons
+                name={advanced ? 'chevron-down' : 'chevron-forward'}
+                size={14}
+                color={Colors.textSecondary}
+              />
+              <Text style={styles.advancedToggleText}>Advanced</Text>
+            </TouchableOpacity>
+
+            {/* Advanced fields */}
+            {advanced ? (
+              <View style={styles.advancedSection}>
+                <Text style={styles.fieldLabel}>Working Directory</Text>
+                <View style={styles.inputRow}>
+                  <TextInput
+                    style={[styles.input, styles.inputFlex]}
+                    value={cwd}
+                    onChangeText={setCwd}
+                    placeholder="Leave empty for shell default"
+                    placeholderTextColor="#6E7D90"
+                    autoCapitalize="none"
+                    autoCorrect={false}
+                    autoComplete="off"
+                  />
+                  {selectedServerId ? (
+                    <TouchableOpacity
+                      style={styles.folderBtn}
+                      onPress={() => setDirPickerOpen(true)}
+                      activeOpacity={0.7}
+                    >
+                      <Ionicons name="folder-open-outline" size={20} color={Colors.textSecondary} />
+                    </TouchableOpacity>
+                  ) : null}
+                </View>
+
+                <Text style={styles.fieldLabel}>Command</Text>
+                <TextInput
+                  style={styles.input}
+                  value={command}
+                  onChangeText={setCommand}
+                  placeholder="e.g. claude or codex --approval-mode auto"
+                  placeholderTextColor="#6E7D90"
+                  autoCapitalize="none"
+                  autoCorrect={false}
+                  autoComplete="off"
+                />
+
+                <Text style={styles.fieldLabel}>Window Title</Text>
+                <TextInput
+                  style={styles.input}
+                  value={name}
+                  onChangeText={setName}
+                  placeholder="Optional"
+                  placeholderTextColor="#6E7D90"
+                  autoCapitalize="none"
+                  autoCorrect={false}
+                  autoComplete="off"
+                />
+
+                <TouchableOpacity
+                  style={[styles.launchBtn, !canSubmit && styles.launchBtnDisabled]}
+                  onPress={handleAdvancedSubmit}
+                  disabled={!canSubmit}
+                  activeOpacity={0.82}
+                >
+                  <Text style={styles.launchBtnText}>
+                    {submitting ? 'Starting…' : 'Launch'}
+                  </Text>
+                </TouchableOpacity>
+              </View>
+            ) : null}
+
+            {/* Cancel */}
+            <TouchableOpacity
+              style={styles.cancelBtn}
+              onPress={onClose}
+              activeOpacity={0.82}
+            >
+              <Text style={styles.cancelBtnText}>Cancel</Text>
+            </TouchableOpacity>
+          </ScrollView>
         </View>
-      </View>
+      </KeyboardAvoidingView>
+
+      {selectedServerId ? (
+        <DirectoryPicker
+          visible={dirPickerOpen}
+          serverId={selectedServerId}
+          initialPath={cwd.trim() || undefined}
+          onSelect={(path) => {
+            setCwd(path);
+            setDirPickerOpen(false);
+          }}
+          onClose={() => setDirPickerOpen(false)}
+        />
+      ) : null}
     </Modal>
   );
 }
@@ -245,6 +296,7 @@ const styles = StyleSheet.create({
     backgroundColor: 'rgba(6, 8, 12, 0.62)',
   },
   card: {
+    maxHeight: '85%',
     borderTopLeftRadius: 28,
     borderTopRightRadius: 28,
     paddingHorizontal: 18,
@@ -308,6 +360,10 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: 'rgba(255,255,255,0.06)',
   },
+  presetCardActive: {
+    borderColor: 'rgba(91,157,255,0.38)',
+    backgroundColor: 'rgba(91,157,255,0.08)',
+  },
   presetCardDisabled: {
     opacity: 0.5,
   },
@@ -351,6 +407,14 @@ const styles = StyleSheet.create({
     marginTop: 8,
     marginBottom: 4,
   },
+  inputRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  inputFlex: {
+    flex: 1,
+  },
   input: {
     minHeight: 42,
     borderRadius: 12,
@@ -361,6 +425,17 @@ const styles = StyleSheet.create({
     backgroundColor: '#18222F',
     borderWidth: 1,
     borderColor: 'rgba(255,255,255,0.06)',
+  },
+  folderBtn: {
+    width: 42,
+    minHeight: 42,
+    borderRadius: 12,
+    backgroundColor: '#18222F',
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.06)',
+    alignItems: 'center',
+    justifyContent: 'center',
+    alignSelf: 'stretch',
   },
   launchBtn: {
     height: 40,

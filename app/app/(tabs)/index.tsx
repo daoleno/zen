@@ -2,7 +2,9 @@ import React, { useEffect, useMemo, useState } from 'react';
 import {
   Alert,
   FlatList,
+  KeyboardAvoidingView,
   Modal,
+  Platform,
   StyleSheet,
   Text,
   TextInput,
@@ -530,7 +532,10 @@ export default function InboxScreen() {
         animationType="fade"
         onRequestClose={closeRename}
       >
-        <View style={styles.menuRoot}>
+        <KeyboardAvoidingView
+          style={styles.menuRoot}
+          behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+        >
           <TouchableOpacity
             style={styles.menuBackdrop}
             activeOpacity={1}
@@ -562,7 +567,7 @@ export default function InboxScreen() {
               </TouchableOpacity>
             </View>
           </View>
-        </View>
+        </KeyboardAvoidingView>
       </Modal>
     </SafeAreaView>
   );

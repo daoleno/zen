@@ -1,7 +1,9 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import {
   Alert,
+  KeyboardAvoidingView,
   Modal,
+  Platform,
   ScrollView,
   StyleSheet,
   Text,
@@ -395,98 +397,107 @@ export default function SettingsScreen() {
         animationType="fade"
         onRequestClose={closeEditor}
       >
-        <View style={styles.modalRoot}>
+        <KeyboardAvoidingView
+          style={styles.modalRoot}
+          behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+        >
           <TouchableOpacity
             style={styles.modalBackdrop}
             activeOpacity={1}
             onPress={closeEditor}
           />
-          <View style={styles.modalCard}>
-            <Text style={styles.modalTitle}>
-              {editingServerId ? 'Edit Server' : 'Add Server'}
-            </Text>
+          <ScrollView
+            bounces={false}
+            keyboardShouldPersistTaps="handled"
+            contentContainerStyle={styles.modalScrollContent}
+          >
+            <View style={styles.modalCard}>
+              <Text style={styles.modalTitle}>
+                {editingServerId ? 'Edit Server' : 'Add Server'}
+              </Text>
 
-            <Text style={styles.fieldLabel}>Name</Text>
-            <TextInput
-              style={styles.input}
-              value={draftName}
-              onChangeText={setDraftName}
-              placeholder="staging"
-              placeholderTextColor="rgba(255,255,255,0.2)"
-              autoCapitalize="none"
-              autoCorrect={false}
-            />
+              <Text style={styles.fieldLabel}>Name</Text>
+              <TextInput
+                style={styles.input}
+                value={draftName}
+                onChangeText={setDraftName}
+                placeholder="staging"
+                placeholderTextColor="rgba(255,255,255,0.2)"
+                autoCapitalize="none"
+                autoCorrect={false}
+              />
 
-            <Text style={[styles.fieldLabel, { marginTop: 16 }]}>Endpoint</Text>
-            <TextInput
-              style={styles.input}
-              value={draftEndpoint}
-              onChangeText={setDraftEndpoint}
-              placeholder="192.168.1.10 or wss://zen.example.com/ws"
-              placeholderTextColor="rgba(255,255,255,0.2)"
-              autoCapitalize="none"
-              autoCorrect={false}
-            />
-            <Text style={styles.fieldHint}>
-              Enter a LAN host/IP or a full WebSocket URL.
-            </Text>
+              <Text style={[styles.fieldLabel, { marginTop: 16 }]}>Endpoint</Text>
+              <TextInput
+                style={styles.input}
+                value={draftEndpoint}
+                onChangeText={setDraftEndpoint}
+                placeholder="192.168.1.10 or wss://zen.example.com/ws"
+                placeholderTextColor="rgba(255,255,255,0.2)"
+                autoCapitalize="none"
+                autoCorrect={false}
+              />
+              <Text style={styles.fieldHint}>
+                Enter a LAN host/IP or a full WebSocket URL.
+              </Text>
 
-            <Text style={[styles.fieldLabel, { marginTop: 16 }]}>Secret (Optional)</Text>
-            <TextInput
-              style={styles.input}
-              value={draftSecret}
-              onChangeText={setDraftSecret}
-              placeholder="64-char hex secret"
-              placeholderTextColor="rgba(255,255,255,0.2)"
-              autoCapitalize="none"
-              autoCorrect={false}
-              autoComplete="off"
-            />
+              <Text style={[styles.fieldLabel, { marginTop: 16 }]}>Secret (Optional)</Text>
+              <TextInput
+                style={styles.input}
+                value={draftSecret}
+                onChangeText={setDraftSecret}
+                placeholder="64-char hex secret"
+                placeholderTextColor="rgba(255,255,255,0.2)"
+                autoCapitalize="none"
+                autoCorrect={false}
+                autoComplete="off"
+              />
 
-            <View style={styles.modalActions}>
-              <TouchableOpacity style={styles.modalBtn} onPress={closeEditor} activeOpacity={0.82}>
-                <Text style={styles.modalBtnText}>Cancel</Text>
-              </TouchableOpacity>
-              <TouchableOpacity
-                style={[styles.modalBtn, styles.modalBtnPrimary]}
-                onPress={handleSaveServer}
-                activeOpacity={0.82}
-              >
-                <Text style={[styles.modalBtnText, styles.modalBtnPrimaryText]}>Save</Text>
-              </TouchableOpacity>
+              <View style={styles.modalActions}>
+                <TouchableOpacity style={styles.modalBtn} onPress={closeEditor} activeOpacity={0.82}>
+                  <Text style={styles.modalBtnText}>Cancel</Text>
+                </TouchableOpacity>
+                <TouchableOpacity
+                  style={[styles.modalBtn, styles.modalBtnPrimary]}
+                  onPress={handleSaveServer}
+                  activeOpacity={0.82}
+                >
+                  <Text style={[styles.modalBtnText, styles.modalBtnPrimaryText]}>Save</Text>
+                </TouchableOpacity>
+              </View>
+
+              {/* Quick import section */}
+              {!editingServerId ? (
+                <>
+                  <View style={styles.divider}>
+                    <View style={styles.dividerLine} />
+                    <Text style={styles.dividerText}>or import</Text>
+                    <View style={styles.dividerLine} />
+                  </View>
+
+                  <View style={styles.importRow}>
+                    <TouchableOpacity
+                      style={styles.importBtn}
+                      onPress={handlePasteImport}
+                      activeOpacity={0.82}
+                    >
+                      <Ionicons name="clipboard-outline" size={15} color={Colors.textSecondary} />
+                      <Text style={styles.importBtnText}>Paste Link</Text>
+                    </TouchableOpacity>
+                    <TouchableOpacity
+                      style={styles.importBtn}
+                      onPress={openScanner}
+                      activeOpacity={0.82}
+                    >
+                      <Ionicons name="qr-code-outline" size={15} color={Colors.textSecondary} />
+                      <Text style={styles.importBtnText}>Scan QR</Text>
+                    </TouchableOpacity>
+                  </View>
+                </>
+              ) : null}
             </View>
-
-            {/* Quick import section */}
-            {!editingServerId ? (
-              <>
-                <View style={styles.divider}>
-                  <View style={styles.dividerLine} />
-                  <Text style={styles.dividerText}>or import</Text>
-                  <View style={styles.dividerLine} />
-                </View>
-
-                <View style={styles.importRow}>
-                  <TouchableOpacity
-                    style={styles.importBtn}
-                    onPress={handlePasteImport}
-                    activeOpacity={0.82}
-                  >
-                    <Ionicons name="clipboard-outline" size={15} color={Colors.textSecondary} />
-                    <Text style={styles.importBtnText}>Paste Link</Text>
-                  </TouchableOpacity>
-                  <TouchableOpacity
-                    style={styles.importBtn}
-                    onPress={openScanner}
-                    activeOpacity={0.82}
-                  >
-                    <Ionicons name="qr-code-outline" size={15} color={Colors.textSecondary} />
-                    <Text style={styles.importBtnText}>Scan QR</Text>
-                  </TouchableOpacity>
-                </View>
-              </>
-            ) : null}
-          </View>
-        </View>
+          </ScrollView>
+        </KeyboardAvoidingView>
       </Modal>
 
       {/* QR Scanner */}
@@ -844,6 +855,10 @@ const styles = StyleSheet.create({
     flex: 1,
     justifyContent: 'center',
     paddingHorizontal: 24,
+  },
+  modalScrollContent: {
+    flexGrow: 1,
+    justifyContent: 'center',
   },
   modalBackdrop: {
     ...StyleSheet.absoluteFillObject,
