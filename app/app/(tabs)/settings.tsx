@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useState } from "react";
 import {
   Alert,
   KeyboardAvoidingView,
@@ -10,46 +10,65 @@ import {
   TextInput,
   TouchableOpacity,
   View,
-} from 'react-native';
-import { useFocusEffect, useLocalSearchParams } from 'expo-router';
-import { Ionicons } from '@expo/vector-icons';
-import { SafeAreaView } from 'react-native-safe-area-context';
-import * as Clipboard from 'expo-clipboard';
-import { BarcodeScanningResult, CameraView, useCameraPermissions } from 'expo-camera';
-import { Colors, Typography } from '../../constants/tokens';
+} from "react-native";
+import { useFocusEffect, useLocalSearchParams } from "expo-router";
+import { Ionicons } from "@expo/vector-icons";
+import { SafeAreaView } from "react-native-safe-area-context";
+import * as Clipboard from "expo-clipboard";
+import * as DocumentPicker from "expo-document-picker";
+import {
+  BarcodeScanningResult,
+  BarcodeType,
+  CameraView,
+  scanFromURLAsync,
+  useCameraPermissions,
+} from "expo-camera";
+import { Colors, Typography } from "../../constants/tokens";
 import {
   DefaultTerminalThemeName,
   TerminalThemeName,
   TerminalThemes,
-} from '../../constants/terminalThemes';
-import { deriveEndpointFromURL, normalizeConnectionProvider } from '../../services/connection';
-import { importConnection } from '../../services/importConnection';
-import { wsClient } from '../../services/websocket';
-import { ConnectionState, useAgents } from '../../store/agents';
-import * as Storage from '../../services/storage';
-import { normalizeServerSecret } from '../../services/auth';
-import { connectionIssueAccent } from '../../services/connectionIssue';
+} from "../../constants/terminalThemes";
+import { importConnection } from "../../services/importConnection";
+import { wsClient } from "../../services/websocket";
+import { ConnectionState, useAgents } from "../../store/agents";
+import * as Storage from "../../services/storage";
+import { connectionIssueAccent } from "../../services/connectionIssue";
+
+const QR_BARCODE_TYPES: BarcodeType[] = ["qr"];
 
 export default function SettingsScreen() {
   const { state, dispatch } = useAgents();
-  const params = useLocalSearchParams<{ addServer?: string; refresh?: string }>();
+  const params = useLocalSearchParams<{
+    addServer?: string;
+    refresh?: string;
+  }>();
   const [servers, setServers] = useState<Storage.StoredServer[]>([]);
-  const [terminalTheme, setTerminalTheme] = useState<TerminalThemeName>(DefaultTerminalThemeName);
+  const [terminalTheme, setTerminalTheme] = useState<TerminalThemeName>(
+    DefaultTerminalThemeName,
+  );
   const [loaded, setLoaded] = useState(false);
   const [editorVisible, setEditorVisible] = useState(false);
   const [scannerVisible, setScannerVisible] = useState(false);
   const [scannerLocked, setScannerLocked] = useState(false);
   const [editingServerId, setEditingServerId] = useState<string | null>(null);
-  const [draftName, setDraftName] = useState('');
-  const [draftEndpoint, setDraftEndpoint] = useState('');
-  const [draftSecret, setDraftSecret] = useState('');
+  const [draftName, setDraftName] = useState("");
+  const [draftEndpoint, setDraftEndpoint] = useState("");
+  const [draftImportValue, setDraftImportValue] = useState("");
   const [expandedServer, setExpandedServer] = useState<string | null>(null);
-  const [handledAutoOpenToken, setHandledAutoOpenToken] = useState<string | null>(null);
-  const [handledRefreshToken, setHandledRefreshToken] = useState<string | null>(null);
+  const [handledAutoOpenToken, setHandledAutoOpenToken] = useState<
+    string | null
+  >(null);
+  const [handledRefreshToken, setHandledRefreshToken] = useState<string | null>(
+    null,
+  );
   const [cameraPermission, requestCameraPermission] = useCameraPermissions();
 
   const connectedCount = useMemo(
-    () => servers.filter(server => state.serverConnections[server.id] === 'connected').length,
+    () =>
+      servers.filter(
+        (server) => state.serverConnections[server.id] === "connected",
+      ).length,
     [servers, state.serverConnections],
   );
   const agentCountByServer = useMemo(() => {
@@ -59,6 +78,10 @@ export default function SettingsScreen() {
     }
     return counts;
   }, [state.agents]);
+  const editingServer = useMemo(
+    () => servers.find((server) => server.id === editingServerId) || null,
+    [editingServerId, servers],
+  );
 
   useFocusEffect(
     React.useCallback(() => {
@@ -83,13 +106,19 @@ export default function SettingsScreen() {
   );
 
   useEffect(() => {
-    if (!loaded || !params.addServer || handledAutoOpenToken === params.addServer) return;
+    if (
+      !loaded ||
+      !params.addServer ||
+      handledAutoOpenToken === params.addServer
+    )
+      return;
     openCreateServer();
     setHandledAutoOpenToken(params.addServer);
   }, [handledAutoOpenToken, loaded, params.addServer]);
 
   useEffect(() => {
-    if (!loaded || !params.refresh || handledRefreshToken === params.refresh) return;
+    if (!loaded || !params.refresh || handledRefreshToken === params.refresh)
+      return;
     void refreshServers();
     setHandledRefreshToken(params.refresh);
   }, [handledRefreshToken, loaded, params.refresh]);
@@ -108,26 +137,26 @@ export default function SettingsScreen() {
 
   const openCreateServer = () => {
     setEditingServerId(null);
-    setDraftName('');
-    setDraftEndpoint('');
-    setDraftSecret('');
+    setDraftName("");
+    setDraftEndpoint("");
+    setDraftImportValue("");
     setEditorVisible(true);
   };
 
   const openEditServer = (server: Storage.StoredServer) => {
     setEditingServerId(server.id);
     setDraftName(server.name);
-    setDraftEndpoint(deriveEndpointFromURL(server.provider, server.url));
-    setDraftSecret(server.secret || '');
+    setDraftEndpoint(server.url);
+    setDraftImportValue("");
     setEditorVisible(true);
   };
 
   const closeEditor = () => {
     setEditorVisible(false);
     setEditingServerId(null);
-    setDraftName('');
-    setDraftEndpoint('');
-    setDraftSecret('');
+    setDraftName("");
+    setDraftEndpoint("");
+    setDraftImportValue("");
   };
 
   const openScanner = () => {
@@ -141,54 +170,103 @@ export default function SettingsScreen() {
   };
 
   const handleSaveServer = async () => {
+    if (!editingServer) {
+      await handleImportDraft();
+      return;
+    }
+
     const normalizedEndpoint = draftEndpoint.trim();
     if (!normalizedEndpoint) {
-      Alert.alert('Endpoint required', 'Enter a LAN host/IP or a WebSocket URL.');
-      return;
-    }
-    if (draftSecret.trim().length > 0 && !normalizeServerSecret(draftSecret)) {
-      Alert.alert('Invalid secret', 'Pairing secret must be a 64-character hex string.');
+      Alert.alert(
+        "Endpoint required",
+        "Enter the WebSocket endpoint exposed by your tunnel or private network.",
+      );
       return;
     }
 
-    const provider = normalizeConnectionProvider(undefined, normalizedEndpoint);
-    const wasConnected =
-      editingServerId ? Boolean(state.serverConnections[editingServerId]) : true;
+    const previousConnectionState = editingServerId
+      ? state.serverConnections[editingServerId]
+      : "connected";
+    const shouldReconnect =
+      previousConnectionState === "connected" ||
+      previousConnectionState === "connecting";
 
-    const savedServer = await Storage.saveServer({
-      id: editingServerId || undefined,
-      name: draftName,
-      provider,
-      endpoint: normalizedEndpoint,
-      secret: draftSecret,
-    });
+    let savedServer: Storage.StoredServer;
+    try {
+      savedServer = await Storage.saveServer({
+        id: editingServer.id,
+        name: draftName,
+        url: normalizedEndpoint,
+        daemonId: editingServer.daemonId,
+        daemonPublicKey: editingServer.daemonPublicKey,
+      });
+    } catch (error: any) {
+      Alert.alert(
+        "Invalid endpoint",
+        error?.message ||
+          "Use a full ws://, wss://, http://, or https:// URL that points at zen-daemon.",
+      );
+      return;
+    }
 
     await refreshServers();
     closeEditor();
 
-    if (wasConnected) {
+    if (shouldReconnect) {
       wsClient.connectServer(savedServer);
     }
   };
 
-  const handleDeleteServer = (server: Storage.StoredServer) => {
-    Alert.alert(
-      'Remove server',
-      `Delete ${server.name}?`,
-      [
-        { text: 'Cancel', style: 'cancel' },
-        {
-          text: 'Delete',
-          style: 'destructive',
-          onPress: async () => {
-            wsClient.disconnectServer(server.id);
-            dispatch({ type: 'REMOVE_SERVER', serverId: server.id });
-            await Storage.removeServer(server.id);
-            await refreshServers();
-          },
+  const importServer = async (
+    rawValue: string,
+    options?: { closeScanner?: boolean },
+  ) => {
+    try {
+      const savedServer = await importConnection(rawValue, {
+        onImported: async (importedServer) => {
+          await refreshServers();
+          setExpandedServer(importedServer.id);
         },
-      ],
-    );
+      });
+
+      if (!savedServer) {
+        Alert.alert(
+          "Invalid import",
+          "Could not parse the pairing link. Import the zen:// link or QR printed by zen-daemon.",
+        );
+        return false;
+      }
+
+      if (options?.closeScanner) {
+        closeScanner();
+      }
+      closeEditor();
+      return true;
+    } catch (error: any) {
+      Alert.alert(
+        "Pairing failed",
+        error?.message || "Could not pair with that daemon.",
+      );
+      return false;
+    } finally {
+      setScannerLocked(false);
+    }
+  };
+
+  const handleDeleteServer = (server: Storage.StoredServer) => {
+    Alert.alert("Remove server", `Delete ${server.name}?`, [
+      { text: "Cancel", style: "cancel" },
+      {
+        text: "Delete",
+        style: "destructive",
+        onPress: async () => {
+          wsClient.disconnectServer(server.id);
+          dispatch({ type: "REMOVE_SERVER", serverId: server.id });
+          await Storage.removeServer(server.id);
+          await refreshServers();
+        },
+      },
+    ]);
   };
 
   const handleTerminalTheme = async (value: TerminalThemeName) => {
@@ -197,91 +275,116 @@ export default function SettingsScreen() {
   };
 
   const toggleServerExpand = (serverId: string) => {
-    setExpandedServer(prev => prev === serverId ? null : serverId);
+    setExpandedServer((prev) => (prev === serverId ? null : serverId));
   };
 
   const handlePasteImport = async () => {
     const clipboardValue = await Clipboard.getStringAsync();
     if (!clipboardValue.trim()) {
-      Alert.alert('Clipboard is empty', 'Copy a zen:// link or JSON payload first.');
+      Alert.alert("Clipboard is empty", "Copy a zen:// pairing link first.");
       return;
     }
+    await importServer(clipboardValue);
+  };
 
-    const savedServer = await importConnection(clipboardValue, {
-      onImported: async importedServer => {
-        await refreshServers();
-        setExpandedServer(importedServer.id);
-      },
-    });
-
-    if (!savedServer) {
-      Alert.alert('Invalid import', 'Could not parse the clipboard content as a zen connection.');
+  const handleImportDraft = async () => {
+    const rawValue = draftImportValue.trim();
+    if (!rawValue) {
+      Alert.alert(
+        "Pairing link required",
+        "Paste the pairing link printed by zen-daemon, or scan its QR code.",
+      );
       return;
     }
-
-    closeEditor();
+    await importServer(rawValue);
   };
 
   const handleScanResult = async ({ data }: BarcodeScanningResult) => {
     if (scannerLocked) return;
     setScannerLocked(true);
+    await importServer(data || "", { closeScanner: true });
+  };
 
-    const savedServer = await importConnection(data || '', {
-      onImported: async importedServer => {
-        await refreshServers();
-        setExpandedServer(importedServer.id);
-      },
-    });
+  const handlePickScannerImage = async () => {
+    if (scannerLocked) return;
 
-    if (!savedServer) {
+    try {
+      const result = await DocumentPicker.getDocumentAsync({
+        type: ["image/*"],
+        copyToCacheDirectory: true,
+      });
+      if (result.canceled || !result.assets?.length) {
+        return;
+      }
+
+      const asset = result.assets[0];
+      if (!asset.uri) {
+        throw new Error("Selected image is not available.");
+      }
+
+      setScannerLocked(true);
+      const matches = await scanFromURLAsync(asset.uri, QR_BARCODE_TYPES);
+      const qrMatch = matches.find((item) => (item.data || "").trim());
+      if (!qrMatch?.data) {
+        Alert.alert(
+          "QR not found",
+          "No QR code was detected in that image. Use a tighter crop with the QR filling most of the frame.",
+        );
+        return;
+      }
+
+      await importServer(qrMatch.data, { closeScanner: true });
+    } catch (error: any) {
       Alert.alert(
-        'Unsupported QR code',
-        'Scan a zen-daemon pairing QR code.',
+        "Image scan failed",
+        error?.message || "Could not read a QR code from that image.",
       );
-      return;
+    } finally {
+      setScannerLocked(false);
     }
-
-    closeScanner();
-    closeEditor();
   };
 
   if (!loaded) return null;
 
   return (
-    <SafeAreaView style={styles.container} edges={['top']}>
+    <SafeAreaView style={styles.container} edges={["top"]}>
       <View style={styles.header}>
         <Text style={styles.pageTitle}>Settings</Text>
       </View>
       <ScrollView contentContainerStyle={styles.content}>
-
         {/* Servers */}
         <View style={styles.sectionHeader}>
           <Text style={[styles.sectionLabel, { marginTop: 0 }]}>Servers</Text>
           {servers.length > 0 && (
-            <Text style={styles.sectionCount}>{connectedCount}/{servers.length}</Text>
+            <Text style={styles.sectionCount}>
+              {connectedCount}/{servers.length}
+            </Text>
           )}
         </View>
 
         <View style={styles.serverList}>
           {servers.length === 0 ? (
             <View style={styles.emptyCard}>
-              <Text style={styles.emptyText}>No servers configured</Text>
+              <Text style={styles.emptyText}>No paired daemons yet</Text>
             </View>
           ) : (
-            servers.map(server => {
-              const connectionState = state.serverConnections[server.id] || 'offline';
-              const connectionIssue = state.serverConnectionIssues[server.id] || null;
+            servers.map((server) => {
+              const connectionState =
+                state.serverConnections[server.id] || "offline";
+              const connectionIssue =
+                state.serverConnectionIssues[server.id] || null;
               const expanded = expandedServer === server.id;
               const agentCount = agentCountByServer[server.id] || 0;
               const hydrated = Boolean(state.hydratedServers[server.id]);
               const waitingForAgents =
-                connectionState === 'connected' && (!hydrated || agentCount === 0);
+                connectionState === "connected" &&
+                (!hydrated || agentCount === 0);
               const actionLabel =
-                connectionState === 'connected'
-                  ? 'Disconnect'
-                  : connectionState === 'connecting' || connectionIssue
-                    ? 'Retry'
-                    : 'Connect';
+                connectionState === "connected"
+                  ? "Disconnect"
+                  : connectionState === "connecting" || connectionIssue
+                    ? "Retry"
+                    : "Connect";
 
               return (
                 <TouchableOpacity
@@ -291,12 +394,25 @@ export default function SettingsScreen() {
                   activeOpacity={0.82}
                 >
                   <View style={styles.serverRow}>
-                    <View style={[styles.statusDot, { backgroundColor: connectionColor(connectionState) }]} />
+                    <View
+                      style={[
+                        styles.statusDot,
+                        { backgroundColor: connectionColor(connectionState) },
+                      ]}
+                    />
                     <View style={styles.serverInfo}>
                       <Text style={styles.serverName}>{server.name}</Text>
-                      <Text style={styles.serverUrl} numberOfLines={1}>{server.url}</Text>
+                      <Text style={styles.serverUrl} numberOfLines={1}>
+                        {server.url}
+                      </Text>
                     </View>
-                    <Text style={[styles.connectionLabel, connectionState === 'connected' && styles.connectionLabelActive]}>
+                    <Text
+                      style={[
+                        styles.connectionLabel,
+                        connectionState === "connected" &&
+                          styles.connectionLabelActive,
+                      ]}
+                    >
                       {connectionLabel(connectionState)}
                     </Text>
                   </View>
@@ -317,11 +433,15 @@ export default function SettingsScreen() {
                         <ServerNoticeCard
                           icon="information-circle-outline"
                           accent={Colors.accent}
-                          title={hydrated ? 'Connected, no active agents yet' : 'Connected, waiting for agent data'}
+                          title={
+                            hydrated
+                              ? "Connected, no active agents yet"
+                              : "Connected, waiting for agent data"
+                          }
                           detail={
                             hydrated
-                              ? 'zen is connected to this daemon, but it has not reported any live agents yet.'
-                              : 'zen is connected to this daemon and waiting for the first agent list to arrive.'
+                              ? "zen is connected to this daemon, but it has not reported any live agents yet."
+                              : "zen is connected to this daemon and waiting for the first agent list to arrive."
                           }
                           hint="Start Claude or Codex on that machine, or verify the watcher/tmux bridge is forwarding terminals."
                         />
@@ -330,10 +450,16 @@ export default function SettingsScreen() {
                       <View style={styles.serverActions}>
                         <TouchableOpacity
                           style={styles.actionBtn}
-                          onPress={() => connectionState === 'connected' ? disconnectServer(server.id) : connectServer(server)}
+                          onPress={() =>
+                            connectionState === "connected"
+                              ? disconnectServer(server.id)
+                              : connectServer(server)
+                          }
                           activeOpacity={0.82}
                         >
-                          <Text style={styles.actionBtnText}>{actionLabel}</Text>
+                          <Text style={styles.actionBtnText}>
+                            {actionLabel}
+                          </Text>
                         </TouchableOpacity>
                         <TouchableOpacity
                           style={styles.actionBtn}
@@ -347,7 +473,14 @@ export default function SettingsScreen() {
                           onPress={() => handleDeleteServer(server)}
                           activeOpacity={0.82}
                         >
-                          <Text style={[styles.actionBtnText, styles.actionBtnDangerText]}>Remove</Text>
+                          <Text
+                            style={[
+                              styles.actionBtnText,
+                              styles.actionBtnDangerText,
+                            ]}
+                          >
+                            Remove
+                          </Text>
                         </TouchableOpacity>
                       </View>
                     </>
@@ -358,35 +491,58 @@ export default function SettingsScreen() {
           )}
         </View>
 
-        <TouchableOpacity style={styles.addBtn} onPress={openCreateServer} activeOpacity={0.82}>
+        <TouchableOpacity
+          style={styles.addBtn}
+          onPress={openCreateServer}
+          activeOpacity={0.82}
+        >
           <Ionicons name="add" size={16} color={Colors.textSecondary} />
-          <Text style={styles.addBtnText}>Add Server</Text>
+          <Text style={styles.addBtnText}>Pair Server</Text>
         </TouchableOpacity>
 
         {/* Theme */}
         <Text style={styles.sectionLabel}>Theme</Text>
         <View style={styles.themeList}>
-          {(Object.keys(TerminalThemes) as TerminalThemeName[]).map(themeName => {
-            const theme = TerminalThemes[themeName];
-            const active = terminalTheme === themeName;
-            return (
-              <TouchableOpacity
-                key={themeName}
-                style={[styles.themeCard, active && styles.themeCardActive]}
-                onPress={() => handleTerminalTheme(themeName)}
-                activeOpacity={0.84}
-              >
-                <View style={[styles.themePreview, { backgroundColor: theme.background }]}>
-                  <Text style={[styles.themePreviewText, { color: theme.foreground }]}>
-                    $ zen --watch{'\n'}
-                    <Text style={{ color: theme.green }}>connected</Text>
-                    <Text style={{ color: theme.brightBlack }}> · 3 agents</Text>
+          {(Object.keys(TerminalThemes) as TerminalThemeName[]).map(
+            (themeName) => {
+              const theme = TerminalThemes[themeName];
+              const active = terminalTheme === themeName;
+              return (
+                <TouchableOpacity
+                  key={themeName}
+                  style={[styles.themeCard, active && styles.themeCardActive]}
+                  onPress={() => handleTerminalTheme(themeName)}
+                  activeOpacity={0.84}
+                >
+                  <View
+                    style={[
+                      styles.themePreview,
+                      { backgroundColor: theme.background },
+                    ]}
+                  >
+                    <Text
+                      style={[
+                        styles.themePreviewText,
+                        { color: theme.foreground },
+                      ]}
+                    >
+                      $ zen --watch{"\n"}
+                      <Text style={{ color: theme.green }}>connected</Text>
+                      <Text style={{ color: theme.brightBlack }}>
+                        {" "}
+                        · 3 agents
+                      </Text>
+                    </Text>
+                  </View>
+                  <Text
+                    style={[styles.themeName, active && styles.themeNameActive]}
+                  >
+                    {themeName}
                   </Text>
-                </View>
-                <Text style={[styles.themeName, active && styles.themeNameActive]}>{themeName}</Text>
-              </TouchableOpacity>
-            );
-          })}
+                </TouchableOpacity>
+              );
+            },
+          )}
         </View>
 
         <Text style={styles.version}>zen v0.1.0</Text>
@@ -401,89 +557,147 @@ export default function SettingsScreen() {
       >
         <KeyboardAvoidingView
           style={styles.modalRoot}
-          behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+          behavior={Platform.OS === "ios" ? "padding" : undefined}
         >
           <TouchableOpacity
             style={styles.modalBackdrop}
             activeOpacity={1}
             onPress={closeEditor}
           />
-          <ScrollView
-            bounces={false}
-            keyboardShouldPersistTaps="handled"
-            contentContainerStyle={styles.modalScrollContent}
-          >
+          <View style={styles.modalContent}>
             <View style={styles.modalCard}>
               <Text style={styles.modalTitle}>
-                {editingServerId ? 'Edit Server' : 'Add Server'}
+                {editingServerId ? "Edit Server" : "Pair Server"}
               </Text>
 
-              <Text style={styles.fieldLabel}>Name</Text>
-              <TextInput
-                style={styles.input}
-                value={draftName}
-                onChangeText={setDraftName}
-                placeholder="staging"
-                placeholderTextColor="rgba(255,255,255,0.2)"
-                autoCapitalize="none"
-                autoCorrect={false}
-              />
-
-              <Text style={[styles.fieldLabel, { marginTop: 16 }]}>Endpoint</Text>
-              <TextInput
-                style={styles.input}
-                value={draftEndpoint}
-                onChangeText={setDraftEndpoint}
-                placeholder="192.168.1.10 or wss://zen.example.com/ws"
-                placeholderTextColor="rgba(255,255,255,0.2)"
-                autoCapitalize="none"
-                autoCorrect={false}
-              />
-              <Text style={styles.fieldHint}>
-                Enter a LAN host/IP or a full WebSocket URL.
-              </Text>
-
-              <Text style={[styles.fieldLabel, { marginTop: 16 }]}>Secret (Optional)</Text>
-              <TextInput
-                style={styles.input}
-                value={draftSecret}
-                onChangeText={setDraftSecret}
-                placeholder="64-char hex secret"
-                placeholderTextColor="rgba(255,255,255,0.2)"
-                autoCapitalize="none"
-                autoCorrect={false}
-                autoComplete="off"
-              />
-
-              <View style={styles.modalActions}>
-                <TouchableOpacity style={styles.modalBtn} onPress={closeEditor} activeOpacity={0.82}>
-                  <Text style={styles.modalBtnText}>Cancel</Text>
-                </TouchableOpacity>
-                <TouchableOpacity
-                  style={[styles.modalBtn, styles.modalBtnPrimary]}
-                  onPress={handleSaveServer}
-                  activeOpacity={0.82}
-                >
-                  <Text style={[styles.modalBtnText, styles.modalBtnPrimaryText]}>Save</Text>
-                </TouchableOpacity>
-              </View>
-
-              {/* Quick import section */}
-              {!editingServerId ? (
+              {editingServer ? (
                 <>
+                  <Text style={styles.fieldLabel}>Name</Text>
+                  <TextInput
+                    style={styles.input}
+                    value={draftName}
+                    onChangeText={setDraftName}
+                    placeholder="workstation"
+                    placeholderTextColor="rgba(255,255,255,0.2)"
+                    autoCapitalize="none"
+                    autoCorrect={false}
+                  />
+
+                  <Text style={[styles.fieldLabel, { marginTop: 16 }]}>
+                    Endpoint
+                  </Text>
+                  <TextInput
+                    style={styles.input}
+                    value={draftEndpoint}
+                    onChangeText={setDraftEndpoint}
+                    placeholder="wss://zen.example.com/ws"
+                    placeholderTextColor="rgba(255,255,255,0.2)"
+                    autoCapitalize="none"
+                    autoCorrect={false}
+                  />
+                  <Text style={styles.fieldHint}>
+                    This is the externally reachable WebSocket endpoint exposed
+                    by your tunnel, reverse proxy, or private network.
+                  </Text>
+
+                  <View style={styles.identityCard}>
+                    <Text style={styles.identityLabel}>Trusted Daemon</Text>
+                    <Text style={styles.identityCode} numberOfLines={1}>
+                      {editingServer.daemonId}
+                    </Text>
+                  </View>
+
+                  <View style={styles.modalActions}>
+                    <TouchableOpacity
+                      style={styles.modalBtn}
+                      onPress={closeEditor}
+                      activeOpacity={0.82}
+                    >
+                      <Text style={styles.modalBtnText}>Cancel</Text>
+                    </TouchableOpacity>
+                    <TouchableOpacity
+                      style={[styles.modalBtn, styles.modalBtnPrimary]}
+                      onPress={() => void handleSaveServer()}
+                      activeOpacity={0.82}
+                    >
+                      <Text
+                        style={[
+                          styles.modalBtnText,
+                          styles.modalBtnPrimaryText,
+                        ]}
+                      >
+                        Save
+                      </Text>
+                    </TouchableOpacity>
+                  </View>
+                </>
+              ) : (
+                <>
+                  <Text style={styles.importLead}>
+                    zen pairs to a daemon identity, not a shared secret. Expose
+                    zen-daemon through Cloudflare Tunnel, Tailscale, or your own
+                    proxy, then import the pairing link it prints.
+                  </Text>
+
+                  <Text style={styles.fieldLabel}>Pairing Link</Text>
+                  <TextInput
+                    style={[styles.input, styles.importInput]}
+                    value={draftImportValue}
+                    onChangeText={setDraftImportValue}
+                    placeholder="zen://settings?p=..."
+                    placeholderTextColor="rgba(255,255,255,0.2)"
+                    autoCapitalize="none"
+                    autoCorrect={false}
+                    multiline
+                    textAlignVertical="top"
+                  />
+                  <Text style={styles.fieldHint}>
+                    Import the full pairing link or scan the QR code printed by
+                    zen-daemon. You can also import a screenshot or photo of the
+                    QR. New servers are added only through pairing.
+                  </Text>
+
+                  <View style={styles.modalActions}>
+                    <TouchableOpacity
+                      style={styles.modalBtn}
+                      onPress={closeEditor}
+                      activeOpacity={0.82}
+                    >
+                      <Text style={styles.modalBtnText}>Cancel</Text>
+                    </TouchableOpacity>
+                    <TouchableOpacity
+                      style={[styles.modalBtn, styles.modalBtnPrimary]}
+                      onPress={() => void handleImportDraft()}
+                      activeOpacity={0.82}
+                    >
+                      <Text
+                        style={[
+                          styles.modalBtnText,
+                          styles.modalBtnPrimaryText,
+                        ]}
+                      >
+                        Import
+                      </Text>
+                    </TouchableOpacity>
+                  </View>
+
                   <View style={styles.divider}>
                     <View style={styles.dividerLine} />
-                    <Text style={styles.dividerText}>or import</Text>
+                    <Text style={styles.dividerText}>or import faster</Text>
                     <View style={styles.dividerLine} />
                   </View>
 
                   <View style={styles.importRow}>
                     <TouchableOpacity
                       style={styles.importBtn}
-                      onPress={handlePasteImport}
+                      onPress={() => void handlePasteImport()}
                       activeOpacity={0.82}
                     >
-                      <Ionicons name="clipboard-outline" size={15} color={Colors.textSecondary} />
+                      <Ionicons
+                        name="clipboard-outline"
+                        size={15}
+                        color={Colors.textSecondary}
+                      />
                       <Text style={styles.importBtnText}>Paste Link</Text>
                     </TouchableOpacity>
                     <TouchableOpacity
@@ -491,14 +705,18 @@ export default function SettingsScreen() {
                       onPress={openScanner}
                       activeOpacity={0.82}
                     >
-                      <Ionicons name="qr-code-outline" size={15} color={Colors.textSecondary} />
+                      <Ionicons
+                        name="qr-code-outline"
+                        size={15}
+                        color={Colors.textSecondary}
+                      />
                       <Text style={styles.importBtnText}>Scan QR</Text>
                     </TouchableOpacity>
                   </View>
                 </>
-              ) : null}
+              )}
             </View>
-          </ScrollView>
+          </View>
         </KeyboardAvoidingView>
       </Modal>
 
@@ -522,7 +740,9 @@ export default function SettingsScreen() {
             </View>
           ) : !cameraPermission.granted ? (
             <View style={styles.scannerNoticeCard}>
-              <Text style={styles.scannerNoticeTitle}>Camera permission required</Text>
+              <Text style={styles.scannerNoticeTitle}>
+                Camera permission required
+              </Text>
               <Text style={styles.scannerNoticeText}>
                 Allow camera access to scan a zen-daemon pairing QR code.
               </Text>
@@ -531,7 +751,9 @@ export default function SettingsScreen() {
                 onPress={() => void requestCameraPermission()}
                 activeOpacity={0.82}
               >
-                <Text style={styles.scannerPrimaryBtnText}>Grant Camera Access</Text>
+                <Text style={styles.scannerPrimaryBtnText}>
+                  Grant Camera Access
+                </Text>
               </TouchableOpacity>
             </View>
           ) : (
@@ -540,8 +762,10 @@ export default function SettingsScreen() {
                 <CameraView
                   style={styles.scannerCamera}
                   facing="back"
-                  barcodeScannerSettings={{ barcodeTypes: ['qr'] }}
-                  onBarcodeScanned={scannerLocked ? undefined : handleScanResult}
+                  barcodeScannerSettings={{ barcodeTypes: ["qr"] }}
+                  onBarcodeScanned={
+                    scannerLocked ? undefined : handleScanResult
+                  }
                 />
                 <View pointerEvents="none" style={styles.scannerOverlay}>
                   <View style={styles.scannerMaskTop} />
@@ -560,27 +784,34 @@ export default function SettingsScreen() {
               </View>
 
               <Text style={styles.scannerHelpText}>
-                Point the camera at the QR printed by zen-daemon.
+                Point the camera at the QR printed by zen-daemon, or choose a
+                screenshot or photo from this device.
               </Text>
-
-              <View style={styles.scannerActions}>
-                <TouchableOpacity
-                  style={styles.scannerSecondaryBtn}
-                  onPress={() => setScannerLocked(false)}
-                  activeOpacity={0.82}
-                >
-                  <Text style={styles.scannerSecondaryBtnText}>Scan Again</Text>
-                </TouchableOpacity>
-                <TouchableOpacity
-                  style={styles.scannerPrimaryBtn}
-                  onPress={closeScanner}
-                  activeOpacity={0.82}
-                >
-                  <Text style={styles.scannerPrimaryBtnText}>Done</Text>
-                </TouchableOpacity>
-              </View>
             </>
           )}
+
+          <View style={styles.scannerActions}>
+            <TouchableOpacity
+              style={[
+                styles.scannerSecondaryBtn,
+                scannerLocked && styles.scannerBtnDisabled,
+              ]}
+              onPress={() => void handlePickScannerImage()}
+              disabled={scannerLocked}
+              activeOpacity={0.82}
+            >
+              <Text style={styles.scannerSecondaryBtnText}>
+                {scannerLocked ? "Reading Image..." : "Pick QR Image"}
+              </Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={styles.scannerPrimaryBtn}
+              onPress={closeScanner}
+              activeOpacity={0.82}
+            >
+              <Text style={styles.scannerPrimaryBtnText}>Done</Text>
+            </TouchableOpacity>
+          </View>
         </View>
       </Modal>
     </SafeAreaView>
@@ -594,7 +825,7 @@ function ServerNoticeCard({
   detail,
   hint,
 }: {
-  icon: React.ComponentProps<typeof Ionicons>['name'];
+  icon: React.ComponentProps<typeof Ionicons>["name"];
   accent: string;
   title: string;
   detail: string;
@@ -614,17 +845,23 @@ function ServerNoticeCard({
 
 function connectionLabel(state: ConnectionState): string {
   switch (state) {
-    case 'connected': return 'Connected';
-    case 'connecting': return 'Connecting';
-    case 'offline': return 'Offline';
+    case "connected":
+      return "Connected";
+    case "connecting":
+      return "Connecting";
+    case "offline":
+      return "Offline";
   }
 }
 
 function connectionColor(state: ConnectionState): string {
   switch (state) {
-    case 'connected': return Colors.statusRunning;
-    case 'connecting': return '#E7B65C';
-    case 'offline': return '#65758A';
+    case "connected":
+      return Colors.statusRunning;
+    case "connecting":
+      return "#E7B65C";
+    case "offline":
+      return "#65758A";
   }
 }
 
@@ -652,16 +889,16 @@ const styles = StyleSheet.create({
 
   // Section
   sectionHeader: {
-    flexDirection: 'row',
-    alignItems: 'baseline',
-    justifyContent: 'space-between',
+    flexDirection: "row",
+    alignItems: "baseline",
+    justifyContent: "space-between",
     marginBottom: 10,
   },
   sectionLabel: {
     color: Colors.textSecondary,
     fontSize: 12,
     fontFamily: Typography.uiFontMedium,
-    textTransform: 'uppercase',
+    textTransform: "uppercase",
     letterSpacing: 1.2,
     marginBottom: 10,
     marginTop: 20,
@@ -682,13 +919,13 @@ const styles = StyleSheet.create({
     borderRadius: 12,
     paddingHorizontal: 14,
     paddingVertical: 12,
-    backgroundColor: 'rgba(255,255,255,0.03)',
+    backgroundColor: "rgba(255,255,255,0.03)",
     borderWidth: StyleSheet.hairlineWidth,
-    borderColor: 'rgba(255,255,255,0.06)',
+    borderColor: "rgba(255,255,255,0.06)",
   },
   serverRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
+    flexDirection: "row",
+    alignItems: "center",
     gap: 10,
   },
   statusDot: {
@@ -726,11 +963,11 @@ const styles = StyleSheet.create({
     padding: 12,
     borderRadius: 10,
     borderWidth: StyleSheet.hairlineWidth,
-    backgroundColor: 'rgba(255,255,255,0.03)',
+    backgroundColor: "rgba(255,255,255,0.03)",
   },
   noticeHeader: {
-    flexDirection: 'row',
-    alignItems: 'center',
+    flexDirection: "row",
+    alignItems: "center",
     gap: 8,
   },
   noticeTitle: {
@@ -756,18 +993,18 @@ const styles = StyleSheet.create({
     opacity: 0.62,
   },
   serverActions: {
-    flexDirection: 'row',
+    flexDirection: "row",
     gap: 8,
     marginTop: 12,
     paddingTop: 12,
     borderTopWidth: StyleSheet.hairlineWidth,
-    borderTopColor: 'rgba(255,255,255,0.06)',
+    borderTopColor: "rgba(255,255,255,0.06)",
   },
   actionBtn: {
     paddingHorizontal: 12,
     paddingVertical: 6,
     borderRadius: 8,
-    backgroundColor: 'rgba(255,255,255,0.05)',
+    backgroundColor: "rgba(255,255,255,0.05)",
   },
   actionBtnText: {
     color: Colors.textPrimary,
@@ -776,23 +1013,23 @@ const styles = StyleSheet.create({
     opacity: 0.8,
   },
   actionBtnDanger: {
-    backgroundColor: 'rgba(255,82,82,0.08)',
-    marginLeft: 'auto',
+    backgroundColor: "rgba(255,82,82,0.08)",
+    marginLeft: "auto",
   },
   actionBtnDangerText: {
-    color: '#F09999',
+    color: "#F09999",
   },
   addBtn: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
     gap: 6,
     paddingVertical: 10,
     marginTop: 8,
     borderRadius: 10,
     borderWidth: StyleSheet.hairlineWidth,
-    borderColor: 'rgba(255,255,255,0.08)',
-    borderStyle: 'dashed',
+    borderColor: "rgba(255,255,255,0.08)",
+    borderStyle: "dashed",
   },
   addBtnText: {
     color: Colors.textSecondary,
@@ -801,7 +1038,7 @@ const styles = StyleSheet.create({
   },
   emptyCard: {
     paddingVertical: 20,
-    alignItems: 'center',
+    alignItems: "center",
   },
   emptyText: {
     color: Colors.textSecondary,
@@ -817,16 +1054,16 @@ const styles = StyleSheet.create({
   themeCard: {
     borderRadius: 12,
     borderWidth: StyleSheet.hairlineWidth,
-    borderColor: 'rgba(255,255,255,0.06)',
-    overflow: 'hidden',
+    borderColor: "rgba(255,255,255,0.06)",
+    overflow: "hidden",
   },
   themeCardActive: {
-    borderColor: 'rgba(91,157,255,0.3)',
+    borderColor: "rgba(91,157,255,0.3)",
   },
   themePreview: {
     minHeight: 80,
     padding: 14,
-    justifyContent: 'flex-end',
+    justifyContent: "flex-end",
   },
   themePreviewText: {
     fontSize: 12,
@@ -839,7 +1076,7 @@ const styles = StyleSheet.create({
     fontFamily: Typography.uiFontMedium,
     paddingHorizontal: 14,
     paddingVertical: 10,
-    textTransform: 'capitalize',
+    textTransform: "capitalize",
     opacity: 0.6,
   },
   themeNameActive: {
@@ -850,7 +1087,7 @@ const styles = StyleSheet.create({
     color: Colors.textSecondary,
     fontSize: 11,
     fontFamily: Typography.uiFont,
-    textAlign: 'center',
+    textAlign: "center",
     marginTop: 40,
     opacity: 0.3,
   },
@@ -858,29 +1095,40 @@ const styles = StyleSheet.create({
   // Modal
   modalRoot: {
     flex: 1,
-    justifyContent: 'center',
     paddingHorizontal: 24,
+    paddingVertical: 24,
   },
-  modalScrollContent: {
-    flexGrow: 1,
-    justifyContent: 'center',
+  modalContent: {
+    flex: 1,
+    justifyContent: "center",
   },
   modalBackdrop: {
     ...StyleSheet.absoluteFillObject,
-    backgroundColor: 'rgba(0,0,0,0.7)',
+    backgroundColor: "rgba(0,0,0,0.7)",
   },
   modalCard: {
     borderRadius: 16,
     padding: 20,
-    backgroundColor: '#141418',
+    maxWidth: 520,
+    width: "100%",
+    alignSelf: "center",
+    backgroundColor: "#141418",
     borderWidth: StyleSheet.hairlineWidth,
-    borderColor: 'rgba(255,255,255,0.08)',
+    borderColor: "rgba(255,255,255,0.08)",
   },
   modalTitle: {
     color: Colors.textPrimary,
     fontSize: 17,
     fontFamily: Typography.uiFontMedium,
     marginBottom: 20,
+  },
+  importLead: {
+    color: Colors.textSecondary,
+    fontSize: 13,
+    lineHeight: 20,
+    fontFamily: Typography.uiFont,
+    marginBottom: 18,
+    opacity: 0.82,
   },
   fieldLabel: {
     color: Colors.textSecondary,
@@ -890,7 +1138,7 @@ const styles = StyleSheet.create({
     opacity: 0.6,
   },
   input: {
-    backgroundColor: 'rgba(255,255,255,0.04)',
+    backgroundColor: "rgba(255,255,255,0.04)",
     borderRadius: 10,
     paddingHorizontal: 14,
     paddingVertical: 10,
@@ -898,7 +1146,11 @@ const styles = StyleSheet.create({
     fontSize: 14,
     fontFamily: Typography.terminalFont,
     borderWidth: StyleSheet.hairlineWidth,
-    borderColor: 'rgba(255,255,255,0.08)',
+    borderColor: "rgba(255,255,255,0.08)",
+  },
+  importInput: {
+    minHeight: 116,
+    paddingTop: 12,
   },
   fieldHint: {
     marginTop: 8,
@@ -908,9 +1160,30 @@ const styles = StyleSheet.create({
     fontFamily: Typography.uiFont,
     opacity: 0.65,
   },
+  identityCard: {
+    marginTop: 16,
+    borderRadius: 10,
+    padding: 12,
+    backgroundColor: "rgba(255,255,255,0.03)",
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: "rgba(255,255,255,0.08)",
+  },
+  identityLabel: {
+    color: Colors.textSecondary,
+    fontSize: 12,
+    fontFamily: Typography.uiFontMedium,
+    marginBottom: 8,
+    opacity: 0.7,
+  },
+  identityCode: {
+    color: Colors.textPrimary,
+    fontSize: 12,
+    fontFamily: Typography.terminalFont,
+    opacity: 0.86,
+  },
   modalActions: {
-    flexDirection: 'row',
-    justifyContent: 'flex-end',
+    flexDirection: "row",
+    justifyContent: "flex-end",
     gap: 10,
     marginTop: 24,
   },
@@ -918,9 +1191,9 @@ const styles = StyleSheet.create({
     minWidth: 70,
     height: 36,
     borderRadius: 10,
-    alignItems: 'center',
-    justifyContent: 'center',
-    backgroundColor: 'rgba(255,255,255,0.05)',
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "rgba(255,255,255,0.05)",
   },
   modalBtnPrimary: {
     backgroundColor: Colors.accent,
@@ -934,8 +1207,8 @@ const styles = StyleSheet.create({
     color: Colors.bgPrimary,
   },
   divider: {
-    flexDirection: 'row',
-    alignItems: 'center',
+    flexDirection: "row",
+    alignItems: "center",
     gap: 12,
     marginTop: 20,
     marginBottom: 16,
@@ -943,7 +1216,7 @@ const styles = StyleSheet.create({
   dividerLine: {
     flex: 1,
     height: StyleSheet.hairlineWidth,
-    backgroundColor: 'rgba(255,255,255,0.08)',
+    backgroundColor: "rgba(255,255,255,0.08)",
   },
   dividerText: {
     color: Colors.textSecondary,
@@ -952,20 +1225,20 @@ const styles = StyleSheet.create({
     opacity: 0.5,
   },
   importRow: {
-    flexDirection: 'row',
+    flexDirection: "row",
     gap: 10,
   },
   importBtn: {
     flex: 1,
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
     gap: 6,
     height: 40,
     borderRadius: 10,
     borderWidth: StyleSheet.hairlineWidth,
-    borderColor: 'rgba(255,255,255,0.08)',
-    backgroundColor: 'rgba(255,255,255,0.03)',
+    borderColor: "rgba(255,255,255,0.08)",
+    backgroundColor: "rgba(255,255,255,0.03)",
   },
   importBtnText: {
     color: Colors.textSecondary,
@@ -976,15 +1249,15 @@ const styles = StyleSheet.create({
   // Scanner
   scannerScreen: {
     flex: 1,
-    backgroundColor: '#0A0C10',
+    backgroundColor: "#0A0C10",
     paddingTop: 64,
     paddingHorizontal: 20,
     paddingBottom: 28,
   },
   scannerHeader: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
     marginBottom: 18,
   },
   scannerTitle: {
@@ -994,8 +1267,8 @@ const styles = StyleSheet.create({
   },
   scannerViewport: {
     borderRadius: 24,
-    overflow: 'hidden',
-    backgroundColor: '#050608',
+    overflow: "hidden",
+    backgroundColor: "#050608",
     minHeight: 440,
   },
   scannerCamera: {
@@ -1007,28 +1280,28 @@ const styles = StyleSheet.create({
   },
   scannerMaskTop: {
     flex: 1,
-    backgroundColor: 'rgba(5,8,12,0.52)',
+    backgroundColor: "rgba(5,8,12,0.52)",
   },
   scannerMaskMiddle: {
     height: 240,
-    flexDirection: 'row',
+    flexDirection: "row",
   },
   scannerMaskSide: {
     flex: 1,
-    backgroundColor: 'rgba(5,8,12,0.52)',
+    backgroundColor: "rgba(5,8,12,0.52)",
   },
   scannerFrame: {
     width: 240,
     borderRadius: 20,
     borderWidth: 1,
-    borderColor: 'rgba(255,255,255,0.18)',
+    borderColor: "rgba(255,255,255,0.18)",
   },
   scannerMaskBottom: {
     flex: 1,
-    backgroundColor: 'rgba(5,8,12,0.52)',
+    backgroundColor: "rgba(5,8,12,0.52)",
   },
   scannerFrameCornerTopLeft: {
-    position: 'absolute',
+    position: "absolute",
     top: -1,
     left: -1,
     width: 32,
@@ -1039,7 +1312,7 @@ const styles = StyleSheet.create({
     borderTopLeftRadius: 20,
   },
   scannerFrameCornerTopRight: {
-    position: 'absolute',
+    position: "absolute",
     top: -1,
     right: -1,
     width: 32,
@@ -1050,7 +1323,7 @@ const styles = StyleSheet.create({
     borderTopRightRadius: 20,
   },
   scannerFrameCornerBottomLeft: {
-    position: 'absolute',
+    position: "absolute",
     bottom: -1,
     left: -1,
     width: 32,
@@ -1061,7 +1334,7 @@ const styles = StyleSheet.create({
     borderBottomLeftRadius: 20,
   },
   scannerFrameCornerBottomRight: {
-    position: 'absolute',
+    position: "absolute",
     bottom: -1,
     right: -1,
     width: 32,
@@ -1077,11 +1350,11 @@ const styles = StyleSheet.create({
     fontSize: 13,
     lineHeight: 20,
     fontFamily: Typography.uiFont,
-    textAlign: 'center',
+    textAlign: "center",
     opacity: 0.8,
   },
   scannerActions: {
-    flexDirection: 'row',
+    flexDirection: "row",
     gap: 10,
     marginTop: 20,
   },
@@ -1089,10 +1362,10 @@ const styles = StyleSheet.create({
     marginTop: 24,
     borderRadius: 18,
     padding: 20,
-    backgroundColor: 'rgba(255,255,255,0.04)',
+    backgroundColor: "rgba(255,255,255,0.04)",
     borderWidth: StyleSheet.hairlineWidth,
-    borderColor: 'rgba(255,255,255,0.08)',
-    alignItems: 'center',
+    borderColor: "rgba(255,255,255,0.08)",
+    alignItems: "center",
   },
   scannerNoticeTitle: {
     color: Colors.textPrimary,
@@ -1105,7 +1378,7 @@ const styles = StyleSheet.create({
     fontSize: 13,
     lineHeight: 20,
     fontFamily: Typography.uiFont,
-    textAlign: 'center',
+    textAlign: "center",
     opacity: 0.8,
   },
   scannerPrimaryBtn: {
@@ -1113,8 +1386,8 @@ const styles = StyleSheet.create({
     marginTop: 16,
     minHeight: 44,
     borderRadius: 12,
-    alignItems: 'center',
-    justifyContent: 'center',
+    alignItems: "center",
+    justifyContent: "center",
     backgroundColor: Colors.accent,
     paddingHorizontal: 16,
   },
@@ -1128,12 +1401,15 @@ const styles = StyleSheet.create({
     marginTop: 16,
     minHeight: 44,
     borderRadius: 12,
-    alignItems: 'center',
-    justifyContent: 'center',
-    backgroundColor: 'rgba(255,255,255,0.06)',
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "rgba(255,255,255,0.06)",
     borderWidth: StyleSheet.hairlineWidth,
-    borderColor: 'rgba(255,255,255,0.08)',
+    borderColor: "rgba(255,255,255,0.08)",
     paddingHorizontal: 16,
+  },
+  scannerBtnDisabled: {
+    opacity: 0.45,
   },
   scannerSecondaryBtnText: {
     color: Colors.textPrimary,

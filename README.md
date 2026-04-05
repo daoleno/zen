@@ -7,12 +7,14 @@ Mobile-native agent control plane. Manage your AI coding agents from your phone.
 ```
 [Phone: Expo App]
     ↕ WSS
-[Your Own LAN / Tailnet / Reverse Proxy / Tunnel]
+[Your Own Tailnet / Reverse Proxy / Tunnel]
     ↕
 [Homelab: zen-daemon (Go)]
     ↕ tmux session scraping
 [Claude Code] [Codex] [Other CLI Agents]
 ```
+
+`zen` does not ship a hosted relay. Network reachability is delegated to whatever you already trust: Cloudflare Tunnel, Tailscale, your own reverse proxy, or a private mesh. `zen` itself is responsible for daemon identity, device pairing, and request authentication.
 
 ## Quick Start
 
@@ -21,67 +23,64 @@ Mobile-native agent control plane. Manage your AI coding agents from your phone.
 ```bash
 cd daemon
 go build -o bin/zen-daemon ./cmd/zen-daemon/
-./bin/zen-daemon
+./bin/zen-daemon -advertise-url https://your-host.example/ws
 ```
 
-The daemon listens on `:9876`. On startup it now prints:
+The daemon listens on `127.0.0.1:9876` by default. On startup it now prints:
 
-- reachable LAN or tailnet endpoints when it can detect them
-- a `zen://...` import link for the primary endpoint
-- an ASCII QR you can scan from your phone to import that endpoint directly in a dev build or installed app
+- its persistent daemon identity
+- `Mode: LOCAL-ONLY` when it has no advertised URL yet
+- or `Mode: PAIRABLE`, plus a one-time `zen://...` pairing link and QR code, when `-advertise-url` is set
 
-Optional: protect a public or shared endpoint with a fixed secret.
+If you do not pass `-advertise-url`, the daemon still starts in `LOCAL-ONLY` mode, but it cannot pair a phone yet. Expose `http://127.0.0.1:9876` through your network layer first, then either restart with `-advertise-url` or generate a fresh link later with:
 
 ```bash
-SECRET=$(./bin/zen-daemon -gen-secret)
-./bin/zen-daemon -secret "$SECRET"
+./bin/zen-daemon pair -advertise-url https://zen.example.com/ws
 ```
 
-If you already have your own public or tunneled URL, advertise it explicitly so the QR/deep link points at that endpoint:
-
 ```bash
-./bin/zen-daemon -advertise-url https://zen.example.com
+./bin/zen-daemon \
+  -addr 127.0.0.1:9876 \
+  -advertise-url https://zen.example.com/ws \
+  -state-dir ~/.config/zen
 ```
 
 ### 2. Expose it however you want
 
 `zen` does not require an official relay. Any endpoint that reaches the daemon works.
 
-**Same LAN / reverse proxy:**
-Point the mobile app at your own `ws://host:9876/ws` or `wss://.../ws` endpoint.
+Important: forward the full daemon origin, not just `/ws`. The app also uses `/health`, `/auth-check`, `/pair`, and `/upload`.
 
 **Tailscale / Tailnet:**
-Use your tailnet address directly or add Funnel if you want public reachability.
+Expose the daemon through your tailnet, Funnel, or an HTTPS reverse proxy that ultimately reaches `http://127.0.0.1:9876`.
 
 **Tailscale Funnel:**
 ```bash
-tailscale funnel 9876
+tailscale funnel --https=443 http://127.0.0.1:9876
 ```
 
 **Cloudflare Tunnel:**
 ```bash
-cloudflared tunnel --url http://localhost:9876
+cloudflared tunnel --url http://127.0.0.1:9876
 ```
 
 ### 3. Run the mobile app
 
 ```bash
 cd app
-npm install
+bun install
 npx expo start
 ```
 
-Scan the QR code with Expo Go on your phone. In Settings, enter your endpoint URL, for example:
+Import the pairing link from `zen-daemon`:
 
-- `ws://192.168.1.10:9876/ws`
-- `wss://your-machine.ts.net/ws`
-- `wss://zen.example.com/ws`
+- paste the printed `zen://...` link into Settings
+- scan the QR code from Settings
+- or use the clipboard import button
 
-If you started `zen-daemon` with `-secret`, the generated deep link / QR already contains the same 64-character hex secret. You can still enter it manually in Settings if needed.
+There is no shared secret. Pairing is one-time enrollment: the app presents its own device key, the daemon stores that device as trusted, and subsequent HTTP/WebSocket requests are signed by the device identity and bound to the daemon identity you paired with.
 
-If you are running the app inside Expo Go, add the endpoint manually in Settings. Custom `zen://...` import links require a dev build or a shipped app binary.
-You can also paste the generated `zen://...` link or JSON payload directly into Settings -> Import Link.
-The app also includes an in-app QR scanner in Settings -> Scan QR.
+If you are running the app inside Expo Go, use Settings to paste or scan the pairing link. Custom `zen://...` deep links require a dev build or a shipped app binary.
 
 Remote push registration is optional in OSS builds. To test Expo push with your own EAS project, set `ZEN_EXPO_PROJECT_ID` in `app/.env.local` or your shell before starting Expo. See `app/.env.example`.
 
@@ -94,7 +93,7 @@ zen/
 │   ├── classifier/            tmux output → agent state
 │   ├── watcher/               tmux polling + send-keys
 │   ├── server/                WebSocket server + message protocol
-│   ├── auth/                  Optional shared-secret auth
+│   ├── auth/                  Daemon identity + trusted device auth
 │   ├── push/                  Expo Push API notifications
 │   └── Dockerfile
 │

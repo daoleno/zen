@@ -1,89 +1,108 @@
 package main
 
 import (
+	"encoding/base64"
+	"encoding/binary"
+	"encoding/hex"
 	"fmt"
 	"io"
-	"net"
 	"net/url"
-	"os"
-	"sort"
 	"strings"
 
 	"github.com/daoleno/zen/daemon/auth"
 	"github.com/mdp/qrterminal/v3"
 )
 
-const defaultDaemonPort = "9876"
-
-var carrierGradeNATRange = mustCIDR("100.64.0.0/10")
+const (
+	startupModeLocalOnly  = "LOCAL-ONLY"
+	startupModePairable   = "PAIRABLE"
+	connectParamPayload   = "p"
+	connectPayloadVersion = 1
+	connectPublicKeyBytes = 32
+	connectTokenBytes     = 32
+)
 
 type connectionOffer struct {
 	Label       string
-	Provider    string
-	Endpoint    string
 	URL         string
 	ConnectLink string
 }
 
-func buildConnectionOffers(listenAddr string, advertiseURL string, secret *auth.Secret) ([]connectionOffer, error) {
-	serverName := defaultServerName()
-	if strings.TrimSpace(advertiseURL) != "" {
-		normalizedURL, err := normalizeAdvertiseURL(advertiseURL)
-		if err != nil {
-			return nil, err
-		}
-
-		offer := connectionOffer{
-			Label:    "Advertised endpoint",
-			Provider: "custom-endpoint",
-			Endpoint: normalizedURL,
-			URL:      normalizedURL,
-		}
-		offer.ConnectLink = buildConnectLink(offer.Provider, offer.Endpoint, serverName, secret)
-		return []connectionOffer{offer}, nil
+func buildConnectionOffers(advertiseURL string, authManager *auth.Manager, pairing auth.PairingToken) ([]connectionOffer, error) {
+	if strings.TrimSpace(advertiseURL) == "" {
+		return nil, nil
 	}
 
-	port := listenPort(listenAddr)
-	ips := privateIPv4s()
-	offers := make([]connectionOffer, 0, len(ips))
-	for _, ip := range ips {
-		endpoint := ip
-		if port != defaultDaemonPort {
-			endpoint = net.JoinHostPort(ip, port)
-		}
-
-		offer := connectionOffer{
-			Label:    fmt.Sprintf("Direct %s", ip),
-			Provider: "local-lan",
-			Endpoint: endpoint,
-			URL:      buildLANURL(ip, port),
-		}
-		offer.ConnectLink = buildConnectLink(offer.Provider, offer.Endpoint, serverName, secret)
-		offers = append(offers, offer)
+	normalizedURL, err := normalizeAdvertiseURL(advertiseURL)
+	if err != nil {
+		return nil, err
 	}
 
-	return offers, nil
+	offer := connectionOffer{
+		Label: "Advertised endpoint",
+		URL:   normalizedURL,
+	}
+	offer.ConnectLink = buildConnectLink(offer.URL, authManager, pairing)
+	return []connectionOffer{offer}, nil
 }
 
-func printConnectionInfo(w io.Writer, offers []connectionOffer) {
+func printStartupBanner(w io.Writer, listenAddr, daemonID, mode string) {
+	fmt.Fprintln(w, "╔══════════════════════════════════════╗")
+	fmt.Fprintln(w, "║         zen-daemon v0.1.0            ║")
+	fmt.Fprintln(w, "╠══════════════════════════════════════╣")
+	fmt.Fprintf(w, "║  Listening on %-22s ║\n", listenAddr)
+	fmt.Fprintf(w, "║  Auth: %-28s ║\n", "device identity")
+	fmt.Fprintf(w, "║  Mode: %-28s ║\n", mode)
+	fmt.Fprintln(w, "╠══════════════════════════════════════╣")
+	fmt.Fprintf(w, "║  Daemon ID: %-23s ║\n", daemonID[:23])
+	fmt.Fprintln(w, "╚══════════════════════════════════════╝")
+}
+
+func printLocalOnlyInfo(w io.Writer, stateDir string) {
+	fmt.Fprintln(w, "")
+	fmt.Fprintln(w, "State: LOCAL-ONLY")
+	fmt.Fprintln(w, "The daemon is running and has a stable identity, but it is not pairable from mobile yet.")
+	fmt.Fprintln(w, "Next step:")
+	fmt.Fprintln(w, "  1. Expose this daemon through your tunnel or private network.")
+	fmt.Fprintln(w, "  2. Generate a pairing link without restarting:")
+	fmt.Fprintf(w, "     %s\n", pairCommandExample(stateDir))
+}
+
+func printPairingInfo(w io.Writer, offers []connectionOffer) {
 	if len(offers) == 0 {
-		fmt.Fprintln(w, "")
-		fmt.Fprintln(w, "No reachable LAN endpoint detected.")
-		fmt.Fprintln(w, "Use -advertise-url with your own public or tunneled WebSocket URL.")
+		printLocalOnlyInfo(w, "")
 		return
 	}
 
 	fmt.Fprintln(w, "")
-	fmt.Fprintln(w, "Connection offers:")
+	fmt.Fprintln(w, "State: PAIRABLE")
 	for _, offer := range offers {
 		fmt.Fprintf(w, "  - %s\n", offer.Label)
 		fmt.Fprintf(w, "    URL:  %s\n", offer.URL)
-		fmt.Fprintf(w, "    Link: %s\n", offer.ConnectLink)
 	}
 
 	fmt.Fprintln(w, "")
-	fmt.Fprintln(w, "Scan on your phone to import the primary endpoint:")
-	qrterminal.GenerateHalfBlock(offers[0].ConnectLink, qrterminal.L, w)
+	fmt.Fprintln(w, "Paste this link into Settings -> Pair Server:")
+	fmt.Fprintln(w, offers[0].ConnectLink)
+
+	fmt.Fprintln(w, "")
+	fmt.Fprintln(w, "Scan on your phone to pair this device:")
+	renderPairingQR(w, offers[0].ConnectLink)
+}
+
+func printPairCommandInfo(w io.Writer, daemonID string, offers []connectionOffer) {
+	fmt.Fprintln(w, "")
+	fmt.Fprintln(w, "Generated a fresh pairing link for the existing daemon identity.")
+	fmt.Fprintf(w, "Daemon ID: %s\n", daemonID)
+	printPairingInfo(w, offers)
+}
+
+func pairCommandExample(stateDir string) string {
+	parts := []string{"zen-daemon", "pair", "-advertise-url", "https://your-host/ws"}
+	if strings.TrimSpace(stateDir) != "" {
+		parts = append(parts, "-state-dir", stateDir)
+	}
+	return strings.Join(parts, " ")
 }
 
 func normalizeAdvertiseURL(rawValue string) (string, error) {
@@ -117,121 +136,64 @@ func normalizeAdvertiseURL(rawValue string) (string, error) {
 	return parsed.String(), nil
 }
 
-func buildLANURL(host string, port string) string {
-	endpoint := host
-	if port != defaultDaemonPort {
-		endpoint = net.JoinHostPort(host, port)
+func buildConnectLink(serverURL string, authManager *auth.Manager, pairing auth.PairingToken) string {
+	payload, err := encodeConnectPayload(serverURL, authManager.PublicKeyHex(), pairing.Value)
+	if err != nil {
+		return "zen://settings"
 	}
-	return fmt.Sprintf("ws://%s/ws", endpoint)
-}
-
-func buildConnectLink(provider string, endpoint string, name string, secret *auth.Secret) string {
 	params := url.Values{}
-	params.Set("provider", provider)
-	params.Set("endpoint", endpoint)
-	if name != "" {
-		params.Set("name", name)
-	}
-	if secret != nil {
-		params.Set("secret", secret.Hex())
-	}
+	params.Set(connectParamPayload, payload)
 	return "zen://settings?" + params.Encode()
 }
 
-func listenPort(listenAddr string) string {
-	trimmed := strings.TrimSpace(listenAddr)
-	if trimmed == "" {
-		return defaultDaemonPort
-	}
-	if strings.HasPrefix(trimmed, ":") {
-		return strings.TrimPrefix(trimmed, ":")
-	}
-	if _, port, err := net.SplitHostPort(trimmed); err == nil && port != "" {
-		return port
-	}
-	return defaultDaemonPort
+func renderPairingQR(w io.Writer, link string) {
+	qrterminal.GenerateWithConfig(link, qrterminal.Config{
+		Level:          qrterminal.L,
+		Writer:         w,
+		HalfBlocks:     true,
+		BlackChar:      qrterminal.BLACK_BLACK,
+		WhiteBlackChar: qrterminal.WHITE_BLACK,
+		WhiteChar:      qrterminal.WHITE_WHITE,
+		BlackWhiteChar: qrterminal.BLACK_WHITE,
+		QuietZone:      1,
+	})
 }
 
-func privateIPv4s() []string {
-	var addresses []string
+func encodeConnectPayload(serverURL, daemonPublicKeyHex, enrollmentTokenHex string) (string, error) {
+	urlBytes := []byte(strings.TrimSpace(serverURL))
+	if len(urlBytes) == 0 {
+		return "", fmt.Errorf("server URL is empty")
+	}
+	if len(urlBytes) > 0xffff {
+		return "", fmt.Errorf("server URL is too long")
+	}
 
-	ifaces, err := net.Interfaces()
+	publicKey, err := hex.DecodeString(strings.TrimSpace(daemonPublicKeyHex))
 	if err != nil {
-		return addresses
+		return "", fmt.Errorf("decode daemon public key: %w", err)
+	}
+	if len(publicKey) != connectPublicKeyBytes {
+		return "", fmt.Errorf("daemon public key must be %d bytes", connectPublicKeyBytes)
 	}
 
-	for _, iface := range ifaces {
-		if iface.Flags&net.FlagUp == 0 || iface.Flags&net.FlagLoopback != 0 {
-			continue
-		}
-
-		addrs, err := iface.Addrs()
-		if err != nil {
-			continue
-		}
-
-		for _, addr := range addrs {
-			ip := extractIP(addr)
-			if ip == nil {
-				continue
-			}
-
-			ip = ip.To4()
-			if ip == nil || !isDirectReachableIPv4(ip) {
-				continue
-			}
-			addresses = append(addresses, ip.String())
-		}
-	}
-
-	sort.Strings(addresses)
-	return dedupeStrings(addresses)
-}
-
-func extractIP(addr net.Addr) net.IP {
-	switch value := addr.(type) {
-	case *net.IPNet:
-		return value.IP
-	case *net.IPAddr:
-		return value.IP
-	default:
-		return nil
-	}
-}
-
-func dedupeStrings(values []string) []string {
-	if len(values) == 0 {
-		return values
-	}
-
-	seen := make(map[string]struct{}, len(values))
-	deduped := make([]string, 0, len(values))
-	for _, value := range values {
-		if _, ok := seen[value]; ok {
-			continue
-		}
-		seen[value] = struct{}{}
-		deduped = append(deduped, value)
-	}
-	return deduped
-}
-
-func isDirectReachableIPv4(ip net.IP) bool {
-	return ip.IsPrivate() || carrierGradeNATRange.Contains(ip)
-}
-
-func mustCIDR(value string) *net.IPNet {
-	_, network, err := net.ParseCIDR(value)
+	token, err := hex.DecodeString(strings.TrimSpace(enrollmentTokenHex))
 	if err != nil {
-		panic(err)
+		return "", fmt.Errorf("decode enrollment token: %w", err)
 	}
-	return network
-}
+	if len(token) != connectTokenBytes {
+		return "", fmt.Errorf("enrollment token must be %d bytes", connectTokenBytes)
+	}
 
-func defaultServerName() string {
-	hostname, err := os.Hostname()
-	if err != nil {
-		return ""
-	}
-	return strings.TrimSpace(hostname)
+	payload := make([]byte, 1+2+len(urlBytes)+len(publicKey)+len(token))
+	payload[0] = connectPayloadVersion
+	binary.BigEndian.PutUint16(payload[1:3], uint16(len(urlBytes)))
+
+	offset := 3
+	copy(payload[offset:], urlBytes)
+	offset += len(urlBytes)
+	copy(payload[offset:], publicKey)
+	offset += len(publicKey)
+	copy(payload[offset:], token)
+
+	return base64.RawURLEncoding.EncodeToString(payload), nil
 }

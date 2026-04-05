@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -28,7 +29,7 @@ var upgrader = websocket.Upgrader{
 
 // Server handles WebSocket connections from the zen mobile app.
 type Server struct {
-	secret   *auth.Secret
+	auth     *auth.Manager
 	watcher  *watcher.Watcher
 	terminal *terminal.Manager
 	pusher   *push.Client
@@ -40,9 +41,9 @@ type Server struct {
 }
 
 // New creates a WebSocket server.
-func New(secret *auth.Secret, w *watcher.Watcher, pusher *push.Client, sc *stats.Collector) *Server {
+func New(authManager *auth.Manager, w *watcher.Watcher, pusher *push.Client, sc *stats.Collector) *Server {
 	return &Server{
-		secret:   secret,
+		auth:     authManager,
 		watcher:  w,
 		terminal: terminal.NewManager(&terminal.TmuxBackend{}),
 		pusher:   pusher,
@@ -57,10 +58,15 @@ func New(secret *auth.Secret, w *watcher.Watcher, pusher *push.Client, sc *stats
 func (s *Server) Run(ctx context.Context, addr string) error {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/ws", s.handleWS)
+	mux.HandleFunc("/pair", s.handlePair)
+	mux.HandleFunc("/auth-check", s.handleAuthCheck)
 	mux.HandleFunc("/upload", s.handleUpload)
 	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusOK)
-		w.Write([]byte(`{"status":"ok"}`))
+		s.writeJSONWithAssertion(w, http.StatusOK, "zen-health", map[string]any{
+			"status":            "ok",
+			"daemon_id":         s.auth.DaemonID(),
+			"daemon_public_key": s.auth.PublicKeyHex(),
+		})
 	})
 
 	srv := &http.Server{Addr: addr, Handler: mux}
@@ -78,12 +84,19 @@ func (s *Server) Run(ctx context.Context, addr string) error {
 }
 
 func (s *Server) handleWS(w http.ResponseWriter, r *http.Request) {
-	if s.secret != nil {
-		token := r.Header.Get("Authorization")
-		if !s.secret.VerifyAuthorization(token, []byte("zen-connect"), 5*time.Minute) {
-			http.Error(w, "unauthorized", http.StatusUnauthorized)
+	if !websocket.IsWebSocketUpgrade(r) {
+		if _, ok := s.authenticateRequest(w, r, "zen-probe"); !ok {
 			return
 		}
+		s.writeJSONWithAssertion(w, http.StatusOK, "zen-probe", map[string]any{
+			"ok":                true,
+			"daemon_id":         s.auth.DaemonID(),
+			"daemon_public_key": s.auth.PublicKeyHex(),
+		})
+		return
+	}
+	if _, ok := s.authenticateRequest(w, r, "zen-connect"); !ok {
+		return
 	}
 
 	conn, err := upgrader.Upgrade(w, r, nil)
@@ -117,6 +130,71 @@ func (s *Server) handleWS(w http.ResponseWriter, r *http.Request) {
 	delete(s.writes, conn)
 	s.mu.Unlock()
 	log.Printf("client disconnected (%d remaining)", len(s.clients))
+}
+
+func (s *Server) handlePair(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	var raw struct {
+		EnrollmentToken   string `json:"enrollment_token"`
+		ExpectedDaemonID  string `json:"expected_daemon_id"`
+		ExpectedPublicKey string `json:"expected_daemon_public_key"`
+		DeviceID          string `json:"device_id"`
+		DeviceName        string `json:"device_name"`
+		DevicePublicKey   string `json:"device_public_key"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&raw); err != nil {
+		http.Error(w, "invalid json body", http.StatusBadRequest)
+		return
+	}
+
+	device, err := s.auth.EnrollDevice(
+		raw.EnrollmentToken,
+		raw.ExpectedDaemonID,
+		raw.ExpectedPublicKey,
+		raw.DeviceID,
+		raw.DeviceName,
+		raw.DevicePublicKey,
+	)
+	if err != nil {
+		status := http.StatusUnauthorized
+		switch err {
+		case auth.ErrWrongDaemon:
+			status = http.StatusConflict
+		case auth.ErrInvalidPairingToken, auth.ErrExpiredPairingToken:
+			status = http.StatusUnauthorized
+		default:
+			if strings.Contains(err.Error(), "different key") {
+				status = http.StatusConflict
+			}
+		}
+		http.Error(w, err.Error(), status)
+		return
+	}
+
+	s.writeJSONWithAssertion(w, http.StatusOK, "zen-pair", map[string]any{
+		"ok":                true,
+		"daemon_id":         s.auth.DaemonID(),
+		"daemon_public_key": s.auth.PublicKeyHex(),
+		"device_id":         device.ID,
+		"device_name":       device.Name,
+	})
+}
+
+func (s *Server) handleAuthCheck(w http.ResponseWriter, r *http.Request) {
+	device, ok := s.authenticateRequest(w, r, "zen-probe")
+	if !ok {
+		return
+	}
+	s.writeJSONWithAssertion(w, http.StatusOK, "zen-probe", map[string]any{
+		"ok":                true,
+		"device_id":         device.ID,
+		"daemon_id":         s.auth.DaemonID(),
+		"daemon_public_key": s.auth.PublicKeyHex(),
+	})
 }
 
 func (s *Server) handleClientMessage(conn *websocket.Conn, msg []byte) {
@@ -435,12 +513,8 @@ func (s *Server) broadcast(data []byte) {
 }
 
 func (s *Server) handleUpload(w http.ResponseWriter, r *http.Request) {
-	if s.secret != nil {
-		token := r.Header.Get("Authorization")
-		if !s.secret.VerifyAuthorization(token, []byte("zen-upload"), 5*time.Minute) {
-			http.Error(w, "unauthorized", http.StatusUnauthorized)
-			return
-		}
+	if _, ok := s.authenticateRequest(w, r, "zen-upload"); !ok {
+		return
 	}
 	if r.Method != http.MethodPost {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
@@ -478,6 +552,32 @@ func (s *Server) handleUpload(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]string{"path": path, "name": header.Filename})
+}
+
+func (s *Server) authenticateRequest(w http.ResponseWriter, r *http.Request, purpose string) (*auth.TrustedDevice, bool) {
+	device, err := s.auth.VerifyAuthorization(r.Header.Get("Authorization"), purpose, 5*time.Minute)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusUnauthorized)
+		return nil, false
+	}
+	return device, true
+}
+
+func (s *Server) writeJSONWithAssertion(w http.ResponseWriter, status int, purpose string, payload map[string]any) {
+	assertion, err := s.auth.CreateServerAssertion(purpose)
+	if err != nil {
+		http.Error(w, "failed to sign daemon response", http.StatusInternalServerError)
+		return
+	}
+
+	payload["assertion_purpose"] = purpose
+	payload["assertion_timestamp"] = assertion.Timestamp
+	payload["assertion_nonce"] = assertion.NonceHex
+	payload["assertion_signature"] = assertion.SignatureHex
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	_ = json.NewEncoder(w).Encode(payload)
 }
 
 func clientID(conn *websocket.Conn) string {

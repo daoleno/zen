@@ -1,14 +1,19 @@
-import { buildAuthorizationHeader } from './auth';
+import {
+  buildAuthorizationHeader,
+  normalizeDaemonId,
+  normalizePublicKeyHex,
+  verifyDaemonAssertion,
+} from "./auth";
 
 export type ConnectionIssueCode =
-  | 'invalid_url'
-  | 'network_unreachable'
-  | 'auth_required'
-  | 'auth_invalid'
-  | 'path_not_found'
-  | 'proxy_error'
-  | 'websocket_upgrade_failed'
-  | 'unexpected_http_response';
+  | "invalid_url"
+  | "network_unreachable"
+  | "device_not_paired"
+  | "wrong_daemon"
+  | "path_not_found"
+  | "proxy_error"
+  | "websocket_upgrade_failed"
+  | "unexpected_http_response";
 
 export interface ConnectionIssue {
   code: ConnectionIssueCode;
@@ -19,100 +24,219 @@ export interface ConnectionIssue {
   httpStatus?: number;
 }
 
+interface TrustedDaemonPayload {
+  daemon_id?: string;
+  daemon_public_key?: string;
+  assertion_timestamp?: string;
+  assertion_nonce?: string;
+  assertion_signature?: string;
+}
+
 const PROBE_TIMEOUT_MS = 4000;
 
 export async function diagnoseConnectionIssue(input: {
   serverUrl: string;
-  secret?: string | null;
+  daemonId: string;
+  daemonPublicKey: string;
 }): Promise<ConnectionIssue> {
+  const daemonId = normalizeDaemonId(input.daemonId);
+  const daemonPublicKey = normalizePublicKeyHex(input.daemonPublicKey);
   const probeURL = buildProbeURL(input.serverUrl);
-  if (!probeURL) {
+  const healthURL = buildPathURL(input.serverUrl, "/health");
+  const authCheckURL = buildPathURL(input.serverUrl, "/auth-check");
+
+  if (!probeURL || !healthURL || !authCheckURL) {
     return createIssue(
-      'invalid_url',
-      'Invalid endpoint URL',
-      'The saved server URL could not be parsed.',
-      'Edit the server and use a full ws:// or wss:// endpoint ending in /ws.',
+      "invalid_url",
+      "Invalid endpoint URL",
+      "The saved server URL could not be parsed.",
+      "Use a full ws:// or wss:// endpoint that points at zen-daemon, usually ending in /ws.",
+    );
+  }
+  if (!daemonId || !daemonPublicKey) {
+    return createIssue(
+      "wrong_daemon",
+      "Missing daemon identity",
+      "This saved server does not include a trusted daemon identity.",
+      "Re-import the pairing link from zen-daemon so zen can bind this endpoint to a daemon key.",
     );
   }
 
-  const authHeader = buildAuthorizationHeader(input.secret);
-  const headers = authHeader ? { Authorization: authHeader } : undefined;
-
   try {
-    const response = await fetchWithTimeout(probeURL, {
-      method: 'GET',
-      headers,
-    });
+    const healthResponse = await fetchWithTimeout(healthURL, { method: "GET" });
+    if (!healthResponse.ok) {
+      return mapProbeFailure(healthResponse.status, "health");
+    }
 
-    switch (response.status) {
+    const healthPayload = await readJSON<TrustedDaemonPayload>(healthResponse);
+    if (
+      !isTrustedDaemonPayload(healthPayload, {
+        purpose: "zen-health",
+        daemonId,
+        daemonPublicKey,
+      })
+    ) {
+      return createIssue(
+        "wrong_daemon",
+        "Wrong daemon identity",
+        "The endpoint is reachable, but it did not prove possession of the trusted daemon key for this server.",
+        "Re-import the pairing link for the correct daemon, or update the endpoint if your tunnel now points somewhere else.",
+        healthResponse.status,
+      );
+    }
+
+    const authHeader = await buildAuthorizationHeader({
+      daemonId,
+      purpose: "zen-probe",
+    });
+    const signedHeaders = { Authorization: authHeader };
+
+    const authCheckResponse = await fetchWithTimeout(authCheckURL, {
+      method: "GET",
+      headers: signedHeaders,
+    });
+    switch (authCheckResponse.status) {
+      case 200:
+        break;
       case 401:
         return createIssue(
-          authHeader ? 'auth_invalid' : 'auth_required',
-          authHeader ? 'Pairing secret rejected' : 'Pairing secret required',
-          authHeader
-            ? 'The daemon is reachable, but it rejected the configured secret.'
-            : 'The daemon is reachable, but it requires a pairing secret before it will accept connections.',
-          authHeader
-            ? 'Update the secret in Settings or restart zen-daemon with the expected secret.'
-            : 'Paste the 64-character secret from zen-daemon into Settings, or restart the daemon without -secret.',
-          response.status,
-        );
-      case 404:
-        return createIssue(
-          'path_not_found',
-          'Wrong WebSocket path',
-          'The endpoint answered 404 for the WebSocket path.',
-          'Use a URL ending in /ws, or update your reverse proxy or tunnel to forward /ws to zen-daemon.',
-          response.status,
-        );
-      case 400:
-      case 405:
-      case 426:
-        return createIssue(
-          'websocket_upgrade_failed',
-          'WebSocket handshake failed',
-          'The daemon is reachable at this path, but the WebSocket upgrade did not succeed.',
-          'Check HTTPS/TLS and make sure your reverse proxy forwards WebSocket Upgrade and Connection headers.',
-          response.status,
-        );
-      case 502:
-      case 503:
-      case 504:
-        return createIssue(
-          'proxy_error',
-          'Proxy could not reach daemon',
-          `The endpoint returned HTTP ${response.status}, which usually means the proxy or tunnel could not reach zen-daemon.`,
-          'Check that zen-daemon is running and that your reverse proxy or tunnel points at the correct local port.',
-          response.status,
+          "device_not_paired",
+          "Device is not paired",
+          "The daemon is reachable and trusted, but it rejected this device identity.",
+          "Import a fresh pairing link from zen-daemon on this machine to enroll this phone again.",
+          authCheckResponse.status,
         );
       default:
-        return createIssue(
-          'unexpected_http_response',
-          'Unexpected server response',
-          `The endpoint returned HTTP ${response.status} instead of a WebSocket handshake response.`,
-          'Make sure this URL points at zen-daemon rather than a normal website or HTTP-only endpoint.',
-          response.status,
-        );
+        return mapProbeFailure(authCheckResponse.status, "auth-check");
     }
+
+    const authCheckPayload =
+      await readJSON<TrustedDaemonPayload>(authCheckResponse);
+    if (
+      !isTrustedDaemonPayload(authCheckPayload, {
+        purpose: "zen-probe",
+        daemonId,
+        daemonPublicKey,
+      })
+    ) {
+      return createIssue(
+        "wrong_daemon",
+        "Wrong daemon identity",
+        "The endpoint answered the auth check, but its identity proof did not match the trusted daemon.",
+        "Update the saved endpoint or re-import the pairing link from the daemon you actually want to trust.",
+        authCheckResponse.status,
+      );
+    }
+
+    const probeResponse = await fetchWithTimeout(probeURL, {
+      method: "GET",
+      headers: signedHeaders,
+    });
+    switch (probeResponse.status) {
+      case 200:
+        break;
+      case 401:
+        return createIssue(
+          "device_not_paired",
+          "Device is not paired",
+          "The daemon reached the WebSocket endpoint, but it rejected this device identity at the /ws probe.",
+          "Import a fresh pairing link from zen-daemon on this machine to enroll this phone again.",
+          probeResponse.status,
+        );
+      default:
+        return mapProbeFailure(probeResponse.status, "ws");
+    }
+
+    const probePayload = await readJSON<TrustedDaemonPayload>(probeResponse);
+    if (
+      !isTrustedDaemonPayload(probePayload, {
+        purpose: "zen-probe",
+        daemonId,
+        daemonPublicKey,
+      })
+    ) {
+      return createIssue(
+        "wrong_daemon",
+        "Wrong daemon identity",
+        "The WebSocket endpoint responded, but it did not prove the trusted daemon identity for this server.",
+        "Make sure the tunnel forwards to the correct zen-daemon instance rather than another service or machine.",
+        probeResponse.status,
+      );
+    }
+
+    return createIssue(
+      "websocket_upgrade_failed",
+      "WebSocket session failed after probes passed",
+      "HTTP reachability, daemon identity, and device authorization all succeeded, but the live WebSocket session still failed to open.",
+      "Check that your tunnel or reverse proxy forwards WebSocket Upgrade and Connection headers, and does not downgrade the connection to plain HTTP polling.",
+      probeResponse.status,
+    );
   } catch (error) {
     return buildNetworkIssue(error);
   }
 }
 
-export function connectionIssueAccent(issue: ConnectionIssue | null | undefined): string {
-  if (!issue) return '#65758A';
+export function connectionIssueAccent(
+  issue: ConnectionIssue | null | undefined,
+): string {
+  if (!issue) return "#65758A";
 
   switch (issue.code) {
-    case 'auth_required':
-    case 'auth_invalid':
-    case 'path_not_found':
-    case 'websocket_upgrade_failed':
-      return '#E7B65C';
-    case 'network_unreachable':
-    case 'proxy_error':
-    case 'unexpected_http_response':
-    case 'invalid_url':
-      return '#F09999';
+    case "device_not_paired":
+      return "#E7B65C";
+    case "wrong_daemon":
+    case "network_unreachable":
+    case "proxy_error":
+    case "unexpected_http_response":
+    case "invalid_url":
+      return "#F09999";
+    case "path_not_found":
+    case "websocket_upgrade_failed":
+      return "#E7B65C";
+  }
+}
+
+function mapProbeFailure(
+  status: number,
+  endpointKind: "health" | "auth-check" | "ws",
+): ConnectionIssue {
+  switch (status) {
+    case 404:
+      return createIssue(
+        "path_not_found",
+        "Daemon routes are not exposed",
+        `The endpoint returned HTTP 404 for zen-daemon's ${endpointKind} route.`,
+        "Forward the full zen-daemon origin through your tunnel or reverse proxy, including /health, /auth-check, /pair, /upload, and /ws.",
+        status,
+      );
+    case 400:
+    case 405:
+    case 426:
+      return createIssue(
+        "websocket_upgrade_failed",
+        "WebSocket handshake failed",
+        `The ${endpointKind} request reached the endpoint, but the tunnel or proxy did not behave like zen-daemon expects.`,
+        "Check HTTPS/TLS and make sure your reverse proxy preserves WebSocket Upgrade and Connection headers all the way to zen-daemon.",
+        status,
+      );
+    case 502:
+    case 503:
+    case 504:
+      return createIssue(
+        "proxy_error",
+        "Proxy could not reach daemon",
+        `The endpoint returned HTTP ${status}, which usually means your proxy or tunnel could not reach zen-daemon on localhost.`,
+        "Check that zen-daemon is running on 127.0.0.1:9876 and that your tunnel points at the same local port.",
+        status,
+      );
+    default:
+      return createIssue(
+        "unexpected_http_response",
+        "Unexpected server response",
+        `The endpoint returned HTTP ${status} instead of a valid zen-daemon response.`,
+        "Make sure this URL points at zen-daemon rather than a website, API gateway, or some other service.",
+        status,
+      );
   }
 }
 
@@ -122,16 +246,31 @@ function buildProbeURL(serverUrl: string): string | null {
 
   try {
     const parsed = new URL(trimmed);
-    if (parsed.protocol === 'ws:') {
-      parsed.protocol = 'http:';
-    } else if (parsed.protocol === 'wss:') {
-      parsed.protocol = 'https:';
-    } else if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+    if (parsed.protocol === "ws:") {
+      parsed.protocol = "http:";
+    } else if (parsed.protocol === "wss:") {
+      parsed.protocol = "https:";
+    } else if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
       return null;
     }
 
-    parsed.search = '';
-    parsed.hash = '';
+    parsed.search = "";
+    parsed.hash = "";
+    return parsed.toString();
+  } catch {
+    return null;
+  }
+}
+
+function buildPathURL(serverUrl: string, pathname: string): string | null {
+  const probeURL = buildProbeURL(serverUrl);
+  if (!probeURL) return null;
+
+  try {
+    const parsed = new URL(probeURL);
+    parsed.pathname = pathname;
+    parsed.search = "";
+    parsed.hash = "";
     return parsed.toString();
   } catch {
     return null;
@@ -156,62 +295,110 @@ async function fetchWithTimeout(
   }
 }
 
+async function readJSON<T extends object>(
+  response: Response,
+): Promise<T | null> {
+  try {
+    return (await response.json()) as T;
+  } catch {
+    return null;
+  }
+}
+
+function isTrustedDaemonPayload(
+  payload: TrustedDaemonPayload | null,
+  input: {
+    purpose: string;
+    daemonId: string;
+    daemonPublicKey: string;
+  },
+): boolean {
+  if (!payload) {
+    return false;
+  }
+
+  const daemonId = normalizeDaemonId(readString(payload.daemon_id));
+  const daemonPublicKey = normalizePublicKeyHex(
+    readString(payload.daemon_public_key),
+  );
+  if (
+    daemonId !== input.daemonId ||
+    daemonPublicKey !== input.daemonPublicKey
+  ) {
+    return false;
+  }
+
+  return verifyDaemonAssertion({
+    purpose: input.purpose,
+    daemonId,
+    daemonPublicKey,
+    timestamp: readString(payload.assertion_timestamp),
+    nonceHex: readString(payload.assertion_nonce),
+    signatureHex: readString(payload.assertion_signature),
+  });
+}
+
 function buildNetworkIssue(error: unknown): ConnectionIssue {
-  const rawMessage = error instanceof Error ? error.message.trim() : '';
+  const rawMessage = error instanceof Error ? error.message.trim() : "";
   const normalizedMessage = rawMessage.toLowerCase();
 
-  if (error instanceof Error && error.name === 'AbortError') {
+  if (error instanceof Error && error.name === "AbortError") {
     return createIssue(
-      'network_unreachable',
-      'Server timed out',
-      'The daemon did not respond before the probe timed out.',
-      'Check the host or IP, tunnel latency, firewall rules, and whether zen-daemon is busy or sleeping.',
+      "network_unreachable",
+      "Server timed out",
+      "The daemon did not respond before the probe timed out.",
+      "Check tunnel latency, firewall rules, and whether zen-daemon is sleeping or overloaded.",
     );
   }
 
   if (
-    normalizedMessage.includes('enotfound') ||
-    normalizedMessage.includes('name resolution') ||
-    normalizedMessage.includes('dns') ||
-    normalizedMessage.includes('host not found')
+    normalizedMessage.includes("enotfound") ||
+    normalizedMessage.includes("name resolution") ||
+    normalizedMessage.includes("dns") ||
+    normalizedMessage.includes("host not found")
   ) {
     return createIssue(
-      'network_unreachable',
-      'DNS lookup failed',
-      rawMessage || 'The hostname could not be resolved before the WebSocket connection started.',
-      'Check the hostname spelling, local DNS, or try a direct IP address instead of a hostname.',
-    );
-  }
-
-  if (normalizedMessage.includes('econnrefused') || normalizedMessage.includes('connection refused')) {
-    return createIssue(
-      'network_unreachable',
-      'Daemon refused connection',
-      'The host is reachable, but nothing accepted the connection on the configured port.',
-      'Check that zen-daemon is running and listening on the expected port, and that your tunnel or proxy forwards to the same port.',
+      "network_unreachable",
+      "DNS lookup failed",
+      rawMessage ||
+        "The hostname could not be resolved before zen reached the daemon.",
+      "Check the hostname spelling, your DNS configuration, or try a different tunnel hostname.",
     );
   }
 
   if (
-    normalizedMessage.includes('certificate') ||
-    normalizedMessage.includes('ssl') ||
-    normalizedMessage.includes('tls')
+    normalizedMessage.includes("econnrefused") ||
+    normalizedMessage.includes("connection refused")
   ) {
     return createIssue(
-      'network_unreachable',
-      'TLS handshake failed',
-      rawMessage || 'The HTTPS/TLS handshake failed before the WebSocket could connect.',
-      'Check your certificate chain, hostname, and reverse proxy TLS configuration.',
+      "network_unreachable",
+      "Daemon refused connection",
+      "The host is reachable, but nothing accepted the connection on the configured port.",
+      "Check that zen-daemon is running and that your tunnel or reverse proxy forwards to 127.0.0.1:9876.",
+    );
+  }
+
+  if (
+    normalizedMessage.includes("certificate") ||
+    normalizedMessage.includes("ssl") ||
+    normalizedMessage.includes("tls")
+  ) {
+    return createIssue(
+      "network_unreachable",
+      "TLS handshake failed",
+      rawMessage ||
+        "The HTTPS/TLS handshake failed before the WebSocket could connect.",
+      "Check your certificate chain, hostname, and tunnel or reverse proxy TLS configuration.",
     );
   }
 
   return createIssue(
-    'network_unreachable',
-    'Server unreachable',
+    "network_unreachable",
+    "Server unreachable",
     rawMessage
       ? `The network request failed before a WebSocket connection could be established: ${rawMessage}`
-      : 'The network request failed before a WebSocket connection could be established.',
-    'Check the host or IP, DNS, tunnel, firewall, and whether zen-daemon is running.',
+      : "The network request failed before a WebSocket connection could be established.",
+    "Check the hostname, DNS, tunnel, firewall, and whether zen-daemon is running.",
   );
 }
 
@@ -230,4 +417,8 @@ function createIssue(
     checkedAt: Date.now(),
     httpStatus,
   };
+}
+
+function readString(value: unknown): string {
+  return typeof value === "string" ? value.trim() : "";
 }

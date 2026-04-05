@@ -1,33 +1,28 @@
-import AsyncStorage from '@react-native-async-storage/async-storage';
-import { parseSessionKey } from './sessionKeys';
-import { normalizeServerSecret } from './auth';
-import {
-  buildServerURL,
-  ConnectionProvider,
-  normalizeConnectionProvider,
-  normalizeServerURL as normalizeConnectionURL,
-} from './connection';
+import AsyncStorage from "@react-native-async-storage/async-storage";
+import { parseSessionKey } from "./sessionKeys";
+import { normalizeDaemonId, normalizePublicKeyHex } from "./auth";
+import { normalizeServerURL as normalizeConnectionURL } from "./connection";
 
 const KEYS = {
-  servers: 'zen:servers',
-  onboarded: 'zen:onboarded',
-  terminalTheme: 'zen:terminal_theme',
-  inboxViewMode: 'zen:inbox_view_mode',
-  recentAgentOpens: 'zen:recent_agent_opens',
-  terminalTabs: 'zen:terminal_tabs',
-  agentAliases: 'zen:agent_aliases',
+  servers: "zen:v3:servers",
+  onboarded: "zen:onboarded",
+  terminalTheme: "zen:terminal_theme",
+  inboxViewMode: "zen:inbox_view_mode",
+  recentAgentOpens: "zen:recent_agent_opens",
+  terminalTabs: "zen:terminal_tabs",
+  agentAliases: "zen:agent_aliases",
 } as const;
 
-export type StoredTerminalTheme = 'zen-midnight' | 'zen-amber';
-export type StoredInboxViewMode = 'list' | 'grid';
+export type StoredTerminalTheme = "zen-midnight" | "zen-amber";
+export type StoredInboxViewMode = "list" | "grid";
 export type StoredRecentAgentOpens = Record<string, number>;
 export type StoredAgentAliases = Record<string, string>;
 export interface StoredServer {
   id: string;
   name: string;
-  provider: ConnectionProvider;
   url: string;
-  secret?: string;
+  daemonId: string;
+  daemonPublicKey: string;
 }
 export interface StoredTerminalTabs {
   order: string[];
@@ -46,24 +41,31 @@ export async function getServers(): Promise<StoredServer[]> {
 
     const normalized: StoredServer[] = [];
     for (const item of parsed) {
-      if (!item || typeof item !== 'object') continue;
+      if (!item || typeof item !== "object") continue;
       const candidate = item as Record<string, unknown>;
-      const id = typeof candidate.id === 'string' ? candidate.id.trim() : '';
-      const rawName = typeof candidate.name === 'string' ? candidate.name.trim() : '';
-      const rawURL = typeof candidate.url === 'string' ? normalizeConnectionURL(candidate.url) : '';
-      const rawSecret = typeof candidate.secret === 'string' ? normalizeServerSecret(candidate.secret) : '';
-      const provider = normalizeConnectionProvider(
-        typeof candidate.provider === 'string' ? candidate.provider : '',
-        rawURL,
-      );
-      if (!id || !rawURL) continue;
+      const id = typeof candidate.id === "string" ? candidate.id.trim() : "";
+      const rawName =
+        typeof candidate.name === "string" ? candidate.name.trim() : "";
+      const rawURL =
+        typeof candidate.url === "string"
+          ? normalizeConnectionURL(candidate.url)
+          : "";
+      const daemonId =
+        typeof candidate.daemonId === "string"
+          ? normalizeDaemonId(candidate.daemonId)
+          : "";
+      const daemonPublicKey =
+        typeof candidate.daemonPublicKey === "string"
+          ? normalizePublicKeyHex(candidate.daemonPublicKey)
+          : "";
+      if (!id || !rawURL || !daemonId || !daemonPublicKey) continue;
 
       normalized.push({
         id,
         name: rawName || deriveServerName(rawURL),
-        provider,
         url: rawURL,
-        secret: rawSecret || undefined,
+        daemonId,
+        daemonPublicKey,
       });
     }
 
@@ -76,37 +78,36 @@ export async function getServers(): Promise<StoredServer[]> {
 export async function saveServer(input: {
   id?: string;
   name: string;
-  provider?: ConnectionProvider;
-  endpoint?: string;
-  url?: string;
-  secret?: string;
+  url: string;
+  daemonId: string;
+  daemonPublicKey: string;
 }): Promise<StoredServer> {
   const servers = await getServers();
-  const rawEndpoint = input.endpoint?.trim() || input.url?.trim() || '';
-  const provider = normalizeConnectionProvider(input.provider, rawEndpoint);
-  const normalizedURL = input.url?.trim()
-    ? normalizeConnectionURL(input.url)
-    : buildServerURL(provider, rawEndpoint);
+  const normalizedURL = normalizeConnectionURL(input.url);
+  if (!normalizedURL) {
+    throw new Error("Invalid server URL.");
+  }
   const normalizedName = input.name.trim() || deriveServerName(normalizedURL);
-  const normalizedSecret = normalizeServerSecret(input.secret);
+  const daemonId = normalizeDaemonId(input.daemonId);
+  const daemonPublicKey = normalizePublicKeyHex(input.daemonPublicKey);
+  if (!daemonId || !daemonPublicKey) {
+    throw new Error("Missing daemon identity.");
+  }
   const existingMatch = input.id?.trim()
     ? null
-    : servers.find(server =>
-      server.provider === provider &&
-      server.url === normalizedURL &&
-      (server.secret || '') === (normalizedSecret || ''));
+    : servers.find((server) => server.daemonId === daemonId);
 
   const nextServer: StoredServer = {
     id: input.id?.trim() || existingMatch?.id || createServerID(),
     name: normalizedName,
-    provider,
     url: normalizedURL,
-    secret: normalizedSecret || undefined,
+    daemonId,
+    daemonPublicKey,
   };
 
   const nextServers = dedupeServers([
     nextServer,
-    ...servers.filter(server => server.id !== nextServer.id),
+    ...servers.filter((server) => server.id !== nextServer.id),
   ]);
 
   await AsyncStorage.setItem(KEYS.servers, JSON.stringify(nextServers));
@@ -115,39 +116,45 @@ export async function saveServer(input: {
 
 export async function removeServer(serverID: string): Promise<void> {
   const servers = await getServers();
-  const nextServers = servers.filter(server => server.id !== serverID);
+  const nextServers = servers.filter((server) => server.id !== serverID);
   await AsyncStorage.setItem(KEYS.servers, JSON.stringify(nextServers));
   await pruneTerminalTabsForServers([serverID]);
 }
 
-export async function getServerById(serverId: string): Promise<StoredServer | null> {
+export async function getServerById(
+  serverId: string,
+): Promise<StoredServer | null> {
   const servers = await getServers();
-  return servers.find(server => server.id === serverId) || null;
+  return servers.find((server) => server.id === serverId) || null;
 }
 
 export async function isOnboarded(): Promise<boolean> {
-  return (await AsyncStorage.getItem(KEYS.onboarded)) === 'true';
+  return (await AsyncStorage.getItem(KEYS.onboarded)) === "true";
 }
 
 export async function markOnboarded(): Promise<void> {
-  await AsyncStorage.setItem(KEYS.onboarded, 'true');
+  await AsyncStorage.setItem(KEYS.onboarded, "true");
 }
 
 export async function getTerminalTheme(): Promise<StoredTerminalTheme> {
   const value = await AsyncStorage.getItem(KEYS.terminalTheme);
-  return value === 'zen-amber' ? 'zen-amber' : 'zen-midnight';
+  return value === "zen-amber" ? "zen-amber" : "zen-midnight";
 }
 
-export async function setTerminalTheme(theme: StoredTerminalTheme): Promise<void> {
+export async function setTerminalTheme(
+  theme: StoredTerminalTheme,
+): Promise<void> {
   await AsyncStorage.setItem(KEYS.terminalTheme, theme);
 }
 
 export async function getInboxViewMode(): Promise<StoredInboxViewMode> {
   const value = await AsyncStorage.getItem(KEYS.inboxViewMode);
-  return value === 'grid' ? 'grid' : 'list';
+  return value === "grid" ? "grid" : "list";
 }
 
-export async function setInboxViewMode(mode: StoredInboxViewMode): Promise<void> {
+export async function setInboxViewMode(
+  mode: StoredInboxViewMode,
+): Promise<void> {
   await AsyncStorage.setItem(KEYS.inboxViewMode, mode);
 }
 
@@ -159,7 +166,7 @@ export async function getRecentAgentOpens(): Promise<StoredRecentAgentOpens> {
     const parsed = JSON.parse(value) as Record<string, unknown>;
     const normalized: StoredRecentAgentOpens = {};
     for (const [agentId, openedAt] of Object.entries(parsed)) {
-      if (typeof openedAt === 'number' && Number.isFinite(openedAt)) {
+      if (typeof openedAt === "number" && Number.isFinite(openedAt)) {
         normalized[agentId] = openedAt;
       }
     }
@@ -169,7 +176,10 @@ export async function getRecentAgentOpens(): Promise<StoredRecentAgentOpens> {
   }
 }
 
-export async function markAgentOpened(agentId: string, openedAt: number = Date.now()): Promise<void> {
+export async function markAgentOpened(
+  agentId: string,
+  openedAt: number = Date.now(),
+): Promise<void> {
   const current = await getRecentAgentOpens();
   const next: StoredRecentAgentOpens = {
     ...current,
@@ -180,7 +190,10 @@ export async function markAgentOpened(agentId: string, openedAt: number = Date.n
     .sort((left, right) => right[1] - left[1])
     .slice(0, 100);
 
-  await AsyncStorage.setItem(KEYS.recentAgentOpens, JSON.stringify(Object.fromEntries(entries)));
+  await AsyncStorage.setItem(
+    KEYS.recentAgentOpens,
+    JSON.stringify(Object.fromEntries(entries)),
+  );
 }
 
 export async function getTerminalTabs(): Promise<StoredTerminalTabs> {
@@ -198,27 +211,35 @@ export async function getTerminalTabs(): Promise<StoredTerminalTabs> {
   }
 }
 
-export async function touchTerminalTab(agentId: string): Promise<StoredTerminalTabs> {
+export async function touchTerminalTab(
+  agentId: string,
+): Promise<StoredTerminalTabs> {
   const current = await getTerminalTabs();
   const next = normalizeTerminalTabs({
-    order: current.order.includes(agentId) ? current.order : [...current.order, agentId],
+    order: current.order.includes(agentId)
+      ? current.order
+      : [...current.order, agentId],
     pinned: current.pinned,
   });
   await AsyncStorage.setItem(KEYS.terminalTabs, JSON.stringify(next));
   return next;
 }
 
-export async function closeTerminalTab(agentId: string): Promise<StoredTerminalTabs> {
+export async function closeTerminalTab(
+  agentId: string,
+): Promise<StoredTerminalTabs> {
   const current = await getTerminalTabs();
   const next = normalizeTerminalTabs({
-    order: current.order.filter(id => id !== agentId),
-    pinned: current.pinned.filter(id => id !== agentId),
+    order: current.order.filter((id) => id !== agentId),
+    pinned: current.pinned.filter((id) => id !== agentId),
   });
   await AsyncStorage.setItem(KEYS.terminalTabs, JSON.stringify(next));
   return next;
 }
 
-export async function closeOtherTerminalTabs(agentId: string): Promise<StoredTerminalTabs> {
+export async function closeOtherTerminalTabs(
+  agentId: string,
+): Promise<StoredTerminalTabs> {
   const current = await getTerminalTabs();
   const next = normalizeTerminalTabs({
     order: [agentId],
@@ -234,10 +255,12 @@ export async function setTerminalTabPinned(
 ): Promise<StoredTerminalTabs> {
   const current = await getTerminalTabs();
   const next = normalizeTerminalTabs({
-    order: current.order.includes(agentId) ? current.order : [...current.order, agentId],
+    order: current.order.includes(agentId)
+      ? current.order
+      : [...current.order, agentId],
     pinned: pinned
-      ? [agentId, ...current.pinned.filter(id => id !== agentId)]
-      : current.pinned.filter(id => id !== agentId),
+      ? [agentId, ...current.pinned.filter((id) => id !== agentId)]
+      : current.pinned.filter((id) => id !== agentId),
   });
   await AsyncStorage.setItem(KEYS.terminalTabs, JSON.stringify(next));
   return next;
@@ -252,8 +275,12 @@ export async function syncTerminalTabsWithLiveSessions(
   const hydratedServers = new Set(hydratedServerIds);
 
   const next = normalizeTerminalTabs({
-    order: current.order.filter(sessionKey => shouldKeepSessionKey(sessionKey, liveSessions, hydratedServers)),
-    pinned: current.pinned.filter(sessionKey => shouldKeepSessionKey(sessionKey, liveSessions, hydratedServers)),
+    order: current.order.filter((sessionKey) =>
+      shouldKeepSessionKey(sessionKey, liveSessions, hydratedServers),
+    ),
+    pinned: current.pinned.filter((sessionKey) =>
+      shouldKeepSessionKey(sessionKey, liveSessions, hydratedServers),
+    ),
   });
 
   if (
@@ -277,8 +304,8 @@ export async function getAgentAliases(): Promise<StoredAgentAliases> {
     const parsed = JSON.parse(value) as Record<string, unknown>;
     const normalized: StoredAgentAliases = {};
     for (const [agentId, alias] of Object.entries(parsed)) {
-      if (typeof agentId !== 'string' || agentId.trim().length === 0) continue;
-      if (typeof alias !== 'string') continue;
+      if (typeof agentId !== "string" || agentId.trim().length === 0) continue;
+      if (typeof alias !== "string") continue;
 
       const trimmed = alias.trim();
       if (!trimmed) continue;
@@ -313,7 +340,12 @@ function normalizeIdList(value: unknown): string[] {
 
   const normalized: string[] = [];
   for (const item of value) {
-    if (typeof item !== 'string' || item.trim().length === 0 || normalized.includes(item)) continue;
+    if (
+      typeof item !== "string" ||
+      item.trim().length === 0 ||
+      normalized.includes(item)
+    )
+      continue;
     normalized.push(item);
   }
   return normalized;
@@ -323,11 +355,11 @@ async function pruneTerminalTabsForServers(serverIds: string[]): Promise<void> {
   const blockedServers = new Set(serverIds);
   const current = await getTerminalTabs();
   const next = normalizeTerminalTabs({
-    order: current.order.filter(sessionKey => {
+    order: current.order.filter((sessionKey) => {
       const parsed = parseSessionKey(sessionKey);
       return parsed ? !blockedServers.has(parsed.serverId) : false;
     }),
-    pinned: current.pinned.filter(sessionKey => {
+    pinned: current.pinned.filter((sessionKey) => {
       const parsed = parseSessionKey(sessionKey);
       return parsed ? !blockedServers.has(parsed.serverId) : false;
     }),
@@ -375,9 +407,11 @@ function deriveServerName(url: string): string {
 
 function normalizeTerminalTabs(state: StoredTerminalTabs): StoredTerminalTabs {
   const normalizedOrder = normalizeIdList(state.order);
-  const normalizedPinned = normalizeIdList(state.pinned).filter(id => normalizedOrder.includes(id));
+  const normalizedPinned = normalizeIdList(state.pinned).filter((id) =>
+    normalizedOrder.includes(id),
+  );
   const order = trimTerminalTabOrder(normalizedOrder, normalizedPinned);
-  const pinned = normalizedPinned.filter(id => order.includes(id));
+  const pinned = normalizedPinned.filter((id) => order.includes(id));
   return { order, pinned };
 }
 

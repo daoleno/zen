@@ -1,9 +1,14 @@
 package main
 
 import (
-	"net"
+	"bytes"
+	"encoding/base64"
+	"encoding/binary"
+	"encoding/hex"
 	"net/url"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/daoleno/zen/daemon/auth"
 )
@@ -24,13 +29,18 @@ func TestNormalizeAdvertiseURLRejectsMissingScheme(t *testing.T) {
 	}
 }
 
-func TestBuildConnectLink(t *testing.T) {
-	secret, err := auth.LoadSecret("0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef")
+func TestBuildConnectLinkIncludesDaemonIdentity(t *testing.T) {
+	manager, err := auth.NewManager(t.TempDir())
 	if err != nil {
-		t.Fatalf("LoadSecret returned error: %v", err)
+		t.Fatalf("NewManager returned error: %v", err)
 	}
 
-	rawLink := buildConnectLink("local-lan", "192.168.1.10", "lab-box", secret)
+	pairing := auth.PairingToken{
+		Value:     "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+		ExpiresAt: time.Date(2026, 4, 5, 8, 0, 0, 0, time.UTC),
+	}
+
+	rawLink := buildConnectLink("wss://zen.example.com/ws", manager, pairing)
 	parsed, err := url.Parse(rawLink)
 	if err != nil {
 		t.Fatalf("Parse returned error: %v", err)
@@ -39,53 +49,101 @@ func TestBuildConnectLink(t *testing.T) {
 	if parsed.Scheme != "zen" {
 		t.Fatalf("unexpected scheme: %s", parsed.Scheme)
 	}
-	if got := parsed.Query().Get("provider"); got != "local-lan" {
-		t.Fatalf("unexpected provider: %s", got)
+	payloadValue := parsed.Query().Get(connectParamPayload)
+	if payloadValue == "" {
+		t.Fatal("expected compact payload query param")
 	}
-	if got := parsed.Query().Get("endpoint"); got != "192.168.1.10" {
-		t.Fatalf("unexpected endpoint: %s", got)
+
+	payload, err := base64.RawURLEncoding.DecodeString(payloadValue)
+	if err != nil {
+		t.Fatalf("DecodeString returned error: %v", err)
 	}
-	if got := parsed.Query().Get("name"); got != "lab-box" {
-		t.Fatalf("unexpected name: %s", got)
+	if len(payload) != 1+2+len("wss://zen.example.com/ws")+connectPublicKeyBytes+connectTokenBytes {
+		t.Fatalf("unexpected payload size: %d", len(payload))
 	}
-	if got := parsed.Query().Get("secret"); got != secret.Hex() {
-		t.Fatalf("unexpected secret: %s", got)
+	if payload[0] != connectPayloadVersion {
+		t.Fatalf("unexpected payload version: %d", payload[0])
+	}
+
+	urlLength := int(binary.BigEndian.Uint16(payload[1:3]))
+	offset := 3
+	gotURL := string(payload[offset : offset+urlLength])
+	offset += urlLength
+	gotPublicKey := hex.EncodeToString(payload[offset : offset+connectPublicKeyBytes])
+	offset += connectPublicKeyBytes
+	gotToken := hex.EncodeToString(payload[offset : offset+connectTokenBytes])
+
+	if gotURL != "wss://zen.example.com/ws" {
+		t.Fatalf("unexpected url: %s", gotURL)
+	}
+	if gotPublicKey != manager.PublicKeyHex() {
+		t.Fatalf("unexpected daemon public key: %s", gotPublicKey)
+	}
+	if gotToken != pairing.Value {
+		t.Fatalf("unexpected enrollment token: %s", gotToken)
 	}
 }
 
-func TestBuildLANURL(t *testing.T) {
-	if got := buildLANURL("192.168.1.10", defaultDaemonPort); got != "ws://192.168.1.10/ws" {
-		t.Fatalf("unexpected default port URL: %s", got)
+func TestBuildConnectionOffersUsesAdvertiseURL(t *testing.T) {
+	manager, err := auth.NewManager(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewManager returned error: %v", err)
 	}
-	if got := buildLANURL("192.168.1.10", "7777"); got != "ws://192.168.1.10:7777/ws" {
-		t.Fatalf("unexpected custom port URL: %s", got)
+
+	pairing := auth.PairingToken{
+		Value:     "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+		ExpiresAt: time.Date(2026, 4, 5, 8, 0, 0, 0, time.UTC),
+	}
+
+	offers, err := buildConnectionOffers("https://zen.example.com/gateway", manager, pairing)
+	if err != nil {
+		t.Fatalf("buildConnectionOffers returned error: %v", err)
+	}
+	if len(offers) != 1 {
+		t.Fatalf("expected one offer, got %d", len(offers))
+	}
+	if offers[0].URL != "wss://zen.example.com/gateway" {
+		t.Fatalf("unexpected offer URL: %s", offers[0].URL)
+	}
+
+	parsed, err := url.Parse(offers[0].ConnectLink)
+	if err != nil {
+		t.Fatalf("Parse returned error: %v", err)
+	}
+	if got := parsed.Query().Get(connectParamPayload); got == "" {
+		t.Fatal("expected compact payload query param")
 	}
 }
 
-func TestListenPort(t *testing.T) {
-	if got := listenPort(":9876"); got != "9876" {
-		t.Fatalf("unexpected port for wildcard listen: %s", got)
+func TestPrintLocalOnlyInfo(t *testing.T) {
+	var output bytes.Buffer
+	printLocalOnlyInfo(&output, "/tmp/zen-state")
+
+	rendered := output.String()
+	if !strings.Contains(rendered, "State: LOCAL-ONLY") {
+		t.Fatalf("expected LOCAL-ONLY output, got %q", rendered)
 	}
-	if got := listenPort("0.0.0.0:7777"); got != "7777" {
-		t.Fatalf("unexpected port for explicit listen: %s", got)
+	if !strings.Contains(rendered, "zen-daemon pair -advertise-url https://your-host/ws -state-dir /tmp/zen-state") {
+		t.Fatalf("expected pair command example, got %q", rendered)
 	}
 }
 
-func TestIsDirectReachableIPv4(t *testing.T) {
-	testCases := []struct {
-		name string
-		ip   string
-		want bool
-	}{
-		{name: "lan", ip: "192.168.1.10", want: true},
-		{name: "tailscale", ip: "100.101.102.103", want: true},
-		{name: "public", ip: "8.8.8.8", want: false},
-	}
+func TestPrintPairingInfo(t *testing.T) {
+	var output bytes.Buffer
+	printPairingInfo(&output, []connectionOffer{{
+		Label:       "Advertised endpoint",
+		URL:         "wss://zen.example.com/ws",
+		ConnectLink: "zen://settings?p=compact-payload",
+	}})
 
-	for _, testCase := range testCases {
-		ip := net.ParseIP(testCase.ip).To4()
-		if got := isDirectReachableIPv4(ip); got != testCase.want {
-			t.Fatalf("%s: got %v want %v", testCase.name, got, testCase.want)
-		}
+	rendered := output.String()
+	if !strings.Contains(rendered, "State: PAIRABLE") {
+		t.Fatalf("expected PAIRABLE output, got %q", rendered)
+	}
+	if !strings.Contains(rendered, "Paste this link into Settings -> Pair Server:") {
+		t.Fatalf("expected pair instruction, got %q", rendered)
+	}
+	if !strings.Contains(rendered, "zen://settings?p=compact-payload") {
+		t.Fatalf("expected connect link, got %q", rendered)
 	}
 }

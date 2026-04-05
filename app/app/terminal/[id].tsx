@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import {
   ActivityIndicator,
   Alert,
@@ -16,13 +16,24 @@ import {
   TouchableOpacity,
   View,
   useWindowDimensions,
-} from 'react-native';
-import { Ionicons } from '@expo/vector-icons';
-import { useFocusEffect, useLocalSearchParams, useRouter } from 'expo-router';
-import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
-import { Agent, useAgents } from '../../store/agents';
-import { AgentStatus, Colors, Typography, statusColor } from '../../constants/tokens';
-import { DefaultTerminalThemeName, TerminalThemeName } from '../../constants/terminalThemes';
+} from "react-native";
+import { Ionicons } from "@expo/vector-icons";
+import { useFocusEffect, useLocalSearchParams, useRouter } from "expo-router";
+import {
+  SafeAreaView,
+  useSafeAreaInsets,
+} from "react-native-safe-area-context";
+import { Agent, useAgents } from "../../store/agents";
+import {
+  AgentStatus,
+  Colors,
+  Typography,
+  statusColor,
+} from "../../constants/tokens";
+import {
+  DefaultTerminalThemeName,
+  TerminalThemeName,
+} from "../../constants/terminalThemes";
 import {
   closeOtherTerminalTabs,
   closeTerminalTab,
@@ -36,18 +47,22 @@ import {
   setTerminalTabPinned,
   StoredAgentAliases,
   StoredRecentAgentOpens,
+  StoredServer,
   StoredTerminalTabs,
   syncTerminalTabsWithLiveSessions,
   touchTerminalTab,
-} from '../../services/storage';
-import { makeSessionKey, parseSessionKey } from '../../services/sessionKeys';
-import { wsClient } from '../../services/websocket';
-import { connectionIssueAccent } from '../../services/connectionIssue';
-import { TerminalSurface, TerminalSurfaceHandle } from '../../components/terminal/TerminalSurface';
-import { TerminalAccessoryBar } from '../../components/terminal/TerminalAccessoryBar';
-import { AgentKindIcon } from '../../components/terminal/AgentKindIcon';
-import { NewTerminalSheet } from '../../components/terminal/NewTerminalSheet';
-import { presentAgent } from '../../services/agentPresentation';
+} from "../../services/storage";
+import { makeSessionKey, parseSessionKey } from "../../services/sessionKeys";
+import { wsClient } from "../../services/websocket";
+import { connectionIssueAccent } from "../../services/connectionIssue";
+import {
+  TerminalSurface,
+  TerminalSurfaceHandle,
+} from "../../components/terminal/TerminalSurface";
+import { TerminalAccessoryBar } from "../../components/terminal/TerminalAccessoryBar";
+import { AgentKindIcon } from "../../components/terminal/AgentKindIcon";
+import { NewTerminalSheet } from "../../components/terminal/NewTerminalSheet";
+import { presentAgent } from "../../services/agentPresentation";
 
 const EMPTY_TABS: StoredTerminalTabs = { order: [], pinned: [] };
 const MENU_POPOVER_WIDTH = 168;
@@ -64,55 +79,71 @@ interface TerminalTabDescriptor {
   id: string;
   name: string;
   status: AgentStatus;
-  kind: 'terminal' | 'claude' | 'codex';
+  kind: "terminal" | "claude" | "codex";
   pinned: boolean;
   active: boolean;
 }
 
 export default function TerminalScreen() {
   const params = useLocalSearchParams<{ id?: string; serverId?: string }>();
-  const agentId = typeof params.id === 'string' ? params.id : '';
-  const serverId = typeof params.serverId === 'string' ? params.serverId : '';
-  const sessionKey = agentId && serverId ? makeSessionKey(serverId, agentId) : null;
+  const agentId = typeof params.id === "string" ? params.id : "";
+  const serverId = typeof params.serverId === "string" ? params.serverId : "";
+  const sessionKey =
+    agentId && serverId ? makeSessionKey(serverId, agentId) : null;
   const { state, dispatch } = useAgents();
   const router = useRouter();
   const insets = useSafeAreaInsets();
   const { width: windowWidth, height: windowHeight } = useWindowDimensions();
-  const [themeName, setThemeName] = useState<TerminalThemeName>(DefaultTerminalThemeName);
+  const [themeName, setThemeName] = useState<TerminalThemeName>(
+    DefaultTerminalThemeName,
+  );
   const [agentAliases, setAgentAliases] = useState<StoredAgentAliases>({});
-  const [recentAgentOpens, setRecentAgentOpens] = useState<StoredRecentAgentOpens>({});
-  const [terminalTabs, setTerminalTabs] = useState<StoredTerminalTabs>(EMPTY_TABS);
-  const [serverUrl, setServerUrl] = useState('');
-  const [serverSecret, setServerSecret] = useState('');
+  const [recentAgentOpens, setRecentAgentOpens] =
+    useState<StoredRecentAgentOpens>({});
+  const [terminalTabs, setTerminalTabs] =
+    useState<StoredTerminalTabs>(EMPTY_TABS);
+  const [server, setServer] = useState<StoredServer | null>(null);
   const [pickerVisible, setPickerVisible] = useState(false);
   const [menuVisible, setMenuVisible] = useState(false);
-  const [menuAnchor, setMenuAnchor] = useState<{ x: number; y: number; width: number; height: number } | null>(null);
+  const [menuAnchor, setMenuAnchor] = useState<{
+    x: number;
+    y: number;
+    width: number;
+    height: number;
+  } | null>(null);
   const [renameVisible, setRenameVisible] = useState(false);
-  const [renameDraft, setRenameDraft] = useState('');
+  const [renameDraft, setRenameDraft] = useState("");
   const [keyboardVisible, setKeyboardVisible] = useState(false);
   const [keyboardInset, setKeyboardInset] = useState(0);
   const [ctrlArmed, setCtrlArmed] = useState(false);
   const [newTerminalVisible, setNewTerminalVisible] = useState(false);
   const [creatingSession, setCreatingSession] = useState(false);
-  const [showTerminalFallback, setShowTerminalFallback] = useState(!Boolean(sessionKey && serverId && agentId));
+  const [showTerminalFallback, setShowTerminalFallback] = useState(
+    !Boolean(sessionKey && serverId && agentId),
+  );
   const terminalRef = useRef<TerminalSurfaceHandle>(null);
   const tabScrollRef = useRef<ScrollView>(null);
-  const tabLayoutsRef = useRef<Map<string, { x: number; width: number }>>(new Map());
+  const tabLayoutsRef = useRef<Map<string, { x: number; width: number }>>(
+    new Map(),
+  );
   const tabSwipeTranslateX = useRef(new Animated.Value(0)).current;
   const tabSwipeAnimatingRef = useRef(false);
   const keyboardHeightRef = useRef(0);
   const baseWindowHeightRef = useRef(windowHeight);
   const menuAnchorRef = useRef<View | null>(null);
-  const reconnectFallbackTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const reconnectFallbackTimerRef = useRef<ReturnType<
+    typeof setTimeout
+  > | null>(null);
 
   const agentByKey = useMemo(
-    () => new Map(state.agents.map(agent => [agent.key, agent])),
+    () => new Map(state.agents.map((agent) => [agent.key, agent])),
     [state.agents],
   );
   const hydratedServerIds = useMemo(
-    () => Object.entries(state.hydratedServers)
-      .filter(([, hydrated]) => hydrated)
-      .map(([serverId]) => serverId),
+    () =>
+      Object.entries(state.hydratedServers)
+        .filter(([, hydrated]) => hydrated)
+        .map(([serverId]) => serverId),
     [state.hydratedServers],
   );
   const hydratedServerIdSet = useMemo(
@@ -120,40 +151,54 @@ export default function TerminalScreen() {
     [hydratedServerIds],
   );
   const agent = sessionKey ? agentByKey.get(sessionKey) : undefined;
-  const activePinned = sessionKey ? terminalTabs.pinned.includes(sessionKey) : false;
+  const activePinned = sessionKey
+    ? terminalTabs.pinned.includes(sessionKey)
+    : false;
   const displayName = useMemo(
-    () => presentAgent(agent || { name: '', summary: '', last_output_lines: [] }, sessionKey ? agentAliases[sessionKey] : undefined).title,
+    () =>
+      presentAgent(
+        agent || { name: "", summary: "", last_output_lines: [] },
+        sessionKey ? agentAliases[sessionKey] : undefined,
+      ).title,
     [agent, agentAliases, sessionKey],
   );
-  const connectionState = serverId ? state.serverConnections[serverId] || 'offline' : 'offline';
-  const connectionIssue = serverId ? state.serverConnectionIssues[serverId] || null : null;
+  const connectionState = serverId
+    ? state.serverConnections[serverId] || "offline"
+    : "offline";
+  const connectionIssue = serverId
+    ? state.serverConnectionIssues[serverId] || null
+    : null;
   const hasTerminalRoute = Boolean(sessionKey && serverId && agentId);
   const canRenderTerminal = hasTerminalRoute && !showTerminalFallback;
   const terminalStateAccent = connectionIssue
     ? connectionIssueAccent(connectionIssue)
-    : connectionState === 'connecting'
-      ? '#E7B65C'
-      : '#65758A';
-  const terminalStateBusy = hasTerminalRoute && connectionState === 'connecting' && !connectionIssue;
+    : connectionState === "connecting"
+      ? "#E7B65C"
+      : "#65758A";
+  const terminalStateBusy =
+    hasTerminalRoute && connectionState === "connecting" && !connectionIssue;
   const terminalStateTitle = !hasTerminalRoute
-    ? 'Terminal unavailable'
-    : connectionIssue?.title || (connectionState === 'connecting' ? 'Reconnecting to daemon' : 'Daemon unavailable');
+    ? "Terminal unavailable"
+    : connectionIssue?.title ||
+      (connectionState === "connecting"
+        ? "Reconnecting to daemon"
+        : "Daemon unavailable");
   const terminalStateDetail = !hasTerminalRoute
-    ? 'Open this terminal again from the Agents tab.'
-    : connectionIssue?.detail || (
-      connectionState === 'connecting'
-        ? 'zen is reconnecting before reopening this terminal.'
-        : 'Start zen-daemon on that machine, or bring the network or tunnel back.'
-    );
+    ? "Open this terminal again from the Agents tab."
+    : connectionIssue?.detail ||
+      (connectionState === "connecting"
+        ? "zen is reconnecting before reopening this terminal."
+        : "Start zen-daemon on that machine, or bring the network or tunnel back.");
   const terminalStateHint = !hasTerminalRoute
-    ? 'The app kept your route, but the live terminal is not ready yet.'
-    : connectionIssue?.hint || 'This terminal will reopen automatically once the daemon is reachable again.';
+    ? "The app kept your route, but the live terminal is not ready yet."
+    : connectionIssue?.hint ||
+      "This terminal will reopen automatically once the daemon is reachable again.";
 
   useFocusEffect(
     React.useCallback(() => {
-      dispatch({ type: 'SELECT_AGENT', key: sessionKey });
+      dispatch({ type: "SELECT_AGENT", key: sessionKey });
       return () => {
-        dispatch({ type: 'SELECT_AGENT', key: null });
+        dispatch({ type: "SELECT_AGENT", key: null });
       };
     }, [dispatch, sessionKey]),
   );
@@ -162,11 +207,9 @@ export default function TerminalScreen() {
     let cancelled = false;
 
     (async () => {
-      const [storedTheme, storedRecentOpens, storedAliases] = await Promise.all([
-        getTerminalTheme(),
-        getRecentAgentOpens(),
-        getAgentAliases(),
-      ]);
+      const [storedTheme, storedRecentOpens, storedAliases] = await Promise.all(
+        [getTerminalTheme(), getRecentAgentOpens(), getAgentAliases()],
+      );
       const storedServer = serverId ? await getServerById(serverId) : null;
 
       if (!sessionKey) {
@@ -176,8 +219,7 @@ export default function TerminalScreen() {
           setAgentAliases(storedAliases);
           setRecentAgentOpens(storedRecentOpens);
           setTerminalTabs(storedTabs);
-          setServerUrl(storedServer?.url || '');
-          setServerSecret(storedServer?.secret || '');
+          setServer(storedServer);
         }
         return;
       }
@@ -194,8 +236,7 @@ export default function TerminalScreen() {
           [sessionKey]: openedAt,
         });
         setTerminalTabs(nextTabs);
-        setServerUrl(storedServer?.url || '');
-        setServerSecret(storedServer?.secret || '');
+        setServer(storedServer);
       }
     })();
 
@@ -211,7 +252,7 @@ export default function TerminalScreen() {
 
   useEffect(() => {
     setRenameVisible(false);
-    setRenameDraft('');
+    setRenameDraft("");
   }, [sessionKey]);
 
   useEffect(() => {
@@ -221,7 +262,7 @@ export default function TerminalScreen() {
 
     (async () => {
       const nextTabs = await syncTerminalTabsWithLiveSessions(
-        state.agents.map(currentAgent => currentAgent.key),
+        state.agents.map((currentAgent) => currentAgent.key),
         hydratedServerIds,
       );
       if (!cancelled) {
@@ -236,7 +277,7 @@ export default function TerminalScreen() {
 
   useEffect(() => {
     const handleShow = (event: KeyboardEvent) => {
-      if (Platform.OS === 'android') {
+      if (Platform.OS === "android") {
         keyboardHeightRef.current = event.endCoordinates.height;
       }
       setKeyboardVisible(true);
@@ -247,8 +288,8 @@ export default function TerminalScreen() {
       setKeyboardInset(0);
     };
 
-    const showSub = Keyboard.addListener('keyboardDidShow', handleShow);
-    const hideSub = Keyboard.addListener('keyboardDidHide', handleHide);
+    const showSub = Keyboard.addListener("keyboardDidShow", handleShow);
+    const hideSub = Keyboard.addListener("keyboardDidHide", handleHide);
     return () => {
       showSub.remove();
       hideSub.remove();
@@ -266,13 +307,18 @@ export default function TerminalScreen() {
   // windowHeight is reactive — when adjustResize completes, it updates and this
   // re-runs, converging to the correct padding automatically.
   useEffect(() => {
-    if (!keyboardVisible || Platform.OS !== 'android') return;
+    if (!keyboardVisible || Platform.OS !== "android") return;
     const kbHeight = keyboardHeightRef.current;
     if (!kbHeight) return;
 
-    const adjustResizeHandled = Math.max(0, baseWindowHeightRef.current - windowHeight);
+    const adjustResizeHandled = Math.max(
+      0,
+      baseWindowHeightRef.current - windowHeight,
+    );
     const remaining = Math.max(0, kbHeight - adjustResizeHandled);
-    setKeyboardInset(prev => (Math.abs(prev - remaining) <= 1 ? prev : remaining));
+    setKeyboardInset((prev) =>
+      Math.abs(prev - remaining) <= 1 ? prev : remaining,
+    );
   }, [keyboardVisible, windowHeight]);
 
   useEffect(() => {
@@ -308,7 +354,7 @@ export default function TerminalScreen() {
       return;
     }
 
-    if (connectionState === 'connected') {
+    if (connectionState === "connected") {
       setShowTerminalFallback(false);
       return;
     }
@@ -335,28 +381,32 @@ export default function TerminalScreen() {
   const tabs = useMemo(() => {
     const order = buildDisplayTabOrder(sessionKey, terminalTabs);
     return order
-      .filter(currentSessionKey => {
+      .filter((currentSessionKey) => {
         if (currentSessionKey === sessionKey) return true;
         if (agentByKey.has(currentSessionKey)) return true;
 
         const parsed = parseSessionKey(currentSessionKey);
         return parsed ? !hydratedServerIdSet.has(parsed.serverId) : false;
       })
-      .map(currentSessionKey => {
-      const tabAgent = agentByKey.get(currentSessionKey);
-      const parsed = parseSessionKey(currentSessionKey);
-      const presented = presentAgent(
-        tabAgent || { name: parsed?.agentId || '', summary: '', last_output_lines: [] },
-        currentSessionKey ? agentAliases[currentSessionKey] : undefined,
-      );
-      return {
-        id: currentSessionKey,
-        name: presented.cwdBase || presented.shortTitle,
-        status: tabAgent?.status || 'unknown',
-        kind: presented.kind,
-        pinned: terminalTabs.pinned.includes(currentSessionKey),
-        active: currentSessionKey === sessionKey,
-      } satisfies TerminalTabDescriptor;
+      .map((currentSessionKey) => {
+        const tabAgent = agentByKey.get(currentSessionKey);
+        const parsed = parseSessionKey(currentSessionKey);
+        const presented = presentAgent(
+          tabAgent || {
+            name: parsed?.agentId || "",
+            summary: "",
+            last_output_lines: [],
+          },
+          currentSessionKey ? agentAliases[currentSessionKey] : undefined,
+        );
+        return {
+          id: currentSessionKey,
+          name: presented.cwdBase || presented.shortTitle,
+          status: tabAgent?.status || "unknown",
+          kind: presented.kind,
+          pinned: terminalTabs.pinned.includes(currentSessionKey),
+          active: currentSessionKey === sessionKey,
+        } satisfies TerminalTabDescriptor;
       });
   }, [agentAliases, agentByKey, hydratedServerIdSet, sessionKey, terminalTabs]);
 
@@ -371,11 +421,11 @@ export default function TerminalScreen() {
   }, [sessionKey]);
 
   const previousTab = useMemo(
-    () => getAdjacentTab(tabs, sessionKey, 'prev'),
+    () => getAdjacentTab(tabs, sessionKey, "prev"),
     [sessionKey, tabs],
   );
   const nextTab = useMemo(
-    () => getAdjacentTab(tabs, sessionKey, 'next'),
+    () => getAdjacentTab(tabs, sessionKey, "next"),
     [sessionKey, tabs],
   );
 
@@ -409,51 +459,57 @@ export default function TerminalScreen() {
     [menuAnchor, windowWidth],
   );
   const previousHintOpacity = useMemo(
-    () => tabSwipeTranslateX.interpolate({
-      inputRange: [0, 14, 80],
-      outputRange: [0, 0.3, 1],
-      extrapolate: 'clamp',
-    }),
+    () =>
+      tabSwipeTranslateX.interpolate({
+        inputRange: [0, 14, 80],
+        outputRange: [0, 0.3, 1],
+        extrapolate: "clamp",
+      }),
     [tabSwipeTranslateX],
   );
   const nextHintOpacity = useMemo(
-    () => tabSwipeTranslateX.interpolate({
-      inputRange: [-80, -14, 0],
-      outputRange: [1, 0.3, 0],
-      extrapolate: 'clamp',
-    }),
+    () =>
+      tabSwipeTranslateX.interpolate({
+        inputRange: [-80, -14, 0],
+        outputRange: [1, 0.3, 0],
+        extrapolate: "clamp",
+      }),
     [tabSwipeTranslateX],
   );
   const previousHintTranslate = useMemo(
-    () => tabSwipeTranslateX.interpolate({
-      inputRange: [0, 80],
-      outputRange: [-12, 0],
-      extrapolate: 'clamp',
-    }),
+    () =>
+      tabSwipeTranslateX.interpolate({
+        inputRange: [0, 80],
+        outputRange: [-12, 0],
+        extrapolate: "clamp",
+      }),
     [tabSwipeTranslateX],
   );
   const terminalSwipeScale = useMemo(
-    () => tabSwipeTranslateX.interpolate({
-      inputRange: [-180, 0, 180],
-      outputRange: [0.982, 1, 0.982],
-      extrapolate: 'clamp',
-    }),
+    () =>
+      tabSwipeTranslateX.interpolate({
+        inputRange: [-180, 0, 180],
+        outputRange: [0.982, 1, 0.982],
+        extrapolate: "clamp",
+      }),
     [tabSwipeTranslateX],
   );
   const terminalSwipeOpacity = useMemo(
-    () => tabSwipeTranslateX.interpolate({
-      inputRange: [-180, 0, 180],
-      outputRange: [0.96, 1, 0.96],
-      extrapolate: 'clamp',
-    }),
+    () =>
+      tabSwipeTranslateX.interpolate({
+        inputRange: [-180, 0, 180],
+        outputRange: [0.96, 1, 0.96],
+        extrapolate: "clamp",
+      }),
     [tabSwipeTranslateX],
   );
   const nextHintTranslate = useMemo(
-    () => tabSwipeTranslateX.interpolate({
-      inputRange: [-80, 0],
-      outputRange: [0, 12],
-      extrapolate: 'clamp',
-    }),
+    () =>
+      tabSwipeTranslateX.interpolate({
+        inputRange: [-80, 0],
+        outputRange: [0, 12],
+        extrapolate: "clamp",
+      }),
     [tabSwipeTranslateX],
   );
 
@@ -484,7 +540,7 @@ export default function TerminalScreen() {
     }
 
     router.replace({
-      pathname: '/terminal/[id]',
+      pathname: "/terminal/[id]",
       params: { id: parsed.agentId, serverId: parsed.serverId },
     });
   };
@@ -492,7 +548,7 @@ export default function TerminalScreen() {
   const goToInbox = () => {
     setPickerVisible(false);
     closeMenu();
-    router.replace('/');
+    router.replace("/");
   };
 
   const openMenu = () => {
@@ -523,12 +579,16 @@ export default function TerminalScreen() {
     setTerminalTabs(nextTabs);
     closeMenu();
 
-    const nextSessionKey = pickNextTabAfterClose(sessionKey, terminalTabs, nextTabs);
+    const nextSessionKey = pickNextTabAfterClose(
+      sessionKey,
+      terminalTabs,
+      nextTabs,
+    );
     if (nextSessionKey) {
       const parsed = parseSessionKey(nextSessionKey);
       if (parsed) {
         router.replace({
-          pathname: '/terminal/[id]',
+          pathname: "/terminal/[id]",
           params: { id: parsed.agentId, serverId: parsed.serverId },
         });
         return;
@@ -536,7 +596,7 @@ export default function TerminalScreen() {
       return;
     }
 
-    router.replace('/');
+    router.replace("/");
   };
 
   const handleCloseOtherTabs = async () => {
@@ -552,22 +612,26 @@ export default function TerminalScreen() {
 
     closeMenu();
 
-    if (connectionState !== 'connected') {
+    if (connectionState !== "connected") {
       Alert.alert(
-        'Daemon unavailable',
-        'Reconnect to that daemon before terminating the agent.',
+        "Daemon unavailable",
+        "Reconnect to that daemon before terminating the agent.",
       );
       return;
     }
 
     Alert.alert(
-      'Terminate?',
-      'This will terminate ' + (displayName || agentId) + ' on ' + (agent?.serverName || serverId) + '. It does more than closing the tab.',
+      "Terminate?",
+      "This will terminate " +
+        (displayName || agentId) +
+        " on " +
+        (agent?.serverName || serverId) +
+        ". It does more than closing the tab.",
       [
-        { text: 'Cancel', style: 'cancel' },
+        { text: "Cancel", style: "cancel" },
         {
-          text: 'Terminate',
-          style: 'destructive',
+          text: "Terminate",
+          style: "destructive",
           onPress: () => {
             void performTerminateAgent();
           },
@@ -584,19 +648,23 @@ export default function TerminalScreen() {
     setTerminalTabs(nextTabs);
     wsClient.killAgent(serverId, agentId);
 
-    const nextSessionKey = pickNextTabAfterClose(sessionKey, currentTabs, nextTabs);
+    const nextSessionKey = pickNextTabAfterClose(
+      sessionKey,
+      currentTabs,
+      nextTabs,
+    );
     if (nextSessionKey) {
       const parsed = parseSessionKey(nextSessionKey);
       if (parsed) {
         router.replace({
-          pathname: '/terminal/[id]',
+          pathname: "/terminal/[id]",
           params: { id: parsed.agentId, serverId: parsed.serverId },
         });
         return;
       }
     }
 
-    router.replace('/');
+    router.replace("/");
   };
 
   const handleSaveRename = async () => {
@@ -610,10 +678,17 @@ export default function TerminalScreen() {
     setCtrlArmed(next);
   };
 
-  const createTerminal = async (input: { cwd: string; command: string; name: string }) => {
-    if (!serverId || connectionState !== 'connected' || creatingSession) {
-      if (connectionState !== 'connected') {
-        Alert.alert('Daemon unavailable', 'Reconnect to that daemon before creating a new terminal.');
+  const createTerminal = async (input: {
+    cwd: string;
+    command: string;
+    name: string;
+  }) => {
+    if (!serverId || connectionState !== "connected" || creatingSession) {
+      if (connectionState !== "connected") {
+        Alert.alert(
+          "Daemon unavailable",
+          "Reconnect to that daemon before creating a new terminal.",
+        );
       }
       return;
     }
@@ -634,24 +709,30 @@ export default function TerminalScreen() {
       const nextTabs = await touchTerminalTab(nextSessionKey);
       setTerminalTabs(nextTabs);
       void markAgentOpened(nextSessionKey, openedAt);
-      setRecentAgentOpens(previous => ({
+      setRecentAgentOpens((previous) => ({
         ...previous,
         [nextSessionKey]: openedAt,
       }));
       router.replace({
-        pathname: '/terminal/[id]',
+        pathname: "/terminal/[id]",
         params: { id: nextAgentId, serverId },
       });
     } catch (error: any) {
-      Alert.alert('Could not create terminal', error?.message || 'Try reconnecting to that daemon first.');
+      Alert.alert(
+        "Could not create terminal",
+        error?.message || "Try reconnecting to that daemon first.",
+      );
     } finally {
       setCreatingSession(false);
     }
   };
 
   const openNewTerminal = () => {
-    if (connectionState !== 'connected') {
-      Alert.alert('Daemon unavailable', 'Reconnect to that daemon before creating a new terminal.');
+    if (connectionState !== "connected") {
+      Alert.alert(
+        "Daemon unavailable",
+        "Reconnect to that daemon before creating a new terminal.",
+      );
       return;
     }
     setNewTerminalVisible(true);
@@ -662,8 +743,7 @@ export default function TerminalScreen() {
     const storedServer = await getServerById(serverId);
     if (!storedServer) return;
 
-    setServerUrl(storedServer.url);
-    setServerSecret(storedServer.secret || '');
+    setServer(storedServer);
     wsClient.connectServer(storedServer);
   };
 
@@ -686,23 +766,28 @@ export default function TerminalScreen() {
       return;
     }
 
-    const direction = deltaX < 0 ? 'next' : 'prev';
-    const targetExists = direction === 'next' ? Boolean(nextTab) : Boolean(previousTab);
+    const direction = deltaX < 0 ? "next" : "prev";
+    const targetExists =
+      direction === "next" ? Boolean(nextTab) : Boolean(previousTab);
     const maxOffset = targetExists ? Math.min(windowWidth * 0.24, 110) : 56;
     const resistance = targetExists ? 0.34 : 0.16;
-    const previewOffset = clamp(
-      deltaX * resistance,
-      -maxOffset,
-      maxOffset,
-    );
+    const previewOffset = clamp(deltaX * resistance, -maxOffset, maxOffset);
 
     tabSwipeTranslateX.setValue(previewOffset);
   };
 
-  const handleTabSwipe = (direction: 'next' | 'prev') => {
-    if (tabSwipeAnimatingRef.current || pickerVisible || menuVisible || renameVisible || !sessionKey || tabs.length <= 1) return;
+  const handleTabSwipe = (direction: "next" | "prev") => {
+    if (
+      tabSwipeAnimatingRef.current ||
+      pickerVisible ||
+      menuVisible ||
+      renameVisible ||
+      !sessionKey ||
+      tabs.length <= 1
+    )
+      return;
 
-    const targetTab = direction === 'next' ? nextTab : previousTab;
+    const targetTab = direction === "next" ? nextTab : previousTab;
     if (!targetTab) {
       animateTabSwipeBack();
       return;
@@ -711,7 +796,7 @@ export default function TerminalScreen() {
     tabSwipeAnimatingRef.current = true;
     setCtrlArmed(false);
     Animated.timing(tabSwipeTranslateX, {
-      toValue: direction === 'next' ? -(windowWidth + 24) : windowWidth + 24,
+      toValue: direction === "next" ? -(windowWidth + 24) : windowWidth + 24,
       duration: 230,
       easing: Easing.bezier(0.22, 1, 0.36, 1),
       useNativeDriver: true,
@@ -721,7 +806,7 @@ export default function TerminalScreen() {
   };
 
   return (
-    <SafeAreaView style={styles.container} edges={['top']}>
+    <SafeAreaView style={styles.container} edges={["top"]}>
       <View style={styles.topBar}>
         <TouchableOpacity
           onPress={goToInbox}
@@ -738,7 +823,7 @@ export default function TerminalScreen() {
           style={styles.tabScroller}
           contentContainerStyle={styles.tabScrollerContent}
         >
-          {tabs.map(tab => (
+          {tabs.map((tab) => (
             <View
               key={tab.id}
               style={[
@@ -758,10 +843,7 @@ export default function TerminalScreen() {
               >
                 <AgentKindIcon kind={tab.kind} size={13} />
                 <Text
-                  style={[
-                    styles.tabLabel,
-                    tab.active && styles.tabLabelActive,
-                  ]}
+                  style={[styles.tabLabel, tab.active && styles.tabLabelActive]}
                   numberOfLines={1}
                 >
                   {tab.name}
@@ -770,7 +852,7 @@ export default function TerminalScreen() {
                   <Ionicons
                     name="bookmark"
                     size={12}
-                    color={tab.active ? Colors.textPrimary : '#73839A'}
+                    color={tab.active ? Colors.textPrimary : "#73839A"}
                   />
                 ) : null}
                 <View
@@ -788,7 +870,11 @@ export default function TerminalScreen() {
                     onPress={openMenu}
                     activeOpacity={0.84}
                   >
-                    <Ionicons name="ellipsis-vertical" size={17} color={Colors.textPrimary} />
+                    <Ionicons
+                      name="ellipsis-vertical"
+                      size={17}
+                      color={Colors.textPrimary}
+                    />
                   </TouchableOpacity>
                 </View>
               ) : null}
@@ -849,7 +935,9 @@ export default function TerminalScreen() {
           shouldRasterizeIOS
           style={[
             styles.terminalShell,
-            Platform.OS === 'android' && keyboardInset > 0 ? { paddingBottom: keyboardInset } : null,
+            Platform.OS === "android" && keyboardInset > 0
+              ? { paddingBottom: keyboardInset }
+              : null,
             {
               opacity: terminalSwipeOpacity,
               transform: [
@@ -861,7 +949,7 @@ export default function TerminalScreen() {
         >
           <KeyboardAvoidingView
             style={styles.terminalContent}
-            behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+            behavior={Platform.OS === "ios" ? "padding" : undefined}
           >
             <View style={styles.output}>
               {canRenderTerminal && sessionKey && serverId && agentId ? (
@@ -877,22 +965,40 @@ export default function TerminalScreen() {
                 />
               ) : (
                 <View style={styles.terminalState}>
-                  <View style={[styles.terminalStateCard, { borderColor: terminalStateAccent }]}>
+                  <View
+                    style={[
+                      styles.terminalStateCard,
+                      { borderColor: terminalStateAccent },
+                    ]}
+                  >
                     {terminalStateBusy ? (
                       <ActivityIndicator color={terminalStateAccent} />
                     ) : (
-                      <View style={[styles.terminalStateDot, { backgroundColor: terminalStateAccent }]} />
+                      <View
+                        style={[
+                          styles.terminalStateDot,
+                          { backgroundColor: terminalStateAccent },
+                        ]}
+                      />
                     )}
-                    <Text style={styles.terminalStateTitle}>{terminalStateTitle}</Text>
-                    <Text style={styles.terminalStateDetail}>{terminalStateDetail}</Text>
-                    <Text style={styles.terminalStateHint}>{terminalStateHint}</Text>
+                    <Text style={styles.terminalStateTitle}>
+                      {terminalStateTitle}
+                    </Text>
+                    <Text style={styles.terminalStateDetail}>
+                      {terminalStateDetail}
+                    </Text>
+                    <Text style={styles.terminalStateHint}>
+                      {terminalStateHint}
+                    </Text>
                     {hasTerminalRoute ? (
                       <TouchableOpacity
                         style={styles.terminalStateAction}
                         onPress={() => void retryServerConnection()}
                         activeOpacity={0.84}
                       >
-                        <Text style={styles.terminalStateActionText}>Retry Connection</Text>
+                        <Text style={styles.terminalStateActionText}>
+                          Retry Connection
+                        </Text>
                       </TouchableOpacity>
                     ) : null}
                   </View>
@@ -901,11 +1007,21 @@ export default function TerminalScreen() {
             </View>
 
             {accessoryVisible ? (
-              <View style={[styles.inputShell, { paddingBottom: keyboardVisible ? 6 : Math.max(insets.bottom + 8, 12), marginBottom: keyboardVisible ? 4 : 0 }]}>
+              <View
+                style={[
+                  styles.inputShell,
+                  {
+                    paddingBottom: keyboardVisible
+                      ? 6
+                      : Math.max(insets.bottom + 8, 12),
+                    marginBottom: keyboardVisible ? 4 : 0,
+                  },
+                ]}
+              >
                 <TerminalAccessoryBar
                   terminalRef={terminalRef}
-                  serverUrl={serverUrl}
-                  authSecret={serverSecret}
+                  serverUrl={server?.url || ""}
+                  daemonId={server?.daemonId || ""}
                   ctrlArmed={ctrlArmed}
                   onCtrlArmedChange={handleCtrlArmedChange}
                 />
@@ -939,7 +1055,7 @@ export default function TerminalScreen() {
               {sortedAgents.length === 0 ? (
                 <Text style={styles.sheetEmpty}>No agents available.</Text>
               ) : (
-                sortedAgents.map(item => {
+                sortedAgents.map((item) => {
                   const isActive = item.key === sessionKey;
                   const presented = presentAgent(item, agentAliases[item.key]);
 
@@ -975,14 +1091,17 @@ export default function TerminalScreen() {
             </ScrollView>
 
             <TouchableOpacity
-              style={[styles.sheetCreateButton, creatingSession && styles.sheetCreateButtonDisabled]}
+              style={[
+                styles.sheetCreateButton,
+                creatingSession && styles.sheetCreateButtonDisabled,
+              ]}
               onPress={openNewTerminal}
               disabled={creatingSession}
               activeOpacity={0.84}
             >
               <Ionicons name="add" size={16} color={Colors.textSecondary} />
               <Text style={styles.sheetCreateButtonText}>
-                {creatingSession ? 'Starting…' : 'New Terminal'}
+                {creatingSession ? "Starting…" : "New Terminal"}
               </Text>
             </TouchableOpacity>
           </View>
@@ -1013,16 +1132,13 @@ export default function TerminalScreen() {
             ]}
           >
             <MenuAction
-              label={creatingSession ? 'Starting Terminal…' : 'New Terminal'}
+              label={creatingSession ? "Starting Terminal…" : "New Terminal"}
               onPress={openNewTerminal}
-              disabled={creatingSession || connectionState !== 'connected'}
+              disabled={creatingSession || connectionState !== "connected"}
             />
+            <MenuAction label="Rename" onPress={openRenameModal} />
             <MenuAction
-              label="Rename"
-              onPress={openRenameModal}
-            />
-            <MenuAction
-              label={activePinned ? 'Unpin Tab' : 'Pin Tab'}
+              label={activePinned ? "Unpin Tab" : "Pin Tab"}
               onPress={handleTogglePinned}
             />
             <MenuAction
@@ -1030,10 +1146,7 @@ export default function TerminalScreen() {
               onPress={handleCloseOtherTabs}
               disabled={tabs.length <= 1}
             />
-            <MenuAction
-              label="Close Tab"
-              onPress={handleCloseCurrentTab}
-            />
+            <MenuAction label="Close Tab" onPress={handleCloseCurrentTab} />
             <MenuAction
               label="Terminate"
               onPress={handleTerminateAgent}
@@ -1047,11 +1160,11 @@ export default function TerminalScreen() {
         visible={newTerminalVisible}
         title="New Terminal"
         subtitle="Start a plain shell here, or launch Claude/Codex in the current project."
-        initialCwd={agent?.cwd || ''}
+        initialCwd={agent?.cwd || ""}
         selectedServerId={serverId}
         submitting={creatingSession}
         onClose={() => setNewTerminalVisible(false)}
-        onSubmit={input => {
+        onSubmit={(input) => {
           void createTerminal({
             cwd: input.cwd,
             command: input.command,
@@ -1068,7 +1181,7 @@ export default function TerminalScreen() {
       >
         <KeyboardAvoidingView
           style={styles.renameRoot}
-          behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+          behavior={Platform.OS === "ios" ? "padding" : "height"}
         >
           <TouchableOpacity
             style={styles.modalBackdrop}
@@ -1078,7 +1191,9 @@ export default function TerminalScreen() {
 
           <View style={styles.renameCard}>
             <Text style={styles.renameTitle}>Rename Terminal</Text>
-            <Text style={styles.renameHint}>Only changes the local display name on this device.</Text>
+            <Text style={styles.renameHint}>
+              Only changes the local display name on this device.
+            </Text>
             <TextInput
               style={styles.renameInput}
               value={renameDraft}
@@ -1104,7 +1219,14 @@ export default function TerminalScreen() {
                 onPress={handleSaveRename}
                 activeOpacity={0.84}
               >
-                <Text style={[styles.renameButtonText, styles.renameButtonTextPrimary]}>Save</Text>
+                <Text
+                  style={[
+                    styles.renameButtonText,
+                    styles.renameButtonTextPrimary,
+                  ]}
+                >
+                  Save
+                </Text>
               </TouchableOpacity>
             </View>
           </View>
@@ -1145,22 +1267,29 @@ function MenuAction({
   );
 }
 
-function buildDisplayTabOrder(currentId: string | null | undefined, tabs: StoredTerminalTabs): string[] {
+function buildDisplayTabOrder(
+  currentId: string | null | undefined,
+  tabs: StoredTerminalTabs,
+): string[] {
   if (!currentId) return tabs.order;
-  return tabs.order.includes(currentId) ? tabs.order : [...tabs.order, currentId];
+  return tabs.order.includes(currentId)
+    ? tabs.order
+    : [...tabs.order, currentId];
 }
 
 function getAdjacentTab(
   tabs: TerminalTabDescriptor[],
   currentId: string | null | undefined,
-  direction: 'next' | 'prev',
+  direction: "next" | "prev",
 ): TerminalTabDescriptor | null {
   if (!currentId) return null;
 
-  const currentIndex = tabs.findIndex(tab => tab.id === currentId);
+  const currentIndex = tabs.findIndex((tab) => tab.id === currentId);
   if (currentIndex === -1) return null;
 
-  return tabs[direction === 'next' ? currentIndex + 1 : currentIndex - 1] ?? null;
+  return (
+    tabs[direction === "next" ? currentIndex + 1 : currentIndex - 1] ?? null
+  );
 }
 
 function buildMenuPosition(
@@ -1168,7 +1297,8 @@ function buildMenuPosition(
   windowWidth: number,
 ): { left: number; top: number } {
   const top = Math.max(12, (anchor?.y ?? 12) + (anchor?.height ?? 38) + 16);
-  const preferredLeft = (anchor?.x ?? windowWidth - 14) + (anchor?.width ?? 0) - MENU_POPOVER_WIDTH;
+  const preferredLeft =
+    (anchor?.x ?? windowWidth - 14) + (anchor?.width ?? 0) - MENU_POPOVER_WIDTH;
   const maxLeft = Math.max(12, windowWidth - MENU_POPOVER_WIDTH - 12);
 
   return {
@@ -1198,43 +1328,43 @@ function pickNextTabAfterClose(
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: '#0B1118',
+    backgroundColor: "#0B1118",
   },
   topBar: {
-    flexDirection: 'row',
-    alignItems: 'center',
+    flexDirection: "row",
+    alignItems: "center",
     paddingHorizontal: 10,
     paddingTop: 4,
     paddingBottom: 8,
     borderBottomWidth: 1,
-    borderBottomColor: '#161E2A',
-    backgroundColor: '#11161F',
+    borderBottomColor: "#161E2A",
+    backgroundColor: "#11161F",
   },
   terminalStage: {
     flex: 1,
     minHeight: 0,
-    overflow: 'hidden',
-    justifyContent: 'center',
+    overflow: "hidden",
+    justifyContent: "center",
   },
   terminalShell: {
     flex: 1,
     minHeight: 0,
   },
   swipeHint: {
-    position: 'absolute',
-    top: '50%',
+    position: "absolute",
+    top: "50%",
     zIndex: 1,
-    maxWidth: '46%',
+    maxWidth: "46%",
     minHeight: 40,
     paddingHorizontal: 12,
     borderRadius: 16,
-    backgroundColor: 'rgba(20, 30, 44, 0.92)',
+    backgroundColor: "rgba(20, 30, 44, 0.92)",
     borderWidth: 1,
-    borderColor: 'rgba(255,255,255,0.08)',
-    flexDirection: 'row',
-    alignItems: 'center',
+    borderColor: "rgba(255,255,255,0.08)",
+    flexDirection: "row",
+    alignItems: "center",
     gap: 8,
-    shadowColor: '#000',
+    shadowColor: "#000",
     shadowOpacity: 0.18,
     shadowRadius: 14,
     shadowOffset: { width: 0, height: 8 },
@@ -1247,7 +1377,7 @@ const styles = StyleSheet.create({
   },
   swipeHintText: {
     flexShrink: 1,
-    color: '#DDE5F2',
+    color: "#DDE5F2",
     fontSize: 12,
     fontFamily: Typography.uiFontMedium,
   },
@@ -1259,11 +1389,11 @@ const styles = StyleSheet.create({
     width: 38,
     height: 38,
     borderRadius: 12,
-    alignItems: 'center',
-    justifyContent: 'center',
-    backgroundColor: '#1B2230',
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "#1B2230",
     borderWidth: 1,
-    borderColor: 'rgba(255,255,255,0.05)',
+    borderColor: "rgba(255,255,255,0.05)",
   },
   tabScroller: {
     flex: 1,
@@ -1280,25 +1410,25 @@ const styles = StyleSheet.create({
     paddingLeft: 10,
     paddingRight: 6,
     marginRight: 6,
-    flexDirection: 'row',
-    alignItems: 'center',
-    backgroundColor: '#262633',
+    flexDirection: "row",
+    alignItems: "center",
+    backgroundColor: "#262633",
     borderWidth: 1,
-    borderColor: 'rgba(255,255,255,0.04)',
+    borderColor: "rgba(255,255,255,0.04)",
   },
   tabPillActive: {
-    backgroundColor: '#5A5A67',
-    borderColor: 'rgba(255,255,255,0.08)',
+    backgroundColor: "#5A5A67",
+    borderColor: "rgba(255,255,255,0.08)",
   },
   tabPillPinned: {
-    shadowColor: '#5B9DFF',
+    shadowColor: "#5B9DFF",
     shadowOpacity: 0.12,
     shadowRadius: 5,
   },
   tabMainButton: {
     flex: 1,
-    flexDirection: 'row',
-    alignItems: 'center',
+    flexDirection: "row",
+    alignItems: "center",
     gap: 6,
   },
   tabStatusDot: {
@@ -1309,20 +1439,20 @@ const styles = StyleSheet.create({
   },
   tabLabel: {
     flex: 1,
-    color: '#C6CDDA',
+    color: "#C6CDDA",
     fontSize: 13,
     fontFamily: Typography.uiFontMedium,
     marginRight: 6,
   },
   tabLabelActive: {
-    color: '#F4F6FA',
+    color: "#F4F6FA",
   },
   tabMenuButton: {
     width: 24,
     height: 24,
     borderRadius: 8,
-    alignItems: 'center',
-    justifyContent: 'center',
+    alignItems: "center",
+    justifyContent: "center",
   },
   output: {
     flex: 1,
@@ -1331,20 +1461,20 @@ const styles = StyleSheet.create({
   },
   terminalState: {
     flex: 1,
-    alignItems: 'center',
-    justifyContent: 'center',
+    alignItems: "center",
+    justifyContent: "center",
     paddingHorizontal: 18,
     paddingBottom: 32,
   },
   terminalStateCard: {
-    width: '100%',
+    width: "100%",
     maxWidth: 360,
-    alignItems: 'center',
+    alignItems: "center",
     paddingHorizontal: 18,
     paddingVertical: 20,
     borderRadius: 20,
     borderWidth: 1,
-    backgroundColor: 'rgba(17,22,31,0.9)',
+    backgroundColor: "rgba(17,22,31,0.9)",
   },
   terminalStateDot: {
     width: 10,
@@ -1356,31 +1486,31 @@ const styles = StyleSheet.create({
     color: Colors.textPrimary,
     fontSize: 18,
     fontFamily: Typography.uiFontMedium,
-    textAlign: 'center',
+    textAlign: "center",
   },
   terminalStateDetail: {
     marginTop: 8,
-    color: '#D6DFEC',
+    color: "#D6DFEC",
     fontSize: 13,
     lineHeight: 19,
     fontFamily: Typography.uiFont,
-    textAlign: 'center',
+    textAlign: "center",
   },
   terminalStateHint: {
     marginTop: 8,
-    color: '#8E9DB2',
+    color: "#8E9DB2",
     fontSize: 12,
     lineHeight: 18,
     fontFamily: Typography.uiFont,
-    textAlign: 'center',
+    textAlign: "center",
   },
   terminalStateAction: {
     marginTop: 16,
     minHeight: 38,
     paddingHorizontal: 14,
     borderRadius: 12,
-    alignItems: 'center',
-    justifyContent: 'center',
+    alignItems: "center",
+    justifyContent: "center",
     backgroundColor: Colors.accent,
   },
   terminalStateActionText: {
@@ -1391,22 +1521,22 @@ const styles = StyleSheet.create({
   inputShell: {
     paddingHorizontal: 12,
     paddingTop: 6,
-    backgroundColor: '#0B1118',
+    backgroundColor: "#0B1118",
   },
   modalRoot: {
     flex: 1,
-    justifyContent: 'flex-end',
+    justifyContent: "flex-end",
   },
   popoverRoot: {
     flex: 1,
   },
   popoverBackdrop: {
     ...StyleSheet.absoluteFillObject,
-    backgroundColor: 'transparent',
+    backgroundColor: "transparent",
   },
   modalBackdrop: {
     ...StyleSheet.absoluteFillObject,
-    backgroundColor: 'rgba(6, 8, 12, 0.58)',
+    backgroundColor: "rgba(6, 8, 12, 0.58)",
   },
   sheetCard: {
     borderTopLeftRadius: 28,
@@ -1414,30 +1544,30 @@ const styles = StyleSheet.create({
     paddingHorizontal: 18,
     paddingTop: 12,
     paddingBottom: 28,
-    backgroundColor: '#121A25',
+    backgroundColor: "#121A25",
     borderTopWidth: 1,
-    borderColor: 'rgba(255,255,255,0.06)',
-    maxHeight: '82%',
+    borderColor: "rgba(255,255,255,0.06)",
+    maxHeight: "82%",
   },
   sheetHandle: {
-    alignSelf: 'center',
+    alignSelf: "center",
     width: 42,
     height: 4,
     borderRadius: 2,
-    backgroundColor: '#3A475B',
+    backgroundColor: "#3A475B",
     marginBottom: 14,
   },
   sheetCreateButton: {
     marginTop: 12,
     height: 40,
     borderRadius: 12,
-    backgroundColor: 'rgba(255,255,255,0.04)',
+    backgroundColor: "rgba(255,255,255,0.04)",
     borderWidth: StyleSheet.hairlineWidth,
-    borderColor: 'rgba(255,255,255,0.08)',
-    borderStyle: 'dashed' as const,
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
+    borderColor: "rgba(255,255,255,0.08)",
+    borderStyle: "dashed" as const,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
     gap: 6,
   },
   sheetCreateButtonDisabled: {
@@ -1455,18 +1585,18 @@ const styles = StyleSheet.create({
     paddingBottom: 8,
   },
   sheetEmpty: {
-    color: '#7D8CA0',
+    color: "#7D8CA0",
     fontSize: 13,
     fontFamily: Typography.uiFont,
     paddingVertical: 12,
   },
   agentRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
+    flexDirection: "row",
+    alignItems: "center",
     gap: 10,
     paddingVertical: 12,
     borderBottomWidth: StyleSheet.hairlineWidth,
-    borderBottomColor: 'rgba(255,255,255,0.04)',
+    borderBottomColor: "rgba(255,255,255,0.04)",
   },
   agentRowActive: {
     opacity: 1,
@@ -1489,20 +1619,20 @@ const styles = StyleSheet.create({
     opacity: 0.5,
   },
   menuPopover: {
-    position: 'absolute',
+    position: "absolute",
     borderRadius: 14,
     paddingVertical: 4,
-    backgroundColor: '#161F2B',
+    backgroundColor: "#161F2B",
     borderWidth: 1,
-    borderColor: 'rgba(255,255,255,0.06)',
-    shadowColor: '#000',
+    borderColor: "rgba(255,255,255,0.06)",
+    shadowColor: "#000",
     shadowOpacity: 0.2,
     shadowRadius: 8,
     elevation: 8,
   },
   menuAction: {
     minHeight: 38,
-    justifyContent: 'center',
+    justifyContent: "center",
     paddingHorizontal: 12,
     paddingVertical: 8,
   },
@@ -1515,22 +1645,22 @@ const styles = StyleSheet.create({
     fontFamily: Typography.uiFont,
   },
   menuActionTextDisabled: {
-    color: '#556176',
+    color: "#556176",
   },
   menuActionTextDestructive: {
-    color: '#F09999',
+    color: "#F09999",
   },
   renameRoot: {
     flex: 1,
-    justifyContent: 'center',
+    justifyContent: "center",
     paddingHorizontal: 20,
   },
   renameCard: {
     borderRadius: 18,
     padding: 16,
-    backgroundColor: '#161F2B',
+    backgroundColor: "#161F2B",
     borderWidth: 1,
-    borderColor: 'rgba(255,255,255,0.06)',
+    borderColor: "rgba(255,255,255,0.06)",
   },
   renameTitle: {
     color: Colors.textPrimary,
@@ -1539,7 +1669,7 @@ const styles = StyleSheet.create({
   },
   renameHint: {
     marginTop: 4,
-    color: '#7D8CA0',
+    color: "#7D8CA0",
     fontSize: 12,
     fontFamily: Typography.uiFont,
   },
@@ -1547,8 +1677,8 @@ const styles = StyleSheet.create({
     marginTop: 14,
     borderRadius: 12,
     borderWidth: 1,
-    borderColor: '#263345',
-    backgroundColor: '#111923',
+    borderColor: "#263345",
+    backgroundColor: "#111923",
     color: Colors.textPrimary,
     paddingHorizontal: 12,
     paddingVertical: 11,
@@ -1556,8 +1686,8 @@ const styles = StyleSheet.create({
     fontFamily: Typography.uiFont,
   },
   renameActions: {
-    flexDirection: 'row',
-    justifyContent: 'flex-end',
+    flexDirection: "row",
+    justifyContent: "flex-end",
     marginTop: 14,
     gap: 10,
   },
@@ -1565,9 +1695,9 @@ const styles = StyleSheet.create({
     minWidth: 72,
     height: 38,
     borderRadius: 10,
-    alignItems: 'center',
-    justifyContent: 'center',
-    backgroundColor: '#202A38',
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "#202A38",
   },
   renameButtonPrimary: {
     backgroundColor: Colors.accent,
@@ -1578,6 +1708,6 @@ const styles = StyleSheet.create({
     fontFamily: Typography.uiFontMedium,
   },
   renameButtonTextPrimary: {
-    color: '#07111E',
+    color: "#07111E",
   },
 });

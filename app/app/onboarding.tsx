@@ -1,9 +1,9 @@
-import React from 'react';
-import { View, Text, TouchableOpacity, StyleSheet } from 'react-native';
-import { useRouter } from 'expo-router';
-import { SafeAreaView } from 'react-native-safe-area-context';
-import { Colors, Spacing, Typography } from '../constants/tokens';
-import { markOnboarded } from '../services/storage';
+import React from "react";
+import { View, Text, TouchableOpacity, StyleSheet } from "react-native";
+import { useRouter } from "expo-router";
+import { SafeAreaView } from "react-native-safe-area-context";
+import { Colors, Spacing, Typography } from "../constants/tokens";
+import { markOnboarded } from "../services/storage";
 
 export default function OnboardingScreen() {
   const router = useRouter();
@@ -13,14 +13,20 @@ export default function OnboardingScreen() {
       <View style={styles.content}>
         <Text style={styles.logo}>☯</Text>
         <Text style={styles.title}>Welcome to zen</Text>
-        <Text style={styles.subtitle}>Connect to your homelab agent control plane</Text>
+        <Text style={styles.subtitle}>
+          Pair your phone with a trusted daemon identity
+        </Text>
 
         <View style={styles.step}>
           <Text style={styles.stepNum}>1</Text>
           <View style={styles.stepContent}>
-            <Text style={styles.stepTitle}>Install zen-daemon on your server</Text>
+            <Text style={styles.stepTitle}>
+              Install zen-daemon on your server
+            </Text>
             <View style={styles.codeBlock}>
-              <Text style={styles.code}>go install github.com/daoleno/zen/daemon/cmd/zen-daemon@latest</Text>
+              <Text style={styles.code}>
+                go install github.com/daoleno/zen/daemon/cmd/zen-daemon@latest
+              </Text>
             </View>
           </View>
         </View>
@@ -30,27 +36,40 @@ export default function OnboardingScreen() {
           <View style={styles.stepContent}>
             <Text style={styles.stepTitle}>Run zen-daemon</Text>
             <View style={styles.codeBlock}>
-              <Text style={styles.code}>zen-daemon</Text>
+              <Text style={styles.code}>
+                zen-daemon -advertise-url https://your-host.example/ws
+              </Text>
             </View>
-            <Text style={styles.stepHint}>By default it listens locally on :9876, prints reachable endpoints, and shows a QR/deep link with no hosted relay required.</Text>
+            <Text style={styles.stepHint}>
+              zen-daemon listens on 127.0.0.1:9876 by default. Expose that local
+              port through Cloudflare Tunnel, Tailscale, or your own reverse
+              proxy, then pass the public /ws URL with -advertise-url.
+            </Text>
           </View>
         </View>
 
         <View style={styles.step}>
           <Text style={styles.stepNum}>3</Text>
           <View style={styles.stepContent}>
-            <Text style={styles.stepTitle}>Import or enter your own endpoint</Text>
-            <Text style={styles.stepHint}>Scan the daemon QR or use LAN, Tailscale, your own reverse proxy, or a tunnel URL. Add a secret only if you protected the daemon with one.</Text>
+            <Text style={styles.stepTitle}>Import the pairing link</Text>
+            <Text style={styles.stepHint}>
+              Scan the QR or paste the zen:// pairing link printed by
+              zen-daemon. zen binds to the daemon key directly, so there is no
+              shared secret to manage.
+            </Text>
           </View>
         </View>
 
-        <TouchableOpacity style={styles.doneBtn} onPress={async () => {
-          await markOnboarded();
-          router.replace({
-            pathname: '/settings',
-            params: { addServer: Date.now().toString() },
-          });
-        }}>
+        <TouchableOpacity
+          style={styles.doneBtn}
+          onPress={async () => {
+            await markOnboarded();
+            router.replace({
+              pathname: "/settings",
+              params: { addServer: Date.now().toString() },
+            });
+          }}
+        >
           <Text style={styles.doneBtnText}>Get Started</Text>
         </TouchableOpacity>
       </View>
@@ -60,11 +79,27 @@ export default function OnboardingScreen() {
 
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: Colors.bgPrimary },
-  content: { flex: 1, padding: Spacing.screenMargin * 2, justifyContent: 'center' },
-  logo: { fontSize: 56, textAlign: 'center', marginBottom: 16 },
-  title: { color: Colors.textPrimary, fontSize: 28, fontFamily: Typography.uiFontMedium, textAlign: 'center' },
-  subtitle: { color: Colors.textSecondary, fontSize: 15, fontFamily: Typography.uiFont, textAlign: 'center', marginTop: 8, marginBottom: 40 },
-  step: { flexDirection: 'row', marginBottom: 24 },
+  content: {
+    flex: 1,
+    padding: Spacing.screenMargin * 2,
+    justifyContent: "center",
+  },
+  logo: { fontSize: 56, textAlign: "center", marginBottom: 16 },
+  title: {
+    color: Colors.textPrimary,
+    fontSize: 28,
+    fontFamily: Typography.uiFontMedium,
+    textAlign: "center",
+  },
+  subtitle: {
+    color: Colors.textSecondary,
+    fontSize: 15,
+    fontFamily: Typography.uiFont,
+    textAlign: "center",
+    marginTop: 8,
+    marginBottom: 40,
+  },
+  step: { flexDirection: "row", marginBottom: 24 },
   stepNum: {
     color: Colors.accent,
     fontSize: 20,
@@ -73,22 +108,40 @@ const styles = StyleSheet.create({
     marginTop: 2,
   },
   stepContent: { flex: 1 },
-  stepTitle: { color: Colors.textPrimary, fontSize: 16, fontFamily: Typography.uiFontMedium, marginBottom: 8 },
-  stepHint: { color: Colors.textSecondary, fontSize: 13, fontFamily: Typography.uiFont, marginTop: 6 },
+  stepTitle: {
+    color: Colors.textPrimary,
+    fontSize: 16,
+    fontFamily: Typography.uiFontMedium,
+    marginBottom: 8,
+  },
+  stepHint: {
+    color: Colors.textSecondary,
+    fontSize: 13,
+    fontFamily: Typography.uiFont,
+    marginTop: 6,
+  },
   codeBlock: {
     backgroundColor: Colors.bgSurface,
     borderRadius: 8,
     padding: 12,
   },
-  code: { color: Colors.accent, fontFamily: Typography.terminalFont, fontSize: 12 },
+  code: {
+    color: Colors.accent,
+    fontFamily: Typography.terminalFont,
+    fontSize: 12,
+  },
   doneBtn: {
     backgroundColor: Colors.accent,
     borderRadius: 12,
     paddingVertical: 16,
-    alignItems: 'center',
+    alignItems: "center",
     marginTop: 32,
     minHeight: 52,
-    justifyContent: 'center',
+    justifyContent: "center",
   },
-  doneBtnText: { color: Colors.bgPrimary, fontFamily: Typography.uiFontMedium, fontSize: 17 },
+  doneBtnText: {
+    color: Colors.bgPrimary,
+    fontFamily: Typography.uiFontMedium,
+    fontSize: 17,
+  },
 });

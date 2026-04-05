@@ -1,6 +1,6 @@
-import type { StoredServer } from './storage';
-import { buildAuthorizationHeader } from './auth';
-import { diagnoseConnectionIssue } from './connectionIssue';
+import type { StoredServer } from "./storage";
+import { buildAuthorizationHeader } from "./auth";
+import { diagnoseConnectionIssue } from "./connectionIssue";
 
 type MessageHandler = (data: any) => void;
 
@@ -8,7 +8,8 @@ interface ConnectionMeta {
   serverId: string;
   serverName: string;
   serverUrl: string;
-  authSecret?: string;
+  daemonId: string;
+  daemonPublicKey: string;
 }
 
 class ServerSocket {
@@ -44,7 +45,7 @@ class ServerSocket {
       this.reconnectTimer = null;
     }
 
-    this.emit('connection_issue', { issue: null });
+    this.emit("connection_issue", { issue: null });
 
     const ws = this.ws;
     this.ws = null;
@@ -66,8 +67,8 @@ class ServerSocket {
 
   private startConnectAttempt() {
     const attemptId = ++this.attemptSequence;
-    this.emit('connecting', {});
-    this.doConnect(attemptId);
+    this.emit("connecting", {});
+    void this.doConnect(attemptId);
   }
 
   private scheduleReconnect() {
@@ -87,13 +88,17 @@ class ServerSocket {
       }
       this.startConnectAttempt();
     }, delay);
-    this.reconnectDelay = Math.min(this.reconnectDelay * 2, this.maxReconnectDelay);
+    this.reconnectDelay = Math.min(
+      this.reconnectDelay * 2,
+      this.maxReconnectDelay,
+    );
   }
 
   private async reportConnectionIssue(attemptId: number) {
     const issue = await diagnoseConnectionIssue({
       serverUrl: this.meta.serverUrl,
-      secret: this.meta.authSecret,
+      daemonId: this.meta.daemonId,
+      daemonPublicKey: this.meta.daemonPublicKey,
     });
 
     if (attemptId !== this.attemptSequence) {
@@ -106,19 +111,24 @@ class ServerSocket {
       return;
     }
 
-    this.emit('connection_issue', { issue });
+    this.emit("connection_issue", { issue });
   }
 
-  private doConnect(attemptId: number) {
+  private async doConnect(attemptId: number) {
     let opened = false;
 
     try {
-      const authHeader = buildAuthorizationHeader(this.meta.authSecret);
-      const wsOptions = authHeader ? { headers: { Authorization: authHeader } } : undefined;
+      const authHeader = await buildAuthorizationHeader({
+        daemonId: this.meta.daemonId,
+        purpose: "zen-connect",
+      });
+      if (attemptId !== this.attemptSequence || !this.shouldReconnect) {
+        return;
+      }
+
+      const wsOptions = { headers: { Authorization: authHeader } };
       const WebSocketCtor = WebSocket as any;
-      const ws = wsOptions
-        ? new WebSocketCtor(this.meta.serverUrl, [], wsOptions)
-        : new WebSocketCtor(this.meta.serverUrl);
+      const ws = new WebSocketCtor(this.meta.serverUrl, [], wsOptions);
       this.ws = ws;
 
       ws.onopen = () => {
@@ -129,8 +139,8 @@ class ServerSocket {
 
         opened = true;
         this.reconnectDelay = 1000;
-        this.emit('connection_issue', { issue: null });
-        this.emit('connected', {});
+        this.emit("connection_issue", { issue: null });
+        this.emit("connected", {});
 
         while (this.pendingQueue.length > 0) {
           const msg = this.pendingQueue.shift()!;
@@ -155,7 +165,7 @@ class ServerSocket {
           return;
         }
 
-        this.emit('disconnected', {});
+        this.emit("disconnected", {});
         if (!opened) {
           void this.reportConnectionIssue(attemptId);
         }
@@ -175,7 +185,7 @@ class ServerSocket {
       }
 
       this.ws = null;
-      this.emit('disconnected', {});
+      this.emit("disconnected", {});
       void this.reportConnectionIssue(attemptId);
       this.scheduleReconnect();
     }
@@ -208,8 +218,8 @@ class MultiServerWebSocketClient {
     this.connections.get(serverId)?.disconnect();
     this.connections.delete(serverId);
     this.serverMeta.delete(serverId);
-    this.emit('disconnected', serverId, {});
-    this.emit('connection_issue', serverId, { issue: null });
+    this.emit("disconnected", serverId, {});
+    this.emit("connection_issue", serverId, { issue: null });
   }
 
   disconnectAll() {
@@ -225,14 +235,25 @@ class MultiServerWebSocketClient {
 
   off(type: string, handler: MessageHandler) {
     const existing = this.handlers.get(type) || [];
-    this.handlers.set(type, existing.filter(current => current !== handler));
+    this.handlers.set(
+      type,
+      existing.filter((current) => current !== handler),
+    );
   }
 
   send(serverId: string, msg: object) {
     this.connections.get(serverId)?.send(msg);
   }
 
-  createSession(serverId: string, options?: { targetId?: string; cwd?: string; command?: string; name?: string }) {
+  createSession(
+    serverId: string,
+    options?: {
+      targetId?: string;
+      cwd?: string;
+      command?: string;
+      name?: string;
+    },
+  ) {
     const requestId = `${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
 
     return new Promise<string>((resolve, reject) => {
@@ -240,35 +261,37 @@ class MultiServerWebSocketClient {
         if (timer) {
           clearTimeout(timer);
         }
-        this.off('session_created', handleCreated);
-        this.off('error', handleError);
+        this.off("session_created", handleCreated);
+        this.off("error", handleError);
       };
 
       const handleCreated = (payload: any) => {
-        if (payload.serverId !== serverId || payload.request_id !== requestId) return;
+        if (payload.serverId !== serverId || payload.request_id !== requestId)
+          return;
         cleanup();
-        if (typeof payload.agent_id === 'string' && payload.agent_id) {
+        if (typeof payload.agent_id === "string" && payload.agent_id) {
           resolve(payload.agent_id);
           return;
         }
-        reject(new Error('Daemon returned an invalid session id.'));
+        reject(new Error("Daemon returned an invalid session id."));
       };
 
       const handleError = (payload: any) => {
-        if (payload.serverId !== serverId || payload.request_id !== requestId) return;
+        if (payload.serverId !== serverId || payload.request_id !== requestId)
+          return;
         cleanup();
-        reject(new Error(payload.message || 'Failed to create terminal.'));
+        reject(new Error(payload.message || "Failed to create terminal."));
       };
 
       const timer = setTimeout(() => {
         cleanup();
-        reject(new Error('Timed out while creating a new terminal.'));
+        reject(new Error("Timed out while creating a new terminal."));
       }, 10000);
 
-      this.on('session_created', handleCreated);
-      this.on('error', handleError);
+      this.on("session_created", handleCreated);
+      this.on("error", handleError);
       this.send(serverId, {
-        type: 'create_session',
+        type: "create_session",
         request_id: requestId,
         target_id: options?.targetId,
         cwd: options?.cwd,
@@ -281,73 +304,113 @@ class MultiServerWebSocketClient {
   listDir(serverId: string, path?: string) {
     const requestId = `${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
 
-    return new Promise<{ path: string; entries: { name: string; path: string }[] }>((resolve, reject) => {
+    return new Promise<{
+      path: string;
+      entries: { name: string; path: string }[];
+    }>((resolve, reject) => {
       const cleanup = () => {
         if (timer) clearTimeout(timer);
-        this.off('dir_list', handleList);
-        this.off('error', handleError);
+        this.off("dir_list", handleList);
+        this.off("error", handleError);
       };
 
       const handleList = (payload: any) => {
-        if (payload.serverId !== serverId || payload.request_id !== requestId) return;
+        if (payload.serverId !== serverId || payload.request_id !== requestId)
+          return;
         cleanup();
         resolve({ path: payload.path, entries: payload.entries ?? [] });
       };
 
       const handleError = (payload: any) => {
-        if (payload.serverId !== serverId || payload.request_id !== requestId) return;
+        if (payload.serverId !== serverId || payload.request_id !== requestId)
+          return;
         cleanup();
-        reject(new Error(payload.message || 'Failed to list directory.'));
+        reject(new Error(payload.message || "Failed to list directory."));
       };
 
       const timer = setTimeout(() => {
         cleanup();
-        reject(new Error('Timed out while listing directory.'));
+        reject(new Error("Timed out while listing directory."));
       }, 10000);
 
-      this.on('dir_list', handleList);
-      this.on('error', handleError);
+      this.on("dir_list", handleList);
+      this.on("error", handleError);
       this.send(serverId, {
-        type: 'list_dir',
+        type: "list_dir",
         request_id: requestId,
-        cwd: path ?? '',
+        cwd: path ?? "",
       });
     });
   }
 
-  openTerminal(serverId: string, targetId: string, backend: string = 'tmux', cols?: number, rows?: number) {
-    this.send(serverId, { type: 'terminal_open', target_id: targetId, backend, cols, rows });
+  openTerminal(
+    serverId: string,
+    targetId: string,
+    backend: string = "tmux",
+    cols?: number,
+    rows?: number,
+  ) {
+    this.send(serverId, {
+      type: "terminal_open",
+      target_id: targetId,
+      backend,
+      cols,
+      rows,
+    });
   }
 
   sendTerminalInput(serverId: string, sessionId: string, data: string) {
-    this.send(serverId, { type: 'terminal_input', session_id: sessionId, data });
+    this.send(serverId, {
+      type: "terminal_input",
+      session_id: sessionId,
+      data,
+    });
   }
 
-  resizeTerminal(serverId: string, sessionId: string, cols: number, rows: number) {
-    this.send(serverId, { type: 'terminal_resize', session_id: sessionId, cols, rows });
+  resizeTerminal(
+    serverId: string,
+    sessionId: string,
+    cols: number,
+    rows: number,
+  ) {
+    this.send(serverId, {
+      type: "terminal_resize",
+      session_id: sessionId,
+      cols,
+      rows,
+    });
   }
 
   scrollTerminal(serverId: string, sessionId: string, lines: number) {
-    this.send(serverId, { type: 'terminal_scroll', session_id: sessionId, lines });
+    this.send(serverId, {
+      type: "terminal_scroll",
+      session_id: sessionId,
+      lines,
+    });
   }
 
   cancelTerminalScroll(serverId: string, sessionId: string) {
-    this.send(serverId, { type: 'terminal_scroll_cancel', session_id: sessionId });
+    this.send(serverId, {
+      type: "terminal_scroll_cancel",
+      session_id: sessionId,
+    });
   }
 
   closeTerminal(serverId: string, sessionId: string) {
-    this.send(serverId, { type: 'terminal_close', session_id: sessionId });
+    this.send(serverId, { type: "terminal_close", session_id: sessionId });
   }
 
   sendAction(serverId: string, agentId: string, action: string) {
-    this.send(serverId, { type: 'send_action', agent_id: agentId, action });
+    this.send(serverId, { type: "send_action", agent_id: agentId, action });
   }
 
   setActiveAgent(serverId: string, agentId: string | null) {
-    this.send(serverId, { type: 'set_active_agent', agent_id: agentId ?? '' });
+    this.send(serverId, { type: "set_active_agent", agent_id: agentId ?? "" });
   }
 
-  clearActiveAgentsExcept(selected: { serverId: string; agentId: string } | null) {
+  clearActiveAgentsExcept(
+    selected: { serverId: string; agentId: string } | null,
+  ) {
     for (const [serverId] of this.connections) {
       if (selected && selected.serverId === serverId) {
         this.setActiveAgent(serverId, selected.agentId);
@@ -361,7 +424,7 @@ class MultiServerWebSocketClient {
     return new Promise((resolve, reject) => {
       const cleanup = () => {
         if (timer) clearTimeout(timer);
-        this.off('stats_data', handleStats);
+        this.off("stats_data", handleStats);
       };
 
       const handleStats = (payload: any) => {
@@ -372,20 +435,20 @@ class MultiServerWebSocketClient {
 
       const timer = setTimeout(() => {
         cleanup();
-        reject(new Error('Stats request timed out.'));
+        reject(new Error("Stats request timed out."));
       }, 15000);
 
-      this.on('stats_data', handleStats);
-      this.send(serverId, { type: 'get_stats' });
+      this.on("stats_data", handleStats);
+      this.send(serverId, { type: "get_stats" });
     });
   }
 
   killAgent(serverId: string, agentId: string) {
-    this.send(serverId, { type: 'kill_agent', agent_id: agentId });
+    this.send(serverId, { type: "kill_agent", agent_id: agentId });
   }
 
   listAgents(serverId: string) {
-    this.send(serverId, { type: 'list_agents' });
+    this.send(serverId, { type: "list_agents" });
   }
 
   isConnected(serverId: string) {
@@ -393,7 +456,9 @@ class MultiServerWebSocketClient {
   }
 
   connectedServerIds() {
-    return [...this.connections.keys()].filter(serverId => this.isConnected(serverId));
+    return [...this.connections.keys()].filter((serverId) =>
+      this.isConnected(serverId),
+    );
   }
 
   private emit(type: string, serverId: string, payload: any) {
@@ -402,10 +467,10 @@ class MultiServerWebSocketClient {
       ...payload,
       serverId,
       serverName: meta?.serverName || serverId,
-      serverUrl: meta?.serverUrl || '',
+      serverUrl: meta?.serverUrl || "",
     };
     const handlers = this.handlers.get(type) || [];
-    handlers.forEach(handler => handler(data));
+    handlers.forEach((handler) => handler(data));
   }
 }
 
@@ -414,7 +479,8 @@ function toConnectionMeta(server: StoredServer): ConnectionMeta {
     serverId: server.id,
     serverName: server.name,
     serverUrl: server.url,
-    authSecret: server.secret,
+    daemonId: server.daemonId,
+    daemonPublicKey: server.daemonPublicKey,
   };
 }
 

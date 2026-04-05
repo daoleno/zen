@@ -1,98 +1,200 @@
 package auth
 
 import (
+	"crypto/ed25519"
+	"crypto/rand"
+	"encoding/hex"
+	"errors"
+	"strconv"
 	"testing"
 	"time"
 )
 
-func TestGenerateAndVerify(t *testing.T) {
-	secret, err := GenerateSecret()
+func TestManagerEnrollAndVerifyAuthorization(t *testing.T) {
+	manager, err := NewManager(t.TempDir())
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("NewManager returned error: %v", err)
 	}
 
-	msg := []byte("hello world")
-	token := secret.Sign(msg)
-
-	if !secret.Verify(token, msg, 5*time.Minute) {
-		t.Error("valid token should verify")
-	}
-}
-
-func TestVerifyWrongMessage(t *testing.T) {
-	secret, _ := GenerateSecret()
-	token := secret.Sign([]byte("hello"))
-	if secret.Verify(token, []byte("world"), 5*time.Minute) {
-		t.Error("wrong message should not verify")
-	}
-}
-
-func TestVerifyWrongSecret(t *testing.T) {
-	s1, _ := GenerateSecret()
-	s2, _ := GenerateSecret()
-	token := s1.Sign([]byte("test"))
-	if s2.Verify(token, []byte("test"), 5*time.Minute) {
-		t.Error("different secret should not verify")
-	}
-}
-
-func TestVerifyExpired(t *testing.T) {
-	secret, _ := GenerateSecret()
-	token := secret.Sign([]byte("test"))
-	// With a 0 maxAge, any token is expired.
-	if secret.Verify(token, []byte("test"), 0) {
-		t.Error("expired token should not verify")
-	}
-}
-
-func TestVerifyBadFormat(t *testing.T) {
-	secret, _ := GenerateSecret()
-	if secret.Verify("not-a-valid-token", []byte("test"), 5*time.Minute) {
-		t.Error("bad format should not verify")
-	}
-	if secret.Verify("abc:def", []byte("test"), 5*time.Minute) {
-		t.Error("non-numeric timestamp should not verify")
-	}
-}
-
-func TestLoadSecret(t *testing.T) {
-	s1, _ := GenerateSecret()
-	s2, err := LoadSecret(s1.Hex())
+	pairing, err := manager.IssuePairingToken(time.Minute)
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("IssuePairingToken returned error: %v", err)
 	}
 
-	msg := []byte("roundtrip")
-	token := s1.Sign(msg)
-	if !s2.Verify(token, msg, 5*time.Minute) {
-		t.Error("loaded secret should verify tokens from original")
+	publicKey, privateKey, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("GenerateKey returned error: %v", err)
+	}
+
+	device, err := manager.EnrollDevice(
+		pairing.Value,
+		manager.DaemonID(),
+		manager.PublicKeyHex(),
+		"device-1",
+		"phone",
+		hex.EncodeToString(publicKey),
+	)
+	if err != nil {
+		t.Fatalf("EnrollDevice returned error: %v", err)
+	}
+	if device.ID != "device-1" {
+		t.Fatalf("unexpected device id: %s", device.ID)
+	}
+
+	header := buildTestAuthorizationHeader(t, privateKey, manager.DaemonID(), "device-1", "zen-probe")
+	verifiedDevice, err := manager.VerifyAuthorization(header, "zen-probe", time.Minute)
+	if err != nil {
+		t.Fatalf("VerifyAuthorization returned error: %v", err)
+	}
+	if verifiedDevice.ID != "device-1" {
+		t.Fatalf("unexpected verified device id: %s", verifiedDevice.ID)
 	}
 }
 
-func TestVerifyRaw(t *testing.T) {
-	secret, _ := GenerateSecret()
-	if !secret.VerifyRaw(secret.Hex()) {
-		t.Error("raw secret should verify")
+func TestManagerVerifyAuthorizationRejectsReplay(t *testing.T) {
+	manager, err := NewManager(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewManager returned error: %v", err)
 	}
-	if secret.VerifyRaw("deadbeef") {
-		t.Error("wrong raw secret should not verify")
+
+	pairing, err := manager.IssuePairingToken(time.Minute)
+	if err != nil {
+		t.Fatalf("IssuePairingToken returned error: %v", err)
+	}
+
+	publicKey, privateKey, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("GenerateKey returned error: %v", err)
+	}
+
+	if _, err := manager.EnrollDevice(
+		pairing.Value,
+		manager.DaemonID(),
+		manager.PublicKeyHex(),
+		"device-1",
+		"phone",
+		hex.EncodeToString(publicKey),
+	); err != nil {
+		t.Fatalf("EnrollDevice returned error: %v", err)
+	}
+
+	header := buildTestAuthorizationHeader(t, privateKey, manager.DaemonID(), "device-1", "zen-probe")
+	if _, err := manager.VerifyAuthorization(header, "zen-probe", time.Minute); err != nil {
+		t.Fatalf("first VerifyAuthorization returned error: %v", err)
+	}
+
+	if _, err := manager.VerifyAuthorization(header, "zen-probe", time.Minute); !errors.Is(err, ErrReplayDetected) {
+		t.Fatalf("expected ErrReplayDetected, got %v", err)
 	}
 }
 
-func TestVerifyAuthorization(t *testing.T) {
-	secret, _ := GenerateSecret()
-	message := []byte("zen-connect")
-
-	if !secret.VerifyAuthorization("Bearer "+secret.Hex(), message, 5*time.Minute) {
-		t.Error("bearer raw secret should verify")
+func TestManagerEnrollDeviceRejectsExpiredPairingToken(t *testing.T) {
+	manager, err := NewManager(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewManager returned error: %v", err)
 	}
 
-	token := secret.Sign(message)
-	if !secret.VerifyAuthorization("Bearer "+token, message, 5*time.Minute) {
-		t.Error("bearer signed token should verify")
+	pairing, err := manager.IssuePairingToken(time.Minute)
+	if err != nil {
+		t.Fatalf("IssuePairingToken returned error: %v", err)
 	}
 
-	if secret.VerifyAuthorization("Bearer wrong", message, 5*time.Minute) {
-		t.Error("invalid authorization header should not verify")
+	manager.mu.Lock()
+	manager.pairings[pairing.Value] = PairingToken{
+		Value:     pairing.Value,
+		ExpiresAt: time.Now().Add(-time.Minute),
 	}
+	if err := manager.savePairingsLocked(); err != nil {
+		manager.mu.Unlock()
+		t.Fatalf("savePairingsLocked returned error: %v", err)
+	}
+	manager.mu.Unlock()
+
+	publicKey, _, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("GenerateKey returned error: %v", err)
+	}
+
+	if _, err := manager.EnrollDevice(
+		pairing.Value,
+		manager.DaemonID(),
+		manager.PublicKeyHex(),
+		"device-1",
+		"phone",
+		hex.EncodeToString(publicKey),
+	); !errors.Is(err, ErrExpiredPairingToken) {
+		t.Fatalf("expected ErrExpiredPairingToken, got %v", err)
+	}
+}
+
+func TestManagerCreateServerAssertion(t *testing.T) {
+	manager, err := NewManager(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewManager returned error: %v", err)
+	}
+
+	assertion, err := manager.CreateServerAssertion("zen-health")
+	if err != nil {
+		t.Fatalf("CreateServerAssertion returned error: %v", err)
+	}
+
+	signature, err := decodeFixedHex(assertion.SignatureHex, ed25519.SignatureSize)
+	if err != nil {
+		t.Fatalf("decodeFixedHex returned error: %v", err)
+	}
+
+	payload := BuildServerAssertionPayload("zen-health", manager.DaemonID(), assertion.Timestamp, assertion.NonceHex)
+	if !ed25519.Verify(manager.publicKey, payload, signature) {
+		t.Fatal("server assertion signature did not verify")
+	}
+}
+
+func TestPairingTokensPersistAcrossManagers(t *testing.T) {
+	storageDir := t.TempDir()
+
+	runningManager, err := NewManager(storageDir)
+	if err != nil {
+		t.Fatalf("NewManager returned error: %v", err)
+	}
+	pairManager, err := NewManager(storageDir)
+	if err != nil {
+		t.Fatalf("second NewManager returned error: %v", err)
+	}
+
+	pairing, err := pairManager.IssuePairingToken(time.Minute)
+	if err != nil {
+		t.Fatalf("IssuePairingToken returned error: %v", err)
+	}
+
+	publicKey, _, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("GenerateKey returned error: %v", err)
+	}
+
+	device, err := runningManager.EnrollDevice(
+		pairing.Value,
+		runningManager.DaemonID(),
+		runningManager.PublicKeyHex(),
+		"device-2",
+		"tablet",
+		hex.EncodeToString(publicKey),
+	)
+	if err != nil {
+		t.Fatalf("EnrollDevice returned error: %v", err)
+	}
+	if device.ID != "device-2" {
+		t.Fatalf("unexpected device id: %s", device.ID)
+	}
+}
+
+func buildTestAuthorizationHeader(t *testing.T, privateKey ed25519.PrivateKey, daemonID, deviceID, purpose string) string {
+	t.Helper()
+
+	nonceHex, err := randomHex(16)
+	if err != nil {
+		t.Fatalf("randomHex returned error: %v", err)
+	}
+	timestamp := strconv.FormatInt(time.Now().UTC().UnixMilli(), 10)
+	signature := ed25519.Sign(privateKey, BuildSignaturePayload(purpose, daemonID, deviceID, timestamp, nonceHex))
+	return AuthorizationHeaderPrefix + "v1:" + deviceID + ":" + daemonID + ":" + timestamp + ":" + nonceHex + ":" + hex.EncodeToString(signature)
 }
