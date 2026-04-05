@@ -521,7 +521,7 @@ func (c *Collector) collectCodexStats(home string) (map[string]codexDailyEntry, 
 	}
 
 	out, err := exec.Command(sqlite3, "-json", dbPath,
-		"SELECT id, cwd, model, tokens_used, created_at, rollout_path FROM threads WHERE tokens_used > 0").Output()
+		"SELECT id, cwd, model, tokens_used, created_at, updated_at, rollout_path FROM threads WHERE tokens_used > 0").Output()
 	if err != nil {
 		log.Printf("[stats] sqlite3 query failed: %v", err)
 		return daily, modelsByDate, projectsByDate
@@ -533,6 +533,7 @@ func (c *Collector) collectCodexStats(home string) (map[string]codexDailyEntry, 
 		Model       string `json:"model"`
 		TokensUsed  int64  `json:"tokens_used"`
 		CreatedAt   int64  `json:"created_at"`
+		UpdatedAt   int64  `json:"updated_at"`
 		RolloutPath string `json:"rollout_path"`
 	}
 	if err := json.Unmarshal(out, &threads); err != nil {
@@ -541,64 +542,79 @@ func (c *Collector) collectCodexStats(home string) (map[string]codexDailyEntry, 
 	}
 
 	for _, t := range threads {
-		// created_at is Unix timestamp in seconds
-		date := time.Unix(t.CreatedAt, 0).Format("2006-01-02")
-		usage, err := readCodexUsage(t.RolloutPath)
-		if err != nil {
-			usage = codexUsage{
-				totalTokens: t.TokensUsed,
-				inputTokens: t.TokensUsed,
-			}
-		}
-
-		d := daily[date]
-		d.sessions++
-		d.totalTokens += usage.totalTokens
-		d.inputTokens += usage.inputTokens
-		d.outputTokens += usage.outputTokens
-		d.reasoningTokens += usage.reasoningTokens
-		d.cacheRead += usage.cacheRead
-		daily[date] = d
-
 		modelID := t.Model
 		if modelID == "" {
 			modelID = "codex-mini-latest" // Codex CLI default model
 		}
-		models := modelsByDate[date]
-		if models == nil {
-			models = make(map[string]modelAggEntry)
-			modelsByDate[date] = models
-		}
-		m := models[modelID]
-		m.totalTokens += usage.totalTokens
-		m.inputTokens += usage.inputTokens
-		m.outputTokens += usage.outputTokens
-		m.reasoning += usage.reasoningTokens
-		m.cacheRead += usage.cacheRead
-		m.sessions++
-		models[modelID] = m
-
 		projectName := filepath.Base(t.Cwd)
-		if projectName == "" || projectName == "." || projectName == "/" {
-			continue
+		if projectName == "." || projectName == "/" {
+			projectName = ""
 		}
-		projects := projectsByDate[date]
-		if projects == nil {
-			projects = make(map[string]*projectAggEntry)
-			projectsByDate[date] = projects
+
+		usageByDate, err := readCodexUsageByDate(t.RolloutPath, time.Local)
+		if err != nil || len(usageByDate) == 0 {
+			fallbackDate := dateFromUnixTimestamp(t.UpdatedAt)
+			if fallbackDate == "" {
+				fallbackDate = dateFromUnixTimestamp(t.CreatedAt)
+			}
+			usageByDate = map[string]codexUsage{
+				fallbackDate: {
+					totalTokens: t.TokensUsed,
+					inputTokens: t.TokensUsed,
+				},
+			}
 		}
-		p := projects[projectName]
-		if p == nil {
-			p = &projectAggEntry{}
-			projects[projectName] = p
+
+		for date, usage := range usageByDate {
+			if !usage.hasTokens() {
+				continue
+			}
+
+			d := daily[date]
+			d.sessions++
+			d.totalTokens += usage.totalTokens
+			d.inputTokens += usage.inputTokens
+			d.outputTokens += usage.outputTokens
+			d.reasoningTokens += usage.reasoningTokens
+			d.cacheRead += usage.cacheRead
+			daily[date] = d
+
+			models := modelsByDate[date]
+			if models == nil {
+				models = make(map[string]modelAggEntry)
+				modelsByDate[date] = models
+			}
+			m := models[modelID]
+			m.totalTokens += usage.totalTokens
+			m.inputTokens += usage.inputTokens
+			m.outputTokens += usage.outputTokens
+			m.reasoning += usage.reasoningTokens
+			m.cacheRead += usage.cacheRead
+			m.sessions++
+			models[modelID] = m
+
+			if projectName == "" {
+				continue
+			}
+
+			projects := projectsByDate[date]
+			if projects == nil {
+				projects = make(map[string]*projectAggEntry)
+				projectsByDate[date] = projects
+			}
+			p := projects[projectName]
+			if p == nil {
+				p = &projectAggEntry{}
+				projects[projectName] = p
+			}
+			p.totalTokens += usage.totalTokens
+			p.inputTokens += usage.inputTokens
+			p.outputTokens += usage.outputTokens
+			p.reasoning += usage.reasoningTokens
+			p.cacheRead += usage.cacheRead
+			p.cost += computeCost(modelID, usage.inputTokens, usage.outputTokens, usage.reasoningTokens, usage.cacheRead, 0)
+			p.sessions++
 		}
-		p.totalTokens += usage.totalTokens
-		p.inputTokens += usage.inputTokens
-		p.outputTokens += usage.outputTokens
-		p.reasoning += usage.reasoningTokens
-		p.cacheRead += usage.cacheRead
-		p.cost += computeCost(modelID, usage.inputTokens, usage.outputTokens, usage.reasoningTokens, usage.cacheRead, 0)
-		p.sessions++
 	}
 
 	return daily, modelsByDate, projectsByDate
@@ -612,20 +628,45 @@ type codexUsage struct {
 	cacheRead       int64
 }
 
+func (u codexUsage) hasTokens() bool {
+	return u.totalTokens > 0 ||
+		u.inputTokens > 0 ||
+		u.outputTokens > 0 ||
+		u.reasoningTokens > 0 ||
+		u.cacheRead > 0
+}
+
 func readCodexUsage(path string) (codexUsage, error) {
+	byDate, err := readCodexUsageByDate(path, time.Local)
+	if err != nil {
+		return codexUsage{}, err
+	}
+
+	var usage codexUsage
+	for _, bucket := range byDate {
+		usage = addCodexUsage(usage, bucket)
+	}
+	if !usage.hasTokens() {
+		return codexUsage{}, fmt.Errorf("no token_count event found")
+	}
+	return usage, nil
+}
+
+func readCodexUsageByDate(path string, loc *time.Location) (map[string]codexUsage, error) {
 	if path == "" {
-		return codexUsage{}, fmt.Errorf("empty rollout path")
+		return nil, fmt.Errorf("empty rollout path")
 	}
 
 	f, err := os.Open(path)
 	if err != nil {
-		return codexUsage{}, err
+		return nil, err
 	}
 	defer f.Close()
 
 	type tokenCountLine struct {
-		Type    string `json:"type"`
-		Payload struct {
+		Timestamp string `json:"timestamp"`
+		Type      string `json:"type"`
+		Payload   struct {
 			Type string `json:"type"`
 			Info *struct {
 				TotalTokenUsage *struct {
@@ -639,7 +680,8 @@ func readCodexUsage(path string) (codexUsage, error) {
 		} `json:"payload"`
 	}
 
-	var usage codexUsage
+	byDate := make(map[string]codexUsage)
+	var previous *codexUsage
 	found := false
 
 	scanner := bufio.NewScanner(f)
@@ -656,32 +698,95 @@ func readCodexUsage(path string) (codexUsage, error) {
 			continue
 		}
 
-		total := line.Payload.Info.TotalTokenUsage
-		uncachedInput := total.InputTokens - total.CachedInputTokens
-		if uncachedInput < 0 {
-			uncachedInput = total.InputTokens
-		}
-		totalTokens := total.TotalTokens
-		if totalTokens <= 0 {
-			totalTokens = total.InputTokens + total.OutputTokens
+		date, _, ok := localDateHourFromTimestamp(line.Timestamp, loc)
+		if !ok || date == "" {
+			continue
 		}
 
-		usage = codexUsage{
-			totalTokens:     totalTokens,
-			inputTokens:     uncachedInput,
-			outputTokens:    total.OutputTokens,
-			reasoningTokens: total.ReasoningOutputTokens,
-			cacheRead:       total.CachedInputTokens,
+		current := codexUsageFromTotals(line.Payload.Info.TotalTokenUsage)
+		if !current.hasTokens() {
+			continue
 		}
+
+		delta := current
+		if previous != nil {
+			delta = diffCodexUsage(current, *previous)
+		}
+		if !delta.hasTokens() {
+			previous = &current
+			continue
+		}
+
+		byDate[date] = addCodexUsage(byDate[date], delta)
+		previous = &current
 		found = true
 	}
 	if err := scanner.Err(); err != nil {
-		return codexUsage{}, err
+		return nil, err
 	}
 	if !found {
-		return codexUsage{}, fmt.Errorf("no token_count event found")
+		return nil, fmt.Errorf("no token_count event found")
 	}
-	return usage, nil
+	return byDate, nil
+}
+
+func codexUsageFromTotals(total *struct {
+	InputTokens           int64 `json:"input_tokens"`
+	CachedInputTokens     int64 `json:"cached_input_tokens"`
+	OutputTokens          int64 `json:"output_tokens"`
+	ReasoningOutputTokens int64 `json:"reasoning_output_tokens"`
+	TotalTokens           int64 `json:"total_tokens"`
+}) codexUsage {
+	if total == nil {
+		return codexUsage{}
+	}
+
+	uncachedInput := total.InputTokens - total.CachedInputTokens
+	if uncachedInput < 0 {
+		uncachedInput = total.InputTokens
+	}
+
+	totalTokens := total.TotalTokens
+	if totalTokens <= 0 {
+		totalTokens = total.InputTokens + total.OutputTokens
+	}
+
+	return codexUsage{
+		totalTokens:     totalTokens,
+		inputTokens:     uncachedInput,
+		outputTokens:    total.OutputTokens,
+		reasoningTokens: total.ReasoningOutputTokens,
+		cacheRead:       total.CachedInputTokens,
+	}
+}
+
+func addCodexUsage(dst, src codexUsage) codexUsage {
+	dst.totalTokens += src.totalTokens
+	dst.inputTokens += src.inputTokens
+	dst.outputTokens += src.outputTokens
+	dst.reasoningTokens += src.reasoningTokens
+	dst.cacheRead += src.cacheRead
+	return dst
+}
+
+func diffCodexUsage(current, previous codexUsage) codexUsage {
+	// Token totals should normally be monotonic. If they reset, treat the new
+	// snapshot as a fresh baseline instead of producing negative deltas.
+	if current.totalTokens < previous.totalTokens ||
+		current.inputTokens < previous.inputTokens ||
+		current.outputTokens < previous.outputTokens ||
+		current.reasoningTokens < previous.reasoningTokens ||
+		current.cacheRead < previous.cacheRead {
+		return current
+	}
+
+	return codexUsage{
+		totalTokens:     current.totalTokens - previous.totalTokens,
+		inputTokens:     current.inputTokens - previous.inputTokens,
+		outputTokens:    current.outputTokens - previous.outputTokens,
+		reasoningTokens: current.reasoningTokens - previous.reasoningTokens,
+		cacheRead:       current.cacheRead - previous.cacheRead,
+	}
 }
 
 // ── Aggregation helpers ────────────────────────────────────
@@ -894,10 +999,50 @@ func ensureDateAgg(byDate map[string]*dateAgg, date string) *dateAgg {
 	return agg
 }
 
-// hourFromTimestamp extracts the hour (0-23) from an ISO 8601 timestamp.
+// hourFromTimestamp extracts the local hour (0-23) from an ISO 8601 timestamp.
 // Returns 12 as a safe default if parsing fails.
 func hourFromTimestamp(ts string) int {
-	// Format: "2006-01-02T15:04:05.000Z"
+	_, hour, ok := localDateHourFromTimestamp(ts, time.Local)
+	if ok {
+		return hour
+	}
+	return fallbackHourFromTimestamp(ts)
+}
+
+func dateFromTimestamp(ts string) string {
+	date, _, ok := localDateHourFromTimestamp(ts, time.Local)
+	if ok {
+		return date
+	}
+	return fallbackDateFromTimestamp(ts)
+}
+
+func dateFromUnixTimestamp(sec int64) string {
+	return localDateFromUnixTimestamp(sec, time.Local)
+}
+
+func localDateHourFromTimestamp(ts string, loc *time.Location) (string, int, bool) {
+	if loc == nil {
+		loc = time.Local
+	}
+
+	parsed, err := time.Parse(time.RFC3339Nano, strings.TrimSpace(ts))
+	if err != nil {
+		return "", 12, false
+	}
+
+	local := parsed.In(loc)
+	return local.Format("2006-01-02"), local.Hour(), true
+}
+
+func localDateFromUnixTimestamp(sec int64, loc *time.Location) string {
+	if loc == nil {
+		loc = time.Local
+	}
+	return time.Unix(sec, 0).In(loc).Format("2006-01-02")
+}
+
+func fallbackHourFromTimestamp(ts string) int {
 	if len(ts) < 13 {
 		return 12
 	}
@@ -914,7 +1059,7 @@ func hourFromTimestamp(ts string) int {
 	return h
 }
 
-func dateFromTimestamp(ts string) string {
+func fallbackDateFromTimestamp(ts string) string {
 	if len(ts) < len("2006-01-02") {
 		return ""
 	}

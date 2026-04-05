@@ -269,6 +269,18 @@ function mergeStatsPayloads(payloads: StatsPayload[]): StatsPayload | null {
   return { ranges };
 }
 
+function hasRangeStats(data?: RangeData | null): boolean {
+  if (!data) return false;
+  return data.sessions > 0 ||
+    data.cost > 0 ||
+    data.totalTokens > 0 ||
+    (data.models?.length ?? 0) > 0 ||
+    (data.projects?.length ?? 0) > 0 ||
+    (data.skills?.length ?? 0) > 0 ||
+    (data.tools?.length ?? 0) > 0 ||
+    (data.days?.length ?? 0) > 0;
+}
+
 // ── Component ──────────────────────────────────────────────
 
 export default function StatsScreen() {
@@ -305,6 +317,7 @@ export default function StatsScreen() {
   );
 
   const data = statsData?.ranges?.[range] ?? EMPTY_RANGE;
+  const allData = statsData?.ranges?.all ?? EMPTY_RANGE;
   const days = data.days ?? [];
 
   const maxModelCost = useMemo(() => Math.max(...(data.models?.map(m => m.cost) ?? [0]), 0.01), [data.models]);
@@ -321,7 +334,22 @@ export default function StatsScreen() {
   const visibleTools = useMemo(() => topItems(data.tools ?? []), [data.tools]);
   const maxDayCost = useMemo(() => Math.max(...days.map(d => d.cost), 0.01), [days]);
 
-  const hasData = data.sessions > 0 || (data.tools?.length ?? 0) > 0;
+  const hasData = hasRangeStats(data);
+  const hasAnyStats = useMemo(
+    () => Object.values(statsData?.ranges ?? {}).some(item => hasRangeStats(item)),
+    [statsData],
+  );
+  const latestDay = allData.days?.[allData.days.length - 1] ?? null;
+  const emptyTitle = !hasAnyStats
+    ? 'No stats yet'
+    : range === 'day'
+      ? 'No activity today'
+      : `No ${RANGE_OPTIONS.find(opt => opt.key === range)?.label.toLowerCase()} activity`;
+  const emptySubtext = !hasAnyStats
+    ? 'Connect to a server with Claude Code or Codex history to start collecting data.'
+    : latestDay
+      ? `Latest activity: ${shortDate(latestDay.date)}. Stats read Claude Code and Codex history from the daemon host.`
+      : 'Stats read Claude Code and Codex history from the daemon host.';
 
   return (
     <SafeAreaView style={s.container} edges={['top']}>
@@ -354,8 +382,8 @@ export default function StatsScreen() {
       ) : !hasData ? (
         <View style={s.emptyContainer}>
           <Text style={s.emptyIcon}>{'∷'}</Text>
-          <Text style={s.emptyText}>No stats yet</Text>
-          <Text style={s.emptySubtext}>Connect to a server to start collecting data.</Text>
+          <Text style={s.emptyText}>{emptyTitle}</Text>
+          <Text style={s.emptySubtext}>{emptySubtext}</Text>
         </View>
       ) : (
         <ScrollView contentContainerStyle={s.scroll} showsVerticalScrollIndicator={false}>

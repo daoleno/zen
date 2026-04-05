@@ -5,7 +5,18 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 )
+
+func setTestLocalLocation(t *testing.T, loc *time.Location) {
+	t.Helper()
+
+	prev := time.Local
+	time.Local = loc
+	t.Cleanup(func() {
+		time.Local = prev
+	})
+}
 
 func TestCollectorSmoke(t *testing.T) {
 	c := NewCollector()
@@ -171,7 +182,71 @@ func TestReadCodexUsageFromRollout(t *testing.T) {
 	}
 }
 
+func TestReadCodexUsageByDateSplitsAcrossLocalDays(t *testing.T) {
+	shanghai, err := time.LoadLocation("Asia/Shanghai")
+	if err != nil {
+		t.Fatalf("load location: %v", err)
+	}
+
+	dir := t.TempDir()
+	path := filepath.Join(dir, "rollout.jsonl")
+	content := `{"timestamp":"2026-04-05T15:59:00.000Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":100,"cached_input_tokens":20,"output_tokens":10,"reasoning_output_tokens":2,"total_tokens":110}}}}
+{"timestamp":"2026-04-05T15:59:10.000Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":100,"cached_input_tokens":20,"output_tokens":10,"reasoning_output_tokens":2,"total_tokens":110}}}}
+{"timestamp":"2026-04-05T16:01:00.000Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":160,"cached_input_tokens":40,"output_tokens":18,"reasoning_output_tokens":4,"total_tokens":178}}}}
+`
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatalf("write rollout: %v", err)
+	}
+
+	byDate, err := readCodexUsageByDate(path, shanghai)
+	if err != nil {
+		t.Fatalf("readCodexUsageByDate: %v", err)
+	}
+
+	day1 := byDate["2026-04-05"]
+	if day1.totalTokens != 110 || day1.inputTokens != 80 || day1.outputTokens != 10 || day1.reasoningTokens != 2 || day1.cacheRead != 20 {
+		t.Fatalf("unexpected day1 usage: %+v", day1)
+	}
+
+	day2 := byDate["2026-04-06"]
+	if day2.totalTokens != 68 || day2.inputTokens != 40 || day2.outputTokens != 8 || day2.reasoningTokens != 2 || day2.cacheRead != 20 {
+		t.Fatalf("unexpected day2 usage: %+v", day2)
+	}
+}
+
+func TestTimestampBucketingUsesLocalTimezone(t *testing.T) {
+	shanghai, err := time.LoadLocation("Asia/Shanghai")
+	if err != nil {
+		t.Fatalf("load location: %v", err)
+	}
+
+	date, hour, ok := localDateHourFromTimestamp("2026-04-05T17:30:00.000Z", shanghai)
+	if !ok {
+		t.Fatal("expected timestamp to parse")
+	}
+	if date != "2026-04-06" {
+		t.Fatalf("date = %s, want 2026-04-06", date)
+	}
+	if hour != 1 {
+		t.Fatalf("hour = %d, want 1", hour)
+	}
+}
+
+func TestCodexUnixTimestampUsesLocalTimezone(t *testing.T) {
+	shanghai, err := time.LoadLocation("Asia/Shanghai")
+	if err != nil {
+		t.Fatalf("load location: %v", err)
+	}
+
+	createdAt := time.Date(2026, time.April, 5, 17, 30, 0, 0, time.UTC).Unix()
+	if got := localDateFromUnixTimestamp(createdAt, shanghai); got != "2026-04-06" {
+		t.Fatalf("date = %s, want 2026-04-06", got)
+	}
+}
+
 func TestScanSessionJSONLCrossDayBucketsSessionsPerDay(t *testing.T) {
+	setTestLocalLocation(t, time.UTC)
+
 	dir := t.TempDir()
 	path := filepath.Join(dir, "session.jsonl")
 	content := `{"type":"assistant","timestamp":"2026-04-04T23:59:00.000Z","cwd":"/tmp/zen","message":{"id":"m1","model":"claude-sonnet-4-6","content":[{"type":"text","text":"a"}],"usage":{"input_tokens":10,"output_tokens":5,"cache_read_input_tokens":2,"cache_creation_input_tokens":1}}}
@@ -205,6 +280,44 @@ func TestScanSessionJSONLCrossDayBucketsSessionsPerDay(t *testing.T) {
 	}
 	if got := day2.projects["zen"].sessions; got != 1 {
 		t.Fatalf("day2 project sessions = %d, want 1", got)
+	}
+}
+
+func TestScanSessionJSONLUsesLocalDateForShanghai(t *testing.T) {
+	shanghai, err := time.LoadLocation("Asia/Shanghai")
+	if err != nil {
+		t.Fatalf("load location: %v", err)
+	}
+	setTestLocalLocation(t, shanghai)
+
+	dir := t.TempDir()
+	path := filepath.Join(dir, "session.jsonl")
+	content := `{"type":"assistant","timestamp":"2026-04-05T17:30:00.000Z","cwd":"/tmp/zen","message":{"id":"m1","model":"claude-sonnet-4-6","content":[{"type":"text","text":"late"}],"usage":{"input_tokens":20,"output_tokens":7,"cache_read_input_tokens":3,"cache_creation_input_tokens":0}}}
+`
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatalf("write session: %v", err)
+	}
+
+	c := NewCollector()
+	byDate := make(map[string]*dateAgg)
+	c.scanSessionJSONL(path, "zen", byDate)
+
+	if _, ok := byDate["2026-04-05"]; ok {
+		t.Fatal("unexpected UTC date bucket")
+	}
+
+	day := byDate["2026-04-06"]
+	if day == nil {
+		t.Fatal("missing local-date bucket")
+	}
+	if got := day.models["claude-sonnet-4-6"].sessions; got != 1 {
+		t.Fatalf("model sessions = %d, want 1", got)
+	}
+	if got := day.projects["zen"].sessions; got != 1 {
+		t.Fatalf("project sessions = %d, want 1", got)
+	}
+	if got := day.slots[0].sessions; got != 1 {
+		t.Fatalf("night slot sessions = %d, want 1", got)
 	}
 }
 
