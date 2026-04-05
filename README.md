@@ -6,7 +6,7 @@ Mobile-native agent control plane. Manage your AI coding agents from your phone.
 
 ```
 [Phone: Expo App]
-    ↕ WSS
+    ↕ signed HTTP / WebSocket
 [Your Own Tailnet / Reverse Proxy / Tunnel]
     ↕
 [Homelab: zen-daemon (Go)]
@@ -30,7 +30,7 @@ The daemon listens on `127.0.0.1:9876` by default. On startup it now prints:
 
 - its persistent daemon identity
 - `Mode: LOCAL-ONLY` when it has no advertised URL yet
-- or `Mode: PAIRABLE`, plus a one-time `zen://...` pairing link and QR code, when `-advertise-url` is set
+- or `Mode: PAIRABLE`, plus a one-time compact `zen://settings?p=...` pairing link and QR code, when `-advertise-url` is set
 
 If you do not pass `-advertise-url`, the daemon still starts in `LOCAL-ONLY` mode, but it cannot pair a phone yet. Expose `http://127.0.0.1:9876` through your network layer first, then either restart with `-advertise-url` or generate a fresh link later with:
 
@@ -76,6 +76,7 @@ Import the pairing link from `zen-daemon`:
 
 - paste the printed `zen://...` link into Settings
 - scan the QR code from Settings
+- import a screenshot or photo of the QR from Settings
 - or use the clipboard import button
 
 There is no shared secret. Pairing is one-time enrollment: the app presents its own device key, the daemon stores that device as trusted, and subsequent HTTP/WebSocket requests are signed by the device identity and bound to the daemon identity you paired with.
@@ -124,7 +125,16 @@ npx expo start          # Dev server
 npx expo export --platform android  # Verify build
 ```
 
-## Design Doc
+## Architecture Doc
 
-Full design document with architecture decisions, competitive analysis, and review history:
-`~/.gstack/projects/zen/daoleno-unknown-design-20260325-190643.md`
+The current OSS-core architecture document lives in:
+
+- `docs/architecture.md`
+
+It covers:
+
+- external networking boundaries
+- daemon identity and trusted device pairing
+- compact `zen://settings?p=...` pairing links
+- signed HTTP / WebSocket authentication
+- storage and runtime responsibilities across the app and daemon
