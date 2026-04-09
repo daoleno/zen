@@ -18,6 +18,7 @@ import (
 	"github.com/daoleno/zen/daemon/auth"
 	"github.com/daoleno/zen/daemon/push"
 	"github.com/daoleno/zen/daemon/stats"
+	"github.com/daoleno/zen/daemon/task"
 	"github.com/daoleno/zen/daemon/terminal"
 	"github.com/daoleno/zen/daemon/watcher"
 	"github.com/gorilla/websocket"
@@ -34,6 +35,10 @@ type Server struct {
 	terminal *terminal.Manager
 	pusher   *push.Client
 	stats    *stats.Collector
+	tasks    *task.Store
+	skills   *task.SkillStore
+	guidance *task.GuidanceStore
+	projects *task.ProjectStore
 	clients  map[*websocket.Conn]bool
 	active   map[*websocket.Conn]string
 	writes   map[*websocket.Conn]*sync.Mutex
@@ -41,13 +46,17 @@ type Server struct {
 }
 
 // New creates a WebSocket server.
-func New(authManager *auth.Manager, w *watcher.Watcher, pusher *push.Client, sc *stats.Collector) *Server {
+func New(authManager *auth.Manager, w *watcher.Watcher, pusher *push.Client, sc *stats.Collector, ts *task.Store, ss *task.SkillStore, gs *task.GuidanceStore, ps *task.ProjectStore) *Server {
 	return &Server{
 		auth:     authManager,
 		watcher:  w,
 		terminal: terminal.NewManager(&terminal.TmuxBackend{}),
 		pusher:   pusher,
 		stats:    sc,
+		tasks:    ts,
+		skills:   ss,
+		guidance: gs,
+		projects: ps,
 		clients:  make(map[*websocket.Conn]bool),
 		active:   make(map[*websocket.Conn]string),
 		writes:   make(map[*websocket.Conn]*sync.Mutex),
@@ -217,6 +226,21 @@ func (s *Server) handleClientMessage(conn *websocket.Conn, msg []byte) {
 		Cols         int    `json:"cols"`
 		Rows         int    `json:"rows"`
 		Lines        int    `json:"lines"`
+		TaskID       string `json:"task_id"`
+		Title        string `json:"title"`
+		Description  string `json:"description"`
+		SkillID      string `json:"skill_id"`
+		TaskStatus   string `json:"task_status"`
+		Icon         string `json:"icon"`
+		AgentCmd     string `json:"agent_cmd"`
+		Prompt       string `json:"prompt"`
+		Priority     int      `json:"priority"`
+		Labels       []string `json:"labels"`
+		ProjectID    string   `json:"project_id"`
+		ProjectName  string   `json:"project_name"`
+		ProjectIcon  string   `json:"project_icon"`
+		Preamble     string   `json:"preamble"`
+		Constraints  []string `json:"constraints"`
 	}
 	if err := json.Unmarshal(msg, &raw); err != nil {
 		log.Printf("invalid message: %v", err)
@@ -424,6 +448,184 @@ func (s *Server) handleClientMessage(conn *websocket.Conn, msg []byte) {
 			s.sendJSON(conn, map[string]any{"type": "stats_data", "ranges": map[string]any{}})
 		}
 
+	// ── Task CRUD ──────────────────────────────────────────
+
+	case "list_tasks":
+		s.sendJSON(conn, map[string]any{"type": "task_list", "tasks": s.tasks.List()})
+
+	case "create_task":
+		t, err := s.tasks.Create(raw.Title, raw.Description, raw.SkillID, raw.Cwd, raw.Priority, raw.Labels, raw.ProjectID)
+		if err != nil {
+			s.sendError(conn, "create_task_failed", err.Error())
+			return
+		}
+		s.sendJSON(conn, map[string]any{"type": "task_created", "request_id": raw.RequestID, "task": t})
+
+	case "update_task":
+		t, err := s.tasks.Update(raw.TaskID, func(t *task.Task) {
+			if raw.Title != "" {
+				t.Title = raw.Title
+			}
+			if raw.Description != "" {
+				t.Description = raw.Description
+			}
+			if raw.TaskStatus != "" {
+				t.Status = task.TaskStatus(raw.TaskStatus)
+			}
+			if raw.Priority > 0 || raw.TaskStatus != "" {
+				t.Priority = raw.Priority
+			}
+			if raw.Labels != nil {
+				t.Labels = raw.Labels
+			}
+			if raw.ProjectID != "" {
+				t.ProjectID = raw.ProjectID
+			}
+		})
+		if err != nil {
+			s.sendError(conn, "update_task_failed", err.Error())
+			return
+		}
+		s.sendJSON(conn, map[string]any{"type": "task_updated", "request_id": raw.RequestID, "task": t})
+
+	case "delete_task":
+		if err := s.tasks.Delete(raw.TaskID); err != nil {
+			s.sendError(conn, "delete_task_failed", err.Error())
+			return
+		}
+		s.sendJSON(conn, map[string]any{"type": "task_deleted", "request_id": raw.RequestID, "task_id": raw.TaskID})
+
+	case "delegate_task":
+		t := s.tasks.Get(raw.TaskID)
+		if t == nil {
+			s.sendError(conn, "delegate_task_failed", "task not found")
+			return
+		}
+
+		// Build prompt from task + optional skill + guidance
+		prompt := s.guidance.BuildPromptPrefix()
+		if t.SkillID != "" {
+			if sk := s.skills.Get(t.SkillID); sk != nil {
+				prompt += sk.Prompt + "\n\n"
+			}
+		}
+		if t.Description != "" {
+			prompt += t.Description
+		} else {
+			prompt += t.Title
+		}
+
+		cmd := "claude"
+		if t.SkillID != "" {
+			if sk := s.skills.Get(t.SkillID); sk != nil && sk.AgentCmd != "" {
+				cmd = sk.AgentCmd
+			}
+		}
+
+		agentID, err := s.watcher.CreateSession("", watcher.CreateSessionOptions{
+			Cwd:     t.Cwd,
+			Command: cmd + " " + shellQuoteSimple(prompt),
+			Name:    t.Title,
+		})
+		if err != nil {
+			s.sendError(conn, "delegate_task_failed", err.Error())
+			return
+		}
+
+		updated, err := s.tasks.Update(t.ID, func(t *task.Task) {
+			t.AgentID = agentID
+			t.Status = task.StatusInProgress
+			t.AgentStatus = "running"
+		})
+		if err != nil {
+			s.sendError(conn, "delegate_task_failed", err.Error())
+			return
+		}
+		s.sendJSON(conn, map[string]any{
+			"type":       "task_delegated",
+			"request_id": raw.RequestID,
+			"task":       updated,
+			"agent_id":   agentID,
+		})
+
+	// ── Skills CRUD ────────────────────────────────────────
+
+	case "list_skills":
+		s.sendJSON(conn, map[string]any{"type": "skill_list", "skills": s.skills.List()})
+
+	case "create_skill":
+		sk, err := s.skills.Create(raw.Name, raw.Icon, raw.AgentCmd, raw.Prompt, raw.Cwd)
+		if err != nil {
+			s.sendError(conn, "create_skill_failed", err.Error())
+			return
+		}
+		s.sendJSON(conn, map[string]any{"type": "skill_created", "request_id": raw.RequestID, "skill": sk})
+
+	case "update_skill":
+		sk, err := s.skills.Update(raw.SkillID, func(sk *task.Skill) {
+			if raw.Name != "" {
+				sk.Name = raw.Name
+			}
+			if raw.Icon != "" {
+				sk.Icon = raw.Icon
+			}
+			if raw.AgentCmd != "" {
+				sk.AgentCmd = raw.AgentCmd
+			}
+			if raw.Prompt != "" {
+				sk.Prompt = raw.Prompt
+			}
+			if raw.Cwd != "" {
+				sk.Cwd = raw.Cwd
+			}
+		})
+		if err != nil {
+			s.sendError(conn, "update_skill_failed", err.Error())
+			return
+		}
+		s.sendJSON(conn, map[string]any{"type": "skill_updated", "request_id": raw.RequestID, "skill": sk})
+
+	case "delete_skill":
+		if err := s.skills.Delete(raw.SkillID); err != nil {
+			s.sendError(conn, "delete_skill_failed", err.Error())
+			return
+		}
+		s.sendJSON(conn, map[string]any{"type": "skill_deleted", "request_id": raw.RequestID, "skill_id": raw.SkillID})
+
+	// ── Guidance ───────────────────────────────────────────
+
+	case "get_guidance":
+		g := s.guidance.Get()
+		s.sendJSON(conn, map[string]any{"type": "guidance", "guidance": g})
+
+	case "set_guidance":
+		g, err := s.guidance.Set(raw.Preamble, raw.Constraints)
+		if err != nil {
+			s.sendError(conn, "set_guidance_failed", err.Error())
+			return
+		}
+		s.sendJSON(conn, map[string]any{"type": "guidance_updated", "request_id": raw.RequestID, "guidance": g})
+
+	// ── Projects CRUD ──────────────────────────────────────
+
+	case "list_projects":
+		s.sendJSON(conn, map[string]any{"type": "project_list", "projects": s.projects.List()})
+
+	case "create_project":
+		p, err := s.projects.Create(raw.ProjectName, raw.ProjectIcon)
+		if err != nil {
+			s.sendError(conn, "create_project_failed", err.Error())
+			return
+		}
+		s.sendJSON(conn, map[string]any{"type": "project_created", "request_id": raw.RequestID, "project": p})
+
+	case "delete_project":
+		if err := s.projects.Delete(raw.ProjectID); err != nil {
+			s.sendError(conn, "delete_project_failed", err.Error())
+			return
+		}
+		s.sendJSON(conn, map[string]any{"type": "project_deleted", "request_id": raw.RequestID, "project_id": raw.ProjectID})
+
 	default:
 		log.Printf("unknown message type: %s", raw.Type)
 	}
@@ -461,6 +663,34 @@ func (s *Server) broadcastEvents(ctx context.Context) {
 				if agent == nil {
 					continue
 				}
+
+				// Auto-track: sync issue status from agent state.
+				if linked := s.tasks.FindByAgentID(ev.AgentID); linked != nil {
+					switch ev.NewState {
+					case "blocked":
+						// Issue stays in_progress, just update agent_status
+						s.tasks.Update(linked.ID, func(t *task.Task) {
+							t.AgentStatus = "blocked"
+						})
+					case "done":
+						s.tasks.Update(linked.ID, func(t *task.Task) {
+							t.Status = task.StatusDone
+							t.AgentStatus = "done"
+						})
+					case "failed":
+						// Agent failed → issue goes back to todo for retry
+						s.tasks.Update(linked.ID, func(t *task.Task) {
+							t.Status = task.StatusTodo
+							t.AgentID = ""
+							t.AgentStatus = ""
+						})
+					case "running":
+						s.tasks.Update(linked.ID, func(t *task.Task) {
+							t.AgentStatus = "running"
+						})
+					}
+				}
+
 				if s.hasAnyActiveViewer() {
 					continue
 				}
@@ -473,6 +703,12 @@ func (s *Server) broadcastEvents(ctx context.Context) {
 					s.pusher.NotifyAgentDone(ev.AgentID, agent.Name, agent.Summary)
 				}
 			}
+		case te := <-s.tasks.Events():
+			data, err := json.Marshal(te)
+			if err != nil {
+				continue
+			}
+			s.broadcast(data)
 		}
 	}
 }
@@ -582,6 +818,11 @@ func (s *Server) writeJSONWithAssertion(w http.ResponseWriter, status int, purpo
 
 func clientID(conn *websocket.Conn) string {
 	return fmt.Sprintf("%p", conn)
+}
+
+// shellQuoteSimple wraps a string in single quotes for safe shell injection.
+func shellQuoteSimple(s string) string {
+	return "'" + strings.ReplaceAll(s, "'", "'\"'\"'") + "'"
 }
 
 func (s *Server) hasAnyActiveViewer() bool {

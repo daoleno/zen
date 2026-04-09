@@ -23,7 +23,8 @@ import {
   scanFromURLAsync,
   useCameraPermissions,
 } from "expo-camera";
-import { Colors, Typography } from "../../constants/tokens";
+import { Colors, Typography, statusColor } from "../../constants/tokens";
+import { useTasks, Skill, Guidance } from "../../store/tasks";
 import {
   DefaultTerminalThemeName,
   TerminalThemeName,
@@ -39,6 +40,7 @@ const QR_BARCODE_TYPES: BarcodeType[] = ["qr"];
 
 export default function SettingsScreen() {
   const { state, dispatch } = useAgents();
+  const { state: taskState } = useTasks();
   const params = useLocalSearchParams<{
     addServer?: string;
     refresh?: string;
@@ -545,6 +547,87 @@ export default function SettingsScreen() {
           )}
         </View>
 
+        {/* Skills */}
+        <Text style={styles.sectionLabel}>Skills</Text>
+        <View style={styles.serverList}>
+          {taskState.skills.length === 0 ? (
+            <Text style={styles.noServerText}>
+              No skills configured. Connect to a server to load default skills.
+            </Text>
+          ) : (
+            taskState.skills.map((skill) => (
+              <View key={skill.id} style={styles.skillRow}>
+                <Ionicons name="flash-outline" size={16} color={Colors.accent} />
+                <View style={styles.skillInfo}>
+                  <Text style={styles.serverName}>{skill.name}</Text>
+                  <Text style={styles.serverUrl} numberOfLines={1}>
+                    {skill.agentCmd} · {skill.serverName}
+                  </Text>
+                </View>
+                <TouchableOpacity
+                  onPress={() => {
+                    Alert.alert(
+                      "Delete skill?",
+                      `Remove "${skill.name}"?`,
+                      [
+                        { text: "Cancel", style: "cancel" },
+                        {
+                          text: "Delete",
+                          style: "destructive",
+                          onPress: () =>
+                            wsClient.deleteSkill(skill.serverId, skill.id),
+                        },
+                      ],
+                    );
+                  }}
+                  activeOpacity={0.82}
+                >
+                  <Ionicons
+                    name="trash-outline"
+                    size={16}
+                    color="rgba(255,255,255,0.3)"
+                  />
+                </TouchableOpacity>
+              </View>
+            ))
+          )}
+        </View>
+
+        {/* Guidance */}
+        {Object.keys(taskState.guidance).length > 0 && (
+          <>
+            <Text style={styles.sectionLabel}>Agent Guidance</Text>
+            {Object.entries(taskState.guidance).map(([serverId, guidance]) => {
+              const server = servers.find((s) => s.id === serverId);
+              return (
+                <View key={serverId} style={styles.guidanceCard}>
+                  <Text style={styles.guidanceServer}>
+                    {server?.name || serverId}
+                  </Text>
+                  {guidance.preamble ? (
+                    <Text style={styles.guidanceText} numberOfLines={3}>
+                      {guidance.preamble}
+                    </Text>
+                  ) : (
+                    <Text style={styles.guidancePlaceholder}>
+                      No preamble configured
+                    </Text>
+                  )}
+                  {guidance.constraints && guidance.constraints.length > 0 && (
+                    <View style={styles.constraintList}>
+                      {guidance.constraints.map((c, i) => (
+                        <Text key={i} style={styles.constraintText}>
+                          · {c}
+                        </Text>
+                      ))}
+                    </View>
+                  )}
+                </View>
+              );
+            })}
+          </>
+        )}
+
         <Text style={styles.version}>zen v0.1.0</Text>
       </ScrollView>
 
@@ -634,9 +717,7 @@ export default function SettingsScreen() {
               ) : (
                 <>
                   <Text style={styles.importLead}>
-                    zen pairs to a daemon identity, not a shared secret. Expose
-                    zen-daemon through Cloudflare Tunnel, Tailscale, or your own
-                    proxy, then import the pairing link it prints.
+                    Paste the pairing link from zen-daemon, or scan its QR code.
                   </Text>
 
                   <Text style={styles.fieldLabel}>Pairing Link</Text>
@@ -652,9 +733,7 @@ export default function SettingsScreen() {
                     textAlignVertical="top"
                   />
                   <Text style={styles.fieldHint}>
-                    Import the full pairing link or scan the QR code printed by
-                    zen-daemon. You can also import a screenshot or photo of the
-                    QR. New servers are added only through pairing.
+                    You can also import a screenshot or photo of the QR.
                   </Text>
 
                   <View style={styles.modalActions}>
@@ -683,7 +762,7 @@ export default function SettingsScreen() {
 
                   <View style={styles.divider}>
                     <View style={styles.dividerLine} />
-                    <Text style={styles.dividerText}>or import faster</Text>
+                    <Text style={styles.dividerText}>or</Text>
                     <View style={styles.dividerLine} />
                   </View>
 
@@ -784,8 +863,7 @@ export default function SettingsScreen() {
               </View>
 
               <Text style={styles.scannerHelpText}>
-                Point the camera at the QR printed by zen-daemon, or choose a
-                screenshot or photo from this device.
+                Scan the QR, or choose an image from this device.
               </Text>
             </>
           )}
@@ -1083,6 +1161,64 @@ const styles = StyleSheet.create({
     color: Colors.accent,
     opacity: 0.9,
   },
+  // Skills
+  skillRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 10,
+    paddingVertical: 10,
+    paddingHorizontal: 14,
+    borderRadius: 10,
+    backgroundColor: "rgba(255,255,255,0.02)",
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: "rgba(255,255,255,0.06)",
+    marginBottom: 6,
+  },
+  skillInfo: {
+    flex: 1,
+  },
+
+  // Guidance
+  guidanceCard: {
+    borderRadius: 12,
+    padding: 14,
+    backgroundColor: "rgba(255,255,255,0.02)",
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: "rgba(255,255,255,0.06)",
+    marginBottom: 8,
+  },
+  guidanceServer: {
+    color: Colors.textSecondary,
+    fontSize: 11,
+    fontFamily: Typography.uiFontMedium,
+    textTransform: "uppercase",
+    opacity: 0.6,
+    marginBottom: 6,
+  },
+  guidanceText: {
+    color: Colors.textPrimary,
+    fontSize: 13,
+    fontFamily: Typography.uiFont,
+    lineHeight: 18,
+  },
+  guidancePlaceholder: {
+    color: Colors.textSecondary,
+    fontSize: 13,
+    fontFamily: Typography.uiFont,
+    fontStyle: "italic",
+    opacity: 0.4,
+  },
+  constraintList: {
+    marginTop: 8,
+    gap: 2,
+  },
+  constraintText: {
+    color: Colors.textSecondary,
+    fontSize: 12,
+    fontFamily: Typography.uiFont,
+    lineHeight: 16,
+  },
+
   version: {
     color: Colors.textSecondary,
     fontSize: 11,

@@ -11,6 +11,10 @@ export const Colors = {
   statusRunning: '#4CAF50',
   statusDone: '#666680',
   zenGreen: '#2E7D32',
+  priorityUrgent: '#FF5252',
+  priorityHigh: '#FF9500',
+  priorityMedium: '#FFB74D',
+  priorityLow: '#8888A0',
 } as const;
 
 export const Spacing = {
@@ -35,6 +39,9 @@ export const Typography = {
 
 export type AgentStatus = 'running' | 'blocked' | 'done' | 'failed' | 'unknown';
 
+export type IssueStatus = 'backlog' | 'todo' | 'in_progress' | 'done' | 'cancelled';
+export type IssuePriority = 0 | 1 | 2 | 3 | 4;
+
 export const statusColor = (status: AgentStatus): string => {
   switch (status) {
     case 'failed': return Colors.statusFailed;
@@ -42,5 +49,25 @@ export const statusColor = (status: AgentStatus): string => {
     case 'unknown': return Colors.statusUnknown;
     case 'running': return Colors.statusRunning;
     case 'done': return Colors.statusDone;
+  }
+};
+
+export const issueStatusColor = (status: IssueStatus): string => {
+  switch (status) {
+    case 'in_progress': return Colors.statusRunning;
+    case 'todo': return Colors.accent;
+    case 'backlog': return Colors.textSecondary;
+    case 'done': return Colors.statusDone;
+    case 'cancelled': return Colors.statusDone;
+  }
+};
+
+export const priorityColor = (priority: IssuePriority): string => {
+  switch (priority) {
+    case 1: return Colors.priorityUrgent;
+    case 2: return Colors.priorityHigh;
+    case 3: return Colors.priorityMedium;
+    case 4: return Colors.priorityLow;
+    default: return 'transparent';
   }
 };

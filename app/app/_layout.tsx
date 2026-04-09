@@ -9,6 +9,7 @@ import * as Device from 'expo-device';
 import Constants from 'expo-constants';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 import { Agent, AgentProvider, useAgents } from '../store/agents';
+import { TaskProvider, useTasks } from '../store/tasks';
 import { Colors } from '../constants/tokens';
 import { wsClient } from '../services/websocket';
 import { getServers, isOnboarded } from '../services/storage';
@@ -127,6 +128,7 @@ function AppContent() {
   const router = useRouter();
   const segments = useSegments();
   const { state, dispatch } = useAgents();
+  const { dispatch: taskDispatch } = useTasks();
   const notificationListener = useRef<Notifications.EventSubscription | null>(null);
   const responseListener = useRef<Notifications.EventSubscription | null>(null);
   const appStateRef = useRef<AppStateStatus>(AppState.currentState);
@@ -213,6 +215,87 @@ function AppContent() {
         issue: data.issue || null,
       });
 
+    // Task/Skill/Guidance listeners
+    const onTaskList = (data: any) =>
+      taskDispatch({
+        type: 'UPSERT_SERVER_TASKS',
+        serverId: data.serverId,
+        serverName: data.serverName,
+        tasks: data.tasks || [],
+      });
+    const onTaskCreated = (data: any) => {
+      if (data.task) taskDispatch({
+        type: 'TASK_CREATED',
+        serverId: data.serverId,
+        serverName: data.serverName,
+        task: data.task,
+      });
+    };
+    const onTaskUpdated = (data: any) => {
+      if (data.task) taskDispatch({
+        type: 'TASK_UPDATED',
+        serverId: data.serverId,
+        serverName: data.serverName,
+        task: data.task,
+      });
+    };
+    const onTaskDeleted = (data: any) =>
+      taskDispatch({
+        type: 'TASK_DELETED',
+        serverId: data.serverId,
+        taskId: data.task_id,
+      });
+    const onTaskDelegated = (data: any) => {
+      if (data.task) taskDispatch({
+        type: 'TASK_UPDATED',
+        serverId: data.serverId,
+        serverName: data.serverName,
+        task: data.task,
+      });
+    };
+    const onSkillList = (data: any) =>
+      taskDispatch({
+        type: 'UPSERT_SERVER_SKILLS',
+        serverId: data.serverId,
+        serverName: data.serverName,
+        skills: data.skills || [],
+      });
+    const onGuidance = (data: any) => {
+      if (data.guidance) taskDispatch({
+        type: 'SET_GUIDANCE',
+        serverId: data.serverId,
+        guidance: data.guidance,
+      });
+    };
+
+    const onProjectList = (data: any) =>
+      taskDispatch({
+        type: 'UPSERT_SERVER_PROJECTS',
+        serverId: data.serverId,
+        projects: data.projects || [],
+      });
+    const onProjectCreated = (data: any) => {
+      if (data.project) taskDispatch({
+        type: 'PROJECT_CREATED',
+        serverId: data.serverId,
+        project: data.project,
+      });
+    };
+    const onProjectDeleted = (data: any) =>
+      taskDispatch({
+        type: 'PROJECT_DELETED',
+        serverId: data.serverId,
+        projectId: data.project_id,
+      });
+
+    // Fetch tasks, skills, projects on connected
+    const onConnectedFetchTasks = (data: any) => {
+      wsClient.listTasks(data.serverId);
+      wsClient.listSkills(data.serverId);
+      wsClient.getGuidance(data.serverId);
+      wsClient.listProjects(data.serverId);
+    };
+
     wsClient.on('agent_list', onAgentList);
     wsClient.on('agent_state_change', onStateChange);
     wsClient.on('agent_output', onOutput);
@@ -220,6 +303,18 @@ function AppContent() {
     wsClient.on('connected', onConnected);
     wsClient.on('disconnected', onDisconnected);
     wsClient.on('connection_issue', onConnectionIssue);
+    wsClient.on('task_list', onTaskList);
+    wsClient.on('task_created', onTaskCreated);
+    wsClient.on('task_updated', onTaskUpdated);
+    wsClient.on('task_deleted', onTaskDeleted);
+    wsClient.on('task_delegated', onTaskDelegated);
+    wsClient.on('skill_list', onSkillList);
+    wsClient.on('guidance', onGuidance);
+    wsClient.on('guidance_updated', onGuidance);
+    wsClient.on('project_list', onProjectList);
+    wsClient.on('project_created', onProjectCreated);
+    wsClient.on('project_deleted', onProjectDeleted);
+    wsClient.on('connected', onConnectedFetchTasks);
 
     (async () => {
       try {
@@ -255,6 +350,18 @@ function AppContent() {
       wsClient.off('connected', onConnected);
       wsClient.off('disconnected', onDisconnected);
       wsClient.off('connection_issue', onConnectionIssue);
+      wsClient.off('task_list', onTaskList);
+      wsClient.off('task_created', onTaskCreated);
+      wsClient.off('task_updated', onTaskUpdated);
+      wsClient.off('task_deleted', onTaskDeleted);
+      wsClient.off('task_delegated', onTaskDelegated);
+      wsClient.off('skill_list', onSkillList);
+      wsClient.off('guidance', onGuidance);
+      wsClient.off('guidance_updated', onGuidance);
+      wsClient.off('project_list', onProjectList);
+      wsClient.off('project_created', onProjectCreated);
+      wsClient.off('project_deleted', onProjectDeleted);
+      wsClient.off('connected', onConnectedFetchTasks);
       wsClient.disconnectAll();
     };
   }, []);
@@ -422,6 +529,7 @@ function AppContent() {
     >
       <Stack.Screen name="(tabs)" options={{ headerShown: false }} />
       <Stack.Screen name="terminal/[id]" options={{ headerShown: false, animation: 'none' }} />
+      <Stack.Screen name="issue/[id]" options={{ headerShown: false }} />
       <Stack.Screen name="onboarding" options={{ headerShown: false, presentation: 'modal' }} />
     </Stack>
   );
@@ -447,10 +555,12 @@ export default function RootLayout() {
 
   return (
     <AgentProvider>
-      <SafeAreaProvider>
-        <StatusBar style="light" />
-        <AppContent />
-      </SafeAreaProvider>
+      <TaskProvider>
+        <SafeAreaProvider>
+          <StatusBar style="light" />
+          <AppContent />
+        </SafeAreaProvider>
+      </TaskProvider>
     </AgentProvider>
   );
 }

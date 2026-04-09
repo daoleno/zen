@@ -8,7 +8,11 @@
     "ios": "expo run:ios",
     "web": "expo start --web",
     "android:debug": "expo run:android --variant debug",
-    "android:release": "expo run:android --variant release"
+    "android:release": "expo run:android --variant release",
+    "build:apk": "JAVA_HOME=/usr/lib/jvm/java-17-openjdk cd android && ./gradlew assembleRelease && echo '\n✅ APK: android/app/build/outputs/apk/release/app-release.apk'",
+    "build:apk:debug": "JAVA_HOME=/usr/lib/jvm/java-17-openjdk cd android && ./gradlew assembleDebug && echo '\n✅ APK: android/app/build/outputs/apk/debug/app-debug.apk'",
+    "serve:apk": "cd android/app/build/outputs/apk/release && python3 -m http.server 8899",
+    "serve:apk:debug": "cd android/app/build/outputs/apk/debug && python3 -m http.server 8899"
   },
   "dependencies": {
     "@expo/vector-icons": "^15.0.2",

@@ -53,9 +53,7 @@ export default function OnboardingScreen() {
           <View style={styles.stepContent}>
             <Text style={styles.stepTitle}>Import the pairing link</Text>
             <Text style={styles.stepHint}>
-              Scan the QR or paste the zen:// pairing link printed by
-              zen-daemon. zen binds to the daemon key directly, so there is no
-              shared secret to manage.
+              Scan the QR or paste the pairing link printed by zen-daemon.
             </Text>
           </View>
         </View>

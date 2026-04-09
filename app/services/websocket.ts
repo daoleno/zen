@@ -451,6 +451,213 @@ class MultiServerWebSocketClient {
     this.send(serverId, { type: "list_agents" });
   }
 
+  // ── Tasks ────────────────────────────────────────────
+
+  listTasks(serverId: string) {
+    this.send(serverId, { type: "list_tasks" });
+  }
+
+  createTask(
+    serverId: string,
+    options: {
+      title: string;
+      description?: string;
+      priority?: number;
+      labels?: string[];
+      projectId?: string;
+      skillId?: string;
+      cwd?: string;
+    },
+  ) {
+    const requestId = `${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
+
+    return new Promise<any>((resolve, reject) => {
+      const cleanup = () => {
+        if (timer) clearTimeout(timer);
+        this.off("task_created", handleCreated);
+        this.off("error", handleError);
+      };
+
+      const handleCreated = (payload: any) => {
+        if (payload.serverId !== serverId || payload.request_id !== requestId)
+          return;
+        cleanup();
+        resolve(payload.task);
+      };
+
+      const handleError = (payload: any) => {
+        if (payload.serverId !== serverId || payload.request_id !== requestId)
+          return;
+        cleanup();
+        reject(new Error(payload.message || "Failed to create task."));
+      };
+
+      const timer = setTimeout(() => {
+        cleanup();
+        reject(new Error("Timed out while creating task."));
+      }, 10000);
+
+      this.on("task_created", handleCreated);
+      this.on("error", handleError);
+      this.send(serverId, {
+        type: "create_task",
+        request_id: requestId,
+        title: options.title,
+        description: options.description ?? "",
+        priority: options.priority ?? 0,
+        labels: options.labels ?? [],
+        project_id: options.projectId ?? "",
+        skill_id: options.skillId ?? "",
+        cwd: options.cwd ?? "",
+      });
+    });
+  }
+
+  updateTask(
+    serverId: string,
+    taskId: string,
+    updates: { title?: string; description?: string; status?: string; priority?: number; labels?: string[]; projectId?: string },
+  ) {
+    const requestId = `${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
+    this.send(serverId, {
+      type: "update_task",
+      request_id: requestId,
+      task_id: taskId,
+      title: updates.title ?? "",
+      description: updates.description ?? "",
+      task_status: updates.status ?? "",
+      priority: updates.priority ?? 0,
+      labels: updates.labels,
+      project_id: updates.projectId ?? "",
+    });
+  }
+
+  deleteTask(serverId: string, taskId: string) {
+    const requestId = `${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
+    this.send(serverId, {
+      type: "delete_task",
+      request_id: requestId,
+      task_id: taskId,
+    });
+  }
+
+  delegateTask(serverId: string, taskId: string) {
+    const requestId = `${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
+
+    return new Promise<{ task: any; agentId: string }>((resolve, reject) => {
+      const cleanup = () => {
+        if (timer) clearTimeout(timer);
+        this.off("task_delegated", handleDelegated);
+        this.off("error", handleError);
+      };
+
+      const handleDelegated = (payload: any) => {
+        if (payload.serverId !== serverId || payload.request_id !== requestId)
+          return;
+        cleanup();
+        resolve({ task: payload.task, agentId: payload.agent_id });
+      };
+
+      const handleError = (payload: any) => {
+        if (payload.serverId !== serverId || payload.request_id !== requestId)
+          return;
+        cleanup();
+        reject(new Error(payload.message || "Failed to delegate task."));
+      };
+
+      const timer = setTimeout(() => {
+        cleanup();
+        reject(new Error("Timed out while delegating task."));
+      }, 15000);
+
+      this.on("task_delegated", handleDelegated);
+      this.on("error", handleError);
+      this.send(serverId, {
+        type: "delegate_task",
+        request_id: requestId,
+        task_id: taskId,
+      });
+    });
+  }
+
+  // ── Skills ───────────────────────────────────────────
+
+  listSkills(serverId: string) {
+    this.send(serverId, { type: "list_skills" });
+  }
+
+  createSkill(
+    serverId: string,
+    options: {
+      name: string;
+      icon?: string;
+      agentCmd: string;
+      prompt: string;
+      cwd?: string;
+    },
+  ) {
+    const requestId = `${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
+    this.send(serverId, {
+      type: "create_skill",
+      request_id: requestId,
+      name: options.name,
+      icon: options.icon ?? "",
+      agent_cmd: options.agentCmd,
+      prompt: options.prompt,
+      cwd: options.cwd ?? "",
+    });
+  }
+
+  deleteSkill(serverId: string, skillId: string) {
+    this.send(serverId, {
+      type: "delete_skill",
+      request_id: `${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`,
+      skill_id: skillId,
+    });
+  }
+
+  // ── Guidance ─────────────────────────────────────────
+
+  getGuidance(serverId: string) {
+    this.send(serverId, { type: "get_guidance" });
+  }
+
+  setGuidance(
+    serverId: string,
+    preamble: string,
+    constraints: string[],
+  ) {
+    this.send(serverId, {
+      type: "set_guidance",
+      request_id: `${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`,
+      preamble,
+      constraints,
+    });
+  }
+
+  // ── Projects ─────────────────────────────────────────
+
+  listProjects(serverId: string) {
+    this.send(serverId, { type: "list_projects" });
+  }
+
+  createProject(serverId: string, name: string, icon?: string) {
+    this.send(serverId, {
+      type: "create_project",
+      request_id: `${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`,
+      project_name: name,
+      project_icon: icon ?? "",
+    });
+  }
+
+  deleteProject(serverId: string, projectId: string) {
+    this.send(serverId, {
+      type: "delete_project",
+      request_id: `${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`,
+      project_id: projectId,
+    });
+  }
+
   isConnected(serverId: string) {
     return this.connections.get(serverId)?.isConnected ?? false;
   }

@@ -15,6 +15,7 @@ import { useFocusEffect, useRouter } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Agent, useAgents } from '../../store/agents';
+import { useTasks, Task } from '../../store/tasks';
 import { AgentStatus, Colors, Typography, statusColor } from '../../constants/tokens';
 import { TerminalPreview } from '../../components/terminal/TerminalPreview';
 import { AgentKindIcon } from '../../components/terminal/AgentKindIcon';
@@ -51,7 +52,19 @@ const STATUS_PRIORITY: Record<AgentStatus, number> = {
 
 export default function InboxScreen() {
   const { state } = useAgents();
+  const { state: taskState } = useTasks();
   const router = useRouter();
+
+  // Build agent→issue lookup for subtitle display
+  const agentIssueMap = useMemo(() => {
+    const map: Record<string, Task> = {};
+    for (const task of taskState.tasks) {
+      if (task.agentId && task.status === 'in_progress') {
+        map[`${task.serverId}:${task.agentId}`] = task;
+      }
+    }
+    return map;
+  }, [taskState.tasks]);
   const [viewMode, setViewModeState] = useState<StoredInboxViewMode>('list');
   const [agentAliases, setAgentAliases] = useState<StoredAgentAliases>({});
   const [recentAgentOpens, setRecentAgentOpens] = useState<StoredRecentAgentOpens>({});
@@ -122,6 +135,7 @@ export default function InboxScreen() {
       return (right.updated_at || 0) - (left.updated_at || 0);
     });
   }, [recentAgentOpens, state.agents]);
+
 
   const primaryIssue = useMemo(() => {
     let nextIssue: (typeof state.serverConnectionIssues)[string] | null = null;
@@ -254,6 +268,7 @@ export default function InboxScreen() {
     setCreateSheetVisible(true);
   };
 
+
   const handleTerminateAgent = () => {
     if (!menuAgent) return;
 
@@ -321,6 +336,7 @@ export default function InboxScreen() {
   // ── List: compact row ──
   const renderListAgent = ({ item }: { item: Agent }) => {
     const presented = presentAgent(item, agentAliases[item.key]);
+    const linkedIssue = agentIssueMap[`${item.serverId}:${item.id}`];
     return (
       <TouchableOpacity
         style={styles.listRow}
@@ -330,7 +346,14 @@ export default function InboxScreen() {
         delayLongPress={400}
       >
         <AgentKindIcon kind={presented.kind} size={15} />
-        <Text style={styles.listName} numberOfLines={1}>{presented.cwdBase || presented.title}</Text>
+        <View style={styles.listNameWrap}>
+          <Text style={styles.listName} numberOfLines={1}>{presented.cwdBase || presented.title}</Text>
+          {linkedIssue ? (
+            <Text style={styles.issueSubtitle} numberOfLines={1}>
+              ZEN-{linkedIssue.number}: {linkedIssue.title}
+            </Text>
+          ) : null}
+        </View>
         {item.serverName ? (
           <Text style={styles.listMeta} numberOfLines={1}>{item.serverName}</Text>
         ) : null}
@@ -569,6 +592,7 @@ export default function InboxScreen() {
           </View>
         </KeyboardAvoidingView>
       </Modal>
+
     </SafeAreaView>
   );
 }
@@ -688,11 +712,20 @@ const styles = StyleSheet.create({
     height: 7,
     borderRadius: 4,
   },
-  listName: {
+  listNameWrap: {
     flex: 1,
+    gap: 2,
+  },
+  listName: {
     color: Colors.textPrimary,
     fontSize: 14,
     fontFamily: Typography.uiFontMedium,
+  },
+  issueSubtitle: {
+    color: Colors.accent,
+    fontSize: 11,
+    fontFamily: Typography.uiFont,
+    opacity: 0.8,
   },
   listMeta: {
     color: Colors.textSecondary,

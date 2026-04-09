@@ -17,6 +17,7 @@ import (
 	"github.com/daoleno/zen/daemon/push"
 	"github.com/daoleno/zen/daemon/server"
 	"github.com/daoleno/zen/daemon/stats"
+	"github.com/daoleno/zen/daemon/task"
 	"github.com/daoleno/zen/daemon/watcher"
 )
 
@@ -88,6 +89,28 @@ func runDaemon(args []string, stderr io.Writer) error {
 		cancel()
 	}()
 
+	stateDir := authManager.StorageDir()
+
+	taskStore, err := task.NewStore(stateDir)
+	if err != nil {
+		return fmt.Errorf("initialize task store: %w", err)
+	}
+
+	skillStore, err := task.NewSkillStore(stateDir)
+	if err != nil {
+		return fmt.Errorf("initialize skill store: %w", err)
+	}
+
+	guidanceStore, err := task.NewGuidanceStore(stateDir)
+	if err != nil {
+		return fmt.Errorf("initialize guidance store: %w", err)
+	}
+
+	projectStore, err := task.NewProjectStore(stateDir)
+	if err != nil {
+		return fmt.Errorf("initialize project store: %w", err)
+	}
+
 	w := watcher.New(500 * time.Millisecond)
 	go w.Run(ctx)
 
@@ -95,7 +118,7 @@ func runDaemon(args []string, stderr io.Writer) error {
 	go sc.Start(ctx)
 
 	pusher := push.New()
-	srv := server.New(authManager, w, pusher, sc)
+	srv := server.New(authManager, w, pusher, sc, taskStore, skillStore, guidanceStore, projectStore)
 	if err := srv.Run(ctx, cfg.addr); err != nil && err.Error() != "http: Server closed" {
 		return fmt.Errorf("server error: %w", err)
 	}
