@@ -37,13 +37,48 @@ export function buildGhosttyTerminalHtml(theme: TerminalThemePalette, fontUri: s
         position: relative;
         width: 100%;
         height: 100%;
+        overflow: hidden;
         background: ${theme.background};
       }
-      #terminal-canvas {
-        display: block;
-        width: 100%;
-        height: 100%;
-        touch-action: none;
+      #terminal-html {
+        position: absolute;
+        inset: 0;
+        overflow: hidden;
+        box-sizing: border-box;
+        background: ${theme.background};
+        color: ${theme.foreground};
+        font-family: 'ZenTerm', monospace;
+        font-size: ${Typography.terminalSize}px;
+        line-height: ${Math.ceil(Typography.terminalSize * 1.28)}px;
+        white-space: pre;
+        tab-size: 8;
+        pointer-events: none;
+      }
+      #terminal-html * {
+        font-family: inherit;
+      }
+      #terminal-html pre {
+        margin: 0;
+        white-space: pre;
+      }
+      #terminal-cursor {
+        position: absolute;
+        top: 0;
+        left: 0;
+        z-index: 10;
+        display: none;
+        width: 2px;
+        height: ${Math.ceil(Typography.terminalSize * 1.28)}px;
+        background: ${theme.cursor};
+        pointer-events: none;
+      }
+      #cell-measure {
+        position: absolute;
+        visibility: hidden;
+        white-space: pre;
+        font-family: 'ZenTerm', monospace;
+        font-size: ${Typography.terminalSize}px;
+        line-height: ${Math.ceil(Typography.terminalSize * 1.28)}px;
       }
       #selection-layer {
         display: none;
@@ -96,7 +131,9 @@ export function buildGhosttyTerminalHtml(theme: TerminalThemePalette, fontUri: s
   </head>
   <body>
     <div id="root">
-      <canvas id="terminal-canvas"></canvas>
+      <div id="terminal-html"></div>
+      <div id="terminal-cursor"></div>
+      <span id="cell-measure">M</span>
       <div id="selection-layer">
         <button id="selection-close" type="button" aria-label="Close selection">×</button>
         <pre id="selection-text"></pre>
@@ -107,11 +144,6 @@ export function buildGhosttyTerminalHtml(theme: TerminalThemePalette, fontUri: s
       const LINE_HEIGHT_RATIO = 1.28;
       const CELL_WIDTH_FALLBACK = 0.62;
       const LINE_HEIGHT_PX = Math.ceil(FONT_SIZE * LINE_HEIGHT_RATIO);
-      const FLAG_BOLD = 1 << 0;
-      const FLAG_ITALIC = 1 << 1;
-      const FLAG_UNDERLINE = 1 << 2;
-      const FLAG_STRIKETHROUGH = 1 << 3;
-      const FLAG_INVERSE = 1 << 4;
 
       (async () => {
         if (document.fonts && typeof document.fonts.load === 'function') {
@@ -121,21 +153,23 @@ export function buildGhosttyTerminalHtml(theme: TerminalThemePalette, fontUri: s
           } catch (_) {}
         }
 
-        const canvas = document.getElementById('terminal-canvas');
-        const ctx = canvas.getContext('2d');
+        const root = document.getElementById('root');
+        const terminalHtml = document.getElementById('terminal-html');
+        const cursor = document.getElementById('terminal-cursor');
+        const measure = document.getElementById('cell-measure');
         const selectionLayer = document.getElementById('selection-layer');
         const selectionClose = document.getElementById('selection-close');
         const selectionText = document.getElementById('selection-text');
 
-        if (!ctx || !selectionLayer || !selectionClose || !selectionText) {
+        if (!root || !terminalHtml || !cursor || !measure || !selectionLayer || !selectionClose || !selectionText) {
           return;
         }
 
         let activeTheme = ${JSON.stringify(theme)};
-        let renderState = {
+        let renderSnapshot = {
           rows: 0,
           cols: 0,
-          cells: [],
+          html: '',
           cursorCol: 0,
           cursorRow: 0,
           cursorVisible: false,
@@ -144,23 +178,30 @@ export function buildGhosttyTerminalHtml(theme: TerminalThemePalette, fontUri: s
         let viewportHeight = 1;
         let cellWidth = Math.max(1, FONT_SIZE * CELL_WIDTH_FALLBACK);
         let cellHeight = LINE_HEIGHT_PX;
+        let lastRenderedHtml = '';
         let lastReportedCols = 0;
         let lastReportedRows = 0;
         let lastReportedCellWidth = 0;
         let lastReportedCellHeight = 0;
         let remoteAtBottom = true;
         let selectionMode = false;
+        let cursorBlinkVisible = true;
         let drawRAF = null;
         let swipeProgressRAF = null;
         let swipeProgressDeltaX = 0;
         let swipeProgressActive = false;
-        let cursorBlinkVisible = true;
-        let lastFont = '';
 
         const send = (payload) => {
           try {
             window.ReactNativeWebView.postMessage(JSON.stringify(payload));
           } catch (_) {}
+        };
+
+        const scheduleDraw = () => {
+          if (drawRAF != null) {
+            return;
+          }
+          drawRAF = requestAnimationFrame(draw);
         };
 
         const focusInput = () => {
@@ -188,149 +229,50 @@ export function buildGhosttyTerminalHtml(theme: TerminalThemePalette, fontUri: s
           swipeProgressRAF = requestAnimationFrame(flushSwipeProgress);
         };
 
-        const fontForFlags = (flags) => {
-          const italic = (flags & FLAG_ITALIC) ? 'italic ' : '';
-          const bold = (flags & FLAG_BOLD) ? 'bold ' : '';
-          return italic + bold + FONT_SIZE + 'px ZenTerm, monospace';
+        const measureCellWidth = () => {
+          const width = measure.getBoundingClientRect().width;
+          return Math.max(1, width || FONT_SIZE * CELL_WIDTH_FALLBACK);
         };
 
-        const setFontForFlags = (flags) => {
-          const nextFont = fontForFlags(flags);
-          if (nextFont === lastFont) {
-            return;
-          }
-          ctx.font = nextFont;
-          lastFont = nextFont;
+        const applyTheme = () => {
+          document.body.style.background = activeTheme.background;
+          document.documentElement.style.background = activeTheme.background;
+          root.style.background = activeTheme.background;
+          terminalHtml.style.background = activeTheme.background;
+          terminalHtml.style.color = activeTheme.foreground;
+          cursor.style.background = activeTheme.cursor;
+          selectionLayer.style.background = activeTheme.background;
+          selectionLayer.style.color = activeTheme.foreground;
+          selectionClose.style.color = activeTheme.foreground;
         };
 
-        const argbToCss = (argb, fallback) => {
-          if (!argb) {
-            return fallback;
+        const updateCursor = () => {
+          if (!remoteAtBottom || selectionMode || !cursorBlinkVisible || !renderSnapshot.cursorVisible) {
+            cursor.style.display = 'none';
+            return;
           }
-          const value = argb >>> 0;
-          const a = ((value >> 24) & 255) / 255;
-          const r = (value >> 16) & 255;
-          const g = (value >> 8) & 255;
-          const b = value & 255;
-          if (a >= 0.999) {
-            return 'rgb(' + r + ',' + g + ',' + b + ')';
-          }
-          return 'rgba(' + r + ',' + g + ',' + b + ',' + a.toFixed(3) + ')';
-        };
 
-        const safeFromCodePoint = (value) => {
-          if (!value) {
-            return '';
+          const x = renderSnapshot.cursorCol * cellWidth;
+          const y = renderSnapshot.cursorRow * cellHeight;
+          if (x >= viewportWidth || y >= viewportHeight || x < 0 || y < 0) {
+            cursor.style.display = 'none';
+            return;
           }
-          try {
-            return String.fromCodePoint(value);
-          } catch (_) {
-            return '';
-          }
-        };
 
-        const scheduleDraw = () => {
-          if (drawRAF != null) {
-            return;
-          }
-          drawRAF = requestAnimationFrame(draw);
-        };
-
-        const drawCursor = () => {
-          if (!remoteAtBottom || selectionMode || !cursorBlinkVisible || !renderState.cursorVisible) {
-            return;
-          }
-          if (renderState.cursorCol < 0 || renderState.cursorRow < 0) {
-            return;
-          }
-          const x = renderState.cursorCol * cellWidth;
-          const y = renderState.cursorRow * cellHeight;
-          if (x >= viewportWidth || y >= viewportHeight) {
-            return;
-          }
-          ctx.fillStyle = activeTheme.cursor;
-          ctx.fillRect(x, y, Math.max(2, Math.round(cellWidth * 0.14)), cellHeight);
+          cursor.style.display = 'block';
+          cursor.style.width = Math.max(2, Math.round(cellWidth * 0.14)) + 'px';
+          cursor.style.height = cellHeight + 'px';
+          cursor.style.transform = 'translate(' + x + 'px,' + y + 'px)';
         };
 
         const draw = () => {
           drawRAF = null;
-          const rows = renderState.rows || 0;
-          const cols = renderState.cols || 0;
-          const cells = Array.isArray(renderState.cells) ? renderState.cells : [];
-          const baselineOffset = Math.max(0, Math.floor((cellHeight - FONT_SIZE) / 2) - 1);
-
-          ctx.clearRect(0, 0, viewportWidth, viewportHeight);
-          ctx.fillStyle = activeTheme.background;
-          ctx.fillRect(0, 0, viewportWidth, viewportHeight);
-          ctx.textBaseline = 'top';
-          ctx.direction = 'ltr';
-          lastFont = '';
-
-          for (let row = 0; row < rows; row += 1) {
-            const y = row * cellHeight;
-            for (let col = 0; col < cols; col += 1) {
-              const offset = (row * cols + col) * 4;
-              if (offset + 3 >= cells.length) {
-                break;
-              }
-
-              const codepoint = cells[offset] | 0;
-              const rawFg = cells[offset + 1] | 0;
-              const rawBg = cells[offset + 2] | 0;
-              const flags = cells[offset + 3] | 0;
-
-              let fg = argbToCss(rawFg, activeTheme.foreground);
-              let bg = rawBg ? argbToCss(rawBg, activeTheme.background) : activeTheme.background;
-              if (flags & FLAG_INVERSE) {
-                const swapped = fg;
-                fg = bg;
-                bg = swapped;
-              }
-
-              const x = col * cellWidth;
-              if (bg !== activeTheme.background) {
-                ctx.fillStyle = bg;
-                ctx.fillRect(x, y, Math.ceil(cellWidth + 0.5), cellHeight);
-              }
-
-              if (codepoint > 0) {
-                setFontForFlags(flags);
-                ctx.fillStyle = fg;
-                const glyph = safeFromCodePoint(codepoint);
-                if (glyph) {
-                  ctx.fillText(glyph, x, y + baselineOffset);
-                }
-                if (flags & FLAG_UNDERLINE) {
-                  ctx.fillRect(x, y + cellHeight - 2, Math.max(1, cellWidth), 1);
-                }
-                if (flags & FLAG_STRIKETHROUGH) {
-                  ctx.fillRect(x, y + Math.floor(cellHeight / 2), Math.max(1, cellWidth), 1);
-                }
-              }
-            }
+          const nextHtml = renderSnapshot.html || '';
+          if (nextHtml !== lastRenderedHtml) {
+            terminalHtml.innerHTML = nextHtml;
+            lastRenderedHtml = nextHtml;
           }
-
-          drawCursor();
-        };
-
-        const measureCellWidth = () => {
-          ctx.save();
-          ctx.font = '400 ' + FONT_SIZE + 'px ZenTerm, monospace';
-          const width = ctx.measureText('M').width;
-          ctx.restore();
-          return Math.max(1, width || FONT_SIZE * CELL_WIDTH_FALLBACK);
-        };
-
-        const resizeCanvas = () => {
-          const dpr = Math.max(1, window.devicePixelRatio || 1);
-          canvas.width = Math.max(1, Math.floor(viewportWidth * dpr));
-          canvas.height = Math.max(1, Math.floor(viewportHeight * dpr));
-          canvas.style.width = viewportWidth + 'px';
-          canvas.style.height = viewportHeight + 'px';
-          ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-          ctx.textBaseline = 'top';
-          ctx.direction = 'ltr';
-          lastFont = '';
+          updateCursor();
         };
 
         const syncViewport = (force) => {
@@ -341,21 +283,11 @@ export function buildGhosttyTerminalHtml(theme: TerminalThemePalette, fontUri: s
           const nextCellHeight = LINE_HEIGHT_PX;
           const nextCols = Math.max(1, Math.floor(nextWidth / nextCellWidth));
           const nextRows = Math.max(1, Math.floor(nextHeight / nextCellHeight));
-          const changed =
-            force ||
-            nextWidth !== viewportWidth ||
-            nextHeight !== viewportHeight ||
-            Math.abs(nextCellWidth - cellWidth) > 0.25 ||
-            nextCellHeight !== cellHeight;
 
           viewportWidth = nextWidth;
           viewportHeight = nextHeight;
           cellWidth = nextCellWidth;
           cellHeight = nextCellHeight;
-
-          if (changed) {
-            resizeCanvas();
-          }
 
           const shouldReport =
             force ||
@@ -585,10 +517,10 @@ export function buildGhosttyTerminalHtml(theme: TerminalThemePalette, fontUri: s
           lastY = y;
 
           scrollAccum += delta;
-          const lines = Math.trunc(scrollAccum / LINE_HEIGHT_PX);
+          const lines = Math.trunc(scrollAccum / cellHeight);
           if (lines !== 0) {
             doScroll(lines);
-            scrollAccum -= lines * LINE_HEIGHT_PX;
+            scrollAccum -= lines * cellHeight;
           }
         }, { capture: true, passive: false });
 
@@ -655,10 +587,10 @@ export function buildGhosttyTerminalHtml(theme: TerminalThemePalette, fontUri: s
             }
 
             accum += velocityPx;
-            const lines = Math.trunc(accum / LINE_HEIGHT_PX);
+            const lines = Math.trunc(accum / cellHeight);
             if (lines !== 0) {
               doScroll(lines);
-              accum -= lines * LINE_HEIGHT_PX;
+              accum -= lines * cellHeight;
             }
             velocityPx *= FRICTION;
             momentumRAF = requestAnimationFrame(tick);
@@ -685,8 +617,8 @@ export function buildGhosttyTerminalHtml(theme: TerminalThemePalette, fontUri: s
           scheduleDraw();
         }, 530);
 
-        window.__zenRenderState = (nextState) => {
-          renderState = nextState || renderState;
+        window.__zenRenderSnapshot = (nextSnapshot) => {
+          renderSnapshot = nextSnapshot || renderSnapshot;
           scheduleDraw();
         };
 
@@ -695,12 +627,7 @@ export function buildGhosttyTerminalHtml(theme: TerminalThemePalette, fontUri: s
             return;
           }
           activeTheme = nextTheme;
-          document.body.style.background = activeTheme.background;
-          document.documentElement.style.background = activeTheme.background;
-          document.getElementById('root').style.background = activeTheme.background;
-          selectionLayer.style.background = activeTheme.background;
-          selectionLayer.style.color = activeTheme.foreground;
-          selectionClose.style.color = activeTheme.foreground;
+          applyTheme();
           scheduleDraw();
         };
 
@@ -745,6 +672,8 @@ export function buildGhosttyTerminalHtml(theme: TerminalThemePalette, fontUri: s
           const observer = new ResizeObserver(handleViewportChange);
           observer.observe(document.documentElement);
         }
+
+        applyTheme();
 
         requestAnimationFrame(() => {
           syncViewport(true);

@@ -1,32 +1,29 @@
 import { requireNativeModule } from 'expo-modules-core';
 
-const ZenTerminalVt = requireNativeModule('ZenTerminalVt');
+type NativeRenderSnapshot = Omit<RenderSnapshot, 'html'> & {
+  html?: string;
+};
 
-/**
- * Cell flags bitmask constants.
- */
-export const CellFlags = {
-  BOLD: 1 << 0,
-  ITALIC: 1 << 1,
-  UNDERLINE: 1 << 2,
-  STRIKETHROUGH: 1 << 3,
-  INVERSE: 1 << 4,
-  WIDE: 1 << 5,
-} as const;
+interface NativeTerminalVtModule {
+  createTerminal(cols: number, rows: number): number;
+  destroyTerminal(handle: number): void;
+  writeData(handle: number, data: string): void;
+  resize(handle: number, cols: number, rows: number, cellWidth: number, cellHeight: number): void;
+  getRenderSnapshot?: (handle: number) => NativeRenderSnapshot;
+  getRenderState?: (handle: number) => NativeRenderSnapshot;
+  getVisibleText(handle: number): string;
+  getVisibleHtml(handle: number): string;
+  getCrashBreadcrumb(): NativeCrashBreadcrumb | null;
+  clearCrashBreadcrumb(): void;
+}
 
-/**
- * Render state returned from the native module.
- *
- * `cells` is a flat Int32Array packed as [codepoint, fg, bg, flags] per cell,
- * row-major order. Total length = rows * cols * 4.
- *
- * Colors are packed ARGB (0xAARRGGBB). bg=0 means default background.
- */
-export interface RenderState {
+const ZenTerminalVt = requireNativeModule<NativeTerminalVtModule>('ZenTerminalVt');
+
+export interface RenderSnapshot {
   dirty: 'none' | 'partial' | 'full';
   rows: number;
   cols: number;
-  cells: number[];
+  html: string;
   cursorCol: number;
   cursorRow: number;
   cursorVisible: boolean;
@@ -41,6 +38,18 @@ export interface NativeCrashBreadcrumb {
   model: string;
   brand: string;
   sdkInt: number;
+}
+
+function readNativeSnapshot(handle: number): NativeRenderSnapshot | null {
+  if (typeof ZenTerminalVt.getRenderSnapshot === 'function') {
+    return ZenTerminalVt.getRenderSnapshot(handle);
+  }
+
+  if (typeof ZenTerminalVt.getRenderState === 'function') {
+    return ZenTerminalVt.getRenderState(handle);
+  }
+
+  return null;
 }
 
 /**
@@ -79,12 +88,33 @@ export function resize(
 }
 
 /**
- * Extract the current render state (cell grid with colors and styles).
- * Returns dirty='none' if nothing changed since last call.
+ * Extract the current terminal snapshot for rendering.
  */
-export function getRenderState(handle: number): RenderState {
-  return ZenTerminalVt.getRenderState(handle);
+export function getRenderSnapshot(handle: number): RenderSnapshot {
+  const snapshot = readNativeSnapshot(handle);
+
+  if (!snapshot || snapshot.dirty === 'none') {
+    return {
+      dirty: 'none',
+      rows: snapshot?.rows ?? 0,
+      cols: snapshot?.cols ?? 0,
+      html: '',
+      cursorCol: snapshot?.cursorCol ?? 0,
+      cursorRow: snapshot?.cursorRow ?? 0,
+      cursorVisible: snapshot?.cursorVisible ?? false,
+    };
+  }
+
+  return {
+    ...snapshot,
+    html: ZenTerminalVt.getVisibleHtml(handle),
+  };
 }
+
+/**
+ * Backward-compatible alias for older call sites and stale Metro caches.
+ */
+export const getRenderState = getRenderSnapshot;
 
 /**
  * Get the full visible text as a string (for text selection / copy).
@@ -94,8 +124,7 @@ export function getVisibleText(handle: number): string {
 }
 
 /**
- * Get the current visible screen as HTML with inline styles.
- * Intended for lightweight DOM rendering surfaces.
+ * Get the full visible screen formatted as HTML.
  */
 export function getVisibleHtml(handle: number): string {
   return ZenTerminalVt.getVisibleHtml(handle);

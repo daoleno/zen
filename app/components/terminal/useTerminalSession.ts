@@ -1,8 +1,7 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef } from 'react';
 import { wsClient } from '../../services/websocket';
 
 type Handlers = {
-  onOpen?: (payload: { session_id: string; cols: number; rows: number; backend: string }) => void;
   onHistory?: (payload: { session_id: string; data: string }) => void;
   onOutput?: (payload: { session_id: string; data: string }) => void;
   onScrollState?: (payload: { session_id: string; at_bottom: boolean; in_copy_mode: boolean; scroll_position: number }) => void;
@@ -16,7 +15,6 @@ export function useTerminalSession(serverId: string, targetId: string, backend: 
   const openedRef = useRef(false);
   const sizeRef = useRef<{ cols: number; rows: number } | null>(null);
   const reopenOnConnectRef = useRef(false);
-  const [connected, setConnected] = useState(false);
 
   handlersRef.current = handlers;
 
@@ -32,8 +30,6 @@ export function useTerminalSession(serverId: string, targetId: string, backend: 
       sessionIdRef.current = payload.session_id;
       sizeRef.current = { cols: payload.cols, rows: payload.rows };
       reopenOnConnectRef.current = false;
-      setConnected(true);
-      handlersRef.current.onOpen?.(payload);
     };
     const handleOutput = (payload: { serverId: string; session_id: string; data: string }) => {
       if (payload.serverId !== serverId) return;
@@ -50,7 +46,6 @@ export function useTerminalSession(serverId: string, targetId: string, backend: 
       if (sessionIdRef.current && payload.session_id !== sessionIdRef.current) return;
       sessionIdRef.current = null;
       reopenOnConnectRef.current = false;
-      setConnected(false);
       handlersRef.current.onExit?.(payload);
     };
     const handleScrollState = (payload: {
@@ -69,7 +64,6 @@ export function useTerminalSession(serverId: string, targetId: string, backend: 
       if (payload.session_id && sessionIdRef.current && payload.session_id !== sessionIdRef.current) return;
       if (payload.code === 'input_failed' && payload.message.includes('unknown terminal session')) {
         sessionIdRef.current = null;
-        setConnected(false);
         if (openedRef.current && wsClient.isConnected(serverId)) {
           requestOpen();
         } else if (openedRef.current) {
@@ -88,7 +82,6 @@ export function useTerminalSession(serverId: string, targetId: string, backend: 
       if (!openedRef.current) return;
       sessionIdRef.current = null;
       reopenOnConnectRef.current = true;
-      setConnected(false);
     };
 
     wsClient.on('connected', handleConnected);
@@ -114,21 +107,11 @@ export function useTerminalSession(serverId: string, targetId: string, backend: 
       sizeRef.current = null;
       const sessionId = sessionIdRef.current;
       sessionIdRef.current = null;
-      setConnected(false);
       if (sessionId) {
         wsClient.closeTerminal(serverId, sessionId);
       }
     };
   }, [serverId, targetId, backend]);
-
-  const open = useCallback((cols: number, rows: number) => {
-    sizeRef.current = { cols, rows };
-    if (openedRef.current) {
-      return;
-    }
-    openedRef.current = true;
-    wsClient.openTerminal(serverId, targetId, backend, cols, rows);
-  }, [backend, serverId, targetId]);
 
   const sendInput = useCallback((data: string) => {
     const sessionId = sessionIdRef.current;
@@ -166,11 +149,9 @@ export function useTerminalSession(serverId: string, targetId: string, backend: 
   }, [backend, serverId, targetId]);
 
   return useMemo(() => ({
-    connected,
-    open,
     sendInput,
     scroll,
     cancelScroll,
     resize,
-  }), [cancelScroll, connected, open, resize, scroll, sendInput]);
+  }), [cancelScroll, resize, scroll, sendInput]);
 }

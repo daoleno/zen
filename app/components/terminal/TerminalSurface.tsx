@@ -4,33 +4,30 @@
  */
 import React from 'react';
 import { Platform } from 'react-native';
+import type { TerminalSurfaceHandle, TerminalSurfaceProps } from './TerminalSurface.types';
 
-export type { TerminalSurfaceHandle } from './TerminalSurfaceGhosttyWebView';
+export type { TerminalSurfaceHandle, TerminalSurfaceProps } from './TerminalSurface.types';
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-let _resolved: React.ComponentType<any> | null = null;
+type TerminalSurfaceComponent = React.ForwardRefExoticComponent<
+  TerminalSurfaceProps & React.RefAttributes<TerminalSurfaceHandle>
+>;
+
+let _resolved: TerminalSurfaceComponent | null = null;
 
 function getImpl() {
   if (!_resolved) {
     if (Platform.OS === 'android') {
-      _resolved = require('./TerminalSurfaceGhosttyWebView').TerminalSurfaceGhosttyWebView;
+      _resolved = require('./TerminalSurfaceGhosttyWebView').TerminalSurfaceGhosttyWebView as TerminalSurfaceComponent;
     } else {
-      _resolved = require('./TerminalSurfaceWebView').TerminalSurfaceWebView;
+      _resolved = require('./TerminalSurfaceUnsupported').TerminalSurfaceUnsupported as TerminalSurfaceComponent;
     }
   }
   return _resolved!;
 }
 
-const TerminalSurfaceImpl = React.forwardRef((props: any, ref: any) => {
+const TerminalSurfaceImpl = React.forwardRef<TerminalSurfaceHandle, TerminalSurfaceProps>((props, ref) => {
   const Impl = getImpl();
   return <Impl {...props} ref={ref} />;
 });
 
-export const TerminalSurface = React.memo(TerminalSurfaceImpl, (prev: any, next: any) => (
-  prev.serverId === next.serverId &&
-  prev.targetId === next.targetId &&
-  prev.backend === next.backend &&
-  prev.themeName === next.themeName &&
-  prev.themeOverrides === next.themeOverrides &&
-  prev.ctrlArmed === next.ctrlArmed
-));
+export const TerminalSurface = TerminalSurfaceImpl;

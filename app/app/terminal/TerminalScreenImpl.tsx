@@ -3,6 +3,8 @@ import {
   ActivityIndicator,
   Alert,
   Animated,
+  AppState,
+  AppStateStatus,
   Easing,
   Keyboard,
   KeyboardAvoidingView,
@@ -90,7 +92,7 @@ export default function TerminalScreen() {
   const serverId = typeof params.serverId === "string" ? params.serverId : "";
   const sessionKey =
     agentId && serverId ? makeSessionKey(serverId, agentId) : null;
-  const { state, dispatch } = useAgents();
+  const { state } = useAgents();
   const router = useRouter();
   const insets = useSafeAreaInsets();
   const { width: windowWidth, height: windowHeight } = useWindowDimensions();
@@ -196,16 +198,39 @@ export default function TerminalScreen() {
     : connectionIssue?.hint ||
       "This terminal will reopen automatically once the daemon is reachable again.";
 
+  const syncActiveTerminal = React.useCallback(
+    (appState: AppStateStatus = "active") => {
+      if (
+        appState !== "active" ||
+        !sessionKey ||
+        !serverId ||
+        !agentId
+      ) {
+        wsClient.clearActiveAgentsExcept(null);
+        return;
+      }
+
+      wsClient.clearActiveAgentsExcept({ serverId, agentId });
+    },
+    [agentId, serverId, sessionKey],
+  );
+
   useFocusEffect(
     React.useCallback(() => {
       setScreenFocused(true);
-      dispatch({ type: "SELECT_AGENT", key: sessionKey });
+      syncActiveTerminal();
+
+      const appStateSub = AppState.addEventListener("change", (nextState) => {
+        syncActiveTerminal(nextState);
+      });
+
       return () => {
+        appStateSub.remove();
         setScreenFocused(false);
         setCtrlArmed(false);
-        dispatch({ type: "SELECT_AGENT", key: null });
+        syncActiveTerminal("background");
       };
-    }, [dispatch, sessionKey]),
+    }, [syncActiveTerminal]),
   );
 
   useEffect(() => {
@@ -911,7 +936,7 @@ export default function TerminalScreen() {
           >
             <Ionicons name="chevron-back" size={15} color="#DDE5F2" />
             <Text style={styles.swipeHintText} numberOfLines={1}>
-              {previousTab.name}
+              {previousTab?.name}
             </Text>
           </Animated.View>
         ) : null}
@@ -929,7 +954,7 @@ export default function TerminalScreen() {
             ]}
           >
             <Text style={styles.swipeHintText} numberOfLines={1}>
-              {nextTab.name}
+              {nextTab?.name}
             </Text>
             <Ionicons name="chevron-forward" size={15} color="#DDE5F2" />
           </Animated.View>

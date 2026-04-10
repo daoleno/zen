@@ -1,13 +1,6 @@
 import { useCallback, useEffect, useRef } from 'react';
-import {
-  createTerminal,
-  destroyTerminal,
-  getRenderState,
-  getVisibleText,
-  resize,
-  writeData,
-} from 'zen-terminal-vt';
-import type { RenderState } from 'zen-terminal-vt';
+import * as GhosttyVt from 'zen-terminal-vt';
+import type { RenderSnapshot } from 'zen-terminal-vt';
 
 export interface GhosttyGridSize {
   cols: number;
@@ -16,29 +9,34 @@ export interface GhosttyGridSize {
   cellHeight: number;
 }
 
-function normalizeRenderCells(cells: unknown): number[] {
-  if (Array.isArray(cells)) {
-    return cells;
+type GhosttyCompatModule = typeof GhosttyVt & {
+  getRenderState?: (handle: number) => Omit<RenderSnapshot, 'html'> & { html?: string };
+};
+
+function readRenderSnapshot(handle: number): RenderSnapshot | null {
+  const moduleCompat = GhosttyVt as GhosttyCompatModule;
+  const snapshotReader =
+    typeof moduleCompat.getRenderSnapshot === 'function'
+      ? moduleCompat.getRenderSnapshot
+      : typeof moduleCompat.getRenderState === 'function'
+        ? moduleCompat.getRenderState
+        : null;
+
+  if (!snapshotReader) {
+    return null;
   }
 
-  if (!cells || typeof cells !== 'object') {
-    return [];
+  const snapshot = snapshotReader(handle);
+  if (!snapshot || snapshot.dirty === 'none') {
+    return null;
   }
 
-  const arrayLike = cells as { length?: unknown };
-  if (typeof arrayLike.length === 'number') {
-    try {
-      return Array.from(cells as ArrayLike<number>);
-    } catch {
-      // Fall through to numeric-key extraction.
-    }
-  }
-
-  const record = cells as Record<string, unknown>;
-  return Object.keys(record)
-    .filter((key) => /^\d+$/.test(key))
-    .sort((a, b) => Number(a) - Number(b))
-    .map((key) => Number(record[key] ?? 0));
+  return typeof snapshot.html === 'string'
+    ? snapshot
+    : {
+      ...snapshot,
+      html: GhosttyVt.getVisibleHtml(handle),
+    };
 }
 
 /**
@@ -59,7 +57,7 @@ export function useGhosttyCoreTerminal() {
 
     if (!handleRef.current) {
       try {
-        handleRef.current = createTerminal(grid.cols, grid.rows);
+        handleRef.current = GhosttyVt.createTerminal(grid.cols, grid.rows);
       } catch (error) {
         console.error('[useGhosttyCoreTerminal] createTerminal failed:', error);
         return false;
@@ -80,7 +78,7 @@ export function useGhosttyCoreTerminal() {
 
     if (shouldResize) {
       try {
-        resize(handleRef.current, grid.cols, grid.rows, grid.cellWidth, grid.cellHeight);
+        GhosttyVt.resize(handleRef.current, grid.cols, grid.rows, grid.cellWidth, grid.cellHeight);
         dirtyRef.current = true;
         gridRef.current = grid;
       } catch (error) {
@@ -99,7 +97,7 @@ export function useGhosttyCoreTerminal() {
     }
 
     try {
-      writeData(handle, data);
+      GhosttyVt.writeData(handle, data);
       dirtyRef.current = true;
       return true;
     } catch (error) {
@@ -108,7 +106,7 @@ export function useGhosttyCoreTerminal() {
     }
   }, []);
 
-  const consumeRenderState = useCallback((): RenderState | null => {
+  const consumeRenderSnapshot = useCallback((): RenderSnapshot | null => {
     const handle = handleRef.current;
     if (!handle || !dirtyRef.current) {
       return null;
@@ -116,14 +114,9 @@ export function useGhosttyCoreTerminal() {
     dirtyRef.current = false;
 
     try {
-      const state = getRenderState(handle);
-      if (!state || state.dirty === 'none') {
-        return null;
-      }
-      const normalizedCells = normalizeRenderCells((state as RenderState & { cells?: unknown }).cells);
-      return normalizedCells === state.cells ? state : { ...state, cells: normalizedCells };
+      return readRenderSnapshot(handle);
     } catch (error) {
-      console.error('[useGhosttyCoreTerminal] getRenderState failed:', error);
+      console.error('[useGhosttyCoreTerminal] getRenderSnapshot failed:', error);
       return null;
     }
   }, []);
@@ -135,7 +128,7 @@ export function useGhosttyCoreTerminal() {
     }
 
     try {
-      return getVisibleText(handle);
+      return GhosttyVt.getVisibleText(handle);
     } catch (error) {
       console.error('[useGhosttyCoreTerminal] getVisibleText failed:', error);
       return '';
@@ -152,7 +145,7 @@ export function useGhosttyCoreTerminal() {
         return;
       }
       try {
-        destroyTerminal(handle);
+        GhosttyVt.destroyTerminal(handle);
       } catch (error) {
         console.error('[useGhosttyCoreTerminal] destroyTerminal failed:', error);
       }
@@ -162,7 +155,7 @@ export function useGhosttyCoreTerminal() {
   return {
     ensureTerminal,
     writeOutput,
-    consumeRenderState,
+    consumeRenderSnapshot,
     getVisibleTextSnapshot,
   };
 }

@@ -7,38 +7,17 @@ import { Colors } from '../../constants/tokens';
 import {
   DefaultTerminalThemeName,
   resolveTerminalTheme,
-  TerminalThemeName,
-  TerminalThemePalette,
 } from '../../constants/terminalThemes';
 import { buildGhosttyTerminalHtml } from './ghosttyWebViewHtml';
 import { TerminalInputHandler } from './TerminalInputHandler';
+import type { TerminalSurfaceHandle, TerminalSurfaceProps } from './TerminalSurface.types';
 import { useGhosttyTerminalController } from './useGhosttyTerminalController';
 
 let cachedTerminalFontUri: string | null = null;
 
-export interface TerminalSurfaceHandle {
-  sendInput(data: string, options?: { focus?: boolean }): void;
-  focus(): void;
-  blur(): void;
-  resumeInput(): void;
-  scrollToBottom(): void;
-}
-
-interface TerminalSurfaceGhosttyWebViewProps {
-  serverId: string;
-  targetId: string;
-  backend?: string;
-  themeName?: TerminalThemeName;
-  themeOverrides?: Partial<TerminalThemePalette>;
-  ctrlArmed?: boolean;
-  onCtrlArmedChange?: (next: boolean) => void;
-  onTabSwipeProgress?: (deltaX: number, active: boolean) => void;
-  onTabSwipe?: (direction: 'next' | 'prev') => void;
-}
-
 export const TerminalSurfaceGhosttyWebView = forwardRef<
   TerminalSurfaceHandle,
-  TerminalSurfaceGhosttyWebViewProps
+  TerminalSurfaceProps
 >(({
   serverId,
   targetId,

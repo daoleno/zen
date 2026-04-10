@@ -14,7 +14,6 @@ import { TaskProvider, useTasks } from '../store/tasks';
 import { Colors } from '../constants/tokens';
 import { wsClient } from '../services/websocket';
 import { getServers, isOnboarded } from '../services/storage';
-import { parseSessionKey } from '../services/sessionKeys';
 import { importConnection } from '../services/importConnection';
 import {
   clearNativeTerminalCrashBreadcrumb,
@@ -140,6 +139,7 @@ function AppContent() {
   const notificationsEnabledRef = useRef(false);
   const previousAgentStatesRef = useRef(new Map<string, Agent['status']>());
   const handledConnectLinksRef = useRef(new Set<string>());
+  const isTerminalRouteActive = segments[0] === 'terminal';
 
   useEffect(() => {
     const breadcrumb = getNativeTerminalCrashBreadcrumb();
@@ -365,8 +365,7 @@ function AppContent() {
       } catch (error) {
         console.log('Failed to bootstrap app:', error);
       } finally {
-        const selected = state.selectedAgentKey ? parseSessionKey(state.selectedAgentKey) : null;
-        wsClient.clearActiveAgentsExcept(selected);
+        wsClient.clearActiveAgentsExcept(null);
       }
     })();
 
@@ -408,34 +407,17 @@ function AppContent() {
   }, [router]);
 
   useEffect(() => {
-    const syncActiveAgent = (appState: AppStateStatus) => {
-      if (appState !== 'active') {
-        wsClient.clearActiveAgentsExcept(null);
-        return;
-      }
-
-      const selected = state.selectedAgentKey ? parseSessionKey(state.selectedAgentKey) : null;
-      wsClient.clearActiveAgentsExcept(selected);
-    };
-
     const subscription = AppState.addEventListener('change', nextState => {
       appStateRef.current = nextState;
-      syncActiveAgent(nextState);
+      if (nextState !== 'active') {
+        wsClient.clearActiveAgentsExcept(null);
+      }
     });
 
     return () => {
       subscription.remove();
     };
-  }, [state.selectedAgentKey]);
-
-  useEffect(() => {
-    if (appStateRef.current !== 'active') {
-      wsClient.clearActiveAgentsExcept(null);
-      return;
-    }
-    const selected = state.selectedAgentKey ? parseSessionKey(state.selectedAgentKey) : null;
-    wsClient.clearActiveAgentsExcept(selected);
-  }, [state.selectedAgentKey]);
+  }, []);
 
   useEffect(() => {
     const nextAgentStates = new Map(state.agents.map(agent => [agent.key, agent.status]));
@@ -452,7 +434,7 @@ function AppContent() {
     }
 
     // Suppress all local notifications while user is in any terminal session.
-    if (state.selectedAgentKey) {
+    if (isTerminalRouteActive) {
       previousAgentStatesRef.current = nextAgentStates;
       return;
     }
@@ -475,7 +457,7 @@ function AppContent() {
     }
 
     previousAgentStatesRef.current = nextAgentStates;
-  }, [state.agents, state.selectedAgentKey]);
+  }, [isTerminalRouteActive, state.agents]);
 
   // Register permissions and push token.
   useEffect(() => {

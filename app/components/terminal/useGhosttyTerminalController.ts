@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { WebView, WebViewMessageEvent } from 'react-native-webview';
-import type { RenderState } from 'zen-terminal-vt';
+import type { RenderSnapshot } from 'zen-terminal-vt';
 import type { TerminalThemePalette } from '../../constants/terminalThemes';
 import { useGhosttyCoreTerminal, type GhosttyGridSize } from './useGhosttyCoreTerminal';
 import { useTerminalSession } from './useTerminalSession';
@@ -18,14 +18,14 @@ type BridgeMessage =
   | { type: 'requestSelection' };
 
 type RendererStateMessage =
-  | { type: 'renderState'; state: RenderState }
+  | { type: 'renderSnapshot'; snapshot: RenderSnapshot }
   | { type: 'theme'; theme: TerminalThemePalette }
   | { type: 'scrollState'; atBottom: boolean }
   | { type: 'ctrlState'; armed: boolean }
   | { type: 'selectionText'; text: string };
 
 const REPLACEABLE_PENDING_TYPES: readonly RendererStateMessage['type'][] = [
-  'renderState',
+  'renderSnapshot',
   'theme',
   'scrollState',
   'ctrlState',
@@ -85,8 +85,8 @@ export function useGhosttyTerminalController({
   const injectRendererMessage = useCallback((payload: RendererStateMessage) => {
     let script = '';
 
-    if (payload.type === 'renderState') {
-      script = `window.__zenRenderState && window.__zenRenderState(${JSON.stringify(payload.state)}); true;`;
+    if (payload.type === 'renderSnapshot') {
+      script = `window.__zenRenderSnapshot && window.__zenRenderSnapshot(${JSON.stringify(payload.snapshot)}); true;`;
     } else if (payload.type === 'theme') {
       script = `window.__zenTheme && window.__zenTheme(${JSON.stringify(payload.theme)}); true;`;
     } else if (payload.type === 'scrollState') {
@@ -134,11 +134,11 @@ export function useGhosttyTerminalController({
 
   const flushRenderState = useCallback(() => {
     renderFrameRef.current = 0;
-    const state = ghostty.consumeRenderState();
-    if (!state) {
+    const snapshot = ghostty.consumeRenderSnapshot();
+    if (!snapshot) {
       return;
     }
-    postToRenderer({ type: 'renderState', state });
+    postToRenderer({ type: 'renderSnapshot', snapshot });
   }, [ghostty, postToRenderer]);
 
   const scheduleRenderState = useCallback(() => {

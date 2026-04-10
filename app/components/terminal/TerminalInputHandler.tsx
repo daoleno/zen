@@ -17,10 +17,7 @@ interface TerminalInputHandlerProps {
 
 /**
  * Hidden TextInput for keyboard/IME capture.
- * Replaces the hidden textarea in the xterm.js WebView.
- *
- * React Native's TextInput handles IME composition natively,
- * eliminating the 100+ lines of xterm.js composition patches.
+ * Keeps IME capture in React Native so the renderer stays display-only.
  */
 export const TerminalInputHandler = forwardRef<TerminalInputHandleRef, TerminalInputHandlerProps>(
   ({ onInput, ctrlArmed, onCtrlConsumed, disabled }, ref) => {

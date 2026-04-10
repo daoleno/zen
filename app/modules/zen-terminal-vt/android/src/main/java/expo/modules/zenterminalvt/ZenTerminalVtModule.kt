@@ -2,6 +2,7 @@ package expo.modules.zenterminalvt
 
 import android.content.Context
 import android.os.Build
+import android.os.Bundle
 import expo.modules.kotlin.modules.Module
 import expo.modules.kotlin.modules.ModuleDefinition
 import java.util.concurrent.ConcurrentHashMap
@@ -85,6 +86,26 @@ class ZenTerminalVtModule : Module() {
         return terminalHandles.remove(handleId)
     }
 
+    private fun buildSnapshotBundle(nativeState: Map<String, Any?>): Bundle {
+        val bundle = Bundle(nativeState.size)
+
+        for ((key, value) in nativeState) {
+            when (value) {
+                null -> bundle.putString(key, null)
+                is String -> bundle.putString(key, value)
+                is Int -> bundle.putInt(key, value)
+                is Boolean -> bundle.putBoolean(key, value)
+            }
+        }
+
+        return bundle
+    }
+
+    private fun readRenderSnapshot(handleId: Int): Bundle {
+        ensureLoaded()
+        return buildSnapshotBundle(nativeGetRenderSnapshot(getNativeHandle(handleId)))
+    }
+
     override fun definition() = ModuleDefinition {
         Name("ZenTerminalVt")
 
@@ -126,10 +147,15 @@ class ZenTerminalVtModule : Module() {
             }
         }
 
+        Function("getRenderSnapshot") { handleId: Int ->
+            runWithBreadcrumb("getRenderSnapshot", "handleId=$handleId") {
+                readRenderSnapshot(handleId)
+            }
+        }
+
         Function("getRenderState") { handleId: Int ->
-            runWithBreadcrumb("getRenderState", "handleId=$handleId") {
-                ensureLoaded()
-                nativeGetRenderState(getNativeHandle(handleId))
+            runWithBreadcrumb("getRenderSnapshot", "handleId=$handleId") {
+                readRenderSnapshot(handleId)
             }
         }
 
@@ -193,12 +219,13 @@ class ZenTerminalVtModule : Module() {
         external fun nativeResize(handle: Long, cols: Int, rows: Int, cellWidth: Float, cellHeight: Float)
 
         @JvmStatic
-        external fun nativeGetRenderState(handle: Long): Map<String, Any>
+        external fun nativeGetRenderSnapshot(handle: Long): Map<String, Any?>
 
         @JvmStatic
         external fun nativeGetVisibleText(handle: Long): String
 
         @JvmStatic
         external fun nativeGetVisibleHtml(handle: Long): String
+
     }
 }
