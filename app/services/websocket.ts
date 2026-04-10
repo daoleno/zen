@@ -152,8 +152,13 @@ class ServerSocket {
         try {
           const data = JSON.parse(event.data);
           this.emit(data.type, data);
-        } catch {
-          // Ignore malformed payloads.
+        } catch (error) {
+          console.warn('[ws] malformed payload', {
+            serverId: this.meta.serverId,
+            dataType: typeof event?.data,
+            error: error instanceof Error ? error.message : String(error),
+            sample: typeof event?.data === 'string' ? event.data.slice(0, 200) : String(event?.data),
+          });
         }
       };
 

@@ -1,5 +1,5 @@
 import { useEffect, useRef } from 'react';
-import { AppState, AppStateStatus, Platform } from 'react-native';
+import { Alert, AppState, AppStateStatus, Platform } from 'react-native';
 import { Stack, useRouter, useSegments } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
 import { useFonts } from 'expo-font';
@@ -7,6 +7,7 @@ import * as Linking from 'expo-linking';
 import * as Notifications from 'expo-notifications';
 import * as Device from 'expo-device';
 import Constants from 'expo-constants';
+import { GestureHandlerRootView } from 'react-native-gesture-handler';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 import { Agent, AgentProvider, useAgents } from '../store/agents';
 import { TaskProvider, useTasks } from '../store/tasks';
@@ -15,6 +16,10 @@ import { wsClient } from '../services/websocket';
 import { getServers, isOnboarded } from '../services/storage';
 import { parseSessionKey } from '../services/sessionKeys';
 import { importConnection } from '../services/importConnection';
+import {
+  clearNativeTerminalCrashBreadcrumb,
+  getNativeTerminalCrashBreadcrumb,
+} from '../services/nativeTerminalDiagnostics';
 
 Notifications.setNotificationHandler({
   handleNotification: async () => ({
@@ -135,6 +140,29 @@ function AppContent() {
   const notificationsEnabledRef = useRef(false);
   const previousAgentStatesRef = useRef(new Map<string, Agent['status']>());
   const handledConnectLinksRef = useRef(new Set<string>());
+
+  useEffect(() => {
+    const breadcrumb = getNativeTerminalCrashBreadcrumb();
+    if (!breadcrumb || breadcrumb.stage !== 'before') {
+      return;
+    }
+
+    clearNativeTerminalCrashBreadcrumb();
+
+    const detail = breadcrumb.detail ? `\n${breadcrumb.detail}` : '';
+    const device = [breadcrumb.brand, breadcrumb.model].filter(Boolean).join(' ').trim();
+    const environment = [device, breadcrumb.abi].filter(Boolean).join(' / ');
+    const footer = environment || breadcrumb.sdkInt
+      ? `\n\n${[environment, breadcrumb.sdkInt ? `Android ${breadcrumb.sdkInt}` : '']
+        .filter(Boolean)
+        .join(' / ')}`
+      : '';
+
+    Alert.alert(
+      'Native terminal crashed last run',
+      `Last unfinished step: ${breadcrumb.operation}${detail}${footer}`,
+    );
+  }, []);
 
   const importConnectLink = async (rawValue: string | null | undefined): Promise<boolean> => {
     const trimmed = rawValue?.trim() || '';
@@ -343,6 +371,10 @@ function AppContent() {
     })();
 
     return () => {
+      // Disconnect first so the mounted listeners can drive connection state
+      // back to offline during hot reloads and remounts.
+      wsClient.disconnectAll();
+
       wsClient.off('agent_list', onAgentList);
       wsClient.off('agent_state_change', onStateChange);
       wsClient.off('agent_output', onOutput);
@@ -362,7 +394,6 @@ function AppContent() {
       wsClient.off('project_created', onProjectCreated);
       wsClient.off('project_deleted', onProjectDeleted);
       wsClient.off('connected', onConnectedFetchTasks);
-      wsClient.disconnectAll();
     };
   }, []);
 
@@ -554,13 +585,15 @@ export default function RootLayout() {
   }
 
   return (
-    <AgentProvider>
-      <TaskProvider>
-        <SafeAreaProvider>
-          <StatusBar style="light" />
-          <AppContent />
-        </SafeAreaProvider>
-      </TaskProvider>
-    </AgentProvider>
+    <GestureHandlerRootView style={{ flex: 1 }}>
+      <AgentProvider>
+        <TaskProvider>
+          <SafeAreaProvider>
+            <StatusBar style="light" />
+            <AppContent />
+          </SafeAreaProvider>
+        </TaskProvider>
+      </AgentProvider>
+    </GestureHandlerRootView>
   );
 }

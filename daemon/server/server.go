@@ -637,8 +637,14 @@ func (s *Server) sendAgentList(conn *websocket.Conn) {
 }
 
 func (s *Server) sendJSON(conn *websocket.Conn, v any) {
-	data, _ := json.Marshal(v)
-	s.writeMessage(conn, websocket.TextMessage, data)
+	data, err := json.Marshal(v)
+	if err != nil {
+		log.Printf("sendJSON marshal error: %v", err)
+		return
+	}
+	if err := s.writeMessage(conn, websocket.TextMessage, data); err != nil {
+		log.Printf("sendJSON write error: %v", err)
+	}
 }
 
 func (s *Server) sendError(conn *websocket.Conn, code, message string) {

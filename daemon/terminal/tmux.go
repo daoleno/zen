@@ -11,6 +11,8 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"time"
+	"unicode/utf8"
 
 	"github.com/creack/pty"
 )
@@ -59,6 +61,12 @@ type tmuxSession struct {
 	inCopyMode bool
 }
 
+type tmuxReadResult struct {
+	data string
+	err  error
+	eof  bool
+}
+
 func (s *tmuxSession) ID() string { return s.id }
 
 func (s *tmuxSession) Events() <-chan Event { return s.events }
@@ -98,35 +106,158 @@ func (s *tmuxSession) Start(ctx context.Context) error {
 	s.pty = ptmx
 	s.mu.Unlock()
 
-	if history, err := tmuxCaptureHistory(s.targetID, 600); err == nil && history != "" {
-		s.sendEvent(Event{
-			Type: EventHistory,
-			Data: sanitizeTmuxHistory(history),
-		})
-	}
 	s.emitScrollState()
 
-	go s.readLoop(runCtx, ptmx)
+	go func() {
+		select {
+		case <-runCtx.Done():
+			return
+		case <-time.After(1 * time.Second):
+		}
+		s.streamLoop(runCtx, ptmx)
+	}()
 	go s.waitLoop()
 
 	return nil
 }
 
-func (s *tmuxSession) readLoop(ctx context.Context, ptmx *os.File) {
+func (s *tmuxSession) streamLoop(ctx context.Context, ptmx *os.File) {
+	const flushInterval = 80 * time.Millisecond
+	const maxFrameBytes = 2048
+
+	results := make(chan tmuxReadResult, 128)
+	go func() {
+		defer close(results)
+		s.readLoop(ctx, ptmx, results)
+	}()
+
+	timer := time.NewTimer(time.Hour)
+	if !timer.Stop() {
+		<-timer.C
+	}
+	timerActive := false
+	var pending strings.Builder
+
+	stopTimer := func() {
+		if !timerActive {
+			return
+		}
+		if !timer.Stop() {
+			select {
+			case <-timer.C:
+			default:
+			}
+		}
+		timerActive = false
+	}
+
+	flush := func() {
+		if pending.Len() == 0 {
+			return
+		}
+		data := sanitizeTmuxOutput(pending.String())
+		pending.Reset()
+		chunk, rest := splitUTF8Prefix(data, maxFrameBytes)
+		if rest != "" {
+			pending.WriteString(rest)
+		}
+		s.sendEvent(Event{
+			Type: EventOutput,
+			Data: chunk,
+		})
+	}
+
+	for {
+		select {
+		case <-ctx.Done():
+			stopTimer()
+			flush()
+			return
+		case result, ok := <-results:
+			if !ok {
+				stopTimer()
+				flush()
+				return
+			}
+			if result.data != "" {
+				pending.WriteString(result.data)
+				if pending.Len() >= maxFrameBytes {
+					stopTimer()
+					flush()
+					if pending.Len() > 0 {
+						timer.Reset(flushInterval)
+						timerActive = true
+					}
+				} else if !timerActive {
+					timer.Reset(flushInterval)
+					timerActive = true
+				}
+			}
+			if result.err != nil {
+				stopTimer()
+				flush()
+				if !result.eof && ctx.Err() == nil {
+					s.sendEvent(Event{Type: EventError, Err: result.err})
+				}
+				return
+			}
+			if result.eof {
+				stopTimer()
+				flush()
+				return
+			}
+		case <-timer.C:
+			timerActive = false
+			flush()
+			if pending.Len() > 0 {
+				timer.Reset(flushInterval)
+				timerActive = true
+			}
+		}
+	}
+}
+
+func splitUTF8Prefix(s string, maxBytes int) (string, string) {
+	if len(s) <= maxBytes {
+		return s, ""
+	}
+	end := maxBytes
+	for end > 0 && !utf8.ValidString(s[:end]) {
+		end--
+	}
+	if end == 0 {
+		_, size := utf8.DecodeRuneInString(s)
+		end = size
+	}
+	return s[:end], s[end:]
+}
+
+func (s *tmuxSession) readLoop(ctx context.Context, ptmx *os.File, results chan<- tmuxReadResult) {
 	buf := make([]byte, 8192)
 	for {
 		n, err := ptmx.Read(buf)
 		if n > 0 {
-			s.sendEvent(Event{
-				Type: EventOutput,
-				Data: sanitizeTmuxOutput(string(buf[:n])),
-			})
-		}
-		if err != nil {
-			if ctx.Err() != nil || err == io.EOF {
+			select {
+			case results <- tmuxReadResult{data: string(buf[:n])}:
+			case <-ctx.Done():
 				return
 			}
-			s.sendEvent(Event{Type: EventError, Err: fmt.Errorf("read tmux client pty: %w", err)})
+		}
+		if err != nil {
+			if ctx.Err() != nil {
+				return
+			}
+			if err == io.EOF {
+				select {
+				case results <- tmuxReadResult{eof: true}:
+				case <-ctx.Done():
+				}
+				return
+			}
+			select {
+			case results <- tmuxReadResult{err: fmt.Errorf("read tmux client pty: %w", err)}:
+			case <-ctx.Done():
+			}
 			return
 		}
 	}

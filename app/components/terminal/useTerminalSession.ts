@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { wsClient } from '../../services/websocket';
 
 type Handlers = {
@@ -121,44 +121,56 @@ export function useTerminalSession(serverId: string, targetId: string, backend: 
     };
   }, [serverId, targetId, backend]);
 
-  return {
+  const open = useCallback((cols: number, rows: number) => {
+    sizeRef.current = { cols, rows };
+    if (openedRef.current) {
+      return;
+    }
+    openedRef.current = true;
+    wsClient.openTerminal(serverId, targetId, backend, cols, rows);
+  }, [backend, serverId, targetId]);
+
+  const sendInput = useCallback((data: string) => {
+    const sessionId = sessionIdRef.current;
+    if (!sessionId) return;
+    wsClient.sendTerminalInput(serverId, sessionId, data);
+  }, [serverId]);
+
+  const scroll = useCallback((lines: number) => {
+    const sessionId = sessionIdRef.current;
+    if (!sessionId) return;
+    wsClient.scrollTerminal(serverId, sessionId, lines);
+  }, [serverId]);
+
+  const cancelScroll = useCallback(() => {
+    const sessionId = sessionIdRef.current;
+    if (!sessionId) return;
+    wsClient.cancelTerminalScroll(serverId, sessionId);
+  }, [serverId]);
+
+  const resize = useCallback((cols: number, rows: number) => {
+    const previousSize = sizeRef.current;
+    if (previousSize && previousSize.cols === cols && previousSize.rows === rows) {
+      return;
+    }
+    sizeRef.current = { cols, rows };
+    const sessionId = sessionIdRef.current;
+    if (!sessionId) {
+      if (!openedRef.current) {
+        openedRef.current = true;
+        wsClient.openTerminal(serverId, targetId, backend, cols, rows);
+      }
+      return;
+    }
+    wsClient.resizeTerminal(serverId, sessionId, cols, rows);
+  }, [backend, serverId, targetId]);
+
+  return useMemo(() => ({
     connected,
-    open(cols: number, rows: number) {
-      sizeRef.current = { cols, rows };
-      if (openedRef.current) return;
-      openedRef.current = true;
-      wsClient.openTerminal(serverId, targetId, backend, cols, rows);
-    },
-    sendInput(data: string) {
-      const sessionId = sessionIdRef.current;
-      if (!sessionId) return;
-      wsClient.sendTerminalInput(serverId, sessionId, data);
-    },
-    scroll(lines: number) {
-      const sessionId = sessionIdRef.current;
-      if (!sessionId) return;
-      wsClient.scrollTerminal(serverId, sessionId, lines);
-    },
-    cancelScroll() {
-      const sessionId = sessionIdRef.current;
-      if (!sessionId) return;
-      wsClient.cancelTerminalScroll(serverId, sessionId);
-    },
-    resize(cols: number, rows: number) {
-      const previousSize = sizeRef.current;
-      if (previousSize && previousSize.cols === cols && previousSize.rows === rows) {
-        return;
-      }
-      sizeRef.current = { cols, rows };
-      const sessionId = sessionIdRef.current;
-      if (!sessionId) {
-        if (!openedRef.current) {
-          openedRef.current = true;
-          wsClient.openTerminal(serverId, targetId, backend, cols, rows);
-        }
-        return;
-      }
-      wsClient.resizeTerminal(serverId, sessionId, cols, rows);
-    },
-  };
+    open,
+    sendInput,
+    scroll,
+    cancelScroll,
+    resize,
+  }), [cancelScroll, connected, open, resize, scroll, sendInput]);
 }
