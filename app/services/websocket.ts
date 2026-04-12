@@ -394,6 +394,15 @@ class MultiServerWebSocketClient {
     });
   }
 
+  focusTerminalPane(serverId: string, sessionId: string, col: number, row: number) {
+    this.send(serverId, {
+      type: "terminal_focus_pane",
+      session_id: sessionId,
+      col,
+      row,
+    });
+  }
+
   cancelTerminalScroll(serverId: string, sessionId: string) {
     this.send(serverId, {
       type: "terminal_scroll_cancel",

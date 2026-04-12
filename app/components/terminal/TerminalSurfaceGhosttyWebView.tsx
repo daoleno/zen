@@ -26,8 +26,6 @@ export const TerminalSurfaceGhosttyWebView = forwardRef<
   themeOverrides,
   ctrlArmed = false,
   onCtrlArmedChange,
-  onTabSwipeProgress,
-  onTabSwipe,
 }, ref) => {
   const [fontUri, setFontUri] = useState<string | null>(cachedTerminalFontUri);
   const theme = useMemo(
@@ -41,10 +39,7 @@ export const TerminalSurfaceGhosttyWebView = forwardRef<
     targetId,
     backend,
     theme,
-    ctrlArmed,
     onCtrlArmedChange,
-    onTabSwipeProgress,
-    onTabSwipe,
   });
 
   const html = useMemo(
@@ -124,7 +119,6 @@ export const TerminalSurfaceGhosttyWebView = forwardRef<
         onInput={controller.onInput}
         ctrlArmed={ctrlArmed}
         onCtrlConsumed={controller.onCtrlConsumed}
-        disabled={controller.scrolledUp}
       />
     </View>
   );

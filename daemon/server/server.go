@@ -225,6 +225,8 @@ func (s *Server) handleClientMessage(conn *websocket.Conn, msg []byte) {
 		ServerRef    string `json:"server_ref"`
 		Cols         int    `json:"cols"`
 		Rows         int    `json:"rows"`
+		Col          int    `json:"col"`
+		Row          int    `json:"row"`
 		Lines        int    `json:"lines"`
 		TaskID       string `json:"task_id"`
 		Title        string `json:"title"`
@@ -357,6 +359,16 @@ func (s *Server) handleClientMessage(conn *websocket.Conn, msg []byte) {
 				"type":       "terminal_error",
 				"session_id": raw.SessionID,
 				"code":       "scroll_cancel_failed",
+				"message":    err.Error(),
+			})
+		}
+
+	case "terminal_focus_pane":
+		if err := s.terminal.FocusPane(clientID(conn), raw.SessionID, raw.Col, raw.Row); err != nil {
+			s.sendJSON(conn, map[string]any{
+				"type":       "terminal_error",
+				"session_id": raw.SessionID,
+				"code":       "focus_pane_failed",
 				"message":    err.Error(),
 			})
 		}

@@ -12,7 +12,6 @@ interface TerminalInputHandlerProps {
   onInput: (data: string) => void;
   ctrlArmed: boolean;
   onCtrlConsumed: () => void;
-  disabled: boolean;
 }
 
 /**
@@ -20,7 +19,7 @@ interface TerminalInputHandlerProps {
  * Keeps IME capture in React Native so the renderer stays display-only.
  */
 export const TerminalInputHandler = forwardRef<TerminalInputHandleRef, TerminalInputHandlerProps>(
-  ({ onInput, ctrlArmed, onCtrlConsumed, disabled }, ref) => {
+  ({ onInput, ctrlArmed, onCtrlConsumed }, ref) => {
     const inputRef = useRef<TextInput>(null);
     const lastTextRef = useRef('');
     const handledSubmitRef = useRef(false);
@@ -116,7 +115,7 @@ export const TerminalInputHandler = forwardRef<TerminalInputHandleRef, TerminalI
         spellCheck={false}
         keyboardType="default"
         blurOnSubmit={false}
-        editable={!disabled}
+        editable
         onChangeText={handleChangeText}
         onKeyPress={handleKeyPress}
         onSubmitEditing={() => {

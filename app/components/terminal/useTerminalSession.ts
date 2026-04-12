@@ -131,6 +131,12 @@ export function useTerminalSession(serverId: string, targetId: string, backend: 
     wsClient.cancelTerminalScroll(serverId, sessionId);
   }, [serverId]);
 
+  const focusPane = useCallback((col: number, row: number) => {
+    const sessionId = sessionIdRef.current;
+    if (!sessionId) return;
+    wsClient.focusTerminalPane(serverId, sessionId, col, row);
+  }, [serverId]);
+
   const resize = useCallback((cols: number, rows: number) => {
     const previousSize = sizeRef.current;
     if (previousSize && previousSize.cols === cols && previousSize.rows === rows) {
@@ -152,6 +158,7 @@ export function useTerminalSession(serverId: string, targetId: string, backend: 
     sendInput,
     scroll,
     cancelScroll,
+    focusPane,
     resize,
-  }), [cancelScroll, resize, scroll, sendInput]);
+  }), [cancelScroll, focusPane, resize, scroll, sendInput]);
 }

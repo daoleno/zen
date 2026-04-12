@@ -1,12 +1,12 @@
 package terminal
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"io"
 	"os"
 	"os/exec"
-	"regexp"
 	"strconv"
 	"strings"
 	"sync"
@@ -23,8 +23,6 @@ var terminalIDCounter atomic.Int64
 // TmuxBackend attaches a dedicated tmux client to an existing tmux session
 // and streams the client's PTY output directly to the mobile terminal.
 type TmuxBackend struct{}
-
-var tmuxAltScreenSeq = regexp.MustCompile(`\x1b\[\?(1049|1047|47)(h|l)`)
 
 func (b *TmuxBackend) Name() string { return "tmux" }
 
@@ -90,7 +88,7 @@ func (s *tmuxSession) Start(ctx context.Context) error {
 		return err
 	}
 	s.linkedSession = linkedName
-	cmd.Env = append(os.Environ(), "TERM=xterm-256color")
+	cmd.Env = tmuxClientEnv(os.Environ())
 
 	ptmx, err := pty.StartWithSize(cmd, &pty.Winsize{
 		Cols: uint16(s.size.Cols),
@@ -106,16 +104,13 @@ func (s *tmuxSession) Start(ctx context.Context) error {
 	s.pty = ptmx
 	s.mu.Unlock()
 
+	if err := s.syncWindowSize(); err != nil {
+		return err
+	}
+
 	s.emitScrollState()
 
-	go func() {
-		select {
-		case <-runCtx.Done():
-			return
-		case <-time.After(1 * time.Second):
-		}
-		s.streamLoop(runCtx, ptmx)
-	}()
+	go s.streamLoop(runCtx, ptmx)
 	go s.waitLoop()
 
 	return nil
@@ -292,11 +287,12 @@ func (s *tmuxSession) Write(data string) error {
 		s.mu.Unlock()
 		return fmt.Errorf("tmux session is not started")
 	}
+	target := s.interactiveTargetLocked()
 	emitScrollState := false
 	// Exit copy-mode before sending user input so the terminal
 	// returns to the live view.
 	if s.inCopyMode {
-		_ = exec.Command("tmux", "send-keys", "-t", s.targetID, "-X", "cancel").Run()
+		_ = exec.Command("tmux", "send-keys", "-t", target, "-X", "cancel").Run()
 		s.inCopyMode = false
 		emitScrollState = true
 	}
@@ -319,6 +315,7 @@ func (s *tmuxSession) Write(data string) error {
 // tmux's internal scrollback is the only source of history.
 func (s *tmuxSession) Scroll(lines int) error {
 	s.mu.Lock()
+	target := s.interactiveTargetLocked()
 
 	if lines == 0 {
 		s.mu.Unlock()
@@ -332,7 +329,7 @@ func (s *tmuxSession) Scroll(lines int) error {
 			s.emitScrollState()
 			return nil
 		}
-		if err := exec.Command("tmux", "copy-mode", "-e", "-t", s.targetID).Run(); err != nil {
+		if err := exec.Command("tmux", "copy-mode", "-e", "-t", target).Run(); err != nil {
 			s.mu.Unlock()
 			return fmt.Errorf("enter copy-mode: %w", err)
 		}
@@ -351,7 +348,7 @@ func (s *tmuxSession) Scroll(lines int) error {
 		cmd = "scroll-down-and-cancel"
 	}
 
-	if err := exec.Command("tmux", "send-keys", "-t", s.targetID,
+	if err := exec.Command("tmux", "send-keys", "-t", target,
 		"-X", "-N", fmt.Sprintf("%d", absLines), cmd).Run(); err != nil {
 		s.mu.Unlock()
 		return fmt.Errorf("scroll copy-mode: %w", err)
@@ -363,18 +360,69 @@ func (s *tmuxSession) Scroll(lines int) error {
 
 func (s *tmuxSession) CancelScroll() error {
 	s.mu.Lock()
+	target := s.interactiveTargetLocked()
 	if !s.inCopyMode {
 		s.mu.Unlock()
 		s.emitScrollState()
 		return nil
 	}
-	if err := exec.Command("tmux", "send-keys", "-t", s.targetID, "-X", "cancel").Run(); err != nil {
+	if err := exec.Command("tmux", "send-keys", "-t", target, "-X", "cancel").Run(); err != nil {
 		s.mu.Unlock()
 		return fmt.Errorf("cancel copy-mode: %w", err)
 	}
 	s.inCopyMode = false
 	s.mu.Unlock()
 	s.emitScrollState()
+	return nil
+}
+
+func (s *tmuxSession) FocusPane(col, row int) error {
+	if col < 0 || row < 0 {
+		return nil
+	}
+
+	s.mu.Lock()
+	target := s.interactiveTargetLocked()
+	s.mu.Unlock()
+
+	out, err := exec.Command(
+		"tmux",
+		"list-panes",
+		"-t",
+		target,
+		"-F",
+		"#{pane_id}\t#{pane_left}\t#{pane_top}\t#{pane_width}\t#{pane_height}",
+	).Output()
+	if err != nil {
+		return fmt.Errorf("list tmux panes: %w", err)
+	}
+
+	lines := bytes.Split(bytes.TrimSpace(out), []byte{'\n'})
+	for _, line := range lines {
+		fields := bytes.Split(line, []byte{'\t'})
+		if len(fields) != 5 {
+			continue
+		}
+
+		paneID := string(fields[0])
+		left, errLeft := strconv.Atoi(string(fields[1]))
+		top, errTop := strconv.Atoi(string(fields[2]))
+		width, errWidth := strconv.Atoi(string(fields[3]))
+		height, errHeight := strconv.Atoi(string(fields[4]))
+		if errLeft != nil || errTop != nil || errWidth != nil || errHeight != nil {
+			continue
+		}
+
+		if col < left || col >= left+width || row < top || row >= top+height {
+			continue
+		}
+
+		if err := exec.Command("tmux", "select-pane", "-t", paneID).Run(); err != nil {
+			return fmt.Errorf("select tmux pane: %w", err)
+		}
+		return nil
+	}
+
 	return nil
 }
 
@@ -395,7 +443,7 @@ func (s *tmuxSession) Resize(cols, rows int) error {
 	}); err != nil {
 		return fmt.Errorf("resize tmux client pty: %w", err)
 	}
-	return nil
+	return s.syncWindowSizeLocked()
 }
 
 func (s *tmuxSession) Close() error {
@@ -434,6 +482,30 @@ func (s *tmuxSession) closeEvents() {
 	})
 }
 
+func (s *tmuxSession) syncWindowSize() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.syncWindowSizeLocked()
+}
+
+func (s *tmuxSession) syncWindowSizeLocked() error {
+	target := s.interactiveTargetLocked()
+	if target == "" || s.size.Cols <= 0 || s.size.Rows <= 0 {
+		return nil
+	}
+	if err := tmuxResizeWindowCommand(target, s.size).Run(); err != nil {
+		return fmt.Errorf("resize tmux window: %w", err)
+	}
+	return nil
+}
+
+func (s *tmuxSession) interactiveTargetLocked() string {
+	if s.linkedSession != "" {
+		return s.linkedSession
+	}
+	return s.targetID
+}
+
 func (s *tmuxSession) emitScrollState() {
 	s.mu.Lock()
 	state := s.readScrollStateLocked()
@@ -452,7 +524,7 @@ func (s *tmuxSession) readScrollStateLocked() ScrollState {
 		Position:   0,
 	}
 
-	out, err := exec.Command("tmux", "display-message", "-p", "-t", s.targetID,
+	out, err := exec.Command("tmux", "display-message", "-p", "-t", s.interactiveTargetLocked(),
 		"#{pane_in_mode}:#{scroll_position}").Output()
 	if err != nil {
 		return state
@@ -507,13 +579,83 @@ func tmuxGroupedSession(targetID string, size Size) (string, *exec.Cmd, error) {
 	// Prefer the most recently active client size for the shared window.
 	// This still means the pane geometry is shared across attached clients.
 	_ = exec.Command("tmux", "set-option", "-t", linkedName, "window-size", "latest").Run()
+	_ = exec.Command("tmux", "set-option", "-t", linkedName, "aggressive-resize", "on").Run()
+	_ = exec.Command(
+		"tmux",
+		"set-hook",
+		"-t",
+		linkedName,
+		"after-select-window",
+		tmuxResizeWindowHook(linkedName, size),
+	).Run()
 
 	// Select the correct window in the linked session before attaching
 	if windowTarget != "" {
 		_ = exec.Command("tmux", "select-window", "-t", linkedName+":"+strings.SplitN(windowTarget, ":", 2)[1]).Run()
 	}
 
-	return linkedName, exec.Command("tmux", "attach-session", "-t", linkedName), nil
+	return linkedName, tmuxAttachCommand(linkedName), nil
+}
+
+func tmuxAttachCommand(sessionName string) *exec.Cmd {
+	return exec.Command("tmux", "-T", "RGB,256", "attach-session", "-t", sessionName)
+}
+
+func tmuxResizeWindowCommand(target string, size Size) *exec.Cmd {
+	return exec.Command(
+		"tmux",
+		"resize-window",
+		"-t",
+		target,
+		"-x",
+		strconv.Itoa(size.Cols),
+		"-y",
+		strconv.Itoa(size.Rows),
+	)
+}
+
+func tmuxResizeWindowHook(target string, size Size) string {
+	return fmt.Sprintf("resize-window -t %s -x %d -y %d", target, size.Cols, size.Rows)
+}
+
+func tmuxClientEnv(base []string) []string {
+	const (
+		termKey      = "TERM"
+		colorTermKey = "COLORTERM"
+	)
+
+	overrides := map[string]string{
+		termKey:      "xterm-256color",
+		colorTermKey: "truecolor",
+	}
+
+	order := make([]string, 0, len(base)+len(overrides))
+	values := make(map[string]string, len(base)+len(overrides))
+
+	for _, entry := range base {
+		key, value, ok := strings.Cut(entry, "=")
+		if !ok || key == "" {
+			continue
+		}
+		if _, seen := values[key]; !seen {
+			order = append(order, key)
+		}
+		values[key] = value
+	}
+
+	for _, key := range []string{termKey, colorTermKey} {
+		if _, seen := values[key]; !seen {
+			order = append(order, key)
+		}
+		values[key] = overrides[key]
+	}
+
+	env := make([]string, 0, len(order))
+	for _, key := range order {
+		env = append(env, key+"="+values[key])
+	}
+
+	return env
 }
 
 func tmuxCaptureHistory(targetID string, lines int) (string, error) {
@@ -536,21 +678,14 @@ func tmuxCaptureHistory(targetID string, lines int) (string, error) {
 }
 
 func sanitizeTmuxOutput(data string) string {
-	// Strip alt-screen sequences. tmux itself wraps ALL content in
-	// alt-screen (\x1b[?1049h), so if we pass these through, xterm.js
-	// always thinks it's in alternate buffer. Stripping lets xterm.js
-	// stay in normal buffer and accumulate scrollback for shell sessions.
-	if data == "" {
-		return ""
-	}
-	return tmuxAltScreenSeq.ReplaceAllString(data, "")
+	// libghostty is the terminal emulator now, so tmux output must stay intact.
+	// Stripping alt-screen or other control sequences breaks tmux's own UI
+	// semantics, including pane borders, status areas, and copy-mode redraws.
+	return data
 }
 
 func sanitizeTmuxHistory(data string) string {
-	data = sanitizeTmuxOutput(data)
-	// Normalize to \n first, then convert to \r\n for xterm.js
-	data = strings.ReplaceAll(data, "\r\n", "\n")
-	data = strings.ReplaceAll(data, "\r", "\n")
-	data = strings.ReplaceAll(data, "\n", "\r\n")
+	// Preserve the capture as-is so the emulator receives the same bytes tmux
+	// intended to present, rather than an xterm.js-shaped approximation.
 	return data
 }

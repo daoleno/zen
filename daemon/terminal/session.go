@@ -57,6 +57,12 @@ type Scroller interface {
 	CancelScroll() error
 }
 
+// PaneFocuser is optionally implemented by sessions that can focus a pane
+// from terminal cell coordinates.
+type PaneFocuser interface {
+	FocusPane(col, row int) error
+}
+
 // Backend opens terminal sessions for a given target.
 type Backend interface {
 	Name() string

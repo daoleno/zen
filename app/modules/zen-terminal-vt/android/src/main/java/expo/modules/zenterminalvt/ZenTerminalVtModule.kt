@@ -48,7 +48,7 @@ class ZenTerminalVtModule : Module() {
         )
     }
 
-    private inline fun <T> runWithBreadcrumb(
+    private inline fun <T> runWithPersistentBreadcrumb(
         operation: String,
         detail: String = "",
         block: () -> T,
@@ -95,6 +95,38 @@ class ZenTerminalVtModule : Module() {
                 is String -> bundle.putString(key, value)
                 is Int -> bundle.putInt(key, value)
                 is Boolean -> bundle.putBoolean(key, value)
+                is List<*> -> {
+                    val stringValues = ArrayList<String>(value.size)
+                    val intValues = ArrayList<Int>(value.size)
+                    var isStringList = value.isNotEmpty()
+                    var isIntList = value.isNotEmpty()
+
+                    for (entry in value) {
+                        when (entry) {
+                            is String -> {
+                                if (isStringList) {
+                                    stringValues.add(entry)
+                                }
+                                isIntList = false
+                            }
+                            is Int -> {
+                                if (isIntList) {
+                                    intValues.add(entry)
+                                }
+                                isStringList = false
+                            }
+                            else -> {
+                                isStringList = false
+                                isIntList = false
+                            }
+                        }
+                    }
+
+                    when {
+                        isStringList -> bundle.putStringArrayList(key, stringValues)
+                        isIntList -> bundle.putIntegerArrayList(key, intValues)
+                    }
+                }
             }
         }
 
@@ -110,35 +142,27 @@ class ZenTerminalVtModule : Module() {
         Name("ZenTerminalVt")
 
         Function("createTerminal") { cols: Int, rows: Int ->
-            runWithBreadcrumb("createTerminal", "cols=$cols rows=$rows") {
+            runWithPersistentBreadcrumb("createTerminal", "cols=$cols rows=$rows") {
                 ensureLoaded()
                 createHandleId(nativeCreateTerminal(cols, rows))
             }
         }
 
         Function("destroyTerminal") { handleId: Int ->
-            runWithBreadcrumb("destroyTerminal", "handleId=$handleId") {
+            runWithPersistentBreadcrumb("destroyTerminal", "handleId=$handleId") {
                 ensureLoaded()
-                val nativeHandle = removeNativeHandle(handleId) ?: return@runWithBreadcrumb
+                val nativeHandle = removeNativeHandle(handleId) ?: return@runWithPersistentBreadcrumb
                 nativeDestroyTerminal(nativeHandle)
             }
         }
 
         Function("writeData") { handleId: Int, data: String ->
-            val preview = data.take(32)
-                .replace("\r", "\\r")
-                .replace("\n", "\\n")
-            runWithBreadcrumb(
-                "writeData",
-                "handleId=$handleId len=${data.length} preview=$preview",
-            ) {
-                ensureLoaded()
-                nativeWriteData(getNativeHandle(handleId), data)
-            }
+            ensureLoaded()
+            nativeWriteData(getNativeHandle(handleId), data)
         }
 
         Function("resize") { handleId: Int, cols: Int, rows: Int, cellWidth: Float, cellHeight: Float ->
-            runWithBreadcrumb(
+            runWithPersistentBreadcrumb(
                 "resize",
                 "handleId=$handleId cols=$cols rows=$rows cellWidth=$cellWidth cellHeight=$cellHeight",
             ) {
@@ -146,31 +170,51 @@ class ZenTerminalVtModule : Module() {
                 nativeResize(getNativeHandle(handleId), cols, rows, cellWidth, cellHeight)
             }
         }
+        Function("setTheme") { handleId: Int, foreground: String, background: String, cursor: String, palette: List<String> ->
+            runWithPersistentBreadcrumb(
+                "setTheme",
+                "handleId=$handleId paletteSize=${palette.size}",
+            ) {
+                ensureLoaded()
+                nativeSetTheme(
+                    getNativeHandle(handleId),
+                    foreground,
+                    background,
+                    cursor,
+                    palette.toTypedArray(),
+                )
+            }
+        }
+
+        Function("encodeMouseEvent") { handleId: Int, action: Int, button: Int, x: Float, y: Float, mods: Int, anyButtonPressed: Boolean ->
+            ensureLoaded()
+            nativeEncodeMouseEvent(
+                getNativeHandle(handleId),
+                action,
+                button,
+                x,
+                y,
+                mods,
+                anyButtonPressed,
+            )
+        }
 
         Function("getRenderSnapshot") { handleId: Int ->
-            runWithBreadcrumb("getRenderSnapshot", "handleId=$handleId") {
-                readRenderSnapshot(handleId)
-            }
+            readRenderSnapshot(handleId)
         }
 
         Function("getRenderState") { handleId: Int ->
-            runWithBreadcrumb("getRenderSnapshot", "handleId=$handleId") {
-                readRenderSnapshot(handleId)
-            }
+            readRenderSnapshot(handleId)
         }
 
         Function("getVisibleText") { handleId: Int ->
-            runWithBreadcrumb("getVisibleText", "handleId=$handleId") {
-                ensureLoaded()
-                nativeGetVisibleText(getNativeHandle(handleId))
-            }
+            ensureLoaded()
+            nativeGetVisibleText(getNativeHandle(handleId))
         }
 
         Function("getVisibleHtml") { handleId: Int ->
-            runWithBreadcrumb("getVisibleHtml", "handleId=$handleId") {
-                ensureLoaded()
-                nativeGetVisibleHtml(getNativeHandle(handleId))
-            }
+            ensureLoaded()
+            nativeGetVisibleHtml(getNativeHandle(handleId))
         }
 
         Function("getCrashBreadcrumb") {
@@ -217,6 +261,26 @@ class ZenTerminalVtModule : Module() {
 
         @JvmStatic
         external fun nativeResize(handle: Long, cols: Int, rows: Int, cellWidth: Float, cellHeight: Float)
+
+        @JvmStatic
+        external fun nativeSetTheme(
+            handle: Long,
+            foreground: String,
+            background: String,
+            cursor: String,
+            palette: Array<String>,
+        )
+
+        @JvmStatic
+        external fun nativeEncodeMouseEvent(
+            handle: Long,
+            action: Int,
+            button: Int,
+            x: Float,
+            y: Float,
+            mods: Int,
+            anyButtonPressed: Boolean,
+        ): String
 
         @JvmStatic
         external fun nativeGetRenderSnapshot(handle: Long): Map<String, Any?>

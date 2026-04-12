@@ -1,14 +1,48 @@
 import { requireNativeModule } from 'expo-modules-core';
 
-type NativeRenderSnapshot = Omit<RenderSnapshot, 'html'> & {
+type NativeRenderSnapshot = Omit<RenderSnapshot, 'html' | 'lineHtml' | 'dirtyLines'> & {
   html?: string;
+  lineHtml?: string[];
+  dirtyLines?: number[];
 };
+
+export type MouseAction = 'press' | 'release' | 'motion';
+export type MouseButton = 'none' | 'left' | 'middle' | 'right' | 'wheelUp' | 'wheelDown';
+
+export interface MouseEventPayload {
+  action: MouseAction;
+  button: MouseButton;
+  x: number;
+  y: number;
+  shift?: boolean;
+  ctrl?: boolean;
+  alt?: boolean;
+  meta?: boolean;
+  anyButtonPressed?: boolean;
+}
+
+export interface NativeTerminalTheme {
+  foreground: string;
+  background: string;
+  cursor: string;
+  palette: readonly string[];
+}
 
 interface NativeTerminalVtModule {
   createTerminal(cols: number, rows: number): number;
   destroyTerminal(handle: number): void;
   writeData(handle: number, data: string): void;
   resize(handle: number, cols: number, rows: number, cellWidth: number, cellHeight: number): void;
+  setTheme?(handle: number, foreground: string, background: string, cursor: string, palette: string[]): void;
+  encodeMouseEvent?(
+    handle: number,
+    action: number,
+    button: number,
+    x: number,
+    y: number,
+    mods: number,
+    anyButtonPressed: boolean,
+  ): string;
   getRenderSnapshot?: (handle: number) => NativeRenderSnapshot;
   getRenderState?: (handle: number) => NativeRenderSnapshot;
   getVisibleText(handle: number): string;
@@ -19,11 +53,33 @@ interface NativeTerminalVtModule {
 
 const ZenTerminalVt = requireNativeModule<NativeTerminalVtModule>('ZenTerminalVt');
 
+const MOUSE_ACTION_CODES: Record<MouseAction, number> = {
+  press: 0,
+  release: 1,
+  motion: 2,
+};
+
+const MOUSE_BUTTON_CODES: Record<MouseButton, number> = {
+  none: 0,
+  left: 1,
+  right: 2,
+  middle: 3,
+  wheelUp: 4,
+  wheelDown: 5,
+};
+
+const MOD_SHIFT = 1 << 0;
+const MOD_CTRL = 1 << 1;
+const MOD_ALT = 1 << 2;
+const MOD_SUPER = 1 << 3;
+
 export interface RenderSnapshot {
   dirty: 'none' | 'partial' | 'full';
   rows: number;
   cols: number;
   html: string;
+  lineHtml?: string[];
+  dirtyLines?: number[];
   cursorCol: number;
   cursorRow: number;
   cursorVisible: boolean;
@@ -88,6 +144,56 @@ export function resize(
 }
 
 /**
+ * Apply the embedder theme so libghostty renders ANSI colors with the app palette.
+ */
+export function setTheme(handle: number, theme: NativeTerminalTheme): void {
+  if (typeof ZenTerminalVt.setTheme !== 'function') {
+    return;
+  }
+
+  ZenTerminalVt.setTheme(
+    handle,
+    theme.foreground,
+    theme.background,
+    theme.cursor,
+    [...theme.palette],
+  );
+}
+
+/**
+ * Encode a mouse event using the terminal's current tracking mode.
+ */
+export function encodeMouseEvent(handle: number, event: MouseEventPayload): string {
+  if (typeof ZenTerminalVt.encodeMouseEvent !== 'function') {
+    return '';
+  }
+
+  let mods = 0;
+  if (event.shift) {
+    mods |= MOD_SHIFT;
+  }
+  if (event.ctrl) {
+    mods |= MOD_CTRL;
+  }
+  if (event.alt) {
+    mods |= MOD_ALT;
+  }
+  if (event.meta) {
+    mods |= MOD_SUPER;
+  }
+
+  return ZenTerminalVt.encodeMouseEvent(
+    handle,
+    MOUSE_ACTION_CODES[event.action],
+    MOUSE_BUTTON_CODES[event.button],
+    event.x,
+    event.y,
+    mods,
+    Boolean(event.anyButtonPressed),
+  );
+}
+
+/**
  * Extract the current terminal snapshot for rendering.
  */
 export function getRenderSnapshot(handle: number): RenderSnapshot {
@@ -99,6 +205,8 @@ export function getRenderSnapshot(handle: number): RenderSnapshot {
       rows: snapshot?.rows ?? 0,
       cols: snapshot?.cols ?? 0,
       html: '',
+      lineHtml: undefined,
+      dirtyLines: undefined,
       cursorCol: snapshot?.cursorCol ?? 0,
       cursorRow: snapshot?.cursorRow ?? 0,
       cursorVisible: snapshot?.cursorVisible ?? false,
@@ -107,7 +215,12 @@ export function getRenderSnapshot(handle: number): RenderSnapshot {
 
   return {
     ...snapshot,
-    html: ZenTerminalVt.getVisibleHtml(handle),
+    // Prefer the native snapshot HTML when provided. The Android bridge now
+    // resolves per-cell styles itself so tmux status lines and ANSI/RGB spans
+    // render consistently in the WebView.
+    html: typeof snapshot.html === 'string'
+      ? snapshot.html
+      : ZenTerminalVt.getVisibleHtml(handle),
   };
 }
 

@@ -44,6 +44,7 @@ export function buildGhosttyTerminalHtml(theme: TerminalThemePalette, fontUri: s
         position: absolute;
         inset: 0;
         overflow: hidden;
+        display: block;
         box-sizing: border-box;
         background: ${theme.background};
         color: ${theme.foreground};
@@ -183,13 +184,10 @@ export function buildGhosttyTerminalHtml(theme: TerminalThemePalette, fontUri: s
         let lastReportedRows = 0;
         let lastReportedCellWidth = 0;
         let lastReportedCellHeight = 0;
-        let remoteAtBottom = true;
+        let viewportMode = 'live';
         let selectionMode = false;
         let cursorBlinkVisible = true;
         let drawRAF = null;
-        let swipeProgressRAF = null;
-        let swipeProgressDeltaX = 0;
-        let swipeProgressActive = false;
 
         const send = (payload) => {
           try {
@@ -205,33 +203,54 @@ export function buildGhosttyTerminalHtml(theme: TerminalThemePalette, fontUri: s
         };
 
         const focusInput = () => {
-          if (!remoteAtBottom || selectionMode) {
+          if (selectionMode) {
             return;
           }
           send({ type: 'focusInput' });
         };
 
-        const flushSwipeProgress = () => {
-          swipeProgressRAF = null;
+        const sendMouse = (action, button, x, y, anyButtonPressed) => {
           send({
-            type: 'tabSwipeProgress',
-            deltaX: swipeProgressDeltaX,
-            active: swipeProgressActive,
+            type: 'mouse',
+            action,
+            button,
+            x,
+            y,
+            anyButtonPressed,
           });
         };
 
-        const reportSwipeProgress = (deltaX, active) => {
-          swipeProgressDeltaX = deltaX;
-          swipeProgressActive = active;
-          if (swipeProgressRAF != null) {
+        const emitTap = (x, y) => {
+          if (selectionMode) {
             return;
           }
-          swipeProgressRAF = requestAnimationFrame(flushSwipeProgress);
+          sendMouse('press', 'left', x, y, true);
+          sendMouse('release', 'left', x, y, false);
+          focusInput();
         };
 
         const measureCellWidth = () => {
           const width = measure.getBoundingClientRect().width;
           return Math.max(1, width || FONT_SIZE * CELL_WIDTH_FALLBACK);
+        };
+
+        const getViewportSize = () => {
+          const rect = root.getBoundingClientRect();
+          const width =
+            rect.width ||
+            root.clientWidth ||
+            document.documentElement.clientWidth ||
+            window.innerWidth;
+          const height =
+            rect.height ||
+            root.clientHeight ||
+            document.documentElement.clientHeight ||
+            window.innerHeight;
+
+          return {
+            width: Math.max(1, Math.floor(width || 1)),
+            height: Math.max(1, Math.floor(height || 1)),
+          };
         };
 
         const applyTheme = () => {
@@ -247,7 +266,7 @@ export function buildGhosttyTerminalHtml(theme: TerminalThemePalette, fontUri: s
         };
 
         const updateCursor = () => {
-          if (!remoteAtBottom || selectionMode || !cursorBlinkVisible || !renderSnapshot.cursorVisible) {
+          if (viewportMode !== 'live' || selectionMode || !cursorBlinkVisible || !renderSnapshot.cursorVisible) {
             cursor.style.display = 'none';
             return;
           }
@@ -276,9 +295,9 @@ export function buildGhosttyTerminalHtml(theme: TerminalThemePalette, fontUri: s
         };
 
         const syncViewport = (force) => {
-          const rect = document.documentElement.getBoundingClientRect();
-          const nextWidth = Math.max(1, Math.floor(rect.width));
-          const nextHeight = Math.max(1, Math.floor(rect.height));
+          const viewport = getViewportSize();
+          const nextWidth = viewport.width;
+          const nextHeight = viewport.height;
           const nextCellWidth = measureCellWidth();
           const nextCellHeight = LINE_HEIGHT_PX;
           const nextCols = Math.max(1, Math.floor(nextWidth / nextCellWidth));
@@ -362,29 +381,17 @@ export function buildGhosttyTerminalHtml(theme: TerminalThemePalette, fontUri: s
         });
 
         const VERTICAL_START_THRESHOLD = 12;
-        const HORIZONTAL_START_THRESHOLD = 16;
-        const HORIZONTAL_COMMIT_THRESHOLD = 64;
-        const HORIZONTAL_LOCK_RATIO = 1.0;
         const VERTICAL_LOCK_RATIO = 1.1;
-        const MAX_VELOCITY = 8;
-        const MIN_MOMENTUM = 0.12;
-        const FRICTION = 0.93;
-        const STOP_V = 0.3;
-        const MAX_FRAMES = 180;
-        const THROTTLE_MS = 60;
+        const THROTTLE_MS = 48;
         const LONG_PRESS_MS = 500;
 
         let scrolling = false;
-        let horizontalSwiping = false;
         let startX = 0;
         let startY = 0;
         let lastY = 0;
-        let lastTime = 0;
-        let velocity = 0;
         let scrollAccum = 0;
         let pendingLines = 0;
         let throttleTimer = null;
-        let momentumRAF = null;
         let longPressTimer = null;
         let longPressTriggered = false;
 
@@ -393,6 +400,9 @@ export function buildGhosttyTerminalHtml(theme: TerminalThemePalette, fontUri: s
           if (pendingLines === 0) {
             return;
           }
+          // Match native touch scrolling expectations: dragging downward should
+          // pull older history into view, so we invert the finger delta before
+          // sending tmux's copy-mode scroll units.
           send({ type: 'scroll', lines: pendingLines });
           pendingLines = 0;
         };
@@ -418,13 +428,6 @@ export function buildGhosttyTerminalHtml(theme: TerminalThemePalette, fontUri: s
           }
         };
 
-        const cancelMomentum = () => {
-          if (momentumRAF) {
-            cancelAnimationFrame(momentumRAF);
-            momentumRAF = null;
-          }
-        };
-
         const cancelLongPress = () => {
           if (longPressTimer) {
             clearTimeout(longPressTimer);
@@ -436,20 +439,16 @@ export function buildGhosttyTerminalHtml(theme: TerminalThemePalette, fontUri: s
           if (selectionMode) {
             return;
           }
-          cancelMomentum();
           scrolling = false;
-          horizontalSwiping = false;
           longPressTriggered = false;
           scrollAccum = 0;
-          velocity = 0;
           startX = event.touches[0].clientX;
           startY = lastY = event.touches[0].clientY;
-          lastTime = performance.now();
 
           cancelLongPress();
           longPressTimer = setTimeout(() => {
             longPressTimer = null;
-            if (!scrolling && !horizontalSwiping) {
+            if (!scrolling) {
               longPressTriggered = true;
               send({ type: 'requestSelection' });
             }
@@ -460,6 +459,7 @@ export function buildGhosttyTerminalHtml(theme: TerminalThemePalette, fontUri: s
           if (selectionMode) {
             return;
           }
+
           const x = event.touches[0].clientX;
           const y = event.touches[0].clientY;
           const deltaXFromStart = x - startX;
@@ -467,36 +467,13 @@ export function buildGhosttyTerminalHtml(theme: TerminalThemePalette, fontUri: s
           const absDeltaX = Math.abs(deltaXFromStart);
           const absDeltaY = Math.abs(deltaYFromStart);
 
-          if (!scrolling && !horizontalSwiping) {
-            if (
-              absDeltaX > HORIZONTAL_START_THRESHOLD &&
-              absDeltaX >= absDeltaY * HORIZONTAL_LOCK_RATIO
-            ) {
-              horizontalSwiping = true;
-              cancelLongPress();
-            } else if (
-              absDeltaY > VERTICAL_START_THRESHOLD &&
-              absDeltaY > absDeltaX * VERTICAL_LOCK_RATIO
-            ) {
-              scrolling = true;
-              scrollAccum = 0;
-              cancelLongPress();
-            }
-          }
-
-          if (horizontalSwiping) {
-            reportSwipeProgress(deltaXFromStart, true);
-            if (event.cancelable) {
-              event.preventDefault();
-            }
-            if (typeof event.stopPropagation === 'function') {
-              event.stopPropagation();
-            }
-            return;
-          }
-
           if (!scrolling) {
-            return;
+            if (absDeltaY <= VERTICAL_START_THRESHOLD || absDeltaY <= absDeltaX * VERTICAL_LOCK_RATIO) {
+              return;
+            }
+            scrolling = true;
+            scrollAccum = 0;
+            cancelLongPress();
           }
 
           if (event.cancelable) {
@@ -507,13 +484,6 @@ export function buildGhosttyTerminalHtml(theme: TerminalThemePalette, fontUri: s
           }
 
           const delta = lastY - y;
-          const now = performance.now();
-          const dt = now - lastTime;
-
-          if (dt > 0 && Number.isFinite(delta / dt)) {
-            velocity = 0.6 * velocity + 0.4 * (delta / dt);
-          }
-          lastTime = now;
           lastY = y;
 
           scrollAccum += delta;
@@ -532,71 +502,20 @@ export function buildGhosttyTerminalHtml(theme: TerminalThemePalette, fontUri: s
 
           if (longPressTriggered) {
             scrolling = false;
-            horizontalSwiping = false;
-            reportSwipeProgress(0, false);
             return;
           }
 
-          if (horizontalSwiping) {
-            const touch = event.changedTouches && event.changedTouches[0];
-            const totalDeltaX = touch ? touch.clientX - startX : 0;
-            horizontalSwiping = false;
-
-            if (Math.abs(totalDeltaX) >= HORIZONTAL_COMMIT_THRESHOLD) {
-              if (event.cancelable) {
-                event.preventDefault();
-              }
-              if (typeof event.stopPropagation === 'function') {
-                event.stopPropagation();
-              }
-              send({
-                type: 'tabSwipe',
-                direction: totalDeltaX < 0 ? 'next' : 'prev',
-              });
-            } else {
-              reportSwipeProgress(0, false);
-            }
-            return;
-          }
+          const touch = event.changedTouches && event.changedTouches[0];
+          const endX = touch ? touch.clientX : startX;
+          const endY = touch ? touch.clientY : startY;
 
           if (!scrolling) {
-            if (remoteAtBottom) {
-              focusInput();
-            }
+            emitTap(endX, endY);
             return;
           }
 
           scrolling = false;
           flushScrollNow();
-
-          let frameVelocity = Math.max(-MAX_VELOCITY, Math.min(MAX_VELOCITY, velocity));
-          if (Math.abs(frameVelocity) < MIN_MOMENTUM) {
-            return;
-          }
-
-          let velocityPx = frameVelocity * 16;
-          let accum = 0;
-          let frames = 0;
-
-          const tick = () => {
-            frames += 1;
-            if (Math.abs(velocityPx) < STOP_V || frames > MAX_FRAMES) {
-              momentumRAF = null;
-              flushScrollNow();
-              return;
-            }
-
-            accum += velocityPx;
-            const lines = Math.trunc(accum / cellHeight);
-            if (lines !== 0) {
-              doScroll(lines);
-              accum -= lines * cellHeight;
-            }
-            velocityPx *= FRICTION;
-            momentumRAF = requestAnimationFrame(tick);
-          };
-
-          momentumRAF = requestAnimationFrame(tick);
         }, { capture: true, passive: false });
 
         document.addEventListener('touchcancel', () => {
@@ -604,12 +523,9 @@ export function buildGhosttyTerminalHtml(theme: TerminalThemePalette, fontUri: s
             return;
           }
           scrolling = false;
-          horizontalSwiping = false;
           longPressTriggered = false;
           cancelLongPress();
-          cancelMomentum();
           flushScrollNow();
-          reportSwipeProgress(0, false);
         }, { capture: true, passive: true });
 
         setInterval(() => {
@@ -631,12 +547,10 @@ export function buildGhosttyTerminalHtml(theme: TerminalThemePalette, fontUri: s
           scheduleDraw();
         };
 
-        window.__zenScrollState = (state) => {
-          remoteAtBottom = !!(state && state.atBottom);
+        window.__zenViewportMode = (state) => {
+          viewportMode = state && state.mode === 'scrolled' ? 'scrolled' : 'live';
           scheduleDraw();
         };
-
-        window.__zenCtrlState = () => {};
 
         window.__zenSelectionText = (payload) => {
           const text = payload && typeof payload.text === 'string'
@@ -651,14 +565,14 @@ export function buildGhosttyTerminalHtml(theme: TerminalThemePalette, fontUri: s
 
         window.__zenResumeInput = () => {
           closeSelectionMode();
-          remoteAtBottom = true;
-          send({ type: 'focusInput' });
+          viewportMode = 'live';
           scheduleDraw();
         };
 
         window.__zenScrollToBottom = () => {
           closeSelectionMode();
-          send({ type: 'focusInput' });
+          viewportMode = 'live';
+          scheduleDraw();
         };
 
         const handleViewportChange = () => {
@@ -670,7 +584,7 @@ export function buildGhosttyTerminalHtml(theme: TerminalThemePalette, fontUri: s
 
         if (typeof ResizeObserver === 'function') {
           const observer = new ResizeObserver(handleViewportChange);
-          observer.observe(document.documentElement);
+          observer.observe(root);
         }
 
         applyTheme();

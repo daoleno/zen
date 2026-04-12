@@ -187,6 +187,18 @@ func (m *Manager) ScrollCancel(ownerID, sessionID string) error {
 	return nil
 }
 
+// FocusPane selects the tmux pane that contains the given terminal cell.
+func (m *Manager) FocusPane(ownerID, sessionID string, col, row int) error {
+	ms, err := m.withSession(ownerID, sessionID)
+	if err != nil {
+		return err
+	}
+	if focuser, ok := ms.session.(PaneFocuser); ok {
+		return focuser.FocusPane(col, row)
+	}
+	return nil
+}
+
 // Resize updates a terminal session's dimensions.
 func (m *Manager) Resize(ownerID, sessionID string, cols, rows int) error {
 	ms, err := m.withSession(ownerID, sessionID)

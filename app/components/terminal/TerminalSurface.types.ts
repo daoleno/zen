@@ -16,6 +16,4 @@ export interface TerminalSurfaceProps {
   themeOverrides?: Partial<TerminalThemePalette>;
   ctrlArmed?: boolean;
   onCtrlArmedChange?: (next: boolean) => void;
-  onTabSwipeProgress?: (deltaX: number, active: boolean) => void;
-  onTabSwipe?: (direction: 'next' | 'prev') => void;
 }
