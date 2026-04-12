@@ -59,3 +59,17 @@ func TestTmuxResizeWindowHookUsesFixedTargetAndSize(t *testing.T) {
 		t.Fatalf("resize hook = %q, want %q", got, want)
 	}
 }
+
+func TestTmuxHistoryCaptureRangeUsesOnlyScrollbackRegion(t *testing.T) {
+	startLine, endLine := tmuxHistoryCaptureRange(10, 21)
+	if startLine != -21 || endLine != -10 {
+		t.Fatalf("history capture range = (%d, %d), want (%d, %d)", startLine, endLine, -21, -10)
+	}
+}
+
+func TestTmuxHistoryCaptureRangeHandlesNoHistory(t *testing.T) {
+	startLine, endLine := tmuxHistoryCaptureRange(10, 0)
+	if startLine != 0 || endLine != -1 {
+		t.Fatalf("history capture range for empty history = (%d, %d), want (%d, %d)", startLine, endLine, 0, -1)
+	}
+}

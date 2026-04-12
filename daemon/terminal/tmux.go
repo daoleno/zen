@@ -109,6 +109,7 @@ func (s *tmuxSession) Start(ctx context.Context) error {
 	}
 
 	s.emitScrollState()
+	s.emitInitialHistory()
 
 	go s.streamLoop(runCtx, ptmx)
 	go s.waitLoop()
@@ -517,6 +518,28 @@ func (s *tmuxSession) emitScrollState() {
 	})
 }
 
+func (s *tmuxSession) emitInitialHistory() {
+	s.mu.Lock()
+	target := s.interactiveTargetLocked()
+	s.mu.Unlock()
+	if target == "" {
+		return
+	}
+
+	history, err := tmuxCaptureHistory(target)
+	if err != nil {
+		return
+	}
+	if history == "" {
+		return
+	}
+
+	s.sendEvent(Event{
+		Type: EventHistory,
+		Data: sanitizeTmuxHistory(history),
+	})
+}
+
 func (s *tmuxSession) readScrollStateLocked() ScrollState {
 	state := ScrollState{
 		AtBottom:   !s.inCopyMode,
@@ -658,11 +681,33 @@ func tmuxClientEnv(base []string) []string {
 	return env
 }
 
-func tmuxCaptureHistory(targetID string, lines int) (string, error) {
-	if lines <= 0 {
-		lines = 2000
+func tmuxCaptureHistory(targetID string) (string, error) {
+	targetID = strings.TrimSpace(targetID)
+	if targetID == "" {
+		return "", nil
 	}
-	cmd := exec.Command("tmux", "capture-pane", "-p", "-e", "-S", fmt.Sprintf("-%d", lines), "-t", targetID)
+
+	paneHeight, historySize, err := tmuxHistoryBounds(targetID)
+	if err != nil {
+		return "", err
+	}
+	if historySize <= 0 {
+		return "", nil
+	}
+
+	startLine, endLine := tmuxHistoryCaptureRange(paneHeight, historySize)
+	cmd := exec.Command(
+		"tmux",
+		"capture-pane",
+		"-p",
+		"-e",
+		"-S",
+		fmt.Sprintf("%d", startLine),
+		"-E",
+		fmt.Sprintf("%d", endLine),
+		"-t",
+		targetID,
+	)
 	out, err := cmd.Output()
 	if err != nil {
 		return "", fmt.Errorf("capture tmux history: %w", err)
@@ -675,6 +720,44 @@ func tmuxCaptureHistory(targetID string, lines int) (string, error) {
 		history += "\n"
 	}
 	return history, nil
+}
+
+func tmuxHistoryBounds(targetID string) (paneHeight int, historySize int, err error) {
+	out, err := exec.Command(
+		"tmux",
+		"display-message",
+		"-p",
+		"-t",
+		targetID,
+		"#{pane_height}:#{history_size}",
+	).Output()
+	if err != nil {
+		return 0, 0, fmt.Errorf("read tmux history bounds: %w", err)
+	}
+
+	parts := strings.SplitN(strings.TrimSpace(string(out)), ":", 2)
+	if len(parts) != 2 {
+		return 0, 0, fmt.Errorf("unexpected tmux history bounds: %q", strings.TrimSpace(string(out)))
+	}
+
+	paneHeight, err = strconv.Atoi(strings.TrimSpace(parts[0]))
+	if err != nil {
+		return 0, 0, fmt.Errorf("parse tmux pane height: %w", err)
+	}
+	historySize, err = strconv.Atoi(strings.TrimSpace(parts[1]))
+	if err != nil {
+		return 0, 0, fmt.Errorf("parse tmux history size: %w", err)
+	}
+
+	return paneHeight, historySize, nil
+}
+
+func tmuxHistoryCaptureRange(paneHeight int, historySize int) (startLine int, endLine int) {
+	if paneHeight <= 0 || historySize <= 0 {
+		return 0, -1
+	}
+
+	return -historySize, -paneHeight
 }
 
 func sanitizeTmuxOutput(data string) string {
