@@ -117,7 +117,7 @@ func (s *tmuxSession) Start(ctx context.Context) error {
 }
 
 func (s *tmuxSession) streamLoop(ctx context.Context, ptmx *os.File) {
-	const flushInterval = 80 * time.Millisecond
+	const flushInterval = 16 * time.Millisecond
 	const maxFrameBytes = 2048
 
 	results := make(chan tmuxReadResult, 128)
@@ -152,14 +152,14 @@ func (s *tmuxSession) streamLoop(ctx context.Context, ptmx *os.File) {
 		}
 		data := sanitizeTmuxOutput(pending.String())
 		pending.Reset()
-		chunk, rest := splitUTF8Prefix(data, maxFrameBytes)
-		if rest != "" {
-			pending.WriteString(rest)
+		for len(data) > 0 {
+			chunk, rest := splitUTF8Prefix(data, maxFrameBytes)
+			s.sendEvent(Event{
+				Type: EventOutput,
+				Data: chunk,
+			})
+			data = rest
 		}
-		s.sendEvent(Event{
-			Type: EventOutput,
-			Data: chunk,
-		})
 	}
 
 	for {

@@ -54,6 +54,8 @@ export function buildGhosttyTerminalHtml(theme: TerminalThemePalette, fontUri: s
         white-space: pre;
         tab-size: 8;
         pointer-events: none;
+        transform: translate3d(0, 0, 0);
+        will-change: transform;
       }
       #terminal-html * {
         font-family: inherit;
@@ -188,6 +190,8 @@ export function buildGhosttyTerminalHtml(theme: TerminalThemePalette, fontUri: s
         let selectionMode = false;
         let cursorBlinkVisible = true;
         let drawRAF = null;
+        let optimisticScrollOffsetPx = 0;
+        let awaitingScrollPaint = false;
 
         const send = (payload) => {
           try {
@@ -266,7 +270,13 @@ export function buildGhosttyTerminalHtml(theme: TerminalThemePalette, fontUri: s
         };
 
         const updateCursor = () => {
-          if (viewportMode !== 'live' || selectionMode || !cursorBlinkVisible || !renderSnapshot.cursorVisible) {
+          if (
+            viewportMode !== 'live' ||
+            selectionMode ||
+            Math.abs(optimisticScrollOffsetPx) >= 0.5 ||
+            !cursorBlinkVisible ||
+            !renderSnapshot.cursorVisible
+          ) {
             cursor.style.display = 'none';
             return;
           }
@@ -291,6 +301,7 @@ export function buildGhosttyTerminalHtml(theme: TerminalThemePalette, fontUri: s
             terminalHtml.innerHTML = nextHtml;
             lastRenderedHtml = nextHtml;
           }
+          terminalHtml.style.transform = 'translate3d(0,' + optimisticScrollOffsetPx + 'px,0)';
           updateCursor();
         };
 
@@ -380,9 +391,8 @@ export function buildGhosttyTerminalHtml(theme: TerminalThemePalette, fontUri: s
           }
         });
 
-        const VERTICAL_START_THRESHOLD = 12;
-        const VERTICAL_LOCK_RATIO = 1.1;
-        const THROTTLE_MS = 48;
+        const VERTICAL_START_THRESHOLD = 4;
+        const VERTICAL_LOCK_RATIO = 0.9;
         const LONG_PRESS_MS = 500;
 
         let scrolling = false;
@@ -391,12 +401,12 @@ export function buildGhosttyTerminalHtml(theme: TerminalThemePalette, fontUri: s
         let lastY = 0;
         let scrollAccum = 0;
         let pendingLines = 0;
-        let throttleTimer = null;
+        let scrollFlushRAF = null;
         let longPressTimer = null;
         let longPressTriggered = false;
 
         const flushScroll = () => {
-          throttleTimer = null;
+          scrollFlushRAF = null;
           if (pendingLines === 0) {
             return;
           }
@@ -404,6 +414,7 @@ export function buildGhosttyTerminalHtml(theme: TerminalThemePalette, fontUri: s
           // pull older history into view, so we invert the finger delta before
           // sending tmux's copy-mode scroll units.
           send({ type: 'scroll', lines: pendingLines });
+          awaitingScrollPaint = true;
           pendingLines = 0;
         };
 
@@ -412,20 +423,17 @@ export function buildGhosttyTerminalHtml(theme: TerminalThemePalette, fontUri: s
             return;
           }
           pendingLines += lines;
-          if (!throttleTimer) {
-            throttleTimer = setTimeout(flushScroll, THROTTLE_MS);
+          if (scrollFlushRAF == null) {
+            scrollFlushRAF = requestAnimationFrame(flushScroll);
           }
         };
 
         const flushScrollNow = () => {
-          if (throttleTimer) {
-            clearTimeout(throttleTimer);
-            throttleTimer = null;
+          if (scrollFlushRAF != null) {
+            cancelAnimationFrame(scrollFlushRAF);
+            scrollFlushRAF = null;
           }
-          if (pendingLines !== 0) {
-            send({ type: 'scroll', lines: pendingLines });
-            pendingLines = 0;
-          }
+          flushScroll();
         };
 
         const cancelLongPress = () => {
@@ -442,8 +450,10 @@ export function buildGhosttyTerminalHtml(theme: TerminalThemePalette, fontUri: s
           scrolling = false;
           longPressTriggered = false;
           scrollAccum = 0;
+          optimisticScrollOffsetPx = 0;
           startX = event.touches[0].clientX;
           startY = lastY = event.touches[0].clientY;
+          scheduleDraw();
 
           cancelLongPress();
           longPressTimer = setTimeout(() => {
@@ -486,12 +496,14 @@ export function buildGhosttyTerminalHtml(theme: TerminalThemePalette, fontUri: s
           const delta = lastY - y;
           lastY = y;
 
+          optimisticScrollOffsetPx -= delta;
           scrollAccum += delta;
           const lines = Math.trunc(scrollAccum / cellHeight);
           if (lines !== 0) {
             doScroll(lines);
             scrollAccum -= lines * cellHeight;
           }
+          scheduleDraw();
         }, { capture: true, passive: false });
 
         document.addEventListener('touchend', (event) => {
@@ -535,6 +547,12 @@ export function buildGhosttyTerminalHtml(theme: TerminalThemePalette, fontUri: s
 
         window.__zenRenderSnapshot = (nextSnapshot) => {
           renderSnapshot = nextSnapshot || renderSnapshot;
+          if (awaitingScrollPaint) {
+            awaitingScrollPaint = false;
+            optimisticScrollOffsetPx = scrolling ? scrollAccum : 0;
+          } else if (!scrolling && viewportMode === 'live') {
+            optimisticScrollOffsetPx = 0;
+          }
           scheduleDraw();
         };
 
@@ -549,6 +567,10 @@ export function buildGhosttyTerminalHtml(theme: TerminalThemePalette, fontUri: s
 
         window.__zenViewportMode = (state) => {
           viewportMode = state && state.mode === 'scrolled' ? 'scrolled' : 'live';
+          if (viewportMode === 'live') {
+            awaitingScrollPaint = false;
+            optimisticScrollOffsetPx = 0;
+          }
           scheduleDraw();
         };
 
@@ -566,12 +588,16 @@ export function buildGhosttyTerminalHtml(theme: TerminalThemePalette, fontUri: s
         window.__zenResumeInput = () => {
           closeSelectionMode();
           viewportMode = 'live';
+          awaitingScrollPaint = false;
+          optimisticScrollOffsetPx = 0;
           scheduleDraw();
         };
 
         window.__zenScrollToBottom = () => {
           closeSelectionMode();
           viewportMode = 'live';
+          awaitingScrollPaint = false;
+          optimisticScrollOffsetPx = 0;
           scheduleDraw();
         };
 
