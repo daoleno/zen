@@ -48,24 +48,6 @@ const REPLACEABLE_PENDING_TYPES: readonly RendererStateMessage['type'][] = [
   'selectionText',
 ];
 
-function trimHistoryToViewport(data: string, rows: number): string {
-  if (!data || rows <= 0) {
-    return data;
-  }
-
-  const normalized = data.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
-  const lines = normalized.split('\n');
-  const trailingEmpty = lines[lines.length - 1] === '' ? 1 : 0;
-  const keepCount = rows + trailingEmpty;
-
-  if (lines.length <= keepCount) {
-    return data;
-  }
-
-  const trimmed = lines.slice(-keepCount).join('\n');
-  return data.includes('\r\n') ? trimmed.replace(/\n/g, '\r\n') : trimmed;
-}
-
 interface UseGhosttyTerminalControllerArgs {
   serverId: string;
   targetId: string;
@@ -197,7 +179,7 @@ export function useGhosttyTerminalController({
         pendingTerminalRef.current.push({ type: 'history', data });
         return;
       }
-      ghostty.writeOutput(trimHistoryToViewport(data, grid.rows));
+      ghostty.writeOutput(data);
       scheduleRenderState();
     },
     onOutput: ({ data }) => {
@@ -212,6 +194,9 @@ export function useGhosttyTerminalController({
     onScrollState: ({ at_bottom }) => {
       const nextMode: TerminalViewportMode = at_bottom ? 'live' : 'scrolled';
       setViewportMode(nextMode);
+      if (at_bottom && ghostty.scrollViewportToBottom()) {
+        scheduleRenderState();
+      }
       if (!at_bottom) {
         inputRef.current?.blur();
       }
@@ -252,7 +237,7 @@ export function useGhosttyTerminalController({
     pendingTerminalRef.current = [];
     for (const event of pending) {
       if (event.type === 'history') {
-        ghostty.writeOutput(trimHistoryToViewport(event.data, grid.rows));
+        ghostty.writeOutput(event.data);
         continue;
       }
       ghostty.writeOutput(event.data);
@@ -277,11 +262,14 @@ export function useGhosttyTerminalController({
   }, [backend, focusPane]);
 
   const enterLiveMode = useCallback((command: 'resumeInput' | 'scrollToBottom') => {
+    if (ghostty.scrollViewportToBottom()) {
+      scheduleRenderState();
+    }
     cancelScroll();
     setViewportMode('live');
     runRendererCommand(command);
     inputRef.current?.focus();
-  }, [cancelScroll, runRendererCommand, setViewportMode]);
+  }, [cancelScroll, ghostty, runRendererCommand, scheduleRenderState, setViewportMode]);
 
   const focus = useCallback(() => {
     inputRef.current?.focus();
@@ -360,6 +348,12 @@ export function useGhosttyTerminalController({
       }
 
       if (payload.type === 'scroll') {
+        if (ghostty.scrollViewport(payload.lines)) {
+          if (payload.lines < 0 || viewportModeRef.current === 'scrolled') {
+            setViewportMode('scrolled');
+          }
+          scheduleRenderState();
+        }
         scroll(payload.lines);
         return;
       }

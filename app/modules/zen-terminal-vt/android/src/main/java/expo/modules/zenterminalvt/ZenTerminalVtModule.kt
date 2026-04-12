@@ -161,6 +161,16 @@ class ZenTerminalVtModule : Module() {
             nativeWriteData(getNativeHandle(handleId), data)
         }
 
+        Function("scrollViewport") { handleId: Int, delta: Int ->
+            ensureLoaded()
+            nativeScrollViewport(getNativeHandle(handleId), delta)
+        }
+
+        Function("scrollViewportToBottom") { handleId: Int ->
+            ensureLoaded()
+            nativeScrollViewportToBottom(getNativeHandle(handleId))
+        }
+
         Function("resize") { handleId: Int, cols: Int, rows: Int, cellWidth: Float, cellHeight: Float ->
             runWithPersistentBreadcrumb(
                 "resize",
@@ -258,6 +268,12 @@ class ZenTerminalVtModule : Module() {
 
         @JvmStatic
         external fun nativeWriteData(handle: Long, data: String)
+
+        @JvmStatic
+        external fun nativeScrollViewport(handle: Long, delta: Int)
+
+        @JvmStatic
+        external fun nativeScrollViewportToBottom(handle: Long)
 
         @JvmStatic
         external fun nativeResize(handle: Long, cols: Int, rows: Int, cellWidth: Float, cellHeight: Float)

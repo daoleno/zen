@@ -9,6 +9,8 @@ import {
   getRenderSnapshot,
   getVisibleText,
   resize as resizeTerminal,
+  scrollViewport as scrollNativeViewport,
+  scrollViewportToBottom as scrollNativeViewportToBottom,
   setTheme as setNativeTheme,
   writeData,
   type MouseEventPayload,
@@ -125,6 +127,38 @@ export function useGhosttyCoreTerminal() {
     }
   }, [logNativeError]);
 
+  const scrollViewport = useCallback((delta: number) => {
+    const handle = handleRef.current;
+    if (!handle || delta === 0) {
+      return false;
+    }
+
+    try {
+      scrollNativeViewport(handle, delta);
+      dirtyRef.current = true;
+      return true;
+    } catch (error) {
+      logNativeError('scrollViewport', error);
+      return false;
+    }
+  }, [logNativeError]);
+
+  const scrollViewportToBottom = useCallback(() => {
+    const handle = handleRef.current;
+    if (!handle) {
+      return false;
+    }
+
+    try {
+      scrollNativeViewportToBottom(handle);
+      dirtyRef.current = true;
+      return true;
+    } catch (error) {
+      logNativeError('scrollViewportToBottom', error);
+      return false;
+    }
+  }, [logNativeError]);
+
   const encodePointer = useCallback((event: MouseEventPayload) => {
     const handle = handleRef.current;
     if (!handle) {
@@ -191,10 +225,21 @@ export function useGhosttyCoreTerminal() {
     ensureTerminal,
     setTheme,
     writeOutput,
+    scrollViewport,
+    scrollViewportToBottom,
     encodePointer,
     consumeRenderSnapshot,
     getVisibleTextSnapshot,
-  }), [consumeRenderSnapshot, encodePointer, ensureTerminal, getVisibleTextSnapshot, setTheme, writeOutput]);
+  }), [
+    consumeRenderSnapshot,
+    encodePointer,
+    ensureTerminal,
+    getVisibleTextSnapshot,
+    scrollViewport,
+    scrollViewportToBottom,
+    setTheme,
+    writeOutput,
+  ]);
 }
 
 const ANSI_COLOR_KEYS = [

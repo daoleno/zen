@@ -967,6 +967,35 @@ Java_expo_modules_zenterminalvt_ZenTerminalVtModule_nativeWriteData(
 }
 
 JNIEXPORT void JNICALL
+Java_expo_modules_zenterminalvt_ZenTerminalVtModule_nativeScrollViewport(
+    JNIEnv*, jobject, jlong handle, jint delta)
+{
+    auto* h = getHandle(handle);
+    if (!h || delta == 0) return;
+
+    GhosttyTerminalScrollViewport behavior = {};
+    behavior.tag = GHOSTTY_SCROLL_VIEWPORT_DELTA;
+    behavior.value.delta = static_cast<intptr_t>(delta);
+
+    ghostty_terminal_scroll_viewport(h->terminal, behavior);
+    markFullSnapshot(h);
+}
+
+JNIEXPORT void JNICALL
+Java_expo_modules_zenterminalvt_ZenTerminalVtModule_nativeScrollViewportToBottom(
+    JNIEnv*, jobject, jlong handle)
+{
+    auto* h = getHandle(handle);
+    if (!h) return;
+
+    GhosttyTerminalScrollViewport behavior = {};
+    behavior.tag = GHOSTTY_SCROLL_VIEWPORT_BOTTOM;
+
+    ghostty_terminal_scroll_viewport(h->terminal, behavior);
+    markFullSnapshot(h);
+}
+
+JNIEXPORT void JNICALL
 Java_expo_modules_zenterminalvt_ZenTerminalVtModule_nativeResize(
     JNIEnv*, jobject, jlong handle,
     jint cols, jint rows, jfloat cellWidth, jfloat cellHeight)

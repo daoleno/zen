@@ -55,7 +55,6 @@ export function buildGhosttyTerminalHtml(theme: TerminalThemePalette, fontUri: s
         tab-size: 8;
         pointer-events: none;
         transform: translate3d(0, 0, 0);
-        will-change: transform;
       }
       #terminal-html * {
         font-family: inherit;
@@ -190,8 +189,7 @@ export function buildGhosttyTerminalHtml(theme: TerminalThemePalette, fontUri: s
         let selectionMode = false;
         let cursorBlinkVisible = true;
         let drawRAF = null;
-        let optimisticScrollOffsetPx = 0;
-        let awaitingScrollPaint = false;
+        let dragScrollOffsetPx = 0;
 
         const send = (payload) => {
           try {
@@ -273,7 +271,7 @@ export function buildGhosttyTerminalHtml(theme: TerminalThemePalette, fontUri: s
           if (
             viewportMode !== 'live' ||
             selectionMode ||
-            Math.abs(optimisticScrollOffsetPx) >= 0.5 ||
+            Math.abs(dragScrollOffsetPx) >= 0.5 ||
             !cursorBlinkVisible ||
             !renderSnapshot.cursorVisible
           ) {
@@ -301,7 +299,7 @@ export function buildGhosttyTerminalHtml(theme: TerminalThemePalette, fontUri: s
             terminalHtml.innerHTML = nextHtml;
             lastRenderedHtml = nextHtml;
           }
-          terminalHtml.style.transform = 'translate3d(0,' + optimisticScrollOffsetPx + 'px,0)';
+          terminalHtml.style.transform = 'translate3d(0,' + dragScrollOffsetPx + 'px,0)';
           updateCursor();
         };
 
@@ -450,7 +448,7 @@ export function buildGhosttyTerminalHtml(theme: TerminalThemePalette, fontUri: s
           scrolling = false;
           longPressTriggered = false;
           scrollAccum = 0;
-          optimisticScrollOffsetPx = 0;
+          dragScrollOffsetPx = 0;
           startX = event.touches[0].clientX;
           startY = lastY = event.touches[0].clientY;
           scheduleDraw();
@@ -496,13 +494,13 @@ export function buildGhosttyTerminalHtml(theme: TerminalThemePalette, fontUri: s
           const delta = lastY - y;
           lastY = y;
 
-          optimisticScrollOffsetPx -= delta;
           scrollAccum += delta;
           const lines = Math.trunc(scrollAccum / cellHeight);
           if (lines !== 0) {
             doScroll(lines);
             scrollAccum -= lines * cellHeight;
           }
+          dragScrollOffsetPx = -scrollAccum;
           scheduleDraw();
         }, { capture: true, passive: false });
 
@@ -528,6 +526,9 @@ export function buildGhosttyTerminalHtml(theme: TerminalThemePalette, fontUri: s
 
           scrolling = false;
           flushScrollNow();
+          scrollAccum = 0;
+          dragScrollOffsetPx = 0;
+          scheduleDraw();
         }, { capture: true, passive: false });
 
         document.addEventListener('touchcancel', () => {
@@ -538,6 +539,9 @@ export function buildGhosttyTerminalHtml(theme: TerminalThemePalette, fontUri: s
           longPressTriggered = false;
           cancelLongPress();
           flushScrollNow();
+          scrollAccum = 0;
+          dragScrollOffsetPx = 0;
+          scheduleDraw();
         }, { capture: true, passive: true });
 
         setInterval(() => {
@@ -547,12 +551,6 @@ export function buildGhosttyTerminalHtml(theme: TerminalThemePalette, fontUri: s
 
         window.__zenRenderSnapshot = (nextSnapshot) => {
           renderSnapshot = nextSnapshot || renderSnapshot;
-          if (awaitingScrollPaint) {
-            awaitingScrollPaint = false;
-            optimisticScrollOffsetPx = scrolling ? scrollAccum : 0;
-          } else if (!scrolling && viewportMode === 'live') {
-            optimisticScrollOffsetPx = 0;
-          }
           scheduleDraw();
         };
 
@@ -568,8 +566,8 @@ export function buildGhosttyTerminalHtml(theme: TerminalThemePalette, fontUri: s
         window.__zenViewportMode = (state) => {
           viewportMode = state && state.mode === 'scrolled' ? 'scrolled' : 'live';
           if (viewportMode === 'live') {
-            awaitingScrollPaint = false;
-            optimisticScrollOffsetPx = 0;
+            scrollAccum = 0;
+            dragScrollOffsetPx = 0;
           }
           scheduleDraw();
         };
@@ -588,16 +586,16 @@ export function buildGhosttyTerminalHtml(theme: TerminalThemePalette, fontUri: s
         window.__zenResumeInput = () => {
           closeSelectionMode();
           viewportMode = 'live';
-          awaitingScrollPaint = false;
-          optimisticScrollOffsetPx = 0;
+          scrollAccum = 0;
+          dragScrollOffsetPx = 0;
           scheduleDraw();
         };
 
         window.__zenScrollToBottom = () => {
           closeSelectionMode();
           viewportMode = 'live';
-          awaitingScrollPaint = false;
-          optimisticScrollOffsetPx = 0;
+          scrollAccum = 0;
+          dragScrollOffsetPx = 0;
           scheduleDraw();
         };
 

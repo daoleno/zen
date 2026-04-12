@@ -32,6 +32,8 @@ interface NativeTerminalVtModule {
   createTerminal(cols: number, rows: number): number;
   destroyTerminal(handle: number): void;
   writeData(handle: number, data: string): void;
+  scrollViewport?(handle: number, delta: number): void;
+  scrollViewportToBottom?(handle: number): void;
   resize(handle: number, cols: number, rows: number, cellWidth: number, cellHeight: number): void;
   setTheme?(handle: number, foreground: string, background: string, cursor: string, palette: string[]): void;
   encodeMouseEvent?(
@@ -128,6 +130,28 @@ export function destroyTerminal(handle: number): void {
  */
 export function writeData(handle: number, data: string): void {
   ZenTerminalVt.writeData(handle, data);
+}
+
+/**
+ * Scroll the local viewport by terminal rows. Negative = older content, positive = newer.
+ */
+export function scrollViewport(handle: number, delta: number): void {
+  if (typeof ZenTerminalVt.scrollViewport !== 'function' || delta === 0) {
+    return;
+  }
+
+  ZenTerminalVt.scrollViewport(handle, delta);
+}
+
+/**
+ * Return the local viewport to the live bottom.
+ */
+export function scrollViewportToBottom(handle: number): void {
+  if (typeof ZenTerminalVt.scrollViewportToBottom !== 'function') {
+    return;
+  }
+
+  ZenTerminalVt.scrollViewportToBottom(handle);
 }
 
 /**
