@@ -296,6 +296,10 @@ export function useGhosttyTerminalController({
     onCtrlArmedChange?.(false);
   }, [onCtrlArmedChange]);
 
+  const clearInputMirror = useCallback(() => {
+    inputRef.current?.clear();
+  }, []);
+
   const onRendererLoadStart = useCallback(() => {
     webReadyRef.current = false;
     pendingRef.current = [];
@@ -359,7 +363,11 @@ export function useGhosttyTerminalController({
       }
 
       if (payload.type === 'mouse') {
-        if (payload.action === 'press' && payload.button === 'left') {
+        const shouldInvalidateInput =
+          payload.action === 'press' && payload.button === 'left';
+
+        if (shouldInvalidateInput) {
+          clearInputMirror();
           focusPaneAtPoint(payload.x, payload.y);
         }
 
@@ -379,6 +387,9 @@ export function useGhosttyTerminalController({
           anyButtonPressed: payload.anyButtonPressed,
         });
         if (encoded) {
+          if (!shouldInvalidateInput) {
+            clearInputMirror();
+          }
           sendInput(encoded);
         }
         return;
@@ -400,6 +411,7 @@ export function useGhosttyTerminalController({
     resize,
     flushPendingTerminal,
     focusPaneAtPoint,
+    clearInputMirror,
     scheduleRenderState,
     scroll,
     scrollToBottom,
@@ -417,6 +429,7 @@ export function useGhosttyTerminalController({
     onRendererLoadStart,
     onRendererMessage,
     sendInput(data: string, options?: { focus?: boolean }) {
+      clearInputMirror();
       sendInput(data);
       if (options?.focus !== false) {
         inputRef.current?.focus();

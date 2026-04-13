@@ -1,6 +1,11 @@
 import React, { forwardRef, useCallback, useImperativeHandle, useRef } from 'react';
 import { TextInput, StyleSheet } from 'react-native';
 import { applyCtrlModifier } from './terminalControl';
+import {
+  diffTerminalInput,
+  encodeTerminalInputDelta,
+  trimTrailingInputUnits,
+} from './terminalInputBuffer';
 
 export interface TerminalInputHandleRef {
   focus(): void;
@@ -46,45 +51,68 @@ export const TerminalInputHandler = forwardRef<TerminalInputHandleRef, TerminalI
         const previous = lastTextRef.current;
         lastTextRef.current = text;
 
-        if (!text) {
+        if (previous === text) {
           return;
         }
 
-        let sharedPrefixLength = 0;
-        const sharedLength = Math.min(previous.length, text.length);
-        while (
-          sharedPrefixLength < sharedLength &&
-          previous[sharedPrefixLength] === text[sharedPrefixLength]
-        ) {
-          sharedPrefixLength += 1;
-        }
+        if (text.startsWith(previous)) {
+          const appendedText = text.slice(previous.length);
+          if (!appendedText) {
+            return;
+          }
 
-        const appended = text.slice(sharedPrefixLength);
-        if (!appended) {
+          if (ctrlArmed) {
+            const appendedUnits = Array.from(appendedText);
+            onInput(applyCtrlModifier(appendedUnits[0]));
+            onCtrlConsumed();
+            if (appendedUnits.length > 1) {
+              onInput(appendedUnits.slice(1).join(''));
+            }
+            clearInput();
+            return;
+          }
+
+          onInput(appendedText);
           return;
         }
 
         if (ctrlArmed) {
-          // Apply Ctrl modifier to the first inserted character only.
-          const modified = applyCtrlModifier(appended[0]);
-          onInput(modified);
-          onCtrlConsumed();
-          if (appended.length > 1) {
-            onInput(appended.slice(1));
-          }
-        } else {
-          onInput(appended);
-        }
+          const delta = diffTerminalInput(previous, text);
+          const insertedUnits = Array.from(delta.insertedText);
 
+          if (delta.backspaces > 0) {
+            onInput('\x7f'.repeat(delta.backspaces));
+          }
+
+          if (insertedUnits.length === 0) {
+            return;
+          }
+
+          // Apply Ctrl modifier to the first inserted character only, then
+          // reset the local mirror because the terminal state may diverge.
+          onInput(applyCtrlModifier(insertedUnits[0]));
+          onCtrlConsumed();
+          if (insertedUnits.length > 1) {
+            onInput(insertedUnits.slice(1).join(''));
+          }
+          clearInput();
+        } else {
+          const payload = encodeTerminalInputDelta(diffTerminalInput(previous, text));
+          if (!payload) {
+            return;
+          }
+          onInput(payload);
+        }
       },
-      [ctrlArmed, onInput, onCtrlConsumed],
+      [clearInput, ctrlArmed, onInput, onCtrlConsumed],
     );
 
     const handleKeyPress = useCallback(
       (e: { nativeEvent: { key: string } }) => {
         const { key } = e.nativeEvent;
 
-        // Special keys that don't trigger onChangeText
+        // Keys that either do not flow through onChangeText or would leave the
+        // hidden TextInput mirror out of sync with the terminal state.
         switch (key) {
           case 'Enter':
             handledSubmitRef.current = true;
@@ -92,13 +120,16 @@ export const TerminalInputHandler = forwardRef<TerminalInputHandleRef, TerminalI
             clearInput();
             return;
           case 'Backspace':
+            lastTextRef.current = trimTrailingInputUnits(lastTextRef.current, 1);
             onInput('\x7f');
             return;
           case 'Tab':
             onInput('\t');
+            clearInput();
             return;
           case 'Escape':
             onInput('\x1b');
+            clearInput();
             return;
         }
       },
