@@ -189,7 +189,6 @@ export function buildGhosttyTerminalHtml(theme: TerminalThemePalette, fontUri: s
         let selectionMode = false;
         let cursorBlinkVisible = true;
         let drawRAF = null;
-        let dragScrollOffsetPx = 0;
 
         const send = (payload) => {
           try {
@@ -271,7 +270,6 @@ export function buildGhosttyTerminalHtml(theme: TerminalThemePalette, fontUri: s
           if (
             viewportMode !== 'live' ||
             selectionMode ||
-            Math.abs(dragScrollOffsetPx) >= 0.5 ||
             !cursorBlinkVisible ||
             !renderSnapshot.cursorVisible
           ) {
@@ -299,7 +297,6 @@ export function buildGhosttyTerminalHtml(theme: TerminalThemePalette, fontUri: s
             terminalHtml.innerHTML = nextHtml;
             lastRenderedHtml = nextHtml;
           }
-          terminalHtml.style.transform = 'translate3d(0,' + dragScrollOffsetPx + 'px,0)';
           updateCursor();
         };
 
@@ -412,7 +409,6 @@ export function buildGhosttyTerminalHtml(theme: TerminalThemePalette, fontUri: s
           // pull older history into view, so we invert the finger delta before
           // sending tmux's copy-mode scroll units.
           send({ type: 'scroll', lines: pendingLines });
-          awaitingScrollPaint = true;
           pendingLines = 0;
         };
 
@@ -448,7 +444,6 @@ export function buildGhosttyTerminalHtml(theme: TerminalThemePalette, fontUri: s
           scrolling = false;
           longPressTriggered = false;
           scrollAccum = 0;
-          dragScrollOffsetPx = 0;
           startX = event.touches[0].clientX;
           startY = lastY = event.touches[0].clientY;
           scheduleDraw();
@@ -500,8 +495,6 @@ export function buildGhosttyTerminalHtml(theme: TerminalThemePalette, fontUri: s
             doScroll(lines);
             scrollAccum -= lines * cellHeight;
           }
-          dragScrollOffsetPx = -scrollAccum;
-          scheduleDraw();
         }, { capture: true, passive: false });
 
         document.addEventListener('touchend', (event) => {
@@ -527,8 +520,6 @@ export function buildGhosttyTerminalHtml(theme: TerminalThemePalette, fontUri: s
           scrolling = false;
           flushScrollNow();
           scrollAccum = 0;
-          dragScrollOffsetPx = 0;
-          scheduleDraw();
         }, { capture: true, passive: false });
 
         document.addEventListener('touchcancel', () => {
@@ -540,8 +531,6 @@ export function buildGhosttyTerminalHtml(theme: TerminalThemePalette, fontUri: s
           cancelLongPress();
           flushScrollNow();
           scrollAccum = 0;
-          dragScrollOffsetPx = 0;
-          scheduleDraw();
         }, { capture: true, passive: true });
 
         setInterval(() => {
@@ -567,7 +556,6 @@ export function buildGhosttyTerminalHtml(theme: TerminalThemePalette, fontUri: s
           viewportMode = state && state.mode === 'scrolled' ? 'scrolled' : 'live';
           if (viewportMode === 'live') {
             scrollAccum = 0;
-            dragScrollOffsetPx = 0;
           }
           scheduleDraw();
         };
@@ -587,7 +575,6 @@ export function buildGhosttyTerminalHtml(theme: TerminalThemePalette, fontUri: s
           closeSelectionMode();
           viewportMode = 'live';
           scrollAccum = 0;
-          dragScrollOffsetPx = 0;
           scheduleDraw();
         };
 
@@ -595,7 +582,6 @@ export function buildGhosttyTerminalHtml(theme: TerminalThemePalette, fontUri: s
           closeSelectionMode();
           viewportMode = 'live';
           scrollAccum = 0;
-          dragScrollOffsetPx = 0;
           scheduleDraw();
         };
 

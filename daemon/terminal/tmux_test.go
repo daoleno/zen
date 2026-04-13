@@ -43,23 +43,6 @@ func TestTmuxClientEnvOverridesTerminalCapabilities(t *testing.T) {
 	}
 }
 
-func TestTmuxResizeWindowCommandUsesLinkedSessionSize(t *testing.T) {
-	cmd := tmuxResizeWindowCommand("zen-123-1", Size{Cols: 52, Rows: 41})
-
-	want := []string{"tmux", "resize-window", "-t", "zen-123-1", "-x", "52", "-y", "41"}
-	if !reflect.DeepEqual(cmd.Args, want) {
-		t.Fatalf("resize-window args = %v, want %v", cmd.Args, want)
-	}
-}
-
-func TestTmuxResizeWindowHookUsesFixedTargetAndSize(t *testing.T) {
-	got := tmuxResizeWindowHook("zen-123-1", Size{Cols: 52, Rows: 41})
-	want := "resize-window -t zen-123-1 -x 52 -y 41"
-	if got != want {
-		t.Fatalf("resize hook = %q, want %q", got, want)
-	}
-}
-
 func TestTmuxHistoryCaptureRangeUsesOnlyScrollbackRegion(t *testing.T) {
 	startLine, endLine := tmuxHistoryCaptureRange(10, 21)
 	if startLine != -21 || endLine != -10 {

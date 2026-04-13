@@ -104,10 +104,6 @@ func (s *tmuxSession) Start(ctx context.Context) error {
 	s.pty = ptmx
 	s.mu.Unlock()
 
-	if err := s.syncWindowSize(); err != nil {
-		return err
-	}
-
 	s.emitScrollState()
 	s.emitInitialHistory()
 
@@ -444,7 +440,7 @@ func (s *tmuxSession) Resize(cols, rows int) error {
 	}); err != nil {
 		return fmt.Errorf("resize tmux client pty: %w", err)
 	}
-	return s.syncWindowSizeLocked()
+	return nil
 }
 
 func (s *tmuxSession) Close() error {
@@ -481,23 +477,6 @@ func (s *tmuxSession) closeEvents() {
 	s.closeOnce.Do(func() {
 		close(s.events)
 	})
-}
-
-func (s *tmuxSession) syncWindowSize() error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.syncWindowSizeLocked()
-}
-
-func (s *tmuxSession) syncWindowSizeLocked() error {
-	target := s.interactiveTargetLocked()
-	if target == "" || s.size.Cols <= 0 || s.size.Rows <= 0 {
-		return nil
-	}
-	if err := tmuxResizeWindowCommand(target, s.size).Run(); err != nil {
-		return fmt.Errorf("resize tmux window: %w", err)
-	}
-	return nil
 }
 
 func (s *tmuxSession) interactiveTargetLocked() string {
@@ -569,9 +548,9 @@ func (s *tmuxSession) readScrollStateLocked() ScrollState {
 // tmuxGroupedSession creates a linked/grouped tmux session that shares the
 // same windows as the target, but with a separate client attachment. This
 // lets us attach a dedicated mobile client without hijacking the user's
-// original desktop client process. It does NOT create an independent pane
-// geometry model: tmux still chooses a single effective window size across
-// attached clients according to window-size/aggressive-resize.
+// original desktop client process. We rely on tmux's "latest" sizing model
+// so the active client can temporarily own the shared window geometry without
+// pinning the desktop layout to the mobile size.
 func tmuxGroupedSession(targetID string, size Size) (string, *exec.Cmd, error) {
 	targetID = strings.TrimSpace(targetID)
 	if targetID == "" {
@@ -589,7 +568,10 @@ func tmuxGroupedSession(targetID string, size Size) (string, *exec.Cmd, error) {
 	id := sessionCounter.Add(1)
 	linkedName := fmt.Sprintf("zen-%d-%d", os.Getpid(), id)
 
-	// Create grouped session with its own attached client process.
+	// Create grouped session with shared windows. Seed the detached session
+	// with the mobile dimensions so the first mobile attach paints a narrow
+	// layout immediately, then let tmux hand size ownership to the most
+	// recently active attached client.
 	createCmd := exec.Command("tmux", "new-session", "-d",
 		"-t", sessionName,
 		"-s", linkedName,
@@ -599,18 +581,8 @@ func tmuxGroupedSession(targetID string, size Size) (string, *exec.Cmd, error) {
 		return "", nil, fmt.Errorf("create grouped tmux session: %w", err)
 	}
 
-	// Prefer the most recently active client size for the shared window.
-	// This still means the pane geometry is shared across attached clients.
 	_ = exec.Command("tmux", "set-option", "-t", linkedName, "window-size", "latest").Run()
 	_ = exec.Command("tmux", "set-option", "-t", linkedName, "aggressive-resize", "on").Run()
-	_ = exec.Command(
-		"tmux",
-		"set-hook",
-		"-t",
-		linkedName,
-		"after-select-window",
-		tmuxResizeWindowHook(linkedName, size),
-	).Run()
 
 	// Select the correct window in the linked session before attaching
 	if windowTarget != "" {
@@ -621,24 +593,14 @@ func tmuxGroupedSession(targetID string, size Size) (string, *exec.Cmd, error) {
 }
 
 func tmuxAttachCommand(sessionName string) *exec.Cmd {
-	return exec.Command("tmux", "-T", "RGB,256", "attach-session", "-t", sessionName)
-}
-
-func tmuxResizeWindowCommand(target string, size Size) *exec.Cmd {
 	return exec.Command(
 		"tmux",
-		"resize-window",
+		"-T",
+		"RGB,256",
+		"attach-session",
 		"-t",
-		target,
-		"-x",
-		strconv.Itoa(size.Cols),
-		"-y",
-		strconv.Itoa(size.Rows),
+		sessionName,
 	)
-}
-
-func tmuxResizeWindowHook(target string, size Size) string {
-	return fmt.Sprintf("resize-window -t %s -x %d -y %d", target, size.Cols, size.Rows)
 }
 
 func tmuxClientEnv(base []string) []string {

@@ -522,6 +522,8 @@ static std::string buildRowHtml(
     std::string segmentText;
     rowHtml.reserve(256);
     segmentText.reserve(128);
+    bool sawVisibleText = false;
+    bool sawNonDefaultBackground = false;
 
     while (ghostty_render_state_row_cells_next(rowCells)) {
         GhosttyCell cell = 0;
@@ -567,13 +569,27 @@ static std::string buildRowHtml(
         }
         segmentCss = css;
 
-        const bool preserveBlankCell = css.find("background-color:") != std::string::npos;
+        const bool preserveBlankCell = true;
+        if (css.find("background-color:") != std::string::npos) {
+            sawNonDefaultBackground = true;
+        }
+
+        const size_t previousLen = segmentText.size();
         appendCellText(rowCells, cell, preserveBlankCell, &segmentText);
+        if (!sawVisibleText && segmentText.size() > previousLen) {
+            bool hasText = false;
+            ghostty_cell_get(cell, GHOSTTY_CELL_DATA_HAS_TEXT, &hasText);
+            uint32_t codepoint = 0;
+            ghostty_cell_get(cell, GHOSTTY_CELL_DATA_CODEPOINT, &codepoint);
+            if (hasText && codepoint != 0 && codepoint != ' ') {
+                sawVisibleText = true;
+            }
+        }
     }
 
     flushStyledSegment(&rowHtml, segmentCss, &segmentText);
     ghostty_render_state_row_cells_free(rowCells);
-    if (rowHtml.find("background-color:") == std::string::npos && !htmlHasVisibleText(rowHtml)) {
+    if (!sawNonDefaultBackground && !sawVisibleText && !htmlHasVisibleText(rowHtml)) {
         return "";
     }
     return rowHtml;
