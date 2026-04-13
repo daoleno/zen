@@ -5,6 +5,14 @@ import (
 	"testing"
 )
 
+func TestTmuxWindowLinkedHookCommandConfiguresWindowSizing(t *testing.T) {
+	got := tmuxWindowLinkedHookCommand()
+	want := `run-shell "tmux set-window-option -t #{hook_window} window-size latest; tmux set-window-option -t #{hook_window} aggressive-resize on"`
+	if got != want {
+		t.Fatalf("tmuxWindowLinkedHookCommand() = %q, want %q", got, want)
+	}
+}
+
 func TestTmuxAttachCommandEnablesRGBClientFeatures(t *testing.T) {
 	cmd := tmuxAttachCommand("zen-demo")
 

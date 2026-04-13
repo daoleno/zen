@@ -548,9 +548,9 @@ func (s *tmuxSession) readScrollStateLocked() ScrollState {
 // tmuxGroupedSession creates a linked/grouped tmux session that shares the
 // same windows as the target, but with a separate client attachment. This
 // lets us attach a dedicated mobile client without hijacking the user's
-// original desktop client process. We rely on tmux's "latest" sizing model
-// so the active client can temporarily own the shared window geometry without
-// pinning the desktop layout to the mobile size.
+// original desktop client process. tmux stores size strategy on each shared
+// window, not on the session, so we must configure every linked window
+// directly and keep doing that for windows linked later.
 func tmuxGroupedSession(targetID string, size Size) (string, *exec.Cmd, error) {
 	targetID = strings.TrimSpace(targetID)
 	if targetID == "" {
@@ -581,15 +581,109 @@ func tmuxGroupedSession(targetID string, size Size) (string, *exec.Cmd, error) {
 		return "", nil, fmt.Errorf("create grouped tmux session: %w", err)
 	}
 
-	_ = exec.Command("tmux", "set-option", "-t", linkedName, "window-size", "latest").Run()
-	_ = exec.Command("tmux", "set-option", "-t", linkedName, "aggressive-resize", "on").Run()
+	if err := tmuxConfigureGroupedSession(linkedName); err != nil {
+		_ = exec.Command("tmux", "kill-session", "-t", linkedName).Run()
+		return "", nil, err
+	}
 
 	// Select the correct window in the linked session before attaching
 	if windowTarget != "" {
-		_ = exec.Command("tmux", "select-window", "-t", linkedName+":"+strings.SplitN(windowTarget, ":", 2)[1]).Run()
+		if err := exec.Command(
+			"tmux",
+			"select-window",
+			"-t",
+			linkedName+":"+strings.SplitN(windowTarget, ":", 2)[1],
+		).Run(); err != nil {
+			_ = exec.Command("tmux", "kill-session", "-t", linkedName).Run()
+			return "", nil, fmt.Errorf("select grouped tmux window: %w", err)
+		}
 	}
 
 	return linkedName, tmuxAttachCommand(linkedName), nil
+}
+
+func tmuxConfigureGroupedSession(sessionName string) error {
+	windowIDs, err := tmuxSessionWindowIDs(sessionName)
+	if err != nil {
+		return fmt.Errorf("list grouped tmux windows: %w", err)
+	}
+
+	for _, windowID := range windowIDs {
+		if err := tmuxConfigureWindow(windowID); err != nil {
+			return err
+		}
+	}
+
+	if err := exec.Command(
+		"tmux",
+		"set-hook",
+		"-t",
+		sessionName,
+		"window-linked",
+		tmuxWindowLinkedHookCommand(),
+	).Run(); err != nil {
+		return fmt.Errorf("set grouped tmux window-linked hook: %w", err)
+	}
+
+	return nil
+}
+
+func tmuxSessionWindowIDs(sessionName string) ([]string, error) {
+	out, err := exec.Command(
+		"tmux",
+		"list-windows",
+		"-t",
+		sessionName,
+		"-F",
+		"#{window_id}",
+	).Output()
+	if err != nil {
+		return nil, err
+	}
+
+	lines := strings.Split(strings.TrimSpace(string(out)), "\n")
+	windowIDs := make([]string, 0, len(lines))
+	for _, line := range lines {
+		windowID := strings.TrimSpace(line)
+		if windowID == "" {
+			continue
+		}
+		windowIDs = append(windowIDs, windowID)
+	}
+	if len(windowIDs) == 0 {
+		return nil, fmt.Errorf("session %s has no windows", sessionName)
+	}
+	return windowIDs, nil
+}
+
+func tmuxConfigureWindow(windowTarget string) error {
+	if err := exec.Command(
+		"tmux",
+		"set-window-option",
+		"-t",
+		windowTarget,
+		"window-size",
+		"latest",
+	).Run(); err != nil {
+		return fmt.Errorf("set tmux window-size for %s: %w", windowTarget, err)
+	}
+
+	if err := exec.Command(
+		"tmux",
+		"set-window-option",
+		"-t",
+		windowTarget,
+		"aggressive-resize",
+		"on",
+	).Run(); err != nil {
+		return fmt.Errorf("set tmux aggressive-resize for %s: %w", windowTarget, err)
+	}
+
+	return nil
+}
+
+func tmuxWindowLinkedHookCommand() string {
+	return `run-shell "tmux set-window-option -t #{hook_window} window-size latest; tmux set-window-option -t #{hook_window} aggressive-resize on"`
 }
 
 func tmuxAttachCommand(sessionName string) *exec.Cmd {
