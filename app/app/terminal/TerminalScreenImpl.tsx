@@ -1,14 +1,11 @@
-import React, { useEffect, useMemo, useRef, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   ActivityIndicator,
   Alert,
-  Animated,
   AppState,
   AppStateStatus,
-  Easing,
   Keyboard,
   KeyboardAvoidingView,
-  KeyboardEvent,
   Modal,
   Platform,
   ScrollView,
@@ -33,7 +30,9 @@ import {
   statusColor,
 } from "../../constants/tokens";
 import {
+  buildTerminalChrome,
   DefaultTerminalThemeName,
+  resolveTerminalTheme,
   TerminalThemeName,
 } from "../../constants/terminalThemes";
 import {
@@ -116,7 +115,8 @@ export default function TerminalScreen() {
   const [renameVisible, setRenameVisible] = useState(false);
   const [renameDraft, setRenameDraft] = useState("");
   const [keyboardVisible, setKeyboardVisible] = useState(false);
-  const [keyboardInset, setKeyboardInset] = useState(0);
+  const [androidKeyboardInset, setAndroidKeyboardInset] = useState(0);
+  const [accessoryHeight, setAccessoryHeight] = useState(68);
   const [ctrlArmed, setCtrlArmed] = useState(false);
   const [newTerminalVisible, setNewTerminalVisible] = useState(false);
   const [creatingSession, setCreatingSession] = useState(false);
@@ -124,13 +124,19 @@ export default function TerminalScreen() {
     !Boolean(sessionKey && serverId && agentId),
   );
   const [screenFocused, setScreenFocused] = useState(false);
+  const terminalTheme = useMemo(
+    () => resolveTerminalTheme(themeName),
+    [themeName],
+  );
+  const chromeColors = useMemo(
+    () => buildTerminalChrome(terminalTheme),
+    [terminalTheme],
+  );
   const terminalRef = useRef<TerminalSurfaceHandle>(null);
   const tabScrollRef = useRef<ScrollView>(null);
   const tabLayoutsRef = useRef<Map<string, { x: number; width: number }>>(
     new Map(),
   );
-  const tabSwipeTranslateX = useRef(new Animated.Value(0)).current;
-  const tabSwipeAnimatingRef = useRef(false);
   const keyboardHeightRef = useRef(0);
   const baseWindowHeightRef = useRef(windowHeight);
   const menuAnchorRef = useRef<View | null>(null);
@@ -306,16 +312,16 @@ export default function TerminalScreen() {
   }, [hydratedServerIds, state.agents]);
 
   useEffect(() => {
-    const handleShow = (event: KeyboardEvent) => {
+    const handleShow = (event: any) => {
       if (Platform.OS === "android") {
-        keyboardHeightRef.current = event.endCoordinates.height;
+        keyboardHeightRef.current = event?.endCoordinates?.height ?? 0;
       }
       setKeyboardVisible(true);
     };
     const handleHide = () => {
-      setKeyboardVisible(false);
       keyboardHeightRef.current = 0;
-      setKeyboardInset(0);
+      setAndroidKeyboardInset(0);
+      setKeyboardVisible(false);
     };
 
     const showSub = Keyboard.addListener("keyboardDidShow", handleShow);
@@ -326,28 +332,25 @@ export default function TerminalScreen() {
     };
   }, []);
 
-  // Track base window height when keyboard is hidden
   useEffect(() => {
     if (!keyboardVisible) {
       baseWindowHeightRef.current = windowHeight;
     }
   }, [keyboardVisible, windowHeight]);
 
-  // Compute Android keyboard inset: keyboardHeight minus what adjustResize handled.
-  // windowHeight is reactive — when adjustResize completes, it updates and this
-  // re-runs, converging to the correct padding automatically.
   useEffect(() => {
     if (!keyboardVisible || Platform.OS !== "android") return;
-    const kbHeight = keyboardHeightRef.current;
-    if (!kbHeight) return;
+
+    const keyboardHeight = keyboardHeightRef.current;
+    if (!keyboardHeight) return;
 
     const adjustResizeHandled = Math.max(
       0,
       baseWindowHeightRef.current - windowHeight,
     );
-    const remaining = Math.max(0, kbHeight - adjustResizeHandled);
-    setKeyboardInset((prev) =>
-      Math.abs(prev - remaining) <= 1 ? prev : remaining,
+    const remainingInset = Math.max(0, keyboardHeight - adjustResizeHandled);
+    setAndroidKeyboardInset((previous) =>
+      Math.abs(previous - remainingInset) <= 1 ? previous : remainingInset,
     );
   }, [keyboardVisible, windowHeight]);
 
@@ -360,12 +363,6 @@ export default function TerminalScreen() {
   useEffect(() => {
     setCtrlArmed(false);
   }, [sessionKey]);
-
-  useEffect(() => {
-    tabSwipeAnimatingRef.current = false;
-    tabSwipeTranslateX.stopAnimation();
-    tabSwipeTranslateX.setValue(0);
-  }, [sessionKey, tabSwipeTranslateX]);
 
   useEffect(() => {
     if (renameVisible) {
@@ -450,15 +447,6 @@ export default function TerminalScreen() {
     }
   }, [sessionKey]);
 
-  const previousTab = useMemo(
-    () => getAdjacentTab(tabs, sessionKey, "prev"),
-    [sessionKey, tabs],
-  );
-  const nextTab = useMemo(
-    () => getAdjacentTab(tabs, sessionKey, "next"),
-    [sessionKey, tabs],
-  );
-
   const sortedAgents = useMemo(() => {
     const openTabs = new Set(terminalTabs.order);
     const pinnedTabs = new Set(terminalTabs.pinned);
@@ -488,62 +476,14 @@ export default function TerminalScreen() {
     () => buildMenuPosition(menuAnchor, windowWidth),
     [menuAnchor, windowWidth],
   );
-  const previousHintOpacity = useMemo(
-    () =>
-      tabSwipeTranslateX.interpolate({
-        inputRange: [0, 14, 80],
-        outputRange: [0, 0.3, 1],
-        extrapolate: "clamp",
-      }),
-    [tabSwipeTranslateX],
-  );
-  const nextHintOpacity = useMemo(
-    () =>
-      tabSwipeTranslateX.interpolate({
-        inputRange: [-80, -14, 0],
-        outputRange: [1, 0.3, 0],
-        extrapolate: "clamp",
-      }),
-    [tabSwipeTranslateX],
-  );
-  const previousHintTranslate = useMemo(
-    () =>
-      tabSwipeTranslateX.interpolate({
-        inputRange: [0, 80],
-        outputRange: [-12, 0],
-        extrapolate: "clamp",
-      }),
-    [tabSwipeTranslateX],
-  );
-  const terminalSwipeScale = useMemo(
-    () =>
-      tabSwipeTranslateX.interpolate({
-        inputRange: [-180, 0, 180],
-        outputRange: [0.982, 1, 0.982],
-        extrapolate: "clamp",
-      }),
-    [tabSwipeTranslateX],
-  );
-  const terminalSwipeOpacity = useMemo(
-    () =>
-      tabSwipeTranslateX.interpolate({
-        inputRange: [-180, 0, 180],
-        outputRange: [0.96, 1, 0.96],
-        extrapolate: "clamp",
-      }),
-    [tabSwipeTranslateX],
-  );
-  const nextHintTranslate = useMemo(
-    () =>
-      tabSwipeTranslateX.interpolate({
-        inputRange: [-80, 0],
-        outputRange: [0, 12],
-        extrapolate: "clamp",
-      }),
-    [tabSwipeTranslateX],
-  );
-
   const accessoryVisible = canRenderTerminal && screenFocused;
+  const androidAccessoryDock = Platform.OS === "android";
+  const accessoryBottomOffset = androidAccessoryDock && keyboardVisible
+    ? androidKeyboardInset
+    : 0;
+  const outputBottomInset = androidAccessoryDock && accessoryVisible
+    ? accessoryHeight + accessoryBottomOffset
+    : 0;
 
   const closeMenu = () => {
     setMenuVisible(false);
@@ -704,9 +644,9 @@ export default function TerminalScreen() {
     setRenameVisible(false);
   };
 
-  const handleCtrlArmedChange = (next: boolean) => {
+  const handleCtrlArmedChange = useCallback((next: boolean) => {
     setCtrlArmed(next);
-  };
+  }, []);
 
   const createTerminal = async (input: {
     cwd: string;
@@ -777,73 +717,141 @@ export default function TerminalScreen() {
     wsClient.connectServer(storedServer);
   };
 
-  const animateTabSwipeBack = () => {
-    tabSwipeAnimatingRef.current = false;
-    Animated.spring(tabSwipeTranslateX, {
-      toValue: 0,
-      useNativeDriver: true,
-      damping: 22,
-      stiffness: 240,
-      mass: 0.8,
-    }).start();
-  };
+  const terminalViewport = (
+    <>
+      <View
+        style={[
+          styles.output,
+          { backgroundColor: terminalTheme.background },
+          outputBottomInset > 0 ? { paddingBottom: outputBottomInset } : null,
+        ]}
+      >
+        {shouldMountTerminalSurface && sessionKey && serverId && agentId ? (
+          <TerminalSurface
+            key={sessionKey}
+            ref={terminalRef}
+            serverId={serverId}
+            targetId={agentId}
+            themeName={themeName}
+            ctrlArmed={ctrlArmed}
+            onCtrlArmedChange={handleCtrlArmedChange}
+          />
+        ) : null}
+        {canRenderTerminal ? null : (
+          <View style={styles.terminalState}>
+            <View
+              style={[
+                styles.terminalStateCard,
+                {
+                  backgroundColor: chromeColors.surface,
+                  borderColor: terminalStateAccent,
+                },
+              ]}
+            >
+              {terminalStateBusy ? (
+                <ActivityIndicator color={terminalStateAccent} />
+              ) : (
+                <View
+                  style={[
+                    styles.terminalStateDot,
+                    { backgroundColor: terminalStateAccent },
+                  ]}
+                />
+              )}
+              <Text style={[styles.terminalStateTitle, { color: chromeColors.text }]}>
+                {terminalStateTitle}
+              </Text>
+              <Text
+                style={[styles.terminalStateDetail, { color: chromeColors.textMuted }]}
+              >
+                {terminalStateDetail}
+              </Text>
+              <Text
+                style={[styles.terminalStateHint, { color: chromeColors.textSubtle }]}
+              >
+                {terminalStateHint}
+              </Text>
+              {hasTerminalRoute ? (
+                <TouchableOpacity
+                  style={[
+                    styles.terminalStateAction,
+                    { backgroundColor: chromeColors.accent },
+                  ]}
+                  onPress={() => void retryServerConnection()}
+                  activeOpacity={0.84}
+                >
+                  <Text
+                    style={[
+                      styles.terminalStateActionText,
+                      { color: terminalTheme.background },
+                    ]}
+                  >
+                    Retry Connection
+                  </Text>
+                </TouchableOpacity>
+              ) : null}
+            </View>
+          </View>
+        )}
+      </View>
 
-  const handleTabSwipeProgress = (deltaX: number, active: boolean) => {
-    if (tabSwipeAnimatingRef.current) return;
-
-    if (!active) {
-      animateTabSwipeBack();
-      return;
-    }
-
-    const direction = deltaX < 0 ? "next" : "prev";
-    const targetExists =
-      direction === "next" ? Boolean(nextTab) : Boolean(previousTab);
-    const maxOffset = targetExists ? Math.min(windowWidth * 0.24, 110) : 56;
-    const resistance = targetExists ? 0.34 : 0.16;
-    const previewOffset = clamp(deltaX * resistance, -maxOffset, maxOffset);
-
-    tabSwipeTranslateX.setValue(previewOffset);
-  };
-
-  const handleTabSwipe = (direction: "next" | "prev") => {
-    if (
-      tabSwipeAnimatingRef.current ||
-      pickerVisible ||
-      menuVisible ||
-      renameVisible ||
-      !sessionKey ||
-      tabs.length <= 1
-    )
-      return;
-
-    const targetTab = direction === "next" ? nextTab : previousTab;
-    if (!targetTab) {
-      animateTabSwipeBack();
-      return;
-    }
-
-    tabSwipeAnimatingRef.current = true;
-    setCtrlArmed(false);
-    Animated.timing(tabSwipeTranslateX, {
-      toValue: direction === "next" ? -(windowWidth + 24) : windowWidth + 24,
-      duration: 230,
-      easing: Easing.bezier(0.22, 1, 0.36, 1),
-      useNativeDriver: true,
-    }).start(() => {
-      void openAgentTab(targetTab.id);
-    });
-  };
+      {accessoryVisible ? (
+        <View
+          onLayout={(event) => {
+            const nextHeight = Math.ceil(event.nativeEvent.layout.height);
+            setAccessoryHeight((previous) =>
+              Math.abs(previous - nextHeight) <= 1 ? previous : nextHeight,
+            );
+          }}
+          style={[
+            styles.inputShell,
+            androidAccessoryDock ? styles.inputShellDock : null,
+            {
+              bottom: androidAccessoryDock ? accessoryBottomOffset : undefined,
+              paddingBottom: keyboardVisible ? 8 : Math.max(insets.bottom + 8, 12),
+              marginBottom: androidAccessoryDock ? 0 : keyboardVisible ? 4 : 0,
+            },
+          ]}
+        >
+          <TerminalAccessoryBar
+            terminalRef={terminalRef}
+            serverUrl={server?.url || ""}
+            daemonId={server?.daemonId || ""}
+            theme={terminalTheme}
+            ctrlArmed={ctrlArmed}
+            onCtrlArmedChange={handleCtrlArmedChange}
+          />
+        </View>
+      ) : null}
+    </>
+  );
 
   return (
-    <SafeAreaView style={styles.container} edges={["top"]}>
-      <View style={styles.topBar}>
+    <SafeAreaView
+      style={[styles.container, { backgroundColor: chromeColors.appBackground }]}
+      edges={["top"]}
+    >
+      <View
+        style={[
+          styles.topBar,
+          {
+            backgroundColor: chromeColors.surface,
+            borderBottomColor: chromeColors.border,
+          },
+        ]}
+      >
         <TouchableOpacity
           onPress={goToInbox}
-          style={styles.chromeButton}
+          style={[
+            styles.chromeButton,
+            {
+              backgroundColor: chromeColors.surfaceMuted,
+              borderColor: chromeColors.border,
+            },
+          ]}
           activeOpacity={0.84}
         >
-          <Ionicons name="chevron-back" size={22} color={Colors.textPrimary} />
+          <Ionicons name="chevron-back" size={22} color={chromeColors.text} />
         </TouchableOpacity>
 
         <ScrollView
@@ -858,8 +866,18 @@ export default function TerminalScreen() {
               key={tab.id}
               style={[
                 styles.tabPill,
-                tab.active && styles.tabPillActive,
-                tab.pinned && styles.tabPillPinned,
+                {
+                  backgroundColor: chromeColors.surfaceMuted,
+                  borderColor: chromeColors.border,
+                },
+                tab.active && [
+                  styles.tabPillActive,
+                  {
+                    backgroundColor: chromeColors.surfaceActive,
+                    borderColor: chromeColors.borderStrong,
+                  },
+                ],
+                tab.pinned && [styles.tabPillPinned, { shadowColor: chromeColors.accent }],
               ]}
               onLayout={(e) => {
                 const { x, width } = e.nativeEvent.layout;
@@ -873,7 +891,11 @@ export default function TerminalScreen() {
               >
                 <AgentKindIcon kind={tab.kind} size={13} />
                 <Text
-                  style={[styles.tabLabel, tab.active && styles.tabLabelActive]}
+                  style={[
+                    styles.tabLabel,
+                    { color: tab.active ? chromeColors.text : chromeColors.textMuted },
+                    tab.active && styles.tabLabelActive,
+                  ]}
                   numberOfLines={1}
                 >
                   {tab.name}
@@ -882,7 +904,7 @@ export default function TerminalScreen() {
                   <Ionicons
                     name="bookmark"
                     size={12}
-                    color={tab.active ? Colors.textPrimary : "#73839A"}
+                    color={tab.active ? chromeColors.text : chromeColors.textSubtle}
                   />
                 ) : null}
                 <View
@@ -903,7 +925,7 @@ export default function TerminalScreen() {
                     <Ionicons
                       name="ellipsis-vertical"
                       size={17}
-                      color={Colors.textPrimary}
+                      color={chromeColors.text}
                     />
                   </TouchableOpacity>
                 </View>
@@ -914,151 +936,32 @@ export default function TerminalScreen() {
 
         <TouchableOpacity
           onPress={() => setPickerVisible(true)}
-          style={styles.chromeButton}
+          style={[
+            styles.chromeButton,
+            {
+              backgroundColor: chromeColors.surfaceMuted,
+              borderColor: chromeColors.border,
+            },
+          ]}
           activeOpacity={0.84}
         >
-          <Ionicons name="add" size={22} color={Colors.textPrimary} />
+          <Ionicons name="add" size={22} color={chromeColors.text} />
         </TouchableOpacity>
       </View>
 
-      <View style={styles.terminalStage}>
-        {previousTab ? (
-          <Animated.View
-            pointerEvents="none"
-            style={[
-              styles.swipeHint,
-              styles.swipeHintLeft,
-              {
-                opacity: previousHintOpacity,
-                transform: [{ translateX: previousHintTranslate }],
-              },
-            ]}
-          >
-            <Ionicons name="chevron-back" size={15} color="#DDE5F2" />
-            <Text style={styles.swipeHintText} numberOfLines={1}>
-              {previousTab?.name}
-            </Text>
-          </Animated.View>
-        ) : null}
-
-        {nextTab ? (
-          <Animated.View
-            pointerEvents="none"
-            style={[
-              styles.swipeHint,
-              styles.swipeHintRight,
-              {
-                opacity: nextHintOpacity,
-                transform: [{ translateX: nextHintTranslate }],
-              },
-            ]}
-          >
-            <Text style={styles.swipeHintText} numberOfLines={1}>
-              {nextTab?.name}
-            </Text>
-            <Ionicons name="chevron-forward" size={15} color="#DDE5F2" />
-          </Animated.View>
-        ) : null}
-
-        <Animated.View
-          style={[
-            styles.terminalShell,
-            Platform.OS === "android" && keyboardInset > 0
-              ? { paddingBottom: keyboardInset }
-              : null,
-            {
-              opacity: terminalSwipeOpacity,
-              transform: [
-                { translateX: tabSwipeTranslateX },
-                { scale: terminalSwipeScale },
-              ],
-            },
-          ]}
-        >
-          <KeyboardAvoidingView
-            style={styles.terminalContent}
-            behavior={Platform.OS === "ios" ? "padding" : undefined}
-          >
-            <View style={styles.output}>
-              {shouldMountTerminalSurface && sessionKey && serverId && agentId ? (
-                <TerminalSurface
-                  key={sessionKey}
-                  ref={terminalRef}
-                  serverId={serverId}
-                  targetId={agentId}
-                  themeName={themeName}
-                  ctrlArmed={ctrlArmed}
-                  onCtrlArmedChange={handleCtrlArmedChange}
-                  onTabSwipeProgress={handleTabSwipeProgress}
-                  onTabSwipe={handleTabSwipe}
-                />
-              ) : null}
-              {canRenderTerminal ? null : (
-                <View style={styles.terminalState}>
-                  <View
-                    style={[
-                      styles.terminalStateCard,
-                      { borderColor: terminalStateAccent },
-                    ]}
-                  >
-                    {terminalStateBusy ? (
-                      <ActivityIndicator color={terminalStateAccent} />
-                    ) : (
-                      <View
-                        style={[
-                          styles.terminalStateDot,
-                          { backgroundColor: terminalStateAccent },
-                        ]}
-                      />
-                    )}
-                    <Text style={styles.terminalStateTitle}>
-                      {terminalStateTitle}
-                    </Text>
-                    <Text style={styles.terminalStateDetail}>
-                      {terminalStateDetail}
-                    </Text>
-                    <Text style={styles.terminalStateHint}>
-                      {terminalStateHint}
-                    </Text>
-                    {hasTerminalRoute ? (
-                      <TouchableOpacity
-                        style={styles.terminalStateAction}
-                        onPress={() => void retryServerConnection()}
-                        activeOpacity={0.84}
-                      >
-                        <Text style={styles.terminalStateActionText}>
-                          Retry Connection
-                        </Text>
-                      </TouchableOpacity>
-                    ) : null}
-                  </View>
-                </View>
-              )}
-            </View>
-
-            {accessoryVisible ? (
-              <View
-                style={[
-                  styles.inputShell,
-                  {
-                    paddingBottom: keyboardVisible
-                      ? 6
-                      : Math.max(insets.bottom + 8, 12),
-                    marginBottom: keyboardVisible ? 4 : 0,
-                  },
-                ]}
-              >
-                <TerminalAccessoryBar
-                  terminalRef={terminalRef}
-                  serverUrl={server?.url || ""}
-                  daemonId={server?.daemonId || ""}
-                  ctrlArmed={ctrlArmed}
-                  onCtrlArmedChange={handleCtrlArmedChange}
-                />
-              </View>
-            ) : null}
-          </KeyboardAvoidingView>
-        </Animated.View>
+      <View style={[styles.terminalStage, { backgroundColor: terminalTheme.background }]}>
+        <View style={[styles.terminalShell, { backgroundColor: terminalTheme.background }]}>
+          {Platform.OS === "ios" ? (
+            <KeyboardAvoidingView
+              style={styles.terminalContent}
+              behavior="padding"
+            >
+              {terminalViewport}
+            </KeyboardAvoidingView>
+          ) : (
+            <View style={styles.terminalContent}>{terminalViewport}</View>
+          )}
+        </View>
       </View>
 
       <Modal
@@ -1074,8 +977,21 @@ export default function TerminalScreen() {
             onPress={() => setPickerVisible(false)}
           />
 
-          <View style={styles.sheetCard}>
-            <View style={styles.sheetHandle} />
+          <View
+            style={[
+              styles.sheetCard,
+              {
+                backgroundColor: chromeColors.surface,
+                borderColor: chromeColors.border,
+              },
+            ]}
+          >
+            <View
+              style={[
+                styles.sheetHandle,
+                { backgroundColor: chromeColors.textSubtle },
+              ]}
+            />
 
             <ScrollView
               style={styles.sheetScroll}
@@ -1123,14 +1039,20 @@ export default function TerminalScreen() {
             <TouchableOpacity
               style={[
                 styles.sheetCreateButton,
+                {
+                  backgroundColor: chromeColors.surfaceMuted,
+                  borderColor: chromeColors.border,
+                },
                 creatingSession && styles.sheetCreateButtonDisabled,
               ]}
               onPress={openNewTerminal}
               disabled={creatingSession}
               activeOpacity={0.84}
             >
-              <Ionicons name="add" size={16} color={Colors.textSecondary} />
-              <Text style={styles.sheetCreateButtonText}>
+              <Ionicons name="add" size={16} color={chromeColors.textMuted} />
+              <Text
+                style={[styles.sheetCreateButtonText, { color: chromeColors.textMuted }]}
+              >
                 {creatingSession ? "Starting…" : "New Terminal"}
               </Text>
             </TouchableOpacity>
@@ -1155,9 +1077,11 @@ export default function TerminalScreen() {
             style={[
               styles.menuPopover,
               {
+                backgroundColor: chromeColors.surface,
                 left: menuPosition.left,
                 top: menuPosition.top,
                 width: MENU_POPOVER_WIDTH,
+                borderColor: chromeColors.border,
               },
             ]}
           >
@@ -1165,22 +1089,46 @@ export default function TerminalScreen() {
               label={creatingSession ? "Starting Terminal…" : "New Terminal"}
               onPress={openNewTerminal}
               disabled={creatingSession || connectionState !== "connected"}
+              textColor={chromeColors.text}
+              disabledTextColor={chromeColors.textSubtle}
+              destructiveColor={terminalTheme.red}
             />
-            <MenuAction label="Rename" onPress={openRenameModal} />
+            <MenuAction
+              label="Rename"
+              onPress={openRenameModal}
+              textColor={chromeColors.text}
+              disabledTextColor={chromeColors.textSubtle}
+              destructiveColor={terminalTheme.red}
+            />
             <MenuAction
               label={activePinned ? "Unpin Tab" : "Pin Tab"}
               onPress={handleTogglePinned}
+              textColor={chromeColors.text}
+              disabledTextColor={chromeColors.textSubtle}
+              destructiveColor={terminalTheme.red}
             />
             <MenuAction
               label="Close Other Tabs"
               onPress={handleCloseOtherTabs}
               disabled={tabs.length <= 1}
+              textColor={chromeColors.text}
+              disabledTextColor={chromeColors.textSubtle}
+              destructiveColor={terminalTheme.red}
             />
-            <MenuAction label="Close Tab" onPress={handleCloseCurrentTab} />
+            <MenuAction
+              label="Close Tab"
+              onPress={handleCloseCurrentTab}
+              textColor={chromeColors.text}
+              disabledTextColor={chromeColors.textSubtle}
+              destructiveColor={terminalTheme.red}
+            />
             <MenuAction
               label="Terminate"
               onPress={handleTerminateAgent}
               destructive
+              textColor={chromeColors.text}
+              disabledTextColor={chromeColors.textSubtle}
+              destructiveColor={terminalTheme.red}
             />
           </View>
         </View>
@@ -1219,17 +1167,34 @@ export default function TerminalScreen() {
             onPress={() => setRenameVisible(false)}
           />
 
-          <View style={styles.renameCard}>
-            <Text style={styles.renameTitle}>Rename Terminal</Text>
-            <Text style={styles.renameHint}>
+          <View
+            style={[
+              styles.renameCard,
+              {
+                backgroundColor: chromeColors.surface,
+                borderColor: chromeColors.border,
+              },
+            ]}
+          >
+            <Text style={[styles.renameTitle, { color: chromeColors.text }]}>
+              Rename Terminal
+            </Text>
+            <Text style={[styles.renameHint, { color: chromeColors.textMuted }]}>
               Only changes the local display name on this device.
             </Text>
             <TextInput
-              style={styles.renameInput}
+              style={[
+                styles.renameInput,
+                {
+                  color: chromeColors.text,
+                  borderColor: chromeColors.border,
+                  backgroundColor: chromeColors.surfaceMuted,
+                },
+              ]}
               value={renameDraft}
               onChangeText={setRenameDraft}
               placeholder={agent?.name || agentId}
-              placeholderTextColor="#6E7D90"
+              placeholderTextColor={chromeColors.textSubtle}
               autoFocus
               autoCorrect={false}
               autoCapitalize="none"
@@ -1238,14 +1203,29 @@ export default function TerminalScreen() {
             />
             <View style={styles.renameActions}>
               <TouchableOpacity
-                style={styles.renameButton}
+                style={[
+                  styles.renameButton,
+                  {
+                    backgroundColor: chromeColors.surfaceMuted,
+                    borderColor: chromeColors.border,
+                  },
+                ]}
                 onPress={() => setRenameVisible(false)}
                 activeOpacity={0.84}
               >
-                <Text style={styles.renameButtonText}>Cancel</Text>
+                <Text style={[styles.renameButtonText, { color: chromeColors.textMuted }]}>
+                  Cancel
+                </Text>
               </TouchableOpacity>
               <TouchableOpacity
-                style={[styles.renameButton, styles.renameButtonPrimary]}
+                style={[
+                  styles.renameButton,
+                  styles.renameButtonPrimary,
+                  {
+                    backgroundColor: chromeColors.accent,
+                    borderColor: chromeColors.borderStrong,
+                  },
+                ]}
                 onPress={handleSaveRename}
                 activeOpacity={0.84}
               >
@@ -1253,6 +1233,7 @@ export default function TerminalScreen() {
                   style={[
                     styles.renameButtonText,
                     styles.renameButtonTextPrimary,
+                    { color: terminalTheme.background },
                   ]}
                 >
                   Save
@@ -1271,11 +1252,17 @@ function MenuAction({
   onPress,
   disabled = false,
   destructive = false,
+  textColor,
+  disabledTextColor,
+  destructiveColor,
 }: {
   label: string;
   onPress: () => void;
   disabled?: boolean;
   destructive?: boolean;
+  textColor: string;
+  disabledTextColor: string;
+  destructiveColor: string;
 }) {
   return (
     <TouchableOpacity
@@ -1287,8 +1274,9 @@ function MenuAction({
       <Text
         style={[
           styles.menuActionText,
-          destructive && styles.menuActionTextDestructive,
-          disabled && styles.menuActionTextDisabled,
+          { color: textColor },
+          destructive && { color: destructiveColor },
+          disabled && { color: disabledTextColor },
         ]}
       >
         {label}
@@ -1305,21 +1293,6 @@ function buildDisplayTabOrder(
   return tabs.order.includes(currentId)
     ? tabs.order
     : [...tabs.order, currentId];
-}
-
-function getAdjacentTab(
-  tabs: TerminalTabDescriptor[],
-  currentId: string | null | undefined,
-  direction: "next" | "prev",
-): TerminalTabDescriptor | null {
-  if (!currentId) return null;
-
-  const currentIndex = tabs.findIndex((tab) => tab.id === currentId);
-  if (currentIndex === -1) return null;
-
-  return (
-    tabs[direction === "next" ? currentIndex + 1 : currentIndex - 1] ?? null
-  );
 }
 
 function buildMenuPosition(
@@ -1379,37 +1352,6 @@ const styles = StyleSheet.create({
   terminalShell: {
     flex: 1,
     minHeight: 0,
-  },
-  swipeHint: {
-    position: "absolute",
-    top: "50%",
-    zIndex: 1,
-    maxWidth: "46%",
-    minHeight: 40,
-    paddingHorizontal: 12,
-    borderRadius: 16,
-    backgroundColor: "rgba(20, 30, 44, 0.92)",
-    borderWidth: 1,
-    borderColor: "rgba(255,255,255,0.08)",
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 8,
-    shadowColor: "#000",
-    shadowOpacity: 0.18,
-    shadowRadius: 14,
-    shadowOffset: { width: 0, height: 8 },
-  },
-  swipeHintLeft: {
-    left: 12,
-  },
-  swipeHintRight: {
-    right: 12,
-  },
-  swipeHintText: {
-    flexShrink: 1,
-    color: "#DDE5F2",
-    fontSize: 12,
-    fontFamily: Typography.uiFontMedium,
   },
   terminalContent: {
     flex: 1,
@@ -1551,7 +1493,14 @@ const styles = StyleSheet.create({
   inputShell: {
     paddingHorizontal: 12,
     paddingTop: 6,
-    backgroundColor: "#0B1118",
+    backgroundColor: "transparent",
+  },
+  inputShellDock: {
+    position: "absolute",
+    left: 0,
+    right: 0,
+    bottom: 0,
+    zIndex: 8,
   },
   modalRoot: {
     flex: 1,

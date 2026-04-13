@@ -10,8 +10,13 @@ import {
 import { Ionicons } from "@expo/vector-icons";
 import * as DocumentPicker from "expo-document-picker";
 import * as Haptics from "expo-haptics";
-import { Colors, Typography } from "../../constants/tokens";
+import { Typography } from "../../constants/tokens";
 import { buildAuthorizationHeader } from "../../services/auth";
+import {
+  buildTerminalChrome,
+  resolveTerminalTheme,
+  type TerminalThemePalette,
+} from "../../constants/terminalThemes";
 import type { TerminalSurfaceHandle } from "./TerminalSurface";
 
 type ShortcutKey =
@@ -34,6 +39,7 @@ interface TerminalAccessoryBarProps {
   terminalRef: React.RefObject<TerminalSurfaceHandle | null>;
   serverUrl: string;
   daemonId: string;
+  theme?: TerminalThemePalette;
   ctrlArmed: boolean;
   onCtrlArmedChange(next: boolean): void;
 }
@@ -42,10 +48,15 @@ export function TerminalAccessoryBar({
   terminalRef,
   serverUrl,
   daemonId,
+  theme,
   ctrlArmed,
   onCtrlArmedChange,
 }: TerminalAccessoryBarProps) {
   const uploadEnabled = !!buildUploadUrl(serverUrl) && !!daemonId.trim();
+  const chrome = React.useMemo(
+    () => buildTerminalChrome(theme ?? resolveTerminalTheme()),
+    [theme],
+  );
 
   const sendInput = (data: string) => {
     terminalRef.current?.sendInput(data);
@@ -105,7 +116,15 @@ export function TerminalAccessoryBar({
   };
 
   return (
-    <View style={styles.container}>
+    <View
+      style={[
+        styles.container,
+        {
+          backgroundColor: chrome.appBackground,
+          borderTopColor: chrome.border,
+        },
+      ]}
+    >
       <ScrollView
         horizontal
         showsHorizontalScrollIndicator={false}
@@ -114,7 +133,15 @@ export function TerminalAccessoryBar({
         contentContainerStyle={styles.shortcutRowContent}
       >
         <TouchableOpacity
-          style={[styles.attachBtn, !uploadEnabled && styles.attachBtnDisabled]}
+          accessibilityLabel="Attach"
+          style={[
+            styles.attachBtn,
+            {
+              backgroundColor: chrome.surface,
+              borderColor: chrome.border,
+            },
+            !uploadEnabled && styles.attachBtnDisabled,
+          ]}
           onPress={() => void handleFilePick()}
           disabled={!uploadEnabled}
           activeOpacity={0.82}
@@ -122,7 +149,7 @@ export function TerminalAccessoryBar({
           <Ionicons
             name="attach-outline"
             size={18}
-            color={Colors.textPrimary}
+            color={uploadEnabled ? chrome.text : chrome.textSubtle}
           />
         </TouchableOpacity>
 
@@ -132,7 +159,17 @@ export function TerminalAccessoryBar({
           return (
             <TouchableOpacity
               key={key.type === "sequence" ? key.sequence : key.label}
-              style={[styles.shortcutBtn, active && styles.shortcutBtnActive]}
+              style={[
+                styles.shortcutBtn,
+                {
+                  backgroundColor: chrome.surface,
+                  borderColor: chrome.border,
+                },
+                active && {
+                  backgroundColor: chrome.accentSoft,
+                  borderColor: chrome.borderStrong,
+                },
+              ]}
               onPress={() => {
                 if (key.type === "modifier") {
                   handleCtrlToggle();
@@ -145,7 +182,7 @@ export function TerminalAccessoryBar({
               <Text
                 style={[
                   styles.shortcutText,
-                  active && styles.shortcutTextActive,
+                  { color: active ? chrome.accent : chrome.text },
                 ]}
               >
                 {key.label}
@@ -194,12 +231,12 @@ function appendShellPath(current: string, path: string): string {
 }
 
 function shellQuote(value: string): string {
-  return `'${value.replace(/'/g, `'"'"'`)}'`;
+  return `'${value.replace(/'/g, `"'"'`)}'`;
 }
 
 const styles = StyleSheet.create({
   container: {
-    backgroundColor: Colors.bgPrimary,
+    borderTopWidth: StyleSheet.hairlineWidth,
     paddingBottom: 4,
   },
   shortcutRow: {
@@ -210,29 +247,6 @@ const styles = StyleSheet.create({
     paddingLeft: 0,
     paddingRight: 18,
   },
-  shortcutBtn: {
-    paddingHorizontal: 12,
-    height: 36,
-    borderRadius: 10,
-    backgroundColor: Colors.bgSurface,
-    marginRight: 6,
-    alignItems: "center",
-    justifyContent: "center",
-    borderWidth: 1,
-    borderColor: "#27364a",
-  },
-  shortcutBtnActive: {
-    backgroundColor: Colors.accent,
-    borderColor: Colors.accent,
-  },
-  shortcutText: {
-    color: Colors.textPrimary,
-    fontSize: 12,
-    fontFamily: Typography.terminalFont,
-  },
-  shortcutTextActive: {
-    color: "#fff",
-  },
   attachBtn: {
     width: 36,
     height: 36,
@@ -241,10 +255,21 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "center",
     borderWidth: 1,
-    borderColor: "#27364a",
-    backgroundColor: Colors.bgSurface,
   },
   attachBtnDisabled: {
     opacity: 0.45,
+  },
+  shortcutBtn: {
+    paddingHorizontal: 12,
+    height: 36,
+    borderRadius: 10,
+    marginRight: 6,
+    alignItems: "center",
+    justifyContent: "center",
+    borderWidth: 1,
+  },
+  shortcutText: {
+    fontSize: 12,
+    fontFamily: Typography.terminalFont,
   },
 });
