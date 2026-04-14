@@ -60,8 +60,8 @@ func TestStoreCRUD(t *testing.T) {
 	// Update
 	updated, err := s.Update(task.ID, func(t *Task) {
 		t.Status = StatusInProgress
-		t.AgentID = "main:3"
-		t.AgentStatus = "running"
+		t.CurrentRunID = "run-1"
+		t.LastRunStatus = "running"
 	})
 	if err != nil {
 		t.Fatalf("Update: %v", err)
@@ -70,13 +70,13 @@ func TestStoreCRUD(t *testing.T) {
 		t.Errorf("Status = %q, want %q", updated.Status, StatusInProgress)
 	}
 
-	// FindByAgentID
-	found := s.FindByAgentID("main:3")
+	// FindByCurrentRunID
+	found := s.FindByCurrentRunID("run-1")
 	if found == nil {
-		t.Fatal("FindByAgentID returned nil")
+		t.Fatal("FindByCurrentRunID returned nil")
 	}
 	if found.ID != task.ID {
-		t.Errorf("FindByAgentID ID = %q, want %q", found.ID, task.ID)
+		t.Errorf("FindByCurrentRunID ID = %q, want %q", found.ID, task.ID)
 	}
 
 	// Delete
@@ -191,4 +191,3 @@ func TestStoreEvents(t *testing.T) {
 		t.Error("no delete event received")
 	}
 }
-

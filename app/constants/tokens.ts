@@ -38,6 +38,7 @@ export const Typography = {
 } as const;
 
 export type AgentStatus = 'running' | 'blocked' | 'done' | 'failed' | 'unknown';
+export type RunStatus = 'queued' | 'running' | 'blocked' | 'done' | 'failed' | 'cancelled';
 
 export type IssueStatus = 'backlog' | 'todo' | 'in_progress' | 'done' | 'cancelled';
 export type IssuePriority = 0 | 1 | 2 | 3 | 4;
@@ -59,6 +60,18 @@ export const issueStatusColor = (status: IssueStatus): string => {
     case 'backlog': return Colors.textSecondary;
     case 'done': return Colors.statusDone;
     case 'cancelled': return Colors.statusDone;
+  }
+};
+
+export const runStatusColor = (status: RunStatus | string): string => {
+  switch (status) {
+    case 'queued': return Colors.statusUnknown;
+    case 'running': return Colors.statusRunning;
+    case 'blocked': return Colors.statusBlocked;
+    case 'failed': return Colors.statusFailed;
+    case 'done': return Colors.statusDone;
+    case 'cancelled': return Colors.textSecondary;
+    default: return Colors.textSecondary;
   }
 };
 

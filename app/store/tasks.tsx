@@ -15,9 +15,30 @@ export interface Task {
   labels: string[];
   projectId?: string;
   skillId?: string;
-  agentId?: string;
-  agentStatus?: string;
   cwd?: string;
+  currentRunId?: string;
+  lastRunStatus?: string;
+  createdAt: number;
+  updatedAt: number;
+}
+
+export interface Run {
+  id: string;
+  serverId: string;
+  serverName: string;
+  taskId: string;
+  attemptNumber: number;
+  status: string;
+  executionMode: string;
+  executorKind?: string;
+  executorLabel?: string;
+  agentSessionId?: string;
+  promptSnapshot?: string;
+  summary?: string;
+  lastError?: string;
+  waitingReason?: string;
+  startedAt?: number;
+  endedAt?: number;
   createdAt: number;
   updatedAt: number;
 }
@@ -47,6 +68,7 @@ export interface Project {
 
 interface State {
   tasks: Task[];
+  runs: Run[];
   skills: Skill[];
   projects: Project[];
   guidance: Record<string, Guidance>;
@@ -62,9 +84,28 @@ type RawTask = {
   labels?: string[];
   project_id?: string;
   skill_id?: string;
-  agent_id?: string;
-  agent_status?: string;
   cwd?: string;
+  current_run_id?: string;
+  last_run_status?: string;
+  created_at?: string | number;
+  updated_at?: string | number;
+};
+
+type RawRun = {
+  id: string;
+  task_id: string;
+  attempt_number?: number;
+  status: string;
+  execution_mode?: string;
+  executor_kind?: string;
+  executor_label?: string;
+  agent_session_id?: string;
+  prompt_snapshot?: string;
+  summary?: string;
+  last_error?: string;
+  waiting_reason?: string;
+  started_at?: string | number;
+  ended_at?: string | number;
   created_at?: string | number;
   updated_at?: string | number;
 };
@@ -89,6 +130,9 @@ type Action =
   | { type: 'TASK_CREATED'; serverId: string; serverName: string; task: RawTask }
   | { type: 'TASK_UPDATED'; serverId: string; serverName: string; task: RawTask }
   | { type: 'TASK_DELETED'; serverId: string; taskId: string }
+  | { type: 'UPSERT_SERVER_RUNS'; serverId: string; serverName: string; runs: RawRun[] }
+  | { type: 'RUN_CREATED'; serverId: string; serverName: string; run: RawRun }
+  | { type: 'RUN_UPDATED'; serverId: string; serverName: string; run: RawRun }
   | { type: 'UPSERT_SERVER_SKILLS'; serverId: string; serverName: string; skills: RawSkill[] }
   | { type: 'UPSERT_SERVER_PROJECTS'; serverId: string; projects: RawProject[] }
   | { type: 'PROJECT_CREATED'; serverId: string; project: RawProject }
@@ -98,6 +142,7 @@ type Action =
 
 const initialState: State = {
   tasks: [],
+  runs: [],
   skills: [],
   projects: [],
   guidance: {},
@@ -116,9 +161,32 @@ function normalizeTask(raw: RawTask, serverId: string, serverName: string): Task
     labels: raw.labels || [],
     projectId: raw.project_id,
     skillId: raw.skill_id,
-    agentId: raw.agent_id,
-    agentStatus: raw.agent_status,
     cwd: raw.cwd,
+    currentRunId: raw.current_run_id,
+    lastRunStatus: raw.last_run_status,
+    createdAt: normalizeTimestamp(raw.created_at),
+    updatedAt: normalizeTimestamp(raw.updated_at),
+  };
+}
+
+function normalizeRun(raw: RawRun, serverId: string, serverName: string): Run {
+  return {
+    id: raw.id,
+    serverId,
+    serverName,
+    taskId: raw.task_id,
+    attemptNumber: raw.attempt_number || 0,
+    status: raw.status,
+    executionMode: raw.execution_mode || '',
+    executorKind: raw.executor_kind,
+    executorLabel: raw.executor_label,
+    agentSessionId: raw.agent_session_id,
+    promptSnapshot: raw.prompt_snapshot,
+    summary: raw.summary,
+    lastError: raw.last_error,
+    waitingReason: raw.waiting_reason,
+    startedAt: raw.started_at ? normalizeTimestamp(raw.started_at) : undefined,
+    endedAt: raw.ended_at ? normalizeTimestamp(raw.ended_at) : undefined,
     createdAt: normalizeTimestamp(raw.created_at),
     updatedAt: normalizeTimestamp(raw.updated_at),
   };
@@ -191,6 +259,33 @@ function reducer(state: State, action: Action): State {
         ...state,
         tasks: state.tasks.filter(t => !(t.id === action.taskId && t.serverId === action.serverId)),
       };
+    case 'UPSERT_SERVER_RUNS': {
+      const normalized = action.runs.map(r => normalizeRun(r, action.serverId, action.serverName));
+      return {
+        ...state,
+        runs: [
+          ...state.runs.filter(r => r.serverId !== action.serverId),
+          ...normalized,
+        ],
+      };
+    }
+    case 'RUN_CREATED': {
+      const run = normalizeRun(action.run, action.serverId, action.serverName);
+      return {
+        ...state,
+        runs: [...state.runs.filter(r => !(r.id === run.id && r.serverId === run.serverId)), run],
+      };
+    }
+    case 'RUN_UPDATED': {
+      const run = normalizeRun(action.run, action.serverId, action.serverName);
+      const exists = state.runs.some(r => r.id === run.id && r.serverId === run.serverId);
+      return {
+        ...state,
+        runs: exists
+          ? state.runs.map(r => (r.id === run.id && r.serverId === run.serverId ? run : r))
+          : [...state.runs, run],
+      };
+    }
     case 'UPSERT_SERVER_SKILLS': {
       const normalized = action.skills.map(s => normalizeSkill(s, action.serverId, action.serverName));
       return {
@@ -232,6 +327,7 @@ function reducer(state: State, action: Action): State {
       return {
         ...state,
         tasks: state.tasks.filter(t => t.serverId !== action.serverId),
+        runs: state.runs.filter(r => r.serverId !== action.serverId),
         skills: state.skills.filter(s => s.serverId !== action.serverId),
         projects: state.projects.filter(p => p.serverId !== action.serverId),
         guidance: Object.fromEntries(

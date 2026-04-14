@@ -23,6 +23,7 @@ import {
   useSafeAreaInsets,
 } from "react-native-safe-area-context";
 import { Agent, useAgents } from "../../store/agents";
+import { useTasks } from "../../store/tasks";
 import {
   AgentStatus,
   Colors,
@@ -63,6 +64,8 @@ import {
 import { TerminalAccessoryBar } from "../../components/terminal/TerminalAccessoryBar";
 import { AgentKindIcon } from "../../components/terminal/AgentKindIcon";
 import { NewTerminalSheet } from "../../components/terminal/NewTerminalSheet";
+import { CreateIssueSheet } from "../../components/issue/CreateIssueSheet";
+import { TaskPickerSheet } from "../../components/issue/TaskPickerSheet";
 import { presentAgent } from "../../services/agentPresentation";
 
 const EMPTY_TABS: StoredTerminalTabs = { order: [], pinned: [] };
@@ -92,6 +95,7 @@ export default function TerminalScreen() {
   const sessionKey =
     agentId && serverId ? makeSessionKey(serverId, agentId) : null;
   const { state } = useAgents();
+  const { state: taskState } = useTasks();
   const router = useRouter();
   const insets = useSafeAreaInsets();
   const { width: windowWidth, height: windowHeight } = useWindowDimensions();
@@ -106,6 +110,8 @@ export default function TerminalScreen() {
   const [server, setServer] = useState<StoredServer | null>(null);
   const [pickerVisible, setPickerVisible] = useState(false);
   const [menuVisible, setMenuVisible] = useState(false);
+  const [createTaskVisible, setCreateTaskVisible] = useState(false);
+  const [linkTaskVisible, setLinkTaskVisible] = useState(false);
   const [menuAnchor, setMenuAnchor] = useState<{
     x: number;
     y: number;
@@ -160,6 +166,44 @@ export default function TerminalScreen() {
     [hydratedServerIds],
   );
   const agent = sessionKey ? agentByKey.get(sessionKey) : undefined;
+  const activeRunForSession = useMemo(
+    () => taskState.runs.find(run =>
+      run.serverId === serverId
+      && run.agentSessionId === agentId
+      && (run.status === "queued" || run.status === "running" || run.status === "blocked"),
+    ),
+    [agentId, serverId, taskState.runs],
+  );
+  const linkedTask = useMemo(
+    () => activeRunForSession
+      ? taskState.tasks.find(task => task.id === activeRunForSession.taskId && task.serverId === serverId)
+      : undefined,
+    [activeRunForSession, serverId, taskState.tasks],
+  );
+  const linkableTasks = useMemo(() => {
+    const activeRunsByTaskId = new Map(
+      taskState.runs
+        .filter(run =>
+          run.serverId === serverId
+          && (run.status === "queued" || run.status === "running" || run.status === "blocked"),
+        )
+        .map(run => [run.taskId, run]),
+    );
+
+    return taskState.tasks
+      .filter(task => task.serverId === serverId)
+      .filter(task => task.status !== "done" && task.status !== "cancelled")
+      .filter(task => !activeRunsByTaskId.has(task.id))
+      .sort((left, right) => right.updatedAt - left.updatedAt)
+      .map(task => ({
+        id: task.id,
+        number: task.number,
+        title: task.title,
+        subtitle: task.description || task.serverName,
+        status: task.status,
+        priority: task.priority,
+      }));
+  }, [serverId, taskState.runs, taskState.tasks]);
   const activePinned = sessionKey
     ? terminalTabs.pinned.includes(sessionKey)
     : false;
@@ -203,6 +247,17 @@ export default function TerminalScreen() {
     ? "The app kept your route, but the live terminal is not ready yet."
     : connectionIssue?.hint ||
       "This terminal will reopen automatically once the daemon is reachable again.";
+  const createTaskInitialTitle = useMemo(() => {
+    const label = displayName || agent?.project || agent?.name || agentId;
+    return label ? `Follow up ${label}` : "";
+  }, [agent?.name, agent?.project, agentId, displayName]);
+  const createTaskInitialDescription = useMemo(() => {
+    const parts = [
+      agent?.summary ? `Session summary: ${agent.summary}` : "",
+      agent?.cwd ? `Working directory: ${agent.cwd}` : "",
+    ].filter(Boolean);
+    return parts.join("\n");
+  }, [agent?.cwd, agent?.summary]);
 
   const syncActiveTerminal = React.useCallback(
     (appState: AppStateStatus = "active") => {
@@ -708,6 +763,47 @@ export default function TerminalScreen() {
     setNewTerminalVisible(true);
   };
 
+  const openCreateTaskModal = () => {
+    closeMenu();
+    setCreateTaskVisible(true);
+  };
+
+  const openLinkTaskModal = () => {
+    closeMenu();
+    setLinkTaskVisible(true);
+  };
+
+  const openLinkedTask = () => {
+    if (!linkedTask) return;
+    closeMenu();
+    router.push({
+      pathname: "/issue/[id]",
+      params: { id: linkedTask.id, serverId: linkedTask.serverId },
+    });
+  };
+
+  const linkSessionToTask = async (taskId: string) => {
+    if (!serverId || !agentId) return;
+
+    setLinkTaskVisible(false);
+    try {
+      await wsClient.createRun(serverId, {
+        taskId,
+        executionMode: "attach_existing_session",
+        agentSessionId: agentId,
+      });
+      router.push({
+        pathname: "/issue/[id]",
+        params: { id: taskId, serverId },
+      });
+    } catch (error: any) {
+      Alert.alert(
+        "Could not link task",
+        error?.message || "Try another task or start a fresh run.",
+      );
+    }
+  };
+
   const retryServerConnection = async () => {
     if (!serverId) return;
     const storedServer = await getServerById(serverId);
@@ -1123,6 +1219,21 @@ export default function TerminalScreen() {
               destructiveColor={terminalTheme.red}
             />
             <MenuAction
+              label="Create Task"
+              onPress={openCreateTaskModal}
+              textColor={chromeColors.text}
+              disabledTextColor={chromeColors.textSubtle}
+              destructiveColor={terminalTheme.red}
+            />
+            <MenuAction
+              label={linkedTask ? "Open Linked Task" : "Link to Existing Task"}
+              onPress={linkedTask ? openLinkedTask : openLinkTaskModal}
+              disabled={!linkedTask && linkableTasks.length === 0}
+              textColor={chromeColors.text}
+              disabledTextColor={chromeColors.textSubtle}
+              destructiveColor={terminalTheme.red}
+            />
+            <MenuAction
               label="Terminate"
               onPress={handleTerminateAgent}
               destructive
@@ -1149,6 +1260,50 @@ export default function TerminalScreen() {
             name: input.name,
           });
         }}
+      />
+
+      <CreateIssueSheet
+        visible={createTaskVisible}
+        serverOptions={[{ id: serverId, name: server?.name || agent?.serverName || serverId }]}
+        selectedServerId={serverId || null}
+        onSelectServer={() => {}}
+        onClose={() => setCreateTaskVisible(false)}
+        initialTitle={createTaskInitialTitle}
+        initialDescription={createTaskInitialDescription}
+        actions={[
+          {
+            key: "create",
+            label: "Create Task",
+            primary: true,
+          },
+          ...(!linkedTask ? [{
+            key: "create_and_link",
+            label: "Create & Link Session",
+            icon: "link-outline" as const,
+            afterCreate: async (selectedServerId: string, task: { id: string }) => {
+              if (!agentId) return;
+              await wsClient.createRun(selectedServerId, {
+                taskId: task.id,
+                executionMode: "attach_existing_session",
+                agentSessionId: agentId,
+              });
+            },
+          }] : []),
+        ]}
+        onCreated={(selectedServerId, taskId) => {
+          router.push({
+            pathname: "/issue/[id]",
+            params: { id: taskId, serverId: selectedServerId },
+          });
+        }}
+      />
+
+      <TaskPickerSheet
+        visible={linkTaskVisible}
+        tasks={linkableTasks}
+        onClose={() => setLinkTaskVisible(false)}
+        onPick={(taskId) => { void linkSessionToTask(taskId); }}
+        emptySubtitle="Only tasks without an active delegation can be linked to this session."
       />
 
       <Modal

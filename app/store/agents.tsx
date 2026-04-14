@@ -26,7 +26,6 @@ interface State {
   serverConnections: Record<string, ConnectionState>;
   serverConnectionIssues: Record<string, ConnectionIssue | null>;
   hydratedServers: Record<string, boolean>;
-  selectedAgentKey: string | null;
 }
 
 type RawAgent = {
@@ -49,19 +48,23 @@ type Action =
       serverUrl: string;
       agents: RawAgent[];
     }
-  | { type: 'UPDATE_OUTPUT'; serverId: string; agent_id: string; lines: string[] }
-  | { type: 'STATE_CHANGE'; serverId: string; agent_id: string; old: string; new_state: string }
+  | {
+      type: 'UPSERT_AGENT';
+      serverId: string;
+      serverName: string;
+      serverUrl: string;
+      agent: RawAgent;
+    }
+  | { type: 'REMOVE_AGENT'; serverId: string; agent_id: string }
   | { type: 'SET_SERVER_CONNECTION_STATE'; serverId: string; connectionState: ConnectionState }
   | { type: 'SET_SERVER_CONNECTION_ISSUE'; serverId: string; issue: ConnectionIssue | null }
-  | { type: 'REMOVE_SERVER'; serverId: string }
-  | { type: 'SELECT_AGENT'; key: string | null };
+  | { type: 'REMOVE_SERVER'; serverId: string };
 
 const initialState: State = {
   agents: [],
   serverConnections: {},
   serverConnectionIssues: {},
   hydratedServers: {},
-  selectedAgentKey: null,
 };
 
 function reducer(state: State, action: Action): State {
@@ -83,29 +86,26 @@ function reducer(state: State, action: Action): State {
         },
       };
     }
-    case 'UPDATE_OUTPUT': {
-      const targetKey = makeSessionKey(action.serverId, action.agent_id);
-      const agents = state.agents.map(agent => {
-        if (agent.key !== targetKey) return agent;
-        return {
-          ...agent,
-          last_output_lines: [...agent.last_output_lines, ...action.lines].slice(-1000),
-          updated_at: Date.now(),
-        };
-      });
-      return { ...state, agents };
+    case 'UPSERT_AGENT': {
+      const nextAgent = normalizeAgent(action.agent, action.serverId, action.serverName, action.serverUrl);
+      const exists = state.agents.some(agent => agent.key === nextAgent.key);
+      return {
+        ...state,
+        agents: exists
+          ? state.agents.map(agent => (agent.key === nextAgent.key ? nextAgent : agent))
+          : [...state.agents, nextAgent],
+        hydratedServers: {
+          ...state.hydratedServers,
+          [action.serverId]: true,
+        },
+      };
     }
-    case 'STATE_CHANGE': {
+    case 'REMOVE_AGENT': {
       const targetKey = makeSessionKey(action.serverId, action.agent_id);
-      const agents = state.agents.map(agent => {
-        if (agent.key !== targetKey) return agent;
-        return {
-          ...agent,
-          status: action.new_state as AgentStatus,
-          updated_at: Date.now(),
-        };
-      });
-      return { ...state, agents };
+      return {
+        ...state,
+        agents: state.agents.filter(agent => agent.key !== targetKey),
+      };
     }
     case 'SET_SERVER_CONNECTION_STATE':
       return {
@@ -136,13 +136,7 @@ function reducer(state: State, action: Action): State {
         hydratedServers: Object.fromEntries(
           Object.entries(state.hydratedServers).filter(([serverId]) => serverId !== action.serverId),
         ),
-        selectedAgentKey:
-          state.selectedAgentKey && parseServerIdFromKey(state.selectedAgentKey) === action.serverId
-            ? null
-            : state.selectedAgentKey,
       };
-    case 'SELECT_AGENT':
-      return { ...state, selectedAgentKey: action.key };
     default:
       return state;
   }
@@ -186,15 +180,6 @@ function normalizeTimestamp(value: RawAgent['updated_at']): number {
   }
 
   return Date.now();
-}
-
-function parseServerIdFromKey(sessionKey: string): string | null {
-  try {
-    const [serverId] = JSON.parse(sessionKey) as [string, string];
-    return typeof serverId === 'string' ? serverId : null;
-  } catch {
-    return null;
-  }
 }
 
 const AgentContext = createContext<{ state: State; dispatch: React.Dispatch<Action> } | null>(null);

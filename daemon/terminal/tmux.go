@@ -65,6 +65,11 @@ type tmuxReadResult struct {
 	eof  bool
 }
 
+const (
+	tmuxInitialHistoryViewportScreens = 4
+	tmuxInitialHistoryMaxLines        = 240
+)
+
 func (s *tmuxSession) ID() string { return s.id }
 
 func (s *tmuxSession) Events() <-chan Event { return s.events }
@@ -813,7 +818,15 @@ func tmuxHistoryCaptureRange(paneHeight int, historySize int) (startLine int, en
 		return 0, -1
 	}
 
-	return -historySize, -paneHeight
+	captureLines := paneHeight * tmuxInitialHistoryViewportScreens
+	if captureLines > tmuxInitialHistoryMaxLines {
+		captureLines = tmuxInitialHistoryMaxLines
+	}
+	if captureLines > historySize {
+		captureLines = historySize
+	}
+
+	return -captureLines, -paneHeight
 }
 
 func sanitizeTmuxOutput(data string) string {

@@ -36,6 +36,7 @@ type Server struct {
 	pusher   *push.Client
 	stats    *stats.Collector
 	tasks    *task.Store
+	runs     *task.RunStore
 	skills   *task.SkillStore
 	guidance *task.GuidanceStore
 	projects *task.ProjectStore
@@ -46,7 +47,7 @@ type Server struct {
 }
 
 // New creates a WebSocket server.
-func New(authManager *auth.Manager, w *watcher.Watcher, pusher *push.Client, sc *stats.Collector, ts *task.Store, ss *task.SkillStore, gs *task.GuidanceStore, ps *task.ProjectStore) *Server {
+func New(authManager *auth.Manager, w *watcher.Watcher, pusher *push.Client, sc *stats.Collector, ts *task.Store, rs *task.RunStore, ss *task.SkillStore, gs *task.GuidanceStore, ps *task.ProjectStore) *Server {
 	return &Server{
 		auth:     authManager,
 		watcher:  w,
@@ -54,6 +55,7 @@ func New(authManager *auth.Manager, w *watcher.Watcher, pusher *push.Client, sc 
 		pusher:   pusher,
 		stats:    sc,
 		tasks:    ts,
+		runs:     rs,
 		skills:   ss,
 		guidance: gs,
 		projects: ps,
@@ -123,7 +125,7 @@ func (s *Server) handleWS(w http.ResponseWriter, r *http.Request) {
 	s.mu.Unlock()
 
 	log.Printf("client connected (%d total)", len(s.clients))
-	s.sendAgentList(conn)
+	s.sendAgentSessionList(conn)
 
 	for {
 		_, msg, err := conn.ReadMessage()
@@ -208,41 +210,44 @@ func (s *Server) handleAuthCheck(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleClientMessage(conn *websocket.Conn, msg []byte) {
 	var raw struct {
-		Type         string `json:"type"`
-		RequestID    string `json:"request_id"`
-		AgentID      string `json:"agent_id"`
-		TargetID     string `json:"target_id"`
-		Cwd          string `json:"cwd"`
-		Command      string `json:"command"`
-		Name         string `json:"name"`
-		Backend      string `json:"backend"`
-		SessionID    string `json:"session_id"`
-		Text         string `json:"text"`
-		Data         string `json:"data"`
-		Action       string `json:"action"`
-		StateVersion int64  `json:"state_version"`
-		PushToken    string `json:"push_token"`
-		ServerRef    string `json:"server_ref"`
-		Cols         int    `json:"cols"`
-		Rows         int    `json:"rows"`
-		Col          int    `json:"col"`
-		Row          int    `json:"row"`
-		Lines        int    `json:"lines"`
-		TaskID       string `json:"task_id"`
-		Title        string `json:"title"`
-		Description  string `json:"description"`
-		SkillID      string `json:"skill_id"`
-		TaskStatus   string `json:"task_status"`
-		Icon         string `json:"icon"`
-		AgentCmd     string `json:"agent_cmd"`
-		Prompt       string `json:"prompt"`
-		Priority     int      `json:"priority"`
-		Labels       []string `json:"labels"`
-		ProjectID    string   `json:"project_id"`
-		ProjectName  string   `json:"project_name"`
-		ProjectIcon  string   `json:"project_icon"`
-		Preamble     string   `json:"preamble"`
-		Constraints  []string `json:"constraints"`
+		Type           string   `json:"type"`
+		RequestID      string   `json:"request_id"`
+		AgentID        string   `json:"agent_id"`
+		TargetID       string   `json:"target_id"`
+		Cwd            string   `json:"cwd"`
+		Command        string   `json:"command"`
+		Name           string   `json:"name"`
+		Backend        string   `json:"backend"`
+		SessionID      string   `json:"session_id"`
+		Text           string   `json:"text"`
+		Data           string   `json:"data"`
+		Action         string   `json:"action"`
+		StateVersion   int64    `json:"state_version"`
+		PushToken      string   `json:"push_token"`
+		ServerRef      string   `json:"server_ref"`
+		Cols           int      `json:"cols"`
+		Rows           int      `json:"rows"`
+		Col            int      `json:"col"`
+		Row            int      `json:"row"`
+		Lines          int      `json:"lines"`
+		TaskID         string   `json:"task_id"`
+		RunID          string   `json:"run_id"`
+		Title          string   `json:"title"`
+		Description    string   `json:"description"`
+		SkillID        string   `json:"skill_id"`
+		TaskStatus     string   `json:"task_status"`
+		ExecutionMode  string   `json:"execution_mode"`
+		AgentSessionID string   `json:"agent_session_id"`
+		Icon           string   `json:"icon"`
+		AgentCmd       string   `json:"agent_cmd"`
+		Prompt         string   `json:"prompt"`
+		Priority       int      `json:"priority"`
+		Labels         []string `json:"labels"`
+		ProjectID      string   `json:"project_id"`
+		ProjectName    string   `json:"project_name"`
+		ProjectIcon    string   `json:"project_icon"`
+		Preamble       string   `json:"preamble"`
+		Constraints    []string `json:"constraints"`
 	}
 	if err := json.Unmarshal(msg, &raw); err != nil {
 		log.Printf("invalid message: %v", err)
@@ -250,8 +255,8 @@ func (s *Server) handleClientMessage(conn *websocket.Conn, msg []byte) {
 	}
 
 	switch raw.Type {
-	case "list_agents":
-		s.sendAgentList(conn)
+	case "list_agents", "list_agent_sessions":
+		s.sendAgentSessionList(conn)
 
 	case "register_push":
 		if raw.PushToken != "" {
@@ -465,10 +470,13 @@ func (s *Server) handleClientMessage(conn *websocket.Conn, msg []byte) {
 	case "list_tasks":
 		s.sendJSON(conn, map[string]any{"type": "task_list", "tasks": s.tasks.List()})
 
+	case "list_runs":
+		s.sendJSON(conn, map[string]any{"type": "run_list", "runs": s.runs.List()})
+
 	case "create_task":
 		t, err := s.tasks.Create(raw.Title, raw.Description, raw.SkillID, raw.Cwd, raw.Priority, raw.Labels, raw.ProjectID)
 		if err != nil {
-			s.sendError(conn, "create_task_failed", err.Error())
+			s.sendErrorWithRequestID(conn, raw.RequestID, "create_task_failed", err.Error())
 			return
 		}
 		s.sendJSON(conn, map[string]any{"type": "task_created", "request_id": raw.RequestID, "task": t})
@@ -495,69 +503,97 @@ func (s *Server) handleClientMessage(conn *websocket.Conn, msg []byte) {
 			}
 		})
 		if err != nil {
-			s.sendError(conn, "update_task_failed", err.Error())
+			s.sendErrorWithRequestID(conn, raw.RequestID, "update_task_failed", err.Error())
 			return
 		}
 		s.sendJSON(conn, map[string]any{"type": "task_updated", "request_id": raw.RequestID, "task": t})
 
 	case "delete_task":
 		if err := s.tasks.Delete(raw.TaskID); err != nil {
-			s.sendError(conn, "delete_task_failed", err.Error())
+			s.sendErrorWithRequestID(conn, raw.RequestID, "delete_task_failed", err.Error())
 			return
 		}
 		s.sendJSON(conn, map[string]any{"type": "task_deleted", "request_id": raw.RequestID, "task_id": raw.TaskID})
 
-	case "delegate_task":
+	case "create_run", "delegate_task":
 		t := s.tasks.Get(raw.TaskID)
 		if t == nil {
-			s.sendError(conn, "delegate_task_failed", "task not found")
+			s.sendErrorWithRequestID(conn, raw.RequestID, "create_run_failed", "task not found")
 			return
 		}
 
-		// Build prompt from task + optional skill + guidance
-		prompt := s.guidance.BuildPromptPrefix()
-		if t.SkillID != "" {
-			if sk := s.skills.Get(t.SkillID); sk != nil {
-				prompt += sk.Prompt + "\n\n"
-			}
-		}
-		if t.Description != "" {
-			prompt += t.Description
-		} else {
-			prompt += t.Title
+		executionMode := strings.TrimSpace(raw.ExecutionMode)
+		if executionMode == "" {
+			executionMode = "spawn_new_session"
 		}
 
-		cmd := "claude"
-		if t.SkillID != "" {
-			if sk := s.skills.Get(t.SkillID); sk != nil && sk.AgentCmd != "" {
-				cmd = sk.AgentCmd
+		prompt, executorKind := s.buildTaskPrompt(t)
+		agentSessionID := strings.TrimSpace(raw.AgentSessionID)
+		runStatus := task.RunStatusQueued
+
+		switch executionMode {
+		case "spawn_new_session":
+			var err error
+			agentSessionID, err = s.watcher.CreateSession("", watcher.CreateSessionOptions{
+				Cwd:     t.Cwd,
+				Command: executorKind + " " + shellQuoteSimple(prompt),
+				Name:    t.Title,
+			})
+			if err != nil {
+				s.sendErrorWithRequestID(conn, raw.RequestID, "create_run_failed", err.Error())
+				return
 			}
+			runStatus = task.RunStatusRunning
+		case "attach_existing_session":
+			agent := s.watcher.GetAgent(agentSessionID)
+			if agent == nil {
+				s.sendErrorWithRequestID(conn, raw.RequestID, "create_run_failed", "agent session not found")
+				return
+			}
+			if activeRun := s.runs.FindActiveByAgentSessionID(agentSessionID); activeRun != nil {
+				s.sendErrorWithRequestID(conn, raw.RequestID, "create_run_failed", "agent session already linked to an active task")
+				return
+			}
+			runStatus = mapAgentStateToRunStatus(string(agent.State))
+		default:
+			s.sendErrorWithRequestID(conn, raw.RequestID, "create_run_failed", "unknown execution mode")
+			return
 		}
 
-		agentID, err := s.watcher.CreateSession("", watcher.CreateSessionOptions{
-			Cwd:     t.Cwd,
-			Command: cmd + " " + shellQuoteSimple(prompt),
-			Name:    t.Title,
+		run, err := s.runs.Create(task.CreateRunOptions{
+			TaskID:         t.ID,
+			Status:         runStatus,
+			ExecutionMode:  executionMode,
+			ExecutorKind:   executorKind,
+			ExecutorLabel:  t.Title,
+			AgentSessionID: agentSessionID,
+			PromptSnapshot: prompt,
+			Summary:        t.Title,
 		})
 		if err != nil {
-			s.sendError(conn, "delegate_task_failed", err.Error())
+			s.sendErrorWithRequestID(conn, raw.RequestID, "create_run_failed", err.Error())
 			return
 		}
 
-		updated, err := s.tasks.Update(t.ID, func(t *task.Task) {
-			t.AgentID = agentID
-			t.Status = task.StatusInProgress
-			t.AgentStatus = "running"
+		updatedTask, err := s.tasks.Update(t.ID, func(t *task.Task) {
+			t.CurrentRunID = run.ID
+			t.LastRunStatus = string(run.Status)
+			if run.Status == task.RunStatusDone {
+				t.Status = task.StatusDone
+			} else if t.Status != task.StatusCancelled {
+				t.Status = task.StatusInProgress
+			}
 		})
 		if err != nil {
-			s.sendError(conn, "delegate_task_failed", err.Error())
+			s.sendErrorWithRequestID(conn, raw.RequestID, "create_run_failed", err.Error())
 			return
 		}
+
 		s.sendJSON(conn, map[string]any{
-			"type":       "task_delegated",
+			"type":       "run_created",
 			"request_id": raw.RequestID,
-			"task":       updated,
-			"agent_id":   agentID,
+			"run":        run,
+			"task":       updatedTask,
 		})
 
 	// ── Skills CRUD ────────────────────────────────────────
@@ -643,9 +679,9 @@ func (s *Server) handleClientMessage(conn *websocket.Conn, msg []byte) {
 	}
 }
 
-func (s *Server) sendAgentList(conn *websocket.Conn) {
-	agents := s.watcher.Agents()
-	s.sendJSON(conn, map[string]any{"type": "agent_list", "agents": agents})
+func (s *Server) sendAgentSessionList(conn *websocket.Conn) {
+	agentSessions := s.watcher.Agents()
+	s.sendJSON(conn, map[string]any{"type": "agent_session_list", "agent_sessions": agentSessions})
 }
 
 func (s *Server) sendJSON(conn *websocket.Conn, v any) {
@@ -663,66 +699,30 @@ func (s *Server) sendError(conn *websocket.Conn, code, message string) {
 	s.sendJSON(conn, map[string]any{"type": "error", "code": code, "message": message})
 }
 
+func (s *Server) sendErrorWithRequestID(conn *websocket.Conn, requestID, code, message string) {
+	s.sendJSON(conn, map[string]any{
+		"type":       "error",
+		"request_id": requestID,
+		"code":       code,
+		"message":    message,
+	})
+}
+
 func (s *Server) broadcastEvents(ctx context.Context) {
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case ev := <-s.watcher.Events():
-			data, err := json.Marshal(ev)
+			s.handleWatcherEvent(ev)
+		case te := <-s.tasks.Events():
+			data, err := json.Marshal(te)
 			if err != nil {
 				continue
 			}
 			s.broadcast(data)
-
-			// Send push notifications for state changes.
-			if ev.Type == "agent_state_change" {
-				agent := s.watcher.GetAgent(ev.AgentID)
-				if agent == nil {
-					continue
-				}
-
-				// Auto-track: sync issue status from agent state.
-				if linked := s.tasks.FindByAgentID(ev.AgentID); linked != nil {
-					switch ev.NewState {
-					case "blocked":
-						// Issue stays in_progress, just update agent_status
-						s.tasks.Update(linked.ID, func(t *task.Task) {
-							t.AgentStatus = "blocked"
-						})
-					case "done":
-						s.tasks.Update(linked.ID, func(t *task.Task) {
-							t.Status = task.StatusDone
-							t.AgentStatus = "done"
-						})
-					case "failed":
-						// Agent failed → issue goes back to todo for retry
-						s.tasks.Update(linked.ID, func(t *task.Task) {
-							t.Status = task.StatusTodo
-							t.AgentID = ""
-							t.AgentStatus = ""
-						})
-					case "running":
-						s.tasks.Update(linked.ID, func(t *task.Task) {
-							t.AgentStatus = "running"
-						})
-					}
-				}
-
-				if s.hasAnyActiveViewer() {
-					continue
-				}
-				switch ev.NewState {
-				case "blocked":
-					s.pusher.NotifyAgentBlocked(ev.AgentID, agent.Name, agent.Summary)
-				case "failed":
-					s.pusher.NotifyAgentFailed(ev.AgentID, agent.Name, agent.Summary)
-				case "done":
-					s.pusher.NotifyAgentDone(ev.AgentID, agent.Name, agent.Summary)
-				}
-			}
-		case te := <-s.tasks.Events():
-			data, err := json.Marshal(te)
+		case re := <-s.runs.Events():
+			data, err := json.Marshal(re)
 			if err != nil {
 				continue
 			}
@@ -739,10 +739,97 @@ func (s *Server) heartbeat(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			agents := s.watcher.Agents()
-			data, _ := json.Marshal(map[string]any{"type": "agent_list", "agents": agents})
+			agentSessions := s.watcher.Agents()
+			data, _ := json.Marshal(map[string]any{"type": "agent_session_list", "agent_sessions": agentSessions})
 			s.broadcast(data)
 		}
+	}
+}
+
+func (s *Server) handleWatcherEvent(ev watcher.SessionEvent) {
+	switch ev.Type {
+	case "agent_discovered":
+		if ev.Agent != nil {
+			s.broadcastJSON(map[string]any{"type": "agent_session_created", "agent_session": ev.Agent})
+		}
+	case "agent_output":
+		if ev.Agent != nil {
+			s.broadcastJSON(map[string]any{"type": "agent_session_updated", "agent_session": ev.Agent})
+		}
+	case "agent_state_change":
+		if ev.Agent != nil {
+			s.broadcastJSON(map[string]any{"type": "agent_session_updated", "agent_session": ev.Agent})
+		}
+		s.syncRunAndTaskForSessionEvent(ev)
+		s.maybeNotifyForSessionEvent(ev)
+	case "agent_removed":
+		if ev.Agent != nil {
+			s.broadcastJSON(map[string]any{"type": "agent_session_archived", "agent_session": ev.Agent})
+		}
+		s.syncRunAndTaskForSessionEvent(ev)
+		s.maybeNotifyForSessionEvent(ev)
+	}
+}
+
+func (s *Server) syncRunAndTaskForSessionEvent(ev watcher.SessionEvent) {
+	run := s.runs.FindActiveByAgentSessionID(ev.AgentID)
+	if run == nil {
+		return
+	}
+
+	nextStatus := mapWatcherEventToRunStatus(ev)
+	updatedRun, err := s.runs.Update(run.ID, func(current *task.Run) {
+		current.Status = nextStatus
+		if ev.Agent != nil {
+			current.Summary = ev.Agent.Summary
+			if nextStatus == task.RunStatusBlocked {
+				current.WaitingReason = ev.Agent.Summary
+				current.LastError = ""
+			} else if nextStatus == task.RunStatusFailed {
+				current.LastError = ev.Agent.Summary
+				current.WaitingReason = ""
+			} else {
+				current.WaitingReason = ""
+				if nextStatus != task.RunStatusFailed {
+					current.LastError = ""
+				}
+			}
+		}
+	})
+	if err != nil {
+		return
+	}
+
+	_, _ = s.tasks.Update(updatedRun.TaskID, func(current *task.Task) {
+		current.CurrentRunID = updatedRun.ID
+		current.LastRunStatus = string(updatedRun.Status)
+		switch updatedRun.Status {
+		case task.RunStatusDone:
+			current.Status = task.StatusDone
+		case task.RunStatusFailed, task.RunStatusCancelled:
+			if current.Status != task.StatusCancelled {
+				current.Status = task.StatusTodo
+			}
+		default:
+			if current.Status != task.StatusCancelled && current.Status != task.StatusDone {
+				current.Status = task.StatusInProgress
+			}
+		}
+	})
+}
+
+func (s *Server) maybeNotifyForSessionEvent(ev watcher.SessionEvent) {
+	if s.hasAnyActiveViewer() || ev.Agent == nil {
+		return
+	}
+
+	switch mapWatcherEventToRunStatus(ev) {
+	case task.RunStatusBlocked:
+		s.pusher.NotifyAgentBlocked(ev.AgentID, ev.Agent.Name, ev.Agent.Summary)
+	case task.RunStatusFailed:
+		s.pusher.NotifyAgentFailed(ev.AgentID, ev.Agent.Name, ev.Agent.Summary)
+	case task.RunStatusDone:
+		s.pusher.NotifyAgentDone(ev.AgentID, ev.Agent.Name, ev.Agent.Summary)
 	}
 }
 
@@ -764,6 +851,14 @@ func (s *Server) broadcast(data []byte) {
 			s.mu.Unlock()
 		}
 	}
+}
+
+func (s *Server) broadcastJSON(v any) {
+	data, err := json.Marshal(v)
+	if err != nil {
+		return
+	}
+	s.broadcast(data)
 }
 
 func (s *Server) handleUpload(w http.ResponseWriter, r *http.Request) {
@@ -836,6 +931,57 @@ func (s *Server) writeJSONWithAssertion(w http.ResponseWriter, status int, purpo
 
 func clientID(conn *websocket.Conn) string {
 	return fmt.Sprintf("%p", conn)
+}
+
+func (s *Server) buildTaskPrompt(t *task.Task) (string, string) {
+	prompt := s.guidance.BuildPromptPrefix()
+	if t.SkillID != "" {
+		if sk := s.skills.Get(t.SkillID); sk != nil {
+			prompt += sk.Prompt + "\n\n"
+		}
+	}
+	if t.Description != "" {
+		prompt += t.Description
+	} else {
+		prompt += t.Title
+	}
+
+	cmd := "claude"
+	if t.SkillID != "" {
+		if sk := s.skills.Get(t.SkillID); sk != nil && sk.AgentCmd != "" {
+			cmd = sk.AgentCmd
+		}
+	}
+	return prompt, cmd
+}
+
+func mapAgentStateToRunStatus(state string) task.RunStatus {
+	switch state {
+	case "blocked":
+		return task.RunStatusBlocked
+	case "failed":
+		return task.RunStatusFailed
+	case "done":
+		return task.RunStatusDone
+	case "running":
+		return task.RunStatusRunning
+	default:
+		return task.RunStatusRunning
+	}
+}
+
+func mapWatcherEventToRunStatus(ev watcher.SessionEvent) task.RunStatus {
+	if ev.Type == "agent_removed" {
+		switch ev.OldState {
+		case "failed":
+			return task.RunStatusFailed
+		case "done":
+			return task.RunStatusDone
+		default:
+			return task.RunStatusCancelled
+		}
+	}
+	return mapAgentStateToRunStatus(ev.NewState)
 }
 
 // shellQuoteSimple wraps a string in single quotes for safe shell injection.

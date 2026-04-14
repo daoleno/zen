@@ -64,3 +64,17 @@ func TestTmuxHistoryCaptureRangeHandlesNoHistory(t *testing.T) {
 		t.Fatalf("history capture range for empty history = (%d, %d), want (%d, %d)", startLine, endLine, 0, -1)
 	}
 }
+
+func TestTmuxHistoryCaptureRangeCapsLargeHistoryToStartupBudget(t *testing.T) {
+	startLine, endLine := tmuxHistoryCaptureRange(36, 5000)
+	if startLine != -144 || endLine != -36 {
+		t.Fatalf("history capture range for large history = (%d, %d), want (%d, %d)", startLine, endLine, -144, -36)
+	}
+}
+
+func TestTmuxHistoryCaptureRangeRespectsMaximumLineBudget(t *testing.T) {
+	startLine, endLine := tmuxHistoryCaptureRange(80, 5000)
+	if startLine != -240 || endLine != -80 {
+		t.Fatalf("history capture range for tall pane = (%d, %d), want (%d, %d)", startLine, endLine, -240, -80)
+	}
+}

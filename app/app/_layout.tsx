@@ -195,28 +195,27 @@ function AppContent() {
 
   // Auto-connect on app start.
   useEffect(() => {
-    const onAgentList = (data: any) =>
+    const onAgentSessionList = (data: any) =>
       dispatch({
         type: 'UPSERT_SERVER_AGENTS',
         serverId: data.serverId,
         serverName: data.serverName,
         serverUrl: data.serverUrl,
-        agents: data.agents || [],
+        agents: data.agent_sessions || [],
       });
-    const onStateChange = (data: any) =>
+    const onAgentSessionUpsert = (data: any) =>
       dispatch({
-        type: 'STATE_CHANGE',
+        type: 'UPSERT_AGENT',
         serverId: data.serverId,
-        agent_id: data.agent_id,
-        old: data.old,
-        new_state: data.new,
+        serverName: data.serverName,
+        serverUrl: data.serverUrl,
+        agent: data.agent_session,
       });
-    const onOutput = (data: any) =>
+    const onAgentSessionArchived = (data: any) =>
       dispatch({
-        type: 'UPDATE_OUTPUT',
+        type: 'REMOVE_AGENT',
         serverId: data.serverId,
-        agent_id: data.agent_id,
-        lines: data.lines || [],
+        agent_id: data.agent_session?.id || '',
       });
     const onConnecting = (data: any) =>
       dispatch({
@@ -273,7 +272,34 @@ function AppContent() {
         serverId: data.serverId,
         taskId: data.task_id,
       });
-    const onTaskDelegated = (data: any) => {
+    const onRunList = (data: any) =>
+      taskDispatch({
+        type: 'UPSERT_SERVER_RUNS',
+        serverId: data.serverId,
+        serverName: data.serverName,
+        runs: data.runs || [],
+      });
+    const onRunUpdated = (data: any) => {
+      if (data.run) taskDispatch({
+        type: 'RUN_UPDATED',
+        serverId: data.serverId,
+        serverName: data.serverName,
+        run: data.run,
+      });
+      if (data.task) taskDispatch({
+        type: 'TASK_UPDATED',
+        serverId: data.serverId,
+        serverName: data.serverName,
+        task: data.task,
+      });
+    };
+    const onRunCreated = (data: any) => {
+      if (data.run) taskDispatch({
+        type: 'RUN_CREATED',
+        serverId: data.serverId,
+        serverName: data.serverName,
+        run: data.run,
+      });
       if (data.task) taskDispatch({
         type: 'TASK_UPDATED',
         serverId: data.serverId,
@@ -319,14 +345,17 @@ function AppContent() {
     // Fetch tasks, skills, projects on connected
     const onConnectedFetchTasks = (data: any) => {
       wsClient.listTasks(data.serverId);
+      wsClient.listRuns(data.serverId);
       wsClient.listSkills(data.serverId);
       wsClient.getGuidance(data.serverId);
       wsClient.listProjects(data.serverId);
+      wsClient.listAgentSessions(data.serverId);
     };
 
-    wsClient.on('agent_list', onAgentList);
-    wsClient.on('agent_state_change', onStateChange);
-    wsClient.on('agent_output', onOutput);
+    wsClient.on('agent_session_list', onAgentSessionList);
+    wsClient.on('agent_session_created', onAgentSessionUpsert);
+    wsClient.on('agent_session_updated', onAgentSessionUpsert);
+    wsClient.on('agent_session_archived', onAgentSessionArchived);
     wsClient.on('connecting', onConnecting);
     wsClient.on('connected', onConnected);
     wsClient.on('disconnected', onDisconnected);
@@ -335,7 +364,12 @@ function AppContent() {
     wsClient.on('task_created', onTaskCreated);
     wsClient.on('task_updated', onTaskUpdated);
     wsClient.on('task_deleted', onTaskDeleted);
-    wsClient.on('task_delegated', onTaskDelegated);
+    wsClient.on('run_list', onRunList);
+    wsClient.on('run_created', onRunCreated);
+    wsClient.on('run_updated', onRunUpdated);
+    wsClient.on('run_completed', onRunUpdated);
+    wsClient.on('run_failed', onRunUpdated);
+    wsClient.on('run_cancelled', onRunUpdated);
     wsClient.on('skill_list', onSkillList);
     wsClient.on('guidance', onGuidance);
     wsClient.on('guidance_updated', onGuidance);
@@ -374,9 +408,10 @@ function AppContent() {
       // back to offline during hot reloads and remounts.
       wsClient.disconnectAll();
 
-      wsClient.off('agent_list', onAgentList);
-      wsClient.off('agent_state_change', onStateChange);
-      wsClient.off('agent_output', onOutput);
+      wsClient.off('agent_session_list', onAgentSessionList);
+      wsClient.off('agent_session_created', onAgentSessionUpsert);
+      wsClient.off('agent_session_updated', onAgentSessionUpsert);
+      wsClient.off('agent_session_archived', onAgentSessionArchived);
       wsClient.off('connecting', onConnecting);
       wsClient.off('connected', onConnected);
       wsClient.off('disconnected', onDisconnected);
@@ -385,7 +420,12 @@ function AppContent() {
       wsClient.off('task_created', onTaskCreated);
       wsClient.off('task_updated', onTaskUpdated);
       wsClient.off('task_deleted', onTaskDeleted);
-      wsClient.off('task_delegated', onTaskDelegated);
+      wsClient.off('run_list', onRunList);
+      wsClient.off('run_created', onRunCreated);
+      wsClient.off('run_updated', onRunUpdated);
+      wsClient.off('run_completed', onRunUpdated);
+      wsClient.off('run_failed', onRunUpdated);
+      wsClient.off('run_cancelled', onRunUpdated);
       wsClient.off('skill_list', onSkillList);
       wsClient.off('guidance', onGuidance);
       wsClient.off('guidance_updated', onGuidance);

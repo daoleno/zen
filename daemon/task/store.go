@@ -114,12 +114,12 @@ func (s *Store) List() []*Task {
 	return list
 }
 
-// FindByAgentID returns the first active task linked to the given agent.
-func (s *Store) FindByAgentID(agentID string) *Task {
+// FindByCurrentRunID returns the task whose current run matches the given run id.
+func (s *Store) FindByCurrentRunID(runID string) *Task {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	for _, t := range s.tasks {
-		if t.AgentID == agentID && t.Status != StatusDone && t.Status != StatusCancelled {
+		if t.CurrentRunID == runID {
 			cp := *t
 			return &cp
 		}

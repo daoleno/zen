@@ -11,7 +11,6 @@ import { useRouter } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Colors, Typography } from '../../constants/tokens';
-import type { IssueStatus } from '../../constants/tokens';
 import { useTasks, Task } from '../../store/tasks';
 import { useAgents } from '../../store/agents';
 import { IssueRow } from '../../components/issue/IssueRow';
@@ -84,6 +83,10 @@ export default function IssuesScreen() {
         return b.updatedAt - a.updatedAt;
       });
   }, [taskState.tasks, filter]);
+  const runById = useMemo(
+    () => Object.fromEntries(taskState.runs.map(run => [`${run.serverId}:${run.id}`, run])),
+    [taskState.runs],
+  );
 
   const openCreateSheet = () => {
     if (connectedServers.length === 0) {
@@ -147,6 +150,7 @@ export default function IssuesScreen() {
           renderItem={({ item }) => (
             <IssueRow
               task={item}
+              run={item.currentRunId ? runById[`${item.serverId}:${item.currentRunId}`] : null}
               onPress={() => router.push({
                 pathname: '/issue/[id]',
                 params: { id: item.id, serverId: item.serverId },

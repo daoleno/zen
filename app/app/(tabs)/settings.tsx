@@ -26,7 +26,10 @@ import {
 import { Colors, Typography, statusColor } from "../../constants/tokens";
 import { useTasks, Skill, Guidance } from "../../store/tasks";
 import {
+  buildTerminalChrome,
   DefaultTerminalThemeName,
+  TerminalThemeDescriptions,
+  TerminalThemeLabels,
   TerminalThemeName,
   TerminalThemes,
 } from "../../constants/terminalThemes";
@@ -35,6 +38,10 @@ import { wsClient } from "../../services/websocket";
 import { ConnectionState, useAgents } from "../../store/agents";
 import * as Storage from "../../services/storage";
 import { connectionIssueAccent } from "../../services/connectionIssue";
+import {
+  measureServerLatency,
+  type ServerLatencySample,
+} from "../../services/serverLatency";
 
 const QR_BARCODE_TYPES: BarcodeType[] = ["qr"];
 
@@ -58,6 +65,9 @@ export default function SettingsScreen() {
   const [draftEndpoint, setDraftEndpoint] = useState("");
   const [draftImportValue, setDraftImportValue] = useState("");
   const [expandedServer, setExpandedServer] = useState<string | null>(null);
+  const [serverLatencyById, setServerLatencyById] = useState<
+    Record<string, ServerLatencySample>
+  >({});
   const [handledAutoOpenToken, setHandledAutoOpenToken] = useState<
     string | null
   >(null);
@@ -105,6 +115,71 @@ export default function SettingsScreen() {
         cancelled = true;
       };
     }, []),
+  );
+
+  useFocusEffect(
+    React.useCallback(() => {
+      let cancelled = false;
+
+      const refreshLatency = async () => {
+        const connectedServers = servers.filter(
+          (server) => state.serverConnections[server.id] === "connected",
+        );
+
+        if (connectedServers.length === 0) {
+          if (!cancelled) {
+            setServerLatencyById({});
+          }
+          return;
+        }
+
+        const samples = await Promise.all(
+          connectedServers.map(async (server) => {
+            try {
+              return [
+                server.id,
+                await measureServerLatency({
+                  serverUrl: server.url,
+                  daemonId: server.daemonId,
+                }),
+              ] as const;
+            } catch {
+              return [server.id, null] as const;
+            }
+          }),
+        );
+
+        if (cancelled) {
+          return;
+        }
+
+        setServerLatencyById((current) => {
+          const next: Record<string, ServerLatencySample> = {};
+          for (const server of connectedServers) {
+            const existing = current[server.id];
+            if (existing) {
+              next[server.id] = existing;
+            }
+          }
+          for (const [serverId, sample] of samples) {
+            if (sample) {
+              next[serverId] = sample;
+            }
+          }
+          return next;
+        });
+      };
+
+      void refreshLatency();
+      const interval = setInterval(() => {
+        void refreshLatency();
+      }, 15000);
+
+      return () => {
+        cancelled = true;
+        clearInterval(interval);
+      };
+    }, [servers, state.serverConnections]),
   );
 
   useEffect(() => {
@@ -373,6 +448,7 @@ export default function SettingsScreen() {
             servers.map((server) => {
               const connectionState =
                 state.serverConnections[server.id] || "offline";
+              const latencySample = serverLatencyById[server.id];
               const connectionIssue =
                 state.serverConnectionIssues[server.id] || null;
               const expanded = expandedServer === server.id;
@@ -408,15 +484,29 @@ export default function SettingsScreen() {
                         {server.url}
                       </Text>
                     </View>
-                    <Text
-                      style={[
-                        styles.connectionLabel,
-                        connectionState === "connected" &&
-                          styles.connectionLabelActive,
-                      ]}
-                    >
-                      {connectionLabel(connectionState)}
-                    </Text>
+                    <View style={styles.serverStatus}>
+                      {connectionState === "connected" && latencySample ? (
+                        <Text
+                          style={[
+                            styles.latencyLabel,
+                            {
+                              color: latencyColor(latencySample.latencyMs),
+                            },
+                          ]}
+                        >
+                          {formatLatency(latencySample.latencyMs)}
+                        </Text>
+                      ) : null}
+                      <Text
+                        style={[
+                          styles.connectionLabel,
+                          connectionState === "connected" &&
+                            styles.connectionLabelActive,
+                        ]}
+                      >
+                        {connectionLabel(connectionState)}
+                      </Text>
+                    </View>
                   </View>
 
                   {expanded && (
@@ -507,41 +597,14 @@ export default function SettingsScreen() {
         <View style={styles.themeList}>
           {(Object.keys(TerminalThemes) as TerminalThemeName[]).map(
             (themeName) => {
-              const theme = TerminalThemes[themeName];
               const active = terminalTheme === themeName;
               return (
-                <TouchableOpacity
-                  key={themeName}
-                  style={[styles.themeCard, active && styles.themeCardActive]}
+                <TerminalThemeCard
+                  key={TerminalThemeLabels[themeName]}
+                  themeName={themeName}
+                  active={active}
                   onPress={() => handleTerminalTheme(themeName)}
-                  activeOpacity={0.84}
-                >
-                  <View
-                    style={[
-                      styles.themePreview,
-                      { backgroundColor: theme.background },
-                    ]}
-                  >
-                    <Text
-                      style={[
-                        styles.themePreviewText,
-                        { color: theme.foreground },
-                      ]}
-                    >
-                      $ zen --watch{"\n"}
-                      <Text style={{ color: theme.green }}>connected</Text>
-                      <Text style={{ color: theme.brightBlack }}>
-                        {" "}
-                        · 3 agents
-                      </Text>
-                    </Text>
-                  </View>
-                  <Text
-                    style={[styles.themeName, active && styles.themeNameActive]}
-                  >
-                    {themeName}
-                  </Text>
-                </TouchableOpacity>
+                />
               );
             },
           )}
@@ -921,6 +984,129 @@ function ServerNoticeCard({
   );
 }
 
+function TerminalThemeCard({
+  themeName,
+  active,
+  onPress,
+}: {
+  themeName: TerminalThemeName;
+  active: boolean;
+  onPress(): void;
+}) {
+  const theme = TerminalThemes[themeName];
+  const chrome = buildTerminalChrome(theme);
+
+  return (
+    <TouchableOpacity
+      style={[
+        styles.themeCard,
+        {
+          backgroundColor: chrome.surfaceMuted,
+          borderColor: active ? chrome.borderStrong : chrome.border,
+        },
+      ]}
+      onPress={onPress}
+      activeOpacity={0.84}
+    >
+      <View
+        style={[
+          styles.themePreview,
+          {
+            backgroundColor: theme.background,
+            borderBottomColor: chrome.border,
+          },
+        ]}
+      >
+        <View style={styles.themePreviewHeader}>
+          <View style={styles.themePreviewHeaderCopy}>
+            <Text
+              style={[
+                styles.themeCardTitle,
+                { color: active ? chrome.text : chrome.textMuted },
+              ]}
+            >
+              {TerminalThemeLabels[themeName]}
+            </Text>
+            <Text style={[styles.themeCardDescription, { color: chrome.textSubtle }]}>
+              {TerminalThemeDescriptions[themeName]}
+            </Text>
+          </View>
+          {active ? (
+            <View
+              style={[
+                styles.themeCheckBadge,
+                {
+                  backgroundColor: chrome.accentSoft,
+                  borderColor: chrome.borderStrong,
+                },
+              ]}
+            >
+              <Ionicons name="checkmark" size={12} color={chrome.accent} />
+            </View>
+          ) : null}
+        </View>
+
+        <Text style={[styles.themePreviewMeta, { color: theme.brightBlack }]}>
+          tmux · libghostty · ansi
+        </Text>
+        <Text style={[styles.themePreviewText, { color: theme.foreground }]}>
+          <Text style={{ color: theme.green }}>zen</Text>
+          <Text style={{ color: theme.brightBlack }}> ~/workspace/zen</Text>
+          {"\n"}
+          <Text style={{ color: theme.brightBlack }}>$</Text>
+          <Text> git status --short</Text>
+          {"\n"}
+          <Text style={{ color: theme.yellow }}>M</Text>
+          <Text> app/components/terminal</Text>
+          {"\n"}
+          <Text style={{ color: theme.cyan }}>tmux</Text>
+          <Text style={{ color: theme.brightBlack }}> session attached · 2 panes</Text>
+        </Text>
+
+        <View style={styles.themeSwatchGrid}>
+          <ThemeSwatchRow
+            colors={[
+              theme.black,
+              theme.red,
+              theme.green,
+              theme.yellow,
+              theme.blue,
+              theme.magenta,
+              theme.cyan,
+              theme.white,
+            ]}
+          />
+          <ThemeSwatchRow
+            colors={[
+              theme.brightBlack,
+              theme.brightRed,
+              theme.brightGreen,
+              theme.brightYellow,
+              theme.brightBlue,
+              theme.brightMagenta,
+              theme.brightCyan,
+              theme.brightWhite,
+            ]}
+          />
+        </View>
+      </View>
+    </TouchableOpacity>
+  );
+}
+
+function ThemeSwatchRow({ colors }: { colors: string[] }) {
+  return (
+    <View style={styles.themeSwatchRow}>
+      {colors.map((color, index) => (
+        <View
+          key={`${color}-${index}`}
+          style={[styles.themeSwatch, { backgroundColor: color }]}
+        />
+      ))}
+    </View>
+  );
+}
+
 function connectionLabel(state: ConnectionState): string {
   switch (state) {
     case "connected":
@@ -941,6 +1127,23 @@ function connectionColor(state: ConnectionState): string {
     case "offline":
       return "#65758A";
   }
+}
+
+function formatLatency(latencyMs: number): string {
+  if (latencyMs >= 1000) {
+    return `${(latencyMs / 1000).toFixed(1)}s`;
+  }
+  return `${latencyMs} ms`;
+}
+
+function latencyColor(latencyMs: number): string {
+  if (latencyMs <= 120) {
+    return Colors.statusRunning;
+  }
+  if (latencyMs <= 350) {
+    return "#E7B65C";
+  }
+  return "#F09999";
 }
 
 const styles = StyleSheet.create({
@@ -993,6 +1196,13 @@ const styles = StyleSheet.create({
   serverList: {
     gap: 6,
   },
+  noServerText: {
+    color: Colors.textSecondary,
+    fontSize: 12,
+    fontFamily: Typography.uiFont,
+    opacity: 0.7,
+    lineHeight: 18,
+  },
   serverCard: {
     borderRadius: 12,
     paddingHorizontal: 14,
@@ -1013,6 +1223,11 @@ const styles = StyleSheet.create({
   },
   serverInfo: {
     flex: 1,
+  },
+  serverStatus: {
+    alignItems: "flex-end",
+    justifyContent: "center",
+    gap: 3,
   },
   serverName: {
     color: Colors.textPrimary,
@@ -1035,6 +1250,11 @@ const styles = StyleSheet.create({
   connectionLabelActive: {
     color: Colors.statusRunning,
     opacity: 0.8,
+  },
+  latencyLabel: {
+    fontSize: 11,
+    fontFamily: Typography.terminalFont,
+    opacity: 0.86,
   },
   noticeCard: {
     marginTop: 12,
@@ -1130,36 +1350,66 @@ const styles = StyleSheet.create({
     gap: 10,
   },
   themeCard: {
-    borderRadius: 12,
-    borderWidth: StyleSheet.hairlineWidth,
-    borderColor: "rgba(255,255,255,0.06)",
+    borderRadius: 16,
+    borderWidth: 1,
     overflow: "hidden",
   },
-  themeCardActive: {
-    borderColor: "rgba(91,157,255,0.3)",
-  },
   themePreview: {
-    minHeight: 80,
+    minHeight: 164,
     padding: 14,
-    justifyContent: "flex-end",
+    borderBottomWidth: StyleSheet.hairlineWidth,
+  },
+  themePreviewHeader: {
+    flexDirection: "row",
+    alignItems: "flex-start",
+    gap: 12,
+  },
+  themePreviewHeaderCopy: {
+    flex: 1,
+  },
+  themeCardTitle: {
+    fontSize: 13,
+    fontFamily: Typography.uiFontMedium,
+  },
+  themeCardDescription: {
+    marginTop: 3,
+    fontSize: 11,
+    lineHeight: 16,
+    fontFamily: Typography.uiFont,
+  },
+  themeCheckBadge: {
+    width: 24,
+    height: 24,
+    borderRadius: 12,
+    borderWidth: 1,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  themePreviewMeta: {
+    marginTop: 12,
+    fontSize: 10,
+    fontFamily: Typography.terminalFont,
+    textTransform: "uppercase",
+    letterSpacing: 0.8,
   },
   themePreviewText: {
+    marginTop: 10,
     fontSize: 12,
     fontFamily: Typography.terminalFont,
     lineHeight: 18,
   },
-  themeName: {
-    color: Colors.textSecondary,
-    fontSize: 12,
-    fontFamily: Typography.uiFontMedium,
-    paddingHorizontal: 14,
-    paddingVertical: 10,
-    textTransform: "capitalize",
-    opacity: 0.6,
+  themeSwatchGrid: {
+    marginTop: 14,
+    gap: 6,
   },
-  themeNameActive: {
-    color: Colors.accent,
-    opacity: 0.9,
+  themeSwatchRow: {
+    flexDirection: "row",
+    gap: 6,
+  },
+  themeSwatch: {
+    flex: 1,
+    height: 10,
+    borderRadius: 999,
   },
   // Skills
   skillRow: {

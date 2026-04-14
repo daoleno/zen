@@ -2,6 +2,11 @@ import AsyncStorage from "@react-native-async-storage/async-storage";
 import { parseSessionKey } from "./sessionKeys";
 import { normalizeDaemonId, normalizePublicKeyHex } from "./auth";
 import { normalizeServerURL as normalizeConnectionURL } from "./connection";
+import {
+  DefaultTerminalThemeName,
+  TerminalThemeName,
+  TerminalThemes,
+} from "../constants/terminalThemes";
 
 const KEYS = {
   servers: "zen:v3:servers",
@@ -13,7 +18,7 @@ const KEYS = {
   agentAliases: "zen:agent_aliases",
 } as const;
 
-export type StoredTerminalTheme = "zen-midnight" | "zen-amber";
+export type StoredTerminalTheme = TerminalThemeName;
 export type StoredInboxViewMode = "list" | "grid";
 export type StoredRecentAgentOpens = Record<string, number>;
 export type StoredAgentAliases = Record<string, string>;
@@ -138,7 +143,9 @@ export async function markOnboarded(): Promise<void> {
 
 export async function getTerminalTheme(): Promise<StoredTerminalTheme> {
   const value = await AsyncStorage.getItem(KEYS.terminalTheme);
-  return value === "zen-amber" ? "zen-amber" : "zen-midnight";
+  return typeof value === "string" && value in TerminalThemes
+    ? (value as TerminalThemeName)
+    : DefaultTerminalThemeName;
 }
 
 export async function setTerminalTheme(

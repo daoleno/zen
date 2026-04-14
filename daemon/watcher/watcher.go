@@ -4,8 +4,8 @@ import (
 	"context"
 	"fmt"
 	"os"
-	"os/user"
 	"os/exec"
+	"os/user"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -142,6 +142,14 @@ func (w *Watcher) poll() {
 			agent.StateVersion++
 		}
 
+		if !exists {
+			w.events <- SessionEvent{
+				Type:    "agent_discovered",
+				AgentID: win.target,
+				Agent:   cloneAgent(agent),
+			}
+		}
+
 		if contentChanged && existed {
 			prevLines := strings.Split(prev, "\n")
 			if len(lines) > len(prevLines) {
@@ -149,6 +157,7 @@ func (w *Watcher) poll() {
 				w.events <- SessionEvent{
 					Type:    "agent_output",
 					AgentID: win.target,
+					Agent:   cloneAgent(agent),
 					Lines:   newLines,
 				}
 			}
@@ -158,6 +167,7 @@ func (w *Watcher) poll() {
 			w.events <- SessionEvent{
 				Type:     "agent_state_change",
 				AgentID:  win.target,
+				Agent:    cloneAgent(agent),
 				OldState: string(oldState),
 				NewState: string(newState),
 			}
@@ -171,13 +181,25 @@ func (w *Watcher) poll() {
 			delete(w.agents, id)
 			delete(w.prevContent, id)
 			w.events <- SessionEvent{
-				Type:     "agent_state_change",
+				Type:     "agent_removed",
 				AgentID:  id,
+				Agent:    cloneAgent(old),
 				OldState: string(old.State),
 				NewState: string(classifier.StateDone),
 			}
 		}
 	}
+}
+
+func cloneAgent(agent *classifier.Agent) *classifier.Agent {
+	if agent == nil {
+		return nil
+	}
+	cp := *agent
+	if agent.LastLines != nil {
+		cp.LastLines = append([]string(nil), agent.LastLines...)
+	}
+	return &cp
 }
 
 // tmuxWindow represents a single tmux window target.

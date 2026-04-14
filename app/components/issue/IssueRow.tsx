@@ -1,18 +1,19 @@
 import React from 'react';
 import { StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
-import { Colors, Typography } from '../../constants/tokens';
+import { Colors, Typography, runStatusColor } from '../../constants/tokens';
 import { IssueStatusIcon } from './IssueStatusIcon';
 import { PriorityBar } from './PriorityBar';
-import type { Task } from '../../store/tasks';
+import type { Task, Run } from '../../store/tasks';
 
 interface Props {
   task: Task;
+  run?: Run | null;
   onPress: () => void;
   onLongPress?: () => void;
 }
 
-export function IssueRow({ task, onPress, onLongPress }: Props) {
+export function IssueRow({ task, run, onPress, onLongPress }: Props) {
   return (
     <TouchableOpacity
       style={styles.row}
@@ -25,7 +26,10 @@ export function IssueRow({ task, onPress, onLongPress }: Props) {
       <IssueStatusIcon status={task.status} size={16} />
       <Text style={styles.issueId}>ZEN-{task.number}</Text>
       <Text style={styles.title} numberOfLines={1}>{task.title}</Text>
-      {task.agentId ? (
+      {run?.status ? (
+        <View style={[styles.runDot, { backgroundColor: runStatusColor(run.status) }]} />
+      ) : null}
+      {run?.agentSessionId ? (
         <Ionicons name="terminal-outline" size={14} color={Colors.accent} />
       ) : null}
     </TouchableOpacity>
@@ -54,5 +58,10 @@ const styles = StyleSheet.create({
     color: Colors.textPrimary,
     fontSize: 14,
     fontFamily: Typography.uiFontMedium,
+  },
+  runDot: {
+    width: 8,
+    height: 8,
+    borderRadius: 4,
   },
 });

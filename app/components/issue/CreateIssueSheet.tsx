@@ -17,12 +17,23 @@ import type { IssuePriority } from '../../constants/tokens';
 import { PriorityPicker } from './PriorityPicker';
 import { wsClient } from '../../services/websocket';
 
+type CreateAction = {
+  key: string;
+  label: string;
+  primary?: boolean;
+  icon?: keyof typeof Ionicons.glyphMap;
+  afterCreate?: (serverId: string, task: any) => Promise<void> | void;
+};
+
 interface Props {
   visible: boolean;
   serverOptions: { id: string; name: string }[];
   selectedServerId: string | null;
   onSelectServer: (id: string) => void;
   onClose: () => void;
+  initialTitle?: string;
+  initialDescription?: string;
+  actions?: CreateAction[];
   onCreated?: (serverId: string, taskId: string) => void;
 }
 
@@ -32,6 +43,9 @@ export function CreateIssueSheet({
   selectedServerId,
   onSelectServer,
   onClose,
+  initialTitle,
+  initialDescription,
+  actions,
   onCreated,
 }: Props) {
   const [title, setTitle] = useState('');
@@ -39,13 +53,37 @@ export function CreateIssueSheet({
   const [priority, setPriority] = useState<IssuePriority>(0);
   const [submitting, setSubmitting] = useState(false);
 
+  React.useEffect(() => {
+    if (!visible) return;
+    setTitle(initialTitle || '');
+    setDescription(initialDescription || '');
+    setPriority(0);
+  }, [visible, initialDescription, initialTitle]);
+
   const reset = () => {
     setTitle('');
     setDescription('');
     setPriority(0);
   };
 
-  const handleCreate = async (delegate: boolean) => {
+  const resolvedActions: CreateAction[] = actions && actions.length > 0
+    ? actions
+    : [
+        { key: 'create', label: 'Create', primary: true },
+        {
+          key: 'create_and_delegate',
+          label: 'Create & Delegate',
+          icon: 'play',
+          afterCreate: async (serverId, task) => {
+            await wsClient.createRun(serverId, {
+              taskId: task.id,
+              executionMode: 'spawn_new_session',
+            });
+          },
+        },
+      ];
+
+  const handleCreate = async (action: CreateAction) => {
     const trimmed = title.trim();
     if (!trimmed || !selectedServerId) return;
 
@@ -56,11 +94,14 @@ export function CreateIssueSheet({
         description: description.trim(),
         priority,
       });
-      if (delegate) {
+      if (action.afterCreate) {
         try {
-          await wsClient.delegateTask(selectedServerId, task.id);
-        } catch {
-          // Task created, delegation failed — user can retry
+          await action.afterCreate(selectedServerId, task);
+        } catch (error: any) {
+          Alert.alert(
+            'Task created, follow-up failed',
+            error?.message || 'You can retry from the task detail screen.',
+          );
         }
       }
       reset();
@@ -140,25 +181,30 @@ export function CreateIssueSheet({
 
           {/* Actions */}
           <View style={styles.actions}>
-            <TouchableOpacity
-              style={[styles.actionBtn, styles.actionBtnPrimary, !title.trim() && styles.actionBtnDisabled]}
-              onPress={() => handleCreate(false)}
-              disabled={!title.trim() || submitting}
-              activeOpacity={0.82}
-            >
-              <Text style={[styles.actionText, styles.actionTextPrimary]}>
-                {submitting ? 'Creating...' : 'Create'}
-              </Text>
-            </TouchableOpacity>
-            <TouchableOpacity
-              style={[styles.actionBtn, !title.trim() && styles.actionBtnDisabled]}
-              onPress={() => handleCreate(true)}
-              disabled={!title.trim() || submitting}
-              activeOpacity={0.82}
-            >
-              <Ionicons name="play" size={14} color={Colors.textPrimary} />
-              <Text style={styles.actionText}>Create & Delegate</Text>
-            </TouchableOpacity>
+            {resolvedActions.map(action => (
+              <TouchableOpacity
+                key={action.key}
+                style={[
+                  styles.actionBtn,
+                  action.primary && styles.actionBtnPrimary,
+                  !title.trim() && styles.actionBtnDisabled,
+                ]}
+                onPress={() => handleCreate(action)}
+                disabled={!title.trim() || submitting}
+                activeOpacity={0.82}
+              >
+                {action.icon ? (
+                  <Ionicons
+                    name={action.icon}
+                    size={14}
+                    color={action.primary ? Colors.bgPrimary : Colors.textPrimary}
+                  />
+                ) : null}
+                <Text style={[styles.actionText, action.primary && styles.actionTextPrimary]}>
+                  {submitting ? 'Creating...' : action.label}
+                </Text>
+              </TouchableOpacity>
+            ))}
           </View>
         </View>
       </KeyboardAvoidingView>

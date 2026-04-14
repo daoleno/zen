@@ -54,17 +54,25 @@ export default function InboxScreen() {
   const { state } = useAgents();
   const { state: taskState } = useTasks();
   const router = useRouter();
+  const runById = useMemo(
+    () => Object.fromEntries(taskState.runs.map(run => [`${run.serverId}:${run.id}`, run])),
+    [taskState.runs],
+  );
 
   // Build agent→issue lookup for subtitle display
   const agentIssueMap = useMemo(() => {
     const map: Record<string, Task> = {};
     for (const task of taskState.tasks) {
-      if (task.agentId && task.status === 'in_progress') {
-        map[`${task.serverId}:${task.agentId}`] = task;
+      if (!task.currentRunId || task.status !== 'in_progress') {
+        continue;
+      }
+      const run = runById[`${task.serverId}:${task.currentRunId}`];
+      if (run?.agentSessionId) {
+        map[`${task.serverId}:${run.agentSessionId}`] = task;
       }
     }
     return map;
-  }, [taskState.tasks]);
+  }, [runById, taskState.tasks]);
   const [viewMode, setViewModeState] = useState<StoredInboxViewMode>('list');
   const [agentAliases, setAgentAliases] = useState<StoredAgentAliases>({});
   const [recentAgentOpens, setRecentAgentOpens] = useState<StoredRecentAgentOpens>({});

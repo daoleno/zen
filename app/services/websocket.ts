@@ -461,14 +461,18 @@ class MultiServerWebSocketClient {
     this.send(serverId, { type: "kill_agent", agent_id: agentId });
   }
 
-  listAgents(serverId: string) {
-    this.send(serverId, { type: "list_agents" });
+  listAgentSessions(serverId: string) {
+    this.send(serverId, { type: "list_agent_sessions" });
   }
 
   // ── Tasks ────────────────────────────────────────────
 
   listTasks(serverId: string) {
     this.send(serverId, { type: "list_tasks" });
+  }
+
+  listRuns(serverId: string) {
+    this.send(serverId, { type: "list_runs" });
   }
 
   createTask(
@@ -555,21 +559,28 @@ class MultiServerWebSocketClient {
     });
   }
 
-  delegateTask(serverId: string, taskId: string) {
+  createRun(
+    serverId: string,
+    options: {
+      taskId: string;
+      executionMode?: "spawn_new_session" | "attach_existing_session";
+      agentSessionId?: string;
+    },
+  ) {
     const requestId = `${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
 
-    return new Promise<{ task: any; agentId: string }>((resolve, reject) => {
+    return new Promise<{ run: any; task?: any }>((resolve, reject) => {
       const cleanup = () => {
         if (timer) clearTimeout(timer);
-        this.off("task_delegated", handleDelegated);
+        this.off("run_created", handleCreated);
         this.off("error", handleError);
       };
 
-      const handleDelegated = (payload: any) => {
+      const handleCreated = (payload: any) => {
         if (payload.serverId !== serverId || payload.request_id !== requestId)
           return;
         cleanup();
-        resolve({ task: payload.task, agentId: payload.agent_id });
+        resolve({ run: payload.run, task: payload.task });
       };
 
       const handleError = (payload: any) => {
@@ -581,15 +592,17 @@ class MultiServerWebSocketClient {
 
       const timer = setTimeout(() => {
         cleanup();
-        reject(new Error("Timed out while delegating task."));
+        reject(new Error("Timed out while creating run."));
       }, 15000);
 
-      this.on("task_delegated", handleDelegated);
+      this.on("run_created", handleCreated);
       this.on("error", handleError);
       this.send(serverId, {
-        type: "delegate_task",
+        type: "create_run",
         request_id: requestId,
-        task_id: taskId,
+        task_id: options.taskId,
+        execution_mode: options.executionMode ?? "spawn_new_session",
+        agent_session_id: options.agentSessionId ?? "",
       });
     });
   }

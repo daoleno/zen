@@ -96,6 +96,11 @@ func runDaemon(args []string, stderr io.Writer) error {
 		return fmt.Errorf("initialize task store: %w", err)
 	}
 
+	runStore, err := task.NewRunStore(stateDir)
+	if err != nil {
+		return fmt.Errorf("initialize run store: %w", err)
+	}
+
 	skillStore, err := task.NewSkillStore(stateDir)
 	if err != nil {
 		return fmt.Errorf("initialize skill store: %w", err)
@@ -118,7 +123,7 @@ func runDaemon(args []string, stderr io.Writer) error {
 	go sc.Start(ctx)
 
 	pusher := push.New()
-	srv := server.New(authManager, w, pusher, sc, taskStore, skillStore, guidanceStore, projectStore)
+	srv := server.New(authManager, w, pusher, sc, taskStore, runStore, skillStore, guidanceStore, projectStore)
 	if err := srv.Run(ctx, cfg.addr); err != nil && err.Error() != "http: Server closed" {
 		return fmt.Errorf("server error: %w", err)
 	}
