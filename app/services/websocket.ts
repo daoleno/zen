@@ -492,6 +492,7 @@ class MultiServerWebSocketClient {
     options: {
       title: string;
       description?: string;
+      attachments?: { name: string; path: string }[];
       priority?: number;
       labels?: string[];
       projectId?: string;
@@ -535,6 +536,7 @@ class MultiServerWebSocketClient {
         request_id: requestId,
         title: options.title,
         description: options.description ?? "",
+        attachments: options.attachments ?? [],
         priority: options.priority ?? 0,
         labels: options.labels ?? [],
         project_id: options.projectId ?? "",
@@ -554,6 +556,7 @@ class MultiServerWebSocketClient {
     updates: {
       title?: string;
       description?: string;
+      attachments?: { name: string; path: string }[];
       status?: string;
       priority?: number;
       labels?: string[];
@@ -573,6 +576,9 @@ class MultiServerWebSocketClient {
     }
     if ("description" in updates) {
       payload.description = updates.description ?? "";
+    }
+    if ("attachments" in updates) {
+      payload.attachments = updates.attachments ?? [];
     }
     if ("status" in updates) {
       payload.task_status = updates.status ?? "";
@@ -689,13 +695,15 @@ class MultiServerWebSocketClient {
     options: {
       taskId: string;
       body: string;
+      attachments?: { name: string; path: string }[];
       parentCommentId?: string;
       deliveryMode?:
-        | "note"
+        | "comment"
         | "current_run"
         | "spawn_new_session"
         | "attach_existing_session";
       agentSessionId?: string;
+      agentCmd?: string;
     },
   ) {
     const requestId = `${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
@@ -746,9 +754,11 @@ class MultiServerWebSocketClient {
           request_id: requestId,
           task_id: options.taskId,
           body: options.body,
+          attachments: options.attachments ?? [],
           parent_comment_id: options.parentCommentId ?? "",
-          delivery_mode: options.deliveryMode ?? "note",
+          delivery_mode: options.deliveryMode ?? "comment",
           agent_session_id: options.agentSessionId ?? "",
+          agent_cmd: options.agentCmd ?? "",
         });
       },
     );

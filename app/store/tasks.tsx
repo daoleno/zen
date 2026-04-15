@@ -3,9 +3,15 @@ import type { IssueStatus, IssuePriority } from "../constants/tokens";
 
 export type { IssueStatus, IssuePriority };
 
+export interface Attachment {
+  name: string;
+  path: string;
+}
+
 export interface TaskComment {
   id: string;
   body: string;
+  attachments: Attachment[];
   authorKind: string;
   authorLabel: string;
   parentId?: string;
@@ -23,6 +29,7 @@ export interface Task {
   serverName: string;
   title: string;
   description: string;
+  attachments: Attachment[];
   status: IssueStatus;
   priority: IssuePriority;
   labels: string[];
@@ -97,6 +104,7 @@ type RawTask = {
   number?: number;
   title: string;
   description?: string;
+  attachments?: RawAttachment[];
   status: IssueStatus;
   priority?: number;
   labels?: string[];
@@ -114,6 +122,7 @@ type RawTask = {
 type RawTaskComment = {
   id: string;
   body?: string;
+  attachments?: RawAttachment[];
   author_kind?: string;
   author_label?: string;
   parent_id?: string;
@@ -122,6 +131,11 @@ type RawTaskComment = {
   agent_session_id?: string;
   target_label?: string;
   created_at?: string | number;
+};
+
+type RawAttachment = {
+  name?: string;
+  path?: string;
 };
 
 type RawRun = {
@@ -222,6 +236,9 @@ function normalizeTask(
     serverName,
     title: raw.title,
     description: raw.description || "",
+    attachments: Array.isArray(raw.attachments)
+      ? raw.attachments.map(normalizeAttachment)
+      : [],
     status: raw.status,
     priority: (raw.priority || 0) as IssuePriority,
     labels: raw.labels || [],
@@ -243,6 +260,9 @@ function normalizeTaskComment(raw: RawTaskComment): TaskComment {
   return {
     id: raw.id,
     body: raw.body || "",
+    attachments: Array.isArray(raw.attachments)
+      ? raw.attachments.map(normalizeAttachment)
+      : [],
     authorKind: raw.author_kind || "user",
     authorLabel: raw.author_label || "",
     parentId: raw.parent_id,
@@ -251,6 +271,13 @@ function normalizeTaskComment(raw: RawTaskComment): TaskComment {
     agentSessionId: raw.agent_session_id,
     targetLabel: raw.target_label,
     createdAt: normalizeTimestamp(raw.created_at),
+  };
+}
+
+function normalizeAttachment(raw: RawAttachment): Attachment {
+  return {
+    name: raw.name || "",
+    path: raw.path || "",
   };
 }
 

@@ -13,7 +13,17 @@ func TestStoreCRUD(t *testing.T) {
 	}
 
 	// Create
-	task, err := s.Create("Fix bug", "Fix the login bug", "", "/home/user/project", 2, []string{"bug"}, "", "2026-04-20")
+	task, err := s.Create(
+		"Fix bug",
+		"Fix the login bug",
+		[]Attachment{{Name: "screenshot.png", Path: "/tmp/screenshot.png"}},
+		"",
+		"/home/user/project",
+		2,
+		[]string{"bug"},
+		"",
+		"2026-04-20",
+	)
 	if err != nil {
 		t.Fatalf("Create: %v", err)
 	}
@@ -35,6 +45,9 @@ func TestStoreCRUD(t *testing.T) {
 	if task.DueDate != "2026-04-20" {
 		t.Errorf("DueDate = %q, want %q", task.DueDate, "2026-04-20")
 	}
+	if len(task.Attachments) != 1 || task.Attachments[0].Path != "/tmp/screenshot.png" {
+		t.Errorf("Attachments = %#v, want persisted attachment", task.Attachments)
+	}
 
 	// Get
 	got := s.Get(task.ID)
@@ -46,7 +59,7 @@ func TestStoreCRUD(t *testing.T) {
 	}
 
 	// Second create should get number 2
-	task2, err := s.Create("Add tests", "", "", "", 0, nil, "", "")
+	task2, err := s.Create("Add tests", "", nil, "", "", 0, nil, "", "")
 	if err != nil {
 		t.Fatalf("Create #2: %v", err)
 	}
@@ -98,7 +111,7 @@ func TestStorePersistence(t *testing.T) {
 		t.Fatalf("NewStore: %v", err)
 	}
 
-	task, err := s1.Create("Persistent task", "Should survive reload", "", "", 0, nil, "", "2026-05-01")
+	task, err := s1.Create("Persistent task", "Should survive reload", nil, "", "", 0, nil, "", "2026-05-01")
 	if err != nil {
 		t.Fatalf("Create: %v", err)
 	}
@@ -121,7 +134,7 @@ func TestStorePersistence(t *testing.T) {
 	}
 
 	// Issue number should continue from where it left off
-	task2, err := s2.Create("Next task", "", "", "", 0, nil, "", "")
+	task2, err := s2.Create("Next task", "", nil, "", "", 0, nil, "", "")
 	if err != nil {
 		t.Fatalf("Create after reload: %v", err)
 	}
@@ -137,7 +150,7 @@ func TestStoreCommentsPersist(t *testing.T) {
 		t.Fatalf("NewStore: %v", err)
 	}
 
-	task, err := s.Create("Commented task", "", "", "", 0, nil, "", "")
+	task, err := s.Create("Commented task", "", nil, "", "", 0, nil, "", "")
 	if err != nil {
 		t.Fatalf("Create: %v", err)
 	}
@@ -145,10 +158,11 @@ func TestStoreCommentsPersist(t *testing.T) {
 	updated, err := s.AddComment(task.ID, TaskComment{
 		ID:             "comment-1",
 		Body:           "Please take a look at this.",
+		Attachments:    []Attachment{{Name: "trace.log", Path: "/tmp/trace.log"}},
 		AuthorKind:     "user",
 		AuthorLabel:    "You",
 		ParentID:       "comment-root",
-		DeliveryMode:   "note",
+		DeliveryMode:   "comment",
 		AgentSessionID: "session-1",
 		TargetLabel:    "repo",
 	})
@@ -181,6 +195,9 @@ func TestStoreCommentsPersist(t *testing.T) {
 	if got.Comments[0].ParentID != "comment-root" {
 		t.Fatalf("ParentID = %q, want comment-root", got.Comments[0].ParentID)
 	}
+	if len(got.Comments[0].Attachments) != 1 || got.Comments[0].Attachments[0].Path != "/tmp/trace.log" {
+		t.Fatalf("Attachments = %#v, want persisted comment attachment", got.Comments[0].Attachments)
+	}
 }
 
 func TestStoreConcurrency(t *testing.T) {
@@ -195,7 +212,7 @@ func TestStoreConcurrency(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			_, _ = s.Create("Task", "", "", "", 0, nil, "", "")
+			_, _ = s.Create("Task", "", nil, "", "", 0, nil, "", "")
 		}()
 	}
 	wg.Wait()
@@ -213,7 +230,7 @@ func TestStoreEvents(t *testing.T) {
 		t.Fatalf("NewStore: %v", err)
 	}
 
-	task, err := s.Create("Event task", "", "", "", 0, nil, "", "")
+	task, err := s.Create("Event task", "", nil, "", "", 0, nil, "", "")
 	if err != nil {
 		t.Fatalf("Create: %v", err)
 	}
@@ -258,11 +275,11 @@ func TestStoreClearProjectRemovesProjectReferenceAndEmitsUpdates(t *testing.T) {
 		t.Fatalf("NewStore: %v", err)
 	}
 
-	projectTask, err := s.Create("Project task", "", "", "", 0, nil, "project-1", "")
+	projectTask, err := s.Create("Project task", "", nil, "", "", 0, nil, "project-1", "")
 	if err != nil {
 		t.Fatalf("Create project task: %v", err)
 	}
-	otherTask, err := s.Create("Other task", "", "", "", 0, nil, "project-2", "")
+	otherTask, err := s.Create("Other task", "", nil, "", "", 0, nil, "project-2", "")
 	if err != nil {
 		t.Fatalf("Create other task: %v", err)
 	}

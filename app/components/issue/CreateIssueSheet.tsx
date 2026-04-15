@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useState } from "react";
 import {
   Alert,
   Keyboard,
@@ -11,15 +11,18 @@ import {
   TouchableOpacity,
   useWindowDimensions,
   View,
-} from 'react-native';
-import { Ionicons } from '@expo/vector-icons';
-import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { Colors, Typography, priorityColor } from '../../constants/tokens';
-import type { IssuePriority } from '../../constants/tokens';
-import { DueDatePicker } from './DueDatePicker';
-import { formatDueDateShort } from '../../services/dueDate';
-import { useTasks } from '../../store/tasks';
-import { wsClient } from '../../services/websocket';
+} from "react-native";
+import { Ionicons } from "@expo/vector-icons";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
+import { Colors, Typography, priorityColor } from "../../constants/tokens";
+import type { IssuePriority } from "../../constants/tokens";
+import { DueDatePicker } from "./DueDatePicker";
+import { AttachmentStack } from "./AttachmentStack";
+import { formatDueDateShort } from "../../services/dueDate";
+import { uploadDocumentForServer } from "../../services/uploads";
+import { useTasks } from "../../store/tasks";
+import type { Attachment } from "../../store/tasks";
+import { wsClient } from "../../services/websocket";
 
 type CreateAction = {
   key: string;
@@ -29,14 +32,14 @@ type CreateAction = {
   afterCreate?: (serverId: string, task: any) => Promise<void> | void;
 };
 
-type ExpandedSection = 'project' | 'priority' | 'dueDate' | null;
+type ExpandedSection = "project" | "priority" | "dueDate" | null;
 
 const PRIORITY_OPTIONS: { value: IssuePriority; label: string }[] = [
-  { value: 0, label: 'No priority' },
-  { value: 4, label: 'Low' },
-  { value: 3, label: 'Medium' },
-  { value: 2, label: 'High' },
-  { value: 1, label: 'Urgent' },
+  { value: 0, label: "No priority" },
+  { value: 4, label: "Low" },
+  { value: 3, label: "Medium" },
+  { value: 2, label: "High" },
+  { value: 1, label: "Urgent" },
 ];
 
 function clamp(value: number, min: number, max: number) {
@@ -70,17 +73,23 @@ export function CreateIssueSheet({
 }: Props) {
   const { state: taskState } = useTasks();
   const insets = useSafeAreaInsets();
-  const { width: windowWidth, height: windowHeight, fontScale } = useWindowDimensions();
+  const {
+    width: windowWidth,
+    height: windowHeight,
+    fontScale,
+  } = useWindowDimensions();
 
-  const [title, setTitle] = useState('');
-  const [description, setDescription] = useState('');
+  const [title, setTitle] = useState("");
+  const [description, setDescription] = useState("");
   const [priority, setPriority] = useState<IssuePriority>(0);
-  const [projectId, setProjectId] = useState('');
+  const [projectId, setProjectId] = useState("");
   const [dueDate, setDueDate] = useState<string | null>(null);
+  const [attachments, setAttachments] = useState<Attachment[]>([]);
   const [expandedSection, setExpandedSection] = useState<ExpandedSection>(null);
   const [submitting, setSubmitting] = useState(false);
-  const [newProjectName, setNewProjectName] = useState('');
+  const [newProjectName, setNewProjectName] = useState("");
   const [creatingProject, setCreatingProject] = useState(false);
+  const [uploadingAttachment, setUploadingAttachment] = useState(false);
   const [keyboardHeight, setKeyboardHeight] = useState(0);
 
   const projectOptions = useMemo(() => {
@@ -89,38 +98,45 @@ export function CreateIssueSheet({
     }
 
     return taskState.projects
-      .filter(project => project.serverId === selectedServerId)
+      .filter((project) => project.serverId === selectedServerId)
       .sort((left, right) => left.name.localeCompare(right.name));
   }, [selectedServerId, taskState.projects]);
 
   const selectedProject = useMemo(
-    () => projectOptions.find(project => project.id === projectId) || null,
+    () => projectOptions.find((project) => project.id === projectId) || null,
     [projectId, projectOptions],
   );
 
   const selectedPriority = useMemo(
-    () => PRIORITY_OPTIONS.find(option => option.value === priority) || PRIORITY_OPTIONS[0],
+    () =>
+      PRIORITY_OPTIONS.find((option) => option.value === priority) ||
+      PRIORITY_OPTIONS[0],
     [priority],
   );
 
-  const resolvedActions: CreateAction[] = actions && actions.length > 0
-    ? actions
-    : [{ key: 'create', label: 'Create issue', primary: true }];
+  const resolvedActions: CreateAction[] =
+    actions && actions.length > 0
+      ? actions
+      : [{ key: "create", label: "Create issue", primary: true }];
 
   const normalizedFontScale = clamp(fontScale || 1, 1, 1.25);
   const isLandscape = windowWidth > windowHeight;
   const isTabletLike = windowWidth >= 768;
   const isNarrowPhone = windowWidth < 360;
-  const isCompactHeight = windowHeight < 760 || (isLandscape && windowHeight < 620);
+  const isCompactHeight =
+    windowHeight < 760 || (isLandscape && windowHeight < 620);
   const stackComposer = isNarrowPhone || normalizedFontScale > 1.15;
-  const stackActions = resolvedActions.length > 1 && (isNarrowPhone || normalizedFontScale > 1.1);
+  const stackActions =
+    resolvedActions.length > 1 && (isNarrowPhone || normalizedFontScale > 1.1);
   const shouldInsetSheet = isTabletLike || isLandscape;
 
   const keyboardInset = Math.max(0, keyboardHeight - insets.bottom);
   const keyboardOpen = keyboardInset > 0;
   const sheetHorizontalPadding = isTabletLike ? 24 : isNarrowPhone ? 16 : 20;
   const sheetRadius = isTabletLike ? 32 : 30;
-  const sheetWidth = shouldInsetSheet ? Math.min(windowWidth - 16, 720) : windowWidth;
+  const sheetWidth = shouldInsetSheet
+    ? Math.min(windowWidth - 16, 720)
+    : windowWidth;
   const sheetMaxHeight = Math.min(
     windowHeight - insets.top - (shouldInsetSheet ? 10 : 14),
     windowHeight * (isLandscape ? 0.96 : 0.9),
@@ -133,15 +149,31 @@ export function CreateIssueSheet({
   const headerTopPadding = isCompactHeight ? 4 : 6;
   const headerBottomPadding = isCompactHeight ? 10 : 14;
   const contentTopPadding = isCompactHeight ? 2 : 6;
-  const contentBottomPadding = keyboardOpen ? (isCompactHeight ? 96 : 112) : (isCompactHeight ? 16 : 20);
+  const contentBottomPadding = keyboardOpen
+    ? isCompactHeight
+      ? 96
+      : 112
+    : isCompactHeight
+      ? 16
+      : 20;
   const titleFontSize = isTabletLike ? 30 : isCompactHeight ? 24 : 28;
   const titleLineHeight = Math.round(titleFontSize * 1.18);
-  const titleVerticalPadding = Platform.OS === 'android'
-    ? (isCompactHeight ? 8 : 10)
-    : (isCompactHeight ? 6 : 8);
-  const titleMinHeight = Platform.OS === 'android'
-    ? (isCompactHeight ? 48 : 52)
-    : (isCompactHeight ? 44 : 48);
+  const titleVerticalPadding =
+    Platform.OS === "android"
+      ? isCompactHeight
+        ? 8
+        : 10
+      : isCompactHeight
+        ? 6
+        : 8;
+  const titleMinHeight =
+    Platform.OS === "android"
+      ? isCompactHeight
+        ? 48
+        : 52
+      : isCompactHeight
+        ? 44
+        : 48;
   const descriptionMinHeight = isTabletLike ? 120 : isCompactHeight ? 92 : 108;
   const cardRadius = isTabletLike ? 20 : 18;
   const groupRadius = isTabletLike ? 20 : 18;
@@ -162,13 +194,14 @@ export function CreateIssueSheet({
       onSelectServer(serverOptions[0].id);
     }
 
-    setTitle(initialTitle || '');
-    setDescription(initialDescription || '');
+    setTitle(initialTitle || "");
+    setDescription(initialDescription || "");
     setPriority(0);
-    setProjectId(initialProjectId || '');
+    setProjectId(initialProjectId || "");
     setDueDate(null);
+    setAttachments([]);
     setExpandedSection(null);
-    setNewProjectName('');
+    setNewProjectName("");
     setKeyboardHeight(0);
   }, [
     initialDescription,
@@ -185,8 +218,8 @@ export function CreateIssueSheet({
       return;
     }
 
-    if (!projectOptions.some(project => project.id === projectId)) {
-      setProjectId('');
+    if (!projectOptions.some((project) => project.id === projectId)) {
+      setProjectId("");
     }
   }, [projectId, projectOptions]);
 
@@ -195,10 +228,12 @@ export function CreateIssueSheet({
       return;
     }
 
-    const showEvent = Platform.OS === 'ios' ? 'keyboardWillShow' : 'keyboardDidShow';
-    const hideEvent = Platform.OS === 'ios' ? 'keyboardWillHide' : 'keyboardDidHide';
+    const showEvent =
+      Platform.OS === "ios" ? "keyboardWillShow" : "keyboardDidShow";
+    const hideEvent =
+      Platform.OS === "ios" ? "keyboardWillHide" : "keyboardDidHide";
 
-    const showSubscription = Keyboard.addListener(showEvent, event => {
+    const showSubscription = Keyboard.addListener(showEvent, (event) => {
       setKeyboardHeight(event.endCoordinates.height);
     });
 
@@ -242,6 +277,7 @@ export function CreateIssueSheet({
       const task = await wsClient.createTask(selectedServerId, {
         title: trimmed,
         description: description.trim(),
+        attachments,
         priority,
         projectId: projectId || undefined,
         dueDate: dueDate || undefined,
@@ -252,8 +288,8 @@ export function CreateIssueSheet({
           await action.afterCreate(selectedServerId, task);
         } catch (error: any) {
           Alert.alert(
-            'Issue created, follow-up failed',
-            error?.message || 'You can retry from the issue detail screen.',
+            "Issue created, follow-up failed",
+            error?.message || "You can retry from the issue detail screen.",
           );
         }
       }
@@ -261,10 +297,46 @@ export function CreateIssueSheet({
       onCreated?.(selectedServerId, task.id);
       handleClose(true);
     } catch (error: any) {
-      Alert.alert('Could not create issue', error?.message || 'Try again.');
+      Alert.alert("Could not create issue", error?.message || "Try again.");
     } finally {
       setSubmitting(false);
     }
+  };
+
+  const handleAddAttachment = async () => {
+    if (
+      !selectedServerId ||
+      submitting ||
+      creatingProject ||
+      uploadingAttachment
+    ) {
+      return;
+    }
+
+    setUploadingAttachment(true);
+    try {
+      const attachment = await uploadDocumentForServer(selectedServerId);
+      if (!attachment) {
+        return;
+      }
+
+      setAttachments((current) => {
+        if (current.some((existing) => existing.path === attachment.path)) {
+          return current;
+        }
+        return [...current, attachment];
+      });
+    } catch (error: any) {
+      Alert.alert("Could not attach file", error?.message || "Try again.");
+    } finally {
+      setUploadingAttachment(false);
+    }
+  };
+
+  const handleRemoveAttachment = (attachment: Attachment) => {
+    setAttachments((current) =>
+      current.filter((existing) => existing.path !== attachment.path),
+    );
   };
 
   const handleCreateProject = async () => {
@@ -280,10 +352,10 @@ export function CreateIssueSheet({
         name: trimmed,
       });
       setProjectId(project.id);
-      setNewProjectName('');
+      setNewProjectName("");
       setExpandedSection(null);
     } catch (error: any) {
-      Alert.alert('Could not create project', error?.message || 'Try again.');
+      Alert.alert("Could not create project", error?.message || "Try again.");
     } finally {
       setCreatingProject(false);
     }
@@ -310,7 +382,7 @@ export function CreateIssueSheet({
     }
 
     Keyboard.dismiss();
-    setExpandedSection(current => current === section ? null : section);
+    setExpandedSection((current) => (current === section ? null : section));
   };
 
   const renderProjectValue = () => {
@@ -318,7 +390,7 @@ export function CreateIssueSheet({
       return selectedProject.name;
     }
 
-    return 'No project';
+    return "No project";
   };
 
   const renderAttributeRow = ({
@@ -354,7 +426,9 @@ export function CreateIssueSheet({
         >
           <View style={styles.attributeLeft}>
             <Ionicons name={icon} size={17} color={Colors.textSecondary} />
-            <Text style={styles.attributeLabel} maxFontSizeMultiplier={1.1}>{label}</Text>
+            <Text style={styles.attributeLabel} maxFontSizeMultiplier={1.1}>
+              {label}
+            </Text>
           </View>
 
           <View style={styles.attributeRight}>
@@ -363,14 +437,16 @@ export function CreateIssueSheet({
               maxFontSizeMultiplier={1.1}
               style={[
                 styles.attributeValue,
-                valueMuted ? styles.attributeValueMuted : styles.attributeValueActive,
+                valueMuted
+                  ? styles.attributeValueMuted
+                  : styles.attributeValueActive,
               ]}
               numberOfLines={1}
             >
               {value}
             </Text>
             <Ionicons
-              name={active ? 'chevron-up' : 'chevron-down'}
+              name={active ? "chevron-up" : "chevron-down"}
               size={15}
               color={Colors.textSecondary}
             />
@@ -379,7 +455,12 @@ export function CreateIssueSheet({
 
         {active && children ? (
           <View style={styles.inlinePanel}>
-            <View style={[styles.panelContent, { paddingVertical: panelVerticalPadding }]}>
+            <View
+              style={[
+                styles.panelContent,
+                { paddingVertical: panelVerticalPadding },
+              ]}
+            >
               {children}
             </View>
           </View>
@@ -397,7 +478,11 @@ export function CreateIssueSheet({
       onRequestClose={() => handleClose()}
     >
       <View style={styles.root}>
-        <TouchableOpacity style={styles.backdrop} activeOpacity={1} onPress={() => handleClose()} />
+        <TouchableOpacity
+          style={styles.backdrop}
+          activeOpacity={1}
+          onPress={() => handleClose()}
+        />
 
         <View
           style={[
@@ -414,7 +499,10 @@ export function CreateIssueSheet({
           <View
             style={[
               styles.handle,
-              { marginTop: isCompactHeight ? 8 : 10, marginBottom: isCompactHeight ? 6 : 8 },
+              {
+                marginTop: isCompactHeight ? 8 : 10,
+                marginBottom: isCompactHeight ? 6 : 8,
+              },
             ]}
           />
 
@@ -428,7 +516,9 @@ export function CreateIssueSheet({
               },
             ]}
           >
-            <Text style={styles.headerTitle} maxFontSizeMultiplier={1.12}>New issue</Text>
+            <Text style={styles.headerTitle} maxFontSizeMultiplier={1.12}>
+              New issue
+            </Text>
 
             <View style={styles.headerActions}>
               {keyboardOpen ? (
@@ -438,7 +528,11 @@ export function CreateIssueSheet({
                   activeOpacity={0.82}
                   disabled={submitting || creatingProject}
                 >
-                  <Ionicons name="chevron-down" size={18} color={Colors.textSecondary} />
+                  <Ionicons
+                    name="chevron-down"
+                    size={18}
+                    color={Colors.textSecondary}
+                  />
                 </TouchableOpacity>
               ) : null}
 
@@ -465,8 +559,10 @@ export function CreateIssueSheet({
             ]}
             showsVerticalScrollIndicator={false}
             keyboardShouldPersistTaps="handled"
-            keyboardDismissMode={Platform.OS === 'ios' ? 'interactive' : 'on-drag'}
-            automaticallyAdjustKeyboardInsets={Platform.OS === 'ios'}
+            keyboardDismissMode={
+              Platform.OS === "ios" ? "interactive" : "on-drag"
+            }
+            automaticallyAdjustKeyboardInsets={Platform.OS === "ios"}
           >
             <TextInput
               style={[
@@ -493,9 +589,14 @@ export function CreateIssueSheet({
               maxFontSizeMultiplier={1.12}
             />
 
-            <View style={[styles.descriptionCard, { borderRadius: cardRadius }]}>
+            <View
+              style={[styles.descriptionCard, { borderRadius: cardRadius }]}
+            >
               <TextInput
-                style={[styles.descriptionInput, { minHeight: descriptionMinHeight }]}
+                style={[
+                  styles.descriptionInput,
+                  { minHeight: descriptionMinHeight },
+                ]}
                 value={description}
                 onChangeText={setDescription}
                 onFocus={() => setExpandedSection(null)}
@@ -511,11 +612,37 @@ export function CreateIssueSheet({
               />
             </View>
 
+            <View
+              style={[styles.attachmentsCard, { borderRadius: cardRadius }]}
+            >
+              <Text
+                style={styles.attachmentsLabel}
+                maxFontSizeMultiplier={1.05}
+              >
+                Files
+              </Text>
+              <AttachmentStack
+                attachments={attachments}
+                emptyLabel="Optional files, screenshots, or specs."
+                addLabel={uploadingAttachment ? "Uploading..." : "Attach file"}
+                addDisabled={
+                  !selectedServerId ||
+                  submitting ||
+                  creatingProject ||
+                  uploadingAttachment
+                }
+                onAdd={() => {
+                  void handleAddAttachment();
+                }}
+                onRemove={handleRemoveAttachment}
+              />
+            </View>
+
             <View style={[styles.attributeList, { gap: sectionGap }]}>
               {renderAttributeRow({
-                section: 'project',
-                icon: 'folder-open-outline',
-                label: 'Project',
+                section: "project",
+                icon: "folder-open-outline",
+                label: "Project",
                 value: renderProjectValue(),
                 valueMuted: !selectedProject,
                 children: (
@@ -523,20 +650,33 @@ export function CreateIssueSheet({
                     <View style={styles.optionList}>
                       <TouchableOpacity
                         style={styles.optionRow}
-                        onPress={() => selectProject('')}
+                        onPress={() => selectProject("")}
                         activeOpacity={0.82}
                       >
                         <View style={styles.optionMain}>
-                          <Ionicons name="remove-circle-outline" size={16} color={Colors.textSecondary} />
-                          <Text style={styles.optionText} maxFontSizeMultiplier={1.1}>No project</Text>
+                          <Ionicons
+                            name="remove-circle-outline"
+                            size={16}
+                            color={Colors.textSecondary}
+                          />
+                          <Text
+                            style={styles.optionText}
+                            maxFontSizeMultiplier={1.1}
+                          >
+                            No project
+                          </Text>
                         </View>
 
                         {!projectId ? (
-                          <Ionicons name="checkmark" size={16} color={Colors.accent} />
+                          <Ionicons
+                            name="checkmark"
+                            size={16}
+                            color={Colors.accent}
+                          />
                         ) : null}
                       </TouchableOpacity>
 
-                      {projectOptions.map(project => {
+                      {projectOptions.map((project) => {
                         const active = project.id === projectId;
 
                         return (
@@ -547,12 +687,25 @@ export function CreateIssueSheet({
                             activeOpacity={0.82}
                           >
                             <View style={styles.optionMain}>
-                              <Ionicons name="folder-open-outline" size={16} color={Colors.textSecondary} />
-                              <Text style={styles.optionText} maxFontSizeMultiplier={1.1}>{project.name}</Text>
+                              <Ionicons
+                                name="folder-open-outline"
+                                size={16}
+                                color={Colors.textSecondary}
+                              />
+                              <Text
+                                style={styles.optionText}
+                                maxFontSizeMultiplier={1.1}
+                              >
+                                {project.name}
+                              </Text>
                             </View>
 
                             {active ? (
-                              <Ionicons name="checkmark" size={16} color={Colors.accent} />
+                              <Ionicons
+                                name="checkmark"
+                                size={16}
+                                color={Colors.accent}
+                              />
                             ) : null}
                           </TouchableOpacity>
                         );
@@ -561,13 +714,28 @@ export function CreateIssueSheet({
 
                     {projectOptions.length === 0 ? (
                       <View style={styles.emptyState}>
-                        <Text style={styles.emptyStateTitle} maxFontSizeMultiplier={1.1}>No projects yet</Text>
+                        <Text
+                          style={styles.emptyStateTitle}
+                          maxFontSizeMultiplier={1.1}
+                        >
+                          No projects yet
+                        </Text>
                       </View>
                     ) : null}
 
                     <View style={styles.composer}>
-                      <Text style={styles.composerLabel} maxFontSizeMultiplier={1.05}>Create project</Text>
-                      <View style={[styles.composerRow, stackComposer && styles.composerRowStacked]}>
+                      <Text
+                        style={styles.composerLabel}
+                        maxFontSizeMultiplier={1.05}
+                      >
+                        Create project
+                      </Text>
+                      <View
+                        style={[
+                          styles.composerRow,
+                          stackComposer && styles.composerRowStacked,
+                        ]}
+                      >
                         <TextInput
                           style={[
                             styles.composerInput,
@@ -581,7 +749,9 @@ export function CreateIssueSheet({
                           autoCorrect={false}
                           editable={!creatingProject && !submitting}
                           returnKeyType="done"
-                          onSubmitEditing={() => { void handleCreateProject(); }}
+                          onSubmitEditing={() => {
+                            void handleCreateProject();
+                          }}
                           maxFontSizeMultiplier={1.1}
                         />
 
@@ -589,14 +759,26 @@ export function CreateIssueSheet({
                           style={[
                             styles.composerButton,
                             stackComposer && styles.composerButtonStacked,
-                            (!newProjectName.trim() || creatingProject || submitting) && styles.composerButtonDisabled,
+                            (!newProjectName.trim() ||
+                              creatingProject ||
+                              submitting) &&
+                              styles.composerButtonDisabled,
                           ]}
-                          onPress={() => { void handleCreateProject(); }}
+                          onPress={() => {
+                            void handleCreateProject();
+                          }}
                           activeOpacity={0.82}
-                          disabled={!newProjectName.trim() || creatingProject || submitting}
+                          disabled={
+                            !newProjectName.trim() ||
+                            creatingProject ||
+                            submitting
+                          }
                         >
-                          <Text style={styles.composerButtonText} maxFontSizeMultiplier={1.05}>
-                            {creatingProject ? 'Creating...' : 'Create'}
+                          <Text
+                            style={styles.composerButtonText}
+                            maxFontSizeMultiplier={1.05}
+                          >
+                            {creatingProject ? "Creating..." : "Create"}
                           </Text>
                         </TouchableOpacity>
                       </View>
@@ -606,9 +788,9 @@ export function CreateIssueSheet({
               })}
 
               {renderAttributeRow({
-                section: 'priority',
-                icon: 'flag-outline',
-                label: 'Priority',
+                section: "priority",
+                icon: "flag-outline",
+                label: "Priority",
                 value: selectedPriority.label,
                 valueMuted: priority === 0,
                 trailing: (
@@ -617,7 +799,9 @@ export function CreateIssueSheet({
                       styles.priorityDot,
                       {
                         backgroundColor:
-                          priority === 0 ? 'rgba(255,255,255,0.12)' : priorityColor(priority),
+                          priority === 0
+                            ? "rgba(255,255,255,0.12)"
+                            : priorityColor(priority),
                       },
                     ]}
                   />
@@ -625,11 +809,12 @@ export function CreateIssueSheet({
                 children: (
                   <>
                     <View style={styles.optionList}>
-                      {PRIORITY_OPTIONS.map(option => {
+                      {PRIORITY_OPTIONS.map((option) => {
                         const active = option.value === priority;
-                        const tint = option.value === 0
-                          ? 'rgba(255,255,255,0.18)'
-                          : priorityColor(option.value);
+                        const tint =
+                          option.value === 0
+                            ? "rgba(255,255,255,0.18)"
+                            : priorityColor(option.value);
 
                         return (
                           <TouchableOpacity
@@ -639,12 +824,27 @@ export function CreateIssueSheet({
                             activeOpacity={0.82}
                           >
                             <View style={styles.optionMain}>
-                              <View style={[styles.priorityDot, styles.optionPriorityDot, { backgroundColor: tint }]} />
-                              <Text style={styles.optionText} maxFontSizeMultiplier={1.1}>{option.label}</Text>
+                              <View
+                                style={[
+                                  styles.priorityDot,
+                                  styles.optionPriorityDot,
+                                  { backgroundColor: tint },
+                                ]}
+                              />
+                              <Text
+                                style={styles.optionText}
+                                maxFontSizeMultiplier={1.1}
+                              >
+                                {option.label}
+                              </Text>
                             </View>
 
                             {active ? (
-                              <Ionicons name="checkmark" size={16} color={Colors.accent} />
+                              <Ionicons
+                                name="checkmark"
+                                size={16}
+                                color={Colors.accent}
+                              />
                             ) : null}
                           </TouchableOpacity>
                         );
@@ -655,12 +855,14 @@ export function CreateIssueSheet({
               })}
 
               {renderAttributeRow({
-                section: 'dueDate',
-                icon: 'calendar-outline',
-                label: 'Due date',
+                section: "dueDate",
+                icon: "calendar-outline",
+                label: "Due date",
                 value: formatDueDateShort(dueDate),
                 valueMuted: !dueDate,
-                children: <DueDatePicker value={dueDate} onChange={selectDueDate} />,
+                children: (
+                  <DueDatePicker value={dueDate} onChange={selectDueDate} />
+                ),
               })}
             </View>
           </ScrollView>
@@ -682,9 +884,10 @@ export function CreateIssueSheet({
                 stackActions && styles.actionRowStacked,
               ]}
             >
-              {resolvedActions.map(action => {
+              {resolvedActions.map((action) => {
                 const disabled = !title.trim() || submitting || creatingProject;
-                const singlePrimary = resolvedActions.length === 1 && !!action.primary;
+                const singlePrimary =
+                  resolvedActions.length === 1 && !!action.primary;
 
                 return (
                   <TouchableOpacity
@@ -695,12 +898,16 @@ export function CreateIssueSheet({
                         minHeight: actionButtonHeight,
                         borderRadius: actionButtonRadius,
                       },
-                      action.primary ? styles.actionButtonPrimary : styles.actionButtonSecondary,
+                      action.primary
+                        ? styles.actionButtonPrimary
+                        : styles.actionButtonSecondary,
                       singlePrimary && styles.actionButtonPrimarySingle,
                       stackActions && styles.actionButtonStacked,
                       disabled && styles.actionButtonDisabled,
                     ]}
-                    onPress={() => { void handleCreate(action); }}
+                    onPress={() => {
+                      void handleCreate(action);
+                    }}
                     disabled={disabled}
                     activeOpacity={0.82}
                   >
@@ -708,14 +915,19 @@ export function CreateIssueSheet({
                       <Ionicons
                         name={action.icon}
                         size={15}
-                        color={action.primary ? Colors.bgPrimary : Colors.textPrimary}
+                        color={
+                          action.primary ? Colors.bgPrimary : Colors.textPrimary
+                        }
                       />
                     ) : null}
                     <Text
-                      style={[styles.actionText, action.primary && styles.actionTextPrimary]}
+                      style={[
+                        styles.actionText,
+                        action.primary && styles.actionTextPrimary,
+                      ]}
                       maxFontSizeMultiplier={1.08}
                     >
-                      {submitting ? 'Creating...' : action.label}
+                      {submitting ? "Creating..." : action.label}
                     </Text>
                   </TouchableOpacity>
                 );
@@ -731,40 +943,40 @@ export function CreateIssueSheet({
 const styles = StyleSheet.create({
   root: {
     flex: 1,
-    justifyContent: 'flex-end',
+    justifyContent: "flex-end",
   },
   backdrop: {
     ...StyleSheet.absoluteFillObject,
-    backgroundColor: 'rgba(4,6,10,0.66)',
+    backgroundColor: "rgba(4,6,10,0.66)",
   },
   sheet: {
-    alignSelf: 'center',
+    alignSelf: "center",
     backgroundColor: Colors.bgSurface,
     borderTopLeftRadius: 30,
     borderTopRightRadius: 30,
     borderTopWidth: StyleSheet.hairlineWidth,
     borderLeftWidth: StyleSheet.hairlineWidth,
     borderRightWidth: StyleSheet.hairlineWidth,
-    borderColor: 'rgba(255,255,255,0.07)',
+    borderColor: "rgba(255,255,255,0.07)",
   },
   handle: {
     width: 40,
     height: 4,
     borderRadius: 999,
-    backgroundColor: 'rgba(255,255,255,0.14)',
-    alignSelf: 'center',
+    backgroundColor: "rgba(255,255,255,0.14)",
+    alignSelf: "center",
     marginTop: 10,
     marginBottom: 8,
   },
   header: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
     gap: 16,
   },
   headerActions: {
-    flexDirection: 'row',
-    alignItems: 'center',
+    flexDirection: "row",
+    alignItems: "center",
     gap: 8,
   },
   headerTitle: {
@@ -778,35 +990,34 @@ const styles = StyleSheet.create({
     width: 34,
     height: 34,
     borderRadius: 17,
-    alignItems: 'center',
-    justifyContent: 'center',
-    backgroundColor: 'rgba(255,255,255,0.04)',
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "rgba(255,255,255,0.04)",
   },
   secondaryHeaderButton: {
     width: 34,
     height: 34,
     borderRadius: 17,
-    alignItems: 'center',
-    justifyContent: 'center',
-    backgroundColor: 'rgba(255,255,255,0.04)',
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "rgba(255,255,255,0.04)",
   },
   content: {
     flex: 1,
   },
-  contentContainer: {
-  },
+  contentContainer: {},
   titleInput: {
     color: Colors.textPrimary,
     fontFamily: Typography.uiFontMedium,
-    textAlignVertical: 'center',
+    textAlignVertical: "center",
     includeFontPadding: false,
   },
   descriptionCard: {
     marginTop: 4,
     borderRadius: 18,
-    backgroundColor: 'rgba(255,255,255,0.035)',
+    backgroundColor: "rgba(255,255,255,0.035)",
     borderWidth: StyleSheet.hairlineWidth,
-    borderColor: 'rgba(255,255,255,0.06)',
+    borderColor: "rgba(255,255,255,0.06)",
     paddingHorizontal: 14,
     paddingVertical: 4,
   },
@@ -819,29 +1030,44 @@ const styles = StyleSheet.create({
     lineHeight: 23,
     fontFamily: Typography.uiFont,
   },
+  attachmentsCard: {
+    marginTop: 12,
+    borderRadius: 18,
+    backgroundColor: "rgba(255,255,255,0.03)",
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: "rgba(255,255,255,0.06)",
+    paddingHorizontal: 14,
+    paddingVertical: 14,
+    gap: 12,
+  },
+  attachmentsLabel: {
+    color: Colors.textSecondary,
+    fontSize: 12,
+    fontFamily: Typography.uiFontMedium,
+  },
   attributeList: {
     marginTop: 16,
   },
   attributeGroup: {
     borderRadius: 18,
-    backgroundColor: 'rgba(255,255,255,0.03)',
+    backgroundColor: "rgba(255,255,255,0.03)",
     borderWidth: StyleSheet.hairlineWidth,
-    borderColor: 'rgba(255,255,255,0.06)',
-    overflow: 'hidden',
+    borderColor: "rgba(255,255,255,0.06)",
+    overflow: "hidden",
   },
   attributeRow: {
     paddingHorizontal: 14,
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
     gap: 14,
   },
   attributeRowActive: {
-    backgroundColor: 'rgba(255,255,255,0.028)',
+    backgroundColor: "rgba(255,255,255,0.028)",
   },
   attributeLeft: {
-    flexDirection: 'row',
-    alignItems: 'center',
+    flexDirection: "row",
+    alignItems: "center",
     gap: 12,
     flex: 1,
   },
@@ -851,10 +1077,10 @@ const styles = StyleSheet.create({
     fontFamily: Typography.uiFontMedium,
   },
   attributeRight: {
-    flexDirection: 'row',
-    alignItems: 'center',
+    flexDirection: "row",
+    alignItems: "center",
     gap: 8,
-    maxWidth: '58%',
+    maxWidth: "58%",
   },
   attributeValue: {
     fontSize: 13,
@@ -868,8 +1094,8 @@ const styles = StyleSheet.create({
   },
   inlinePanel: {
     borderTopWidth: StyleSheet.hairlineWidth,
-    borderTopColor: 'rgba(255,255,255,0.06)',
-    backgroundColor: 'rgba(255,255,255,0.02)',
+    borderTopColor: "rgba(255,255,255,0.06)",
+    backgroundColor: "rgba(255,255,255,0.02)",
   },
   panelContent: {
     paddingHorizontal: 14,
@@ -881,14 +1107,14 @@ const styles = StyleSheet.create({
   optionRow: {
     minHeight: 46,
     paddingHorizontal: 2,
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
     gap: 12,
   },
   optionMain: {
-    flexDirection: 'row',
-    alignItems: 'center',
+    flexDirection: "row",
+    alignItems: "center",
     gap: 10,
     flex: 1,
   },
@@ -924,13 +1150,13 @@ const styles = StyleSheet.create({
     fontFamily: Typography.uiFontMedium,
   },
   composerRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
+    flexDirection: "row",
+    alignItems: "center",
     gap: 10,
   },
   composerRowStacked: {
-    alignItems: 'stretch',
-    flexDirection: 'column',
+    alignItems: "stretch",
+    flexDirection: "column",
   },
   composerInput: {
     flex: 1,
@@ -940,24 +1166,24 @@ const styles = StyleSheet.create({
     color: Colors.textPrimary,
     fontSize: 14,
     fontFamily: Typography.uiFont,
-    backgroundColor: 'rgba(255,255,255,0.05)',
+    backgroundColor: "rgba(255,255,255,0.05)",
     borderWidth: StyleSheet.hairlineWidth,
-    borderColor: 'rgba(255,255,255,0.08)',
+    borderColor: "rgba(255,255,255,0.08)",
   },
   composerInputStacked: {
-    width: '100%',
+    width: "100%",
   },
   composerButton: {
     minWidth: 84,
     minHeight: 44,
     paddingHorizontal: 16,
     borderRadius: 14,
-    alignItems: 'center',
-    justifyContent: 'center',
+    alignItems: "center",
+    justifyContent: "center",
     backgroundColor: Colors.accent,
   },
   composerButtonStacked: {
-    width: '100%',
+    width: "100%",
   },
   composerButtonDisabled: {
     opacity: 0.45,
@@ -969,39 +1195,39 @@ const styles = StyleSheet.create({
   },
   footer: {
     borderTopWidth: StyleSheet.hairlineWidth,
-    borderTopColor: 'rgba(255,255,255,0.06)',
+    borderTopColor: "rgba(255,255,255,0.06)",
   },
   actionRow: {
-    flexDirection: 'row',
+    flexDirection: "row",
     gap: 10,
   },
   actionRowStacked: {
-    flexDirection: 'column',
+    flexDirection: "column",
   },
   actionRowSingle: {
-    width: '100%',
+    width: "100%",
   },
   actionButton: {
     paddingHorizontal: 16,
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
     gap: 8,
     flex: 1,
   },
   actionButtonStacked: {
-    width: '100%',
+    width: "100%",
   },
   actionButtonPrimary: {
     backgroundColor: Colors.accent,
   },
   actionButtonPrimarySingle: {
-    width: '100%',
+    width: "100%",
   },
   actionButtonSecondary: {
-    backgroundColor: 'rgba(255,255,255,0.05)',
+    backgroundColor: "rgba(255,255,255,0.05)",
     borderWidth: StyleSheet.hairlineWidth,
-    borderColor: 'rgba(255,255,255,0.09)',
+    borderColor: "rgba(255,255,255,0.09)",
   },
   actionButtonDisabled: {
     opacity: 0.4,

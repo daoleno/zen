@@ -61,12 +61,18 @@ func TestBuildReplyMessagesIncludeRelevantDiscussionContext(t *testing.T) {
 		ID:          "task-1",
 		Title:       "Polish issue detail UX",
 		Description: "Keep the issue detail page calm, editable, and agent-native.",
+		Attachments: []task.Attachment{
+			{Name: "issue-spec.md", Path: "/tmp/issue-spec.md"},
+		},
 		Comments: []task.TaskComment{
 			{
 				ID:          "root",
 				Body:        "We need replies and agent routing in one thread.",
 				AuthorLabel: "Alice",
-				CreatedAt:   now,
+				Attachments: []task.Attachment{
+					{Name: "context.txt", Path: "/tmp/context.txt"},
+				},
+				CreatedAt: now,
 			},
 			{
 				ID:          "reply-1",
@@ -82,6 +88,7 @@ func TestBuildReplyMessagesIncludeRelevantDiscussionContext(t *testing.T) {
 		currentTask,
 		"reply-1",
 		"Please continue from the existing thread.",
+		[]task.Attachment{{Name: "screenshot.png", Path: "/tmp/screenshot.png"}},
 	)
 	if !strings.Contains(currentRunMessage, "Reply context:") {
 		t.Fatalf("current run message missing reply context: %q", currentRunMessage)
@@ -95,11 +102,18 @@ func TestBuildReplyMessagesIncludeRelevantDiscussionContext(t *testing.T) {
 	if !strings.Contains(currentRunMessage, "New reply:\nPlease continue from the existing thread.") {
 		t.Fatalf("current run message missing new reply body: %q", currentRunMessage)
 	}
+	if !strings.Contains(currentRunMessage, "Attached files:\n- /tmp/screenshot.png (screenshot.png)") {
+		t.Fatalf("current run message missing attachment block: %q", currentRunMessage)
+	}
+	if !strings.Contains(currentRunMessage, "Attachments: /tmp/context.txt") {
+		t.Fatalf("current run message missing reply chain attachment line: %q", currentRunMessage)
+	}
 
 	attachedMessage := s.buildAttachedSessionMessage(
 		currentTask,
 		"reply-1",
 		"Take this over and send back a concise plan.",
+		[]task.Attachment{{Name: "trace.log", Path: "/tmp/trace.log"}},
 	)
 	if !strings.Contains(attachedMessage, "Issue: Polish issue detail UX") {
 		t.Fatalf("attached message missing issue title: %q", attachedMessage)
@@ -107,11 +121,17 @@ func TestBuildReplyMessagesIncludeRelevantDiscussionContext(t *testing.T) {
 	if !strings.Contains(attachedMessage, "Context:\nKeep the issue detail page calm, editable, and agent-native.") {
 		t.Fatalf("attached message missing issue description: %q", attachedMessage)
 	}
-	if !strings.Contains(attachedMessage, "Relevant discussion:\n- Alice: We need replies and agent routing in one thread.\n- Bob: Make sure replies carry context, not only the last line.") {
+	if !strings.Contains(attachedMessage, "Issue attachments:\n- /tmp/issue-spec.md (issue-spec.md)") {
+		t.Fatalf("attached message missing issue attachments: %q", attachedMessage)
+	}
+	if !strings.Contains(attachedMessage, "Relevant discussion:\n- Alice: We need replies and agent routing in one thread.\n  Attachments: /tmp/context.txt\n- Bob: Make sure replies carry context, not only the last line.") {
 		t.Fatalf("attached message missing discussion chain: %q", attachedMessage)
 	}
 	if !strings.Contains(attachedMessage, "User message:\nTake this over and send back a concise plan.") {
 		t.Fatalf("attached message missing user message: %q", attachedMessage)
+	}
+	if !strings.Contains(attachedMessage, "Comment attachments:\n- /tmp/trace.log (trace.log)") {
+		t.Fatalf("attached message missing comment attachments: %q", attachedMessage)
 	}
 }
 
@@ -187,6 +207,7 @@ func TestSyncRunAndTaskForSessionEventKeepsTaskInProgressOnRunCompletion(t *test
 	currentTask, err := taskStore.Create(
 		"Refactor issue lifecycle",
 		"Separate run status from task status",
+		nil,
 		"",
 		"",
 		0,

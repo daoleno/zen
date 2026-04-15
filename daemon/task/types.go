@@ -17,6 +17,7 @@ type Task struct {
 	Number        int           `json:"number"`
 	Title         string        `json:"title"`
 	Description   string        `json:"description,omitempty"`
+	Attachments   []Attachment  `json:"attachments,omitempty"`
 	Status        TaskStatus    `json:"status"`
 	Priority      int           `json:"priority"`
 	Labels        []string      `json:"labels,omitempty"`
@@ -31,17 +32,23 @@ type Task struct {
 	UpdatedAt     time.Time     `json:"updated_at"`
 }
 
+type Attachment struct {
+	Name string `json:"name"`
+	Path string `json:"path"`
+}
+
 type TaskComment struct {
-	ID             string    `json:"id"`
-	Body           string    `json:"body"`
-	AuthorKind     string    `json:"author_kind"`
-	AuthorLabel    string    `json:"author_label,omitempty"`
-	ParentID       string    `json:"parent_id,omitempty"`
-	DeliveryMode   string    `json:"delivery_mode,omitempty"`
-	RunID          string    `json:"run_id,omitempty"`
-	AgentSessionID string    `json:"agent_session_id,omitempty"`
-	TargetLabel    string    `json:"target_label,omitempty"`
-	CreatedAt      time.Time `json:"created_at"`
+	ID             string       `json:"id"`
+	Body           string       `json:"body"`
+	Attachments    []Attachment `json:"attachments,omitempty"`
+	AuthorKind     string       `json:"author_kind"`
+	AuthorLabel    string       `json:"author_label,omitempty"`
+	ParentID       string       `json:"parent_id,omitempty"`
+	DeliveryMode   string       `json:"delivery_mode,omitempty"`
+	RunID          string       `json:"run_id,omitempty"`
+	AgentSessionID string       `json:"agent_session_id,omitempty"`
+	TargetLabel    string       `json:"target_label,omitempty"`
+	CreatedAt      time.Time    `json:"created_at"`
 }
 
 type TaskEvent struct {
@@ -65,12 +72,12 @@ type Guidance struct {
 }
 
 type Project struct {
-	ID          string    `json:"id"`
-	Name        string    `json:"name"`
-	Icon        string    `json:"icon,omitempty"`
-	RepoRoot    string    `json:"repo_root,omitempty"`
-	WorktreeRoot string   `json:"worktree_root,omitempty"`
-	BaseBranch  string    `json:"base_branch,omitempty"`
-	CreatedAt   time.Time `json:"created_at"`
-	UpdatedAt   time.Time `json:"updated_at"`
+	ID           string    `json:"id"`
+	Name         string    `json:"name"`
+	Icon         string    `json:"icon,omitempty"`
+	RepoRoot     string    `json:"repo_root,omitempty"`
+	WorktreeRoot string    `json:"worktree_root,omitempty"`
+	BaseBranch   string    `json:"base_branch,omitempty"`
+	CreatedAt    time.Time `json:"created_at"`
+	UpdatedAt    time.Time `json:"updated_at"`
 }

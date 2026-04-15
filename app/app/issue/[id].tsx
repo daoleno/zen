@@ -31,6 +31,7 @@ import {
   AssignIssueSheet,
   type AssignAgentPreset,
 } from "../../components/issue/AssignIssueSheet";
+import { AttachmentStack } from "../../components/issue/AttachmentStack";
 import { DueDatePicker } from "../../components/issue/DueDatePicker";
 import { IssueStatusIcon } from "../../components/issue/IssueStatusIcon";
 import { PriorityPicker } from "../../components/issue/PriorityPicker";
@@ -41,8 +42,9 @@ import {
   getDueDateState,
 } from "../../services/dueDate";
 import {
-  CLAUDE_CODE_COMMAND,
-  CODEX_COMMAND,
+  SUPPORTED_AGENT_TARGETS,
+  findSupportedAgentMention,
+  stripSupportedAgentMentions,
 } from "../../services/agentCommands";
 import {
   RUN_STATUS_LABEL,
@@ -51,11 +53,18 @@ import {
   getTaskStatusPresentation,
   pickCurrentRun,
 } from "../../services/taskFeed";
+import { uploadDocumentForServer } from "../../services/uploads";
 import { wsClient } from "../../services/websocket";
 import { useAgents } from "../../store/agents";
 import type { Agent } from "../../store/agents";
 import { useTasks } from "../../store/tasks";
-import type { Project, Run, Task, TaskComment } from "../../store/tasks";
+import type {
+  Attachment,
+  Project,
+  Run,
+  Task,
+  TaskComment,
+} from "../../store/tasks";
 
 const STATUS_OPTIONS: { key: IssueStatus; label: string }[] = [
   { key: "backlog", label: "Backlog" },
@@ -73,20 +82,14 @@ const PRIORITY_LABEL: Record<number, string> = {
   4: "Low",
 };
 
-const ASSIGN_PRESETS: AssignAgentPreset[] = [
-  {
-    key: "claude",
-    label: "Claude Code",
-    description: "Autonomous Claude Code run in this issue worktree.",
-    command: CLAUDE_CODE_COMMAND,
-  },
-  {
-    key: "codex",
-    label: "Codex",
-    description: "Autonomous Codex run in this issue worktree.",
-    command: CODEX_COMMAND,
-  },
-];
+const ASSIGN_PRESETS: AssignAgentPreset[] = SUPPORTED_AGENT_TARGETS.map(
+  (target) => ({
+    key: target.id,
+    label: target.label,
+    description: target.description,
+    command: target.command,
+  }),
+);
 
 const NEW_PROJECT_ID = "__new__";
 
@@ -102,13 +105,20 @@ type ActivityItem = {
   sessionLive?: boolean;
 };
 
-type NoteNode = TaskComment & {
-  replies: NoteNode[];
+type CommentNode = TaskComment & {
+  replies: CommentNode[];
 };
 
-function isNoteComment(comment: TaskComment) {
-  return !comment.deliveryMode || comment.deliveryMode === "note";
-}
+type ComposerSelection = {
+  start: number;
+  end: number;
+};
+
+type MentionMatch = {
+  start: number;
+  end: number;
+  query: string;
+};
 
 function formatTimestamp(timestamp?: number) {
   if (!timestamp) {
@@ -198,36 +208,9 @@ function getRunBody(run: Run, liveAgent?: Agent | null) {
   }
 }
 
-function getCommentActivityTitle(comment: TaskComment) {
-  switch (comment.deliveryMode) {
-    case "current_run":
-      return comment.authorKind === "user" ? "Sent to session" : "Session replied";
-    case "spawn_new_session":
-      return "Started from issue";
-    case "attach_existing_session":
-      return "Sent to linked session";
-    default:
-      return comment.authorKind === "user" ? "Note added" : "Comment added";
-  }
-}
-
-function getCommentActivityMeta(comment: TaskComment) {
-  switch (comment.deliveryMode) {
-    case "current_run":
-      return "Current session";
-    case "spawn_new_session":
-      return "New run";
-    case "attach_existing_session":
-      return "Linked session";
-    default:
-      return undefined;
-  }
-}
-
 function buildActivityItems(
   task: Task,
   runs: Run[],
-  comments: TaskComment[],
   liveSessionById: Record<string, Agent>,
 ) {
   const items: ActivityItem[] = [
@@ -240,29 +223,6 @@ function buildActivityItems(
       body: collapseCopy(task.description, 220) || undefined,
     },
   ];
-
-  for (const comment of comments) {
-    if (isNoteComment(comment)) {
-      continue;
-    }
-
-    const liveAgent = comment.agentSessionId
-      ? liveSessionById[comment.agentSessionId]
-      : undefined;
-    items.push({
-      key: `comment-${comment.id}`,
-      title: getCommentActivityTitle(comment),
-      timestamp: comment.createdAt,
-      tone: Colors.accent,
-      meta: getCommentActivityMeta(comment),
-      body: collapseCopy(comment.body, 220) || undefined,
-      sessionId: comment.agentSessionId,
-      sessionLabel: liveAgent
-        ? formatAgentLabel(liveAgent)
-        : comment.targetLabel || comment.agentSessionId,
-      sessionLive: !!liveAgent,
-    });
-  }
 
   for (const run of runs) {
     const liveAgent = run.agentSessionId
@@ -279,7 +239,9 @@ function buildActivityItems(
       }`,
       body: getRunBody(run, liveAgent),
       sessionId: run.agentSessionId,
-      sessionLabel: liveAgent ? formatAgentLabel(liveAgent) : run.agentSessionId,
+      sessionLabel: liveAgent
+        ? formatAgentLabel(liveAgent)
+        : run.agentSessionId,
       sessionLive: !!liveAgent,
     });
   }
@@ -287,15 +249,17 @@ function buildActivityItems(
   return items.sort((left, right) => right.timestamp - left.timestamp);
 }
 
-function buildNoteThreads(comments: TaskComment[]) {
-  const sorted = comments.slice().sort((left, right) => left.createdAt - right.createdAt);
-  const nodesById: Record<string, NoteNode> = {};
+function buildCommentThreads(comments: TaskComment[]) {
+  const sorted = comments
+    .slice()
+    .sort((left, right) => left.createdAt - right.createdAt);
+  const nodesById: Record<string, CommentNode> = {};
 
   for (const comment of sorted) {
     nodesById[comment.id] = { ...comment, replies: [] };
   }
 
-  const roots: NoteNode[] = [];
+  const roots: CommentNode[] = [];
   for (const comment of sorted) {
     const node = nodesById[comment.id];
     if (comment.parentId && nodesById[comment.parentId]) {
@@ -306,6 +270,47 @@ function buildNoteThreads(comments: TaskComment[]) {
   }
 
   return roots;
+}
+
+function getCommentRoutingLabel(comment: TaskComment) {
+  switch (comment.deliveryMode) {
+    case "spawn_new_session":
+      return comment.targetLabel
+        ? `Started ${comment.targetLabel}`
+        : "Started new run";
+    case "current_run":
+      return comment.targetLabel
+        ? `Sent to ${comment.targetLabel}`
+        : "Sent to current session";
+    case "attach_existing_session":
+      return comment.targetLabel
+        ? `Sent to ${comment.targetLabel}`
+        : "Sent to linked session";
+    default:
+      return "";
+  }
+}
+
+function getActiveMentionMatch(
+  value: string,
+  selection: ComposerSelection,
+): MentionMatch | null {
+  if (selection.start !== selection.end) {
+    return null;
+  }
+
+  const cursor = selection.start;
+  const beforeCursor = value.slice(0, cursor);
+  const match = beforeCursor.match(/(^|\s)@([a-z0-9_-]*)$/i);
+  if (!match) {
+    return null;
+  }
+
+  return {
+    start: cursor - match[2].length - 1,
+    end: cursor,
+    query: match[2].toLowerCase(),
+  };
 }
 
 function loadProjectDraft(projects: Project[], projectId?: string) {
@@ -349,21 +354,30 @@ export default function IssueDetailScreen() {
   const [dueDateVisible, setDueDateVisible] = useState(false);
   const [projectVisible, setProjectVisible] = useState(false);
   const [assignVisible, setAssignVisible] = useState(false);
-  const [noteVisible, setNoteVisible] = useState(false);
+  const [commentVisible, setCommentVisible] = useState(false);
   const [assigning, setAssigning] = useState(false);
   const [deletingIssue, setDeletingIssue] = useState(false);
   const [projectSaving, setProjectSaving] = useState(false);
-  const [noteSaving, setNoteSaving] = useState(false);
+  const [commentSaving, setCommentSaving] = useState(false);
+  const [uploadingCommentAttachment, setUploadingCommentAttachment] =
+    useState(false);
   const [replyTargetId, setReplyTargetId] = useState("");
-  const [noteDraft, setNoteDraft] = useState("");
+  const [commentDraft, setCommentDraft] = useState("");
+  const [commentAttachments, setCommentAttachments] = useState<Attachment[]>(
+    [],
+  );
+  const [commentSelection, setCommentSelection] = useState<ComposerSelection>({
+    start: 0,
+    end: 0,
+  });
   const [projectDraftId, setProjectDraftId] = useState("");
   const [projectNameDraft, setProjectNameDraft] = useState("");
   const [projectRepoRootDraft, setProjectRepoRootDraft] = useState("");
   const [projectWorktreeRootDraft, setProjectWorktreeRootDraft] = useState("");
   const [projectBaseBranchDraft, setProjectBaseBranchDraft] = useState("");
-  const [directoryTarget, setDirectoryTarget] = useState<"repo" | "worktree" | null>(
-    null,
-  );
+  const [directoryTarget, setDirectoryTarget] = useState<
+    "repo" | "worktree" | null
+  >(null);
 
   const task = useMemo(() => {
     return (
@@ -437,29 +451,46 @@ export default function IssueDetailScreen() {
     );
   }, [projects, task?.projectId]);
 
-  const noteComments = useMemo(() => {
-    return task ? task.comments.filter(isNoteComment) : [];
-  }, [task]);
-
-  const noteThreads = useMemo(
-    () => buildNoteThreads(noteComments),
-    [noteComments],
+  const commentThreads = useMemo(
+    () => (task ? buildCommentThreads(task.comments) : []),
+    [task],
   );
 
-  const noteCommentsById = useMemo(() => {
-    return Object.fromEntries(noteComments.map((comment) => [comment.id, comment])) as Record<
-      string,
-      TaskComment
-    >;
-  }, [noteComments]);
+  const commentsById = useMemo(() => {
+    return Object.fromEntries(
+      (task?.comments || []).map((comment) => [comment.id, comment]),
+    ) as Record<string, TaskComment>;
+  }, [task?.comments]);
 
-  const replyTarget = replyTargetId ? noteCommentsById[replyTargetId] || null : null;
+  const replyTarget = replyTargetId
+    ? commentsById[replyTargetId] || null
+    : null;
 
   const activityItems = useMemo(() => {
-    return task
-      ? buildActivityItems(task, runsForTask, task.comments, liveSessionById)
-      : [];
+    return task ? buildActivityItems(task, runsForTask, liveSessionById) : [];
   }, [liveSessionById, runsForTask, task]);
+
+  const activeMention = useMemo(
+    () => getActiveMentionMatch(commentDraft, commentSelection),
+    [commentDraft, commentSelection],
+  );
+
+  const mentionSuggestions = useMemo(() => {
+    if (!activeMention) {
+      return [];
+    }
+
+    const query = activeMention.query.trim().toLowerCase();
+    return SUPPORTED_AGENT_TARGETS.filter((target) => {
+      if (!query) {
+        return true;
+      }
+      return (
+        target.handle.includes(query) ||
+        target.label.toLowerCase().includes(query)
+      );
+    });
+  }, [activeMention]);
 
   useEffect(() => {
     if (!projectVisible) {
@@ -473,14 +504,6 @@ export default function IssueDetailScreen() {
     setProjectWorktreeRootDraft(draft.worktreeRoot);
     setProjectBaseBranchDraft(draft.baseBranch);
   }, [projectVisible, projects, task?.projectId]);
-
-  useEffect(() => {
-    if (!noteVisible) {
-      return;
-    }
-
-    setNoteDraft("");
-  }, [noteVisible]);
 
   if (!task) {
     return (
@@ -542,10 +565,15 @@ export default function IssueDetailScreen() {
     });
   };
 
-  const handleSaveIssueText = (title: string, description: string) => {
+  const handleSaveIssueText = (
+    title: string,
+    description: string,
+    attachments: Attachment[],
+  ) => {
     wsClient.updateTask(task.serverId, task.id, {
       title,
       description,
+      attachments,
     });
     setEditVisible(false);
   };
@@ -555,34 +583,30 @@ export default function IssueDetailScreen() {
       return;
     }
 
-    Alert.alert(
-      "Delete issue?",
-      `Delete ZEN-${task.number} permanently?`,
-      [
-        { text: "Cancel", style: "cancel" },
-        {
-          text: "Delete",
-          style: "destructive",
-          onPress: () => {
-            void (async () => {
-              setDeletingIssue(true);
-              try {
-                await wsClient.deleteTask(task.serverId, task.id);
-                setEditVisible(false);
-                router.back();
-              } catch (error: any) {
-                Alert.alert(
-                  "Could not delete issue",
-                  error?.message || "Try again.",
-                );
-              } finally {
-                setDeletingIssue(false);
-              }
-            })();
-          },
+    Alert.alert("Delete issue?", `Delete ZEN-${task.number} permanently?`, [
+      { text: "Cancel", style: "cancel" },
+      {
+        text: "Delete",
+        style: "destructive",
+        onPress: () => {
+          void (async () => {
+            setDeletingIssue(true);
+            try {
+              await wsClient.deleteTask(task.serverId, task.id);
+              setEditVisible(false);
+              router.back();
+            } catch (error: any) {
+              Alert.alert(
+                "Could not delete issue",
+                error?.message || "Try again.",
+              );
+            } finally {
+              setDeletingIssue(false);
+            }
+          })();
         },
-      ],
-    );
+      },
+    ]);
   };
 
   const handleSelectExistingProject = (selectedProjectId: string) => {
@@ -652,10 +676,7 @@ export default function IssueDetailScreen() {
       });
       setProjectVisible(false);
     } catch (error: any) {
-      Alert.alert(
-        "Could not save project",
-        error?.message || "Try again.",
-      );
+      Alert.alert("Could not save project", error?.message || "Try again.");
     } finally {
       setProjectSaving(false);
     }
@@ -694,32 +715,93 @@ export default function IssueDetailScreen() {
     }
   };
 
-  const handleOpenNoteComposer = (replyTo?: TaskComment) => {
+  const handleOpenCommentComposer = (replyTo?: TaskComment) => {
     setReplyTargetId(replyTo?.id || "");
-    setNoteVisible(true);
+    setCommentDraft("");
+    setCommentAttachments([]);
+    setCommentSelection({ start: 0, end: 0 });
+    setCommentVisible(true);
   };
 
-  const handleSaveNote = async () => {
-    const body = noteDraft.trim();
-    if (!body || noteSaving) {
+  const handleAddCommentAttachment = async () => {
+    if (uploadingCommentAttachment || commentSaving) {
       return;
     }
 
-    setNoteSaving(true);
+    setUploadingCommentAttachment(true);
+    try {
+      const attachment = await uploadDocumentForServer(task.serverId);
+      if (!attachment) {
+        return;
+      }
+
+      setCommentAttachments((current) => {
+        if (current.some((existing) => existing.path === attachment.path)) {
+          return current;
+        }
+        return [...current, attachment];
+      });
+    } catch (error: any) {
+      Alert.alert("Could not attach file", error?.message || "Try again.");
+    } finally {
+      setUploadingCommentAttachment(false);
+    }
+  };
+
+  const handleInsertMention = (handle: string) => {
+    if (!activeMention) {
+      return;
+    }
+
+    const replacement = `@${handle} `;
+    const nextValue =
+      commentDraft.slice(0, activeMention.start) +
+      replacement +
+      commentDraft.slice(activeMention.end);
+    const cursor = activeMention.start + replacement.length;
+    setCommentDraft(nextValue);
+    setCommentSelection({ start: cursor, end: cursor });
+  };
+
+  const handleSaveComment = async () => {
+    if (commentSaving) {
+      return;
+    }
+
+    const targetAgent = findSupportedAgentMention(commentDraft);
+    const cleanedBody = targetAgent
+      ? stripSupportedAgentMentions(commentDraft)
+      : commentDraft.trim();
+
+    if (!cleanedBody) {
+      Alert.alert(
+        "Comment required",
+        targetAgent
+          ? "Add a message after the mention."
+          : "Add a comment before sending.",
+      );
+      return;
+    }
+
+    setCommentSaving(true);
     try {
       await wsClient.addTaskComment(task.serverId, {
         taskId: task.id,
-        body,
+        body: cleanedBody,
+        attachments: commentAttachments,
         parentCommentId: replyTargetId || undefined,
-        deliveryMode: "note",
+        deliveryMode: targetAgent ? "spawn_new_session" : "comment",
+        agentCmd: targetAgent?.command,
       });
-      setNoteVisible(false);
+      setCommentVisible(false);
       setReplyTargetId("");
-      setNoteDraft("");
+      setCommentDraft("");
+      setCommentAttachments([]);
+      setCommentSelection({ start: 0, end: 0 });
     } catch (error: any) {
-      Alert.alert("Could not save note", error?.message || "Try again.");
+      Alert.alert("Could not save comment", error?.message || "Try again.");
     } finally {
-      setNoteSaving(false);
+      setCommentSaving(false);
     }
   };
 
@@ -758,7 +840,12 @@ export default function IssueDetailScreen() {
         }}
         showsVerticalScrollIndicator={false}
       >
-        <View style={[styles.page, pageMaxWidth ? { maxWidth: pageMaxWidth } : null]}>
+        <View
+          style={[
+            styles.page,
+            pageMaxWidth ? { maxWidth: pageMaxWidth } : null,
+          ]}
+        >
           <View style={styles.hero}>
             <View style={styles.heroMetaRow}>
               <TouchableOpacity
@@ -815,6 +902,12 @@ export default function IssueDetailScreen() {
             {task.description.trim() ? (
               <Text style={styles.description}>{task.description.trim()}</Text>
             ) : null}
+            {task.attachments.length > 0 ? (
+              <View style={styles.heroAttachmentSurface}>
+                <Text style={styles.heroAttachmentLabel}>Files</Text>
+                <AttachmentStack attachments={task.attachments} compact />
+              </View>
+            ) : null}
 
             <View style={styles.actionRow}>
               <TouchableOpacity
@@ -851,11 +944,17 @@ export default function IssueDetailScreen() {
                 activeOpacity={0.82}
               >
                 <Ionicons
-                  name={task.status === "done" ? "refresh-outline" : "checkmark-outline"}
+                  name={
+                    task.status === "done"
+                      ? "refresh-outline"
+                      : "checkmark-outline"
+                  }
                   size={15}
                   color={Colors.textPrimary}
                 />
-                <Text style={styles.secondaryActionText}>{doneToggleLabel}</Text>
+                <Text style={styles.secondaryActionText}>
+                  {doneToggleLabel}
+                </Text>
               </TouchableOpacity>
             </View>
           </View>
@@ -874,7 +973,9 @@ export default function IssueDetailScreen() {
                 ]}
               />
               <View style={styles.executionCopy}>
-                <Text style={styles.executionTitle}>{statusPresentation.label}</Text>
+                <Text style={styles.executionTitle}>
+                  {statusPresentation.label}
+                </Text>
                 <Text style={styles.executionBody}>{secondaryCopy}</Text>
               </View>
             </View>
@@ -891,9 +992,15 @@ export default function IssueDetailScreen() {
                     ? "Linked session"
                     : "No live session"
               }
-              meta={currentRun ? RUN_STATUS_LABEL[currentRun.status] || currentRun.status : undefined}
+              meta={
+                currentRun
+                  ? RUN_STATUS_LABEL[currentRun.status] || currentRun.status
+                  : undefined
+              }
               muted={!currentRun}
-              onPress={currentAgent ? () => openSession(currentAgent.id) : undefined}
+              onPress={
+                currentAgent ? () => openSession(currentAgent.id) : undefined
+              }
             />
 
             <Divider />
@@ -940,7 +1047,9 @@ export default function IssueDetailScreen() {
               label="Priority"
               value={PRIORITY_LABEL[task.priority]}
               valueTone={
-                task.priority > 0 ? priorityColor(task.priority) : Colors.textSecondary
+                task.priority > 0
+                  ? priorityColor(task.priority)
+                  : Colors.textSecondary
               }
               onPress={() => setPriorityVisible(true)}
             />
@@ -956,32 +1065,37 @@ export default function IssueDetailScreen() {
             <PropertyRow
               icon="calendar-outline"
               label="Due date"
-              value={task.dueDate ? formatDueDateShort(task.dueDate) : "No date"}
-              valueTone={dueDateState?.isOverdue ? Colors.statusFailed : undefined}
+              value={
+                task.dueDate ? formatDueDateShort(task.dueDate) : "No date"
+              }
+              valueTone={
+                dueDateState?.isOverdue ? Colors.statusFailed : undefined
+              }
               muted={!task.dueDate}
               onPress={() => setDueDateVisible(true)}
             />
           </View>
 
           <SectionHeader
-            title="Notes"
-            actionLabel="Add note"
-            onAction={() => handleOpenNoteComposer()}
+            title="Comments"
+            actionLabel="Add comment"
+            onAction={() => handleOpenCommentComposer()}
           />
           <View style={styles.surface}>
-            {noteThreads.length === 0 ? (
+            {commentThreads.length === 0 ? (
               <EmptyState
-                title="No notes yet"
-                body="Add context or decisions here."
+                title="No comments yet"
+                body="Use comments to brief agents, add context, or ask for a follow-up."
               />
             ) : (
               <View style={styles.noteList}>
-                {noteThreads.map((note, index) => (
-                  <React.Fragment key={note.id}>
+                {commentThreads.map((comment, index) => (
+                  <React.Fragment key={comment.id}>
                     {index > 0 ? <Divider /> : null}
-                    <NoteThread
-                      note={note}
-                      onReply={handleOpenNoteComposer}
+                    <CommentThread
+                      comment={comment}
+                      onReply={handleOpenCommentComposer}
+                      onOpenSession={openSession}
                     />
                   </React.Fragment>
                 ))}
@@ -1021,7 +1135,10 @@ export default function IssueDetailScreen() {
         onClose={() => setPriorityVisible(false)}
       >
         <View style={styles.sheetContent}>
-          <PriorityPicker value={task.priority} onChange={handleUpdatePriority} />
+          <PriorityPicker
+            value={task.priority}
+            onChange={handleUpdatePriority}
+          />
         </View>
       </SheetScaffold>
 
@@ -1031,7 +1148,9 @@ export default function IssueDetailScreen() {
         onClose={() => setDueDateVisible(false)}
       >
         <View style={styles.sheetContent}>
-          <Text style={styles.sheetValue}>{formatDueDateLong(task.dueDate)}</Text>
+          <Text style={styles.sheetValue}>
+            {formatDueDateLong(task.dueDate)}
+          </Text>
           <DueDatePicker value={task.dueDate} onChange={handleUpdateDueDate} />
         </View>
       </SheetScaffold>
@@ -1057,25 +1176,44 @@ export default function IssueDetailScreen() {
         onSave={handleSaveProject}
       />
 
-      <NoteComposerSheet
-        visible={noteVisible}
-        busy={noteSaving}
+      <CommentComposerSheet
+        visible={commentVisible}
+        busy={commentSaving}
         replyTarget={replyTarget}
-        value={noteDraft}
-        onChangeText={setNoteDraft}
+        value={commentDraft}
+        selection={commentSelection}
+        attachments={commentAttachments}
+        attachmentBusy={uploadingCommentAttachment}
+        mentionSuggestions={mentionSuggestions}
+        onChangeText={setCommentDraft}
+        onChangeSelection={setCommentSelection}
+        onPickMention={handleInsertMention}
+        onAddAttachment={() => {
+          void handleAddCommentAttachment();
+        }}
+        onRemoveAttachment={(attachment) => {
+          setCommentAttachments((current) =>
+            current.filter((existing) => existing.path !== attachment.path),
+          );
+        }}
         onClose={() => {
-          setNoteVisible(false);
+          setCommentVisible(false);
           setReplyTargetId("");
+          setCommentDraft("");
+          setCommentAttachments([]);
+          setCommentSelection({ start: 0, end: 0 });
         }}
         onSave={() => {
-          void handleSaveNote();
+          void handleSaveComment();
         }}
       />
 
       <EditIssueSheet
         visible={editVisible}
+        serverId={task.serverId}
         title={task.title}
         description={task.description}
+        attachments={task.attachments}
         deleting={deletingIssue}
         onClose={() => setEditVisible(false)}
         onSave={handleSaveIssueText}
@@ -1269,7 +1407,11 @@ function DetailRow({
   }
 
   return (
-    <TouchableOpacity style={styles.detailRow} onPress={onPress} activeOpacity={0.82}>
+    <TouchableOpacity
+      style={styles.detailRow}
+      onPress={onPress}
+      activeOpacity={0.82}
+    >
       {content}
     </TouchableOpacity>
   );
@@ -1299,10 +1441,16 @@ function ActivityRow({
       <View style={styles.activityCopy}>
         <View style={styles.activityTopRow}>
           <Text style={styles.activityTitle}>{item.title}</Text>
-          <Text style={styles.activityTime}>{formatTimestamp(item.timestamp)}</Text>
+          <Text style={styles.activityTime}>
+            {formatTimestamp(item.timestamp)}
+          </Text>
         </View>
-        {item.meta ? <Text style={styles.activityMeta}>{item.meta}</Text> : null}
-        {item.body ? <Text style={styles.activityBody}>{item.body}</Text> : null}
+        {item.meta ? (
+          <Text style={styles.activityMeta}>{item.meta}</Text>
+        ) : null}
+        {item.body ? (
+          <Text style={styles.activityBody}>{item.body}</Text>
+        ) : null}
         {item.sessionId && item.sessionLabel ? (
           item.sessionLive ? (
             <TouchableOpacity
@@ -1335,26 +1483,64 @@ function ActivityRow({
   );
 }
 
-function NoteThread({
-  note,
+function CommentThread({
+  comment,
   onReply,
+  onOpenSession,
   depth = 0,
 }: {
-  note: NoteNode;
-  onReply: (note?: TaskComment) => void;
+  comment: CommentNode;
+  onReply: (comment?: TaskComment) => void;
+  onOpenSession: (sessionId: string) => void;
   depth?: number;
 }) {
+  const routingLabel = getCommentRoutingLabel(comment);
+
   return (
-    <View style={[styles.noteThread, depth > 0 ? styles.noteThreadNested : null]}>
+    <View
+      style={[styles.noteThread, depth > 0 ? styles.noteThreadNested : null]}
+    >
       <View style={styles.noteCard}>
         <View style={styles.noteHeader}>
-          <Text style={styles.noteAuthor}>{note.authorLabel || "You"}</Text>
-          <Text style={styles.noteTime}>{formatTimestamp(note.createdAt)}</Text>
+          <Text style={styles.noteAuthor}>{comment.authorLabel || "You"}</Text>
+          <Text style={styles.noteTime}>
+            {formatTimestamp(comment.createdAt)}
+          </Text>
         </View>
-        <Text style={styles.noteBody}>{note.body}</Text>
+
+        {routingLabel ? (
+          <View style={styles.commentMetaRow}>
+            <View style={styles.commentMetaPill}>
+              <Text style={styles.commentMetaPillText}>{routingLabel}</Text>
+            </View>
+            {comment.agentSessionId ? (
+              <TouchableOpacity
+                style={styles.inlineLink}
+                onPress={() => onOpenSession(comment.agentSessionId!)}
+                activeOpacity={0.82}
+              >
+                <Ionicons
+                  name="terminal-outline"
+                  size={13}
+                  color={Colors.textSecondary}
+                />
+                <Text style={styles.inlineLinkText}>Open session</Text>
+              </TouchableOpacity>
+            ) : null}
+          </View>
+        ) : null}
+
+        <Text style={styles.noteBody}>{comment.body}</Text>
+
+        {comment.attachments.length > 0 ? (
+          <View style={styles.commentAttachmentBlock}>
+            <AttachmentStack attachments={comment.attachments} compact />
+          </View>
+        ) : null}
+
         <TouchableOpacity
           style={styles.noteReplyButton}
-          onPress={() => onReply(note)}
+          onPress={() => onReply(comment)}
           activeOpacity={0.82}
         >
           <Ionicons
@@ -1366,10 +1552,16 @@ function NoteThread({
         </TouchableOpacity>
       </View>
 
-      {note.replies.length > 0 ? (
+      {comment.replies.length > 0 ? (
         <View style={styles.noteReplyList}>
-          {note.replies.map((reply) => (
-            <NoteThread key={reply.id} note={reply} onReply={onReply} depth={depth + 1} />
+          {comment.replies.map((reply) => (
+            <CommentThread
+              key={reply.id}
+              comment={reply}
+              onReply={onReply}
+              onOpenSession={onOpenSession}
+              depth={depth + 1}
+            />
           ))}
         </View>
       ) : null}
@@ -1649,7 +1841,8 @@ function ProjectSetupSheet({
         ) : (
           <View style={styles.projectEmptyState}>
             <Text style={styles.projectHint}>
-              Choose an existing project or start a new one to define repo context.
+              Choose an existing project or start a new one to define repo
+              context.
             </Text>
           </View>
         )}
@@ -1670,7 +1863,9 @@ function ProjectSetupSheet({
           </TouchableOpacity>
         </View>
 
-        {activeProjectId && draftProjectId && activeProjectId !== draftProjectId ? (
+        {activeProjectId &&
+        draftProjectId &&
+        activeProjectId !== draftProjectId ? (
           <Text style={styles.projectFootnote}>
             Saving also switches this issue to the selected project.
           </Text>
@@ -1719,12 +1914,20 @@ function DirectoryField({
   );
 }
 
-function NoteComposerSheet({
+function CommentComposerSheet({
   visible,
   busy,
   replyTarget,
   value,
+  selection,
+  attachments,
+  attachmentBusy,
+  mentionSuggestions,
   onChangeText,
+  onChangeSelection,
+  onPickMention,
+  onAddAttachment,
+  onRemoveAttachment,
   onClose,
   onSave,
 }: {
@@ -1732,14 +1935,22 @@ function NoteComposerSheet({
   busy?: boolean;
   replyTarget?: TaskComment | null;
   value: string;
+  selection: ComposerSelection;
+  attachments: Attachment[];
+  attachmentBusy?: boolean;
+  mentionSuggestions: typeof SUPPORTED_AGENT_TARGETS;
   onChangeText: (text: string) => void;
+  onChangeSelection: (selection: ComposerSelection) => void;
+  onPickMention: (handle: string) => void;
+  onAddAttachment: () => void;
+  onRemoveAttachment: (attachment: Attachment) => void;
   onClose: () => void;
   onSave: () => void;
 }) {
   return (
     <SheetScaffold
       visible={visible}
-      title={replyTarget ? "Reply" : "Add note"}
+      title={replyTarget ? "Reply" : "Comment"}
       onClose={onClose}
     >
       <View style={styles.editorContent}>
@@ -1757,7 +1968,11 @@ function NoteComposerSheet({
         <TextInput
           value={value}
           onChangeText={onChangeText}
-          placeholder="Add context, decisions, or blockers..."
+          onSelectionChange={(event) => {
+            onChangeSelection(event.nativeEvent.selection);
+          }}
+          selection={selection}
+          placeholder="Comment, or type @ to route work to an agent..."
           placeholderTextColor={Colors.textSecondary}
           style={styles.editorDescriptionInput}
           multiline
@@ -1765,17 +1980,53 @@ function NoteComposerSheet({
           textAlignVertical="top"
         />
 
+        {mentionSuggestions.length > 0 ? (
+          <View style={styles.mentionPanel}>
+            {mentionSuggestions.map((target) => (
+              <TouchableOpacity
+                key={target.id}
+                style={styles.mentionRow}
+                onPress={() => onPickMention(target.handle)}
+                activeOpacity={0.82}
+              >
+                <View style={styles.mentionCopy}>
+                  <View style={styles.mentionTopRow}>
+                    <Text style={styles.mentionHandle}>@{target.handle}</Text>
+                    <Text style={styles.mentionLabel}>{target.label}</Text>
+                  </View>
+                  <Text style={styles.mentionDescription}>
+                    {target.description}
+                  </Text>
+                </View>
+              </TouchableOpacity>
+            ))}
+          </View>
+        ) : null}
+
+        <View style={styles.attachmentEditor}>
+          <Text style={styles.editorLabel}>Files</Text>
+          <AttachmentStack
+            attachments={attachments}
+            emptyLabel="Optional screenshots, logs, or specs."
+            addLabel={attachmentBusy ? "Uploading..." : "Attach file"}
+            addDisabled={busy || attachmentBusy}
+            onAdd={onAddAttachment}
+            onRemove={onRemoveAttachment}
+          />
+        </View>
+
         <TouchableOpacity
           style={[
             styles.primarySheetButton,
-            (!value.trim() || busy) && styles.primarySheetButtonDisabled,
+            (!value.trim() || busy || attachmentBusy) &&
+              styles.primarySheetButtonDisabled,
           ]}
           onPress={onSave}
-          disabled={!value.trim() || busy}
+          disabled={!value.trim() || busy || attachmentBusy}
           activeOpacity={0.82}
         >
           <Text style={styles.primarySheetButtonText}>
-            {busy ? "Saving..." : "Save note"}
+            {busy ? "Sending..." : "Send comment"}
           </Text>
         </TouchableOpacity>
       </View>
@@ -1785,30 +2036,66 @@ function NoteComposerSheet({
 
 function EditIssueSheet({
   visible,
+  serverId,
   title,
   description,
+  attachments,
   deleting,
   onClose,
   onSave,
   onDelete,
 }: {
   visible: boolean;
+  serverId: string;
   title: string;
   description: string;
+  attachments: Attachment[];
   deleting?: boolean;
   onClose: () => void;
-  onSave: (title: string, description: string) => void;
+  onSave: (
+    title: string,
+    description: string,
+    attachments: Attachment[],
+  ) => void;
   onDelete: () => void;
 }) {
   const [nextTitle, setNextTitle] = useState(title);
   const [nextDescription, setNextDescription] = useState(description);
+  const [nextAttachments, setNextAttachments] = useState(attachments);
+  const [uploadingAttachment, setUploadingAttachment] = useState(false);
 
   useEffect(() => {
     if (visible) {
       setNextTitle(title);
       setNextDescription(description);
+      setNextAttachments(attachments);
     }
-  }, [description, title, visible]);
+  }, [attachments, description, title, visible]);
+
+  const handleAddAttachment = async () => {
+    if (uploadingAttachment) {
+      return;
+    }
+
+    setUploadingAttachment(true);
+    try {
+      const attachment = await uploadDocumentForServer(serverId);
+      if (!attachment) {
+        return;
+      }
+
+      setNextAttachments((current) => {
+        if (current.some((existing) => existing.path === attachment.path)) {
+          return current;
+        }
+        return [...current, attachment];
+      });
+    } catch (error: any) {
+      Alert.alert("Could not attach file", error?.message || "Try again.");
+    } finally {
+      setUploadingAttachment(false);
+    }
+  };
 
   return (
     <SheetScaffold visible={visible} title="Edit issue" onClose={onClose}>
@@ -1833,12 +2120,32 @@ function EditIssueSheet({
           textAlignVertical="top"
         />
 
+        <View style={styles.attachmentEditor}>
+          <FieldLabel text="Files" />
+          <AttachmentStack
+            attachments={nextAttachments}
+            emptyLabel="Optional screenshots, logs, or specs."
+            addLabel={uploadingAttachment ? "Uploading..." : "Attach file"}
+            addDisabled={uploadingAttachment}
+            onAdd={() => {
+              void handleAddAttachment();
+            }}
+            onRemove={(attachment) => {
+              setNextAttachments((current) =>
+                current.filter((existing) => existing.path !== attachment.path),
+              );
+            }}
+          />
+        </View>
+
         <TouchableOpacity
           style={[
             styles.primarySheetButton,
             !nextTitle.trim() && styles.primarySheetButtonDisabled,
           ]}
-          onPress={() => onSave(nextTitle.trim(), nextDescription)}
+          onPress={() =>
+            onSave(nextTitle.trim(), nextDescription, nextAttachments)
+          }
           disabled={!nextTitle.trim()}
           activeOpacity={0.82}
         >
@@ -1962,6 +2269,20 @@ const styles = StyleSheet.create({
     fontSize: 15,
     lineHeight: 24,
     fontFamily: Typography.uiFont,
+  },
+  heroAttachmentSurface: {
+    gap: 10,
+    paddingHorizontal: 14,
+    paddingVertical: 14,
+    borderRadius: 20,
+    backgroundColor: "rgba(255,255,255,0.03)",
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: "rgba(255,255,255,0.08)",
+  },
+  heroAttachmentLabel: {
+    color: Colors.textSecondary,
+    fontSize: 12,
+    fontFamily: Typography.uiFontMedium,
   },
   actionRow: {
     flexDirection: "row",
@@ -2195,6 +2516,29 @@ const styles = StyleSheet.create({
     fontSize: 14,
     lineHeight: 22,
     fontFamily: Typography.uiFont,
+  },
+  commentMetaRow: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    alignItems: "center",
+    gap: 8,
+  },
+  commentMetaPill: {
+    minHeight: 26,
+    paddingHorizontal: 10,
+    borderRadius: 13,
+    justifyContent: "center",
+    backgroundColor: "rgba(91,157,255,0.10)",
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: `${Colors.accent}40`,
+  },
+  commentMetaPillText: {
+    color: Colors.accent,
+    fontSize: 11,
+    fontFamily: Typography.uiFontMedium,
+  },
+  commentAttachmentBlock: {
+    paddingTop: 2,
   },
   noteReplyButton: {
     alignSelf: "flex-start",
@@ -2520,5 +2864,45 @@ const styles = StyleSheet.create({
     fontSize: 12,
     lineHeight: 19,
     fontFamily: Typography.uiFont,
+  },
+  mentionPanel: {
+    gap: 8,
+    padding: 12,
+    borderRadius: 16,
+    backgroundColor: "rgba(255,255,255,0.03)",
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: "rgba(255,255,255,0.08)",
+  },
+  mentionRow: {
+    paddingHorizontal: 2,
+    paddingVertical: 2,
+  },
+  mentionCopy: {
+    gap: 4,
+  },
+  mentionTopRow: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    alignItems: "center",
+    gap: 8,
+  },
+  mentionHandle: {
+    color: Colors.accent,
+    fontSize: 12,
+    fontFamily: Typography.uiFontMedium,
+  },
+  mentionLabel: {
+    color: Colors.textPrimary,
+    fontSize: 13,
+    fontFamily: Typography.uiFontMedium,
+  },
+  mentionDescription: {
+    color: Colors.textSecondary,
+    fontSize: 12,
+    lineHeight: 18,
+    fontFamily: Typography.uiFont,
+  },
+  attachmentEditor: {
+    gap: 10,
   },
 });

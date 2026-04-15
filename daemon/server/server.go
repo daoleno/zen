@@ -216,49 +216,50 @@ func (s *Server) handleAuthCheck(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleClientMessage(conn *websocket.Conn, msg []byte) {
 	var raw struct {
-		Type           string   `json:"type"`
-		RequestID      string   `json:"request_id"`
-		AgentID        string   `json:"agent_id"`
-		TargetID       string   `json:"target_id"`
-		Cwd            string   `json:"cwd"`
-		Command        string   `json:"command"`
-		Name           string   `json:"name"`
-		Backend        string   `json:"backend"`
-		SessionID      string   `json:"session_id"`
-		Text           string   `json:"text"`
-		Data           string   `json:"data"`
-		Body           string   `json:"body"`
-		Action         string   `json:"action"`
-		StateVersion   int64    `json:"state_version"`
-		PushToken      string   `json:"push_token"`
-		ServerRef      string   `json:"server_ref"`
-		Cols           int      `json:"cols"`
-		Rows           int      `json:"rows"`
-		Col            int      `json:"col"`
-		Row            int      `json:"row"`
-		Lines          int      `json:"lines"`
-		TaskID         string   `json:"task_id"`
-		RunID          string   `json:"run_id"`
-		Title          string   `json:"title"`
-		Description    string   `json:"description"`
-		SkillID        string   `json:"skill_id"`
-		TaskStatus     string   `json:"task_status"`
-		ExecutionMode  string   `json:"execution_mode"`
-		DeliveryMode   string   `json:"delivery_mode"`
-		AgentSessionID string   `json:"agent_session_id"`
-		Icon           string   `json:"icon"`
-		AgentCmd       string   `json:"agent_cmd"`
-		Prompt         string   `json:"prompt"`
-		Priority       int      `json:"priority"`
-		Labels         []string `json:"labels"`
-		ProjectID      string   `json:"project_id"`
-		ProjectName    string   `json:"project_name"`
-		ProjectIcon    string   `json:"project_icon"`
-		RepoRoot       string   `json:"repo_root"`
-		WorktreeRoot   string   `json:"worktree_root"`
-		BaseBranch     string   `json:"base_branch"`
-		Preamble       string   `json:"preamble"`
-		Constraints    []string `json:"constraints"`
+		Type           string            `json:"type"`
+		RequestID      string            `json:"request_id"`
+		AgentID        string            `json:"agent_id"`
+		TargetID       string            `json:"target_id"`
+		Cwd            string            `json:"cwd"`
+		Command        string            `json:"command"`
+		Name           string            `json:"name"`
+		Backend        string            `json:"backend"`
+		SessionID      string            `json:"session_id"`
+		Text           string            `json:"text"`
+		Data           string            `json:"data"`
+		Body           string            `json:"body"`
+		Action         string            `json:"action"`
+		StateVersion   int64             `json:"state_version"`
+		PushToken      string            `json:"push_token"`
+		ServerRef      string            `json:"server_ref"`
+		Cols           int               `json:"cols"`
+		Rows           int               `json:"rows"`
+		Col            int               `json:"col"`
+		Row            int               `json:"row"`
+		Lines          int               `json:"lines"`
+		TaskID         string            `json:"task_id"`
+		RunID          string            `json:"run_id"`
+		Title          string            `json:"title"`
+		Description    string            `json:"description"`
+		SkillID        string            `json:"skill_id"`
+		TaskStatus     string            `json:"task_status"`
+		ExecutionMode  string            `json:"execution_mode"`
+		DeliveryMode   string            `json:"delivery_mode"`
+		AgentSessionID string            `json:"agent_session_id"`
+		Icon           string            `json:"icon"`
+		AgentCmd       string            `json:"agent_cmd"`
+		Prompt         string            `json:"prompt"`
+		Priority       int               `json:"priority"`
+		Labels         []string          `json:"labels"`
+		Attachments    []task.Attachment `json:"attachments"`
+		ProjectID      string            `json:"project_id"`
+		ProjectName    string            `json:"project_name"`
+		ProjectIcon    string            `json:"project_icon"`
+		RepoRoot       string            `json:"repo_root"`
+		WorktreeRoot   string            `json:"worktree_root"`
+		BaseBranch     string            `json:"base_branch"`
+		Preamble       string            `json:"preamble"`
+		Constraints    []string          `json:"constraints"`
 	}
 	if err := json.Unmarshal(msg, &raw); err != nil {
 		log.Printf("invalid message: %v", err)
@@ -486,15 +487,16 @@ func (s *Server) handleClientMessage(conn *websocket.Conn, msg []byte) {
 
 	case "create_task":
 		var input struct {
-			RequestID   string   `json:"request_id"`
-			Title       string   `json:"title"`
-			Description string   `json:"description"`
-			SkillID     string   `json:"skill_id"`
-			Cwd         string   `json:"cwd"`
-			Priority    int      `json:"priority"`
-			Labels      []string `json:"labels"`
-			ProjectID   string   `json:"project_id"`
-			DueDate     string   `json:"due_date"`
+			RequestID   string            `json:"request_id"`
+			Title       string            `json:"title"`
+			Description string            `json:"description"`
+			Attachments []task.Attachment `json:"attachments"`
+			SkillID     string            `json:"skill_id"`
+			Cwd         string            `json:"cwd"`
+			Priority    int               `json:"priority"`
+			Labels      []string          `json:"labels"`
+			ProjectID   string            `json:"project_id"`
+			DueDate     string            `json:"due_date"`
 		}
 		if err := json.Unmarshal(msg, &input); err != nil {
 			s.sendErrorWithRequestID(conn, raw.RequestID, "create_task_failed", "invalid create_task payload")
@@ -504,6 +506,7 @@ func (s *Server) handleClientMessage(conn *websocket.Conn, msg []byte) {
 		t, err := s.tasks.Create(
 			strings.TrimSpace(input.Title),
 			input.Description,
+			input.Attachments,
 			input.SkillID,
 			input.Cwd,
 			input.Priority,
@@ -519,15 +522,16 @@ func (s *Server) handleClientMessage(conn *websocket.Conn, msg []byte) {
 
 	case "update_task":
 		var input struct {
-			RequestID   string   `json:"request_id"`
-			TaskID      string   `json:"task_id"`
-			Title       *string  `json:"title"`
-			Description *string  `json:"description"`
-			TaskStatus  *string  `json:"task_status"`
-			Priority    *int     `json:"priority"`
-			Labels      []string `json:"labels"`
-			ProjectID   *string  `json:"project_id"`
-			DueDate     *string  `json:"due_date"`
+			RequestID   string             `json:"request_id"`
+			TaskID      string             `json:"task_id"`
+			Title       *string            `json:"title"`
+			Description *string            `json:"description"`
+			Attachments *[]task.Attachment `json:"attachments"`
+			TaskStatus  *string            `json:"task_status"`
+			Priority    *int               `json:"priority"`
+			Labels      []string           `json:"labels"`
+			ProjectID   *string            `json:"project_id"`
+			DueDate     *string            `json:"due_date"`
 		}
 		if err := json.Unmarshal(msg, &input); err != nil {
 			s.sendErrorWithRequestID(conn, raw.RequestID, "update_task_failed", "invalid update_task payload")
@@ -554,6 +558,9 @@ func (s *Server) handleClientMessage(conn *websocket.Conn, msg []byte) {
 			if input.Description != nil {
 				t.Description = *input.Description
 			}
+			if input.Attachments != nil {
+				t.Attachments = append([]task.Attachment(nil), (*input.Attachments)...)
+			}
 			if input.TaskStatus != nil && *input.TaskStatus != "" {
 				t.Status = task.TaskStatus(*input.TaskStatus)
 			}
@@ -578,12 +585,14 @@ func (s *Server) handleClientMessage(conn *websocket.Conn, msg []byte) {
 
 	case "add_task_comment":
 		var input struct {
-			RequestID       string `json:"request_id"`
-			TaskID          string `json:"task_id"`
-			Body            string `json:"body"`
-			ParentCommentID string `json:"parent_comment_id"`
-			DeliveryMode    string `json:"delivery_mode"`
-			AgentSessionID  string `json:"agent_session_id"`
+			RequestID       string            `json:"request_id"`
+			TaskID          string            `json:"task_id"`
+			Body            string            `json:"body"`
+			Attachments     []task.Attachment `json:"attachments"`
+			ParentCommentID string            `json:"parent_comment_id"`
+			DeliveryMode    string            `json:"delivery_mode"`
+			AgentSessionID  string            `json:"agent_session_id"`
+			AgentCmd        string            `json:"agent_cmd"`
 		}
 		if err := json.Unmarshal(msg, &input); err != nil {
 			s.sendErrorWithRequestID(conn, raw.RequestID, "add_task_comment_failed", "invalid add_task_comment payload")
@@ -609,7 +618,7 @@ func (s *Server) handleClientMessage(conn *websocket.Conn, msg []byte) {
 
 		deliveryMode := strings.TrimSpace(input.DeliveryMode)
 		if deliveryMode == "" {
-			deliveryMode = "note"
+			deliveryMode = "comment"
 		}
 
 		var (
@@ -619,7 +628,7 @@ func (s *Server) handleClientMessage(conn *websocket.Conn, msg []byte) {
 		)
 
 		switch deliveryMode {
-		case "note":
+		case "comment":
 			// Plain discussion comments stay on the issue and do not trigger agent work.
 		case "current_run":
 			currentRun, err := s.findLiveRunForTask(currentTask)
@@ -627,7 +636,7 @@ func (s *Server) handleClientMessage(conn *websocket.Conn, msg []byte) {
 				s.sendErrorWithRequestID(conn, input.RequestID, "add_task_comment_failed", err.Error())
 				return
 			}
-			if err := s.watcher.SendInput(currentRun.AgentSessionID, s.buildCurrentRunReplyMessage(currentTask, parentCommentID, body)); err != nil {
+			if err := s.watcher.SendInput(currentRun.AgentSessionID, s.buildCurrentRunReplyMessage(currentTask, parentCommentID, body, input.Attachments)); err != nil {
 				s.sendErrorWithRequestID(conn, input.RequestID, "add_task_comment_failed", err.Error())
 				return
 			}
@@ -639,8 +648,8 @@ func (s *Server) handleClientMessage(conn *websocket.Conn, msg []byte) {
 				currentTask,
 				"spawn_new_session",
 				"",
-				s.buildSpawnRunCommentInstruction(currentTask, parentCommentID, body),
-				"",
+				s.buildSpawnRunCommentInstruction(currentTask, parentCommentID, body, input.Attachments),
+				strings.TrimSpace(input.AgentCmd),
 			)
 			if err != nil {
 				s.sendErrorWithRequestID(conn, input.RequestID, "add_task_comment_failed", err.Error())
@@ -662,7 +671,7 @@ func (s *Server) handleClientMessage(conn *websocket.Conn, msg []byte) {
 				return
 			}
 			targetSessionID = createdRun.AgentSessionID
-			if err := s.watcher.SendInput(targetSessionID, s.buildAttachedSessionMessage(currentTask, parentCommentID, body)); err != nil {
+			if err := s.watcher.SendInput(targetSessionID, s.buildAttachedSessionMessage(currentTask, parentCommentID, body, input.Attachments)); err != nil {
 				updatedRun, runErr := s.runs.Update(createdRun.ID, func(run *task.Run) {
 					run.Status = task.RunStatusFailed
 					run.LastError = err.Error()
@@ -688,6 +697,7 @@ func (s *Server) handleClientMessage(conn *websocket.Conn, msg []byte) {
 		comment := task.TaskComment{
 			ID:             uuid.New().String(),
 			Body:           body,
+			Attachments:    append([]task.Attachment(nil), input.Attachments...),
 			AuthorKind:     "user",
 			AuthorLabel:    "You",
 			ParentID:       parentCommentID,
@@ -1110,6 +1120,9 @@ func (s *Server) buildTaskPrompt(t *task.Task, note, agentCmdOverride string) (s
 		prompt += t.Description
 	} else {
 		prompt += t.Title
+	}
+	if attachmentBlock := formatAttachmentsBlock("Attached files", t.Attachments); attachmentBlock != "" {
+		prompt += "\n\n" + attachmentBlock
 	}
 	if trimmedNote := strings.TrimSpace(note); trimmedNote != "" {
 		prompt += "\n\nAdditional instruction:\n" + trimmedNote
@@ -1550,15 +1563,18 @@ func (s *Server) formatCommentContextBlock(currentTask *task.Task, parentComment
 			label = "Comment"
 		}
 		lines = append(lines, fmt.Sprintf("- %s: %s", label, collapseCommentText(comment.Body)))
+		if attachmentLine := formatAttachmentInlineLine(comment.Attachments); attachmentLine != "" {
+			lines = append(lines, "  "+attachmentLine)
+		}
 	}
 
 	return strings.Join(lines, "\n")
 }
 
-func (s *Server) buildCurrentRunReplyMessage(t *task.Task, parentCommentID, body string) string {
+func (s *Server) buildCurrentRunReplyMessage(t *task.Task, parentCommentID, body string, attachments []task.Attachment) string {
 	contextBlock := s.formatCommentContextBlock(t, parentCommentID)
 	if contextBlock == "" {
-		return strings.TrimSpace(body)
+		return strings.TrimSpace(body) + formatTrailingAttachments(attachments)
 	}
 
 	var builder strings.Builder
@@ -1566,13 +1582,17 @@ func (s *Server) buildCurrentRunReplyMessage(t *task.Task, parentCommentID, body
 	builder.WriteString(contextBlock)
 	builder.WriteString("\n\nNew reply:\n")
 	builder.WriteString(strings.TrimSpace(body))
+	if attachmentBlock := formatAttachmentsBlock("Attached files", attachments); attachmentBlock != "" {
+		builder.WriteString("\n\n")
+		builder.WriteString(attachmentBlock)
+	}
 	return builder.String()
 }
 
-func (s *Server) buildSpawnRunCommentInstruction(t *task.Task, parentCommentID, body string) string {
+func (s *Server) buildSpawnRunCommentInstruction(t *task.Task, parentCommentID, body string, attachments []task.Attachment) string {
 	contextBlock := s.formatCommentContextBlock(t, parentCommentID)
 	if contextBlock == "" {
-		return strings.TrimSpace(body)
+		return strings.TrimSpace(body) + formatTrailingAttachments(attachments)
 	}
 
 	var builder strings.Builder
@@ -1580,10 +1600,14 @@ func (s *Server) buildSpawnRunCommentInstruction(t *task.Task, parentCommentID, 
 	builder.WriteString(contextBlock)
 	builder.WriteString("\n\nPlease address this reply:\n")
 	builder.WriteString(strings.TrimSpace(body))
+	if attachmentBlock := formatAttachmentsBlock("Attached files", attachments); attachmentBlock != "" {
+		builder.WriteString("\n\n")
+		builder.WriteString(attachmentBlock)
+	}
 	return builder.String()
 }
 
-func (s *Server) buildAttachedSessionMessage(t *task.Task, parentCommentID, body string) string {
+func (s *Server) buildAttachedSessionMessage(t *task.Task, parentCommentID, body string, attachments []task.Attachment) string {
 	var builder strings.Builder
 	builder.WriteString("Please work on this issue.\n\n")
 	builder.WriteString("Issue: ")
@@ -1592,6 +1616,10 @@ func (s *Server) buildAttachedSessionMessage(t *task.Task, parentCommentID, body
 		builder.WriteString("\n\nContext:\n")
 		builder.WriteString(description)
 	}
+	if attachmentBlock := formatAttachmentsBlock("Issue attachments", t.Attachments); attachmentBlock != "" {
+		builder.WriteString("\n\n")
+		builder.WriteString(attachmentBlock)
+	}
 	if contextBlock := s.formatCommentContextBlock(t, parentCommentID); contextBlock != "" {
 		builder.WriteString("\n\nRelevant discussion:\n")
 		builder.WriteString(contextBlock)
@@ -1599,6 +1627,10 @@ func (s *Server) buildAttachedSessionMessage(t *task.Task, parentCommentID, body
 	if note := strings.TrimSpace(body); note != "" {
 		builder.WriteString("\n\nUser message:\n")
 		builder.WriteString(note)
+	}
+	if attachmentBlock := formatAttachmentsBlock("Comment attachments", attachments); attachmentBlock != "" {
+		builder.WriteString("\n\n")
+		builder.WriteString(attachmentBlock)
 	}
 	return builder.String()
 }
@@ -1652,6 +1684,54 @@ func collapseCommentText(text string) string {
 		return normalized
 	}
 	return normalized[:217] + "..."
+}
+
+func formatAttachmentsBlock(title string, attachments []task.Attachment) string {
+	if len(attachments) == 0 {
+		return ""
+	}
+
+	lines := make([]string, 0, len(attachments)+1)
+	lines = append(lines, title+":")
+	for _, attachment := range attachments {
+		path := strings.TrimSpace(attachment.Path)
+		if path == "" {
+			continue
+		}
+		name := strings.TrimSpace(attachment.Name)
+		if name != "" && name != path {
+			lines = append(lines, fmt.Sprintf("- %s (%s)", path, name))
+			continue
+		}
+		lines = append(lines, "- "+path)
+	}
+	if len(lines) == 1 {
+		return ""
+	}
+	return strings.Join(lines, "\n")
+}
+
+func formatAttachmentInlineLine(attachments []task.Attachment) string {
+	if len(attachments) == 0 {
+		return ""
+	}
+	parts := make([]string, 0, len(attachments))
+	for _, attachment := range attachments {
+		if path := strings.TrimSpace(attachment.Path); path != "" {
+			parts = append(parts, path)
+		}
+	}
+	if len(parts) == 0 {
+		return ""
+	}
+	return "Attachments: " + strings.Join(parts, ", ")
+}
+
+func formatTrailingAttachments(attachments []task.Attachment) string {
+	if block := formatAttachmentsBlock("Attached files", attachments); block != "" {
+		return "\n\n" + block
+	}
+	return ""
 }
 
 // shellQuoteSimple wraps a string in single quotes for safe shell injection.

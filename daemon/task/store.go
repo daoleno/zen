@@ -50,7 +50,7 @@ func (s *Store) Events() <-chan TaskEvent {
 	return s.events
 }
 
-func (s *Store) Create(title, description, skillID, cwd string, priority int, labels []string, projectID, dueDate string) (*Task, error) {
+func (s *Store) Create(title, description string, attachments []Attachment, skillID, cwd string, priority int, labels []string, projectID, dueDate string) (*Task, error) {
 	now := time.Now().UTC()
 	normalizedDueDate, err := NormalizeDueDate(dueDate)
 	if err != nil {
@@ -66,6 +66,7 @@ func (s *Store) Create(title, description, skillID, cwd string, priority int, la
 		Number:      num,
 		Title:       title,
 		Description: description,
+		Attachments: cloneAttachments(attachments),
 		Status:      StatusBacklog,
 		Priority:    priority,
 		Labels:      append([]string(nil), labels...),
@@ -298,8 +299,24 @@ func cloneTask(task *Task) *Task {
 	if task.Labels != nil {
 		cp.Labels = append([]string(nil), task.Labels...)
 	}
+	if task.Attachments != nil {
+		cp.Attachments = cloneAttachments(task.Attachments)
+	}
 	if task.Comments != nil {
-		cp.Comments = append([]TaskComment(nil), task.Comments...)
+		cp.Comments = make([]TaskComment, len(task.Comments))
+		for i, comment := range task.Comments {
+			cp.Comments[i] = comment
+			if comment.Attachments != nil {
+				cp.Comments[i].Attachments = cloneAttachments(comment.Attachments)
+			}
+		}
 	}
 	return &cp
+}
+
+func cloneAttachments(items []Attachment) []Attachment {
+	if items == nil {
+		return nil
+	}
+	return append([]Attachment(nil), items...)
 }

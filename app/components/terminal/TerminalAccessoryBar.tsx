@@ -11,12 +11,12 @@ import { Ionicons } from "@expo/vector-icons";
 import * as DocumentPicker from "expo-document-picker";
 import * as Haptics from "expo-haptics";
 import { Typography } from "../../constants/tokens";
-import { buildAuthorizationHeader } from "../../services/auth";
 import {
   buildTerminalChrome,
   resolveTerminalTheme,
   type TerminalThemePalette,
 } from "../../constants/terminalThemes";
+import { buildUploadHeaders, buildUploadUrl } from "../../services/uploads";
 import type { TerminalSurfaceHandle } from "./TerminalSurface";
 
 type ShortcutKey =
@@ -95,7 +95,7 @@ export function TerminalAccessoryBar({
 
       const response = await fetch(uploadUrl, {
         method: "POST",
-        headers: await buildRequestHeaders(daemonId),
+        headers: await buildUploadHeaders(daemonId),
         body: formData,
       });
       if (!response.ok) {
@@ -194,36 +194,6 @@ export function TerminalAccessoryBar({
       </ScrollView>
     </View>
   );
-}
-
-async function buildRequestHeaders(
-  daemonId: string,
-): Promise<Record<string, string>> {
-  return {
-    Authorization: await buildAuthorizationHeader({
-      daemonId,
-      purpose: "zen-upload",
-    }),
-  };
-}
-
-function buildUploadUrl(serverUrl: string): string | null {
-  if (!serverUrl) return null;
-
-  try {
-    const url = new URL(serverUrl);
-    if (url.protocol === "ws:") {
-      url.protocol = "http:";
-    } else if (url.protocol === "wss:") {
-      url.protocol = "https:";
-    }
-    url.pathname = "/upload";
-    url.search = "";
-    url.hash = "";
-    return url.toString();
-  } catch {
-    return null;
-  }
 }
 
 function appendShellPath(current: string, path: string): string {
