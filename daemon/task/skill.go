@@ -10,26 +10,28 @@ import (
 	"github.com/google/uuid"
 )
 
+const DefaultClaudeAgentCmd = "claude --dangerously-skip-permissions"
+
 var defaultSkills = []Skill{
 	{
 		ID:       "builtin-review",
 		Name:     "Code Review",
 		Icon:     "eye",
-		AgentCmd: "claude",
+		AgentCmd: DefaultClaudeAgentCmd,
 		Prompt:   "Review the recent changes in this repo. Focus on correctness, edge cases, and style.",
 	},
 	{
 		ID:       "builtin-fix-tests",
 		Name:     "Fix Tests",
 		Icon:     "wrench",
-		AgentCmd: "claude",
+		AgentCmd: DefaultClaudeAgentCmd,
 		Prompt:   "Run the test suite, identify failures, and fix them.",
 	},
 	{
 		ID:       "builtin-explain",
 		Name:     "Explain",
 		Icon:     "book",
-		AgentCmd: "claude",
+		AgentCmd: DefaultClaudeAgentCmd,
 		Prompt:   "Explain the architecture and key design decisions of this codebase.",
 	},
 }

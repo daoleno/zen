@@ -1,7 +1,20 @@
-import React, { createContext, useContext, useReducer, ReactNode } from 'react';
-import type { IssueStatus, IssuePriority } from '../constants/tokens';
+import React, { createContext, useContext, useReducer, ReactNode } from "react";
+import type { IssueStatus, IssuePriority } from "../constants/tokens";
 
 export type { IssueStatus, IssuePriority };
+
+export interface TaskComment {
+  id: string;
+  body: string;
+  authorKind: string;
+  authorLabel: string;
+  parentId?: string;
+  deliveryMode?: string;
+  runId?: string;
+  agentSessionId?: string;
+  targetLabel?: string;
+  createdAt: number;
+}
 
 export interface Task {
   id: string;
@@ -15,9 +28,11 @@ export interface Task {
   labels: string[];
   projectId?: string;
   skillId?: string;
+  dueDate?: string;
   cwd?: string;
   currentRunId?: string;
   lastRunStatus?: string;
+  comments: TaskComment[];
   createdAt: number;
   updatedAt: number;
 }
@@ -64,6 +79,9 @@ export interface Project {
   serverId: string;
   name: string;
   icon: string;
+  repoRoot?: string;
+  worktreeRoot?: string;
+  baseBranch?: string;
 }
 
 interface State {
@@ -84,11 +102,26 @@ type RawTask = {
   labels?: string[];
   project_id?: string;
   skill_id?: string;
+  due_date?: string;
   cwd?: string;
   current_run_id?: string;
   last_run_status?: string;
+  comments?: RawTaskComment[];
   created_at?: string | number;
   updated_at?: string | number;
+};
+
+type RawTaskComment = {
+  id: string;
+  body?: string;
+  author_kind?: string;
+  author_label?: string;
+  parent_id?: string;
+  delivery_mode?: string;
+  run_id?: string;
+  agent_session_id?: string;
+  target_label?: string;
+  created_at?: string | number;
 };
 
 type RawRun = {
@@ -123,22 +156,51 @@ type RawProject = {
   id: string;
   name: string;
   icon?: string;
+  repo_root?: string;
+  worktree_root?: string;
+  base_branch?: string;
 };
 
 type Action =
-  | { type: 'UPSERT_SERVER_TASKS'; serverId: string; serverName: string; tasks: RawTask[] }
-  | { type: 'TASK_CREATED'; serverId: string; serverName: string; task: RawTask }
-  | { type: 'TASK_UPDATED'; serverId: string; serverName: string; task: RawTask }
-  | { type: 'TASK_DELETED'; serverId: string; taskId: string }
-  | { type: 'UPSERT_SERVER_RUNS'; serverId: string; serverName: string; runs: RawRun[] }
-  | { type: 'RUN_CREATED'; serverId: string; serverName: string; run: RawRun }
-  | { type: 'RUN_UPDATED'; serverId: string; serverName: string; run: RawRun }
-  | { type: 'UPSERT_SERVER_SKILLS'; serverId: string; serverName: string; skills: RawSkill[] }
-  | { type: 'UPSERT_SERVER_PROJECTS'; serverId: string; projects: RawProject[] }
-  | { type: 'PROJECT_CREATED'; serverId: string; project: RawProject }
-  | { type: 'PROJECT_DELETED'; serverId: string; projectId: string }
-  | { type: 'SET_GUIDANCE'; serverId: string; guidance: Guidance }
-  | { type: 'REMOVE_SERVER'; serverId: string };
+  | {
+      type: "UPSERT_SERVER_TASKS";
+      serverId: string;
+      serverName: string;
+      tasks: RawTask[];
+    }
+  | {
+      type: "TASK_CREATED";
+      serverId: string;
+      serverName: string;
+      task: RawTask;
+    }
+  | {
+      type: "TASK_UPDATED";
+      serverId: string;
+      serverName: string;
+      task: RawTask;
+    }
+  | { type: "TASK_DELETED"; serverId: string; taskId: string }
+  | {
+      type: "UPSERT_SERVER_RUNS";
+      serverId: string;
+      serverName: string;
+      runs: RawRun[];
+    }
+  | { type: "RUN_CREATED"; serverId: string; serverName: string; run: RawRun }
+  | { type: "RUN_UPDATED"; serverId: string; serverName: string; run: RawRun }
+  | {
+      type: "UPSERT_SERVER_SKILLS";
+      serverId: string;
+      serverName: string;
+      skills: RawSkill[];
+    }
+  | { type: "UPSERT_SERVER_PROJECTS"; serverId: string; projects: RawProject[] }
+  | { type: "PROJECT_CREATED"; serverId: string; project: RawProject }
+  | { type: "PROJECT_UPDATED"; serverId: string; project: RawProject }
+  | { type: "PROJECT_DELETED"; serverId: string; projectId: string }
+  | { type: "SET_GUIDANCE"; serverId: string; guidance: Guidance }
+  | { type: "REMOVE_SERVER"; serverId: string };
 
 const initialState: State = {
   tasks: [],
@@ -148,24 +210,47 @@ const initialState: State = {
   guidance: {},
 };
 
-function normalizeTask(raw: RawTask, serverId: string, serverName: string): Task {
+function normalizeTask(
+  raw: RawTask,
+  serverId: string,
+  serverName: string,
+): Task {
   return {
     id: raw.id,
     number: raw.number || 0,
     serverId,
     serverName,
     title: raw.title,
-    description: raw.description || '',
+    description: raw.description || "",
     status: raw.status,
     priority: (raw.priority || 0) as IssuePriority,
     labels: raw.labels || [],
     projectId: raw.project_id,
     skillId: raw.skill_id,
+    dueDate: raw.due_date || "",
     cwd: raw.cwd,
     currentRunId: raw.current_run_id,
     lastRunStatus: raw.last_run_status,
+    comments: Array.isArray(raw.comments)
+      ? raw.comments.map(normalizeTaskComment)
+      : [],
     createdAt: normalizeTimestamp(raw.created_at),
     updatedAt: normalizeTimestamp(raw.updated_at),
+  };
+}
+
+function normalizeTaskComment(raw: RawTaskComment): TaskComment {
+  return {
+    id: raw.id,
+    body: raw.body || "",
+    authorKind: raw.author_kind || "user",
+    authorLabel: raw.author_label || "",
+    parentId: raw.parent_id,
+    deliveryMode: raw.delivery_mode,
+    runId: raw.run_id,
+    agentSessionId: raw.agent_session_id,
+    targetLabel: raw.target_label,
+    createdAt: normalizeTimestamp(raw.created_at),
   };
 }
 
@@ -177,7 +262,7 @@ function normalizeRun(raw: RawRun, serverId: string, serverName: string): Run {
     taskId: raw.task_id,
     attemptNumber: raw.attempt_number || 0,
     status: raw.status,
-    executionMode: raw.execution_mode || '',
+    executionMode: raw.execution_mode || "",
     executorKind: raw.executor_kind,
     executorLabel: raw.executor_label,
     agentSessionId: raw.agent_session_id,
@@ -192,13 +277,17 @@ function normalizeRun(raw: RawRun, serverId: string, serverName: string): Run {
   };
 }
 
-function normalizeSkill(raw: RawSkill, serverId: string, serverName: string): Skill {
+function normalizeSkill(
+  raw: RawSkill,
+  serverId: string,
+  serverName: string,
+): Skill {
   return {
     id: raw.id,
     serverId,
     serverName,
     name: raw.name,
-    icon: raw.icon || '',
+    icon: raw.icon || "",
     agentCmd: raw.agent_cmd,
     prompt: raw.prompt,
     cwd: raw.cwd,
@@ -210,15 +299,18 @@ function normalizeProject(raw: RawProject, serverId: string): Project {
     id: raw.id,
     serverId,
     name: raw.name,
-    icon: raw.icon || '',
+    icon: raw.icon || "",
+    repoRoot: raw.repo_root || "",
+    worktreeRoot: raw.worktree_root || "",
+    baseBranch: raw.base_branch || "",
   };
 }
 
 function normalizeTimestamp(value?: string | number): number {
-  if (typeof value === 'number' && Number.isFinite(value)) {
+  if (typeof value === "number" && Number.isFinite(value)) {
     return value > 10_000_000_000 ? value : value * 1000;
   }
-  if (typeof value === 'string') {
+  if (typeof value === "string") {
     const parsed = Date.parse(value);
     if (!Number.isNaN(parsed)) return parsed;
   }
@@ -227,111 +319,177 @@ function normalizeTimestamp(value?: string | number): number {
 
 function reducer(state: State, action: Action): State {
   switch (action.type) {
-    case 'UPSERT_SERVER_TASKS': {
-      const normalized = action.tasks.map(t => normalizeTask(t, action.serverId, action.serverName));
+    case "UPSERT_SERVER_TASKS": {
+      const normalized = action.tasks.map((t) =>
+        normalizeTask(t, action.serverId, action.serverName),
+      );
       return {
         ...state,
         tasks: [
-          ...state.tasks.filter(t => t.serverId !== action.serverId),
+          ...state.tasks.filter((t) => t.serverId !== action.serverId),
           ...normalized,
         ],
       };
     }
-    case 'TASK_CREATED': {
-      const task = normalizeTask(action.task, action.serverId, action.serverName);
+    case "TASK_CREATED": {
+      const task = normalizeTask(
+        action.task,
+        action.serverId,
+        action.serverName,
+      );
       return {
         ...state,
-        tasks: [...state.tasks.filter(t => !(t.id === task.id && t.serverId === task.serverId)), task],
+        tasks: [
+          ...state.tasks.filter(
+            (t) => !(t.id === task.id && t.serverId === task.serverId),
+          ),
+          task,
+        ],
       };
     }
-    case 'TASK_UPDATED': {
-      const task = normalizeTask(action.task, action.serverId, action.serverName);
-      const exists = state.tasks.some(t => t.id === task.id && t.serverId === task.serverId);
+    case "TASK_UPDATED": {
+      const task = normalizeTask(
+        action.task,
+        action.serverId,
+        action.serverName,
+      );
+      const exists = state.tasks.some(
+        (t) => t.id === task.id && t.serverId === task.serverId,
+      );
       return {
         ...state,
         tasks: exists
-          ? state.tasks.map(t => (t.id === task.id && t.serverId === task.serverId ? task : t))
+          ? state.tasks.map((t) =>
+              t.id === task.id && t.serverId === task.serverId ? task : t,
+            )
           : [...state.tasks, task],
       };
     }
-    case 'TASK_DELETED':
+    case "TASK_DELETED":
       return {
         ...state,
-        tasks: state.tasks.filter(t => !(t.id === action.taskId && t.serverId === action.serverId)),
+        tasks: state.tasks.filter(
+          (t) => !(t.id === action.taskId && t.serverId === action.serverId),
+        ),
       };
-    case 'UPSERT_SERVER_RUNS': {
-      const normalized = action.runs.map(r => normalizeRun(r, action.serverId, action.serverName));
+    case "UPSERT_SERVER_RUNS": {
+      const normalized = action.runs.map((r) =>
+        normalizeRun(r, action.serverId, action.serverName),
+      );
       return {
         ...state,
         runs: [
-          ...state.runs.filter(r => r.serverId !== action.serverId),
+          ...state.runs.filter((r) => r.serverId !== action.serverId),
           ...normalized,
         ],
       };
     }
-    case 'RUN_CREATED': {
+    case "RUN_CREATED": {
       const run = normalizeRun(action.run, action.serverId, action.serverName);
       return {
         ...state,
-        runs: [...state.runs.filter(r => !(r.id === run.id && r.serverId === run.serverId)), run],
+        runs: [
+          ...state.runs.filter(
+            (r) => !(r.id === run.id && r.serverId === run.serverId),
+          ),
+          run,
+        ],
       };
     }
-    case 'RUN_UPDATED': {
+    case "RUN_UPDATED": {
       const run = normalizeRun(action.run, action.serverId, action.serverName);
-      const exists = state.runs.some(r => r.id === run.id && r.serverId === run.serverId);
+      const exists = state.runs.some(
+        (r) => r.id === run.id && r.serverId === run.serverId,
+      );
       return {
         ...state,
         runs: exists
-          ? state.runs.map(r => (r.id === run.id && r.serverId === run.serverId ? run : r))
+          ? state.runs.map((r) =>
+              r.id === run.id && r.serverId === run.serverId ? run : r,
+            )
           : [...state.runs, run],
       };
     }
-    case 'UPSERT_SERVER_SKILLS': {
-      const normalized = action.skills.map(s => normalizeSkill(s, action.serverId, action.serverName));
+    case "UPSERT_SERVER_SKILLS": {
+      const normalized = action.skills.map((s) =>
+        normalizeSkill(s, action.serverId, action.serverName),
+      );
       return {
         ...state,
         skills: [
-          ...state.skills.filter(s => s.serverId !== action.serverId),
+          ...state.skills.filter((s) => s.serverId !== action.serverId),
           ...normalized,
         ],
       };
     }
-    case 'UPSERT_SERVER_PROJECTS': {
-      const normalized = action.projects.map(p => normalizeProject(p, action.serverId));
+    case "UPSERT_SERVER_PROJECTS": {
+      const normalized = action.projects.map((p) =>
+        normalizeProject(p, action.serverId),
+      );
       return {
         ...state,
         projects: [
-          ...state.projects.filter(p => p.serverId !== action.serverId),
+          ...state.projects.filter((p) => p.serverId !== action.serverId),
           ...normalized,
         ],
       };
     }
-    case 'PROJECT_CREATED': {
+    case "PROJECT_CREATED": {
       const project = normalizeProject(action.project, action.serverId);
       return {
         ...state,
-        projects: [...state.projects.filter(p => !(p.id === project.id && p.serverId === project.serverId)), project],
+        projects: [
+          ...state.projects.filter(
+            (p) => !(p.id === project.id && p.serverId === project.serverId),
+          ),
+          project,
+        ],
       };
     }
-    case 'PROJECT_DELETED':
+    case "PROJECT_UPDATED": {
+      const project = normalizeProject(action.project, action.serverId);
+      const exists = state.projects.some(
+        (p) => p.id === project.id && p.serverId === project.serverId,
+      );
       return {
         ...state,
-        projects: state.projects.filter(p => !(p.id === action.projectId && p.serverId === action.serverId)),
+        projects: exists
+          ? state.projects.map((p) =>
+              p.id === project.id && p.serverId === project.serverId
+                ? project
+                : p,
+            )
+          : [...state.projects, project],
       };
-    case 'SET_GUIDANCE':
+    }
+    case "PROJECT_DELETED":
+      return {
+        ...state,
+        tasks: state.tasks.map((task) =>
+          task.serverId === action.serverId && task.projectId === action.projectId
+            ? { ...task, projectId: "" }
+            : task,
+        ),
+        projects: state.projects.filter(
+          (p) => !(p.id === action.projectId && p.serverId === action.serverId),
+        ),
+      };
+    case "SET_GUIDANCE":
       return {
         ...state,
         guidance: { ...state.guidance, [action.serverId]: action.guidance },
       };
-    case 'REMOVE_SERVER':
+    case "REMOVE_SERVER":
       return {
         ...state,
-        tasks: state.tasks.filter(t => t.serverId !== action.serverId),
-        runs: state.runs.filter(r => r.serverId !== action.serverId),
-        skills: state.skills.filter(s => s.serverId !== action.serverId),
-        projects: state.projects.filter(p => p.serverId !== action.serverId),
+        tasks: state.tasks.filter((t) => t.serverId !== action.serverId),
+        runs: state.runs.filter((r) => r.serverId !== action.serverId),
+        skills: state.skills.filter((s) => s.serverId !== action.serverId),
+        projects: state.projects.filter((p) => p.serverId !== action.serverId),
         guidance: Object.fromEntries(
-          Object.entries(state.guidance).filter(([id]) => id !== action.serverId),
+          Object.entries(state.guidance).filter(
+            ([id]) => id !== action.serverId,
+          ),
         ),
       };
     default:
@@ -339,7 +497,10 @@ function reducer(state: State, action: Action): State {
   }
 }
 
-const TaskContext = createContext<{ state: State; dispatch: React.Dispatch<Action> } | null>(null);
+const TaskContext = createContext<{
+  state: State;
+  dispatch: React.Dispatch<Action>;
+} | null>(null);
 
 export function TaskProvider({ children }: { children: ReactNode }) {
   const [state, dispatch] = useReducer(reducer, initialState);
@@ -352,6 +513,6 @@ export function TaskProvider({ children }: { children: ReactNode }) {
 
 export function useTasks() {
   const ctx = useContext(TaskContext);
-  if (!ctx) throw new Error('useTasks must be used within TaskProvider');
+  if (!ctx) throw new Error("useTasks must be used within TaskProvider");
   return ctx;
 }

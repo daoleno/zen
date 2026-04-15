@@ -8,6 +8,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -27,6 +28,11 @@ import (
 var upgrader = websocket.Upgrader{
 	CheckOrigin: func(r *http.Request) bool { return true },
 }
+
+const (
+	taskStateMachineStatusStart = "<!-- ZEN:STATUS START -->"
+	taskStateMachineStatusEnd   = "<!-- ZEN:STATUS END -->"
+)
 
 // Server handles WebSocket connections from the zen mobile app.
 type Server struct {
@@ -221,6 +227,7 @@ func (s *Server) handleClientMessage(conn *websocket.Conn, msg []byte) {
 		SessionID      string   `json:"session_id"`
 		Text           string   `json:"text"`
 		Data           string   `json:"data"`
+		Body           string   `json:"body"`
 		Action         string   `json:"action"`
 		StateVersion   int64    `json:"state_version"`
 		PushToken      string   `json:"push_token"`
@@ -237,6 +244,7 @@ func (s *Server) handleClientMessage(conn *websocket.Conn, msg []byte) {
 		SkillID        string   `json:"skill_id"`
 		TaskStatus     string   `json:"task_status"`
 		ExecutionMode  string   `json:"execution_mode"`
+		DeliveryMode   string   `json:"delivery_mode"`
 		AgentSessionID string   `json:"agent_session_id"`
 		Icon           string   `json:"icon"`
 		AgentCmd       string   `json:"agent_cmd"`
@@ -246,6 +254,9 @@ func (s *Server) handleClientMessage(conn *websocket.Conn, msg []byte) {
 		ProjectID      string   `json:"project_id"`
 		ProjectName    string   `json:"project_name"`
 		ProjectIcon    string   `json:"project_icon"`
+		RepoRoot       string   `json:"repo_root"`
+		WorktreeRoot   string   `json:"worktree_root"`
+		BaseBranch     string   `json:"base_branch"`
 		Preamble       string   `json:"preamble"`
 		Constraints    []string `json:"constraints"`
 	}
@@ -474,39 +485,234 @@ func (s *Server) handleClientMessage(conn *websocket.Conn, msg []byte) {
 		s.sendJSON(conn, map[string]any{"type": "run_list", "runs": s.runs.List()})
 
 	case "create_task":
-		t, err := s.tasks.Create(raw.Title, raw.Description, raw.SkillID, raw.Cwd, raw.Priority, raw.Labels, raw.ProjectID)
-		if err != nil {
-			s.sendErrorWithRequestID(conn, raw.RequestID, "create_task_failed", err.Error())
+		var input struct {
+			RequestID   string   `json:"request_id"`
+			Title       string   `json:"title"`
+			Description string   `json:"description"`
+			SkillID     string   `json:"skill_id"`
+			Cwd         string   `json:"cwd"`
+			Priority    int      `json:"priority"`
+			Labels      []string `json:"labels"`
+			ProjectID   string   `json:"project_id"`
+			DueDate     string   `json:"due_date"`
+		}
+		if err := json.Unmarshal(msg, &input); err != nil {
+			s.sendErrorWithRequestID(conn, raw.RequestID, "create_task_failed", "invalid create_task payload")
 			return
 		}
-		s.sendJSON(conn, map[string]any{"type": "task_created", "request_id": raw.RequestID, "task": t})
+
+		t, err := s.tasks.Create(
+			strings.TrimSpace(input.Title),
+			input.Description,
+			input.SkillID,
+			input.Cwd,
+			input.Priority,
+			input.Labels,
+			input.ProjectID,
+			input.DueDate,
+		)
+		if err != nil {
+			s.sendErrorWithRequestID(conn, input.RequestID, "create_task_failed", err.Error())
+			return
+		}
+		s.sendJSON(conn, map[string]any{"type": "task_created", "request_id": input.RequestID, "task": t})
 
 	case "update_task":
-		t, err := s.tasks.Update(raw.TaskID, func(t *task.Task) {
-			if raw.Title != "" {
-				t.Title = raw.Title
+		var input struct {
+			RequestID   string   `json:"request_id"`
+			TaskID      string   `json:"task_id"`
+			Title       *string  `json:"title"`
+			Description *string  `json:"description"`
+			TaskStatus  *string  `json:"task_status"`
+			Priority    *int     `json:"priority"`
+			Labels      []string `json:"labels"`
+			ProjectID   *string  `json:"project_id"`
+			DueDate     *string  `json:"due_date"`
+		}
+		if err := json.Unmarshal(msg, &input); err != nil {
+			s.sendErrorWithRequestID(conn, raw.RequestID, "update_task_failed", "invalid update_task payload")
+			return
+		}
+
+		normalizedDueDate := ""
+		if input.DueDate != nil {
+			var err error
+			normalizedDueDate, err = task.NormalizeDueDate(*input.DueDate)
+			if err != nil {
+				s.sendErrorWithRequestID(conn, input.RequestID, "update_task_failed", err.Error())
+				return
 			}
-			if raw.Description != "" {
-				t.Description = raw.Description
+		}
+
+		t, err := s.tasks.Update(input.TaskID, func(t *task.Task) {
+			if input.Title != nil {
+				trimmed := strings.TrimSpace(*input.Title)
+				if trimmed != "" {
+					t.Title = trimmed
+				}
 			}
-			if raw.TaskStatus != "" {
-				t.Status = task.TaskStatus(raw.TaskStatus)
+			if input.Description != nil {
+				t.Description = *input.Description
 			}
-			if raw.Priority > 0 || raw.TaskStatus != "" {
-				t.Priority = raw.Priority
+			if input.TaskStatus != nil && *input.TaskStatus != "" {
+				t.Status = task.TaskStatus(*input.TaskStatus)
 			}
-			if raw.Labels != nil {
-				t.Labels = raw.Labels
+			if input.Priority != nil {
+				t.Priority = *input.Priority
 			}
-			if raw.ProjectID != "" {
-				t.ProjectID = raw.ProjectID
+			if input.Labels != nil {
+				t.Labels = input.Labels
+			}
+			if input.ProjectID != nil {
+				t.ProjectID = *input.ProjectID
+			}
+			if input.DueDate != nil {
+				t.DueDate = normalizedDueDate
 			}
 		})
 		if err != nil {
-			s.sendErrorWithRequestID(conn, raw.RequestID, "update_task_failed", err.Error())
+			s.sendErrorWithRequestID(conn, input.RequestID, "update_task_failed", err.Error())
 			return
 		}
-		s.sendJSON(conn, map[string]any{"type": "task_updated", "request_id": raw.RequestID, "task": t})
+		s.sendJSON(conn, map[string]any{"type": "task_updated", "request_id": input.RequestID, "task": t})
+
+	case "add_task_comment":
+		var input struct {
+			RequestID       string `json:"request_id"`
+			TaskID          string `json:"task_id"`
+			Body            string `json:"body"`
+			ParentCommentID string `json:"parent_comment_id"`
+			DeliveryMode    string `json:"delivery_mode"`
+			AgentSessionID  string `json:"agent_session_id"`
+		}
+		if err := json.Unmarshal(msg, &input); err != nil {
+			s.sendErrorWithRequestID(conn, raw.RequestID, "add_task_comment_failed", "invalid add_task_comment payload")
+			return
+		}
+
+		currentTask := s.tasks.Get(input.TaskID)
+		if currentTask == nil {
+			s.sendErrorWithRequestID(conn, input.RequestID, "add_task_comment_failed", "task not found")
+			return
+		}
+
+		body := strings.TrimSpace(input.Body)
+		if body == "" {
+			s.sendErrorWithRequestID(conn, input.RequestID, "add_task_comment_failed", "comment body is required")
+			return
+		}
+		parentCommentID := strings.TrimSpace(input.ParentCommentID)
+		if parentCommentID != "" && s.findTaskComment(currentTask, parentCommentID) == nil {
+			s.sendErrorWithRequestID(conn, input.RequestID, "add_task_comment_failed", "parent comment not found")
+			return
+		}
+
+		deliveryMode := strings.TrimSpace(input.DeliveryMode)
+		if deliveryMode == "" {
+			deliveryMode = "note"
+		}
+
+		var (
+			run             *task.Run
+			targetLabel     string
+			targetSessionID string
+		)
+
+		switch deliveryMode {
+		case "note":
+			// Plain discussion comments stay on the issue and do not trigger agent work.
+		case "current_run":
+			currentRun, err := s.findLiveRunForTask(currentTask)
+			if err != nil {
+				s.sendErrorWithRequestID(conn, input.RequestID, "add_task_comment_failed", err.Error())
+				return
+			}
+			if err := s.watcher.SendInput(currentRun.AgentSessionID, s.buildCurrentRunReplyMessage(currentTask, parentCommentID, body)); err != nil {
+				s.sendErrorWithRequestID(conn, input.RequestID, "add_task_comment_failed", err.Error())
+				return
+			}
+			run = currentRun
+			targetSessionID = currentRun.AgentSessionID
+			targetLabel = s.agentSessionLabel(targetSessionID)
+		case "spawn_new_session":
+			createdRun, _, err := s.createRunForTask(
+				currentTask,
+				"spawn_new_session",
+				"",
+				s.buildSpawnRunCommentInstruction(currentTask, parentCommentID, body),
+				"",
+			)
+			if err != nil {
+				s.sendErrorWithRequestID(conn, input.RequestID, "add_task_comment_failed", err.Error())
+				return
+			}
+			run = createdRun
+			targetSessionID = createdRun.AgentSessionID
+			targetLabel = s.agentSessionLabel(targetSessionID)
+		case "attach_existing_session":
+			agentSessionID := strings.TrimSpace(input.AgentSessionID)
+			if agentSessionID == "" {
+				s.sendErrorWithRequestID(conn, input.RequestID, "add_task_comment_failed", "agent session is required")
+				return
+			}
+
+			createdRun, _, err := s.createRunForTask(currentTask, "attach_existing_session", agentSessionID, body, "")
+			if err != nil {
+				s.sendErrorWithRequestID(conn, input.RequestID, "add_task_comment_failed", err.Error())
+				return
+			}
+			targetSessionID = createdRun.AgentSessionID
+			if err := s.watcher.SendInput(targetSessionID, s.buildAttachedSessionMessage(currentTask, parentCommentID, body)); err != nil {
+				updatedRun, runErr := s.runs.Update(createdRun.ID, func(run *task.Run) {
+					run.Status = task.RunStatusFailed
+					run.LastError = err.Error()
+					run.WaitingReason = ""
+					run.Summary = "Failed to deliver issue context."
+				})
+				if runErr == nil && updatedRun != nil {
+					_, _ = s.tasks.Update(currentTask.ID, func(current *task.Task) {
+						current.CurrentRunID = updatedRun.ID
+						current.LastRunStatus = string(updatedRun.Status)
+					})
+				}
+				s.sendErrorWithRequestID(conn, input.RequestID, "add_task_comment_failed", err.Error())
+				return
+			}
+			run = createdRun
+			targetLabel = s.agentSessionLabel(targetSessionID)
+		default:
+			s.sendErrorWithRequestID(conn, input.RequestID, "add_task_comment_failed", "unknown delivery mode")
+			return
+		}
+
+		comment := task.TaskComment{
+			ID:             uuid.New().String(),
+			Body:           body,
+			AuthorKind:     "user",
+			AuthorLabel:    "You",
+			ParentID:       parentCommentID,
+			DeliveryMode:   deliveryMode,
+			AgentSessionID: targetSessionID,
+			TargetLabel:    targetLabel,
+			CreatedAt:      time.Now().UTC(),
+		}
+		if run != nil {
+			comment.RunID = run.ID
+		}
+
+		updatedTask, err := s.tasks.AddComment(currentTask.ID, comment)
+		if err != nil {
+			s.sendErrorWithRequestID(conn, input.RequestID, "add_task_comment_failed", err.Error())
+			return
+		}
+
+		s.sendJSON(conn, map[string]any{
+			"type":       "task_comment_added",
+			"request_id": input.RequestID,
+			"task":       updatedTask,
+			"comment":    comment,
+			"run":        run,
+		})
 
 	case "delete_task":
 		if err := s.tasks.Delete(raw.TaskID); err != nil {
@@ -522,68 +728,7 @@ func (s *Server) handleClientMessage(conn *websocket.Conn, msg []byte) {
 			return
 		}
 
-		executionMode := strings.TrimSpace(raw.ExecutionMode)
-		if executionMode == "" {
-			executionMode = "spawn_new_session"
-		}
-
-		prompt, executorKind := s.buildTaskPrompt(t)
-		agentSessionID := strings.TrimSpace(raw.AgentSessionID)
-		runStatus := task.RunStatusQueued
-
-		switch executionMode {
-		case "spawn_new_session":
-			var err error
-			agentSessionID, err = s.watcher.CreateSession("", watcher.CreateSessionOptions{
-				Cwd:     t.Cwd,
-				Command: executorKind + " " + shellQuoteSimple(prompt),
-				Name:    t.Title,
-			})
-			if err != nil {
-				s.sendErrorWithRequestID(conn, raw.RequestID, "create_run_failed", err.Error())
-				return
-			}
-			runStatus = task.RunStatusRunning
-		case "attach_existing_session":
-			agent := s.watcher.GetAgent(agentSessionID)
-			if agent == nil {
-				s.sendErrorWithRequestID(conn, raw.RequestID, "create_run_failed", "agent session not found")
-				return
-			}
-			if activeRun := s.runs.FindActiveByAgentSessionID(agentSessionID); activeRun != nil {
-				s.sendErrorWithRequestID(conn, raw.RequestID, "create_run_failed", "agent session already linked to an active task")
-				return
-			}
-			runStatus = mapAgentStateToRunStatus(string(agent.State))
-		default:
-			s.sendErrorWithRequestID(conn, raw.RequestID, "create_run_failed", "unknown execution mode")
-			return
-		}
-
-		run, err := s.runs.Create(task.CreateRunOptions{
-			TaskID:         t.ID,
-			Status:         runStatus,
-			ExecutionMode:  executionMode,
-			ExecutorKind:   executorKind,
-			ExecutorLabel:  t.Title,
-			AgentSessionID: agentSessionID,
-			PromptSnapshot: prompt,
-			Summary:        t.Title,
-		})
-		if err != nil {
-			s.sendErrorWithRequestID(conn, raw.RequestID, "create_run_failed", err.Error())
-			return
-		}
-
-		updatedTask, err := s.tasks.Update(t.ID, func(t *task.Task) {
-			t.CurrentRunID = run.ID
-			t.LastRunStatus = string(run.Status)
-			if run.Status == task.RunStatusDone {
-				t.Status = task.StatusDone
-			} else if t.Status != task.StatusCancelled {
-				t.Status = task.StatusInProgress
-			}
-		})
+		run, updatedTask, err := s.createRunForTask(t, raw.ExecutionMode, raw.AgentSessionID, "", raw.AgentCmd)
 		if err != nil {
 			s.sendErrorWithRequestID(conn, raw.RequestID, "create_run_failed", err.Error())
 			return
@@ -660,16 +805,42 @@ func (s *Server) handleClientMessage(conn *websocket.Conn, msg []byte) {
 		s.sendJSON(conn, map[string]any{"type": "project_list", "projects": s.projects.List()})
 
 	case "create_project":
-		p, err := s.projects.Create(raw.ProjectName, raw.ProjectIcon)
+		p, err := s.projects.Create(
+			raw.ProjectName,
+			raw.ProjectIcon,
+			raw.RepoRoot,
+			raw.WorktreeRoot,
+			raw.BaseBranch,
+		)
 		if err != nil {
-			s.sendError(conn, "create_project_failed", err.Error())
+			s.sendErrorWithRequestID(conn, raw.RequestID, "create_project_failed", err.Error())
 			return
 		}
 		s.sendJSON(conn, map[string]any{"type": "project_created", "request_id": raw.RequestID, "project": p})
 
+	case "update_project":
+		p, err := s.projects.Update(raw.ProjectID, func(current *task.Project) {
+			if raw.ProjectName != "" {
+				current.Name = raw.ProjectName
+			}
+			current.Icon = raw.ProjectIcon
+			current.RepoRoot = raw.RepoRoot
+			current.WorktreeRoot = raw.WorktreeRoot
+			current.BaseBranch = raw.BaseBranch
+		})
+		if err != nil {
+			s.sendErrorWithRequestID(conn, raw.RequestID, "update_project_failed", err.Error())
+			return
+		}
+		s.sendJSON(conn, map[string]any{"type": "project_updated", "request_id": raw.RequestID, "project": p})
+
 	case "delete_project":
+		if _, err := s.tasks.ClearProject(raw.ProjectID); err != nil {
+			s.sendErrorWithRequestID(conn, raw.RequestID, "delete_project_failed", err.Error())
+			return
+		}
 		if err := s.projects.Delete(raw.ProjectID); err != nil {
-			s.sendError(conn, "delete_project_failed", err.Error())
+			s.sendErrorWithRequestID(conn, raw.RequestID, "delete_project_failed", err.Error())
 			return
 		}
 		s.sendJSON(conn, map[string]any{"type": "project_deleted", "request_id": raw.RequestID, "project_id": raw.ProjectID})
@@ -800,22 +971,17 @@ func (s *Server) syncRunAndTaskForSessionEvent(ev watcher.SessionEvent) {
 		return
 	}
 
-	_, _ = s.tasks.Update(updatedRun.TaskID, func(current *task.Task) {
+	updatedTask, err := s.tasks.Update(updatedRun.TaskID, func(current *task.Task) {
 		current.CurrentRunID = updatedRun.ID
 		current.LastRunStatus = string(updatedRun.Status)
-		switch updatedRun.Status {
-		case task.RunStatusDone:
-			current.Status = task.StatusDone
-		case task.RunStatusFailed, task.RunStatusCancelled:
-			if current.Status != task.StatusCancelled {
-				current.Status = task.StatusTodo
-			}
-		default:
-			if current.Status != task.StatusCancelled && current.Status != task.StatusDone {
-				current.Status = task.StatusInProgress
-			}
-		}
 	})
+	if err != nil {
+		return
+	}
+
+	if err := s.writeTaskStateFile(updatedTask, updatedRun); err != nil {
+		log.Printf("write task state file: %v", err)
+	}
 }
 
 func (s *Server) maybeNotifyForSessionEvent(ev watcher.SessionEvent) {
@@ -933,7 +1099,7 @@ func clientID(conn *websocket.Conn) string {
 	return fmt.Sprintf("%p", conn)
 }
 
-func (s *Server) buildTaskPrompt(t *task.Task) (string, string) {
+func (s *Server) buildTaskPrompt(t *task.Task, note, agentCmdOverride string) (string, string, error) {
 	prompt := s.guidance.BuildPromptPrefix()
 	if t.SkillID != "" {
 		if sk := s.skills.Get(t.SkillID); sk != nil {
@@ -945,14 +1111,510 @@ func (s *Server) buildTaskPrompt(t *task.Task) (string, string) {
 	} else {
 		prompt += t.Title
 	}
+	if trimmedNote := strings.TrimSpace(note); trimmedNote != "" {
+		prompt += "\n\nAdditional instruction:\n" + trimmedNote
+	}
 
-	cmd := "claude"
-	if t.SkillID != "" {
+	cmd := strings.TrimSpace(agentCmdOverride)
+	if cmd == "" && t.SkillID != "" {
 		if sk := s.skills.Get(t.SkillID); sk != nil && sk.AgentCmd != "" {
 			cmd = sk.AgentCmd
 		}
 	}
-	return prompt, cmd
+	if cmd == "" {
+		return "", "", fmt.Errorf("agent command required for spawn_new_session")
+	}
+	return prompt, cmd, nil
+}
+
+func (s *Server) createRunForTask(t *task.Task, executionMode, requestedAgentSessionID, note, agentCmdOverride string) (*task.Run, *task.Task, error) {
+	mode := strings.TrimSpace(executionMode)
+	if mode == "" {
+		mode = "spawn_new_session"
+	}
+
+	agentSessionID := strings.TrimSpace(requestedAgentSessionID)
+	runStatus := task.RunStatusQueued
+	workspaceCwd := strings.TrimSpace(t.Cwd)
+	executorKind := ""
+	promptSnapshot := ""
+
+	switch mode {
+	case "spawn_new_session":
+		prompt, agentCmd, err := s.buildTaskPrompt(t, note, agentCmdOverride)
+		if err != nil {
+			return nil, nil, err
+		}
+		executorKind = agentCmd
+		promptSnapshot = prompt
+
+		workspaceCwd, err = s.prepareTaskWorkspace(t)
+		if err != nil {
+			return nil, nil, err
+		}
+		agentSessionID, err = s.watcher.CreateSession("", watcher.CreateSessionOptions{
+			Cwd:     workspaceCwd,
+			Command: agentCmd + " " + shellQuoteSimple(promptSnapshot),
+			Name:    t.Title,
+		})
+		if err != nil {
+			return nil, nil, err
+		}
+		runStatus = task.RunStatusRunning
+	case "attach_existing_session":
+		agent := s.watcher.GetAgent(agentSessionID)
+		if agent == nil {
+			return nil, nil, fmt.Errorf("agent session not found")
+		}
+		if activeRun := s.runs.FindActiveByAgentSessionID(agentSessionID); activeRun != nil {
+			return nil, nil, fmt.Errorf("agent session already linked to an active task")
+		}
+		if cwd := strings.TrimSpace(agent.Cwd); cwd != "" {
+			workspaceCwd = cwd
+		}
+		executorKind = strings.TrimSpace(agent.Command)
+		runStatus = mapAgentStateToRunStatus(string(agent.State))
+	default:
+		return nil, nil, fmt.Errorf("unknown execution mode")
+	}
+
+	run, err := s.runs.Create(task.CreateRunOptions{
+		TaskID:         t.ID,
+		Status:         runStatus,
+		ExecutionMode:  mode,
+		ExecutorKind:   executorKind,
+		ExecutorLabel:  t.Title,
+		AgentSessionID: agentSessionID,
+		PromptSnapshot: promptSnapshot,
+		Summary:        t.Title,
+	})
+	if err != nil {
+		return nil, nil, err
+	}
+
+	updatedTask, err := s.tasks.Update(t.ID, func(current *task.Task) {
+		current.CurrentRunID = run.ID
+		current.LastRunStatus = string(run.Status)
+		if workspaceCwd != "" {
+			current.Cwd = workspaceCwd
+		}
+		if current.Status != task.StatusCancelled {
+			current.Status = task.StatusInProgress
+		}
+	})
+	if err != nil {
+		return nil, nil, err
+	}
+
+	if err := s.writeTaskStateFile(updatedTask, run); err != nil {
+		log.Printf("write task state file: %v", err)
+	}
+
+	return run, updatedTask, nil
+}
+
+func (s *Server) prepareTaskWorkspace(currentTask *task.Task) (string, error) {
+	if currentTask == nil {
+		return "", fmt.Errorf("task not found")
+	}
+
+	if cwd := strings.TrimSpace(currentTask.Cwd); cwd != "" {
+		if info, err := os.Stat(cwd); err == nil && info.IsDir() {
+			return cwd, nil
+		}
+	}
+
+	var project *task.Project
+	if currentTask.ProjectID != "" {
+		project = s.projects.Get(currentTask.ProjectID)
+	}
+	if project == nil {
+		return "", fmt.Errorf("assign this issue requires a project with a repo root")
+	}
+
+	repoRoot := strings.TrimSpace(project.RepoRoot)
+	if repoRoot == "" {
+		return "", fmt.Errorf("project %q needs a repo root before an agent can be assigned", project.Name)
+	}
+
+	canonicalRepoRoot, err := gitOutput(repoRoot, "rev-parse", "--show-toplevel")
+	if err != nil {
+		return "", fmt.Errorf("project %q repo root is not a valid git repository", project.Name)
+	}
+	repoRoot = canonicalRepoRoot
+
+	worktreeRoot := strings.TrimSpace(project.WorktreeRoot)
+	if worktreeRoot == "" {
+		worktreeRoot = defaultWorktreeRoot(repoRoot)
+	}
+	baseBranch := strings.TrimSpace(project.BaseBranch)
+	if baseBranch == "" {
+		baseBranch, err = detectBaseBranch(repoRoot)
+		if err != nil {
+			return "", err
+		}
+	}
+
+	worktreePath := filepath.Join(worktreeRoot, issueWorktreeDirName(currentTask))
+	if err := ensureIssueWorktree(repoRoot, worktreePath, issueBranchName(currentTask), baseBranch); err != nil {
+		return "", err
+	}
+
+	return worktreePath, nil
+}
+
+func defaultWorktreeRoot(repoRoot string) string {
+	return filepath.Join(filepath.Dir(repoRoot), ".zen-worktrees", filepath.Base(repoRoot))
+}
+
+func issueBranchName(currentTask *task.Task) string {
+	return fmt.Sprintf("zen/issue-%d-%s", currentTask.Number, slugPathToken(currentTask.Title, 32))
+}
+
+func issueWorktreeDirName(currentTask *task.Task) string {
+	return fmt.Sprintf("issue-%d-%s", currentTask.Number, slugPathToken(currentTask.Title, 32))
+}
+
+func slugPathToken(value string, maxLen int) string {
+	normalized := strings.ToLower(strings.TrimSpace(value))
+	var builder strings.Builder
+	lastDash := false
+	for _, r := range normalized {
+		isASCIIAlphaNum := (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9')
+		if isASCIIAlphaNum {
+			builder.WriteRune(r)
+			lastDash = false
+			continue
+		}
+		if !lastDash {
+			builder.WriteByte('-')
+			lastDash = true
+		}
+	}
+	result := strings.Trim(builder.String(), "-")
+	if result == "" {
+		result = "task"
+	}
+	if maxLen > 0 && len(result) > maxLen {
+		result = strings.Trim(result[:maxLen], "-")
+	}
+	if result == "" {
+		return "task"
+	}
+	return result
+}
+
+func ensureIssueWorktree(repoRoot, worktreePath, branchName, baseBranch string) error {
+	if info, err := os.Stat(worktreePath); err == nil && info.IsDir() {
+		if _, err := gitOutput(worktreePath, "rev-parse", "--show-toplevel"); err == nil {
+			return nil
+		}
+		return fmt.Errorf("worktree path exists but is not a git worktree: %s", worktreePath)
+	}
+
+	if err := os.MkdirAll(filepath.Dir(worktreePath), 0o755); err != nil {
+		return fmt.Errorf("create worktree parent: %w", err)
+	}
+
+	args := []string{"worktree", "add"}
+	if gitRefExists(repoRoot, "refs/heads/"+branchName) {
+		args = append(args, worktreePath, branchName)
+	} else {
+		args = append(args, "-b", branchName, worktreePath, baseBranch)
+	}
+
+	if _, err := gitOutput(repoRoot, args...); err != nil {
+		return fmt.Errorf("prepare issue worktree: %w", err)
+	}
+
+	return nil
+}
+
+func gitRefExists(repoRoot, ref string) bool {
+	cmd := exec.Command("git", "-C", repoRoot, "show-ref", "--verify", "--quiet", ref)
+	return cmd.Run() == nil
+}
+
+func detectBaseBranch(repoRoot string) (string, error) {
+	if symbolic, err := gitOutput(repoRoot, "symbolic-ref", "--short", "refs/remotes/origin/HEAD"); err == nil {
+		if strings.HasPrefix(symbolic, "origin/") {
+			return strings.TrimPrefix(symbolic, "origin/"), nil
+		}
+	}
+
+	if branch, err := gitOutput(repoRoot, "branch", "--show-current"); err == nil && strings.TrimSpace(branch) != "" {
+		return branch, nil
+	}
+
+	for _, candidate := range []string{"main", "master"} {
+		if gitRefExists(repoRoot, "refs/heads/"+candidate) {
+			return candidate, nil
+		}
+	}
+
+	return "", fmt.Errorf("could not determine base branch for %s", repoRoot)
+}
+
+func gitOutput(repoRoot string, args ...string) (string, error) {
+	cmd := exec.Command("git", append([]string{"-C", repoRoot}, args...)...)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return "", fmt.Errorf("%s", strings.TrimSpace(string(out)))
+	}
+	return strings.TrimSpace(string(out)), nil
+}
+
+func (s *Server) writeTaskStateFile(currentTask *task.Task, currentRun *task.Run) error {
+	if currentTask == nil || currentRun == nil {
+		return nil
+	}
+	cwd := strings.TrimSpace(currentTask.Cwd)
+	if cwd == "" {
+		return nil
+	}
+
+	if err := os.MkdirAll(cwd, 0o755); err != nil {
+		return err
+	}
+
+	path := filepath.Join(cwd, ".zen-task.md")
+	existing, err := os.ReadFile(path)
+	if err != nil && !os.IsNotExist(err) {
+		return err
+	}
+
+	managedBlock := s.renderTaskStateManagedBlock(currentTask, currentRun)
+	content := string(existing)
+	if strings.TrimSpace(content) == "" {
+		content = s.renderInitialTaskStateFile(currentTask, managedBlock)
+	} else {
+		content = replaceManagedTaskState(content, managedBlock)
+	}
+
+	return writeServerFileAtomic(path, []byte(content), 0o644)
+}
+
+func (s *Server) renderInitialTaskStateFile(currentTask *task.Task, managedBlock string) string {
+	goal := strings.TrimSpace(currentTask.Description)
+	if goal == "" {
+		goal = strings.TrimSpace(currentTask.Title)
+	}
+
+	var builder strings.Builder
+	builder.WriteString("# ")
+	builder.WriteString(fmt.Sprintf("ZEN-%d %s", currentTask.Number, strings.TrimSpace(currentTask.Title)))
+	builder.WriteString("\n\n## Goal\n")
+	builder.WriteString(goal)
+	builder.WriteString("\n\n## Machine status\n")
+	builder.WriteString(managedBlock)
+	builder.WriteString("\n\n## Completed\n- \n\n## Known pitfalls / blockers\n- \n\n## Next step\n- Continue from the latest machine status above.\n")
+	return builder.String()
+}
+
+func (s *Server) renderTaskStateManagedBlock(currentTask *task.Task, currentRun *task.Run) string {
+	lines := []string{
+		taskStateMachineStatusStart,
+		fmt.Sprintf("- Updated: %s", time.Now().UTC().Format(time.RFC3339)),
+		fmt.Sprintf("- Task status: %s", currentTask.Status),
+		fmt.Sprintf("- Run status: %s", currentRun.Status),
+		fmt.Sprintf("- Run attempt: %d", currentRun.AttemptNumber),
+	}
+	if cwd := strings.TrimSpace(currentTask.Cwd); cwd != "" {
+		lines = append(lines, fmt.Sprintf("- Workspace: %s", cwd))
+	}
+	if currentRun.AgentSessionID != "" {
+		lines = append(lines, fmt.Sprintf("- Session: %s", currentRun.AgentSessionID))
+	}
+
+	summary := strings.TrimSpace(currentRun.WaitingReason)
+	if summary == "" {
+		summary = strings.TrimSpace(currentRun.LastError)
+	}
+	if summary == "" {
+		summary = strings.TrimSpace(currentRun.Summary)
+	}
+	if summary != "" {
+		lines = append(lines, fmt.Sprintf("- Summary: %s", collapseCommentText(summary)))
+	}
+	lines = append(lines, taskStateMachineStatusEnd)
+	return strings.Join(lines, "\n")
+}
+
+func replaceManagedTaskState(content, managedBlock string) string {
+	start := strings.Index(content, taskStateMachineStatusStart)
+	end := strings.Index(content, taskStateMachineStatusEnd)
+	if start == -1 || end == -1 || end < start {
+		content = strings.TrimRight(content, "\n")
+		if content != "" {
+			content += "\n\n"
+		}
+		content += "## Machine status\n" + managedBlock + "\n"
+		return content
+	}
+	end += len(taskStateMachineStatusEnd)
+	return content[:start] + managedBlock + content[end:]
+}
+
+func writeServerFileAtomic(path string, data []byte, mode os.FileMode) error {
+	tmpPath := path + ".tmp"
+	if err := os.WriteFile(tmpPath, data, mode); err != nil {
+		return err
+	}
+	return os.Rename(tmpPath, path)
+}
+
+func (s *Server) findLiveRunForTask(currentTask *task.Task) (*task.Run, error) {
+	if currentTask == nil {
+		return nil, fmt.Errorf("task not found")
+	}
+
+	if currentTask.CurrentRunID != "" {
+		if currentRun := s.runs.Get(currentTask.CurrentRunID); currentRun != nil {
+			if currentRun.AgentSessionID != "" && s.watcher.GetAgent(currentRun.AgentSessionID) != nil {
+				return currentRun, nil
+			}
+		}
+	}
+
+	for _, run := range s.runs.List() {
+		if run.TaskID != currentTask.ID || run.AgentSessionID == "" {
+			continue
+		}
+		if s.watcher.GetAgent(run.AgentSessionID) != nil {
+			return run, nil
+		}
+	}
+
+	return nil, fmt.Errorf("no live session is linked to this issue")
+}
+
+func (s *Server) findTaskComment(currentTask *task.Task, commentID string) *task.TaskComment {
+	if currentTask == nil || commentID == "" {
+		return nil
+	}
+
+	for i := range currentTask.Comments {
+		if currentTask.Comments[i].ID == commentID {
+			comment := currentTask.Comments[i]
+			return &comment
+		}
+	}
+
+	return nil
+}
+
+func (s *Server) commentAncestors(currentTask *task.Task, commentID string) []task.TaskComment {
+	if currentTask == nil || commentID == "" {
+		return nil
+	}
+
+	byID := make(map[string]task.TaskComment, len(currentTask.Comments))
+	for _, comment := range currentTask.Comments {
+		byID[comment.ID] = comment
+	}
+
+	chain := make([]task.TaskComment, 0, 6)
+	seen := make(map[string]bool)
+	currentID := commentID
+	for currentID != "" && !seen[currentID] {
+		current, ok := byID[currentID]
+		if !ok {
+			break
+		}
+		seen[currentID] = true
+		chain = append(chain, current)
+		currentID = current.ParentID
+	}
+
+	for left, right := 0, len(chain)-1; left < right; left, right = left+1, right-1 {
+		chain[left], chain[right] = chain[right], chain[left]
+	}
+
+	if len(chain) > 6 {
+		chain = chain[len(chain)-6:]
+	}
+
+	return chain
+}
+
+func (s *Server) formatCommentContextBlock(currentTask *task.Task, parentCommentID string) string {
+	chain := s.commentAncestors(currentTask, parentCommentID)
+	if len(chain) == 0 {
+		return ""
+	}
+
+	lines := make([]string, 0, len(chain))
+	for _, comment := range chain {
+		label := strings.TrimSpace(comment.AuthorLabel)
+		if label == "" {
+			label = "Comment"
+		}
+		lines = append(lines, fmt.Sprintf("- %s: %s", label, collapseCommentText(comment.Body)))
+	}
+
+	return strings.Join(lines, "\n")
+}
+
+func (s *Server) buildCurrentRunReplyMessage(t *task.Task, parentCommentID, body string) string {
+	contextBlock := s.formatCommentContextBlock(t, parentCommentID)
+	if contextBlock == "" {
+		return strings.TrimSpace(body)
+	}
+
+	var builder strings.Builder
+	builder.WriteString("Reply context:\n")
+	builder.WriteString(contextBlock)
+	builder.WriteString("\n\nNew reply:\n")
+	builder.WriteString(strings.TrimSpace(body))
+	return builder.String()
+}
+
+func (s *Server) buildSpawnRunCommentInstruction(t *task.Task, parentCommentID, body string) string {
+	contextBlock := s.formatCommentContextBlock(t, parentCommentID)
+	if contextBlock == "" {
+		return strings.TrimSpace(body)
+	}
+
+	var builder strings.Builder
+	builder.WriteString("Relevant discussion:\n")
+	builder.WriteString(contextBlock)
+	builder.WriteString("\n\nPlease address this reply:\n")
+	builder.WriteString(strings.TrimSpace(body))
+	return builder.String()
+}
+
+func (s *Server) buildAttachedSessionMessage(t *task.Task, parentCommentID, body string) string {
+	var builder strings.Builder
+	builder.WriteString("Please work on this issue.\n\n")
+	builder.WriteString("Issue: ")
+	builder.WriteString(strings.TrimSpace(t.Title))
+	if description := strings.TrimSpace(t.Description); description != "" {
+		builder.WriteString("\n\nContext:\n")
+		builder.WriteString(description)
+	}
+	if contextBlock := s.formatCommentContextBlock(t, parentCommentID); contextBlock != "" {
+		builder.WriteString("\n\nRelevant discussion:\n")
+		builder.WriteString(contextBlock)
+	}
+	if note := strings.TrimSpace(body); note != "" {
+		builder.WriteString("\n\nUser message:\n")
+		builder.WriteString(note)
+	}
+	return builder.String()
+}
+
+func (s *Server) agentSessionLabel(agentSessionID string) string {
+	agent := s.watcher.GetAgent(agentSessionID)
+	if agent == nil {
+		return agentSessionID
+	}
+	if project := strings.TrimSpace(agent.Project); project != "" {
+		return project
+	}
+	if name := strings.TrimSpace(agent.Name); name != "" {
+		return name
+	}
+	return agentSessionID
 }
 
 func mapAgentStateToRunStatus(state string) task.RunStatus {
@@ -982,6 +1644,14 @@ func mapWatcherEventToRunStatus(ev watcher.SessionEvent) task.RunStatus {
 		}
 	}
 	return mapAgentStateToRunStatus(ev.NewState)
+}
+
+func collapseCommentText(text string) string {
+	normalized := strings.Join(strings.Fields(strings.TrimSpace(text)), " ")
+	if len(normalized) <= 220 {
+		return normalized
+	}
+	return normalized[:217] + "..."
 }
 
 // shellQuoteSimple wraps a string in single quotes for safe shell injection.

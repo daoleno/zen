@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -52,12 +53,21 @@ func (ps *ProjectStore) List() []*Project {
 	return list
 }
 
-func (ps *ProjectStore) Create(name, icon string) (*Project, error) {
+func (ps *ProjectStore) Create(name, icon, repoRoot, worktreeRoot, baseBranch string) (*Project, error) {
+	now := time.Now().UTC()
 	p := &Project{
-		ID:        uuid.New().String(),
-		Name:      name,
-		Icon:      icon,
-		CreatedAt: time.Now().UTC(),
+		ID:           uuid.New().String(),
+		Name:         strings.TrimSpace(name),
+		Icon:         strings.TrimSpace(icon),
+		RepoRoot:     strings.TrimSpace(repoRoot),
+		WorktreeRoot: strings.TrimSpace(worktreeRoot),
+		BaseBranch:   strings.TrimSpace(baseBranch),
+		CreatedAt:    now,
+		UpdatedAt:    now,
+	}
+
+	if p.Name == "" {
+		return nil, fmt.Errorf("project name is required")
 	}
 
 	ps.mu.Lock()
@@ -69,6 +79,35 @@ func (ps *ProjectStore) Create(name, icon string) (*Project, error) {
 	}
 	ps.mu.Unlock()
 	return p, nil
+}
+
+func (ps *ProjectStore) Update(id string, fn func(*Project)) (*Project, error) {
+	ps.mu.Lock()
+	p, ok := ps.projects[id]
+	if !ok {
+		ps.mu.Unlock()
+		return nil, fmt.Errorf("project %s not found", id)
+	}
+
+	fn(p)
+	p.Name = strings.TrimSpace(p.Name)
+	p.Icon = strings.TrimSpace(p.Icon)
+	p.RepoRoot = strings.TrimSpace(p.RepoRoot)
+	p.WorktreeRoot = strings.TrimSpace(p.WorktreeRoot)
+	p.BaseBranch = strings.TrimSpace(p.BaseBranch)
+	if p.Name == "" {
+		ps.mu.Unlock()
+		return nil, fmt.Errorf("project name is required")
+	}
+	p.UpdatedAt = time.Now().UTC()
+
+	if err := ps.persist(); err != nil {
+		ps.mu.Unlock()
+		return nil, err
+	}
+	cp := *p
+	ps.mu.Unlock()
+	return &cp, nil
 }
 
 func (ps *ProjectStore) Delete(id string) error {

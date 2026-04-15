@@ -15,6 +15,7 @@ import { Colors, Typography } from '../../constants/tokens';
 import { AgentKindIcon } from './AgentKindIcon';
 import { DirectoryPicker } from './DirectoryPicker';
 import type { AgentKind } from '../../services/agentPresentation';
+import { CLAUDE_CODE_COMMAND, CODEX_COMMAND } from '../../services/agentCommands';
 
 type ServerOption = {
   id: string;
@@ -31,8 +32,8 @@ type LaunchPreset = {
 
 const PRESETS: readonly LaunchPreset[] = [
   { key: 'shell', kind: 'terminal', label: 'Shell', description: 'Plain terminal session', command: '' },
-  { key: 'claude', kind: 'claude', label: 'Claude', description: 'Claude Code agent', command: 'claude' },
-  { key: 'codex', kind: 'codex', label: 'Codex', description: 'OpenAI Codex agent', command: 'codex' },
+  { key: 'claude', kind: 'claude', label: 'Claude', description: 'Claude Code agent', command: CLAUDE_CODE_COMMAND },
+  { key: 'codex', kind: 'codex', label: 'Codex', description: 'OpenAI Codex agent', command: CODEX_COMMAND },
 ];
 
 interface NewTerminalSheetProps {
@@ -226,7 +227,7 @@ export function NewTerminalSheet({
                   style={styles.input}
                   value={command}
                   onChangeText={setCommand}
-                  placeholder="e.g. claude or codex --approval-mode auto"
+                  placeholder="e.g. claude --dangerously-skip-permissions"
                   placeholderTextColor="#6E7D90"
                   autoCapitalize="none"
                   autoCorrect={false}

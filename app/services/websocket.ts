@@ -153,11 +153,14 @@ class ServerSocket {
           const data = JSON.parse(event.data);
           this.emit(data.type, data);
         } catch (error) {
-          console.warn('[ws] malformed payload', {
+          console.warn("[ws] malformed payload", {
             serverId: this.meta.serverId,
             dataType: typeof event?.data,
             error: error instanceof Error ? error.message : String(error),
-            sample: typeof event?.data === 'string' ? event.data.slice(0, 200) : String(event?.data),
+            sample:
+              typeof event?.data === "string"
+                ? event.data.slice(0, 200)
+                : String(event?.data),
           });
         }
       };
@@ -394,7 +397,12 @@ class MultiServerWebSocketClient {
     });
   }
 
-  focusTerminalPane(serverId: string, sessionId: string, col: number, row: number) {
+  focusTerminalPane(
+    serverId: string,
+    sessionId: string,
+    col: number,
+    row: number,
+  ) {
     this.send(serverId, {
       type: "terminal_focus_pane",
       session_id: sessionId,
@@ -416,6 +424,10 @@ class MultiServerWebSocketClient {
 
   sendAction(serverId: string, agentId: string, action: string) {
     this.send(serverId, { type: "send_action", agent_id: agentId, action });
+  }
+
+  sendInput(serverId: string, agentId: string, text: string) {
+    this.send(serverId, { type: "send_input", agent_id: agentId, text });
   }
 
   setActiveAgent(serverId: string, agentId: string | null) {
@@ -483,6 +495,7 @@ class MultiServerWebSocketClient {
       priority?: number;
       labels?: string[];
       projectId?: string;
+      dueDate?: string;
       skillId?: string;
       cwd?: string;
     },
@@ -517,7 +530,7 @@ class MultiServerWebSocketClient {
 
       this.on("task_created", handleCreated);
       this.on("error", handleError);
-      this.send(serverId, {
+      const payload: Record<string, any> = {
         type: "create_task",
         request_id: requestId,
         title: options.title,
@@ -527,35 +540,97 @@ class MultiServerWebSocketClient {
         project_id: options.projectId ?? "",
         skill_id: options.skillId ?? "",
         cwd: options.cwd ?? "",
-      });
+      };
+      if (options.dueDate) {
+        payload.due_date = options.dueDate;
+      }
+      this.send(serverId, payload);
     });
   }
 
   updateTask(
     serverId: string,
     taskId: string,
-    updates: { title?: string; description?: string; status?: string; priority?: number; labels?: string[]; projectId?: string },
+    updates: {
+      title?: string;
+      description?: string;
+      status?: string;
+      priority?: number;
+      labels?: string[];
+      projectId?: string;
+      dueDate?: string | null;
+    },
   ) {
     const requestId = `${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
-    this.send(serverId, {
+    const payload: Record<string, any> = {
       type: "update_task",
       request_id: requestId,
       task_id: taskId,
-      title: updates.title ?? "",
-      description: updates.description ?? "",
-      task_status: updates.status ?? "",
-      priority: updates.priority ?? 0,
-      labels: updates.labels,
-      project_id: updates.projectId ?? "",
-    });
+    };
+
+    if ("title" in updates) {
+      payload.title = updates.title ?? "";
+    }
+    if ("description" in updates) {
+      payload.description = updates.description ?? "";
+    }
+    if ("status" in updates) {
+      payload.task_status = updates.status ?? "";
+    }
+    if ("priority" in updates) {
+      payload.priority = updates.priority ?? 0;
+    }
+    if ("labels" in updates) {
+      payload.labels = updates.labels ?? [];
+    }
+    if ("projectId" in updates) {
+      payload.project_id = updates.projectId ?? "";
+    }
+    if ("dueDate" in updates) {
+      payload.due_date = updates.dueDate ?? "";
+    }
+
+    this.send(serverId, payload);
   }
 
   deleteTask(serverId: string, taskId: string) {
     const requestId = `${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
-    this.send(serverId, {
-      type: "delete_task",
-      request_id: requestId,
-      task_id: taskId,
+
+    return new Promise<void>((resolve, reject) => {
+      const cleanup = () => {
+        if (timer) clearTimeout(timer);
+        this.off("task_deleted", handleDeleted);
+        this.off("error", handleError);
+      };
+
+      const handleDeleted = (payload: any) => {
+        if (payload.serverId !== serverId || payload.request_id !== requestId) {
+          return;
+        }
+        cleanup();
+        resolve();
+      };
+
+      const handleError = (payload: any) => {
+        if (payload.serverId !== serverId || payload.request_id !== requestId) {
+          return;
+        }
+        cleanup();
+        reject(new Error(payload.message || "Failed to delete issue."));
+      };
+
+      const timer = setTimeout(() => {
+        cleanup();
+        reject(new Error("Timed out while deleting issue."));
+      }, 10000);
+
+      this.on("task_deleted", handleDeleted);
+      this.on("error", handleError);
+      this.send(serverId, {
+        type: "delete_task",
+        request_id: requestId,
+        task_id: taskId,
+      });
     });
   }
 
@@ -565,6 +640,7 @@ class MultiServerWebSocketClient {
       taskId: string;
       executionMode?: "spawn_new_session" | "attach_existing_session";
       agentSessionId?: string;
+      agentCmd?: string;
     },
   ) {
     const requestId = `${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
@@ -603,8 +679,79 @@ class MultiServerWebSocketClient {
         task_id: options.taskId,
         execution_mode: options.executionMode ?? "spawn_new_session",
         agent_session_id: options.agentSessionId ?? "",
+        agent_cmd: options.agentCmd ?? "",
       });
     });
+  }
+
+  addTaskComment(
+    serverId: string,
+    options: {
+      taskId: string;
+      body: string;
+      parentCommentId?: string;
+      deliveryMode?:
+        | "note"
+        | "current_run"
+        | "spawn_new_session"
+        | "attach_existing_session";
+      agentSessionId?: string;
+    },
+  ) {
+    const requestId = `${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
+
+    return new Promise<{ task?: any; comment?: any; run?: any }>(
+      (resolve, reject) => {
+        const cleanup = () => {
+          if (timer) clearTimeout(timer);
+          this.off("task_comment_added", handleAdded);
+          this.off("error", handleError);
+        };
+
+        const handleAdded = (payload: any) => {
+          if (
+            payload.serverId !== serverId ||
+            payload.request_id !== requestId
+          ) {
+            return;
+          }
+          cleanup();
+          resolve({
+            task: payload.task,
+            comment: payload.comment,
+            run: payload.run,
+          });
+        };
+
+        const handleError = (payload: any) => {
+          if (
+            payload.serverId !== serverId ||
+            payload.request_id !== requestId
+          ) {
+            return;
+          }
+          cleanup();
+          reject(new Error(payload.message || "Failed to send comment."));
+        };
+
+        const timer = setTimeout(() => {
+          cleanup();
+          reject(new Error("Timed out while sending comment."));
+        }, 15000);
+
+        this.on("task_comment_added", handleAdded);
+        this.on("error", handleError);
+        this.send(serverId, {
+          type: "add_task_comment",
+          request_id: requestId,
+          task_id: options.taskId,
+          body: options.body,
+          parent_comment_id: options.parentCommentId ?? "",
+          delivery_mode: options.deliveryMode ?? "note",
+          agent_session_id: options.agentSessionId ?? "",
+        });
+      },
+    );
   }
 
   // ── Skills ───────────────────────────────────────────
@@ -649,11 +796,7 @@ class MultiServerWebSocketClient {
     this.send(serverId, { type: "get_guidance" });
   }
 
-  setGuidance(
-    serverId: string,
-    preamble: string,
-    constraints: string[],
-  ) {
+  setGuidance(serverId: string, preamble: string, constraints: string[]) {
     this.send(serverId, {
       type: "set_guidance",
       request_id: `${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`,
@@ -668,20 +811,154 @@ class MultiServerWebSocketClient {
     this.send(serverId, { type: "list_projects" });
   }
 
-  createProject(serverId: string, name: string, icon?: string) {
-    this.send(serverId, {
-      type: "create_project",
-      request_id: `${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`,
-      project_name: name,
-      project_icon: icon ?? "",
+  createProject(
+    serverId: string,
+    options: {
+      name: string;
+      icon?: string;
+      repoRoot?: string;
+      worktreeRoot?: string;
+      baseBranch?: string;
+    },
+  ) {
+    const requestId = `${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
+
+    return new Promise<any>((resolve, reject) => {
+      const cleanup = () => {
+        if (timer) clearTimeout(timer);
+        this.off("project_created", handleCreated);
+        this.off("error", handleError);
+      };
+
+      const handleCreated = (payload: any) => {
+        if (payload.serverId !== serverId || payload.request_id !== requestId) {
+          return;
+        }
+        cleanup();
+        resolve(payload.project);
+      };
+
+      const handleError = (payload: any) => {
+        if (payload.serverId !== serverId || payload.request_id !== requestId) {
+          return;
+        }
+        cleanup();
+        reject(new Error(payload.message || "Failed to create project."));
+      };
+
+      const timer = setTimeout(() => {
+        cleanup();
+        reject(new Error("Timed out while creating project."));
+      }, 10000);
+
+      this.on("project_created", handleCreated);
+      this.on("error", handleError);
+      this.send(serverId, {
+        type: "create_project",
+        request_id: requestId,
+        project_name: options.name,
+        project_icon: options.icon ?? "",
+        repo_root: options.repoRoot ?? "",
+        worktree_root: options.worktreeRoot ?? "",
+        base_branch: options.baseBranch ?? "",
+      });
+    });
+  }
+
+  updateProject(
+    serverId: string,
+    options: {
+      projectId: string;
+      name: string;
+      icon?: string;
+      repoRoot?: string;
+      worktreeRoot?: string;
+      baseBranch?: string;
+    },
+  ) {
+    const requestId = `${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
+
+    return new Promise<any>((resolve, reject) => {
+      const cleanup = () => {
+        if (timer) clearTimeout(timer);
+        this.off("project_updated", handleUpdated);
+        this.off("error", handleError);
+      };
+
+      const handleUpdated = (payload: any) => {
+        if (payload.serverId !== serverId || payload.request_id !== requestId) {
+          return;
+        }
+        cleanup();
+        resolve(payload.project);
+      };
+
+      const handleError = (payload: any) => {
+        if (payload.serverId !== serverId || payload.request_id !== requestId) {
+          return;
+        }
+        cleanup();
+        reject(new Error(payload.message || "Failed to update project."));
+      };
+
+      const timer = setTimeout(() => {
+        cleanup();
+        reject(new Error("Timed out while updating project."));
+      }, 10000);
+
+      this.on("project_updated", handleUpdated);
+      this.on("error", handleError);
+      this.send(serverId, {
+        type: "update_project",
+        request_id: requestId,
+        project_id: options.projectId,
+        project_name: options.name,
+        project_icon: options.icon ?? "",
+        repo_root: options.repoRoot ?? "",
+        worktree_root: options.worktreeRoot ?? "",
+        base_branch: options.baseBranch ?? "",
+      });
     });
   }
 
   deleteProject(serverId: string, projectId: string) {
-    this.send(serverId, {
-      type: "delete_project",
-      request_id: `${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`,
-      project_id: projectId,
+    const requestId = `${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
+
+    return new Promise<void>((resolve, reject) => {
+      const cleanup = () => {
+        if (timer) clearTimeout(timer);
+        this.off("project_deleted", handleDeleted);
+        this.off("error", handleError);
+      };
+
+      const handleDeleted = (payload: any) => {
+        if (payload.serverId !== serverId || payload.request_id !== requestId) {
+          return;
+        }
+        cleanup();
+        resolve();
+      };
+
+      const handleError = (payload: any) => {
+        if (payload.serverId !== serverId || payload.request_id !== requestId) {
+          return;
+        }
+        cleanup();
+        reject(new Error(payload.message || "Failed to delete project."));
+      };
+
+      const timer = setTimeout(() => {
+        cleanup();
+        reject(new Error("Timed out while deleting project."));
+      }, 10000);
+
+      this.on("project_deleted", handleDeleted);
+      this.on("error", handleError);
+      this.send(serverId, {
+        type: "delete_project",
+        request_id: requestId,
+        project_id: projectId,
+      });
     });
   }
 

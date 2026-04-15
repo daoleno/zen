@@ -50,8 +50,12 @@ func (s *Store) Events() <-chan TaskEvent {
 	return s.events
 }
 
-func (s *Store) Create(title, description, skillID, cwd string, priority int, labels []string, projectID string) (*Task, error) {
+func (s *Store) Create(title, description, skillID, cwd string, priority int, labels []string, projectID, dueDate string) (*Task, error) {
 	now := time.Now().UTC()
+	normalizedDueDate, err := NormalizeDueDate(dueDate)
+	if err != nil {
+		return nil, err
+	}
 
 	s.mu.Lock()
 	num := s.nextNumber
@@ -64,9 +68,10 @@ func (s *Store) Create(title, description, skillID, cwd string, priority int, la
 		Description: description,
 		Status:      StatusBacklog,
 		Priority:    priority,
-		Labels:      labels,
+		Labels:      append([]string(nil), labels...),
 		ProjectID:   projectID,
 		SkillID:     skillID,
+		DueDate:     normalizedDueDate,
 		Cwd:         cwd,
 		CreatedAt:   now,
 		UpdatedAt:   now,
@@ -84,8 +89,9 @@ func (s *Store) Create(title, description, skillID, cwd string, priority int, la
 	}
 	s.mu.Unlock()
 
-	s.emit(TaskEvent{Type: "task_created", TaskID: t.ID, Task: t})
-	return t, nil
+	cp := cloneTask(t)
+	s.emit(TaskEvent{Type: "task_created", TaskID: t.ID, Task: cp})
+	return cp, nil
 }
 
 func (s *Store) Get(id string) *Task {
@@ -95,8 +101,7 @@ func (s *Store) Get(id string) *Task {
 	if !ok {
 		return nil
 	}
-	cp := *t
-	return &cp
+	return cloneTask(t)
 }
 
 func (s *Store) List() []*Task {
@@ -105,8 +110,7 @@ func (s *Store) List() []*Task {
 
 	list := make([]*Task, 0, len(s.tasks))
 	for _, t := range s.tasks {
-		cp := *t
-		list = append(list, &cp)
+		list = append(list, cloneTask(t))
 	}
 	sort.Slice(list, func(i, j int) bool {
 		return list[i].CreatedAt.After(list[j].CreatedAt)
@@ -120,8 +124,7 @@ func (s *Store) FindByCurrentRunID(runID string) *Task {
 	defer s.mu.RUnlock()
 	for _, t := range s.tasks {
 		if t.CurrentRunID == runID {
-			cp := *t
-			return &cp
+			return cloneTask(t)
 		}
 	}
 	return nil
@@ -140,11 +143,17 @@ func (s *Store) Update(id string, fn func(*Task)) (*Task, error) {
 		s.mu.Unlock()
 		return nil, err
 	}
-	cp := *t
+	cp := cloneTask(t)
 	s.mu.Unlock()
 
-	s.emit(TaskEvent{Type: "task_updated", TaskID: cp.ID, Task: &cp})
-	return &cp, nil
+	s.emit(TaskEvent{Type: "task_updated", TaskID: cp.ID, Task: cp})
+	return cp, nil
+}
+
+func (s *Store) AddComment(id string, comment TaskComment) (*Task, error) {
+	return s.Update(id, func(t *Task) {
+		t.Comments = append(t.Comments, comment)
+	})
 }
 
 func (s *Store) Delete(id string) error {
@@ -162,6 +171,38 @@ func (s *Store) Delete(id string) error {
 
 	s.emit(TaskEvent{Type: "task_deleted", TaskID: id})
 	return nil
+}
+
+func (s *Store) ClearProject(projectID string) ([]*Task, error) {
+	s.mu.Lock()
+	updated := make([]*Task, 0)
+
+	for _, current := range s.tasks {
+		if current.ProjectID != projectID {
+			continue
+		}
+
+		current.ProjectID = ""
+		current.UpdatedAt = time.Now().UTC()
+		updated = append(updated, cloneTask(current))
+	}
+
+	if len(updated) == 0 {
+		s.mu.Unlock()
+		return nil, nil
+	}
+
+	if err := s.persist(); err != nil {
+		s.mu.Unlock()
+		return nil, err
+	}
+	s.mu.Unlock()
+
+	for _, current := range updated {
+		s.emit(TaskEvent{Type: "task_updated", TaskID: current.ID, Task: current})
+	}
+
+	return updated, nil
 }
 
 func (s *Store) emit(e TaskEvent) {
@@ -246,4 +287,19 @@ func writeFileAtomic(path string, data []byte, perm os.FileMode) error {
 		return err
 	}
 	return os.Rename(tmpPath, path)
+}
+
+func cloneTask(task *Task) *Task {
+	if task == nil {
+		return nil
+	}
+
+	cp := *task
+	if task.Labels != nil {
+		cp.Labels = append([]string(nil), task.Labels...)
+	}
+	if task.Comments != nil {
+		cp.Comments = append([]TaskComment(nil), task.Comments...)
+	}
+	return &cp
 }

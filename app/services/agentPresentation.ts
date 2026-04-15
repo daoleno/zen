@@ -1,4 +1,5 @@
 import type { Agent } from '../store/agents';
+import { isClaudeCommand, isCodexCommand } from './agentCommands';
 
 export type AgentKind = 'terminal' | 'claude' | 'codex';
 
@@ -42,9 +43,8 @@ export function presentAgent(agent: Pick<Agent, 'name' | 'project' | 'cwd' | 'co
 }
 
 function detectAgentKind(agent: Pick<Agent, 'name' | 'project' | 'cwd' | 'command' | 'summary' | 'last_output_lines'>): AgentKind {
-  const command = normalize(agent.command).toLowerCase();
-  if (command === 'claude') return 'claude';
-  if (command === 'codex') return 'codex';
+  if (isClaudeCommand(agent.command)) return 'claude';
+  if (isCodexCommand(agent.command)) return 'codex';
   return 'terminal';
 }
 

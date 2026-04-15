@@ -116,7 +116,10 @@ zen/
 cd daemon
 go test ./...           # Run tests
 go build -o bin/zen-daemon ./cmd/zen-daemon/  # Build
+go run ./cmd/zen-dev -advertise-url https://your-host.example/ws  # Watch, rebuild, restart
 ```
+
+`zen-dev` is a development watcher for the Go daemon. It uses `fsnotify` to watch `*.go`, `go.mod`, and `go.sum`, rebuilds `zen-daemon`, and restarts it automatically after each save. This is reload, not in-process hot patching, so the process restarts, but daemon identity and persisted state stay stable as long as you keep the same `-state-dir`.
 
 ### App
 ```bash

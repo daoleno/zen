@@ -1,7 +1,7 @@
-import React, { useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import {
   Alert,
-  KeyboardAvoidingView,
+  Keyboard,
   Modal,
   Platform,
   ScrollView,
@@ -9,12 +9,16 @@ import {
   Text,
   TextInput,
   TouchableOpacity,
+  useWindowDimensions,
   View,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
-import { Colors, Typography } from '../../constants/tokens';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { Colors, Typography, priorityColor } from '../../constants/tokens';
 import type { IssuePriority } from '../../constants/tokens';
-import { PriorityPicker } from './PriorityPicker';
+import { DueDatePicker } from './DueDatePicker';
+import { formatDueDateShort } from '../../services/dueDate';
+import { useTasks } from '../../store/tasks';
 import { wsClient } from '../../services/websocket';
 
 type CreateAction = {
@@ -25,12 +29,27 @@ type CreateAction = {
   afterCreate?: (serverId: string, task: any) => Promise<void> | void;
 };
 
+type ExpandedSection = 'project' | 'priority' | 'dueDate' | null;
+
+const PRIORITY_OPTIONS: { value: IssuePriority; label: string }[] = [
+  { value: 0, label: 'No priority' },
+  { value: 4, label: 'Low' },
+  { value: 3, label: 'Medium' },
+  { value: 2, label: 'High' },
+  { value: 1, label: 'Urgent' },
+];
+
+function clamp(value: number, min: number, max: number) {
+  return Math.min(Math.max(value, min), max);
+}
+
 interface Props {
   visible: boolean;
   serverOptions: { id: string; name: string }[];
   selectedServerId: string | null;
   onSelectServer: (id: string) => void;
   onClose: () => void;
+  initialProjectId?: string;
   initialTitle?: string;
   initialDescription?: string;
   actions?: CreateAction[];
@@ -43,70 +62,204 @@ export function CreateIssueSheet({
   selectedServerId,
   onSelectServer,
   onClose,
+  initialProjectId,
   initialTitle,
   initialDescription,
   actions,
   onCreated,
 }: Props) {
+  const { state: taskState } = useTasks();
+  const insets = useSafeAreaInsets();
+  const { width: windowWidth, height: windowHeight, fontScale } = useWindowDimensions();
+
   const [title, setTitle] = useState('');
   const [description, setDescription] = useState('');
   const [priority, setPriority] = useState<IssuePriority>(0);
+  const [projectId, setProjectId] = useState('');
+  const [dueDate, setDueDate] = useState<string | null>(null);
+  const [expandedSection, setExpandedSection] = useState<ExpandedSection>(null);
   const [submitting, setSubmitting] = useState(false);
+  const [newProjectName, setNewProjectName] = useState('');
+  const [creatingProject, setCreatingProject] = useState(false);
+  const [keyboardHeight, setKeyboardHeight] = useState(0);
 
-  React.useEffect(() => {
-    if (!visible) return;
-    setTitle(initialTitle || '');
-    setDescription(initialDescription || '');
-    setPriority(0);
-  }, [visible, initialDescription, initialTitle]);
+  const projectOptions = useMemo(() => {
+    if (!selectedServerId) {
+      return [];
+    }
 
-  const reset = () => {
-    setTitle('');
-    setDescription('');
-    setPriority(0);
-  };
+    return taskState.projects
+      .filter(project => project.serverId === selectedServerId)
+      .sort((left, right) => left.name.localeCompare(right.name));
+  }, [selectedServerId, taskState.projects]);
+
+  const selectedProject = useMemo(
+    () => projectOptions.find(project => project.id === projectId) || null,
+    [projectId, projectOptions],
+  );
+
+  const selectedPriority = useMemo(
+    () => PRIORITY_OPTIONS.find(option => option.value === priority) || PRIORITY_OPTIONS[0],
+    [priority],
+  );
 
   const resolvedActions: CreateAction[] = actions && actions.length > 0
     ? actions
-    : [
-        { key: 'create', label: 'Create', primary: true },
-        {
-          key: 'create_and_delegate',
-          label: 'Create & Delegate',
-          icon: 'play',
-          afterCreate: async (serverId, task) => {
-            await wsClient.createRun(serverId, {
-              taskId: task.id,
-              executionMode: 'spawn_new_session',
-            });
-          },
-        },
-      ];
+    : [{ key: 'create', label: 'Create issue', primary: true }];
+
+  const normalizedFontScale = clamp(fontScale || 1, 1, 1.25);
+  const isLandscape = windowWidth > windowHeight;
+  const isTabletLike = windowWidth >= 768;
+  const isNarrowPhone = windowWidth < 360;
+  const isCompactHeight = windowHeight < 760 || (isLandscape && windowHeight < 620);
+  const stackComposer = isNarrowPhone || normalizedFontScale > 1.15;
+  const stackActions = resolvedActions.length > 1 && (isNarrowPhone || normalizedFontScale > 1.1);
+  const shouldInsetSheet = isTabletLike || isLandscape;
+
+  const keyboardInset = Math.max(0, keyboardHeight - insets.bottom);
+  const keyboardOpen = keyboardInset > 0;
+  const sheetHorizontalPadding = isTabletLike ? 24 : isNarrowPhone ? 16 : 20;
+  const sheetRadius = isTabletLike ? 32 : 30;
+  const sheetWidth = shouldInsetSheet ? Math.min(windowWidth - 16, 720) : windowWidth;
+  const sheetMaxHeight = Math.min(
+    windowHeight - insets.top - (shouldInsetSheet ? 10 : 14),
+    windowHeight * (isLandscape ? 0.96 : 0.9),
+  );
+  const sheetMinHeight = Math.min(
+    sheetMaxHeight,
+    windowHeight * (isCompactHeight ? 0.82 : isTabletLike ? 0.76 : 0.72),
+  );
+  const footerInset = insets.bottom + (isCompactHeight ? 14 : 18);
+  const headerTopPadding = isCompactHeight ? 4 : 6;
+  const headerBottomPadding = isCompactHeight ? 10 : 14;
+  const contentTopPadding = isCompactHeight ? 2 : 6;
+  const contentBottomPadding = keyboardOpen ? (isCompactHeight ? 96 : 112) : (isCompactHeight ? 16 : 20);
+  const titleFontSize = isTabletLike ? 30 : isCompactHeight ? 24 : 28;
+  const titleLineHeight = Math.round(titleFontSize * 1.18);
+  const titleVerticalPadding = Platform.OS === 'android'
+    ? (isCompactHeight ? 8 : 10)
+    : (isCompactHeight ? 6 : 8);
+  const titleMinHeight = Platform.OS === 'android'
+    ? (isCompactHeight ? 48 : 52)
+    : (isCompactHeight ? 44 : 48);
+  const descriptionMinHeight = isTabletLike ? 120 : isCompactHeight ? 92 : 108;
+  const cardRadius = isTabletLike ? 20 : 18;
+  const groupRadius = isTabletLike ? 20 : 18;
+  const rowMinHeight = isTabletLike ? 60 : isCompactHeight ? 54 : 58;
+  const panelVerticalPadding = isCompactHeight ? 12 : 14;
+  const sectionGap = isCompactHeight ? 8 : 10;
+  const footerTopPadding = isCompactHeight ? 10 : 12;
+  const actionButtonHeight = isCompactHeight ? 46 : 48;
+  const actionButtonRadius = isCompactHeight ? 14 : 16;
+
+  useEffect(() => {
+    if (!visible) {
+      setKeyboardHeight(0);
+      return;
+    }
+
+    if (!selectedServerId && serverOptions[0]?.id) {
+      onSelectServer(serverOptions[0].id);
+    }
+
+    setTitle(initialTitle || '');
+    setDescription(initialDescription || '');
+    setPriority(0);
+    setProjectId(initialProjectId || '');
+    setDueDate(null);
+    setExpandedSection(null);
+    setNewProjectName('');
+    setKeyboardHeight(0);
+  }, [
+    initialDescription,
+    initialProjectId,
+    initialTitle,
+    onSelectServer,
+    selectedServerId,
+    serverOptions,
+    visible,
+  ]);
+
+  useEffect(() => {
+    if (!projectId) {
+      return;
+    }
+
+    if (!projectOptions.some(project => project.id === projectId)) {
+      setProjectId('');
+    }
+  }, [projectId, projectOptions]);
+
+  useEffect(() => {
+    if (!visible) {
+      return;
+    }
+
+    const showEvent = Platform.OS === 'ios' ? 'keyboardWillShow' : 'keyboardDidShow';
+    const hideEvent = Platform.OS === 'ios' ? 'keyboardWillHide' : 'keyboardDidHide';
+
+    const showSubscription = Keyboard.addListener(showEvent, event => {
+      setKeyboardHeight(event.endCoordinates.height);
+    });
+
+    const hideSubscription = Keyboard.addListener(hideEvent, () => {
+      setKeyboardHeight(0);
+    });
+
+    return () => {
+      showSubscription.remove();
+      hideSubscription.remove();
+    };
+  }, [visible]);
+
+  useEffect(() => {
+    if (!visible || !selectedServerId) {
+      return;
+    }
+
+    wsClient.listProjects(selectedServerId);
+  }, [selectedServerId, visible]);
+
+  const handleClose = (force = false) => {
+    if ((submitting || creatingProject) && !force) {
+      return;
+    }
+
+    Keyboard.dismiss();
+    setExpandedSection(null);
+    onClose();
+  };
 
   const handleCreate = async (action: CreateAction) => {
     const trimmed = title.trim();
-    if (!trimmed || !selectedServerId) return;
+    if (!trimmed || !selectedServerId) {
+      return;
+    }
 
+    Keyboard.dismiss();
     setSubmitting(true);
     try {
       const task = await wsClient.createTask(selectedServerId, {
         title: trimmed,
         description: description.trim(),
         priority,
+        projectId: projectId || undefined,
+        dueDate: dueDate || undefined,
       });
+
       if (action.afterCreate) {
         try {
           await action.afterCreate(selectedServerId, task);
         } catch (error: any) {
           Alert.alert(
-            'Task created, follow-up failed',
-            error?.message || 'You can retry from the task detail screen.',
+            'Issue created, follow-up failed',
+            error?.message || 'You can retry from the issue detail screen.',
           );
         }
       }
-      reset();
+
       onCreated?.(selectedServerId, task.id);
-      onClose();
+      handleClose(true);
     } catch (error: any) {
       Alert.alert('Could not create issue', error?.message || 'Try again.');
     } finally {
@@ -114,163 +267,751 @@ export function CreateIssueSheet({
     }
   };
 
+  const handleCreateProject = async () => {
+    const trimmed = newProjectName.trim();
+    if (!trimmed || !selectedServerId || creatingProject || submitting) {
+      return;
+    }
+
+    Keyboard.dismiss();
+    setCreatingProject(true);
+    try {
+      const project = await wsClient.createProject(selectedServerId, {
+        name: trimmed,
+      });
+      setProjectId(project.id);
+      setNewProjectName('');
+      setExpandedSection(null);
+    } catch (error: any) {
+      Alert.alert('Could not create project', error?.message || 'Try again.');
+    } finally {
+      setCreatingProject(false);
+    }
+  };
+
+  const selectProject = (nextProjectId: string) => {
+    setProjectId(nextProjectId);
+    setExpandedSection(null);
+  };
+
+  const selectPriority = (nextPriority: IssuePriority) => {
+    setPriority(nextPriority);
+    setExpandedSection(null);
+  };
+
+  const selectDueDate = (nextDueDate: string | null) => {
+    setDueDate(nextDueDate);
+    setExpandedSection(null);
+  };
+
+  const toggleSection = (section: ExpandedSection) => {
+    if (submitting || creatingProject) {
+      return;
+    }
+
+    Keyboard.dismiss();
+    setExpandedSection(current => current === section ? null : section);
+  };
+
+  const renderProjectValue = () => {
+    if (selectedProject) {
+      return selectedProject.name;
+    }
+
+    return 'No project';
+  };
+
+  const renderAttributeRow = ({
+    section,
+    icon,
+    label,
+    value,
+    valueMuted = false,
+    trailing,
+    children,
+  }: {
+    section: Exclude<ExpandedSection, null>;
+    icon: keyof typeof Ionicons.glyphMap;
+    label: string;
+    value: string;
+    valueMuted?: boolean;
+    trailing?: React.ReactNode;
+    children?: React.ReactNode;
+  }) => {
+    const active = expandedSection === section;
+
+    return (
+      <View style={[styles.attributeGroup, { borderRadius: groupRadius }]}>
+        <TouchableOpacity
+          style={[
+            styles.attributeRow,
+            { minHeight: rowMinHeight },
+            active && styles.attributeRowActive,
+          ]}
+          onPress={() => toggleSection(section)}
+          activeOpacity={0.82}
+          disabled={submitting || creatingProject}
+        >
+          <View style={styles.attributeLeft}>
+            <Ionicons name={icon} size={17} color={Colors.textSecondary} />
+            <Text style={styles.attributeLabel} maxFontSizeMultiplier={1.1}>{label}</Text>
+          </View>
+
+          <View style={styles.attributeRight}>
+            {trailing}
+            <Text
+              maxFontSizeMultiplier={1.1}
+              style={[
+                styles.attributeValue,
+                valueMuted ? styles.attributeValueMuted : styles.attributeValueActive,
+              ]}
+              numberOfLines={1}
+            >
+              {value}
+            </Text>
+            <Ionicons
+              name={active ? 'chevron-up' : 'chevron-down'}
+              size={15}
+              color={Colors.textSecondary}
+            />
+          </View>
+        </TouchableOpacity>
+
+        {active && children ? (
+          <View style={styles.inlinePanel}>
+            <View style={[styles.panelContent, { paddingVertical: panelVerticalPadding }]}>
+              {children}
+            </View>
+          </View>
+        ) : null}
+      </View>
+    );
+  };
+
   return (
-    <Modal visible={visible} transparent animationType="slide" onRequestClose={onClose}>
-      <KeyboardAvoidingView
-        style={styles.root}
-        behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
-      >
-        <TouchableOpacity style={styles.backdrop} activeOpacity={1} onPress={onClose} />
-        <View style={styles.sheet}>
-          <View style={styles.handle} />
+    <Modal
+      visible={visible}
+      transparent
+      animationType="slide"
+      presentationStyle="overFullScreen"
+      onRequestClose={() => handleClose()}
+    >
+      <View style={styles.root}>
+        <TouchableOpacity style={styles.backdrop} activeOpacity={1} onPress={() => handleClose()} />
 
-          <Text style={styles.sheetTitle}>New Issue</Text>
+        <View
+          style={[
+            styles.sheet,
+            {
+              width: sheetWidth,
+              minHeight: sheetMinHeight,
+              maxHeight: sheetMaxHeight,
+              borderTopLeftRadius: sheetRadius,
+              borderTopRightRadius: sheetRadius,
+            },
+          ]}
+        >
+          <View
+            style={[
+              styles.handle,
+              { marginTop: isCompactHeight ? 8 : 10, marginBottom: isCompactHeight ? 6 : 8 },
+            ]}
+          />
 
-          {/* Server selector */}
-          {serverOptions.length > 1 && (
-            <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.serverRow}>
-              {serverOptions.map(server => (
+          <View
+            style={[
+              styles.header,
+              {
+                paddingHorizontal: sheetHorizontalPadding,
+                paddingTop: headerTopPadding,
+                paddingBottom: headerBottomPadding,
+              },
+            ]}
+          >
+            <Text style={styles.headerTitle} maxFontSizeMultiplier={1.12}>New issue</Text>
+
+            <View style={styles.headerActions}>
+              {keyboardOpen ? (
                 <TouchableOpacity
-                  key={server.id}
-                  style={[styles.serverChip, server.id === selectedServerId && styles.serverChipActive]}
-                  onPress={() => onSelectServer(server.id)}
+                  style={styles.secondaryHeaderButton}
+                  onPress={() => Keyboard.dismiss()}
                   activeOpacity={0.82}
+                  disabled={submitting || creatingProject}
                 >
-                  <Text style={[styles.serverChipText, server.id === selectedServerId && styles.serverChipTextActive]}>
-                    {server.name}
-                  </Text>
+                  <Ionicons name="chevron-down" size={18} color={Colors.textSecondary} />
                 </TouchableOpacity>
-              ))}
-            </ScrollView>
-          )}
+              ) : null}
 
-          {/* Title */}
-          <View style={styles.fieldGroup}>
+              <TouchableOpacity
+                style={styles.closeButton}
+                onPress={() => handleClose()}
+                activeOpacity={0.82}
+                disabled={submitting || creatingProject}
+              >
+                <Ionicons name="close" size={18} color={Colors.textSecondary} />
+              </TouchableOpacity>
+            </View>
+          </View>
+
+          <ScrollView
+            style={styles.content}
+            contentContainerStyle={[
+              styles.contentContainer,
+              {
+                paddingHorizontal: sheetHorizontalPadding,
+                paddingTop: contentTopPadding,
+                paddingBottom: contentBottomPadding,
+              },
+            ]}
+            showsVerticalScrollIndicator={false}
+            keyboardShouldPersistTaps="handled"
+            keyboardDismissMode={Platform.OS === 'ios' ? 'interactive' : 'on-drag'}
+            automaticallyAdjustKeyboardInsets={Platform.OS === 'ios'}
+          >
             <TextInput
-              style={styles.titleInput}
+              style={[
+                styles.titleInput,
+                {
+                  minHeight: titleMinHeight,
+                  paddingTop: titleVerticalPadding,
+                  paddingBottom: titleVerticalPadding,
+                  fontSize: titleFontSize,
+                  lineHeight: titleLineHeight,
+                },
+              ]}
               value={title}
               onChangeText={setTitle}
+              onFocus={() => setExpandedSection(null)}
               placeholder="Issue title"
-              placeholderTextColor="rgba(255,255,255,0.2)"
+              placeholderTextColor="rgba(255,255,255,0.24)"
               autoCapitalize="sentences"
               autoCorrect={false}
-              editable={!submitting}
+              editable={!submitting && !creatingProject}
+              selectionColor={Colors.accent}
+              multiline={false}
+              autoFocus
+              maxFontSizeMultiplier={1.12}
             />
-          </View>
 
-          {/* Description */}
-          <View style={styles.fieldGroup}>
-            <TextInput
-              style={styles.descInput}
-              value={description}
-              onChangeText={setDescription}
-              placeholder="Description (optional)"
-              placeholderTextColor="rgba(255,255,255,0.15)"
-              multiline
-              numberOfLines={3}
-              autoCapitalize="sentences"
-              editable={!submitting}
-            />
-          </View>
+            <View style={[styles.descriptionCard, { borderRadius: cardRadius }]}>
+              <TextInput
+                style={[styles.descriptionInput, { minHeight: descriptionMinHeight }]}
+                value={description}
+                onChangeText={setDescription}
+                onFocus={() => setExpandedSection(null)}
+                placeholder="Add description..."
+                placeholderTextColor="rgba(255,255,255,0.18)"
+                autoCapitalize="sentences"
+                editable={!submitting && !creatingProject}
+                selectionColor={Colors.accent}
+                multiline
+                numberOfLines={5}
+                textAlignVertical="top"
+                maxFontSizeMultiplier={1.15}
+              />
+            </View>
 
-          {/* Priority */}
-          <View style={styles.fieldGroup}>
-            <Text style={styles.fieldLabel}>Priority</Text>
-            <PriorityPicker value={priority} onChange={setPriority} />
-          </View>
+            <View style={[styles.attributeList, { gap: sectionGap }]}>
+              {renderAttributeRow({
+                section: 'project',
+                icon: 'folder-open-outline',
+                label: 'Project',
+                value: renderProjectValue(),
+                valueMuted: !selectedProject,
+                children: (
+                  <>
+                    <View style={styles.optionList}>
+                      <TouchableOpacity
+                        style={styles.optionRow}
+                        onPress={() => selectProject('')}
+                        activeOpacity={0.82}
+                      >
+                        <View style={styles.optionMain}>
+                          <Ionicons name="remove-circle-outline" size={16} color={Colors.textSecondary} />
+                          <Text style={styles.optionText} maxFontSizeMultiplier={1.1}>No project</Text>
+                        </View>
 
-          {/* Actions */}
-          <View style={styles.actions}>
-            {resolvedActions.map(action => (
-              <TouchableOpacity
-                key={action.key}
-                style={[
-                  styles.actionBtn,
-                  action.primary && styles.actionBtnPrimary,
-                  !title.trim() && styles.actionBtnDisabled,
-                ]}
-                onPress={() => handleCreate(action)}
-                disabled={!title.trim() || submitting}
-                activeOpacity={0.82}
-              >
-                {action.icon ? (
-                  <Ionicons
-                    name={action.icon}
-                    size={14}
-                    color={action.primary ? Colors.bgPrimary : Colors.textPrimary}
+                        {!projectId ? (
+                          <Ionicons name="checkmark" size={16} color={Colors.accent} />
+                        ) : null}
+                      </TouchableOpacity>
+
+                      {projectOptions.map(project => {
+                        const active = project.id === projectId;
+
+                        return (
+                          <TouchableOpacity
+                            key={project.id}
+                            style={styles.optionRow}
+                            onPress={() => selectProject(project.id)}
+                            activeOpacity={0.82}
+                          >
+                            <View style={styles.optionMain}>
+                              <Ionicons name="folder-open-outline" size={16} color={Colors.textSecondary} />
+                              <Text style={styles.optionText} maxFontSizeMultiplier={1.1}>{project.name}</Text>
+                            </View>
+
+                            {active ? (
+                              <Ionicons name="checkmark" size={16} color={Colors.accent} />
+                            ) : null}
+                          </TouchableOpacity>
+                        );
+                      })}
+                    </View>
+
+                    {projectOptions.length === 0 ? (
+                      <View style={styles.emptyState}>
+                        <Text style={styles.emptyStateTitle} maxFontSizeMultiplier={1.1}>No projects yet</Text>
+                      </View>
+                    ) : null}
+
+                    <View style={styles.composer}>
+                      <Text style={styles.composerLabel} maxFontSizeMultiplier={1.05}>Create project</Text>
+                      <View style={[styles.composerRow, stackComposer && styles.composerRowStacked]}>
+                        <TextInput
+                          style={[
+                            styles.composerInput,
+                            stackComposer && styles.composerInputStacked,
+                          ]}
+                          value={newProjectName}
+                          onChangeText={setNewProjectName}
+                          placeholder="Project name"
+                          placeholderTextColor="rgba(255,255,255,0.22)"
+                          autoCapitalize="words"
+                          autoCorrect={false}
+                          editable={!creatingProject && !submitting}
+                          returnKeyType="done"
+                          onSubmitEditing={() => { void handleCreateProject(); }}
+                          maxFontSizeMultiplier={1.1}
+                        />
+
+                        <TouchableOpacity
+                          style={[
+                            styles.composerButton,
+                            stackComposer && styles.composerButtonStacked,
+                            (!newProjectName.trim() || creatingProject || submitting) && styles.composerButtonDisabled,
+                          ]}
+                          onPress={() => { void handleCreateProject(); }}
+                          activeOpacity={0.82}
+                          disabled={!newProjectName.trim() || creatingProject || submitting}
+                        >
+                          <Text style={styles.composerButtonText} maxFontSizeMultiplier={1.05}>
+                            {creatingProject ? 'Creating...' : 'Create'}
+                          </Text>
+                        </TouchableOpacity>
+                      </View>
+                    </View>
+                  </>
+                ),
+              })}
+
+              {renderAttributeRow({
+                section: 'priority',
+                icon: 'flag-outline',
+                label: 'Priority',
+                value: selectedPriority.label,
+                valueMuted: priority === 0,
+                trailing: (
+                  <View
+                    style={[
+                      styles.priorityDot,
+                      {
+                        backgroundColor:
+                          priority === 0 ? 'rgba(255,255,255,0.12)' : priorityColor(priority),
+                      },
+                    ]}
                   />
-                ) : null}
-                <Text style={[styles.actionText, action.primary && styles.actionTextPrimary]}>
-                  {submitting ? 'Creating...' : action.label}
-                </Text>
-              </TouchableOpacity>
-            ))}
+                ),
+                children: (
+                  <>
+                    <View style={styles.optionList}>
+                      {PRIORITY_OPTIONS.map(option => {
+                        const active = option.value === priority;
+                        const tint = option.value === 0
+                          ? 'rgba(255,255,255,0.18)'
+                          : priorityColor(option.value);
+
+                        return (
+                          <TouchableOpacity
+                            key={option.value}
+                            style={styles.optionRow}
+                            onPress={() => selectPriority(option.value)}
+                            activeOpacity={0.82}
+                          >
+                            <View style={styles.optionMain}>
+                              <View style={[styles.priorityDot, styles.optionPriorityDot, { backgroundColor: tint }]} />
+                              <Text style={styles.optionText} maxFontSizeMultiplier={1.1}>{option.label}</Text>
+                            </View>
+
+                            {active ? (
+                              <Ionicons name="checkmark" size={16} color={Colors.accent} />
+                            ) : null}
+                          </TouchableOpacity>
+                        );
+                      })}
+                    </View>
+                  </>
+                ),
+              })}
+
+              {renderAttributeRow({
+                section: 'dueDate',
+                icon: 'calendar-outline',
+                label: 'Due date',
+                value: formatDueDateShort(dueDate),
+                valueMuted: !dueDate,
+                children: <DueDatePicker value={dueDate} onChange={selectDueDate} />,
+              })}
+            </View>
+          </ScrollView>
+
+          <View
+            style={[
+              styles.footer,
+              {
+                paddingHorizontal: sheetHorizontalPadding,
+                paddingTop: footerTopPadding,
+                paddingBottom: footerInset,
+              },
+            ]}
+          >
+            <View
+              style={[
+                styles.actionRow,
+                resolvedActions.length === 1 && styles.actionRowSingle,
+                stackActions && styles.actionRowStacked,
+              ]}
+            >
+              {resolvedActions.map(action => {
+                const disabled = !title.trim() || submitting || creatingProject;
+                const singlePrimary = resolvedActions.length === 1 && !!action.primary;
+
+                return (
+                  <TouchableOpacity
+                    key={action.key}
+                    style={[
+                      styles.actionButton,
+                      {
+                        minHeight: actionButtonHeight,
+                        borderRadius: actionButtonRadius,
+                      },
+                      action.primary ? styles.actionButtonPrimary : styles.actionButtonSecondary,
+                      singlePrimary && styles.actionButtonPrimarySingle,
+                      stackActions && styles.actionButtonStacked,
+                      disabled && styles.actionButtonDisabled,
+                    ]}
+                    onPress={() => { void handleCreate(action); }}
+                    disabled={disabled}
+                    activeOpacity={0.82}
+                  >
+                    {action.icon ? (
+                      <Ionicons
+                        name={action.icon}
+                        size={15}
+                        color={action.primary ? Colors.bgPrimary : Colors.textPrimary}
+                      />
+                    ) : null}
+                    <Text
+                      style={[styles.actionText, action.primary && styles.actionTextPrimary]}
+                      maxFontSizeMultiplier={1.08}
+                    >
+                      {submitting ? 'Creating...' : action.label}
+                    </Text>
+                  </TouchableOpacity>
+                );
+              })}
+            </View>
           </View>
         </View>
-      </KeyboardAvoidingView>
+      </View>
     </Modal>
   );
 }
 
 const styles = StyleSheet.create({
-  root: { flex: 1, justifyContent: 'flex-end' },
-  backdrop: { ...StyleSheet.absoluteFillObject, backgroundColor: 'rgba(0,0,0,0.6)' },
+  root: {
+    flex: 1,
+    justifyContent: 'flex-end',
+  },
+  backdrop: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: 'rgba(4,6,10,0.66)',
+  },
   sheet: {
+    alignSelf: 'center',
     backgroundColor: Colors.bgSurface,
-    borderTopLeftRadius: 20,
-    borderTopRightRadius: 20,
-    paddingBottom: 40,
+    borderTopLeftRadius: 30,
+    borderTopRightRadius: 30,
+    borderTopWidth: StyleSheet.hairlineWidth,
+    borderLeftWidth: StyleSheet.hairlineWidth,
+    borderRightWidth: StyleSheet.hairlineWidth,
+    borderColor: 'rgba(255,255,255,0.07)',
   },
   handle: {
-    width: 36, height: 4, borderRadius: 2,
-    backgroundColor: 'rgba(255,255,255,0.15)',
+    width: 40,
+    height: 4,
+    borderRadius: 999,
+    backgroundColor: 'rgba(255,255,255,0.14)',
     alignSelf: 'center',
-    marginTop: 10, marginBottom: 12,
+    marginTop: 10,
+    marginBottom: 8,
   },
-  sheetTitle: {
+  header: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 16,
+  },
+  headerActions: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  headerTitle: {
     color: Colors.textPrimary,
-    fontSize: 16,
+    fontSize: 20,
+    lineHeight: 26,
     fontFamily: Typography.uiFontMedium,
-    paddingHorizontal: 20,
-    marginBottom: 16,
+    flex: 1,
   },
-  serverRow: { paddingHorizontal: 16, marginBottom: 12, maxHeight: 36 },
-  serverChip: {
-    paddingHorizontal: 12, paddingVertical: 6, borderRadius: 8,
+  closeButton: {
+    width: 34,
+    height: 34,
+    borderRadius: 17,
+    alignItems: 'center',
+    justifyContent: 'center',
     backgroundColor: 'rgba(255,255,255,0.04)',
-    borderWidth: StyleSheet.hairlineWidth, borderColor: 'rgba(255,255,255,0.08)',
-    marginRight: 8,
   },
-  serverChipActive: { backgroundColor: 'rgba(91,157,255,0.15)', borderColor: Colors.accent },
-  serverChipText: { color: Colors.textSecondary, fontSize: 12, fontFamily: Typography.uiFontMedium },
-  serverChipTextActive: { color: Colors.accent },
-  fieldGroup: { paddingHorizontal: 20, marginBottom: 14 },
-  fieldLabel: {
-    color: Colors.textSecondary, fontSize: 11, fontFamily: Typography.uiFontMedium,
-    textTransform: 'uppercase', letterSpacing: 0.5, marginBottom: 6, opacity: 0.6,
+  secondaryHeaderButton: {
+    width: 34,
+    height: 34,
+    borderRadius: 17,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: 'rgba(255,255,255,0.04)',
+  },
+  content: {
+    flex: 1,
+  },
+  contentContainer: {
   },
   titleInput: {
-    backgroundColor: 'rgba(255,255,255,0.04)', borderRadius: 12,
-    paddingHorizontal: 14, paddingVertical: 12,
-    color: Colors.textPrimary, fontSize: 16, fontFamily: Typography.uiFontMedium,
-    borderWidth: StyleSheet.hairlineWidth, borderColor: 'rgba(255,255,255,0.08)',
+    color: Colors.textPrimary,
+    fontFamily: Typography.uiFontMedium,
+    textAlignVertical: 'center',
+    includeFontPadding: false,
   },
-  descInput: {
-    backgroundColor: 'rgba(255,255,255,0.04)', borderRadius: 12,
-    paddingHorizontal: 14, paddingVertical: 10,
-    color: Colors.textPrimary, fontSize: 14, fontFamily: Typography.uiFont,
-    borderWidth: StyleSheet.hairlineWidth, borderColor: 'rgba(255,255,255,0.08)',
-    minHeight: 60, textAlignVertical: 'top',
+  descriptionCard: {
+    marginTop: 4,
+    borderRadius: 18,
+    backgroundColor: 'rgba(255,255,255,0.035)',
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: 'rgba(255,255,255,0.06)',
+    paddingHorizontal: 14,
+    paddingVertical: 4,
   },
-  actions: { paddingHorizontal: 20, gap: 10 },
-  actionBtn: {
-    flexDirection: 'row', alignItems: 'center', justifyContent: 'center',
-    gap: 6, height: 44, borderRadius: 12,
-    backgroundColor: 'rgba(255,255,255,0.06)',
-    borderWidth: StyleSheet.hairlineWidth, borderColor: 'rgba(255,255,255,0.1)',
+  descriptionInput: {
+    minHeight: 108,
+    paddingTop: 8,
+    paddingBottom: 12,
+    color: Colors.textPrimary,
+    fontSize: 15,
+    lineHeight: 23,
+    fontFamily: Typography.uiFont,
   },
-  actionBtnPrimary: { backgroundColor: Colors.accent, borderColor: Colors.accent },
-  actionBtnDisabled: { opacity: 0.4 },
-  actionText: { color: Colors.textPrimary, fontSize: 14, fontFamily: Typography.uiFontMedium },
-  actionTextPrimary: { color: Colors.bgPrimary },
+  attributeList: {
+    marginTop: 16,
+  },
+  attributeGroup: {
+    borderRadius: 18,
+    backgroundColor: 'rgba(255,255,255,0.03)',
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: 'rgba(255,255,255,0.06)',
+    overflow: 'hidden',
+  },
+  attributeRow: {
+    paddingHorizontal: 14,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 14,
+  },
+  attributeRowActive: {
+    backgroundColor: 'rgba(255,255,255,0.028)',
+  },
+  attributeLeft: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+    flex: 1,
+  },
+  attributeLabel: {
+    color: Colors.textPrimary,
+    fontSize: 14,
+    fontFamily: Typography.uiFontMedium,
+  },
+  attributeRight: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    maxWidth: '58%',
+  },
+  attributeValue: {
+    fontSize: 13,
+    fontFamily: Typography.uiFontMedium,
+  },
+  attributeValueActive: {
+    color: Colors.textPrimary,
+  },
+  attributeValueMuted: {
+    color: Colors.textSecondary,
+  },
+  inlinePanel: {
+    borderTopWidth: StyleSheet.hairlineWidth,
+    borderTopColor: 'rgba(255,255,255,0.06)',
+    backgroundColor: 'rgba(255,255,255,0.02)',
+  },
+  panelContent: {
+    paddingHorizontal: 14,
+    gap: 12,
+  },
+  optionList: {
+    gap: 2,
+  },
+  optionRow: {
+    minHeight: 46,
+    paddingHorizontal: 2,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 12,
+  },
+  optionMain: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    flex: 1,
+  },
+  optionText: {
+    color: Colors.textPrimary,
+    fontSize: 13,
+    fontFamily: Typography.uiFontMedium,
+  },
+  priorityDot: {
+    width: 8,
+    height: 8,
+    borderRadius: 999,
+  },
+  optionPriorityDot: {
+    width: 10,
+    height: 10,
+  },
+  emptyState: {
+    paddingHorizontal: 2,
+  },
+  emptyStateTitle: {
+    color: Colors.textPrimary,
+    fontSize: 13,
+    fontFamily: Typography.uiFontMedium,
+  },
+  composer: {
+    paddingTop: 4,
+    gap: 8,
+  },
+  composerLabel: {
+    color: Colors.textSecondary,
+    fontSize: 12,
+    fontFamily: Typography.uiFontMedium,
+  },
+  composerRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+  },
+  composerRowStacked: {
+    alignItems: 'stretch',
+    flexDirection: 'column',
+  },
+  composerInput: {
+    flex: 1,
+    minHeight: 44,
+    borderRadius: 14,
+    paddingHorizontal: 14,
+    color: Colors.textPrimary,
+    fontSize: 14,
+    fontFamily: Typography.uiFont,
+    backgroundColor: 'rgba(255,255,255,0.05)',
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: 'rgba(255,255,255,0.08)',
+  },
+  composerInputStacked: {
+    width: '100%',
+  },
+  composerButton: {
+    minWidth: 84,
+    minHeight: 44,
+    paddingHorizontal: 16,
+    borderRadius: 14,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: Colors.accent,
+  },
+  composerButtonStacked: {
+    width: '100%',
+  },
+  composerButtonDisabled: {
+    opacity: 0.45,
+  },
+  composerButtonText: {
+    color: Colors.bgPrimary,
+    fontSize: 13,
+    fontFamily: Typography.uiFontMedium,
+  },
+  footer: {
+    borderTopWidth: StyleSheet.hairlineWidth,
+    borderTopColor: 'rgba(255,255,255,0.06)',
+  },
+  actionRow: {
+    flexDirection: 'row',
+    gap: 10,
+  },
+  actionRowStacked: {
+    flexDirection: 'column',
+  },
+  actionRowSingle: {
+    width: '100%',
+  },
+  actionButton: {
+    paddingHorizontal: 16,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 8,
+    flex: 1,
+  },
+  actionButtonStacked: {
+    width: '100%',
+  },
+  actionButtonPrimary: {
+    backgroundColor: Colors.accent,
+  },
+  actionButtonPrimarySingle: {
+    width: '100%',
+  },
+  actionButtonSecondary: {
+    backgroundColor: 'rgba(255,255,255,0.05)',
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: 'rgba(255,255,255,0.09)',
+  },
+  actionButtonDisabled: {
+    opacity: 0.4,
+  },
+  actionText: {
+    color: Colors.textPrimary,
+    fontSize: 14,
+    fontFamily: Typography.uiFontMedium,
+  },
+  actionTextPrimary: {
+    color: Colors.bgPrimary,
+  },
 });
