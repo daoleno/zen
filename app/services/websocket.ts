@@ -1,6 +1,10 @@
 import type { StoredServer } from "./storage";
 import { buildAuthorizationHeader } from "./auth";
 import { diagnoseConnectionIssue } from "./connectionIssue";
+import type {
+  GitDiffPatchPayload,
+  GitDiffStatusSnapshot,
+} from "./gitDiff";
 
 type MessageHandler = (data: any) => void;
 
@@ -347,6 +351,116 @@ class MultiServerWebSocketClient {
         type: "list_dir",
         request_id: requestId,
         cwd: path ?? "",
+      });
+    });
+  }
+
+  getGitDiffStatus(
+    serverId: string,
+    options?: {
+      targetId?: string;
+      cwd?: string;
+    },
+  ) {
+    const requestId = `${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
+
+    return new Promise<GitDiffStatusSnapshot>((resolve, reject) => {
+      const cleanup = () => {
+        if (timer) clearTimeout(timer);
+        this.off("git_diff_status", handleStatus);
+        this.off("error", handleError);
+      };
+
+      const handleStatus = (payload: any) => {
+        if (payload.serverId !== serverId || payload.request_id !== requestId) {
+          return;
+        }
+        cleanup();
+        resolve(
+          (payload.status ?? {
+            available: false,
+            clean: true,
+            file_count: 0,
+            staged_file_count: 0,
+            unstaged_file_count: 0,
+            untracked_file_count: 0,
+            additions: 0,
+            deletions: 0,
+            files: [],
+          }) as GitDiffStatusSnapshot,
+        );
+      };
+
+      const handleError = (payload: any) => {
+        if (payload.serverId !== serverId || payload.request_id !== requestId) {
+          return;
+        }
+        cleanup();
+        reject(new Error(payload.message || "Failed to load git diff status."));
+      };
+
+      const timer = setTimeout(() => {
+        cleanup();
+        reject(new Error("Timed out while loading git diff status."));
+      }, 10000);
+
+      this.on("git_diff_status", handleStatus);
+      this.on("error", handleError);
+      this.send(serverId, {
+        type: "git_diff_status",
+        request_id: requestId,
+        target_id: options?.targetId,
+        cwd: options?.cwd,
+      });
+    });
+  }
+
+  getGitDiffPatch(
+    serverId: string,
+    options: {
+      targetId?: string;
+      cwd?: string;
+      path: string;
+    },
+  ) {
+    const requestId = `${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
+
+    return new Promise<GitDiffPatchPayload>((resolve, reject) => {
+      const cleanup = () => {
+        if (timer) clearTimeout(timer);
+        this.off("git_diff_patch", handlePatch);
+        this.off("error", handleError);
+      };
+
+      const handlePatch = (payload: any) => {
+        if (payload.serverId !== serverId || payload.request_id !== requestId) {
+          return;
+        }
+        cleanup();
+        resolve(payload.patch as GitDiffPatchPayload);
+      };
+
+      const handleError = (payload: any) => {
+        if (payload.serverId !== serverId || payload.request_id !== requestId) {
+          return;
+        }
+        cleanup();
+        reject(new Error(payload.message || "Failed to load git diff patch."));
+      };
+
+      const timer = setTimeout(() => {
+        cleanup();
+        reject(new Error("Timed out while loading git diff patch."));
+      }, 10000);
+
+      this.on("git_diff_patch", handlePatch);
+      this.on("error", handleError);
+      this.send(serverId, {
+        type: "git_diff_patch",
+        request_id: requestId,
+        target_id: options.targetId,
+        cwd: options.cwd,
+        path: options.path,
       });
     });
   }

@@ -237,6 +237,7 @@ func (s *Server) handleClientMessage(conn *websocket.Conn, msg []byte) {
 		Col            int               `json:"col"`
 		Row            int               `json:"row"`
 		Lines          int               `json:"lines"`
+		Path           string            `json:"path"`
 		TaskID         string            `json:"task_id"`
 		RunID          string            `json:"run_id"`
 		Title          string            `json:"title"`
@@ -306,6 +307,30 @@ func (s *Server) handleClientMessage(conn *websocket.Conn, msg []byte) {
 			"type":       "session_created",
 			"request_id": raw.RequestID,
 			"agent_id":   agentID,
+		})
+
+	case "git_diff_status":
+		payload, err := s.buildGitDiffStatus(raw.TargetID, raw.Cwd)
+		if err != nil {
+			s.sendErrorWithRequestID(conn, raw.RequestID, "git_diff_status_failed", err.Error())
+			return
+		}
+		s.sendJSON(conn, map[string]any{
+			"type":       "git_diff_status",
+			"request_id": raw.RequestID,
+			"status":     payload,
+		})
+
+	case "git_diff_patch":
+		payload, err := s.buildGitDiffPatch(raw.TargetID, raw.Cwd, raw.Path)
+		if err != nil {
+			s.sendErrorWithRequestID(conn, raw.RequestID, "git_diff_patch_failed", err.Error())
+			return
+		}
+		s.sendJSON(conn, map[string]any{
+			"type":       "git_diff_patch",
+			"request_id": raw.RequestID,
+			"patch":      payload,
 		})
 
 	case "terminal_open":

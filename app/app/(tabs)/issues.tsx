@@ -1,8 +1,9 @@
 import React, { useEffect, useMemo, useState } from "react";
 import {
   Alert,
-  FlatList,
   Platform,
+  Pressable,
+  ScrollView,
   SectionList,
   StyleSheet,
   Text,
@@ -18,7 +19,6 @@ import { useTasks, Project, Run, Task } from "../../store/tasks";
 import { Agent, useAgents } from "../../store/agents";
 import { IssueRow } from "../../components/issue/IssueRow";
 import { ProjectEditorSheet } from "../../components/issue/ProjectEditorSheet";
-import { ProjectRow } from "../../components/issue/ProjectRow";
 import {
   StatusFilterBar,
   IssueFilter,
@@ -37,7 +37,6 @@ import {
   pickCurrentRun,
 } from "../../services/taskFeed";
 
-type BrowseMode = "issues" | "projects";
 type IssueSectionKey = "active" | "backlog" | "done";
 
 type IssueListItem = {
@@ -189,12 +188,12 @@ export default function IssuesScreen() {
   const router = useRouter();
   const { state: taskState } = useTasks();
   const { state: agentState } = useAgents();
-  const [browseMode, setBrowseMode] = useState<BrowseMode>("issues");
   const [filter, setFilter] = useState<IssueFilter>("active");
   const [projectFilterId, setProjectFilterId] = useState<string | null>(null);
   const [createVisible, setCreateVisible] = useState(false);
   const [projectEditorVisible, setProjectEditorVisible] = useState(false);
   const [editingProject, setEditingProject] = useState<Project | null>(null);
+  const [scopeOpen, setScopeOpen] = useState(false);
   const [servers, setServers] = useState<StoredServer[]>([]);
   const [selectedServerId, setSelectedServerId] = useState<string | null>(null);
 
@@ -435,16 +434,8 @@ export default function IssuesScreen() {
     0,
   );
 
-  const browseCounts = useMemo(
-    () => ({
-      issues: issueItems.length,
-      projects: projectItems.length,
-    }),
-    [issueItems.length, projectItems.length],
-  );
 
   const emptyIssueCopy = getIssueEmptyStateCopy(filter, selectedProject?.name);
-  const emptyProjectCopy = getProjectEmptyStateCopy();
   const showSectionHeaders = filter === "all" && sections.length > 1;
   const editorIssueCount = useMemo(
     () =>
@@ -572,7 +563,6 @@ export default function IssuesScreen() {
         text: "Open issues",
         onPress: () => {
           setProjectFilterId(item.project.id);
-          setBrowseMode("issues");
           setFilter("all");
           setSelectedServerId(item.project.serverId);
         },
@@ -667,160 +657,173 @@ export default function IssuesScreen() {
     setFilter(nextFilter);
   };
 
+  const selectProject = (id: string | null) => {
+    setProjectFilterId(id);
+    if (id) {
+      setFilter("all");
+      const project = taskState.projects.find((p) => p.id === id);
+      if (project) setSelectedServerId(project.serverId);
+    }
+  };
+
   return (
     <SafeAreaView style={styles.container} edges={["top"]}>
+      {/* Header: scope-as-title on left, add on right */}
       <View style={styles.header}>
-        <Text style={styles.title}>
-          {browseMode === "projects" ? "Projects" : "Issues"}
-        </Text>
+        {taskState.projects.length > 0 ? (
+          <TouchableOpacity
+            style={styles.scopeTitle}
+            onPress={() => setScopeOpen((v) => !v)}
+            activeOpacity={0.75}
+          >
+            <Text style={styles.scopeTitleText} numberOfLines={1}>
+              {selectedProject ? selectedProject.name : "All Issues"}
+            </Text>
+            <Ionicons
+              name={scopeOpen ? "chevron-up" : "chevron-down"}
+              size={13}
+              color={Colors.textSecondary}
+            />
+          </TouchableOpacity>
+        ) : (
+          <Text style={styles.scopeTitleText}>All Issues</Text>
+        )}
+
+        <View style={styles.headerSpacer} />
+
         <TouchableOpacity
-          style={styles.addBtn}
-          onPress={browseMode === "projects" ? () => openProjectEditor(null) : openCreateSheet}
+          style={styles.headerBtn}
+          onPress={openCreateSheet}
           activeOpacity={0.82}
         >
-          <Ionicons name="add" size={18} color={Colors.textPrimary} />
+          <Ionicons name="add" size={22} color={Colors.textPrimary} />
         </TouchableOpacity>
       </View>
 
-      <View style={styles.modeBar}>
-        <ModeChip
-          label="Issues"
-          count={browseCounts.issues}
-          active={browseMode === "issues"}
-          onPress={() => setBrowseMode("issues")}
-        />
-        <ModeChip
-          label="Projects"
-          count={browseCounts.projects}
-          active={browseMode === "projects"}
-          onPress={() => setBrowseMode("projects")}
-        />
-      </View>
-
-      {browseMode === "issues" ? (
+      {/* Inline scope dropdown — overlays content below header */}
+      {scopeOpen ? (
         <>
-          {selectedProject ? (
-            <View style={styles.scopeBar}>
-              <TouchableOpacity
-                style={styles.scopeChip}
-                onPress={() => setBrowseMode("projects")}
-                activeOpacity={0.82}
-              >
-                <Ionicons
-                  name="folder-open-outline"
-                  size={14}
-                  color={Colors.accent}
-                />
-                <Text style={styles.scopeChipText}>{selectedProject.name}</Text>
-              </TouchableOpacity>
-
-              <TouchableOpacity
-                style={styles.scopeClear}
-                onPress={() => setProjectFilterId(null)}
-                activeOpacity={0.82}
-              >
-                <Ionicons name="close" size={14} color={Colors.textSecondary} />
-              </TouchableOpacity>
-            </View>
-          ) : null}
-
-          <StatusFilterBar
-            selected={filter}
-            onSelect={handleFilterChange}
-            counts={filterCounts}
+          <Pressable
+            style={styles.scopeDropdownBackdrop}
+            onPress={() => setScopeOpen(false)}
           />
+          <View style={styles.scopeDropdown}>
+            <TouchableOpacity
+              style={styles.scopeDropdownRow}
+              onPress={() => { selectProject(null); setScopeOpen(false); }}
+              activeOpacity={0.82}
+            >
+              <Text style={[styles.scopeDropdownLabel, !projectFilterId && styles.scopeDropdownLabelActive]}>
+                All issues
+              </Text>
+              {!projectFilterId ? (
+                <Ionicons name="checkmark" size={14} color={Colors.accent} />
+              ) : null}
+            </TouchableOpacity>
 
-          {totalVisibleItems === 0 ? (
-            <View style={styles.emptyContainer}>
-              <Text style={styles.emptyIcon}>◇</Text>
-              <Text style={styles.emptyText}>{emptyIssueCopy.title}</Text>
-              <Text style={styles.emptySubtext}>{emptyIssueCopy.body}</Text>
-              {connectedServers.length > 0 ? (
+            {taskState.projects.length > 0 ? (
+              <View style={styles.scopeDropdownDivider} />
+            ) : null}
+
+            {taskState.projects.map((project) => {
+              const active = projectFilterId === project.id;
+              return (
                 <TouchableOpacity
-                  style={styles.emptyActionBtn}
-                  onPress={openCreateSheet}
+                  key={project.id}
+                  style={styles.scopeDropdownRow}
+                  onPress={() => { selectProject(project.id); setScopeOpen(false); }}
+                  onLongPress={() => {
+                    setScopeOpen(false);
+                    const item = projectItems.find((i) => i.project.id === project.id);
+                    if (item) handleProjectActions(item);
+                  }}
                   activeOpacity={0.82}
                 >
-                  <Text style={styles.emptyActionText}>New Issue</Text>
+                  <Text
+                    style={[styles.scopeDropdownLabel, active && styles.scopeDropdownLabelActive]}
+                    numberOfLines={1}
+                  >
+                    {project.name}
+                  </Text>
+                  {active ? (
+                    <Ionicons name="checkmark" size={14} color={Colors.accent} />
+                  ) : null}
                 </TouchableOpacity>
-              ) : null}
-            </View>
-          ) : (
-            <SectionList
-              sections={sections}
-              keyExtractor={(item) => item.key}
-              stickySectionHeadersEnabled={false}
-              contentContainerStyle={styles.listContent}
-              renderSectionHeader={({ section }) =>
-                showSectionHeaders ? (
-                  <View style={styles.sectionHeader}>
-                    <Text style={styles.sectionTitle}>{section.title}</Text>
-                    <Text style={styles.sectionCount}>
-                      {countsBySection[section.key]}
-                    </Text>
-                  </View>
-                ) : null
-              }
-              renderItem={({ item }) => (
-                <IssueRow
-                  task={item.task}
-                  run={item.run}
-                  metaText={item.metaText}
-                  secondaryText={item.secondaryText}
-                  statusLabel={item.statusLabel}
-                  statusTone={item.statusTone}
-                  hasLiveSession={item.hasLiveSession}
-                  sessionIsLive={item.sessionIsLive}
-                  runCount={item.runCount}
-                  onPress={() => openIssue(item.task)}
-                  onLongPress={() => handleIssueLongPress(item)}
-                />
-              )}
-              ItemSeparatorComponent={() => <View style={styles.rowDivider} />}
-              SectionSeparatorComponent={() =>
-                showSectionHeaders ? <View style={styles.sectionSpacer} /> : null
-              }
-            />
-          )}
+              );
+            })}
+
+            <View style={styles.scopeDropdownDivider} />
+            <TouchableOpacity
+              style={styles.scopeDropdownRow}
+              onPress={() => { setScopeOpen(false); openProjectEditor(null); }}
+              activeOpacity={0.82}
+            >
+              <Ionicons name="add" size={14} color={Colors.textSecondary} style={{ marginRight: 8 }} />
+              <Text style={styles.scopeDropdownLabel}>New project</Text>
+            </TouchableOpacity>
+          </View>
         </>
-      ) : projectItems.length === 0 ? (
+      ) : null}
+
+      {/* Status filter bar */}
+      <StatusFilterBar
+        selected={filter}
+        onSelect={handleFilterChange}
+        counts={filterCounts}
+      />
+
+      {/* Content — direct child of SafeAreaView, no wrapper */}
+      {totalVisibleItems === 0 ? (
         <View style={styles.emptyContainer}>
-          <Text style={styles.emptyIcon}>▣</Text>
-          <Text style={styles.emptyText}>{emptyProjectCopy.title}</Text>
-          <Text style={styles.emptySubtext}>{emptyProjectCopy.body}</Text>
+          <Text style={styles.emptyIcon}>◇</Text>
+          <Text style={styles.emptyText}>{emptyIssueCopy.title}</Text>
+          <Text style={styles.emptySubtext}>{emptyIssueCopy.body}</Text>
           {connectedServers.length > 0 ? (
             <TouchableOpacity
               style={styles.emptyActionBtn}
-              onPress={() => openProjectEditor(null)}
+              onPress={openCreateSheet}
               activeOpacity={0.82}
             >
-              <Text style={styles.emptyActionText}>New Project</Text>
+              <Text style={styles.emptyActionText}>New Issue</Text>
             </TouchableOpacity>
           ) : null}
         </View>
       ) : (
-        <FlatList
-          data={projectItems}
+        <SectionList
+          style={styles.list}
+          sections={sections}
           keyExtractor={(item) => item.key}
+          stickySectionHeadersEnabled={false}
           contentContainerStyle={styles.listContent}
+          renderSectionHeader={({ section }) =>
+            showSectionHeaders ? (
+              <View style={styles.sectionHeader}>
+                <Text style={styles.sectionTitle}>{section.title}</Text>
+                <Text style={styles.sectionCount}>
+                  {countsBySection[section.key]}
+                </Text>
+              </View>
+            ) : null
+          }
           renderItem={({ item }) => (
-            <ProjectRow
-              name={item.project.name}
-              meta={item.metaText}
-              issueCount={item.issueCount}
-              activeCount={item.activeCount}
-              backlogCount={item.backlogCount}
-              doneCount={item.doneCount}
-              onPress={() => {
-                setProjectFilterId(item.project.id);
-                setBrowseMode("issues");
-                setFilter("all");
-                setSelectedServerId(item.project.serverId);
-              }}
-              onMore={() => handleProjectActions(item)}
+            <IssueRow
+              task={item.task}
+              run={item.run}
+              metaText={item.metaText}
+              secondaryText={item.secondaryText}
+              statusLabel={item.statusLabel}
+              statusTone={item.statusTone}
+              hasLiveSession={item.hasLiveSession}
+              sessionIsLive={item.sessionIsLive}
+              runCount={item.runCount}
+              onPress={() => openIssue(item.task)}
+              onLongPress={() => handleIssueLongPress(item)}
             />
           )}
-          ItemSeparatorComponent={() => <View style={styles.projectDivider} />}
+          ItemSeparatorComponent={() => <View style={styles.rowDivider} />}
+          SectionSeparatorComponent={() =>
+            showSectionHeaders ? <View style={styles.sectionSpacer} /> : null
+          }
         />
       )}
 
@@ -848,159 +851,95 @@ export default function IssuesScreen() {
   );
 }
 
-function ModeChip({
-  label,
-  count,
-  active,
-  onPress,
-}: {
-  label: string;
-  count: number;
-  active: boolean;
-  onPress: () => void;
-}) {
-  return (
-    <TouchableOpacity
-      style={[styles.modeChip, active && styles.modeChipActive]}
-      onPress={onPress}
-      activeOpacity={0.82}
-    >
-      <Text style={[styles.modeChipText, active && styles.modeChipTextActive]}>
-        {label}
-      </Text>
-      {count > 0 ? (
-        <View style={[styles.modeCount, active && styles.modeCountActive]}>
-          <Text
-            style={[styles.modeCountText, active && styles.modeCountTextActive]}
-          >
-            {count}
-          </Text>
-        </View>
-      ) : null}
-    </TouchableOpacity>
-  );
-}
 
 const styles = StyleSheet.create({
   container: {
     flex: 1,
     backgroundColor: Colors.bgPrimary,
   },
+  // ── Header ───────────────────────────────────────────────────────────
   header: {
     flexDirection: "row",
-    justifyContent: "space-between",
     alignItems: "center",
-    paddingHorizontal: 20,
-    paddingTop: 8,
-    paddingBottom: 12,
+    paddingHorizontal: 16,
+    paddingTop: 4,
+    paddingBottom: 4,
   },
-  title: {
-    color: Colors.textPrimary,
-    fontSize: 22,
-    lineHeight: 28,
-    fontFamily: Typography.uiFontMedium,
-    letterSpacing: 0.3,
-  },
-  addBtn: {
-    width: 34,
-    height: 34,
-    borderRadius: 17,
-    alignItems: "center",
-    justifyContent: "center",
-    backgroundColor: "rgba(255,255,255,0.04)",
-    borderWidth: StyleSheet.hairlineWidth,
-    borderColor: "rgba(255,255,255,0.08)",
-    marginTop: 2,
-  },
-  modeBar: {
-    flexDirection: "row",
-    gap: 8,
-    paddingHorizontal: 20,
-    paddingBottom: 10,
-  },
-  modeChip: {
-    minHeight: 36,
-    paddingLeft: 13,
-    paddingRight: 8,
-    borderRadius: 999,
+  // Scope title doubles as page title — one element, no redundant label
+  scopeTitle: {
     flexDirection: "row",
     alignItems: "center",
-    gap: 8,
-    backgroundColor: "rgba(255,255,255,0.04)",
-    borderWidth: StyleSheet.hairlineWidth,
-    borderColor: "rgba(255,255,255,0.08)",
+    gap: 5,
+    paddingVertical: 6,
+    flexShrink: 1,
   },
-  modeChipActive: {
-    backgroundColor: "rgba(91,157,255,0.12)",
-    borderColor: "rgba(91,157,255,0.4)",
-  },
-  modeChipText: {
-    color: Colors.textSecondary,
-    fontSize: 12,
-    fontFamily: Typography.uiFontMedium,
-  },
-  modeChipTextActive: {
+  scopeTitleText: {
     color: Colors.textPrimary,
+    fontSize: 17,
+    fontFamily: Typography.uiFontMedium,
+    flexShrink: 1,
   },
-  modeCount: {
-    minWidth: 22,
-    height: 22,
-    paddingHorizontal: 6,
-    borderRadius: 11,
+  headerSpacer: {
+    flex: 1,
+  },
+  headerBtn: {
+    width: 32,
+    height: 32,
     alignItems: "center",
     justifyContent: "center",
-    backgroundColor: "rgba(255,255,255,0.06)",
   },
-  modeCountActive: {
-    backgroundColor: "rgba(91,157,255,0.18)",
+  // ── Scope dropdown ────────────────────────────────────────────────────
+  scopeDropdownBackdrop: {
+    ...StyleSheet.absoluteFillObject,
+    top: 46,
+    zIndex: 49,
   },
-  modeCountText: {
-    color: Colors.textSecondary,
-    fontSize: 11,
-    fontFamily: Typography.terminalFont,
+  scopeDropdown: {
+    position: "absolute",
+    top: 46,
+    left: 0,
+    right: 0,
+    zIndex: 50,
+    backgroundColor: Colors.bgSurface,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: "rgba(255,255,255,0.07)",
+    paddingVertical: 4,
   },
-  modeCountTextActive: {
+  scopeDropdownRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    paddingHorizontal: 18,
+    minHeight: 44,
+    gap: 10,
+  },
+  scopeDropdownLabel: {
+    flex: 1,
+    color: Colors.textPrimary,
+    fontSize: 14,
+    fontFamily: Typography.uiFontMedium,
+  },
+  scopeDropdownLabelActive: {
     color: Colors.accent,
   },
-  scopeBar: {
-    paddingHorizontal: 20,
-    paddingBottom: 10,
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 8,
+  scopeDropdownDivider: {
+    height: StyleSheet.hairlineWidth,
+    backgroundColor: "rgba(255,255,255,0.06)",
+    marginHorizontal: 18,
+    marginVertical: 2,
   },
-  scopeChip: {
-    minHeight: 32,
-    paddingHorizontal: 12,
-    borderRadius: 16,
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 8,
-    backgroundColor: "rgba(91,157,255,0.12)",
-    borderWidth: StyleSheet.hairlineWidth,
-    borderColor: "rgba(91,157,255,0.32)",
-  },
-  scopeChipText: {
-    color: Colors.textPrimary,
-    fontSize: 12,
-    fontFamily: Typography.uiFontMedium,
-  },
-  scopeClear: {
-    width: 28,
-    height: 28,
-    borderRadius: 14,
-    alignItems: "center",
-    justifyContent: "center",
-    backgroundColor: "rgba(255,255,255,0.04)",
+  // ── Issue list ────────────────────────────────────────────────────────
+  list: {
+    flex: 1,
   },
   listContent: {
-    paddingHorizontal: 20,
+    paddingHorizontal: 16,
+    paddingTop: 2,
     paddingBottom: 32,
   },
   sectionHeader: {
-    minHeight: 28,
+    minHeight: 22,
     marginTop: 4,
-    marginBottom: 6,
+    marginBottom: 2,
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "space-between",
@@ -1009,44 +948,42 @@ const styles = StyleSheet.create({
   sectionTitle: {
     flex: 1,
     color: Colors.textSecondary,
-    fontSize: 12,
+    fontSize: 11,
     fontFamily: Typography.uiFontMedium,
     textTransform: "uppercase",
-    letterSpacing: 0.4,
+    letterSpacing: 0.5,
+    opacity: 0.7,
   },
   sectionCount: {
     color: Colors.textSecondary,
     fontSize: 11,
     fontFamily: Typography.terminalFont,
+    opacity: 0.7,
   },
   rowDivider: {
     height: StyleSheet.hairlineWidth,
-    marginLeft: 31,
-    backgroundColor: "rgba(255,255,255,0.06)",
-  },
-  projectDivider: {
-    height: StyleSheet.hairlineWidth,
-    marginLeft: 0,
-    backgroundColor: "rgba(255,255,255,0.06)",
+    marginLeft: 29,
+    backgroundColor: "rgba(255,255,255,0.05)",
   },
   sectionSpacer: {
-    height: 8,
+    height: 6,
   },
+  // ── Empty state ───────────────────────────────────────────────────────
   emptyContainer: {
     flex: 1,
     justifyContent: "center",
     alignItems: "center",
-    paddingHorizontal: 28,
+    paddingHorizontal: 32,
   },
   emptyIcon: {
-    fontSize: 44,
+    fontSize: 32,
     color: Colors.textSecondary,
-    marginBottom: 16,
-    opacity: 0.6,
+    marginBottom: 14,
+    opacity: 0.4,
   },
   emptyText: {
     color: Colors.textPrimary,
-    fontSize: 17,
+    fontSize: 15,
     textAlign: "center",
     fontFamily: Typography.uiFontMedium,
   },
@@ -1055,15 +992,16 @@ const styles = StyleSheet.create({
     fontSize: 13,
     lineHeight: 19,
     fontFamily: Typography.uiFont,
-    marginTop: 8,
-    maxWidth: 300,
+    marginTop: 6,
+    maxWidth: 260,
     textAlign: "center",
+    opacity: 0.7,
   },
   emptyActionBtn: {
-    marginTop: 22,
-    paddingHorizontal: 20,
-    minHeight: 40,
-    borderRadius: 12,
+    marginTop: 20,
+    paddingHorizontal: 18,
+    minHeight: 36,
+    borderRadius: 8,
     alignItems: "center",
     justifyContent: "center",
     backgroundColor: Colors.accent,

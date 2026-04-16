@@ -1,6 +1,6 @@
 const fs = require('fs');
 const path = require('path');
-const { expo: baseConfig } = require('./app.json');
+const { expo: baseConfig } = require('./app.base.json');
 
 loadEnvFile(path.join(__dirname, '.env.local'));
 

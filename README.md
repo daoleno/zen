@@ -67,8 +67,8 @@ cloudflared tunnel --url http://127.0.0.1:9876
 ### 3. Run the mobile app
 
 ```bash
-cd app
 bun install
+cd app
 npx expo start
 ```
 
@@ -123,6 +123,7 @@ go run ./cmd/zen-dev -advertise-url https://your-host.example/ws  # Watch, rebui
 
 ### App
 ```bash
+bun install              # Workspace install from repo root
 cd app
 npx expo start          # Dev server
 npx expo export --platform android  # Verify build

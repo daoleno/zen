@@ -19,92 +19,94 @@ interface Props {
 
 export function StatusFilterBar({ selected, onSelect, counts }: Props) {
   return (
-    <ScrollView
-      horizontal
-      showsHorizontalScrollIndicator={false}
-      style={styles.container}
-      contentContainerStyle={styles.content}
-    >
-      {FILTERS.map(filter => {
-        const count = counts?.[filter.key];
-        const active = filter.key === selected;
-        const shouldShowCount = typeof count === 'number' && count > 0;
+    // Outer View with explicit height is the key — ScrollView alone can expand on Android
+    <View style={styles.container}>
+      <ScrollView
+        horizontal
+        showsHorizontalScrollIndicator={false}
+        style={styles.scroll}
+        contentContainerStyle={styles.content}
+      >
+        {FILTERS.map(filter => {
+          const count = counts?.[filter.key];
+          const active = filter.key === selected;
+          const shouldShowCount = typeof count === 'number' && count > 0;
 
-        return (
-          <TouchableOpacity
-            key={filter.key}
-            style={[styles.chip, active && styles.chipActive]}
-            onPress={() => onSelect(filter.key)}
-            activeOpacity={0.82}
-          >
-            <Text style={[styles.chipText, active && styles.chipTextActive]}>
-              {filter.label}
-            </Text>
-            {shouldShowCount ? (
-              <View style={[styles.countPill, active && styles.countPillActive]}>
-                <Text style={[styles.countText, active && styles.countTextActive]}>
-                  {count}
+          return (
+            <TouchableOpacity
+              key={filter.key}
+              style={styles.tab}
+              onPress={() => onSelect(filter.key)}
+              activeOpacity={0.82}
+            >
+              <View style={styles.tabInner}>
+                <Text style={[styles.tabLabel, active && styles.tabLabelActive]}>
+                  {filter.label}
                 </Text>
+                {shouldShowCount ? (
+                  <Text style={[styles.tabCount, active && styles.tabCountActive]}>
+                    {count}
+                  </Text>
+                ) : null}
               </View>
-            ) : null}
-          </TouchableOpacity>
-        );
-      })}
-    </ScrollView>
+              {active ? <View style={styles.tabIndicator} /> : null}
+            </TouchableOpacity>
+          );
+        })}
+      </ScrollView>
+    </View>
   );
 }
 
 const styles = StyleSheet.create({
   container: {
-    maxHeight: 42,
-    marginBottom: 10,
+    height: 38,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: 'rgba(255,255,255,0.07)',
+    overflow: 'hidden',
+  },
+  scroll: {
+    flex: 1,
   },
   content: {
-    paddingHorizontal: 20,
-    gap: 8,
+    paddingHorizontal: 8,
+    alignItems: 'center',
   },
-  chip: {
-    minHeight: 36,
-    paddingLeft: 13,
-    paddingRight: 8,
-    borderRadius: 999,
+  tab: {
+    paddingHorizontal: 12,
+    paddingTop: 2,
+    paddingBottom: 0,
+    position: 'relative',
+  },
+  tabInner: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 8,
-    backgroundColor: 'rgba(255,255,255,0.04)',
-    borderWidth: StyleSheet.hairlineWidth,
-    borderColor: 'rgba(255,255,255,0.08)',
+    gap: 6,
+    paddingBottom: 10,
   },
-  chipActive: {
-    backgroundColor: 'rgba(91,157,255,0.12)',
-    borderColor: 'rgba(91,157,255,0.4)',
-  },
-  chipText: {
+  tabLabel: {
     color: Colors.textSecondary,
     fontSize: 12,
     fontFamily: Typography.uiFontMedium,
   },
-  chipTextActive: {
+  tabLabelActive: {
     color: Colors.textPrimary,
   },
-  countPill: {
-    minWidth: 22,
-    height: 22,
-    paddingHorizontal: 6,
-    borderRadius: 11,
-    alignItems: 'center',
-    justifyContent: 'center',
-    backgroundColor: 'rgba(255,255,255,0.06)',
-  },
-  countPillActive: {
-    backgroundColor: 'rgba(91,157,255,0.18)',
-  },
-  countText: {
+  tabCount: {
     color: Colors.textSecondary,
     fontSize: 11,
     fontFamily: Typography.terminalFont,
   },
-  countTextActive: {
+  tabCountActive: {
     color: Colors.accent,
+  },
+  tabIndicator: {
+    position: 'absolute',
+    bottom: 0,
+    left: 12,
+    right: 12,
+    height: 1.5,
+    borderRadius: 1,
+    backgroundColor: Colors.accent,
   },
 });

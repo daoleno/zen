@@ -62,11 +62,17 @@ import {
   TerminalSurfaceHandle,
 } from "../../components/terminal/TerminalSurface";
 import { TerminalAccessoryBar } from "../../components/terminal/TerminalAccessoryBar";
+import { GitDiffSheet } from "../../components/terminal/GitDiffSheet";
 import { AgentKindIcon } from "../../components/terminal/AgentKindIcon";
 import { NewTerminalSheet } from "../../components/terminal/NewTerminalSheet";
 import { CreateIssueSheet } from "../../components/issue/CreateIssueSheet";
 import { TaskPickerSheet } from "../../components/issue/TaskPickerSheet";
 import { presentAgent } from "../../services/agentPresentation";
+import {
+  buildGitDiffChipLabel,
+  type GitDiffPatchPayload,
+  type GitDiffStatusSnapshot,
+} from "../../services/gitDiff";
 
 const EMPTY_TABS: StoredTerminalTabs = { order: [], pinned: [] };
 const MENU_POPOVER_WIDTH = 168;
@@ -125,6 +131,20 @@ export default function TerminalScreen() {
   const [accessoryHeight, setAccessoryHeight] = useState(68);
   const [ctrlArmed, setCtrlArmed] = useState(false);
   const [newTerminalVisible, setNewTerminalVisible] = useState(false);
+  const [gitDiffVisible, setGitDiffVisible] = useState(false);
+  const [gitDiffStatus, setGitDiffStatus] =
+    useState<GitDiffStatusSnapshot | null>(null);
+  const [gitDiffLoading, setGitDiffLoading] = useState(false);
+  const [gitDiffError, setGitDiffError] = useState<string | null>(null);
+  const [gitDiffExpandedPath, setGitDiffExpandedPath] = useState<string | null>(
+    null,
+  );
+  const [gitDiffPatchLoadingPath, setGitDiffPatchLoadingPath] = useState<
+    string | null
+  >(null);
+  const [gitDiffPatchByPath, setGitDiffPatchByPath] = useState<
+    Record<string, GitDiffPatchPayload | undefined>
+  >({});
   const [creatingSession, setCreatingSession] = useState(false);
   const [showTerminalFallback, setShowTerminalFallback] = useState(
     !Boolean(sessionKey && serverId && agentId),
@@ -149,6 +169,7 @@ export default function TerminalScreen() {
   const reconnectFallbackTimerRef = useRef<ReturnType<
     typeof setTimeout
   > | null>(null);
+  const gitDiffRequestRef = useRef(0);
 
   const agentByKey = useMemo(
     () => new Map(state.agents.map((agent) => [agent.key, agent])),
@@ -166,6 +187,7 @@ export default function TerminalScreen() {
     [hydratedServerIds],
   );
   const agent = sessionKey ? agentByKey.get(sessionKey) : undefined;
+  const gitDiffCwd = typeof agent?.cwd === "string" ? agent.cwd.trim() : "";
   const activeRunForSession = useMemo(
     () => taskState.runs.find(run =>
       run.serverId === serverId
@@ -258,6 +280,72 @@ export default function TerminalScreen() {
     ].filter(Boolean);
     return parts.join("\n");
   }, [agent?.cwd, agent?.summary]);
+  const gitDiffQueryEnabled = Boolean(
+    hasTerminalRoute && screenFocused && serverId && agentId && gitDiffCwd,
+  );
+  const refreshGitDiff = useCallback(
+    async (showLoading: boolean = true) => {
+      if (
+        !serverId
+        || !agentId
+        || connectionState !== "connected"
+        || !gitDiffQueryEnabled
+      ) {
+        setGitDiffStatus(null);
+        setGitDiffError(null);
+        setGitDiffPatchByPath({});
+        setGitDiffExpandedPath(null);
+        setGitDiffPatchLoadingPath(null);
+        if (showLoading) {
+          setGitDiffLoading(false);
+        }
+        return;
+      }
+
+      const requestId = gitDiffRequestRef.current + 1;
+      gitDiffRequestRef.current = requestId;
+
+      if (showLoading) {
+        setGitDiffLoading(true);
+      }
+
+      try {
+        const nextStatus = await wsClient.getGitDiffStatus(serverId, {
+          targetId: agentId,
+          cwd: gitDiffCwd,
+        });
+        if (gitDiffRequestRef.current !== requestId) return;
+
+        setGitDiffStatus(nextStatus);
+        setGitDiffError(null);
+        setGitDiffPatchByPath((previous) => {
+          if (!nextStatus.available) {
+            return {};
+          }
+          const allowed = new Set(nextStatus.files.map((file) => file.path));
+          return Object.fromEntries(
+            Object.entries(previous).filter(([path]) => allowed.has(path)),
+          );
+        });
+        setGitDiffExpandedPath((previous) => {
+          if (!previous || !nextStatus.available) {
+            return null;
+          }
+          return nextStatus.files.some((file) => file.path === previous)
+            ? previous
+            : null;
+        });
+      } catch (error: any) {
+        if (gitDiffRequestRef.current !== requestId) return;
+        setGitDiffError(error?.message || "Could not inspect local git changes.");
+      } finally {
+        if (showLoading && gitDiffRequestRef.current === requestId) {
+          setGitDiffLoading(false);
+        }
+      }
+    },
+    [agentId, connectionState, gitDiffCwd, gitDiffQueryEnabled, serverId],
+  );
 
   const syncActiveTerminal = React.useCallback(
     (appState: AppStateStatus = "active") => {
@@ -347,6 +435,17 @@ export default function TerminalScreen() {
   }, [sessionKey]);
 
   useEffect(() => {
+    setGitDiffVisible(false);
+  }, [sessionKey]);
+
+  useEffect(() => {
+    setGitDiffPatchByPath({});
+    setGitDiffExpandedPath(null);
+    setGitDiffPatchLoadingPath(null);
+    setGitDiffError(null);
+  }, [agentId, gitDiffCwd, serverId]);
+
+  useEffect(() => {
     if (hydratedServerIds.length === 0) return;
 
     let cancelled = false;
@@ -368,9 +467,7 @@ export default function TerminalScreen() {
 
   useEffect(() => {
     const handleShow = (event: any) => {
-      if (Platform.OS === "android") {
-        keyboardHeightRef.current = event?.endCoordinates?.height ?? 0;
-      }
+      keyboardHeightRef.current = event?.endCoordinates?.height ?? 0;
       setKeyboardVisible(true);
     };
     const handleHide = () => {
@@ -460,6 +557,30 @@ export default function TerminalScreen() {
     };
   }, [connectionIssue, connectionState, hasTerminalRoute]);
 
+  useEffect(() => {
+    if (!gitDiffQueryEnabled || connectionState !== "connected") {
+      gitDiffRequestRef.current += 1;
+      setGitDiffStatus(null);
+      setGitDiffError(null);
+      setGitDiffLoading(false);
+      setGitDiffExpandedPath(null);
+      setGitDiffPatchLoadingPath(null);
+      setGitDiffPatchByPath({});
+      return;
+    }
+
+    void refreshGitDiff(true);
+
+    const interval = setInterval(() => {
+      void refreshGitDiff(false);
+    }, gitDiffVisible ? 7000 : 15000);
+
+    return () => {
+      gitDiffRequestRef.current += 1;
+      clearInterval(interval);
+    };
+  }, [connectionState, gitDiffQueryEnabled, gitDiffVisible, refreshGitDiff]);
+
   const tabs = useMemo(() => {
     const order = buildDisplayTabOrder(sessionKey, terminalTabs);
     return order
@@ -532,17 +653,63 @@ export default function TerminalScreen() {
     [menuAnchor, windowWidth],
   );
   const accessoryVisible = canRenderTerminal && screenFocused;
-  const androidAccessoryDock = Platform.OS === "android";
-  const accessoryBottomOffset = androidAccessoryDock && keyboardVisible
-    ? androidKeyboardInset
-    : 0;
-  const outputBottomInset = androidAccessoryDock && accessoryVisible
+  // Both platforms use absolute dock — iOS uses keyboard event height directly,
+  // Android uses the window-resize calculation (handles both adjustResize and adjustPan).
+  // Add insets.bottom so the bar sits above the system gesture bar, and a fixed 6px gap
+  // above the keyboard so the bar never looks flush / overlapping with the keyboard top edge.
+  const accessoryBottomOffset = Platform.OS === "ios"
+    ? (keyboardVisible ? keyboardHeightRef.current : insets.bottom)
+    : (keyboardVisible ? androidKeyboardInset + insets.bottom + 6 : insets.bottom);
+  const outputBottomInset = accessoryVisible
     ? accessoryHeight + accessoryBottomOffset
     : 0;
 
   const closeMenu = () => {
     setMenuVisible(false);
     setMenuAnchor(null);
+  };
+
+  const openGitDiff = () => {
+    closeMenu();
+    setGitDiffVisible(true);
+    void refreshGitDiff(true);
+  };
+
+  const handleSelectGitDiffPath = async (path: string) => {
+    const nextPath = path.trim();
+    if (!nextPath) return;
+
+    if (gitDiffExpandedPath === nextPath) {
+      setGitDiffExpandedPath(null);
+      return;
+    }
+
+    setGitDiffExpandedPath(nextPath);
+    if (gitDiffPatchByPath[nextPath] || !serverId || !agentId) {
+      return;
+    }
+
+    setGitDiffPatchLoadingPath(nextPath);
+    try {
+      const payload = await wsClient.getGitDiffPatch(serverId, {
+        targetId: agentId,
+        cwd: gitDiffCwd,
+        path: nextPath,
+      });
+      setGitDiffPatchByPath((previous) => ({
+        ...previous,
+        [nextPath]: payload,
+      }));
+    } catch (error: any) {
+      Alert.alert(
+        "Could not load patch",
+        error?.message || "Try refreshing the git diff first.",
+      );
+    } finally {
+      setGitDiffPatchLoadingPath((previous) =>
+        previous === nextPath ? null : previous,
+      );
+    }
   };
 
   const openRenameModal = () => {
@@ -702,6 +869,38 @@ export default function TerminalScreen() {
   const handleCtrlArmedChange = useCallback((next: boolean) => {
     setCtrlArmed(next);
   }, []);
+
+  const gitDiffChip = useMemo(() => {
+    if (!gitDiffQueryEnabled) {
+      return null;
+    }
+    if (gitDiffStatus?.reason === "not_git_repo") {
+      return null;
+    }
+
+    const tone: "clean" | "dirty" | "error" | "loading" =
+      gitDiffLoading && !gitDiffStatus
+        ? "loading"
+        : gitDiffStatus?.available
+          ? gitDiffStatus.clean
+            ? "clean"
+            : "dirty"
+          : gitDiffError
+            ? "error"
+            : "loading";
+
+    return {
+      label: buildGitDiffChipLabel(gitDiffStatus, gitDiffLoading),
+      tone,
+      onPress: openGitDiff,
+    };
+  }, [
+    gitDiffError,
+    gitDiffLoading,
+    gitDiffQueryEnabled,
+    gitDiffStatus,
+    openGitDiff,
+  ]);
 
   const createTerminal = async (input: {
     cwd: string;
@@ -901,12 +1100,8 @@ export default function TerminalScreen() {
           }}
           style={[
             styles.inputShell,
-            androidAccessoryDock ? styles.inputShellDock : null,
-            {
-              bottom: androidAccessoryDock ? accessoryBottomOffset : undefined,
-              paddingBottom: keyboardVisible ? 8 : Math.max(insets.bottom + 8, 12),
-              marginBottom: androidAccessoryDock ? 0 : keyboardVisible ? 4 : 0,
-            },
+            styles.inputShellDock,
+            { bottom: accessoryBottomOffset },
           ]}
         >
           <TerminalAccessoryBar
@@ -914,6 +1109,7 @@ export default function TerminalScreen() {
             serverUrl={server?.url || ""}
             daemonId={server?.daemonId || ""}
             theme={terminalTheme}
+            gitDiff={gitDiffChip}
             ctrlArmed={ctrlArmed}
             onCtrlArmedChange={handleCtrlArmedChange}
           />
@@ -930,24 +1126,15 @@ export default function TerminalScreen() {
       <View
         style={[
           styles.topBar,
-          {
-            backgroundColor: chromeColors.surface,
-            borderBottomColor: chromeColors.border,
-          },
+          { backgroundColor: terminalTheme.background },
         ]}
       >
         <TouchableOpacity
           onPress={goToInbox}
-          style={[
-            styles.chromeButton,
-            {
-              backgroundColor: chromeColors.surfaceMuted,
-              borderColor: chromeColors.border,
-            },
-          ]}
-          activeOpacity={0.84}
+          style={styles.chromeButton}
+          activeOpacity={0.75}
         >
-          <Ionicons name="chevron-back" size={22} color={chromeColors.text} />
+          <Ionicons name="chevron-back" size={20} color={chromeColors.textMuted} />
         </TouchableOpacity>
 
         <ScrollView
@@ -962,18 +1149,10 @@ export default function TerminalScreen() {
               key={tab.id}
               style={[
                 styles.tabPill,
-                {
-                  backgroundColor: chromeColors.surfaceMuted,
-                  borderColor: chromeColors.border,
-                },
                 tab.active && [
                   styles.tabPillActive,
-                  {
-                    backgroundColor: chromeColors.surfaceActive,
-                    borderColor: chromeColors.borderStrong,
-                  },
+                  { backgroundColor: chromeColors.surfaceMuted },
                 ],
-                tab.pinned && [styles.tabPillPinned, { shadowColor: chromeColors.accent }],
               ]}
               onLayout={(e) => {
                 const { x, width } = e.nativeEvent.layout;
@@ -985,28 +1164,30 @@ export default function TerminalScreen() {
                 onPress={() => openAgentTab(tab.id)}
                 activeOpacity={0.84}
               >
-                <AgentKindIcon kind={tab.kind} size={13} />
-                <Text
-                  style={[
-                    styles.tabLabel,
-                    { color: tab.active ? chromeColors.text : chromeColors.textMuted },
-                    tab.active && styles.tabLabelActive,
-                  ]}
-                  numberOfLines={1}
-                >
-                  {tab.name}
-                </Text>
+                <AgentKindIcon kind={tab.kind} size={10} />
+                <View style={styles.tabLabelWrapper}>
+                  <Text
+                    style={[
+                      styles.tabLabel,
+                      { color: tab.active ? chromeColors.text : chromeColors.textSubtle },
+                    ]}
+                    numberOfLines={1}
+                  >
+                    {tab.name}
+                  </Text>
+                </View>
                 {tab.pinned ? (
                   <Ionicons
                     name="bookmark"
-                    size={12}
-                    color={tab.active ? chromeColors.text : chromeColors.textSubtle}
+                    size={10}
+                    color={tab.active ? chromeColors.textMuted : chromeColors.textSubtle}
                   />
                 ) : null}
                 <View
                   style={[
                     styles.tabStatusDot,
                     { backgroundColor: statusColor(tab.status) },
+                    !tab.active && styles.tabStatusDotInactive,
                   ]}
                 />
               </TouchableOpacity>
@@ -1016,12 +1197,12 @@ export default function TerminalScreen() {
                   <TouchableOpacity
                     style={styles.tabMenuButton}
                     onPress={openMenu}
-                    activeOpacity={0.84}
+                    activeOpacity={0.75}
                   >
                     <Ionicons
                       name="ellipsis-vertical"
-                      size={17}
-                      color={chromeColors.text}
+                      size={15}
+                      color={chromeColors.textMuted}
                     />
                   </TouchableOpacity>
                 </View>
@@ -1032,31 +1213,16 @@ export default function TerminalScreen() {
 
         <TouchableOpacity
           onPress={() => setPickerVisible(true)}
-          style={[
-            styles.chromeButton,
-            {
-              backgroundColor: chromeColors.surfaceMuted,
-              borderColor: chromeColors.border,
-            },
-          ]}
-          activeOpacity={0.84}
+          style={styles.chromeButton}
+          activeOpacity={0.75}
         >
-          <Ionicons name="add" size={22} color={chromeColors.text} />
+          <Ionicons name="add" size={20} color={chromeColors.textMuted} />
         </TouchableOpacity>
       </View>
 
       <View style={[styles.terminalStage, { backgroundColor: terminalTheme.background }]}>
         <View style={[styles.terminalShell, { backgroundColor: terminalTheme.background }]}>
-          {Platform.OS === "ios" ? (
-            <KeyboardAvoidingView
-              style={styles.terminalContent}
-              behavior="padding"
-            >
-              {terminalViewport}
-            </KeyboardAvoidingView>
-          ) : (
-            <View style={styles.terminalContent}>{terminalViewport}</View>
-          )}
+          <View style={styles.terminalContent}>{terminalViewport}</View>
         </View>
       </View>
 
@@ -1190,6 +1356,14 @@ export default function TerminalScreen() {
               destructiveColor={terminalTheme.red}
             />
             <MenuAction
+              label="Git Diff"
+              onPress={openGitDiff}
+              disabled={!gitDiffQueryEnabled || gitDiffStatus?.reason === "not_git_repo"}
+              textColor={chromeColors.text}
+              disabledTextColor={chromeColors.textSubtle}
+              destructiveColor={terminalTheme.red}
+            />
+            <MenuAction
               label="Rename"
               onPress={openRenameModal}
               textColor={chromeColors.text}
@@ -1304,6 +1478,20 @@ export default function TerminalScreen() {
         onClose={() => setLinkTaskVisible(false)}
         onPick={(taskId) => { void linkSessionToTask(taskId); }}
         emptySubtitle="Only tasks without an active delegation can be linked to this session."
+      />
+
+      <GitDiffSheet
+        visible={gitDiffVisible}
+        theme={terminalTheme}
+        snapshot={gitDiffStatus}
+        loading={gitDiffLoading}
+        error={gitDiffError}
+        expandedPath={gitDiffExpandedPath}
+        patchLoadingPath={gitDiffPatchLoadingPath}
+        patchByPath={gitDiffPatchByPath}
+        onClose={() => setGitDiffVisible(false)}
+        onRefresh={() => { void refreshGitDiff(true); }}
+        onSelectPath={(path) => { void handleSelectGitDiffPath(path); }}
       />
 
       <Modal
@@ -1486,17 +1674,14 @@ function pickNextTabAfterClose(
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: "#0B1118",
+    backgroundColor: "#0D0C0C",
   },
   topBar: {
     flexDirection: "row",
     alignItems: "center",
-    paddingHorizontal: 10,
-    paddingTop: 4,
-    paddingBottom: 8,
-    borderBottomWidth: 1,
-    borderBottomColor: "#161E2A",
-    backgroundColor: "#11161F",
+    paddingHorizontal: 8,
+    paddingTop: 2,
+    paddingBottom: 4,
   },
   terminalStage: {
     flex: 1,
@@ -1513,71 +1698,63 @@ const styles = StyleSheet.create({
     minHeight: 0,
   },
   chromeButton: {
-    width: 38,
-    height: 38,
-    borderRadius: 12,
+    width: 32,
+    height: 32,
     alignItems: "center",
     justifyContent: "center",
-    backgroundColor: "#1B2230",
-    borderWidth: 1,
-    borderColor: "rgba(255,255,255,0.05)",
   },
   tabScroller: {
     flex: 1,
-    marginHorizontal: 8,
+    marginHorizontal: 4,
   },
   tabScrollerContent: {
     paddingRight: 2,
   },
   tabPill: {
-    minWidth: 140,
-    maxWidth: 220,
-    height: 38,
-    borderRadius: 13,
-    paddingLeft: 10,
-    paddingRight: 6,
-    marginRight: 6,
+    minWidth: 110,
+    maxWidth: 200,
+    height: 30,
+    borderRadius: 8,
+    paddingLeft: 8,
+    paddingRight: 4,
+    marginRight: 2,
     flexDirection: "row",
     alignItems: "center",
-    backgroundColor: "#262633",
-    borderWidth: 1,
-    borderColor: "rgba(255,255,255,0.04)",
   },
   tabPillActive: {
-    backgroundColor: "#5A5A67",
-    borderColor: "rgba(255,255,255,0.08)",
-  },
-  tabPillPinned: {
-    shadowColor: "#5B9DFF",
-    shadowOpacity: 0.12,
-    shadowRadius: 5,
+    borderRadius: 8,
   },
   tabMainButton: {
     flex: 1,
     flexDirection: "row",
     alignItems: "center",
-    gap: 6,
+    gap: 5,
   },
   tabStatusDot: {
-    width: 6,
-    height: 6,
-    borderRadius: 3,
-    marginLeft: 8,
+    width: 5,
+    height: 5,
+    borderRadius: 2.5,
+    marginLeft: 6,
+  },
+  tabStatusDotInactive: {
+    opacity: 0.45,
+  },
+  tabLabelWrapper: {
+    flex: 1,
+    justifyContent: "center",
+    marginRight: 4,
+    paddingTop: 1,
   },
   tabLabel: {
-    flex: 1,
-    color: "#C6CDDA",
-    fontSize: 13,
+    fontSize: 12,
+    lineHeight: 16,
     fontFamily: Typography.uiFontMedium,
-    marginRight: 6,
-  },
-  tabLabelActive: {
-    color: "#F4F6FA",
+    includeFontPadding: false,
   },
   tabMenuButton: {
-    width: 24,
-    height: 24,
-    borderRadius: 8,
+    width: 22,
+    height: 22,
+    borderRadius: 6,
     alignItems: "center",
     justifyContent: "center",
   },
@@ -1646,8 +1823,6 @@ const styles = StyleSheet.create({
     fontFamily: Typography.uiFontMedium,
   },
   inputShell: {
-    paddingHorizontal: 12,
-    paddingTop: 6,
     backgroundColor: "transparent",
   },
   inputShellDock: {

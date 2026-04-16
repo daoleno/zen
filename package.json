@@ -1,0 +1,17 @@
+{
+  "name": "zen",
+  "private": true,
+  "packageManager": "bun@1.3.5",
+  "workspaces": [
+    "app",
+    "app/modules/*"
+  ],
+  "scripts": {
+    "app:install": "cd app && bun install",
+    "app:start": "cd app && bun run start",
+    "app:android": "cd app && bun run android",
+    "app:doctor": "cd app && bunx expo-doctor",
+    "daemon:build": "go build -o bin/zen-daemon ./daemon/cmd/zen-daemon",
+    "daemon:test": "cd daemon && go test ./..."
+  }
+}

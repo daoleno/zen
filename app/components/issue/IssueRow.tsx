@@ -33,9 +33,19 @@ export function IssueRow({
   onPress,
   onLongPress,
 }: Props) {
+  const isDimmed = task.status === 'done' || task.status === 'cancelled';
+  const hasTrailing = hasLiveSession || !!run?.agentSessionId || runCount > 1 || !!statusLabel;
+
+  // Derive terminal icon color from execution state
+  const terminalColor = statusLabel
+    ? statusTone
+    : sessionIsLive
+      ? Colors.accent
+      : Colors.textSecondary;
+
   return (
     <TouchableOpacity
-      style={styles.row}
+      style={[styles.row, isDimmed && styles.rowDimmed]}
       onPress={onPress}
       onLongPress={onLongPress}
       activeOpacity={0.82}
@@ -44,72 +54,59 @@ export function IssueRow({
       <PriorityBar priority={task.priority} />
 
       <View style={styles.iconWrap}>
-        <IssueStatusIcon status={task.status} size={16} />
+        <IssueStatusIcon status={task.status} size={15} />
       </View>
 
       <View style={styles.copy}>
-        <View style={styles.titleRow}>
-          <Text style={styles.title} numberOfLines={1}>{task.title}</Text>
-        </View>
+        <Text style={styles.title} numberOfLines={1}>{task.title}</Text>
         <Text style={styles.meta} numberOfLines={1}>
           {metaText}
           {secondaryText ? `  ·  ${secondaryText}` : ''}
         </Text>
       </View>
 
-      <View style={styles.trailing}>
-        {statusLabel ? (
-          <View style={[styles.statusPill, { backgroundColor: `${statusTone}18` }]}>
-            <Text style={[styles.statusPillText, { color: statusTone }]}>
-              {statusLabel}
-            </Text>
-          </View>
-        ) : (
-          <View style={styles.trailingSpacer} />
-        )}
-
-        <View style={styles.trailingMeta}>
+      {hasTrailing ? (
+        <View style={styles.trailing}>
           {runCount > 1 ? (
-            <Text style={styles.runCount} numberOfLines={1}>
-              ×{runCount}
-            </Text>
+            <Text style={styles.runCount}>×{runCount}</Text>
+          ) : null}
+          {statusLabel ? (
+            <View style={[styles.statusDot, { backgroundColor: statusTone }]} />
           ) : null}
           {hasLiveSession ? (
             <Ionicons
               name="terminal-outline"
-              size={14}
-              color={sessionIsLive ? Colors.accent : Colors.textSecondary}
+              size={13}
+              color={terminalColor}
             />
           ) : run?.agentSessionId ? (
-            <Ionicons name="link-outline" size={13} color={Colors.textSecondary} />
+            <Ionicons name="link-outline" size={12} color={Colors.textSecondary} />
           ) : null}
         </View>
-      </View>
+      ) : null}
     </TouchableOpacity>
   );
 }
 
 const styles = StyleSheet.create({
   row: {
-    minHeight: 58,
+    minHeight: 50,
     paddingRight: 4,
     flexDirection: 'row',
     alignItems: 'center',
     gap: 10,
   },
+  rowDimmed: {
+    opacity: 0.42,
+  },
   iconWrap: {
-    width: 18,
+    width: 16,
     alignItems: 'center',
   },
   copy: {
     flex: 1,
-    gap: 4,
+    gap: 3,
     paddingVertical: 10,
-  },
-  titleRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 8,
   },
   title: {
     color: Colors.textPrimary,
@@ -120,34 +117,19 @@ const styles = StyleSheet.create({
   meta: {
     color: Colors.textSecondary,
     fontSize: 11,
-    lineHeight: 16,
+    lineHeight: 15,
     fontFamily: Typography.uiFont,
   },
   trailing: {
-    alignItems: 'flex-end',
-    justifyContent: 'center',
-    gap: 6,
-    paddingLeft: 8,
-  },
-  statusPill: {
-    minHeight: 24,
-    paddingHorizontal: 9,
-    borderRadius: 999,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  statusPillText: {
-    fontSize: 11,
-    fontFamily: Typography.uiFontMedium,
-  },
-  trailingSpacer: {
-    height: 24,
-  },
-  trailingMeta: {
-    minHeight: 14,
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 6,
+    gap: 5,
+    paddingLeft: 6,
+  },
+  statusDot: {
+    width: 5,
+    height: 5,
+    borderRadius: 2.5,
   },
   runCount: {
     color: Colors.textSecondary,

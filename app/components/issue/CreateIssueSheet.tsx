@@ -2,6 +2,7 @@ import React, { useEffect, useMemo, useState } from "react";
 import {
   Alert,
   Keyboard,
+  KeyboardAvoidingView,
   Modal,
   Platform,
   ScrollView,
@@ -32,7 +33,7 @@ type CreateAction = {
   afterCreate?: (serverId: string, task: any) => Promise<void> | void;
 };
 
-type ExpandedSection = "project" | "priority" | "dueDate" | null;
+type ExpandedSection = "project" | "priority" | "dueDate" | "files" | null;
 
 const PRIORITY_OPTIONS: { value: IssuePriority; label: string }[] = [
   { value: 0, label: "No priority" },
@@ -174,7 +175,7 @@ export function CreateIssueSheet({
       : isCompactHeight
         ? 44
         : 48;
-  const descriptionMinHeight = isTabletLike ? 120 : isCompactHeight ? 92 : 108;
+  const descriptionMinHeight = isTabletLike ? 80 : isCompactHeight ? 56 : 64;
   const cardRadius = isTabletLike ? 20 : 18;
   const groupRadius = isTabletLike ? 20 : 18;
   const rowMinHeight = isTabletLike ? 60 : isCompactHeight ? 54 : 58;
@@ -477,7 +478,10 @@ export function CreateIssueSheet({
       presentationStyle="overFullScreen"
       onRequestClose={() => handleClose()}
     >
-      <View style={styles.root}>
+      <KeyboardAvoidingView
+        style={styles.root}
+        behavior={Platform.OS === "ios" ? "padding" : "height"}
+      >
         <TouchableOpacity
           style={styles.backdrop}
           activeOpacity={1}
@@ -578,7 +582,7 @@ export function CreateIssueSheet({
               value={title}
               onChangeText={setTitle}
               onFocus={() => setExpandedSection(null)}
-              placeholder="Issue title"
+              placeholder="Title"
               placeholderTextColor="rgba(255,255,255,0.24)"
               autoCapitalize="sentences"
               autoCorrect={false}
@@ -609,32 +613,6 @@ export function CreateIssueSheet({
                 numberOfLines={5}
                 textAlignVertical="top"
                 maxFontSizeMultiplier={1.15}
-              />
-            </View>
-
-            <View
-              style={[styles.attachmentsCard, { borderRadius: cardRadius }]}
-            >
-              <Text
-                style={styles.attachmentsLabel}
-                maxFontSizeMultiplier={1.05}
-              >
-                Files
-              </Text>
-              <AttachmentStack
-                attachments={attachments}
-                emptyLabel="Optional files, screenshots, or specs."
-                addLabel={uploadingAttachment ? "Uploading..." : "Attach file"}
-                addDisabled={
-                  !selectedServerId ||
-                  submitting ||
-                  creatingProject ||
-                  uploadingAttachment
-                }
-                onAdd={() => {
-                  void handleAddAttachment();
-                }}
-                onRemove={handleRemoveAttachment}
               />
             </View>
 
@@ -864,6 +842,33 @@ export function CreateIssueSheet({
                   <DueDatePicker value={dueDate} onChange={selectDueDate} />
                 ),
               })}
+
+              {renderAttributeRow({
+                section: "files",
+                icon: "attach-outline",
+                label: "Files",
+                value: attachments.length > 0
+                  ? `${attachments.length} file${attachments.length !== 1 ? "s" : ""}`
+                  : "None",
+                valueMuted: attachments.length === 0,
+                children: (
+                  <AttachmentStack
+                    attachments={attachments}
+                    emptyLabel="Optional files, screenshots, or specs."
+                    addLabel={uploadingAttachment ? "Uploading..." : "Attach file"}
+                    addDisabled={
+                      !selectedServerId ||
+                      submitting ||
+                      creatingProject ||
+                      uploadingAttachment
+                    }
+                    onAdd={() => {
+                      void handleAddAttachment();
+                    }}
+                    onRemove={handleRemoveAttachment}
+                  />
+                ),
+              })}
             </View>
           </ScrollView>
 
@@ -935,7 +940,7 @@ export function CreateIssueSheet({
             </View>
           </View>
         </View>
-      </View>
+      </KeyboardAvoidingView>
     </Modal>
   );
 }
@@ -1029,21 +1034,6 @@ const styles = StyleSheet.create({
     fontSize: 15,
     lineHeight: 23,
     fontFamily: Typography.uiFont,
-  },
-  attachmentsCard: {
-    marginTop: 12,
-    borderRadius: 18,
-    backgroundColor: "rgba(255,255,255,0.03)",
-    borderWidth: StyleSheet.hairlineWidth,
-    borderColor: "rgba(255,255,255,0.06)",
-    paddingHorizontal: 14,
-    paddingVertical: 14,
-    gap: 12,
-  },
-  attachmentsLabel: {
-    color: Colors.textSecondary,
-    fontSize: 12,
-    fontFamily: Typography.uiFontMedium,
   },
   attributeList: {
     marginTop: 16,

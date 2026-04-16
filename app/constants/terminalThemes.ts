@@ -59,9 +59,91 @@ const ANSI_COLOR_KEYS = [
 
 const XTERM_CUBE_LEVELS = [0, 95, 135, 175, 215, 255] as const;
 
-export type TerminalThemeName = 'zen-midnight' | 'zen-amber';
+export type TerminalThemeName =
+  | 'kanagawa'
+  | 'rose-pine'
+  | 'everforest'
+  | 'zen-midnight'
+  | 'zen-amber'
+  | 'zen-paper';
 
 export const TerminalThemes: Record<TerminalThemeName, TerminalThemePalette> = {
+  // Kanagawa Dragon — deep ink, Japanese brushwork. The most zen by name and spirit.
+  'kanagawa': {
+    background: '#0D0C0C',
+    foreground: '#C5C9C5',
+    cursor: '#C8C093',
+    cursorAccent: '#0D0C0C',
+    selectionBackground: 'rgba(200, 192, 147, 0.20)',
+    selectionInactiveBackground: 'rgba(200, 192, 147, 0.10)',
+    black: '#16161D',
+    red: '#C34043',
+    green: '#76946A',
+    yellow: '#C0A36E',
+    blue: '#7E9CD8',
+    magenta: '#957FB8',
+    cyan: '#6A9589',
+    white: '#C8C093',
+    brightBlack: '#717C7C',
+    brightRed: '#E82424',
+    brightGreen: '#98BB6C',
+    brightYellow: '#E6C384',
+    brightBlue: '#7FB4CA',
+    brightMagenta: '#938AA9',
+    brightCyan: '#7AA89F',
+    brightWhite: '#DCD7BA',
+  },
+  // Rosé Pine Moon — botanical moonlight, soft purples and warm gold.
+  'rose-pine': {
+    background: '#232136',
+    foreground: '#E0DEF4',
+    cursor: '#EA9A97',
+    cursorAccent: '#232136',
+    selectionBackground: 'rgba(196, 167, 231, 0.20)',
+    selectionInactiveBackground: 'rgba(196, 167, 231, 0.10)',
+    black: '#393552',
+    red: '#EB6F92',
+    green: '#3E8FB0',
+    yellow: '#F6C177',
+    blue: '#9CCFD8',
+    magenta: '#C4A7E7',
+    cyan: '#EA9A97',
+    white: '#E0DEF4',
+    brightBlack: '#6E6A86',
+    brightRed: '#EB6F92',
+    brightGreen: '#9CCFD8',
+    brightYellow: '#F6C177',
+    brightBlue: '#9CCFD8',
+    brightMagenta: '#C4A7E7',
+    brightCyan: '#EA9A97',
+    brightWhite: '#E0DEF4',
+  },
+  // Everforest Dark — forest earth tones, low glare, long sessions.
+  'everforest': {
+    background: '#272E33',
+    foreground: '#D3C6AA',
+    cursor: '#A7C080',
+    cursorAccent: '#272E33',
+    selectionBackground: 'rgba(167, 192, 128, 0.22)',
+    selectionInactiveBackground: 'rgba(167, 192, 128, 0.12)',
+    black: '#374145',
+    red: '#E67E80',
+    green: '#A7C080',
+    yellow: '#DBBC7F',
+    blue: '#7FBBB3',
+    magenta: '#D699B6',
+    cyan: '#83C092',
+    white: '#D3C6AA',
+    brightBlack: '#475258',
+    brightRed: '#E67E80',
+    brightGreen: '#A7C080',
+    brightYellow: '#DBBC7F',
+    brightBlue: '#7FBBB3',
+    brightMagenta: '#D699B6',
+    brightCyan: '#83C092',
+    brightWhite: '#D3C6AA',
+  },
+  // Zen Midnight — cool ANSI contrast, blue cursor.
   'zen-midnight': {
     background: '#0C1117',
     foreground: '#D9E1EA',
@@ -86,6 +168,32 @@ export const TerminalThemes: Record<TerminalThemeName, TerminalThemePalette> = {
     brightCyan: '#A6D9B0',
     brightWhite: '#F6F8FB',
   },
+  // Zen Paper — warm parchment light theme, ink on paper.
+  'zen-paper': {
+    background: '#F3EDE0',
+    foreground: '#2B2921',
+    cursor: '#8B7355',
+    cursorAccent: '#F3EDE0',
+    selectionBackground: 'rgba(139, 115, 85, 0.22)',
+    selectionInactiveBackground: 'rgba(139, 115, 85, 0.12)',
+    black: '#1C1918',
+    red: '#C44040',
+    green: '#4A7C4E',
+    yellow: '#7D6228',
+    blue: '#3B6BA5',
+    magenta: '#7B4F8E',
+    cyan: '#3A7D7D',
+    white: '#DDD8CE',
+    brightBlack: '#7A7060',
+    brightRed: '#E05252',
+    brightGreen: '#5E9966',
+    brightYellow: '#A07E30',
+    brightBlue: '#4D82C4',
+    brightMagenta: '#9965AE',
+    brightCyan: '#4A9999',
+    brightWhite: '#F3EDE0',
+  },
+  // Zen Amber — warm, low-glare ANSI tuned for long sessions.
   'zen-amber': {
     background: '#28221D',
     foreground: '#E2D6C4',
@@ -113,16 +221,24 @@ export const TerminalThemes: Record<TerminalThemeName, TerminalThemePalette> = {
 };
 
 export const TerminalThemeLabels: Record<TerminalThemeName, string> = {
+  'kanagawa': 'Kanagawa',
+  'rose-pine': 'Rosé Pine',
+  'everforest': 'Everforest',
   'zen-midnight': 'Midnight',
-  'zen-amber': 'Amber Quiet',
+  'zen-amber': 'Amber',
+  'zen-paper': 'Paper',
 };
 
 export const TerminalThemeDescriptions: Record<TerminalThemeName, string> = {
-  'zen-midnight': 'Cooler ANSI contrast with a clean blue cursor.',
-  'zen-amber': 'Warm, low-glare ANSI palette tuned for long sessions.',
+  'kanagawa': 'Deep ink and warm sand — Japanese woodblock in terminal form.',
+  'rose-pine': 'Botanical moonlight, soft purples and warm gold.',
+  'everforest': 'Forest earth tones, low glare, easy on long sessions.',
+  'zen-midnight': 'Cool blue contrast, clean and bright.',
+  'zen-amber': 'Warm, low-glare palette tuned for long sessions.',
+  'zen-paper': 'Warm parchment light theme, ink on paper.',
 };
 
-export const DefaultTerminalThemeName: TerminalThemeName = 'zen-amber';
+export const DefaultTerminalThemeName: TerminalThemeName = 'kanagawa';
 
 export function resolveTerminalTheme(
   name: TerminalThemeName = DefaultTerminalThemeName,
@@ -155,18 +271,20 @@ export function buildTerminalPalette(theme: TerminalThemePalette): string[] {
 
 export function buildTerminalChrome(theme: TerminalThemePalette): TerminalThemeChrome {
   return {
-    appBackground: mixHex(theme.background, '#000000', 0.22),
-    surface: mixHex(theme.background, theme.foreground, 0.07),
-    surfaceMuted: mixHex(theme.background, theme.foreground, 0.04),
-    surfaceActive: mixHex(theme.background, theme.cursor, 0.16),
-    border: withAlpha(theme.foreground, 0.1),
-    borderStrong: withAlpha(theme.cursor, 0.26),
+    // Slightly lighter than the terminal background so the toolbar is visually above,
+    // not merged with the dark system keyboard behind it.
+    appBackground: mixHex(theme.background, theme.foreground, 0.06),
+    surface: mixHex(theme.background, theme.foreground, 0.06),
+    surfaceMuted: mixHex(theme.background, theme.foreground, 0.035),
+    surfaceActive: mixHex(theme.background, theme.cursor, 0.14),
+    border: withAlpha(theme.foreground, 0.08),
+    borderStrong: withAlpha(theme.cursor, 0.22),
     text: theme.foreground,
-    textMuted: mixHex(theme.foreground, theme.background, 0.34),
-    textSubtle: mixHex(theme.foreground, theme.background, 0.56),
+    textMuted: mixHex(theme.foreground, theme.background, 0.38),
+    textSubtle: mixHex(theme.foreground, theme.background, 0.60),
     accent: theme.cursor,
-    accentSoft: withAlpha(theme.cursor, 0.18),
-    overlay: withAlpha(theme.background, 0.92),
+    accentSoft: withAlpha(theme.cursor, 0.14),
+    overlay: withAlpha(theme.background, 0.94),
   };
 }
 

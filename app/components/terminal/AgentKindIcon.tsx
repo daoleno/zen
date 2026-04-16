@@ -11,9 +11,10 @@ interface AgentKindIconProps {
 }
 
 export function AgentKindIcon({ kind, size = 16 }: AgentKindIconProps) {
+  const frameSize = size + 8;
   if (kind === 'claude') {
     return (
-      <View style={[styles.frame, { width: size + 8, height: size + 8 }]}>
+      <View style={[styles.frame, { width: frameSize, height: frameSize }]}>
         <Claude.Color size={size} />
       </View>
     );
@@ -21,12 +22,14 @@ export function AgentKindIcon({ kind, size = 16 }: AgentKindIconProps) {
 
   if (kind === 'codex') {
     return (
-      <OpenAI.Avatar size={size + 8} />
+      <View style={[styles.frame, { width: frameSize, height: frameSize }]}>
+        <OpenAI.Avatar size={size} />
+      </View>
     );
   }
 
   return (
-    <View style={[styles.frame, styles.terminalFrame, { width: size + 8, height: size + 8 }]}>
+    <View style={[styles.frame, styles.terminalFrame, { width: frameSize, height: frameSize }]}>
       <Ionicons name="terminal-outline" size={size} color={Colors.textSecondary} />
     </View>
   );

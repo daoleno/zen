@@ -716,7 +716,8 @@ export default function IssueDetailScreen() {
   };
 
   const handleOpenCommentComposer = (replyTo?: TaskComment) => {
-    setReplyTargetId(replyTo?.id || "");
+    if (!replyTo) return;
+    setReplyTargetId(replyTo.id);
     setCommentDraft("");
     setCommentAttachments([]);
     setCommentSelection({ start: 0, end: 0 });
@@ -817,7 +818,6 @@ export default function IssueDetailScreen() {
         </TouchableOpacity>
 
         <View style={styles.headerCopy}>
-          <Text style={styles.headerEyebrow}>Issue</Text>
           <Text style={styles.headerKey}>ZEN-{task.number}</Text>
         </View>
 
@@ -847,39 +847,9 @@ export default function IssueDetailScreen() {
           ]}
         >
           <View style={styles.hero}>
-            <View style={styles.heroMetaRow}>
-              <TouchableOpacity
-                style={[
-                  styles.heroBadge,
-                  {
-                    backgroundColor: `${issueStatusColor(task.status)}14`,
-                    borderColor: `${issueStatusColor(task.status)}30`,
-                  },
-                ]}
-                onPress={() => setStatusVisible(true)}
-                activeOpacity={0.82}
-              >
-                <IssueStatusIcon status={task.status} size={14} />
-                <Text
-                  style={[
-                    styles.heroBadgeText,
-                    { color: issueStatusColor(task.status) },
-                  ]}
-                >
-                  {taskStatusLabel}
-                </Text>
-              </TouchableOpacity>
-
-              {showExecutionBadge ? (
-                <View
-                  style={[
-                    styles.heroBadge,
-                    {
-                      backgroundColor: `${statusPresentation.tone}14`,
-                      borderColor: `${statusPresentation.tone}30`,
-                    },
-                  ]}
-                >
+            {showExecutionBadge ? (
+              <View style={styles.heroMetaRow}>
+                <View style={styles.heroBadge}>
                   <View
                     style={[
                       styles.heroBadgeDot,
@@ -895,8 +865,8 @@ export default function IssueDetailScreen() {
                     {statusPresentation.label}
                   </Text>
                 </View>
-              ) : null}
-            </View>
+              </View>
+            ) : null}
 
             <Text style={styles.title}>{task.title}</Text>
             {task.description.trim() ? (
@@ -907,128 +877,6 @@ export default function IssueDetailScreen() {
                 <Text style={styles.heroAttachmentLabel}>Files</Text>
                 <AttachmentStack attachments={task.attachments} compact />
               </View>
-            ) : null}
-
-            <View style={styles.actionRow}>
-              <TouchableOpacity
-                style={styles.primaryAction}
-                onPress={() => setAssignVisible(true)}
-                activeOpacity={0.82}
-              >
-                <Ionicons
-                  name="sparkles-outline"
-                  size={16}
-                  color={Colors.bgPrimary}
-                />
-                <Text style={styles.primaryActionText}>Assign agent</Text>
-              </TouchableOpacity>
-
-              {currentAgent ? (
-                <TouchableOpacity
-                  style={styles.secondaryAction}
-                  onPress={() => openSession(currentAgent.id)}
-                  activeOpacity={0.82}
-                >
-                  <Ionicons
-                    name="terminal-outline"
-                    size={15}
-                    color={Colors.textPrimary}
-                  />
-                  <Text style={styles.secondaryActionText}>Open session</Text>
-                </TouchableOpacity>
-              ) : null}
-
-              <TouchableOpacity
-                style={styles.secondaryAction}
-                onPress={handleToggleDone}
-                activeOpacity={0.82}
-              >
-                <Ionicons
-                  name={
-                    task.status === "done"
-                      ? "refresh-outline"
-                      : "checkmark-outline"
-                  }
-                  size={15}
-                  color={Colors.textPrimary}
-                />
-                <Text style={styles.secondaryActionText}>
-                  {doneToggleLabel}
-                </Text>
-              </TouchableOpacity>
-            </View>
-          </View>
-
-          <SectionHeader
-            title="Execution"
-            actionLabel={projectReady ? "Configure" : "Set up"}
-            onAction={() => setProjectVisible(true)}
-          />
-          <View style={styles.surface}>
-            <View style={styles.executionLead}>
-              <View
-                style={[
-                  styles.executionMarker,
-                  { backgroundColor: statusPresentation.tone },
-                ]}
-              />
-              <View style={styles.executionCopy}>
-                <Text style={styles.executionTitle}>
-                  {statusPresentation.label}
-                </Text>
-                <Text style={styles.executionBody}>{secondaryCopy}</Text>
-              </View>
-            </View>
-
-            <Divider />
-
-            <DetailRow
-              icon="terminal-outline"
-              label="Session"
-              value={
-                currentAgent
-                  ? formatAgentLabel(currentAgent)
-                  : currentRun?.agentSessionId
-                    ? "Linked session"
-                    : "No live session"
-              }
-              meta={
-                currentRun
-                  ? RUN_STATUS_LABEL[currentRun.status] || currentRun.status
-                  : undefined
-              }
-              muted={!currentRun}
-              onPress={
-                currentAgent ? () => openSession(currentAgent.id) : undefined
-              }
-            />
-
-            <Divider />
-
-            <DetailRow
-              icon="folder-open-outline"
-              label="Workspace"
-              value={workspaceValue || "No workspace yet"}
-              meta={
-                task.cwd
-                  ? "Current issue worktree"
-                  : projectReady
-                    ? "A dedicated worktree will be created on assign"
-                    : undefined
-              }
-              muted={!workspaceValue}
-              onPress={() => setProjectVisible(true)}
-            />
-
-            {project?.baseBranch ? (
-              <>
-                <Divider />
-                <DetailRow
-                  icon="git-branch-outline"
-                  label="Base branch"
-                  value={project.baseBranch}
-                />
-              </>
             ) : null}
           </View>
 
@@ -1055,7 +903,39 @@ export default function IssueDetailScreen() {
             />
             <Divider />
             <PropertyRow
-              icon="folder-open-outline"
+              icon="hardware-chip-outline"
+              label="Agent"
+              value={
+                currentAgent
+                  ? formatAgentLabel(currentAgent)
+                  : currentRun?.agentSessionId
+                    ? "Linked session"
+                    : "Assign agent"
+              }
+              valueTone={currentAgent ? Colors.statusRunning : undefined}
+              muted={!currentAgent && !currentRun?.agentSessionId}
+              onPress={
+                currentAgent
+                  ? () => openSession(currentAgent.id)
+                  : currentRun?.agentSessionId
+                    ? () => openSession(currentRun.agentSessionId!)
+                    : () => setAssignVisible(true)
+              }
+            />
+            {workspaceValue ? (
+              <>
+                <Divider />
+                <PropertyRow
+                  icon="folder-open-outline"
+                  label="Workspace"
+                  value={workspaceValue}
+                  onPress={() => setProjectVisible(true)}
+                />
+              </>
+            ) : null}
+            <Divider />
+            <PropertyRow
+              icon="archive-outline"
               label="Project"
               value={project?.name || "No project"}
               muted={!project}
@@ -1076,18 +956,9 @@ export default function IssueDetailScreen() {
             />
           </View>
 
-          <SectionHeader
-            title="Comments"
-            actionLabel="Add comment"
-            onAction={() => handleOpenCommentComposer()}
-          />
+          <SectionHeader title="Comments" />
           <View style={styles.surface}>
-            {commentThreads.length === 0 ? (
-              <EmptyState
-                title="No comments yet"
-                body="Use comments to brief agents, add context, or ask for a follow-up."
-              />
-            ) : (
+            {commentThreads.length > 0 ? (
               <View style={styles.noteList}>
                 {commentThreads.map((comment, index) => (
                   <React.Fragment key={comment.id}>
@@ -1100,7 +971,41 @@ export default function IssueDetailScreen() {
                   </React.Fragment>
                 ))}
               </View>
-            )}
+            ) : null}
+            <Divider />
+            <View style={styles.inlineComposer}>
+              <TextInput
+                style={styles.inlineComposerInput}
+                value={commentDraft}
+                onChangeText={setCommentDraft}
+                onFocus={() => {
+                  setReplyTargetId("");
+                  setCommentAttachments([]);
+                }}
+                placeholder="Add a comment..."
+                placeholderTextColor="rgba(255,255,255,0.25)"
+                multiline
+                textAlignVertical="top"
+                selectionColor={Colors.accent}
+              />
+              {commentDraft.trim() ? (
+                <TouchableOpacity
+                  style={[
+                    styles.inlineComposerSend,
+                    commentSaving && styles.inlineComposerSendBusy,
+                  ]}
+                  onPress={() => void handleSaveComment()}
+                  disabled={commentSaving}
+                  activeOpacity={0.82}
+                >
+                  <Ionicons
+                    name="arrow-up"
+                    size={14}
+                    color={Colors.bgPrimary}
+                  />
+                </TouchableOpacity>
+              ) : null}
+            </View>
           </View>
 
           <SectionHeader title="Activity" />
@@ -1326,16 +1231,12 @@ function PropertyRow({
   icon: keyof typeof Ionicons.glyphMap;
   label: string;
   value: string;
-  onPress: () => void;
+  onPress?: () => void;
   muted?: boolean;
   valueTone?: string;
 }) {
-  return (
-    <TouchableOpacity
-      style={styles.propertyRow}
-      onPress={onPress}
-      activeOpacity={0.82}
-    >
+  const inner = (
+    <>
       <View style={styles.propertyLabelWrap}>
         <Ionicons name={icon} size={16} color={Colors.textSecondary} />
         <Text style={styles.propertyLabel}>{label}</Text>
@@ -1352,12 +1253,28 @@ function PropertyRow({
         >
           {value}
         </Text>
-        <Ionicons
-          name="chevron-forward"
-          size={15}
-          color={Colors.textSecondary}
-        />
+        {onPress ? (
+          <Ionicons
+            name="chevron-forward"
+            size={15}
+            color={Colors.textSecondary}
+          />
+        ) : null}
       </View>
+    </>
+  );
+
+  if (!onPress) {
+    return <View style={styles.propertyRow}>{inner}</View>;
+  }
+
+  return (
+    <TouchableOpacity
+      style={styles.propertyRow}
+      onPress={onPress}
+      activeOpacity={0.82}
+    >
+      {inner}
     </TouchableOpacity>
   );
 }
@@ -1429,10 +1346,7 @@ function ActivityRow({
       <View
         style={[
           styles.activityDotWrap,
-          {
-            backgroundColor: `${item.tone}14`,
-            borderColor: `${item.tone}30`,
-          },
+          { backgroundColor: `${item.tone}18` },
         ]}
       >
         <View style={[styles.activityDot, { backgroundColor: item.tone }]} />
@@ -2176,45 +2090,34 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     alignItems: "center",
     gap: 12,
-    paddingHorizontal: 20,
-    paddingVertical: 10,
+    paddingHorizontal: 16,
+    paddingVertical: 8,
   },
   iconButton: {
-    width: 34,
-    height: 34,
-    borderRadius: 17,
+    width: 30,
+    height: 30,
+    borderRadius: 15,
     alignItems: "center",
     justifyContent: "center",
-    backgroundColor: "rgba(255,255,255,0.04)",
-    borderWidth: StyleSheet.hairlineWidth,
-    borderColor: "rgba(255,255,255,0.08)",
   },
   headerCopy: {
     flex: 1,
-    gap: 2,
-  },
-  headerEyebrow: {
-    color: Colors.textSecondary,
-    fontSize: 11,
-    fontFamily: Typography.uiFont,
   },
   headerKey: {
-    color: Colors.textPrimary,
-    fontSize: 15,
-    fontFamily: Typography.uiFontMedium,
+    color: Colors.textSecondary,
+    fontSize: 13,
+    fontFamily: Typography.terminalFont,
   },
   headerAction: {
-    minHeight: 34,
-    paddingHorizontal: 12,
-    borderRadius: 17,
+    minHeight: 30,
+    paddingHorizontal: 10,
+    borderRadius: 6,
     alignItems: "center",
     justifyContent: "center",
-    backgroundColor: "rgba(255,255,255,0.04)",
-    borderWidth: StyleSheet.hairlineWidth,
-    borderColor: "rgba(255,255,255,0.08)",
+    backgroundColor: "rgba(255,255,255,0.05)",
   },
   headerActionText: {
-    color: Colors.textPrimary,
+    color: Colors.textSecondary,
     fontSize: 12,
     fontFamily: Typography.uiFontMedium,
   },
@@ -2228,30 +2131,32 @@ const styles = StyleSheet.create({
   },
   page: {
     width: "100%",
-    gap: 26,
+    gap: 20,
   },
   hero: {
-    gap: 16,
+    gap: 12,
     paddingTop: 4,
   },
   heroMetaRow: {
     flexDirection: "row",
     flexWrap: "wrap",
-    gap: 10,
+    gap: 8,
+    alignItems: "center",
   },
   heroBadge: {
     flexDirection: "row",
     alignItems: "center",
-    gap: 8,
-    minHeight: 32,
-    paddingHorizontal: 12,
-    borderRadius: 16,
-    borderWidth: StyleSheet.hairlineWidth,
+    gap: 6,
+  },
+  heroBadgeSep: {
+    color: Colors.textSecondary,
+    fontSize: 12,
+    opacity: 0.4,
   },
   heroBadgeDot: {
-    width: 7,
-    height: 7,
-    borderRadius: 3.5,
+    width: 6,
+    height: 6,
+    borderRadius: 3,
   },
   heroBadgeText: {
     fontSize: 12,
@@ -2259,43 +2164,43 @@ const styles = StyleSheet.create({
   },
   title: {
     color: Colors.textPrimary,
-    fontSize: 30,
-    lineHeight: 38,
+    fontSize: 20,
+    lineHeight: 27,
     fontFamily: Typography.uiFontMedium,
-    letterSpacing: -0.4,
+    letterSpacing: -0.2,
   },
   description: {
     color: Colors.textSecondary,
-    fontSize: 15,
-    lineHeight: 24,
+    fontSize: 14,
+    lineHeight: 22,
     fontFamily: Typography.uiFont,
   },
   heroAttachmentSurface: {
-    gap: 10,
-    paddingHorizontal: 14,
-    paddingVertical: 14,
-    borderRadius: 20,
+    gap: 8,
+    paddingHorizontal: 12,
+    paddingVertical: 12,
+    borderRadius: 12,
     backgroundColor: "rgba(255,255,255,0.03)",
     borderWidth: StyleSheet.hairlineWidth,
-    borderColor: "rgba(255,255,255,0.08)",
+    borderColor: "rgba(255,255,255,0.07)",
   },
   heroAttachmentLabel: {
     color: Colors.textSecondary,
-    fontSize: 12,
+    fontSize: 11,
     fontFamily: Typography.uiFontMedium,
   },
   actionRow: {
     flexDirection: "row",
     flexWrap: "wrap",
-    gap: 10,
+    gap: 8,
   },
   primaryAction: {
     flexDirection: "row",
     alignItems: "center",
-    gap: 8,
-    minHeight: 42,
-    paddingHorizontal: 16,
-    borderRadius: 21,
+    gap: 7,
+    minHeight: 36,
+    paddingHorizontal: 14,
+    borderRadius: 8,
     backgroundColor: Colors.accent,
   },
   primaryActionText: {
@@ -2306,11 +2211,11 @@ const styles = StyleSheet.create({
   secondaryAction: {
     flexDirection: "row",
     alignItems: "center",
-    gap: 8,
-    minHeight: 42,
-    paddingHorizontal: 14,
-    borderRadius: 21,
-    backgroundColor: "rgba(255,255,255,0.04)",
+    gap: 7,
+    minHeight: 36,
+    paddingHorizontal: 12,
+    borderRadius: 8,
+    backgroundColor: "rgba(255,255,255,0.05)",
     borderWidth: StyleSheet.hairlineWidth,
     borderColor: "rgba(255,255,255,0.08)",
   },
@@ -2326,27 +2231,30 @@ const styles = StyleSheet.create({
     gap: 12,
   },
   sectionTitle: {
-    color: Colors.textPrimary,
-    fontSize: 14,
+    color: Colors.textSecondary,
+    fontSize: 11,
     fontFamily: Typography.uiFontMedium,
+    textTransform: "uppercase",
+    letterSpacing: 0.5,
+    opacity: 0.7,
   },
   sectionAction: {
     color: Colors.accent,
-    fontSize: 13,
+    fontSize: 12,
     fontFamily: Typography.uiFontMedium,
   },
   surface: {
-    backgroundColor: "rgba(255,255,255,0.03)",
-    borderRadius: 24,
+    backgroundColor: "rgba(255,255,255,0.025)",
+    borderRadius: 14,
     borderWidth: StyleSheet.hairlineWidth,
-    borderColor: "rgba(255,255,255,0.08)",
+    borderColor: "rgba(255,255,255,0.07)",
     overflow: "hidden",
   },
   executionLead: {
     flexDirection: "row",
-    gap: 14,
-    paddingHorizontal: 18,
-    paddingVertical: 18,
+    gap: 12,
+    paddingHorizontal: 16,
+    paddingVertical: 14,
   },
   executionMarker: {
     width: 3,
@@ -2369,23 +2277,23 @@ const styles = StyleSheet.create({
   },
   divider: {
     height: StyleSheet.hairlineWidth,
-    backgroundColor: "rgba(255,255,255,0.08)",
-    marginHorizontal: 18,
+    backgroundColor: "rgba(255,255,255,0.06)",
+    marginHorizontal: 16,
   },
   propertyRow: {
-    minHeight: 60,
+    minHeight: 50,
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "space-between",
     gap: 12,
-    paddingHorizontal: 18,
-    paddingVertical: 12,
+    paddingHorizontal: 16,
+    paddingVertical: 10,
   },
   propertyLabelWrap: {
     flexDirection: "row",
     alignItems: "center",
-    gap: 10,
-    minWidth: 92,
+    gap: 8,
+    minWidth: 88,
   },
   propertyLabel: {
     color: Colors.textSecondary,
@@ -2397,7 +2305,7 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "flex-end",
-    gap: 10,
+    gap: 8,
   },
   propertyValue: {
     flexShrink: 1,
@@ -2410,15 +2318,15 @@ const styles = StyleSheet.create({
     color: Colors.textSecondary,
   },
   detailRow: {
-    minHeight: 68,
+    minHeight: 56,
     flexDirection: "row",
     alignItems: "center",
     gap: 12,
-    paddingHorizontal: 18,
+    paddingHorizontal: 16,
     paddingVertical: 12,
   },
   detailIconWrap: {
-    width: 28,
+    width: 24,
     alignItems: "center",
   },
   detailCopy: {
@@ -2476,23 +2384,23 @@ const styles = StyleSheet.create({
     paddingVertical: 4,
   },
   noteThread: {
-    paddingHorizontal: 18,
-    paddingVertical: 14,
-    gap: 10,
+    paddingHorizontal: 16,
+    paddingVertical: 12,
+    gap: 8,
   },
   noteThreadNested: {
-    paddingLeft: 14,
+    paddingLeft: 12,
     paddingRight: 0,
     paddingTop: 8,
     paddingBottom: 0,
   },
   noteCard: {
-    gap: 10,
-    padding: 14,
-    borderRadius: 18,
-    backgroundColor: "rgba(255,255,255,0.04)",
+    gap: 8,
+    padding: 12,
+    borderRadius: 10,
+    backgroundColor: "rgba(255,255,255,0.035)",
     borderWidth: StyleSheet.hairlineWidth,
-    borderColor: "rgba(255,255,255,0.08)",
+    borderColor: "rgba(255,255,255,0.07)",
   },
   noteHeader: {
     flexDirection: "row",
@@ -2524,13 +2432,11 @@ const styles = StyleSheet.create({
     gap: 8,
   },
   commentMetaPill: {
-    minHeight: 26,
-    paddingHorizontal: 10,
-    borderRadius: 13,
+    minHeight: 22,
+    paddingHorizontal: 8,
+    borderRadius: 4,
     justifyContent: "center",
-    backgroundColor: "rgba(91,157,255,0.10)",
-    borderWidth: StyleSheet.hairlineWidth,
-    borderColor: `${Colors.accent}40`,
+    backgroundColor: "rgba(91,157,255,0.08)",
   },
   commentMetaPillText: {
     color: Colors.accent,
@@ -2558,22 +2464,22 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     alignItems: "flex-start",
     gap: 12,
-    paddingHorizontal: 18,
-    paddingVertical: 14,
+    paddingHorizontal: 16,
+    paddingVertical: 12,
   },
   activityDotWrap: {
-    width: 24,
-    height: 24,
-    borderRadius: 12,
-    borderWidth: StyleSheet.hairlineWidth,
+    width: 20,
+    height: 20,
+    borderRadius: 10,
     alignItems: "center",
     justifyContent: "center",
     marginTop: 2,
+    backgroundColor: "rgba(255,255,255,0.04)",
   },
   activityDot: {
-    width: 7,
-    height: 7,
-    borderRadius: 3.5,
+    width: 6,
+    height: 6,
+    borderRadius: 3,
   },
   activityCopy: {
     flex: 1,
@@ -2605,6 +2511,36 @@ const styles = StyleSheet.create({
     fontSize: 13,
     lineHeight: 20,
     fontFamily: Typography.uiFont,
+  },
+  inlineComposer: {
+    flexDirection: "row",
+    alignItems: "flex-end",
+    gap: 10,
+    paddingHorizontal: 14,
+    paddingVertical: 10,
+  },
+  inlineComposerInput: {
+    flex: 1,
+    minHeight: 36,
+    maxHeight: 120,
+    paddingTop: 8,
+    paddingBottom: 8,
+    color: Colors.textPrimary,
+    fontSize: 14,
+    lineHeight: 20,
+    fontFamily: Typography.uiFont,
+  },
+  inlineComposerSend: {
+    width: 28,
+    height: 28,
+    borderRadius: 14,
+    backgroundColor: Colors.accent,
+    alignItems: "center",
+    justifyContent: "center",
+    marginBottom: 4,
+  },
+  inlineComposerSendBusy: {
+    opacity: 0.5,
   },
   inlineLink: {
     marginTop: 2,
@@ -2655,7 +2591,7 @@ const styles = StyleSheet.create({
   },
   sheetTitle: {
     color: Colors.textPrimary,
-    fontSize: 18,
+    fontSize: 16,
     fontFamily: Typography.uiFontMedium,
   },
   sheetContent: {
@@ -2677,21 +2613,21 @@ const styles = StyleSheet.create({
     gap: 10,
   },
   selectionRow: {
-    minHeight: 52,
-    borderRadius: 16,
+    minHeight: 46,
+    borderRadius: 10,
     paddingHorizontal: 14,
-    paddingVertical: 12,
-    backgroundColor: "rgba(255,255,255,0.04)",
+    paddingVertical: 10,
+    backgroundColor: "rgba(255,255,255,0.03)",
     borderWidth: StyleSheet.hairlineWidth,
-    borderColor: "rgba(255,255,255,0.08)",
+    borderColor: "rgba(255,255,255,0.07)",
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "space-between",
     gap: 10,
   },
   selectionRowActive: {
-    borderColor: `${Colors.accent}55`,
-    backgroundColor: "rgba(91,157,255,0.10)",
+    borderColor: `${Colors.accent}44`,
+    backgroundColor: "rgba(91,157,255,0.08)",
   },
   selectionLabelWrap: {
     flexDirection: "row",

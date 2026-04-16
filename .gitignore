@@ -3,6 +3,7 @@ daemon/bin/
 daemon/tmp/
 
 # Dependencies
+node_modules/
 app/node_modules/
 app/dist/
 dist-download/
@@ -40,6 +41,7 @@ app/ios/
 app/.expo/
 
 # Bun
+bun.lockb
 app/bun.lockb
 
 # Daemon binary

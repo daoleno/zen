@@ -1,7 +1,9 @@
 import React, { useEffect, useMemo, useState } from "react";
 import {
   Alert,
+  KeyboardAvoidingView,
   Modal,
+  Platform,
   Pressable,
   ScrollView,
   StyleSheet,
@@ -157,10 +159,13 @@ export function ProjectEditorSheet({
         animationType="slide"
         onRequestClose={onClose}
       >
-        <View style={styles.root}>
+        <KeyboardAvoidingView
+          style={styles.root}
+          behavior={Platform.OS === "ios" ? "padding" : "height"}
+        >
           <Pressable style={styles.backdrop} onPress={busy ? undefined : onClose} />
 
-          <View style={[styles.sheet, { paddingBottom: insets.bottom + 18 }]}>
+          <View style={[styles.sheet, { paddingBottom: insets.bottom + 6 }]}>
             <View style={styles.handle} />
 
             <View style={styles.header}>
@@ -245,7 +250,7 @@ export function ProjectEditorSheet({
                 <Text style={styles.label}>Worktree root</Text>
                 <DirectoryField
                   value={worktreeRoot}
-                  placeholder="Optional. Defaults beside the repo"
+                  placeholder={repoRoot ? `Default: ${repoRoot}/../worktrees` : "Default: sibling of repo root"}
                   onPress={() => setDirectoryTarget("worktree")}
                 />
               </View>
@@ -255,7 +260,7 @@ export function ProjectEditorSheet({
                 <TextInput
                   value={baseBranch}
                   onChangeText={setBaseBranch}
-                  placeholder="Optional. Auto-detect if left empty"
+                  placeholder="Auto-detected (main / master / trunk)"
                   placeholderTextColor={Colors.textSecondary}
                   style={styles.textInput}
                   autoCapitalize="none"
@@ -266,45 +271,46 @@ export function ProjectEditorSheet({
 
               <Text style={styles.hint}>
                 {repoRoot
-                  ? "Assign will create issue worktrees from this repo context."
-                  : "Add a repo root to make project assignment executable."}
+                  ? "Issues assigned to this project will run in worktrees created from this repo."
+                  : "Set a repo root to enable automatic worktree creation for issues."}
               </Text>
+            </ScrollView>
 
-              <View style={styles.actions}>
+            {/* CTA always visible — never buried under scroll */}
+            <View style={styles.actions}>
+              <TouchableOpacity
+                style={[
+                  styles.primaryButton,
+                  busy && styles.primaryButtonDisabled,
+                ]}
+                onPress={() => {
+                  void handleSave();
+                }}
+                disabled={busy}
+                activeOpacity={0.82}
+              >
+                <Text style={styles.primaryButtonText}>
+                  {busy
+                    ? "Saving..."
+                    : project
+                      ? "Save project"
+                      : "Create project"}
+                </Text>
+              </TouchableOpacity>
+
+              {project ? (
                 <TouchableOpacity
-                  style={[
-                    styles.primaryButton,
-                    busy && styles.primaryButtonDisabled,
-                  ]}
-                  onPress={() => {
-                    void handleSave();
-                  }}
+                  style={styles.deleteButton}
+                  onPress={handleDelete}
                   disabled={busy}
                   activeOpacity={0.82}
                 >
-                  <Text style={styles.primaryButtonText}>
-                    {busy
-                      ? "Saving..."
-                      : project
-                        ? "Save project"
-                        : "Create project"}
-                  </Text>
+                  <Text style={styles.deleteButtonText}>Delete project</Text>
                 </TouchableOpacity>
-
-                {project ? (
-                  <TouchableOpacity
-                    style={styles.deleteButton}
-                    onPress={handleDelete}
-                    disabled={busy}
-                    activeOpacity={0.82}
-                  >
-                    <Text style={styles.deleteButtonText}>Delete project</Text>
-                  </TouchableOpacity>
-                ) : null}
-              </View>
-            </ScrollView>
+              ) : null}
+            </View>
           </View>
-        </View>
+        </KeyboardAvoidingView>
       </Modal>
 
       <DirectoryPicker
@@ -368,9 +374,9 @@ const styles = StyleSheet.create({
     backgroundColor: "rgba(0,0,0,0.56)",
   },
   sheet: {
-    maxHeight: "88%",
-    borderTopLeftRadius: 30,
-    borderTopRightRadius: 30,
+    maxHeight: "82%",
+    borderTopLeftRadius: 24,
+    borderTopRightRadius: 24,
     backgroundColor: "#16161D",
     borderWidth: StyleSheet.hairlineWidth,
     borderColor: "rgba(255,255,255,0.08)",
@@ -378,54 +384,56 @@ const styles = StyleSheet.create({
   },
   handle: {
     alignSelf: "center",
-    width: 44,
+    width: 36,
     height: 4,
     borderRadius: 2,
     backgroundColor: "rgba(255,255,255,0.14)",
-    marginBottom: 10,
+    marginBottom: 8,
   },
   header: {
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "space-between",
     paddingHorizontal: 16,
-    paddingBottom: 10,
+    paddingBottom: 8,
     gap: 12,
   },
   title: {
     color: Colors.textPrimary,
-    fontSize: 18,
+    fontSize: 16,
     fontFamily: Typography.uiFontMedium,
   },
   closeButton: {
-    width: 32,
-    height: 32,
-    borderRadius: 16,
+    width: 28,
+    height: 28,
+    borderRadius: 14,
     alignItems: "center",
     justifyContent: "center",
     backgroundColor: "rgba(255,255,255,0.04)",
   },
   content: {
     paddingHorizontal: 16,
-    gap: 14,
+    paddingBottom: 8,
+    gap: 10,
   },
   group: {
-    gap: 8,
+    gap: 5,
   },
   label: {
     color: Colors.textSecondary,
-    fontSize: 12,
+    fontSize: 11,
     fontFamily: Typography.uiFont,
+    letterSpacing: 0.2,
   },
   serverRow: {
     flexDirection: "row",
     flexWrap: "wrap",
-    gap: 10,
+    gap: 8,
   },
   serverChip: {
-    minHeight: 34,
+    minHeight: 30,
     paddingHorizontal: 12,
-    borderRadius: 17,
+    borderRadius: 15,
     alignItems: "center",
     justifyContent: "center",
     backgroundColor: "rgba(255,255,255,0.04)",
@@ -446,13 +454,13 @@ const styles = StyleSheet.create({
   },
   serverValue: {
     color: Colors.textPrimary,
-    fontSize: 14,
+    fontSize: 13,
     fontFamily: Typography.uiFontMedium,
   },
   textInput: {
-    minHeight: 46,
-    paddingHorizontal: 14,
-    borderRadius: 16,
+    minHeight: 40,
+    paddingHorizontal: 12,
+    borderRadius: 10,
     backgroundColor: "rgba(255,255,255,0.04)",
     borderWidth: StyleSheet.hairlineWidth,
     borderColor: "rgba(255,255,255,0.08)",
@@ -461,21 +469,21 @@ const styles = StyleSheet.create({
     fontFamily: Typography.uiFontMedium,
   },
   directoryField: {
-    minHeight: 54,
-    paddingHorizontal: 14,
-    borderRadius: 16,
+    minHeight: 44,
+    paddingHorizontal: 12,
+    borderRadius: 10,
     backgroundColor: "rgba(255,255,255,0.04)",
     borderWidth: StyleSheet.hairlineWidth,
     borderColor: "rgba(255,255,255,0.08)",
     flexDirection: "row",
     alignItems: "center",
-    gap: 12,
+    gap: 10,
   },
   directoryValue: {
     flex: 1,
     color: Colors.textPrimary,
     fontSize: 13,
-    lineHeight: 20,
+    lineHeight: 19,
     fontFamily: Typography.uiFont,
   },
   directoryPlaceholder: {
@@ -483,17 +491,23 @@ const styles = StyleSheet.create({
   },
   hint: {
     color: Colors.textSecondary,
-    fontSize: 12,
-    lineHeight: 19,
+    fontSize: 11,
+    lineHeight: 17,
     fontFamily: Typography.uiFont,
+    opacity: 0.7,
   },
+  // CTA sits outside ScrollView — always visible
   actions: {
-    gap: 10,
-    paddingBottom: 2,
+    gap: 8,
+    paddingHorizontal: 16,
+    paddingTop: 8,
+    paddingBottom: 4,
+    borderTopWidth: StyleSheet.hairlineWidth,
+    borderTopColor: "rgba(255,255,255,0.06)",
   },
   primaryButton: {
-    minHeight: 46,
-    borderRadius: 16,
+    minHeight: 44,
+    borderRadius: 12,
     alignItems: "center",
     justifyContent: "center",
     backgroundColor: Colors.accent,
@@ -507,13 +521,13 @@ const styles = StyleSheet.create({
     fontFamily: Typography.uiFontMedium,
   },
   deleteButton: {
-    minHeight: 40,
-    borderRadius: 14,
+    minHeight: 38,
+    borderRadius: 10,
     alignItems: "center",
     justifyContent: "center",
-    backgroundColor: "rgba(255,82,82,0.1)",
+    backgroundColor: "rgba(255,82,82,0.08)",
     borderWidth: StyleSheet.hairlineWidth,
-    borderColor: "rgba(255,82,82,0.22)",
+    borderColor: "rgba(255,82,82,0.20)",
   },
   deleteButtonText: {
     color: Colors.statusFailed,

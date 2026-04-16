@@ -24,11 +24,8 @@ import {
   useCameraPermissions,
 } from "expo-camera";
 import { Colors, Typography, statusColor } from "../../constants/tokens";
-import { useTasks, Skill, Guidance } from "../../store/tasks";
 import {
-  buildTerminalChrome,
   DefaultTerminalThemeName,
-  TerminalThemeDescriptions,
   TerminalThemeLabels,
   TerminalThemeName,
   TerminalThemes,
@@ -47,7 +44,6 @@ const QR_BARCODE_TYPES: BarcodeType[] = ["qr"];
 
 export default function SettingsScreen() {
   const { state, dispatch } = useAgents();
-  const { state: taskState } = useTasks();
   const params = useLocalSearchParams<{
     addServer?: string;
     refresh?: string;
@@ -594,13 +590,13 @@ export default function SettingsScreen() {
 
         {/* Theme */}
         <Text style={styles.sectionLabel}>Theme</Text>
-        <View style={styles.themeList}>
+        <View style={styles.themeGrid}>
           {(Object.keys(TerminalThemes) as TerminalThemeName[]).map(
             (themeName) => {
               const active = terminalTheme === themeName;
               return (
                 <TerminalThemeCard
-                  key={TerminalThemeLabels[themeName]}
+                  key={themeName}
                   themeName={themeName}
                   active={active}
                   onPress={() => handleTerminalTheme(themeName)}
@@ -609,87 +605,6 @@ export default function SettingsScreen() {
             },
           )}
         </View>
-
-        {/* Skills */}
-        <Text style={styles.sectionLabel}>Skills</Text>
-        <View style={styles.serverList}>
-          {taskState.skills.length === 0 ? (
-            <Text style={styles.noServerText}>
-              No skills configured. Connect to a server to load default skills.
-            </Text>
-          ) : (
-            taskState.skills.map((skill) => (
-              <View key={skill.id} style={styles.skillRow}>
-                <Ionicons name="flash-outline" size={16} color={Colors.accent} />
-                <View style={styles.skillInfo}>
-                  <Text style={styles.serverName}>{skill.name}</Text>
-                  <Text style={styles.serverUrl} numberOfLines={1}>
-                    {skill.agentCmd} · {skill.serverName}
-                  </Text>
-                </View>
-                <TouchableOpacity
-                  onPress={() => {
-                    Alert.alert(
-                      "Delete skill?",
-                      `Remove "${skill.name}"?`,
-                      [
-                        { text: "Cancel", style: "cancel" },
-                        {
-                          text: "Delete",
-                          style: "destructive",
-                          onPress: () =>
-                            wsClient.deleteSkill(skill.serverId, skill.id),
-                        },
-                      ],
-                    );
-                  }}
-                  activeOpacity={0.82}
-                >
-                  <Ionicons
-                    name="trash-outline"
-                    size={16}
-                    color="rgba(255,255,255,0.3)"
-                  />
-                </TouchableOpacity>
-              </View>
-            ))
-          )}
-        </View>
-
-        {/* Guidance */}
-        {Object.keys(taskState.guidance).length > 0 && (
-          <>
-            <Text style={styles.sectionLabel}>Agent Guidance</Text>
-            {Object.entries(taskState.guidance).map(([serverId, guidance]) => {
-              const server = servers.find((s) => s.id === serverId);
-              return (
-                <View key={serverId} style={styles.guidanceCard}>
-                  <Text style={styles.guidanceServer}>
-                    {server?.name || serverId}
-                  </Text>
-                  {guidance.preamble ? (
-                    <Text style={styles.guidanceText} numberOfLines={3}>
-                      {guidance.preamble}
-                    </Text>
-                  ) : (
-                    <Text style={styles.guidancePlaceholder}>
-                      No preamble configured
-                    </Text>
-                  )}
-                  {guidance.constraints && guidance.constraints.length > 0 && (
-                    <View style={styles.constraintList}>
-                      {guidance.constraints.map((c, i) => (
-                        <Text key={i} style={styles.constraintText}>
-                          · {c}
-                        </Text>
-                      ))}
-                    </View>
-                  )}
-                </View>
-              );
-            })}
-          </>
-        )}
 
         <Text style={styles.version}>zen v0.1.0</Text>
       </ScrollView>
@@ -994,116 +909,46 @@ function TerminalThemeCard({
   onPress(): void;
 }) {
   const theme = TerminalThemes[themeName];
-  const chrome = buildTerminalChrome(theme);
 
   return (
     <TouchableOpacity
-      style={[
-        styles.themeCard,
-        {
-          backgroundColor: chrome.surfaceMuted,
-          borderColor: active ? chrome.borderStrong : chrome.border,
-        },
-      ]}
+      style={[styles.themeCard, active && styles.themeCardActive]}
       onPress={onPress}
-      activeOpacity={0.84}
+      activeOpacity={0.82}
     >
-      <View
-        style={[
-          styles.themePreview,
-          {
-            backgroundColor: theme.background,
-            borderBottomColor: chrome.border,
-          },
-        ]}
-      >
-        <View style={styles.themePreviewHeader}>
-          <View style={styles.themePreviewHeaderCopy}>
-            <Text
-              style={[
-                styles.themeCardTitle,
-                { color: active ? chrome.text : chrome.textMuted },
-              ]}
-            >
-              {TerminalThemeLabels[themeName]}
-            </Text>
-            <Text style={[styles.themeCardDescription, { color: chrome.textSubtle }]}>
-              {TerminalThemeDescriptions[themeName]}
-            </Text>
-          </View>
-          {active ? (
-            <View
-              style={[
-                styles.themeCheckBadge,
-                {
-                  backgroundColor: chrome.accentSoft,
-                  borderColor: chrome.borderStrong,
-                },
-              ]}
-            >
-              <Ionicons name="checkmark" size={12} color={chrome.accent} />
-            </View>
-          ) : null}
+      {/* Mini terminal preview */}
+      <View style={[styles.themePreview, { backgroundColor: theme.background }]}>
+        {/* Traffic-light dots */}
+        <View style={styles.themePreviewDots}>
+          <View style={[styles.themePreviewDot, { backgroundColor: theme.red }]} />
+          <View style={[styles.themePreviewDot, { backgroundColor: theme.yellow }]} />
+          <View style={[styles.themePreviewDot, { backgroundColor: theme.green }]} />
         </View>
-
-        <Text style={[styles.themePreviewMeta, { color: theme.brightBlack }]}>
-          tmux · libghostty · ansi
-        </Text>
-        <Text style={[styles.themePreviewText, { color: theme.foreground }]}>
-          <Text style={{ color: theme.green }}>zen</Text>
-          <Text style={{ color: theme.brightBlack }}> ~/workspace/zen</Text>
-          {"\n"}
-          <Text style={{ color: theme.brightBlack }}>$</Text>
-          <Text> git status --short</Text>
-          {"\n"}
-          <Text style={{ color: theme.yellow }}>M</Text>
-          <Text> app/components/terminal</Text>
-          {"\n"}
-          <Text style={{ color: theme.cyan }}>tmux</Text>
-          <Text style={{ color: theme.brightBlack }}> session attached · 2 panes</Text>
-        </Text>
-
-        <View style={styles.themeSwatchGrid}>
-          <ThemeSwatchRow
-            colors={[
-              theme.black,
-              theme.red,
-              theme.green,
-              theme.yellow,
-              theme.blue,
-              theme.magenta,
-              theme.cyan,
-              theme.white,
-            ]}
-          />
-          <ThemeSwatchRow
-            colors={[
-              theme.brightBlack,
-              theme.brightRed,
-              theme.brightGreen,
-              theme.brightYellow,
-              theme.brightBlue,
-              theme.brightMagenta,
-              theme.brightCyan,
-              theme.brightWhite,
-            ]}
-          />
+        {/* Fake terminal lines */}
+        <View style={styles.themePreviewLines}>
+          <View style={styles.themePreviewLine}>
+            <Text style={[styles.themePreviewPrompt, { color: theme.green }]}>$ </Text>
+            <Text style={[styles.themePreviewText, { color: theme.foreground }]}>zen</Text>
+            <Text style={[styles.themePreviewText, { color: theme.blue, opacity: 0.8 }]}> --watch</Text>
+          </View>
+          <View style={styles.themePreviewLine}>
+            <Text style={[styles.themePreviewText, { color: theme.cyan }]}>✓ </Text>
+            <Text style={[styles.themePreviewText, { color: theme.foreground, opacity: 0.55 }]}>agents running</Text>
+          </View>
+          <View style={styles.themePreviewLine}>
+            <Text style={[styles.themePreviewPrompt, { color: theme.foreground, opacity: 0.5 }]}>$ </Text>
+            <View style={[styles.themePreviewCursor, { backgroundColor: theme.cursor }]} />
+          </View>
         </View>
       </View>
+      {/* Label row */}
+      <View style={styles.themeCardLabel}>
+        <Text style={[styles.themeCardName, active && styles.themeCardNameActive]}>
+          {TerminalThemeLabels[themeName]}
+        </Text>
+        {active && <Ionicons name="checkmark" size={12} color={Colors.accent} />}
+      </View>
     </TouchableOpacity>
-  );
-}
-
-function ThemeSwatchRow({ colors }: { colors: string[] }) {
-  return (
-    <View style={styles.themeSwatchRow}>
-      {colors.map((color, index) => (
-        <View
-          key={`${color}-${index}`}
-          style={[styles.themeSwatch, { backgroundColor: color }]}
-        />
-      ))}
-    </View>
   );
 }
 
@@ -1195,13 +1040,6 @@ const styles = StyleSheet.create({
   // Server list
   serverList: {
     gap: 6,
-  },
-  noServerText: {
-    color: Colors.textSecondary,
-    fontSize: 12,
-    fontFamily: Typography.uiFont,
-    opacity: 0.7,
-    lineHeight: 18,
   },
   serverCard: {
     borderRadius: 12,
@@ -1345,128 +1183,74 @@ const styles = StyleSheet.create({
     opacity: 0.5,
   },
 
-  // Theme
-  themeList: {
-    gap: 10,
+  // Theme grid
+  themeGrid: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: 8,
   },
   themeCard: {
-    borderRadius: 16,
-    borderWidth: 1,
+    width: "48.5%",
+    borderRadius: 12,
     overflow: "hidden",
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: "rgba(255,255,255,0.08)",
+  },
+  themeCardActive: {
+    borderWidth: 1.5,
+    borderColor: Colors.accent,
   },
   themePreview: {
-    minHeight: 164,
-    padding: 14,
-    borderBottomWidth: StyleSheet.hairlineWidth,
+    height: 82,
+    padding: 9,
   },
-  themePreviewHeader: {
+  themePreviewDots: {
     flexDirection: "row",
-    alignItems: "flex-start",
-    gap: 12,
-  },
-  themePreviewHeaderCopy: {
-    flex: 1,
-  },
-  themeCardTitle: {
-    fontSize: 13,
-    fontFamily: Typography.uiFontMedium,
-  },
-  themeCardDescription: {
-    marginTop: 3,
-    fontSize: 11,
-    lineHeight: 16,
-    fontFamily: Typography.uiFont,
-  },
-  themeCheckBadge: {
-    width: 24,
-    height: 24,
-    borderRadius: 12,
-    borderWidth: 1,
-    alignItems: "center",
-    justifyContent: "center",
-  },
-  themePreviewMeta: {
-    marginTop: 12,
-    fontSize: 10,
-    fontFamily: Typography.terminalFont,
-    textTransform: "uppercase",
-    letterSpacing: 0.8,
-  },
-  themePreviewText: {
-    marginTop: 10,
-    fontSize: 12,
-    fontFamily: Typography.terminalFont,
-    lineHeight: 18,
-  },
-  themeSwatchGrid: {
-    marginTop: 14,
-    gap: 6,
-  },
-  themeSwatchRow: {
-    flexDirection: "row",
-    gap: 6,
-  },
-  themeSwatch: {
-    flex: 1,
-    height: 10,
-    borderRadius: 999,
-  },
-  // Skills
-  skillRow: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 10,
-    paddingVertical: 10,
-    paddingHorizontal: 14,
-    borderRadius: 10,
-    backgroundColor: "rgba(255,255,255,0.02)",
-    borderWidth: StyleSheet.hairlineWidth,
-    borderColor: "rgba(255,255,255,0.06)",
-    marginBottom: 6,
-  },
-  skillInfo: {
-    flex: 1,
-  },
-
-  // Guidance
-  guidanceCard: {
-    borderRadius: 12,
-    padding: 14,
-    backgroundColor: "rgba(255,255,255,0.02)",
-    borderWidth: StyleSheet.hairlineWidth,
-    borderColor: "rgba(255,255,255,0.06)",
+    gap: 5,
     marginBottom: 8,
   },
-  guidanceServer: {
-    color: Colors.textSecondary,
-    fontSize: 11,
-    fontFamily: Typography.uiFontMedium,
-    textTransform: "uppercase",
-    opacity: 0.6,
-    marginBottom: 6,
+  themePreviewDot: {
+    width: 7,
+    height: 7,
+    borderRadius: 4,
+    opacity: 0.75,
   },
-  guidanceText: {
-    color: Colors.textPrimary,
-    fontSize: 13,
-    fontFamily: Typography.uiFont,
-    lineHeight: 18,
+  themePreviewLines: {
+    gap: 4,
   },
-  guidancePlaceholder: {
-    color: Colors.textSecondary,
-    fontSize: 13,
-    fontFamily: Typography.uiFont,
-    fontStyle: "italic",
-    opacity: 0.4,
+  themePreviewLine: {
+    flexDirection: "row",
+    alignItems: "center",
   },
-  constraintList: {
-    marginTop: 8,
-    gap: 2,
+  themePreviewPrompt: {
+    fontSize: 10,
+    fontFamily: Typography.terminalFont,
   },
-  constraintText: {
-    color: Colors.textSecondary,
+  themePreviewText: {
+    fontSize: 10,
+    fontFamily: Typography.terminalFont,
+  },
+  themePreviewCursor: {
+    width: 6,
+    height: 11,
+    borderRadius: 1,
+    opacity: 0.85,
+  },
+  themeCardLabel: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    paddingHorizontal: 10,
+    paddingVertical: 7,
+    backgroundColor: "rgba(255,255,255,0.03)",
+  },
+  themeCardName: {
     fontSize: 12,
-    fontFamily: Typography.uiFont,
-    lineHeight: 16,
+    fontFamily: Typography.uiFontMedium,
+    color: Colors.textSecondary,
+  },
+  themeCardNameActive: {
+    color: Colors.textPrimary,
   },
 
   version: {
