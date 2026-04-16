@@ -322,7 +322,7 @@ export default function TerminalScreen() {
           if (!nextStatus.available) {
             return {};
           }
-          const allowed = new Set(nextStatus.files.map((file) => file.path));
+          const allowed = new Set((nextStatus.files ?? []).map((file) => file.path));
           return Object.fromEntries(
             Object.entries(previous).filter(([path]) => allowed.has(path)),
           );
@@ -331,7 +331,7 @@ export default function TerminalScreen() {
           if (!previous || !nextStatus.available) {
             return null;
           }
-          return nextStatus.files.some((file) => file.path === previous)
+          return (nextStatus.files ?? []).some((file) => file.path === previous)
             ? previous
             : null;
         });

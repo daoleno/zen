@@ -32,7 +32,7 @@ export interface GitDiffStatusSnapshot {
   untracked_file_count: number;
   additions: number;
   deletions: number;
-  files: GitDiffFileInfo[];
+  files?: GitDiffFileInfo[];
 }
 
 export interface GitDiffPatchSection {

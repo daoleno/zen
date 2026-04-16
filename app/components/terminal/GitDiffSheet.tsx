@@ -236,7 +236,7 @@ export function GitDiffSheet({
                   </View>
                 </View>
 
-                {snapshot.files.map((file) => {
+                {(snapshot.files ?? []).map((file) => {
                   const expanded = expandedPath === file.path;
                   const patch = patchByPath[file.path];
                   const patchLoading = patchLoadingPath === file.path;
