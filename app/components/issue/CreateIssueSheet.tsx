@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import {
   Alert,
   Keyboard,
@@ -20,6 +20,7 @@ import type { IssuePriority } from "../../constants/tokens";
 import { DueDatePicker } from "./DueDatePicker";
 import { AttachmentStack } from "./AttachmentStack";
 import { formatDueDateShort } from "../../services/dueDate";
+import { deriveProjectIssuePrefix } from "../../services/taskIdentity";
 import { uploadDocumentForServer } from "../../services/uploads";
 import { useTasks } from "../../store/tasks";
 import type { Attachment } from "../../store/tasks";
@@ -92,6 +93,7 @@ export function CreateIssueSheet({
   const [creatingProject, setCreatingProject] = useState(false);
   const [uploadingAttachment, setUploadingAttachment] = useState(false);
   const [keyboardHeight, setKeyboardHeight] = useState(0);
+  const didInitializeRef = useRef(false);
 
   const projectOptions = useMemo(() => {
     if (!selectedServerId) {
@@ -119,6 +121,7 @@ export function CreateIssueSheet({
     actions && actions.length > 0
       ? actions
       : [{ key: "create", label: "Create issue", primary: true }];
+  const defaultServerId = serverOptions[0]?.id || null;
 
   const normalizedFontScale = clamp(fontScale || 1, 1, 1.25);
   const isLandscape = windowWidth > windowHeight;
@@ -186,15 +189,25 @@ export function CreateIssueSheet({
   const actionButtonRadius = isCompactHeight ? 14 : 16;
 
   useEffect(() => {
+    if (!visible || selectedServerId || !defaultServerId) {
+      return;
+    }
+
+    onSelectServer(defaultServerId);
+  }, [defaultServerId, onSelectServer, selectedServerId, visible]);
+
+  useEffect(() => {
     if (!visible) {
+      didInitializeRef.current = false;
       setKeyboardHeight(0);
       return;
     }
 
-    if (!selectedServerId && serverOptions[0]?.id) {
-      onSelectServer(serverOptions[0].id);
+    if (didInitializeRef.current) {
+      return;
     }
 
+    didInitializeRef.current = true;
     setTitle(initialTitle || "");
     setDescription(initialDescription || "");
     setPriority(0);
@@ -208,9 +221,6 @@ export function CreateIssueSheet({
     initialDescription,
     initialProjectId,
     initialTitle,
-    onSelectServer,
-    selectedServerId,
-    serverOptions,
     visible,
   ]);
 
@@ -480,7 +490,9 @@ export function CreateIssueSheet({
     >
       <KeyboardAvoidingView
         style={styles.root}
-        behavior={Platform.OS === "ios" ? "padding" : "height"}
+        // Android already resizes this modal for the keyboard. Applying
+        // "height" here makes the sheet fight that resize and flicker.
+        behavior={Platform.OS === "ios" ? "padding" : undefined}
       >
         <TouchableOpacity
           style={styles.backdrop}
@@ -707,6 +719,12 @@ export function CreateIssueSheet({
                         maxFontSizeMultiplier={1.05}
                       >
                         Create project
+                      </Text>
+                      <Text
+                        style={styles.composerHint}
+                        maxFontSizeMultiplier={1.05}
+                      >
+                        Prefix preview: {deriveProjectIssuePrefix(newProjectName)}
                       </Text>
                       <View
                         style={[
@@ -1138,6 +1156,12 @@ const styles = StyleSheet.create({
     color: Colors.textSecondary,
     fontSize: 12,
     fontFamily: Typography.uiFontMedium,
+  },
+  composerHint: {
+    color: Colors.textSecondary,
+    fontSize: 11,
+    fontFamily: Typography.terminalFont,
+    opacity: 0.78,
   },
   composerRow: {
     flexDirection: "row",

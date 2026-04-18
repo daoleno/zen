@@ -219,6 +219,7 @@ export default function TerminalScreen() {
       .sort((left, right) => right.updatedAt - left.updatedAt)
       .map(task => ({
         id: task.id,
+        identifierPrefix: task.identifierPrefix,
         number: task.number,
         title: task.title,
         subtitle: task.description || task.serverName,
@@ -280,6 +281,14 @@ export default function TerminalScreen() {
     ].filter(Boolean);
     return parts.join("\n");
   }, [agent?.cwd, agent?.summary]);
+  const createTaskServerOptions = useMemo(
+    () =>
+      serverId
+        ? [{ id: serverId, name: server?.name || agent?.serverName || serverId }]
+        : [],
+    [agent?.serverName, server?.name, serverId],
+  );
+  const handleCreateTaskServerSelect = useCallback(() => {}, []);
   const gitDiffQueryEnabled = Boolean(
     hasTerminalRoute && screenFocused && serverId && agentId && gitDiffCwd,
   );
@@ -1438,9 +1447,9 @@ export default function TerminalScreen() {
 
       <CreateIssueSheet
         visible={createTaskVisible}
-        serverOptions={[{ id: serverId, name: server?.name || agent?.serverName || serverId }]}
+        serverOptions={createTaskServerOptions}
         selectedServerId={serverId || null}
-        onSelectServer={() => {}}
+        onSelectServer={handleCreateTaskServerSelect}
         onClose={() => setCreateTaskVisible(false)}
         initialTitle={createTaskInitialTitle}
         initialDescription={createTaskInitialDescription}

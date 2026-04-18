@@ -68,6 +68,8 @@ type tmuxReadResult struct {
 const (
 	tmuxInitialHistoryViewportScreens = 4
 	tmuxInitialHistoryMaxLines        = 240
+	tmuxGroupedWindowSelectAttempts   = 6
+	tmuxGroupedWindowSelectBackoff    = 25 * time.Millisecond
 )
 
 func (s *tmuxSession) ID() string { return s.id }
@@ -593,14 +595,17 @@ func tmuxGroupedSession(targetID string, size Size) (string, *exec.Cmd, error) {
 
 	// Select the correct window in the linked session before attaching
 	if windowTarget != "" {
-		if err := exec.Command(
-			"tmux",
-			"select-window",
-			"-t",
-			linkedName+":"+strings.SplitN(windowTarget, ":", 2)[1],
-		).Run(); err != nil {
+		if err := tmuxSelectGroupedWindow(linkedName, windowTarget); err != nil {
+			if tmuxIsLegacyWindowIndexTarget(windowTarget) {
+				return linkedName, tmuxAttachCommand(linkedName), nil
+			}
 			_ = exec.Command("tmux", "kill-session", "-t", linkedName).Run()
-			return "", nil, fmt.Errorf("select grouped tmux window: %w", err)
+			return "", nil, fmt.Errorf(
+				"select grouped tmux window for %s in %s: %w",
+				windowTarget,
+				linkedName,
+				err,
+			)
 		}
 	}
 
@@ -659,6 +664,60 @@ func tmuxSessionWindowIDs(sessionName string) ([]string, error) {
 		return nil, fmt.Errorf("session %s has no windows", sessionName)
 	}
 	return windowIDs, nil
+}
+
+func tmuxSelectGroupedWindow(sessionName, targetID string) error {
+	windowRef := tmuxWindowRef(targetID)
+	if windowRef == "" {
+		return fmt.Errorf("invalid tmux window target %q", targetID)
+	}
+
+	selectTarget := sessionName + ":" + windowRef
+	var lastErr error
+	for attempt := 0; attempt < tmuxGroupedWindowSelectAttempts; attempt++ {
+		if err := exec.Command("tmux", "select-window", "-t", selectTarget).Run(); err == nil {
+			return nil
+		} else {
+			lastErr = err
+		}
+
+		time.Sleep(time.Duration(attempt+1) * tmuxGroupedWindowSelectBackoff)
+	}
+
+	return fmt.Errorf(
+		"tmux select-window -t %s failed after %d attempts: %w",
+		selectTarget,
+		tmuxGroupedWindowSelectAttempts,
+		lastErr,
+	)
+}
+
+func tmuxWindowRef(targetID string) string {
+	_, windowRef, ok := strings.Cut(strings.TrimSpace(targetID), ":")
+	if !ok {
+		return ""
+	}
+
+	windowRef = strings.TrimSpace(windowRef)
+	if idx := strings.Index(windowRef, "."); idx >= 0 {
+		windowRef = windowRef[:idx]
+	}
+
+	return strings.TrimSpace(windowRef)
+}
+
+func tmuxIsLegacyWindowIndexTarget(targetID string) bool {
+	windowRef := tmuxWindowRef(targetID)
+	if windowRef == "" || strings.HasPrefix(windowRef, "@") {
+		return false
+	}
+
+	for _, r := range windowRef {
+		if r < '0' || r > '9' {
+			return false
+		}
+	}
+	return true
 }
 
 func tmuxConfigureWindow(windowTarget string) error {

@@ -10,7 +10,12 @@ import {
 } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
-import { Colors, Typography } from "../../constants/tokens";
+import {
+  Colors,
+  Typography,
+  statusColor,
+  type AgentStatus,
+} from "../../constants/tokens";
 import { AgentKindIcon } from "../terminal/AgentKindIcon";
 
 export type AssignAgentPreset = {
@@ -29,9 +34,13 @@ interface AssignIssueSheetProps {
   repoRoot?: string;
   worktreeRoot?: string;
   baseBranch?: string;
+  currentSessionLabel?: string;
+  currentSessionStatus?: AgentStatus;
+  currentSessionSubtitle?: string;
   canAssign: boolean;
   onClose: () => void;
   onConfigureProject: () => void;
+  onOpenCurrentSession?: () => void;
   onAssign: (preset: AssignAgentPreset) => void;
 }
 
@@ -44,12 +53,17 @@ export function AssignIssueSheet({
   repoRoot,
   worktreeRoot,
   baseBranch,
+  currentSessionLabel,
+  currentSessionStatus = "unknown",
+  currentSessionSubtitle,
   canAssign,
   onClose,
   onConfigureProject,
+  onOpenCurrentSession,
   onAssign,
 }: AssignIssueSheetProps) {
   const insets = useSafeAreaInsets();
+  const title = currentSessionLabel ? "Change agent" : "Assign agent";
 
   return (
     <Modal
@@ -65,7 +79,7 @@ export function AssignIssueSheet({
           <View style={styles.handle} />
 
           <View style={styles.header}>
-            <Text style={styles.title}>Assign agent</Text>
+            <Text style={styles.title}>{title}</Text>
             <TouchableOpacity
               style={styles.closeButton}
               onPress={onClose}
@@ -106,6 +120,50 @@ export function AssignIssueSheet({
                 <Text style={styles.summaryLine}>Base branch · {baseBranch}</Text>
               ) : null}
             </View>
+
+            {currentSessionLabel && onOpenCurrentSession ? (
+              <View style={styles.currentSessionCard}>
+                <View style={styles.currentSessionHeader}>
+                  <Text style={styles.currentSessionEyebrow}>Current session</Text>
+                  <TouchableOpacity
+                    style={styles.currentSessionAction}
+                    onPress={onOpenCurrentSession}
+                    activeOpacity={0.82}
+                  >
+                    <Ionicons
+                      name="terminal-outline"
+                      size={13}
+                      color={Colors.accent}
+                    />
+                    <Text style={styles.currentSessionActionText}>
+                      Open session
+                    </Text>
+                  </TouchableOpacity>
+                </View>
+
+                <View style={styles.currentSessionRow}>
+                  <View
+                    style={[
+                      styles.currentSessionDot,
+                      { backgroundColor: statusColor(currentSessionStatus) },
+                    ]}
+                  />
+                  <View style={styles.currentSessionCopy}>
+                    <Text style={styles.currentSessionTitle} numberOfLines={1}>
+                      {currentSessionLabel}
+                    </Text>
+                    {currentSessionSubtitle ? (
+                      <Text
+                        style={styles.currentSessionSubtitle}
+                        numberOfLines={2}
+                      >
+                        {currentSessionSubtitle}
+                      </Text>
+                    ) : null}
+                  </View>
+                </View>
+              </View>
+            ) : null}
 
             {!canAssign ? (
               <View style={styles.warning}>
@@ -222,6 +280,64 @@ const styles = StyleSheet.create({
     color: Colors.textSecondary,
     fontSize: 12,
     lineHeight: 18,
+    fontFamily: Typography.uiFont,
+  },
+  currentSessionCard: {
+    borderRadius: 18,
+    backgroundColor: "rgba(91,157,255,0.08)",
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: "rgba(91,157,255,0.22)",
+    paddingHorizontal: 14,
+    paddingVertical: 12,
+    gap: 10,
+  },
+  currentSessionHeader: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: 12,
+  },
+  currentSessionEyebrow: {
+    color: Colors.textSecondary,
+    fontSize: 11,
+    fontFamily: Typography.uiFontMedium,
+    letterSpacing: 0.5,
+    textTransform: "uppercase",
+  },
+  currentSessionAction: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+  },
+  currentSessionActionText: {
+    color: Colors.accent,
+    fontSize: 12,
+    fontFamily: Typography.uiFontMedium,
+  },
+  currentSessionRow: {
+    flexDirection: "row",
+    alignItems: "flex-start",
+    gap: 10,
+  },
+  currentSessionDot: {
+    width: 9,
+    height: 9,
+    borderRadius: 4.5,
+    marginTop: 4,
+  },
+  currentSessionCopy: {
+    flex: 1,
+    gap: 4,
+  },
+  currentSessionTitle: {
+    color: Colors.textPrimary,
+    fontSize: 14,
+    fontFamily: Typography.uiFontMedium,
+  },
+  currentSessionSubtitle: {
+    color: Colors.textSecondary,
+    fontSize: 12,
+    lineHeight: 17,
     fontFamily: Typography.uiFont,
   },
   warning: {

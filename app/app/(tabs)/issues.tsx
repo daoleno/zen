@@ -26,6 +26,7 @@ import {
 import { CreateIssueSheet } from "../../components/issue/CreateIssueSheet";
 import { getServers, StoredServer } from "../../services/storage";
 import { CLAUDE_CODE_COMMAND } from "../../services/agentCommands";
+import { formatTaskIssueId } from "../../services/taskIdentity";
 import { wsClient } from "../../services/websocket";
 import {
   getRunMoment,
@@ -165,7 +166,7 @@ function getProjectMeta(
   serverName: string,
   showServerName: boolean,
 ) {
-  const parts: string[] = [];
+  const parts: string[] = [project.key];
   const repoLabel = getPathLabel(project.repoRoot);
   const worktreeLabel = getPathLabel(project.worktreeRoot);
 
@@ -283,7 +284,7 @@ export default function IssuesScreen() {
       const agent = sessionKey ? liveSessionByKey[sessionKey] || null : null;
       const sectionKey = getTaskSectionKey(task, currentRun);
       const rowStatus = getRowStatusLabel(task, currentRun);
-      const metaParts = [`ZEN-${task.number}`];
+      const metaParts = [formatTaskIssueId(task)];
 
       if (hasMultipleTaskServers) {
         metaParts.push(task.serverName);
@@ -452,6 +453,13 @@ export default function IssuesScreen() {
     });
   };
 
+  const openSession = (serverId: string, sessionId: string) => {
+    router.push({
+      pathname: "/terminal/[id]",
+      params: { id: sessionId, serverId },
+    });
+  };
+
   const ensureDefaultServer = (preferredServerId?: string | null) => {
     if (connectedServers.length === 0) {
       Alert.alert("No server connected", "Connect to a daemon first.");
@@ -529,7 +537,7 @@ export default function IssuesScreen() {
   const confirmDeleteIssue = (task: Task) => {
     Alert.alert(
       "Delete issue?",
-      `Delete ZEN-${task.number} permanently?`,
+      `Delete ${formatTaskIssueId(task)} permanently?`,
       [
         { text: "Cancel", style: "cancel" },
         {
@@ -613,6 +621,13 @@ export default function IssuesScreen() {
       onPress?: () => void;
     }[] = [{ text: "Open issue", onPress: () => openIssue(item.task) }];
 
+    if (item.sessionIsLive && item.run?.agentSessionId) {
+      actions.push({
+        text: "Open running session",
+        onPress: () => openSession(item.task.serverId, item.run!.agentSessionId!),
+      });
+    }
+
     if (canDelegate) {
       actions.push({
         text: "Start Claude run",
@@ -650,7 +665,7 @@ export default function IssuesScreen() {
     });
     actions.push({ text: "Dismiss", style: "cancel" });
 
-    Alert.alert(`ZEN-${item.task.number}`, item.task.title, actions);
+    Alert.alert(formatTaskIssueId(item.task), item.task.title, actions);
   };
 
   const handleFilterChange = (nextFilter: IssueFilter) => {
@@ -817,6 +832,11 @@ export default function IssuesScreen() {
               sessionIsLive={item.sessionIsLive}
               runCount={item.runCount}
               onPress={() => openIssue(item.task)}
+              onOpenSession={
+                item.sessionIsLive && item.run?.agentSessionId
+                  ? () => openSession(item.task.serverId, item.run!.agentSessionId!)
+                  : undefined
+              }
               onLongPress={() => handleIssueLongPress(item)}
             />
           )}

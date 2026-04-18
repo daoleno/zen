@@ -15,6 +15,7 @@ import {
 import { Ionicons } from "@expo/vector-icons";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Colors, Typography } from "../../constants/tokens";
+import { deriveProjectIssuePrefix } from "../../services/taskIdentity";
 import type { Project } from "../../store/tasks";
 import { wsClient } from "../../services/websocket";
 import { DirectoryPicker } from "../terminal/DirectoryPicker";
@@ -60,6 +61,12 @@ export function ProjectEditorSheet({
       serverOptions.find((option) => option.id === resolvedServerId)?.name || ""
     );
   }, [resolvedServerId, serverOptions]);
+  const issuePrefix = useMemo(() => {
+    if (project?.key) {
+      return project.key;
+    }
+    return deriveProjectIssuePrefix(name);
+  }, [name, project?.key]);
 
   useEffect(() => {
     if (!visible) {
@@ -235,6 +242,15 @@ export function ProjectEditorSheet({
                   autoCapitalize="words"
                   editable={!busy}
                 />
+                <View style={styles.prefixRow}>
+                  <Text style={styles.prefixLabel}>Issue prefix</Text>
+                  <Text style={styles.prefixValue}>{issuePrefix}</Text>
+                </View>
+                <Text style={styles.prefixHint}>
+                  {project
+                    ? "Stable once created."
+                    : "Auto-generated from the project name. Duplicates get a numeric suffix."}
+                </Text>
               </View>
 
               <View style={styles.group}>
@@ -467,6 +483,30 @@ const styles = StyleSheet.create({
     color: Colors.textPrimary,
     fontSize: 14,
     fontFamily: Typography.uiFontMedium,
+  },
+  prefixRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    paddingHorizontal: 2,
+    marginTop: 2,
+  },
+  prefixLabel: {
+    color: Colors.textSecondary,
+    fontSize: 11,
+    fontFamily: Typography.uiFont,
+  },
+  prefixValue: {
+    color: Colors.textPrimary,
+    fontSize: 11,
+    fontFamily: Typography.terminalFont,
+  },
+  prefixHint: {
+    color: Colors.textSecondary,
+    fontSize: 11,
+    lineHeight: 17,
+    fontFamily: Typography.uiFont,
+    opacity: 0.7,
   },
   directoryField: {
     minHeight: 44,

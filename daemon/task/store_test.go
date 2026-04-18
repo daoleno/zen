@@ -1,6 +1,9 @@
 package task
 
 import (
+	"encoding/json"
+	"os"
+	"path/filepath"
 	"sync"
 	"testing"
 )
@@ -12,17 +15,16 @@ func TestStoreCRUD(t *testing.T) {
 		t.Fatalf("NewStore: %v", err)
 	}
 
-	// Create
 	task, err := s.Create(
 		"Fix bug",
 		"Fix the login bug",
 		[]Attachment{{Name: "screenshot.png", Path: "/tmp/screenshot.png"}},
-		"",
 		"/home/user/project",
 		2,
 		[]string{"bug"},
 		"",
 		"2026-04-20",
+		"",
 	)
 	if err != nil {
 		t.Fatalf("Create: %v", err)
@@ -35,6 +37,9 @@ func TestStoreCRUD(t *testing.T) {
 	}
 	if task.Number != 1 {
 		t.Errorf("Number = %d, want 1", task.Number)
+	}
+	if task.IdentifierPrefix != DefaultIdentifierPrefix {
+		t.Errorf("IdentifierPrefix = %q, want %q", task.IdentifierPrefix, DefaultIdentifierPrefix)
 	}
 	if task.Priority != 2 {
 		t.Errorf("Priority = %d, want 2", task.Priority)
@@ -49,7 +54,6 @@ func TestStoreCRUD(t *testing.T) {
 		t.Errorf("Attachments = %#v, want persisted attachment", task.Attachments)
 	}
 
-	// Get
 	got := s.Get(task.ID)
 	if got == nil {
 		t.Fatal("Get returned nil")
@@ -58,8 +62,7 @@ func TestStoreCRUD(t *testing.T) {
 		t.Errorf("Get Title = %q, want %q", got.Title, "Fix bug")
 	}
 
-	// Second create should get number 2
-	task2, err := s.Create("Add tests", "", nil, "", "", 0, nil, "", "")
+	task2, err := s.Create("Add tests", "", nil, "", 0, nil, "", "", "")
 	if err != nil {
 		t.Fatalf("Create #2: %v", err)
 	}
@@ -67,13 +70,11 @@ func TestStoreCRUD(t *testing.T) {
 		t.Errorf("Number = %d, want 2", task2.Number)
 	}
 
-	// List
 	list := s.List()
 	if len(list) != 2 {
 		t.Fatalf("List len = %d, want 2", len(list))
 	}
 
-	// Update
 	updated, err := s.Update(task.ID, func(t *Task) {
 		t.Status = StatusInProgress
 		t.CurrentRunID = "run-1"
@@ -86,7 +87,6 @@ func TestStoreCRUD(t *testing.T) {
 		t.Errorf("Status = %q, want %q", updated.Status, StatusInProgress)
 	}
 
-	// FindByCurrentRunID
 	found := s.FindByCurrentRunID("run-1")
 	if found == nil {
 		t.Fatal("FindByCurrentRunID returned nil")
@@ -95,7 +95,6 @@ func TestStoreCRUD(t *testing.T) {
 		t.Errorf("FindByCurrentRunID ID = %q, want %q", found.ID, task.ID)
 	}
 
-	// Delete
 	if err := s.Delete(task.ID); err != nil {
 		t.Fatalf("Delete: %v", err)
 	}
@@ -111,12 +110,11 @@ func TestStorePersistence(t *testing.T) {
 		t.Fatalf("NewStore: %v", err)
 	}
 
-	task, err := s1.Create("Persistent task", "Should survive reload", nil, "", "", 0, nil, "", "2026-05-01")
+	task, err := s1.Create("Persistent task", "Should survive reload", nil, "", 0, nil, "", "2026-05-01", "")
 	if err != nil {
 		t.Fatalf("Create: %v", err)
 	}
 
-	// Create a new store from the same directory
 	s2, err := NewStore(dir)
 	if err != nil {
 		t.Fatalf("NewStore reload: %v", err)
@@ -133,8 +131,7 @@ func TestStorePersistence(t *testing.T) {
 		t.Errorf("DueDate after reload = %q, want %q", got.DueDate, "2026-05-01")
 	}
 
-	// Issue number should continue from where it left off
-	task2, err := s2.Create("Next task", "", nil, "", "", 0, nil, "", "")
+	task2, err := s2.Create("Next task", "", nil, "", 0, nil, "", "", "")
 	if err != nil {
 		t.Fatalf("Create after reload: %v", err)
 	}
@@ -150,7 +147,7 @@ func TestStoreCommentsPersist(t *testing.T) {
 		t.Fatalf("NewStore: %v", err)
 	}
 
-	task, err := s.Create("Commented task", "", nil, "", "", 0, nil, "", "")
+	task, err := s.Create("Commented task", "", nil, "", 0, nil, "", "", "")
 	if err != nil {
 		t.Fatalf("Create: %v", err)
 	}
@@ -212,7 +209,7 @@ func TestStoreConcurrency(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			_, _ = s.Create("Task", "", nil, "", "", 0, nil, "", "")
+			_, _ = s.Create("Task", "", nil, "", 0, nil, "", "", "")
 		}()
 	}
 	wg.Wait()
@@ -230,7 +227,7 @@ func TestStoreEvents(t *testing.T) {
 		t.Fatalf("NewStore: %v", err)
 	}
 
-	task, err := s.Create("Event task", "", nil, "", "", 0, nil, "", "")
+	task, err := s.Create("Event task", "", nil, "", 0, nil, "", "", "")
 	if err != nil {
 		t.Fatalf("Create: %v", err)
 	}
@@ -275,11 +272,11 @@ func TestStoreClearProjectRemovesProjectReferenceAndEmitsUpdates(t *testing.T) {
 		t.Fatalf("NewStore: %v", err)
 	}
 
-	projectTask, err := s.Create("Project task", "", nil, "", "", 0, nil, "project-1", "")
+	projectTask, err := s.Create("Project task", "", nil, "", 0, nil, "project-1", "", "PRO")
 	if err != nil {
 		t.Fatalf("Create project task: %v", err)
 	}
-	otherTask, err := s.Create("Other task", "", nil, "", "", 0, nil, "project-2", "")
+	otherTask, err := s.Create("Other task", "", nil, "", 0, nil, "project-2", "", "OTH")
 	if err != nil {
 		t.Fatalf("Create other task: %v", err)
 	}
@@ -314,6 +311,9 @@ func TestStoreClearProjectRemovesProjectReferenceAndEmitsUpdates(t *testing.T) {
 	if got.ProjectID != "" {
 		t.Fatalf("task project id = %q, want empty", got.ProjectID)
 	}
+	if got.IdentifierPrefix != "PRO" {
+		t.Fatalf("task prefix = %q, want PRO", got.IdentifierPrefix)
+	}
 
 	unchanged := s.Get(otherTask.ID)
 	if unchanged == nil {
@@ -321,6 +321,9 @@ func TestStoreClearProjectRemovesProjectReferenceAndEmitsUpdates(t *testing.T) {
 	}
 	if unchanged.ProjectID != "project-2" {
 		t.Fatalf("other task project id = %q, want %q", unchanged.ProjectID, "project-2")
+	}
+	if unchanged.IdentifierPrefix != "OTH" {
+		t.Fatalf("other task prefix = %q, want OTH", unchanged.IdentifierPrefix)
 	}
 
 	select {
@@ -348,5 +351,96 @@ func TestStoreClearProjectRemovesProjectReferenceAndEmitsUpdates(t *testing.T) {
 	}
 	if reloadedTask.ProjectID != "" {
 		t.Fatalf("reloaded project id = %q, want empty", reloadedTask.ProjectID)
+	}
+	if reloadedTask.IdentifierPrefix != "PRO" {
+		t.Fatalf("reloaded prefix = %q, want PRO", reloadedTask.IdentifierPrefix)
+	}
+}
+
+func TestStoreNumbersAreScopedByIdentifierPrefix(t *testing.T) {
+	dir := t.TempDir()
+	s, err := NewStore(dir)
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+
+	backlog, err := s.Create("General issue", "", nil, "", 0, nil, "", "", "")
+	if err != nil {
+		t.Fatalf("Create backlog: %v", err)
+	}
+	projectOne, err := s.Create("Project issue 1", "", nil, "", 0, nil, "project-1", "", "WOO")
+	if err != nil {
+		t.Fatalf("Create project issue 1: %v", err)
+	}
+	projectTwo, err := s.Create("Project issue 2", "", nil, "", 0, nil, "project-1", "", "WOO")
+	if err != nil {
+		t.Fatalf("Create project issue 2: %v", err)
+	}
+	otherProject, err := s.Create("Project issue A", "", nil, "", 0, nil, "project-2", "", "ABC")
+	if err != nil {
+		t.Fatalf("Create project issue A: %v", err)
+	}
+
+	if backlog.Number != 1 || backlog.IdentifierPrefix != DefaultIdentifierPrefix {
+		t.Fatalf("backlog = %s, want %s", DisplayID(backlog), FormatDisplayID(DefaultIdentifierPrefix, 1))
+	}
+	if projectOne.Number != 1 || projectOne.IdentifierPrefix != "WOO" {
+		t.Fatalf("project one = %s, want %s", DisplayID(projectOne), FormatDisplayID("WOO", 1))
+	}
+	if projectTwo.Number != 2 || projectTwo.IdentifierPrefix != "WOO" {
+		t.Fatalf("project two = %s, want %s", DisplayID(projectTwo), FormatDisplayID("WOO", 2))
+	}
+	if otherProject.Number != 1 || otherProject.IdentifierPrefix != "ABC" {
+		t.Fatalf("other project = %s, want %s", DisplayID(otherProject), FormatDisplayID("ABC", 1))
+	}
+}
+
+func TestStoreLoadBackfillsLegacyIdentifierPrefixAndCounter(t *testing.T) {
+	dir := t.TempDir()
+
+	legacyTasks := []*Task{
+		{ID: "task-1", Number: 1, Title: "Legacy 1"},
+		{ID: "task-2", Number: 3, Title: "Legacy 3"},
+	}
+	tasksData, err := json.MarshalIndent(legacyTasks, "", "  ")
+	if err != nil {
+		t.Fatalf("MarshalIndent tasks: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "tasks.json"), tasksData, 0o600); err != nil {
+		t.Fatalf("Write tasks.json: %v", err)
+	}
+
+	metaData, err := json.MarshalIndent(storeMeta{NextIssueNumber: 4}, "", "  ")
+	if err != nil {
+		t.Fatalf("MarshalIndent meta: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "meta.json"), metaData, 0o600); err != nil {
+		t.Fatalf("Write meta.json: %v", err)
+	}
+
+	s, err := NewStore(dir)
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+
+	for _, id := range []string{"task-1", "task-2"} {
+		current := s.Get(id)
+		if current == nil {
+			t.Fatalf("expected task %s", id)
+		}
+		if current.IdentifierPrefix != DefaultIdentifierPrefix {
+			t.Fatalf("legacy prefix = %q, want %q", current.IdentifierPrefix, DefaultIdentifierPrefix)
+		}
+	}
+
+	next, err := s.Create("Next legacy issue", "", nil, "", 0, nil, "", "", "")
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if next.Number != 4 {
+		t.Fatalf("Number = %d, want 4", next.Number)
+	}
+	if next.IdentifierPrefix != DefaultIdentifierPrefix {
+		t.Fatalf("IdentifierPrefix = %q, want %q", next.IdentifierPrefix, DefaultIdentifierPrefix)
 	}
 }

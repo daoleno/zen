@@ -17,6 +17,7 @@ interface Props {
   sessionIsLive?: boolean;
   runCount?: number;
   onPress: () => void;
+  onOpenSession?: () => void;
   onLongPress?: () => void;
 }
 
@@ -31,10 +32,12 @@ export function IssueRow({
   sessionIsLive = false,
   runCount = 0,
   onPress,
+  onOpenSession,
   onLongPress,
 }: Props) {
   const isDimmed = task.status === 'done' || task.status === 'cancelled';
   const hasTrailing = hasLiveSession || !!run?.agentSessionId || runCount > 1 || !!statusLabel;
+  const trailingInteractive = sessionIsLive && !!onOpenSession;
 
   // Derive terminal icon color from execution state
   const terminalColor = statusLabel
@@ -44,60 +47,88 @@ export function IssueRow({
       : Colors.textSecondary;
 
   return (
-    <TouchableOpacity
-      style={[styles.row, isDimmed && styles.rowDimmed]}
-      onPress={onPress}
-      onLongPress={onLongPress}
-      activeOpacity={0.82}
-      delayLongPress={400}
-    >
-      <PriorityBar priority={task.priority} />
+    <View style={[styles.row, isDimmed && styles.rowDimmed]}>
+      <TouchableOpacity
+        style={styles.mainPress}
+        onPress={onPress}
+        onLongPress={onLongPress}
+        activeOpacity={0.82}
+        delayLongPress={400}
+      >
+        <PriorityBar priority={task.priority} />
 
-      <View style={styles.iconWrap}>
-        <IssueStatusIcon status={task.status} size={15} />
-      </View>
+        <View style={styles.iconWrap}>
+          <IssueStatusIcon status={task.status} size={15} />
+        </View>
 
-      <View style={styles.copy}>
-        <Text style={styles.title} numberOfLines={1}>{task.title}</Text>
-        <Text style={styles.meta} numberOfLines={1}>
-          {metaText}
-          {secondaryText ? `  ·  ${secondaryText}` : ''}
-        </Text>
-      </View>
-
+        <View style={styles.copy}>
+          <Text style={styles.title} numberOfLines={1}>{task.title}</Text>
+          <Text style={styles.meta} numberOfLines={1}>
+            {metaText}
+            {secondaryText ? `  ·  ${secondaryText}` : ''}
+          </Text>
+        </View>
+      </TouchableOpacity>
       {hasTrailing ? (
-        <View style={styles.trailing}>
-          {runCount > 1 ? (
-            <Text style={styles.runCount}>×{runCount}</Text>
-          ) : null}
-          {statusLabel ? (
-            <View style={[styles.statusDot, { backgroundColor: statusTone }]} />
-          ) : null}
-          {hasLiveSession ? (
+        trailingInteractive ? (
+          <TouchableOpacity
+            style={[styles.trailing, styles.trailingButton]}
+            onPress={onOpenSession}
+            activeOpacity={0.82}
+          >
+            {runCount > 1 ? (
+              <Text style={styles.runCount}>×{runCount}</Text>
+            ) : null}
+            {statusLabel ? (
+              <View style={[styles.statusDot, { backgroundColor: statusTone }]} />
+            ) : null}
             <Ionicons
               name="terminal-outline"
               size={13}
               color={terminalColor}
             />
-          ) : run?.agentSessionId ? (
-            <Ionicons name="link-outline" size={12} color={Colors.textSecondary} />
-          ) : null}
-        </View>
+          </TouchableOpacity>
+        ) : (
+          <View style={styles.trailing}>
+            {runCount > 1 ? (
+              <Text style={styles.runCount}>×{runCount}</Text>
+            ) : null}
+            {statusLabel ? (
+              <View style={[styles.statusDot, { backgroundColor: statusTone }]} />
+            ) : null}
+            {hasLiveSession ? (
+              <Ionicons
+                name="terminal-outline"
+                size={13}
+                color={terminalColor}
+              />
+            ) : run?.agentSessionId ? (
+              <Ionicons name="link-outline" size={12} color={Colors.textSecondary} />
+            ) : null}
+          </View>
+        )
       ) : null}
-    </TouchableOpacity>
+    </View>
   );
 }
 
 const styles = StyleSheet.create({
   row: {
     minHeight: 50,
-    paddingRight: 4,
     flexDirection: 'row',
     alignItems: 'center',
     gap: 10,
   },
   rowDimmed: {
     opacity: 0.42,
+  },
+  mainPress: {
+    flex: 1,
+    minHeight: 50,
+    paddingRight: 4,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
   },
   iconWrap: {
     width: 16,
@@ -125,6 +156,13 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     gap: 5,
     paddingLeft: 6,
+  },
+  trailingButton: {
+    minHeight: 32,
+    paddingHorizontal: 8,
+    borderRadius: 10,
+    justifyContent: 'center',
+    backgroundColor: 'rgba(91,157,255,0.08)',
   },
   statusDot: {
     width: 5,

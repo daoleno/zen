@@ -13,23 +13,23 @@ const (
 )
 
 type Task struct {
-	ID            string        `json:"id"`
-	Number        int           `json:"number"`
-	Title         string        `json:"title"`
-	Description   string        `json:"description,omitempty"`
-	Attachments   []Attachment  `json:"attachments,omitempty"`
-	Status        TaskStatus    `json:"status"`
-	Priority      int           `json:"priority"`
-	Labels        []string      `json:"labels,omitempty"`
-	ProjectID     string        `json:"project_id,omitempty"`
-	SkillID       string        `json:"skill_id,omitempty"`
-	DueDate       string        `json:"due_date,omitempty"`
-	Cwd           string        `json:"cwd,omitempty"`
-	CurrentRunID  string        `json:"current_run_id,omitempty"`
-	LastRunStatus string        `json:"last_run_status,omitempty"`
-	Comments      []TaskComment `json:"comments,omitempty"`
-	CreatedAt     time.Time     `json:"created_at"`
-	UpdatedAt     time.Time     `json:"updated_at"`
+	ID               string        `json:"id"`
+	IdentifierPrefix string        `json:"identifier_prefix"`
+	Number           int           `json:"number"`
+	Title            string        `json:"title"`
+	Description      string        `json:"description,omitempty"`
+	Attachments      []Attachment  `json:"attachments,omitempty"`
+	Status           TaskStatus    `json:"status"`
+	Priority         int           `json:"priority"`
+	Labels           []string      `json:"labels,omitempty"`
+	ProjectID        string        `json:"project_id,omitempty"`
+	DueDate          string        `json:"due_date,omitempty"`
+	Cwd              string        `json:"cwd,omitempty"`
+	CurrentRunID     string        `json:"current_run_id,omitempty"`
+	LastRunStatus    string        `json:"last_run_status,omitempty"`
+	Comments         []TaskComment `json:"comments,omitempty"`
+	CreatedAt        time.Time     `json:"created_at"`
+	UpdatedAt        time.Time     `json:"updated_at"`
 }
 
 type Attachment struct {
@@ -57,15 +57,6 @@ type TaskEvent struct {
 	Task   *Task  `json:"task,omitempty"`
 }
 
-type Skill struct {
-	ID       string `json:"id"`
-	Name     string `json:"name"`
-	Icon     string `json:"icon,omitempty"`
-	AgentCmd string `json:"agent_cmd"`
-	Prompt   string `json:"prompt"`
-	Cwd      string `json:"cwd,omitempty"`
-}
-
 type Guidance struct {
 	Preamble    string   `json:"preamble"`
 	Constraints []string `json:"constraints"`
@@ -73,6 +64,7 @@ type Guidance struct {
 
 type Project struct {
 	ID           string    `json:"id"`
+	Key          string    `json:"key"`
 	Name         string    `json:"name"`
 	Icon         string    `json:"icon,omitempty"`
 	RepoRoot     string    `json:"repo_root,omitempty"`

@@ -272,7 +272,7 @@ function AppContent() {
         issue: data.issue || null,
       });
 
-    // Task/Skill/Guidance listeners
+    // Task/Guidance listeners
     const onTaskList = (data: any) =>
       taskDispatch({
         type: "UPSERT_SERVER_TASKS",
@@ -359,13 +359,6 @@ function AppContent() {
           task: data.task,
         });
     };
-    const onSkillList = (data: any) =>
-      taskDispatch({
-        type: "UPSERT_SERVER_SKILLS",
-        serverId: data.serverId,
-        serverName: data.serverName,
-        skills: data.skills || [],
-      });
     const onGuidance = (data: any) => {
       if (data.guidance)
         taskDispatch({
@@ -404,11 +397,10 @@ function AppContent() {
         projectId: data.project_id,
       });
 
-    // Fetch tasks, skills, projects on connected
+    // Fetch tasks, projects on connected
     const onConnectedFetchTasks = (data: any) => {
       wsClient.listTasks(data.serverId);
       wsClient.listRuns(data.serverId);
-      wsClient.listSkills(data.serverId);
       wsClient.getGuidance(data.serverId);
       wsClient.listProjects(data.serverId);
       wsClient.listAgentSessions(data.serverId);
@@ -433,7 +425,6 @@ function AppContent() {
     wsClient.on("run_failed", onRunUpdated);
     wsClient.on("run_cancelled", onRunUpdated);
     wsClient.on("task_comment_added", onTaskCommentAdded);
-    wsClient.on("skill_list", onSkillList);
     wsClient.on("guidance", onGuidance);
     wsClient.on("guidance_updated", onGuidance);
     wsClient.on("project_list", onProjectList);
@@ -491,7 +482,6 @@ function AppContent() {
       wsClient.off("run_failed", onRunUpdated);
       wsClient.off("run_cancelled", onRunUpdated);
       wsClient.off("task_comment_added", onTaskCommentAdded);
-      wsClient.off("skill_list", onSkillList);
       wsClient.off("guidance", onGuidance);
       wsClient.off("guidance_updated", onGuidance);
       wsClient.off("project_list", onProjectList);

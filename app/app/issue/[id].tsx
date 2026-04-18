@@ -53,6 +53,10 @@ import {
   getTaskStatusPresentation,
   pickCurrentRun,
 } from "../../services/taskFeed";
+import {
+  deriveProjectIssuePrefix,
+  formatTaskIssueId,
+} from "../../services/taskIdentity";
 import { uploadDocumentForServer } from "../../services/uploads";
 import { wsClient } from "../../services/websocket";
 import { useAgents } from "../../store/agents";
@@ -219,7 +223,7 @@ function buildActivityItems(
       title: "Issue created",
       timestamp: task.createdAt,
       tone: issueStatusColor(task.status),
-      meta: `ZEN-${task.number}`,
+      meta: formatTaskIssueId(task),
       body: collapseCopy(task.description, 220) || undefined,
     },
   ];
@@ -531,6 +535,7 @@ export default function IssueDetailScreen() {
     project?.repoRoot?.trim() ||
     "";
   const taskStatusLabel = TASK_STATUS_LABEL[task.status] || task.status;
+  const issueId = formatTaskIssueId(task);
   const statusPresentation = getTaskStatusPresentation(task, currentRun);
   const secondaryCopy = getTaskSecondaryText(task, currentRun, currentAgent);
   const showExecutionBadge =
@@ -583,7 +588,7 @@ export default function IssueDetailScreen() {
       return;
     }
 
-    Alert.alert("Delete issue?", `Delete ZEN-${task.number} permanently?`, [
+    Alert.alert("Delete issue?", `Delete ${issueId} permanently?`, [
       { text: "Cancel", style: "cancel" },
       {
         text: "Delete",
@@ -818,7 +823,7 @@ export default function IssueDetailScreen() {
         </TouchableOpacity>
 
         <View style={styles.headerCopy}>
-          <Text style={styles.headerKey}>ZEN-{task.number}</Text>
+          <Text style={styles.headerKey}>{issueId}</Text>
         </View>
 
         <TouchableOpacity
@@ -914,14 +919,20 @@ export default function IssueDetailScreen() {
               }
               valueTone={currentAgent ? Colors.statusRunning : undefined}
               muted={!currentAgent && !currentRun?.agentSessionId}
-              onPress={
-                currentAgent
-                  ? () => openSession(currentAgent.id)
-                  : currentRun?.agentSessionId
-                    ? () => openSession(currentRun.agentSessionId!)
-                    : () => setAssignVisible(true)
-              }
+              onPress={() => setAssignVisible(true)}
             />
+            {currentAgent ? (
+              <>
+                <Divider />
+                <PropertyRow
+                  icon="terminal-outline"
+                  label="Session"
+                  value="Open running session"
+                  valueTone={Colors.accent}
+                  onPress={() => openSession(currentAgent.id)}
+                />
+              </>
+            ) : null}
             {workspaceValue ? (
               <>
                 <Divider />
@@ -1134,12 +1145,26 @@ export default function IssueDetailScreen() {
         repoRoot={project?.repoRoot}
         worktreeRoot={project?.worktreeRoot}
         baseBranch={project?.baseBranch}
+        currentSessionLabel={
+          currentAgent ? formatAgentLabel(currentAgent) : undefined
+        }
+        currentSessionStatus={currentAgent?.status}
+        currentSessionSubtitle={
+          currentAgent
+            ? collapseCopy(currentAgent.summary, 120) ||
+              currentAgent.cwd?.trim() ||
+              undefined
+            : undefined
+        }
         canAssign={projectReady}
         onClose={() => setAssignVisible(false)}
         onConfigureProject={() => {
           setAssignVisible(false);
           setProjectVisible(true);
         }}
+        onOpenCurrentSession={
+          currentAgent ? () => openSession(currentAgent.id) : undefined
+        }
         onAssign={(preset) => {
           void handleAssign(preset);
         }}
@@ -1630,6 +1655,10 @@ function ProjectSetupSheet({
 }) {
   const isNewProject = draftProjectId === NEW_PROJECT_ID;
   const showEditor = draftProjectId !== "";
+  const selectedProject = projects.find((project) => project.id === draftProjectId) || null;
+  const issuePrefix = isNewProject
+    ? deriveProjectIssuePrefix(projectName)
+    : selectedProject?.key || deriveProjectIssuePrefix(projectName);
   const primaryLabel = isNewProject
     ? "Create & use"
     : draftProjectId
@@ -1720,6 +1749,15 @@ function ProjectSetupSheet({
               style={styles.editorTitleInput}
               autoCapitalize="words"
             />
+            <View style={styles.projectPrefixRow}>
+              <Text style={styles.projectPrefixLabel}>Issue prefix</Text>
+              <Text style={styles.projectPrefixValue}>{issuePrefix}</Text>
+            </View>
+            <Text style={styles.projectPrefixHint}>
+              {isNewProject
+                ? "Auto-generated from the project name. Duplicates get a numeric suffix."
+                : "Stable once the project is created."}
+            </Text>
 
             <FieldLabel text="Repo root" />
             <DirectoryField
@@ -1731,7 +1769,7 @@ function ProjectSetupSheet({
             <FieldLabel text="Worktree root" />
             <DirectoryField
               value={worktreeRoot}
-              placeholder="Optional. Defaults to .zen-worktrees beside the repo"
+              placeholder="Optional. Defaults to .zen/worktrees beside the repo"
               onPress={onOpenWorktreePicker}
             />
 
@@ -2699,6 +2737,30 @@ const styles = StyleSheet.create({
     color: Colors.textPrimary,
     fontSize: 14,
     fontFamily: Typography.uiFontMedium,
+  },
+  projectPrefixRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    paddingHorizontal: 4,
+    marginTop: -2,
+  },
+  projectPrefixLabel: {
+    color: Colors.textSecondary,
+    fontSize: 12,
+    fontFamily: Typography.uiFont,
+  },
+  projectPrefixValue: {
+    color: Colors.textPrimary,
+    fontSize: 12,
+    fontFamily: Typography.terminalFont,
+  },
+  projectPrefixHint: {
+    color: Colors.textSecondary,
+    fontSize: 11,
+    lineHeight: 17,
+    fontFamily: Typography.uiFont,
+    marginTop: -2,
   },
   editorDescriptionInput: {
     minHeight: 146,

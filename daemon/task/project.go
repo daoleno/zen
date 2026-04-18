@@ -71,6 +71,7 @@ func (ps *ProjectStore) Create(name, icon, repoRoot, worktreeRoot, baseBranch st
 	}
 
 	ps.mu.Lock()
+	p.Key = ps.allocateKeyLocked(p.Name, "")
 	ps.projects[p.ID] = p
 	if err := ps.persist(); err != nil {
 		delete(ps.projects, p.ID)
@@ -98,6 +99,16 @@ func (ps *ProjectStore) Update(id string, fn func(*Project)) (*Project, error) {
 	if p.Name == "" {
 		ps.mu.Unlock()
 		return nil, fmt.Errorf("project name is required")
+	}
+	if p.Key == "" {
+		p.Key = ps.allocateKeyLocked(p.Name, p.ID)
+	} else {
+		normalizedKey := NormalizeIdentifierPrefix(p.Key)
+		if ps.keyTakenLocked(normalizedKey, p.ID) {
+			p.Key = ps.allocateKeyLocked(p.Name, p.ID)
+		} else {
+			p.Key = normalizedKey
+		}
 	}
 	p.UpdatedAt = time.Now().UTC()
 
@@ -137,8 +148,35 @@ func (ps *ProjectStore) load() error {
 	if err := json.Unmarshal(data, &list); err != nil {
 		return fmt.Errorf("parse projects file: %w", err)
 	}
+	dirty := false
+	taken := make(map[string]bool)
 	for _, p := range list {
+		p.Name = strings.TrimSpace(p.Name)
+		p.Icon = strings.TrimSpace(p.Icon)
+		p.RepoRoot = strings.TrimSpace(p.RepoRoot)
+		p.WorktreeRoot = strings.TrimSpace(p.WorktreeRoot)
+		p.BaseBranch = strings.TrimSpace(p.BaseBranch)
+
+		key := strings.TrimSpace(p.Key)
+		normalizedKey := NormalizeIdentifierPrefix(key)
+		if key == "" || taken[normalizedKey] {
+			p.Key = DeriveProjectKey(p.Name, func(candidate string) bool {
+				return taken[candidate]
+			})
+			dirty = true
+		} else {
+			if p.Key != normalizedKey {
+				p.Key = normalizedKey
+				dirty = true
+			}
+		}
+		taken[p.Key] = true
 		ps.projects[p.ID] = p
+	}
+	if dirty {
+		if err := ps.persist(); err != nil {
+			return err
+		}
 	}
 	return nil
 }
@@ -153,4 +191,23 @@ func (ps *ProjectStore) persist() error {
 		return err
 	}
 	return writeFileAtomic(ps.path, data, 0o600)
+}
+
+func (ps *ProjectStore) allocateKeyLocked(name, excludeID string) string {
+	return DeriveProjectKey(name, func(candidate string) bool {
+		return ps.keyTakenLocked(candidate, excludeID)
+	})
+}
+
+func (ps *ProjectStore) keyTakenLocked(candidate, excludeID string) bool {
+	normalizedCandidate := NormalizeIdentifierPrefix(candidate)
+	for _, project := range ps.projects {
+		if project.ID == excludeID {
+			continue
+		}
+		if NormalizeIdentifierPrefix(project.Key) == normalizedCandidate {
+			return true
+		}
+	}
+	return false
 }

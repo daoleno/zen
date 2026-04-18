@@ -51,6 +51,36 @@ func TestTmuxClientEnvOverridesTerminalCapabilities(t *testing.T) {
 	}
 }
 
+func TestTmuxWindowRefExtractsWindowIndex(t *testing.T) {
+	got := tmuxWindowRef("main:12")
+	if got != "12" {
+		t.Fatalf("tmuxWindowRef() = %q, want %q", got, "12")
+	}
+}
+
+func TestTmuxWindowRefStripsPaneSuffix(t *testing.T) {
+	got := tmuxWindowRef("main:12.1")
+	if got != "12" {
+		t.Fatalf("tmuxWindowRef() with pane suffix = %q, want %q", got, "12")
+	}
+}
+
+func TestTmuxWindowRefHandlesInvalidTarget(t *testing.T) {
+	got := tmuxWindowRef("main")
+	if got != "" {
+		t.Fatalf("tmuxWindowRef() for invalid target = %q, want empty string", got)
+	}
+}
+
+func TestTmuxIsLegacyWindowIndexTarget(t *testing.T) {
+	if !tmuxIsLegacyWindowIndexTarget("main:12") {
+		t.Fatalf("tmuxIsLegacyWindowIndexTarget() should accept numeric window index targets")
+	}
+	if tmuxIsLegacyWindowIndexTarget("main:@12") {
+		t.Fatalf("tmuxIsLegacyWindowIndexTarget() should reject stable window ids")
+	}
+}
+
 func TestTmuxHistoryCaptureRangeUsesOnlyScrollbackRegion(t *testing.T) {
 	startLine, endLine := tmuxHistoryCaptureRange(10, 21)
 	if startLine != -21 || endLine != -10 {

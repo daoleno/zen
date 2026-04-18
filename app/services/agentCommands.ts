@@ -1,7 +1,7 @@
 const QUOTE_TRIM_RE = /^['"]|['"]$/g;
 
 export const CLAUDE_CODE_COMMAND = "claude --dangerously-skip-permissions";
-export const CODEX_COMMAND = "codex --approval-mode auto";
+export const CODEX_COMMAND = "codex --dangerously-bypass-approvals-and-sandbox";
 
 export type SupportedAgentID = "claude" | "codex";
 

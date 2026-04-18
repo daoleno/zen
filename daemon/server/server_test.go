@@ -1,6 +1,8 @@
 package server
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -141,21 +143,17 @@ func TestBuildTaskPromptRequiresExplicitAgentCommand(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewGuidanceStore: %v", err)
 	}
-	skillStore, err := task.NewSkillStore(dir)
-	if err != nil {
-		t.Fatalf("NewSkillStore: %v", err)
-	}
 
 	s := &Server{
 		guidance: guidanceStore,
-		skills:   skillStore,
 	}
 
 	_, _, err = s.buildTaskPrompt(&task.Task{
 		ID:          "task-1",
+		Number:      12,
 		Title:       "Investigate command selection",
 		Description: "Make agent startup explicit.",
-	}, "", "")
+	}, "/tmp/zen-worktree", "", "")
 	if err == nil {
 		t.Fatal("expected missing agent command error")
 	}
@@ -164,32 +162,113 @@ func TestBuildTaskPromptRequiresExplicitAgentCommand(t *testing.T) {
 	}
 }
 
-func TestBuildTaskPromptUsesSkillAgentCommandWhenPresent(t *testing.T) {
+func TestBuildTaskPromptIncludesStructuredIssueContext(t *testing.T) {
 	dir := t.TempDir()
 	guidanceStore, err := task.NewGuidanceStore(dir)
 	if err != nil {
 		t.Fatalf("NewGuidanceStore: %v", err)
 	}
-	skillStore, err := task.NewSkillStore(dir)
+	projectStore, err := task.NewProjectStore(dir)
 	if err != nil {
-		t.Fatalf("NewSkillStore: %v", err)
+		t.Fatalf("NewProjectStore: %v", err)
+	}
+	project, err := projectStore.Create("wooo-cli", "", "/repo/root", "", "main")
+	if err != nil {
+		t.Fatalf("Create project: %v", err)
 	}
 
 	s := &Server{
 		guidance: guidanceStore,
-		skills:   skillStore,
+		projects: projectStore,
 	}
 
-	_, cmd, err := s.buildTaskPrompt(&task.Task{
-		ID:      "task-1",
-		Title:   "Review the diff",
-		SkillID: "builtin-review",
-	}, "", "")
+	prompt, cmd, err := s.buildTaskPrompt(&task.Task{
+		ID:               "task-1",
+		IdentifierPrefix: project.Key,
+		Number:           7,
+		Title:            "Upgrade polymarket v2",
+		Description:      "Follow the migration guide and update the CLI client.",
+		Status:           task.StatusTodo,
+		Priority:         2,
+		DueDate:          "2026-04-18",
+		Labels:           []string{"migration", "api"},
+		ProjectID:        project.ID,
+		Attachments:      []task.Attachment{{Name: "guide.md", Path: "/tmp/guide.md"}},
+		Comments: []task.TaskComment{
+			{ID: "c1", Body: "Please keep the old commands working.", AuthorLabel: "Alice"},
+			{ID: "c2", Body: "Double-check auth edge cases.", AuthorLabel: "Bob"},
+		},
+	}, "/tmp/zen-worktree", "", "codex --dangerously-bypass-approvals-and-sandbox")
 	if err != nil {
 		t.Fatalf("buildTaskPrompt: %v", err)
 	}
-	if cmd != task.DefaultClaudeAgentCmd {
-		t.Fatalf("command = %q, want %q", cmd, task.DefaultClaudeAgentCmd)
+	if cmd != "codex --dangerously-bypass-approvals-and-sandbox" {
+		t.Fatalf("command = %q, want %q", cmd, "codex --dangerously-bypass-approvals-and-sandbox")
+	}
+	for _, snippet := range []string{
+		"Issue:\n- ID: WOO-7",
+		"- Title: Upgrade polymarket v2",
+		"- Project: wooo-cli",
+		"- Repo root: /repo/root",
+		"- Base branch: main",
+		"- Workspace: /tmp/zen-worktree",
+		"Goal:\nFollow the migration guide and update the CLI client.",
+		"Attached files:\n- /tmp/guide.md (guide.md)",
+		"Recent discussion:\n- Alice: Please keep the old commands working.\n- Bob: Double-check auth edge cases.",
+		"Working rules:",
+	} {
+		if !strings.Contains(prompt, snippet) {
+			t.Fatalf("prompt missing %q:\n%s", snippet, prompt)
+		}
+	}
+}
+
+func TestDefaultWorktreeRootUsesZenWorkspaceDir(t *testing.T) {
+	got := defaultWorktreeRoot("/workspace/zen")
+	want := "/workspace/.zen/worktrees/zen"
+	if got != want {
+		t.Fatalf("defaultWorktreeRoot = %q, want %q", got, want)
+	}
+}
+
+func TestWriteTaskStateFileUsesZenWorkspaceDir(t *testing.T) {
+	dir := t.TempDir()
+	currentTask := &task.Task{
+		ID:               "task-1",
+		IdentifierPrefix: "ZEN",
+		Number:           12,
+		Title:            "Investigate workspace layout",
+		Description:      "Move task state into the workspace-local .zen directory.",
+		Cwd:              dir,
+	}
+	currentRun := &task.Run{
+		ID:           "run-1",
+		TaskID:       currentTask.ID,
+		Status:       task.RunStatusRunning,
+		ExecutorKind: "codex",
+	}
+
+	s := &Server{}
+	if err := s.writeTaskStateFile(currentTask, currentRun); err != nil {
+		t.Fatalf("writeTaskStateFile: %v", err)
+	}
+
+	path := filepath.Join(dir, ".zen", "task.md")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("ReadFile(%q): %v", path, err)
+	}
+	content := string(data)
+	if !strings.Contains(content, "# ZEN-12 Investigate workspace layout") {
+		t.Fatalf("task state file missing heading: %q", content)
+	}
+	if !strings.Contains(content, "## Machine status") {
+		t.Fatalf("task state file missing machine status block: %q", content)
+	}
+
+	legacyPath := filepath.Join(dir, ".zen-task.md")
+	if _, err := os.Stat(legacyPath); !os.IsNotExist(err) {
+		t.Fatalf("legacy task state path should not exist, stat err = %v", err)
 	}
 }
 
@@ -209,9 +288,9 @@ func TestSyncRunAndTaskForSessionEventKeepsTaskInProgressOnRunCompletion(t *test
 		"Separate run status from task status",
 		nil,
 		"",
-		"",
 		0,
 		nil,
+		"",
 		"",
 		"",
 	)

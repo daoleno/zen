@@ -1,5 +1,6 @@
 import React, { createContext, useContext, useReducer, ReactNode } from "react";
 import type { IssueStatus, IssuePriority } from "../constants/tokens";
+import { normalizeIssuePrefix } from "../services/taskIdentity";
 
 export type { IssueStatus, IssuePriority };
 
@@ -24,6 +25,7 @@ export interface TaskComment {
 
 export interface Task {
   id: string;
+  identifierPrefix: string;
   number: number;
   serverId: string;
   serverName: string;
@@ -34,7 +36,6 @@ export interface Task {
   priority: IssuePriority;
   labels: string[];
   projectId?: string;
-  skillId?: string;
   dueDate?: string;
   cwd?: string;
   currentRunId?: string;
@@ -65,17 +66,6 @@ export interface Run {
   updatedAt: number;
 }
 
-export interface Skill {
-  id: string;
-  serverId: string;
-  serverName: string;
-  name: string;
-  icon: string;
-  agentCmd: string;
-  prompt: string;
-  cwd?: string;
-}
-
 export interface Guidance {
   preamble: string;
   constraints: string[];
@@ -84,6 +74,7 @@ export interface Guidance {
 export interface Project {
   id: string;
   serverId: string;
+  key: string;
   name: string;
   icon: string;
   repoRoot?: string;
@@ -94,13 +85,13 @@ export interface Project {
 interface State {
   tasks: Task[];
   runs: Run[];
-  skills: Skill[];
   projects: Project[];
   guidance: Record<string, Guidance>;
 }
 
 type RawTask = {
   id: string;
+  identifier_prefix?: string;
   number?: number;
   title: string;
   description?: string;
@@ -109,7 +100,6 @@ type RawTask = {
   priority?: number;
   labels?: string[];
   project_id?: string;
-  skill_id?: string;
   due_date?: string;
   cwd?: string;
   current_run_id?: string;
@@ -157,17 +147,9 @@ type RawRun = {
   updated_at?: string | number;
 };
 
-type RawSkill = {
-  id: string;
-  name: string;
-  icon?: string;
-  agent_cmd: string;
-  prompt: string;
-  cwd?: string;
-};
-
 type RawProject = {
   id: string;
+  key?: string;
   name: string;
   icon?: string;
   repo_root?: string;
@@ -203,12 +185,6 @@ type Action =
     }
   | { type: "RUN_CREATED"; serverId: string; serverName: string; run: RawRun }
   | { type: "RUN_UPDATED"; serverId: string; serverName: string; run: RawRun }
-  | {
-      type: "UPSERT_SERVER_SKILLS";
-      serverId: string;
-      serverName: string;
-      skills: RawSkill[];
-    }
   | { type: "UPSERT_SERVER_PROJECTS"; serverId: string; projects: RawProject[] }
   | { type: "PROJECT_CREATED"; serverId: string; project: RawProject }
   | { type: "PROJECT_UPDATED"; serverId: string; project: RawProject }
@@ -219,7 +195,6 @@ type Action =
 const initialState: State = {
   tasks: [],
   runs: [],
-  skills: [],
   projects: [],
   guidance: {},
 };
@@ -231,6 +206,7 @@ function normalizeTask(
 ): Task {
   return {
     id: raw.id,
+    identifierPrefix: normalizeIssuePrefix(raw.identifier_prefix),
     number: raw.number || 0,
     serverId,
     serverName,
@@ -243,7 +219,6 @@ function normalizeTask(
     priority: (raw.priority || 0) as IssuePriority,
     labels: raw.labels || [],
     projectId: raw.project_id,
-    skillId: raw.skill_id,
     dueDate: raw.due_date || "",
     cwd: raw.cwd,
     currentRunId: raw.current_run_id,
@@ -304,27 +279,11 @@ function normalizeRun(raw: RawRun, serverId: string, serverName: string): Run {
   };
 }
 
-function normalizeSkill(
-  raw: RawSkill,
-  serverId: string,
-  serverName: string,
-): Skill {
-  return {
-    id: raw.id,
-    serverId,
-    serverName,
-    name: raw.name,
-    icon: raw.icon || "",
-    agentCmd: raw.agent_cmd,
-    prompt: raw.prompt,
-    cwd: raw.cwd,
-  };
-}
-
 function normalizeProject(raw: RawProject, serverId: string): Project {
   return {
     id: raw.id,
     serverId,
+    key: normalizeIssuePrefix(raw.key),
     name: raw.name,
     icon: raw.icon || "",
     repoRoot: raw.repo_root || "",
@@ -437,18 +396,6 @@ function reducer(state: State, action: Action): State {
           : [...state.runs, run],
       };
     }
-    case "UPSERT_SERVER_SKILLS": {
-      const normalized = action.skills.map((s) =>
-        normalizeSkill(s, action.serverId, action.serverName),
-      );
-      return {
-        ...state,
-        skills: [
-          ...state.skills.filter((s) => s.serverId !== action.serverId),
-          ...normalized,
-        ],
-      };
-    }
     case "UPSERT_SERVER_PROJECTS": {
       const normalized = action.projects.map((p) =>
         normalizeProject(p, action.serverId),
@@ -511,7 +458,6 @@ function reducer(state: State, action: Action): State {
         ...state,
         tasks: state.tasks.filter((t) => t.serverId !== action.serverId),
         runs: state.runs.filter((r) => r.serverId !== action.serverId),
-        skills: state.skills.filter((s) => s.serverId !== action.serverId),
         projects: state.projects.filter((p) => p.serverId !== action.serverId),
         guidance: Object.fromEntries(
           Object.entries(state.guidance).filter(

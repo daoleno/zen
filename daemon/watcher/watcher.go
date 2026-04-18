@@ -7,6 +7,7 @@ import (
 	"os/exec"
 	"os/user"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -204,7 +205,7 @@ func cloneAgent(agent *classifier.Agent) *classifier.Agent {
 
 // tmuxWindow represents a single tmux window target.
 type tmuxWindow struct {
-	target  string // "session:window_index" — usable as tmux -t target
+	target  string // "session:window_id" — stable tmux target usable as -t
 	name    string // window name (e.g. "claude", "node")
 	cwd     string // active pane cwd
 	command string // active pane command
@@ -213,7 +214,7 @@ type tmuxWindow struct {
 
 // listTmuxWindows returns all windows across all tmux sessions.
 func listTmuxWindows() ([]tmuxWindow, error) {
-	cmd := exec.Command("tmux", "list-windows", "-a", "-F", "#{session_name}:#{window_index}\t#{window_name}\t#{pane_current_path}\t#{pane_current_command}\t#{pane_pid}")
+	cmd := exec.Command("tmux", "list-windows", "-a", "-F", "#{session_name}:#{window_id}\t#{window_name}\t#{pane_current_path}\t#{pane_current_command}\t#{pane_pid}")
 	out, err := cmd.Output()
 	if err != nil {
 		return nil, fmt.Errorf("tmux list-windows: %w", err)
@@ -332,9 +333,12 @@ func (w *Watcher) CreateSession(preferredTarget string, opts CreateSessionOption
 		"new-window",
 		"-P",
 		"-F",
-		"#{session_name}:#{window_index}",
+		"#{session_name}:#{window_id}",
 		"-t",
 		sessionName,
+	}
+	for _, envEntry := range tmuxWindowEnvironment(os.Environ()) {
+		args = append(args, "-e", envEntry)
 	}
 	if name := strings.TrimSpace(opts.Name); name != "" {
 		args = append(args, "-n", name)
@@ -366,11 +370,55 @@ func buildWindowCommand(command string) (string, error) {
 		return "", err
 	}
 
+	return buildWindowCommandForShell(shellPath, command), nil
+}
+
+func buildWindowCommandForShell(shellPath, command string) string {
 	quotedShell := shellQuote(shellPath)
 	if command == "" {
-		return "exec " + quotedShell + " -l", nil
+		return "exec " + quotedShell + " -i -l"
 	}
-	return "exec " + quotedShell + " -l -c " + shellQuote(command), nil
+	return "exec " + quotedShell + " -i -l -c " + shellQuote(command)
+}
+
+func tmuxWindowEnvironment(base []string) []string {
+	skipKeys := map[string]bool{
+		"":                     true,
+		"_":                    true,
+		"OLDPWD":               true,
+		"PWD":                  true,
+		"SHLVL":                true,
+		"TERM":                 true,
+		"TERM_PROGRAM":         true,
+		"TERM_PROGRAM_VERSION": true,
+		"TMUX":                 true,
+		"TMUX_PANE":            true,
+	}
+
+	values := make(map[string]string, len(base))
+	keys := make([]string, 0, len(base))
+	for _, entry := range base {
+		key, value, ok := strings.Cut(entry, "=")
+		if !ok {
+			continue
+		}
+		key = strings.TrimSpace(key)
+		if skipKeys[key] {
+			continue
+		}
+		if _, exists := values[key]; !exists {
+			keys = append(keys, key)
+		}
+		values[key] = value
+	}
+
+	sort.Strings(keys)
+
+	env := make([]string, 0, len(keys))
+	for _, key := range keys {
+		env = append(env, key+"="+values[key])
+	}
+	return env
 }
 
 func currentLoginShell() (string, error) {
@@ -420,7 +468,7 @@ func shellQuote(value string) string {
 }
 
 // KillSession terminates the tmux window backing a single agent.
-// Agent IDs use the form session:window_index, so killing the window
+// Agent IDs use the form session:window_id, so killing the window
 // exits only that agent instead of the whole tmux session.
 func (w *Watcher) KillSession(sessionID string) error {
 	return exec.Command("tmux", "kill-window", "-t", sessionID).Run()

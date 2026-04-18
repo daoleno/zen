@@ -14,27 +14,28 @@ import (
 
 // Store persists tasks to a JSON file and broadcasts changes.
 type Store struct {
-	mu         sync.RWMutex
-	tasks      map[string]*Task
-	nextNumber int
-	path       string
-	metaPath   string
-	events     chan TaskEvent
+	mu                  sync.RWMutex
+	tasks               map[string]*Task
+	nextNumbersByPrefix map[string]int
+	path                string
+	metaPath            string
+	events              chan TaskEvent
 }
 
 type storeMeta struct {
-	NextIssueNumber int `json:"next_issue_number"`
+	NextIssueNumber          int            `json:"next_issue_number"`
+	NextIssueNumbersByPrefix map[string]int `json:"next_issue_numbers_by_prefix,omitempty"`
 }
 
 func NewStore(dir string) (*Store, error) {
 	path := filepath.Join(dir, "tasks.json")
 	metaPath := filepath.Join(dir, "meta.json")
 	s := &Store{
-		tasks:      make(map[string]*Task),
-		nextNumber: 1,
-		path:       path,
-		metaPath:   metaPath,
-		events:     make(chan TaskEvent, 64),
+		tasks:               make(map[string]*Task),
+		nextNumbersByPrefix: map[string]int{DefaultIdentifierPrefix: 1},
+		path:                path,
+		metaPath:            metaPath,
+		events:              make(chan TaskEvent, 64),
 	}
 	if err := s.loadMeta(); err != nil {
 		return nil, err
@@ -50,38 +51,43 @@ func (s *Store) Events() <-chan TaskEvent {
 	return s.events
 }
 
-func (s *Store) Create(title, description string, attachments []Attachment, skillID, cwd string, priority int, labels []string, projectID, dueDate string) (*Task, error) {
+func (s *Store) Create(title, description string, attachments []Attachment, cwd string, priority int, labels []string, projectID, dueDate, identifierPrefix string) (*Task, error) {
 	now := time.Now().UTC()
 	normalizedDueDate, err := NormalizeDueDate(dueDate)
 	if err != nil {
 		return nil, err
 	}
+	normalizedPrefix := NormalizeIdentifierPrefix(identifierPrefix)
 
 	s.mu.Lock()
-	num := s.nextNumber
-	s.nextNumber++
+	previousNext, hadPreviousNext := s.nextNumbersByPrefix[normalizedPrefix]
+	num := s.allocateNumberLocked(normalizedPrefix)
 
 	t := &Task{
-		ID:          uuid.New().String(),
-		Number:      num,
-		Title:       title,
-		Description: description,
-		Attachments: cloneAttachments(attachments),
-		Status:      StatusBacklog,
-		Priority:    priority,
-		Labels:      append([]string(nil), labels...),
-		ProjectID:   projectID,
-		SkillID:     skillID,
-		DueDate:     normalizedDueDate,
-		Cwd:         cwd,
-		CreatedAt:   now,
-		UpdatedAt:   now,
+		ID:               uuid.New().String(),
+		IdentifierPrefix: normalizedPrefix,
+		Number:           num,
+		Title:            title,
+		Description:      description,
+		Attachments:      cloneAttachments(attachments),
+		Status:           StatusBacklog,
+		Priority:         priority,
+		Labels:           append([]string(nil), labels...),
+		ProjectID:        projectID,
+		DueDate:          normalizedDueDate,
+		Cwd:              cwd,
+		CreatedAt:        now,
+		UpdatedAt:        now,
 	}
 
 	s.tasks[t.ID] = t
 	if err := s.persist(); err != nil {
 		delete(s.tasks, t.ID)
-		s.nextNumber--
+		if hadPreviousNext {
+			s.nextNumbersByPrefix[normalizedPrefix] = previousNext
+		} else {
+			delete(s.nextNumbersByPrefix, normalizedPrefix)
+		}
 		s.mu.Unlock()
 		return nil, err
 	}
@@ -139,6 +145,7 @@ func (s *Store) Update(id string, fn func(*Task)) (*Task, error) {
 		return nil, fmt.Errorf("task %s not found", id)
 	}
 	fn(t)
+	t.IdentifierPrefix = NormalizeIdentifierPrefix(t.IdentifierPrefix)
 	t.UpdatedAt = time.Now().UTC()
 	if err := s.persist(); err != nil {
 		s.mu.Unlock()
@@ -228,14 +235,35 @@ func (s *Store) load() error {
 	}
 
 	maxNumber := 0
+	dirty := false
+	maxByPrefix := make(map[string]int)
 	for _, t := range list {
-		if t.Number > maxNumber {
+		normalizedPrefix := NormalizeIdentifierPrefix(t.IdentifierPrefix)
+		if t.IdentifierPrefix != normalizedPrefix {
+			t.IdentifierPrefix = normalizedPrefix
+			dirty = true
+		}
+		if t.Number > maxByPrefix[normalizedPrefix] {
+			maxByPrefix[normalizedPrefix] = t.Number
+		}
+		if normalizedPrefix == DefaultIdentifierPrefix && t.Number > maxNumber {
 			maxNumber = t.Number
 		}
 		s.tasks[t.ID] = t
 	}
-	if maxNumber >= s.nextNumber {
-		s.nextNumber = maxNumber + 1
+	for prefix, currentMax := range maxByPrefix {
+		next := currentMax + 1
+		if next > s.nextNumbersByPrefix[prefix] {
+			s.nextNumbersByPrefix[prefix] = next
+		}
+	}
+	if maxNumber+1 > s.nextNumbersByPrefix[DefaultIdentifierPrefix] {
+		s.nextNumbersByPrefix[DefaultIdentifierPrefix] = maxNumber + 1
+	}
+	if dirty {
+		if err := s.persist(); err != nil {
+			return err
+		}
 	}
 	return nil
 }
@@ -264,19 +292,42 @@ func (s *Store) loadMeta() error {
 	if err := json.Unmarshal(data, &m); err != nil {
 		return nil // non-fatal
 	}
-	if m.NextIssueNumber > s.nextNumber {
-		s.nextNumber = m.NextIssueNumber
+	for prefix, next := range m.NextIssueNumbersByPrefix {
+		normalizedPrefix := NormalizeIdentifierPrefix(prefix)
+		if next > s.nextNumbersByPrefix[normalizedPrefix] {
+			s.nextNumbersByPrefix[normalizedPrefix] = next
+		}
+	}
+	if m.NextIssueNumber > s.nextNumbersByPrefix[DefaultIdentifierPrefix] {
+		s.nextNumbersByPrefix[DefaultIdentifierPrefix] = m.NextIssueNumber
 	}
 	return nil
 }
 
 func (s *Store) saveMeta() error {
-	m := storeMeta{NextIssueNumber: s.nextNumber}
+	nextByPrefix := make(map[string]int, len(s.nextNumbersByPrefix))
+	for prefix, next := range s.nextNumbersByPrefix {
+		nextByPrefix[prefix] = next
+	}
+	m := storeMeta{
+		NextIssueNumber:          s.nextNumbersByPrefix[DefaultIdentifierPrefix],
+		NextIssueNumbersByPrefix: nextByPrefix,
+	}
 	data, err := json.MarshalIndent(m, "", "  ")
 	if err != nil {
 		return err
 	}
 	return writeFileAtomic(s.metaPath, data, 0o600)
+}
+
+func (s *Store) allocateNumberLocked(prefix string) int {
+	normalizedPrefix := NormalizeIdentifierPrefix(prefix)
+	next := s.nextNumbersByPrefix[normalizedPrefix]
+	if next < 1 {
+		next = 1
+	}
+	s.nextNumbersByPrefix[normalizedPrefix] = next + 1
+	return next
 }
 
 func writeFileAtomic(path string, data []byte, perm os.FileMode) error {

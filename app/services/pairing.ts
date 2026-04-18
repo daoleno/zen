@@ -28,20 +28,25 @@ export async function enrollWithDaemon(input: PairingInput): Promise<{
   }
 
   const identity = await getOrCreateLocalDeviceIdentity();
-  const response = await fetch(pairURL, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({
-      enrollment_token: enrollmentToken,
-      expected_daemon_id: daemonId || undefined,
-      expected_daemon_public_key: daemonPublicKey,
-      device_id: identity.deviceId,
-      device_name: identity.deviceName,
-      device_public_key: identity.publicKeyHex,
-    }),
-  });
+  let response: Response;
+  try {
+    response = await fetch(pairURL, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        enrollment_token: enrollmentToken,
+        expected_daemon_id: daemonId || undefined,
+        expected_daemon_public_key: daemonPublicKey,
+        device_id: identity.deviceId,
+        device_name: identity.deviceName,
+        device_public_key: identity.publicKeyHex,
+      }),
+    });
+  } catch (error) {
+    throw buildPairingNetworkError(pairURL, error);
+  }
 
   if (!response.ok) {
     const detail = (await response.text()).trim();
@@ -123,4 +128,29 @@ export function buildHTTPURL(
   } catch {
     return null;
   }
+}
+
+function buildPairingNetworkError(pairURL: string, error: unknown): Error {
+  const rawMessage = error instanceof Error ? error.message.trim() : "";
+  const healthURL = buildHTTPURL(pairURL, "/health");
+
+  try {
+    const parsed = new URL(pairURL);
+    if (parsed.protocol === "http:") {
+      const detail = rawMessage || "Network request failed.";
+      return new Error(
+        `${detail} The app could not reach ${pairURL}. Confirm that ${healthURL || "the /health endpoint"} opens from the phone browser. If browser access works but the app still fails on Android, the app build may still be blocking cleartext HTTP and needs to be rebuilt after enabling it.`,
+      );
+    }
+  } catch {
+    // Fall through to the generic message below.
+  }
+
+  if (healthURL) {
+    return new Error(
+      `${rawMessage || "Network request failed."} The app could not reach ${pairURL}. Confirm that ${healthURL} opens from the phone browser.`,
+    );
+  }
+
+  return new Error(rawMessage || "Network request failed.");
 }

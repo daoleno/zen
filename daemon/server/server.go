@@ -32,6 +32,9 @@ var upgrader = websocket.Upgrader{
 const (
 	taskStateMachineStatusStart = "<!-- ZEN:STATUS START -->"
 	taskStateMachineStatusEnd   = "<!-- ZEN:STATUS END -->"
+	workspaceStateDirName       = ".zen"
+	workspaceTaskStateFileName  = "task.md"
+	workspaceWorktreesDirName   = "worktrees"
 )
 
 // Server handles WebSocket connections from the zen mobile app.
@@ -43,7 +46,6 @@ type Server struct {
 	stats    *stats.Collector
 	tasks    *task.Store
 	runs     *task.RunStore
-	skills   *task.SkillStore
 	guidance *task.GuidanceStore
 	projects *task.ProjectStore
 	clients  map[*websocket.Conn]bool
@@ -53,7 +55,7 @@ type Server struct {
 }
 
 // New creates a WebSocket server.
-func New(authManager *auth.Manager, w *watcher.Watcher, pusher *push.Client, sc *stats.Collector, ts *task.Store, rs *task.RunStore, ss *task.SkillStore, gs *task.GuidanceStore, ps *task.ProjectStore) *Server {
+func New(authManager *auth.Manager, w *watcher.Watcher, pusher *push.Client, sc *stats.Collector, ts *task.Store, rs *task.RunStore, gs *task.GuidanceStore, ps *task.ProjectStore) *Server {
 	return &Server{
 		auth:     authManager,
 		watcher:  w,
@@ -62,7 +64,6 @@ func New(authManager *auth.Manager, w *watcher.Watcher, pusher *push.Client, sc 
 		stats:    sc,
 		tasks:    ts,
 		runs:     rs,
-		skills:   ss,
 		guidance: gs,
 		projects: ps,
 		clients:  make(map[*websocket.Conn]bool),
@@ -242,7 +243,6 @@ func (s *Server) handleClientMessage(conn *websocket.Conn, msg []byte) {
 		RunID          string            `json:"run_id"`
 		Title          string            `json:"title"`
 		Description    string            `json:"description"`
-		SkillID        string            `json:"skill_id"`
 		TaskStatus     string            `json:"task_status"`
 		ExecutionMode  string            `json:"execution_mode"`
 		DeliveryMode   string            `json:"delivery_mode"`
@@ -516,7 +516,6 @@ func (s *Server) handleClientMessage(conn *websocket.Conn, msg []byte) {
 			Title       string            `json:"title"`
 			Description string            `json:"description"`
 			Attachments []task.Attachment `json:"attachments"`
-			SkillID     string            `json:"skill_id"`
 			Cwd         string            `json:"cwd"`
 			Priority    int               `json:"priority"`
 			Labels      []string          `json:"labels"`
@@ -532,12 +531,12 @@ func (s *Server) handleClientMessage(conn *websocket.Conn, msg []byte) {
 			strings.TrimSpace(input.Title),
 			input.Description,
 			input.Attachments,
-			input.SkillID,
 			input.Cwd,
 			input.Priority,
 			input.Labels,
 			input.ProjectID,
 			input.DueDate,
+			s.resolveTaskIdentifierPrefix(input.ProjectID),
 		)
 		if err != nil {
 			s.sendErrorWithRequestID(conn, input.RequestID, "create_task_failed", err.Error())
@@ -775,50 +774,6 @@ func (s *Server) handleClientMessage(conn *websocket.Conn, msg []byte) {
 			"run":        run,
 			"task":       updatedTask,
 		})
-
-	// ── Skills CRUD ────────────────────────────────────────
-
-	case "list_skills":
-		s.sendJSON(conn, map[string]any{"type": "skill_list", "skills": s.skills.List()})
-
-	case "create_skill":
-		sk, err := s.skills.Create(raw.Name, raw.Icon, raw.AgentCmd, raw.Prompt, raw.Cwd)
-		if err != nil {
-			s.sendError(conn, "create_skill_failed", err.Error())
-			return
-		}
-		s.sendJSON(conn, map[string]any{"type": "skill_created", "request_id": raw.RequestID, "skill": sk})
-
-	case "update_skill":
-		sk, err := s.skills.Update(raw.SkillID, func(sk *task.Skill) {
-			if raw.Name != "" {
-				sk.Name = raw.Name
-			}
-			if raw.Icon != "" {
-				sk.Icon = raw.Icon
-			}
-			if raw.AgentCmd != "" {
-				sk.AgentCmd = raw.AgentCmd
-			}
-			if raw.Prompt != "" {
-				sk.Prompt = raw.Prompt
-			}
-			if raw.Cwd != "" {
-				sk.Cwd = raw.Cwd
-			}
-		})
-		if err != nil {
-			s.sendError(conn, "update_skill_failed", err.Error())
-			return
-		}
-		s.sendJSON(conn, map[string]any{"type": "skill_updated", "request_id": raw.RequestID, "skill": sk})
-
-	case "delete_skill":
-		if err := s.skills.Delete(raw.SkillID); err != nil {
-			s.sendError(conn, "delete_skill_failed", err.Error())
-			return
-		}
-		s.sendJSON(conn, map[string]any{"type": "skill_deleted", "request_id": raw.RequestID, "skill_id": raw.SkillID})
 
 	// ── Guidance ───────────────────────────────────────────
 
@@ -1134,35 +1089,68 @@ func clientID(conn *websocket.Conn) string {
 	return fmt.Sprintf("%p", conn)
 }
 
-func (s *Server) buildTaskPrompt(t *task.Task, note, agentCmdOverride string) (string, string, error) {
-	prompt := s.guidance.BuildPromptPrefix()
-	if t.SkillID != "" {
-		if sk := s.skills.Get(t.SkillID); sk != nil {
-			prompt += sk.Prompt + "\n\n"
-		}
-	}
-	if t.Description != "" {
-		prompt += t.Description
-	} else {
-		prompt += t.Title
-	}
-	if attachmentBlock := formatAttachmentsBlock("Attached files", t.Attachments); attachmentBlock != "" {
-		prompt += "\n\n" + attachmentBlock
-	}
-	if trimmedNote := strings.TrimSpace(note); trimmedNote != "" {
-		prompt += "\n\nAdditional instruction:\n" + trimmedNote
-	}
-
+func (s *Server) buildTaskPrompt(t *task.Task, workspaceCwd, note, agentCmdOverride string) (string, string, error) {
 	cmd := strings.TrimSpace(agentCmdOverride)
-	if cmd == "" && t.SkillID != "" {
-		if sk := s.skills.Get(t.SkillID); sk != nil && sk.AgentCmd != "" {
-			cmd = sk.AgentCmd
-		}
-	}
 	if cmd == "" {
 		return "", "", fmt.Errorf("agent command required for spawn_new_session")
 	}
-	return prompt, cmd, nil
+
+	project := s.taskProject(t)
+	var builder strings.Builder
+	builder.WriteString(s.guidance.BuildPromptPrefix())
+	builder.WriteString("You are starting a fresh issue session in a dedicated git worktree.\n\n")
+	builder.WriteString("Issue:\n")
+	builder.WriteString(fmt.Sprintf("- ID: %s\n", task.DisplayID(t)))
+	builder.WriteString(fmt.Sprintf("- Title: %s\n", strings.TrimSpace(t.Title)))
+	builder.WriteString(fmt.Sprintf("- Status: %s\n", t.Status))
+	builder.WriteString(fmt.Sprintf("- Priority: %s\n", taskPriorityLabel(t.Priority)))
+	if dueDate := strings.TrimSpace(t.DueDate); dueDate != "" {
+		builder.WriteString(fmt.Sprintf("- Due date: %s\n", dueDate))
+	}
+	if len(t.Labels) > 0 {
+		builder.WriteString(fmt.Sprintf("- Labels: %s\n", strings.Join(t.Labels, ", ")))
+	}
+	if project != nil {
+		builder.WriteString(fmt.Sprintf("- Project: %s\n", project.Name))
+		if repoRoot := strings.TrimSpace(project.RepoRoot); repoRoot != "" {
+			builder.WriteString(fmt.Sprintf("- Repo root: %s\n", repoRoot))
+		}
+		if baseBranch := strings.TrimSpace(project.BaseBranch); baseBranch != "" {
+			builder.WriteString(fmt.Sprintf("- Base branch: %s\n", baseBranch))
+		}
+		builder.WriteString(fmt.Sprintf("- Issue branch: %s\n", issueBranchName(t)))
+	}
+	if cwd := strings.TrimSpace(workspaceCwd); cwd != "" {
+		builder.WriteString(fmt.Sprintf("- Workspace: %s\n", cwd))
+	}
+
+	goal := strings.TrimSpace(t.Description)
+	if goal == "" {
+		goal = strings.TrimSpace(t.Title)
+	}
+	builder.WriteString("\nGoal:\n")
+	builder.WriteString(goal)
+
+	if attachmentBlock := formatAttachmentsBlock("Attached files", t.Attachments); attachmentBlock != "" {
+		builder.WriteString("\n\n")
+		builder.WriteString(attachmentBlock)
+	}
+	if discussionBlock := s.formatRecentTaskDiscussion(t, 5); discussionBlock != "" {
+		builder.WriteString("\n\nRecent discussion:\n")
+		builder.WriteString(discussionBlock)
+	}
+	if trimmedNote := strings.TrimSpace(note); trimmedNote != "" {
+		builder.WriteString("\n\nAdditional instruction:\n")
+		builder.WriteString(trimmedNote)
+	}
+
+	builder.WriteString("\n\nWorking rules:\n")
+	builder.WriteString("- Operate only inside the workspace above.\n")
+	builder.WriteString("- Inspect the codebase and any referenced files or docs before making changes.\n")
+	builder.WriteString("- Keep .zen/task.md updated as you work.\n")
+	builder.WriteString("- Keep changes scoped to this issue and leave a concise summary when you finish.")
+
+	return builder.String(), cmd, nil
 }
 
 func (s *Server) createRunForTask(t *task.Task, executionMode, requestedAgentSessionID, note, agentCmdOverride string) (*task.Run, *task.Task, error) {
@@ -1176,20 +1164,20 @@ func (s *Server) createRunForTask(t *task.Task, executionMode, requestedAgentSes
 	workspaceCwd := strings.TrimSpace(t.Cwd)
 	executorKind := ""
 	promptSnapshot := ""
+	var err error
 
 	switch mode {
 	case "spawn_new_session":
-		prompt, agentCmd, err := s.buildTaskPrompt(t, note, agentCmdOverride)
+		workspaceCwd, err = s.prepareTaskWorkspace(t)
+		if err != nil {
+			return nil, nil, err
+		}
+		prompt, agentCmd, err := s.buildTaskPrompt(t, workspaceCwd, note, agentCmdOverride)
 		if err != nil {
 			return nil, nil, err
 		}
 		executorKind = agentCmd
 		promptSnapshot = prompt
-
-		workspaceCwd, err = s.prepareTaskWorkspace(t)
-		if err != nil {
-			return nil, nil, err
-		}
 		agentSessionID, err = s.watcher.CreateSession("", watcher.CreateSessionOptions{
 			Cwd:     workspaceCwd,
 			Command: agentCmd + " " + shellQuoteSimple(promptSnapshot),
@@ -1302,15 +1290,19 @@ func (s *Server) prepareTaskWorkspace(currentTask *task.Task) (string, error) {
 }
 
 func defaultWorktreeRoot(repoRoot string) string {
-	return filepath.Join(filepath.Dir(repoRoot), ".zen-worktrees", filepath.Base(repoRoot))
+	return filepath.Join(filepath.Dir(repoRoot), workspaceStateDirName, workspaceWorktreesDirName, filepath.Base(repoRoot))
+}
+
+func taskStateFilePath(cwd string) string {
+	return filepath.Join(cwd, workspaceStateDirName, workspaceTaskStateFileName)
 }
 
 func issueBranchName(currentTask *task.Task) string {
-	return fmt.Sprintf("zen/issue-%d-%s", currentTask.Number, slugPathToken(currentTask.Title, 32))
+	return fmt.Sprintf("zen/%s-%d-%s", issueIdentifierSlug(currentTask), currentTask.Number, slugPathToken(currentTask.Title, 32))
 }
 
 func issueWorktreeDirName(currentTask *task.Task) string {
-	return fmt.Sprintf("issue-%d-%s", currentTask.Number, slugPathToken(currentTask.Title, 32))
+	return fmt.Sprintf("%s-%d-%s", issueIdentifierSlug(currentTask), currentTask.Number, slugPathToken(currentTask.Title, 32))
 }
 
 func slugPathToken(value string, maxLen int) string {
@@ -1340,6 +1332,26 @@ func slugPathToken(value string, maxLen int) string {
 		return "task"
 	}
 	return result
+}
+
+func issueIdentifierSlug(currentTask *task.Task) string {
+	if currentTask == nil {
+		return strings.ToLower(task.DefaultIdentifierPrefix)
+	}
+	return slugPathToken(currentTask.IdentifierPrefix, 12)
+}
+
+func (s *Server) resolveTaskIdentifierPrefix(projectID string) string {
+	if s.projects == nil || strings.TrimSpace(projectID) == "" {
+		return task.DefaultIdentifierPrefix
+	}
+
+	project := s.projects.Get(projectID)
+	if project == nil {
+		return task.DefaultIdentifierPrefix
+	}
+
+	return project.Key
 }
 
 func ensureIssueWorktree(repoRoot, worktreePath, branchName, baseBranch string) error {
@@ -1411,11 +1423,11 @@ func (s *Server) writeTaskStateFile(currentTask *task.Task, currentRun *task.Run
 		return nil
 	}
 
-	if err := os.MkdirAll(cwd, 0o755); err != nil {
+	path := taskStateFilePath(cwd)
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return err
 	}
 
-	path := filepath.Join(cwd, ".zen-task.md")
 	existing, err := os.ReadFile(path)
 	if err != nil && !os.IsNotExist(err) {
 		return err
@@ -1440,7 +1452,7 @@ func (s *Server) renderInitialTaskStateFile(currentTask *task.Task, managedBlock
 
 	var builder strings.Builder
 	builder.WriteString("# ")
-	builder.WriteString(fmt.Sprintf("ZEN-%d %s", currentTask.Number, strings.TrimSpace(currentTask.Title)))
+	builder.WriteString(fmt.Sprintf("%s %s", task.DisplayID(currentTask), strings.TrimSpace(currentTask.Title)))
 	builder.WriteString("\n\n## Goal\n")
 	builder.WriteString(goal)
 	builder.WriteString("\n\n## Machine status\n")
@@ -1575,6 +1587,31 @@ func (s *Server) commentAncestors(currentTask *task.Task, commentID string) []ta
 	return chain
 }
 
+func (s *Server) formatRecentTaskDiscussion(currentTask *task.Task, limit int) string {
+	if currentTask == nil || len(currentTask.Comments) == 0 || limit <= 0 {
+		return ""
+	}
+
+	start := len(currentTask.Comments) - limit
+	if start < 0 {
+		start = 0
+	}
+
+	lines := make([]string, 0, (len(currentTask.Comments)-start)*2)
+	for _, comment := range currentTask.Comments[start:] {
+		label := strings.TrimSpace(comment.AuthorLabel)
+		if label == "" {
+			label = "Comment"
+		}
+		lines = append(lines, fmt.Sprintf("- %s: %s", label, collapseCommentText(comment.Body)))
+		if attachmentLine := formatAttachmentInlineLine(comment.Attachments); attachmentLine != "" {
+			lines = append(lines, "  "+attachmentLine)
+		}
+	}
+
+	return strings.Join(lines, "\n")
+}
+
 func (s *Server) formatCommentContextBlock(currentTask *task.Task, parentCommentID string) string {
 	chain := s.commentAncestors(currentTask, parentCommentID)
 	if len(chain) == 0 {
@@ -1594,6 +1631,28 @@ func (s *Server) formatCommentContextBlock(currentTask *task.Task, parentComment
 	}
 
 	return strings.Join(lines, "\n")
+}
+
+func (s *Server) taskProject(currentTask *task.Task) *task.Project {
+	if s.projects == nil || currentTask == nil || strings.TrimSpace(currentTask.ProjectID) == "" {
+		return nil
+	}
+	return s.projects.Get(currentTask.ProjectID)
+}
+
+func taskPriorityLabel(priority int) string {
+	switch priority {
+	case 1:
+		return "Urgent"
+	case 2:
+		return "High"
+	case 3:
+		return "Medium"
+	case 4:
+		return "Low"
+	default:
+		return "None"
+	}
 }
 
 func (s *Server) buildCurrentRunReplyMessage(t *task.Task, parentCommentID, body string, attachments []task.Attachment) string {

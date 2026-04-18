@@ -41,6 +41,7 @@ import { connectionIssueAccent } from '../../services/connectionIssue';
 import { wsClient } from '../../services/websocket';
 import { makeSessionKey } from '../../services/sessionKeys';
 import { presentAgent } from '../../services/agentPresentation';
+import { formatTaskIssueId } from '../../services/taskIdentity';
 
 const STATUS_PRIORITY: Record<AgentStatus, number> = {
   failed: 0,
@@ -358,7 +359,7 @@ export default function InboxScreen() {
           <Text style={styles.listName} numberOfLines={1}>{presented.cwdBase || presented.title}</Text>
           {linkedIssue ? (
             <Text style={styles.issueSubtitle} numberOfLines={1}>
-              ZEN-{linkedIssue.number}: {linkedIssue.title}
+              {formatTaskIssueId(linkedIssue)}: {linkedIssue.title}
             </Text>
           ) : null}
         </View>

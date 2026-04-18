@@ -11,9 +11,11 @@ import {
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { Colors, Typography, issueStatusColor, priorityColor } from '../../constants/tokens';
+import { formatIssueId } from '../../services/taskIdentity';
 
 export type TaskPickerOption = {
   id: string;
+  identifierPrefix: string;
   number: number;
   title: string;
   subtitle?: string;
@@ -72,9 +74,9 @@ export function TaskPickerSheet({
                   activeOpacity={0.82}
                 >
                   <View style={[styles.priorityBar, { backgroundColor: priorityColor(task.priority as any) || 'transparent' }]} />
-                  <View style={styles.copy}>
-                    <View style={styles.rowHeader}>
-                      <Text style={styles.issueId}>ZEN-{task.number}</Text>
+                    <View style={styles.copy}>
+                      <View style={styles.rowHeader}>
+                      <Text style={styles.issueId}>{formatIssueId(task.identifierPrefix, task.number)}</Text>
                       <View style={[styles.statusDot, { backgroundColor: issueStatusColor(task.status as any) }]} />
                     </View>
                     <Text style={styles.rowTitle} numberOfLines={1}>{task.title}</Text>

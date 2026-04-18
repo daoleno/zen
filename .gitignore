@@ -50,6 +50,9 @@ app/bun.lockb
 # Playwright
 .playwright-mcp/
 
+# Local zen workspace state
+.zen/
+
 # Caches
 .cache/
 .turbo/

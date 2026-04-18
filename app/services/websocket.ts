@@ -611,7 +611,6 @@ class MultiServerWebSocketClient {
       labels?: string[];
       projectId?: string;
       dueDate?: string;
-      skillId?: string;
       cwd?: string;
     },
   ) {
@@ -654,7 +653,6 @@ class MultiServerWebSocketClient {
         priority: options.priority ?? 0,
         labels: options.labels ?? [],
         project_id: options.projectId ?? "",
-        skill_id: options.skillId ?? "",
         cwd: options.cwd ?? "",
       };
       if (options.dueDate) {
@@ -876,42 +874,6 @@ class MultiServerWebSocketClient {
         });
       },
     );
-  }
-
-  // ── Skills ───────────────────────────────────────────
-
-  listSkills(serverId: string) {
-    this.send(serverId, { type: "list_skills" });
-  }
-
-  createSkill(
-    serverId: string,
-    options: {
-      name: string;
-      icon?: string;
-      agentCmd: string;
-      prompt: string;
-      cwd?: string;
-    },
-  ) {
-    const requestId = `${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
-    this.send(serverId, {
-      type: "create_skill",
-      request_id: requestId,
-      name: options.name,
-      icon: options.icon ?? "",
-      agent_cmd: options.agentCmd,
-      prompt: options.prompt,
-      cwd: options.cwd ?? "",
-    });
-  }
-
-  deleteSkill(serverId: string, skillId: string) {
-    this.send(serverId, {
-      type: "delete_skill",
-      request_id: `${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`,
-      skill_id: skillId,
-    });
   }
 
   // ── Guidance ─────────────────────────────────────────
