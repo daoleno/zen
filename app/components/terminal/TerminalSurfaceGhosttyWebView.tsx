@@ -91,6 +91,7 @@ export const TerminalSurfaceGhosttyWebView = forwardRef<
           javaScriptEnabled
           domStorageEnabled
           allowFileAccess
+          textInteractionEnabled
           scrollEnabled={false}
           bounces={false}
           overScrollMode="never"

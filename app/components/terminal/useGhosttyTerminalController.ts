@@ -14,8 +14,8 @@ type BridgeMessage =
   | { type: 'ready' }
   | { type: 'resize'; cols: number; rows: number; cellWidth: number; cellHeight: number }
   | { type: 'focusInput' }
+  | { type: 'selectionActive'; active: boolean }
   | { type: 'scroll'; lines: number }
-  | { type: 'requestSelection' }
   | {
       type: 'mouse';
       action: MouseAction;
@@ -34,8 +34,7 @@ type TerminalViewportMode = 'live' | 'scrolled';
 type RendererStateMessage =
   | { type: 'renderSnapshot'; snapshot: RenderSnapshot }
   | { type: 'theme'; theme: TerminalThemePalette }
-  | { type: 'viewportMode'; mode: TerminalViewportMode }
-  | { type: 'selectionText'; text: string };
+  | { type: 'viewportMode'; mode: TerminalViewportMode };
 
 type PendingTerminalEvent =
   | { type: 'history' | 'output'; data: string }
@@ -45,7 +44,6 @@ const REPLACEABLE_PENDING_TYPES: readonly RendererStateMessage['type'][] = [
   'renderSnapshot',
   'theme',
   'viewportMode',
-  'selectionText',
 ];
 
 interface UseGhosttyTerminalControllerArgs {
@@ -78,7 +76,6 @@ export function useGhosttyTerminalController({
   const renderFrameRef = useRef<number>(0);
   const gridRef = useRef<GhosttyGridSize | null>(null);
   const viewportModeRef = useRef<TerminalViewportMode>('live');
-  const copyRequestRef = useRef(0);
   const [ready, setReady] = useState(false);
   const [viewportMode, setViewportModeState] = useState<TerminalViewportMode>('live');
 
@@ -93,8 +90,6 @@ export function useGhosttyTerminalController({
       script = `window.__zenTheme && window.__zenTheme(${JSON.stringify(payload.theme)}); true;`;
     } else if (payload.type === 'viewportMode') {
       script = `window.__zenViewportMode && window.__zenViewportMode(${JSON.stringify({ mode: payload.mode })}); true;`;
-    } else if (payload.type === 'selectionText') {
-      script = `window.__zenSelectionText && window.__zenSelectionText(${JSON.stringify({ text: payload.text })}); true;`;
     }
 
     if (script) {
@@ -223,7 +218,7 @@ export function useGhosttyTerminalController({
       scheduleRenderState();
     },
   });
-  const { cancelScroll, focusPane, requestCopyBuffer, resize, scroll, sendInput } = session;
+  const { cancelScroll, focusPane, resize, scroll, sendInput } = session;
 
   const flushPendingTerminal = useCallback((grid: GhosttyGridSize) => {
     if (!ghostty.ensureTerminal(grid)) {
@@ -352,6 +347,16 @@ export function useGhosttyTerminalController({
         return;
       }
 
+      if (payload.type === 'selectionActive') {
+        if (!payload.active) {
+          return;
+        }
+        clearInputMirror();
+        inputRef.current?.blur();
+        onCtrlArmedChange?.(false);
+        return;
+      }
+
       if (payload.type === 'scroll') {
         if (ghostty.scrollViewport(payload.lines)) {
           if (payload.lines < 0 || viewportModeRef.current === 'scrolled') {
@@ -395,35 +400,6 @@ export function useGhosttyTerminalController({
         }
         return;
       }
-
-      if (payload.type === 'requestSelection') {
-        clearInputMirror();
-        inputRef.current?.blur();
-        onCtrlArmedChange?.(false);
-
-        const requestId = copyRequestRef.current + 1;
-        copyRequestRef.current = requestId;
-
-        void requestCopyBuffer()
-          .then((text) => {
-            if (copyRequestRef.current !== requestId) {
-              return;
-            }
-            postToRenderer({
-              type: 'selectionText',
-              text: text || ghostty.getVisibleTextSnapshot(),
-            });
-          })
-          .catch(() => {
-            if (copyRequestRef.current !== requestId) {
-              return;
-            }
-            postToRenderer({
-              type: 'selectionText',
-              text: ghostty.getVisibleTextSnapshot(),
-            });
-          });
-      }
     } catch {
       // Ignore malformed bridge messages.
     }
@@ -439,7 +415,6 @@ export function useGhosttyTerminalController({
     scroll,
     scrollToBottom,
     sendInput,
-    requestCopyBuffer,
     onCtrlArmedChange,
     theme,
   ]);

@@ -53,15 +53,24 @@ export function buildGhosttyTerminalHtml(theme: TerminalThemePalette, fontUri: s
         line-height: ${Math.ceil(Typography.terminalSize * 1.28)}px;
         white-space: pre;
         tab-size: 8;
-        pointer-events: none;
+        pointer-events: auto;
+        user-select: text;
+        -webkit-user-select: text;
+        -webkit-touch-callout: default;
         transform: translate3d(0, 0, 0);
       }
       #terminal-html * {
         font-family: inherit;
+        user-select: text;
+        -webkit-user-select: text;
       }
       #terminal-html pre {
         margin: 0;
         white-space: pre;
+      }
+      #terminal-html::selection,
+      #terminal-html *::selection {
+        background: ${theme.selectionBackground};
       }
       #terminal-cursor {
         position: absolute;
@@ -82,53 +91,6 @@ export function buildGhosttyTerminalHtml(theme: TerminalThemePalette, fontUri: s
         font-size: ${Typography.terminalSize}px;
         line-height: ${Math.ceil(Typography.terminalSize * 1.28)}px;
       }
-      #selection-layer {
-        display: none;
-        position: fixed;
-        inset: 0;
-        z-index: 20;
-        overflow: auto;
-        box-sizing: border-box;
-        padding: 14px 14px 22px;
-        background: ${theme.background};
-        color: ${theme.foreground};
-        user-select: text;
-        -webkit-user-select: text;
-        overscroll-behavior: contain;
-      }
-      #selection-layer.active {
-        display: block;
-      }
-      #selection-close {
-        position: sticky;
-        top: 0;
-        margin-left: auto;
-        margin-bottom: 12px;
-        display: flex;
-        align-items: center;
-        justify-content: center;
-        width: 36px;
-        height: 36px;
-        border: 0;
-        border-radius: 18px;
-        background: rgba(255,255,255,0.08);
-        color: ${theme.foreground};
-        font-size: 18px;
-      }
-      #selection-text {
-        margin: 0;
-        white-space: pre-wrap;
-        overflow-wrap: break-word;
-        word-break: break-word;
-        user-select: text;
-        -webkit-user-select: text;
-        font-family: 'ZenTerm', monospace;
-        font-size: ${Typography.terminalSize}px;
-        line-height: ${Math.ceil(Typography.terminalSize * 1.28)}px;
-      }
-      #selection-text::selection {
-        background: ${theme.selectionBackground};
-      }
     </style>
   </head>
   <body>
@@ -136,10 +98,6 @@ export function buildGhosttyTerminalHtml(theme: TerminalThemePalette, fontUri: s
       <div id="terminal-html"></div>
       <div id="terminal-cursor"></div>
       <span id="cell-measure">M</span>
-      <div id="selection-layer">
-        <button id="selection-close" type="button" aria-label="Close selection">×</button>
-        <pre id="selection-text"></pre>
-      </div>
     </div>
     <script>
       const FONT_SIZE = ${Typography.terminalSize};
@@ -159,11 +117,8 @@ export function buildGhosttyTerminalHtml(theme: TerminalThemePalette, fontUri: s
         const terminalHtml = document.getElementById('terminal-html');
         const cursor = document.getElementById('terminal-cursor');
         const measure = document.getElementById('cell-measure');
-        const selectionLayer = document.getElementById('selection-layer');
-        const selectionClose = document.getElementById('selection-close');
-        const selectionText = document.getElementById('selection-text');
 
-        if (!root || !terminalHtml || !cursor || !measure || !selectionLayer || !selectionClose || !selectionText) {
+        if (!root || !terminalHtml || !cursor || !measure) {
           return;
         }
 
@@ -186,7 +141,7 @@ export function buildGhosttyTerminalHtml(theme: TerminalThemePalette, fontUri: s
         let lastReportedCellWidth = 0;
         let lastReportedCellHeight = 0;
         let viewportMode = 'live';
-        let selectionMode = false;
+        let nativeSelectionActive = false;
         let cursorBlinkVisible = true;
         let drawRAF = null;
 
@@ -204,7 +159,7 @@ export function buildGhosttyTerminalHtml(theme: TerminalThemePalette, fontUri: s
         };
 
         const focusInput = () => {
-          if (selectionMode) {
+          if (nativeSelectionActive) {
             return;
           }
           send({ type: 'focusInput' });
@@ -222,7 +177,7 @@ export function buildGhosttyTerminalHtml(theme: TerminalThemePalette, fontUri: s
         };
 
         const emitTap = (x, y) => {
-          if (selectionMode) {
+          if (nativeSelectionActive || hasTerminalSelection()) {
             return;
           }
           sendMouse('press', 'left', x, y, true);
@@ -261,15 +216,12 @@ export function buildGhosttyTerminalHtml(theme: TerminalThemePalette, fontUri: s
           terminalHtml.style.background = activeTheme.background;
           terminalHtml.style.color = activeTheme.foreground;
           cursor.style.background = activeTheme.cursor;
-          selectionLayer.style.background = activeTheme.background;
-          selectionLayer.style.color = activeTheme.foreground;
-          selectionClose.style.color = activeTheme.foreground;
         };
 
         const updateCursor = () => {
           if (
             viewportMode !== 'live' ||
-            selectionMode ||
+            nativeSelectionActive ||
             !cursorBlinkVisible ||
             !renderSnapshot.cursorVisible
           ) {
@@ -293,7 +245,7 @@ export function buildGhosttyTerminalHtml(theme: TerminalThemePalette, fontUri: s
         const draw = () => {
           drawRAF = null;
           const nextHtml = renderSnapshot.html || '';
-          if (nextHtml !== lastRenderedHtml) {
+          if (!nativeSelectionActive && nextHtml !== lastRenderedHtml) {
             terminalHtml.innerHTML = nextHtml;
             lastRenderedHtml = nextHtml;
           }
@@ -301,10 +253,6 @@ export function buildGhosttyTerminalHtml(theme: TerminalThemePalette, fontUri: s
         };
 
         const syncViewport = (force) => {
-          if (selectionMode) {
-            closeSelectionMode();
-          }
-
           const viewport = getViewportSize();
           const nextWidth = viewport.width;
           const nextHeight = viewport.height;
@@ -347,60 +295,43 @@ export function buildGhosttyTerminalHtml(theme: TerminalThemePalette, fontUri: s
           if (selection) {
             selection.removeAllRanges();
           }
+          syncNativeSelectionState();
         };
 
-        const closeSelectionMode = () => {
-          if (!selectionMode) {
-            return;
+        const selectionContainsNode = (node) => {
+          if (!node) {
+            return false;
+          }
+          const element = node.nodeType === Node.TEXT_NODE ? node.parentNode : node;
+          return element === terminalHtml || terminalHtml.contains(element);
+        };
+
+        const hasTerminalSelection = () => {
+          const selection = window.getSelection();
+          if (!selection || selection.isCollapsed || selection.rangeCount === 0) {
+            return false;
           }
 
-          selectionMode = false;
-          selectionLayer.classList.remove('active');
-          selectionText.textContent = '';
-          clearSelection();
+          return (
+            selectionContainsNode(selection.anchorNode) ||
+            selectionContainsNode(selection.focusNode)
+          );
+        };
+
+        const syncNativeSelectionState = () => {
+          const nextActive = hasTerminalSelection();
+          if (nativeSelectionActive === nextActive) {
+            return nextActive;
+          }
+
+          nativeSelectionActive = nextActive;
+          send({ type: 'selectionActive', active: nextActive });
           scheduleDraw();
+          return nextActive;
         };
-
-        const openSelectionMode = (text, selectAll) => {
-          selectionMode = true;
-          selectionText.textContent = text;
-          selectionLayer.classList.add('active');
-
-          if (selectAll) {
-            requestAnimationFrame(() => {
-              try {
-                const selection = window.getSelection();
-                if (!selection) {
-                  return;
-                }
-                const range = document.createRange();
-                range.selectNodeContents(selectionText);
-                selection.removeAllRanges();
-                selection.addRange(range);
-              } catch (_) {}
-            });
-          } else {
-            clearSelection();
-          }
-
-          scheduleDraw();
-        };
-
-        selectionClose.addEventListener('click', (event) => {
-          event.preventDefault();
-          event.stopPropagation();
-          closeSelectionMode();
-        });
-
-        selectionLayer.addEventListener('click', (event) => {
-          if (event.target === selectionLayer) {
-            closeSelectionMode();
-          }
-        });
 
         const VERTICAL_START_THRESHOLD = 4;
         const VERTICAL_LOCK_RATIO = 0.9;
-        const LONG_PRESS_MS = 500;
 
         let scrolling = false;
         let startX = 0;
@@ -409,8 +340,6 @@ export function buildGhosttyTerminalHtml(theme: TerminalThemePalette, fontUri: s
         let scrollAccum = 0;
         let pendingLines = 0;
         let scrollFlushRAF = null;
-        let longPressTimer = null;
-        let longPressTriggered = false;
 
         const flushScroll = () => {
           scrollFlushRAF = null;
@@ -442,37 +371,19 @@ export function buildGhosttyTerminalHtml(theme: TerminalThemePalette, fontUri: s
           flushScroll();
         };
 
-        const cancelLongPress = () => {
-          if (longPressTimer) {
-            clearTimeout(longPressTimer);
-            longPressTimer = null;
-          }
-        };
-
         document.addEventListener('touchstart', (event) => {
-          if (selectionMode) {
+          if (nativeSelectionActive) {
             return;
           }
           scrolling = false;
-          longPressTriggered = false;
           scrollAccum = 0;
           startX = event.touches[0].clientX;
           startY = lastY = event.touches[0].clientY;
           scheduleDraw();
-
-          cancelLongPress();
-          longPressTimer = setTimeout(() => {
-            longPressTimer = null;
-            if (!scrolling) {
-              longPressTriggered = true;
-              openSelectionMode('Preparing terminal content…', false);
-              send({ type: 'requestSelection' });
-            }
-          }, LONG_PRESS_MS);
         }, { capture: true, passive: true });
 
         document.addEventListener('touchmove', (event) => {
-          if (selectionMode) {
+          if (nativeSelectionActive) {
             return;
           }
 
@@ -489,7 +400,6 @@ export function buildGhosttyTerminalHtml(theme: TerminalThemePalette, fontUri: s
             }
             scrolling = true;
             scrollAccum = 0;
-            cancelLongPress();
           }
 
           if (event.cancelable) {
@@ -511,13 +421,7 @@ export function buildGhosttyTerminalHtml(theme: TerminalThemePalette, fontUri: s
         }, { capture: true, passive: false });
 
         document.addEventListener('touchend', (event) => {
-          if (selectionMode) {
-            return;
-          }
-          cancelLongPress();
-
-          if (longPressTriggered) {
-            scrolling = false;
+          if (nativeSelectionActive) {
             return;
           }
 
@@ -526,6 +430,9 @@ export function buildGhosttyTerminalHtml(theme: TerminalThemePalette, fontUri: s
           const endY = touch ? touch.clientY : startY;
 
           if (!scrolling) {
+            if (syncNativeSelectionState()) {
+              return;
+            }
             emitTap(endX, endY);
             return;
           }
@@ -536,15 +443,17 @@ export function buildGhosttyTerminalHtml(theme: TerminalThemePalette, fontUri: s
         }, { capture: true, passive: false });
 
         document.addEventListener('touchcancel', () => {
-          if (selectionMode) {
+          if (nativeSelectionActive) {
             return;
           }
           scrolling = false;
-          longPressTriggered = false;
-          cancelLongPress();
           flushScrollNow();
           scrollAccum = 0;
         }, { capture: true, passive: true });
+
+        document.addEventListener('selectionchange', () => {
+          syncNativeSelectionState();
+        });
 
         setInterval(() => {
           cursorBlinkVisible = !cursorBlinkVisible;
@@ -573,26 +482,19 @@ export function buildGhosttyTerminalHtml(theme: TerminalThemePalette, fontUri: s
           scheduleDraw();
         };
 
-        window.__zenSelectionText = (payload) => {
-          const text = payload && typeof payload.text === 'string'
-            ? payload.text.trimEnd()
-            : '';
-          openSelectionMode(text || 'No terminal content available.', Boolean(text));
-        };
-
         window.__zenBlur = () => {
-          closeSelectionMode();
+          clearSelection();
         };
 
         window.__zenResumeInput = () => {
-          closeSelectionMode();
+          clearSelection();
           viewportMode = 'live';
           scrollAccum = 0;
           scheduleDraw();
         };
 
         window.__zenScrollToBottom = () => {
-          closeSelectionMode();
+          clearSelection();
           viewportMode = 'live';
           scrollAccum = 0;
           scheduleDraw();
