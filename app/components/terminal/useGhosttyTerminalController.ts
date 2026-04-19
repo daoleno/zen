@@ -15,6 +15,7 @@ type BridgeMessage =
   | { type: 'resize'; cols: number; rows: number; cellWidth: number; cellHeight: number }
   | { type: 'focusInput' }
   | { type: 'scroll'; lines: number }
+  | { type: 'requestSelection' }
   | {
       type: 'mouse';
       action: MouseAction;
@@ -26,8 +27,7 @@ type BridgeMessage =
       alt?: boolean;
       meta?: boolean;
       anyButtonPressed?: boolean;
-    }
-  | { type: 'requestSelection' };
+    };
 
 type TerminalViewportMode = 'live' | 'scrolled';
 
@@ -78,6 +78,7 @@ export function useGhosttyTerminalController({
   const renderFrameRef = useRef<number>(0);
   const gridRef = useRef<GhosttyGridSize | null>(null);
   const viewportModeRef = useRef<TerminalViewportMode>('live');
+  const copyRequestRef = useRef(0);
   const [ready, setReady] = useState(false);
   const [viewportMode, setViewportModeState] = useState<TerminalViewportMode>('live');
 
@@ -222,7 +223,7 @@ export function useGhosttyTerminalController({
       scheduleRenderState();
     },
   });
-  const { cancelScroll, focusPane, resize, scroll, sendInput } = session;
+  const { cancelScroll, focusPane, requestCopyBuffer, resize, scroll, sendInput } = session;
 
   const flushPendingTerminal = useCallback((grid: GhosttyGridSize) => {
     if (!ghostty.ensureTerminal(grid)) {
@@ -396,10 +397,32 @@ export function useGhosttyTerminalController({
       }
 
       if (payload.type === 'requestSelection') {
-        postToRenderer({
-          type: 'selectionText',
-          text: ghostty.getVisibleTextSnapshot(),
-        });
+        clearInputMirror();
+        inputRef.current?.blur();
+        onCtrlArmedChange?.(false);
+
+        const requestId = copyRequestRef.current + 1;
+        copyRequestRef.current = requestId;
+
+        void requestCopyBuffer()
+          .then((text) => {
+            if (copyRequestRef.current !== requestId) {
+              return;
+            }
+            postToRenderer({
+              type: 'selectionText',
+              text: text || ghostty.getVisibleTextSnapshot(),
+            });
+          })
+          .catch(() => {
+            if (copyRequestRef.current !== requestId) {
+              return;
+            }
+            postToRenderer({
+              type: 'selectionText',
+              text: ghostty.getVisibleTextSnapshot(),
+            });
+          });
       }
     } catch {
       // Ignore malformed bridge messages.
@@ -416,6 +439,8 @@ export function useGhosttyTerminalController({
     scroll,
     scrollToBottom,
     sendInput,
+    requestCopyBuffer,
+    onCtrlArmedChange,
     theme,
   ]);
 

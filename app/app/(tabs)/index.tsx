@@ -355,16 +355,9 @@ export default function InboxScreen() {
         delayLongPress={400}
       >
         <AgentKindIcon kind={presented.kind} size={15} />
-        <View style={styles.listNameWrap}>
-          <Text style={styles.listName} numberOfLines={1}>{presented.cwdBase || presented.title}</Text>
-          {linkedIssue ? (
-            <Text style={styles.issueSubtitle} numberOfLines={1}>
-              {formatTaskIssueId(linkedIssue)}: {linkedIssue.title}
-            </Text>
-          ) : null}
-        </View>
-        {item.serverName ? (
-          <Text style={styles.listMeta} numberOfLines={1}>{item.serverName}</Text>
+        <Text style={styles.listName} numberOfLines={1}>{presented.cwdBase || presented.title}</Text>
+        {linkedIssue ? (
+          <Text style={styles.issueTag} numberOfLines={1}>{formatTaskIssueId(linkedIssue)}</Text>
         ) : null}
         <View style={[styles.statusDot, { backgroundColor: statusColor(item.status) }]} />
       </TouchableOpacity>
@@ -712,7 +705,7 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     gap: 10,
-    paddingVertical: 12,
+    paddingVertical: 9,
     borderBottomWidth: StyleSheet.hairlineWidth,
     borderBottomColor: 'rgba(255,255,255,0.04)',
   },
@@ -721,26 +714,17 @@ const styles = StyleSheet.create({
     height: 7,
     borderRadius: 4,
   },
-  listNameWrap: {
-    flex: 1,
-    gap: 2,
-  },
   listName: {
+    flex: 1,
     color: Colors.textPrimary,
     fontSize: 14,
     fontFamily: Typography.uiFontMedium,
   },
-  issueSubtitle: {
-    color: Colors.accent,
-    fontSize: 11,
-    fontFamily: Typography.uiFont,
-    opacity: 0.8,
-  },
-  listMeta: {
+  issueTag: {
     color: Colors.textSecondary,
-    fontSize: 12,
-    fontFamily: Typography.uiFont,
-    opacity: 0.5,
+    fontSize: 11,
+    fontFamily: Typography.terminalFont,
+    opacity: 0.45,
   },
 
   // ── Grid: terminal preview cards ──

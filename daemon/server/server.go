@@ -416,6 +416,19 @@ func (s *Server) handleClientMessage(conn *websocket.Conn, msg []byte) {
 			})
 		}
 
+	case "terminal_copy_buffer":
+		buffer, err := s.terminal.CopyBuffer(clientID(conn), raw.SessionID)
+		if err != nil {
+			s.sendErrorWithRequestID(conn, raw.RequestID, "terminal_copy_buffer_failed", err.Error())
+			return
+		}
+		s.sendJSON(conn, map[string]any{
+			"type":       "terminal_copy_buffer",
+			"request_id": raw.RequestID,
+			"session_id": raw.SessionID,
+			"text":       buffer,
+		})
+
 	case "terminal_close":
 		if err := s.terminal.Close(clientID(conn), raw.SessionID); err != nil {
 			s.sendJSON(conn, map[string]any{

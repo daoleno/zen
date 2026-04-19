@@ -532,6 +532,47 @@ class MultiServerWebSocketClient {
     });
   }
 
+  requestTerminalCopyBuffer(serverId: string, sessionId: string) {
+    const requestId = `${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
+
+    return new Promise<string>((resolve, reject) => {
+      const cleanup = () => {
+        if (timer) clearTimeout(timer);
+        this.off("terminal_copy_buffer", handleBuffer);
+        this.off("error", handleError);
+      };
+
+      const handleBuffer = (payload: any) => {
+        if (payload.serverId !== serverId || payload.request_id !== requestId) {
+          return;
+        }
+        cleanup();
+        resolve(typeof payload.text === "string" ? payload.text : "");
+      };
+
+      const handleError = (payload: any) => {
+        if (payload.serverId !== serverId || payload.request_id !== requestId) {
+          return;
+        }
+        cleanup();
+        reject(new Error(payload.message || "Failed to load terminal copy buffer."));
+      };
+
+      const timer = setTimeout(() => {
+        cleanup();
+        reject(new Error("Timed out while loading terminal copy buffer."));
+      }, 10000);
+
+      this.on("terminal_copy_buffer", handleBuffer);
+      this.on("error", handleError);
+      this.send(serverId, {
+        type: "terminal_copy_buffer",
+        request_id: requestId,
+        session_id: sessionId,
+      });
+    });
+  }
+
   closeTerminal(serverId: string, sessionId: string) {
     this.send(serverId, { type: "terminal_close", session_id: sessionId });
   }

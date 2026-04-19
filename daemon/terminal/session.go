@@ -63,6 +63,12 @@ type PaneFocuser interface {
 	FocusPane(col, row int) error
 }
 
+// CopyProvider is optionally implemented by sessions that can expose
+// a plain-text snapshot for dedicated copy UI flows.
+type CopyProvider interface {
+	CopyBuffer() (string, error)
+}
+
 // Backend opens terminal sessions for a given target.
 type Backend interface {
 	Name() string
