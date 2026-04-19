@@ -255,6 +255,7 @@ func (s *Server) handleClientMessage(conn *websocket.Conn, msg []byte) {
 		Attachments    []task.Attachment `json:"attachments"`
 		ProjectID      string            `json:"project_id"`
 		ProjectName    string            `json:"project_name"`
+		ProjectKey     string            `json:"project_key"`
 		ProjectIcon    string            `json:"project_icon"`
 		RepoRoot       string            `json:"repo_root"`
 		WorktreeRoot   string            `json:"worktree_root"`
@@ -797,6 +798,7 @@ func (s *Server) handleClientMessage(conn *websocket.Conn, msg []byte) {
 	case "create_project":
 		p, err := s.projects.Create(
 			raw.ProjectName,
+			raw.ProjectKey,
 			raw.ProjectIcon,
 			raw.RepoRoot,
 			raw.WorktreeRoot,

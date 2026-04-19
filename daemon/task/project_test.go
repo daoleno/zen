@@ -12,6 +12,7 @@ func TestProjectStoreCreateUpdateAndReload(t *testing.T) {
 	project, err := store.Create(
 		"Zen",
 		"",
+		"",
 		"/workspace/zen",
 		"/workspace/.zen/worktrees/zen",
 		"main",
@@ -73,15 +74,15 @@ func TestProjectStoreDerivesUniqueKeys(t *testing.T) {
 		t.Fatalf("NewProjectStore: %v", err)
 	}
 
-	first, err := store.Create("wooo-cli", "", "", "", "")
+	first, err := store.Create("wooo-cli", "", "", "", "", "")
 	if err != nil {
 		t.Fatalf("Create first: %v", err)
 	}
-	second, err := store.Create("wooo mobile", "", "", "", "")
+	second, err := store.Create("wooo mobile", "", "", "", "", "")
 	if err != nil {
 		t.Fatalf("Create second: %v", err)
 	}
-	third, err := store.Create("0g-agent-market", "", "", "", "")
+	third, err := store.Create("0g-agent-market", "", "", "", "", "")
 	if err != nil {
 		t.Fatalf("Create third: %v", err)
 	}
@@ -104,11 +105,11 @@ func TestProjectStoreLoadBackfillsMissingKeys(t *testing.T) {
 		t.Fatalf("NewProjectStore: %v", err)
 	}
 
-	first, err := store.Create("better-wallet", "", "", "", "")
+	first, err := store.Create("better-wallet", "", "", "", "", "")
 	if err != nil {
 		t.Fatalf("Create first: %v", err)
 	}
-	second, err := store.Create("backend-api", "", "", "", "")
+	second, err := store.Create("backend-api", "", "", "", "", "")
 	if err != nil {
 		t.Fatalf("Create second: %v", err)
 	}
@@ -143,5 +144,38 @@ func TestProjectStoreLoadBackfillsMissingKeys(t *testing.T) {
 	}
 	if secondReloaded.Key != "BAC" {
 		t.Fatalf("second reloaded key = %q, want BAC", secondReloaded.Key)
+	}
+}
+
+func TestProjectStoreCreatePreservesExplicitKey(t *testing.T) {
+	dir := t.TempDir()
+	store, err := NewProjectStore(dir)
+	if err != nil {
+		t.Fatalf("NewProjectStore: %v", err)
+	}
+
+	project, err := store.Create("Zen Mobile", "ZENAPP", "", "", "", "")
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	if project.Key != "ZENAPP" {
+		t.Fatalf("key = %q, want ZENAPP", project.Key)
+	}
+}
+
+func TestProjectStoreCreateRejectsDuplicateExplicitKey(t *testing.T) {
+	dir := t.TempDir()
+	store, err := NewProjectStore(dir)
+	if err != nil {
+		t.Fatalf("NewProjectStore: %v", err)
+	}
+
+	if _, err := store.Create("Zen Mobile", "ZENAPP", "", "", "", ""); err != nil {
+		t.Fatalf("Create first: %v", err)
+	}
+
+	if _, err := store.Create("Zen Desktop", "ZENAPP", "", "", "", ""); err == nil {
+		t.Fatal("expected duplicate project key error")
 	}
 }

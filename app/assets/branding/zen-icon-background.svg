@@ -1,0 +1,17 @@
+<svg width="1024" height="1024" viewBox="0 0 1024 1024" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <radialGradient id="bgGlow" cx="0" cy="0" r="1" gradientUnits="userSpaceOnUse" gradientTransform="translate(512 360) rotate(90) scale(700 760)">
+      <stop stop-color="#182538"/>
+      <stop offset="0.58" stop-color="#121822"/>
+      <stop offset="1" stop-color="#0F0F14"/>
+    </radialGradient>
+    <radialGradient id="mist" cx="0" cy="0" r="1" gradientUnits="userSpaceOnUse" gradientTransform="translate(448 332) rotate(90) scale(256 284)">
+      <stop stop-color="#5B9DFF" stop-opacity="0.28"/>
+      <stop offset="1" stop-color="#5B9DFF" stop-opacity="0"/>
+    </radialGradient>
+  </defs>
+  <rect width="1024" height="1024" fill="url(#bgGlow)"/>
+  <circle cx="448" cy="332" r="256" fill="url(#mist)"/>
+  <circle cx="512" cy="512" r="314" stroke="#5B9DFF" stroke-opacity="0.06" stroke-width="2"/>
+  <circle cx="512" cy="512" r="236" stroke="#5B9DFF" stroke-opacity="0.03" stroke-width="2"/>
+</svg>

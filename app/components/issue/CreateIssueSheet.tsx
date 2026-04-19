@@ -20,7 +20,10 @@ import type { IssuePriority } from "../../constants/tokens";
 import { DueDatePicker } from "./DueDatePicker";
 import { AttachmentStack } from "./AttachmentStack";
 import { formatDueDateShort } from "../../services/dueDate";
-import { deriveProjectIssuePrefix } from "../../services/taskIdentity";
+import {
+  deriveProjectIssuePrefix,
+  sanitizeIssuePrefixInput,
+} from "../../services/taskIdentity";
 import { uploadDocumentForServer } from "../../services/uploads";
 import { useTasks } from "../../store/tasks";
 import type { Attachment } from "../../store/tasks";
@@ -90,6 +93,11 @@ export function CreateIssueSheet({
   const [expandedSection, setExpandedSection] = useState<ExpandedSection>(null);
   const [submitting, setSubmitting] = useState(false);
   const [newProjectName, setNewProjectName] = useState("");
+  const [newProjectIssuePrefix, setNewProjectIssuePrefix] = useState(
+    deriveProjectIssuePrefix(""),
+  );
+  const [newProjectIssuePrefixDirty, setNewProjectIssuePrefixDirty] =
+    useState(false);
   const [creatingProject, setCreatingProject] = useState(false);
   const [uploadingAttachment, setUploadingAttachment] = useState(false);
   const [keyboardHeight, setKeyboardHeight] = useState(0);
@@ -216,6 +224,8 @@ export function CreateIssueSheet({
     setAttachments([]);
     setExpandedSection(null);
     setNewProjectName("");
+    setNewProjectIssuePrefix(deriveProjectIssuePrefix(""));
+    setNewProjectIssuePrefixDirty(false);
     setKeyboardHeight(0);
   }, [
     initialDescription,
@@ -361,9 +371,12 @@ export function CreateIssueSheet({
     try {
       const project = await wsClient.createProject(selectedServerId, {
         name: trimmed,
+        issuePrefix: newProjectIssuePrefix.trim(),
       });
       setProjectId(project.id);
       setNewProjectName("");
+      setNewProjectIssuePrefix(deriveProjectIssuePrefix(""));
+      setNewProjectIssuePrefixDirty(false);
       setExpandedSection(null);
     } catch (error: any) {
       Alert.alert("Could not create project", error?.message || "Try again.");
@@ -375,6 +388,29 @@ export function CreateIssueSheet({
   const selectProject = (nextProjectId: string) => {
     setProjectId(nextProjectId);
     setExpandedSection(null);
+  };
+
+  const handleNewProjectNameChange = (value: string) => {
+    const currentDerived = deriveProjectIssuePrefix(newProjectName);
+    const nextDerived = deriveProjectIssuePrefix(value);
+    setNewProjectName(value);
+    if (
+      !newProjectIssuePrefixDirty ||
+      newProjectIssuePrefix === currentDerived
+    ) {
+      setNewProjectIssuePrefix(nextDerived);
+    }
+  };
+
+  const handleNewProjectIssuePrefixChange = (value: string) => {
+    const sanitized = sanitizeIssuePrefixInput(value);
+    if (sanitized) {
+      setNewProjectIssuePrefix(sanitized);
+      setNewProjectIssuePrefixDirty(true);
+      return;
+    }
+    setNewProjectIssuePrefix(deriveProjectIssuePrefix(newProjectName));
+    setNewProjectIssuePrefixDirty(false);
   };
 
   const selectPriority = (nextPriority: IssuePriority) => {
@@ -720,11 +756,30 @@ export function CreateIssueSheet({
                       >
                         Create project
                       </Text>
+                      <View style={styles.composerMetaRow}>
+                        <Text
+                          style={styles.composerMetaLabel}
+                          maxFontSizeMultiplier={1.05}
+                        >
+                          Issue prefix
+                        </Text>
+                        <TextInput
+                          style={styles.composerPrefixInput}
+                          value={newProjectIssuePrefix}
+                          onChangeText={handleNewProjectIssuePrefixChange}
+                          placeholder={deriveProjectIssuePrefix(newProjectName)}
+                          placeholderTextColor="rgba(255,255,255,0.22)"
+                          autoCapitalize="characters"
+                          autoCorrect={false}
+                          editable={!creatingProject && !submitting}
+                          maxFontSizeMultiplier={1.05}
+                        />
+                      </View>
                       <Text
                         style={styles.composerHint}
                         maxFontSizeMultiplier={1.05}
                       >
-                        Prefix preview: {deriveProjectIssuePrefix(newProjectName)}
+                        Used for new issue IDs in this project.
                       </Text>
                       <View
                         style={[
@@ -738,7 +793,7 @@ export function CreateIssueSheet({
                             stackComposer && styles.composerInputStacked,
                           ]}
                           value={newProjectName}
-                          onChangeText={setNewProjectName}
+                          onChangeText={handleNewProjectNameChange}
                           placeholder="Project name"
                           placeholderTextColor="rgba(255,255,255,0.22)"
                           autoCapitalize="words"
@@ -1160,8 +1215,32 @@ const styles = StyleSheet.create({
   composerHint: {
     color: Colors.textSecondary,
     fontSize: 11,
-    fontFamily: Typography.terminalFont,
+    fontFamily: Typography.uiFont,
     opacity: 0.78,
+  },
+  composerMetaRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: 12,
+  },
+  composerMetaLabel: {
+    color: Colors.textSecondary,
+    fontSize: 11,
+    fontFamily: Typography.uiFont,
+  },
+  composerPrefixInput: {
+    minWidth: 108,
+    minHeight: 36,
+    borderRadius: 12,
+    paddingHorizontal: 12,
+    color: Colors.textPrimary,
+    fontSize: 13,
+    fontFamily: Typography.terminalFont,
+    backgroundColor: "rgba(255,255,255,0.05)",
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: "rgba(255,255,255,0.08)",
+    textAlign: "center",
   },
   composerRow: {
     flexDirection: "row",

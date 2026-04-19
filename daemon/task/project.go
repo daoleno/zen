@@ -53,11 +53,12 @@ func (ps *ProjectStore) List() []*Project {
 	return list
 }
 
-func (ps *ProjectStore) Create(name, icon, repoRoot, worktreeRoot, baseBranch string) (*Project, error) {
+func (ps *ProjectStore) Create(name, key, icon, repoRoot, worktreeRoot, baseBranch string) (*Project, error) {
 	now := time.Now().UTC()
 	p := &Project{
 		ID:           uuid.New().String(),
 		Name:         strings.TrimSpace(name),
+		Key:          strings.TrimSpace(key),
 		Icon:         strings.TrimSpace(icon),
 		RepoRoot:     strings.TrimSpace(repoRoot),
 		WorktreeRoot: strings.TrimSpace(worktreeRoot),
@@ -71,7 +72,12 @@ func (ps *ProjectStore) Create(name, icon, repoRoot, worktreeRoot, baseBranch st
 	}
 
 	ps.mu.Lock()
-	p.Key = ps.allocateKeyLocked(p.Name, "")
+	resolvedKey, err := ps.resolveKeyLocked(p.Key, p.Name, "")
+	if err != nil {
+		ps.mu.Unlock()
+		return nil, err
+	}
+	p.Key = resolvedKey
 	ps.projects[p.ID] = p
 	if err := ps.persist(); err != nil {
 		delete(ps.projects, p.ID)
@@ -197,6 +203,18 @@ func (ps *ProjectStore) allocateKeyLocked(name, excludeID string) string {
 	return DeriveProjectKey(name, func(candidate string) bool {
 		return ps.keyTakenLocked(candidate, excludeID)
 	})
+}
+
+func (ps *ProjectStore) resolveKeyLocked(key, name, excludeID string) (string, error) {
+	if strings.TrimSpace(key) == "" {
+		return ps.allocateKeyLocked(name, excludeID), nil
+	}
+
+	normalizedKey := NormalizeIdentifierPrefix(key)
+	if ps.keyTakenLocked(normalizedKey, excludeID) {
+		return "", fmt.Errorf("project key %q already exists", normalizedKey)
+	}
+	return normalizedKey, nil
 }
 
 func (ps *ProjectStore) keyTakenLocked(candidate, excludeID string) bool {

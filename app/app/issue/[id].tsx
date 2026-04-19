@@ -56,6 +56,7 @@ import {
 import {
   deriveProjectIssuePrefix,
   formatTaskIssueId,
+  sanitizeIssuePrefixInput,
 } from "../../services/taskIdentity";
 import { uploadDocumentForServer } from "../../services/uploads";
 import { wsClient } from "../../services/websocket";
@@ -326,6 +327,7 @@ function loadProjectDraft(projects: Project[], projectId?: string) {
     return {
       projectId: "",
       name: "",
+      key: deriveProjectIssuePrefix(""),
       repoRoot: "",
       worktreeRoot: "",
       baseBranch: "",
@@ -335,6 +337,7 @@ function loadProjectDraft(projects: Project[], projectId?: string) {
   return {
     projectId: project.id,
     name: project.name,
+    key: project.key,
     repoRoot: project.repoRoot || "",
     worktreeRoot: project.worktreeRoot || "",
     baseBranch: project.baseBranch || "",
@@ -376,6 +379,10 @@ export default function IssueDetailScreen() {
   });
   const [projectDraftId, setProjectDraftId] = useState("");
   const [projectNameDraft, setProjectNameDraft] = useState("");
+  const [projectKeyDraft, setProjectKeyDraft] = useState(
+    deriveProjectIssuePrefix(""),
+  );
+  const [projectKeyDirty, setProjectKeyDirty] = useState(false);
   const [projectRepoRootDraft, setProjectRepoRootDraft] = useState("");
   const [projectWorktreeRootDraft, setProjectWorktreeRootDraft] = useState("");
   const [projectBaseBranchDraft, setProjectBaseBranchDraft] = useState("");
@@ -504,6 +511,8 @@ export default function IssueDetailScreen() {
     const draft = loadProjectDraft(projects, task?.projectId);
     setProjectDraftId(draft.projectId);
     setProjectNameDraft(draft.name);
+    setProjectKeyDraft(draft.key);
+    setProjectKeyDirty(false);
     setProjectRepoRootDraft(draft.repoRoot);
     setProjectWorktreeRootDraft(draft.worktreeRoot);
     setProjectBaseBranchDraft(draft.baseBranch);
@@ -618,6 +627,8 @@ export default function IssueDetailScreen() {
     const draft = loadProjectDraft(projects, selectedProjectId);
     setProjectDraftId(draft.projectId);
     setProjectNameDraft(draft.name);
+    setProjectKeyDraft(draft.key);
+    setProjectKeyDirty(false);
     setProjectRepoRootDraft(draft.repoRoot);
     setProjectWorktreeRootDraft(draft.worktreeRoot);
     setProjectBaseBranchDraft(draft.baseBranch);
@@ -626,6 +637,8 @@ export default function IssueDetailScreen() {
   const handleStartNewProject = () => {
     setProjectDraftId(NEW_PROJECT_ID);
     setProjectNameDraft("");
+    setProjectKeyDraft(deriveProjectIssuePrefix(""));
+    setProjectKeyDirty(false);
     setProjectRepoRootDraft("");
     setProjectWorktreeRootDraft("");
     setProjectBaseBranchDraft("");
@@ -634,9 +647,34 @@ export default function IssueDetailScreen() {
   const handleClearProject = () => {
     setProjectDraftId("");
     setProjectNameDraft("");
+    setProjectKeyDraft(deriveProjectIssuePrefix(""));
+    setProjectKeyDirty(false);
     setProjectRepoRootDraft("");
     setProjectWorktreeRootDraft("");
     setProjectBaseBranchDraft("");
+  };
+
+  const handleProjectNameChange = (value: string) => {
+    const currentDerived = deriveProjectIssuePrefix(projectNameDraft);
+    const nextDerived = deriveProjectIssuePrefix(value);
+    setProjectNameDraft(value);
+    if (
+      projectDraftId === NEW_PROJECT_ID &&
+      (!projectKeyDirty || projectKeyDraft === currentDerived)
+    ) {
+      setProjectKeyDraft(nextDerived);
+    }
+  };
+
+  const handleProjectKeyChange = (value: string) => {
+    const sanitized = sanitizeIssuePrefixInput(value);
+    if (sanitized) {
+      setProjectKeyDraft(sanitized);
+      setProjectKeyDirty(true);
+      return;
+    }
+    setProjectKeyDraft(deriveProjectIssuePrefix(projectNameDraft));
+    setProjectKeyDirty(false);
   };
 
   const handleSaveProject = async () => {
@@ -662,6 +700,7 @@ export default function IssueDetailScreen() {
       if (projectDraftId === NEW_PROJECT_ID) {
         savedProject = await wsClient.createProject(task.serverId, {
           name: trimmedName,
+          issuePrefix: projectKeyDraft.trim(),
           repoRoot: projectRepoRootDraft.trim(),
           worktreeRoot: projectWorktreeRootDraft.trim(),
           baseBranch: projectBaseBranchDraft.trim(),
@@ -1077,6 +1116,7 @@ export default function IssueDetailScreen() {
         activeProjectId={task.projectId}
         draftProjectId={projectDraftId}
         projectName={projectNameDraft}
+        issuePrefix={projectKeyDraft}
         repoRoot={projectRepoRootDraft}
         worktreeRoot={projectWorktreeRootDraft}
         baseBranch={projectBaseBranchDraft}
@@ -1085,7 +1125,8 @@ export default function IssueDetailScreen() {
         onSelectExisting={handleSelectExistingProject}
         onStartNew={handleStartNewProject}
         onClearProject={handleClearProject}
-        onChangeName={setProjectNameDraft}
+        onChangeName={handleProjectNameChange}
+        onChangeIssuePrefix={handleProjectKeyChange}
         onChangeBaseBranch={setProjectBaseBranchDraft}
         onOpenRepoPicker={() => setDirectoryTarget("repo")}
         onOpenWorktreePicker={() => setDirectoryTarget("worktree")}
@@ -1526,6 +1567,7 @@ function SheetScaffold({
       visible={visible}
       transparent
       animationType="slide"
+      presentationStyle="overFullScreen"
       onRequestClose={onClose}
     >
       <KeyboardAvoidingView
@@ -1620,6 +1662,7 @@ function ProjectSetupSheet({
   activeProjectId,
   draftProjectId,
   projectName,
+  issuePrefix,
   repoRoot,
   worktreeRoot,
   baseBranch,
@@ -1629,6 +1672,7 @@ function ProjectSetupSheet({
   onStartNew,
   onClearProject,
   onChangeName,
+  onChangeIssuePrefix,
   onChangeBaseBranch,
   onOpenRepoPicker,
   onOpenWorktreePicker,
@@ -1639,6 +1683,7 @@ function ProjectSetupSheet({
   activeProjectId?: string;
   draftProjectId: string;
   projectName: string;
+  issuePrefix: string;
   repoRoot: string;
   worktreeRoot: string;
   baseBranch: string;
@@ -1648,6 +1693,7 @@ function ProjectSetupSheet({
   onStartNew: () => void;
   onClearProject: () => void;
   onChangeName: (value: string) => void;
+  onChangeIssuePrefix: (value: string) => void;
   onChangeBaseBranch: (value: string) => void;
   onOpenRepoPicker: () => void;
   onOpenWorktreePicker: () => void;
@@ -1656,9 +1702,9 @@ function ProjectSetupSheet({
   const isNewProject = draftProjectId === NEW_PROJECT_ID;
   const showEditor = draftProjectId !== "";
   const selectedProject = projects.find((project) => project.id === draftProjectId) || null;
-  const issuePrefix = isNewProject
-    ? deriveProjectIssuePrefix(projectName)
-    : selectedProject?.key || deriveProjectIssuePrefix(projectName);
+  const resolvedIssuePrefix = isNewProject
+    ? issuePrefix
+    : selectedProject?.key || issuePrefix;
   const primaryLabel = isNewProject
     ? "Create & use"
     : draftProjectId
@@ -1673,6 +1719,10 @@ function ProjectSetupSheet({
         style={styles.selectionScroll}
         contentContainerStyle={styles.projectSheetContent}
         keyboardShouldPersistTaps="handled"
+        keyboardDismissMode={
+          Platform.OS === "ios" ? "interactive" : "on-drag"
+        }
+        automaticallyAdjustKeyboardInsets={Platform.OS === "ios"}
       >
         <View style={styles.projectSelector}>
           <TouchableOpacity
@@ -1749,13 +1799,26 @@ function ProjectSetupSheet({
               style={styles.editorTitleInput}
               autoCapitalize="words"
             />
-            <View style={styles.projectPrefixRow}>
-              <Text style={styles.projectPrefixLabel}>Issue prefix</Text>
-              <Text style={styles.projectPrefixValue}>{issuePrefix}</Text>
-            </View>
+            <FieldLabel text="Issue prefix" />
+            {isNewProject ? (
+              <TextInput
+                value={resolvedIssuePrefix}
+                onChangeText={onChangeIssuePrefix}
+                placeholder={deriveProjectIssuePrefix(projectName)}
+                placeholderTextColor={Colors.textSecondary}
+                style={[styles.editorTitleInput, styles.projectPrefixInput]}
+                autoCapitalize="characters"
+                autoCorrect={false}
+              />
+            ) : (
+              <View style={styles.projectPrefixRow}>
+                <Text style={styles.projectPrefixLabel}>Issue prefix</Text>
+                <Text style={styles.projectPrefixValue}>{resolvedIssuePrefix}</Text>
+              </View>
+            )}
             <Text style={styles.projectPrefixHint}>
               {isNewProject
-                ? "Auto-generated from the project name. Duplicates get a numeric suffix."
+                ? "Editable during creation. Duplicates must be unique."
                 : "Stable once the project is created."}
             </Text>
 
@@ -2559,10 +2622,10 @@ const styles = StyleSheet.create({
   },
   inlineComposerInput: {
     flex: 1,
-    minHeight: 36,
+    minHeight: 44,
     maxHeight: 120,
-    paddingTop: 8,
-    paddingBottom: 8,
+    paddingTop: 10,
+    paddingBottom: 10,
     color: Colors.textPrimary,
     fontSize: 14,
     lineHeight: 20,
@@ -2737,6 +2800,10 @@ const styles = StyleSheet.create({
     color: Colors.textPrimary,
     fontSize: 14,
     fontFamily: Typography.uiFontMedium,
+  },
+  projectPrefixInput: {
+    fontFamily: Typography.terminalFont,
+    textAlign: "center",
   },
   projectPrefixRow: {
     flexDirection: "row",

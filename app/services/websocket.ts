@@ -901,6 +901,7 @@ class MultiServerWebSocketClient {
     serverId: string,
     options: {
       name: string;
+      issuePrefix?: string;
       icon?: string;
       repoRoot?: string;
       worktreeRoot?: string;
@@ -943,6 +944,7 @@ class MultiServerWebSocketClient {
         type: "create_project",
         request_id: requestId,
         project_name: options.name,
+        project_key: options.issuePrefix ?? "",
         project_icon: options.icon ?? "",
         repo_root: options.repoRoot ?? "",
         worktree_root: options.worktreeRoot ?? "",

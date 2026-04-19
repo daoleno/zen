@@ -1,0 +1,44 @@
+<svg width="1024" height="1024" viewBox="0 0 1024 1024" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <radialGradient id="bgGlow" cx="0" cy="0" r="1" gradientUnits="userSpaceOnUse" gradientTransform="translate(512 360) rotate(90) scale(700 760)">
+      <stop stop-color="#182538"/>
+      <stop offset="0.58" stop-color="#121822"/>
+      <stop offset="1" stop-color="#0F0F14"/>
+    </radialGradient>
+    <radialGradient id="mist" cx="0" cy="0" r="1" gradientUnits="userSpaceOnUse" gradientTransform="translate(456 332) rotate(90) scale(256 284)">
+      <stop stop-color="#5B9DFF" stop-opacity="0.22"/>
+      <stop offset="1" stop-color="#5B9DFF" stop-opacity="0"/>
+    </radialGradient>
+    <linearGradient id="ringStroke" x1="232" y1="250" x2="770" y2="796" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#8ECEFF"/>
+      <stop offset="0.52" stop-color="#5B9DFF"/>
+      <stop offset="1" stop-color="#4D7FE0"/>
+    </linearGradient>
+    <linearGradient id="zenStroke" x1="306" y1="300" x2="734" y2="752" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#FAF8F1"/>
+      <stop offset="0.5" stop-color="#EEE7DB"/>
+      <stop offset="1" stop-color="#D9D0C2"/>
+    </linearGradient>
+    <filter id="softShadow" x="178" y="186" width="668" height="686" filterUnits="userSpaceOnUse" color-interpolation-filters="sRGB">
+      <feFlood flood-opacity="0" result="BackgroundImageFix"/>
+      <feColorMatrix in="SourceAlpha" type="matrix" values="0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 127 0" result="hardAlpha"/>
+      <feOffset dy="18"/>
+      <feGaussianBlur stdDeviation="18"/>
+      <feComposite in2="hardAlpha" operator="out"/>
+      <feColorMatrix type="matrix" values="0 0 0 0 0.0196078 0 0 0 0 0.0352941 0 0 0 0 0.0666667 0 0 0 0.42 0"/>
+      <feBlend mode="normal" in2="BackgroundImageFix" result="effect1_dropShadow_1_1"/>
+      <feBlend mode="normal" in="SourceGraphic" in2="effect1_dropShadow_1_1" result="shape"/>
+    </filter>
+  </defs>
+  <rect width="1024" height="1024" fill="url(#bgGlow)"/>
+  <circle cx="448" cy="332" r="256" fill="url(#mist)"/>
+  <circle cx="512" cy="512" r="314" stroke="#5B9DFF" stroke-opacity="0.06" stroke-width="2"/>
+  <path d="M286 530C286 384 394 258 540 254C649 252 744 326 777 430C806 522 782 633 713 708C658 767 576 802 489 798C384 794 290 727 249 628" stroke="url(#ringStroke)" stroke-width="76" stroke-linecap="round" stroke-linejoin="round" opacity="0.52"/>
+  <g filter="url(#softShadow)">
+    <path d="M322 318C402 300 626 300 702 318" stroke="url(#zenStroke)" stroke-width="90" stroke-linecap="round" stroke-linejoin="round"/>
+    <path d="M696 334C646 387 603 440 553 495C497 559 451 615 402 672C375 703 348 730 320 752" stroke="url(#zenStroke)" stroke-width="90" stroke-linecap="round" stroke-linejoin="round"/>
+    <path d="M312 726C403 748 628 748 716 726" stroke="url(#zenStroke)" stroke-width="90" stroke-linecap="round" stroke-linejoin="round"/>
+  </g>
+  <path d="M318 318C398 300 624 300 700 318" stroke="#FFFFFF" stroke-opacity="0.14" stroke-width="28" stroke-linecap="round"/>
+  <path d="M694 336C620 420 546 510 468 602" stroke="#5B9DFF" stroke-opacity="0.16" stroke-width="20" stroke-linecap="round"/>
+</svg>

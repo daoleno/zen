@@ -172,7 +172,7 @@ func TestBuildTaskPromptIncludesStructuredIssueContext(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewProjectStore: %v", err)
 	}
-	project, err := projectStore.Create("wooo-cli", "", "/repo/root", "", "main")
+	project, err := projectStore.Create("wooo-cli", "", "", "/repo/root", "", "main")
 	if err != nil {
 		t.Fatalf("Create project: %v", err)
 	}

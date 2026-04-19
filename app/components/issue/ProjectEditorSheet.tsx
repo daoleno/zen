@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useState } from "react";
 import {
   Alert,
+  Keyboard,
   KeyboardAvoidingView,
   Modal,
   Platform,
@@ -15,7 +16,10 @@ import {
 import { Ionicons } from "@expo/vector-icons";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Colors, Typography } from "../../constants/tokens";
-import { deriveProjectIssuePrefix } from "../../services/taskIdentity";
+import {
+  deriveProjectIssuePrefix,
+  sanitizeIssuePrefixInput,
+} from "../../services/taskIdentity";
 import type { Project } from "../../store/tasks";
 import { wsClient } from "../../services/websocket";
 import { DirectoryPicker } from "../terminal/DirectoryPicker";
@@ -47,6 +51,8 @@ export function ProjectEditorSheet({
   const insets = useSafeAreaInsets();
   const [serverId, setServerId] = useState("");
   const [name, setName] = useState("");
+  const [issuePrefix, setIssuePrefix] = useState(deriveProjectIssuePrefix(""));
+  const [issuePrefixDirty, setIssuePrefixDirty] = useState(false);
   const [repoRoot, setRepoRoot] = useState("");
   const [worktreeRoot, setWorktreeRoot] = useState("");
   const [baseBranch, setBaseBranch] = useState("");
@@ -61,12 +67,6 @@ export function ProjectEditorSheet({
       serverOptions.find((option) => option.id === resolvedServerId)?.name || ""
     );
   }, [resolvedServerId, serverOptions]);
-  const issuePrefix = useMemo(() => {
-    if (project?.key) {
-      return project.key;
-    }
-    return deriveProjectIssuePrefix(name);
-  }, [name, project?.key]);
 
   useEffect(() => {
     if (!visible) {
@@ -75,6 +75,8 @@ export function ProjectEditorSheet({
 
     setServerId(project?.serverId || initialServerId || serverOptions[0]?.id || "");
     setName(project?.name || "");
+    setIssuePrefix(project?.key || deriveProjectIssuePrefix(project?.name || ""));
+    setIssuePrefixDirty(false);
     setRepoRoot(project?.repoRoot || "");
     setWorktreeRoot(project?.worktreeRoot || "");
     setBaseBranch(project?.baseBranch || "");
@@ -107,6 +109,7 @@ export function ProjectEditorSheet({
       } else {
         await wsClient.createProject(resolvedServerId, {
           name: trimmedName,
+          issuePrefix: issuePrefix.trim(),
           repoRoot: repoRoot.trim(),
           worktreeRoot: worktreeRoot.trim(),
           baseBranch: baseBranch.trim(),
@@ -121,6 +124,34 @@ export function ProjectEditorSheet({
     } finally {
       setBusy(false);
     }
+  };
+
+  const handleClose = () => {
+    if (busy) {
+      return;
+    }
+    Keyboard.dismiss();
+    onClose();
+  };
+
+  const handleNameChange = (value: string) => {
+    const currentDerived = deriveProjectIssuePrefix(name);
+    const nextDerived = deriveProjectIssuePrefix(value);
+    setName(value);
+    if (!project && (!issuePrefixDirty || issuePrefix === currentDerived)) {
+      setIssuePrefix(nextDerived);
+    }
+  };
+
+  const handleIssuePrefixChange = (value: string) => {
+    const sanitized = sanitizeIssuePrefixInput(value);
+    if (sanitized) {
+      setIssuePrefix(sanitized);
+      setIssuePrefixDirty(true);
+      return;
+    }
+    setIssuePrefix(deriveProjectIssuePrefix(name));
+    setIssuePrefixDirty(false);
   };
 
   const handleDelete = () => {
@@ -164,13 +195,14 @@ export function ProjectEditorSheet({
         visible={visible}
         transparent
         animationType="slide"
-        onRequestClose={onClose}
+        presentationStyle="overFullScreen"
+        onRequestClose={handleClose}
       >
         <KeyboardAvoidingView
           style={styles.root}
-          behavior={Platform.OS === "ios" ? "padding" : "height"}
+          behavior={Platform.OS === "ios" ? "padding" : undefined}
         >
-          <Pressable style={styles.backdrop} onPress={busy ? undefined : onClose} />
+          <Pressable style={styles.backdrop} onPress={busy ? undefined : handleClose} />
 
           <View style={[styles.sheet, { paddingBottom: insets.bottom + 6 }]}>
             <View style={styles.handle} />
@@ -181,7 +213,7 @@ export function ProjectEditorSheet({
               </Text>
               <TouchableOpacity
                 style={styles.closeButton}
-                onPress={onClose}
+                onPress={handleClose}
                 disabled={busy}
                 activeOpacity={0.82}
               >
@@ -193,6 +225,10 @@ export function ProjectEditorSheet({
               showsVerticalScrollIndicator={false}
               contentContainerStyle={styles.content}
               keyboardShouldPersistTaps="handled"
+              keyboardDismissMode={
+                Platform.OS === "ios" ? "interactive" : "on-drag"
+              }
+              automaticallyAdjustKeyboardInsets={Platform.OS === "ios"}
             >
               {!project && serverOptions.length > 1 ? (
                 <View style={styles.group}>
@@ -235,21 +271,34 @@ export function ProjectEditorSheet({
                 <Text style={styles.label}>Project name</Text>
                 <TextInput
                   value={name}
-                  onChangeText={setName}
+                  onChangeText={handleNameChange}
                   placeholder="Project name"
                   placeholderTextColor={Colors.textSecondary}
                   style={styles.textInput}
                   autoCapitalize="words"
                   editable={!busy}
                 />
-                <View style={styles.prefixRow}>
-                  <Text style={styles.prefixLabel}>Issue prefix</Text>
-                  <Text style={styles.prefixValue}>{issuePrefix}</Text>
-                </View>
+                {!project ? (
+                  <TextInput
+                    value={issuePrefix}
+                    onChangeText={handleIssuePrefixChange}
+                    placeholder={deriveProjectIssuePrefix(name)}
+                    placeholderTextColor={Colors.textSecondary}
+                    style={[styles.textInput, styles.prefixInput]}
+                    autoCapitalize="characters"
+                    autoCorrect={false}
+                    editable={!busy}
+                  />
+                ) : (
+                  <View style={styles.prefixRow}>
+                    <Text style={styles.prefixLabel}>Issue prefix</Text>
+                    <Text style={styles.prefixValue}>{issuePrefix}</Text>
+                  </View>
+                )}
                 <Text style={styles.prefixHint}>
                   {project
                     ? "Stable once created."
-                    : "Auto-generated from the project name. Duplicates get a numeric suffix."}
+                    : "Editable during creation. Duplicates must be unique."}
                 </Text>
               </View>
 
@@ -266,7 +315,7 @@ export function ProjectEditorSheet({
                 <Text style={styles.label}>Worktree root</Text>
                 <DirectoryField
                   value={worktreeRoot}
-                  placeholder={repoRoot ? `Default: ${repoRoot}/../worktrees` : "Default: sibling of repo root"}
+                  placeholder="Optional. Defaults to .zen/worktrees beside the repo"
                   onPress={() => setDirectoryTarget("worktree")}
                 />
               </View>
@@ -483,6 +532,10 @@ const styles = StyleSheet.create({
     color: Colors.textPrimary,
     fontSize: 14,
     fontFamily: Typography.uiFontMedium,
+  },
+  prefixInput: {
+    fontFamily: Typography.terminalFont,
+    textAlign: "center",
   },
   prefixRow: {
     flexDirection: "row",

@@ -22,12 +22,16 @@ type IssueIdentity = {
 };
 
 export function normalizeIssuePrefix(value?: string) {
-  const normalized = (value || "")
+  const normalized = sanitizeIssuePrefixInput(value || "");
+
+  return normalized || DEFAULT_ISSUE_PREFIX;
+}
+
+export function sanitizeIssuePrefixInput(value: string) {
+  return (value || "")
     .trim()
     .toUpperCase()
     .replace(/[^A-Z0-9]/g, "");
-
-  return normalized || DEFAULT_ISSUE_PREFIX;
 }
 
 export function formatIssueId(prefix: string | undefined, number: number) {
