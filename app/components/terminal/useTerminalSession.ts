@@ -131,6 +131,14 @@ export function useTerminalSession(serverId: string, targetId: string, backend: 
     wsClient.cancelTerminalScroll(serverId, sessionId);
   }, [serverId]);
 
+  const requestCopyBuffer = useCallback(() => {
+    const sessionId = sessionIdRef.current;
+    if (!sessionId) {
+      return Promise.resolve("");
+    }
+    return wsClient.requestTerminalCopyBuffer(serverId, sessionId);
+  }, [serverId]);
+
   const focusPane = useCallback((col: number, row: number) => {
     const sessionId = sessionIdRef.current;
     if (!sessionId) return;
@@ -158,7 +166,8 @@ export function useTerminalSession(serverId: string, targetId: string, backend: 
     sendInput,
     scroll,
     cancelScroll,
+    requestCopyBuffer,
     focusPane,
     resize,
-  }), [cancelScroll, focusPane, resize, scroll, sendInput]);
+  }), [cancelScroll, focusPane, requestCopyBuffer, resize, scroll, sendInput]);
 }

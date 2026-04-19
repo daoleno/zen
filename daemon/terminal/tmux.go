@@ -430,6 +430,16 @@ func (s *tmuxSession) FocusPane(col, row int) error {
 	return nil
 }
 
+func (s *tmuxSession) CopyBuffer() (string, error) {
+	s.mu.Lock()
+	target := s.interactiveTargetLocked()
+	s.mu.Unlock()
+	if target == "" {
+		return "", nil
+	}
+	return tmuxCaptureCopyBuffer(target)
+}
+
 func (s *tmuxSession) Resize(cols, rows int) error {
 	if cols <= 0 || rows <= 0 {
 		return nil
@@ -840,6 +850,37 @@ func tmuxCaptureHistory(targetID string) (string, error) {
 		history += "\n"
 	}
 	return history, nil
+}
+
+func tmuxCaptureCopyBuffer(targetID string) (string, error) {
+	targetID = strings.TrimSpace(targetID)
+	if targetID == "" {
+		return "", nil
+	}
+
+	out, err := exec.Command(
+		"tmux",
+		"capture-pane",
+		"-p",
+		"-S",
+		"-",
+		"-E",
+		"-",
+		"-t",
+		targetID,
+	).Output()
+	if err != nil {
+		return "", fmt.Errorf("capture tmux copy buffer: %w", err)
+	}
+
+	buffer := string(out)
+	if buffer == "" {
+		return "", nil
+	}
+	if !strings.HasSuffix(buffer, "\n") {
+		buffer += "\n"
+	}
+	return buffer, nil
 }
 
 func tmuxHistoryBounds(targetID string) (paneHeight int, historySize int, err error) {

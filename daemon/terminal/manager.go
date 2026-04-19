@@ -199,6 +199,18 @@ func (m *Manager) FocusPane(ownerID, sessionID string, col, row int) error {
 	return nil
 }
 
+// CopyBuffer returns a plain-text snapshot for copy-oriented UI flows.
+func (m *Manager) CopyBuffer(ownerID, sessionID string) (string, error) {
+	ms, err := m.withSession(ownerID, sessionID)
+	if err != nil {
+		return "", err
+	}
+	if provider, ok := ms.session.(CopyProvider); ok {
+		return provider.CopyBuffer()
+	}
+	return "", fmt.Errorf("session does not support copy buffer capture")
+}
+
 // Resize updates a terminal session's dimensions.
 func (m *Manager) Resize(ownerID, sessionID string, cols, rows int) error {
 	ms, err := m.withSession(ownerID, sessionID)

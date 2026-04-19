@@ -301,6 +301,10 @@ export function buildGhosttyTerminalHtml(theme: TerminalThemePalette, fontUri: s
         };
 
         const syncViewport = (force) => {
+          if (selectionMode) {
+            closeSelectionMode();
+          }
+
           const viewport = getViewportSize();
           const nextWidth = viewport.width;
           const nextHeight = viewport.height;
@@ -338,38 +342,46 @@ export function buildGhosttyTerminalHtml(theme: TerminalThemePalette, fontUri: s
           scheduleDraw();
         };
 
-        const closeSelectionMode = () => {
-          selectionMode = false;
-          selectionLayer.classList.remove('active');
-          selectionText.textContent = '';
+        const clearSelection = () => {
           const selection = window.getSelection();
           if (selection) {
             selection.removeAllRanges();
           }
-          scheduleDraw();
         };
 
-        const openSelectionMode = (text) => {
-          if (!text) {
+        const closeSelectionMode = () => {
+          if (!selectionMode) {
             return;
           }
 
+          selectionMode = false;
+          selectionLayer.classList.remove('active');
+          selectionText.textContent = '';
+          clearSelection();
+          scheduleDraw();
+        };
+
+        const openSelectionMode = (text, selectAll) => {
           selectionMode = true;
           selectionText.textContent = text;
           selectionLayer.classList.add('active');
 
-          requestAnimationFrame(() => {
-            try {
-              const selection = window.getSelection();
-              if (!selection) {
-                return;
-              }
-              const range = document.createRange();
-              range.selectNodeContents(selectionText);
-              selection.removeAllRanges();
-              selection.addRange(range);
-            } catch (_) {}
-          });
+          if (selectAll) {
+            requestAnimationFrame(() => {
+              try {
+                const selection = window.getSelection();
+                if (!selection) {
+                  return;
+                }
+                const range = document.createRange();
+                range.selectNodeContents(selectionText);
+                selection.removeAllRanges();
+                selection.addRange(range);
+              } catch (_) {}
+            });
+          } else {
+            clearSelection();
+          }
 
           scheduleDraw();
         };
@@ -453,6 +465,7 @@ export function buildGhosttyTerminalHtml(theme: TerminalThemePalette, fontUri: s
             longPressTimer = null;
             if (!scrolling) {
               longPressTriggered = true;
+              openSelectionMode('Preparing terminal content…', false);
               send({ type: 'requestSelection' });
             }
           }, LONG_PRESS_MS);
@@ -564,7 +577,7 @@ export function buildGhosttyTerminalHtml(theme: TerminalThemePalette, fontUri: s
           const text = payload && typeof payload.text === 'string'
             ? payload.text.trimEnd()
             : '';
-          openSelectionMode(text);
+          openSelectionMode(text || 'No terminal content available.', Boolean(text));
         };
 
         window.__zenBlur = () => {
