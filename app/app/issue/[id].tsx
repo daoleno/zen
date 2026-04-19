@@ -58,6 +58,12 @@ import {
   formatTaskIssueId,
   sanitizeIssuePrefixInput,
 } from "../../services/taskIdentity";
+import {
+  taskStateSectionHasContent,
+  type TaskStateField,
+  type TaskStateSection,
+  type TaskStateSnapshot,
+} from "../../services/taskState";
 import { uploadDocumentForServer } from "../../services/uploads";
 import { wsClient } from "../../services/websocket";
 import { useAgents } from "../../store/agents";
@@ -125,12 +131,32 @@ type MentionMatch = {
   query: string;
 };
 
+type IssueContentTab = "task" | "activity";
+
 function formatTimestamp(timestamp?: number) {
   if (!timestamp) {
     return "";
   }
 
   return new Date(timestamp).toLocaleString(undefined, {
+    month: "short",
+    day: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
+  });
+}
+
+function formatTaskStateTimestamp(value?: string) {
+  if (!value) {
+    return "";
+  }
+
+  const parsed = Date.parse(value);
+  if (Number.isNaN(parsed)) {
+    return value;
+  }
+
+  return new Date(parsed).toLocaleString(undefined, {
     month: "short",
     day: "numeric",
     hour: "numeric",
@@ -165,22 +191,65 @@ function getRunMoment(run?: Run | null) {
   return run.updatedAt || run.endedAt || run.startedAt || run.createdAt || 0;
 }
 
+function formatTaskStateFieldValue(field: TaskStateField) {
+  const normalizedLabel = field.label.trim().toLowerCase();
+  const normalizedValue = field.value.trim();
+
+  switch (normalizedLabel) {
+    case "updated":
+      return formatTaskStateTimestamp(normalizedValue) || normalizedValue;
+    case "task status":
+      return TASK_STATUS_LABEL[normalizedValue as IssueStatus] || normalizedValue;
+    case "run status":
+      return RUN_STATUS_LABEL[normalizedValue] || normalizedValue;
+    case "run attempt":
+      return normalizedValue ? `#${normalizedValue}` : normalizedValue;
+    default:
+      return normalizedValue;
+  }
+}
+
+function taskStateFieldTone(field: TaskStateField) {
+  const normalizedLabel = field.label.trim().toLowerCase();
+  const normalizedValue = field.value.trim();
+
+  switch (normalizedLabel) {
+    case "task status":
+      return issueStatusColor(normalizedValue as IssueStatus);
+    case "run status":
+      return runStatusColor(normalizedValue);
+    case "summary":
+      return Colors.textPrimary;
+    default:
+      return undefined;
+  }
+}
+
+function isWideTaskStateField(field: TaskStateField) {
+  const normalizedLabel = field.label.trim().toLowerCase();
+  return (
+    normalizedLabel === "summary" ||
+    normalizedLabel === "workspace" ||
+    normalizedLabel === "session"
+  );
+}
+
 function getRunTitle(run: Run) {
   switch (run.status) {
     case "queued":
-      return "Run queued";
+      return "Queued";
     case "running":
-      return "Run running";
+      return "Running";
     case "blocked":
-      return "Run blocked";
+      return "Blocked";
     case "done":
-      return "Run finished";
+      return "Finished";
     case "failed":
-      return "Run failed";
+      return "Failed";
     case "cancelled":
-      return "Run stopped";
+      return "Stopped";
     default:
-      return "Run updated";
+      return "Updated";
   }
 }
 
@@ -214,20 +283,11 @@ function getRunBody(run: Run, liveAgent?: Agent | null) {
 }
 
 function buildActivityItems(
-  task: Task,
+  _task: Task,
   runs: Run[],
   liveSessionById: Record<string, Agent>,
 ) {
-  const items: ActivityItem[] = [
-    {
-      key: `issue-created-${task.id}`,
-      title: "Issue created",
-      timestamp: task.createdAt,
-      tone: issueStatusColor(task.status),
-      meta: formatTaskIssueId(task),
-      body: collapseCopy(task.description, 220) || undefined,
-    },
-  ];
+  const items: ActivityItem[] = [];
 
   for (const run of runs) {
     const liveAgent = run.agentSessionId
@@ -239,9 +299,7 @@ function buildActivityItems(
       title: getRunTitle(run),
       timestamp: getRunMoment(run),
       tone: runStatusColor(run.status),
-      meta: `Attempt ${run.attemptNumber || 1} · ${
-        RUN_STATUS_LABEL[run.status] || run.status
-      }`,
+      meta: `Attempt ${run.attemptNumber || 1}`,
       body: getRunBody(run, liveAgent),
       sessionId: run.agentSessionId,
       sessionLabel: liveAgent
@@ -389,6 +447,14 @@ export default function IssueDetailScreen() {
   const [directoryTarget, setDirectoryTarget] = useState<
     "repo" | "worktree" | null
   >(null);
+  const [workspaceTaskState, setWorkspaceTaskState] =
+    useState<TaskStateSnapshot | null>(null);
+  const [workspaceTaskStateLoading, setWorkspaceTaskStateLoading] =
+    useState(false);
+  const [workspaceTaskStateError, setWorkspaceTaskStateError] = useState("");
+  const [workspaceTaskStateReloadKey, setWorkspaceTaskStateReloadKey] =
+    useState(0);
+  const [contentTab, setContentTab] = useState<IssueContentTab>("task");
 
   const task = useMemo(() => {
     return (
@@ -518,6 +584,60 @@ export default function IssueDetailScreen() {
     setProjectBaseBranchDraft(draft.baseBranch);
   }, [projectVisible, projects, task?.projectId]);
 
+  useEffect(() => {
+    if (!task || !serverId) {
+      setWorkspaceTaskState(null);
+      setWorkspaceTaskStateError("");
+      setWorkspaceTaskStateLoading(false);
+      return;
+    }
+
+    let cancelled = false;
+    setWorkspaceTaskStateLoading(true);
+
+    void wsClient
+      .getTaskState(serverId, task.id)
+      .then((snapshot) => {
+        if (cancelled) {
+          return;
+        }
+        setWorkspaceTaskState(snapshot);
+        setWorkspaceTaskStateError("");
+      })
+      .catch((error: any) => {
+        if (cancelled) {
+          return;
+        }
+        setWorkspaceTaskState(null);
+        setWorkspaceTaskStateError(
+          error?.message || "Could not load task state.",
+        );
+      })
+      .finally(() => {
+        if (cancelled) {
+          return;
+        }
+        setWorkspaceTaskStateLoading(false);
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    currentRun?.updatedAt,
+    serverId,
+    task?.currentRunId,
+    task?.cwd,
+    task?.id,
+    task?.lastRunStatus,
+    task?.updatedAt,
+    workspaceTaskStateReloadKey,
+  ]);
+
+  useEffect(() => {
+    setContentTab("task");
+  }, [task?.id]);
+
   if (!task) {
     return (
       <SafeAreaView style={styles.container}>
@@ -550,6 +670,14 @@ export default function IssueDetailScreen() {
   const showExecutionBadge =
     !!currentRun && statusPresentation.label !== taskStatusLabel;
   const doneToggleLabel = task.status === "done" ? "Reopen" : "Mark done";
+  const hasWorkspaceTaskState =
+    !!workspaceTaskState &&
+    (workspaceTaskState.available ||
+      taskStateSectionHasContent(workspaceTaskState.goal) ||
+      taskStateSectionHasContent(workspaceTaskState.completed) ||
+      taskStateSectionHasContent(workspaceTaskState.blockers) ||
+      taskStateSectionHasContent(workspaceTaskState.nextStep) ||
+      workspaceTaskState.machineStatus.fields.length > 0);
 
   const openSession = (sessionId: string) => {
     router.push({
@@ -1058,14 +1186,182 @@ export default function IssueDetailScreen() {
             </View>
           </View>
 
-          <SectionHeader title="Activity" />
+          <View style={styles.bottomTabsRow}>
+            <View style={styles.contentTabs}>
+              <TouchableOpacity
+                style={[
+                  styles.contentTabButton,
+                  contentTab === "task" && styles.contentTabButtonActive,
+                ]}
+                onPress={() => setContentTab("task")}
+                activeOpacity={0.82}
+              >
+                <Text
+                  style={[
+                    styles.contentTabText,
+                    contentTab === "task" && styles.contentTabTextActive,
+                  ]}
+                >
+                  Task
+                </Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={[
+                  styles.contentTabButton,
+                  contentTab === "activity" && styles.contentTabButtonActive,
+                ]}
+                onPress={() => setContentTab("activity")}
+                activeOpacity={0.82}
+              >
+                <Text
+                  style={[
+                    styles.contentTabText,
+                    contentTab === "activity" && styles.contentTabTextActive,
+                  ]}
+                >
+                  Activity
+                </Text>
+              </TouchableOpacity>
+            </View>
+            {contentTab === "task" ? (
+              <TouchableOpacity
+                style={styles.tabActionButton}
+                onPress={() => {
+                  setWorkspaceTaskStateReloadKey((current) => current + 1);
+                }}
+                activeOpacity={0.82}
+              >
+                <Ionicons
+                  name="refresh-outline"
+                  size={14}
+                  color={Colors.textSecondary}
+                />
+                <Text style={styles.tabActionText}>Refresh</Text>
+              </TouchableOpacity>
+            ) : null}
+          </View>
+
           <View style={styles.surface}>
-            {activityItems.map((item, index) => (
-              <React.Fragment key={item.key}>
-                {index > 0 ? <Divider /> : null}
-                <ActivityRow item={item} onOpenSession={openSession} />
-              </React.Fragment>
-            ))}
+            {contentTab === "task" ? (
+              workspaceTaskStateLoading && !workspaceTaskState ? (
+                <View style={styles.taskStateLoadingRow}>
+                  <Ionicons
+                    name="sync-outline"
+                    size={15}
+                    color={Colors.textSecondary}
+                  />
+                  <Text style={styles.taskStateLoadingText}>
+                    Loading `.zen/task.md`...
+                  </Text>
+                </View>
+              ) : workspaceTaskStateError ? (
+                <EmptyState
+                  title="Could not load task state"
+                  body={workspaceTaskStateError}
+                />
+              ) : hasWorkspaceTaskState && workspaceTaskState ? (
+                <View style={styles.taskStateContent}>
+                  {workspaceTaskState.path ? (
+                    <>
+                      <View style={styles.taskStatePathRow}>
+                        <Ionicons
+                          name="document-text-outline"
+                          size={15}
+                          color={Colors.textSecondary}
+                        />
+                        <Text style={styles.taskStatePathText}>
+                          {workspaceTaskState.path}
+                        </Text>
+                      </View>
+                      <Divider />
+                    </>
+                  ) : null}
+
+                  {workspaceTaskState.machineStatus.fields.length > 0 ? (
+                    <>
+                      <TaskStateGroupLabel label="Machine status" />
+                      <View style={styles.taskStateFieldGrid}>
+                        {workspaceTaskState.machineStatus.fields.map(
+                          (field, index) => (
+                            <View
+                              key={`${field.label}:${field.value}:${index}`}
+                              style={[
+                                styles.taskStateFieldCard,
+                                isWideTaskStateField(field) &&
+                                  styles.taskStateFieldCardWide,
+                              ]}
+                            >
+                              <Text style={styles.taskStateFieldLabel}>
+                                {field.label}
+                              </Text>
+                              <Text
+                                style={[
+                                  styles.taskStateFieldValue,
+                                  taskStateFieldTone(field)
+                                    ? { color: taskStateFieldTone(field) }
+                                    : null,
+                                ]}
+                              >
+                                {formatTaskStateFieldValue(field)}
+                              </Text>
+                            </View>
+                          ),
+                        )}
+                      </View>
+                    </>
+                  ) : null}
+
+                  {taskStateSectionHasContent(workspaceTaskState.goal) ? (
+                    <TaskStateSectionBlock
+                      label="Goal"
+                      section={workspaceTaskState.goal}
+                    />
+                  ) : null}
+
+                  {taskStateSectionHasContent(workspaceTaskState.completed) ? (
+                    <TaskStateSectionBlock
+                      label="Completed"
+                      section={workspaceTaskState.completed}
+                    />
+                  ) : null}
+
+                  {taskStateSectionHasContent(workspaceTaskState.blockers) ? (
+                    <TaskStateSectionBlock
+                      label="Known pitfalls / blockers"
+                      section={workspaceTaskState.blockers}
+                    />
+                  ) : null}
+
+                  {taskStateSectionHasContent(workspaceTaskState.nextStep) ? (
+                    <TaskStateSectionBlock
+                      label="Next step"
+                      section={workspaceTaskState.nextStep}
+                    />
+                  ) : null}
+                </View>
+              ) : (
+                <EmptyState
+                  title="No task note yet"
+                  body={
+                    task.cwd?.trim()
+                      ? "This workspace does not have a `.zen/task.md` note yet. Start or resume a run to generate it."
+                      : "This issue has no workspace yet. Start a run first, then the daemon can create `.zen/task.md` and keep it updated."
+                  }
+                />
+              )
+            ) : activityItems.length > 0 ? (
+              activityItems.map((item, index) => (
+                <React.Fragment key={item.key}>
+                  {index > 0 ? <Divider /> : null}
+                  <ActivityRow item={item} onOpenSession={openSession} />
+                </React.Fragment>
+              ))
+            ) : (
+              <EmptyState
+                title="No activity yet"
+                body="Run history will appear here after you delegate this task."
+              />
+            )}
           </View>
         </View>
       </ScrollView>
@@ -1400,6 +1696,41 @@ function DetailRow({
   );
 }
 
+function TaskStateGroupLabel({ label }: { label: string }) {
+  return <Text style={styles.taskStateGroupLabel}>{label}</Text>;
+}
+
+function TaskStateSectionBlock({
+  label,
+  section,
+}: {
+  label: string;
+  section: TaskStateSection;
+}) {
+  if (!taskStateSectionHasContent(section)) {
+    return null;
+  }
+
+  return (
+    <View style={styles.taskStateSectionBlock}>
+      <TaskStateGroupLabel label={label} />
+      {section.body ? (
+        <Text style={styles.taskStateBody}>{section.body}</Text>
+      ) : null}
+      {section.items.length > 0 ? (
+        <View style={styles.taskStateBulletList}>
+          {section.items.map((item, index) => (
+            <View key={`${label}-${index}`} style={styles.taskStateBulletRow}>
+              <View style={styles.taskStateBullet} />
+              <Text style={styles.taskStateBulletText}>{item}</Text>
+            </View>
+          ))}
+        </View>
+      ) : null}
+    </View>
+  );
+}
+
 function ActivityRow({
   item,
   onOpenSession,
@@ -1409,27 +1740,26 @@ function ActivityRow({
 }) {
   return (
     <View style={styles.activityRow}>
-      <View
-        style={[
-          styles.activityDotWrap,
-          { backgroundColor: `${item.tone}18` },
-        ]}
-      >
-        <View style={[styles.activityDot, { backgroundColor: item.tone }]} />
-      </View>
+      <View style={[styles.activityMarker, { backgroundColor: item.tone }]} />
 
       <View style={styles.activityCopy}>
         <View style={styles.activityTopRow}>
-          <Text style={styles.activityTitle}>{item.title}</Text>
+          <View style={styles.activityHeadline}>
+            <Text style={[styles.activityTitle, { color: item.tone }]}>
+              {item.title}
+            </Text>
+            {item.meta ? (
+              <Text style={styles.activityMeta}>{item.meta}</Text>
+            ) : null}
+          </View>
           <Text style={styles.activityTime}>
             {formatTimestamp(item.timestamp)}
           </Text>
         </View>
-        {item.meta ? (
-          <Text style={styles.activityMeta}>{item.meta}</Text>
-        ) : null}
         {item.body ? (
-          <Text style={styles.activityBody}>{item.body}</Text>
+          <Text style={styles.activityBody} numberOfLines={2}>
+            {item.body}
+          </Text>
         ) : null}
         {item.sessionId && item.sessionLabel ? (
           item.sessionLive ? (
@@ -1832,7 +2162,7 @@ function ProjectSetupSheet({
             <FieldLabel text="Worktree root" />
             <DirectoryField
               value={worktreeRoot}
-              placeholder="Optional. Defaults to .zen/worktrees beside the repo"
+              placeholder="Optional. Defaults to ~/.zen/worktrees"
               onPress={onOpenWorktreePicker}
             />
 
@@ -2290,6 +2620,55 @@ const styles = StyleSheet.create({
     fontSize: 11,
     fontFamily: Typography.uiFontMedium,
   },
+  contentTabs: {
+    flex: 1,
+    flexDirection: "row",
+    gap: 6,
+    padding: 4,
+    borderRadius: 14,
+    backgroundColor: "rgba(255,255,255,0.03)",
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: "rgba(255,255,255,0.07)",
+  },
+  bottomTabsRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 10,
+  },
+  contentTabButton: {
+    flex: 1,
+    minHeight: 36,
+    borderRadius: 10,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  contentTabButtonActive: {
+    backgroundColor: "rgba(255,255,255,0.08)",
+  },
+  contentTabText: {
+    color: Colors.textSecondary,
+    fontSize: 13,
+    fontFamily: Typography.uiFontMedium,
+  },
+  contentTabTextActive: {
+    color: Colors.textPrimary,
+  },
+  tabActionButton: {
+    minHeight: 34,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+    paddingHorizontal: 10,
+    borderRadius: 10,
+    backgroundColor: "rgba(255,255,255,0.04)",
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: "rgba(255,255,255,0.08)",
+  },
+  tabActionText: {
+    color: Colors.textSecondary,
+    fontSize: 12,
+    fontFamily: Typography.uiFontMedium,
+  },
   actionRow: {
     flexDirection: "row",
     flexWrap: "wrap",
@@ -2481,6 +2860,104 @@ const styles = StyleSheet.create({
     fontSize: 12,
     fontFamily: Typography.uiFontMedium,
   },
+  taskStateLoadingRow: {
+    minHeight: 54,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 10,
+    paddingHorizontal: 16,
+  },
+  taskStateLoadingText: {
+    color: Colors.textSecondary,
+    fontSize: 13,
+    fontFamily: Typography.uiFont,
+  },
+  taskStateContent: {
+    gap: 14,
+    paddingHorizontal: 16,
+    paddingVertical: 14,
+  },
+  taskStatePathRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+  },
+  taskStatePathText: {
+    flex: 1,
+    color: Colors.textSecondary,
+    fontSize: 12,
+    lineHeight: 18,
+    fontFamily: Typography.terminalFont,
+  },
+  taskStateGroupLabel: {
+    color: Colors.textSecondary,
+    fontSize: 11,
+    fontFamily: Typography.uiFontMedium,
+    textTransform: "uppercase",
+    letterSpacing: 0.45,
+    opacity: 0.78,
+  },
+  taskStateFieldGrid: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: 10,
+  },
+  taskStateFieldCard: {
+    minWidth: "47%",
+    flexGrow: 1,
+    gap: 4,
+    paddingHorizontal: 12,
+    paddingVertical: 11,
+    borderRadius: 12,
+    backgroundColor: "rgba(255,255,255,0.035)",
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: "rgba(255,255,255,0.08)",
+  },
+  taskStateFieldCardWide: {
+    minWidth: "100%",
+  },
+  taskStateFieldLabel: {
+    color: Colors.textSecondary,
+    fontSize: 11,
+    fontFamily: Typography.uiFont,
+  },
+  taskStateFieldValue: {
+    color: Colors.textPrimary,
+    fontSize: 13,
+    lineHeight: 19,
+    fontFamily: Typography.uiFontMedium,
+  },
+  taskStateSectionBlock: {
+    gap: 8,
+  },
+  taskStateBody: {
+    color: Colors.textPrimary,
+    fontSize: 13,
+    lineHeight: 21,
+    fontFamily: Typography.uiFont,
+  },
+  taskStateBulletList: {
+    gap: 8,
+  },
+  taskStateBulletRow: {
+    flexDirection: "row",
+    alignItems: "flex-start",
+    gap: 9,
+  },
+  taskStateBullet: {
+    width: 5,
+    height: 5,
+    borderRadius: 3,
+    marginTop: 7,
+    backgroundColor: Colors.accent,
+  },
+  taskStateBulletText: {
+    flex: 1,
+    color: Colors.textPrimary,
+    fontSize: 13,
+    lineHeight: 20,
+    fontFamily: Typography.uiFont,
+  },
   noteList: {
     paddingVertical: 4,
   },
@@ -2564,40 +3041,40 @@ const styles = StyleSheet.create({
   activityRow: {
     flexDirection: "row",
     alignItems: "flex-start",
-    gap: 12,
-    paddingHorizontal: 16,
+    gap: 10,
+    paddingHorizontal: 14,
     paddingVertical: 12,
   },
-  activityDotWrap: {
-    width: 20,
-    height: 20,
-    borderRadius: 10,
-    alignItems: "center",
-    justifyContent: "center",
+  activityMarker: {
+    width: 3,
+    minHeight: 48,
+    borderRadius: 2,
     marginTop: 2,
-    backgroundColor: "rgba(255,255,255,0.04)",
-  },
-  activityDot: {
-    width: 6,
-    height: 6,
-    borderRadius: 3,
   },
   activityCopy: {
     flex: 1,
-    gap: 4,
+    gap: 6,
   },
   activityTopRow: {
     flexDirection: "row",
+    alignItems: "baseline",
     justifyContent: "space-between",
     gap: 12,
   },
-  activityTitle: {
+  activityHeadline: {
     flex: 1,
+    flexDirection: "row",
+    flexWrap: "wrap",
+    alignItems: "baseline",
+    gap: 6,
+  },
+  activityTitle: {
     color: Colors.textPrimary,
     fontSize: 13,
     fontFamily: Typography.uiFontMedium,
   },
   activityTime: {
+    flexShrink: 0,
     color: Colors.textSecondary,
     fontSize: 12,
     fontFamily: Typography.uiFont,
@@ -2605,12 +3082,12 @@ const styles = StyleSheet.create({
   activityMeta: {
     color: Colors.textSecondary,
     fontSize: 12,
-    fontFamily: Typography.uiFont,
+    fontFamily: Typography.uiFontMedium,
   },
   activityBody: {
     color: Colors.textPrimary,
     fontSize: 13,
-    lineHeight: 20,
+    lineHeight: 19,
     fontFamily: Typography.uiFont,
   },
   inlineComposer: {

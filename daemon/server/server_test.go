@@ -223,22 +223,23 @@ func TestBuildTaskPromptIncludesStructuredIssueContext(t *testing.T) {
 	}
 }
 
-func TestDefaultWorktreeRootUsesZenWorkspaceDir(t *testing.T) {
+func TestDefaultWorktreeRootUsesGlobalZenDir(t *testing.T) {
+	t.Setenv("HOME", "/home/tester")
 	got := defaultWorktreeRoot("/workspace/zen")
-	want := "/workspace/.zen/worktrees/zen"
+	want := "/home/tester/.zen/worktrees/zen"
 	if got != want {
 		t.Fatalf("defaultWorktreeRoot = %q, want %q", got, want)
 	}
 }
 
-func TestWriteTaskStateFileUsesZenWorkspaceDir(t *testing.T) {
+func TestWriteTaskStateFileUsesRepoLocalZenDir(t *testing.T) {
 	dir := t.TempDir()
 	currentTask := &task.Task{
 		ID:               "task-1",
 		IdentifierPrefix: "ZEN",
 		Number:           12,
 		Title:            "Investigate workspace layout",
-		Description:      "Move task state into the workspace-local .zen directory.",
+		Description:      "Keep task state in the repo-local .zen directory.",
 		Cwd:              dir,
 	}
 	currentRun := &task.Run{

@@ -5,6 +5,10 @@ import type {
   GitDiffPatchPayload,
   GitDiffStatusSnapshot,
 } from "./gitDiff";
+import {
+  normalizeTaskStateSnapshot,
+  type TaskStateSnapshot,
+} from "./taskState";
 
 type MessageHandler = (data: any) => void;
 
@@ -351,6 +355,47 @@ class MultiServerWebSocketClient {
         type: "list_dir",
         request_id: requestId,
         cwd: path ?? "",
+      });
+    });
+  }
+
+  getTaskState(serverId: string, taskId: string) {
+    const requestId = `${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
+
+    return new Promise<TaskStateSnapshot>((resolve, reject) => {
+      const cleanup = () => {
+        if (timer) clearTimeout(timer);
+        this.off("task_state", handleState);
+        this.off("error", handleError);
+      };
+
+      const handleState = (payload: any) => {
+        if (payload.serverId !== serverId || payload.request_id !== requestId) {
+          return;
+        }
+        cleanup();
+        resolve(normalizeTaskStateSnapshot(payload.task_state));
+      };
+
+      const handleError = (payload: any) => {
+        if (payload.serverId !== serverId || payload.request_id !== requestId) {
+          return;
+        }
+        cleanup();
+        reject(new Error(payload.message || "Failed to load task state."));
+      };
+
+      const timer = setTimeout(() => {
+        cleanup();
+        reject(new Error("Timed out while loading task state."));
+      }, 10000);
+
+      this.on("task_state", handleState);
+      this.on("error", handleError);
+      this.send(serverId, {
+        type: "get_task_state",
+        request_id: requestId,
+        task_id: taskId,
       });
     });
   }

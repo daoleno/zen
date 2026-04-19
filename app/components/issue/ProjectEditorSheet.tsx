@@ -315,7 +315,7 @@ export function ProjectEditorSheet({
                 <Text style={styles.label}>Worktree root</Text>
                 <DirectoryField
                   value={worktreeRoot}
-                  placeholder="Optional. Defaults to .zen/worktrees beside the repo"
+                  placeholder="Optional. Defaults to ~/.zen/worktrees"
                   onPress={() => setDirectoryTarget("worktree")}
                 />
               </View>

@@ -511,6 +511,18 @@ func (s *Server) handleClientMessage(conn *websocket.Conn, msg []byte) {
 	case "list_runs":
 		s.sendJSON(conn, map[string]any{"type": "run_list", "runs": s.runs.List()})
 
+	case "get_task_state":
+		snapshot, err := s.readTaskStateSnapshot(raw.TaskID)
+		if err != nil {
+			s.sendErrorWithRequestID(conn, raw.RequestID, "get_task_state_failed", err.Error())
+			return
+		}
+		s.sendJSON(conn, map[string]any{
+			"type":       "task_state",
+			"request_id": raw.RequestID,
+			"task_state": snapshot,
+		})
+
 	case "create_task":
 		var input struct {
 			RequestID   string            `json:"request_id"`
@@ -1292,6 +1304,9 @@ func (s *Server) prepareTaskWorkspace(currentTask *task.Task) (string, error) {
 }
 
 func defaultWorktreeRoot(repoRoot string) string {
+	if storageDir, err := auth.DefaultStorageDir(); err == nil && strings.TrimSpace(storageDir) != "" {
+		return filepath.Join(storageDir, workspaceWorktreesDirName, filepath.Base(repoRoot))
+	}
 	return filepath.Join(filepath.Dir(repoRoot), workspaceStateDirName, workspaceWorktreesDirName, filepath.Base(repoRoot))
 }
 
