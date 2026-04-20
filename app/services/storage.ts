@@ -100,7 +100,12 @@ export async function saveServer(input: {
   }
   const existingMatch = input.id?.trim()
     ? null
-    : servers.find((server) => server.daemonId === daemonId);
+    : servers.find(
+        (server) =>
+          server.daemonId === daemonId &&
+          server.daemonPublicKey === daemonPublicKey &&
+          server.url === normalizedURL,
+      );
 
   const nextServer: StoredServer = {
     id: input.id?.trim() || existingMatch?.id || createServerID(),
