@@ -5,6 +5,7 @@ import {
   ScrollView,
   StyleSheet,
   Text,
+  TextInput,
   TouchableOpacity,
   View,
   useWindowDimensions,
@@ -44,9 +45,14 @@ interface GitDiffSheetProps {
   onSelectPath(path: string): void;
 }
 
-interface GitDiffFileGroup {
-  directory: string;
-  files: GitDiffFileInfo[];
+interface GitDiffTreeNode {
+  key: string;
+  name: string;
+  path: string;
+  kind: "directory" | "file";
+  file?: GitDiffFileInfo;
+  children: GitDiffTreeNode[];
+  fileCount: number;
 }
 
 export function GitDiffSheet({
@@ -69,17 +75,31 @@ export function GitDiffSheet({
   const isWideLayout = windowWidth >= 920;
   const isTabletLike = windowWidth >= 720;
   const isCompactHeight = windowHeight < 760;
+  const treeIndent = isWideLayout ? 16 : 13;
   const [previewMode, setPreviewMode] = React.useState<PreviewMode>("diff");
   const [mobilePane, setMobilePane] = React.useState<MobilePane>("files");
+  const [searchQuery, setSearchQuery] = React.useState("");
+  const [expandedDirectories, setExpandedDirectories] = React.useState<Record<string, boolean>>(
+    {},
+  );
 
   const files = snapshot?.files ?? [];
+  const deferredSearchQuery = React.useDeferredValue(searchQuery);
+  const normalizedSearchQuery = React.useMemo(
+    () => normalizeSearchQuery(deferredSearchQuery),
+    [deferredSearchQuery],
+  );
   const selectedFile = React.useMemo(
     () => files.find((file) => file.path === selectedPath) ?? null,
     [files, selectedPath],
   );
-  const groupedFiles = React.useMemo(
-    () => buildFileGroups(files),
+  const fileTree = React.useMemo(
+    () => buildGitDiffTree(files),
     [files],
+  );
+  const filteredTree = React.useMemo(
+    () => normalizedSearchQuery ? filterGitDiffTree(fileTree, normalizedSearchQuery) : fileTree,
+    [fileTree, normalizedSearchQuery],
   );
   const selectedPatch = selectedPath ? patchByPath[selectedPath] : undefined;
   const selectedContent = selectedPath ? contentByPath[selectedPath] : undefined;
@@ -92,17 +112,175 @@ export function GitDiffSheet({
   const previewLoading =
     (selectedPath && patchLoadingPath === selectedPath && previewMode === "diff")
     || (selectedPath && contentLoadingPath === selectedPath && previewMode !== "diff");
+  const searchExpandedDirectories = React.useMemo(
+    () => normalizedSearchQuery ? collectDirectoryPaths(filteredTree) : new Set<string>(),
+    [filteredTree, normalizedSearchQuery],
+  );
+  const selectedAncestorDirectories = React.useMemo(
+    () => new Set(collectAncestorDirectories(selectedPath)),
+    [selectedPath],
+  );
+  const expandedDirectorySet = React.useMemo(() => {
+    const next = new Set<string>();
+
+    for (const [path, expanded] of Object.entries(expandedDirectories)) {
+      if (expanded) {
+        next.add(path);
+      }
+    }
+    for (const path of selectedAncestorDirectories) {
+      next.add(path);
+    }
+    for (const path of searchExpandedDirectories) {
+      next.add(path);
+    }
+
+    return next;
+  }, [expandedDirectories, searchExpandedDirectories, selectedAncestorDirectories]);
+  const visibleFileCount = React.useMemo(
+    () => countGitDiffLeaves(filteredTree),
+    [filteredTree],
+  );
 
   React.useEffect(() => {
-    if (!visible) {
-      return;
-    }
     if (isWideLayout) {
-      setMobilePane("preview");
       return;
     }
-    setMobilePane(selectedPath ? "preview" : "files");
-  }, [isWideLayout, selectedPath, visible]);
+    if (selectedPath) {
+      setMobilePane("preview");
+    }
+  }, [isWideLayout, selectedPath]);
+
+  React.useEffect(() => {
+    if (visible) {
+      return;
+    }
+    setSearchQuery("");
+  }, [visible]);
+
+  React.useEffect(() => {
+    setExpandedDirectories((previous) => initializeExpandedDirectories(previous, fileTree));
+  }, [fileTree]);
+
+  const toggleDirectory = (path: string) => {
+    if (!path || normalizedSearchQuery) {
+      return;
+    }
+    setExpandedDirectories((previous) => ({
+      ...previous,
+      [path]: !(previous[path] ?? true),
+    }));
+  };
+
+  const renderTreeNodes = (nodes: GitDiffTreeNode[], depth: number = 0): React.ReactNode =>
+    nodes.map((node) => {
+      if (node.kind === "directory") {
+        const expanded = expandedDirectorySet.has(node.path);
+        const activeBranch = Boolean(
+          selectedPath && selectedPath.startsWith(`${node.path}/`),
+        );
+
+        return (
+          <View key={node.key}>
+            <TouchableOpacity
+              style={[
+                styles.treeDirectoryRow,
+                {
+                  paddingLeft: 12 + depth * treeIndent,
+                  backgroundColor: activeBranch
+                    ? withAlpha(theme.cursor, 0.1)
+                    : "transparent",
+                },
+              ]}
+              onPress={() => toggleDirectory(node.path)}
+              activeOpacity={normalizedSearchQuery ? 1 : 0.82}
+            >
+              <View style={styles.treeDirectoryLead}>
+                <Ionicons
+                  name={expanded ? "chevron-down" : "chevron-forward"}
+                  size={14}
+                  color={normalizedSearchQuery ? chrome.textSubtle : chrome.textMuted}
+                />
+                <Ionicons
+                  name={expanded ? "folder-open-outline" : "folder-outline"}
+                  size={15}
+                  color={activeBranch ? theme.cursor : chrome.textSubtle}
+                />
+                <Text
+                  style={[styles.treeDirectoryTitle, { color: chrome.text }]}
+                  numberOfLines={1}
+                >
+                  {node.name}
+                </Text>
+              </View>
+
+              <Text style={[styles.treeDirectoryCount, { color: chrome.textMuted }]}>
+                {node.fileCount}
+              </Text>
+            </TouchableOpacity>
+
+            {expanded ? renderTreeNodes(node.children, depth + 1) : null}
+          </View>
+        );
+      }
+
+      const file = node.file;
+      if (!file) {
+        return null;
+      }
+
+      const active = selectedPath === file.path;
+
+      return (
+        <TouchableOpacity
+          key={node.key}
+          style={[
+            styles.fileRow,
+            {
+              marginLeft: 12 + depth * treeIndent,
+              backgroundColor: active
+                ? withAlpha(theme.cursor, 0.16)
+                : "transparent",
+              borderColor: active
+                ? withAlpha(theme.cursor, 0.26)
+                : chrome.border,
+            },
+          ]}
+          onPress={() => onSelectPath(file.path)}
+          activeOpacity={0.84}
+        >
+          <View style={styles.fileRowLead}>
+            <View style={styles.fileRowIconWrap}>
+              <Ionicons
+                name="document-text-outline"
+                size={15}
+                color={active ? theme.cursor : chrome.textSubtle}
+              />
+            </View>
+            <View style={styles.fileRowCopy}>
+              <Text
+                style={[styles.fileRowTitle, { color: chrome.text }]}
+                numberOfLines={1}
+              >
+                {node.name}
+              </Text>
+              <Text
+                style={[styles.fileRowMeta, { color: chrome.textMuted }]}
+                numberOfLines={1}
+              >
+                {buildFileRowMeta(file)}
+              </Text>
+            </View>
+          </View>
+
+          <StatusPill file={file} theme={theme} compact />
+        </TouchableOpacity>
+      );
+    });
+
+  const searchSummary = normalizedSearchQuery
+    ? `${visibleFileCount} ${visibleFileCount === 1 ? "match" : "matches"}`
+    : `${files.length} files`;
 
   return (
     <Modal
@@ -284,7 +462,7 @@ export function GitDiffSheet({
                     Local change volume
                   </Text>
                   <Text style={[styles.countStripMeta, { color: chrome.textSubtle }]}>
-                    Browse files, patch context, and live code without leaving the shell.
+                    Search paths, collapse noisy folders, and inspect the exact snapshot you need.
                   </Text>
                 </View>
                 <View style={styles.countStripValues}>
@@ -302,7 +480,7 @@ export function GitDiffSheet({
                   <SegmentedControl
                     options={[
                       { value: "files", label: `Files ${files.length}` },
-                      { value: "preview", label: selectedFile ? "Preview" : "Preview" },
+                      { value: "preview", label: "Preview" },
                     ]}
                     selectedValue={mobilePane}
                     onSelect={(value) => setMobilePane(value as MobilePane)}
@@ -345,7 +523,59 @@ export function GitDiffSheet({
                         </Text>
                       </View>
                       <Text style={[styles.browserPaneMeta, { color: chrome.textMuted }]}>
-                        {files.length} files
+                        {searchSummary}
+                      </Text>
+                    </View>
+
+                    <View
+                      style={[
+                        styles.browserTools,
+                        { borderBottomColor: chrome.border },
+                      ]}
+                    >
+                      <View
+                        style={[
+                          styles.searchField,
+                          {
+                            backgroundColor: chrome.surface,
+                            borderColor: normalizedSearchQuery
+                              ? withAlpha(theme.cursor, 0.24)
+                              : chrome.border,
+                          },
+                        ]}
+                      >
+                        <Ionicons
+                          name="search-outline"
+                          size={16}
+                          color={normalizedSearchQuery ? theme.cursor : chrome.textSubtle}
+                        />
+                        <TextInput
+                          style={[styles.searchInput, { color: chrome.text }]}
+                          value={searchQuery}
+                          onChangeText={setSearchQuery}
+                          placeholder="Search files, paths, or renames"
+                          placeholderTextColor={chrome.textSubtle}
+                          autoCapitalize="none"
+                          autoCorrect={false}
+                          autoComplete="off"
+                          returnKeyType="search"
+                          selectionColor={theme.cursor}
+                        />
+                        {searchQuery ? (
+                          <TouchableOpacity
+                            style={styles.searchClearButton}
+                            onPress={() => setSearchQuery("")}
+                            activeOpacity={0.82}
+                          >
+                            <Ionicons name="close-circle" size={16} color={chrome.textMuted} />
+                          </TouchableOpacity>
+                        ) : null}
+                      </View>
+
+                      <Text style={[styles.searchMeta, { color: chrome.textMuted }]}>
+                        {normalizedSearchQuery
+                          ? "Matching folders auto-expand while search is active."
+                          : "Tap folders to collapse noise and focus the tree."}
                       </Text>
                     </View>
 
@@ -355,87 +585,21 @@ export function GitDiffSheet({
                         styles.browserScrollContent,
                         isTabletLike ? styles.browserScrollContentTablet : null,
                       ]}
+                      keyboardShouldPersistTaps="handled"
                       showsVerticalScrollIndicator={false}
                     >
-                      {groupedFiles.map((group) => (
-                        <View
-                          key={group.directory}
-                          style={[
-                            styles.groupCard,
-                            {
-                              backgroundColor: chrome.surface,
-                              borderColor: chrome.border,
-                            },
-                          ]}
-                        >
-                          <View style={styles.groupHeader}>
-                            <View style={styles.groupHeaderLead}>
-                              <Ionicons
-                                name="folder-open-outline"
-                                size={15}
-                                color={chrome.textSubtle}
-                              />
-                              <Text style={[styles.groupHeaderText, { color: chrome.text }]}>
-                                {group.directory}
-                              </Text>
-                            </View>
-                            <Text style={[styles.groupHeaderCount, { color: chrome.textMuted }]}>
-                              {group.files.length}
-                            </Text>
-                          </View>
-
-                          {group.files.map((file) => {
-                            const active = selectedPath === file.path;
-                            return (
-                              <TouchableOpacity
-                                key={file.path}
-                                style={[
-                                  styles.fileRow,
-                                  {
-                                    backgroundColor: active
-                                      ? withAlpha(theme.cursor, 0.16)
-                                      : "transparent",
-                                    borderColor: active
-                                      ? withAlpha(theme.cursor, 0.26)
-                                      : chrome.border,
-                                  },
-                                ]}
-                                onPress={() => onSelectPath(file.path)}
-                                activeOpacity={0.84}
-                              >
-                                <View style={styles.fileRowLead}>
-                                  <View style={styles.fileRowIconWrap}>
-                                    <Ionicons
-                                      name="document-text-outline"
-                                      size={16}
-                                      color={active ? theme.cursor : chrome.textSubtle}
-                                    />
-                                  </View>
-                                  <View style={styles.fileRowCopy}>
-                                    <Text
-                                      style={[
-                                        styles.fileRowTitle,
-                                        { color: active ? chrome.text : chrome.text },
-                                      ]}
-                                      numberOfLines={1}
-                                    >
-                                      {pathBaseName(file.path)}
-                                    </Text>
-                                    <Text
-                                      style={[styles.fileRowMeta, { color: chrome.textMuted }]}
-                                      numberOfLines={1}
-                                    >
-                                      {buildFileRowMeta(file)}
-                                    </Text>
-                                  </View>
-                                </View>
-
-                                <StatusPill file={file} theme={theme} compact />
-                              </TouchableOpacity>
-                            );
-                          })}
-                        </View>
-                      ))}
+                      {visibleFileCount > 0 ? (
+                        renderTreeNodes(filteredTree)
+                      ) : (
+                        <StateCard
+                          icon="search-outline"
+                          title="No matching files"
+                          detail="Try a shorter path fragment, a filename, or part of the previous rename target."
+                          accent={theme.cursor}
+                          chromeText={chrome.text}
+                          chromeMuted={chrome.textMuted}
+                        />
+                      )}
                     </ScrollView>
                   </View>
                 ) : null}
@@ -1032,23 +1196,159 @@ function buildSubtitle(snapshot: GitDiffStatusSnapshot | null): string {
   return "Browse changed files, patch context, and live code without disrupting the active shell.";
 }
 
-function buildFileGroups(files: GitDiffFileInfo[]): GitDiffFileGroup[] {
-  const grouped = new Map<string, GitDiffFileInfo[]>();
+function buildGitDiffTree(files: GitDiffFileInfo[]): GitDiffTreeNode[] {
+  const sortedFiles = [...files].sort((left, right) => left.path.localeCompare(right.path));
+  const root: GitDiffTreeNode = {
+    key: "__root__",
+    name: "",
+    path: "",
+    kind: "directory",
+    children: [],
+    fileCount: 0,
+  };
+  const directories = new Map<string, GitDiffTreeNode>([["", root]]);
 
-  for (const file of files) {
-    const directory = pathDirectory(file.path);
-    if (!grouped.has(directory)) {
-      grouped.set(directory, []);
+  for (const file of sortedFiles) {
+    const parts = file.path.split("/").filter(Boolean);
+    let parent = root;
+    let currentPath = "";
+
+    for (const part of parts.slice(0, -1)) {
+      currentPath = currentPath ? `${currentPath}/${part}` : part;
+      let directory = directories.get(currentPath);
+      if (!directory) {
+        directory = {
+          key: `dir:${currentPath}`,
+          name: part,
+          path: currentPath,
+          kind: "directory",
+          children: [],
+          fileCount: 0,
+        };
+        directories.set(currentPath, directory);
+        parent.children.push(directory);
+      }
+      parent = directory;
     }
-    grouped.get(directory)?.push(file);
+
+    parent.children.push({
+      key: `file:${file.path}`,
+      name: parts[parts.length - 1] ?? file.path,
+      path: file.path,
+      kind: "file",
+      file,
+      children: [],
+      fileCount: 1,
+    });
   }
 
-  return Array.from(grouped.entries())
-    .sort(([left], [right]) => left.localeCompare(right))
-    .map(([directory, groupFiles]) => ({
-      directory,
-      files: [...groupFiles].sort((left, right) => left.path.localeCompare(right.path)),
-    }));
+  return finalizeGitDiffTree(root.children);
+}
+
+function finalizeGitDiffTree(nodes: GitDiffTreeNode[]): GitDiffTreeNode[] {
+  return [...nodes]
+    .map((node) => {
+      if (node.kind === "file") {
+        return node;
+      }
+
+      const children = finalizeGitDiffTree(node.children);
+      return {
+        ...node,
+        children,
+        fileCount: countGitDiffLeaves(children),
+      };
+    })
+    .sort(compareGitDiffTreeNodes);
+}
+
+function filterGitDiffTree(nodes: GitDiffTreeNode[], query: string): GitDiffTreeNode[] {
+  return nodes.reduce<GitDiffTreeNode[]>((result, node) => {
+    if (node.kind === "file") {
+      if (node.file && gitDiffFileMatchesQuery(node.file, query)) {
+        result.push(node);
+      }
+      return result;
+    }
+
+    const children = filterGitDiffTree(node.children, query);
+    if (children.length === 0) {
+      return result;
+    }
+
+    result.push({
+      ...node,
+      children,
+      fileCount: countGitDiffLeaves(children),
+    });
+    return result;
+  }, []);
+}
+
+function initializeExpandedDirectories(
+  previous: Record<string, boolean>,
+  tree: GitDiffTreeNode[],
+): Record<string, boolean> {
+  const available = collectDirectoryPaths(tree);
+  const next: Record<string, boolean> = {};
+
+  for (const [path, expanded] of Object.entries(previous)) {
+    if (available.has(path)) {
+      next[path] = expanded;
+    }
+  }
+
+  for (const node of tree) {
+    if (node.kind === "directory" && next[node.path] === undefined) {
+      next[node.path] = true;
+    }
+  }
+
+  return shallowEqualRecord(previous, next) ? previous : next;
+}
+
+function collectDirectoryPaths(nodes: GitDiffTreeNode[], acc: Set<string> = new Set()): Set<string> {
+  for (const node of nodes) {
+    if (node.kind !== "directory") {
+      continue;
+    }
+    acc.add(node.path);
+    collectDirectoryPaths(node.children, acc);
+  }
+  return acc;
+}
+
+function countGitDiffLeaves(nodes: GitDiffTreeNode[]): number {
+  return nodes.reduce((count, node) => {
+    if (node.kind === "file") {
+      return count + 1;
+    }
+    return count + countGitDiffLeaves(node.children);
+  }, 0);
+}
+
+function compareGitDiffTreeNodes(left: GitDiffTreeNode, right: GitDiffTreeNode): number {
+  if (left.kind !== right.kind) {
+    return left.kind === "directory" ? -1 : 1;
+  }
+  return left.name.localeCompare(right.name);
+}
+
+function normalizeSearchQuery(value: string): string {
+  return value.trim().toLowerCase();
+}
+
+function gitDiffFileMatchesQuery(file: GitDiffFileInfo, query: string): boolean {
+  const haystack = [
+    file.path,
+    file.old_path ?? "",
+    pathBaseName(file.path),
+    file.old_path ? pathBaseName(file.old_path) : "",
+  ]
+    .join(" ")
+    .toLowerCase();
+
+  return haystack.includes(query);
 }
 
 function buildFileMeta(file: GitDiffFileInfo): string {
@@ -1065,17 +1365,22 @@ function buildFileRowMeta(file: GitDiffFileInfo): string {
   return `${describeGitDiffScope(file)} · ${statusLabel(file)}`;
 }
 
-function pathDirectory(path: string): string {
-  const index = path.lastIndexOf("/");
-  if (index === -1) {
-    return "repo root";
-  }
-  return path.slice(0, index);
-}
-
 function pathBaseName(path: string): string {
   const index = path.lastIndexOf("/");
   return index === -1 ? path : path.slice(index + 1);
+}
+
+function collectAncestorDirectories(path: string | null): string[] {
+  if (!path || !path.includes("/")) {
+    return [];
+  }
+
+  const parts = path.split("/");
+  const ancestors: string[] = [];
+  for (let index = 0; index < parts.length - 1; index += 1) {
+    ancestors.push(parts.slice(0, index + 1).join("/"));
+  }
+  return ancestors;
 }
 
 function describeSnapshotMissing(
@@ -1188,6 +1493,26 @@ function formatByteCount(bytes: number): string {
     return `${Math.round(bytes / 1024)} KB`;
   }
   return `${bytes} B`;
+}
+
+function shallowEqualRecord(
+  left: Record<string, boolean>,
+  right: Record<string, boolean>,
+): boolean {
+  const leftKeys = Object.keys(left);
+  const rightKeys = Object.keys(right);
+
+  if (leftKeys.length !== rightKeys.length) {
+    return false;
+  }
+
+  for (const key of leftKeys) {
+    if (left[key] !== right[key]) {
+      return false;
+    }
+  }
+
+  return true;
 }
 
 function withAlpha(hex: string, alpha: number): string {
@@ -1338,7 +1663,7 @@ const styles = StyleSheet.create({
     minHeight: 0,
   },
   browserPaneWide: {
-    width: 336,
+    width: 356,
     flexShrink: 0,
   },
   browserPaneStacked: {
@@ -1370,6 +1695,41 @@ const styles = StyleSheet.create({
     lineHeight: 15,
     fontFamily: Typography.uiFont,
   },
+  browserTools: {
+    paddingHorizontal: 12,
+    paddingTop: 12,
+    paddingBottom: 12,
+    gap: 8,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+  },
+  searchField: {
+    minHeight: 42,
+    borderRadius: 15,
+    borderWidth: StyleSheet.hairlineWidth,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 10,
+    paddingHorizontal: 12,
+  },
+  searchInput: {
+    flex: 1,
+    minWidth: 0,
+    fontSize: 13,
+    lineHeight: 18,
+    fontFamily: Typography.uiFont,
+    paddingVertical: 0,
+  },
+  searchClearButton: {
+    width: 18,
+    height: 18,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  searchMeta: {
+    fontSize: 11,
+    lineHeight: 16,
+    fontFamily: Typography.uiFont,
+  },
   panelEyebrow: {
     fontSize: 10,
     lineHeight: 12,
@@ -1390,46 +1750,43 @@ const styles = StyleSheet.create({
     paddingHorizontal: 12,
     paddingTop: 12,
     paddingBottom: 20,
-    gap: 10,
+    gap: 6,
   },
   browserScrollContentTablet: {
     paddingBottom: 28,
   },
-  groupCard: {
-    borderRadius: 18,
-    borderWidth: StyleSheet.hairlineWidth,
-    padding: 10,
-    gap: 8,
-  },
-  groupHeader: {
+  treeDirectoryRow: {
+    minHeight: 36,
+    borderRadius: 12,
+    paddingRight: 10,
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "space-between",
     gap: 10,
-    paddingHorizontal: 4,
   },
-  groupHeaderLead: {
+  treeDirectoryLead: {
     flexDirection: "row",
     alignItems: "center",
     gap: 8,
     flex: 1,
     minWidth: 0,
   },
-  groupHeaderText: {
+  treeDirectoryTitle: {
     fontSize: 12,
     lineHeight: 16,
     fontFamily: Typography.uiFontMedium,
   },
-  groupHeaderCount: {
+  treeDirectoryCount: {
     fontSize: 11,
     lineHeight: 14,
     fontFamily: Typography.terminalFont,
   },
   fileRow: {
+    minHeight: 48,
     borderRadius: 16,
     borderWidth: StyleSheet.hairlineWidth,
-    paddingHorizontal: 10,
-    paddingVertical: 10,
+    paddingRight: 10,
+    paddingVertical: 8,
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "space-between",
@@ -1443,7 +1800,7 @@ const styles = StyleSheet.create({
     minWidth: 0,
   },
   fileRowIconWrap: {
-    width: 28,
+    width: 20,
     alignItems: "center",
     justifyContent: "center",
   },
