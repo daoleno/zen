@@ -1,13 +1,32 @@
-import React, { useEffect, useMemo, useState } from "react";
-import { Alert, Pressable, StyleSheet, Text, View } from "react-native";
+import React, { useEffect, useMemo, useRef, useState } from "react";
+import {
+  Alert,
+  KeyboardAvoidingView,
+  Modal,
+  Platform,
+  Pressable,
+  StyleSheet,
+  Text,
+  View,
+} from "react-native";
 import { useLocalSearchParams, useRouter } from "expo-router";
+import { Ionicons } from "@expo/vector-icons";
 import { SafeAreaView } from "react-native-safe-area-context";
-import { Colors, Typography } from "../../constants/tokens";
+import { Colors, Radii, Spacing, Typography } from "../../constants/tokens";
 import { useIssues, type Issue } from "../../store/issues";
 import { useAgents } from "../../store/agents";
-import { MarkdownEditor } from "../../components/issue/MarkdownEditor";
-import type { MentionCandidate } from "../../components/issue/MentionPicker";
+import {
+  MarkdownEditor,
+  type ActiveMention,
+  type MarkdownEditorHandle,
+} from "../../components/issue/MarkdownEditor";
+import {
+  MentionPicker,
+  type MentionCandidate,
+} from "../../components/issue/MentionPicker";
 import { wsClient } from "../../services/websocket";
+
+const AUTOSAVE_DELAY_MS = 600;
 
 function issueKey(serverId: string, id: string) {
   return `${serverId}:${id}`;
@@ -29,11 +48,19 @@ export default function IssueDetailScreen() {
   const serverId = typeof params.serverId === "string" ? params.serverId : "";
   const issue = state.byKey[issueKey(serverId, issueId)] as Issue | undefined;
 
+  const editorRef = useRef<MarkdownEditorHandle>(null);
   const [draftBody, setDraftBody] = useState(issue?.body ?? "");
   const [baseMtime, setBaseMtime] = useState(issue?.mtime ?? "");
   const [dirty, setDirty] = useState(false);
   const [remoteBanner, setRemoteBanner] = useState(false);
   const [saving, setSaving] = useState(false);
+  const [mention, setMention] = useState<ActiveMention | null>(null);
+  const [menuOpen, setMenuOpen] = useState(false);
+  const savingRef = useRef(false);
+  const draftBodyRef = useRef(draftBody);
+  useEffect(() => {
+    draftBodyRef.current = draftBody;
+  }, [draftBody]);
 
   useEffect(() => {
     if (!issue) {
@@ -54,12 +81,13 @@ export default function IssueDetailScreen() {
     if (!issue) {
       return [];
     }
-    const roles = (state.executorsByServer[issue.serverId] || []).map<MentionCandidate>((name) => ({
-      kind: "role",
-      name,
-    }));
+    const roles = (state.executorsByServer[issue.serverId] || []).map<MentionCandidate>(
+      (name) => ({ kind: "role", name }),
+    );
     const sessions = agentsState.agents
-      .filter((agent) => agent.serverId === issue.serverId && agent.project === issue.project)
+      .filter(
+        (agent) => agent.serverId === issue.serverId && agent.project === issue.project,
+      )
       .map<MentionCandidate>((agent) => ({
         kind: "session",
         role: agentRole(agent.command),
@@ -73,33 +101,58 @@ export default function IssueDetailScreen() {
     if (!issue || !serverId || !frontmatter) {
       return null;
     }
-
+    if (savingRef.current) {
+      return null;
+    }
+    savingRef.current = true;
     setSaving(true);
+    const bodyAtSave = draftBodyRef.current;
     try {
       const written = await wsClient.writeIssue(serverId, {
         id: issue.id,
         project: issue.project,
         path: issue.path,
-        body: draftBody,
+        body: bodyAtSave,
         frontmatter,
         baseMtime,
       });
-      setDraftBody(written.body);
       setBaseMtime(written.mtime);
-      setDirty(false);
+      // If the user didn't type during the save, normalize body and clear
+      // dirty. Otherwise leave their newer text alone; the next autosave
+      // tick will capture it.
+      if (draftBodyRef.current === bodyAtSave) {
+        if (written.body !== bodyAtSave) {
+          setDraftBody(written.body);
+        }
+        setDirty(false);
+      }
       setRemoteBanner(false);
       return written;
     } catch (error: any) {
       if (error?.code === "conflict" && error?.current) {
         setRemoteBanner(true);
         setBaseMtime(error.current.mtime || baseMtime);
+      } else {
+        Alert.alert("Save failed", error?.message || "Could not save issue.");
       }
-      Alert.alert("Save failed", error?.message || "Could not save issue.");
       return null;
     } finally {
+      savingRef.current = false;
       setSaving(false);
     }
   };
+
+  // Debounced autosave whenever the body changes.
+  useEffect(() => {
+    if (!dirty || remoteBanner || !issue) {
+      return;
+    }
+    const timer = setTimeout(() => {
+      void saveIssue();
+    }, AUTOSAVE_DELAY_MS);
+    return () => clearTimeout(timer);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [dirty, draftBody, remoteBanner]);
 
   const handleSend = async () => {
     if (!issue || !serverId) {
@@ -127,7 +180,10 @@ export default function IssueDetailScreen() {
     try {
       await wsClient.redispatchIssue(serverId, issue.id);
     } catch (error: any) {
-      Alert.alert("Redispatch failed", error?.message || "Could not redispatch issue.");
+      Alert.alert(
+        "Redispatch failed",
+        error?.message || "Could not redispatch issue.",
+      );
     }
   };
 
@@ -157,12 +213,19 @@ export default function IssueDetailScreen() {
               await wsClient.deleteIssue(serverId, issue.id);
               router.back();
             } catch (error: any) {
-              Alert.alert("Delete failed", error?.message || "Could not delete issue.");
+              Alert.alert(
+                "Delete failed",
+                error?.message || "Could not delete issue.",
+              );
             }
           })();
         },
       },
     ]);
+  };
+
+  const handleSelectMention = (candidate: MentionCandidate) => {
+    editorRef.current?.insertMention(candidate);
   };
 
   if (!issue) {
@@ -175,77 +238,174 @@ export default function IssueDetailScreen() {
 
   const done = !!issue.frontmatter.done;
   const dispatched = !!issue.frontmatter.dispatched;
+  const primaryLabel = dispatched ? "Redispatch" : "Send";
 
   return (
     <SafeAreaView style={styles.screen} edges={["top"]}>
-      <View style={styles.header}>
-        <Pressable onPress={() => router.back()} style={styles.headerButton}>
-          <Text style={styles.headerButtonText}>Back</Text>
-        </Pressable>
-        <View style={styles.headerCenter}>
-          <Text style={styles.project}>{issue.project}</Text>
-          <Text style={styles.server}>{issue.serverName}</Text>
+      <KeyboardAvoidingView
+        style={styles.kav}
+        behavior={Platform.OS === "ios" ? "padding" : undefined}
+      >
+        <View style={styles.header}>
+          <Pressable
+            onPress={() => router.back()}
+            hitSlop={10}
+            style={({ pressed }) => [styles.iconButton, pressed && styles.iconButtonPressed]}
+          >
+            <Ionicons name="chevron-back" size={22} color={Colors.textPrimary} />
+          </Pressable>
+
+          <View style={styles.headerCenter}>
+            <Text style={styles.project} numberOfLines={1}>
+              {issue.project}
+            </Text>
+          </View>
+
+          <Pressable
+            onPress={() => setMenuOpen(true)}
+            hitSlop={10}
+            style={({ pressed }) => [styles.iconButton, pressed && styles.iconButtonPressed]}
+          >
+            <Ionicons name="ellipsis-horizontal" size={20} color={Colors.textPrimary} />
+          </Pressable>
         </View>
-        <Pressable onPress={handleDelete} style={styles.headerButton}>
-          <Text style={styles.headerButtonText}>Delete</Text>
-        </Pressable>
-      </View>
 
-      {remoteBanner ? (
-        <Pressable
-          onPress={() => {
-            setDraftBody(issue.body);
-            setBaseMtime(issue.mtime);
-            setDirty(false);
-            setRemoteBanner(false);
+        {remoteBanner ? (
+          <Pressable
+            onPress={() => {
+              setDraftBody(issue.body);
+              setBaseMtime(issue.mtime);
+              setDirty(false);
+              setRemoteBanner(false);
+            }}
+            style={styles.banner}
+          >
+            <Ionicons
+              name="cloud-download-outline"
+              size={14}
+              color={Colors.textPrimary}
+            />
+            <Text style={styles.bannerText}>
+              Remote changes — tap to load.
+            </Text>
+          </Pressable>
+        ) : null}
+
+        <MarkdownEditor
+          ref={editorRef}
+          value={draftBody}
+          onChange={(next) => {
+            setDraftBody(next);
+            setDirty(true);
           }}
-          style={styles.banner}
-        >
-          <Text style={styles.bannerText}>Remote changes detected. Tap to load them.</Text>
-        </Pressable>
-      ) : null}
+          onActiveMentionChange={setMention}
+          onBlur={() => {
+            if (dirty && !remoteBanner) {
+              void saveIssue();
+            }
+          }}
+          autoFocus
+        />
 
-      <MarkdownEditor
-        value={draftBody}
-        onChange={(next) => {
-          setDraftBody(next);
-          setDirty(true);
+        {mention ? (
+          <MentionPicker
+            candidates={candidates}
+            query={mention.query}
+            onSelect={handleSelectMention}
+          />
+        ) : null}
+
+        <View style={styles.footer}>
+          {saving ? (
+            <View style={styles.savingTag}>
+              <View style={styles.savingDot} />
+              <Text style={styles.savingText}>Saving…</Text>
+            </View>
+          ) : dirty ? (
+            <Text style={styles.savingText}>Unsaved</Text>
+          ) : (
+            <Text style={styles.savedText}>Saved</Text>
+          )}
+          <Pressable
+            onPress={() => {
+              void (dispatched ? handleRedispatch() : handleSend());
+            }}
+            disabled={saving}
+            style={({ pressed }) => [
+              styles.primaryButton,
+              saving && styles.primaryButtonDisabled,
+              pressed && styles.primaryButtonPressed,
+            ]}
+          >
+            <Ionicons
+              name={dispatched ? "refresh" : "paper-plane"}
+              size={15}
+              color={Colors.bgPrimary}
+            />
+            <Text style={styles.primaryButtonText}>{primaryLabel}</Text>
+          </Pressable>
+        </View>
+      </KeyboardAvoidingView>
+
+      <OverflowMenu
+        visible={menuOpen}
+        onClose={() => setMenuOpen(false)}
+        done={done}
+        onToggleDone={() => {
+          setMenuOpen(false);
+          void handleToggleDone();
         }}
-        candidates={candidates}
-        autoFocus
+        onDelete={() => {
+          setMenuOpen(false);
+          handleDelete();
+        }}
       />
-
-      <View style={styles.footer}>
-        <Pressable
-          onPress={() => {
-            void handleToggleDone();
-          }}
-          style={[styles.footerButton, styles.secondaryButton]}
-        >
-          <Text style={styles.footerButtonText}>{done ? "Reopen" : "Mark done"}</Text>
-        </Pressable>
-        <Pressable
-          onPress={() => {
-            void saveIssue();
-          }}
-          disabled={saving}
-          style={[styles.footerButton, styles.secondaryButton, saving && styles.buttonDisabled]}
-        >
-          <Text style={styles.footerButtonText}>{saving ? "Saving..." : "Save"}</Text>
-        </Pressable>
-        <Pressable
-          onPress={() => {
-            void (dispatched ? handleRedispatch() : handleSend());
-          }}
-          disabled={saving}
-          style={[styles.footerButton, styles.primaryButton, saving && styles.buttonDisabled]}
-        >
-          <Text style={[styles.footerButtonText, styles.primaryButtonText]}>
-            {dispatched ? "Redispatch" : "Send"}
-          </Text>
-        </Pressable>
-      </View>
     </SafeAreaView>
+  );
+}
+
+function OverflowMenu({
+  visible,
+  onClose,
+  done,
+  onToggleDone,
+  onDelete,
+}: {
+  visible: boolean;
+  onClose: () => void;
+  done: boolean;
+  onToggleDone: () => void;
+  onDelete: () => void;
+}) {
+  return (
+    <Modal visible={visible} transparent animationType="fade" onRequestClose={onClose}>
+      <View style={menuStyles.root}>
+        <Pressable style={menuStyles.backdrop} onPress={onClose} />
+        <View style={menuStyles.card}>
+          <Pressable
+            onPress={onToggleDone}
+            style={({ pressed }) => [menuStyles.item, pressed && menuStyles.itemPressed]}
+          >
+            <Ionicons
+              name={done ? "refresh-outline" : "checkmark-circle-outline"}
+              size={18}
+              color={Colors.textPrimary}
+            />
+            <Text style={menuStyles.itemText}>{done ? "Reopen" : "Mark done"}</Text>
+          </Pressable>
+          <View style={menuStyles.divider} />
+          <Pressable
+            onPress={onDelete}
+            style={({ pressed }) => [menuStyles.item, pressed && menuStyles.itemPressed]}
+          >
+            <Ionicons name="trash-outline" size={18} color={Colors.statusFailed} />
+            <Text style={[menuStyles.itemText, menuStyles.itemTextDestructive]}>
+              Delete
+            </Text>
+          </Pressable>
+        </View>
+      </View>
+    </Modal>
   );
 }
 
@@ -253,6 +413,9 @@ const styles = StyleSheet.create({
   screen: {
     flex: 1,
     backgroundColor: Colors.bgPrimary,
+  },
+  kav: {
+    flex: 1,
   },
   emptyScreen: {
     flex: 1,
@@ -263,23 +426,23 @@ const styles = StyleSheet.create({
   emptyTitle: {
     color: Colors.textPrimary,
     fontFamily: Typography.uiFontMedium,
-    fontSize: 18,
+    fontSize: 17,
   },
   header: {
     flexDirection: "row",
     alignItems: "center",
-    justifyContent: "space-between",
-    paddingHorizontal: 14,
-    paddingBottom: 10,
+    paddingHorizontal: Spacing.sm,
+    paddingVertical: Spacing.sm,
   },
-  headerButton: {
-    minWidth: 56,
-    paddingVertical: 8,
+  iconButton: {
+    width: 36,
+    height: 36,
+    alignItems: "center",
+    justifyContent: "center",
+    borderRadius: Radii.pill,
   },
-  headerButtonText: {
-    color: Colors.accent,
-    fontFamily: Typography.uiFontMedium,
-    fontSize: 14,
+  iconButtonPressed: {
+    backgroundColor: Colors.bgSurface,
   },
   headerCenter: {
     flex: 1,
@@ -288,57 +451,116 @@ const styles = StyleSheet.create({
   project: {
     color: Colors.textPrimary,
     fontFamily: Typography.uiFontMedium,
-    fontSize: 16,
-  },
-  server: {
-    marginTop: 2,
-    color: Colors.textSecondary,
-    fontFamily: Typography.uiFont,
-    fontSize: 12,
+    fontSize: 15,
   },
   banner: {
-    marginHorizontal: 14,
-    marginBottom: 8,
-    borderRadius: 12,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: Spacing.sm,
+    marginHorizontal: Spacing.md,
+    marginBottom: Spacing.sm,
+    paddingHorizontal: Spacing.md,
+    paddingVertical: Spacing.sm,
+    borderRadius: Radii.md,
     backgroundColor: Colors.bgElevated,
-    paddingHorizontal: 14,
-    paddingVertical: 10,
   },
   bannerText: {
     color: Colors.textPrimary,
     fontFamily: Typography.uiFont,
     fontSize: 13,
-    textAlign: "center",
   },
   footer: {
     flexDirection: "row",
-    justifyContent: "flex-end",
-    gap: 10,
-    paddingHorizontal: 14,
-    paddingVertical: 12,
+    alignItems: "center",
+    justifyContent: "space-between",
+    paddingHorizontal: Spacing.lg,
+    paddingVertical: Spacing.md,
     borderTopWidth: StyleSheet.hairlineWidth,
     borderTopColor: Colors.bgElevated,
   },
-  footerButton: {
-    borderRadius: 12,
-    paddingHorizontal: 16,
-    paddingVertical: 11,
+  savingTag: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: Spacing.xs,
   },
-  secondaryButton: {
-    backgroundColor: Colors.bgSurface,
+  savingDot: {
+    width: 6,
+    height: 6,
+    borderRadius: 3,
+    backgroundColor: Colors.statusUnknown,
   },
-  primaryButton: {
-    backgroundColor: Colors.accent,
+  savingText: {
+    color: Colors.textSecondary,
+    fontFamily: Typography.uiFont,
+    fontSize: 12,
   },
-  buttonDisabled: {
+  savedText: {
+    color: Colors.textSecondary,
+    fontFamily: Typography.uiFont,
+    fontSize: 12,
     opacity: 0.5,
   },
-  footerButtonText: {
-    color: Colors.textPrimary,
-    fontFamily: Typography.uiFontMedium,
-    fontSize: 14,
+  primaryButton: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: Spacing.sm,
+    paddingHorizontal: Spacing.lg,
+    paddingVertical: Spacing.md,
+    borderRadius: Radii.pill,
+    backgroundColor: Colors.accent,
+  },
+  primaryButtonPressed: {
+    opacity: 0.85,
+  },
+  primaryButtonDisabled: {
+    opacity: 0.5,
   },
   primaryButtonText: {
     color: Colors.bgPrimary,
+    fontFamily: Typography.uiFontMedium,
+    fontSize: 14,
+  },
+});
+
+const menuStyles = StyleSheet.create({
+  root: {
+    flex: 1,
+    justifyContent: "flex-end",
+  },
+  backdrop: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: "rgba(0,0,0,0.6)",
+  },
+  card: {
+    marginHorizontal: Spacing.md,
+    marginBottom: Spacing.xl,
+    borderRadius: Radii.lg,
+    backgroundColor: Colors.bgSurface,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: Colors.bgElevated,
+    overflow: "hidden",
+  },
+  item: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: Spacing.md,
+    paddingHorizontal: Spacing.lg,
+    paddingVertical: Spacing.lg,
+  },
+  itemPressed: {
+    backgroundColor: Colors.bgElevated,
+  },
+  divider: {
+    height: StyleSheet.hairlineWidth,
+    backgroundColor: Colors.bgElevated,
+    marginHorizontal: Spacing.lg,
+  },
+  itemText: {
+    color: Colors.textPrimary,
+    fontFamily: Typography.uiFont,
+    fontSize: 15,
+  },
+  itemTextDestructive: {
+    color: Colors.statusFailed,
   },
 });

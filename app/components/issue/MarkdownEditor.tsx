@@ -1,19 +1,27 @@
-import React, { useCallback, useRef, useState } from "react";
+import React, {
+  forwardRef,
+  useCallback,
+  useEffect,
+  useImperativeHandle,
+  useRef,
+  useState,
+} from "react";
 import {
   NativeSyntheticEvent,
   StyleSheet,
   TextInput,
   type TextInputSelectionChangeEventData,
-  View,
 } from "react-native";
-import { Colors, Typography } from "../../constants/tokens";
+import { Colors, Spacing, Typography } from "../../constants/tokens";
 import {
-  MentionPicker,
   mentionCandidateValue,
   type MentionCandidate,
 } from "./MentionPicker";
 
-export function activeMention(value: string, pos: number): { query: string; start: number } | null {
+export function activeMention(
+  value: string,
+  pos: number,
+): { query: string; start: number } | null {
   let cursor = pos - 1;
   while (cursor >= 0) {
     const char = value[cursor];
@@ -34,50 +42,102 @@ export function activeMention(value: string, pos: number): { query: string; star
   return null;
 }
 
-export function MarkdownEditor({
-  value,
-  onChange,
-  candidates,
-  autoFocus,
-}: {
+export type ActiveMention = { query: string; start: number };
+
+export type MarkdownEditorHandle = {
+  insertMention(candidate: MentionCandidate): void;
+  focus(): void;
+};
+
+type Props = {
   value: string;
   onChange: (text: string) => void;
-  candidates: MentionCandidate[];
+  onActiveMentionChange?: (mention: ActiveMention | null) => void;
+  onBlur?: () => void;
   autoFocus?: boolean;
-}) {
-  const ref = useRef<TextInput>(null);
-  const [selection, setSelection] = useState({ start: 0, end: 0 });
+};
 
-  const onSelectionChange = useCallback(
-    (event: NativeSyntheticEvent<TextInputSelectionChangeEventData>) => {
-      setSelection(event.nativeEvent.selection);
-    },
-    [],
-  );
+export const MarkdownEditor = forwardRef<MarkdownEditorHandle, Props>(
+  function MarkdownEditor(
+    { value, onChange, onActiveMentionChange, onBlur, autoFocus },
+    forwardedRef,
+  ) {
+    const inputRef = useRef<TextInput>(null);
+    const selectionRef = useRef({ start: value.length, end: value.length });
+    const [controlledSelection, setControlledSelection] = useState<
+      { start: number; end: number } | undefined
+    >(undefined);
 
-  const mention = activeMention(value, selection.start);
+    const notifyMention = useCallback(
+      (nextValue: string, pos: number) => {
+        onActiveMentionChange?.(activeMention(nextValue, pos));
+      },
+      [onActiveMentionChange],
+    );
 
-  const handleSelectMention = useCallback(
-    (candidate: MentionCandidate) => {
-      if (!mention) {
+    const handleChangeText = useCallback(
+      (next: string) => {
+        onChange(next);
+        const pos = Math.min(selectionRef.current.start, next.length);
+        notifyMention(next, pos);
+      },
+      [notifyMention, onChange],
+    );
+
+    const handleSelectionChange = useCallback(
+      (event: NativeSyntheticEvent<TextInputSelectionChangeEventData>) => {
+        selectionRef.current = event.nativeEvent.selection;
+        notifyMention(value, event.nativeEvent.selection.start);
+      },
+      [notifyMention, value],
+    );
+
+    useImperativeHandle(
+      forwardedRef,
+      () => ({
+        insertMention(candidate) {
+          const pos = selectionRef.current.start;
+          const current = activeMention(value, pos);
+          if (!current) {
+            return;
+          }
+          const insert = `${mentionCandidateValue(candidate)} `;
+          const before = value.slice(0, current.start);
+          const after = value.slice(pos);
+          const nextValue = before + insert + after;
+          const nextPos = current.start + insert.length;
+
+          onChange(nextValue);
+          selectionRef.current = { start: nextPos, end: nextPos };
+          setControlledSelection({ start: nextPos, end: nextPos });
+          notifyMention(nextValue, nextPos);
+          requestAnimationFrame(() => inputRef.current?.focus());
+        },
+        focus() {
+          inputRef.current?.focus();
+        },
+      }),
+      [notifyMention, onChange, value],
+    );
+
+    // Release the controlled selection on the next tick so further user
+    // typing/navigation moves the caret naturally.
+    useEffect(() => {
+      if (!controlledSelection) {
         return;
       }
-      const insert = `${mentionCandidateValue(candidate)} `;
-      const before = value.slice(0, mention.start);
-      const after = value.slice(selection.start);
-      onChange(before + insert + after);
-      requestAnimationFrame(() => ref.current?.focus());
-    },
-    [mention, onChange, selection.start, value],
-  );
+      const handle = setTimeout(() => setControlledSelection(undefined), 0);
+      return () => clearTimeout(handle);
+    }, [controlledSelection]);
 
-  return (
-    <View style={styles.container}>
+    return (
       <TextInput
-        ref={ref}
+        ref={inputRef}
         value={value}
-        onChangeText={onChange}
-        onSelectionChange={onSelectionChange}
+        onChangeText={handleChangeText}
+        onSelectionChange={handleSelectionChange}
+        selection={controlledSelection}
+        onBlur={onBlur}
         multiline
         autoFocus={autoFocus}
         placeholder="# Issue title\n\nDescribe the work..."
@@ -86,30 +146,21 @@ export function MarkdownEditor({
         textAlignVertical="top"
         autoCapitalize="none"
         autoCorrect={false}
+        scrollEnabled
       />
-      {mention ? (
-        <MentionPicker
-          candidates={candidates}
-          query={mention.query}
-          onSelect={handleSelectMention}
-        />
-      ) : null}
-    </View>
-  );
-}
+    );
+  },
+);
 
 const styles = StyleSheet.create({
-  container: {
-    flex: 1,
-    backgroundColor: Colors.bgPrimary,
-  },
   input: {
     flex: 1,
-    paddingHorizontal: 18,
-    paddingVertical: 16,
+    paddingHorizontal: Spacing.lg,
+    paddingVertical: Spacing.lg,
     color: Colors.textPrimary,
     fontFamily: Typography.terminalFont,
     fontSize: 15,
     lineHeight: 22,
+    backgroundColor: Colors.bgPrimary,
   },
 });

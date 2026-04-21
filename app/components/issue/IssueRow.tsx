@@ -1,13 +1,19 @@
 import React from "react";
 import { Pressable, StyleSheet, Text, View } from "react-native";
 import { useRouter } from "expo-router";
-import { Colors, Typography } from "../../constants/tokens";
+import { Colors, Spacing, Typography } from "../../constants/tokens";
 import type { Issue } from "../../store/issues";
 
-export function statusGlyph(issue: Issue): string {
-  if (issue.frontmatter.done) return "✓";
-  if (issue.frontmatter.dispatched) return "▶";
-  return "●";
+type GlyphInfo = { glyph: string; color: string };
+
+export function statusGlyph(issue: Issue): GlyphInfo {
+  if (issue.frontmatter.done) {
+    return { glyph: "✓", color: Colors.textSecondary };
+  }
+  if (issue.frontmatter.dispatched) {
+    return { glyph: "▸", color: Colors.statusRunning };
+  }
+  return { glyph: "●", color: Colors.accent };
 }
 
 export function relativeTime(iso: string): string {
@@ -15,16 +21,19 @@ export function relativeTime(iso: string): string {
   if (Number.isNaN(then)) {
     return "";
   }
-
-  const diffSeconds = Math.floor((Date.now() - then) / 1000);
-  if (diffSeconds < 60) return "just now";
-  if (diffSeconds < 3600) return `${Math.floor(diffSeconds / 60)}m`;
-  if (diffSeconds < 86_400) return `${Math.floor(diffSeconds / 3600)}h`;
-  return `${Math.floor(diffSeconds / 86_400)}d`;
+  const diff = Math.floor((Date.now() - then) / 1000);
+  if (diff < 60) return "now";
+  if (diff < 3600) return `${Math.floor(diff / 60)}m`;
+  if (diff < 86_400) return `${Math.floor(diff / 3600)}h`;
+  if (diff < 86_400 * 30) return `${Math.floor(diff / 86_400)}d`;
+  return `${Math.floor(diff / (86_400 * 30))}mo`;
 }
 
 export function IssueRow({ issue }: { issue: Issue }) {
   const router = useRouter();
+  const { glyph, color } = statusGlyph(issue);
+  const done = !!issue.frontmatter.done;
+  const timeSource = issue.mtime || issue.frontmatter.created;
 
   return (
     <Pressable
@@ -36,15 +45,14 @@ export function IssueRow({ issue }: { issue: Issue }) {
       }
       style={({ pressed }) => [styles.row, pressed && styles.rowPressed]}
     >
-      <Text style={styles.glyph}>{statusGlyph(issue)}</Text>
-      <View style={styles.body}>
-        <Text style={styles.title} numberOfLines={1}>
-          {issue.title || "(untitled)"}
-        </Text>
-        <Text style={styles.meta} numberOfLines={1}>
-          {issue.serverName} · {issue.project} · {relativeTime(issue.frontmatter.created)}
-        </Text>
-      </View>
+      <Text style={[styles.glyph, { color }]}>{glyph}</Text>
+      <Text
+        style={[styles.title, done && styles.titleDone]}
+        numberOfLines={1}
+      >
+        {issue.title || "(untitled)"}
+      </Text>
+      <Text style={styles.time}>{relativeTime(timeSource)}</Text>
     </Pressable>
   );
 }
@@ -53,35 +61,35 @@ const styles = StyleSheet.create({
   row: {
     flexDirection: "row",
     alignItems: "center",
-    gap: 12,
-    paddingHorizontal: 18,
-    paddingVertical: 14,
-    borderBottomWidth: StyleSheet.hairlineWidth,
-    borderBottomColor: Colors.bgElevated,
+    gap: Spacing.md,
+    paddingHorizontal: Spacing.lg,
+    height: 44,
     backgroundColor: Colors.bgPrimary,
   },
   rowPressed: {
-    opacity: 0.65,
+    backgroundColor: Colors.bgSurface,
   },
   glyph: {
-    width: 18,
-    color: Colors.textSecondary,
+    width: 14,
     fontFamily: Typography.terminalFontBold,
     fontSize: 14,
     textAlign: "center",
   },
-  body: {
-    flex: 1,
-  },
   title: {
+    flex: 1,
     color: Colors.textPrimary,
     fontFamily: Typography.uiFontMedium,
-    fontSize: 16,
+    fontSize: 15,
   },
-  meta: {
-    marginTop: 4,
+  titleDone: {
+    color: Colors.textSecondary,
+    textDecorationLine: "line-through",
+  },
+  time: {
     color: Colors.textSecondary,
     fontFamily: Typography.uiFont,
     fontSize: 12,
+    minWidth: 28,
+    textAlign: "right",
   },
 });

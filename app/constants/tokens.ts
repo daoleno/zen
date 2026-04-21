@@ -18,12 +18,25 @@ export const Colors = {
 } as const;
 
 export const Spacing = {
+  xs: 4,
+  sm: 8,
+  md: 12,
+  lg: 16,
+  xl: 24,
+  xxl: 32,
   base: 8,
   rowHeight: 64,
   rowPaddingH: 16,
   rowPaddingV: 12,
   screenMargin: 16,
   actionBarHeight: 56,
+} as const;
+
+export const Radii = {
+  sm: 8,
+  md: 12,
+  lg: 16,
+  pill: 999,
 } as const;
 
 export const Typography = {

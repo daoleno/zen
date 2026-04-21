@@ -1,6 +1,6 @@
 import React, { useMemo } from "react";
 import { FlatList, Pressable, StyleSheet, Text, View } from "react-native";
-import { Colors, Typography } from "../../constants/tokens";
+import { Colors, Radii, Spacing, Typography } from "../../constants/tokens";
 
 export type MentionCandidate =
   | { kind: "role"; name: string }
@@ -10,6 +10,12 @@ export function mentionCandidateValue(candidate: MentionCandidate) {
   return candidate.kind === "role"
     ? `@${candidate.name}`
     : `@${candidate.role}#${candidate.sessionId}`;
+}
+
+function candidateKey(candidate: MentionCandidate) {
+  return candidate.kind === "role"
+    ? `role:${candidate.name}`
+    : `session:${candidate.sessionId}`;
 }
 
 export function MentionPicker({
@@ -23,8 +29,12 @@ export function MentionPicker({
 }) {
   const filtered = useMemo(() => {
     const needle = query.toLowerCase();
+    if (!needle) {
+      return candidates;
+    }
     return candidates.filter((candidate) => {
-      const haystack = candidate.kind === "role" ? candidate.name : candidate.sessionId;
+      const haystack =
+        candidate.kind === "role" ? candidate.name : candidate.sessionId;
       return haystack.toLowerCase().startsWith(needle);
     });
   }, [candidates, query]);
@@ -34,18 +44,23 @@ export function MentionPicker({
   }
 
   return (
-    <View style={styles.container}>
+    <View style={styles.bar}>
       <FlatList
-        data={filtered}
-        keyExtractor={(item) =>
-          item.kind === "role" ? `role:${item.name}` : `session:${item.sessionId}`
-        }
+        horizontal
+        showsHorizontalScrollIndicator={false}
         keyboardShouldPersistTaps="always"
+        data={filtered}
+        keyExtractor={candidateKey}
+        contentContainerStyle={styles.content}
+        ItemSeparatorComponent={() => <View style={styles.separator} />}
         renderItem={({ item }) => (
-          <Pressable onPress={() => onSelect(item)} style={styles.row}>
-            <Text style={styles.label}>{mentionCandidateValue(item)}</Text>
+          <Pressable
+            onPress={() => onSelect(item)}
+            style={({ pressed }) => [styles.chip, pressed && styles.chipPressed]}
+          >
+            <Text style={styles.chipText}>{mentionCandidateValue(item)}</Text>
             {item.kind === "session" ? (
-              <Text style={styles.project}>{item.project}</Text>
+              <Text style={styles.chipProject}>{item.project}</Text>
             ) : null}
           </Pressable>
         )}
@@ -55,27 +70,38 @@ export function MentionPicker({
 }
 
 const styles = StyleSheet.create({
-  container: {
-    maxHeight: 220,
+  bar: {
     borderTopWidth: StyleSheet.hairlineWidth,
     borderTopColor: Colors.bgElevated,
     backgroundColor: Colors.bgSurface,
   },
-  row: {
+  content: {
+    paddingHorizontal: Spacing.lg,
+    paddingVertical: Spacing.sm,
+  },
+  separator: {
+    width: Spacing.sm,
+  },
+  chip: {
     flexDirection: "row",
     alignItems: "center",
-    justifyContent: "space-between",
-    paddingHorizontal: 14,
-    paddingVertical: 11,
+    gap: Spacing.sm,
+    height: 36,
+    paddingHorizontal: Spacing.md,
+    borderRadius: Radii.pill,
+    backgroundColor: Colors.bgElevated,
   },
-  label: {
+  chipPressed: {
+    opacity: 0.7,
+  },
+  chipText: {
     color: Colors.textPrimary,
     fontFamily: Typography.terminalFont,
     fontSize: 13,
   },
-  project: {
+  chipProject: {
     color: Colors.textSecondary,
     fontFamily: Typography.uiFont,
-    fontSize: 12,
+    fontSize: 11,
   },
 });
