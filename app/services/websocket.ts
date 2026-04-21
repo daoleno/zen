@@ -2,13 +2,10 @@ import type { StoredServer } from "./storage";
 import { buildAuthorizationHeader } from "./auth";
 import { diagnoseConnectionIssue } from "./connectionIssue";
 import type {
+  GitDiffFileContentPayload,
   GitDiffPatchPayload,
   GitDiffStatusSnapshot,
 } from "./gitDiff";
-import {
-  normalizeTaskStateSnapshot,
-  type TaskStateSnapshot,
-} from "./taskState";
 
 type MessageHandler = (data: any) => void;
 
@@ -359,47 +356,6 @@ class MultiServerWebSocketClient {
     });
   }
 
-  getTaskState(serverId: string, taskId: string) {
-    const requestId = `${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
-
-    return new Promise<TaskStateSnapshot>((resolve, reject) => {
-      const cleanup = () => {
-        if (timer) clearTimeout(timer);
-        this.off("task_state", handleState);
-        this.off("error", handleError);
-      };
-
-      const handleState = (payload: any) => {
-        if (payload.serverId !== serverId || payload.request_id !== requestId) {
-          return;
-        }
-        cleanup();
-        resolve(normalizeTaskStateSnapshot(payload.task_state));
-      };
-
-      const handleError = (payload: any) => {
-        if (payload.serverId !== serverId || payload.request_id !== requestId) {
-          return;
-        }
-        cleanup();
-        reject(new Error(payload.message || "Failed to load task state."));
-      };
-
-      const timer = setTimeout(() => {
-        cleanup();
-        reject(new Error("Timed out while loading task state."));
-      }, 10000);
-
-      this.on("task_state", handleState);
-      this.on("error", handleError);
-      this.send(serverId, {
-        type: "get_task_state",
-        request_id: requestId,
-        task_id: taskId,
-      });
-    });
-  }
-
   getGitDiffStatus(
     serverId: string,
     options?: {
@@ -502,6 +458,56 @@ class MultiServerWebSocketClient {
       this.on("error", handleError);
       this.send(serverId, {
         type: "git_diff_patch",
+        request_id: requestId,
+        target_id: options.targetId,
+        cwd: options.cwd,
+        path: options.path,
+      });
+    });
+  }
+
+  getGitDiffFileContent(
+    serverId: string,
+    options: {
+      targetId?: string;
+      cwd?: string;
+      path: string;
+    },
+  ) {
+    const requestId = `${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
+
+    return new Promise<GitDiffFileContentPayload>((resolve, reject) => {
+      const cleanup = () => {
+        if (timer) clearTimeout(timer);
+        this.off("git_diff_file_content", handleContent);
+        this.off("error", handleError);
+      };
+
+      const handleContent = (payload: any) => {
+        if (payload.serverId !== serverId || payload.request_id !== requestId) {
+          return;
+        }
+        cleanup();
+        resolve(payload.content as GitDiffFileContentPayload);
+      };
+
+      const handleError = (payload: any) => {
+        if (payload.serverId !== serverId || payload.request_id !== requestId) {
+          return;
+        }
+        cleanup();
+        reject(new Error(payload.message || "Failed to load git diff file content."));
+      };
+
+      const timer = setTimeout(() => {
+        cleanup();
+        reject(new Error("Timed out while loading git diff file content."));
+      }, 10000);
+
+      this.on("git_diff_file_content", handleContent);
+      this.on("error", handleError);
+      this.send(serverId, {
+        type: "git_diff_file_content",
         request_id: requestId,
         target_id: options.targetId,
         cwd: options.cwd,
@@ -677,27 +683,25 @@ class MultiServerWebSocketClient {
     this.send(serverId, { type: "list_agent_sessions" });
   }
 
-  // ── Tasks ────────────────────────────────────────────
+  // ── Issues ───────────────────────────────────────────
 
-  listTasks(serverId: string) {
-    this.send(serverId, { type: "list_tasks" });
+  listIssues(serverId: string) {
+    this.send(serverId, { type: "list_issues" });
   }
 
-  listRuns(serverId: string) {
-    this.send(serverId, { type: "list_runs" });
+  listExecutors(serverId: string) {
+    this.send(serverId, { type: "list_executors" });
   }
 
-  createTask(
+  writeIssue(
     serverId: string,
     options: {
-      title: string;
-      description?: string;
-      attachments?: { name: string; path: string }[];
-      priority?: number;
-      labels?: string[];
-      projectId?: string;
-      dueDate?: string;
-      cwd?: string;
+      id?: string;
+      project: string;
+      path?: string;
+      body: string;
+      frontmatter?: Record<string, unknown>;
+      baseMtime?: string;
     },
   ) {
     const requestId = `${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
@@ -705,105 +709,70 @@ class MultiServerWebSocketClient {
     return new Promise<any>((resolve, reject) => {
       const cleanup = () => {
         if (timer) clearTimeout(timer);
-        this.off("task_created", handleCreated);
+        this.off("issue_written", handleWritten);
         this.off("error", handleError);
       };
 
-      const handleCreated = (payload: any) => {
-        if (payload.serverId !== serverId || payload.request_id !== requestId)
+      const handleWritten = (payload: any) => {
+        if (payload.serverId !== serverId || payload.request_id !== requestId) {
           return;
+        }
         cleanup();
-        resolve(payload.task);
+        resolve(payload.issue);
       };
 
       const handleError = (payload: any) => {
-        if (payload.serverId !== serverId || payload.request_id !== requestId)
+        if (payload.serverId !== serverId || payload.request_id !== requestId) {
           return;
+        }
         cleanup();
-        reject(new Error(payload.message || "Failed to create task."));
+        const error = new Error(payload.message || "Failed to write issue.");
+        (error as Error & { code?: string; current?: any }).code = payload.code;
+        (error as Error & { code?: string; current?: any }).current = payload.current;
+        reject(error);
       };
 
       const timer = setTimeout(() => {
         cleanup();
-        reject(new Error("Timed out while creating task."));
+        reject(new Error("Timed out while writing issue."));
       }, 10000);
 
-      this.on("task_created", handleCreated);
+      this.on("issue_written", handleWritten);
       this.on("error", handleError);
-      const payload: Record<string, any> = {
-        type: "create_task",
+      this.send(serverId, {
+        type: "write_issue",
         request_id: requestId,
-        title: options.title,
-        description: options.description ?? "",
-        attachments: options.attachments ?? [],
-        priority: options.priority ?? 0,
-        labels: options.labels ?? [],
-        project_id: options.projectId ?? "",
-        cwd: options.cwd ?? "",
-      };
-      if (options.dueDate) {
-        payload.due_date = options.dueDate;
-      }
-      this.send(serverId, payload);
+        id: options.id ?? "",
+        project: options.project,
+        path: options.path ?? "",
+        body: options.body,
+        frontmatter: options.frontmatter ?? {},
+        base_mtime: options.baseMtime ?? "",
+      });
     });
   }
 
-  updateTask(
-    serverId: string,
-    taskId: string,
-    updates: {
-      title?: string;
-      description?: string;
-      attachments?: { name: string; path: string }[];
-      status?: string;
-      priority?: number;
-      labels?: string[];
-      projectId?: string;
-      dueDate?: string | null;
-    },
-  ) {
-    const requestId = `${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
-    const payload: Record<string, any> = {
-      type: "update_task",
-      request_id: requestId,
-      task_id: taskId,
-    };
-
-    if ("title" in updates) {
-      payload.title = updates.title ?? "";
-    }
-    if ("description" in updates) {
-      payload.description = updates.description ?? "";
-    }
-    if ("attachments" in updates) {
-      payload.attachments = updates.attachments ?? [];
-    }
-    if ("status" in updates) {
-      payload.task_status = updates.status ?? "";
-    }
-    if ("priority" in updates) {
-      payload.priority = updates.priority ?? 0;
-    }
-    if ("labels" in updates) {
-      payload.labels = updates.labels ?? [];
-    }
-    if ("projectId" in updates) {
-      payload.project_id = updates.projectId ?? "";
-    }
-    if ("dueDate" in updates) {
-      payload.due_date = updates.dueDate ?? "";
-    }
-
-    this.send(serverId, payload);
+  sendIssue(serverId: string, id: string) {
+    return this.issueAction(serverId, "send_issue", "issue_dispatched", id, "Failed to send issue.");
   }
 
-  deleteTask(serverId: string, taskId: string) {
+  redispatchIssue(serverId: string, id: string) {
+    return this.issueAction(
+      serverId,
+      "redispatch_issue",
+      "issue_redispatched",
+      id,
+      "Failed to redispatch issue.",
+    );
+  }
+
+  deleteIssue(serverId: string, id: string) {
     const requestId = `${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
 
     return new Promise<void>((resolve, reject) => {
       const cleanup = () => {
         if (timer) clearTimeout(timer);
-        this.off("task_deleted", handleDeleted);
+        this.off("issue_deleted_ack", handleDeleted);
         this.off("error", handleError);
       };
 
@@ -828,310 +797,12 @@ class MultiServerWebSocketClient {
         reject(new Error("Timed out while deleting issue."));
       }, 10000);
 
-      this.on("task_deleted", handleDeleted);
+      this.on("issue_deleted_ack", handleDeleted);
       this.on("error", handleError);
       this.send(serverId, {
-        type: "delete_task",
+        type: "delete_issue",
         request_id: requestId,
-        task_id: taskId,
-      });
-    });
-  }
-
-  createRun(
-    serverId: string,
-    options: {
-      taskId: string;
-      executionMode?: "spawn_new_session" | "attach_existing_session";
-      agentSessionId?: string;
-      agentCmd?: string;
-    },
-  ) {
-    const requestId = `${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
-
-    return new Promise<{ run: any; task?: any }>((resolve, reject) => {
-      const cleanup = () => {
-        if (timer) clearTimeout(timer);
-        this.off("run_created", handleCreated);
-        this.off("error", handleError);
-      };
-
-      const handleCreated = (payload: any) => {
-        if (payload.serverId !== serverId || payload.request_id !== requestId)
-          return;
-        cleanup();
-        resolve({ run: payload.run, task: payload.task });
-      };
-
-      const handleError = (payload: any) => {
-        if (payload.serverId !== serverId || payload.request_id !== requestId)
-          return;
-        cleanup();
-        reject(new Error(payload.message || "Failed to delegate task."));
-      };
-
-      const timer = setTimeout(() => {
-        cleanup();
-        reject(new Error("Timed out while creating run."));
-      }, 15000);
-
-      this.on("run_created", handleCreated);
-      this.on("error", handleError);
-      this.send(serverId, {
-        type: "create_run",
-        request_id: requestId,
-        task_id: options.taskId,
-        execution_mode: options.executionMode ?? "spawn_new_session",
-        agent_session_id: options.agentSessionId ?? "",
-        agent_cmd: options.agentCmd ?? "",
-      });
-    });
-  }
-
-  addTaskComment(
-    serverId: string,
-    options: {
-      taskId: string;
-      body: string;
-      attachments?: { name: string; path: string }[];
-      parentCommentId?: string;
-      deliveryMode?:
-        | "comment"
-        | "current_run"
-        | "spawn_new_session"
-        | "attach_existing_session";
-      agentSessionId?: string;
-      agentCmd?: string;
-    },
-  ) {
-    const requestId = `${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
-
-    return new Promise<{ task?: any; comment?: any; run?: any }>(
-      (resolve, reject) => {
-        const cleanup = () => {
-          if (timer) clearTimeout(timer);
-          this.off("task_comment_added", handleAdded);
-          this.off("error", handleError);
-        };
-
-        const handleAdded = (payload: any) => {
-          if (
-            payload.serverId !== serverId ||
-            payload.request_id !== requestId
-          ) {
-            return;
-          }
-          cleanup();
-          resolve({
-            task: payload.task,
-            comment: payload.comment,
-            run: payload.run,
-          });
-        };
-
-        const handleError = (payload: any) => {
-          if (
-            payload.serverId !== serverId ||
-            payload.request_id !== requestId
-          ) {
-            return;
-          }
-          cleanup();
-          reject(new Error(payload.message || "Failed to send comment."));
-        };
-
-        const timer = setTimeout(() => {
-          cleanup();
-          reject(new Error("Timed out while sending comment."));
-        }, 15000);
-
-        this.on("task_comment_added", handleAdded);
-        this.on("error", handleError);
-        this.send(serverId, {
-          type: "add_task_comment",
-          request_id: requestId,
-          task_id: options.taskId,
-          body: options.body,
-          attachments: options.attachments ?? [],
-          parent_comment_id: options.parentCommentId ?? "",
-          delivery_mode: options.deliveryMode ?? "comment",
-          agent_session_id: options.agentSessionId ?? "",
-          agent_cmd: options.agentCmd ?? "",
-        });
-      },
-    );
-  }
-
-  // ── Guidance ─────────────────────────────────────────
-
-  getGuidance(serverId: string) {
-    this.send(serverId, { type: "get_guidance" });
-  }
-
-  setGuidance(serverId: string, preamble: string, constraints: string[]) {
-    this.send(serverId, {
-      type: "set_guidance",
-      request_id: `${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`,
-      preamble,
-      constraints,
-    });
-  }
-
-  // ── Projects ─────────────────────────────────────────
-
-  listProjects(serverId: string) {
-    this.send(serverId, { type: "list_projects" });
-  }
-
-  createProject(
-    serverId: string,
-    options: {
-      name: string;
-      issuePrefix?: string;
-      icon?: string;
-      repoRoot?: string;
-      worktreeRoot?: string;
-      baseBranch?: string;
-    },
-  ) {
-    const requestId = `${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
-
-    return new Promise<any>((resolve, reject) => {
-      const cleanup = () => {
-        if (timer) clearTimeout(timer);
-        this.off("project_created", handleCreated);
-        this.off("error", handleError);
-      };
-
-      const handleCreated = (payload: any) => {
-        if (payload.serverId !== serverId || payload.request_id !== requestId) {
-          return;
-        }
-        cleanup();
-        resolve(payload.project);
-      };
-
-      const handleError = (payload: any) => {
-        if (payload.serverId !== serverId || payload.request_id !== requestId) {
-          return;
-        }
-        cleanup();
-        reject(new Error(payload.message || "Failed to create project."));
-      };
-
-      const timer = setTimeout(() => {
-        cleanup();
-        reject(new Error("Timed out while creating project."));
-      }, 10000);
-
-      this.on("project_created", handleCreated);
-      this.on("error", handleError);
-      this.send(serverId, {
-        type: "create_project",
-        request_id: requestId,
-        project_name: options.name,
-        project_key: options.issuePrefix ?? "",
-        project_icon: options.icon ?? "",
-        repo_root: options.repoRoot ?? "",
-        worktree_root: options.worktreeRoot ?? "",
-        base_branch: options.baseBranch ?? "",
-      });
-    });
-  }
-
-  updateProject(
-    serverId: string,
-    options: {
-      projectId: string;
-      name: string;
-      icon?: string;
-      repoRoot?: string;
-      worktreeRoot?: string;
-      baseBranch?: string;
-    },
-  ) {
-    const requestId = `${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
-
-    return new Promise<any>((resolve, reject) => {
-      const cleanup = () => {
-        if (timer) clearTimeout(timer);
-        this.off("project_updated", handleUpdated);
-        this.off("error", handleError);
-      };
-
-      const handleUpdated = (payload: any) => {
-        if (payload.serverId !== serverId || payload.request_id !== requestId) {
-          return;
-        }
-        cleanup();
-        resolve(payload.project);
-      };
-
-      const handleError = (payload: any) => {
-        if (payload.serverId !== serverId || payload.request_id !== requestId) {
-          return;
-        }
-        cleanup();
-        reject(new Error(payload.message || "Failed to update project."));
-      };
-
-      const timer = setTimeout(() => {
-        cleanup();
-        reject(new Error("Timed out while updating project."));
-      }, 10000);
-
-      this.on("project_updated", handleUpdated);
-      this.on("error", handleError);
-      this.send(serverId, {
-        type: "update_project",
-        request_id: requestId,
-        project_id: options.projectId,
-        project_name: options.name,
-        project_icon: options.icon ?? "",
-        repo_root: options.repoRoot ?? "",
-        worktree_root: options.worktreeRoot ?? "",
-        base_branch: options.baseBranch ?? "",
-      });
-    });
-  }
-
-  deleteProject(serverId: string, projectId: string) {
-    const requestId = `${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
-
-    return new Promise<void>((resolve, reject) => {
-      const cleanup = () => {
-        if (timer) clearTimeout(timer);
-        this.off("project_deleted", handleDeleted);
-        this.off("error", handleError);
-      };
-
-      const handleDeleted = (payload: any) => {
-        if (payload.serverId !== serverId || payload.request_id !== requestId) {
-          return;
-        }
-        cleanup();
-        resolve();
-      };
-
-      const handleError = (payload: any) => {
-        if (payload.serverId !== serverId || payload.request_id !== requestId) {
-          return;
-        }
-        cleanup();
-        reject(new Error(payload.message || "Failed to delete project."));
-      };
-
-      const timer = setTimeout(() => {
-        cleanup();
-        reject(new Error("Timed out while deleting project."));
-      }, 10000);
-
-      this.on("project_deleted", handleDeleted);
-      this.on("error", handleError);
-      this.send(serverId, {
-        type: "delete_project",
-        request_id: requestId,
-        project_id: projectId,
+        id,
       });
     });
   }
@@ -1144,6 +815,53 @@ class MultiServerWebSocketClient {
     return [...this.connections.keys()].filter((serverId) =>
       this.isConnected(serverId),
     );
+  }
+
+  private issueAction(
+    serverId: string,
+    requestType: string,
+    responseType: string,
+    id: string,
+    fallbackMessage: string,
+  ) {
+    const requestId = `${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
+
+    return new Promise<any>((resolve, reject) => {
+      const cleanup = () => {
+        if (timer) clearTimeout(timer);
+        this.off(responseType, handleResponse);
+        this.off("error", handleError);
+      };
+
+      const handleResponse = (payload: any) => {
+        if (payload.serverId !== serverId || payload.request_id !== requestId) {
+          return;
+        }
+        cleanup();
+        resolve(payload.issue);
+      };
+
+      const handleError = (payload: any) => {
+        if (payload.serverId !== serverId || payload.request_id !== requestId) {
+          return;
+        }
+        cleanup();
+        reject(new Error(payload.message || fallbackMessage));
+      };
+
+      const timer = setTimeout(() => {
+        cleanup();
+        reject(new Error(`Timed out while waiting for ${requestType}.`));
+      }, 15000);
+
+      this.on(responseType, handleResponse);
+      this.on("error", handleError);
+      this.send(serverId, {
+        type: requestType,
+        request_id: requestId,
+        id,
+      });
+    });
   }
 
   private emit(type: string, serverId: string, payload: any) {

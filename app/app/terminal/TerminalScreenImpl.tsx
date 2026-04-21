@@ -23,7 +23,7 @@ import {
   useSafeAreaInsets,
 } from "react-native-safe-area-context";
 import { Agent, useAgents } from "../../store/agents";
-import { useTasks } from "../../store/tasks";
+import { useIssues } from "../../store/issues";
 import {
   AgentStatus,
   Colors,
@@ -65,11 +65,10 @@ import { TerminalAccessoryBar } from "../../components/terminal/TerminalAccessor
 import { GitDiffSheet } from "../../components/terminal/GitDiffSheet";
 import { AgentKindIcon } from "../../components/terminal/AgentKindIcon";
 import { NewTerminalSheet } from "../../components/terminal/NewTerminalSheet";
-import { CreateIssueSheet } from "../../components/issue/CreateIssueSheet";
-import { TaskPickerSheet } from "../../components/issue/TaskPickerSheet";
 import { presentAgent } from "../../services/agentPresentation";
 import {
   buildGitDiffChipLabel,
+  type GitDiffFileContentPayload,
   type GitDiffPatchPayload,
   type GitDiffStatusSnapshot,
 } from "../../services/gitDiff";
@@ -101,7 +100,7 @@ export default function TerminalScreen() {
   const sessionKey =
     agentId && serverId ? makeSessionKey(serverId, agentId) : null;
   const { state } = useAgents();
-  const { state: taskState } = useTasks();
+  const { state: issuesState } = useIssues();
   const router = useRouter();
   const insets = useSafeAreaInsets();
   const { width: windowWidth, height: windowHeight } = useWindowDimensions();
@@ -116,8 +115,6 @@ export default function TerminalScreen() {
   const [server, setServer] = useState<StoredServer | null>(null);
   const [pickerVisible, setPickerVisible] = useState(false);
   const [menuVisible, setMenuVisible] = useState(false);
-  const [createTaskVisible, setCreateTaskVisible] = useState(false);
-  const [linkTaskVisible, setLinkTaskVisible] = useState(false);
   const [menuAnchor, setMenuAnchor] = useState<{
     x: number;
     y: number;
@@ -136,7 +133,7 @@ export default function TerminalScreen() {
     useState<GitDiffStatusSnapshot | null>(null);
   const [gitDiffLoading, setGitDiffLoading] = useState(false);
   const [gitDiffError, setGitDiffError] = useState<string | null>(null);
-  const [gitDiffExpandedPath, setGitDiffExpandedPath] = useState<string | null>(
+  const [gitDiffSelectedPath, setGitDiffSelectedPath] = useState<string | null>(
     null,
   );
   const [gitDiffPatchLoadingPath, setGitDiffPatchLoadingPath] = useState<
@@ -144,6 +141,12 @@ export default function TerminalScreen() {
   >(null);
   const [gitDiffPatchByPath, setGitDiffPatchByPath] = useState<
     Record<string, GitDiffPatchPayload | undefined>
+  >({});
+  const [gitDiffContentLoadingPath, setGitDiffContentLoadingPath] = useState<
+    string | null
+  >(null);
+  const [gitDiffContentByPath, setGitDiffContentByPath] = useState<
+    Record<string, GitDiffFileContentPayload | undefined>
   >({});
   const [creatingSession, setCreatingSession] = useState(false);
   const [showTerminalFallback, setShowTerminalFallback] = useState(
@@ -188,45 +191,17 @@ export default function TerminalScreen() {
   );
   const agent = sessionKey ? agentByKey.get(sessionKey) : undefined;
   const gitDiffCwd = typeof agent?.cwd === "string" ? agent.cwd.trim() : "";
-  const activeRunForSession = useMemo(
-    () => taskState.runs.find(run =>
-      run.serverId === serverId
-      && run.agentSessionId === agentId
-      && (run.status === "queued" || run.status === "running" || run.status === "blocked"),
-    ),
-    [agentId, serverId, taskState.runs],
+  const linkedIssue = useMemo(
+    () =>
+      Object.values(issuesState.byKey)
+        .filter((current) => current.serverId === serverId && current.frontmatter.agent_session === agentId)
+        .sort((left, right) => {
+          const leftTime = Date.parse(left.frontmatter.dispatched || left.frontmatter.created || "");
+          const rightTime = Date.parse(right.frontmatter.dispatched || right.frontmatter.created || "");
+          return (Number.isNaN(rightTime) ? 0 : rightTime) - (Number.isNaN(leftTime) ? 0 : leftTime);
+        })[0],
+    [agentId, issuesState.byKey, serverId],
   );
-  const linkedTask = useMemo(
-    () => activeRunForSession
-      ? taskState.tasks.find(task => task.id === activeRunForSession.taskId && task.serverId === serverId)
-      : undefined,
-    [activeRunForSession, serverId, taskState.tasks],
-  );
-  const linkableTasks = useMemo(() => {
-    const activeRunsByTaskId = new Map(
-      taskState.runs
-        .filter(run =>
-          run.serverId === serverId
-          && (run.status === "queued" || run.status === "running" || run.status === "blocked"),
-        )
-        .map(run => [run.taskId, run]),
-    );
-
-    return taskState.tasks
-      .filter(task => task.serverId === serverId)
-      .filter(task => task.status !== "done" && task.status !== "cancelled")
-      .filter(task => !activeRunsByTaskId.has(task.id))
-      .sort((left, right) => right.updatedAt - left.updatedAt)
-      .map(task => ({
-        id: task.id,
-        identifierPrefix: task.identifierPrefix,
-        number: task.number,
-        title: task.title,
-        subtitle: task.description || task.serverName,
-        status: task.status,
-        priority: task.priority,
-      }));
-  }, [serverId, taskState.runs, taskState.tasks]);
   const activePinned = sessionKey
     ? terminalTabs.pinned.includes(sessionKey)
     : false;
@@ -270,25 +245,6 @@ export default function TerminalScreen() {
     ? "The app kept your route, but the live terminal is not ready yet."
     : connectionIssue?.hint ||
       "This terminal will reopen automatically once the daemon is reachable again.";
-  const createTaskInitialTitle = useMemo(() => {
-    const label = displayName || agent?.project || agent?.name || agentId;
-    return label ? `Follow up ${label}` : "";
-  }, [agent?.name, agent?.project, agentId, displayName]);
-  const createTaskInitialDescription = useMemo(() => {
-    const parts = [
-      agent?.summary ? `Session summary: ${agent.summary}` : "",
-      agent?.cwd ? `Working directory: ${agent.cwd}` : "",
-    ].filter(Boolean);
-    return parts.join("\n");
-  }, [agent?.cwd, agent?.summary]);
-  const createTaskServerOptions = useMemo(
-    () =>
-      serverId
-        ? [{ id: serverId, name: server?.name || agent?.serverName || serverId }]
-        : [],
-    [agent?.serverName, server?.name, serverId],
-  );
-  const handleCreateTaskServerSelect = useCallback(() => {}, []);
   const gitDiffQueryEnabled = Boolean(
     hasTerminalRoute && screenFocused && serverId && agentId && gitDiffCwd,
   );
@@ -303,8 +259,10 @@ export default function TerminalScreen() {
         setGitDiffStatus(null);
         setGitDiffError(null);
         setGitDiffPatchByPath({});
-        setGitDiffExpandedPath(null);
+        setGitDiffContentByPath({});
+        setGitDiffSelectedPath(null);
         setGitDiffPatchLoadingPath(null);
+        setGitDiffContentLoadingPath(null);
         if (showLoading) {
           setGitDiffLoading(false);
         }
@@ -336,13 +294,27 @@ export default function TerminalScreen() {
             Object.entries(previous).filter(([path]) => allowed.has(path)),
           );
         });
-        setGitDiffExpandedPath((previous) => {
-          if (!previous || !nextStatus.available) {
+        setGitDiffContentByPath((previous) => {
+          if (!nextStatus.available) {
+            return {};
+          }
+          const allowed = new Set((nextStatus.files ?? []).map((file) => file.path));
+          return Object.fromEntries(
+            Object.entries(previous).filter(([path]) => allowed.has(path)),
+          );
+        });
+        setGitDiffSelectedPath((previous) => {
+          if (!nextStatus.available) {
             return null;
           }
-          return (nextStatus.files ?? []).some((file) => file.path === previous)
-            ? previous
-            : null;
+          const files = nextStatus.files ?? [];
+          if (files.length === 0) {
+            return null;
+          }
+          if (previous && files.some((file) => file.path === previous)) {
+            return previous;
+          }
+          return files[0]?.path ?? null;
         });
       } catch (error: any) {
         if (gitDiffRequestRef.current !== requestId) return;
@@ -449,8 +421,10 @@ export default function TerminalScreen() {
 
   useEffect(() => {
     setGitDiffPatchByPath({});
-    setGitDiffExpandedPath(null);
+    setGitDiffContentByPath({});
+    setGitDiffSelectedPath(null);
     setGitDiffPatchLoadingPath(null);
+    setGitDiffContentLoadingPath(null);
     setGitDiffError(null);
   }, [agentId, gitDiffCwd, serverId]);
 
@@ -572,9 +546,11 @@ export default function TerminalScreen() {
       setGitDiffStatus(null);
       setGitDiffError(null);
       setGitDiffLoading(false);
-      setGitDiffExpandedPath(null);
+      setGitDiffSelectedPath(null);
       setGitDiffPatchLoadingPath(null);
+      setGitDiffContentLoadingPath(null);
       setGitDiffPatchByPath({});
+      setGitDiffContentByPath({});
       return;
     }
 
@@ -684,42 +660,94 @@ export default function TerminalScreen() {
     void refreshGitDiff(true);
   };
 
+  const ensureGitDiffPreview = useCallback(
+    async (path: string) => {
+      const nextPath = path.trim();
+      if (!nextPath || !serverId || !agentId) {
+        return;
+      }
+
+      const requests: Promise<void>[] = [];
+
+      if (!gitDiffPatchByPath[nextPath]) {
+        requests.push((async () => {
+          setGitDiffPatchLoadingPath(nextPath);
+          try {
+            const payload = await wsClient.getGitDiffPatch(serverId, {
+              targetId: agentId,
+              cwd: gitDiffCwd,
+              path: nextPath,
+            });
+            setGitDiffPatchByPath((previous) => ({
+              ...previous,
+              [nextPath]: payload,
+            }));
+          } catch (error: any) {
+            Alert.alert(
+              "Could not load patch",
+              error?.message || "Try refreshing the git diff first.",
+            );
+          } finally {
+            setGitDiffPatchLoadingPath((previous) =>
+              previous === nextPath ? null : previous,
+            );
+          }
+        })());
+      }
+
+      if (!gitDiffContentByPath[nextPath]) {
+        requests.push((async () => {
+          setGitDiffContentLoadingPath(nextPath);
+          try {
+            const payload = await wsClient.getGitDiffFileContent(serverId, {
+              targetId: agentId,
+              cwd: gitDiffCwd,
+              path: nextPath,
+            });
+            setGitDiffContentByPath((previous) => ({
+              ...previous,
+              [nextPath]: payload,
+            }));
+          } catch (error: any) {
+            Alert.alert(
+              "Could not load file preview",
+              error?.message || "Try refreshing the git diff first.",
+            );
+          } finally {
+            setGitDiffContentLoadingPath((previous) =>
+              previous === nextPath ? null : previous,
+            );
+          }
+        })());
+      }
+
+      if (requests.length > 0) {
+        await Promise.all(requests);
+      }
+    },
+    [
+      agentId,
+      gitDiffContentByPath,
+      gitDiffCwd,
+      gitDiffPatchByPath,
+      serverId,
+    ],
+  );
+
   const handleSelectGitDiffPath = async (path: string) => {
     const nextPath = path.trim();
     if (!nextPath) return;
 
-    if (gitDiffExpandedPath === nextPath) {
-      setGitDiffExpandedPath(null);
-      return;
-    }
-
-    setGitDiffExpandedPath(nextPath);
-    if (gitDiffPatchByPath[nextPath] || !serverId || !agentId) {
-      return;
-    }
-
-    setGitDiffPatchLoadingPath(nextPath);
-    try {
-      const payload = await wsClient.getGitDiffPatch(serverId, {
-        targetId: agentId,
-        cwd: gitDiffCwd,
-        path: nextPath,
-      });
-      setGitDiffPatchByPath((previous) => ({
-        ...previous,
-        [nextPath]: payload,
-      }));
-    } catch (error: any) {
-      Alert.alert(
-        "Could not load patch",
-        error?.message || "Try refreshing the git diff first.",
-      );
-    } finally {
-      setGitDiffPatchLoadingPath((previous) =>
-        previous === nextPath ? null : previous,
-      );
-    }
+    setGitDiffSelectedPath(nextPath);
+    await ensureGitDiffPreview(nextPath);
   };
+
+  useEffect(() => {
+    if (!gitDiffVisible || !gitDiffSelectedPath) {
+      return;
+    }
+    void ensureGitDiffPreview(gitDiffSelectedPath);
+  }, [ensureGitDiffPreview, gitDiffSelectedPath, gitDiffVisible]);
 
   const openRenameModal = () => {
     closeMenu();
@@ -971,45 +999,13 @@ export default function TerminalScreen() {
     setNewTerminalVisible(true);
   };
 
-  const openCreateTaskModal = () => {
-    closeMenu();
-    setCreateTaskVisible(true);
-  };
-
-  const openLinkTaskModal = () => {
-    closeMenu();
-    setLinkTaskVisible(true);
-  };
-
-  const openLinkedTask = () => {
-    if (!linkedTask) return;
+  const openLinkedIssue = () => {
+    if (!linkedIssue) return;
     closeMenu();
     router.push({
       pathname: "/issue/[id]",
-      params: { id: linkedTask.id, serverId: linkedTask.serverId },
+      params: { id: linkedIssue.id, serverId: linkedIssue.serverId },
     });
-  };
-
-  const linkSessionToTask = async (taskId: string) => {
-    if (!serverId || !agentId) return;
-
-    setLinkTaskVisible(false);
-    try {
-      await wsClient.createRun(serverId, {
-        taskId,
-        executionMode: "attach_existing_session",
-        agentSessionId: agentId,
-      });
-      router.push({
-        pathname: "/issue/[id]",
-        params: { id: taskId, serverId },
-      });
-    } catch (error: any) {
-      Alert.alert(
-        "Could not link task",
-        error?.message || "Try another task or start a fresh run.",
-      );
-    }
   };
 
   const retryServerConnection = async () => {
@@ -1401,21 +1397,15 @@ export default function TerminalScreen() {
               disabledTextColor={chromeColors.textSubtle}
               destructiveColor={terminalTheme.red}
             />
-            <MenuAction
-              label="Create Task"
-              onPress={openCreateTaskModal}
-              textColor={chromeColors.text}
-              disabledTextColor={chromeColors.textSubtle}
-              destructiveColor={terminalTheme.red}
-            />
-            <MenuAction
-              label={linkedTask ? "Open Linked Task" : "Link to Existing Task"}
-              onPress={linkedTask ? openLinkedTask : openLinkTaskModal}
-              disabled={!linkedTask && linkableTasks.length === 0}
-              textColor={chromeColors.text}
-              disabledTextColor={chromeColors.textSubtle}
-              destructiveColor={terminalTheme.red}
-            />
+            {linkedIssue ? (
+              <MenuAction
+                label="Open Linked Issue"
+                onPress={openLinkedIssue}
+                textColor={chromeColors.text}
+                disabledTextColor={chromeColors.textSubtle}
+                destructiveColor={terminalTheme.red}
+              />
+            ) : null}
             <MenuAction
               label="Terminate"
               onPress={handleTerminateAgent}
@@ -1445,59 +1435,17 @@ export default function TerminalScreen() {
         }}
       />
 
-      <CreateIssueSheet
-        visible={createTaskVisible}
-        serverOptions={createTaskServerOptions}
-        selectedServerId={serverId || null}
-        onSelectServer={handleCreateTaskServerSelect}
-        onClose={() => setCreateTaskVisible(false)}
-        initialTitle={createTaskInitialTitle}
-        initialDescription={createTaskInitialDescription}
-        actions={[
-          {
-            key: "create",
-            label: "Create Task",
-            primary: true,
-          },
-          ...(!linkedTask ? [{
-            key: "create_and_link",
-            label: "Create & Link Session",
-            icon: "link-outline" as const,
-            afterCreate: async (selectedServerId: string, task: { id: string }) => {
-              if (!agentId) return;
-              await wsClient.createRun(selectedServerId, {
-                taskId: task.id,
-                executionMode: "attach_existing_session",
-                agentSessionId: agentId,
-              });
-            },
-          }] : []),
-        ]}
-        onCreated={(selectedServerId, taskId) => {
-          router.push({
-            pathname: "/issue/[id]",
-            params: { id: taskId, serverId: selectedServerId },
-          });
-        }}
-      />
-
-      <TaskPickerSheet
-        visible={linkTaskVisible}
-        tasks={linkableTasks}
-        onClose={() => setLinkTaskVisible(false)}
-        onPick={(taskId) => { void linkSessionToTask(taskId); }}
-        emptySubtitle="Only tasks without an active delegation can be linked to this session."
-      />
-
       <GitDiffSheet
         visible={gitDiffVisible}
         theme={terminalTheme}
         snapshot={gitDiffStatus}
         loading={gitDiffLoading}
         error={gitDiffError}
-        expandedPath={gitDiffExpandedPath}
+        selectedPath={gitDiffSelectedPath}
         patchLoadingPath={gitDiffPatchLoadingPath}
         patchByPath={gitDiffPatchByPath}
+        contentLoadingPath={gitDiffContentLoadingPath}
+        contentByPath={gitDiffContentByPath}
         onClose={() => setGitDiffVisible(false)}
         onRefresh={() => { void refreshGitDiff(true); }}
         onSelectPath={(path) => { void handleSelectGitDiffPath(path); }}

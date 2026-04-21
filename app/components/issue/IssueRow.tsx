@@ -1,177 +1,87 @@
-import React from 'react';
-import { StyleSheet, Text, TouchableOpacity, View } from 'react-native';
-import { Ionicons } from '@expo/vector-icons';
-import { Colors, Typography } from '../../constants/tokens';
-import { IssueStatusIcon } from './IssueStatusIcon';
-import { PriorityBar } from './PriorityBar';
-import type { Task, Run } from '../../store/tasks';
+import React from "react";
+import { Pressable, StyleSheet, Text, View } from "react-native";
+import { useRouter } from "expo-router";
+import { Colors, Typography } from "../../constants/tokens";
+import type { Issue } from "../../store/issues";
 
-interface Props {
-  task: Task;
-  run?: Run | null;
-  metaText: string;
-  secondaryText?: string;
-  statusLabel?: string;
-  statusTone?: string;
-  hasLiveSession?: boolean;
-  sessionIsLive?: boolean;
-  runCount?: number;
-  onPress: () => void;
-  onOpenSession?: () => void;
-  onLongPress?: () => void;
+export function statusGlyph(issue: Issue): string {
+  if (issue.frontmatter.done) return "✓";
+  if (issue.frontmatter.dispatched) return "▶";
+  return "●";
 }
 
-export function IssueRow({
-  task,
-  run,
-  metaText,
-  secondaryText,
-  statusLabel,
-  statusTone = Colors.textSecondary,
-  hasLiveSession = false,
-  sessionIsLive = false,
-  runCount = 0,
-  onPress,
-  onOpenSession,
-  onLongPress,
-}: Props) {
-  const isDimmed = task.status === 'done' || task.status === 'cancelled';
-  const hasTrailing = hasLiveSession || !!run?.agentSessionId || runCount > 1 || !!statusLabel;
-  const trailingInteractive = sessionIsLive && !!onOpenSession;
+export function relativeTime(iso: string): string {
+  const then = Date.parse(iso);
+  if (Number.isNaN(then)) {
+    return "";
+  }
 
-  // Derive terminal icon color from execution state
-  const terminalColor = statusLabel
-    ? statusTone
-    : sessionIsLive
-      ? Colors.accent
-      : Colors.textSecondary;
+  const diffSeconds = Math.floor((Date.now() - then) / 1000);
+  if (diffSeconds < 60) return "just now";
+  if (diffSeconds < 3600) return `${Math.floor(diffSeconds / 60)}m`;
+  if (diffSeconds < 86_400) return `${Math.floor(diffSeconds / 3600)}h`;
+  return `${Math.floor(diffSeconds / 86_400)}d`;
+}
+
+export function IssueRow({ issue }: { issue: Issue }) {
+  const router = useRouter();
 
   return (
-    <View style={[styles.row, isDimmed && styles.rowDimmed]}>
-      <TouchableOpacity
-        style={styles.mainPress}
-        onPress={onPress}
-        onLongPress={onLongPress}
-        activeOpacity={0.82}
-        delayLongPress={400}
-      >
-        <PriorityBar priority={task.priority} />
-
-        <View style={styles.iconWrap}>
-          <IssueStatusIcon status={task.status} size={15} />
-        </View>
-
-        <View style={styles.copy}>
-          <Text style={styles.title} numberOfLines={1}>{task.title}</Text>
-          <Text style={styles.meta} numberOfLines={1}>
-            {metaText}
-            {secondaryText ? `  ·  ${secondaryText}` : ''}
-          </Text>
-        </View>
-      </TouchableOpacity>
-      {hasTrailing ? (
-        trailingInteractive ? (
-          <TouchableOpacity
-            style={[styles.trailing, styles.trailingButton]}
-            onPress={onOpenSession}
-            activeOpacity={0.82}
-          >
-            {runCount > 1 ? (
-              <Text style={styles.runCount}>×{runCount}</Text>
-            ) : null}
-            {statusLabel ? (
-              <View style={[styles.statusDot, { backgroundColor: statusTone }]} />
-            ) : null}
-            <Ionicons
-              name="terminal-outline"
-              size={13}
-              color={terminalColor}
-            />
-          </TouchableOpacity>
-        ) : (
-          <View style={styles.trailing}>
-            {runCount > 1 ? (
-              <Text style={styles.runCount}>×{runCount}</Text>
-            ) : null}
-            {statusLabel ? (
-              <View style={[styles.statusDot, { backgroundColor: statusTone }]} />
-            ) : null}
-            {hasLiveSession ? (
-              <Ionicons
-                name="terminal-outline"
-                size={13}
-                color={terminalColor}
-              />
-            ) : run?.agentSessionId ? (
-              <Ionicons name="link-outline" size={12} color={Colors.textSecondary} />
-            ) : null}
-          </View>
-        )
-      ) : null}
-    </View>
+    <Pressable
+      onPress={() =>
+        router.push({
+          pathname: "/issue/[id]",
+          params: { id: issue.id, serverId: issue.serverId },
+        })
+      }
+      style={({ pressed }) => [styles.row, pressed && styles.rowPressed]}
+    >
+      <Text style={styles.glyph}>{statusGlyph(issue)}</Text>
+      <View style={styles.body}>
+        <Text style={styles.title} numberOfLines={1}>
+          {issue.title || "(untitled)"}
+        </Text>
+        <Text style={styles.meta} numberOfLines={1}>
+          {issue.serverName} · {issue.project} · {relativeTime(issue.frontmatter.created)}
+        </Text>
+      </View>
+    </Pressable>
   );
 }
 
 const styles = StyleSheet.create({
   row: {
-    minHeight: 50,
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 10,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 12,
+    paddingHorizontal: 18,
+    paddingVertical: 14,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: Colors.bgElevated,
+    backgroundColor: Colors.bgPrimary,
   },
-  rowDimmed: {
-    opacity: 0.42,
+  rowPressed: {
+    opacity: 0.65,
   },
-  mainPress: {
+  glyph: {
+    width: 18,
+    color: Colors.textSecondary,
+    fontFamily: Typography.terminalFontBold,
+    fontSize: 14,
+    textAlign: "center",
+  },
+  body: {
     flex: 1,
-    minHeight: 50,
-    paddingRight: 4,
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 10,
-  },
-  iconWrap: {
-    width: 16,
-    alignItems: 'center',
-  },
-  copy: {
-    flex: 1,
-    gap: 3,
-    paddingVertical: 10,
   },
   title: {
     color: Colors.textPrimary,
-    fontSize: 14,
-    lineHeight: 18,
     fontFamily: Typography.uiFontMedium,
+    fontSize: 16,
   },
   meta: {
+    marginTop: 4,
     color: Colors.textSecondary,
-    fontSize: 11,
-    lineHeight: 15,
     fontFamily: Typography.uiFont,
-  },
-  trailing: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 5,
-    paddingLeft: 6,
-  },
-  trailingButton: {
-    minHeight: 32,
-    paddingHorizontal: 8,
-    borderRadius: 10,
-    justifyContent: 'center',
-    backgroundColor: 'rgba(91,157,255,0.08)',
-  },
-  statusDot: {
-    width: 5,
-    height: 5,
-    borderRadius: 2.5,
-  },
-  runCount: {
-    color: Colors.textSecondary,
-    fontSize: 11,
-    fontFamily: Typography.terminalFont,
+    fontSize: 12,
   },
 });

@@ -15,7 +15,7 @@ import { useFocusEffect, useRouter } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Agent, useAgents } from '../../store/agents';
-import { useTasks, Task } from '../../store/tasks';
+import { useIssues, type Issue } from '../../store/issues';
 import { AgentStatus, Colors, Typography, statusColor } from '../../constants/tokens';
 import { TerminalPreview } from '../../components/terminal/TerminalPreview';
 import { AgentKindIcon } from '../../components/terminal/AgentKindIcon';
@@ -41,7 +41,6 @@ import { connectionIssueAccent } from '../../services/connectionIssue';
 import { wsClient } from '../../services/websocket';
 import { makeSessionKey } from '../../services/sessionKeys';
 import { presentAgent } from '../../services/agentPresentation';
-import { formatTaskIssueId } from '../../services/taskIdentity';
 
 const STATUS_PRIORITY: Record<AgentStatus, number> = {
   failed: 0,
@@ -53,27 +52,20 @@ const STATUS_PRIORITY: Record<AgentStatus, number> = {
 
 export default function InboxScreen() {
   const { state } = useAgents();
-  const { state: taskState } = useTasks();
+  const { state: issuesState } = useIssues();
   const router = useRouter();
-  const runById = useMemo(
-    () => Object.fromEntries(taskState.runs.map(run => [`${run.serverId}:${run.id}`, run])),
-    [taskState.runs],
-  );
 
   // Build agent→issue lookup for subtitle display
   const agentIssueMap = useMemo(() => {
-    const map: Record<string, Task> = {};
-    for (const task of taskState.tasks) {
-      if (!task.currentRunId || task.status !== 'in_progress') {
+    const map: Record<string, Issue> = {};
+    for (const current of Object.values(issuesState.byKey)) {
+      if (current.frontmatter.done || !current.frontmatter.agent_session) {
         continue;
       }
-      const run = runById[`${task.serverId}:${task.currentRunId}`];
-      if (run?.agentSessionId) {
-        map[`${task.serverId}:${run.agentSessionId}`] = task;
-      }
+      map[`${current.serverId}:${current.frontmatter.agent_session}`] = current;
     }
     return map;
-  }, [runById, taskState.tasks]);
+  }, [issuesState.byKey]);
   const [viewMode, setViewModeState] = useState<StoredInboxViewMode>('list');
   const [agentAliases, setAgentAliases] = useState<StoredAgentAliases>({});
   const [recentAgentOpens, setRecentAgentOpens] = useState<StoredRecentAgentOpens>({});
@@ -357,7 +349,7 @@ export default function InboxScreen() {
         <AgentKindIcon kind={presented.kind} size={15} />
         <Text style={styles.listName} numberOfLines={1}>{presented.cwdBase || presented.title}</Text>
         {linkedIssue ? (
-          <Text style={styles.issueTag} numberOfLines={1}>{formatTaskIssueId(linkedIssue)}</Text>
+          <Text style={styles.issueTag} numberOfLines={1}>{linkedIssue.title || linkedIssue.id}</Text>
         ) : null}
         <View style={[styles.statusDot, { backgroundColor: statusColor(item.status) }]} />
       </TouchableOpacity>

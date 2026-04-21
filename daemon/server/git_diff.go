@@ -1,19 +1,23 @@
 package server
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"regexp"
 	"sort"
 	"strconv"
 	"strings"
+	"unicode/utf8"
 )
 
 const (
 	gitDiffReasonNoCwd      = "no_cwd"
 	gitDiffReasonNotGitRepo = "not_git_repo"
+	gitDiffContentMaxBytes  = 256 * 1024
 )
 
 var shortstatCountPattern = regexp.MustCompile(`(\d+)\s+(insertion|deletion)`)
@@ -53,6 +57,24 @@ type gitDiffPatchSection struct {
 	Scope string `json:"scope"`
 	Title string `json:"title"`
 	Patch string `json:"patch"`
+}
+
+type gitDiffFileContentPayload struct {
+	RepoRoot string                 `json:"repo_root"`
+	Path     string                 `json:"path"`
+	Current  gitDiffContentSnapshot `json:"current"`
+	Base     gitDiffContentSnapshot `json:"base"`
+}
+
+type gitDiffContentSnapshot struct {
+	Label     string `json:"label"`
+	Exists    bool   `json:"exists"`
+	Binary    bool   `json:"binary,omitempty"`
+	Truncated bool   `json:"truncated,omitempty"`
+	Reason    string `json:"reason,omitempty"`
+	ByteCount int    `json:"byte_count"`
+	LineCount int    `json:"line_count"`
+	Content   string `json:"content,omitempty"`
 }
 
 func (s *Server) buildGitDiffStatus(targetID, cwd string) (gitDiffStatusPayload, error) {
@@ -220,6 +242,41 @@ func (s *Server) buildGitDiffPatch(targetID, cwd, path string) (gitDiffPatchPayl
 	}, nil
 }
 
+func (s *Server) buildGitDiffFileContent(targetID, cwd, path string) (gitDiffFileContentPayload, error) {
+	repoRoot, reason, err := s.resolveGitRepoRoot(targetID, cwd)
+	if err != nil {
+		return gitDiffFileContentPayload{}, err
+	}
+	if reason == gitDiffReasonNoCwd {
+		return gitDiffFileContentPayload{}, fmt.Errorf("git diff is unavailable because this terminal has no cwd")
+	}
+	if reason == gitDiffReasonNotGitRepo {
+		return gitDiffFileContentPayload{}, fmt.Errorf("current cwd is not inside a git repository")
+	}
+
+	file, err := gitDiffTargetFile(repoRoot, path)
+	if err != nil {
+		return gitDiffFileContentPayload{}, err
+	}
+
+	current, err := workingTreeContentSnapshot(repoRoot, *file)
+	if err != nil {
+		return gitDiffFileContentPayload{}, err
+	}
+
+	base, err := baseContentSnapshot(repoRoot, *file)
+	if err != nil {
+		return gitDiffFileContentPayload{}, err
+	}
+
+	return gitDiffFileContentPayload{
+		RepoRoot: repoRoot,
+		Path:     file.Path,
+		Current:  current,
+		Base:     base,
+	}, nil
+}
+
 func (s *Server) resolveGitRepoRoot(targetID, cwd string) (repoRoot string, reason string, err error) {
 	resolvedCwd := strings.TrimSpace(cwd)
 	if resolvedCwd == "" && targetID != "" {
@@ -350,6 +407,26 @@ func listGitDiffFiles(repoRoot string) ([]gitDiffFileInfo, error) {
 	return files, nil
 }
 
+func gitDiffTargetFile(repoRoot, path string) (*gitDiffFileInfo, error) {
+	targetPath := strings.TrimSpace(path)
+	if targetPath == "" {
+		return nil, fmt.Errorf("git diff file path is required")
+	}
+
+	files, err := listGitDiffFiles(repoRoot)
+	if err != nil {
+		return nil, err
+	}
+
+	for index := range files {
+		if files[index].Path == targetPath {
+			return &files[index], nil
+		}
+	}
+
+	return nil, fmt.Errorf("git diff file not found: %s", targetPath)
+}
+
 func parseGitStatusPath(raw string) (path string, oldPath string) {
 	value := strings.TrimSpace(raw)
 	if value == "" {
@@ -415,4 +492,121 @@ func gitCommandOutput(repoRoot string, allowDiffExitCode bool, args ...string) (
 		return "", fmt.Errorf("%s", strings.TrimSpace(string(out)))
 	}
 	return string(out), nil
+}
+
+func workingTreeContentSnapshot(repoRoot string, file gitDiffFileInfo) (gitDiffContentSnapshot, error) {
+	absolutePath := filepath.Join(repoRoot, filepath.FromSlash(file.Path))
+	content, err := os.ReadFile(absolutePath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return gitDiffContentSnapshot{
+				Label:  "Working tree",
+				Reason: "missing",
+			}, nil
+		}
+		return gitDiffContentSnapshot{}, fmt.Errorf("read working tree file: %w", err)
+	}
+
+	return buildGitDiffContentSnapshot("Working tree", content), nil
+}
+
+func baseContentSnapshot(repoRoot string, file gitDiffFileInfo) (gitDiffContentSnapshot, error) {
+	if file.Untracked {
+		return gitDiffContentSnapshot{
+			Label:  "Base",
+			Reason: "untracked",
+		}, nil
+	}
+
+	basePath := file.Path
+	if file.OldPath != "" {
+		basePath = file.OldPath
+	}
+
+	spec := fmt.Sprintf("HEAD:%s", basePath)
+	exists, err := gitObjectExists(repoRoot, spec)
+	if err != nil {
+		return gitDiffContentSnapshot{}, err
+	}
+	if !exists {
+		return gitDiffContentSnapshot{
+			Label:  "Base",
+			Reason: "missing",
+		}, nil
+	}
+
+	content, err := gitObjectContent(repoRoot, spec)
+	if err != nil {
+		return gitDiffContentSnapshot{}, err
+	}
+
+	snapshot := buildGitDiffContentSnapshot("Base", content)
+	return snapshot, nil
+}
+
+func buildGitDiffContentSnapshot(label string, content []byte) gitDiffContentSnapshot {
+	snapshot := gitDiffContentSnapshot{
+		Label:     label,
+		Exists:    true,
+		ByteCount: len(content),
+	}
+
+	if len(content) == 0 {
+		return snapshot
+	}
+
+	if !utf8.Valid(content) {
+		snapshot.Binary = true
+		snapshot.Reason = "binary"
+		return snapshot
+	}
+
+	display := content
+	if len(display) > gitDiffContentMaxBytes {
+		display = display[:gitDiffContentMaxBytes]
+		for len(display) > 0 && !utf8.Valid(display) {
+			display = display[:len(display)-1]
+		}
+		snapshot.Truncated = true
+	}
+
+	snapshot.LineCount = bytes.Count(content, []byte{'\n'})
+	if len(content) > 0 && content[len(content)-1] != '\n' {
+		snapshot.LineCount += 1
+	}
+	snapshot.Content = string(display)
+	return snapshot
+}
+
+func gitObjectExists(repoRoot, spec string) (bool, error) {
+	cmd := exec.Command("git", "-C", repoRoot, "cat-file", "-e", spec)
+	if err := cmd.Run(); err != nil {
+		var exitErr *exec.ExitError
+		if errors.As(err, &exitErr) && exitErr.ExitCode() == 128 {
+			return false, nil
+		}
+		return false, fmt.Errorf("resolve git object %s: %w", spec, err)
+	}
+	return true, nil
+}
+
+func gitObjectContent(repoRoot, spec string) ([]byte, error) {
+	cmd := exec.Command("git", "-C", repoRoot, "show", spec)
+	out, err := cmd.Output()
+	if err != nil {
+		if exitErr, ok := err.(*exec.ExitError); ok {
+			return nil, fmt.Errorf("%s", strings.TrimSpace(string(exitErr.Stderr)))
+		}
+		return nil, err
+	}
+	return out, nil
+}
+
+func gitOutput(repoRoot string, args ...string) (string, error) {
+	cmd := exec.Command("git", append([]string{"-C", repoRoot}, args...)...)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return "", fmt.Errorf("%s", strings.TrimSpace(string(out)))
+	}
+	return strings.TrimSpace(string(out)), nil
 }

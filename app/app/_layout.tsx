@@ -10,7 +10,7 @@ import Constants from "expo-constants";
 import { GestureHandlerRootView } from "react-native-gesture-handler";
 import { SafeAreaProvider } from "react-native-safe-area-context";
 import { Agent, AgentProvider, useAgents } from "../store/agents";
-import { TaskProvider, useTasks } from "../store/tasks";
+import { IssuesProvider, useIssues } from "../store/issues";
 import { Colors } from "../constants/tokens";
 import { wsClient } from "../services/websocket";
 import { getServers, isOnboarded } from "../services/storage";
@@ -151,7 +151,7 @@ function AppContent() {
   const router = useRouter();
   const segments = useSegments();
   const { state, dispatch } = useAgents();
-  const { dispatch: taskDispatch } = useTasks();
+  const { dispatch: issuesDispatch } = useIssues();
   const notificationListener = useRef<Notifications.EventSubscription | null>(
     null,
   );
@@ -260,11 +260,17 @@ function AppContent() {
         connectionState: "connected",
       });
     const onDisconnected = (data: any) =>
-      dispatch({
-        type: "SET_SERVER_CONNECTION_STATE",
-        serverId: data.serverId,
-        connectionState: "offline",
-      });
+      {
+        dispatch({
+          type: "SET_SERVER_CONNECTION_STATE",
+          serverId: data.serverId,
+          connectionState: "offline",
+        });
+        issuesDispatch({
+          type: "REMOVE_SERVER",
+          serverId: data.serverId,
+        });
+      };
     const onConnectionIssue = (data: any) =>
       dispatch({
         type: "SET_SERVER_CONNECTION_ISSUE",
@@ -272,137 +278,44 @@ function AppContent() {
         issue: data.issue || null,
       });
 
-    // Task/Guidance listeners
-    const onTaskList = (data: any) =>
-      taskDispatch({
-        type: "UPSERT_SERVER_TASKS",
+    const onIssuesSnapshot = (data: any) =>
+      issuesDispatch({
+        type: "ISSUES_SNAPSHOT",
         serverId: data.serverId,
         serverName: data.serverName,
-        tasks: data.tasks || [],
+        serverUrl: data.serverUrl,
+        issues: data.issues || [],
+        executors: data.executors || [],
       });
-    const onTaskCreated = (data: any) => {
-      if (data.task)
-        taskDispatch({
-          type: "TASK_CREATED",
-          serverId: data.serverId,
-          serverName: data.serverName,
-          task: data.task,
-        });
-    };
-    const onTaskUpdated = (data: any) => {
-      if (data.task)
-        taskDispatch({
-          type: "TASK_UPDATED",
-          serverId: data.serverId,
-          serverName: data.serverName,
-          task: data.task,
-        });
-    };
-    const onTaskDeleted = (data: any) =>
-      taskDispatch({
-        type: "TASK_DELETED",
-        serverId: data.serverId,
-        taskId: data.task_id,
-      });
-    const onRunList = (data: any) =>
-      taskDispatch({
-        type: "UPSERT_SERVER_RUNS",
+    const onIssueChanged = (data: any) => {
+      if (!data.issue) {
+        return;
+      }
+      issuesDispatch({
+        type: "ISSUE_CHANGED",
         serverId: data.serverId,
         serverName: data.serverName,
-        runs: data.runs || [],
+        serverUrl: data.serverUrl,
+        issue: data.issue,
       });
-    const onRunUpdated = (data: any) => {
-      if (data.run)
-        taskDispatch({
-          type: "RUN_UPDATED",
-          serverId: data.serverId,
-          serverName: data.serverName,
-          run: data.run,
-        });
-      if (data.task)
-        taskDispatch({
-          type: "TASK_UPDATED",
-          serverId: data.serverId,
-          serverName: data.serverName,
-          task: data.task,
-        });
     };
-    const onRunCreated = (data: any) => {
-      if (data.run)
-        taskDispatch({
-          type: "RUN_CREATED",
-          serverId: data.serverId,
-          serverName: data.serverName,
-          run: data.run,
-        });
-      if (data.task)
-        taskDispatch({
-          type: "TASK_UPDATED",
-          serverId: data.serverId,
-          serverName: data.serverName,
-          task: data.task,
-        });
-    };
-    const onTaskCommentAdded = (data: any) => {
-      if (data.run)
-        taskDispatch({
-          type: "RUN_CREATED",
-          serverId: data.serverId,
-          serverName: data.serverName,
-          run: data.run,
-        });
-      if (data.task)
-        taskDispatch({
-          type: "TASK_UPDATED",
-          serverId: data.serverId,
-          serverName: data.serverName,
-          task: data.task,
-        });
-    };
-    const onGuidance = (data: any) => {
-      if (data.guidance)
-        taskDispatch({
-          type: "SET_GUIDANCE",
-          serverId: data.serverId,
-          guidance: data.guidance,
-        });
-    };
-
-    const onProjectList = (data: any) =>
-      taskDispatch({
-        type: "UPSERT_SERVER_PROJECTS",
+    const onIssueDeleted = (data: any) =>
+      issuesDispatch({
+        type: "ISSUE_DELETED",
         serverId: data.serverId,
-        projects: data.projects || [],
+        id: data.id,
+        path: data.path,
       });
-    const onProjectCreated = (data: any) => {
-      if (data.project)
-        taskDispatch({
-          type: "PROJECT_CREATED",
-          serverId: data.serverId,
-          project: data.project,
-        });
-    };
-    const onProjectUpdated = (data: any) => {
-      if (data.project)
-        taskDispatch({
-          type: "PROJECT_UPDATED",
-          serverId: data.serverId,
-          project: data.project,
-        });
-    };
-    const onProjectDeleted = (data: any) =>
-      taskDispatch({
-        type: "PROJECT_DELETED",
+    const onExecutors = (data: any) =>
+      issuesDispatch({
+        type: "EXECUTORS_LOADED",
         serverId: data.serverId,
-        projectId: data.project_id,
+        executors: data.executors || [],
       });
 
-    // Fetch tasks, projects on connected
-    const onConnectedFetchTasks = (data: any) => {
-      wsClient.listTasks(data.serverId);
-      wsClient.listRuns(data.serverId);
-      wsClient.getGuidance(data.serverId);
-      wsClient.listProjects(data.serverId);
+    const onConnectedFetchIssues = (data: any) => {
+      wsClient.listIssues(data.serverId);
+      wsClient.listExecutors(data.serverId);
       wsClient.listAgentSessions(data.serverId);
     };
 
@@ -414,24 +327,11 @@ function AppContent() {
     wsClient.on("connected", onConnected);
     wsClient.on("disconnected", onDisconnected);
     wsClient.on("connection_issue", onConnectionIssue);
-    wsClient.on("task_list", onTaskList);
-    wsClient.on("task_created", onTaskCreated);
-    wsClient.on("task_updated", onTaskUpdated);
-    wsClient.on("task_deleted", onTaskDeleted);
-    wsClient.on("run_list", onRunList);
-    wsClient.on("run_created", onRunCreated);
-    wsClient.on("run_updated", onRunUpdated);
-    wsClient.on("run_completed", onRunUpdated);
-    wsClient.on("run_failed", onRunUpdated);
-    wsClient.on("run_cancelled", onRunUpdated);
-    wsClient.on("task_comment_added", onTaskCommentAdded);
-    wsClient.on("guidance", onGuidance);
-    wsClient.on("guidance_updated", onGuidance);
-    wsClient.on("project_list", onProjectList);
-    wsClient.on("project_created", onProjectCreated);
-    wsClient.on("project_updated", onProjectUpdated);
-    wsClient.on("project_deleted", onProjectDeleted);
-    wsClient.on("connected", onConnectedFetchTasks);
+    wsClient.on("issues_snapshot", onIssuesSnapshot);
+    wsClient.on("issue_changed", onIssueChanged);
+    wsClient.on("issue_deleted", onIssueDeleted);
+    wsClient.on("executor_list", onExecutors);
+    wsClient.on("connected", onConnectedFetchIssues);
 
     (async () => {
       try {
@@ -471,26 +371,13 @@ function AppContent() {
       wsClient.off("connected", onConnected);
       wsClient.off("disconnected", onDisconnected);
       wsClient.off("connection_issue", onConnectionIssue);
-      wsClient.off("task_list", onTaskList);
-      wsClient.off("task_created", onTaskCreated);
-      wsClient.off("task_updated", onTaskUpdated);
-      wsClient.off("task_deleted", onTaskDeleted);
-      wsClient.off("run_list", onRunList);
-      wsClient.off("run_created", onRunCreated);
-      wsClient.off("run_updated", onRunUpdated);
-      wsClient.off("run_completed", onRunUpdated);
-      wsClient.off("run_failed", onRunUpdated);
-      wsClient.off("run_cancelled", onRunUpdated);
-      wsClient.off("task_comment_added", onTaskCommentAdded);
-      wsClient.off("guidance", onGuidance);
-      wsClient.off("guidance_updated", onGuidance);
-      wsClient.off("project_list", onProjectList);
-      wsClient.off("project_created", onProjectCreated);
-      wsClient.off("project_updated", onProjectUpdated);
-      wsClient.off("project_deleted", onProjectDeleted);
-      wsClient.off("connected", onConnectedFetchTasks);
+      wsClient.off("issues_snapshot", onIssuesSnapshot);
+      wsClient.off("issue_changed", onIssueChanged);
+      wsClient.off("issue_deleted", onIssueDeleted);
+      wsClient.off("executor_list", onExecutors);
+      wsClient.off("connected", onConnectedFetchIssues);
     };
-  }, []);
+  }, [dispatch, issuesDispatch, router, segments]);
 
   useEffect(() => {
     const subscription = Linking.addEventListener("url", (event) => {
@@ -677,12 +564,12 @@ export default function RootLayout() {
   return (
     <GestureHandlerRootView style={{ flex: 1 }}>
       <AgentProvider>
-        <TaskProvider>
+        <IssuesProvider>
           <SafeAreaProvider>
             <StatusBar style="light" />
             <AppContent />
           </SafeAreaProvider>
-        </TaskProvider>
+        </IssuesProvider>
       </AgentProvider>
     </GestureHandlerRootView>
   );

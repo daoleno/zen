@@ -9,15 +9,16 @@ import (
 	"log"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strings"
 	"syscall"
 	"time"
 
 	"github.com/daoleno/zen/daemon/auth"
+	"github.com/daoleno/zen/daemon/issue"
 	"github.com/daoleno/zen/daemon/push"
 	"github.com/daoleno/zen/daemon/server"
 	"github.com/daoleno/zen/daemon/stats"
-	"github.com/daoleno/zen/daemon/task"
 	"github.com/daoleno/zen/daemon/watcher"
 )
 
@@ -90,25 +91,8 @@ func runDaemon(args []string, stderr io.Writer) error {
 	}()
 
 	stateDir := authManager.StorageDir()
-
-	taskStore, err := task.NewStore(stateDir)
-	if err != nil {
-		return fmt.Errorf("initialize task store: %w", err)
-	}
-
-	runStore, err := task.NewRunStore(stateDir)
-	if err != nil {
-		return fmt.Errorf("initialize run store: %w", err)
-	}
-
-	guidanceStore, err := task.NewGuidanceStore(stateDir)
-	if err != nil {
-		return fmt.Errorf("initialize guidance store: %w", err)
-	}
-
-	projectStore, err := task.NewProjectStore(stateDir)
-	if err != nil {
-		return fmt.Errorf("initialize project store: %w", err)
+	for _, name := range []string{"tasks.json", "runs.json", "meta.json"} {
+		_ = os.Remove(filepath.Join(stateDir, name))
 	}
 
 	w := watcher.New(500 * time.Millisecond)
@@ -117,8 +101,31 @@ func runDaemon(args []string, stderr io.Writer) error {
 	sc := stats.NewCollector()
 	go sc.Start(ctx)
 
+	issuesRoot, err := issue.DefaultRoot()
+	if err != nil {
+		return fmt.Errorf("resolve issues root: %w", err)
+	}
+	issueStore, err := issue.NewStore(issuesRoot)
+	if err != nil {
+		return fmt.Errorf("initialize issue store: %w", err)
+	}
+	if err := issueStore.StartWatcher(); err != nil {
+		return fmt.Errorf("start issue watcher: %w", err)
+	}
+	defer issueStore.Close()
+
+	executorsPath, err := issue.DefaultExecutorsPath()
+	if err != nil {
+		return fmt.Errorf("resolve executors path: %w", err)
+	}
+	execs, err := issue.LoadExecutors(executorsPath)
+	if err != nil {
+		return fmt.Errorf("load executors: %w", err)
+	}
+
 	pusher := push.New()
-	srv := server.New(authManager, w, pusher, sc, taskStore, runStore, guidanceStore, projectStore)
+	dispatcher := issue.NewDispatcher(&issue.WatcherRegistry{W: w}, issue.TmuxRunner{}, execs)
+	srv := server.New(authManager, w, pusher, sc, issueStore, dispatcher, execs)
 	if err := srv.Run(ctx, cfg.addr); err != nil && err.Error() != "http: Server closed" {
 		return fmt.Errorf("server error: %w", err)
 	}

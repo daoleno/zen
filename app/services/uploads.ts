@@ -1,7 +1,11 @@
 import * as DocumentPicker from "expo-document-picker";
-import type { Attachment } from "../store/tasks";
 import { buildAuthorizationHeader } from "./auth";
 import { getServerById } from "./storage";
+
+export type UploadedAttachment = {
+  name: string;
+  path: string;
+};
 
 export async function buildUploadHeaders(
   daemonId: string,
@@ -37,7 +41,7 @@ export function buildUploadUrl(serverUrl: string): string | null {
 
 export async function uploadDocumentForServer(
   serverId: string,
-): Promise<Attachment | null> {
+): Promise<UploadedAttachment | null> {
   const result = await DocumentPicker.getDocumentAsync({
     type: ["*/*"],
     copyToCacheDirectory: true,

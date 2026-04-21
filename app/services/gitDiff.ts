@@ -47,6 +47,24 @@ export interface GitDiffPatchPayload {
   sections: GitDiffPatchSection[];
 }
 
+export interface GitDiffContentSnapshot {
+  label: string;
+  exists: boolean;
+  binary?: boolean;
+  truncated?: boolean;
+  reason?: string;
+  byte_count: number;
+  line_count: number;
+  content?: string;
+}
+
+export interface GitDiffFileContentPayload {
+  repo_root: string;
+  path: string;
+  current: GitDiffContentSnapshot;
+  base: GitDiffContentSnapshot;
+}
+
 export function buildGitDiffChipLabel(
   snapshot: GitDiffStatusSnapshot | null,
   loading: boolean,
