@@ -469,10 +469,11 @@ func extractTitle(body string) string {
 }
 ```
 
-**Note:** `ExtractMentions` is declared here as a call site but not yet implemented — stub for Task 4:
+**Important instruction to the implementer:** `ExtractMentions` is deliberately a stub in this task. Task 4 implements the real regex. **Do not implement the real logic here**, even if it seems trivial — keeping the boundary makes Task 4's TDD cycle meaningful. Paste exactly:
 
 ```go
 // ExtractMentions is implemented in parser.go (mentions section) in Task 4.
+// Intentional stub — do not implement here.
 func ExtractMentions(body string) []Mention { return nil }
 ```
 
@@ -2050,24 +2051,19 @@ git commit -m "Dispatch issues to idle or freshly spawned sessions"
 
 The dispatcher's `SessionRegistry` and `SessionRunner` interfaces need concrete implementations using the existing `watcher` package (agent discovery) and `terminal` package (tmux).
 
-- [ ] **Step 1: Read existing watcher types**
+- [ ] **Step 1: Confirm watcher types (already verified)**
 
-Before writing this file, look at these to confirm the shape of agent info and tmux spawn:
-
-```bash
-grep -n "type Agent" /home/daoleno/workspace/zen/daemon/watcher/*.go
-grep -n "func.*Watcher.*Agents\|func.*Watcher.*Sessions" /home/daoleno/workspace/zen/daemon/watcher/*.go
-grep -n "func tmuxGroupedSession\|func.*Start" /home/daoleno/workspace/zen/daemon/terminal/*.go
-```
-
-Expected output:
-- `watcher.Agent` struct with `ID`, `Cwd`, `State` (classifier.AgentState), `Command`, `Project` fields.
-- `watcher.Watcher.Agents()` or similar returning `[]Agent`.
-- `terminal.NewTmuxSession(...)` or `terminal.Spawn(...)` as the session creator.
-
-Record the exact signatures you find; the code below uses conservative placeholders that you'll adjust to match.
+Verified facts (from reading the code):
+- `watcher.Watcher.Agents() []*classifier.Agent` (watcher/watcher.go:55).
+- `classifier.Agent` fields include `ID`, `Cwd`, `State`, `Command`, `Project` — access via pointer (the slice is `[]*classifier.Agent`).
+- `classifier.StateRunning` is the "idle and accepting input" state.
+- The watcher polls via `tmux list-sessions` every 500ms and strips sessions whose name starts with `zen-` (watcher/watcher.go:486). Spawned agent sessions must NOT use the `zen-` prefix.
 
 - [ ] **Step 2: Implement adapters**
+
+**Critical constraint (verified in source):** `daemon/watcher/watcher.go:486` explicitly excludes tmux sessions whose name starts with `zen-` because those are terminal-streaming proxies, not user agents. Therefore the dispatcher must NOT use the `zen-` prefix, or the watcher will never track the spawned session and `agent_session` in the frontmatter won't resolve to anything in the app.
+
+Also important: the watcher's agent ID is `<session_name>:<window_id>` (comment at `watcher.go:471`), not the bare session name. After spawning, we look up the window id and return the full target so later `Send` calls and the app's agent lookup line up with the watcher's view.
 
 Create `daemon/issue/adapters.go`:
 
@@ -2076,10 +2072,13 @@ package issue
 
 import (
 	"fmt"
+	"math/rand"
 	"os/exec"
+	"strings"
+	"sync/atomic"
+	"time"
 
 	"github.com/daoleno/zen/daemon/classifier"
-	"github.com/daoleno/zen/daemon/terminal"
 	"github.com/daoleno/zen/daemon/watcher"
 )
 
@@ -2112,7 +2111,7 @@ func (r *WatcherRegistry) IdleSessions(role, cwd string) []SessionInfo {
 
 // roleMatches decides whether an Agent corresponds to the requested executor role.
 // Convention: the first word of a.Command (e.g., "claude", "codex") is the role name.
-func roleMatches(a watcher.Agent, role string) bool {
+func roleMatches(a *classifier.Agent, role string) bool {
 	if a.Command == "" {
 		return false
 	}
@@ -2129,51 +2128,64 @@ func firstWord(s string) string {
 	return s
 }
 
-// TmuxRunner adapts terminal.Tmux* helpers to SessionRunner.
+// TmuxRunner adapts tmux CLI calls to SessionRunner.
 type TmuxRunner struct{}
 
-// Spawn creates a new detached tmux session and returns its name.
-// The session runs `command` in cwd. We use `tmux new-session -d -s <name> -c <cwd> <command>`.
-func (TmuxRunner) Spawn(role, cwd, command string) (string, error) {
-	name := terminal.GenerateSessionName(role) // assumed helper; adjust to match actual API
-	args := []string{"new-session", "-d", "-s", name, "-c", cwd, command}
-	cmd := exec.Command("tmux", args...)
-	if out, err := cmd.CombinedOutput(); err != nil {
-		return "", fmt.Errorf("tmux new-session: %w: %s", err, string(out))
-	}
-	return name, nil
+var tmuxCounter atomic.Uint64
+var tmuxRand = rand.New(rand.NewSource(time.Now().UnixNano()))
+
+// sessionName builds a tmux session name that:
+//   - Does NOT start with "zen-" (the watcher excludes those).
+//   - Is short, readable, unique enough for practical use.
+// Format: "<role>-<date>-<4 hex chars>", e.g. "claude-260421-3a1f".
+func sessionName(role string) string {
+	n := tmuxCounter.Add(1)
+	// small daily suffix + random to avoid collisions across daemon restarts
+	return fmt.Sprintf("%s-%s-%04x%x",
+		role,
+		time.Now().Format("060102"),
+		tmuxRand.Intn(0xffff),
+		n%0xf,
+	)
 }
 
-func (TmuxRunner) Send(sessionID, text string) error {
-	// Use tmux send-keys with C-m to submit after the text.
-	cmd := exec.Command("tmux", "send-keys", "-t", sessionID, text, "C-m")
+// Spawn creates a detached tmux session running command in cwd and returns
+// the watcher-compatible agent ID "<session>:<window_id>".
+func (TmuxRunner) Spawn(role, cwd, command string) (string, error) {
+	name := sessionName(role)
+	create := exec.Command("tmux", "new-session", "-d", "-s", name, "-c", cwd, command)
+	if out, err := create.CombinedOutput(); err != nil {
+		return "", fmt.Errorf("tmux new-session: %w: %s", err, strings.TrimSpace(string(out)))
+	}
+	// Ask tmux for the window id so the returned id matches how the watcher
+	// stores agents (session:window_id).
+	lw := exec.Command("tmux", "list-windows", "-t", name, "-F", "#{window_id}")
+	out, err := lw.Output()
+	if err != nil {
+		_ = exec.Command("tmux", "kill-session", "-t", name).Run()
+		return "", fmt.Errorf("tmux list-windows: %w", err)
+	}
+	windowID := strings.TrimSpace(string(out))
+	if windowID == "" {
+		_ = exec.Command("tmux", "kill-session", "-t", name).Run()
+		return "", fmt.Errorf("tmux list-windows: no window id returned")
+	}
+	return name + ":" + windowID, nil
+}
+
+// Send writes text followed by Enter to the session's pane.
+// agentID is expected in "session:window_id" form (what Spawn returns and
+// what the watcher stores).
+func (TmuxRunner) Send(agentID, text string) error {
+	cmd := exec.Command("tmux", "send-keys", "-t", agentID, text, "C-m")
 	if out, err := cmd.CombinedOutput(); err != nil {
-		return fmt.Errorf("tmux send-keys: %w: %s", err, string(out))
+		return fmt.Errorf("tmux send-keys: %w: %s", err, strings.TrimSpace(string(out)))
 	}
 	return nil
 }
 ```
 
-**Note:** Replace `terminal.GenerateSessionName` with the actual helper in the `terminal` package (confirmed in Step 1). If no such helper exists, add one in the terminal package:
-
-```go
-// terminal/names.go
-package terminal
-
-import (
-    "fmt"
-    "math/rand"
-    "time"
-)
-
-var seededRand = rand.New(rand.NewSource(time.Now().UnixNano()))
-
-// GenerateSessionName returns a short unique tmux session name of the form
-// zen-<role>-<4chars>.
-func GenerateSessionName(role string) string {
-    return fmt.Sprintf("zen-%s-%04x", role, seededRand.Intn(0xffff))
-}
-```
+No changes required in the `terminal` package.
 
 - [ ] **Step 3: Verify build**
 
