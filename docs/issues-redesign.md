@@ -120,7 +120,7 @@ The first mention in the body is the primary; later mentions are text only. A si
 - `app/(tabs)/issues.tsx` (current implementation).
 - `app/issue/[id].tsx` (current implementation).
 - All of `components/issue/*` (14 files: `CreateIssueSheet`, `StatusPicker`, `PriorityPicker`, `DueDatePicker`, `ProjectEditorSheet`, `AssignIssueSheet`, `DelegateRunSheet`, `IssueRow`, etc.).
-- Redux `tasks` slice and related selectors/actions.
+- `store/tasks.tsx` (context + reducer for tasks/runs/projects/guidance) and its registrations in `_layout.tsx`.
 
 ### App — new
 
@@ -128,11 +128,12 @@ The first mention in the body is the primary; later mentions are text only. A si
 - `app/issue/[id].tsx` — full-screen Markdown editor + mention picker + Send button.
 - `components/issue/MarkdownEditor.tsx` — plain `<TextInput multiline>` with scan-on-change to detect the active mention prefix and surface the picker.
 - `components/issue/MentionPicker.tsx` — floating list. React Native does not expose a pixel-precise caret position for `TextInput`, so the picker is anchored below the editor (or above the keyboard on mobile) rather than at the caret. Shows `@role` entries first, then running sessions of the current project. Keyboard (`↑↓` / `Enter` / `Esc`) and touch selection.
+- `store/issues.tsx` — React Context + `useReducer`, mirroring the current `store/tasks.tsx` pattern. State: `{ byId: Record<string, Issue>, byProject: Record<string, string[]>, executors: string[] }`. Actions: `ISSUES_SNAPSHOT`, `ISSUE_CHANGED`, `ISSUE_DELETED`, `EXECUTORS_LOADED`.
 - `components/issue/IssueRow.tsx` — list row: title (first `#` heading or first non-empty line), relative time, single-glyph status badge computed from frontmatter:
   - `done` non-empty → `✓` (Done section)
   - `done` empty + `dispatched` set → `▶︎` working
   - `done` empty + `dispatched` empty → `●` draft/active
-- Redux `issues` slice: `{ byId: Record<string, Issue>, byProject: Record<string, string[]>, executors: string[] }`. `issue_changed` upserts; `issue_deleted` removes.
+- context store `issues` slice: `{ byId: Record<string, Issue>, byProject: Record<string, string[]>, executors: string[] }`. `issue_changed` upserts; `issue_deleted` removes.
 
 ## Dispatch Flow
 
@@ -204,7 +205,7 @@ type MentionCandidate =
 
 ## Executor Configuration
 
-Extends the existing daemon config (`daemon.toml` or whatever the current daemon uses) with a `default_executor` string and an `[[executors]]` table:
+Daemon today is flag-based. Rather than adding TOML to the existing config surface, introduce a **single new file** `~/.zen/executors.toml` read at startup:
 
 ```toml
 default_executor = "claude"
@@ -218,7 +219,7 @@ name = "codex"
 command = "codex"
 ```
 
-App fetches executor roles via `list_executors` on connect and caches them. Other existing daemon config (listen address, auth secret, etc.) is untouched.
+If the file is absent, the daemon uses a built-in default: `claude` with command `claude`, `codex` with command `codex`, default executor `claude`. No existing daemon flags or config behavior change. App fetches executor roles via `list_executors` on connect and caches them.
 
 ## Deletion Plan — Atomic Rewrite
 
@@ -228,7 +229,7 @@ Order within the PR (so reviewers can follow):
 1. Delete `daemon/task/` package.
 2. Delete old WebSocket handlers in `server/`.
 3. Delete old persisted files references; keep deletion of actual `tasks.json`/`runs.json` files as a daemon startup step (log warning, remove them).
-4. Delete app `components/issue/*`, `app/(tabs)/issues.tsx`, `app/issue/[id].tsx`, Redux `tasks` slice.
+4. Delete app `components/issue/*`, `app/(tabs)/issues.tsx`, `app/issue/[id].tsx`, context store `tasks` slice.
 5. Add daemon `issue/` package and new WebSocket handlers.
 6. Add app `issues` slice, editor, picker, row.
 7. Add tests alongside each new module.
@@ -260,7 +261,7 @@ No migration script. Existing users discard their old data.
 
 - `MentionPicker.test.tsx` (Jest + React Native Testing Library): `@` opens picker, typing filters, `Enter` inserts, `Esc` closes.
 - `MarkdownEditor.test.tsx`: mention regex matches correctly; conflict banner renders on mtime mismatch.
-- Redux `issues` slice: upsert / remove / group-by-project selectors.
+- context store `issues` slice: upsert / remove / group-by-project selectors.
 - Manual E2E script (`docs/e2e-issues.md`):
   1. Create issue with `@claude`. Tap Send.
   2. Verify `dispatched` appears in frontmatter.
