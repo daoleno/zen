@@ -41,6 +41,10 @@ import { connectionIssueAccent } from '../../services/connectionIssue';
 import { wsClient } from '../../services/websocket';
 import { makeSessionKey } from '../../services/sessionKeys';
 import { presentAgent } from '../../services/agentPresentation';
+import {
+  filterAgentsByPreferredServers,
+  groupAgentsByDirectory,
+} from '../../services/serverSelection';
 
 const STATUS_PRIORITY: Record<AgentStatus, number> = {
   failed: 0,
@@ -124,8 +128,19 @@ export default function InboxScreen() {
     }, []),
   );
 
+  const displayAgents = useMemo(
+    () =>
+      filterAgentsByPreferredServers({
+        agents: state.agents,
+        servers,
+        connectionStates: state.serverConnections,
+        latencyById: state.serverLatencyById,
+      }),
+    [servers, state.agents, state.serverConnections, state.serverLatencyById],
+  );
+
   const sortedAgents = useMemo(() => {
-    return [...state.agents].sort((left, right) => {
+    return [...displayAgents].sort((left, right) => {
       const leftOpenedAt = recentAgentOpens[left.key] ?? 0;
       const rightOpenedAt = recentAgentOpens[right.key] ?? 0;
       if (leftOpenedAt !== rightOpenedAt) return rightOpenedAt - leftOpenedAt;
@@ -135,9 +150,32 @@ export default function InboxScreen() {
       if (leftPriority !== rightPriority) return leftPriority - rightPriority;
       return (right.updated_at || 0) - (left.updated_at || 0);
     });
-  }, [recentAgentOpens, state.agents]);
+  }, [displayAgents, recentAgentOpens]);
 
+  const showServerNames = useMemo(
+    () => new Set(sortedAgents.map((agent) => agent.serverId)).size > 1,
+    [sortedAgents],
+  );
+  const hasConfiguredServers = configuredServerCount > 0;
+  const hasConnection = Object.keys(state.serverConnections).length > 0;
+  const anyConnected = Object.values(state.serverConnections).includes('connected');
+  const anyConnecting = Object.values(state.serverConnections).includes('connecting');
+  const groupedAgents = useMemo(
+    () => groupAgentsByDirectory(sortedAgents, { showServerName: showServerNames }),
+    [showServerNames, sortedAgents],
+  );
+  const headerSummary = useMemo(() => {
+    if (sortedAgents.length === 0) {
+      if (anyConnecting) return 'reconnecting';
+      if (anyConnected) return 'connected';
+      if (hasConfiguredServers) return 'offline';
+      return 'no servers';
+    }
 
+    const workspaceLabel = groupedAgents.length === 1 ? '1 workspace' : `${groupedAgents.length} workspaces`;
+    const sessionLabel = sortedAgents.length === 1 ? '1 session' : `${sortedAgents.length} sessions`;
+    return `${workspaceLabel} · ${sessionLabel}`;
+  }, [anyConnected, anyConnecting, groupedAgents.length, hasConfiguredServers, sortedAgents.length]);
   const primaryIssue = useMemo(() => {
     let nextIssue: (typeof state.serverConnectionIssues)[string] | null = null;
     for (const issue of Object.values(state.serverConnectionIssues)) {
@@ -309,10 +347,6 @@ export default function InboxScreen() {
     });
   };
 
-  const hasConfiguredServers = configuredServerCount > 0;
-  const hasConnection = Object.keys(state.serverConnections).length > 0;
-  const anyConnected = Object.values(state.serverConnections).includes('connected');
-  const anyConnecting = Object.values(state.serverConnections).includes('connecting');
   const bannerAccent = primaryIssue
     ? connectionIssueAccent(primaryIssue)
     : anyConnecting
@@ -334,24 +368,45 @@ export default function InboxScreen() {
           ? 'zen is trying to reconnect. You can still change servers now.'
           : 'Your saved servers are offline. You can edit them or add another one.';
 
-  // ── List: compact row ──
-  const renderListAgent = ({ item }: { item: Agent }) => {
-    const presented = presentAgent(item, agentAliases[item.key]);
+  const buildAgentMeta = (item: Agent) => {
     const linkedIssue = agentIssueMap[`${item.serverId}:${item.id}`];
+    if (linkedIssue) {
+      return linkedIssue.title || linkedIssue.id;
+    }
+    const summary = item.summary.trim();
+    if ((item.status === 'blocked' || item.status === 'failed') && summary) {
+      return summary;
+    }
+    return '';
+  };
+
+  const renderPromptAgent = ({ item }: { item: Agent }) => {
+    const presented = presentAgent(item, agentAliases[item.key]);
+    const directoryLabel = promptDirectoryLabel(item, presented.cwdBase, showServerNames);
+    const meta = buildAgentMeta(item);
+    const hasMeta = Boolean(meta);
     return (
       <TouchableOpacity
-        style={styles.listRow}
+        style={[styles.promptRow, hasMeta && styles.promptRowWithMeta]}
         onPress={() => openAgent(item)}
         onLongPress={() => openContextMenu(item)}
         activeOpacity={0.82}
         delayLongPress={400}
       >
-        <AgentKindIcon kind={presented.kind} size={15} />
-        <Text style={styles.listName} numberOfLines={1}>{presented.cwdBase || presented.title}</Text>
-        {linkedIssue ? (
-          <Text style={styles.issueTag} numberOfLines={1}>{linkedIssue.title || linkedIssue.id}</Text>
+        <View style={styles.promptLine}>
+          <View style={styles.promptPrefix}>
+            <Text style={styles.promptDirectory} numberOfLines={1}>{directoryLabel}</Text>
+            <Text style={styles.promptArrow}>❯</Text>
+          </View>
+          <View style={styles.promptIcon}>
+            <AgentKindIcon kind={presented.kind} size={13} />
+          </View>
+          <Text style={styles.promptTitle} numberOfLines={1}>{presented.title}</Text>
+          <View style={[styles.promptStatusDot, { backgroundColor: statusColor(item.status) }]} />
+        </View>
+        {meta ? (
+          <Text style={styles.promptMeta} numberOfLines={1}>{meta}</Text>
         ) : null}
-        <View style={[styles.statusDot, { backgroundColor: statusColor(item.status) }]} />
       </TouchableOpacity>
     );
   };
@@ -392,10 +447,13 @@ export default function InboxScreen() {
       )}
 
       <View style={styles.header}>
-        <Text style={styles.title}>zen</Text>
+        <View style={styles.headerBrand}>
+          <Text style={styles.title}>zen</Text>
+          <Text style={styles.headerSummary}>{headerSummary}</Text>
+        </View>
         <View style={styles.headerActions}>
           <TouchableOpacity
-            style={[styles.viewBtn, creatingServerId && { opacity: 0.5 }]}
+            style={[styles.addButton, creatingServerId && { opacity: 0.5 }]}
             onPress={openCreateTerminal}
             disabled={!!creatingServerId}
             activeOpacity={0.82}
@@ -466,8 +524,11 @@ export default function InboxScreen() {
           data={sortedAgents}
           key="list"
           keyExtractor={item => item.key}
-          renderItem={renderListAgent}
-          contentContainerStyle={styles.listContent}
+          renderItem={renderPromptAgent}
+          contentContainerStyle={styles.promptContent}
+          removeClippedSubviews={false}
+          windowSize={15}
+          showsVerticalScrollIndicator={false}
         />
       ) : (
         <FlatList
@@ -615,8 +676,23 @@ function ToggleButton({
   );
 }
 
-function stripAnsi(value: string): string {
-  return value.replace(/\x1b\[[0-9;?]*[ -/]*[@-~]/g, '');
+function promptDirectoryLabel(agent: Agent, cwdBase: string, showServerNames: boolean): string {
+  const directory = cwdBase || agent.project?.trim() || lastPathSegment(agent.cwd) || 'session';
+  if (!showServerNames || !agent.serverName) {
+    return directory;
+  }
+
+  return `${agent.serverName}@${directory}`;
+}
+
+function lastPathSegment(value?: string): string {
+  const trimmed = value?.trim().replace(/\/+$/, '') || '';
+  if (!trimmed || trimmed === '/') {
+    return trimmed;
+  }
+
+  const parts = trimmed.split('/').filter(Boolean);
+  return parts[parts.length - 1] || trimmed;
 }
 
 const styles = StyleSheet.create({
@@ -652,9 +728,13 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
-    paddingHorizontal: 20,
+    paddingHorizontal: 16,
     paddingTop: 8,
-    paddingBottom: 12,
+    paddingBottom: 10,
+  },
+  headerBrand: {
+    flex: 1,
+    minWidth: 0,
   },
   title: {
     color: Colors.textPrimary,
@@ -665,10 +745,26 @@ const styles = StyleSheet.create({
     opacity: 0.9,
     paddingRight: 4,
   },
+  headerSummary: {
+    marginTop: 2,
+    color: Colors.textSecondary,
+    fontSize: 10,
+    lineHeight: 13,
+    fontFamily: Typography.uiFont,
+    opacity: 0.58,
+  },
   headerActions: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 10,
+    gap: 8,
+  },
+  addButton: {
+    width: 34,
+    height: 34,
+    borderRadius: 11,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: 'rgba(255,255,255,0.05)',
   },
   viewToggle: {
     flexDirection: 'row',
@@ -688,37 +784,82 @@ const styles = StyleSheet.create({
     backgroundColor: 'rgba(255,255,255,0.08)',
   },
 
-  // ── List: compact rows ──
-  listContent: {
-    paddingHorizontal: 20,
-    paddingBottom: 32,
+  // ── Prompt list ──
+  promptContent: {
+    paddingHorizontal: 16,
+    paddingTop: 6,
+    paddingBottom: 28,
   },
-  listRow: {
+  promptRow: {
+    minHeight: 42,
+    paddingVertical: 7,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: 'rgba(235,225,207,0.055)',
+  },
+  promptRowWithMeta: {
+    minHeight: 54,
+    paddingVertical: 8,
+  },
+  promptLine: {
+    minHeight: 24,
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 10,
-    paddingVertical: 9,
-    borderBottomWidth: StyleSheet.hairlineWidth,
-    borderBottomColor: 'rgba(255,255,255,0.04)',
   },
-  statusDot: {
-    width: 7,
-    height: 7,
-    borderRadius: 4,
+  promptPrefix: {
+    maxWidth: '48%',
+    flexDirection: 'row',
+    alignItems: 'center',
+    flexShrink: 1,
+    marginRight: 8,
   },
-  listName: {
+  promptDirectory: {
+    flexShrink: 1,
+    color: '#8FB573',
+    fontSize: 13,
+    lineHeight: 18,
+    fontFamily: Typography.terminalFont,
+    letterSpacing: -0.1,
+  },
+  promptArrow: {
+    color: '#E6B450',
+    fontSize: 13,
+    lineHeight: 18,
+    fontFamily: Typography.terminalFontBold,
+    marginLeft: 6,
+  },
+  promptIcon: {
+    marginRight: 8,
+    opacity: 0.86,
+  },
+  promptTitle: {
     flex: 1,
+    minWidth: 0,
     color: Colors.textPrimary,
     fontSize: 14,
+    lineHeight: 18,
     fontFamily: Typography.uiFontMedium,
+    opacity: 0.92,
   },
-  issueTag: {
+  promptStatusDot: {
+    width: 6,
+    height: 6,
+    borderRadius: 3,
+    marginLeft: 8,
+  },
+  promptMeta: {
+    marginTop: 1,
+    paddingLeft: 1,
     color: Colors.textSecondary,
-    fontSize: 11,
-    fontFamily: Typography.terminalFont,
-    opacity: 0.45,
+    fontSize: 10,
+    lineHeight: 13,
+    fontFamily: Typography.uiFont,
+    opacity: 0.42,
   },
-
+  statusDot: {
+    width: 6,
+    height: 6,
+    borderRadius: 3,
+  },
   // ── Grid: terminal preview cards ──
   gridContent: {
     paddingHorizontal: 20,
