@@ -558,9 +558,17 @@ func (s *Server) handleClientMessage(conn *websocket.Conn, msg []byte) {
 
 	case "get_stats":
 		if resp := s.stats.Stats(); resp != nil {
-			s.sendJSON(conn, resp)
+			s.sendJSON(conn, map[string]any{
+				"type":       "stats_data",
+				"request_id": raw.RequestID,
+				"ranges":     resp.Ranges,
+			})
 		} else {
-			s.sendJSON(conn, map[string]any{"type": "stats_data", "ranges": map[string]any{}})
+			s.sendJSON(conn, map[string]any{
+				"type":       "stats_data",
+				"request_id": raw.RequestID,
+				"ranges":     map[string]any{},
+			})
 		}
 
 	default:

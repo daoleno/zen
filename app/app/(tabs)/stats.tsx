@@ -1,4 +1,4 @@
-import React, { useCallback, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   Modal,
@@ -293,6 +293,11 @@ export default function StatsScreen() {
   const [loading, setLoading] = useState(true);
   const [expandedSections, setExpandedSections] = useState<Set<string>>(new Set());
   const [selectedDay, setSelectedDay] = useState<DayCell | null>(null);
+  const statsDataRef = useRef<StatsPayload | null>(null);
+
+  useEffect(() => {
+    statsDataRef.current = statsData;
+  }, [statsData]);
 
   const toggleSection = (section: string) => {
     setExpandedSections(prev => {
@@ -315,6 +320,10 @@ export default function StatsScreen() {
     () => Object.values(agentsState.serverConnections).includes('connecting'),
     [agentsState.serverConnections],
   );
+  const connectedServerIdsKey = useMemo(
+    () => connectedServerIds.join('|'),
+    [connectedServerIds],
+  );
 
   useFocusEffect(
     useCallback(() => {
@@ -325,12 +334,14 @@ export default function StatsScreen() {
         retryTimer = null;
         const liveServerIds = connectedServerIds.filter((id) => wsClient.isConnected(id));
         if (liveServerIds.length === 0) {
-          setStatsData(null);
-          setLoading(hasConnectingServer);
+          if (!statsDataRef.current) {
+            setStatsData(null);
+          }
+          setLoading(!statsDataRef.current && hasConnectingServer);
           return;
         }
 
-        setLoading(true);
+        setLoading(!statsDataRef.current);
         Promise.allSettled(liveServerIds.map(id => wsClient.getStats(id)))
           .then(results => {
             if (cancelled) return;
@@ -348,6 +359,7 @@ export default function StatsScreen() {
               return;
             }
 
+            statsDataRef.current = merged;
             setStatsData(merged);
           })
           .catch(() => {})
@@ -362,7 +374,7 @@ export default function StatsScreen() {
         cancelled = true;
         if (retryTimer) clearTimeout(retryTimer);
       };
-    }, [connectedServerIds, hasConnectingServer]),
+    }, [connectedServerIdsKey, hasConnectingServer]),
   );
 
   const data = statsData?.ranges?.[range] ?? EMPTY_RANGE;
@@ -424,7 +436,7 @@ export default function StatsScreen() {
         </View>
       </View>
 
-      {loading ? (
+      {loading && !statsData ? (
         <View style={s.emptyContainer}>
           <ActivityIndicator color={Colors.textSecondary} />
         </View>
@@ -453,10 +465,10 @@ export default function StatsScreen() {
               <Text style={s.label}>Activity</Text>
               {days.length <= 14 ? (
                 <View style={s.barChartFlex}>
-                  {days.map((d, i) => {
+                  {days.map((d) => {
                     const intensity = barIntensity(d.cost, maxDayCost);
                     return (
-                      <TouchableOpacity key={i} style={s.barColFlex} activeOpacity={0.7} onPress={() => setSelectedDay(d)}>
+                      <TouchableOpacity key={d.date} style={s.barColFlex} activeOpacity={0.7} onPress={() => setSelectedDay(d)}>
                         <View style={s.barOuter}>
                           <View
                             style={[s.barInner, {
@@ -473,10 +485,10 @@ export default function StatsScreen() {
               ) : (
                 <ScrollView horizontal showsHorizontalScrollIndicator={false}>
                   <View style={s.barChartScroll}>
-                    {days.map((d, i) => {
+                    {days.map((d) => {
                       const intensity = barIntensity(d.cost, maxDayCost);
                       return (
-                        <TouchableOpacity key={i} style={s.barColFixed} activeOpacity={0.7} onPress={() => setSelectedDay(d)}>
+                        <TouchableOpacity key={d.date} style={s.barColFixed} activeOpacity={0.7} onPress={() => setSelectedDay(d)}>
                           <View style={s.barOuter}>
                             <View
                               style={[s.barInner, {
@@ -499,8 +511,8 @@ export default function StatsScreen() {
           {(data.models?.length ?? 0) > 0 && (
             <View style={s.card}>
               <Text style={s.label}>Models</Text>
-              {(expandedSections.has('models') ? data.models : visibleModels).map((m, i) => (
-                <View key={i} style={s.row}>
+              {(expandedSections.has('models') ? data.models : visibleModels).map((m) => (
+                <View key={m.name} style={s.row}>
                   <View style={s.rowInfo}>
                     <Text style={s.rowName} numberOfLines={1}>{m.name}</Text>
                     <Text style={s.rowMeta}>{fmt(m.totalTokens)} tokens · {m.sessions} sessions</Text>
@@ -519,8 +531,8 @@ export default function StatsScreen() {
           {(data.projects?.length ?? 0) > 0 && (
             <View style={s.card}>
               <Text style={s.label}>Projects</Text>
-              {(expandedSections.has('projects') ? data.projects : visibleProjects).map((p, i) => (
-                <View key={i} style={s.row}>
+              {(expandedSections.has('projects') ? data.projects : visibleProjects).map((p) => (
+                <View key={p.name} style={s.row}>
                   <View style={s.rowInfo}>
                     <Text style={s.rowName} numberOfLines={1}>{p.name}</Text>
                     <Text style={s.rowMeta}>{p.sessions} sessions</Text>
@@ -542,8 +554,8 @@ export default function StatsScreen() {
                 <Text style={s.label}>Skills</Text>
                 <Text style={s.labelCount}>{totalSkillCalls} calls</Text>
               </View>
-              {(expandedSections.has('skills') ? data.skills : visibleSkills).map((sk, i) => (
-                <View key={i} style={s.row}>
+              {(expandedSections.has('skills') ? data.skills : visibleSkills).map((sk) => (
+                <View key={sk.name} style={s.row}>
                   <View style={s.rowInfo}>
                     <Text style={s.skillCmd}>{sk.name}</Text>
                     <Text style={s.rowMeta}>{sk.projects?.join(' · ')}</Text>
@@ -565,8 +577,8 @@ export default function StatsScreen() {
                 <Text style={s.label}>Tools</Text>
                 <Text style={s.labelCount}>{totalToolCalls} calls</Text>
               </View>
-              {(expandedSections.has('tools') ? data.tools : visibleTools).map((t, i) => (
-                <View key={i} style={s.row}>
+              {(expandedSections.has('tools') ? data.tools : visibleTools).map((t) => (
+                <View key={t.name} style={s.row}>
                   <View style={s.rowInfo}>
                     <Text style={s.rowName}>{t.name}</Text>
                   </View>

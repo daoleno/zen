@@ -755,6 +755,8 @@ class MultiServerWebSocketClient {
   }
 
   getStats(serverId: string): Promise<any> {
+    const requestId = `${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
+
     return new Promise((resolve, reject) => {
       const cleanup = () => {
         if (timer) clearTimeout(timer);
@@ -763,6 +765,7 @@ class MultiServerWebSocketClient {
 
       const handleStats = (payload: any) => {
         if (payload.serverId !== serverId) return;
+        if (payload.request_id && payload.request_id !== requestId) return;
         cleanup();
         resolve(payload);
       };
@@ -773,7 +776,7 @@ class MultiServerWebSocketClient {
       }, 15000);
 
       this.on("stats_data", handleStats);
-      this.send(serverId, { type: "get_stats" });
+      this.send(serverId, { type: "get_stats", request_id: requestId });
     });
   }
 
