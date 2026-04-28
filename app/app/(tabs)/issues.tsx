@@ -29,6 +29,9 @@ type IssueSection = {
   key: string;
   projectKey: string;
   title: string;
+  subtitle: string | null;
+  activeCount: number;
+  doneCount: number;
   data: SectionItem[];
 };
 
@@ -121,14 +124,13 @@ export default function IssuesScreen() {
 
       if (items.length === 0) continue;
 
-      const title = showServerPrefix
-        ? `${first.serverName} · ${first.project}`
-        : first.project;
-
       out.push({
         key: projectKey,
         projectKey,
-        title,
+        title: first.project,
+        subtitle: showServerPrefix ? first.serverName : null,
+        activeCount: active.length,
+        doneCount: done.length,
         data: items,
       });
     }
@@ -173,27 +175,32 @@ export default function IssuesScreen() {
     setExpandedDone((prev) => ({ ...prev, [projectKey]: !prev[projectKey] }));
 
   const isEmpty = sections.length === 0;
+  const summary = useMemo(
+    () => issueSummary(Object.values(state.byKey)),
+    [state.byKey],
+  );
 
   return (
     <SafeAreaView style={styles.screen} edges={["top"]}>
       <View style={styles.header}>
-        <Text style={styles.title}>Issues</Text>
+        <View style={styles.headerCopy}>
+          <Text style={styles.title}>Issues</Text>
+          <Text style={styles.subtitle}>{summary}</Text>
+        </View>
         <Pressable
           onPress={onCreatePress}
           hitSlop={8}
           style={({ pressed }) => [styles.addButton, pressed && styles.addButtonPressed]}
         >
-          <Ionicons name="add" size={20} color={Colors.textPrimary} />
+          <Ionicons name="add" size={19} color={Colors.textPrimary} />
         </Pressable>
       </View>
 
       {isEmpty ? (
         <View style={styles.emptyState}>
-          <Text style={styles.emptyGlyph}>☯</Text>
-          <Text style={styles.emptyTitle}>No issues yet</Text>
-          <Text style={styles.emptyBody}>
-            Capture a thought, dispatch to an agent.
-          </Text>
+          <Text style={styles.emptyGlyph}>∷</Text>
+          <Text style={styles.emptyTitle}>No issues</Text>
+          <Text style={styles.emptyBody}>Everything is quiet.</Text>
           <Pressable
             onPress={onCreatePress}
             style={({ pressed }) => [styles.emptyAction, pressed && styles.emptyActionPressed]}
@@ -224,7 +231,9 @@ export default function IssuesScreen() {
                     size={14}
                     color={Colors.textSecondary}
                   />
-                  <Text style={styles.doneToggleText}>Done ({item.count})</Text>
+                  <Text style={styles.doneToggleText}>
+                    {item.expanded ? "hide done" : "show done"} · {item.count}
+                  </Text>
                 </Pressable>
               );
             }
@@ -232,11 +241,29 @@ export default function IssuesScreen() {
             return issue ? <IssueRow issue={issue} /> : null;
           }}
           renderSectionHeader={({ section }) => (
-            <Text style={styles.sectionHeader}>{section.title}</Text>
+            <View style={styles.sectionHeader}>
+              <View style={styles.sectionHeaderCopy}>
+                <View style={styles.sectionPrompt}>
+                  <Text style={styles.sectionTitle} numberOfLines={1}>{section.title}</Text>
+                  <Text style={styles.sectionArrow}>❯</Text>
+                  <Text style={styles.sectionState}>
+                    {section.activeCount}
+                  </Text>
+                </View>
+                {section.subtitle ? (
+                  <Text style={styles.sectionSubtitle} numberOfLines={1}>
+                    {section.subtitle}
+                  </Text>
+                ) : null}
+              </View>
+            </View>
           )}
-          SectionSeparatorComponent={null}
+          SectionSeparatorComponent={() => <View style={styles.sectionSeparator} />}
           stickySectionHeadersEnabled={false}
           contentContainerStyle={styles.listContent}
+          showsVerticalScrollIndicator={false}
+          removeClippedSubviews={false}
+          windowSize={15}
         />
       )}
 
@@ -256,6 +283,33 @@ export default function IssuesScreen() {
       />
     </SafeAreaView>
   );
+}
+
+function issueSummary(issues: Issue[]): string {
+  if (issues.length === 0) {
+    return "quiet";
+  }
+  let open = 0;
+  let sent = 0;
+  let done = 0;
+  const projects = new Set<string>();
+  for (const issue of issues) {
+    projects.add(`${issue.serverId}:${issue.project}`);
+    if (issue.frontmatter.done) {
+      done++;
+    } else if (issue.frontmatter.dispatched) {
+      sent++;
+      open++;
+    } else {
+      open++;
+    }
+  }
+
+  const parts = [`${open} open`];
+  if (sent > 0) parts.push(`${sent} sent`);
+  if (done > 0) parts.push(`${done} done`);
+  parts.push(`${projects.size} workspace${projects.size === 1 ? "" : "s"}`);
+  return parts.join(" · ");
 }
 
 function CreateIssueSheet({
@@ -373,52 +427,115 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "space-between",
-    paddingHorizontal: Spacing.lg,
-    paddingVertical: Spacing.sm,
+    paddingHorizontal: 16,
+    paddingTop: 8,
+    paddingBottom: 10,
+  },
+  headerCopy: {
+    flex: 1,
+    minWidth: 0,
+    paddingRight: Spacing.md,
   },
   title: {
     color: Colors.textPrimary,
     fontFamily: Typography.uiFontMedium,
     fontSize: 22,
+    lineHeight: 28,
+    letterSpacing: 0.6,
+    opacity: 0.9,
+  },
+  subtitle: {
+    marginTop: 2,
+    color: Colors.textSecondary,
+    fontFamily: Typography.uiFont,
+    fontSize: 10,
+    lineHeight: 13,
+    opacity: 0.58,
   },
   addButton: {
-    width: 32,
-    height: 32,
+    width: 34,
+    height: 34,
     alignItems: "center",
     justifyContent: "center",
-    borderRadius: Radii.pill,
-    backgroundColor: Colors.bgSurface,
+    borderRadius: 11,
+    backgroundColor: "rgba(255,255,255,0.05)",
   },
   addButtonPressed: {
-    opacity: 0.7,
+    opacity: 0.82,
   },
   listContent: {
-    paddingBottom: Spacing.xxl,
+    paddingHorizontal: 16,
+    paddingTop: 6,
+    paddingBottom: 28,
   },
   sectionHeader: {
-    paddingHorizontal: Spacing.lg,
-    paddingTop: Spacing.xl,
-    paddingBottom: Spacing.sm,
+    minHeight: 31,
+    paddingTop: 7,
+    paddingBottom: 3,
+    flexDirection: "row",
+    alignItems: "flex-end",
+    gap: 10,
+    backgroundColor: Colors.bgPrimary,
+  },
+  sectionHeaderCopy: {
+    flex: 1,
+    minWidth: 0,
+  },
+  sectionTitle: {
+    maxWidth: "76%",
+    flexShrink: 1,
+    color: "#8FB573",
+    fontFamily: Typography.terminalFont,
+    fontSize: 13,
+    lineHeight: 17,
+    letterSpacing: -0.1,
+  },
+  sectionPrompt: {
+    flexDirection: "row",
+    alignItems: "center",
+    minWidth: 0,
+  },
+  sectionArrow: {
+    marginHorizontal: 7,
+    color: "#E6B450",
+    fontFamily: Typography.terminalFontBold,
+    fontSize: 12,
+    lineHeight: 17,
+  },
+  sectionState: {
     color: Colors.textSecondary,
-    fontFamily: Typography.uiFontMedium,
-    fontSize: 11,
-    letterSpacing: 1.2,
-    textTransform: "uppercase",
+    fontFamily: Typography.terminalFont,
+    fontSize: 10,
+    lineHeight: 14,
+    opacity: 0.5,
+  },
+  sectionSubtitle: {
+    marginTop: 2,
+    color: Colors.textSecondary,
+    fontFamily: Typography.uiFont,
+    fontSize: 10,
+    lineHeight: 12,
+    opacity: 0.48,
+  },
+  sectionSeparator: {
+    height: 4,
   },
   doneToggle: {
     flexDirection: "row",
     alignItems: "center",
     gap: Spacing.sm,
-    paddingHorizontal: Spacing.lg,
-    height: 36,
+    height: 28,
+    borderTopWidth: StyleSheet.hairlineWidth,
+    borderTopColor: "rgba(235,225,207,0.045)",
   },
   doneTogglePressed: {
     opacity: 0.7,
   },
   doneToggleText: {
     color: Colors.textSecondary,
-    fontFamily: Typography.uiFont,
-    fontSize: 12,
+    fontFamily: Typography.terminalFont,
+    fontSize: 10,
+    opacity: 0.56,
   },
   emptyState: {
     flex: 1,
@@ -428,26 +545,27 @@ const styles = StyleSheet.create({
   },
   emptyGlyph: {
     color: Colors.textSecondary,
-    fontSize: 48,
-    marginBottom: Spacing.lg,
-    opacity: 0.5,
+    fontSize: 34,
+    marginBottom: 12,
+    opacity: 0.38,
   },
   emptyTitle: {
     color: Colors.textPrimary,
     fontFamily: Typography.uiFontMedium,
-    fontSize: 17,
+    fontSize: 16,
   },
   emptyBody: {
     marginTop: Spacing.sm,
     color: Colors.textSecondary,
     fontFamily: Typography.uiFont,
-    fontSize: 13,
+    fontSize: 12,
     textAlign: "center",
+    opacity: 0.58,
   },
   emptyAction: {
-    marginTop: Spacing.xl,
-    paddingHorizontal: Spacing.xl,
-    paddingVertical: Spacing.md,
+    marginTop: 18,
+    paddingHorizontal: 14,
+    paddingVertical: 8,
     borderRadius: Radii.pill,
     backgroundColor: Colors.accent,
   },
@@ -457,7 +575,7 @@ const styles = StyleSheet.create({
   emptyActionText: {
     color: Colors.bgPrimary,
     fontFamily: Typography.uiFontMedium,
-    fontSize: 14,
+    fontSize: 13,
   },
   sheetRoot: {
     flex: 1,
@@ -465,23 +583,23 @@ const styles = StyleSheet.create({
   },
   sheetBackdrop: {
     ...StyleSheet.absoluteFillObject,
-    backgroundColor: "rgba(0,0,0,0.58)",
+    backgroundColor: "rgba(0,0,0,0.66)",
   },
   sheetCard: {
     marginHorizontal: Spacing.md,
     marginBottom: Spacing.md,
-    padding: Spacing.lg,
-    borderRadius: Radii.lg,
-    backgroundColor: Colors.bgSurface,
+    padding: 20,
+    borderRadius: 20,
+    backgroundColor: "#15151C",
     borderWidth: StyleSheet.hairlineWidth,
-    borderColor: Colors.bgElevated,
+    borderColor: "rgba(235,225,207,0.08)",
   },
   sheetHandle: {
     alignSelf: "center",
     width: 40,
-    height: 4,
-    borderRadius: 2,
-    backgroundColor: Colors.bgElevated,
+    height: 3,
+    borderRadius: 1.5,
+    backgroundColor: "rgba(235,225,207,0.16)",
     marginBottom: Spacing.md,
   },
   sheetTitle: {
@@ -504,8 +622,8 @@ const styles = StyleSheet.create({
     gap: Spacing.sm,
   },
   serverChip: {
-    paddingHorizontal: Spacing.md,
-    paddingVertical: Spacing.sm,
+    paddingHorizontal: 10,
+    paddingVertical: 6,
     borderRadius: Radii.pill,
     backgroundColor: Colors.bgElevated,
   },
@@ -515,7 +633,7 @@ const styles = StyleSheet.create({
   serverChipText: {
     color: Colors.textPrimary,
     fontFamily: Typography.uiFont,
-    fontSize: 13,
+    fontSize: 12,
   },
   serverChipTextSelected: {
     color: Colors.bgPrimary,
@@ -525,7 +643,7 @@ const styles = StyleSheet.create({
     paddingHorizontal: Spacing.md,
     paddingVertical: Spacing.md,
     borderRadius: Radii.md,
-    backgroundColor: Colors.bgElevated,
+    backgroundColor: "rgba(255,255,255,0.045)",
     color: Colors.textPrimary,
     fontFamily: Typography.uiFont,
     fontSize: 15,
@@ -533,12 +651,13 @@ const styles = StyleSheet.create({
   sheetActions: {
     flexDirection: "row",
     justifyContent: "flex-end",
-    gap: Spacing.sm,
+    gap: 8,
     marginTop: Spacing.xl,
   },
   sheetButton: {
-    paddingHorizontal: Spacing.lg,
-    paddingVertical: Spacing.md,
+    minHeight: 34,
+    paddingHorizontal: 13,
+    paddingVertical: 8,
     borderRadius: Radii.md,
   },
   sheetButtonPressed: {
@@ -556,7 +675,7 @@ const styles = StyleSheet.create({
   sheetButtonText: {
     color: Colors.textPrimary,
     fontFamily: Typography.uiFontMedium,
-    fontSize: 14,
+    fontSize: 13,
   },
   sheetButtonTextPrimary: {
     color: Colors.bgPrimary,

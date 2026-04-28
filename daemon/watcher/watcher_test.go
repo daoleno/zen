@@ -47,3 +47,19 @@ func TestBaseSessionNameHandlesStableWindowIDs(t *testing.T) {
 		t.Fatalf("baseSessionName() = %q, want %q", got, "main")
 	}
 }
+
+func TestFormatAgentNamePrefersWindowNameAndKeepsTargetSuffix(t *testing.T) {
+	got := formatAgentName("Implement issue titles", "main:@42")
+	want := "Implement issue titles (main:@42)"
+	if got != want {
+		t.Fatalf("formatAgentName() = %q, want %q", got, want)
+	}
+}
+
+func TestFormatAgentNameFallsBackToTargetWhenWindowNameMissing(t *testing.T) {
+	got := formatAgentName("", "main:@42")
+	want := "main:@42"
+	if got != want {
+		t.Fatalf("formatAgentName() = %q, want %q", got, want)
+	}
+}

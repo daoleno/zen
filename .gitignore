@@ -38,6 +38,7 @@ app/android/
 app/ios/
 
 # Expo
+.expo/
 app/.expo/
 
 # Bun

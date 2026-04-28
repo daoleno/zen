@@ -1,5 +1,5 @@
 import React, { forwardRef, useCallback, useImperativeHandle, useRef } from 'react';
-import { TextInput, StyleSheet } from 'react-native';
+import { Platform, TextInput, StyleSheet } from 'react-native';
 import { applyCtrlModifier } from './terminalControl';
 import {
   diffTerminalInput,
@@ -144,7 +144,11 @@ export const TerminalInputHandler = forwardRef<TerminalInputHandleRef, TerminalI
         autoCapitalize="none"
         autoComplete="off"
         spellCheck={false}
-        keyboardType="default"
+        keyboardType={Platform.OS === 'android' ? 'visible-password' : 'default'}
+        disableFullscreenUI
+        importantForAutofill="no"
+        selectTextOnFocus={false}
+        underlineColorAndroid="transparent"
         blurOnSubmit={false}
         editable
         onChangeText={handleChangeText}
@@ -170,9 +174,9 @@ const styles = StyleSheet.create({
     position: 'absolute',
     width: 1,
     height: 1,
-    opacity: 0.01,
-    left: 0,
-    top: 0,
+    opacity: 0,
+    left: -1000,
+    top: -1000,
     color: 'transparent',
     backgroundColor: 'transparent',
   },

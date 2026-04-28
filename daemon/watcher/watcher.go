@@ -116,9 +116,12 @@ func (w *Watcher) poll() {
 		if !exists {
 			agent = &classifier.Agent{
 				ID:   win.target,
-				Name: win.name + " (" + win.target + ")",
+				Name: formatAgentName(win.name, win.target),
 			}
 			w.agents[win.target] = agent
+		}
+		if nextName := formatAgentName(win.name, win.target); nextName != "" {
+			agent.Name = nextName
 		}
 		agent.Cwd = win.cwd
 		agent.Project = projectNameFromPath(win.cwd)
@@ -379,6 +382,19 @@ func buildWindowCommandForShell(shellPath, command string) string {
 		return "exec " + quotedShell + " -i -l"
 	}
 	return "exec " + quotedShell + " -i -l -c " + shellQuote(command)
+}
+
+func formatAgentName(windowName, target string) string {
+	trimmedName := strings.TrimSpace(windowName)
+	trimmedTarget := strings.TrimSpace(target)
+	switch {
+	case trimmedName != "" && trimmedTarget != "":
+		return trimmedName + " (" + trimmedTarget + ")"
+	case trimmedName != "":
+		return trimmedName
+	default:
+		return trimmedTarget
+	}
 }
 
 func tmuxWindowEnvironment(base []string) []string {

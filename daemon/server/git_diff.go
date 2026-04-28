@@ -231,10 +231,6 @@ func (s *Server) buildGitDiffPatch(targetID, cwd, path string) (gitDiffPatchPayl
 		}
 	}
 
-	if len(sections) == 0 {
-		return gitDiffPatchPayload{}, fmt.Errorf("no diff available for %s", targetPath)
-	}
-
 	return gitDiffPatchPayload{
 		RepoRoot: repoRoot,
 		Path:     file.Path,

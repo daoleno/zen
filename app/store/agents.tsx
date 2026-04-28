@@ -1,6 +1,7 @@
 import React, { createContext, useContext, useReducer, ReactNode } from 'react';
 import { AgentStatus } from '../constants/tokens';
 import type { ConnectionIssue } from '../services/connectionIssue';
+import type { ServerLatencySample } from '../services/serverLatency';
 import { makeSessionKey } from '../services/sessionKeys';
 
 export interface Agent {
@@ -25,6 +26,7 @@ interface State {
   agents: Agent[];
   serverConnections: Record<string, ConnectionState>;
   serverConnectionIssues: Record<string, ConnectionIssue | null>;
+  serverLatencyById: Record<string, ServerLatencySample | undefined>;
   hydratedServers: Record<string, boolean>;
 }
 
@@ -58,12 +60,14 @@ type Action =
   | { type: 'REMOVE_AGENT'; serverId: string; agent_id: string }
   | { type: 'SET_SERVER_CONNECTION_STATE'; serverId: string; connectionState: ConnectionState }
   | { type: 'SET_SERVER_CONNECTION_ISSUE'; serverId: string; issue: ConnectionIssue | null }
+  | { type: 'SET_SERVER_LATENCY'; serverId: string; sample: ServerLatencySample }
   | { type: 'REMOVE_SERVER'; serverId: string };
 
 const initialState: State = {
   agents: [],
   serverConnections: {},
   serverConnectionIssues: {},
+  serverLatencyById: {},
   hydratedServers: {},
 };
 
@@ -123,6 +127,14 @@ function reducer(state: State, action: Action): State {
           [action.serverId]: action.issue,
         },
       };
+    case 'SET_SERVER_LATENCY':
+      return {
+        ...state,
+        serverLatencyById: {
+          ...state.serverLatencyById,
+          [action.serverId]: action.sample,
+        },
+      };
     case 'REMOVE_SERVER':
       return {
         ...state,
@@ -132,6 +144,9 @@ function reducer(state: State, action: Action): State {
         ),
         serverConnectionIssues: Object.fromEntries(
           Object.entries(state.serverConnectionIssues).filter(([serverId]) => serverId !== action.serverId),
+        ),
+        serverLatencyById: Object.fromEntries(
+          Object.entries(state.serverLatencyById).filter(([serverId]) => serverId !== action.serverId),
         ),
         hydratedServers: Object.fromEntries(
           Object.entries(state.hydratedServers).filter(([serverId]) => serverId !== action.serverId),

@@ -11,6 +11,7 @@ import {
 import { useFocusEffect } from 'expo-router';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Colors, Typography } from '../../constants/tokens';
+import { useAgents } from '../../store/agents';
 import { wsClient } from '../../services/websocket';
 
 // ── Types (mirror daemon/stats/types.go) ───────────────────
@@ -106,6 +107,8 @@ const INTENSITY_COLORS = [
 ];
 
 const MAX_LIST_ITEMS = 5;
+const EMPTY_STATS_RETRY_MS = 700;
+const EMPTY_STATS_MAX_RETRIES = 3;
 
 // ── Helpers ────────────────────────────────────────────────
 
@@ -284,6 +287,7 @@ function hasRangeStats(data?: RangeData | null): boolean {
 // ── Component ──────────────────────────────────────────────
 
 export default function StatsScreen() {
+  const { state: agentsState } = useAgents();
   const [range, setRange] = useState<TimeRange>('week');
   const [statsData, setStatsData] = useState<StatsPayload | null>(null);
   const [loading, setLoading] = useState(true);
@@ -299,21 +303,66 @@ export default function StatsScreen() {
     });
   };
 
+  const connectedServerIds = useMemo(
+    () =>
+      Object.entries(agentsState.serverConnections)
+        .filter(([, state]) => state === 'connected')
+        .map(([serverId]) => serverId)
+        .sort(),
+    [agentsState.serverConnections],
+  );
+  const hasConnectingServer = useMemo(
+    () => Object.values(agentsState.serverConnections).includes('connecting'),
+    [agentsState.serverConnections],
+  );
+
   useFocusEffect(
     useCallback(() => {
-      const serverIds = wsClient.connectedServerIds();
-      if (serverIds.length === 0) { setStatsData(null); setLoading(false); return; }
-      setLoading(true);
-      Promise.allSettled(serverIds.map(id => wsClient.getStats(id)))
-        .then(results => {
-          const payloads = results
-            .filter((r): r is PromiseFulfilledResult<StatsPayload> => r.status === 'fulfilled')
-            .map(r => r.value);
-          setStatsData(mergeStatsPayloads(payloads));
-        })
-        .catch(() => {})
-        .finally(() => setLoading(false));
-    }, []),
+      let cancelled = false;
+      let retryTimer: ReturnType<typeof setTimeout> | null = null;
+
+      const loadStats = (attempt: number) => {
+        retryTimer = null;
+        const liveServerIds = connectedServerIds.filter((id) => wsClient.isConnected(id));
+        if (liveServerIds.length === 0) {
+          setStatsData(null);
+          setLoading(hasConnectingServer);
+          return;
+        }
+
+        setLoading(true);
+        Promise.allSettled(liveServerIds.map(id => wsClient.getStats(id)))
+          .then(results => {
+            if (cancelled) return;
+            const payloads = results
+              .filter((r): r is PromiseFulfilledResult<StatsPayload> => r.status === 'fulfilled')
+              .map(r => r.value);
+            const merged = mergeStatsPayloads(payloads);
+            const rangesReady = Object.keys(merged?.ranges ?? {}).length > 0;
+
+            if (!rangesReady && attempt < EMPTY_STATS_MAX_RETRIES) {
+              retryTimer = setTimeout(
+                () => loadStats(attempt + 1),
+                EMPTY_STATS_RETRY_MS * (attempt + 1),
+              );
+              return;
+            }
+
+            setStatsData(merged);
+          })
+          .catch(() => {})
+          .finally(() => {
+            if (!cancelled && !retryTimer) setLoading(false);
+          });
+      };
+
+      loadStats(0);
+
+      return () => {
+        cancelled = true;
+        if (retryTimer) clearTimeout(retryTimer);
+      };
+    }, [connectedServerIds, hasConnectingServer]),
   );
 
   const data = statsData?.ranges?.[range] ?? EMPTY_RANGE;

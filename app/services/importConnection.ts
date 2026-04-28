@@ -1,5 +1,10 @@
 import { parseConnectLink } from "./connection";
-import { markOnboarded, saveServer, type StoredServer } from "./storage";
+import {
+  markOnboarded,
+  saveServer,
+  setServerAutoConnect,
+  type StoredServer,
+} from "./storage";
 import { wsClient } from "./websocket";
 import { enrollWithDaemon } from "./pairing";
 
@@ -35,6 +40,7 @@ export async function importConnection(
   });
 
   await markOnboarded();
+  await setServerAutoConnect(savedServer.id, true);
   wsClient.connectServer(savedServer);
   await options.onImported?.(savedServer);
   return savedServer;

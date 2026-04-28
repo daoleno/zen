@@ -2,17 +2,21 @@ import type { Agent } from '../store/agents';
 import { isClaudeCommand, isCodexCommand } from './agentCommands';
 
 export type AgentKind = 'terminal' | 'claude' | 'codex';
+export type AgentTitleSource = 'alias' | 'explicit_name' | 'default';
 
 export type PresentedAgent = {
   kind: AgentKind;
   title: string;
   shortTitle: string;
   subtitle: string;
+  typeLabel: string;
   cwdBase: string;
+  titleSource: AgentTitleSource;
 };
 
 export function presentAgent(agent: Pick<Agent, 'name' | 'project' | 'cwd' | 'command' | 'summary' | 'last_output_lines'>, alias?: string): PresentedAgent {
   const kind = detectAgentKind(agent);
+  const label = typeLabel(kind);
   const cwd = normalize(agent.cwd);
   const cwdBase = basename(cwd);
   const project = normalize(agent.project);
@@ -26,19 +30,24 @@ export function presentAgent(agent: Pick<Agent, 'name' | 'project' | 'cwd' | 'co
       kind,
       title: explicitAlias,
       shortTitle: explicitAlias,
-      subtitle: buildSubtitle(kind, cwd || project),
+      subtitle: buildSubtitle(label, cwd || project),
+      typeLabel: label,
       cwdBase,
+      titleSource: 'alias',
     };
   }
 
-  const title = shouldPreferGeneratedTitle(cleanName, kind) ? generatedTitle : (cleanName || generatedTitle);
+  const usesDefaultTitle = shouldPreferGeneratedTitle(cleanName, kind);
+  const title = usesDefaultTitle ? generatedTitle : (cleanName || generatedTitle);
 
   return {
     kind,
     title,
-    shortTitle: title,
-    subtitle: buildSubtitle(kind, location || cwd),
+    shortTitle: usesDefaultTitle ? shortDefaultTitle(kind) : title,
+    subtitle: buildSubtitle(label, location || cwd),
+    typeLabel: label,
     cwdBase,
+    titleSource: usesDefaultTitle ? 'default' : 'explicit_name',
   };
 }
 
@@ -95,11 +104,22 @@ function normalize(value?: string): string {
 function defaultTitle(kind: AgentKind): string {
   switch (kind) {
     case 'claude':
-      return 'Claude Code';
+      return 'Claude Code Session';
+    case 'codex':
+      return 'Codex Session';
+    default:
+      return 'Shell Session';
+  }
+}
+
+function shortDefaultTitle(kind: AgentKind): string {
+  switch (kind) {
+    case 'claude':
+      return 'Claude';
     case 'codex':
       return 'Codex';
     default:
-      return 'Terminal';
+      return 'Shell';
   }
 }
 
@@ -114,6 +134,6 @@ function typeLabel(kind: AgentKind): string {
   }
 }
 
-function buildSubtitle(kind: AgentKind, location: string): string {
-  return [typeLabel(kind), location].filter(Boolean).join(' · ');
+function buildSubtitle(label: string, location: string): string {
+  return [label, location].filter(Boolean).join(' · ');
 }

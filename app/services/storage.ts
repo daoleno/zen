@@ -10,6 +10,7 @@ import {
 
 const KEYS = {
   servers: "zen:v3:servers",
+  disabledServers: "zen:v1:disabled_servers",
   onboarded: "zen:onboarded",
   terminalTheme: "zen:terminal_theme",
   inboxViewMode: "zen:inbox_view_mode",
@@ -128,6 +129,7 @@ export async function removeServer(serverID: string): Promise<void> {
   const servers = await getServers();
   const nextServers = servers.filter((server) => server.id !== serverID);
   await AsyncStorage.setItem(KEYS.servers, JSON.stringify(nextServers));
+  await setServerAutoConnect(serverID, true);
   await pruneTerminalTabsForServers([serverID]);
 }
 
@@ -144,6 +146,39 @@ export async function isOnboarded(): Promise<boolean> {
 
 export async function markOnboarded(): Promise<void> {
   await AsyncStorage.setItem(KEYS.onboarded, "true");
+}
+
+export async function getDisabledServerIds(): Promise<string[]> {
+  const value = await AsyncStorage.getItem(KEYS.disabledServers);
+  if (!value) return [];
+
+  try {
+    return normalizeIdList(JSON.parse(value));
+  } catch {
+    return [];
+  }
+}
+
+export async function setServerAutoConnect(
+  serverId: string,
+  enabled: boolean,
+): Promise<void> {
+  const normalizedId = serverId.trim();
+  if (!normalizedId) {
+    return;
+  }
+
+  const current = await getDisabledServerIds();
+  const next = enabled
+    ? current.filter((id) => id !== normalizedId)
+    : normalizeIdList([...current, normalizedId]);
+
+  if (next.length === 0) {
+    await AsyncStorage.removeItem(KEYS.disabledServers);
+    return;
+  }
+
+  await AsyncStorage.setItem(KEYS.disabledServers, JSON.stringify(next));
 }
 
 export async function getTerminalTheme(): Promise<StoredTerminalTheme> {

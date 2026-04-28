@@ -13,14 +13,17 @@ import (
 const (
 	pricingCacheRelPath = ".zen/pricing-cache.json"
 	pricingSyncEvery    = 7 * 24 * time.Hour
+	pricingCacheVersion = 2
 )
 
 var (
 	pricingSyncURL    = "https://models.dev/api.json"
 	pricingHTTPClient = http.DefaultClient
+	pricingProviders  = map[string]bool{"anthropic": true, "openai": true}
 )
 
 type pricingCacheFile struct {
+	Version   int                          `json:"version,omitempty"`
 	UpdatedAt time.Time                    `json:"updatedAt"`
 	Source    string                       `json:"source"`
 	Models    map[string]pricingCacheEntry `json:"models"`
@@ -93,7 +96,11 @@ func loadPricingCache(home string) {
 	}
 	prices.mu.Lock()
 	prices.models = mergePricingMaps(staticPricing, loaded)
-	prices.updatedAt = cache.UpdatedAt
+	if cache.Version == pricingCacheVersion {
+		prices.updatedAt = cache.UpdatedAt
+	} else {
+		prices.updatedAt = time.Time{}
+	}
 	prices.source = cache.Source
 	prices.mu.Unlock()
 }
@@ -130,6 +137,7 @@ func syncPricing(ctx context.Context, home string) error {
 
 	var payload map[string]struct {
 		Models map[string]struct {
+			Name string             `json:"name"`
 			Cost map[string]float64 `json:"cost"`
 		} `json:"models"`
 	}
@@ -139,6 +147,9 @@ func syncPricing(ctx context.Context, home string) error {
 
 	updated := clonePricingMap(staticPricing)
 	for provider, providerData := range payload {
+		if !pricingProviders[provider] {
+			continue
+		}
 		for modelID, modelData := range providerData.Models {
 			cost := modelData.Cost
 			if len(cost) == 0 {
@@ -151,7 +162,9 @@ func syncPricing(ctx context.Context, home string) error {
 			}
 			current, ok := updated[localID]
 			if !ok {
-				continue
+				current = modelPricing{displayName: modelDisplayName(localID, modelData.Name)}
+			} else if modelData.Name != "" {
+				current.displayName = modelData.Name
 			}
 			if v, ok := cost["input"]; ok {
 				current.input = v
@@ -191,12 +204,20 @@ func syncPricing(ctx context.Context, home string) error {
 			}
 		}
 		_ = persistPricingCache(home, pricingCacheFile{
+			Version:   pricingCacheVersion,
 			UpdatedAt: now,
 			Source:    "models.dev",
 			Models:    cacheModels,
 		})
 	}
 	return nil
+}
+
+func modelDisplayName(modelID, sourceName string) string {
+	if sourceName != "" {
+		return sourceName
+	}
+	return modelID
 }
 
 func persistPricingCache(home string, cache pricingCacheFile) error {

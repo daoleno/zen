@@ -11,7 +11,7 @@ import {
 } from "react-native";
 import { useLocalSearchParams, useRouter } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
-import { SafeAreaView } from "react-native-safe-area-context";
+import { SafeAreaView, useSafeAreaInsets } from "react-native-safe-area-context";
 import { Colors, Radii, Spacing, Typography } from "../../constants/tokens";
 import { useIssues, type Issue } from "../../store/issues";
 import { useAgents } from "../../store/agents";
@@ -24,9 +24,11 @@ import {
   MentionPicker,
   type MentionCandidate,
 } from "../../components/issue/MentionPicker";
+import { relativeTime } from "../../components/issue/IssueRow";
 import { wsClient } from "../../services/websocket";
 
 const AUTOSAVE_DELAY_MS = 600;
+type IconName = React.ComponentProps<typeof Ionicons>["name"];
 
 function issueKey(serverId: string, id: string) {
   return `${serverId}:${id}`;
@@ -41,6 +43,7 @@ function agentRole(command?: string) {
 export default function IssueDetailScreen() {
   const params = useLocalSearchParams<{ id?: string; serverId?: string }>();
   const router = useRouter();
+  const insets = useSafeAreaInsets();
   const { state } = useIssues();
   const { state: agentsState } = useAgents();
 
@@ -238,7 +241,10 @@ export default function IssueDetailScreen() {
 
   const done = !!issue.frontmatter.done;
   const dispatched = !!issue.frontmatter.dispatched;
-  const primaryLabel = dispatched ? "Redispatch" : "Send";
+  const primaryLabel = dispatched ? "Resend" : "Send";
+  const draftTitle = titleFromMarkdown(draftBody) || issue.title || "Untitled issue";
+  const status = issueStatusInfo(done, dispatched);
+  const updatedLabel = relativeTime(issue.mtime || issue.frontmatter.created);
 
   return (
     <SafeAreaView style={styles.screen} edges={["top"]}>
@@ -256,7 +262,7 @@ export default function IssueDetailScreen() {
           </Pressable>
 
           <View style={styles.headerCenter}>
-            <Text style={styles.project} numberOfLines={1}>
+            <Text style={styles.headerTitle} numberOfLines={1}>
               {issue.project}
             </Text>
           </View>
@@ -268,6 +274,24 @@ export default function IssueDetailScreen() {
           >
             <Ionicons name="ellipsis-horizontal" size={20} color={Colors.textPrimary} />
           </Pressable>
+        </View>
+
+        <View style={styles.context}>
+          <View style={styles.statusRow}>
+            <StatusPill
+              icon={status.icon}
+              label={status.label}
+              color={status.color}
+            />
+            <Text style={styles.contextPath} numberOfLines={1}>
+              {issue.serverName ? `${issue.serverName} · ${issue.project}` : issue.project}
+              {updatedLabel ? ` · ${updatedLabel}` : ""}
+            </Text>
+          </View>
+
+          <Text style={styles.issueTitle} numberOfLines={2}>
+            {draftTitle}
+          </Text>
         </View>
 
         {remoteBanner ? (
@@ -291,21 +315,23 @@ export default function IssueDetailScreen() {
           </Pressable>
         ) : null}
 
-        <MarkdownEditor
-          ref={editorRef}
-          value={draftBody}
-          onChange={(next) => {
-            setDraftBody(next);
-            setDirty(true);
-          }}
-          onActiveMentionChange={setMention}
-          onBlur={() => {
-            if (dirty && !remoteBanner) {
-              void saveIssue();
-            }
-          }}
-          autoFocus
-        />
+        <View style={styles.editorShell}>
+          <MarkdownEditor
+            ref={editorRef}
+            value={draftBody}
+            onChange={(next) => {
+              setDraftBody(next);
+              setDirty(true);
+            }}
+            onActiveMentionChange={setMention}
+            onBlur={() => {
+              if (dirty && !remoteBanner) {
+                void saveIssue();
+              }
+            }}
+            autoFocus
+          />
+        </View>
 
         {mention ? (
           <MentionPicker
@@ -315,35 +341,46 @@ export default function IssueDetailScreen() {
           />
         ) : null}
 
-        <View style={styles.footer}>
-          {saving ? (
-            <View style={styles.savingTag}>
-              <View style={styles.savingDot} />
-              <Text style={styles.savingText}>Saving…</Text>
-            </View>
-          ) : dirty ? (
-            <Text style={styles.savingText}>Unsaved</Text>
-          ) : (
-            <Text style={styles.savedText}>Saved</Text>
-          )}
-          <Pressable
-            onPress={() => {
-              void (dispatched ? handleRedispatch() : handleSend());
-            }}
-            disabled={saving}
-            style={({ pressed }) => [
-              styles.primaryButton,
-              saving && styles.primaryButtonDisabled,
-              pressed && styles.primaryButtonPressed,
-            ]}
-          >
-            <Ionicons
-              name={dispatched ? "refresh" : "paper-plane"}
-              size={15}
-              color={Colors.bgPrimary}
-            />
-            <Text style={styles.primaryButtonText}>{primaryLabel}</Text>
-          </Pressable>
+        <View style={[styles.footer, { paddingBottom: Math.max(insets.bottom, Spacing.md) }]}>
+          <SaveState saving={saving} dirty={dirty} />
+          <View style={styles.footerActions}>
+            <Pressable
+              onPress={() => {
+                void handleToggleDone();
+              }}
+              disabled={saving}
+              style={({ pressed }) => [
+                styles.secondaryButton,
+                saving && styles.primaryButtonDisabled,
+                pressed && styles.secondaryButtonPressed,
+              ]}
+            >
+              <Ionicons
+                name={done ? "return-up-back-outline" : "checkmark"}
+                size={14}
+                color={Colors.textPrimary}
+              />
+              <Text style={styles.secondaryButtonText}>{done ? "Reopen" : "Done"}</Text>
+            </Pressable>
+            <Pressable
+              onPress={() => {
+                void (dispatched ? handleRedispatch() : handleSend());
+              }}
+              disabled={saving}
+              style={({ pressed }) => [
+                styles.primaryButton,
+                saving && styles.primaryButtonDisabled,
+                pressed && styles.primaryButtonPressed,
+              ]}
+            >
+              <Ionicons
+                name={dispatched ? "refresh" : "paper-plane"}
+                size={14}
+                color={Colors.bgPrimary}
+              />
+              <Text style={styles.primaryButtonText}>{primaryLabel}</Text>
+            </Pressable>
+          </View>
         </View>
       </KeyboardAvoidingView>
 
@@ -361,6 +398,64 @@ export default function IssueDetailScreen() {
         }}
       />
     </SafeAreaView>
+  );
+}
+
+function StatusPill({
+  icon,
+  label,
+  color,
+}: {
+  icon: IconName;
+  label: string;
+  color: string;
+}) {
+  return (
+    <View style={styles.statusPill}>
+      <Ionicons name={icon} size={13} color={color} />
+      <Text style={[styles.statusPillText, { color }]}>{label}</Text>
+    </View>
+  );
+}
+
+function titleFromMarkdown(value: string): string {
+  const firstHeading = value
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .find((line) => line.length > 0);
+  if (!firstHeading) {
+    return "";
+  }
+  return firstHeading.replace(/^#{1,6}\s+/, "").trim();
+}
+
+function issueStatusInfo(done: boolean, dispatched: boolean): {
+  icon: IconName;
+  label: string;
+  color: string;
+} {
+  if (done) {
+    return { icon: "checkmark-circle", label: "Done", color: Colors.textSecondary };
+  }
+  if (dispatched) {
+    return { icon: "paper-plane", label: "Sent", color: Colors.statusRunning };
+  }
+  return { icon: "ellipse", label: "Open", color: Colors.accent };
+}
+
+function SaveState({ saving, dirty }: { saving: boolean; dirty: boolean }) {
+  const label = saving ? "Saving" : dirty ? "Unsaved" : "Saved";
+  return (
+    <View style={styles.savingTag}>
+      <View style={[
+        styles.savingDot,
+        dirty && !saving && styles.unsavedDot,
+        !dirty && !saving && styles.savedDot,
+      ]} />
+      <Text style={[styles.savingText, !dirty && !saving && styles.savedText]}>
+        {label}
+      </Text>
+    </View>
   );
 }
 
@@ -431,8 +526,9 @@ const styles = StyleSheet.create({
   header: {
     flexDirection: "row",
     alignItems: "center",
-    paddingHorizontal: Spacing.sm,
-    paddingVertical: Spacing.sm,
+    paddingHorizontal: 10,
+    paddingTop: 3,
+    paddingBottom: 5,
   },
   iconButton: {
     width: 36,
@@ -442,16 +538,63 @@ const styles = StyleSheet.create({
     borderRadius: Radii.pill,
   },
   iconButtonPressed: {
-    backgroundColor: Colors.bgSurface,
+    backgroundColor: "rgba(255,255,255,0.05)",
   },
   headerCenter: {
     flex: 1,
     alignItems: "center",
+    minWidth: 0,
   },
-  project: {
+  headerTitle: {
     color: Colors.textPrimary,
     fontFamily: Typography.uiFontMedium,
-    fontSize: 15,
+    fontSize: 14,
+    lineHeight: 18,
+    opacity: 0.86,
+  },
+  context: {
+    paddingHorizontal: 16,
+    paddingTop: 6,
+    paddingBottom: 11,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: "rgba(235,225,207,0.055)",
+  },
+  statusRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: Spacing.sm,
+  },
+  statusPill: {
+    height: 22,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 5,
+    paddingHorizontal: 8,
+    borderRadius: Radii.pill,
+    backgroundColor: "rgba(255,255,255,0.035)",
+  },
+  statusPillText: {
+    fontFamily: Typography.terminalFont,
+    fontSize: 10,
+    lineHeight: 13,
+    textTransform: "uppercase",
+  },
+  contextPath: {
+    flex: 1,
+    color: Colors.textSecondary,
+    fontFamily: Typography.uiFont,
+    fontSize: 11,
+    lineHeight: 15,
+    opacity: 0.56,
+  },
+  issueTitle: {
+    marginTop: 9,
+    color: Colors.textPrimary,
+    fontFamily: Typography.uiFontMedium,
+    fontSize: 20,
+    lineHeight: 26,
+    letterSpacing: -0.2,
+    opacity: 0.94,
   },
   banner: {
     flexDirection: "row",
@@ -462,32 +605,58 @@ const styles = StyleSheet.create({
     paddingHorizontal: Spacing.md,
     paddingVertical: Spacing.sm,
     borderRadius: Radii.md,
-    backgroundColor: Colors.bgElevated,
+    backgroundColor: "rgba(255,183,77,0.14)",
   },
   bannerText: {
     color: Colors.textPrimary,
     fontFamily: Typography.uiFont,
     fontSize: 13,
   },
+  editorShell: {
+    flex: 1,
+    marginHorizontal: 10,
+    marginTop: 8,
+    marginBottom: 8,
+    borderRadius: 14,
+    overflow: "hidden",
+    backgroundColor: "rgba(255,255,255,0.018)",
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: "rgba(235,225,207,0.052)",
+  },
   footer: {
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "space-between",
-    paddingHorizontal: Spacing.lg,
-    paddingVertical: Spacing.md,
+    gap: Spacing.sm,
+    paddingHorizontal: 14,
+    paddingTop: 8,
     borderTopWidth: StyleSheet.hairlineWidth,
-    borderTopColor: Colors.bgElevated,
+    borderTopColor: "rgba(235,225,207,0.055)",
+    backgroundColor: "rgba(15,15,20,0.98)",
+  },
+  footerActions: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+    flexShrink: 0,
   },
   savingTag: {
     flexDirection: "row",
     alignItems: "center",
     gap: Spacing.xs,
+    flexShrink: 1,
   },
   savingDot: {
     width: 6,
     height: 6,
     borderRadius: 3,
     backgroundColor: Colors.statusUnknown,
+  },
+  unsavedDot: {
+    backgroundColor: Colors.statusUnknown,
+  },
+  savedDot: {
+    backgroundColor: Colors.statusDone,
   },
   savingText: {
     color: Colors.textSecondary,
@@ -498,14 +667,32 @@ const styles = StyleSheet.create({
     color: Colors.textSecondary,
     fontFamily: Typography.uiFont,
     fontSize: 12,
-    opacity: 0.5,
+    opacity: 0.46,
   },
-  primaryButton: {
+  secondaryButton: {
+    height: 34,
     flexDirection: "row",
     alignItems: "center",
-    gap: Spacing.sm,
-    paddingHorizontal: Spacing.lg,
-    paddingVertical: Spacing.md,
+    gap: 5,
+    paddingHorizontal: 10,
+    borderRadius: Radii.pill,
+    backgroundColor: "rgba(255,255,255,0.052)",
+  },
+  secondaryButtonPressed: {
+    opacity: 0.78,
+  },
+  secondaryButtonText: {
+    color: Colors.textPrimary,
+    fontFamily: Typography.uiFontMedium,
+    fontSize: 12,
+    lineHeight: 16,
+  },
+  primaryButton: {
+    height: 34,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+    paddingHorizontal: 12,
     borderRadius: Radii.pill,
     backgroundColor: Colors.accent,
   },
@@ -518,7 +705,8 @@ const styles = StyleSheet.create({
   primaryButtonText: {
     color: Colors.bgPrimary,
     fontFamily: Typography.uiFontMedium,
-    fontSize: 14,
+    fontSize: 13,
+    lineHeight: 17,
   },
 });
 

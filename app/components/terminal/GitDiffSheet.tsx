@@ -1,14 +1,13 @@
 import React from "react";
 import {
   ActivityIndicator,
+  FlatList,
   Modal,
   ScrollView,
   StyleSheet,
   Text,
-  TextInput,
   TouchableOpacity,
   View,
-  useWindowDimensions,
 } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 import { SafeAreaView } from "react-native-safe-area-context";
@@ -19,15 +18,16 @@ import {
 } from "../../constants/terminalThemes";
 import type {
   GitDiffContentSnapshot,
-  GitDiffFileContentPayload,
   GitDiffFileInfo,
   GitDiffPatchPayload,
+  GitDiffPatchSection,
   GitDiffStatusSnapshot,
+  GitRepoBrowserEntry,
+  GitRepoFileContentPayload,
 } from "../../services/gitDiff";
 import { describeGitDiffScope } from "../../services/gitDiff";
 
-type PreviewMode = "diff" | "current" | "base";
-type MobilePane = "files" | "preview";
+type SheetTab = "diff" | "browser";
 
 interface GitDiffSheetProps {
   visible: boolean;
@@ -35,24 +35,23 @@ interface GitDiffSheetProps {
   snapshot: GitDiffStatusSnapshot | null;
   loading: boolean;
   error: string | null;
-  selectedPath: string | null;
-  patchLoadingPath: string | null;
   patchByPath: Record<string, GitDiffPatchPayload | undefined>;
-  contentLoadingPath: string | null;
-  contentByPath: Record<string, GitDiffFileContentPayload | undefined>;
+  patchLoadingByPath: Record<string, boolean>;
+  patchErrorByPath: Record<string, string | undefined>;
+  repoBrowserPath: string;
+  repoBrowserEntries: GitRepoBrowserEntry[];
+  repoBrowserLoading: boolean;
+  repoBrowserError: string | null;
+  repoFilePath: string | null;
+  repoFileLoadingPath: string | null;
+  repoFileError: string | null;
+  repoFileByPath: Record<string, GitRepoFileContentPayload | undefined>;
   onClose(): void;
   onRefresh(): void;
-  onSelectPath(path: string): void;
-}
-
-interface GitDiffTreeNode {
-  key: string;
-  name: string;
-  path: string;
-  kind: "directory" | "file";
-  file?: GitDiffFileInfo;
-  children: GitDiffTreeNode[];
-  fileCount: number;
+  onOpenRepoPath(path: string): void;
+  onOpenRepoFile(path: string): void;
+  onCloseRepoFile(): void;
+  onBackRepoPath(): void;
 }
 
 export function GitDiffSheet({
@@ -61,226 +60,120 @@ export function GitDiffSheet({
   snapshot,
   loading,
   error,
-  selectedPath,
-  patchLoadingPath,
   patchByPath,
-  contentLoadingPath,
-  contentByPath,
+  patchLoadingByPath,
+  patchErrorByPath,
+  repoBrowserPath,
+  repoBrowserEntries,
+  repoBrowserLoading,
+  repoBrowserError,
+  repoFilePath,
+  repoFileLoadingPath,
+  repoFileError,
+  repoFileByPath,
   onClose,
   onRefresh,
-  onSelectPath,
+  onOpenRepoPath,
+  onOpenRepoFile,
+  onCloseRepoFile,
+  onBackRepoPath,
 }: GitDiffSheetProps) {
   const chrome = React.useMemo(() => buildTerminalChrome(theme), [theme]);
-  const { width: windowWidth, height: windowHeight } = useWindowDimensions();
-  const isWideLayout = windowWidth >= 920;
-  const isTabletLike = windowWidth >= 720;
-  const isCompactHeight = windowHeight < 760;
-  const treeIndent = isWideLayout ? 16 : 13;
-  const [previewMode, setPreviewMode] = React.useState<PreviewMode>("diff");
-  const [mobilePane, setMobilePane] = React.useState<MobilePane>("files");
-  const [searchQuery, setSearchQuery] = React.useState("");
-  const [expandedDirectories, setExpandedDirectories] = React.useState<Record<string, boolean>>(
-    {},
+  const [activeTab, setActiveTab] = React.useState<SheetTab>("diff");
+  const [collapsedDiffPaths, setCollapsedDiffPaths] = React.useState<Set<string>>(
+    () => new Set(),
   );
 
   const files = snapshot?.files ?? [];
-  const deferredSearchQuery = React.useDeferredValue(searchQuery);
-  const normalizedSearchQuery = React.useMemo(
-    () => normalizeSearchQuery(deferredSearchQuery),
-    [deferredSearchQuery],
-  );
-  const selectedFile = React.useMemo(
-    () => files.find((file) => file.path === selectedPath) ?? null,
-    [files, selectedPath],
-  );
-  const fileTree = React.useMemo(
-    () => buildGitDiffTree(files),
+  const changedPathSet = React.useMemo(
+    () => new Set(files.map((file) => file.path)),
     [files],
   );
-  const filteredTree = React.useMemo(
-    () => normalizedSearchQuery ? filterGitDiffTree(fileTree, normalizedSearchQuery) : fileTree,
-    [fileTree, normalizedSearchQuery],
+  const repoFileContent = repoFilePath ? repoFileByPath[repoFilePath] : undefined;
+  const repoFileLoading = Boolean(
+    repoFilePath && repoFileLoadingPath === repoFilePath && !repoFileContent,
   );
-  const selectedPatch = selectedPath ? patchByPath[selectedPath] : undefined;
-  const selectedContent = selectedPath ? contentByPath[selectedPath] : undefined;
-  const contentSnapshot =
-    previewMode === "current"
-      ? (selectedContent?.current ?? null)
-      : previewMode === "base"
-        ? (selectedContent?.base ?? null)
-        : null;
-  const previewLoading =
-    (selectedPath && patchLoadingPath === selectedPath && previewMode === "diff")
-    || (selectedPath && contentLoadingPath === selectedPath && previewMode !== "diff");
-  const searchExpandedDirectories = React.useMemo(
-    () => normalizedSearchQuery ? collectDirectoryPaths(filteredTree) : new Set<string>(),
-    [filteredTree, normalizedSearchQuery],
-  );
-  const selectedAncestorDirectories = React.useMemo(
-    () => new Set(collectAncestorDirectories(selectedPath)),
-    [selectedPath],
-  );
-  const expandedDirectorySet = React.useMemo(() => {
-    const next = new Set<string>();
-
-    for (const [path, expanded] of Object.entries(expandedDirectories)) {
-      if (expanded) {
-        next.add(path);
-      }
-    }
-    for (const path of selectedAncestorDirectories) {
-      next.add(path);
-    }
-    for (const path of searchExpandedDirectories) {
-      next.add(path);
-    }
-
-    return next;
-  }, [expandedDirectories, searchExpandedDirectories, selectedAncestorDirectories]);
-  const visibleFileCount = React.useMemo(
-    () => countGitDiffLeaves(filteredTree),
-    [filteredTree],
-  );
-
-  React.useEffect(() => {
-    if (isWideLayout) {
-      return;
-    }
-    if (selectedPath) {
-      setMobilePane("preview");
-    }
-  }, [isWideLayout, selectedPath]);
 
   React.useEffect(() => {
     if (visible) {
       return;
     }
-    setSearchQuery("");
+    setActiveTab("diff");
+    setCollapsedDiffPaths(new Set());
   }, [visible]);
 
-  React.useEffect(() => {
-    setExpandedDirectories((previous) => initializeExpandedDirectories(previous, fileTree));
-  }, [fileTree]);
+  const allDiffFilesCollapsed = files.length > 0
+    && files.every((file) => collapsedDiffPaths.has(file.path));
 
-  const toggleDirectory = (path: string) => {
-    if (!path || normalizedSearchQuery) {
-      return;
-    }
-    setExpandedDirectories((previous) => ({
-      ...previous,
-      [path]: !(previous[path] ?? true),
-    }));
-  };
-
-  const renderTreeNodes = (nodes: GitDiffTreeNode[], depth: number = 0): React.ReactNode =>
-    nodes.map((node) => {
-      if (node.kind === "directory") {
-        const expanded = expandedDirectorySet.has(node.path);
-        const activeBranch = Boolean(
-          selectedPath && selectedPath.startsWith(`${node.path}/`),
-        );
-
-        return (
-          <View key={node.key}>
-            <TouchableOpacity
-              style={[
-                styles.treeDirectoryRow,
-                {
-                  paddingLeft: 12 + depth * treeIndent,
-                  backgroundColor: activeBranch
-                    ? withAlpha(theme.cursor, 0.1)
-                    : "transparent",
-                },
-              ]}
-              onPress={() => toggleDirectory(node.path)}
-              activeOpacity={normalizedSearchQuery ? 1 : 0.82}
-            >
-              <View style={styles.treeDirectoryLead}>
-                <Ionicons
-                  name={expanded ? "chevron-down" : "chevron-forward"}
-                  size={14}
-                  color={normalizedSearchQuery ? chrome.textSubtle : chrome.textMuted}
-                />
-                <Ionicons
-                  name={expanded ? "folder-open-outline" : "folder-outline"}
-                  size={15}
-                  color={activeBranch ? theme.cursor : chrome.textSubtle}
-                />
-                <Text
-                  style={[styles.treeDirectoryTitle, { color: chrome.text }]}
-                  numberOfLines={1}
-                >
-                  {node.name}
-                </Text>
-              </View>
-
-              <Text style={[styles.treeDirectoryCount, { color: chrome.textMuted }]}>
-                {node.fileCount}
-              </Text>
-            </TouchableOpacity>
-
-            {expanded ? renderTreeNodes(node.children, depth + 1) : null}
-          </View>
-        );
+  const toggleDiffFile = React.useCallback((path: string) => {
+    setCollapsedDiffPaths((previous) => {
+      const next = new Set(previous);
+      if (next.has(path)) {
+        next.delete(path);
+      } else {
+        next.add(path);
       }
-
-      const file = node.file;
-      if (!file) {
-        return null;
-      }
-
-      const active = selectedPath === file.path;
-
-      return (
-        <TouchableOpacity
-          key={node.key}
-          style={[
-            styles.fileRow,
-            {
-              marginLeft: 12 + depth * treeIndent,
-              backgroundColor: active
-                ? withAlpha(theme.cursor, 0.16)
-                : "transparent",
-              borderColor: active
-                ? withAlpha(theme.cursor, 0.26)
-                : chrome.border,
-            },
-          ]}
-          onPress={() => onSelectPath(file.path)}
-          activeOpacity={0.84}
-        >
-          <View style={styles.fileRowLead}>
-            <View style={styles.fileRowIconWrap}>
-              <Ionicons
-                name="document-text-outline"
-                size={15}
-                color={active ? theme.cursor : chrome.textSubtle}
-              />
-            </View>
-            <View style={styles.fileRowCopy}>
-              <Text
-                style={[styles.fileRowTitle, { color: chrome.text }]}
-                numberOfLines={1}
-              >
-                {node.name}
-              </Text>
-              <Text
-                style={[styles.fileRowMeta, { color: chrome.textMuted }]}
-                numberOfLines={1}
-              >
-                {buildFileRowMeta(file)}
-              </Text>
-            </View>
-          </View>
-
-          <StatusPill file={file} theme={theme} compact />
-        </TouchableOpacity>
-      );
+      return next;
     });
+  }, []);
 
-  const searchSummary = normalizedSearchQuery
-    ? `${visibleFileCount} ${visibleFileCount === 1 ? "match" : "matches"}`
-    : `${files.length} files`;
+  const collapseAllDiffFiles = React.useCallback(() => {
+    setCollapsedDiffPaths(new Set(files.map((file) => file.path)));
+  }, [files]);
+
+  const expandAllDiffFiles = React.useCallback(() => {
+    setCollapsedDiffPaths(new Set());
+  }, []);
+
+  const renderDiffFile = React.useCallback(
+    ({ item }: { item: GitDiffFileInfo }) => (
+      <DiffFileCard
+        file={item}
+        patch={patchByPath[item.path]}
+        loading={Boolean(patchLoadingByPath[item.path])}
+        error={patchErrorByPath[item.path] ?? null}
+        expanded={!collapsedDiffPaths.has(item.path)}
+        theme={theme}
+        chrome={chrome}
+        onToggle={() => toggleDiffFile(item.path)}
+        onOpenFile={() => {
+          setActiveTab("browser");
+          onOpenRepoFile(item.path);
+        }}
+      />
+    ),
+    [
+      chrome,
+      collapsedDiffPaths,
+      onOpenRepoFile,
+      patchByPath,
+      patchErrorByPath,
+      patchLoadingByPath,
+      theme,
+      toggleDiffFile,
+    ],
+  );
+
+  const renderRepoEntry = React.useCallback(
+    ({ item }: { item: GitRepoBrowserEntry }) => (
+      <RepoEntryRow
+        entry={item}
+        changed={changedPathSet.has(item.path)}
+        theme={theme}
+        chrome={chrome}
+        onPress={() => {
+          if (item.kind === "directory") {
+            onOpenRepoPath(item.path);
+            return;
+          }
+          onOpenRepoFile(item.path);
+        }}
+      />
+    ),
+    [changedPathSet, chrome, onOpenRepoFile, onOpenRepoPath, theme],
+  );
+
+  const repoTitle = snapshot?.repo_name || repoBaseName(snapshot?.repo_root || "") || "repo";
 
   return (
     <Modal
@@ -290,10 +183,7 @@ export function GitDiffSheet({
       statusBarTranslucent
     >
       <SafeAreaView
-        style={[
-          styles.root,
-          { backgroundColor: chrome.appBackground },
-        ]}
+        style={[styles.root, { backgroundColor: chrome.appBackground }]}
         edges={["top", "bottom"]}
       >
         <View
@@ -305,12 +195,7 @@ export function GitDiffSheet({
             },
           ]}
         >
-          <View
-            style={[
-              styles.header,
-              { borderBottomColor: chrome.border },
-            ]}
-          >
+          <View style={[styles.header, { borderBottomColor: chrome.border }]}>
             <TouchableOpacity
               style={[
                 styles.iconButton,
@@ -326,8 +211,8 @@ export function GitDiffSheet({
             </TouchableOpacity>
 
             <View style={styles.headerCopy}>
-              <Text style={[styles.title, { color: chrome.text }]}>Git Diff Browser</Text>
-              <Text style={[styles.subtitle, { color: chrome.textMuted }]}>
+              <Text style={[styles.title, { color: chrome.text }]}>Git</Text>
+              <Text style={[styles.subtitle, { color: chrome.textMuted }]} numberOfLines={1}>
                 {buildSubtitle(snapshot)}
               </Text>
             </View>
@@ -352,48 +237,42 @@ export function GitDiffSheet({
           </View>
 
           {snapshot?.available ? (
-            <View
-              style={[
-                styles.summaryRow,
-                { borderBottomColor: chrome.border },
-              ]}
-            >
-              <SummaryChip
-                label="repo"
-                value={snapshot.repo_name || "repo"}
-                backgroundColor={chrome.accentSoft}
-                textColor={chrome.accent}
+            <View style={[styles.modeBar, { borderBottomColor: chrome.border }]}>
+              <SegmentedControl
+                options={[
+                  { value: "diff", label: `Diff ${files.length}` },
+                  { value: "browser", label: "Files" },
+                ]}
+                selectedValue={activeTab}
+                onSelect={(value) => setActiveTab(value as SheetTab)}
+                chrome={chrome}
+                theme={theme}
               />
-              <SummaryChip
-                label="files"
-                value={`${snapshot.file_count}`}
-                backgroundColor={withAlpha(theme.cursor, 0.14)}
-                textColor={theme.cursor}
-              />
-              <SummaryChip
-                label="branch"
-                value={snapshot.branch || "detached"}
-                backgroundColor={withAlpha(theme.blue, 0.14)}
-                textColor={theme.blue}
-              />
-              <SummaryChip
-                label="staged"
-                value={`${snapshot.staged_file_count}`}
-                backgroundColor={withAlpha(theme.green, 0.12)}
-                textColor={theme.green}
-              />
-              <SummaryChip
-                label="unstaged"
-                value={`${snapshot.unstaged_file_count}`}
-                backgroundColor={withAlpha(theme.yellow, 0.12)}
-                textColor={theme.yellow}
-              />
-              <SummaryChip
-                label="untracked"
-                value={`${snapshot.untracked_file_count}`}
-                backgroundColor={withAlpha(theme.magenta, 0.12)}
-                textColor={theme.magenta}
-              />
+              <View style={styles.modeMetaRow}>
+                <View style={styles.modeSummaryWrap}>
+                  <Text style={[styles.modeSummary, { color: chrome.textMuted }]} numberOfLines={1}>
+                    {buildCompactSummary(snapshot)}
+                  </Text>
+                </View>
+                {activeTab === "diff" && !snapshot.clean && files.length > 0 ? (
+                  <TouchableOpacity
+                    style={[
+                      styles.collapseAllButton,
+                      {
+                        backgroundColor: chrome.surfaceMuted,
+                        borderColor: chrome.border,
+                      },
+                    ]}
+                    onPress={allDiffFilesCollapsed ? expandAllDiffFiles : collapseAllDiffFiles}
+                    activeOpacity={0.82}
+                    hitSlop={{ top: 6, right: 6, bottom: 6, left: 6 }}
+                  >
+                    <Text style={[styles.collapseAllText, { color: chrome.textMuted }]}>
+                      {allDiffFilesCollapsed ? "Expand all" : "Collapse all"}
+                    </Text>
+                  </TouchableOpacity>
+                ) : null}
+              </View>
             </View>
           ) : null}
 
@@ -401,7 +280,7 @@ export function GitDiffSheet({
             <View style={styles.contentPad}>
               <StateCard
                 icon="warning-outline"
-                title="Could not load git diff"
+                title="Could not load git data"
                 detail={error}
                 accent={theme.red}
                 chromeText={chrome.text}
@@ -413,7 +292,7 @@ export function GitDiffSheet({
               <StateCard
                 icon="sync-outline"
                 title="Inspecting repository"
-                detail="zen is checking the current working tree for local changes."
+                detail="zen is checking the current working tree."
                 accent={theme.cursor}
                 chromeText={chrome.text}
                 chromeMuted={chrome.textMuted}
@@ -427,344 +306,93 @@ export function GitDiffSheet({
                 title={snapshot?.reason === "no_cwd" ? "No working directory yet" : "Not a git repository"}
                 detail={
                   snapshot?.reason === "no_cwd"
-                    ? "This terminal session has not reported a cwd yet, so zen cannot resolve a repository."
-                    : "The current terminal cwd is outside a git repository. Move into a repo and refresh."
+                    ? "This terminal has not reported a cwd yet."
+                    : "Move this terminal into a git repository and refresh."
                 }
                 accent={chrome.textSubtle}
                 chromeText={chrome.text}
                 chromeMuted={chrome.textMuted}
               />
             </View>
+          ) : activeTab === "browser" ? (
+            repoFilePath ? (
+              <RepoFileView
+                key={`repo-file:${repoFilePath}`}
+                repoTitle={repoTitle}
+                path={repoFilePath}
+                payload={repoFileContent}
+                loading={repoFileLoading}
+                error={repoFileError}
+                changed={changedPathSet.has(repoFilePath)}
+                theme={theme}
+                chrome={chrome}
+                onBack={onCloseRepoFile}
+              />
+            ) : (
+              <FlatList
+                key={`repo-browser-list:${repoBrowserPath || "root"}`}
+                data={repoBrowserEntries}
+                keyExtractor={(item) => `${item.kind}:${item.path}`}
+                renderItem={renderRepoEntry}
+                style={styles.fullList}
+                contentContainerStyle={[
+                  styles.browserContent,
+                  repoBrowserEntries.length === 0 ? styles.fullListEmpty : null,
+                ]}
+                ListHeaderComponent={
+                  <RepoBrowserHeader
+                    repoTitle={repoTitle}
+                    path={repoBrowserPath}
+                    loading={repoBrowserLoading}
+                    error={repoBrowserError}
+                    theme={theme}
+                    chrome={chrome}
+                    onBack={onBackRepoPath}
+                    canGoBack={repoBrowserPath !== ""}
+                  />
+                }
+                ListEmptyComponent={
+                  repoBrowserLoading ? null : (
+                    <StateCard
+                      icon="folder-open-outline"
+                      title="No files here"
+                      detail="This folder does not contain visible repository entries."
+                      accent={chrome.textSubtle}
+                      chromeText={chrome.text}
+                      chromeMuted={chrome.textMuted}
+                    />
+                  )
+                }
+                keyboardShouldPersistTaps="handled"
+                showsVerticalScrollIndicator={false}
+                nestedScrollEnabled={false}
+              />
+            )
           ) : snapshot.clean ? (
             <View style={styles.contentPad}>
               <StateCard
                 icon="checkmark-done-outline"
                 title="Working tree is clean"
-                detail="No staged, unstaged, or untracked changes were found for this repository."
+                detail="No staged, unstaged, or untracked changes were found."
                 accent={theme.green}
                 chromeText={chrome.text}
                 chromeMuted={chrome.textMuted}
               />
             </View>
           ) : (
-            <View style={styles.workspaceRoot}>
-              <View
-                style={[
-                  styles.countStrip,
-                  {
-                    backgroundColor: chrome.surfaceMuted,
-                    borderColor: chrome.border,
-                  },
-                ]}
-              >
-                <View style={styles.countStripCopy}>
-                  <Text style={[styles.countStripLabel, { color: chrome.textMuted }]}>
-                    Local change volume
-                  </Text>
-                  <Text style={[styles.countStripMeta, { color: chrome.textSubtle }]}>
-                    Search paths, collapse noisy folders, and inspect the exact snapshot you need.
-                  </Text>
-                </View>
-                <View style={styles.countStripValues}>
-                  <Text style={[styles.countStripValue, { color: theme.green }]}>
-                    +{snapshot.additions}
-                  </Text>
-                  <Text style={[styles.countStripValue, { color: theme.red }]}>
-                    -{snapshot.deletions}
-                  </Text>
-                </View>
-              </View>
-
-              {!isWideLayout ? (
-                <View style={styles.mobileToolbar}>
-                  <SegmentedControl
-                    options={[
-                      { value: "files", label: `Files ${files.length}` },
-                      { value: "preview", label: "Preview" },
-                    ]}
-                    selectedValue={mobilePane}
-                    onSelect={(value) => setMobilePane(value as MobilePane)}
-                    chrome={chrome}
-                    theme={theme}
-                    compact={isCompactHeight}
-                  />
-                </View>
-              ) : null}
-
-              <View
-                style={[
-                  styles.workspace,
-                  isWideLayout ? styles.workspaceWide : styles.workspaceStacked,
-                ]}
-              >
-                {(isWideLayout || mobilePane === "files") ? (
-                  <View
-                    style={[
-                      styles.browserPane,
-                      isWideLayout ? styles.browserPaneWide : styles.browserPaneStacked,
-                      {
-                        backgroundColor: chrome.surfaceMuted,
-                        borderColor: chrome.border,
-                      },
-                    ]}
-                  >
-                    <View
-                      style={[
-                        styles.browserPaneHeader,
-                        { borderBottomColor: chrome.border },
-                      ]}
-                    >
-                      <View style={styles.browserPaneTitleWrap}>
-                        <Text style={[styles.panelEyebrow, { color: chrome.textSubtle }]}>
-                          Changed Files
-                        </Text>
-                        <Text style={[styles.panelTitle, { color: chrome.text }]}>
-                          File browser
-                        </Text>
-                      </View>
-                      <Text style={[styles.browserPaneMeta, { color: chrome.textMuted }]}>
-                        {searchSummary}
-                      </Text>
-                    </View>
-
-                    <View
-                      style={[
-                        styles.browserTools,
-                        { borderBottomColor: chrome.border },
-                      ]}
-                    >
-                      <View
-                        style={[
-                          styles.searchField,
-                          {
-                            backgroundColor: chrome.surface,
-                            borderColor: normalizedSearchQuery
-                              ? withAlpha(theme.cursor, 0.24)
-                              : chrome.border,
-                          },
-                        ]}
-                      >
-                        <Ionicons
-                          name="search-outline"
-                          size={16}
-                          color={normalizedSearchQuery ? theme.cursor : chrome.textSubtle}
-                        />
-                        <TextInput
-                          style={[styles.searchInput, { color: chrome.text }]}
-                          value={searchQuery}
-                          onChangeText={setSearchQuery}
-                          placeholder="Search files, paths, or renames"
-                          placeholderTextColor={chrome.textSubtle}
-                          autoCapitalize="none"
-                          autoCorrect={false}
-                          autoComplete="off"
-                          returnKeyType="search"
-                          selectionColor={theme.cursor}
-                        />
-                        {searchQuery ? (
-                          <TouchableOpacity
-                            style={styles.searchClearButton}
-                            onPress={() => setSearchQuery("")}
-                            activeOpacity={0.82}
-                          >
-                            <Ionicons name="close-circle" size={16} color={chrome.textMuted} />
-                          </TouchableOpacity>
-                        ) : null}
-                      </View>
-
-                      <Text style={[styles.searchMeta, { color: chrome.textMuted }]}>
-                        {normalizedSearchQuery
-                          ? "Matching folders auto-expand while search is active."
-                          : "Tap folders to collapse noise and focus the tree."}
-                      </Text>
-                    </View>
-
-                    <ScrollView
-                      style={styles.browserScroll}
-                      contentContainerStyle={[
-                        styles.browserScrollContent,
-                        isTabletLike ? styles.browserScrollContentTablet : null,
-                      ]}
-                      keyboardShouldPersistTaps="handled"
-                      showsVerticalScrollIndicator={false}
-                    >
-                      {visibleFileCount > 0 ? (
-                        renderTreeNodes(filteredTree)
-                      ) : (
-                        <StateCard
-                          icon="search-outline"
-                          title="No matching files"
-                          detail="Try a shorter path fragment, a filename, or part of the previous rename target."
-                          accent={theme.cursor}
-                          chromeText={chrome.text}
-                          chromeMuted={chrome.textMuted}
-                        />
-                      )}
-                    </ScrollView>
-                  </View>
-                ) : null}
-
-                {(isWideLayout || mobilePane === "preview") ? (
-                  <View
-                    style={[
-                      styles.previewPane,
-                      {
-                        backgroundColor: chrome.surfaceMuted,
-                        borderColor: chrome.border,
-                      },
-                    ]}
-                  >
-                    {selectedFile ? (
-                      <>
-                        <View
-                          style={[
-                            styles.previewHeader,
-                            { borderBottomColor: chrome.border },
-                          ]}
-                        >
-                          <View style={styles.previewHeaderCopy}>
-                            <Text style={[styles.panelEyebrow, { color: chrome.textSubtle }]}>
-                              Inspector
-                            </Text>
-                            <Text
-                              style={[styles.previewPath, { color: chrome.text }]}
-                              numberOfLines={isWideLayout ? 1 : 2}
-                            >
-                              {selectedFile.path}
-                            </Text>
-                            <Text style={[styles.previewMeta, { color: chrome.textMuted }]}>
-                              {buildFileMeta(selectedFile)}
-                            </Text>
-                          </View>
-
-                          <View style={styles.previewHeaderActions}>
-                            <StatusPill file={selectedFile} theme={theme} />
-                            <ScopeBadge
-                              label={describeGitDiffScope(selectedFile)}
-                              color={theme.cursor}
-                            />
-                          </View>
-                        </View>
-
-                        <View style={styles.previewToolbar}>
-                          <SegmentedControl
-                            options={[
-                              { value: "diff", label: "Diff" },
-                              { value: "current", label: "Working Tree" },
-                              { value: "base", label: "Base" },
-                            ]}
-                            selectedValue={previewMode}
-                            onSelect={(value) => setPreviewMode(value as PreviewMode)}
-                            chrome={chrome}
-                            theme={theme}
-                            compact={!isWideLayout && isCompactHeight}
-                          />
-
-                          <View style={styles.previewStats}>
-                            {previewMode === "diff" ? (
-                              <MetaPill
-                                label={selectedPatch?.sections.length ? `${selectedPatch.sections.length} sections` : "Patch"}
-                                value={patchLoadingPath === selectedPath ? "Loading" : "Ready"}
-                                chrome={chrome}
-                                theme={theme}
-                              />
-                            ) : (
-                              <ContentSnapshotMeta
-                                snapshot={contentSnapshot}
-                                chrome={chrome}
-                                theme={theme}
-                              />
-                            )}
-                          </View>
-                        </View>
-
-                        <View style={styles.previewBody}>
-                          {previewLoading ? (
-                            <View style={styles.inlineStateWrap}>
-                              <StateCard
-                                icon="sync-outline"
-                                title="Loading file preview"
-                                detail="zen is fetching the selected snapshot."
-                                accent={theme.cursor}
-                                chromeText={chrome.text}
-                                chromeMuted={chrome.textMuted}
-                                busy
-                              />
-                            </View>
-                          ) : previewMode === "diff" ? (
-                            selectedPatch?.sections.length ? (
-                              <ScrollView
-                                style={styles.previewScroll}
-                                contentContainerStyle={styles.previewScrollContent}
-                                showsVerticalScrollIndicator={false}
-                              >
-                                {selectedPatch.sections.map((section) => (
-                                  <View
-                                    key={`${selectedFile.path}:${section.scope}`}
-                                    style={[
-                                      styles.section,
-                                      {
-                                        backgroundColor: chrome.surface,
-                                        borderColor: chrome.border,
-                                      },
-                                    ]}
-                                  >
-                                    <View style={styles.sectionHeader}>
-                                      <Text style={[styles.sectionTitle, { color: chrome.text }]}>
-                                        {section.title}
-                                      </Text>
-                                      <Text
-                                        style={[styles.sectionScope, { color: chrome.textSubtle }]}
-                                      >
-                                        {section.scope}
-                                      </Text>
-                                    </View>
-                                    <DiffBlock patch={section.patch} theme={theme} />
-                                  </View>
-                                ))}
-                              </ScrollView>
-                            ) : (
-                              <View style={styles.inlineStateWrap}>
-                                <StateCard
-                                  icon="document-text-outline"
-                                  title="No patch content"
-                                  detail="This file does not expose a patch preview right now."
-                                  accent={theme.cursor}
-                                  chromeText={chrome.text}
-                                  chromeMuted={chrome.textMuted}
-                                />
-                              </View>
-                            )
-                          ) : (
-                            <CodeSnapshotPanel
-                              snapshot={contentSnapshot}
-                              chrome={chrome}
-                              theme={theme}
-                              mode={previewMode}
-                            />
-                          )}
-                        </View>
-                      </>
-                    ) : (
-                      <View style={styles.inlineStateWrap}>
-                        <StateCard
-                          icon="documents-outline"
-                          title="Select a file"
-                          detail={
-                            isWideLayout
-                              ? "Choose a changed file from the browser to inspect its diff or source snapshot."
-                              : "Choose a file from the Files tab to inspect its diff or source snapshot."
-                          }
-                          accent={theme.cursor}
-                          chromeText={chrome.text}
-                          chromeMuted={chrome.textMuted}
-                        />
-                      </View>
-                    )}
-                  </View>
-                ) : null}
-              </View>
-            </View>
+            <FlatList
+              key="git-diff-list"
+              data={files}
+              keyExtractor={(item) => item.path}
+              renderItem={renderDiffFile}
+              style={styles.fullList}
+              contentContainerStyle={styles.diffContent}
+              showsVerticalScrollIndicator={false}
+              removeClippedSubviews={false}
+              initialNumToRender={4}
+              maxToRenderPerBatch={4}
+              windowSize={5}
+            />
           )}
         </View>
       </SafeAreaView>
@@ -772,24 +400,390 @@ export function GitDiffSheet({
   );
 }
 
-function SummaryChip({
-  label,
-  value,
-  backgroundColor,
-  textColor,
+function DiffFileCard({
+  file,
+  patch,
+  loading,
+  error,
+  expanded,
+  theme,
+  chrome,
+  onToggle,
+  onOpenFile,
 }: {
-  label: string;
-  value: string;
-  backgroundColor: string;
-  textColor: string;
+  file: GitDiffFileInfo;
+  patch?: GitDiffPatchPayload;
+  loading: boolean;
+  error: string | null;
+  expanded: boolean;
+  theme: TerminalThemePalette;
+  chrome: ReturnType<typeof buildTerminalChrome>;
+  onToggle(): void;
+  onOpenFile(): void;
+}) {
+  const sections = patch?.sections ?? [];
+
+  return (
+    <View
+      style={[
+        styles.diffCard,
+        {
+          backgroundColor: chrome.surfaceMuted,
+          borderColor: chrome.border,
+        },
+      ]}
+    >
+      <TouchableOpacity
+        style={[
+          styles.diffCardHeader,
+          { borderBottomColor: expanded ? chrome.border : "transparent" },
+        ]}
+        onPress={onToggle}
+        activeOpacity={0.82}
+      >
+        <Ionicons
+          name={expanded ? "chevron-down" : "chevron-forward"}
+          size={16}
+          color={chrome.textSubtle}
+        />
+        <View style={styles.diffCardTitleWrap}>
+          <Text style={[styles.diffFileName, { color: chrome.text }]} numberOfLines={1}>
+            {pathBaseName(file.path)}
+          </Text>
+          <Text style={[styles.diffFilePath, { color: chrome.textMuted }]} numberOfLines={1}>
+            {buildFilePathMeta(file)}
+          </Text>
+        </View>
+        <View style={styles.diffHeaderBadges}>
+          <StatusPill file={file} theme={theme} compact />
+          <TouchableOpacity
+            style={[styles.diffOpenButton, { borderColor: chrome.border }]}
+            onPress={onOpenFile}
+            activeOpacity={0.82}
+          >
+            <Ionicons name="document-text-outline" size={14} color={chrome.textSubtle} />
+          </TouchableOpacity>
+        </View>
+      </TouchableOpacity>
+
+      {!expanded ? null : loading && sections.length === 0 ? (
+        <View style={styles.inlineStateWrap}>
+          <StateCard
+            icon="sync-outline"
+            title="Loading patch"
+            detail="Fetching this file's staged and unstaged hunks."
+            accent={theme.cursor}
+            chromeText={chrome.text}
+            chromeMuted={chrome.textMuted}
+            busy
+          />
+        </View>
+      ) : error ? (
+        <View style={styles.inlineStateWrap}>
+          <StateCard
+            icon="warning-outline"
+            title="Patch unavailable"
+            detail={error}
+            accent={theme.red}
+            chromeText={chrome.text}
+            chromeMuted={chrome.textMuted}
+          />
+        </View>
+      ) : patch && sections.length === 0 ? (
+        <View style={styles.inlineStateWrap}>
+          <StateCard
+            icon="information-circle-outline"
+            title="No patch content"
+            detail="Git reports this file as changed, but there are no hunks to display."
+            accent={chrome.textSubtle}
+            chromeText={chrome.text}
+            chromeMuted={chrome.textMuted}
+          />
+        </View>
+      ) : sections.length === 0 ? (
+        <View style={styles.inlineStateWrap}>
+          <StateCard
+            icon="time-outline"
+            title="Queued"
+            detail="This patch will load shortly."
+            accent={chrome.textSubtle}
+            chromeText={chrome.text}
+            chromeMuted={chrome.textMuted}
+          />
+        </View>
+      ) : (
+        <View style={styles.patchList}>
+          {sections.map((section, index) => (
+            <PatchSection
+              key={`${file.path}:${section.scope}:${index}`}
+              section={section}
+              theme={theme}
+              chrome={chrome}
+            />
+          ))}
+        </View>
+      )}
+    </View>
+  );
+}
+
+function PatchSection({
+  section,
+  theme,
+  chrome,
+}: {
+  section: GitDiffPatchSection;
+  theme: TerminalThemePalette;
+  chrome: ReturnType<typeof buildTerminalChrome>;
 }) {
   return (
-    <View style={[styles.summaryChip, { backgroundColor }]}>
-      <Text style={[styles.summaryChipLabel, { color: textColor }]}>
-        {label}
-      </Text>
-      <Text style={[styles.summaryChipValue, { color: textColor }]}>
-        {value}
+    <View style={[styles.patchSection, { backgroundColor: chrome.surface, borderColor: chrome.border }]}>
+      <View style={styles.patchHeader}>
+        <Text style={[styles.patchTitle, { color: chrome.text }]}>
+          {section.title}
+        </Text>
+        <Text style={[styles.patchScope, { color: chrome.textSubtle }]}>
+          {section.scope}
+        </Text>
+      </View>
+      <DiffBlock patch={section.patch} theme={theme} />
+    </View>
+  );
+}
+
+function RepoBrowserHeader({
+  repoTitle,
+  path,
+  loading,
+  error,
+  theme,
+  chrome,
+  onBack,
+  canGoBack,
+}: {
+  repoTitle: string;
+  path: string;
+  loading: boolean;
+  error: string | null;
+  theme: TerminalThemePalette;
+  chrome: ReturnType<typeof buildTerminalChrome>;
+  onBack(): void;
+  canGoBack: boolean;
+}) {
+  return (
+    <View style={styles.browserHeaderWrap}>
+      <View
+        style={[
+          styles.browserPathBar,
+          {
+            backgroundColor: chrome.surfaceMuted,
+            borderColor: chrome.border,
+          },
+        ]}
+      >
+        <TouchableOpacity
+          style={[
+            styles.browserBackButton,
+            {
+              backgroundColor: canGoBack ? chrome.surface : "transparent",
+              borderColor: canGoBack ? chrome.border : "transparent",
+              opacity: canGoBack ? 1 : 0.35,
+            },
+          ]}
+          onPress={onBack}
+          disabled={!canGoBack}
+          activeOpacity={0.82}
+        >
+          <Ionicons name="arrow-up" size={16} color={chrome.textMuted} />
+        </TouchableOpacity>
+        <View style={styles.browserPathCopy}>
+          <Text style={[styles.browserRepoTitle, { color: chrome.text }]} numberOfLines={1}>
+            {repoTitle}
+          </Text>
+          <Text style={[styles.browserPathText, { color: chrome.textMuted }]} numberOfLines={1}>
+            {path ? `/${path}` : "/"}
+          </Text>
+        </View>
+        {loading ? <ActivityIndicator size="small" color={theme.cursor} /> : null}
+      </View>
+
+      {error ? (
+        <StateCard
+          icon="warning-outline"
+          title="Could not load folder"
+          detail={error}
+          accent={theme.red}
+          chromeText={chrome.text}
+          chromeMuted={chrome.textMuted}
+        />
+      ) : null}
+    </View>
+  );
+}
+
+function RepoEntryRow({
+  entry,
+  changed,
+  theme,
+  chrome,
+  onPress,
+}: {
+  entry: GitRepoBrowserEntry;
+  changed: boolean;
+  theme: TerminalThemePalette;
+  chrome: ReturnType<typeof buildTerminalChrome>;
+  onPress(): void;
+}) {
+  const isDirectory = entry.kind === "directory";
+
+  return (
+    <TouchableOpacity
+      style={[
+        styles.repoEntryRow,
+        {
+          backgroundColor: chrome.surfaceMuted,
+          borderColor: chrome.border,
+        },
+      ]}
+      onPress={onPress}
+      activeOpacity={0.82}
+    >
+      <Ionicons
+        name={isDirectory ? "folder-outline" : "document-text-outline"}
+        size={16}
+        color={isDirectory ? theme.yellow : chrome.textSubtle}
+      />
+      <View style={styles.repoEntryCopy}>
+        <Text style={[styles.repoEntryName, { color: chrome.text }]} numberOfLines={1}>
+          {entry.name}
+        </Text>
+      </View>
+      {changed ? (
+        <View style={[styles.changedPill, { backgroundColor: withAlpha(theme.cursor, 0.12) }]}>
+          <Text style={[styles.changedPillText, { color: theme.cursor }]}>Changed</Text>
+        </View>
+      ) : null}
+      <Ionicons
+        name={isDirectory ? "chevron-forward" : "open-outline"}
+        size={15}
+        color={chrome.textSubtle}
+      />
+    </TouchableOpacity>
+  );
+}
+
+function RepoFileView({
+  repoTitle,
+  path,
+  payload,
+  loading,
+  error,
+  changed,
+  theme,
+  chrome,
+  onBack,
+}: {
+  repoTitle: string;
+  path: string;
+  payload?: GitRepoFileContentPayload;
+  loading: boolean;
+  error: string | null;
+  changed: boolean;
+  theme: TerminalThemePalette;
+  chrome: ReturnType<typeof buildTerminalChrome>;
+  onBack(): void;
+}) {
+  return (
+    <View style={styles.repoFileRoot}>
+      <View style={[styles.repoFileHeader, { borderBottomColor: chrome.border }]}>
+        <TouchableOpacity
+          style={[
+            styles.repoFileBack,
+            {
+              backgroundColor: chrome.surfaceMuted,
+              borderColor: chrome.border,
+            },
+          ]}
+          onPress={onBack}
+          activeOpacity={0.82}
+        >
+          <Ionicons name="chevron-back" size={17} color={chrome.textMuted} />
+        </TouchableOpacity>
+        <View style={styles.repoFileCopy}>
+          <Text style={[styles.repoFileTitle, { color: chrome.text }]} numberOfLines={1}>
+            {pathBaseName(path)}
+          </Text>
+          <Text style={[styles.repoFilePath, { color: chrome.textMuted }]} numberOfLines={1}>
+            {repoTitle}/{pathDirectoryName(path)}
+          </Text>
+        </View>
+        {changed ? (
+          <View style={[styles.changedPill, { backgroundColor: withAlpha(theme.cursor, 0.12) }]}>
+            <Text style={[styles.changedPillText, { color: theme.cursor }]}>Changed</Text>
+          </View>
+        ) : null}
+      </View>
+
+      {loading ? (
+        <View style={styles.contentPad}>
+          <StateCard
+            icon="sync-outline"
+            title="Loading file"
+            detail="Fetching the current working tree snapshot."
+            accent={theme.cursor}
+            chromeText={chrome.text}
+            chromeMuted={chrome.textMuted}
+            busy
+          />
+        </View>
+      ) : error ? (
+        <View style={styles.contentPad}>
+          <StateCard
+            icon="warning-outline"
+            title="Could not load file"
+            detail={error}
+            accent={theme.red}
+            chromeText={chrome.text}
+            chromeMuted={chrome.textMuted}
+          />
+        </View>
+      ) : (
+        <CodeSnapshotPanel
+          snapshot={payload?.snapshot ?? null}
+          chrome={chrome}
+          theme={theme}
+        />
+      )}
+    </View>
+  );
+}
+
+function StatusPill({
+  file,
+  theme,
+  compact = false,
+}: {
+  file: GitDiffFileInfo;
+  theme: TerminalThemePalette;
+  compact?: boolean;
+}) {
+  const color = statusTone(file, theme);
+  return (
+    <View
+      style={[
+        styles.statusPill,
+        compact ? styles.statusPillCompact : null,
+        { backgroundColor: withAlpha(color, 0.14) },
+      ]}
+    >
+      <Text
+        style={[
+          styles.statusPillText,
+          compact ? styles.statusPillTextCompact : null,
+          { color },
+        ]}
+      >
+        {statusLabel(file)}
       </Text>
     </View>
   );
@@ -801,14 +795,12 @@ function SegmentedControl({
   onSelect,
   chrome,
   theme,
-  compact = false,
 }: {
   options: Array<{ value: string; label: string }>;
   selectedValue: string;
   onSelect(value: string): void;
   chrome: ReturnType<typeof buildTerminalChrome>;
   theme: TerminalThemePalette;
-  compact?: boolean;
 }) {
   return (
     <View
@@ -827,18 +819,14 @@ function SegmentedControl({
             key={option.value}
             style={[
               styles.segmentButton,
-              compact ? styles.segmentButtonCompact : null,
               active
                 ? {
                     backgroundColor: withAlpha(theme.cursor, 0.16),
-                    borderColor: withAlpha(theme.cursor, 0.24),
                   }
-                : {
-                    borderColor: "transparent",
-                  },
+                : null,
             ]}
             onPress={() => onSelect(option.value)}
-            activeOpacity={0.84}
+            activeOpacity={0.82}
           >
             <Text
               style={[
@@ -855,162 +843,22 @@ function SegmentedControl({
   );
 }
 
-function StatusPill({
-  file,
-  theme,
-  compact = false,
-}: {
-  file: GitDiffFileInfo;
-  theme: TerminalThemePalette;
-  compact?: boolean;
-}) {
-  const tone = statusTone(file, theme);
-  return (
-    <View
-      style={[
-        styles.statusPill,
-        compact ? styles.statusPillCompact : null,
-        { backgroundColor: withAlpha(tone, 0.16) },
-      ]}
-    >
-      <Text style={[styles.statusPillText, { color: tone }]}>
-        {statusLabel(file)}
-      </Text>
-    </View>
-  );
-}
-
-function ScopeBadge({
-  label,
-  color,
-}: {
-  label: string;
-  color: string;
-}) {
-  return (
-    <View style={[styles.scopeBadge, { backgroundColor: withAlpha(color, 0.12) }]}>
-      <Text style={[styles.scopeBadgeText, { color }]}>{label}</Text>
-    </View>
-  );
-}
-
-function MetaPill({
-  label,
-  value,
-  chrome,
-  theme,
-}: {
-  label: string;
-  value: string;
-  chrome: ReturnType<typeof buildTerminalChrome>;
-  theme: TerminalThemePalette;
-}) {
-  return (
-    <View
-      style={[
-        styles.metaPill,
-        {
-          backgroundColor: chrome.surface,
-          borderColor: chrome.border,
-        },
-      ]}
-    >
-      <Text style={[styles.metaPillLabel, { color: chrome.textSubtle }]}>{label}</Text>
-      <Text style={[styles.metaPillValue, { color: theme.cursor }]}>{value}</Text>
-    </View>
-  );
-}
-
-function ContentSnapshotMeta({
-  snapshot,
-  chrome,
-  theme,
-}: {
-  snapshot: GitDiffContentSnapshot | null;
-  chrome: ReturnType<typeof buildTerminalChrome>;
-  theme: TerminalThemePalette;
-}) {
-  if (!snapshot) {
-    return (
-      <MetaPill
-        label="Snapshot"
-        value="Pending"
-        chrome={chrome}
-        theme={theme}
-      />
-    );
-  }
-
-  if (!snapshot.exists) {
-    return (
-      <MetaPill
-        label={snapshot.label}
-        value={snapshot.reason === "untracked" ? "No base" : "Unavailable"}
-        chrome={chrome}
-        theme={theme}
-      />
-    );
-  }
-
-  if (snapshot.binary) {
-    return (
-      <MetaPill
-        label={snapshot.label}
-        value="Binary"
-        chrome={chrome}
-        theme={theme}
-      />
-    );
-  }
-
-  const value = snapshot.line_count > 0
-    ? `${snapshot.line_count} lines`
-    : formatByteCount(snapshot.byte_count);
-
-  return (
-    <MetaPill
-      label={snapshot.label}
-      value={snapshot.truncated ? `${value} · cut` : value}
-      chrome={chrome}
-      theme={theme}
-    />
-  );
-}
-
 function CodeSnapshotPanel({
   snapshot,
   chrome,
   theme,
-  mode,
 }: {
   snapshot: GitDiffContentSnapshot | null;
   chrome: ReturnType<typeof buildTerminalChrome>;
   theme: TerminalThemePalette;
-  mode: Exclude<PreviewMode, "diff">;
 }) {
-  if (!snapshot) {
+  if (!snapshot?.exists || !snapshot.content) {
     return (
-      <View style={styles.inlineStateWrap}>
+      <View style={styles.contentPad}>
         <StateCard
-          icon="document-outline"
-          title="Preparing snapshot"
-          detail="zen is waiting for the file snapshot to load."
-          accent={theme.cursor}
-          chromeText={chrome.text}
-          chromeMuted={chrome.textMuted}
-          busy
-        />
-      </View>
-    );
-  }
-
-  if (!snapshot.exists) {
-    return (
-      <View style={styles.inlineStateWrap}>
-        <StateCard
-          icon={mode === "current" ? "document-outline" : "layers-outline"}
-          title={mode === "current" ? "Working tree snapshot unavailable" : "Base snapshot unavailable"}
-          detail={describeSnapshotMissing(snapshot, mode)}
+          icon="document-text-outline"
+          title="File snapshot unavailable"
+          detail={snapshot?.reason || "This file could not be read from the working tree."}
           accent={theme.cursor}
           chromeText={chrome.text}
           chromeMuted={chrome.textMuted}
@@ -1021,11 +869,11 @@ function CodeSnapshotPanel({
 
   if (snapshot.binary) {
     return (
-      <View style={styles.inlineStateWrap}>
+      <View style={styles.contentPad}>
         <StateCard
           icon="cube-outline"
           title="Binary file"
-          detail="This snapshot is binary, so zen keeps the inspector in metadata mode instead of rendering source text."
+          detail="zen does not render binary file content."
           accent={theme.cursor}
           chromeText={chrome.text}
           chromeMuted={chrome.textMuted}
@@ -1034,69 +882,41 @@ function CodeSnapshotPanel({
     );
   }
 
-  return (
-    <View style={styles.codePanel}>
-      <View style={styles.codePanelMeta}>
-        <MetaPill
-          label="Bytes"
-          value={formatByteCount(snapshot.byte_count)}
-          chrome={chrome}
-          theme={theme}
-        />
-        <MetaPill
-          label="Lines"
-          value={`${snapshot.line_count || 0}`}
-          chrome={chrome}
-          theme={theme}
-        />
-        {snapshot.truncated ? (
-          <MetaPill
-            label="Preview"
-            value="Truncated"
-            chrome={chrome}
-            theme={theme}
-          />
-        ) : null}
-      </View>
-
-      <CodeBlock
-        content={snapshot.content || ""}
-        chrome={chrome}
-        theme={theme}
-      />
-    </View>
-  );
-}
-
-function CodeBlock({
-  content,
-  chrome,
-  theme,
-}: {
-  content: string;
-  chrome: ReturnType<typeof buildTerminalChrome>;
-  theme: TerminalThemePalette;
-}) {
-  const lines = React.useMemo(() => content.split("\n"), [content]);
-
+  const lines = snapshot.content.split("\n");
   return (
     <ScrollView
-      style={styles.previewScroll}
-      contentContainerStyle={styles.previewScrollContent}
+      style={styles.codeScroll}
+      contentContainerStyle={styles.codeScrollContent}
       showsVerticalScrollIndicator={false}
+      nestedScrollEnabled={false}
     >
-      <ScrollView horizontal showsHorizontalScrollIndicator>
+      {snapshot.truncated ? (
+        <View
+          style={[
+            styles.truncationBanner,
+            {
+              backgroundColor: withAlpha(theme.yellow, 0.1),
+              borderColor: withAlpha(theme.yellow, 0.2),
+            },
+          ]}
+        >
+          <Text style={[styles.truncationText, { color: theme.yellow }]}>
+            Showing the first {formatByteCount(snapshot.content.length)} of {formatByteCount(snapshot.byte_count)}.
+          </Text>
+        </View>
+      ) : null}
+      <ScrollView horizontal showsHorizontalScrollIndicator nestedScrollEnabled={false}>
         <View
           style={[
             styles.codeFrame,
             {
-              backgroundColor: chrome.surface,
+              backgroundColor: chrome.surfaceMuted,
               borderColor: chrome.border,
             },
           ]}
         >
           {lines.map((line, index) => (
-            <View key={`${index}:${line}`} style={styles.codeRow}>
+            <View key={index} style={styles.codeRow}>
               <Text style={[styles.codeLineNumber, { color: chrome.textSubtle }]}>
                 {index + 1}
               </Text>
@@ -1122,14 +942,13 @@ function DiffBlock({
   const lines = React.useMemo(() => patch.split("\n"), [patch]);
 
   return (
-    <ScrollView horizontal showsHorizontalScrollIndicator>
+    <ScrollView horizontal showsHorizontalScrollIndicator nestedScrollEnabled={false}>
       <View style={styles.diffBlock}>
         {lines.map((line, index) => {
           const presentation = linePresentation(line, theme, chrome);
-
           return (
             <View
-              key={`${index}:${line}`}
+              key={index}
               style={[
                 styles.diffLineWrap,
                 presentation.backgroundColor
@@ -1188,181 +1007,39 @@ function StateCard({
 
 function buildSubtitle(snapshot: GitDiffStatusSnapshot | null): string {
   if (!snapshot?.available) {
-    return "Browse changed files, patch context, and live code without disrupting the active shell.";
+    return "Diff and files";
   }
   if (snapshot.repo_name && snapshot.branch) {
     return `${snapshot.repo_name} · ${snapshot.branch}`;
   }
-  return "Browse changed files, patch context, and live code without disrupting the active shell.";
+  return snapshot.repo_name || "Repository";
 }
 
-function buildGitDiffTree(files: GitDiffFileInfo[]): GitDiffTreeNode[] {
-  const sortedFiles = [...files].sort((left, right) => left.path.localeCompare(right.path));
-  const root: GitDiffTreeNode = {
-    key: "__root__",
-    name: "",
-    path: "",
-    kind: "directory",
-    children: [],
-    fileCount: 0,
-  };
-  const directories = new Map<string, GitDiffTreeNode>([["", root]]);
-
-  for (const file of sortedFiles) {
-    const parts = file.path.split("/").filter(Boolean);
-    let parent = root;
-    let currentPath = "";
-
-    for (const part of parts.slice(0, -1)) {
-      currentPath = currentPath ? `${currentPath}/${part}` : part;
-      let directory = directories.get(currentPath);
-      if (!directory) {
-        directory = {
-          key: `dir:${currentPath}`,
-          name: part,
-          path: currentPath,
-          kind: "directory",
-          children: [],
-          fileCount: 0,
-        };
-        directories.set(currentPath, directory);
-        parent.children.push(directory);
-      }
-      parent = directory;
-    }
-
-    parent.children.push({
-      key: `file:${file.path}`,
-      name: parts[parts.length - 1] ?? file.path,
-      path: file.path,
-      kind: "file",
-      file,
-      children: [],
-      fileCount: 1,
-    });
+function buildCompactSummary(snapshot: GitDiffStatusSnapshot): string {
+  if (snapshot.clean) {
+    return "working tree clean";
   }
 
-  return finalizeGitDiffTree(root.children);
-}
-
-function finalizeGitDiffTree(nodes: GitDiffTreeNode[]): GitDiffTreeNode[] {
-  return [...nodes]
-    .map((node) => {
-      if (node.kind === "file") {
-        return node;
-      }
-
-      const children = finalizeGitDiffTree(node.children);
-      return {
-        ...node,
-        children,
-        fileCount: countGitDiffLeaves(children),
-      };
-    })
-    .sort(compareGitDiffTreeNodes);
-}
-
-function filterGitDiffTree(nodes: GitDiffTreeNode[], query: string): GitDiffTreeNode[] {
-  return nodes.reduce<GitDiffTreeNode[]>((result, node) => {
-    if (node.kind === "file") {
-      if (node.file && gitDiffFileMatchesQuery(node.file, query)) {
-        result.push(node);
-      }
-      return result;
-    }
-
-    const children = filterGitDiffTree(node.children, query);
-    if (children.length === 0) {
-      return result;
-    }
-
-    result.push({
-      ...node,
-      children,
-      fileCount: countGitDiffLeaves(children),
-    });
-    return result;
-  }, []);
-}
-
-function initializeExpandedDirectories(
-  previous: Record<string, boolean>,
-  tree: GitDiffTreeNode[],
-): Record<string, boolean> {
-  const available = collectDirectoryPaths(tree);
-  const next: Record<string, boolean> = {};
-
-  for (const [path, expanded] of Object.entries(previous)) {
-    if (available.has(path)) {
-      next[path] = expanded;
-    }
+  const parts = [
+    `${snapshot.file_count} changed`,
+    `${snapshot.staged_file_count} staged`,
+    `${snapshot.unstaged_file_count} unstaged`,
+  ];
+  if (snapshot.untracked_file_count > 0) {
+    parts.push(`${snapshot.untracked_file_count} untracked`);
   }
-
-  for (const node of tree) {
-    if (node.kind === "directory" && next[node.path] === undefined) {
-      next[node.path] = true;
-    }
+  if (snapshot.additions > 0 || snapshot.deletions > 0) {
+    parts.push(`+${snapshot.additions} -${snapshot.deletions}`);
   }
-
-  return shallowEqualRecord(previous, next) ? previous : next;
+  return parts.join(" · ");
 }
 
-function collectDirectoryPaths(nodes: GitDiffTreeNode[], acc: Set<string> = new Set()): Set<string> {
-  for (const node of nodes) {
-    if (node.kind !== "directory") {
-      continue;
-    }
-    acc.add(node.path);
-    collectDirectoryPaths(node.children, acc);
-  }
-  return acc;
-}
-
-function countGitDiffLeaves(nodes: GitDiffTreeNode[]): number {
-  return nodes.reduce((count, node) => {
-    if (node.kind === "file") {
-      return count + 1;
-    }
-    return count + countGitDiffLeaves(node.children);
-  }, 0);
-}
-
-function compareGitDiffTreeNodes(left: GitDiffTreeNode, right: GitDiffTreeNode): number {
-  if (left.kind !== right.kind) {
-    return left.kind === "directory" ? -1 : 1;
-  }
-  return left.name.localeCompare(right.name);
-}
-
-function normalizeSearchQuery(value: string): string {
-  return value.trim().toLowerCase();
-}
-
-function gitDiffFileMatchesQuery(file: GitDiffFileInfo, query: string): boolean {
-  const haystack = [
-    file.path,
-    file.old_path ?? "",
-    pathBaseName(file.path),
-    file.old_path ? pathBaseName(file.old_path) : "",
-  ]
-    .join(" ")
-    .toLowerCase();
-
-  return haystack.includes(query);
-}
-
-function buildFileMeta(file: GitDiffFileInfo): string {
+function buildFilePathMeta(file: GitDiffFileInfo): string {
   if (file.old_path) {
     return `${describeGitDiffScope(file)} · ${file.old_path} -> ${file.path}`;
   }
-  return `${describeGitDiffScope(file)} · ${statusLabel(file)}`;
-}
-
-function buildFileRowMeta(file: GitDiffFileInfo): string {
-  if (file.old_path) {
-    return `${describeGitDiffScope(file)} · ${pathBaseName(file.old_path)} -> ${pathBaseName(file.path)}`;
-  }
-  return `${describeGitDiffScope(file)} · ${statusLabel(file)}`;
+  const directory = pathDirectoryName(file.path);
+  return [describeGitDiffScope(file), directory].filter(Boolean).join(" · ");
 }
 
 function pathBaseName(path: string): string {
@@ -1370,30 +1047,15 @@ function pathBaseName(path: string): string {
   return index === -1 ? path : path.slice(index + 1);
 }
 
-function collectAncestorDirectories(path: string | null): string[] {
-  if (!path || !path.includes("/")) {
-    return [];
-  }
-
-  const parts = path.split("/");
-  const ancestors: string[] = [];
-  for (let index = 0; index < parts.length - 1; index += 1) {
-    ancestors.push(parts.slice(0, index + 1).join("/"));
-  }
-  return ancestors;
+function pathDirectoryName(path: string): string {
+  const index = path.lastIndexOf("/");
+  return index === -1 ? "" : path.slice(0, index);
 }
 
-function describeSnapshotMissing(
-  snapshot: GitDiffContentSnapshot,
-  mode: Exclude<PreviewMode, "diff">,
-): string {
-  if (mode === "base" && snapshot.reason === "untracked") {
-    return "Untracked files do not have a base revision yet.";
-  }
-  if (mode === "base") {
-    return "This file does not have content in the current HEAD base snapshot.";
-  }
-  return "This file is not present in the current working tree snapshot.";
+function repoBaseName(path: string): string {
+  const trimmed = path.replace(/\/+$/, "");
+  if (!trimmed) return "";
+  return pathBaseName(trimmed);
 }
 
 function statusLabel(file: GitDiffFileInfo): string {
@@ -1495,26 +1157,6 @@ function formatByteCount(bytes: number): string {
   return `${bytes} B`;
 }
 
-function shallowEqualRecord(
-  left: Record<string, boolean>,
-  right: Record<string, boolean>,
-): boolean {
-  const leftKeys = Object.keys(left);
-  const rightKeys = Object.keys(right);
-
-  if (leftKeys.length !== rightKeys.length) {
-    return false;
-  }
-
-  for (const key of leftKeys) {
-    if (left[key] !== right[key]) {
-      return false;
-    }
-  }
-
-  return true;
-}
-
 function withAlpha(hex: string, alpha: number): string {
   const normalized = hex.replace("#", "").trim();
   if (!/^[0-9a-fA-F]{6}$/.test(normalized)) {
@@ -1538,10 +1180,10 @@ const styles = StyleSheet.create({
   header: {
     flexDirection: "row",
     alignItems: "center",
-    paddingHorizontal: 14,
-    paddingTop: 8,
-    paddingBottom: 12,
-    gap: 12,
+    paddingHorizontal: 10,
+    paddingTop: 5,
+    paddingBottom: 6,
+    gap: 8,
     borderBottomWidth: StyleSheet.hairlineWidth,
   },
   headerCopy: {
@@ -1549,50 +1191,80 @@ const styles = StyleSheet.create({
     minWidth: 0,
   },
   title: {
-    fontSize: 24,
-    lineHeight: 30,
+    fontSize: 19,
+    lineHeight: 24,
     fontFamily: Typography.uiFontMedium,
   },
   subtitle: {
-    marginTop: 4,
-    fontSize: 12,
-    lineHeight: 18,
+    marginTop: 1,
+    fontSize: 10,
+    lineHeight: 13,
     fontFamily: Typography.uiFont,
   },
   iconButton: {
-    width: 36,
-    height: 36,
-    borderRadius: 12,
+    width: 31,
+    height: 31,
+    borderRadius: 10,
     alignItems: "center",
     justifyContent: "center",
     borderWidth: StyleSheet.hairlineWidth,
   },
-  summaryRow: {
-    flexDirection: "row",
-    flexWrap: "wrap",
-    gap: 8,
-    paddingHorizontal: 14,
-    paddingTop: 12,
-    paddingBottom: 12,
+  modeBar: {
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    gap: 4,
     borderBottomWidth: StyleSheet.hairlineWidth,
   },
-  summaryChip: {
-    minWidth: 84,
-    borderRadius: 14,
-    paddingHorizontal: 12,
-    paddingVertical: 9,
+  modeSummary: {
+    fontSize: 10,
+    lineHeight: 13,
+    fontFamily: Typography.uiFont,
+    flexShrink: 1,
   },
-  summaryChipLabel: {
+  modeSummaryWrap: {
+    flex: 1,
+    minWidth: 0,
+    paddingRight: 4,
+  },
+  modeMetaRow: {
+    minHeight: 24,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+  },
+  collapseAllButton: {
+    minHeight: 28,
+    borderRadius: 8,
+    borderWidth: StyleSheet.hairlineWidth,
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+    alignItems: "center",
+    justifyContent: "center",
+    flexShrink: 0,
+  },
+  collapseAllText: {
     fontSize: 10,
     lineHeight: 12,
-    fontFamily: Typography.uiFont,
-    textTransform: "uppercase",
-    letterSpacing: 0.4,
-    opacity: 0.9,
+    fontFamily: Typography.uiFontMedium,
   },
-  summaryChipValue: {
-    marginTop: 4,
-    fontSize: 13,
+  segmented: {
+    minHeight: 34,
+    borderRadius: 12,
+    borderWidth: StyleSheet.hairlineWidth,
+    padding: 3,
+    flexDirection: "row",
+    gap: 3,
+  },
+  segmentButton: {
+    flex: 1,
+    minHeight: 26,
+    borderRadius: 9,
+    alignItems: "center",
+    justifyContent: "center",
+    paddingHorizontal: 8,
+  },
+  segmentButtonText: {
+    fontSize: 12,
     lineHeight: 16,
     fontFamily: Typography.uiFontMedium,
   },
@@ -1601,461 +1273,300 @@ const styles = StyleSheet.create({
     paddingHorizontal: 14,
     paddingVertical: 14,
   },
-  workspaceRoot: {
+  fullList: {
     flex: 1,
-    paddingHorizontal: 14,
-    paddingTop: 14,
-    paddingBottom: 18,
-    gap: 12,
   },
-  countStrip: {
-    borderRadius: 18,
+  fullListEmpty: {
+    flexGrow: 1,
+  },
+  diffContent: {
+    paddingHorizontal: 8,
+    paddingTop: 8,
+    paddingBottom: 18,
+    gap: 8,
+  },
+  diffCard: {
+    borderRadius: 10,
     borderWidth: StyleSheet.hairlineWidth,
-    paddingHorizontal: 14,
-    paddingVertical: 12,
+    overflow: "hidden",
+  },
+  diffCardHeader: {
+    minHeight: 46,
+    paddingHorizontal: 9,
+    paddingVertical: 6,
+    borderBottomWidth: StyleSheet.hairlineWidth,
     flexDirection: "row",
     alignItems: "center",
-    justifyContent: "space-between",
-    gap: 14,
+    gap: 10,
   },
-  countStripCopy: {
+  diffCardTitleWrap: {
     flex: 1,
     minWidth: 0,
   },
-  countStripLabel: {
+  diffOpenButton: {
+    width: 28,
+    height: 28,
+    borderRadius: 9,
+    borderWidth: StyleSheet.hairlineWidth,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  diffFileName: {
+    fontSize: 13,
+    lineHeight: 17,
+    fontFamily: Typography.terminalFontBold,
+  },
+  diffFilePath: {
+    marginTop: 2,
+    fontSize: 10,
+    lineHeight: 13,
+    fontFamily: Typography.uiFont,
+  },
+  diffHeaderBadges: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+  },
+  patchList: {
+    padding: 5,
+    gap: 5,
+  },
+  patchSection: {
+    borderRadius: 8,
+    borderWidth: StyleSheet.hairlineWidth,
+    overflow: "hidden",
+  },
+  patchHeader: {
+    paddingHorizontal: 8,
+    paddingVertical: 5,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: 10,
+  },
+  patchTitle: {
     fontSize: 12,
     lineHeight: 16,
     fontFamily: Typography.uiFontMedium,
   },
-  countStripMeta: {
-    marginTop: 4,
-    fontSize: 11,
-    lineHeight: 16,
-    fontFamily: Typography.uiFont,
-  },
-  countStripValues: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 12,
-  },
-  countStripValue: {
-    fontSize: 15,
-    lineHeight: 18,
-    fontFamily: Typography.terminalFontBold,
-  },
-  mobileToolbar: {
-    gap: 10,
-  },
-  workspace: {
-    flex: 1,
-    gap: 12,
-  },
-  workspaceWide: {
-    flexDirection: "row",
-  },
-  workspaceStacked: {
-    flexDirection: "column",
-  },
-  browserPane: {
-    borderRadius: 22,
-    borderWidth: StyleSheet.hairlineWidth,
-    overflow: "hidden",
-    minHeight: 0,
-  },
-  browserPaneWide: {
-    width: 356,
-    flexShrink: 0,
-  },
-  browserPaneStacked: {
-    flex: 1,
-  },
-  previewPane: {
-    flex: 1,
-    borderRadius: 22,
-    borderWidth: StyleSheet.hairlineWidth,
-    overflow: "hidden",
-    minHeight: 0,
-  },
-  browserPaneHeader: {
-    paddingHorizontal: 14,
-    paddingTop: 14,
-    paddingBottom: 12,
-    borderBottomWidth: StyleSheet.hairlineWidth,
-    flexDirection: "row",
-    alignItems: "flex-end",
-    justifyContent: "space-between",
-    gap: 12,
-  },
-  browserPaneTitleWrap: {
-    minWidth: 0,
-    flex: 1,
-  },
-  browserPaneMeta: {
-    fontSize: 11,
-    lineHeight: 15,
-    fontFamily: Typography.uiFont,
-  },
-  browserTools: {
-    paddingHorizontal: 12,
-    paddingTop: 12,
-    paddingBottom: 12,
-    gap: 8,
-    borderBottomWidth: StyleSheet.hairlineWidth,
-  },
-  searchField: {
-    minHeight: 42,
-    borderRadius: 15,
-    borderWidth: StyleSheet.hairlineWidth,
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 10,
-    paddingHorizontal: 12,
-  },
-  searchInput: {
-    flex: 1,
-    minWidth: 0,
-    fontSize: 13,
-    lineHeight: 18,
-    fontFamily: Typography.uiFont,
-    paddingVertical: 0,
-  },
-  searchClearButton: {
-    width: 18,
-    height: 18,
-    alignItems: "center",
-    justifyContent: "center",
-  },
-  searchMeta: {
-    fontSize: 11,
-    lineHeight: 16,
-    fontFamily: Typography.uiFont,
-  },
-  panelEyebrow: {
+  patchScope: {
     fontSize: 10,
     lineHeight: 12,
     fontFamily: Typography.uiFont,
     textTransform: "uppercase",
     letterSpacing: 0.5,
   },
-  panelTitle: {
-    marginTop: 5,
-    fontSize: 18,
-    lineHeight: 22,
-    fontFamily: Typography.uiFontMedium,
-  },
-  browserScroll: {
-    flex: 1,
-  },
-  browserScrollContent: {
-    paddingHorizontal: 12,
-    paddingTop: 12,
+  browserContent: {
+    paddingHorizontal: 8,
+    paddingTop: 8,
     paddingBottom: 20,
-    gap: 6,
+    gap: 3,
   },
-  browserScrollContentTablet: {
-    paddingBottom: 28,
-  },
-  treeDirectoryRow: {
-    minHeight: 36,
-    borderRadius: 12,
-    paddingRight: 10,
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "space-between",
-    gap: 10,
-  },
-  treeDirectoryLead: {
-    flexDirection: "row",
-    alignItems: "center",
+  browserHeaderWrap: {
     gap: 8,
-    flex: 1,
-    minWidth: 0,
+    marginBottom: 2,
   },
-  treeDirectoryTitle: {
-    fontSize: 12,
-    lineHeight: 16,
-    fontFamily: Typography.uiFontMedium,
-  },
-  treeDirectoryCount: {
-    fontSize: 11,
-    lineHeight: 14,
-    fontFamily: Typography.terminalFont,
-  },
-  fileRow: {
-    minHeight: 48,
-    borderRadius: 16,
+  browserPathBar: {
+    minHeight: 44,
+    borderRadius: 11,
     borderWidth: StyleSheet.hairlineWidth,
-    paddingRight: 10,
-    paddingVertical: 8,
+    paddingHorizontal: 9,
+    paddingVertical: 6,
     flexDirection: "row",
     alignItems: "center",
-    justifyContent: "space-between",
-    gap: 10,
+    gap: 9,
   },
-  fileRowLead: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 10,
-    flex: 1,
-    minWidth: 0,
-  },
-  fileRowIconWrap: {
-    width: 20,
+  browserBackButton: {
+    width: 30,
+    height: 30,
+    borderRadius: 10,
+    borderWidth: StyleSheet.hairlineWidth,
     alignItems: "center",
     justifyContent: "center",
   },
-  fileRowCopy: {
+  browserPathCopy: {
     flex: 1,
     minWidth: 0,
   },
-  fileRowTitle: {
+  browserRepoTitle: {
     fontSize: 13,
     lineHeight: 17,
-    fontFamily: Typography.terminalFontBold,
+    fontFamily: Typography.uiFontMedium,
   },
-  fileRowMeta: {
-    marginTop: 3,
-    fontSize: 11,
-    lineHeight: 15,
-    fontFamily: Typography.uiFont,
+  browserPathText: {
+    marginTop: 1,
+    fontSize: 10,
+    lineHeight: 13,
+    fontFamily: Typography.terminalFont,
   },
-  previewHeader: {
-    paddingHorizontal: 14,
-    paddingTop: 14,
-    paddingBottom: 12,
-    borderBottomWidth: StyleSheet.hairlineWidth,
-    gap: 12,
+  repoEntryRow: {
+    minHeight: 34,
+    borderRadius: 8,
+    borderWidth: StyleSheet.hairlineWidth,
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 9,
   },
-  previewHeaderCopy: {
+  repoEntryCopy: {
+    flex: 1,
     minWidth: 0,
   },
-  previewHeaderActions: {
-    flexDirection: "row",
-    alignItems: "center",
-    flexWrap: "wrap",
-    gap: 8,
-  },
-  previewPath: {
-    marginTop: 4,
-    fontSize: 16,
-    lineHeight: 22,
-    fontFamily: Typography.terminalFontBold,
-  },
-  previewMeta: {
-    marginTop: 4,
-    fontSize: 11,
-    lineHeight: 16,
-    fontFamily: Typography.uiFont,
-  },
-  previewToolbar: {
-    paddingHorizontal: 14,
-    paddingTop: 12,
-    gap: 10,
-  },
-  previewStats: {
-    flexDirection: "row",
-    alignItems: "center",
-    flexWrap: "wrap",
-    gap: 8,
-  },
-  previewBody: {
-    flex: 1,
-    minHeight: 0,
-    paddingHorizontal: 14,
-    paddingTop: 12,
-    paddingBottom: 14,
-  },
-  previewScroll: {
-    flex: 1,
-    minHeight: 0,
-  },
-  previewScrollContent: {
-    paddingBottom: 24,
-    gap: 10,
-  },
-  segmented: {
-    flexDirection: "row",
-    alignItems: "center",
-    borderRadius: 16,
-    borderWidth: StyleSheet.hairlineWidth,
-    padding: 4,
-    gap: 4,
-  },
-  segmentButton: {
-    flex: 1,
-    minHeight: 38,
-    borderRadius: 12,
-    borderWidth: StyleSheet.hairlineWidth,
-    alignItems: "center",
-    justifyContent: "center",
-    paddingHorizontal: 12,
-  },
-  segmentButtonCompact: {
-    minHeight: 34,
-    paddingHorizontal: 10,
-  },
-  segmentButtonText: {
+  repoEntryName: {
     fontSize: 12,
     lineHeight: 16,
     fontFamily: Typography.uiFontMedium,
-    textAlign: "center",
+  },
+  repoFileRoot: {
+    flex: 1,
+  },
+  repoFileHeader: {
+    minHeight: 48,
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 9,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+  },
+  repoFileBack: {
+    width: 32,
+    height: 32,
+    borderRadius: 10,
+    borderWidth: StyleSheet.hairlineWidth,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  repoFileCopy: {
+    flex: 1,
+    minWidth: 0,
+  },
+  repoFileTitle: {
+    fontSize: 14,
+    lineHeight: 18,
+    fontFamily: Typography.terminalFontBold,
+  },
+  repoFilePath: {
+    marginTop: 1,
+    fontSize: 10,
+    lineHeight: 13,
+    fontFamily: Typography.terminalFont,
+  },
+  changedPill: {
+    borderRadius: 999,
+    paddingHorizontal: 7,
+    paddingVertical: 3,
+  },
+  changedPillText: {
+    fontSize: 10,
+    lineHeight: 12,
+    fontFamily: Typography.uiFontMedium,
   },
   statusPill: {
-    borderRadius: 12,
-    paddingHorizontal: 10,
+    borderRadius: 999,
+    paddingHorizontal: 8,
     paddingVertical: 5,
   },
   statusPillCompact: {
-    paddingHorizontal: 8,
-    paddingVertical: 4,
+    paddingHorizontal: 7,
+    paddingVertical: 3,
   },
   statusPillText: {
-    fontSize: 11,
-    lineHeight: 13,
-    fontFamily: Typography.uiFontMedium,
-  },
-  scopeBadge: {
-    borderRadius: 12,
-    paddingHorizontal: 10,
-    paddingVertical: 5,
-  },
-  scopeBadgeText: {
-    fontSize: 11,
-    lineHeight: 13,
-    fontFamily: Typography.uiFontMedium,
-  },
-  metaPill: {
-    borderRadius: 14,
-    borderWidth: StyleSheet.hairlineWidth,
-    paddingHorizontal: 10,
-    paddingVertical: 8,
-  },
-  metaPillLabel: {
     fontSize: 10,
     lineHeight: 12,
-    fontFamily: Typography.uiFont,
-    textTransform: "uppercase",
-    letterSpacing: 0.4,
-  },
-  metaPillValue: {
-    marginTop: 4,
-    fontSize: 12,
-    lineHeight: 15,
-    fontFamily: Typography.terminalFontBold,
-  },
-  section: {
-    borderRadius: 18,
-    borderWidth: StyleSheet.hairlineWidth,
-    overflow: "hidden",
-  },
-  sectionHeader: {
-    paddingHorizontal: 12,
-    paddingTop: 12,
-    paddingBottom: 8,
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "space-between",
-    gap: 12,
-  },
-  sectionTitle: {
-    fontSize: 13,
-    lineHeight: 16,
     fontFamily: Typography.uiFontMedium,
   },
-  sectionScope: {
-    fontSize: 11,
-    lineHeight: 13,
-    fontFamily: Typography.terminalFont,
-    textTransform: "uppercase",
+  statusPillTextCompact: {
+    fontSize: 9,
+    lineHeight: 11,
   },
-  diffBlock: {
-    minWidth: "100%",
-    paddingHorizontal: 10,
-    paddingBottom: 10,
+  inlineStateWrap: {
+    padding: 8,
   },
-  diffLineWrap: {
-    borderRadius: 8,
-    paddingHorizontal: 8,
-    paddingVertical: 4,
-    marginBottom: 2,
-    flexDirection: "row",
+  stateCard: {
+    borderRadius: 14,
+    borderWidth: StyleSheet.hairlineWidth,
+    paddingHorizontal: 12,
+    paddingVertical: 12,
     alignItems: "flex-start",
-    gap: 10,
+    gap: 6,
   },
-  diffLineNumber: {
-    minWidth: 32,
+  stateTitle: {
+    fontSize: 13,
+    lineHeight: 17,
+    fontFamily: Typography.uiFontMedium,
+  },
+  stateDetail: {
     fontSize: 11,
-    lineHeight: 18,
-    fontFamily: Typography.terminalFont,
-    textAlign: "right",
+    lineHeight: 15,
+    fontFamily: Typography.uiFont,
   },
-  diffLine: {
-    fontSize: 12,
-    lineHeight: 18,
-    fontFamily: Typography.terminalFont,
-  },
-  codePanel: {
+  codeScroll: {
     flex: 1,
-    minHeight: 0,
-    gap: 12,
   },
-  codePanelMeta: {
-    flexDirection: "row",
-    alignItems: "center",
-    flexWrap: "wrap",
-    gap: 8,
+  codeScrollContent: {
+    paddingHorizontal: 8,
+    paddingTop: 8,
+    paddingBottom: 20,
+  },
+  truncationBanner: {
+    borderRadius: 8,
+    borderWidth: StyleSheet.hairlineWidth,
+    paddingHorizontal: 12,
+    paddingVertical: 9,
+    marginBottom: 10,
+  },
+  truncationText: {
+    fontSize: 11,
+    lineHeight: 15,
+    fontFamily: Typography.uiFont,
   },
   codeFrame: {
     minWidth: "100%",
-    borderRadius: 18,
+    borderRadius: 12,
     borderWidth: StyleSheet.hairlineWidth,
     overflow: "hidden",
-    paddingVertical: 8,
   },
   codeRow: {
+    minHeight: 18,
     flexDirection: "row",
-    alignItems: "flex-start",
-    gap: 12,
-    paddingHorizontal: 12,
-    paddingVertical: 2,
+    alignItems: "center",
+    paddingRight: 12,
   },
   codeLineNumber: {
-    minWidth: 34,
-    fontSize: 11,
-    lineHeight: 20,
-    fontFamily: Typography.terminalFont,
+    width: 36,
     textAlign: "right",
+    paddingRight: 8,
+    fontSize: 10,
+    lineHeight: 15,
+    fontFamily: Typography.terminalFont,
   },
   codeLine: {
-    fontSize: 12,
-    lineHeight: 20,
+    fontSize: 10,
+    lineHeight: 15,
     fontFamily: Typography.terminalFont,
   },
-  inlineStateWrap: {
-    flex: 1,
-    justifyContent: "center",
+  diffBlock: {
+    minWidth: "100%",
   },
-  stateCard: {
+  diffLineWrap: {
+    minHeight: 18,
+    flexDirection: "row",
     alignItems: "center",
-    justifyContent: "center",
-    paddingHorizontal: 18,
-    paddingVertical: 24,
-    borderRadius: 20,
-    borderWidth: 1,
-    minHeight: 180,
+    paddingRight: 12,
   },
-  stateTitle: {
-    marginTop: 12,
-    fontSize: 18,
-    lineHeight: 22,
-    fontFamily: Typography.uiFontMedium,
-    textAlign: "center",
+  diffLineNumber: {
+    width: 36,
+    textAlign: "right",
+    paddingRight: 8,
+    fontSize: 10,
+    lineHeight: 15,
+    fontFamily: Typography.terminalFont,
   },
-  stateDetail: {
-    marginTop: 8,
-    fontSize: 13,
-    lineHeight: 20,
-    fontFamily: Typography.uiFont,
-    textAlign: "center",
+  diffLine: {
+    fontSize: 10,
+    lineHeight: 15,
+    fontFamily: Typography.terminalFont,
   },
 });

@@ -1,19 +1,19 @@
 import React from "react";
 import { Pressable, StyleSheet, Text, View } from "react-native";
 import { useRouter } from "expo-router";
-import { Colors, Spacing, Typography } from "../../constants/tokens";
+import { Colors, Typography } from "../../constants/tokens";
 import type { Issue } from "../../store/issues";
 
-type GlyphInfo = { glyph: string; color: string };
+type GlyphInfo = { glyph: string; color: string; label: string };
 
 export function statusGlyph(issue: Issue): GlyphInfo {
   if (issue.frontmatter.done) {
-    return { glyph: "✓", color: Colors.textSecondary };
+    return { glyph: "✓", color: Colors.textSecondary, label: "Done" };
   }
   if (issue.frontmatter.dispatched) {
-    return { glyph: "▸", color: Colors.statusRunning };
+    return { glyph: "▸", color: Colors.statusRunning, label: "Sent" };
   }
-  return { glyph: "●", color: Colors.accent };
+  return { glyph: "●", color: Colors.accent, label: "Open" };
 }
 
 export function relativeTime(iso: string): string {
@@ -31,9 +31,11 @@ export function relativeTime(iso: string): string {
 
 export function IssueRow({ issue }: { issue: Issue }) {
   const router = useRouter();
-  const { glyph, color } = statusGlyph(issue);
+  const { glyph, color, label } = statusGlyph(issue);
   const done = !!issue.frontmatter.done;
+  const sent = !!issue.frontmatter.dispatched;
   const timeSource = issue.mtime || issue.frontmatter.created;
+  const mentionCount = issue.mentions.length;
 
   return (
     <Pressable
@@ -46,12 +48,23 @@ export function IssueRow({ issue }: { issue: Issue }) {
       style={({ pressed }) => [styles.row, pressed && styles.rowPressed]}
     >
       <Text style={[styles.glyph, { color }]}>{glyph}</Text>
-      <Text
-        style={[styles.title, done && styles.titleDone]}
-        numberOfLines={1}
-      >
-        {issue.title || "(untitled)"}
-      </Text>
+      <View style={styles.copy}>
+        <Text
+          style={[styles.title, done && styles.titleDone]}
+          numberOfLines={1}
+        >
+          {issue.title || "(untitled)"}
+        </Text>
+        {sent || mentionCount > 0 ? (
+          <View style={styles.metaLine}>
+            {sent ? <Text style={[styles.status, { color }]}>{label}</Text> : null}
+            {sent && mentionCount > 0 ? <Text style={styles.metaDot}>·</Text> : null}
+            {mentionCount > 0 ? (
+              <Text style={styles.meta}>@{mentionCount}</Text>
+            ) : null}
+          </View>
+        ) : null}
+      </View>
       <Text style={styles.time}>{relativeTime(timeSource)}</Text>
     </Pressable>
   );
@@ -61,35 +74,73 @@ const styles = StyleSheet.create({
   row: {
     flexDirection: "row",
     alignItems: "center",
-    gap: Spacing.md,
-    paddingHorizontal: Spacing.lg,
-    height: 44,
+    gap: 10,
+    minHeight: 40,
+    paddingVertical: 6,
     backgroundColor: Colors.bgPrimary,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: "rgba(235,225,207,0.045)",
   },
   rowPressed: {
-    backgroundColor: Colors.bgSurface,
+    backgroundColor: "rgba(255,255,255,0.035)",
   },
   glyph: {
-    width: 14,
     fontFamily: Typography.terminalFontBold,
-    fontSize: 14,
+    fontSize: 10,
+    lineHeight: 18,
     textAlign: "center",
+    width: 16,
+    opacity: 0.88,
+  },
+  copy: {
+    flex: 1,
+    minWidth: 0,
   },
   title: {
-    flex: 1,
     color: Colors.textPrimary,
     fontFamily: Typography.uiFontMedium,
-    fontSize: 15,
+    fontSize: 13,
+    lineHeight: 17,
+    opacity: 0.92,
   },
   titleDone: {
     color: Colors.textSecondary,
     textDecorationLine: "line-through",
+    opacity: 0.62,
+  },
+  metaLine: {
+    marginTop: 1,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 5,
+  },
+  status: {
+    fontFamily: Typography.terminalFont,
+    fontSize: 10,
+    lineHeight: 13,
+    opacity: 0.78,
+  },
+  metaDot: {
+    color: Colors.textSecondary,
+    fontFamily: Typography.terminalFont,
+    fontSize: 10,
+    lineHeight: 13,
+    opacity: 0.35,
+  },
+  meta: {
+    color: Colors.textSecondary,
+    fontFamily: Typography.uiFont,
+    fontSize: 10,
+    lineHeight: 13,
+    opacity: 0.5,
   },
   time: {
     color: Colors.textSecondary,
     fontFamily: Typography.uiFont,
-    fontSize: 12,
-    minWidth: 28,
+    fontSize: 11,
+    lineHeight: 14,
+    minWidth: 26,
     textAlign: "right",
+    opacity: 0.44,
   },
 });

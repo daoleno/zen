@@ -140,7 +140,7 @@ export default function InboxScreen() {
   );
 
   const sortedAgents = useMemo(() => {
-    return [...displayAgents].sort((left, right) => {
+    const agentsByPriority = [...displayAgents].sort((left, right) => {
       const leftOpenedAt = recentAgentOpens[left.key] ?? 0;
       const rightOpenedAt = recentAgentOpens[right.key] ?? 0;
       if (leftOpenedAt !== rightOpenedAt) return rightOpenedAt - leftOpenedAt;
@@ -150,6 +150,7 @@ export default function InboxScreen() {
       if (leftPriority !== rightPriority) return leftPriority - rightPriority;
       return (right.updated_at || 0) - (left.updated_at || 0);
     });
+    return groupAgentsByDirectory(agentsByPriority).flatMap(section => section.data);
   }, [displayAgents, recentAgentOpens]);
 
   const showServerNames = useMemo(
@@ -368,22 +369,11 @@ export default function InboxScreen() {
           ? 'zen is trying to reconnect. You can still change servers now.'
           : 'Your saved servers are offline. You can edit them or add another one.';
 
-  const buildAgentMeta = (item: Agent) => {
-    const linkedIssue = agentIssueMap[`${item.serverId}:${item.id}`];
-    if (linkedIssue) {
-      return linkedIssue.title || linkedIssue.id;
-    }
-    const summary = item.summary.trim();
-    if ((item.status === 'blocked' || item.status === 'failed') && summary) {
-      return summary;
-    }
-    return '';
-  };
-
   const renderPromptAgent = ({ item }: { item: Agent }) => {
     const presented = presentAgent(item, agentAliases[item.key]);
     const directoryLabel = promptDirectoryLabel(item, presented.cwdBase, showServerNames);
-    const meta = buildAgentMeta(item);
+    const promptTitle = resolvePromptTitle(item, presented, agentIssueMap);
+    const meta = buildPromptMeta(item, presented, promptTitle, agentIssueMap);
     const hasMeta = Boolean(meta);
     return (
       <TouchableOpacity
@@ -394,14 +384,14 @@ export default function InboxScreen() {
         delayLongPress={400}
       >
         <View style={styles.promptLine}>
+          <View style={styles.promptIcon}>
+            <AgentKindIcon kind={presented.kind} size={13} />
+          </View>
           <View style={styles.promptPrefix}>
             <Text style={styles.promptDirectory} numberOfLines={1}>{directoryLabel}</Text>
             <Text style={styles.promptArrow}>❯</Text>
           </View>
-          <View style={styles.promptIcon}>
-            <AgentKindIcon kind={presented.kind} size={13} />
-          </View>
-          <Text style={styles.promptTitle} numberOfLines={1}>{presented.title}</Text>
+          <Text style={styles.promptTitle} numberOfLines={1}>{promptTitle}</Text>
           <View style={[styles.promptStatusDot, { backgroundColor: statusColor(item.status) }]} />
         </View>
         {meta ? (
@@ -676,6 +666,49 @@ function ToggleButton({
   );
 }
 
+function resolvePromptTitle(
+  agent: Agent,
+  presented: ReturnType<typeof presentAgent>,
+  issueMap: Record<string, Issue>,
+): string {
+  if (presented.titleSource !== 'default') {
+    return presented.title;
+  }
+
+  const linkedIssue = issueMap[`${agent.serverId}:${agent.id}`];
+  const issueTitle = linkedIssue?.title?.trim();
+  if (issueTitle) {
+    return issueTitle;
+  }
+
+  return presented.title;
+}
+
+function buildPromptMeta(
+  agent: Agent,
+  presented: ReturnType<typeof presentAgent>,
+  promptTitle: string,
+  issueMap: Record<string, Issue>,
+): string {
+  const summary = agent.summary.trim();
+  if ((agent.status === 'blocked' || agent.status === 'failed') && summary) {
+    return summary;
+  }
+
+  const linkedIssue = issueMap[`${agent.serverId}:${agent.id}`];
+  const issueTitle = linkedIssue?.title?.trim() || linkedIssue?.id || '';
+
+  if (issueTitle && issueTitle !== promptTitle) {
+    return issueTitle;
+  }
+
+  if (presented.titleSource === 'default') {
+    return '';
+  }
+
+  return '';
+}
+
 function promptDirectoryLabel(agent: Agent, cwdBase: string, showServerNames: boolean): string {
   const directory = cwdBase || agent.project?.trim() || lastPathSegment(agent.cwd) || 'session';
   if (!showServerNames || !agent.serverName) {
@@ -810,7 +843,7 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     flexShrink: 1,
-    marginRight: 8,
+    marginRight: 10,
   },
   promptDirectory: {
     flexShrink: 1,
@@ -828,7 +861,7 @@ const styles = StyleSheet.create({
     marginLeft: 6,
   },
   promptIcon: {
-    marginRight: 8,
+    marginRight: 10,
     opacity: 0.86,
   },
   promptTitle: {

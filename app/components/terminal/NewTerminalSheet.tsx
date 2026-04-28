@@ -26,14 +26,13 @@ type LaunchPreset = {
   key: string;
   kind: AgentKind;
   label: string;
-  description: string;
   command: string;
 };
 
 const PRESETS: readonly LaunchPreset[] = [
-  { key: 'shell', kind: 'terminal', label: 'Shell', description: 'Plain terminal session', command: '' },
-  { key: 'claude', kind: 'claude', label: 'Claude', description: 'Claude Code agent', command: CLAUDE_CODE_COMMAND },
-  { key: 'codex', kind: 'codex', label: 'Codex', description: 'OpenAI Codex agent', command: CODEX_COMMAND },
+  { key: 'shell', kind: 'terminal', label: 'Shell', command: '' },
+  { key: 'claude', kind: 'claude', label: 'Claude', command: CLAUDE_CODE_COMMAND },
+  { key: 'codex', kind: 'codex', label: 'Codex', command: CODEX_COMMAND },
 ];
 
 interface NewTerminalSheetProps {
@@ -175,9 +174,8 @@ export function NewTerminalSheet({
                   <AgentKindIcon kind={preset.kind} size={18} />
                   <View style={styles.presetCardText}>
                     <Text style={styles.presetLabel}>{preset.label}</Text>
-                    <Text style={styles.presetDesc}>{preset.description}</Text>
                   </View>
-                  <Ionicons name="chevron-forward" size={16} color="rgba(255,255,255,0.2)" />
+                  <Ionicons name="chevron-forward" size={14} color="rgba(255,255,255,0.18)" />
                 </TouchableOpacity>
               ))}
             </View>
@@ -297,12 +295,12 @@ const styles = StyleSheet.create({
     backgroundColor: 'rgba(6, 8, 12, 0.62)',
   },
   card: {
-    maxHeight: '85%',
+    maxHeight: '68%',
     borderTopLeftRadius: 28,
     borderTopRightRadius: 28,
-    paddingHorizontal: 18,
-    paddingTop: 12,
-    paddingBottom: 28,
+    paddingHorizontal: 14,
+    paddingTop: 10,
+    paddingBottom: 18,
     backgroundColor: '#121A25',
     borderTopWidth: 1,
     borderColor: 'rgba(255,255,255,0.06)',
@@ -310,27 +308,27 @@ const styles = StyleSheet.create({
   handle: {
     alignSelf: 'center',
     width: 42,
-    height: 4,
+    height: 3,
     borderRadius: 2,
     backgroundColor: '#3A475B',
-    marginBottom: 18,
+    marginBottom: 10,
   },
 
   // Server chips
   serverSection: {
-    marginBottom: 14,
+    marginBottom: 8,
   },
   serverRow: {
     flexDirection: 'row',
     gap: 8,
   },
   serverChip: {
-    paddingHorizontal: 12,
-    height: 34,
-    borderRadius: 12,
+    paddingHorizontal: 10,
+    height: 28,
+    borderRadius: 10,
     justifyContent: 'center',
     backgroundColor: '#18222F',
-    borderWidth: 1,
+    borderWidth: StyleSheet.hairlineWidth,
     borderColor: 'rgba(255,255,255,0.06)',
   },
   serverChipActive: {
@@ -339,7 +337,7 @@ const styles = StyleSheet.create({
   },
   serverChipText: {
     color: Colors.textSecondary,
-    fontSize: 13,
+    fontSize: 12,
     fontFamily: Typography.uiFontMedium,
   },
   serverChipTextActive: {
@@ -348,22 +346,21 @@ const styles = StyleSheet.create({
 
   // Preset cards
   presetList: {
-    gap: 8,
+    gap: 0,
   },
   presetCard: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 14,
-    paddingVertical: 14,
-    paddingHorizontal: 16,
-    borderRadius: 14,
-    backgroundColor: '#18222F',
-    borderWidth: 1,
-    borderColor: 'rgba(255,255,255,0.06)',
+    gap: 12,
+    minHeight: 42,
+    paddingVertical: 8,
+    paddingHorizontal: 4,
+    backgroundColor: 'transparent',
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: 'rgba(255,255,255,0.055)',
   },
   presetCardActive: {
-    borderColor: 'rgba(91,157,255,0.38)',
-    backgroundColor: 'rgba(91,157,255,0.08)',
+    backgroundColor: 'rgba(91,157,255,0.045)',
   },
   presetCardDisabled: {
     opacity: 0.5,
@@ -373,15 +370,9 @@ const styles = StyleSheet.create({
   },
   presetLabel: {
     color: Colors.textPrimary,
-    fontSize: 15,
+    fontSize: 14,
+    lineHeight: 18,
     fontFamily: Typography.uiFontMedium,
-  },
-  presetDesc: {
-    color: Colors.textSecondary,
-    fontSize: 12,
-    fontFamily: Typography.uiFont,
-    marginTop: 2,
-    opacity: 0.7,
   },
 
   // Advanced
@@ -389,12 +380,12 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     gap: 6,
-    marginTop: 16,
-    paddingVertical: 8,
+    marginTop: 8,
+    paddingVertical: 6,
   },
   advancedToggleText: {
     color: Colors.textSecondary,
-    fontSize: 13,
+    fontSize: 12,
     fontFamily: Typography.uiFont,
   },
   advancedSection: {
@@ -417,56 +408,56 @@ const styles = StyleSheet.create({
     flex: 1,
   },
   input: {
-    minHeight: 42,
-    borderRadius: 12,
-    paddingHorizontal: 14,
+    minHeight: 38,
+    borderRadius: 10,
+    paddingHorizontal: 12,
     color: Colors.textPrimary,
-    fontSize: 14,
+    fontSize: 13,
     fontFamily: Typography.terminalFont,
     backgroundColor: '#18222F',
-    borderWidth: 1,
+    borderWidth: StyleSheet.hairlineWidth,
     borderColor: 'rgba(255,255,255,0.06)',
   },
   folderBtn: {
-    width: 42,
-    minHeight: 42,
-    borderRadius: 12,
+    width: 38,
+    minHeight: 38,
+    borderRadius: 10,
     backgroundColor: '#18222F',
-    borderWidth: 1,
+    borderWidth: StyleSheet.hairlineWidth,
     borderColor: 'rgba(255,255,255,0.06)',
     alignItems: 'center',
     justifyContent: 'center',
     alignSelf: 'stretch',
   },
   launchBtn: {
-    height: 40,
-    borderRadius: 12,
+    height: 36,
+    borderRadius: 10,
     alignItems: 'center',
     justifyContent: 'center',
     backgroundColor: Colors.accent,
-    marginTop: 12,
+    marginTop: 10,
   },
   launchBtnDisabled: {
     opacity: 0.5,
   },
   launchBtnText: {
     color: Colors.bgPrimary,
-    fontSize: 14,
+    fontSize: 13,
     fontFamily: Typography.uiFontMedium,
   },
 
   // Cancel
   cancelBtn: {
-    height: 40,
-    borderRadius: 12,
+    height: 34,
+    borderRadius: 10,
     alignItems: 'center',
     justifyContent: 'center',
-    marginTop: 12,
-    backgroundColor: 'rgba(255,255,255,0.04)',
+    marginTop: 8,
+    backgroundColor: 'transparent',
   },
   cancelBtnText: {
     color: Colors.textSecondary,
-    fontSize: 14,
+    fontSize: 13,
     fontFamily: Typography.uiFontMedium,
   },
 });

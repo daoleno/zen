@@ -35,10 +35,6 @@ import { wsClient } from "../../services/websocket";
 import { ConnectionState, useAgents } from "../../store/agents";
 import * as Storage from "../../services/storage";
 import { connectionIssueAccent } from "../../services/connectionIssue";
-import {
-  measureServerLatency,
-  type ServerLatencySample,
-} from "../../services/serverLatency";
 
 const QR_BARCODE_TYPES: BarcodeType[] = ["qr"];
 
@@ -61,9 +57,6 @@ export default function SettingsScreen() {
   const [draftEndpoint, setDraftEndpoint] = useState("");
   const [draftImportValue, setDraftImportValue] = useState("");
   const [expandedServer, setExpandedServer] = useState<string | null>(null);
-  const [serverLatencyById, setServerLatencyById] = useState<
-    Record<string, ServerLatencySample>
-  >({});
   const [handledAutoOpenToken, setHandledAutoOpenToken] = useState<
     string | null
   >(null);
@@ -90,6 +83,7 @@ export default function SettingsScreen() {
     () => servers.find((server) => server.id === editingServerId) || null,
     [editingServerId, servers],
   );
+  const serverLatencyById = state.serverLatencyById;
 
   useFocusEffect(
     React.useCallback(() => {
@@ -111,71 +105,6 @@ export default function SettingsScreen() {
         cancelled = true;
       };
     }, []),
-  );
-
-  useFocusEffect(
-    React.useCallback(() => {
-      let cancelled = false;
-
-      const refreshLatency = async () => {
-        const connectedServers = servers.filter(
-          (server) => state.serverConnections[server.id] === "connected",
-        );
-
-        if (connectedServers.length === 0) {
-          if (!cancelled) {
-            setServerLatencyById({});
-          }
-          return;
-        }
-
-        const samples = await Promise.all(
-          connectedServers.map(async (server) => {
-            try {
-              return [
-                server.id,
-                await measureServerLatency({
-                  serverUrl: server.url,
-                  daemonId: server.daemonId,
-                }),
-              ] as const;
-            } catch {
-              return [server.id, null] as const;
-            }
-          }),
-        );
-
-        if (cancelled) {
-          return;
-        }
-
-        setServerLatencyById((current) => {
-          const next: Record<string, ServerLatencySample> = {};
-          for (const server of connectedServers) {
-            const existing = current[server.id];
-            if (existing) {
-              next[server.id] = existing;
-            }
-          }
-          for (const [serverId, sample] of samples) {
-            if (sample) {
-              next[serverId] = sample;
-            }
-          }
-          return next;
-        });
-      };
-
-      void refreshLatency();
-      const interval = setInterval(() => {
-        void refreshLatency();
-      }, 15000);
-
-      return () => {
-        cancelled = true;
-        clearInterval(interval);
-      };
-    }, [servers, state.serverConnections]),
   );
 
   useEffect(() => {
@@ -200,11 +129,13 @@ export default function SettingsScreen() {
     setServers(await Storage.getServers());
   };
 
-  const connectServer = (server: Storage.StoredServer) => {
+  const connectServer = async (server: Storage.StoredServer) => {
+    await Storage.setServerAutoConnect(server.id, true);
     wsClient.connectServer(server);
   };
 
-  const disconnectServer = (serverId: string) => {
+  const disconnectServer = async (serverId: string) => {
+    await Storage.setServerAutoConnect(serverId, false);
     wsClient.disconnectServer(serverId);
   };
 
@@ -286,6 +217,7 @@ export default function SettingsScreen() {
     closeEditor();
 
     if (shouldReconnect) {
+      await Storage.setServerAutoConnect(savedServer.id, true);
       wsClient.connectServer(savedServer);
     }
   };
@@ -538,11 +470,11 @@ export default function SettingsScreen() {
                       <View style={styles.serverActions}>
                         <TouchableOpacity
                           style={styles.actionBtn}
-                          onPress={() =>
+                          onPress={() => void (
                             connectionState === "connected"
                               ? disconnectServer(server.id)
                               : connectServer(server)
-                          }
+                          )}
                           activeOpacity={0.82}
                         >
                           <Text style={styles.actionBtnText}>

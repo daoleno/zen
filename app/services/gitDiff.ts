@@ -65,6 +65,24 @@ export interface GitDiffFileContentPayload {
   base: GitDiffContentSnapshot;
 }
 
+export interface GitRepoBrowserEntry {
+  name: string;
+  path: string;
+  kind: "directory" | "file" | string;
+}
+
+export interface GitRepoBrowserPayload {
+  repo_root: string;
+  path: string;
+  entries: GitRepoBrowserEntry[];
+}
+
+export interface GitRepoFileContentPayload {
+  repo_root: string;
+  path: string;
+  snapshot: GitDiffContentSnapshot;
+}
+
 export function buildGitDiffChipLabel(
   snapshot: GitDiffStatusSnapshot | null,
   loading: boolean,

@@ -13,12 +13,17 @@ import { Agent, AgentProvider, useAgents } from "../store/agents";
 import { IssuesProvider, useIssues } from "../store/issues";
 import { Colors } from "../constants/tokens";
 import { wsClient } from "../services/websocket";
-import { getServers, isOnboarded } from "../services/storage";
+import {
+  getDisabledServerIds,
+  getServers,
+  isOnboarded,
+} from "../services/storage";
 import { importConnection } from "../services/importConnection";
 import {
   clearNativeTerminalCrashBreadcrumb,
   getNativeTerminalCrashBreadcrumb,
 } from "../services/nativeTerminalDiagnostics";
+import { measureServerLatency } from "../services/serverLatency";
 
 Notifications.setNotificationHandler({
   handleNotification: async () => ({
@@ -347,8 +352,15 @@ function AppContent() {
           return;
         }
 
-        const servers = await getServers();
+        const [servers, disabledServerIds] = await Promise.all([
+          getServers(),
+          getDisabledServerIds(),
+        ]);
+        const disabledSet = new Set(disabledServerIds);
         servers.forEach((server) => {
+          if (disabledSet.has(server.id)) {
+            return;
+          }
           wsClient.connectServer(server);
         });
       } catch (error) {
@@ -401,6 +413,65 @@ function AppContent() {
       subscription.remove();
     };
   }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    const refreshServerLatency = async () => {
+      const servers = await getServers();
+      if (cancelled) {
+        return;
+      }
+
+      const connectedServers = servers.filter(
+        (server) => state.serverConnections[server.id] === "connected",
+      );
+      if (connectedServers.length === 0) {
+        return;
+      }
+
+      const samples = await Promise.all(
+        connectedServers.map(async (server) => {
+          try {
+            return [
+              server.id,
+              await measureServerLatency({
+                serverUrl: server.url,
+                daemonId: server.daemonId,
+              }),
+            ] as const;
+          } catch {
+            return [server.id, null] as const;
+          }
+        }),
+      );
+
+      if (cancelled) {
+        return;
+      }
+
+      for (const [serverId, sample] of samples) {
+        if (!sample) {
+          continue;
+        }
+        dispatch({
+          type: "SET_SERVER_LATENCY",
+          serverId,
+          sample,
+        });
+      }
+    };
+
+    void refreshServerLatency();
+    const interval = setInterval(() => {
+      void refreshServerLatency();
+    }, 15000);
+
+    return () => {
+      cancelled = true;
+      clearInterval(interval);
+    };
+  }, [dispatch, state.serverConnections]);
 
   useEffect(() => {
     const nextAgentStates = new Map(

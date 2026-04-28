@@ -42,6 +42,7 @@ import {
   getAgentAliases,
   getRecentAgentOpens,
   getServerById,
+  getServers,
   getTerminalTabs,
   getTerminalTheme,
   markAgentOpened,
@@ -68,10 +69,15 @@ import { NewTerminalSheet } from "../../components/terminal/NewTerminalSheet";
 import { presentAgent } from "../../services/agentPresentation";
 import {
   buildGitDiffChipLabel,
-  type GitDiffFileContentPayload,
   type GitDiffPatchPayload,
+  type GitRepoBrowserEntry,
+  type GitRepoFileContentPayload,
   type GitDiffStatusSnapshot,
 } from "../../services/gitDiff";
+import {
+  filterAgentsByPreferredServers,
+  groupAgentsByDirectory,
+} from "../../services/serverSelection";
 
 const EMPTY_TABS: StoredTerminalTabs = { order: [], pinned: [] };
 const MENU_POPOVER_WIDTH = 168;
@@ -113,6 +119,7 @@ export default function TerminalScreen() {
   const [terminalTabs, setTerminalTabs] =
     useState<StoredTerminalTabs>(EMPTY_TABS);
   const [server, setServer] = useState<StoredServer | null>(null);
+  const [servers, setServers] = useState<StoredServer[]>([]);
   const [pickerVisible, setPickerVisible] = useState(false);
   const [menuVisible, setMenuVisible] = useState(false);
   const [menuAnchor, setMenuAnchor] = useState<{
@@ -133,20 +140,28 @@ export default function TerminalScreen() {
     useState<GitDiffStatusSnapshot | null>(null);
   const [gitDiffLoading, setGitDiffLoading] = useState(false);
   const [gitDiffError, setGitDiffError] = useState<string | null>(null);
-  const [gitDiffSelectedPath, setGitDiffSelectedPath] = useState<string | null>(
-    null,
-  );
-  const [gitDiffPatchLoadingPath, setGitDiffPatchLoadingPath] = useState<
-    string | null
-  >(null);
+  const [gitDiffPatchLoadingByPath, setGitDiffPatchLoadingByPath] = useState<
+    Record<string, boolean>
+  >({});
+  const [gitDiffPatchErrorByPath, setGitDiffPatchErrorByPath] = useState<
+    Record<string, string | undefined>
+  >({});
   const [gitDiffPatchByPath, setGitDiffPatchByPath] = useState<
     Record<string, GitDiffPatchPayload | undefined>
   >({});
-  const [gitDiffContentLoadingPath, setGitDiffContentLoadingPath] = useState<
-    string | null
-  >(null);
-  const [gitDiffContentByPath, setGitDiffContentByPath] = useState<
-    Record<string, GitDiffFileContentPayload | undefined>
+  const [repoBrowserPath, setRepoBrowserPath] = useState("");
+  const [repoBrowserEntries, setRepoBrowserEntries] = useState<
+    GitRepoBrowserEntry[]
+  >([]);
+  const [repoBrowserLoading, setRepoBrowserLoading] = useState(false);
+  const [repoBrowserError, setRepoBrowserError] = useState<string | null>(null);
+  const [repoFilePath, setRepoFilePath] = useState<string | null>(null);
+  const [repoFileLoadingPath, setRepoFileLoadingPath] = useState<string | null>(
+    null,
+  );
+  const [repoFileError, setRepoFileError] = useState<string | null>(null);
+  const [repoFileByPath, setRepoFileByPath] = useState<
+    Record<string, GitRepoFileContentPayload | undefined>
   >({});
   const [creatingSession, setCreatingSession] = useState(false);
   const [showTerminalFallback, setShowTerminalFallback] = useState(
@@ -259,10 +274,15 @@ export default function TerminalScreen() {
         setGitDiffStatus(null);
         setGitDiffError(null);
         setGitDiffPatchByPath({});
-        setGitDiffContentByPath({});
-        setGitDiffSelectedPath(null);
-        setGitDiffPatchLoadingPath(null);
-        setGitDiffContentLoadingPath(null);
+        setGitDiffPatchErrorByPath({});
+        setGitDiffPatchLoadingByPath({});
+        setRepoBrowserEntries([]);
+        setRepoBrowserPath("");
+        setRepoBrowserError(null);
+        setRepoFilePath(null);
+        setRepoFileError(null);
+        setRepoFileLoadingPath(null);
+        setRepoFileByPath({});
         if (showLoading) {
           setGitDiffLoading(false);
         }
@@ -274,6 +294,9 @@ export default function TerminalScreen() {
 
       if (showLoading) {
         setGitDiffLoading(true);
+        setGitDiffPatchByPath({});
+        setGitDiffPatchErrorByPath({});
+        setGitDiffPatchLoadingByPath({});
       }
 
       try {
@@ -294,7 +317,7 @@ export default function TerminalScreen() {
             Object.entries(previous).filter(([path]) => allowed.has(path)),
           );
         });
-        setGitDiffContentByPath((previous) => {
+        setGitDiffPatchErrorByPath((previous) => {
           if (!nextStatus.available) {
             return {};
           }
@@ -302,19 +325,6 @@ export default function TerminalScreen() {
           return Object.fromEntries(
             Object.entries(previous).filter(([path]) => allowed.has(path)),
           );
-        });
-        setGitDiffSelectedPath((previous) => {
-          if (!nextStatus.available) {
-            return null;
-          }
-          const files = nextStatus.files ?? [];
-          if (files.length === 0) {
-            return null;
-          }
-          if (previous && files.some((file) => file.path === previous)) {
-            return previous;
-          }
-          return files[0]?.path ?? null;
         });
       } catch (error: any) {
         if (gitDiffRequestRef.current !== requestId) return;
@@ -367,10 +377,16 @@ export default function TerminalScreen() {
     let cancelled = false;
 
     (async () => {
-      const [storedTheme, storedRecentOpens, storedAliases] = await Promise.all(
-        [getTerminalTheme(), getRecentAgentOpens(), getAgentAliases()],
-      );
-      const storedServer = serverId ? await getServerById(serverId) : null;
+      const [storedTheme, storedRecentOpens, storedAliases, storedServers] =
+        await Promise.all([
+          getTerminalTheme(),
+          getRecentAgentOpens(),
+          getAgentAliases(),
+          getServers(),
+        ]);
+      const storedServer = serverId
+        ? storedServers.find((current) => current.id === serverId) || null
+        : null;
 
       if (!sessionKey) {
         const storedTabs = await getTerminalTabs();
@@ -380,6 +396,7 @@ export default function TerminalScreen() {
           setRecentAgentOpens(storedRecentOpens);
           setTerminalTabs(storedTabs);
           setServer(storedServer);
+          setServers(storedServers);
         }
         return;
       }
@@ -397,13 +414,14 @@ export default function TerminalScreen() {
         });
         setTerminalTabs(nextTabs);
         setServer(storedServer);
+        setServers(storedServers);
       }
     })();
 
     return () => {
       cancelled = true;
     };
-  }, [sessionKey]);
+  }, [serverId, sessionKey]);
 
   useEffect(() => {
     setMenuVisible(false);
@@ -421,10 +439,16 @@ export default function TerminalScreen() {
 
   useEffect(() => {
     setGitDiffPatchByPath({});
-    setGitDiffContentByPath({});
-    setGitDiffSelectedPath(null);
-    setGitDiffPatchLoadingPath(null);
-    setGitDiffContentLoadingPath(null);
+    setGitDiffPatchErrorByPath({});
+    setGitDiffPatchLoadingByPath({});
+    setRepoBrowserPath("");
+    setRepoBrowserEntries([]);
+    setRepoBrowserError(null);
+    setRepoBrowserLoading(false);
+    setRepoFilePath(null);
+    setRepoFileLoadingPath(null);
+    setRepoFileError(null);
+    setRepoFileByPath({});
     setGitDiffError(null);
   }, [agentId, gitDiffCwd, serverId]);
 
@@ -546,11 +570,16 @@ export default function TerminalScreen() {
       setGitDiffStatus(null);
       setGitDiffError(null);
       setGitDiffLoading(false);
-      setGitDiffSelectedPath(null);
-      setGitDiffPatchLoadingPath(null);
-      setGitDiffContentLoadingPath(null);
+      setGitDiffPatchLoadingByPath({});
+      setGitDiffPatchErrorByPath({});
       setGitDiffPatchByPath({});
-      setGitDiffContentByPath({});
+      setRepoBrowserEntries([]);
+      setRepoBrowserError(null);
+      setRepoBrowserLoading(false);
+      setRepoFilePath(null);
+      setRepoFileError(null);
+      setRepoFileLoadingPath(null);
+      setRepoFileByPath({});
       return;
     }
 
@@ -608,11 +637,22 @@ export default function TerminalScreen() {
     }
   }, [sessionKey]);
 
+  const displayAgents = useMemo(
+    () =>
+      filterAgentsByPreferredServers({
+        agents: state.agents,
+        servers,
+        connectionStates: state.serverConnections,
+        latencyById: state.serverLatencyById,
+      }),
+    [servers, state.agents, state.serverConnections, state.serverLatencyById],
+  );
+
   const sortedAgents = useMemo(() => {
     const openTabs = new Set(terminalTabs.order);
     const pinnedTabs = new Set(terminalTabs.pinned);
 
-    return [...state.agents].sort((left, right) => {
+    return [...displayAgents].sort((left, right) => {
       const leftPinned = pinnedTabs.has(left.key) ? 0 : 1;
       const rightPinned = pinnedTabs.has(right.key) ? 0 : 1;
       if (leftPinned !== rightPinned) return leftPinned - rightPinned;
@@ -631,7 +671,18 @@ export default function TerminalScreen() {
 
       return (right.updated_at || 0) - (left.updated_at || 0);
     });
-  }, [recentAgentOpens, state.agents, terminalTabs]);
+  }, [displayAgents, recentAgentOpens, terminalTabs]);
+
+  const showPickerServerNames = useMemo(
+    () => new Set(sortedAgents.map((agent) => agent.serverId)).size > 1,
+    [sortedAgents],
+  );
+  const pickerSections = useMemo(
+    () => groupAgentsByDirectory(sortedAgents, {
+      showServerName: showPickerServerNames,
+    }),
+    [showPickerServerNames, sortedAgents],
+  );
 
   const menuPosition = useMemo(
     () => buildMenuPosition(menuAnchor, windowWidth),
@@ -660,94 +711,165 @@ export default function TerminalScreen() {
     void refreshGitDiff(true);
   };
 
-  const ensureGitDiffPreview = useCallback(
+  const ensureGitDiffPatch = useCallback(
     async (path: string) => {
       const nextPath = path.trim();
       if (!nextPath || !serverId || !agentId) {
         return;
       }
 
-      const requests: Promise<void>[] = [];
-
-      if (!gitDiffPatchByPath[nextPath]) {
-        requests.push((async () => {
-          setGitDiffPatchLoadingPath(nextPath);
-          try {
-            const payload = await wsClient.getGitDiffPatch(serverId, {
-              targetId: agentId,
-              cwd: gitDiffCwd,
-              path: nextPath,
-            });
-            setGitDiffPatchByPath((previous) => ({
-              ...previous,
-              [nextPath]: payload,
-            }));
-          } catch (error: any) {
-            Alert.alert(
-              "Could not load patch",
-              error?.message || "Try refreshing the git diff first.",
-            );
-          } finally {
-            setGitDiffPatchLoadingPath((previous) =>
-              previous === nextPath ? null : previous,
-            );
-          }
-        })());
+      if (
+        gitDiffPatchByPath[nextPath]
+        || gitDiffPatchLoadingByPath[nextPath]
+        || gitDiffPatchErrorByPath[nextPath]
+      ) {
+        return;
       }
 
-      if (!gitDiffContentByPath[nextPath]) {
-        requests.push((async () => {
-          setGitDiffContentLoadingPath(nextPath);
-          try {
-            const payload = await wsClient.getGitDiffFileContent(serverId, {
-              targetId: agentId,
-              cwd: gitDiffCwd,
-              path: nextPath,
-            });
-            setGitDiffContentByPath((previous) => ({
-              ...previous,
-              [nextPath]: payload,
-            }));
-          } catch (error: any) {
-            Alert.alert(
-              "Could not load file preview",
-              error?.message || "Try refreshing the git diff first.",
-            );
-          } finally {
-            setGitDiffContentLoadingPath((previous) =>
-              previous === nextPath ? null : previous,
-            );
-          }
-        })());
-      }
+      setGitDiffPatchLoadingByPath((previous) => ({
+        ...previous,
+        [nextPath]: true,
+      }));
+      setGitDiffPatchErrorByPath((previous) => ({
+        ...previous,
+        [nextPath]: undefined,
+      }));
 
-      if (requests.length > 0) {
-        await Promise.all(requests);
+      try {
+        const payload = await wsClient.getGitDiffPatch(serverId, {
+          targetId: agentId,
+          cwd: gitDiffCwd,
+          path: nextPath,
+        });
+        setGitDiffPatchByPath((previous) => ({
+          ...previous,
+          [nextPath]: payload,
+        }));
+      } catch (error: any) {
+        setGitDiffPatchErrorByPath((previous) => ({
+          ...previous,
+          [nextPath]: error?.message || "Could not load this patch.",
+        }));
+      } finally {
+        setGitDiffPatchLoadingByPath((previous) => {
+          const next = { ...previous };
+          delete next[nextPath];
+          return next;
+        });
       }
     },
     [
       agentId,
-      gitDiffContentByPath,
       gitDiffCwd,
       gitDiffPatchByPath,
+      gitDiffPatchErrorByPath,
+      gitDiffPatchLoadingByPath,
       serverId,
     ],
   );
 
-  const handleSelectGitDiffPath = async (path: string) => {
-    const nextPath = path.trim();
-    if (!nextPath) return;
+  const loadRepoBrowserPath = useCallback(
+    async (path: string = "") => {
+      if (!serverId || !agentId || !gitDiffCwd) {
+        return;
+      }
 
-    setGitDiffSelectedPath(nextPath);
-    await ensureGitDiffPreview(nextPath);
-  };
+      setRepoBrowserLoading(true);
+      setRepoBrowserError(null);
+      setRepoFilePath(null);
+      setRepoFileError(null);
+
+      try {
+        const payload = await wsClient.getGitRepoEntries(serverId, {
+          targetId: agentId,
+          cwd: gitDiffCwd,
+          path,
+        });
+        setRepoBrowserPath(payload.path || "");
+        setRepoBrowserEntries(payload.entries ?? []);
+      } catch (error: any) {
+        setRepoBrowserError(error?.message || "Could not load repository files.");
+      } finally {
+        setRepoBrowserLoading(false);
+      }
+    },
+    [agentId, gitDiffCwd, serverId],
+  );
+
+  const openRepoFile = useCallback(
+    async (path: string) => {
+      const nextPath = path.trim();
+      if (!nextPath || !serverId || !agentId || !gitDiffCwd) {
+        return;
+      }
+
+      setRepoFilePath(nextPath);
+      setRepoFileError(null);
+
+      if (repoFileByPath[nextPath]) {
+        return;
+      }
+
+      setRepoFileLoadingPath(nextPath);
+      try {
+        const payload = await wsClient.getGitRepoFileContent(serverId, {
+          targetId: agentId,
+          cwd: gitDiffCwd,
+          path: nextPath,
+        });
+        setRepoFileByPath((previous) => ({
+          ...previous,
+          [nextPath]: payload,
+        }));
+      } catch (error: any) {
+        setRepoFileError(error?.message || "Could not load repository file.");
+      } finally {
+        setRepoFileLoadingPath((previous) =>
+          previous === nextPath ? null : previous,
+        );
+      }
+    },
+    [agentId, gitDiffCwd, repoFileByPath, serverId],
+  );
+
+  const closeRepoFile = useCallback(() => {
+    setRepoFilePath(null);
+    setRepoFileError(null);
+  }, []);
+
+  const goUpRepoBrowserPath = useCallback(() => {
+    const parent = repoBrowserPath.includes("/")
+      ? repoBrowserPath.slice(0, repoBrowserPath.lastIndexOf("/"))
+      : "";
+    void loadRepoBrowserPath(parent);
+  }, [loadRepoBrowserPath, repoBrowserPath]);
 
   useEffect(() => {
-    if (!gitDiffVisible || !gitDiffSelectedPath) {
+    if (!gitDiffVisible || !gitDiffStatus?.available) {
       return;
     }
-    void ensureGitDiffPreview(gitDiffSelectedPath);
-  }, [ensureGitDiffPreview, gitDiffSelectedPath, gitDiffVisible]);
+
+    let cancelled = false;
+    const files = gitDiffStatus.files ?? [];
+
+    (async () => {
+      for (const file of files) {
+        if (cancelled) break;
+        await ensureGitDiffPatch(file.path);
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [ensureGitDiffPatch, gitDiffStatus, gitDiffVisible]);
+
+  useEffect(() => {
+    if (!gitDiffVisible || !gitDiffStatus?.available) {
+      return;
+    }
+    void loadRepoBrowserPath(repoBrowserPath || "");
+  }, [gitDiffStatus?.repo_root, gitDiffStatus?.available, gitDiffVisible, loadRepoBrowserPath]);
 
   const openRenameModal = () => {
     closeMenu();
@@ -1217,7 +1339,7 @@ export default function TerminalScreen() {
         </ScrollView>
 
         <TouchableOpacity
-          onPress={() => setPickerVisible(true)}
+          onPress={openNewTerminal}
           style={styles.chromeButton}
           activeOpacity={0.75}
         >
@@ -1268,38 +1390,60 @@ export default function TerminalScreen() {
               {sortedAgents.length === 0 ? (
                 <Text style={styles.sheetEmpty}>No agents available.</Text>
               ) : (
-                sortedAgents.map((item) => {
-                  const isActive = item.key === sessionKey;
-                  const presented = presentAgent(item, agentAliases[item.key]);
-
-                  return (
-                    <TouchableOpacity
-                      key={item.key}
-                      style={[
-                        styles.agentRow,
-                        isActive && styles.agentRowActive,
-                      ]}
-                      onPress={() => openAgentTab(item.key)}
-                      activeOpacity={0.84}
-                    >
-                      <AgentKindIcon kind={presented.kind} size={15} />
-                      <Text style={styles.agentRowTitle} numberOfLines={1}>
-                        {presented.cwdBase || presented.title}
-                      </Text>
-                      {item.serverName ? (
-                        <Text style={styles.agentRowMeta} numberOfLines={1}>
-                          {item.serverName}
+                pickerSections.map((section) => (
+                  <View key={section.key} style={styles.sheetSection}>
+                    <View style={styles.sheetSectionHeader}>
+                      <View style={styles.sheetSectionBody}>
+                        <Text style={styles.sheetSectionTitle} numberOfLines={1}>
+                          {section.title}
                         </Text>
-                      ) : null}
-                      <View
-                        style={[
-                          styles.agentRowStatusDot,
-                          { backgroundColor: statusColor(item.status) },
-                        ]}
-                      />
-                    </TouchableOpacity>
-                  );
-                })
+                        <Text style={styles.sheetSectionSubtitle} numberOfLines={1}>
+                          {section.subtitle}
+                        </Text>
+                      </View>
+                      <Text style={styles.sheetSectionCount}>{section.data.length}</Text>
+                    </View>
+
+                    {section.data.map((item) => {
+                      const isActive = item.key === sessionKey;
+                      const presented = presentAgent(item, agentAliases[item.key]);
+                      const meta = [
+                        presented.typeLabel,
+                        showPickerServerNames ? item.serverName : null,
+                      ]
+                        .filter(Boolean)
+                        .join(" · ");
+
+                      return (
+                        <TouchableOpacity
+                          key={item.key}
+                          style={[
+                            styles.agentRow,
+                            isActive && styles.agentRowActive,
+                          ]}
+                          onPress={() => openAgentTab(item.key)}
+                          activeOpacity={0.84}
+                        >
+                          <AgentKindIcon kind={presented.kind} size={15} />
+                          <View style={styles.agentRowBody}>
+                            <Text style={styles.agentRowTitle} numberOfLines={1}>
+                              {presented.title}
+                            </Text>
+                            <Text style={styles.agentRowMeta} numberOfLines={1}>
+                              {meta}
+                            </Text>
+                          </View>
+                          <View
+                            style={[
+                              styles.agentRowStatusDot,
+                              { backgroundColor: statusColor(item.status) },
+                            ]}
+                          />
+                        </TouchableOpacity>
+                      );
+                    })}
+                  </View>
+                ))
               )}
             </ScrollView>
 
@@ -1441,14 +1585,23 @@ export default function TerminalScreen() {
         snapshot={gitDiffStatus}
         loading={gitDiffLoading}
         error={gitDiffError}
-        selectedPath={gitDiffSelectedPath}
-        patchLoadingPath={gitDiffPatchLoadingPath}
         patchByPath={gitDiffPatchByPath}
-        contentLoadingPath={gitDiffContentLoadingPath}
-        contentByPath={gitDiffContentByPath}
+        patchLoadingByPath={gitDiffPatchLoadingByPath}
+        patchErrorByPath={gitDiffPatchErrorByPath}
+        repoBrowserPath={repoBrowserPath}
+        repoBrowserEntries={repoBrowserEntries}
+        repoBrowserLoading={repoBrowserLoading}
+        repoBrowserError={repoBrowserError}
+        repoFilePath={repoFilePath}
+        repoFileLoadingPath={repoFileLoadingPath}
+        repoFileError={repoFileError}
+        repoFileByPath={repoFileByPath}
         onClose={() => setGitDiffVisible(false)}
         onRefresh={() => { void refreshGitDiff(true); }}
-        onSelectPath={(path) => { void handleSelectGitDiffPath(path); }}
+        onOpenRepoPath={(path) => { void loadRepoBrowserPath(path); }}
+        onOpenRepoFile={(path) => { void openRepoFile(path); }}
+        onCloseRepoFile={closeRepoFile}
+        onBackRepoPath={goUpRepoBrowserPath}
       />
 
       <Modal
@@ -1850,6 +2003,46 @@ const styles = StyleSheet.create({
   sheetScrollContent: {
     paddingBottom: 8,
   },
+  sheetSection: {
+    paddingTop: 18,
+  },
+  sheetSectionHeader: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 12,
+    paddingBottom: 10,
+  },
+  sheetSectionBody: {
+    flex: 1,
+    minWidth: 0,
+  },
+  sheetSectionTitle: {
+    color: Colors.textPrimary,
+    fontSize: 15,
+    lineHeight: 20,
+    fontFamily: Typography.uiFontMedium,
+  },
+  sheetSectionSubtitle: {
+    marginTop: 2,
+    color: Colors.textSecondary,
+    fontSize: 11,
+    lineHeight: 15,
+    fontFamily: Typography.uiFont,
+    opacity: 0.55,
+  },
+  sheetSectionCount: {
+    minWidth: 24,
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    borderRadius: 999,
+    overflow: "hidden",
+    textAlign: "center",
+    color: Colors.textSecondary,
+    fontSize: 11,
+    lineHeight: 14,
+    fontFamily: Typography.uiFontMedium,
+    backgroundColor: "rgba(255,255,255,0.05)",
+  },
   sheetEmpty: {
     color: "#7D8CA0",
     fontSize: 13,
@@ -1867,6 +2060,11 @@ const styles = StyleSheet.create({
   agentRowActive: {
     opacity: 1,
   },
+  agentRowBody: {
+    flex: 1,
+    minWidth: 0,
+    gap: 2,
+  },
   agentRowStatusDot: {
     width: 7,
     height: 7,
@@ -1880,9 +2078,10 @@ const styles = StyleSheet.create({
   },
   agentRowMeta: {
     color: Colors.textSecondary,
-    fontSize: 12,
+    fontSize: 11,
+    lineHeight: 15,
     fontFamily: Typography.uiFont,
-    opacity: 0.5,
+    opacity: 0.55,
   },
   menuPopover: {
     position: "absolute",

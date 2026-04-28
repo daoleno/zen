@@ -155,12 +155,12 @@ export const MarkdownEditor = forwardRef<MarkdownEditorHandle, Props>(
 const styles = StyleSheet.create({
   input: {
     flex: 1,
-    paddingHorizontal: Spacing.lg,
+    paddingHorizontal: 18,
     paddingVertical: Spacing.lg,
     color: Colors.textPrimary,
     fontFamily: Typography.terminalFont,
     fontSize: 15,
     lineHeight: 22,
-    backgroundColor: Colors.bgPrimary,
+    backgroundColor: "transparent",
   },
 });

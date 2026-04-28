@@ -4,6 +4,8 @@ import { diagnoseConnectionIssue } from "./connectionIssue";
 import type {
   GitDiffFileContentPayload,
   GitDiffPatchPayload,
+  GitRepoBrowserPayload,
+  GitRepoFileContentPayload,
   GitDiffStatusSnapshot,
 } from "./gitDiff";
 
@@ -508,6 +510,106 @@ class MultiServerWebSocketClient {
       this.on("error", handleError);
       this.send(serverId, {
         type: "git_diff_file_content",
+        request_id: requestId,
+        target_id: options.targetId,
+        cwd: options.cwd,
+        path: options.path,
+      });
+    });
+  }
+
+  getGitRepoEntries(
+    serverId: string,
+    options?: {
+      targetId?: string;
+      cwd?: string;
+      path?: string;
+    },
+  ) {
+    const requestId = `${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
+
+    return new Promise<GitRepoBrowserPayload>((resolve, reject) => {
+      const cleanup = () => {
+        if (timer) clearTimeout(timer);
+        this.off("git_repo_entries", handleEntries);
+        this.off("error", handleError);
+      };
+
+      const handleEntries = (payload: any) => {
+        if (payload.serverId !== serverId || payload.request_id !== requestId) {
+          return;
+        }
+        cleanup();
+        resolve(payload.browser as GitRepoBrowserPayload);
+      };
+
+      const handleError = (payload: any) => {
+        if (payload.serverId !== serverId || payload.request_id !== requestId) {
+          return;
+        }
+        cleanup();
+        reject(new Error(payload.message || "Failed to load repository files."));
+      };
+
+      const timer = setTimeout(() => {
+        cleanup();
+        reject(new Error("Timed out while loading repository files."));
+      }, 10000);
+
+      this.on("git_repo_entries", handleEntries);
+      this.on("error", handleError);
+      this.send(serverId, {
+        type: "git_repo_entries",
+        request_id: requestId,
+        target_id: options?.targetId,
+        cwd: options?.cwd,
+        path: options?.path,
+      });
+    });
+  }
+
+  getGitRepoFileContent(
+    serverId: string,
+    options: {
+      targetId?: string;
+      cwd?: string;
+      path: string;
+    },
+  ) {
+    const requestId = `${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
+
+    return new Promise<GitRepoFileContentPayload>((resolve, reject) => {
+      const cleanup = () => {
+        if (timer) clearTimeout(timer);
+        this.off("git_repo_file_content", handleContent);
+        this.off("error", handleError);
+      };
+
+      const handleContent = (payload: any) => {
+        if (payload.serverId !== serverId || payload.request_id !== requestId) {
+          return;
+        }
+        cleanup();
+        resolve(payload.content as GitRepoFileContentPayload);
+      };
+
+      const handleError = (payload: any) => {
+        if (payload.serverId !== serverId || payload.request_id !== requestId) {
+          return;
+        }
+        cleanup();
+        reject(new Error(payload.message || "Failed to load repository file."));
+      };
+
+      const timer = setTimeout(() => {
+        cleanup();
+        reject(new Error("Timed out while loading repository file."));
+      }, 10000);
+
+      this.on("git_repo_file_content", handleContent);
+      this.on("error", handleError);
+      this.send(serverId, {
+        type: "git_repo_file_content",
         request_id: requestId,
         target_id: options.targetId,
         cwd: options.cwd,

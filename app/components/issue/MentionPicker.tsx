@@ -85,9 +85,9 @@ const styles = StyleSheet.create({
   chip: {
     flexDirection: "row",
     alignItems: "center",
-    gap: Spacing.sm,
-    height: 36,
-    paddingHorizontal: Spacing.md,
+    gap: 6,
+    height: 30,
+    paddingHorizontal: 10,
     borderRadius: Radii.pill,
     backgroundColor: Colors.bgElevated,
   },
@@ -97,7 +97,7 @@ const styles = StyleSheet.create({
   chipText: {
     color: Colors.textPrimary,
     fontFamily: Typography.terminalFont,
-    fontSize: 13,
+    fontSize: 12,
   },
   chipProject: {
     color: Colors.textSecondary,

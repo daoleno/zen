@@ -72,33 +72,33 @@ func New(authManager *auth.Manager, w *watcher.Watcher, pusher *push.Client, sc 
 }
 
 type clientMessage struct {
-	Type           string                 `json:"type"`
-	RequestID      string                 `json:"request_id"`
-	AgentID        string                 `json:"agent_id"`
-	TargetID       string                 `json:"target_id"`
-	Cwd            string                 `json:"cwd"`
-	Command        string                 `json:"command"`
-	Name           string                 `json:"name"`
-	Backend        string                 `json:"backend"`
-	SessionID      string                 `json:"session_id"`
-	Text           string                 `json:"text"`
-	Data           string                 `json:"data"`
-	Body           string                 `json:"body"`
-	Action         string                 `json:"action"`
-	StateVersion   int64                  `json:"state_version"`
-	PushToken      string                 `json:"push_token"`
-	ServerRef      string                 `json:"server_ref"`
-	Cols           int                    `json:"cols"`
-	Rows           int                    `json:"rows"`
-	Col            int                    `json:"col"`
-	Row            int                    `json:"row"`
-	Lines          int                    `json:"lines"`
-	Path           string                 `json:"path"`
-	ID             string                 `json:"id"`
-	Project        string                 `json:"project"`
-	Frontmatter    map[string]interface{} `json:"frontmatter"`
-	BaseMtime      string                 `json:"base_mtime"`
-	Prompt         string                 `json:"prompt"`
+	Type         string                 `json:"type"`
+	RequestID    string                 `json:"request_id"`
+	AgentID      string                 `json:"agent_id"`
+	TargetID     string                 `json:"target_id"`
+	Cwd          string                 `json:"cwd"`
+	Command      string                 `json:"command"`
+	Name         string                 `json:"name"`
+	Backend      string                 `json:"backend"`
+	SessionID    string                 `json:"session_id"`
+	Text         string                 `json:"text"`
+	Data         string                 `json:"data"`
+	Body         string                 `json:"body"`
+	Action       string                 `json:"action"`
+	StateVersion int64                  `json:"state_version"`
+	PushToken    string                 `json:"push_token"`
+	ServerRef    string                 `json:"server_ref"`
+	Cols         int                    `json:"cols"`
+	Rows         int                    `json:"rows"`
+	Col          int                    `json:"col"`
+	Row          int                    `json:"row"`
+	Lines        int                    `json:"lines"`
+	Path         string                 `json:"path"`
+	ID           string                 `json:"id"`
+	Project      string                 `json:"project"`
+	Frontmatter  map[string]interface{} `json:"frontmatter"`
+	BaseMtime    string                 `json:"base_mtime"`
+	Prompt       string                 `json:"prompt"`
 }
 
 // Run starts the HTTP server and event broadcaster.
@@ -353,6 +353,30 @@ func (s *Server) handleClientMessage(conn *websocket.Conn, msg []byte) {
 		}
 		s.sendJSON(conn, map[string]any{
 			"type":       "git_diff_file_content",
+			"request_id": raw.RequestID,
+			"content":    payload,
+		})
+
+	case "git_repo_entries":
+		payload, err := s.buildGitRepoEntries(raw.TargetID, raw.Cwd, raw.Path)
+		if err != nil {
+			s.sendErrorWithRequestID(conn, raw.RequestID, "git_repo_entries_failed", err.Error())
+			return
+		}
+		s.sendJSON(conn, map[string]any{
+			"type":       "git_repo_entries",
+			"request_id": raw.RequestID,
+			"browser":    payload,
+		})
+
+	case "git_repo_file_content":
+		payload, err := s.buildGitRepoFileContent(raw.TargetID, raw.Cwd, raw.Path)
+		if err != nil {
+			s.sendErrorWithRequestID(conn, raw.RequestID, "git_repo_file_content_failed", err.Error())
+			return
+		}
+		s.sendJSON(conn, map[string]any{
+			"type":       "git_repo_file_content",
 			"request_id": raw.RequestID,
 			"content":    payload,
 		})
