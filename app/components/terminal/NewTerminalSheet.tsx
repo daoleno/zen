@@ -1,5 +1,6 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import {
+  Keyboard,
   KeyboardAvoidingView,
   Modal,
   Platform,
@@ -72,10 +73,12 @@ export function NewTerminalSheet({
 
   useEffect(() => {
     if (!visible) return;
+    Keyboard.dismiss();
     setCwd(initialCwd);
     setCommand(initialCommand);
     setName(initialName);
     setAdvanced(false);
+    setDirPickerOpen(false);
   }, [initialCommand, initialCwd, initialName, visible]);
 
   const canSubmit = !submitting && (!serverOptions.length || Boolean(selectedServerId));
@@ -85,8 +88,14 @@ export function NewTerminalSheet({
     [command],
   );
 
+  const handleClose = () => {
+    Keyboard.dismiss();
+    onClose();
+  };
+
   const handlePresetTap = (preset: LaunchPreset) => {
     if (!canSubmit) return;
+    Keyboard.dismiss();
     setCommand(preset.command);
     if (!advanced) {
       onSubmit({
@@ -100,6 +109,7 @@ export function NewTerminalSheet({
 
   const handleAdvancedSubmit = () => {
     if (!canSubmit) return;
+    Keyboard.dismiss();
     onSubmit({
       cwd: cwd.trim(),
       command: command.trim(),
@@ -108,28 +118,20 @@ export function NewTerminalSheet({
     });
   };
 
-  return (
-    <Modal
-      visible={visible}
-      transparent
-      animationType="fade"
-      onRequestClose={onClose}
-    >
-      <KeyboardAvoidingView
-        style={styles.root}
-        behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
-      >
+  const sheetContent = (
+    <>
         <TouchableOpacity
           style={styles.backdrop}
           activeOpacity={1}
-          onPress={onClose}
+          onPress={handleClose}
         />
         <View style={styles.card}>
           <View style={styles.handle} />
 
           <ScrollView
             showsVerticalScrollIndicator={false}
-            keyboardShouldPersistTaps="handled"
+            keyboardShouldPersistTaps="always"
+            keyboardDismissMode="none"
             bounces={false}
           >
             {/* Server selector when multiple servers */}
@@ -183,7 +185,10 @@ export function NewTerminalSheet({
             {/* Advanced toggle */}
             <TouchableOpacity
               style={styles.advancedToggle}
-              onPress={() => setAdvanced(!advanced)}
+              onPress={() => {
+                if (advanced) Keyboard.dismiss();
+                setAdvanced(!advanced);
+              }}
               activeOpacity={0.82}
             >
               <Ionicons
@@ -212,7 +217,10 @@ export function NewTerminalSheet({
                   {selectedServerId ? (
                     <TouchableOpacity
                       style={styles.folderBtn}
-                      onPress={() => setDirPickerOpen(true)}
+                      onPress={() => {
+                        Keyboard.dismiss();
+                        setDirPickerOpen(true);
+                      }}
                       activeOpacity={0.7}
                     >
                       <Ionicons name="folder-open-outline" size={20} color={Colors.textSecondary} />
@@ -260,14 +268,30 @@ export function NewTerminalSheet({
             {/* Cancel */}
             <TouchableOpacity
               style={styles.cancelBtn}
-              onPress={onClose}
+              onPress={handleClose}
               activeOpacity={0.82}
             >
               <Text style={styles.cancelBtnText}>Cancel</Text>
             </TouchableOpacity>
           </ScrollView>
         </View>
-      </KeyboardAvoidingView>
+    </>
+  );
+
+  return (
+    <Modal
+      visible={visible}
+      transparent
+      animationType="fade"
+      onRequestClose={handleClose}
+    >
+      {Platform.OS === 'ios' ? (
+        <KeyboardAvoidingView style={styles.root} behavior="padding">
+          {sheetContent}
+        </KeyboardAvoidingView>
+      ) : (
+        <View style={styles.root}>{sheetContent}</View>
+      )}
 
       {selectedServerId ? (
         <DirectoryPicker
