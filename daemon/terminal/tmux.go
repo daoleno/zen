@@ -49,14 +49,16 @@ type tmuxSession struct {
 	linkedSession string // grouped session name, cleaned up on close
 	size          Size
 
-	mu         sync.Mutex
-	events     chan Event
-	cancel     context.CancelFunc
-	cmd        *exec.Cmd
-	pty        *os.File
-	closed     bool
-	closeOnce  sync.Once
-	inCopyMode bool
+	mu                 sync.Mutex
+	events             chan Event
+	cancel             context.CancelFunc
+	cmd                *exec.Cmd
+	pty                *os.File
+	closed             bool
+	closeOnce          sync.Once
+	inCopyMode         bool
+	scrollStateTimer   *time.Timer
+	scrollStateVersion uint64
 }
 
 type tmuxReadResult struct {
@@ -70,6 +72,7 @@ const (
 	tmuxInitialHistoryMaxLines        = 240
 	tmuxGroupedWindowSelectAttempts   = 6
 	tmuxGroupedWindowSelectBackoff    = 25 * time.Millisecond
+	tmuxScrollStateDebounce           = 120 * time.Millisecond
 )
 
 func (s *tmuxSession) ID() string { return s.id }
@@ -122,7 +125,7 @@ func (s *tmuxSession) Start(ctx context.Context) error {
 
 func (s *tmuxSession) streamLoop(ctx context.Context, ptmx *os.File) {
 	const flushInterval = 16 * time.Millisecond
-	const maxFrameBytes = 2048
+	const maxFrameBytes = 8192
 
 	results := make(chan tmuxReadResult, 128)
 	go func() {
@@ -358,7 +361,11 @@ func (s *tmuxSession) Scroll(lines int) error {
 		return fmt.Errorf("scroll copy-mode: %w", err)
 	}
 	s.mu.Unlock()
-	s.emitScrollState()
+	if lines > 0 {
+		s.emitScrollState()
+		return nil
+	}
+	s.scheduleScrollStateEmit()
 	return nil
 }
 
@@ -467,6 +474,7 @@ func (s *tmuxSession) Close() error {
 		return nil
 	}
 	s.closed = true
+	s.cancelScheduledScrollStateLocked()
 	if s.cancel != nil {
 		s.cancel()
 	}
@@ -503,8 +511,51 @@ func (s *tmuxSession) interactiveTargetLocked() string {
 	return s.targetID
 }
 
+func (s *tmuxSession) scheduleScrollStateEmit() {
+	s.mu.Lock()
+	if s.closed {
+		s.mu.Unlock()
+		return
+	}
+
+	s.scrollStateVersion++
+	version := s.scrollStateVersion
+	if s.scrollStateTimer != nil {
+		s.scrollStateTimer.Stop()
+	}
+	s.scrollStateTimer = time.AfterFunc(tmuxScrollStateDebounce, func() {
+		s.emitScheduledScrollState(version)
+	})
+	s.mu.Unlock()
+}
+
+func (s *tmuxSession) emitScheduledScrollState(version uint64) {
+	s.mu.Lock()
+	if s.closed || version != s.scrollStateVersion {
+		s.mu.Unlock()
+		return
+	}
+	s.scrollStateTimer = nil
+	s.mu.Unlock()
+
+	s.emitScrollState()
+}
+
+func (s *tmuxSession) cancelScheduledScrollStateLocked() {
+	s.scrollStateVersion++
+	if s.scrollStateTimer != nil {
+		s.scrollStateTimer.Stop()
+		s.scrollStateTimer = nil
+	}
+}
+
 func (s *tmuxSession) emitScrollState() {
 	s.mu.Lock()
+	if s.closed {
+		s.mu.Unlock()
+		return
+	}
+	s.cancelScheduledScrollStateLocked()
 	state := s.readScrollStateLocked()
 	s.inCopyMode = state.InCopyMode
 	s.mu.Unlock()

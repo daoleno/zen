@@ -46,6 +46,8 @@ const REPLACEABLE_PENDING_TYPES: readonly RendererStateMessage['type'][] = [
   'viewportMode',
 ];
 
+const REMOTE_SCROLL_FLUSH_MS = 64;
+
 interface UseGhosttyTerminalControllerArgs {
   serverId: string;
   targetId: string;
@@ -74,6 +76,8 @@ export function useGhosttyTerminalController({
   const pendingRef = useRef<RendererStateMessage[]>([]);
   const pendingTerminalRef = useRef<PendingTerminalEvent[]>([]);
   const renderFrameRef = useRef<number>(0);
+  const pendingRemoteScrollRef = useRef(0);
+  const remoteScrollTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const gridRef = useRef<GhosttyGridSize | null>(null);
   const viewportModeRef = useRef<TerminalViewportMode>('live');
   const [ready, setReady] = useState(false);
@@ -219,6 +223,48 @@ export function useGhosttyTerminalController({
     },
   });
   const { cancelScroll, focusPane, resize, scroll, sendInput } = session;
+  const scrollRef = useRef(scroll);
+
+  useEffect(() => {
+    scrollRef.current = scroll;
+  }, [scroll]);
+
+  const clearRemoteScrollTimer = useCallback(() => {
+    if (!remoteScrollTimerRef.current) {
+      return;
+    }
+    clearTimeout(remoteScrollTimerRef.current);
+    remoteScrollTimerRef.current = null;
+  }, []);
+
+  const flushRemoteScroll = useCallback(() => {
+    clearRemoteScrollTimer();
+    const lines = pendingRemoteScrollRef.current;
+    pendingRemoteScrollRef.current = 0;
+    if (lines !== 0) {
+      scrollRef.current(lines);
+    }
+  }, [clearRemoteScrollTimer]);
+
+  const resetRemoteScroll = useCallback(() => {
+    clearRemoteScrollTimer();
+    pendingRemoteScrollRef.current = 0;
+  }, [clearRemoteScrollTimer]);
+
+  const scheduleRemoteScroll = useCallback((lines: number) => {
+    if (lines === 0) {
+      return;
+    }
+    pendingRemoteScrollRef.current += lines;
+    if (remoteScrollTimerRef.current) {
+      return;
+    }
+    remoteScrollTimerRef.current = setTimeout(flushRemoteScroll, REMOTE_SCROLL_FLUSH_MS);
+  }, [flushRemoteScroll]);
+
+  useEffect(() => {
+    return resetRemoteScroll;
+  }, [backend, resetRemoteScroll, serverId, targetId]);
 
   const flushPendingTerminal = useCallback((grid: GhosttyGridSize) => {
     if (!ghostty.ensureTerminal(grid)) {
@@ -258,6 +304,7 @@ export function useGhosttyTerminalController({
   }, [backend, focusPane]);
 
   const enterLiveMode = useCallback((command: 'resumeInput' | 'scrollToBottom') => {
+    flushRemoteScroll();
     if (ghostty.scrollViewportToBottom()) {
       scheduleRenderState();
     }
@@ -265,7 +312,7 @@ export function useGhosttyTerminalController({
     setViewportMode('live');
     runRendererCommand(command);
     inputRef.current?.focus();
-  }, [cancelScroll, ghostty, runRendererCommand, scheduleRenderState, setViewportMode]);
+  }, [cancelScroll, flushRemoteScroll, ghostty, runRendererCommand, scheduleRenderState, setViewportMode]);
 
   const focus = useCallback(() => {
     inputRef.current?.focus();
@@ -285,8 +332,9 @@ export function useGhosttyTerminalController({
   }, [enterLiveMode]);
 
   const onInput = useCallback((data: string) => {
+    flushRemoteScroll();
     sendInput(data);
-  }, [sendInput]);
+  }, [flushRemoteScroll, sendInput]);
 
   const onCtrlConsumed = useCallback(() => {
     onCtrlArmedChange?.(false);
@@ -299,8 +347,9 @@ export function useGhosttyTerminalController({
   const onRendererLoadStart = useCallback(() => {
     webReadyRef.current = false;
     pendingRef.current = [];
+    resetRemoteScroll();
     setReady(false);
-  }, []);
+  }, [resetRemoteScroll]);
 
   const onRendererMessage = useCallback((event: WebViewMessageEvent) => {
     try {
@@ -361,10 +410,11 @@ export function useGhosttyTerminalController({
         if (ghostty.scrollViewport(payload.lines)) {
           if (payload.lines < 0 || viewportModeRef.current === 'scrolled') {
             setViewportMode('scrolled');
+            inputRef.current?.blur();
           }
           scheduleRenderState();
         }
-        scroll(payload.lines);
+        scheduleRemoteScroll(payload.lines);
         return;
       }
 
@@ -412,7 +462,7 @@ export function useGhosttyTerminalController({
     focusPaneAtPoint,
     clearInputMirror,
     scheduleRenderState,
-    scroll,
+    scheduleRemoteScroll,
     scrollToBottom,
     sendInput,
     onCtrlArmedChange,
@@ -430,6 +480,7 @@ export function useGhosttyTerminalController({
     onRendererMessage,
     sendInput(data: string, options?: { focus?: boolean }) {
       clearInputMirror();
+      flushRemoteScroll();
       sendInput(data);
       if (options?.focus !== false) {
         inputRef.current?.focus();
