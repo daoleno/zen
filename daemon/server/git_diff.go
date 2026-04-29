@@ -171,7 +171,7 @@ func (s *Server) buildGitDiffPatch(targetID, cwd, path string) (gitDiffPatchPayl
 			"--find-renames",
 			"--submodule=diff",
 			"--",
-			file.Path,
+			gitLiteralPathspec(file.Path),
 		)
 		if err != nil {
 			return gitDiffPatchPayload{}, err
@@ -194,7 +194,7 @@ func (s *Server) buildGitDiffPatch(targetID, cwd, path string) (gitDiffPatchPayl
 			"--find-renames",
 			"--submodule=diff",
 			"--",
-			file.Path,
+			gitLiteralPathspec(file.Path),
 		)
 		if err != nil {
 			return gitDiffPatchPayload{}, err
@@ -437,6 +437,15 @@ func parseGitStatusPath(raw string) (path string, oldPath string) {
 	}
 
 	return unquoteGitPath(value), ""
+}
+
+func gitLiteralPathspec(path string) string {
+	path = filepath.ToSlash(strings.TrimSpace(path))
+	path = strings.TrimPrefix(path, "./")
+	if path == "" {
+		return ":(literal)."
+	}
+	return ":(literal)./" + path
 }
 
 func unquoteGitPath(value string) string {

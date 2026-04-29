@@ -64,6 +64,50 @@ func TestBuildGitDiffPatchIncludesUntrackedSection(t *testing.T) {
 	}
 }
 
+func TestBuildGitDiffPatchUsesLiteralPathspecs(t *testing.T) {
+	repoRoot := initGitDiffTestRepo(t)
+	path := ":(literal)page.tsx"
+	writeGitDiffTestFile(t, repoRoot, path, "one\n")
+	runGitDiffTestGit(t, repoRoot, "add", "./"+path)
+	runGitDiffTestGit(t, repoRoot, "commit", "-m", "initial")
+
+	writeGitDiffTestFile(t, repoRoot, path, "two\n")
+	runGitDiffTestGit(t, repoRoot, "add", "./"+path)
+
+	payload, err := (&Server{}).buildGitDiffPatch("", repoRoot, path)
+	if err != nil {
+		t.Fatalf("buildGitDiffPatch returned error: %v", err)
+	}
+	if len(payload.Sections) != 1 {
+		t.Fatalf("section count = %d, want 1", len(payload.Sections))
+	}
+	if !strings.Contains(payload.Sections[0].Patch, "-one") || !strings.Contains(payload.Sections[0].Patch, "+two") {
+		t.Fatalf("literal pathspec patch did not include expected hunk:\n%s", payload.Sections[0].Patch)
+	}
+}
+
+func TestBuildGitDiffPatchHandlesNextRoutePath(t *testing.T) {
+	repoRoot := initGitDiffTestRepo(t)
+	path := "apps/web/src/app/(main)/portfolio/[slug]/page.tsx"
+	writeGitDiffTestFile(t, repoRoot, path, "one\nold\n")
+	runGitDiffTestGit(t, repoRoot, "add", path)
+	runGitDiffTestGit(t, repoRoot, "commit", "-m", "initial")
+
+	writeGitDiffTestFile(t, repoRoot, path, "one\nnew\nextra\n")
+	runGitDiffTestGit(t, repoRoot, "add", path)
+
+	payload, err := (&Server{}).buildGitDiffPatch("", repoRoot, path)
+	if err != nil {
+		t.Fatalf("buildGitDiffPatch returned error: %v", err)
+	}
+	if len(payload.Sections) != 1 {
+		t.Fatalf("section count = %d, want 1", len(payload.Sections))
+	}
+	if !strings.Contains(payload.Sections[0].Patch, "-old") || !strings.Contains(payload.Sections[0].Patch, "+new") {
+		t.Fatalf("Next.js route patch did not include expected hunk:\n%s", payload.Sections[0].Patch)
+	}
+}
+
 func initGitDiffTestRepo(t *testing.T) string {
 	t.Helper()
 
