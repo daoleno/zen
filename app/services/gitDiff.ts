@@ -94,7 +94,7 @@ export function buildGitDiffChipLabel(
     return "Git diff";
   }
   if (snapshot.clean) {
-    return snapshot.branch ? `${snapshot.branch} clean` : "Git clean";
+    return snapshot.branch || "Git";
   }
 
   const fileLabel = snapshot.file_count === 1 ? "1 file" : `${snapshot.file_count} files`;

@@ -82,6 +82,10 @@ import {
 const EMPTY_TABS: StoredTerminalTabs = { order: [], pinned: [] };
 const MENU_POPOVER_WIDTH = 168;
 
+function hasGitDiffPatchContent(payload?: GitDiffPatchPayload) {
+  return Boolean(payload?.sections?.some((section) => section.patch.trim()));
+}
+
 const STATUS_PRIORITY: Record<AgentStatus, number> = {
   failed: 0,
   blocked: 1,
@@ -149,6 +153,9 @@ export default function TerminalScreen() {
   const [gitDiffPatchByPath, setGitDiffPatchByPath] = useState<
     Record<string, GitDiffPatchPayload | undefined>
   >({});
+  const gitDiffPatchByPathRef = useRef(gitDiffPatchByPath);
+  const gitDiffPatchLoadingByPathRef = useRef(gitDiffPatchLoadingByPath);
+  const gitDiffPatchErrorByPathRef = useRef(gitDiffPatchErrorByPath);
   const [repoBrowserPath, setRepoBrowserPath] = useState("");
   const [repoBrowserEntries, setRepoBrowserEntries] = useState<
     GitRepoBrowserEntry[]
@@ -206,6 +213,28 @@ export default function TerminalScreen() {
   );
   const agent = sessionKey ? agentByKey.get(sessionKey) : undefined;
   const gitDiffCwd = typeof agent?.cwd === "string" ? agent.cwd.trim() : "";
+
+  useEffect(() => {
+    gitDiffPatchByPathRef.current = gitDiffPatchByPath;
+  }, [gitDiffPatchByPath]);
+
+  useEffect(() => {
+    gitDiffPatchLoadingByPathRef.current = gitDiffPatchLoadingByPath;
+  }, [gitDiffPatchLoadingByPath]);
+
+  useEffect(() => {
+    gitDiffPatchErrorByPathRef.current = gitDiffPatchErrorByPath;
+  }, [gitDiffPatchErrorByPath]);
+
+  const resetGitDiffPatchCache = useCallback(() => {
+    gitDiffPatchByPathRef.current = {};
+    gitDiffPatchErrorByPathRef.current = {};
+    gitDiffPatchLoadingByPathRef.current = {};
+    setGitDiffPatchByPath({});
+    setGitDiffPatchErrorByPath({});
+    setGitDiffPatchLoadingByPath({});
+  }, []);
+
   const linkedIssue = useMemo(
     () =>
       Object.values(issuesState.byKey)
@@ -273,9 +302,7 @@ export default function TerminalScreen() {
       ) {
         setGitDiffStatus(null);
         setGitDiffError(null);
-        setGitDiffPatchByPath({});
-        setGitDiffPatchErrorByPath({});
-        setGitDiffPatchLoadingByPath({});
+        resetGitDiffPatchCache();
         setRepoBrowserEntries([]);
         setRepoBrowserPath("");
         setRepoBrowserError(null);
@@ -294,9 +321,7 @@ export default function TerminalScreen() {
 
       if (showLoading) {
         setGitDiffLoading(true);
-        setGitDiffPatchByPath({});
-        setGitDiffPatchErrorByPath({});
-        setGitDiffPatchLoadingByPath({});
+        resetGitDiffPatchCache();
       }
 
       try {
@@ -310,21 +335,29 @@ export default function TerminalScreen() {
         setGitDiffError(null);
         setGitDiffPatchByPath((previous) => {
           if (!nextStatus.available) {
+            gitDiffPatchByPathRef.current = {};
             return {};
           }
           const allowed = new Set((nextStatus.files ?? []).map((file) => file.path));
-          return Object.fromEntries(
-            Object.entries(previous).filter(([path]) => allowed.has(path)),
+          const next = Object.fromEntries(
+            Object.entries(previous).filter(
+              ([path, patch]) => allowed.has(path) && hasGitDiffPatchContent(patch),
+            ),
           );
+          gitDiffPatchByPathRef.current = next;
+          return next;
         });
         setGitDiffPatchErrorByPath((previous) => {
           if (!nextStatus.available) {
+            gitDiffPatchErrorByPathRef.current = {};
             return {};
           }
           const allowed = new Set((nextStatus.files ?? []).map((file) => file.path));
-          return Object.fromEntries(
+          const next = Object.fromEntries(
             Object.entries(previous).filter(([path]) => allowed.has(path)),
           );
+          gitDiffPatchErrorByPathRef.current = next;
+          return next;
         });
       } catch (error: any) {
         if (gitDiffRequestRef.current !== requestId) return;
@@ -335,7 +368,7 @@ export default function TerminalScreen() {
         }
       }
     },
-    [agentId, connectionState, gitDiffCwd, gitDiffQueryEnabled, serverId],
+    [agentId, connectionState, gitDiffCwd, gitDiffQueryEnabled, resetGitDiffPatchCache, serverId],
   );
 
   const syncActiveTerminal = React.useCallback(
@@ -438,9 +471,7 @@ export default function TerminalScreen() {
   }, [sessionKey]);
 
   useEffect(() => {
-    setGitDiffPatchByPath({});
-    setGitDiffPatchErrorByPath({});
-    setGitDiffPatchLoadingByPath({});
+    resetGitDiffPatchCache();
     setRepoBrowserPath("");
     setRepoBrowserEntries([]);
     setRepoBrowserError(null);
@@ -450,7 +481,7 @@ export default function TerminalScreen() {
     setRepoFileError(null);
     setRepoFileByPath({});
     setGitDiffError(null);
-  }, [agentId, gitDiffCwd, serverId]);
+  }, [agentId, gitDiffCwd, resetGitDiffPatchCache, serverId]);
 
   useEffect(() => {
     if (hydratedServerIds.length === 0) return;
@@ -570,9 +601,7 @@ export default function TerminalScreen() {
       setGitDiffStatus(null);
       setGitDiffError(null);
       setGitDiffLoading(false);
-      setGitDiffPatchLoadingByPath({});
-      setGitDiffPatchErrorByPath({});
-      setGitDiffPatchByPath({});
+      resetGitDiffPatchCache();
       setRepoBrowserEntries([]);
       setRepoBrowserError(null);
       setRepoBrowserLoading(false);
@@ -593,7 +622,7 @@ export default function TerminalScreen() {
       gitDiffRequestRef.current += 1;
       clearInterval(interval);
     };
-  }, [connectionState, gitDiffQueryEnabled, gitDiffVisible, refreshGitDiff]);
+  }, [connectionState, gitDiffQueryEnabled, gitDiffVisible, refreshGitDiff, resetGitDiffPatchCache]);
 
   const tabs = useMemo(() => {
     const order = buildDisplayTabOrder(sessionKey, terminalTabs);
@@ -719,17 +748,25 @@ export default function TerminalScreen() {
       }
 
       if (
-        gitDiffPatchByPath[nextPath]
-        || gitDiffPatchLoadingByPath[nextPath]
-        || gitDiffPatchErrorByPath[nextPath]
+        gitDiffPatchByPathRef.current[nextPath]
+        || gitDiffPatchLoadingByPathRef.current[nextPath]
+        || gitDiffPatchErrorByPathRef.current[nextPath]
       ) {
         return;
       }
 
+      gitDiffPatchLoadingByPathRef.current = {
+        ...gitDiffPatchLoadingByPathRef.current,
+        [nextPath]: true,
+      };
       setGitDiffPatchLoadingByPath((previous) => ({
         ...previous,
         [nextPath]: true,
       }));
+      gitDiffPatchErrorByPathRef.current = {
+        ...gitDiffPatchErrorByPathRef.current,
+        [nextPath]: undefined,
+      };
       setGitDiffPatchErrorByPath((previous) => ({
         ...previous,
         [nextPath]: undefined,
@@ -741,16 +778,27 @@ export default function TerminalScreen() {
           cwd: gitDiffCwd,
           path: nextPath,
         });
+        gitDiffPatchByPathRef.current = {
+          ...gitDiffPatchByPathRef.current,
+          [nextPath]: payload,
+        };
         setGitDiffPatchByPath((previous) => ({
           ...previous,
           [nextPath]: payload,
         }));
       } catch (error: any) {
+        gitDiffPatchErrorByPathRef.current = {
+          ...gitDiffPatchErrorByPathRef.current,
+          [nextPath]: error?.message || "Could not load this patch.",
+        };
         setGitDiffPatchErrorByPath((previous) => ({
           ...previous,
           [nextPath]: error?.message || "Could not load this patch.",
         }));
       } finally {
+        const nextLoading = { ...gitDiffPatchLoadingByPathRef.current };
+        delete nextLoading[nextPath];
+        gitDiffPatchLoadingByPathRef.current = nextLoading;
         setGitDiffPatchLoadingByPath((previous) => {
           const next = { ...previous };
           delete next[nextPath];
@@ -761,9 +809,6 @@ export default function TerminalScreen() {
     [
       agentId,
       gitDiffCwd,
-      gitDiffPatchByPath,
-      gitDiffPatchErrorByPath,
-      gitDiffPatchLoadingByPath,
       serverId,
     ],
   );
