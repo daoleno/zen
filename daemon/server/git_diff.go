@@ -162,17 +162,7 @@ func (s *Server) buildGitDiffPatch(targetID, cwd, path string) (gitDiffPatchPayl
 
 	sections := make([]gitDiffPatchSection, 0, 3)
 	if file.Staged {
-		patch, err := gitCommandOutput(
-			repoRoot,
-			false,
-			"diff",
-			"--cached",
-			"--no-ext-diff",
-			"--find-renames",
-			"--submodule=diff",
-			"--",
-			gitLiteralPathspec(file.Path),
-		)
+		patch, err := gitDiffPatchForFile(repoRoot, file.Path, true)
 		if err != nil {
 			return gitDiffPatchPayload{}, err
 		}
@@ -186,16 +176,7 @@ func (s *Server) buildGitDiffPatch(targetID, cwd, path string) (gitDiffPatchPayl
 	}
 
 	if file.Unstaged {
-		patch, err := gitCommandOutput(
-			repoRoot,
-			false,
-			"diff",
-			"--no-ext-diff",
-			"--find-renames",
-			"--submodule=diff",
-			"--",
-			gitLiteralPathspec(file.Path),
-		)
+		patch, err := gitDiffPatchForFile(repoRoot, file.Path, false)
 		if err != nil {
 			return gitDiffPatchPayload{}, err
 		}
@@ -446,6 +427,97 @@ func gitLiteralPathspec(path string) string {
 		return ":(literal)."
 	}
 	return ":(literal)./" + path
+}
+
+func gitDiffPatchForFile(repoRoot, path string, staged bool) (string, error) {
+	args := gitDiffPatchArgs(staged)
+	args = append(args, "--", gitLiteralPathspec(path))
+	patch, err := gitCommandOutput(repoRoot, false, args...)
+	if err != nil {
+		return "", err
+	}
+	if strings.TrimSpace(patch) != "" {
+		return patch, nil
+	}
+
+	fullPatch, err := gitCommandOutput(repoRoot, false, gitDiffPatchArgs(staged)...)
+	if err != nil {
+		return "", err
+	}
+	if section, ok := extractGitDiffPatchForPath(fullPatch, path); ok {
+		return section, nil
+	}
+	return patch, nil
+}
+
+func gitDiffPatchArgs(staged bool) []string {
+	args := []string{
+		"diff",
+		"--no-ext-diff",
+		"--find-renames",
+		"--submodule=diff",
+	}
+	if staged {
+		args = append(args, "--cached")
+	}
+	return args
+}
+
+func extractGitDiffPatchForPath(patch, path string) (string, bool) {
+	path = filepath.ToSlash(strings.TrimSpace(path))
+	path = strings.TrimPrefix(path, "./")
+	if strings.TrimSpace(patch) == "" || path == "" {
+		return "", false
+	}
+
+	lines := strings.Split(patch, "\n")
+	sectionStart := -1
+	for index, line := range lines {
+		if !strings.HasPrefix(line, "diff --git ") {
+			continue
+		}
+		if sectionStart >= 0 && gitDiffSectionMatchesPath(lines[sectionStart:index], path) {
+			return strings.TrimRight(strings.Join(lines[sectionStart:index], "\n"), "\n"), true
+		}
+		sectionStart = index
+	}
+
+	if sectionStart >= 0 && gitDiffSectionMatchesPath(lines[sectionStart:], path) {
+		return strings.TrimRight(strings.Join(lines[sectionStart:], "\n"), "\n"), true
+	}
+	return "", false
+}
+
+func gitDiffSectionMatchesPath(lines []string, path string) bool {
+	for _, line := range lines {
+		for _, prefix := range []string{"--- ", "+++ ", "rename to ", "copy to "} {
+			linePath, ok := gitDiffLinePath(line, prefix)
+			if ok && linePath == path {
+				return true
+			}
+		}
+
+		if strings.HasPrefix(line, "diff --git ") &&
+			(strings.Contains(line, " a/"+path+" ") || strings.Contains(line, " b/"+path)) {
+			return true
+		}
+	}
+	return false
+}
+
+func gitDiffLinePath(line, prefix string) (string, bool) {
+	if !strings.HasPrefix(line, prefix) {
+		return "", false
+	}
+
+	value := strings.TrimSpace(strings.TrimPrefix(line, prefix))
+	if value == "" || value == "/dev/null" {
+		return "", false
+	}
+	value = unquoteGitPath(value)
+	value = strings.TrimPrefix(value, "a/")
+	value = strings.TrimPrefix(value, "b/")
+	return filepath.ToSlash(value), true
 }
 
 func unquoteGitPath(value string) string {

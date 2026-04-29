@@ -108,6 +108,37 @@ func TestBuildGitDiffPatchHandlesNextRoutePath(t *testing.T) {
 	}
 }
 
+func TestExtractGitDiffPatchForPathReturnsSingleSection(t *testing.T) {
+	patch := strings.Join([]string{
+		"diff --git a/first.txt b/first.txt",
+		"index 5626abf..f719efd 100644",
+		"--- a/first.txt",
+		"+++ b/first.txt",
+		"@@ -1 +1 @@",
+		"-one",
+		"+two",
+		"diff --git a/apps/web/src/app/(main)/portfolio/[slug]/page.tsx b/apps/web/src/app/(main)/portfolio/[slug]/page.tsx",
+		"index 5626abf..f719efd 100644",
+		"--- a/apps/web/src/app/(main)/portfolio/[slug]/page.tsx",
+		"+++ b/apps/web/src/app/(main)/portfolio/[slug]/page.tsx",
+		"@@ -1 +1 @@",
+		"-old",
+		"+new",
+		"",
+	}, "\n")
+
+	section, ok := extractGitDiffPatchForPath(patch, "apps/web/src/app/(main)/portfolio/[slug]/page.tsx")
+	if !ok {
+		t.Fatalf("extractGitDiffPatchForPath did not find section")
+	}
+	if strings.Contains(section, "first.txt") {
+		t.Fatalf("extracted section included another file:\n%s", section)
+	}
+	if !strings.Contains(section, "-old") || !strings.Contains(section, "+new") {
+		t.Fatalf("extracted section did not include expected hunk:\n%s", section)
+	}
+}
+
 func initGitDiffTestRepo(t *testing.T) string {
 	t.Helper()
 
