@@ -48,7 +48,7 @@ const REPLACEABLE_PENDING_TYPES: readonly RendererStateMessage['type'][] = [
   'viewportMode',
 ];
 
-const REMOTE_SCROLL_FLUSH_MS = 64;
+const REMOTE_SCROLL_FLUSH_MS = 80;
 
 interface UseGhosttyTerminalControllerArgs {
   serverId: string;
@@ -256,18 +256,18 @@ export function useGhosttyTerminalController({
   }, [clearRemoteScrollTimer]);
 
   const scheduleRemoteScroll = useCallback((lines: number) => {
-    if (lines === 0) {
+    if (backend !== 'tmux' || lines === 0) {
       return;
     }
     pendingRemoteScrollRef.current += lines;
-    if (remoteScrollGestureActiveRef.current) {
-      return;
-    }
     if (remoteScrollTimerRef.current) {
       return;
     }
-    remoteScrollTimerRef.current = setTimeout(flushRemoteScroll, REMOTE_SCROLL_FLUSH_MS);
-  }, [flushRemoteScroll]);
+    // tmux copy-mode repaints the whole pane per scroll command, so coalesce
+    // touch deltas while the gesture is active.
+    const delay = remoteScrollGestureActiveRef.current ? REMOTE_SCROLL_FLUSH_MS : 0;
+    remoteScrollTimerRef.current = setTimeout(flushRemoteScroll, delay);
+  }, [backend, flushRemoteScroll]);
 
   useEffect(() => {
     return resetRemoteScroll;
@@ -426,6 +426,15 @@ export function useGhosttyTerminalController({
       }
 
       if (payload.type === 'scroll') {
+        if (backend === 'tmux') {
+          if (payload.lines < 0 || viewportModeRef.current === 'scrolled') {
+            setViewportMode('scrolled');
+            inputRef.current?.blur();
+          }
+          scheduleRemoteScroll(payload.lines);
+          return;
+        }
+
         if (ghostty.scrollViewport(payload.lines)) {
           if (payload.lines < 0 || viewportModeRef.current === 'scrolled') {
             setViewportMode('scrolled');
@@ -433,7 +442,6 @@ export function useGhosttyTerminalController({
           }
           scheduleRenderState();
         }
-        scheduleRemoteScroll(payload.lines);
         return;
       }
 
@@ -480,6 +488,7 @@ export function useGhosttyTerminalController({
     flushPendingTerminal,
     focusPaneAtPoint,
     clearInputMirror,
+    backend,
     clearRemoteScrollTimer,
     flushRemoteScroll,
     scheduleRenderState,

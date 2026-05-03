@@ -259,14 +259,23 @@ static void appendHtmlEscapedCodepoint(std::string* out, uint32_t codepoint) {
     }
 }
 
-static void appendCellText(
+static bool appendCellText(
     GhosttyRenderStateRowCells rowCells,
     GhosttyCell cell,
     bool preserveBlankCell,
     std::string* htmlText)
 {
     if (!htmlText) {
-        return;
+        return false;
+    }
+
+    bool hasText = false;
+    ghostty_cell_get(cell, GHOSTTY_CELL_DATA_HAS_TEXT, &hasText);
+    if (!hasText) {
+        if (preserveBlankCell) {
+            htmlText->push_back(' ');
+        }
+        return false;
     }
 
     uint32_t graphemeLen = 0;
@@ -280,20 +289,15 @@ static void appendCellText(
                 rowCells,
                 GHOSTTY_RENDER_STATE_ROW_CELLS_DATA_GRAPHEMES_BUF,
                 graphemes.data()) == GHOSTTY_SUCCESS) {
+            bool visible = false;
             for (uint32_t codepoint : graphemes) {
                 appendHtmlEscapedCodepoint(htmlText, codepoint);
+                if (codepoint != 0 && codepoint != ' ') {
+                    visible = true;
+                }
             }
-            return;
+            return visible;
         }
-    }
-
-    bool hasText = false;
-    ghostty_cell_get(cell, GHOSTTY_CELL_DATA_HAS_TEXT, &hasText);
-    if (!hasText) {
-        if (preserveBlankCell) {
-            htmlText->push_back(' ');
-        }
-        return;
     }
 
     uint32_t codepoint = 0;
@@ -302,10 +306,11 @@ static void appendCellText(
         if (preserveBlankCell) {
             htmlText->push_back(' ');
         }
-        return;
+        return false;
     }
 
     appendHtmlEscapedCodepoint(htmlText, codepoint);
+    return codepoint != ' ';
 }
 
 static bool htmlHasVisibleText(const std::string& html) {
@@ -367,6 +372,39 @@ static bool resolveStyleColor(
         default:
             return false;
     }
+}
+
+static bool styleColorsEqual(const GhosttyStyleColor& left, const GhosttyStyleColor& right) {
+    if (left.tag != right.tag) {
+        return false;
+    }
+
+    switch (left.tag) {
+        case GHOSTTY_STYLE_COLOR_NONE:
+            return true;
+        case GHOSTTY_STYLE_COLOR_PALETTE:
+            return left.value.palette == right.value.palette;
+        case GHOSTTY_STYLE_COLOR_RGB:
+            return colorsEqual(left.value.rgb, right.value.rgb);
+        default:
+            return false;
+    }
+}
+
+static bool stylesEquivalent(const GhosttyStyle& left, const GhosttyStyle& right) {
+    return
+        styleColorsEqual(left.fg_color, right.fg_color) &&
+        styleColorsEqual(left.bg_color, right.bg_color) &&
+        styleColorsEqual(left.underline_color, right.underline_color) &&
+        left.bold == right.bold &&
+        left.italic == right.italic &&
+        left.faint == right.faint &&
+        left.blink == right.blink &&
+        left.inverse == right.inverse &&
+        left.invisible == right.invisible &&
+        left.strikethrough == right.strikethrough &&
+        left.overline == right.overline &&
+        left.underline == right.underline;
 }
 
 static GhosttyColorRgb resolveEffectiveForeground(
@@ -576,6 +614,13 @@ static std::string buildRowHtml(
     segmentText.reserve(128);
     bool sawVisibleText = false;
     bool sawNonDefaultBackground = false;
+    bool hasSegmentStyle = false;
+    bool segmentHasFg = false;
+    bool segmentHasBg = false;
+    bool segmentHasNonDefaultBackground = false;
+    GhosttyStyle segmentStyle = GHOSTTY_INIT_SIZED(GhosttyStyle);
+    GhosttyColorRgb segmentFg = renderColors.foreground;
+    GhosttyColorRgb segmentBg = renderColors.background;
 
     while (ghostty_render_state_row_cells_next(rowCells)) {
         GhosttyCell cell = 0;
@@ -617,30 +662,45 @@ static std::string buildRowHtml(
                 GHOSTTY_RENDER_STATE_ROW_CELLS_DATA_BG_COLOR,
                 &bg) == GHOSTTY_SUCCESS;
 
-        const std::string css = buildCellCss(style, renderColors, hasFg, fg, hasBg, bg);
-        if (!segmentText.empty() && css != segmentCss) {
+        const bool sameSegmentStyle =
+            hasSegmentStyle &&
+            segmentHasFg == hasFg &&
+            segmentHasBg == hasBg &&
+            colorsEqual(segmentFg, fg) &&
+            colorsEqual(segmentBg, bg) &&
+            stylesEquivalent(segmentStyle, style);
+
+        if (!sameSegmentStyle && !segmentText.empty()) {
             flushStyledSegment(&rowHtml, segmentCss, &segmentText);
         }
-        segmentCss = css;
 
-        const bool preserveBlankCell = true;
-        if (css.find("background-color:") != std::string::npos) {
+        if (!sameSegmentStyle) {
+            segmentCss = buildCellCss(style, renderColors, hasFg, fg, hasBg, bg);
+            segmentStyle = style;
+            segmentHasFg = hasFg;
+            segmentHasBg = hasBg;
+            segmentFg = fg;
+            segmentBg = bg;
+            segmentHasNonDefaultBackground =
+                segmentCss.find("background-color:") != std::string::npos;
+            hasSegmentStyle = true;
+        }
+
+        if (segmentHasNonDefaultBackground) {
             sawNonDefaultBackground = true;
         }
 
-        const size_t previousLen = segmentText.size();
-        appendCellText(rowCells, cell, preserveBlankCell, &segmentText);
-        if (!sawVisibleText && segmentText.size() > previousLen) {
-            bool hasText = false;
-            ghostty_cell_get(cell, GHOSTTY_CELL_DATA_HAS_TEXT, &hasText);
-            uint32_t codepoint = 0;
-            ghostty_cell_get(cell, GHOSTTY_CELL_DATA_CODEPOINT, &codepoint);
-            if (hasText && codepoint != 0 && codepoint != ' ') {
-                sawVisibleText = true;
-            }
+        const bool preserveBlankCell = true;
+        if (appendCellText(rowCells, cell, preserveBlankCell, &segmentText)) {
+            sawVisibleText = true;
         }
     }
 
+    if (!segmentHasNonDefaultBackground) {
+        while (!segmentText.empty() && segmentText.back() == ' ') {
+            segmentText.pop_back();
+        }
+    }
     flushStyledSegment(&rowHtml, segmentCss, &segmentText);
     ghostty_render_state_row_cells_free(rowCells);
     if (!sawNonDefaultBackground && !sawVisibleText && !htmlHasVisibleText(rowHtml)) {

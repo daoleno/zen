@@ -59,21 +59,12 @@ export function buildGhosttyTerminalHtml(theme: TerminalThemePalette, fontUri: s
         -webkit-touch-callout: default;
         touch-action: none;
         -webkit-tap-highlight-color: transparent;
-        contain: strict;
         transform: translate3d(0, 0, 0);
       }
       #terminal-html * {
         font-family: inherit;
         user-select: text;
         -webkit-user-select: text;
-        touch-action: none;
-        -webkit-tap-highlight-color: transparent;
-      }
-      #terminal-html.is-scrolling,
-      #terminal-html.is-scrolling * {
-        user-select: none;
-        -webkit-user-select: none;
-        -webkit-touch-callout: none;
       }
       #terminal-html pre {
         margin: 0;
@@ -359,8 +350,7 @@ export function buildGhosttyTerminalHtml(theme: TerminalThemePalette, fontUri: s
             return;
           }
           // Match native touch scrolling expectations: dragging downward should
-          // pull older history into view, so we invert the finger delta before
-          // sending tmux's copy-mode scroll units.
+          // pull older history into view.
           send({ type: 'scroll', lines: pendingLines });
           pendingLines = 0;
         };
@@ -388,7 +378,6 @@ export function buildGhosttyTerminalHtml(theme: TerminalThemePalette, fontUri: s
             return;
           }
           scrollGestureActive = true;
-          terminalHtml.classList.add('is-scrolling');
           send({ type: 'scrollStart' });
         };
 
@@ -398,7 +387,6 @@ export function buildGhosttyTerminalHtml(theme: TerminalThemePalette, fontUri: s
           }
           flushScrollNow();
           scrollGestureActive = false;
-          terminalHtml.classList.remove('is-scrolling');
           send({ type: 'scrollEnd' });
         };
 
@@ -510,7 +498,6 @@ export function buildGhosttyTerminalHtml(theme: TerminalThemePalette, fontUri: s
           viewportMode = state && state.mode === 'scrolled' ? 'scrolled' : 'live';
           if (viewportMode === 'live') {
             scrollAccum = 0;
-            endScrollGesture();
           }
           scheduleDraw();
         };
