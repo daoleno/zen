@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { ActivityIndicator, View } from 'react-native';
+import { useAppColors } from '../../constants/tokens';
 
 let TerminalScreenImpl: React.ComponentType | null = null;
 
@@ -11,6 +12,7 @@ function getTerminalScreenImpl(): React.ComponentType {
 }
 
 export default function TerminalScreenRoute() {
+  const colors = useAppColors();
   const [ready, setReady] = useState(false);
 
   useEffect(() => {
@@ -29,10 +31,10 @@ export default function TerminalScreenRoute() {
           flex: 1,
           alignItems: 'center',
           justifyContent: 'center',
-          backgroundColor: '#0F0F14',
+          backgroundColor: colors.bgPrimary,
         }}
       >
-        <ActivityIndicator color="#5B9DFF" />
+        <ActivityIndicator color={colors.accent} />
       </View>
     );
   }

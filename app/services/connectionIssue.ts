@@ -4,6 +4,7 @@ import {
   normalizePublicKeyHex,
   verifyDaemonAssertion,
 } from "./auth";
+import { Colors, type AppColors } from "../constants/tokens";
 
 export type ConnectionIssueCode =
   | "invalid_url"
@@ -178,21 +179,22 @@ export async function diagnoseConnectionIssue(input: {
 
 export function connectionIssueAccent(
   issue: ConnectionIssue | null | undefined,
+  colors: AppColors = Colors,
 ): string {
-  if (!issue) return "#65758A";
+  if (!issue) return colors.disabledText;
 
   switch (issue.code) {
     case "device_not_paired":
-      return "#E7B65C";
+      return colors.warning;
     case "wrong_daemon":
     case "network_unreachable":
     case "proxy_error":
     case "unexpected_http_response":
     case "invalid_url":
-      return "#F09999";
+      return colors.dangerText;
     case "path_not_found":
     case "websocket_upgrade_failed":
-      return "#E7B65C";
+      return colors.warning;
   }
 }
 

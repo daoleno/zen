@@ -1,19 +1,19 @@
-import React from "react";
+import React, { useMemo } from "react";
 import { Pressable, StyleSheet, Text, View } from "react-native";
 import { useRouter } from "expo-router";
-import { Colors, Typography } from "../../constants/tokens";
+import { Colors, Typography, useAppColors } from "../../constants/tokens";
 import type { Issue } from "../../store/issues";
 
 type GlyphInfo = { glyph: string; color: string; label: string };
 
-export function statusGlyph(issue: Issue): GlyphInfo {
+export function statusGlyph(issue: Issue, colors: typeof Colors = Colors): GlyphInfo {
   if (issue.frontmatter.done) {
-    return { glyph: "✓", color: Colors.textSecondary, label: "Done" };
+    return { glyph: "✓", color: colors.textSecondary, label: "Done" };
   }
   if (issue.frontmatter.dispatched) {
-    return { glyph: "▸", color: Colors.statusRunning, label: "Sent" };
+    return { glyph: "▸", color: colors.statusRunning, label: "Sent" };
   }
-  return { glyph: "●", color: Colors.accent, label: "Open" };
+  return { glyph: "●", color: colors.accent, label: "Open" };
 }
 
 export function relativeTime(iso: string): string {
@@ -31,7 +31,9 @@ export function relativeTime(iso: string): string {
 
 export function IssueRow({ issue }: { issue: Issue }) {
   const router = useRouter();
-  const { glyph, color, label } = statusGlyph(issue);
+  const colors = useAppColors();
+  const styles = useMemo(() => createStyles(colors), [colors]);
+  const { glyph, color, label } = statusGlyph(issue, colors);
   const done = !!issue.frontmatter.done;
   const sent = !!issue.frontmatter.dispatched;
   const timeSource = issue.mtime || issue.frontmatter.created;
@@ -70,19 +72,20 @@ export function IssueRow({ issue }: { issue: Issue }) {
   );
 }
 
-const styles = StyleSheet.create({
+function createStyles(colors: typeof Colors) {
+  return StyleSheet.create({
   row: {
     flexDirection: "row",
     alignItems: "center",
     gap: 10,
     minHeight: 40,
     paddingVertical: 6,
-    backgroundColor: Colors.bgPrimary,
+    backgroundColor: colors.bgPrimary,
     borderBottomWidth: StyleSheet.hairlineWidth,
-    borderBottomColor: "rgba(235,225,207,0.045)",
+    borderBottomColor: colors.borderSubtle,
   },
   rowPressed: {
-    backgroundColor: "rgba(255,255,255,0.035)",
+    backgroundColor: colors.surfacePressed,
   },
   glyph: {
     fontFamily: Typography.terminalFontBold,
@@ -97,14 +100,14 @@ const styles = StyleSheet.create({
     minWidth: 0,
   },
   title: {
-    color: Colors.textPrimary,
+    color: colors.textPrimary,
     fontFamily: Typography.uiFontMedium,
     fontSize: 13,
     lineHeight: 17,
     opacity: 0.92,
   },
   titleDone: {
-    color: Colors.textSecondary,
+    color: colors.textSecondary,
     textDecorationLine: "line-through",
     opacity: 0.62,
   },
@@ -121,21 +124,21 @@ const styles = StyleSheet.create({
     opacity: 0.78,
   },
   metaDot: {
-    color: Colors.textSecondary,
+    color: colors.textSecondary,
     fontFamily: Typography.terminalFont,
     fontSize: 10,
     lineHeight: 13,
     opacity: 0.35,
   },
   meta: {
-    color: Colors.textSecondary,
+    color: colors.textSecondary,
     fontFamily: Typography.uiFont,
     fontSize: 10,
     lineHeight: 13,
     opacity: 0.5,
   },
   time: {
-    color: Colors.textSecondary,
+    color: colors.textSecondary,
     fontFamily: Typography.uiFont,
     fontSize: 11,
     lineHeight: 14,
@@ -143,4 +146,5 @@ const styles = StyleSheet.create({
     textAlign: "right",
     opacity: 0.44,
   },
-});
+  });
+}

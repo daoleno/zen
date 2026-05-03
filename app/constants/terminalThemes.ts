@@ -67,6 +67,15 @@ export type TerminalThemeName =
   | 'zen-amber'
   | 'zen-paper';
 
+export type TerminalThemePreference = TerminalThemeName | 'system';
+
+export type TerminalSystemColorScheme =
+  | 'light'
+  | 'dark'
+  | 'unspecified'
+  | null
+  | undefined;
+
 export const TerminalThemes: Record<TerminalThemeName, TerminalThemePalette> = {
   // Kanagawa Dragon — deep ink, Japanese brushwork. The most zen by name and spirit.
   'kanagawa': {
@@ -177,20 +186,20 @@ export const TerminalThemes: Record<TerminalThemeName, TerminalThemePalette> = {
     selectionBackground: 'rgba(139, 115, 85, 0.22)',
     selectionInactiveBackground: 'rgba(139, 115, 85, 0.12)',
     black: '#1C1918',
-    red: '#C44040',
-    green: '#4A7C4E',
-    yellow: '#7D6228',
-    blue: '#3B6BA5',
-    magenta: '#7B4F8E',
-    cyan: '#3A7D7D',
+    red: '#C65A52',
+    green: '#5C8F50',
+    yellow: '#9F7D38',
+    blue: '#4D77A8',
+    magenta: '#8A6097',
+    cyan: '#4F8782',
     white: '#DDD8CE',
     brightBlack: '#7A7060',
-    brightRed: '#E05252',
-    brightGreen: '#5E9966',
-    brightYellow: '#A07E30',
-    brightBlue: '#4D82C4',
-    brightMagenta: '#9965AE',
-    brightCyan: '#4A9999',
+    brightRed: '#D8736B',
+    brightGreen: '#73A766',
+    brightYellow: '#B8924B',
+    brightBlue: '#668DB7',
+    brightMagenta: '#A077AB',
+    brightCyan: '#68A09A',
     brightWhite: '#F3EDE0',
   },
   // Zen Amber — warm, low-glare ANSI tuned for long sessions.
@@ -239,6 +248,37 @@ export const TerminalThemeDescriptions: Record<TerminalThemeName, string> = {
 };
 
 export const DefaultTerminalThemeName: TerminalThemeName = 'kanagawa';
+export const SystemLightTerminalThemeName: TerminalThemeName = 'zen-paper';
+export const SystemDarkTerminalThemeName: TerminalThemeName = DefaultTerminalThemeName;
+export const DefaultTerminalThemePreference: TerminalThemePreference = 'system';
+
+export const TerminalThemePreferenceLabels: Record<TerminalThemePreference, string> = {
+  system: 'System',
+  ...TerminalThemeLabels,
+};
+
+export function isTerminalThemeName(value: string): value is TerminalThemeName {
+  return Object.prototype.hasOwnProperty.call(TerminalThemes, value);
+}
+
+export function isTerminalThemePreference(
+  value: string,
+): value is TerminalThemePreference {
+  return value === 'system' || isTerminalThemeName(value);
+}
+
+export function resolveTerminalThemePreference(
+  preference: TerminalThemePreference = DefaultTerminalThemePreference,
+  colorScheme: TerminalSystemColorScheme = 'dark',
+): TerminalThemeName {
+  if (preference !== 'system') {
+    return preference;
+  }
+
+  return colorScheme === 'light'
+    ? SystemLightTerminalThemeName
+    : SystemDarkTerminalThemeName;
+}
 
 export function resolveTerminalTheme(
   name: TerminalThemeName = DefaultTerminalThemeName,
@@ -286,6 +326,12 @@ export function buildTerminalChrome(theme: TerminalThemePalette): TerminalThemeC
     accentSoft: withAlpha(theme.cursor, 0.14),
     overlay: withAlpha(theme.background, 0.94),
   };
+}
+
+export function isLightTerminalTheme(theme: TerminalThemePalette): boolean {
+  const { red, green, blue } = parseHex(theme.background);
+  const luminance = (0.299 * red + 0.587 * green + 0.114 * blue) / 255;
+  return luminance > 0.62;
 }
 
 function rgbToHex(red: number, green: number, blue: number): string {

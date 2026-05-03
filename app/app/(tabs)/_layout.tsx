@@ -1,9 +1,10 @@
-import { Text as RNText } from 'react-native';
+import { StyleSheet, Text as RNText } from 'react-native';
 import { Tabs } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { Colors, Typography } from '../../constants/tokens';
+import { useAppColors } from '../../constants/tokens';
 
 export default function TabLayout() {
+  const colors = useAppColors();
   const insets = useSafeAreaInsets();
   const tabBarBottom = Math.max(insets.bottom, 8);
 
@@ -11,15 +12,15 @@ export default function TabLayout() {
     <Tabs
       screenOptions={{
         tabBarStyle: {
-          backgroundColor: Colors.bgPrimary,
-          borderTopColor: 'rgba(255,255,255,0.04)',
+          backgroundColor: colors.bgPrimary,
+          borderTopColor: colors.borderSubtle,
           borderTopWidth: 0.5,
           height: 52 + tabBarBottom,
           paddingBottom: tabBarBottom,
           paddingTop: 4,
         },
-        tabBarActiveTintColor: Colors.textPrimary,
-        tabBarInactiveTintColor: 'rgba(255,255,255,0.25)',
+        tabBarActiveTintColor: colors.accent,
+        tabBarInactiveTintColor: colors.disabledText,
         tabBarShowLabel: false,
         headerShown: false,
       }}
@@ -28,36 +29,73 @@ export default function TabLayout() {
         name="index"
         options={{
           title: 'Agents',
-          tabBarIcon: ({ color }) => <TabDot color={color} />,
+          tabBarIcon: ({ color, focused }) => (
+            <TabSymbol glyph="●" color={color} focused={focused} fontSize={14} />
+          ),
         }}
       />
       <Tabs.Screen
         name="issues"
         options={{
           title: 'Issues',
-          tabBarIcon: ({ color }) => <RNText style={{ fontSize: 16, color, opacity: 0.8, lineHeight: 22 }}>{'◇'}</RNText>,
+          tabBarIcon: ({ color, focused }) => (
+            <TabSymbol glyph="◇" color={color} focused={focused} fontSize={16} />
+          ),
         }}
       />
       <Tabs.Screen
         name="stats"
         options={{
           title: 'Stats',
-          tabBarIcon: ({ color }) => <RNText style={{ fontSize: 20, color, opacity: 0.8, lineHeight: 22 }}>{'∷'}</RNText>,
+          tabBarIcon: ({ color, focused }) => (
+            <TabSymbol glyph="∷" color={color} focused={focused} fontSize={20} />
+          ),
         }}
       />
       <Tabs.Screen
         name="settings"
         options={{
           title: 'Settings',
-          tabBarIcon: ({ color }) => <RNText style={{ fontSize: 16, color, opacity: 0.8, lineHeight: 22 }}>{'///'}</RNText>,
+          tabBarIcon: ({ color, focused }) => (
+            <TabSymbol glyph="///" color={color} focused={focused} fontSize={16} />
+          ),
         }}
       />
     </Tabs>
   );
 }
 
-function TabDot({ color }: { color: string }) {
+function TabSymbol({
+  glyph,
+  color,
+  focused,
+  fontSize,
+}: {
+  glyph: string;
+  color: string;
+  focused: boolean;
+  fontSize: number;
+}) {
   return (
-    <RNText style={{ fontSize: 14, color, lineHeight: 22 }}>{'●'}</RNText>
+    <RNText
+      style={[
+        styles.tabSymbol,
+        {
+          color,
+          fontSize,
+          opacity: focused ? 1 : 0.52,
+        },
+      ]}
+    >
+      {glyph}
+    </RNText>
   );
 }
+
+const styles = StyleSheet.create({
+  tabSymbol: {
+    minWidth: 28,
+    lineHeight: 22,
+    textAlign: 'center',
+  },
+});

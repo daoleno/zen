@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   ActivityIndicator,
   FlatList,
@@ -9,7 +9,7 @@ import {
   View,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
-import { Colors, Typography } from '../../constants/tokens';
+import { Colors, Typography, useAppColors } from '../../constants/tokens';
 import { wsClient } from '../../services/websocket';
 
 interface DirectoryPickerProps {
@@ -23,6 +23,8 @@ interface DirectoryPickerProps {
 type DirEntry = { name: string; path: string };
 
 export function DirectoryPicker({ visible, serverId, initialPath, onSelect, onClose }: DirectoryPickerProps) {
+  const colors = useAppColors();
+  const styles = useMemo(() => createStyles(colors), [colors]);
   const [currentPath, setCurrentPath] = useState('');
   const [entries, setEntries] = useState<DirEntry[]>([]);
   const [loading, setLoading] = useState(false);
@@ -68,7 +70,7 @@ export function DirectoryPicker({ visible, serverId, initialPath, onSelect, onCl
           {/* Current path + parent button */}
           <View style={styles.pathRow}>
             <TouchableOpacity onPress={goUp} style={styles.upBtn} activeOpacity={0.7}>
-              <Ionicons name="arrow-up" size={18} color={Colors.textSecondary} />
+              <Ionicons name="arrow-up" size={18} color={colors.textSecondary} />
             </TouchableOpacity>
             <Text style={styles.pathText} numberOfLines={1}>{currentPath}</Text>
           </View>
@@ -76,7 +78,7 @@ export function DirectoryPicker({ visible, serverId, initialPath, onSelect, onCl
           {/* Content */}
           {loading ? (
             <View style={styles.center}>
-              <ActivityIndicator color={Colors.textSecondary} />
+              <ActivityIndicator color={colors.textSecondary} />
             </View>
           ) : error ? (
             <View style={styles.center}>
@@ -93,9 +95,9 @@ export function DirectoryPicker({ visible, serverId, initialPath, onSelect, onCl
                   onPress={() => loadDir(item.path)}
                   activeOpacity={0.7}
                 >
-                  <Ionicons name="folder" size={18} color="#D6B16A" />
+                  <Ionicons name="folder" size={18} color={colors.promptYellow} />
                   <Text style={styles.dirName}>{item.name}</Text>
-                  <Ionicons name="chevron-forward" size={14} color="rgba(255,255,255,0.2)" />
+                  <Ionicons name="chevron-forward" size={14} color={colors.textSecondary} />
                 </TouchableOpacity>
               )}
               ListEmptyComponent={
@@ -126,14 +128,15 @@ export function DirectoryPicker({ visible, serverId, initialPath, onSelect, onCl
   );
 }
 
-const styles = StyleSheet.create({
+function createStyles(colors: typeof Colors) {
+  return StyleSheet.create({
   root: {
     flex: 1,
     justifyContent: 'flex-end',
   },
   backdrop: {
     ...StyleSheet.absoluteFillObject,
-    backgroundColor: 'rgba(6, 8, 12, 0.62)',
+    backgroundColor: colors.modalBackdrop,
   },
   card: {
     maxHeight: '75%',
@@ -142,23 +145,23 @@ const styles = StyleSheet.create({
     paddingHorizontal: 18,
     paddingTop: 12,
     paddingBottom: 28,
-    backgroundColor: '#121A25',
+    backgroundColor: colors.modalSurface,
     borderTopWidth: 1,
-    borderColor: 'rgba(255,255,255,0.06)',
+    borderColor: colors.borderSubtle,
   },
   handle: {
     alignSelf: 'center',
     width: 42,
     height: 4,
     borderRadius: 2,
-    backgroundColor: '#3A475B',
+    backgroundColor: colors.borderStrong,
     marginBottom: 14,
   },
   header: {
     marginBottom: 12,
   },
   title: {
-    color: Colors.textPrimary,
+    color: colors.textPrimary,
     fontSize: 16,
     fontFamily: Typography.uiFontMedium,
   },
@@ -173,13 +176,13 @@ const styles = StyleSheet.create({
     width: 32,
     height: 32,
     borderRadius: 10,
-    backgroundColor: '#18222F',
+    backgroundColor: colors.bgElevated,
     alignItems: 'center',
     justifyContent: 'center',
   },
   pathText: {
     flex: 1,
-    color: Colors.textSecondary,
+    color: colors.textSecondary,
     fontSize: 13,
     fontFamily: Typography.terminalFont,
   },
@@ -194,11 +197,11 @@ const styles = StyleSheet.create({
     paddingHorizontal: 12,
     borderRadius: 12,
     marginBottom: 4,
-    backgroundColor: '#18222F',
+    backgroundColor: colors.bgElevated,
   },
   dirName: {
     flex: 1,
-    color: Colors.textPrimary,
+    color: colors.textPrimary,
     fontSize: 14,
     fontFamily: Typography.uiFont,
   },
@@ -208,13 +211,13 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
   },
   errorText: {
-    color: '#E57373',
+    color: colors.dangerText,
     fontSize: 13,
     fontFamily: Typography.uiFont,
     textAlign: 'center',
   },
   emptyText: {
-    color: Colors.textSecondary,
+    color: colors.textSecondary,
     fontSize: 13,
     fontFamily: Typography.uiFont,
   },
@@ -227,10 +230,10 @@ const styles = StyleSheet.create({
     borderRadius: 12,
     alignItems: 'center',
     justifyContent: 'center',
-    backgroundColor: Colors.accent,
+    backgroundColor: colors.accent,
   },
   selectBtnText: {
-    color: Colors.bgPrimary,
+    color: colors.textOnAccent,
     fontSize: 14,
     fontFamily: Typography.uiFontMedium,
   },
@@ -239,11 +242,12 @@ const styles = StyleSheet.create({
     borderRadius: 12,
     alignItems: 'center',
     justifyContent: 'center',
-    backgroundColor: 'rgba(255,255,255,0.04)',
+    backgroundColor: colors.surfaceSubtle,
   },
   cancelBtnText: {
-    color: Colors.textSecondary,
+    color: colors.textSecondary,
     fontSize: 14,
     fontFamily: Typography.uiFontMedium,
   },
-});
+  });
+}

@@ -10,6 +10,7 @@ import {
   TextInput,
   TouchableOpacity,
   View,
+  useColorScheme,
 } from "react-native";
 import { useFocusEffect, useLocalSearchParams } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
@@ -23,12 +24,16 @@ import {
   scanFromURLAsync,
   useCameraPermissions,
 } from "expo-camera";
-import { Colors, Typography, statusColor } from "../../constants/tokens";
+import { Colors, Typography, statusColor, useAppColors } from "../../constants/tokens";
 import {
-  DefaultTerminalThemeName,
+  DefaultTerminalThemePreference,
   TerminalThemeLabels,
-  TerminalThemeName,
+  TerminalThemePreferenceLabels,
   TerminalThemes,
+  resolveTerminalThemePreference,
+  type TerminalThemeName,
+  type TerminalThemePalette,
+  type TerminalThemePreference,
 } from "../../constants/terminalThemes";
 import { importConnection } from "../../services/importConnection";
 import { wsClient } from "../../services/websocket";
@@ -40,13 +45,16 @@ const QR_BARCODE_TYPES: BarcodeType[] = ["qr"];
 
 export default function SettingsScreen() {
   const { state, dispatch } = useAgents();
+  const colorScheme = useColorScheme();
+  const colors = useAppColors();
+  const styles = useMemo(() => createStyles(colors), [colors]);
   const params = useLocalSearchParams<{
     addServer?: string;
     refresh?: string;
   }>();
   const [servers, setServers] = useState<Storage.StoredServer[]>([]);
-  const [terminalTheme, setTerminalTheme] = useState<TerminalThemeName>(
-    DefaultTerminalThemeName,
+  const [terminalTheme, setTerminalTheme] = useState<Storage.StoredTerminalTheme>(
+    DefaultTerminalThemePreference,
   );
   const [loaded, setLoaded] = useState(false);
   const [editorVisible, setEditorVisible] = useState(false);
@@ -274,7 +282,7 @@ export default function SettingsScreen() {
     ]);
   };
 
-  const handleTerminalTheme = async (value: TerminalThemeName) => {
+  const handleTerminalTheme = async (value: TerminalThemePreference) => {
     setTerminalTheme(value);
     await Storage.setTerminalTheme(value);
   };
@@ -403,7 +411,7 @@ export default function SettingsScreen() {
                     <View
                       style={[
                         styles.statusDot,
-                        { backgroundColor: connectionColor(connectionState) },
+                        { backgroundColor: connectionColor(connectionState, colors) },
                       ]}
                     />
                     <View style={styles.serverInfo}>
@@ -418,7 +426,7 @@ export default function SettingsScreen() {
                           style={[
                             styles.latencyLabel,
                             {
-                              color: latencyColor(latencySample.latencyMs),
+                              color: latencyColor(latencySample.latencyMs, colors),
                             },
                           ]}
                         >
@@ -442,7 +450,7 @@ export default function SettingsScreen() {
                       {connectionIssue ? (
                         <ServerNoticeCard
                           icon="alert-circle-outline"
-                          accent={connectionIssueAccent(connectionIssue)}
+                          accent={connectionIssueAccent(connectionIssue, colors)}
                           title={connectionIssue.title}
                           detail={connectionIssue.detail}
                           hint={connectionIssue.hint}
@@ -452,7 +460,7 @@ export default function SettingsScreen() {
                       {waitingForAgents ? (
                         <ServerNoticeCard
                           icon="information-circle-outline"
-                          accent={Colors.accent}
+                          accent={colors.accent}
                           title={
                             hydrated
                               ? "Connected, no active agents yet"
@@ -516,20 +524,27 @@ export default function SettingsScreen() {
           onPress={openCreateServer}
           activeOpacity={0.82}
         >
-          <Ionicons name="add" size={16} color={Colors.textSecondary} />
+          <Ionicons name="add" size={16} color={colors.textSecondary} />
           <Text style={styles.addBtnText}>Pair Server</Text>
         </TouchableOpacity>
 
         {/* Theme */}
         <Text style={styles.sectionLabel}>Theme</Text>
         <View style={styles.themeGrid}>
+          <TerminalThemeCard
+            label={TerminalThemePreferenceLabels.system}
+            theme={TerminalThemes[resolveTerminalThemePreference("system", colorScheme)]}
+            active={terminalTheme === "system"}
+            onPress={() => handleTerminalTheme("system")}
+          />
           {(Object.keys(TerminalThemes) as TerminalThemeName[]).map(
             (themeName) => {
               const active = terminalTheme === themeName;
               return (
                 <TerminalThemeCard
                   key={themeName}
-                  themeName={themeName}
+                  label={TerminalThemeLabels[themeName]}
+                  theme={TerminalThemes[themeName]}
                   active={active}
                   onPress={() => handleTerminalTheme(themeName)}
                 />
@@ -571,7 +586,7 @@ export default function SettingsScreen() {
                     value={draftName}
                     onChangeText={setDraftName}
                     placeholder="workstation"
-                    placeholderTextColor="rgba(255,255,255,0.2)"
+                    placeholderTextColor={colors.textSecondary}
                     autoCapitalize="none"
                     autoCorrect={false}
                   />
@@ -584,7 +599,7 @@ export default function SettingsScreen() {
                     value={draftEndpoint}
                     onChangeText={setDraftEndpoint}
                     placeholder="wss://zen.example.com/ws"
-                    placeholderTextColor="rgba(255,255,255,0.2)"
+                    placeholderTextColor={colors.textSecondary}
                     autoCapitalize="none"
                     autoCorrect={false}
                   />
@@ -636,7 +651,7 @@ export default function SettingsScreen() {
                     value={draftImportValue}
                     onChangeText={setDraftImportValue}
                     placeholder="zen://settings?p=..."
-                    placeholderTextColor="rgba(255,255,255,0.2)"
+                    placeholderTextColor={colors.textSecondary}
                     autoCapitalize="none"
                     autoCorrect={false}
                     multiline
@@ -685,7 +700,7 @@ export default function SettingsScreen() {
                       <Ionicons
                         name="clipboard-outline"
                         size={15}
-                        color={Colors.textSecondary}
+                        color={colors.textSecondary}
                       />
                       <Text style={styles.importBtnText}>Paste Link</Text>
                     </TouchableOpacity>
@@ -697,7 +712,7 @@ export default function SettingsScreen() {
                       <Ionicons
                         name="qr-code-outline"
                         size={15}
-                        color={Colors.textSecondary}
+                        color={colors.textSecondary}
                       />
                       <Text style={styles.importBtnText}>Scan QR</Text>
                     </TouchableOpacity>
@@ -719,7 +734,7 @@ export default function SettingsScreen() {
           <View style={styles.scannerHeader}>
             <Text style={styles.scannerTitle}>Scan Pairing QR</Text>
             <TouchableOpacity onPress={closeScanner} activeOpacity={0.82}>
-              <Ionicons name="close" size={24} color={Colors.textPrimary} />
+              <Ionicons name="close" size={24} color={colors.textPrimary} />
             </TouchableOpacity>
           </View>
 
@@ -819,6 +834,9 @@ function ServerNoticeCard({
   detail: string;
   hint: string;
 }) {
+  const colors = useAppColors();
+  const styles = useMemo(() => createStyles(colors), [colors]);
+
   return (
     <View style={[styles.noticeCard, { borderColor: accent }]}>
       <View style={styles.noticeHeader}>
@@ -832,15 +850,18 @@ function ServerNoticeCard({
 }
 
 function TerminalThemeCard({
-  themeName,
+  label,
+  theme,
   active,
   onPress,
 }: {
-  themeName: TerminalThemeName;
+  label: string;
+  theme: TerminalThemePalette;
   active: boolean;
   onPress(): void;
 }) {
-  const theme = TerminalThemes[themeName];
+  const colors = useAppColors();
+  const styles = useMemo(() => createStyles(colors), [colors]);
 
   return (
     <TouchableOpacity
@@ -876,9 +897,9 @@ function TerminalThemeCard({
       {/* Label row */}
       <View style={styles.themeCardLabel}>
         <Text style={[styles.themeCardName, active && styles.themeCardNameActive]}>
-          {TerminalThemeLabels[themeName]}
+          {label}
         </Text>
-        {active && <Ionicons name="checkmark" size={12} color={Colors.accent} />}
+        {active && <Ionicons name="checkmark" size={12} color={colors.accent} />}
       </View>
     </TouchableOpacity>
   );
@@ -895,14 +916,14 @@ function connectionLabel(state: ConnectionState): string {
   }
 }
 
-function connectionColor(state: ConnectionState): string {
+function connectionColor(state: ConnectionState, colors: typeof Colors = Colors): string {
   switch (state) {
     case "connected":
-      return Colors.statusRunning;
+      return colors.statusRunning;
     case "connecting":
-      return "#E7B65C";
+      return colors.warning;
     case "offline":
-      return "#65758A";
+      return colors.disabledText;
   }
 }
 
@@ -913,20 +934,21 @@ function formatLatency(latencyMs: number): string {
   return `${latencyMs} ms`;
 }
 
-function latencyColor(latencyMs: number): string {
+function latencyColor(latencyMs: number, colors: typeof Colors = Colors): string {
   if (latencyMs <= 120) {
-    return Colors.statusRunning;
+    return colors.statusRunning;
   }
   if (latencyMs <= 350) {
-    return "#E7B65C";
+    return colors.warning;
   }
-  return "#F09999";
+  return colors.dangerText;
 }
 
-const styles = StyleSheet.create({
+function createStyles(colors: typeof Colors) {
+  return StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: Colors.bgPrimary,
+    backgroundColor: colors.bgPrimary,
   },
   header: {
     paddingHorizontal: 20,
@@ -938,7 +960,7 @@ const styles = StyleSheet.create({
     paddingBottom: 40,
   },
   pageTitle: {
-    color: Colors.textPrimary,
+    color: colors.textPrimary,
     fontSize: 22,
     fontFamily: Typography.uiFontMedium,
     letterSpacing: 1,
@@ -953,7 +975,7 @@ const styles = StyleSheet.create({
     marginBottom: 10,
   },
   sectionLabel: {
-    color: Colors.textSecondary,
+    color: colors.textSecondary,
     fontSize: 12,
     fontFamily: Typography.uiFontMedium,
     textTransform: "uppercase",
@@ -963,7 +985,7 @@ const styles = StyleSheet.create({
     opacity: 0.7,
   },
   sectionCount: {
-    color: Colors.textSecondary,
+    color: colors.textSecondary,
     fontSize: 12,
     fontFamily: Typography.terminalFont,
     opacity: 0.5,
@@ -977,9 +999,9 @@ const styles = StyleSheet.create({
     borderRadius: 12,
     paddingHorizontal: 14,
     paddingVertical: 12,
-    backgroundColor: "rgba(255,255,255,0.03)",
+    backgroundColor: colors.surfaceSubtle,
     borderWidth: StyleSheet.hairlineWidth,
-    borderColor: "rgba(255,255,255,0.06)",
+    borderColor: colors.borderSubtle,
   },
   serverRow: {
     flexDirection: "row",
@@ -1000,25 +1022,25 @@ const styles = StyleSheet.create({
     gap: 3,
   },
   serverName: {
-    color: Colors.textPrimary,
+    color: colors.textPrimary,
     fontSize: 14,
     fontFamily: Typography.uiFontMedium,
   },
   serverUrl: {
-    color: Colors.textSecondary,
+    color: colors.textSecondary,
     fontSize: 11,
     fontFamily: Typography.terminalFont,
     marginTop: 2,
     opacity: 0.6,
   },
   connectionLabel: {
-    color: Colors.textSecondary,
+    color: colors.textSecondary,
     fontSize: 11,
     fontFamily: Typography.uiFont,
     opacity: 0.5,
   },
   connectionLabelActive: {
-    color: Colors.statusRunning,
+    color: colors.statusRunning,
     opacity: 0.8,
   },
   latencyLabel: {
@@ -1031,7 +1053,7 @@ const styles = StyleSheet.create({
     padding: 12,
     borderRadius: 10,
     borderWidth: StyleSheet.hairlineWidth,
-    backgroundColor: "rgba(255,255,255,0.03)",
+    backgroundColor: colors.surfaceSubtle,
   },
   noticeHeader: {
     flexDirection: "row",
@@ -1040,13 +1062,13 @@ const styles = StyleSheet.create({
   },
   noticeTitle: {
     flex: 1,
-    color: Colors.textPrimary,
+    color: colors.textPrimary,
     fontSize: 13,
     fontFamily: Typography.uiFontMedium,
   },
   noticeDetail: {
     marginTop: 8,
-    color: Colors.textSecondary,
+    color: colors.textSecondary,
     fontSize: 12,
     lineHeight: 18,
     fontFamily: Typography.uiFont,
@@ -1054,7 +1076,7 @@ const styles = StyleSheet.create({
   },
   noticeHint: {
     marginTop: 8,
-    color: Colors.textSecondary,
+    color: colors.textSecondary,
     fontSize: 12,
     lineHeight: 18,
     fontFamily: Typography.uiFont,
@@ -1066,26 +1088,26 @@ const styles = StyleSheet.create({
     marginTop: 12,
     paddingTop: 12,
     borderTopWidth: StyleSheet.hairlineWidth,
-    borderTopColor: "rgba(255,255,255,0.06)",
+    borderTopColor: colors.borderSubtle,
   },
   actionBtn: {
     paddingHorizontal: 12,
     paddingVertical: 6,
     borderRadius: 8,
-    backgroundColor: "rgba(255,255,255,0.05)",
+    backgroundColor: colors.surfacePressed,
   },
   actionBtnText: {
-    color: Colors.textPrimary,
+    color: colors.textPrimary,
     fontSize: 12,
     fontFamily: Typography.uiFontMedium,
     opacity: 0.8,
   },
   actionBtnDanger: {
-    backgroundColor: "rgba(255,82,82,0.08)",
+    backgroundColor: `${colors.statusFailed}14`,
     marginLeft: "auto",
   },
   actionBtnDangerText: {
-    color: "#F09999",
+    color: colors.dangerText,
   },
   addBtn: {
     flexDirection: "row",
@@ -1096,11 +1118,11 @@ const styles = StyleSheet.create({
     marginTop: 8,
     borderRadius: 10,
     borderWidth: StyleSheet.hairlineWidth,
-    borderColor: "rgba(255,255,255,0.08)",
+    borderColor: colors.border,
     borderStyle: "dashed",
   },
   addBtnText: {
-    color: Colors.textSecondary,
+    color: colors.textSecondary,
     fontSize: 13,
     fontFamily: Typography.uiFont,
   },
@@ -1109,7 +1131,7 @@ const styles = StyleSheet.create({
     alignItems: "center",
   },
   emptyText: {
-    color: Colors.textSecondary,
+    color: colors.textSecondary,
     fontSize: 13,
     fontFamily: Typography.uiFont,
     opacity: 0.5,
@@ -1126,11 +1148,11 @@ const styles = StyleSheet.create({
     borderRadius: 12,
     overflow: "hidden",
     borderWidth: StyleSheet.hairlineWidth,
-    borderColor: "rgba(255,255,255,0.08)",
+    borderColor: colors.border,
   },
   themeCardActive: {
     borderWidth: 1.5,
-    borderColor: Colors.accent,
+    borderColor: colors.accent,
   },
   themePreview: {
     height: 82,
@@ -1174,19 +1196,19 @@ const styles = StyleSheet.create({
     justifyContent: "space-between",
     paddingHorizontal: 10,
     paddingVertical: 7,
-    backgroundColor: "rgba(255,255,255,0.03)",
+    backgroundColor: colors.surfaceSubtle,
   },
   themeCardName: {
     fontSize: 12,
     fontFamily: Typography.uiFontMedium,
-    color: Colors.textSecondary,
+    color: colors.textSecondary,
   },
   themeCardNameActive: {
-    color: Colors.textPrimary,
+    color: colors.textPrimary,
   },
 
   version: {
-    color: Colors.textSecondary,
+    color: colors.textSecondary,
     fontSize: 11,
     fontFamily: Typography.uiFont,
     textAlign: "center",
@@ -1206,7 +1228,7 @@ const styles = StyleSheet.create({
   },
   modalBackdrop: {
     ...StyleSheet.absoluteFillObject,
-    backgroundColor: "rgba(0,0,0,0.7)",
+    backgroundColor: colors.modalBackdrop,
   },
   modalCard: {
     borderRadius: 16,
@@ -1214,18 +1236,18 @@ const styles = StyleSheet.create({
     maxWidth: 520,
     width: "100%",
     alignSelf: "center",
-    backgroundColor: "#141418",
+    backgroundColor: colors.modalSurface,
     borderWidth: StyleSheet.hairlineWidth,
-    borderColor: "rgba(255,255,255,0.08)",
+    borderColor: colors.border,
   },
   modalTitle: {
-    color: Colors.textPrimary,
+    color: colors.textPrimary,
     fontSize: 17,
     fontFamily: Typography.uiFontMedium,
     marginBottom: 20,
   },
   importLead: {
-    color: Colors.textSecondary,
+    color: colors.textSecondary,
     fontSize: 13,
     lineHeight: 20,
     fontFamily: Typography.uiFont,
@@ -1233,22 +1255,22 @@ const styles = StyleSheet.create({
     opacity: 0.82,
   },
   fieldLabel: {
-    color: Colors.textSecondary,
+    color: colors.textSecondary,
     fontSize: 12,
     fontFamily: Typography.uiFont,
     marginBottom: 6,
     opacity: 0.6,
   },
   input: {
-    backgroundColor: "rgba(255,255,255,0.04)",
+    backgroundColor: colors.inputBackground,
     borderRadius: 10,
     paddingHorizontal: 14,
     paddingVertical: 10,
-    color: Colors.textPrimary,
+    color: colors.textPrimary,
     fontSize: 14,
     fontFamily: Typography.terminalFont,
     borderWidth: StyleSheet.hairlineWidth,
-    borderColor: "rgba(255,255,255,0.08)",
+    borderColor: colors.border,
   },
   importInput: {
     minHeight: 116,
@@ -1256,7 +1278,7 @@ const styles = StyleSheet.create({
   },
   fieldHint: {
     marginTop: 8,
-    color: Colors.textSecondary,
+    color: colors.textSecondary,
     fontSize: 12,
     lineHeight: 18,
     fontFamily: Typography.uiFont,
@@ -1266,19 +1288,19 @@ const styles = StyleSheet.create({
     marginTop: 16,
     borderRadius: 10,
     padding: 12,
-    backgroundColor: "rgba(255,255,255,0.03)",
+    backgroundColor: colors.surfaceSubtle,
     borderWidth: StyleSheet.hairlineWidth,
-    borderColor: "rgba(255,255,255,0.08)",
+    borderColor: colors.border,
   },
   identityLabel: {
-    color: Colors.textSecondary,
+    color: colors.textSecondary,
     fontSize: 12,
     fontFamily: Typography.uiFontMedium,
     marginBottom: 8,
     opacity: 0.7,
   },
   identityCode: {
-    color: Colors.textPrimary,
+    color: colors.textPrimary,
     fontSize: 12,
     fontFamily: Typography.terminalFont,
     opacity: 0.86,
@@ -1295,18 +1317,18 @@ const styles = StyleSheet.create({
     borderRadius: 10,
     alignItems: "center",
     justifyContent: "center",
-    backgroundColor: "rgba(255,255,255,0.05)",
+    backgroundColor: colors.surfacePressed,
   },
   modalBtnPrimary: {
-    backgroundColor: Colors.accent,
+    backgroundColor: colors.accent,
   },
   modalBtnText: {
-    color: Colors.textPrimary,
+    color: colors.textPrimary,
     fontSize: 13,
     fontFamily: Typography.uiFontMedium,
   },
   modalBtnPrimaryText: {
-    color: Colors.bgPrimary,
+    color: colors.textOnAccent,
   },
   divider: {
     flexDirection: "row",
@@ -1318,10 +1340,10 @@ const styles = StyleSheet.create({
   dividerLine: {
     flex: 1,
     height: StyleSheet.hairlineWidth,
-    backgroundColor: "rgba(255,255,255,0.08)",
+    backgroundColor: colors.border,
   },
   dividerText: {
-    color: Colors.textSecondary,
+    color: colors.textSecondary,
     fontSize: 12,
     fontFamily: Typography.uiFont,
     opacity: 0.5,
@@ -1339,11 +1361,11 @@ const styles = StyleSheet.create({
     height: 40,
     borderRadius: 10,
     borderWidth: StyleSheet.hairlineWidth,
-    borderColor: "rgba(255,255,255,0.08)",
-    backgroundColor: "rgba(255,255,255,0.03)",
+    borderColor: colors.border,
+    backgroundColor: colors.surfaceSubtle,
   },
   importBtnText: {
-    color: Colors.textSecondary,
+    color: colors.textSecondary,
     fontSize: 13,
     fontFamily: Typography.uiFontMedium,
   },
@@ -1363,7 +1385,7 @@ const styles = StyleSheet.create({
     marginBottom: 18,
   },
   scannerTitle: {
-    color: Colors.textPrimary,
+    color: colors.textPrimary,
     fontSize: 20,
     fontFamily: Typography.uiFontMedium,
   },
@@ -1410,7 +1432,7 @@ const styles = StyleSheet.create({
     height: 32,
     borderTopWidth: 4,
     borderLeftWidth: 4,
-    borderColor: Colors.accent,
+    borderColor: colors.accent,
     borderTopLeftRadius: 20,
   },
   scannerFrameCornerTopRight: {
@@ -1421,7 +1443,7 @@ const styles = StyleSheet.create({
     height: 32,
     borderTopWidth: 4,
     borderRightWidth: 4,
-    borderColor: Colors.accent,
+    borderColor: colors.accent,
     borderTopRightRadius: 20,
   },
   scannerFrameCornerBottomLeft: {
@@ -1432,7 +1454,7 @@ const styles = StyleSheet.create({
     height: 32,
     borderBottomWidth: 4,
     borderLeftWidth: 4,
-    borderColor: Colors.accent,
+    borderColor: colors.accent,
     borderBottomLeftRadius: 20,
   },
   scannerFrameCornerBottomRight: {
@@ -1443,12 +1465,12 @@ const styles = StyleSheet.create({
     height: 32,
     borderBottomWidth: 4,
     borderRightWidth: 4,
-    borderColor: Colors.accent,
+    borderColor: colors.accent,
     borderBottomRightRadius: 20,
   },
   scannerHelpText: {
     marginTop: 18,
-    color: Colors.textSecondary,
+    color: colors.textSecondary,
     fontSize: 13,
     lineHeight: 20,
     fontFamily: Typography.uiFont,
@@ -1464,19 +1486,19 @@ const styles = StyleSheet.create({
     marginTop: 24,
     borderRadius: 18,
     padding: 20,
-    backgroundColor: "rgba(255,255,255,0.04)",
+    backgroundColor: colors.surfaceSubtle,
     borderWidth: StyleSheet.hairlineWidth,
-    borderColor: "rgba(255,255,255,0.08)",
+    borderColor: colors.border,
     alignItems: "center",
   },
   scannerNoticeTitle: {
-    color: Colors.textPrimary,
+    color: colors.textPrimary,
     fontSize: 16,
     fontFamily: Typography.uiFontMedium,
   },
   scannerNoticeText: {
     marginTop: 8,
-    color: Colors.textSecondary,
+    color: colors.textSecondary,
     fontSize: 13,
     lineHeight: 20,
     fontFamily: Typography.uiFont,
@@ -1490,11 +1512,11 @@ const styles = StyleSheet.create({
     borderRadius: 12,
     alignItems: "center",
     justifyContent: "center",
-    backgroundColor: Colors.accent,
+    backgroundColor: colors.accent,
     paddingHorizontal: 16,
   },
   scannerPrimaryBtnText: {
-    color: Colors.bgPrimary,
+    color: colors.textOnAccent,
     fontSize: 13,
     fontFamily: Typography.uiFontMedium,
   },
@@ -1505,17 +1527,18 @@ const styles = StyleSheet.create({
     borderRadius: 12,
     alignItems: "center",
     justifyContent: "center",
-    backgroundColor: "rgba(255,255,255,0.06)",
+    backgroundColor: colors.surfacePressed,
     borderWidth: StyleSheet.hairlineWidth,
-    borderColor: "rgba(255,255,255,0.08)",
+    borderColor: colors.border,
     paddingHorizontal: 16,
   },
   scannerBtnDisabled: {
     opacity: 0.45,
   },
   scannerSecondaryBtnText: {
-    color: Colors.textPrimary,
+    color: colors.textPrimary,
     fontSize: 13,
     fontFamily: Typography.uiFontMedium,
   },
-});
+  });
+}

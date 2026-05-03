@@ -1,12 +1,14 @@
-import React from "react";
+import React, { useMemo } from "react";
 import { View, Text, TouchableOpacity, StyleSheet } from "react-native";
 import { useRouter } from "expo-router";
 import { SafeAreaView } from "react-native-safe-area-context";
-import { Colors, Spacing, Typography } from "../constants/tokens";
+import { Colors, Spacing, Typography, useAppColors } from "../constants/tokens";
 import { markOnboarded } from "../services/storage";
 
 export default function OnboardingScreen() {
   const router = useRouter();
+  const colors = useAppColors();
+  const styles = useMemo(() => createStyles(colors), [colors]);
 
   return (
     <SafeAreaView style={styles.container}>
@@ -75,8 +77,9 @@ export default function OnboardingScreen() {
   );
 }
 
-const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: Colors.bgPrimary },
+function createStyles(colors: typeof Colors) {
+  return StyleSheet.create({
+  container: { flex: 1, backgroundColor: colors.bgPrimary },
   content: {
     flex: 1,
     padding: Spacing.screenMargin * 2,
@@ -84,13 +87,13 @@ const styles = StyleSheet.create({
   },
   logo: { fontSize: 56, textAlign: "center", marginBottom: 16 },
   title: {
-    color: Colors.textPrimary,
+    color: colors.textPrimary,
     fontSize: 28,
     fontFamily: Typography.uiFontMedium,
     textAlign: "center",
   },
   subtitle: {
-    color: Colors.textSecondary,
+    color: colors.textSecondary,
     fontSize: 15,
     fontFamily: Typography.uiFont,
     textAlign: "center",
@@ -99,7 +102,7 @@ const styles = StyleSheet.create({
   },
   step: { flexDirection: "row", marginBottom: 24 },
   stepNum: {
-    color: Colors.accent,
+    color: colors.accent,
     fontSize: 20,
     fontFamily: Typography.uiFontMedium,
     width: 32,
@@ -107,29 +110,29 @@ const styles = StyleSheet.create({
   },
   stepContent: { flex: 1 },
   stepTitle: {
-    color: Colors.textPrimary,
+    color: colors.textPrimary,
     fontSize: 16,
     fontFamily: Typography.uiFontMedium,
     marginBottom: 8,
   },
   stepHint: {
-    color: Colors.textSecondary,
+    color: colors.textSecondary,
     fontSize: 13,
     fontFamily: Typography.uiFont,
     marginTop: 6,
   },
   codeBlock: {
-    backgroundColor: Colors.bgSurface,
+    backgroundColor: colors.bgSurface,
     borderRadius: 8,
     padding: 12,
   },
   code: {
-    color: Colors.accent,
+    color: colors.accent,
     fontFamily: Typography.terminalFont,
     fontSize: 12,
   },
   doneBtn: {
-    backgroundColor: Colors.accent,
+    backgroundColor: colors.accent,
     borderRadius: 12,
     paddingVertical: 16,
     alignItems: "center",
@@ -138,8 +141,9 @@ const styles = StyleSheet.create({
     justifyContent: "center",
   },
   doneBtnText: {
-    color: Colors.bgPrimary,
+    color: colors.textOnAccent,
     fontFamily: Typography.uiFontMedium,
     fontSize: 17,
   },
-});
+  });
+}

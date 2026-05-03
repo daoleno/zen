@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef } from 'react';
 import {
+  buildTerminalPalette,
   type TerminalThemePalette,
 } from '../../constants/terminalThemes';
 import {
@@ -240,53 +241,4 @@ export function useGhosttyCoreTerminal() {
     setTheme,
     writeOutput,
   ]);
-}
-
-const ANSI_COLOR_KEYS = [
-  'black',
-  'red',
-  'green',
-  'yellow',
-  'blue',
-  'magenta',
-  'cyan',
-  'white',
-  'brightBlack',
-  'brightRed',
-  'brightGreen',
-  'brightYellow',
-  'brightBlue',
-  'brightMagenta',
-  'brightCyan',
-  'brightWhite',
-] as const;
-
-const XTERM_CUBE_LEVELS = [0, 95, 135, 175, 215, 255] as const;
-
-function buildTerminalPalette(theme: TerminalThemePalette): string[] {
-  const palette = ANSI_COLOR_KEYS.map((key) => theme[key]);
-
-  for (const red of XTERM_CUBE_LEVELS) {
-    for (const green of XTERM_CUBE_LEVELS) {
-      for (const blue of XTERM_CUBE_LEVELS) {
-        palette.push(rgbToHex(red, green, blue));
-      }
-    }
-  }
-
-  for (let index = 0; index < 24; index += 1) {
-    const level = 8 + index * 10;
-    palette.push(rgbToHex(level, level, level));
-  }
-
-  return palette;
-}
-
-function rgbToHex(red: number, green: number, blue: number): string {
-  return (
-    '#' +
-    red.toString(16).padStart(2, '0') +
-    green.toString(16).padStart(2, '0') +
-    blue.toString(16).padStart(2, '0')
-  );
 }

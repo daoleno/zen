@@ -1,6 +1,6 @@
 import React, { useMemo } from "react";
 import { FlatList, Pressable, StyleSheet, Text, View } from "react-native";
-import { Colors, Radii, Spacing, Typography } from "../../constants/tokens";
+import { Colors, Radii, Spacing, Typography, useAppColors } from "../../constants/tokens";
 
 export type MentionCandidate =
   | { kind: "role"; name: string }
@@ -27,6 +27,8 @@ export function MentionPicker({
   query: string;
   onSelect: (candidate: MentionCandidate) => void;
 }) {
+  const colors = useAppColors();
+  const styles = useMemo(() => createStyles(colors), [colors]);
   const filtered = useMemo(() => {
     const needle = query.toLowerCase();
     if (!needle) {
@@ -69,11 +71,12 @@ export function MentionPicker({
   );
 }
 
-const styles = StyleSheet.create({
+function createStyles(colors: typeof Colors) {
+  return StyleSheet.create({
   bar: {
     borderTopWidth: StyleSheet.hairlineWidth,
-    borderTopColor: Colors.bgElevated,
-    backgroundColor: Colors.bgSurface,
+    borderTopColor: colors.border,
+    backgroundColor: colors.bgSurface,
   },
   content: {
     paddingHorizontal: Spacing.lg,
@@ -89,19 +92,20 @@ const styles = StyleSheet.create({
     height: 30,
     paddingHorizontal: 10,
     borderRadius: Radii.pill,
-    backgroundColor: Colors.bgElevated,
+    backgroundColor: colors.bgElevated,
   },
   chipPressed: {
     opacity: 0.7,
   },
   chipText: {
-    color: Colors.textPrimary,
+    color: colors.textPrimary,
     fontFamily: Typography.terminalFont,
     fontSize: 12,
   },
   chipProject: {
-    color: Colors.textSecondary,
+    color: colors.textSecondary,
     fontFamily: Typography.uiFont,
     fontSize: 11,
   },
-});
+  });
+}

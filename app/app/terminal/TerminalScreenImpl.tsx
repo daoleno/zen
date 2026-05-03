@@ -14,10 +14,12 @@ import {
   TextInput,
   TouchableOpacity,
   View,
+  useColorScheme,
   useWindowDimensions,
 } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 import { useFocusEffect, useLocalSearchParams, useRouter } from "expo-router";
+import { StatusBar } from "expo-status-bar";
 import {
   SafeAreaView,
   useSafeAreaInsets,
@@ -32,9 +34,11 @@ import {
 } from "../../constants/tokens";
 import {
   buildTerminalChrome,
-  DefaultTerminalThemeName,
+  DefaultTerminalThemePreference,
+  isLightTerminalTheme,
   resolveTerminalTheme,
-  TerminalThemeName,
+  resolveTerminalThemePreference,
+  type TerminalThemePreference,
 } from "../../constants/terminalThemes";
 import {
   closeOtherTerminalTabs,
@@ -57,7 +61,6 @@ import {
 } from "../../services/storage";
 import { makeSessionKey, parseSessionKey } from "../../services/sessionKeys";
 import { wsClient } from "../../services/websocket";
-import { connectionIssueAccent } from "../../services/connectionIssue";
 import {
   TerminalSurface,
   TerminalSurfaceHandle,
@@ -112,10 +115,11 @@ export default function TerminalScreen() {
   const { state } = useAgents();
   const { state: issuesState } = useIssues();
   const router = useRouter();
+  const colorScheme = useColorScheme();
   const insets = useSafeAreaInsets();
   const { width: windowWidth, height: windowHeight } = useWindowDimensions();
-  const [themeName, setThemeName] = useState<TerminalThemeName>(
-    DefaultTerminalThemeName,
+  const [themePreference, setThemePreference] = useState<TerminalThemePreference>(
+    DefaultTerminalThemePreference,
   );
   const [agentAliases, setAgentAliases] = useState<StoredAgentAliases>({});
   const [recentAgentOpens, setRecentAgentOpens] =
@@ -175,6 +179,10 @@ export default function TerminalScreen() {
     !Boolean(sessionKey && serverId && agentId),
   );
   const [screenFocused, setScreenFocused] = useState(false);
+  const themeName = useMemo(
+    () => resolveTerminalThemePreference(themePreference, colorScheme),
+    [themePreference, colorScheme],
+  );
   const terminalTheme = useMemo(
     () => resolveTerminalTheme(themeName),
     [themeName],
@@ -267,10 +275,10 @@ export default function TerminalScreen() {
   const canRenderTerminal = hasTerminalRoute && !showTerminalFallback;
   const shouldMountTerminalSurface = hasTerminalRoute && screenFocused;
   const terminalStateAccent = connectionIssue
-    ? connectionIssueAccent(connectionIssue)
+    ? terminalTheme.red
     : connectionState === "connecting"
-      ? "#E7B65C"
-      : "#65758A";
+      ? terminalTheme.yellow
+      : chromeColors.textSubtle;
   const terminalStateBusy =
     hasTerminalRoute && connectionState === "connecting" && !connectionIssue;
   const terminalStateTitle = !hasTerminalRoute
@@ -424,7 +432,7 @@ export default function TerminalScreen() {
       if (!sessionKey) {
         const storedTabs = await getTerminalTabs();
         if (!cancelled) {
-          setThemeName(storedTheme);
+          setThemePreference(storedTheme);
           setAgentAliases(storedAliases);
           setRecentAgentOpens(storedRecentOpens);
           setTerminalTabs(storedTabs);
@@ -439,7 +447,7 @@ export default function TerminalScreen() {
       void markAgentOpened(sessionKey, openedAt);
 
       if (!cancelled) {
-        setThemeName(storedTheme);
+        setThemePreference(storedTheme);
         setAgentAliases(storedAliases);
         setRecentAgentOpens({
           ...storedRecentOpens,
@@ -893,26 +901,6 @@ export default function TerminalScreen() {
     if (!gitDiffVisible || !gitDiffStatus?.available) {
       return;
     }
-
-    let cancelled = false;
-    const files = gitDiffStatus.files ?? [];
-
-    (async () => {
-      for (const file of files) {
-        if (cancelled) break;
-        await ensureGitDiffPatch(file.path);
-      }
-    })();
-
-    return () => {
-      cancelled = true;
-    };
-  }, [ensureGitDiffPatch, gitDiffStatus, gitDiffVisible]);
-
-  useEffect(() => {
-    if (!gitDiffVisible || !gitDiffStatus?.available) {
-      return;
-    }
     void loadRepoBrowserPath(repoBrowserPath || "");
   }, [gitDiffStatus?.repo_root, gitDiffStatus?.available, gitDiffVisible, loadRepoBrowserPath]);
 
@@ -1295,6 +1283,9 @@ export default function TerminalScreen() {
       style={[styles.container, { backgroundColor: chromeColors.appBackground }]}
       edges={["top"]}
     >
+      <StatusBar
+        style={isLightTerminalTheme(terminalTheme) ? "dark" : "light"}
+      />
       <View
         style={[
           styles.topBar,
@@ -1433,20 +1424,41 @@ export default function TerminalScreen() {
               showsVerticalScrollIndicator={false}
             >
               {sortedAgents.length === 0 ? (
-                <Text style={styles.sheetEmpty}>No agents available.</Text>
+                <Text style={[styles.sheetEmpty, { color: chromeColors.textMuted }]}>
+                  No agents available.
+                </Text>
               ) : (
                 pickerSections.map((section) => (
                   <View key={section.key} style={styles.sheetSection}>
                     <View style={styles.sheetSectionHeader}>
                       <View style={styles.sheetSectionBody}>
-                        <Text style={styles.sheetSectionTitle} numberOfLines={1}>
+                        <Text
+                          style={[styles.sheetSectionTitle, { color: chromeColors.text }]}
+                          numberOfLines={1}
+                        >
                           {section.title}
                         </Text>
-                        <Text style={styles.sheetSectionSubtitle} numberOfLines={1}>
+                        <Text
+                          style={[
+                            styles.sheetSectionSubtitle,
+                            { color: chromeColors.textMuted },
+                          ]}
+                          numberOfLines={1}
+                        >
                           {section.subtitle}
                         </Text>
                       </View>
-                      <Text style={styles.sheetSectionCount}>{section.data.length}</Text>
+                      <Text
+                        style={[
+                          styles.sheetSectionCount,
+                          {
+                            color: chromeColors.textMuted,
+                            backgroundColor: chromeColors.surfaceMuted,
+                          },
+                        ]}
+                      >
+                        {section.data.length}
+                      </Text>
                     </View>
 
                     {section.data.map((item) => {
@@ -1464,6 +1476,7 @@ export default function TerminalScreen() {
                           key={item.key}
                           style={[
                             styles.agentRow,
+                            { borderBottomColor: chromeColors.border },
                             isActive && styles.agentRowActive,
                           ]}
                           onPress={() => openAgentTab(item.key)}
@@ -1471,10 +1484,19 @@ export default function TerminalScreen() {
                         >
                           <AgentKindIcon kind={presented.kind} size={15} />
                           <View style={styles.agentRowBody}>
-                            <Text style={styles.agentRowTitle} numberOfLines={1}>
+                            <Text
+                              style={[styles.agentRowTitle, { color: chromeColors.text }]}
+                              numberOfLines={1}
+                            >
                               {presented.title}
                             </Text>
-                            <Text style={styles.agentRowMeta} numberOfLines={1}>
+                            <Text
+                              style={[
+                                styles.agentRowMeta,
+                                { color: chromeColors.textMuted },
+                              ]}
+                              numberOfLines={1}
+                            >
                               {meta}
                             </Text>
                           </View>
@@ -1645,6 +1667,7 @@ export default function TerminalScreen() {
         onRefresh={() => { void refreshGitDiff(true); }}
         onOpenRepoPath={(path) => { void loadRepoBrowserPath(path); }}
         onOpenRepoFile={(path) => { void openRepoFile(path); }}
+        onLoadDiffPatch={(path) => { void ensureGitDiffPatch(path); }}
         onCloseRepoFile={closeRepoFile}
         onBackRepoPath={goUpRepoBrowserPath}
       />

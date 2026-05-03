@@ -14,7 +14,7 @@ import {
 import { useRouter } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
 import { SafeAreaView, useSafeAreaInsets } from "react-native-safe-area-context";
-import { Colors, Radii, Spacing, Typography } from "../../constants/tokens";
+import { Colors, Radii, Spacing, Typography, useAppColors } from "../../constants/tokens";
 import { useIssues, type Issue } from "../../store/issues";
 import { useAgents } from "../../store/agents";
 import { IssueRow } from "../../components/issue/IssueRow";
@@ -37,6 +37,8 @@ type IssueSection = {
 
 export default function IssuesScreen() {
   const router = useRouter();
+  const colors = useAppColors();
+  const styles = useMemo(() => createStyles(colors), [colors]);
   const { state } = useIssues();
   const { state: agentsState } = useAgents();
   const [servers, setServers] = useState<StoredServer[]>([]);
@@ -192,7 +194,7 @@ export default function IssuesScreen() {
           hitSlop={8}
           style={({ pressed }) => [styles.addButton, pressed && styles.addButtonPressed]}
         >
-          <Ionicons name="add" size={19} color={Colors.textPrimary} />
+          <Ionicons name="add" size={19} color={colors.textPrimary} />
         </Pressable>
       </View>
 
@@ -229,7 +231,7 @@ export default function IssuesScreen() {
                   <Ionicons
                     name={item.expanded ? "chevron-down" : "chevron-forward"}
                     size={14}
-                    color={Colors.textSecondary}
+                    color={colors.textSecondary}
                   />
                   <Text style={styles.doneToggleText}>
                     {item.expanded ? "hide done" : "show done"} · {item.count}
@@ -333,6 +335,8 @@ function CreateIssueSheet({
   onClose: () => void;
   onSubmit: () => void;
 }) {
+  const colors = useAppColors();
+  const styles = useMemo(() => createStyles(colors), [colors]);
   const insets = useSafeAreaInsets();
   const disabled = submitting || servers.length === 0 || !selectedServerId;
   return (
@@ -379,7 +383,7 @@ function CreateIssueSheet({
               value={project}
               onChangeText={onChangeProject}
               placeholder="inbox"
-              placeholderTextColor={Colors.textSecondary}
+              placeholderTextColor={colors.textSecondary}
               style={styles.input}
               autoCapitalize="none"
               autoCorrect={false}
@@ -418,10 +422,11 @@ function CreateIssueSheet({
   );
 }
 
-const styles = StyleSheet.create({
+function createStyles(colors: typeof Colors) {
+  return StyleSheet.create({
   screen: {
     flex: 1,
-    backgroundColor: Colors.bgPrimary,
+    backgroundColor: colors.bgPrimary,
   },
   header: {
     flexDirection: "row",
@@ -437,7 +442,7 @@ const styles = StyleSheet.create({
     paddingRight: Spacing.md,
   },
   title: {
-    color: Colors.textPrimary,
+    color: colors.textPrimary,
     fontFamily: Typography.uiFontMedium,
     fontSize: 22,
     lineHeight: 28,
@@ -446,7 +451,7 @@ const styles = StyleSheet.create({
   },
   subtitle: {
     marginTop: 2,
-    color: Colors.textSecondary,
+    color: colors.textSecondary,
     fontFamily: Typography.uiFont,
     fontSize: 10,
     lineHeight: 13,
@@ -458,7 +463,7 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "center",
     borderRadius: 11,
-    backgroundColor: "rgba(255,255,255,0.05)",
+    backgroundColor: colors.surfacePressed,
   },
   addButtonPressed: {
     opacity: 0.82,
@@ -475,7 +480,7 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     alignItems: "flex-end",
     gap: 10,
-    backgroundColor: Colors.bgPrimary,
+    backgroundColor: colors.bgPrimary,
   },
   sectionHeaderCopy: {
     flex: 1,
@@ -484,7 +489,7 @@ const styles = StyleSheet.create({
   sectionTitle: {
     maxWidth: "76%",
     flexShrink: 1,
-    color: "#8FB573",
+    color: colors.promptGreen,
     fontFamily: Typography.terminalFont,
     fontSize: 13,
     lineHeight: 17,
@@ -497,13 +502,13 @@ const styles = StyleSheet.create({
   },
   sectionArrow: {
     marginHorizontal: 7,
-    color: "#E6B450",
+    color: colors.promptYellow,
     fontFamily: Typography.terminalFontBold,
     fontSize: 12,
     lineHeight: 17,
   },
   sectionState: {
-    color: Colors.textSecondary,
+    color: colors.textSecondary,
     fontFamily: Typography.terminalFont,
     fontSize: 10,
     lineHeight: 14,
@@ -511,7 +516,7 @@ const styles = StyleSheet.create({
   },
   sectionSubtitle: {
     marginTop: 2,
-    color: Colors.textSecondary,
+    color: colors.textSecondary,
     fontFamily: Typography.uiFont,
     fontSize: 10,
     lineHeight: 12,
@@ -526,13 +531,13 @@ const styles = StyleSheet.create({
     gap: Spacing.sm,
     height: 28,
     borderTopWidth: StyleSheet.hairlineWidth,
-    borderTopColor: "rgba(235,225,207,0.045)",
+    borderTopColor: colors.borderSubtle,
   },
   doneTogglePressed: {
     opacity: 0.7,
   },
   doneToggleText: {
-    color: Colors.textSecondary,
+    color: colors.textSecondary,
     fontFamily: Typography.terminalFont,
     fontSize: 10,
     opacity: 0.56,
@@ -544,19 +549,19 @@ const styles = StyleSheet.create({
     paddingHorizontal: Spacing.xl,
   },
   emptyGlyph: {
-    color: Colors.textSecondary,
+    color: colors.textSecondary,
     fontSize: 34,
     marginBottom: 12,
     opacity: 0.38,
   },
   emptyTitle: {
-    color: Colors.textPrimary,
+    color: colors.textPrimary,
     fontFamily: Typography.uiFontMedium,
     fontSize: 16,
   },
   emptyBody: {
     marginTop: Spacing.sm,
-    color: Colors.textSecondary,
+    color: colors.textSecondary,
     fontFamily: Typography.uiFont,
     fontSize: 12,
     textAlign: "center",
@@ -567,13 +572,13 @@ const styles = StyleSheet.create({
     paddingHorizontal: 14,
     paddingVertical: 8,
     borderRadius: Radii.pill,
-    backgroundColor: Colors.accent,
+    backgroundColor: colors.accent,
   },
   emptyActionPressed: {
     opacity: 0.8,
   },
   emptyActionText: {
-    color: Colors.bgPrimary,
+    color: colors.textOnAccent,
     fontFamily: Typography.uiFontMedium,
     fontSize: 13,
   },
@@ -583,34 +588,34 @@ const styles = StyleSheet.create({
   },
   sheetBackdrop: {
     ...StyleSheet.absoluteFillObject,
-    backgroundColor: "rgba(0,0,0,0.66)",
+    backgroundColor: colors.modalBackdrop,
   },
   sheetCard: {
     marginHorizontal: Spacing.md,
     marginBottom: Spacing.md,
     padding: 20,
     borderRadius: 20,
-    backgroundColor: "#15151C",
+    backgroundColor: colors.modalSurface,
     borderWidth: StyleSheet.hairlineWidth,
-    borderColor: "rgba(235,225,207,0.08)",
+    borderColor: colors.border,
   },
   sheetHandle: {
     alignSelf: "center",
     width: 40,
     height: 3,
     borderRadius: 1.5,
-    backgroundColor: "rgba(235,225,207,0.16)",
+    backgroundColor: colors.surfaceActive,
     marginBottom: Spacing.md,
   },
   sheetTitle: {
-    color: Colors.textPrimary,
+    color: colors.textPrimary,
     fontFamily: Typography.uiFontMedium,
     fontSize: 17,
   },
   fieldLabel: {
     marginTop: Spacing.lg,
     marginBottom: Spacing.sm,
-    color: Colors.textSecondary,
+    color: colors.textSecondary,
     fontFamily: Typography.uiFontMedium,
     fontSize: 11,
     letterSpacing: 1.1,
@@ -625,26 +630,26 @@ const styles = StyleSheet.create({
     paddingHorizontal: 10,
     paddingVertical: 6,
     borderRadius: Radii.pill,
-    backgroundColor: Colors.bgElevated,
+    backgroundColor: colors.bgElevated,
   },
   serverChipSelected: {
-    backgroundColor: Colors.accent,
+    backgroundColor: colors.accent,
   },
   serverChipText: {
-    color: Colors.textPrimary,
+    color: colors.textPrimary,
     fontFamily: Typography.uiFont,
     fontSize: 12,
   },
   serverChipTextSelected: {
-    color: Colors.bgPrimary,
+    color: colors.textOnAccent,
     fontFamily: Typography.uiFontMedium,
   },
   input: {
     paddingHorizontal: Spacing.md,
     paddingVertical: Spacing.md,
     borderRadius: Radii.md,
-    backgroundColor: "rgba(255,255,255,0.045)",
-    color: Colors.textPrimary,
+    backgroundColor: colors.inputBackground,
+    color: colors.textPrimary,
     fontFamily: Typography.uiFont,
     fontSize: 15,
   },
@@ -664,20 +669,21 @@ const styles = StyleSheet.create({
     opacity: 0.8,
   },
   sheetButtonSecondary: {
-    backgroundColor: Colors.bgElevated,
+    backgroundColor: colors.bgElevated,
   },
   sheetButtonPrimary: {
-    backgroundColor: Colors.accent,
+    backgroundColor: colors.accent,
   },
   sheetButtonDisabled: {
     opacity: 0.5,
   },
   sheetButtonText: {
-    color: Colors.textPrimary,
+    color: colors.textPrimary,
     fontFamily: Typography.uiFontMedium,
     fontSize: 13,
   },
   sheetButtonTextPrimary: {
-    color: Colors.bgPrimary,
+    color: colors.textOnAccent,
   },
-});
+  });
+}

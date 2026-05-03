@@ -1,8 +1,8 @@
-import React from 'react';
+import React, { useMemo } from 'react';
 import { Ionicons } from '@expo/vector-icons';
 import { StyleSheet, View } from 'react-native';
 import { Claude, OpenAI } from '@lobehub/icons-rn';
-import { Colors } from '../../constants/tokens';
+import { Colors, useAppColors } from '../../constants/tokens';
 import type { AgentKind } from '../../services/agentPresentation';
 
 interface AgentKindIconProps {
@@ -11,6 +11,8 @@ interface AgentKindIconProps {
 }
 
 export function AgentKindIcon({ kind, size = 16 }: AgentKindIconProps) {
+  const colors = useAppColors();
+  const styles = useMemo(() => createStyles(colors), [colors]);
   const frameSize = size + 8;
   if (kind === 'claude') {
     return (
@@ -30,20 +32,22 @@ export function AgentKindIcon({ kind, size = 16 }: AgentKindIconProps) {
 
   return (
     <View style={[styles.frame, styles.terminalFrame, { width: frameSize, height: frameSize }]}>
-      <Ionicons name="terminal-outline" size={size} color={Colors.textSecondary} />
+      <Ionicons name="terminal-outline" size={size} color={colors.textSecondary} />
     </View>
   );
 }
 
-const styles = StyleSheet.create({
+function createStyles(colors: typeof Colors) {
+  return StyleSheet.create({
   frame: {
     borderRadius: 10,
     alignItems: 'center',
     justifyContent: 'center',
   },
   terminalFrame: {
-    backgroundColor: 'rgba(255,255,255,0.04)',
+    backgroundColor: colors.surfaceSubtle,
     borderWidth: StyleSheet.hairlineWidth,
-    borderColor: 'rgba(255,255,255,0.06)',
+    borderColor: colors.borderSubtle,
   },
-});
+  });
+}

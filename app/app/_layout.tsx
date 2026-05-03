@@ -11,7 +11,7 @@ import { GestureHandlerRootView } from "react-native-gesture-handler";
 import { SafeAreaProvider } from "react-native-safe-area-context";
 import { Agent, AgentProvider, useAgents } from "../store/agents";
 import { IssuesProvider, useIssues } from "../store/issues";
-import { Colors } from "../constants/tokens";
+import { useAppTheme } from "../constants/tokens";
 import { wsClient } from "../services/websocket";
 import {
   getDisabledServerIds,
@@ -157,6 +157,7 @@ function AppContent() {
   const segments = useSegments();
   const { state, dispatch } = useAgents();
   const { dispatch: issuesDispatch } = useIssues();
+  const { colors } = useAppTheme();
   const notificationListener = useRef<Notifications.EventSubscription | null>(
     null,
   );
@@ -594,9 +595,9 @@ function AppContent() {
   return (
     <Stack
       screenOptions={{
-        headerStyle: { backgroundColor: Colors.bgPrimary },
-        headerTintColor: Colors.textPrimary,
-        contentStyle: { backgroundColor: Colors.bgPrimary },
+        headerStyle: { backgroundColor: colors.bgPrimary },
+        headerTintColor: colors.textPrimary,
+        contentStyle: { backgroundColor: colors.bgPrimary },
         animation: "slide_from_right",
       }}
     >
@@ -615,6 +616,7 @@ function AppContent() {
 }
 
 export default function RootLayout() {
+  const { isLight } = useAppTheme();
   const [fontsLoaded, fontError] = useFonts({
     "SourceHanSansSC-Regular": require("../assets/fonts/SourceHanSansSC-Regular.otf"),
     "SourceHanSansSC-Medium": require("../assets/fonts/SourceHanSansSC-Medium.otf"),
@@ -637,7 +639,7 @@ export default function RootLayout() {
       <AgentProvider>
         <IssuesProvider>
           <SafeAreaProvider>
-            <StatusBar style="light" />
+            <StatusBar style={isLight ? "dark" : "light"} />
             <AppContent />
           </SafeAreaProvider>
         </IssuesProvider>

@@ -57,12 +57,23 @@ export function buildGhosttyTerminalHtml(theme: TerminalThemePalette, fontUri: s
         user-select: text;
         -webkit-user-select: text;
         -webkit-touch-callout: default;
+        touch-action: none;
+        -webkit-tap-highlight-color: transparent;
+        contain: strict;
         transform: translate3d(0, 0, 0);
       }
       #terminal-html * {
         font-family: inherit;
         user-select: text;
         -webkit-user-select: text;
+        touch-action: none;
+        -webkit-tap-highlight-color: transparent;
+      }
+      #terminal-html.is-scrolling,
+      #terminal-html.is-scrolling * {
+        user-select: none;
+        -webkit-user-select: none;
+        -webkit-touch-callout: none;
       }
       #terminal-html pre {
         margin: 0;
@@ -340,6 +351,7 @@ export function buildGhosttyTerminalHtml(theme: TerminalThemePalette, fontUri: s
         let scrollAccum = 0;
         let pendingLines = 0;
         let scrollFlushRAF = null;
+        let scrollGestureActive = false;
 
         const flushScroll = () => {
           scrollFlushRAF = null;
@@ -371,6 +383,25 @@ export function buildGhosttyTerminalHtml(theme: TerminalThemePalette, fontUri: s
           flushScroll();
         };
 
+        const beginScrollGesture = () => {
+          if (scrollGestureActive) {
+            return;
+          }
+          scrollGestureActive = true;
+          terminalHtml.classList.add('is-scrolling');
+          send({ type: 'scrollStart' });
+        };
+
+        const endScrollGesture = () => {
+          if (!scrollGestureActive) {
+            return;
+          }
+          flushScrollNow();
+          scrollGestureActive = false;
+          terminalHtml.classList.remove('is-scrolling');
+          send({ type: 'scrollEnd' });
+        };
+
         document.addEventListener('touchstart', (event) => {
           if (nativeSelectionActive) {
             return;
@@ -400,6 +431,7 @@ export function buildGhosttyTerminalHtml(theme: TerminalThemePalette, fontUri: s
             }
             scrolling = true;
             scrollAccum = 0;
+            beginScrollGesture();
           }
 
           if (event.cancelable) {
@@ -438,7 +470,7 @@ export function buildGhosttyTerminalHtml(theme: TerminalThemePalette, fontUri: s
           }
 
           scrolling = false;
-          flushScrollNow();
+          endScrollGesture();
           scrollAccum = 0;
         }, { capture: true, passive: false });
 
@@ -447,7 +479,7 @@ export function buildGhosttyTerminalHtml(theme: TerminalThemePalette, fontUri: s
             return;
           }
           scrolling = false;
-          flushScrollNow();
+          endScrollGesture();
           scrollAccum = 0;
         }, { capture: true, passive: true });
 
@@ -478,6 +510,7 @@ export function buildGhosttyTerminalHtml(theme: TerminalThemePalette, fontUri: s
           viewportMode = state && state.mode === 'scrolled' ? 'scrolled' : 'live';
           if (viewportMode === 'live') {
             scrollAccum = 0;
+            endScrollGesture();
           }
           scheduleDraw();
         };

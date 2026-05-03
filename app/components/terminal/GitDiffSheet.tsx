@@ -28,6 +28,7 @@ import type {
 import { describeGitDiffScope } from "../../services/gitDiff";
 
 type SheetTab = "diff" | "browser";
+const LARGE_DIFF_FILE_THRESHOLD = 8;
 
 interface GitDiffSheetProps {
   visible: boolean;
@@ -50,6 +51,7 @@ interface GitDiffSheetProps {
   onRefresh(): void;
   onOpenRepoPath(path: string): void;
   onOpenRepoFile(path: string): void;
+  onLoadDiffPatch(path: string): void;
   onCloseRepoFile(): void;
   onBackRepoPath(): void;
 }
@@ -75,6 +77,7 @@ export function GitDiffSheet({
   onRefresh,
   onOpenRepoPath,
   onOpenRepoFile,
+  onLoadDiffPatch,
   onCloseRepoFile,
   onBackRepoPath,
 }: GitDiffSheetProps) {
@@ -100,7 +103,33 @@ export function GitDiffSheet({
     }
     setActiveTab("diff");
     setCollapsedDiffPaths(new Set());
+    diffStateSeedRef.current = "";
   }, [visible]);
+
+  const diffPathsSignature = React.useMemo(
+    () => files.map((file) => file.path).join("\n"),
+    [files],
+  );
+  const diffStateSeedRef = React.useRef<string>("");
+
+  React.useEffect(() => {
+    if (!visible || !snapshot?.available) {
+      return;
+    }
+
+    const seed = `${diffPathsSignature}|${files.length}`;
+    if (diffStateSeedRef.current === seed) {
+      return;
+    }
+
+    diffStateSeedRef.current = seed;
+    if (files.length > LARGE_DIFF_FILE_THRESHOLD) {
+      setCollapsedDiffPaths(new Set(files.map((file) => file.path)));
+      return;
+    }
+
+    setCollapsedDiffPaths(new Set());
+  }, [diffPathsSignature, files, snapshot?.available, visible]);
 
   const allDiffFilesCollapsed = files.length > 0
     && files.every((file) => collapsedDiffPaths.has(file.path));
@@ -135,6 +164,7 @@ export function GitDiffSheet({
         expanded={!collapsedDiffPaths.has(item.path)}
         theme={theme}
         chrome={chrome}
+        onLoadPatch={() => onLoadDiffPatch(item.path)}
         onToggle={() => toggleDiffFile(item.path)}
         onOpenFile={() => {
           setActiveTab("browser");
@@ -408,6 +438,7 @@ function DiffFileCard({
   expanded,
   theme,
   chrome,
+  onLoadPatch,
   onToggle,
   onOpenFile,
 }: {
@@ -418,10 +449,18 @@ function DiffFileCard({
   expanded: boolean;
   theme: TerminalThemePalette;
   chrome: ReturnType<typeof buildTerminalChrome>;
+  onLoadPatch(): void;
   onToggle(): void;
   onOpenFile(): void;
 }) {
   const sections = patch?.sections ?? [];
+
+  React.useEffect(() => {
+    if (!expanded || patch || loading || error) {
+      return;
+    }
+    onLoadPatch();
+  }, [expanded, error, loading, onLoadPatch, patch]);
 
   return (
     <View

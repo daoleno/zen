@@ -15,6 +15,8 @@ type BridgeMessage =
   | { type: 'resize'; cols: number; rows: number; cellWidth: number; cellHeight: number }
   | { type: 'focusInput' }
   | { type: 'selectionActive'; active: boolean }
+  | { type: 'scrollStart' }
+  | { type: 'scrollEnd' }
   | { type: 'scroll'; lines: number }
   | {
       type: 'mouse';
@@ -78,6 +80,7 @@ export function useGhosttyTerminalController({
   const renderFrameRef = useRef<number>(0);
   const pendingRemoteScrollRef = useRef(0);
   const remoteScrollTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const remoteScrollGestureActiveRef = useRef(false);
   const gridRef = useRef<GhosttyGridSize | null>(null);
   const viewportModeRef = useRef<TerminalViewportMode>('live');
   const [ready, setReady] = useState(false);
@@ -249,6 +252,7 @@ export function useGhosttyTerminalController({
   const resetRemoteScroll = useCallback(() => {
     clearRemoteScrollTimer();
     pendingRemoteScrollRef.current = 0;
+    remoteScrollGestureActiveRef.current = false;
   }, [clearRemoteScrollTimer]);
 
   const scheduleRemoteScroll = useCallback((lines: number) => {
@@ -256,6 +260,9 @@ export function useGhosttyTerminalController({
       return;
     }
     pendingRemoteScrollRef.current += lines;
+    if (remoteScrollGestureActiveRef.current) {
+      return;
+    }
     if (remoteScrollTimerRef.current) {
       return;
     }
@@ -406,6 +413,18 @@ export function useGhosttyTerminalController({
         return;
       }
 
+      if (payload.type === 'scrollStart') {
+        remoteScrollGestureActiveRef.current = true;
+        clearRemoteScrollTimer();
+        return;
+      }
+
+      if (payload.type === 'scrollEnd') {
+        remoteScrollGestureActiveRef.current = false;
+        flushRemoteScroll();
+        return;
+      }
+
       if (payload.type === 'scroll') {
         if (ghostty.scrollViewport(payload.lines)) {
           if (payload.lines < 0 || viewportModeRef.current === 'scrolled') {
@@ -461,6 +480,8 @@ export function useGhosttyTerminalController({
     flushPendingTerminal,
     focusPaneAtPoint,
     clearInputMirror,
+    clearRemoteScrollTimer,
+    flushRemoteScroll,
     scheduleRenderState,
     scheduleRemoteScroll,
     scrollToBottom,

@@ -12,7 +12,7 @@ import {
 import { useLocalSearchParams, useRouter } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
 import { SafeAreaView, useSafeAreaInsets } from "react-native-safe-area-context";
-import { Colors, Radii, Spacing, Typography } from "../../constants/tokens";
+import { Colors, Radii, Spacing, Typography, useAppColors } from "../../constants/tokens";
 import { useIssues, type Issue } from "../../store/issues";
 import { useAgents } from "../../store/agents";
 import {
@@ -43,6 +43,8 @@ function agentRole(command?: string) {
 export default function IssueDetailScreen() {
   const params = useLocalSearchParams<{ id?: string; serverId?: string }>();
   const router = useRouter();
+  const colors = useAppColors();
+  const styles = useMemo(() => createStyles(colors), [colors]);
   const insets = useSafeAreaInsets();
   const { state } = useIssues();
   const { state: agentsState } = useAgents();
@@ -243,7 +245,7 @@ export default function IssueDetailScreen() {
   const dispatched = !!issue.frontmatter.dispatched;
   const primaryLabel = dispatched ? "Resend" : "Send";
   const draftTitle = titleFromMarkdown(draftBody) || issue.title || "Untitled issue";
-  const status = issueStatusInfo(done, dispatched);
+  const status = issueStatusInfo(done, dispatched, colors);
   const updatedLabel = relativeTime(issue.mtime || issue.frontmatter.created);
 
   return (
@@ -258,7 +260,7 @@ export default function IssueDetailScreen() {
             hitSlop={10}
             style={({ pressed }) => [styles.iconButton, pressed && styles.iconButtonPressed]}
           >
-            <Ionicons name="chevron-back" size={22} color={Colors.textPrimary} />
+            <Ionicons name="chevron-back" size={22} color={colors.textPrimary} />
           </Pressable>
 
           <View style={styles.headerCenter}>
@@ -272,7 +274,7 @@ export default function IssueDetailScreen() {
             hitSlop={10}
             style={({ pressed }) => [styles.iconButton, pressed && styles.iconButtonPressed]}
           >
-            <Ionicons name="ellipsis-horizontal" size={20} color={Colors.textPrimary} />
+            <Ionicons name="ellipsis-horizontal" size={20} color={colors.textPrimary} />
           </Pressable>
         </View>
 
@@ -307,7 +309,7 @@ export default function IssueDetailScreen() {
             <Ionicons
               name="cloud-download-outline"
               size={14}
-              color={Colors.textPrimary}
+              color={colors.textPrimary}
             />
             <Text style={styles.bannerText}>
               Remote changes — tap to load.
@@ -358,7 +360,7 @@ export default function IssueDetailScreen() {
               <Ionicons
                 name={done ? "return-up-back-outline" : "checkmark"}
                 size={14}
-                color={Colors.textPrimary}
+                color={colors.textPrimary}
               />
               <Text style={styles.secondaryButtonText}>{done ? "Reopen" : "Done"}</Text>
             </Pressable>
@@ -376,7 +378,7 @@ export default function IssueDetailScreen() {
               <Ionicons
                 name={dispatched ? "refresh" : "paper-plane"}
                 size={14}
-                color={Colors.bgPrimary}
+                color={colors.textOnAccent}
               />
               <Text style={styles.primaryButtonText}>{primaryLabel}</Text>
             </Pressable>
@@ -410,6 +412,9 @@ function StatusPill({
   label: string;
   color: string;
 }) {
+  const colors = useAppColors();
+  const styles = useMemo(() => createStyles(colors), [colors]);
+
   return (
     <View style={styles.statusPill}>
       <Ionicons name={icon} size={13} color={color} />
@@ -429,21 +434,27 @@ function titleFromMarkdown(value: string): string {
   return firstHeading.replace(/^#{1,6}\s+/, "").trim();
 }
 
-function issueStatusInfo(done: boolean, dispatched: boolean): {
+function issueStatusInfo(
+  done: boolean,
+  dispatched: boolean,
+  colors: typeof Colors = Colors,
+): {
   icon: IconName;
   label: string;
   color: string;
 } {
   if (done) {
-    return { icon: "checkmark-circle", label: "Done", color: Colors.textSecondary };
+    return { icon: "checkmark-circle", label: "Done", color: colors.textSecondary };
   }
   if (dispatched) {
-    return { icon: "paper-plane", label: "Sent", color: Colors.statusRunning };
+    return { icon: "paper-plane", label: "Sent", color: colors.statusRunning };
   }
-  return { icon: "ellipse", label: "Open", color: Colors.accent };
+  return { icon: "ellipse", label: "Open", color: colors.accent };
 }
 
 function SaveState({ saving, dirty }: { saving: boolean; dirty: boolean }) {
+  const colors = useAppColors();
+  const styles = useMemo(() => createStyles(colors), [colors]);
   const label = saving ? "Saving" : dirty ? "Unsaved" : "Saved";
   return (
     <View style={styles.savingTag}>
@@ -472,6 +483,9 @@ function OverflowMenu({
   onToggleDone: () => void;
   onDelete: () => void;
 }) {
+  const colors = useAppColors();
+  const menuStyles = useMemo(() => createMenuStyles(colors), [colors]);
+
   return (
     <Modal visible={visible} transparent animationType="fade" onRequestClose={onClose}>
       <View style={menuStyles.root}>
@@ -484,7 +498,7 @@ function OverflowMenu({
             <Ionicons
               name={done ? "refresh-outline" : "checkmark-circle-outline"}
               size={18}
-              color={Colors.textPrimary}
+              color={colors.textPrimary}
             />
             <Text style={menuStyles.itemText}>{done ? "Reopen" : "Mark done"}</Text>
           </Pressable>
@@ -493,7 +507,7 @@ function OverflowMenu({
             onPress={onDelete}
             style={({ pressed }) => [menuStyles.item, pressed && menuStyles.itemPressed]}
           >
-            <Ionicons name="trash-outline" size={18} color={Colors.statusFailed} />
+            <Ionicons name="trash-outline" size={18} color={colors.statusFailed} />
             <Text style={[menuStyles.itemText, menuStyles.itemTextDestructive]}>
               Delete
             </Text>
@@ -504,10 +518,11 @@ function OverflowMenu({
   );
 }
 
-const styles = StyleSheet.create({
+function createStyles(colors: typeof Colors) {
+  return StyleSheet.create({
   screen: {
     flex: 1,
-    backgroundColor: Colors.bgPrimary,
+    backgroundColor: colors.bgPrimary,
   },
   kav: {
     flex: 1,
@@ -516,10 +531,10 @@ const styles = StyleSheet.create({
     flex: 1,
     alignItems: "center",
     justifyContent: "center",
-    backgroundColor: Colors.bgPrimary,
+    backgroundColor: colors.bgPrimary,
   },
   emptyTitle: {
-    color: Colors.textPrimary,
+    color: colors.textPrimary,
     fontFamily: Typography.uiFontMedium,
     fontSize: 17,
   },
@@ -538,7 +553,7 @@ const styles = StyleSheet.create({
     borderRadius: Radii.pill,
   },
   iconButtonPressed: {
-    backgroundColor: "rgba(255,255,255,0.05)",
+    backgroundColor: colors.surfacePressed,
   },
   headerCenter: {
     flex: 1,
@@ -546,7 +561,7 @@ const styles = StyleSheet.create({
     minWidth: 0,
   },
   headerTitle: {
-    color: Colors.textPrimary,
+    color: colors.textPrimary,
     fontFamily: Typography.uiFontMedium,
     fontSize: 14,
     lineHeight: 18,
@@ -557,7 +572,7 @@ const styles = StyleSheet.create({
     paddingTop: 6,
     paddingBottom: 11,
     borderBottomWidth: StyleSheet.hairlineWidth,
-    borderBottomColor: "rgba(235,225,207,0.055)",
+    borderBottomColor: colors.borderSubtle,
   },
   statusRow: {
     flexDirection: "row",
@@ -571,7 +586,7 @@ const styles = StyleSheet.create({
     gap: 5,
     paddingHorizontal: 8,
     borderRadius: Radii.pill,
-    backgroundColor: "rgba(255,255,255,0.035)",
+    backgroundColor: colors.surfaceSubtle,
   },
   statusPillText: {
     fontFamily: Typography.terminalFont,
@@ -581,7 +596,7 @@ const styles = StyleSheet.create({
   },
   contextPath: {
     flex: 1,
-    color: Colors.textSecondary,
+    color: colors.textSecondary,
     fontFamily: Typography.uiFont,
     fontSize: 11,
     lineHeight: 15,
@@ -589,7 +604,7 @@ const styles = StyleSheet.create({
   },
   issueTitle: {
     marginTop: 9,
-    color: Colors.textPrimary,
+    color: colors.textPrimary,
     fontFamily: Typography.uiFontMedium,
     fontSize: 20,
     lineHeight: 26,
@@ -605,10 +620,10 @@ const styles = StyleSheet.create({
     paddingHorizontal: Spacing.md,
     paddingVertical: Spacing.sm,
     borderRadius: Radii.md,
-    backgroundColor: "rgba(255,183,77,0.14)",
+    backgroundColor: `${colors.statusUnknown}24`,
   },
   bannerText: {
-    color: Colors.textPrimary,
+    color: colors.textPrimary,
     fontFamily: Typography.uiFont,
     fontSize: 13,
   },
@@ -619,9 +634,9 @@ const styles = StyleSheet.create({
     marginBottom: 8,
     borderRadius: 14,
     overflow: "hidden",
-    backgroundColor: "rgba(255,255,255,0.018)",
+    backgroundColor: colors.surfaceSubtle,
     borderWidth: StyleSheet.hairlineWidth,
-    borderColor: "rgba(235,225,207,0.052)",
+    borderColor: colors.borderSubtle,
   },
   footer: {
     flexDirection: "row",
@@ -631,8 +646,8 @@ const styles = StyleSheet.create({
     paddingHorizontal: 14,
     paddingTop: 8,
     borderTopWidth: StyleSheet.hairlineWidth,
-    borderTopColor: "rgba(235,225,207,0.055)",
-    backgroundColor: "rgba(15,15,20,0.98)",
+    borderTopColor: colors.borderSubtle,
+    backgroundColor: colors.bgPrimary,
   },
   footerActions: {
     flexDirection: "row",
@@ -650,21 +665,21 @@ const styles = StyleSheet.create({
     width: 6,
     height: 6,
     borderRadius: 3,
-    backgroundColor: Colors.statusUnknown,
+    backgroundColor: colors.statusUnknown,
   },
   unsavedDot: {
-    backgroundColor: Colors.statusUnknown,
+    backgroundColor: colors.statusUnknown,
   },
   savedDot: {
-    backgroundColor: Colors.statusDone,
+    backgroundColor: colors.statusDone,
   },
   savingText: {
-    color: Colors.textSecondary,
+    color: colors.textSecondary,
     fontFamily: Typography.uiFont,
     fontSize: 12,
   },
   savedText: {
-    color: Colors.textSecondary,
+    color: colors.textSecondary,
     fontFamily: Typography.uiFont,
     fontSize: 12,
     opacity: 0.46,
@@ -676,13 +691,13 @@ const styles = StyleSheet.create({
     gap: 5,
     paddingHorizontal: 10,
     borderRadius: Radii.pill,
-    backgroundColor: "rgba(255,255,255,0.052)",
+    backgroundColor: colors.surfacePressed,
   },
   secondaryButtonPressed: {
     opacity: 0.78,
   },
   secondaryButtonText: {
-    color: Colors.textPrimary,
+    color: colors.textPrimary,
     fontFamily: Typography.uiFontMedium,
     fontSize: 12,
     lineHeight: 16,
@@ -694,7 +709,7 @@ const styles = StyleSheet.create({
     gap: 6,
     paddingHorizontal: 12,
     borderRadius: Radii.pill,
-    backgroundColor: Colors.accent,
+    backgroundColor: colors.accent,
   },
   primaryButtonPressed: {
     opacity: 0.85,
@@ -703,29 +718,31 @@ const styles = StyleSheet.create({
     opacity: 0.5,
   },
   primaryButtonText: {
-    color: Colors.bgPrimary,
+    color: colors.textOnAccent,
     fontFamily: Typography.uiFontMedium,
     fontSize: 13,
     lineHeight: 17,
   },
-});
+  });
+}
 
-const menuStyles = StyleSheet.create({
+function createMenuStyles(colors: typeof Colors) {
+  return StyleSheet.create({
   root: {
     flex: 1,
     justifyContent: "flex-end",
   },
   backdrop: {
     ...StyleSheet.absoluteFillObject,
-    backgroundColor: "rgba(0,0,0,0.6)",
+    backgroundColor: colors.modalBackdrop,
   },
   card: {
     marginHorizontal: Spacing.md,
     marginBottom: Spacing.xl,
     borderRadius: Radii.lg,
-    backgroundColor: Colors.bgSurface,
+    backgroundColor: colors.bgSurface,
     borderWidth: StyleSheet.hairlineWidth,
-    borderColor: Colors.bgElevated,
+    borderColor: colors.border,
     overflow: "hidden",
   },
   item: {
@@ -736,19 +753,20 @@ const menuStyles = StyleSheet.create({
     paddingVertical: Spacing.lg,
   },
   itemPressed: {
-    backgroundColor: Colors.bgElevated,
+    backgroundColor: colors.bgElevated,
   },
   divider: {
     height: StyleSheet.hairlineWidth,
-    backgroundColor: Colors.bgElevated,
+    backgroundColor: colors.borderSubtle,
     marginHorizontal: Spacing.lg,
   },
   itemText: {
-    color: Colors.textPrimary,
+    color: colors.textPrimary,
     fontFamily: Typography.uiFont,
     fontSize: 15,
   },
   itemTextDestructive: {
-    color: Colors.statusFailed,
+    color: colors.statusFailed,
   },
-});
+  });
+}

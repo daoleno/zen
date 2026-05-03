@@ -1,6 +1,6 @@
 import React, { forwardRef, useImperativeHandle, useMemo } from 'react';
 import { StyleSheet, Text, View } from 'react-native';
-import { Colors, Typography } from '../../constants/tokens';
+import { Colors, Typography, useAppColors } from '../../constants/tokens';
 import {
   DefaultTerminalThemeName,
   resolveTerminalTheme,
@@ -11,6 +11,8 @@ export const TerminalSurfaceUnsupported = forwardRef<TerminalSurfaceHandle, Term
   themeName = DefaultTerminalThemeName,
   themeOverrides,
 }, ref) => {
+  const colors = useAppColors();
+  const styles = useMemo(() => createStyles(colors), [colors]);
   const theme = useMemo(
     () => resolveTerminalTheme(themeName, themeOverrides),
     [themeName, themeOverrides],
@@ -26,14 +28,14 @@ export const TerminalSurfaceUnsupported = forwardRef<TerminalSurfaceHandle, Term
 
   return (
     <View style={[styles.container, { backgroundColor: theme.background }]}>
-      <View style={[styles.card, { borderColor: 'rgba(91,157,255,0.24)' }]}>
+      <View style={[styles.card, { borderColor: colors.borderStrong }]}>
         <Text style={[styles.title, { color: theme.foreground }]}>
           Terminal unavailable on this platform
         </Text>
         <Text style={[styles.body, { color: theme.foreground }]}>
           This build only ships the libghostty-backed terminal on Android.
         </Text>
-        <Text style={[styles.caption, { color: Colors.textSecondary }]}>
+        <Text style={[styles.caption, { color: colors.textSecondary }]}>
           Web and iOS stay disabled until a libghostty-backed surface exists there.
         </Text>
       </View>
@@ -41,7 +43,8 @@ export const TerminalSurfaceUnsupported = forwardRef<TerminalSurfaceHandle, Term
   );
 });
 
-const styles = StyleSheet.create({
+function createStyles(colors: typeof Colors) {
+  return StyleSheet.create({
   container: {
     flex: 1,
     alignItems: 'center',
@@ -55,7 +58,7 @@ const styles = StyleSheet.create({
     paddingVertical: 16,
     borderRadius: 16,
     borderWidth: 1,
-    backgroundColor: Colors.bgSurface,
+    backgroundColor: colors.bgSurface,
   },
   title: {
     fontSize: 16,
@@ -75,4 +78,5 @@ const styles = StyleSheet.create({
     lineHeight: 18,
     fontFamily: Typography.uiFont,
   },
-});
+  });
+}

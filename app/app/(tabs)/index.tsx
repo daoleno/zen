@@ -10,17 +10,21 @@ import {
   TextInput,
   TouchableOpacity,
   View,
+  useColorScheme,
 } from 'react-native';
 import { useFocusEffect, useRouter } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Agent, useAgents } from '../../store/agents';
 import { useIssues, type Issue } from '../../store/issues';
-import { AgentStatus, Colors, Typography, statusColor } from '../../constants/tokens';
+import { AgentStatus, Colors, Typography, statusColor, useAppColors } from '../../constants/tokens';
 import { TerminalPreview } from '../../components/terminal/TerminalPreview';
 import { AgentKindIcon } from '../../components/terminal/AgentKindIcon';
 import { NewTerminalSheet } from '../../components/terminal/NewTerminalSheet';
-import { TerminalThemeName, DefaultTerminalThemeName } from '../../constants/terminalThemes';
+import {
+  DefaultTerminalThemePreference,
+  resolveTerminalThemePreference,
+} from '../../constants/terminalThemes';
 import {
   closeTerminalTab,
   getInboxViewMode,
@@ -34,6 +38,7 @@ import {
   touchTerminalTab,
   StoredAgentAliases,
   StoredInboxViewMode,
+  StoredTerminalTheme,
   StoredRecentAgentOpens,
   StoredServer,
 } from '../../services/storage';
@@ -58,6 +63,9 @@ export default function InboxScreen() {
   const { state } = useAgents();
   const { state: issuesState } = useIssues();
   const router = useRouter();
+  const colorScheme = useColorScheme();
+  const colors = useAppColors();
+  const styles = useMemo(() => createStyles(colors), [colors]);
 
   // Build agent→issue lookup for subtitle display
   const agentIssueMap = useMemo(() => {
@@ -73,7 +81,9 @@ export default function InboxScreen() {
   const [viewMode, setViewModeState] = useState<StoredInboxViewMode>('list');
   const [agentAliases, setAgentAliases] = useState<StoredAgentAliases>({});
   const [recentAgentOpens, setRecentAgentOpens] = useState<StoredRecentAgentOpens>({});
-  const [terminalTheme, setTerminalTheme] = useState<TerminalThemeName>(DefaultTerminalThemeName);
+  const [terminalTheme, setTerminalTheme] = useState<StoredTerminalTheme>(
+    DefaultTerminalThemePreference,
+  );
   const [configuredServerCount, setConfiguredServerCount] = useState(0);
   const [servers, setServers] = useState<StoredServer[]>([]);
   const [createSheetVisible, setCreateSheetVisible] = useState(false);
@@ -100,7 +110,7 @@ export default function InboxScreen() {
         setViewModeState(storedViewMode);
         setRecentAgentOpens(storedRecentOpens);
         setAgentAliases(storedAliases);
-        setTerminalTheme(storedTheme as TerminalThemeName);
+        setTerminalTheme(storedTheme);
         setConfiguredServerCount(storedServers.length);
         setServers(storedServers);
       }
@@ -112,20 +122,27 @@ export default function InboxScreen() {
     React.useCallback(() => {
       let cancelled = false;
       (async () => {
-        const [storedRecentOpens, storedAliases, storedServers] = await Promise.all([
+        const [storedRecentOpens, storedAliases, storedServers, storedTheme] = await Promise.all([
           getRecentAgentOpens(),
           getAgentAliases(),
           getServers(),
+          getTerminalTheme(),
         ]);
         if (!cancelled) {
           setRecentAgentOpens(storedRecentOpens);
           setAgentAliases(storedAliases);
           setConfiguredServerCount(storedServers.length);
           setServers(storedServers);
+          setTerminalTheme(storedTheme);
         }
       })();
       return () => { cancelled = true; };
     }, []),
+  );
+
+  const terminalThemeName = useMemo(
+    () => resolveTerminalThemePreference(terminalTheme, colorScheme),
+    [terminalTheme, colorScheme],
   );
 
   const displayAgents = useMemo(
@@ -349,10 +366,10 @@ export default function InboxScreen() {
   };
 
   const bannerAccent = primaryIssue
-    ? connectionIssueAccent(primaryIssue)
+    ? connectionIssueAccent(primaryIssue, colors)
     : anyConnecting
-      ? Colors.statusUnknown
-      : '#65758A';
+      ? colors.statusUnknown
+      : colors.disabledText;
   const bannerText = primaryIssue?.title || (anyConnecting ? 'Connecting' : 'Offline');
   const emptyTitle = !hasConfiguredServers
     ? 'No servers configured'
@@ -421,7 +438,7 @@ export default function InboxScreen() {
           <View style={[styles.statusDot, { backgroundColor: statusColor(item.status) }]} />
         </View>
         <View style={styles.gridPreview}>
-          <TerminalPreview key={item.key} lines={item.last_output_lines} themeName={terminalTheme} />
+          <TerminalPreview key={item.key} lines={item.last_output_lines} themeName={terminalThemeName} />
         </View>
       </TouchableOpacity>
     );
@@ -448,18 +465,22 @@ export default function InboxScreen() {
             disabled={!!creatingServerId}
             activeOpacity={0.82}
           >
-            <Ionicons name="add" size={19} color={Colors.textPrimary} />
+            <Ionicons name="add" size={19} color={colors.accent} />
           </TouchableOpacity>
           <View style={styles.viewToggle}>
           <ToggleButton
             icon="reorder-three-outline"
             selected={viewMode === 'list'}
             onPress={() => setViewMode('list')}
+            colors={colors}
+            styles={styles}
           />
           <ToggleButton
             icon="grid-outline"
             selected={viewMode === 'grid'}
             onPress={() => setViewMode('grid')}
+            colors={colors}
+            styles={styles}
           />
           </View>
         </View>
@@ -572,7 +593,7 @@ export default function InboxScreen() {
             </Text>
 
             <TouchableOpacity style={styles.menuItem} onPress={openRename} activeOpacity={0.82}>
-              <Ionicons name="pencil-outline" size={16} color={Colors.textPrimary} />
+              <Ionicons name="pencil-outline" size={16} color={colors.textPrimary} />
               <Text style={styles.menuItemText}>Rename</Text>
             </TouchableOpacity>
 
@@ -581,12 +602,12 @@ export default function InboxScreen() {
               onPress={() => { if (menuAgent) openAgent(menuAgent); closeContextMenu(); }}
               activeOpacity={0.82}
             >
-              <Ionicons name="terminal-outline" size={16} color={Colors.textPrimary} />
+              <Ionicons name="terminal-outline" size={16} color={colors.textPrimary} />
               <Text style={styles.menuItemText}>Open Terminal</Text>
             </TouchableOpacity>
 
             <TouchableOpacity style={styles.menuItem} onPress={handleTerminateAgent} activeOpacity={0.82}>
-              <Ionicons name="power-outline" size={16} color="#F09999" />
+              <Ionicons name="power-outline" size={16} color={colors.dangerText} />
               <Text style={[styles.menuItemText, styles.menuItemTextDestructive]}>Terminate</Text>
             </TouchableOpacity>
           </View>
@@ -616,7 +637,7 @@ export default function InboxScreen() {
               value={renameDraft}
               onChangeText={setRenameDraft}
               placeholder="Agent name"
-              placeholderTextColor="rgba(255,255,255,0.2)"
+              placeholderTextColor={colors.textSecondary}
               autoCapitalize="none"
               autoCorrect={false}
               autoFocus
@@ -646,10 +667,14 @@ function ToggleButton({
   icon,
   selected,
   onPress,
+  colors,
+  styles,
 }: {
   icon: React.ComponentProps<typeof Ionicons>['name'];
   selected: boolean;
   onPress: () => void;
+  colors: typeof Colors;
+  styles: ReturnType<typeof createStyles>;
 }) {
   return (
     <TouchableOpacity
@@ -660,7 +685,8 @@ function ToggleButton({
       <Ionicons
         name={icon}
         size={17}
-        color={selected ? Colors.textPrimary : Colors.textSecondary}
+        color={selected ? colors.accent : colors.disabledText}
+        style={!selected && styles.viewIconInactive}
       />
     </TouchableOpacity>
   );
@@ -728,10 +754,11 @@ function lastPathSegment(value?: string): string {
   return parts[parts.length - 1] || trimmed;
 }
 
-const styles = StyleSheet.create({
+function createStyles(colors: typeof Colors) {
+  return StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: Colors.bgPrimary,
+    backgroundColor: colors.bgPrimary,
   },
 
   // Banner
@@ -741,9 +768,9 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     gap: 6,
     paddingVertical: 6,
-    backgroundColor: 'rgba(255,255,255,0.03)',
+    backgroundColor: colors.surfaceSubtle,
     borderBottomWidth: StyleSheet.hairlineWidth,
-    borderBottomColor: 'rgba(255,255,255,0.06)',
+    borderBottomColor: colors.borderSubtle,
   },
   bannerDot: {
     width: 6,
@@ -751,7 +778,7 @@ const styles = StyleSheet.create({
     borderRadius: 3,
   },
   bannerText: {
-    color: Colors.textSecondary,
+    color: colors.textSecondary,
     fontFamily: Typography.uiFont,
     fontSize: 12,
   },
@@ -770,7 +797,7 @@ const styles = StyleSheet.create({
     minWidth: 0,
   },
   title: {
-    color: Colors.textPrimary,
+    color: colors.textPrimary,
     fontSize: 22,
     lineHeight: 28,
     fontFamily: Typography.uiFontMedium,
@@ -780,7 +807,7 @@ const styles = StyleSheet.create({
   },
   headerSummary: {
     marginTop: 2,
-    color: Colors.textSecondary,
+    color: colors.textSecondary,
     fontSize: 10,
     lineHeight: 13,
     fontFamily: Typography.uiFont,
@@ -797,13 +824,13 @@ const styles = StyleSheet.create({
     borderRadius: 11,
     alignItems: 'center',
     justifyContent: 'center',
-    backgroundColor: 'rgba(255,255,255,0.05)',
+    backgroundColor: colors.surfaceActive,
   },
   viewToggle: {
     flexDirection: 'row',
     gap: 2,
     borderRadius: 12,
-    backgroundColor: 'rgba(255,255,255,0.04)',
+    backgroundColor: colors.surfaceSubtle,
     padding: 3,
   },
   viewBtn: {
@@ -814,7 +841,10 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
   },
   viewBtnActive: {
-    backgroundColor: 'rgba(255,255,255,0.08)',
+    backgroundColor: colors.surfaceActive,
+  },
+  viewIconInactive: {
+    opacity: 0.72,
   },
 
   // ── Prompt list ──
@@ -827,7 +857,7 @@ const styles = StyleSheet.create({
     minHeight: 42,
     paddingVertical: 7,
     borderBottomWidth: StyleSheet.hairlineWidth,
-    borderBottomColor: 'rgba(235,225,207,0.055)',
+    borderBottomColor: colors.borderSubtle,
   },
   promptRowWithMeta: {
     minHeight: 54,
@@ -847,14 +877,14 @@ const styles = StyleSheet.create({
   },
   promptDirectory: {
     flexShrink: 1,
-    color: '#8FB573',
+    color: colors.promptGreen,
     fontSize: 13,
     lineHeight: 18,
     fontFamily: Typography.terminalFont,
     letterSpacing: -0.1,
   },
   promptArrow: {
-    color: '#E6B450',
+    color: colors.promptYellow,
     fontSize: 13,
     lineHeight: 18,
     fontFamily: Typography.terminalFontBold,
@@ -867,7 +897,7 @@ const styles = StyleSheet.create({
   promptTitle: {
     flex: 1,
     minWidth: 0,
-    color: Colors.textPrimary,
+    color: colors.textPrimary,
     fontSize: 14,
     lineHeight: 18,
     fontFamily: Typography.uiFontMedium,
@@ -882,7 +912,7 @@ const styles = StyleSheet.create({
   promptMeta: {
     marginTop: 1,
     paddingLeft: 1,
-    color: Colors.textSecondary,
+    color: colors.textSecondary,
     fontSize: 10,
     lineHeight: 13,
     fontFamily: Typography.uiFont,
@@ -903,9 +933,9 @@ const styles = StyleSheet.create({
   },
   gridCard: {
     borderRadius: 14,
-    backgroundColor: 'rgba(255,255,255,0.03)',
+    backgroundColor: colors.surfaceSubtle,
     borderWidth: StyleSheet.hairlineWidth,
-    borderColor: 'rgba(255,255,255,0.06)',
+    borderColor: colors.borderSubtle,
     overflow: 'hidden',
   },
   gridHeader: {
@@ -916,18 +946,18 @@ const styles = StyleSheet.create({
     paddingVertical: 11,
     minHeight: 44,
     borderBottomWidth: StyleSheet.hairlineWidth,
-    borderBottomColor: 'rgba(255,255,255,0.04)',
+    borderBottomColor: colors.borderSubtle,
   },
   gridTitle: {
     flex: 1,
     minWidth: 0,
-    color: Colors.textPrimary,
+    color: colors.textPrimary,
     fontSize: 13,
     lineHeight: 18,
     fontFamily: Typography.uiFontMedium,
   },
   gridMeta: {
-    color: Colors.textSecondary,
+    color: colors.textSecondary,
     fontSize: 11,
     lineHeight: 16,
     fontFamily: Typography.uiFont,
@@ -950,18 +980,18 @@ const styles = StyleSheet.create({
   },
   emptyIcon: {
     fontSize: 44,
-    color: Colors.textSecondary,
+    color: colors.textSecondary,
     marginBottom: 16,
     opacity: 0.6,
   },
   emptyText: {
-    color: Colors.textPrimary,
+    color: colors.textPrimary,
     fontSize: 17,
     fontFamily: Typography.uiFontMedium,
     opacity: 0.8,
   },
   emptySubtext: {
-    color: Colors.textSecondary,
+    color: colors.textSecondary,
     fontSize: 13,
     fontFamily: Typography.uiFont,
     marginTop: 6,
@@ -983,21 +1013,21 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
     borderWidth: StyleSheet.hairlineWidth,
-    borderColor: 'rgba(255,255,255,0.12)',
-    backgroundColor: 'rgba(255,255,255,0.04)',
+    borderColor: colors.borderStrong,
+    backgroundColor: colors.surfaceSubtle,
   },
   emptyActionBtnPrimary: {
-    backgroundColor: Colors.accent,
-    borderColor: Colors.accent,
+    backgroundColor: colors.accent,
+    borderColor: colors.accent,
   },
   emptyActionText: {
-    color: Colors.textPrimary,
+    color: colors.textPrimary,
     fontSize: 13,
     fontFamily: Typography.uiFontMedium,
     textAlign: 'center',
   },
   emptyActionTextPrimary: {
-    color: Colors.bgPrimary,
+    color: colors.textOnAccent,
   },
 
   // Context menu
@@ -1007,19 +1037,19 @@ const styles = StyleSheet.create({
   },
   menuBackdrop: {
     ...StyleSheet.absoluteFillObject,
-    backgroundColor: 'rgba(0,0,0,0.6)',
+    backgroundColor: colors.modalBackdrop,
   },
   menuCard: {
     marginHorizontal: 12,
     marginBottom: 32,
     borderRadius: 16,
-    backgroundColor: '#1A1A22',
+    backgroundColor: colors.modalSurfaceAlt,
     borderWidth: StyleSheet.hairlineWidth,
-    borderColor: 'rgba(255,255,255,0.08)',
+    borderColor: colors.border,
     overflow: 'hidden',
   },
   menuTitle: {
-    color: Colors.textSecondary,
+    color: colors.textSecondary,
     fontSize: 12,
     fontFamily: Typography.uiFontMedium,
     paddingHorizontal: 18,
@@ -1034,15 +1064,15 @@ const styles = StyleSheet.create({
     paddingHorizontal: 18,
     paddingVertical: 14,
     borderTopWidth: StyleSheet.hairlineWidth,
-    borderTopColor: 'rgba(255,255,255,0.05)',
+    borderTopColor: colors.borderSubtle,
   },
   menuItemText: {
-    color: Colors.textPrimary,
+    color: colors.textPrimary,
     fontSize: 15,
     fontFamily: Typography.uiFont,
   },
   menuItemTextDestructive: {
-    color: '#F09999',
+    color: colors.dangerText,
   },
 
   // Rename modal
@@ -1051,26 +1081,26 @@ const styles = StyleSheet.create({
     marginBottom: 100,
     borderRadius: 16,
     padding: 20,
-    backgroundColor: '#141418',
+    backgroundColor: colors.modalSurface,
     borderWidth: StyleSheet.hairlineWidth,
-    borderColor: 'rgba(255,255,255,0.08)',
+    borderColor: colors.border,
   },
   renameTitle: {
-    color: Colors.textPrimary,
+    color: colors.textPrimary,
     fontSize: 16,
     fontFamily: Typography.uiFontMedium,
     marginBottom: 16,
   },
   renameInput: {
-    backgroundColor: 'rgba(255,255,255,0.04)',
+    backgroundColor: colors.inputBackground,
     borderRadius: 10,
     paddingHorizontal: 14,
     paddingVertical: 10,
-    color: Colors.textPrimary,
+    color: colors.textPrimary,
     fontSize: 14,
     fontFamily: Typography.terminalFont,
     borderWidth: StyleSheet.hairlineWidth,
-    borderColor: 'rgba(255,255,255,0.08)',
+    borderColor: colors.border,
   },
   renameActions: {
     flexDirection: 'row',
@@ -1084,17 +1114,18 @@ const styles = StyleSheet.create({
     borderRadius: 10,
     alignItems: 'center',
     justifyContent: 'center',
-    backgroundColor: 'rgba(255,255,255,0.05)',
+    backgroundColor: colors.surfacePressed,
   },
   renameBtnPrimary: {
-    backgroundColor: Colors.accent,
+    backgroundColor: colors.accent,
   },
   renameBtnText: {
-    color: Colors.textPrimary,
+    color: colors.textPrimary,
     fontSize: 13,
     fontFamily: Typography.uiFontMedium,
   },
   renameBtnPrimaryText: {
-    color: Colors.bgPrimary,
+    color: colors.textOnAccent,
   },
-});
+  });
+}

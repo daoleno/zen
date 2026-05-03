@@ -32,9 +32,18 @@ export function TerminalPreview({
 }: TerminalPreviewProps) {
   const theme = useMemo(() => resolveTerminalTheme(themeName), [themeName]);
   const previewText = useMemo(() => formatPreviewLines(lines), [lines]);
+  const borderColor = useMemo(() => withAlpha(theme.foreground, 0.12), [theme.foreground]);
 
   return (
-    <View style={[styles.container, { backgroundColor: theme.background }]}>
+    <View
+      style={[
+        styles.container,
+        {
+          backgroundColor: theme.background,
+          borderColor,
+        },
+      ]}
+    >
       <Text
         numberOfLines={PREVIEW_LINE_COUNT}
         style={[
@@ -59,7 +68,6 @@ const styles = StyleSheet.create({
     paddingHorizontal: 10,
     paddingVertical: 12,
     borderWidth: 1,
-    borderColor: 'rgba(255,255,255,0.04)',
   },
   previewText: {
     flex: 1,
@@ -69,3 +77,15 @@ const styles = StyleSheet.create({
     includeFontPadding: false,
   },
 });
+
+function withAlpha(hex: string, alpha: number): string {
+  const normalized = hex.trim().replace('#', '');
+  if (!/^[0-9a-fA-F]{6}$/.test(normalized)) {
+    return hex;
+  }
+
+  const red = Number.parseInt(normalized.slice(0, 2), 16);
+  const green = Number.parseInt(normalized.slice(2, 4), 16);
+  const blue = Number.parseInt(normalized.slice(4, 6), 16);
+  return `rgba(${red}, ${green}, ${blue}, ${Math.min(Math.max(alpha, 0), 1)})`;
+}

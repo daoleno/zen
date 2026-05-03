@@ -10,7 +10,7 @@ import {
 } from 'react-native';
 import { useFocusEffect } from 'expo-router';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { Colors, Typography } from '../../constants/tokens';
+import { Colors, Typography, useAppColors } from '../../constants/tokens';
 import { useAgents } from '../../store/agents';
 import { wsClient } from '../../services/websocket';
 
@@ -97,13 +97,6 @@ const RANGE_OPTIONS: { key: TimeRange; label: string }[] = [
   { key: 'week', label: 'Week' },
   { key: 'month', label: 'Month' },
   { key: 'all', label: 'All' },
-];
-
-const INTENSITY_COLORS = [
-  'rgba(91,157,255,0.05)',
-  'rgba(91,157,255,0.20)',
-  'rgba(91,157,255,0.45)',
-  'rgba(91,157,255,0.80)',
 ];
 
 const MAX_LIST_ITEMS = 5;
@@ -287,6 +280,17 @@ function hasRangeStats(data?: RangeData | null): boolean {
 // ── Component ──────────────────────────────────────────────
 
 export default function StatsScreen() {
+  const colors = useAppColors();
+  const s = useMemo(() => createStyles(colors), [colors]);
+  const intensityColors = useMemo(
+    () => [
+      `${colors.accent}0D`,
+      `${colors.accent}33`,
+      `${colors.accent}73`,
+      `${colors.accent}CC`,
+    ],
+    [colors],
+  );
   const { state: agentsState } = useAgents();
   const [range, setRange] = useState<TimeRange>('week');
   const [statsData, setStatsData] = useState<StatsPayload | null>(null);
@@ -438,7 +442,7 @@ export default function StatsScreen() {
 
       {loading && !statsData ? (
         <View style={s.emptyContainer}>
-          <ActivityIndicator color={Colors.textSecondary} />
+          <ActivityIndicator color={colors.textSecondary} />
         </View>
       ) : !hasData ? (
         <View style={s.emptyContainer}>
@@ -473,7 +477,7 @@ export default function StatsScreen() {
                           <View
                             style={[s.barInner, {
                               height: `${Math.max(d.cost / maxDayCost * 100, 4)}%`,
-                              backgroundColor: INTENSITY_COLORS[intensity],
+                              backgroundColor: intensityColors[intensity],
                             }]}
                           />
                         </View>
@@ -493,7 +497,7 @@ export default function StatsScreen() {
                             <View
                               style={[s.barInner, {
                                 height: `${Math.max(d.cost / maxDayCost * 100, 4)}%`,
-                                backgroundColor: INTENSITY_COLORS[intensity],
+                                backgroundColor: intensityColors[intensity],
                               }]}
                             />
                           </View>
@@ -518,11 +522,11 @@ export default function StatsScreen() {
                     <Text style={s.rowMeta}>{fmt(m.totalTokens)} tokens · {m.sessions} sessions</Text>
                   </View>
                   <Text style={s.rowCost}>{fmtCost(m.cost)}</Text>
-                  <Bar ratio={m.cost / maxModelCost} color={Colors.accent} />
+                  <Bar ratio={m.cost / maxModelCost} color={colors.accent} styles={s} />
                 </View>
               ))}
               {data.models.length > MAX_LIST_ITEMS && (
-                <ExpandToggle expanded={expandedSections.has('models')} total={data.models.length} onPress={() => toggleSection('models')} />
+                <ExpandToggle expanded={expandedSections.has('models')} total={data.models.length} onPress={() => toggleSection('models')} styles={s} />
               )}
             </View>
           )}
@@ -538,11 +542,11 @@ export default function StatsScreen() {
                     <Text style={s.rowMeta}>{p.sessions} sessions</Text>
                   </View>
                   <Text style={s.rowCost}>{p.cost > 0 ? fmtCost(p.cost) : fmt(p.totalTokens)}</Text>
-                  <Bar ratio={p.cost > 0 ? p.cost / maxProjectCost : p.totalTokens / maxProjectTokens} color={Colors.accent} />
+                  <Bar ratio={p.cost > 0 ? p.cost / maxProjectCost : p.totalTokens / maxProjectTokens} color={colors.accent} styles={s} />
                 </View>
               ))}
               {data.projects.length > MAX_LIST_ITEMS && (
-                <ExpandToggle expanded={expandedSections.has('projects')} total={data.projects.length} onPress={() => toggleSection('projects')} />
+                <ExpandToggle expanded={expandedSections.has('projects')} total={data.projects.length} onPress={() => toggleSection('projects')} styles={s} />
               )}
             </View>
           )}
@@ -561,11 +565,11 @@ export default function StatsScreen() {
                     <Text style={s.rowMeta}>{sk.projects?.join(' · ')}</Text>
                   </View>
                   <Text style={s.rowCount}>{sk.calls}</Text>
-                  <Bar ratio={sk.calls / maxSkillCalls} color={Colors.statusUnknown} />
+                  <Bar ratio={sk.calls / maxSkillCalls} color={colors.statusUnknown} styles={s} />
                 </View>
               ))}
               {totalSkills > MAX_LIST_ITEMS && (
-                <ExpandToggle expanded={expandedSections.has('skills')} total={totalSkills} onPress={() => toggleSection('skills')} />
+                <ExpandToggle expanded={expandedSections.has('skills')} total={totalSkills} onPress={() => toggleSection('skills')} styles={s} />
               )}
             </View>
           )}
@@ -583,11 +587,11 @@ export default function StatsScreen() {
                     <Text style={s.rowName}>{t.name}</Text>
                   </View>
                   <Text style={s.rowCount}>{t.calls}</Text>
-                  <Bar ratio={t.calls / maxToolCalls} color={Colors.statusRunning} />
+                  <Bar ratio={t.calls / maxToolCalls} color={colors.statusRunning} styles={s} />
                 </View>
               ))}
               {(data.tools?.length ?? 0) > MAX_LIST_ITEMS && (
-                <ExpandToggle expanded={expandedSections.has('tools')} total={data.tools.length} onPress={() => toggleSection('tools')} />
+                <ExpandToggle expanded={expandedSections.has('tools')} total={data.tools.length} onPress={() => toggleSection('tools')} styles={s} />
               )}
             </View>
           )}
@@ -607,13 +611,13 @@ export default function StatsScreen() {
             <View style={s.detailCard}>
               <Text style={s.detailTitle}>{selectedDay.date}</Text>
               <View style={s.detailGrid}>
-                <DItem label="Cost" value={fmtCost(selectedDay.cost)} accent />
-                <DItem label="Sessions" value={`${selectedDay.sessions}`} />
-                <DItem label="Total" value={fmt(selectedDay.totalTokens)} />
-                <DItem label="Input" value={fmt(selectedDay.inputTokens)} />
-                <DItem label="Cache" value={fmt(selectedDay.cacheRead)} />
-                <DItem label="Output" value={fmt(selectedDay.outputTokens)} />
-                <DItem label="Reason" value={fmt(selectedDay.reasoningTokens)} />
+                <DItem label="Cost" value={fmtCost(selectedDay.cost)} accent colors={colors} styles={s} />
+                <DItem label="Sessions" value={`${selectedDay.sessions}`} colors={colors} styles={s} />
+                <DItem label="Total" value={fmt(selectedDay.totalTokens)} colors={colors} styles={s} />
+                <DItem label="Input" value={fmt(selectedDay.inputTokens)} colors={colors} styles={s} />
+                <DItem label="Cache" value={fmt(selectedDay.cacheRead)} colors={colors} styles={s} />
+                <DItem label="Output" value={fmt(selectedDay.outputTokens)} colors={colors} styles={s} />
+                <DItem label="Reason" value={fmt(selectedDay.reasoningTokens)} colors={colors} styles={s} />
               </View>
             </View>
           )}
@@ -625,27 +629,57 @@ export default function StatsScreen() {
 
 // ── Small components ───────────────────────────────────────
 
-function DItem({ label, value, accent }: { label: string; value: string; accent?: boolean }) {
+function DItem({
+  label,
+  value,
+  accent,
+  colors,
+  styles,
+}: {
+  label: string;
+  value: string;
+  accent?: boolean;
+  colors: typeof Colors;
+  styles: ReturnType<typeof createStyles>;
+}) {
   return (
-    <View style={s.dItem}>
-      <Text style={s.dLabel}>{label}</Text>
-      <Text style={[s.dValue, accent && { color: Colors.accent }]}>{value}</Text>
+    <View style={styles.dItem}>
+      <Text style={styles.dLabel}>{label}</Text>
+      <Text style={[styles.dValue, accent && { color: colors.accent }]}>{value}</Text>
     </View>
   );
 }
 
-function Bar({ ratio, color }: { ratio: number; color: string }) {
+function Bar({
+  ratio,
+  color,
+  styles,
+}: {
+  ratio: number;
+  color: string;
+  styles: ReturnType<typeof createStyles>;
+}) {
   return (
-    <View style={s.barTrack}>
-      <View style={[s.barFill, { width: `${Math.min(ratio, 1) * 100}%`, backgroundColor: color }]} />
+    <View style={styles.barTrack}>
+      <View style={[styles.barFill, { width: `${Math.min(ratio, 1) * 100}%`, backgroundColor: color }]} />
     </View>
   );
 }
 
-function ExpandToggle({ expanded, total, onPress }: { expanded: boolean; total: number; onPress: () => void }) {
+function ExpandToggle({
+  expanded,
+  total,
+  onPress,
+  styles,
+}: {
+  expanded: boolean;
+  total: number;
+  onPress: () => void;
+  styles: ReturnType<typeof createStyles>;
+}) {
   return (
-    <TouchableOpacity style={s.expandBtn} onPress={onPress} activeOpacity={0.7}>
-      <Text style={s.expandText}>
+    <TouchableOpacity style={styles.expandBtn} onPress={onPress} activeOpacity={0.7}>
+      <Text style={styles.expandText}>
         {expanded ? 'less' : `${total - MAX_LIST_ITEMS} more`}
       </Text>
     </TouchableOpacity>
@@ -654,61 +688,62 @@ function ExpandToggle({ expanded, total, onPress }: { expanded: boolean; total: 
 
 // ── Styles ─────────────────────────────────────────────────
 
-const s = StyleSheet.create({
-  container: { flex: 1, backgroundColor: Colors.bgPrimary },
+function createStyles(colors: typeof Colors) {
+  return StyleSheet.create({
+  container: { flex: 1, backgroundColor: colors.bgPrimary },
   header: {
     flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center',
     paddingHorizontal: 16, paddingTop: 6, paddingBottom: 8,
   },
   title: {
-    color: Colors.textPrimary, fontSize: 22, fontFamily: Typography.uiFontMedium,
+    color: colors.textPrimary, fontSize: 22, fontFamily: Typography.uiFontMedium,
     letterSpacing: 1, opacity: 0.9,
   },
   rangeToggle: { flexDirection: 'row', gap: 16 },
   rangeBtn: { alignItems: 'center', paddingVertical: 2 },
   rangeBtnText: {
-    color: Colors.textSecondary, fontSize: 13, fontFamily: Typography.uiFont,
+    color: colors.textSecondary, fontSize: 13, fontFamily: Typography.uiFont,
     letterSpacing: 0.3, opacity: 0.4,
   },
-  rangeBtnTextOn: { color: Colors.textPrimary, opacity: 0.9 },
+  rangeBtnTextOn: { color: colors.textPrimary, opacity: 0.9 },
   rangeBtnBar: {
     width: 12, height: 1.5, borderRadius: 1,
-    backgroundColor: Colors.accent, marginTop: 3, opacity: 0.6,
+    backgroundColor: colors.accent, marginTop: 3, opacity: 0.6,
   },
 
   scroll: { paddingHorizontal: 16, gap: 10 },
 
   // Empty
   emptyContainer: { flex: 1, justifyContent: 'center', alignItems: 'center', paddingHorizontal: 24 },
-  emptyIcon: { fontSize: 44, color: Colors.textSecondary, marginBottom: 16, opacity: 0.6 },
-  emptyText: { color: Colors.textPrimary, fontSize: 17, fontFamily: Typography.uiFontMedium, opacity: 0.8 },
-  emptySubtext: { color: Colors.textSecondary, fontSize: 13, fontFamily: Typography.uiFont, marginTop: 6, textAlign: 'center', opacity: 0.6 },
+  emptyIcon: { fontSize: 44, color: colors.textSecondary, marginBottom: 16, opacity: 0.6 },
+  emptyText: { color: colors.textPrimary, fontSize: 17, fontFamily: Typography.uiFontMedium, opacity: 0.8 },
+  emptySubtext: { color: colors.textSecondary, fontSize: 13, fontFamily: Typography.uiFont, marginTop: 6, textAlign: 'center', opacity: 0.6 },
 
   // Card
   card: {
-    borderRadius: 12, backgroundColor: 'rgba(255,255,255,0.03)',
-    borderWidth: StyleSheet.hairlineWidth, borderColor: 'rgba(255,255,255,0.06)',
+    borderRadius: 12, backgroundColor: colors.surfaceSubtle,
+    borderWidth: StyleSheet.hairlineWidth, borderColor: colors.borderSubtle,
     paddingHorizontal: 14, paddingVertical: 12,
   },
   label: {
-    color: Colors.textSecondary, fontSize: 10, fontFamily: Typography.uiFont,
+    color: colors.textSecondary, fontSize: 10, fontFamily: Typography.uiFont,
     letterSpacing: 0.4, marginBottom: 8, opacity: 0.5,
   },
   labelRow: {
     flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8,
   },
   labelCount: {
-    color: Colors.textSecondary, fontSize: 10, fontFamily: Typography.terminalFont, opacity: 0.35,
+    color: colors.textSecondary, fontSize: 10, fontFamily: Typography.terminalFont, opacity: 0.35,
   },
 
   // Cost hero — horizontal: big number left, meta right-aligned
   costRow: { flexDirection: 'row', alignItems: 'center' },
   costBig: {
-    color: Colors.accent, fontSize: 28, fontFamily: Typography.terminalFontBold, lineHeight: 34,
+    color: colors.accent, fontSize: 28, fontFamily: Typography.terminalFontBold, lineHeight: 34,
   },
   costRight: { flex: 1, alignItems: 'flex-end', gap: 2 },
   costMeta: {
-    color: Colors.textSecondary, fontSize: 11, fontFamily: Typography.terminalFont, opacity: 0.45,
+    color: colors.textSecondary, fontSize: 11, fontFamily: Typography.terminalFont, opacity: 0.45,
   },
 
   // Daily bar chart — flex layout (<=14 days, fills width)
@@ -723,13 +758,13 @@ const s = StyleSheet.create({
   barColFixed: { alignItems: 'center', width: 24 },
   barOuter: {
     width: '100%', maxWidth: 20, height: 48, borderRadius: 3,
-    backgroundColor: 'rgba(255,255,255,0.03)',
+    backgroundColor: colors.surfaceSubtle,
     justifyContent: 'flex-end', overflow: 'hidden',
     alignSelf: 'center',
   },
   barInner: { width: '100%', borderRadius: 3, minHeight: 2 },
   barDate: {
-    color: Colors.textSecondary, fontSize: 7, fontFamily: Typography.uiFont,
+    color: colors.textSecondary, fontSize: 7, fontFamily: Typography.uiFont,
     marginTop: 3, opacity: 0.4,
   },
 
@@ -737,38 +772,39 @@ const s = StyleSheet.create({
   row: {
     flexDirection: 'row', alignItems: 'center', gap: 8,
     paddingVertical: 7,
-    borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: 'rgba(255,255,255,0.04)',
+    borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: colors.borderSubtle,
   },
   rowInfo: { flex: 1, minWidth: 0 },
-  rowName: { color: Colors.textPrimary, fontSize: 12, fontFamily: Typography.terminalFont },
-  rowMeta: { color: Colors.textSecondary, fontSize: 9, fontFamily: Typography.uiFont, marginTop: 1, opacity: 0.45 },
-  rowCost: { color: Colors.accent, fontSize: 12, fontFamily: Typography.terminalFontBold, minWidth: 42, textAlign: 'right' },
-  rowCount: { color: Colors.textSecondary, fontSize: 12, fontFamily: Typography.terminalFontBold, minWidth: 32, textAlign: 'right' },
+  rowName: { color: colors.textPrimary, fontSize: 12, fontFamily: Typography.terminalFont },
+  rowMeta: { color: colors.textSecondary, fontSize: 9, fontFamily: Typography.uiFont, marginTop: 1, opacity: 0.45 },
+  rowCost: { color: colors.accent, fontSize: 12, fontFamily: Typography.terminalFontBold, minWidth: 42, textAlign: 'right' },
+  rowCount: { color: colors.textSecondary, fontSize: 12, fontFamily: Typography.terminalFontBold, minWidth: 32, textAlign: 'right' },
 
   // Skill
-  skillCmd: { color: Colors.statusUnknown, fontSize: 12, fontFamily: Typography.terminalFontBold },
+  skillCmd: { color: colors.statusUnknown, fontSize: 12, fontFamily: Typography.terminalFontBold },
 
   // Expand
   expandBtn: { alignItems: 'center', paddingVertical: 8, marginTop: 4 },
-  expandText: { color: Colors.accent, fontSize: 11, fontFamily: Typography.uiFontMedium, opacity: 0.7 },
+  expandText: { color: colors.accent, fontSize: 11, fontFamily: Typography.uiFontMedium, opacity: 0.7 },
 
   // Modal
   modalRoot: { flex: 1, justifyContent: 'center', alignItems: 'center' },
-  modalBg: { ...StyleSheet.absoluteFillObject, backgroundColor: 'rgba(0,0,0,0.6)' },
+  modalBg: { ...StyleSheet.absoluteFillObject, backgroundColor: colors.modalBackdrop },
   detailCard: {
     width: 240, borderRadius: 14, padding: 16,
-    backgroundColor: '#1A1A22', borderWidth: StyleSheet.hairlineWidth, borderColor: 'rgba(255,255,255,0.08)',
+    backgroundColor: colors.modalSurfaceAlt, borderWidth: StyleSheet.hairlineWidth, borderColor: colors.border,
   },
   detailTitle: {
-    color: Colors.textPrimary, fontSize: 14, fontFamily: Typography.uiFontMedium,
+    color: colors.textPrimary, fontSize: 14, fontFamily: Typography.uiFontMedium,
     marginBottom: 12, textAlign: 'center',
   },
   detailGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: 10 },
   dItem: { width: '46%', alignItems: 'center' },
-  dLabel: { color: Colors.textSecondary, fontSize: 9, fontFamily: Typography.uiFont, opacity: 0.5, marginBottom: 3 },
-  dValue: { color: Colors.textPrimary, fontSize: 16, fontFamily: Typography.terminalFontBold },
+  dLabel: { color: colors.textSecondary, fontSize: 9, fontFamily: Typography.uiFont, opacity: 0.5, marginBottom: 3 },
+  dValue: { color: colors.textPrimary, fontSize: 16, fontFamily: Typography.terminalFontBold },
 
   // Bar (inline rank bar)
-  barTrack: { width: 40, height: 2.5, borderRadius: 1.5, backgroundColor: 'rgba(255,255,255,0.04)' },
+  barTrack: { width: 40, height: 2.5, borderRadius: 1.5, backgroundColor: colors.borderSubtle },
   barFill: { height: 2.5, borderRadius: 1.5, opacity: 0.55 },
-});
+  });
+}

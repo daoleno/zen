@@ -169,6 +169,39 @@ static bool colorsEqual(const GhosttyColorRgb& left, const GhosttyColorRgb& righ
     return left.r == right.r && left.g == right.g && left.b == right.b;
 }
 
+static double colorPerceivedLuminance(const GhosttyColorRgb& color) {
+    return (
+        0.299 * static_cast<double>(color.r) +
+        0.587 * static_cast<double>(color.g) +
+        0.114 * static_cast<double>(color.b)
+    ) / 255.0;
+}
+
+static uint8_t mixColorChannel(uint8_t from, uint8_t to, double weight) {
+    const double mixed =
+        static_cast<double>(from) +
+        (static_cast<double>(to) - static_cast<double>(from)) * weight;
+    if (mixed <= 0.0) {
+        return 0;
+    }
+    if (mixed >= 255.0) {
+        return 255;
+    }
+    return static_cast<uint8_t>(std::lround(mixed));
+}
+
+static GhosttyColorRgb mixColors(
+    const GhosttyColorRgb& from,
+    const GhosttyColorRgb& to,
+    double weight)
+{
+    return GhosttyColorRgb{
+        mixColorChannel(from.r, to.r, weight),
+        mixColorChannel(from.g, to.g, weight),
+        mixColorChannel(from.b, to.b, weight),
+    };
+}
+
 static void appendCssHexColor(std::string* out, const GhosttyColorRgb& color) {
     static constexpr char hex[] = "0123456789abcdef";
     out->push_back('#');
@@ -339,6 +372,7 @@ static bool resolveStyleColor(
 static GhosttyColorRgb resolveEffectiveForeground(
     const GhosttyStyle& style,
     const GhosttyRenderStateColors& renderColors,
+    bool hasResolvedFg,
     const GhosttyColorRgb& resolvedFg)
 {
     if (style.fg_color.tag == GHOSTTY_STYLE_COLOR_PALETTE) {
@@ -353,7 +387,7 @@ static GhosttyColorRgb resolveEffectiveForeground(
         return style.fg_color.value.rgb;
     }
 
-    return resolvedFg;
+    return hasResolvedFg ? resolvedFg : renderColors.foreground;
 }
 
 static bool resolveEffectiveBackground(
@@ -389,18 +423,36 @@ static bool resolveEffectiveBackground(
 static std::string buildCellCss(
     const GhosttyStyle& style,
     const GhosttyRenderStateColors& renderColors,
+    bool hasResolvedFg,
     const GhosttyColorRgb& resolvedFg,
     bool hasResolvedBg,
     const GhosttyColorRgb& resolvedBg)
 {
-    GhosttyColorRgb fg = resolveEffectiveForeground(style, renderColors, resolvedFg);
+    GhosttyColorRgb fg =
+        resolveEffectiveForeground(style, renderColors, hasResolvedFg, resolvedFg);
     GhosttyColorRgb bg = renderColors.background;
     bool hasBg = resolveEffectiveBackground(style, renderColors, hasResolvedBg, resolvedBg, &bg);
 
     if (style.inverse) {
-        const GhosttyColorRgb originalFg = fg;
-        fg = bg;
-        bg = originalFg;
+        const bool hasExplicitFg =
+            hasResolvedFg || style.fg_color.tag != GHOSTTY_STYLE_COLOR_NONE;
+        const bool hasExplicitBg =
+            hasBg || style.bg_color.tag != GHOSTTY_STYLE_COLOR_NONE;
+        const bool isDefaultReverseOnLightTheme =
+            !hasExplicitFg &&
+            !hasExplicitBg &&
+            colorPerceivedLuminance(renderColors.background) > 0.62;
+
+        if (isDefaultReverseOnLightTheme) {
+            const GhosttyColorRgb highlightSource =
+                renderColors.cursor_has_value ? renderColors.cursor : renderColors.foreground;
+            fg = renderColors.foreground;
+            bg = mixColors(renderColors.background, highlightSource, 0.22);
+        } else {
+            const GhosttyColorRgb originalFg = fg;
+            fg = bg;
+            bg = originalFg;
+        }
         hasBg = true;
     }
 
@@ -549,10 +601,12 @@ static std::string buildRowHtml(
         );
 
         GhosttyColorRgb fg = renderColors.foreground;
-        if (ghostty_render_state_row_cells_get(
+        const bool hasFg =
+            ghostty_render_state_row_cells_get(
                 rowCells,
                 GHOSTTY_RENDER_STATE_ROW_CELLS_DATA_FG_COLOR,
-                &fg) != GHOSTTY_SUCCESS) {
+                &fg) == GHOSTTY_SUCCESS;
+        if (!hasFg) {
             fg = renderColors.foreground;
         }
 
@@ -563,7 +617,7 @@ static std::string buildRowHtml(
                 GHOSTTY_RENDER_STATE_ROW_CELLS_DATA_BG_COLOR,
                 &bg) == GHOSTTY_SUCCESS;
 
-        const std::string css = buildCellCss(style, renderColors, fg, hasBg, bg);
+        const std::string css = buildCellCss(style, renderColors, hasFg, fg, hasBg, bg);
         if (!segmentText.empty() && css != segmentCss) {
             flushStyledSegment(&rowHtml, segmentCss, &segmentText);
         }

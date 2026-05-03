@@ -3,6 +3,7 @@ import React, {
   useCallback,
   useEffect,
   useImperativeHandle,
+  useMemo,
   useRef,
   useState,
 } from "react";
@@ -12,7 +13,7 @@ import {
   TextInput,
   type TextInputSelectionChangeEventData,
 } from "react-native";
-import { Colors, Spacing, Typography } from "../../constants/tokens";
+import { Colors, Spacing, Typography, useAppColors } from "../../constants/tokens";
 import {
   mentionCandidateValue,
   type MentionCandidate,
@@ -62,6 +63,8 @@ export const MarkdownEditor = forwardRef<MarkdownEditorHandle, Props>(
     { value, onChange, onActiveMentionChange, onBlur, autoFocus },
     forwardedRef,
   ) {
+    const colors = useAppColors();
+    const styles = useMemo(() => createStyles(colors), [colors]);
     const inputRef = useRef<TextInput>(null);
     const selectionRef = useRef({ start: value.length, end: value.length });
     const [controlledSelection, setControlledSelection] = useState<
@@ -141,7 +144,7 @@ export const MarkdownEditor = forwardRef<MarkdownEditorHandle, Props>(
         multiline
         autoFocus={autoFocus}
         placeholder="# Issue title\n\nDescribe the work..."
-        placeholderTextColor={Colors.textSecondary}
+        placeholderTextColor={colors.textSecondary}
         style={styles.input}
         textAlignVertical="top"
         autoCapitalize="none"
@@ -152,15 +155,17 @@ export const MarkdownEditor = forwardRef<MarkdownEditorHandle, Props>(
   },
 );
 
-const styles = StyleSheet.create({
+function createStyles(colors: typeof Colors) {
+  return StyleSheet.create({
   input: {
     flex: 1,
     paddingHorizontal: 18,
     paddingVertical: Spacing.lg,
-    color: Colors.textPrimary,
+    color: colors.textPrimary,
     fontFamily: Typography.terminalFont,
     fontSize: 15,
     lineHeight: 22,
     backgroundColor: "transparent",
   },
-});
+  });
+}

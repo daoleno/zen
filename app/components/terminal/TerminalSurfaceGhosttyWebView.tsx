@@ -3,8 +3,8 @@ import { ActivityIndicator, StyleSheet, TouchableOpacity, View } from 'react-nat
 import { Asset } from 'expo-asset';
 import { Ionicons } from '@expo/vector-icons';
 import { WebView } from 'react-native-webview';
-import { Colors } from '../../constants/tokens';
 import {
+  buildTerminalChrome,
   DefaultTerminalThemeName,
   resolveTerminalTheme,
 } from '../../constants/terminalThemes';
@@ -31,6 +31,10 @@ export const TerminalSurfaceGhosttyWebView = forwardRef<
   const theme = useMemo(
     () => resolveTerminalTheme(themeName, themeOverrides),
     [themeName, themeOverrides],
+  );
+  const chrome = useMemo(
+    () => buildTerminalChrome(theme),
+    [theme],
   );
   const initialThemeRef = useRef(theme);
 
@@ -101,17 +105,23 @@ export const TerminalSurfaceGhosttyWebView = forwardRef<
 
       {(!fontUri || !controller.ready) && (
         <View style={[styles.loading, { backgroundColor: theme.background }]}>
-          <ActivityIndicator color={Colors.accent} />
+          <ActivityIndicator color={theme.cursor} />
         </View>
       )}
 
       {controller.scrolledUp && controller.ready && (
         <TouchableOpacity
-          style={styles.jumpButton}
+          style={[
+            styles.jumpButton,
+            {
+              backgroundColor: chrome.overlay,
+              borderColor: chrome.borderStrong,
+            },
+          ]}
           onPress={controller.scrollToBottom}
           activeOpacity={0.7}
         >
-          <Ionicons name="arrow-down" size={16} color="rgba(255,255,255,0.8)" />
+          <Ionicons name="arrow-down" size={16} color={chrome.text} />
         </TouchableOpacity>
       )}
 
@@ -141,9 +151,7 @@ const styles = StyleSheet.create({
     position: 'absolute',
     right: 16,
     bottom: 16,
-    backgroundColor: 'rgba(30,50,80,0.85)',
     borderWidth: 1,
-    borderColor: 'rgba(91,157,255,0.3)',
     borderRadius: 999,
     width: 38,
     height: 38,

@@ -12,7 +12,7 @@ import {
   View,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
-import { Colors, Typography } from '../../constants/tokens';
+import { Colors, Typography, useAppColors } from '../../constants/tokens';
 import { AgentKindIcon } from './AgentKindIcon';
 import { DirectoryPicker } from './DirectoryPicker';
 import type { AgentKind } from '../../services/agentPresentation';
@@ -65,6 +65,8 @@ export function NewTerminalSheet({
   onClose,
   onSubmit,
 }: NewTerminalSheetProps) {
+  const colors = useAppColors();
+  const styles = useMemo(() => createStyles(colors), [colors]);
   const [cwd, setCwd] = useState(initialCwd);
   const [command, setCommand] = useState(initialCommand);
   const [name, setName] = useState(initialName);
@@ -177,7 +179,7 @@ export function NewTerminalSheet({
                   <View style={styles.presetCardText}>
                     <Text style={styles.presetLabel}>{preset.label}</Text>
                   </View>
-                  <Ionicons name="chevron-forward" size={14} color="rgba(255,255,255,0.18)" />
+                  <Ionicons name="chevron-forward" size={14} color={colors.textSecondary} />
                 </TouchableOpacity>
               ))}
             </View>
@@ -194,7 +196,7 @@ export function NewTerminalSheet({
               <Ionicons
                 name={advanced ? 'chevron-down' : 'chevron-forward'}
                 size={14}
-                color={Colors.textSecondary}
+                color={colors.textSecondary}
               />
               <Text style={styles.advancedToggleText}>Advanced</Text>
             </TouchableOpacity>
@@ -209,7 +211,7 @@ export function NewTerminalSheet({
                     value={cwd}
                     onChangeText={setCwd}
                     placeholder="Leave empty for shell default"
-                    placeholderTextColor="#6E7D90"
+                    placeholderTextColor={colors.textSecondary}
                     autoCapitalize="none"
                     autoCorrect={false}
                     autoComplete="off"
@@ -223,7 +225,7 @@ export function NewTerminalSheet({
                       }}
                       activeOpacity={0.7}
                     >
-                      <Ionicons name="folder-open-outline" size={20} color={Colors.textSecondary} />
+                      <Ionicons name="folder-open-outline" size={20} color={colors.textSecondary} />
                     </TouchableOpacity>
                   ) : null}
                 </View>
@@ -234,7 +236,7 @@ export function NewTerminalSheet({
                   value={command}
                   onChangeText={setCommand}
                   placeholder="e.g. claude --dangerously-skip-permissions"
-                  placeholderTextColor="#6E7D90"
+                  placeholderTextColor={colors.textSecondary}
                   autoCapitalize="none"
                   autoCorrect={false}
                   autoComplete="off"
@@ -246,7 +248,7 @@ export function NewTerminalSheet({
                   value={name}
                   onChangeText={setName}
                   placeholder="Optional"
-                  placeholderTextColor="#6E7D90"
+                  placeholderTextColor={colors.textSecondary}
                   autoCapitalize="none"
                   autoCorrect={false}
                   autoComplete="off"
@@ -309,14 +311,15 @@ export function NewTerminalSheet({
   );
 }
 
-const styles = StyleSheet.create({
+function createStyles(colors: typeof Colors) {
+  return StyleSheet.create({
   root: {
     flex: 1,
     justifyContent: 'flex-end',
   },
   backdrop: {
     ...StyleSheet.absoluteFillObject,
-    backgroundColor: 'rgba(6, 8, 12, 0.62)',
+    backgroundColor: colors.modalBackdrop,
   },
   card: {
     maxHeight: '68%',
@@ -325,16 +328,16 @@ const styles = StyleSheet.create({
     paddingHorizontal: 14,
     paddingTop: 10,
     paddingBottom: 18,
-    backgroundColor: '#121A25',
+    backgroundColor: colors.modalSurface,
     borderTopWidth: 1,
-    borderColor: 'rgba(255,255,255,0.06)',
+    borderColor: colors.borderSubtle,
   },
   handle: {
     alignSelf: 'center',
     width: 42,
     height: 3,
     borderRadius: 2,
-    backgroundColor: '#3A475B',
+    backgroundColor: colors.borderStrong,
     marginBottom: 10,
   },
 
@@ -351,21 +354,21 @@ const styles = StyleSheet.create({
     height: 28,
     borderRadius: 10,
     justifyContent: 'center',
-    backgroundColor: '#18222F',
+    backgroundColor: colors.bgElevated,
     borderWidth: StyleSheet.hairlineWidth,
-    borderColor: 'rgba(255,255,255,0.06)',
+    borderColor: colors.borderSubtle,
   },
   serverChipActive: {
-    backgroundColor: 'rgba(214, 177, 106, 0.14)',
-    borderColor: 'rgba(214, 177, 106, 0.42)',
+    backgroundColor: colors.surfaceActive,
+    borderColor: colors.accent,
   },
   serverChipText: {
-    color: Colors.textSecondary,
+    color: colors.textSecondary,
     fontSize: 12,
     fontFamily: Typography.uiFontMedium,
   },
   serverChipTextActive: {
-    color: Colors.textPrimary,
+    color: colors.textPrimary,
   },
 
   // Preset cards
@@ -381,10 +384,10 @@ const styles = StyleSheet.create({
     paddingHorizontal: 4,
     backgroundColor: 'transparent',
     borderBottomWidth: StyleSheet.hairlineWidth,
-    borderBottomColor: 'rgba(255,255,255,0.055)',
+    borderBottomColor: colors.borderSubtle,
   },
   presetCardActive: {
-    backgroundColor: 'rgba(91,157,255,0.045)',
+    backgroundColor: colors.surfaceActive,
   },
   presetCardDisabled: {
     opacity: 0.5,
@@ -393,7 +396,7 @@ const styles = StyleSheet.create({
     flex: 1,
   },
   presetLabel: {
-    color: Colors.textPrimary,
+    color: colors.textPrimary,
     fontSize: 14,
     lineHeight: 18,
     fontFamily: Typography.uiFontMedium,
@@ -408,7 +411,7 @@ const styles = StyleSheet.create({
     paddingVertical: 6,
   },
   advancedToggleText: {
-    color: Colors.textSecondary,
+    color: colors.textSecondary,
     fontSize: 12,
     fontFamily: Typography.uiFont,
   },
@@ -417,7 +420,7 @@ const styles = StyleSheet.create({
     gap: 4,
   },
   fieldLabel: {
-    color: Colors.textSecondary,
+    color: colors.textSecondary,
     fontSize: 12,
     fontFamily: Typography.uiFontMedium,
     marginTop: 8,
@@ -435,20 +438,20 @@ const styles = StyleSheet.create({
     minHeight: 38,
     borderRadius: 10,
     paddingHorizontal: 12,
-    color: Colors.textPrimary,
+    color: colors.textPrimary,
     fontSize: 13,
     fontFamily: Typography.terminalFont,
-    backgroundColor: '#18222F',
+    backgroundColor: colors.inputBackground,
     borderWidth: StyleSheet.hairlineWidth,
-    borderColor: 'rgba(255,255,255,0.06)',
+    borderColor: colors.borderSubtle,
   },
   folderBtn: {
     width: 38,
     minHeight: 38,
     borderRadius: 10,
-    backgroundColor: '#18222F',
+    backgroundColor: colors.inputBackground,
     borderWidth: StyleSheet.hairlineWidth,
-    borderColor: 'rgba(255,255,255,0.06)',
+    borderColor: colors.borderSubtle,
     alignItems: 'center',
     justifyContent: 'center',
     alignSelf: 'stretch',
@@ -458,14 +461,14 @@ const styles = StyleSheet.create({
     borderRadius: 10,
     alignItems: 'center',
     justifyContent: 'center',
-    backgroundColor: Colors.accent,
+    backgroundColor: colors.accent,
     marginTop: 10,
   },
   launchBtnDisabled: {
     opacity: 0.5,
   },
   launchBtnText: {
-    color: Colors.bgPrimary,
+    color: colors.textOnAccent,
     fontSize: 13,
     fontFamily: Typography.uiFontMedium,
   },
@@ -480,8 +483,9 @@ const styles = StyleSheet.create({
     backgroundColor: 'transparent',
   },
   cancelBtnText: {
-    color: Colors.textSecondary,
+    color: colors.textSecondary,
     fontSize: 13,
     fontFamily: Typography.uiFontMedium,
   },
-});
+  });
+}
