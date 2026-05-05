@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
+import * as Clipboard from 'expo-clipboard';
 import { WebView, WebViewMessageEvent } from 'react-native-webview';
 import type {
   MouseAction,
@@ -15,6 +16,7 @@ type BridgeMessage =
   | { type: 'resize'; cols: number; rows: number; cellWidth: number; cellHeight: number }
   | { type: 'focusInput' }
   | { type: 'selectionActive'; active: boolean }
+  | { type: 'copyText'; text: string }
   | { type: 'scrollStart' }
   | { type: 'scrollEnd' }
   | { type: 'scroll'; lines: number }
@@ -410,6 +412,11 @@ export function useGhosttyTerminalController({
         clearInputMirror();
         inputRef.current?.blur();
         onCtrlArmedChange?.(false);
+        return;
+      }
+
+      if (payload.type === 'copyText') {
+        void Clipboard.setStringAsync(payload.text);
         return;
       }
 

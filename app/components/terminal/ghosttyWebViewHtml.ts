@@ -51,7 +51,7 @@ export function buildGhosttyTerminalHtml(theme: TerminalThemePalette, fontUri: s
         font-family: 'ZenTerm', monospace;
         font-size: ${Typography.terminalSize}px;
         line-height: ${Math.ceil(Typography.terminalSize * 1.28)}px;
-        white-space: pre;
+        white-space: normal;
         tab-size: 8;
         pointer-events: auto;
         user-select: text;
@@ -65,6 +65,15 @@ export function buildGhosttyTerminalHtml(theme: TerminalThemePalette, fontUri: s
         font-family: inherit;
         user-select: text;
         -webkit-user-select: text;
+      }
+      #terminal-html .terminal-row {
+        display: block;
+        height: ${Math.ceil(Typography.terminalSize * 1.28)}px;
+        line-height: ${Math.ceil(Typography.terminalSize * 1.28)}px;
+        white-space: pre;
+      }
+      #terminal-html .terminal-row * {
+        white-space: pre;
       }
       #terminal-html pre {
         margin: 0;
@@ -320,6 +329,69 @@ export function buildGhosttyTerminalHtml(theme: TerminalThemePalette, fontUri: s
           );
         };
 
+        const clippedTextForRow = (range, row) => {
+          const rowRange = document.createRange();
+          rowRange.selectNodeContents(row);
+
+          const clipped = range.cloneRange();
+          if (clipped.compareBoundaryPoints(Range.START_TO_START, rowRange) < 0) {
+            clipped.setStart(rowRange.startContainer, rowRange.startOffset);
+          }
+          if (clipped.compareBoundaryPoints(Range.END_TO_END, rowRange) > 0) {
+            clipped.setEnd(rowRange.endContainer, rowRange.endOffset);
+          }
+
+          return clipped.toString();
+        };
+
+        const normalizedTerminalSelectionText = () => {
+          const selection = window.getSelection();
+          if (!selection || selection.isCollapsed || selection.rangeCount === 0) {
+            return null;
+          }
+          if (!selectionContainsNode(selection.anchorNode) && !selectionContainsNode(selection.focusNode)) {
+            return null;
+          }
+
+          const range = selection.getRangeAt(0);
+          const rows = Array.from(terminalHtml.querySelectorAll('.terminal-row'));
+          if (rows.length === 0) {
+            return selection.toString();
+          }
+
+          const selected = [];
+          for (const row of rows) {
+            if (!range.intersectsNode(row)) {
+              continue;
+            }
+
+            selected.push({
+              row,
+              text: clippedTextForRow(range, row),
+            });
+          }
+
+          if (selected.length === 0) {
+            return selection.toString();
+          }
+
+          let text = '';
+          for (let index = 0; index < selected.length; index += 1) {
+            const current = selected[index];
+            if (index > 0) {
+              const previous = selected[index - 1].row;
+              const previousSoftWraps = previous.dataset.wrap === '1';
+              const currentContinuesWrap = current.row.dataset.wrapContinuation === '1';
+              if (!previousSoftWraps && !currentContinuesWrap) {
+                text += '\n';
+              }
+            }
+            text += current.text;
+          }
+
+          return text;
+        };
+
         const syncNativeSelectionState = () => {
           const nextActive = hasTerminalSelection();
           if (nativeSelectionActive === nextActive) {
@@ -473,6 +545,19 @@ export function buildGhosttyTerminalHtml(theme: TerminalThemePalette, fontUri: s
 
         document.addEventListener('selectionchange', () => {
           syncNativeSelectionState();
+        });
+
+        document.addEventListener('copy', (event) => {
+          const text = normalizedTerminalSelectionText();
+          if (text == null) {
+            return;
+          }
+
+          event.preventDefault();
+          if (event.clipboardData) {
+            event.clipboardData.setData('text/plain', text);
+          }
+          send({ type: 'copyText', text });
         });
 
         setInterval(() => {

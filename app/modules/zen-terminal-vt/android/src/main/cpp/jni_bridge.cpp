@@ -709,6 +709,61 @@ static std::string buildRowHtml(
     return rowHtml;
 }
 
+static void readRowWrapFlags(
+    GhosttyRenderStateRowIterator rowIterator,
+    bool* wrap,
+    bool* wrapContinuation)
+{
+    if (wrap) {
+        *wrap = false;
+    }
+    if (wrapContinuation) {
+        *wrapContinuation = false;
+    }
+    if (!rowIterator) {
+        return;
+    }
+
+    GhosttyRow row = 0;
+    if (ghostty_render_state_row_get(
+            rowIterator,
+            GHOSTTY_RENDER_STATE_ROW_DATA_RAW,
+            &row) != GHOSTTY_SUCCESS) {
+        return;
+    }
+
+    if (wrap) {
+        bool value = false;
+        if (ghostty_row_get(row, GHOSTTY_ROW_DATA_WRAP, &value) == GHOSTTY_SUCCESS) {
+            *wrap = value;
+        }
+    }
+    if (wrapContinuation) {
+        bool value = false;
+        if (ghostty_row_get(row, GHOSTTY_ROW_DATA_WRAP_CONTINUATION, &value) == GHOSTTY_SUCCESS) {
+            *wrapContinuation = value;
+        }
+    }
+}
+
+static void appendVisibleHtmlRow(
+    std::string* out,
+    uint16_t rowIndex,
+    bool wrap,
+    bool wrapContinuation,
+    const std::string& rowHtml)
+{
+    out->append("<div class=\"terminal-row\" data-row=\"");
+    out->append(std::to_string(rowIndex));
+    out->append("\" data-wrap=\"");
+    out->append(wrap ? "1" : "0");
+    out->append("\" data-wrap-continuation=\"");
+    out->append(wrapContinuation ? "1" : "0");
+    out->append("\">");
+    out->append(rowHtml);
+    out->append("</div>");
+}
+
 static bool buildVisibleHtml(
     GhosttyRenderState renderState,
     uint16_t expectedRows,
@@ -737,10 +792,16 @@ static bool buildVisibleHtml(
 
     uint16_t rowIndex = 0;
     while (ghostty_render_state_row_iterator_next(rowIterator)) {
-        if (rowIndex > 0) {
-            out->push_back('\n');
-        }
-        out->append(buildRowHtml(rowIterator, renderColors));
+        bool wrap = false;
+        bool wrapContinuation = false;
+        readRowWrapFlags(rowIterator, &wrap, &wrapContinuation);
+        appendVisibleHtmlRow(
+            out,
+            rowIndex,
+            wrap,
+            wrapContinuation,
+            buildRowHtml(rowIterator, renderColors)
+        );
         rowIndex += 1;
     }
 
