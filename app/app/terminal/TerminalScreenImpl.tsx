@@ -1270,6 +1270,7 @@ export default function TerminalScreen() {
             daemonId={server?.daemonId || ""}
             theme={terminalTheme}
             gitDiff={gitDiffChip}
+            keyboardVisible={keyboardVisible}
             ctrlArmed={ctrlArmed}
             onCtrlArmedChange={handleCtrlArmedChange}
           />

@@ -30,7 +30,7 @@ export default function TabLayout() {
         options={{
           title: 'Agents',
           tabBarIcon: ({ color, focused }) => (
-            <TabSymbol glyph="●" color={color} focused={focused} fontSize={14} />
+            <TabSymbol glyph={focused ? '●' : '○'} color={color} focused={focused} fontSize={14} />
           ),
         }}
       />

@@ -262,6 +262,9 @@ func (s *Server) handleClientMessage(conn *websocket.Conn, msg []byte) {
 	case "list_agents", "list_agent_sessions":
 		s.sendAgentSessionList(conn)
 
+	case "list_session_services":
+		s.handleListSessionServices(conn, raw)
+
 	case "list_issues":
 		s.handleListIssues(conn, raw)
 
@@ -579,6 +582,21 @@ func (s *Server) handleClientMessage(conn *websocket.Conn, msg []byte) {
 func (s *Server) sendAgentSessionList(conn *websocket.Conn) {
 	agentSessions := s.watcher.Agents()
 	s.sendJSON(conn, map[string]any{"type": "agent_session_list", "agent_sessions": agentSessions})
+}
+
+func (s *Server) handleListSessionServices(conn *websocket.Conn, raw clientMessage) {
+	payload, err := s.watcher.DiscoverSessionServices()
+	if err != nil {
+		s.sendErrorWithRequestID(conn, raw.RequestID, "list_session_services_failed", err.Error())
+		return
+	}
+	s.sendJSON(conn, map[string]any{
+		"type":         "session_service_list",
+		"request_id":   raw.RequestID,
+		"generated_at": payload.GeneratedAt,
+		"interfaces":   payload.Interfaces,
+		"services":     payload.Services,
+	})
 }
 
 func (s *Server) executorRoles() []string {

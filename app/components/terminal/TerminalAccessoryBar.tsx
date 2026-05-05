@@ -1,6 +1,7 @@
 import React, { useRef } from "react";
 import {
   Alert,
+  Keyboard,
   ScrollView,
   StyleSheet,
   Text,
@@ -58,6 +59,7 @@ interface TerminalAccessoryBarProps {
     tone: "clean" | "dirty" | "error" | "loading";
     onPress(): void;
   } | null;
+  keyboardVisible: boolean;
   ctrlArmed: boolean;
   onCtrlArmedChange(next: boolean): void;
 }
@@ -68,6 +70,7 @@ export function TerminalAccessoryBar({
   daemonId,
   theme,
   gitDiff,
+  keyboardVisible,
   ctrlArmed,
   onCtrlArmedChange,
 }: TerminalAccessoryBarProps) {
@@ -112,6 +115,17 @@ export function TerminalAccessoryBar({
 
   const handleCtrlToggle = () => {
     onCtrlArmedChange(!ctrlArmed);
+  };
+
+  const handleKeyboardToggle = () => {
+    onCtrlArmedChange(false);
+    if (keyboardVisible) {
+      terminalRef.current?.blur();
+      Keyboard.dismiss();
+      return;
+    }
+
+    terminalRef.current?.resumeInput();
   };
 
   // For tap keys: send on press (after release), consistent with modifier toggle.
@@ -238,6 +252,21 @@ export function TerminalAccessoryBar({
           />
         </TouchableOpacity>
 
+        <TouchableOpacity
+          accessibilityLabel={keyboardVisible ? "Hide keyboard" : "Show keyboard"}
+          accessibilityRole="button"
+          accessibilityState={{ selected: keyboardVisible }}
+          style={styles.keyboardBtn}
+          onPress={handleKeyboardToggle}
+          activeOpacity={0.75}
+        >
+          <Ionicons
+            name="keypad-outline"
+            size={16}
+            color={keyboardVisible ? chrome.accent : chrome.textMuted}
+          />
+        </TouchableOpacity>
+
         {SHORTCUT_KEYS.map((key) => {
           if (key.type === "modifier") {
             const active = ctrlArmed;
@@ -333,6 +362,13 @@ const styles = StyleSheet.create({
   },
   attachBtnDisabled: {
     opacity: 0.35,
+  },
+  keyboardBtn: {
+    width: 36,
+    height: 36,
+    marginRight: 2,
+    alignItems: "center",
+    justifyContent: "center",
   },
   gitDiffChip: {
     maxWidth: 220,

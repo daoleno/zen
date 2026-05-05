@@ -1,10 +1,13 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import {
+  ActivityIndicator,
   Alert,
   FlatList,
   KeyboardAvoidingView,
+  Linking,
   Modal,
   Platform,
+  ScrollView,
   StyleSheet,
   Text,
   TextInput,
@@ -50,6 +53,7 @@ import {
   filterAgentsByPreferredServers,
   groupAgentsByDirectory,
 } from '../../services/serverSelection';
+import type { SessionService } from '../../services/sessionServices';
 
 const STATUS_PRIORITY: Record<AgentStatus, number> = {
   failed: 0,
@@ -57,6 +61,11 @@ const STATUS_PRIORITY: Record<AgentStatus, number> = {
   unknown: 2,
   running: 3,
   done: 4,
+};
+
+type DiscoveredSessionService = SessionService & {
+  serverId: string;
+  serverName: string;
 };
 
 export default function InboxScreen() {
@@ -89,6 +98,10 @@ export default function InboxScreen() {
   const [createSheetVisible, setCreateSheetVisible] = useState(false);
   const [selectedCreateServerId, setSelectedCreateServerId] = useState<string | null>(null);
   const [creatingServerId, setCreatingServerId] = useState<string | null>(null);
+  const [serviceSheetVisible, setServiceSheetVisible] = useState(false);
+  const [sessionServices, setSessionServices] = useState<DiscoveredSessionService[]>([]);
+  const [servicesLoading, setServicesLoading] = useState(false);
+  const [servicesError, setServicesError] = useState<string | null>(null);
 
   // Context menu state
   const [menuAgent, setMenuAgent] = useState<Agent | null>(null);
@@ -311,6 +324,80 @@ export default function InboxScreen() {
     }
   };
 
+  const refreshSessionServices = async () => {
+    if (connectedServers.length === 0) {
+      setSessionServices([]);
+      setServicesError(null);
+      return;
+    }
+
+    setServicesLoading(true);
+    setServicesError(null);
+    try {
+      const results = await Promise.allSettled(
+        connectedServers.map(async (server) => {
+          const snapshot = await wsClient.listSessionServices(server.id);
+          return snapshot.services.map<DiscoveredSessionService>((service) => ({
+            ...service,
+            serverId: server.id,
+            serverName: server.name,
+          }));
+        }),
+      );
+
+      const services = results
+        .flatMap(result => result.status === 'fulfilled' ? result.value : [])
+        .sort((left, right) => {
+          if (left.serverName !== right.serverName) return left.serverName.localeCompare(right.serverName);
+          const leftProject = serviceProjectLabel(left);
+          const rightProject = serviceProjectLabel(right);
+          if (leftProject !== rightProject) return leftProject.localeCompare(rightProject);
+          return left.port - right.port;
+        });
+
+      const failures = results.filter(result => result.status === 'rejected');
+      setSessionServices(services);
+      setServicesError(
+        failures.length > 0
+          ? `${failures.length} daemon${failures.length === 1 ? '' : 's'} did not return services.`
+          : null,
+      );
+    } catch (error: any) {
+      setSessionServices([]);
+      setServicesError(error?.message || 'Failed to load services.');
+    } finally {
+      setServicesLoading(false);
+    }
+  };
+
+  const openSessionServices = () => {
+    if (connectedServers.length === 0) {
+      Alert.alert(
+        'Daemon unavailable',
+        'Connect to a daemon before viewing session services.',
+      );
+      return;
+    }
+    setServiceSheetVisible(true);
+    void refreshSessionServices();
+  };
+
+  const openServiceTerminal = (service: DiscoveredSessionService) => {
+    setServiceSheetVisible(false);
+    router.push({
+      pathname: '/terminal/[id]',
+      params: { id: service.agent_id, serverId: service.serverId },
+    });
+  };
+
+  const openServiceURL = async (url: string) => {
+    try {
+      await Linking.openURL(url);
+    } catch (error: any) {
+      Alert.alert('Could not open URL', error?.message || url);
+    }
+  };
+
   const openCreateTerminal = () => {
     if (connectedServers.length === 0) {
       Alert.alert(
@@ -460,6 +547,17 @@ export default function InboxScreen() {
         </View>
         <View style={styles.headerActions}>
           <TouchableOpacity
+            style={[styles.serviceButton, !anyConnected && { opacity: 0.5 }]}
+            onPress={openSessionServices}
+            activeOpacity={0.82}
+          >
+            <Ionicons
+              name="globe-outline"
+              size={18}
+              color={anyConnected ? colors.accent : colors.disabledText}
+            />
+          </TouchableOpacity>
+          <TouchableOpacity
             style={[styles.addButton, creatingServerId && { opacity: 0.5 }]}
             onPress={openCreateTerminal}
             disabled={!!creatingServerId}
@@ -553,6 +651,118 @@ export default function InboxScreen() {
           windowSize={21}
         />
       )}
+
+      <Modal
+        visible={serviceSheetVisible}
+        transparent
+        animationType="slide"
+        onRequestClose={() => setServiceSheetVisible(false)}
+      >
+        <View style={styles.serviceModalRoot}>
+          <TouchableOpacity
+            style={styles.menuBackdrop}
+            activeOpacity={1}
+            onPress={() => setServiceSheetVisible(false)}
+          />
+          <View style={styles.serviceSheet}>
+            <View style={styles.serviceSheetHeader}>
+              <View style={styles.serviceSheetTitleBlock}>
+                <Text style={styles.serviceSheetTitle}>Services</Text>
+                <Text style={styles.serviceSheetMeta}>
+                  {connectedServers.length} daemon{connectedServers.length === 1 ? '' : 's'} · {sessionServices.length} port{sessionServices.length === 1 ? '' : 's'}
+                </Text>
+              </View>
+              <TouchableOpacity
+                style={styles.serviceIconButton}
+                onPress={() => void refreshSessionServices()}
+                disabled={servicesLoading}
+                activeOpacity={0.82}
+              >
+                {servicesLoading ? (
+                  <ActivityIndicator size="small" color={colors.accent} />
+                ) : (
+                  <Ionicons name="refresh" size={17} color={colors.textSecondary} />
+                )}
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={styles.serviceIconButton}
+                onPress={() => setServiceSheetVisible(false)}
+                activeOpacity={0.82}
+              >
+                <Ionicons name="close" size={19} color={colors.textSecondary} />
+              </TouchableOpacity>
+            </View>
+
+            {servicesError ? (
+              <Text style={styles.serviceError}>{servicesError}</Text>
+            ) : null}
+
+            {servicesLoading && sessionServices.length === 0 ? (
+              <View style={styles.serviceLoading}>
+                <ActivityIndicator color={colors.accent} />
+              </View>
+            ) : sessionServices.length === 0 ? (
+              <View style={styles.serviceEmpty}>
+                <Ionicons name="radio-outline" size={22} color={colors.textSecondary} />
+                <Text style={styles.serviceEmptyText}>No listening services found.</Text>
+              </View>
+            ) : (
+              <ScrollView
+                style={styles.serviceScroll}
+                contentContainerStyle={styles.serviceList}
+                showsVerticalScrollIndicator={false}
+              >
+                {sessionServices.map(service => (
+                  <View key={`${service.serverId}:${service.id}`} style={styles.serviceItem}>
+                    <TouchableOpacity
+                      style={styles.serviceItemHeader}
+                      onPress={() => openServiceTerminal(service)}
+                      activeOpacity={0.82}
+                    >
+                      <View style={styles.serviceMain}>
+                        <Text style={styles.serviceTitle} numberOfLines={1}>
+                          {serviceProjectLabel(service)}
+                        </Text>
+                        <Text style={styles.servicePort}>:{service.port}</Text>
+                      </View>
+                      <Ionicons name="terminal-outline" size={16} color={colors.textSecondary} />
+                    </TouchableOpacity>
+                    <Text style={styles.serviceMeta} numberOfLines={1}>
+                      {service.serverName} · {shortAgentLabel(service.agent_name)}
+                    </Text>
+                    <Text style={styles.serviceProcess} numberOfLines={1}>
+                      {shortProcessLabel(service.process || service.command || '')}
+                    </Text>
+                    <View style={styles.serviceURLRow}>
+                      {(service.urls ?? []).length > 0 ? (
+                        (service.urls ?? []).map(item => (
+                          <TouchableOpacity
+                            key={item.url}
+                            style={styles.serviceURLChip}
+                            onPress={() => void openServiceURL(item.url)}
+                            activeOpacity={0.82}
+                          >
+                            <Text style={styles.serviceURLLabel}>{item.label}</Text>
+                            <Text style={styles.serviceURLText} numberOfLines={1}>
+                              {item.address}:{service.port}
+                            </Text>
+                          </TouchableOpacity>
+                        ))
+                      ) : (
+                        <View style={styles.serviceLocalChip}>
+                          <Text style={styles.serviceLocalText}>
+                            {(service.binds ?? []).length > 0 ? (service.binds ?? []).join(', ') : 'localhost'}:{service.port}
+                          </Text>
+                        </View>
+                      )}
+                    </View>
+                  </View>
+                ))}
+              </ScrollView>
+            )}
+          </View>
+        </View>
+      </Modal>
 
       <NewTerminalSheet
         visible={createSheetVisible}
@@ -754,6 +964,23 @@ function lastPathSegment(value?: string): string {
   return parts[parts.length - 1] || trimmed;
 }
 
+function serviceProjectLabel(service: Pick<DiscoveredSessionService, 'project' | 'cwd' | 'agent_name'>): string {
+  return service.project?.trim() || lastPathSegment(service.cwd) || shortAgentLabel(service.agent_name) || 'service';
+}
+
+function shortAgentLabel(value?: string): string {
+  const trimmed = value?.trim() || '';
+  return trimmed.replace(/\s+\([^)]+\)\s*$/, '') || trimmed;
+}
+
+function shortProcessLabel(value: string): string {
+  const trimmed = value.replace(/\s+/g, ' ').trim();
+  if (!trimmed) {
+    return 'process';
+  }
+  return trimmed.length > 96 ? `${trimmed.slice(0, 93)}...` : trimmed;
+}
+
 function createStyles(colors: typeof Colors) {
   return StyleSheet.create({
   container: {
@@ -825,6 +1052,16 @@ function createStyles(colors: typeof Colors) {
     alignItems: 'center',
     justifyContent: 'center',
     backgroundColor: colors.surfaceActive,
+  },
+  serviceButton: {
+    width: 34,
+    height: 34,
+    borderRadius: 11,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: colors.surfaceSubtle,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: colors.borderSubtle,
   },
   viewToggle: {
     flexDirection: 'row',
@@ -1028,6 +1265,183 @@ function createStyles(colors: typeof Colors) {
   },
   emptyActionTextPrimary: {
     color: colors.textOnAccent,
+  },
+
+  // Services sheet
+  serviceModalRoot: {
+    flex: 1,
+    justifyContent: 'flex-end',
+  },
+  serviceSheet: {
+    maxHeight: '78%',
+    marginHorizontal: 10,
+    marginBottom: 20,
+    borderRadius: 16,
+    backgroundColor: colors.modalSurface,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: colors.border,
+    overflow: 'hidden',
+  },
+  serviceSheetHeader: {
+    minHeight: 58,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    paddingHorizontal: 16,
+    paddingVertical: 12,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: colors.borderSubtle,
+  },
+  serviceSheetTitleBlock: {
+    flex: 1,
+    minWidth: 0,
+  },
+  serviceSheetTitle: {
+    color: colors.textPrimary,
+    fontSize: 16,
+    lineHeight: 21,
+    fontFamily: Typography.uiFontMedium,
+  },
+  serviceSheetMeta: {
+    marginTop: 2,
+    color: colors.textSecondary,
+    fontSize: 11,
+    lineHeight: 14,
+    fontFamily: Typography.uiFont,
+    opacity: 0.62,
+  },
+  serviceIconButton: {
+    width: 34,
+    height: 34,
+    borderRadius: 10,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: colors.surfaceSubtle,
+  },
+  serviceError: {
+    paddingHorizontal: 16,
+    paddingTop: 10,
+    color: colors.dangerText,
+    fontSize: 12,
+    lineHeight: 16,
+    fontFamily: Typography.uiFont,
+  },
+  serviceLoading: {
+    minHeight: 160,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  serviceEmpty: {
+    minHeight: 180,
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 10,
+  },
+  serviceEmptyText: {
+    color: colors.textSecondary,
+    fontSize: 13,
+    lineHeight: 18,
+    fontFamily: Typography.uiFont,
+  },
+  serviceScroll: {
+    maxHeight: 520,
+  },
+  serviceList: {
+    padding: 12,
+    gap: 10,
+  },
+  serviceItem: {
+    borderRadius: 12,
+    backgroundColor: colors.surfaceSubtle,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: colors.borderSubtle,
+    padding: 12,
+  },
+  serviceItemHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    minHeight: 24,
+  },
+  serviceMain: {
+    flex: 1,
+    minWidth: 0,
+    flexDirection: 'row',
+    alignItems: 'baseline',
+  },
+  serviceTitle: {
+    flexShrink: 1,
+    color: colors.textPrimary,
+    fontSize: 14,
+    lineHeight: 19,
+    fontFamily: Typography.uiFontMedium,
+  },
+  servicePort: {
+    color: colors.promptYellow,
+    fontSize: 13,
+    lineHeight: 18,
+    fontFamily: Typography.terminalFontBold,
+    marginLeft: 2,
+  },
+  serviceMeta: {
+    marginTop: 2,
+    color: colors.textSecondary,
+    fontSize: 11,
+    lineHeight: 15,
+    fontFamily: Typography.uiFont,
+    opacity: 0.6,
+  },
+  serviceProcess: {
+    marginTop: 5,
+    color: colors.textSecondary,
+    fontSize: 11,
+    lineHeight: 15,
+    fontFamily: Typography.terminalFont,
+    opacity: 0.78,
+  },
+  serviceURLRow: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 8,
+    marginTop: 10,
+  },
+  serviceURLChip: {
+    maxWidth: '100%',
+    minHeight: 34,
+    borderRadius: 10,
+    paddingHorizontal: 10,
+    paddingVertical: 7,
+    backgroundColor: colors.surfaceActive,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: colors.borderStrong,
+  },
+  serviceURLLabel: {
+    color: colors.accent,
+    fontSize: 10,
+    lineHeight: 12,
+    fontFamily: Typography.uiFontMedium,
+    textTransform: 'uppercase',
+  },
+  serviceURLText: {
+    marginTop: 1,
+    color: colors.textPrimary,
+    fontSize: 12,
+    lineHeight: 15,
+    fontFamily: Typography.terminalFont,
+  },
+  serviceLocalChip: {
+    minHeight: 32,
+    borderRadius: 10,
+    paddingHorizontal: 10,
+    paddingVertical: 8,
+    backgroundColor: colors.surfacePressed,
+  },
+  serviceLocalText: {
+    color: colors.textSecondary,
+    fontSize: 12,
+    lineHeight: 15,
+    fontFamily: Typography.terminalFont,
+    opacity: 0.72,
   },
 
   // Context menu

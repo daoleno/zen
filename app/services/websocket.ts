@@ -8,6 +8,7 @@ import type {
   GitRepoFileContentPayload,
   GitDiffStatusSnapshot,
 } from "./gitDiff";
+import type { SessionService, SessionServiceSnapshot } from "./sessionServices";
 
 type MessageHandler = (data: any) => void;
 
@@ -788,6 +789,52 @@ class MultiServerWebSocketClient {
     this.send(serverId, { type: "list_agent_sessions" });
   }
 
+  listSessionServices(serverId: string): Promise<SessionServiceSnapshot> {
+    const requestId = `${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
+
+    return new Promise((resolve, reject) => {
+      const cleanup = () => {
+        if (timer) clearTimeout(timer);
+        this.off("session_service_list", handleList);
+        this.off("error", handleError);
+      };
+
+      const handleList = (payload: any) => {
+        if (payload.serverId !== serverId || payload.request_id !== requestId) {
+          return;
+        }
+        cleanup();
+        resolve({
+          generated_at: payload.generated_at,
+          interfaces: Array.isArray(payload.interfaces) ? payload.interfaces : [],
+          services: Array.isArray(payload.services)
+            ? payload.services.map(normalizeSessionService)
+            : [],
+        });
+      };
+
+      const handleError = (payload: any) => {
+        if (payload.serverId !== serverId || payload.request_id !== requestId) {
+          return;
+        }
+        cleanup();
+        reject(new Error(payload.message || "Failed to load session services."));
+      };
+
+      const timer = setTimeout(() => {
+        cleanup();
+        reject(new Error("Timed out while loading session services."));
+      }, 10000);
+
+      this.on("session_service_list", handleList);
+      this.on("error", handleError);
+      this.send(serverId, {
+        type: "list_session_services",
+        request_id: requestId,
+      });
+    });
+  }
+
   // ── Issues ───────────────────────────────────────────
 
   listIssues(serverId: string) {
@@ -980,6 +1027,26 @@ class MultiServerWebSocketClient {
     const handlers = this.handlers.get(type) || [];
     handlers.forEach((handler) => handler(data));
   }
+}
+
+function normalizeSessionService(value: any): SessionService {
+  const service = value && typeof value === "object" ? value : {};
+  return {
+    ...service,
+    id: typeof service.id === "string" ? service.id : "",
+    agent_id: typeof service.agent_id === "string" ? service.agent_id : "",
+    agent_name: typeof service.agent_name === "string" ? service.agent_name : "",
+    project: typeof service.project === "string" ? service.project : undefined,
+    cwd: typeof service.cwd === "string" ? service.cwd : undefined,
+    command: typeof service.command === "string" ? service.command : undefined,
+    process: typeof service.process === "string" ? service.process : undefined,
+    pid: typeof service.pid === "number" ? service.pid : 0,
+    port: typeof service.port === "number" ? service.port : 0,
+    protocol: typeof service.protocol === "string" ? service.protocol : "tcp",
+    binds: Array.isArray(service.binds) ? service.binds : [],
+    urls: Array.isArray(service.urls) ? service.urls : [],
+    local_only: Boolean(service.local_only),
+  };
 }
 
 function toConnectionMeta(server: StoredServer): ConnectionMeta {
