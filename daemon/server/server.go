@@ -69,7 +69,7 @@ func New(authManager *auth.Manager, w *watcher.Watcher, pusher *push.Client, sc 
 	}
 	if workStore != nil {
 		srv.workSubID, srv.workSub = workStore.Subscribe()
-		srv.workLog = work.NewSessionLogger(workStore)
+		srv.workLog = work.NewSessionLogger(workStore, work.NewAgentCLIDigestProvider(execs))
 	}
 	return srv
 }
@@ -681,9 +681,17 @@ func (s *Server) handleWriteWorkItem(conn *websocket.Conn, raw clientMessage) {
 			Done:         existing.Frontmatter.Done,
 			Started:      existing.Frontmatter.Started,
 			Status:       existing.Frontmatter.Status,
+			Title:        existing.Frontmatter.Title,
+			Summary:      existing.Frontmatter.Summary,
+			Progress:     existing.Frontmatter.Progress,
+			Next:         existing.Frontmatter.Next,
 			AgentSession: existing.Frontmatter.AgentSession,
 			Cwd:          existing.Frontmatter.Cwd,
 			Command:      existing.Frontmatter.Command,
+			AIProvider:   existing.Frontmatter.AIProvider,
+			AIUpdated:    existing.Frontmatter.AIUpdated,
+			AIHash:       existing.Frontmatter.AIHash,
+			AIError:      existing.Frontmatter.AIError,
 			Extra:        existing.Frontmatter.Extra,
 		}
 	}
@@ -1089,6 +1097,20 @@ func applyFrontmatterOverrides(fm *work.Frontmatter, raw map[string]interface{})
 			if s, ok := value.(string); ok {
 				fm.Status = strings.TrimSpace(s)
 			}
+		case "title":
+			if s, ok := value.(string); ok {
+				fm.Title = strings.TrimSpace(s)
+			}
+		case "summary":
+			if s, ok := value.(string); ok {
+				fm.Summary = strings.TrimSpace(s)
+			}
+		case "progress":
+			fm.Progress = parseStringList(value)
+		case "next":
+			if s, ok := value.(string); ok {
+				fm.Next = strings.TrimSpace(s)
+			}
 		case "agent_session":
 			if s, ok := value.(string); ok {
 				fm.AgentSession = s
@@ -1100,6 +1122,24 @@ func applyFrontmatterOverrides(fm *work.Frontmatter, raw map[string]interface{})
 		case "command":
 			if s, ok := value.(string); ok {
 				fm.Command = strings.TrimSpace(s)
+			}
+		case "ai_provider":
+			if s, ok := value.(string); ok {
+				fm.AIProvider = strings.TrimSpace(s)
+			}
+		case "ai_updated":
+			if parsed, ok := parseRFC3339Value(value); ok {
+				fm.AIUpdated = &parsed
+			} else {
+				fm.AIUpdated = nil
+			}
+		case "ai_hash":
+			if s, ok := value.(string); ok {
+				fm.AIHash = strings.TrimSpace(s)
+			}
+		case "ai_error":
+			if s, ok := value.(string); ok {
+				fm.AIError = strings.TrimSpace(s)
 			}
 		case "extra":
 			if nested, ok := value.(map[string]interface{}); ok {
@@ -1132,6 +1172,23 @@ func parseRFC3339Value(value interface{}) (time.Time, bool) {
 		return time.Time{}, false
 	}
 	return time.Time{}, false
+}
+
+func parseStringList(value interface{}) []string {
+	raw, ok := value.([]interface{})
+	if !ok {
+		if typed, ok := value.([]string); ok {
+			return typed
+		}
+		return nil
+	}
+	out := make([]string, 0, len(raw))
+	for _, item := range raw {
+		if s, ok := item.(string); ok && strings.TrimSpace(s) != "" {
+			out = append(out, strings.TrimSpace(s))
+		}
+	}
+	return out
 }
 
 func buildWorkFilename(now time.Time, body, fallbackID string) string {

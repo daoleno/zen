@@ -14,17 +14,14 @@ import { Ionicons } from "@expo/vector-icons";
 import { SafeAreaView, useSafeAreaInsets } from "react-native-safe-area-context";
 import { Colors, Radii, Spacing, Typography, useAppColors } from "../../constants/tokens";
 import { useWork, type WorkItem } from "../../store/work";
-import { useAgents } from "../../store/agents";
 import {
   WorkEditor,
-  type ActiveMention,
-  type WorkEditorHandle,
 } from "../../components/work/WorkEditor";
 import {
-  MentionPicker,
-  type MentionCandidate,
-} from "../../components/work/MentionPicker";
-import { relativeTime, workItemStatus } from "../../components/work/WorkRow";
+  relativeTime,
+  workItemStatus,
+  workItemTitle,
+} from "../../components/work/WorkRow";
 import { wsClient } from "../../services/websocket";
 
 const AUTOSAVE_DELAY_MS = 600;
@@ -34,12 +31,6 @@ function workItemKey(serverId: string, id: string) {
   return `${serverId}:${id}`;
 }
 
-function agentRole(command?: string) {
-  const first = (command || "").trim().split(/\s+/)[0] || "agent";
-  const parts = first.split("/");
-  return parts[parts.length - 1] || "agent";
-}
-
 export default function WorkDetailScreen() {
   const params = useLocalSearchParams<{ id?: string; serverId?: string }>();
   const router = useRouter();
@@ -47,19 +38,16 @@ export default function WorkDetailScreen() {
   const styles = useMemo(() => createStyles(colors), [colors]);
   const insets = useSafeAreaInsets();
   const { state } = useWork();
-  const { state: agentsState } = useAgents();
 
   const itemId = typeof params.id === "string" ? params.id : "";
   const serverId = typeof params.serverId === "string" ? params.serverId : "";
   const item = state.byKey[workItemKey(serverId, itemId)] as WorkItem | undefined;
 
-  const editorRef = useRef<WorkEditorHandle>(null);
   const [draftBody, setDraftBody] = useState(item?.body ?? "");
   const [baseMtime, setBaseMtime] = useState(item?.mtime ?? "");
   const [dirty, setDirty] = useState(false);
   const [remoteBanner, setRemoteBanner] = useState(false);
   const [saving, setSaving] = useState(false);
-  const [mention, setMention] = useState<ActiveMention | null>(null);
   const [menuOpen, setMenuOpen] = useState(false);
   const savingRef = useRef(false);
   const draftBodyRef = useRef(draftBody);
@@ -81,26 +69,6 @@ export default function WorkDetailScreen() {
       setRemoteBanner(true);
     }
   }, [baseMtime, dirty, draftBody, item]);
-
-  const candidates = useMemo<MentionCandidate[]>(() => {
-    if (!item) {
-      return [];
-    }
-    const roles = (state.executorsByServer[item.serverId] || []).map<MentionCandidate>(
-      (name) => ({ kind: "role", name }),
-    );
-    const sessions = agentsState.agents
-      .filter(
-        (agent) => agent.serverId === item.serverId && agent.project === item.project,
-      )
-      .map<MentionCandidate>((agent) => ({
-        kind: "session",
-        role: agentRole(agent.command),
-        sessionId: agent.id,
-        project: agent.project || item.project,
-      }));
-    return [...roles, ...sessions];
-  }, [agentsState.agents, item, state.executorsByServer]);
 
   const saveWorkItem = async (frontmatter = item?.frontmatter) => {
     if (!item || !serverId || !frontmatter) {
@@ -159,39 +127,6 @@ export default function WorkDetailScreen() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [dirty, draftBody, remoteBanner]);
 
-  const handleStart = async () => {
-    if (!item || !serverId) {
-      return;
-    }
-    const written = await saveWorkItem();
-    if (!written) {
-      return;
-    }
-    try {
-      await wsClient.startWorkItem(serverId, item.id);
-    } catch (error: any) {
-      Alert.alert("Start failed", error?.message || "Could not start this work item.");
-    }
-  };
-
-  const handleRerun = async () => {
-    if (!item || !serverId) {
-      return;
-    }
-    const written = await saveWorkItem();
-    if (!written) {
-      return;
-    }
-    try {
-      await wsClient.rerunWorkItem(serverId, item.id);
-    } catch (error: any) {
-      Alert.alert(
-        "Run failed",
-        error?.message || "Could not run this work item again.",
-      );
-    }
-  };
-
   const handleToggleDone = async () => {
     if (!item) {
       return;
@@ -229,10 +164,6 @@ export default function WorkDetailScreen() {
     ]);
   };
 
-  const handleSelectMention = (candidate: MentionCandidate) => {
-    editorRef.current?.insertMention(candidate);
-  };
-
   if (!item) {
     return (
       <SafeAreaView style={styles.emptyScreen} edges={["top"]}>
@@ -242,9 +173,7 @@ export default function WorkDetailScreen() {
   }
 
   const done = !!item.frontmatter.done;
-  const started = !!item.frontmatter.started;
-  const primaryLabel = started ? "Run again" : "Start";
-  const draftTitle = titleFromMarkdown(draftBody) || item.title || "Untitled work";
+  const draftTitle = workItemTitle(item) || titleFromMarkdown(draftBody) || "Untitled work";
   const status = workStatusInfo(item, colors);
   const updatedLabel = relativeTime(item.mtime || item.frontmatter.created);
 
@@ -319,29 +248,18 @@ export default function WorkDetailScreen() {
 
         <View style={styles.editorShell}>
           <WorkEditor
-            ref={editorRef}
             value={draftBody}
             onChange={(next) => {
               setDraftBody(next);
               setDirty(true);
             }}
-            onActiveMentionChange={setMention}
             onBlur={() => {
               if (dirty && !remoteBanner) {
                 void saveWorkItem();
               }
             }}
-            autoFocus
           />
         </View>
-
-        {mention ? (
-          <MentionPicker
-            candidates={candidates}
-            query={mention.query}
-            onSelect={handleSelectMention}
-          />
-        ) : null}
 
         <View style={[styles.footer, { paddingBottom: Math.max(insets.bottom, Spacing.md) }]}>
           <SaveState saving={saving} dirty={dirty} />
@@ -363,24 +281,6 @@ export default function WorkDetailScreen() {
                 color={colors.textPrimary}
               />
               <Text style={styles.secondaryButtonText}>{done ? "Reopen" : "Done"}</Text>
-            </Pressable>
-            <Pressable
-              onPress={() => {
-                void (started ? handleRerun() : handleStart());
-              }}
-              disabled={saving}
-              style={({ pressed }) => [
-                styles.primaryButton,
-                saving && styles.primaryButtonDisabled,
-                pressed && styles.primaryButtonPressed,
-              ]}
-            >
-              <Ionicons
-                name={started ? "refresh" : "play"}
-                size={14}
-                color={colors.textOnAccent}
-              />
-              <Text style={styles.primaryButtonText}>{primaryLabel}</Text>
             </Pressable>
           </View>
         </View>

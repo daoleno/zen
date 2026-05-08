@@ -73,7 +73,7 @@ export default function WorkScreen() {
           <Text style={styles.emptyGlyph}>▤</Text>
           <Text style={styles.emptyTitle}>No work logged</Text>
           <Text style={styles.emptyBody}>
-            Agent sessions will appear here after the daemon records them.
+            Agent sessions will appear here after the daemon reads them with AI.
           </Text>
         </View>
       ) : (
@@ -228,7 +228,7 @@ function sortWorkByTime(left: WorkItem, right: WorkItem): number {
 
 function workSummary(sections: WorkSection[]): string {
   if (sections.length === 0) {
-    return "daemon auto log";
+    return "AI work log";
   }
 
   const active = sections.reduce((sum, section) => sum + section.activeCount, 0);

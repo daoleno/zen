@@ -23,9 +23,17 @@ type Frontmatter struct {
 	Done         *time.Time             `yaml:"done,omitempty" json:"done,omitempty"`
 	Started      *time.Time             `yaml:"started,omitempty" json:"started,omitempty"`
 	Status       string                 `yaml:"status,omitempty" json:"status,omitempty"`
+	Title        string                 `yaml:"title,omitempty" json:"title,omitempty"`
+	Summary      string                 `yaml:"summary,omitempty" json:"summary,omitempty"`
+	Progress     []string               `yaml:"progress,omitempty" json:"progress,omitempty"`
+	Next         string                 `yaml:"next,omitempty" json:"next,omitempty"`
 	AgentSession string                 `yaml:"agent_session,omitempty" json:"agent_session,omitempty"`
 	Cwd          string                 `yaml:"cwd,omitempty" json:"cwd,omitempty"`
 	Command      string                 `yaml:"command,omitempty" json:"command,omitempty"`
+	AIProvider   string                 `yaml:"ai_provider,omitempty" json:"ai_provider,omitempty"`
+	AIUpdated    *time.Time             `yaml:"ai_updated,omitempty" json:"ai_updated,omitempty"`
+	AIHash       string                 `yaml:"ai_hash,omitempty" json:"ai_hash,omitempty"`
+	AIError      string                 `yaml:"ai_error,omitempty" json:"ai_error,omitempty"`
 	Extra        map[string]interface{} `yaml:"-" json:"extra,omitempty"`
 }
 
@@ -70,6 +78,13 @@ func cloneFrontmatter(fm Frontmatter) Frontmatter {
 	if fm.Started != nil {
 		started := *fm.Started
 		cp.Started = &started
+	}
+	if fm.Progress != nil {
+		cp.Progress = append([]string(nil), fm.Progress...)
+	}
+	if fm.AIUpdated != nil {
+		updated := *fm.AIUpdated
+		cp.AIUpdated = &updated
 	}
 	if fm.Extra != nil {
 		cp.Extra = make(map[string]interface{}, len(fm.Extra))

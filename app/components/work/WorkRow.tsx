@@ -65,6 +65,20 @@ export function relativeTime(iso: string): string {
   return `${Math.floor(diff / (86_400 * 30))}mo`;
 }
 
+export function workItemTitle(item: WorkItem): string {
+  return item.frontmatter.title?.trim() || item.title || "Analyzing work session";
+}
+
+export function workItemSummary(item: WorkItem): string {
+  if (item.frontmatter.summary?.trim()) {
+    return item.frontmatter.summary.trim();
+  }
+  if (item.frontmatter.ai_error?.trim()) {
+    return "AI digest unavailable. The daemon will retry when this session changes.";
+  }
+  return "Waiting for AI digest.";
+}
+
 export function WorkRow({ item }: { item: WorkItem }) {
   const router = useRouter();
   const colors = useAppColors();
@@ -72,9 +86,12 @@ export function WorkRow({ item }: { item: WorkItem }) {
   const { glyph, color, label } = statusGlyph(item, colors);
   const status = workItemStatus(item);
   const done = status === "done";
-  const showStatus = status !== "queued";
   const timeSource = item.mtime || item.frontmatter.created;
-  const mentionCount = item.mentions.length;
+  const title = workItemTitle(item);
+  const summary = workItemSummary(item);
+  const next = item.frontmatter.next?.trim();
+  const provider = item.frontmatter.ai_provider?.trim();
+  const time = relativeTime(timeSource);
 
   return (
     <Pressable
@@ -86,25 +103,31 @@ export function WorkRow({ item }: { item: WorkItem }) {
       }
       style={({ pressed }) => [styles.row, pressed && styles.rowPressed]}
     >
-      <Text style={[styles.glyph, { color }]}>{glyph}</Text>
+      <View style={[styles.statusRail, { backgroundColor: color }]} />
       <View style={styles.copy}>
+        <View style={styles.topLine}>
+          <View style={[styles.statusPill, { borderColor: color }]}>
+            <Text style={[styles.statusGlyph, { color }]}>{glyph}</Text>
+            <Text style={[styles.statusLabel, { color }]}>{label}</Text>
+          </View>
+          {provider ? <Text style={styles.provider}>{provider}</Text> : null}
+          {time ? <Text style={styles.time}>{time}</Text> : null}
+        </View>
         <Text
           style={[styles.title, done && styles.titleDone]}
-          numberOfLines={1}
+          numberOfLines={2}
         >
-          {item.title || "(untitled work)"}
+          {title}
         </Text>
-        {showStatus || mentionCount > 0 ? (
-          <View style={styles.metaLine}>
-            {showStatus ? <Text style={[styles.status, { color }]}>{label}</Text> : null}
-            {showStatus && mentionCount > 0 ? <Text style={styles.metaDot}>·</Text> : null}
-            {mentionCount > 0 ? (
-              <Text style={styles.meta}>@{mentionCount}</Text>
-            ) : null}
-          </View>
+        <Text style={styles.summary} numberOfLines={2}>
+          {summary}
+        </Text>
+        {next ? (
+          <Text style={styles.next} numberOfLines={1}>
+            Next: {next}
+          </Text>
         ) : null}
       </View>
-      <Text style={styles.time}>{relativeTime(timeSource)}</Text>
     </Pressable>
   );
 }
@@ -113,10 +136,10 @@ function createStyles(colors: typeof Colors) {
   return StyleSheet.create({
   row: {
     flexDirection: "row",
-    alignItems: "center",
-    gap: 10,
-    minHeight: 40,
-    paddingVertical: 6,
+    alignItems: "stretch",
+    gap: 11,
+    minHeight: 86,
+    paddingVertical: 10,
     backgroundColor: colors.bgPrimary,
     borderBottomWidth: StyleSheet.hairlineWidth,
     borderBottomColor: colors.borderSubtle,
@@ -124,64 +147,85 @@ function createStyles(colors: typeof Colors) {
   rowPressed: {
     backgroundColor: colors.surfacePressed,
   },
-  glyph: {
-    fontFamily: Typography.terminalFontBold,
-    fontSize: 10,
-    lineHeight: 18,
-    textAlign: "center",
-    width: 16,
-    opacity: 0.88,
+  statusRail: {
+    width: 3,
+    borderRadius: 2,
+    opacity: 0.82,
   },
   copy: {
     flex: 1,
     minWidth: 0,
   },
+  topLine: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 7,
+    minHeight: 18,
+    marginBottom: 4,
+  },
+  statusPill: {
+    height: 18,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 4,
+    paddingHorizontal: 6,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderRadius: 9,
+    backgroundColor: colors.surfaceSubtle,
+  },
+  statusGlyph: {
+    fontFamily: Typography.terminalFontBold,
+    fontSize: 9,
+    lineHeight: 12,
+  },
+  statusLabel: {
+    fontFamily: Typography.terminalFont,
+    fontSize: 9,
+    lineHeight: 12,
+    textTransform: "uppercase",
+  },
+  provider: {
+    color: colors.textSecondary,
+    fontFamily: Typography.terminalFont,
+    fontSize: 10,
+    lineHeight: 13,
+    opacity: 0.48,
+  },
   title: {
     color: colors.textPrimary,
     fontFamily: Typography.uiFontMedium,
-    fontSize: 13,
-    lineHeight: 17,
-    opacity: 0.92,
+    fontSize: 14,
+    lineHeight: 19,
+    opacity: 0.94,
   },
   titleDone: {
     color: colors.textSecondary,
     textDecorationLine: "line-through",
     opacity: 0.62,
   },
-  metaLine: {
-    marginTop: 1,
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 5,
-  },
-  status: {
-    fontFamily: Typography.terminalFont,
-    fontSize: 10,
-    lineHeight: 13,
-    opacity: 0.78,
-  },
-  metaDot: {
-    color: colors.textSecondary,
-    fontFamily: Typography.terminalFont,
-    fontSize: 10,
-    lineHeight: 13,
-    opacity: 0.35,
-  },
-  meta: {
+  summary: {
+    marginTop: 4,
     color: colors.textSecondary,
     fontFamily: Typography.uiFont,
-    fontSize: 10,
-    lineHeight: 13,
-    opacity: 0.5,
+    fontSize: 12,
+    lineHeight: 17,
+    opacity: 0.76,
+  },
+  next: {
+    marginTop: 5,
+    color: colors.textSecondary,
+    fontFamily: Typography.uiFont,
+    fontSize: 11,
+    lineHeight: 15,
+    opacity: 0.54,
   },
   time: {
     color: colors.textSecondary,
     fontFamily: Typography.uiFont,
-    fontSize: 11,
-    lineHeight: 14,
-    minWidth: 26,
-    textAlign: "right",
-    opacity: 0.44,
+    fontSize: 10,
+    lineHeight: 13,
+    marginLeft: "auto",
+    opacity: 0.48,
   },
   });
 }

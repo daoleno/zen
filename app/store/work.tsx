@@ -6,9 +6,17 @@ export type Frontmatter = {
   done?: string | null;
   started?: string | null;
   status?: string;
+  title?: string;
+  summary?: string;
+  progress?: string[];
+  next?: string;
   agent_session?: string;
   cwd?: string;
   command?: string;
+  ai_provider?: string;
+  ai_updated?: string | null;
+  ai_hash?: string;
+  ai_error?: string;
   extra?: Record<string, unknown>;
   [key: string]: unknown;
 };
@@ -134,6 +142,21 @@ function normalizeWorkItem(
         typeof frontmatter.status === "string"
           ? frontmatter.status.trim()
           : undefined,
+      title:
+        typeof frontmatter.title === "string"
+          ? frontmatter.title.trim()
+          : undefined,
+      summary:
+        typeof frontmatter.summary === "string"
+          ? frontmatter.summary.trim()
+          : undefined,
+      progress: Array.isArray(frontmatter.progress)
+        ? frontmatter.progress.filter((item): item is string => typeof item === "string")
+        : undefined,
+      next:
+        typeof frontmatter.next === "string"
+          ? frontmatter.next.trim()
+          : undefined,
       agent_session:
         typeof frontmatter.agent_session === "string"
           ? frontmatter.agent_session
@@ -143,6 +166,22 @@ function normalizeWorkItem(
       command:
         typeof frontmatter.command === "string"
           ? frontmatter.command.trim()
+          : undefined,
+      ai_provider:
+        typeof frontmatter.ai_provider === "string"
+          ? frontmatter.ai_provider.trim()
+          : undefined,
+      ai_updated:
+        typeof frontmatter.ai_updated === "string"
+          ? frontmatter.ai_updated
+          : frontmatter.ai_updated ?? null,
+      ai_hash:
+        typeof frontmatter.ai_hash === "string"
+          ? frontmatter.ai_hash.trim()
+          : undefined,
+      ai_error:
+        typeof frontmatter.ai_error === "string"
+          ? frontmatter.ai_error.trim()
           : undefined,
     },
     mentions: Array.isArray(raw.mentions) ? raw.mentions : [],

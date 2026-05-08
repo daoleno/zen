@@ -88,9 +88,17 @@ func decodeFrontmatter(fm string) (Frontmatter, map[string]interface{}, error) {
 		"done":          {},
 		"started":       {},
 		"status":        {},
+		"title":         {},
+		"summary":       {},
+		"progress":      {},
+		"next":          {},
 		"agent_session": {},
 		"cwd":           {},
 		"command":       {},
+		"ai_provider":   {},
+		"ai_updated":    {},
+		"ai_hash":       {},
+		"ai_error":      {},
 	}
 	for key, value := range raw {
 		if _, ok := known[key]; ok {
@@ -160,6 +168,18 @@ func SerializeItem(iss *Item) ([]byte, error) {
 	if iss.Frontmatter.Status != "" {
 		out["status"] = iss.Frontmatter.Status
 	}
+	if iss.Frontmatter.Title != "" {
+		out["title"] = iss.Frontmatter.Title
+	}
+	if iss.Frontmatter.Summary != "" {
+		out["summary"] = iss.Frontmatter.Summary
+	}
+	if len(iss.Frontmatter.Progress) > 0 {
+		out["progress"] = iss.Frontmatter.Progress
+	}
+	if iss.Frontmatter.Next != "" {
+		out["next"] = iss.Frontmatter.Next
+	}
 	if iss.Frontmatter.AgentSession != "" {
 		out["agent_session"] = iss.Frontmatter.AgentSession
 	}
@@ -168,6 +188,18 @@ func SerializeItem(iss *Item) ([]byte, error) {
 	}
 	if iss.Frontmatter.Command != "" {
 		out["command"] = iss.Frontmatter.Command
+	}
+	if iss.Frontmatter.AIProvider != "" {
+		out["ai_provider"] = iss.Frontmatter.AIProvider
+	}
+	if iss.Frontmatter.AIUpdated != nil {
+		out["ai_updated"] = iss.Frontmatter.AIUpdated.Format(time.RFC3339)
+	}
+	if iss.Frontmatter.AIHash != "" {
+		out["ai_hash"] = iss.Frontmatter.AIHash
+	}
+	if iss.Frontmatter.AIError != "" {
+		out["ai_error"] = iss.Frontmatter.AIError
 	}
 	for key, value := range iss.Frontmatter.Extra {
 		out[key] = value
