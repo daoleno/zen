@@ -551,7 +551,7 @@ func (c *Collector) collectCodexStats(home string) (map[string]codexDailyEntry, 
 	}
 
 	out, err := exec.Command(sqlite3, "-json", dbPath,
-		"SELECT id, cwd, model, tokens_used, created_at, updated_at, rollout_path FROM threads WHERE tokens_used > 0").Output()
+		"SELECT id, cwd, model, rollout_path FROM threads WHERE tokens_used > 0").Output()
 	if err != nil {
 		log.Printf("[stats] sqlite3 query failed: %v", err)
 		return daily, modelsByDate, projectsByDate
@@ -561,9 +561,6 @@ func (c *Collector) collectCodexStats(home string) (map[string]codexDailyEntry, 
 		ID          string `json:"id"`
 		Cwd         string `json:"cwd"`
 		Model       string `json:"model"`
-		TokensUsed  int64  `json:"tokens_used"`
-		CreatedAt   int64  `json:"created_at"`
-		UpdatedAt   int64  `json:"updated_at"`
 		RolloutPath string `json:"rollout_path"`
 	}
 	if err := json.Unmarshal(out, &threads); err != nil {
@@ -571,6 +568,8 @@ func (c *Collector) collectCodexStats(home string) (map[string]codexDailyEntry, 
 		return daily, modelsByDate, projectsByDate
 	}
 
+	skipped := 0
+	var skippedExamples []string
 	for _, t := range threads {
 		modelID := t.Model
 		if modelID == "" {
@@ -583,16 +582,19 @@ func (c *Collector) collectCodexStats(home string) (map[string]codexDailyEntry, 
 
 		usageByDate, err := readCodexUsageByDate(t.RolloutPath, time.Local)
 		if err != nil || len(usageByDate) == 0 {
-			fallbackDate := dateFromUnixTimestamp(t.UpdatedAt)
-			if fallbackDate == "" {
-				fallbackDate = dateFromUnixTimestamp(t.CreatedAt)
+			skipped++
+			if len(skippedExamples) < 3 {
+				reason := "no usage by date"
+				if err != nil {
+					reason = err.Error()
+				}
+				threadID := t.ID
+				if threadID == "" {
+					threadID = t.RolloutPath
+				}
+				skippedExamples = append(skippedExamples, fmt.Sprintf("%s (%s)", threadID, reason))
 			}
-			usageByDate = map[string]codexUsage{
-				fallbackDate: {
-					totalTokens: t.TokensUsed,
-					inputTokens: t.TokensUsed,
-				},
-			}
+			continue
 		}
 
 		for date, usage := range usageByDate {
@@ -645,6 +647,13 @@ func (c *Collector) collectCodexStats(home string) (map[string]codexDailyEntry, 
 			p.cost += computeCost(modelID, usage.inputTokens, usage.outputTokens, usage.reasoningTokens, usage.cacheRead, 0)
 			p.sessions++
 		}
+	}
+	if skipped > 0 {
+		detail := ""
+		if len(skippedExamples) > 0 {
+			detail = ": " + strings.Join(skippedExamples, "; ")
+		}
+		log.Printf("[stats] skipped %d Codex threads without parsable token_count rollout%s", skipped, detail)
 	}
 
 	return daily, modelsByDate, projectsByDate

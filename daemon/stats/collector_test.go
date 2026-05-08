@@ -3,6 +3,7 @@ package stats
 import (
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -66,6 +67,43 @@ func TestCollectorSmoke(t *testing.T) {
 		if i < 5 || i >= len(all.Days)-3 {
 			fmt.Printf("  %s: $%.2f %d sess\n", d.Date, d.Cost, d.Sessions)
 		}
+	}
+}
+
+func TestCollectCodexStatsSkipsUnparsableRollouts(t *testing.T) {
+	sqlite3, err := exec.LookPath("sqlite3")
+	if err != nil {
+		t.Skip("sqlite3 not found")
+	}
+
+	home := t.TempDir()
+	codexDir := filepath.Join(home, ".codex")
+	if err := os.MkdirAll(codexDir, 0o755); err != nil {
+		t.Fatalf("mkdir codex dir: %v", err)
+	}
+
+	dbPath := filepath.Join(codexDir, "state_5.sqlite")
+	sql := `
+CREATE TABLE threads (
+	id TEXT,
+	cwd TEXT,
+	model TEXT,
+	tokens_used INTEGER,
+	created_at INTEGER,
+	updated_at INTEGER,
+	rollout_path TEXT
+);
+INSERT INTO threads (id, cwd, model, tokens_used, created_at, updated_at, rollout_path)
+VALUES ('bad-thread', '/tmp/onlora', 'gpt-5.5', 362727822, 1710000000, 1710003600, '/tmp/missing-rollout.jsonl');
+`
+	if out, err := exec.Command(sqlite3, dbPath, sql).CombinedOutput(); err != nil {
+		t.Fatalf("create sqlite fixture: %v\n%s", err, out)
+	}
+
+	c := &Collector{}
+	daily, modelsByDate, projectsByDate := c.collectCodexStats(home)
+	if len(daily) != 0 || len(modelsByDate) != 0 || len(projectsByDate) != 0 {
+		t.Fatalf("unparsable rollout should not create synthetic usage: daily=%v models=%v projects=%v", daily, modelsByDate, projectsByDate)
 	}
 }
 
