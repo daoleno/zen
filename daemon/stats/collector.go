@@ -715,7 +715,7 @@ func readCodexUsageByDate(path string, loc *time.Location) (map[string]codexUsag
 	found := false
 
 	scanner := bufio.NewScanner(f)
-	scanner.Buffer(make([]byte, 1024*1024), 1024*1024)
+	scanner.Buffer(make([]byte, 1024*1024), 16*1024*1024)
 	for scanner.Scan() {
 		var line tokenCountLine
 		if err := json.Unmarshal(scanner.Bytes(), &line); err != nil {

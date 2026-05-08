@@ -1023,6 +1023,8 @@ class MultiServerWebSocketClient {
       serverId,
       serverName: meta?.serverName || serverId,
       serverUrl: meta?.serverUrl || "",
+      daemonId: meta?.daemonId || "",
+      daemonPublicKey: meta?.daemonPublicKey || "",
     };
     const handlers = this.handlers.get(type) || [];
     handlers.forEach((handler) => handler(data));

@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -211,6 +212,27 @@ func TestReadCodexUsageByDateSplitsAcrossLocalDays(t *testing.T) {
 	day2 := byDate["2026-04-06"]
 	if day2.totalTokens != 68 || day2.inputTokens != 40 || day2.outputTokens != 8 || day2.reasoningTokens != 2 || day2.cacheRead != 20 {
 		t.Fatalf("unexpected day2 usage: %+v", day2)
+	}
+}
+
+func TestReadCodexUsageHandlesLargeRolloutLines(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "rollout.jsonl")
+	content := `{"timestamp":"2026-05-08T01:00:00.000Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":100,"cached_input_tokens":20,"output_tokens":10,"reasoning_output_tokens":2,"total_tokens":110}}}}
+{"type":"event_msg","payload":{"type":"large_context","data":"` + strings.Repeat("x", 2*1024*1024) + `"}}
+{"timestamp":"2026-05-08T01:01:00.000Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":160,"cached_input_tokens":40,"output_tokens":18,"reasoning_output_tokens":4,"total_tokens":178}}}}
+`
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatalf("write rollout: %v", err)
+	}
+
+	usage, err := readCodexUsage(path)
+	if err != nil {
+		t.Fatalf("readCodexUsage: %v", err)
+	}
+
+	if usage.totalTokens != 178 || usage.inputTokens != 120 || usage.cacheRead != 40 || usage.outputTokens != 18 || usage.reasoningTokens != 4 {
+		t.Fatalf("unexpected usage: %+v", usage)
 	}
 }
 

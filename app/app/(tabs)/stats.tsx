@@ -83,6 +83,10 @@ interface RangeData {
 
 interface StatsPayload {
   ranges: Record<string, RangeData>;
+  serverId?: string;
+  serverUrl?: string;
+  daemonId?: string;
+  daemonPublicKey?: string;
 }
 
 // ── Constants ──────────────────────────────────────────────
@@ -255,14 +259,34 @@ function mergeRangeData(items: RangeData[]): RangeData {
 }
 
 function mergeStatsPayloads(payloads: StatsPayload[]): StatsPayload | null {
-  if (payloads.length === 0) return null;
+  const uniquePayloads = uniqueStatsPayloads(payloads);
+  if (uniquePayloads.length === 0) return null;
   const rangeKeys = new Set<string>();
-  for (const p of payloads) for (const k of Object.keys(p.ranges ?? {})) rangeKeys.add(k);
+  for (const p of uniquePayloads) for (const k of Object.keys(p.ranges ?? {})) rangeKeys.add(k);
   const ranges: Record<string, RangeData> = {};
   for (const k of rangeKeys) {
-    ranges[k] = mergeRangeData(payloads.map(p => p.ranges?.[k] ?? EMPTY_RANGE));
+    ranges[k] = mergeRangeData(uniquePayloads.map(p => p.ranges?.[k] ?? EMPTY_RANGE));
   }
   return { ranges };
+}
+
+function uniqueStatsPayloads(payloads: StatsPayload[]): StatsPayload[] {
+  const seen = new Set<string>();
+  const out: StatsPayload[] = [];
+  for (const payload of payloads) {
+    const key =
+      payload.daemonId && payload.daemonPublicKey
+        ? `daemon:${payload.daemonId}:${payload.daemonPublicKey}`
+        : payload.serverUrl
+          ? `url:${payload.serverUrl}`
+          : payload.serverId
+            ? `server:${payload.serverId}`
+            : `payload:${out.length}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(payload);
+  }
+  return out;
 }
 
 function hasRangeStats(data?: RangeData | null): boolean {
