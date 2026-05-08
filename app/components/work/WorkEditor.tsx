@@ -45,7 +45,7 @@ export function activeMention(
 
 export type ActiveMention = { query: string; start: number };
 
-export type MarkdownEditorHandle = {
+export type WorkEditorHandle = {
   insertMention(candidate: MentionCandidate): void;
   focus(): void;
 };
@@ -58,8 +58,8 @@ type Props = {
   autoFocus?: boolean;
 };
 
-export const MarkdownEditor = forwardRef<MarkdownEditorHandle, Props>(
-  function MarkdownEditor(
+export const WorkEditor = forwardRef<WorkEditorHandle, Props>(
+  function WorkEditor(
     { value, onChange, onActiveMentionChange, onBlur, autoFocus },
     forwardedRef,
   ) {
@@ -143,7 +143,7 @@ export const MarkdownEditor = forwardRef<MarkdownEditorHandle, Props>(
         onBlur={onBlur}
         multiline
         autoFocus={autoFocus}
-        placeholder="# Issue title\n\nDescribe the work..."
+        placeholder="# Work title\n\n## Context\n\n## Outcome\n\n## Notes\n\n"
         placeholderTextColor={colors.textSecondary}
         style={styles.input}
         textAlignVertical="top"

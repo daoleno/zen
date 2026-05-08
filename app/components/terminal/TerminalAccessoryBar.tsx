@@ -8,7 +8,7 @@ import {
   TouchableOpacity,
   View,
 } from "react-native";
-import { Ionicons } from "@expo/vector-icons";
+import { Ionicons, MaterialCommunityIcons } from "@expo/vector-icons";
 import * as DocumentPicker from "expo-document-picker";
 import * as Haptics from "expo-haptics";
 import { Typography } from "../../constants/tokens";
@@ -260,9 +260,9 @@ export function TerminalAccessoryBar({
           onPress={handleKeyboardToggle}
           activeOpacity={0.75}
         >
-          <Ionicons
-            name="keypad-outline"
-            size={16}
+          <MaterialCommunityIcons
+            name="keyboard-outline"
+            size={18}
             color={keyboardVisible ? chrome.accent : chrome.textMuted}
           />
         </TouchableOpacity>

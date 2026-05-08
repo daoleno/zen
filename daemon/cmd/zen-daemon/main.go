@@ -15,11 +15,11 @@ import (
 	"time"
 
 	"github.com/daoleno/zen/daemon/auth"
-	"github.com/daoleno/zen/daemon/issue"
 	"github.com/daoleno/zen/daemon/push"
 	"github.com/daoleno/zen/daemon/server"
 	"github.com/daoleno/zen/daemon/stats"
 	"github.com/daoleno/zen/daemon/watcher"
+	"github.com/daoleno/zen/daemon/work"
 )
 
 type daemonConfig struct {
@@ -101,31 +101,31 @@ func runDaemon(args []string, stderr io.Writer) error {
 	sc := stats.NewCollector()
 	go sc.Start(ctx)
 
-	issuesRoot, err := issue.DefaultRoot()
+	workRoot, err := work.DefaultRoot()
 	if err != nil {
-		return fmt.Errorf("resolve issues root: %w", err)
+		return fmt.Errorf("resolve work root: %w", err)
 	}
-	issueStore, err := issue.NewStore(issuesRoot)
+	workStore, err := work.NewStore(workRoot)
 	if err != nil {
-		return fmt.Errorf("initialize issue store: %w", err)
+		return fmt.Errorf("initialize work store: %w", err)
 	}
-	if err := issueStore.StartWatcher(); err != nil {
-		return fmt.Errorf("start issue watcher: %w", err)
+	if err := workStore.StartWatcher(); err != nil {
+		return fmt.Errorf("start work watcher: %w", err)
 	}
-	defer issueStore.Close()
+	defer workStore.Close()
 
-	executorsPath, err := issue.DefaultExecutorsPath()
+	executorsPath, err := work.DefaultExecutorsPath()
 	if err != nil {
 		return fmt.Errorf("resolve executors path: %w", err)
 	}
-	execs, err := issue.LoadExecutors(executorsPath)
+	execs, err := work.LoadExecutors(executorsPath)
 	if err != nil {
 		return fmt.Errorf("load executors: %w", err)
 	}
 
 	pusher := push.New()
-	dispatcher := issue.NewDispatcher(&issue.WatcherRegistry{W: w}, issue.TmuxRunner{}, execs)
-	srv := server.New(authManager, w, pusher, sc, issueStore, dispatcher, execs)
+	launcher := work.NewLauncher(&work.WatcherRegistry{W: w}, work.TmuxRunner{}, execs)
+	srv := server.New(authManager, w, pusher, sc, workStore, launcher, execs)
 	if err := srv.Run(ctx, cfg.addr); err != nil && err.Error() != "http: Server closed" {
 		return fmt.Errorf("server error: %w", err)
 	}

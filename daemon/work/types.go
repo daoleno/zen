@@ -1,9 +1,9 @@
-package issue
+package work
 
 import "time"
 
-// Issue is the canonical in-memory representation of one Markdown file.
-type Issue struct {
+// Item is the canonical in-memory representation of one Markdown file.
+type Item struct {
 	ID          string      `json:"id"`
 	Path        string      `json:"path"`
 	Project     string      `json:"project"`
@@ -21,8 +21,11 @@ type Frontmatter struct {
 	ID           string                 `yaml:"id" json:"id"`
 	Created      time.Time              `yaml:"created" json:"created"`
 	Done         *time.Time             `yaml:"done,omitempty" json:"done,omitempty"`
-	Dispatched   *time.Time             `yaml:"dispatched,omitempty" json:"dispatched,omitempty"`
+	Started      *time.Time             `yaml:"started,omitempty" json:"started,omitempty"`
+	Status       string                 `yaml:"status,omitempty" json:"status,omitempty"`
 	AgentSession string                 `yaml:"agent_session,omitempty" json:"agent_session,omitempty"`
+	Cwd          string                 `yaml:"cwd,omitempty" json:"cwd,omitempty"`
+	Command      string                 `yaml:"command,omitempty" json:"command,omitempty"`
 	Extra        map[string]interface{} `yaml:"-" json:"extra,omitempty"`
 }
 
@@ -46,7 +49,7 @@ type Project struct {
 	Executor string `toml:"executor" json:"executor"`
 }
 
-func cloneIssue(iss *Issue) *Issue {
+func cloneItem(iss *Item) *Item {
 	if iss == nil {
 		return nil
 	}
@@ -64,9 +67,9 @@ func cloneFrontmatter(fm Frontmatter) Frontmatter {
 		done := *fm.Done
 		cp.Done = &done
 	}
-	if fm.Dispatched != nil {
-		dispatched := *fm.Dispatched
-		cp.Dispatched = &dispatched
+	if fm.Started != nil {
+		started := *fm.Started
+		cp.Started = &started
 	}
 	if fm.Extra != nil {
 		cp.Extra = make(map[string]interface{}, len(fm.Extra))

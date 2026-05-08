@@ -17,11 +17,12 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/daoleno/zen/daemon/auth"
-	"github.com/daoleno/zen/daemon/issue"
+	"github.com/daoleno/zen/daemon/classifier"
 	"github.com/daoleno/zen/daemon/push"
 	"github.com/daoleno/zen/daemon/stats"
 	"github.com/daoleno/zen/daemon/terminal"
 	"github.com/daoleno/zen/daemon/watcher"
+	"github.com/daoleno/zen/daemon/work"
 	"github.com/gorilla/websocket"
 	"github.com/oklog/ulid/v2"
 )
@@ -37,12 +38,13 @@ type Server struct {
 	terminal *terminal.Manager
 	pusher   *push.Client
 	stats    *stats.Collector
-	issues   *issue.Store
-	dispatch *issue.Dispatcher
-	execs    *issue.ExecutorConfig
+	work     *work.Store
+	launcher *work.Launcher
+	workLog  *work.SessionLogger
+	execs    *work.ExecutorConfig
 
-	issueSubID int
-	issueSub   <-chan issue.Event
+	workSubID int
+	workSub   <-chan work.Event
 
 	clients map[*websocket.Conn]bool
 	active  map[*websocket.Conn]string
@@ -51,22 +53,23 @@ type Server struct {
 }
 
 // New creates a WebSocket server.
-func New(authManager *auth.Manager, w *watcher.Watcher, pusher *push.Client, sc *stats.Collector, issues *issue.Store, dispatcher *issue.Dispatcher, execs *issue.ExecutorConfig) *Server {
+func New(authManager *auth.Manager, w *watcher.Watcher, pusher *push.Client, sc *stats.Collector, workStore *work.Store, launcher *work.Launcher, execs *work.ExecutorConfig) *Server {
 	srv := &Server{
 		auth:     authManager,
 		watcher:  w,
 		terminal: terminal.NewManager(&terminal.TmuxBackend{}),
 		pusher:   pusher,
 		stats:    sc,
-		issues:   issues,
-		dispatch: dispatcher,
+		work:     workStore,
+		launcher: launcher,
 		execs:    execs,
 		clients:  make(map[*websocket.Conn]bool),
 		active:   make(map[*websocket.Conn]string),
 		writes:   make(map[*websocket.Conn]*sync.Mutex),
 	}
-	if issues != nil {
-		srv.issueSubID, srv.issueSub = issues.Subscribe()
+	if workStore != nil {
+		srv.workSubID, srv.workSub = workStore.Subscribe()
+		srv.workLog = work.NewSessionLogger(workStore)
 	}
 	return srv
 }
@@ -162,11 +165,12 @@ func (s *Server) handleWS(w http.ResponseWriter, r *http.Request) {
 
 	log.Printf("client connected (%d total)", len(s.clients))
 	s.sendAgentSessionList(conn)
-	if s.issues != nil {
+	if s.work != nil {
+		s.syncWorkLogsForAgents(false)
 		s.sendJSON(conn, map[string]any{
-			"type":      "issues_snapshot",
-			"issues":    s.issues.List(),
-			"executors": s.executorRoles(),
+			"type":       "work_items_snapshot",
+			"work_items": s.work.List(),
+			"executors":  s.executorRoles(),
 		})
 	}
 
@@ -265,23 +269,23 @@ func (s *Server) handleClientMessage(conn *websocket.Conn, msg []byte) {
 	case "list_session_services":
 		s.handleListSessionServices(conn, raw)
 
-	case "list_issues":
-		s.handleListIssues(conn, raw)
+	case "list_work_items":
+		s.handleListWorkItems(conn, raw)
 
-	case "get_issue":
-		s.handleGetIssue(conn, raw)
+	case "get_work_item":
+		s.handleGetWorkItem(conn, raw)
 
-	case "write_issue":
-		s.handleWriteIssue(conn, raw)
+	case "write_work_item":
+		s.handleWriteWorkItem(conn, raw)
 
-	case "send_issue":
-		s.handleSendIssue(conn, raw)
+	case "start_work_item":
+		s.handleStartWorkItem(conn, raw)
 
-	case "redispatch_issue":
-		s.handleRedispatchIssue(conn, raw)
+	case "rerun_work_item":
+		s.handleRerunWorkItem(conn, raw)
 
-	case "delete_issue":
-		s.handleDeleteIssue(conn, raw)
+	case "delete_work_item":
+		s.handleDeleteWorkItem(conn, raw)
 
 	case "list_executors":
 		s.handleListExecutors(conn, raw)
@@ -606,33 +610,33 @@ func (s *Server) executorRoles() []string {
 	return s.execs.Roles()
 }
 
-func (s *Server) handleListIssues(conn *websocket.Conn, raw clientMessage) {
-	if s.issues == nil {
-		s.sendErrorWithRequestID(conn, raw.RequestID, "list_issues_failed", "issue store not configured")
+func (s *Server) handleListWorkItems(conn *websocket.Conn, raw clientMessage) {
+	if s.work == nil {
+		s.sendErrorWithRequestID(conn, raw.RequestID, "list_work_items_failed", "work store not configured")
 		return
 	}
 	s.sendJSON(conn, map[string]any{
-		"type":       "issues_snapshot",
+		"type":       "work_items_snapshot",
 		"request_id": raw.RequestID,
-		"issues":     s.issues.List(),
+		"work_items": s.work.List(),
 		"executors":  s.executorRoles(),
 	})
 }
 
-func (s *Server) handleGetIssue(conn *websocket.Conn, raw clientMessage) {
-	if s.issues == nil {
-		s.sendErrorWithRequestID(conn, raw.RequestID, "get_issue_failed", "issue store not configured")
+func (s *Server) handleGetWorkItem(conn *websocket.Conn, raw clientMessage) {
+	if s.work == nil {
+		s.sendErrorWithRequestID(conn, raw.RequestID, "get_work_item_failed", "work store not configured")
 		return
 	}
-	iss, ok := s.issues.GetByID(strings.TrimSpace(raw.ID))
+	item, ok := s.work.GetByID(strings.TrimSpace(raw.ID))
 	if !ok {
-		s.sendErrorWithRequestID(conn, raw.RequestID, "get_issue_failed", "issue not found")
+		s.sendErrorWithRequestID(conn, raw.RequestID, "get_work_item_failed", "work item not found")
 		return
 	}
 	s.sendJSON(conn, map[string]any{
-		"type":       "issue",
+		"type":       "work_item",
 		"request_id": raw.RequestID,
-		"issue":      iss,
+		"work_item":  item,
 	})
 }
 
@@ -644,9 +648,9 @@ func (s *Server) handleListExecutors(conn *websocket.Conn, raw clientMessage) {
 	})
 }
 
-func (s *Server) handleWriteIssue(conn *websocket.Conn, raw clientMessage) {
-	if s.issues == nil {
-		s.sendErrorWithRequestID(conn, raw.RequestID, "write_issue_failed", "issue store not configured")
+func (s *Server) handleWriteWorkItem(conn *websocket.Conn, raw clientMessage) {
+	if s.work == nil {
+		s.sendErrorWithRequestID(conn, raw.RequestID, "write_work_item_failed", "work store not configured")
 		return
 	}
 
@@ -663,25 +667,23 @@ func (s *Server) handleWriteIssue(conn *websocket.Conn, raw clientMessage) {
 
 	path := strings.TrimSpace(raw.Path)
 	if path == "" {
-		root, err := issue.DefaultRoot()
-		if err != nil {
-			s.sendErrorWithRequestID(conn, raw.RequestID, "write_issue_failed", err.Error())
-			return
-		}
-		path = filepath.Join(root, project, buildIssueFilename(now, raw.Body, id))
+		path = filepath.Join(s.work.Root, project, buildWorkFilename(now, raw.Body, id))
 	}
 
-	frontmatter := issue.Frontmatter{
+	frontmatter := work.Frontmatter{
 		ID:      id,
 		Created: now,
 	}
-	if existing, ok := s.issues.GetByID(id); ok {
-		frontmatter = issue.Frontmatter{
+	if existing, ok := s.work.GetByID(id); ok {
+		frontmatter = work.Frontmatter{
 			ID:           existing.Frontmatter.ID,
 			Created:      existing.Frontmatter.Created,
 			Done:         existing.Frontmatter.Done,
-			Dispatched:   existing.Frontmatter.Dispatched,
+			Started:      existing.Frontmatter.Started,
+			Status:       existing.Frontmatter.Status,
 			AgentSession: existing.Frontmatter.AgentSession,
+			Cwd:          existing.Frontmatter.Cwd,
+			Command:      existing.Frontmatter.Command,
 			Extra:        existing.Frontmatter.Extra,
 		}
 	}
@@ -695,7 +697,7 @@ func (s *Server) handleWriteIssue(conn *websocket.Conn, raw clientMessage) {
 		}
 	}
 
-	written, err := s.issues.Write(&issue.Issue{
+	written, err := s.work.Write(&work.Item{
 		ID:          frontmatter.ID,
 		Path:        path,
 		Project:     project,
@@ -703,100 +705,96 @@ func (s *Server) handleWriteIssue(conn *websocket.Conn, raw clientMessage) {
 		Frontmatter: frontmatter,
 	}, baseMtime)
 	if err != nil {
-		if errors.Is(err, issue.ErrConflict) {
-			current, _ := s.issues.GetByID(id)
+		if errors.Is(err, work.ErrConflict) {
+			current, _ := s.work.GetByID(id)
 			s.sendJSON(conn, map[string]any{
 				"type":       "error",
 				"request_id": raw.RequestID,
 				"code":       "conflict",
-				"message":    "issue changed on disk",
+				"message":    "work item changed on disk",
 				"current":    current,
 			})
 			return
 		}
-		s.sendErrorWithRequestID(conn, raw.RequestID, "write_issue_failed", err.Error())
+		s.sendErrorWithRequestID(conn, raw.RequestID, "write_work_item_failed", err.Error())
 		return
 	}
 
 	s.sendJSON(conn, map[string]any{
-		"type":       "issue_written",
+		"type":       "work_item_written",
 		"request_id": raw.RequestID,
-		"issue":      written,
+		"work_item":  written,
 	})
 }
 
-func (s *Server) handleSendIssue(conn *websocket.Conn, raw clientMessage) {
-	s.handleDispatchIssue(conn, raw, false)
+func (s *Server) handleStartWorkItem(conn *websocket.Conn, raw clientMessage) {
+	s.handleLaunchWorkItem(conn, raw, false)
 }
 
-func (s *Server) handleRedispatchIssue(conn *websocket.Conn, raw clientMessage) {
-	s.handleDispatchIssue(conn, raw, true)
+func (s *Server) handleRerunWorkItem(conn *websocket.Conn, raw clientMessage) {
+	s.handleLaunchWorkItem(conn, raw, true)
 }
 
-func (s *Server) handleDispatchIssue(conn *websocket.Conn, raw clientMessage, redispatch bool) {
-	if s.issues == nil || s.dispatch == nil {
-		s.sendErrorWithRequestID(conn, raw.RequestID, "send_issue_failed", "issue dispatch not configured")
+func (s *Server) handleLaunchWorkItem(conn *websocket.Conn, raw clientMessage, rerun bool) {
+	failCode := "start_work_item_failed"
+	if rerun {
+		failCode = "rerun_work_item_failed"
+	}
+	if s.work == nil || s.launcher == nil {
+		s.sendErrorWithRequestID(conn, raw.RequestID, failCode, "work launcher not configured")
 		return
 	}
 
-	iss, ok := s.issues.GetByID(strings.TrimSpace(raw.ID))
+	item, ok := s.work.GetByID(strings.TrimSpace(raw.ID))
 	if !ok {
-		s.sendErrorWithRequestID(conn, raw.RequestID, "send_issue_failed", "issue not found")
+		s.sendErrorWithRequestID(conn, raw.RequestID, failCode, "work item not found")
 		return
 	}
-	project, err := issue.LoadProject(filepath.Dir(iss.Path))
+	project, err := work.LoadProject(filepath.Dir(item.Path))
 	if err != nil {
-		s.sendErrorWithRequestID(conn, raw.RequestID, "send_issue_failed", err.Error())
+		s.sendErrorWithRequestID(conn, raw.RequestID, failCode, err.Error())
 		return
 	}
 
-	var updated *issue.Issue
-	if redispatch {
-		updated, err = s.dispatch.Redispatch(iss, project)
+	var updated *work.Item
+	if rerun {
+		updated, err = s.launcher.Rerun(item, project)
 	} else {
-		updated, err = s.dispatch.Dispatch(iss, project)
+		updated, err = s.launcher.Start(item, project)
 	}
 	if err != nil {
-		code := "send_issue_failed"
-		if redispatch {
-			code = "redispatch_issue_failed"
-		}
-		s.sendErrorWithRequestID(conn, raw.RequestID, code, err.Error())
+		s.sendErrorWithRequestID(conn, raw.RequestID, failCode, err.Error())
 		return
 	}
 
-	written, err := s.issues.Write(updated, time.Time{})
+	written, err := s.work.Write(updated, time.Time{})
 	if err != nil {
-		code := "send_issue_failed"
-		if redispatch {
-			code = "redispatch_issue_failed"
-		}
-		s.sendErrorWithRequestID(conn, raw.RequestID, code, err.Error())
+		s.sendErrorWithRequestID(conn, raw.RequestID, failCode, err.Error())
 		return
 	}
 
-	msgType := "issue_dispatched"
-	if redispatch {
-		msgType = "issue_redispatched"
+	msgType := "work_item_started"
+	if rerun {
+		msgType = "work_item_rerun"
 	}
 	s.sendJSON(conn, map[string]any{
 		"type":       msgType,
 		"request_id": raw.RequestID,
-		"issue":      written,
+		"work_item":  written,
 	})
 }
 
-func (s *Server) handleDeleteIssue(conn *websocket.Conn, raw clientMessage) {
-	if s.issues == nil {
-		s.sendErrorWithRequestID(conn, raw.RequestID, "delete_issue_failed", "issue store not configured")
+func (s *Server) handleDeleteWorkItem(conn *websocket.Conn, raw clientMessage) {
+	if s.work == nil {
+		s.sendErrorWithRequestID(conn, raw.RequestID, "delete_work_item_failed", "work store not configured")
 		return
 	}
-	if err := s.issues.Delete(strings.TrimSpace(raw.ID)); err != nil {
-		s.sendErrorWithRequestID(conn, raw.RequestID, "delete_issue_failed", err.Error())
+	if err := s.work.Delete(strings.TrimSpace(raw.ID)); err != nil {
+		s.sendErrorWithRequestID(conn, raw.RequestID, "delete_work_item_failed", err.Error())
 		return
 	}
 	s.sendJSON(conn, map[string]any{
-		"type":       "issue_deleted_ack",
+		"type":       "work_item_deleted_ack",
 		"request_id": raw.RequestID,
 		"id":         strings.TrimSpace(raw.ID),
 	})
@@ -833,28 +831,28 @@ func (s *Server) broadcastEvents(ctx context.Context) {
 			return
 		case ev := <-s.watcher.Events():
 			s.handleWatcherEvent(ev)
-		case ie, ok := <-s.issueSub:
+		case ie, ok := <-s.workSub:
 			if !ok {
-				s.issueSub = nil
+				s.workSub = nil
 				continue
 			}
-			s.handleIssueEvent(ie)
+			s.handleWorkEvent(ie)
 		}
 	}
 }
 
-func (s *Server) handleIssueEvent(ev issue.Event) {
+func (s *Server) handleWorkEvent(ev work.Event) {
 	switch ev.Type {
-	case issue.EventChanged:
+	case work.EventChanged:
 		s.broadcastJSON(map[string]any{
-			"type":  "issue_changed",
-			"path":  ev.Path,
-			"id":    ev.ID,
-			"issue": ev.Issue,
+			"type":      "work_item_changed",
+			"path":      ev.Path,
+			"id":        ev.ID,
+			"work_item": ev.Item,
 		})
-	case issue.EventDeleted:
+	case work.EventDeleted:
 		s.broadcastJSON(map[string]any{
-			"type": "issue_deleted",
+			"type": "work_item_deleted",
 			"path": ev.Path,
 			"id":   ev.ID,
 		})
@@ -870,6 +868,7 @@ func (s *Server) heartbeat(ctx context.Context) {
 			return
 		case <-ticker.C:
 			agentSessions := s.watcher.Agents()
+			s.syncWorkLogs(agentSessions, false)
 			data, _ := json.Marshal(map[string]any{"type": "agent_session_list", "agent_sessions": agentSessions})
 			s.broadcast(data)
 		}
@@ -877,6 +876,8 @@ func (s *Server) heartbeat(ctx context.Context) {
 }
 
 func (s *Server) handleWatcherEvent(ev watcher.SessionEvent) {
+	s.recordWorkForSessionEvent(ev)
+
 	switch ev.Type {
 	case "agent_discovered":
 		if ev.Agent != nil {
@@ -897,6 +898,43 @@ func (s *Server) handleWatcherEvent(ev watcher.SessionEvent) {
 		}
 		s.maybeNotifyForSessionEvent(ev)
 	}
+}
+
+func (s *Server) recordWorkForSessionEvent(ev watcher.SessionEvent) {
+	if s.workLog == nil || ev.Agent == nil {
+		return
+	}
+	final := ev.Type == "agent_removed" || isFinalAgentState(ev.NewState)
+	force := ev.Type != "agent_output"
+	if _, err := s.workLog.RecordAgent(ev.Agent, final, force); err != nil {
+		log.Printf("work log sync failed for %s: %v", ev.AgentID, err)
+	}
+}
+
+func (s *Server) syncWorkLogsForAgents(force bool) {
+	if s.watcher == nil {
+		return
+	}
+	s.syncWorkLogs(s.watcher.Agents(), force)
+}
+
+func (s *Server) syncWorkLogs(agents []*classifier.Agent, force bool) {
+	if s.workLog == nil {
+		return
+	}
+	for _, agent := range agents {
+		if agent == nil {
+			continue
+		}
+		final := isFinalAgentState(string(agent.State))
+		if _, err := s.workLog.RecordAgent(agent, final, force); err != nil {
+			log.Printf("work log sync failed for %s: %v", agent.ID, err)
+		}
+	}
+}
+
+func isFinalAgentState(state string) bool {
+	return state == "done" || state == "failed"
 }
 
 func (s *Server) maybeNotifyForSessionEvent(ev watcher.SessionEvent) {
@@ -1019,7 +1057,7 @@ func clientID(conn *websocket.Conn) string {
 	return fmt.Sprintf("%p", conn)
 }
 
-func applyFrontmatterOverrides(fm *issue.Frontmatter, raw map[string]interface{}) {
+func applyFrontmatterOverrides(fm *work.Frontmatter, raw map[string]interface{}) {
 	if fm == nil || raw == nil {
 		return
 	}
@@ -1041,15 +1079,27 @@ func applyFrontmatterOverrides(fm *issue.Frontmatter, raw map[string]interface{}
 			} else {
 				fm.Done = nil
 			}
-		case "dispatched":
+		case "started":
 			if parsed, ok := parseRFC3339Value(value); ok {
-				fm.Dispatched = &parsed
+				fm.Started = &parsed
 			} else {
-				fm.Dispatched = nil
+				fm.Started = nil
+			}
+		case "status":
+			if s, ok := value.(string); ok {
+				fm.Status = strings.TrimSpace(s)
 			}
 		case "agent_session":
 			if s, ok := value.(string); ok {
 				fm.AgentSession = s
+			}
+		case "cwd":
+			if s, ok := value.(string); ok {
+				fm.Cwd = strings.TrimSpace(s)
+			}
+		case "command":
+			if s, ok := value.(string); ok {
+				fm.Command = strings.TrimSpace(s)
 			}
 		case "extra":
 			if nested, ok := value.(map[string]interface{}); ok {
@@ -1084,11 +1134,11 @@ func parseRFC3339Value(value interface{}) (time.Time, bool) {
 	return time.Time{}, false
 }
 
-func buildIssueFilename(now time.Time, body, fallbackID string) string {
-	return now.Format("2006-01-02") + "-" + slugifyIssueTitle(firstLine(body), fallbackID) + ".md"
+func buildWorkFilename(now time.Time, body, fallbackID string) string {
+	return now.Format("2006-01-02") + "-" + slugifyWorkTitle(firstLine(body), fallbackID) + ".md"
 }
 
-func slugifyIssueTitle(line, fallback string) string {
+func slugifyWorkTitle(line, fallback string) string {
 	trimmed := strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(line), "#"))
 	if trimmed == "" {
 		return strings.ToLower(fallback)

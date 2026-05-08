@@ -19,7 +19,7 @@ import { useFocusEffect, useRouter } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Agent, useAgents } from '../../store/agents';
-import { useIssues, type Issue } from '../../store/issues';
+import { useWork, type WorkItem } from '../../store/work';
 import { AgentStatus, Colors, Typography, statusColor, useAppColors } from '../../constants/tokens';
 import { TerminalPreview } from '../../components/terminal/TerminalPreview';
 import { AgentKindIcon } from '../../components/terminal/AgentKindIcon';
@@ -70,23 +70,23 @@ type DiscoveredSessionService = SessionService & {
 
 export default function InboxScreen() {
   const { state } = useAgents();
-  const { state: issuesState } = useIssues();
+  const { state: workState } = useWork();
   const router = useRouter();
   const colorScheme = useColorScheme();
   const colors = useAppColors();
   const styles = useMemo(() => createStyles(colors), [colors]);
 
-  // Build agent→issue lookup for subtitle display
-  const agentIssueMap = useMemo(() => {
-    const map: Record<string, Issue> = {};
-    for (const current of Object.values(issuesState.byKey)) {
+  // Build agent→work lookup for subtitle display.
+  const agentWorkMap = useMemo(() => {
+    const map: Record<string, WorkItem> = {};
+    for (const current of Object.values(workState.byKey)) {
       if (current.frontmatter.done || !current.frontmatter.agent_session) {
         continue;
       }
       map[`${current.serverId}:${current.frontmatter.agent_session}`] = current;
     }
     return map;
-  }, [issuesState.byKey]);
+  }, [workState.byKey]);
   const [viewMode, setViewModeState] = useState<StoredInboxViewMode>('list');
   const [agentAliases, setAgentAliases] = useState<StoredAgentAliases>({});
   const [recentAgentOpens, setRecentAgentOpens] = useState<StoredRecentAgentOpens>({});
@@ -476,8 +476,8 @@ export default function InboxScreen() {
   const renderPromptAgent = ({ item }: { item: Agent }) => {
     const presented = presentAgent(item, agentAliases[item.key]);
     const directoryLabel = promptDirectoryLabel(item, presented.cwdBase, showServerNames);
-    const promptTitle = resolvePromptTitle(item, presented, agentIssueMap);
-    const meta = buildPromptMeta(item, presented, promptTitle, agentIssueMap);
+    const promptTitle = resolvePromptTitle(item, presented, agentWorkMap);
+    const meta = buildPromptMeta(item, presented, promptTitle, agentWorkMap);
     const hasMeta = Boolean(meta);
     return (
       <TouchableOpacity
@@ -905,16 +905,16 @@ function ToggleButton({
 function resolvePromptTitle(
   agent: Agent,
   presented: ReturnType<typeof presentAgent>,
-  issueMap: Record<string, Issue>,
+  workMap: Record<string, WorkItem>,
 ): string {
   if (presented.titleSource !== 'default') {
     return presented.title;
   }
 
-  const linkedIssue = issueMap[`${agent.serverId}:${agent.id}`];
-  const issueTitle = linkedIssue?.title?.trim();
-  if (issueTitle) {
-    return issueTitle;
+  const linkedWork = workMap[`${agent.serverId}:${agent.id}`];
+  const workTitle = linkedWork?.title?.trim();
+  if (workTitle) {
+    return workTitle;
   }
 
   return presented.title;
@@ -924,18 +924,18 @@ function buildPromptMeta(
   agent: Agent,
   presented: ReturnType<typeof presentAgent>,
   promptTitle: string,
-  issueMap: Record<string, Issue>,
+  workMap: Record<string, WorkItem>,
 ): string {
   const summary = agent.summary.trim();
   if ((agent.status === 'blocked' || agent.status === 'failed') && summary) {
     return summary;
   }
 
-  const linkedIssue = issueMap[`${agent.serverId}:${agent.id}`];
-  const issueTitle = linkedIssue?.title?.trim() || linkedIssue?.id || '';
+  const linkedWork = workMap[`${agent.serverId}:${agent.id}`];
+  const workTitle = linkedWork?.title?.trim() || linkedWork?.id || '';
 
-  if (issueTitle && issueTitle !== promptTitle) {
-    return issueTitle;
+  if (workTitle && workTitle !== promptTitle) {
+    return workTitle;
   }
 
   if (presented.titleSource === 'default') {

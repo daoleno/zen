@@ -1,4 +1,4 @@
-package issue
+package work
 
 import (
 	"errors"
@@ -53,12 +53,12 @@ func (f *fakeRunner) Send(sessionID, text string) error {
 	return nil
 }
 
-func TestDispatch_UsesIdleSession(t *testing.T) {
+func TestLauncher_StartUsesIdleSession(t *testing.T) {
 	reg := &fakeRegistry{sessions: []fakeSession{{id: "claude-1", cwd: "/p", role: "claude", state: "idle"}}}
 	run := &fakeRunner{}
 	execs := &ExecutorConfig{Default: "claude", ByName: map[string]Executor{"claude": {Name: "claude", Command: "claude"}}}
 
-	iss := &Issue{
+	iss := &Item{
 		Path:     "/tmp/t.md",
 		Project:  "p",
 		Body:     "@claude do it",
@@ -69,11 +69,11 @@ func TestDispatch_UsesIdleSession(t *testing.T) {
 		},
 	}
 	proj := Project{Name: "p", Cwd: "/p", Executor: "claude"}
-	dispatcher := NewDispatcher(reg, run, execs)
+	launcher := NewLauncher(reg, run, execs)
 
-	updated, err := dispatcher.Dispatch(iss, proj)
+	updated, err := launcher.Start(iss, proj)
 	if err != nil {
-		t.Fatalf("Dispatch: %v", err)
+		t.Fatalf("Start: %v", err)
 	}
 	if run.spawnCalls != 0 {
 		t.Fatalf("spawnCalls = %d, want 0", run.spawnCalls)
@@ -84,16 +84,16 @@ func TestDispatch_UsesIdleSession(t *testing.T) {
 	if updated.Frontmatter.AgentSession != "claude-1" {
 		t.Fatalf("agent_session = %q", updated.Frontmatter.AgentSession)
 	}
-	if updated.Frontmatter.Dispatched == nil {
-		t.Fatal("dispatched should be set")
+	if updated.Frontmatter.Started == nil {
+		t.Fatal("started should be set")
 	}
 }
 
-func TestDispatch_SpawnsWhenNoIdle(t *testing.T) {
+func TestLauncher_StartSpawnsWhenNoIdle(t *testing.T) {
 	reg := &fakeRegistry{}
 	run := &fakeRunner{newID: "claude-new"}
 	execs := &ExecutorConfig{Default: "claude", ByName: map[string]Executor{"claude": {Name: "claude", Command: "claude"}}}
-	iss := &Issue{
+	iss := &Item{
 		Path:     "/tmp/t.md",
 		Project:  "p",
 		Mentions: []Mention{{Role: "claude"}},
@@ -103,11 +103,11 @@ func TestDispatch_SpawnsWhenNoIdle(t *testing.T) {
 		},
 	}
 	proj := Project{Name: "p", Cwd: "/p", Executor: "claude"}
-	dispatcher := NewDispatcher(reg, run, execs)
+	launcher := NewLauncher(reg, run, execs)
 
-	updated, err := dispatcher.Dispatch(iss, proj)
+	updated, err := launcher.Start(iss, proj)
 	if err != nil {
-		t.Fatalf("Dispatch: %v", err)
+		t.Fatalf("Start: %v", err)
 	}
 	if run.spawnCalls != 1 {
 		t.Fatalf("spawnCalls = %d, want 1", run.spawnCalls)
@@ -117,32 +117,32 @@ func TestDispatch_SpawnsWhenNoIdle(t *testing.T) {
 	}
 }
 
-func TestDispatch_AlreadyDispatchedError(t *testing.T) {
+func TestLauncher_StartAlreadyStartedError(t *testing.T) {
 	now := time.Now()
-	dispatcher := NewDispatcher(&fakeRegistry{}, &fakeRunner{}, &ExecutorConfig{Default: "claude"})
-	iss := &Issue{Frontmatter: Frontmatter{ID: "T", Dispatched: &now}}
-	if _, err := dispatcher.Dispatch(iss, Project{Cwd: "/p"}); !errors.Is(err, ErrAlreadyDispatched) {
-		t.Fatalf("err = %v, want ErrAlreadyDispatched", err)
+	launcher := NewLauncher(&fakeRegistry{}, &fakeRunner{}, &ExecutorConfig{Default: "claude"})
+	iss := &Item{Frontmatter: Frontmatter{ID: "T", Started: &now}}
+	if _, err := launcher.Start(iss, Project{Cwd: "/p"}); !errors.Is(err, ErrAlreadyStarted) {
+		t.Fatalf("err = %v, want ErrAlreadyStarted", err)
 	}
 }
 
-func TestDispatch_NoExecutorError(t *testing.T) {
+func TestLauncher_StartNoExecutorError(t *testing.T) {
 	execs := &ExecutorConfig{Default: "missing", ByName: map[string]Executor{}}
-	iss := &Issue{Frontmatter: Frontmatter{ID: "T"}, Mentions: []Mention{{Role: "missing"}}}
-	dispatcher := NewDispatcher(&fakeRegistry{}, &fakeRunner{}, execs)
-	if _, err := dispatcher.Dispatch(iss, Project{Cwd: "/p"}); !errors.Is(err, ErrExecutorNotConfigured) {
+	iss := &Item{Frontmatter: Frontmatter{ID: "T"}, Mentions: []Mention{{Role: "missing"}}}
+	launcher := NewLauncher(&fakeRegistry{}, &fakeRunner{}, execs)
+	if _, err := launcher.Start(iss, Project{Cwd: "/p"}); !errors.Is(err, ErrExecutorNotConfigured) {
 		t.Fatalf("err = %v, want ErrExecutorNotConfigured", err)
 	}
 }
 
-func TestDispatch_RespectsSessionMention(t *testing.T) {
+func TestLauncher_StartRespectsSessionMention(t *testing.T) {
 	reg := &fakeRegistry{sessions: []fakeSession{
 		{id: "claude-1", cwd: "/p", role: "claude", state: "idle"},
 		{id: "claude-2", cwd: "/p", role: "claude", state: "idle"},
 	}}
 	run := &fakeRunner{}
 	execs := &ExecutorConfig{Default: "claude", ByName: map[string]Executor{"claude": {Name: "claude", Command: "claude"}}}
-	iss := &Issue{
+	iss := &Item{
 		Path:     "/tmp/t.md",
 		Project:  "p",
 		Mentions: []Mention{{Role: "claude", Session: "claude-2"}},
@@ -152,21 +152,21 @@ func TestDispatch_RespectsSessionMention(t *testing.T) {
 		},
 	}
 	proj := Project{Name: "p", Cwd: "/p", Executor: "claude"}
-	dispatcher := NewDispatcher(reg, run, execs)
+	launcher := NewLauncher(reg, run, execs)
 
-	updated, err := dispatcher.Dispatch(iss, proj)
+	updated, err := launcher.Start(iss, proj)
 	if err != nil {
-		t.Fatalf("Dispatch: %v", err)
+		t.Fatalf("Start: %v", err)
 	}
 	if updated.Frontmatter.AgentSession != "claude-2" {
 		t.Fatalf("agent_session = %q", updated.Frontmatter.AgentSession)
 	}
 }
 
-func TestDispatch_SessionMentionSkipsProjectCwdRequirement(t *testing.T) {
+func TestLauncher_StartSessionMentionSkipsProjectCwdRequirement(t *testing.T) {
 	run := &fakeRunner{}
 	execs := &ExecutorConfig{Default: "claude", ByName: map[string]Executor{"claude": {Name: "claude", Command: "claude"}}}
-	iss := &Issue{
+	iss := &Item{
 		Path:     "/tmp/t.md",
 		Project:  "inbox",
 		Mentions: []Mention{{Role: "claude", Session: "claude-inbox-1"}},
@@ -175,11 +175,11 @@ func TestDispatch_SessionMentionSkipsProjectCwdRequirement(t *testing.T) {
 			Created: time.Now(),
 		},
 	}
-	dispatcher := NewDispatcher(&fakeRegistry{}, run, execs)
+	launcher := NewLauncher(&fakeRegistry{}, run, execs)
 
-	updated, err := dispatcher.Dispatch(iss, Project{Name: "inbox"})
+	updated, err := launcher.Start(iss, Project{Name: "inbox"})
 	if err != nil {
-		t.Fatalf("Dispatch: %v", err)
+		t.Fatalf("Start: %v", err)
 	}
 	if run.spawnCalls != 0 {
 		t.Fatalf("spawnCalls = %d, want 0", run.spawnCalls)
@@ -192,33 +192,33 @@ func TestDispatch_SessionMentionSkipsProjectCwdRequirement(t *testing.T) {
 	}
 }
 
-func TestDispatch_RedispatchClearsFields(t *testing.T) {
+func TestLauncher_RerunClearsFields(t *testing.T) {
 	now := time.Now()
 	reg := &fakeRegistry{sessions: []fakeSession{{id: "claude-1", cwd: "/p", role: "claude", state: "idle"}}}
 	run := &fakeRunner{}
 	execs := &ExecutorConfig{Default: "claude", ByName: map[string]Executor{"claude": {Name: "claude", Command: "claude"}}}
-	iss := &Issue{
+	iss := &Item{
 		Path:     "/tmp/t.md",
 		Project:  "p",
 		Mentions: []Mention{{Role: "claude"}},
 		Frontmatter: Frontmatter{
 			ID:           "T",
 			Created:      time.Now(),
-			Dispatched:   &now,
+			Started:      &now,
 			AgentSession: "old",
 		},
 	}
 	proj := Project{Name: "p", Cwd: "/p", Executor: "claude"}
-	dispatcher := NewDispatcher(reg, run, execs)
+	launcher := NewLauncher(reg, run, execs)
 
-	updated, err := dispatcher.Redispatch(iss, proj)
+	updated, err := launcher.Rerun(iss, proj)
 	if err != nil {
-		t.Fatalf("Redispatch: %v", err)
+		t.Fatalf("Rerun: %v", err)
 	}
 	if updated.Frontmatter.AgentSession != "claude-1" {
 		t.Fatalf("agent_session = %q", updated.Frontmatter.AgentSession)
 	}
-	if updated.Frontmatter.Dispatched == nil {
-		t.Fatal("dispatched should be set")
+	if updated.Frontmatter.Started == nil {
+		t.Fatal("started should be set")
 	}
 }

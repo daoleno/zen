@@ -25,7 +25,7 @@ import {
   useSafeAreaInsets,
 } from "react-native-safe-area-context";
 import { Agent, useAgents } from "../../store/agents";
-import { useIssues } from "../../store/issues";
+import { useWork } from "../../store/work";
 import {
   AgentStatus,
   Colors,
@@ -113,7 +113,7 @@ export default function TerminalScreen() {
   const sessionKey =
     agentId && serverId ? makeSessionKey(serverId, agentId) : null;
   const { state } = useAgents();
-  const { state: issuesState } = useIssues();
+  const { state: workState } = useWork();
   const router = useRouter();
   const colorScheme = useColorScheme();
   const insets = useSafeAreaInsets();
@@ -243,16 +243,16 @@ export default function TerminalScreen() {
     setGitDiffPatchLoadingByPath({});
   }, []);
 
-  const linkedIssue = useMemo(
+  const linkedWork = useMemo(
     () =>
-      Object.values(issuesState.byKey)
+      Object.values(workState.byKey)
         .filter((current) => current.serverId === serverId && current.frontmatter.agent_session === agentId)
         .sort((left, right) => {
-          const leftTime = Date.parse(left.frontmatter.dispatched || left.frontmatter.created || "");
-          const rightTime = Date.parse(right.frontmatter.dispatched || right.frontmatter.created || "");
+          const leftTime = Date.parse(left.frontmatter.started || left.frontmatter.created || "");
+          const rightTime = Date.parse(right.frontmatter.started || right.frontmatter.created || "");
           return (Number.isNaN(rightTime) ? 0 : rightTime) - (Number.isNaN(leftTime) ? 0 : leftTime);
         })[0],
-    [agentId, issuesState.byKey, serverId],
+    [agentId, workState.byKey, serverId],
   );
   const activePinned = sessionKey
     ? terminalTabs.pinned.includes(sessionKey)
@@ -1154,12 +1154,12 @@ export default function TerminalScreen() {
     setNewTerminalVisible(true);
   };
 
-  const openLinkedIssue = () => {
-    if (!linkedIssue) return;
+  const openLinkedWork = () => {
+    if (!linkedWork) return;
     closeMenu();
     router.push({
-      pathname: "/issue/[id]",
-      params: { id: linkedIssue.id, serverId: linkedIssue.serverId },
+      pathname: "/work/[id]",
+      params: { id: linkedWork.id, serverId: linkedWork.serverId },
     });
   };
 
@@ -1609,10 +1609,10 @@ export default function TerminalScreen() {
               disabledTextColor={chromeColors.textSubtle}
               destructiveColor={terminalTheme.red}
             />
-            {linkedIssue ? (
+            {linkedWork ? (
               <MenuAction
-                label="Open Linked Issue"
-                onPress={openLinkedIssue}
+                label="Open Linked Work"
+                onPress={openLinkedWork}
                 textColor={chromeColors.text}
                 disabledTextColor={chromeColors.textSubtle}
                 destructiveColor={terminalTheme.red}

@@ -1,17 +1,17 @@
-package issue
+package work
 
 import (
 	"os"
 	"path/filepath"
 )
 
-// DefaultRoot returns ~/.zen/issues.
+// DefaultRoot returns ~/.zen/work.
 func DefaultRoot() (string, error) {
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return "", err
 	}
-	return filepath.Join(home, ".zen", "issues"), nil
+	return filepath.Join(home, ".zen", "work"), nil
 }
 
 // DefaultExecutorsPath returns ~/.zen/executors.toml.

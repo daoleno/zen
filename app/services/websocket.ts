@@ -835,17 +835,17 @@ class MultiServerWebSocketClient {
     });
   }
 
-  // ── Issues ───────────────────────────────────────────
+  // ── Work items ───────────────────────────────────────────────────────────
 
-  listIssues(serverId: string) {
-    this.send(serverId, { type: "list_issues" });
+  listWorkItems(serverId: string) {
+    this.send(serverId, { type: "list_work_items" });
   }
 
   listExecutors(serverId: string) {
     this.send(serverId, { type: "list_executors" });
   }
 
-  writeIssue(
+  writeWorkItem(
     serverId: string,
     options: {
       id?: string;
@@ -861,7 +861,7 @@ class MultiServerWebSocketClient {
     return new Promise<any>((resolve, reject) => {
       const cleanup = () => {
         if (timer) clearTimeout(timer);
-        this.off("issue_written", handleWritten);
+        this.off("work_item_written", handleWritten);
         this.off("error", handleError);
       };
 
@@ -870,7 +870,7 @@ class MultiServerWebSocketClient {
           return;
         }
         cleanup();
-        resolve(payload.issue);
+        resolve(payload.work_item);
       };
 
       const handleError = (payload: any) => {
@@ -878,7 +878,7 @@ class MultiServerWebSocketClient {
           return;
         }
         cleanup();
-        const error = new Error(payload.message || "Failed to write issue.");
+        const error = new Error(payload.message || "Failed to write work item.");
         (error as Error & { code?: string; current?: any }).code = payload.code;
         (error as Error & { code?: string; current?: any }).current = payload.current;
         reject(error);
@@ -886,13 +886,13 @@ class MultiServerWebSocketClient {
 
       const timer = setTimeout(() => {
         cleanup();
-        reject(new Error("Timed out while writing issue."));
+        reject(new Error("Timed out while writing work item."));
       }, 10000);
 
-      this.on("issue_written", handleWritten);
+      this.on("work_item_written", handleWritten);
       this.on("error", handleError);
       this.send(serverId, {
-        type: "write_issue",
+        type: "write_work_item",
         request_id: requestId,
         id: options.id ?? "",
         project: options.project,
@@ -904,27 +904,27 @@ class MultiServerWebSocketClient {
     });
   }
 
-  sendIssue(serverId: string, id: string) {
-    return this.issueAction(serverId, "send_issue", "issue_dispatched", id, "Failed to send issue.");
+  startWorkItem(serverId: string, id: string) {
+    return this.workItemAction(serverId, "start_work_item", "work_item_started", id, "Failed to start work item.");
   }
 
-  redispatchIssue(serverId: string, id: string) {
-    return this.issueAction(
+  rerunWorkItem(serverId: string, id: string) {
+    return this.workItemAction(
       serverId,
-      "redispatch_issue",
-      "issue_redispatched",
+      "rerun_work_item",
+      "work_item_rerun",
       id,
-      "Failed to redispatch issue.",
+      "Failed to run work item again.",
     );
   }
 
-  deleteIssue(serverId: string, id: string) {
+  deleteWorkItem(serverId: string, id: string) {
     const requestId = `${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
 
     return new Promise<void>((resolve, reject) => {
       const cleanup = () => {
         if (timer) clearTimeout(timer);
-        this.off("issue_deleted_ack", handleDeleted);
+        this.off("work_item_deleted_ack", handleDeleted);
         this.off("error", handleError);
       };
 
@@ -941,18 +941,18 @@ class MultiServerWebSocketClient {
           return;
         }
         cleanup();
-        reject(new Error(payload.message || "Failed to delete issue."));
+        reject(new Error(payload.message || "Failed to delete work item."));
       };
 
       const timer = setTimeout(() => {
         cleanup();
-        reject(new Error("Timed out while deleting issue."));
+        reject(new Error("Timed out while deleting work item."));
       }, 10000);
 
-      this.on("issue_deleted_ack", handleDeleted);
+      this.on("work_item_deleted_ack", handleDeleted);
       this.on("error", handleError);
       this.send(serverId, {
-        type: "delete_issue",
+        type: "delete_work_item",
         request_id: requestId,
         id,
       });
@@ -969,7 +969,7 @@ class MultiServerWebSocketClient {
     );
   }
 
-  private issueAction(
+  private workItemAction(
     serverId: string,
     requestType: string,
     responseType: string,
@@ -990,7 +990,7 @@ class MultiServerWebSocketClient {
           return;
         }
         cleanup();
-        resolve(payload.issue);
+        resolve(payload.work_item);
       };
 
       const handleError = (payload: any) => {
@@ -1003,7 +1003,7 @@ class MultiServerWebSocketClient {
 
       const timer = setTimeout(() => {
         cleanup();
-        reject(new Error(`Timed out while waiting for ${requestType}.`));
+        reject(new Error("Timed out while waiting for work item action."));
       }, 15000);
 
       this.on(responseType, handleResponse);

@@ -1,4 +1,4 @@
-package issue
+package work
 
 import (
 	"errors"
@@ -21,23 +21,23 @@ const (
 )
 
 // ErrConflict is returned by Write when the base mtime does not match the file on disk.
-var ErrConflict = errors.New("issue write conflict: file changed on disk")
+var ErrConflict = errors.New("work item write conflict: file changed on disk")
 
-// Event describes an issue change emitted by the store.
+// Event describes a work item change emitted by the store.
 type Event struct {
-	Type  EventType
-	ID    string
-	Path  string
-	Issue *Issue
+	Type EventType
+	ID   string
+	Path string
+	Item *Item
 }
 
-// Store is an in-memory index of Markdown issue files under Root.
+// Store is an in-memory index of Markdown work item files under Root.
 type Store struct {
 	Root string
 
 	mu      sync.RWMutex
-	byPath  map[string]*Issue
-	byID    map[string]*Issue
+	byPath  map[string]*Item
+	byID    map[string]*Item
 	subs    map[int]chan Event
 	nextSub int
 
@@ -54,8 +54,8 @@ func NewStore(root string) (*Store, error) {
 	}
 	store := &Store{
 		Root:   root,
-		byPath: map[string]*Issue{},
-		byID:   map[string]*Issue{},
+		byPath: map[string]*Item{},
+		byID:   map[string]*Item{},
 		subs:   map[int]chan Event{},
 		stopCh: make(chan struct{}),
 	}
@@ -86,7 +86,7 @@ func (s *Store) Close() error {
 	return nil
 }
 
-// Subscribe returns a channel that receives issue change events.
+// Subscribe returns a channel that receives work item change events.
 func (s *Store) Subscribe() (int, <-chan Event) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -119,14 +119,14 @@ func (s *Store) broadcast(ev Event) {
 	}
 }
 
-// List returns a stable snapshot of all issues sorted by creation time descending.
-func (s *Store) List() []*Issue {
+// List returns a stable snapshot of all work items sorted by creation time descending.
+func (s *Store) List() []*Item {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
-	out := make([]*Issue, 0, len(s.byPath))
+	out := make([]*Item, 0, len(s.byPath))
 	for _, iss := range s.byPath {
-		out = append(out, cloneIssue(iss))
+		out = append(out, cloneItem(iss))
 	}
 	sort.Slice(out, func(i, j int) bool {
 		return out[i].Frontmatter.Created.After(out[j].Frontmatter.Created)
@@ -134,26 +134,43 @@ func (s *Store) List() []*Issue {
 	return out
 }
 
-// GetByID returns one issue by frontmatter ID.
-func (s *Store) GetByID(id string) (*Issue, bool) {
+// GetByID returns one work item by frontmatter ID.
+func (s *Store) GetByID(id string) (*Item, bool) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	iss, ok := s.byID[id]
-	return cloneIssue(iss), ok
+	return cloneItem(iss), ok
 }
 
-// Write persists the issue to disk atomically. If baseMtime is non-zero and
-// the current file mtime does not match, ErrConflict is returned.
-func (s *Store) Write(iss *Issue, baseMtime time.Time) (*Issue, error) {
-	if iss == nil {
-		return nil, fmt.Errorf("issue required")
+// GetByAgentSession returns the work item linked to one agent session id.
+func (s *Store) GetByAgentSession(sessionID string) (*Item, bool) {
+	sessionID = strings.TrimSpace(sessionID)
+	if sessionID == "" {
+		return nil, false
 	}
-	if strings.TrimSpace(iss.Path) == "" {
-		return nil, fmt.Errorf("issue path required")
+
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	for _, item := range s.byPath {
+		if strings.TrimSpace(item.Frontmatter.AgentSession) == sessionID {
+			return cloneItem(item), true
+		}
+	}
+	return nil, false
+}
+
+// Write persists the work item to disk atomically. If baseMtime is non-zero and
+// the current file mtime does not match, ErrConflict is returned.
+func (s *Store) Write(item *Item, baseMtime time.Time) (*Item, error) {
+	if item == nil {
+		return nil, fmt.Errorf("work item required")
+	}
+	if strings.TrimSpace(item.Path) == "" {
+		return nil, fmt.Errorf("work item path required")
 	}
 
 	if !baseMtime.IsZero() {
-		st, err := os.Stat(iss.Path)
+		st, err := os.Stat(item.Path)
 		if err == nil {
 			if !sameMtime(st.ModTime(), baseMtime) {
 				return nil, ErrConflict
@@ -163,22 +180,22 @@ func (s *Store) Write(iss *Issue, baseMtime time.Time) (*Issue, error) {
 		}
 	}
 
-	data, err := SerializeIssue(iss)
+	data, err := SerializeItem(item)
 	if err != nil {
 		return nil, err
 	}
-	if err := os.MkdirAll(filepath.Dir(iss.Path), 0o700); err != nil {
+	if err := os.MkdirAll(filepath.Dir(item.Path), 0o700); err != nil {
 		return nil, err
 	}
-	if err := writeAtomic(iss.Path, data, 0o600); err != nil {
+	if err := writeAtomic(item.Path, data, 0o600); err != nil {
 		return nil, err
 	}
 
-	st, err := os.Stat(iss.Path)
+	st, err := os.Stat(item.Path)
 	if err != nil {
 		return nil, err
 	}
-	parsed, err := ParseFile(iss.Path, data, st.ModTime())
+	parsed, err := ParseFile(item.Path, data, st.ModTime())
 	if err != nil {
 		return nil, err
 	}
@@ -187,12 +204,12 @@ func (s *Store) Write(iss *Issue, baseMtime time.Time) (*Issue, error) {
 	s.upsertLocked(parsed)
 	s.mu.Unlock()
 
-	out := cloneIssue(parsed)
-	s.broadcast(Event{Type: EventChanged, ID: out.ID, Path: out.Path, Issue: out})
+	out := cloneItem(parsed)
+	s.broadcast(Event{Type: EventChanged, ID: out.ID, Path: out.Path, Item: out})
 	return out, nil
 }
 
-// Delete removes the file and evicts the issue from the in-memory snapshot.
+// Delete removes the file and evicts the work item from the in-memory snapshot.
 func (s *Store) Delete(id string) error {
 	s.mu.RLock()
 	iss, ok := s.byID[id]
@@ -256,18 +273,18 @@ func (s *Store) StartWatcher() error {
 			return
 		}
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "issue: stat %s: %v\n", path, err)
+			fmt.Fprintf(os.Stderr, "work: stat %s: %v\n", path, err)
 			return
 		}
 		if st.IsDir() || !strings.HasSuffix(path, ".md") {
 			return
 		}
 		if err := s.reloadPath(path); err != nil {
-			fmt.Fprintf(os.Stderr, "issue: reload %s: %v\n", path, err)
+			fmt.Fprintf(os.Stderr, "work: reload %s: %v\n", path, err)
 			return
 		}
 		if iss, ok := s.GetByIDFromPath(path); ok {
-			s.broadcast(Event{Type: EventChanged, ID: iss.ID, Path: path, Issue: iss})
+			s.broadcast(Event{Type: EventChanged, ID: iss.ID, Path: path, Item: iss})
 		}
 	}
 
@@ -298,7 +315,7 @@ func (s *Store) StartWatcher() error {
 				if !ok {
 					return
 				}
-				fmt.Fprintf(os.Stderr, "issue: watch error: %v\n", err)
+				fmt.Fprintf(os.Stderr, "work: watch error: %v\n", err)
 			}
 		}
 	}()
@@ -306,11 +323,11 @@ func (s *Store) StartWatcher() error {
 	return nil
 }
 
-func (s *Store) GetByIDFromPath(path string) (*Issue, bool) {
+func (s *Store) GetByIDFromPath(path string) (*Item, bool) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	iss, ok := s.byPath[path]
-	return cloneIssue(iss), ok
+	return cloneItem(iss), ok
 }
 
 func (s *Store) scanAll() error {
@@ -325,7 +342,7 @@ func (s *Store) scanAll() error {
 			return nil
 		}
 		if err := s.reloadPath(path); err != nil {
-			fmt.Fprintf(os.Stderr, "issue: skip %s: %v\n", path, err)
+			fmt.Fprintf(os.Stderr, "work: skip %s: %v\n", path, err)
 		}
 		return nil
 	})
@@ -351,15 +368,15 @@ func (s *Store) reloadPath(path string) error {
 	return nil
 }
 
-func (s *Store) upsertLocked(iss *Issue) {
+func (s *Store) upsertLocked(iss *Item) {
 	if old, ok := s.byPath[iss.Path]; ok && old.ID != iss.ID {
 		delete(s.byID, old.ID)
 	}
 	if old, ok := s.byID[iss.ID]; ok && old.Path != iss.Path {
 		delete(s.byPath, old.Path)
 	}
-	s.byPath[iss.Path] = cloneIssue(iss)
-	s.byID[iss.ID] = cloneIssue(iss)
+	s.byPath[iss.Path] = cloneItem(iss)
+	s.byID[iss.ID] = cloneItem(iss)
 }
 
 func sameMtime(left, right time.Time) bool {
@@ -367,7 +384,7 @@ func sameMtime(left, right time.Time) bool {
 }
 
 func writeAtomic(path string, data []byte, perm os.FileMode) error {
-	tmp, err := os.CreateTemp(filepath.Dir(path), ".zen-issue-*")
+	tmp, err := os.CreateTemp(filepath.Dir(path), ".zen-work-*")
 	if err != nil {
 		return err
 	}

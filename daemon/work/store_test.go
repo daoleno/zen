@@ -1,4 +1,4 @@
-package issue
+package work
 
 import (
 	"os"
@@ -7,14 +7,14 @@ import (
 	"time"
 )
 
-func writeIssue(t *testing.T, path, id string) {
+func writeWorkItem(t *testing.T, path, id string) {
 	t.Helper()
 
 	content := `---
 id: ` + id + `
 created: 2026-04-21T00:00:00Z
 ---
-# Issue ` + id + `
+# Item ` + id + `
 
 Body.
 `
@@ -28,9 +28,9 @@ Body.
 
 func TestStore_Scan(t *testing.T) {
 	root := t.TempDir()
-	writeIssue(t, filepath.Join(root, "zen", "a.md"), "A")
-	writeIssue(t, filepath.Join(root, "zen", "b.md"), "B")
-	writeIssue(t, filepath.Join(root, "inbox", "c.md"), "C")
+	writeWorkItem(t, filepath.Join(root, "zen", "a.md"), "A")
+	writeWorkItem(t, filepath.Join(root, "zen", "b.md"), "B")
+	writeWorkItem(t, filepath.Join(root, "inbox", "c.md"), "C")
 
 	store, err := NewStore(root)
 	if err != nil {
@@ -46,7 +46,7 @@ func TestStore_Scan(t *testing.T) {
 
 func TestStore_GetByID(t *testing.T) {
 	root := t.TempDir()
-	writeIssue(t, filepath.Join(root, "zen", "a.md"), "A")
+	writeWorkItem(t, filepath.Join(root, "zen", "a.md"), "A")
 
 	store, err := NewStore(root)
 	if err != nil {
@@ -56,7 +56,7 @@ func TestStore_GetByID(t *testing.T) {
 
 	iss, ok := store.GetByID("A")
 	if !ok {
-		t.Fatal("issue A not found")
+		t.Fatal("work item A not found")
 	}
 	if iss.Project != "zen" {
 		t.Fatalf("project = %q", iss.Project)
@@ -75,7 +75,7 @@ func TestStore_WriteAndRead(t *testing.T) {
 	}
 	defer store.Close()
 
-	iss := &Issue{
+	iss := &Item{
 		Path: filepath.Join(root, "zen", "new.md"),
 		Body: "# New\n\nBody.\n",
 		Frontmatter: Frontmatter{
@@ -93,7 +93,7 @@ func TestStore_WriteAndRead(t *testing.T) {
 
 	got, ok := store.GetByID("NEW")
 	if !ok {
-		t.Fatal("issue NEW not found")
+		t.Fatal("work item NEW not found")
 	}
 	if got.Title != "New" {
 		t.Fatalf("title = %q", got.Title)
@@ -117,15 +117,15 @@ func TestStore_WatchNotifiesOnChange(t *testing.T) {
 	}
 	_, ch := store.Subscribe()
 
-	go writeIssue(t, filepath.Join(root, "zen", "live.md"), "LIVE")
+	go writeWorkItem(t, filepath.Join(root, "zen", "live.md"), "LIVE")
 
 	select {
 	case ev := <-ch:
 		if ev.Type != EventChanged {
 			t.Fatalf("type = %q", ev.Type)
 		}
-		if ev.Issue == nil || ev.Issue.ID != "LIVE" {
-			t.Fatalf("issue = %#v", ev.Issue)
+		if ev.Item == nil || ev.Item.ID != "LIVE" {
+			t.Fatalf("item = %#v", ev.Item)
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("timed out waiting for change event")
@@ -150,10 +150,10 @@ func TestStore_WatchDebouncesMultipleWrites(t *testing.T) {
 	_, ch := store.Subscribe()
 
 	path := filepath.Join(root, "zen", "hot.md")
-	writeIssue(t, path, "HOT")
+	writeWorkItem(t, path, "HOT")
 	for range 3 {
 		time.Sleep(50 * time.Millisecond)
-		writeIssue(t, path, "HOT")
+		writeWorkItem(t, path, "HOT")
 	}
 
 	count := 0

@@ -4,8 +4,11 @@ export type Frontmatter = {
   id: string;
   created: string;
   done?: string | null;
-  dispatched?: string | null;
+  started?: string | null;
+  status?: string;
   agent_session?: string;
+  cwd?: string;
+  command?: string;
   extra?: Record<string, unknown>;
   [key: string]: unknown;
 };
@@ -16,7 +19,7 @@ export type Mention = {
   index: number;
 };
 
-export type Issue = {
+export type WorkItem = {
   key: string;
   serverId: string;
   serverName: string;
@@ -31,19 +34,19 @@ export type Issue = {
   mtime: string;
 };
 
-export type IssuesState = {
-  byKey: Record<string, Issue>;
+export type WorkState = {
+  byKey: Record<string, WorkItem>;
   byProject: Record<string, string[]>;
   executorsByServer: Record<string, string[]>;
 };
 
-export const initialIssuesState: IssuesState = {
+export const initialWorkState: WorkState = {
   byKey: {},
   byProject: {},
   executorsByServer: {},
 };
 
-type RawIssue = {
+type RawWorkItem = {
   id: string;
   path?: string;
   project?: string;
@@ -56,33 +59,33 @@ type RawIssue = {
 
 type Action =
   | {
-      type: "ISSUES_SNAPSHOT";
+      type: "WORK_ITEMS_SNAPSHOT";
       serverId: string;
       serverName: string;
       serverUrl: string;
-      issues: RawIssue[];
+      workItems: RawWorkItem[];
       executors: string[];
     }
   | {
-      type: "ISSUE_CHANGED";
+      type: "WORK_ITEM_CHANGED";
       serverId: string;
       serverName: string;
       serverUrl: string;
-      issue: RawIssue;
+      workItem: RawWorkItem;
     }
-  | { type: "ISSUE_DELETED"; serverId: string; id?: string; path?: string }
+  | { type: "WORK_ITEM_DELETED"; serverId: string; id?: string; path?: string }
   | { type: "EXECUTORS_LOADED"; serverId: string; executors: string[] }
   | { type: "REMOVE_SERVER"; serverId: string };
 
-function makeIssueKey(serverId: string, issueId: string) {
-  return `${serverId}:${issueId}`;
+function makeWorkItemKey(serverId: string, itemId: string) {
+  return `${serverId}:${itemId}`;
 }
 
-function makeProjectKey(issue: Pick<Issue, "serverId" | "project">) {
-  return `${issue.serverId}:${issue.project}`;
+function makeProjectKey(item: Pick<WorkItem, "serverId" | "project">) {
+  return `${item.serverId}:${item.project}`;
 }
 
-function normalizeTimestamp(value: RawIssue["mtime"]): string {
+function normalizeTimestamp(value: RawWorkItem["mtime"]): string {
   if (typeof value === "string" && value.trim()) {
     const parsed = Date.parse(value);
     return Number.isNaN(parsed) ? value : new Date(parsed).toISOString();
@@ -100,19 +103,19 @@ function normalizeTimestamp(value: RawIssue["mtime"]): string {
   return new Date(0).toISOString();
 }
 
-function normalizeIssue(
-  raw: RawIssue,
+function normalizeWorkItem(
+  raw: RawWorkItem,
   serverId: string,
   serverName: string,
   serverUrl: string,
-): Issue {
+): WorkItem {
   const id = String(raw.id || "");
   const frontmatter = raw.frontmatter || {};
   const created = typeof frontmatter.created === "string"
     ? frontmatter.created
     : new Date(0).toISOString();
   return {
-    key: makeIssueKey(serverId, id),
+    key: makeWorkItemKey(serverId, id),
     serverId,
     serverName,
     serverUrl,
@@ -126,13 +129,20 @@ function normalizeIssue(
       id: typeof frontmatter.id === "string" && frontmatter.id ? frontmatter.id : id,
       created,
       done: typeof frontmatter.done === "string" ? frontmatter.done : frontmatter.done ?? null,
-      dispatched:
-        typeof frontmatter.dispatched === "string"
-          ? frontmatter.dispatched
-          : frontmatter.dispatched ?? null,
+      started: typeof frontmatter.started === "string" ? frontmatter.started : frontmatter.started ?? null,
+      status:
+        typeof frontmatter.status === "string"
+          ? frontmatter.status.trim()
+          : undefined,
       agent_session:
         typeof frontmatter.agent_session === "string"
           ? frontmatter.agent_session
+          : undefined,
+      cwd:
+        typeof frontmatter.cwd === "string" ? frontmatter.cwd.trim() : undefined,
+      command:
+        typeof frontmatter.command === "string"
+          ? frontmatter.command.trim()
           : undefined,
     },
     mentions: Array.isArray(raw.mentions) ? raw.mentions : [],
@@ -140,7 +150,7 @@ function normalizeIssue(
   };
 }
 
-function groupByProject(byKey: Record<string, Issue>) {
+function groupByProject(byKey: Record<string, WorkItem>) {
   const out: Record<string, string[]> = {};
   for (const current of Object.values(byKey)) {
     const key = makeProjectKey(current);
@@ -152,10 +162,10 @@ function groupByProject(byKey: Record<string, Issue>) {
 
   for (const key of Object.keys(out)) {
     out[key].sort((left, right) => {
-      const leftIssue = byKey[left];
-      const rightIssue = byKey[right];
-      const leftCreated = Date.parse(leftIssue?.frontmatter.created || "");
-      const rightCreated = Date.parse(rightIssue?.frontmatter.created || "");
+      const leftItem = byKey[left];
+      const rightItem = byKey[right];
+      const leftCreated = Date.parse(leftItem?.frontmatter.created || "");
+      const rightCreated = Date.parse(rightItem?.frontmatter.created || "");
       return (Number.isNaN(rightCreated) ? 0 : rightCreated) - (Number.isNaN(leftCreated) ? 0 : leftCreated);
     });
   }
@@ -163,14 +173,14 @@ function groupByProject(byKey: Record<string, Issue>) {
   return out;
 }
 
-export function issuesReducer(state: IssuesState, action: Action): IssuesState {
+export function workReducer(state: WorkState, action: Action): WorkState {
   switch (action.type) {
-    case "ISSUES_SNAPSHOT": {
+    case "WORK_ITEMS_SNAPSHOT": {
       const nextByKey = Object.fromEntries(
         Object.entries(state.byKey).filter(([key]) => !key.startsWith(`${action.serverId}:`)),
       );
-      for (const rawIssue of action.issues) {
-        const normalized = normalizeIssue(rawIssue, action.serverId, action.serverName, action.serverUrl);
+      for (const rawItem of action.workItems) {
+        const normalized = normalizeWorkItem(rawItem, action.serverId, action.serverName, action.serverUrl);
         nextByKey[normalized.key] = normalized;
       }
       return {
@@ -182,8 +192,8 @@ export function issuesReducer(state: IssuesState, action: Action): IssuesState {
         },
       };
     }
-    case "ISSUE_CHANGED": {
-      const normalized = normalizeIssue(action.issue, action.serverId, action.serverName, action.serverUrl);
+    case "WORK_ITEM_CHANGED": {
+      const normalized = normalizeWorkItem(action.workItem, action.serverId, action.serverName, action.serverUrl);
       const nextByKey = {
         ...state.byKey,
         [normalized.key]: normalized,
@@ -194,10 +204,10 @@ export function issuesReducer(state: IssuesState, action: Action): IssuesState {
         byProject: groupByProject(nextByKey),
       };
     }
-    case "ISSUE_DELETED": {
+    case "WORK_ITEM_DELETED": {
       const nextByKey = { ...state.byKey };
       if (action.id) {
-        delete nextByKey[makeIssueKey(action.serverId, action.id)];
+        delete nextByKey[makeWorkItemKey(action.serverId, action.id)];
       } else if (action.path) {
         for (const [key, value] of Object.entries(nextByKey)) {
           if (value.serverId === action.serverId && value.path === action.path) {
@@ -236,24 +246,24 @@ export function issuesReducer(state: IssuesState, action: Action): IssuesState {
   }
 }
 
-const IssuesContext = createContext<{
-  state: IssuesState;
+const WorkContext = createContext<{
+  state: WorkState;
   dispatch: React.Dispatch<Action>;
 } | null>(null);
 
-export function IssuesProvider({ children }: { children: ReactNode }) {
-  const [state, dispatch] = useReducer(issuesReducer, initialIssuesState);
+export function WorkProvider({ children }: { children: ReactNode }) {
+  const [state, dispatch] = useReducer(workReducer, initialWorkState);
   return (
-    <IssuesContext.Provider value={{ state, dispatch }}>
+    <WorkContext.Provider value={{ state, dispatch }}>
       {children}
-    </IssuesContext.Provider>
+    </WorkContext.Provider>
   );
 }
 
-export function useIssues() {
-  const ctx = useContext(IssuesContext);
+export function useWork() {
+  const ctx = useContext(WorkContext);
   if (!ctx) {
-    throw new Error("useIssues must be used within IssuesProvider");
+    throw new Error("useWork must be used within WorkProvider");
   }
   return ctx;
 }

@@ -1,4 +1,4 @@
-package issue
+package work
 
 import (
 	"bytes"
@@ -16,8 +16,8 @@ var (
 	mentionRe        = regexp.MustCompile(`(?m)(?:^|\s)@([a-z][a-z0-9-]*)(?:#([a-z0-9-]+))?\b`)
 )
 
-// ParseFile parses a Markdown file's bytes into an Issue.
-func ParseFile(path string, data []byte, mtime time.Time) (*Issue, error) {
+// ParseFile parses a Markdown file's bytes into an Item.
+func ParseFile(path string, data []byte, mtime time.Time) (*Item, error) {
 	fm, body, err := splitFrontmatter(data)
 	if err != nil {
 		return nil, err
@@ -33,7 +33,7 @@ func ParseFile(path string, data []byte, mtime time.Time) (*Issue, error) {
 	title := extractTitle(body)
 	mentions := ExtractMentions(body)
 
-	return &Issue{
+	return &Item{
 		ID:          parsed.ID,
 		Path:        path,
 		Project:     project,
@@ -86,8 +86,11 @@ func decodeFrontmatter(fm string) (Frontmatter, map[string]interface{}, error) {
 		"id":            {},
 		"created":       {},
 		"done":          {},
-		"dispatched":    {},
+		"started":       {},
+		"status":        {},
 		"agent_session": {},
+		"cwd":           {},
+		"command":       {},
 	}
 	for key, value := range raw {
 		if _, ok := known[key]; ok {
@@ -140,9 +143,9 @@ func ExtractMentions(body string) []Mention {
 	return out
 }
 
-// SerializeIssue renders an Issue back to Markdown bytes suitable for atomic write.
+// SerializeItem renders an Item back to Markdown bytes suitable for atomic write.
 // Unknown frontmatter fields from iss.Frontmatter.Extra are preserved.
-func SerializeIssue(iss *Issue) ([]byte, error) {
+func SerializeItem(iss *Item) ([]byte, error) {
 	out := map[string]interface{}{}
 	out["id"] = iss.Frontmatter.ID
 	out["created"] = iss.Frontmatter.Created.Format(time.RFC3339)
@@ -151,11 +154,20 @@ func SerializeIssue(iss *Issue) ([]byte, error) {
 	} else {
 		out["done"] = nil
 	}
-	if iss.Frontmatter.Dispatched != nil {
-		out["dispatched"] = iss.Frontmatter.Dispatched.Format(time.RFC3339)
+	if iss.Frontmatter.Started != nil {
+		out["started"] = iss.Frontmatter.Started.Format(time.RFC3339)
+	}
+	if iss.Frontmatter.Status != "" {
+		out["status"] = iss.Frontmatter.Status
 	}
 	if iss.Frontmatter.AgentSession != "" {
 		out["agent_session"] = iss.Frontmatter.AgentSession
+	}
+	if iss.Frontmatter.Cwd != "" {
+		out["cwd"] = iss.Frontmatter.Cwd
+	}
+	if iss.Frontmatter.Command != "" {
+		out["command"] = iss.Frontmatter.Command
 	}
 	for key, value := range iss.Frontmatter.Extra {
 		out[key] = value

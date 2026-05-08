@@ -1,4 +1,4 @@
-package issue
+package work
 
 import (
 	"strings"
@@ -102,7 +102,7 @@ func TestParseFile_ExtraFieldsPreserved(t *testing.T) {
 	src := `---
 id: a
 created: 2026-04-21T00:00:00Z
-dispatched: 2026-04-21T01:00:00Z
+started: 2026-04-21T01:00:00Z
 agent_session: zen-claude-3
 labels: [keep, me]
 ---
@@ -113,8 +113,8 @@ Body
 	if err != nil {
 		t.Fatalf("ParseFile: %v", err)
 	}
-	if iss.Frontmatter.Dispatched == nil {
-		t.Fatal("dispatched should be set")
+	if iss.Frontmatter.Started == nil {
+		t.Fatal("started should be set")
 	}
 	if iss.Frontmatter.AgentSession != "zen-claude-3" {
 		t.Fatalf("agent_session = %q", iss.Frontmatter.AgentSession)
@@ -177,12 +177,12 @@ func TestExtractMentions_StartOfLine(t *testing.T) {
 	}
 }
 
-func TestSerializeIssue_RoundTrip(t *testing.T) {
+func TestSerializeItem_RoundTrip(t *testing.T) {
 	src := `---
 id: 01HZ5K8J9X
 created: 2026-04-21T14:32:15Z
 done: 2026-04-22T00:00:00Z
-dispatched: 2026-04-21T15:00:00Z
+started: 2026-04-21T15:00:00Z
 agent_session: zen-claude-3
 ---
 # Hello
@@ -194,9 +194,9 @@ Body line.
 	if err != nil {
 		t.Fatalf("ParseFile: %v", err)
 	}
-	out, err := SerializeIssue(iss)
+	out, err := SerializeItem(iss)
 	if err != nil {
-		t.Fatalf("SerializeIssue: %v", err)
+		t.Fatalf("SerializeItem: %v", err)
 	}
 	reparsed, err := ParseFile("/tmp/x.md", out, time.Now())
 	if err != nil {
@@ -216,17 +216,17 @@ Body line.
 	}
 }
 
-func TestSerializeIssue_EmitsEmptyDoneField(t *testing.T) {
-	iss := &Issue{
+func TestSerializeItem_EmitsEmptyDoneField(t *testing.T) {
+	iss := &Item{
 		Frontmatter: Frontmatter{
 			ID:      "a",
 			Created: time.Date(2026, 4, 21, 0, 0, 0, 0, time.UTC),
 		},
 		Body: "body",
 	}
-	out, err := SerializeIssue(iss)
+	out, err := SerializeItem(iss)
 	if err != nil {
-		t.Fatalf("SerializeIssue: %v", err)
+		t.Fatalf("SerializeItem: %v", err)
 	}
 	reparsed, err := ParseFile("/tmp/x.md", out, time.Now())
 	if err != nil {

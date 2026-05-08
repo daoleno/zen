@@ -13,24 +13,24 @@ import { useLocalSearchParams, useRouter } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
 import { SafeAreaView, useSafeAreaInsets } from "react-native-safe-area-context";
 import { Colors, Radii, Spacing, Typography, useAppColors } from "../../constants/tokens";
-import { useIssues, type Issue } from "../../store/issues";
+import { useWork, type WorkItem } from "../../store/work";
 import { useAgents } from "../../store/agents";
 import {
-  MarkdownEditor,
+  WorkEditor,
   type ActiveMention,
-  type MarkdownEditorHandle,
-} from "../../components/issue/MarkdownEditor";
+  type WorkEditorHandle,
+} from "../../components/work/WorkEditor";
 import {
   MentionPicker,
   type MentionCandidate,
-} from "../../components/issue/MentionPicker";
-import { relativeTime } from "../../components/issue/IssueRow";
+} from "../../components/work/MentionPicker";
+import { relativeTime, workItemStatus } from "../../components/work/WorkRow";
 import { wsClient } from "../../services/websocket";
 
 const AUTOSAVE_DELAY_MS = 600;
 type IconName = React.ComponentProps<typeof Ionicons>["name"];
 
-function issueKey(serverId: string, id: string) {
+function workItemKey(serverId: string, id: string) {
   return `${serverId}:${id}`;
 }
 
@@ -40,22 +40,22 @@ function agentRole(command?: string) {
   return parts[parts.length - 1] || "agent";
 }
 
-export default function IssueDetailScreen() {
+export default function WorkDetailScreen() {
   const params = useLocalSearchParams<{ id?: string; serverId?: string }>();
   const router = useRouter();
   const colors = useAppColors();
   const styles = useMemo(() => createStyles(colors), [colors]);
   const insets = useSafeAreaInsets();
-  const { state } = useIssues();
+  const { state } = useWork();
   const { state: agentsState } = useAgents();
 
-  const issueId = typeof params.id === "string" ? params.id : "";
+  const itemId = typeof params.id === "string" ? params.id : "";
   const serverId = typeof params.serverId === "string" ? params.serverId : "";
-  const issue = state.byKey[issueKey(serverId, issueId)] as Issue | undefined;
+  const item = state.byKey[workItemKey(serverId, itemId)] as WorkItem | undefined;
 
-  const editorRef = useRef<MarkdownEditorHandle>(null);
-  const [draftBody, setDraftBody] = useState(issue?.body ?? "");
-  const [baseMtime, setBaseMtime] = useState(issue?.mtime ?? "");
+  const editorRef = useRef<WorkEditorHandle>(null);
+  const [draftBody, setDraftBody] = useState(item?.body ?? "");
+  const [baseMtime, setBaseMtime] = useState(item?.mtime ?? "");
   const [dirty, setDirty] = useState(false);
   const [remoteBanner, setRemoteBanner] = useState(false);
   const [saving, setSaving] = useState(false);
@@ -68,42 +68,42 @@ export default function IssueDetailScreen() {
   }, [draftBody]);
 
   useEffect(() => {
-    if (!issue) {
+    if (!item) {
       return;
     }
     if (!dirty) {
-      setDraftBody(issue.body);
-      setBaseMtime(issue.mtime);
+      setDraftBody(item.body);
+      setBaseMtime(item.mtime);
       setRemoteBanner(false);
       return;
     }
-    if (issue.mtime !== baseMtime && issue.body !== draftBody) {
+    if (item.mtime !== baseMtime && item.body !== draftBody) {
       setRemoteBanner(true);
     }
-  }, [baseMtime, dirty, draftBody, issue]);
+  }, [baseMtime, dirty, draftBody, item]);
 
   const candidates = useMemo<MentionCandidate[]>(() => {
-    if (!issue) {
+    if (!item) {
       return [];
     }
-    const roles = (state.executorsByServer[issue.serverId] || []).map<MentionCandidate>(
+    const roles = (state.executorsByServer[item.serverId] || []).map<MentionCandidate>(
       (name) => ({ kind: "role", name }),
     );
     const sessions = agentsState.agents
       .filter(
-        (agent) => agent.serverId === issue.serverId && agent.project === issue.project,
+        (agent) => agent.serverId === item.serverId && agent.project === item.project,
       )
       .map<MentionCandidate>((agent) => ({
         kind: "session",
         role: agentRole(agent.command),
         sessionId: agent.id,
-        project: agent.project || issue.project,
+        project: agent.project || item.project,
       }));
     return [...roles, ...sessions];
-  }, [agentsState.agents, issue, state.executorsByServer]);
+  }, [agentsState.agents, item, state.executorsByServer]);
 
-  const saveIssue = async (frontmatter = issue?.frontmatter) => {
-    if (!issue || !serverId || !frontmatter) {
+  const saveWorkItem = async (frontmatter = item?.frontmatter) => {
+    if (!item || !serverId || !frontmatter) {
       return null;
     }
     if (savingRef.current) {
@@ -113,10 +113,10 @@ export default function IssueDetailScreen() {
     setSaving(true);
     const bodyAtSave = draftBodyRef.current;
     try {
-      const written = await wsClient.writeIssue(serverId, {
-        id: issue.id,
-        project: issue.project,
-        path: issue.path,
+      const written = await wsClient.writeWorkItem(serverId, {
+        id: item.id,
+        project: item.project,
+        path: item.path,
         body: bodyAtSave,
         frontmatter,
         baseMtime,
@@ -138,7 +138,7 @@ export default function IssueDetailScreen() {
         setRemoteBanner(true);
         setBaseMtime(error.current.mtime || baseMtime);
       } else {
-        Alert.alert("Save failed", error?.message || "Could not save issue.");
+        Alert.alert("Save failed", error?.message || "Could not save work item.");
       }
       return null;
     } finally {
@@ -149,65 +149,65 @@ export default function IssueDetailScreen() {
 
   // Debounced autosave whenever the body changes.
   useEffect(() => {
-    if (!dirty || remoteBanner || !issue) {
+    if (!dirty || remoteBanner || !item) {
       return;
     }
     const timer = setTimeout(() => {
-      void saveIssue();
+      void saveWorkItem();
     }, AUTOSAVE_DELAY_MS);
     return () => clearTimeout(timer);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [dirty, draftBody, remoteBanner]);
 
-  const handleSend = async () => {
-    if (!issue || !serverId) {
+  const handleStart = async () => {
+    if (!item || !serverId) {
       return;
     }
-    const written = await saveIssue();
+    const written = await saveWorkItem();
     if (!written) {
       return;
     }
     try {
-      await wsClient.sendIssue(serverId, issue.id);
+      await wsClient.startWorkItem(serverId, item.id);
     } catch (error: any) {
-      Alert.alert("Send failed", error?.message || "Could not dispatch issue.");
+      Alert.alert("Start failed", error?.message || "Could not start this work item.");
     }
   };
 
-  const handleRedispatch = async () => {
-    if (!issue || !serverId) {
+  const handleRerun = async () => {
+    if (!item || !serverId) {
       return;
     }
-    const written = await saveIssue();
+    const written = await saveWorkItem();
     if (!written) {
       return;
     }
     try {
-      await wsClient.redispatchIssue(serverId, issue.id);
+      await wsClient.rerunWorkItem(serverId, item.id);
     } catch (error: any) {
       Alert.alert(
-        "Redispatch failed",
-        error?.message || "Could not redispatch issue.",
+        "Run failed",
+        error?.message || "Could not run this work item again.",
       );
     }
   };
 
   const handleToggleDone = async () => {
-    if (!issue) {
+    if (!item) {
       return;
     }
     const nextFrontmatter = {
-      ...issue.frontmatter,
-      done: issue.frontmatter.done ? null : new Date().toISOString(),
+      ...item.frontmatter,
+      done: item.frontmatter.done ? null : new Date().toISOString(),
     };
-    await saveIssue(nextFrontmatter);
+    await saveWorkItem(nextFrontmatter);
   };
 
   const handleDelete = () => {
-    if (!issue || !serverId) {
+    if (!item || !serverId) {
       return;
     }
-    Alert.alert("Delete issue", "Remove this Markdown issue file?", [
+    Alert.alert("Delete work item", "Remove this Markdown work file?", [
       { text: "Cancel", style: "cancel" },
       {
         text: "Delete",
@@ -215,12 +215,12 @@ export default function IssueDetailScreen() {
         onPress: () => {
           void (async () => {
             try {
-              await wsClient.deleteIssue(serverId, issue.id);
+              await wsClient.deleteWorkItem(serverId, item.id);
               router.back();
             } catch (error: any) {
               Alert.alert(
                 "Delete failed",
-                error?.message || "Could not delete issue.",
+                error?.message || "Could not delete work item.",
               );
             }
           })();
@@ -233,20 +233,20 @@ export default function IssueDetailScreen() {
     editorRef.current?.insertMention(candidate);
   };
 
-  if (!issue) {
+  if (!item) {
     return (
       <SafeAreaView style={styles.emptyScreen} edges={["top"]}>
-        <Text style={styles.emptyTitle}>Issue not found</Text>
+        <Text style={styles.emptyTitle}>Work item not found</Text>
       </SafeAreaView>
     );
   }
 
-  const done = !!issue.frontmatter.done;
-  const dispatched = !!issue.frontmatter.dispatched;
-  const primaryLabel = dispatched ? "Resend" : "Send";
-  const draftTitle = titleFromMarkdown(draftBody) || issue.title || "Untitled issue";
-  const status = issueStatusInfo(done, dispatched, colors);
-  const updatedLabel = relativeTime(issue.mtime || issue.frontmatter.created);
+  const done = !!item.frontmatter.done;
+  const started = !!item.frontmatter.started;
+  const primaryLabel = started ? "Run again" : "Start";
+  const draftTitle = titleFromMarkdown(draftBody) || item.title || "Untitled work";
+  const status = workStatusInfo(item, colors);
+  const updatedLabel = relativeTime(item.mtime || item.frontmatter.created);
 
   return (
     <SafeAreaView style={styles.screen} edges={["top"]}>
@@ -265,7 +265,7 @@ export default function IssueDetailScreen() {
 
           <View style={styles.headerCenter}>
             <Text style={styles.headerTitle} numberOfLines={1}>
-              {issue.project}
+              {item.project}
             </Text>
           </View>
 
@@ -286,12 +286,12 @@ export default function IssueDetailScreen() {
               color={status.color}
             />
             <Text style={styles.contextPath} numberOfLines={1}>
-              {issue.serverName ? `${issue.serverName} · ${issue.project}` : issue.project}
+              {item.serverName ? `${item.serverName} · ${item.project}` : item.project}
               {updatedLabel ? ` · ${updatedLabel}` : ""}
             </Text>
           </View>
 
-          <Text style={styles.issueTitle} numberOfLines={2}>
+          <Text style={styles.workTitle} numberOfLines={2}>
             {draftTitle}
           </Text>
         </View>
@@ -299,8 +299,8 @@ export default function IssueDetailScreen() {
         {remoteBanner ? (
           <Pressable
             onPress={() => {
-              setDraftBody(issue.body);
-              setBaseMtime(issue.mtime);
+              setDraftBody(item.body);
+              setBaseMtime(item.mtime);
               setDirty(false);
               setRemoteBanner(false);
             }}
@@ -318,7 +318,7 @@ export default function IssueDetailScreen() {
         ) : null}
 
         <View style={styles.editorShell}>
-          <MarkdownEditor
+          <WorkEditor
             ref={editorRef}
             value={draftBody}
             onChange={(next) => {
@@ -328,7 +328,7 @@ export default function IssueDetailScreen() {
             onActiveMentionChange={setMention}
             onBlur={() => {
               if (dirty && !remoteBanner) {
-                void saveIssue();
+                void saveWorkItem();
               }
             }}
             autoFocus
@@ -366,7 +366,7 @@ export default function IssueDetailScreen() {
             </Pressable>
             <Pressable
               onPress={() => {
-                void (dispatched ? handleRedispatch() : handleSend());
+                void (started ? handleRerun() : handleStart());
               }}
               disabled={saving}
               style={({ pressed }) => [
@@ -376,7 +376,7 @@ export default function IssueDetailScreen() {
               ]}
             >
               <Ionicons
-                name={dispatched ? "refresh" : "paper-plane"}
+                name={started ? "refresh" : "play"}
                 size={14}
                 color={colors.textOnAccent}
               />
@@ -434,22 +434,25 @@ function titleFromMarkdown(value: string): string {
   return firstHeading.replace(/^#{1,6}\s+/, "").trim();
 }
 
-function issueStatusInfo(
-  done: boolean,
-  dispatched: boolean,
-  colors: typeof Colors = Colors,
-): {
+function workStatusInfo(item: WorkItem, colors: typeof Colors = Colors): {
   icon: IconName;
   label: string;
   color: string;
 } {
-  if (done) {
-    return { icon: "checkmark-circle", label: "Done", color: colors.textSecondary };
+  switch (workItemStatus(item)) {
+    case "failed":
+      return { icon: "close-circle", label: "Failed", color: colors.statusFailed };
+    case "blocked":
+      return { icon: "alert-circle", label: "Blocked", color: colors.statusBlocked };
+    case "done":
+      return { icon: "checkmark-circle", label: "Done", color: colors.statusDone };
+    case "running":
+      return { icon: "play-circle", label: "Running", color: colors.statusRunning };
+    case "unknown":
+      return { icon: "help-circle", label: "Unknown", color: colors.statusUnknown };
+    case "queued":
+      return { icon: "ellipse", label: "Queued", color: colors.accent };
   }
-  if (dispatched) {
-    return { icon: "paper-plane", label: "Sent", color: colors.statusRunning };
-  }
-  return { icon: "ellipse", label: "Open", color: colors.accent };
 }
 
 function SaveState({ saving, dirty }: { saving: boolean; dirty: boolean }) {
@@ -602,7 +605,7 @@ function createStyles(colors: typeof Colors) {
     lineHeight: 15,
     opacity: 0.56,
   },
-  issueTitle: {
+  workTitle: {
     marginTop: 9,
     color: colors.textPrimary,
     fontFamily: Typography.uiFontMedium,

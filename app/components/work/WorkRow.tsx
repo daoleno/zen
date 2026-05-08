@@ -2,18 +2,54 @@ import React, { useMemo } from "react";
 import { Pressable, StyleSheet, Text, View } from "react-native";
 import { useRouter } from "expo-router";
 import { Colors, Typography, useAppColors } from "../../constants/tokens";
-import type { Issue } from "../../store/issues";
+import type { WorkItem } from "../../store/work";
 
 type GlyphInfo = { glyph: string; color: string; label: string };
+export type WorkStatus = "queued" | "running" | "blocked" | "done" | "failed" | "unknown";
 
-export function statusGlyph(issue: Issue, colors: typeof Colors = Colors): GlyphInfo {
-  if (issue.frontmatter.done) {
-    return { glyph: "✓", color: colors.textSecondary, label: "Done" };
+export function workItemStatus(item: WorkItem): WorkStatus {
+  const raw =
+    typeof item.frontmatter.status === "string"
+      ? item.frontmatter.status.trim().toLowerCase()
+      : "";
+  switch (raw) {
+    case "failed":
+      return "failed";
+    case "blocked":
+      return "blocked";
+    case "done":
+      return "done";
+    case "running":
+      return "running";
+    case "unknown":
+      return "unknown";
+    default:
+      break;
   }
-  if (issue.frontmatter.dispatched) {
-    return { glyph: "▸", color: colors.statusRunning, label: "Sent" };
+  if (item.frontmatter.done) {
+    return "done";
   }
-  return { glyph: "●", color: colors.accent, label: "Open" };
+  if (item.frontmatter.started) {
+    return "running";
+  }
+  return "queued";
+}
+
+export function statusGlyph(item: WorkItem, colors: typeof Colors = Colors): GlyphInfo {
+  switch (workItemStatus(item)) {
+    case "failed":
+      return { glyph: "×", color: colors.statusFailed, label: "Failed" };
+    case "blocked":
+      return { glyph: "!", color: colors.statusBlocked, label: "Blocked" };
+    case "done":
+      return { glyph: "✓", color: colors.statusDone, label: "Done" };
+    case "running":
+      return { glyph: "▸", color: colors.statusRunning, label: "Running" };
+    case "unknown":
+      return { glyph: "?", color: colors.statusUnknown, label: "Unknown" };
+    case "queued":
+      return { glyph: "●", color: colors.accent, label: "Queued" };
+  }
 }
 
 export function relativeTime(iso: string): string {
@@ -29,22 +65,23 @@ export function relativeTime(iso: string): string {
   return `${Math.floor(diff / (86_400 * 30))}mo`;
 }
 
-export function IssueRow({ issue }: { issue: Issue }) {
+export function WorkRow({ item }: { item: WorkItem }) {
   const router = useRouter();
   const colors = useAppColors();
   const styles = useMemo(() => createStyles(colors), [colors]);
-  const { glyph, color, label } = statusGlyph(issue, colors);
-  const done = !!issue.frontmatter.done;
-  const sent = !!issue.frontmatter.dispatched;
-  const timeSource = issue.mtime || issue.frontmatter.created;
-  const mentionCount = issue.mentions.length;
+  const { glyph, color, label } = statusGlyph(item, colors);
+  const status = workItemStatus(item);
+  const done = status === "done";
+  const showStatus = status !== "queued";
+  const timeSource = item.mtime || item.frontmatter.created;
+  const mentionCount = item.mentions.length;
 
   return (
     <Pressable
       onPress={() =>
         router.push({
-          pathname: "/issue/[id]",
-          params: { id: issue.id, serverId: issue.serverId },
+          pathname: "/work/[id]",
+          params: { id: item.id, serverId: item.serverId },
         })
       }
       style={({ pressed }) => [styles.row, pressed && styles.rowPressed]}
@@ -55,12 +92,12 @@ export function IssueRow({ issue }: { issue: Issue }) {
           style={[styles.title, done && styles.titleDone]}
           numberOfLines={1}
         >
-          {issue.title || "(untitled)"}
+          {item.title || "(untitled work)"}
         </Text>
-        {sent || mentionCount > 0 ? (
+        {showStatus || mentionCount > 0 ? (
           <View style={styles.metaLine}>
-            {sent ? <Text style={[styles.status, { color }]}>{label}</Text> : null}
-            {sent && mentionCount > 0 ? <Text style={styles.metaDot}>·</Text> : null}
+            {showStatus ? <Text style={[styles.status, { color }]}>{label}</Text> : null}
+            {showStatus && mentionCount > 0 ? <Text style={styles.metaDot}>·</Text> : null}
             {mentionCount > 0 ? (
               <Text style={styles.meta}>@{mentionCount}</Text>
             ) : null}

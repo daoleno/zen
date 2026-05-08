@@ -19,14 +19,14 @@ export const SUPPORTED_AGENT_TARGETS: SupportedAgentTarget[] = [
     handle: "claude",
     label: "Claude Code",
     command: CLAUDE_CODE_COMMAND,
-    description: "Autonomous Claude Code run in this issue worktree.",
+    description: "Autonomous Claude Code run for this work item.",
   },
   {
     id: "codex",
     handle: "codex",
     label: "Codex",
     command: CODEX_COMMAND,
-    description: "Autonomous Codex run in this issue worktree.",
+    description: "Autonomous Codex run for this work item.",
   },
 ];
 

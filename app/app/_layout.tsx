@@ -10,7 +10,7 @@ import Constants from "expo-constants";
 import { GestureHandlerRootView } from "react-native-gesture-handler";
 import { SafeAreaProvider } from "react-native-safe-area-context";
 import { Agent, AgentProvider, useAgents } from "../store/agents";
-import { IssuesProvider, useIssues } from "../store/issues";
+import { WorkProvider, useWork } from "../store/work";
 import { useAppTheme } from "../constants/tokens";
 import { wsClient } from "../services/websocket";
 import {
@@ -156,7 +156,7 @@ function AppContent() {
   const router = useRouter();
   const segments = useSegments();
   const { state, dispatch } = useAgents();
-  const { dispatch: issuesDispatch } = useIssues();
+  const { dispatch: workDispatch } = useWork();
   const { colors } = useAppTheme();
   const notificationListener = useRef<Notifications.EventSubscription | null>(
     null,
@@ -272,7 +272,7 @@ function AppContent() {
           serverId: data.serverId,
           connectionState: "offline",
         });
-        issuesDispatch({
+        workDispatch({
           type: "REMOVE_SERVER",
           serverId: data.serverId,
         });
@@ -284,43 +284,43 @@ function AppContent() {
         issue: data.issue || null,
       });
 
-    const onIssuesSnapshot = (data: any) =>
-      issuesDispatch({
-        type: "ISSUES_SNAPSHOT",
+    const onWorkItemsSnapshot = (data: any) =>
+      workDispatch({
+        type: "WORK_ITEMS_SNAPSHOT",
         serverId: data.serverId,
         serverName: data.serverName,
         serverUrl: data.serverUrl,
-        issues: data.issues || [],
+        workItems: data.work_items || [],
         executors: data.executors || [],
       });
-    const onIssueChanged = (data: any) => {
-      if (!data.issue) {
+    const onWorkItemChanged = (data: any) => {
+      if (!data.work_item) {
         return;
       }
-      issuesDispatch({
-        type: "ISSUE_CHANGED",
+      workDispatch({
+        type: "WORK_ITEM_CHANGED",
         serverId: data.serverId,
         serverName: data.serverName,
         serverUrl: data.serverUrl,
-        issue: data.issue,
+        workItem: data.work_item,
       });
     };
-    const onIssueDeleted = (data: any) =>
-      issuesDispatch({
-        type: "ISSUE_DELETED",
+    const onWorkItemDeleted = (data: any) =>
+      workDispatch({
+        type: "WORK_ITEM_DELETED",
         serverId: data.serverId,
         id: data.id,
         path: data.path,
       });
     const onExecutors = (data: any) =>
-      issuesDispatch({
+      workDispatch({
         type: "EXECUTORS_LOADED",
         serverId: data.serverId,
         executors: data.executors || [],
       });
 
-    const onConnectedFetchIssues = (data: any) => {
-      wsClient.listIssues(data.serverId);
+    const onConnectedFetchWork = (data: any) => {
+      wsClient.listWorkItems(data.serverId);
       wsClient.listExecutors(data.serverId);
       wsClient.listAgentSessions(data.serverId);
     };
@@ -333,11 +333,11 @@ function AppContent() {
     wsClient.on("connected", onConnected);
     wsClient.on("disconnected", onDisconnected);
     wsClient.on("connection_issue", onConnectionIssue);
-    wsClient.on("issues_snapshot", onIssuesSnapshot);
-    wsClient.on("issue_changed", onIssueChanged);
-    wsClient.on("issue_deleted", onIssueDeleted);
+    wsClient.on("work_items_snapshot", onWorkItemsSnapshot);
+    wsClient.on("work_item_changed", onWorkItemChanged);
+    wsClient.on("work_item_deleted", onWorkItemDeleted);
     wsClient.on("executor_list", onExecutors);
-    wsClient.on("connected", onConnectedFetchIssues);
+    wsClient.on("connected", onConnectedFetchWork);
 
     (async () => {
       try {
@@ -384,13 +384,13 @@ function AppContent() {
       wsClient.off("connected", onConnected);
       wsClient.off("disconnected", onDisconnected);
       wsClient.off("connection_issue", onConnectionIssue);
-      wsClient.off("issues_snapshot", onIssuesSnapshot);
-      wsClient.off("issue_changed", onIssueChanged);
-      wsClient.off("issue_deleted", onIssueDeleted);
+      wsClient.off("work_items_snapshot", onWorkItemsSnapshot);
+      wsClient.off("work_item_changed", onWorkItemChanged);
+      wsClient.off("work_item_deleted", onWorkItemDeleted);
       wsClient.off("executor_list", onExecutors);
-      wsClient.off("connected", onConnectedFetchIssues);
+      wsClient.off("connected", onConnectedFetchWork);
     };
-  }, [dispatch, issuesDispatch, router, segments]);
+  }, [dispatch, workDispatch, router, segments]);
 
   useEffect(() => {
     const subscription = Linking.addEventListener("url", (event) => {
@@ -606,7 +606,7 @@ function AppContent() {
         name="terminal/[id]"
         options={{ headerShown: false, animation: "none" }}
       />
-      <Stack.Screen name="issue/[id]" options={{ headerShown: false }} />
+      <Stack.Screen name="work/[id]" options={{ headerShown: false }} />
       <Stack.Screen
         name="onboarding"
         options={{ headerShown: false, presentation: "modal" }}
@@ -637,12 +637,12 @@ export default function RootLayout() {
   return (
     <GestureHandlerRootView style={{ flex: 1 }}>
       <AgentProvider>
-        <IssuesProvider>
+        <WorkProvider>
           <SafeAreaProvider>
             <StatusBar style={isLight ? "dark" : "light"} />
             <AppContent />
           </SafeAreaProvider>
-        </IssuesProvider>
+        </WorkProvider>
       </AgentProvider>
     </GestureHandlerRootView>
   );
