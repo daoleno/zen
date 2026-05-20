@@ -37,9 +37,9 @@ export default function TabLayout() {
       <Tabs.Screen
         name="work"
         options={{
-          title: 'Work',
+          title: 'Brain',
           tabBarIcon: ({ color, focused }) => (
-            <TabSymbol glyph="▤" color={color} focused={focused} fontSize={16} />
+            <TabSymbol glyph="✦" color={color} focused={focused} fontSize={17} />
           ),
         }}
       />

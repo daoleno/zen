@@ -168,9 +168,10 @@ func (s *Server) handleWS(w http.ResponseWriter, r *http.Request) {
 	if s.work != nil {
 		s.syncWorkLogsForAgents(false)
 		s.sendJSON(conn, map[string]any{
-			"type":       "work_items_snapshot",
-			"work_items": s.work.List(),
-			"executors":  s.executorRoles(),
+			"type":                 "work_items_snapshot",
+			"work_items":           work.FilterAgentWorkItems(s.work.List()),
+			"executors":            s.executorRoles(),
+			"work_digest_provider": s.workDigestProvider(),
 		})
 	}
 
@@ -289,6 +290,9 @@ func (s *Server) handleClientMessage(conn *websocket.Conn, msg []byte) {
 
 	case "list_executors":
 		s.handleListExecutors(conn, raw)
+
+	case "set_work_digest_provider":
+		s.handleSetWorkDigestProvider(conn, raw)
 
 	case "register_push":
 		if raw.PushToken != "" {
@@ -610,16 +614,26 @@ func (s *Server) executorRoles() []string {
 	return s.execs.Roles()
 }
 
+func (s *Server) workDigestProvider() string {
+	if s.workLog != nil {
+		if provider := s.workLog.DigestProvider(); provider != "" {
+			return provider
+		}
+	}
+	return "auto"
+}
+
 func (s *Server) handleListWorkItems(conn *websocket.Conn, raw clientMessage) {
 	if s.work == nil {
 		s.sendErrorWithRequestID(conn, raw.RequestID, "list_work_items_failed", "work store not configured")
 		return
 	}
 	s.sendJSON(conn, map[string]any{
-		"type":       "work_items_snapshot",
-		"request_id": raw.RequestID,
-		"work_items": s.work.List(),
-		"executors":  s.executorRoles(),
+		"type":                 "work_items_snapshot",
+		"request_id":           raw.RequestID,
+		"work_items":           work.FilterAgentWorkItems(s.work.List()),
+		"executors":            s.executorRoles(),
+		"work_digest_provider": s.workDigestProvider(),
 	})
 }
 
@@ -642,10 +656,29 @@ func (s *Server) handleGetWorkItem(conn *websocket.Conn, raw clientMessage) {
 
 func (s *Server) handleListExecutors(conn *websocket.Conn, raw clientMessage) {
 	s.sendJSON(conn, map[string]any{
-		"type":       "executor_list",
-		"request_id": raw.RequestID,
-		"executors":  s.executorRoles(),
+		"type":                 "executor_list",
+		"request_id":           raw.RequestID,
+		"executors":            s.executorRoles(),
+		"work_digest_provider": s.workDigestProvider(),
 	})
+}
+
+func (s *Server) handleSetWorkDigestProvider(conn *websocket.Conn, raw clientMessage) {
+	if s.workLog == nil {
+		s.sendErrorWithRequestID(conn, raw.RequestID, "set_work_digest_provider_failed", "work log not configured")
+		return
+	}
+	provider, ok := s.workLog.SetDigestProvider(raw.Name)
+	if !ok {
+		s.sendErrorWithRequestID(conn, raw.RequestID, "set_work_digest_provider_failed", "unsupported digest provider")
+		return
+	}
+	s.sendJSON(conn, map[string]any{
+		"type":                 "work_digest_provider",
+		"request_id":           raw.RequestID,
+		"work_digest_provider": provider,
+	})
+	go s.syncWorkLogsForAgents(true)
 }
 
 func (s *Server) handleWriteWorkItem(conn *websocket.Conn, raw clientMessage) {
@@ -677,14 +710,20 @@ func (s *Server) handleWriteWorkItem(conn *websocket.Conn, raw clientMessage) {
 	if existing, ok := s.work.GetByID(id); ok {
 		frontmatter = work.Frontmatter{
 			ID:           existing.Frontmatter.ID,
+			Kind:         existing.Frontmatter.Kind,
 			Created:      existing.Frontmatter.Created,
 			Done:         existing.Frontmatter.Done,
 			Started:      existing.Frontmatter.Started,
 			Status:       existing.Frontmatter.Status,
 			Title:        existing.Frontmatter.Title,
+			Outcome:      existing.Frontmatter.Outcome,
 			Summary:      existing.Frontmatter.Summary,
 			Progress:     existing.Frontmatter.Progress,
+			Friction:     existing.Frontmatter.Friction,
+			Cause:        existing.Frontmatter.Cause,
+			Insight:      existing.Frontmatter.Insight,
 			Next:         existing.Frontmatter.Next,
+			AgentSource:  existing.Frontmatter.AgentSource,
 			AgentSession: existing.Frontmatter.AgentSession,
 			Cwd:          existing.Frontmatter.Cwd,
 			Command:      existing.Frontmatter.Command,
@@ -852,6 +891,9 @@ func (s *Server) broadcastEvents(ctx context.Context) {
 func (s *Server) handleWorkEvent(ev work.Event) {
 	switch ev.Type {
 	case work.EventChanged:
+		if !work.IsAgentWorkItem(ev.Item) {
+			return
+		}
 		s.broadcastJSON(map[string]any{
 			"type":      "work_item_changed",
 			"path":      ev.Path,
@@ -1077,6 +1119,10 @@ func applyFrontmatterOverrides(fm *work.Frontmatter, raw map[string]interface{})
 			if s, ok := value.(string); ok && strings.TrimSpace(s) != "" {
 				fm.ID = strings.TrimSpace(s)
 			}
+		case "kind":
+			if s, ok := value.(string); ok {
+				fm.Kind = strings.TrimSpace(s)
+			}
 		case "created":
 			if parsed, ok := parseRFC3339Value(value); ok {
 				fm.Created = parsed
@@ -1107,9 +1153,29 @@ func applyFrontmatterOverrides(fm *work.Frontmatter, raw map[string]interface{})
 			}
 		case "progress":
 			fm.Progress = parseStringList(value)
+		case "outcome":
+			if s, ok := value.(string); ok {
+				fm.Outcome = strings.TrimSpace(s)
+			}
+		case "friction":
+			if s, ok := value.(string); ok {
+				fm.Friction = strings.TrimSpace(s)
+			}
+		case "cause":
+			if s, ok := value.(string); ok {
+				fm.Cause = strings.TrimSpace(s)
+			}
+		case "insight":
+			if s, ok := value.(string); ok {
+				fm.Insight = strings.TrimSpace(s)
+			}
 		case "next":
 			if s, ok := value.(string); ok {
 				fm.Next = strings.TrimSpace(s)
+			}
+		case "agent_source":
+			if s, ok := value.(string); ok {
+				fm.AgentSource = strings.TrimSpace(s)
 			}
 		case "agent_session":
 			if s, ok := value.(string); ok {

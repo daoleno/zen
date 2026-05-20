@@ -5,6 +5,7 @@ import {
   Modal,
   Platform,
   Pressable,
+  ScrollView,
   StyleSheet,
   Text,
   View,
@@ -17,6 +18,7 @@ import { useWork, type WorkItem } from "../../store/work";
 import {
   WorkEditor,
 } from "../../components/work/WorkEditor";
+import { MarkdownView } from "../../components/work/MarkdownView";
 import {
   relativeTime,
   workItemStatus,
@@ -49,6 +51,7 @@ export default function WorkDetailScreen() {
   const [remoteBanner, setRemoteBanner] = useState(false);
   const [saving, setSaving] = useState(false);
   const [menuOpen, setMenuOpen] = useState(false);
+  const [editing, setEditing] = useState(false);
   const savingRef = useRef(false);
   const draftBodyRef = useRef(draftBody);
   useEffect(() => {
@@ -164,18 +167,33 @@ export default function WorkDetailScreen() {
     ]);
   };
 
+  const toggleEditing = async () => {
+    if (editing && dirty && !remoteBanner) {
+      await saveWorkItem();
+    }
+    setEditing((prev) => !prev);
+  };
+
   if (!item) {
     return (
       <SafeAreaView style={styles.emptyScreen} edges={["top"]}>
-        <Text style={styles.emptyTitle}>Work item not found</Text>
+        <Text style={styles.emptyTitle}>Brain item not found</Text>
       </SafeAreaView>
     );
   }
 
-  const done = !!item.frontmatter.done;
+  const brainLog = item.frontmatter.kind === "brain_log";
+  const done = !brainLog && !!item.frontmatter.done;
   const draftTitle = workItemTitle(item) || titleFromMarkdown(draftBody) || "Untitled work";
   const status = workStatusInfo(item, colors);
   const updatedLabel = relativeTime(item.mtime || item.frontmatter.created);
+  const previewBody = stripLeadingTitle(draftBody);
+  const headerTitle = brainLog ? "Brain" : item.project;
+  const contextLabel = brainLog
+    ? [item.serverName, updatedLabel].filter(Boolean).join(" · ")
+    : `${item.serverName ? `${item.serverName} · ${item.project}` : item.project}${
+        updatedLabel ? ` · ${updatedLabel}` : ""
+      }`;
 
   return (
     <SafeAreaView style={styles.screen} edges={["top"]}>
@@ -194,9 +212,23 @@ export default function WorkDetailScreen() {
 
           <View style={styles.headerCenter}>
             <Text style={styles.headerTitle} numberOfLines={1}>
-              {item.project}
+              {headerTitle}
             </Text>
           </View>
+
+          <Pressable
+            onPress={() => {
+              void toggleEditing();
+            }}
+            hitSlop={10}
+            style={({ pressed }) => [styles.iconButton, pressed && styles.iconButtonPressed]}
+          >
+            <Ionicons
+              name={editing ? "eye-outline" : "create-outline"}
+              size={19}
+              color={colors.textPrimary}
+            />
+          </Pressable>
 
           <Pressable
             onPress={() => setMenuOpen(true)}
@@ -209,14 +241,15 @@ export default function WorkDetailScreen() {
 
         <View style={styles.context}>
           <View style={styles.statusRow}>
-            <StatusPill
-              icon={status.icon}
-              label={status.label}
-              color={status.color}
-            />
+            {brainLog ? null : (
+              <StatusPill
+                icon={status.icon}
+                label={status.label}
+                color={status.color}
+              />
+            )}
             <Text style={styles.contextPath} numberOfLines={1}>
-              {item.serverName ? `${item.serverName} · ${item.project}` : item.project}
-              {updatedLabel ? ` · ${updatedLabel}` : ""}
+              {contextLabel}
             </Text>
           </View>
 
@@ -246,42 +279,54 @@ export default function WorkDetailScreen() {
           </Pressable>
         ) : null}
 
-        <View style={styles.editorShell}>
-          <WorkEditor
-            value={draftBody}
-            onChange={(next) => {
-              setDraftBody(next);
-              setDirty(true);
-            }}
-            onBlur={() => {
-              if (dirty && !remoteBanner) {
-                void saveWorkItem();
-              }
-            }}
-          />
+        <View style={styles.contentShell}>
+          {editing ? (
+            <WorkEditor
+              value={draftBody}
+              onChange={(next) => {
+                setDraftBody(next);
+                setDirty(true);
+              }}
+              onBlur={() => {
+                if (dirty && !remoteBanner) {
+                  void saveWorkItem();
+                }
+              }}
+            />
+          ) : (
+            <ScrollView
+              style={styles.previewScroll}
+              contentContainerStyle={styles.previewContent}
+              showsVerticalScrollIndicator={false}
+            >
+              <MarkdownView value={previewBody} />
+            </ScrollView>
+          )}
         </View>
 
         <View style={[styles.footer, { paddingBottom: Math.max(insets.bottom, Spacing.md) }]}>
           <SaveState saving={saving} dirty={dirty} />
           <View style={styles.footerActions}>
-            <Pressable
-              onPress={() => {
-                void handleToggleDone();
-              }}
-              disabled={saving}
-              style={({ pressed }) => [
-                styles.secondaryButton,
-                saving && styles.primaryButtonDisabled,
-                pressed && styles.secondaryButtonPressed,
-              ]}
-            >
-              <Ionicons
-                name={done ? "return-up-back-outline" : "checkmark"}
-                size={14}
-                color={colors.textPrimary}
-              />
-              <Text style={styles.secondaryButtonText}>{done ? "Reopen" : "Done"}</Text>
-            </Pressable>
+            {brainLog ? null : (
+              <Pressable
+                onPress={() => {
+                  void handleToggleDone();
+                }}
+                disabled={saving}
+                style={({ pressed }) => [
+                  styles.secondaryButton,
+                  saving && styles.primaryButtonDisabled,
+                  pressed && styles.secondaryButtonPressed,
+                ]}
+              >
+                <Ionicons
+                  name={done ? "return-up-back-outline" : "checkmark"}
+                  size={14}
+                  color={colors.textPrimary}
+                />
+                <Text style={styles.secondaryButtonText}>{done ? "Reopen" : "Done"}</Text>
+              </Pressable>
+            )}
           </View>
         </View>
       </KeyboardAvoidingView>
@@ -290,6 +335,7 @@ export default function WorkDetailScreen() {
         visible={menuOpen}
         onClose={() => setMenuOpen(false)}
         done={done}
+        showDone={!brainLog}
         onToggleDone={() => {
           setMenuOpen(false);
           void handleToggleDone();
@@ -332,6 +378,10 @@ function titleFromMarkdown(value: string): string {
     return "";
   }
   return firstHeading.replace(/^#{1,6}\s+/, "").trim();
+}
+
+function stripLeadingTitle(value: string): string {
+  return value.replace(/^\s*#\s+.+?(?:\r?\n){1,2}/, "");
 }
 
 function workStatusInfo(item: WorkItem, colors: typeof Colors = Colors): {
@@ -377,12 +427,14 @@ function OverflowMenu({
   visible,
   onClose,
   done,
+  showDone,
   onToggleDone,
   onDelete,
 }: {
   visible: boolean;
   onClose: () => void;
   done: boolean;
+  showDone: boolean;
   onToggleDone: () => void;
   onDelete: () => void;
 }) {
@@ -394,18 +446,22 @@ function OverflowMenu({
       <View style={menuStyles.root}>
         <Pressable style={menuStyles.backdrop} onPress={onClose} />
         <View style={menuStyles.card}>
-          <Pressable
-            onPress={onToggleDone}
-            style={({ pressed }) => [menuStyles.item, pressed && menuStyles.itemPressed]}
-          >
-            <Ionicons
-              name={done ? "refresh-outline" : "checkmark-circle-outline"}
-              size={18}
-              color={colors.textPrimary}
-            />
-            <Text style={menuStyles.itemText}>{done ? "Reopen" : "Mark done"}</Text>
-          </Pressable>
-          <View style={menuStyles.divider} />
+          {showDone ? (
+            <>
+              <Pressable
+                onPress={onToggleDone}
+                style={({ pressed }) => [menuStyles.item, pressed && menuStyles.itemPressed]}
+              >
+                <Ionicons
+                  name={done ? "refresh-outline" : "checkmark-circle-outline"}
+                  size={18}
+                  color={colors.textPrimary}
+                />
+                <Text style={menuStyles.itemText}>{done ? "Reopen" : "Mark done"}</Text>
+              </Pressable>
+              <View style={menuStyles.divider} />
+            </>
+          ) : null}
           <Pressable
             onPress={onDelete}
             style={({ pressed }) => [menuStyles.item, pressed && menuStyles.itemPressed]}
@@ -530,16 +586,22 @@ function createStyles(colors: typeof Colors) {
     fontFamily: Typography.uiFont,
     fontSize: 13,
   },
-  editorShell: {
+  contentShell: {
     flex: 1,
     marginHorizontal: 10,
     marginTop: 8,
     marginBottom: 8,
-    borderRadius: 14,
+    borderRadius: 10,
     overflow: "hidden",
     backgroundColor: colors.surfaceSubtle,
     borderWidth: StyleSheet.hairlineWidth,
     borderColor: colors.borderSubtle,
+  },
+  previewScroll: {
+    flex: 1,
+  },
+  previewContent: {
+    paddingBottom: Spacing.lg,
   },
   footer: {
     flexDirection: "row",

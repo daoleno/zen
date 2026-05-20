@@ -292,6 +292,10 @@ function AppContent() {
         serverUrl: data.serverUrl,
         workItems: data.work_items || [],
         executors: data.executors || [],
+        digestProvider:
+          typeof data.work_digest_provider === "string"
+            ? data.work_digest_provider
+            : undefined,
       });
     const onWorkItemChanged = (data: any) => {
       if (!data.work_item) {
@@ -317,6 +321,19 @@ function AppContent() {
         type: "EXECUTORS_LOADED",
         serverId: data.serverId,
         executors: data.executors || [],
+        digestProvider:
+          typeof data.work_digest_provider === "string"
+            ? data.work_digest_provider
+            : undefined,
+      });
+    const onWorkDigestProvider = (data: any) =>
+      workDispatch({
+        type: "WORK_DIGEST_PROVIDER_SET",
+        serverId: data.serverId,
+        provider:
+          typeof data.work_digest_provider === "string"
+            ? data.work_digest_provider
+            : "",
       });
 
     const onConnectedFetchWork = (data: any) => {
@@ -337,6 +354,7 @@ function AppContent() {
     wsClient.on("work_item_changed", onWorkItemChanged);
     wsClient.on("work_item_deleted", onWorkItemDeleted);
     wsClient.on("executor_list", onExecutors);
+    wsClient.on("work_digest_provider", onWorkDigestProvider);
     wsClient.on("connected", onConnectedFetchWork);
 
     (async () => {
@@ -388,6 +406,7 @@ function AppContent() {
       wsClient.off("work_item_changed", onWorkItemChanged);
       wsClient.off("work_item_deleted", onWorkItemDeleted);
       wsClient.off("executor_list", onExecutors);
+      wsClient.off("work_digest_provider", onWorkDigestProvider);
       wsClient.off("connected", onConnectedFetchWork);
     };
   }, [dispatch, workDispatch, router, segments]);

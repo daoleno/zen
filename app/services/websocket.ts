@@ -845,6 +845,51 @@ class MultiServerWebSocketClient {
     this.send(serverId, { type: "list_executors" });
   }
 
+  setWorkDigestProvider(serverId: string, provider: string): Promise<string> {
+    const requestId = `${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
+
+    return new Promise((resolve, reject) => {
+      const cleanup = () => {
+        if (timer) clearTimeout(timer);
+        this.off("work_digest_provider", handleProvider);
+        this.off("error", handleError);
+      };
+
+      const handleProvider = (payload: any) => {
+        if (payload.serverId !== serverId || payload.request_id !== requestId) {
+          return;
+        }
+        cleanup();
+        const selected =
+          typeof payload.work_digest_provider === "string"
+            ? payload.work_digest_provider
+            : provider;
+        resolve(selected);
+      };
+
+      const handleError = (payload: any) => {
+        if (payload.serverId !== serverId || payload.request_id !== requestId) {
+          return;
+        }
+        cleanup();
+        reject(new Error(payload.message || "Failed to change work analyzer."));
+      };
+
+      const timer = setTimeout(() => {
+        cleanup();
+        reject(new Error("Timed out while changing work analyzer."));
+      }, 15000);
+
+      this.on("work_digest_provider", handleProvider);
+      this.on("error", handleError);
+      this.send(serverId, {
+        type: "set_work_digest_provider",
+        request_id: requestId,
+        name: provider,
+      });
+    });
+  }
+
   writeWorkItem(
     serverId: string,
     options: {

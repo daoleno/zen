@@ -1611,7 +1611,7 @@ export default function TerminalScreen() {
             />
             {linkedWork ? (
               <MenuAction
-                label="Open Linked Work"
+                label="Open Brain"
                 onPress={openLinkedWork}
                 textColor={chromeColors.text}
                 disabledTextColor={chromeColors.textSubtle}

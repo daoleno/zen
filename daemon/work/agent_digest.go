@@ -10,18 +10,26 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
+	"unicode/utf8"
 
 	"github.com/daoleno/zen/daemon/classifier"
 )
 
 var ErrNoAgentDigestProvider = errors.New("no agent digest provider available")
 
-// AgentDigest is the AI-produced reading of one agent session snapshot.
+// AgentDigest is the AI-produced reading of one evidence slice for the daily work log.
 type AgentDigest struct {
 	Title    string   `json:"title"`
-	Summary  string   `json:"summary"`
-	Progress []string `json:"progress"`
+	Outcome  string   `json:"outcome,omitempty"`
+	Readout  string   `json:"readout,omitempty"`
+	Summary  string   `json:"summary,omitempty"`
+	Signals  []string `json:"signals,omitempty"`
+	Progress []string `json:"progress,omitempty"`
+	Friction string   `json:"friction,omitempty"`
+	Cause    string   `json:"cause,omitempty"`
+	Insight  string   `json:"insight,omitempty"`
 	Next     string   `json:"next"`
 	Provider string   `json:"provider,omitempty"`
 }
@@ -29,6 +37,7 @@ type AgentDigest struct {
 type AgentDigestInput struct {
 	Agent           classifier.Agent
 	Status          string
+	Transcript      ToolTranscript
 	PreviousTitle   string
 	PreviousSummary string
 	PreviousNext    string
@@ -46,8 +55,10 @@ func (f AgentDigestProviderFunc) Digest(ctx context.Context, input AgentDigestIn
 }
 
 type AgentCLIDigestProvider struct {
-	execs   *ExecutorConfig
-	timeout time.Duration
+	execs     *ExecutorConfig
+	timeout   time.Duration
+	mu        sync.RWMutex
+	preferred string
 }
 
 func NewAgentCLIDigestProvider(execs *ExecutorConfig) *AgentCLIDigestProvider {
@@ -55,6 +66,32 @@ func NewAgentCLIDigestProvider(execs *ExecutorConfig) *AgentCLIDigestProvider {
 		execs:   execs,
 		timeout: 45 * time.Second,
 	}
+}
+
+func (p *AgentCLIDigestProvider) PreferredProvider() string {
+	if p == nil {
+		return ""
+	}
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	return p.preferred
+}
+
+func (p *AgentCLIDigestProvider) SetPreferredProvider(provider string) (string, bool) {
+	if p == nil {
+		return "", false
+	}
+	normalized, ok := normalizeDigestProvider(provider)
+	if !ok {
+		return "", false
+	}
+	p.mu.Lock()
+	p.preferred = normalized
+	p.mu.Unlock()
+	if normalized == "" {
+		return "auto", true
+	}
+	return normalized, true
 }
 
 func (p *AgentCLIDigestProvider) Digest(ctx context.Context, input AgentDigestInput) (AgentDigest, error) {
@@ -73,7 +110,7 @@ func (p *AgentCLIDigestProvider) Digest(ctx context.Context, input AgentDigestIn
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
-	prompt := buildAgentDigestPrompt(input)
+	prompt := sanitizePromptUTF8(buildAgentDigestPrompt(input))
 	var (
 		digest AgentDigest
 		err    error
@@ -99,11 +136,15 @@ func (p *AgentCLIDigestProvider) selectProvider(command string) (string, bool) {
 		command = ""
 	}
 	preferred := make([]string, 0, 4)
-	if strings.Contains(command, "claude") {
-		preferred = append(preferred, "claude")
-	}
-	if strings.Contains(command, "codex") {
-		preferred = append(preferred, "codex")
+	if selected := p.PreferredProvider(); selected != "" {
+		preferred = append(preferred, selected)
+	} else {
+		if strings.Contains(command, "claude") {
+			preferred = append(preferred, "claude")
+		}
+		if strings.Contains(command, "codex") {
+			preferred = append(preferred, "codex")
+		}
 	}
 	if p.execs != nil {
 		if name := strings.ToLower(strings.TrimSpace(p.execs.Default)); name == "claude" || name == "codex" {
@@ -123,6 +164,19 @@ func (p *AgentCLIDigestProvider) selectProvider(command string) (string, bool) {
 		}
 	}
 	return "", false
+}
+
+func normalizeDigestProvider(provider string) (string, bool) {
+	switch strings.ToLower(strings.TrimSpace(provider)) {
+	case "", "auto", "automatic":
+		return "", true
+	case "codex":
+		return "codex", true
+	case "claude", "claude-code", "claude code":
+		return "claude", true
+	default:
+		return "", false
+	}
 }
 
 func (p *AgentCLIDigestProvider) digestWithCodex(ctx context.Context, cwd, prompt string) (AgentDigest, error) {
@@ -191,22 +245,40 @@ func buildAgentDigestPrompt(input AgentDigestInput) string {
 	if strings.TrimSpace(tail) == "" {
 		tail = "(no visible terminal output)"
 	}
+	transcript := formatTranscriptForPrompt(input.Transcript)
 	return strings.TrimSpace(fmt.Sprintf(`
-You are turning a coding-agent terminal snapshot into a readable mobile work log.
+You are extracting one evidence slice for a daily mobile Brain readout.
+
+The final Brain readout is day-level. This JSON is not a user-facing item summary; it will be
+merged with other evidence from the same day. The user needs leverage: what actually changed,
+where the work shape was healthy or wasteful, what caused friction, and what should change next
+in either the code, the prompt boundary, the environment, the model, or the agent workflow.
 
 Return ONLY valid JSON with this exact shape:
-{"title":"short title","summary":"one useful paragraph","progress":["short bullet"],"next":"next useful action"}
+{"title":"short evidence label","outcome":"what actually changed or was decided","readout":"why this matters for the day","signals":["evidence about work quality"],"friction":"empty if none; otherwise the main drag","cause":"likely cause of friction or empty","insight":"one reusable lesson","next":"next high-leverage action"}
 
 Rules:
-- Do not include markdown, code fences, tmux ids, ANSI noise, or generic terminal mechanics.
-- Describe the actual engineering work in human terms.
+- Analyze only coding-agent work. Ignore shell mechanics, tmux ids, progress spinners, prompts, and log noise.
+- Do not write a chronological status report.
+- Do not call the unit a session, round, or "this agent". The user-facing unit is the day.
+- You may discuss model or agent behavior as evidence, but phrase the conclusion as a daily work observation.
+- Prefer native tool transcript evidence over terminal output. Terminal output is only secondary context.
+- The native transcript is compressed: counters and repeated surfaces are evidence, not the answer.
+- Look for deeper signals: repeated user corrections, repeated edits to the same surface, failed tool calls, tests that catch regressions, missing context, unclear boundaries, and over-broad exploration.
+- Convert transcript shape into judgment: what made the day easier, what created rework, and what habit/tooling/prompt change would reduce future work.
+- Focus on behavior and leverage: clean completion, rework loops, weak task boundary, context gap, tooling/env issue, model mistake, or useful decision.
+- If friction exists, name the most likely cause. If it is unclear, say "unknown" briefly rather than inventing.
+- Prefer concrete evidence from output over generic judgment.
+- Inline Markdown is allowed for code identifiers, file names, and short labels.
 - Prefer the language used by the user's task or the terminal output.
 - If the evidence is weak, say what can be inferred and keep it honest.
-- title <= 60 characters; summary <= 180 characters; each progress item <= 90 characters; max 4 progress items; next <= 120 characters.
+- Be compact. Avoid filler like "visible evidence indicates" unless uncertainty changes the next action.
+- Avoid generic phrases like "worked on the task", "made progress", or "ran commands".
+- title <= 64 chars; outcome/readout/friction/cause/insight/next <= 180 chars each; max 3 signals; each signal <= 120 chars.
 
-Session:
+Evidence slice:
 - Status: %s
-- Agent name: %s
+- Tool name: %s
 - Command: %s
 - Project: %s
 - CWD: %s
@@ -215,6 +287,9 @@ Session:
 - Previous summary: %s
 - Previous next: %s
 - Updated: %s
+
+Native tool transcript evidence:
+%s
 
 Recent terminal output:
 %s
@@ -228,8 +303,27 @@ Recent terminal output:
 		input.PreviousSummary,
 		input.PreviousNext,
 		input.Now.Format(time.RFC3339),
+		transcript,
 		tail,
 	))
+}
+
+func formatTranscriptForPrompt(transcript ToolTranscript) string {
+	if strings.TrimSpace(transcript.Excerpt) == "" {
+		return "(no native tool transcript found)"
+	}
+	header := []string{
+		fmt.Sprintf("- Source: %s", transcript.Source),
+		fmt.Sprintf("- Path: %s", transcript.Path),
+	}
+	if transcript.SessionID != "" {
+		header = append(header, fmt.Sprintf("- Transcript ID: %s", transcript.SessionID))
+	}
+	if !transcript.Updated.IsZero() {
+		header = append(header, fmt.Sprintf("- Updated: %s", transcript.Updated.Format(time.RFC3339)))
+	}
+	header = append(header, "", transcript.Excerpt)
+	return strings.Join(header, "\n")
 }
 
 func parseAgentDigest(raw string) (AgentDigest, error) {
@@ -266,29 +360,55 @@ func parseAgentDigest(raw string) (AgentDigest, error) {
 
 func hasDigestContent(d AgentDigest) bool {
 	return strings.TrimSpace(d.Title) != "" ||
+		strings.TrimSpace(d.Outcome) != "" ||
+		strings.TrimSpace(d.Readout) != "" ||
 		strings.TrimSpace(d.Summary) != "" ||
+		len(d.Signals) > 0 ||
 		len(d.Progress) > 0 ||
+		strings.TrimSpace(d.Friction) != "" ||
+		strings.TrimSpace(d.Cause) != "" ||
+		strings.TrimSpace(d.Insight) != "" ||
 		strings.TrimSpace(d.Next) != ""
 }
 
 func sanitizeDigest(d AgentDigest) AgentDigest {
+	readout := firstNonEmpty(d.Readout, d.Summary)
+	signals := d.Signals
+	if len(signals) == 0 {
+		signals = d.Progress
+	}
 	out := AgentDigest{
-		Title:    truncateRunes(collapseSpaces(d.Title), 60),
-		Summary:  truncateRunes(collapseSpaces(d.Summary), 180),
-		Next:     truncateRunes(collapseSpaces(d.Next), 120),
+		Title:    truncateRunes(collapseSpaces(d.Title), 70),
+		Outcome:  truncateRunes(collapseSpaces(d.Outcome), 180),
+		Readout:  truncateRunes(collapseSpaces(readout), 180),
+		Summary:  truncateRunes(collapseSpaces(readout), 180),
+		Friction: truncateRunes(collapseSpaces(d.Friction), 180),
+		Cause:    truncateRunes(collapseSpaces(d.Cause), 180),
+		Insight:  truncateRunes(collapseSpaces(d.Insight), 180),
+		Next:     truncateRunes(collapseSpaces(d.Next), 180),
 		Provider: strings.TrimSpace(d.Provider),
 	}
-	for _, item := range d.Progress {
-		item = truncateRunes(collapseSpaces(item), 90)
+	for _, item := range signals {
+		item = truncateRunes(collapseSpaces(item), 120)
 		if item == "" {
 			continue
 		}
+		out.Signals = append(out.Signals, item)
 		out.Progress = append(out.Progress, item)
-		if len(out.Progress) >= 4 {
+		if len(out.Signals) >= 3 {
 			break
 		}
 	}
 	return out
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		if trimmed := strings.TrimSpace(value); trimmed != "" {
+			return trimmed
+		}
+	}
+	return ""
 }
 
 func truncateRunes(value string, max int) string {
@@ -300,4 +420,11 @@ func truncateRunes(value string, max int) string {
 		return string(runes[:max])
 	}
 	return strings.TrimSpace(string(runes[:max-3])) + "..."
+}
+
+func sanitizePromptUTF8(value string) string {
+	if utf8.ValidString(value) {
+		return value
+	}
+	return strings.ToValidUTF8(value, "\uFFFD")
 }

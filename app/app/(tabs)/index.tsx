@@ -76,7 +76,7 @@ export default function InboxScreen() {
   const colors = useAppColors();
   const styles = useMemo(() => createStyles(colors), [colors]);
 
-  // Build agent→work lookup for subtitle display.
+  // Build agent→work lookup for display names.
   const agentWorkMap = useMemo(() => {
     const map: Record<string, WorkItem> = {};
     for (const current of Object.values(workState.byKey)) {
@@ -477,11 +477,9 @@ export default function InboxScreen() {
     const presented = presentAgent(item, agentAliases[item.key]);
     const directoryLabel = promptDirectoryLabel(item, presented.cwdBase, showServerNames);
     const promptTitle = resolvePromptTitle(item, presented, agentWorkMap);
-    const meta = buildPromptMeta(item, presented, promptTitle, agentWorkMap);
-    const hasMeta = Boolean(meta);
     return (
       <TouchableOpacity
-        style={[styles.promptRow, hasMeta && styles.promptRowWithMeta]}
+        style={styles.promptRow}
         onPress={() => openAgent(item)}
         onLongPress={() => openContextMenu(item)}
         activeOpacity={0.82}
@@ -498,9 +496,6 @@ export default function InboxScreen() {
           <Text style={styles.promptTitle} numberOfLines={1}>{promptTitle}</Text>
           <View style={[styles.promptStatusDot, { backgroundColor: statusColor(item.status) }]} />
         </View>
-        {meta ? (
-          <Text style={styles.promptMeta} numberOfLines={1}>{meta}</Text>
-        ) : null}
       </TouchableOpacity>
     );
   };
@@ -920,31 +915,6 @@ function resolvePromptTitle(
   return presented.title;
 }
 
-function buildPromptMeta(
-  agent: Agent,
-  presented: ReturnType<typeof presentAgent>,
-  promptTitle: string,
-  workMap: Record<string, WorkItem>,
-): string {
-  const summary = agent.summary.trim();
-  if ((agent.status === 'blocked' || agent.status === 'failed') && summary) {
-    return summary;
-  }
-
-  const linkedWork = workMap[`${agent.serverId}:${agent.id}`];
-  const workTitle = linkedWork?.title?.trim() || linkedWork?.id || '';
-
-  if (workTitle && workTitle !== promptTitle) {
-    return workTitle;
-  }
-
-  if (presented.titleSource === 'default') {
-    return '';
-  }
-
-  return '';
-}
-
 function promptDirectoryLabel(agent: Agent, cwdBase: string, showServerNames: boolean): string {
   const directory = cwdBase || agent.project?.trim() || lastPathSegment(agent.cwd) || 'session';
   if (!showServerNames || !agent.serverName) {
@@ -1096,10 +1066,6 @@ function createStyles(colors: typeof Colors) {
     borderBottomWidth: StyleSheet.hairlineWidth,
     borderBottomColor: colors.borderSubtle,
   },
-  promptRowWithMeta: {
-    minHeight: 54,
-    paddingVertical: 8,
-  },
   promptLine: {
     minHeight: 24,
     flexDirection: 'row',
@@ -1145,15 +1111,6 @@ function createStyles(colors: typeof Colors) {
     height: 6,
     borderRadius: 3,
     marginLeft: 8,
-  },
-  promptMeta: {
-    marginTop: 1,
-    paddingLeft: 1,
-    color: colors.textSecondary,
-    fontSize: 10,
-    lineHeight: 13,
-    fontFamily: Typography.uiFont,
-    opacity: 0.42,
   },
   statusDot: {
     width: 6,

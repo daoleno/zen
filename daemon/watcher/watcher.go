@@ -134,7 +134,7 @@ func (w *Watcher) poll() {
 		}
 
 		agent.PaneAlive = alive
-		agent.LastLines = lastN(lines, 20)
+		agent.LastLines = lastN(lines, 120)
 		agent.UpdatedAt = time.Now()
 
 		oldState := agent.State
@@ -577,7 +577,7 @@ func snapshotProcesses() map[int]processInfo {
 
 func detectAgentCommand(baseCommand string, panePID int, processes map[int]processInfo) string {
 	command := normalizeCommand(baseCommand)
-	if command == "claude" || command == "codex" {
+	if command == "claude" || command == "claude-code" || command == "codex" || command == "cc" {
 		return command
 	}
 	if panePID <= 0 || len(processes) == 0 {
@@ -589,7 +589,10 @@ func detectAgentCommand(baseCommand string, panePID int, processes map[int]proce
 		lowerComm := normalizeCommand(proc.comm)
 		lowerArgs := strings.ToLower(proc.args)
 
-		if lowerComm == "claude" || strings.Contains(lowerArgs, " claude") || strings.HasPrefix(lowerArgs, "claude ") {
+		if lowerComm == "claude" || lowerComm == "claude-code" || lowerComm == "cc" {
+			return lowerComm
+		}
+		if strings.Contains(lowerArgs, " claude") || strings.HasPrefix(lowerArgs, "claude ") {
 			return "claude"
 		}
 		if lowerComm == "codex" || strings.Contains(lowerArgs, "/bin/codex") || strings.Contains(lowerArgs, " codex ") || strings.HasPrefix(lowerArgs, "codex ") {

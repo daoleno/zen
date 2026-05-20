@@ -5,8 +5,11 @@ import (
 	"crypto/sha1"
 	"encoding/hex"
 	"fmt"
+	"log"
 	"path/filepath"
 	"regexp"
+	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -15,70 +18,104 @@ import (
 )
 
 const (
-	autoBlockStart = "<!-- zen:auto:start -->"
-	autoBlockEnd   = "<!-- zen:auto:end -->"
-	pendingTitle   = "Analyzing Work Session"
+	autoBlockStart    = "<!-- zen:auto:start -->"
+	autoBlockEnd      = "<!-- zen:auto:end -->"
+	sessionBlockStart = "<!-- zen:session:start "
+	sessionBlockEnd   = "<!-- zen:session:end "
+	brainLogKind      = "brain_log"
+	// Keep this stable during product iteration; change only for incompatible readout semantics.
+	digestPromptVersion = "agent-readout"
 )
 
 var autoTitleSuffixRe = regexp.MustCompile(`\s+\([^)]+\)\s*$`)
 
-// SessionLogger turns watcher session snapshots into durable work log files.
+// SessionLogger turns watcher agent snapshots into durable daily work log evidence.
 type SessionLogger struct {
-	store       *Store
-	digester    AgentDigestProvider
-	now         func() time.Time
-	minInterval time.Duration
-	digestEvery time.Duration
+	store          *Store
+	digester       AgentDigestProvider
+	now            func() time.Time
+	minInterval    time.Duration
+	digestEvery    time.Duration
+	failureBackoff time.Duration
 
 	mu             sync.Mutex
 	lastWrite      map[string]time.Time
 	lastHash       map[string]string
 	lastDigest     map[string]time.Time
 	lastDigestHash map[string]string
+	lastDigestErr  map[string]digestFailure
 	pendingDigest  map[string]bool
 	digestSem      chan struct{}
 	syncDigest     bool
+	loadTranscript func(classifier.Agent, time.Time) ToolTranscript
+}
+
+type digestFailure struct {
+	hash string
+	at   time.Time
 }
 
 func NewSessionLogger(store *Store, digester AgentDigestProvider) *SessionLogger {
 	return &SessionLogger{
 		store:          store,
 		digester:       digester,
-		now:            func() time.Time { return time.Now().UTC() },
+		now:            time.Now,
 		minInterval:    2 * time.Second,
-		digestEvery:    90 * time.Second,
+		digestEvery:    time.Hour,
+		failureBackoff: time.Hour,
 		lastWrite:      map[string]time.Time{},
 		lastHash:       map[string]string{},
 		lastDigest:     map[string]time.Time{},
 		lastDigestHash: map[string]string{},
+		lastDigestErr:  map[string]digestFailure{},
 		pendingDigest:  map[string]bool{},
 		digestSem:      make(chan struct{}, 1),
+		loadTranscript: loadToolTranscript,
 	}
 }
 
-// RecordAgent upserts the work log for an agent session. Non-forced updates are
+type configurableDigestProvider interface {
+	PreferredProvider() string
+	SetPreferredProvider(string) (string, bool)
+}
+
+func (l *SessionLogger) DigestProvider() string {
+	if l == nil || l.digester == nil {
+		return ""
+	}
+	configurable, ok := l.digester.(configurableDigestProvider)
+	if !ok {
+		return ""
+	}
+	return configurable.PreferredProvider()
+}
+
+func (l *SessionLogger) SetDigestProvider(provider string) (string, bool) {
+	if l == nil || l.digester == nil {
+		return "", false
+	}
+	configurable, ok := l.digester.(configurableDigestProvider)
+	if !ok {
+		return "", false
+	}
+	return configurable.SetPreferredProvider(provider)
+}
+
+// RecordAgent upserts the project evidence used by the daily work log. Non-forced updates are
 // throttled so active output does not rewrite the Markdown file on every poll.
 func (l *SessionLogger) RecordAgent(agent *classifier.Agent, final, force bool) (*Item, error) {
 	if l == nil || l.store == nil || agent == nil || strings.TrimSpace(agent.ID) == "" {
 		return nil, nil
 	}
-
-	now := l.now().UTC()
-	status := sessionStatus(agent, final)
-	hash := sessionSnapshotHash(agent, status)
-	if !force && l.shouldSkip(agent.ID, hash, now) {
+	if !IsAgentSession(agent) {
 		return nil, nil
 	}
 
-	existing, ok := l.store.GetByAgentSession(agent.ID)
-	if !ok {
-		existing, ok = l.store.GetByID(autoSessionID(agent.ID))
-	}
-
-	item := buildSessionItem(l.store.Root, existing, agent, now, status, digestFromExisting(existing), "")
-	written, err := l.store.Write(item, time.Time{})
-	if err != nil {
-		return nil, err
+	now := l.now()
+	status := sessionStatus(agent, final)
+	hash := sessionSnapshotHash(agent, status)
+	if !force && l.shouldSkip(agent.ID, now) {
+		return nil, nil
 	}
 
 	l.mu.Lock()
@@ -86,16 +123,22 @@ func (l *SessionLogger) RecordAgent(agent *classifier.Agent, final, force bool) 
 	l.lastHash[agent.ID] = hash
 	l.mu.Unlock()
 
+	project := safeProjectName(agent.Project, agent.Cwd)
 	l.scheduleDigest(agent, status, hash, final, force, now)
-	return written, nil
+	if l.syncDigest {
+		if written, ok := l.store.GetByID(brainLogID(project)); ok {
+			return written, nil
+		}
+	}
+	if existing, ok := l.store.GetByID(brainLogID(project)); ok {
+		return existing, nil
+	}
+	return nil, nil
 }
 
-func (l *SessionLogger) shouldSkip(sessionID, hash string, now time.Time) bool {
+func (l *SessionLogger) shouldSkip(sessionID string, now time.Time) bool {
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	if l.lastHash[sessionID] == hash {
-		return true
-	}
 	if last, ok := l.lastWrite[sessionID]; ok && now.Sub(last) < l.minInterval {
 		return true
 	}
@@ -113,7 +156,7 @@ func (l *SessionLogger) scheduleDigest(agent *classifier.Agent, status, hash str
 	}
 
 	l.mu.Lock()
-	if l.pendingDigest[sessionID] || l.lastDigestHash[sessionID] == hash {
+	if l.pendingDigest[sessionID] {
 		l.mu.Unlock()
 		return
 	}
@@ -134,7 +177,7 @@ func (l *SessionLogger) scheduleDigest(agent *classifier.Agent, status, hash str
 	go l.digestAndWrite(agentCopy, status, hash)
 }
 
-func (l *SessionLogger) digestAndWrite(agent *classifier.Agent, status, hash string) {
+func (l *SessionLogger) digestAndWrite(agent *classifier.Agent, status, _ string) {
 	sessionID := strings.TrimSpace(agent.ID)
 	defer func() {
 		l.mu.Lock()
@@ -147,11 +190,45 @@ func (l *SessionLogger) digestAndWrite(agent *classifier.Agent, status, hash str
 		defer func() { <-l.digestSem }()
 	}
 
-	existing, _ := l.store.GetByAgentSession(sessionID)
-	now := l.now().UTC()
+	project := safeProjectName(agent.Project, agent.Cwd)
+	existing, _ := l.store.GetByID(brainLogID(project))
+	now := l.now()
+	transcript := l.nativeTranscript(*agent, now)
+	if strings.TrimSpace(transcript.Excerpt) == "" || !IsNativeAgentSource(transcript.Source) {
+		l.mu.Lock()
+		l.lastDigest[sessionID] = now
+		l.mu.Unlock()
+		return
+	}
+	digestHash := transcriptEvidenceHash(*agent, transcript)
+
+	l.mu.Lock()
+	if l.lastDigestHash[sessionID] == digestHash {
+		l.lastDigest[sessionID] = now
+		l.mu.Unlock()
+		l.writeExistingDigestSnapshot(agent, existing, now, status, digestHash, transcript)
+		return
+	}
+	if lastErr, ok := l.lastDigestErr[sessionID]; ok && lastErr.hash == digestHash && now.Sub(lastErr.at) < l.failureBackoff {
+		l.lastDigest[sessionID] = now
+		l.mu.Unlock()
+		return
+	}
+	l.mu.Unlock()
+	if existing != nil && existing.Frontmatter.AIHash == digestHash {
+		l.mu.Lock()
+		l.lastDigest[sessionID] = now
+		l.lastDigestHash[sessionID] = digestHash
+		delete(l.lastDigestErr, sessionID)
+		l.mu.Unlock()
+		l.writeExistingDigestSnapshot(agent, existing, now, status, digestHash, transcript)
+		return
+	}
+
 	input := AgentDigestInput{
 		Agent:           *agent,
 		Status:          status,
+		Transcript:      transcript,
 		PreviousTitle:   "",
 		PreviousSummary: "",
 		PreviousNext:    "",
@@ -164,45 +241,49 @@ func (l *SessionLogger) digestAndWrite(agent *classifier.Agent, status, hash str
 	}
 
 	digest, err := l.digester.Digest(context.Background(), input)
-	finishedAt := l.now().UTC()
+	finishedAt := l.now()
 
 	l.mu.Lock()
-	currentHash := l.lastHash[sessionID]
-	if currentHash != hash {
-		l.mu.Unlock()
-		return
-	}
 	l.lastDigest[sessionID] = finishedAt
 	if err == nil {
-		l.lastDigestHash[sessionID] = hash
+		l.lastDigestHash[sessionID] = digestHash
+		delete(l.lastDigestErr, sessionID)
+	} else {
+		l.lastDigestErr[sessionID] = digestFailure{hash: digestHash, at: finishedAt}
 	}
 	l.mu.Unlock()
 
 	if err != nil {
-		l.writeDigestError(agent, status, hash, finishedAt, err)
+		log.Printf("brain digest failed for %s (%s): %v", agent.ID, project, err)
 		return
 	}
 
-	latest, _ := l.store.GetByAgentSession(sessionID)
-	item := buildSessionItem(l.store.Root, latest, agent, finishedAt, status, digest, hash)
+	latest, _ := l.store.GetByID(brainLogID(project))
+	item := buildSessionItem(l.store.Root, latest, agent, finishedAt, status, digest, digestHash, transcript)
 	if _, err := l.store.Write(item, time.Time{}); err != nil {
 		l.mu.Lock()
 		delete(l.lastDigestHash, sessionID)
 		l.mu.Unlock()
+		log.Printf("brain digest write failed for %s (%s): %v", agent.ID, project, err)
 	}
 }
 
-func (l *SessionLogger) writeDigestError(agent *classifier.Agent, status, hash string, now time.Time, digestErr error) {
-	latest, _ := l.store.GetByAgentSession(agent.ID)
-	digest := digestFromExisting(latest)
-	item := buildSessionItem(l.store.Root, latest, agent, now, status, digest, "")
-	item.Frontmatter.AIError = truncateText(collapseSpaces(digestErr.Error()), 180)
-	item.Frontmatter.AIHash = hash
-	title := digestTitle(digestFromFrontmatter(item.Frontmatter), agent)
-	item.Body = mergeAutoBlock(item.Body, title, renderAutoBlock(agent, item.Frontmatter, now))
-	if _, err := l.store.Write(item, time.Time{}); err != nil {
+func (l *SessionLogger) writeExistingDigestSnapshot(agent *classifier.Agent, existing *Item, now time.Time, status, digestHash string, transcript ToolTranscript) {
+	if l == nil || l.store == nil || agent == nil || existing == nil {
 		return
 	}
+	current := digestFromExisting(existing)
+	item := buildSessionItem(l.store.Root, existing, agent, now, status, current, digestHash, transcript)
+	if _, err := l.store.Write(item, time.Time{}); err != nil {
+		log.Printf("brain digest write failed for %s (%s): %v", agent.ID, safeProjectName(agent.Project, agent.Cwd), err)
+	}
+}
+
+func (l *SessionLogger) nativeTranscript(agent classifier.Agent, now time.Time) ToolTranscript {
+	if l != nil && l.loadTranscript != nil {
+		return l.loadTranscript(agent, now)
+	}
+	return loadToolTranscript(agent, now)
 }
 
 func cloneDigestAgent(agent *classifier.Agent) *classifier.Agent {
@@ -222,25 +303,30 @@ func isDigestUrgentStatus(status string) bool {
 		status == string(classifier.StateFailed)
 }
 
-func buildSessionItem(root string, existing *Item, agent *classifier.Agent, now time.Time, status string, digest AgentDigest, digestHash string) *Item {
-	id := autoSessionID(agent.ID)
+func buildSessionItem(root string, existing *Item, agent *classifier.Agent, now time.Time, status string, digest AgentDigest, digestHash string, transcript ToolTranscript) *Item {
 	project := safeProjectName(agent.Project, agent.Cwd)
-	title := digestTitle(digest, agent)
-	path := filepath.Join(root, project, buildSessionFilename(now, title, id))
+	id := brainLogID(project)
+	title := project
+	path := filepath.Join(root, project, "brain.md")
 	frontmatter := Frontmatter{
-		ID:           id,
-		Created:      now,
-		Started:      &now,
-		Status:       status,
-		Title:        digest.Title,
-		Summary:      digest.Summary,
-		Progress:     append([]string(nil), digest.Progress...),
-		Next:         digest.Next,
-		AgentSession: agent.ID,
-		Cwd:          strings.TrimSpace(agent.Cwd),
-		Command:      strings.TrimSpace(agent.Command),
-		AIProvider:   digest.Provider,
-		AIHash:       digestHash,
+		ID:          id,
+		Kind:        brainLogKind,
+		Created:     now,
+		Started:     &now,
+		Status:      status,
+		Title:       title,
+		Outcome:     digest.Outcome,
+		Summary:     digest.Summary,
+		Progress:    append([]string(nil), digest.Progress...),
+		Friction:    digest.Friction,
+		Cause:       digest.Cause,
+		Insight:     digest.Insight,
+		Next:        digest.Next,
+		AgentSource: strings.TrimSpace(transcript.Source),
+		Cwd:         strings.TrimSpace(agent.Cwd),
+		Command:     strings.TrimSpace(agent.Command),
+		AIProvider:  digest.Provider,
+		AIHash:      digestHash,
 	}
 	if hasDigestContent(digest) {
 		updated := now
@@ -257,6 +343,7 @@ func buildSessionItem(root string, existing *Item, agent *classifier.Agent, now 
 		if frontmatter.ID == "" {
 			frontmatter.ID = id
 		}
+		frontmatter.Kind = brainLogKind
 		if frontmatter.Created.IsZero() {
 			frontmatter.Created = now
 		}
@@ -264,14 +351,18 @@ func buildSessionItem(root string, existing *Item, agent *classifier.Agent, now 
 			started := frontmatter.Created
 			frontmatter.Started = &started
 		}
-		frontmatter.AgentSession = agent.ID
 		frontmatter.Cwd = strings.TrimSpace(agent.Cwd)
 		frontmatter.Command = strings.TrimSpace(agent.Command)
 		frontmatter.Status = status
+		frontmatter.Title = title
+		frontmatter.AgentSource = strings.TrimSpace(transcript.Source)
 		if hasDigestContent(digest) {
-			frontmatter.Title = digest.Title
+			frontmatter.Outcome = digest.Outcome
 			frontmatter.Summary = digest.Summary
 			frontmatter.Progress = append([]string(nil), digest.Progress...)
+			frontmatter.Friction = digest.Friction
+			frontmatter.Cause = digest.Cause
+			frontmatter.Insight = digest.Insight
 			frontmatter.Next = digest.Next
 			frontmatter.AIProvider = digest.Provider
 			frontmatter.AIHash = digestHash
@@ -279,67 +370,304 @@ func buildSessionItem(root string, existing *Item, agent *classifier.Agent, now 
 			updated := now
 			frontmatter.AIUpdated = &updated
 		}
-		title = digestTitle(digestFromFrontmatter(frontmatter), agent)
 	}
 
-	if isTerminalStatus(frontmatter.Status) {
-		if frontmatter.Done == nil {
-			done := now
-			frontmatter.Done = &done
-		}
-	} else {
-		frontmatter.Done = nil
-	}
+	frontmatter.Done = nil
+	entry := renderProjectSessionEntry(agent, frontmatter, digest, now)
 
 	return &Item{
 		ID:          frontmatter.ID,
 		Path:        path,
 		Project:     project,
-		Body:        mergeAutoBlock(existingBody, title, renderAutoBlock(agent, frontmatter, now)),
+		Body:        mergeProjectLog(existingBody, title, entry),
 		Frontmatter: frontmatter,
 	}
+}
+
+func brainLogID(project string) string {
+	project = safeProjectName(project, "")
+	sum := sha1.Sum([]byte(project))
+	return "brain-" + hex.EncodeToString(sum[:])[:16]
+}
+
+type projectSessionEntry struct {
+	Key     string
+	Date    string
+	Updated time.Time
+	Score   int
+	Content string
+}
+
+func renderProjectSessionEntry(agent *classifier.Agent, frontmatter Frontmatter, digest AgentDigest, now time.Time) projectSessionEntry {
+	key := autoSessionID(agent.ID)
+	date := now.Format("2006-01-02")
+	score := sessionEntryScore(frontmatter, digest)
+	updated := now.UTC()
+	title := digestTitle(digest, agent)
+
+	lines := []string{
+		fmt.Sprintf("%s%s date=%s score=%d updated=%s -->", sessionBlockStart, key, date, score, updated.Format(time.RFC3339)),
+		"### " + title,
+		"",
+	}
+
+	if outcome := strings.TrimSpace(frontmatter.Outcome); outcome != "" {
+		lines = append(lines, "#### Outcome", "", outcome)
+	}
+
+	if summary := strings.TrimSpace(frontmatter.Summary); summary != "" {
+		if len(lines) > 3 {
+			lines = append(lines, "")
+		}
+		lines = append(lines, "#### Read", "", summary)
+	} else if frontmatter.Outcome == "" && frontmatter.AIError != "" {
+		lines = append(lines, "AI digest unavailable. The daemon will retry when the evidence changes.")
+	}
+
+	if len(frontmatter.Progress) > 0 {
+		lines = append(lines, "", "#### Signals", "")
+		for _, item := range frontmatter.Progress {
+			if trimmed := strings.TrimSpace(item); trimmed != "" {
+				lines = append(lines, "- "+trimmed)
+			}
+		}
+	}
+
+	if friction := strings.TrimSpace(frontmatter.Friction); friction != "" {
+		lines = append(lines, "", "#### Friction", "", friction)
+	}
+
+	if cause := strings.TrimSpace(frontmatter.Cause); cause != "" {
+		lines = append(lines, "", "#### Cause", "", cause)
+	}
+
+	if insight := strings.TrimSpace(frontmatter.Insight); insight != "" {
+		lines = append(lines, "", "#### Insight", "", insight)
+	}
+
+	if next := strings.TrimSpace(frontmatter.Next); next != "" {
+		lines = append(lines, "", "#### Next", "", next)
+	}
+
+	if len(lines) == 3 {
+		if summary := strings.TrimSpace(frontmatter.Summary); summary != "" {
+			lines = append(lines, summary)
+		}
+	}
+
+	meta := []string{
+		fmt.Sprintf("session=%s", strings.TrimSpace(agent.ID)),
+		fmt.Sprintf("status=%s", frontmatter.Status),
+		fmt.Sprintf("agent=%s", collapseSpaces(autoTitleSuffixRe.ReplaceAllString(strings.TrimSpace(agent.Name), ""))),
+		fmt.Sprintf("updated=%s", updated.Format(time.RFC3339)),
+	}
+	if provider := strings.TrimSpace(frontmatter.AIProvider); provider != "" {
+		meta = append(meta, fmt.Sprintf("read_by=%s", provider))
+	}
+	if frontmatter.AIError != "" {
+		meta = append(meta, fmt.Sprintf("ai_error=%s", frontmatter.AIError))
+	}
+	lines = append(lines,
+		"",
+		"<!-- zen:meta "+strings.Join(meta, "; ")+" -->",
+		fmt.Sprintf("%s%s -->", sessionBlockEnd, key),
+	)
+
+	return projectSessionEntry{
+		Key:     key,
+		Date:    date,
+		Updated: updated,
+		Score:   score,
+		Content: strings.Join(lines, "\n"),
+	}
+}
+
+func sessionEntryScore(frontmatter Frontmatter, digest AgentDigest) int {
+	score := 0
+	if hasDigestContent(digest) {
+		score += 10
+	}
+	if strings.TrimSpace(frontmatter.Outcome) != "" {
+		score += 2
+	}
+	if strings.TrimSpace(frontmatter.Summary) != "" {
+		score += 3
+	}
+	if len(frontmatter.Progress) > 0 {
+		score += 2
+	}
+	if strings.TrimSpace(frontmatter.Insight) != "" {
+		score += 3
+	}
+	if strings.TrimSpace(frontmatter.Friction) != "" {
+		score++
+	}
+	if strings.TrimSpace(frontmatter.Next) != "" {
+		score += 2
+	}
+	if frontmatter.Status == string(classifier.StateBlocked) || frontmatter.Status == string(classifier.StateFailed) {
+		score++
+	}
+	return score
+}
+
+func mergeProjectLog(existingBody, projectTitle string, entry projectSessionEntry) string {
+	projectTitle = strings.TrimSpace(projectTitle)
+	if projectTitle == "" {
+		projectTitle = "Brain"
+	}
+
+	before, auto, after, ok := splitAutoBlock(existingBody)
+	entries := parseProjectSessionEntries(auto)
+	replaced := false
+	for i := range entries {
+		if entries[i].Key == entry.Key {
+			entries[i] = entry
+			replaced = true
+			break
+		}
+	}
+	if !replaced {
+		entries = append(entries, entry)
+	}
+
+	autoBlock := renderProjectAutoBlock(entries)
+	if strings.TrimSpace(existingBody) == "" || !ok {
+		if strings.TrimSpace(existingBody) == "" {
+			return "# " + projectTitle + "\n\n" + autoBlock + "\n"
+		}
+		lines := strings.Split(existingBody, "\n")
+		if len(lines) > 0 && strings.HasPrefix(strings.TrimSpace(lines[0]), "# ") {
+			before = strings.TrimRight(lines[0], "\n") + "\n\n"
+			after = strings.TrimLeft(strings.Join(lines[1:], "\n"), "\n")
+		} else {
+			before = "# " + projectTitle + "\n\n"
+			after = strings.TrimLeft(existingBody, "\n")
+		}
+	}
+
+	out := strings.TrimRight(before, "\n") + "\n\n" + autoBlock
+	if strings.TrimSpace(after) != "" {
+		out += "\n\n" + strings.TrimLeft(after, "\n")
+	}
+	return strings.TrimRight(out, "\n") + "\n"
+}
+
+func splitAutoBlock(body string) (before, auto, after string, ok bool) {
+	start := strings.Index(body, autoBlockStart)
+	end := strings.Index(body, autoBlockEnd)
+	if start < 0 || end < start {
+		return "", "", "", false
+	}
+	end += len(autoBlockEnd)
+	return body[:start], body[start:end], body[end:], true
+}
+
+func renderProjectAutoBlock(entries []projectSessionEntry) string {
+	sort.SliceStable(entries, func(i, j int) bool {
+		if entries[i].Date != entries[j].Date {
+			return entries[i].Date > entries[j].Date
+		}
+		if entries[i].Score != entries[j].Score {
+			return entries[i].Score > entries[j].Score
+		}
+		return entries[i].Updated.After(entries[j].Updated)
+	})
+
+	lines := []string{autoBlockStart}
+	currentDate := ""
+	for _, entry := range entries {
+		date := strings.TrimSpace(entry.Date)
+		if date == "" {
+			date = "Undated"
+		}
+		if date != currentDate {
+			if currentDate != "" {
+				lines = append(lines, "")
+			}
+			lines = append(lines, "## "+date, "")
+			currentDate = date
+		}
+		lines = append(lines, strings.TrimSpace(entry.Content), "")
+	}
+	lines = append(lines, autoBlockEnd)
+	return strings.TrimRight(strings.Join(lines, "\n"), "\n")
+}
+
+func parseProjectSessionEntries(autoBlock string) []projectSessionEntry {
+	var entries []projectSessionEntry
+	rest := autoBlock
+	for {
+		start := strings.Index(rest, sessionBlockStart)
+		if start < 0 {
+			break
+		}
+		afterStart := rest[start+len(sessionBlockStart):]
+		startClose := strings.Index(afterStart, "-->")
+		if startClose < 0 {
+			break
+		}
+		header := strings.TrimSpace(afterStart[:startClose])
+		key, meta := splitSessionHeader(header)
+		if key == "" {
+			rest = afterStart[startClose+len("-->"):]
+			continue
+		}
+		endMarker := sessionBlockEnd + key + " -->"
+		afterHeader := afterStart[startClose+len("-->"):]
+		end := strings.Index(afterHeader, endMarker)
+		if end < 0 {
+			rest = afterHeader
+			continue
+		}
+		content := sessionBlockStart + strings.TrimSpace(header) + " -->" + afterHeader[:end] + endMarker
+		entries = append(entries, projectSessionEntry{
+			Key:     key,
+			Date:    meta["date"],
+			Updated: parseEntryUpdated(meta["updated"]),
+			Score:   parseEntryScore(meta["score"]),
+			Content: strings.TrimSpace(content),
+		})
+		rest = afterHeader[end+len(endMarker):]
+	}
+	return entries
+}
+
+func splitSessionHeader(header string) (string, map[string]string) {
+	fields := strings.Fields(header)
+	if len(fields) == 0 {
+		return "", nil
+	}
+	meta := map[string]string{}
+	for _, field := range fields[1:] {
+		key, value, ok := strings.Cut(field, "=")
+		if !ok {
+			continue
+		}
+		meta[strings.TrimSpace(key)] = strings.TrimSpace(value)
+	}
+	return strings.TrimSpace(fields[0]), meta
+}
+
+func parseEntryUpdated(value string) time.Time {
+	parsed, err := time.Parse(time.RFC3339, strings.TrimSpace(value))
+	if err != nil {
+		return time.Time{}
+	}
+	return parsed
+}
+
+func parseEntryScore(value string) int {
+	parsed, err := strconv.Atoi(strings.TrimSpace(value))
+	if err != nil {
+		return 0
+	}
+	return parsed
 }
 
 func autoSessionID(sessionID string) string {
 	sum := sha1.Sum([]byte(strings.TrimSpace(sessionID)))
 	return "session-" + hex.EncodeToString(sum[:])[:16]
-}
-
-func buildSessionFilename(now time.Time, title, id string) string {
-	return now.Format("2006-01-02") + "-" + slugifySessionTitle(title, id) + ".md"
-}
-
-func slugifySessionTitle(title, fallback string) string {
-	trimmed := strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(title), "#"))
-	if trimmed == "" {
-		return strings.ToLower(fallback)
-	}
-
-	out := make([]rune, 0, len(trimmed))
-	lastDash := false
-	for _, r := range strings.ToLower(trimmed) {
-		switch {
-		case r >= 'a' && r <= 'z', r >= '0' && r <= '9':
-			out = append(out, r)
-			lastDash = false
-		case r == ' ' || r == '-' || r == '_' || r == '.':
-			if !lastDash {
-				out = append(out, '-')
-				lastDash = true
-			}
-		}
-	}
-	slug := strings.Trim(string(out), "-")
-	if slug == "" {
-		slug = strings.ToLower(fallback)
-	}
-	if len(slug) > 60 {
-		slug = strings.Trim(slug[:60], "-")
-	}
-	if slug == "" {
-		return strings.ToLower(fallback)
-	}
-	return slug
 }
 
 func safeProjectName(project, cwd string) string {
@@ -379,6 +707,7 @@ func sessionSnapshotHash(agent *classifier.Agent, status string) string {
 		return ""
 	}
 	parts := []string{
+		digestPromptVersion,
 		strings.TrimSpace(agent.ID),
 		strings.TrimSpace(agent.Name),
 		strings.TrimSpace(agent.Project),
@@ -392,36 +721,18 @@ func sessionSnapshotHash(agent *classifier.Agent, status string) string {
 	return hex.EncodeToString(sum[:])
 }
 
-func isTerminalStatus(status string) bool {
-	return status == string(classifier.StateDone) || status == string(classifier.StateFailed)
-}
-
-func sessionTitle(agent *classifier.Agent) string {
-	if agent == nil {
-		return "Agent Session"
+func transcriptEvidenceHash(agent classifier.Agent, transcript ToolTranscript) string {
+	parts := []string{
+		digestPromptVersion,
+		strings.TrimSpace(agent.Project),
+		strings.TrimSpace(agent.Cwd),
+		strings.TrimSpace(transcript.Source),
+		strings.TrimSpace(transcript.SessionID),
+		strings.TrimSpace(transcript.Path),
+		collapseSpaces(transcript.Excerpt),
 	}
-	title := autoTitleSuffixRe.ReplaceAllString(strings.TrimSpace(agent.Name), "")
-	if isGenericSessionTitle(title) {
-		if summary := strings.TrimSpace(agent.Summary); summary != "" && !strings.HasPrefix(strings.ToLower(summary), "no new output") {
-			title = summary
-		}
-	}
-	if title == "" {
-		title = strings.TrimSpace(agent.Command)
-	}
-	if title == "" {
-		title = "Agent Session"
-	}
-	return truncateText(collapseSpaces(title), 80)
-}
-
-func isGenericSessionTitle(title string) bool {
-	switch strings.ToLower(strings.TrimSpace(title)) {
-	case "", "claude", "claude code", "codex", "zsh", "bash", "sh", "fish", "tmux", "terminal":
-		return true
-	default:
-		return false
-	}
+	sum := sha1.Sum([]byte(strings.Join(parts, "\x00")))
+	return hex.EncodeToString(sum[:])
 }
 
 func digestFromExisting(existing *Item) AgentDigest {
@@ -434,8 +745,14 @@ func digestFromExisting(existing *Item) AgentDigest {
 func digestFromFrontmatter(fm Frontmatter) AgentDigest {
 	return AgentDigest{
 		Title:    fm.Title,
+		Outcome:  fm.Outcome,
+		Readout:  fm.Summary,
 		Summary:  fm.Summary,
+		Signals:  append([]string(nil), fm.Progress...),
 		Progress: append([]string(nil), fm.Progress...),
+		Friction: fm.Friction,
+		Cause:    fm.Cause,
+		Insight:  fm.Insight,
 		Next:     fm.Next,
 		Provider: fm.AIProvider,
 	}
@@ -445,91 +762,15 @@ func digestTitle(digest AgentDigest, agent *classifier.Agent) string {
 	if title := strings.TrimSpace(digest.Title); title != "" {
 		return title
 	}
-	return pendingTitle
-}
-
-func renderAutoBlock(agent *classifier.Agent, frontmatter Frontmatter, now time.Time) string {
-	status := frontmatter.Status
-	lines := []string{
-		autoBlockStart,
-		"## Brief",
-		"",
+	if summary := firstNonEmpty(digest.Insight, digest.Summary, digest.Outcome); summary != "" {
+		return truncateText(collapseSpaces(summary), 70)
 	}
-
-	if summary := strings.TrimSpace(frontmatter.Summary); summary != "" {
-		lines = append(lines, summary)
-	} else if frontmatter.AIError != "" {
-		lines = append(lines, "AI digest unavailable. The daemon will retry when the session changes.")
-	} else {
-		lines = append(lines, "AI digest pending.")
-	}
-
-	if len(frontmatter.Progress) > 0 {
-		lines = append(lines, "", "## Progress", "")
-		for _, item := range frontmatter.Progress {
-			if trimmed := strings.TrimSpace(item); trimmed != "" {
-				lines = append(lines, "- "+trimmed)
-			}
+	if agent != nil {
+		if summary := strings.TrimSpace(agent.Summary); summary != "" {
+			return truncateText(collapseSpaces(summary), 70)
 		}
 	}
-
-	if next := strings.TrimSpace(frontmatter.Next); next != "" {
-		lines = append(lines, "", "## Next", "", next)
-	}
-
-	lines = append(lines,
-		"",
-		"## Context",
-		"",
-		fmt.Sprintf("- Status: %s", status),
-		fmt.Sprintf("- Agent: %s", collapseSpaces(autoTitleSuffixRe.ReplaceAllString(strings.TrimSpace(agent.Name), ""))),
-		fmt.Sprintf("- Workspace: %s", safeProjectName(agent.Project, agent.Cwd)),
-		fmt.Sprintf("- Updated: %s", now.Format(time.RFC3339)),
-	)
-	if provider := strings.TrimSpace(frontmatter.AIProvider); provider != "" {
-		lines = append(lines, fmt.Sprintf("- Read by: %s", provider))
-	}
-	if frontmatter.AIError != "" {
-		lines = append(lines, fmt.Sprintf("- AI error: %s", frontmatter.AIError))
-	}
-	lines = append(lines, "", autoBlockEnd)
-	return strings.Join(lines, "\n")
-}
-
-func mergeAutoBlock(existingBody, title, autoBlock string) string {
-	title = strings.TrimSpace(title)
-	if title == "" {
-		title = "Agent Session"
-	}
-	if strings.TrimSpace(existingBody) == "" {
-		return "# " + title + "\n\n" + autoBlock + "\n\n## Notes\n\n"
-	}
-
-	start := strings.Index(existingBody, autoBlockStart)
-	end := strings.Index(existingBody, autoBlockEnd)
-	if start >= 0 && end >= start {
-		end += len(autoBlockEnd)
-		return strings.TrimRight(existingBody[:start], "\n") + "\n\n" + autoBlock + "\n\n" + strings.TrimLeft(existingBody[end:], "\n")
-	}
-
-	lines := strings.Split(existingBody, "\n")
-	if len(lines) > 0 && strings.HasPrefix(strings.TrimSpace(lines[0]), "# ") {
-		if shouldReplaceAutoTitle(strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(lines[0]), "#")), title) {
-			lines[0] = "# " + title
-		}
-		rest := strings.Join(lines[1:], "\n")
-		return strings.TrimRight(lines[0], "\n") + "\n\n" + autoBlock + "\n\n" + strings.TrimLeft(rest, "\n")
-	}
-	return "# " + title + "\n\n" + autoBlock + "\n\n" + strings.TrimLeft(existingBody, "\n")
-}
-
-func shouldReplaceAutoTitle(existingTitle, nextTitle string) bool {
-	existingTitle = strings.TrimSpace(existingTitle)
-	nextTitle = strings.TrimSpace(nextTitle)
-	if existingTitle == "" || nextTitle == "" || existingTitle == nextTitle {
-		return false
-	}
-	return existingTitle == pendingTitle || isGenericSessionTitle(existingTitle)
+	return "Brain readout"
 }
 
 func recentOutput(lines []string) string {
@@ -537,8 +778,8 @@ func recentOutput(lines []string) string {
 		return ""
 	}
 	start := 0
-	if len(lines) > 20 {
-		start = len(lines) - 20
+	if len(lines) > 120 {
+		start = len(lines) - 120
 	}
 	out := make([]string, 0, len(lines)-start)
 	for _, line := range lines[start:] {

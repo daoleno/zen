@@ -8,6 +8,9 @@ type GlyphInfo = { glyph: string; color: string; label: string };
 export type WorkStatus = "queued" | "running" | "blocked" | "done" | "failed" | "unknown";
 
 export function workItemStatus(item: WorkItem): WorkStatus {
+  if (item.frontmatter.kind === "brain_log") {
+    return "running";
+  }
   const raw =
     typeof item.frontmatter.status === "string"
       ? item.frontmatter.status.trim().toLowerCase()
@@ -66,32 +69,38 @@ export function relativeTime(iso: string): string {
 }
 
 export function workItemTitle(item: WorkItem): string {
-  return item.frontmatter.title?.trim() || item.title || "Analyzing work session";
+  return usefulInlineText(item.frontmatter.title?.trim() || item.title);
 }
 
 export function workItemSummary(item: WorkItem): string {
   if (item.frontmatter.summary?.trim()) {
-    return item.frontmatter.summary.trim();
+    return usefulInlineText(item.frontmatter.summary.trim());
   }
-  if (item.frontmatter.ai_error?.trim()) {
-    return "AI digest unavailable. The daemon will retry when this session changes.";
-  }
-  return "Waiting for AI digest.";
+  return "";
 }
 
 export function WorkRow({ item }: { item: WorkItem }) {
   const router = useRouter();
   const colors = useAppColors();
   const styles = useMemo(() => createStyles(colors), [colors]);
-  const { glyph, color, label } = statusGlyph(item, colors);
+  const { color } = statusGlyph(item, colors);
+  const brainLog = item.frontmatter.kind === "brain_log";
   const status = workItemStatus(item);
   const done = status === "done";
   const timeSource = item.mtime || item.frontmatter.created;
   const title = workItemTitle(item);
   const summary = workItemSummary(item);
   const next = item.frontmatter.next?.trim();
-  const provider = item.frontmatter.ai_provider?.trim();
+  const nextLabel = next ? usefulInlineText(next) : "";
   const time = relativeTime(timeSource);
+  const context = brainLog
+    ? item.serverName
+    : item.serverName
+      ? `${item.serverName} · ${item.project}`
+      : item.project;
+  const primary = title || summary || nextLabel || context;
+  const secondary = title ? summary : "";
+  const railColor = brainLog ? colors.border : color;
 
   return (
     <Pressable
@@ -103,33 +112,63 @@ export function WorkRow({ item }: { item: WorkItem }) {
       }
       style={({ pressed }) => [styles.row, pressed && styles.rowPressed]}
     >
-      <View style={[styles.statusRail, { backgroundColor: color }]} />
+      <View style={[styles.statusRail, { backgroundColor: railColor }]} />
       <View style={styles.copy}>
-        <View style={styles.topLine}>
-          <View style={[styles.statusPill, { borderColor: color }]}>
-            <Text style={[styles.statusGlyph, { color }]}>{glyph}</Text>
-            <Text style={[styles.statusLabel, { color }]}>{label}</Text>
+        {context || time ? (
+          <View style={styles.topLine}>
+            {context ? (
+              <Text style={styles.context} numberOfLines={1}>
+                {context}
+              </Text>
+            ) : null}
+            {time ? <Text style={styles.time}>{time}</Text> : null}
           </View>
-          {provider ? <Text style={styles.provider}>{provider}</Text> : null}
-          {time ? <Text style={styles.time}>{time}</Text> : null}
-        </View>
+        ) : null}
         <Text
           style={[styles.title, done && styles.titleDone]}
           numberOfLines={2}
         >
-          {title}
+          {primary}
         </Text>
-        <Text style={styles.summary} numberOfLines={2}>
-          {summary}
-        </Text>
-        {next ? (
+        {secondary ? (
+          <Text style={styles.summary} numberOfLines={2}>
+            {secondary}
+          </Text>
+        ) : null}
+        {nextLabel ? (
           <Text style={styles.next} numberOfLines={1}>
-            Next: {next}
+            Next: {nextLabel}
           </Text>
         ) : null}
       </View>
     </Pressable>
   );
+}
+
+function usefulInlineText(value?: string): string {
+  const text = (value || "")
+    .replace(/<!--[\s\S]*?-->/g, "")
+    .replace(/\[([^\]]+)\]\([^)]+\)/g, "$1")
+    .replace(/\*\*([^*]+)\*\*/g, "$1")
+    .replace(/`([^`]+)`/g, "$1")
+    .trim();
+  return isPlaceholderText(text) ? "" : text;
+}
+
+function isPlaceholderText(value: string): boolean {
+  switch (value.trim().toLowerCase()) {
+    case "":
+    case "agent session":
+    case "work session":
+    case "analyzing session":
+    case "analyzing work session":
+    case "waiting for ai digest":
+    case "ai digest pending.":
+    case "ai digest pending":
+      return true;
+    default:
+      return false;
+  }
 }
 
 function createStyles(colors: typeof Colors) {
@@ -163,33 +202,14 @@ function createStyles(colors: typeof Colors) {
     minHeight: 18,
     marginBottom: 4,
   },
-  statusPill: {
-    height: 18,
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 4,
-    paddingHorizontal: 6,
-    borderWidth: StyleSheet.hairlineWidth,
-    borderRadius: 9,
-    backgroundColor: colors.surfaceSubtle,
-  },
-  statusGlyph: {
-    fontFamily: Typography.terminalFontBold,
-    fontSize: 9,
-    lineHeight: 12,
-  },
-  statusLabel: {
-    fontFamily: Typography.terminalFont,
-    fontSize: 9,
-    lineHeight: 12,
-    textTransform: "uppercase",
-  },
-  provider: {
+  context: {
+    minWidth: 0,
+    maxWidth: "74%",
     color: colors.textSecondary,
-    fontFamily: Typography.terminalFont,
+    fontFamily: Typography.uiFont,
     fontSize: 10,
     lineHeight: 13,
-    opacity: 0.48,
+    opacity: 0.52,
   },
   title: {
     color: colors.textPrimary,

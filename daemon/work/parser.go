@@ -84,14 +84,20 @@ func decodeFrontmatter(fm string) (Frontmatter, map[string]interface{}, error) {
 	extra := map[string]interface{}{}
 	known := map[string]struct{}{
 		"id":            {},
+		"kind":          {},
 		"created":       {},
 		"done":          {},
 		"started":       {},
 		"status":        {},
 		"title":         {},
+		"outcome":       {},
 		"summary":       {},
 		"progress":      {},
+		"friction":      {},
+		"cause":         {},
+		"insight":       {},
 		"next":          {},
+		"agent_source":  {},
 		"agent_session": {},
 		"cwd":           {},
 		"command":       {},
@@ -156,6 +162,9 @@ func ExtractMentions(body string) []Mention {
 func SerializeItem(iss *Item) ([]byte, error) {
 	out := map[string]interface{}{}
 	out["id"] = iss.Frontmatter.ID
+	if iss.Frontmatter.Kind != "" {
+		out["kind"] = iss.Frontmatter.Kind
+	}
 	out["created"] = iss.Frontmatter.Created.Format(time.RFC3339)
 	if iss.Frontmatter.Done != nil {
 		out["done"] = iss.Frontmatter.Done.Format(time.RFC3339)
@@ -171,14 +180,29 @@ func SerializeItem(iss *Item) ([]byte, error) {
 	if iss.Frontmatter.Title != "" {
 		out["title"] = iss.Frontmatter.Title
 	}
+	if iss.Frontmatter.Outcome != "" {
+		out["outcome"] = iss.Frontmatter.Outcome
+	}
 	if iss.Frontmatter.Summary != "" {
 		out["summary"] = iss.Frontmatter.Summary
 	}
 	if len(iss.Frontmatter.Progress) > 0 {
 		out["progress"] = iss.Frontmatter.Progress
 	}
+	if iss.Frontmatter.Friction != "" {
+		out["friction"] = iss.Frontmatter.Friction
+	}
+	if iss.Frontmatter.Cause != "" {
+		out["cause"] = iss.Frontmatter.Cause
+	}
+	if iss.Frontmatter.Insight != "" {
+		out["insight"] = iss.Frontmatter.Insight
+	}
 	if iss.Frontmatter.Next != "" {
 		out["next"] = iss.Frontmatter.Next
+	}
+	if iss.Frontmatter.AgentSource != "" {
+		out["agent_source"] = iss.Frontmatter.AgentSource
 	}
 	if iss.Frontmatter.AgentSession != "" {
 		out["agent_session"] = iss.Frontmatter.AgentSession

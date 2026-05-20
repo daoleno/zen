@@ -19,14 +19,20 @@ type Item struct {
 // round-trips through the daemon and app.
 type Frontmatter struct {
 	ID           string                 `yaml:"id" json:"id"`
+	Kind         string                 `yaml:"kind,omitempty" json:"kind,omitempty"`
 	Created      time.Time              `yaml:"created" json:"created"`
 	Done         *time.Time             `yaml:"done,omitempty" json:"done,omitempty"`
 	Started      *time.Time             `yaml:"started,omitempty" json:"started,omitempty"`
 	Status       string                 `yaml:"status,omitempty" json:"status,omitempty"`
 	Title        string                 `yaml:"title,omitempty" json:"title,omitempty"`
+	Outcome      string                 `yaml:"outcome,omitempty" json:"outcome,omitempty"`
 	Summary      string                 `yaml:"summary,omitempty" json:"summary,omitempty"`
 	Progress     []string               `yaml:"progress,omitempty" json:"progress,omitempty"`
+	Friction     string                 `yaml:"friction,omitempty" json:"friction,omitempty"`
+	Cause        string                 `yaml:"cause,omitempty" json:"cause,omitempty"`
+	Insight      string                 `yaml:"insight,omitempty" json:"insight,omitempty"`
 	Next         string                 `yaml:"next,omitempty" json:"next,omitempty"`
+	AgentSource  string                 `yaml:"agent_source,omitempty" json:"agent_source,omitempty"`
 	AgentSession string                 `yaml:"agent_session,omitempty" json:"agent_session,omitempty"`
 	Cwd          string                 `yaml:"cwd,omitempty" json:"cwd,omitempty"`
 	Command      string                 `yaml:"command,omitempty" json:"command,omitempty"`

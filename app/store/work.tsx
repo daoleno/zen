@@ -2,14 +2,20 @@ import React, { createContext, useContext, useReducer, type ReactNode } from "re
 
 export type Frontmatter = {
   id: string;
+  kind?: string;
   created: string;
   done?: string | null;
   started?: string | null;
   status?: string;
   title?: string;
+  outcome?: string;
   summary?: string;
   progress?: string[];
+  friction?: string;
+  cause?: string;
+  insight?: string;
   next?: string;
+  agent_source?: string;
   agent_session?: string;
   cwd?: string;
   command?: string;
@@ -46,12 +52,14 @@ export type WorkState = {
   byKey: Record<string, WorkItem>;
   byProject: Record<string, string[]>;
   executorsByServer: Record<string, string[]>;
+  digestProviderByServer: Record<string, string>;
 };
 
 export const initialWorkState: WorkState = {
   byKey: {},
   byProject: {},
   executorsByServer: {},
+  digestProviderByServer: {},
 };
 
 type RawWorkItem = {
@@ -73,6 +81,7 @@ type Action =
       serverUrl: string;
       workItems: RawWorkItem[];
       executors: string[];
+      digestProvider?: string;
     }
   | {
       type: "WORK_ITEM_CHANGED";
@@ -82,7 +91,13 @@ type Action =
       workItem: RawWorkItem;
     }
   | { type: "WORK_ITEM_DELETED"; serverId: string; id?: string; path?: string }
-  | { type: "EXECUTORS_LOADED"; serverId: string; executors: string[] }
+  | {
+      type: "EXECUTORS_LOADED";
+      serverId: string;
+      executors: string[];
+      digestProvider?: string;
+    }
+  | { type: "WORK_DIGEST_PROVIDER_SET"; serverId: string; provider: string }
   | { type: "REMOVE_SERVER"; serverId: string };
 
 function makeWorkItemKey(serverId: string, itemId: string) {
@@ -136,6 +151,10 @@ function normalizeWorkItem(
       ...frontmatter,
       id: typeof frontmatter.id === "string" && frontmatter.id ? frontmatter.id : id,
       created,
+      kind:
+        typeof frontmatter.kind === "string"
+          ? frontmatter.kind.trim()
+          : undefined,
       done: typeof frontmatter.done === "string" ? frontmatter.done : frontmatter.done ?? null,
       started: typeof frontmatter.started === "string" ? frontmatter.started : frontmatter.started ?? null,
       status:
@@ -146,6 +165,10 @@ function normalizeWorkItem(
         typeof frontmatter.title === "string"
           ? frontmatter.title.trim()
           : undefined,
+      outcome:
+        typeof frontmatter.outcome === "string"
+          ? frontmatter.outcome.trim()
+          : undefined,
       summary:
         typeof frontmatter.summary === "string"
           ? frontmatter.summary.trim()
@@ -153,9 +176,25 @@ function normalizeWorkItem(
       progress: Array.isArray(frontmatter.progress)
         ? frontmatter.progress.filter((item): item is string => typeof item === "string")
         : undefined,
+      friction:
+        typeof frontmatter.friction === "string"
+          ? frontmatter.friction.trim()
+          : undefined,
+      cause:
+        typeof frontmatter.cause === "string"
+          ? frontmatter.cause.trim()
+          : undefined,
+      insight:
+        typeof frontmatter.insight === "string"
+          ? frontmatter.insight.trim()
+          : undefined,
       next:
         typeof frontmatter.next === "string"
           ? frontmatter.next.trim()
+          : undefined,
+      agent_source:
+        typeof frontmatter.agent_source === "string"
+          ? frontmatter.agent_source.trim()
           : undefined,
       agent_session:
         typeof frontmatter.agent_session === "string"
@@ -229,6 +268,12 @@ export function workReducer(state: WorkState, action: Action): WorkState {
           ...state.executorsByServer,
           [action.serverId]: action.executors,
         },
+        digestProviderByServer: {
+          ...state.digestProviderByServer,
+          ...(action.digestProvider
+            ? { [action.serverId]: action.digestProvider }
+            : {}),
+        },
       };
     }
     case "WORK_ITEM_CHANGED": {
@@ -267,6 +312,23 @@ export function workReducer(state: WorkState, action: Action): WorkState {
           ...state.executorsByServer,
           [action.serverId]: action.executors,
         },
+        digestProviderByServer: {
+          ...state.digestProviderByServer,
+          ...(action.digestProvider
+            ? { [action.serverId]: action.digestProvider }
+            : {}),
+        },
+      };
+    case "WORK_DIGEST_PROVIDER_SET":
+      if (!action.provider) {
+        return state;
+      }
+      return {
+        ...state,
+        digestProviderByServer: {
+          ...state.digestProviderByServer,
+          [action.serverId]: action.provider,
+        },
       };
     case "REMOVE_SERVER": {
       const nextByKey = Object.fromEntries(
@@ -277,6 +339,9 @@ export function workReducer(state: WorkState, action: Action): WorkState {
         byProject: groupByProject(nextByKey),
         executorsByServer: Object.fromEntries(
           Object.entries(state.executorsByServer).filter(([serverId]) => serverId !== action.serverId),
+        ),
+        digestProviderByServer: Object.fromEntries(
+          Object.entries(state.digestProviderByServer).filter(([serverId]) => serverId !== action.serverId),
         ),
       };
     }

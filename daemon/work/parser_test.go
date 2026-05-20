@@ -104,6 +104,7 @@ id: a
 created: 2026-04-21T00:00:00Z
 started: 2026-04-21T01:00:00Z
 agent_session: zen-claude-3
+agent_source: claude
 labels: [keep, me]
 ---
 Body
@@ -118,6 +119,9 @@ Body
 	}
 	if iss.Frontmatter.AgentSession != "zen-claude-3" {
 		t.Fatalf("agent_session = %q", iss.Frontmatter.AgentSession)
+	}
+	if iss.Frontmatter.AgentSource != "claude" {
+		t.Fatalf("agent_source = %q", iss.Frontmatter.AgentSource)
 	}
 	if _, ok := iss.Frontmatter.Extra["labels"]; !ok {
 		t.Fatalf("extra = %#v, want labels", iss.Frontmatter.Extra)
@@ -184,6 +188,7 @@ created: 2026-04-21T14:32:15Z
 done: 2026-04-22T00:00:00Z
 started: 2026-04-21T15:00:00Z
 agent_session: zen-claude-3
+agent_source: claude
 ---
 # Hello
 
@@ -210,6 +215,9 @@ Body line.
 	}
 	if reparsed.Frontmatter.AgentSession != iss.Frontmatter.AgentSession {
 		t.Fatalf("agent_session = %q", reparsed.Frontmatter.AgentSession)
+	}
+	if reparsed.Frontmatter.AgentSource != iss.Frontmatter.AgentSource {
+		t.Fatalf("agent_source = %q", reparsed.Frontmatter.AgentSource)
 	}
 	if reparsed.Body != iss.Body {
 		t.Fatalf("body = %q, want %q", reparsed.Body, iss.Body)
