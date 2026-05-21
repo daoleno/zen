@@ -9,8 +9,18 @@ import type {
   GitDiffStatusSnapshot,
 } from "./gitDiff";
 import type { SessionService, SessionServiceSnapshot } from "./sessionServices";
+import {
+  normalizeCodexConversation,
+  type CodexConversation,
+} from "./codexConversation";
 
 type MessageHandler = (data: any) => void;
+
+export interface CodexAssetPreview {
+  path: string;
+  content_type: string;
+  data_url: string;
+}
 
 interface ConnectionMeta {
   serverId: string;
@@ -615,6 +625,115 @@ class MultiServerWebSocketClient {
         target_id: options.targetId,
         cwd: options.cwd,
         path: options.path,
+      });
+    });
+  }
+
+  getCodexConversation(
+    serverId: string,
+    options: {
+      targetId?: string;
+      agentId?: string;
+      cwd?: string;
+      command?: string;
+      name?: string;
+      startedAt?: number;
+    },
+  ) {
+    const requestId = `${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
+
+    return new Promise<CodexConversation>((resolve, reject) => {
+      const cleanup = () => {
+        if (timer) clearTimeout(timer);
+        this.off("codex_conversation", handleConversation);
+        this.off("error", handleError);
+      };
+
+      const handleConversation = (payload: any) => {
+        if (payload.serverId !== serverId || payload.request_id !== requestId) {
+          return;
+        }
+        cleanup();
+        resolve(normalizeCodexConversation(payload.conversation));
+      };
+
+      const handleError = (payload: any) => {
+        if (payload.serverId !== serverId || payload.request_id !== requestId) {
+          return;
+        }
+        cleanup();
+        reject(new Error(payload.message || "Failed to load Codex conversation."));
+      };
+
+      const timer = setTimeout(() => {
+        cleanup();
+        reject(new Error("Timed out while loading Codex conversation."));
+      }, 10000);
+
+      this.on("codex_conversation", handleConversation);
+      this.on("error", handleError);
+      this.send(serverId, {
+        type: "codex_conversation",
+        request_id: requestId,
+        target_id: options.targetId,
+        agent_id: options.agentId,
+        cwd: options.cwd,
+        command: options.command,
+        name: options.name,
+        started_at: options.startedAt,
+      });
+    });
+  }
+
+  getCodexAsset(
+    serverId: string,
+    options: {
+      path: string;
+      cwd?: string;
+    },
+  ) {
+    const requestId = `${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
+
+    return new Promise<CodexAssetPreview>((resolve, reject) => {
+      const cleanup = () => {
+        if (timer) clearTimeout(timer);
+        this.off("codex_asset", handleAsset);
+        this.off("error", handleError);
+      };
+
+      const handleAsset = (payload: any) => {
+        if (payload.serverId !== serverId || payload.request_id !== requestId) {
+          return;
+        }
+        cleanup();
+        resolve({
+          path: typeof payload.path === "string" ? payload.path : options.path,
+          content_type:
+            typeof payload.content_type === "string" ? payload.content_type : "image/*",
+          data_url: typeof payload.data_url === "string" ? payload.data_url : "",
+        });
+      };
+
+      const handleError = (payload: any) => {
+        if (payload.serverId !== serverId || payload.request_id !== requestId) {
+          return;
+        }
+        cleanup();
+        reject(new Error(payload.message || "Failed to load Codex asset."));
+      };
+
+      const timer = setTimeout(() => {
+        cleanup();
+        reject(new Error("Timed out while loading Codex asset."));
+      }, 10000);
+
+      this.on("codex_asset", handleAsset);
+      this.on("error", handleError);
+      this.send(serverId, {
+        type: "codex_asset",
+        request_id: requestId,
+        path: options.path,
+        cwd: options.cwd,
       });
     });
   }

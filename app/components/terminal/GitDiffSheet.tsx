@@ -364,7 +364,7 @@ export function GitDiffSheet({
               <StateCard
                 icon="sync-outline"
                 title="Inspecting repository"
-                detail="zen is checking the current working tree."
+                detail="Zen is checking the current working tree."
                 accent={theme.cursor}
                 chromeText={chrome.text}
                 chromeMuted={chrome.textMuted}
@@ -957,7 +957,7 @@ function CodeSnapshotPanel({
         <StateCard
           icon="cube-outline"
           title="Binary file"
-          detail="zen does not render binary file content."
+          detail="Zen does not render binary file content."
           accent={theme.cursor}
           chromeText={chrome.text}
           chromeMuted={chrome.textMuted}

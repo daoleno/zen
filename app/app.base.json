@@ -22,9 +22,11 @@
       },
       "package": "com.anonymous.zen",
       "versionCode": 3,
-      "permissions": [
-        "android.permission.CAMERA",
+      "blockedPermissions": [
         "android.permission.RECORD_AUDIO"
+      ],
+      "permissions": [
+        "android.permission.CAMERA"
       ]
     },
     "plugins": [
@@ -33,7 +35,7 @@
       [
         "expo-camera",
         {
-          "cameraPermission": "Allow $(PRODUCT_NAME) to access your camera to scan zen pairing QR codes."
+          "cameraPermission": "Allow $(PRODUCT_NAME) to access your camera to scan Zen pairing QR codes."
         }
       ]
     ],

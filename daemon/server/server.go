@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -26,6 +27,8 @@ import (
 	"github.com/gorilla/websocket"
 	"github.com/oklog/ulid/v2"
 )
+
+const maxCodexAssetBytes = 6 << 20
 
 var upgrader = websocket.Upgrader{
 	CheckOrigin: func(r *http.Request) bool { return true },
@@ -82,6 +85,7 @@ type clientMessage struct {
 	Cwd          string                 `json:"cwd"`
 	Command      string                 `json:"command"`
 	Name         string                 `json:"name"`
+	StartedAt    json.RawMessage        `json:"started_at"`
 	Backend      string                 `json:"backend"`
 	SessionID    string                 `json:"session_id"`
 	Text         string                 `json:"text"`
@@ -392,6 +396,12 @@ func (s *Server) handleClientMessage(conn *websocket.Conn, msg []byte) {
 			"content":    payload,
 		})
 
+	case "codex_conversation":
+		s.handleCodexConversation(conn, raw)
+
+	case "codex_asset":
+		s.handleCodexAsset(conn, raw)
+
 	case "terminal_open":
 		backend := raw.Backend
 		if backend == "" {
@@ -605,6 +615,173 @@ func (s *Server) handleListSessionServices(conn *websocket.Conn, raw clientMessa
 		"interfaces":   payload.Interfaces,
 		"services":     payload.Services,
 	})
+}
+
+func (s *Server) handleCodexConversation(conn *websocket.Conn, raw clientMessage) {
+	targetID := strings.TrimSpace(raw.TargetID)
+	if targetID == "" {
+		targetID = strings.TrimSpace(raw.AgentID)
+	}
+
+	var agent classifier.Agent
+	agentFromWatcher := false
+	if targetID != "" {
+		if snapshot := s.watcher.GetAgent(targetID); snapshot != nil {
+			agent = *snapshot
+			agentFromWatcher = true
+		}
+	}
+	startedAt := clientStartedAt(raw.StartedAt)
+	if agent.ID == "" {
+		if targetID != "" && startedAt.IsZero() {
+			s.sendJSON(conn, map[string]any{
+				"type":       "codex_conversation",
+				"request_id": raw.RequestID,
+				"agent_id":   targetID,
+				"conversation": work.CodexConversation{
+					Available: false,
+					Reason:    "session_not_ready",
+					Events:    []work.CodexConversationEvent{},
+				},
+			})
+			return
+		}
+		agent = classifier.Agent{
+			ID:        targetID,
+			Name:      raw.Name,
+			Cwd:       raw.Cwd,
+			Command:   raw.Command,
+			StartedAt: startedAt,
+		}
+	}
+	if !startedAt.IsZero() && (!agentFromWatcher || agent.StartedAt.IsZero()) {
+		agent.StartedAt = startedAt
+	}
+	if agent.ID == "" && strings.TrimSpace(agent.Cwd) == "" {
+		s.sendJSON(conn, map[string]any{
+			"type":       "codex_conversation",
+			"request_id": raw.RequestID,
+			"agent_id":   targetID,
+			"conversation": work.CodexConversation{
+				Available: false,
+				Reason:    "agent_not_found",
+				Events:    []work.CodexConversationEvent{},
+			},
+		})
+		return
+	}
+
+	conversation, err := work.LoadCodexConversationForAgent(agent, time.Now())
+	if err != nil {
+		s.sendErrorWithRequestID(conn, raw.RequestID, "codex_conversation_failed", err.Error())
+		return
+	}
+	s.sendJSON(conn, map[string]any{
+		"type":         "codex_conversation",
+		"request_id":   raw.RequestID,
+		"agent_id":     targetID,
+		"conversation": conversation,
+	})
+}
+
+func clientStartedAt(raw json.RawMessage) time.Time {
+	if len(raw) == 0 || string(raw) == "null" {
+		return time.Time{}
+	}
+	var numeric float64
+	if err := json.Unmarshal(raw, &numeric); err == nil && numeric > 0 {
+		seconds := int64(numeric)
+		nanos := int64((numeric - float64(seconds)) * 1_000_000_000)
+		if numeric > 10_000_000_000 {
+			seconds = int64(numeric / 1000)
+			nanos = int64(numeric-float64(seconds*1000)) * int64(time.Millisecond)
+		}
+		return time.Unix(seconds, nanos).UTC()
+	}
+	var text string
+	if err := json.Unmarshal(raw, &text); err != nil {
+		return time.Time{}
+	}
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return time.Time{}
+	}
+	if parsed, err := time.Parse(time.RFC3339Nano, text); err == nil {
+		return parsed.UTC()
+	}
+	if parsed, err := time.Parse(time.RFC3339, text); err == nil {
+		return parsed.UTC()
+	}
+	return time.Time{}
+}
+
+func (s *Server) handleCodexAsset(conn *websocket.Conn, raw clientMessage) {
+	path := strings.TrimSpace(raw.Path)
+	if path == "" {
+		s.sendErrorWithRequestID(conn, raw.RequestID, "codex_asset_failed", "missing asset path")
+		return
+	}
+	if !filepath.IsAbs(path) {
+		if strings.TrimSpace(raw.Cwd) == "" {
+			s.sendErrorWithRequestID(conn, raw.RequestID, "codex_asset_failed", "relative asset path requires cwd")
+			return
+		}
+		path = filepath.Join(raw.Cwd, path)
+	}
+	path = filepath.Clean(path)
+
+	info, err := os.Stat(path)
+	if err != nil {
+		s.sendErrorWithRequestID(conn, raw.RequestID, "codex_asset_failed", err.Error())
+		return
+	}
+	if info.IsDir() {
+		s.sendErrorWithRequestID(conn, raw.RequestID, "codex_asset_failed", "asset path is a directory")
+		return
+	}
+	if info.Size() > maxCodexAssetBytes {
+		s.sendErrorWithRequestID(conn, raw.RequestID, "codex_asset_failed", "asset is too large to preview")
+		return
+	}
+
+	data, err := os.ReadFile(path)
+	if err != nil {
+		s.sendErrorWithRequestID(conn, raw.RequestID, "codex_asset_failed", err.Error())
+		return
+	}
+	contentType := codexAssetContentType(path, data)
+	if !strings.HasPrefix(contentType, "image/") {
+		s.sendErrorWithRequestID(conn, raw.RequestID, "codex_asset_failed", "asset is not a supported image")
+		return
+	}
+
+	s.sendJSON(conn, map[string]any{
+		"type":         "codex_asset",
+		"request_id":   raw.RequestID,
+		"path":         path,
+		"content_type": contentType,
+		"data_url":     "data:" + contentType + ";base64," + base64.StdEncoding.EncodeToString(data),
+	})
+}
+
+func codexAssetContentType(path string, data []byte) string {
+	contentType := http.DetectContentType(data)
+	if strings.HasPrefix(contentType, "image/") {
+		return contentType
+	}
+	switch strings.ToLower(filepath.Ext(path)) {
+	case ".jpg", ".jpeg":
+		return "image/jpeg"
+	case ".png":
+		return "image/png"
+	case ".gif":
+		return "image/gif"
+	case ".webp":
+		return "image/webp"
+	case ".bmp":
+		return "image/bmp"
+	}
+	return contentType
 }
 
 func (s *Server) executorRoles() []string {

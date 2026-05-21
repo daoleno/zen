@@ -43,7 +43,9 @@ import {
 import {
   closeOtherTerminalTabs,
   closeTerminalTab,
+  DefaultCodexRenderMode,
   getAgentAliases,
+  getCodexRenderModes,
   getRecentAgentOpens,
   getServerById,
   getServers,
@@ -51,7 +53,10 @@ import {
   getTerminalTheme,
   markAgentOpened,
   setAgentAlias,
+  setCodexRenderMode,
   setTerminalTabPinned,
+  StoredCodexRenderModes,
+  StoredCodexRenderMode,
   StoredAgentAliases,
   StoredRecentAgentOpens,
   StoredServer,
@@ -66,6 +71,7 @@ import {
   TerminalSurfaceHandle,
 } from "../../components/terminal/TerminalSurface";
 import { TerminalAccessoryBar } from "../../components/terminal/TerminalAccessoryBar";
+import { CodexChatSurface } from "../../components/terminal/CodexChatSurface";
 import { GitDiffSheet } from "../../components/terminal/GitDiffSheet";
 import { AgentKindIcon } from "../../components/terminal/AgentKindIcon";
 import { NewTerminalSheet } from "../../components/terminal/NewTerminalSheet";
@@ -83,7 +89,7 @@ import {
 } from "../../services/serverSelection";
 
 const EMPTY_TABS: StoredTerminalTabs = { order: [], pinned: [] };
-const MENU_POPOVER_WIDTH = 168;
+const MENU_POPOVER_WIDTH = 184;
 
 function hasGitDiffPatchContent(payload?: GitDiffPatchPayload) {
   return Boolean(payload?.sections?.some((section) => section.patch.trim()));
@@ -122,6 +128,8 @@ export default function TerminalScreen() {
     DefaultTerminalThemePreference,
   );
   const [agentAliases, setAgentAliases] = useState<StoredAgentAliases>({});
+  const [codexRenderModes, setCodexRenderModes] =
+    useState<StoredCodexRenderModes>({});
   const [recentAgentOpens, setRecentAgentOpens] =
     useState<StoredRecentAgentOpens>({});
   const [terminalTabs, setTerminalTabs] =
@@ -221,6 +229,14 @@ export default function TerminalScreen() {
   );
   const agent = sessionKey ? agentByKey.get(sessionKey) : undefined;
   const gitDiffCwd = typeof agent?.cwd === "string" ? agent.cwd.trim() : "";
+  const presentedAgent = useMemo(
+    () =>
+      presentAgent(
+        agent || { name: "", summary: "", last_output_lines: [] },
+        sessionKey ? agentAliases[sessionKey] : undefined,
+      ),
+    [agent, agentAliases, sessionKey],
+  );
 
   useEffect(() => {
     gitDiffPatchByPathRef.current = gitDiffPatchByPath;
@@ -257,14 +273,7 @@ export default function TerminalScreen() {
   const activePinned = sessionKey
     ? terminalTabs.pinned.includes(sessionKey)
     : false;
-  const displayName = useMemo(
-    () =>
-      presentAgent(
-        agent || { name: "", summary: "", last_output_lines: [] },
-        sessionKey ? agentAliases[sessionKey] : undefined,
-      ).title,
-    [agent, agentAliases, sessionKey],
-  );
+  const displayName = presentedAgent.title;
   const connectionState = serverId
     ? state.serverConnections[serverId] || "offline"
     : "offline";
@@ -272,8 +281,13 @@ export default function TerminalScreen() {
     ? state.serverConnectionIssues[serverId] || null
     : null;
   const hasTerminalRoute = Boolean(sessionKey && serverId && agentId);
-  const canRenderTerminal = hasTerminalRoute && !showTerminalFallback;
-  const shouldMountTerminalSurface = hasTerminalRoute && screenFocused;
+  const isCodexAgent = presentedAgent.kind === "codex";
+  const codexRenderMode: StoredCodexRenderMode = sessionKey
+    ? codexRenderModes[sessionKey] ?? DefaultCodexRenderMode
+    : DefaultCodexRenderMode;
+  const showCodexChat = hasTerminalRoute && isCodexAgent && codexRenderMode === "chat";
+  const canRenderTerminal = hasTerminalRoute && !showTerminalFallback && !showCodexChat;
+  const shouldMountTerminalSurface = canRenderTerminal && screenFocused;
   const terminalStateAccent = connectionIssue
     ? terminalTheme.red
     : connectionState === "connecting"
@@ -291,7 +305,7 @@ export default function TerminalScreen() {
     ? "Open this terminal again from the Agents tab."
     : connectionIssue?.detail ||
       (connectionState === "connecting"
-        ? "zen is reconnecting before reopening this terminal."
+        ? "Zen is reconnecting before reopening this terminal."
         : "Start zen-daemon on that machine, or bring the network or tunnel back.");
   const terminalStateHint = !hasTerminalRoute
     ? "The app kept your route, but the live terminal is not ready yet."
@@ -418,12 +432,19 @@ export default function TerminalScreen() {
     let cancelled = false;
 
     (async () => {
-      const [storedTheme, storedRecentOpens, storedAliases, storedServers] =
+      const [
+        storedTheme,
+        storedRecentOpens,
+        storedAliases,
+        storedServers,
+        storedCodexRenderModes,
+      ] =
         await Promise.all([
           getTerminalTheme(),
           getRecentAgentOpens(),
           getAgentAliases(),
           getServers(),
+          getCodexRenderModes(),
         ]);
       const storedServer = serverId
         ? storedServers.find((current) => current.id === serverId) || null
@@ -434,6 +455,7 @@ export default function TerminalScreen() {
         if (!cancelled) {
           setThemePreference(storedTheme);
           setAgentAliases(storedAliases);
+          setCodexRenderModes(storedCodexRenderModes);
           setRecentAgentOpens(storedRecentOpens);
           setTerminalTabs(storedTabs);
           setServer(storedServer);
@@ -449,6 +471,7 @@ export default function TerminalScreen() {
       if (!cancelled) {
         setThemePreference(storedTheme);
         setAgentAliases(storedAliases);
+        setCodexRenderModes(storedCodexRenderModes);
         setRecentAgentOpens({
           ...storedRecentOpens,
           [sessionKey]: openedAt,
@@ -1058,6 +1081,22 @@ export default function TerminalScreen() {
     setRenameVisible(false);
   };
 
+  const applyCodexRenderMode = useCallback(
+    async (mode: StoredCodexRenderMode) => {
+      if (!sessionKey) return;
+      const nextModes = await setCodexRenderMode(sessionKey, mode);
+      setCodexRenderModes(nextModes);
+      closeMenu();
+    },
+    [sessionKey],
+  );
+
+  const toggleCodexRenderMode = () => {
+    void applyCodexRenderMode(
+      codexRenderMode === "chat" ? "terminal" : "chat",
+    );
+  };
+
   const handleCtrlArmedChange = useCallback((next: boolean) => {
     setCtrlArmed(next);
   }, []);
@@ -1172,7 +1211,23 @@ export default function TerminalScreen() {
     wsClient.connectServer(storedServer);
   };
 
-  const terminalViewport = (
+  const terminalViewport = showCodexChat && sessionKey && serverId && agentId ? (
+    <CodexChatSurface
+      key={`codex-chat:${sessionKey}`}
+      serverId={serverId}
+      agentId={agentId}
+      agent={agent}
+      connectionState={connectionState}
+      connectionIssue={connectionIssue}
+      theme={terminalTheme}
+      chrome={chromeColors}
+      screenFocused={screenFocused}
+      gitDiff={gitDiffChip}
+      onSwitchToTerminal={() => {
+        void applyCodexRenderMode("terminal");
+      }}
+    />
+  ) : (
     <>
       <View
         style={[
@@ -1248,6 +1303,27 @@ export default function TerminalScreen() {
             </View>
           </View>
         )}
+        {isCodexAgent ? (
+          <TouchableOpacity
+            accessibilityLabel="Open Codex Chat renderer"
+            style={[
+              styles.codexChatSwitchButton,
+              {
+                backgroundColor: chromeColors.surfaceMuted,
+                borderColor: chromeColors.borderStrong,
+              },
+            ]}
+            onPress={() => {
+              void applyCodexRenderMode("chat");
+            }}
+            activeOpacity={0.82}
+          >
+            <Ionicons name="sparkles-outline" size={14} color={chromeColors.accent} />
+            <Text style={[styles.codexChatSwitchText, { color: chromeColors.textMuted }]}>
+              Chat
+            </Text>
+          </TouchableOpacity>
+        ) : null}
       </View>
 
       {accessoryVisible ? (
@@ -1580,6 +1656,15 @@ export default function TerminalScreen() {
               disabledTextColor={chromeColors.textSubtle}
               destructiveColor={terminalTheme.red}
             />
+            {isCodexAgent ? (
+              <MenuAction
+                label={codexRenderMode === "chat" ? "Use Terminal" : "Use Codex Chat"}
+                onPress={toggleCodexRenderMode}
+                textColor={chromeColors.text}
+                disabledTextColor={chromeColors.textSubtle}
+                destructiveColor={terminalTheme.red}
+              />
+            ) : null}
             <MenuAction
               label="Rename"
               onPress={openRenameModal}
@@ -1875,6 +1960,25 @@ const styles = StyleSheet.create({
   terminalContent: {
     flex: 1,
     minHeight: 0,
+    position: "relative",
+  },
+  codexChatSwitchButton: {
+    position: "absolute",
+    top: 10,
+    right: 10,
+    minHeight: 32,
+    borderRadius: 8,
+    borderWidth: StyleSheet.hairlineWidth,
+    paddingHorizontal: 10,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 5,
+    zIndex: 8,
+  },
+  codexChatSwitchText: {
+    fontSize: 12,
+    lineHeight: 16,
+    fontFamily: Typography.uiFontMedium,
   },
   chromeButton: {
     width: 32,

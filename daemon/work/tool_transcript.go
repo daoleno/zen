@@ -37,7 +37,7 @@ func loadToolTranscript(agent classifier.Agent, now time.Time) ToolTranscript {
 	tool := agentToolName(agent.Command, agent.Name)
 	switch tool {
 	case "codex":
-		transcript, err := loadCodexTranscript(agent.Cwd, now)
+		transcript, err := loadCodexTranscript(agent, now)
 		if err != nil {
 			log.Printf("work transcript lookup failed for codex (%s): %v", agent.Cwd, err)
 		}
@@ -70,28 +70,61 @@ func agentToolName(command, name string) string {
 	}
 }
 
-func loadCodexTranscript(cwd string, now time.Time) (ToolTranscript, error) {
-	cwd = strings.TrimSpace(cwd)
+func loadCodexTranscript(agent classifier.Agent, now time.Time) (ToolTranscript, error) {
+	candidate, ok, err := findCodexTranscript(agent, now)
+	if err != nil || !ok {
+		return ToolTranscript{}, err
+	}
+	excerpt, err := summarizeCodexTranscript(candidate.Path)
+	if err != nil || strings.TrimSpace(excerpt) == "" {
+		return ToolTranscript{}, err
+	}
+	return ToolTranscript{
+		Source:    "codex",
+		Path:      candidate.Path,
+		SessionID: firstNonEmpty(candidate.Meta.ID, candidate.Row.ID),
+		Updated:   candidate.Updated,
+		Excerpt:   excerpt,
+	}, nil
+}
+
+type codexThreadRow struct {
+	ID          string `json:"id"`
+	RolloutPath string `json:"rollout_path"`
+	CreatedAt   int64  `json:"created_at"`
+	CreatedAtMS int64  `json:"created_at_ms"`
+}
+
+type codexTranscriptCandidate struct {
+	Row     codexThreadRow
+	Meta    codexMeta
+	Path    string
+	Updated time.Time
+}
+
+func findCodexTranscript(agent classifier.Agent, now time.Time) (codexTranscriptCandidate, bool, error) {
+	cwd := strings.TrimSpace(agent.Cwd)
 	if cwd == "" {
-		return ToolTranscript{}, nil
+		return codexTranscriptCandidate{}, false, nil
 	}
 	home, err := os.UserHomeDir()
 	if err != nil {
-		return ToolTranscript{}, err
+		return codexTranscriptCandidate{}, false, err
 	}
 	dbPath := filepath.Join(home, ".codex", "state_5.sqlite")
 	if _, err := os.Stat(dbPath); err != nil {
-		return ToolTranscript{}, nil
+		return codexTranscriptCandidate{}, false, nil
 	}
 	sqlite3, err := exec.LookPath("sqlite3")
 	if err != nil {
-		return ToolTranscript{}, nil
+		return codexTranscriptCandidate{}, false, nil
 	}
 
+	var candidates []codexTranscriptCandidate
 	for _, candidateCWD := range transcriptCWDCandidates(cwd) {
 		rows, err := queryCodexThreads(sqlite3, dbPath, candidateCWD)
 		if err != nil {
-			return ToolTranscript{}, err
+			return codexTranscriptCandidate{}, false, err
 		}
 		for _, row := range rows {
 			path := strings.TrimSpace(row.RolloutPath)
@@ -109,29 +142,68 @@ func loadCodexTranscript(cwd string, now time.Time) (ToolTranscript, error) {
 			if err != nil || !isTranscriptFresh(info.ModTime(), now) {
 				continue
 			}
-			excerpt, err := summarizeCodexTranscript(path)
-			if err != nil || strings.TrimSpace(excerpt) == "" {
-				continue
-			}
-			return ToolTranscript{
-				Source:    "codex",
-				Path:      path,
-				SessionID: firstNonEmpty(meta.ID, row.ID),
-				Updated:   info.ModTime(),
-				Excerpt:   excerpt,
-			}, nil
+			candidates = append(candidates, codexTranscriptCandidate{
+				Row:     row,
+				Meta:    meta,
+				Path:    path,
+				Updated: info.ModTime(),
+			})
 		}
 	}
-	return ToolTranscript{}, nil
+	if len(candidates) == 0 {
+		return codexTranscriptCandidate{}, false, nil
+	}
+	if matched, ok := matchCodexTranscriptToAgentStart(candidates, agent.StartedAt); ok {
+		return matched, true, nil
+	}
+	if !agent.StartedAt.IsZero() {
+		return codexTranscriptCandidate{}, false, nil
+	}
+	return candidates[0], true, nil
 }
 
-type codexThreadRow struct {
-	ID          string `json:"id"`
-	RolloutPath string `json:"rollout_path"`
+func matchCodexTranscriptToAgentStart(candidates []codexTranscriptCandidate, startedAt time.Time) (codexTranscriptCandidate, bool) {
+	if startedAt.IsZero() {
+		return codexTranscriptCandidate{}, false
+	}
+	startedAt = startedAt.UTC()
+	minCreatedAt := startedAt.Add(-2 * time.Minute)
+	bestIndex := -1
+	var bestDelta time.Duration
+	for index, candidate := range candidates {
+		createdAt := candidateCreatedAt(candidate.Row)
+		if createdAt.IsZero() || createdAt.Before(minCreatedAt) {
+			continue
+		}
+		delta := createdAt.Sub(startedAt)
+		if delta < 0 {
+			delta = -delta
+		}
+		if bestIndex == -1 || delta < bestDelta ||
+			(delta == bestDelta && candidate.Updated.After(candidates[bestIndex].Updated)) {
+			bestIndex = index
+			bestDelta = delta
+		}
+	}
+	if bestIndex == -1 {
+		return codexTranscriptCandidate{}, false
+	}
+	return candidates[bestIndex], true
+}
+
+func candidateCreatedAt(row codexThreadRow) time.Time {
+	switch {
+	case row.CreatedAtMS > 0:
+		return time.UnixMilli(row.CreatedAtMS).UTC()
+	case row.CreatedAt > 0:
+		return time.Unix(row.CreatedAt, 0).UTC()
+	default:
+		return time.Time{}
+	}
 }
 
 func queryCodexThreads(sqlite3, dbPath, cwd string) ([]codexThreadRow, error) {
-	query := fmt.Sprintf(`SELECT id, rollout_path FROM threads WHERE archived = 0 AND cwd = %s ORDER BY coalesce(updated_at_ms, updated_at * 1000) DESC LIMIT 12`, sqlString(cwd))
+	query := fmt.Sprintf(`SELECT id, rollout_path, created_at, coalesce(created_at_ms, 0) AS created_at_ms FROM threads WHERE archived = 0 AND cwd = %s ORDER BY coalesce(updated_at_ms, updated_at * 1000) DESC LIMIT 48`, sqlString(cwd))
 	out, err := exec.Command(sqlite3, "-json", dbPath, query).Output()
 	if err != nil {
 		return nil, err
@@ -494,7 +566,7 @@ func (b *transcriptBuilder) consumeCodexResponseItem(raw json.RawMessage) {
 			b.addAssistant(text)
 		}
 	case "function_call":
-		if payload.Name == "exec_command" {
+		if isCodexCommandTool(payload.Name) {
 			command := codexExecCommand(payload.Arguments)
 			if command != "" {
 				b.seenToolCalls[payload.CallID] = command
@@ -843,12 +915,23 @@ func codexContentText(raw json.RawMessage) string {
 
 func codexExecCommand(arguments string) string {
 	var payload struct {
-		Cmd string `json:"cmd"`
+		Cmd     string          `json:"cmd"`
+		Command json.RawMessage `json:"command"`
 	}
 	if json.Unmarshal([]byte(arguments), &payload) != nil {
 		return ""
 	}
-	return payload.Cmd
+	if cmd := strings.TrimSpace(payload.Cmd); cmd != "" {
+		return cmd
+	}
+	if command := jsonString(payload.Command); command != "" {
+		return command
+	}
+	var command []string
+	if json.Unmarshal(payload.Command, &command) == nil {
+		return shellCommandLabel(command)
+	}
+	return ""
 }
 
 func claudeContentText(raw json.RawMessage) string {

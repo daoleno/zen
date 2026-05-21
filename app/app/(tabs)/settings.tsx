@@ -501,8 +501,8 @@ export default function SettingsScreen() {
                           }
                           detail={
                             hydrated
-                              ? "zen is connected to this daemon, but it has not reported any live agents yet."
-                              : "zen is connected to this daemon and waiting for the first agent list to arrive."
+                              ? "Zen is connected to this daemon, but it has not reported any live agents yet."
+                              : "Zen is connected to this daemon and waiting for the first agent list to arrive."
                           }
                           hint="Start Claude or Codex on that machine, or verify the watcher/tmux bridge is forwarding terminals."
                         />
@@ -647,7 +647,7 @@ export default function SettingsScreen() {
           )}
         </View>
 
-        <Text style={styles.version}>zen v0.1.0</Text>
+        <Text style={styles.version}>Zen v0.1.0</Text>
       </ScrollView>
 
       {/* Unified Add/Edit Server modal */}

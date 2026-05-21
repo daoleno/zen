@@ -17,6 +17,7 @@ export interface Agent {
   command?: string;
   summary: string;
   last_output_lines: string[];
+  started_at?: number;
   updated_at: number;
 }
 
@@ -39,6 +40,7 @@ type RawAgent = {
   command?: string;
   summary?: string;
   last_output_lines?: string[];
+  started_at?: string | number | Date;
   updated_at?: string | number | Date;
 };
 
@@ -176,6 +178,7 @@ function normalizeAgent(
     command: agent.command,
     summary: agent.summary || '',
     last_output_lines: Array.isArray(agent.last_output_lines) ? agent.last_output_lines : [],
+    started_at: agent.started_at === undefined ? undefined : normalizeTimestamp(agent.started_at),
     updated_at: normalizeTimestamp(agent.updated_at),
   };
 }

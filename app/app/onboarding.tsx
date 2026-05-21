@@ -1,5 +1,5 @@
 import React, { useMemo } from "react";
-import { View, Text, TouchableOpacity, StyleSheet } from "react-native";
+import { Image, View, Text, TouchableOpacity, StyleSheet } from "react-native";
 import { useRouter } from "expo-router";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { Colors, Spacing, Typography, useAppColors } from "../constants/tokens";
@@ -13,8 +13,12 @@ export default function OnboardingScreen() {
   return (
     <SafeAreaView style={styles.container}>
       <View style={styles.content}>
-        <Text style={styles.logo}>☯</Text>
-        <Text style={styles.title}>Welcome to zen</Text>
+        <Image
+          source={require("../assets/branding/zen-logo-transparent.png")}
+          style={styles.logo}
+          resizeMode="contain"
+        />
+        <Text style={styles.title}>Welcome to Zen</Text>
         <Text style={styles.subtitle}>
           Pair your phone with a trusted daemon identity
         </Text>
@@ -85,7 +89,12 @@ function createStyles(colors: typeof Colors) {
     padding: Spacing.screenMargin * 2,
     justifyContent: "center",
   },
-  logo: { fontSize: 56, textAlign: "center", marginBottom: 16 },
+  logo: {
+    width: 120,
+    height: 120,
+    alignSelf: "center",
+    marginBottom: 12,
+  },
   title: {
     color: colors.textPrimary,
     fontSize: 28,

@@ -208,7 +208,7 @@ export function useGhosttyTerminalController({
     },
     onExit: ({ exit_code }) => {
       const grid = gridRef.current;
-      const message = `\r\n[zen] session exited with code ${exit_code}\r\n`;
+      const message = `\r\n[Zen] session exited with code ${exit_code}\r\n`;
       if (!grid || !ghostty.ensureTerminal(grid)) {
         pendingTerminalRef.current.push({ type: 'message', data: message });
         return;
@@ -218,7 +218,7 @@ export function useGhosttyTerminalController({
     },
     onError: ({ message }) => {
       const grid = gridRef.current;
-      const formatted = `\r\n[zen] ${message}\r\n`;
+      const formatted = `\r\n[Zen] ${message}\r\n`;
       if (!grid || !ghostty.ensureTerminal(grid)) {
         pendingTerminalRef.current.push({ type: 'message', data: formatted });
         return;

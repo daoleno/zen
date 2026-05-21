@@ -17,12 +17,16 @@ const KEYS = {
   recentAgentOpens: "zen:recent_agent_opens",
   terminalTabs: "zen:terminal_tabs",
   agentAliases: "zen:agent_aliases",
+  codexRenderModes: "zen:codex_render_modes",
 } as const;
 
 export type StoredTerminalTheme = TerminalThemePreference;
 export type StoredInboxViewMode = "list" | "grid";
 export type StoredRecentAgentOpens = Record<string, number>;
 export type StoredAgentAliases = Record<string, string>;
+export type StoredCodexRenderMode = "chat" | "terminal";
+export type StoredCodexRenderModes = Record<string, StoredCodexRenderMode>;
+export const DefaultCodexRenderMode: StoredCodexRenderMode = "chat";
 export interface StoredServer {
   id: string;
   name: string;
@@ -379,6 +383,44 @@ export async function setAgentAlias(
   }
 
   await AsyncStorage.setItem(KEYS.agentAliases, JSON.stringify(next));
+  return next;
+}
+
+export async function getCodexRenderModes(): Promise<StoredCodexRenderModes> {
+  const value = await AsyncStorage.getItem(KEYS.codexRenderModes);
+  if (!value) return {};
+
+  try {
+    const parsed = JSON.parse(value) as Record<string, unknown>;
+    const normalized: StoredCodexRenderModes = {};
+    for (const [agentId, mode] of Object.entries(parsed)) {
+      if (typeof agentId !== "string" || agentId.trim().length === 0) continue;
+      if (mode === "chat" || mode === "terminal") {
+        normalized[agentId] = mode;
+      }
+    }
+    return normalized;
+  } catch {
+    return {};
+  }
+}
+
+export async function setCodexRenderMode(
+  agentId: string,
+  mode: StoredCodexRenderMode,
+): Promise<StoredCodexRenderModes> {
+  const trimmed = agentId.trim();
+  if (!trimmed) {
+    return getCodexRenderModes();
+  }
+
+  const current = await getCodexRenderModes();
+  const next: StoredCodexRenderModes = {
+    ...current,
+    [trimmed]: mode,
+  };
+
+  await AsyncStorage.setItem(KEYS.codexRenderModes, JSON.stringify(next));
   return next;
 }
 

@@ -59,7 +59,7 @@ export async function diagnoseConnectionIssue(input: {
       "wrong_daemon",
       "Missing daemon identity",
       "This saved server does not include a trusted daemon identity.",
-      "Re-import the pairing link from zen-daemon so zen can bind this endpoint to a daemon key.",
+      "Re-import the pairing link from zen-daemon so Zen can bind this endpoint to a daemon key.",
     );
   }
 
@@ -363,7 +363,7 @@ function buildNetworkIssue(error: unknown): ConnectionIssue {
       "network_unreachable",
       "DNS lookup failed",
       rawMessage ||
-        "The hostname could not be resolved before zen reached the daemon.",
+        "The hostname could not be resolved before Zen reached the daemon.",
       "Check the hostname spelling, your DNS configuration, or try a different tunnel hostname.",
     );
   }

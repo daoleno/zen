@@ -8,6 +8,7 @@ import * as Notifications from "expo-notifications";
 import * as Device from "expo-device";
 import Constants from "expo-constants";
 import { GestureHandlerRootView } from "react-native-gesture-handler";
+import { KeyboardProvider } from "react-native-keyboard-controller";
 import { SafeAreaProvider } from "react-native-safe-area-context";
 import { Agent, AgentProvider, useAgents } from "../store/agents";
 import { WorkProvider, useWork } from "../store/work";
@@ -655,14 +656,16 @@ export default function RootLayout() {
 
   return (
     <GestureHandlerRootView style={{ flex: 1 }}>
-      <AgentProvider>
-        <WorkProvider>
-          <SafeAreaProvider>
-            <StatusBar style={isLight ? "dark" : "light"} />
-            <AppContent />
-          </SafeAreaProvider>
-        </WorkProvider>
-      </AgentProvider>
+      <KeyboardProvider statusBarTranslucent navigationBarTranslucent>
+        <AgentProvider>
+          <WorkProvider>
+            <SafeAreaProvider>
+              <StatusBar style={isLight ? "dark" : "light"} />
+              <AppContent />
+            </SafeAreaProvider>
+          </WorkProvider>
+        </AgentProvider>
+      </KeyboardProvider>
     </GestureHandlerRootView>
   );
 }

@@ -204,5 +204,5 @@ function normalizeFixedHex(
 }
 
 function defaultDeviceName(): string {
-  return Device.deviceName?.trim() || Device.modelName?.trim() || "zen mobile";
+  return Device.deviceName?.trim() || Device.modelName?.trim() || "Zen mobile";
 }

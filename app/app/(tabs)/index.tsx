@@ -464,13 +464,13 @@ export default function InboxScreen() {
       ? 'Connected, waiting for agent data'
       : primaryIssue?.title || (anyConnecting ? 'Connecting to servers' : 'No agents available');
   const emptySubtext = !hasConfiguredServers
-    ? 'Add your first server before zen can load agents.'
+    ? 'Add your first server before Zen can load agents.'
     : anyConnected
-      ? 'zen is connected to your daemon, but no agent data has arrived yet. Start Claude or Codex, or check the tmux watcher.'
+      ? 'Zen is connected to your daemon, but no agent data has arrived yet. Start Claude or Codex, or check the tmux watcher.'
       : primaryIssue
         ? `${primaryIssue.detail} ${primaryIssue.hint}`
         : anyConnecting
-          ? 'zen is trying to reconnect. You can still change servers now.'
+          ? 'Zen is trying to reconnect. You can still change servers now.'
           : 'Your saved servers are offline. You can edit them or add another one.';
 
   const renderPromptAgent = ({ item }: { item: Agent }) => {
@@ -537,7 +537,7 @@ export default function InboxScreen() {
 
       <View style={styles.header}>
         <View style={styles.headerBrand}>
-          <Text style={styles.title}>zen</Text>
+          <Text style={styles.title}>Zen</Text>
           <Text style={styles.headerSummary}>{headerSummary}</Text>
         </View>
         <View style={styles.headerActions}>
@@ -998,7 +998,7 @@ function createStyles(colors: typeof Colors) {
     fontSize: 22,
     lineHeight: 28,
     fontFamily: Typography.uiFontMedium,
-    letterSpacing: 1,
+    letterSpacing: 0,
     opacity: 0.9,
     paddingRight: 4,
   },

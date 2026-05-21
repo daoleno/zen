@@ -112,6 +112,46 @@ func TestSummarizeCodexTranscript_ExtractsWorkflowSignals(t *testing.T) {
 	}
 }
 
+func TestMatchCodexTranscriptToAgentStart_UsesNearestCreatedThread(t *testing.T) {
+	base := time.Date(2026, 5, 21, 8, 0, 0, 0, time.UTC)
+	candidates := []codexTranscriptCandidate{
+		{
+			Row:     codexThreadRow{ID: "newer-other-window", CreatedAtMS: base.Add(90 * time.Second).UnixMilli()},
+			Updated: base.Add(5 * time.Minute),
+		},
+		{
+			Row:     codexThreadRow{ID: "this-window", CreatedAtMS: base.Add(3 * time.Second).UnixMilli()},
+			Updated: base.Add(2 * time.Minute),
+		},
+		{
+			Row:     codexThreadRow{ID: "old-window", CreatedAtMS: base.Add(-10 * time.Minute).UnixMilli()},
+			Updated: base.Add(6 * time.Minute),
+		},
+	}
+
+	got, ok := matchCodexTranscriptToAgentStart(candidates, base)
+	if !ok {
+		t.Fatal("expected a transcript match")
+	}
+	if got.Row.ID != "this-window" {
+		t.Fatalf("matched %q, want this-window", got.Row.ID)
+	}
+}
+
+func TestMatchCodexTranscriptToAgentStart_DoesNotFallBackToOldThread(t *testing.T) {
+	base := time.Date(2026, 5, 21, 8, 0, 0, 0, time.UTC)
+	candidates := []codexTranscriptCandidate{
+		{
+			Row:     codexThreadRow{ID: "old-window", CreatedAtMS: base.Add(-10 * time.Minute).UnixMilli()},
+			Updated: base.Add(5 * time.Minute),
+		},
+	}
+
+	if got, ok := matchCodexTranscriptToAgentStart(candidates, base); ok {
+		t.Fatalf("matched %#v, want no match", got)
+	}
+}
+
 func TestSummarizeClaudeTranscript_ExtractsWorkflowSignals(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "claude.jsonl")
 	writeJSONL(t, path,

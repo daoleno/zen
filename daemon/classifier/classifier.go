@@ -27,6 +27,7 @@ type Agent struct {
 	State         AgentState `json:"status"`
 	Summary       string     `json:"summary"`
 	LastLines     []string   `json:"last_output_lines"`
+	StartedAt     time.Time  `json:"started_at,omitempty"`
 	UpdatedAt     time.Time  `json:"updated_at"`
 	StateVersion  int64      `json:"state_version"` // increments on every state change
 	PaneAlive     bool       `json:"-"`

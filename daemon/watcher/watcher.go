@@ -96,6 +96,7 @@ func (w *Watcher) poll() {
 		return
 	}
 	processes := snapshotProcesses()
+	processSnapshotAt := time.Now()
 
 	w.mu.Lock()
 	defer w.mu.Unlock()
@@ -125,7 +126,7 @@ func (w *Watcher) poll() {
 		}
 		agent.Cwd = win.cwd
 		agent.Project = projectNameFromPath(win.cwd)
-		agent.Command = detectAgentCommand(win.command, win.panePID, processes)
+		agent.Command, agent.StartedAt = detectAgentProcess(win.command, win.panePID, processes, processSnapshotAt)
 
 		if contentChanged {
 			agent.StaleCount = 0
@@ -274,10 +275,29 @@ func capturePaneContent(target string) (string, bool) {
 	return string(out), alive
 }
 
-// SendInput sends raw text to a tmux window via send-keys.
+// SendInput sends text to a tmux window and treats trailing newlines as submit.
 func (w *Watcher) SendInput(sessionID, text string) error {
-	cmd := exec.Command("tmux", "send-keys", "-t", sessionID, text)
-	return cmd.Run()
+	body, submit := splitTmuxInput(text)
+	if body != "" {
+		if err := exec.Command("tmux", "send-keys", "-l", "-t", sessionID, body).Run(); err != nil {
+			return err
+		}
+	}
+	if submit {
+		if body != "" {
+			time.Sleep(120 * time.Millisecond)
+		}
+		return exec.Command("tmux", "send-keys", "-t", sessionID, "Enter").Run()
+	}
+	return nil
+}
+
+func splitTmuxInput(text string) (body string, submit bool) {
+	submit = strings.HasSuffix(text, "\n") || strings.HasSuffix(text, "\r")
+	if submit {
+		text = strings.TrimRight(text, "\r\n")
+	}
+	return text, submit
 }
 
 // SendAction executes a predefined action on a tmux window.
@@ -532,14 +552,16 @@ func currentPathForTarget(target string) (string, error) {
 }
 
 type processInfo struct {
-	pid  int
-	ppid int
-	comm string
-	args string
+	pid       int
+	ppid      int
+	startedAt time.Time
+	comm      string
+	args      string
 }
 
 func snapshotProcesses() map[int]processInfo {
-	out, err := exec.Command("ps", "-eo", "pid=,ppid=,comm=,args=").Output()
+	snapshotAt := time.Now()
+	out, err := exec.Command("ps", "-eo", "pid=,ppid=,etimes=,comm=,args=").Output()
 	if err != nil {
 		return nil
 	}
@@ -551,56 +573,84 @@ func snapshotProcesses() map[int]processInfo {
 			continue
 		}
 		fields := strings.Fields(line)
-		if len(fields) < 3 {
+		if len(fields) < 4 {
 			continue
 		}
 		pid, err1 := strconv.Atoi(fields[0])
 		ppid, err2 := strconv.Atoi(fields[1])
-		if err1 != nil || err2 != nil {
+		elapsedSeconds, err3 := strconv.Atoi(fields[2])
+		if err1 != nil || err2 != nil || err3 != nil {
 			continue
 		}
 
 		args := ""
-		if len(fields) > 3 {
-			args = strings.Join(fields[3:], " ")
+		if len(fields) > 4 {
+			args = strings.Join(fields[4:], " ")
 		}
 
 		processes[pid] = processInfo{
-			pid:  pid,
-			ppid: ppid,
-			comm: fields[2],
-			args: args,
+			pid:       pid,
+			ppid:      ppid,
+			startedAt: snapshotAt.Add(-time.Duration(elapsedSeconds) * time.Second),
+			comm:      fields[3],
+			args:      args,
 		}
 	}
 	return processes
 }
 
-func detectAgentCommand(baseCommand string, panePID int, processes map[int]processInfo) string {
+func detectAgentProcess(baseCommand string, panePID int, processes map[int]processInfo, fallbackAt time.Time) (string, time.Time) {
 	command := normalizeCommand(baseCommand)
-	if command == "claude" || command == "claude-code" || command == "codex" || command == "cc" {
-		return command
-	}
-	if panePID <= 0 || len(processes) == 0 {
-		return command
+	baseStartedAt := time.Time{}
+	if proc, ok := processes[panePID]; ok {
+		baseStartedAt = proc.startedAt
 	}
 
-	descendants := descendantProcesses(panePID, processes)
-	for _, proc := range descendants {
-		lowerComm := normalizeCommand(proc.comm)
-		lowerArgs := strings.ToLower(proc.args)
-
-		if lowerComm == "claude" || lowerComm == "claude-code" || lowerComm == "cc" {
-			return lowerComm
+	if panePID > 0 && len(processes) > 0 {
+		scan := descendantProcesses(panePID, processes)
+		if proc, ok := processes[panePID]; ok {
+			scan = append([]processInfo{proc}, scan...)
 		}
-		if strings.Contains(lowerArgs, " claude") || strings.HasPrefix(lowerArgs, "claude ") {
-			return "claude"
-		}
-		if lowerComm == "codex" || strings.Contains(lowerArgs, "/bin/codex") || strings.Contains(lowerArgs, " codex ") || strings.HasPrefix(lowerArgs, "codex ") {
-			return "codex"
+		for _, proc := range scan {
+			if detected := agentCommandFromProcess(proc); detected != "" {
+				return detected, firstNonZeroTime(proc.startedAt, fallbackAt)
+			}
 		}
 	}
 
-	return command
+	if isAgentCommand(command) {
+		return command, fallbackAt
+	}
+	return command, baseStartedAt
+}
+
+func agentCommandFromProcess(proc processInfo) string {
+	lowerComm := normalizeCommand(proc.comm)
+	lowerArgs := strings.ToLower(proc.args)
+
+	if lowerComm == "claude" || lowerComm == "claude-code" || lowerComm == "cc" {
+		return lowerComm
+	}
+	if strings.Contains(lowerArgs, " claude") || strings.HasPrefix(lowerArgs, "claude ") {
+		return "claude"
+	}
+	if lowerComm == "codex" || strings.Contains(lowerArgs, "/bin/codex") || strings.Contains(lowerArgs, " codex ") || strings.HasPrefix(lowerArgs, "codex ") {
+		return "codex"
+	}
+	return ""
+}
+
+func isAgentCommand(command string) bool {
+	return command == "claude" || command == "claude-code" || command == "codex" || command == "cc"
+}
+
+func firstNonZeroTime(values ...time.Time) time.Time {
+	for _, value := range values {
+		if !value.IsZero() {
+			return value
+		}
+	}
+	return time.Time{}
 }
 
 func descendantProcesses(rootPID int, processes map[int]processInfo) []processInfo {
