@@ -10,20 +10,13 @@ import type {
   TerminalThemePalette,
 } from "../../constants/terminalThemes";
 import {
-  TerminalSheetAction,
+  TERMINAL_ACTION_MENU_WIDTH,
+  TerminalActionMenu,
+  type TerminalActionMenuItem,
   type TerminalSheetActionIcon,
-} from "./TerminalSheetAction";
+} from "./TerminalActionMenu";
 
-export const TERMINAL_ACTION_POPOVER_WIDTH = 184;
-
-interface TerminalPopoverAction {
-  key: string;
-  icon: TerminalSheetActionIcon;
-  label: string;
-  disabled?: boolean;
-  destructive?: boolean;
-  onPress(): void;
-}
+export const TERMINAL_ACTION_POPOVER_WIDTH = TERMINAL_ACTION_MENU_WIDTH;
 
 interface TerminalActionPopoverProps {
   visible: boolean;
@@ -78,7 +71,7 @@ export function TerminalActionPopover({
   onOpenLinkedWork,
   onTerminate,
 }: TerminalActionPopoverProps) {
-  const actions: TerminalPopoverAction[] = [
+  const actions: TerminalActionMenuItem[] = [
     {
       key: "new-terminal",
       icon: "add",
@@ -165,31 +158,13 @@ export function TerminalActionPopover({
           onPress={onClose}
         />
 
-        <View
-          style={[
-            styles.menuPopover,
-            {
-              backgroundColor: chrome.surface,
-              left,
-              top,
-              width: TERMINAL_ACTION_POPOVER_WIDTH,
-              borderColor: chrome.border,
-            },
-          ]}
-        >
-          {actions.map((action) => (
-            <TerminalSheetAction
-              key={action.key}
-              icon={action.icon}
-              label={action.label}
-              disabled={action.disabled}
-              destructive={action.destructive}
-              chrome={chrome}
-              theme={theme}
-              onPress={action.onPress}
-            />
-          ))}
-        </View>
+        <TerminalActionMenu
+          left={left}
+          top={top}
+          actions={actions}
+          chrome={chrome}
+          theme={theme}
+        />
       </View>
     </Modal>
   );
@@ -202,17 +177,5 @@ const styles = StyleSheet.create({
   popoverBackdrop: {
     ...StyleSheet.absoluteFill,
     backgroundColor: "transparent",
-  },
-  menuPopover: {
-    position: "absolute",
-    borderRadius: 14,
-    paddingVertical: 4,
-    backgroundColor: "#161F2B",
-    borderWidth: 1,
-    borderColor: "rgba(255,255,255,0.06)",
-    shadowColor: "#000",
-    shadowOpacity: 0.2,
-    shadowRadius: 8,
-    elevation: 8,
   },
 });
