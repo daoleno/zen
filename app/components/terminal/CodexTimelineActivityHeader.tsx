@@ -1,14 +1,14 @@
 import React from "react";
 import {
-  ActivityIndicator,
   StyleSheet,
   Text,
   TouchableOpacity,
 } from "react-native";
-import { Ionicons } from "@expo/vector-icons";
 import type { TerminalThemeChrome } from "../../constants/terminalThemes";
 import { Typography } from "../../constants/tokens";
 import type { TimelineActivityIconName } from "./CodexTimelineActivityTypes";
+import { CodexTimelineActivityExpandIcon } from "./CodexTimelineActivityExpandIcon";
+import { CodexTimelineActivityToneIcon } from "./CodexTimelineActivityToneIcon";
 
 interface CodexTimelineActivityHeaderProps {
   title: string;
@@ -36,16 +36,18 @@ export function CodexTimelineActivityHeader({
   return (
     <TouchableOpacity
       accessibilityLabel={title}
+      accessibilityRole="button"
+      accessibilityState={{ disabled: !canExpand, expanded: canExpand ? expanded : undefined }}
       style={styles.row}
       onPress={onPress}
       disabled={!canExpand}
       activeOpacity={0.76}
     >
-      {tone === "running" ? (
-        <ActivityIndicator size="small" color={toneColor} />
-      ) : (
-        <Ionicons name={icon} size={13} color={toneColor} />
-      )}
+      <CodexTimelineActivityToneIcon
+        tone={tone}
+        icon={icon}
+        color={toneColor}
+      />
       <Text style={[styles.title, { color: chrome.textSubtle }]} numberOfLines={1}>
         {title}
       </Text>
@@ -58,11 +60,7 @@ export function CodexTimelineActivityHeader({
         </Text>
       ) : null}
       {canExpand ? (
-        <Ionicons
-          name={expanded ? "chevron-up" : "chevron-down"}
-          size={12}
-          color={chrome.textSubtle}
-        />
+        <CodexTimelineActivityExpandIcon expanded={expanded} chrome={chrome} />
       ) : null}
     </TouchableOpacity>
   );
