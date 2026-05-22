@@ -1,20 +1,14 @@
 import React from "react";
-import {
-  useWindowDimensions,
-} from "react-native";
 import { useAgents } from "../../store/agents";
 import { useWork } from "../../store/work";
-import {
-  TERMINAL_ACTION_POPOVER_WIDTH,
-} from "../../components/terminal/TerminalActionPopover";
 import { useTerminalAccessoryLayout } from "../../components/terminal/useTerminalAccessoryLayout";
 import { useTerminalGitDiff } from "../../components/terminal/useTerminalGitDiff";
 import { TerminalScreenLayout } from "./TerminalScreenLayout";
 import { useTerminalAgentIndex } from "./useTerminalAgentIndex";
-import { useTerminalChromeLayout } from "./useTerminalChromeLayout";
 import { useTerminalDirectoryModel } from "./useTerminalDirectoryModel";
 import { useTerminalRouteModel } from "./useTerminalRouteModel";
 import { useTerminalScreenActions } from "./useTerminalScreenActions";
+import { useTerminalScreenChrome } from "./useTerminalScreenChrome";
 import { useTerminalScreenLifecycle } from "./useTerminalScreenLifecycle";
 import { useTerminalScreenLocalState } from "./useTerminalScreenLocalState";
 import { useTerminalScreenOverlayProps } from "./useTerminalScreenOverlayProps";
@@ -29,7 +23,6 @@ import { useTerminalViewportProps } from "./useTerminalViewportProps";
 export default function TerminalScreen() {
   const { state } = useAgents();
   const { state: workState } = useWork();
-  const { width: windowWidth } = useWindowDimensions();
   const {
     agentId,
     serverId,
@@ -48,17 +41,12 @@ export default function TerminalScreen() {
     setScreenFocused,
     terminalRef,
   } = useTerminalScreenLocalState();
-  const chromeLayout = useTerminalChromeLayout({
-    sessionKey,
-    windowWidth,
-    popoverWidth: TERMINAL_ACTION_POPOVER_WIDTH,
-  });
+  const chromeLayout = useTerminalScreenChrome({ sessionKey });
   const {
     closeMenu,
     menuPosition,
     menuVisible,
   } = chromeLayout;
-
   const {
     agentByKey,
     hydratedServerIds,
