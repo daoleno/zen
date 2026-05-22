@@ -14,7 +14,6 @@ import { StatusBar } from "expo-status-bar";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { Agent, useAgents } from "../../store/agents";
 import { useWork } from "../../store/work";
-import { AgentStatus } from "../../constants/tokens";
 import {
   buildTerminalChrome,
   DefaultTerminalThemePreference,
@@ -38,14 +37,14 @@ import {
   setAgentAlias,
   setCodexRenderMode,
   setTerminalTabPinned,
-  StoredCodexRenderModes,
-  StoredCodexRenderMode,
-  StoredAgentAliases,
-  StoredRecentAgentOpens,
-  StoredServer,
-  StoredTerminalTabs,
   syncTerminalTabsWithLiveSessions,
   touchTerminalTab,
+  type StoredCodexRenderModes,
+  type StoredCodexRenderMode,
+  type StoredAgentAliases,
+  type StoredRecentAgentOpens,
+  type StoredServer,
+  type StoredTerminalTabs,
 } from "../../services/storage";
 import { makeSessionKey, parseSessionKey } from "../../services/sessionKeys";
 import { wsClient } from "../../services/websocket";
@@ -58,10 +57,7 @@ import {
   TERMINAL_ACTION_POPOVER_WIDTH,
 } from "../../components/terminal/TerminalActionPopover";
 import { TerminalRenameModal } from "../../components/terminal/TerminalRenameModal";
-import {
-  TerminalTopBar,
-  type TerminalTabDescriptor,
-} from "../../components/terminal/TerminalTopBar";
+import { TerminalTopBar } from "../../components/terminal/TerminalTopBar";
 import { TerminalViewport } from "../../components/terminal/TerminalViewport";
 import { useTerminalAccessoryLayout } from "../../components/terminal/useTerminalAccessoryLayout";
 import { useTerminalGitDiff } from "../../components/terminal/useTerminalGitDiff";
@@ -70,16 +66,15 @@ import {
   filterAgentsByPreferredServers,
   groupAgentsByDirectory,
 } from "../../services/serverSelection";
-
-const EMPTY_TABS: StoredTerminalTabs = { order: [], pinned: [] };
-
-const STATUS_PRIORITY: Record<AgentStatus, number> = {
-  failed: 0,
-  blocked: 1,
-  unknown: 2,
-  running: 3,
-  done: 4,
-};
+import {
+  EMPTY_TABS,
+  buildMenuPosition,
+  buildTerminalTabs,
+  pickNextTabAfterClose,
+  shouldShowPickerServerNames,
+  sortTerminalAgents,
+  type MenuAnchorLayout,
+} from "./TerminalScreenModel";
 
 export default function TerminalScreen() {
   const params = useLocalSearchParams<{ id?: string; serverId?: string }>();
@@ -106,12 +101,7 @@ export default function TerminalScreen() {
   const [servers, setServers] = useState<StoredServer[]>([]);
   const [pickerVisible, setPickerVisible] = useState(false);
   const [menuVisible, setMenuVisible] = useState(false);
-  const [menuAnchor, setMenuAnchor] = useState<{
-    x: number;
-    y: number;
-    width: number;
-    height: number;
-  } | null>(null);
+  const [menuAnchor, setMenuAnchor] = useState<MenuAnchorLayout | null>(null);
   const [renameVisible, setRenameVisible] = useState(false);
   const [renameDraft, setRenameDraft] = useState("");
   const [newTerminalVisible, setNewTerminalVisible] = useState(false);
@@ -402,35 +392,13 @@ export default function TerminalScreen() {
   }, [connectionIssue, connectionState, hasTerminalRoute]);
 
   const tabs = useMemo(() => {
-    const order = buildDisplayTabOrder(sessionKey, terminalTabs);
-    return order
-      .filter((currentSessionKey) => {
-        if (currentSessionKey === sessionKey) return true;
-        if (agentByKey.has(currentSessionKey)) return true;
-
-        const parsed = parseSessionKey(currentSessionKey);
-        return parsed ? !hydratedServerIdSet.has(parsed.serverId) : false;
-      })
-      .map((currentSessionKey) => {
-        const tabAgent = agentByKey.get(currentSessionKey);
-        const parsed = parseSessionKey(currentSessionKey);
-        const presented = presentAgent(
-          tabAgent || {
-            name: parsed?.agentId || "",
-            summary: "",
-            last_output_lines: [],
-          },
-          currentSessionKey ? agentAliases[currentSessionKey] : undefined,
-        );
-        return {
-          id: currentSessionKey,
-          name: presented.cwdBase || presented.shortTitle,
-          status: tabAgent?.status || "unknown",
-          kind: presented.kind,
-          pinned: terminalTabs.pinned.includes(currentSessionKey),
-          active: currentSessionKey === sessionKey,
-        } satisfies TerminalTabDescriptor;
-      });
+    return buildTerminalTabs({
+      sessionKey,
+      terminalTabs,
+      agentByKey,
+      hydratedServerIdSet,
+      agentAliases,
+    });
   }, [agentAliases, agentByKey, hydratedServerIdSet, sessionKey, terminalTabs]);
 
   // Auto-scroll to keep the active tab visible
@@ -454,33 +422,18 @@ export default function TerminalScreen() {
     [servers, state.agents, state.serverConnections, state.serverLatencyById],
   );
 
-  const sortedAgents = useMemo(() => {
-    const openTabs = new Set(terminalTabs.order);
-    const pinnedTabs = new Set(terminalTabs.pinned);
-
-    return [...displayAgents].sort((left, right) => {
-      const leftPinned = pinnedTabs.has(left.key) ? 0 : 1;
-      const rightPinned = pinnedTabs.has(right.key) ? 0 : 1;
-      if (leftPinned !== rightPinned) return leftPinned - rightPinned;
-
-      const leftOpen = openTabs.has(left.key) ? 0 : 1;
-      const rightOpen = openTabs.has(right.key) ? 0 : 1;
-      if (leftOpen !== rightOpen) return leftOpen - rightOpen;
-
-      const leftOpenedAt = recentAgentOpens[left.key] ?? 0;
-      const rightOpenedAt = recentAgentOpens[right.key] ?? 0;
-      if (leftOpenedAt !== rightOpenedAt) return rightOpenedAt - leftOpenedAt;
-
-      const leftPriority = STATUS_PRIORITY[left.status] ?? 5;
-      const rightPriority = STATUS_PRIORITY[right.status] ?? 5;
-      if (leftPriority !== rightPriority) return leftPriority - rightPriority;
-
-      return (right.updated_at || 0) - (left.updated_at || 0);
-    });
-  }, [displayAgents, recentAgentOpens, terminalTabs]);
+  const sortedAgents = useMemo(
+    () =>
+      sortTerminalAgents({
+        agents: displayAgents,
+        terminalTabs,
+        recentAgentOpens,
+      }),
+    [displayAgents, recentAgentOpens, terminalTabs],
+  );
 
   const showPickerServerNames = useMemo(
-    () => new Set(sortedAgents.map((agent) => agent.serverId)).size > 1,
+    () => shouldShowPickerServerNames(sortedAgents),
     [sortedAgents],
   );
   const pickerSections = useMemo(
@@ -491,7 +444,12 @@ export default function TerminalScreen() {
   );
 
   const menuPosition = useMemo(
-    () => buildMenuPosition(menuAnchor, windowWidth),
+    () =>
+      buildMenuPosition(
+        menuAnchor,
+        windowWidth,
+        TERMINAL_ACTION_POPOVER_WIDTH,
+      ),
     [menuAnchor, windowWidth],
   );
 
@@ -901,49 +859,6 @@ export default function TerminalScreen() {
       />
     </SafeAreaView>
   );
-}
-
-function buildDisplayTabOrder(
-  currentId: string | null | undefined,
-  tabs: StoredTerminalTabs,
-): string[] {
-  if (!currentId) return tabs.order;
-  return tabs.order.includes(currentId)
-    ? tabs.order
-    : [...tabs.order, currentId];
-}
-
-function buildMenuPosition(
-  anchor: { x: number; y: number; width: number; height: number } | null,
-  windowWidth: number,
-): { left: number; top: number } {
-  const top = Math.max(12, (anchor?.y ?? 12) + (anchor?.height ?? 38) + 16);
-  const preferredLeft =
-    (anchor?.x ?? windowWidth - 14) + (anchor?.width ?? 0) - TERMINAL_ACTION_POPOVER_WIDTH;
-  const maxLeft = Math.max(12, windowWidth - TERMINAL_ACTION_POPOVER_WIDTH - 12);
-
-  return {
-    left: clamp(preferredLeft, 12, maxLeft),
-    top,
-  };
-}
-
-function clamp(value: number, min: number, max: number): number {
-  return Math.min(Math.max(value, min), max);
-}
-
-function pickNextTabAfterClose(
-  closedId: string,
-  currentTabs: StoredTerminalTabs,
-  nextTabs: StoredTerminalTabs,
-): string | null {
-  const currentOrder = buildDisplayTabOrder(null, currentTabs);
-  const nextOrder = buildDisplayTabOrder(null, nextTabs);
-  const closedIndex = currentOrder.indexOf(closedId);
-
-  if (closedIndex === -1) return nextOrder[0] || null;
-
-  return currentOrder[closedIndex + 1] || currentOrder[closedIndex - 1] || null;
 }
 
 const styles = StyleSheet.create({
