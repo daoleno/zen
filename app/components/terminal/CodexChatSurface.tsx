@@ -50,6 +50,11 @@ import {
   type UploadedAttachment,
 } from "../../services/uploads";
 import { wsClient, type CodexSlashCommand } from "../../services/websocket";
+import {
+  ChatHeaderIconButton,
+  ComposerIconButton,
+  ComposerSendButton,
+} from "./CodexChatControls";
 
 interface CodexChatSurfaceProps {
   serverId: string;
@@ -1364,40 +1369,21 @@ export function CodexChatSurface({
         </View>
 
         {gitDiff ? (
-          <TouchableOpacity
+          <ChatHeaderIconButton
+            icon={gitDiff.tone === "loading" ? "sync-outline" : "git-branch-outline"}
             accessibilityLabel="Git diff"
-            style={[
-              styles.headerIconButton,
-              {
-                backgroundColor: "transparent",
-                borderColor: "transparent",
-              },
-            ]}
+            chrome={chrome}
+            color={gitDiff.tone === "dirty" ? chrome.accent : chrome.textMuted}
             onPress={gitDiff.onPress}
-            activeOpacity={0.75}
-          >
-            <Ionicons
-              name={gitDiff.tone === "loading" ? "sync-outline" : "git-branch-outline"}
-              size={16}
-              color={gitDiff.tone === "dirty" ? chrome.accent : chrome.textMuted}
-            />
-          </TouchableOpacity>
+          />
         ) : null}
 
-        <TouchableOpacity
+        <ChatHeaderIconButton
+          icon="terminal-outline"
           accessibilityLabel="Open terminal renderer"
-          style={[
-            styles.headerIconButton,
-            {
-              backgroundColor: "transparent",
-              borderColor: "transparent",
-            },
-          ]}
+          chrome={chrome}
           onPress={onSwitchToTerminal}
-          activeOpacity={0.75}
-        >
-          <Ionicons name="terminal-outline" size={16} color={chrome.textMuted} />
-        </TouchableOpacity>
+        />
       </View>
 
       <KeyboardAvoidingView
@@ -1655,26 +1641,15 @@ export function CodexChatSurface({
             },
           ]}
         >
-          <TouchableOpacity
+          <ComposerIconButton
             accessibilityLabel="Upload file"
-            style={[
-              styles.composerIconButton,
-              !canAttach && styles.composerIconButtonDisabled,
-            ]}
-            onPress={() => void handleUploadAttachment()}
-            activeOpacity={0.78}
+            icon="add"
+            chrome={chrome}
+            loading={uploading}
             disabled={!canAttach}
-          >
-            {uploading ? (
-              <ActivityIndicator size="small" color={chrome.accent} />
-            ) : (
-              <Ionicons
-                name="add"
-                size={20}
-                color={canAttach ? chrome.text : chrome.textSubtle}
-              />
-            )}
-          </TouchableOpacity>
+            iconColor={canAttach ? chrome.text : chrome.textSubtle}
+            onPress={() => void handleUploadAttachment()}
+          />
 
           <View
             collapsable={false}
@@ -1718,30 +1693,16 @@ export function CodexChatSurface({
             />
           </View>
 
-          <TouchableOpacity
+          <ComposerSendButton
             accessibilityLabel={sendActionLabel}
-            style={[
-              styles.sendButton,
-              {
-                backgroundColor: sendActionEnabled ? chrome.text : chrome.surfaceMuted,
-                borderColor: sendActionEnabled ? chrome.text : chrome.border,
-              },
-              !sendActionEnabled && styles.sendButtonDisabled,
-            ]}
+            icon={sendActionIcon}
+            chrome={chrome}
+            theme={theme}
+            enabled={sendActionEnabled}
+            loading={sending}
+            compact={showStopButton}
             onPress={showStopButton ? interruptCodex : sendDraft}
-            disabled={!sendActionEnabled}
-            activeOpacity={0.8}
-          >
-            {sending ? (
-              <ActivityIndicator size="small" color={theme.background} />
-            ) : (
-              <Ionicons
-                name={sendActionIcon}
-                size={showStopButton ? 12 : 18}
-                color={sendActionEnabled ? theme.background : chrome.textSubtle}
-              />
-            )}
-          </TouchableOpacity>
+          />
         </View>
         </View>
       </KeyboardAvoidingView>
@@ -5161,14 +5122,6 @@ const styles = StyleSheet.create({
     height: 6,
     borderRadius: 3,
   },
-  headerIconButton: {
-    width: 30,
-    height: 30,
-    borderRadius: 8,
-    borderWidth: StyleSheet.hairlineWidth,
-    alignItems: "center",
-    justifyContent: "center",
-  },
   timeline: {
     flex: 1,
     minHeight: 0,
@@ -5882,26 +5835,5 @@ const styles = StyleSheet.create({
     alignItems: "center",
     gap: 8,
     paddingHorizontal: 12,
-  },
-  composerIconButton: {
-    width: 36,
-    height: 40,
-    borderRadius: 20,
-    alignItems: "center",
-    justifyContent: "center",
-  },
-  composerIconButtonDisabled: {
-    opacity: 0.54,
-  },
-  sendButton: {
-    width: 38,
-    height: 38,
-    borderRadius: 19,
-    borderWidth: StyleSheet.hairlineWidth,
-    alignItems: "center",
-    justifyContent: "center",
-  },
-  sendButtonDisabled: {
-    opacity: 0.62,
   },
 });

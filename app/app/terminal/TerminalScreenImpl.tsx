@@ -75,6 +75,7 @@ import { CodexChatSurface } from "../../components/terminal/CodexChatSurface";
 import { GitDiffSheet } from "../../components/terminal/GitDiffSheet";
 import { AgentKindIcon } from "../../components/terminal/AgentKindIcon";
 import { NewTerminalSheet } from "../../components/terminal/NewTerminalSheet";
+import { TerminalSheetAction } from "../../components/terminal/TerminalSheetAction";
 import { presentAgent } from "../../services/agentPresentation";
 import {
   buildGitDiffChipLabel,
@@ -1641,7 +1642,8 @@ export default function TerminalScreen() {
               },
             ]}
           >
-            <MenuAction
+            <TerminalSheetAction
+              icon="add"
               label={creatingSession ? "Starting Terminal…" : "New Terminal"}
               onPress={openNewTerminal}
               disabled={creatingSession || connectionState !== "connected"}
@@ -1649,7 +1651,8 @@ export default function TerminalScreen() {
               disabledTextColor={chromeColors.textSubtle}
               destructiveColor={terminalTheme.red}
             />
-            <MenuAction
+            <TerminalSheetAction
+              icon="git-branch-outline"
               label="Git Diff"
               onPress={openGitDiff}
               disabled={!gitDiffQueryEnabled || gitDiffStatus?.reason === "not_git_repo"}
@@ -1658,7 +1661,8 @@ export default function TerminalScreen() {
               destructiveColor={terminalTheme.red}
             />
             {isCodexAgent ? (
-              <MenuAction
+              <TerminalSheetAction
+                icon={codexRenderMode === "chat" ? "terminal-outline" : "sparkles-outline"}
                 label={codexRenderMode === "chat" ? "Use Terminal" : "Use Codex Chat"}
                 onPress={toggleCodexRenderMode}
                 textColor={chromeColors.text}
@@ -1666,21 +1670,24 @@ export default function TerminalScreen() {
                 destructiveColor={terminalTheme.red}
               />
             ) : null}
-            <MenuAction
+            <TerminalSheetAction
+              icon="create-outline"
               label="Rename"
               onPress={openRenameModal}
               textColor={chromeColors.text}
               disabledTextColor={chromeColors.textSubtle}
               destructiveColor={terminalTheme.red}
             />
-            <MenuAction
+            <TerminalSheetAction
+              icon={activePinned ? "remove-circle-outline" : "pin-outline"}
               label={activePinned ? "Unpin Tab" : "Pin Tab"}
               onPress={handleTogglePinned}
               textColor={chromeColors.text}
               disabledTextColor={chromeColors.textSubtle}
               destructiveColor={terminalTheme.red}
             />
-            <MenuAction
+            <TerminalSheetAction
+              icon="close-circle-outline"
               label="Close Other Tabs"
               onPress={handleCloseOtherTabs}
               disabled={tabs.length <= 1}
@@ -1688,7 +1695,8 @@ export default function TerminalScreen() {
               disabledTextColor={chromeColors.textSubtle}
               destructiveColor={terminalTheme.red}
             />
-            <MenuAction
+            <TerminalSheetAction
+              icon="close-outline"
               label="Close Tab"
               onPress={handleCloseCurrentTab}
               textColor={chromeColors.text}
@@ -1696,7 +1704,8 @@ export default function TerminalScreen() {
               destructiveColor={terminalTheme.red}
             />
             {linkedWork ? (
-              <MenuAction
+              <TerminalSheetAction
+                icon="reader-outline"
                 label="Open Brain"
                 onPress={openLinkedWork}
                 textColor={chromeColors.text}
@@ -1704,7 +1713,8 @@ export default function TerminalScreen() {
                 destructiveColor={terminalTheme.red}
               />
             ) : null}
-            <MenuAction
+            <TerminalSheetAction
+              icon="stop-circle-outline"
               label="Terminate"
               onPress={handleTerminateAgent}
               destructive
@@ -1852,44 +1862,6 @@ export default function TerminalScreen() {
         </KeyboardAvoidingView>
       </Modal>
     </SafeAreaView>
-  );
-}
-
-function MenuAction({
-  label,
-  onPress,
-  disabled = false,
-  destructive = false,
-  textColor,
-  disabledTextColor,
-  destructiveColor,
-}: {
-  label: string;
-  onPress: () => void;
-  disabled?: boolean;
-  destructive?: boolean;
-  textColor: string;
-  disabledTextColor: string;
-  destructiveColor: string;
-}) {
-  return (
-    <TouchableOpacity
-      style={[styles.menuAction, disabled && styles.menuActionDisabled]}
-      onPress={onPress}
-      disabled={disabled}
-      activeOpacity={0.84}
-    >
-      <Text
-        style={[
-          styles.menuActionText,
-          { color: textColor },
-          destructive && { color: destructiveColor },
-          disabled && { color: disabledTextColor },
-        ]}
-      >
-        {label}
-      </Text>
-    </TouchableOpacity>
   );
 }
 
@@ -2268,26 +2240,6 @@ const styles = StyleSheet.create({
     shadowOpacity: 0.2,
     shadowRadius: 8,
     elevation: 8,
-  },
-  menuAction: {
-    minHeight: 38,
-    justifyContent: "center",
-    paddingHorizontal: 12,
-    paddingVertical: 8,
-  },
-  menuActionDisabled: {
-    opacity: 0.52,
-  },
-  menuActionText: {
-    color: Colors.textPrimary,
-    fontSize: 14,
-    fontFamily: Typography.uiFont,
-  },
-  menuActionTextDisabled: {
-    color: "#556176",
-  },
-  menuActionTextDestructive: {
-    color: "#F09999",
   },
   renameRoot: {
     flex: 1,
