@@ -1,22 +1,19 @@
 import React from "react";
 import { useAgents } from "../../store/agents";
 import { useWork } from "../../store/work";
-import { useTerminalGitDiff } from "../../components/terminal/useTerminalGitDiff";
 import { TerminalScreenLayout } from "./TerminalScreenLayout";
 import { useTerminalAgentIndex } from "./useTerminalAgentIndex";
 import { useTerminalDirectoryModel } from "./useTerminalDirectoryModel";
-import { useTerminalRouteModel } from "./useTerminalRouteModel";
 import { useTerminalScreenActions } from "./useTerminalScreenActions";
 import { useTerminalScreenAccessory } from "./useTerminalScreenAccessory";
 import { useTerminalScreenChrome } from "./useTerminalScreenChrome";
 import { useTerminalScreenLocalState } from "./useTerminalScreenLocalState";
+import { useTerminalScreenModels } from "./useTerminalScreenModels";
 import { useTerminalScreenOverlayProps } from "./useTerminalScreenOverlayProps";
 import { useTerminalScreenStorage } from "./useTerminalScreenStorage";
 import { useTerminalSessionActions } from "./useTerminalSessionActions";
 import { useTerminalTabActions } from "./useTerminalTabActions";
-import { useTerminalThemeChrome } from "./useTerminalThemeChrome";
 import { useTerminalTopBarProps } from "./useTerminalTopBarProps";
-import { useTerminalViewportModel } from "./useTerminalViewportModel";
 import { useTerminalViewportProps } from "./useTerminalViewportProps";
 
 export default function TerminalScreen() {
@@ -74,24 +71,17 @@ export default function TerminalScreen() {
     hydratedServerIds,
     liveAgentKeys,
   });
-  const { chromeColors, statusBarStyle, terminalTheme, themeName } =
-    useTerminalThemeChrome(themePreference);
   const {
-    activePinned,
-    agent,
-    codexRenderMode,
-    connectionIssue,
-    connectionState,
-    displayName,
-    gitDiffCwd,
-    hasTerminalRoute,
-    isCodexAgent,
-    linkedWork,
-    showCodexChat,
-  } = useTerminalRouteModel({
+    gitDiff,
+    route,
+    theme,
+    viewport: viewportModel,
+  } = useTerminalScreenModels({
     serverId,
     agentId,
     sessionKey,
+    screenFocused,
+    themePreference,
     agentByKey,
     workByKey: workState.byKey,
     agentAliases,
@@ -100,23 +90,19 @@ export default function TerminalScreen() {
     serverConnectionIssues: state.serverConnectionIssues,
     codexRenderModes,
   });
-  const viewportModel = useTerminalViewportModel({
-    hasTerminalRoute,
-    showCodexChat,
-    screenFocused,
-    connectionState,
+  const { chromeColors, statusBarStyle, terminalTheme, themeName } = theme;
+  const {
+    activePinned,
+    agent,
+    codexRenderMode,
     connectionIssue,
-    terminalTheme,
-    chromeColors,
-  });
-  const gitDiff = useTerminalGitDiff({
-    serverId,
-    agentId,
-    cwd: gitDiffCwd,
     connectionState,
+    displayName,
     hasTerminalRoute,
-    screenFocused,
-  });
+    isCodexAgent,
+    linkedWork,
+    showCodexChat,
+  } = route;
   const {
     keyboardVisible,
     ctrlArmed,
