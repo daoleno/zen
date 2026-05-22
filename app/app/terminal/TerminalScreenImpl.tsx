@@ -1,6 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
-  Alert,
   AppState,
   StyleSheet,
   View,
@@ -9,7 +8,7 @@ import {
   useColorScheme,
   useWindowDimensions,
 } from "react-native";
-import { useFocusEffect, useLocalSearchParams, useRouter } from "expo-router";
+import { useFocusEffect, useLocalSearchParams } from "expo-router";
 import { StatusBar } from "expo-status-bar";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { useAgents } from "../../store/agents";
@@ -22,11 +21,6 @@ import {
 } from "../../constants/terminalThemes";
 import {
   DefaultCodexRenderMode,
-  getServerById,
-  markAgentOpened,
-  setAgentAlias,
-  setCodexRenderMode,
-  touchTerminalTab,
   type StoredCodexRenderMode,
 } from "../../services/storage";
 import { makeSessionKey } from "../../services/sessionKeys";
@@ -58,6 +52,7 @@ import {
 } from "./TerminalScreenModel";
 import { useTerminalFallbackState } from "./useTerminalFallbackState";
 import { useTerminalScreenStorage } from "./useTerminalScreenStorage";
+import { useTerminalSessionActions } from "./useTerminalSessionActions";
 import { useTerminalTabActions } from "./useTerminalTabActions";
 
 export default function TerminalScreen() {
@@ -68,7 +63,6 @@ export default function TerminalScreen() {
     agentId && serverId ? makeSessionKey(serverId, agentId) : null;
   const { state } = useAgents();
   const { state: workState } = useWork();
-  const router = useRouter();
   const colorScheme = useColorScheme();
   const { width: windowWidth } = useWindowDimensions();
   const [pickerVisible, setPickerVisible] = useState(false);
@@ -390,106 +384,34 @@ export default function TerminalScreen() {
     });
   };
 
-  const handleSaveRename = async () => {
-    if (!sessionKey) return;
-    const nextAliases = await setAgentAlias(sessionKey, renameDraft);
-    setAgentAliases(nextAliases);
-    setRenameVisible(false);
-  };
-
-  const applyCodexRenderMode = useCallback(
-    async (mode: StoredCodexRenderMode) => {
-      if (!sessionKey) return;
-      const nextModes = await setCodexRenderMode(sessionKey, mode);
-      setCodexRenderModes(nextModes);
-      closeMenu();
-    },
-    [closeMenu, sessionKey, setCodexRenderModes],
-  );
-
-  const toggleCodexRenderMode = () => {
-    void applyCodexRenderMode(
-      codexRenderMode === "chat" ? "terminal" : "chat",
-    );
-  };
-
-  const createTerminal = async (input: {
-    cwd: string;
-    command: string;
-    name: string;
-  }) => {
-    if (!serverId || connectionState !== "connected" || creatingSession) {
-      if (connectionState !== "connected") {
-        Alert.alert(
-          "Daemon unavailable",
-          "Reconnect to that daemon before creating a new terminal.",
-        );
-      }
-      return;
-    }
-
-    setNewTerminalVisible(false);
-    closePicker();
-    closeMenu();
-    setCreatingSession(true);
-    try {
-      const nextAgentId = await wsClient.createSession(serverId, {
-        targetId: agentId,
-        cwd: input.cwd,
-        command: input.command,
-        name: input.name,
-      });
-      const nextSessionKey = makeSessionKey(serverId, nextAgentId);
-      const openedAt = Date.now();
-      const nextTabs = await touchTerminalTab(nextSessionKey);
-      setTerminalTabs(nextTabs);
-      void markAgentOpened(nextSessionKey, openedAt);
-      setRecentAgentOpens((previous) => ({
-        ...previous,
-        [nextSessionKey]: openedAt,
-      }));
-      router.replace({
-        pathname: "/terminal/[id]",
-        params: { id: nextAgentId, serverId },
-      });
-    } catch (error: any) {
-      Alert.alert(
-        "Could not create terminal",
-        error?.message || "Try reconnecting to that daemon first.",
-      );
-    } finally {
-      setCreatingSession(false);
-    }
-  };
-
-  const openNewTerminal = () => {
-    if (connectionState !== "connected") {
-      Alert.alert(
-        "Daemon unavailable",
-        "Reconnect to that daemon before creating a new terminal.",
-      );
-      return;
-    }
-    setNewTerminalVisible(true);
-  };
-
-  const openLinkedWork = () => {
-    if (!linkedWork) return;
-    closeMenu();
-    router.push({
-      pathname: "/work/[id]",
-      params: { id: linkedWork.id, serverId: linkedWork.serverId },
-    });
-  };
-
-  const retryServerConnection = async () => {
-    if (!serverId) return;
-    const storedServer = await getServerById(serverId);
-    if (!storedServer) return;
-
-    setServer(storedServer);
-    wsClient.connectServer(storedServer);
-  };
+  const {
+    applyCodexRenderMode,
+    createTerminal,
+    handleSaveRename,
+    openLinkedWork,
+    openNewTerminal,
+    retryServerConnection,
+    toggleCodexRenderMode,
+  } = useTerminalSessionActions({
+    serverId,
+    agentId,
+    sessionKey,
+    connectionState,
+    creatingSession,
+    codexRenderMode,
+    linkedWork,
+    renameDraft,
+    closeMenu,
+    closePicker,
+    setNewTerminalVisible,
+    setCreatingSession,
+    setRenameVisible,
+    setAgentAliases,
+    setCodexRenderModes,
+    setTerminalTabs,
+    setRecentAgentOpens,
+    setServer,
+  });
 
   return (
     <SafeAreaView
