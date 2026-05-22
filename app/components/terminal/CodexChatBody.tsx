@@ -19,7 +19,7 @@ import type {
 import type { CodexSlashCommand } from "../../services/websocket";
 import type { ComposerAttachment, ChatCommandEvent } from "./CodexChatSession";
 import type { CodexComposerPresentation } from "./CodexChatSurfaceModel";
-import { CodexChatComposer } from "./CodexChatComposer";
+import { CodexChatComposerSection } from "./CodexChatComposerSection";
 import { CodexChatTimelineSection } from "./CodexChatTimelineSection";
 import { useCodexComposerLayout } from "./useCodexComposerLayout";
 
@@ -134,25 +134,16 @@ export function CodexChatBody({
         onUnavailableAction={onUnavailableAction}
       />
 
-      <CodexChatComposer
+      <CodexChatComposerSection
         inputRef={inputRef}
         draft={draft}
-        placeholder={composerPresentation.placeholder}
         editable={editable}
         focused={composerFocused}
-        floating={composerPresentation.active}
         canAttach={canAttach}
         uploading={uploading}
-        sendEnabled={composerPresentation.sendEnabled}
         sending={sending}
-        sendIcon={composerPresentation.sendIcon}
-        sendLabel={composerPresentation.sendLabel}
-        compactSendIcon={composerPresentation.showStopButton}
-        bottomPadding={composerPresentation.bottomPadding}
-        showCommandMenu={composerPresentation.showCommandMenu}
-        commandQuery={composerPresentation.commandQuery}
-        commands={composerPresentation.visibleSlashCommands}
         attachments={attachments}
+        presentation={composerPresentation}
         chrome={chrome}
         theme={theme}
         onLayout={handleComposerLayout}
