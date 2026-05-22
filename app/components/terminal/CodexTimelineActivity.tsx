@@ -40,7 +40,8 @@ export function ZenActivityEvent({
   formatPatchPath,
   truncateBody,
 }: ZenActivityEventProps) {
-  const [expanded, setExpanded] = useState(() => shouldAutoExpandActivity(item));
+  const defaultExpanded = shouldAutoExpandActivity(item);
+  const [expanded, setExpanded] = useState(defaultExpanded);
   const [assetPreviewUri, setAssetPreviewUri] = useState<string | null>(null);
   const [assetPreviewFailed, setAssetPreviewFailed] = useState(false);
   const textSelectable = useContext(TimelineTextSelectableContext);
@@ -49,6 +50,10 @@ export function ZenActivityEvent({
     chrome,
     theme,
   );
+
+  useEffect(() => {
+    setExpanded(defaultExpanded);
+  }, [defaultExpanded, item.id, item.statusKey]);
 
   useEffect(() => {
     let cancelled = false;

@@ -18,6 +18,7 @@ export interface ZenActivityTimelineItem {
   type: "activity";
   id: string;
   timestamp?: string;
+  statusKey?: string;
   title: string;
   tone: "neutral" | "running" | "success" | "failed";
   icon: TimelineActivityIconName;

@@ -186,11 +186,13 @@ function activityFromEvent(event: CodexConversationEvent): ZenTimelineItem | nul
         type: "activity",
         id: event.id || `command:${event.seq}`,
         timestamp: event.timestamp,
+        statusKey: event.status || "done",
         title: commandActivityTitle(command, running, failed, presentation),
         tone: running ? "running" : failed ? "failed" : "success",
         icon: running ? "time-outline" : failed ? "alert-circle-outline" : presentation.icon,
         detail: presentation.detail || commandSummary(command),
         body: output.text || (!running && !failed ? "(no output)" : undefined),
+        defaultExpanded: false,
       };
     }
     case "patch": {
@@ -225,6 +227,7 @@ function activityFromEvent(event: CodexConversationEvent): ZenTimelineItem | nul
         type: "activity",
         id: event.id || `tool:${event.seq}`,
         timestamp: event.timestamp,
+        statusKey: event.status || "done",
         title: heading.title,
         tone: running ? "running" : failed ? "failed" : "success",
         icon: presentation.icon,
@@ -307,20 +310,23 @@ function explorationActivityFromEntries(
       `${entry.presentation.detail || commandSummary(entry.event.command || "") || "Command"} output:`,
       entry.output.text,
     ]);
-  const body = cleanDisplayText([...commandLines, ...failedOutputs].join("\n"));
+  const body = failedOutputs.length > 0
+    ? cleanDisplayText([...commandLines, ...failedOutputs].join("\n"))
+    : "";
   const detail = summarizeExploration(entries);
 
   return {
     type: "activity",
     id: `explore:${first?.event.id || first?.event.seq}:${last?.event.id || last?.event.seq}`,
     timestamp: last?.event.timestamp || first?.event.timestamp,
+    statusKey: running ? "running" : failed ? "failed" : "done",
     title: running ? "Exploring" : "Explored",
     tone: running ? "running" : failed ? "failed" : "success",
     icon: failed ? "alert-circle-outline" : running ? "time-outline" : "folder-open-outline",
     detail,
     body: body || undefined,
     files,
-    defaultExpanded: running || failed,
+    defaultExpanded: false,
   };
 }
 
@@ -526,7 +532,7 @@ function patchSummaryTitle(files: PatchFileSummary[], totalAdded: number, totalR
     const file = files[0];
     const verb =
       file.operation === "add" ? "Added" : file.operation === "delete" ? "Deleted" : "Edited";
-    return `${verb} ${patchDisplayPath(file)} ${lineCountSummary(file.added, file.removed)}`;
+    return `${verb} 1 file ${lineCountSummary(file.added, file.removed)}`;
   }
   return `Edited ${files.length} files ${lineCountSummary(totalAdded, totalRemoved)}`;
 }
