@@ -1,4 +1,5 @@
 import { StyleSheet, Text as RNText } from 'react-native';
+import type { ColorValue } from 'react-native';
 import { Tabs } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useAppColors } from '../../constants/tokens';
@@ -72,7 +73,7 @@ function TabSymbol({
   fontSize,
 }: {
   glyph: string;
-  color: string;
+  color: ColorValue;
   focused: boolean;
   fontSize: number;
 }) {

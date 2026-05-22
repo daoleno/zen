@@ -24,6 +24,7 @@ import {
   type NativeSyntheticEvent,
 } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
+import * as Clipboard from "expo-clipboard";
 import { KeyboardAvoidingView } from "react-native-keyboard-controller";
 import {
   EnrichedMarkdownText,
@@ -48,7 +49,7 @@ import {
   uploadDocumentForServer,
   type UploadedAttachment,
 } from "../../services/uploads";
-import { wsClient } from "../../services/websocket";
+import { wsClient, type CodexSlashCommand } from "../../services/websocket";
 
 interface CodexChatSurfaceProps {
   serverId: string;
@@ -65,36 +66,73 @@ interface CodexChatSurfaceProps {
     onPress(): void;
   } | null;
   onSwitchToTerminal(): void;
+  onOpenGitDiff?: () => void;
 }
 
 const POLL_INTERVAL_MS = 900;
 const SCROLL_BOTTOM_THRESHOLD = 96;
-const QUICK_COMMANDS = [
-  {
-    value: "/status",
-    title: "Status",
-    description: "Current session state",
-    icon: "pulse-outline",
-  },
-  {
-    value: "/diff",
-    title: "Diff",
-    description: "Changed files",
-    icon: "git-compare-outline",
-  },
-  {
-    value: "/test",
-    title: "Test",
-    description: "Run checks",
-    icon: "checkmark-done-outline",
-  },
-  {
-    value: "/help",
-    title: "Help",
-    description: "Available commands",
-    icon: "help-circle-outline",
-  },
-] satisfies QuickCommand[];
+const FALLBACK_SLASH_COMMANDS = [
+  ["model", "choose what model and reasoning effort to use"],
+  ["fast", "1.5x speed, increased usage"],
+  ["ide", "include current selection, open files, and other context from your IDE"],
+  ["permissions", "choose what Codex is allowed to do"],
+  ["keymap", "remap TUI shortcuts"],
+  ["setup-default-sandbox", "set up elevated agent sandbox"],
+  ["sandbox-add-read-dir", "let sandbox read a directory: /sandbox-add-read-dir <absolute_path>"],
+  ["vim", "toggle Vim mode for the composer"],
+  ["experimental", "toggle experimental features"],
+  ["approve", "approve one retry of a recent auto-review denial"],
+  ["memories", "configure memory use and generation"],
+  ["skills", "use skills to improve how Codex performs specific tasks"],
+  ["hooks", "view and manage lifecycle hooks"],
+  ["review", "review my current changes and find issues"],
+  ["rename", "rename the current thread"],
+  ["new", "start a new chat during a conversation"],
+  ["resume", "resume a saved chat"],
+  ["fork", "fork the current chat"],
+  ["init", "create an AGENTS.md file with instructions for Codex"],
+  ["compact", "summarize conversation to prevent hitting the context limit"],
+  ["plan", "switch to Plan mode"],
+  ["goal", "set or view the goal for a long-running task"],
+  ["side", "start a side conversation in an ephemeral fork"],
+  ["copy", "copy last response as markdown"],
+  ["raw", "toggle raw scrollback mode for copy-friendly terminal selection"],
+  ["diff", "show git diff (including untracked files)"],
+  ["mention", "mention a file"],
+  ["status", "show current session configuration and token usage"],
+  ["debug-config", "show config layers and requirement sources for debugging"],
+  ["title", "configure which items appear in the terminal title"],
+  ["statusline", "configure which items appear in the status line"],
+  ["theme", "choose a syntax highlighting theme"],
+  ["pets", "choose or hide the terminal pet"],
+  ["mcp", "list configured MCP tools; use /mcp verbose for details"],
+  ["apps", "manage apps"],
+  ["plugins", "browse plugins"],
+  ["logout", "log out of Codex"],
+  ["quit", "exit Codex"],
+  ["exit", "exit Codex"],
+  ["feedback", "send logs to maintainers"],
+  ["rollout", "print the rollout file path"],
+  ["ps", "list background terminals"],
+  ["stop", "stop all background terminals"],
+  ["clear", "clear the terminal and start a new chat"],
+  ["personality", "choose a communication style for Codex"],
+  ["realtime", "toggle realtime voice mode (experimental)"],
+  ["settings", "configure realtime microphone/speaker"],
+  ["test-approval", "test approval request"],
+  ["agent", "switch the active agent thread"],
+  ["subagents", "switch the active agent thread"],
+  ["btw", "start a side conversation in an ephemeral fork"],
+  ["debug-m-drop", "DO NOT USE"],
+  ["debug-m-update", "DO NOT USE"],
+].map(([name, description]) => ({
+  value: `/${name}`,
+  name,
+  title: slashCommandTitle(name),
+  description,
+  source: "fallback",
+  ...fallbackSlashCommandCapability(name),
+})) satisfies CodexSlashCommand[];
 const ATTACHMENT_TAG_RE = /<zen_attachments>\s*([\s\S]*?)\s*<\/zen_attachments>/i;
 const COMMAND_OUTPUT_PREVIEW_LINES = 7;
 const COMMAND_OUTPUT_PREVIEW_CHARS = 1200;
@@ -121,13 +159,6 @@ type ToolField = {
   label: string;
   value: string;
   mono?: boolean;
-};
-
-type QuickCommand = {
-  value: string;
-  title: string;
-  description: string;
-  icon: IoniconName;
 };
 
 type ToolPresentation = {
@@ -208,10 +239,39 @@ type ComposerAttachment = UploadedAttachment & {
   id: string;
 };
 
+type ChatCommandEvent = {
+  id: string;
+  command: CodexSlashCommand;
+  tone: "neutral" | "success" | "failed";
+  title: string;
+  detail?: string;
+  body?: string;
+  createdAt: string;
+};
+
+type SlashCommandRequest = {
+  command: CodexSlashCommand;
+  rawText: string;
+  known: boolean;
+};
+
 const conversationCache = new Map<string, CodexConversation>();
 const draftCache = new Map<string, string>();
 const attachmentCache = new Map<string, ComposerAttachment[]>();
+const slashCommandCache = new Map<string, CodexSlashCommand[]>();
+const chatCommandEventCache = new Map<string, ChatCommandEvent[]>();
 const TimelineTextSelectableContext = React.createContext(true);
+
+type LocalSlashCommandCapability = Pick<
+  CodexSlashCommand,
+  | "category"
+  | "execution"
+  | "input"
+  | "output"
+  | "interactive"
+  | "chat_supported"
+  | "terminal_supported"
+>;
 
 type DisplayAttachment = {
   name: string;
@@ -504,6 +564,7 @@ export function CodexChatSurface({
   screenFocused,
   gitDiff,
   onSwitchToTerminal,
+  onOpenGitDiff,
 }: CodexChatSurfaceProps) {
   const insets = useSafeAreaInsets();
   const conversationCacheKey = `${serverId}:${agentId}`;
@@ -520,6 +581,12 @@ export function CodexChatSurface({
   );
   const [sending, setSending] = useState(false);
   const [uploading, setUploading] = useState(false);
+  const [slashCommands, setSlashCommands] = useState<CodexSlashCommand[]>(
+    () => slashCommandCache.get(serverId) ?? FALLBACK_SLASH_COMMANDS,
+  );
+  const [chatCommandEvents, setChatCommandEventsState] = useState<ChatCommandEvent[]>(
+    () => chatCommandEventCache.get(conversationCacheKey) ?? [],
+  );
   const [composerHeight, setComposerHeight] = useState(76);
   const events = conversation?.events ?? [];
   const timeline = usePinnedTimeline(events.length);
@@ -585,6 +652,37 @@ export function CodexChatSurface({
       });
     },
     [conversationCacheKey],
+  );
+
+  const setChatCommandEvents = useCallback(
+    (nextValue: React.SetStateAction<ChatCommandEvent[]>) => {
+      setChatCommandEventsState((current) => {
+        const nextEvents =
+          typeof nextValue === "function" ? nextValue(current) : nextValue;
+        const bounded = nextEvents.slice(-12);
+        if (bounded.length > 0) {
+          chatCommandEventCache.set(conversationCacheKey, bounded);
+        } else {
+          chatCommandEventCache.delete(conversationCacheKey);
+        }
+        return bounded;
+      });
+    },
+    [conversationCacheKey],
+  );
+
+  const recordChatCommandEvent = useCallback(
+    (event: Omit<ChatCommandEvent, "id" | "createdAt">) => {
+      setChatCommandEvents((current) => [
+        ...current,
+        {
+          ...event,
+          id: `chat-command:${Date.now().toString(36)}:${Math.random().toString(36).slice(2, 8)}`,
+          createdAt: new Date().toISOString(),
+        },
+      ]);
+    },
+    [setChatCommandEvents],
   );
 
   const refreshConversation = useCallback(
@@ -664,10 +762,46 @@ export function CodexChatSurface({
   }, [agent?.updated_at, refreshConversation, screenFocused]);
 
   useEffect(() => {
+    const cachedCommands = slashCommandCache.get(serverId);
+    setSlashCommands(
+      cachedCommands && cachedCommands.length > 0
+        ? cachedCommands
+        : FALLBACK_SLASH_COMMANDS,
+    );
+
+    if (!screenFocused || connectionState !== "connected") {
+      return;
+    }
+
+    let cancelled = false;
+    void wsClient
+      .getCodexSlashCommands(serverId)
+      .then((snapshot) => {
+        if (cancelled) {
+          return;
+        }
+        const nextCommands = normalizeSlashCommands(snapshot.commands);
+        if (nextCommands.length === 0) {
+          return;
+        }
+        slashCommandCache.set(serverId, nextCommands);
+        setSlashCommands(nextCommands);
+      })
+      .catch(() => {
+        // The fallback list keeps slash commands usable on older daemons.
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [connectionState, screenFocused, serverId]);
+
+  useEffect(() => {
     setConversationState(conversationCache.get(conversationCacheKey) ?? null);
     setError(null);
     setDraftState(draftCache.get(conversationCacheKey) ?? "");
     setAttachmentsState(attachmentCache.get(conversationCacheKey) ?? []);
+    setChatCommandEventsState(chatCommandEventCache.get(conversationCacheKey) ?? []);
     refreshInFlightRef.current = null;
     resetForConversation();
   }, [conversationCacheKey, resetForConversation]);
@@ -680,6 +814,373 @@ export function CodexChatSurface({
     !sending &&
     !uploading;
 
+  const statusMeta = useMemo(() => {
+    if (connectionIssue) {
+      return connectionIssue.title;
+    }
+    if (connectionState === "connecting") {
+      return "Reconnecting";
+    }
+    if (connectionState !== "connected") {
+      return "Offline";
+    }
+    if (sending || agent?.status === "running" || events.some(isEventRunning)) {
+      return "Working";
+    }
+    if (conversation?.updated_at) {
+      return `Updated ${formatTime(conversation.updated_at)}`;
+    }
+    return "Live";
+  }, [agent?.status, connectionIssue, connectionState, conversation?.updated_at, events, sending]);
+
+  const submitTextToCodex = useCallback(
+    (text: string, previousDraft: string, previousAttachments: ComposerAttachment[]) => {
+      setSending(true);
+      setDraft("");
+      setAttachments([]);
+      scrollToLatest(true);
+      try {
+        wsClient.sendInput(serverId, agentId, `${text}\n`);
+        setTimeout(() => {
+          void refreshConversation(false);
+          setSending(false);
+        }, 600);
+      } catch {
+        setDraft(previousDraft);
+        setAttachments(previousAttachments);
+        setSending(false);
+      }
+    },
+    [
+      agentId,
+      refreshConversation,
+      scrollToLatest,
+      serverId,
+      setAttachments,
+      setDraft,
+    ],
+  );
+
+  const clearComposerForLocalCommand = useCallback(() => {
+    setDraft("");
+    setAttachments([]);
+    scrollToLatest(true);
+    setTimeout(() => {
+      pinToBottomIfNeeded(true);
+    }, SCROLL_TO_BOTTOM_LAYOUT_DELAY_MS);
+  }, [pinToBottomIfNeeded, scrollToLatest, setAttachments, setDraft]);
+
+  const openSlashCommandInTerminal = useCallback(
+    (command: CodexSlashCommand, rawText?: string) => {
+      const text = slashCommandTerminalText(command, rawText);
+      const previousDraft = draft;
+      const previousAttachments = attachments;
+      setDraft("");
+      setAttachments([]);
+      try {
+        wsClient.sendInput(serverId, agentId, `${text}\n`);
+        recordChatCommandEvent({
+          command,
+          tone: "neutral",
+          title: "Opened in Terminal",
+          detail: command.value,
+          body: command.interactive
+            ? "This command uses the terminal renderer because it can open prompts, pickers, or terminal-only output."
+            : "This command was routed to the terminal renderer.",
+        });
+        onSwitchToTerminal();
+      } catch {
+        setDraft(previousDraft);
+        setAttachments(previousAttachments);
+        recordChatCommandEvent({
+          command,
+          tone: "failed",
+          title: "Command Not Sent",
+          detail: command.value,
+          body: "Zen could not send this command to the terminal session.",
+        });
+      }
+    },
+    [
+      agentId,
+      attachments,
+      draft,
+      onSwitchToTerminal,
+      recordChatCommandEvent,
+      serverId,
+      setAttachments,
+      setDraft,
+    ],
+  );
+
+  const runNativeSlashCommand = useCallback(
+    async (command: CodexSlashCommand) => {
+      clearComposerForLocalCommand();
+      switch (command.name) {
+        case "status":
+          recordChatCommandEvent({
+            command,
+            tone: connectionState === "connected" ? "success" : "failed",
+            title: "Session Status",
+            detail: statusMeta,
+            body: buildChatStatusCommandBody({
+              agent,
+              conversation,
+              connectionState,
+              connectionIssue,
+              slashCommands,
+            }),
+          });
+          return;
+        case "diff":
+          if (onOpenGitDiff || gitDiff?.onPress) {
+            (onOpenGitDiff ?? gitDiff?.onPress)?.();
+            recordChatCommandEvent({
+              command,
+              tone: gitDiff?.tone === "error" ? "failed" : "success",
+              title: "Opened Git Diff",
+              detail: gitDiff?.label || command.value,
+              body: gitDiff?.label
+                ? `Git diff panel opened. Current summary: ${gitDiff.label}`
+                : "Git diff panel opened.",
+            });
+            return;
+          }
+          recordChatCommandEvent({
+            command,
+            tone: "failed",
+            title: "Git Diff Unavailable",
+            detail: command.value,
+            body: "Zen does not have a working directory for this Codex session yet.",
+          });
+          return;
+        case "copy": {
+          const latestAssistantMessage = latestAssistantMessageBody(events);
+          if (!latestAssistantMessage) {
+            recordChatCommandEvent({
+              command,
+              tone: "failed",
+              title: "Nothing to Copy",
+              detail: command.value,
+              body: "No assistant response is available in the current transcript.",
+            });
+            return;
+          }
+          try {
+            await Clipboard.setStringAsync(latestAssistantMessage);
+            recordChatCommandEvent({
+              command,
+              tone: "success",
+              title: "Copied Last Response",
+              detail: `${Array.from(latestAssistantMessage).length} chars`,
+              body: "The latest assistant response was copied as markdown.",
+            });
+          } catch (err: any) {
+            recordChatCommandEvent({
+              command,
+              tone: "failed",
+              title: "Copy Failed",
+              detail: command.value,
+              body: err?.message || "Zen could not write to the clipboard.",
+            });
+          }
+          return;
+        }
+        default:
+          recordChatCommandEvent({
+            command,
+            tone: "failed",
+            title: "Command Not Available",
+            detail: command.value,
+            body: "Zen does not have a native chat renderer for this slash command yet.",
+          });
+      }
+    },
+    [
+      agent,
+      clearComposerForLocalCommand,
+      connectionIssue,
+      connectionState,
+      conversation,
+      events,
+      gitDiff,
+      onOpenGitDiff,
+      recordChatCommandEvent,
+      slashCommands,
+      statusMeta,
+    ],
+  );
+
+  const showTerminalRequiredAction = useCallback(
+    (
+      command: CodexSlashCommand,
+      rawText: string,
+      composedText: string,
+      previousDraft: string,
+      previousAttachments: ComposerAttachment[],
+    ) => {
+      Alert.alert(
+        `${command.value} needs Terminal`,
+        slashCommandTerminalMessage(command),
+        [
+          { text: "Cancel", style: "cancel" },
+          {
+            text: "Send Anyway",
+            onPress: () =>
+              submitTextToCodex(composedText, previousDraft, previousAttachments),
+          },
+          {
+            text: "Open Terminal",
+            onPress: () => openSlashCommandInTerminal(command, rawText),
+          },
+        ],
+      );
+    },
+    [openSlashCommandInTerminal, submitTextToCodex],
+  );
+
+  const showUnsupportedSlashCommand = useCallback((command: CodexSlashCommand) => {
+    Alert.alert(
+      `${command.value} is not available`,
+      "This command is hidden or internal in Codex and is not exposed in the chat renderer.",
+      [{ text: "OK", style: "cancel" }],
+    );
+  }, []);
+
+  const showUnknownSlashCommand = useCallback(
+    (
+      command: CodexSlashCommand,
+      rawText: string,
+      composedText: string,
+      previousDraft: string,
+      previousAttachments: ComposerAttachment[],
+    ) => {
+      Alert.alert(
+        `${command.value} is not in the catalog`,
+        "Zen cannot tell whether this slash command is interactive. Open it in Terminal, or send it as a normal message.",
+        [
+          { text: "Cancel", style: "cancel" },
+          {
+            text: "Send as Message",
+            onPress: () =>
+              submitTextToCodex(composedText, previousDraft, previousAttachments),
+          },
+          {
+            text: "Open Terminal",
+            onPress: () => openSlashCommandInTerminal(command, rawText),
+          },
+        ],
+      );
+    },
+    [openSlashCommandInTerminal, submitTextToCodex],
+  );
+
+  const showSlashCommandAttachmentAlert = useCallback(
+    (
+      command: CodexSlashCommand,
+      composedText: string,
+      previousDraft: string,
+      previousAttachments: ComposerAttachment[],
+    ) => {
+      Alert.alert(
+        `${command.value} cannot use attachments here`,
+        "Run the slash command without attachments, or send this as a normal message.",
+        [
+          { text: "Cancel", style: "cancel" },
+          {
+            text: "Send as Message",
+            onPress: () =>
+              submitTextToCodex(composedText, previousDraft, previousAttachments),
+          },
+        ],
+      );
+    },
+    [submitTextToCodex],
+  );
+
+  const routeSlashCommandSubmission = useCallback(
+    (
+      request: SlashCommandRequest,
+      composedText: string,
+      previousDraft: string,
+      previousAttachments: ComposerAttachment[],
+    ) => {
+      const { command, rawText, known } = request;
+      if (previousAttachments.length > 0) {
+        showSlashCommandAttachmentAlert(
+          command,
+          composedText,
+          previousDraft,
+          previousAttachments,
+        );
+        return true;
+      }
+      if (requiresSlashCommandArgs(command) && !slashCommandHasArgs(rawText, command)) {
+        setDraft(`${command.value} `);
+        focusComposer();
+        recordChatCommandEvent({
+          command,
+          tone: "failed",
+          title: "Command Needs Input",
+          detail: command.value,
+          body: command.input.placeholder
+            ? `Add arguments after ${command.value}: ${command.input.placeholder}`
+            : `Add arguments after ${command.value}.`,
+        });
+        return true;
+      }
+      if (!known) {
+        showUnknownSlashCommand(
+          command,
+          rawText,
+          composedText,
+          previousDraft,
+          previousAttachments,
+        );
+        return true;
+      }
+      switch (command.execution) {
+        case "chat-native":
+        case "timeline-output":
+          void runNativeSlashCommand(command);
+          return true;
+        case "terminal-required":
+          showTerminalRequiredAction(
+            command,
+            rawText,
+            composedText,
+            previousDraft,
+            previousAttachments,
+          );
+          return true;
+        case "insert-only":
+          return false;
+        case "unsupported":
+          showUnsupportedSlashCommand(command);
+          return true;
+        default:
+          showTerminalRequiredAction(
+            command,
+            rawText,
+            composedText,
+            previousDraft,
+            previousAttachments,
+          );
+          return true;
+      }
+    },
+    [
+      focusComposer,
+      recordChatCommandEvent,
+      runNativeSlashCommand,
+      setDraft,
+      showSlashCommandAttachmentAlert,
+      showTerminalRequiredAction,
+      showUnknownSlashCommand,
+      showUnsupportedSlashCommand,
+    ],
+  );
+
   const sendDraft = useCallback(() => {
     const text = buildCodexComposerMessage(draft, attachments);
     if (!text || connectionState !== "connected" || sending || uploading) {
@@ -687,30 +1188,27 @@ export function CodexChatSurface({
     }
     const previousDraft = draft;
     const previousAttachments = attachments;
-    setSending(true);
-    setDraft("");
-    setAttachments([]);
-    scrollToLatest(true);
-    try {
-      wsClient.sendInput(serverId, agentId, `${text}\n`);
-      setTimeout(() => {
-        void refreshConversation(false);
-        setSending(false);
-      }, 600);
-    } catch {
-      setDraft(previousDraft);
-      setAttachments(previousAttachments);
-      setSending(false);
+    const slashRequest = slashCommandRequestFromDraft(draft, slashCommands);
+    if (
+      slashRequest &&
+      routeSlashCommandSubmission(
+        slashRequest,
+        text,
+        previousDraft,
+        previousAttachments,
+      )
+    ) {
+      return;
     }
+    submitTextToCodex(text, previousDraft, previousAttachments);
   }, [
-    agentId,
     attachments,
     connectionState,
     draft,
-    refreshConversation,
-    scrollToLatest,
+    routeSlashCommandSubmission,
     sending,
-    serverId,
+    slashCommands,
+    submitTextToCodex,
     uploading,
   ]);
 
@@ -730,10 +1228,35 @@ export function CodexChatSurface({
     }
   }, [agentId, connectionState, refreshConversation, sending, serverId]);
 
-  const pickQuickCommand = useCallback((command: QuickCommand) => {
+  const pickSlashCommand = useCallback((command: CodexSlashCommand) => {
+    if (attachments.length > 0) {
+      setDraft(`${command.value} `);
+      focusComposer();
+      return;
+    }
+    if (command.execution === "unsupported") {
+      showUnsupportedSlashCommand(command);
+      return;
+    }
+    if (command.execution === "chat-native" && !requiresSlashCommandArgs(command)) {
+      void runNativeSlashCommand(command);
+      return;
+    }
+    if (command.execution === "terminal-required" && !requiresSlashCommandArgs(command)) {
+      showTerminalRequiredAction(command, command.value, command.value, draft, attachments);
+      return;
+    }
     setDraft(`${command.value} `);
     focusComposer();
-  }, [focusComposer]);
+  }, [
+    attachments,
+    draft,
+    focusComposer,
+    runNativeSlashCommand,
+    setDraft,
+    showTerminalRequiredAction,
+    showUnsupportedSlashCommand,
+  ]);
 
   const handleUploadAttachment = useCallback(async () => {
     if (!canAttach) {
@@ -766,41 +1289,18 @@ export function CodexChatSurface({
     setAttachments((current) => current.filter((attachment) => attachment.id !== id));
   }, []);
 
-  const statusMeta = useMemo(() => {
-    if (connectionIssue) {
-      return connectionIssue.title;
-    }
-    if (connectionState === "connecting") {
-      return "Reconnecting";
-    }
-    if (connectionState !== "connected") {
-      return "Offline";
-    }
-    if (sending || agent?.status === "running" || events.some(isEventRunning)) {
-      return "Working";
-    }
-    if (conversation?.updated_at) {
-      return `Updated ${formatTime(conversation.updated_at)}`;
-    }
-    return "Live";
-  }, [agent?.status, connectionIssue, connectionState, conversation?.updated_at, events, sending]);
   const commandQuery = draft.trimStart();
-  const visibleQuickCommands = useMemo(() => {
-    if (!commandQuery.startsWith("/") || commandQuery === "/") {
-      return QUICK_COMMANDS;
-    }
-    const query = commandQuery.toLowerCase();
-    return QUICK_COMMANDS.filter(
-      (command) =>
-        command.value.startsWith(query) ||
-        command.title.toLowerCase().startsWith(query.slice(1)),
-    );
-  }, [commandQuery]);
+  const visibleSlashCommands = useMemo(() => {
+    return filterSlashCommands(slashCommands, commandQuery);
+  }, [commandQuery, slashCommands]);
   const showCommandMenu =
     connectionState === "connected" &&
     commandQuery.startsWith("/") &&
     !commandQuery.includes(" ");
-  const timelineItems = useMemo(() => buildZenTimeline(events), [events]);
+  const timelineItems = useMemo(
+    () => mergeChatCommandEventsIntoTimeline(buildZenTimeline(events), chatCommandEvents),
+    [chatCommandEvents, events],
+  );
   const showStopButton =
     connectionState === "connected" &&
     agent?.status === "running" &&
@@ -990,59 +1490,82 @@ export function CodexChatSurface({
               { backgroundColor: chrome.surface, borderColor: chrome.border },
             ]}
           >
-            {visibleQuickCommands.length > 0 ? (
-              visibleQuickCommands.map((command) => {
-                const selected = commandQuery === command.value;
-                return (
-                  <TouchableOpacity
-                    key={command.value}
-                    accessibilityLabel={`Insert ${command.value}`}
-                    style={[
-                      styles.quickCommandRow,
-                      selected && { backgroundColor: chrome.surfaceMuted },
-                    ]}
-                    onPress={() => pickQuickCommand(command)}
-                    activeOpacity={0.78}
-                  >
-                    <View
+            {visibleSlashCommands.length > 0 ? (
+              <ScrollView
+                style={styles.quickCommandScroller}
+                keyboardShouldPersistTaps="handled"
+                showsVerticalScrollIndicator={visibleSlashCommands.length > 5}
+              >
+                {visibleSlashCommands.map((command) => {
+                  const selected = commandQuery === command.value;
+                  const icon = slashCommandIcon(command.name);
+                  return (
+                    <TouchableOpacity
+                      key={command.value}
+                      accessibilityLabel={`${slashCommandRouteLabel(command)} ${command.value}`}
                       style={[
-                        styles.quickCommandIcon,
-                        { backgroundColor: chrome.surfaceMuted },
+                        styles.quickCommandRow,
+                        selected && { backgroundColor: chrome.surfaceMuted },
                       ]}
+                      onPress={() => pickSlashCommand(command)}
+                      activeOpacity={0.78}
                     >
-                      <Ionicons name={command.icon} size={15} color={chrome.accent} />
-                    </View>
-                    <View style={styles.quickCommandCopy}>
-                      <Text
-                        style={[styles.quickCommandTitle, { color: chrome.text }]}
-                        numberOfLines={1}
-                      >
-                        {command.title}
-                      </Text>
-                      <Text
+                      <View
                         style={[
-                          styles.quickCommandDescription,
-                          { color: chrome.textSubtle },
+                          styles.quickCommandIcon,
+                          { backgroundColor: chrome.surfaceMuted },
                         ]}
+                      >
+                        <Ionicons name={icon} size={15} color={chrome.accent} />
+                      </View>
+                      <View style={styles.quickCommandCopy}>
+                        <Text
+                          style={[styles.quickCommandTitle, { color: chrome.text }]}
+                          numberOfLines={1}
+                        >
+                          {command.title || slashCommandTitle(command.name)}
+                        </Text>
+                        <Text
+                          style={[
+                            styles.quickCommandDescription,
+                            { color: chrome.textSubtle },
+                          ]}
+                          numberOfLines={1}
+                        >
+                          {command.description}
+                        </Text>
+                      </View>
+                      <View
+                        style={[
+                          styles.quickCommandBadge,
+                          { borderColor: slashCommandRouteColor(command, chrome, theme) },
+                        ]}
+                      >
+                        <Text
+                          style={[
+                            styles.quickCommandBadgeText,
+                            { color: slashCommandRouteColor(command, chrome, theme) },
+                          ]}
+                          numberOfLines={1}
+                        >
+                          {slashCommandRouteLabel(command)}
+                        </Text>
+                      </View>
+                      <Text
+                        style={[styles.quickCommandValue, { color: chrome.textMuted }]}
                         numberOfLines={1}
                       >
-                        {command.description}
+                        {command.value}
                       </Text>
-                    </View>
-                    <Text
-                      style={[styles.quickCommandValue, { color: chrome.textMuted }]}
-                      numberOfLines={1}
-                    >
-                      {command.value}
-                    </Text>
-                    <Ionicons
-                      name="chevron-forward"
-                      size={14}
-                      color={chrome.textSubtle}
-                    />
-                  </TouchableOpacity>
-                );
-              })
+                      <Ionicons
+                        name="chevron-forward"
+                        size={14}
+                        color={chrome.textSubtle}
+                      />
+                    </TouchableOpacity>
+                  );
+                })}
+              </ScrollView>
             ) : (
               <View style={styles.quickCommandEmpty}>
                 <Ionicons name="search-outline" size={15} color={chrome.textSubtle} />
@@ -1224,6 +1747,572 @@ export function CodexChatSurface({
       </KeyboardAvoidingView>
     </View>
   );
+}
+
+function normalizeSlashCommands(commands: CodexSlashCommand[]) {
+  const seen = new Set<string>();
+  const normalized: CodexSlashCommand[] = [];
+  for (const command of commands) {
+    const name = command.name.trim().replace(/^\//, "");
+    const rawValue = command.value.trim();
+    const value = rawValue.length > 1 && rawValue.startsWith("/") ? rawValue : `/${name}`;
+    if (!name || !value.startsWith("/") || seen.has(value)) {
+      continue;
+    }
+    seen.add(value);
+    normalized.push({
+      value,
+      name,
+      title: command.title.trim() || slashCommandTitle(name),
+      description: command.description.trim(),
+      source: command.source,
+      ...normalizeSlashCommandCapability(name, command),
+    });
+  }
+  return normalized.length > 0 ? normalized : FALLBACK_SLASH_COMMANDS;
+}
+
+function slashCommandRequestFromDraft(
+  draft: string,
+  commands: CodexSlashCommand[],
+): SlashCommandRequest | null {
+  const trimmedStart = draft.trimStart();
+  if (!trimmedStart.startsWith("/")) {
+    return null;
+  }
+  const firstLine = trimmedStart.split(/\r?\n/, 1)[0] || "";
+  const match = /^\/([a-z][a-z0-9-]*)(?:\s|$)/.exec(firstLine);
+  if (!match) {
+    return null;
+  }
+  const name = match[1];
+  const command = commands.find((candidate) => candidate.name === name);
+  if (command) {
+    return { command, rawText: trimmedStart, known: true };
+  }
+  return {
+    command: {
+      value: `/${name}`,
+      name,
+      title: slashCommandTitle(name),
+      description: "Unknown Codex slash command",
+      source: "draft",
+      ...fallbackSlashCommandCapability(name),
+    },
+    rawText: trimmedStart,
+    known: false,
+  };
+}
+
+function requiresSlashCommandArgs(command: CodexSlashCommand) {
+  return (
+    command.input.kind === "inline-args" ||
+    command.input.kind === "freeform" ||
+    command.input.kind === "form"
+  );
+}
+
+function slashCommandHasArgs(rawText: string, command: CodexSlashCommand) {
+  const args = rawText.trimStart().slice(command.value.length).trim();
+  return args.length > 0;
+}
+
+function slashCommandTerminalText(command: CodexSlashCommand, rawText?: string) {
+  const text = rawText?.trim();
+  if (text?.startsWith(command.value)) {
+    return text;
+  }
+  return command.value;
+}
+
+function slashCommandTerminalMessage(command: CodexSlashCommand) {
+  if (command.interactive) {
+    return "This command can open Codex prompts, pickers, or terminal-only views. The chat renderer cannot represent that interaction yet.";
+  }
+  if (command.output.kind === "terminal") {
+    return "This command writes terminal-oriented output. Open it in Terminal for correct rendering, or send it anyway as a normal message.";
+  }
+  return "Zen does not have a native chat renderer for this command yet.";
+}
+
+function buildChatStatusCommandBody({
+  agent,
+  conversation,
+  connectionState,
+  connectionIssue,
+  slashCommands,
+}: {
+  agent?: Agent;
+  conversation: CodexConversation | null;
+  connectionState: ConnectionState;
+  connectionIssue?: ConnectionIssue | null;
+  slashCommands: CodexSlashCommand[];
+}) {
+  const nativeCommands = slashCommands.filter((command) => command.chat_supported).length;
+  const terminalCommands = slashCommands.filter((command) => command.terminal_supported).length;
+  const lines = [
+    `Connection: ${connectionState}${connectionIssue ? ` (${connectionIssue.title})` : ""}`,
+    `Agent: ${agent?.name || agent?.id || "unknown"}${agent?.status ? ` (${agent.status})` : ""}`,
+    `Project: ${agent?.project || conversation?.cwd || agent?.cwd || "unknown"}`,
+    `Transcript: ${conversation?.available ? "available" : conversation?.reason || "unavailable"}`,
+    `Events: ${conversation?.events.length ?? 0}`,
+    `Slash commands: ${slashCommands.length} discovered, ${nativeCommands} chat-native, ${terminalCommands} terminal-capable`,
+  ];
+  if (conversation?.updated_at) {
+    lines.splice(4, 0, `Updated: ${formatTime(conversation.updated_at)}`);
+  }
+  return lines.join("\n");
+}
+
+function latestAssistantMessageBody(events: CodexConversationEvent[]) {
+  for (let index = events.length - 1; index >= 0; index--) {
+    const event = events[index];
+    if (event.kind === "assistant_message" && event.body?.trim()) {
+      return event.body.trim();
+    }
+  }
+  return "";
+}
+
+function normalizeSlashCommandCapability(
+  name: string,
+  command: Partial<CodexSlashCommand>,
+): LocalSlashCommandCapability {
+  const fallback = fallbackSlashCommandCapability(name);
+  const execution =
+    typeof command.execution === "string" && command.execution.trim()
+      ? command.execution.trim()
+      : fallback.execution;
+  const terminalSupported =
+    typeof command.terminal_supported === "boolean"
+      ? command.terminal_supported
+      : fallback.terminal_supported;
+  return {
+    category:
+      typeof command.category === "string" && command.category.trim()
+        ? command.category.trim()
+        : fallback.category,
+    execution,
+    input: {
+      kind:
+        command.input?.kind && typeof command.input.kind === "string"
+          ? command.input.kind
+          : fallback.input.kind,
+      placeholder:
+        typeof command.input?.placeholder === "string"
+          ? command.input.placeholder
+          : fallback.input.placeholder,
+      picker:
+        typeof command.input?.picker === "string"
+          ? command.input.picker
+          : fallback.input.picker,
+    },
+    output: {
+      kind:
+        command.output?.kind && typeof command.output.kind === "string"
+          ? command.output.kind
+          : fallback.output.kind,
+    },
+    interactive:
+      typeof command.interactive === "boolean"
+        ? command.interactive
+        : fallback.interactive,
+    chat_supported:
+      typeof command.chat_supported === "boolean"
+        ? command.chat_supported
+        : fallback.chat_supported,
+    terminal_supported: terminalSupported,
+  };
+}
+
+function fallbackSlashCommandCapability(name: string): LocalSlashCommandCapability {
+  switch (name) {
+    case "status":
+      return chatSlashCapability("session", "status-card");
+    case "diff":
+      return chatSlashCapability("tools", "diff");
+    case "copy":
+      return chatSlashCapability("tools", "none");
+    case "debug-m-drop":
+    case "debug-m-update":
+      return {
+        category: "debug",
+        execution: "unsupported",
+        input: { kind: "none" },
+        output: { kind: "terminal" },
+        interactive: true,
+        chat_supported: false,
+        terminal_supported: false,
+      };
+    case "debug-config":
+    case "test-approval":
+      return terminalSlashCapability("debug", { kind: "none" }, true);
+    default:
+      return terminalSlashCapability(
+        slashCommandDefaultCategory(name),
+        slashCommandDefaultInput(name),
+        slashCommandDefaultsToInteractive(name),
+      );
+  }
+}
+
+function chatSlashCapability(
+  category: string,
+  outputKind: CodexSlashCommand["output"]["kind"],
+): LocalSlashCommandCapability {
+  return {
+    category,
+    execution: "chat-native",
+    input: { kind: "none" },
+    output: { kind: outputKind },
+    interactive: false,
+    chat_supported: true,
+    terminal_supported: true,
+  };
+}
+
+function terminalSlashCapability(
+  category: string,
+  input: CodexSlashCommand["input"],
+  interactive: boolean,
+): LocalSlashCommandCapability {
+  return {
+    category,
+    execution: "terminal-required",
+    input,
+    output: { kind: input.kind === "picker" ? "management-screen" : "terminal" },
+    interactive,
+    chat_supported: false,
+    terminal_supported: true,
+  };
+}
+
+function slashCommandDefaultCategory(name: string) {
+  switch (name) {
+    case "model":
+    case "fast":
+    case "ide":
+    case "permissions":
+    case "keymap":
+    case "setup-default-sandbox":
+    case "sandbox-add-read-dir":
+    case "vim":
+    case "experimental":
+    case "title":
+    case "statusline":
+    case "theme":
+    case "pets":
+    case "personality":
+    case "realtime":
+    case "settings":
+      return "settings";
+    case "resume":
+    case "fork":
+    case "side":
+    case "agent":
+    case "subagents":
+    case "btw":
+      return "navigation";
+    case "memories":
+    case "skills":
+    case "hooks":
+    case "mcp":
+    case "apps":
+    case "plugins":
+    case "feedback":
+      return "management";
+    case "logout":
+    case "quit":
+    case "exit":
+      return "danger";
+    case "review":
+    case "init":
+    case "mention":
+    case "raw":
+    case "rollout":
+    case "ps":
+    case "stop":
+      return "tools";
+    case "approve":
+    case "rename":
+    case "new":
+    case "compact":
+    case "plan":
+    case "goal":
+    case "clear":
+      return "session";
+    default:
+      return name.startsWith("debug-") ? "debug" : "unknown";
+  }
+}
+
+function slashCommandDefaultInput(name: string): CodexSlashCommand["input"] {
+  switch (name) {
+    case "fast":
+      return { kind: "inline-args", placeholder: "optional speed mode" };
+    case "model":
+    case "permissions":
+    case "resume":
+    case "fork":
+    case "mention":
+    case "theme":
+    case "pets":
+    case "personality":
+    case "agent":
+    case "subagents":
+      return { kind: "picker", picker: name };
+    case "sandbox-add-read-dir":
+      return { kind: "inline-args", placeholder: "<absolute_path>" };
+    case "mcp":
+      return { kind: "inline-args", placeholder: "verbose" };
+    case "rename":
+      return { kind: "freeform", placeholder: "new thread title" };
+    case "goal":
+      return { kind: "freeform", placeholder: "goal text" };
+    case "side":
+    case "btw":
+      return { kind: "freeform", placeholder: "side conversation prompt" };
+    default:
+      return { kind: "none" };
+  }
+}
+
+function slashCommandDefaultsToInteractive(name: string) {
+  const input = slashCommandDefaultInput(name);
+  if (input.kind === "picker" || input.kind === "form") {
+    return true;
+  }
+  return [
+    "model",
+    "fast",
+    "ide",
+    "permissions",
+    "keymap",
+    "setup-default-sandbox",
+    "vim",
+    "experimental",
+    "memories",
+    "skills",
+    "hooks",
+    "new",
+    "resume",
+    "fork",
+    "side",
+    "raw",
+    "mention",
+    "title",
+    "statusline",
+    "theme",
+    "pets",
+    "mcp",
+    "apps",
+    "plugins",
+    "logout",
+    "quit",
+    "exit",
+    "feedback",
+    "clear",
+    "personality",
+    "realtime",
+    "settings",
+    "test-approval",
+    "agent",
+    "subagents",
+    "btw",
+  ].includes(name);
+}
+
+function filterSlashCommands(commands: CodexSlashCommand[], commandQuery: string) {
+  if (!commandQuery.startsWith("/")) {
+    return [];
+  }
+  const query = commandQuery.slice(1).toLowerCase();
+  if (!query) {
+    return commands;
+  }
+
+  return commands
+    .map((command, index) => {
+      const name = command.name.toLowerCase();
+      const value = command.value.toLowerCase();
+      const title = command.title.toLowerCase();
+      const description = command.description.toLowerCase();
+      let score = Number.POSITIVE_INFINITY;
+      if (name === query || value === `/${query}`) {
+        score = 0;
+      } else if (name.startsWith(query) || value.startsWith(`/${query}`)) {
+        score = 1;
+      } else if (title.startsWith(query)) {
+        score = 2;
+      } else if (name.includes(query) || value.includes(query)) {
+        score = 3;
+      } else if (title.includes(query)) {
+        score = 4;
+      } else if (description.includes(query)) {
+        score = 5;
+      }
+      return { command, index, score };
+    })
+    .filter((entry) => Number.isFinite(entry.score))
+    .sort((a, b) => a.score - b.score || a.index - b.index)
+    .map((entry) => entry.command);
+}
+
+function slashCommandTitle(name: string) {
+  return name
+    .split("-")
+    .filter(Boolean)
+    .map((part) => {
+      const lower = part.toLowerCase();
+      if (lower === "ide" || lower === "mcp") {
+        return lower.toUpperCase();
+      }
+      return `${part.slice(0, 1).toUpperCase()}${part.slice(1)}`;
+    })
+    .join(" ");
+}
+
+function slashCommandIcon(name: string): IoniconName {
+  switch (name) {
+    case "model":
+      return "hardware-chip-outline";
+    case "fast":
+      return "flash-outline";
+    case "ide":
+      return "code-slash-outline";
+    case "permissions":
+    case "approve":
+    case "test-approval":
+      return "shield-checkmark-outline";
+    case "keymap":
+      return "keypad-outline";
+    case "setup-default-sandbox":
+    case "sandbox-add-read-dir":
+      return "lock-open-outline";
+    case "vim":
+      return "create-outline";
+    case "experimental":
+      return "flask-outline";
+    case "memories":
+      return "library-outline";
+    case "skills":
+      return "sparkles-outline";
+    case "hooks":
+      return "link-outline";
+    case "review":
+      return "search-outline";
+    case "rename":
+    case "title":
+      return "text-outline";
+    case "new":
+      return "add-circle-outline";
+    case "resume":
+      return "play-forward-outline";
+    case "fork":
+    case "side":
+      return "git-branch-outline";
+    case "init":
+      return "document-text-outline";
+    case "compact":
+      return "contract-outline";
+    case "plan":
+      return "list-outline";
+    case "goal":
+      return "flag-outline";
+    case "copy":
+      return "copy-outline";
+    case "raw":
+      return "reorder-four-outline";
+    case "diff":
+      return "git-compare-outline";
+    case "mention":
+      return "at-outline";
+    case "status":
+      return "pulse-outline";
+    case "debug-config":
+    case "debug-m-drop":
+    case "debug-m-update":
+      return "bug-outline";
+    case "statusline":
+      return "reader-outline";
+    case "theme":
+      return "color-palette-outline";
+    case "pets":
+      return "happy-outline";
+    case "mcp":
+      return "server-outline";
+    case "apps":
+    case "plugins":
+      return "extension-puzzle-outline";
+    case "logout":
+    case "quit":
+    case "exit":
+      return "exit-outline";
+    case "feedback":
+      return "chatbox-ellipses-outline";
+    case "rollout":
+      return "map-outline";
+    case "ps":
+      return "layers-outline";
+    case "stop":
+      return "stop-circle-outline";
+    case "clear":
+      return "trash-outline";
+    case "personality":
+      return "person-circle-outline";
+    case "realtime":
+    case "settings":
+      return "mic-outline";
+    case "agent":
+    case "subagents":
+      return "people-outline";
+    case "btw":
+      return "chatbubble-ellipses-outline";
+    default:
+      return "terminal-outline";
+  }
+}
+
+function slashCommandRouteLabel(command: CodexSlashCommand) {
+  if (command.execution === "unsupported" || !command.terminal_supported && !command.chat_supported) {
+    return "Unsupported";
+  }
+  if (command.execution === "chat-native" || command.execution === "timeline-output") {
+    if (command.output.kind === "diff") {
+      return "Diff";
+    }
+    if (command.output.kind === "status-card") {
+      return "Status";
+    }
+    return "Chat";
+  }
+  if (command.interactive || command.input.kind === "picker" || command.input.kind === "form") {
+    return "Interactive";
+  }
+  if (command.execution === "insert-only") {
+    return "Insert";
+  }
+  return "Terminal";
+}
+
+function slashCommandRouteColor(
+  command: CodexSlashCommand,
+  chrome: TerminalThemeChrome,
+  theme: TerminalThemePalette,
+) {
+  if (command.execution === "unsupported" || !command.terminal_supported && !command.chat_supported) {
+    return theme.red;
+  }
+  if (command.execution === "chat-native" || command.execution === "timeline-output") {
+    return theme.green;
+  }
+  if (command.interactive || command.input.kind === "picker" || command.input.kind === "form") {
+    return theme.yellow;
+  }
+  if (command.execution === "insert-only") {
+    return theme.cyan;
+  }
+  return chrome.textSubtle;
 }
 
 function ZenTimelineItemView({
@@ -1745,6 +2834,33 @@ function buildZenTimeline(events: CodexConversationEvent[]): ZenTimelineItem[] {
   }
   flushExploration();
   return items;
+}
+
+function mergeChatCommandEventsIntoTimeline(
+  timelineItems: ZenTimelineItem[],
+  commandEvents: ChatCommandEvent[],
+): ZenTimelineItem[] {
+  if (commandEvents.length === 0) {
+    return timelineItems;
+  }
+  return [
+    ...timelineItems,
+    ...commandEvents.map((event) => ({
+      type: "activity" as const,
+      id: event.id,
+      timestamp: event.createdAt,
+      title: event.title,
+      tone: event.tone,
+      icon:
+        event.tone === "failed"
+          ? "alert-circle-outline"
+          : event.tone === "success"
+            ? slashCommandIcon(event.command.name)
+            : "terminal-outline",
+      detail: event.detail,
+      body: event.body,
+    })),
+  ];
 }
 
 function activityFromEvent(event: CodexConversationEvent): ZenTimelineItem | null {
@@ -4707,6 +5823,9 @@ const styles = StyleSheet.create({
     borderWidth: StyleSheet.hairlineWidth,
     overflow: "hidden",
   },
+  quickCommandScroller: {
+    maxHeight: 330,
+  },
   quickCommandRow: {
     minHeight: 50,
     flexDirection: "row",
@@ -4742,6 +5861,20 @@ const styles = StyleSheet.create({
     fontSize: 11,
     lineHeight: 15,
     fontFamily: Typography.terminalFont,
+  },
+  quickCommandBadge: {
+    maxWidth: 86,
+    minHeight: 22,
+    borderRadius: 8,
+    borderWidth: StyleSheet.hairlineWidth,
+    paddingHorizontal: 7,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  quickCommandBadgeText: {
+    fontSize: 10,
+    lineHeight: 13,
+    fontFamily: Typography.uiFontMedium,
   },
   quickCommandEmpty: {
     minHeight: 44,

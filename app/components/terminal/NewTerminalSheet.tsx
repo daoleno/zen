@@ -1,12 +1,8 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import {
   Keyboard,
-  KeyboardAvoidingView,
-  Modal,
-  Platform,
   ScrollView,
   StyleSheet,
-  Text,
   TextInput,
   TouchableOpacity,
   View,
@@ -17,6 +13,7 @@ import { AgentKindIcon } from './AgentKindIcon';
 import { DirectoryPicker } from './DirectoryPicker';
 import type { AgentKind } from '../../services/agentPresentation';
 import { CLAUDE_CODE_COMMAND, CODEX_COMMAND } from '../../services/agentCommands';
+import { AppButton, AppText, BottomSheetFrame, IconButton } from '../ui';
 
 type ServerOption = {
   id: string;
@@ -121,179 +118,165 @@ export function NewTerminalSheet({
   };
 
   const sheetContent = (
-    <>
-        <TouchableOpacity
-          style={styles.backdrop}
-          activeOpacity={1}
-          onPress={handleClose}
-        />
-        <View style={styles.card}>
-          <View style={styles.handle} />
-
-          <ScrollView
-            showsVerticalScrollIndicator={false}
-            keyboardShouldPersistTaps="always"
-            keyboardDismissMode="none"
-            bounces={false}
-          >
-            {/* Server selector when multiple servers */}
-            {serverOptions.length > 1 ? (
-              <View style={styles.serverSection}>
-                <ScrollView horizontal showsHorizontalScrollIndicator={false}>
-                  <View style={styles.serverRow}>
-                    {serverOptions.map(server => {
-                      const active = server.id === selectedServerId;
-                      return (
-                        <TouchableOpacity
-                          key={server.id}
-                          style={[styles.serverChip, active && styles.serverChipActive]}
-                          onPress={() => onSelectServer?.(server.id)}
-                          activeOpacity={0.84}
-                        >
-                          <Text style={[styles.serverChipText, active && styles.serverChipTextActive]}>
-                            {server.name}
-                          </Text>
-                        </TouchableOpacity>
-                      );
-                    })}
-                  </View>
-                </ScrollView>
+    <BottomSheetFrame
+      visible={visible}
+      onClose={handleClose}
+      maxHeight="68%"
+      cardStyle={styles.sheetCard}
+      keyboardAvoiding
+    >
+      <ScrollView
+        showsVerticalScrollIndicator={false}
+        keyboardShouldPersistTaps="always"
+        keyboardDismissMode="none"
+        bounces={false}
+      >
+        {serverOptions.length > 1 ? (
+          <View style={styles.serverSection}>
+            <ScrollView horizontal showsHorizontalScrollIndicator={false}>
+              <View style={styles.serverRow}>
+                {serverOptions.map(server => {
+                  const active = server.id === selectedServerId;
+                  return (
+                    <TouchableOpacity
+                      key={server.id}
+                      style={[styles.serverChip, active && styles.serverChipActive]}
+                      onPress={() => onSelectServer?.(server.id)}
+                      activeOpacity={0.84}
+                    >
+                      <AppText variant="label" tone={active ? 'primary' : 'secondary'}>
+                        {server.name}
+                      </AppText>
+                    </TouchableOpacity>
+                  );
+                })}
               </View>
-            ) : null}
+            </ScrollView>
+          </View>
+        ) : null}
 
-            {/* Preset cards */}
-            <View style={styles.presetList}>
-              {PRESETS.map(preset => (
-                <TouchableOpacity
-                  key={preset.key}
-                  style={[
-                    styles.presetCard,
-                    activePreset === preset.key && styles.presetCardActive,
-                    submitting && styles.presetCardDisabled,
-                  ]}
-                  onPress={() => handlePresetTap(preset)}
-                  disabled={!canSubmit}
-                  activeOpacity={0.78}
-                >
-                  <AgentKindIcon kind={preset.kind} size={18} />
-                  <View style={styles.presetCardText}>
-                    <Text style={styles.presetLabel}>{preset.label}</Text>
-                  </View>
-                  <Ionicons name="chevron-forward" size={14} color={colors.textSecondary} />
-                </TouchableOpacity>
-              ))}
+        <View style={styles.presetList}>
+          {PRESETS.map(preset => (
+            <TouchableOpacity
+              key={preset.key}
+              style={[
+                styles.presetCard,
+                activePreset === preset.key && styles.presetCardActive,
+                submitting && styles.presetCardDisabled,
+              ]}
+              onPress={() => handlePresetTap(preset)}
+              disabled={!canSubmit}
+              activeOpacity={0.78}
+            >
+              <AgentKindIcon kind={preset.kind} size={18} />
+              <View style={styles.presetCardText}>
+                <AppText variant="button">{preset.label}</AppText>
+              </View>
+              <Ionicons name="chevron-forward" size={14} color={colors.textSecondary} />
+            </TouchableOpacity>
+          ))}
+        </View>
+
+        <TouchableOpacity
+          style={styles.advancedToggle}
+          onPress={() => {
+            if (advanced) Keyboard.dismiss();
+            setAdvanced(!advanced);
+          }}
+          activeOpacity={0.82}
+        >
+          <Ionicons
+            name={advanced ? 'chevron-down' : 'chevron-forward'}
+            size={14}
+            color={colors.textSecondary}
+          />
+          <AppText variant="caption" tone="secondary">
+            Advanced
+          </AppText>
+        </TouchableOpacity>
+
+        {advanced ? (
+          <View style={styles.advancedSection}>
+            <AppText variant="label" tone="secondary" style={styles.fieldLabel}>
+              Working Directory
+            </AppText>
+            <View style={styles.inputRow}>
+              <TextInput
+                style={[styles.input, styles.inputFlex]}
+                value={cwd}
+                onChangeText={setCwd}
+                placeholder="Leave empty for shell default"
+                placeholderTextColor={colors.textSecondary}
+                autoCapitalize="none"
+                autoCorrect={false}
+                autoComplete="off"
+              />
+              {selectedServerId ? (
+                <IconButton
+                  icon="folder-open-outline"
+                  size={38}
+                  iconSize={20}
+                  tone="input"
+                  style={styles.folderBtn}
+                  onPress={() => {
+                    Keyboard.dismiss();
+                    setDirPickerOpen(true);
+                  }}
+                />
+              ) : null}
             </View>
 
-            {/* Advanced toggle */}
-            <TouchableOpacity
-              style={styles.advancedToggle}
-              onPress={() => {
-                if (advanced) Keyboard.dismiss();
-                setAdvanced(!advanced);
-              }}
-              activeOpacity={0.82}
-            >
-              <Ionicons
-                name={advanced ? 'chevron-down' : 'chevron-forward'}
-                size={14}
-                color={colors.textSecondary}
-              />
-              <Text style={styles.advancedToggleText}>Advanced</Text>
-            </TouchableOpacity>
+            <AppText variant="label" tone="secondary" style={styles.fieldLabel}>
+              Command
+            </AppText>
+            <TextInput
+              style={styles.input}
+              value={command}
+              onChangeText={setCommand}
+              placeholder="e.g. claude --dangerously-skip-permissions"
+              placeholderTextColor={colors.textSecondary}
+              autoCapitalize="none"
+              autoCorrect={false}
+              autoComplete="off"
+            />
 
-            {/* Advanced fields */}
-            {advanced ? (
-              <View style={styles.advancedSection}>
-                <Text style={styles.fieldLabel}>Working Directory</Text>
-                <View style={styles.inputRow}>
-                  <TextInput
-                    style={[styles.input, styles.inputFlex]}
-                    value={cwd}
-                    onChangeText={setCwd}
-                    placeholder="Leave empty for shell default"
-                    placeholderTextColor={colors.textSecondary}
-                    autoCapitalize="none"
-                    autoCorrect={false}
-                    autoComplete="off"
-                  />
-                  {selectedServerId ? (
-                    <TouchableOpacity
-                      style={styles.folderBtn}
-                      onPress={() => {
-                        Keyboard.dismiss();
-                        setDirPickerOpen(true);
-                      }}
-                      activeOpacity={0.7}
-                    >
-                      <Ionicons name="folder-open-outline" size={20} color={colors.textSecondary} />
-                    </TouchableOpacity>
-                  ) : null}
-                </View>
+            <AppText variant="label" tone="secondary" style={styles.fieldLabel}>
+              Window Title
+            </AppText>
+            <TextInput
+              style={styles.input}
+              value={name}
+              onChangeText={setName}
+              placeholder="Optional"
+              placeholderTextColor={colors.textSecondary}
+              autoCapitalize="none"
+              autoCorrect={false}
+              autoComplete="off"
+            />
 
-                <Text style={styles.fieldLabel}>Command</Text>
-                <TextInput
-                  style={styles.input}
-                  value={command}
-                  onChangeText={setCommand}
-                  placeholder="e.g. claude --dangerously-skip-permissions"
-                  placeholderTextColor={colors.textSecondary}
-                  autoCapitalize="none"
-                  autoCorrect={false}
-                  autoComplete="off"
-                />
+            <AppButton
+              label={submitting ? 'Starting...' : 'Launch'}
+              variant="primary"
+              onPress={handleAdvancedSubmit}
+              disabled={!canSubmit}
+              style={styles.launchBtn}
+            />
+          </View>
+        ) : null}
 
-                <Text style={styles.fieldLabel}>Window Title</Text>
-                <TextInput
-                  style={styles.input}
-                  value={name}
-                  onChangeText={setName}
-                  placeholder="Optional"
-                  placeholderTextColor={colors.textSecondary}
-                  autoCapitalize="none"
-                  autoCorrect={false}
-                  autoComplete="off"
-                />
-
-                <TouchableOpacity
-                  style={[styles.launchBtn, !canSubmit && styles.launchBtnDisabled]}
-                  onPress={handleAdvancedSubmit}
-                  disabled={!canSubmit}
-                  activeOpacity={0.82}
-                >
-                  <Text style={styles.launchBtnText}>
-                    {submitting ? 'Starting…' : 'Launch'}
-                  </Text>
-                </TouchableOpacity>
-              </View>
-            ) : null}
-
-            {/* Cancel */}
-            <TouchableOpacity
-              style={styles.cancelBtn}
-              onPress={handleClose}
-              activeOpacity={0.82}
-            >
-              <Text style={styles.cancelBtnText}>Cancel</Text>
-            </TouchableOpacity>
-          </ScrollView>
-        </View>
-    </>
+        <AppButton
+          label="Cancel"
+          variant="ghost"
+          onPress={handleClose}
+          style={styles.cancelBtn}
+        />
+      </ScrollView>
+    </BottomSheetFrame>
   );
 
   return (
-    <Modal
-      visible={visible}
-      transparent
-      animationType="fade"
-      onRequestClose={handleClose}
-    >
-      {Platform.OS === 'ios' ? (
-        <KeyboardAvoidingView style={styles.root} behavior="padding">
-          {sheetContent}
-        </KeyboardAvoidingView>
-      ) : (
-        <View style={styles.root}>{sheetContent}</View>
-      )}
+    <>
+      {sheetContent}
 
       {selectedServerId ? (
         <DirectoryPicker
@@ -307,38 +290,16 @@ export function NewTerminalSheet({
           onClose={() => setDirPickerOpen(false)}
         />
       ) : null}
-    </Modal>
+    </>
   );
 }
 
 function createStyles(colors: typeof Colors) {
   return StyleSheet.create({
-  root: {
-    flex: 1,
-    justifyContent: 'flex-end',
-  },
-  backdrop: {
-    ...StyleSheet.absoluteFillObject,
-    backgroundColor: colors.modalBackdrop,
-  },
-  card: {
-    maxHeight: '68%',
-    borderTopLeftRadius: 28,
-    borderTopRightRadius: 28,
+  sheetCard: {
     paddingHorizontal: 14,
     paddingTop: 10,
     paddingBottom: 18,
-    backgroundColor: colors.modalSurface,
-    borderTopWidth: 1,
-    borderColor: colors.borderSubtle,
-  },
-  handle: {
-    alignSelf: 'center',
-    width: 42,
-    height: 3,
-    borderRadius: 2,
-    backgroundColor: colors.borderStrong,
-    marginBottom: 10,
   },
 
   // Server chips
@@ -361,14 +322,6 @@ function createStyles(colors: typeof Colors) {
   serverChipActive: {
     backgroundColor: colors.surfaceActive,
     borderColor: colors.accent,
-  },
-  serverChipText: {
-    color: colors.textSecondary,
-    fontSize: 12,
-    fontFamily: Typography.uiFontMedium,
-  },
-  serverChipTextActive: {
-    color: colors.textPrimary,
   },
 
   // Preset cards
@@ -395,12 +348,6 @@ function createStyles(colors: typeof Colors) {
   presetCardText: {
     flex: 1,
   },
-  presetLabel: {
-    color: colors.textPrimary,
-    fontSize: 14,
-    lineHeight: 18,
-    fontFamily: Typography.uiFontMedium,
-  },
 
   // Advanced
   advancedToggle: {
@@ -410,19 +357,11 @@ function createStyles(colors: typeof Colors) {
     marginTop: 8,
     paddingVertical: 6,
   },
-  advancedToggleText: {
-    color: colors.textSecondary,
-    fontSize: 12,
-    fontFamily: Typography.uiFont,
-  },
   advancedSection: {
     marginTop: 4,
     gap: 4,
   },
   fieldLabel: {
-    color: colors.textSecondary,
-    fontSize: 12,
-    fontFamily: Typography.uiFontMedium,
     marginTop: 8,
     marginBottom: 4,
   },
@@ -446,46 +385,19 @@ function createStyles(colors: typeof Colors) {
     borderColor: colors.borderSubtle,
   },
   folderBtn: {
-    width: 38,
-    minHeight: 38,
-    borderRadius: 10,
-    backgroundColor: colors.inputBackground,
-    borderWidth: StyleSheet.hairlineWidth,
-    borderColor: colors.borderSubtle,
-    alignItems: 'center',
-    justifyContent: 'center',
     alignSelf: 'stretch',
   },
   launchBtn: {
-    height: 36,
+    minHeight: 36,
     borderRadius: 10,
-    alignItems: 'center',
-    justifyContent: 'center',
-    backgroundColor: colors.accent,
     marginTop: 10,
-  },
-  launchBtnDisabled: {
-    opacity: 0.5,
-  },
-  launchBtnText: {
-    color: colors.textOnAccent,
-    fontSize: 13,
-    fontFamily: Typography.uiFontMedium,
   },
 
   // Cancel
   cancelBtn: {
-    height: 34,
+    minHeight: 34,
     borderRadius: 10,
-    alignItems: 'center',
-    justifyContent: 'center',
     marginTop: 8,
-    backgroundColor: 'transparent',
-  },
-  cancelBtnText: {
-    color: colors.textSecondary,
-    fontSize: 13,
-    fontFamily: Typography.uiFontMedium,
   },
   });
 }

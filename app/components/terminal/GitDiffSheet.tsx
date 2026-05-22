@@ -17,6 +17,7 @@ import {
   buildTerminalChrome,
   type TerminalThemePalette,
 } from "../../constants/terminalThemes";
+import { NativeSegmentedControl } from "../ui";
 import type {
   GitDiffContentSnapshot,
   GitDiffFileInfo,
@@ -885,43 +886,17 @@ function SegmentedControl({
   theme: TerminalThemePalette;
 }) {
   return (
-    <View
-      style={[
-        styles.segmented,
-        {
-          backgroundColor: chrome.surface,
-          borderColor: chrome.border,
-        },
-      ]}
-    >
-      {options.map((option) => {
-        const active = option.value === selectedValue;
-        return (
-          <TouchableOpacity
-            key={option.value}
-            style={[
-              styles.segmentButton,
-              active
-                ? {
-                    backgroundColor: withAlpha(theme.cursor, 0.16),
-                  }
-                : null,
-            ]}
-            onPress={() => onSelect(option.value)}
-            activeOpacity={0.82}
-          >
-            <Text
-              style={[
-                styles.segmentButtonText,
-                { color: active ? chrome.text : chrome.textMuted },
-              ]}
-            >
-              {option.label}
-            </Text>
-          </TouchableOpacity>
-        );
-      })}
-    </View>
+    <NativeSegmentedControl
+      options={options}
+      selectedValue={selectedValue}
+      onSelect={onSelect}
+      tintColor={withAlpha(theme.cursor, 0.72)}
+      appearance="dark"
+      style={{
+        backgroundColor: chrome.surface,
+        borderColor: chrome.border,
+      }}
+    />
   );
 }
 
@@ -1883,27 +1858,6 @@ const styles = StyleSheet.create({
   collapseAllText: {
     fontSize: 10,
     lineHeight: 12,
-    fontFamily: Typography.uiFontMedium,
-  },
-  segmented: {
-    minHeight: 34,
-    borderRadius: 12,
-    borderWidth: StyleSheet.hairlineWidth,
-    padding: 3,
-    flexDirection: "row",
-    gap: 3,
-  },
-  segmentButton: {
-    flex: 1,
-    minHeight: 26,
-    borderRadius: 9,
-    alignItems: "center",
-    justifyContent: "center",
-    paddingHorizontal: 8,
-  },
-  segmentButtonText: {
-    fontSize: 12,
-    lineHeight: 16,
     fontFamily: Typography.uiFontMedium,
   },
   contentPad: {

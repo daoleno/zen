@@ -16,10 +16,92 @@ import {
 
 type MessageHandler = (data: any) => void;
 
+function normalizeCodexSlashCommandInput(value: any): CodexSlashCommandInput {
+  const input = value && typeof value === "object" ? value : {};
+  return {
+    kind:
+      typeof input.kind === "string" && input.kind
+        ? input.kind
+        : "",
+    placeholder:
+      typeof input.placeholder === "string" ? input.placeholder : undefined,
+    picker: typeof input.picker === "string" ? input.picker : undefined,
+  };
+}
+
+function normalizeCodexSlashCommandOutput(value: any): CodexSlashCommandOutput {
+  const output = value && typeof value === "object" ? value : {};
+  return {
+    kind:
+      typeof output.kind === "string" && output.kind
+        ? output.kind
+        : "",
+  };
+}
+
 export interface CodexAssetPreview {
   path: string;
   content_type: string;
   data_url: string;
+}
+
+export interface CodexSlashCommand {
+  value: string;
+  name: string;
+  title: string;
+  description: string;
+  source?: string;
+  category: CodexSlashCommandCategory;
+  execution: CodexSlashCommandExecution;
+  input: CodexSlashCommandInput;
+  output: CodexSlashCommandOutput;
+  interactive: boolean;
+  chat_supported: boolean;
+  terminal_supported: boolean;
+}
+
+export type CodexSlashCommandCategory =
+  | "session"
+  | "navigation"
+  | "settings"
+  | "tools"
+  | "management"
+  | "debug"
+  | "danger"
+  | "unknown"
+  | string;
+
+export type CodexSlashCommandExecution =
+  | "chat-native"
+  | "timeline-output"
+  | "terminal-required"
+  | "insert-only"
+  | "unsupported"
+  | string;
+
+export interface CodexSlashCommandInput {
+  kind: "none" | "inline-args" | "form" | "picker" | "freeform" | string;
+  placeholder?: string;
+  picker?: string;
+}
+
+export interface CodexSlashCommandOutput {
+  kind:
+    | "none"
+    | "markdown"
+    | "monospace-log"
+    | "diff"
+    | "status-card"
+    | "management-screen"
+    | "terminal"
+    | string;
+}
+
+export interface CodexSlashCommandSnapshot {
+  generated_at?: string;
+  source?: string;
+  version?: string;
+  commands: CodexSlashCommand[];
 }
 
 interface ConnectionMeta {
@@ -681,6 +763,85 @@ class MultiServerWebSocketClient {
         command: options.command,
         name: options.name,
         started_at: options.startedAt,
+      });
+    });
+  }
+
+  getCodexSlashCommands(serverId: string) {
+    const requestId = `${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
+
+    return new Promise<CodexSlashCommandSnapshot>((resolve, reject) => {
+      const cleanup = () => {
+        if (timer) clearTimeout(timer);
+        this.off("codex_slash_commands", handleCommands);
+        this.off("error", handleError);
+      };
+
+      const handleCommands = (payload: any) => {
+        if (payload.serverId !== serverId || payload.request_id !== requestId) {
+          return;
+        }
+        cleanup();
+        const commands = Array.isArray(payload.commands)
+          ? payload.commands
+              .map((command: any) => ({
+                value: typeof command.value === "string" ? command.value : "",
+                name: typeof command.name === "string" ? command.name : "",
+                title: typeof command.title === "string" ? command.title : "",
+                description:
+                  typeof command.description === "string"
+                    ? command.description
+                    : "",
+                source: typeof command.source === "string" ? command.source : undefined,
+                category:
+                  typeof command.category === "string" && command.category
+                    ? command.category
+                    : "",
+                execution:
+                  typeof command.execution === "string" && command.execution
+                    ? command.execution
+                    : "",
+                input: normalizeCodexSlashCommandInput(command.input),
+                output: normalizeCodexSlashCommandOutput(command.output),
+                interactive: Boolean(command.interactive),
+                chat_supported: Boolean(command.chat_supported),
+                terminal_supported:
+                  typeof command.terminal_supported === "boolean"
+                    ? command.terminal_supported
+                    : command.execution !== "unsupported",
+              }))
+              .filter(
+                (command: CodexSlashCommand) =>
+                  command.value.startsWith("/") && command.name.length > 0,
+              )
+          : [];
+        resolve({
+          generated_at:
+            typeof payload.generated_at === "string" ? payload.generated_at : undefined,
+          source: typeof payload.source === "string" ? payload.source : undefined,
+          version: typeof payload.version === "string" ? payload.version : undefined,
+          commands,
+        });
+      };
+
+      const handleError = (payload: any) => {
+        if (payload.serverId !== serverId || payload.request_id !== requestId) {
+          return;
+        }
+        cleanup();
+        reject(new Error(payload.message || "Failed to load Codex commands."));
+      };
+
+      const timer = setTimeout(() => {
+        cleanup();
+        reject(new Error("Timed out while loading Codex commands."));
+      }, 10000);
+
+      this.on("codex_slash_commands", handleCommands);
+      this.on("error", handleError);
+      this.send(serverId, {
+        type: "codex_slash_commands",
+        request_id: requestId,
       });
     });
   }

@@ -698,7 +698,7 @@ function createMenuStyles(colors: typeof Colors) {
     justifyContent: "flex-end",
   },
   backdrop: {
-    ...StyleSheet.absoluteFillObject,
+    ...StyleSheet.absoluteFill,
     backgroundColor: colors.modalBackdrop,
   },
   card: {

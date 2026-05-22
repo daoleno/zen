@@ -1407,7 +1407,7 @@ function createStyles(colors: typeof Colors) {
     justifyContent: 'flex-end',
   },
   menuBackdrop: {
-    ...StyleSheet.absoluteFillObject,
+    ...StyleSheet.absoluteFill,
     backgroundColor: colors.modalBackdrop,
   },
   menuCard: {

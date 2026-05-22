@@ -1406,7 +1406,7 @@ function createStyles(colors: typeof Colors) {
     justifyContent: "center",
   },
   modalBackdrop: {
-    ...StyleSheet.absoluteFillObject,
+    ...StyleSheet.absoluteFill,
     backgroundColor: colors.modalBackdrop,
   },
   modalCard: {
@@ -1579,7 +1579,7 @@ function createStyles(colors: typeof Colors) {
     minHeight: 440,
   },
   scannerOverlay: {
-    ...StyleSheet.absoluteFillObject,
+    ...StyleSheet.absoluteFill,
   },
   scannerMaskTop: {
     flex: 1,

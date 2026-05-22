@@ -813,7 +813,7 @@ function createStyles(colors: typeof Colors) {
 
   // Modal
   modalRoot: { flex: 1, justifyContent: 'center', alignItems: 'center' },
-  modalBg: { ...StyleSheet.absoluteFillObject, backgroundColor: colors.modalBackdrop },
+  modalBg: { ...StyleSheet.absoluteFill, backgroundColor: colors.modalBackdrop },
   detailCard: {
     width: 240, borderRadius: 14, padding: 16,
     backgroundColor: colors.modalSurfaceAlt, borderWidth: StyleSheet.hairlineWidth, borderColor: colors.border,

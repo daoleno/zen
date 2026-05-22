@@ -1226,6 +1226,7 @@ export default function TerminalScreen() {
       onSwitchToTerminal={() => {
         void applyCodexRenderMode("terminal");
       }}
+      onOpenGitDiff={openGitDiff}
     />
   ) : (
     <>
@@ -2123,11 +2124,11 @@ const styles = StyleSheet.create({
     flex: 1,
   },
   popoverBackdrop: {
-    ...StyleSheet.absoluteFillObject,
+    ...StyleSheet.absoluteFill,
     backgroundColor: "transparent",
   },
   modalBackdrop: {
-    ...StyleSheet.absoluteFillObject,
+    ...StyleSheet.absoluteFill,
     backgroundColor: "rgba(6, 8, 12, 0.58)",
   },
   sheetCard: {

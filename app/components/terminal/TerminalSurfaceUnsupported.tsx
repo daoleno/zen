@@ -1,11 +1,12 @@
 import React, { forwardRef, useImperativeHandle, useMemo } from 'react';
-import { StyleSheet, Text, View } from 'react-native';
-import { Colors, Typography, useAppColors } from '../../constants/tokens';
+import { StyleSheet, View } from 'react-native';
+import { Colors, useAppColors } from '../../constants/tokens';
 import {
   DefaultTerminalThemeName,
   resolveTerminalTheme,
 } from '../../constants/terminalThemes';
 import type { TerminalSurfaceHandle, TerminalSurfaceProps } from './TerminalSurface.types';
+import { AppText } from '../ui';
 
 export const TerminalSurfaceUnsupported = forwardRef<TerminalSurfaceHandle, TerminalSurfaceProps>(({
   themeName = DefaultTerminalThemeName,
@@ -29,15 +30,15 @@ export const TerminalSurfaceUnsupported = forwardRef<TerminalSurfaceHandle, Term
   return (
     <View style={[styles.container, { backgroundColor: theme.background }]}>
       <View style={[styles.card, { borderColor: colors.borderStrong }]}>
-        <Text style={[styles.title, { color: theme.foreground }]}>
+        <AppText variant="title" style={{ color: theme.foreground }}>
           Terminal unavailable on this platform
-        </Text>
-        <Text style={[styles.body, { color: theme.foreground }]}>
+        </AppText>
+        <AppText variant="caption" style={[styles.body, { color: theme.foreground }]}>
           This build only ships the libghostty-backed terminal on Android.
-        </Text>
-        <Text style={[styles.caption, { color: colors.textSecondary }]}>
+        </AppText>
+        <AppText variant="caption" tone="secondary" style={styles.caption}>
           Web and iOS stay disabled until a libghostty-backed surface exists there.
-        </Text>
+        </AppText>
       </View>
     </View>
   );
@@ -60,23 +61,12 @@ function createStyles(colors: typeof Colors) {
     borderWidth: 1,
     backgroundColor: colors.bgSurface,
   },
-  title: {
-    fontSize: 16,
-    lineHeight: 22,
-    fontFamily: Typography.uiFontMedium,
-  },
   body: {
     marginTop: 8,
-    fontSize: 13,
-    lineHeight: 19,
-    fontFamily: Typography.uiFont,
     opacity: 0.86,
   },
   caption: {
     marginTop: 8,
-    fontSize: 12,
-    lineHeight: 18,
-    fontFamily: Typography.uiFont,
   },
   });
 }

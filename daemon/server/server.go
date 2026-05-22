@@ -399,6 +399,9 @@ func (s *Server) handleClientMessage(conn *websocket.Conn, msg []byte) {
 	case "codex_conversation":
 		s.handleCodexConversation(conn, raw)
 
+	case "codex_slash_commands":
+		s.handleCodexSlashCommands(conn, raw)
+
 	case "codex_asset":
 		s.handleCodexAsset(conn, raw)
 
@@ -713,6 +716,18 @@ func clientStartedAt(raw json.RawMessage) time.Time {
 		return parsed.UTC()
 	}
 	return time.Time{}
+}
+
+func (s *Server) handleCodexSlashCommands(conn *websocket.Conn, raw clientMessage) {
+	snapshot := discoverCodexSlashCommands(time.Now())
+	s.sendJSON(conn, map[string]any{
+		"type":         "codex_slash_commands",
+		"request_id":   raw.RequestID,
+		"generated_at": snapshot.GeneratedAt,
+		"source":       snapshot.Source,
+		"version":      snapshot.Version,
+		"commands":     snapshot.Commands,
+	})
 }
 
 func (s *Server) handleCodexAsset(conn *websocket.Conn, raw clientMessage) {

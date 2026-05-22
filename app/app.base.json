@@ -2,7 +2,7 @@
   "expo": {
     "name": "Zen",
     "slug": "zen",
-    "version": "0.1.2",
+    "version": "0.1.8",
     "orientation": "portrait",
     "icon": "./assets/icon.png",
     "userInterfaceStyle": "automatic",
@@ -21,7 +21,7 @@
         "monochromeImage": "./assets/android-icon-monochrome.png"
       },
       "package": "com.anonymous.zen",
-      "versionCode": 3,
+      "versionCode": 9,
       "blockedPermissions": [
         "android.permission.RECORD_AUDIO"
       ],
