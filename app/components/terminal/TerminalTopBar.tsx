@@ -21,7 +21,7 @@ export interface TerminalTabDescriptor {
   active: boolean;
 }
 
-interface TerminalTopBarProps {
+export interface TerminalTopBarProps {
   tabs: TerminalTabDescriptor[];
   backgroundColor: string;
   chrome: TerminalThemeChrome;

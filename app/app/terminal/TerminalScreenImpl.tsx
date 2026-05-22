@@ -29,6 +29,7 @@ import { useTerminalScreenStorage } from "./useTerminalScreenStorage";
 import { useTerminalSessionActions } from "./useTerminalSessionActions";
 import { useTerminalTabActions } from "./useTerminalTabActions";
 import { useTerminalThemeChrome } from "./useTerminalThemeChrome";
+import { useTerminalTopBarProps } from "./useTerminalTopBarProps";
 import { useTerminalViewportModel } from "./useTerminalViewportModel";
 import { useTerminalViewportProps } from "./useTerminalViewportProps";
 
@@ -48,19 +49,16 @@ export default function TerminalScreen() {
   const [creatingSession, setCreatingSession] = useState(false);
   const [screenFocused, setScreenFocused] = useState(false);
   const terminalRef = useRef<TerminalSurfaceHandle>(null);
-  const {
-    closeMenu,
-    handleTabLayout,
-    menuAnchorRef,
-    menuPosition,
-    menuVisible,
-    openMenu,
-    tabScrollRef,
-  } = useTerminalChromeLayout({
+  const chromeLayout = useTerminalChromeLayout({
     sessionKey,
     windowWidth,
     popoverWidth: TERMINAL_ACTION_POPOVER_WIDTH,
   });
+  const {
+    closeMenu,
+    menuPosition,
+    menuVisible,
+  } = chromeLayout;
 
   const {
     agentByKey,
@@ -201,11 +199,6 @@ export default function TerminalScreen() {
     closeMenu,
     closePicker,
   });
-  const {
-    goToInbox,
-    openAgentTab,
-  } = tabActions;
-
   const openGitDiff = () => {
     closeMenu();
     gitDiff.open();
@@ -240,6 +233,14 @@ export default function TerminalScreen() {
   const {
     openNewTerminal,
   } = sessionActions;
+  const topBarProps = useTerminalTopBarProps({
+    tabs,
+    terminalTheme,
+    chrome: chromeColors,
+    chromeLayout,
+    tabActions,
+    openNewTerminal,
+  });
   const viewportProps = useTerminalViewportProps({
     showCodexChat,
     sessionKey,
@@ -311,18 +312,7 @@ export default function TerminalScreen() {
       edges={["top"]}
     >
       <StatusBar style={statusBarStyle} />
-      <TerminalTopBar
-        tabs={tabs}
-        backgroundColor={terminalTheme.background}
-        chrome={chromeColors}
-        tabScrollRef={tabScrollRef}
-        menuAnchorRef={menuAnchorRef}
-        onBack={goToInbox}
-        onOpenTab={openAgentTab}
-        onOpenMenu={openMenu}
-        onNewTerminal={openNewTerminal}
-        onTabLayout={handleTabLayout}
-      />
+      <TerminalTopBar {...topBarProps} />
 
       <TerminalViewport {...viewportProps} />
 
