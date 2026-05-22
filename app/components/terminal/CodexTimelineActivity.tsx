@@ -14,6 +14,10 @@ import { CodexTimelineActivityDetails } from "./CodexTimelineActivityDetails";
 import {
   CodexTimelineActivityHeader,
 } from "./CodexTimelineActivityHeader";
+import {
+  buildCodexTimelineActivityPresentation,
+  shouldAutoExpandActivity,
+} from "./CodexTimelineActivityModel";
 import type {
   PatchFileSummary,
   ZenActivityTimelineItem,
@@ -40,14 +44,11 @@ export function ZenActivityEvent({
   const [assetPreviewUri, setAssetPreviewUri] = useState<string | null>(null);
   const [assetPreviewFailed, setAssetPreviewFailed] = useState(false);
   const textSelectable = useContext(TimelineTextSelectableContext);
-  const toneColor =
-    item.tone === "failed"
-      ? theme.red
-      : item.tone === "running"
-        ? theme.yellow
-        : item.tone === "success"
-          ? theme.green
-          : chrome.textSubtle;
+  const activityPresentation = buildCodexTimelineActivityPresentation(
+    item,
+    chrome,
+    theme,
+  );
 
   useEffect(() => {
     let cancelled = false;
@@ -74,10 +75,6 @@ export function ZenActivityEvent({
     };
   }, [item.previewPath, loadAssetPreview]);
 
-  const canExpand = Boolean(
-    item.body || item.fileSummaries?.length || item.files?.length || item.previewPath,
-  );
-
   return (
     <View style={styles.wrap}>
       <CodexTimelineActivityHeader
@@ -85,12 +82,12 @@ export function ZenActivityEvent({
         tone={item.tone}
         icon={item.icon}
         detail={item.detail}
-        canExpand={canExpand}
+        canExpand={activityPresentation.canExpand}
         expanded={expanded}
-        toneColor={toneColor}
+        toneColor={activityPresentation.toneColor}
         chrome={chrome}
         onPress={() => {
-          if (canExpand) {
+          if (activityPresentation.canExpand) {
             setExpanded((value) => !value);
           }
         }}
@@ -110,22 +107,6 @@ export function ZenActivityEvent({
       ) : null}
     </View>
   );
-}
-
-function shouldAutoExpandActivity(item: ZenActivityTimelineItem) {
-  if (
-    item.tone === "running" ||
-    item.tone === "failed" ||
-    item.previewPath ||
-    item.fileSummaries?.length ||
-    item.files?.length
-  ) {
-    return true;
-  }
-  if (!item.body) {
-    return false;
-  }
-  return item.body.length <= 700 && item.body.split("\n").length <= 10;
 }
 
 const styles = StyleSheet.create({
