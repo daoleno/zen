@@ -1,6 +1,5 @@
 import React, { useMemo } from 'react';
 import {
-  ScrollView,
   StyleSheet,
   TouchableOpacity,
   View,
@@ -11,11 +10,12 @@ import type { AgentKind } from '../../services/agentPresentation';
 import { CLAUDE_CODE_COMMAND, CODEX_COMMAND } from '../../services/agentCommands';
 import { AgentKindIcon } from './AgentKindIcon';
 import { AppText } from '../ui';
+import {
+  NewTerminalServerSelector,
+  type NewTerminalServerOption,
+} from './NewTerminalServerSelector';
 
-export type NewTerminalServerOption = {
-  id: string;
-  name: string;
-};
+export type { NewTerminalServerOption } from './NewTerminalServerSelector';
 
 export type NewTerminalLaunchPreset = {
   key: string;
@@ -62,29 +62,11 @@ export function NewTerminalQuickLaunchSection({
 
   return (
     <>
-      {serverOptions.length > 1 ? (
-        <View style={styles.serverSection}>
-          <ScrollView horizontal showsHorizontalScrollIndicator={false}>
-            <View style={styles.serverRow}>
-              {serverOptions.map(server => {
-                const active = server.id === selectedServerId;
-                return (
-                  <TouchableOpacity
-                    key={server.id}
-                    style={[styles.serverChip, active && styles.serverChipActive]}
-                    onPress={() => onSelectServer?.(server.id)}
-                    activeOpacity={0.84}
-                  >
-                    <AppText variant="label" tone={active ? 'primary' : 'secondary'}>
-                      {server.name}
-                    </AppText>
-                  </TouchableOpacity>
-                );
-              })}
-            </View>
-          </ScrollView>
-        </View>
-      ) : null}
+      <NewTerminalServerSelector
+        serverOptions={serverOptions}
+        selectedServerId={selectedServerId}
+        onSelectServer={onSelectServer}
+      />
 
       <View style={styles.presetList}>
         {LAUNCH_PRESETS.map(preset => (
@@ -128,26 +110,6 @@ export function NewTerminalQuickLaunchSection({
 
 function createStyles(colors: typeof Colors) {
   return StyleSheet.create({
-    serverSection: {
-      marginBottom: 8,
-    },
-    serverRow: {
-      flexDirection: 'row',
-      gap: 8,
-    },
-    serverChip: {
-      paddingHorizontal: 10,
-      height: 28,
-      borderRadius: 10,
-      justifyContent: 'center',
-      backgroundColor: colors.bgElevated,
-      borderWidth: StyleSheet.hairlineWidth,
-      borderColor: colors.borderSubtle,
-    },
-    serverChipActive: {
-      backgroundColor: colors.surfaceActive,
-      borderColor: colors.accent,
-    },
     presetList: {
       gap: 0,
     },
