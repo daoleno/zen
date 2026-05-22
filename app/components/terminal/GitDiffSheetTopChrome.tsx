@@ -11,6 +11,7 @@ import { Typography } from "../../constants/tokens";
 import { buildTerminalChrome } from "../../constants/terminalThemes";
 import type { GitDiffStatusSnapshot } from "../../services/gitDiff";
 import { NativeSegmentedControl } from "../ui";
+import { withAlpha } from "./gitDiffColor";
 
 export type GitDiffSheetTab = "diff" | "browser";
 
@@ -22,7 +23,7 @@ interface GitDiffSheetTopChromeProps {
   fileCount: number;
   showCollapseAll: boolean;
   allDiffFilesCollapsed: boolean;
-  segmentedTintColor: string;
+  accentColor: string;
   onClose(): void;
   onRefresh(): void;
   onTabChange(tab: GitDiffSheetTab): void;
@@ -37,7 +38,7 @@ export function GitDiffSheetTopChrome({
   fileCount,
   showCollapseAll,
   allDiffFilesCollapsed,
-  segmentedTintColor,
+  accentColor,
   onClose,
   onRefresh,
   onTabChange,
@@ -95,7 +96,7 @@ export function GitDiffSheetTopChrome({
             ]}
             selectedValue={activeTab}
             onSelect={(value) => onTabChange(value as GitDiffSheetTab)}
-            tintColor={segmentedTintColor}
+            tintColor={withAlpha(accentColor, 0.72)}
             appearance="dark"
             style={{
               backgroundColor: chrome.surface,

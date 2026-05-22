@@ -27,6 +27,7 @@ import type {
   GitRepoFileContentPayload,
 } from "../../services/gitDiff";
 import { describeGitDiffScope } from "../../services/gitDiff";
+import { GitDiffStateCard } from "./GitDiffStateCard";
 import {
   highlightCodeLine,
   type HighlightTokenKind,
@@ -35,6 +36,7 @@ import {
   GitDiffSheetTopChrome,
   type GitDiffSheetTab,
 } from "./GitDiffSheetTopChrome";
+import { withAlpha } from "./gitDiffColor";
 
 const LARGE_DIFF_FILE_THRESHOLD = 8;
 
@@ -246,7 +248,7 @@ export function GitDiffSheet({
               && files.length > 0
             }
             allDiffFilesCollapsed={allDiffFilesCollapsed}
-            segmentedTintColor={withAlpha(theme.cursor, 0.72)}
+            accentColor={theme.cursor}
             onClose={onClose}
             onRefresh={onRefresh}
             onTabChange={setActiveTab}
@@ -255,7 +257,7 @@ export function GitDiffSheet({
 
           {error && !snapshot?.available ? (
             <View style={styles.contentPad}>
-              <StateCard
+              <GitDiffStateCard
                 icon="warning-outline"
                 title="Could not load git data"
                 detail={error}
@@ -266,7 +268,7 @@ export function GitDiffSheet({
             </View>
           ) : loading && !snapshot ? (
             <View style={styles.contentPad}>
-              <StateCard
+              <GitDiffStateCard
                 icon="sync-outline"
                 title="Inspecting repository"
                 detail="Zen is checking the current working tree."
@@ -278,7 +280,7 @@ export function GitDiffSheet({
             </View>
           ) : !snapshot?.available ? (
             <View style={styles.contentPad}>
-              <StateCard
+              <GitDiffStateCard
                 icon="git-branch-outline"
                 title={snapshot?.reason === "no_cwd" ? "No working directory yet" : "Not a git repository"}
                 detail={
@@ -330,7 +332,7 @@ export function GitDiffSheet({
                 }
                 ListEmptyComponent={
                   repoBrowserLoading ? null : (
-                    <StateCard
+                    <GitDiffStateCard
                       icon="folder-open-outline"
                       title="No files here"
                       detail="This folder does not contain visible repository entries."
@@ -347,7 +349,7 @@ export function GitDiffSheet({
             )
           ) : snapshot.clean ? (
             <View style={styles.contentPad}>
-              <StateCard
+              <GitDiffStateCard
                 icon="checkmark-done-outline"
                 title="Working tree is clean"
                 detail="No staged, unstaged, or untracked changes were found."
@@ -454,7 +456,7 @@ function DiffFileCard({
 
       {!expanded ? null : loading && sections.length === 0 ? (
         <View style={styles.inlineStateWrap}>
-          <StateCard
+          <GitDiffStateCard
             icon="sync-outline"
             title="Loading patch"
             detail="Fetching this file's staged and unstaged hunks."
@@ -466,7 +468,7 @@ function DiffFileCard({
         </View>
       ) : error ? (
         <View style={styles.inlineStateWrap}>
-          <StateCard
+          <GitDiffStateCard
             icon="warning-outline"
             title="Patch unavailable"
             detail={error}
@@ -477,7 +479,7 @@ function DiffFileCard({
         </View>
       ) : patch && sections.length === 0 ? (
         <View style={styles.inlineStateWrap}>
-          <StateCard
+          <GitDiffStateCard
             icon="information-circle-outline"
             title="No patch content"
             detail="Git reports this file as changed, but there are no hunks to display."
@@ -488,7 +490,7 @@ function DiffFileCard({
         </View>
       ) : sections.length === 0 ? (
         <View style={styles.inlineStateWrap}>
-          <StateCard
+          <GitDiffStateCard
             icon="time-outline"
             title="Queued"
             detail="This patch will load shortly."
@@ -594,7 +596,7 @@ function RepoBrowserHeader({
       </View>
 
       {error ? (
-        <StateCard
+        <GitDiffStateCard
           icon="warning-outline"
           title="Could not load folder"
           detail={error}
@@ -712,7 +714,7 @@ function RepoFileView({
 
       {loading ? (
         <View style={styles.contentPad}>
-          <StateCard
+          <GitDiffStateCard
             icon="sync-outline"
             title="Loading file"
             detail="Fetching the current working tree snapshot."
@@ -724,7 +726,7 @@ function RepoFileView({
         </View>
       ) : error ? (
         <View style={styles.contentPad}>
-          <StateCard
+          <GitDiffStateCard
             icon="warning-outline"
             title="Could not load file"
             detail={error}
@@ -790,7 +792,7 @@ function CodeSnapshotPanel({
   if (!snapshot?.exists || !snapshot.content) {
     return (
       <View style={styles.contentPad}>
-        <StateCard
+        <GitDiffStateCard
           icon="document-text-outline"
           title="File snapshot unavailable"
           detail={snapshot?.reason || "This file could not be read from the working tree."}
@@ -805,7 +807,7 @@ function CodeSnapshotPanel({
   if (snapshot.binary) {
     return (
       <View style={styles.contentPad}>
-        <StateCard
+        <GitDiffStateCard
           icon="cube-outline"
           title="Binary file"
           detail="Zen does not render binary file content."
@@ -980,41 +982,6 @@ function syntaxColor(
   }
 }
 
-function StateCard({
-  icon,
-  title,
-  detail,
-  accent,
-  chromeText,
-  chromeMuted,
-  busy = false,
-}: {
-  icon: keyof typeof Ionicons.glyphMap;
-  title: string;
-  detail: string;
-  accent: string;
-  chromeText: string;
-  chromeMuted: string;
-  busy?: boolean;
-}) {
-  return (
-    <View
-      style={[
-        styles.stateCard,
-        { borderColor: withAlpha(accent, 0.24), backgroundColor: withAlpha(accent, 0.08) },
-      ]}
-    >
-      {busy ? (
-        <ActivityIndicator size="small" color={accent} />
-      ) : (
-        <Ionicons name={icon} size={18} color={accent} />
-      )}
-      <Text style={[styles.stateTitle, { color: chromeText }]}>{title}</Text>
-      <Text style={[styles.stateDetail, { color: chromeMuted }]}>{detail}</Text>
-    </View>
-  );
-}
-
 function buildFilePathMeta(file: GitDiffFileInfo): string {
   if (file.old_path) {
     return `${describeGitDiffScope(file)} · ${file.old_path} -> ${file.path}`;
@@ -1136,18 +1103,6 @@ function formatByteCount(bytes: number): string {
     return `${Math.round(bytes / 1024)} KB`;
   }
   return `${bytes} B`;
-}
-
-function withAlpha(hex: string, alpha: number): string {
-  const normalized = hex.replace("#", "").trim();
-  if (!/^[0-9a-fA-F]{6}$/.test(normalized)) {
-    return hex;
-  }
-
-  const red = Number.parseInt(normalized.slice(0, 2), 16);
-  const green = Number.parseInt(normalized.slice(2, 4), 16);
-  const blue = Number.parseInt(normalized.slice(4, 6), 16);
-  return `rgba(${red}, ${green}, ${blue}, ${Math.min(Math.max(alpha, 0), 1)})`;
 }
 
 const styles = StyleSheet.create({
@@ -1373,24 +1328,6 @@ const styles = StyleSheet.create({
   },
   inlineStateWrap: {
     padding: 8,
-  },
-  stateCard: {
-    borderRadius: 14,
-    borderWidth: StyleSheet.hairlineWidth,
-    paddingHorizontal: 12,
-    paddingVertical: 12,
-    alignItems: "flex-start",
-    gap: 6,
-  },
-  stateTitle: {
-    fontSize: 13,
-    lineHeight: 17,
-    fontFamily: Typography.uiFontMedium,
-  },
-  stateDetail: {
-    fontSize: 11,
-    lineHeight: 15,
-    fontFamily: Typography.uiFont,
   },
   codeScroll: {
     flex: 1,
