@@ -31,7 +31,6 @@ export function PatchFileSummaryList({
           </Text>
           <Text
             style={[styles.diffPath, { color: chrome.textMuted }]}
-            numberOfLines={1}
           >
             {formatPatchPath(file)}
           </Text>
@@ -54,7 +53,7 @@ const styles = StyleSheet.create({
   diffFileRow: {
     minWidth: 0,
     flexDirection: "row",
-    alignItems: "center",
+    alignItems: "flex-start",
     gap: 5,
   },
   diffPrefix: {
@@ -71,11 +70,13 @@ const styles = StyleSheet.create({
     fontFamily: Typography.terminalFont,
   },
   diffAdded: {
+    paddingTop: 1,
     fontSize: 11,
     lineHeight: 15,
     fontFamily: Typography.terminalFont,
   },
   diffRemoved: {
+    paddingTop: 1,
     fontSize: 11,
     lineHeight: 15,
     fontFamily: Typography.terminalFont,

@@ -26,4 +26,5 @@ export interface ZenActivityTimelineItem {
   files?: string[];
   fileSummaries?: PatchFileSummary[];
   previewPath?: string;
+  defaultExpanded?: boolean;
 }

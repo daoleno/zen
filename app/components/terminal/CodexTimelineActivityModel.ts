@@ -21,10 +21,12 @@ export function buildCodexTimelineActivityPresentation(
 }
 
 export function shouldAutoExpandActivity(item: ZenActivityTimelineItem) {
+  if (typeof item.defaultExpanded === "boolean") {
+    return item.defaultExpanded;
+  }
   if (
     item.tone === "running" ||
     item.tone === "failed" ||
-    item.previewPath ||
     item.fileSummaries?.length ||
     item.files?.length
   ) {

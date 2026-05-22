@@ -231,6 +231,7 @@ function activityFromEvent(event: CodexConversationEvent): ZenTimelineItem | nul
         detail: heading.detail || presentation.subtitle || compactToolDetail(event),
         body: result.text || undefined,
         previewPath,
+        defaultExpanded: false,
       };
     }
     case "commentary": {
@@ -242,9 +243,10 @@ function activityFromEvent(event: CodexConversationEvent): ZenTimelineItem | nul
         id: event.id || `commentary:${event.seq}`,
         timestamp: event.timestamp,
         title: event.title || "Reasoning",
-        tone: "running",
+        tone: "neutral",
         icon: "ellipse-outline",
         body: event.body,
+        defaultExpanded: false,
       };
     }
     case "status": {
@@ -318,6 +320,7 @@ function explorationActivityFromEntries(
     detail,
     body: body || undefined,
     files,
+    defaultExpanded: running || failed,
   };
 }
 

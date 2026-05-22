@@ -20,7 +20,6 @@ export function ActivityFileList({
         <Text
           key={file}
           style={[styles.fileText, { color: chrome.textMuted }]}
-          numberOfLines={1}
         >
           {file}
         </Text>
@@ -34,6 +33,7 @@ const styles = StyleSheet.create({
     gap: 4,
   },
   fileText: {
+    flexShrink: 1,
     fontSize: 11,
     lineHeight: 15,
     fontFamily: Typography.terminalFont,

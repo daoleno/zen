@@ -54,7 +54,7 @@ export function ZenActivityEvent({
     let cancelled = false;
     setAssetPreviewUri(null);
     setAssetPreviewFailed(false);
-    if (!item.previewPath) {
+    if (!item.previewPath || !expanded) {
       return () => {
         cancelled = true;
       };
@@ -73,7 +73,7 @@ export function ZenActivityEvent({
     return () => {
       cancelled = true;
     };
-  }, [item.previewPath, loadAssetPreview]);
+  }, [expanded, item.previewPath, loadAssetPreview]);
 
   return (
     <View style={styles.wrap}>
