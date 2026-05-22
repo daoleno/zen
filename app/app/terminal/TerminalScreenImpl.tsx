@@ -14,14 +14,9 @@ import {
 } from "../../services/storage";
 import { makeSessionKey } from "../../services/sessionKeys";
 import type { TerminalSurfaceHandle } from "../../components/terminal/TerminalSurface";
-import { GitDiffSheet } from "../../components/terminal/GitDiffSheet";
-import { NewTerminalSheet } from "../../components/terminal/NewTerminalSheet";
-import { TerminalAgentPickerSheet } from "../../components/terminal/TerminalAgentPickerSheet";
 import {
-  TerminalActionPopover,
   TERMINAL_ACTION_POPOVER_WIDTH,
 } from "../../components/terminal/TerminalActionPopover";
-import { TerminalRenameModal } from "../../components/terminal/TerminalRenameModal";
 import { TerminalTopBar } from "../../components/terminal/TerminalTopBar";
 import { TerminalViewport } from "../../components/terminal/TerminalViewport";
 import { useTerminalAccessoryLayout } from "../../components/terminal/useTerminalAccessoryLayout";
@@ -32,6 +27,7 @@ import {
   buildTerminalTabs,
   findLinkedWork,
 } from "./TerminalScreenModel";
+import { TerminalScreenOverlays } from "./TerminalScreenOverlays";
 import { useTerminalChromeLayout } from "./useTerminalChromeLayout";
 import { useTerminalFallbackState } from "./useTerminalFallbackState";
 import { useTerminalFocusLifecycle } from "./useTerminalFocusLifecycle";
@@ -356,44 +352,36 @@ export default function TerminalScreen() {
         onAccessoryLayout={handleAccessoryLayout}
       />
 
-      <TerminalAgentPickerSheet
-        visible={pickerVisible}
-        sections={pickerSections}
-        agentCount={sortedAgents.length}
+      <TerminalScreenOverlays
+        pickerVisible={pickerVisible}
+        pickerSections={pickerSections}
+        pickerAgentCount={sortedAgents.length}
         activeSessionKey={sessionKey}
-        showServerNames={showPickerServerNames}
+        showPickerServerNames={showPickerServerNames}
         agentAliases={agentAliases}
         creatingSession={creatingSession}
-        chrome={chromeColors}
-        onClose={() => setPickerVisible(false)}
-        onOpenAgent={openAgentTab}
-        onNewTerminal={openNewTerminal}
-      />
-
-      <TerminalActionPopover
-        visible={menuVisible}
-        left={menuPosition.left}
-        top={menuPosition.top}
-        creatingSession={creatingSession}
-        newTerminalLabel={creatingSession ? "Starting Terminal…" : "New Terminal"}
+        menuVisible={menuVisible}
+        menuPosition={menuPosition}
         newTerminalDisabled={connectionState !== "connected"}
         gitDiffDisabled={gitDiff.actionDisabled}
         activePinned={activePinned}
         closeOtherTabsDisabled={tabs.length <= 1}
-        codexRenderAction={
-          isCodexAgent
-            ? {
-                icon: codexRenderMode === "chat" ? "terminal-outline" : "sparkles-outline",
-                label: codexRenderMode === "chat" ? "Use Terminal" : "Use Codex Chat",
-                onPress: toggleCodexRenderMode,
-              }
-            : null
-        }
+        isCodexAgent={isCodexAgent}
+        codexRenderMode={codexRenderMode}
         showLinkedWork={Boolean(linkedWork)}
+        newTerminalVisible={newTerminalVisible}
+        newTerminalInitialCwd={agent?.cwd || ""}
+        selectedServerId={serverId}
+        gitDiffSheetProps={gitDiff.sheetProps}
+        renameVisible={renameVisible}
+        renameDraft={renameDraft}
+        renamePlaceholder={agent?.name || agentId}
         chrome={chromeColors}
         theme={terminalTheme}
-        onClose={closeMenu}
+        onClosePicker={() => setPickerVisible(false)}
+        onOpenAgent={openAgentTab}
         onNewTerminal={openNewTerminal}
+        onCloseMenu={closeMenu}
         onOpenGitDiff={openGitDiff}
         onRename={openRenameModal}
         onTogglePinned={handleTogglePinned}
@@ -401,39 +389,18 @@ export default function TerminalScreen() {
         onCloseTab={handleCloseCurrentTab}
         onOpenLinkedWork={openLinkedWork}
         onTerminate={handleTerminateAgent}
-      />
-
-      <NewTerminalSheet
-        visible={newTerminalVisible}
-        title="New Terminal"
-        subtitle="Start a plain shell here, or launch Claude/Codex in the current project."
-        initialCwd={agent?.cwd || ""}
-        selectedServerId={serverId}
-        submitting={creatingSession}
-        onClose={() => setNewTerminalVisible(false)}
-        onSubmit={(input) => {
+        onToggleCodexRenderMode={toggleCodexRenderMode}
+        onCloseNewTerminal={() => setNewTerminalVisible(false)}
+        onSubmitNewTerminal={(input) => {
           void createTerminal({
             cwd: input.cwd,
             command: input.command,
             name: input.name,
           });
         }}
-      />
-
-      <GitDiffSheet
-        theme={terminalTheme}
-        {...gitDiff.sheetProps}
-      />
-
-      <TerminalRenameModal
-        visible={renameVisible}
-        draft={renameDraft}
-        placeholder={agent?.name || agentId}
-        chrome={chromeColors}
-        theme={terminalTheme}
-        onDraftChange={setRenameDraft}
-        onClose={() => setRenameVisible(false)}
-        onSave={handleSaveRename}
+        onRenameDraftChange={setRenameDraft}
+        onCloseRename={() => setRenameVisible(false)}
+        onSaveRename={handleSaveRename}
       />
     </SafeAreaView>
   );
