@@ -1,7 +1,5 @@
 import React from "react";
 import {
-  StyleSheet,
-  View,
   type LayoutChangeEvent,
   type TextInput as TextInputInstance,
 } from "react-native";
@@ -14,6 +12,7 @@ import {
   CodexComposerAttachmentRail,
   type CodexComposerAttachment,
 } from "./CodexComposerAttachmentRail";
+import { CodexChatComposerFrame } from "./CodexChatComposerFrame";
 import { CodexComposerPanel } from "./CodexComposerPanel";
 import { CodexQuickCommandMenu } from "./CodexQuickCommandMenu";
 
@@ -85,16 +84,11 @@ export function CodexChatComposer({
   onSendPress,
 }: CodexChatComposerProps) {
   return (
-    <View
+    <CodexChatComposerFrame
       onLayout={onLayout}
-      style={[
-        styles.composer,
-        {
-          paddingBottom: bottomPadding,
-          borderTopColor: chrome.border,
-          backgroundColor: theme.background,
-        },
-      ]}
+      bottomPadding={bottomPadding}
+      chrome={chrome}
+      theme={theme}
     >
       {showCommandMenu ? (
         <CodexQuickCommandMenu
@@ -138,13 +132,6 @@ export function CodexChatComposer({
         onSubmit={onSubmit}
         onSendPress={onSendPress}
       />
-    </View>
+    </CodexChatComposerFrame>
   );
 }
-
-const styles = StyleSheet.create({
-  composer: {
-    paddingHorizontal: 12,
-    paddingTop: 8,
-  },
-});
