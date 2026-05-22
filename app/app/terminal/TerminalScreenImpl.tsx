@@ -6,11 +6,11 @@ import {
   AppStateStatus,
   Keyboard,
   Platform,
-  ScrollView,
   StyleSheet,
   Text,
   TouchableOpacity,
   View,
+  type ScrollView,
   useColorScheme,
   useWindowDimensions,
 } from "react-native";
@@ -27,7 +27,6 @@ import {
   AgentStatus,
   Colors,
   Typography,
-  statusColor,
 } from "../../constants/tokens";
 import {
   buildTerminalChrome,
@@ -70,7 +69,6 @@ import {
 import { TerminalAccessoryBar } from "../../components/terminal/TerminalAccessoryBar";
 import { CodexChatSurface } from "../../components/terminal/CodexChatSurface";
 import { GitDiffSheet } from "../../components/terminal/GitDiffSheet";
-import { AgentKindIcon } from "../../components/terminal/AgentKindIcon";
 import { NewTerminalSheet } from "../../components/terminal/NewTerminalSheet";
 import { TerminalAgentPickerSheet } from "../../components/terminal/TerminalAgentPickerSheet";
 import {
@@ -78,6 +76,10 @@ import {
   TERMINAL_ACTION_POPOVER_WIDTH,
 } from "../../components/terminal/TerminalActionPopover";
 import { TerminalRenameModal } from "../../components/terminal/TerminalRenameModal";
+import {
+  TerminalTopBar,
+  type TerminalTabDescriptor,
+} from "../../components/terminal/TerminalTopBar";
 import { presentAgent } from "../../services/agentPresentation";
 import {
   buildGitDiffChipLabel,
@@ -104,15 +106,6 @@ const STATUS_PRIORITY: Record<AgentStatus, number> = {
   running: 3,
   done: 4,
 };
-
-interface TerminalTabDescriptor {
-  id: string;
-  name: string;
-  status: AgentStatus;
-  kind: "terminal" | "claude" | "codex";
-  pinned: boolean;
-  active: boolean;
-}
 
 export default function TerminalScreen() {
   const params = useLocalSearchParams<{ id?: string; serverId?: string }>();
@@ -1366,102 +1359,20 @@ export default function TerminalScreen() {
       <StatusBar
         style={isLightTerminalTheme(terminalTheme) ? "dark" : "light"}
       />
-      <View
-        style={[
-          styles.topBar,
-          { backgroundColor: terminalTheme.background },
-        ]}
-      >
-        <TouchableOpacity
-          onPress={goToInbox}
-          style={styles.chromeButton}
-          activeOpacity={0.75}
-        >
-          <Ionicons name="chevron-back" size={20} color={chromeColors.textMuted} />
-        </TouchableOpacity>
-
-        <ScrollView
-          ref={tabScrollRef}
-          horizontal
-          showsHorizontalScrollIndicator={false}
-          style={styles.tabScroller}
-          contentContainerStyle={styles.tabScrollerContent}
-        >
-          {tabs.map((tab) => (
-            <View
-              key={tab.id}
-              style={[
-                styles.tabPill,
-                tab.active && [
-                  styles.tabPillActive,
-                  { backgroundColor: chromeColors.surfaceMuted },
-                ],
-              ]}
-              onLayout={(e) => {
-                const { x, width } = e.nativeEvent.layout;
-                tabLayoutsRef.current.set(tab.id, { x, width });
-              }}
-            >
-              <TouchableOpacity
-                style={styles.tabMainButton}
-                onPress={() => openAgentTab(tab.id)}
-                activeOpacity={0.84}
-              >
-                <AgentKindIcon kind={tab.kind} size={10} />
-                <View style={styles.tabLabelWrapper}>
-                  <Text
-                    style={[
-                      styles.tabLabel,
-                      { color: tab.active ? chromeColors.text : chromeColors.textSubtle },
-                    ]}
-                    numberOfLines={1}
-                  >
-                    {tab.name}
-                  </Text>
-                </View>
-                {tab.pinned ? (
-                  <Ionicons
-                    name="bookmark"
-                    size={10}
-                    color={tab.active ? chromeColors.textMuted : chromeColors.textSubtle}
-                  />
-                ) : null}
-                <View
-                  style={[
-                    styles.tabStatusDot,
-                    { backgroundColor: statusColor(tab.status) },
-                    !tab.active && styles.tabStatusDotInactive,
-                  ]}
-                />
-              </TouchableOpacity>
-
-              {tab.active ? (
-                <View ref={menuAnchorRef} collapsable={false}>
-                  <TouchableOpacity
-                    style={styles.tabMenuButton}
-                    onPress={openMenu}
-                    activeOpacity={0.75}
-                  >
-                    <Ionicons
-                      name="ellipsis-vertical"
-                      size={15}
-                      color={chromeColors.textMuted}
-                    />
-                  </TouchableOpacity>
-                </View>
-              ) : null}
-            </View>
-          ))}
-        </ScrollView>
-
-        <TouchableOpacity
-          onPress={openNewTerminal}
-          style={styles.chromeButton}
-          activeOpacity={0.75}
-        >
-          <Ionicons name="add" size={20} color={chromeColors.textMuted} />
-        </TouchableOpacity>
-      </View>
+      <TerminalTopBar
+        tabs={tabs}
+        backgroundColor={terminalTheme.background}
+        chrome={chromeColors}
+        tabScrollRef={tabScrollRef}
+        menuAnchorRef={menuAnchorRef}
+        onBack={goToInbox}
+        onOpenTab={openAgentTab}
+        onOpenMenu={openMenu}
+        onNewTerminal={openNewTerminal}
+        onTabLayout={(tabId, layout) => {
+          tabLayoutsRef.current.set(tabId, layout);
+        }}
+      />
 
       <View style={[styles.terminalStage, { backgroundColor: terminalTheme.background }]}>
         <View style={[styles.terminalShell, { backgroundColor: terminalTheme.background }]}>
@@ -1621,13 +1532,6 @@ const styles = StyleSheet.create({
     flex: 1,
     backgroundColor: "#0D0C0C",
   },
-  topBar: {
-    flexDirection: "row",
-    alignItems: "center",
-    paddingHorizontal: 8,
-    paddingTop: 2,
-    paddingBottom: 4,
-  },
   terminalStage: {
     flex: 1,
     minHeight: 0,
@@ -1660,67 +1564,6 @@ const styles = StyleSheet.create({
     fontSize: 12,
     lineHeight: 16,
     fontFamily: Typography.uiFontMedium,
-  },
-  chromeButton: {
-    width: 32,
-    height: 32,
-    alignItems: "center",
-    justifyContent: "center",
-  },
-  tabScroller: {
-    flex: 1,
-    marginHorizontal: 4,
-  },
-  tabScrollerContent: {
-    paddingRight: 2,
-  },
-  tabPill: {
-    minWidth: 110,
-    maxWidth: 200,
-    height: 30,
-    borderRadius: 8,
-    paddingLeft: 8,
-    paddingRight: 4,
-    marginRight: 2,
-    flexDirection: "row",
-    alignItems: "center",
-  },
-  tabPillActive: {
-    borderRadius: 8,
-  },
-  tabMainButton: {
-    flex: 1,
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 5,
-  },
-  tabStatusDot: {
-    width: 5,
-    height: 5,
-    borderRadius: 2.5,
-    marginLeft: 6,
-  },
-  tabStatusDotInactive: {
-    opacity: 0.45,
-  },
-  tabLabelWrapper: {
-    flex: 1,
-    justifyContent: "center",
-    marginRight: 4,
-    paddingTop: 1,
-  },
-  tabLabel: {
-    fontSize: 12,
-    lineHeight: 16,
-    fontFamily: Typography.uiFontMedium,
-    includeFontPadding: false,
-  },
-  tabMenuButton: {
-    width: 22,
-    height: 22,
-    borderRadius: 6,
-    alignItems: "center",
-    justifyContent: "center",
   },
   output: {
     flex: 1,
