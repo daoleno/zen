@@ -1,21 +1,17 @@
 import React from "react";
 import {
-  ActivityIndicator,
   ScrollView,
   StyleSheet,
-  Text,
-  TouchableOpacity,
-  View,
   type LayoutChangeEvent,
   type NativeScrollEvent,
   type NativeSyntheticEvent,
 } from "react-native";
-import { Ionicons } from "@expo/vector-icons";
-import { Typography } from "../../constants/tokens";
 import type {
   TerminalThemeChrome,
   TerminalThemePalette,
 } from "../../constants/terminalThemes";
+import { CodexTimelineEmptyState } from "./CodexTimelineEmptyState";
+import { CodexTimelineJumpButton } from "./CodexTimelineJumpButton";
 import { TimelineTextSelectableContext } from "./CodexMessageBody";
 import {
   ZenTimelineItemView,
@@ -85,11 +81,19 @@ export function CodexTimelineView({
         onContentSizeChange={onContentSizeChange}
       >
         {loading && items.length === 0 ? (
-          <EmptyState chrome={chrome} title="Loading Codex transcript" busy />
+          <CodexTimelineEmptyState
+            chrome={chrome}
+            title="Loading Codex transcript"
+            busy
+          />
         ) : error && items.length === 0 ? (
-          <EmptyState chrome={chrome} title="Transcript unavailable" body={error} />
+          <CodexTimelineEmptyState
+            chrome={chrome}
+            title="Transcript unavailable"
+            body={error}
+          />
         ) : unavailable ? (
-          <EmptyState
+          <CodexTimelineEmptyState
             chrome={chrome}
             title="Native transcript unavailable"
             body={unavailableReason}
@@ -97,7 +101,10 @@ export function CodexTimelineView({
             onAction={onUnavailableAction}
           />
         ) : items.length === 0 ? (
-          <EmptyState chrome={chrome} title="Waiting for Codex transcript" />
+          <CodexTimelineEmptyState
+            chrome={chrome}
+            title="Waiting for Codex transcript"
+          />
         ) : (
           items.map((item) => (
             <ZenTimelineItemView
@@ -119,65 +126,13 @@ export function CodexTimelineView({
       </ScrollView>
 
       {showJumpToLatest ? (
-        <TouchableOpacity
-          accessibilityLabel="Jump to latest"
-          style={[
-            styles.jumpButton,
-            {
-              backgroundColor: chrome.surfaceMuted,
-              borderColor: chrome.borderStrong,
-              bottom: jumpButtonBottom,
-            },
-          ]}
+        <CodexTimelineJumpButton
+          bottom={jumpButtonBottom}
+          chrome={chrome}
           onPress={onJumpToLatest}
-          activeOpacity={0.82}
-        >
-          <Ionicons name="arrow-down" size={15} color={chrome.accent} />
-          <Text style={[styles.jumpButtonText, { color: chrome.textMuted }]}>Latest</Text>
-        </TouchableOpacity>
+        />
       ) : null}
     </TimelineTextSelectableContext.Provider>
-  );
-}
-
-function EmptyState({
-  chrome,
-  title,
-  body,
-  busy = false,
-  actionLabel,
-  onAction,
-}: {
-  chrome: TerminalThemeChrome;
-  title: string;
-  body?: string;
-  busy?: boolean;
-  actionLabel?: string;
-  onAction?: () => void;
-}) {
-  return (
-    <View style={styles.emptyState}>
-      {busy ? <ActivityIndicator color={chrome.accent} /> : null}
-      <Text style={[styles.emptyTitle, { color: chrome.text }]}>{title}</Text>
-      {body ? (
-        <Text style={[styles.emptyBody, { color: chrome.textMuted }]}>{body}</Text>
-      ) : null}
-      {actionLabel && onAction ? (
-        <TouchableOpacity
-          style={[
-            styles.emptyAction,
-            { backgroundColor: chrome.surfaceMuted, borderColor: chrome.border },
-          ]}
-          onPress={onAction}
-          activeOpacity={0.82}
-        >
-          <Ionicons name="terminal-outline" size={15} color={chrome.textMuted} />
-          <Text style={[styles.emptyActionText, { color: chrome.textMuted }]}>
-            {actionLabel}
-          </Text>
-        </TouchableOpacity>
-      ) : null}
-    </View>
   );
 }
 
@@ -190,59 +145,5 @@ const styles = StyleSheet.create({
     paddingHorizontal: 16,
     paddingTop: 14,
     paddingBottom: TIMELINE_BOTTOM_PADDING,
-  },
-  jumpButton: {
-    position: "absolute",
-    right: 14,
-    minHeight: 32,
-    borderRadius: 8,
-    borderWidth: StyleSheet.hairlineWidth,
-    paddingHorizontal: 10,
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "center",
-    gap: 6,
-    zIndex: 4,
-  },
-  jumpButtonText: {
-    fontSize: 12,
-    lineHeight: 16,
-    fontFamily: Typography.uiFontMedium,
-  },
-  emptyState: {
-    minHeight: 260,
-    alignItems: "center",
-    justifyContent: "center",
-    paddingHorizontal: 24,
-  },
-  emptyTitle: {
-    marginTop: 10,
-    fontSize: 16,
-    lineHeight: 21,
-    textAlign: "center",
-    fontFamily: Typography.uiFontMedium,
-  },
-  emptyBody: {
-    marginTop: 7,
-    fontSize: 12,
-    lineHeight: 18,
-    textAlign: "center",
-    fontFamily: Typography.uiFont,
-  },
-  emptyAction: {
-    marginTop: 14,
-    minHeight: 36,
-    borderRadius: 8,
-    borderWidth: StyleSheet.hairlineWidth,
-    paddingHorizontal: 12,
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "center",
-    gap: 7,
-  },
-  emptyActionText: {
-    fontSize: 13,
-    lineHeight: 17,
-    fontFamily: Typography.uiFontMedium,
   },
 });
