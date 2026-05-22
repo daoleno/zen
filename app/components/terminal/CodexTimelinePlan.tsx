@@ -11,14 +11,7 @@ import type {
 } from "../../constants/terminalThemes";
 import { Typography } from "../../constants/tokens";
 import type { CodexPlanStep } from "../../services/codexConversation";
-
-export interface ZenPlanTimelineItem {
-  type: "plan";
-  id: string;
-  timestamp?: string;
-  explanation?: string;
-  steps: CodexPlanStep[];
-}
+import type { ZenPlanTimelineItem } from "./CodexTimelinePlanTypes";
 
 export function ZenPlanUpdate({
   item,

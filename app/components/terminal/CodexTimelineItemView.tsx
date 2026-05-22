@@ -12,8 +12,8 @@ import type {
 } from "./CodexTimelineActivityTypes";
 import {
   ZenPlanUpdate,
-  type ZenPlanTimelineItem,
 } from "./CodexTimelinePlan";
+import type { ZenPlanTimelineItem } from "./CodexTimelinePlanTypes";
 import {
   ZenAssistantMessage,
   ZenUserMessage,
