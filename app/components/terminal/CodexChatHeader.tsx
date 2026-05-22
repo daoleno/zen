@@ -11,7 +11,7 @@ import type {
 } from "../../constants/terminalThemes";
 import { ChatHeaderIconButton } from "./CodexChatControls";
 
-interface CodexChatHeaderProps {
+export interface CodexChatHeaderProps {
   status: AgentStatus;
   statusMeta: string;
   theme: TerminalThemePalette;
