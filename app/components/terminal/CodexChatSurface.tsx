@@ -5,7 +5,6 @@ import React, {
   useState,
 } from "react";
 import {
-  Platform,
   StyleSheet,
   View,
   type LayoutChangeEvent,
@@ -25,11 +24,9 @@ import { useCodexChatController } from "./CodexChatController";
 import { conversationUnavailableReason } from "./CodexChatControllerModel";
 import { CodexChatHeader } from "./CodexChatHeader";
 import { useCodexChatSession } from "./CodexChatSession";
+import { useCodexSlashCommands } from "./CodexSlashCommands";
 import {
-  filterSlashCommands,
-  useCodexSlashCommands,
-} from "./CodexSlashCommands";
-import {
+  useCodexComposerPresentation,
   useCodexComposerInput,
   usePinnedTimeline,
 } from "./CodexChatSurfaceHooks";
@@ -58,8 +55,6 @@ interface CodexChatSurfaceProps {
   onSwitchToTerminal(): void;
   onOpenGitDiff?: () => void;
 }
-
-const TERMINAL_ROUTE_BAR_HEIGHT = 38;
 
 export function CodexChatSurface({
   serverId,
@@ -164,34 +159,27 @@ export function CodexChatSurface({
   }, [conversationCacheKey, resetForConversation]);
 
   const unavailable = conversation && !conversation.available;
-  const commandQuery = draft.trimStart();
-  const visibleSlashCommands = useMemo(() => {
-    return filterSlashCommands(slashCommands, commandQuery);
-  }, [commandQuery, slashCommands]);
-  const showCommandMenu =
-    connectionState === "connected" &&
-    commandQuery.startsWith("/") &&
-    !commandQuery.includes(" ");
+  const composerPresentation = useCodexComposerPresentation({
+    draft,
+    slashCommands,
+    connectionState,
+    agentStatus: agent?.status,
+    attachmentCount: attachments.length,
+    sending,
+    canSend,
+    composerFocused,
+    safeAreaTop: insets.top,
+    safeAreaBottom: insets.bottom,
+  });
   const timelineItems = useMemo(
-    () => mergeChatCommandEventsIntoTimeline(buildZenTimeline(events), chatCommandEvents),
+    () =>
+      mergeChatCommandEventsIntoTimeline(
+        buildZenTimeline(events),
+        chatCommandEvents,
+      ),
     [chatCommandEvents, events],
   );
-  const showStopButton =
-    connectionState === "connected" &&
-    agent?.status === "running" &&
-    draft.trim().length === 0 &&
-    attachments.length === 0 &&
-    !sending;
-  const sendActionEnabled = canSend || showStopButton;
-  const sendActionIcon = showStopButton ? "square" : "arrow-up";
-  const sendActionLabel = showStopButton ? "Stop Codex" : "Send message";
-  const composerPlaceholder =
-    connectionState === "connected" ? "Message Codex" : "Daemon unavailable";
   const streamingAssistantId = "";
-  const composerBottomPadding = Math.max(insets.bottom, 8);
-  const composerActive = composerFocused || showCommandMenu;
-  const keyboardVerticalOffset =
-    Platform.OS === "android" ? insets.top + TERMINAL_ROUTE_BAR_HEIGHT : 0;
   const loadTimelineAssetPreview = useCallback(
     async (path: string) => {
       const asset = await wsClient.getCodexAsset(serverId, {
@@ -229,7 +217,7 @@ export function CodexChatSurface({
       <KeyboardAvoidingView
         behavior="padding"
         enabled={screenFocused}
-        keyboardVerticalOffset={keyboardVerticalOffset}
+        keyboardVerticalOffset={composerPresentation.keyboardVerticalOffset}
         style={styles.chatBody}
       >
         <CodexTimelineView
@@ -239,7 +227,7 @@ export function CodexChatSurface({
           error={error}
           unavailable={unavailable}
           unavailableReason={conversationUnavailableReason(conversation?.reason)}
-          textSelectable={!composerActive}
+          textSelectable={!composerPresentation.active}
           showJumpToLatest={showJumpToLatest}
           jumpButtonBottom={composerHeight + 12}
           streamingAssistantId={streamingAssistantId}
@@ -258,21 +246,21 @@ export function CodexChatSurface({
         <CodexChatComposer
           inputRef={inputRef}
           draft={draft}
-          placeholder={composerPlaceholder}
+          placeholder={composerPresentation.placeholder}
           editable={connectionState === "connected"}
           focused={composerFocused}
-          floating={composerActive}
+          floating={composerPresentation.active}
           canAttach={canAttach}
           uploading={uploading}
-          sendEnabled={sendActionEnabled}
+          sendEnabled={composerPresentation.sendEnabled}
           sending={sending}
-          sendIcon={sendActionIcon}
-          sendLabel={sendActionLabel}
-          compactSendIcon={showStopButton}
-          bottomPadding={composerBottomPadding}
-          showCommandMenu={showCommandMenu}
-          commandQuery={commandQuery}
-          commands={visibleSlashCommands}
+          sendIcon={composerPresentation.sendIcon}
+          sendLabel={composerPresentation.sendLabel}
+          compactSendIcon={composerPresentation.showStopButton}
+          bottomPadding={composerPresentation.bottomPadding}
+          showCommandMenu={composerPresentation.showCommandMenu}
+          commandQuery={composerPresentation.commandQuery}
+          commands={composerPresentation.visibleSlashCommands}
           attachments={attachments}
           chrome={chrome}
           theme={theme}
@@ -286,7 +274,9 @@ export function CodexChatSurface({
           onInputBlur={handleComposerBlur}
           onInputStart={handleComposerInputStart}
           onSubmit={sendDraft}
-          onSendPress={showStopButton ? interruptCodex : sendDraft}
+          onSendPress={
+            composerPresentation.showStopButton ? interruptCodex : sendDraft
+          }
         />
       </KeyboardAvoidingView>
     </View>

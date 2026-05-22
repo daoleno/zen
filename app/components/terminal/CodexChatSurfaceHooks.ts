@@ -1,16 +1,71 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   Keyboard,
+  Platform,
   type NativeScrollEvent,
   type NativeSyntheticEvent,
   type ScrollView,
   type TextInput,
 } from "react-native";
+import type { AgentStatus } from "../../constants/tokens";
+import type { ConnectionState } from "../../store/agents";
+import type { CodexSlashCommand } from "../../services/websocket";
+import {
+  buildCodexComposerPresentation,
+  type CodexComposerPresentationInput,
+} from "./CodexChatSurfaceModel";
 
 const SCROLL_BOTTOM_THRESHOLD = 96;
 export const SCROLL_TO_BOTTOM_LAYOUT_DELAY_MS = 30;
 const COMPOSER_FOCUS_LOCK_MS = 1000;
 const COMPOSER_REFOCUS_DELAYS_MS = [0, 60, 140, 280, 520, 820] as const;
+
+type UseCodexComposerPresentationInput = Omit<
+  CodexComposerPresentationInput,
+  "isAndroid"
+>;
+
+export function useCodexComposerPresentation({
+  draft,
+  slashCommands,
+  connectionState,
+  agentStatus,
+  attachmentCount,
+  sending,
+  canSend,
+  composerFocused,
+  safeAreaTop,
+  safeAreaBottom,
+}: UseCodexComposerPresentationInput) {
+  return useMemo(
+    () =>
+      buildCodexComposerPresentation({
+        draft,
+        slashCommands,
+        connectionState,
+        agentStatus,
+        attachmentCount,
+        sending,
+        canSend,
+        composerFocused,
+        safeAreaTop,
+        safeAreaBottom,
+        isAndroid: Platform.OS === "android",
+      }),
+    [
+      agentStatus,
+      attachmentCount,
+      canSend,
+      composerFocused,
+      connectionState,
+      draft,
+      safeAreaBottom,
+      safeAreaTop,
+      sending,
+      slashCommands,
+    ],
+  );
+}
 
 export function usePinnedTimeline(itemCount: number) {
   const scrollRef = useRef<ScrollView>(null);
