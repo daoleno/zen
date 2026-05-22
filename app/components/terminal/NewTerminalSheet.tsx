@@ -1,17 +1,15 @@
 import React, { useEffect, useState } from 'react';
 import {
   Keyboard,
-  ScrollView,
   StyleSheet,
 } from 'react-native';
 import { DirectoryPicker } from './DirectoryPicker';
-import { NewTerminalAdvancedForm } from './NewTerminalAdvancedForm';
 import {
-  NewTerminalQuickLaunchSection,
   type NewTerminalLaunchPreset,
   type NewTerminalServerOption,
 } from './NewTerminalQuickLaunchSection';
-import { AppButton, BottomSheetFrame } from '../ui';
+import { NewTerminalSheetContent } from './NewTerminalSheetContent';
+import { BottomSheetFrame } from '../ui';
 
 interface NewTerminalSheetProps {
   visible: boolean;
@@ -108,47 +106,26 @@ export function NewTerminalSheet({
       cardStyle={styles.sheetCard}
       keyboardAvoiding
     >
-      <ScrollView
-        showsVerticalScrollIndicator={false}
-        keyboardShouldPersistTaps="always"
-        keyboardDismissMode="none"
-        bounces={false}
-      >
-        <NewTerminalQuickLaunchSection
-          serverOptions={serverOptions}
-          selectedServerId={selectedServerId}
-          command={command}
-          submitting={submitting}
-          canSubmit={canSubmit}
-          advanced={advanced}
-          onSelectServer={onSelectServer}
-          onPresetPress={handlePresetTap}
-          onToggleAdvanced={handleToggleAdvanced}
-        />
-
-        {advanced ? (
-          <NewTerminalAdvancedForm
-            cwd={cwd}
-            command={command}
-            name={name}
-            canSubmit={canSubmit}
-            submitting={submitting}
-            canPickDirectory={Boolean(selectedServerId)}
-            onCwdChange={setCwd}
-            onCommandChange={setCommand}
-            onNameChange={setName}
-            onPickDirectory={handleOpenDirectoryPicker}
-            onSubmit={handleAdvancedSubmit}
-          />
-        ) : null}
-
-        <AppButton
-          label="Cancel"
-          variant="ghost"
-          onPress={handleClose}
-          style={styles.cancelBtn}
-        />
-      </ScrollView>
+      <NewTerminalSheetContent
+        serverOptions={serverOptions}
+        selectedServerId={selectedServerId}
+        command={command}
+        submitting={submitting}
+        canSubmit={canSubmit}
+        advanced={advanced}
+        cwd={cwd}
+        name={name}
+        canPickDirectory={Boolean(selectedServerId)}
+        onSelectServer={onSelectServer}
+        onPresetPress={handlePresetTap}
+        onToggleAdvanced={handleToggleAdvanced}
+        onCwdChange={setCwd}
+        onCommandChange={setCommand}
+        onNameChange={setName}
+        onPickDirectory={handleOpenDirectoryPicker}
+        onSubmitAdvanced={handleAdvancedSubmit}
+        onCancel={handleClose}
+      />
     </BottomSheetFrame>
   );
 
@@ -177,10 +154,5 @@ const styles = StyleSheet.create({
     paddingHorizontal: 14,
     paddingTop: 10,
     paddingBottom: 18,
-  },
-  cancelBtn: {
-    minHeight: 34,
-    borderRadius: 10,
-    marginTop: 8,
   },
 });
