@@ -1,32 +1,27 @@
 import React, {
   useCallback,
-  useContext,
   useEffect,
   useMemo,
   useRef,
   useState,
 } from "react";
 import {
-  ActivityIndicator,
   Alert,
-  Image,
   Keyboard,
   Platform,
-  ScrollView,
   StyleSheet,
-  Text,
-  TouchableOpacity,
   View,
   type LayoutChangeEvent,
   type NativeScrollEvent,
   type NativeSyntheticEvent,
+  type ScrollView,
   type TextInput,
 } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 import * as Clipboard from "expo-clipboard";
 import { KeyboardAvoidingView } from "react-native-keyboard-controller";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
-import { Typography, type AgentStatus } from "../../constants/tokens";
+import type { AgentStatus } from "../../constants/tokens";
 import type {
   TerminalThemeChrome,
   TerminalThemePalette,
@@ -45,24 +40,18 @@ import { wsClient, type CodexSlashCommand } from "../../services/websocket";
 import { CodexChatHeader } from "./CodexChatHeader";
 import { CodexComposerAttachmentRail } from "./CodexComposerAttachmentRail";
 import { CodexComposerPanel } from "./CodexComposerPanel";
-import {
-  MessageBody,
-  TimelineTextSelectableContext,
-} from "./CodexMessageBody";
 import { CodexQuickCommandMenu } from "./CodexQuickCommandMenu";
 import {
-  ZenActivityEvent,
-  ZenPlanUpdate,
   type PatchFileSummary,
   type PatchOperation,
-  type ZenActivityTimelineItem,
-  type ZenPlanTimelineItem,
 } from "./CodexTimelineActivity";
 import {
-  ZenAssistantMessage,
-  ZenUserMessage,
   type DisplayAttachment,
 } from "./CodexTimelineMessage";
+import {
+  type ZenTimelineItem,
+} from "./CodexTimelineItemView";
+import { CodexTimelineView } from "./CodexTimelineView";
 import {
   slashCommandIcon,
   slashCommandTitle,
@@ -155,8 +144,6 @@ const COMMAND_OUTPUT_PREVIEW_LINES = 7;
 const COMMAND_OUTPUT_PREVIEW_CHARS = 1200;
 const TOOL_PAYLOAD_PREVIEW_LINES = 6;
 const TOOL_PAYLOAD_PREVIEW_CHARS = 1000;
-const COMMENTARY_PREVIEW_LINES = 3;
-const COMMENTARY_PREVIEW_CHARS = 260;
 const MAX_COMPOSER_ATTACHMENTS = 8;
 const FULL_OUTPUT_HINT = "Open Terminal for full output.";
 const TERMINAL_ROUTE_BAR_HEIGHT = 38;
@@ -166,21 +153,10 @@ const COMPOSER_REFOCUS_DELAYS_MS = [0, 60, 140, 280, 520, 820] as const;
 
 type IoniconName = React.ComponentProps<typeof Ionicons>["name"];
 
-type ToolField = {
-  label: string;
-  value: string;
-  mono?: boolean;
-};
-
 type ToolPresentation = {
-  title: string;
   subtitle?: string;
   icon: IoniconName;
-  fields: ToolField[];
-  previewUri?: string;
   localImagePath?: string;
-  rawInputLabel: string;
-  rawOutputLabel: string;
 };
 
 type CommandKind =
@@ -272,26 +248,6 @@ type LocalSlashCommandCapability = Pick<
   | "chat_supported"
   | "terminal_supported"
 >;
-
-type ZenTimelineItem =
-  | {
-      type: "message";
-      id: string;
-      role: "user";
-      timestamp?: string;
-      body: string;
-      attachments: DisplayAttachment[];
-    }
-  | {
-      type: "message";
-      id: string;
-      role: "assistant";
-      timestamp?: string;
-      body: string;
-      attachments: DisplayAttachment[];
-    }
-  | ZenActivityTimelineItem
-  | ZenPlanTimelineItem;
 
 function usePinnedTimeline(itemCount: number) {
   const scrollRef = useRef<ScrollView>(null);
@@ -1256,10 +1212,15 @@ export function CodexChatSurface({
   const composerActive = composerFocused || showCommandMenu;
   const keyboardVerticalOffset =
     Platform.OS === "android" ? insets.top + TERMINAL_ROUTE_BAR_HEIGHT : 0;
-  const timelineBottomPadding = 18;
-  const timelineContentStyle = useMemo(
-    () => [styles.timelineContent, { paddingBottom: timelineBottomPadding }],
-    [timelineBottomPadding],
+  const loadTimelineAssetPreview = useCallback(
+    async (path: string) => {
+      const asset = await wsClient.getCodexAsset(serverId, {
+        path,
+        cwd: conversation?.cwd || agent?.cwd,
+      });
+      return asset.data_url || null;
+    },
+    [agent?.cwd, conversation?.cwd, serverId],
   );
   const handleComposerLayout = useCallback((event: LayoutChangeEvent) => {
     const nextHeight = Math.ceil(event.nativeEvent.layout.height);
@@ -1291,71 +1252,28 @@ export function CodexChatSurface({
         keyboardVerticalOffset={keyboardVerticalOffset}
         style={styles.chatBody}
       >
-        <TimelineTextSelectableContext.Provider value={!composerActive}>
-          <ScrollView
-            ref={scrollRef}
-            style={styles.timeline}
-            contentContainerStyle={timelineContentStyle}
-            scrollIndicatorInsets={{ bottom: timelineBottomPadding }}
-            keyboardShouldPersistTaps="handled"
-            showsVerticalScrollIndicator={false}
-            scrollEventThrottle={80}
-            onLayout={handleTimelineLayout}
-            onScroll={handleTimelineScroll}
-            onContentSizeChange={handleContentSizeChange}
-          >
-            {loading && timelineItems.length === 0 ? (
-              <EmptyState chrome={chrome} title="Loading Codex transcript" busy />
-            ) : error && timelineItems.length === 0 ? (
-              <EmptyState chrome={chrome} title="Transcript unavailable" body={error} />
-            ) : unavailable ? (
-              <EmptyState
-                chrome={chrome}
-                title="Native transcript unavailable"
-                body={conversationUnavailableReason(conversation?.reason)}
-                actionLabel="Terminal"
-                onAction={onSwitchToTerminal}
-              />
-            ) : timelineItems.length === 0 ? (
-              <EmptyState chrome={chrome} title="Waiting for Codex transcript" />
-            ) : (
-              timelineItems.map((item) => (
-                <ZenTimelineItemView
-                  key={item.id}
-                  serverId={serverId}
-                  cwd={conversation?.cwd || agent?.cwd}
-                  item={item}
-                  chrome={chrome}
-                  theme={theme}
-                  stream={
-                    item.type === "message" &&
-                    item.role === "assistant" &&
-                    item.id === streamingAssistantId
-                  }
-                />
-              ))
-            )}
-          </ScrollView>
-        </TimelineTextSelectableContext.Provider>
-
-        {showJumpToLatest ? (
-          <TouchableOpacity
-            accessibilityLabel="Jump to latest"
-            style={[
-              styles.jumpButton,
-              {
-                backgroundColor: chrome.surfaceMuted,
-                borderColor: chrome.borderStrong,
-                bottom: composerHeight + 12,
-              },
-            ]}
-            onPress={() => scrollToLatest(true)}
-            activeOpacity={0.82}
-          >
-            <Ionicons name="arrow-down" size={15} color={chrome.accent} />
-            <Text style={[styles.jumpButtonText, { color: chrome.textMuted }]}>Latest</Text>
-          </TouchableOpacity>
-        ) : null}
+        <CodexTimelineView
+          scrollRef={scrollRef}
+          items={timelineItems}
+          loading={loading}
+          error={error}
+          unavailable={unavailable}
+          unavailableReason={conversationUnavailableReason(conversation?.reason)}
+          textSelectable={!composerActive}
+          showJumpToLatest={showJumpToLatest}
+          jumpButtonBottom={composerHeight + 12}
+          streamingAssistantId={streamingAssistantId}
+          chrome={chrome}
+          theme={theme}
+          onLayout={handleTimelineLayout}
+          onScroll={handleTimelineScroll}
+          onContentSizeChange={handleContentSizeChange}
+          onJumpToLatest={() => scrollToLatest(true)}
+          onUnavailableAction={onSwitchToTerminal}
+          loadAssetPreview={loadTimelineAssetPreview}
+          formatPatchPath={patchDisplayPath}
+          truncateBody={truncateRunes}
+        />
 
         <View
           onLayout={handleComposerLayout}
@@ -1823,55 +1741,6 @@ function filterSlashCommands(commands: CodexSlashCommand[], commandQuery: string
     .filter((entry) => Number.isFinite(entry.score))
     .sort((a, b) => a.score - b.score || a.index - b.index)
     .map((entry) => entry.command);
-}
-
-function ZenTimelineItemView({
-  serverId,
-  cwd,
-  item,
-  chrome,
-  theme,
-  stream,
-}: {
-  serverId: string;
-  cwd?: string;
-  item: ZenTimelineItem;
-  chrome: TerminalThemeChrome;
-  theme: TerminalThemePalette;
-  stream: boolean;
-}) {
-  if (item.type === "message") {
-    if (item.role === "user") {
-      return <ZenUserMessage item={item} chrome={chrome} theme={theme} />;
-    }
-    return (
-      <ZenAssistantMessage
-        item={item}
-        chrome={chrome}
-        theme={theme}
-        stream={stream}
-      />
-    );
-  }
-  if (item.type === "plan") {
-    return <ZenPlanUpdate item={item} chrome={chrome} theme={theme} />;
-  }
-  return (
-    <ZenActivityEvent
-      item={item}
-      chrome={chrome}
-      theme={theme}
-      loadAssetPreview={async (path) => {
-        if (!serverId) {
-          return null;
-        }
-        const asset = await wsClient.getCodexAsset(serverId, { path, cwd });
-        return asset.data_url || null;
-      }}
-      formatPatchPath={patchDisplayPath}
-      truncateBody={truncateRunes}
-    />
-  );
 }
 
 function buildZenTimeline(events: CodexConversationEvent[]): ZenTimelineItem[] {
@@ -2351,6 +2220,10 @@ function isLowSignalToolEvent(name: string, input: string) {
   return false;
 }
 
+function isEventRunning(event: CodexConversationEvent) {
+  return event.status === "running";
+}
+
 function toolActivityHeading(event: CodexConversationEvent, running: boolean) {
   const name = (event.tool_name || event.title || "tool").trim().replace(/^functions\./, "");
   if (name === "view_image") {
@@ -2821,423 +2694,6 @@ function isToolMetadataLine(line: string) {
   );
 }
 
-function isRecentTimestamp(value?: string) {
-  if (!value) {
-    return false;
-  }
-  const time = new Date(value).getTime();
-  if (!Number.isFinite(time)) {
-    return false;
-  }
-  return Date.now() - time <= 90_000;
-}
-
-function TimelineEvent({
-  serverId,
-  cwd,
-  event,
-  chrome,
-  theme,
-}: {
-  serverId: string;
-  cwd?: string;
-  event: CodexConversationEvent;
-  chrome: TerminalThemeChrome;
-  theme: TerminalThemePalette;
-}) {
-  switch (event.kind) {
-    case "user_message":
-      return (
-        <View style={styles.userRow}>
-          <View
-            style={[
-              styles.messageBubble,
-              styles.userBubble,
-              { backgroundColor: chrome.accentSoft, borderColor: chrome.borderStrong },
-            ]}
-          >
-            <MessageBody value={event.body || ""} chrome={chrome} theme={theme} compact />
-          </View>
-        </View>
-      );
-    case "assistant_message":
-      return (
-        <View style={styles.assistantRow}>
-          <View style={[styles.assistantAvatar, { backgroundColor: chrome.accentSoft }]}>
-            <Ionicons name="sparkles-outline" size={14} color={chrome.accent} />
-          </View>
-          <View
-            style={[
-              styles.assistantBlock,
-              { borderColor: chrome.border, backgroundColor: chrome.surface },
-            ]}
-          >
-            {event.title ? (
-              <Text style={[styles.messageEyebrow, { color: chrome.textSubtle }]}>
-                {event.title}
-              </Text>
-            ) : null}
-            <MessageBody value={event.body || ""} chrome={chrome} theme={theme} />
-          </View>
-        </View>
-      );
-    case "command":
-      return <CommandEvent event={event} chrome={chrome} theme={theme} />;
-    case "tool":
-      return <ToolEvent serverId={serverId} cwd={cwd} event={event} chrome={chrome} theme={theme} />;
-    case "patch":
-      return <PatchEvent event={event} chrome={chrome} theme={theme} />;
-    case "commentary":
-      return <CommentaryEvent event={event} chrome={chrome} theme={theme} />;
-    case "status":
-    default:
-      return (
-        <View style={styles.statusRow}>
-          <Ionicons name="ellipse" size={6} color={chrome.textSubtle} />
-          <Text style={[styles.statusText, { color: chrome.textMuted }]}>
-            {[event.title, event.body].filter(Boolean).join(" · ")}
-          </Text>
-        </View>
-      );
-  }
-}
-
-function CommentaryEvent({
-  event,
-  chrome,
-  theme,
-}: {
-  event: CodexConversationEvent;
-  chrome: TerminalThemeChrome;
-  theme: TerminalThemePalette;
-}) {
-  const [expanded, setExpanded] = useState(false);
-  const textSelectable = useContext(TimelineTextSelectableContext);
-  const title = event.title || "Reasoning";
-  const body = event.body || "";
-  const shouldCollapse =
-    body.length > COMMENTARY_PREVIEW_CHARS ||
-    body.split("\n").length > COMMENTARY_PREVIEW_LINES;
-
-  return (
-    <View
-      style={[
-        styles.commentaryRow,
-        { backgroundColor: chrome.surfaceMuted, borderColor: chrome.border },
-      ]}
-    >
-      <Ionicons name="bulb-outline" size={14} color={theme.yellow} />
-      <View style={styles.commentaryContent}>
-        <Text style={[styles.commentaryTitle, { color: chrome.textMuted }]} numberOfLines={1}>
-          {title}
-        </Text>
-        {body ? (
-          <Text
-            selectable={textSelectable}
-            style={[styles.commentaryText, { color: chrome.textSubtle }]}
-            numberOfLines={expanded ? undefined : COMMENTARY_PREVIEW_LINES}
-          >
-            {body}
-          </Text>
-        ) : null}
-        {shouldCollapse ? (
-          <TouchableOpacity
-            style={styles.commentaryToggle}
-            onPress={() => setExpanded((value) => !value)}
-            activeOpacity={0.76}
-          >
-            <Text style={[styles.toolToggleText, { color: chrome.accent }]}>
-              {expanded ? "Show less" : "Show more"}
-            </Text>
-            <Ionicons
-              name={expanded ? "chevron-up" : "chevron-down"}
-              size={14}
-              color={chrome.accent}
-            />
-          </TouchableOpacity>
-        ) : null}
-      </View>
-    </View>
-  );
-}
-
-function CommandEvent({
-  event,
-  chrome,
-  theme,
-}: {
-  event: CodexConversationEvent;
-  chrome: TerminalThemeChrome;
-  theme: TerminalThemePalette;
-}) {
-  const [expanded, setExpanded] = useState(false);
-  const textSelectable = useContext(TimelineTextSelectableContext);
-  const failed = event.status === "failed" || (event.exit_code ?? 0) !== 0;
-  const icon = event.status === "running"
-    ? "time-outline"
-    : failed
-      ? "close-circle-outline"
-      : "checkmark-circle-outline";
-  const iconColor = event.status === "running"
-    ? theme.yellow
-    : failed
-      ? theme.red
-      : theme.green;
-  const output = cleanToolOutput(event.body || "");
-  const shouldCollapseOutput =
-    output.length > COMMAND_OUTPUT_PREVIEW_CHARS ||
-    output.split("\n").length > COMMAND_OUTPUT_PREVIEW_LINES;
-
-  return (
-    <View
-      style={[
-        styles.toolBlock,
-        { backgroundColor: chrome.surfaceMuted, borderColor: chrome.border },
-      ]}
-    >
-      <View style={styles.toolHeader}>
-        <Ionicons name={icon} size={15} color={iconColor} />
-        <Text style={[styles.toolTitle, { color: chrome.textMuted }]} numberOfLines={1}>
-          {event.exit_code === undefined ? "Command" : `Command exit ${event.exit_code}`}
-        </Text>
-        {event.status === "running" ? (
-          <ActivityIndicator size="small" color={theme.yellow} />
-        ) : null}
-      </View>
-      <Text
-        selectable={textSelectable}
-        style={[styles.commandText, { color: chrome.text }]}
-        numberOfLines={4}
-      >
-        {event.command}
-      </Text>
-      {output ? (
-        <Text
-          selectable={textSelectable}
-          style={[styles.toolBody, { color: chrome.textSubtle, borderColor: chrome.border }]}
-          numberOfLines={expanded ? undefined : COMMAND_OUTPUT_PREVIEW_LINES}
-        >
-          {output}
-        </Text>
-      ) : null}
-      {shouldCollapseOutput ? (
-        <TouchableOpacity
-          style={styles.toolToggle}
-          onPress={() => setExpanded((value) => !value)}
-          activeOpacity={0.76}
-        >
-          <Text style={[styles.toolToggleText, { color: chrome.accent }]}>
-            {expanded ? "Show less" : "Show more"}
-          </Text>
-          <Ionicons
-            name={expanded ? "chevron-up" : "chevron-down"}
-            size={14}
-            color={chrome.accent}
-          />
-        </TouchableOpacity>
-      ) : null}
-    </View>
-  );
-}
-
-function ToolEvent({
-  serverId,
-  cwd,
-  event,
-  chrome,
-  theme,
-}: {
-  serverId: string;
-  cwd?: string;
-  event: CodexConversationEvent;
-  chrome: TerminalThemeChrome;
-  theme: TerminalThemePalette;
-}) {
-  const [expanded, setExpanded] = useState(false);
-  const [assetPreviewUri, setAssetPreviewUri] = useState<string | null>(null);
-  const [assetPreviewFailed, setAssetPreviewFailed] = useState(false);
-  const textSelectable = useContext(TimelineTextSelectableContext);
-  const presentation = useMemo(() => toolPresentation(event), [event]);
-  const running = isEventRunning(event);
-  const failed = isEventFailed(event);
-  const input = event.input || "";
-  const output = cleanToolOutput(event.output || event.body || "");
-  const imagePreviewUri = presentation.previewUri || assetPreviewUri || "";
-  const showRawInput = Boolean(input) && (expanded || presentation.fields.length === 0);
-  const inputCollapsed =
-    input.length > TOOL_PAYLOAD_PREVIEW_CHARS ||
-    input.split("\n").length > TOOL_PAYLOAD_PREVIEW_LINES;
-  const outputCollapsed =
-    output.length > TOOL_PAYLOAD_PREVIEW_CHARS ||
-    output.split("\n").length > TOOL_PAYLOAD_PREVIEW_LINES;
-  const shouldCollapsePayload = inputCollapsed || outputCollapsed;
-  const statusText = running ? "Running" : failed ? "Failed" : "Done";
-  const iconColor = running ? theme.yellow : failed ? theme.red : theme.cyan;
-  const outputLabel = failed ? "Error" : presentation.rawOutputLabel;
-
-  useEffect(() => {
-    let cancelled = false;
-    setAssetPreviewUri(null);
-    setAssetPreviewFailed(false);
-    if (!presentation.localImagePath || !serverId) {
-      return () => {
-        cancelled = true;
-      };
-    }
-    void wsClient
-      .getCodexAsset(serverId, { path: presentation.localImagePath, cwd })
-      .then((asset) => {
-        if (!cancelled && asset.data_url) {
-          setAssetPreviewUri(asset.data_url);
-        }
-      })
-      .catch(() => {
-        if (!cancelled) {
-          setAssetPreviewFailed(true);
-        }
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [cwd, presentation.localImagePath, serverId]);
-
-  return (
-    <View
-      style={[
-        styles.toolBlock,
-        { backgroundColor: chrome.surfaceMuted, borderColor: chrome.border },
-      ]}
-    >
-      <View style={styles.toolHeader}>
-        <Ionicons name={presentation.icon} size={15} color={iconColor} />
-        <View style={styles.toolTitleGroup}>
-          <Text style={[styles.toolTitle, { color: chrome.textMuted }]} numberOfLines={1}>
-            {presentation.title}
-          </Text>
-          {presentation.subtitle ? (
-            <Text style={[styles.toolSubtitle, { color: chrome.textSubtle }]} numberOfLines={1}>
-              {presentation.subtitle}
-            </Text>
-          ) : null}
-        </View>
-        <View
-          style={[
-            styles.toolStatusPill,
-            {
-              backgroundColor: failed
-                ? theme.red + "22"
-                : running
-                  ? theme.yellow + "22"
-                  : chrome.surface,
-              borderColor: failed ? theme.red : running ? theme.yellow : chrome.border,
-            },
-          ]}
-        >
-          <Text
-            style={[
-              styles.toolStatusText,
-              { color: failed ? theme.red : running ? theme.yellow : chrome.textSubtle },
-            ]}
-          >
-            {statusText}
-          </Text>
-        </View>
-        {running ? <ActivityIndicator size="small" color={theme.yellow} /> : null}
-      </View>
-
-      {imagePreviewUri ? (
-        <Image
-          source={{ uri: imagePreviewUri }}
-          style={[styles.toolImagePreview, { borderColor: chrome.border }]}
-          resizeMode="cover"
-        />
-      ) : presentation.localImagePath ? (
-        <View
-          style={[
-            styles.toolImagePlaceholder,
-            { borderColor: chrome.border, backgroundColor: chrome.surface },
-          ]}
-        >
-          <Ionicons
-            name={assetPreviewFailed ? "image-outline" : "sync-outline"}
-            size={18}
-            color={assetPreviewFailed ? chrome.textSubtle : theme.yellow}
-          />
-          <Text style={[styles.toolImagePlaceholderText, { color: chrome.textSubtle }]}>
-            {assetPreviewFailed ? "Preview unavailable" : "Loading preview"}
-          </Text>
-        </View>
-      ) : null}
-
-      {presentation.fields.length > 0 ? (
-        <View style={styles.toolFieldList}>
-          {presentation.fields.map((field) => (
-            <View key={`${field.label}:${field.value}`} style={styles.toolFieldRow}>
-              <Text style={[styles.toolFieldLabel, { color: chrome.textSubtle }]}>
-                {field.label}
-              </Text>
-              <Text
-                selectable={textSelectable}
-                style={[
-                  styles.toolFieldValue,
-                  field.mono ? styles.toolFieldValueMono : null,
-                  { color: chrome.text },
-                ]}
-                numberOfLines={3}
-              >
-                {field.value}
-              </Text>
-            </View>
-          ))}
-        </View>
-      ) : null}
-
-      {showRawInput ? (
-        <View style={styles.toolPayloadSection}>
-          <Text style={[styles.toolLabel, { color: chrome.textSubtle }]}>
-            {presentation.rawInputLabel}
-          </Text>
-          <Text
-            selectable={textSelectable}
-            style={[styles.toolBody, { color: chrome.textSubtle, borderColor: chrome.border }]}
-            numberOfLines={expanded ? undefined : TOOL_PAYLOAD_PREVIEW_LINES}
-          >
-            {input}
-          </Text>
-        </View>
-      ) : null}
-      {output ? (
-        <View style={styles.toolPayloadSection}>
-          <Text style={[styles.toolLabel, { color: chrome.textSubtle }]}>{outputLabel}</Text>
-          <Text
-            selectable={textSelectable}
-            style={[styles.toolBody, { color: chrome.textSubtle, borderColor: chrome.border }]}
-            numberOfLines={expanded ? undefined : TOOL_PAYLOAD_PREVIEW_LINES}
-          >
-            {output}
-          </Text>
-        </View>
-      ) : null}
-      {shouldCollapsePayload || (input && presentation.fields.length > 0) ? (
-        <TouchableOpacity
-          style={styles.toolToggle}
-          onPress={() => setExpanded((value) => !value)}
-          activeOpacity={0.76}
-        >
-          <Text style={[styles.toolToggleText, { color: chrome.accent }]}>
-            {expanded ? "Show less" : "Show more"}
-          </Text>
-          <Ionicons
-            name={expanded ? "chevron-up" : "chevron-down"}
-            size={14}
-            color={chrome.accent}
-          />
-        </TouchableOpacity>
-      ) : null}
-    </View>
-  );
-}
-
 function toolPresentation(event: CodexConversationEvent): ToolPresentation {
   const name = (event.tool_name || event.title || "tool").trim() || "tool";
   const input = parseToolPayload(event.input);
@@ -3248,50 +2704,22 @@ function toolPresentation(event: CodexConversationEvent): ToolPresentation {
     const path = stringField(inputObject, "path") || stringField(inputObject, "image_url");
     const previewUri = previewableImageUri(path);
     return {
-      title: "Image preview",
       subtitle: path ? basename(path) : undefined,
       icon: "image-outline",
-      fields: compactFields([
-        { label: "Path", value: path, mono: true },
-        { label: "Detail", value: stringField(inputObject, "detail") },
-      ]),
-      previewUri,
       localImagePath: path && !previewUri ? path : undefined,
-      rawInputLabel: "Image request",
-      rawOutputLabel: "Result",
     };
   }
 
   if (name === "write_stdin") {
     const chars = stringField(inputObject, "chars");
     const sessionId = valueField(inputObject, "session_id");
-    const title = chars === ""
-      ? "Terminal poll"
-      : chars === "\u0003"
-        ? "Terminal interrupt"
-        : "Terminal input";
-    const text = chars === "\u0003" ? "Ctrl-C" : displayControlText(chars);
     return {
-      title,
       subtitle: sessionId ? `session ${sessionId}` : undefined,
       icon: chars === ""
         ? "sync-outline"
         : chars === "\u0003"
           ? "stop-circle-outline"
           : "return-down-forward-outline",
-      fields: compactFields([
-        { label: "Session", value: sessionId, mono: true },
-        { label: "Text", value: text, mono: true },
-        {
-          label: "Wait",
-          value: valueField(inputObject, "yield_time_ms")
-            ? `${valueField(inputObject, "yield_time_ms")} ms`
-            : "",
-        },
-        { label: "Max output", value: valueField(inputObject, "max_output_tokens") },
-      ]),
-      rawInputLabel: "Terminal request",
-      rawOutputLabel: "Terminal output",
     };
   }
 
@@ -3301,47 +2729,24 @@ function toolPresentation(event: CodexConversationEvent): ToolPresentation {
       ? previewableImageUri(browserFile)
       : undefined;
     return {
-      title: `Browser ${browserAction}`,
       subtitle: stringField(inputObject, "element") || stringField(inputObject, "url") || undefined,
       icon: browserToolIcon(name),
-      fields: compactFields([
-        { label: "Element", value: stringField(inputObject, "element") },
-        { label: "Target", value: stringField(inputObject, "target"), mono: true },
-        { label: "URL", value: stringField(inputObject, "url"), mono: true },
-        { label: "Text", value: stringField(inputObject, "text"), mono: true },
-        { label: "Key", value: stringField(inputObject, "key"), mono: true },
-        { label: "File", value: browserFile, mono: true },
-      ]),
-      previewUri: browserPreviewUri,
       localImagePath: browserFile && !browserPreviewUri && looksLikeImagePath(browserFile)
         ? browserFile
         : undefined,
-      rawInputLabel: "Browser request",
-      rawOutputLabel: "Browser result",
     };
   }
 
   if (name.includes("query_docs") || name.includes("resolve_library_id")) {
     return {
-      title: name.includes("resolve") ? "Library lookup" : "Docs lookup",
       subtitle: stringField(inputObject, "libraryId") || stringField(inputObject, "libraryName") || undefined,
       icon: "library-outline",
-      fields: compactFields([
-        { label: "Library", value: stringField(inputObject, "libraryId") || stringField(inputObject, "libraryName"), mono: true },
-        { label: "Query", value: stringField(inputObject, "query") },
-      ]),
-      rawInputLabel: "Docs request",
-      rawOutputLabel: "Docs result",
     };
   }
 
   if (name.includes("search_query") || name === "web.run") {
     return {
-      title: "Web lookup",
       icon: "search-outline",
-      fields: genericToolFields(inputObject),
-      rawInputLabel: "Search request",
-      rawOutputLabel: "Search result",
     };
   }
 
@@ -3355,35 +2760,20 @@ function toolPresentation(event: CodexConversationEvent): ToolPresentation {
       )
       .filter(Boolean);
     return {
-      title: "Parallel tools",
       subtitle: names.length ? names.slice(0, 2).join(", ") : undefined,
       icon: "git-network-outline",
-      fields: compactFields([
-        { label: "Calls", value: toolUses.length ? String(toolUses.length) : "" },
-        { label: "Tools", value: names.slice(0, 4).join(", ") },
-      ]),
-      rawInputLabel: "Parallel request",
-      rawOutputLabel: "Parallel result",
     };
   }
 
   if (name.includes("spawn_agent") || name.includes("send_input") || name.includes("wait_agent")) {
     return {
-      title: "Agent coordination",
       subtitle: stringField(inputObject, "target") || firstString(inputObject.targets),
       icon: "git-network-outline",
-      fields: genericToolFields(inputObject),
-      rawInputLabel: "Agent request",
-      rawOutputLabel: "Agent result",
     };
   }
 
   return {
-    title: humanizeToolName(name),
     icon: "cube-outline",
-    fields: genericToolFields(inputObject),
-    rawInputLabel: "Input",
-    rawOutputLabel: "Output",
   };
 }
 
@@ -3420,44 +2810,6 @@ function valueField(record: Record<string, unknown>, key: string): string {
 
 function firstString(value: unknown): string {
   return Array.isArray(value) && typeof value[0] === "string" ? value[0] : "";
-}
-
-function compactFields(fields: ToolField[]): ToolField[] {
-  return fields.filter((field) => field.value.trim().length > 0).slice(0, 6);
-}
-
-function genericToolFields(record: Record<string, unknown>): ToolField[] {
-  const hidden = new Set(["max_output_tokens", "yield_time_ms", "timeout_ms", "response_length"]);
-  return Object.entries(record)
-    .filter(([key]) => !hidden.has(key))
-    .map(([key, value]) => ({
-      label: humanizeToolName(key),
-      value: summarizeToolValue(value),
-      mono: typeof value !== "boolean",
-    }))
-    .filter((field) => field.value.length > 0)
-    .slice(0, 6);
-}
-
-function summarizeToolValue(value: unknown): string {
-  if (typeof value === "string") {
-    return displayControlText(value);
-  }
-  if (typeof value === "number" || typeof value === "boolean") {
-    return String(value);
-  }
-  if (Array.isArray(value)) {
-    const scalar = value.filter((item) => ["string", "number", "boolean"].includes(typeof item));
-    if (scalar.length > 0) {
-      return scalar.slice(0, 3).map(String).join(", ");
-    }
-    return `${value.length} item${value.length === 1 ? "" : "s"}`;
-  }
-  if (isRecord(value)) {
-    const keys = Object.keys(value);
-    return keys.length ? keys.slice(0, 4).join(", ") : "";
-  }
-  return "";
 }
 
 function displayControlText(value: string): string {
@@ -3562,140 +2914,6 @@ function uniqueStrings(values: string[]) {
   return result;
 }
 
-function isEventRunning(event: CodexConversationEvent) {
-  return event.status === "running";
-}
-
-function isEventFailed(event: CodexConversationEvent) {
-  return event.status === "failed" || (event.exit_code ?? 0) !== 0;
-}
-
-function PatchEvent({
-  event,
-  chrome,
-  theme,
-}: {
-  event: CodexConversationEvent;
-  chrome: TerminalThemeChrome;
-  theme: TerminalThemePalette;
-}) {
-  const [expanded, setExpanded] = useState(false);
-  const textSelectable = useContext(TimelineTextSelectableContext);
-  const visibleFiles = event.files?.slice(0, 5) ?? [];
-  const hiddenFileCount = Math.max((event.files?.length ?? 0) - visibleFiles.length, 0);
-  const patch = event.body || "";
-  return (
-    <View
-      style={[
-        styles.toolBlock,
-        { backgroundColor: chrome.surfaceMuted, borderColor: chrome.border },
-      ]}
-    >
-      <View style={styles.toolHeader}>
-        <Ionicons name="construct-outline" size={15} color={theme.cyan} />
-        <Text style={[styles.toolTitle, { color: chrome.textMuted }]} numberOfLines={1}>
-          {event.title || "Patch"}
-        </Text>
-      </View>
-      {visibleFiles.length ? (
-        <View style={styles.fileList}>
-          {visibleFiles.map((file) => (
-            <View
-              key={file}
-              style={[
-                styles.filePill,
-                { borderColor: chrome.border, backgroundColor: chrome.surface },
-              ]}
-            >
-              <Text style={[styles.filePillText, { color: chrome.textMuted }]} numberOfLines={1}>
-                {file}
-              </Text>
-            </View>
-          ))}
-          {hiddenFileCount > 0 ? (
-            <View
-              style={[
-                styles.filePill,
-                { borderColor: chrome.border, backgroundColor: chrome.surface },
-              ]}
-            >
-              <Text style={[styles.filePillText, { color: chrome.textMuted }]}>
-                +{hiddenFileCount}
-              </Text>
-            </View>
-          ) : null}
-        </View>
-      ) : null}
-      {patch && expanded ? (
-        <Text
-          selectable={textSelectable}
-          style={[styles.toolBody, { color: chrome.textSubtle, borderColor: chrome.border }]}
-          numberOfLines={COMMAND_OUTPUT_PREVIEW_LINES}
-        >
-          {patch}
-        </Text>
-      ) : null}
-      {patch ? (
-        <TouchableOpacity
-          style={styles.toolToggle}
-          onPress={() => setExpanded((value) => !value)}
-          activeOpacity={0.76}
-        >
-          <Text style={[styles.toolToggleText, { color: chrome.accent }]}>
-            {expanded ? "Hide patch" : "View patch"}
-          </Text>
-          <Ionicons
-            name={expanded ? "chevron-up" : "chevron-down"}
-            size={14}
-            color={chrome.accent}
-          />
-        </TouchableOpacity>
-      ) : null}
-    </View>
-  );
-}
-
-function EmptyState({
-  chrome,
-  title,
-  body,
-  busy = false,
-  actionLabel,
-  onAction,
-}: {
-  chrome: TerminalThemeChrome;
-  title: string;
-  body?: string;
-  busy?: boolean;
-  actionLabel?: string;
-  onAction?: () => void;
-}) {
-  return (
-    <View style={styles.emptyState}>
-      {busy ? <ActivityIndicator color={chrome.accent} /> : null}
-      <Text style={[styles.emptyTitle, { color: chrome.text }]}>{title}</Text>
-      {body ? (
-        <Text style={[styles.emptyBody, { color: chrome.textMuted }]}>{body}</Text>
-      ) : null}
-      {actionLabel && onAction ? (
-        <TouchableOpacity
-          style={[
-            styles.emptyAction,
-            { backgroundColor: chrome.surfaceMuted, borderColor: chrome.border },
-          ]}
-          onPress={onAction}
-          activeOpacity={0.82}
-        >
-          <Ionicons name="terminal-outline" size={15} color={chrome.textMuted} />
-          <Text style={[styles.emptyActionText, { color: chrome.textMuted }]}>
-            {actionLabel}
-          </Text>
-        </TouchableOpacity>
-      ) : null}
-    </View>
-  );
-}
-
 function conversationUnavailableReason(reason?: string) {
   switch (reason) {
     case "not_codex":
@@ -3741,316 +2959,9 @@ const styles = StyleSheet.create({
     minHeight: 0,
     position: "relative",
   },
-  timeline: {
-    flex: 1,
-    minHeight: 0,
-  },
   chatBody: {
     flex: 1,
     minHeight: 0,
-  },
-  timelineContent: {
-    paddingHorizontal: 16,
-    paddingTop: 14,
-    paddingBottom: 22,
-  },
-  userRow: {
-    flexDirection: "row",
-    justifyContent: "flex-end",
-    marginBottom: 10,
-  },
-  messageBubble: {
-    maxWidth: "88%",
-    borderRadius: 8,
-    borderWidth: StyleSheet.hairlineWidth,
-    paddingHorizontal: 12,
-    paddingVertical: 10,
-  },
-  userBubble: {
-    alignSelf: "flex-end",
-  },
-  assistantRow: {
-    flexDirection: "row",
-    alignItems: "flex-start",
-    gap: 8,
-    marginBottom: 10,
-  },
-  assistantAvatar: {
-    width: 26,
-    height: 26,
-    borderRadius: 8,
-    alignItems: "center",
-    justifyContent: "center",
-    marginTop: 1,
-  },
-  assistantBlock: {
-    flex: 1,
-    minWidth: 0,
-    borderRadius: 8,
-    borderWidth: StyleSheet.hairlineWidth,
-    paddingHorizontal: 12,
-    paddingVertical: 10,
-  },
-  messageEyebrow: {
-    marginBottom: 5,
-    fontSize: 10,
-    lineHeight: 13,
-    textTransform: "uppercase",
-    fontFamily: Typography.uiFontMedium,
-  },
-  toolBlock: {
-    marginLeft: 34,
-    marginBottom: 10,
-    borderRadius: 8,
-    borderWidth: StyleSheet.hairlineWidth,
-    paddingHorizontal: 11,
-    paddingVertical: 9,
-  },
-  toolHeader: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 7,
-  },
-  toolTitleGroup: {
-    flex: 1,
-    minWidth: 0,
-  },
-  toolTitle: {
-    minWidth: 0,
-    fontSize: 11,
-    lineHeight: 15,
-    fontFamily: Typography.uiFontMedium,
-  },
-  toolSubtitle: {
-    flex: 1,
-    minWidth: 0,
-    marginTop: 1,
-    fontSize: 10,
-    lineHeight: 13,
-    fontFamily: Typography.uiFont,
-  },
-  toolStatusPill: {
-    minHeight: 20,
-    borderRadius: 7,
-    borderWidth: StyleSheet.hairlineWidth,
-    paddingHorizontal: 7,
-    alignItems: "center",
-    justifyContent: "center",
-  },
-  toolStatusText: {
-    fontSize: 10,
-    lineHeight: 13,
-    fontFamily: Typography.uiFontMedium,
-  },
-  commandText: {
-    marginTop: 6,
-    fontSize: 12,
-    lineHeight: 17,
-    fontFamily: Typography.terminalFont,
-  },
-  toolBody: {
-    marginTop: 7,
-    borderLeftWidth: StyleSheet.hairlineWidth,
-    paddingLeft: 9,
-    fontSize: 11,
-    lineHeight: 16,
-    fontFamily: Typography.terminalFont,
-  },
-  toolPayloadSection: {
-    marginTop: 8,
-  },
-  toolImagePreview: {
-    marginTop: 9,
-    width: "100%",
-    height: 160,
-    borderRadius: 8,
-    borderWidth: StyleSheet.hairlineWidth,
-    overflow: "hidden",
-  },
-  toolImagePlaceholder: {
-    marginTop: 9,
-    minHeight: 96,
-    borderRadius: 8,
-    borderWidth: StyleSheet.hairlineWidth,
-    alignItems: "center",
-    justifyContent: "center",
-    gap: 6,
-  },
-  toolImagePlaceholderText: {
-    fontSize: 11,
-    lineHeight: 15,
-    fontFamily: Typography.uiFont,
-  },
-  toolFieldList: {
-    marginTop: 8,
-    gap: 6,
-  },
-  toolFieldRow: {
-    flexDirection: "row",
-    alignItems: "flex-start",
-    gap: 8,
-  },
-  toolFieldLabel: {
-    width: 72,
-    flexShrink: 0,
-    fontSize: 10,
-    lineHeight: 16,
-    fontFamily: Typography.uiFontMedium,
-    textTransform: "uppercase",
-  },
-  toolFieldValue: {
-    flex: 1,
-    minWidth: 0,
-    fontSize: 12,
-    lineHeight: 16,
-    fontFamily: Typography.uiFont,
-  },
-  toolFieldValueMono: {
-    fontFamily: Typography.terminalFont,
-    fontSize: 11,
-    lineHeight: 16,
-  },
-  toolLabel: {
-    fontSize: 10,
-    lineHeight: 13,
-    fontFamily: Typography.uiFontMedium,
-    textTransform: "uppercase",
-  },
-  toolToggle: {
-    alignSelf: "flex-start",
-    marginTop: 8,
-    minHeight: 28,
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 4,
-  },
-  toolToggleText: {
-    fontSize: 12,
-    lineHeight: 16,
-    fontFamily: Typography.uiFontMedium,
-  },
-  fileList: {
-    flexDirection: "row",
-    flexWrap: "wrap",
-    gap: 6,
-    marginTop: 8,
-  },
-  filePill: {
-    maxWidth: "100%",
-    borderRadius: 7,
-    borderWidth: StyleSheet.hairlineWidth,
-    paddingHorizontal: 8,
-    paddingVertical: 4,
-  },
-  filePillText: {
-    fontSize: 10,
-    lineHeight: 13,
-    fontFamily: Typography.terminalFont,
-  },
-  statusRow: {
-    marginBottom: 10,
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 8,
-    paddingHorizontal: 4,
-  },
-  statusText: {
-    flex: 1,
-    minWidth: 0,
-    fontSize: 12,
-    lineHeight: 17,
-    fontFamily: Typography.uiFont,
-  },
-  commentaryRow: {
-    marginLeft: 34,
-    marginBottom: 10,
-    borderRadius: 8,
-    borderWidth: StyleSheet.hairlineWidth,
-    paddingHorizontal: 10,
-    paddingVertical: 8,
-    flexDirection: "row",
-    alignItems: "flex-start",
-    gap: 7,
-  },
-  commentaryText: {
-    flex: 1,
-    minWidth: 0,
-    fontSize: 12,
-    lineHeight: 17,
-    fontFamily: Typography.uiFont,
-  },
-  commentaryContent: {
-    flex: 1,
-    minWidth: 0,
-  },
-  commentaryTitle: {
-    marginBottom: 2,
-    fontSize: 11,
-    lineHeight: 15,
-    fontFamily: Typography.uiFontMedium,
-  },
-  commentaryToggle: {
-    alignSelf: "flex-start",
-    marginTop: 5,
-    minHeight: 24,
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 4,
-  },
-  jumpButton: {
-    position: "absolute",
-    right: 14,
-    bottom: 76,
-    minHeight: 32,
-    borderRadius: 8,
-    borderWidth: StyleSheet.hairlineWidth,
-    paddingHorizontal: 10,
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "center",
-    gap: 6,
-    zIndex: 4,
-  },
-  jumpButtonText: {
-    fontSize: 12,
-    lineHeight: 16,
-    fontFamily: Typography.uiFontMedium,
-  },
-  emptyState: {
-    minHeight: 260,
-    alignItems: "center",
-    justifyContent: "center",
-    paddingHorizontal: 24,
-  },
-  emptyTitle: {
-    marginTop: 10,
-    fontSize: 16,
-    lineHeight: 21,
-    textAlign: "center",
-    fontFamily: Typography.uiFontMedium,
-  },
-  emptyBody: {
-    marginTop: 7,
-    fontSize: 12,
-    lineHeight: 18,
-    textAlign: "center",
-    fontFamily: Typography.uiFont,
-  },
-  emptyAction: {
-    marginTop: 14,
-    minHeight: 36,
-    borderRadius: 8,
-    borderWidth: StyleSheet.hairlineWidth,
-    paddingHorizontal: 12,
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "center",
-    gap: 7,
-  },
-  emptyActionText: {
-    fontSize: 13,
-    lineHeight: 17,
-    fontFamily: Typography.uiFontMedium,
   },
   composer: {
     paddingHorizontal: 12,
