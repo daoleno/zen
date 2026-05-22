@@ -4,7 +4,6 @@ import {
   Keyboard,
   ScrollView,
   StyleSheet,
-  TouchableOpacity,
   View,
 } from "react-native";
 import { Ionicons, MaterialCommunityIcons } from "@expo/vector-icons";
@@ -20,6 +19,7 @@ import {
   TerminalAccessoryGitDiffChip,
   type TerminalAccessoryGitDiff,
 } from "./TerminalAccessoryGitDiffChip";
+import { TerminalAccessoryIconButton } from "./TerminalAccessoryIconButton";
 import { TerminalAccessoryShortcutButton } from "./TerminalAccessoryShortcutButton";
 import type { TerminalSurfaceHandle } from "./TerminalSurface";
 
@@ -202,37 +202,29 @@ export function TerminalAccessoryBar({
           />
         ) : null}
 
-        <TouchableOpacity
+        <TerminalAccessoryIconButton
           accessibilityLabel="Attach"
-          style={[
-            styles.attachBtn,
-            !uploadEnabled && styles.attachBtnDisabled,
-          ]}
           onPress={() => void handleFilePick()}
           disabled={!uploadEnabled}
-          activeOpacity={0.75}
         >
           <Ionicons
             name="attach-outline"
             size={16}
             color={uploadEnabled ? chrome.textMuted : chrome.textSubtle}
           />
-        </TouchableOpacity>
+        </TerminalAccessoryIconButton>
 
-        <TouchableOpacity
+        <TerminalAccessoryIconButton
           accessibilityLabel={keyboardVisible ? "Hide keyboard" : "Show keyboard"}
-          accessibilityRole="button"
           accessibilityState={{ selected: keyboardVisible }}
-          style={styles.keyboardBtn}
           onPress={handleKeyboardToggle}
-          activeOpacity={0.75}
         >
           <MaterialCommunityIcons
             name="keyboard-outline"
             size={18}
             color={keyboardVisible ? chrome.accent : chrome.textMuted}
           />
-        </TouchableOpacity>
+        </TerminalAccessoryIconButton>
 
         {SHORTCUT_KEYS.map((key) => {
           if (key.type === "modifier") {
@@ -296,22 +288,5 @@ const styles = StyleSheet.create({
   shortcutRowContent: {
     paddingLeft: 12,
     paddingRight: 12,
-  },
-  attachBtn: {
-    width: 36,
-    height: 36,
-    marginRight: 2,
-    alignItems: "center",
-    justifyContent: "center",
-  },
-  attachBtnDisabled: {
-    opacity: 0.35,
-  },
-  keyboardBtn: {
-    width: 36,
-    height: 36,
-    marginRight: 2,
-    alignItems: "center",
-    justifyContent: "center",
   },
 });
