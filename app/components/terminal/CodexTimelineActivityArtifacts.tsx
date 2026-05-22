@@ -12,7 +12,7 @@ import type {
   TerminalThemePalette,
 } from "../../constants/terminalThemes";
 import { Typography } from "../../constants/tokens";
-import type { PatchFileSummary } from "./CodexTimelineActivity";
+import type { PatchFileSummary } from "./CodexTimelineActivityTypes";
 
 export function ActivityPreview({
   uri,

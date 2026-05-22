@@ -5,9 +5,11 @@ import type {
 } from "../../constants/terminalThemes";
 import {
   ZenActivityEvent,
-  type PatchFileSummary,
-  type ZenActivityTimelineItem,
 } from "./CodexTimelineActivity";
+import type {
+  PatchFileSummary,
+  ZenActivityTimelineItem,
+} from "./CodexTimelineActivityTypes";
 import {
   ZenPlanUpdate,
   type ZenPlanTimelineItem,

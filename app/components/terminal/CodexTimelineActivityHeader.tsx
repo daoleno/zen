@@ -8,14 +8,12 @@ import {
 import { Ionicons } from "@expo/vector-icons";
 import type { TerminalThemeChrome } from "../../constants/terminalThemes";
 import { Typography } from "../../constants/tokens";
-
-export type ActivityHeaderIconName =
-  React.ComponentProps<typeof Ionicons>["name"];
+import type { TimelineActivityIconName } from "./CodexTimelineActivityTypes";
 
 interface CodexTimelineActivityHeaderProps {
   title: string;
   tone: "neutral" | "running" | "success" | "failed";
-  icon: ActivityHeaderIconName;
+  icon: TimelineActivityIconName;
   detail?: string;
   canExpand: boolean;
   expanded: boolean;

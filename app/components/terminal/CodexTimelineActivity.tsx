@@ -13,32 +13,11 @@ import {
 import { CodexTimelineActivityDetails } from "./CodexTimelineActivityDetails";
 import {
   CodexTimelineActivityHeader,
-  type ActivityHeaderIconName,
 } from "./CodexTimelineActivityHeader";
-
-export type PatchOperation = "add" | "delete" | "update";
-
-export type PatchFileSummary = {
-  path: string;
-  movePath?: string;
-  operation: PatchOperation;
-  added: number;
-  removed: number;
-};
-
-export interface ZenActivityTimelineItem {
-  type: "activity";
-  id: string;
-  timestamp?: string;
-  title: string;
-  tone: "neutral" | "running" | "success" | "failed";
-  icon: ActivityHeaderIconName;
-  detail?: string;
-  body?: string;
-  files?: string[];
-  fileSummaries?: PatchFileSummary[];
-  previewPath?: string;
-}
+import type {
+  PatchFileSummary,
+  ZenActivityTimelineItem,
+} from "./CodexTimelineActivityTypes";
 
 interface ZenActivityEventProps {
   item: ZenActivityTimelineItem;

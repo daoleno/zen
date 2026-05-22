@@ -9,15 +9,15 @@ import type {
   TerminalThemePalette,
 } from "../../constants/terminalThemes";
 import { Typography } from "../../constants/tokens";
-import type {
-  PatchFileSummary,
-  ZenActivityTimelineItem,
-} from "./CodexTimelineActivity";
 import {
   ActivityFileList,
   ActivityPreview,
   PatchFileSummaryList,
 } from "./CodexTimelineActivityArtifacts";
+import type {
+  PatchFileSummary,
+  ZenActivityTimelineItem,
+} from "./CodexTimelineActivityTypes";
 
 interface CodexTimelineActivityDetailsProps {
   item: ZenActivityTimelineItem;

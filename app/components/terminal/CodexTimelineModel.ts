@@ -4,7 +4,7 @@ import {
   type PatchFileSummary,
   type PatchOperation,
   type ZenActivityTimelineItem,
-} from "./CodexTimelineActivity";
+} from "./CodexTimelineActivityTypes";
 import type { DisplayAttachment } from "./CodexTimelineMessage";
 import type { ZenTimelineItem } from "./CodexTimelineItemView";
 import { slashCommandIcon } from "./codexSlashCommandPresentation";

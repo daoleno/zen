@@ -21,7 +21,7 @@ import {
   ZenTimelineItemView,
   type ZenTimelineItem,
 } from "./CodexTimelineItemView";
-import type { PatchFileSummary } from "./CodexTimelineActivity";
+import type { PatchFileSummary } from "./CodexTimelineActivityTypes";
 
 interface CodexTimelineViewProps {
   scrollRef: React.RefObject<ScrollView | null>;
