@@ -4,12 +4,12 @@ import {
   Text,
   View,
 } from "react-native";
-import { Ionicons } from "@expo/vector-icons";
 import type {
   TerminalThemeChrome,
   TerminalThemePalette,
 } from "../../constants/terminalThemes";
 import { Typography } from "../../constants/tokens";
+import { ZenPlanHeader } from "./CodexTimelinePlanHeader";
 import { ZenPlanSteps } from "./CodexTimelinePlanSteps";
 import type { ZenPlanTimelineItem } from "./CodexTimelinePlanTypes";
 
@@ -24,15 +24,7 @@ export function ZenPlanUpdate({
 }) {
   return (
     <View style={styles.wrap}>
-      <View style={styles.row}>
-        <Ionicons name="checkbox-outline" size={13} color={theme.cyan} />
-        <Text
-          style={[styles.title, { color: chrome.textSubtle }]}
-          numberOfLines={1}
-        >
-          Updated Plan
-        </Text>
-      </View>
+      <ZenPlanHeader accentColor={theme.cyan} chrome={chrome} />
       <View
         style={[
           styles.expanded,
@@ -55,20 +47,6 @@ const styles = StyleSheet.create({
   wrap: {
     marginBottom: 10,
     paddingLeft: 1,
-  },
-  row: {
-    alignSelf: "flex-start",
-    minHeight: 24,
-    maxWidth: "100%",
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 6,
-    opacity: 0.78,
-  },
-  title: {
-    fontSize: 11,
-    lineHeight: 15,
-    fontFamily: Typography.uiFontMedium,
   },
   expanded: {
     marginTop: 6,
