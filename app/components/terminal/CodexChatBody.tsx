@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useState } from "react";
+import React from "react";
 import {
   StyleSheet,
   type LayoutChangeEvent,
@@ -21,6 +21,7 @@ import type { ComposerAttachment, ChatCommandEvent } from "./CodexChatSession";
 import type { CodexComposerPresentation } from "./CodexChatSurfaceModel";
 import { CodexChatComposer } from "./CodexChatComposer";
 import { CodexChatTimelineSection } from "./CodexChatTimelineSection";
+import { useCodexComposerLayout } from "./useCodexComposerLayout";
 
 interface CodexChatBodyProps {
   screenFocused: boolean;
@@ -101,23 +102,9 @@ export function CodexChatBody({
   onSubmit,
   onSendPress,
 }: CodexChatBodyProps) {
-  const [composerHeight, setComposerHeight] = useState(76);
-  const handleComposerLayout = useCallback(
-    (event: LayoutChangeEvent) => {
-      const nextHeight = Math.ceil(event.nativeEvent.layout.height);
-      setComposerHeight((previous) => {
-        if (Math.abs(previous - nextHeight) <= 1) {
-          return previous;
-        }
-        return nextHeight;
-      });
-    },
-    [],
-  );
-
-  useEffect(() => {
-    onComposerHeightChange(composerHeight);
-  }, [composerHeight, onComposerHeightChange]);
+  const { composerHeight, handleComposerLayout } = useCodexComposerLayout({
+    onHeightChange: onComposerHeightChange,
+  });
 
   return (
     <KeyboardAvoidingView
