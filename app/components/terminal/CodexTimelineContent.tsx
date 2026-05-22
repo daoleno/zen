@@ -1,44 +1,27 @@
 import React from "react";
-import type {
-  TerminalThemeChrome,
-  TerminalThemePalette,
-} from "../../constants/terminalThemes";
+import type { TerminalThemeChrome } from "../../constants/terminalThemes";
 import { CodexTimelineEmptyState } from "./CodexTimelineEmptyState";
-import {
-  ZenTimelineItemView,
-  type ZenTimelineItem,
-} from "./CodexTimelineItemView";
-import type { PatchFileSummary } from "./CodexTimelineActivityTypes";
+import type { ZenTimelineItem } from "./CodexTimelineItemView";
 
-interface CodexTimelineContentProps {
+interface CodexTimelineEmptyContentProps {
   items: ZenTimelineItem[];
   loading: boolean;
   error?: string | null;
   unavailable: boolean | null;
   unavailableReason?: string;
-  streamingAssistantId: string;
   chrome: TerminalThemeChrome;
-  theme: TerminalThemePalette;
   onUnavailableAction(): void;
-  loadAssetPreview(path: string): Promise<string | null>;
-  formatPatchPath(file: PatchFileSummary): string;
-  truncateBody(value: string, limit: number): string;
 }
 
-export function CodexTimelineContent({
+export function CodexTimelineEmptyContent({
   items,
   loading,
   error,
   unavailable,
   unavailableReason,
-  streamingAssistantId,
   chrome,
-  theme,
   onUnavailableAction,
-  loadAssetPreview,
-  formatPatchPath,
-  truncateBody,
-}: CodexTimelineContentProps) {
+}: CodexTimelineEmptyContentProps) {
   if (loading && items.length === 0) {
     return (
       <CodexTimelineEmptyState
@@ -80,24 +63,5 @@ export function CodexTimelineContent({
     );
   }
 
-  return (
-    <>
-      {items.map((item) => (
-        <ZenTimelineItemView
-          key={item.id}
-          item={item}
-          chrome={chrome}
-          theme={theme}
-          stream={
-            item.type === "message" &&
-            item.role === "assistant" &&
-            item.id === streamingAssistantId
-          }
-          loadAssetPreview={loadAssetPreview}
-          formatPatchPath={formatPatchPath}
-          truncateBody={truncateBody}
-        />
-      ))}
-    </>
-  );
+  return null;
 }

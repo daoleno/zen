@@ -1,8 +1,9 @@
 import React from "react";
 import {
-  ScrollView,
+  FlatList,
   StyleSheet,
   type LayoutChangeEvent,
+  type ListRenderItemInfo,
   type NativeScrollEvent,
   type NativeSyntheticEvent,
 } from "react-native";
@@ -10,14 +11,17 @@ import type {
   TerminalThemeChrome,
   TerminalThemePalette,
 } from "../../constants/terminalThemes";
-import { CodexTimelineContent } from "./CodexTimelineContent";
+import { CodexTimelineEmptyContent } from "./CodexTimelineContent";
 import { CodexTimelineJumpButton } from "./CodexTimelineJumpButton";
 import { TimelineTextSelectableContext } from "./TimelineTextSelectableContext";
-import type { ZenTimelineItem } from "./CodexTimelineItemView";
+import {
+  ZenTimelineItemView,
+  type ZenTimelineItem,
+} from "./CodexTimelineItemView";
 import type { PatchFileSummary } from "./CodexTimelineActivityTypes";
 
 interface CodexTimelineViewProps {
-  scrollRef: React.RefObject<ScrollView | null>;
+  scrollRef: React.RefObject<FlatList | null>;
   items: ZenTimelineItem[];
   loading: boolean;
   error?: string | null;
@@ -63,10 +67,62 @@ export function CodexTimelineView({
   formatPatchPath,
   truncateBody,
 }: CodexTimelineViewProps) {
+  const renderItem = React.useCallback(
+    ({ item }: ListRenderItemInfo<ZenTimelineItem>) => (
+      <ZenTimelineItemView
+        item={item}
+        chrome={chrome}
+        theme={theme}
+        stream={
+          item.type === "message" &&
+          item.role === "assistant" &&
+          item.id === streamingAssistantId
+        }
+        loadAssetPreview={loadAssetPreview}
+        formatPatchPath={formatPatchPath}
+        truncateBody={truncateBody}
+      />
+    ),
+    [
+      chrome,
+      formatPatchPath,
+      loadAssetPreview,
+      streamingAssistantId,
+      theme,
+      truncateBody,
+    ],
+  );
+
+  const listEmptyComponent = React.useMemo(
+    () => (
+      <CodexTimelineEmptyContent
+        items={items}
+        loading={loading}
+        error={error}
+        unavailable={unavailable}
+        unavailableReason={unavailableReason}
+        chrome={chrome}
+        onUnavailableAction={onUnavailableAction}
+      />
+    ),
+    [
+      chrome,
+      error,
+      items,
+      loading,
+      onUnavailableAction,
+      unavailable,
+      unavailableReason,
+    ],
+  );
+
   return (
     <TimelineTextSelectableContext.Provider value={textSelectable}>
-      <ScrollView
+      <FlatList
         ref={scrollRef}
+        data={items}
+        keyExtractor={(item) => item.id}
+        renderItem={renderItem}
         style={styles.timeline}
         contentContainerStyle={styles.timelineContent}
         scrollIndicatorInsets={{ bottom: TIMELINE_BOTTOM_PADDING }}
@@ -76,22 +132,13 @@ export function CodexTimelineView({
         onLayout={onLayout}
         onScroll={onScroll}
         onContentSizeChange={onContentSizeChange}
-      >
-        <CodexTimelineContent
-          items={items}
-          loading={loading}
-          error={error}
-          unavailable={unavailable}
-          unavailableReason={unavailableReason}
-          streamingAssistantId={streamingAssistantId}
-          chrome={chrome}
-          theme={theme}
-          onUnavailableAction={onUnavailableAction}
-          loadAssetPreview={loadAssetPreview}
-          formatPatchPath={formatPatchPath}
-          truncateBody={truncateBody}
-        />
-      </ScrollView>
+        ListEmptyComponent={listEmptyComponent}
+        initialNumToRender={12}
+        maxToRenderPerBatch={8}
+        updateCellsBatchingPeriod={32}
+        windowSize={7}
+        removeClippedSubviews
+      />
 
       {showJumpToLatest ? (
         <CodexTimelineJumpButton

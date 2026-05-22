@@ -1,10 +1,10 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
+  type FlatList,
   Keyboard,
   Platform,
   type NativeScrollEvent,
   type NativeSyntheticEvent,
-  type ScrollView,
   type TextInput,
 } from "react-native";
 import type { AgentStatus } from "../../constants/tokens";
@@ -68,7 +68,7 @@ export function useCodexComposerPresentation({
 }
 
 export function usePinnedTimeline(itemCount: number) {
-  const scrollRef = useRef<ScrollView>(null);
+  const scrollRef = useRef<FlatList>(null);
   const nearBottomRef = useRef(true);
   const contentReadyRef = useRef(false);
   const [showJumpToLatest, setShowJumpToLatest] = useState(false);
@@ -77,9 +77,14 @@ export function usePinnedTimeline(itemCount: number) {
     (animated: boolean = true, delay: number = SCROLL_TO_BOTTOM_LAYOUT_DELAY_MS) => {
       nearBottomRef.current = true;
       setShowJumpToLatest(false);
-      setTimeout(() => {
+      const scroll = () => {
         scrollRef.current?.scrollToEnd({ animated });
-      }, delay);
+      };
+      if (delay <= 0) {
+        scroll();
+        return;
+      }
+      setTimeout(scroll, delay);
     },
     [],
   );
@@ -114,7 +119,7 @@ export function usePinnedTimeline(itemCount: number) {
   const handleContentSizeChange = useCallback(() => {
     if (!contentReadyRef.current || nearBottomRef.current) {
       contentReadyRef.current = true;
-      scrollToLatest(true);
+      scrollToLatest(false, 0);
     } else if (itemCount > 0) {
       setShowJumpToLatest(true);
     }

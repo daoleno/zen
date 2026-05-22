@@ -3,7 +3,7 @@ import {
   type LayoutChangeEvent,
   type NativeScrollEvent,
   type NativeSyntheticEvent,
-  type ScrollView,
+  type FlatList,
   type TextInput,
 } from "react-native";
 import type {
@@ -31,7 +31,7 @@ export interface CodexChatBodyProps {
   chatCommandEvents: ChatCommandEvent[];
   loading: boolean;
   error?: string | null;
-  scrollRef: React.RefObject<ScrollView | null>;
+  scrollRef: React.RefObject<FlatList | null>;
   showJumpToLatest: boolean;
   onTimelineLayout(event: LayoutChangeEvent): void;
   onTimelineScroll(event: NativeSyntheticEvent<NativeScrollEvent>): void;

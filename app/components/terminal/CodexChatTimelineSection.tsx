@@ -1,9 +1,9 @@
 import React, { useCallback } from "react";
 import {
   type LayoutChangeEvent,
+  type FlatList,
   type NativeScrollEvent,
   type NativeSyntheticEvent,
-  type ScrollView,
 } from "react-native";
 import type {
   TerminalThemeChrome,
@@ -33,7 +33,7 @@ interface CodexChatTimelineSectionProps {
   error?: string | null;
   composerActive: boolean;
   composerHeight: number;
-  scrollRef: React.RefObject<ScrollView | null>;
+  scrollRef: React.RefObject<FlatList | null>;
   showJumpToLatest: boolean;
   chrome: TerminalThemeChrome;
   theme: TerminalThemePalette;
@@ -93,7 +93,7 @@ export function CodexChatTimelineSection({
       onLayout={onLayout}
       onScroll={onScroll}
       onContentSizeChange={onContentSizeChange}
-      onJumpToLatest={() => onScrollToLatest(true)}
+      onJumpToLatest={() => onScrollToLatest(false, 0)}
       onUnavailableAction={onUnavailableAction}
       loadAssetPreview={loadAssetPreview}
       formatPatchPath={patchDisplayPath}

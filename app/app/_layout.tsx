@@ -1,4 +1,4 @@
-import { useEffect, useRef } from "react";
+import { useCallback, useEffect, useRef } from "react";
 import { Alert, AppState, AppStateStatus, Platform } from "react-native";
 import { Stack, useRouter, useSegments } from "expo-router";
 import { StatusBar } from "expo-status-bar";
@@ -167,7 +167,13 @@ function AppContent() {
   const notificationsEnabledRef = useRef(false);
   const previousAgentStatesRef = useRef(new Map<string, Agent["status"]>());
   const handledConnectLinksRef = useRef(new Set<string>());
-  const isTerminalRouteActive = segments[0] === "terminal";
+  const rootSegment = segments[0];
+  const rootSegmentRef = useRef(rootSegment);
+  const isTerminalRouteActive = rootSegment === "terminal";
+
+  useEffect(() => {
+    rootSegmentRef.current = rootSegment;
+  }, [rootSegment]);
 
   useEffect(() => {
     const breadcrumb = getNativeTerminalCrashBreadcrumb();
@@ -199,7 +205,7 @@ function AppContent() {
     );
   }, []);
 
-  const importConnectLink = async (
+  const importConnectLink = useCallback(async (
     rawValue: string | null | undefined,
   ): Promise<boolean> => {
     const trimmed = rawValue?.trim() || "";
@@ -228,7 +234,7 @@ function AppContent() {
       console.log("Failed to import connect link:", error);
       return false;
     }
-  };
+  }, [router]);
 
   // Auto-connect on app start.
   useEffect(() => {
@@ -367,7 +373,7 @@ function AppContent() {
         }
 
         const onboarded = await isOnboarded();
-        if (!onboarded && segments[0] !== "onboarding") {
+        if (!onboarded && rootSegmentRef.current !== "onboarding") {
           router.replace("/onboarding");
           return;
         }
@@ -410,7 +416,7 @@ function AppContent() {
       wsClient.off("work_digest_provider", onWorkDigestProvider);
       wsClient.off("connected", onConnectedFetchWork);
     };
-  }, [dispatch, workDispatch, router, segments]);
+  }, [dispatch, importConnectLink, router, workDispatch]);
 
   useEffect(() => {
     const subscription = Linking.addEventListener("url", (event) => {
@@ -420,7 +426,7 @@ function AppContent() {
     return () => {
       subscription.remove();
     };
-  }, [router]);
+  }, [importConnectLink]);
 
   useEffect(() => {
     const subscription = AppState.addEventListener("change", (nextState) => {
