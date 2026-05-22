@@ -4,14 +4,12 @@ import {
   Keyboard,
   ScrollView,
   StyleSheet,
-  Text,
   TouchableOpacity,
   View,
 } from "react-native";
 import { Ionicons, MaterialCommunityIcons } from "@expo/vector-icons";
 import * as DocumentPicker from "expo-document-picker";
 import * as Haptics from "expo-haptics";
-import { Typography } from "../../constants/tokens";
 import {
   buildTerminalChrome,
   resolveTerminalTheme,
@@ -22,6 +20,7 @@ import {
   TerminalAccessoryGitDiffChip,
   type TerminalAccessoryGitDiff,
 } from "./TerminalAccessoryGitDiffChip";
+import { TerminalAccessoryShortcutButton } from "./TerminalAccessoryShortcutButton";
 import type { TerminalSurfaceHandle } from "./TerminalSurface";
 
 // Keys that fire once per tap
@@ -239,48 +238,37 @@ export function TerminalAccessoryBar({
           if (key.type === "modifier") {
             const active = ctrlArmed;
             return (
-              <TouchableOpacity
+              <TerminalAccessoryShortcutButton
                 key="Ctrl"
-                style={styles.shortcutBtn}
+                label="Ctrl"
+                chrome={chrome}
+                active={active}
                 onPress={handleCtrlToggle}
-                activeOpacity={0.6}
-              >
-                <Text style={[styles.shortcutText, { color: active ? chrome.accent : chrome.textMuted }]}>
-                  Ctrl
-                </Text>
-              </TouchableOpacity>
+              />
             );
           }
 
           if (key.type === "hold") {
             return (
-              <TouchableOpacity
+              <TerminalAccessoryShortcutButton
                 key={key.sequence}
-                style={styles.shortcutBtn}
+                label={key.label}
+                chrome={chrome}
                 onPressIn={() => handleHoldPressIn(key.sequence)}
                 onPressOut={stopRepeat}
                 delayLongPress={9999}
-                activeOpacity={0.6}
-              >
-                <Text style={[styles.shortcutText, { color: chrome.textMuted }]}>
-                  {key.label}
-                </Text>
-              </TouchableOpacity>
+              />
             );
           }
 
           // tap key
           return (
-            <TouchableOpacity
+            <TerminalAccessoryShortcutButton
               key={key.sequence}
-              style={styles.shortcutBtn}
+              label={key.label}
+              chrome={chrome}
               onPress={() => handleTapSequence(key.sequence)}
-              activeOpacity={0.6}
-            >
-              <Text style={[styles.shortcutText, { color: chrome.textMuted }]}>
-                {key.label}
-              </Text>
-            </TouchableOpacity>
+            />
           );
         })}
       </ScrollView>
@@ -325,16 +313,5 @@ const styles = StyleSheet.create({
     marginRight: 2,
     alignItems: "center",
     justifyContent: "center",
-  },
-  shortcutBtn: {
-    paddingHorizontal: 10,
-    height: 36,
-    marginRight: 2,
-    alignItems: "center",
-    justifyContent: "center",
-  },
-  shortcutText: {
-    fontSize: 13,
-    fontFamily: Typography.terminalFont,
   },
 });
