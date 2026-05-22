@@ -9,15 +9,11 @@ import type {
   CodexConversationEvent,
 } from "../../services/codexConversation";
 import type { ConnectionIssue } from "../../services/connectionIssue";
-import { wsClient, type CodexSlashCommand } from "../../services/websocket";
+import type { CodexSlashCommand } from "../../services/websocket";
 import {
   type ChatCommandEvent,
   type ComposerAttachment,
 } from "./CodexChatSession";
-import {
-  slashCommandTerminalText,
-} from "./CodexSlashCommands";
-import { SCROLL_TO_BOTTOM_LAYOUT_DELAY_MS } from "./CodexChatSurfaceHooks";
 import {
   buildCodexComposerMessage,
   buildCodexStatusMeta,
@@ -26,6 +22,7 @@ import { useCodexComposerAttachments } from "./useCodexComposerAttachments";
 import { useCodexMessageTransport } from "./useCodexMessageTransport";
 import { useCodexNativeCommands } from "./useCodexNativeCommands";
 import { useCodexSlashCommandRouter } from "./useCodexSlashCommandRouter";
+import { useCodexTerminalCommandActions } from "./useCodexTerminalCommandActions";
 
 interface GitDiffAction {
   label: string;
@@ -124,57 +121,21 @@ export function useCodexChatController({
     !sending &&
     !uploading;
 
-  const clearComposerForLocalCommand = useCallback(() => {
-    setDraft("");
-    setAttachments([]);
-    scrollToLatest(true);
-    setTimeout(() => {
-      pinToBottomIfNeeded(true);
-    }, SCROLL_TO_BOTTOM_LAYOUT_DELAY_MS);
-  }, [pinToBottomIfNeeded, scrollToLatest, setAttachments, setDraft]);
-
-  const openSlashCommandInTerminal = useCallback(
-    (command: CodexSlashCommand, rawText?: string) => {
-      const text = slashCommandTerminalText(command, rawText);
-      const previousDraft = draft;
-      const previousAttachments = attachments;
-      setDraft("");
-      setAttachments([]);
-      try {
-        wsClient.sendInput(serverId, agentId, `${text}\n`);
-        recordChatCommandEvent({
-          command,
-          tone: "neutral",
-          title: "Opened in Terminal",
-          detail: command.value,
-          body: command.interactive
-            ? "This command uses the terminal renderer because it can open prompts, pickers, or terminal-only output."
-            : "This command was routed to the terminal renderer.",
-        });
-        onSwitchToTerminal();
-      } catch {
-        setDraft(previousDraft);
-        setAttachments(previousAttachments);
-        recordChatCommandEvent({
-          command,
-          tone: "failed",
-          title: "Command Not Sent",
-          detail: command.value,
-          body: "Zen could not send this command to the terminal session.",
-        });
-      }
-    },
-    [
-      agentId,
-      attachments,
-      draft,
-      onSwitchToTerminal,
-      recordChatCommandEvent,
-      serverId,
-      setAttachments,
-      setDraft,
-    ],
-  );
+  const {
+    clearComposerForLocalCommand,
+    openSlashCommandInTerminal,
+  } = useCodexTerminalCommandActions({
+    serverId,
+    agentId,
+    draft,
+    attachments,
+    setDraft,
+    setAttachments,
+    recordChatCommandEvent,
+    scrollToLatest,
+    pinToBottomIfNeeded,
+    onSwitchToTerminal,
+  });
 
   const runNativeSlashCommand = useCodexNativeCommands({
     agent,
