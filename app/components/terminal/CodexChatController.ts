@@ -1,5 +1,4 @@
 import {
-  useMemo,
   type SetStateAction,
 } from "react";
 import type { Agent, ConnectionState } from "../../store/agents";
@@ -13,10 +12,8 @@ import {
   type ChatCommandEvent,
   type ComposerAttachment,
 } from "./CodexChatSession";
-import {
-  buildCodexStatusMeta,
-} from "./CodexChatControllerModel";
 import { useCodexComposerAttachments } from "./useCodexComposerAttachments";
+import { useCodexControllerPresentation } from "./useCodexControllerPresentation";
 import { useCodexDraftSubmission } from "./useCodexDraftSubmission";
 import { useCodexMessageTransport } from "./useCodexMessageTransport";
 import { useCodexNativeCommands } from "./useCodexNativeCommands";
@@ -101,24 +98,20 @@ export function useCodexChatController({
     scrollToLatest,
   });
 
-  const statusMeta = useMemo(
-    () =>
-      buildCodexStatusMeta({
-        agent,
-        connectionState,
-        connectionIssue,
-        conversation,
-        events,
-        sending,
-      }),
-    [agent, connectionIssue, connectionState, conversation, events, sending],
-  );
-
-  const canSend =
-    connectionState === "connected" &&
-    (draft.trim().length > 0 || attachments.length > 0) &&
-    !sending &&
-    !uploading;
+  const {
+    statusMeta,
+    canSend,
+  } = useCodexControllerPresentation({
+    agent,
+    connectionState,
+    connectionIssue,
+    conversation,
+    events,
+    draft,
+    attachments,
+    sending,
+    uploading,
+  });
 
   const {
     clearComposerForLocalCommand,
