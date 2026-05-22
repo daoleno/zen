@@ -3,17 +3,17 @@ import {
   Keyboard,
   ScrollView,
   StyleSheet,
-  TextInput,
   TouchableOpacity,
   View,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
-import { Colors, Typography, useAppColors } from '../../constants/tokens';
+import { Colors, useAppColors } from '../../constants/tokens';
 import { AgentKindIcon } from './AgentKindIcon';
 import { DirectoryPicker } from './DirectoryPicker';
+import { NewTerminalAdvancedForm } from './NewTerminalAdvancedForm';
 import type { AgentKind } from '../../services/agentPresentation';
 import { CLAUDE_CODE_COMMAND, CODEX_COMMAND } from '../../services/agentCommands';
-import { AppButton, AppText, BottomSheetFrame, IconButton } from '../ui';
+import { AppButton, AppText, BottomSheetFrame } from '../ui';
 
 type ServerOption = {
   id: string;
@@ -117,6 +117,11 @@ export function NewTerminalSheet({
     });
   };
 
+  const handleOpenDirectoryPicker = () => {
+    Keyboard.dismiss();
+    setDirPickerOpen(true);
+  };
+
   const sheetContent = (
     <BottomSheetFrame
       visible={visible}
@@ -196,72 +201,19 @@ export function NewTerminalSheet({
         </TouchableOpacity>
 
         {advanced ? (
-          <View style={styles.advancedSection}>
-            <AppText variant="label" tone="secondary" style={styles.fieldLabel}>
-              Working Directory
-            </AppText>
-            <View style={styles.inputRow}>
-              <TextInput
-                style={[styles.input, styles.inputFlex]}
-                value={cwd}
-                onChangeText={setCwd}
-                placeholder="Leave empty for shell default"
-                placeholderTextColor={colors.textSecondary}
-                autoCapitalize="none"
-                autoCorrect={false}
-                autoComplete="off"
-              />
-              {selectedServerId ? (
-                <IconButton
-                  icon="folder-open-outline"
-                  size={38}
-                  iconSize={20}
-                  tone="input"
-                  style={styles.folderBtn}
-                  onPress={() => {
-                    Keyboard.dismiss();
-                    setDirPickerOpen(true);
-                  }}
-                />
-              ) : null}
-            </View>
-
-            <AppText variant="label" tone="secondary" style={styles.fieldLabel}>
-              Command
-            </AppText>
-            <TextInput
-              style={styles.input}
-              value={command}
-              onChangeText={setCommand}
-              placeholder="e.g. claude --dangerously-skip-permissions"
-              placeholderTextColor={colors.textSecondary}
-              autoCapitalize="none"
-              autoCorrect={false}
-              autoComplete="off"
-            />
-
-            <AppText variant="label" tone="secondary" style={styles.fieldLabel}>
-              Window Title
-            </AppText>
-            <TextInput
-              style={styles.input}
-              value={name}
-              onChangeText={setName}
-              placeholder="Optional"
-              placeholderTextColor={colors.textSecondary}
-              autoCapitalize="none"
-              autoCorrect={false}
-              autoComplete="off"
-            />
-
-            <AppButton
-              label={submitting ? 'Starting...' : 'Launch'}
-              variant="primary"
-              onPress={handleAdvancedSubmit}
-              disabled={!canSubmit}
-              style={styles.launchBtn}
-            />
-          </View>
+          <NewTerminalAdvancedForm
+            cwd={cwd}
+            command={command}
+            name={name}
+            canSubmit={canSubmit}
+            submitting={submitting}
+            canPickDirectory={Boolean(selectedServerId)}
+            onCwdChange={setCwd}
+            onCommandChange={setCommand}
+            onNameChange={setName}
+            onPickDirectory={handleOpenDirectoryPicker}
+            onSubmit={handleAdvancedSubmit}
+          />
         ) : null}
 
         <AppButton
@@ -349,48 +301,12 @@ function createStyles(colors: typeof Colors) {
     flex: 1,
   },
 
-  // Advanced
   advancedToggle: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: 6,
     marginTop: 8,
     paddingVertical: 6,
-  },
-  advancedSection: {
-    marginTop: 4,
-    gap: 4,
-  },
-  fieldLabel: {
-    marginTop: 8,
-    marginBottom: 4,
-  },
-  inputRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 8,
-  },
-  inputFlex: {
-    flex: 1,
-  },
-  input: {
-    minHeight: 38,
-    borderRadius: 10,
-    paddingHorizontal: 12,
-    color: colors.textPrimary,
-    fontSize: 13,
-    fontFamily: Typography.terminalFont,
-    backgroundColor: colors.inputBackground,
-    borderWidth: StyleSheet.hairlineWidth,
-    borderColor: colors.borderSubtle,
-  },
-  folderBtn: {
-    alignSelf: 'stretch',
-  },
-  launchBtn: {
-    minHeight: 36,
-    borderRadius: 10,
-    marginTop: 10,
   },
 
   // Cancel
