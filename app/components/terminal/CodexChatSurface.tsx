@@ -1,14 +1,11 @@
 import React, {
   useCallback,
   useEffect,
-  useState,
 } from "react";
 import {
   StyleSheet,
   View,
-  type LayoutChangeEvent,
 } from "react-native";
-import { KeyboardAvoidingView } from "react-native-keyboard-controller";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import type { AgentStatus } from "../../constants/tokens";
 import type {
@@ -17,11 +14,10 @@ import type {
 } from "../../constants/terminalThemes";
 import type { Agent, ConnectionState } from "../../store/agents";
 import type { ConnectionIssue } from "../../services/connectionIssue";
-import { CodexChatComposer } from "./CodexChatComposer";
+import { CodexChatBody } from "./CodexChatBody";
 import { useCodexChatController } from "./CodexChatController";
 import { CodexChatHeader } from "./CodexChatHeader";
 import { useCodexChatSession } from "./CodexChatSession";
-import { CodexChatTimelineSection } from "./CodexChatTimelineSection";
 import { useCodexSlashCommands } from "./CodexSlashCommands";
 import {
   useCodexComposerPresentation,
@@ -66,7 +62,6 @@ export function CodexChatSurface({
     connectionState,
     screenFocused,
   });
-  const [composerHeight, setComposerHeight] = useState(76);
   const session = useCodexChatSession({
     serverId,
     agentId,
@@ -161,16 +156,9 @@ export function CodexChatSurface({
     safeAreaTop: insets.top,
     safeAreaBottom: insets.bottom,
   });
-  const handleComposerLayout = useCallback((event: LayoutChangeEvent) => {
-    const nextHeight = Math.ceil(event.nativeEvent.layout.height);
-    setComposerHeight((previous) =>
-      Math.abs(previous - nextHeight) <= 1 ? previous : nextHeight,
-    );
-  }, []);
-
-  useEffect(() => {
+  const handleComposerHeightChange = useCallback(() => {
     pinToBottomIfNeeded(false);
-  }, [composerHeight, pinToBottomIfNeeded]);
+  }, [pinToBottomIfNeeded]);
 
   return (
     <View
@@ -185,69 +173,47 @@ export function CodexChatSurface({
         onSwitchToTerminal={onSwitchToTerminal}
       />
 
-      <KeyboardAvoidingView
-        behavior="padding"
-        enabled={screenFocused}
-        keyboardVerticalOffset={composerPresentation.keyboardVerticalOffset}
-        style={styles.chatBody}
-      >
-        <CodexChatTimelineSection
-          serverId={serverId}
-          agentCwd={agent?.cwd}
-          conversation={conversation}
-          events={events}
-          chatCommandEvents={chatCommandEvents}
-          loading={loading}
-          error={error}
-          composerActive={composerPresentation.active}
-          composerHeight={composerHeight}
-          scrollRef={scrollRef}
-          showJumpToLatest={showJumpToLatest}
-          chrome={chrome}
-          theme={theme}
-          onLayout={handleTimelineLayout}
-          onScroll={handleTimelineScroll}
-          onContentSizeChange={handleContentSizeChange}
-          onScrollToLatest={scrollToLatest}
-          onUnavailableAction={onSwitchToTerminal}
-        />
-
-        <CodexChatComposer
-          inputRef={inputRef}
-          draft={draft}
-          placeholder={composerPresentation.placeholder}
-          editable={connectionState === "connected"}
-          focused={composerFocused}
-          floating={composerPresentation.active}
-          canAttach={canAttach}
-          uploading={uploading}
-          sendEnabled={composerPresentation.sendEnabled}
-          sending={sending}
-          sendIcon={composerPresentation.sendIcon}
-          sendLabel={composerPresentation.sendLabel}
-          compactSendIcon={composerPresentation.showStopButton}
-          bottomPadding={composerPresentation.bottomPadding}
-          showCommandMenu={composerPresentation.showCommandMenu}
-          commandQuery={composerPresentation.commandQuery}
-          commands={composerPresentation.visibleSlashCommands}
-          attachments={attachments}
-          chrome={chrome}
-          theme={theme}
-          onLayout={handleComposerLayout}
-          onSelectCommand={pickSlashCommand}
-          onRemoveAttachment={removeAttachment}
-          onDraftChange={setDraft}
-          onUploadPress={() => void handleUploadAttachment()}
-          onInputPress={focusComposer}
-          onInputFocus={handleComposerFocus}
-          onInputBlur={handleComposerBlur}
-          onInputStart={handleComposerInputStart}
-          onSubmit={sendDraft}
-          onSendPress={
-            composerPresentation.showStopButton ? interruptCodex : sendDraft
-          }
-        />
-      </KeyboardAvoidingView>
+      <CodexChatBody
+        screenFocused={screenFocused}
+        serverId={serverId}
+        agentCwd={agent?.cwd}
+        conversation={conversation}
+        events={events}
+        chatCommandEvents={chatCommandEvents}
+        loading={loading}
+        error={error}
+        scrollRef={scrollRef}
+        showJumpToLatest={showJumpToLatest}
+        onTimelineLayout={handleTimelineLayout}
+        onTimelineScroll={handleTimelineScroll}
+        onTimelineContentSizeChange={handleContentSizeChange}
+        onScrollToLatest={scrollToLatest}
+        onComposerHeightChange={handleComposerHeightChange}
+        onUnavailableAction={onSwitchToTerminal}
+        inputRef={inputRef}
+        draft={draft}
+        editable={connectionState === "connected"}
+        composerFocused={composerFocused}
+        canAttach={canAttach}
+        uploading={uploading}
+        sending={sending}
+        attachments={attachments}
+        composerPresentation={composerPresentation}
+        chrome={chrome}
+        theme={theme}
+        onSelectCommand={pickSlashCommand}
+        onRemoveAttachment={removeAttachment}
+        onDraftChange={setDraft}
+        onUploadPress={() => void handleUploadAttachment()}
+        onInputPress={focusComposer}
+        onInputFocus={handleComposerFocus}
+        onInputBlur={handleComposerBlur}
+        onInputStart={handleComposerInputStart}
+        onSubmit={sendDraft}
+        onSendPress={
+          composerPresentation.showStopButton ? interruptCodex : sendDraft
+        }
+      />
     </View>
   );
 }
@@ -257,9 +223,5 @@ const styles = StyleSheet.create({
     flex: 1,
     minHeight: 0,
     position: "relative",
-  },
-  chatBody: {
-    flex: 1,
-    minHeight: 0,
   },
 });
