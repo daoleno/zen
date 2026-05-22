@@ -1,7 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   StyleSheet,
-  useColorScheme,
   useWindowDimensions,
 } from "react-native";
 import { useLocalSearchParams } from "expo-router";
@@ -9,12 +8,6 @@ import { StatusBar } from "expo-status-bar";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { useAgents } from "../../store/agents";
 import { useWork } from "../../store/work";
-import {
-  buildTerminalChrome,
-  isLightTerminalTheme,
-  resolveTerminalTheme,
-  resolveTerminalThemePreference,
-} from "../../constants/terminalThemes";
 import {
   DefaultCodexRenderMode,
   type StoredCodexRenderMode,
@@ -46,6 +39,7 @@ import { useTerminalPickerModel } from "./useTerminalPickerModel";
 import { useTerminalScreenStorage } from "./useTerminalScreenStorage";
 import { useTerminalSessionActions } from "./useTerminalSessionActions";
 import { useTerminalTabActions } from "./useTerminalTabActions";
+import { useTerminalThemeChrome } from "./useTerminalThemeChrome";
 
 export default function TerminalScreen() {
   const params = useLocalSearchParams<{ id?: string; serverId?: string }>();
@@ -55,7 +49,6 @@ export default function TerminalScreen() {
     agentId && serverId ? makeSessionKey(serverId, agentId) : null;
   const { state } = useAgents();
   const { state: workState } = useWork();
-  const colorScheme = useColorScheme();
   const { width: windowWidth } = useWindowDimensions();
   const [pickerVisible, setPickerVisible] = useState(false);
   const [renameVisible, setRenameVisible] = useState(false);
@@ -116,18 +109,8 @@ export default function TerminalScreen() {
     hydratedServerIds,
     liveAgentKeys,
   });
-  const themeName = useMemo(
-    () => resolveTerminalThemePreference(themePreference, colorScheme),
-    [themePreference, colorScheme],
-  );
-  const terminalTheme = useMemo(
-    () => resolveTerminalTheme(themeName),
-    [themeName],
-  );
-  const chromeColors = useMemo(
-    () => buildTerminalChrome(terminalTheme),
-    [terminalTheme],
-  );
+  const { chromeColors, statusBarStyle, terminalTheme, themeName } =
+    useTerminalThemeChrome(themePreference);
   const agent = sessionKey ? agentByKey.get(sessionKey) : undefined;
   const gitDiffCwd = typeof agent?.cwd === "string" ? agent.cwd.trim() : "";
   const presentedAgent = useMemo(
@@ -315,9 +298,7 @@ export default function TerminalScreen() {
       style={[styles.container, { backgroundColor: chromeColors.appBackground }]}
       edges={["top"]}
     >
-      <StatusBar
-        style={isLightTerminalTheme(terminalTheme) ? "dark" : "light"}
-      />
+      <StatusBar style={statusBarStyle} />
       <TerminalTopBar
         tabs={tabs}
         backgroundColor={terminalTheme.background}
