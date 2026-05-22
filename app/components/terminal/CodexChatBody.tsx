@@ -23,7 +23,7 @@ import { CodexChatComposer } from "./CodexChatComposer";
 import { CodexChatTimelineSection } from "./CodexChatTimelineSection";
 import { useCodexComposerLayout } from "./useCodexComposerLayout";
 
-interface CodexChatBodyProps {
+export interface CodexChatBodyProps {
   screenFocused: boolean;
   serverId: string;
   agentCwd?: string;

@@ -1,5 +1,4 @@
 import React, {
-  useCallback,
   useEffect,
 } from "react";
 import {
@@ -19,6 +18,7 @@ import { useCodexChatController } from "./CodexChatController";
 import { CodexChatHeader } from "./CodexChatHeader";
 import { useCodexChatSession } from "./CodexChatSession";
 import { useCodexSlashCommands } from "./CodexSlashCommands";
+import { useCodexChatBodyProps } from "./useCodexChatBodyProps";
 import {
   useCodexComposerPresentation,
   useCodexComposerInput,
@@ -88,36 +88,7 @@ export function CodexChatSurface({
     enabled: screenFocused && connectionState === "connected",
     onKeyboardShown: timeline.pinToBottomIfNeeded,
   });
-  const {
-    scrollRef,
-    showJumpToLatest,
-    scrollToLatest,
-    pinToBottomIfNeeded,
-    resetForConversation,
-    handleScroll: handleTimelineScroll,
-    handleContentSizeChange,
-    handleLayout: handleTimelineLayout,
-  } = timeline;
-  const {
-    inputRef,
-    focused: composerFocused,
-    focus: focusComposer,
-    handleFocus: handleComposerFocus,
-    handleBlur: handleComposerBlur,
-    handleInputStart: handleComposerInputStart,
-  } = composerInput;
-  const {
-    sending,
-    uploading,
-    statusMeta,
-    canAttach,
-    canSend,
-    sendDraft,
-    interruptCodex,
-    pickSlashCommand,
-    handleUploadAttachment,
-    removeAttachment,
-  } = useCodexChatController({
+  const controller = useCodexChatController({
     serverId,
     agentId,
     agent,
@@ -135,14 +106,14 @@ export function CodexChatSurface({
     onOpenGitDiff,
     recordChatCommandEvent,
     refreshConversation,
-    scrollToLatest,
-    pinToBottomIfNeeded,
-    focusComposer,
+    scrollToLatest: timeline.scrollToLatest,
+    pinToBottomIfNeeded: timeline.pinToBottomIfNeeded,
+    focusComposer: composerInput.focus,
   });
 
   useEffect(() => {
-    resetForConversation();
-  }, [conversationCacheKey, resetForConversation]);
+    timeline.resetForConversation();
+  }, [conversationCacheKey, timeline.resetForConversation]);
 
   const composerPresentation = useCodexComposerPresentation({
     draft,
@@ -150,15 +121,33 @@ export function CodexChatSurface({
     connectionState,
     agentStatus: agent?.status,
     attachmentCount: attachments.length,
-    sending,
-    canSend,
-    composerFocused,
+    sending: controller.sending,
+    canSend: controller.canSend,
+    composerFocused: composerInput.focused,
     safeAreaTop: insets.top,
     safeAreaBottom: insets.bottom,
   });
-  const handleComposerHeightChange = useCallback(() => {
-    pinToBottomIfNeeded(false);
-  }, [pinToBottomIfNeeded]);
+  const bodyProps = useCodexChatBodyProps({
+    screenFocused,
+    serverId,
+    agent,
+    connectionState,
+    conversation,
+    events,
+    chatCommandEvents,
+    loading,
+    error,
+    draft,
+    attachments,
+    composerPresentation,
+    timeline,
+    composerInput,
+    controller,
+    chrome,
+    theme,
+    onSwitchToTerminal,
+    setDraft,
+  });
 
   return (
     <View
@@ -166,54 +155,14 @@ export function CodexChatSurface({
     >
       <CodexChatHeader
         status={(agent?.status || "unknown") as AgentStatus}
-        statusMeta={statusMeta}
+        statusMeta={controller.statusMeta}
         theme={theme}
         chrome={chrome}
         gitDiff={gitDiff}
         onSwitchToTerminal={onSwitchToTerminal}
       />
 
-      <CodexChatBody
-        screenFocused={screenFocused}
-        serverId={serverId}
-        agentCwd={agent?.cwd}
-        conversation={conversation}
-        events={events}
-        chatCommandEvents={chatCommandEvents}
-        loading={loading}
-        error={error}
-        scrollRef={scrollRef}
-        showJumpToLatest={showJumpToLatest}
-        onTimelineLayout={handleTimelineLayout}
-        onTimelineScroll={handleTimelineScroll}
-        onTimelineContentSizeChange={handleContentSizeChange}
-        onScrollToLatest={scrollToLatest}
-        onComposerHeightChange={handleComposerHeightChange}
-        onUnavailableAction={onSwitchToTerminal}
-        inputRef={inputRef}
-        draft={draft}
-        editable={connectionState === "connected"}
-        composerFocused={composerFocused}
-        canAttach={canAttach}
-        uploading={uploading}
-        sending={sending}
-        attachments={attachments}
-        composerPresentation={composerPresentation}
-        chrome={chrome}
-        theme={theme}
-        onSelectCommand={pickSlashCommand}
-        onRemoveAttachment={removeAttachment}
-        onDraftChange={setDraft}
-        onUploadPress={() => void handleUploadAttachment()}
-        onInputPress={focusComposer}
-        onInputFocus={handleComposerFocus}
-        onInputBlur={handleComposerBlur}
-        onInputStart={handleComposerInputStart}
-        onSubmit={sendDraft}
-        onSendPress={
-          composerPresentation.showStopButton ? interruptCodex : sendDraft
-        }
-      />
+      <CodexChatBody {...bodyProps} />
     </View>
   );
 }
