@@ -41,8 +41,10 @@ import {
   groupAgentsByDirectory,
 } from "../../services/serverSelection";
 import {
+  buildTerminalFallbackPresentation,
   buildMenuPosition,
   buildTerminalTabs,
+  findLinkedWork,
   shouldShowPickerServerNames,
   sortTerminalAgents,
   type MenuAnchorLayout,
@@ -140,15 +142,8 @@ export default function TerminalScreen() {
   );
 
   const linkedWork = useMemo(
-    () =>
-      Object.values(workState.byKey)
-        .filter((current) => current.serverId === serverId && current.frontmatter.agent_session === agentId)
-        .sort((left, right) => {
-          const leftTime = Date.parse(left.frontmatter.started || left.frontmatter.created || "");
-          const rightTime = Date.parse(right.frontmatter.started || right.frontmatter.created || "");
-          return (Number.isNaN(rightTime) ? 0 : rightTime) - (Number.isNaN(leftTime) ? 0 : leftTime);
-        })[0],
-    [agentId, workState.byKey, serverId],
+    () => findLinkedWork(workState.byKey, serverId, agentId),
+    [agentId, serverId, workState.byKey],
   );
   const activePinned = sessionKey
     ? terminalTabs.pinned.includes(sessionKey)
@@ -165,37 +160,33 @@ export default function TerminalScreen() {
   const codexRenderMode: StoredCodexRenderMode = sessionKey
     ? codexRenderModes[sessionKey] ?? DefaultCodexRenderMode
     : DefaultCodexRenderMode;
-  const showCodexChat = hasTerminalRoute && isCodexAgent && codexRenderMode === "chat";
+  const showCodexChat =
+    hasTerminalRoute && isCodexAgent && codexRenderMode === "chat";
   const showTerminalFallback = useTerminalFallbackState({
     hasTerminalRoute,
     connectionState,
     connectionIssue,
   });
-  const canRenderTerminal = hasTerminalRoute && !showTerminalFallback && !showCodexChat;
+  const canRenderTerminal =
+    hasTerminalRoute && !showTerminalFallback && !showCodexChat;
   const shouldMountTerminalSurface = canRenderTerminal && screenFocused;
-  const terminalStateAccent = connectionIssue
-    ? terminalTheme.red
-    : connectionState === "connecting"
-      ? terminalTheme.yellow
-      : chromeColors.textSubtle;
-  const terminalStateBusy =
-    hasTerminalRoute && connectionState === "connecting" && !connectionIssue;
-  const terminalStateTitle = !hasTerminalRoute
-    ? "Terminal unavailable"
-    : connectionIssue?.title ||
-      (connectionState === "connecting"
-        ? "Reconnecting to daemon"
-        : "Daemon unavailable");
-  const terminalStateDetail = !hasTerminalRoute
-    ? "Open this terminal again from the Agents tab."
-    : connectionIssue?.detail ||
-      (connectionState === "connecting"
-        ? "Zen is reconnecting before reopening this terminal."
-        : "Start zen-daemon on that machine, or bring the network or tunnel back.");
-  const terminalStateHint = !hasTerminalRoute
-    ? "The app kept your route, but the live terminal is not ready yet."
-    : connectionIssue?.hint ||
-      "This terminal will reopen automatically once the daemon is reachable again.";
+  const terminalState = useMemo(
+    () =>
+      buildTerminalFallbackPresentation({
+        hasTerminalRoute,
+        connectionState,
+        connectionIssue,
+        terminalTheme,
+        chromeColors,
+      }),
+    [
+      chromeColors,
+      connectionIssue,
+      connectionState,
+      hasTerminalRoute,
+      terminalTheme,
+    ],
+  );
   const gitDiff = useTerminalGitDiff({
     serverId,
     agentId,
@@ -428,11 +419,11 @@ export default function TerminalScreen() {
         onCtrlArmedChange={handleCtrlArmedChange}
         canRenderTerminal={canRenderTerminal}
         shouldMountTerminalSurface={shouldMountTerminalSurface}
-        terminalStateAccent={terminalStateAccent}
-        terminalStateBusy={terminalStateBusy}
-        terminalStateTitle={terminalStateTitle}
-        terminalStateDetail={terminalStateDetail}
-        terminalStateHint={terminalStateHint}
+        terminalStateAccent={terminalState.accent}
+        terminalStateBusy={terminalState.busy}
+        terminalStateTitle={terminalState.title}
+        terminalStateDetail={terminalState.detail}
+        terminalStateHint={terminalState.hint}
         hasTerminalRoute={hasTerminalRoute}
         isCodexAgent={isCodexAgent}
         outputBottomInset={outputBottomInset}
