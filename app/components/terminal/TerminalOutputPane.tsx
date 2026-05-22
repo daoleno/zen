@@ -1,6 +1,5 @@
 import React from "react";
 import {
-  ActivityIndicator,
   StyleSheet,
   Text,
   TouchableOpacity,
@@ -8,7 +7,7 @@ import {
   type LayoutChangeEvent,
 } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
-import { Colors, Typography } from "../../constants/tokens";
+import { Typography } from "../../constants/tokens";
 import type {
   TerminalThemeChrome,
   TerminalThemeName,
@@ -19,6 +18,7 @@ import {
   TerminalSurface,
   type TerminalSurfaceHandle,
 } from "./TerminalSurface";
+import { TerminalOutputStateCard } from "./TerminalOutputStateCard";
 
 interface GitDiffChip {
   label: string;
@@ -108,66 +108,17 @@ export function TerminalOutputPane({
           />
         ) : null}
         {canRenderTerminal ? null : (
-          <View style={styles.terminalState}>
-            <View
-              style={[
-                styles.terminalStateCard,
-                {
-                  backgroundColor: chrome.surface,
-                  borderColor: terminalStateAccent,
-                },
-              ]}
-            >
-              {terminalStateBusy ? (
-                <ActivityIndicator color={terminalStateAccent} />
-              ) : (
-                <View
-                  style={[
-                    styles.terminalStateDot,
-                    { backgroundColor: terminalStateAccent },
-                  ]}
-                />
-              )}
-              <Text style={[styles.terminalStateTitle, { color: chrome.text }]}>
-                {terminalStateTitle}
-              </Text>
-              <Text
-                style={[
-                  styles.terminalStateDetail,
-                  { color: chrome.textMuted },
-                ]}
-              >
-                {terminalStateDetail}
-              </Text>
-              <Text
-                style={[
-                  styles.terminalStateHint,
-                  { color: chrome.textSubtle },
-                ]}
-              >
-                {terminalStateHint}
-              </Text>
-              {hasTerminalRoute ? (
-                <TouchableOpacity
-                  style={[
-                    styles.terminalStateAction,
-                    { backgroundColor: chrome.accent },
-                  ]}
-                  onPress={onRetryConnection}
-                  activeOpacity={0.84}
-                >
-                  <Text
-                    style={[
-                      styles.terminalStateActionText,
-                      { color: theme.background },
-                    ]}
-                  >
-                    Retry Connection
-                  </Text>
-                </TouchableOpacity>
-              ) : null}
-            </View>
-          </View>
+          <TerminalOutputStateCard
+            accent={terminalStateAccent}
+            busy={terminalStateBusy}
+            title={terminalStateTitle}
+            detail={terminalStateDetail}
+            hint={terminalStateHint}
+            showRetry={hasTerminalRoute}
+            chrome={chrome}
+            theme={theme}
+            onRetry={onRetryConnection}
+          />
         )}
         {isCodexAgent ? (
           <TouchableOpacity
@@ -243,65 +194,6 @@ const styles = StyleSheet.create({
     flex: 1,
     minHeight: 0,
     paddingTop: 4,
-  },
-  terminalState: {
-    flex: 1,
-    alignItems: "center",
-    justifyContent: "center",
-    paddingHorizontal: 18,
-    paddingBottom: 32,
-  },
-  terminalStateCard: {
-    width: "100%",
-    maxWidth: 360,
-    alignItems: "center",
-    paddingHorizontal: 18,
-    paddingVertical: 20,
-    borderRadius: 20,
-    borderWidth: 1,
-    backgroundColor: "rgba(17,22,31,0.9)",
-  },
-  terminalStateDot: {
-    width: 10,
-    height: 10,
-    borderRadius: 5,
-  },
-  terminalStateTitle: {
-    marginTop: 12,
-    color: Colors.textPrimary,
-    fontSize: 18,
-    fontFamily: Typography.uiFontMedium,
-    textAlign: "center",
-  },
-  terminalStateDetail: {
-    marginTop: 8,
-    color: "#D6DFEC",
-    fontSize: 13,
-    lineHeight: 19,
-    fontFamily: Typography.uiFont,
-    textAlign: "center",
-  },
-  terminalStateHint: {
-    marginTop: 8,
-    color: "#8E9DB2",
-    fontSize: 12,
-    lineHeight: 18,
-    fontFamily: Typography.uiFont,
-    textAlign: "center",
-  },
-  terminalStateAction: {
-    marginTop: 16,
-    minHeight: 38,
-    paddingHorizontal: 14,
-    borderRadius: 12,
-    alignItems: "center",
-    justifyContent: "center",
-    backgroundColor: Colors.accent,
-  },
-  terminalStateActionText: {
-    color: Colors.bgPrimary,
-    fontSize: 13,
-    fontFamily: Typography.uiFontMedium,
   },
   inputShell: {
     backgroundColor: "transparent",
