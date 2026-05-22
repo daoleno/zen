@@ -7,7 +7,7 @@ import {
 import type { AgentStatus } from "../../constants/tokens";
 import type { TerminalThemeChrome } from "../../constants/terminalThemes";
 import { TerminalTopBarChromeButton } from "./TerminalTopBarChromeButton";
-import { TerminalTabPill } from "./TerminalTabPill";
+import { TerminalTabScroller } from "./TerminalTabScroller";
 
 export interface TerminalTabDescriptor {
   id: string;
@@ -57,28 +57,15 @@ export function TerminalTopBar({
         onPress={onBack}
       />
 
-      <ScrollView
-        ref={tabScrollRef}
-        horizontal
-        showsHorizontalScrollIndicator={false}
-        style={styles.tabScroller}
-        contentContainerStyle={styles.tabScrollerContent}
-      >
-        {tabs.map((tab) => (
-          <TerminalTabPill
-            key={tab.id}
-            tab={tab}
-            chrome={chrome}
-            menuAnchorRef={menuAnchorRef}
-            onOpenTab={onOpenTab}
-            onOpenMenu={onOpenMenu}
-            onLayout={(event) => {
-              const { x, width } = event.nativeEvent.layout;
-              onTabLayout(tab.id, { x, width });
-            }}
-          />
-        ))}
-      </ScrollView>
+      <TerminalTabScroller
+        tabs={tabs}
+        chrome={chrome}
+        tabScrollRef={tabScrollRef}
+        menuAnchorRef={menuAnchorRef}
+        onOpenTab={onOpenTab}
+        onOpenMenu={onOpenMenu}
+        onTabLayout={onTabLayout}
+      />
 
       <TerminalTopBarChromeButton
         accessibilityLabel="New terminal"
@@ -97,12 +84,5 @@ const styles = StyleSheet.create({
     paddingHorizontal: 8,
     paddingTop: 2,
     paddingBottom: 4,
-  },
-  tabScroller: {
-    flex: 1,
-    marginHorizontal: 4,
-  },
-  tabScrollerContent: {
-    paddingRight: 2,
   },
 });
