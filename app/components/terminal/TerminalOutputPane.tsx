@@ -13,7 +13,7 @@ import type {
   TerminalThemeName,
   TerminalThemePalette,
 } from "../../constants/terminalThemes";
-import { TerminalAccessoryBar } from "./TerminalAccessoryBar";
+import { TerminalAccessoryDock } from "./TerminalAccessoryDock";
 import {
   TerminalSurface,
   type TerminalSurfaceHandle,
@@ -147,25 +147,18 @@ export function TerminalOutputPane({
       </View>
 
       {accessoryVisible ? (
-        <View
+        <TerminalAccessoryDock
+          terminalRef={terminalRef}
+          serverUrl={serverUrl}
+          daemonId={daemonId}
+          theme={theme}
+          gitDiff={gitDiff}
+          keyboardVisible={keyboardVisible}
+          ctrlArmed={ctrlArmed}
+          bottomOffset={accessoryBottomOffset}
+          onCtrlArmedChange={onCtrlArmedChange}
           onLayout={onAccessoryLayout}
-          style={[
-            styles.inputShell,
-            styles.inputShellDock,
-            { bottom: accessoryBottomOffset },
-          ]}
-        >
-          <TerminalAccessoryBar
-            terminalRef={terminalRef}
-            serverUrl={serverUrl}
-            daemonId={daemonId}
-            theme={theme}
-            gitDiff={gitDiff}
-            keyboardVisible={keyboardVisible}
-            ctrlArmed={ctrlArmed}
-            onCtrlArmedChange={onCtrlArmedChange}
-          />
-        </View>
+        />
       ) : null}
     </>
   );
@@ -194,15 +187,5 @@ const styles = StyleSheet.create({
     flex: 1,
     minHeight: 0,
     paddingTop: 4,
-  },
-  inputShell: {
-    backgroundColor: "transparent",
-  },
-  inputShellDock: {
-    position: "absolute",
-    left: 0,
-    right: 0,
-    bottom: 0,
-    zIndex: 8,
   },
 });
