@@ -1,8 +1,4 @@
 import React from "react";
-import {
-  StyleSheet,
-  View,
-} from "react-native";
 import type {
   TerminalThemeChrome,
   TerminalThemePalette,
@@ -13,6 +9,7 @@ import {
   PatchFileSummaryList,
 } from "./CodexTimelineActivityArtifacts";
 import { CodexTimelineActivityBody } from "./CodexTimelineActivityBody";
+import { CodexTimelineExpandedBlock } from "./CodexTimelineExpandedBlock";
 import type {
   PatchFileSummary,
   ZenActivityTimelineItem,
@@ -40,7 +37,7 @@ export function CodexTimelineActivityDetails({
   truncateBody,
 }: CodexTimelineActivityDetailsProps) {
   return (
-    <View style={[styles.expanded, { borderColor: chrome.border }]}>
+    <CodexTimelineExpandedBlock borderColor={chrome.border}>
       {item.previewPath ? (
         <ActivityPreview
           uri={assetPreviewUri}
@@ -66,17 +63,6 @@ export function CodexTimelineActivityDetails({
           truncateBody={truncateBody}
         />
       ) : null}
-    </View>
+    </CodexTimelineExpandedBlock>
   );
 }
-
-const styles = StyleSheet.create({
-  expanded: {
-    marginTop: 6,
-    marginLeft: 19,
-    maxWidth: "92%",
-    borderLeftWidth: StyleSheet.hairlineWidth,
-    paddingLeft: 10,
-    paddingVertical: 4,
-  },
-});

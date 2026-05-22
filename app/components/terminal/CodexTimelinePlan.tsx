@@ -9,6 +9,7 @@ import type {
   TerminalThemePalette,
 } from "../../constants/terminalThemes";
 import { Typography } from "../../constants/tokens";
+import { CodexTimelineExpandedBlock } from "./CodexTimelineExpandedBlock";
 import { ZenPlanHeader } from "./CodexTimelinePlanHeader";
 import { ZenPlanSteps } from "./CodexTimelinePlanSteps";
 import type { ZenPlanTimelineItem } from "./CodexTimelinePlanTypes";
@@ -25,12 +26,9 @@ export function ZenPlanUpdate({
   return (
     <View style={styles.wrap}>
       <ZenPlanHeader accentColor={theme.cyan} chrome={chrome} />
-      <View
-        style={[
-          styles.expanded,
-          styles.planBlock,
-          { borderColor: chrome.border },
-        ]}
+      <CodexTimelineExpandedBlock
+        borderColor={chrome.border}
+        style={styles.planBlock}
       >
         {item.explanation?.trim() ? (
           <Text style={[styles.planExplanation, { color: chrome.textSubtle }]}>
@@ -38,7 +36,7 @@ export function ZenPlanUpdate({
           </Text>
         ) : null}
         <ZenPlanSteps steps={item.steps} chrome={chrome} theme={theme} />
-      </View>
+      </CodexTimelineExpandedBlock>
     </View>
   );
 }
@@ -47,14 +45,6 @@ const styles = StyleSheet.create({
   wrap: {
     marginBottom: 10,
     paddingLeft: 1,
-  },
-  expanded: {
-    marginTop: 6,
-    marginLeft: 19,
-    maxWidth: "92%",
-    borderLeftWidth: StyleSheet.hairlineWidth,
-    paddingLeft: 10,
-    paddingVertical: 4,
   },
   planBlock: {
     paddingVertical: 2,
