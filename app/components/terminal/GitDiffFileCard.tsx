@@ -17,7 +17,7 @@ import type {
   GitDiffPatchSection,
 } from "../../services/gitDiff";
 import { describeGitDiffScope } from "../../services/gitDiff";
-import { GitDiffBlock } from "./GitDiffCodeView";
+import { GitDiffBlock } from "./GitDiffPatchBlock";
 import { GitDiffStateCard } from "./GitDiffStateCard";
 import { withAlpha } from "./gitDiffColor";
 
