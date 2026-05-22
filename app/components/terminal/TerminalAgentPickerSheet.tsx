@@ -1,7 +1,6 @@
 import React from "react";
 import {
   Modal,
-  ScrollView,
   StyleSheet,
   Text,
   TouchableOpacity,
@@ -11,7 +10,7 @@ import { Ionicons } from "@expo/vector-icons";
 import { Colors, Typography } from "../../constants/tokens";
 import type { TerminalThemeChrome } from "../../constants/terminalThemes";
 import type { AgentDirectorySection } from "../../services/serverSelection";
-import { TerminalAgentPickerSection } from "./TerminalAgentPickerSection";
+import { TerminalAgentPickerList } from "./TerminalAgentPickerList";
 
 interface TerminalAgentPickerSheetProps {
   visible: boolean;
@@ -70,29 +69,15 @@ export function TerminalAgentPickerSheet({
             ]}
           />
 
-          <ScrollView
-            style={styles.sheetScroll}
-            contentContainerStyle={styles.sheetScrollContent}
-            showsVerticalScrollIndicator={false}
-          >
-            {agentCount === 0 ? (
-              <Text style={[styles.sheetEmpty, { color: chrome.textMuted }]}>
-                No agents available.
-              </Text>
-            ) : (
-              sections.map((section) => (
-                <TerminalAgentPickerSection
-                  key={section.key}
-                  section={section}
-                  activeSessionKey={activeSessionKey}
-                  showServerNames={showServerNames}
-                  agentAliases={agentAliases}
-                  chrome={chrome}
-                  onOpenAgent={onOpenAgent}
-                />
-              ))
-            )}
-          </ScrollView>
+          <TerminalAgentPickerList
+            sections={sections}
+            agentCount={agentCount}
+            activeSessionKey={activeSessionKey}
+            showServerNames={showServerNames}
+            agentAliases={agentAliases}
+            chrome={chrome}
+            onOpenAgent={onOpenAgent}
+          />
 
           <TouchableOpacity
             style={[
@@ -168,17 +153,5 @@ const styles = StyleSheet.create({
     color: Colors.textSecondary,
     fontSize: 13,
     fontFamily: Typography.uiFont,
-  },
-  sheetScroll: {
-    marginTop: 4,
-  },
-  sheetScrollContent: {
-    paddingBottom: 8,
-  },
-  sheetEmpty: {
-    color: "#7D8CA0",
-    fontSize: 13,
-    fontFamily: Typography.uiFont,
-    paddingVertical: 12,
   },
 });
