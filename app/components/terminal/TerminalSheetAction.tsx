@@ -7,10 +7,10 @@ import type {
 } from "../../constants/terminalThemes";
 import { Typography } from "../../constants/tokens";
 
-type IoniconName = React.ComponentProps<typeof Ionicons>["name"];
+export type TerminalSheetActionIcon = React.ComponentProps<typeof Ionicons>["name"];
 
 interface TerminalSheetActionProps {
-  icon: IoniconName;
+  icon: TerminalSheetActionIcon;
   label: string;
   disabled?: boolean;
   destructive?: boolean;

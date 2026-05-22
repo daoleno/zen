@@ -1,19 +1,15 @@
 import React from "react";
 import {
-  ActivityIndicator,
   StyleSheet,
-  TouchableOpacity,
 } from "react-native";
-import { Ionicons } from "@expo/vector-icons";
 import type {
   TerminalThemeChrome,
   TerminalThemePalette,
 } from "../../constants/terminalThemes";
-
-type IoniconName = React.ComponentProps<typeof Ionicons>["name"];
+import { ComposerIconButton } from "./ComposerIconButton";
 
 interface ComposerSendButtonProps {
-  icon: IoniconName;
+  icon: React.ComponentProps<typeof ComposerIconButton>["icon"];
   accessibilityLabel: string;
   chrome: TerminalThemeChrome;
   theme: TerminalThemePalette;
@@ -34,32 +30,25 @@ export function ComposerSendButton({
   onPress,
 }: ComposerSendButtonProps) {
   return (
-    <TouchableOpacity
+    <ComposerIconButton
       accessibilityLabel={accessibilityLabel}
-      accessibilityRole="button"
-      accessibilityState={{ disabled: !enabled, busy: loading }}
+      icon={icon}
+      chrome={chrome}
+      iconSize={compact ? 12 : 18}
+      iconColor={enabled ? theme.background : chrome.textSubtle}
+      loading={loading}
+      loadingColor={theme.background}
+      disabled={!enabled}
+      disabledOpacity={0.62}
       style={[
         styles.button,
         {
           backgroundColor: enabled ? chrome.text : chrome.surfaceMuted,
           borderColor: enabled ? chrome.text : chrome.border,
         },
-        !enabled ? styles.disabled : null,
       ]}
       onPress={onPress}
-      disabled={!enabled}
-      activeOpacity={0.8}
-    >
-      {loading ? (
-        <ActivityIndicator size="small" color={theme.background} />
-      ) : (
-        <Ionicons
-          name={icon}
-          size={compact ? 12 : 18}
-          color={enabled ? theme.background : chrome.textSubtle}
-        />
-      )}
-    </TouchableOpacity>
+    />
   );
 }
 
@@ -71,8 +60,5 @@ const styles = StyleSheet.create({
     borderWidth: StyleSheet.hairlineWidth,
     alignItems: "center",
     justifyContent: "center",
-  },
-  disabled: {
-    opacity: 0.62,
   },
 });

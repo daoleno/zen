@@ -4,6 +4,7 @@ import {
   StyleSheet,
   TouchableOpacity,
 } from "react-native";
+import type { StyleProp, ViewStyle } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 import type { TerminalThemeChrome } from "../../constants/terminalThemes";
 
@@ -16,6 +17,10 @@ interface ComposerIconButtonProps {
   loading?: boolean;
   disabled?: boolean;
   iconColor?: string;
+  iconSize?: number;
+  loadingColor?: string;
+  disabledOpacity?: number;
+  style?: StyleProp<ViewStyle>;
   onPress(): void;
 }
 
@@ -26,6 +31,10 @@ export function ComposerIconButton({
   loading = false,
   disabled = false,
   iconColor,
+  iconSize = 20,
+  loadingColor,
+  disabledOpacity = 0.54,
+  style,
   onPress,
 }: ComposerIconButtonProps) {
   return (
@@ -35,16 +44,17 @@ export function ComposerIconButton({
       accessibilityState={{ disabled, busy: loading }}
       style={[
         styles.button,
-        disabled ? styles.disabled : null,
+        style,
+        disabled ? { opacity: disabledOpacity } : null,
       ]}
       onPress={onPress}
       activeOpacity={0.78}
       disabled={disabled}
     >
       {loading ? (
-        <ActivityIndicator size="small" color={chrome.accent} />
+        <ActivityIndicator size="small" color={loadingColor ?? chrome.accent} />
       ) : (
-        <Ionicons name={icon} size={20} color={iconColor ?? chrome.text} />
+        <Ionicons name={icon} size={iconSize} color={iconColor ?? chrome.text} />
       )}
     </TouchableOpacity>
   );
@@ -57,8 +67,5 @@ const styles = StyleSheet.create({
     borderRadius: 20,
     alignItems: "center",
     justifyContent: "center",
-  },
-  disabled: {
-    opacity: 0.54,
   },
 });

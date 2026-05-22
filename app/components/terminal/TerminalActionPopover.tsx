@@ -5,20 +5,20 @@ import {
   TouchableOpacity,
   View,
 } from "react-native";
-import { Ionicons } from "@expo/vector-icons";
 import type {
   TerminalThemeChrome,
   TerminalThemePalette,
 } from "../../constants/terminalThemes";
-import { TerminalSheetAction } from "./TerminalSheetAction";
-
-type IoniconName = React.ComponentProps<typeof Ionicons>["name"];
+import {
+  TerminalSheetAction,
+  type TerminalSheetActionIcon,
+} from "./TerminalSheetAction";
 
 export const TERMINAL_ACTION_POPOVER_WIDTH = 184;
 
 interface TerminalPopoverAction {
   key: string;
-  icon: IoniconName;
+  icon: TerminalSheetActionIcon;
   label: string;
   disabled?: boolean;
   destructive?: boolean;
@@ -36,7 +36,7 @@ interface TerminalActionPopoverProps {
   activePinned: boolean;
   closeOtherTabsDisabled: boolean;
   codexRenderAction?: {
-    icon: IoniconName;
+    icon: TerminalSheetActionIcon;
     label: string;
     onPress(): void;
   } | null;
