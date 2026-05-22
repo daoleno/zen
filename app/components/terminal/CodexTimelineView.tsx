@@ -12,7 +12,7 @@ import type {
 } from "../../constants/terminalThemes";
 import { CodexTimelineEmptyState } from "./CodexTimelineEmptyState";
 import { CodexTimelineJumpButton } from "./CodexTimelineJumpButton";
-import { TimelineTextSelectableContext } from "./CodexMessageBody";
+import { TimelineTextSelectableContext } from "./TimelineTextSelectableContext";
 import {
   ZenTimelineItemView,
   type ZenTimelineItem,

@@ -17,6 +17,8 @@ import type {
   TerminalThemeChrome,
   TerminalThemePalette,
 } from "../../constants/terminalThemes";
+import { CodexMarkdownErrorBoundary } from "./CodexMarkdownErrorBoundary";
+import { TimelineTextSelectableContext } from "./TimelineTextSelectableContext";
 
 const USE_NATIVE_MARKDOWN_BODY = true;
 const STREAMING_REMEND_OPTIONS: RemendOptions = {
@@ -24,46 +26,6 @@ const STREAMING_REMEND_OPTIONS: RemendOptions = {
   inlineKatex: false,
   linkMode: "text-only",
 };
-
-export const TimelineTextSelectableContext = React.createContext(true);
-
-type MarkdownErrorBoundaryProps = {
-  fallback: React.ReactNode;
-  children: React.ReactNode;
-  resetKey: string;
-};
-
-type MarkdownErrorBoundaryState = {
-  failed: boolean;
-};
-
-class MarkdownErrorBoundary extends React.Component<
-  MarkdownErrorBoundaryProps,
-  MarkdownErrorBoundaryState
-> {
-  state: MarkdownErrorBoundaryState = { failed: false };
-
-  static getDerivedStateFromError() {
-    return { failed: true };
-  }
-
-  componentDidUpdate(previousProps: MarkdownErrorBoundaryProps) {
-    if (previousProps.resetKey !== this.props.resetKey && this.state.failed) {
-      this.setState({ failed: false });
-    }
-  }
-
-  componentDidCatch(error: unknown) {
-    console.warn("[codex] native markdown renderer failed", error);
-  }
-
-  render() {
-    if (this.state.failed) {
-      return this.props.fallback;
-    }
-    return this.props.children;
-  }
-}
 
 type MessageBlock =
   | { type: "heading"; level: number; text: string }
@@ -280,7 +242,7 @@ function CodexMarkdownBody({
   }
 
   return (
-    <MarkdownErrorBoundary fallback={fallback} resetKey={markdown}>
+    <CodexMarkdownErrorBoundary fallback={fallback} resetKey={markdown}>
       <EnrichedMarkdownText
         markdown={markdown}
         markdownStyle={markdownStyle}
@@ -295,7 +257,7 @@ function CodexMarkdownBody({
         streamingAnimation={streaming}
         spoilerOverlay="solid"
       />
-    </MarkdownErrorBoundary>
+    </CodexMarkdownErrorBoundary>
   );
 }
 

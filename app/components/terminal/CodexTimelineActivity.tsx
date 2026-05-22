@@ -9,7 +9,7 @@ import type {
 } from "../../constants/terminalThemes";
 import {
   TimelineTextSelectableContext,
-} from "./CodexMessageBody";
+} from "./TimelineTextSelectableContext";
 import { CodexTimelineActivityDetails } from "./CodexTimelineActivityDetails";
 import {
   CodexTimelineActivityHeader,
