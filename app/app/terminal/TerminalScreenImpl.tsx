@@ -1,14 +1,12 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
-  AppState,
   StyleSheet,
   View,
   type ScrollView,
-  type AppStateStatus,
   useColorScheme,
   useWindowDimensions,
 } from "react-native";
-import { useFocusEffect, useLocalSearchParams } from "expo-router";
+import { useLocalSearchParams } from "expo-router";
 import { StatusBar } from "expo-status-bar";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { useAgents } from "../../store/agents";
@@ -24,7 +22,6 @@ import {
   type StoredCodexRenderMode,
 } from "../../services/storage";
 import { makeSessionKey } from "../../services/sessionKeys";
-import { wsClient } from "../../services/websocket";
 import type { TerminalSurfaceHandle } from "../../components/terminal/TerminalSurface";
 import { GitDiffSheet } from "../../components/terminal/GitDiffSheet";
 import { NewTerminalSheet } from "../../components/terminal/NewTerminalSheet";
@@ -51,6 +48,7 @@ import {
   type MenuAnchorLayout,
 } from "./TerminalScreenModel";
 import { useTerminalFallbackState } from "./useTerminalFallbackState";
+import { useTerminalFocusLifecycle } from "./useTerminalFocusLifecycle";
 import { useTerminalScreenStorage } from "./useTerminalScreenStorage";
 import { useTerminalSessionActions } from "./useTerminalSessionActions";
 import { useTerminalTabActions } from "./useTerminalTabActions";
@@ -220,40 +218,16 @@ export default function TerminalScreen() {
     ctrlDisabled: renameVisible,
   });
 
-  const syncActiveTerminal = React.useCallback(
-    (appState: AppStateStatus = "active") => {
-      if (
-        appState !== "active" ||
-        !sessionKey ||
-        !serverId ||
-        !agentId
-      ) {
-        wsClient.clearActiveAgentsExcept(null);
-        return;
-      }
-
-      wsClient.clearActiveAgentsExcept({ serverId, agentId });
-    },
-    [agentId, serverId, sessionKey],
-  );
-
-  useFocusEffect(
-    React.useCallback(() => {
-      setScreenFocused(true);
-      syncActiveTerminal();
-
-      const appStateSub = AppState.addEventListener("change", (nextState) => {
-        syncActiveTerminal(nextState);
-      });
-
-      return () => {
-        appStateSub.remove();
-        setScreenFocused(false);
-        handleCtrlArmedChange(false);
-        syncActiveTerminal("background");
-      };
-    }, [handleCtrlArmedChange, syncActiveTerminal]),
-  );
+  const handleTerminalInactive = useCallback(() => {
+    handleCtrlArmedChange(false);
+  }, [handleCtrlArmedChange]);
+  useTerminalFocusLifecycle({
+    serverId,
+    agentId,
+    sessionKey,
+    setScreenFocused,
+    onInactive: handleTerminalInactive,
+  });
 
   useEffect(() => {
     setMenuVisible(false);
