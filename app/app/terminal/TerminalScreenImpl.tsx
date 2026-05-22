@@ -37,20 +37,15 @@ import { useTerminalAccessoryLayout } from "../../components/terminal/useTermina
 import { useTerminalGitDiff } from "../../components/terminal/useTerminalGitDiff";
 import { presentAgent } from "../../services/agentPresentation";
 import {
-  filterAgentsByPreferredServers,
-  groupAgentsByDirectory,
-} from "../../services/serverSelection";
-import {
   buildTerminalFallbackPresentation,
   buildMenuPosition,
   buildTerminalTabs,
   findLinkedWork,
-  shouldShowPickerServerNames,
-  sortTerminalAgents,
   type MenuAnchorLayout,
 } from "./TerminalScreenModel";
 import { useTerminalFallbackState } from "./useTerminalFallbackState";
 import { useTerminalFocusLifecycle } from "./useTerminalFocusLifecycle";
+import { useTerminalPickerModel } from "./useTerminalPickerModel";
 import { useTerminalScreenStorage } from "./useTerminalScreenStorage";
 import { useTerminalSessionActions } from "./useTerminalSessionActions";
 import { useTerminalTabActions } from "./useTerminalTabActions";
@@ -250,37 +245,15 @@ export default function TerminalScreen() {
     }
   }, [sessionKey]);
 
-  const displayAgents = useMemo(
-    () =>
-      filterAgentsByPreferredServers({
-        agents: state.agents,
-        servers,
-        connectionStates: state.serverConnections,
-        latencyById: state.serverLatencyById,
-      }),
-    [servers, state.agents, state.serverConnections, state.serverLatencyById],
-  );
-
-  const sortedAgents = useMemo(
-    () =>
-      sortTerminalAgents({
-        agents: displayAgents,
-        terminalTabs,
-        recentAgentOpens,
-      }),
-    [displayAgents, recentAgentOpens, terminalTabs],
-  );
-
-  const showPickerServerNames = useMemo(
-    () => shouldShowPickerServerNames(sortedAgents),
-    [sortedAgents],
-  );
-  const pickerSections = useMemo(
-    () => groupAgentsByDirectory(sortedAgents, {
-      showServerName: showPickerServerNames,
-    }),
-    [showPickerServerNames, sortedAgents],
-  );
+  const { pickerSections, showPickerServerNames, sortedAgents } =
+    useTerminalPickerModel({
+      agents: state.agents,
+      servers,
+      connectionStates: state.serverConnections,
+      latencyById: state.serverLatencyById,
+      terminalTabs,
+      recentAgentOpens,
+    });
 
   const menuPosition = useMemo(
     () =>
