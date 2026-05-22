@@ -8,13 +8,11 @@ import { useTerminalScreenActions } from "./useTerminalScreenActions";
 import { useTerminalScreenAccessory } from "./useTerminalScreenAccessory";
 import { useTerminalScreenChrome } from "./useTerminalScreenChrome";
 import { useTerminalScreenLocalState } from "./useTerminalScreenLocalState";
+import { useTerminalScreenLayoutProps } from "./useTerminalScreenLayoutProps";
 import { useTerminalScreenModels } from "./useTerminalScreenModels";
-import { useTerminalScreenOverlayProps } from "./useTerminalScreenOverlayProps";
 import { useTerminalScreenStorage } from "./useTerminalScreenStorage";
 import { useTerminalSessionActions } from "./useTerminalSessionActions";
 import { useTerminalTabActions } from "./useTerminalTabActions";
-import { useTerminalTopBarProps } from "./useTerminalTopBarProps";
-import { useTerminalViewportProps } from "./useTerminalViewportProps";
 
 export default function TerminalScreen() {
   const { state } = useAgents();
@@ -189,77 +187,62 @@ export default function TerminalScreen() {
   const {
     openNewTerminal,
   } = sessionActions;
-  const topBarProps = useTerminalTopBarProps({
-    tabs,
-    terminalTheme,
+  const {
+    overlayProps,
+    topBarProps,
+    viewportProps,
+  } = useTerminalScreenLayoutProps({
+    activePinned,
+    agent,
+    agentAliases,
+    agentId,
+    accessoryBottomOffset,
     chrome: chromeColors,
     chromeLayout,
-    tabActions,
-    openNewTerminal,
-  });
-  const viewportProps = useTerminalViewportProps({
-    showCodexChat,
-    sessionKey,
-    serverId,
-    agentId,
-    agent,
-    connectionState,
+    codexRenderMode,
     connectionIssue,
-    theme: terminalTheme,
-    chrome: chromeColors,
-    themeName,
-    screenFocused,
-    gitDiff,
-    terminalRef,
+    connectionState,
+    creatingSession,
     ctrlArmed,
-    onCtrlArmedChange: handleCtrlArmedChange,
-    viewportModel,
+    daemonId: server?.daemonId,
+    gitDiff,
+    handleAccessoryLayout,
+    handleCtrlArmedChange,
+    hasLinkedWork: Boolean(linkedWork),
     hasTerminalRoute,
     isCodexAgent,
-    outputBottomInset,
-    accessoryBottomOffset,
-    serverUrl: server?.url,
-    daemonId: server?.daemonId,
     keyboardVisible,
-    sessionActions,
-    openGitDiff,
-    onAccessoryLayout: handleAccessoryLayout,
-  });
-  const overlayProps = useTerminalScreenOverlayProps({
-    pickerVisible,
-    pickerSections,
-    sortedAgentCount: sortedAgents.length,
-    sessionKey,
-    showPickerServerNames,
-    agentAliases,
-    creatingSession,
-    menuVisible,
     menuPosition,
-    connectionConnected: connectionState === "connected",
-    gitDiff,
-    activePinned,
-    tabs,
-    isCodexAgent,
-    codexRenderMode,
-    hasLinkedWork: Boolean(linkedWork),
+    menuVisible,
     newTerminalVisible,
-    agentCwd: agent?.cwd,
-    serverId,
-    renameVisible,
+    outputBottomInset,
+    pickerSections,
+    pickerVisible,
     renameDraft,
     renamePlaceholder: agent?.name || agentId,
-    chrome: chromeColors,
-    theme: terminalTheme,
-    setPickerVisible,
+    renameVisible,
+    screenFocused,
+    selectedServerId: serverId,
+    serverId,
+    serverUrl: server?.url,
+    sessionKey,
     setNewTerminalVisible,
-    setRenameVisible,
+    setPickerVisible,
     setRenameDraft,
+    setRenameVisible,
+    showCodexChat,
+    showPickerServerNames,
+    sortedAgentCount: sortedAgents.length,
     tabActions,
-    sessionActions,
-    closeMenu,
-    openNewTerminal,
+    tabs,
+    terminalRef,
+    terminalTheme,
+    themeName,
+    viewportModel,
     openGitDiff,
+    openNewTerminal,
     openRenameModal,
+    sessionActions,
   });
 
   return (
