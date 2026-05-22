@@ -1,19 +1,18 @@
 import React from "react";
 import {
   StyleSheet,
-  Text,
   View,
 } from "react-native";
 import type {
   TerminalThemeChrome,
   TerminalThemePalette,
 } from "../../constants/terminalThemes";
-import { Typography } from "../../constants/tokens";
 import {
   ActivityFileList,
   ActivityPreview,
   PatchFileSummaryList,
 } from "./CodexTimelineActivityArtifacts";
+import { CodexTimelineActivityBody } from "./CodexTimelineActivityBody";
 import type {
   PatchFileSummary,
   ZenActivityTimelineItem,
@@ -60,12 +59,12 @@ export function CodexTimelineActivityDetails({
         <ActivityFileList files={item.files} chrome={chrome} />
       ) : null}
       {item.body ? (
-        <Text
-          selectable={textSelectable}
-          style={[styles.body, { color: chrome.textSubtle }]}
-        >
-          {truncateBody(item.body, 1800)}
-        </Text>
+        <CodexTimelineActivityBody
+          body={item.body}
+          chrome={chrome}
+          textSelectable={textSelectable}
+          truncateBody={truncateBody}
+        />
       ) : null}
     </View>
   );
@@ -79,11 +78,5 @@ const styles = StyleSheet.create({
     borderLeftWidth: StyleSheet.hairlineWidth,
     paddingLeft: 10,
     paddingVertical: 4,
-  },
-  body: {
-    marginTop: 6,
-    fontSize: 11,
-    lineHeight: 16,
-    fontFamily: Typography.terminalFont,
   },
 });
