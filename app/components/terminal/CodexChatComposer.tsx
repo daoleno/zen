@@ -12,9 +12,9 @@ import {
   CodexComposerAttachmentRail,
   type CodexComposerAttachment,
 } from "./CodexComposerAttachmentRail";
+import { CodexChatComposerCommandMenu } from "./CodexChatComposerCommandMenu";
 import { CodexChatComposerFrame } from "./CodexChatComposerFrame";
 import { CodexComposerPanel } from "./CodexComposerPanel";
-import { CodexQuickCommandMenu } from "./CodexQuickCommandMenu";
 
 interface CodexChatComposerProps {
   inputRef: React.RefObject<TextInputInstance | null>;
@@ -90,15 +90,14 @@ export function CodexChatComposer({
       chrome={chrome}
       theme={theme}
     >
-      {showCommandMenu ? (
-        <CodexQuickCommandMenu
-          commands={commands}
-          commandQuery={commandQuery}
-          chrome={chrome}
-          theme={theme}
-          onSelectCommand={onSelectCommand}
-        />
-      ) : null}
+      <CodexChatComposerCommandMenu
+        visible={showCommandMenu}
+        commands={commands}
+        commandQuery={commandQuery}
+        chrome={chrome}
+        theme={theme}
+        onSelectCommand={onSelectCommand}
+      />
 
       <CodexComposerAttachmentRail
         attachments={attachments}
