@@ -2,21 +2,16 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import {
   Alert,
   AppState,
-  AppStateStatus,
-  Keyboard,
-  Platform,
   StyleSheet,
   View,
   type ScrollView,
+  type AppStateStatus,
   useColorScheme,
   useWindowDimensions,
 } from "react-native";
 import { useFocusEffect, useLocalSearchParams, useRouter } from "expo-router";
 import { StatusBar } from "expo-status-bar";
-import {
-  SafeAreaView,
-  useSafeAreaInsets,
-} from "react-native-safe-area-context";
+import { SafeAreaView } from "react-native-safe-area-context";
 import { Agent, useAgents } from "../../store/agents";
 import { useWork } from "../../store/work";
 import { AgentStatus } from "../../constants/tokens";
@@ -68,6 +63,7 @@ import {
   type TerminalTabDescriptor,
 } from "../../components/terminal/TerminalTopBar";
 import { TerminalViewport } from "../../components/terminal/TerminalViewport";
+import { useTerminalAccessoryLayout } from "../../components/terminal/useTerminalAccessoryLayout";
 import { useTerminalGitDiff } from "../../components/terminal/useTerminalGitDiff";
 import { presentAgent } from "../../services/agentPresentation";
 import {
@@ -95,8 +91,7 @@ export default function TerminalScreen() {
   const { state: workState } = useWork();
   const router = useRouter();
   const colorScheme = useColorScheme();
-  const insets = useSafeAreaInsets();
-  const { width: windowWidth, height: windowHeight } = useWindowDimensions();
+  const { width: windowWidth } = useWindowDimensions();
   const [themePreference, setThemePreference] = useState<TerminalThemePreference>(
     DefaultTerminalThemePreference,
   );
@@ -119,10 +114,6 @@ export default function TerminalScreen() {
   } | null>(null);
   const [renameVisible, setRenameVisible] = useState(false);
   const [renameDraft, setRenameDraft] = useState("");
-  const [keyboardVisible, setKeyboardVisible] = useState(false);
-  const [androidKeyboardInset, setAndroidKeyboardInset] = useState(0);
-  const [accessoryHeight, setAccessoryHeight] = useState(68);
-  const [ctrlArmed, setCtrlArmed] = useState(false);
   const [newTerminalVisible, setNewTerminalVisible] = useState(false);
   const [creatingSession, setCreatingSession] = useState(false);
   const [showTerminalFallback, setShowTerminalFallback] = useState(
@@ -146,8 +137,6 @@ export default function TerminalScreen() {
   const tabLayoutsRef = useRef<Map<string, { x: number; width: number }>>(
     new Map(),
   );
-  const keyboardHeightRef = useRef(0);
-  const baseWindowHeightRef = useRef(windowHeight);
   const menuAnchorRef = useRef<View | null>(null);
   const reconnectFallbackTimerRef = useRef<ReturnType<
     typeof setTimeout
@@ -239,6 +228,19 @@ export default function TerminalScreen() {
     hasTerminalRoute,
     screenFocused,
   });
+  const accessoryVisible = canRenderTerminal && screenFocused;
+  const {
+    keyboardVisible,
+    ctrlArmed,
+    accessoryBottomOffset,
+    outputBottomInset,
+    handleCtrlArmedChange,
+    handleAccessoryLayout,
+  } = useTerminalAccessoryLayout({
+    accessoryVisible,
+    ctrlResetKey: sessionKey,
+    ctrlDisabled: renameVisible,
+  });
 
   const syncActiveTerminal = React.useCallback(
     (appState: AppStateStatus = "active") => {
@@ -269,10 +271,10 @@ export default function TerminalScreen() {
       return () => {
         appStateSub.remove();
         setScreenFocused(false);
-        setCtrlArmed(false);
+        handleCtrlArmedChange(false);
         syncActiveTerminal("background");
       };
-    }, [syncActiveTerminal]),
+    }, [handleCtrlArmedChange, syncActiveTerminal]),
   );
 
   useEffect(() => {
@@ -363,63 +365,6 @@ export default function TerminalScreen() {
       cancelled = true;
     };
   }, [hydratedServerIds, state.agents]);
-
-  useEffect(() => {
-    const handleShow = (event: any) => {
-      keyboardHeightRef.current = event?.endCoordinates?.height ?? 0;
-      setKeyboardVisible(true);
-    };
-    const handleHide = () => {
-      keyboardHeightRef.current = 0;
-      setAndroidKeyboardInset(0);
-      setKeyboardVisible(false);
-    };
-
-    const showSub = Keyboard.addListener("keyboardDidShow", handleShow);
-    const hideSub = Keyboard.addListener("keyboardDidHide", handleHide);
-    return () => {
-      showSub.remove();
-      hideSub.remove();
-    };
-  }, []);
-
-  useEffect(() => {
-    if (!keyboardVisible) {
-      baseWindowHeightRef.current = windowHeight;
-    }
-  }, [keyboardVisible, windowHeight]);
-
-  useEffect(() => {
-    if (!keyboardVisible || Platform.OS !== "android") return;
-
-    const keyboardHeight = keyboardHeightRef.current;
-    if (!keyboardHeight) return;
-
-    const adjustResizeHandled = Math.max(
-      0,
-      baseWindowHeightRef.current - windowHeight,
-    );
-    const remainingInset = Math.max(0, keyboardHeight - adjustResizeHandled);
-    setAndroidKeyboardInset((previous) =>
-      Math.abs(previous - remainingInset) <= 1 ? previous : remainingInset,
-    );
-  }, [keyboardVisible, windowHeight]);
-
-  useEffect(() => {
-    if (!keyboardVisible) {
-      setCtrlArmed(false);
-    }
-  }, [keyboardVisible]);
-
-  useEffect(() => {
-    setCtrlArmed(false);
-  }, [sessionKey]);
-
-  useEffect(() => {
-    if (renameVisible) {
-      setCtrlArmed(false);
-    }
-  }, [renameVisible]);
 
   useEffect(() => {
     if (reconnectFallbackTimerRef.current) {
@@ -549,17 +494,6 @@ export default function TerminalScreen() {
     () => buildMenuPosition(menuAnchor, windowWidth),
     [menuAnchor, windowWidth],
   );
-  const accessoryVisible = canRenderTerminal && screenFocused;
-  // Both platforms use absolute dock — iOS uses keyboard event height directly,
-  // Android uses the window-resize calculation (handles both adjustResize and adjustPan).
-  // Add insets.bottom so the bar sits above the system gesture bar, and a fixed 6px gap
-  // above the keyboard so the bar never looks flush / overlapping with the keyboard top edge.
-  const accessoryBottomOffset = Platform.OS === "ios"
-    ? (keyboardVisible ? keyboardHeightRef.current : insets.bottom)
-    : (keyboardVisible ? androidKeyboardInset + insets.bottom + 6 : insets.bottom);
-  const outputBottomInset = accessoryVisible
-    ? accessoryHeight + accessoryBottomOffset
-    : 0;
 
   const closeMenu = () => {
     setMenuVisible(false);
@@ -741,10 +675,6 @@ export default function TerminalScreen() {
     );
   };
 
-  const handleCtrlArmedChange = useCallback((next: boolean) => {
-    setCtrlArmed(next);
-  }, []);
-
   const createTerminal = async (input: {
     cwd: string;
     command: string;
@@ -887,12 +817,7 @@ export default function TerminalScreen() {
         onRetryConnection={() => {
           void retryServerConnection();
         }}
-        onAccessoryLayout={(event) => {
-          const nextHeight = Math.ceil(event.nativeEvent.layout.height);
-          setAccessoryHeight((previous) =>
-            Math.abs(previous - nextHeight) <= 1 ? previous : nextHeight,
-          );
-        }}
+        onAccessoryLayout={handleAccessoryLayout}
       />
 
       <TerminalAgentPickerSheet
