@@ -1,13 +1,8 @@
 import React, { useContext, useEffect, useState } from "react";
 import {
-  ActivityIndicator,
   StyleSheet,
-  Text,
-  TouchableOpacity,
   View,
 } from "react-native";
-import { Ionicons } from "@expo/vector-icons";
-import { Typography } from "../../constants/tokens";
 import type {
   TerminalThemeChrome,
   TerminalThemePalette,
@@ -16,8 +11,10 @@ import {
   TimelineTextSelectableContext,
 } from "./CodexMessageBody";
 import { CodexTimelineActivityDetails } from "./CodexTimelineActivityDetails";
-
-type IoniconName = React.ComponentProps<typeof Ionicons>["name"];
+import {
+  CodexTimelineActivityHeader,
+  type ActivityHeaderIconName,
+} from "./CodexTimelineActivityHeader";
 
 export type PatchOperation = "add" | "delete" | "update";
 
@@ -35,7 +32,7 @@ export interface ZenActivityTimelineItem {
   timestamp?: string;
   title: string;
   tone: "neutral" | "running" | "success" | "failed";
-  icon: IoniconName;
+  icon: ActivityHeaderIconName;
   detail?: string;
   body?: string;
   files?: string[];
@@ -104,38 +101,21 @@ export function ZenActivityEvent({
 
   return (
     <View style={styles.wrap}>
-      <TouchableOpacity
-        accessibilityLabel={item.title}
-        style={styles.row}
+      <CodexTimelineActivityHeader
+        title={item.title}
+        tone={item.tone}
+        icon={item.icon}
+        detail={item.detail}
+        canExpand={canExpand}
+        expanded={expanded}
+        toneColor={toneColor}
+        chrome={chrome}
         onPress={() => {
           if (canExpand) {
             setExpanded((value) => !value);
           }
         }}
-        disabled={!canExpand}
-        activeOpacity={0.76}
-      >
-        {item.tone === "running" ? (
-          <ActivityIndicator size="small" color={toneColor} />
-        ) : (
-          <Ionicons name={item.icon} size={13} color={toneColor} />
-        )}
-        <Text style={[styles.title, { color: chrome.textSubtle }]} numberOfLines={1}>
-          {item.title}
-        </Text>
-        {item.detail ? (
-          <Text style={[styles.detail, { color: chrome.textSubtle }]} numberOfLines={1}>
-            {item.detail}
-          </Text>
-        ) : null}
-        {canExpand ? (
-          <Ionicons
-            name={expanded ? "chevron-up" : "chevron-down"}
-            size={12}
-            color={chrome.textSubtle}
-          />
-        ) : null}
-      </TouchableOpacity>
+      />
 
       {expanded ? (
         <CodexTimelineActivityDetails
@@ -173,26 +153,5 @@ const styles = StyleSheet.create({
   wrap: {
     marginBottom: 10,
     paddingLeft: 1,
-  },
-  row: {
-    alignSelf: "flex-start",
-    minHeight: 24,
-    maxWidth: "100%",
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 6,
-    opacity: 0.78,
-  },
-  title: {
-    fontSize: 11,
-    lineHeight: 15,
-    fontFamily: Typography.uiFontMedium,
-  },
-  detail: {
-    flexShrink: 1,
-    maxWidth: 210,
-    fontSize: 11,
-    lineHeight: 15,
-    fontFamily: Typography.terminalFont,
   },
 });
