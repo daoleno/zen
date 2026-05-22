@@ -1,7 +1,6 @@
 import {
   useCallback,
   useMemo,
-  useState,
   type SetStateAction,
 } from "react";
 import type { Agent, ConnectionState } from "../../store/agents";
@@ -24,6 +23,7 @@ import {
   buildCodexStatusMeta,
 } from "./CodexChatControllerModel";
 import { useCodexComposerAttachments } from "./useCodexComposerAttachments";
+import { useCodexMessageTransport } from "./useCodexMessageTransport";
 import { useCodexNativeCommands } from "./useCodexNativeCommands";
 import { useCodexSlashCommandRouter } from "./useCodexSlashCommandRouter";
 
@@ -80,7 +80,6 @@ export function useCodexChatController({
   pinToBottomIfNeeded,
   focusComposer,
 }: UseCodexChatControllerInput) {
-  const [sending, setSending] = useState(false);
   const {
     canAttach,
     handleUploadAttachment,
@@ -91,6 +90,19 @@ export function useCodexChatController({
     connectionState,
     setAttachments,
     focusComposer,
+  });
+  const {
+    interruptCodex,
+    sending,
+    submitTextToCodex,
+  } = useCodexMessageTransport({
+    serverId,
+    agentId,
+    connectionState,
+    setDraft,
+    setAttachments,
+    refreshConversation,
+    scrollToLatest,
   });
 
   const statusMeta = useMemo(
@@ -111,38 +123,6 @@ export function useCodexChatController({
     (draft.trim().length > 0 || attachments.length > 0) &&
     !sending &&
     !uploading;
-
-  const submitTextToCodex = useCallback(
-    (
-      text: string,
-      previousDraft: string,
-      previousAttachments: ComposerAttachment[],
-    ) => {
-      setSending(true);
-      setDraft("");
-      setAttachments([]);
-      scrollToLatest(true);
-      try {
-        wsClient.sendInput(serverId, agentId, `${text}\n`);
-        setTimeout(() => {
-          void refreshConversation(false);
-          setSending(false);
-        }, 600);
-      } catch {
-        setDraft(previousDraft);
-        setAttachments(previousAttachments);
-        setSending(false);
-      }
-    },
-    [
-      agentId,
-      refreshConversation,
-      scrollToLatest,
-      serverId,
-      setAttachments,
-      setDraft,
-    ],
-  );
 
   const clearComposerForLocalCommand = useCallback(() => {
     setDraft("");
@@ -252,22 +232,6 @@ export function useCodexChatController({
     submitTextToCodex,
     uploading,
   ]);
-
-  const interruptCodex = useCallback(() => {
-    if (connectionState !== "connected" || sending) {
-      return;
-    }
-    setSending(true);
-    try {
-      wsClient.sendAction(serverId, agentId, "pause");
-      setTimeout(() => {
-        void refreshConversation(false);
-        setSending(false);
-      }, 600);
-    } catch {
-      setSending(false);
-    }
-  }, [agentId, connectionState, refreshConversation, sending, serverId]);
 
   return {
     sending,
