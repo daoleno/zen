@@ -13,6 +13,10 @@ import type {
 import { Typography } from "../../constants/tokens";
 import type { CodexSlashCommand } from "../../services/websocket";
 import {
+  CodexQuickCommandRouteBadge,
+  getCodexQuickCommandRoutePresentation,
+} from "./CodexQuickCommandRouteBadge";
+import {
   slashCommandIcon,
   slashCommandTitle,
 } from "./codexSlashCommandPresentation";
@@ -32,12 +36,11 @@ export function CodexQuickCommandRow({
   theme,
   onSelect,
 }: CodexQuickCommandRowProps) {
-  const routeLabel = slashCommandRouteLabel(command);
-  const routeColor = slashCommandRouteColor(command, chrome, theme);
+  const route = getCodexQuickCommandRoutePresentation(command, chrome, theme);
 
   return (
     <TouchableOpacity
-      accessibilityLabel={`${routeLabel} ${command.value}`}
+      accessibilityLabel={`${route.label} ${command.value}`}
       style={[
         styles.row,
         selected ? { backgroundColor: chrome.surfaceMuted } : null,
@@ -63,14 +66,7 @@ export function CodexQuickCommandRow({
           {command.description}
         </Text>
       </View>
-      <View style={[styles.badge, { borderColor: routeColor }]}>
-        <Text
-          style={[styles.badgeText, { color: routeColor }]}
-          numberOfLines={1}
-        >
-          {routeLabel}
-        </Text>
-      </View>
+      <CodexQuickCommandRouteBadge route={route} />
       <Text
         style={[styles.value, { color: chrome.textMuted }]}
         numberOfLines={1}
@@ -80,68 +76,6 @@ export function CodexQuickCommandRow({
       <Ionicons name="chevron-forward" size={14} color={chrome.textSubtle} />
     </TouchableOpacity>
   );
-}
-
-function slashCommandRouteLabel(command: CodexSlashCommand) {
-  if (
-    command.execution === "unsupported" ||
-    (!command.terminal_supported && !command.chat_supported)
-  ) {
-    return "Unsupported";
-  }
-  if (
-    command.execution === "chat-native" ||
-    command.execution === "timeline-output"
-  ) {
-    if (command.output.kind === "diff") {
-      return "Diff";
-    }
-    if (command.output.kind === "status-card") {
-      return "Status";
-    }
-    return "Chat";
-  }
-  if (
-    command.interactive ||
-    command.input.kind === "picker" ||
-    command.input.kind === "form"
-  ) {
-    return "Interactive";
-  }
-  if (command.execution === "insert-only") {
-    return "Insert";
-  }
-  return "Terminal";
-}
-
-function slashCommandRouteColor(
-  command: CodexSlashCommand,
-  chrome: TerminalThemeChrome,
-  theme: TerminalThemePalette,
-) {
-  if (
-    command.execution === "unsupported" ||
-    (!command.terminal_supported && !command.chat_supported)
-  ) {
-    return theme.red;
-  }
-  if (
-    command.execution === "chat-native" ||
-    command.execution === "timeline-output"
-  ) {
-    return theme.green;
-  }
-  if (
-    command.interactive ||
-    command.input.kind === "picker" ||
-    command.input.kind === "form"
-  ) {
-    return theme.yellow;
-  }
-  if (command.execution === "insert-only") {
-    return theme.cyan;
-  }
-  return chrome.textSubtle;
 }
 
 const styles = StyleSheet.create({
@@ -180,19 +114,5 @@ const styles = StyleSheet.create({
     fontSize: 11,
     lineHeight: 15,
     fontFamily: Typography.terminalFont,
-  },
-  badge: {
-    maxWidth: 86,
-    minHeight: 22,
-    borderRadius: 8,
-    borderWidth: StyleSheet.hairlineWidth,
-    paddingHorizontal: 7,
-    alignItems: "center",
-    justifyContent: "center",
-  },
-  badgeText: {
-    fontSize: 10,
-    lineHeight: 13,
-    fontFamily: Typography.uiFontMedium,
   },
 });
