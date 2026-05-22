@@ -4,14 +4,12 @@ import {
   useState,
   type SetStateAction,
 } from "react";
-import { Alert } from "react-native";
 import type { Agent, ConnectionState } from "../../store/agents";
 import type {
   CodexConversation,
   CodexConversationEvent,
 } from "../../services/codexConversation";
 import type { ConnectionIssue } from "../../services/connectionIssue";
-import { uploadDocumentForServer } from "../../services/uploads";
 import { wsClient, type CodexSlashCommand } from "../../services/websocket";
 import {
   type ChatCommandEvent,
@@ -25,10 +23,9 @@ import {
   buildCodexComposerMessage,
   buildCodexStatusMeta,
 } from "./CodexChatControllerModel";
+import { useCodexComposerAttachments } from "./useCodexComposerAttachments";
 import { useCodexNativeCommands } from "./useCodexNativeCommands";
 import { useCodexSlashCommandRouter } from "./useCodexSlashCommandRouter";
-
-const MAX_COMPOSER_ATTACHMENTS = 8;
 
 interface GitDiffAction {
   label: string;
@@ -84,7 +81,17 @@ export function useCodexChatController({
   focusComposer,
 }: UseCodexChatControllerInput) {
   const [sending, setSending] = useState(false);
-  const [uploading, setUploading] = useState(false);
+  const {
+    canAttach,
+    handleUploadAttachment,
+    removeAttachment,
+    uploading,
+  } = useCodexComposerAttachments({
+    serverId,
+    connectionState,
+    setAttachments,
+    focusComposer,
+  });
 
   const statusMeta = useMemo(
     () =>
@@ -99,7 +106,6 @@ export function useCodexChatController({
     [agent, connectionIssue, connectionState, conversation, events, sending],
   );
 
-  const canAttach = connectionState === "connected" && !uploading;
   const canSend =
     connectionState === "connected" &&
     (draft.trim().length > 0 || attachments.length > 0) &&
@@ -262,42 +268,6 @@ export function useCodexChatController({
       setSending(false);
     }
   }, [agentId, connectionState, refreshConversation, sending, serverId]);
-
-  const handleUploadAttachment = useCallback(async () => {
-    if (!canAttach) {
-      return;
-    }
-    setUploading(true);
-    try {
-      const attachment = await uploadDocumentForServer(serverId);
-      if (!attachment) {
-        return;
-      }
-      setAttachments((current) =>
-        [
-          ...current,
-          {
-            ...attachment,
-            id: `${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`,
-          },
-        ].slice(-MAX_COMPOSER_ATTACHMENTS),
-      );
-      focusComposer();
-    } catch (err: any) {
-      Alert.alert("Upload failed", err?.message || "Could not upload this file.");
-    } finally {
-      setUploading(false);
-    }
-  }, [canAttach, focusComposer, serverId, setAttachments]);
-
-  const removeAttachment = useCallback(
-    (id: string) => {
-      setAttachments((current) =>
-        current.filter((attachment) => attachment.id !== id),
-      );
-    },
-    [setAttachments],
-  );
 
   return {
     sending,
