@@ -1,7 +1,5 @@
 import React from "react";
 import {
-  StyleSheet,
-  View,
   type TextInput as TextInputInstance,
 } from "react-native";
 import type {
@@ -9,7 +7,8 @@ import type {
   TerminalThemePalette,
 } from "../../constants/terminalThemes";
 import { CodexComposerInput } from "./CodexComposerInput";
-import { ComposerIconButton } from "./ComposerIconButton";
+import { CodexComposerPanelFrame } from "./CodexComposerPanelFrame";
+import { CodexComposerUploadButton } from "./CodexComposerUploadButton";
 import { ComposerSendButton } from "./ComposerSendButton";
 
 interface CodexComposerPanelProps {
@@ -64,24 +63,15 @@ export function CodexComposerPanel({
   onSendPress,
 }: CodexComposerPanelProps) {
   return (
-    <View
-      collapsable={false}
-      style={[
-        styles.panel,
-        floating ? styles.floating : null,
-        {
-          backgroundColor: focused ? chrome.surfaceActive : chrome.surface,
-          borderColor: focused ? chrome.borderStrong : chrome.border,
-        },
-      ]}
+    <CodexComposerPanelFrame
+      focused={focused}
+      floating={floating}
+      chrome={chrome}
     >
-      <ComposerIconButton
-        accessibilityLabel="Upload file"
-        icon="add"
+      <CodexComposerUploadButton
+        canAttach={canAttach}
+        uploading={uploading}
         chrome={chrome}
-        loading={uploading}
-        disabled={!canAttach}
-        iconColor={canAttach ? chrome.text : chrome.textSubtle}
         onPress={onUploadPress}
       />
 
@@ -109,27 +99,6 @@ export function CodexComposerPanel({
         compact={compactSendIcon}
         onPress={onSendPress}
       />
-    </View>
+    </CodexComposerPanelFrame>
   );
 }
-
-const styles = StyleSheet.create({
-  panel: {
-    minHeight: 50,
-    borderRadius: 25,
-    borderWidth: StyleSheet.hairlineWidth,
-    paddingLeft: 4,
-    paddingRight: 6,
-    paddingVertical: 4,
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 4,
-  },
-  floating: {
-    shadowColor: "#000000",
-    shadowOffset: { width: 0, height: 8 },
-    shadowOpacity: 0.16,
-    shadowRadius: 18,
-    elevation: 10,
-  },
-});
