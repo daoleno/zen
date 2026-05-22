@@ -1,11 +1,8 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
-  StyleSheet,
   useWindowDimensions,
 } from "react-native";
 import { useLocalSearchParams } from "expo-router";
-import { StatusBar } from "expo-status-bar";
-import { SafeAreaView } from "react-native-safe-area-context";
 import { useAgents } from "../../store/agents";
 import { useWork } from "../../store/work";
 import { makeSessionKey } from "../../services/sessionKeys";
@@ -13,12 +10,10 @@ import type { TerminalSurfaceHandle } from "../../components/terminal/TerminalSu
 import {
   TERMINAL_ACTION_POPOVER_WIDTH,
 } from "../../components/terminal/TerminalActionPopover";
-import { TerminalTopBar } from "../../components/terminal/TerminalTopBar";
-import { TerminalViewport } from "../../components/terminal/TerminalViewport";
 import { useTerminalAccessoryLayout } from "../../components/terminal/useTerminalAccessoryLayout";
 import { useTerminalGitDiff } from "../../components/terminal/useTerminalGitDiff";
 import { buildTerminalTabs } from "./TerminalScreenModel";
-import { TerminalScreenOverlays } from "./TerminalScreenOverlays";
+import { TerminalScreenLayout } from "./TerminalScreenLayout";
 import { useTerminalAgentIndex } from "./useTerminalAgentIndex";
 import { useTerminalChromeLayout } from "./useTerminalChromeLayout";
 import { useTerminalFocusLifecycle } from "./useTerminalFocusLifecycle";
@@ -307,23 +302,12 @@ export default function TerminalScreen() {
   });
 
   return (
-    <SafeAreaView
-      style={[styles.container, { backgroundColor: chromeColors.appBackground }]}
-      edges={["top"]}
-    >
-      <StatusBar style={statusBarStyle} />
-      <TerminalTopBar {...topBarProps} />
-
-      <TerminalViewport {...viewportProps} />
-
-      <TerminalScreenOverlays {...overlayProps} />
-    </SafeAreaView>
+    <TerminalScreenLayout
+      chrome={chromeColors}
+      statusBarStyle={statusBarStyle}
+      topBarProps={topBarProps}
+      viewportProps={viewportProps}
+      overlayProps={overlayProps}
+    />
   );
 }
-
-const styles = StyleSheet.create({
-  container: {
-    flex: 1,
-    backgroundColor: "#0D0C0C",
-  },
-});
