@@ -24,6 +24,7 @@ import { useTerminalChromeLayout } from "./useTerminalChromeLayout";
 import { useTerminalFocusLifecycle } from "./useTerminalFocusLifecycle";
 import { useTerminalRouteModel } from "./useTerminalRouteModel";
 import { useTerminalPickerModel } from "./useTerminalPickerModel";
+import { useTerminalScreenOverlayProps } from "./useTerminalScreenOverlayProps";
 import { useTerminalScreenStorage } from "./useTerminalScreenStorage";
 import { useTerminalSessionActions } from "./useTerminalSessionActions";
 import { useTerminalTabActions } from "./useTerminalTabActions";
@@ -189,14 +190,7 @@ export default function TerminalScreen() {
     setPickerVisible(false);
   }, []);
 
-  const {
-    goToInbox,
-    openAgentTab,
-    handleCloseCurrentTab,
-    handleCloseOtherTabs,
-    handleTerminateAgent,
-    handleTogglePinned,
-  } = useTerminalTabActions({
+  const tabActions = useTerminalTabActions({
     sessionKey,
     serverId,
     agentId,
@@ -211,6 +205,10 @@ export default function TerminalScreen() {
     closeMenu,
     closePicker,
   });
+  const {
+    goToInbox,
+    openAgentTab,
+  } = tabActions;
 
   const openGitDiff = () => {
     closeMenu();
@@ -223,15 +221,7 @@ export default function TerminalScreen() {
     setRenameVisible(true);
   };
 
-  const {
-    applyCodexRenderMode,
-    createTerminal,
-    handleSaveRename,
-    openLinkedWork,
-    openNewTerminal,
-    retryServerConnection,
-    toggleCodexRenderMode,
-  } = useTerminalSessionActions({
+  const sessionActions = useTerminalSessionActions({
     serverId,
     agentId,
     sessionKey,
@@ -250,6 +240,47 @@ export default function TerminalScreen() {
     setTerminalTabs,
     setRecentAgentOpens,
     setServer,
+  });
+  const {
+    applyCodexRenderMode,
+    openNewTerminal,
+    retryServerConnection,
+  } = sessionActions;
+  const overlayProps = useTerminalScreenOverlayProps({
+    pickerVisible,
+    pickerSections,
+    sortedAgentCount: sortedAgents.length,
+    sessionKey,
+    showPickerServerNames,
+    agentAliases,
+    creatingSession,
+    menuVisible,
+    menuPosition,
+    connectionConnected: connectionState === "connected",
+    gitDiff,
+    activePinned,
+    tabs,
+    isCodexAgent,
+    codexRenderMode,
+    hasLinkedWork: Boolean(linkedWork),
+    newTerminalVisible,
+    agentCwd: agent?.cwd,
+    serverId,
+    renameVisible,
+    renameDraft,
+    renamePlaceholder: agent?.name || agentId,
+    chrome: chromeColors,
+    theme: terminalTheme,
+    setPickerVisible,
+    setNewTerminalVisible,
+    setRenameVisible,
+    setRenameDraft,
+    tabActions,
+    sessionActions,
+    closeMenu,
+    openNewTerminal,
+    openGitDiff,
+    openRenameModal,
   });
 
   return (
@@ -315,56 +346,7 @@ export default function TerminalScreen() {
         onAccessoryLayout={handleAccessoryLayout}
       />
 
-      <TerminalScreenOverlays
-        pickerVisible={pickerVisible}
-        pickerSections={pickerSections}
-        pickerAgentCount={sortedAgents.length}
-        activeSessionKey={sessionKey}
-        showPickerServerNames={showPickerServerNames}
-        agentAliases={agentAliases}
-        creatingSession={creatingSession}
-        menuVisible={menuVisible}
-        menuPosition={menuPosition}
-        newTerminalDisabled={connectionState !== "connected"}
-        gitDiffDisabled={gitDiff.actionDisabled}
-        activePinned={activePinned}
-        closeOtherTabsDisabled={tabs.length <= 1}
-        isCodexAgent={isCodexAgent}
-        codexRenderMode={codexRenderMode}
-        showLinkedWork={Boolean(linkedWork)}
-        newTerminalVisible={newTerminalVisible}
-        newTerminalInitialCwd={agent?.cwd || ""}
-        selectedServerId={serverId}
-        gitDiffSheetProps={gitDiff.sheetProps}
-        renameVisible={renameVisible}
-        renameDraft={renameDraft}
-        renamePlaceholder={agent?.name || agentId}
-        chrome={chromeColors}
-        theme={terminalTheme}
-        onClosePicker={() => setPickerVisible(false)}
-        onOpenAgent={openAgentTab}
-        onNewTerminal={openNewTerminal}
-        onCloseMenu={closeMenu}
-        onOpenGitDiff={openGitDiff}
-        onRename={openRenameModal}
-        onTogglePinned={handleTogglePinned}
-        onCloseOtherTabs={handleCloseOtherTabs}
-        onCloseTab={handleCloseCurrentTab}
-        onOpenLinkedWork={openLinkedWork}
-        onTerminate={handleTerminateAgent}
-        onToggleCodexRenderMode={toggleCodexRenderMode}
-        onCloseNewTerminal={() => setNewTerminalVisible(false)}
-        onSubmitNewTerminal={(input) => {
-          void createTerminal({
-            cwd: input.cwd,
-            command: input.command,
-            name: input.name,
-          });
-        }}
-        onRenameDraftChange={setRenameDraft}
-        onCloseRename={() => setRenameVisible(false)}
-        onSaveRename={handleSaveRename}
-      />
+      <TerminalScreenOverlays {...overlayProps} />
     </SafeAreaView>
   );
 }

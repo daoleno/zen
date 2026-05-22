@@ -19,7 +19,7 @@ type NewTerminalSubmitInput = Parameters<
   React.ComponentProps<typeof NewTerminalSheet>["onSubmit"]
 >[0];
 
-interface TerminalScreenOverlaysProps {
+export interface TerminalScreenOverlaysProps {
   pickerVisible: boolean;
   pickerSections: AgentDirectorySection[];
   pickerAgentCount: number;
