@@ -8,11 +8,10 @@ import {
   View,
 } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
-import { Colors, Typography, statusColor } from "../../constants/tokens";
+import { Colors, Typography } from "../../constants/tokens";
 import type { TerminalThemeChrome } from "../../constants/terminalThemes";
-import { presentAgent } from "../../services/agentPresentation";
 import type { AgentDirectorySection } from "../../services/serverSelection";
-import { AgentKindIcon } from "./AgentKindIcon";
+import { TerminalAgentPickerSection } from "./TerminalAgentPickerSection";
 
 interface TerminalAgentPickerSheetProps {
   visible: boolean;
@@ -82,87 +81,15 @@ export function TerminalAgentPickerSheet({
               </Text>
             ) : (
               sections.map((section) => (
-                <View key={section.key} style={styles.sheetSection}>
-                  <View style={styles.sheetSectionHeader}>
-                    <View style={styles.sheetSectionBody}>
-                      <Text
-                        style={[styles.sheetSectionTitle, { color: chrome.text }]}
-                        numberOfLines={1}
-                      >
-                        {section.title}
-                      </Text>
-                      <Text
-                        style={[
-                          styles.sheetSectionSubtitle,
-                          { color: chrome.textMuted },
-                        ]}
-                        numberOfLines={1}
-                      >
-                        {section.subtitle}
-                      </Text>
-                    </View>
-                    <Text
-                      style={[
-                        styles.sheetSectionCount,
-                        {
-                          color: chrome.textMuted,
-                          backgroundColor: chrome.surfaceMuted,
-                        },
-                      ]}
-                    >
-                      {section.data.length}
-                    </Text>
-                  </View>
-
-                  {section.data.map((item) => {
-                    const isActive = item.key === activeSessionKey;
-                    const presented = presentAgent(item, agentAliases[item.key]);
-                    const meta = [
-                      presented.typeLabel,
-                      showServerNames ? item.serverName : null,
-                    ]
-                      .filter(Boolean)
-                      .join(" · ");
-
-                    return (
-                      <TouchableOpacity
-                        key={item.key}
-                        style={[
-                          styles.agentRow,
-                          { borderBottomColor: chrome.border },
-                          isActive && styles.agentRowActive,
-                        ]}
-                        onPress={() => onOpenAgent(item.key)}
-                        activeOpacity={0.84}
-                      >
-                        <AgentKindIcon kind={presented.kind} size={15} />
-                        <View style={styles.agentRowBody}>
-                          <Text
-                            style={[styles.agentRowTitle, { color: chrome.text }]}
-                            numberOfLines={1}
-                          >
-                            {presented.title}
-                          </Text>
-                          <Text
-                            style={[
-                              styles.agentRowMeta,
-                              { color: chrome.textMuted },
-                            ]}
-                            numberOfLines={1}
-                          >
-                            {meta}
-                          </Text>
-                        </View>
-                        <View
-                          style={[
-                            styles.agentRowStatusDot,
-                            { backgroundColor: statusColor(item.status) },
-                          ]}
-                        />
-                      </TouchableOpacity>
-                    );
-                  })}
-                </View>
+                <TerminalAgentPickerSection
+                  key={section.key}
+                  section={section}
+                  activeSessionKey={activeSessionKey}
+                  showServerNames={showServerNames}
+                  agentAliases={agentAliases}
+                  chrome={chrome}
+                  onOpenAgent={onOpenAgent}
+                />
               ))
             )}
           </ScrollView>
@@ -248,84 +175,10 @@ const styles = StyleSheet.create({
   sheetScrollContent: {
     paddingBottom: 8,
   },
-  sheetSection: {
-    paddingTop: 18,
-  },
-  sheetSectionHeader: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 12,
-    paddingBottom: 10,
-  },
-  sheetSectionBody: {
-    flex: 1,
-    minWidth: 0,
-  },
-  sheetSectionTitle: {
-    color: Colors.textPrimary,
-    fontSize: 15,
-    lineHeight: 20,
-    fontFamily: Typography.uiFontMedium,
-  },
-  sheetSectionSubtitle: {
-    marginTop: 2,
-    color: Colors.textSecondary,
-    fontSize: 11,
-    lineHeight: 15,
-    fontFamily: Typography.uiFont,
-    opacity: 0.55,
-  },
-  sheetSectionCount: {
-    minWidth: 24,
-    paddingHorizontal: 8,
-    paddingVertical: 4,
-    borderRadius: 999,
-    overflow: "hidden",
-    textAlign: "center",
-    color: Colors.textSecondary,
-    fontSize: 11,
-    lineHeight: 14,
-    fontFamily: Typography.uiFontMedium,
-    backgroundColor: "rgba(255,255,255,0.05)",
-  },
   sheetEmpty: {
     color: "#7D8CA0",
     fontSize: 13,
     fontFamily: Typography.uiFont,
     paddingVertical: 12,
-  },
-  agentRow: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 10,
-    paddingVertical: 12,
-    borderBottomWidth: StyleSheet.hairlineWidth,
-    borderBottomColor: "rgba(255,255,255,0.04)",
-  },
-  agentRowActive: {
-    opacity: 1,
-  },
-  agentRowBody: {
-    flex: 1,
-    minWidth: 0,
-    gap: 2,
-  },
-  agentRowStatusDot: {
-    width: 7,
-    height: 7,
-    borderRadius: 4,
-  },
-  agentRowTitle: {
-    flex: 1,
-    color: Colors.textPrimary,
-    fontSize: 14,
-    fontFamily: Typography.uiFontMedium,
-  },
-  agentRowMeta: {
-    color: Colors.textSecondary,
-    fontSize: 11,
-    lineHeight: 15,
-    fontFamily: Typography.uiFont,
-    opacity: 0.55,
   },
 });
