@@ -11,6 +11,7 @@ import {
   type SlashCommandRequest,
 } from "./CodexSlashCommands";
 import { useCodexSlashCommandDialogs } from "./useCodexSlashCommandDialogs";
+import { useCodexSlashCommandPicker } from "./useCodexSlashCommandPicker";
 
 interface RouteDraftSubmissionInput {
   draft: string;
@@ -168,50 +169,15 @@ export function useCodexSlashCommandRouter({
     [routeSlashCommandSubmission, slashCommands],
   );
 
-  const pickSlashCommand = useCallback(
-    (command: CodexSlashCommand) => {
-      if (attachments.length > 0) {
-        setDraft(`${command.value} `);
-        focusComposer();
-        return;
-      }
-      if (command.execution === "unsupported") {
-        showUnsupportedSlashCommand(command);
-        return;
-      }
-      if (
-        command.execution === "chat-native" &&
-        !requiresSlashCommandArgs(command)
-      ) {
-        void runNativeSlashCommand(command);
-        return;
-      }
-      if (
-        command.execution === "terminal-required" &&
-        !requiresSlashCommandArgs(command)
-      ) {
-        showTerminalRequiredAction(
-          command,
-          command.value,
-          command.value,
-          draft,
-          attachments,
-        );
-        return;
-      }
-      setDraft(`${command.value} `);
-      focusComposer();
-    },
-    [
-      attachments,
-      draft,
-      focusComposer,
-      runNativeSlashCommand,
-      setDraft,
-      showTerminalRequiredAction,
-      showUnsupportedSlashCommand,
-    ],
-  );
+  const pickSlashCommand = useCodexSlashCommandPicker({
+    draft,
+    attachments,
+    setDraft,
+    focusComposer,
+    showTerminalRequiredAction,
+    showUnsupportedSlashCommand,
+    runNativeSlashCommand,
+  });
 
   return {
     pickSlashCommand,
