@@ -68,24 +68,14 @@ import {
   type TerminalTabDescriptor,
 } from "../../components/terminal/TerminalTopBar";
 import { TerminalViewport } from "../../components/terminal/TerminalViewport";
+import { useTerminalGitDiff } from "../../components/terminal/useTerminalGitDiff";
 import { presentAgent } from "../../services/agentPresentation";
-import {
-  buildGitDiffChipLabel,
-  type GitDiffPatchPayload,
-  type GitRepoBrowserEntry,
-  type GitRepoFileContentPayload,
-  type GitDiffStatusSnapshot,
-} from "../../services/gitDiff";
 import {
   filterAgentsByPreferredServers,
   groupAgentsByDirectory,
 } from "../../services/serverSelection";
 
 const EMPTY_TABS: StoredTerminalTabs = { order: [], pinned: [] };
-
-function hasGitDiffPatchContent(payload?: GitDiffPatchPayload) {
-  return Boolean(payload?.sections?.some((section) => section.patch.trim()));
-}
 
 const STATUS_PRIORITY: Record<AgentStatus, number> = {
   failed: 0,
@@ -134,37 +124,6 @@ export default function TerminalScreen() {
   const [accessoryHeight, setAccessoryHeight] = useState(68);
   const [ctrlArmed, setCtrlArmed] = useState(false);
   const [newTerminalVisible, setNewTerminalVisible] = useState(false);
-  const [gitDiffVisible, setGitDiffVisible] = useState(false);
-  const [gitDiffStatus, setGitDiffStatus] =
-    useState<GitDiffStatusSnapshot | null>(null);
-  const [gitDiffLoading, setGitDiffLoading] = useState(false);
-  const [gitDiffError, setGitDiffError] = useState<string | null>(null);
-  const [gitDiffPatchLoadingByPath, setGitDiffPatchLoadingByPath] = useState<
-    Record<string, boolean>
-  >({});
-  const [gitDiffPatchErrorByPath, setGitDiffPatchErrorByPath] = useState<
-    Record<string, string | undefined>
-  >({});
-  const [gitDiffPatchByPath, setGitDiffPatchByPath] = useState<
-    Record<string, GitDiffPatchPayload | undefined>
-  >({});
-  const gitDiffPatchByPathRef = useRef(gitDiffPatchByPath);
-  const gitDiffPatchLoadingByPathRef = useRef(gitDiffPatchLoadingByPath);
-  const gitDiffPatchErrorByPathRef = useRef(gitDiffPatchErrorByPath);
-  const [repoBrowserPath, setRepoBrowserPath] = useState("");
-  const [repoBrowserEntries, setRepoBrowserEntries] = useState<
-    GitRepoBrowserEntry[]
-  >([]);
-  const [repoBrowserLoading, setRepoBrowserLoading] = useState(false);
-  const [repoBrowserError, setRepoBrowserError] = useState<string | null>(null);
-  const [repoFilePath, setRepoFilePath] = useState<string | null>(null);
-  const [repoFileLoadingPath, setRepoFileLoadingPath] = useState<string | null>(
-    null,
-  );
-  const [repoFileError, setRepoFileError] = useState<string | null>(null);
-  const [repoFileByPath, setRepoFileByPath] = useState<
-    Record<string, GitRepoFileContentPayload | undefined>
-  >({});
   const [creatingSession, setCreatingSession] = useState(false);
   const [showTerminalFallback, setShowTerminalFallback] = useState(
     !Boolean(sessionKey && serverId && agentId),
@@ -193,7 +152,6 @@ export default function TerminalScreen() {
   const reconnectFallbackTimerRef = useRef<ReturnType<
     typeof setTimeout
   > | null>(null);
-  const gitDiffRequestRef = useRef(0);
 
   const agentByKey = useMemo(
     () => new Map(state.agents.map((agent) => [agent.key, agent])),
@@ -220,27 +178,6 @@ export default function TerminalScreen() {
       ),
     [agent, agentAliases, sessionKey],
   );
-
-  useEffect(() => {
-    gitDiffPatchByPathRef.current = gitDiffPatchByPath;
-  }, [gitDiffPatchByPath]);
-
-  useEffect(() => {
-    gitDiffPatchLoadingByPathRef.current = gitDiffPatchLoadingByPath;
-  }, [gitDiffPatchLoadingByPath]);
-
-  useEffect(() => {
-    gitDiffPatchErrorByPathRef.current = gitDiffPatchErrorByPath;
-  }, [gitDiffPatchErrorByPath]);
-
-  const resetGitDiffPatchCache = useCallback(() => {
-    gitDiffPatchByPathRef.current = {};
-    gitDiffPatchErrorByPathRef.current = {};
-    gitDiffPatchLoadingByPathRef.current = {};
-    setGitDiffPatchByPath({});
-    setGitDiffPatchErrorByPath({});
-    setGitDiffPatchLoadingByPath({});
-  }, []);
 
   const linkedWork = useMemo(
     () =>
@@ -294,87 +231,14 @@ export default function TerminalScreen() {
     ? "The app kept your route, but the live terminal is not ready yet."
     : connectionIssue?.hint ||
       "This terminal will reopen automatically once the daemon is reachable again.";
-  const gitDiffQueryEnabled = Boolean(
-    hasTerminalRoute && screenFocused && serverId && agentId && gitDiffCwd,
-  );
-  const refreshGitDiff = useCallback(
-    async (showLoading: boolean = true) => {
-      if (
-        !serverId
-        || !agentId
-        || connectionState !== "connected"
-        || !gitDiffQueryEnabled
-      ) {
-        setGitDiffStatus(null);
-        setGitDiffError(null);
-        resetGitDiffPatchCache();
-        setRepoBrowserEntries([]);
-        setRepoBrowserPath("");
-        setRepoBrowserError(null);
-        setRepoFilePath(null);
-        setRepoFileError(null);
-        setRepoFileLoadingPath(null);
-        setRepoFileByPath({});
-        if (showLoading) {
-          setGitDiffLoading(false);
-        }
-        return;
-      }
-
-      const requestId = gitDiffRequestRef.current + 1;
-      gitDiffRequestRef.current = requestId;
-
-      if (showLoading) {
-        setGitDiffLoading(true);
-        resetGitDiffPatchCache();
-      }
-
-      try {
-        const nextStatus = await wsClient.getGitDiffStatus(serverId, {
-          targetId: agentId,
-          cwd: gitDiffCwd,
-        });
-        if (gitDiffRequestRef.current !== requestId) return;
-
-        setGitDiffStatus(nextStatus);
-        setGitDiffError(null);
-        setGitDiffPatchByPath((previous) => {
-          if (!nextStatus.available) {
-            gitDiffPatchByPathRef.current = {};
-            return {};
-          }
-          const allowed = new Set((nextStatus.files ?? []).map((file) => file.path));
-          const next = Object.fromEntries(
-            Object.entries(previous).filter(
-              ([path, patch]) => allowed.has(path) && hasGitDiffPatchContent(patch),
-            ),
-          );
-          gitDiffPatchByPathRef.current = next;
-          return next;
-        });
-        setGitDiffPatchErrorByPath((previous) => {
-          if (!nextStatus.available) {
-            gitDiffPatchErrorByPathRef.current = {};
-            return {};
-          }
-          const allowed = new Set((nextStatus.files ?? []).map((file) => file.path));
-          const next = Object.fromEntries(
-            Object.entries(previous).filter(([path]) => allowed.has(path)),
-          );
-          gitDiffPatchErrorByPathRef.current = next;
-          return next;
-        });
-      } catch (error: any) {
-        if (gitDiffRequestRef.current !== requestId) return;
-        setGitDiffError(error?.message || "Could not inspect local git changes.");
-      } finally {
-        if (showLoading && gitDiffRequestRef.current === requestId) {
-          setGitDiffLoading(false);
-        }
-      }
-    },
-    [agentId, connectionState, gitDiffCwd, gitDiffQueryEnabled, resetGitDiffPatchCache, serverId],
-  );
+  const gitDiff = useTerminalGitDiff({
+    serverId,
+    agentId,
+    cwd: gitDiffCwd,
+    connectionState,
+    hasTerminalRoute,
+    screenFocused,
+  });
 
   const syncActiveTerminal = React.useCallback(
     (appState: AppStateStatus = "active") => {
@@ -479,23 +343,6 @@ export default function TerminalScreen() {
     setRenameVisible(false);
     setRenameDraft("");
   }, [sessionKey]);
-
-  useEffect(() => {
-    setGitDiffVisible(false);
-  }, [sessionKey]);
-
-  useEffect(() => {
-    resetGitDiffPatchCache();
-    setRepoBrowserPath("");
-    setRepoBrowserEntries([]);
-    setRepoBrowserError(null);
-    setRepoBrowserLoading(false);
-    setRepoFilePath(null);
-    setRepoFileLoadingPath(null);
-    setRepoFileError(null);
-    setRepoFileByPath({});
-    setGitDiffError(null);
-  }, [agentId, gitDiffCwd, resetGitDiffPatchCache, serverId]);
 
   useEffect(() => {
     if (hydratedServerIds.length === 0) return;
@@ -609,35 +456,6 @@ export default function TerminalScreen() {
     };
   }, [connectionIssue, connectionState, hasTerminalRoute]);
 
-  useEffect(() => {
-    if (!gitDiffQueryEnabled || connectionState !== "connected") {
-      gitDiffRequestRef.current += 1;
-      setGitDiffStatus(null);
-      setGitDiffError(null);
-      setGitDiffLoading(false);
-      resetGitDiffPatchCache();
-      setRepoBrowserEntries([]);
-      setRepoBrowserError(null);
-      setRepoBrowserLoading(false);
-      setRepoFilePath(null);
-      setRepoFileError(null);
-      setRepoFileLoadingPath(null);
-      setRepoFileByPath({});
-      return;
-    }
-
-    void refreshGitDiff(true);
-
-    const interval = setInterval(() => {
-      void refreshGitDiff(false);
-    }, gitDiffVisible ? 7000 : 15000);
-
-    return () => {
-      gitDiffRequestRef.current += 1;
-      clearInterval(interval);
-    };
-  }, [connectionState, gitDiffQueryEnabled, gitDiffVisible, refreshGitDiff, resetGitDiffPatchCache]);
-
   const tabs = useMemo(() => {
     const order = buildDisplayTabOrder(sessionKey, terminalTabs);
     return order
@@ -750,165 +568,8 @@ export default function TerminalScreen() {
 
   const openGitDiff = () => {
     closeMenu();
-    setGitDiffVisible(true);
-    void refreshGitDiff(true);
+    gitDiff.open();
   };
-
-  const ensureGitDiffPatch = useCallback(
-    async (path: string) => {
-      const nextPath = path.trim();
-      if (!nextPath || !serverId || !agentId) {
-        return;
-      }
-
-      if (
-        gitDiffPatchByPathRef.current[nextPath]
-        || gitDiffPatchLoadingByPathRef.current[nextPath]
-        || gitDiffPatchErrorByPathRef.current[nextPath]
-      ) {
-        return;
-      }
-
-      gitDiffPatchLoadingByPathRef.current = {
-        ...gitDiffPatchLoadingByPathRef.current,
-        [nextPath]: true,
-      };
-      setGitDiffPatchLoadingByPath((previous) => ({
-        ...previous,
-        [nextPath]: true,
-      }));
-      gitDiffPatchErrorByPathRef.current = {
-        ...gitDiffPatchErrorByPathRef.current,
-        [nextPath]: undefined,
-      };
-      setGitDiffPatchErrorByPath((previous) => ({
-        ...previous,
-        [nextPath]: undefined,
-      }));
-
-      try {
-        const payload = await wsClient.getGitDiffPatch(serverId, {
-          targetId: agentId,
-          cwd: gitDiffCwd,
-          path: nextPath,
-        });
-        gitDiffPatchByPathRef.current = {
-          ...gitDiffPatchByPathRef.current,
-          [nextPath]: payload,
-        };
-        setGitDiffPatchByPath((previous) => ({
-          ...previous,
-          [nextPath]: payload,
-        }));
-      } catch (error: any) {
-        gitDiffPatchErrorByPathRef.current = {
-          ...gitDiffPatchErrorByPathRef.current,
-          [nextPath]: error?.message || "Could not load this patch.",
-        };
-        setGitDiffPatchErrorByPath((previous) => ({
-          ...previous,
-          [nextPath]: error?.message || "Could not load this patch.",
-        }));
-      } finally {
-        const nextLoading = { ...gitDiffPatchLoadingByPathRef.current };
-        delete nextLoading[nextPath];
-        gitDiffPatchLoadingByPathRef.current = nextLoading;
-        setGitDiffPatchLoadingByPath((previous) => {
-          const next = { ...previous };
-          delete next[nextPath];
-          return next;
-        });
-      }
-    },
-    [
-      agentId,
-      gitDiffCwd,
-      serverId,
-    ],
-  );
-
-  const loadRepoBrowserPath = useCallback(
-    async (path: string = "") => {
-      if (!serverId || !agentId || !gitDiffCwd) {
-        return;
-      }
-
-      setRepoBrowserLoading(true);
-      setRepoBrowserError(null);
-      setRepoFilePath(null);
-      setRepoFileError(null);
-
-      try {
-        const payload = await wsClient.getGitRepoEntries(serverId, {
-          targetId: agentId,
-          cwd: gitDiffCwd,
-          path,
-        });
-        setRepoBrowserPath(payload.path || "");
-        setRepoBrowserEntries(payload.entries ?? []);
-      } catch (error: any) {
-        setRepoBrowserError(error?.message || "Could not load repository files.");
-      } finally {
-        setRepoBrowserLoading(false);
-      }
-    },
-    [agentId, gitDiffCwd, serverId],
-  );
-
-  const openRepoFile = useCallback(
-    async (path: string) => {
-      const nextPath = path.trim();
-      if (!nextPath || !serverId || !agentId || !gitDiffCwd) {
-        return;
-      }
-
-      setRepoFilePath(nextPath);
-      setRepoFileError(null);
-
-      if (repoFileByPath[nextPath]) {
-        return;
-      }
-
-      setRepoFileLoadingPath(nextPath);
-      try {
-        const payload = await wsClient.getGitRepoFileContent(serverId, {
-          targetId: agentId,
-          cwd: gitDiffCwd,
-          path: nextPath,
-        });
-        setRepoFileByPath((previous) => ({
-          ...previous,
-          [nextPath]: payload,
-        }));
-      } catch (error: any) {
-        setRepoFileError(error?.message || "Could not load repository file.");
-      } finally {
-        setRepoFileLoadingPath((previous) =>
-          previous === nextPath ? null : previous,
-        );
-      }
-    },
-    [agentId, gitDiffCwd, repoFileByPath, serverId],
-  );
-
-  const closeRepoFile = useCallback(() => {
-    setRepoFilePath(null);
-    setRepoFileError(null);
-  }, []);
-
-  const goUpRepoBrowserPath = useCallback(() => {
-    const parent = repoBrowserPath.includes("/")
-      ? repoBrowserPath.slice(0, repoBrowserPath.lastIndexOf("/"))
-      : "";
-    void loadRepoBrowserPath(parent);
-  }, [loadRepoBrowserPath, repoBrowserPath]);
-
-  useEffect(() => {
-    if (!gitDiffVisible || !gitDiffStatus?.available) {
-      return;
-    }
-    void loadRepoBrowserPath(repoBrowserPath || "");
-  }, [gitDiffStatus?.repo_root, gitDiffStatus?.available, gitDiffVisible, loadRepoBrowserPath]);
 
   const openRenameModal = () => {
     closeMenu();
@@ -1084,38 +745,6 @@ export default function TerminalScreen() {
     setCtrlArmed(next);
   }, []);
 
-  const gitDiffChip = useMemo(() => {
-    if (!gitDiffQueryEnabled) {
-      return null;
-    }
-    if (gitDiffStatus?.reason === "not_git_repo") {
-      return null;
-    }
-
-    const tone: "clean" | "dirty" | "error" | "loading" =
-      gitDiffLoading && !gitDiffStatus
-        ? "loading"
-        : gitDiffStatus?.available
-          ? gitDiffStatus.clean
-            ? "clean"
-            : "dirty"
-          : gitDiffError
-            ? "error"
-            : "loading";
-
-    return {
-      label: buildGitDiffChipLabel(gitDiffStatus, gitDiffLoading),
-      tone,
-      onPress: openGitDiff,
-    };
-  }, [
-    gitDiffError,
-    gitDiffLoading,
-    gitDiffQueryEnabled,
-    gitDiffStatus,
-    openGitDiff,
-  ]);
-
   const createTerminal = async (input: {
     cwd: string;
     command: string;
@@ -1229,7 +858,7 @@ export default function TerminalScreen() {
         chrome={chromeColors}
         themeName={themeName}
         screenFocused={screenFocused}
-        gitDiff={gitDiffChip}
+        gitDiff={gitDiff.chip}
         terminalRef={terminalRef}
         ctrlArmed={ctrlArmed}
         onCtrlArmedChange={handleCtrlArmedChange}
@@ -1287,7 +916,7 @@ export default function TerminalScreen() {
         creatingSession={creatingSession}
         newTerminalLabel={creatingSession ? "Starting Terminal…" : "New Terminal"}
         newTerminalDisabled={connectionState !== "connected"}
-        gitDiffDisabled={!gitDiffQueryEnabled || gitDiffStatus?.reason === "not_git_repo"}
+        gitDiffDisabled={gitDiff.actionDisabled}
         activePinned={activePinned}
         closeOtherTabsDisabled={tabs.length <= 1}
         codexRenderAction={
@@ -1331,29 +960,8 @@ export default function TerminalScreen() {
       />
 
       <GitDiffSheet
-        visible={gitDiffVisible}
         theme={terminalTheme}
-        snapshot={gitDiffStatus}
-        loading={gitDiffLoading}
-        error={gitDiffError}
-        patchByPath={gitDiffPatchByPath}
-        patchLoadingByPath={gitDiffPatchLoadingByPath}
-        patchErrorByPath={gitDiffPatchErrorByPath}
-        repoBrowserPath={repoBrowserPath}
-        repoBrowserEntries={repoBrowserEntries}
-        repoBrowserLoading={repoBrowserLoading}
-        repoBrowserError={repoBrowserError}
-        repoFilePath={repoFilePath}
-        repoFileLoadingPath={repoFileLoadingPath}
-        repoFileError={repoFileError}
-        repoFileByPath={repoFileByPath}
-        onClose={() => setGitDiffVisible(false)}
-        onRefresh={() => { void refreshGitDiff(true); }}
-        onOpenRepoPath={(path) => { void loadRepoBrowserPath(path); }}
-        onOpenRepoFile={(path) => { void openRepoFile(path); }}
-        onLoadDiffPatch={(path) => { void ensureGitDiffPatch(path); }}
-        onCloseRepoFile={closeRepoFile}
-        onBackRepoPath={goUpRepoBrowserPath}
+        {...gitDiff.sheetProps}
       />
 
       <TerminalRenameModal
