@@ -1,5 +1,4 @@
 import {
-  useCallback,
   useMemo,
   type SetStateAction,
 } from "react";
@@ -15,10 +14,10 @@ import {
   type ComposerAttachment,
 } from "./CodexChatSession";
 import {
-  buildCodexComposerMessage,
   buildCodexStatusMeta,
 } from "./CodexChatControllerModel";
 import { useCodexComposerAttachments } from "./useCodexComposerAttachments";
+import { useCodexDraftSubmission } from "./useCodexDraftSubmission";
 import { useCodexMessageTransport } from "./useCodexMessageTransport";
 import { useCodexNativeCommands } from "./useCodexNativeCommands";
 import { useCodexSlashCommandRouter } from "./useCodexSlashCommandRouter";
@@ -166,33 +165,15 @@ export function useCodexChatController({
     runNativeSlashCommand,
   });
 
-  const sendDraft = useCallback(() => {
-    const text = buildCodexComposerMessage(draft, attachments);
-    if (!text || connectionState !== "connected" || sending || uploading) {
-      return;
-    }
-    const previousDraft = draft;
-    const previousAttachments = attachments;
-    if (
-      routeDraftSubmission({
-        draft,
-        composedText: text,
-        previousDraft,
-        previousAttachments,
-      })
-    ) {
-      return;
-    }
-    submitTextToCodex(text, previousDraft, previousAttachments);
-  }, [
+  const sendDraft = useCodexDraftSubmission({
+    draft,
     attachments,
     connectionState,
-    draft,
-    routeDraftSubmission,
     sending,
-    submitTextToCodex,
     uploading,
-  ]);
+    routeDraftSubmission,
+    submitTextToCodex,
+  });
 
   return {
     sending,
