@@ -16,6 +16,15 @@ type IoniconName = React.ComponentProps<typeof Ionicons>["name"];
 
 export const TERMINAL_ACTION_POPOVER_WIDTH = 184;
 
+interface TerminalPopoverAction {
+  key: string;
+  icon: IoniconName;
+  label: string;
+  disabled?: boolean;
+  destructive?: boolean;
+  onPress(): void;
+}
+
 interface TerminalActionPopoverProps {
   visible: boolean;
   left: number;
@@ -69,6 +78,79 @@ export function TerminalActionPopover({
   onOpenLinkedWork,
   onTerminate,
 }: TerminalActionPopoverProps) {
+  const actions: TerminalPopoverAction[] = [
+    {
+      key: "new-terminal",
+      icon: "add",
+      label: newTerminalLabel,
+      onPress: onNewTerminal,
+      disabled: creatingSession || newTerminalDisabled,
+    },
+    {
+      key: "git-diff",
+      icon: "git-branch-outline",
+      label: "Git Diff",
+      onPress: onOpenGitDiff,
+      disabled: gitDiffDisabled,
+    },
+  ];
+
+  if (codexRenderAction) {
+    actions.push({
+      key: "codex-render",
+      icon: codexRenderAction.icon,
+      label: codexRenderAction.label,
+      onPress: codexRenderAction.onPress,
+    });
+  }
+
+  actions.push(
+    {
+      key: "rename",
+      icon: "create-outline",
+      label: "Rename",
+      onPress: onRename,
+    },
+    {
+      key: "pin",
+      icon: activePinned ? "remove-circle-outline" : "pin-outline",
+      label: activePinned ? "Unpin Tab" : "Pin Tab",
+      onPress: onTogglePinned,
+    },
+    {
+      key: "close-other-tabs",
+      icon: "close-circle-outline",
+      label: "Close Other Tabs",
+      onPress: onCloseOtherTabs,
+      disabled: closeOtherTabsDisabled,
+    },
+    {
+      key: "close-tab",
+      icon: "close-outline",
+      label: "Close Tab",
+      onPress: onCloseTab,
+    },
+  );
+
+  if (showLinkedWork) {
+    actions.push({
+      key: "linked-work",
+      icon: "reader-outline",
+      label: "Open Brain",
+      onPress: onOpenLinkedWork,
+    });
+  }
+
+  actions.push(
+    {
+      key: "terminate",
+      icon: "stop-circle-outline",
+      label: "Terminate",
+      onPress: onTerminate,
+      destructive: true,
+    },
+  );
+
   return (
     <Modal
       visible={visible}
@@ -95,86 +177,18 @@ export function TerminalActionPopover({
             },
           ]}
         >
-          <TerminalSheetAction
-            icon="add"
-            label={newTerminalLabel}
-            onPress={onNewTerminal}
-            disabled={creatingSession || newTerminalDisabled}
-            textColor={chrome.text}
-            disabledTextColor={chrome.textSubtle}
-            destructiveColor={theme.red}
-          />
-          <TerminalSheetAction
-            icon="git-branch-outline"
-            label="Git Diff"
-            onPress={onOpenGitDiff}
-            disabled={gitDiffDisabled}
-            textColor={chrome.text}
-            disabledTextColor={chrome.textSubtle}
-            destructiveColor={theme.red}
-          />
-          {codexRenderAction ? (
+          {actions.map((action) => (
             <TerminalSheetAction
-              icon={codexRenderAction.icon}
-              label={codexRenderAction.label}
-              onPress={codexRenderAction.onPress}
-              textColor={chrome.text}
-              disabledTextColor={chrome.textSubtle}
-              destructiveColor={theme.red}
+              key={action.key}
+              icon={action.icon}
+              label={action.label}
+              disabled={action.disabled}
+              destructive={action.destructive}
+              chrome={chrome}
+              theme={theme}
+              onPress={action.onPress}
             />
-          ) : null}
-          <TerminalSheetAction
-            icon="create-outline"
-            label="Rename"
-            onPress={onRename}
-            textColor={chrome.text}
-            disabledTextColor={chrome.textSubtle}
-            destructiveColor={theme.red}
-          />
-          <TerminalSheetAction
-            icon={activePinned ? "remove-circle-outline" : "pin-outline"}
-            label={activePinned ? "Unpin Tab" : "Pin Tab"}
-            onPress={onTogglePinned}
-            textColor={chrome.text}
-            disabledTextColor={chrome.textSubtle}
-            destructiveColor={theme.red}
-          />
-          <TerminalSheetAction
-            icon="close-circle-outline"
-            label="Close Other Tabs"
-            onPress={onCloseOtherTabs}
-            disabled={closeOtherTabsDisabled}
-            textColor={chrome.text}
-            disabledTextColor={chrome.textSubtle}
-            destructiveColor={theme.red}
-          />
-          <TerminalSheetAction
-            icon="close-outline"
-            label="Close Tab"
-            onPress={onCloseTab}
-            textColor={chrome.text}
-            disabledTextColor={chrome.textSubtle}
-            destructiveColor={theme.red}
-          />
-          {showLinkedWork ? (
-            <TerminalSheetAction
-              icon="reader-outline"
-              label="Open Brain"
-              onPress={onOpenLinkedWork}
-              textColor={chrome.text}
-              disabledTextColor={chrome.textSubtle}
-              destructiveColor={theme.red}
-            />
-          ) : null}
-          <TerminalSheetAction
-            icon="stop-circle-outline"
-            label="Terminate"
-            onPress={onTerminate}
-            destructive
-            textColor={chrome.text}
-            disabledTextColor={chrome.textSubtle}
-            destructiveColor={theme.red}
-          />
+          ))}
         </View>
       </View>
     </Modal>

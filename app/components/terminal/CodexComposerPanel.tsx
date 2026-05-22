@@ -8,11 +8,9 @@ import type {
   TerminalThemeChrome,
   TerminalThemePalette,
 } from "../../constants/terminalThemes";
-import {
-  ComposerIconButton,
-  ComposerSendButton,
-} from "./CodexChatControls";
 import { CodexComposerInput } from "./CodexComposerInput";
+import { ComposerIconButton } from "./ComposerIconButton";
+import { ComposerSendButton } from "./ComposerSendButton";
 
 interface CodexComposerPanelProps {
   inputRef: React.RefObject<TextInputInstance | null>;

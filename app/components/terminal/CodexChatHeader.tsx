@@ -9,7 +9,7 @@ import type {
   TerminalThemeChrome,
   TerminalThemePalette,
 } from "../../constants/terminalThemes";
-import { ChatHeaderIconButton } from "./CodexChatControls";
+import { ChatHeaderIconButton } from "./ChatHeaderIconButton";
 
 export interface CodexChatHeaderProps {
   status: AgentStatus;

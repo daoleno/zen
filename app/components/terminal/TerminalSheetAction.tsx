@@ -1,7 +1,11 @@
 import React from "react";
 import { StyleSheet, Text, TouchableOpacity } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
-import { Colors, Typography } from "../../constants/tokens";
+import type {
+  TerminalThemeChrome,
+  TerminalThemePalette,
+} from "../../constants/terminalThemes";
+import { Typography } from "../../constants/tokens";
 
 type IoniconName = React.ComponentProps<typeof Ionicons>["name"];
 
@@ -10,9 +14,8 @@ interface TerminalSheetActionProps {
   label: string;
   disabled?: boolean;
   destructive?: boolean;
-  textColor: string;
-  disabledTextColor: string;
-  destructiveColor: string;
+  chrome: TerminalThemeChrome;
+  theme: TerminalThemePalette;
   onPress(): void;
 }
 
@@ -22,25 +25,29 @@ export function TerminalSheetAction({
   onPress,
   disabled = false,
   destructive = false,
-  textColor,
-  disabledTextColor,
-  destructiveColor,
+  chrome,
+  theme,
 }: TerminalSheetActionProps) {
   const color = disabled
-    ? disabledTextColor
+    ? chrome.textSubtle
     : destructive
-      ? destructiveColor
-      : textColor;
+      ? theme.red
+      : chrome.text;
 
   return (
     <TouchableOpacity
+      accessibilityLabel={label}
+      accessibilityRole="button"
+      accessibilityState={{ disabled }}
       style={[styles.action, disabled ? styles.disabled : null]}
       onPress={onPress}
       disabled={disabled}
       activeOpacity={0.84}
     >
       <Ionicons name={icon} size={16} color={color} />
-      <Text style={[styles.label, { color }]}>{label}</Text>
+      <Text style={[styles.label, { color }]} numberOfLines={1}>
+        {label}
+      </Text>
     </TouchableOpacity>
   );
 }
@@ -59,7 +66,6 @@ const styles = StyleSheet.create({
   },
   label: {
     flex: 1,
-    color: Colors.textPrimary,
     fontSize: 14,
     fontFamily: Typography.uiFont,
   },
