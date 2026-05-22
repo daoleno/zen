@@ -21,18 +21,15 @@ import {
   resolveTerminalThemePreference,
 } from "../../constants/terminalThemes";
 import {
-  closeOtherTerminalTabs,
-  closeTerminalTab,
   DefaultCodexRenderMode,
   getServerById,
   markAgentOpened,
   setAgentAlias,
   setCodexRenderMode,
-  setTerminalTabPinned,
   touchTerminalTab,
   type StoredCodexRenderMode,
 } from "../../services/storage";
-import { makeSessionKey, parseSessionKey } from "../../services/sessionKeys";
+import { makeSessionKey } from "../../services/sessionKeys";
 import { wsClient } from "../../services/websocket";
 import type { TerminalSurfaceHandle } from "../../components/terminal/TerminalSurface";
 import { GitDiffSheet } from "../../components/terminal/GitDiffSheet";
@@ -55,13 +52,13 @@ import {
 import {
   buildMenuPosition,
   buildTerminalTabs,
-  pickNextTabAfterClose,
   shouldShowPickerServerNames,
   sortTerminalAgents,
   type MenuAnchorLayout,
 } from "./TerminalScreenModel";
 import { useTerminalFallbackState } from "./useTerminalFallbackState";
 import { useTerminalScreenStorage } from "./useTerminalScreenStorage";
+import { useTerminalTabActions } from "./useTerminalTabActions";
 
 export default function TerminalScreen() {
   const params = useLocalSearchParams<{ id?: string; serverId?: string }>();
@@ -336,10 +333,37 @@ export default function TerminalScreen() {
     [menuAnchor, windowWidth],
   );
 
-  const closeMenu = () => {
+  const closeMenu = useCallback(() => {
     setMenuVisible(false);
     setMenuAnchor(null);
-  };
+  }, []);
+
+  const closePicker = useCallback(() => {
+    setPickerVisible(false);
+  }, []);
+
+  const {
+    goToInbox,
+    openAgentTab,
+    handleCloseCurrentTab,
+    handleCloseOtherTabs,
+    handleTerminateAgent,
+    handleTogglePinned,
+  } = useTerminalTabActions({
+    sessionKey,
+    serverId,
+    agentId,
+    activePinned,
+    terminalTabs,
+    agentByKey,
+    hydratedServerIdSet,
+    connectionState,
+    displayName,
+    agentServerName: agent?.serverName,
+    setTerminalTabs,
+    closeMenu,
+    closePicker,
+  });
 
   const openGitDiff = () => {
     closeMenu();
@@ -350,31 +374,6 @@ export default function TerminalScreen() {
     closeMenu();
     setRenameDraft(displayName);
     setRenameVisible(true);
-  };
-
-  const openAgentTab = async (agentId: string) => {
-    setPickerVisible(false);
-    closeMenu();
-
-    if (!agentId || agentId === sessionKey) return;
-    const parsed = parseSessionKey(agentId);
-    if (!parsed) return;
-    if (!agentByKey.has(agentId) && hydratedServerIdSet.has(parsed.serverId)) {
-      const nextTabs = await closeTerminalTab(agentId);
-      setTerminalTabs(nextTabs);
-      return;
-    }
-
-    router.replace({
-      pathname: "/terminal/[id]",
-      params: { id: parsed.agentId, serverId: parsed.serverId },
-    });
-  };
-
-  const goToInbox = () => {
-    setPickerVisible(false);
-    closeMenu();
-    router.replace("/");
   };
 
   const openMenu = () => {
@@ -391,108 +390,6 @@ export default function TerminalScreen() {
     });
   };
 
-  const handleTogglePinned = async () => {
-    if (!sessionKey) return;
-    const nextTabs = await setTerminalTabPinned(sessionKey, !activePinned);
-    setTerminalTabs(nextTabs);
-    closeMenu();
-  };
-
-  const handleCloseCurrentTab = async () => {
-    if (!sessionKey) return;
-
-    const nextTabs = await closeTerminalTab(sessionKey);
-    setTerminalTabs(nextTabs);
-    closeMenu();
-
-    const nextSessionKey = pickNextTabAfterClose(
-      sessionKey,
-      terminalTabs,
-      nextTabs,
-    );
-    if (nextSessionKey) {
-      const parsed = parseSessionKey(nextSessionKey);
-      if (parsed) {
-        router.replace({
-          pathname: "/terminal/[id]",
-          params: { id: parsed.agentId, serverId: parsed.serverId },
-        });
-        return;
-      }
-      return;
-    }
-
-    router.replace("/");
-  };
-
-  const handleCloseOtherTabs = async () => {
-    if (!sessionKey) return;
-
-    const nextTabs = await closeOtherTerminalTabs(sessionKey);
-    setTerminalTabs(nextTabs);
-    closeMenu();
-  };
-
-  const handleTerminateAgent = () => {
-    if (!sessionKey || !serverId || !agentId) return;
-
-    closeMenu();
-
-    if (connectionState !== "connected") {
-      Alert.alert(
-        "Daemon unavailable",
-        "Reconnect to that daemon before terminating the agent.",
-      );
-      return;
-    }
-
-    Alert.alert(
-      "Terminate?",
-      "This will terminate " +
-        (displayName || agentId) +
-        " on " +
-        (agent?.serverName || serverId) +
-        ". It does more than closing the tab.",
-      [
-        { text: "Cancel", style: "cancel" },
-        {
-          text: "Terminate",
-          style: "destructive",
-          onPress: () => {
-            void performTerminateAgent();
-          },
-        },
-      ],
-    );
-  };
-
-  const performTerminateAgent = async () => {
-    if (!sessionKey || !serverId || !agentId) return;
-
-    const currentTabs = terminalTabs;
-    const nextTabs = await closeTerminalTab(sessionKey);
-    setTerminalTabs(nextTabs);
-    wsClient.killAgent(serverId, agentId);
-
-    const nextSessionKey = pickNextTabAfterClose(
-      sessionKey,
-      currentTabs,
-      nextTabs,
-    );
-    if (nextSessionKey) {
-      const parsed = parseSessionKey(nextSessionKey);
-      if (parsed) {
-        router.replace({
-          pathname: "/terminal/[id]",
-          params: { id: parsed.agentId, serverId: parsed.serverId },
-        });
-        return;
-      }
-    }
-
-    router.replace("/");
-  };
-
   const handleSaveRename = async () => {
     if (!sessionKey) return;
     const nextAliases = await setAgentAlias(sessionKey, renameDraft);
@@ -507,7 +404,7 @@ export default function TerminalScreen() {
       setCodexRenderModes(nextModes);
       closeMenu();
     },
-    [sessionKey],
+    [closeMenu, sessionKey, setCodexRenderModes],
   );
 
   const toggleCodexRenderMode = () => {
@@ -532,7 +429,7 @@ export default function TerminalScreen() {
     }
 
     setNewTerminalVisible(false);
-    setPickerVisible(false);
+    closePicker();
     closeMenu();
     setCreatingSession(true);
     try {
