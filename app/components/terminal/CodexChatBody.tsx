@@ -1,13 +1,11 @@
 import React from "react";
 import {
-  StyleSheet,
   type LayoutChangeEvent,
   type NativeScrollEvent,
   type NativeSyntheticEvent,
   type ScrollView,
   type TextInput,
 } from "react-native";
-import { KeyboardAvoidingView } from "react-native-keyboard-controller";
 import type {
   CodexConversation,
   CodexConversationEvent,
@@ -20,6 +18,7 @@ import type { CodexSlashCommand } from "../../services/websocket";
 import type { ComposerAttachment, ChatCommandEvent } from "./CodexChatSession";
 import type { CodexComposerPresentation } from "./CodexChatSurfaceModel";
 import { CodexChatComposerSection } from "./CodexChatComposerSection";
+import { CodexChatKeyboardFrame } from "./CodexChatKeyboardFrame";
 import { CodexChatTimelineSection } from "./CodexChatTimelineSection";
 import { useCodexComposerLayout } from "./useCodexComposerLayout";
 
@@ -107,11 +106,9 @@ export function CodexChatBody({
   });
 
   return (
-    <KeyboardAvoidingView
-      behavior="padding"
+    <CodexChatKeyboardFrame
       enabled={screenFocused}
       keyboardVerticalOffset={composerPresentation.keyboardVerticalOffset}
-      style={styles.chatBody}
     >
       <CodexChatTimelineSection
         serverId={serverId}
@@ -158,13 +155,6 @@ export function CodexChatBody({
         onSubmit={onSubmit}
         onSendPress={onSendPress}
       />
-    </KeyboardAvoidingView>
+    </CodexChatKeyboardFrame>
   );
 }
-
-const styles = StyleSheet.create({
-  chatBody: {
-    flex: 1,
-    minHeight: 0,
-  },
-});
