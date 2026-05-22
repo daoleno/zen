@@ -1,7 +1,6 @@
 import React, {
   useCallback,
   useEffect,
-  useMemo,
   useState,
 } from "react";
 import {
@@ -18,25 +17,17 @@ import type {
 } from "../../constants/terminalThemes";
 import type { Agent, ConnectionState } from "../../store/agents";
 import type { ConnectionIssue } from "../../services/connectionIssue";
-import { wsClient } from "../../services/websocket";
 import { CodexChatComposer } from "./CodexChatComposer";
 import { useCodexChatController } from "./CodexChatController";
-import { conversationUnavailableReason } from "./CodexChatControllerModel";
 import { CodexChatHeader } from "./CodexChatHeader";
 import { useCodexChatSession } from "./CodexChatSession";
+import { CodexChatTimelineSection } from "./CodexChatTimelineSection";
 import { useCodexSlashCommands } from "./CodexSlashCommands";
 import {
   useCodexComposerPresentation,
   useCodexComposerInput,
   usePinnedTimeline,
 } from "./CodexChatSurfaceHooks";
-import { CodexTimelineView } from "./CodexTimelineView";
-import {
-  buildZenTimeline,
-  mergeChatCommandEventsIntoTimeline,
-  patchDisplayPath,
-  truncateRunes,
-} from "./CodexTimelineModel";
 
 interface CodexChatSurfaceProps {
   serverId: string;
@@ -158,7 +149,6 @@ export function CodexChatSurface({
     resetForConversation();
   }, [conversationCacheKey, resetForConversation]);
 
-  const unavailable = conversation && !conversation.available;
   const composerPresentation = useCodexComposerPresentation({
     draft,
     slashCommands,
@@ -171,25 +161,6 @@ export function CodexChatSurface({
     safeAreaTop: insets.top,
     safeAreaBottom: insets.bottom,
   });
-  const timelineItems = useMemo(
-    () =>
-      mergeChatCommandEventsIntoTimeline(
-        buildZenTimeline(events),
-        chatCommandEvents,
-      ),
-    [chatCommandEvents, events],
-  );
-  const streamingAssistantId = "";
-  const loadTimelineAssetPreview = useCallback(
-    async (path: string) => {
-      const asset = await wsClient.getCodexAsset(serverId, {
-        path,
-        cwd: conversation?.cwd || agent?.cwd,
-      });
-      return asset.data_url || null;
-    },
-    [agent?.cwd, conversation?.cwd, serverId],
-  );
   const handleComposerLayout = useCallback((event: LayoutChangeEvent) => {
     const nextHeight = Math.ceil(event.nativeEvent.layout.height);
     setComposerHeight((previous) =>
@@ -220,27 +191,25 @@ export function CodexChatSurface({
         keyboardVerticalOffset={composerPresentation.keyboardVerticalOffset}
         style={styles.chatBody}
       >
-        <CodexTimelineView
-          scrollRef={scrollRef}
-          items={timelineItems}
+        <CodexChatTimelineSection
+          serverId={serverId}
+          agentCwd={agent?.cwd}
+          conversation={conversation}
+          events={events}
+          chatCommandEvents={chatCommandEvents}
           loading={loading}
           error={error}
-          unavailable={unavailable}
-          unavailableReason={conversationUnavailableReason(conversation?.reason)}
-          textSelectable={!composerPresentation.active}
+          composerActive={composerPresentation.active}
+          composerHeight={composerHeight}
+          scrollRef={scrollRef}
           showJumpToLatest={showJumpToLatest}
-          jumpButtonBottom={composerHeight + 12}
-          streamingAssistantId={streamingAssistantId}
           chrome={chrome}
           theme={theme}
           onLayout={handleTimelineLayout}
           onScroll={handleTimelineScroll}
           onContentSizeChange={handleContentSizeChange}
-          onJumpToLatest={() => scrollToLatest(true)}
+          onScrollToLatest={scrollToLatest}
           onUnavailableAction={onSwitchToTerminal}
-          loadAssetPreview={loadTimelineAssetPreview}
-          formatPatchPath={patchDisplayPath}
-          truncateBody={truncateRunes}
         />
 
         <CodexChatComposer
