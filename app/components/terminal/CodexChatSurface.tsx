@@ -2,7 +2,6 @@ import React, {
   useCallback,
   useEffect,
   useMemo,
-  useRef,
   useState,
 } from "react";
 import {
@@ -27,13 +26,15 @@ import type {
   CodexConversationEvent,
 } from "../../services/codexConversation";
 import type { ConnectionIssue } from "../../services/connectionIssue";
-import {
-  uploadDocumentForServer,
-  type UploadedAttachment,
-} from "../../services/uploads";
+import { uploadDocumentForServer } from "../../services/uploads";
 import { wsClient, type CodexSlashCommand } from "../../services/websocket";
 import { CodexChatComposer } from "./CodexChatComposer";
 import { CodexChatHeader } from "./CodexChatHeader";
+import {
+  useCodexChatSession,
+  type ChatCommandEvent,
+  type ComposerAttachment,
+} from "./CodexChatSession";
 import {
   SCROLL_TO_BOTTOM_LAYOUT_DELAY_MS,
   useCodexComposerInput,
@@ -73,7 +74,6 @@ interface CodexChatSurfaceProps {
   onOpenGitDiff?: () => void;
 }
 
-const POLL_INTERVAL_MS = 900;
 const FALLBACK_SLASH_COMMANDS = [
   ["model", "choose what model and reasoning effort to use"],
   ["fast", "1.5x speed, increased usage"],
@@ -201,36 +201,13 @@ type PatchSummary = {
   totalRemoved: number;
 };
 
-type RefreshInFlight = {
-  baseKey: string;
-  requestSeq: number;
-};
-
-type ComposerAttachment = UploadedAttachment & {
-  id: string;
-};
-
-type ChatCommandEvent = {
-  id: string;
-  command: CodexSlashCommand;
-  tone: "neutral" | "success" | "failed";
-  title: string;
-  detail?: string;
-  body?: string;
-  createdAt: string;
-};
-
 type SlashCommandRequest = {
   command: CodexSlashCommand;
   rawText: string;
   known: boolean;
 };
 
-const conversationCache = new Map<string, CodexConversation>();
-const draftCache = new Map<string, string>();
-const attachmentCache = new Map<string, ComposerAttachment[]>();
 const slashCommandCache = new Map<string, CodexSlashCommand[]>();
-const chatCommandEventCache = new Map<string, ChatCommandEvent[]>();
 
 type LocalSlashCommandCapability = Pick<
   CodexSlashCommand,
@@ -257,27 +234,32 @@ export function CodexChatSurface({
   onOpenGitDiff,
 }: CodexChatSurfaceProps) {
   const insets = useSafeAreaInsets();
-  const conversationCacheKey = `${serverId}:${agentId}`;
-  const requestSeqRef = useRef(0);
-  const refreshInFlightRef = useRef<RefreshInFlight | null>(null);
-  const [conversation, setConversationState] = useState<CodexConversation | null>(
-    () => conversationCache.get(conversationCacheKey) ?? null,
-  );
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const [draft, setDraftState] = useState(() => draftCache.get(conversationCacheKey) ?? "");
-  const [attachments, setAttachmentsState] = useState<ComposerAttachment[]>(
-    () => attachmentCache.get(conversationCacheKey) ?? [],
-  );
   const [sending, setSending] = useState(false);
   const [uploading, setUploading] = useState(false);
   const [slashCommands, setSlashCommands] = useState<CodexSlashCommand[]>(
     () => slashCommandCache.get(serverId) ?? FALLBACK_SLASH_COMMANDS,
   );
-  const [chatCommandEvents, setChatCommandEventsState] = useState<ChatCommandEvent[]>(
-    () => chatCommandEventCache.get(conversationCacheKey) ?? [],
-  );
   const [composerHeight, setComposerHeight] = useState(76);
+  const session = useCodexChatSession({
+    serverId,
+    agentId,
+    agent,
+    connectionState,
+    screenFocused,
+  });
+  const {
+    cacheKey: conversationCacheKey,
+    conversation,
+    loading,
+    error,
+    draft,
+    setDraft,
+    attachments,
+    setAttachments,
+    chatCommandEvents,
+    recordChatCommandEvent,
+    refreshConversation,
+  } = session;
   const events = conversation?.events ?? [];
   const timeline = usePinnedTimeline(events.length);
   const composerInput = useCodexComposerInput({
@@ -302,154 +284,6 @@ export function CodexChatSurface({
     handleBlur: handleComposerBlur,
     handleInputStart: handleComposerInputStart,
   } = composerInput;
-
-  const setConversation = useCallback(
-    (nextConversation: CodexConversation | null) => {
-      if (nextConversation) {
-        const cached = conversationCache.get(conversationCacheKey);
-        if (nextConversation.available || !cached?.available) {
-          conversationCache.set(conversationCacheKey, nextConversation);
-        }
-      }
-      setConversationState(nextConversation);
-    },
-    [conversationCacheKey],
-  );
-
-  const setDraft = useCallback(
-    (nextDraft: string) => {
-      if (nextDraft) {
-        draftCache.set(conversationCacheKey, nextDraft);
-      } else {
-        draftCache.delete(conversationCacheKey);
-      }
-      setDraftState(nextDraft);
-    },
-    [conversationCacheKey],
-  );
-
-  const setAttachments = useCallback(
-    (nextValue: React.SetStateAction<ComposerAttachment[]>) => {
-      setAttachmentsState((current) => {
-        const nextAttachments =
-          typeof nextValue === "function" ? nextValue(current) : nextValue;
-        if (nextAttachments.length > 0) {
-          attachmentCache.set(conversationCacheKey, nextAttachments);
-        } else {
-          attachmentCache.delete(conversationCacheKey);
-        }
-        return nextAttachments;
-      });
-    },
-    [conversationCacheKey],
-  );
-
-  const setChatCommandEvents = useCallback(
-    (nextValue: React.SetStateAction<ChatCommandEvent[]>) => {
-      setChatCommandEventsState((current) => {
-        const nextEvents =
-          typeof nextValue === "function" ? nextValue(current) : nextValue;
-        const bounded = nextEvents.slice(-12);
-        if (bounded.length > 0) {
-          chatCommandEventCache.set(conversationCacheKey, bounded);
-        } else {
-          chatCommandEventCache.delete(conversationCacheKey);
-        }
-        return bounded;
-      });
-    },
-    [conversationCacheKey],
-  );
-
-  const recordChatCommandEvent = useCallback(
-    (event: Omit<ChatCommandEvent, "id" | "createdAt">) => {
-      setChatCommandEvents((current) => [
-        ...current,
-        {
-          ...event,
-          id: `chat-command:${Date.now().toString(36)}:${Math.random().toString(36).slice(2, 8)}`,
-          createdAt: new Date().toISOString(),
-        },
-      ]);
-    },
-    [setChatCommandEvents],
-  );
-
-  const refreshConversation = useCallback(
-    async (showLoading: boolean = false) => {
-      if (!serverId || !agentId || connectionState !== "connected") {
-        requestSeqRef.current += 1;
-        refreshInFlightRef.current = null;
-        setLoading(false);
-        return;
-      }
-      const requestBaseKey = `${serverId}:${agentId}`;
-      if (refreshInFlightRef.current?.baseKey === requestBaseKey) {
-        return;
-      }
-
-      const requestSeq = requestSeqRef.current + 1;
-      requestSeqRef.current = requestSeq;
-      refreshInFlightRef.current = { baseKey: requestBaseKey, requestSeq };
-      if (showLoading) {
-        setLoading(true);
-      }
-      try {
-        const nextConversation = await wsClient.getCodexConversation(serverId, {
-          targetId: agentId,
-          cwd: agent?.cwd,
-          command: agent?.command,
-          name: agent?.name,
-          startedAt: agent?.started_at,
-        });
-        if (requestSeqRef.current !== requestSeq) {
-          return;
-        }
-        const cachedConversation = conversationCache.get(requestBaseKey);
-        if (cachedConversation && shouldKeepCachedConversation(cachedConversation, nextConversation)) {
-          setConversation(cachedConversation);
-        } else {
-          setConversation(nextConversation);
-        }
-        setError(null);
-      } catch (err: any) {
-        if (requestSeqRef.current !== requestSeq) {
-          return;
-        }
-        setError(err?.message || "Could not load Codex conversation.");
-      } finally {
-        if (refreshInFlightRef.current?.requestSeq === requestSeq) {
-          refreshInFlightRef.current = null;
-        }
-        if (requestSeqRef.current === requestSeq) {
-          setLoading(false);
-        }
-      }
-    },
-    [agent?.command, agent?.cwd, agent?.name, agent?.started_at, agentId, connectionState, serverId, setConversation],
-  );
-
-  useEffect(() => {
-    if (!screenFocused) {
-      return;
-    }
-    void refreshConversation(true);
-    const interval = setInterval(() => {
-      void refreshConversation(false);
-    }, POLL_INTERVAL_MS);
-    return () => {
-      requestSeqRef.current += 1;
-      refreshInFlightRef.current = null;
-      clearInterval(interval);
-    };
-  }, [refreshConversation, screenFocused]);
-
-  useEffect(() => {
-    if (!screenFocused || !agent?.updated_at) {
-      return;
-    }
-    void refreshConversation(false);
-  }, [agent?.updated_at, refreshConversation, screenFocused]);
 
   useEffect(() => {
     const cachedCommands = slashCommandCache.get(serverId);
@@ -487,12 +321,6 @@ export function CodexChatSurface({
   }, [connectionState, screenFocused, serverId]);
 
   useEffect(() => {
-    setConversationState(conversationCache.get(conversationCacheKey) ?? null);
-    setError(null);
-    setDraftState(draftCache.get(conversationCacheKey) ?? "");
-    setAttachmentsState(attachmentCache.get(conversationCacheKey) ?? []);
-    setChatCommandEventsState(chatCommandEventCache.get(conversationCacheKey) ?? []);
-    refreshInFlightRef.current = null;
     resetForConversation();
   }, [conversationCacheKey, resetForConversation]);
 
@@ -2703,20 +2531,6 @@ function conversationUnavailableReason(reason?: string) {
     default:
       return "Open the terminal renderer for the raw session.";
   }
-}
-
-function shouldKeepCachedConversation(
-  cached: CodexConversation | undefined,
-  nextConversation: CodexConversation,
-) {
-  if (!cached?.available || nextConversation.available) {
-    return false;
-  }
-  return (
-    nextConversation.reason === "session_not_ready" ||
-    nextConversation.reason === "transcript_not_found" ||
-    nextConversation.reason === "agent_not_found"
-  );
 }
 
 function formatTime(value: string) {
