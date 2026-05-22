@@ -1,14 +1,13 @@
 import React from "react";
 import {
-  ActivityIndicator,
   StyleSheet,
   Text,
-  TouchableOpacity,
   View,
 } from "react-native";
-import { Ionicons } from "@expo/vector-icons";
 import type { TerminalThemeChrome } from "../../constants/terminalThemes";
 import { Typography } from "../../constants/tokens";
+import { CodexComposerAttachmentIcon } from "./CodexComposerAttachmentIcon";
+import { CodexComposerAttachmentRemoveButton } from "./CodexComposerAttachmentRemoveButton";
 
 export interface CodexComposerAttachment {
   id: string;
@@ -34,14 +33,9 @@ export function CodexComposerAttachmentChip({
         { backgroundColor: chrome.surfaceMuted, borderColor: chrome.border },
       ]}
     >
-      <Ionicons
-        name={
-          looksLikeImagePath(attachment.name)
-            ? "image-outline"
-            : "document-attach-outline"
-        }
-        size={14}
-        color={chrome.textMuted}
+      <CodexComposerAttachmentIcon
+        fileName={attachment.name}
+        chrome={chrome}
       />
       <View style={styles.textGroup}>
         <Text style={[styles.name, { color: chrome.text }]} numberOfLines={1}>
@@ -54,39 +48,13 @@ export function CodexComposerAttachmentChip({
           {basename(attachment.path)}
         </Text>
       </View>
-      <TouchableOpacity
-        accessibilityLabel={`Remove ${attachment.name}`}
-        style={styles.remove}
+      <CodexComposerAttachmentRemoveButton
+        attachmentName={attachment.name}
+        chrome={chrome}
         onPress={() => onRemove(attachment.id)}
-        activeOpacity={0.72}
-      >
-        <Ionicons name="close" size={13} color={chrome.textSubtle} />
-      </TouchableOpacity>
+      />
     </View>
   );
-}
-
-export function CodexComposerUploadingChip({
-  chrome,
-}: {
-  chrome: TerminalThemeChrome;
-}) {
-  return (
-    <View
-      style={[
-        styles.chip,
-        styles.uploading,
-        { backgroundColor: chrome.surfaceMuted, borderColor: chrome.border },
-      ]}
-    >
-      <ActivityIndicator size="small" color={chrome.accent} />
-      <Text style={[styles.name, { color: chrome.textMuted }]}>Uploading</Text>
-    </View>
-  );
-}
-
-function looksLikeImagePath(value: string) {
-  return /\.(png|jpe?g|gif|webp|bmp)$/i.test(value.trim());
 }
 
 function basename(value: string) {
@@ -106,9 +74,6 @@ const styles = StyleSheet.create({
     alignItems: "center",
     gap: 7,
   },
-  uploading: {
-    paddingRight: 10,
-  },
   textGroup: {
     flex: 1,
     minWidth: 0,
@@ -123,11 +88,5 @@ const styles = StyleSheet.create({
     fontSize: 10,
     lineHeight: 13,
     fontFamily: Typography.terminalFont,
-  },
-  remove: {
-    width: 24,
-    height: 28,
-    alignItems: "center",
-    justifyContent: "center",
   },
 });

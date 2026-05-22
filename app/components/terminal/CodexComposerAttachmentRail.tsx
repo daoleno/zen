@@ -7,9 +7,9 @@ import {
 import type { TerminalThemeChrome } from "../../constants/terminalThemes";
 import {
   CodexComposerAttachmentChip,
-  CodexComposerUploadingChip,
   type CodexComposerAttachment,
 } from "./CodexComposerAttachmentChip";
+import { CodexComposerUploadingChip } from "./CodexComposerUploadingChip";
 
 export type { CodexComposerAttachment } from "./CodexComposerAttachmentChip";
 
