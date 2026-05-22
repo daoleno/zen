@@ -5,13 +5,11 @@ import {
   AppState,
   AppStateStatus,
   Keyboard,
-  KeyboardAvoidingView,
   Modal,
   Platform,
   ScrollView,
   StyleSheet,
   Text,
-  TextInput,
   TouchableOpacity,
   View,
   useColorScheme,
@@ -75,7 +73,11 @@ import { CodexChatSurface } from "../../components/terminal/CodexChatSurface";
 import { GitDiffSheet } from "../../components/terminal/GitDiffSheet";
 import { AgentKindIcon } from "../../components/terminal/AgentKindIcon";
 import { NewTerminalSheet } from "../../components/terminal/NewTerminalSheet";
-import { TerminalSheetAction } from "../../components/terminal/TerminalSheetAction";
+import {
+  TerminalActionPopover,
+  TERMINAL_ACTION_POPOVER_WIDTH,
+} from "../../components/terminal/TerminalActionPopover";
+import { TerminalRenameModal } from "../../components/terminal/TerminalRenameModal";
 import { presentAgent } from "../../services/agentPresentation";
 import {
   buildGitDiffChipLabel,
@@ -90,7 +92,6 @@ import {
 } from "../../services/serverSelection";
 
 const EMPTY_TABS: StoredTerminalTabs = { order: [], pinned: [] };
-const MENU_POPOVER_WIDTH = 184;
 
 function hasGitDiffPatchContent(payload?: GitDiffPatchPayload) {
   return Boolean(payload?.sections?.some((section) => section.patch.trim()));
@@ -1617,114 +1618,38 @@ export default function TerminalScreen() {
         </View>
       </Modal>
 
-      <Modal
+      <TerminalActionPopover
         visible={menuVisible}
-        transparent
-        animationType="none"
-        onRequestClose={closeMenu}
-      >
-        <View style={styles.popoverRoot}>
-          <TouchableOpacity
-            style={styles.popoverBackdrop}
-            activeOpacity={1}
-            onPress={closeMenu}
-          />
-
-          <View
-            style={[
-              styles.menuPopover,
-              {
-                backgroundColor: chromeColors.surface,
-                left: menuPosition.left,
-                top: menuPosition.top,
-                width: MENU_POPOVER_WIDTH,
-                borderColor: chromeColors.border,
-              },
-            ]}
-          >
-            <TerminalSheetAction
-              icon="add"
-              label={creatingSession ? "Starting Terminal…" : "New Terminal"}
-              onPress={openNewTerminal}
-              disabled={creatingSession || connectionState !== "connected"}
-              textColor={chromeColors.text}
-              disabledTextColor={chromeColors.textSubtle}
-              destructiveColor={terminalTheme.red}
-            />
-            <TerminalSheetAction
-              icon="git-branch-outline"
-              label="Git Diff"
-              onPress={openGitDiff}
-              disabled={!gitDiffQueryEnabled || gitDiffStatus?.reason === "not_git_repo"}
-              textColor={chromeColors.text}
-              disabledTextColor={chromeColors.textSubtle}
-              destructiveColor={terminalTheme.red}
-            />
-            {isCodexAgent ? (
-              <TerminalSheetAction
-                icon={codexRenderMode === "chat" ? "terminal-outline" : "sparkles-outline"}
-                label={codexRenderMode === "chat" ? "Use Terminal" : "Use Codex Chat"}
-                onPress={toggleCodexRenderMode}
-                textColor={chromeColors.text}
-                disabledTextColor={chromeColors.textSubtle}
-                destructiveColor={terminalTheme.red}
-              />
-            ) : null}
-            <TerminalSheetAction
-              icon="create-outline"
-              label="Rename"
-              onPress={openRenameModal}
-              textColor={chromeColors.text}
-              disabledTextColor={chromeColors.textSubtle}
-              destructiveColor={terminalTheme.red}
-            />
-            <TerminalSheetAction
-              icon={activePinned ? "remove-circle-outline" : "pin-outline"}
-              label={activePinned ? "Unpin Tab" : "Pin Tab"}
-              onPress={handleTogglePinned}
-              textColor={chromeColors.text}
-              disabledTextColor={chromeColors.textSubtle}
-              destructiveColor={terminalTheme.red}
-            />
-            <TerminalSheetAction
-              icon="close-circle-outline"
-              label="Close Other Tabs"
-              onPress={handleCloseOtherTabs}
-              disabled={tabs.length <= 1}
-              textColor={chromeColors.text}
-              disabledTextColor={chromeColors.textSubtle}
-              destructiveColor={terminalTheme.red}
-            />
-            <TerminalSheetAction
-              icon="close-outline"
-              label="Close Tab"
-              onPress={handleCloseCurrentTab}
-              textColor={chromeColors.text}
-              disabledTextColor={chromeColors.textSubtle}
-              destructiveColor={terminalTheme.red}
-            />
-            {linkedWork ? (
-              <TerminalSheetAction
-                icon="reader-outline"
-                label="Open Brain"
-                onPress={openLinkedWork}
-                textColor={chromeColors.text}
-                disabledTextColor={chromeColors.textSubtle}
-                destructiveColor={terminalTheme.red}
-              />
-            ) : null}
-            <TerminalSheetAction
-              icon="stop-circle-outline"
-              label="Terminate"
-              onPress={handleTerminateAgent}
-              destructive
-              textColor={chromeColors.text}
-              disabledTextColor={chromeColors.textSubtle}
-              destructiveColor={terminalTheme.red}
-            />
-          </View>
-        </View>
-      </Modal>
+        left={menuPosition.left}
+        top={menuPosition.top}
+        creatingSession={creatingSession}
+        newTerminalLabel={creatingSession ? "Starting Terminal…" : "New Terminal"}
+        newTerminalDisabled={connectionState !== "connected"}
+        gitDiffDisabled={!gitDiffQueryEnabled || gitDiffStatus?.reason === "not_git_repo"}
+        activePinned={activePinned}
+        closeOtherTabsDisabled={tabs.length <= 1}
+        codexRenderAction={
+          isCodexAgent
+            ? {
+                icon: codexRenderMode === "chat" ? "terminal-outline" : "sparkles-outline",
+                label: codexRenderMode === "chat" ? "Use Terminal" : "Use Codex Chat",
+                onPress: toggleCodexRenderMode,
+              }
+            : null
+        }
+        showLinkedWork={Boolean(linkedWork)}
+        chrome={chromeColors}
+        theme={terminalTheme}
+        onClose={closeMenu}
+        onNewTerminal={openNewTerminal}
+        onOpenGitDiff={openGitDiff}
+        onRename={openRenameModal}
+        onTogglePinned={handleTogglePinned}
+        onCloseOtherTabs={handleCloseOtherTabs}
+        onCloseTab={handleCloseCurrentTab}
+        onOpenLinkedWork={openLinkedWork}
+        onTerminate={handleTerminateAgent}
+      />
 
       <NewTerminalSheet
         visible={newTerminalVisible}
@@ -1769,98 +1694,16 @@ export default function TerminalScreen() {
         onBackRepoPath={goUpRepoBrowserPath}
       />
 
-      <Modal
+      <TerminalRenameModal
         visible={renameVisible}
-        transparent
-        animationType="fade"
-        onRequestClose={() => setRenameVisible(false)}
-      >
-        <KeyboardAvoidingView
-          style={styles.renameRoot}
-          behavior={Platform.OS === "ios" ? "padding" : "height"}
-        >
-          <TouchableOpacity
-            style={styles.modalBackdrop}
-            activeOpacity={1}
-            onPress={() => setRenameVisible(false)}
-          />
-
-          <View
-            style={[
-              styles.renameCard,
-              {
-                backgroundColor: chromeColors.surface,
-                borderColor: chromeColors.border,
-              },
-            ]}
-          >
-            <Text style={[styles.renameTitle, { color: chromeColors.text }]}>
-              Rename Terminal
-            </Text>
-            <Text style={[styles.renameHint, { color: chromeColors.textMuted }]}>
-              Only changes the local display name on this device.
-            </Text>
-            <TextInput
-              style={[
-                styles.renameInput,
-                {
-                  color: chromeColors.text,
-                  borderColor: chromeColors.border,
-                  backgroundColor: chromeColors.surfaceMuted,
-                },
-              ]}
-              value={renameDraft}
-              onChangeText={setRenameDraft}
-              placeholder={agent?.name || agentId}
-              placeholderTextColor={chromeColors.textSubtle}
-              autoFocus
-              autoCorrect={false}
-              autoCapitalize="none"
-              returnKeyType="done"
-              onSubmitEditing={handleSaveRename}
-            />
-            <View style={styles.renameActions}>
-              <TouchableOpacity
-                style={[
-                  styles.renameButton,
-                  {
-                    backgroundColor: chromeColors.surfaceMuted,
-                    borderColor: chromeColors.border,
-                  },
-                ]}
-                onPress={() => setRenameVisible(false)}
-                activeOpacity={0.84}
-              >
-                <Text style={[styles.renameButtonText, { color: chromeColors.textMuted }]}>
-                  Cancel
-                </Text>
-              </TouchableOpacity>
-              <TouchableOpacity
-                style={[
-                  styles.renameButton,
-                  styles.renameButtonPrimary,
-                  {
-                    backgroundColor: chromeColors.accent,
-                    borderColor: chromeColors.borderStrong,
-                  },
-                ]}
-                onPress={handleSaveRename}
-                activeOpacity={0.84}
-              >
-                <Text
-                  style={[
-                    styles.renameButtonText,
-                    styles.renameButtonTextPrimary,
-                    { color: terminalTheme.background },
-                  ]}
-                >
-                  Save
-                </Text>
-              </TouchableOpacity>
-            </View>
-          </View>
-        </KeyboardAvoidingView>
-      </Modal>
+        draft={renameDraft}
+        placeholder={agent?.name || agentId}
+        chrome={chromeColors}
+        theme={terminalTheme}
+        onDraftChange={setRenameDraft}
+        onClose={() => setRenameVisible(false)}
+        onSave={handleSaveRename}
+      />
     </SafeAreaView>
   );
 }
@@ -1881,8 +1724,8 @@ function buildMenuPosition(
 ): { left: number; top: number } {
   const top = Math.max(12, (anchor?.y ?? 12) + (anchor?.height ?? 38) + 16);
   const preferredLeft =
-    (anchor?.x ?? windowWidth - 14) + (anchor?.width ?? 0) - MENU_POPOVER_WIDTH;
-  const maxLeft = Math.max(12, windowWidth - MENU_POPOVER_WIDTH - 12);
+    (anchor?.x ?? windowWidth - 14) + (anchor?.width ?? 0) - TERMINAL_ACTION_POPOVER_WIDTH;
+  const maxLeft = Math.max(12, windowWidth - TERMINAL_ACTION_POPOVER_WIDTH - 12);
 
   return {
     left: clamp(preferredLeft, 12, maxLeft),
@@ -2092,13 +1935,6 @@ const styles = StyleSheet.create({
     flex: 1,
     justifyContent: "flex-end",
   },
-  popoverRoot: {
-    flex: 1,
-  },
-  popoverBackdrop: {
-    ...StyleSheet.absoluteFill,
-    backgroundColor: "transparent",
-  },
   modalBackdrop: {
     ...StyleSheet.absoluteFill,
     backgroundColor: "rgba(6, 8, 12, 0.58)",
@@ -2228,77 +2064,5 @@ const styles = StyleSheet.create({
     lineHeight: 15,
     fontFamily: Typography.uiFont,
     opacity: 0.55,
-  },
-  menuPopover: {
-    position: "absolute",
-    borderRadius: 14,
-    paddingVertical: 4,
-    backgroundColor: "#161F2B",
-    borderWidth: 1,
-    borderColor: "rgba(255,255,255,0.06)",
-    shadowColor: "#000",
-    shadowOpacity: 0.2,
-    shadowRadius: 8,
-    elevation: 8,
-  },
-  renameRoot: {
-    flex: 1,
-    justifyContent: "center",
-    paddingHorizontal: 20,
-  },
-  renameCard: {
-    borderRadius: 18,
-    padding: 16,
-    backgroundColor: "#161F2B",
-    borderWidth: 1,
-    borderColor: "rgba(255,255,255,0.06)",
-  },
-  renameTitle: {
-    color: Colors.textPrimary,
-    fontSize: 17,
-    fontFamily: Typography.uiFontMedium,
-  },
-  renameHint: {
-    marginTop: 4,
-    color: "#7D8CA0",
-    fontSize: 12,
-    fontFamily: Typography.uiFont,
-  },
-  renameInput: {
-    marginTop: 14,
-    borderRadius: 12,
-    borderWidth: 1,
-    borderColor: "#263345",
-    backgroundColor: "#111923",
-    color: Colors.textPrimary,
-    paddingHorizontal: 12,
-    paddingVertical: 11,
-    fontSize: 14,
-    fontFamily: Typography.uiFont,
-  },
-  renameActions: {
-    flexDirection: "row",
-    justifyContent: "flex-end",
-    marginTop: 14,
-    gap: 10,
-  },
-  renameButton: {
-    minWidth: 72,
-    height: 38,
-    borderRadius: 10,
-    alignItems: "center",
-    justifyContent: "center",
-    backgroundColor: "#202A38",
-  },
-  renameButtonPrimary: {
-    backgroundColor: Colors.accent,
-  },
-  renameButtonText: {
-    color: Colors.textPrimary,
-    fontSize: 14,
-    fontFamily: Typography.uiFontMedium,
-  },
-  renameButtonTextPrimary: {
-    color: "#07111E",
   },
 });
