@@ -78,7 +78,7 @@ export function usePinnedTimeline(itemCount: number) {
       nearBottomRef.current = true;
       setShowJumpToLatest(false);
       const scroll = () => {
-        scrollRef.current?.scrollToEnd({ animated });
+        scrollRef.current?.scrollToOffset({ offset: 0, animated });
       };
       if (delay <= 0) {
         scroll();
@@ -106,12 +106,10 @@ export function usePinnedTimeline(itemCount: number) {
 
   const handleScroll = useCallback(
     (event: NativeSyntheticEvent<NativeScrollEvent>) => {
-      const { contentOffset, contentSize, layoutMeasurement } = event.nativeEvent;
-      const distanceFromBottom =
-        contentSize.height - layoutMeasurement.height - contentOffset.y;
-      const nearBottom = distanceFromBottom <= SCROLL_BOTTOM_THRESHOLD;
-      nearBottomRef.current = nearBottom;
-      setShowJumpToLatest(!nearBottom && itemCount > 0);
+      const distanceFromLatest = Math.max(0, event.nativeEvent.contentOffset.y);
+      const nearLatest = distanceFromLatest <= SCROLL_BOTTOM_THRESHOLD;
+      nearBottomRef.current = nearLatest;
+      setShowJumpToLatest(!nearLatest && itemCount > 0);
     },
     [itemCount],
   );

@@ -67,6 +67,11 @@ export function CodexTimelineView({
   formatPatchPath,
   truncateBody,
 }: CodexTimelineViewProps) {
+  const timelineData = React.useMemo(
+    () => [...items].reverse(),
+    [items],
+  );
+
   const renderItem = React.useCallback(
     ({ item }: ListRenderItemInfo<ZenTimelineItem>) => (
       <ZenTimelineItemView
@@ -120,9 +125,10 @@ export function CodexTimelineView({
     <TimelineTextSelectableContext.Provider value={textSelectable}>
       <FlatList
         ref={scrollRef}
-        data={items}
+        data={timelineData}
         keyExtractor={(item) => item.id}
         renderItem={renderItem}
+        inverted
         style={styles.timeline}
         contentContainerStyle={styles.timelineContent}
         scrollIndicatorInsets={{ bottom: TIMELINE_BOTTOM_PADDING }}
