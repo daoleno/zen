@@ -20,32 +20,8 @@ import {
   type TerminalAccessoryGitDiff,
 } from "./TerminalAccessoryGitDiffChip";
 import { TerminalAccessoryIconButton } from "./TerminalAccessoryIconButton";
-import { TerminalAccessoryShortcutButton } from "./TerminalAccessoryShortcutButton";
+import { TerminalAccessoryShortcutList } from "./TerminalAccessoryShortcutList";
 import type { TerminalSurfaceHandle } from "./TerminalSurface";
-
-// Keys that fire once per tap
-type TapKey =
-  | { label: "Ctrl"; type: "modifier" }
-  | { label: string; type: "tap"; sequence: string };
-
-// Keys that repeat while held
-type HoldKey = { label: string; type: "hold"; sequence: string };
-
-type ShortcutKey = TapKey | HoldKey;
-
-const SHORTCUT_KEYS: readonly ShortcutKey[] = [
-  { label: "Ctrl", type: "modifier" },
-  { label: "Esc", type: "tap", sequence: "\x1b" },
-  { label: "Tab", type: "tap", sequence: "\t" },
-  { label: "⌃B", type: "tap", sequence: "\x02" },
-  { label: "⌃C", type: "tap", sequence: "\x03" },
-  { label: "⌃D", type: "tap", sequence: "\x04" },
-  // Arrow keys repeat on hold
-  { label: "←", type: "hold", sequence: "\x1b[D" },
-  { label: "↑", type: "hold", sequence: "\x1b[A" },
-  { label: "↓", type: "hold", sequence: "\x1b[B" },
-  { label: "→", type: "hold", sequence: "\x1b[C" },
-];
 
 // Initial delay before repeat begins (matches system key-repeat feel)
 const REPEAT_DELAY_MS = 360;
@@ -226,43 +202,14 @@ export function TerminalAccessoryBar({
           />
         </TerminalAccessoryIconButton>
 
-        {SHORTCUT_KEYS.map((key) => {
-          if (key.type === "modifier") {
-            const active = ctrlArmed;
-            return (
-              <TerminalAccessoryShortcutButton
-                key="Ctrl"
-                label="Ctrl"
-                chrome={chrome}
-                active={active}
-                onPress={handleCtrlToggle}
-              />
-            );
-          }
-
-          if (key.type === "hold") {
-            return (
-              <TerminalAccessoryShortcutButton
-                key={key.sequence}
-                label={key.label}
-                chrome={chrome}
-                onPressIn={() => handleHoldPressIn(key.sequence)}
-                onPressOut={stopRepeat}
-                delayLongPress={9999}
-              />
-            );
-          }
-
-          // tap key
-          return (
-            <TerminalAccessoryShortcutButton
-              key={key.sequence}
-              label={key.label}
-              chrome={chrome}
-              onPress={() => handleTapSequence(key.sequence)}
-            />
-          );
-        })}
+        <TerminalAccessoryShortcutList
+          chrome={chrome}
+          ctrlArmed={ctrlArmed}
+          onCtrlToggle={handleCtrlToggle}
+          onHoldPressIn={handleHoldPressIn}
+          onHoldPressOut={stopRepeat}
+          onTapSequence={handleTapSequence}
+        />
       </ScrollView>
     </View>
   );
