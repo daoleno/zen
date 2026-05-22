@@ -1,12 +1,9 @@
-import React, { useCallback, useEffect, useRef, useState } from "react";
+import React, { useCallback } from "react";
 import {
   useWindowDimensions,
 } from "react-native";
-import { useLocalSearchParams } from "expo-router";
 import { useAgents } from "../../store/agents";
 import { useWork } from "../../store/work";
-import { makeSessionKey } from "../../services/sessionKeys";
-import type { TerminalSurfaceHandle } from "../../components/terminal/TerminalSurface";
 import {
   TERMINAL_ACTION_POPOVER_WIDTH,
 } from "../../components/terminal/TerminalActionPopover";
@@ -19,6 +16,7 @@ import { useTerminalDirectoryModel } from "./useTerminalDirectoryModel";
 import { useTerminalFocusLifecycle } from "./useTerminalFocusLifecycle";
 import { useTerminalRouteModel } from "./useTerminalRouteModel";
 import { useTerminalScreenActions } from "./useTerminalScreenActions";
+import { useTerminalScreenLocalState } from "./useTerminalScreenLocalState";
 import { useTerminalScreenOverlayProps } from "./useTerminalScreenOverlayProps";
 import { useTerminalScreenStorage } from "./useTerminalScreenStorage";
 import { useTerminalSessionActions } from "./useTerminalSessionActions";
@@ -29,21 +27,27 @@ import { useTerminalViewportModel } from "./useTerminalViewportModel";
 import { useTerminalViewportProps } from "./useTerminalViewportProps";
 
 export default function TerminalScreen() {
-  const params = useLocalSearchParams<{ id?: string; serverId?: string }>();
-  const agentId = typeof params.id === "string" ? params.id : "";
-  const serverId = typeof params.serverId === "string" ? params.serverId : "";
-  const sessionKey =
-    agentId && serverId ? makeSessionKey(serverId, agentId) : null;
   const { state } = useAgents();
   const { state: workState } = useWork();
   const { width: windowWidth } = useWindowDimensions();
-  const [pickerVisible, setPickerVisible] = useState(false);
-  const [renameVisible, setRenameVisible] = useState(false);
-  const [renameDraft, setRenameDraft] = useState("");
-  const [newTerminalVisible, setNewTerminalVisible] = useState(false);
-  const [creatingSession, setCreatingSession] = useState(false);
-  const [screenFocused, setScreenFocused] = useState(false);
-  const terminalRef = useRef<TerminalSurfaceHandle>(null);
+  const {
+    agentId,
+    serverId,
+    sessionKey,
+    pickerVisible,
+    setPickerVisible,
+    renameVisible,
+    setRenameVisible,
+    renameDraft,
+    setRenameDraft,
+    newTerminalVisible,
+    setNewTerminalVisible,
+    creatingSession,
+    setCreatingSession,
+    screenFocused,
+    setScreenFocused,
+    terminalRef,
+  } = useTerminalScreenLocalState();
   const chromeLayout = useTerminalChromeLayout({
     sessionKey,
     windowWidth,
@@ -149,11 +153,6 @@ export default function TerminalScreen() {
     setScreenFocused,
     onInactive: handleTerminalInactive,
   });
-
-  useEffect(() => {
-    setRenameVisible(false);
-    setRenameDraft("");
-  }, [sessionKey]);
 
   const {
     pickerSections,
