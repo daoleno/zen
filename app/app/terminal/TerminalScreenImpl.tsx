@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import React, { useCallback, useEffect, useRef, useState } from "react";
 import {
   useWindowDimensions,
 } from "react-native";
@@ -12,13 +12,12 @@ import {
 } from "../../components/terminal/TerminalActionPopover";
 import { useTerminalAccessoryLayout } from "../../components/terminal/useTerminalAccessoryLayout";
 import { useTerminalGitDiff } from "../../components/terminal/useTerminalGitDiff";
-import { buildTerminalTabs } from "./TerminalScreenModel";
 import { TerminalScreenLayout } from "./TerminalScreenLayout";
 import { useTerminalAgentIndex } from "./useTerminalAgentIndex";
 import { useTerminalChromeLayout } from "./useTerminalChromeLayout";
+import { useTerminalDirectoryModel } from "./useTerminalDirectoryModel";
 import { useTerminalFocusLifecycle } from "./useTerminalFocusLifecycle";
 import { useTerminalRouteModel } from "./useTerminalRouteModel";
-import { useTerminalPickerModel } from "./useTerminalPickerModel";
 import { useTerminalScreenActions } from "./useTerminalScreenActions";
 import { useTerminalScreenOverlayProps } from "./useTerminalScreenOverlayProps";
 import { useTerminalScreenStorage } from "./useTerminalScreenStorage";
@@ -156,25 +155,23 @@ export default function TerminalScreen() {
     setRenameDraft("");
   }, [sessionKey]);
 
-  const tabs = useMemo(() => {
-    return buildTerminalTabs({
-      sessionKey,
-      terminalTabs,
-      agentByKey,
-      hydratedServerIdSet,
-      agentAliases,
-    });
-  }, [agentAliases, agentByKey, hydratedServerIdSet, sessionKey, terminalTabs]);
-
-  const { pickerSections, showPickerServerNames, sortedAgents } =
-    useTerminalPickerModel({
-      agents: state.agents,
-      servers,
-      connectionStates: state.serverConnections,
-      latencyById: state.serverLatencyById,
-      terminalTabs,
-      recentAgentOpens,
-    });
+  const {
+    pickerSections,
+    showPickerServerNames,
+    sortedAgents,
+    tabs,
+  } = useTerminalDirectoryModel({
+    sessionKey,
+    agents: state.agents,
+    servers,
+    connectionStates: state.serverConnections,
+    latencyById: state.serverLatencyById,
+    terminalTabs,
+    recentAgentOpens,
+    agentByKey,
+    hydratedServerIdSet,
+    agentAliases,
+  });
 
   const {
     closePicker,
