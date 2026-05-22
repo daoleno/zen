@@ -5,6 +5,10 @@ import type {
   TerminalThemeChrome,
   TerminalThemePalette,
 } from "../../constants/terminalThemes";
+import {
+  CodexChatHeaderGitDiffButton,
+  type CodexChatHeaderGitDiff,
+} from "./CodexChatHeaderGitDiffButton";
 import { CodexChatHeaderTitle } from "./CodexChatHeaderTitle";
 import { ChatHeaderIconButton } from "./ChatHeaderIconButton";
 
@@ -13,10 +17,7 @@ export interface CodexChatHeaderProps {
   statusMeta: string;
   theme: TerminalThemePalette;
   chrome: TerminalThemeChrome;
-  gitDiff?: {
-    tone: "clean" | "dirty" | "error" | "loading";
-    onPress(): void;
-  } | null;
+  gitDiff?: CodexChatHeaderGitDiff | null;
   onSwitchToTerminal(): void;
 }
 
@@ -45,13 +46,7 @@ export function CodexChatHeader({
       />
 
       {gitDiff ? (
-        <ChatHeaderIconButton
-          icon={gitDiff.tone === "loading" ? "sync-outline" : "git-branch-outline"}
-          accessibilityLabel="Git diff"
-          chrome={chrome}
-          color={gitDiff.tone === "dirty" ? chrome.accent : chrome.textMuted}
-          onPress={gitDiff.onPress}
-        />
+        <CodexChatHeaderGitDiffButton gitDiff={gitDiff} chrome={chrome} />
       ) : null}
 
       <ChatHeaderIconButton
