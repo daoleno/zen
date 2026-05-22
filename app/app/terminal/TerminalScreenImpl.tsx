@@ -24,6 +24,7 @@ import { useTerminalChromeLayout } from "./useTerminalChromeLayout";
 import { useTerminalFocusLifecycle } from "./useTerminalFocusLifecycle";
 import { useTerminalRouteModel } from "./useTerminalRouteModel";
 import { useTerminalPickerModel } from "./useTerminalPickerModel";
+import { useTerminalScreenActions } from "./useTerminalScreenActions";
 import { useTerminalScreenOverlayProps } from "./useTerminalScreenOverlayProps";
 import { useTerminalScreenStorage } from "./useTerminalScreenStorage";
 import { useTerminalSessionActions } from "./useTerminalSessionActions";
@@ -180,9 +181,18 @@ export default function TerminalScreen() {
       recentAgentOpens,
     });
 
-  const closePicker = useCallback(() => {
-    setPickerVisible(false);
-  }, []);
+  const {
+    closePicker,
+    openGitDiff,
+    openRenameModal,
+  } = useTerminalScreenActions({
+    displayName,
+    closeMenu,
+    openGitDiffSheet: gitDiff.open,
+    setPickerVisible,
+    setRenameDraft,
+    setRenameVisible,
+  });
 
   const tabActions = useTerminalTabActions({
     sessionKey,
@@ -199,16 +209,6 @@ export default function TerminalScreen() {
     closeMenu,
     closePicker,
   });
-  const openGitDiff = () => {
-    closeMenu();
-    gitDiff.open();
-  };
-
-  const openRenameModal = () => {
-    closeMenu();
-    setRenameDraft(displayName);
-    setRenameVisible(true);
-  };
 
   const sessionActions = useTerminalSessionActions({
     serverId,
