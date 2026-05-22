@@ -17,7 +17,6 @@ import {
   buildTerminalChrome,
   type TerminalThemePalette,
 } from "../../constants/terminalThemes";
-import { NativeSegmentedControl } from "../ui";
 import type {
   GitDiffContentSnapshot,
   GitDiffFileInfo,
@@ -32,8 +31,11 @@ import {
   highlightCodeLine,
   type HighlightTokenKind,
 } from "./gitDiffSyntaxHighlight";
+import {
+  GitDiffSheetTopChrome,
+  type GitDiffSheetTab,
+} from "./GitDiffSheetTopChrome";
 
-type SheetTab = "diff" | "browser";
 const LARGE_DIFF_FILE_THRESHOLD = 8;
 
 interface GitDiffSheetProps {
@@ -88,7 +90,7 @@ export function GitDiffSheet({
   onBackRepoPath,
 }: GitDiffSheetProps) {
   const chrome = React.useMemo(() => buildTerminalChrome(theme), [theme]);
-  const [activeTab, setActiveTab] = React.useState<SheetTab>("diff");
+  const [activeTab, setActiveTab] = React.useState<GitDiffSheetTab>("diff");
   const [collapsedDiffPaths, setCollapsedDiffPaths] = React.useState<Set<string>>(
     () => new Set(),
   );
@@ -231,86 +233,25 @@ export function GitDiffSheet({
             },
           ]}
         >
-          <View style={[styles.header, { borderBottomColor: chrome.border }]}>
-            <TouchableOpacity
-              style={[
-                styles.iconButton,
-                {
-                  backgroundColor: chrome.surfaceMuted,
-                  borderColor: chrome.border,
-                },
-              ]}
-              onPress={onClose}
-              activeOpacity={0.82}
-            >
-              <Ionicons name="close" size={18} color={chrome.textMuted} />
-            </TouchableOpacity>
-
-            <View style={styles.headerCopy}>
-              <Text style={[styles.title, { color: chrome.text }]}>Git</Text>
-              <Text style={[styles.subtitle, { color: chrome.textMuted }]} numberOfLines={1}>
-                {buildSubtitle(snapshot)}
-              </Text>
-            </View>
-
-            <TouchableOpacity
-              style={[
-                styles.iconButton,
-                {
-                  backgroundColor: chrome.surfaceMuted,
-                  borderColor: chrome.border,
-                },
-              ]}
-              onPress={onRefresh}
-              activeOpacity={0.82}
-            >
-              {loading ? (
-                <ActivityIndicator size="small" color={chrome.accent} />
-              ) : (
-                <Ionicons name="refresh" size={16} color={chrome.textMuted} />
-              )}
-            </TouchableOpacity>
-          </View>
-
-          {snapshot?.available ? (
-            <View style={[styles.modeBar, { borderBottomColor: chrome.border }]}>
-              <SegmentedControl
-                options={[
-                  { value: "diff", label: `Diff ${files.length}` },
-                  { value: "browser", label: "Files" },
-                ]}
-                selectedValue={activeTab}
-                onSelect={(value) => setActiveTab(value as SheetTab)}
-                chrome={chrome}
-                theme={theme}
-              />
-              <View style={styles.modeMetaRow}>
-                <View style={styles.modeSummaryWrap}>
-                  <Text style={[styles.modeSummary, { color: chrome.textMuted }]} numberOfLines={1}>
-                    {buildCompactSummary(snapshot)}
-                  </Text>
-                </View>
-                {activeTab === "diff" && !snapshot.clean && files.length > 0 ? (
-                  <TouchableOpacity
-                    style={[
-                      styles.collapseAllButton,
-                      {
-                        backgroundColor: chrome.surfaceMuted,
-                        borderColor: chrome.border,
-                      },
-                    ]}
-                    onPress={allDiffFilesCollapsed ? expandAllDiffFiles : collapseAllDiffFiles}
-                    activeOpacity={0.82}
-                    hitSlop={{ top: 6, right: 6, bottom: 6, left: 6 }}
-                  >
-                    <Text style={[styles.collapseAllText, { color: chrome.textMuted }]}>
-                      {allDiffFilesCollapsed ? "Expand all" : "Collapse all"}
-                    </Text>
-                  </TouchableOpacity>
-                ) : null}
-              </View>
-            </View>
-          ) : null}
+          <GitDiffSheetTopChrome
+            chrome={chrome}
+            snapshot={snapshot}
+            loading={loading}
+            activeTab={activeTab}
+            fileCount={files.length}
+            showCollapseAll={
+              activeTab === "diff"
+              && Boolean(snapshot?.available)
+              && !snapshot?.clean
+              && files.length > 0
+            }
+            allDiffFilesCollapsed={allDiffFilesCollapsed}
+            segmentedTintColor={withAlpha(theme.cursor, 0.72)}
+            onClose={onClose}
+            onRefresh={onRefresh}
+            onTabChange={setActiveTab}
+            onToggleAllDiffFiles={allDiffFilesCollapsed ? expandAllDiffFiles : collapseAllDiffFiles}
+          />
 
           {error && !snapshot?.available ? (
             <View style={styles.contentPad}>
@@ -835,34 +776,6 @@ function StatusPill({
   );
 }
 
-function SegmentedControl({
-  options,
-  selectedValue,
-  onSelect,
-  chrome,
-  theme,
-}: {
-  options: Array<{ value: string; label: string }>;
-  selectedValue: string;
-  onSelect(value: string): void;
-  chrome: ReturnType<typeof buildTerminalChrome>;
-  theme: TerminalThemePalette;
-}) {
-  return (
-    <NativeSegmentedControl
-      options={options}
-      selectedValue={selectedValue}
-      onSelect={onSelect}
-      tintColor={withAlpha(theme.cursor, 0.72)}
-      appearance="dark"
-      style={{
-        backgroundColor: chrome.surface,
-        borderColor: chrome.border,
-      }}
-    />
-  );
-}
-
 function CodeSnapshotPanel({
   path,
   snapshot,
@@ -1102,35 +1015,6 @@ function StateCard({
   );
 }
 
-function buildSubtitle(snapshot: GitDiffStatusSnapshot | null): string {
-  if (!snapshot?.available) {
-    return "Diff and files";
-  }
-  if (snapshot.repo_name && snapshot.branch) {
-    return `${snapshot.repo_name} · ${snapshot.branch}`;
-  }
-  return snapshot.repo_name || "Repository";
-}
-
-function buildCompactSummary(snapshot: GitDiffStatusSnapshot): string {
-  if (snapshot.clean) {
-    return "working tree clean";
-  }
-
-  const parts = [
-    `${snapshot.file_count} changed`,
-    `${snapshot.staged_file_count} staged`,
-    `${snapshot.unstaged_file_count} unstaged`,
-  ];
-  if (snapshot.untracked_file_count > 0) {
-    parts.push(`${snapshot.untracked_file_count} untracked`);
-  }
-  if (snapshot.additions > 0 || snapshot.deletions > 0) {
-    parts.push(`+${snapshot.additions} -${snapshot.deletions}`);
-  }
-  return parts.join(" · ");
-}
-
 function buildFilePathMeta(file: GitDiffFileInfo): string {
   if (file.old_path) {
     return `${describeGitDiffScope(file)} · ${file.old_path} -> ${file.path}`;
@@ -1273,76 +1157,6 @@ const styles = StyleSheet.create({
   sheet: {
     flex: 1,
     borderWidth: 0,
-  },
-  header: {
-    flexDirection: "row",
-    alignItems: "center",
-    paddingHorizontal: 10,
-    paddingTop: 5,
-    paddingBottom: 6,
-    gap: 8,
-    borderBottomWidth: StyleSheet.hairlineWidth,
-  },
-  headerCopy: {
-    flex: 1,
-    minWidth: 0,
-  },
-  title: {
-    fontSize: 19,
-    lineHeight: 24,
-    fontFamily: Typography.uiFontMedium,
-  },
-  subtitle: {
-    marginTop: 1,
-    fontSize: 10,
-    lineHeight: 13,
-    fontFamily: Typography.uiFont,
-  },
-  iconButton: {
-    width: 31,
-    height: 31,
-    borderRadius: 10,
-    alignItems: "center",
-    justifyContent: "center",
-    borderWidth: StyleSheet.hairlineWidth,
-  },
-  modeBar: {
-    paddingHorizontal: 10,
-    paddingVertical: 6,
-    gap: 4,
-    borderBottomWidth: StyleSheet.hairlineWidth,
-  },
-  modeSummary: {
-    fontSize: 10,
-    lineHeight: 13,
-    fontFamily: Typography.uiFont,
-    flexShrink: 1,
-  },
-  modeSummaryWrap: {
-    flex: 1,
-    minWidth: 0,
-    paddingRight: 4,
-  },
-  modeMetaRow: {
-    minHeight: 24,
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 8,
-  },
-  collapseAllButton: {
-    minHeight: 28,
-    borderRadius: 8,
-    borderWidth: StyleSheet.hairlineWidth,
-    paddingHorizontal: 10,
-    paddingVertical: 4,
-    alignItems: "center",
-    justifyContent: "center",
-    flexShrink: 0,
-  },
-  collapseAllText: {
-    fontSize: 10,
-    lineHeight: 12,
-    fontFamily: Typography.uiFontMedium,
   },
   contentPad: {
     flex: 1,
