@@ -2,11 +2,9 @@ import React, { useRef } from "react";
 import {
   Alert,
   Keyboard,
-  ScrollView,
   StyleSheet,
   View,
 } from "react-native";
-import { Ionicons, MaterialCommunityIcons } from "@expo/vector-icons";
 import * as DocumentPicker from "expo-document-picker";
 import * as Haptics from "expo-haptics";
 import {
@@ -16,11 +14,9 @@ import {
 } from "../../constants/terminalThemes";
 import { buildUploadHeaders, buildUploadUrl } from "../../services/uploads";
 import {
-  TerminalAccessoryGitDiffChip,
   type TerminalAccessoryGitDiff,
 } from "./TerminalAccessoryGitDiffChip";
-import { TerminalAccessoryIconButton } from "./TerminalAccessoryIconButton";
-import { TerminalAccessoryShortcutList } from "./TerminalAccessoryShortcutList";
+import { TerminalAccessoryControls } from "./TerminalAccessoryControls";
 import type { TerminalSurfaceHandle } from "./TerminalSurface";
 
 // Initial delay before repeat begins (matches system key-repeat feel)
@@ -163,54 +159,20 @@ export function TerminalAccessoryBar({
         },
       ]}
     >
-      <ScrollView
-        horizontal
-        showsHorizontalScrollIndicator={false}
-        keyboardShouldPersistTaps="handled"
-        style={styles.shortcutRow}
-        contentContainerStyle={styles.shortcutRowContent}
-      >
-        {gitDiff ? (
-          <TerminalAccessoryGitDiffChip
-            gitDiff={gitDiff}
-            chrome={chrome}
-            theme={activeTheme}
-          />
-        ) : null}
-
-        <TerminalAccessoryIconButton
-          accessibilityLabel="Attach"
-          onPress={() => void handleFilePick()}
-          disabled={!uploadEnabled}
-        >
-          <Ionicons
-            name="attach-outline"
-            size={16}
-            color={uploadEnabled ? chrome.textMuted : chrome.textSubtle}
-          />
-        </TerminalAccessoryIconButton>
-
-        <TerminalAccessoryIconButton
-          accessibilityLabel={keyboardVisible ? "Hide keyboard" : "Show keyboard"}
-          accessibilityState={{ selected: keyboardVisible }}
-          onPress={handleKeyboardToggle}
-        >
-          <MaterialCommunityIcons
-            name="keyboard-outline"
-            size={18}
-            color={keyboardVisible ? chrome.accent : chrome.textMuted}
-          />
-        </TerminalAccessoryIconButton>
-
-        <TerminalAccessoryShortcutList
-          chrome={chrome}
-          ctrlArmed={ctrlArmed}
-          onCtrlToggle={handleCtrlToggle}
-          onHoldPressIn={handleHoldPressIn}
-          onHoldPressOut={stopRepeat}
-          onTapSequence={handleTapSequence}
-        />
-      </ScrollView>
+      <TerminalAccessoryControls
+        uploadEnabled={uploadEnabled}
+        keyboardVisible={keyboardVisible}
+        ctrlArmed={ctrlArmed}
+        chrome={chrome}
+        theme={activeTheme}
+        gitDiff={gitDiff}
+        onUploadPress={() => void handleFilePick()}
+        onKeyboardToggle={handleKeyboardToggle}
+        onCtrlToggle={handleCtrlToggle}
+        onHoldPressIn={handleHoldPressIn}
+        onHoldPressOut={stopRepeat}
+        onTapSequence={handleTapSequence}
+      />
     </View>
   );
 }
@@ -227,13 +189,5 @@ function shellQuote(value: string): string {
 const styles = StyleSheet.create({
   container: {
     borderTopWidth: StyleSheet.hairlineWidth,
-  },
-  shortcutRow: {
-    paddingTop: 3,
-    paddingBottom: 3,
-  },
-  shortcutRowContent: {
-    paddingLeft: 12,
-    paddingRight: 12,
   },
 });
