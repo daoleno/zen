@@ -1,20 +1,16 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
-  ActivityIndicator,
   Alert,
   AppState,
   AppStateStatus,
   Keyboard,
   Platform,
   StyleSheet,
-  Text,
-  TouchableOpacity,
   View,
   type ScrollView,
   useColorScheme,
   useWindowDimensions,
 } from "react-native";
-import { Ionicons } from "@expo/vector-icons";
 import { useFocusEffect, useLocalSearchParams, useRouter } from "expo-router";
 import { StatusBar } from "expo-status-bar";
 import {
@@ -23,11 +19,7 @@ import {
 } from "react-native-safe-area-context";
 import { Agent, useAgents } from "../../store/agents";
 import { useWork } from "../../store/work";
-import {
-  AgentStatus,
-  Colors,
-  Typography,
-} from "../../constants/tokens";
+import { AgentStatus } from "../../constants/tokens";
 import {
   buildTerminalChrome,
   DefaultTerminalThemePreference,
@@ -62,12 +54,7 @@ import {
 } from "../../services/storage";
 import { makeSessionKey, parseSessionKey } from "../../services/sessionKeys";
 import { wsClient } from "../../services/websocket";
-import {
-  TerminalSurface,
-  TerminalSurfaceHandle,
-} from "../../components/terminal/TerminalSurface";
-import { TerminalAccessoryBar } from "../../components/terminal/TerminalAccessoryBar";
-import { CodexChatSurface } from "../../components/terminal/CodexChatSurface";
+import type { TerminalSurfaceHandle } from "../../components/terminal/TerminalSurface";
 import { GitDiffSheet } from "../../components/terminal/GitDiffSheet";
 import { NewTerminalSheet } from "../../components/terminal/NewTerminalSheet";
 import { TerminalAgentPickerSheet } from "../../components/terminal/TerminalAgentPickerSheet";
@@ -80,6 +67,7 @@ import {
   TerminalTopBar,
   type TerminalTabDescriptor,
 } from "../../components/terminal/TerminalTopBar";
+import { TerminalViewport } from "../../components/terminal/TerminalViewport";
 import { presentAgent } from "../../services/agentPresentation";
 import {
   buildGitDiffChipLabel,
@@ -1206,151 +1194,6 @@ export default function TerminalScreen() {
     wsClient.connectServer(storedServer);
   };
 
-  const terminalViewport = showCodexChat && sessionKey && serverId && agentId ? (
-    <CodexChatSurface
-      key={`codex-chat:${sessionKey}`}
-      serverId={serverId}
-      agentId={agentId}
-      agent={agent}
-      connectionState={connectionState}
-      connectionIssue={connectionIssue}
-      theme={terminalTheme}
-      chrome={chromeColors}
-      screenFocused={screenFocused}
-      gitDiff={gitDiffChip}
-      onSwitchToTerminal={() => {
-        void applyCodexRenderMode("terminal");
-      }}
-      onOpenGitDiff={openGitDiff}
-    />
-  ) : (
-    <>
-      <View
-        style={[
-          styles.output,
-          { backgroundColor: terminalTheme.background },
-          outputBottomInset > 0 ? { paddingBottom: outputBottomInset } : null,
-        ]}
-      >
-        {shouldMountTerminalSurface && sessionKey && serverId && agentId ? (
-          <TerminalSurface
-            key={sessionKey}
-            ref={terminalRef}
-            serverId={serverId}
-            targetId={agentId}
-            themeName={themeName}
-            ctrlArmed={ctrlArmed}
-            onCtrlArmedChange={handleCtrlArmedChange}
-          />
-        ) : null}
-        {canRenderTerminal ? null : (
-          <View style={styles.terminalState}>
-            <View
-              style={[
-                styles.terminalStateCard,
-                {
-                  backgroundColor: chromeColors.surface,
-                  borderColor: terminalStateAccent,
-                },
-              ]}
-            >
-              {terminalStateBusy ? (
-                <ActivityIndicator color={terminalStateAccent} />
-              ) : (
-                <View
-                  style={[
-                    styles.terminalStateDot,
-                    { backgroundColor: terminalStateAccent },
-                  ]}
-                />
-              )}
-              <Text style={[styles.terminalStateTitle, { color: chromeColors.text }]}>
-                {terminalStateTitle}
-              </Text>
-              <Text
-                style={[styles.terminalStateDetail, { color: chromeColors.textMuted }]}
-              >
-                {terminalStateDetail}
-              </Text>
-              <Text
-                style={[styles.terminalStateHint, { color: chromeColors.textSubtle }]}
-              >
-                {terminalStateHint}
-              </Text>
-              {hasTerminalRoute ? (
-                <TouchableOpacity
-                  style={[
-                    styles.terminalStateAction,
-                    { backgroundColor: chromeColors.accent },
-                  ]}
-                  onPress={() => void retryServerConnection()}
-                  activeOpacity={0.84}
-                >
-                  <Text
-                    style={[
-                      styles.terminalStateActionText,
-                      { color: terminalTheme.background },
-                    ]}
-                  >
-                    Retry Connection
-                  </Text>
-                </TouchableOpacity>
-              ) : null}
-            </View>
-          </View>
-        )}
-        {isCodexAgent ? (
-          <TouchableOpacity
-            accessibilityLabel="Open Codex Chat renderer"
-            style={[
-              styles.codexChatSwitchButton,
-              {
-                backgroundColor: chromeColors.surfaceMuted,
-                borderColor: chromeColors.borderStrong,
-              },
-            ]}
-            onPress={() => {
-              void applyCodexRenderMode("chat");
-            }}
-            activeOpacity={0.82}
-          >
-            <Ionicons name="sparkles-outline" size={14} color={chromeColors.accent} />
-            <Text style={[styles.codexChatSwitchText, { color: chromeColors.textMuted }]}>
-              Chat
-            </Text>
-          </TouchableOpacity>
-        ) : null}
-      </View>
-
-      {accessoryVisible ? (
-        <View
-          onLayout={(event) => {
-            const nextHeight = Math.ceil(event.nativeEvent.layout.height);
-            setAccessoryHeight((previous) =>
-              Math.abs(previous - nextHeight) <= 1 ? previous : nextHeight,
-            );
-          }}
-          style={[
-            styles.inputShell,
-            styles.inputShellDock,
-            { bottom: accessoryBottomOffset },
-          ]}
-        >
-          <TerminalAccessoryBar
-            terminalRef={terminalRef}
-            serverUrl={server?.url || ""}
-            daemonId={server?.daemonId || ""}
-            theme={terminalTheme}
-            gitDiff={gitDiffChip}
-            keyboardVisible={keyboardVisible}
-            ctrlArmed={ctrlArmed}
-            onCtrlArmedChange={handleCtrlArmedChange}
-          />
-        </View>
-      ) : null}
-    </>
-  );
-
   return (
     <SafeAreaView
       style={[styles.container, { backgroundColor: chromeColors.appBackground }]}
@@ -1374,11 +1217,54 @@ export default function TerminalScreen() {
         }}
       />
 
-      <View style={[styles.terminalStage, { backgroundColor: terminalTheme.background }]}>
-        <View style={[styles.terminalShell, { backgroundColor: terminalTheme.background }]}>
-          <View style={styles.terminalContent}>{terminalViewport}</View>
-        </View>
-      </View>
+      <TerminalViewport
+        showCodexChat={showCodexChat}
+        sessionKey={sessionKey}
+        serverId={serverId}
+        agentId={agentId}
+        agent={agent}
+        connectionState={connectionState}
+        connectionIssue={connectionIssue}
+        theme={terminalTheme}
+        chrome={chromeColors}
+        themeName={themeName}
+        screenFocused={screenFocused}
+        gitDiff={gitDiffChip}
+        terminalRef={terminalRef}
+        ctrlArmed={ctrlArmed}
+        onCtrlArmedChange={handleCtrlArmedChange}
+        canRenderTerminal={canRenderTerminal}
+        shouldMountTerminalSurface={shouldMountTerminalSurface}
+        terminalStateAccent={terminalStateAccent}
+        terminalStateBusy={terminalStateBusy}
+        terminalStateTitle={terminalStateTitle}
+        terminalStateDetail={terminalStateDetail}
+        terminalStateHint={terminalStateHint}
+        hasTerminalRoute={hasTerminalRoute}
+        isCodexAgent={isCodexAgent}
+        outputBottomInset={outputBottomInset}
+        accessoryVisible={accessoryVisible}
+        accessoryBottomOffset={accessoryBottomOffset}
+        serverUrl={server?.url || ""}
+        daemonId={server?.daemonId || ""}
+        keyboardVisible={keyboardVisible}
+        onSwitchToTerminal={() => {
+          void applyCodexRenderMode("terminal");
+        }}
+        onSwitchToChat={() => {
+          void applyCodexRenderMode("chat");
+        }}
+        onOpenGitDiff={openGitDiff}
+        onRetryConnection={() => {
+          void retryServerConnection();
+        }}
+        onAccessoryLayout={(event) => {
+          const nextHeight = Math.ceil(event.nativeEvent.layout.height);
+          setAccessoryHeight((previous) =>
+            Math.abs(previous - nextHeight) <= 1 ? previous : nextHeight,
+          );
+        }}
+      />
 
       <TerminalAgentPickerSheet
         visible={pickerVisible}
@@ -1531,112 +1417,5 @@ const styles = StyleSheet.create({
   container: {
     flex: 1,
     backgroundColor: "#0D0C0C",
-  },
-  terminalStage: {
-    flex: 1,
-    minHeight: 0,
-    overflow: "hidden",
-    justifyContent: "center",
-  },
-  terminalShell: {
-    flex: 1,
-    minHeight: 0,
-  },
-  terminalContent: {
-    flex: 1,
-    minHeight: 0,
-    position: "relative",
-  },
-  codexChatSwitchButton: {
-    position: "absolute",
-    top: 10,
-    right: 10,
-    minHeight: 32,
-    borderRadius: 8,
-    borderWidth: StyleSheet.hairlineWidth,
-    paddingHorizontal: 10,
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 5,
-    zIndex: 8,
-  },
-  codexChatSwitchText: {
-    fontSize: 12,
-    lineHeight: 16,
-    fontFamily: Typography.uiFontMedium,
-  },
-  output: {
-    flex: 1,
-    minHeight: 0,
-    paddingTop: 4,
-  },
-  terminalState: {
-    flex: 1,
-    alignItems: "center",
-    justifyContent: "center",
-    paddingHorizontal: 18,
-    paddingBottom: 32,
-  },
-  terminalStateCard: {
-    width: "100%",
-    maxWidth: 360,
-    alignItems: "center",
-    paddingHorizontal: 18,
-    paddingVertical: 20,
-    borderRadius: 20,
-    borderWidth: 1,
-    backgroundColor: "rgba(17,22,31,0.9)",
-  },
-  terminalStateDot: {
-    width: 10,
-    height: 10,
-    borderRadius: 5,
-  },
-  terminalStateTitle: {
-    marginTop: 12,
-    color: Colors.textPrimary,
-    fontSize: 18,
-    fontFamily: Typography.uiFontMedium,
-    textAlign: "center",
-  },
-  terminalStateDetail: {
-    marginTop: 8,
-    color: "#D6DFEC",
-    fontSize: 13,
-    lineHeight: 19,
-    fontFamily: Typography.uiFont,
-    textAlign: "center",
-  },
-  terminalStateHint: {
-    marginTop: 8,
-    color: "#8E9DB2",
-    fontSize: 12,
-    lineHeight: 18,
-    fontFamily: Typography.uiFont,
-    textAlign: "center",
-  },
-  terminalStateAction: {
-    marginTop: 16,
-    minHeight: 38,
-    paddingHorizontal: 14,
-    borderRadius: 12,
-    alignItems: "center",
-    justifyContent: "center",
-    backgroundColor: Colors.accent,
-  },
-  terminalStateActionText: {
-    color: Colors.bgPrimary,
-    fontSize: 13,
-    fontFamily: Typography.uiFontMedium,
-  },
-  inputShell: {
-    backgroundColor: "transparent",
-  },
-  inputShellDock: {
-    position: "absolute",
-    left: 0,
-    right: 0,
-    bottom: 0,
-    zIndex: 8,
   },
 });
