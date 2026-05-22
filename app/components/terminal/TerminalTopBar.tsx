@@ -2,12 +2,11 @@ import React from "react";
 import {
   ScrollView,
   StyleSheet,
-  TouchableOpacity,
   View,
 } from "react-native";
-import { Ionicons } from "@expo/vector-icons";
 import type { AgentStatus } from "../../constants/tokens";
 import type { TerminalThemeChrome } from "../../constants/terminalThemes";
+import { TerminalTopBarChromeButton } from "./TerminalTopBarChromeButton";
 import { TerminalTabPill } from "./TerminalTabPill";
 
 export interface TerminalTabDescriptor {
@@ -51,13 +50,12 @@ export function TerminalTopBar({
         { backgroundColor },
       ]}
     >
-      <TouchableOpacity
+      <TerminalTopBarChromeButton
+        accessibilityLabel="Back"
+        chrome={chrome}
+        icon="chevron-back"
         onPress={onBack}
-        style={styles.chromeButton}
-        activeOpacity={0.75}
-      >
-        <Ionicons name="chevron-back" size={20} color={chrome.textMuted} />
-      </TouchableOpacity>
+      />
 
       <ScrollView
         ref={tabScrollRef}
@@ -82,13 +80,12 @@ export function TerminalTopBar({
         ))}
       </ScrollView>
 
-      <TouchableOpacity
+      <TerminalTopBarChromeButton
+        accessibilityLabel="New terminal"
+        chrome={chrome}
+        icon="add"
         onPress={onNewTerminal}
-        style={styles.chromeButton}
-        activeOpacity={0.75}
-      >
-        <Ionicons name="add" size={20} color={chrome.textMuted} />
-      </TouchableOpacity>
+      />
     </View>
   );
 }
@@ -100,12 +97,6 @@ const styles = StyleSheet.create({
     paddingHorizontal: 8,
     paddingTop: 2,
     paddingBottom: 4,
-  },
-  chromeButton: {
-    width: 32,
-    height: 32,
-    alignItems: "center",
-    justifyContent: "center",
   },
   tabScroller: {
     flex: 1,
