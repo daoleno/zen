@@ -1,8 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   StyleSheet,
-  View,
-  type ScrollView,
   useColorScheme,
   useWindowDimensions,
 } from "react-native";
@@ -38,11 +36,10 @@ import { useTerminalGitDiff } from "../../components/terminal/useTerminalGitDiff
 import { presentAgent } from "../../services/agentPresentation";
 import {
   buildTerminalFallbackPresentation,
-  buildMenuPosition,
   buildTerminalTabs,
   findLinkedWork,
-  type MenuAnchorLayout,
 } from "./TerminalScreenModel";
+import { useTerminalChromeLayout } from "./useTerminalChromeLayout";
 import { useTerminalFallbackState } from "./useTerminalFallbackState";
 import { useTerminalFocusLifecycle } from "./useTerminalFocusLifecycle";
 import { useTerminalPickerModel } from "./useTerminalPickerModel";
@@ -61,19 +58,25 @@ export default function TerminalScreen() {
   const colorScheme = useColorScheme();
   const { width: windowWidth } = useWindowDimensions();
   const [pickerVisible, setPickerVisible] = useState(false);
-  const [menuVisible, setMenuVisible] = useState(false);
-  const [menuAnchor, setMenuAnchor] = useState<MenuAnchorLayout | null>(null);
   const [renameVisible, setRenameVisible] = useState(false);
   const [renameDraft, setRenameDraft] = useState("");
   const [newTerminalVisible, setNewTerminalVisible] = useState(false);
   const [creatingSession, setCreatingSession] = useState(false);
   const [screenFocused, setScreenFocused] = useState(false);
   const terminalRef = useRef<TerminalSurfaceHandle>(null);
-  const tabScrollRef = useRef<ScrollView>(null);
-  const tabLayoutsRef = useRef<Map<string, { x: number; width: number }>>(
-    new Map(),
-  );
-  const menuAnchorRef = useRef<View | null>(null);
+  const {
+    closeMenu,
+    handleTabLayout,
+    menuAnchorRef,
+    menuPosition,
+    menuVisible,
+    openMenu,
+    tabScrollRef,
+  } = useTerminalChromeLayout({
+    sessionKey,
+    windowWidth,
+    popoverWidth: TERMINAL_ACTION_POPOVER_WIDTH,
+  });
 
   const agentByKey = useMemo(
     () => new Map(state.agents.map((agent) => [agent.key, agent])),
@@ -216,11 +219,6 @@ export default function TerminalScreen() {
   });
 
   useEffect(() => {
-    setMenuVisible(false);
-    setMenuAnchor(null);
-  }, [sessionKey]);
-
-  useEffect(() => {
     setRenameVisible(false);
     setRenameDraft("");
   }, [sessionKey]);
@@ -235,16 +233,6 @@ export default function TerminalScreen() {
     });
   }, [agentAliases, agentByKey, hydratedServerIdSet, sessionKey, terminalTabs]);
 
-  // Auto-scroll to keep the active tab visible
-  useEffect(() => {
-    if (!sessionKey) return;
-    const layout = tabLayoutsRef.current.get(sessionKey);
-    if (layout && tabScrollRef.current) {
-      const scrollTo = Math.max(0, layout.x - 40);
-      tabScrollRef.current.scrollTo({ x: scrollTo, animated: true });
-    }
-  }, [sessionKey]);
-
   const { pickerSections, showPickerServerNames, sortedAgents } =
     useTerminalPickerModel({
       agents: state.agents,
@@ -254,21 +242,6 @@ export default function TerminalScreen() {
       terminalTabs,
       recentAgentOpens,
     });
-
-  const menuPosition = useMemo(
-    () =>
-      buildMenuPosition(
-        menuAnchor,
-        windowWidth,
-        TERMINAL_ACTION_POPOVER_WIDTH,
-      ),
-    [menuAnchor, windowWidth],
-  );
-
-  const closeMenu = useCallback(() => {
-    setMenuVisible(false);
-    setMenuAnchor(null);
-  }, []);
 
   const closePicker = useCallback(() => {
     setPickerVisible(false);
@@ -306,20 +279,6 @@ export default function TerminalScreen() {
     closeMenu();
     setRenameDraft(displayName);
     setRenameVisible(true);
-  };
-
-  const openMenu = () => {
-    const anchor = menuAnchorRef.current;
-    if (!anchor) {
-      setMenuAnchor(null);
-      setMenuVisible(true);
-      return;
-    }
-
-    anchor.measureInWindow((x, y, width, height) => {
-      setMenuAnchor({ x, y, width, height });
-      setMenuVisible(true);
-    });
   };
 
   const {
@@ -369,9 +328,7 @@ export default function TerminalScreen() {
         onOpenTab={openAgentTab}
         onOpenMenu={openMenu}
         onNewTerminal={openNewTerminal}
-        onTabLayout={(tabId, layout) => {
-          tabLayoutsRef.current.set(tabId, layout);
-        }}
+        onTabLayout={handleTabLayout}
       />
 
       <TerminalViewport
