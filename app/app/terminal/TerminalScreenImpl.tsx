@@ -60,6 +60,7 @@ import {
   sortTerminalAgents,
   type MenuAnchorLayout,
 } from "./TerminalScreenModel";
+import { useTerminalFallbackState } from "./useTerminalFallbackState";
 import { useTerminalScreenStorage } from "./useTerminalScreenStorage";
 
 export default function TerminalScreen() {
@@ -80,9 +81,6 @@ export default function TerminalScreen() {
   const [renameDraft, setRenameDraft] = useState("");
   const [newTerminalVisible, setNewTerminalVisible] = useState(false);
   const [creatingSession, setCreatingSession] = useState(false);
-  const [showTerminalFallback, setShowTerminalFallback] = useState(
-    !Boolean(sessionKey && serverId && agentId),
-  );
   const [screenFocused, setScreenFocused] = useState(false);
   const terminalRef = useRef<TerminalSurfaceHandle>(null);
   const tabScrollRef = useRef<ScrollView>(null);
@@ -90,9 +88,6 @@ export default function TerminalScreen() {
     new Map(),
   );
   const menuAnchorRef = useRef<View | null>(null);
-  const reconnectFallbackTimerRef = useRef<ReturnType<
-    typeof setTimeout
-  > | null>(null);
 
   const agentByKey = useMemo(
     () => new Map(state.agents.map((agent) => [agent.key, agent])),
@@ -182,6 +177,11 @@ export default function TerminalScreen() {
     ? codexRenderModes[sessionKey] ?? DefaultCodexRenderMode
     : DefaultCodexRenderMode;
   const showCodexChat = hasTerminalRoute && isCodexAgent && codexRenderMode === "chat";
+  const showTerminalFallback = useTerminalFallbackState({
+    hasTerminalRoute,
+    connectionState,
+    connectionIssue,
+  });
   const canRenderTerminal = hasTerminalRoute && !showTerminalFallback && !showCodexChat;
   const shouldMountTerminalSurface = canRenderTerminal && screenFocused;
   const terminalStateAccent = connectionIssue
@@ -273,41 +273,6 @@ export default function TerminalScreen() {
     setRenameVisible(false);
     setRenameDraft("");
   }, [sessionKey]);
-
-  useEffect(() => {
-    if (reconnectFallbackTimerRef.current) {
-      clearTimeout(reconnectFallbackTimerRef.current);
-      reconnectFallbackTimerRef.current = null;
-    }
-
-    if (!hasTerminalRoute) {
-      setShowTerminalFallback(true);
-      return;
-    }
-
-    if (connectionState === "connected") {
-      setShowTerminalFallback(false);
-      return;
-    }
-
-    if (connectionIssue) {
-      setShowTerminalFallback(true);
-      return;
-    }
-
-    setShowTerminalFallback(false);
-    reconnectFallbackTimerRef.current = setTimeout(() => {
-      setShowTerminalFallback(true);
-      reconnectFallbackTimerRef.current = null;
-    }, 1500);
-
-    return () => {
-      if (reconnectFallbackTimerRef.current) {
-        clearTimeout(reconnectFallbackTimerRef.current);
-        reconnectFallbackTimerRef.current = null;
-      }
-    };
-  }, [connectionIssue, connectionState, hasTerminalRoute]);
 
   const tabs = useMemo(() => {
     return buildTerminalTabs({
