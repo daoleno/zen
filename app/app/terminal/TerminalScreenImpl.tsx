@@ -30,6 +30,7 @@ import { useTerminalSessionActions } from "./useTerminalSessionActions";
 import { useTerminalTabActions } from "./useTerminalTabActions";
 import { useTerminalThemeChrome } from "./useTerminalThemeChrome";
 import { useTerminalViewportModel } from "./useTerminalViewportModel";
+import { useTerminalViewportProps } from "./useTerminalViewportProps";
 
 export default function TerminalScreen() {
   const params = useLocalSearchParams<{ id?: string; serverId?: string }>();
@@ -115,12 +116,7 @@ export default function TerminalScreen() {
     serverConnectionIssues: state.serverConnectionIssues,
     codexRenderModes,
   });
-  const {
-    accessoryVisible,
-    canRenderTerminal,
-    shouldMountTerminalSurface,
-    terminalState,
-  } = useTerminalViewportModel({
+  const viewportModel = useTerminalViewportModel({
     hasTerminalRoute,
     showCodexChat,
     screenFocused,
@@ -145,7 +141,7 @@ export default function TerminalScreen() {
     handleCtrlArmedChange,
     handleAccessoryLayout,
   } = useTerminalAccessoryLayout({
-    accessoryVisible,
+    accessoryVisible: viewportModel.accessoryVisible,
     ctrlResetKey: sessionKey,
     ctrlDisabled: renameVisible,
   });
@@ -242,10 +238,36 @@ export default function TerminalScreen() {
     setServer,
   });
   const {
-    applyCodexRenderMode,
     openNewTerminal,
-    retryServerConnection,
   } = sessionActions;
+  const viewportProps = useTerminalViewportProps({
+    showCodexChat,
+    sessionKey,
+    serverId,
+    agentId,
+    agent,
+    connectionState,
+    connectionIssue,
+    theme: terminalTheme,
+    chrome: chromeColors,
+    themeName,
+    screenFocused,
+    gitDiff,
+    terminalRef,
+    ctrlArmed,
+    onCtrlArmedChange: handleCtrlArmedChange,
+    viewportModel,
+    hasTerminalRoute,
+    isCodexAgent,
+    outputBottomInset,
+    accessoryBottomOffset,
+    serverUrl: server?.url,
+    daemonId: server?.daemonId,
+    keyboardVisible,
+    sessionActions,
+    openGitDiff,
+    onAccessoryLayout: handleAccessoryLayout,
+  });
   const overlayProps = useTerminalScreenOverlayProps({
     pickerVisible,
     pickerSections,
@@ -302,49 +324,7 @@ export default function TerminalScreen() {
         onTabLayout={handleTabLayout}
       />
 
-      <TerminalViewport
-        showCodexChat={showCodexChat}
-        sessionKey={sessionKey}
-        serverId={serverId}
-        agentId={agentId}
-        agent={agent}
-        connectionState={connectionState}
-        connectionIssue={connectionIssue}
-        theme={terminalTheme}
-        chrome={chromeColors}
-        themeName={themeName}
-        screenFocused={screenFocused}
-        gitDiff={gitDiff.chip}
-        terminalRef={terminalRef}
-        ctrlArmed={ctrlArmed}
-        onCtrlArmedChange={handleCtrlArmedChange}
-        canRenderTerminal={canRenderTerminal}
-        shouldMountTerminalSurface={shouldMountTerminalSurface}
-        terminalStateAccent={terminalState.accent}
-        terminalStateBusy={terminalState.busy}
-        terminalStateTitle={terminalState.title}
-        terminalStateDetail={terminalState.detail}
-        terminalStateHint={terminalState.hint}
-        hasTerminalRoute={hasTerminalRoute}
-        isCodexAgent={isCodexAgent}
-        outputBottomInset={outputBottomInset}
-        accessoryVisible={accessoryVisible}
-        accessoryBottomOffset={accessoryBottomOffset}
-        serverUrl={server?.url || ""}
-        daemonId={server?.daemonId || ""}
-        keyboardVisible={keyboardVisible}
-        onSwitchToTerminal={() => {
-          void applyCodexRenderMode("terminal");
-        }}
-        onSwitchToChat={() => {
-          void applyCodexRenderMode("chat");
-        }}
-        onOpenGitDiff={openGitDiff}
-        onRetryConnection={() => {
-          void retryServerConnection();
-        }}
-        onAccessoryLayout={handleAccessoryLayout}
-      />
+      <TerminalViewport {...viewportProps} />
 
       <TerminalScreenOverlays {...overlayProps} />
     </SafeAreaView>

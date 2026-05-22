@@ -29,7 +29,7 @@ interface GitDiffChip {
   onPress(): void;
 }
 
-interface TerminalViewportProps {
+export interface TerminalViewportProps {
   showCodexChat: boolean;
   sessionKey: string | null;
   serverId: string;
