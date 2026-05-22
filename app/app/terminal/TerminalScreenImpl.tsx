@@ -1,15 +1,14 @@
 import React from "react";
 import { useAgents } from "../../store/agents";
 import { useWork } from "../../store/work";
-import { useTerminalAccessoryLayout } from "../../components/terminal/useTerminalAccessoryLayout";
 import { useTerminalGitDiff } from "../../components/terminal/useTerminalGitDiff";
 import { TerminalScreenLayout } from "./TerminalScreenLayout";
 import { useTerminalAgentIndex } from "./useTerminalAgentIndex";
 import { useTerminalDirectoryModel } from "./useTerminalDirectoryModel";
 import { useTerminalRouteModel } from "./useTerminalRouteModel";
 import { useTerminalScreenActions } from "./useTerminalScreenActions";
+import { useTerminalScreenAccessory } from "./useTerminalScreenAccessory";
 import { useTerminalScreenChrome } from "./useTerminalScreenChrome";
-import { useTerminalScreenLifecycle } from "./useTerminalScreenLifecycle";
 import { useTerminalScreenLocalState } from "./useTerminalScreenLocalState";
 import { useTerminalScreenOverlayProps } from "./useTerminalScreenOverlayProps";
 import { useTerminalScreenStorage } from "./useTerminalScreenStorage";
@@ -125,18 +124,13 @@ export default function TerminalScreen() {
     outputBottomInset,
     handleCtrlArmedChange,
     handleAccessoryLayout,
-  } = useTerminalAccessoryLayout({
-    accessoryVisible: viewportModel.accessoryVisible,
-    ctrlResetKey: sessionKey,
-    ctrlDisabled: renameVisible,
-  });
-
-  useTerminalScreenLifecycle({
+  } = useTerminalScreenAccessory({
     serverId,
     agentId,
     sessionKey,
+    accessoryVisible: viewportModel.accessoryVisible,
+    ctrlDisabled: renameVisible,
     setScreenFocused,
-    onCtrlArmedChange: handleCtrlArmedChange,
   });
 
   const {
