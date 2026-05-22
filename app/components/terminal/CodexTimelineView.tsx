@@ -10,13 +10,10 @@ import type {
   TerminalThemeChrome,
   TerminalThemePalette,
 } from "../../constants/terminalThemes";
-import { CodexTimelineEmptyState } from "./CodexTimelineEmptyState";
+import { CodexTimelineContent } from "./CodexTimelineContent";
 import { CodexTimelineJumpButton } from "./CodexTimelineJumpButton";
 import { TimelineTextSelectableContext } from "./TimelineTextSelectableContext";
-import {
-  ZenTimelineItemView,
-  type ZenTimelineItem,
-} from "./CodexTimelineItemView";
+import type { ZenTimelineItem } from "./CodexTimelineItemView";
 import type { PatchFileSummary } from "./CodexTimelineActivityTypes";
 
 interface CodexTimelineViewProps {
@@ -80,49 +77,20 @@ export function CodexTimelineView({
         onScroll={onScroll}
         onContentSizeChange={onContentSizeChange}
       >
-        {loading && items.length === 0 ? (
-          <CodexTimelineEmptyState
-            chrome={chrome}
-            title="Loading Codex transcript"
-            busy
-          />
-        ) : error && items.length === 0 ? (
-          <CodexTimelineEmptyState
-            chrome={chrome}
-            title="Transcript unavailable"
-            body={error}
-          />
-        ) : unavailable ? (
-          <CodexTimelineEmptyState
-            chrome={chrome}
-            title="Native transcript unavailable"
-            body={unavailableReason}
-            actionLabel="Terminal"
-            onAction={onUnavailableAction}
-          />
-        ) : items.length === 0 ? (
-          <CodexTimelineEmptyState
-            chrome={chrome}
-            title="Waiting for Codex transcript"
-          />
-        ) : (
-          items.map((item) => (
-            <ZenTimelineItemView
-              key={item.id}
-              item={item}
-              chrome={chrome}
-              theme={theme}
-              stream={
-                item.type === "message" &&
-                item.role === "assistant" &&
-                item.id === streamingAssistantId
-              }
-              loadAssetPreview={loadAssetPreview}
-              formatPatchPath={formatPatchPath}
-              truncateBody={truncateBody}
-            />
-          ))
-        )}
+        <CodexTimelineContent
+          items={items}
+          loading={loading}
+          error={error}
+          unavailable={unavailable}
+          unavailableReason={unavailableReason}
+          streamingAssistantId={streamingAssistantId}
+          chrome={chrome}
+          theme={theme}
+          onUnavailableAction={onUnavailableAction}
+          loadAssetPreview={loadAssetPreview}
+          formatPatchPath={formatPatchPath}
+          truncateBody={truncateBody}
+        />
       </ScrollView>
 
       {showJumpToLatest ? (
