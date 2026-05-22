@@ -11,29 +11,22 @@ import {
   Alert,
   Image,
   Keyboard,
-  Linking,
   Platform,
   ScrollView,
   StyleSheet,
   Text,
-  TextInput,
   TouchableOpacity,
   View,
   type LayoutChangeEvent,
   type NativeScrollEvent,
   type NativeSyntheticEvent,
+  type TextInput,
 } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 import * as Clipboard from "expo-clipboard";
 import { KeyboardAvoidingView } from "react-native-keyboard-controller";
-import {
-  EnrichedMarkdownText,
-  type LinkPressEvent,
-  type MarkdownStyle,
-} from "react-native-enriched-markdown";
-import remend, { type RemendOptions } from "remend";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
-import { Typography, type AgentStatus, statusColor } from "../../constants/tokens";
+import { Typography, type AgentStatus } from "../../constants/tokens";
 import type {
   TerminalThemeChrome,
   TerminalThemePalette,
@@ -42,7 +35,6 @@ import type { Agent, ConnectionState } from "../../store/agents";
 import type {
   CodexConversation,
   CodexConversationEvent,
-  CodexPlanStep,
 } from "../../services/codexConversation";
 import type { ConnectionIssue } from "../../services/connectionIssue";
 import {
@@ -50,11 +42,31 @@ import {
   type UploadedAttachment,
 } from "../../services/uploads";
 import { wsClient, type CodexSlashCommand } from "../../services/websocket";
+import { CodexChatHeader } from "./CodexChatHeader";
+import { CodexComposerAttachmentRail } from "./CodexComposerAttachmentRail";
+import { CodexComposerPanel } from "./CodexComposerPanel";
 import {
-  ChatHeaderIconButton,
-  ComposerIconButton,
-  ComposerSendButton,
-} from "./CodexChatControls";
+  MessageBody,
+  TimelineTextSelectableContext,
+} from "./CodexMessageBody";
+import { CodexQuickCommandMenu } from "./CodexQuickCommandMenu";
+import {
+  ZenActivityEvent,
+  ZenPlanUpdate,
+  type PatchFileSummary,
+  type PatchOperation,
+  type ZenActivityTimelineItem,
+  type ZenPlanTimelineItem,
+} from "./CodexTimelineActivity";
+import {
+  ZenAssistantMessage,
+  ZenUserMessage,
+  type DisplayAttachment,
+} from "./CodexTimelineMessage";
+import {
+  slashCommandIcon,
+  slashCommandTitle,
+} from "./codexSlashCommandPresentation";
 
 interface CodexChatSurfaceProps {
   serverId: string;
@@ -147,16 +159,10 @@ const COMMENTARY_PREVIEW_LINES = 3;
 const COMMENTARY_PREVIEW_CHARS = 260;
 const MAX_COMPOSER_ATTACHMENTS = 8;
 const FULL_OUTPUT_HINT = "Open Terminal for full output.";
-const USE_NATIVE_MARKDOWN_BODY = true;
 const TERMINAL_ROUTE_BAR_HEIGHT = 38;
 const SCROLL_TO_BOTTOM_LAYOUT_DELAY_MS = 30;
 const COMPOSER_FOCUS_LOCK_MS = 1000;
 const COMPOSER_REFOCUS_DELAYS_MS = [0, 60, 140, 280, 520, 820] as const;
-const STREAMING_REMEND_OPTIONS: RemendOptions = {
-  images: true,
-  inlineKatex: false,
-  linkMode: "text-only",
-};
 
 type IoniconName = React.ComponentProps<typeof Ionicons>["name"];
 
@@ -218,16 +224,6 @@ type ExplorationEntry = {
   output: OutputPreview;
 };
 
-type PatchOperation = "add" | "delete" | "update";
-
-type PatchFileSummary = {
-  path: string;
-  movePath?: string;
-  operation: PatchOperation;
-  added: number;
-  removed: number;
-};
-
 type PatchSummary = {
   title: string;
   files: PatchFileSummary[];
@@ -265,7 +261,6 @@ const draftCache = new Map<string, string>();
 const attachmentCache = new Map<string, ComposerAttachment[]>();
 const slashCommandCache = new Map<string, CodexSlashCommand[]>();
 const chatCommandEventCache = new Map<string, ChatCommandEvent[]>();
-const TimelineTextSelectableContext = React.createContext(true);
 
 type LocalSlashCommandCapability = Pick<
   CodexSlashCommand,
@@ -277,11 +272,6 @@ type LocalSlashCommandCapability = Pick<
   | "chat_supported"
   | "terminal_supported"
 >;
-
-type DisplayAttachment = {
-  name: string;
-  path: string;
-};
 
 type ZenTimelineItem =
   | {
@@ -300,64 +290,8 @@ type ZenTimelineItem =
       body: string;
       attachments: DisplayAttachment[];
     }
-  | {
-      type: "activity";
-      id: string;
-      timestamp?: string;
-      title: string;
-      tone: "neutral" | "running" | "success" | "failed";
-      icon: IoniconName;
-      detail?: string;
-      body?: string;
-      files?: string[];
-      fileSummaries?: PatchFileSummary[];
-      previewPath?: string;
-    }
-  | {
-      type: "plan";
-      id: string;
-      timestamp?: string;
-      explanation?: string;
-      steps: CodexPlanStep[];
-    };
-
-type MarkdownErrorBoundaryProps = {
-  fallback: React.ReactNode;
-  children: React.ReactNode;
-  resetKey: string;
-};
-
-type MarkdownErrorBoundaryState = {
-  failed: boolean;
-};
-
-class MarkdownErrorBoundary extends React.Component<
-  MarkdownErrorBoundaryProps,
-  MarkdownErrorBoundaryState
-> {
-  state: MarkdownErrorBoundaryState = { failed: false };
-
-  static getDerivedStateFromError() {
-    return { failed: true };
-  }
-
-  componentDidUpdate(previousProps: MarkdownErrorBoundaryProps) {
-    if (previousProps.resetKey !== this.props.resetKey && this.state.failed) {
-      this.setState({ failed: false });
-    }
-  }
-
-  componentDidCatch(error: unknown) {
-    console.warn("[codex] native markdown renderer failed", error);
-  }
-
-  render() {
-    if (this.state.failed) {
-      return this.props.fallback;
-    }
-    return this.props.children;
-  }
-}
+  | ZenActivityTimelineItem
+  | ZenPlanTimelineItem;
 
 function usePinnedTimeline(itemCount: number) {
   const scrollRef = useRef<ScrollView>(null);
@@ -1342,49 +1276,14 @@ export function CodexChatSurface({
     <View
       style={[styles.root, { backgroundColor: theme.background }]}
     >
-      <View
-        style={[
-          styles.header,
-          {
-            borderBottomColor: chrome.border,
-            backgroundColor: theme.background,
-          },
-        ]}
-      >
-        <View style={styles.headerTitleGroup}>
-          <View style={styles.headerTitleRow}>
-            <Text style={[styles.headerTitle, { color: chrome.text }]} numberOfLines={1}>
-              Codex
-            </Text>
-            <View
-              style={[
-                styles.statusDot,
-                { backgroundColor: statusColor((agent?.status || "unknown") as AgentStatus) },
-              ]}
-            />
-          </View>
-          <Text style={[styles.headerMeta, { color: chrome.textSubtle }]} numberOfLines={1}>
-            {statusMeta}
-          </Text>
-        </View>
-
-        {gitDiff ? (
-          <ChatHeaderIconButton
-            icon={gitDiff.tone === "loading" ? "sync-outline" : "git-branch-outline"}
-            accessibilityLabel="Git diff"
-            chrome={chrome}
-            color={gitDiff.tone === "dirty" ? chrome.accent : chrome.textMuted}
-            onPress={gitDiff.onPress}
-          />
-        ) : null}
-
-        <ChatHeaderIconButton
-          icon="terminal-outline"
-          accessibilityLabel="Open terminal renderer"
-          chrome={chrome}
-          onPress={onSwitchToTerminal}
-        />
-      </View>
+      <CodexChatHeader
+        status={(agent?.status || "unknown") as AgentStatus}
+        statusMeta={statusMeta}
+        theme={theme}
+        chrome={chrome}
+        gitDiff={gitDiff}
+        onSwitchToTerminal={onSwitchToTerminal}
+      />
 
       <KeyboardAvoidingView
         behavior="padding"
@@ -1470,240 +1369,47 @@ export function CodexChatSurface({
           ]}
         >
         {showCommandMenu ? (
-          <View
-            style={[
-              styles.quickCommandMenu,
-              { backgroundColor: chrome.surface, borderColor: chrome.border },
-            ]}
-          >
-            {visibleSlashCommands.length > 0 ? (
-              <ScrollView
-                style={styles.quickCommandScroller}
-                keyboardShouldPersistTaps="handled"
-                showsVerticalScrollIndicator={visibleSlashCommands.length > 5}
-              >
-                {visibleSlashCommands.map((command) => {
-                  const selected = commandQuery === command.value;
-                  const icon = slashCommandIcon(command.name);
-                  return (
-                    <TouchableOpacity
-                      key={command.value}
-                      accessibilityLabel={`${slashCommandRouteLabel(command)} ${command.value}`}
-                      style={[
-                        styles.quickCommandRow,
-                        selected && { backgroundColor: chrome.surfaceMuted },
-                      ]}
-                      onPress={() => pickSlashCommand(command)}
-                      activeOpacity={0.78}
-                    >
-                      <View
-                        style={[
-                          styles.quickCommandIcon,
-                          { backgroundColor: chrome.surfaceMuted },
-                        ]}
-                      >
-                        <Ionicons name={icon} size={15} color={chrome.accent} />
-                      </View>
-                      <View style={styles.quickCommandCopy}>
-                        <Text
-                          style={[styles.quickCommandTitle, { color: chrome.text }]}
-                          numberOfLines={1}
-                        >
-                          {command.title || slashCommandTitle(command.name)}
-                        </Text>
-                        <Text
-                          style={[
-                            styles.quickCommandDescription,
-                            { color: chrome.textSubtle },
-                          ]}
-                          numberOfLines={1}
-                        >
-                          {command.description}
-                        </Text>
-                      </View>
-                      <View
-                        style={[
-                          styles.quickCommandBadge,
-                          { borderColor: slashCommandRouteColor(command, chrome, theme) },
-                        ]}
-                      >
-                        <Text
-                          style={[
-                            styles.quickCommandBadgeText,
-                            { color: slashCommandRouteColor(command, chrome, theme) },
-                          ]}
-                          numberOfLines={1}
-                        >
-                          {slashCommandRouteLabel(command)}
-                        </Text>
-                      </View>
-                      <Text
-                        style={[styles.quickCommandValue, { color: chrome.textMuted }]}
-                        numberOfLines={1}
-                      >
-                        {command.value}
-                      </Text>
-                      <Ionicons
-                        name="chevron-forward"
-                        size={14}
-                        color={chrome.textSubtle}
-                      />
-                    </TouchableOpacity>
-                  );
-                })}
-              </ScrollView>
-            ) : (
-              <View style={styles.quickCommandEmpty}>
-                <Ionicons name="search-outline" size={15} color={chrome.textSubtle} />
-                <Text style={[styles.quickCommandDescription, { color: chrome.textSubtle }]}>
-                  No matching command
-                </Text>
-              </View>
-            )}
-          </View>
-        ) : null}
-
-        {attachments.length > 0 || uploading ? (
-          <View style={styles.attachmentRail}>
-            <ScrollView
-              horizontal
-              showsHorizontalScrollIndicator={false}
-              keyboardShouldPersistTaps="handled"
-              contentContainerStyle={styles.attachmentList}
-            >
-              {attachments.map((attachment) => (
-                <View
-                  key={attachment.id}
-                  style={[
-                    styles.attachmentChip,
-                    { backgroundColor: chrome.surfaceMuted, borderColor: chrome.border },
-                  ]}
-                >
-                  <Ionicons
-                    name={
-                      looksLikeImagePath(attachment.name)
-                        ? "image-outline"
-                        : "document-attach-outline"
-                    }
-                    size={14}
-                    color={chrome.textMuted}
-                  />
-                  <View style={styles.attachmentTextGroup}>
-                    <Text
-                      style={[styles.attachmentName, { color: chrome.text }]}
-                      numberOfLines={1}
-                    >
-                      {attachment.name}
-                    </Text>
-                    <Text
-                      style={[styles.attachmentPath, { color: chrome.textSubtle }]}
-                      numberOfLines={1}
-                    >
-                      {basename(attachment.path)}
-                    </Text>
-                  </View>
-                  <TouchableOpacity
-                    accessibilityLabel={`Remove ${attachment.name}`}
-                    style={styles.attachmentRemove}
-                    onPress={() => removeAttachment(attachment.id)}
-                    activeOpacity={0.72}
-                  >
-                    <Ionicons name="close" size={13} color={chrome.textSubtle} />
-                  </TouchableOpacity>
-                </View>
-              ))}
-              {uploading ? (
-                <View
-                  style={[
-                    styles.attachmentChip,
-                    styles.attachmentUploading,
-                    { backgroundColor: chrome.surfaceMuted, borderColor: chrome.border },
-                  ]}
-                >
-                  <ActivityIndicator size="small" color={chrome.accent} />
-                  <Text style={[styles.attachmentName, { color: chrome.textMuted }]}>
-                    Uploading
-                  </Text>
-                </View>
-              ) : null}
-            </ScrollView>
-          </View>
-        ) : null}
-
-        <View
-          collapsable={false}
-          style={[
-            styles.composerPanel,
-            composerActive ? styles.composerPanelFloating : null,
-            {
-              backgroundColor: composerFocused ? chrome.surfaceActive : chrome.surface,
-              borderColor: composerFocused ? chrome.borderStrong : chrome.border,
-            },
-          ]}
-        >
-          <ComposerIconButton
-            accessibilityLabel="Upload file"
-            icon="add"
-            chrome={chrome}
-            loading={uploading}
-            disabled={!canAttach}
-            iconColor={canAttach ? chrome.text : chrome.textSubtle}
-            onPress={() => void handleUploadAttachment()}
-          />
-
-          <View
-            collapsable={false}
-            onStartShouldSetResponderCapture={handleComposerInputStart}
-            style={styles.composerInputWrap}
-          >
-            <TextInput
-              ref={inputRef}
-              style={[
-                styles.composerInput,
-                {
-                  color: chrome.text,
-                },
-              ]}
-              value={draft}
-              onChangeText={setDraft}
-              placeholder={composerPlaceholder}
-              placeholderTextColor={chrome.textSubtle}
-              selectionColor={chrome.accent}
-              multiline
-              editable={connectionState === "connected"}
-              textAlignVertical="top"
-              autoCorrect={false}
-              autoCapitalize="none"
-              autoComplete="off"
-              spellCheck={false}
-              keyboardType={Platform.OS === "android" ? "visible-password" : "default"}
-              disableFullscreenUI
-              importantForAutofill="no"
-              selectTextOnFocus={false}
-              underlineColorAndroid="transparent"
-              showSoftInputOnFocus
-              returnKeyType="send"
-              enterKeyHint="send"
-              submitBehavior="submit"
-              blurOnSubmit={false}
-              onPressIn={focusComposer}
-              onSubmitEditing={sendDraft}
-              onFocus={handleComposerFocus}
-              onBlur={handleComposerBlur}
-            />
-          </View>
-
-          <ComposerSendButton
-            accessibilityLabel={sendActionLabel}
-            icon={sendActionIcon}
+          <CodexQuickCommandMenu
+            commands={visibleSlashCommands}
+            commandQuery={commandQuery}
             chrome={chrome}
             theme={theme}
-            enabled={sendActionEnabled}
-            loading={sending}
-            compact={showStopButton}
-            onPress={showStopButton ? interruptCodex : sendDraft}
+            onSelectCommand={pickSlashCommand}
           />
-        </View>
+        ) : null}
+
+        <CodexComposerAttachmentRail
+          attachments={attachments}
+          uploading={uploading}
+          chrome={chrome}
+          onRemoveAttachment={removeAttachment}
+        />
+
+        <CodexComposerPanel
+          inputRef={inputRef}
+          draft={draft}
+          placeholder={composerPlaceholder}
+          editable={connectionState === "connected"}
+          focused={composerFocused}
+          floating={composerActive}
+          canAttach={canAttach}
+          uploading={uploading}
+          sendEnabled={sendActionEnabled}
+          sending={sending}
+          sendIcon={sendActionIcon}
+          sendLabel={sendActionLabel}
+          compactSendIcon={showStopButton}
+          chrome={chrome}
+          theme={theme}
+          onDraftChange={setDraft}
+          onUploadPress={() => void handleUploadAttachment()}
+          onInputPress={focusComposer}
+          onInputFocus={handleComposerFocus}
+          onInputBlur={handleComposerBlur}
+          onInputStart={handleComposerInputStart}
+          onSubmit={sendDraft}
+          onSendPress={showStopButton ? interruptCodex : sendDraft}
+        />
         </View>
       </KeyboardAvoidingView>
     </View>
@@ -2119,163 +1825,6 @@ function filterSlashCommands(commands: CodexSlashCommand[], commandQuery: string
     .map((entry) => entry.command);
 }
 
-function slashCommandTitle(name: string) {
-  return name
-    .split("-")
-    .filter(Boolean)
-    .map((part) => {
-      const lower = part.toLowerCase();
-      if (lower === "ide" || lower === "mcp") {
-        return lower.toUpperCase();
-      }
-      return `${part.slice(0, 1).toUpperCase()}${part.slice(1)}`;
-    })
-    .join(" ");
-}
-
-function slashCommandIcon(name: string): IoniconName {
-  switch (name) {
-    case "model":
-      return "hardware-chip-outline";
-    case "fast":
-      return "flash-outline";
-    case "ide":
-      return "code-slash-outline";
-    case "permissions":
-    case "approve":
-    case "test-approval":
-      return "shield-checkmark-outline";
-    case "keymap":
-      return "keypad-outline";
-    case "setup-default-sandbox":
-    case "sandbox-add-read-dir":
-      return "lock-open-outline";
-    case "vim":
-      return "create-outline";
-    case "experimental":
-      return "flask-outline";
-    case "memories":
-      return "library-outline";
-    case "skills":
-      return "sparkles-outline";
-    case "hooks":
-      return "link-outline";
-    case "review":
-      return "search-outline";
-    case "rename":
-    case "title":
-      return "text-outline";
-    case "new":
-      return "add-circle-outline";
-    case "resume":
-      return "play-forward-outline";
-    case "fork":
-    case "side":
-      return "git-branch-outline";
-    case "init":
-      return "document-text-outline";
-    case "compact":
-      return "contract-outline";
-    case "plan":
-      return "list-outline";
-    case "goal":
-      return "flag-outline";
-    case "copy":
-      return "copy-outline";
-    case "raw":
-      return "reorder-four-outline";
-    case "diff":
-      return "git-compare-outline";
-    case "mention":
-      return "at-outline";
-    case "status":
-      return "pulse-outline";
-    case "debug-config":
-    case "debug-m-drop":
-    case "debug-m-update":
-      return "bug-outline";
-    case "statusline":
-      return "reader-outline";
-    case "theme":
-      return "color-palette-outline";
-    case "pets":
-      return "happy-outline";
-    case "mcp":
-      return "server-outline";
-    case "apps":
-    case "plugins":
-      return "extension-puzzle-outline";
-    case "logout":
-    case "quit":
-    case "exit":
-      return "exit-outline";
-    case "feedback":
-      return "chatbox-ellipses-outline";
-    case "rollout":
-      return "map-outline";
-    case "ps":
-      return "layers-outline";
-    case "stop":
-      return "stop-circle-outline";
-    case "clear":
-      return "trash-outline";
-    case "personality":
-      return "person-circle-outline";
-    case "realtime":
-    case "settings":
-      return "mic-outline";
-    case "agent":
-    case "subagents":
-      return "people-outline";
-    case "btw":
-      return "chatbubble-ellipses-outline";
-    default:
-      return "terminal-outline";
-  }
-}
-
-function slashCommandRouteLabel(command: CodexSlashCommand) {
-  if (command.execution === "unsupported" || !command.terminal_supported && !command.chat_supported) {
-    return "Unsupported";
-  }
-  if (command.execution === "chat-native" || command.execution === "timeline-output") {
-    if (command.output.kind === "diff") {
-      return "Diff";
-    }
-    if (command.output.kind === "status-card") {
-      return "Status";
-    }
-    return "Chat";
-  }
-  if (command.interactive || command.input.kind === "picker" || command.input.kind === "form") {
-    return "Interactive";
-  }
-  if (command.execution === "insert-only") {
-    return "Insert";
-  }
-  return "Terminal";
-}
-
-function slashCommandRouteColor(
-  command: CodexSlashCommand,
-  chrome: TerminalThemeChrome,
-  theme: TerminalThemePalette,
-) {
-  if (command.execution === "unsupported" || !command.terminal_supported && !command.chat_supported) {
-    return theme.red;
-  }
-  if (command.execution === "chat-native" || command.execution === "timeline-output") {
-    return theme.green;
-  }
-  if (command.interactive || command.input.kind === "picker" || command.input.kind === "form") {
-    return theme.yellow;
-  }
-  if (command.execution === "insert-only") {
-    return theme.cyan;
-  }
-  return chrome.textSubtle;
-}
-
 function ZenTimelineItemView({
   serverId,
   cwd,
@@ -2309,429 +1858,19 @@ function ZenTimelineItemView({
   }
   return (
     <ZenActivityEvent
-      serverId={serverId}
-      cwd={cwd}
       item={item}
       chrome={chrome}
       theme={theme}
+      loadAssetPreview={async (path) => {
+        if (!serverId) {
+          return null;
+        }
+        const asset = await wsClient.getCodexAsset(serverId, { path, cwd });
+        return asset.data_url || null;
+      }}
+      formatPatchPath={patchDisplayPath}
+      truncateBody={truncateRunes}
     />
-  );
-}
-
-function ZenUserMessage({
-  item,
-  chrome,
-  theme,
-}: {
-  item: Extract<ZenTimelineItem, { type: "message" }> & { role: "user" };
-  chrome: TerminalThemeChrome;
-  theme: TerminalThemePalette;
-}) {
-  const hasBody = item.body.trim().length > 0;
-  return (
-    <View style={styles.zenUserRow}>
-      <View style={[styles.zenUserBubble, { backgroundColor: chrome.surfaceMuted }]}>
-        {hasBody ? (
-          <MessageBody value={item.body} chrome={chrome} theme={theme} compact />
-        ) : null}
-        {item.attachments.length > 0 ? (
-          <AttachmentPreviewList
-            attachments={item.attachments}
-            chrome={chrome}
-            compact={hasBody}
-          />
-        ) : null}
-      </View>
-    </View>
-  );
-}
-
-function ZenAssistantMessage({
-  item,
-  chrome,
-  theme,
-  stream,
-}: {
-  item: Extract<ZenTimelineItem, { type: "message" }> & { role: "assistant" };
-  chrome: TerminalThemeChrome;
-  theme: TerminalThemePalette;
-  stream: boolean;
-}) {
-  return (
-    <View style={styles.zenAssistantRow}>
-      <StreamingMessageBody
-        value={item.body}
-        chrome={chrome}
-        theme={theme}
-        stream={stream}
-      />
-    </View>
-  );
-}
-
-function StreamingMessageBody({
-  value,
-  chrome,
-  theme,
-  stream,
-}: {
-  value: string;
-  chrome: TerminalThemeChrome;
-  theme: TerminalThemePalette;
-  stream: boolean;
-}) {
-  const [visibleChars, setVisibleChars] = useState(stream ? 0 : value.length);
-
-  useEffect(() => {
-    if (!stream) {
-      setVisibleChars(value.length);
-      return;
-    }
-    setVisibleChars((current) => Math.min(current, value.length));
-  }, [stream, value.length]);
-
-  useEffect(() => {
-    if (!stream || visibleChars >= value.length) {
-      return;
-    }
-    const timer = setTimeout(() => {
-      setVisibleChars((current) => Math.min(value.length, current + 18));
-    }, 24);
-    return () => clearTimeout(timer);
-  }, [stream, value.length, visibleChars]);
-
-  const renderedValue = stream ? value.slice(0, visibleChars) : value;
-  return (
-    <View style={styles.zenAssistantContent}>
-      <CodexMarkdownBody
-        value={renderedValue}
-        chrome={chrome}
-        theme={theme}
-        streaming={stream && visibleChars < value.length}
-      />
-      {stream && visibleChars < value.length ? (
-        <View style={[styles.zenStreamCursor, { backgroundColor: chrome.accent }]} />
-      ) : null}
-    </View>
-  );
-}
-
-function CodexMarkdownBody({
-  value,
-  chrome,
-  theme,
-  compact = false,
-  streaming = false,
-}: {
-  value: string;
-  chrome: TerminalThemeChrome;
-  theme: TerminalThemePalette;
-  compact?: boolean;
-  streaming?: boolean;
-}) {
-  const textSelectable = useContext(TimelineTextSelectableContext);
-  const markdown = useMemo(() => prepareCodexMarkdown(value, streaming), [streaming, value]);
-  const markdownStyle = useMemo(
-    () => codexMarkdownStyle(chrome, theme, compact),
-    [chrome, compact, theme],
-  );
-  const fallback = (
-    <MessageBody value={markdown || value} chrome={chrome} theme={theme} compact={compact} />
-  );
-  const handleLinkPress = useCallback((event: LinkPressEvent) => {
-    const url = event.url.trim();
-    if (!isSafeMarkdownUrl(url)) {
-      return;
-    }
-    void Linking.openURL(url).catch(() => undefined);
-  }, []);
-
-  if (!USE_NATIVE_MARKDOWN_BODY || !markdown) {
-    return fallback;
-  }
-
-  return (
-    <MarkdownErrorBoundary fallback={fallback} resetKey={markdown}>
-      <EnrichedMarkdownText
-        markdown={markdown}
-        markdownStyle={markdownStyle}
-        containerStyle={styles.messageBody}
-        flavor="github"
-        selectable={textSelectable}
-        allowFontScaling={false}
-        allowTrailingMargin={false}
-        enableLinkPreview={false}
-        md4cFlags={{ latexMath: false, underline: false }}
-        onLinkPress={handleLinkPress}
-        streamingAnimation={streaming}
-        spoilerOverlay="solid"
-      />
-    </MarkdownErrorBoundary>
-  );
-}
-
-function ZenPlanUpdate({
-  item,
-  chrome,
-  theme,
-}: {
-  item: Extract<ZenTimelineItem, { type: "plan" }>;
-  chrome: TerminalThemeChrome;
-  theme: TerminalThemePalette;
-}) {
-  return (
-    <View style={styles.zenActivityWrap}>
-      <View style={styles.zenActivityRow}>
-        <Ionicons name="checkbox-outline" size={13} color={theme.cyan} />
-        <Text style={[styles.zenActivityTitle, { color: chrome.textSubtle }]} numberOfLines={1}>
-          Updated Plan
-        </Text>
-      </View>
-      <View style={[styles.zenActivityExpanded, styles.zenPlanBlock, { borderColor: chrome.border }]}>
-        {item.explanation?.trim() ? (
-          <Text style={[styles.zenPlanExplanation, { color: chrome.textSubtle }]}>
-            {item.explanation.trim()}
-          </Text>
-        ) : null}
-        {item.steps.length > 0 ? (
-          <View style={styles.zenPlanSteps}>
-            {item.steps.map((step, index) => (
-              <ZenPlanStepRow
-                key={`${index}:${step.step}`}
-                step={step}
-                chrome={chrome}
-                theme={theme}
-              />
-            ))}
-          </View>
-        ) : (
-          <Text style={[styles.zenPlanEmpty, { color: chrome.textSubtle }]}>
-            (no steps provided)
-          </Text>
-        )}
-      </View>
-    </View>
-  );
-}
-
-function ZenPlanStepRow({
-  step,
-  chrome,
-  theme,
-}: {
-  step: CodexPlanStep;
-  chrome: TerminalThemeChrome;
-  theme: TerminalThemePalette;
-}) {
-  const completed = step.status === "completed";
-  const inProgress = step.status === "in_progress";
-  const marker = completed ? "✔" : "□";
-  const color = completed ? chrome.textSubtle : inProgress ? theme.cyan : chrome.textMuted;
-  return (
-    <View style={styles.zenPlanStepRow}>
-      <Text style={[styles.zenPlanMarker, { color }]}>{marker}</Text>
-      <Text
-        style={[
-          styles.zenPlanStepText,
-          completed ? styles.zenPlanStepCompleted : null,
-          inProgress ? styles.zenPlanStepActive : null,
-          { color },
-        ]}
-      >
-        {step.step}
-      </Text>
-    </View>
-  );
-}
-
-function ZenActivityEvent({
-  serverId,
-  cwd,
-  item,
-  chrome,
-  theme,
-}: {
-  serverId: string;
-  cwd?: string;
-  item: Extract<ZenTimelineItem, { type: "activity" }>;
-  chrome: TerminalThemeChrome;
-  theme: TerminalThemePalette;
-}) {
-  const [expanded, setExpanded] = useState(() => shouldAutoExpandActivity(item));
-  const [assetPreviewUri, setAssetPreviewUri] = useState<string | null>(null);
-  const [assetPreviewFailed, setAssetPreviewFailed] = useState(false);
-  const textSelectable = useContext(TimelineTextSelectableContext);
-  const toneColor =
-    item.tone === "failed"
-      ? theme.red
-      : item.tone === "running"
-        ? theme.yellow
-        : item.tone === "success"
-          ? theme.green
-          : chrome.textSubtle;
-
-  useEffect(() => {
-    let cancelled = false;
-    setAssetPreviewUri(null);
-    setAssetPreviewFailed(false);
-    if (!item.previewPath || !serverId) {
-      return () => {
-        cancelled = true;
-      };
-    }
-    void wsClient
-      .getCodexAsset(serverId, { path: item.previewPath, cwd })
-      .then((asset) => {
-        if (!cancelled && asset.data_url) {
-          setAssetPreviewUri(asset.data_url);
-        }
-      })
-      .catch(() => {
-        if (!cancelled) {
-          setAssetPreviewFailed(true);
-        }
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [cwd, item.previewPath, serverId]);
-
-  const canExpand = Boolean(
-    item.body || item.fileSummaries?.length || item.files?.length || item.previewPath,
-  );
-  return (
-    <View style={styles.zenActivityWrap}>
-      <TouchableOpacity
-        accessibilityLabel={item.title}
-        style={styles.zenActivityRow}
-        onPress={() => {
-          if (canExpand) {
-            setExpanded((value) => !value);
-          }
-        }}
-        disabled={!canExpand}
-        activeOpacity={0.76}
-      >
-        {item.tone === "running" ? (
-          <ActivityIndicator size="small" color={toneColor} />
-        ) : (
-          <Ionicons name={item.icon} size={13} color={toneColor} />
-        )}
-        <Text style={[styles.zenActivityTitle, { color: chrome.textSubtle }]} numberOfLines={1}>
-          {item.title}
-        </Text>
-        {item.detail ? (
-          <Text style={[styles.zenActivityDetail, { color: chrome.textSubtle }]} numberOfLines={1}>
-            {item.detail}
-          </Text>
-        ) : null}
-        {canExpand ? (
-          <Ionicons
-            name={expanded ? "chevron-up" : "chevron-down"}
-            size={12}
-            color={chrome.textSubtle}
-          />
-        ) : null}
-      </TouchableOpacity>
-
-      {expanded ? (
-        <View style={[styles.zenActivityExpanded, { borderColor: chrome.border }]}>
-          {item.previewPath ? (
-            assetPreviewUri ? (
-              <Image
-                source={{ uri: assetPreviewUri }}
-                style={[styles.zenActivityImage, { borderColor: chrome.border }]}
-                resizeMode="cover"
-              />
-            ) : (
-              <View style={[styles.zenActivityImagePlaceholder, { borderColor: chrome.border }]}>
-                {assetPreviewFailed ? (
-                  <Ionicons name="image-outline" size={16} color={chrome.textSubtle} />
-                ) : (
-                  <ActivityIndicator size="small" color={chrome.textSubtle} />
-                )}
-              </View>
-            )
-          ) : null}
-          {item.fileSummaries?.length ? (
-            <View style={styles.zenDiffFiles}>
-              {item.fileSummaries.slice(0, 6).map((file) => (
-                <View key={`${file.operation}:${file.path}`} style={styles.zenDiffFileRow}>
-                  <Text style={[styles.zenDiffPrefix, { color: chrome.textSubtle }]}>
-                    └
-                  </Text>
-                  <Text
-                    style={[styles.zenDiffPath, { color: chrome.textMuted }]}
-                    numberOfLines={1}
-                  >
-                    {patchDisplayPath(file)}
-                  </Text>
-                  <Text style={[styles.zenDiffAdded, { color: theme.green }]}>
-                    +{file.added}
-                  </Text>
-                  <Text style={[styles.zenDiffRemoved, { color: theme.red }]}>
-                    -{file.removed}
-                  </Text>
-                </View>
-              ))}
-            </View>
-          ) : item.files?.length ? (
-            <View style={styles.zenActivityFiles}>
-              {item.files.slice(0, 4).map((file) => (
-                <Text
-                  key={file}
-                  style={[styles.zenActivityFileText, { color: chrome.textMuted }]}
-                  numberOfLines={1}
-                >
-                  {file}
-                </Text>
-              ))}
-            </View>
-          ) : null}
-          {item.body ? (
-            <Text
-              selectable={textSelectable}
-              style={[styles.zenActivityBody, { color: chrome.textSubtle }]}
-            >
-              {truncateRunes(item.body, 1800)}
-            </Text>
-          ) : null}
-        </View>
-      ) : null}
-    </View>
-  );
-}
-
-function AttachmentPreviewList({
-  attachments,
-  chrome,
-  compact,
-}: {
-  attachments: DisplayAttachment[];
-  chrome: TerminalThemeChrome;
-  compact?: boolean;
-}) {
-  return (
-    <View style={[styles.zenMessageAttachments, compact ? styles.zenMessageAttachmentsCompact : null]}>
-      {attachments.map((attachment) => (
-        <View
-          key={`${attachment.name}:${attachment.path}`}
-          style={[styles.zenAttachmentPill, { borderColor: chrome.border }]}
-        >
-          <Ionicons
-            name={looksLikeImagePath(attachment.name) ? "image-outline" : "document-attach-outline"}
-            size={13}
-            color={chrome.textSubtle}
-          />
-          <Text
-            style={[styles.zenAttachmentPillText, { color: chrome.textMuted }]}
-            numberOfLines={1}
-          >
-            {attachment.name || basename(attachment.path)}
-          </Text>
-        </View>
-      ))}
-    </View>
   );
 }
 
@@ -2994,22 +2133,6 @@ function summarizeExploration(entries: ExplorationEntry[]) {
     return hidden > 0 ? `${summary} +${hidden}` : summary;
   }
   return `${entries.length} lookup${entries.length === 1 ? "" : "s"}`;
-}
-
-function shouldAutoExpandActivity(item: Extract<ZenTimelineItem, { type: "activity" }>) {
-  if (
-    item.tone === "running" ||
-    item.tone === "failed" ||
-    item.previewPath ||
-    item.fileSummaries?.length ||
-    item.files?.length
-  ) {
-    return true;
-  }
-  if (!item.body) {
-    return false;
-  }
-  return item.body.length <= 700 && item.body.split("\n").length <= 10;
 }
 
 function extractDisplayMessage(value: string): {
@@ -4532,476 +3655,6 @@ function PatchEvent({
   );
 }
 
-type MessageBlock =
-  | { type: "heading"; level: number; text: string }
-  | { type: "paragraph"; text: string }
-  | { type: "list"; items: string[] }
-  | { type: "code"; text: string }
-  | { type: "quote"; text: string };
-
-type InlinePart = {
-  text: string;
-  kind?: "bold" | "code" | "link";
-};
-
-function MessageBody({
-  value,
-  chrome,
-  theme,
-  compact = false,
-}: {
-  value: string;
-  chrome: TerminalThemeChrome;
-  theme: TerminalThemePalette;
-  compact?: boolean;
-}) {
-  const textSelectable = useContext(TimelineTextSelectableContext);
-  const blocks = useMemo(() => parseMessageBlocks(value), [value]);
-  if (blocks.length === 0) {
-    return null;
-  }
-  return (
-    <View style={styles.messageBody}>
-      {blocks.map((block, index) => {
-        const isLast = index === blocks.length - 1;
-        switch (block.type) {
-          case "heading":
-            return (
-              <Text
-                key={index}
-                selectable={textSelectable}
-                style={[
-                  styles.messageHeading,
-                  block.level <= 2 ? styles.messageHeadingLarge : null,
-                  { color: chrome.text },
-                  isLast ? styles.messageBlockLast : null,
-                ]}
-              >
-                {renderInlineMessage(block.text, chrome, theme)}
-              </Text>
-            );
-          case "list":
-            return (
-              <View
-                key={index}
-                style={[styles.messageList, isLast ? styles.messageBlockLast : null]}
-              >
-                {block.items.map((item, itemIndex) => (
-                  <View key={itemIndex} style={styles.messageListItem}>
-                    <Text
-                      selectable={textSelectable}
-                      style={[styles.messageBullet, { color: chrome.textSubtle }]}
-                    >
-                      •
-                    </Text>
-                    <Text
-                      selectable={textSelectable}
-                      style={[
-                        styles.messageText,
-                        styles.messageBlockLast,
-                        { color: chrome.text },
-                      ]}
-                    >
-                      {renderInlineMessage(item, chrome, theme)}
-                    </Text>
-                  </View>
-                ))}
-              </View>
-            );
-          case "code":
-            return (
-              <Text
-                key={index}
-                selectable={textSelectable}
-                style={[
-                  styles.messageCodeBlock,
-                  {
-                    color: chrome.text,
-                    backgroundColor: compact ? chrome.surface : theme.black,
-                    borderColor: chrome.border,
-                  },
-                  isLast ? styles.messageBlockLast : null,
-                ]}
-              >
-                {block.text}
-              </Text>
-            );
-          case "quote":
-            return (
-              <View
-                key={index}
-                style={[
-                  styles.messageQuote,
-                  { borderLeftColor: chrome.borderStrong },
-                  isLast ? styles.messageBlockLast : null,
-                ]}
-              >
-                <Text
-                  selectable={textSelectable}
-                  style={[styles.messageQuoteText, { color: chrome.textMuted }]}
-                >
-                  {renderInlineMessage(block.text, chrome, theme)}
-                </Text>
-              </View>
-            );
-          case "paragraph":
-          default:
-            return (
-              <Text
-                key={index}
-                selectable={textSelectable}
-                style={[
-                  styles.messageText,
-                  { color: chrome.text },
-                  isLast ? styles.messageBlockLast : null,
-                ]}
-              >
-                {renderInlineMessage(block.text, chrome, theme)}
-              </Text>
-            );
-        }
-      })}
-    </View>
-  );
-}
-
-function parseMessageBlocks(value: string): MessageBlock[] {
-  const lines = value.replace(/<!--[\s\S]*?-->/g, "").replace(/\r\n/g, "\n").split("\n");
-  const blocks: MessageBlock[] = [];
-  let paragraph: string[] = [];
-  let list: string[] = [];
-  let quote: string[] = [];
-  let code: string[] | null = null;
-
-  const flushParagraph = () => {
-    const text = paragraph.join(" ").trim();
-    if (text) {
-      blocks.push({ type: "paragraph", text });
-    }
-    paragraph = [];
-  };
-  const flushList = () => {
-    if (list.length > 0) {
-      blocks.push({ type: "list", items: list });
-    }
-    list = [];
-  };
-  const flushQuote = () => {
-    const text = quote.join(" ").trim();
-    if (text) {
-      blocks.push({ type: "quote", text });
-    }
-    quote = [];
-  };
-  const flushOpenBlocks = () => {
-    flushParagraph();
-    flushList();
-    flushQuote();
-  };
-
-  for (const rawLine of lines) {
-    const line = rawLine.trimEnd();
-    const trimmed = line.trim();
-
-    if (code) {
-      if (/^```/.test(trimmed)) {
-        blocks.push({ type: "code", text: code.join("\n").replace(/\n+$/, "") });
-        code = null;
-      } else {
-        code.push(rawLine);
-      }
-      continue;
-    }
-
-    if (/^```/.test(trimmed)) {
-      flushOpenBlocks();
-      code = [];
-      continue;
-    }
-
-    if (!trimmed) {
-      flushOpenBlocks();
-      continue;
-    }
-
-    const heading = /^(#{1,4})\s+(.+)$/.exec(trimmed);
-    if (heading) {
-      flushOpenBlocks();
-      blocks.push({
-        type: "heading",
-        level: heading[1].length,
-        text: heading[2].trim(),
-      });
-      continue;
-    }
-
-    const listItem = /^(?:[-*]|\d+\.)\s+(.+)$/.exec(trimmed);
-    if (listItem) {
-      flushParagraph();
-      flushQuote();
-      list.push(listItem[1].trim());
-      continue;
-    }
-
-    const quoteItem = /^>\s?(.+)$/.exec(trimmed);
-    if (quoteItem) {
-      flushParagraph();
-      flushList();
-      quote.push(quoteItem[1].trim());
-      continue;
-    }
-
-    flushList();
-    flushQuote();
-    paragraph.push(trimmed);
-  }
-
-  if (code) {
-    blocks.push({ type: "code", text: code.join("\n").replace(/\n+$/, "") });
-  }
-  flushOpenBlocks();
-  return blocks;
-}
-
-function renderInlineMessage(
-  text: string,
-  chrome: TerminalThemeChrome,
-  theme: TerminalThemePalette,
-) {
-  return tokenizeInlineMessage(text).map((part, index) => {
-    if (part.kind === "bold") {
-      return (
-        <Text key={index} style={[styles.messageBold, { color: chrome.text }]}>
-          {part.text}
-        </Text>
-      );
-    }
-    if (part.kind === "code") {
-      return (
-        <Text
-          key={index}
-          style={[
-            styles.messageInlineCode,
-            { color: theme.green, backgroundColor: chrome.surfaceMuted },
-          ]}
-        >
-          {part.text}
-        </Text>
-      );
-    }
-    if (part.kind === "link") {
-      return (
-        <Text key={index} style={[styles.messageLink, { color: chrome.accent }]}>
-          {part.text}
-        </Text>
-      );
-    }
-    return part.text;
-  });
-}
-
-function prepareCodexMarkdown(value: string, streaming: boolean) {
-  let markdown = value
-    .replace(/<!--[\s\S]*?-->/g, "")
-    .replace(/\r\n/g, "\n")
-    .trim();
-  if (!markdown) {
-    return "";
-  }
-  if (streaming) {
-    markdown = remend(markdown, STREAMING_REMEND_OPTIONS);
-  }
-  return stripMarkdownImages(markdown);
-}
-
-function stripMarkdownImages(value: string) {
-  return value.replace(/!\[([^\]]*)\]\(([^)\s]+)(?:\s+"[^"]*")?\)/g, (_match, alt, url) => {
-    const label = String(alt || "").trim();
-    const href = String(url || "").trim();
-    if (!href) {
-      return label;
-    }
-    return label ? `[${label}](${href})` : href;
-  });
-}
-
-function isSafeMarkdownUrl(value: string) {
-  try {
-    const url = new URL(value);
-    return url.protocol === "http:" || url.protocol === "https:";
-  } catch {
-    return false;
-  }
-}
-
-function codexMarkdownStyle(
-  chrome: TerminalThemeChrome,
-  theme: TerminalThemePalette,
-  compact: boolean,
-): MarkdownStyle {
-  const text = {
-    color: chrome.text,
-    fontFamily: Typography.uiFont,
-    fontSize: 14,
-    lineHeight: 20,
-    marginTop: 0,
-    marginBottom: compact ? 6 : 7,
-  };
-  const heading = {
-    color: chrome.text,
-    fontFamily: Typography.uiFontMedium,
-    lineHeight: 20,
-    marginTop: 0,
-    marginBottom: 7,
-  };
-  return {
-    paragraph: text,
-    h1: { ...heading, fontSize: 16, lineHeight: 22 },
-    h2: { ...heading, fontSize: 15, lineHeight: 21 },
-    h3: { ...heading, fontSize: 14, lineHeight: 20 },
-    h4: { ...heading, fontSize: 14, lineHeight: 20 },
-    h5: { ...heading, fontSize: 13, lineHeight: 19 },
-    h6: { ...heading, fontSize: 13, lineHeight: 19, color: chrome.textMuted },
-    strong: {
-      color: chrome.text,
-      fontFamily: Typography.uiFontMedium,
-      fontWeight: "normal",
-    },
-    em: {
-      color: chrome.text,
-      fontFamily: Typography.uiFont,
-      fontStyle: "italic",
-    },
-    link: {
-      color: chrome.accent,
-      fontFamily: Typography.uiFontMedium,
-      underline: false,
-    },
-    code: {
-      color: theme.green,
-      backgroundColor: chrome.surfaceMuted,
-      borderColor: chrome.border,
-      fontFamily: Typography.terminalFont,
-      fontSize: 13,
-    },
-    codeBlock: {
-      color: chrome.text,
-      backgroundColor: compact ? chrome.surface : theme.black,
-      borderColor: chrome.border,
-      borderRadius: 7,
-      borderWidth: StyleSheet.hairlineWidth,
-      fontFamily: Typography.terminalFont,
-      fontSize: 12,
-      lineHeight: 17,
-      marginTop: 2,
-      marginBottom: 9,
-      padding: 10,
-    },
-    blockquote: {
-      color: chrome.textMuted,
-      backgroundColor: "transparent",
-      borderColor: chrome.borderStrong,
-      borderWidth: 2,
-      fontFamily: Typography.uiFont,
-      fontSize: 13,
-      gapWidth: 9,
-      lineHeight: 19,
-      marginTop: 0,
-      marginBottom: 8,
-    },
-    list: {
-      color: chrome.text,
-      bulletColor: chrome.textSubtle,
-      markerColor: chrome.textSubtle,
-      markerFontWeight: "normal",
-      fontFamily: Typography.uiFont,
-      fontSize: 14,
-      gapWidth: 7,
-      lineHeight: 20,
-      marginLeft: 0,
-      marginTop: 0,
-      marginBottom: 8,
-    },
-    table: {
-      color: chrome.text,
-      borderColor: chrome.border,
-      borderRadius: 7,
-      borderWidth: StyleSheet.hairlineWidth,
-      cellPaddingHorizontal: 8,
-      cellPaddingVertical: 6,
-      fontFamily: Typography.uiFont,
-      fontSize: 12,
-      headerBackgroundColor: chrome.surfaceMuted,
-      headerFontFamily: Typography.uiFontMedium,
-      headerTextColor: chrome.text,
-      lineHeight: 17,
-      marginTop: 2,
-      marginBottom: 9,
-      rowEvenBackgroundColor: chrome.surface,
-      rowOddBackgroundColor: chrome.surfaceMuted,
-    },
-    taskList: {
-      borderColor: chrome.borderStrong,
-      checkboxBorderRadius: 4,
-      checkboxSize: 15,
-      checkedColor: theme.green,
-      checkedStrikethrough: true,
-      checkedTextColor: chrome.textMuted,
-      checkmarkColor: theme.background,
-    },
-    thematicBreak: {
-      color: chrome.border,
-      height: StyleSheet.hairlineWidth,
-      marginTop: 8,
-      marginBottom: 10,
-    },
-    math: {
-      color: chrome.text,
-      backgroundColor: chrome.surfaceMuted,
-      fontSize: 13,
-      marginTop: 4,
-      marginBottom: 8,
-      padding: 8,
-      textAlign: "left",
-    },
-    inlineMath: {
-      color: theme.cyan,
-    },
-    spoiler: {
-      color: chrome.surfaceMuted,
-      solid: { borderRadius: 4 },
-    },
-  };
-}
-
-function tokenizeInlineMessage(text: string): InlinePart[] {
-  const pattern = /(`[^`]+`|\*\*[^*]+\*\*|\[[^\]]+\]\([^)]+\))/g;
-  const parts: InlinePart[] = [];
-  let lastIndex = 0;
-  let match: RegExpExecArray | null;
-
-  while ((match = pattern.exec(text)) !== null) {
-    if (match.index > lastIndex) {
-      parts.push({ text: text.slice(lastIndex, match.index) });
-    }
-    const token = match[0];
-    if (token.startsWith("`")) {
-      parts.push({ kind: "code", text: token.slice(1, -1) });
-    } else if (token.startsWith("**")) {
-      parts.push({ kind: "bold", text: token.slice(2, -2) });
-    } else {
-      const label = /^\[([^\]]+)\]/.exec(token)?.[1] || token;
-      parts.push({ kind: "link", text: label });
-    }
-    lastIndex = match.index + token.length;
-  }
-
-  if (lastIndex < text.length) {
-    parts.push({ text: text.slice(lastIndex) });
-  }
-  return parts;
-}
-
 function EmptyState({
   chrome,
   title,
@@ -5088,40 +3741,6 @@ const styles = StyleSheet.create({
     minHeight: 0,
     position: "relative",
   },
-  header: {
-    minHeight: 40,
-    borderBottomWidth: StyleSheet.hairlineWidth,
-    paddingHorizontal: 12,
-    paddingVertical: 5,
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 8,
-  },
-  headerTitleGroup: {
-    flex: 1,
-    minWidth: 0,
-  },
-  headerTitleRow: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 7,
-  },
-  headerTitle: {
-    fontSize: 14,
-    lineHeight: 18,
-    fontFamily: Typography.uiFontMedium,
-  },
-  headerMeta: {
-    marginTop: 1,
-    fontSize: 10,
-    lineHeight: 13,
-    fontFamily: Typography.uiFont,
-  },
-  statusDot: {
-    width: 6,
-    height: 6,
-    borderRadius: 3,
-  },
   timeline: {
     flex: 1,
     minHeight: 0,
@@ -5134,189 +3753,6 @@ const styles = StyleSheet.create({
     paddingHorizontal: 16,
     paddingTop: 14,
     paddingBottom: 22,
-  },
-  zenUserRow: {
-    marginBottom: 16,
-    flexDirection: "row",
-    justifyContent: "flex-end",
-  },
-  zenUserBubble: {
-    maxWidth: "86%",
-    borderRadius: 8,
-    paddingHorizontal: 12,
-    paddingVertical: 9,
-  },
-  zenAssistantRow: {
-    marginBottom: 18,
-    paddingRight: 10,
-  },
-  zenAssistantContent: {
-    minWidth: 0,
-  },
-  zenStreamCursor: {
-    width: 6,
-    height: 16,
-    borderRadius: 3,
-    opacity: 0.65,
-  },
-  zenMessageAttachments: {
-    gap: 6,
-  },
-  zenMessageAttachmentsCompact: {
-    marginTop: 8,
-  },
-  zenAttachmentPill: {
-    alignSelf: "flex-start",
-    maxWidth: "100%",
-    minHeight: 28,
-    borderRadius: 8,
-    borderWidth: StyleSheet.hairlineWidth,
-    paddingHorizontal: 8,
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 6,
-  },
-  zenAttachmentPillText: {
-    flexShrink: 1,
-    fontSize: 11,
-    lineHeight: 15,
-    fontFamily: Typography.uiFontMedium,
-  },
-  zenActivityWrap: {
-    marginBottom: 10,
-    paddingLeft: 1,
-  },
-  zenActivityRow: {
-    alignSelf: "flex-start",
-    minHeight: 24,
-    maxWidth: "100%",
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 6,
-    opacity: 0.78,
-  },
-  zenActivityTitle: {
-    fontSize: 11,
-    lineHeight: 15,
-    fontFamily: Typography.uiFontMedium,
-  },
-  zenActivityDetail: {
-    flexShrink: 1,
-    maxWidth: 210,
-    fontSize: 11,
-    lineHeight: 15,
-    fontFamily: Typography.terminalFont,
-  },
-  zenActivityExpanded: {
-    marginTop: 6,
-    marginLeft: 19,
-    maxWidth: "92%",
-    borderLeftWidth: StyleSheet.hairlineWidth,
-    paddingLeft: 10,
-    paddingVertical: 4,
-  },
-  zenActivityBody: {
-    marginTop: 6,
-    fontSize: 11,
-    lineHeight: 16,
-    fontFamily: Typography.terminalFont,
-  },
-  zenActivityFiles: {
-    gap: 4,
-  },
-  zenActivityFileText: {
-    fontSize: 11,
-    lineHeight: 15,
-    fontFamily: Typography.terminalFont,
-  },
-  zenDiffFiles: {
-    gap: 5,
-  },
-  zenDiffFileRow: {
-    minWidth: 0,
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 5,
-  },
-  zenDiffPrefix: {
-    width: 10,
-    fontSize: 11,
-    lineHeight: 15,
-    fontFamily: Typography.terminalFont,
-  },
-  zenDiffPath: {
-    flex: 1,
-    minWidth: 0,
-    fontSize: 11,
-    lineHeight: 15,
-    fontFamily: Typography.terminalFont,
-  },
-  zenDiffAdded: {
-    fontSize: 11,
-    lineHeight: 15,
-    fontFamily: Typography.terminalFont,
-  },
-  zenDiffRemoved: {
-    fontSize: 11,
-    lineHeight: 15,
-    fontFamily: Typography.terminalFont,
-  },
-  zenActivityImage: {
-    width: "100%",
-    height: 150,
-    borderRadius: 8,
-    borderWidth: StyleSheet.hairlineWidth,
-  },
-  zenActivityImagePlaceholder: {
-    height: 96,
-    borderRadius: 8,
-    borderWidth: StyleSheet.hairlineWidth,
-    alignItems: "center",
-    justifyContent: "center",
-  },
-  zenPlanBlock: {
-    paddingVertical: 2,
-  },
-  zenPlanExplanation: {
-    marginBottom: 7,
-    fontSize: 12,
-    lineHeight: 17,
-    fontStyle: "italic",
-    fontFamily: Typography.uiFont,
-  },
-  zenPlanSteps: {
-    gap: 6,
-  },
-  zenPlanStepRow: {
-    minWidth: 0,
-    flexDirection: "row",
-    alignItems: "flex-start",
-    gap: 7,
-  },
-  zenPlanMarker: {
-    width: 14,
-    fontSize: 13,
-    lineHeight: 18,
-    fontFamily: Typography.uiFontMedium,
-  },
-  zenPlanStepText: {
-    flex: 1,
-    minWidth: 0,
-    fontSize: 12,
-    lineHeight: 18,
-    fontFamily: Typography.uiFont,
-  },
-  zenPlanStepActive: {
-    fontFamily: Typography.uiFontMedium,
-  },
-  zenPlanStepCompleted: {
-    textDecorationLine: "line-through",
-  },
-  zenPlanEmpty: {
-    fontSize: 12,
-    lineHeight: 17,
-    fontStyle: "italic",
-    fontFamily: Typography.uiFont,
   },
   userRow: {
     flexDirection: "row",
@@ -5361,76 +3797,6 @@ const styles = StyleSheet.create({
     lineHeight: 13,
     textTransform: "uppercase",
     fontFamily: Typography.uiFontMedium,
-  },
-  messageBody: {
-    minWidth: 0,
-  },
-  messageText: {
-    marginBottom: 7,
-    fontSize: 14,
-    lineHeight: 20,
-    fontFamily: Typography.uiFont,
-  },
-  messageHeading: {
-    marginBottom: 7,
-    fontSize: 14,
-    lineHeight: 19,
-    fontFamily: Typography.uiFontMedium,
-  },
-  messageHeadingLarge: {
-    fontSize: 15,
-    lineHeight: 20,
-  },
-  messageList: {
-    marginBottom: 8,
-    gap: 4,
-  },
-  messageListItem: {
-    flexDirection: "row",
-    alignItems: "flex-start",
-    gap: 7,
-  },
-  messageBullet: {
-    width: 9,
-    fontSize: 13,
-    lineHeight: 20,
-    fontFamily: Typography.uiFont,
-  },
-  messageCodeBlock: {
-    marginTop: 2,
-    marginBottom: 9,
-    borderRadius: 7,
-    borderWidth: StyleSheet.hairlineWidth,
-    overflow: "hidden",
-    paddingHorizontal: 10,
-    paddingVertical: 8,
-    fontSize: 12,
-    lineHeight: 17,
-    fontFamily: Typography.terminalFont,
-  },
-  messageQuote: {
-    marginBottom: 8,
-    borderLeftWidth: 2,
-    paddingLeft: 9,
-  },
-  messageQuoteText: {
-    fontSize: 13,
-    lineHeight: 19,
-    fontFamily: Typography.uiFont,
-  },
-  messageBold: {
-    fontFamily: Typography.uiFontMedium,
-  },
-  messageInlineCode: {
-    fontFamily: Typography.terminalFont,
-    fontSize: 13,
-    lineHeight: 18,
-  },
-  messageLink: {
-    fontFamily: Typography.uiFontMedium,
-  },
-  messageBlockLast: {
-    marginBottom: 0,
   },
   toolBlock: {
     marginLeft: 34,
@@ -5689,151 +4055,5 @@ const styles = StyleSheet.create({
   composer: {
     paddingHorizontal: 12,
     paddingTop: 8,
-  },
-  composerPanel: {
-    minHeight: 50,
-    borderRadius: 25,
-    borderWidth: StyleSheet.hairlineWidth,
-    paddingLeft: 4,
-    paddingRight: 6,
-    paddingVertical: 4,
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 4,
-  },
-  composerPanelFloating: {
-    shadowColor: "#000000",
-    shadowOffset: { width: 0, height: 8 },
-    shadowOpacity: 0.16,
-    shadowRadius: 18,
-    elevation: 10,
-  },
-  composerInputWrap: {
-    flex: 1,
-    minHeight: 40,
-    maxHeight: 110,
-    justifyContent: "center",
-  },
-  composerInput: {
-    width: "100%",
-    minHeight: 40,
-    maxHeight: 110,
-    paddingHorizontal: 4,
-    paddingTop: 9,
-    paddingBottom: 7,
-    fontSize: 15,
-    lineHeight: 21,
-    fontFamily: Typography.uiFont,
-    includeFontPadding: false,
-  },
-  attachmentRail: {
-    marginBottom: 7,
-  },
-  attachmentList: {
-    minHeight: 38,
-    alignItems: "center",
-    gap: 7,
-    paddingHorizontal: 2,
-  },
-  attachmentChip: {
-    maxWidth: 220,
-    minHeight: 36,
-    borderRadius: 8,
-    borderWidth: StyleSheet.hairlineWidth,
-    paddingLeft: 9,
-    paddingRight: 5,
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 7,
-  },
-  attachmentUploading: {
-    paddingRight: 10,
-  },
-  attachmentTextGroup: {
-    flex: 1,
-    minWidth: 0,
-  },
-  attachmentName: {
-    fontSize: 11,
-    lineHeight: 15,
-    fontFamily: Typography.uiFontMedium,
-  },
-  attachmentPath: {
-    marginTop: 1,
-    fontSize: 10,
-    lineHeight: 13,
-    fontFamily: Typography.terminalFont,
-  },
-  attachmentRemove: {
-    width: 24,
-    height: 28,
-    alignItems: "center",
-    justifyContent: "center",
-  },
-  quickCommandMenu: {
-    marginBottom: 8,
-    borderRadius: 8,
-    borderWidth: StyleSheet.hairlineWidth,
-    overflow: "hidden",
-  },
-  quickCommandScroller: {
-    maxHeight: 330,
-  },
-  quickCommandRow: {
-    minHeight: 50,
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 9,
-    paddingHorizontal: 10,
-    paddingVertical: 7,
-  },
-  quickCommandIcon: {
-    width: 28,
-    height: 28,
-    borderRadius: 8,
-    alignItems: "center",
-    justifyContent: "center",
-  },
-  quickCommandCopy: {
-    flex: 1,
-    minWidth: 0,
-  },
-  quickCommandTitle: {
-    fontSize: 13,
-    lineHeight: 17,
-    fontFamily: Typography.uiFontMedium,
-  },
-  quickCommandDescription: {
-    marginTop: 1,
-    fontSize: 11,
-    lineHeight: 15,
-    fontFamily: Typography.uiFont,
-  },
-  quickCommandValue: {
-    maxWidth: 72,
-    fontSize: 11,
-    lineHeight: 15,
-    fontFamily: Typography.terminalFont,
-  },
-  quickCommandBadge: {
-    maxWidth: 86,
-    minHeight: 22,
-    borderRadius: 8,
-    borderWidth: StyleSheet.hairlineWidth,
-    paddingHorizontal: 7,
-    alignItems: "center",
-    justifyContent: "center",
-  },
-  quickCommandBadgeText: {
-    fontSize: 10,
-    lineHeight: 13,
-    fontFamily: Typography.uiFontMedium,
-  },
-  quickCommandEmpty: {
-    minHeight: 44,
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 8,
-    paddingHorizontal: 12,
   },
 });
