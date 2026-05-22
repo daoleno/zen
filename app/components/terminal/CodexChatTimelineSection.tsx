@@ -1,4 +1,4 @@
-import React, { useCallback, useMemo } from "react";
+import React, { useCallback } from "react";
 import {
   type LayoutChangeEvent,
   type NativeScrollEvent,
@@ -18,11 +18,10 @@ import { conversationUnavailableReason } from "./CodexChatControllerModel";
 import type { ChatCommandEvent } from "./CodexChatSession";
 import { CodexTimelineView } from "./CodexTimelineView";
 import {
-  buildZenTimeline,
-  mergeChatCommandEventsIntoTimeline,
   patchDisplayPath,
   truncateRunes,
 } from "./CodexTimelineModel";
+import { useCodexTimelineItems } from "./useCodexTimelineItems";
 
 interface CodexChatTimelineSectionProps {
   serverId: string;
@@ -65,14 +64,7 @@ export function CodexChatTimelineSection({
   onScrollToLatest,
   onUnavailableAction,
 }: CodexChatTimelineSectionProps) {
-  const timelineItems = useMemo(
-    () =>
-      mergeChatCommandEventsIntoTimeline(
-        buildZenTimeline(events),
-        chatCommandEvents,
-      ),
-    [chatCommandEvents, events],
-  );
+  const timelineItems = useCodexTimelineItems({ events, chatCommandEvents });
   const loadAssetPreview = useCallback(
     async (path: string) => {
       const asset = await wsClient.getCodexAsset(serverId, {
