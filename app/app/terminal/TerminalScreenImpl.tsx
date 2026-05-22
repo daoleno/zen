@@ -1,4 +1,4 @@
-import React, { useCallback } from "react";
+import React from "react";
 import {
   useWindowDimensions,
 } from "react-native";
@@ -13,9 +13,9 @@ import { TerminalScreenLayout } from "./TerminalScreenLayout";
 import { useTerminalAgentIndex } from "./useTerminalAgentIndex";
 import { useTerminalChromeLayout } from "./useTerminalChromeLayout";
 import { useTerminalDirectoryModel } from "./useTerminalDirectoryModel";
-import { useTerminalFocusLifecycle } from "./useTerminalFocusLifecycle";
 import { useTerminalRouteModel } from "./useTerminalRouteModel";
 import { useTerminalScreenActions } from "./useTerminalScreenActions";
+import { useTerminalScreenLifecycle } from "./useTerminalScreenLifecycle";
 import { useTerminalScreenLocalState } from "./useTerminalScreenLocalState";
 import { useTerminalScreenOverlayProps } from "./useTerminalScreenOverlayProps";
 import { useTerminalScreenStorage } from "./useTerminalScreenStorage";
@@ -143,15 +143,12 @@ export default function TerminalScreen() {
     ctrlDisabled: renameVisible,
   });
 
-  const handleTerminalInactive = useCallback(() => {
-    handleCtrlArmedChange(false);
-  }, [handleCtrlArmedChange]);
-  useTerminalFocusLifecycle({
+  useTerminalScreenLifecycle({
     serverId,
     agentId,
     sessionKey,
     setScreenFocused,
-    onInactive: handleTerminalInactive,
+    onCtrlArmedChange: handleCtrlArmedChange,
   });
 
   const {
