@@ -17,14 +17,10 @@ import { TerminalTopBar } from "../../components/terminal/TerminalTopBar";
 import { TerminalViewport } from "../../components/terminal/TerminalViewport";
 import { useTerminalAccessoryLayout } from "../../components/terminal/useTerminalAccessoryLayout";
 import { useTerminalGitDiff } from "../../components/terminal/useTerminalGitDiff";
-import {
-  buildTerminalFallbackPresentation,
-  buildTerminalTabs,
-} from "./TerminalScreenModel";
+import { buildTerminalTabs } from "./TerminalScreenModel";
 import { TerminalScreenOverlays } from "./TerminalScreenOverlays";
 import { useTerminalAgentIndex } from "./useTerminalAgentIndex";
 import { useTerminalChromeLayout } from "./useTerminalChromeLayout";
-import { useTerminalFallbackState } from "./useTerminalFallbackState";
 import { useTerminalFocusLifecycle } from "./useTerminalFocusLifecycle";
 import { useTerminalRouteModel } from "./useTerminalRouteModel";
 import { useTerminalPickerModel } from "./useTerminalPickerModel";
@@ -32,6 +28,7 @@ import { useTerminalScreenStorage } from "./useTerminalScreenStorage";
 import { useTerminalSessionActions } from "./useTerminalSessionActions";
 import { useTerminalTabActions } from "./useTerminalTabActions";
 import { useTerminalThemeChrome } from "./useTerminalThemeChrome";
+import { useTerminalViewportModel } from "./useTerminalViewportModel";
 
 export default function TerminalScreen() {
   const params = useLocalSearchParams<{ id?: string; serverId?: string }>();
@@ -117,31 +114,20 @@ export default function TerminalScreen() {
     serverConnectionIssues: state.serverConnectionIssues,
     codexRenderModes,
   });
-  const showTerminalFallback = useTerminalFallbackState({
+  const {
+    accessoryVisible,
+    canRenderTerminal,
+    shouldMountTerminalSurface,
+    terminalState,
+  } = useTerminalViewportModel({
     hasTerminalRoute,
+    showCodexChat,
+    screenFocused,
     connectionState,
     connectionIssue,
+    terminalTheme,
+    chromeColors,
   });
-  const canRenderTerminal =
-    hasTerminalRoute && !showTerminalFallback && !showCodexChat;
-  const shouldMountTerminalSurface = canRenderTerminal && screenFocused;
-  const terminalState = useMemo(
-    () =>
-      buildTerminalFallbackPresentation({
-        hasTerminalRoute,
-        connectionState,
-        connectionIssue,
-        terminalTheme,
-        chromeColors,
-      }),
-    [
-      chromeColors,
-      connectionIssue,
-      connectionState,
-      hasTerminalRoute,
-      terminalTheme,
-    ],
-  );
   const gitDiff = useTerminalGitDiff({
     serverId,
     agentId,
@@ -150,7 +136,6 @@ export default function TerminalScreen() {
     hasTerminalRoute,
     screenFocused,
   });
-  const accessoryVisible = canRenderTerminal && screenFocused;
   const {
     keyboardVisible,
     ctrlArmed,
