@@ -1,15 +1,14 @@
 import React from "react";
 import {
   StyleSheet,
-  Text,
   View,
 } from "react-native";
 import type {
   TerminalThemeChrome,
   TerminalThemePalette,
 } from "../../constants/terminalThemes";
-import { Typography } from "../../constants/tokens";
 import { CodexTimelineExpandedBlock } from "./CodexTimelineExpandedBlock";
+import { CodexTimelinePlanExplanation } from "./CodexTimelinePlanExplanation";
 import { ZenPlanHeader } from "./CodexTimelinePlanHeader";
 import { ZenPlanSteps } from "./CodexTimelinePlanSteps";
 import type { ZenPlanTimelineItem } from "./CodexTimelinePlanTypes";
@@ -30,11 +29,10 @@ export function ZenPlanUpdate({
         borderColor={chrome.border}
         style={styles.planBlock}
       >
-        {item.explanation?.trim() ? (
-          <Text style={[styles.planExplanation, { color: chrome.textSubtle }]}>
-            {item.explanation.trim()}
-          </Text>
-        ) : null}
+        <CodexTimelinePlanExplanation
+          chrome={chrome}
+          explanation={item.explanation}
+        />
         <ZenPlanSteps steps={item.steps} chrome={chrome} theme={theme} />
       </CodexTimelineExpandedBlock>
     </View>
@@ -48,12 +46,5 @@ const styles = StyleSheet.create({
   },
   planBlock: {
     paddingVertical: 2,
-  },
-  planExplanation: {
-    marginBottom: 7,
-    fontSize: 12,
-    lineHeight: 17,
-    fontStyle: "italic",
-    fontFamily: Typography.uiFont,
   },
 });
