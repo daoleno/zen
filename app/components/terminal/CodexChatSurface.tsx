@@ -21,10 +21,8 @@ import type { Agent, ConnectionState } from "../../store/agents";
 import type { ConnectionIssue } from "../../services/connectionIssue";
 import { wsClient } from "../../services/websocket";
 import { CodexChatComposer } from "./CodexChatComposer";
-import {
-  conversationUnavailableReason,
-  useCodexChatController,
-} from "./CodexChatController";
+import { useCodexChatController } from "./CodexChatController";
+import { conversationUnavailableReason } from "./CodexChatControllerModel";
 import { CodexChatHeader } from "./CodexChatHeader";
 import { useCodexChatSession } from "./CodexChatSession";
 import {
