@@ -12,39 +12,25 @@ import {
 import { useFocusEffect, useLocalSearchParams, useRouter } from "expo-router";
 import { StatusBar } from "expo-status-bar";
 import { SafeAreaView } from "react-native-safe-area-context";
-import { Agent, useAgents } from "../../store/agents";
+import { useAgents } from "../../store/agents";
 import { useWork } from "../../store/work";
 import {
   buildTerminalChrome,
-  DefaultTerminalThemePreference,
   isLightTerminalTheme,
   resolveTerminalTheme,
   resolveTerminalThemePreference,
-  type TerminalThemePreference,
 } from "../../constants/terminalThemes";
 import {
   closeOtherTerminalTabs,
   closeTerminalTab,
   DefaultCodexRenderMode,
-  getAgentAliases,
-  getCodexRenderModes,
-  getRecentAgentOpens,
   getServerById,
-  getServers,
-  getTerminalTabs,
-  getTerminalTheme,
   markAgentOpened,
   setAgentAlias,
   setCodexRenderMode,
   setTerminalTabPinned,
-  syncTerminalTabsWithLiveSessions,
   touchTerminalTab,
-  type StoredCodexRenderModes,
   type StoredCodexRenderMode,
-  type StoredAgentAliases,
-  type StoredRecentAgentOpens,
-  type StoredServer,
-  type StoredTerminalTabs,
 } from "../../services/storage";
 import { makeSessionKey, parseSessionKey } from "../../services/sessionKeys";
 import { wsClient } from "../../services/websocket";
@@ -67,7 +53,6 @@ import {
   groupAgentsByDirectory,
 } from "../../services/serverSelection";
 import {
-  EMPTY_TABS,
   buildMenuPosition,
   buildTerminalTabs,
   pickNextTabAfterClose,
@@ -75,6 +60,7 @@ import {
   sortTerminalAgents,
   type MenuAnchorLayout,
 } from "./TerminalScreenModel";
+import { useTerminalScreenStorage } from "./useTerminalScreenStorage";
 
 export default function TerminalScreen() {
   const params = useLocalSearchParams<{ id?: string; serverId?: string }>();
@@ -87,18 +73,6 @@ export default function TerminalScreen() {
   const router = useRouter();
   const colorScheme = useColorScheme();
   const { width: windowWidth } = useWindowDimensions();
-  const [themePreference, setThemePreference] = useState<TerminalThemePreference>(
-    DefaultTerminalThemePreference,
-  );
-  const [agentAliases, setAgentAliases] = useState<StoredAgentAliases>({});
-  const [codexRenderModes, setCodexRenderModes] =
-    useState<StoredCodexRenderModes>({});
-  const [recentAgentOpens, setRecentAgentOpens] =
-    useState<StoredRecentAgentOpens>({});
-  const [terminalTabs, setTerminalTabs] =
-    useState<StoredTerminalTabs>(EMPTY_TABS);
-  const [server, setServer] = useState<StoredServer | null>(null);
-  const [servers, setServers] = useState<StoredServer[]>([]);
   const [pickerVisible, setPickerVisible] = useState(false);
   const [menuVisible, setMenuVisible] = useState(false);
   const [menuAnchor, setMenuAnchor] = useState<MenuAnchorLayout | null>(null);
@@ -110,18 +84,6 @@ export default function TerminalScreen() {
     !Boolean(sessionKey && serverId && agentId),
   );
   const [screenFocused, setScreenFocused] = useState(false);
-  const themeName = useMemo(
-    () => resolveTerminalThemePreference(themePreference, colorScheme),
-    [themePreference, colorScheme],
-  );
-  const terminalTheme = useMemo(
-    () => resolveTerminalTheme(themeName),
-    [themeName],
-  );
-  const chromeColors = useMemo(
-    () => buildTerminalChrome(terminalTheme),
-    [terminalTheme],
-  );
   const terminalRef = useRef<TerminalSurfaceHandle>(null);
   const tabScrollRef = useRef<ScrollView>(null);
   const tabLayoutsRef = useRef<Map<string, { x: number; width: number }>>(
@@ -143,9 +105,44 @@ export default function TerminalScreen() {
         .map(([serverId]) => serverId),
     [state.hydratedServers],
   );
+  const liveAgentKeys = useMemo(
+    () => state.agents.map((currentAgent) => currentAgent.key),
+    [state.agents],
+  );
   const hydratedServerIdSet = useMemo(
     () => new Set(hydratedServerIds),
     [hydratedServerIds],
+  );
+  const {
+    themePreference,
+    agentAliases,
+    setAgentAliases,
+    codexRenderModes,
+    setCodexRenderModes,
+    recentAgentOpens,
+    setRecentAgentOpens,
+    terminalTabs,
+    setTerminalTabs,
+    server,
+    setServer,
+    servers,
+  } = useTerminalScreenStorage({
+    serverId,
+    sessionKey,
+    hydratedServerIds,
+    liveAgentKeys,
+  });
+  const themeName = useMemo(
+    () => resolveTerminalThemePreference(themePreference, colorScheme),
+    [themePreference, colorScheme],
+  );
+  const terminalTheme = useMemo(
+    () => resolveTerminalTheme(themeName),
+    [themeName],
+  );
+  const chromeColors = useMemo(
+    () => buildTerminalChrome(terminalTheme),
+    [terminalTheme],
   );
   const agent = sessionKey ? agentByKey.get(sessionKey) : undefined;
   const gitDiffCwd = typeof agent?.cwd === "string" ? agent.cwd.trim() : "";
@@ -268,65 +265,6 @@ export default function TerminalScreen() {
   );
 
   useEffect(() => {
-    let cancelled = false;
-
-    (async () => {
-      const [
-        storedTheme,
-        storedRecentOpens,
-        storedAliases,
-        storedServers,
-        storedCodexRenderModes,
-      ] =
-        await Promise.all([
-          getTerminalTheme(),
-          getRecentAgentOpens(),
-          getAgentAliases(),
-          getServers(),
-          getCodexRenderModes(),
-        ]);
-      const storedServer = serverId
-        ? storedServers.find((current) => current.id === serverId) || null
-        : null;
-
-      if (!sessionKey) {
-        const storedTabs = await getTerminalTabs();
-        if (!cancelled) {
-          setThemePreference(storedTheme);
-          setAgentAliases(storedAliases);
-          setCodexRenderModes(storedCodexRenderModes);
-          setRecentAgentOpens(storedRecentOpens);
-          setTerminalTabs(storedTabs);
-          setServer(storedServer);
-          setServers(storedServers);
-        }
-        return;
-      }
-
-      const openedAt = Date.now();
-      const nextTabs = await touchTerminalTab(sessionKey);
-      void markAgentOpened(sessionKey, openedAt);
-
-      if (!cancelled) {
-        setThemePreference(storedTheme);
-        setAgentAliases(storedAliases);
-        setCodexRenderModes(storedCodexRenderModes);
-        setRecentAgentOpens({
-          ...storedRecentOpens,
-          [sessionKey]: openedAt,
-        });
-        setTerminalTabs(nextTabs);
-        setServer(storedServer);
-        setServers(storedServers);
-      }
-    })();
-
-    return () => {
-      cancelled = true;
-    };
-  }, [serverId, sessionKey]);
-
-  useEffect(() => {
     setMenuVisible(false);
     setMenuAnchor(null);
   }, [sessionKey]);
@@ -335,26 +273,6 @@ export default function TerminalScreen() {
     setRenameVisible(false);
     setRenameDraft("");
   }, [sessionKey]);
-
-  useEffect(() => {
-    if (hydratedServerIds.length === 0) return;
-
-    let cancelled = false;
-
-    (async () => {
-      const nextTabs = await syncTerminalTabsWithLiveSessions(
-        state.agents.map((currentAgent) => currentAgent.key),
-        hydratedServerIds,
-      );
-      if (!cancelled) {
-        setTerminalTabs(nextTabs);
-      }
-    })();
-
-    return () => {
-      cancelled = true;
-    };
-  }, [hydratedServerIds, state.agents]);
 
   useEffect(() => {
     if (reconnectFallbackTimerRef.current) {
