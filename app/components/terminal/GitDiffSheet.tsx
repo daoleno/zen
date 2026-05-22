@@ -1,6 +1,5 @@
 import React from "react";
 import {
-  FlatList,
   Modal,
   StyleSheet,
   View,
@@ -11,14 +10,13 @@ import {
   type TerminalThemePalette,
 } from "../../constants/terminalThemes";
 import type {
-  GitDiffFileInfo,
   GitDiffPatchPayload,
   GitDiffStatusSnapshot,
   GitRepoBrowserEntry,
   GitRepoFileContentPayload,
 } from "../../services/gitDiff";
-import { GitDiffFileCard } from "./GitDiffFileCard";
 import { GitDiffRepoBrowser } from "./GitDiffRepoBrowser";
+import { GitDiffSheetDiffContent } from "./GitDiffSheetDiffContent";
 import { GitDiffStateCard } from "./GitDiffStateCard";
 import {
   GitDiffSheetTopChrome,
@@ -151,36 +149,6 @@ export function GitDiffSheet({
     setCollapsedDiffPaths(new Set());
   }, []);
 
-  const renderDiffFile = React.useCallback(
-    ({ item }: { item: GitDiffFileInfo }) => (
-      <GitDiffFileCard
-        file={item}
-        patch={patchByPath[item.path]}
-        loading={Boolean(patchLoadingByPath[item.path])}
-        error={patchErrorByPath[item.path] ?? null}
-        expanded={!collapsedDiffPaths.has(item.path)}
-        theme={theme}
-        chrome={chrome}
-        onLoadPatch={() => onLoadDiffPatch(item.path)}
-        onToggle={() => toggleDiffFile(item.path)}
-        onOpenFile={() => {
-          setActiveTab("browser");
-          onOpenRepoFile(item.path);
-        }}
-      />
-    ),
-    [
-      chrome,
-      collapsedDiffPaths,
-      onOpenRepoFile,
-      patchByPath,
-      patchErrorByPath,
-      patchLoadingByPath,
-      theme,
-      toggleDiffFile,
-    ],
-  );
-
   const repoTitle = snapshot?.repo_name || repoBaseName(snapshot?.repo_root || "") || "repo";
 
   return (
@@ -280,30 +248,22 @@ export function GitDiffSheet({
               onCloseRepoFile={onCloseRepoFile}
               onBackRepoPath={onBackRepoPath}
             />
-          ) : snapshot.clean ? (
-            <View style={styles.contentPad}>
-              <GitDiffStateCard
-                icon="checkmark-done-outline"
-                title="Working tree is clean"
-                detail="No staged, unstaged, or untracked changes were found."
-                accent={theme.green}
-                chromeText={chrome.text}
-                chromeMuted={chrome.textMuted}
-              />
-            </View>
           ) : (
-            <FlatList
-              key="git-diff-list"
-              data={files}
-              keyExtractor={(item) => item.path}
-              renderItem={renderDiffFile}
-              style={styles.fullList}
-              contentContainerStyle={styles.diffContent}
-              showsVerticalScrollIndicator={false}
-              removeClippedSubviews={false}
-              initialNumToRender={4}
-              maxToRenderPerBatch={4}
-              windowSize={5}
+            <GitDiffSheetDiffContent
+              files={files}
+              clean={snapshot.clean}
+              collapsedDiffPaths={collapsedDiffPaths}
+              patchByPath={patchByPath}
+              patchLoadingByPath={patchLoadingByPath}
+              patchErrorByPath={patchErrorByPath}
+              theme={theme}
+              chrome={chrome}
+              onLoadDiffPatch={onLoadDiffPatch}
+              onToggleDiffFile={toggleDiffFile}
+              onOpenFile={(path) => {
+                setActiveTab("browser");
+                onOpenRepoFile(path);
+              }}
             />
           )}
         </View>
@@ -335,14 +295,5 @@ const styles = StyleSheet.create({
     flex: 1,
     paddingHorizontal: 14,
     paddingVertical: 14,
-  },
-  fullList: {
-    flex: 1,
-  },
-  diffContent: {
-    paddingHorizontal: 8,
-    paddingTop: 8,
-    paddingBottom: 18,
-    gap: 8,
   },
 });
