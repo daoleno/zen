@@ -1,6 +1,7 @@
 import {
   useCallback,
   useEffect,
+  useMemo,
   useRef,
   useState,
   type SetStateAction,
@@ -10,7 +11,7 @@ import type { CodexConversation } from "../../services/codexConversation";
 import type { UploadedAttachment } from "../../services/uploads";
 import { wsClient, type CodexSlashCommand } from "../../services/websocket";
 
-const POLL_INTERVAL_MS = 900;
+const POLL_INTERVAL_MS = 1800;
 const PENDING_USER_MESSAGE_MAX_AGE_MS = 120_000;
 const ATTACHMENT_TAG_RE = /<zen_attachments>\s*([\s\S]*?)\s*<\/zen_attachments>/i;
 
@@ -74,7 +75,6 @@ export function useCodexChatSession({
   const composerCacheKey = `${serverId}:${agentId}`;
   const requestSeqRef = useRef(0);
   const refreshInFlightRef = useRef<RefreshInFlight | null>(null);
-  const refreshQueuedRef = useRef(false);
   const [conversationState, setConversationState] = useState<
     KeyedState<CodexConversation | null>
   >(
@@ -135,6 +135,10 @@ export function useCodexChatSession({
     pendingUserMessagesState.cacheKey === composerCacheKey
       ? pendingUserMessagesState.value
       : [];
+  const visiblePendingUserMessages = useMemo(
+    () => filterVisiblePendingUserMessages(pendingUserMessages, conversation),
+    [conversation, pendingUserMessages],
+  );
   const presentationCacheKey = `${cacheKey}:${
     conversation?.session_id || conversation?.path || ""
   }`;
@@ -276,8 +280,7 @@ export function useCodexChatSession({
       }
       const requestBaseKey = cacheKey;
       if (refreshInFlightRef.current?.baseKey === requestBaseKey) {
-        refreshQueuedRef.current = true;
-        if (showLoading) {
+        if (showLoading && !conversationCache.has(requestBaseKey)) {
           setLoading(true);
         }
         return;
@@ -286,7 +289,7 @@ export function useCodexChatSession({
       const requestSeq = requestSeqRef.current + 1;
       requestSeqRef.current = requestSeq;
       refreshInFlightRef.current = { baseKey: requestBaseKey, requestSeq };
-      if (showLoading) {
+      if (showLoading && !conversationCache.has(requestBaseKey)) {
         setLoading(true);
       }
       try {
@@ -315,12 +318,6 @@ export function useCodexChatSession({
         if (requestSeqRef.current === requestSeq) {
           setLoading(false);
         }
-        if (refreshQueuedRef.current && requestSeqRef.current === requestSeq) {
-          refreshQueuedRef.current = false;
-          setTimeout(() => {
-            void refreshConversation(false);
-          }, 0);
-        }
       }
     },
     [
@@ -348,17 +345,9 @@ export function useCodexChatSession({
     return () => {
       requestSeqRef.current += 1;
       refreshInFlightRef.current = null;
-      refreshQueuedRef.current = false;
       clearInterval(interval);
     };
   }, [refreshConversation, screenFocused]);
-
-  useEffect(() => {
-    if (!screenFocused || !agent?.updated_at) {
-      return;
-    }
-    void refreshConversation(false);
-  }, [agent?.updated_at, refreshConversation, screenFocused]);
 
   useEffect(() => {
     setConversationState({
@@ -371,7 +360,6 @@ export function useCodexChatSession({
       value: chatCommandEventCache.get(cacheKey) ?? [],
     });
     refreshInFlightRef.current = null;
-    refreshQueuedRef.current = false;
   }, [cacheKey]);
 
   useEffect(() => {
@@ -436,7 +424,7 @@ export function useCodexChatSession({
     attachments,
     setAttachments,
     chatCommandEvents,
-    pendingUserMessages,
+    pendingUserMessages: visiblePendingUserMessages,
     recordChatCommandEvent,
     addPendingUserMessage,
     removePendingUserMessage,
@@ -449,6 +437,32 @@ function comparableUserMessageText(value: string) {
     .replace(ATTACHMENT_TAG_RE, "")
     .replace(/\s+/g, " ")
     .trim();
+}
+
+function filterVisiblePendingUserMessages(
+  pendingUserMessages: PendingUserMessage[],
+  conversation: CodexConversation | null,
+) {
+  if (pendingUserMessages.length === 0 || !conversation?.events.length) {
+    return pendingUserMessages;
+  }
+  const confirmedUserMessages = new Set(
+    conversation.events
+      .filter((event) => event.kind === "user_message")
+      .map((event) => comparableUserMessageText(event.body || ""))
+      .filter(Boolean),
+  );
+  if (confirmedUserMessages.size === 0) {
+    return pendingUserMessages;
+  }
+  return pendingUserMessages.filter((message) => {
+    const sentText = comparableUserMessageText(message.sentText);
+    const body = comparableUserMessageText(message.body);
+    return !(
+      (sentText && confirmedUserMessages.has(sentText)) ||
+      (body && confirmedUserMessages.has(body))
+    );
+  });
 }
 
 function normalizeSessionTimestamp(value: unknown): string {

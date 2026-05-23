@@ -1,5 +1,7 @@
 import {
   useCallback,
+  useEffect,
+  useRef,
   useState,
   type SetStateAction,
 } from "react";
@@ -36,6 +38,22 @@ export function useCodexMessageTransport({
 }: UseCodexMessageTransportInput) {
   const [sending, setSending] = useState(false);
   const [interrupting, setInterrupting] = useState(false);
+  const sendLockedRef = useRef(false);
+  const sendingResetTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const refreshTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  useEffect(
+    () => () => {
+      if (sendingResetTimerRef.current) {
+        clearTimeout(sendingResetTimerRef.current);
+      }
+      if (refreshTimerRef.current) {
+        clearTimeout(refreshTimerRef.current);
+      }
+      sendLockedRef.current = false;
+    },
+    [],
+  );
 
   const submitTextToCodex = useCallback(
     (
@@ -43,6 +61,10 @@ export function useCodexMessageTransport({
       previousDraft: string,
       previousAttachments: ComposerAttachment[],
     ) => {
+      if (sendLockedRef.current) {
+        return;
+      }
+      sendLockedRef.current = true;
       const pendingMessageId = addPendingUserMessage({
         body: previousDraft.trim(),
         sentText: text,
@@ -58,14 +80,31 @@ export function useCodexMessageTransport({
       setTimeout(() => scrollToLatest(false, 0), 40);
       try {
         wsClient.sendInput(serverId, agentId, `${text}\n`);
-        setTimeout(() => setSending(false), 140);
-        setTimeout(() => {
+        if (sendingResetTimerRef.current) {
+          clearTimeout(sendingResetTimerRef.current);
+        }
+        if (refreshTimerRef.current) {
+          clearTimeout(refreshTimerRef.current);
+        }
+        sendingResetTimerRef.current = setTimeout(() => {
+          sendingResetTimerRef.current = null;
+          sendLockedRef.current = false;
+          setSending(false);
+        }, 220);
+        refreshTimerRef.current = setTimeout(() => {
+          refreshTimerRef.current = null;
           void refreshConversation(false);
-        }, 260);
-        setTimeout(() => {
-          void refreshConversation(false);
-        }, 900);
+        }, 650);
       } catch (err: any) {
+        if (sendingResetTimerRef.current) {
+          clearTimeout(sendingResetTimerRef.current);
+          sendingResetTimerRef.current = null;
+        }
+        if (refreshTimerRef.current) {
+          clearTimeout(refreshTimerRef.current);
+          refreshTimerRef.current = null;
+        }
+        sendLockedRef.current = false;
         removePendingUserMessage(pendingMessageId);
         setDraft(previousDraft);
         setAttachments(previousAttachments);
