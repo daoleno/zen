@@ -1,15 +1,12 @@
 import React from "react";
 import {
-  ActivityIndicator,
   StyleSheet,
-  Text,
   View,
 } from "react-native";
 import type {
   TerminalThemeChrome,
   TerminalThemePalette,
 } from "../../constants/terminalThemes";
-import { Typography } from "../../constants/tokens";
 import {
   MessageBody,
   StreamingMessageBody,
@@ -63,14 +60,6 @@ export function ZenUserMessage({
             compact={hasBody}
           />
         ) : null}
-        {item.pending ? (
-          <View style={[styles.pendingRow, hasBody || item.attachments.length > 0 ? styles.pendingRowSpaced : null]}>
-            <ActivityIndicator size="small" color={chrome.accent} />
-            <Text style={[styles.pendingText, { color: chrome.textMuted }]}>
-              Sending
-            </Text>
-          </View>
-        ) : null}
       </View>
     </View>
   );
@@ -111,20 +100,6 @@ const styles = StyleSheet.create({
     borderWidth: StyleSheet.hairlineWidth,
     paddingHorizontal: 12,
     paddingVertical: 9,
-  },
-  pendingRow: {
-    minHeight: 18,
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 6,
-  },
-  pendingRowSpaced: {
-    marginTop: 8,
-  },
-  pendingText: {
-    fontSize: 11,
-    lineHeight: 15,
-    fontFamily: Typography.uiFontMedium,
   },
   assistantRow: {
     marginBottom: 18,

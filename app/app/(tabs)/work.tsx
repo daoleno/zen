@@ -1,5 +1,13 @@
-import React, { useMemo } from "react";
-import { ScrollView, StyleSheet, Text, View } from "react-native";
+import React, { useMemo, useState } from "react";
+import {
+  Alert,
+  ScrollView,
+  StyleSheet,
+  Text,
+  TouchableOpacity,
+  View,
+} from "react-native";
+import { useFocusEffect } from "expo-router";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { MarkdownView } from "../../components/work/MarkdownView";
 import {
@@ -7,7 +15,18 @@ import {
   Typography,
   useAppColors,
 } from "../../constants/tokens";
+import { getServers, type StoredServer } from "../../services/storage";
+import { wsClient } from "../../services/websocket";
+import { useAgents, type ConnectionState } from "../../store/agents";
 import { useWork, type WorkItem } from "../../store/work";
+
+type BrainGenerator = "auto" | "codex" | "claude";
+
+const BRAIN_GENERATORS: Array<{ value: BrainGenerator; label: string }> = [
+  { value: "auto", label: "Auto" },
+  { value: "codex", label: "Codex" },
+  { value: "claude", label: "Claude" },
+];
 
 type BrainEntry = {
   key: string;
@@ -33,11 +52,17 @@ type BrainSections = {
 export default function BrainScreen() {
   const colors = useAppColors();
   const styles = useMemo(() => createStyles(colors), [colors]);
-  const { state } = useWork();
+  const { state: agentState } = useAgents();
+  const { state: workState, dispatch: workDispatch } = useWork();
+  const [servers, setServers] = useState<StoredServer[]>([]);
+  const [updatingBrainGenerator, setUpdatingBrainGenerator] = useState<
+    string | null
+  >(null);
 
   const brainItems = useMemo(
-    () => Object.values(state.byKey).filter(isBrainItem).sort(sortBrainItems),
-    [state.byKey],
+    () =>
+      Object.values(workState.byKey).filter(isBrainItem).sort(sortBrainItems),
+    [workState.byKey],
   );
   const brainMarkdown = useMemo(
     () => buildBrainMarkdown(brainItems),
@@ -46,6 +71,42 @@ export default function BrainScreen() {
   const markdownValue =
     brainMarkdown ||
     "## Brain\n\n暂无 agent 会话读数。";
+
+  useFocusEffect(
+    React.useCallback(() => {
+      let cancelled = false;
+      void getServers().then((savedServers) => {
+        if (!cancelled) {
+          setServers(savedServers);
+        }
+      });
+      return () => {
+        cancelled = true;
+      };
+    }, []),
+  );
+
+  const handleBrainGenerator = async (
+    serverId: string,
+    generator: BrainGenerator,
+  ) => {
+    setUpdatingBrainGenerator(serverId);
+    try {
+      const selected = await wsClient.setWorkDigestProvider(serverId, generator);
+      workDispatch({
+        type: "WORK_DIGEST_PROVIDER_SET",
+        serverId,
+        provider: normalizeBrainGenerator(selected),
+      });
+    } catch (error: any) {
+      Alert.alert(
+        "Brain generator",
+        error?.message || "Could not update the Brain generator.",
+      );
+    } finally {
+      setUpdatingBrainGenerator(null);
+    }
+  };
 
   return (
     <SafeAreaView style={styles.screen} edges={["top"]}>
@@ -57,10 +118,99 @@ export default function BrainScreen() {
         contentContainerStyle={styles.contentContainer}
         showsVerticalScrollIndicator={false}
       >
+        <BrainGeneratorControls
+          servers={servers}
+          digestProviderByServer={workState.digestProviderByServer}
+          connectionStates={agentState.serverConnections}
+          updatingServerId={updatingBrainGenerator}
+          onChange={handleBrainGenerator}
+        />
         <MarkdownView value={markdownValue} />
       </ScrollView>
     </SafeAreaView>
   );
+}
+
+function BrainGeneratorControls({
+  servers,
+  digestProviderByServer,
+  connectionStates,
+  updatingServerId,
+  onChange,
+}: {
+  servers: StoredServer[];
+  digestProviderByServer: Record<string, string>;
+  connectionStates: Record<string, ConnectionState>;
+  updatingServerId: string | null;
+  onChange(serverId: string, generator: BrainGenerator): void;
+}) {
+  const colors = useAppColors();
+  const styles = useMemo(() => createStyles(colors), [colors]);
+  if (servers.length === 0) {
+    return null;
+  }
+
+  return (
+    <View style={styles.generatorPanel}>
+      {servers.map((server) => {
+        const selected = normalizeBrainGenerator(
+          digestProviderByServer[server.id],
+        );
+        const connected = connectionStates[server.id] === "connected";
+        const updating = updatingServerId === server.id;
+        return (
+          <View key={server.id} style={styles.generatorRow}>
+            {servers.length > 1 ? (
+              <Text style={styles.generatorServer} numberOfLines={1}>
+                {server.name}
+              </Text>
+            ) : null}
+            <View style={styles.generatorSegments}>
+              {BRAIN_GENERATORS.map((option) => {
+                const active = selected === option.value;
+                return (
+                  <TouchableOpacity
+                    key={option.value}
+                    style={[
+                      styles.generatorSegment,
+                      active && styles.generatorSegmentActive,
+                      (!connected || updating) &&
+                        styles.generatorSegmentDisabled,
+                    ]}
+                    onPress={() => onChange(server.id, option.value)}
+                    disabled={!connected || updating}
+                    activeOpacity={0.82}
+                  >
+                    <Text
+                      style={[
+                        styles.generatorSegmentText,
+                        active && styles.generatorSegmentTextActive,
+                      ]}
+                    >
+                      {option.label}
+                    </Text>
+                  </TouchableOpacity>
+                );
+              })}
+            </View>
+          </View>
+        );
+      })}
+    </View>
+  );
+}
+
+function normalizeBrainGenerator(value?: string): BrainGenerator {
+  switch ((value || "").trim().toLowerCase()) {
+    case "codex":
+      return "codex";
+    case "claude":
+    case "claude-code":
+    case "claude code":
+      return "claude";
+    default:
+      return "auto";
+  }
 }
 
 function buildBrainMarkdown(items: WorkItem[]): string {
@@ -596,6 +746,53 @@ function createStyles(colors: typeof Colors) {
     },
     contentContainer: {
       paddingBottom: 20,
+    },
+    generatorPanel: {
+      gap: 6,
+      marginHorizontal: 16,
+      marginBottom: 2,
+    },
+    generatorRow: {
+      flexDirection: "row",
+      alignItems: "center",
+      gap: 8,
+    },
+    generatorServer: {
+      width: 92,
+      color: colors.textSecondary,
+      fontFamily: Typography.uiFontMedium,
+      fontSize: 12,
+      opacity: 0.72,
+    },
+    generatorSegments: {
+      flex: 1,
+      flexDirection: "row",
+      gap: 4,
+    },
+    generatorSegment: {
+      flex: 1,
+      minHeight: 30,
+      alignItems: "center",
+      justifyContent: "center",
+      borderRadius: 8,
+      borderWidth: StyleSheet.hairlineWidth,
+      borderColor: colors.borderSubtle,
+      backgroundColor: colors.surfaceSubtle,
+    },
+    generatorSegmentActive: {
+      borderColor: colors.accent,
+      backgroundColor: colors.surfaceActive,
+    },
+    generatorSegmentDisabled: {
+      opacity: 0.44,
+    },
+    generatorSegmentText: {
+      color: colors.textSecondary,
+      fontFamily: Typography.uiFontMedium,
+      fontSize: 12,
+    },
+    generatorSegmentTextActive: {
+      color: colors.textPrimary,
     },
   });
 }

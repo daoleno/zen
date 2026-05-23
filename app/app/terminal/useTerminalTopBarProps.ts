@@ -112,7 +112,7 @@ function buildGitDiffPresentation({
 
   const toneColor =
     summary.tone === "clean"
-      ? terminalTheme.green
+      ? chrome.textMuted
       : summary.tone === "dirty"
         ? terminalTheme.yellow
         : summary.tone === "error"

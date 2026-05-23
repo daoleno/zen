@@ -100,35 +100,9 @@ export function TerminalTopBar({
       >
         <Ionicons
           name="git-branch-outline"
-          size={13}
+          size={20}
           color={gitDiffPresentation.iconColor}
         />
-        {gitDiffPresentation.additionsText || gitDiffPresentation.deletionsText ? (
-          <View style={styles.gitDiffStats}>
-            {gitDiffPresentation.additionsText ? (
-              <Text
-                style={[
-                  styles.gitDiffStat,
-                  { color: gitDiffPresentation.additionsColor || chrome.textMuted },
-                ]}
-                numberOfLines={1}
-              >
-                {gitDiffPresentation.additionsText}
-              </Text>
-            ) : null}
-            {gitDiffPresentation.deletionsText ? (
-              <Text
-                style={[
-                  styles.gitDiffStat,
-                  { color: gitDiffPresentation.deletionsColor || chrome.textMuted },
-                ]}
-                numberOfLines={1}
-              >
-                {gitDiffPresentation.deletionsText}
-              </Text>
-            ) : null}
-          </View>
-        ) : null}
       </TouchableOpacity>
 
       {isCodexAgent ? (
@@ -193,28 +167,11 @@ const styles = StyleSheet.create({
     transform: [{ translateY: -0.5 }],
   },
   gitDiffButton: {
-    minWidth: 32,
-    maxWidth: 94,
+    width: 32,
     height: 32,
-    paddingHorizontal: 6,
     borderRadius: 8,
-    flexDirection: "row",
     alignItems: "center",
     justifyContent: "center",
-    gap: 4,
-  },
-  gitDiffStats: {
-    minWidth: 0,
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 3,
-  },
-  gitDiffStat: {
-    flexShrink: 1,
-    fontSize: 11,
-    lineHeight: 13,
-    fontFamily: Typography.uiFontMedium,
-    includeFontPadding: false,
   },
   disabled: {
     opacity: 0.48,

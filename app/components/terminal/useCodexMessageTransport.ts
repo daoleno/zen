@@ -52,14 +52,19 @@ export function useCodexMessageTransport({
         })),
       });
       setSending(true);
-      scrollToLatest(false, 0);
       setDraft("");
       setAttachments([]);
+      scrollToLatest(false, 0);
+      setTimeout(() => scrollToLatest(false, 0), 40);
       try {
         wsClient.sendInput(serverId, agentId, `${text}\n`);
+        setTimeout(() => setSending(false), 140);
         setTimeout(() => {
-          void refreshConversation(false).finally(() => setSending(false));
-        }, 600);
+          void refreshConversation(false);
+        }, 260);
+        setTimeout(() => {
+          void refreshConversation(false);
+        }, 900);
       } catch (err: any) {
         removePendingUserMessage(pendingMessageId);
         setDraft(previousDraft);

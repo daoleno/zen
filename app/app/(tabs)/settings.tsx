@@ -27,21 +27,13 @@ import { Colors, Typography, statusColor, useAppColors } from "../../constants/t
 import { importConnection } from "../../services/importConnection";
 import { wsClient } from "../../services/websocket";
 import { ConnectionState, useAgents } from "../../store/agents";
-import { useWork } from "../../store/work";
 import * as Storage from "../../services/storage";
 import { connectionIssueAccent } from "../../services/connectionIssue";
 
 const QR_BARCODE_TYPES: BarcodeType[] = ["qr"];
-type BrainGenerator = "auto" | "codex" | "claude";
-const BRAIN_GENERATORS: Array<{ value: BrainGenerator; label: string }> = [
-  { value: "auto", label: "Auto" },
-  { value: "codex", label: "Codex" },
-  { value: "claude", label: "Claude Code" },
-];
 
 export default function SettingsScreen() {
   const { state, dispatch } = useAgents();
-  const { state: workState, dispatch: workDispatch } = useWork();
   const colors = useAppColors();
   const styles = useMemo(() => createStyles(colors), [colors]);
   const params = useLocalSearchParams<{
@@ -58,9 +50,6 @@ export default function SettingsScreen() {
   const [draftEndpoint, setDraftEndpoint] = useState("");
   const [draftImportValue, setDraftImportValue] = useState("");
   const [expandedServer, setExpandedServer] = useState<string | null>(null);
-  const [updatingBrainGenerator, setUpdatingBrainGenerator] = useState<
-    string | null
-  >(null);
   const [handledAutoOpenToken, setHandledAutoOpenToken] = useState<
     string | null
   >(null);
@@ -272,28 +261,6 @@ export default function SettingsScreen() {
         },
       },
     ]);
-  };
-
-  const handleBrainGenerator = async (
-    serverId: string,
-    generator: BrainGenerator,
-  ) => {
-    setUpdatingBrainGenerator(serverId);
-    try {
-      const selected = await wsClient.setWorkDigestProvider(serverId, generator);
-      workDispatch({
-        type: "WORK_DIGEST_PROVIDER_SET",
-        serverId,
-        provider: normalizeBrainGenerator(selected),
-      });
-    } catch (error: any) {
-      Alert.alert(
-        "Brain generator",
-        error?.message || "Could not update the Brain generator.",
-      );
-    } finally {
-      setUpdatingBrainGenerator(null);
-    }
   };
 
   const toggleServerExpand = (serverId: string) => {
@@ -536,67 +503,6 @@ export default function SettingsScreen() {
           <Ionicons name="add" size={16} color={colors.textSecondary} />
           <Text style={styles.addBtnText}>Pair Server</Text>
         </TouchableOpacity>
-
-        {/* Brain */}
-        <Text style={styles.sectionLabel}>Brain</Text>
-        <View style={styles.generatorPanel}>
-          {servers.length === 0 ? (
-            <View style={styles.emptyCard}>
-              <Text style={styles.emptyText}>No server</Text>
-            </View>
-          ) : (
-            servers.map((server) => {
-              const selected = normalizeBrainGenerator(
-                workState.digestProviderByServer[server.id],
-              );
-              const connected =
-                state.serverConnections[server.id] === "connected";
-              const updating = updatingBrainGenerator === server.id;
-              return (
-                <View key={server.id} style={styles.generatorRow}>
-                  <View style={styles.generatorInfo}>
-                    <Text style={styles.generatorTitle}>
-                      {servers.length === 1 ? "Generator" : server.name}
-                    </Text>
-                    <Text style={styles.generatorValue}>
-                      {brainGeneratorLabel(selected)}
-                    </Text>
-                  </View>
-                  <View style={styles.generatorSegments}>
-                    {BRAIN_GENERATORS.map((option) => {
-                      const active = selected === option.value;
-                      return (
-                        <TouchableOpacity
-                          key={option.value}
-                          style={[
-                            styles.generatorSegment,
-                            active && styles.generatorSegmentActive,
-                            (!connected || updating) &&
-                              styles.generatorSegmentDisabled,
-                          ]}
-                          onPress={() =>
-                            void handleBrainGenerator(server.id, option.value)
-                          }
-                          disabled={!connected || updating}
-                          activeOpacity={0.82}
-                        >
-                          <Text
-                            style={[
-                              styles.generatorSegmentText,
-                              active && styles.generatorSegmentTextActive,
-                            ]}
-                          >
-                            {option.label}
-                          </Text>
-                        </TouchableOpacity>
-                      );
-                    })}
-                  </View>
-                </View>
-              );
-            })
-          )}
-        </View>
 
         <Text style={styles.version}>Zen v0.1.0</Text>
       </ScrollView>
@@ -894,30 +800,6 @@ function ServerNoticeCard({
   );
 }
 
-function normalizeBrainGenerator(value?: string): BrainGenerator {
-  switch ((value || "").trim().toLowerCase()) {
-    case "codex":
-      return "codex";
-    case "claude":
-    case "claude-code":
-    case "claude code":
-      return "claude";
-    default:
-      return "auto";
-  }
-}
-
-function brainGeneratorLabel(value: BrainGenerator): string {
-  switch (value) {
-    case "codex":
-      return "Codex";
-    case "claude":
-      return "Claude Code";
-    default:
-      return "Auto";
-  }
-}
-
 function connectionLabel(state: ConnectionState): string {
   switch (state) {
     case "connected":
@@ -1148,67 +1030,6 @@ function createStyles(colors: typeof Colors) {
     fontSize: 13,
     fontFamily: Typography.uiFont,
     opacity: 0.5,
-  },
-
-  // Brain generator
-  generatorPanel: {
-    gap: 8,
-  },
-  generatorRow: {
-    borderRadius: 12,
-    paddingHorizontal: 12,
-    paddingVertical: 12,
-    backgroundColor: colors.surfaceSubtle,
-    borderWidth: StyleSheet.hairlineWidth,
-    borderColor: colors.borderSubtle,
-  },
-  generatorInfo: {
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "space-between",
-    gap: 12,
-    marginBottom: 10,
-  },
-  generatorTitle: {
-    flex: 1,
-    color: colors.textPrimary,
-    fontSize: 14,
-    fontFamily: Typography.uiFontMedium,
-  },
-  generatorValue: {
-    color: colors.textSecondary,
-    fontSize: 12,
-    fontFamily: Typography.uiFontMedium,
-    opacity: 0.72,
-  },
-  generatorSegments: {
-    flexDirection: "row",
-    gap: 6,
-  },
-  generatorSegment: {
-    flex: 1,
-    minHeight: 34,
-    borderRadius: 8,
-    alignItems: "center",
-    justifyContent: "center",
-    backgroundColor: colors.surfacePressed,
-    borderWidth: StyleSheet.hairlineWidth,
-    borderColor: colors.borderSubtle,
-  },
-  generatorSegmentActive: {
-    backgroundColor: colors.surfaceActive,
-    borderColor: colors.accent,
-  },
-  generatorSegmentDisabled: {
-    opacity: 0.42,
-  },
-  generatorSegmentText: {
-    color: colors.textSecondary,
-    fontSize: 12,
-    fontFamily: Typography.uiFontMedium,
-  },
-  generatorSegmentTextActive: {
-    color: colors.textPrimary,
   },
 
   version: {
