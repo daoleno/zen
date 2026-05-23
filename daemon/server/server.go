@@ -100,6 +100,7 @@ type clientMessage struct {
 	Col          int                    `json:"col"`
 	Row          int                    `json:"row"`
 	Lines        int                    `json:"lines"`
+	ProcessID    int                    `json:"process_id"`
 	Path         string                 `json:"path"`
 	ID           string                 `json:"id"`
 	Project      string                 `json:"project"`
@@ -659,7 +660,11 @@ func (s *Server) handleCodexConversation(conn *websocket.Conn, raw clientMessage
 			Cwd:       raw.Cwd,
 			Command:   raw.Command,
 			StartedAt: startedAt,
+			ProcessID: raw.ProcessID,
 		}
+	}
+	if raw.ProcessID > 0 && agent.ProcessID == 0 {
+		agent.ProcessID = raw.ProcessID
 	}
 	if !startedAt.IsZero() && (!agentFromWatcher || agent.StartedAt.IsZero()) {
 		agent.StartedAt = startedAt

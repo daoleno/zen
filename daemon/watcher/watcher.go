@@ -126,7 +126,7 @@ func (w *Watcher) poll() {
 		}
 		agent.Cwd = win.cwd
 		agent.Project = projectNameFromPath(win.cwd)
-		agent.Command, agent.StartedAt = detectAgentProcess(win.command, win.panePID, processes, processSnapshotAt)
+		agent.Command, agent.StartedAt, agent.ProcessID = detectAgentProcess(win.command, win.panePID, processes, processSnapshotAt)
 
 		if contentChanged {
 			agent.StaleCount = 0
@@ -650,11 +650,13 @@ func snapshotProcesses() map[int]processInfo {
 	return processes
 }
 
-func detectAgentProcess(baseCommand string, panePID int, processes map[int]processInfo, fallbackAt time.Time) (string, time.Time) {
+func detectAgentProcess(baseCommand string, panePID int, processes map[int]processInfo, fallbackAt time.Time) (string, time.Time, int) {
 	command := normalizeCommand(baseCommand)
 	baseStartedAt := time.Time{}
+	basePID := 0
 	if proc, ok := processes[panePID]; ok {
 		baseStartedAt = proc.startedAt
+		basePID = proc.pid
 	}
 
 	if panePID > 0 && len(processes) > 0 {
@@ -662,17 +664,35 @@ func detectAgentProcess(baseCommand string, panePID int, processes map[int]proce
 		if proc, ok := processes[panePID]; ok {
 			scan = append([]processInfo{proc}, scan...)
 		}
+		resumeSeen := false
+		bestScore := -1
+		var bestCommand string
+		var bestProcess processInfo
 		for _, proc := range scan {
 			if detected := agentCommandFromProcess(proc); detected != "" {
-				return detected, firstNonZeroTime(proc.startedAt, fallbackAt)
+				if isCodexResumeCommandLine(detected) {
+					resumeSeen = true
+				}
+				score := agentProcessScore(proc, detected)
+				if bestScore == -1 || score > bestScore {
+					bestScore = score
+					bestCommand = detected
+					bestProcess = proc
+				}
 			}
+		}
+		if bestCommand != "" {
+			if bestCommand == "codex" && resumeSeen {
+				bestCommand = "codex resume"
+			}
+			return bestCommand, firstNonZeroTime(bestProcess.startedAt, fallbackAt), bestProcess.pid
 		}
 	}
 
 	if isAgentCommand(command) {
-		return command, fallbackAt
+		return command, fallbackAt, basePID
 	}
-	return command, baseStartedAt
+	return command, baseStartedAt, basePID
 }
 
 func agentCommandFromProcess(proc processInfo) string {
@@ -692,6 +712,28 @@ func agentCommandFromProcess(proc processInfo) string {
 		return "codex"
 	}
 	return ""
+}
+
+func agentProcessScore(proc processInfo, detected string) int {
+	lowerComm := normalizeCommand(proc.comm)
+	switch {
+	case detected == "codex" || detected == "codex resume":
+		if lowerComm == "codex" {
+			return 100
+		}
+		return 50
+	case detected == "claude" || detected == "claude-code" || detected == "cc":
+		if lowerComm == detected {
+			return 100
+		}
+		return 50
+	default:
+		return 0
+	}
+}
+
+func isCodexResumeCommandLine(command string) bool {
+	return strings.TrimSpace(strings.ToLower(command)) == "codex resume"
 }
 
 func isAgentCommand(command string) bool {

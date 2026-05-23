@@ -19,6 +19,7 @@ export interface Agent {
   last_output_lines: string[];
   started_at?: number;
   updated_at: number;
+  process_id?: number;
 }
 
 export type ConnectionState = 'offline' | 'connecting' | 'connected';
@@ -42,6 +43,7 @@ type RawAgent = {
   last_output_lines?: string[];
   started_at?: string | number | Date;
   updated_at?: string | number | Date;
+  process_id?: number;
 };
 
 type Action =
@@ -180,6 +182,9 @@ function normalizeAgent(
     last_output_lines: Array.isArray(agent.last_output_lines) ? agent.last_output_lines : [],
     started_at: agent.started_at === undefined ? undefined : normalizeTimestamp(agent.started_at),
     updated_at: normalizeTimestamp(agent.updated_at),
+    process_id: typeof agent.process_id === 'number' && Number.isFinite(agent.process_id)
+      ? agent.process_id
+      : undefined,
   };
 }
 

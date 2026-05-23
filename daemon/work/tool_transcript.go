@@ -153,6 +153,9 @@ func findCodexTranscript(agent classifier.Agent, now time.Time) (codexTranscript
 	if len(candidates) == 0 {
 		return codexTranscriptCandidate{}, false, nil
 	}
+	if matched, ok := matchCodexTranscriptToAgentProcess(candidates, agent.ProcessID); ok {
+		return matched, true, nil
+	}
 	if matched, ok := matchCodexTranscriptToAgentStart(candidates, agent.StartedAt); ok {
 		return matched, true, nil
 	}
@@ -160,6 +163,40 @@ func findCodexTranscript(agent classifier.Agent, now time.Time) (codexTranscript
 		return latestUpdatedCodexTranscript(candidates), true, nil
 	}
 	return codexTranscriptCandidate{}, false, nil
+}
+
+func matchCodexTranscriptToAgentProcess(candidates []codexTranscriptCandidate, processID int) (codexTranscriptCandidate, bool) {
+	if processID <= 0 {
+		return codexTranscriptCandidate{}, false
+	}
+	return matchCodexTranscriptToOpenRollouts(candidates, openCodexRolloutPathsForProcess(processID))
+}
+
+func matchCodexTranscriptToOpenRollouts(candidates []codexTranscriptCandidate, paths []string) (codexTranscriptCandidate, bool) {
+	if len(candidates) == 0 || len(paths) == 0 {
+		return codexTranscriptCandidate{}, false
+	}
+
+	openPaths := make(map[string]struct{}, len(paths))
+	for _, path := range paths {
+		if normalized := normalizeOpenFilePath(path); normalized != "" {
+			openPaths[normalized] = struct{}{}
+		}
+	}
+	if len(openPaths) == 0 {
+		return codexTranscriptCandidate{}, false
+	}
+
+	var matched []codexTranscriptCandidate
+	for _, candidate := range candidates {
+		if _, ok := openPaths[normalizeOpenFilePath(candidate.Path)]; ok {
+			matched = append(matched, candidate)
+		}
+	}
+	if len(matched) == 0 {
+		return codexTranscriptCandidate{}, false
+	}
+	return latestUpdatedCodexTranscript(matched), true
 }
 
 func matchCodexTranscriptToAgentStart(candidates []codexTranscriptCandidate, startedAt time.Time) (codexTranscriptCandidate, bool) {
@@ -199,6 +236,100 @@ func latestUpdatedCodexTranscript(candidates []codexTranscriptCandidate) codexTr
 		}
 	}
 	return best
+}
+
+func openCodexRolloutPathsForProcess(processID int) []string {
+	if paths := procOpenCodexRolloutPaths(processID); len(paths) > 0 {
+		return paths
+	}
+	return lsofOpenCodexRolloutPaths(processID)
+}
+
+func procOpenCodexRolloutPaths(processID int) []string {
+	if processID <= 0 {
+		return nil
+	}
+	entries, err := os.ReadDir(filepath.Join("/proc", strconv.Itoa(processID), "fd"))
+	if err != nil {
+		return nil
+	}
+	var paths []string
+	for _, entry := range entries {
+		path, err := os.Readlink(filepath.Join("/proc", strconv.Itoa(processID), "fd", entry.Name()))
+		if err != nil {
+			continue
+		}
+		if isCodexRolloutPath(path) {
+			paths = append(paths, normalizeOpenFilePath(path))
+		}
+	}
+	return uniqueStrings(paths)
+}
+
+func lsofOpenCodexRolloutPaths(processID int) []string {
+	if processID <= 0 {
+		return nil
+	}
+	lsof, err := exec.LookPath("lsof")
+	if err != nil {
+		return nil
+	}
+	out, err := exec.Command(lsof, "-w", "-p", strconv.Itoa(processID), "-Fn").Output()
+	if err != nil {
+		return nil
+	}
+	return parseLsofCodexRolloutPaths(string(out))
+}
+
+func parseLsofCodexRolloutPaths(output string) []string {
+	var paths []string
+	for _, line := range strings.Split(output, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || !strings.HasPrefix(line, "n") {
+			continue
+		}
+		path := strings.TrimSpace(strings.TrimPrefix(line, "n"))
+		if isCodexRolloutPath(path) {
+			paths = append(paths, normalizeOpenFilePath(path))
+		}
+	}
+	return uniqueStrings(paths)
+}
+
+func isCodexRolloutPath(path string) bool {
+	normalized := filepath.ToSlash(normalizeOpenFilePath(path))
+	return strings.Contains(normalized, "/.codex/sessions/") &&
+		strings.HasPrefix(filepath.Base(normalized), "rollout-") &&
+		strings.HasSuffix(normalized, ".jsonl")
+}
+
+func normalizeOpenFilePath(path string) string {
+	path = strings.TrimSpace(path)
+	path = strings.TrimSuffix(path, " (deleted)")
+	if path == "" {
+		return ""
+	}
+	return filepath.Clean(path)
+}
+
+func uniqueStrings(values []string) []string {
+	if len(values) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(values))
+	seen := map[string]struct{}{}
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value == "" {
+			continue
+		}
+		if _, exists := seen[value]; exists {
+			continue
+		}
+		seen[value] = struct{}{}
+		out = append(out, value)
+	}
+	return out
 }
 
 func isCodexResumeCommand(command string) bool {

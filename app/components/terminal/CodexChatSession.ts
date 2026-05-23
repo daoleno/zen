@@ -69,7 +69,8 @@ export function useCodexChatSession({
   screenFocused,
 }: UseCodexChatSessionInput) {
   const sessionStartedAt = normalizeSessionTimestamp(agent?.started_at);
-  const cacheKey = `${serverId}:${agentId}:${sessionStartedAt || ""}`;
+  const agentProcessId = normalizeProcessID(agent?.process_id);
+  const cacheKey = `${serverId}:${agentId}:${sessionStartedAt || ""}:${agentProcessId || ""}`;
   const composerCacheKey = `${serverId}:${agentId}`;
   const requestSeqRef = useRef(0);
   const refreshInFlightRef = useRef<RefreshInFlight | null>(null);
@@ -134,6 +135,9 @@ export function useCodexChatSession({
     pendingUserMessagesState.cacheKey === composerCacheKey
       ? pendingUserMessagesState.value
       : [];
+  const presentationCacheKey = `${cacheKey}:${
+    conversation?.session_id || conversation?.path || ""
+  }`;
 
   const setConversation = useCallback(
     (nextConversation: CodexConversation | null) => {
@@ -292,6 +296,7 @@ export function useCodexChatSession({
           command: agent?.command,
           name: agent?.name,
           startedAt: agent?.started_at,
+          processId: agent?.process_id,
         });
         if (requestSeqRef.current !== requestSeq) {
           return;
@@ -322,6 +327,7 @@ export function useCodexChatSession({
       agent?.command,
       agent?.cwd,
       agent?.name,
+      agent?.process_id,
       agent?.started_at,
       agentId,
       cacheKey,
@@ -421,7 +427,7 @@ export function useCodexChatSession({
   }, [composerCacheKey, conversation?.events, pendingUserMessages.length]);
 
   return {
-    cacheKey,
+    cacheKey: presentationCacheKey,
     conversation,
     loading,
     error,
@@ -446,6 +452,12 @@ function comparableUserMessageText(value: string) {
 }
 
 function normalizeSessionTimestamp(value: unknown): string {
+  return typeof value === "number" && Number.isFinite(value) && value > 0
+    ? String(Math.round(value))
+    : "";
+}
+
+function normalizeProcessID(value: unknown): string {
   return typeof value === "number" && Number.isFinite(value) && value > 0
     ? String(Math.round(value))
     : "";

@@ -141,9 +141,9 @@ func TestDetectAgentProcessPrefersCodexChildStartTime(t *testing.T) {
 		20: {pid: 20, ppid: 10, startedAt: codexStarted, comm: "codex", args: "codex"},
 	}
 
-	command, startedAt := detectAgentProcess("codex", 10, processes, codexStarted.Add(5*time.Second))
-	if command != "codex" || !startedAt.Equal(codexStarted) {
-		t.Fatalf("detectAgentProcess() = (%q, %s), want codex child start %s", command, startedAt, codexStarted)
+	command, startedAt, pid := detectAgentProcess("codex", 10, processes, codexStarted.Add(5*time.Second))
+	if command != "codex" || !startedAt.Equal(codexStarted) || pid != 20 {
+		t.Fatalf("detectAgentProcess() = (%q, %s, %d), want codex child start %s pid 20", command, startedAt, pid, codexStarted)
 	}
 }
 
@@ -155,9 +155,25 @@ func TestDetectAgentProcessPreservesCodexResumeIntent(t *testing.T) {
 		20: {pid: 20, ppid: 10, startedAt: codexStarted, comm: "node", args: "node /home/user/.local/bin/codex --dangerously-bypass-approvals-and-sandbox resume"},
 	}
 
-	command, startedAt := detectAgentProcess("node", 10, processes, codexStarted.Add(5*time.Second))
-	if command != "codex resume" || !startedAt.Equal(codexStarted) {
-		t.Fatalf("detectAgentProcess() = (%q, %s), want codex resume child start %s", command, startedAt, codexStarted)
+	command, startedAt, pid := detectAgentProcess("node", 10, processes, codexStarted.Add(5*time.Second))
+	if command != "codex resume" || !startedAt.Equal(codexStarted) || pid != 20 {
+		t.Fatalf("detectAgentProcess() = (%q, %s, %d), want codex resume child start %s pid 20", command, startedAt, pid, codexStarted)
+	}
+}
+
+func TestDetectAgentProcessPrefersNativeCodexChildOverNodeWrapper(t *testing.T) {
+	shellStarted := time.Date(2026, 5, 21, 8, 0, 0, 0, time.UTC)
+	wrapperStarted := shellStarted.Add(30 * time.Minute)
+	nativeStarted := wrapperStarted.Add(time.Second)
+	processes := map[int]processInfo{
+		10: {pid: 10, ppid: 1, startedAt: shellStarted, comm: "zsh", args: "zsh"},
+		20: {pid: 20, ppid: 10, startedAt: wrapperStarted, comm: "node", args: "node /home/user/.local/bin/codex --dangerously-bypass-approvals-and-sandbox"},
+		30: {pid: 30, ppid: 20, startedAt: nativeStarted, comm: "codex", args: "/home/user/.local/share/codex/codex --dangerously-bypass-approvals-and-sandbox"},
+	}
+
+	command, startedAt, pid := detectAgentProcess("node", 10, processes, nativeStarted.Add(5*time.Second))
+	if command != "codex" || !startedAt.Equal(nativeStarted) || pid != 30 {
+		t.Fatalf("detectAgentProcess() = (%q, %s, %d), want native codex start %s pid 30", command, startedAt, pid, nativeStarted)
 	}
 }
 
@@ -167,8 +183,8 @@ func TestDetectAgentProcessUsesFallbackForCodexWithoutProcessMatch(t *testing.T)
 		10: {pid: 10, ppid: 1, startedAt: fallbackAt.Add(-2 * time.Hour), comm: "zsh", args: "zsh"},
 	}
 
-	command, startedAt := detectAgentProcess("codex", 10, processes, fallbackAt)
-	if command != "codex" || !startedAt.Equal(fallbackAt) {
-		t.Fatalf("detectAgentProcess() = (%q, %s), want codex fallback %s", command, startedAt, fallbackAt)
+	command, startedAt, pid := detectAgentProcess("codex", 10, processes, fallbackAt)
+	if command != "codex" || !startedAt.Equal(fallbackAt) || pid != 10 {
+		t.Fatalf("detectAgentProcess() = (%q, %s, %d), want codex fallback %s pid 10", command, startedAt, pid, fallbackAt)
 	}
 }

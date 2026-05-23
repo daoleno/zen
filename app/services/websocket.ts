@@ -725,6 +725,7 @@ class MultiServerWebSocketClient {
       command?: string;
       name?: string;
       startedAt?: number;
+      processId?: number;
     },
   ) {
     const requestId = `${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
@@ -768,6 +769,7 @@ class MultiServerWebSocketClient {
         command: options.command,
         name: options.name,
         started_at: options.startedAt,
+        process_id: options.processId,
       });
     });
   }

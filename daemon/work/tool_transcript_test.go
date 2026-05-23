@@ -177,6 +177,63 @@ func TestLatestUpdatedCodexTranscriptSupportsResume(t *testing.T) {
 	}
 }
 
+func TestMatchCodexTranscriptToOpenRolloutsUsesNewestOpenFile(t *testing.T) {
+	base := time.Date(2026, 5, 21, 8, 0, 0, 0, time.UTC)
+	candidates := []codexTranscriptCandidate{
+		{
+			Row:     codexThreadRow{ID: "old-thread"},
+			Path:    "/home/user/.codex/sessions/2026/05/21/rollout-old.jsonl",
+			Updated: base.Add(2 * time.Minute),
+		},
+		{
+			Row:     codexThreadRow{ID: "new-thread"},
+			Path:    "/home/user/.codex/sessions/2026/05/21/rollout-new.jsonl",
+			Updated: base.Add(10 * time.Minute),
+		},
+		{
+			Row:     codexThreadRow{ID: "other-process-thread"},
+			Path:    "/home/user/.codex/sessions/2026/05/21/rollout-other.jsonl",
+			Updated: base.Add(20 * time.Minute),
+		},
+	}
+
+	got, ok := matchCodexTranscriptToOpenRollouts(candidates, []string{
+		"/home/user/.codex/sessions/2026/05/21/rollout-old.jsonl",
+		"/home/user/.codex/sessions/2026/05/21/rollout-new.jsonl",
+	})
+	if !ok {
+		t.Fatal("expected an open rollout match")
+	}
+	if got.Row.ID != "new-thread" {
+		t.Fatalf("matched %q, want new-thread", got.Row.ID)
+	}
+}
+
+func TestParseLsofCodexRolloutPathsFiltersCodexRollouts(t *testing.T) {
+	output := strings.Join([]string{
+		"p123",
+		"n/home/user/.codex/state_5.sqlite",
+		"n/home/user/.codex/sessions/2026/05/21/rollout-2026-05-21T08-00-00-old.jsonl",
+		"n/home/user/.codex/sessions/2026/05/21/rollout-2026-05-21T08-10-00-new.jsonl (deleted)",
+		"n/home/user/tmp/rollout-not-codex.jsonl",
+		"n/home/user/.codex/sessions/2026/05/21/not-a-rollout.jsonl",
+	}, "\n")
+
+	got := parseLsofCodexRolloutPaths(output)
+	want := []string{
+		"/home/user/.codex/sessions/2026/05/21/rollout-2026-05-21T08-00-00-old.jsonl",
+		"/home/user/.codex/sessions/2026/05/21/rollout-2026-05-21T08-10-00-new.jsonl",
+	}
+	if len(got) != len(want) {
+		t.Fatalf("paths = %#v, want %#v", got, want)
+	}
+	for index := range want {
+		if got[index] != want[index] {
+			t.Fatalf("paths[%d] = %q, want %q; all %#v", index, got[index], want[index], got)
+		}
+	}
+}
+
 func TestSummarizeClaudeTranscript_ExtractsWorkflowSignals(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "claude.jsonl")
 	writeJSONL(t, path,
