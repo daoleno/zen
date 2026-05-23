@@ -31,7 +31,6 @@ interface UseTerminalViewportPropsInput {
   onCtrlArmedChange(next: boolean): void;
   viewportModel: ReturnType<typeof useTerminalViewportModel>;
   hasTerminalRoute: boolean;
-  isCodexAgent: boolean;
   outputBottomInset: number;
   accessoryBottomOffset: number;
   serverUrl?: string;
@@ -60,7 +59,6 @@ export function useTerminalViewportProps({
   onCtrlArmedChange,
   viewportModel,
   hasTerminalRoute,
-  isCodexAgent,
   outputBottomInset,
   accessoryBottomOffset,
   serverUrl,
@@ -75,11 +73,6 @@ export function useTerminalViewportProps({
     requestAnimationFrame(() => {
       terminalRef.current?.resumeInput();
     });
-  }, [sessionActions.applyCodexRenderMode, terminalRef]);
-
-  const handleSwitchToChat = useCallback(() => {
-    terminalRef.current?.blur();
-    void sessionActions.applyCodexRenderMode("chat");
   }, [sessionActions.applyCodexRenderMode, terminalRef]);
 
   const handleRetryConnection = useCallback(() => {
@@ -111,7 +104,6 @@ export function useTerminalViewportProps({
       terminalStateDetail: viewportModel.terminalState.detail,
       terminalStateHint: viewportModel.terminalState.hint,
       hasTerminalRoute,
-      isCodexAgent,
       outputBottomInset,
       accessoryVisible: viewportModel.accessoryVisible,
       accessoryBottomOffset,
@@ -119,7 +111,6 @@ export function useTerminalViewportProps({
       daemonId: daemonId || "",
       keyboardVisible,
       onSwitchToTerminal: handleSwitchToTerminal,
-      onSwitchToChat: handleSwitchToChat,
       onOpenGitDiff: openGitDiff,
       onRetryConnection: handleRetryConnection,
       onAccessoryLayout,
@@ -135,10 +126,8 @@ export function useTerminalViewportProps({
       daemonId,
       gitDiff.chip,
       handleRetryConnection,
-      handleSwitchToChat,
       handleSwitchToTerminal,
       hasTerminalRoute,
-      isCodexAgent,
       keyboardVisible,
       onAccessoryLayout,
       onCtrlArmedChange,

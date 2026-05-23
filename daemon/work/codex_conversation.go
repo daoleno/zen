@@ -43,6 +43,7 @@ type CodexConversation struct {
 	SessionID string                   `json:"session_id,omitempty"`
 	CWD       string                   `json:"cwd,omitempty"`
 	Updated   *time.Time               `json:"updated_at,omitempty"`
+	Active    *bool                    `json:"active,omitempty"`
 	Events    []CodexConversationEvent `json:"events"`
 }
 
@@ -203,6 +204,8 @@ type codexConversationBuilder struct {
 	sourceID               string
 	sessionID              string
 	cwd                    string
+	lifecycleSeen          bool
+	taskActive             bool
 	events                 []CodexConversationEvent
 	commandByCall          map[string]string
 	commandCallBySession   map[string]string
@@ -282,7 +285,12 @@ func (b *codexConversationBuilder) consumeEvent(lineNumber int, timestamp string
 
 	switch payload.Type {
 	case "task_started":
+		b.lifecycleSeen = true
+		b.taskActive = true
 		b.addStatus(lineNumber, timestamp, "Task started", "")
+	case "task_complete", "turn_aborted":
+		b.lifecycleSeen = true
+		b.taskActive = false
 	case "user_message":
 		b.addMessage(lineNumber, timestamp, "user", payload.Message)
 	case "agent_message":
@@ -756,11 +764,17 @@ func (b *codexConversationBuilder) conversation() CodexConversation {
 		b.events = []CodexConversationEvent{}
 	}
 	b.reindexEvents()
+	var active *bool
+	if b.lifecycleSeen {
+		current := b.taskActive
+		active = &current
+	}
 	return CodexConversation{
 		Available: true,
 		Source:    "codex_rollout",
 		SessionID: b.sessionID,
 		CWD:       b.cwd,
+		Active:    active,
 		Events:    b.events,
 	}
 }

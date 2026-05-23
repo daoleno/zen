@@ -45,6 +45,7 @@ export interface CodexConversation {
   session_id?: string;
   cwd?: string;
   updated_at?: string;
+  active?: boolean;
   events: CodexConversationEvent[];
 }
 
@@ -65,6 +66,10 @@ export function normalizeCodexConversation(value: any): CodexConversation {
     updated_at:
       typeof conversation.updated_at === "string"
         ? conversation.updated_at
+        : undefined,
+    active:
+      typeof conversation.active === "boolean"
+        ? conversation.active
         : undefined,
     events: Array.isArray(conversation.events)
       ? conversation.events.map(normalizeCodexConversationEvent).filter(Boolean)

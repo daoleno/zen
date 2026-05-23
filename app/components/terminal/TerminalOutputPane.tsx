@@ -1,13 +1,9 @@
 import React from "react";
 import {
   StyleSheet,
-  Text,
-  TouchableOpacity,
   View,
   type LayoutChangeEvent,
 } from "react-native";
-import { Ionicons } from "@expo/vector-icons";
-import { Typography } from "../../constants/tokens";
 import type {
   TerminalThemeChrome,
   TerminalThemeName,
@@ -19,12 +15,6 @@ import {
   type TerminalSurfaceHandle,
 } from "./TerminalSurface";
 import { TerminalOutputStateCard } from "./TerminalOutputStateCard";
-
-interface GitDiffChip {
-  label: string;
-  tone: "clean" | "dirty" | "error" | "loading";
-  onPress(): void;
-}
 
 interface TerminalOutputPaneProps {
   sessionKey: string | null;
@@ -44,16 +34,12 @@ interface TerminalOutputPaneProps {
   terminalStateDetail: string;
   terminalStateHint: string;
   hasTerminalRoute: boolean;
-  isCodexAgent: boolean;
   outputBottomInset: number;
   accessoryVisible: boolean;
   accessoryBottomOffset: number;
   serverUrl: string;
   daemonId: string;
   keyboardVisible: boolean;
-  gitDiff?: GitDiffChip | null;
-  chatOverlayVisible: boolean;
-  onSwitchToChat(): void;
   onRetryConnection(): void;
   onAccessoryLayout(event: LayoutChangeEvent): void;
 }
@@ -76,16 +62,12 @@ export function TerminalOutputPane({
   terminalStateDetail,
   terminalStateHint,
   hasTerminalRoute,
-  isCodexAgent,
   outputBottomInset,
   accessoryVisible,
   accessoryBottomOffset,
   serverUrl,
   daemonId,
   keyboardVisible,
-  gitDiff,
-  chatOverlayVisible,
-  onSwitchToChat,
   onRetryConnection,
   onAccessoryLayout,
 }: TerminalOutputPaneProps) {
@@ -122,30 +104,6 @@ export function TerminalOutputPane({
             onRetry={onRetryConnection}
           />
         )}
-        {isCodexAgent && !chatOverlayVisible ? (
-          <TouchableOpacity
-            accessibilityLabel="Open Codex Chat renderer"
-            style={[
-              styles.codexChatSwitchButton,
-              {
-                backgroundColor: chrome.surfaceMuted,
-                borderColor: chrome.borderStrong,
-              },
-            ]}
-            onPress={onSwitchToChat}
-            activeOpacity={0.82}
-          >
-            <Ionicons name="sparkles-outline" size={14} color={chrome.accent} />
-            <Text
-              style={[
-                styles.codexChatSwitchText,
-                { color: chrome.textMuted },
-              ]}
-            >
-              Chat
-            </Text>
-          </TouchableOpacity>
-        ) : null}
       </View>
 
       {accessoryVisible ? (
@@ -154,7 +112,6 @@ export function TerminalOutputPane({
           serverUrl={serverUrl}
           daemonId={daemonId}
           theme={theme}
-          gitDiff={gitDiff}
           keyboardVisible={keyboardVisible}
           ctrlArmed={ctrlArmed}
           bottomOffset={accessoryBottomOffset}
@@ -167,24 +124,6 @@ export function TerminalOutputPane({
 }
 
 const styles = StyleSheet.create({
-  codexChatSwitchButton: {
-    position: "absolute",
-    top: 10,
-    right: 10,
-    minHeight: 32,
-    borderRadius: 8,
-    borderWidth: StyleSheet.hairlineWidth,
-    paddingHorizontal: 10,
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 5,
-    zIndex: 8,
-  },
-  codexChatSwitchText: {
-    fontSize: 12,
-    lineHeight: 16,
-    fontFamily: Typography.uiFontMedium,
-  },
   output: {
     flex: 1,
     minHeight: 0,

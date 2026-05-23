@@ -1,21 +1,29 @@
-import React from "react";
+import { Ionicons } from "@expo/vector-icons";
+import React, {
+  useEffect,
+  useRef,
+} from "react";
 import {
+  Animated,
+  Easing,
   StyleSheet,
+  TouchableOpacity,
 } from "react-native";
 import type {
   TerminalThemeChrome,
   TerminalThemePalette,
 } from "../../constants/terminalThemes";
-import { ComposerIconButton } from "./ComposerIconButton";
+
+type IoniconName = React.ComponentProps<typeof Ionicons>["name"];
 
 interface ComposerSendButtonProps {
-  icon: React.ComponentProps<typeof ComposerIconButton>["icon"];
+  icon: IoniconName;
   accessibilityLabel: string;
   chrome: TerminalThemeChrome;
   theme: TerminalThemePalette;
   enabled: boolean;
   loading: boolean;
-  compact: boolean;
+  running: boolean;
   onPress(): void;
 }
 
@@ -26,29 +34,98 @@ export function ComposerSendButton({
   theme,
   enabled,
   loading,
-  compact,
+  running,
   onPress,
 }: ComposerSendButtonProps) {
+  const animated = loading || running;
+  const progress = useRef(new Animated.Value(0)).current;
+
+  useEffect(() => {
+    if (!animated) {
+      progress.stopAnimation();
+      progress.setValue(0);
+      return;
+    }
+
+    const animation = Animated.loop(
+      Animated.timing(progress, {
+        toValue: 1,
+        duration: running ? 1080 : 820,
+        easing: Easing.linear,
+        useNativeDriver: true,
+      }),
+    );
+    animation.start();
+    return () => {
+      animation.stop();
+      progress.stopAnimation();
+      progress.setValue(0);
+    };
+  }, [animated, progress, running]);
+
+  const rotation = progress.interpolate({
+    inputRange: [0, 1],
+    outputRange: ["0deg", "360deg"],
+  });
+  const pulseOpacity = progress.interpolate({
+    inputRange: [0, 0.5, 1],
+    outputRange: [0.62, 1, 0.62],
+  });
+  const foreground = running || (enabled && !loading)
+    ? theme.background
+    : loading
+      ? chrome.accent
+      : chrome.textSubtle;
+  const backgroundColor = running || (enabled && !loading)
+    ? chrome.text
+    : loading
+      ? chrome.accentSoft
+      : chrome.surfaceMuted;
+  const borderColor = running || (enabled && !loading)
+    ? chrome.text
+    : loading
+      ? chrome.borderStrong
+      : chrome.border;
+
   return (
-    <ComposerIconButton
+    <TouchableOpacity
       accessibilityLabel={accessibilityLabel}
-      icon={icon}
-      chrome={chrome}
-      iconSize={compact ? 12 : 18}
-      iconColor={enabled ? theme.background : chrome.textSubtle}
-      loading={loading}
-      loadingColor={theme.background}
-      disabled={!enabled}
-      disabledOpacity={0.62}
+      accessibilityRole="button"
+      accessibilityState={{ disabled: !enabled, busy: animated }}
       style={[
         styles.button,
-        {
-          backgroundColor: enabled ? chrome.text : chrome.surfaceMuted,
-          borderColor: enabled ? chrome.text : chrome.border,
-        },
+        { backgroundColor, borderColor },
+        !enabled && !loading ? styles.disabled : null,
       ]}
       onPress={onPress}
-    />
+      activeOpacity={0.78}
+      disabled={!enabled}
+    >
+      {animated ? (
+        <>
+          <Animated.View
+            style={[
+              styles.progressRing,
+              {
+                borderColor: running ? chrome.textSubtle : chrome.border,
+                borderTopColor: foreground,
+                borderRightColor: foreground,
+                transform: [{ rotate: rotation }],
+              },
+            ]}
+          />
+          <Animated.View style={{ opacity: pulseOpacity }}>
+            <Ionicons
+              name={running ? "square" : "arrow-up"}
+              size={running ? 10 : 14}
+              color={foreground}
+            />
+          </Animated.View>
+        </>
+      ) : (
+        <Ionicons name={icon} size={18} color={foreground} />
+      )}
+    </TouchableOpacity>
   );
 }
 
@@ -60,5 +137,15 @@ const styles = StyleSheet.create({
     borderWidth: StyleSheet.hairlineWidth,
     alignItems: "center",
     justifyContent: "center",
+  },
+  disabled: {
+    opacity: 0.62,
+  },
+  progressRing: {
+    position: "absolute",
+    width: 29,
+    height: 29,
+    borderRadius: 15,
+    borderWidth: 1.5,
   },
 });

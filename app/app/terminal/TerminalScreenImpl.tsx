@@ -12,7 +12,7 @@ import { useTerminalScreenLayoutProps } from "./useTerminalScreenLayoutProps";
 import { useTerminalScreenModels } from "./useTerminalScreenModels";
 import { useTerminalScreenStorage } from "./useTerminalScreenStorage";
 import { useTerminalSessionActions } from "./useTerminalSessionActions";
-import { useTerminalTabActions } from "./useTerminalTabActions";
+import { useTerminalNavigationActions } from "./useTerminalNavigationActions";
 
 export default function TerminalScreen() {
   const { state } = useAgents();
@@ -21,6 +21,7 @@ export default function TerminalScreen() {
     agentId,
     serverId,
     sessionKey,
+    routeSessionHint,
     pickerVisible,
     setPickerVisible,
     renameVisible,
@@ -43,9 +44,6 @@ export default function TerminalScreen() {
   } = chromeLayout;
   const {
     agentByKey,
-    hydratedServerIds,
-    hydratedServerIdSet,
-    liveAgentKeys,
   } = useTerminalAgentIndex({
     agents: state.agents,
     hydratedServers: state.hydratedServers,
@@ -58,16 +56,12 @@ export default function TerminalScreen() {
     setCodexRenderModes,
     recentAgentOpens,
     setRecentAgentOpens,
-    terminalTabs,
-    setTerminalTabs,
     server,
     setServer,
     servers,
   } = useTerminalScreenStorage({
     serverId,
     sessionKey,
-    hydratedServerIds,
-    liveAgentKeys,
   });
   const {
     gitDiff,
@@ -78,19 +72,18 @@ export default function TerminalScreen() {
     serverId,
     agentId,
     sessionKey,
+    routeSessionHint,
     screenFocused,
     themePreference,
     agentByKey,
     workByKey: workState.byKey,
     agentAliases,
-    terminalTabs,
     serverConnections: state.serverConnections,
     serverConnectionIssues: state.serverConnectionIssues,
     codexRenderModes,
   });
   const { chromeColors, statusBarStyle, terminalTheme, themeName } = theme;
   const {
-    activePinned,
     agent,
     codexRenderMode,
     connectionIssue,
@@ -99,6 +92,7 @@ export default function TerminalScreen() {
     hasTerminalRoute,
     isCodexAgent,
     linkedWork,
+    presentedAgent,
     showCodexChat,
   } = route;
   const {
@@ -121,18 +115,12 @@ export default function TerminalScreen() {
     pickerSections,
     showPickerServerNames,
     sortedAgents,
-    tabs,
   } = useTerminalDirectoryModel({
-    sessionKey,
     agents: state.agents,
     servers,
     connectionStates: state.serverConnections,
     latencyById: state.serverLatencyById,
-    terminalTabs,
     recentAgentOpens,
-    agentByKey,
-    hydratedServerIdSet,
-    agentAliases,
   });
 
   const {
@@ -148,18 +136,14 @@ export default function TerminalScreen() {
     setRenameVisible,
   });
 
-  const tabActions = useTerminalTabActions({
+  const navigationActions = useTerminalNavigationActions({
     sessionKey,
     serverId,
     agentId,
-    activePinned,
-    terminalTabs,
     agentByKey,
-    hydratedServerIdSet,
     connectionState,
     displayName,
     agentServerName: agent?.serverName,
-    setTerminalTabs,
     closeMenu,
     closePicker,
   });
@@ -180,7 +164,6 @@ export default function TerminalScreen() {
     setRenameVisible,
     setAgentAliases,
     setCodexRenderModes,
-    setTerminalTabs,
     setRecentAgentOpens,
     setServer,
   });
@@ -192,7 +175,6 @@ export default function TerminalScreen() {
     topBarProps,
     viewportProps,
   } = useTerminalScreenLayoutProps({
-    activePinned,
     agent,
     agentAliases,
     agentId,
@@ -205,6 +187,7 @@ export default function TerminalScreen() {
     creatingSession,
     ctrlArmed,
     daemonId: server?.daemonId,
+    displayName,
     gitDiff,
     handleAccessoryLayout,
     handleCtrlArmedChange,
@@ -216,6 +199,7 @@ export default function TerminalScreen() {
     menuVisible,
     newTerminalVisible,
     outputBottomInset,
+    presentedAgent,
     pickerSections,
     pickerVisible,
     renameDraft,
@@ -233,8 +217,7 @@ export default function TerminalScreen() {
     showCodexChat,
     showPickerServerNames,
     sortedAgentCount: sortedAgents.length,
-    tabActions,
-    tabs,
+    navigationActions,
     terminalRef,
     terminalTheme,
     themeName,

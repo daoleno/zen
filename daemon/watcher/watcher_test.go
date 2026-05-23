@@ -4,6 +4,8 @@ import (
 	"reflect"
 	"testing"
 	"time"
+
+	"github.com/daoleno/zen/daemon/classifier"
 )
 
 func TestBuildWindowCommandForShellStartsInteractiveLoginShell(t *testing.T) {
@@ -62,6 +64,51 @@ func TestFormatAgentNameFallsBackToTargetWhenWindowNameMissing(t *testing.T) {
 	want := "main:@42"
 	if got != want {
 		t.Fatalf("formatAgentName() = %q, want %q", got, want)
+	}
+}
+
+func TestCreatedSessionNameFallsBackToCommandExecutable(t *testing.T) {
+	got := createdSessionName(CreateSessionOptions{
+		Command: "/usr/local/bin/codex --model gpt-5",
+	})
+	if got != "codex" {
+		t.Fatalf("createdSessionName() = %q, want codex", got)
+	}
+}
+
+func TestRegisterCreatedSessionSeedsAgentSnapshotAndEvent(t *testing.T) {
+	w := New(time.Second)
+	startedAt := time.Date(2026, 5, 23, 10, 0, 0, 0, time.UTC)
+
+	w.registerCreatedSession("main:@42", "/repo/zen", CreateSessionOptions{
+		Command: "codex",
+		Name:    "Codex follow-up",
+	}, startedAt)
+
+	agent := w.GetAgent("main:@42")
+	if agent == nil {
+		t.Fatal("expected created session to be registered")
+	}
+	if agent.Name != "Codex follow-up (main:@42)" {
+		t.Fatalf("agent name = %q", agent.Name)
+	}
+	if agent.Cwd != "/repo/zen" || agent.Project != "zen" || agent.Command != "codex" {
+		t.Fatalf("agent metadata = cwd %q project %q command %q", agent.Cwd, agent.Project, agent.Command)
+	}
+	if agent.State != classifier.StateRunning || !agent.StartedAt.Equal(startedAt) {
+		t.Fatalf("agent state/start = %q %s", agent.State, agent.StartedAt)
+	}
+	if _, ok := w.prevContent["main:@42"]; !ok {
+		t.Fatal("expected initial content marker for first poll update")
+	}
+
+	select {
+	case ev := <-w.Events():
+		if ev.Type != "agent_discovered" || ev.AgentID != "main:@42" || ev.Agent == nil {
+			t.Fatalf("event = %#v", ev)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for created session event")
 	}
 }
 

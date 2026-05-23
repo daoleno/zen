@@ -17,6 +17,8 @@ export interface GitDiffFileInfo {
   staged: boolean;
   unstaged: boolean;
   untracked: boolean;
+  additions?: number;
+  deletions?: number;
 }
 
 export interface GitDiffStatusSnapshot {

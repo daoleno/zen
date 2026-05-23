@@ -142,7 +142,7 @@ func TestMatchCodexTranscriptToAgentStart_DoesNotFallBackToOldThread(t *testing.
 	base := time.Date(2026, 5, 21, 8, 0, 0, 0, time.UTC)
 	candidates := []codexTranscriptCandidate{
 		{
-			Row:     codexThreadRow{ID: "old-window", CreatedAtMS: base.Add(-10 * time.Minute).UnixMilli()},
+			Row:     codexThreadRow{ID: "old-window", CreatedAtMS: base.Add(-30 * time.Second).UnixMilli()},
 			Updated: base.Add(5 * time.Minute),
 		},
 	}

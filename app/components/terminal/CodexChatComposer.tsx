@@ -29,7 +29,7 @@ interface CodexChatComposerProps {
   sending: boolean;
   sendIcon: React.ComponentProps<typeof CodexComposerPanel>["sendIcon"];
   sendLabel: string;
-  compactSendIcon: boolean;
+  running: boolean;
   bottomPadding: number;
   showCommandMenu: boolean;
   commandQuery: string;
@@ -63,7 +63,7 @@ export function CodexChatComposer({
   sending,
   sendIcon,
   sendLabel,
-  compactSendIcon,
+  running,
   bottomPadding,
   showCommandMenu,
   commandQuery,
@@ -119,7 +119,7 @@ export function CodexChatComposer({
         sending={sending}
         sendIcon={sendIcon}
         sendLabel={sendLabel}
-        compactSendIcon={compactSendIcon}
+        running={running}
         chrome={chrome}
         theme={theme}
         onDraftChange={onDraftChange}

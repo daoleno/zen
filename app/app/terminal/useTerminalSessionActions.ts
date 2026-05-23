@@ -8,13 +8,11 @@ import {
   markAgentOpened,
   setAgentAlias,
   setCodexRenderMode,
-  touchTerminalTab,
   type StoredAgentAliases,
   type StoredCodexRenderMode,
   type StoredCodexRenderModes,
   type StoredRecentAgentOpens,
   type StoredServer,
-  type StoredTerminalTabs,
 } from "../../services/storage";
 import { makeSessionKey } from "../../services/sessionKeys";
 import { wsClient } from "../../services/websocket";
@@ -41,7 +39,6 @@ interface UseTerminalSessionActionsInput {
   setRenameVisible(value: boolean): void;
   setAgentAliases(value: StoredAgentAliases): void;
   setCodexRenderModes(value: StoredCodexRenderModes): void;
-  setTerminalTabs(value: StoredTerminalTabs): void;
   setRecentAgentOpens: Dispatch<SetStateAction<StoredRecentAgentOpens>>;
   setServer: Dispatch<SetStateAction<StoredServer | null>>;
 }
@@ -62,7 +59,6 @@ export function useTerminalSessionActions({
   setRenameVisible,
   setAgentAliases,
   setCodexRenderModes,
-  setTerminalTabs,
   setRecentAgentOpens,
   setServer,
 }: UseTerminalSessionActionsInput) {
@@ -108,6 +104,7 @@ export function useTerminalSessionActions({
       closeMenu();
       setCreatingSession(true);
       try {
+        const startedAt = Date.now();
         const nextAgentId = await wsClient.createSession(serverId, {
           targetId: agentId,
           cwd: input.cwd,
@@ -116,8 +113,6 @@ export function useTerminalSessionActions({
         });
         const nextSessionKey = makeSessionKey(serverId, nextAgentId);
         const openedAt = Date.now();
-        const nextTabs = await touchTerminalTab(nextSessionKey);
-        setTerminalTabs(nextTabs);
         void markAgentOpened(nextSessionKey, openedAt);
         setRecentAgentOpens((previous) => ({
           ...previous,
@@ -125,7 +120,14 @@ export function useTerminalSessionActions({
         }));
         router.replace({
           pathname: "/terminal/[id]",
-          params: { id: nextAgentId, serverId },
+          params: {
+            id: nextAgentId,
+            serverId,
+            cwd: input.cwd,
+            command: input.command,
+            name: input.name,
+            startedAt: String(startedAt),
+          },
         });
       } catch (error: any) {
         Alert.alert(
@@ -147,7 +149,6 @@ export function useTerminalSessionActions({
       setCreatingSession,
       setNewTerminalVisible,
       setRecentAgentOpens,
-      setTerminalTabs,
     ],
   );
 

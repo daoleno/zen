@@ -6,12 +6,7 @@ import {
 import { Ionicons, MaterialCommunityIcons } from "@expo/vector-icons";
 import type {
   TerminalThemeChrome,
-  TerminalThemePalette,
 } from "../../constants/terminalThemes";
-import {
-  TerminalAccessoryGitDiffChip,
-  type TerminalAccessoryGitDiff,
-} from "./TerminalAccessoryGitDiffChip";
 import { TerminalAccessoryIconButton } from "./TerminalAccessoryIconButton";
 import { TerminalAccessoryShortcutList } from "./TerminalAccessoryShortcutList";
 
@@ -20,8 +15,6 @@ interface TerminalAccessoryControlsProps {
   keyboardVisible: boolean;
   ctrlArmed: boolean;
   chrome: TerminalThemeChrome;
-  theme: TerminalThemePalette;
-  gitDiff?: TerminalAccessoryGitDiff | null;
   onUploadPress(): void;
   onKeyboardToggle(): void;
   onCtrlToggle(): void;
@@ -35,8 +28,6 @@ export function TerminalAccessoryControls({
   keyboardVisible,
   ctrlArmed,
   chrome,
-  theme,
-  gitDiff,
   onUploadPress,
   onKeyboardToggle,
   onCtrlToggle,
@@ -52,14 +43,6 @@ export function TerminalAccessoryControls({
       style={styles.shortcutRow}
       contentContainerStyle={styles.shortcutRowContent}
     >
-      {gitDiff ? (
-        <TerminalAccessoryGitDiffChip
-          gitDiff={gitDiff}
-          chrome={chrome}
-          theme={theme}
-        />
-      ) : null}
-
       <TerminalAccessoryIconButton
         accessibilityLabel="Attach"
         onPress={onUploadPress}

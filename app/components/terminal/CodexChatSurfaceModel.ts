@@ -1,4 +1,3 @@
-import type { AgentStatus } from "../../constants/tokens";
 import type { ConnectionState } from "../../store/agents";
 import type { CodexSlashCommand } from "../../services/websocket";
 import { filterSlashCommands } from "./CodexSlashCommands";
@@ -10,6 +9,7 @@ export interface CodexComposerPresentation {
   visibleSlashCommands: CodexSlashCommand[];
   showCommandMenu: boolean;
   showStopButton: boolean;
+  showStopIndicator: boolean;
   sendEnabled: boolean;
   sendIcon: "square" | "arrow-up";
   sendLabel: string;
@@ -23,9 +23,10 @@ export interface CodexComposerPresentationInput {
   draft: string;
   slashCommands: CodexSlashCommand[];
   connectionState: ConnectionState;
-  agentStatus?: AgentStatus;
+  requestRunning: boolean;
   attachmentCount: number;
   sending: boolean;
+  interrupting: boolean;
   canSend: boolean;
   composerFocused: boolean;
   safeAreaTop: number;
@@ -37,9 +38,10 @@ export function buildCodexComposerPresentation({
   draft,
   slashCommands,
   connectionState,
-  agentStatus,
+  requestRunning,
   attachmentCount,
   sending,
+  interrupting,
   canSend,
   composerFocused,
   safeAreaTop,
@@ -51,21 +53,28 @@ export function buildCodexComposerPresentation({
     connectionState === "connected" &&
     commandQuery.startsWith("/") &&
     !commandQuery.includes(" ");
-  const showStopButton =
+  const showStopIndicator =
     connectionState === "connected" &&
-    agentStatus === "running" &&
+    requestRunning &&
     draft.trim().length === 0 &&
-    attachmentCount === 0 &&
-    !sending;
+    attachmentCount === 0;
+  const showStopButton = showStopIndicator && !sending;
 
   return {
     commandQuery,
     visibleSlashCommands: filterSlashCommands(slashCommands, commandQuery),
     showCommandMenu,
     showStopButton,
+    showStopIndicator,
     sendEnabled: canSend || showStopButton,
-    sendIcon: showStopButton ? "square" : "arrow-up",
-    sendLabel: showStopButton ? "Stop Codex" : "Send message",
+    sendIcon: showStopIndicator ? "square" : "arrow-up",
+    sendLabel: showStopButton
+      ? "Stop Codex"
+      : showStopIndicator && interrupting
+        ? "Stopping Codex"
+        : showStopIndicator
+          ? "Codex working"
+          : "Send message",
     placeholder:
       connectionState === "connected" ? "Message Codex" : "Daemon unavailable",
     active: composerFocused || showCommandMenu,

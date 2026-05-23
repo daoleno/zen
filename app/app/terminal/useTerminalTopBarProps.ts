@@ -3,57 +3,153 @@ import type {
   TerminalThemeChrome,
   TerminalThemePalette,
 } from "../../constants/terminalThemes";
+import type { AgentKind } from "../../services/agentPresentation";
+import type { StoredCodexRenderMode } from "../../services/storage";
 import type { TerminalTopBarProps } from "../../components/terminal/TerminalTopBar";
+import type { TerminalGitDiffSummary } from "../../components/terminal/useTerminalGitDiff";
 import type { useTerminalChromeLayout } from "./useTerminalChromeLayout";
-import type { useTerminalTabActions } from "./useTerminalTabActions";
+import type { useTerminalNavigationActions } from "./useTerminalNavigationActions";
 
 interface UseTerminalTopBarPropsInput {
-  tabs: TerminalTopBarProps["tabs"];
+  title: string;
+  kind: AgentKind;
   terminalTheme: TerminalThemePalette;
   chrome: TerminalThemeChrome;
   chromeLayout: Pick<
     ReturnType<typeof useTerminalChromeLayout>,
-    "handleTabLayout" | "menuAnchorRef" | "openMenu" | "tabScrollRef"
+    "menuAnchorRef" | "openMenu"
   >;
-  tabActions: Pick<
-    ReturnType<typeof useTerminalTabActions>,
-    "goToInbox" | "openAgentTab"
+  navigationActions: Pick<
+    ReturnType<typeof useTerminalNavigationActions>,
+    "goToInbox"
   >;
-  openNewTerminal(): void;
+  codexRenderMode: StoredCodexRenderMode;
+  gitDiffDisabled: boolean;
+  gitDiffSummary: TerminalGitDiffSummary | null;
+  isCodexAgent: boolean;
+  onOpenPicker(): void;
+  openGitDiff(): void;
+  onToggleCodexRenderMode(): void;
 }
 
 export function useTerminalTopBarProps({
-  tabs,
+  title,
+  kind,
   terminalTheme,
   chrome,
   chromeLayout,
-  tabActions,
-  openNewTerminal,
+  navigationActions,
+  codexRenderMode,
+  gitDiffDisabled,
+  gitDiffSummary,
+  isCodexAgent,
+  onOpenPicker,
+  openGitDiff,
+  onToggleCodexRenderMode,
 }: UseTerminalTopBarPropsInput): TerminalTopBarProps {
   return useMemo(
     () => ({
-      tabs,
+      title,
+      kind,
       backgroundColor: terminalTheme.background,
       chrome,
-      tabScrollRef: chromeLayout.tabScrollRef,
       menuAnchorRef: chromeLayout.menuAnchorRef,
-      onBack: tabActions.goToInbox,
-      onOpenTab: tabActions.openAgentTab,
+      codexRenderMode,
+      gitDiffDisabled,
+      gitDiffPresentation: buildGitDiffPresentation({
+        chrome,
+        disabled: gitDiffDisabled,
+        summary: gitDiffSummary,
+        terminalTheme,
+      }),
+      isCodexAgent,
+      onBack: navigationActions.goToInbox,
+      onOpenPicker,
+      onOpenGitDiff: openGitDiff,
       onOpenMenu: chromeLayout.openMenu,
-      onNewTerminal: openNewTerminal,
-      onTabLayout: chromeLayout.handleTabLayout,
+      onToggleCodexRenderMode,
     }),
     [
+      title,
+      kind,
       chrome,
-      chromeLayout.handleTabLayout,
       chromeLayout.menuAnchorRef,
       chromeLayout.openMenu,
-      chromeLayout.tabScrollRef,
-      openNewTerminal,
-      tabActions.goToInbox,
-      tabActions.openAgentTab,
-      tabs,
+      codexRenderMode,
+      gitDiffDisabled,
+      gitDiffSummary,
+      isCodexAgent,
+      onOpenPicker,
+      openGitDiff,
+      onToggleCodexRenderMode,
+      navigationActions.goToInbox,
       terminalTheme.background,
+      terminalTheme.green,
+      terminalTheme.red,
+      terminalTheme.yellow,
     ],
   );
+}
+
+function buildGitDiffPresentation({
+  chrome,
+  disabled,
+  summary,
+  terminalTheme,
+}: {
+  chrome: TerminalThemeChrome;
+  disabled: boolean;
+  summary: TerminalGitDiffSummary | null;
+  terminalTheme: TerminalThemePalette;
+}): TerminalTopBarProps["gitDiffPresentation"] {
+  if (!summary) {
+    return {
+      accessibilityLabel: "Open Git diff",
+      backgroundColor: "transparent",
+      iconColor: disabled ? chrome.textSubtle : chrome.textMuted,
+    };
+  }
+
+  const toneColor =
+    summary.tone === "clean"
+      ? terminalTheme.green
+      : summary.tone === "dirty"
+        ? terminalTheme.yellow
+        : summary.tone === "error"
+          ? terminalTheme.red
+          : chrome.textMuted;
+  const statsLabel = summary.showStats
+    ? `+${formatGitDelta(summary.additions)} -${formatGitDelta(summary.deletions)}`
+    : "";
+
+  return {
+    accessibilityLabel: [
+      "Open Git diff",
+      summary.label,
+      statsLabel,
+    ].filter(Boolean).join(", "),
+    additionsColor: terminalTheme.green,
+    additionsText: summary.showStats
+      ? `+${formatGitDelta(summary.additions)}`
+      : undefined,
+    backgroundColor: "transparent",
+    deletionsColor: terminalTheme.red,
+    deletionsText: summary.showStats
+      ? `-${formatGitDelta(summary.deletions)}`
+      : undefined,
+    iconColor: disabled ? chrome.textSubtle : toneColor,
+  };
+}
+
+function formatGitDelta(value: number): string {
+  if (!Number.isFinite(value) || value <= 0) {
+    return "0";
+  }
+  if (value < 1000) {
+    return String(value);
+  }
+  if (value < 10000) {
+    return `${(value / 1000).toFixed(1).replace(/\.0$/, "")}k`;
+  }
+  return `${Math.round(value / 1000)}k`;
 }

@@ -8,7 +8,6 @@ import type { TerminalThemePalette } from "../../constants/terminalThemes";
 import {
   TerminalAccessoryBar,
 } from "./TerminalAccessoryBar";
-import type { TerminalAccessoryGitDiff } from "./TerminalAccessoryGitDiffChip";
 import type { TerminalSurfaceHandle } from "./TerminalSurface";
 
 interface TerminalAccessoryDockProps {
@@ -16,7 +15,6 @@ interface TerminalAccessoryDockProps {
   serverUrl: string;
   daemonId: string;
   theme: TerminalThemePalette;
-  gitDiff?: TerminalAccessoryGitDiff | null;
   keyboardVisible: boolean;
   ctrlArmed: boolean;
   bottomOffset: number;
@@ -29,7 +27,6 @@ export function TerminalAccessoryDock({
   serverUrl,
   daemonId,
   theme,
-  gitDiff,
   keyboardVisible,
   ctrlArmed,
   bottomOffset,
@@ -50,7 +47,6 @@ export function TerminalAccessoryDock({
         serverUrl={serverUrl}
         daemonId={daemonId}
         theme={theme}
-        gitDiff={gitDiff}
         keyboardVisible={keyboardVisible}
         ctrlArmed={ctrlArmed}
         onCtrlArmedChange={onCtrlArmedChange}

@@ -24,7 +24,7 @@ interface CodexComposerPanelProps {
   sending: boolean;
   sendIcon: React.ComponentProps<typeof ComposerSendButton>["icon"];
   sendLabel: string;
-  compactSendIcon: boolean;
+  running: boolean;
   chrome: TerminalThemeChrome;
   theme: TerminalThemePalette;
   onDraftChange(value: string): void;
@@ -50,7 +50,7 @@ export function CodexComposerPanel({
   sending,
   sendIcon,
   sendLabel,
-  compactSendIcon,
+  running,
   chrome,
   theme,
   onDraftChange,
@@ -96,7 +96,7 @@ export function CodexComposerPanel({
         theme={theme}
         enabled={sendEnabled}
         loading={sending}
-        compact={compactSendIcon}
+        running={running}
         onPress={onSendPress}
       />
     </CodexComposerPanelFrame>

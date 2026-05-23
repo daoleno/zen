@@ -45,7 +45,6 @@ export interface TerminalViewportProps {
   terminalStateDetail: string;
   terminalStateHint: string;
   hasTerminalRoute: boolean;
-  isCodexAgent: boolean;
   outputBottomInset: number;
   accessoryVisible: boolean;
   accessoryBottomOffset: number;
@@ -53,7 +52,6 @@ export interface TerminalViewportProps {
   daemonId: string;
   keyboardVisible: boolean;
   onSwitchToTerminal(): void;
-  onSwitchToChat(): void;
   onOpenGitDiff(): void;
   onRetryConnection(): void;
   onAccessoryLayout(event: LayoutChangeEvent): void;
@@ -83,7 +81,6 @@ export function TerminalViewport({
   terminalStateDetail,
   terminalStateHint,
   hasTerminalRoute,
-  isCodexAgent,
   outputBottomInset,
   accessoryVisible,
   accessoryBottomOffset,
@@ -91,7 +88,6 @@ export function TerminalViewport({
   daemonId,
   keyboardVisible,
   onSwitchToTerminal,
-  onSwitchToChat,
   onOpenGitDiff,
   onRetryConnection,
   onAccessoryLayout,
@@ -118,16 +114,12 @@ export function TerminalViewport({
             terminalStateDetail={terminalStateDetail}
             terminalStateHint={terminalStateHint}
             hasTerminalRoute={hasTerminalRoute}
-            isCodexAgent={isCodexAgent}
             outputBottomInset={outputBottomInset}
             accessoryVisible={accessoryVisible}
             accessoryBottomOffset={accessoryBottomOffset}
             serverUrl={serverUrl}
             daemonId={daemonId}
             keyboardVisible={keyboardVisible}
-            gitDiff={gitDiff}
-            chatOverlayVisible={showCodexChat}
-            onSwitchToChat={onSwitchToChat}
             onRetryConnection={onRetryConnection}
             onAccessoryLayout={onAccessoryLayout}
           />

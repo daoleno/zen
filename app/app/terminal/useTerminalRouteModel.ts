@@ -8,18 +8,18 @@ import {
   type StoredAgentAliases,
   type StoredCodexRenderMode,
   type StoredCodexRenderModes,
-  type StoredTerminalTabs,
 } from "../../services/storage";
 import { findLinkedWork } from "./TerminalScreenModel";
+import type { TerminalRouteSessionHint } from "./useTerminalScreenLocalState";
 
 interface UseTerminalRouteModelInput {
   serverId: string;
   agentId: string;
   sessionKey: string | null;
+  routeSessionHint: TerminalRouteSessionHint;
   agentByKey: ReadonlyMap<string, Agent>;
   workByKey: Record<string, WorkItem>;
   agentAliases: StoredAgentAliases;
-  terminalTabs: StoredTerminalTabs;
   serverConnections: Record<string, ConnectionState>;
   serverConnectionIssues: Record<string, ConnectionIssue | null>;
   codexRenderModes: StoredCodexRenderModes;
@@ -29,15 +29,26 @@ export function useTerminalRouteModel({
   serverId,
   agentId,
   sessionKey,
+  routeSessionHint,
   agentByKey,
   workByKey,
   agentAliases,
-  terminalTabs,
   serverConnections,
   serverConnectionIssues,
   codexRenderModes,
 }: UseTerminalRouteModelInput) {
-  const agent = sessionKey ? agentByKey.get(sessionKey) : undefined;
+  const storedAgent = sessionKey ? agentByKey.get(sessionKey) : undefined;
+  const agent = useMemo(
+    () =>
+      resolveRouteAgent({
+        storedAgent,
+        routeSessionHint,
+        sessionKey,
+        serverId,
+        agentId,
+      }),
+    [agentId, routeSessionHint, serverId, sessionKey, storedAgent],
+  );
   const gitDiffCwd = typeof agent?.cwd === "string" ? agent.cwd.trim() : "";
   const presentedAgent = useMemo(
     () =>
@@ -51,10 +62,11 @@ export function useTerminalRouteModel({
     () => findLinkedWork(workByKey, serverId, agentId),
     [agentId, serverId, workByKey],
   );
-  const activePinned = sessionKey
-    ? terminalTabs.pinned.includes(sessionKey)
-    : false;
-  const displayName = presentedAgent.title;
+  const linkedWorkTitle = linkedWork?.title?.trim() || "";
+  const displayName =
+    presentedAgent.titleSource === "default" && linkedWorkTitle
+      ? linkedWorkTitle
+      : presentedAgent.title;
   const connectionState = serverId
     ? serverConnections[serverId] || "offline"
     : "offline";
@@ -70,7 +82,6 @@ export function useTerminalRouteModel({
     hasTerminalRoute && isCodexAgent && codexRenderMode === "chat";
 
   return {
-    activePinned,
     agent,
     codexRenderMode,
     connectionIssue,
@@ -83,4 +94,54 @@ export function useTerminalRouteModel({
     presentedAgent,
     showCodexChat,
   };
+}
+
+function resolveRouteAgent({
+  storedAgent,
+  routeSessionHint,
+  sessionKey,
+  serverId,
+  agentId,
+}: {
+  storedAgent?: Agent;
+  routeSessionHint: TerminalRouteSessionHint;
+  sessionKey: string | null;
+  serverId: string;
+  agentId: string;
+}): Agent | undefined {
+  if (storedAgent) {
+    return {
+      ...storedAgent,
+      name: storedAgent.name || routeSessionHint.name || agentId,
+      cwd: storedAgent.cwd || routeSessionHint.cwd,
+      command: storedAgent.command || routeSessionHint.command,
+      started_at: storedAgent.started_at ?? routeSessionHint.startedAt,
+    };
+  }
+
+  if (!sessionKey || !serverId || !agentId || !hasRouteSessionHint(routeSessionHint)) {
+    return undefined;
+  }
+
+  const now = Date.now();
+  return {
+    key: sessionKey,
+    id: agentId,
+    serverId,
+    serverName: "",
+    serverUrl: "",
+    name: routeSessionHint.name || routeSessionHint.command || agentId,
+    status: "running",
+    project: undefined,
+    cwd: routeSessionHint.cwd,
+    command: routeSessionHint.command,
+    summary: "",
+    last_output_lines: [],
+    started_at: routeSessionHint.startedAt,
+    updated_at: routeSessionHint.startedAt || now,
+  };
+}
+
+function hasRouteSessionHint(hint: TerminalRouteSessionHint): boolean {
+  return Boolean(hint.name || hint.cwd || hint.command || hint.startedAt);
 }

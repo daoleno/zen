@@ -8,7 +8,6 @@ import {
   type NativeSyntheticEvent,
   type TextInput,
 } from "react-native";
-import type { AgentStatus } from "../../constants/tokens";
 import type { ConnectionState } from "../../store/agents";
 import type { CodexSlashCommand } from "../../services/websocket";
 import {
@@ -31,9 +30,10 @@ export function useCodexComposerPresentation({
   draft,
   slashCommands,
   connectionState,
-  agentStatus,
+  requestRunning,
   attachmentCount,
   sending,
+  interrupting,
   canSend,
   composerFocused,
   safeAreaTop,
@@ -45,9 +45,10 @@ export function useCodexComposerPresentation({
         draft,
         slashCommands,
         connectionState,
-        agentStatus,
+        requestRunning,
         attachmentCount,
         sending,
+        interrupting,
         canSend,
         composerFocused,
         safeAreaTop,
@@ -55,12 +56,13 @@ export function useCodexComposerPresentation({
         isAndroid: Platform.OS === "android",
       }),
     [
-      agentStatus,
       attachmentCount,
       canSend,
       composerFocused,
       connectionState,
       draft,
+      interrupting,
+      requestRunning,
       safeAreaBottom,
       safeAreaTop,
       sending,

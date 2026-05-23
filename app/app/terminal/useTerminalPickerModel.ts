@@ -8,7 +8,6 @@ import {
 import type {
   StoredRecentAgentOpens,
   StoredServer,
-  StoredTerminalTabs,
 } from "../../services/storage";
 import {
   shouldShowPickerServerNames,
@@ -20,7 +19,6 @@ interface UseTerminalPickerModelInput {
   servers: StoredServer[];
   connectionStates: Record<string, ConnectionState>;
   latencyById: Record<string, ServerLatencySample | undefined>;
-  terminalTabs: StoredTerminalTabs;
   recentAgentOpens: StoredRecentAgentOpens;
 }
 
@@ -29,7 +27,6 @@ export function useTerminalPickerModel({
   servers,
   connectionStates,
   latencyById,
-  terminalTabs,
   recentAgentOpens,
 }: UseTerminalPickerModelInput) {
   const displayAgents = useMemo(
@@ -47,10 +44,9 @@ export function useTerminalPickerModel({
     () =>
       sortTerminalAgents({
         agents: displayAgents,
-        terminalTabs,
         recentAgentOpens,
       }),
-    [displayAgents, recentAgentOpens, terminalTabs],
+    [displayAgents, recentAgentOpens],
   );
 
   const showPickerServerNames = useMemo(

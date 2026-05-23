@@ -7,7 +7,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -19,8 +18,6 @@ const (
 	gitDiffReasonNotGitRepo = "not_git_repo"
 	gitDiffContentMaxBytes  = 256 * 1024
 )
-
-var shortstatCountPattern = regexp.MustCompile(`(\d+)\s+(insertion|deletion)`)
 
 type gitDiffStatusPayload struct {
 	Available          bool              `json:"available"`
@@ -45,6 +42,8 @@ type gitDiffFileInfo struct {
 	Staged    bool   `json:"staged"`
 	Unstaged  bool   `json:"unstaged"`
 	Untracked bool   `json:"untracked"`
+	Additions int    `json:"additions"`
+	Deletions int    `json:"deletions"`
 }
 
 type gitDiffPatchPayload struct {
@@ -95,11 +94,6 @@ func (s *Server) buildGitDiffStatus(targetID, cwd string) (gitDiffStatusPayload,
 		return gitDiffStatusPayload{}, err
 	}
 
-	additions, deletions, err := gitDiffTotals(repoRoot)
-	if err != nil {
-		return gitDiffStatusPayload{}, err
-	}
-
 	payload := gitDiffStatusPayload{
 		Available: true,
 		RepoRoot:  repoRoot,
@@ -107,12 +101,12 @@ func (s *Server) buildGitDiffStatus(targetID, cwd string) (gitDiffStatusPayload,
 		Branch:    gitBranchName(repoRoot),
 		Clean:     len(files) == 0,
 		FileCount: len(files),
-		Additions: additions,
-		Deletions: deletions,
 		Files:     files,
 	}
 
 	for _, file := range files {
+		payload.Additions += file.Additions
+		payload.Deletions += file.Deletions
 		if file.Staged {
 			payload.StagedFileCount += 1
 		}
@@ -287,69 +281,18 @@ func gitBranchName(repoRoot string) string {
 	return ""
 }
 
-func gitDiffTotals(repoRoot string) (additions int, deletions int, err error) {
-	stagedAdditions, stagedDeletions, err := gitShortstat(repoRoot, true)
-	if err != nil {
-		return 0, 0, err
-	}
-	unstagedAdditions, unstagedDeletions, err := gitShortstat(repoRoot, false)
-	if err != nil {
-		return 0, 0, err
-	}
-	return stagedAdditions + unstagedAdditions, stagedDeletions + unstagedDeletions, nil
-}
-
-func gitShortstat(repoRoot string, staged bool) (additions int, deletions int, err error) {
-	args := []string{"diff", "--shortstat", "--no-ext-diff"}
-	if staged {
-		args = append(args, "--cached")
-	}
-
-	out, err := gitOutput(repoRoot, args...)
-	if err != nil {
-		if strings.Contains(strings.ToLower(err.Error()), "no changes") {
-			return 0, 0, nil
-		}
-		return 0, 0, err
-	}
-	return parseShortstatCounts(out), parseShortstatDeletions(out), nil
-}
-
-func parseShortstatCounts(raw string) int {
-	count := 0
-	for _, match := range shortstatCountPattern.FindAllStringSubmatch(raw, -1) {
-		if len(match) < 3 || !strings.HasPrefix(match[2], "insertion") {
-			continue
-		}
-		value, _ := strconv.Atoi(match[1])
-		count += value
-	}
-	return count
-}
-
-func parseShortstatDeletions(raw string) int {
-	count := 0
-	for _, match := range shortstatCountPattern.FindAllStringSubmatch(raw, -1) {
-		if len(match) < 3 || !strings.HasPrefix(match[2], "deletion") {
-			continue
-		}
-		value, _ := strconv.Atoi(match[1])
-		count += value
-	}
-	return count
-}
-
 func listGitDiffFiles(repoRoot string) ([]gitDiffFileInfo, error) {
-	out, err := gitOutput(repoRoot, "status", "--porcelain=v1", "--untracked-files=all")
+	out, err := gitCommandOutput(repoRoot, false, "status", "--porcelain=v1", "--untracked-files=all")
 	if err != nil {
 		return nil, err
 	}
+	out = strings.TrimRight(out, "\r\n")
 	if strings.TrimSpace(out) == "" {
 		return nil, nil
 	}
 
 	files := make([]gitDiffFileInfo, 0)
-	for _, line := range strings.Split(strings.TrimSpace(out), "\n") {
+	for _, line := range strings.Split(out, "\n") {
 		line = strings.TrimRight(line, "\r")
 		if len(line) < 3 {
 			continue
@@ -381,7 +324,126 @@ func listGitDiffFiles(repoRoot string) ([]gitDiffFileInfo, error) {
 		return files[left].Path < files[right].Path
 	})
 
+	if err := hydrateGitDiffFileStats(repoRoot, files); err != nil {
+		return nil, err
+	}
+
 	return files, nil
+}
+
+func hydrateGitDiffFileStats(repoRoot string, files []gitDiffFileInfo) error {
+	for index := range files {
+		additions, deletions, err := gitDiffFileStats(repoRoot, files[index])
+		if err != nil {
+			return err
+		}
+		files[index].Additions = additions
+		files[index].Deletions = deletions
+	}
+	return nil
+}
+
+func gitDiffFileStats(repoRoot string, file gitDiffFileInfo) (additions int, deletions int, err error) {
+	if file.Staged {
+		stagedAdditions, stagedDeletions, err := gitNumstatForFile(repoRoot, file.Path, true)
+		if err != nil {
+			return 0, 0, err
+		}
+		additions += stagedAdditions
+		deletions += stagedDeletions
+	}
+	if file.Unstaged {
+		unstagedAdditions, unstagedDeletions, err := gitNumstatForFile(repoRoot, file.Path, false)
+		if err != nil {
+			return 0, 0, err
+		}
+		additions += unstagedAdditions
+		deletions += unstagedDeletions
+	}
+	if file.Untracked {
+		untrackedAdditions, untrackedDeletions, err := gitUntrackedNumstatForFile(repoRoot, file.Path)
+		if err != nil {
+			return 0, 0, err
+		}
+		additions += untrackedAdditions
+		deletions += untrackedDeletions
+	}
+	return additions, deletions, nil
+}
+
+func gitNumstatForFile(repoRoot, path string, staged bool) (int, int, error) {
+	args := []string{
+		"diff",
+		"--numstat",
+		"--no-ext-diff",
+		"--find-renames",
+	}
+	if staged {
+		args = append(args, "--cached")
+	}
+	args = append(args, "--", gitLiteralPathspec(path))
+
+	out, err := gitCommandOutput(repoRoot, false, args...)
+	if err != nil {
+		return 0, 0, err
+	}
+	return parseNumstatCounts(out), parseNumstatDeletions(out), nil
+}
+
+func gitUntrackedNumstatForFile(repoRoot, path string) (int, int, error) {
+	out, err := gitCommandOutput(
+		repoRoot,
+		true,
+		"diff",
+		"--no-index",
+		"--numstat",
+		"--no-ext-diff",
+		"--",
+		"/dev/null",
+		path,
+	)
+	if err != nil {
+		return 0, 0, err
+	}
+	return parseNumstatCounts(out), parseNumstatDeletions(out), nil
+}
+
+func parseNumstatCounts(raw string) int {
+	additions, _ := parseNumstat(raw)
+	return additions
+}
+
+func parseNumstatDeletions(raw string) int {
+	_, deletions := parseNumstat(raw)
+	return deletions
+}
+
+func parseNumstat(raw string) (additions int, deletions int) {
+	for _, line := range strings.Split(strings.TrimSpace(raw), "\n") {
+		fields := strings.Split(line, "\t")
+		if len(fields) < 3 {
+			continue
+		}
+		if value, ok := parseNumstatField(fields[0]); ok {
+			additions += value
+		}
+		if value, ok := parseNumstatField(fields[1]); ok {
+			deletions += value
+		}
+	}
+	return additions, deletions
+}
+
+func parseNumstatField(value string) (int, bool) {
+	value = strings.TrimSpace(value)
+	if value == "" || value == "-" {
+		return 0, false
+	}
+	parsed, err := strconv.Atoi(value)
+	if err != nil {
+		return 0, false
+	}
+	return parsed, true
 }
 
 func gitDiffTargetFile(repoRoot, path string) (*gitDiffFileInfo, error) {

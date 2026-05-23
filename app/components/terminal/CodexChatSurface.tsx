@@ -10,7 +10,6 @@ import type {
 import type { Agent, ConnectionState } from "../../store/agents";
 import type { ConnectionIssue } from "../../services/connectionIssue";
 import { CodexChatBody } from "./CodexChatBody";
-import { CodexChatHeader } from "./CodexChatHeader";
 import { useCodexChatSurfaceState } from "./useCodexChatSurfaceState";
 
 interface CodexChatSurfaceProps {
@@ -44,7 +43,7 @@ export function CodexChatSurface({
   onSwitchToTerminal,
   onOpenGitDiff,
 }: CodexChatSurfaceProps) {
-  const { headerProps, bodyProps } = useCodexChatSurfaceState({
+  const { bodyProps } = useCodexChatSurfaceState({
     serverId,
     agentId,
     agent,
@@ -62,8 +61,6 @@ export function CodexChatSurface({
     <View
       style={[styles.root, { backgroundColor: theme.background }]}
     >
-      <CodexChatHeader {...headerProps} />
-
       <CodexChatBody {...bodyProps} />
     </View>
   );

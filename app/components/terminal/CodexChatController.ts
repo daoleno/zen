@@ -89,6 +89,7 @@ export function useCodexChatController({
   });
   const {
     interruptCodex,
+    interrupting,
     sending,
     submitTextToCodex,
   } = useCodexMessageTransport({
@@ -174,6 +175,7 @@ export function useCodexChatController({
 
   return {
     sending,
+    interrupting,
     uploading,
     statusMeta,
     canAttach,

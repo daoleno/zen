@@ -332,6 +332,7 @@ type CreateSessionOptions struct {
 // If preferredTarget is set, the new window is created in the same tmux
 // session as that target. Otherwise the first non-zen tmux session is used.
 func (w *Watcher) CreateSession(preferredTarget string, opts CreateSessionOptions) (string, error) {
+	createdAt := time.Now().UTC()
 	sessionName := baseSessionName(preferredTarget)
 	if sessionName == "" {
 		sessions, err := listTmuxSessions()
@@ -384,7 +385,57 @@ func (w *Watcher) CreateSession(preferredTarget string, opts CreateSessionOption
 	if target == "" {
 		return "", fmt.Errorf("tmux returned empty window target")
 	}
+	w.registerCreatedSession(target, cwd, opts, createdAt)
 	return target, nil
+}
+
+func (w *Watcher) registerCreatedSession(target, cwd string, opts CreateSessionOptions, createdAt time.Time) {
+	target = strings.TrimSpace(target)
+	if target == "" {
+		return
+	}
+	if createdAt.IsZero() {
+		createdAt = time.Now().UTC()
+	}
+
+	agent := &classifier.Agent{
+		ID:        target,
+		Name:      formatAgentName(createdSessionName(opts), target),
+		Project:   projectNameFromPath(cwd),
+		Cwd:       strings.TrimSpace(cwd),
+		Command:   strings.TrimSpace(opts.Command),
+		State:     classifier.StateRunning,
+		Summary:   "Session starting",
+		LastLines: []string{},
+		StartedAt: createdAt,
+		UpdatedAt: createdAt,
+		PaneAlive: true,
+	}
+
+	w.mu.Lock()
+	w.agents[target] = agent
+	if _, exists := w.prevContent[target]; !exists {
+		w.prevContent[target] = ""
+	}
+	snapshot := cloneAgent(agent)
+	w.mu.Unlock()
+
+	w.events <- SessionEvent{
+		Type:    "agent_discovered",
+		AgentID: target,
+		Agent:   snapshot,
+	}
+}
+
+func createdSessionName(opts CreateSessionOptions) string {
+	if name := strings.TrimSpace(opts.Name); name != "" {
+		return name
+	}
+	fields := strings.Fields(strings.TrimSpace(opts.Command))
+	if len(fields) == 0 {
+		return ""
+	}
+	return filepath.Base(fields[0])
 }
 
 func buildWindowCommand(command string) (string, error) {

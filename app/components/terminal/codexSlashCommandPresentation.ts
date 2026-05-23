@@ -41,7 +41,7 @@ export function slashCommandIcon(name: string): IoniconName {
     case "memories":
       return "library-outline";
     case "skills":
-      return "sparkles-outline";
+      return "construct-outline";
     case "hooks":
       return "link-outline";
     case "review":
@@ -112,7 +112,7 @@ export function slashCommandIcon(name: string): IoniconName {
     case "subagents":
       return "people-outline";
     case "btw":
-      return "chatbubble-ellipses-outline";
+      return "chatbubble-outline";
     default:
       return "terminal-outline";
   }

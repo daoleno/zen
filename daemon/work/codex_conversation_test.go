@@ -602,6 +602,59 @@ func TestParseCodexConversation_RetainsEventsAcrossLargeRollout(t *testing.T) {
 	assertEvent(t, got.Events[1], "user_message", "user", "", "latest prompt")
 }
 
+func TestParseCodexConversation_TracksTurnActivityFromLifecycleEvents(t *testing.T) {
+	t.Run("running turn", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "running.jsonl")
+		writeJSONL(t, path,
+			map[string]any{
+				"type": "event_msg",
+				"payload": map[string]any{
+					"type":    "task_started",
+					"turn_id": "turn-running",
+				},
+			},
+		)
+
+		got, err := parseCodexConversation(path)
+		if err != nil {
+			t.Fatalf("parseCodexConversation: %v", err)
+		}
+		if got.Active == nil || !*got.Active {
+			t.Fatalf("active = %#v, want true", got.Active)
+		}
+	})
+
+	for _, terminalEvent := range []string{"task_complete", "turn_aborted"} {
+		t.Run(terminalEvent, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), terminalEvent+".jsonl")
+			writeJSONL(t, path,
+				map[string]any{
+					"type": "event_msg",
+					"payload": map[string]any{
+						"type":    "task_started",
+						"turn_id": "turn-settled",
+					},
+				},
+				map[string]any{
+					"type": "event_msg",
+					"payload": map[string]any{
+						"type":    terminalEvent,
+						"turn_id": "turn-settled",
+					},
+				},
+			)
+
+			got, err := parseCodexConversation(path)
+			if err != nil {
+				t.Fatalf("parseCodexConversation: %v", err)
+			}
+			if got.Active == nil || *got.Active {
+				t.Fatalf("active = %#v, want false", got.Active)
+			}
+		})
+	}
+}
+
 func assertEvent(t *testing.T, event CodexConversationEvent, kind, role, title, bodyPart string) {
 	t.Helper()
 	if event.Kind != kind || event.Role != role || event.Title != title || !strings.Contains(event.Body, bodyPart) {

@@ -1,6 +1,5 @@
-import { useEffect, useMemo } from "react";
+import { useEffect } from "react";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
-import type { AgentStatus } from "../../constants/tokens";
 import type {
   TerminalThemeChrome,
   TerminalThemePalette,
@@ -9,7 +8,7 @@ import type { Agent, ConnectionState } from "../../store/agents";
 import type { ConnectionIssue } from "../../services/connectionIssue";
 import type { CodexChatBodyProps } from "./CodexChatBody";
 import { useCodexChatController } from "./CodexChatController";
-import type { CodexChatHeaderProps } from "./CodexChatHeader";
+import { isCodexRequestRunning } from "./CodexChatControllerModel";
 import { useCodexChatSession } from "./CodexChatSession";
 import { useCodexSlashCommands } from "./CodexSlashCommands";
 import { useCodexChatBodyProps } from "./useCodexChatBodyProps";
@@ -40,7 +39,6 @@ interface UseCodexChatSurfaceStateInput {
 }
 
 interface CodexChatSurfaceState {
-  headerProps: CodexChatHeaderProps;
   bodyProps: CodexChatBodyProps;
 }
 
@@ -121,13 +119,19 @@ export function useCodexChatSurfaceState({
     timeline.resetForConversation();
   }, [conversationCacheKey, timeline.resetForConversation]);
 
+  const requestRunning = isCodexRequestRunning({
+    agent,
+    conversation,
+    events,
+  });
   const composerPresentation = useCodexComposerPresentation({
     draft,
     slashCommands,
     connectionState,
-    agentStatus: agent?.status,
+    requestRunning,
     attachmentCount: attachments.length,
     sending: controller.sending,
+    interrupting: controller.interrupting,
     canSend: controller.canSend,
     composerFocused: composerInput.focused,
     safeAreaTop: insets.top,
@@ -155,27 +159,7 @@ export function useCodexChatSurfaceState({
     onSwitchToTerminal,
     setDraft,
   });
-  const headerProps = useMemo(
-    () => ({
-      status: (agent?.status || "unknown") as AgentStatus,
-      statusMeta: controller.statusMeta,
-      theme,
-      chrome,
-      gitDiff,
-      onSwitchToTerminal,
-    }),
-    [
-      agent?.status,
-      chrome,
-      controller.statusMeta,
-      gitDiff,
-      onSwitchToTerminal,
-      theme,
-    ],
-  );
-
   return {
-    headerProps,
     bodyProps,
   };
 }

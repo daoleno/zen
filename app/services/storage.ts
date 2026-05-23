@@ -1,5 +1,4 @@
 import AsyncStorage from "@react-native-async-storage/async-storage";
-import { parseSessionKey } from "./sessionKeys";
 import { normalizeDaemonId, normalizePublicKeyHex } from "./auth";
 import { normalizeServerURL as normalizeConnectionURL } from "./connection";
 import {
@@ -15,7 +14,6 @@ const KEYS = {
   terminalTheme: "zen:terminal_theme",
   inboxViewMode: "zen:inbox_view_mode",
   recentAgentOpens: "zen:recent_agent_opens",
-  terminalTabs: "zen:terminal_tabs",
   agentAliases: "zen:agent_aliases",
   codexRenderModes: "zen:codex_render_modes",
 } as const;
@@ -34,12 +32,6 @@ export interface StoredServer {
   daemonId: string;
   daemonPublicKey: string;
 }
-export interface StoredTerminalTabs {
-  order: string[];
-  pinned: string[];
-}
-
-const MAX_TERMINAL_TABS = 12;
 
 export async function getServers(): Promise<StoredServer[]> {
   const value = await AsyncStorage.getItem(KEYS.servers);
@@ -134,7 +126,6 @@ export async function removeServer(serverID: string): Promise<void> {
   const nextServers = servers.filter((server) => server.id !== serverID);
   await AsyncStorage.setItem(KEYS.servers, JSON.stringify(nextServers));
   await setServerAutoConnect(serverID, true);
-  await pruneTerminalTabsForServers([serverID]);
 }
 
 export async function getServerById(
@@ -247,106 +238,6 @@ export async function markAgentOpened(
   );
 }
 
-export async function getTerminalTabs(): Promise<StoredTerminalTabs> {
-  const value = await AsyncStorage.getItem(KEYS.terminalTabs);
-  if (!value) return { order: [], pinned: [] };
-
-  try {
-    const parsed = JSON.parse(value) as { order?: unknown; pinned?: unknown };
-    return normalizeTerminalTabs({
-      order: normalizeIdList(parsed.order),
-      pinned: normalizeIdList(parsed.pinned),
-    });
-  } catch {
-    return { order: [], pinned: [] };
-  }
-}
-
-export async function touchTerminalTab(
-  agentId: string,
-): Promise<StoredTerminalTabs> {
-  const current = await getTerminalTabs();
-  const next = normalizeTerminalTabs({
-    order: current.order.includes(agentId)
-      ? current.order
-      : [...current.order, agentId],
-    pinned: current.pinned,
-  });
-  await AsyncStorage.setItem(KEYS.terminalTabs, JSON.stringify(next));
-  return next;
-}
-
-export async function closeTerminalTab(
-  agentId: string,
-): Promise<StoredTerminalTabs> {
-  const current = await getTerminalTabs();
-  const next = normalizeTerminalTabs({
-    order: current.order.filter((id) => id !== agentId),
-    pinned: current.pinned.filter((id) => id !== agentId),
-  });
-  await AsyncStorage.setItem(KEYS.terminalTabs, JSON.stringify(next));
-  return next;
-}
-
-export async function closeOtherTerminalTabs(
-  agentId: string,
-): Promise<StoredTerminalTabs> {
-  const current = await getTerminalTabs();
-  const next = normalizeTerminalTabs({
-    order: [agentId],
-    pinned: current.pinned.includes(agentId) ? [agentId] : [],
-  });
-  await AsyncStorage.setItem(KEYS.terminalTabs, JSON.stringify(next));
-  return next;
-}
-
-export async function setTerminalTabPinned(
-  agentId: string,
-  pinned: boolean,
-): Promise<StoredTerminalTabs> {
-  const current = await getTerminalTabs();
-  const next = normalizeTerminalTabs({
-    order: current.order.includes(agentId)
-      ? current.order
-      : [...current.order, agentId],
-    pinned: pinned
-      ? [agentId, ...current.pinned.filter((id) => id !== agentId)]
-      : current.pinned.filter((id) => id !== agentId),
-  });
-  await AsyncStorage.setItem(KEYS.terminalTabs, JSON.stringify(next));
-  return next;
-}
-
-export async function syncTerminalTabsWithLiveSessions(
-  liveSessionKeys: string[],
-  hydratedServerIds: string[],
-): Promise<StoredTerminalTabs> {
-  const current = await getTerminalTabs();
-  const liveSessions = new Set(liveSessionKeys);
-  const hydratedServers = new Set(hydratedServerIds);
-
-  const next = normalizeTerminalTabs({
-    order: current.order.filter((sessionKey) =>
-      shouldKeepSessionKey(sessionKey, liveSessions, hydratedServers),
-    ),
-    pinned: current.pinned.filter((sessionKey) =>
-      shouldKeepSessionKey(sessionKey, liveSessions, hydratedServers),
-    ),
-  });
-
-  if (
-    next.order.length === current.order.length &&
-    next.pinned.length === current.pinned.length &&
-    next.order.every((value, index) => value === current.order[index]) &&
-    next.pinned.every((value, index) => value === current.pinned[index])
-  ) {
-    return current;
-  }
-
-  await AsyncStorage.setItem(KEYS.terminalTabs, JSON.stringify(next));
-  return next;
-}
-
 export async function getAgentAliases(): Promise<StoredAgentAliases> {
   const value = await AsyncStorage.getItem(KEYS.agentAliases);
   if (!value) return {};
@@ -440,34 +331,6 @@ function normalizeIdList(value: unknown): string[] {
   return normalized;
 }
 
-async function pruneTerminalTabsForServers(serverIds: string[]): Promise<void> {
-  const blockedServers = new Set(serverIds);
-  const current = await getTerminalTabs();
-  const next = normalizeTerminalTabs({
-    order: current.order.filter((sessionKey) => {
-      const parsed = parseSessionKey(sessionKey);
-      return parsed ? !blockedServers.has(parsed.serverId) : false;
-    }),
-    pinned: current.pinned.filter((sessionKey) => {
-      const parsed = parseSessionKey(sessionKey);
-      return parsed ? !blockedServers.has(parsed.serverId) : false;
-    }),
-  });
-
-  await AsyncStorage.setItem(KEYS.terminalTabs, JSON.stringify(next));
-}
-
-function shouldKeepSessionKey(
-  sessionKey: string,
-  liveSessions: Set<string>,
-  hydratedServers: Set<string>,
-): boolean {
-  const parsed = parseSessionKey(sessionKey);
-  if (!parsed) return false;
-  if (!hydratedServers.has(parsed.serverId)) return true;
-  return liveSessions.has(sessionKey);
-}
-
 function createServerID(): string {
   return `server_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
 }
@@ -492,40 +355,4 @@ function deriveServerName(url: string): string {
   } catch {
     return url;
   }
-}
-
-function normalizeTerminalTabs(state: StoredTerminalTabs): StoredTerminalTabs {
-  const normalizedOrder = normalizeIdList(state.order);
-  const normalizedPinned = normalizeIdList(state.pinned).filter((id) =>
-    normalizedOrder.includes(id),
-  );
-  const order = trimTerminalTabOrder(normalizedOrder, normalizedPinned);
-  const pinned = normalizedPinned.filter((id) => order.includes(id));
-  return { order, pinned };
-}
-
-function trimTerminalTabOrder(order: string[], pinned: string[]): string[] {
-  if (order.length <= MAX_TERMINAL_TABS) return order;
-
-  const next = [...order];
-  const pinnedSet = new Set(pinned);
-
-  while (next.length > MAX_TERMINAL_TABS) {
-    let removableIndex = -1;
-
-    for (let index = next.length - 1; index >= 0; index -= 1) {
-      if (pinnedSet.has(next[index])) continue;
-      removableIndex = index;
-      break;
-    }
-
-    if (removableIndex === -1) {
-      next.length = MAX_TERMINAL_TABS;
-      break;
-    }
-
-    next.splice(removableIndex, 1);
-  }
-
-  return next;
 }

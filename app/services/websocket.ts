@@ -377,6 +377,11 @@ class MultiServerWebSocketClient {
         if (payload.serverId !== serverId || payload.request_id !== requestId)
           return;
         cleanup();
+        if (payload.agent_session && typeof payload.agent_session === "object") {
+          this.emit("agent_session_created", serverId, {
+            agent_session: payload.agent_session,
+          });
+        }
         if (typeof payload.agent_id === "string" && payload.agent_id) {
           resolve(payload.agent_id);
           return;

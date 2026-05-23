@@ -1,4 +1,4 @@
-import type { RefObject } from "react";
+import { useCallback, type RefObject } from "react";
 import type { LayoutChangeEvent } from "react-native";
 import type { useTerminalGitDiff } from "../../components/terminal/useTerminalGitDiff";
 import type { TerminalSurfaceHandle } from "../../components/terminal/TerminalSurface";
@@ -13,17 +13,17 @@ import type {
   StoredAgentAliases,
   StoredCodexRenderMode,
 } from "../../services/storage";
+import type { PresentedAgent } from "../../services/agentPresentation";
 import type { AgentDirectorySection } from "../../services/serverSelection";
 import type { useTerminalScreenChrome } from "./useTerminalScreenChrome";
 import type { useTerminalSessionActions } from "./useTerminalSessionActions";
-import type { useTerminalTabActions } from "./useTerminalTabActions";
+import type { useTerminalNavigationActions } from "./useTerminalNavigationActions";
 import type { useTerminalViewportModel } from "./useTerminalViewportModel";
 import { useTerminalScreenOverlayProps } from "./useTerminalScreenOverlayProps";
 import { useTerminalTopBarProps } from "./useTerminalTopBarProps";
 import { useTerminalViewportProps } from "./useTerminalViewportProps";
 
 interface UseTerminalScreenLayoutPropsInput {
-  activePinned: boolean;
   agent?: Agent;
   agentAliases: StoredAgentAliases;
   agentId: string;
@@ -36,6 +36,7 @@ interface UseTerminalScreenLayoutPropsInput {
   creatingSession: boolean;
   ctrlArmed: boolean;
   daemonId?: string;
+  displayName: string;
   gitDiff: ReturnType<typeof useTerminalGitDiff>;
   handleAccessoryLayout(event: LayoutChangeEvent): void;
   handleCtrlArmedChange(next: boolean): void;
@@ -47,6 +48,7 @@ interface UseTerminalScreenLayoutPropsInput {
   menuVisible: boolean;
   newTerminalVisible: boolean;
   outputBottomInset: number;
+  presentedAgent: PresentedAgent;
   pickerSections: AgentDirectorySection[];
   pickerVisible: boolean;
   renameDraft: string;
@@ -64,8 +66,7 @@ interface UseTerminalScreenLayoutPropsInput {
   showCodexChat: boolean;
   showPickerServerNames: boolean;
   sortedAgentCount: number;
-  tabActions: ReturnType<typeof useTerminalTabActions>;
-  tabs: Parameters<typeof useTerminalTopBarProps>[0]["tabs"];
+  navigationActions: ReturnType<typeof useTerminalNavigationActions>;
   terminalRef: RefObject<TerminalSurfaceHandle | null>;
   terminalTheme: TerminalThemePalette;
   themeName: TerminalThemeName;
@@ -77,7 +78,6 @@ interface UseTerminalScreenLayoutPropsInput {
 }
 
 export function useTerminalScreenLayoutProps({
-  activePinned,
   agent,
   agentAliases,
   agentId,
@@ -90,6 +90,7 @@ export function useTerminalScreenLayoutProps({
   creatingSession,
   ctrlArmed,
   daemonId,
+  displayName,
   gitDiff,
   handleAccessoryLayout,
   handleCtrlArmedChange,
@@ -101,6 +102,7 @@ export function useTerminalScreenLayoutProps({
   menuVisible,
   newTerminalVisible,
   outputBottomInset,
+  presentedAgent,
   pickerSections,
   pickerVisible,
   renameDraft,
@@ -118,8 +120,7 @@ export function useTerminalScreenLayoutProps({
   showCodexChat,
   showPickerServerNames,
   sortedAgentCount,
-  tabActions,
-  tabs,
+  navigationActions,
   terminalRef,
   terminalTheme,
   themeName,
@@ -129,13 +130,32 @@ export function useTerminalScreenLayoutProps({
   openRenameModal,
   sessionActions,
 }: UseTerminalScreenLayoutPropsInput) {
+  const handleToggleCodexRenderMode = useCallback(() => {
+    if (codexRenderMode === "chat") {
+      void sessionActions.applyCodexRenderMode("terminal");
+      requestAnimationFrame(() => {
+        terminalRef.current?.resumeInput();
+      });
+      return;
+    }
+    terminalRef.current?.blur();
+    void sessionActions.applyCodexRenderMode("chat");
+  }, [codexRenderMode, sessionActions.applyCodexRenderMode, terminalRef]);
+
   const topBarProps = useTerminalTopBarProps({
-    tabs,
+    title: displayName || presentedAgent.title || agent?.name || agentId || "Terminal",
+    kind: presentedAgent.kind,
     terminalTheme,
     chrome,
     chromeLayout,
-    tabActions,
-    openNewTerminal,
+    navigationActions,
+    codexRenderMode,
+    gitDiffDisabled: gitDiff.actionDisabled,
+    gitDiffSummary: gitDiff.summary,
+    isCodexAgent,
+    onOpenPicker: () => setPickerVisible(true),
+    openGitDiff,
+    onToggleCodexRenderMode: handleToggleCodexRenderMode,
   });
   const viewportProps = useTerminalViewportProps({
     showCodexChat,
@@ -155,7 +175,6 @@ export function useTerminalScreenLayoutProps({
     onCtrlArmedChange: handleCtrlArmedChange,
     viewportModel,
     hasTerminalRoute,
-    isCodexAgent,
     outputBottomInset,
     accessoryBottomOffset,
     serverUrl,
@@ -177,10 +196,6 @@ export function useTerminalScreenLayoutProps({
     menuPosition,
     connectionConnected: connectionState === "connected",
     gitDiff,
-    activePinned,
-    tabs,
-    isCodexAgent,
-    codexRenderMode,
     hasLinkedWork,
     newTerminalVisible,
     agentCwd: agent?.cwd,
@@ -194,11 +209,10 @@ export function useTerminalScreenLayoutProps({
     setNewTerminalVisible,
     setRenameVisible,
     setRenameDraft,
-    tabActions,
+    navigationActions,
     sessionActions,
     closeMenu: chromeLayout.closeMenu,
     openNewTerminal,
-    openGitDiff,
     openRenameModal,
   });
 

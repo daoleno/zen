@@ -29,7 +29,6 @@ import {
   resolveTerminalThemePreference,
 } from '../../constants/terminalThemes';
 import {
-  closeTerminalTab,
   getInboxViewMode,
   getAgentAliases,
   getRecentAgentOpens,
@@ -38,7 +37,6 @@ import {
   markAgentOpened,
   setAgentAlias,
   setInboxViewMode,
-  touchTerminalTab,
   StoredAgentAliases,
   StoredInboxViewMode,
   StoredTerminalTheme,
@@ -276,10 +274,13 @@ export default function InboxScreen() {
     setRenameAgentKey(null);
   };
 
-  const finishCreateTerminal = async (serverId: string, agentId: string) => {
+  const finishCreateTerminal = async (
+    serverId: string,
+    agentId: string,
+    hint?: { cwd: string; command: string; name: string; startedAt: number },
+  ) => {
     const sessionKey = makeSessionKey(serverId, agentId);
     const openedAt = Date.now();
-    await touchTerminalTab(sessionKey);
     void markAgentOpened(sessionKey, openedAt);
     setRecentAgentOpens(previous => ({
       ...previous,
@@ -287,7 +288,16 @@ export default function InboxScreen() {
     }));
     router.push({
       pathname: '/terminal/[id]',
-      params: { id: agentId, serverId },
+      params: hint
+        ? {
+            id: agentId,
+            serverId,
+            cwd: hint.cwd,
+            command: hint.command,
+            name: hint.name,
+            startedAt: String(hint.startedAt),
+          }
+        : { id: agentId, serverId },
     });
   };
 
@@ -311,12 +321,13 @@ export default function InboxScreen() {
     setCreateSheetVisible(false);
     setCreatingServerId(server.id);
     try {
+      const startedAt = Date.now();
       const agentId = await wsClient.createSession(server.id, {
         cwd: input.cwd,
         command: input.command,
         name: input.name,
       });
-      await finishCreateTerminal(server.id, agentId);
+      await finishCreateTerminal(server.id, agentId, { ...input, startedAt });
     } catch (error: any) {
       Alert.alert('Could not create terminal', error?.message || 'Try reconnecting to that daemon first.');
     } finally {
@@ -429,14 +440,13 @@ export default function InboxScreen() {
 
     Alert.alert(
       'Terminate?',
-      'This will terminate ' + presentAgent(target, agentAliases[target.key]).title + ' on ' + target.serverName + '. It does more than closing the tab.',
+      'This will terminate ' + presentAgent(target, agentAliases[target.key]).title + ' on ' + target.serverName + '.',
       [
         { text: 'Cancel', style: 'cancel' },
         {
           text: 'Terminate',
           style: 'destructive',
           onPress: () => {
-            void closeTerminalTab(target.key);
             wsClient.killAgent(target.serverId, target.id);
           },
         },

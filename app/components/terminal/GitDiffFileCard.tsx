@@ -19,7 +19,6 @@ import type {
 import { describeGitDiffScope } from "../../services/gitDiff";
 import { GitDiffBlock } from "./GitDiffPatchBlock";
 import { GitDiffStateCard } from "./GitDiffStateCard";
-import { withAlpha } from "./gitDiffColor";
 
 interface GitDiffFileCardProps {
   file: GitDiffFileInfo;
@@ -75,21 +74,27 @@ export function GitDiffFileCard({
       >
         <Ionicons
           name={expanded ? "chevron-down" : "chevron-forward"}
-          size={16}
+          size={15}
           color={chrome.textSubtle}
         />
+        <View
+          style={[
+            styles.statusDot,
+            { backgroundColor: statusTone(file, theme) },
+          ]}
+        />
         <View style={styles.diffCardTitleWrap}>
-          <Text style={[styles.diffFileName, { color: chrome.text }]} numberOfLines={2}>
+          <Text style={[styles.diffFileName, { color: chrome.text }]} numberOfLines={1}>
             {file.path}
           </Text>
-          <Text style={[styles.diffFilePath, { color: chrome.textMuted }]} numberOfLines={2}>
+          <Text style={[styles.diffFilePath, { color: chrome.textMuted }]} numberOfLines={1}>
             {buildFilePathMeta(file)}
           </Text>
         </View>
-        <View style={styles.diffHeaderBadges}>
-          <StatusPill file={file} theme={theme} compact />
+        <View style={styles.diffHeaderActions}>
+          <FileStats file={file} theme={theme} chrome={chrome} />
           <TouchableOpacity
-            style={[styles.diffOpenButton, { borderColor: chrome.border }]}
+            style={styles.diffOpenButton}
             onPress={onOpenFile}
             activeOpacity={0.82}
           >
@@ -186,43 +191,56 @@ function PatchSection({
   );
 }
 
-function StatusPill({
+function FileStats({
   file,
   theme,
-  compact = false,
+  chrome,
 }: {
   file: GitDiffFileInfo;
   theme: TerminalThemePalette;
-  compact?: boolean;
+  chrome: ReturnType<typeof buildTerminalChrome>;
 }) {
-  const color = statusTone(file, theme);
-  return (
-    <View
-      style={[
-        styles.statusPill,
-        compact ? styles.statusPillCompact : null,
-        { backgroundColor: withAlpha(color, 0.14) },
-      ]}
-    >
-      <Text
-        style={[
-          styles.statusPillText,
-          compact ? styles.statusPillTextCompact : null,
-          { color },
-        ]}
-      >
+  const additions = normalizedCount(file.additions);
+  const deletions = normalizedCount(file.deletions);
+  if (additions === 0 && deletions === 0) {
+    return (
+      <Text style={[styles.statEmpty, { color: chrome.textSubtle }]}>
         {statusLabel(file)}
       </Text>
+    );
+  }
+
+  return (
+    <View style={styles.fileStats}>
+      {additions > 0 ? (
+        <Text style={[styles.statText, { color: theme.green }]}>
+          +{additions}
+        </Text>
+      ) : null}
+      {deletions > 0 ? (
+        <Text style={[styles.statText, { color: theme.red }]}>
+          -{deletions}
+        </Text>
+      ) : null}
     </View>
   );
 }
 
+function normalizedCount(value: unknown): number {
+  return typeof value === "number" && Number.isFinite(value)
+    ? Math.max(0, value)
+    : 0;
+}
+
 function buildFilePathMeta(file: GitDiffFileInfo): string {
   if (file.old_path) {
-    return `${describeGitDiffScope(file)} · ${file.old_path} -> ${file.path}`;
+    return `${statusLabel(file)} · ${file.old_path} -> ${file.path}`;
   }
   const directory = pathDirectoryName(file.path);
-  return [describeGitDiffScope(file), directory].filter(Boolean).join(" · ");
+  const scope = describeGitDiffScope(file);
+  const label = statusLabel(file);
+  const state = scope === label ? label : `${label} · ${scope}`;
+  return [state, directory].filter(Boolean).join(" · ");
 }
 
 function pathDirectoryName(path: string): string {
@@ -272,18 +290,18 @@ function statusTone(file: GitDiffFileInfo, theme: TerminalThemePalette): string 
 
 const styles = StyleSheet.create({
   diffCard: {
-    borderRadius: 10,
+    borderRadius: 8,
     borderWidth: StyleSheet.hairlineWidth,
     overflow: "hidden",
   },
   diffCardHeader: {
-    minHeight: 50,
-    paddingHorizontal: 9,
-    paddingVertical: 6,
+    minHeight: 42,
+    paddingHorizontal: 8,
+    paddingVertical: 5,
     borderBottomWidth: StyleSheet.hairlineWidth,
     flexDirection: "row",
-    alignItems: "flex-start",
-    gap: 10,
+    alignItems: "center",
+    gap: 7,
   },
   diffCardTitleWrap: {
     flex: 1,
@@ -292,28 +310,47 @@ const styles = StyleSheet.create({
   diffOpenButton: {
     width: 28,
     height: 28,
-    marginTop: 1,
-    borderRadius: 9,
-    borderWidth: StyleSheet.hairlineWidth,
     alignItems: "center",
     justifyContent: "center",
   },
   diffFileName: {
-    fontSize: 13,
-    lineHeight: 17,
+    fontSize: 12,
+    lineHeight: 16,
     fontFamily: Typography.terminalFontBold,
   },
   diffFilePath: {
-    marginTop: 2,
     fontSize: 10,
     lineHeight: 13,
     fontFamily: Typography.uiFont,
   },
-  diffHeaderBadges: {
+  diffHeaderActions: {
     flexDirection: "row",
-    alignItems: "flex-start",
-    gap: 8,
+    alignItems: "center",
+    gap: 7,
     flexShrink: 0,
+  },
+  statusDot: {
+    width: 7,
+    height: 7,
+    borderRadius: 4,
+    flexShrink: 0,
+  },
+  fileStats: {
+    minWidth: 46,
+    flexDirection: "row",
+    justifyContent: "flex-end",
+    gap: 5,
+  },
+  statText: {
+    fontSize: 11,
+    lineHeight: 14,
+    fontFamily: Typography.terminalFontBold,
+  },
+  statEmpty: {
+    maxWidth: 72,
+    fontSize: 10,
+    lineHeight: 12,
+    fontFamily: Typography.uiFontMedium,
   },
   patchList: {
     padding: 5,
@@ -343,25 +380,6 @@ const styles = StyleSheet.create({
     fontFamily: Typography.uiFont,
     textTransform: "uppercase",
     letterSpacing: 0.5,
-  },
-  statusPill: {
-    borderRadius: 999,
-    paddingHorizontal: 8,
-    paddingVertical: 5,
-    marginTop: 2,
-  },
-  statusPillCompact: {
-    paddingHorizontal: 7,
-    paddingVertical: 3,
-  },
-  statusPillText: {
-    fontSize: 10,
-    lineHeight: 12,
-    fontFamily: Typography.uiFontMedium,
-  },
-  statusPillTextCompact: {
-    fontSize: 9,
-    lineHeight: 11,
   },
   inlineStateWrap: {
     padding: 8,

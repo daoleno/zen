@@ -22,6 +22,17 @@ function hasGitDiffPatchContent(payload?: GitDiffPatchPayload) {
   return Boolean(payload?.sections?.some((section) => section.patch.trim()));
 }
 
+export type TerminalGitDiffTone = "clean" | "dirty" | "error" | "loading";
+
+export interface TerminalGitDiffSummary {
+  label: string;
+  tone: TerminalGitDiffTone;
+  additions: number;
+  deletions: number;
+  fileCount: number;
+  showStats: boolean;
+}
+
 export function useTerminalGitDiff({
   serverId,
   agentId,
@@ -415,6 +426,32 @@ export function useTerminalGitDiff({
     };
   }, [error, loading, open, queryEnabled, status]);
 
+  const summary = useMemo<TerminalGitDiffSummary | null>(() => {
+    if (!queryEnabled || status?.reason === "not_git_repo") {
+      return null;
+    }
+
+    const tone: TerminalGitDiffTone =
+      loading && !status
+        ? "loading"
+        : status?.available
+          ? status.clean
+            ? "clean"
+            : "dirty"
+          : error
+            ? "error"
+            : "loading";
+
+    return {
+      label: buildGitDiffChipLabel(status, loading),
+      tone,
+      additions: status?.available ? status.additions : 0,
+      deletions: status?.available ? status.deletions : 0,
+      fileCount: status?.available ? status.file_count : 0,
+      showStats: Boolean(status?.available),
+    };
+  }, [error, loading, queryEnabled, status]);
+
   const sheetProps = useMemo(
     () => ({
       visible,
@@ -478,6 +515,7 @@ export function useTerminalGitDiff({
     queryEnabled,
     actionDisabled: !queryEnabled || status?.reason === "not_git_repo",
     chip,
+    summary,
     open,
     sheetProps,
   };

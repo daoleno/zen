@@ -159,10 +159,7 @@ func findCodexTranscript(agent classifier.Agent, now time.Time) (codexTranscript
 	if isCodexResumeCommand(agent.Command) {
 		return latestUpdatedCodexTranscript(candidates), true, nil
 	}
-	if !agent.StartedAt.IsZero() {
-		return codexTranscriptCandidate{}, false, nil
-	}
-	return candidates[0], true, nil
+	return codexTranscriptCandidate{}, false, nil
 }
 
 func matchCodexTranscriptToAgentStart(candidates []codexTranscriptCandidate, startedAt time.Time) (codexTranscriptCandidate, bool) {
@@ -170,7 +167,7 @@ func matchCodexTranscriptToAgentStart(candidates []codexTranscriptCandidate, sta
 		return codexTranscriptCandidate{}, false
 	}
 	startedAt = startedAt.UTC()
-	minCreatedAt := startedAt.Add(-2 * time.Minute)
+	minCreatedAt := startedAt.Add(-5 * time.Second)
 	bestIndex := -1
 	var bestDelta time.Duration
 	for index, candidate := range candidates {

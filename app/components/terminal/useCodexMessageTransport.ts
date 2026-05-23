@@ -35,6 +35,7 @@ export function useCodexMessageTransport({
   scrollToLatest,
 }: UseCodexMessageTransportInput) {
   const [sending, setSending] = useState(false);
+  const [interrupting, setInterrupting] = useState(false);
 
   const submitTextToCodex = useCallback(
     (
@@ -83,20 +84,25 @@ export function useCodexMessageTransport({
     if (connectionState !== "connected" || sending) {
       return;
     }
+    setInterrupting(true);
     setSending(true);
     try {
       wsClient.sendAction(serverId, agentId, "pause");
       setTimeout(() => {
-        void refreshConversation(false);
-        setSending(false);
+        void refreshConversation(false).finally(() => {
+          setInterrupting(false);
+          setSending(false);
+        });
       }, 600);
     } catch {
+      setInterrupting(false);
       setSending(false);
     }
   }, [agentId, connectionState, refreshConversation, sending, serverId]);
 
   return {
     sending,
+    interrupting,
     submitTextToCodex,
     interruptCodex,
   };

@@ -4,24 +4,24 @@ import type { WorkItem } from "../../store/work";
 import type {
   StoredAgentAliases,
   StoredCodexRenderModes,
-  StoredTerminalTabs,
 } from "../../services/storage";
 import type { TerminalThemePreference } from "../../constants/terminalThemes";
 import { useTerminalGitDiff } from "../../components/terminal/useTerminalGitDiff";
 import { useTerminalRouteModel } from "./useTerminalRouteModel";
 import { useTerminalThemeChrome } from "./useTerminalThemeChrome";
 import { useTerminalViewportModel } from "./useTerminalViewportModel";
+import type { TerminalRouteSessionHint } from "./useTerminalScreenLocalState";
 
 interface UseTerminalScreenModelsInput {
   serverId: string;
   agentId: string;
   sessionKey: string | null;
+  routeSessionHint: TerminalRouteSessionHint;
   screenFocused: boolean;
   themePreference: TerminalThemePreference;
   agentByKey: ReadonlyMap<string, Agent>;
   workByKey: Record<string, WorkItem>;
   agentAliases: StoredAgentAliases;
-  terminalTabs: StoredTerminalTabs;
   serverConnections: Record<string, ConnectionState>;
   serverConnectionIssues: Record<string, ConnectionIssue | null>;
   codexRenderModes: StoredCodexRenderModes;
@@ -31,12 +31,12 @@ export function useTerminalScreenModels({
   serverId,
   agentId,
   sessionKey,
+  routeSessionHint,
   screenFocused,
   themePreference,
   agentByKey,
   workByKey,
   agentAliases,
-  terminalTabs,
   serverConnections,
   serverConnectionIssues,
   codexRenderModes,
@@ -46,10 +46,10 @@ export function useTerminalScreenModels({
     serverId,
     agentId,
     sessionKey,
+    routeSessionHint,
     agentByKey,
     workByKey,
     agentAliases,
-    terminalTabs,
     serverConnections,
     serverConnectionIssues,
     codexRenderModes,

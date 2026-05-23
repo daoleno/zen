@@ -23,7 +23,7 @@ export function presentAgent(agent: Pick<Agent, 'name' | 'project' | 'cwd' | 'co
   const cleanName = sanitizeName(agent.name);
   const explicitAlias = normalize(alias);
   const location = project || cwdBase;
-  const generatedTitle = defaultTitle(kind);
+  const fallbackTitle = location || defaultTitle(kind);
 
   if (explicitAlias) {
     return {
@@ -37,17 +37,17 @@ export function presentAgent(agent: Pick<Agent, 'name' | 'project' | 'cwd' | 'co
     };
   }
 
-  const usesDefaultTitle = shouldPreferGeneratedTitle(cleanName, kind);
-  const title = usesDefaultTitle ? generatedTitle : (cleanName || generatedTitle);
+  const hasAgentTitle = cleanName && !isGenericAgentTitle(cleanName, kind);
+  const title = hasAgentTitle ? cleanName : fallbackTitle;
 
   return {
     kind,
     title,
-    shortTitle: usesDefaultTitle ? shortDefaultTitle(kind) : title,
+    shortTitle: hasAgentTitle ? title : (location || shortDefaultTitle(kind)),
     subtitle: buildSubtitle(label, location || cwd),
     typeLabel: label,
     cwdBase,
-    titleSource: usesDefaultTitle ? 'default' : 'explicit_name',
+    titleSource: hasAgentTitle ? 'explicit_name' : 'default',
   };
 }
 
@@ -57,31 +57,35 @@ function detectAgentKind(agent: Pick<Agent, 'name' | 'project' | 'cwd' | 'comman
   return 'terminal';
 }
 
-function shouldPreferGeneratedTitle(name: string, kind: AgentKind): boolean {
+function isGenericAgentTitle(name: string, kind: AgentKind): boolean {
   if (!name) return true;
-  const lower = name.toLowerCase();
-  if (kind === 'claude' && (lower === 'claude' || lower === 'claude code')) return true;
-  if (kind === 'codex' && lower === 'codex') return true;
+  const lower = name.toLowerCase().replace(/\s+/g, ' ').trim();
   if (
-    kind === 'terminal' && (
-      lower === 'zsh' ||
-      lower === 'bash' ||
-      lower === 'sh' ||
-      lower === 'fish' ||
-      lower === 'shell' ||
-      lower === 'terminal' ||
-      lower === 'tmux' ||
-      lower === '[tmux]' ||
-      lower === 'node' ||
-      lower === 'bun' ||
-      lower === 'python' ||
-      lower === 'python3' ||
-      lower.includes('tmux') ||
-      lower.startsWith('./') ||
-      lower.startsWith('/')
+    kind === 'claude' && (
+      lower === 'claude' ||
+      lower === 'claude code' ||
+      lower === 'claude-code'
     )
   ) return true;
-  return /\(\w+:\d+\)\s*$/.test(name);
+  if (kind === 'codex' && (lower === 'codex' || lower === 'openai codex')) return true;
+  if (
+    lower === 'zsh' ||
+    lower === 'bash' ||
+    lower === 'sh' ||
+    lower === 'fish' ||
+    lower === 'shell' ||
+    lower === 'terminal' ||
+    lower === 'tmux' ||
+    lower === '[tmux]' ||
+    lower === 'node' ||
+    lower === 'bun' ||
+    lower === 'python' ||
+    lower === 'python3' ||
+    lower.includes('tmux') ||
+    lower.startsWith('./') ||
+    lower.startsWith('/')
+  ) return true;
+  return /^[\w.-]+:[@%\w.-]+$/.test(lower);
 }
 
 function sanitizeName(value?: string): string {
@@ -104,11 +108,11 @@ function normalize(value?: string): string {
 function defaultTitle(kind: AgentKind): string {
   switch (kind) {
     case 'claude':
-      return 'Claude Code Session';
+      return 'Claude';
     case 'codex':
-      return 'Codex Session';
+      return 'Codex';
     default:
-      return 'Shell Session';
+      return 'Shell';
   }
 }
 

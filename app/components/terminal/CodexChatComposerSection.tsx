@@ -75,7 +75,7 @@ export function CodexChatComposerSection({
       sending={sending}
       sendIcon={presentation.sendIcon}
       sendLabel={presentation.sendLabel}
-      compactSendIcon={presentation.showStopButton}
+      running={presentation.showStopIndicator}
       bottomPadding={presentation.bottomPadding}
       showCommandMenu={presentation.showCommandMenu}
       commandQuery={presentation.commandQuery}

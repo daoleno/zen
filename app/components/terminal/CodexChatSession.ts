@@ -19,6 +19,11 @@ type RefreshInFlight = {
   requestSeq: number;
 };
 
+type KeyedState<T> = {
+  cacheKey: string;
+  value: T;
+};
+
 export type ComposerAttachment = UploadedAttachment & {
   id: string;
 };
@@ -63,33 +68,83 @@ export function useCodexChatSession({
   connectionState,
   screenFocused,
 }: UseCodexChatSessionInput) {
-  const cacheKey = `${serverId}:${agentId}`;
+  const sessionStartedAt = normalizeSessionTimestamp(agent?.started_at);
+  const cacheKey = `${serverId}:${agentId}:${sessionStartedAt || ""}`;
   const requestSeqRef = useRef(0);
   const refreshInFlightRef = useRef<RefreshInFlight | null>(null);
   const refreshQueuedRef = useRef(false);
-  const [conversation, setConversationState] = useState<CodexConversation | null>(
-    () => conversationCache.get(cacheKey) ?? null,
+  const [conversationState, setConversationState] = useState<
+    KeyedState<CodexConversation | null>
+  >(
+    () => ({
+      cacheKey,
+      value: conversationCache.get(cacheKey) ?? null,
+    }),
   );
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [draft, setDraftState] = useState(() => draftCache.get(cacheKey) ?? "");
-  const [attachments, setAttachmentsState] = useState<ComposerAttachment[]>(
-    () => attachmentCache.get(cacheKey) ?? [],
+  const [draftState, setDraftState] = useState<KeyedState<string>>(
+    () => ({
+      cacheKey,
+      value: draftCache.get(cacheKey) ?? "",
+    }),
   );
-  const [chatCommandEvents, setChatCommandEventsState] = useState<ChatCommandEvent[]>(
-    () => chatCommandEventCache.get(cacheKey) ?? [],
+  const [attachmentsState, setAttachmentsState] = useState<
+    KeyedState<ComposerAttachment[]>
+  >(
+    () => ({
+      cacheKey,
+      value: attachmentCache.get(cacheKey) ?? [],
+    }),
   );
-  const [pendingUserMessages, setPendingUserMessages] = useState<PendingUserMessage[]>([]);
+  const [chatCommandEventsState, setChatCommandEventsState] = useState<
+    KeyedState<ChatCommandEvent[]>
+  >(
+    () => ({
+      cacheKey,
+      value: chatCommandEventCache.get(cacheKey) ?? [],
+    }),
+  );
+  const [pendingUserMessagesState, setPendingUserMessages] = useState<
+    KeyedState<PendingUserMessage[]>
+  >(
+    () => ({
+      cacheKey,
+      value: [],
+    }),
+  );
+  const conversation =
+    conversationState.cacheKey === cacheKey
+      ? conversationState.value
+      : conversationCache.get(cacheKey) ?? null;
+  const draft =
+    draftState.cacheKey === cacheKey
+      ? draftState.value
+      : draftCache.get(cacheKey) ?? "";
+  const attachments =
+    attachmentsState.cacheKey === cacheKey
+      ? attachmentsState.value
+      : attachmentCache.get(cacheKey) ?? [];
+  const chatCommandEvents =
+    chatCommandEventsState.cacheKey === cacheKey
+      ? chatCommandEventsState.value
+      : chatCommandEventCache.get(cacheKey) ?? [];
+  const pendingUserMessages =
+    pendingUserMessagesState.cacheKey === cacheKey
+      ? pendingUserMessagesState.value
+      : [];
 
   const setConversation = useCallback(
     (nextConversation: CodexConversation | null) => {
       if (nextConversation) {
-        const cached = conversationCache.get(cacheKey);
-        if (nextConversation.available || !cached?.available) {
-          conversationCache.set(cacheKey, nextConversation);
-        }
+        conversationCache.set(cacheKey, nextConversation);
+      } else {
+        conversationCache.delete(cacheKey);
       }
-      setConversationState(nextConversation);
+      setConversationState({
+        cacheKey,
+        value: nextConversation,
+      });
     },
     [cacheKey],
   );
@@ -101,7 +156,10 @@ export function useCodexChatSession({
       } else {
         draftCache.delete(cacheKey);
       }
-      setDraftState(nextDraft);
+      setDraftState({
+        cacheKey,
+        value: nextDraft,
+      });
     },
     [cacheKey],
   );
@@ -109,14 +167,23 @@ export function useCodexChatSession({
   const setAttachments = useCallback(
     (nextValue: SetStateAction<ComposerAttachment[]>) => {
       setAttachmentsState((current) => {
+        const currentAttachments =
+          current.cacheKey === cacheKey
+            ? current.value
+            : attachmentCache.get(cacheKey) ?? [];
         const nextAttachments =
-          typeof nextValue === "function" ? nextValue(current) : nextValue;
+          typeof nextValue === "function"
+            ? nextValue(currentAttachments)
+            : nextValue;
         if (nextAttachments.length > 0) {
           attachmentCache.set(cacheKey, nextAttachments);
         } else {
           attachmentCache.delete(cacheKey);
         }
-        return nextAttachments;
+        return {
+          cacheKey,
+          value: nextAttachments,
+        };
       });
     },
     [cacheKey],
@@ -125,15 +192,24 @@ export function useCodexChatSession({
   const setChatCommandEvents = useCallback(
     (nextValue: SetStateAction<ChatCommandEvent[]>) => {
       setChatCommandEventsState((current) => {
+        const currentEvents =
+          current.cacheKey === cacheKey
+            ? current.value
+            : chatCommandEventCache.get(cacheKey) ?? [];
         const nextEvents =
-          typeof nextValue === "function" ? nextValue(current) : nextValue;
+          typeof nextValue === "function"
+            ? nextValue(currentEvents)
+            : nextValue;
         const bounded = nextEvents.slice(-12);
         if (bounded.length > 0) {
           chatCommandEventCache.set(cacheKey, bounded);
         } else {
           chatCommandEventCache.delete(cacheKey);
         }
-        return bounded;
+        return {
+          cacheKey,
+          value: bounded,
+        };
       });
     },
     [cacheKey],
@@ -155,20 +231,35 @@ export function useCodexChatSession({
 
   const addPendingUserMessage = useCallback((message: PendingUserMessageInput) => {
     const id = `pending-user:${Date.now().toString(36)}:${Math.random().toString(36).slice(2, 8)}`;
-    setPendingUserMessages((current) => [
-      ...current,
-      {
-        ...message,
-        id,
-        createdAt: new Date().toISOString(),
-      },
-    ].slice(-6));
+    setPendingUserMessages((current) => {
+      const currentMessages =
+        current.cacheKey === cacheKey ? current.value : [];
+      return {
+        cacheKey,
+        value: [
+          ...currentMessages,
+          {
+            ...message,
+            id,
+            createdAt: new Date().toISOString(),
+          },
+        ].slice(-6),
+      };
+    });
     return id;
-  }, []);
+  }, [cacheKey]);
 
   const removePendingUserMessage = useCallback((id: string) => {
-    setPendingUserMessages((current) => current.filter((message) => message.id !== id));
-  }, []);
+    setPendingUserMessages((current) => {
+      if (current.cacheKey !== cacheKey) {
+        return current;
+      }
+      return {
+        cacheKey,
+        value: current.value.filter((message) => message.id !== id),
+      };
+    });
+  }, [cacheKey]);
 
   const refreshConversation = useCallback(
     async (showLoading: boolean = false) => {
@@ -178,7 +269,7 @@ export function useCodexChatSession({
         setLoading(false);
         return;
       }
-      const requestBaseKey = `${serverId}:${agentId}`;
+      const requestBaseKey = cacheKey;
       if (refreshInFlightRef.current?.baseKey === requestBaseKey) {
         refreshQueuedRef.current = true;
         if (showLoading) {
@@ -204,15 +295,7 @@ export function useCodexChatSession({
         if (requestSeqRef.current !== requestSeq) {
           return;
         }
-        const cachedConversation = conversationCache.get(requestBaseKey);
-        if (
-          cachedConversation &&
-          shouldKeepCachedConversation(cachedConversation, nextConversation)
-        ) {
-          setConversation(cachedConversation);
-        } else {
-          setConversation(nextConversation);
-        }
+        setConversation(nextConversation);
         setError(null);
       } catch (err: any) {
         if (requestSeqRef.current !== requestSeq) {
@@ -240,6 +323,7 @@ export function useCodexChatSession({
       agent?.name,
       agent?.started_at,
       agentId,
+      cacheKey,
       connectionState,
       serverId,
       setConversation,
@@ -270,12 +354,27 @@ export function useCodexChatSession({
   }, [agent?.updated_at, refreshConversation, screenFocused]);
 
   useEffect(() => {
-    setConversationState(conversationCache.get(cacheKey) ?? null);
+    setConversationState({
+      cacheKey,
+      value: conversationCache.get(cacheKey) ?? null,
+    });
     setError(null);
-    setDraftState(draftCache.get(cacheKey) ?? "");
-    setAttachmentsState(attachmentCache.get(cacheKey) ?? []);
-    setChatCommandEventsState(chatCommandEventCache.get(cacheKey) ?? []);
-    setPendingUserMessages([]);
+    setDraftState({
+      cacheKey,
+      value: draftCache.get(cacheKey) ?? "",
+    });
+    setAttachmentsState({
+      cacheKey,
+      value: attachmentCache.get(cacheKey) ?? [],
+    });
+    setChatCommandEventsState({
+      cacheKey,
+      value: chatCommandEventCache.get(cacheKey) ?? [],
+    });
+    setPendingUserMessages({
+      cacheKey,
+      value: [],
+    });
     refreshInFlightRef.current = null;
     refreshQueuedRef.current = false;
   }, [cacheKey]);
@@ -292,21 +391,30 @@ export function useCodexChatSession({
         .filter(Boolean),
     );
     const now = Date.now();
-    setPendingUserMessages((current) =>
-      current.filter((message) => {
-        const createdAt = new Date(message.createdAt).getTime();
-        if (Number.isFinite(createdAt) && now - createdAt > PENDING_USER_MESSAGE_MAX_AGE_MS) {
-          return false;
-        }
-        const sentText = comparableUserMessageText(message.sentText);
-        const body = comparableUserMessageText(message.body);
-        return !(
-          (sentText && confirmedUserMessages.has(sentText))
-          || (body && confirmedUserMessages.has(body))
-        );
-      }),
-    );
-  }, [conversation?.events, pendingUserMessages.length]);
+    setPendingUserMessages((current) => {
+      if (current.cacheKey !== cacheKey) {
+        return current;
+      }
+      return {
+        cacheKey,
+        value: current.value.filter((message) => {
+          const createdAt = new Date(message.createdAt).getTime();
+          if (
+            Number.isFinite(createdAt) &&
+            now - createdAt > PENDING_USER_MESSAGE_MAX_AGE_MS
+          ) {
+            return false;
+          }
+          const sentText = comparableUserMessageText(message.sentText);
+          const body = comparableUserMessageText(message.body);
+          return !(
+            (sentText && confirmedUserMessages.has(sentText)) ||
+            (body && confirmedUserMessages.has(body))
+          );
+        }),
+      };
+    });
+  }, [cacheKey, conversation?.events, pendingUserMessages.length]);
 
   return {
     cacheKey,
@@ -326,24 +434,15 @@ export function useCodexChatSession({
   };
 }
 
-function shouldKeepCachedConversation(
-  cached: CodexConversation | undefined,
-  nextConversation: CodexConversation,
-) {
-  if (!cached?.available || nextConversation.available) {
-    return false;
-  }
-  return (
-    nextConversation.reason === "session_not_ready" ||
-    nextConversation.reason === "transcript_not_found" ||
-    nextConversation.reason === "missing_cwd" ||
-    nextConversation.reason === "agent_not_found"
-  );
-}
-
 function comparableUserMessageText(value: string) {
   return value
     .replace(ATTACHMENT_TAG_RE, "")
     .replace(/\s+/g, " ")
     .trim();
+}
+
+function normalizeSessionTimestamp(value: unknown): string {
+  return typeof value === "number" && Number.isFinite(value) && value > 0
+    ? String(Math.round(value))
+    : "";
 }

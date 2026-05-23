@@ -108,6 +108,37 @@ func TestBuildGitDiffPatchHandlesNextRoutePath(t *testing.T) {
 	}
 }
 
+func TestBuildGitDiffStatusIncludesPerFileStats(t *testing.T) {
+	repoRoot := initGitDiffTestRepo(t)
+	writeGitDiffTestFile(t, repoRoot, "tracked.txt", "one\ntwo\n")
+	runGitDiffTestGit(t, repoRoot, "add", "tracked.txt")
+	runGitDiffTestGit(t, repoRoot, "commit", "-m", "initial")
+
+	writeGitDiffTestFile(t, repoRoot, "tracked.txt", "one\nthree\nfour\n")
+	writeGitDiffTestFile(t, repoRoot, "new.txt", "alpha\nbeta\n")
+
+	payload, err := (&Server{}).buildGitDiffStatus("", repoRoot)
+	if err != nil {
+		t.Fatalf("buildGitDiffStatus returned error: %v", err)
+	}
+	if payload.Additions != 4 || payload.Deletions != 1 {
+		t.Fatalf("totals = +%d -%d, want +4 -1; files=%+v", payload.Additions, payload.Deletions, payload.Files)
+	}
+
+	stats := map[string]gitDiffFileInfo{}
+	for _, file := range payload.Files {
+		stats[file.Path] = file
+	}
+	tracked := stats["tracked.txt"]
+	if tracked.Additions != 2 || tracked.Deletions != 1 {
+		t.Fatalf("tracked.txt stats = +%d -%d, want +2 -1", tracked.Additions, tracked.Deletions)
+	}
+	untracked := stats["new.txt"]
+	if untracked.Additions != 2 || untracked.Deletions != 0 {
+		t.Fatalf("new.txt stats = +%d -%d, want +2 -0", untracked.Additions, untracked.Deletions)
+	}
+}
+
 func TestExtractGitDiffPatchForPathReturnsSingleSection(t *testing.T) {
 	patch := strings.Join([]string{
 		"diff --git a/first.txt b/first.txt",

@@ -17,9 +17,6 @@ import {
   buildUploadHeaders,
   buildUploadUrl,
 } from "../../services/uploads";
-import {
-  type TerminalAccessoryGitDiff,
-} from "./TerminalAccessoryGitDiffChip";
 import { TerminalAccessoryControls } from "./TerminalAccessoryControls";
 import type { TerminalSurfaceHandle } from "./TerminalSurface";
 
@@ -33,7 +30,6 @@ interface TerminalAccessoryBarProps {
   serverUrl: string;
   daemonId: string;
   theme?: TerminalThemePalette;
-  gitDiff?: TerminalAccessoryGitDiff | null;
   keyboardVisible: boolean;
   ctrlArmed: boolean;
   onCtrlArmedChange(next: boolean): void;
@@ -44,7 +40,6 @@ export function TerminalAccessoryBar({
   serverUrl,
   daemonId,
   theme,
-  gitDiff,
   keyboardVisible,
   ctrlArmed,
   onCtrlArmedChange,
@@ -164,8 +159,6 @@ export function TerminalAccessoryBar({
         keyboardVisible={keyboardVisible}
         ctrlArmed={ctrlArmed}
         chrome={chrome}
-        theme={activeTheme}
-        gitDiff={gitDiff}
         onUploadPress={() => void handleFilePick()}
         onKeyboardToggle={handleKeyboardToggle}
         onCtrlToggle={handleCtrlToggle}

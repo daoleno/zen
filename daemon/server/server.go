@@ -330,11 +330,15 @@ func (s *Server) handleClientMessage(conn *websocket.Conn, msg []byte) {
 			})
 			return
 		}
-		s.sendJSON(conn, map[string]any{
+		response := map[string]any{
 			"type":       "session_created",
 			"request_id": raw.RequestID,
 			"agent_id":   agentID,
-		})
+		}
+		if agent := s.watcher.GetAgent(agentID); agent != nil {
+			response["agent_session"] = agent
+		}
+		s.sendJSON(conn, response)
 
 	case "git_diff_status":
 		payload, err := s.buildGitDiffStatus(raw.TargetID, raw.Cwd)

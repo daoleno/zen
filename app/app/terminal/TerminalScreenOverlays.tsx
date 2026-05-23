@@ -6,7 +6,6 @@ import type {
 import type { AgentDirectorySection } from "../../services/serverSelection";
 import type {
   StoredAgentAliases,
-  StoredCodexRenderMode,
 } from "../../services/storage";
 import { GitDiffSheet } from "../../components/terminal/GitDiffSheet";
 import { NewTerminalSheet } from "../../components/terminal/NewTerminalSheet";
@@ -30,11 +29,6 @@ export interface TerminalScreenOverlaysProps {
   menuVisible: boolean;
   menuPosition: { left: number; top: number };
   newTerminalDisabled: boolean;
-  gitDiffDisabled: boolean;
-  activePinned: boolean;
-  closeOtherTabsDisabled: boolean;
-  isCodexAgent: boolean;
-  codexRenderMode: StoredCodexRenderMode;
   showLinkedWork: boolean;
   newTerminalVisible: boolean;
   newTerminalInitialCwd: string;
@@ -49,14 +43,9 @@ export interface TerminalScreenOverlaysProps {
   onOpenAgent(sessionKey: string): void;
   onNewTerminal(): void;
   onCloseMenu(): void;
-  onOpenGitDiff(): void;
   onRename(): void;
-  onTogglePinned(): void;
-  onCloseOtherTabs(): void;
-  onCloseTab(): void;
   onOpenLinkedWork(): void;
   onTerminate(): void;
-  onToggleCodexRenderMode(): void;
   onCloseNewTerminal(): void;
   onSubmitNewTerminal(input: NewTerminalSubmitInput): void;
   onRenameDraftChange(value: string): void;
@@ -75,11 +64,6 @@ export function TerminalScreenOverlays({
   menuVisible,
   menuPosition,
   newTerminalDisabled,
-  gitDiffDisabled,
-  activePinned,
-  closeOtherTabsDisabled,
-  isCodexAgent,
-  codexRenderMode,
   showLinkedWork,
   newTerminalVisible,
   newTerminalInitialCwd,
@@ -94,14 +78,9 @@ export function TerminalScreenOverlays({
   onOpenAgent,
   onNewTerminal,
   onCloseMenu,
-  onOpenGitDiff,
   onRename,
-  onTogglePinned,
-  onCloseOtherTabs,
-  onCloseTab,
   onOpenLinkedWork,
   onTerminate,
-  onToggleCodexRenderMode,
   onCloseNewTerminal,
   onSubmitNewTerminal,
   onRenameDraftChange,
@@ -131,34 +110,12 @@ export function TerminalScreenOverlays({
         creatingSession={creatingSession}
         newTerminalLabel={creatingSession ? "Starting Terminal…" : "New Terminal"}
         newTerminalDisabled={newTerminalDisabled}
-        gitDiffDisabled={gitDiffDisabled}
-        activePinned={activePinned}
-        closeOtherTabsDisabled={closeOtherTabsDisabled}
-        codexRenderAction={
-          isCodexAgent
-            ? {
-                icon:
-                  codexRenderMode === "chat"
-                    ? "terminal-outline"
-                    : "sparkles-outline",
-                label:
-                  codexRenderMode === "chat"
-                    ? "Use Terminal"
-                    : "Use Codex Chat",
-                onPress: onToggleCodexRenderMode,
-              }
-            : null
-        }
         showLinkedWork={showLinkedWork}
         chrome={chrome}
         theme={theme}
         onClose={onCloseMenu}
         onNewTerminal={onNewTerminal}
-        onOpenGitDiff={onOpenGitDiff}
         onRename={onRename}
-        onTogglePinned={onTogglePinned}
-        onCloseOtherTabs={onCloseOtherTabs}
-        onCloseTab={onCloseTab}
         onOpenLinkedWork={onOpenLinkedWork}
         onTerminate={onTerminate}
       />

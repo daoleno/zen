@@ -1,14 +1,37 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useLocalSearchParams } from "expo-router";
 import { makeSessionKey } from "../../services/sessionKeys";
 import type { TerminalSurfaceHandle } from "../../components/terminal/TerminalSurface";
 
+export interface TerminalRouteSessionHint {
+  name?: string;
+  cwd?: string;
+  command?: string;
+  startedAt?: number;
+}
+
 export function useTerminalScreenLocalState() {
-  const params = useLocalSearchParams<{ id?: string; serverId?: string }>();
-  const agentId = typeof params.id === "string" ? params.id : "";
-  const serverId = typeof params.serverId === "string" ? params.serverId : "";
+  const params = useLocalSearchParams<{
+    id?: string;
+    serverId?: string;
+    name?: string;
+    cwd?: string;
+    command?: string;
+    startedAt?: string;
+  }>();
+  const agentId = paramString(params.id);
+  const serverId = paramString(params.serverId);
   const sessionKey =
     agentId && serverId ? makeSessionKey(serverId, agentId) : null;
+  const routeSessionHint = useMemo<TerminalRouteSessionHint>(
+    () => ({
+      name: paramString(params.name) || undefined,
+      cwd: paramString(params.cwd) || undefined,
+      command: paramString(params.command) || undefined,
+      startedAt: paramTimestamp(params.startedAt),
+    }),
+    [params.command, params.cwd, params.name, params.startedAt],
+  );
   const [pickerVisible, setPickerVisible] = useState(false);
   const [renameVisible, setRenameVisible] = useState(false);
   const [renameDraft, setRenameDraft] = useState("");
@@ -26,6 +49,7 @@ export function useTerminalScreenLocalState() {
     agentId,
     serverId,
     sessionKey,
+    routeSessionHint,
     pickerVisible,
     setPickerVisible,
     renameVisible,
@@ -40,4 +64,18 @@ export function useTerminalScreenLocalState() {
     setScreenFocused,
     terminalRef,
   };
+}
+
+function paramString(value: string | string[] | undefined): string {
+  if (Array.isArray(value)) {
+    return value[0]?.trim() || "";
+  }
+  return value?.trim() || "";
+}
+
+function paramTimestamp(value: string | string[] | undefined): number | undefined {
+  const raw = paramString(value);
+  if (!raw) return undefined;
+  const numeric = Number(raw);
+  return Number.isFinite(numeric) && numeric > 0 ? numeric : undefined;
 }

@@ -32,13 +32,35 @@ export function buildCodexStatusMeta({
   if (connectionState !== "connected") {
     return "Offline";
   }
-  if (sending || agent?.status === "running" || events.some(isEventRunning)) {
+  if (
+    sending ||
+    isCodexRequestRunning({
+      agent,
+      conversation,
+      events,
+    })
+  ) {
     return "Working";
   }
   if (conversation?.updated_at) {
     return `Updated ${formatTime(conversation.updated_at)}`;
   }
   return "Live";
+}
+
+export function isCodexRequestRunning({
+  agent,
+  conversation,
+  events,
+}: {
+  agent?: Agent;
+  conversation: CodexConversation | null;
+  events: CodexConversationEvent[];
+}) {
+  if (typeof conversation?.active === "boolean") {
+    return conversation.active;
+  }
+  return agent?.status === "running" || events.some(isEventRunning);
 }
 
 export function buildChatStatusCommandBody({

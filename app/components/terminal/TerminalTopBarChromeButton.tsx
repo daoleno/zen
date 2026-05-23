@@ -12,6 +12,7 @@ interface TerminalTopBarChromeButtonProps {
   accessibilityLabel: string;
   chrome: TerminalThemeChrome;
   icon: IoniconName;
+  disabled?: boolean;
   onPress(): void;
 }
 
@@ -19,17 +20,20 @@ export function TerminalTopBarChromeButton({
   accessibilityLabel,
   chrome,
   icon,
+  disabled = false,
   onPress,
 }: TerminalTopBarChromeButtonProps) {
   return (
     <TouchableOpacity
       accessibilityLabel={accessibilityLabel}
       accessibilityRole="button"
+      accessibilityState={{ disabled }}
       onPress={onPress}
-      style={styles.button}
+      disabled={disabled}
+      style={[styles.button, disabled ? styles.disabled : null]}
       activeOpacity={0.75}
     >
-      <Ionicons name={icon} size={20} color={chrome.textMuted} />
+      <Ionicons name={icon} size={20} color={disabled ? chrome.textSubtle : chrome.textMuted} />
     </TouchableOpacity>
   );
 }
@@ -40,5 +44,8 @@ const styles = StyleSheet.create({
     height: 32,
     alignItems: "center",
     justifyContent: "center",
+  },
+  disabled: {
+    opacity: 0.48,
   },
 });
