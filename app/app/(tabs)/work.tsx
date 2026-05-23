@@ -60,6 +60,10 @@ export default function BrainScreen() {
     string | null
   >(null);
   const [showBrainSettings, setShowBrainSettings] = useState(false);
+  const brainSettingsServer = useMemo(
+    () => resolveBrainSettingsServer(servers, agentState.serverConnections),
+    [agentState.serverConnections, servers],
+  );
 
   const brainItems = useMemo(
     () =>
@@ -114,7 +118,7 @@ export default function BrainScreen() {
     <SafeAreaView style={styles.screen} edges={["top"]}>
       <View style={styles.header}>
         <Text style={styles.title}>Brain</Text>
-        {servers.length > 0 ? (
+        {brainSettingsServer ? (
           <TouchableOpacity
             accessibilityLabel="Brain settings"
             accessibilityRole="button"
@@ -143,7 +147,7 @@ export default function BrainScreen() {
       >
         {showBrainSettings ? (
           <BrainGeneratorControls
-            servers={servers}
+            server={brainSettingsServer}
             digestProviderByServer={workState.digestProviderByServer}
             connectionStates={agentState.serverConnections}
             updatingServerId={updatingBrainGenerator}
@@ -157,13 +161,13 @@ export default function BrainScreen() {
 }
 
 function BrainGeneratorControls({
-  servers,
+  server,
   digestProviderByServer,
   connectionStates,
   updatingServerId,
   onChange,
 }: {
-  servers: StoredServer[];
+  server: StoredServer | null;
   digestProviderByServer: Record<string, string>;
   connectionStates: Record<string, ConnectionState>;
   updatingServerId: string | null;
@@ -171,57 +175,54 @@ function BrainGeneratorControls({
 }) {
   const colors = useAppColors();
   const styles = useMemo(() => createStyles(colors), [colors]);
-  if (servers.length === 0) {
+  if (!server) {
     return null;
   }
+  const selected = normalizeBrainGenerator(digestProviderByServer[server.id]);
+  const connected = connectionStates[server.id] === "connected";
+  const updating = updatingServerId === server.id;
 
   return (
     <View style={styles.generatorPanel}>
-      {servers.map((server) => {
-        const selected = normalizeBrainGenerator(
-          digestProviderByServer[server.id],
-        );
-        const connected = connectionStates[server.id] === "connected";
-        const updating = updatingServerId === server.id;
-        return (
-          <View key={server.id} style={styles.generatorRow}>
-            {servers.length > 1 ? (
-              <Text style={styles.generatorServer} numberOfLines={1}>
-                {server.name}
+      <View style={styles.generatorSegments}>
+        {BRAIN_GENERATORS.map((option) => {
+          const active = selected === option.value;
+          return (
+            <TouchableOpacity
+              key={option.value}
+              style={[
+                styles.generatorSegment,
+                active && styles.generatorSegmentActive,
+                (!connected || updating) && styles.generatorSegmentDisabled,
+              ]}
+              onPress={() => onChange(server.id, option.value)}
+              disabled={!connected || updating}
+              activeOpacity={0.82}
+            >
+              <Text
+                style={[
+                  styles.generatorSegmentText,
+                  active && styles.generatorSegmentTextActive,
+                ]}
+              >
+                {option.label}
               </Text>
-            ) : null}
-            <View style={styles.generatorSegments}>
-              {BRAIN_GENERATORS.map((option) => {
-                const active = selected === option.value;
-                return (
-                  <TouchableOpacity
-                    key={option.value}
-                    style={[
-                      styles.generatorSegment,
-                      active && styles.generatorSegmentActive,
-                      (!connected || updating) &&
-                        styles.generatorSegmentDisabled,
-                    ]}
-                    onPress={() => onChange(server.id, option.value)}
-                    disabled={!connected || updating}
-                    activeOpacity={0.82}
-                  >
-                    <Text
-                      style={[
-                        styles.generatorSegmentText,
-                        active && styles.generatorSegmentTextActive,
-                      ]}
-                    >
-                      {option.label}
-                    </Text>
-                  </TouchableOpacity>
-                );
-              })}
-            </View>
-          </View>
-        );
-      })}
+            </TouchableOpacity>
+          );
+        })}
+      </View>
     </View>
+  );
+}
+
+function resolveBrainSettingsServer(
+  servers: StoredServer[],
+  connectionStates: Record<string, ConnectionState>,
+): StoredServer | null {
+  return (
+    servers.find((server) => connectionStates[server.id] === "connected") ||
+    servers[0] ||
+    null
   );
 }
 
@@ -783,24 +784,10 @@ function createStyles(colors: typeof Colors) {
       paddingBottom: 20,
     },
     generatorPanel: {
-      gap: 5,
       marginHorizontal: 18,
       marginBottom: 6,
     },
-    generatorRow: {
-      flexDirection: "row",
-      alignItems: "center",
-      gap: 6,
-    },
-    generatorServer: {
-      width: 82,
-      color: colors.textSecondary,
-      fontFamily: Typography.uiFontMedium,
-      fontSize: 11,
-      opacity: 0.72,
-    },
     generatorSegments: {
-      flex: 1,
       flexDirection: "row",
       gap: 4,
     },
