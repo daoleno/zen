@@ -1,8 +1,6 @@
 import React from "react";
 import {
-  Platform,
   StyleSheet,
-  View,
 } from "react-native";
 import { KeyboardAvoidingView } from "react-native-keyboard-controller";
 
@@ -17,10 +15,6 @@ export function CodexChatKeyboardFrame({
   keyboardVerticalOffset,
   children,
 }: CodexChatKeyboardFrameProps) {
-  if (Platform.OS === "android") {
-    return <View style={styles.chatBody}>{children}</View>;
-  }
-
   return (
     <KeyboardAvoidingView
       behavior="padding"
