@@ -152,6 +152,31 @@ func TestMatchCodexTranscriptToAgentStart_DoesNotFallBackToOldThread(t *testing.
 	}
 }
 
+func TestLatestUpdatedCodexTranscriptSupportsResume(t *testing.T) {
+	base := time.Date(2026, 5, 21, 8, 0, 0, 0, time.UTC)
+	candidates := []codexTranscriptCandidate{
+		{
+			Row:     codexThreadRow{ID: "older-resumable", CreatedAtMS: base.Add(-6 * time.Hour).UnixMilli()},
+			Updated: base.Add(4 * time.Hour),
+		},
+		{
+			Row:     codexThreadRow{ID: "newer-created-but-stale", CreatedAtMS: base.Add(10 * time.Minute).UnixMilli()},
+			Updated: base.Add(30 * time.Minute),
+		},
+	}
+
+	got := latestUpdatedCodexTranscript(candidates)
+	if got.Row.ID != "older-resumable" {
+		t.Fatalf("matched %q, want older-resumable", got.Row.ID)
+	}
+	if !isCodexResumeCommand("codex resume") {
+		t.Fatal("codex resume should be detected")
+	}
+	if isCodexResumeCommand("codex") {
+		t.Fatal("plain codex should not be detected as resume")
+	}
+}
+
 func TestSummarizeClaudeTranscript_ExtractsWorkflowSignals(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "claude.jsonl")
 	writeJSONL(t, path,

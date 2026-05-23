@@ -1,9 +1,15 @@
 import React from "react";
-import { StyleSheet, View } from "react-native";
+import {
+  ActivityIndicator,
+  StyleSheet,
+  Text,
+  View,
+} from "react-native";
 import type {
   TerminalThemeChrome,
   TerminalThemePalette,
 } from "../../constants/terminalThemes";
+import { Typography } from "../../constants/tokens";
 import {
   MessageBody,
   StreamingMessageBody,
@@ -22,6 +28,7 @@ export interface ZenMessageTimelineItem {
   timestamp?: string;
   body: string;
   attachments: DisplayAttachment[];
+  pending?: boolean;
 }
 
 export function ZenUserMessage({
@@ -36,7 +43,16 @@ export function ZenUserMessage({
   const hasBody = item.body.trim().length > 0;
   return (
     <View style={styles.userRow}>
-      <View style={[styles.userBubble, { backgroundColor: chrome.surfaceMuted }]}>
+      <View
+        style={[
+          styles.userBubble,
+          {
+            backgroundColor: chrome.surfaceMuted,
+            borderColor: item.pending ? chrome.borderStrong : "transparent",
+            opacity: item.pending ? 0.88 : 1,
+          },
+        ]}
+      >
         {hasBody ? (
           <MessageBody value={item.body} chrome={chrome} theme={theme} compact />
         ) : null}
@@ -46,6 +62,14 @@ export function ZenUserMessage({
             chrome={chrome}
             compact={hasBody}
           />
+        ) : null}
+        {item.pending ? (
+          <View style={[styles.pendingRow, hasBody || item.attachments.length > 0 ? styles.pendingRowSpaced : null]}>
+            <ActivityIndicator size="small" color={chrome.accent} />
+            <Text style={[styles.pendingText, { color: chrome.textMuted }]}>
+              Sending
+            </Text>
+          </View>
         ) : null}
       </View>
     </View>
@@ -84,8 +108,23 @@ const styles = StyleSheet.create({
   userBubble: {
     maxWidth: "86%",
     borderRadius: 8,
+    borderWidth: StyleSheet.hairlineWidth,
     paddingHorizontal: 12,
     paddingVertical: 9,
+  },
+  pendingRow: {
+    minHeight: 18,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+  },
+  pendingRowSpaced: {
+    marginTop: 8,
+  },
+  pendingText: {
+    fontSize: 11,
+    lineHeight: 15,
+    fontFamily: Typography.uiFontMedium,
   },
   assistantRow: {
     marginBottom: 18,

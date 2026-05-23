@@ -79,10 +79,10 @@ export function GitDiffFileCard({
           color={chrome.textSubtle}
         />
         <View style={styles.diffCardTitleWrap}>
-          <Text style={[styles.diffFileName, { color: chrome.text }]} numberOfLines={1}>
-            {pathBaseName(file.path)}
+          <Text style={[styles.diffFileName, { color: chrome.text }]} numberOfLines={2}>
+            {file.path}
           </Text>
-          <Text style={[styles.diffFilePath, { color: chrome.textMuted }]} numberOfLines={1}>
+          <Text style={[styles.diffFilePath, { color: chrome.textMuted }]} numberOfLines={2}>
             {buildFilePathMeta(file)}
           </Text>
         </View>
@@ -149,6 +149,7 @@ export function GitDiffFileCard({
             <PatchSection
               key={`${file.path}:${section.scope}:${index}`}
               section={section}
+              path={file.path}
               theme={theme}
               chrome={chrome}
             />
@@ -161,10 +162,12 @@ export function GitDiffFileCard({
 
 function PatchSection({
   section,
+  path,
   theme,
   chrome,
 }: {
   section: GitDiffPatchSection;
+  path: string;
   theme: TerminalThemePalette;
   chrome: ReturnType<typeof buildTerminalChrome>;
 }) {
@@ -178,7 +181,7 @@ function PatchSection({
           {section.scope}
         </Text>
       </View>
-      <GitDiffBlock patch={section.patch} theme={theme} />
+      <GitDiffBlock path={path} patch={section.patch} theme={theme} />
     </View>
   );
 }
@@ -220,11 +223,6 @@ function buildFilePathMeta(file: GitDiffFileInfo): string {
   }
   const directory = pathDirectoryName(file.path);
   return [describeGitDiffScope(file), directory].filter(Boolean).join(" · ");
-}
-
-function pathBaseName(path: string): string {
-  const index = path.lastIndexOf("/");
-  return index === -1 ? path : path.slice(index + 1);
 }
 
 function pathDirectoryName(path: string): string {
@@ -279,12 +277,12 @@ const styles = StyleSheet.create({
     overflow: "hidden",
   },
   diffCardHeader: {
-    minHeight: 46,
+    minHeight: 50,
     paddingHorizontal: 9,
     paddingVertical: 6,
     borderBottomWidth: StyleSheet.hairlineWidth,
     flexDirection: "row",
-    alignItems: "center",
+    alignItems: "flex-start",
     gap: 10,
   },
   diffCardTitleWrap: {
@@ -294,6 +292,7 @@ const styles = StyleSheet.create({
   diffOpenButton: {
     width: 28,
     height: 28,
+    marginTop: 1,
     borderRadius: 9,
     borderWidth: StyleSheet.hairlineWidth,
     alignItems: "center",
@@ -312,8 +311,9 @@ const styles = StyleSheet.create({
   },
   diffHeaderBadges: {
     flexDirection: "row",
-    alignItems: "center",
+    alignItems: "flex-start",
     gap: 8,
+    flexShrink: 0,
   },
   patchList: {
     padding: 5,
@@ -348,6 +348,7 @@ const styles = StyleSheet.create({
     borderRadius: 999,
     paddingHorizontal: 8,
     paddingVertical: 5,
+    marginTop: 2,
   },
   statusPillCompact: {
     paddingHorizontal: 7,

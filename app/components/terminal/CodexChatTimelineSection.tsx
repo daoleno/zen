@@ -1,7 +1,7 @@
 import React, { useCallback } from "react";
 import {
-  type LayoutChangeEvent,
   type FlatList,
+  type LayoutChangeEvent,
   type NativeScrollEvent,
   type NativeSyntheticEvent,
 } from "react-native";
@@ -14,13 +14,20 @@ import type {
   CodexConversationEvent,
 } from "../../services/codexConversation";
 import { wsClient } from "../../services/websocket";
-import { conversationUnavailableReason } from "./CodexChatControllerModel";
-import type { ChatCommandEvent } from "./CodexChatSession";
+import {
+  conversationUnavailableReason,
+  isConversationSyncingReason,
+} from "./CodexChatControllerModel";
+import type {
+  ChatCommandEvent,
+  PendingUserMessage,
+} from "./CodexChatSession";
 import { CodexTimelineView } from "./CodexTimelineView";
 import {
   patchDisplayPath,
   truncateRunes,
 } from "./CodexTimelineModel";
+import type { ZenTimelineItem } from "./CodexTimelineItemView";
 import { useCodexTimelineItems } from "./useCodexTimelineItems";
 
 interface CodexChatTimelineSectionProps {
@@ -29,16 +36,21 @@ interface CodexChatTimelineSectionProps {
   conversation: CodexConversation | null;
   events: CodexConversationEvent[];
   chatCommandEvents: ChatCommandEvent[];
+  pendingUserMessages: PendingUserMessage[];
   loading: boolean;
   error?: string | null;
   composerActive: boolean;
   composerHeight: number;
-  scrollRef: React.RefObject<FlatList | null>;
+  scrollRef: React.RefObject<FlatList<ZenTimelineItem> | null>;
   showJumpToLatest: boolean;
   chrome: TerminalThemeChrome;
   theme: TerminalThemePalette;
   onLayout(event: LayoutChangeEvent): void;
   onScroll(event: NativeSyntheticEvent<NativeScrollEvent>): void;
+  onScrollBeginDrag(): void;
+  onScrollEndDrag(event: NativeSyntheticEvent<NativeScrollEvent>): void;
+  onMomentumScrollBegin(): void;
+  onMomentumScrollEnd(event: NativeSyntheticEvent<NativeScrollEvent>): void;
   onContentSizeChange(width: number, height: number): void;
   onScrollToLatest(animated?: boolean, delay?: number): void;
   onUnavailableAction(): void;
@@ -50,6 +62,7 @@ export function CodexChatTimelineSection({
   conversation,
   events,
   chatCommandEvents,
+  pendingUserMessages,
   loading,
   error,
   composerActive,
@@ -60,11 +73,19 @@ export function CodexChatTimelineSection({
   theme,
   onLayout,
   onScroll,
+  onScrollBeginDrag,
+  onScrollEndDrag,
+  onMomentumScrollBegin,
+  onMomentumScrollEnd,
   onContentSizeChange,
   onScrollToLatest,
   onUnavailableAction,
 }: CodexChatTimelineSectionProps) {
-  const timelineItems = useCodexTimelineItems({ events, chatCommandEvents });
+  const timelineItems = useCodexTimelineItems({
+    events,
+    chatCommandEvents,
+    pendingUserMessages,
+  });
   const loadAssetPreview = useCallback(
     async (path: string) => {
       const asset = await wsClient.getCodexAsset(serverId, {
@@ -75,6 +96,9 @@ export function CodexChatTimelineSection({
     },
     [agentCwd, conversation?.cwd, serverId],
   );
+  const syncingConversation =
+    Boolean(conversation && !conversation.available)
+    && isConversationSyncingReason(conversation?.reason);
 
   return (
     <CodexTimelineView
@@ -82,8 +106,9 @@ export function CodexChatTimelineSection({
       items={timelineItems}
       loading={loading}
       error={error}
-      unavailable={conversation && !conversation.available}
+      unavailable={conversation && !conversation.available && !syncingConversation}
       unavailableReason={conversationUnavailableReason(conversation?.reason)}
+      syncing={syncingConversation}
       textSelectable={!composerActive}
       showJumpToLatest={showJumpToLatest}
       jumpButtonBottom={composerHeight + 12}
@@ -92,6 +117,10 @@ export function CodexChatTimelineSection({
       theme={theme}
       onLayout={onLayout}
       onScroll={onScroll}
+      onScrollBeginDrag={onScrollBeginDrag}
+      onScrollEndDrag={onScrollEndDrag}
+      onMomentumScrollBegin={onMomentumScrollBegin}
+      onMomentumScrollEnd={onMomentumScrollEnd}
       onContentSizeChange={onContentSizeChange}
       onJumpToLatest={() => onScrollToLatest(false, 0)}
       onUnavailableAction={onUnavailableAction}

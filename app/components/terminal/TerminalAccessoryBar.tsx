@@ -12,7 +12,11 @@ import {
   resolveTerminalTheme,
   type TerminalThemePalette,
 } from "../../constants/terminalThemes";
-import { buildUploadHeaders, buildUploadUrl } from "../../services/uploads";
+import {
+  buildUploadFormData,
+  buildUploadHeaders,
+  buildUploadUrl,
+} from "../../services/uploads";
 import {
   type TerminalAccessoryGitDiff,
 } from "./TerminalAccessoryGitDiffChip";
@@ -119,12 +123,7 @@ export function TerminalAccessoryBar({
         throw new Error("Server URL is not configured");
       }
 
-      const formData = new FormData();
-      formData.append("file", {
-        uri: asset.uri,
-        name: asset.name || "upload",
-        type: asset.mimeType || "application/octet-stream",
-      } as any);
+      const formData = buildUploadFormData(asset);
 
       const response = await fetch(uploadUrl, {
         method: "POST",
@@ -132,7 +131,8 @@ export function TerminalAccessoryBar({
         body: formData,
       });
       if (!response.ok) {
-        throw new Error(`Upload failed (${response.status})`);
+        const body = await response.text().catch(() => "");
+        throw new Error(body.trim() || `Upload failed (${response.status})`);
       }
 
       const payload = (await response.json()) as { path?: string };

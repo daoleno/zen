@@ -7,7 +7,6 @@ import {
   type ChatCommandEvent,
   type ComposerAttachment,
 } from "./CodexChatSession";
-import { SCROLL_TO_BOTTOM_LAYOUT_DELAY_MS } from "./CodexChatSurfaceHooks";
 import { slashCommandTerminalText } from "./CodexSlashCommands";
 
 interface UseCodexTerminalCommandActionsInput {
@@ -21,7 +20,6 @@ interface UseCodexTerminalCommandActionsInput {
     event: Omit<ChatCommandEvent, "id" | "createdAt">,
   ): void;
   scrollToLatest(animated?: boolean, delay?: number): void;
-  pinToBottomIfNeeded(animated?: boolean, delay?: number): void;
   onSwitchToTerminal(): void;
 }
 
@@ -34,17 +32,13 @@ export function useCodexTerminalCommandActions({
   setAttachments,
   recordChatCommandEvent,
   scrollToLatest,
-  pinToBottomIfNeeded,
   onSwitchToTerminal,
 }: UseCodexTerminalCommandActionsInput) {
   const clearComposerForLocalCommand = useCallback(() => {
     setDraft("");
     setAttachments([]);
-    scrollToLatest(true);
-    setTimeout(() => {
-      pinToBottomIfNeeded(true);
-    }, SCROLL_TO_BOTTOM_LAYOUT_DELAY_MS);
-  }, [pinToBottomIfNeeded, scrollToLatest, setAttachments, setDraft]);
+    scrollToLatest(true, 0);
+  }, [scrollToLatest, setAttachments, setDraft]);
 
   const openSlashCommandInTerminal = useCallback(
     (command: CodexSlashCommand, rawText?: string) => {

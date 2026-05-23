@@ -185,7 +185,7 @@ function RepoBrowserHeader({
           <Text style={[styles.browserRepoTitle, { color: chrome.text }]} numberOfLines={1}>
             {repoTitle}
           </Text>
-          <Text style={[styles.browserPathText, { color: chrome.textMuted }]} numberOfLines={1}>
+          <Text style={[styles.browserPathText, { color: chrome.textMuted }]} numberOfLines={2}>
             {path ? `/${path}` : "/"}
           </Text>
         </View>
@@ -239,7 +239,7 @@ function RepoEntryRow({
         color={isDirectory ? theme.yellow : chrome.textSubtle}
       />
       <View style={styles.repoEntryCopy}>
-        <Text style={[styles.repoEntryName, { color: chrome.text }]} numberOfLines={1}>
+        <Text style={[styles.repoEntryName, { color: chrome.text }]} numberOfLines={2}>
           {entry.name}
         </Text>
       </View>
@@ -314,7 +314,7 @@ const styles = StyleSheet.create({
     paddingHorizontal: 8,
     paddingVertical: 4,
     flexDirection: "row",
-    alignItems: "center",
+    alignItems: "flex-start",
     gap: 9,
   },
   repoEntryCopy: {
@@ -330,6 +330,7 @@ const styles = StyleSheet.create({
     borderRadius: 999,
     paddingHorizontal: 7,
     paddingVertical: 3,
+    marginTop: 2,
   },
   changedPillText: {
     fontSize: 10,

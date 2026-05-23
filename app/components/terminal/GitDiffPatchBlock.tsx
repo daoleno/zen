@@ -10,12 +10,18 @@ import {
   buildTerminalChrome,
   type TerminalThemePalette,
 } from "../../constants/terminalThemes";
+import {
+  highlightCodeLine,
+  type HighlightTokenKind,
+} from "./gitDiffSyntaxHighlight";
 import { withAlpha } from "./gitDiffColor";
 
 export function GitDiffBlock({
+  path,
   patch,
   theme,
 }: {
+  path: string;
   patch: string;
   theme: TerminalThemePalette;
 }) {
@@ -41,7 +47,7 @@ export function GitDiffBlock({
                 {index + 1}
               </Text>
               <Text selectable style={[styles.diffLine, { color: presentation.color }]}>
-                {line || " "}
+                {renderDiffLine(line, path, presentation, theme, chrome)}
               </Text>
             </View>
           );
@@ -98,6 +104,75 @@ function linePresentation(
     };
   }
   return { color: chrome.text };
+}
+
+function renderDiffLine(
+  line: string,
+  path: string,
+  presentation: { color: string; backgroundColor?: string },
+  theme: TerminalThemePalette,
+  chrome: ReturnType<typeof buildTerminalChrome>,
+) {
+  if (!line) {
+    return " ";
+  }
+  if (!isPatchCodeLine(line)) {
+    return line;
+  }
+
+  const prefix = line[0];
+  const code = line.slice(1) || " ";
+  const baseColor = prefix === " " ? chrome.text : presentation.color;
+  return (
+    <>
+      <Text style={{ color: presentation.color }}>{prefix}</Text>
+      {highlightCodeLine(code, path).map((segment, index) => (
+        <Text
+          key={`${index}:${segment.kind}`}
+          style={{ color: syntaxColor(segment.kind, theme, chrome, baseColor) }}
+        >
+          {segment.text}
+        </Text>
+      ))}
+    </>
+  );
+}
+
+function isPatchCodeLine(line: string) {
+  if (line.startsWith("+++") || line.startsWith("---")) {
+    return false;
+  }
+  return line.startsWith("+") || line.startsWith("-") || line.startsWith(" ");
+}
+
+function syntaxColor(
+  kind: HighlightTokenKind,
+  theme: TerminalThemePalette,
+  chrome: ReturnType<typeof buildTerminalChrome>,
+  baseColor: string,
+) {
+  switch (kind) {
+    case "attribute":
+    case "property":
+      return theme.cyan;
+    case "comment":
+      return chrome.textSubtle;
+    case "constant":
+    case "number":
+      return theme.yellow;
+    case "function":
+      return theme.blue;
+    case "keyword":
+    case "tag":
+      return theme.magenta;
+    case "operator":
+    case "punctuation":
+      return chrome.textMuted;
+    case "string":
+      return theme.green;
+    default:
+      return baseColor;
+  }
 }
 
 const styles = StyleSheet.create({

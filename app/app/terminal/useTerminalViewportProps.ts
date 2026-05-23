@@ -72,11 +72,15 @@ export function useTerminalViewportProps({
 }: UseTerminalViewportPropsInput): TerminalViewportProps {
   const handleSwitchToTerminal = useCallback(() => {
     void sessionActions.applyCodexRenderMode("terminal");
-  }, [sessionActions.applyCodexRenderMode]);
+    requestAnimationFrame(() => {
+      terminalRef.current?.resumeInput();
+    });
+  }, [sessionActions.applyCodexRenderMode, terminalRef]);
 
   const handleSwitchToChat = useCallback(() => {
+    terminalRef.current?.blur();
     void sessionActions.applyCodexRenderMode("chat");
-  }, [sessionActions.applyCodexRenderMode]);
+  }, [sessionActions.applyCodexRenderMode, terminalRef]);
 
   const handleRetryConnection = useCallback(() => {
     void sessionActions.retryServerConnection();

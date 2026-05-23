@@ -32,8 +32,7 @@ export function useTerminalViewportModel({
     connectionState,
     connectionIssue,
   });
-  const canRenderTerminal =
-    hasTerminalRoute && !showTerminalFallback && !showCodexChat;
+  const canRenderTerminal = hasTerminalRoute && !showTerminalFallback;
   const shouldMountTerminalSurface = canRenderTerminal && screenFocused;
   const terminalState = useMemo(
     () =>
@@ -54,7 +53,7 @@ export function useTerminalViewportModel({
   );
 
   return {
-    accessoryVisible: canRenderTerminal && screenFocused,
+    accessoryVisible: canRenderTerminal && !showCodexChat && screenFocused,
     canRenderTerminal,
     shouldMountTerminalSurface,
     terminalState,

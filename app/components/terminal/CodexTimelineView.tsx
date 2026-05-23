@@ -21,12 +21,13 @@ import {
 import type { PatchFileSummary } from "./CodexTimelineActivityTypes";
 
 interface CodexTimelineViewProps {
-  scrollRef: React.RefObject<FlatList | null>;
+  scrollRef: React.RefObject<FlatList<ZenTimelineItem> | null>;
   items: ZenTimelineItem[];
   loading: boolean;
   error?: string | null;
   unavailable: boolean | null;
   unavailableReason?: string;
+  syncing: boolean;
   textSelectable: boolean;
   showJumpToLatest: boolean;
   jumpButtonBottom: number;
@@ -35,6 +36,10 @@ interface CodexTimelineViewProps {
   theme: TerminalThemePalette;
   onLayout(event: LayoutChangeEvent): void;
   onScroll(event: NativeSyntheticEvent<NativeScrollEvent>): void;
+  onScrollBeginDrag(): void;
+  onScrollEndDrag(event: NativeSyntheticEvent<NativeScrollEvent>): void;
+  onMomentumScrollBegin(): void;
+  onMomentumScrollEnd(event: NativeSyntheticEvent<NativeScrollEvent>): void;
   onContentSizeChange(width: number, height: number): void;
   onJumpToLatest(): void;
   onUnavailableAction(): void;
@@ -52,6 +57,7 @@ export function CodexTimelineView({
   error,
   unavailable,
   unavailableReason,
+  syncing,
   textSelectable,
   showJumpToLatest,
   jumpButtonBottom,
@@ -60,6 +66,10 @@ export function CodexTimelineView({
   theme,
   onLayout,
   onScroll,
+  onScrollBeginDrag,
+  onScrollEndDrag,
+  onMomentumScrollBegin,
+  onMomentumScrollEnd,
   onContentSizeChange,
   onJumpToLatest,
   onUnavailableAction,
@@ -106,6 +116,7 @@ export function CodexTimelineView({
         error={error}
         unavailable={unavailable}
         unavailableReason={unavailableReason}
+        syncing={syncing}
         chrome={chrome}
         onUnavailableAction={onUnavailableAction}
       />
@@ -118,6 +129,7 @@ export function CodexTimelineView({
       onUnavailableAction,
       unavailable,
       unavailableReason,
+      syncing,
     ],
   );
 
@@ -130,13 +142,20 @@ export function CodexTimelineView({
         renderItem={renderItem}
         inverted
         style={styles.timeline}
-        contentContainerStyle={styles.timelineContent}
+        contentContainerStyle={[
+          styles.timelineContent,
+          items.length === 0 ? styles.timelineEmptyContent : null,
+        ]}
         scrollIndicatorInsets={{ bottom: TIMELINE_BOTTOM_PADDING }}
         keyboardShouldPersistTaps="handled"
         showsVerticalScrollIndicator={false}
         scrollEventThrottle={80}
         onLayout={onLayout}
         onScroll={onScroll}
+        onScrollBeginDrag={onScrollBeginDrag}
+        onScrollEndDrag={onScrollEndDrag}
+        onMomentumScrollBegin={onMomentumScrollBegin}
+        onMomentumScrollEnd={onMomentumScrollEnd}
         onContentSizeChange={onContentSizeChange}
         ListEmptyComponent={listEmptyComponent}
         initialNumToRender={12}
@@ -166,5 +185,8 @@ const styles = StyleSheet.create({
     paddingHorizontal: 16,
     paddingTop: 14,
     paddingBottom: TIMELINE_BOTTOM_PADDING,
+  },
+  timelineEmptyContent: {
+    justifyContent: "center",
   },
 });

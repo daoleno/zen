@@ -52,6 +52,7 @@ interface TerminalOutputPaneProps {
   daemonId: string;
   keyboardVisible: boolean;
   gitDiff?: GitDiffChip | null;
+  chatOverlayVisible: boolean;
   onSwitchToChat(): void;
   onRetryConnection(): void;
   onAccessoryLayout(event: LayoutChangeEvent): void;
@@ -83,6 +84,7 @@ export function TerminalOutputPane({
   daemonId,
   keyboardVisible,
   gitDiff,
+  chatOverlayVisible,
   onSwitchToChat,
   onRetryConnection,
   onAccessoryLayout,
@@ -120,7 +122,7 @@ export function TerminalOutputPane({
             onRetry={onRetryConnection}
           />
         )}
-        {isCodexAgent ? (
+        {isCodexAgent && !chatOverlayVisible ? (
           <TouchableOpacity
             accessibilityLabel="Open Codex Chat renderer"
             style={[

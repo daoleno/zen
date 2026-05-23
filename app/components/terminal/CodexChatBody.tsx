@@ -15,11 +15,16 @@ import type {
   TerminalThemePalette,
 } from "../../constants/terminalThemes";
 import type { CodexSlashCommand } from "../../services/websocket";
-import type { ComposerAttachment, ChatCommandEvent } from "./CodexChatSession";
+import type {
+  ComposerAttachment,
+  ChatCommandEvent,
+  PendingUserMessage,
+} from "./CodexChatSession";
 import type { CodexComposerPresentation } from "./CodexChatSurfaceModel";
 import { CodexChatComposerSection } from "./CodexChatComposerSection";
 import { CodexChatKeyboardFrame } from "./CodexChatKeyboardFrame";
 import { CodexChatTimelineSection } from "./CodexChatTimelineSection";
+import type { ZenTimelineItem } from "./CodexTimelineItemView";
 import { useCodexComposerLayout } from "./useCodexComposerLayout";
 
 export interface CodexChatBodyProps {
@@ -29,12 +34,17 @@ export interface CodexChatBodyProps {
   conversation: CodexConversation | null;
   events: CodexConversationEvent[];
   chatCommandEvents: ChatCommandEvent[];
+  pendingUserMessages: PendingUserMessage[];
   loading: boolean;
   error?: string | null;
-  scrollRef: React.RefObject<FlatList | null>;
+  scrollRef: React.RefObject<FlatList<ZenTimelineItem> | null>;
   showJumpToLatest: boolean;
   onTimelineLayout(event: LayoutChangeEvent): void;
   onTimelineScroll(event: NativeSyntheticEvent<NativeScrollEvent>): void;
+  onTimelineScrollBeginDrag(): void;
+  onTimelineScrollEndDrag(event: NativeSyntheticEvent<NativeScrollEvent>): void;
+  onTimelineMomentumScrollBegin(): void;
+  onTimelineMomentumScrollEnd(event: NativeSyntheticEvent<NativeScrollEvent>): void;
   onTimelineContentSizeChange(width: number, height: number): void;
   onScrollToLatest(animated?: boolean, delay?: number): void;
   onComposerHeightChange(height: number): void;
@@ -69,12 +79,17 @@ export function CodexChatBody({
   conversation,
   events,
   chatCommandEvents,
+  pendingUserMessages,
   loading,
   error,
   scrollRef,
   showJumpToLatest,
   onTimelineLayout,
   onTimelineScroll,
+  onTimelineScrollBeginDrag,
+  onTimelineScrollEndDrag,
+  onTimelineMomentumScrollBegin,
+  onTimelineMomentumScrollEnd,
   onTimelineContentSizeChange,
   onScrollToLatest,
   onComposerHeightChange,
@@ -116,6 +131,7 @@ export function CodexChatBody({
         conversation={conversation}
         events={events}
         chatCommandEvents={chatCommandEvents}
+        pendingUserMessages={pendingUserMessages}
         loading={loading}
         error={error}
         composerActive={composerPresentation.active}
@@ -126,6 +142,10 @@ export function CodexChatBody({
         theme={theme}
         onLayout={onTimelineLayout}
         onScroll={onTimelineScroll}
+        onScrollBeginDrag={onTimelineScrollBeginDrag}
+        onScrollEndDrag={onTimelineScrollEndDrag}
+        onMomentumScrollBegin={onTimelineMomentumScrollBegin}
+        onMomentumScrollEnd={onTimelineMomentumScrollEnd}
         onContentSizeChange={onTimelineContentSizeChange}
         onScrollToLatest={onScrollToLatest}
         onUnavailableAction={onUnavailableAction}

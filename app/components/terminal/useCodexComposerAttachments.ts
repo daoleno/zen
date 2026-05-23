@@ -43,7 +43,7 @@ export function useCodexComposerAttachments({
       );
       focusComposer();
     } catch (err: any) {
-      Alert.alert("Upload failed", err?.message || "Could not upload this file.");
+      Alert.alert("Upload failed", uploadErrorMessage(err));
     } finally {
       setUploading(false);
     }
@@ -64,4 +64,21 @@ export function useCodexComposerAttachments({
     removeAttachment,
     uploading,
   };
+}
+
+function uploadErrorMessage(err: any) {
+  const message = typeof err?.message === "string" ? err.message.trim() : "";
+  if (/Unsupported file part|Unsupported FormDataPart/i.test(message)) {
+    return [
+      "This build is using a file upload API that cannot read the selected file.",
+      "Restart the app after updating. If this is a custom native build, rebuild it so expo-file-system is included.",
+    ].join("\n\n");
+  }
+  if (/Creating blobs from 'ArrayBuffer'|ArrayBufferView/i.test(message)) {
+    return [
+      "This build cannot create upload blobs from file bytes.",
+      "Restart the app after updating. If this is a custom native build, rebuild it so the new upload path is included.",
+    ].join("\n\n");
+  }
+  return message || "Could not upload this file.";
 }

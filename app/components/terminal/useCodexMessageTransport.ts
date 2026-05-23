@@ -3,9 +3,13 @@ import {
   useState,
   type SetStateAction,
 } from "react";
+import { Alert } from "react-native";
 import type { ConnectionState } from "../../store/agents";
 import { wsClient } from "../../services/websocket";
-import type { ComposerAttachment } from "./CodexChatSession";
+import type {
+  ComposerAttachment,
+  PendingUserMessageInput,
+} from "./CodexChatSession";
 
 interface UseCodexMessageTransportInput {
   serverId: string;
@@ -13,6 +17,8 @@ interface UseCodexMessageTransportInput {
   connectionState: ConnectionState;
   setDraft(value: string): void;
   setAttachments(value: SetStateAction<ComposerAttachment[]>): void;
+  addPendingUserMessage(message: PendingUserMessageInput): string;
+  removePendingUserMessage(id: string): void;
   refreshConversation(showLoading?: boolean): Promise<void>;
   scrollToLatest(animated?: boolean, delay?: number): void;
 }
@@ -23,6 +29,8 @@ export function useCodexMessageTransport({
   connectionState,
   setDraft,
   setAttachments,
+  addPendingUserMessage,
+  removePendingUserMessage,
   refreshConversation,
   scrollToLatest,
 }: UseCodexMessageTransportInput) {
@@ -34,25 +42,36 @@ export function useCodexMessageTransport({
       previousDraft: string,
       previousAttachments: ComposerAttachment[],
     ) => {
+      const pendingMessageId = addPendingUserMessage({
+        body: previousDraft.trim(),
+        sentText: text,
+        attachments: previousAttachments.map((attachment) => ({
+          name: attachment.name,
+          path: attachment.path,
+        })),
+      });
       setSending(true);
+      scrollToLatest(false, 0);
       setDraft("");
       setAttachments([]);
-      scrollToLatest(true);
       try {
         wsClient.sendInput(serverId, agentId, `${text}\n`);
         setTimeout(() => {
-          void refreshConversation(false);
-          setSending(false);
+          void refreshConversation(false).finally(() => setSending(false));
         }, 600);
-      } catch {
+      } catch (err: any) {
+        removePendingUserMessage(pendingMessageId);
         setDraft(previousDraft);
         setAttachments(previousAttachments);
         setSending(false);
+        Alert.alert("Message not sent", err?.message || "Could not send this message.");
       }
     },
     [
       agentId,
+      addPendingUserMessage,
       refreshConversation,
+      removePendingUserMessage,
       scrollToLatest,
       serverId,
       setAttachments,

@@ -156,6 +156,9 @@ func findCodexTranscript(agent classifier.Agent, now time.Time) (codexTranscript
 	if matched, ok := matchCodexTranscriptToAgentStart(candidates, agent.StartedAt); ok {
 		return matched, true, nil
 	}
+	if isCodexResumeCommand(agent.Command) {
+		return latestUpdatedCodexTranscript(candidates), true, nil
+	}
 	if !agent.StartedAt.IsZero() {
 		return codexTranscriptCandidate{}, false, nil
 	}
@@ -189,6 +192,26 @@ func matchCodexTranscriptToAgentStart(candidates []codexTranscriptCandidate, sta
 		return codexTranscriptCandidate{}, false
 	}
 	return candidates[bestIndex], true
+}
+
+func latestUpdatedCodexTranscript(candidates []codexTranscriptCandidate) codexTranscriptCandidate {
+	best := candidates[0]
+	for _, candidate := range candidates[1:] {
+		if candidate.Updated.After(best.Updated) {
+			best = candidate
+		}
+	}
+	return best
+}
+
+func isCodexResumeCommand(command string) bool {
+	fields := strings.Fields(strings.ToLower(strings.TrimSpace(command)))
+	for _, field := range fields[1:] {
+		if strings.Trim(field, `"'`) == "resume" {
+			return true
+		}
+	}
+	return false
 }
 
 func candidateCreatedAt(row codexThreadRow) time.Time {

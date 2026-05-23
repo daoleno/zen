@@ -104,6 +104,14 @@ export function conversationUnavailableReason(reason?: string) {
   }
 }
 
+export function isConversationSyncingReason(reason?: string) {
+  return (
+    reason === "session_not_ready" ||
+    reason === "transcript_not_found" ||
+    reason === "missing_cwd"
+  );
+}
+
 function formatTime(value: string) {
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) {

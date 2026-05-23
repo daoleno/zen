@@ -116,7 +116,7 @@ export function ZenActivityEvent({
 
 const styles = StyleSheet.create({
   wrap: {
-    marginBottom: 10,
+    marginBottom: 7,
     paddingLeft: 1,
   },
 });

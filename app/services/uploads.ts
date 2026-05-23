@@ -1,4 +1,5 @@
 import * as DocumentPicker from "expo-document-picker";
+import { File } from "expo-file-system";
 import { buildAuthorizationHeader } from "./auth";
 import { getServerById } from "./storage";
 
@@ -39,6 +40,23 @@ export function buildUploadUrl(serverUrl: string): string | null {
   }
 }
 
+export function buildUploadFormData(
+  asset: Pick<DocumentPicker.DocumentPickerAsset, "uri" | "name" | "mimeType">,
+): FormData {
+  const file = new File(asset.uri);
+  const uploadPart = {
+    name: asset.name || file.name || "upload",
+    type: asset.mimeType || file.type || "application/octet-stream",
+    bytes: () => file.bytes(),
+  };
+
+  const formData = new FormData();
+  // Expo's WinterCG fetch accepts File-like objects with bytes(); React Native
+  // Blob cannot be created from ArrayBuffer/Uint8Array parts.
+  formData.append("file", uploadPart as unknown as Blob);
+  return formData;
+}
+
 export async function uploadDocumentForServer(
   serverId: string,
 ): Promise<UploadedAttachment | null> {
@@ -61,12 +79,7 @@ export async function uploadDocumentForServer(
   }
 
   const asset = result.assets[0];
-  const formData = new FormData();
-  formData.append("file", {
-    uri: asset.uri,
-    name: asset.name || "upload",
-    type: asset.mimeType || "application/octet-stream",
-  } as any);
+  const formData = buildUploadFormData(asset);
 
   const response = await fetch(uploadUrl, {
     method: "POST",
@@ -74,7 +87,10 @@ export async function uploadDocumentForServer(
     body: formData,
   });
   if (!response.ok) {
-    throw new Error(`Upload failed (${response.status})`);
+    const body = await response.text().catch(() => "");
+    throw new Error(
+      body.trim() || `Upload failed (${response.status})`,
+    );
   }
 
   const payload = (await response.json()) as {

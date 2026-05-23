@@ -56,10 +56,10 @@ export function GitDiffRepoFileView({
           <Ionicons name="chevron-back" size={17} color={chrome.textMuted} />
         </TouchableOpacity>
         <View style={styles.repoFileCopy}>
-          <Text style={[styles.repoFileTitle, { color: chrome.text }]} numberOfLines={1}>
-            {pathBaseName(path)}
+          <Text style={[styles.repoFileTitle, { color: chrome.text }]} numberOfLines={2}>
+            {path}
           </Text>
-          <Text style={[styles.repoFilePath, { color: chrome.textMuted }]} numberOfLines={1}>
+          <Text style={[styles.repoFilePath, { color: chrome.textMuted }]} numberOfLines={2}>
             {repoTitle}/{pathDirectoryName(path)}
           </Text>
         </View>
@@ -105,11 +105,6 @@ export function GitDiffRepoFileView({
   );
 }
 
-function pathBaseName(path: string): string {
-  const index = path.lastIndexOf("/");
-  return index === -1 ? path : path.slice(index + 1);
-}
-
 function pathDirectoryName(path: string): string {
   const index = path.lastIndexOf("/");
   return index === -1 ? "" : path.slice(0, index);
@@ -129,13 +124,14 @@ const styles = StyleSheet.create({
     paddingHorizontal: 10,
     paddingVertical: 6,
     flexDirection: "row",
-    alignItems: "center",
+    alignItems: "flex-start",
     gap: 9,
     borderBottomWidth: StyleSheet.hairlineWidth,
   },
   repoFileBack: {
     width: 32,
     height: 32,
+    marginTop: 1,
     borderRadius: 10,
     borderWidth: StyleSheet.hairlineWidth,
     alignItems: "center",
@@ -160,6 +156,7 @@ const styles = StyleSheet.create({
     borderRadius: 999,
     paddingHorizontal: 7,
     paddingVertical: 3,
+    marginTop: 5,
   },
   changedPillText: {
     fontSize: 10,

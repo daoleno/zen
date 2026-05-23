@@ -3,6 +3,7 @@ import {
   StyleSheet,
   Text,
   TouchableOpacity,
+  View,
 } from "react-native";
 import type { TerminalThemeChrome } from "../../constants/terminalThemes";
 import { Typography } from "../../constants/tokens";
@@ -48,17 +49,22 @@ export function CodexTimelineActivityHeader({
         icon={icon}
         color={toneColor}
       />
-      <Text style={[styles.title, { color: chrome.textSubtle }]} numberOfLines={1}>
-        {title}
-      </Text>
-      {detail ? (
+      <View style={styles.copy}>
         <Text
-          style={[styles.detail, { color: chrome.textSubtle }]}
+          style={[styles.title, { color: chrome.textSubtle }]}
           numberOfLines={1}
         >
-          {detail}
+          {title}
         </Text>
-      ) : null}
+        {detail ? (
+          <Text
+            style={[styles.detail, { color: chrome.textSubtle }]}
+            numberOfLines={1}
+          >
+            {detail}
+          </Text>
+        ) : null}
+      </View>
       {canExpand ? (
         <CodexTimelineActivityExpandIcon expanded={expanded} chrome={chrome} />
       ) : null}
@@ -68,22 +74,32 @@ export function CodexTimelineActivityHeader({
 
 const styles = StyleSheet.create({
   row: {
-    alignSelf: "flex-start",
-    minHeight: 24,
-    maxWidth: "100%",
+    alignSelf: "stretch",
+    minHeight: 22,
+    width: "100%",
     flexDirection: "row",
-    alignItems: "center",
-    gap: 6,
+    alignItems: "flex-start",
+    gap: 5,
     opacity: 0.78,
   },
+  copy: {
+    flex: 1,
+    minWidth: 0,
+    paddingTop: 1.5,
+    flexDirection: "row",
+    alignItems: "center",
+  },
   title: {
+    flexShrink: 0,
     fontSize: 11,
-    lineHeight: 15,
+    lineHeight: 16,
     fontFamily: Typography.uiFontMedium,
   },
   detail: {
+    flex: 1,
     flexShrink: 1,
-    maxWidth: 210,
+    minWidth: 0,
+    marginLeft: 6,
     fontSize: 11,
     lineHeight: 15,
     fontFamily: Typography.terminalFont,

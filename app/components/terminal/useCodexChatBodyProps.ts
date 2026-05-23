@@ -11,6 +11,7 @@ import type {
 import type {
   ChatCommandEvent,
   ComposerAttachment,
+  PendingUserMessage,
 } from "./CodexChatSession";
 import type { CodexChatBodyProps } from "./CodexChatBody";
 import type { CodexComposerPresentation } from "./CodexChatSurfaceModel";
@@ -28,6 +29,7 @@ interface UseCodexChatBodyPropsInput {
   conversation: CodexConversation | null;
   events: CodexConversationEvent[];
   chatCommandEvents: ChatCommandEvent[];
+  pendingUserMessages: PendingUserMessage[];
   loading: boolean;
   error?: string | null;
   draft: string;
@@ -50,6 +52,7 @@ export function useCodexChatBodyProps({
   conversation,
   events,
   chatCommandEvents,
+  pendingUserMessages,
   loading,
   error,
   draft,
@@ -91,12 +94,17 @@ export function useCodexChatBodyProps({
       conversation,
       events,
       chatCommandEvents,
+      pendingUserMessages,
       loading,
       error,
       scrollRef: timeline.scrollRef,
       showJumpToLatest: timeline.showJumpToLatest,
       onTimelineLayout: timeline.handleLayout,
       onTimelineScroll: timeline.handleScroll,
+      onTimelineScrollBeginDrag: timeline.handleScrollBeginDrag,
+      onTimelineScrollEndDrag: timeline.handleScrollEndDrag,
+      onTimelineMomentumScrollBegin: timeline.handleMomentumScrollBegin,
+      onTimelineMomentumScrollEnd: timeline.handleMomentumScrollEnd,
       onTimelineContentSizeChange: timeline.handleContentSizeChange,
       onScrollToLatest: timeline.scrollToLatest,
       onComposerHeightChange: handleComposerHeightChange,
@@ -147,6 +155,7 @@ export function useCodexChatBodyProps({
       draft,
       error,
       events,
+      pendingUserMessages,
       handleComposerHeightChange,
       handleSendPress,
       handleUploadPress,
@@ -159,6 +168,10 @@ export function useCodexChatBodyProps({
       timeline.handleContentSizeChange,
       timeline.handleLayout,
       timeline.handleScroll,
+      timeline.handleScrollBeginDrag,
+      timeline.handleScrollEndDrag,
+      timeline.handleMomentumScrollBegin,
+      timeline.handleMomentumScrollEnd,
       timeline.scrollRef,
       timeline.scrollToLatest,
       timeline.showJumpToLatest,

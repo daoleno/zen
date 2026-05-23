@@ -11,6 +11,7 @@ import type { CodexSlashCommand } from "../../services/websocket";
 import {
   type ChatCommandEvent,
   type ComposerAttachment,
+  type PendingUserMessageInput,
 } from "./CodexChatSession";
 import { useCodexComposerAttachments } from "./useCodexComposerAttachments";
 import { useCodexControllerPresentation } from "./useCodexControllerPresentation";
@@ -45,9 +46,10 @@ interface UseCodexChatControllerInput {
   recordChatCommandEvent(
     event: Omit<ChatCommandEvent, "id" | "createdAt">,
   ): void;
+  addPendingUserMessage(message: PendingUserMessageInput): string;
+  removePendingUserMessage(id: string): void;
   refreshConversation(showLoading?: boolean): Promise<void>;
   scrollToLatest(animated?: boolean, delay?: number): void;
-  pinToBottomIfNeeded(animated?: boolean, delay?: number): void;
   focusComposer(): void;
 }
 
@@ -68,9 +70,10 @@ export function useCodexChatController({
   onSwitchToTerminal,
   onOpenGitDiff,
   recordChatCommandEvent,
+  addPendingUserMessage,
+  removePendingUserMessage,
   refreshConversation,
   scrollToLatest,
-  pinToBottomIfNeeded,
   focusComposer,
 }: UseCodexChatControllerInput) {
   const {
@@ -94,6 +97,8 @@ export function useCodexChatController({
     connectionState,
     setDraft,
     setAttachments,
+    addPendingUserMessage,
+    removePendingUserMessage,
     refreshConversation,
     scrollToLatest,
   });
@@ -125,7 +130,6 @@ export function useCodexChatController({
     setAttachments,
     recordChatCommandEvent,
     scrollToLatest,
-    pinToBottomIfNeeded,
     onSwitchToTerminal,
   });
 

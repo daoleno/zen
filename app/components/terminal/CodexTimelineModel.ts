@@ -1,5 +1,8 @@
 import type { CodexConversationEvent } from "../../services/codexConversation";
-import type { ChatCommandEvent } from "./CodexChatSession";
+import type {
+  ChatCommandEvent,
+  PendingUserMessage,
+} from "./CodexChatSession";
 import {
   type PatchFileSummary,
   type PatchOperation,
@@ -171,6 +174,27 @@ export function mergeChatCommandEventsIntoTimeline(
   ];
 }
 
+export function mergePendingUserMessagesIntoTimeline(
+  timelineItems: ZenTimelineItem[],
+  pendingUserMessages: PendingUserMessage[],
+): ZenTimelineItem[] {
+  if (pendingUserMessages.length === 0) {
+    return timelineItems;
+  }
+  return [
+    ...timelineItems,
+    ...pendingUserMessages.map((message) => ({
+      type: "message" as const,
+      id: message.id,
+      role: "user" as const,
+      timestamp: message.createdAt,
+      body: message.body,
+      attachments: message.attachments,
+      pending: true,
+    })),
+  ];
+}
+
 function activityFromEvent(event: CodexConversationEvent): ZenTimelineItem | null {
   switch (event.kind) {
     case "command": {
@@ -190,7 +214,7 @@ function activityFromEvent(event: CodexConversationEvent): ZenTimelineItem | nul
         title: commandActivityTitle(command, running, failed, presentation),
         tone: running ? "running" : failed ? "failed" : "success",
         icon: running ? "time-outline" : failed ? "alert-circle-outline" : presentation.icon,
-        detail: presentation.detail || commandSummary(command),
+        detail: commandActivityDetail(command, presentation),
         body: output.text || (!running && !failed ? "(no output)" : undefined),
         defaultExpanded: false,
       };
@@ -615,9 +639,19 @@ function terminalInteractionHeading(event: CodexConversationEvent) {
 function toolInvocationLabel(event: CodexConversationEvent) {
   const rawName = (event.tool_name || event.title || "tool").trim().replace(/^functions\./, "");
   const name = formatToolInvocationName(rawName);
+  if (rawName === "apply_patch" && event.files?.length) {
+    return `${name}: ${event.files.slice(0, 4).join(", ")}${event.files.length > 4 ? ` +${event.files.length - 4}` : ""}`;
+  }
   const input = parseToolPayload(event.input);
-  const args = isRecord(input) ? compactToolInvocationArgs(input) : "";
-  return `${name}(${args})`;
+  if (!isRecord(input)) {
+    return name;
+  }
+  const focused = focusedToolInvocationDetail(rawName, input);
+  if (focused) {
+    return `${name}: ${truncateRunes(focused, 220)}`;
+  }
+  const args = compactToolInvocationArgs(input);
+  return args ? `${name}: ${args}` : name;
 }
 
 function formatToolInvocationName(name: string) {
@@ -641,7 +675,48 @@ function compactToolInvocationArgs(record: Record<string, unknown>) {
     }
   }
   const text = Object.keys(compact).length > 0 ? JSON.stringify(compact) : "";
-  return truncateRunes(text, 120);
+  return truncateRunes(text, 180);
+}
+
+function focusedToolInvocationDetail(
+  rawName: string,
+  input: Record<string, unknown>,
+) {
+  if (rawName === "exec_command") {
+    return stringField(input, "cmd");
+  }
+  if (rawName === "view_image") {
+    return stringField(input, "path") || stringField(input, "image_url");
+  }
+  if (rawName.startsWith("browser_")) {
+    return stringField(input, "url")
+      || stringField(input, "element")
+      || stringField(input, "target")
+      || stringField(input, "filename")
+      || firstString(input.paths);
+  }
+  if (rawName.includes("query_docs")) {
+    return stringField(input, "libraryId") || stringField(input, "query");
+  }
+  if (rawName.includes("resolve_library_id")) {
+    return stringField(input, "libraryName") || stringField(input, "query");
+  }
+  if (rawName.includes("multi_tool_use.parallel")) {
+    const toolUses = Array.isArray(input.tool_uses) ? input.tool_uses : [];
+    const names = toolUses
+      .map((toolUse) =>
+        isRecord(toolUse) && typeof toolUse.recipient_name === "string"
+          ? humanizeToolName(toolUse.recipient_name)
+          : "",
+      )
+      .filter(Boolean);
+    return names.join(", ");
+  }
+  return stringField(input, "path")
+    || stringField(input, "url")
+    || stringField(input, "target")
+    || stringField(input, "query")
+    || firstString(input.paths);
 }
 
 function compactToolDetail(event: CodexConversationEvent) {
@@ -795,6 +870,13 @@ function commandActivityTitle(
   void failed;
   void presentation;
   return running ? "Running" : "Ran";
+}
+
+function commandActivityDetail(
+  command: string,
+  presentation: CommandPresentation,
+) {
+  return presentation.detail || commandSummary(command);
 }
 
 function commandSummary(command: string) {

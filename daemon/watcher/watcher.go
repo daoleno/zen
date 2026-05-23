@@ -635,6 +635,9 @@ func agentCommandFromProcess(proc processInfo) string {
 		return "claude"
 	}
 	if lowerComm == "codex" || strings.Contains(lowerArgs, "/bin/codex") || strings.Contains(lowerArgs, " codex ") || strings.HasPrefix(lowerArgs, "codex ") {
+		if commandHasArg(lowerArgs, "resume") {
+			return "codex resume"
+		}
 		return "codex"
 	}
 	return ""
@@ -682,6 +685,15 @@ func normalizeCommand(value string) string {
 		value = value[idx+1:]
 	}
 	return value
+}
+
+func commandHasArg(command string, arg string) bool {
+	for _, field := range strings.Fields(command) {
+		if strings.Trim(field, `"'`) == arg {
+			return true
+		}
+	}
+	return false
 }
 
 func projectNameFromPath(cwd string) string {

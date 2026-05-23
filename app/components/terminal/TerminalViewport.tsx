@@ -96,59 +96,61 @@ export function TerminalViewport({
   onRetryConnection,
   onAccessoryLayout,
 }: TerminalViewportProps) {
-  const viewport =
-    showCodexChat && sessionKey && serverId && agentId ? (
-      <CodexChatSurface
-        key={`codex-chat:${sessionKey}`}
-        serverId={serverId}
-        agentId={agentId}
-        agent={agent}
-        connectionState={connectionState}
-        connectionIssue={connectionIssue}
-        theme={theme}
-        chrome={chrome}
-        screenFocused={screenFocused}
-        gitDiff={gitDiff}
-        onSwitchToTerminal={onSwitchToTerminal}
-        onOpenGitDiff={onOpenGitDiff}
-      />
-    ) : (
-      <TerminalOutputPane
-        sessionKey={sessionKey}
-        serverId={serverId}
-        agentId={agentId}
-        theme={theme}
-        chrome={chrome}
-        themeName={themeName}
-        terminalRef={terminalRef}
-        ctrlArmed={ctrlArmed}
-        onCtrlArmedChange={onCtrlArmedChange}
-        canRenderTerminal={canRenderTerminal}
-        shouldMountTerminalSurface={shouldMountTerminalSurface}
-        terminalStateAccent={terminalStateAccent}
-        terminalStateBusy={terminalStateBusy}
-        terminalStateTitle={terminalStateTitle}
-        terminalStateDetail={terminalStateDetail}
-        terminalStateHint={terminalStateHint}
-        hasTerminalRoute={hasTerminalRoute}
-        isCodexAgent={isCodexAgent}
-        outputBottomInset={outputBottomInset}
-        accessoryVisible={accessoryVisible}
-        accessoryBottomOffset={accessoryBottomOffset}
-        serverUrl={serverUrl}
-        daemonId={daemonId}
-        keyboardVisible={keyboardVisible}
-        gitDiff={gitDiff}
-        onSwitchToChat={onSwitchToChat}
-        onRetryConnection={onRetryConnection}
-        onAccessoryLayout={onAccessoryLayout}
-      />
-    );
-
   return (
     <View style={[styles.terminalStage, { backgroundColor: theme.background }]}>
       <View style={[styles.terminalShell, { backgroundColor: theme.background }]}>
-        <View style={styles.terminalContent}>{viewport}</View>
+        <View style={styles.terminalContent}>
+          <TerminalOutputPane
+            sessionKey={sessionKey}
+            serverId={serverId}
+            agentId={agentId}
+            theme={theme}
+            chrome={chrome}
+            themeName={themeName}
+            terminalRef={terminalRef}
+            ctrlArmed={ctrlArmed}
+            onCtrlArmedChange={onCtrlArmedChange}
+            canRenderTerminal={canRenderTerminal}
+            shouldMountTerminalSurface={shouldMountTerminalSurface}
+            terminalStateAccent={terminalStateAccent}
+            terminalStateBusy={terminalStateBusy}
+            terminalStateTitle={terminalStateTitle}
+            terminalStateDetail={terminalStateDetail}
+            terminalStateHint={terminalStateHint}
+            hasTerminalRoute={hasTerminalRoute}
+            isCodexAgent={isCodexAgent}
+            outputBottomInset={outputBottomInset}
+            accessoryVisible={accessoryVisible}
+            accessoryBottomOffset={accessoryBottomOffset}
+            serverUrl={serverUrl}
+            daemonId={daemonId}
+            keyboardVisible={keyboardVisible}
+            gitDiff={gitDiff}
+            chatOverlayVisible={showCodexChat}
+            onSwitchToChat={onSwitchToChat}
+            onRetryConnection={onRetryConnection}
+            onAccessoryLayout={onAccessoryLayout}
+          />
+
+          {showCodexChat && sessionKey && serverId && agentId ? (
+            <View style={styles.chatOverlay}>
+              <CodexChatSurface
+                key={`codex-chat:${sessionKey}`}
+                serverId={serverId}
+                agentId={agentId}
+                agent={agent}
+                connectionState={connectionState}
+                connectionIssue={connectionIssue}
+                theme={theme}
+                chrome={chrome}
+                screenFocused={screenFocused}
+                gitDiff={gitDiff}
+                onSwitchToTerminal={onSwitchToTerminal}
+                onOpenGitDiff={onOpenGitDiff}
+              />
+            </View>
+          ) : null}
+        </View>
       </View>
     </View>
   );
@@ -169,5 +171,13 @@ const styles = StyleSheet.create({
     flex: 1,
     minHeight: 0,
     position: "relative",
+  },
+  chatOverlay: {
+    position: "absolute",
+    top: 0,
+    right: 0,
+    bottom: 0,
+    left: 0,
+    zIndex: 12,
   },
 });

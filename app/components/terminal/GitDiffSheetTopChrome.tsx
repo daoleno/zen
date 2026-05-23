@@ -62,8 +62,8 @@ export function GitDiffSheetTopChrome({
         </TouchableOpacity>
 
         <View style={styles.headerCopy}>
-          <Text style={[styles.title, { color: chrome.text }]}>Git</Text>
-          <Text style={[styles.subtitle, { color: chrome.textMuted }]} numberOfLines={1}>
+          <Text style={[styles.title, { color: chrome.text }]}>Git Diff</Text>
+          <Text style={[styles.subtitle, { color: chrome.textMuted }]} numberOfLines={2}>
             {buildSubtitle(snapshot)}
           </Text>
         </View>
@@ -105,7 +105,7 @@ export function GitDiffSheetTopChrome({
           />
           <View style={styles.modeMetaRow}>
             <View style={styles.modeSummaryWrap}>
-              <Text style={[styles.modeSummary, { color: chrome.textMuted }]} numberOfLines={1}>
+              <Text style={[styles.modeSummary, { color: chrome.textMuted }]} numberOfLines={2}>
                 {buildCompactSummary(snapshot)}
               </Text>
             </View>

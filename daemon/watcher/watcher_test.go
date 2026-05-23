@@ -100,6 +100,20 @@ func TestDetectAgentProcessPrefersCodexChildStartTime(t *testing.T) {
 	}
 }
 
+func TestDetectAgentProcessPreservesCodexResumeIntent(t *testing.T) {
+	shellStarted := time.Date(2026, 5, 21, 8, 0, 0, 0, time.UTC)
+	codexStarted := shellStarted.Add(30 * time.Minute)
+	processes := map[int]processInfo{
+		10: {pid: 10, ppid: 1, startedAt: shellStarted, comm: "zsh", args: "zsh"},
+		20: {pid: 20, ppid: 10, startedAt: codexStarted, comm: "node", args: "node /home/user/.local/bin/codex --dangerously-bypass-approvals-and-sandbox resume"},
+	}
+
+	command, startedAt := detectAgentProcess("node", 10, processes, codexStarted.Add(5*time.Second))
+	if command != "codex resume" || !startedAt.Equal(codexStarted) {
+		t.Fatalf("detectAgentProcess() = (%q, %s), want codex resume child start %s", command, startedAt, codexStarted)
+	}
+}
+
 func TestDetectAgentProcessUsesFallbackForCodexWithoutProcessMatch(t *testing.T) {
 	fallbackAt := time.Date(2026, 5, 21, 8, 30, 0, 0, time.UTC)
 	processes := map[int]processInfo{

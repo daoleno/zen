@@ -9,6 +9,7 @@ interface CodexTimelineEmptyContentProps {
   error?: string | null;
   unavailable: boolean | null;
   unavailableReason?: string;
+  syncing: boolean;
   chrome: TerminalThemeChrome;
   onUnavailableAction(): void;
 }
@@ -19,6 +20,7 @@ export function CodexTimelineEmptyContent({
   error,
   unavailable,
   unavailableReason,
+  syncing,
   chrome,
   onUnavailableAction,
 }: CodexTimelineEmptyContentProps) {
@@ -26,7 +28,8 @@ export function CodexTimelineEmptyContent({
     return (
       <CodexTimelineEmptyState
         chrome={chrome}
-        title="Loading Codex transcript"
+        title="Loading chat"
+        body="Pulling in the latest messages."
         busy
       />
     );
@@ -36,8 +39,19 @@ export function CodexTimelineEmptyContent({
     return (
       <CodexTimelineEmptyState
         chrome={chrome}
-        title="Transcript unavailable"
+        title="Could not load this chat"
         body={error}
+      />
+    );
+  }
+
+  if (syncing && items.length === 0) {
+    return (
+      <CodexTimelineEmptyState
+        chrome={chrome}
+        title="Syncing chat"
+        body={unavailableReason || "Waiting for the daemon to index the latest Codex transcript."}
+        busy
       />
     );
   }
@@ -46,9 +60,9 @@ export function CodexTimelineEmptyContent({
     return (
       <CodexTimelineEmptyState
         chrome={chrome}
-        title="Native transcript unavailable"
+        title="Chat view is not available here"
         body={unavailableReason}
-        actionLabel="Terminal"
+        actionLabel="Open Terminal"
         onAction={onUnavailableAction}
       />
     );
@@ -58,7 +72,8 @@ export function CodexTimelineEmptyContent({
     return (
       <CodexTimelineEmptyState
         chrome={chrome}
-        title="Waiting for Codex transcript"
+        title="Ready"
+        body="Send a message below. Replies and tool activity will appear here."
       />
     );
   }

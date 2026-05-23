@@ -80,14 +80,18 @@ export function useCodexChatSurfaceState({
     attachments,
     setAttachments,
     chatCommandEvents,
+    pendingUserMessages,
     recordChatCommandEvent,
+    addPendingUserMessage,
+    removePendingUserMessage,
     refreshConversation,
   } = session;
   const events = conversation?.events ?? [];
-  const timeline = usePinnedTimeline(events.length);
+  const timeline = usePinnedTimeline(
+    events.length + chatCommandEvents.length + pendingUserMessages.length,
+  );
   const composerInput = useCodexComposerInput({
     enabled: screenFocused && connectionState === "connected",
-    onKeyboardShown: timeline.pinToBottomIfNeeded,
   });
   const controller = useCodexChatController({
     serverId,
@@ -106,9 +110,10 @@ export function useCodexChatSurfaceState({
     onSwitchToTerminal,
     onOpenGitDiff,
     recordChatCommandEvent,
+    addPendingUserMessage,
+    removePendingUserMessage,
     refreshConversation,
     scrollToLatest: timeline.scrollToLatest,
-    pinToBottomIfNeeded: timeline.pinToBottomIfNeeded,
     focusComposer: composerInput.focus,
   });
 
@@ -136,6 +141,7 @@ export function useCodexChatSurfaceState({
     conversation,
     events,
     chatCommandEvents,
+    pendingUserMessages,
     loading,
     error,
     draft,
