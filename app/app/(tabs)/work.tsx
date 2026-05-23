@@ -7,6 +7,7 @@ import {
   TouchableOpacity,
   View,
 } from "react-native";
+import { Ionicons } from "@expo/vector-icons";
 import { useFocusEffect } from "expo-router";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { MarkdownView } from "../../components/work/MarkdownView";
@@ -58,6 +59,7 @@ export default function BrainScreen() {
   const [updatingBrainGenerator, setUpdatingBrainGenerator] = useState<
     string | null
   >(null);
+  const [showBrainSettings, setShowBrainSettings] = useState(false);
 
   const brainItems = useMemo(
     () =>
@@ -112,19 +114,42 @@ export default function BrainScreen() {
     <SafeAreaView style={styles.screen} edges={["top"]}>
       <View style={styles.header}>
         <Text style={styles.title}>Brain</Text>
+        {servers.length > 0 ? (
+          <TouchableOpacity
+            accessibilityLabel="Brain settings"
+            accessibilityRole="button"
+            accessibilityState={{ expanded: showBrainSettings }}
+            style={[
+              styles.settingsButton,
+              showBrainSettings && styles.settingsButtonActive,
+            ]}
+            onPress={() => setShowBrainSettings((visible) => !visible)}
+            activeOpacity={0.78}
+          >
+            <Ionicons
+              name="options-outline"
+              size={18}
+              color={
+                showBrainSettings ? colors.textPrimary : colors.textSecondary
+              }
+            />
+          </TouchableOpacity>
+        ) : null}
       </View>
       <ScrollView
         style={styles.content}
         contentContainerStyle={styles.contentContainer}
         showsVerticalScrollIndicator={false}
       >
-        <BrainGeneratorControls
-          servers={servers}
-          digestProviderByServer={workState.digestProviderByServer}
-          connectionStates={agentState.serverConnections}
-          updatingServerId={updatingBrainGenerator}
-          onChange={handleBrainGenerator}
-        />
+        {showBrainSettings ? (
+          <BrainGeneratorControls
+            servers={servers}
+            digestProviderByServer={workState.digestProviderByServer}
+            connectionStates={agentState.serverConnections}
+            updatingServerId={updatingBrainGenerator}
+            onChange={handleBrainGenerator}
+          />
+        ) : null}
         <MarkdownView value={markdownValue} />
       </ScrollView>
     </SafeAreaView>
@@ -741,6 +766,16 @@ function createStyles(colors: typeof Colors) {
       lineHeight: 28,
       opacity: 0.92,
     },
+    settingsButton: {
+      width: 32,
+      height: 32,
+      borderRadius: 8,
+      alignItems: "center",
+      justifyContent: "center",
+    },
+    settingsButtonActive: {
+      backgroundColor: colors.surfaceSubtle,
+    },
     content: {
       flex: 1,
     },
@@ -748,20 +783,20 @@ function createStyles(colors: typeof Colors) {
       paddingBottom: 20,
     },
     generatorPanel: {
-      gap: 6,
-      marginHorizontal: 16,
-      marginBottom: 2,
+      gap: 5,
+      marginHorizontal: 18,
+      marginBottom: 6,
     },
     generatorRow: {
       flexDirection: "row",
       alignItems: "center",
-      gap: 8,
+      gap: 6,
     },
     generatorServer: {
-      width: 92,
+      width: 82,
       color: colors.textSecondary,
       fontFamily: Typography.uiFontMedium,
-      fontSize: 12,
+      fontSize: 11,
       opacity: 0.72,
     },
     generatorSegments: {
@@ -771,10 +806,10 @@ function createStyles(colors: typeof Colors) {
     },
     generatorSegment: {
       flex: 1,
-      minHeight: 30,
+      minHeight: 26,
       alignItems: "center",
       justifyContent: "center",
-      borderRadius: 8,
+      borderRadius: 7,
       borderWidth: StyleSheet.hairlineWidth,
       borderColor: colors.borderSubtle,
       backgroundColor: colors.surfaceSubtle,
@@ -789,7 +824,7 @@ function createStyles(colors: typeof Colors) {
     generatorSegmentText: {
       color: colors.textSecondary,
       fontFamily: Typography.uiFontMedium,
-      fontSize: 12,
+      fontSize: 11,
     },
     generatorSegmentTextActive: {
       color: colors.textPrimary,

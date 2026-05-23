@@ -23,8 +23,6 @@ import {
   type GitDiffSheetTab,
 } from "./GitDiffSheetTopChrome";
 
-const LARGE_DIFF_FILE_THRESHOLD = 8;
-
 interface GitDiffSheetProps {
   visible: boolean;
   theme: TerminalThemePalette;
@@ -118,12 +116,7 @@ export function GitDiffSheet({
     }
 
     diffStateSeedRef.current = seed;
-    if (files.length > LARGE_DIFF_FILE_THRESHOLD) {
-      setCollapsedDiffPaths(new Set(files.map((file) => file.path)));
-      return;
-    }
-
-    setCollapsedDiffPaths(new Set());
+    setCollapsedDiffPaths(new Set(files.map((file) => file.path)));
   }, [diffPathsSignature, files, snapshot?.available, visible]);
 
   const allDiffFilesCollapsed = files.length > 0
