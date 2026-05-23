@@ -6,7 +6,6 @@ import {
 } from "react-native";
 import type {
   TerminalThemeChrome,
-  TerminalThemeName,
   TerminalThemePalette,
 } from "../../constants/terminalThemes";
 import { TerminalAccessoryDock } from "./TerminalAccessoryDock";
@@ -22,7 +21,6 @@ interface TerminalOutputPaneProps {
   agentId: string;
   theme: TerminalThemePalette;
   chrome: TerminalThemeChrome;
-  themeName: TerminalThemeName;
   terminalRef: React.RefObject<TerminalSurfaceHandle | null>;
   ctrlArmed: boolean;
   onCtrlArmedChange(next: boolean): void;
@@ -50,7 +48,6 @@ export function TerminalOutputPane({
   agentId,
   theme,
   chrome,
-  themeName,
   terminalRef,
   ctrlArmed,
   onCtrlArmedChange,
@@ -86,7 +83,7 @@ export function TerminalOutputPane({
             ref={terminalRef}
             serverId={serverId}
             targetId={agentId}
-            themeName={themeName}
+            theme={theme}
             ctrlArmed={ctrlArmed}
             onCtrlArmedChange={onCtrlArmedChange}
           />

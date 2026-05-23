@@ -13,7 +13,6 @@ import {
   TextInput,
   TouchableOpacity,
   View,
-  useColorScheme,
 } from 'react-native';
 import { useFocusEffect, useRouter } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
@@ -25,21 +24,15 @@ import { TerminalPreview } from '../../components/terminal/TerminalPreview';
 import { AgentKindIcon } from '../../components/terminal/AgentKindIcon';
 import { NewTerminalSheet } from '../../components/terminal/NewTerminalSheet';
 import {
-  DefaultTerminalThemePreference,
-  resolveTerminalThemePreference,
-} from '../../constants/terminalThemes';
-import {
   getInboxViewMode,
   getAgentAliases,
   getRecentAgentOpens,
   getServers,
-  getTerminalTheme,
   markAgentOpened,
   setAgentAlias,
   setInboxViewMode,
   StoredAgentAliases,
   StoredInboxViewMode,
-  StoredTerminalTheme,
   StoredRecentAgentOpens,
   StoredServer,
 } from '../../services/storage';
@@ -70,7 +63,6 @@ export default function InboxScreen() {
   const { state } = useAgents();
   const { state: workState } = useWork();
   const router = useRouter();
-  const colorScheme = useColorScheme();
   const colors = useAppColors();
   const styles = useMemo(() => createStyles(colors), [colors]);
 
@@ -88,9 +80,6 @@ export default function InboxScreen() {
   const [viewMode, setViewModeState] = useState<StoredInboxViewMode>('list');
   const [agentAliases, setAgentAliases] = useState<StoredAgentAliases>({});
   const [recentAgentOpens, setRecentAgentOpens] = useState<StoredRecentAgentOpens>({});
-  const [terminalTheme, setTerminalTheme] = useState<StoredTerminalTheme>(
-    DefaultTerminalThemePreference,
-  );
   const [configuredServerCount, setConfiguredServerCount] = useState(0);
   const [servers, setServers] = useState<StoredServer[]>([]);
   const [createSheetVisible, setCreateSheetVisible] = useState(false);
@@ -110,18 +99,16 @@ export default function InboxScreen() {
   useEffect(() => {
     let cancelled = false;
     (async () => {
-      const [storedViewMode, storedRecentOpens, storedAliases, storedTheme, storedServers] = await Promise.all([
+      const [storedViewMode, storedRecentOpens, storedAliases, storedServers] = await Promise.all([
         getInboxViewMode(),
         getRecentAgentOpens(),
         getAgentAliases(),
-        getTerminalTheme(),
         getServers(),
       ]);
       if (!cancelled) {
         setViewModeState(storedViewMode);
         setRecentAgentOpens(storedRecentOpens);
         setAgentAliases(storedAliases);
-        setTerminalTheme(storedTheme);
         setConfiguredServerCount(storedServers.length);
         setServers(storedServers);
       }
@@ -133,27 +120,20 @@ export default function InboxScreen() {
     React.useCallback(() => {
       let cancelled = false;
       (async () => {
-        const [storedRecentOpens, storedAliases, storedServers, storedTheme] = await Promise.all([
+        const [storedRecentOpens, storedAliases, storedServers] = await Promise.all([
           getRecentAgentOpens(),
           getAgentAliases(),
           getServers(),
-          getTerminalTheme(),
         ]);
         if (!cancelled) {
           setRecentAgentOpens(storedRecentOpens);
           setAgentAliases(storedAliases);
           setConfiguredServerCount(storedServers.length);
           setServers(storedServers);
-          setTerminalTheme(storedTheme);
         }
       })();
       return () => { cancelled = true; };
     }, []),
-  );
-
-  const terminalThemeName = useMemo(
-    () => resolveTerminalThemePreference(terminalTheme, colorScheme),
-    [terminalTheme, colorScheme],
   );
 
   const displayAgents = useMemo(
@@ -530,7 +510,7 @@ export default function InboxScreen() {
           <View style={[styles.statusDot, { backgroundColor: statusColor(item.status) }]} />
         </View>
         <View style={styles.gridPreview}>
-          <TerminalPreview key={item.key} lines={item.last_output_lines} themeName={terminalThemeName} />
+          <TerminalPreview key={item.key} lines={item.last_output_lines} />
         </View>
       </TouchableOpacity>
     );

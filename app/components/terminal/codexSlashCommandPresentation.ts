@@ -80,8 +80,6 @@ export function slashCommandIcon(name: string): IoniconName {
       return "bug-outline";
     case "statusline":
       return "reader-outline";
-    case "theme":
-      return "color-palette-outline";
     case "pets":
       return "happy-outline";
     case "mcp":

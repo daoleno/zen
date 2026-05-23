@@ -4,7 +4,6 @@ import type { useTerminalGitDiff } from "../../components/terminal/useTerminalGi
 import type { TerminalSurfaceHandle } from "../../components/terminal/TerminalSurface";
 import type {
   TerminalThemeChrome,
-  TerminalThemeName,
   TerminalThemePalette,
 } from "../../constants/terminalThemes";
 import type { Agent, ConnectionState } from "../../store/agents";
@@ -69,7 +68,6 @@ interface UseTerminalScreenLayoutPropsInput {
   navigationActions: ReturnType<typeof useTerminalNavigationActions>;
   terminalRef: RefObject<TerminalSurfaceHandle | null>;
   terminalTheme: TerminalThemePalette;
-  themeName: TerminalThemeName;
   viewportModel: ReturnType<typeof useTerminalViewportModel>;
   openGitDiff(): void;
   openNewTerminal(): void;
@@ -123,7 +121,6 @@ export function useTerminalScreenLayoutProps({
   navigationActions,
   terminalRef,
   terminalTheme,
-  themeName,
   viewportModel,
   openGitDiff,
   openNewTerminal,
@@ -167,7 +164,6 @@ export function useTerminalScreenLayoutProps({
     connectionIssue,
     theme: terminalTheme,
     chrome,
-    themeName,
     screenFocused,
     gitDiff,
     terminalRef,

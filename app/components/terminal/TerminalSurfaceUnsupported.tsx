@@ -1,23 +1,14 @@
 import React, { forwardRef, useImperativeHandle, useMemo } from 'react';
 import { StyleSheet, View } from 'react-native';
 import { Colors, useAppColors } from '../../constants/tokens';
-import {
-  DefaultTerminalThemeName,
-  resolveTerminalTheme,
-} from '../../constants/terminalThemes';
 import type { TerminalSurfaceHandle, TerminalSurfaceProps } from './TerminalSurface.types';
 import { AppText } from '../ui';
 
 export const TerminalSurfaceUnsupported = forwardRef<TerminalSurfaceHandle, TerminalSurfaceProps>(({
-  themeName = DefaultTerminalThemeName,
-  themeOverrides,
+  theme,
 }, ref) => {
   const colors = useAppColors();
   const styles = useMemo(() => createStyles(colors), [colors]);
-  const theme = useMemo(
-    () => resolveTerminalTheme(themeName, themeOverrides),
-    [themeName, themeOverrides],
-  );
 
   useImperativeHandle(ref, () => ({
     sendInput() {},

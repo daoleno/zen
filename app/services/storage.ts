@@ -1,24 +1,17 @@
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { normalizeDaemonId, normalizePublicKeyHex } from "./auth";
 import { normalizeServerURL as normalizeConnectionURL } from "./connection";
-import {
-  DefaultTerminalThemePreference,
-  TerminalThemePreference,
-  isTerminalThemePreference,
-} from "../constants/terminalThemes";
 
 const KEYS = {
   servers: "zen:v3:servers",
   disabledServers: "zen:v1:disabled_servers",
   onboarded: "zen:onboarded",
-  terminalTheme: "zen:terminal_theme",
   inboxViewMode: "zen:inbox_view_mode",
   recentAgentOpens: "zen:recent_agent_opens",
   agentAliases: "zen:agent_aliases",
   codexRenderModes: "zen:codex_render_modes",
 } as const;
 
-export type StoredTerminalTheme = TerminalThemePreference;
 export type StoredInboxViewMode = "list" | "grid";
 export type StoredRecentAgentOpens = Record<string, number>;
 export type StoredAgentAliases = Record<string, string>;
@@ -174,19 +167,6 @@ export async function setServerAutoConnect(
   }
 
   await AsyncStorage.setItem(KEYS.disabledServers, JSON.stringify(next));
-}
-
-export async function getTerminalTheme(): Promise<StoredTerminalTheme> {
-  const value = await AsyncStorage.getItem(KEYS.terminalTheme);
-  return typeof value === "string" && isTerminalThemePreference(value)
-    ? value
-    : DefaultTerminalThemePreference;
-}
-
-export async function setTerminalTheme(
-  theme: StoredTerminalTheme,
-): Promise<void> {
-  await AsyncStorage.setItem(KEYS.terminalTheme, theme);
 }
 
 export async function getInboxViewMode(): Promise<StoredInboxViewMode> {

@@ -5,7 +5,6 @@ import type {
   StoredAgentAliases,
   StoredCodexRenderModes,
 } from "../../services/storage";
-import type { TerminalThemePreference } from "../../constants/terminalThemes";
 import { useTerminalGitDiff } from "../../components/terminal/useTerminalGitDiff";
 import { useTerminalRouteModel } from "./useTerminalRouteModel";
 import { useTerminalThemeChrome } from "./useTerminalThemeChrome";
@@ -18,7 +17,6 @@ interface UseTerminalScreenModelsInput {
   sessionKey: string | null;
   routeSessionHint: TerminalRouteSessionHint;
   screenFocused: boolean;
-  themePreference: TerminalThemePreference;
   agentByKey: ReadonlyMap<string, Agent>;
   workByKey: Record<string, WorkItem>;
   agentAliases: StoredAgentAliases;
@@ -33,7 +31,6 @@ export function useTerminalScreenModels({
   sessionKey,
   routeSessionHint,
   screenFocused,
-  themePreference,
   agentByKey,
   workByKey,
   agentAliases,
@@ -41,7 +38,7 @@ export function useTerminalScreenModels({
   serverConnectionIssues,
   codexRenderModes,
 }: UseTerminalScreenModelsInput) {
-  const theme = useTerminalThemeChrome(themePreference);
+  const theme = useTerminalThemeChrome();
   const route = useTerminalRouteModel({
     serverId,
     agentId,

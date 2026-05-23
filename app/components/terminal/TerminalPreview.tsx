@@ -1,15 +1,13 @@
 import React, { useMemo } from 'react';
-import { StyleSheet, Text, View } from 'react-native';
+import { StyleSheet, Text, View, useColorScheme } from 'react-native';
 import { Typography } from '../../constants/tokens';
 import {
-  DefaultTerminalThemeName,
+  resolveTerminalThemeName,
   resolveTerminalTheme,
-  TerminalThemeName,
 } from '../../constants/terminalThemes';
 
 interface TerminalPreviewProps {
   lines: string[];
-  themeName?: TerminalThemeName;
 }
 
 const PREVIEW_LINE_COUNT = 12;
@@ -26,10 +24,12 @@ function formatPreviewLines(lines: string[]): string {
   return visibleLines.join('\n');
 }
 
-export function TerminalPreview({
-  lines,
-  themeName = DefaultTerminalThemeName,
-}: TerminalPreviewProps) {
+export function TerminalPreview({ lines }: TerminalPreviewProps) {
+  const colorScheme = useColorScheme();
+  const themeName = useMemo(
+    () => resolveTerminalThemeName(colorScheme),
+    [colorScheme],
+  );
   const theme = useMemo(() => resolveTerminalTheme(themeName), [themeName]);
   const previewText = useMemo(() => formatPreviewLines(lines), [lines]);
   const borderColor = useMemo(() => withAlpha(theme.foreground, 0.12), [theme.foreground]);

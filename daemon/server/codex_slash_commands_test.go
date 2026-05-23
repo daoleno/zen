@@ -39,7 +39,6 @@ func TestParseCodexSlashDescriptionsFindsBinaryBlock(t *testing.T) {
 		"show config layers and requirement sources for debugging" +
 		"configure which items appear in the terminal title" +
 		"configure which items appear in the status line" +
-		"choose a syntax highlighting theme" +
 		"choose or hide the terminal pet" +
 		"list configured MCP tools; use /mcp verbose for details" +
 		"manage apps" +
@@ -95,7 +94,7 @@ func TestDefaultCodexSlashCommandsContainsRealCommandSet(t *testing.T) {
 			t.Fatalf("missing command %s", value)
 		}
 	}
-	for _, value := range []string{"/test", "/help", "/sandbox", "/voice"} {
+	for _, value := range []string{"/test", "/help", "/sandbox", "/voice", "/theme"} {
 		if values[value] {
 			t.Fatalf("unexpected non-Codex command %s", value)
 		}

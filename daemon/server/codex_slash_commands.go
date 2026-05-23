@@ -119,7 +119,6 @@ var codexSlashCommandSpecs = []codexSlashCommandSpec{
 	{name: "debug-config", description: "show config layers and requirement sources for debugging"},
 	{name: "title", description: "configure which items appear in the terminal title"},
 	{name: "statusline", description: "configure which items appear in the status line"},
-	{name: "theme", description: "choose a syntax highlighting theme"},
 	{name: "pets", description: "choose or hide the terminal pet"},
 	{name: "mcp", description: "list configured MCP tools; use /mcp verbose for details"},
 	{name: "apps", description: "manage apps"},
@@ -175,7 +174,6 @@ var codexSlashCommandCapabilities = map[string]codexSlashCommandCapability{
 	"debug-config":          terminalCommand("debug", inputNone(), "terminal", false),
 	"title":                 terminalCommand("settings", inputNone(), "management-screen", true),
 	"statusline":            terminalCommand("settings", inputNone(), "management-screen", true),
-	"theme":                 terminalCommand("settings", pickerInput("theme"), "management-screen", true),
 	"pets":                  terminalCommand("settings", pickerInput("pet"), "management-screen", true),
 	"mcp":                   terminalCommand("management", inlineArgs("verbose"), "management-screen", true),
 	"apps":                  terminalCommand("management", inputNone(), "management-screen", true),
@@ -256,6 +254,9 @@ func discoverCodexSlashCommandsUncached() ([]CodexSlashCommand, string) {
 func defaultCodexSlashCommands(source string) []CodexSlashCommand {
 	commands := make([]CodexSlashCommand, 0, len(codexSlashCommandSpecs))
 	for _, spec := range codexSlashCommandSpecs {
+		if isHiddenCodexSlashCommand(spec.name) {
+			continue
+		}
 		commands = append(commands, codexSlashCommandFromSpec(spec, spec.description, source))
 	}
 	return commands
@@ -265,6 +266,9 @@ func commandsFromDiscovery(discovery codexSlashCommandDiscovery) []CodexSlashCom
 	commands := make([]CodexSlashCommand, 0, len(codexSlashCommandSpecs))
 	seen := make(map[string]bool, len(codexSlashCommandSpecs)+len(discovery.names))
 	for _, spec := range codexSlashCommandSpecs {
+		if isHiddenCodexSlashCommand(spec.name) {
+			continue
+		}
 		description := spec.description
 		if discovered := strings.TrimSpace(discovery.descriptions[spec.name]); discovered != "" {
 			description = discovered
@@ -273,7 +277,7 @@ func commandsFromDiscovery(discovery codexSlashCommandDiscovery) []CodexSlashCom
 		seen[spec.name] = true
 	}
 	for _, name := range discovery.names {
-		if seen[name] {
+		if seen[name] || isHiddenCodexSlashCommand(name) {
 			continue
 		}
 		description := strings.TrimSpace(discovery.descriptions[name])
@@ -284,6 +288,10 @@ func commandsFromDiscovery(discovery codexSlashCommandDiscovery) []CodexSlashCom
 		seen[name] = true
 	}
 	return commands
+}
+
+func isHiddenCodexSlashCommand(name string) bool {
+	return name == "theme"
 }
 
 func codexSlashCommandFromSpec(spec codexSlashCommandSpec, description, source string) CodexSlashCommand {

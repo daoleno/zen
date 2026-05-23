@@ -5,8 +5,6 @@ import { Ionicons } from '@expo/vector-icons';
 import { WebView } from 'react-native-webview';
 import {
   buildTerminalChrome,
-  DefaultTerminalThemeName,
-  resolveTerminalTheme,
 } from '../../constants/terminalThemes';
 import { buildGhosttyTerminalHtml } from './ghosttyWebViewHtml';
 import { TerminalInputHandler } from './TerminalInputHandler';
@@ -22,16 +20,11 @@ export const TerminalSurfaceGhosttyWebView = forwardRef<
   serverId,
   targetId,
   backend = 'tmux',
-  themeName = DefaultTerminalThemeName,
-  themeOverrides,
+  theme,
   ctrlArmed = false,
   onCtrlArmedChange,
 }, ref) => {
   const [fontUri, setFontUri] = useState<string | null>(cachedTerminalFontUri);
-  const theme = useMemo(
-    () => resolveTerminalTheme(themeName, themeOverrides),
-    [themeName, themeOverrides],
-  );
   const chrome = useMemo(
     () => buildTerminalChrome(theme),
     [theme],

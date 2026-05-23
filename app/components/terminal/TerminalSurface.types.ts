@@ -1,4 +1,4 @@
-import type { TerminalThemeName, TerminalThemePalette } from '../../constants/terminalThemes';
+import type { TerminalThemePalette } from '../../constants/terminalThemes';
 
 export interface TerminalSurfaceHandle {
   sendInput(data: string, options?: { focus?: boolean }): void;
@@ -12,8 +12,7 @@ export interface TerminalSurfaceProps {
   serverId: string;
   targetId: string;
   backend?: string;
-  themeName?: TerminalThemeName;
-  themeOverrides?: Partial<TerminalThemePalette>;
+  theme: TerminalThemePalette;
   ctrlArmed?: boolean;
   onCtrlArmedChange?: (next: boolean) => void;
 }

@@ -10,7 +10,6 @@ import {
   TextInput,
   TouchableOpacity,
   View,
-  useColorScheme,
 } from "react-native";
 import { useFocusEffect, useLocalSearchParams } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
@@ -25,16 +24,6 @@ import {
   useCameraPermissions,
 } from "expo-camera";
 import { Colors, Typography, statusColor, useAppColors } from "../../constants/tokens";
-import {
-  DefaultTerminalThemePreference,
-  TerminalThemeLabels,
-  TerminalThemePreferenceLabels,
-  TerminalThemes,
-  resolveTerminalThemePreference,
-  type TerminalThemeName,
-  type TerminalThemePalette,
-  type TerminalThemePreference,
-} from "../../constants/terminalThemes";
 import { importConnection } from "../../services/importConnection";
 import { wsClient } from "../../services/websocket";
 import { ConnectionState, useAgents } from "../../store/agents";
@@ -53,7 +42,6 @@ const BRAIN_GENERATORS: Array<{ value: BrainGenerator; label: string }> = [
 export default function SettingsScreen() {
   const { state, dispatch } = useAgents();
   const { state: workState, dispatch: workDispatch } = useWork();
-  const colorScheme = useColorScheme();
   const colors = useAppColors();
   const styles = useMemo(() => createStyles(colors), [colors]);
   const params = useLocalSearchParams<{
@@ -61,9 +49,6 @@ export default function SettingsScreen() {
     refresh?: string;
   }>();
   const [servers, setServers] = useState<Storage.StoredServer[]>([]);
-  const [terminalTheme, setTerminalTheme] = useState<Storage.StoredTerminalTheme>(
-    DefaultTerminalThemePreference,
-  );
   const [loaded, setLoaded] = useState(false);
   const [editorVisible, setEditorVisible] = useState(false);
   const [scannerVisible, setScannerVisible] = useState(false);
@@ -109,14 +94,10 @@ export default function SettingsScreen() {
       let cancelled = false;
 
       (async () => {
-        const [savedServers, theme] = await Promise.all([
-          Storage.getServers(),
-          Storage.getTerminalTheme(),
-        ]);
+        const savedServers = await Storage.getServers();
         if (cancelled) return;
 
         setServers(savedServers);
-        setTerminalTheme(theme);
         setLoaded(true);
       })();
 
@@ -291,11 +272,6 @@ export default function SettingsScreen() {
         },
       },
     ]);
-  };
-
-  const handleTerminalTheme = async (value: TerminalThemePreference) => {
-    setTerminalTheme(value);
-    await Storage.setTerminalTheme(value);
   };
 
   const handleBrainGenerator = async (
@@ -622,31 +598,6 @@ export default function SettingsScreen() {
           )}
         </View>
 
-        {/* Theme */}
-        <Text style={styles.sectionLabel}>Theme</Text>
-        <View style={styles.themeGrid}>
-          <TerminalThemeCard
-            label={TerminalThemePreferenceLabels.system}
-            theme={TerminalThemes[resolveTerminalThemePreference("system", colorScheme)]}
-            active={terminalTheme === "system"}
-            onPress={() => handleTerminalTheme("system")}
-          />
-          {(Object.keys(TerminalThemes) as TerminalThemeName[]).map(
-            (themeName) => {
-              const active = terminalTheme === themeName;
-              return (
-                <TerminalThemeCard
-                  key={themeName}
-                  label={TerminalThemeLabels[themeName]}
-                  theme={TerminalThemes[themeName]}
-                  active={active}
-                  onPress={() => handleTerminalTheme(themeName)}
-                />
-              );
-            },
-          )}
-        </View>
-
         <Text style={styles.version}>Zen v0.1.0</Text>
       </ScrollView>
 
@@ -940,62 +891,6 @@ function ServerNoticeCard({
       <Text style={styles.noticeDetail}>{detail}</Text>
       <Text style={styles.noticeHint}>{hint}</Text>
     </View>
-  );
-}
-
-function TerminalThemeCard({
-  label,
-  theme,
-  active,
-  onPress,
-}: {
-  label: string;
-  theme: TerminalThemePalette;
-  active: boolean;
-  onPress(): void;
-}) {
-  const colors = useAppColors();
-  const styles = useMemo(() => createStyles(colors), [colors]);
-
-  return (
-    <TouchableOpacity
-      style={[styles.themeCard, active && styles.themeCardActive]}
-      onPress={onPress}
-      activeOpacity={0.82}
-    >
-      {/* Mini terminal preview */}
-      <View style={[styles.themePreview, { backgroundColor: theme.background }]}>
-        {/* Traffic-light dots */}
-        <View style={styles.themePreviewDots}>
-          <View style={[styles.themePreviewDot, { backgroundColor: theme.red }]} />
-          <View style={[styles.themePreviewDot, { backgroundColor: theme.yellow }]} />
-          <View style={[styles.themePreviewDot, { backgroundColor: theme.green }]} />
-        </View>
-        {/* Fake terminal lines */}
-        <View style={styles.themePreviewLines}>
-          <View style={styles.themePreviewLine}>
-            <Text style={[styles.themePreviewPrompt, { color: theme.green }]}>$ </Text>
-            <Text style={[styles.themePreviewText, { color: theme.foreground }]}>zen</Text>
-            <Text style={[styles.themePreviewText, { color: theme.blue, opacity: 0.8 }]}> --watch</Text>
-          </View>
-          <View style={styles.themePreviewLine}>
-            <Text style={[styles.themePreviewText, { color: theme.cyan }]}>✓ </Text>
-            <Text style={[styles.themePreviewText, { color: theme.foreground, opacity: 0.55 }]}>agents running</Text>
-          </View>
-          <View style={styles.themePreviewLine}>
-            <Text style={[styles.themePreviewPrompt, { color: theme.foreground, opacity: 0.5 }]}>$ </Text>
-            <View style={[styles.themePreviewCursor, { backgroundColor: theme.cursor }]} />
-          </View>
-        </View>
-      </View>
-      {/* Label row */}
-      <View style={styles.themeCardLabel}>
-        <Text style={[styles.themeCardName, active && styles.themeCardNameActive]}>
-          {label}
-        </Text>
-        {active && <Ionicons name="checkmark" size={12} color={colors.accent} />}
-      </View>
-    </TouchableOpacity>
   );
 }
 
@@ -1313,76 +1208,6 @@ function createStyles(colors: typeof Colors) {
     fontFamily: Typography.uiFontMedium,
   },
   generatorSegmentTextActive: {
-    color: colors.textPrimary,
-  },
-
-  // Theme grid
-  themeGrid: {
-    flexDirection: "row",
-    flexWrap: "wrap",
-    gap: 8,
-  },
-  themeCard: {
-    width: "48.5%",
-    borderRadius: 12,
-    overflow: "hidden",
-    borderWidth: StyleSheet.hairlineWidth,
-    borderColor: colors.border,
-  },
-  themeCardActive: {
-    borderWidth: 1.5,
-    borderColor: colors.accent,
-  },
-  themePreview: {
-    height: 82,
-    padding: 9,
-  },
-  themePreviewDots: {
-    flexDirection: "row",
-    gap: 5,
-    marginBottom: 8,
-  },
-  themePreviewDot: {
-    width: 7,
-    height: 7,
-    borderRadius: 4,
-    opacity: 0.75,
-  },
-  themePreviewLines: {
-    gap: 4,
-  },
-  themePreviewLine: {
-    flexDirection: "row",
-    alignItems: "center",
-  },
-  themePreviewPrompt: {
-    fontSize: 10,
-    fontFamily: Typography.terminalFont,
-  },
-  themePreviewText: {
-    fontSize: 10,
-    fontFamily: Typography.terminalFont,
-  },
-  themePreviewCursor: {
-    width: 6,
-    height: 11,
-    borderRadius: 1,
-    opacity: 0.85,
-  },
-  themeCardLabel: {
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "space-between",
-    paddingHorizontal: 10,
-    paddingVertical: 7,
-    backgroundColor: colors.surfaceSubtle,
-  },
-  themeCardName: {
-    fontSize: 12,
-    fontFamily: Typography.uiFontMedium,
-    color: colors.textSecondary,
-  },
-  themeCardNameActive: {
     color: colors.textPrimary,
   },
 

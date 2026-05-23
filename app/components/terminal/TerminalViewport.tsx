@@ -6,7 +6,6 @@ import {
 } from "react-native";
 import type {
   TerminalThemeChrome,
-  TerminalThemeName,
   TerminalThemePalette,
 } from "../../constants/terminalThemes";
 import type { ConnectionIssue } from "../../services/connectionIssue";
@@ -31,7 +30,6 @@ export interface TerminalViewportProps {
   connectionIssue?: ConnectionIssue | null;
   theme: TerminalThemePalette;
   chrome: TerminalThemeChrome;
-  themeName: TerminalThemeName;
   screenFocused: boolean;
   gitDiff?: GitDiffChip | null;
   terminalRef: React.RefObject<TerminalSurfaceHandle | null>;
@@ -67,7 +65,6 @@ export function TerminalViewport({
   connectionIssue,
   theme,
   chrome,
-  themeName,
   screenFocused,
   gitDiff,
   terminalRef,
@@ -102,7 +99,6 @@ export function TerminalViewport({
             agentId={agentId}
             theme={theme}
             chrome={chrome}
-            themeName={themeName}
             terminalRef={terminalRef}
             ctrlArmed={ctrlArmed}
             onCtrlArmedChange={onCtrlArmedChange}

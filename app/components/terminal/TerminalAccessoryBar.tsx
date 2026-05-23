@@ -9,7 +9,6 @@ import * as DocumentPicker from "expo-document-picker";
 import * as Haptics from "expo-haptics";
 import {
   buildTerminalChrome,
-  resolveTerminalTheme,
   type TerminalThemePalette,
 } from "../../constants/terminalThemes";
 import {
@@ -29,7 +28,7 @@ interface TerminalAccessoryBarProps {
   terminalRef: React.RefObject<TerminalSurfaceHandle | null>;
   serverUrl: string;
   daemonId: string;
-  theme?: TerminalThemePalette;
+  theme: TerminalThemePalette;
   keyboardVisible: boolean;
   ctrlArmed: boolean;
   onCtrlArmedChange(next: boolean): void;
@@ -45,13 +44,9 @@ export function TerminalAccessoryBar({
   onCtrlArmedChange,
 }: TerminalAccessoryBarProps) {
   const uploadEnabled = !!buildUploadUrl(serverUrl) && !!daemonId.trim();
-  const activeTheme = React.useMemo(
-    () => theme ?? resolveTerminalTheme(),
-    [theme],
-  );
   const chrome = React.useMemo(
-    () => buildTerminalChrome(activeTheme),
-    [activeTheme],
+    () => buildTerminalChrome(theme),
+    [theme],
   );
 
   const repeatDelayRef = useRef<ReturnType<typeof setTimeout> | null>(null);

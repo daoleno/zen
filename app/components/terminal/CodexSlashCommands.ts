@@ -52,7 +52,6 @@ const FALLBACK_SLASH_COMMANDS = [
   ["debug-config", "show config layers and requirement sources for debugging"],
   ["title", "configure which items appear in the terminal title"],
   ["statusline", "configure which items appear in the status line"],
-  ["theme", "choose a syntax highlighting theme"],
   ["pets", "choose or hide the terminal pet"],
   ["mcp", "list configured MCP tools; use /mcp verbose for details"],
   ["apps", "manage apps"],
@@ -246,6 +245,9 @@ function normalizeSlashCommands(commands: CodexSlashCommand[]) {
   const normalized: CodexSlashCommand[] = [];
   for (const command of commands) {
     const name = command.name.trim().replace(/^\//, "");
+    if (name === "theme") {
+      continue;
+    }
     const rawValue = command.value.trim();
     const value = rawValue.length > 1 && rawValue.startsWith("/") ? rawValue : `/${name}`;
     if (!name || !value.startsWith("/") || seen.has(value)) {
@@ -390,7 +392,6 @@ function slashCommandDefaultCategory(name: string) {
     case "experimental":
     case "title":
     case "statusline":
-    case "theme":
     case "pets":
     case "personality":
     case "realtime":
@@ -445,7 +446,6 @@ function slashCommandDefaultInput(name: string): CodexSlashCommand["input"] {
     case "resume":
     case "fork":
     case "mention":
-    case "theme":
     case "pets":
     case "personality":
     case "agent":
@@ -492,7 +492,6 @@ function slashCommandDefaultsToInteractive(name: string) {
     "mention",
     "title",
     "statusline",
-    "theme",
     "pets",
     "mcp",
     "apps",

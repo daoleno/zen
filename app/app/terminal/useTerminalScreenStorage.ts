@@ -4,15 +4,12 @@ import {
   getCodexRenderModes,
   getRecentAgentOpens,
   getServers,
-  getTerminalTheme,
   markAgentOpened,
   type StoredAgentAliases,
   type StoredCodexRenderModes,
   type StoredRecentAgentOpens,
   type StoredServer,
 } from "../../services/storage";
-import type { TerminalThemePreference } from "../../constants/terminalThemes";
-import { DefaultTerminalThemePreference } from "../../constants/terminalThemes";
 
 interface UseTerminalScreenStorageInput {
   serverId: string;
@@ -23,9 +20,6 @@ export function useTerminalScreenStorage({
   serverId,
   sessionKey,
 }: UseTerminalScreenStorageInput) {
-  const [themePreference, setThemePreference] = useState<TerminalThemePreference>(
-    DefaultTerminalThemePreference,
-  );
   const [agentAliases, setAgentAliases] = useState<StoredAgentAliases>({});
   const [codexRenderModes, setCodexRenderModes] =
     useState<StoredCodexRenderModes>({});
@@ -39,14 +33,12 @@ export function useTerminalScreenStorage({
 
     (async () => {
       const [
-        storedTheme,
         storedRecentOpens,
         storedAliases,
         storedServers,
         storedCodexRenderModes,
       ] =
         await Promise.all([
-          getTerminalTheme(),
           getRecentAgentOpens(),
           getAgentAliases(),
           getServers(),
@@ -62,7 +54,6 @@ export function useTerminalScreenStorage({
       }
 
       if (!cancelled) {
-        setThemePreference(storedTheme);
         setAgentAliases(storedAliases);
         setCodexRenderModes(storedCodexRenderModes);
         setRecentAgentOpens(
@@ -84,7 +75,6 @@ export function useTerminalScreenStorage({
   }, [serverId, sessionKey]);
 
   return {
-    themePreference,
     agentAliases,
     setAgentAliases,
     codexRenderModes,

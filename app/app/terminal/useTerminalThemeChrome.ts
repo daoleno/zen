@@ -4,17 +4,14 @@ import {
   buildTerminalChrome,
   isLightTerminalTheme,
   resolveTerminalTheme,
-  resolveTerminalThemePreference,
-  type TerminalThemePreference,
+  resolveTerminalThemeName,
 } from "../../constants/terminalThemes";
 
-export function useTerminalThemeChrome(
-  themePreference: TerminalThemePreference,
-) {
+export function useTerminalThemeChrome() {
   const colorScheme = useColorScheme();
   const themeName = useMemo(
-    () => resolveTerminalThemePreference(themePreference, colorScheme),
-    [themePreference, colorScheme],
+    () => resolveTerminalThemeName(colorScheme),
+    [colorScheme],
   );
   const terminalTheme = useMemo(
     () => resolveTerminalTheme(themeName),
@@ -32,6 +29,5 @@ export function useTerminalThemeChrome(
     chromeColors,
     statusBarStyle,
     terminalTheme,
-    themeName,
   };
 }

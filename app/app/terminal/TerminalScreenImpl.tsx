@@ -49,7 +49,6 @@ export default function TerminalScreen() {
     hydratedServers: state.hydratedServers,
   });
   const {
-    themePreference,
     agentAliases,
     setAgentAliases,
     codexRenderModes,
@@ -74,7 +73,6 @@ export default function TerminalScreen() {
     sessionKey,
     routeSessionHint,
     screenFocused,
-    themePreference,
     agentByKey,
     workByKey: workState.byKey,
     agentAliases,
@@ -82,7 +80,7 @@ export default function TerminalScreen() {
     serverConnectionIssues: state.serverConnectionIssues,
     codexRenderModes,
   });
-  const { chromeColors, statusBarStyle, terminalTheme, themeName } = theme;
+  const { chromeColors, statusBarStyle, terminalTheme } = theme;
   const {
     agent,
     codexRenderMode,
@@ -220,7 +218,6 @@ export default function TerminalScreen() {
     navigationActions,
     terminalRef,
     terminalTheme,
-    themeName,
     viewportModel,
     openGitDiff,
     openNewTerminal,

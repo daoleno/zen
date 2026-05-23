@@ -6,7 +6,6 @@ import type { TerminalViewportProps } from "../../components/terminal/TerminalVi
 import type { useTerminalGitDiff } from "../../components/terminal/useTerminalGitDiff";
 import type {
   TerminalThemeChrome,
-  TerminalThemeName,
   TerminalThemePalette,
 } from "../../constants/terminalThemes";
 import type { Agent, ConnectionState } from "../../store/agents";
@@ -23,7 +22,6 @@ interface UseTerminalViewportPropsInput {
   connectionIssue?: ConnectionIssue | null;
   theme: TerminalThemePalette;
   chrome: TerminalThemeChrome;
-  themeName: TerminalThemeName;
   screenFocused: boolean;
   gitDiff: ReturnType<typeof useTerminalGitDiff>;
   terminalRef: React.RefObject<TerminalSurfaceHandle | null>;
@@ -51,7 +49,6 @@ export function useTerminalViewportProps({
   connectionIssue,
   theme,
   chrome,
-  themeName,
   screenFocused,
   gitDiff,
   terminalRef,
@@ -90,7 +87,6 @@ export function useTerminalViewportProps({
       connectionIssue,
       theme,
       chrome,
-      themeName,
       screenFocused,
       gitDiff: gitDiff.chip,
       terminalRef,
@@ -139,7 +135,6 @@ export function useTerminalViewportProps({
       sessionKey,
       terminalRef,
       theme,
-      themeName,
       showCodexChat,
       viewportModel.accessoryVisible,
       viewportModel.canRenderTerminal,
