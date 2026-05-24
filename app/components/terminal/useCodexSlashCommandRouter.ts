@@ -1,9 +1,6 @@
 import { useCallback } from "react";
 import type { CodexSlashCommand } from "../../services/websocket";
-import type {
-  ChatCommandEvent,
-  ComposerAttachment,
-} from "./CodexChatSession";
+import type { ComposerAttachment } from "./CodexChatSession";
 import {
   requiresSlashCommandArgs,
   slashCommandHasArgs,
@@ -25,20 +22,17 @@ interface UseCodexSlashCommandRouterInput {
   attachments: ComposerAttachment[];
   slashCommands: CodexSlashCommand[];
   setDraft(value: string): void;
+  dismissActionMenu(): void;
   focusComposer(): void;
-  recordChatCommandEvent(
-    event: Omit<ChatCommandEvent, "id" | "createdAt">,
-  ): void;
   submitTextToCodex(
     text: string,
     previousDraft: string,
     previousAttachments: ComposerAttachment[],
   ): void;
-  openSlashCommandInTerminal(
-    command: CodexSlashCommand,
-    rawText?: string,
-  ): void;
-  runNativeSlashCommand(command: CodexSlashCommand): void | Promise<void>;
+  startNewCodexChat(commandText?: string): void;
+  sendSlashCommandToCodex(text: string): void;
+  openSkillsSheet(): void;
+  copyLastAssistantMessage(): void;
 }
 
 export function useCodexSlashCommandRouter({
@@ -46,20 +40,20 @@ export function useCodexSlashCommandRouter({
   attachments,
   slashCommands,
   setDraft,
+  dismissActionMenu,
   focusComposer,
-  recordChatCommandEvent,
   submitTextToCodex,
-  openSlashCommandInTerminal,
-  runNativeSlashCommand,
+  startNewCodexChat,
+  sendSlashCommandToCodex,
+  openSkillsSheet,
+  copyLastAssistantMessage,
 }: UseCodexSlashCommandRouterInput) {
   const {
-    showTerminalRequiredAction,
     showUnsupportedSlashCommand,
-    showUnknownSlashCommand,
+    showUnavailableSlashCommand,
     showSlashCommandAttachmentAlert,
   } = useCodexSlashCommandDialogs({
     submitTextToCodex,
-    openSlashCommandInTerminal,
   });
 
   const routeSlashCommandSubmission = useCallback(
@@ -70,7 +64,11 @@ export function useCodexSlashCommandRouter({
       previousAttachments: ComposerAttachment[],
     ) => {
       const { command, rawText, known } = request;
-      if (previousAttachments.length > 0) {
+      dismissActionMenu();
+      if (
+        previousAttachments.length > 0 &&
+        command.execution !== "native"
+      ) {
         showSlashCommandAttachmentAlert(
           command,
           composedText,
@@ -85,66 +83,62 @@ export function useCodexSlashCommandRouter({
       ) {
         setDraft(`${command.value} `);
         focusComposer();
-        recordChatCommandEvent({
-          command,
-          tone: "failed",
-          title: "Command Needs Input",
-          detail: command.value,
-          body: command.input.placeholder
-            ? `Add arguments after ${command.value}: ${command.input.placeholder}`
-            : `Add arguments after ${command.value}.`,
-        });
         return true;
       }
       if (!known) {
-        showUnknownSlashCommand(
-          command,
-          rawText,
-          composedText,
-          previousDraft,
-          previousAttachments,
-        );
+        setDraft(`${command.value} `);
+        focusComposer();
+        showUnavailableSlashCommand(command);
         return true;
       }
-      switch (command.execution) {
-        case "chat-native":
-        case "timeline-output":
-          void runNativeSlashCommand(command);
-          return true;
-        case "terminal-required":
-          showTerminalRequiredAction(
-            command,
-            rawText,
-            composedText,
-            previousDraft,
-            previousAttachments,
-          );
-          return true;
-        case "insert-only":
-          return false;
-        case "unsupported":
-          showUnsupportedSlashCommand(command);
-          return true;
-        default:
-          showTerminalRequiredAction(
-            command,
-            rawText,
-            composedText,
-            previousDraft,
-            previousAttachments,
-          );
-          return true;
+      if (!command.chat_supported) {
+        setDraft(rawText);
+        focusComposer();
+        showUnavailableSlashCommand(command);
+        return true;
       }
+      if (command.execution === "unsupported") {
+        showUnsupportedSlashCommand(command);
+        return true;
+      }
+      if (command.execution === "insert-only") {
+        return false;
+      }
+      if (command.execution === "native") {
+        if (command.name === "new" || command.name === "clear") {
+          startNewCodexChat(rawText);
+          return true;
+        }
+        if (command.name === "skills") {
+          openSkillsSheet();
+          return true;
+        }
+        if (command.name === "copy") {
+          copyLastAssistantMessage();
+          return true;
+        }
+        setDraft(`${command.value} `);
+        focusComposer();
+        return true;
+      }
+      if (command.name === "new" || command.name === "clear") {
+        startNewCodexChat(rawText);
+        return true;
+      }
+      sendSlashCommandToCodex(rawText);
+      return true;
     },
     [
+      dismissActionMenu,
       focusComposer,
-      recordChatCommandEvent,
-      runNativeSlashCommand,
+      sendSlashCommandToCodex,
       setDraft,
       showSlashCommandAttachmentAlert,
-      showTerminalRequiredAction,
-      showUnknownSlashCommand,
+      showUnavailableSlashCommand,
       showUnsupportedSlashCommand,
+      startNewCodexChat,
+      openSkillsSheet,
+      copyLastAssistantMessage,
     ],
   );
 
@@ -157,6 +151,7 @@ export function useCodexSlashCommandRouter({
     }: RouteDraftSubmissionInput) => {
       const slashRequest = slashCommandRequestFromDraft(draft, slashCommands);
       if (!slashRequest) {
+        dismissActionMenu();
         return false;
       }
       return routeSlashCommandSubmission(
@@ -166,17 +161,19 @@ export function useCodexSlashCommandRouter({
         previousAttachments,
       );
     },
-    [routeSlashCommandSubmission, slashCommands],
+    [dismissActionMenu, routeSlashCommandSubmission, slashCommands],
   );
 
   const pickSlashCommand = useCodexSlashCommandPicker({
-    draft,
     attachments,
     setDraft,
+    dismissActionMenu,
     focusComposer,
-    showTerminalRequiredAction,
+    startNewCodexChat,
     showUnsupportedSlashCommand,
-    runNativeSlashCommand,
+    sendSlashCommandToCodex,
+    openSkillsSheet,
+    copyLastAssistantMessage,
   });
 
   return {

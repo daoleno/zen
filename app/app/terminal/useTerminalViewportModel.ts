@@ -33,7 +33,8 @@ export function useTerminalViewportModel({
     connectionIssue,
   });
   const canRenderTerminal = hasTerminalRoute && !showTerminalFallback;
-  const shouldMountTerminalSurface = canRenderTerminal && screenFocused;
+  const shouldMountTerminalSurface =
+    canRenderTerminal && screenFocused && !showCodexChat;
   const terminalState = useMemo(
     () =>
       buildTerminalFallbackPresentation({

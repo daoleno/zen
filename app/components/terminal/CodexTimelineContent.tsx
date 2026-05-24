@@ -1,12 +1,15 @@
 import React from "react";
 import type { TerminalThemeChrome } from "../../constants/terminalThemes";
+import type { CodexChatLocalState } from "./CodexChatSession";
 import { CodexTimelineEmptyState } from "./CodexTimelineEmptyState";
 import type { ZenTimelineItem } from "./CodexTimelineItemView";
 
 interface CodexTimelineEmptyContentProps {
   items: ZenTimelineItem[];
   loading: boolean;
+  localChatState: CodexChatLocalState;
   error?: string | null;
+  suppressed: boolean;
   unavailable: boolean | null;
   unavailableReason?: string;
   syncing: boolean;
@@ -17,19 +20,48 @@ interface CodexTimelineEmptyContentProps {
 export function CodexTimelineEmptyContent({
   items,
   loading,
+  localChatState,
   error,
+  suppressed,
   unavailable,
   unavailableReason,
   syncing,
   chrome,
   onUnavailableAction,
 }: CodexTimelineEmptyContentProps) {
+  if (suppressed && items.length === 0) {
+    return null;
+  }
+
+  if (localChatState === "starting-new-chat" && items.length === 0) {
+    return (
+      <CodexTimelineEmptyState
+        chrome={chrome}
+        title="New chat"
+        body="Starting fresh."
+        busy
+        variant="session"
+      />
+    );
+  }
+
+  if (localChatState === "new-chat-ready" && items.length === 0) {
+    return (
+      <CodexTimelineEmptyState
+        chrome={chrome}
+        title="New chat"
+        body="Ready."
+        variant="session"
+      />
+    );
+  }
+
   if (loading && items.length === 0) {
     return (
       <CodexTimelineEmptyState
         chrome={chrome}
         title="Loading chat"
-        body="Pulling in the latest messages."
+        body="Syncing messages."
         busy
       />
     );
@@ -62,7 +94,7 @@ export function CodexTimelineEmptyContent({
         chrome={chrome}
         title="Chat view is not available here"
         body={unavailableReason}
-        actionLabel="Open Terminal"
+        actionLabel="Show Raw Session"
         onAction={onUnavailableAction}
       />
     );
@@ -73,7 +105,7 @@ export function CodexTimelineEmptyContent({
       <CodexTimelineEmptyState
         chrome={chrome}
         title="Ready"
-        body="Send a message below. Replies and tool activity will appear here."
+        body="Message Codex below."
       />
     );
   }

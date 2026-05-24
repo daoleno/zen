@@ -8,7 +8,7 @@ import type {
 } from "../../constants/terminalThemes";
 import { CodexComposerInput } from "./CodexComposerInput";
 import { CodexComposerPanelFrame } from "./CodexComposerPanelFrame";
-import { CodexComposerUploadButton } from "./CodexComposerUploadButton";
+import { ComposerIconButton } from "./ComposerIconButton";
 import { ComposerSendButton } from "./ComposerSendButton";
 
 interface CodexComposerPanelProps {
@@ -18,17 +18,18 @@ interface CodexComposerPanelProps {
   editable: boolean;
   focused: boolean;
   floating: boolean;
-  canAttach: boolean;
   uploading: boolean;
   sendEnabled: boolean;
   sending: boolean;
   sendIcon: React.ComponentProps<typeof ComposerSendButton>["icon"];
   sendLabel: string;
   running: boolean;
+  actionMenuExpanded: boolean;
+  actionMenuButtonEnabled: boolean;
   chrome: TerminalThemeChrome;
   theme: TerminalThemePalette;
   onDraftChange(value: string): void;
-  onUploadPress(): void;
+  onActionMenuPress(): void;
   onInputPress(): void;
   onInputFocus(): void;
   onInputBlur(): void;
@@ -44,17 +45,18 @@ export function CodexComposerPanel({
   editable,
   focused,
   floating,
-  canAttach,
   uploading,
   sendEnabled,
   sending,
   sendIcon,
   sendLabel,
   running,
+  actionMenuExpanded,
+  actionMenuButtonEnabled,
   chrome,
   theme,
   onDraftChange,
-  onUploadPress,
+  onActionMenuPress,
   onInputPress,
   onInputFocus,
   onInputBlur,
@@ -68,11 +70,22 @@ export function CodexComposerPanel({
       floating={floating}
       chrome={chrome}
     >
-      <CodexComposerUploadButton
-        canAttach={canAttach}
-        uploading={uploading}
+      <ComposerIconButton
+        accessibilityLabel={
+          actionMenuExpanded ? "Hide composer actions" : "Show composer actions"
+        }
+        icon={actionMenuExpanded ? "close" : "add"}
         chrome={chrome}
-        onPress={onUploadPress}
+        loading={uploading}
+        disabled={!actionMenuButtonEnabled}
+        iconColor={
+          actionMenuExpanded
+            ? chrome.accent
+            : actionMenuButtonEnabled
+              ? chrome.text
+              : chrome.textSubtle
+        }
+        onPress={onActionMenuPress}
       />
 
       <CodexComposerInput
@@ -80,6 +93,7 @@ export function CodexComposerPanel({
         draft={draft}
         placeholder={placeholder}
         editable={editable}
+        busy={sending}
         chrome={chrome}
         onDraftChange={onDraftChange}
         onInputPress={onInputPress}

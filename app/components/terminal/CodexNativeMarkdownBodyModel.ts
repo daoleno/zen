@@ -1,11 +1,12 @@
 import { StyleSheet } from "react-native";
-import type { MarkdownStyle } from "react-native-enriched-markdown";
 import remend, { type RemendOptions } from "remend";
 import { Typography } from "../../constants/tokens";
 import type {
   TerminalThemeChrome,
   TerminalThemePalette,
 } from "../../constants/terminalThemes";
+
+type MarkdownStyle = Record<string, Record<string, unknown>>;
 
 const STREAMING_REMEND_OPTIONS: RemendOptions = {
   images: true,

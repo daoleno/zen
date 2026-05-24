@@ -133,6 +133,22 @@ func TestSplitTmuxInputCanSendTextWithoutSubmit(t *testing.T) {
 	}
 }
 
+func TestChangedPaneLinesReturnsTailWhenContentRepaintsSameLine(t *testing.T) {
+	got := changedPaneLines("› hello\nThinking", "› hello\nThinking longer")
+	want := []string{"› hello", "Thinking longer"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("changedPaneLines() = %#v, want %#v", got, want)
+	}
+}
+
+func TestChangedPaneLinesReturnsOnlyAppendedLines(t *testing.T) {
+	got := changedPaneLines("one\ntwo", "one\ntwo\nthree")
+	want := []string{"three"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("changedPaneLines() = %#v, want %#v", got, want)
+	}
+}
+
 func TestDetectAgentProcessPrefersCodexChildStartTime(t *testing.T) {
 	shellStarted := time.Date(2026, 5, 21, 8, 0, 0, 0, time.UTC)
 	codexStarted := shellStarted.Add(30 * time.Minute)

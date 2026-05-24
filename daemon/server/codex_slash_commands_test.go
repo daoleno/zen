@@ -108,18 +108,28 @@ func TestSlashCommandCapabilitiesAreConservative(t *testing.T) {
 		values[command.Value] = command
 	}
 
-	for _, value := range []string{"/status", "/diff", "/copy"} {
+	for _, value := range []string{"/copy", "/status", "/diff", "/mcp"} {
 		command := values[value]
-		if command.Execution != "chat-native" || !command.ChatSupported || !command.TerminalSupported {
-			t.Fatalf("%s capability = %#v, want chat-native and supported", value, command)
+		if command.Execution != "terminal-required" || !command.ChatSupported || !command.TerminalSupported {
+			t.Fatalf("%s capability = %#v, want chat-supported Codex terminal command", value, command)
 		}
 	}
 
-	for _, value := range []string{"/model", "/permissions", "/mention", "/mcp"} {
+	for _, value := range []string{"/model", "/permissions", "/mention", "/goal", "/skills"} {
 		command := values[value]
 		if command.Execution != "terminal-required" || command.ChatSupported || !command.TerminalSupported || !command.Interactive {
 			t.Fatalf("%s capability = %#v, want interactive terminal-required", value, command)
 		}
+	}
+
+	if command := values["/review"]; command.Input.Kind != "freeform" || command.Input.Required == nil || *command.Input.Required {
+		t.Fatalf("/review input = %#v, want optional freeform", command.Input)
+	}
+	if command := values["/goal"]; command.Input.Kind != "freeform" || command.Input.Required == nil || *command.Input.Required {
+		t.Fatalf("/goal input = %#v, want optional freeform", command.Input)
+	}
+	if command := values["/rename"]; command.Input.Kind != "freeform" || command.Input.Required == nil || !*command.Input.Required {
+		t.Fatalf("/rename input = %#v, want required freeform", command.Input)
 	}
 
 	command := values["/debug-m-drop"]

@@ -1,6 +1,6 @@
 import type { CodexConversationEvent } from "../../services/codexConversation";
 import type {
-  ChatCommandEvent,
+  PendingAssistantMessage,
   PendingUserMessage,
 } from "./CodexChatSession";
 import {
@@ -10,14 +10,13 @@ import {
 } from "./CodexTimelineActivityTypes";
 import type { DisplayAttachment } from "./CodexTimelineMessage";
 import type { ZenTimelineItem } from "./CodexTimelineItemView";
-import { slashCommandIcon } from "./codexSlashCommandPresentation";
 
 const ATTACHMENT_TAG_RE = /<zen_attachments>\s*([\s\S]*?)\s*<\/zen_attachments>/i;
 const COMMAND_OUTPUT_PREVIEW_LINES = 7;
 const COMMAND_OUTPUT_PREVIEW_CHARS = 1200;
 const TOOL_PAYLOAD_PREVIEW_LINES = 6;
 const TOOL_PAYLOAD_PREVIEW_CHARS = 1000;
-const FULL_OUTPUT_HINT = "Open Terminal for full output.";
+const FULL_OUTPUT_HINT = "Expand this item for full output.";
 
 type TimelineIconName = ZenActivityTimelineItem["icon"];
 
@@ -75,16 +74,6 @@ type PatchSummary = {
   totalRemoved: number;
 };
 
-export function latestAssistantMessageBody(events: CodexConversationEvent[]) {
-  for (let index = events.length - 1; index >= 0; index--) {
-    const event = events[index];
-    if (event.kind === "assistant_message" && event.body?.trim()) {
-      return event.body.trim();
-    }
-  }
-  return "";
-}
-
 export function buildZenTimeline(events: CodexConversationEvent[]): ZenTimelineItem[] {
   const items: ZenTimelineItem[] = [];
   let explorationEntries: ExplorationEntry[] = [];
@@ -127,6 +116,23 @@ export function buildZenTimeline(events: CodexConversationEvent[]): ZenTimelineI
       continue;
     }
 
+    if (event.kind === "status") {
+      flushExploration();
+      const body = (event.body || "").trim();
+      if (!body) {
+        continue;
+      }
+      items.push({
+        type: "message",
+        id: event.id || `status:${event.seq}`,
+        role: "assistant",
+        timestamp: event.timestamp,
+        body,
+        attachments: [],
+      });
+      continue;
+    }
+
     if (event.kind === "command") {
       const entry = explorationEntryFromEvent(event);
       if (entry) {
@@ -147,33 +153,6 @@ export function buildZenTimeline(events: CodexConversationEvent[]): ZenTimelineI
   return items;
 }
 
-export function mergeChatCommandEventsIntoTimeline(
-  timelineItems: ZenTimelineItem[],
-  commandEvents: ChatCommandEvent[],
-): ZenTimelineItem[] {
-  if (commandEvents.length === 0) {
-    return timelineItems;
-  }
-  return [
-    ...timelineItems,
-    ...commandEvents.map((event) => ({
-      type: "activity" as const,
-      id: event.id,
-      timestamp: event.createdAt,
-      title: event.title,
-      tone: event.tone,
-      icon:
-        event.tone === "failed"
-          ? "alert-circle-outline"
-          : event.tone === "success"
-            ? slashCommandIcon(event.command.name)
-            : "terminal-outline",
-      detail: event.detail,
-      body: event.body,
-    })),
-  ];
-}
-
 export function mergePendingUserMessagesIntoTimeline(
   timelineItems: ZenTimelineItem[],
   pendingUserMessages: PendingUserMessage[],
@@ -192,6 +171,29 @@ export function mergePendingUserMessagesIntoTimeline(
       attachments: message.attachments,
       pending: true,
     })),
+  ];
+}
+
+export function mergePendingAssistantMessagesIntoTimeline(
+  timelineItems: ZenTimelineItem[],
+  pendingAssistantMessages: PendingAssistantMessage[],
+): ZenTimelineItem[] {
+  if (pendingAssistantMessages.length === 0) {
+    return timelineItems;
+  }
+  return [
+    ...timelineItems,
+    ...pendingAssistantMessages
+      .filter((message) => message.body.trim().length > 0)
+      .map((message) => ({
+        type: "message" as const,
+        id: message.id,
+        role: "assistant" as const,
+        timestamp: message.createdAt,
+        body: message.body,
+        attachments: [],
+        pending: true,
+      })),
   ];
 }
 

@@ -2,6 +2,7 @@ import React from "react";
 import {
   FlatList,
   StyleSheet,
+  View,
   type LayoutChangeEvent,
   type ListRenderItemInfo,
   type NativeScrollEvent,
@@ -13,18 +14,23 @@ import type {
 } from "../../constants/terminalThemes";
 import { CodexTimelineEmptyContent } from "./CodexTimelineContent";
 import { CodexTimelineJumpButton } from "./CodexTimelineJumpButton";
+import type { CodexChatLocalState } from "./CodexChatSession";
 import { TimelineTextSelectableContext } from "./TimelineTextSelectableContext";
 import {
   ZenTimelineItemView,
   type ZenTimelineItem,
 } from "./CodexTimelineItemView";
-import type { PatchFileSummary } from "./CodexTimelineActivityTypes";
+import type {
+  PatchFileSummary,
+} from "./CodexTimelineActivityTypes";
 
 interface CodexTimelineViewProps {
   scrollRef: React.RefObject<FlatList<ZenTimelineItem> | null>;
   items: ZenTimelineItem[];
   loading: boolean;
+  localChatState: CodexChatLocalState;
   error?: string | null;
+  emptyStateSuppressed: boolean;
   unavailable: boolean | null;
   unavailableReason?: string;
   syncing: boolean;
@@ -54,7 +60,9 @@ export function CodexTimelineView({
   scrollRef,
   items,
   loading,
+  localChatState,
   error,
+  emptyStateSuppressed,
   unavailable,
   unavailableReason,
   syncing,
@@ -77,11 +85,6 @@ export function CodexTimelineView({
   formatPatchPath,
   truncateBody,
 }: CodexTimelineViewProps) {
-  const timelineData = React.useMemo(
-    () => [...items].reverse(),
-    [items],
-  );
-
   const renderItem = React.useCallback(
     ({ item }: ListRenderItemInfo<ZenTimelineItem>) => (
       <ZenTimelineItemView
@@ -108,12 +111,14 @@ export function CodexTimelineView({
     ],
   );
 
-  const listEmptyComponent = React.useMemo(
+  const emptyContent = React.useMemo(
     () => (
       <CodexTimelineEmptyContent
         items={items}
         loading={loading}
+        localChatState={localChatState}
         error={error}
+        suppressed={emptyStateSuppressed}
         unavailable={unavailable}
         unavailableReason={unavailableReason}
         syncing={syncing}
@@ -124,8 +129,10 @@ export function CodexTimelineView({
     [
       chrome,
       error,
+      emptyStateSuppressed,
       items,
       loading,
+      localChatState,
       onUnavailableAction,
       unavailable,
       unavailableReason,
@@ -135,58 +142,77 @@ export function CodexTimelineView({
 
   return (
     <TimelineTextSelectableContext.Provider value={textSelectable}>
-      <FlatList
-        ref={scrollRef}
-        data={timelineData}
-        keyExtractor={(item) => item.id}
-        renderItem={renderItem}
-        inverted
-        style={styles.timeline}
-        contentContainerStyle={[
-          styles.timelineContent,
-          items.length === 0 ? styles.timelineEmptyContent : null,
-        ]}
-        scrollIndicatorInsets={{ bottom: TIMELINE_BOTTOM_PADDING }}
-        keyboardShouldPersistTaps="handled"
-        showsVerticalScrollIndicator={false}
-        scrollEventThrottle={80}
-        onLayout={onLayout}
-        onScroll={onScroll}
-        onScrollBeginDrag={onScrollBeginDrag}
-        onScrollEndDrag={onScrollEndDrag}
-        onMomentumScrollBegin={onMomentumScrollBegin}
-        onMomentumScrollEnd={onMomentumScrollEnd}
-        onContentSizeChange={onContentSizeChange}
-        ListEmptyComponent={listEmptyComponent}
-        initialNumToRender={12}
-        maxToRenderPerBatch={8}
-        updateCellsBatchingPeriod={32}
-        windowSize={7}
-        removeClippedSubviews
-      />
-
-      {showJumpToLatest ? (
-        <CodexTimelineJumpButton
-          bottom={jumpButtonBottom}
-          chrome={chrome}
-          onPress={onJumpToLatest}
+      <View style={styles.timelineStage}>
+        <FlatList
+          ref={scrollRef}
+          data={items}
+          keyExtractor={(item) => item.id}
+          renderItem={renderItem}
+          style={styles.timeline}
+          contentContainerStyle={styles.timelineContent}
+          scrollIndicatorInsets={{ bottom: TIMELINE_BOTTOM_PADDING }}
+          keyboardShouldPersistTaps="handled"
+          showsVerticalScrollIndicator={false}
+          scrollEventThrottle={80}
+          onLayout={onLayout}
+          onScroll={onScroll}
+          onScrollBeginDrag={onScrollBeginDrag}
+          onScrollEndDrag={onScrollEndDrag}
+          onMomentumScrollBegin={onMomentumScrollBegin}
+          onMomentumScrollEnd={onMomentumScrollEnd}
+          onContentSizeChange={onContentSizeChange}
+          initialNumToRender={12}
+          maxToRenderPerBatch={8}
+          updateCellsBatchingPeriod={32}
+          windowSize={7}
+          removeClippedSubviews={false}
         />
-      ) : null}
+
+        {items.length === 0 ? (
+          <View style={styles.emptyOverlay}>
+            {emptyContent}
+          </View>
+        ) : null}
+
+        {showJumpToLatest ? (
+          <CodexTimelineJumpButton
+            bottom={jumpButtonBottom}
+            chrome={chrome}
+            onPress={onJumpToLatest}
+          />
+        ) : null}
+      </View>
     </TimelineTextSelectableContext.Provider>
   );
 }
 
 const styles = StyleSheet.create({
+  timelineStage: {
+    flex: 1,
+    minHeight: 0,
+    position: "relative",
+  },
   timeline: {
     flex: 1,
     minHeight: 0,
   },
   timelineContent: {
     paddingHorizontal: 16,
+    paddingTop: TIMELINE_BOTTOM_PADDING,
+    paddingBottom: 14,
+    justifyContent: "flex-end",
+    flexGrow: 1,
+  },
+  emptyOverlay: {
+    position: "absolute",
+    top: 0,
+    right: 0,
+    bottom: 0,
+    left: 0,
+    paddingHorizontal: 16,
     paddingTop: 14,
     paddingBottom: TIMELINE_BOTTOM_PADDING,
-  },
-  timelineEmptyContent: {
     justifyContent: "center",
+    pointerEvents: "box-none",
   },
 });

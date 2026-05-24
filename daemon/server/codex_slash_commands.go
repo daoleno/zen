@@ -44,6 +44,7 @@ type CodexSlashCommandInput struct {
 	Kind        string `json:"kind"`
 	Placeholder string `json:"placeholder,omitempty"`
 	Picker      string `json:"picker,omitempty"`
+	Required    *bool  `json:"required,omitempty"`
 }
 
 type CodexSlashCommandOutput struct {
@@ -156,34 +157,34 @@ var codexSlashCommandCapabilities = map[string]codexSlashCommandCapability{
 	"memories":              terminalCommand("management", inputNone(), "management-screen", true),
 	"skills":                terminalCommand("management", inputNone(), "management-screen", true),
 	"hooks":                 terminalCommand("management", inputNone(), "management-screen", true),
-	"review":                terminalCommand("tools", inputNone(), "terminal", false),
-	"rename":                terminalCommand("session", freeformInput("new thread title"), "terminal", false),
+	"review":                chatTerminalCommand("tools", optionalFreeformInput("optional review instructions"), "terminal", false),
+	"rename":                chatTerminalCommand("session", requiredFreeformInput("new thread title"), "terminal", false),
 	"new":                   terminalCommand("session", inputNone(), "terminal", true),
 	"resume":                terminalCommand("navigation", pickerInput("conversation"), "management-screen", true),
 	"fork":                  terminalCommand("navigation", pickerInput("conversation"), "management-screen", true),
 	"init":                  terminalCommand("tools", inputNone(), "terminal", false),
-	"compact":               terminalCommand("session", inputNone(), "terminal", false),
-	"plan":                  terminalCommand("session", inputNone(), "terminal", false),
-	"goal":                  terminalCommand("session", freeformInput("goal text"), "terminal", false),
-	"side":                  terminalCommand("navigation", freeformInput("side conversation prompt"), "terminal", true),
-	"copy":                  chatCommand("tools", inputNone(), "none"),
+	"compact":               chatTerminalCommand("session", inputNone(), "terminal", false),
+	"plan":                  chatTerminalCommand("session", inputNone(), "terminal", false),
+	"goal":                  terminalCommand("session", optionalFreeformInput("optional goal text"), "terminal", true),
+	"side":                  terminalCommand("navigation", optionalFreeformInput("side conversation prompt"), "terminal", true),
+	"copy":                  chatTerminalCommand("tools", inputNone(), "terminal", false),
 	"raw":                   terminalCommand("tools", inputNone(), "terminal", true),
-	"diff":                  chatCommand("tools", inputNone(), "diff"),
+	"diff":                  chatTerminalCommand("tools", inputNone(), "terminal", false),
 	"mention":               terminalCommand("tools", pickerInput("file"), "terminal", true),
-	"status":                chatCommand("session", inputNone(), "status-card"),
+	"status":                chatTerminalCommand("session", inputNone(), "terminal", false),
 	"debug-config":          terminalCommand("debug", inputNone(), "terminal", false),
 	"title":                 terminalCommand("settings", inputNone(), "management-screen", true),
 	"statusline":            terminalCommand("settings", inputNone(), "management-screen", true),
 	"pets":                  terminalCommand("settings", pickerInput("pet"), "management-screen", true),
-	"mcp":                   terminalCommand("management", inlineArgs("verbose"), "management-screen", true),
+	"mcp":                   chatTerminalCommand("management", inlineArgs("verbose"), "terminal", false),
 	"apps":                  terminalCommand("management", inputNone(), "management-screen", true),
 	"plugins":               terminalCommand("management", inputNone(), "management-screen", true),
 	"logout":                terminalCommand("danger", inputNone(), "terminal", true),
 	"quit":                  terminalCommand("danger", inputNone(), "terminal", true),
 	"exit":                  terminalCommand("danger", inputNone(), "terminal", true),
 	"feedback":              terminalCommand("management", inputNone(), "terminal", true),
-	"rollout":               terminalCommand("tools", inputNone(), "terminal", false),
-	"ps":                    terminalCommand("tools", inputNone(), "terminal", false),
+	"rollout":               chatTerminalCommand("tools", inputNone(), "terminal", false),
+	"ps":                    chatTerminalCommand("tools", inputNone(), "terminal", false),
 	"stop":                  terminalCommand("tools", inputNone(), "terminal", false),
 	"clear":                 terminalCommand("session", inputNone(), "terminal", true),
 	"personality":           terminalCommand("settings", pickerInput("personality"), "management-screen", true),
@@ -192,7 +193,7 @@ var codexSlashCommandCapabilities = map[string]codexSlashCommandCapability{
 	"test-approval":         terminalCommand("debug", inputNone(), "terminal", true),
 	"agent":                 terminalCommand("navigation", pickerInput("agent"), "management-screen", true),
 	"subagents":             terminalCommand("navigation", pickerInput("agent"), "management-screen", true),
-	"btw":                   terminalCommand("navigation", freeformInput("side conversation prompt"), "terminal", true),
+	"btw":                   terminalCommand("navigation", optionalFreeformInput("side conversation prompt"), "terminal", true),
 	"debug-m-drop":          unsupportedCommand("debug"),
 	"debug-m-update":        unsupportedCommand("debug"),
 }
@@ -345,18 +346,6 @@ func (capability codexSlashCommandCapability) withDefaults() codexSlashCommandCa
 	return capability
 }
 
-func chatCommand(category string, input CodexSlashCommandInput, outputKind string) codexSlashCommandCapability {
-	return codexSlashCommandCapability{
-		category:          category,
-		execution:         "chat-native",
-		input:             input,
-		output:            CodexSlashCommandOutput{Kind: outputKind},
-		interactive:       input.Kind == "picker" || input.Kind == "form",
-		chatSupported:     true,
-		terminalSupported: true,
-	}
-}
-
 func terminalCommand(category string, input CodexSlashCommandInput, outputKind string, interactive bool) codexSlashCommandCapability {
 	return codexSlashCommandCapability{
 		category:          category,
@@ -367,6 +356,12 @@ func terminalCommand(category string, input CodexSlashCommandInput, outputKind s
 		chatSupported:     false,
 		terminalSupported: true,
 	}
+}
+
+func chatTerminalCommand(category string, input CodexSlashCommandInput, outputKind string, interactive bool) codexSlashCommandCapability {
+	capability := terminalCommand(category, input, outputKind, interactive)
+	capability.chatSupported = true
+	return capability
 }
 
 func pickerCommand(category, picker, outputKind string) codexSlashCommandCapability {
@@ -395,6 +390,16 @@ func inlineArgs(placeholder string) CodexSlashCommandInput {
 
 func freeformInput(placeholder string) CodexSlashCommandInput {
 	return CodexSlashCommandInput{Kind: "freeform", Placeholder: placeholder}
+}
+
+func optionalFreeformInput(placeholder string) CodexSlashCommandInput {
+	required := false
+	return CodexSlashCommandInput{Kind: "freeform", Placeholder: placeholder, Required: &required}
+}
+
+func requiredFreeformInput(placeholder string) CodexSlashCommandInput {
+	required := true
+	return CodexSlashCommandInput{Kind: "freeform", Placeholder: placeholder, Required: &required}
 }
 
 func pickerInput(picker string) CodexSlashCommandInput {

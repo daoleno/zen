@@ -1,15 +1,20 @@
+import * as Clipboard from "expo-clipboard";
 import {
+  useCallback,
   type SetStateAction,
 } from "react";
+import { Alert } from "react-native";
 import type { Agent, ConnectionState } from "../../store/agents";
 import type {
   CodexConversation,
   CodexConversationEvent,
 } from "../../services/codexConversation";
 import type { ConnectionIssue } from "../../services/connectionIssue";
-import type { CodexSlashCommand } from "../../services/websocket";
+import type {
+  CodexSkill,
+  CodexSlashCommand,
+} from "../../services/websocket";
 import {
-  type ChatCommandEvent,
   type ComposerAttachment,
   type PendingUserMessageInput,
 } from "./CodexChatSession";
@@ -17,15 +22,7 @@ import { useCodexComposerAttachments } from "./useCodexComposerAttachments";
 import { useCodexControllerPresentation } from "./useCodexControllerPresentation";
 import { useCodexDraftSubmission } from "./useCodexDraftSubmission";
 import { useCodexMessageTransport } from "./useCodexMessageTransport";
-import { useCodexNativeCommands } from "./useCodexNativeCommands";
 import { useCodexSlashCommandRouter } from "./useCodexSlashCommandRouter";
-import { useCodexTerminalCommandActions } from "./useCodexTerminalCommandActions";
-
-interface GitDiffAction {
-  label: string;
-  tone: "clean" | "dirty" | "error" | "loading";
-  onPress(): void;
-}
 
 interface UseCodexChatControllerInput {
   serverId: string;
@@ -40,17 +37,17 @@ interface UseCodexChatControllerInput {
   attachments: ComposerAttachment[];
   setAttachments(value: SetStateAction<ComposerAttachment[]>): void;
   slashCommands: CodexSlashCommand[];
-  gitDiff?: GitDiffAction | null;
-  onSwitchToTerminal(): void;
-  onOpenGitDiff?: () => void;
-  recordChatCommandEvent(
-    event: Omit<ChatCommandEvent, "id" | "createdAt">,
-  ): void;
   addPendingUserMessage(message: PendingUserMessageInput): string;
   removePendingUserMessage(id: string): void;
+  startPendingAssistantMessage(sentText: string, baselineLines: string[]): string;
+  resetForNewChat(): void;
+  markNewChatReady(): void;
+  markNewChatMessageStarted(): void;
   refreshConversation(showLoading?: boolean): Promise<void>;
   scrollToLatest(animated?: boolean, delay?: number): void;
   focusComposer(): void;
+  dismissActionMenu(): void;
+  openSkillsSheet(): void;
 }
 
 export function useCodexChatController({
@@ -66,16 +63,45 @@ export function useCodexChatController({
   attachments,
   setAttachments,
   slashCommands,
-  gitDiff,
-  onSwitchToTerminal,
-  onOpenGitDiff,
-  recordChatCommandEvent,
   addPendingUserMessage,
   removePendingUserMessage,
+  startPendingAssistantMessage,
+  resetForNewChat,
+  markNewChatReady,
+  markNewChatMessageStarted,
   refreshConversation,
   scrollToLatest,
   focusComposer,
+  dismissActionMenu,
+  openSkillsSheet,
 }: UseCodexChatControllerInput) {
+  const insertSkillMention = useCallback((skill: CodexSkill) => {
+    const mention = `$${skill.name}`;
+    const nextDraft = draft.trim() && !draft.trimStart().startsWith("/")
+      ? `${draft}${draft.endsWith(" ") || draft.endsWith("\n") ? "" : " "}${mention} `
+      : `${mention} `;
+    setDraft(nextDraft);
+    focusComposer();
+  }, [draft, focusComposer, setDraft]);
+
+  const copyLastAssistantMessage = useCallback(() => {
+    const lastAssistant = [...events]
+      .reverse()
+      .find(
+        (event) =>
+          (event.kind === "assistant_message" || event.kind === "status") &&
+          Boolean(event.body?.trim()),
+      );
+    const text = lastAssistant?.body?.trim();
+    if (!text) {
+      Alert.alert("Nothing to copy", "There is no Codex response in this chat yet.");
+      return;
+    }
+    void Clipboard.setStringAsync(text).catch((err: any) => {
+      Alert.alert("Copy failed", err?.message || "Could not copy the last response.");
+    });
+  }, [events]);
+
   const {
     canAttach,
     handleUploadAttachment,
@@ -91,6 +117,9 @@ export function useCodexChatController({
     interruptCodex,
     interrupting,
     sending,
+    startingNewChat,
+    startNewCodexChat,
+    sendSlashCommandToCodex,
     submitTextToCodex,
   } = useCodexMessageTransport({
     serverId,
@@ -100,6 +129,11 @@ export function useCodexChatController({
     setAttachments,
     addPendingUserMessage,
     removePendingUserMessage,
+    startPendingAssistantMessage,
+    terminalBaselineLines: agent?.last_output_lines ?? [],
+    resetForNewChat,
+    markNewChatReady,
+    markNewChatMessageStarted,
     refreshConversation,
     scrollToLatest,
   });
@@ -120,35 +154,6 @@ export function useCodexChatController({
   });
 
   const {
-    clearComposerForLocalCommand,
-    openSlashCommandInTerminal,
-  } = useCodexTerminalCommandActions({
-    serverId,
-    agentId,
-    draft,
-    attachments,
-    setDraft,
-    setAttachments,
-    recordChatCommandEvent,
-    scrollToLatest,
-    onSwitchToTerminal,
-  });
-
-  const runNativeSlashCommand = useCodexNativeCommands({
-    agent,
-    connectionState,
-    connectionIssue,
-    conversation,
-    events,
-    slashCommands,
-    statusMeta,
-    gitDiff,
-    onOpenGitDiff,
-    clearComposerForLocalCommand,
-    recordChatCommandEvent,
-  });
-
-  const {
     pickSlashCommand,
     routeDraftSubmission,
   } = useCodexSlashCommandRouter({
@@ -156,11 +161,13 @@ export function useCodexChatController({
     attachments,
     slashCommands,
     setDraft,
+    dismissActionMenu,
     focusComposer,
-    recordChatCommandEvent,
     submitTextToCodex,
-    openSlashCommandInTerminal,
-    runNativeSlashCommand,
+    startNewCodexChat,
+    sendSlashCommandToCodex,
+    openSkillsSheet,
+    copyLastAssistantMessage,
   });
 
   const sendDraft = useCodexDraftSubmission({
@@ -176,6 +183,7 @@ export function useCodexChatController({
   return {
     sending,
     interrupting,
+    startingNewChat,
     uploading,
     statusMeta,
     canAttach,
@@ -185,5 +193,6 @@ export function useCodexChatController({
     pickSlashCommand,
     handleUploadAttachment,
     removeAttachment,
+    insertSkillMention,
   };
 }

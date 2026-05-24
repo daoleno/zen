@@ -89,6 +89,7 @@ type clientMessage struct {
 	Backend      string                 `json:"backend"`
 	SessionID    string                 `json:"session_id"`
 	Text         string                 `json:"text"`
+	Key          string                 `json:"key"`
 	Data         string                 `json:"data"`
 	Body         string                 `json:"body"`
 	Action       string                 `json:"action"`
@@ -316,6 +317,19 @@ func (s *Server) handleClientMessage(conn *websocket.Conn, msg []byte) {
 			s.sendError(conn, "send_input_failed", err.Error())
 		}
 
+	case "send_key":
+		if err := s.watcher.SendKey(raw.AgentID, raw.Key); err != nil {
+			log.Printf("send_key error: %v", err)
+			s.sendErrorWithRequestID(conn, raw.RequestID, "send_key_failed", err.Error())
+		} else if raw.RequestID != "" {
+			s.sendJSON(conn, map[string]any{
+				"type":       "key_sent",
+				"request_id": raw.RequestID,
+				"agent_id":   raw.AgentID,
+				"key":        raw.Key,
+			})
+		}
+
 	case "create_session":
 		agentID, err := s.watcher.CreateSession(raw.TargetID, watcher.CreateSessionOptions{
 			Cwd:     raw.Cwd,
@@ -406,6 +420,23 @@ func (s *Server) handleClientMessage(conn *websocket.Conn, msg []byte) {
 
 	case "codex_slash_commands":
 		s.handleCodexSlashCommands(conn, raw)
+
+	case "codex_skills":
+		s.handleCodexSkills(conn, raw)
+
+	case "codex_terminal_snapshot":
+		text, err := s.watcher.CapturePaneContent(raw.TargetID)
+		if err != nil {
+			s.sendErrorWithRequestID(conn, raw.RequestID, "codex_terminal_snapshot_failed", err.Error())
+			return
+		}
+		text = work.CleanCodexDisplayText(text)
+		s.sendJSON(conn, map[string]any{
+			"type":       "codex_terminal_snapshot",
+			"request_id": raw.RequestID,
+			"target_id":  raw.TargetID,
+			"text":       text,
+		})
 
 	case "codex_asset":
 		s.handleCodexAsset(conn, raw)
@@ -736,6 +767,15 @@ func (s *Server) handleCodexSlashCommands(conn *websocket.Conn, raw clientMessag
 		"source":       snapshot.Source,
 		"version":      snapshot.Version,
 		"commands":     snapshot.Commands,
+	})
+}
+
+func (s *Server) handleCodexSkills(conn *websocket.Conn, raw clientMessage) {
+	s.sendJSON(conn, map[string]any{
+		"type":       "codex_skills",
+		"request_id": raw.RequestID,
+		"cwd":        raw.Cwd,
+		"skills":     discoverCodexSkills(raw.Cwd),
 	})
 }
 

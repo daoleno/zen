@@ -20,8 +20,6 @@ import {
 } from "./CodexNativeMarkdownBodyModel";
 import { TimelineTextSelectableContext } from "./TimelineTextSelectableContext";
 
-const USE_NATIVE_MARKDOWN_BODY = true;
-
 interface CodexNativeMarkdownBodyProps {
   value: string;
   chrome: TerminalThemeChrome;
@@ -54,7 +52,7 @@ export function CodexNativeMarkdownBody({
     void Linking.openURL(url).catch(() => undefined);
   }, []);
 
-  if (!USE_NATIVE_MARKDOWN_BODY || !markdown) {
+  if (!markdown) {
     return fallback;
   }
 

@@ -116,6 +116,216 @@ func TestParseCodexConversation_BuildsNativeTimeline(t *testing.T) {
 		if strings.Contains(event.Body, "environment_context") {
 			t.Fatalf("boilerplate leaked: %#v", event)
 		}
+		if strings.Contains(event.Body, "goal_context") {
+			t.Fatalf("goal context leaked: %#v", event)
+		}
+	}
+}
+
+func TestParseCodexConversation_HidesContextualUserFragments(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "rollout.jsonl")
+	writeJSONL(t, path,
+		map[string]any{
+			"type":      "session_meta",
+			"timestamp": "2026-05-20T10:00:00Z",
+			"payload": map[string]any{
+				"id":  "codex-context",
+				"cwd": "/repo",
+			},
+		},
+		map[string]any{
+			"type":      "response_item",
+			"timestamp": "2026-05-20T10:00:01Z",
+			"payload": map[string]any{
+				"type": "message",
+				"role": "user",
+				"content": []map[string]any{
+					{"type": "input_text", "text": "<goal_context>\nContinue working toward the active goal.\n</goal_context>"},
+				},
+			},
+		},
+		map[string]any{
+			"type":      "response_item",
+			"timestamp": "2026-05-20T10:00:02Z",
+			"payload": map[string]any{
+				"type": "message",
+				"role": "user",
+				"content": []map[string]any{
+					{"type": "input_text", "text": "<skills_instructions>\nUse configured skills.\n</skills_instructions>"},
+				},
+			},
+		},
+		map[string]any{
+			"type":      "response_item",
+			"timestamp": "2026-05-20T10:00:03Z",
+			"payload": map[string]any{
+				"type": "message",
+				"role": "user",
+				"content": []map[string]any{
+					{"type": "input_text", "text": "# AGENTS.md instructions for /repo\n\n<INSTRUCTIONS>\nUse repo conventions.\n</INSTRUCTIONS>"},
+				},
+			},
+		},
+		map[string]any{
+			"type":      "response_item",
+			"timestamp": "2026-05-20T10:00:04Z",
+			"payload": map[string]any{
+				"type": "message",
+				"role": "user",
+				"content": []map[string]any{
+					{"type": "input_text", "text": "<user_shell_command>\n<command>\ndate\n</command>\n<result>\nOutput:\nnow\n</result>\n</user_shell_command>"},
+				},
+			},
+		},
+		map[string]any{
+			"type":      "response_item",
+			"timestamp": "2026-05-20T10:00:05Z",
+			"payload": map[string]any{
+				"type": "message",
+				"role": "user",
+				"content": []map[string]any{
+					{"type": "input_text", "text": "Please keep this visible, even with <xml>inline</xml> text."},
+				},
+			},
+		},
+		map[string]any{
+			"type":      "response_item",
+			"timestamp": "2026-05-20T10:00:06Z",
+			"payload": map[string]any{
+				"type": "message",
+				"role": "user",
+				"content": []map[string]any{
+					{"type": "input_text", "text": "Visible before\n\n<goal_context>\nHidden goal context.\n</goal_context>\n\nVisible after"},
+				},
+			},
+		},
+	)
+
+	got, err := parseCodexConversation(path)
+	if err != nil {
+		t.Fatalf("parseCodexConversation: %v", err)
+	}
+	if len(got.Events) != 2 {
+		t.Fatalf("events len = %d, want 2: %#v", len(got.Events), got.Events)
+	}
+	assertEvent(t, got.Events[0], "user_message", "user", "", "Please keep this visible")
+	assertEvent(t, got.Events[1], "user_message", "user", "", "Visible before")
+	if strings.Contains(got.Events[1].Body, "goal_context") ||
+		strings.Contains(got.Events[1].Body, "Hidden goal context") ||
+		!strings.Contains(got.Events[1].Body, "Visible after") {
+		t.Fatalf("inline context was not stripped correctly: %#v", got.Events[1])
+	}
+}
+
+func TestParseCodexConversation_HidesInstructionContextFragments(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "rollout.jsonl")
+	writeJSONL(t, path,
+		map[string]any{
+			"type":      "session_meta",
+			"timestamp": "2026-05-20T10:00:00Z",
+			"payload": map[string]any{
+				"id":  "codex-instructions",
+				"cwd": "/repo",
+			},
+		},
+		map[string]any{
+			"type":      "response_item",
+			"timestamp": "2026-05-20T10:00:01Z",
+			"payload": map[string]any{
+				"type": "message",
+				"role": "user",
+				"content": []map[string]any{
+					{"type": "input_text", "text": "## Project Structure & Module Organization\n- Keep source in apps/web/src.\n\n## Build, Test, and Development Commands\n- bun run test\n\n## Agent & Sandbox Releases\n- Public product/API surface uses Agent names.\n\n## Testing Guidelines\n- Tests are colocated with source."},
+				},
+			},
+		},
+		map[string]any{
+			"type":      "response_item",
+			"timestamp": "2026-05-20T10:00:02Z",
+			"payload": map[string]any{
+				"type": "message",
+				"role": "user",
+				"content": []map[string]any{
+					{"type": "input_text", "text": "Hi. What do you want to work on in /repo?"},
+				},
+			},
+		},
+	)
+
+	got, err := parseCodexConversation(path)
+	if err != nil {
+		t.Fatalf("parseCodexConversation: %v", err)
+	}
+	if len(got.Events) != 1 {
+		t.Fatalf("events len = %d, want 1: %#v", len(got.Events), got.Events)
+	}
+	assertEvent(t, got.Events[0], "user_message", "user", "", "Hi. What do you want to work on")
+	if strings.Contains(got.Events[0].Body, "Agent & Sandbox Releases") {
+		t.Fatalf("instruction context leaked: %#v", got.Events[0])
+	}
+}
+
+func TestParseCodexConversation_StripsContextFromNonMessageEvents(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "rollout.jsonl")
+	writeJSONL(t, path,
+		map[string]any{
+			"type":      "session_meta",
+			"timestamp": "2026-05-20T10:00:00Z",
+			"payload": map[string]any{
+				"id":  "codex-context-events",
+				"cwd": "/repo",
+			},
+		},
+		map[string]any{
+			"type":      "response_item",
+			"timestamp": "2026-05-20T10:00:01Z",
+			"payload": map[string]any{
+				"type":      "function_call",
+				"name":      "read_file",
+				"call_id":   "call-context-tool",
+				"arguments": "<environment_context>\nHidden cwd.\n</environment_context>",
+			},
+		},
+		map[string]any{
+			"type":      "response_item",
+			"timestamp": "2026-05-20T10:00:02Z",
+			"payload": map[string]any{
+				"type":    "function_call_output",
+				"call_id": "call-context-tool",
+				"output":  "Visible before\n\n<skills_instructions>\nHidden skill context.\n</skills_instructions>\n\nVisible after",
+			},
+		},
+		map[string]any{
+			"type":      "event_msg",
+			"timestamp": "2026-05-20T10:00:03Z",
+			"payload": map[string]any{
+				"type":        "plan_update",
+				"explanation": "<goal_context>\nHidden goal.\n</goal_context>",
+				"plan": []map[string]any{
+					{"step": "<permissions instructions>\nHidden permissions.\n</permissions instructions>", "status": "pending"},
+					{"step": "Visible step", "status": "in_progress"},
+				},
+			},
+		},
+	)
+
+	got, err := parseCodexConversation(path)
+	if err != nil {
+		t.Fatalf("parseCodexConversation: %v", err)
+	}
+	if len(got.Events) != 2 {
+		t.Fatalf("events len = %d, want 2: %#v", len(got.Events), got.Events)
+	}
+	tool := got.Events[0]
+	if tool.Kind != "tool" || tool.Input != "" || !strings.Contains(tool.Output, "Visible before") || !strings.Contains(tool.Output, "Visible after") {
+		t.Fatalf("tool context cleanup = %#v", tool)
+	}
+	if strings.Contains(tool.Output, "skills_instructions") || strings.Contains(tool.Output, "Hidden skill context") {
+		t.Fatalf("tool context leaked: %#v", tool)
+	}
+	plan := got.Events[1]
+	if plan.Kind != "plan" || plan.Explanation != "" || len(plan.Plan) != 1 || plan.Plan[0].Step != "Visible step" {
+		t.Fatalf("plan context cleanup = %#v", plan)
 	}
 }
 
@@ -600,6 +810,48 @@ func TestParseCodexConversation_RetainsEventsAcrossLargeRollout(t *testing.T) {
 	}
 	assertEvent(t, got.Events[0], "assistant_message", "assistant", "", "xxxxx")
 	assertEvent(t, got.Events[1], "user_message", "user", "", "latest prompt")
+}
+
+func TestParseCodexConversation_KeepsCodexHistoryEntries(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "rollout.jsonl")
+	writeJSONL(t, path,
+		map[string]any{
+			"type":      "session_meta",
+			"timestamp": "2026-05-20T10:00:00Z",
+			"payload": map[string]any{
+				"id":  "codex-history",
+				"cwd": "/repo",
+			},
+		},
+		map[string]any{
+			"type":      "event_msg",
+			"timestamp": "2026-05-20T10:00:01Z",
+			"payload": map[string]any{
+				"type":    "user_message",
+				"message": "/status",
+			},
+		},
+		map[string]any{
+			"type":      "event_msg",
+			"timestamp": "2026-05-20T10:00:02Z",
+			"payload": map[string]any{
+				"type":    "history_entry",
+				"message": "Model: gpt-5\nApproval: never\nAgents.md: /repo/AGENTS.md",
+			},
+		},
+	)
+
+	got, err := parseCodexConversation(path)
+	if err != nil {
+		t.Fatalf("parseCodexConversation: %v", err)
+	}
+	if len(got.Events) != 1 {
+		t.Fatalf("events len = %d, want 1: %#v", len(got.Events), got.Events)
+	}
+	event := got.Events[0]
+	if event.Kind != "status" || !strings.Contains(event.Body, "Model: gpt-5") {
+		t.Fatalf("history entry event = %#v, want status with native output", event)
+	}
 }
 
 func TestParseCodexConversation_TracksTurnActivityFromLifecycleEvents(t *testing.T) {

@@ -14,12 +14,6 @@ import { CodexChatSurface } from "./CodexChatSurface";
 import { TerminalOutputPane } from "./TerminalOutputPane";
 import type { TerminalSurfaceHandle } from "./TerminalSurface";
 
-interface GitDiffChip {
-  label: string;
-  tone: "clean" | "dirty" | "error" | "loading";
-  onPress(): void;
-}
-
 export interface TerminalViewportProps {
   showCodexChat: boolean;
   sessionKey: string | null;
@@ -31,7 +25,6 @@ export interface TerminalViewportProps {
   theme: TerminalThemePalette;
   chrome: TerminalThemeChrome;
   screenFocused: boolean;
-  gitDiff?: GitDiffChip | null;
   terminalRef: React.RefObject<TerminalSurfaceHandle | null>;
   ctrlArmed: boolean;
   onCtrlArmedChange(next: boolean): void;
@@ -50,7 +43,6 @@ export interface TerminalViewportProps {
   daemonId: string;
   keyboardVisible: boolean;
   onSwitchToTerminal(): void;
-  onOpenGitDiff(): void;
   onRetryConnection(): void;
   onAccessoryLayout(event: LayoutChangeEvent): void;
 }
@@ -66,7 +58,6 @@ export function TerminalViewport({
   theme,
   chrome,
   screenFocused,
-  gitDiff,
   terminalRef,
   ctrlArmed,
   onCtrlArmedChange,
@@ -85,7 +76,6 @@ export function TerminalViewport({
   daemonId,
   keyboardVisible,
   onSwitchToTerminal,
-  onOpenGitDiff,
   onRetryConnection,
   onAccessoryLayout,
 }: TerminalViewportProps) {
@@ -132,9 +122,7 @@ export function TerminalViewport({
                 theme={theme}
                 chrome={chrome}
                 screenFocused={screenFocused}
-                gitDiff={gitDiff}
                 onSwitchToTerminal={onSwitchToTerminal}
-                onOpenGitDiff={onOpenGitDiff}
               />
             </View>
           ) : null}

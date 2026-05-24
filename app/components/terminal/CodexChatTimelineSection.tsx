@@ -19,7 +19,8 @@ import {
   isConversationSyncingReason,
 } from "./CodexChatControllerModel";
 import type {
-  ChatCommandEvent,
+  CodexChatLocalState,
+  PendingAssistantMessage,
   PendingUserMessage,
 } from "./CodexChatSession";
 import { CodexTimelineView } from "./CodexTimelineView";
@@ -35,11 +36,13 @@ interface CodexChatTimelineSectionProps {
   agentCwd?: string;
   conversation: CodexConversation | null;
   events: CodexConversationEvent[];
-  chatCommandEvents: ChatCommandEvent[];
   pendingUserMessages: PendingUserMessage[];
+  pendingAssistantMessages: PendingAssistantMessage[];
   loading: boolean;
+  localChatState: CodexChatLocalState;
   error?: string | null;
   composerActive: boolean;
+  commandMenuOpen: boolean;
   composerHeight: number;
   scrollRef: React.RefObject<FlatList<ZenTimelineItem> | null>;
   showJumpToLatest: boolean;
@@ -61,11 +64,13 @@ export function CodexChatTimelineSection({
   agentCwd,
   conversation,
   events,
-  chatCommandEvents,
   pendingUserMessages,
+  pendingAssistantMessages,
   loading,
+  localChatState,
   error,
   composerActive,
+  commandMenuOpen,
   composerHeight,
   scrollRef,
   showJumpToLatest,
@@ -83,9 +88,12 @@ export function CodexChatTimelineSection({
 }: CodexChatTimelineSectionProps) {
   const timelineItems = useCodexTimelineItems({
     events,
-    chatCommandEvents,
     pendingUserMessages,
+    pendingAssistantMessages,
   });
+  const streamingAssistantId = pendingAssistantMessages.find((message) =>
+    message.body.trim(),
+  )?.id ?? "";
   const loadAssetPreview = useCallback(
     async (path: string) => {
       const asset = await wsClient.getCodexAsset(serverId, {
@@ -99,20 +107,29 @@ export function CodexChatTimelineSection({
   const syncingConversation =
     Boolean(conversation && !conversation.available)
     && isConversationSyncingReason(conversation?.reason);
+  const emptyConversationReady =
+    syncingConversation && conversation?.reason === "transcript_not_found";
 
   return (
     <CodexTimelineView
       scrollRef={scrollRef}
       items={timelineItems}
       loading={loading}
+      localChatState={localChatState}
       error={error}
-      unavailable={conversation && !conversation.available && !syncingConversation}
+      emptyStateSuppressed={commandMenuOpen}
+      unavailable={
+        conversation &&
+        !conversation.available &&
+        !syncingConversation &&
+        !emptyConversationReady
+      }
       unavailableReason={conversationUnavailableReason(conversation?.reason)}
-      syncing={syncingConversation}
+      syncing={syncingConversation && !emptyConversationReady}
       textSelectable={!composerActive}
       showJumpToLatest={showJumpToLatest}
       jumpButtonBottom={composerHeight + 12}
-      streamingAssistantId=""
+      streamingAssistantId={streamingAssistantId}
       chrome={chrome}
       theme={theme}
       onLayout={onLayout}

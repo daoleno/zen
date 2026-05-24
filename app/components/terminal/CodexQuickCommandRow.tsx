@@ -6,26 +6,15 @@ import {
   View,
 } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
-import type {
-  TerminalThemeChrome,
-  TerminalThemePalette,
-} from "../../constants/terminalThemes";
+import type { TerminalThemeChrome } from "../../constants/terminalThemes";
 import { Typography } from "../../constants/tokens";
 import type { CodexSlashCommand } from "../../services/websocket";
-import {
-  CodexQuickCommandRouteBadge,
-  getCodexQuickCommandRoutePresentation,
-} from "./CodexQuickCommandRouteBadge";
-import {
-  slashCommandIcon,
-  slashCommandTitle,
-} from "./codexSlashCommandPresentation";
+import { slashCommandIcon } from "./codexSlashCommandPresentation";
 
 interface CodexQuickCommandRowProps {
   command: CodexSlashCommand;
   selected: boolean;
   chrome: TerminalThemeChrome;
-  theme: TerminalThemePalette;
   onSelect(command: CodexSlashCommand): void;
 }
 
@@ -33,14 +22,11 @@ export function CodexQuickCommandRow({
   command,
   selected,
   chrome,
-  theme,
   onSelect,
 }: CodexQuickCommandRowProps) {
-  const route = getCodexQuickCommandRoutePresentation(command, chrome, theme);
-
   return (
     <TouchableOpacity
-      accessibilityLabel={`${route.label} ${command.value}`}
+      accessibilityLabel={`${command.value} ${command.description}`}
       style={[
         styles.row,
         selected ? { backgroundColor: chrome.surfaceMuted } : null,
@@ -56,8 +42,11 @@ export function CodexQuickCommandRow({
         />
       </View>
       <View style={styles.copy}>
-        <Text style={[styles.title, { color: chrome.text }]} numberOfLines={1}>
-          {command.title || slashCommandTitle(command.name)}
+        <Text
+          style={[styles.value, { color: chrome.accent }]}
+          numberOfLines={1}
+        >
+          {command.value}
         </Text>
         <Text
           style={[styles.description, { color: chrome.textSubtle }]}
@@ -66,13 +55,6 @@ export function CodexQuickCommandRow({
           {command.description}
         </Text>
       </View>
-      <CodexQuickCommandRouteBadge route={route} />
-      <Text
-        style={[styles.value, { color: chrome.textMuted }]}
-        numberOfLines={1}
-      >
-        {command.value}
-      </Text>
       <Ionicons name="chevron-forward" size={14} color={chrome.textSubtle} />
     </TouchableOpacity>
   );
@@ -98,21 +80,15 @@ const styles = StyleSheet.create({
     flex: 1,
     minWidth: 0,
   },
-  title: {
+  value: {
     fontSize: 13,
     lineHeight: 17,
-    fontFamily: Typography.uiFontMedium,
+    fontFamily: Typography.terminalFont,
   },
   description: {
     marginTop: 1,
     fontSize: 11,
     lineHeight: 15,
     fontFamily: Typography.uiFont,
-  },
-  value: {
-    maxWidth: 72,
-    fontSize: 11,
-    lineHeight: 15,
-    fontFamily: Typography.terminalFont,
   },
 });

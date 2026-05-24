@@ -16,8 +16,9 @@ import type {
 } from "../../constants/terminalThemes";
 import type { CodexSlashCommand } from "../../services/websocket";
 import type {
+  CodexChatLocalState,
   ComposerAttachment,
-  ChatCommandEvent,
+  PendingAssistantMessage,
   PendingUserMessage,
 } from "./CodexChatSession";
 import type { CodexComposerPresentation } from "./CodexChatSurfaceModel";
@@ -33,9 +34,10 @@ export interface CodexChatBodyProps {
   agentCwd?: string;
   conversation: CodexConversation | null;
   events: CodexConversationEvent[];
-  chatCommandEvents: ChatCommandEvent[];
   pendingUserMessages: PendingUserMessage[];
+  pendingAssistantMessages: PendingAssistantMessage[];
   loading: boolean;
+  localChatState: CodexChatLocalState;
   error?: string | null;
   scrollRef: React.RefObject<FlatList<ZenTimelineItem> | null>;
   showJumpToLatest: boolean;
@@ -61,6 +63,8 @@ export interface CodexChatBodyProps {
   chrome: TerminalThemeChrome;
   theme: TerminalThemePalette;
   onSelectCommand(command: CodexSlashCommand): void;
+  onToggleActionMenu(): void;
+  onDismissActionMenu(): void;
   onRemoveAttachment(id: string): void;
   onDraftChange(value: string): void;
   onUploadPress(): void;
@@ -70,6 +74,7 @@ export interface CodexChatBodyProps {
   onInputStart(): boolean;
   onSubmit(): void;
   onSendPress(): void;
+  skillsSheet?: React.ReactNode;
 }
 
 export function CodexChatBody({
@@ -78,9 +83,10 @@ export function CodexChatBody({
   agentCwd,
   conversation,
   events,
-  chatCommandEvents,
   pendingUserMessages,
+  pendingAssistantMessages,
   loading,
+  localChatState,
   error,
   scrollRef,
   showJumpToLatest,
@@ -106,6 +112,8 @@ export function CodexChatBody({
   chrome,
   theme,
   onSelectCommand,
+  onToggleActionMenu,
+  onDismissActionMenu,
   onRemoveAttachment,
   onDraftChange,
   onUploadPress,
@@ -115,6 +123,7 @@ export function CodexChatBody({
   onInputStart,
   onSubmit,
   onSendPress,
+  skillsSheet,
 }: CodexChatBodyProps) {
   const { composerHeight, handleComposerLayout } = useCodexComposerLayout({
     onHeightChange: onComposerHeightChange,
@@ -130,11 +139,13 @@ export function CodexChatBody({
         agentCwd={agentCwd}
         conversation={conversation}
         events={events}
-        chatCommandEvents={chatCommandEvents}
         pendingUserMessages={pendingUserMessages}
+        pendingAssistantMessages={pendingAssistantMessages}
         loading={loading}
+        localChatState={localChatState}
         error={error}
         composerActive={composerPresentation.active}
+        commandMenuOpen={composerPresentation.showCommandMenu}
         composerHeight={composerHeight}
         scrollRef={scrollRef}
         showJumpToLatest={showJumpToLatest}
@@ -165,6 +176,8 @@ export function CodexChatBody({
         theme={theme}
         onLayout={handleComposerLayout}
         onSelectCommand={onSelectCommand}
+        onToggleActionMenu={onToggleActionMenu}
+        onDismissActionMenu={onDismissActionMenu}
         onRemoveAttachment={onRemoveAttachment}
         onDraftChange={onDraftChange}
         onUploadPress={onUploadPress}
@@ -175,6 +188,7 @@ export function CodexChatBody({
         onSubmit={onSubmit}
         onSendPress={onSendPress}
       />
+      {skillsSheet}
     </CodexChatKeyboardFrame>
   );
 }

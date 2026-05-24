@@ -1,4 +1,9 @@
-import { useEffect } from "react";
+import React, {
+  useCallback,
+  useEffect,
+  useMemo,
+  useState,
+} from "react";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import type {
   TerminalThemeChrome,
@@ -10,6 +15,7 @@ import type { CodexChatBodyProps } from "./CodexChatBody";
 import { useCodexChatController } from "./CodexChatController";
 import { isCodexRequestRunning } from "./CodexChatControllerModel";
 import { useCodexChatSession } from "./CodexChatSession";
+import { CodexSkillsSheet } from "./CodexSkillsSheet";
 import { useCodexSlashCommands } from "./CodexSlashCommands";
 import { useCodexChatBodyProps } from "./useCodexChatBodyProps";
 import {
@@ -17,12 +23,6 @@ import {
   useCodexComposerPresentation,
   usePinnedTimeline,
 } from "./CodexChatSurfaceHooks";
-
-interface GitDiffAction {
-  label: string;
-  tone: "clean" | "dirty" | "error" | "loading";
-  onPress(): void;
-}
 
 interface UseCodexChatSurfaceStateInput {
   serverId: string;
@@ -33,9 +33,7 @@ interface UseCodexChatSurfaceStateInput {
   theme: TerminalThemePalette;
   chrome: TerminalThemeChrome;
   screenFocused: boolean;
-  gitDiff?: GitDiffAction | null;
   onSwitchToTerminal(): void;
-  onOpenGitDiff?: () => void;
 }
 
 interface CodexChatSurfaceState {
@@ -51,9 +49,7 @@ export function useCodexChatSurfaceState({
   theme,
   chrome,
   screenFocused,
-  gitDiff,
   onSwitchToTerminal,
-  onOpenGitDiff,
 }: UseCodexChatSurfaceStateInput): CodexChatSurfaceState {
   const insets = useSafeAreaInsets();
   const slashCommands = useCodexSlashCommands({
@@ -61,6 +57,8 @@ export function useCodexChatSurfaceState({
     connectionState,
     screenFocused,
   });
+  const [actionMenuPinned, setActionMenuPinned] = useState(false);
+  const [skillsSheetVisible, setSkillsSheetVisible] = useState(false);
   const session = useCodexChatSession({
     serverId,
     agentId,
@@ -71,26 +69,59 @@ export function useCodexChatSurfaceState({
   const {
     cacheKey: conversationCacheKey,
     conversation,
+    localChatState,
     loading,
     error,
     draft,
     setDraft,
     attachments,
     setAttachments,
-    chatCommandEvents,
     pendingUserMessages,
-    recordChatCommandEvent,
+    pendingAssistantMessages,
     addPendingUserMessage,
     removePendingUserMessage,
+    startPendingAssistantMessage,
+    resetForNewChat,
+    markNewChatReady,
+    markNewChatMessageStarted,
     refreshConversation,
   } = session;
-  const events = conversation?.events ?? [];
-  const timeline = usePinnedTimeline(
-    events.length + chatCommandEvents.length + pendingUserMessages.length,
-  );
   const composerInput = useCodexComposerInput({
     enabled: screenFocused && connectionState === "connected",
   });
+  useEffect(() => {
+    if (connectionState !== "connected" && actionMenuPinned) {
+      setActionMenuPinned(false);
+    }
+  }, [actionMenuPinned, connectionState]);
+
+  const toggleActionMenu = useCallback(() => {
+    if (connectionState !== "connected") {
+      composerInput.focus();
+      return;
+    }
+    if (!actionMenuPinned) {
+      composerInput.blur();
+    }
+    setActionMenuPinned(!actionMenuPinned);
+  }, [actionMenuPinned, composerInput.blur, composerInput.focus, connectionState]);
+
+  const dismissActionMenu = useCallback(() => {
+    setActionMenuPinned(false);
+  }, []);
+  const openSkillsSheet = useCallback(() => {
+    setActionMenuPinned(false);
+    setSkillsSheetVisible(true);
+  }, []);
+  const closeSkillsSheet = useCallback(() => {
+    setSkillsSheetVisible(false);
+  }, []);
+  const events = conversation?.events ?? [];
+  const timeline = usePinnedTimeline(
+    events.length +
+      pendingUserMessages.length +
+      pendingAssistantMessages.length,
+  );
   const controller = useCodexChatController({
     serverId,
     agentId,
@@ -104,26 +135,31 @@ export function useCodexChatSurfaceState({
     attachments,
     setAttachments,
     slashCommands,
-    gitDiff,
-    onSwitchToTerminal,
-    onOpenGitDiff,
-    recordChatCommandEvent,
     addPendingUserMessage,
     removePendingUserMessage,
+    startPendingAssistantMessage,
+    resetForNewChat,
+    markNewChatReady,
+    markNewChatMessageStarted,
     refreshConversation,
     scrollToLatest: timeline.scrollToLatest,
     focusComposer: composerInput.focus,
+    dismissActionMenu,
+    openSkillsSheet,
   });
 
   useEffect(() => {
     timeline.resetForConversation();
   }, [conversationCacheKey, timeline.resetForConversation]);
 
-  const requestRunning = isCodexRequestRunning({
-    agent,
-    conversation,
-    events,
-  });
+  const requestRunning =
+    (isCodexRequestRunning({
+      agent,
+      conversation,
+      events,
+    }) &&
+      localChatState === "idle") ||
+    pendingAssistantMessages.some((message) => !message.settledAt);
   const composerPresentation = useCodexComposerPresentation({
     draft,
     slashCommands,
@@ -131,12 +167,38 @@ export function useCodexChatSurfaceState({
     requestRunning,
     attachmentCount: attachments.length,
     sending: controller.sending,
+    startingNewChat: controller.startingNewChat,
     interrupting: controller.interrupting,
     canSend: controller.canSend,
     composerFocused: composerInput.focused,
+    actionMenuPinned,
     safeAreaTop: insets.top,
     safeAreaBottom: insets.bottom,
   });
+  const skillsSheet = useMemo(
+    () =>
+      React.createElement(CodexSkillsSheet, {
+        visible: skillsSheetVisible,
+        serverId,
+        cwd: agent?.cwd,
+        chrome,
+        theme,
+        onSelectSkill: (skill) => {
+          closeSkillsSheet();
+          controller.insertSkillMention(skill);
+        },
+        onClose: closeSkillsSheet,
+      }),
+    [
+      agent?.cwd,
+      chrome,
+      closeSkillsSheet,
+      controller.insertSkillMention,
+      serverId,
+      skillsSheetVisible,
+      theme,
+    ],
+  );
   const bodyProps = useCodexChatBodyProps({
     screenFocused,
     serverId,
@@ -144,9 +206,10 @@ export function useCodexChatSurfaceState({
     connectionState,
     conversation,
     events,
-    chatCommandEvents,
     pendingUserMessages,
+    pendingAssistantMessages,
     loading,
+    localChatState,
     error,
     draft,
     attachments,
@@ -158,6 +221,9 @@ export function useCodexChatSurfaceState({
     theme,
     onSwitchToTerminal,
     setDraft,
+    onToggleActionMenu: toggleActionMenu,
+    onDismissActionMenu: dismissActionMenu,
+    skillsSheet,
   });
   return {
     bodyProps,

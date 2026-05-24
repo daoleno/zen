@@ -5,6 +5,7 @@ import type {
   TerminalThemeChrome,
   TerminalThemePalette,
 } from "../../constants/terminalThemes";
+import { isLightTerminalTheme } from "../../constants/terminalThemes";
 import type { MessageBlock } from "./CodexMessageBodyModel";
 import { CodexFallbackInlineMessage } from "./CodexFallbackInlineMessage";
 import { TimelineTextSelectableContext } from "./TimelineTextSelectableContext";
@@ -75,13 +76,14 @@ export function CodexFallbackMessageBlock({
         </View>
       );
     case "code":
+      const codeBlockDark = !compact && !isLightTerminalTheme(theme);
       return (
         <Text
           selectable={textSelectable}
           style={[
             styles.messageCodeBlock,
             {
-              color: chrome.text,
+              color: codeBlockDark ? theme.brightWhite : chrome.text,
               backgroundColor: compact ? chrome.surface : theme.black,
               borderColor: chrome.border,
             },

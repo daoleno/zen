@@ -26,6 +26,8 @@ function normalizeCodexSlashCommandInput(value: any): CodexSlashCommandInput {
     placeholder:
       typeof input.placeholder === "string" ? input.placeholder : undefined,
     picker: typeof input.picker === "string" ? input.picker : undefined,
+    required:
+      typeof input.required === "boolean" ? input.required : undefined,
   };
 }
 
@@ -72,10 +74,9 @@ export type CodexSlashCommandCategory =
   | string;
 
 export type CodexSlashCommandExecution =
-  | "chat-native"
-  | "timeline-output"
   | "terminal-required"
   | "insert-only"
+  | "native"
   | "unsupported"
   | string;
 
@@ -83,6 +84,7 @@ export interface CodexSlashCommandInput {
   kind: "none" | "inline-args" | "form" | "picker" | "freeform" | string;
   placeholder?: string;
   picker?: string;
+  required?: boolean;
 }
 
 export interface CodexSlashCommandOutput {
@@ -102,6 +104,19 @@ export interface CodexSlashCommandSnapshot {
   source?: string;
   version?: string;
   commands: CodexSlashCommand[];
+}
+
+export interface CodexSkill {
+  name: string;
+  description?: string;
+  path: string;
+  scope: string;
+  enabled: boolean;
+}
+
+export interface CodexSkillsSnapshot {
+  cwd?: string;
+  skills: CodexSkill[];
 }
 
 interface ConnectionMeta {
@@ -853,6 +868,117 @@ class MultiServerWebSocketClient {
     });
   }
 
+  getCodexSkills(
+    serverId: string,
+    options: {
+      cwd?: string;
+    } = {},
+  ) {
+    const requestId = `${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
+
+    return new Promise<CodexSkillsSnapshot>((resolve, reject) => {
+      const cleanup = () => {
+        if (timer) clearTimeout(timer);
+        this.off("codex_skills", handleSkills);
+        this.off("error", handleError);
+      };
+
+      const handleSkills = (payload: any) => {
+        if (payload.serverId !== serverId || payload.request_id !== requestId) {
+          return;
+        }
+        cleanup();
+        const skills = Array.isArray(payload.skills)
+          ? payload.skills
+              .map((skill: any) => ({
+                name: typeof skill.name === "string" ? skill.name : "",
+                description:
+                  typeof skill.description === "string"
+                    ? skill.description
+                    : undefined,
+                path: typeof skill.path === "string" ? skill.path : "",
+                scope:
+                  typeof skill.scope === "string" && skill.scope
+                    ? skill.scope
+                    : "user",
+                enabled:
+                  typeof skill.enabled === "boolean" ? skill.enabled : true,
+              }))
+              .filter(
+                (skill: CodexSkill) =>
+                  skill.name.length > 0 && skill.path.length > 0,
+              )
+          : [];
+        resolve({
+          cwd: typeof payload.cwd === "string" ? payload.cwd : options.cwd,
+          skills,
+        });
+      };
+
+      const handleError = (payload: any) => {
+        if (payload.serverId !== serverId || payload.request_id !== requestId) {
+          return;
+        }
+        cleanup();
+        reject(new Error(payload.message || "Failed to load Codex skills."));
+      };
+
+      const timer = setTimeout(() => {
+        cleanup();
+        reject(new Error("Timed out while loading Codex skills."));
+      }, 10000);
+
+      this.on("codex_skills", handleSkills);
+      this.on("error", handleError);
+      this.send(serverId, {
+        type: "codex_skills",
+        request_id: requestId,
+        cwd: options.cwd,
+      });
+    });
+  }
+
+  getCodexTerminalSnapshot(serverId: string, targetId: string) {
+    const requestId = `${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
+
+    return new Promise<string>((resolve, reject) => {
+      const cleanup = () => {
+        if (timer) clearTimeout(timer);
+        this.off("codex_terminal_snapshot", handleSnapshot);
+        this.off("error", handleError);
+      };
+
+      const handleSnapshot = (payload: any) => {
+        if (payload.serverId !== serverId || payload.request_id !== requestId) {
+          return;
+        }
+        cleanup();
+        resolve(typeof payload.text === "string" ? payload.text : "");
+      };
+
+      const handleError = (payload: any) => {
+        if (payload.serverId !== serverId || payload.request_id !== requestId) {
+          return;
+        }
+        cleanup();
+        reject(new Error(payload.message || "Failed to load Codex terminal output."));
+      };
+
+      const timer = setTimeout(() => {
+        cleanup();
+        reject(new Error("Timed out while loading Codex terminal output."));
+      }, 10000);
+
+      this.on("codex_terminal_snapshot", handleSnapshot);
+      this.on("error", handleError);
+      this.send(serverId, {
+        type: "codex_terminal_snapshot",
+        request_id: requestId,
+        target_id: targetId,
+      });
+    });
+  }
+
   getCodexAsset(
     serverId: string,
     options: {
@@ -1023,7 +1149,19 @@ class MultiServerWebSocketClient {
   }
 
   sendInput(serverId: string, agentId: string, text: string) {
-    this.send(serverId, { type: "send_input", agent_id: agentId, text });
+    const socket = this.connections.get(serverId);
+    if (!socket?.isConnected) {
+      throw new Error("Daemon is not connected.");
+    }
+    socket.send({ type: "send_input", agent_id: agentId, text });
+  }
+
+  sendKey(serverId: string, agentId: string, key: string) {
+    const socket = this.connections.get(serverId);
+    if (!socket?.isConnected) {
+      throw new Error("Daemon is not connected.");
+    }
+    socket.send({ type: "send_key", agent_id: agentId, key });
   }
 
   setActiveAgent(serverId: string, agentId: string | null) {

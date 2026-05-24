@@ -4,32 +4,31 @@ import type { ComposerAttachment } from "./CodexChatSession";
 import { requiresSlashCommandArgs } from "./CodexSlashCommands";
 
 interface UseCodexSlashCommandPickerInput {
-  draft: string;
   attachments: ComposerAttachment[];
   setDraft(value: string): void;
+  dismissActionMenu(): void;
   focusComposer(): void;
-  showTerminalRequiredAction(
-    command: CodexSlashCommand,
-    rawText: string,
-    composedText: string,
-    previousDraft: string,
-    previousAttachments: ComposerAttachment[],
-  ): void;
+  startNewCodexChat(commandText?: string): void;
+  sendSlashCommandToCodex(text: string): void;
+  openSkillsSheet(): void;
+  copyLastAssistantMessage(): void;
   showUnsupportedSlashCommand(command: CodexSlashCommand): void;
-  runNativeSlashCommand(command: CodexSlashCommand): void | Promise<void>;
 }
 
 export function useCodexSlashCommandPicker({
-  draft,
   attachments,
   setDraft,
+  dismissActionMenu,
   focusComposer,
-  showTerminalRequiredAction,
+  startNewCodexChat,
+  sendSlashCommandToCodex,
+  openSkillsSheet,
+  copyLastAssistantMessage,
   showUnsupportedSlashCommand,
-  runNativeSlashCommand,
 }: UseCodexSlashCommandPickerInput) {
   return useCallback(
     (command: CodexSlashCommand) => {
+      dismissActionMenu();
       if (attachments.length > 0) {
         setDraft(`${command.value} `);
         focusComposer();
@@ -39,24 +38,39 @@ export function useCodexSlashCommandPicker({
         showUnsupportedSlashCommand(command);
         return;
       }
-      if (
-        command.execution === "chat-native" &&
-        !requiresSlashCommandArgs(command)
-      ) {
-        void runNativeSlashCommand(command);
+      if (!command.chat_supported) {
+        setDraft(`${command.value} `);
+        focusComposer();
         return;
       }
-      if (
-        command.execution === "terminal-required" &&
-        !requiresSlashCommandArgs(command)
-      ) {
-        showTerminalRequiredAction(
-          command,
-          command.value,
-          command.value,
-          draft,
-          attachments,
-        );
+      if (command.execution === "insert-only") {
+        setDraft(`${command.value} `);
+        focusComposer();
+        return;
+      }
+      if (command.execution === "native") {
+        if (command.name === "new" || command.name === "clear") {
+          startNewCodexChat(command.value);
+          return;
+        }
+        if (command.name === "skills") {
+          openSkillsSheet();
+          return;
+        }
+        if (command.name === "copy") {
+          copyLastAssistantMessage();
+          return;
+        }
+        setDraft(`${command.value} `);
+        focusComposer();
+        return;
+      }
+      if (command.name === "new" || command.name === "clear") {
+        startNewCodexChat(command.value);
+        return;
+      }
+      if (!requiresSlashCommandArgs(command)) {
+        sendSlashCommandToCodex(command.value);
         return;
       }
       setDraft(`${command.value} `);
@@ -64,12 +78,14 @@ export function useCodexSlashCommandPicker({
     },
     [
       attachments,
-      draft,
+      dismissActionMenu,
       focusComposer,
-      runNativeSlashCommand,
+      openSkillsSheet,
+      copyLastAssistantMessage,
+      sendSlashCommandToCodex,
       setDraft,
-      showTerminalRequiredAction,
       showUnsupportedSlashCommand,
+      startNewCodexChat,
     ],
   );
 }

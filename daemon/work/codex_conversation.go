@@ -293,6 +293,8 @@ func (b *codexConversationBuilder) consumeEvent(lineNumber int, timestamp string
 		b.taskActive = false
 	case "user_message":
 		b.addMessage(lineNumber, timestamp, "user", payload.Message)
+	case "history_entry":
+		b.addHistoryEntry(lineNumber, timestamp, payload.Message)
 	case "agent_message":
 		title := ""
 		if strings.TrimSpace(payload.Phase) != "" {
@@ -430,9 +432,27 @@ func (b *codexConversationBuilder) addMessage(lineNumber int, timestamp, role, t
 	b.addMessageWithTitle(lineNumber, timestamp, role, text, "")
 }
 
-func (b *codexConversationBuilder) addMessageWithTitle(lineNumber int, timestamp, role, text, title string) {
-	text = cleanConversationText(text)
+func (b *codexConversationBuilder) addHistoryEntry(lineNumber int, timestamp, text string) {
+	text = CleanCodexDisplayText(text)
 	if text == "" || isTranscriptBoilerplate(text) {
+		return
+	}
+	b.addEvent(CodexConversationEvent{
+		ID:        b.eventID(lineNumber),
+		Timestamp: timestamp,
+		Kind:      "status",
+		Title:     "Codex",
+		Body:      truncateConversationBody(text),
+		Source:    "codex_rollout",
+	})
+}
+
+func (b *codexConversationBuilder) addMessageWithTitle(lineNumber int, timestamp, role, text, title string) {
+	text = CleanCodexDisplayText(text)
+	if text == "" || isTranscriptBoilerplate(text) {
+		return
+	}
+	if role == "user" && isCodexSlashCommandInvocation(text) {
 		return
 	}
 	key := role + ":" + text
@@ -455,6 +475,36 @@ func (b *codexConversationBuilder) addMessageWithTitle(lineNumber int, timestamp
 		Body:      text,
 		Source:    "codex_rollout",
 	})
+}
+
+func isCodexSlashCommandInvocation(value string) bool {
+	trimmed := strings.TrimSpace(value)
+	if !strings.HasPrefix(trimmed, "/") {
+		return false
+	}
+	if strings.Contains(trimmed, "\n") {
+		firstLine, _, _ := strings.Cut(trimmed, "\n")
+		trimmed = strings.TrimSpace(firstLine)
+	}
+	if len(trimmed) < 2 {
+		return false
+	}
+	for index, r := range trimmed[1:] {
+		if r == ' ' || r == '\t' {
+			return index > 0
+		}
+		if r == '-' {
+			continue
+		}
+		if r >= 'a' && r <= 'z' {
+			continue
+		}
+		if index > 0 && r >= '0' && r <= '9' {
+			continue
+		}
+		return false
+	}
+	return true
 }
 
 func (b *codexConversationBuilder) addCommandStart(lineNumber int, timestamp, callID, command string) {
@@ -591,6 +641,9 @@ func (b *codexConversationBuilder) addToolStart(lineNumber int, timestamp, callI
 	if status == "" {
 		status = "running"
 	}
+	if input == "" && command == "" && status == "running" && isConversationToolDisplayOptional(name) {
+		return
+	}
 	event := CodexConversationEvent{
 		ID:        b.eventID(lineNumber),
 		Timestamp: timestamp,
@@ -620,6 +673,15 @@ func (b *codexConversationBuilder) addToolStart(lineNumber int, timestamp, callI
 	}
 	if b.addEvent(event) && callID != "" {
 		b.eventByCall[callID] = len(b.events) - 1
+	}
+}
+
+func isConversationToolDisplayOptional(name string) bool {
+	switch strings.TrimSpace(strings.TrimPrefix(name, "functions.")) {
+	case "read_file", "read", "list_files", "list", "glob", "search", "grep":
+		return true
+	default:
+		return false
 	}
 }
 
@@ -723,10 +785,29 @@ func (b *codexConversationBuilder) addEvent(event CodexConversationEvent) bool {
 	event.Input = truncateConversationBody(event.Input)
 	event.Output = truncateConversationBody(event.Output)
 	event.Explanation = truncateConversationBody(event.Explanation)
+	if isTranscriptBoilerplate(event.Body) {
+		event.Body = ""
+	}
+	if isTranscriptBoilerplate(event.Command) {
+		event.Command = ""
+	}
+	if isTranscriptBoilerplate(event.ToolName) {
+		event.ToolName = ""
+	}
+	if isTranscriptBoilerplate(event.Input) {
+		event.Input = ""
+	}
+	if isTranscriptBoilerplate(event.Output) {
+		event.Output = ""
+	}
+	if isTranscriptBoilerplate(event.Explanation) {
+		event.Explanation = ""
+	}
 	for index := range event.Plan {
 		event.Plan[index].Step = truncateRunes(cleanConversationText(event.Plan[index].Step), 240)
 		event.Plan[index].Status = normalizePlanStepStatus(event.Plan[index].Status)
 	}
+	event.Plan = filterVisibleCodexPlanSteps(event.Plan)
 	if event.Kind == "" || (event.Body == "" && event.Title == "" && event.Command == "" && event.ToolName == "" && event.Input == "" && event.Output == "" && len(event.Files) == 0 && event.Explanation == "" && len(event.Plan) == 0) {
 		return false
 	}
@@ -740,6 +821,20 @@ func (b *codexConversationBuilder) addEvent(event CodexConversationEvent) bool {
 	}
 	b.reindexEvents()
 	return true
+}
+
+func filterVisibleCodexPlanSteps(steps []CodexPlanStep) []CodexPlanStep {
+	if len(steps) == 0 {
+		return steps
+	}
+	out := steps[:0]
+	for _, step := range steps {
+		if step.Step == "" || isTranscriptBoilerplate(step.Step) {
+			continue
+		}
+		out = append(out, step)
+	}
+	return out
 }
 
 func (b *codexConversationBuilder) reindexEvents() {
@@ -784,7 +879,7 @@ func codexConversationContentText(raw json.RawMessage) string {
 		return ""
 	}
 	if raw[0] == '"' {
-		return cleanConversationText(jsonString(raw))
+		return CleanCodexDisplayText(jsonString(raw))
 	}
 	var items []map[string]json.RawMessage
 	if json.Unmarshal(raw, &items) != nil {
@@ -795,7 +890,7 @@ func codexConversationContentText(raw json.RawMessage) string {
 		itemType := jsonString(item["type"])
 		switch itemType {
 		case "input_text", "output_text", "text", "summary_text":
-			if text := cleanConversationText(jsonString(item["text"])); text != "" {
+			if text := CleanCodexDisplayText(jsonString(item["text"])); text != "" {
 				parts = append(parts, text)
 			}
 		}
@@ -1070,7 +1165,7 @@ func truncateConversationBody(value string) string {
 
 func isLowSignalCodexStatus(title, body string) bool {
 	switch strings.TrimSpace(title) {
-	case "Goal updated":
+	case "Task started", "Goal updated":
 		return true
 	}
 	return false

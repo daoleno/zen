@@ -1,12 +1,12 @@
 import React from "react";
 import {
-  ActivityIndicator,
   StyleSheet,
   TouchableOpacity,
 } from "react-native";
 import type { StyleProp, ViewStyle } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 import type { TerminalThemeChrome } from "../../constants/terminalThemes";
+import { ComposerLoadingDots } from "./ComposerLoadingDots";
 
 type IoniconName = React.ComponentProps<typeof Ionicons>["name"];
 
@@ -52,7 +52,7 @@ export function ComposerIconButton({
       disabled={disabled}
     >
       {loading ? (
-        <ActivityIndicator size="small" color={loadingColor ?? chrome.accent} />
+        <ComposerLoadingDots color={loadingColor ?? chrome.accent} />
       ) : (
         <Ionicons name={icon} size={iconSize} color={iconColor ?? chrome.text} />
       )}

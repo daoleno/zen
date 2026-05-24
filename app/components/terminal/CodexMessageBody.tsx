@@ -1,5 +1,6 @@
 import React, {
   useEffect,
+  useRef,
   useState,
 } from "react";
 import { StyleSheet, View } from "react-native";
@@ -24,14 +25,22 @@ export function StreamingMessageBody({
   stream: boolean;
 }) {
   const [visibleChars, setVisibleChars] = useState(stream ? 0 : value.length);
+  const previousValueRef = useRef(value);
 
   useEffect(() => {
     if (!stream) {
       setVisibleChars(value.length);
+      previousValueRef.current = value;
       return;
     }
-    setVisibleChars((current) => Math.min(current, value.length));
-  }, [stream, value.length]);
+    setVisibleChars((current) => {
+      const next = value.startsWith(previousValueRef.current)
+        ? current
+        : 0;
+      return Math.min(next, value.length);
+    });
+    previousValueRef.current = value;
+  }, [stream, value]);
 
   useEffect(() => {
     if (!stream || visibleChars >= value.length) {

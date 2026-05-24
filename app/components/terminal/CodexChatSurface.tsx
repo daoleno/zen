@@ -21,13 +21,7 @@ interface CodexChatSurfaceProps {
   theme: TerminalThemePalette;
   chrome: TerminalThemeChrome;
   screenFocused: boolean;
-  gitDiff?: {
-    label: string;
-    tone: "clean" | "dirty" | "error" | "loading";
-    onPress(): void;
-  } | null;
   onSwitchToTerminal(): void;
-  onOpenGitDiff?: () => void;
 }
 
 export function CodexChatSurface({
@@ -39,9 +33,7 @@ export function CodexChatSurface({
   theme,
   chrome,
   screenFocused,
-  gitDiff,
   onSwitchToTerminal,
-  onOpenGitDiff,
 }: CodexChatSurfaceProps) {
   const { bodyProps } = useCodexChatSurfaceState({
     serverId,
@@ -52,9 +44,7 @@ export function CodexChatSurface({
     theme,
     chrome,
     screenFocused,
-    gitDiff,
     onSwitchToTerminal,
-    onOpenGitDiff,
   });
 
   return (

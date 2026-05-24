@@ -12,7 +12,7 @@ import {
   CodexComposerAttachmentRail,
   type CodexComposerAttachment,
 } from "./CodexComposerAttachmentRail";
-import { CodexChatComposerCommandMenu } from "./CodexChatComposerCommandMenu";
+import { CodexComposerActionMenu } from "./CodexComposerActionMenu";
 import { CodexChatComposerFrame } from "./CodexChatComposerFrame";
 import { CodexComposerPanel } from "./CodexComposerPanel";
 
@@ -32,6 +32,9 @@ interface CodexChatComposerProps {
   running: boolean;
   bottomPadding: number;
   showCommandMenu: boolean;
+  showCommandList: boolean;
+  showComposerActions: boolean;
+  composerActionButtonEnabled: boolean;
   commandQuery: string;
   commands: CodexSlashCommand[];
   attachments: CodexComposerAttachment[];
@@ -39,6 +42,8 @@ interface CodexChatComposerProps {
   theme: TerminalThemePalette;
   onLayout(event: LayoutChangeEvent): void;
   onSelectCommand(command: CodexSlashCommand): void;
+  onToggleActionMenu(): void;
+  onDismissActionMenu(): void;
   onRemoveAttachment(id: string): void;
   onDraftChange(value: string): void;
   onUploadPress(): void;
@@ -66,6 +71,9 @@ export function CodexChatComposer({
   running,
   bottomPadding,
   showCommandMenu,
+  showCommandList,
+  showComposerActions,
+  composerActionButtonEnabled,
   commandQuery,
   commands,
   attachments,
@@ -73,6 +81,8 @@ export function CodexChatComposer({
   theme,
   onLayout,
   onSelectCommand,
+  onToggleActionMenu,
+  onDismissActionMenu,
   onRemoveAttachment,
   onDraftChange,
   onUploadPress,
@@ -90,13 +100,23 @@ export function CodexChatComposer({
       chrome={chrome}
       theme={theme}
     >
-      <CodexChatComposerCommandMenu
+      <CodexComposerActionMenu
         visible={showCommandMenu}
+        showComposerActions={showComposerActions}
+        showCommandList={showCommandList}
+        canAttach={canAttach}
+        uploading={uploading}
         commands={commands}
         commandQuery={commandQuery}
         chrome={chrome}
-        theme={theme}
-        onSelectCommand={onSelectCommand}
+        onUploadPress={() => {
+          onUploadPress();
+          onDismissActionMenu();
+        }}
+        onSelectCommand={(command) => {
+          onSelectCommand(command);
+          onDismissActionMenu();
+        }}
       />
 
       <CodexComposerAttachmentRail
@@ -113,17 +133,18 @@ export function CodexChatComposer({
         editable={editable}
         focused={focused}
         floating={floating}
-        canAttach={canAttach}
         uploading={uploading}
         sendEnabled={sendEnabled}
         sending={sending}
         sendIcon={sendIcon}
         sendLabel={sendLabel}
         running={running}
+        actionMenuExpanded={showComposerActions}
+        actionMenuButtonEnabled={composerActionButtonEnabled}
         chrome={chrome}
         theme={theme}
         onDraftChange={onDraftChange}
-        onUploadPress={onUploadPress}
+        onActionMenuPress={onToggleActionMenu}
         onInputPress={onInputPress}
         onInputFocus={onInputFocus}
         onInputBlur={onInputBlur}

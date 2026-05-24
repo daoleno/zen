@@ -82,6 +82,7 @@ export default function InboxScreen() {
   const [recentAgentOpens, setRecentAgentOpens] = useState<StoredRecentAgentOpens>({});
   const [configuredServerCount, setConfiguredServerCount] = useState(0);
   const [servers, setServers] = useState<StoredServer[]>([]);
+  const [storageHydrated, setStorageHydrated] = useState(false);
   const [createSheetVisible, setCreateSheetVisible] = useState(false);
   const [selectedCreateServerId, setSelectedCreateServerId] = useState<string | null>(null);
   const [creatingServerId, setCreatingServerId] = useState<string | null>(null);
@@ -89,6 +90,10 @@ export default function InboxScreen() {
   const [sessionServices, setSessionServices] = useState<DiscoveredSessionService[]>([]);
   const [servicesLoading, setServicesLoading] = useState(false);
   const [servicesError, setServicesError] = useState<string | null>(null);
+  const agentsHydrated = useMemo(
+    () => servers.some(server => state.hydratedServers[server.id]),
+    [servers, state.hydratedServers],
+  );
 
   // Context menu state
   const [menuAgent, setMenuAgent] = useState<Agent | null>(null);
@@ -111,6 +116,7 @@ export default function InboxScreen() {
         setAgentAliases(storedAliases);
         setConfiguredServerCount(storedServers.length);
         setServers(storedServers);
+        setStorageHydrated(true);
       }
     })();
     return () => { cancelled = true; };
@@ -169,6 +175,22 @@ export default function InboxScreen() {
   const hasConnection = Object.keys(state.serverConnections).length > 0;
   const anyConnected = Object.values(state.serverConnections).includes('connected');
   const anyConnecting = Object.values(state.serverConnections).includes('connecting');
+  const connectedServerIds = useMemo(
+    () => servers
+      .filter(server => state.serverConnections[server.id] === 'connected')
+      .map(server => server.id),
+    [servers, state.serverConnections],
+  );
+  const waitingForInitialAgentSnapshot = storageHydrated &&
+    connectedServerIds.some(serverId => !state.hydratedServers[serverId]);
+  const shouldShowInitialLoading =
+    (!storageHydrated && sortedAgents.length === 0) ||
+    (
+      !agentsHydrated &&
+      sortedAgents.length === 0 &&
+      hasConfiguredServers &&
+      (anyConnecting || waitingForInitialAgentSnapshot)
+    );
   const groupedAgents = useMemo(
     () => groupAgentsByDirectory(sortedAgents, { showServerName: showServerNames }),
     [showServerNames, sortedAgents],
@@ -569,7 +591,11 @@ export default function InboxScreen() {
         </View>
       </View>
 
-      {sortedAgents.length === 0 ? (
+      {shouldShowInitialLoading ? (
+        <View style={styles.loadingContainer}>
+          <ActivityIndicator color={colors.accent} />
+        </View>
+      ) : sortedAgents.length === 0 ? (
         <View style={styles.emptyContainer}>
           <Text style={styles.emptyIcon}>☯</Text>
           <Text style={styles.emptyText}>{emptyTitle}</Text>
@@ -1106,6 +1132,12 @@ function createStyles(colors: typeof Colors) {
     width: 6,
     height: 6,
     borderRadius: 3,
+  },
+
+  loadingContainer: {
+    flex: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
   },
   // ── Grid: terminal preview cards ──
   gridContent: {

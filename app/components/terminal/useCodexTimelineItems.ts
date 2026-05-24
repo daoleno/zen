@@ -1,33 +1,33 @@
 import { useMemo } from "react";
 import type { CodexConversationEvent } from "../../services/codexConversation";
 import type {
-  ChatCommandEvent,
+  PendingAssistantMessage,
   PendingUserMessage,
 } from "./CodexChatSession";
 import {
   buildZenTimeline,
-  mergeChatCommandEventsIntoTimeline,
+  mergePendingAssistantMessagesIntoTimeline,
   mergePendingUserMessagesIntoTimeline,
 } from "./CodexTimelineModel";
 
 export function useCodexTimelineItems({
   events,
-  chatCommandEvents,
   pendingUserMessages,
+  pendingAssistantMessages,
 }: {
   events: CodexConversationEvent[];
-  chatCommandEvents: ChatCommandEvent[];
   pendingUserMessages: PendingUserMessage[];
+  pendingAssistantMessages: PendingAssistantMessage[];
 }) {
   return useMemo(
     () =>
-      mergeChatCommandEventsIntoTimeline(
+      mergePendingAssistantMessagesIntoTimeline(
         mergePendingUserMessagesIntoTimeline(
           buildZenTimeline(events),
           pendingUserMessages,
         ),
-        chatCommandEvents,
+        pendingAssistantMessages,
       ),
-    [chatCommandEvents, events, pendingUserMessages],
+    [events, pendingAssistantMessages, pendingUserMessages],
   );
 }

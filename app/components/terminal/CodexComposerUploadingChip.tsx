@@ -1,12 +1,12 @@
 import React from "react";
 import {
-  ActivityIndicator,
   StyleSheet,
   Text,
   View,
 } from "react-native";
 import type { TerminalThemeChrome } from "../../constants/terminalThemes";
 import { Typography } from "../../constants/tokens";
+import { ComposerLoadingDots } from "./ComposerLoadingDots";
 
 interface CodexComposerUploadingChipProps {
   chrome: TerminalThemeChrome;
@@ -23,7 +23,9 @@ export function CodexComposerUploadingChip({
         { backgroundColor: chrome.surfaceMuted, borderColor: chrome.border },
       ]}
     >
-      <ActivityIndicator size="small" color={chrome.accent} />
+      <View style={styles.loader}>
+        <ComposerLoadingDots color={chrome.accent} />
+      </View>
       <Text style={[styles.name, { color: chrome.textMuted }]}>Uploading</Text>
     </View>
   );
@@ -40,6 +42,10 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     alignItems: "center",
     gap: 7,
+  },
+  loader: {
+    width: 18,
+    alignItems: "center",
   },
   name: {
     fontSize: 11,

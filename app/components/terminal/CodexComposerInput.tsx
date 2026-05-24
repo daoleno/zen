@@ -8,12 +8,14 @@ import {
 } from "react-native";
 import type { TerminalThemeChrome } from "../../constants/terminalThemes";
 import { Typography } from "../../constants/tokens";
+import { ComposerLoadingDots } from "./ComposerLoadingDots";
 
 interface CodexComposerInputProps {
   inputRef: React.RefObject<TextInputInstance | null>;
   draft: string;
   placeholder: string;
   editable: boolean;
+  busy: boolean;
   chrome: TerminalThemeChrome;
   onDraftChange(value: string): void;
   onInputPress(): void;
@@ -28,6 +30,7 @@ export function CodexComposerInput({
   draft,
   placeholder,
   editable,
+  busy,
   chrome,
   onDraftChange,
   onInputPress,
@@ -44,7 +47,11 @@ export function CodexComposerInput({
     >
       <TextInput
         ref={inputRef}
-        style={[styles.input, { color: chrome.text }]}
+        style={[
+          styles.input,
+          busy ? styles.inputBusy : null,
+          { color: chrome.text },
+        ]}
         value={draft}
         onChangeText={onDraftChange}
         placeholder={placeholder}
@@ -72,6 +79,15 @@ export function CodexComposerInput({
         onFocus={onInputFocus}
         onBlur={onInputBlur}
       />
+      {busy ? (
+        <View style={styles.busyOverlay} pointerEvents="none">
+          <ComposerLoadingDots
+            color={chrome.accent}
+            size={4}
+            gap={3}
+          />
+        </View>
+      ) : null}
     </View>
   );
 }
@@ -82,6 +98,13 @@ const styles = StyleSheet.create({
     minHeight: 40,
     maxHeight: 110,
     justifyContent: "center",
+  },
+  busyOverlay: {
+    position: "absolute",
+    right: 5,
+    top: 8,
+    justifyContent: "center",
+    opacity: 0.9,
   },
   input: {
     width: "100%",
@@ -94,5 +117,8 @@ const styles = StyleSheet.create({
     lineHeight: 21,
     fontFamily: Typography.uiFont,
     includeFontPadding: false,
+  },
+  inputBusy: {
+    paddingRight: 28,
   },
 });

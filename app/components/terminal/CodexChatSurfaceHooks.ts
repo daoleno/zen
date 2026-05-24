@@ -33,9 +33,11 @@ export function useCodexComposerPresentation({
   requestRunning,
   attachmentCount,
   sending,
+  startingNewChat,
   interrupting,
   canSend,
   composerFocused,
+  actionMenuPinned,
   safeAreaTop,
   safeAreaBottom,
 }: UseCodexComposerPresentationInput) {
@@ -48,9 +50,11 @@ export function useCodexComposerPresentation({
         requestRunning,
         attachmentCount,
         sending,
+        startingNewChat,
         interrupting,
         canSend,
         composerFocused,
+        actionMenuPinned,
         safeAreaTop,
         safeAreaBottom,
         isAndroid: Platform.OS === "android",
@@ -59,6 +63,7 @@ export function useCodexComposerPresentation({
       attachmentCount,
       canSend,
       composerFocused,
+      actionMenuPinned,
       connectionState,
       draft,
       interrupting,
@@ -66,6 +71,7 @@ export function useCodexComposerPresentation({
       safeAreaBottom,
       safeAreaTop,
       sending,
+      startingNewChat,
       slashCommands,
     ],
   );
@@ -104,7 +110,7 @@ export function usePinnedTimeline(itemCount: number) {
         if (scrollRequestSeqRef.current !== requestSeq) {
           return;
         }
-        scrollRef.current?.scrollToOffset({ offset: 0, animated: nextAnimated });
+        scrollRef.current?.scrollToEnd({ animated: nextAnimated });
       };
       const scheduleScroll = (nextDelay: number, nextAnimated: boolean) => {
         if (nextDelay <= 0) {
@@ -148,7 +154,10 @@ export function usePinnedTimeline(itemCount: number) {
     } = event.nativeEvent;
     contentHeightRef.current = contentSize.height;
     viewportHeightRef.current = layoutMeasurement.height;
-    const distanceFromLatest = Math.max(0, contentOffset.y);
+    const distanceFromLatest = Math.max(
+      0,
+      contentSize.height - layoutMeasurement.height - contentOffset.y,
+    );
     if (distanceFromLatest <= SCROLL_BOTTOM_THRESHOLD) {
       followLatest();
       return;
@@ -199,7 +208,10 @@ export function usePinnedTimeline(itemCount: number) {
     contentHeightRef.current = height;
     if (followLatestRef.current) {
       scrollToLatest(false, 0);
-    } else if (itemCount > 0) {
+    } else if (
+      itemCount > 0 &&
+      height - viewportHeightRef.current > SCROLL_BOTTOM_THRESHOLD
+    ) {
       setShowJumpToLatest(true);
     }
   }, [itemCount, scrollToLatest]);
@@ -298,6 +310,13 @@ export function useCodexComposerInput({
     );
   }, [clearBlurReleaseTimer, clearRefocusTimers, enabled, restoreFocusIfLocked]);
 
+  const blur = useCallback(() => {
+    releaseFocusLock();
+    inputRef.current?.blur();
+    Keyboard.dismiss();
+    setFocused(false);
+  }, [releaseFocusLock]);
+
   const handleFocus = useCallback(() => {
     setFocused(true);
   }, []);
@@ -352,6 +371,7 @@ export function useCodexComposerInput({
     inputRef,
     focused,
     focus,
+    blur,
     handleFocus,
     handleBlur,
     handleInputStart,

@@ -209,7 +209,7 @@ func matchCodexTranscriptToAgentStart(candidates []codexTranscriptCandidate, sta
 	var bestDelta time.Duration
 	for index, candidate := range candidates {
 		createdAt := candidateCreatedAt(candidate.Row)
-		if createdAt.IsZero() || createdAt.Before(minCreatedAt) {
+		if createdAt.IsZero() || createdAt.Before(minCreatedAt) || candidate.Updated.Before(startedAt) {
 			continue
 		}
 		delta := createdAt.Sub(startedAt)
@@ -881,7 +881,7 @@ func (b *transcriptBuilder) consumeClaudeAssistant(raw json.RawMessage) {
 }
 
 func (b *transcriptBuilder) addUser(text string) {
-	text = cleanTranscriptText(text)
+	text = cleanTranscriptText(stripCodexContextualFragments(text))
 	if text == "" || isTranscriptBoilerplate(text) || text == b.lastUserMessage {
 		return
 	}
@@ -894,7 +894,7 @@ func (b *transcriptBuilder) addUser(text string) {
 }
 
 func (b *transcriptBuilder) addAssistant(text string) {
-	text = cleanTranscriptText(text)
+	text = cleanTranscriptText(stripCodexContextualFragments(text))
 	if text == "" || isTranscriptBoilerplate(text) || text == b.lastAssistantMsg {
 		return
 	}
@@ -1058,7 +1058,9 @@ func codexContentText(raw json.RawMessage) string {
 		itemType := jsonString(item["type"])
 		switch itemType {
 		case "input_text", "output_text":
-			parts = append(parts, jsonString(item["text"]))
+			if text := cleanTranscriptText(stripCodexContextualFragments(jsonString(item["text"]))); text != "" {
+				parts = append(parts, text)
+			}
 		}
 	}
 	return strings.Join(parts, "\n")
@@ -1345,15 +1347,182 @@ func cleanTranscriptText(value string) string {
 func isTranscriptBoilerplate(value string) bool {
 	trimmed := strings.TrimSpace(value)
 	lower := strings.ToLower(trimmed)
-	return strings.HasPrefix(trimmed, "<environment_context>") ||
-		strings.HasPrefix(trimmed, "<permissions instructions>") ||
-		strings.HasPrefix(trimmed, "<collaboration_mode>") ||
-		strings.HasPrefix(trimmed, "<skills_instructions>") ||
+	return isCodexContextualFragment(trimmed) ||
+		isCodexInstructionContextFragment(trimmed) ||
 		strings.HasPrefix(trimmed, "<local-command-caveat>") ||
 		strings.HasPrefix(trimmed, "<command-name>") ||
 		strings.HasPrefix(trimmed, "<local-command-stdout>") ||
 		strings.Contains(lower, "base directory for this skill") ||
 		strings.Contains(lower, "you are codex")
+}
+
+func isCodexContextualFragment(value string) bool {
+	return (strings.TrimSpace(value) != "" && stripCodexContextualFragments(value) == "") ||
+		isLegacyCodexContextualFragment(value)
+}
+
+// CleanCodexDisplayText removes Codex-internal context blocks from text before
+// it is shown in user-facing surfaces.
+func CleanCodexDisplayText(value string) string {
+	value = cleanConversationText(stripCodexContextualFragments(value))
+	if isCodexInstructionContextFragment(value) {
+		return ""
+	}
+	return value
+}
+
+type codexContextualFragmentMarker struct {
+	open  string
+	close string
+}
+
+var codexContextualFragmentMarkers = []codexContextualFragmentMarker{
+	{open: "# AGENTS.md instructions for ", close: "</INSTRUCTIONS>"},
+	{open: "<environment_context>", close: "</environment_context>"},
+	{open: "<apps_instructions>", close: "</apps_instructions>"},
+	{open: "<skills_instructions>", close: "</skills_instructions>"},
+	{open: "<plugins_instructions>", close: "</plugins_instructions>"},
+	{open: "<collaboration_mode>", close: "</collaboration_mode>"},
+	{open: "<realtime_conversation>", close: "</realtime_conversation>"},
+	{open: "<permissions instructions>", close: "</permissions instructions>"},
+	{open: "<skill>", close: "</skill>"},
+	{open: "<user_shell_command>", close: "</user_shell_command>"},
+	{open: "<turn_aborted>", close: "</turn_aborted>"},
+	{open: "<subagent_notification>", close: "</subagent_notification>"},
+	{open: "<goal_context>", close: "</goal_context>"},
+	{open: "<model_switch>", close: "</model_switch>"},
+	{open: "<personality_spec>", close: "</personality_spec>"},
+}
+
+func stripCodexContextualFragments(value string) string {
+	if strings.TrimSpace(value) == "" {
+		return ""
+	}
+	stripped := value
+	for {
+		start, end, ok := firstCodexContextualFragmentRange(stripped)
+		if !ok {
+			break
+		}
+		stripped = stripped[:start] + "\n" + stripped[end:]
+	}
+	return strings.TrimSpace(stripped)
+}
+
+func firstCodexContextualFragmentRange(value string) (int, int, bool) {
+	bestStart := -1
+	bestEnd := -1
+	for _, markers := range codexContextualFragmentMarkers {
+		start, end, ok := markedTextRange(markers.open, markers.close, value)
+		if !ok {
+			continue
+		}
+		if bestStart == -1 || start < bestStart {
+			bestStart = start
+			bestEnd = end
+		}
+	}
+	return bestStart, bestEnd, bestStart >= 0
+}
+
+func markedTextRange(openMarker, closeMarker, value string) (int, int, bool) {
+	if openMarker == "" || closeMarker == "" {
+		return 0, 0, false
+	}
+	searchFrom := 0
+	for searchFrom < len(value) {
+		relativeStart := strings.Index(value[searchFrom:], openMarker)
+		if relativeStart < 0 {
+			return 0, 0, false
+		}
+		start := searchFrom + relativeStart
+		if !isLineStartMarker(value, start) {
+			searchFrom = start + len(openMarker)
+			continue
+		}
+		closeSearchFrom := start + len(openMarker)
+		relativeEnd := strings.Index(value[closeSearchFrom:], closeMarker)
+		if relativeEnd < 0 {
+			return 0, 0, false
+		}
+		end := closeSearchFrom + relativeEnd + len(closeMarker)
+		return start, end, true
+	}
+	return 0, 0, false
+}
+
+func isLineStartMarker(value string, index int) bool {
+	for cursor := index - 1; cursor >= 0; cursor-- {
+		switch value[cursor] {
+		case ' ', '\t', '\r':
+			continue
+		case '\n':
+			return true
+		default:
+			return false
+		}
+	}
+	return true
+}
+
+func isLegacyCodexContextualFragment(value string) bool {
+	trimmed := strings.TrimSpace(value)
+	return strings.HasPrefix(trimmed, "Warning: apply_patch was requested via ") &&
+		strings.HasSuffix(trimmed, "Use the apply_patch tool instead of exec_command.") ||
+		strings.HasPrefix(trimmed, "Warning: Your account was flagged for potentially high-risk cyber activity") ||
+		strings.HasPrefix(trimmed, "Warning: The maximum number of unified exec processes you can keep open is")
+}
+
+func isCodexInstructionContextFragment(value string) bool {
+	trimmed := cleanConversationText(value)
+	if trimmed == "" {
+		return false
+	}
+	lower := strings.ToLower(trimmed)
+	if strings.HasPrefix(lower, "# repository guidelines") ||
+		strings.HasPrefix(lower, "repository guidelines\n") ||
+		strings.HasPrefix(lower, "## project structure & module organization") ||
+		strings.Contains(lower, "agents.md instructions for ") {
+		return true
+	}
+	markers := []string{
+		"repository guidelines",
+		"project structure & module organization",
+		"build, test, and development commands",
+		"coding style & naming conventions",
+		"testing guidelines",
+		"commit & pull request guidelines",
+		"security & configuration tips",
+		"configuration & secrets",
+		"agent & sandbox releases",
+		"first-principles engineering",
+		"exchange data & trading state",
+		"refresh cadence is part of the product contract",
+		"avoid compatibility barrels",
+	}
+	strongMarkers := []string{
+		"agent & sandbox releases",
+		"first-principles engineering",
+		"exchange data & trading state",
+		"refresh cadence is part of the product contract",
+		"avoid compatibility barrels",
+		"freeride-sandbox",
+		"daytona",
+	}
+	count := 0
+	for _, marker := range markers {
+		if strings.Contains(lower, marker) {
+			count++
+		}
+	}
+	hasStrongMarker := false
+	for _, marker := range strongMarkers {
+		if strings.Contains(lower, marker) {
+			hasStrongMarker = true
+			break
+		}
+	}
+	return count >= 2 && hasStrongMarker
 }
 
 func excerptText(value string) string {

@@ -3,7 +3,6 @@ import type { LayoutChangeEvent } from "react-native";
 import type { ConnectionIssue } from "../../services/connectionIssue";
 import type { TerminalSurfaceHandle } from "../../components/terminal/TerminalSurface";
 import type { TerminalViewportProps } from "../../components/terminal/TerminalViewport";
-import type { useTerminalGitDiff } from "../../components/terminal/useTerminalGitDiff";
 import type {
   TerminalThemeChrome,
   TerminalThemePalette,
@@ -23,7 +22,6 @@ interface UseTerminalViewportPropsInput {
   theme: TerminalThemePalette;
   chrome: TerminalThemeChrome;
   screenFocused: boolean;
-  gitDiff: ReturnType<typeof useTerminalGitDiff>;
   terminalRef: React.RefObject<TerminalSurfaceHandle | null>;
   ctrlArmed: boolean;
   onCtrlArmedChange(next: boolean): void;
@@ -35,7 +33,6 @@ interface UseTerminalViewportPropsInput {
   daemonId?: string;
   keyboardVisible: boolean;
   sessionActions: ReturnType<typeof useTerminalSessionActions>;
-  openGitDiff(): void;
   onAccessoryLayout(event: LayoutChangeEvent): void;
 }
 
@@ -50,7 +47,6 @@ export function useTerminalViewportProps({
   theme,
   chrome,
   screenFocused,
-  gitDiff,
   terminalRef,
   ctrlArmed,
   onCtrlArmedChange,
@@ -62,7 +58,6 @@ export function useTerminalViewportProps({
   daemonId,
   keyboardVisible,
   sessionActions,
-  openGitDiff,
   onAccessoryLayout,
 }: UseTerminalViewportPropsInput): TerminalViewportProps {
   const handleSwitchToTerminal = useCallback(() => {
@@ -88,7 +83,6 @@ export function useTerminalViewportProps({
       theme,
       chrome,
       screenFocused,
-      gitDiff: gitDiff.chip,
       terminalRef,
       ctrlArmed,
       onCtrlArmedChange,
@@ -107,7 +101,6 @@ export function useTerminalViewportProps({
       daemonId: daemonId || "",
       keyboardVisible,
       onSwitchToTerminal: handleSwitchToTerminal,
-      onOpenGitDiff: openGitDiff,
       onRetryConnection: handleRetryConnection,
       onAccessoryLayout,
     }),
@@ -120,14 +113,12 @@ export function useTerminalViewportProps({
       connectionState,
       ctrlArmed,
       daemonId,
-      gitDiff.chip,
       handleRetryConnection,
       handleSwitchToTerminal,
       hasTerminalRoute,
       keyboardVisible,
       onAccessoryLayout,
       onCtrlArmedChange,
-      openGitDiff,
       outputBottomInset,
       screenFocused,
       serverId,

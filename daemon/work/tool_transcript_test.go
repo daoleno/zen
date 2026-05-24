@@ -112,6 +112,21 @@ func TestSummarizeCodexTranscript_ExtractsWorkflowSignals(t *testing.T) {
 	}
 }
 
+func TestCleanCodexDisplayText_HidesInstructionContextFragments(t *testing.T) {
+	value := "## Project Structure & Module Organization\n- Source lives in apps/web/src.\n\n## Build, Test, and Development Commands\n- bun run test\n\n## Agent & Sandbox Releases\n- Public product/API surface uses Agent names.\n\n## Testing Guidelines\n- Tests are colocated with source."
+	if got := CleanCodexDisplayText(value); got != "" {
+		t.Fatalf("CleanCodexDisplayText() = %q, want empty", got)
+	}
+}
+
+func TestCleanCodexDisplayText_KeepsContributorGuideRequests(t *testing.T) {
+	value := "Generate a file named AGENTS.md that serves as a contributor guide.\n\nRecommended Sections\n\nProject Structure & Module Organization\nBuild, Test, and Development Commands\nCoding Style & Naming Conventions\nTesting Guidelines\nCommit & Pull Request Guidelines"
+	got := CleanCodexDisplayText(value)
+	if !strings.Contains(got, "Generate a file named AGENTS.md") {
+		t.Fatalf("CleanCodexDisplayText() = %q, want contributor guide request", got)
+	}
+}
+
 func TestMatchCodexTranscriptToAgentStart_UsesNearestCreatedThread(t *testing.T) {
 	base := time.Date(2026, 5, 21, 8, 0, 0, 0, time.UTC)
 	candidates := []codexTranscriptCandidate{
@@ -144,6 +159,20 @@ func TestMatchCodexTranscriptToAgentStart_DoesNotFallBackToOldThread(t *testing.
 		{
 			Row:     codexThreadRow{ID: "old-window", CreatedAtMS: base.Add(-30 * time.Second).UnixMilli()},
 			Updated: base.Add(5 * time.Minute),
+		},
+	}
+
+	if got, ok := matchCodexTranscriptToAgentStart(candidates, base); ok {
+		t.Fatalf("matched %#v, want no match", got)
+	}
+}
+
+func TestMatchCodexTranscriptToAgentStart_DoesNotUseStaleUpdatedThread(t *testing.T) {
+	base := time.Date(2026, 5, 21, 8, 0, 0, 0, time.UTC)
+	candidates := []codexTranscriptCandidate{
+		{
+			Row:     codexThreadRow{ID: "created-near-start", CreatedAtMS: base.Add(2 * time.Second).UnixMilli()},
+			Updated: base.Add(-1 * time.Second),
 		},
 	}
 

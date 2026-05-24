@@ -1,4 +1,8 @@
-import { useCallback, useMemo } from "react";
+import {
+  useCallback,
+  useMemo,
+  type ReactNode,
+} from "react";
 import type { Agent, ConnectionState } from "../../store/agents";
 import type {
   CodexConversation,
@@ -9,8 +13,9 @@ import type {
   TerminalThemePalette,
 } from "../../constants/terminalThemes";
 import type {
-  ChatCommandEvent,
+  CodexChatLocalState,
   ComposerAttachment,
+  PendingAssistantMessage,
   PendingUserMessage,
 } from "./CodexChatSession";
 import type { CodexChatBodyProps } from "./CodexChatBody";
@@ -28,9 +33,10 @@ interface UseCodexChatBodyPropsInput {
   connectionState: ConnectionState;
   conversation: CodexConversation | null;
   events: CodexConversationEvent[];
-  chatCommandEvents: ChatCommandEvent[];
   pendingUserMessages: PendingUserMessage[];
+  pendingAssistantMessages: PendingAssistantMessage[];
   loading: boolean;
+  localChatState: CodexChatLocalState;
   error?: string | null;
   draft: string;
   attachments: ComposerAttachment[];
@@ -42,6 +48,9 @@ interface UseCodexChatBodyPropsInput {
   theme: TerminalThemePalette;
   onSwitchToTerminal(): void;
   setDraft(value: string): void;
+  onToggleActionMenu(): void;
+  onDismissActionMenu(): void;
+  skillsSheet?: ReactNode;
 }
 
 export function useCodexChatBodyProps({
@@ -51,9 +60,10 @@ export function useCodexChatBodyProps({
   connectionState,
   conversation,
   events,
-  chatCommandEvents,
   pendingUserMessages,
+  pendingAssistantMessages,
   loading,
+  localChatState,
   error,
   draft,
   attachments,
@@ -65,6 +75,9 @@ export function useCodexChatBodyProps({
   theme,
   onSwitchToTerminal,
   setDraft,
+  onToggleActionMenu,
+  onDismissActionMenu,
+  skillsSheet,
 }: UseCodexChatBodyPropsInput): CodexChatBodyProps {
   const handleComposerHeightChange = useCallback(() => {
     timeline.pinToBottomIfNeeded(false);
@@ -79,11 +92,15 @@ export function useCodexChatBodyProps({
       controller.interruptCodex();
       return;
     }
+    if (controller.startingNewChat) {
+      return;
+    }
     controller.sendDraft();
   }, [
     composerPresentation.showStopButton,
     controller.interruptCodex,
     controller.sendDraft,
+    controller.startingNewChat,
   ]);
 
   return useMemo(
@@ -93,9 +110,10 @@ export function useCodexChatBodyProps({
       agentCwd: agent?.cwd,
       conversation,
       events,
-      chatCommandEvents,
       pendingUserMessages,
+      pendingAssistantMessages,
       loading,
+      localChatState,
       error,
       scrollRef: timeline.scrollRef,
       showJumpToLatest: timeline.showJumpToLatest,
@@ -115,12 +133,14 @@ export function useCodexChatBodyProps({
       composerFocused: composerInput.focused,
       canAttach: controller.canAttach,
       uploading: controller.uploading,
-      sending: controller.sending,
+      sending: controller.sending || controller.startingNewChat,
       attachments,
       composerPresentation,
       chrome,
       theme,
       onSelectCommand: controller.pickSlashCommand,
+      onToggleActionMenu,
+      onDismissActionMenu,
       onRemoveAttachment: controller.removeAttachment,
       onDraftChange: setDraft,
       onUploadPress: handleUploadPress,
@@ -130,11 +150,11 @@ export function useCodexChatBodyProps({
       onInputStart: composerInput.handleInputStart,
       onSubmit: controller.sendDraft,
       onSendPress: handleSendPress,
+      skillsSheet,
     }),
     [
       agent?.cwd,
       attachments,
-      chatCommandEvents,
       chrome,
       composerInput.focus,
       composerInput.focused,
@@ -151,19 +171,25 @@ export function useCodexChatBodyProps({
       controller.removeAttachment,
       controller.sendDraft,
       controller.sending,
+      controller.startingNewChat,
       controller.uploading,
       draft,
       error,
       events,
       pendingUserMessages,
+      pendingAssistantMessages,
       handleComposerHeightChange,
       handleSendPress,
       handleUploadPress,
       loading,
+      localChatState,
       onSwitchToTerminal,
+      onToggleActionMenu,
+      onDismissActionMenu,
       screenFocused,
       serverId,
       setDraft,
+      skillsSheet,
       theme,
       timeline.handleContentSizeChange,
       timeline.handleLayout,

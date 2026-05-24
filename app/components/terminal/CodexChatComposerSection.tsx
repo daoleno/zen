@@ -26,6 +26,8 @@ interface CodexChatComposerSectionProps {
   theme: TerminalThemePalette;
   onLayout(event: LayoutChangeEvent): void;
   onSelectCommand(command: CodexSlashCommand): void;
+  onToggleActionMenu(): void;
+  onDismissActionMenu(): void;
   onRemoveAttachment(id: string): void;
   onDraftChange(value: string): void;
   onUploadPress(): void;
@@ -51,6 +53,8 @@ export function CodexChatComposerSection({
   theme,
   onLayout,
   onSelectCommand,
+  onToggleActionMenu,
+  onDismissActionMenu,
   onRemoveAttachment,
   onDraftChange,
   onUploadPress,
@@ -78,6 +82,9 @@ export function CodexChatComposerSection({
       running={presentation.showStopIndicator}
       bottomPadding={presentation.bottomPadding}
       showCommandMenu={presentation.showCommandMenu}
+      showCommandList={presentation.showCommandList}
+      showComposerActions={presentation.showComposerActions}
+      composerActionButtonEnabled={presentation.composerActionButtonEnabled}
       commandQuery={presentation.commandQuery}
       commands={presentation.visibleSlashCommands}
       attachments={attachments}
@@ -85,6 +92,8 @@ export function CodexChatComposerSection({
       theme={theme}
       onLayout={onLayout}
       onSelectCommand={onSelectCommand}
+      onToggleActionMenu={onToggleActionMenu}
+      onDismissActionMenu={onDismissActionMenu}
       onRemoveAttachment={onRemoveAttachment}
       onDraftChange={onDraftChange}
       onUploadPress={onUploadPress}

@@ -165,7 +165,6 @@ export function useTerminalScreenLayoutProps({
     theme: terminalTheme,
     chrome,
     screenFocused,
-    gitDiff,
     terminalRef,
     ctrlArmed,
     onCtrlArmedChange: handleCtrlArmedChange,
@@ -177,7 +176,6 @@ export function useTerminalScreenLayoutProps({
     daemonId,
     keyboardVisible,
     sessionActions,
-    openGitDiff,
     onAccessoryLayout: handleAccessoryLayout,
   });
   const overlayProps = useTerminalScreenOverlayProps({

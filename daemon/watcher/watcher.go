@@ -156,15 +156,11 @@ func (w *Watcher) poll() {
 		}
 
 		if contentChanged && existed {
-			prevLines := strings.Split(prev, "\n")
-			if len(lines) > len(prevLines) {
-				newLines := lines[len(prevLines):]
-				w.events <- SessionEvent{
-					Type:    "agent_output",
-					AgentID: win.target,
-					Agent:   cloneAgent(agent),
-					Lines:   newLines,
-				}
+			w.events <- SessionEvent{
+				Type:    "agent_output",
+				AgentID: win.target,
+				Agent:   cloneAgent(agent),
+				Lines:   changedPaneLines(prev, content),
 			}
 		}
 
@@ -194,6 +190,27 @@ func (w *Watcher) poll() {
 			}
 		}
 	}
+}
+
+func changedPaneLines(previous, next string) []string {
+	previousLines := strings.Split(previous, "\n")
+	nextLines := strings.Split(next, "\n")
+	if len(nextLines) > len(previousLines) && linesEqual(previousLines, nextLines[:len(previousLines)]) {
+		return nextLines[len(previousLines):]
+	}
+	return lastN(nextLines, 12)
+}
+
+func linesEqual(left, right []string) bool {
+	if len(left) != len(right) {
+		return false
+	}
+	for index := range left {
+		if left[index] != right[index] {
+			return false
+		}
+	}
+	return true
 }
 
 func cloneAgent(agent *classifier.Agent) *classifier.Agent {
@@ -273,6 +290,48 @@ func capturePaneContent(target string) (string, bool) {
 	}
 
 	return string(out), alive
+}
+
+// CapturePaneContent returns a plain-text snapshot of a tmux window's active pane.
+func (w *Watcher) CapturePaneContent(sessionID string) (string, error) {
+	sessionID = strings.TrimSpace(sessionID)
+	if sessionID == "" {
+		return "", fmt.Errorf("missing session id")
+	}
+	out, err := exec.Command("tmux", "capture-pane", "-t", sessionID, "-p", "-S", "-200").Output()
+	if err != nil {
+		return "", fmt.Errorf("capture pane: %w", err)
+	}
+	text := string(out)
+	if text != "" && !strings.HasSuffix(text, "\n") {
+		text += "\n"
+	}
+	return text, nil
+}
+
+// SendKey sends a single tmux key to a window.
+func (w *Watcher) SendKey(sessionID, key string) error {
+	sessionID = strings.TrimSpace(sessionID)
+	key = strings.TrimSpace(key)
+	if sessionID == "" {
+		return fmt.Errorf("missing session id")
+	}
+	if key == "" {
+		return fmt.Errorf("missing key")
+	}
+	if !allowedTmuxKey(key) {
+		return fmt.Errorf("unsupported key %q", key)
+	}
+	return exec.Command("tmux", "send-keys", "-t", sessionID, key).Run()
+}
+
+func allowedTmuxKey(key string) bool {
+	switch key {
+	case "Enter", "Escape", "Up", "Down", "Left", "Right", "Tab", "BTab", "Space":
+		return true
+	default:
+		return false
+	}
 }
 
 // SendInput sends text to a tmux window and treats trailing newlines as submit.

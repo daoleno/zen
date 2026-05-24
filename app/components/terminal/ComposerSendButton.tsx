@@ -1,11 +1,6 @@
 import { Ionicons } from "@expo/vector-icons";
-import React, {
-  useEffect,
-  useRef,
-} from "react";
+import React from "react";
 import {
-  Animated,
-  Easing,
   StyleSheet,
   TouchableOpacity,
 } from "react-native";
@@ -13,6 +8,7 @@ import type {
   TerminalThemeChrome,
   TerminalThemePalette,
 } from "../../constants/terminalThemes";
+import { ComposerLoadingDots } from "./ComposerLoadingDots";
 
 type IoniconName = React.ComponentProps<typeof Ionicons>["name"];
 
@@ -38,48 +34,15 @@ export function ComposerSendButton({
   onPress,
 }: ComposerSendButtonProps) {
   const animated = loading || running;
-  const progress = useRef(new Animated.Value(0)).current;
-
-  useEffect(() => {
-    if (!animated) {
-      progress.stopAnimation();
-      progress.setValue(0);
-      return;
-    }
-
-    const animation = Animated.loop(
-      Animated.timing(progress, {
-        toValue: 1,
-        duration: running ? 1080 : 820,
-        easing: Easing.linear,
-        useNativeDriver: true,
-      }),
-    );
-    animation.start();
-    return () => {
-      animation.stop();
-      progress.stopAnimation();
-      progress.setValue(0);
-    };
-  }, [animated, progress, running]);
-
-  const rotation = progress.interpolate({
-    inputRange: [0, 1],
-    outputRange: ["0deg", "360deg"],
-  });
-  const pulseOpacity = progress.interpolate({
-    inputRange: [0, 0.5, 1],
-    outputRange: [0.62, 1, 0.62],
-  });
   const foreground = running || (enabled && !loading)
     ? theme.background
     : loading
-      ? chrome.accent
+      ? chrome.text
       : chrome.textSubtle;
   const backgroundColor = running || (enabled && !loading)
     ? chrome.text
     : loading
-      ? chrome.accentSoft
+      ? chrome.surface
       : chrome.surfaceMuted;
   const borderColor = running || (enabled && !loading)
     ? chrome.text
@@ -101,29 +64,18 @@ export function ComposerSendButton({
       activeOpacity={0.78}
       disabled={!enabled}
     >
-      {animated ? (
-        <>
-          <Animated.View
-            style={[
-              styles.progressRing,
-              {
-                borderColor: running ? chrome.textSubtle : chrome.border,
-                borderTopColor: foreground,
-                borderRightColor: foreground,
-                transform: [{ rotate: rotation }],
-              },
-            ]}
-          />
-          <Animated.View style={{ opacity: pulseOpacity }}>
-            <Ionicons
-              name={running ? "square" : "arrow-up"}
-              size={running ? 10 : 14}
-              color={foreground}
-            />
-          </Animated.View>
-        </>
+      {loading ? (
+        <ComposerLoadingDots
+          color={chrome.accent}
+          size={4}
+          gap={3}
+        />
       ) : (
-        <Ionicons name={icon} size={18} color={foreground} />
+        <Ionicons
+          name={icon}
+          size={running ? 11 : 18}
+          color={foreground}
+        />
       )}
     </TouchableOpacity>
   );
@@ -140,12 +92,5 @@ const styles = StyleSheet.create({
   },
   disabled: {
     opacity: 0.62,
-  },
-  progressRing: {
-    position: "absolute",
-    width: 29,
-    height: 29,
-    borderRadius: 15,
-    borderWidth: 1.5,
   },
 });
