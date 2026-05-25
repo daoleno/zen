@@ -4,7 +4,7 @@ import {
   type SetStateAction,
 } from "react";
 import { Alert } from "react-native";
-import type { Agent, ConnectionState } from "../../store/agents";
+import type { ConnectionState } from "../../store/agents";
 import type {
   CodexConversation,
   CodexConversationEvent,
@@ -16,6 +16,7 @@ import type {
 } from "../../services/websocket";
 import {
   type ComposerAttachment,
+  type PendingSlashCommandInput,
   type PendingUserMessageInput,
 } from "./CodexChatSession";
 import { useCodexComposerAttachments } from "./useCodexComposerAttachments";
@@ -27,7 +28,6 @@ import { useCodexSlashCommandRouter } from "./useCodexSlashCommandRouter";
 interface UseCodexChatControllerInput {
   serverId: string;
   agentId: string;
-  agent?: Agent;
   connectionState: ConnectionState;
   connectionIssue?: ConnectionIssue | null;
   conversation: CodexConversation | null;
@@ -39,21 +39,22 @@ interface UseCodexChatControllerInput {
   slashCommands: CodexSlashCommand[];
   addPendingUserMessage(message: PendingUserMessageInput): string;
   removePendingUserMessage(id: string): void;
-  startPendingAssistantMessage(sentText: string, baselineLines: string[]): string;
+  addPendingSlashCommand(command: PendingSlashCommandInput): string;
+  settlePendingSlashCommand(id: string): void;
+  removePendingSlashCommand(id: string): void;
   resetForNewChat(): void;
   markNewChatReady(): void;
   markNewChatMessageStarted(): void;
-  refreshConversation(showLoading?: boolean): Promise<void>;
   scrollToLatest(animated?: boolean, delay?: number): void;
   focusComposer(): void;
   dismissActionMenu(): void;
   openSkillsSheet(): void;
+  openGitDiff(): void;
 }
 
 export function useCodexChatController({
   serverId,
   agentId,
-  agent,
   connectionState,
   connectionIssue,
   conversation,
@@ -65,15 +66,17 @@ export function useCodexChatController({
   slashCommands,
   addPendingUserMessage,
   removePendingUserMessage,
-  startPendingAssistantMessage,
+  addPendingSlashCommand,
+  settlePendingSlashCommand,
+  removePendingSlashCommand,
   resetForNewChat,
   markNewChatReady,
   markNewChatMessageStarted,
-  refreshConversation,
   scrollToLatest,
   focusComposer,
   dismissActionMenu,
   openSkillsSheet,
+  openGitDiff,
 }: UseCodexChatControllerInput) {
   const insertSkillMention = useCallback((skill: CodexSkill) => {
     const mention = `$${skill.name}`;
@@ -84,7 +87,23 @@ export function useCodexChatController({
     focusComposer();
   }, [draft, focusComposer, setDraft]);
 
-  const copyLastAssistantMessage = useCallback(() => {
+  const recordLocalSlashCommand = useCallback((
+    command: CodexSlashCommand,
+    text: string = command.value,
+    completedTitle?: string,
+  ) => {
+    const id = addPendingSlashCommand({
+      text,
+      name: command.name,
+      title: command.title,
+      description: command.description,
+      completedTitle,
+    });
+    settlePendingSlashCommand(id);
+    scrollToLatest(false, 0);
+  }, [addPendingSlashCommand, scrollToLatest, settlePendingSlashCommand]);
+
+  const copyLastAssistantMessage = useCallback((command?: CodexSlashCommand) => {
     const lastAssistant = [...events]
       .reverse()
       .find(
@@ -97,10 +116,16 @@ export function useCodexChatController({
       Alert.alert("Nothing to copy", "There is no Codex response in this chat yet.");
       return;
     }
-    void Clipboard.setStringAsync(text).catch((err: any) => {
-      Alert.alert("Copy failed", err?.message || "Could not copy the last response.");
-    });
-  }, [events]);
+    void Clipboard.setStringAsync(text)
+      .then(() => {
+        if (command) {
+          recordLocalSlashCommand(command, command.value, "Copied response");
+        }
+      })
+      .catch((err: any) => {
+        Alert.alert("Copy failed", err?.message || "Could not copy the last response.");
+      });
+  }, [events, recordLocalSlashCommand]);
 
   const {
     canAttach,
@@ -129,12 +154,12 @@ export function useCodexChatController({
     setAttachments,
     addPendingUserMessage,
     removePendingUserMessage,
-    startPendingAssistantMessage,
-    terminalBaselineLines: agent?.last_output_lines ?? [],
+    addPendingSlashCommand,
+    settlePendingSlashCommand,
+    removePendingSlashCommand,
     resetForNewChat,
     markNewChatReady,
     markNewChatMessageStarted,
-    refreshConversation,
     scrollToLatest,
   });
 
@@ -142,7 +167,6 @@ export function useCodexChatController({
     statusMeta,
     canSend,
   } = useCodexControllerPresentation({
-    agent,
     connectionState,
     connectionIssue,
     conversation,
@@ -167,6 +191,7 @@ export function useCodexChatController({
     startNewCodexChat,
     sendSlashCommandToCodex,
     openSkillsSheet,
+    openGitDiff,
     copyLastAssistantMessage,
   });
 

@@ -30,17 +30,15 @@ interface ZenTimelineItemViewProps {
   item: ZenTimelineItem;
   chrome: TerminalThemeChrome;
   theme: TerminalThemePalette;
-  stream: boolean;
   loadAssetPreview(path: string): Promise<string | null>;
   formatPatchPath(file: PatchFileSummary): string;
   truncateBody(value: string, limit: number): string;
 }
 
-export function ZenTimelineItemView({
+function ZenTimelineItemViewImpl({
   item,
   chrome,
   theme,
-  stream,
   loadAssetPreview,
   formatPatchPath,
   truncateBody,
@@ -54,7 +52,6 @@ export function ZenTimelineItemView({
         item={item}
         chrome={chrome}
         theme={theme}
-        stream={stream}
       />
     );
   }
@@ -70,5 +67,24 @@ export function ZenTimelineItemView({
       formatPatchPath={formatPatchPath}
       truncateBody={truncateBody}
     />
+  );
+}
+
+export const ZenTimelineItemView = React.memo(
+  ZenTimelineItemViewImpl,
+  areZenTimelineItemViewPropsEqual,
+);
+
+function areZenTimelineItemViewPropsEqual(
+  previous: ZenTimelineItemViewProps,
+  next: ZenTimelineItemViewProps,
+) {
+  return (
+    previous.item === next.item &&
+    previous.chrome === next.chrome &&
+    previous.theme === next.theme &&
+    previous.loadAssetPreview === next.loadAssetPreview &&
+    previous.formatPatchPath === next.formatPatchPath &&
+    previous.truncateBody === next.truncateBody
   );
 }

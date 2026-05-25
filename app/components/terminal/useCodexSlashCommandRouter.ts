@@ -30,9 +30,10 @@ interface UseCodexSlashCommandRouterInput {
     previousAttachments: ComposerAttachment[],
   ): void;
   startNewCodexChat(commandText?: string): void;
-  sendSlashCommandToCodex(text: string): void;
+  sendSlashCommandToCodex(text: string, command?: CodexSlashCommand): void;
   openSkillsSheet(): void;
-  copyLastAssistantMessage(): void;
+  openGitDiff(): void;
+  copyLastAssistantMessage(command: CodexSlashCommand): void;
 }
 
 export function useCodexSlashCommandRouter({
@@ -46,6 +47,7 @@ export function useCodexSlashCommandRouter({
   startNewCodexChat,
   sendSlashCommandToCodex,
   openSkillsSheet,
+  openGitDiff,
   copyLastAssistantMessage,
 }: UseCodexSlashCommandRouterInput) {
   const {
@@ -110,11 +112,18 @@ export function useCodexSlashCommandRouter({
           return true;
         }
         if (command.name === "skills") {
+          setDraft("");
           openSkillsSheet();
           return true;
         }
         if (command.name === "copy") {
-          copyLastAssistantMessage();
+          setDraft("");
+          copyLastAssistantMessage(command);
+          return true;
+        }
+        if (command.name === "diff") {
+          setDraft("");
+          openGitDiff();
           return true;
         }
         setDraft(`${command.value} `);
@@ -125,7 +134,7 @@ export function useCodexSlashCommandRouter({
         startNewCodexChat(rawText);
         return true;
       }
-      sendSlashCommandToCodex(rawText);
+      sendSlashCommandToCodex(rawText, command);
       return true;
     },
     [
@@ -138,6 +147,7 @@ export function useCodexSlashCommandRouter({
       showUnsupportedSlashCommand,
       startNewCodexChat,
       openSkillsSheet,
+      openGitDiff,
       copyLastAssistantMessage,
     ],
   );
@@ -173,6 +183,7 @@ export function useCodexSlashCommandRouter({
     showUnsupportedSlashCommand,
     sendSlashCommandToCodex,
     openSkillsSheet,
+    openGitDiff,
     copyLastAssistantMessage,
   });
 

@@ -72,13 +72,13 @@ export function CodexChatComposerSection({
       placeholder={presentation.placeholder}
       editable={editable}
       focused={focused}
-      floating={presentation.active}
       canAttach={canAttach}
       uploading={uploading}
       sendEnabled={presentation.sendEnabled}
       sending={sending}
       sendIcon={presentation.sendIcon}
       sendLabel={presentation.sendLabel}
+      sendElapsedLabel={presentation.sendElapsedLabel}
       running={presentation.showStopIndicator}
       bottomPadding={presentation.bottomPadding}
       showCommandMenu={presentation.showCommandMenu}

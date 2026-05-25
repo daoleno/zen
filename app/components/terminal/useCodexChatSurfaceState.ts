@@ -9,12 +9,21 @@ import type {
   TerminalThemeChrome,
   TerminalThemePalette,
 } from "../../constants/terminalThemes";
-import type { Agent, ConnectionState } from "../../store/agents";
+import type { ConnectionState } from "../../store/agents";
 import type { ConnectionIssue } from "../../services/connectionIssue";
+import type {
+  CodexConversation,
+  CodexConversationEvent,
+} from "../../services/codexConversation";
 import type { CodexChatBodyProps } from "./CodexChatBody";
 import { useCodexChatController } from "./CodexChatController";
 import { isCodexRequestRunning } from "./CodexChatControllerModel";
-import { useCodexChatSession } from "./CodexChatSession";
+import {
+  type CodexChatAgentInfo,
+  type PendingSlashCommand,
+  type PendingUserMessage,
+  useCodexChatSession,
+} from "./CodexChatSession";
 import { CodexSkillsSheet } from "./CodexSkillsSheet";
 import { useCodexSlashCommands } from "./CodexSlashCommands";
 import { useCodexChatBodyProps } from "./useCodexChatBodyProps";
@@ -22,18 +31,21 @@ import {
   useCodexComposerInput,
   useCodexComposerPresentation,
   usePinnedTimeline,
+  useRelativeTimeLabel,
 } from "./CodexChatSurfaceHooks";
 
 interface UseCodexChatSurfaceStateInput {
+  visible: boolean;
   serverId: string;
   agentId: string;
-  agent?: Agent;
+  agentInfo?: CodexChatAgentInfo;
   connectionState: ConnectionState;
   connectionIssue?: ConnectionIssue | null;
   theme: TerminalThemePalette;
   chrome: TerminalThemeChrome;
   screenFocused: boolean;
   onSwitchToTerminal(): void;
+  onOpenGitDiff(): void;
 }
 
 interface CodexChatSurfaceState {
@@ -41,15 +53,17 @@ interface CodexChatSurfaceState {
 }
 
 export function useCodexChatSurfaceState({
+  visible,
   serverId,
   agentId,
-  agent,
+  agentInfo,
   connectionState,
   connectionIssue,
   theme,
   chrome,
   screenFocused,
   onSwitchToTerminal,
+  onOpenGitDiff,
 }: UseCodexChatSurfaceStateInput): CodexChatSurfaceState {
   const insets = useSafeAreaInsets();
   const slashCommands = useCodexSlashCommands({
@@ -62,7 +76,7 @@ export function useCodexChatSurfaceState({
   const session = useCodexChatSession({
     serverId,
     agentId,
-    agent,
+    agentInfo,
     connectionState,
     screenFocused,
   });
@@ -77,23 +91,24 @@ export function useCodexChatSurfaceState({
     attachments,
     setAttachments,
     pendingUserMessages,
-    pendingAssistantMessages,
+    pendingSlashCommands,
     addPendingUserMessage,
     removePendingUserMessage,
-    startPendingAssistantMessage,
+    addPendingSlashCommand,
+    settlePendingSlashCommand,
+    removePendingSlashCommand,
     resetForNewChat,
     markNewChatReady,
     markNewChatMessageStarted,
-    refreshConversation,
   } = session;
   const composerInput = useCodexComposerInput({
-    enabled: screenFocused && connectionState === "connected",
+    enabled: visible && screenFocused && connectionState === "connected",
   });
   useEffect(() => {
-    if (connectionState !== "connected" && actionMenuPinned) {
+    if ((!visible || connectionState !== "connected") && actionMenuPinned) {
       setActionMenuPinned(false);
     }
-  }, [actionMenuPinned, connectionState]);
+  }, [actionMenuPinned, connectionState, visible]);
 
   const toggleActionMenu = useCallback(() => {
     if (connectionState !== "connected") {
@@ -117,15 +132,20 @@ export function useCodexChatSurfaceState({
     setSkillsSheetVisible(false);
   }, []);
   const events = conversation?.events ?? [];
+  const latestTimelineTimestamp = useMemo(
+    () => latestChatTimelineTimestamp(conversation, pendingUserMessages, pendingSlashCommands),
+    [conversation, pendingSlashCommands, pendingUserMessages],
+  );
+  const jumpLabel = useRelativeTimeLabel(latestTimelineTimestamp);
   const timeline = usePinnedTimeline(
     events.length +
       pendingUserMessages.length +
-      pendingAssistantMessages.length,
+      pendingSlashCommands.length,
+    conversationCacheKey,
   );
   const controller = useCodexChatController({
     serverId,
     agentId,
-    agent,
     connectionState,
     connectionIssue,
     conversation,
@@ -137,29 +157,25 @@ export function useCodexChatSurfaceState({
     slashCommands,
     addPendingUserMessage,
     removePendingUserMessage,
-    startPendingAssistantMessage,
+    addPendingSlashCommand,
+    settlePendingSlashCommand,
+    removePendingSlashCommand,
     resetForNewChat,
     markNewChatReady,
     markNewChatMessageStarted,
-    refreshConversation,
     scrollToLatest: timeline.scrollToLatest,
     focusComposer: composerInput.focus,
     dismissActionMenu,
     openSkillsSheet,
+    openGitDiff: onOpenGitDiff,
   });
-
-  useEffect(() => {
-    timeline.resetForConversation();
-  }, [conversationCacheKey, timeline.resetForConversation]);
 
   const requestRunning =
     (isCodexRequestRunning({
-      agent,
       conversation,
       events,
     }) &&
-      localChatState === "idle") ||
-    pendingAssistantMessages.some((message) => !message.settledAt);
+      localChatState === "idle");
   const composerPresentation = useCodexComposerPresentation({
     draft,
     slashCommands,
@@ -170,7 +186,7 @@ export function useCodexChatSurfaceState({
     startingNewChat: controller.startingNewChat,
     interrupting: controller.interrupting,
     canSend: controller.canSend,
-    composerFocused: composerInput.focused,
+    elapsedLabel: jumpLabel,
     actionMenuPinned,
     safeAreaTop: insets.top,
     safeAreaBottom: insets.bottom,
@@ -180,7 +196,7 @@ export function useCodexChatSurfaceState({
       React.createElement(CodexSkillsSheet, {
         visible: skillsSheetVisible,
         serverId,
-        cwd: agent?.cwd,
+        cwd: agentInfo?.cwd,
         chrome,
         theme,
         onSelectSkill: (skill) => {
@@ -190,7 +206,7 @@ export function useCodexChatSurfaceState({
         onClose: closeSkillsSheet,
       }),
     [
-      agent?.cwd,
+      agentInfo?.cwd,
       chrome,
       closeSkillsSheet,
       controller.insertSkillMention,
@@ -202,12 +218,12 @@ export function useCodexChatSurfaceState({
   const bodyProps = useCodexChatBodyProps({
     screenFocused,
     serverId,
-    agent,
+    agentCwd: agentInfo?.cwd,
     connectionState,
     conversation,
     events,
     pendingUserMessages,
-    pendingAssistantMessages,
+    pendingSlashCommands,
     loading,
     localChatState,
     error,
@@ -215,6 +231,7 @@ export function useCodexChatSurfaceState({
     attachments,
     composerPresentation,
     timeline,
+    jumpLabel,
     composerInput,
     controller,
     chrome,
@@ -228,4 +245,31 @@ export function useCodexChatSurfaceState({
   return {
     bodyProps,
   };
+}
+
+function latestChatTimelineTimestamp(
+  conversation: CodexConversation | null,
+  pendingUserMessages: PendingUserMessage[],
+  pendingSlashCommands: PendingSlashCommand[],
+) {
+  let latest = 0;
+  conversation?.events.forEach((event: CodexConversationEvent) => {
+    const timestamp = new Date(event.timestamp || "").getTime();
+    if (Number.isFinite(timestamp) && timestamp > latest) {
+      latest = timestamp;
+    }
+  });
+  pendingUserMessages.forEach((message) => {
+    const timestamp = new Date(message.createdAt).getTime();
+    if (Number.isFinite(timestamp) && timestamp > latest) {
+      latest = timestamp;
+    }
+  });
+  pendingSlashCommands.forEach((command) => {
+    const timestamp = new Date(command.createdAt).getTime();
+    if (Number.isFinite(timestamp) && timestamp > latest) {
+      latest = timestamp;
+    }
+  });
+  return latest > 0 ? new Date(latest).toISOString() : undefined;
 }

@@ -29,6 +29,7 @@ import (
 )
 
 const maxCodexAssetBytes = 6 << 20
+const codexConversationSubscriptionInterval = 450 * time.Millisecond
 
 var upgrader = websocket.Upgrader{
 	CheckOrigin: func(r *http.Request) bool { return true },
@@ -49,26 +50,33 @@ type Server struct {
 	workSubID int
 	workSub   <-chan work.Event
 
-	clients map[*websocket.Conn]bool
-	active  map[*websocket.Conn]string
-	writes  map[*websocket.Conn]*sync.Mutex
-	mu      sync.Mutex
+	clients   map[*websocket.Conn]bool
+	active    map[*websocket.Conn]string
+	writes    map[*websocket.Conn]*sync.Mutex
+	codexSubs map[*websocket.Conn]map[string]codexConversationSubscription
+	mu        sync.Mutex
+}
+
+type codexConversationSubscription struct {
+	cancel     context.CancelFunc
+	generation string
 }
 
 // New creates a WebSocket server.
 func New(authManager *auth.Manager, w *watcher.Watcher, pusher *push.Client, sc *stats.Collector, workStore *work.Store, launcher *work.Launcher, execs *work.ExecutorConfig) *Server {
 	srv := &Server{
-		auth:     authManager,
-		watcher:  w,
-		terminal: terminal.NewManager(&terminal.TmuxBackend{}),
-		pusher:   pusher,
-		stats:    sc,
-		work:     workStore,
-		launcher: launcher,
-		execs:    execs,
-		clients:  make(map[*websocket.Conn]bool),
-		active:   make(map[*websocket.Conn]string),
-		writes:   make(map[*websocket.Conn]*sync.Mutex),
+		auth:      authManager,
+		watcher:   w,
+		terminal:  terminal.NewManager(&terminal.TmuxBackend{}),
+		pusher:    pusher,
+		stats:     sc,
+		work:      workStore,
+		launcher:  launcher,
+		execs:     execs,
+		clients:   make(map[*websocket.Conn]bool),
+		active:    make(map[*websocket.Conn]string),
+		writes:    make(map[*websocket.Conn]*sync.Mutex),
+		codexSubs: make(map[*websocket.Conn]map[string]codexConversationSubscription),
 	}
 	if workStore != nil {
 		srv.workSubID, srv.workSub = workStore.Subscribe()
@@ -167,6 +175,7 @@ func (s *Server) handleWS(w http.ResponseWriter, r *http.Request) {
 	s.clients[conn] = true
 	s.active[conn] = ""
 	s.writes[conn] = &sync.Mutex{}
+	s.codexSubs[conn] = map[string]codexConversationSubscription{}
 	s.mu.Unlock()
 
 	log.Printf("client connected (%d total)", len(s.clients))
@@ -190,9 +199,11 @@ func (s *Server) handleWS(w http.ResponseWriter, r *http.Request) {
 	}
 
 	s.mu.Lock()
+	s.cancelCodexSubscriptionsLocked(conn)
 	delete(s.clients, conn)
 	delete(s.active, conn)
 	delete(s.writes, conn)
+	delete(s.codexSubs, conn)
 	s.mu.Unlock()
 	log.Printf("client disconnected (%d remaining)", len(s.clients))
 }
@@ -415,8 +426,11 @@ func (s *Server) handleClientMessage(conn *websocket.Conn, msg []byte) {
 			"content":    payload,
 		})
 
-	case "codex_conversation":
-		s.handleCodexConversation(conn, raw)
+	case "codex_conversation_subscribe":
+		s.handleCodexConversationSubscribe(conn, raw)
+
+	case "codex_conversation_unsubscribe":
+		s.handleCodexConversationUnsubscribe(conn, raw)
 
 	case "codex_slash_commands":
 		s.handleCodexSlashCommands(conn, raw)
@@ -641,22 +655,14 @@ func (s *Server) sendAgentSessionList(conn *websocket.Conn) {
 	s.sendJSON(conn, map[string]any{"type": "agent_session_list", "agent_sessions": agentSessions})
 }
 
-func (s *Server) handleListSessionServices(conn *websocket.Conn, raw clientMessage) {
-	payload, err := s.watcher.DiscoverSessionServices()
-	if err != nil {
-		s.sendErrorWithRequestID(conn, raw.RequestID, "list_session_services_failed", err.Error())
-		return
-	}
-	s.sendJSON(conn, map[string]any{
-		"type":         "session_service_list",
-		"request_id":   raw.RequestID,
-		"generated_at": payload.GeneratedAt,
-		"interfaces":   payload.Interfaces,
-		"services":     payload.Services,
-	})
+type resolvedCodexConversationAgent struct {
+	targetID string
+	agent    classifier.Agent
+	ready    bool
+	reason   string
 }
 
-func (s *Server) handleCodexConversation(conn *websocket.Conn, raw clientMessage) {
+func (s *Server) resolveCodexConversationAgent(raw clientMessage) resolvedCodexConversationAgent {
 	targetID := strings.TrimSpace(raw.TargetID)
 	if targetID == "" {
 		targetID = strings.TrimSpace(raw.AgentID)
@@ -673,17 +679,11 @@ func (s *Server) handleCodexConversation(conn *websocket.Conn, raw clientMessage
 	startedAt := clientStartedAt(raw.StartedAt)
 	if agent.ID == "" {
 		if targetID != "" && startedAt.IsZero() {
-			s.sendJSON(conn, map[string]any{
-				"type":       "codex_conversation",
-				"request_id": raw.RequestID,
-				"agent_id":   targetID,
-				"conversation": work.CodexConversation{
-					Available: false,
-					Reason:    "session_not_ready",
-					Events:    []work.CodexConversationEvent{},
-				},
-			})
-			return
+			return resolvedCodexConversationAgent{
+				targetID: targetID,
+				ready:    false,
+				reason:   "session_not_ready",
+			}
 		}
 		agent = classifier.Agent{
 			ID:        targetID,
@@ -701,30 +701,316 @@ func (s *Server) handleCodexConversation(conn *websocket.Conn, raw clientMessage
 		agent.StartedAt = startedAt
 	}
 	if agent.ID == "" && strings.TrimSpace(agent.Cwd) == "" {
-		s.sendJSON(conn, map[string]any{
-			"type":       "codex_conversation",
-			"request_id": raw.RequestID,
-			"agent_id":   targetID,
-			"conversation": work.CodexConversation{
-				Available: false,
-				Reason:    "agent_not_found",
-				Events:    []work.CodexConversationEvent{},
-			},
-		})
-		return
+		return resolvedCodexConversationAgent{
+			targetID: targetID,
+			ready:    false,
+			reason:   "agent_not_found",
+		}
 	}
+	return resolvedCodexConversationAgent{
+		targetID: targetID,
+		agent:    agent,
+		ready:    true,
+	}
+}
 
-	conversation, err := work.LoadCodexConversationForAgent(agent, time.Now())
+func (s *Server) handleListSessionServices(conn *websocket.Conn, raw clientMessage) {
+	payload, err := s.watcher.DiscoverSessionServices()
 	if err != nil {
-		s.sendErrorWithRequestID(conn, raw.RequestID, "codex_conversation_failed", err.Error())
+		s.sendErrorWithRequestID(conn, raw.RequestID, "list_session_services_failed", err.Error())
 		return
 	}
 	s.sendJSON(conn, map[string]any{
-		"type":         "codex_conversation",
+		"type":         "session_service_list",
 		"request_id":   raw.RequestID,
-		"agent_id":     targetID,
-		"conversation": conversation,
+		"generated_at": payload.GeneratedAt,
+		"interfaces":   payload.Interfaces,
+		"services":     payload.Services,
 	})
+}
+
+func (s *Server) handleCodexConversationSubscribe(conn *websocket.Conn, raw clientMessage) {
+	subscriptionID := strings.TrimSpace(raw.RequestID)
+	if subscriptionID == "" {
+		subscriptionID = strings.TrimSpace(raw.TargetID)
+	}
+	if subscriptionID == "" {
+		subscriptionID = strings.TrimSpace(raw.AgentID)
+	}
+	if subscriptionID == "" {
+		s.sendErrorWithRequestID(conn, raw.RequestID, "codex_conversation_subscribe_failed", "missing subscription id")
+		return
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	generation := uuid.NewString()
+	s.mu.Lock()
+	if s.codexSubs[conn] == nil {
+		s.codexSubs[conn] = map[string]codexConversationSubscription{}
+	}
+	if previous := s.codexSubs[conn][subscriptionID]; previous.cancel != nil {
+		previous.cancel()
+	}
+	s.codexSubs[conn][subscriptionID] = codexConversationSubscription{
+		cancel:     cancel,
+		generation: generation,
+	}
+	s.mu.Unlock()
+
+	go s.runCodexConversationSubscription(ctx, conn, raw, subscriptionID, generation)
+}
+
+func (s *Server) handleCodexConversationUnsubscribe(conn *websocket.Conn, raw clientMessage) {
+	subscriptionID := strings.TrimSpace(raw.RequestID)
+	if subscriptionID == "" {
+		subscriptionID = strings.TrimSpace(raw.TargetID)
+	}
+	if subscriptionID == "" {
+		subscriptionID = strings.TrimSpace(raw.AgentID)
+	}
+	if subscriptionID == "" {
+		return
+	}
+	s.mu.Lock()
+	if sub := s.codexSubs[conn][subscriptionID]; sub.cancel != nil {
+		sub.cancel()
+		delete(s.codexSubs[conn], subscriptionID)
+	}
+	s.mu.Unlock()
+}
+
+func (s *Server) cancelCodexSubscriptionsLocked(conn *websocket.Conn) {
+	for id, sub := range s.codexSubs[conn] {
+		if sub.cancel != nil {
+			sub.cancel()
+		}
+		delete(s.codexSubs[conn], id)
+	}
+}
+
+type codexConversationSubscriptionSnapshot struct {
+	conversation work.CodexConversation
+	fingerprint  string
+	eventsByID   map[string]work.CodexConversationEvent
+	revision     int64
+}
+
+func (s *Server) runCodexConversationSubscription(
+	ctx context.Context,
+	conn *websocket.Conn,
+	raw clientMessage,
+	subscriptionID string,
+	generation string,
+) {
+	ticker := time.NewTicker(codexConversationSubscriptionInterval)
+	defer ticker.Stop()
+	defer func() {
+		s.mu.Lock()
+		if current, ok := s.codexSubs[conn][subscriptionID]; ok && current.generation == generation {
+			delete(s.codexSubs[conn], subscriptionID)
+		}
+		s.mu.Unlock()
+	}()
+
+	var previous *codexConversationSubscriptionSnapshot
+	for {
+		s.publishCodexConversationSubscription(ctx, conn, raw, subscriptionID, &previous)
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+		}
+	}
+}
+
+func (s *Server) publishCodexConversationSubscription(
+	ctx context.Context,
+	conn *websocket.Conn,
+	raw clientMessage,
+	subscriptionID string,
+	previous **codexConversationSubscriptionSnapshot,
+) {
+	if ctx.Err() != nil {
+		return
+	}
+	resolved := s.resolveCodexConversationAgent(raw)
+	if !resolved.ready {
+		fingerprint := fmt.Sprintf("sync:%s:%s", resolved.targetID, resolved.reason)
+		if (*previous) != nil && (*previous).fingerprint == fingerprint {
+			return
+		}
+		revision := int64(1)
+		if (*previous) != nil {
+			revision = (*previous).revision + 1
+		}
+		s.sendJSON(conn, map[string]any{
+			"type":            "codex_conversation_sync_status",
+			"request_id":      subscriptionID,
+			"agent_id":        resolved.targetID,
+			"conversation_id": "",
+			"revision":        revision,
+			"state":           "syncing",
+			"reason":          resolved.reason,
+		})
+		*previous = &codexConversationSubscriptionSnapshot{
+			conversation: work.CodexConversation{
+				Available: false,
+				Reason:    resolved.reason,
+				Events:    []work.CodexConversationEvent{},
+			},
+			fingerprint: fingerprint,
+			eventsByID:  map[string]work.CodexConversationEvent{},
+			revision:    revision,
+		}
+		return
+	}
+
+	conversation, err := work.LoadCodexConversationForAgent(resolved.agent, time.Now())
+	if err != nil {
+		s.sendJSON(conn, map[string]any{
+			"type":       "error",
+			"request_id": subscriptionID,
+			"code":       "codex_conversation_subscribe_failed",
+			"message":    err.Error(),
+		})
+		return
+	}
+	fingerprint := codexConversationSubscriptionFingerprint(conversation)
+	if (*previous) != nil && (*previous).fingerprint == fingerprint {
+		return
+	}
+
+	next := codexConversationSubscriptionSnapshot{
+		conversation: conversation,
+		fingerprint:  fingerprint,
+		eventsByID:   codexConversationEventsByID(conversation.Events),
+		revision:     1,
+	}
+	if (*previous) != nil {
+		next.revision = (*previous).revision + 1
+	}
+
+	if (*previous) == nil || codexConversationIdentity((*previous).conversation) != codexConversationIdentity(conversation) {
+		s.sendJSON(conn, map[string]any{
+			"type":            "codex_conversation_snapshot",
+			"request_id":      subscriptionID,
+			"agent_id":        resolved.targetID,
+			"conversation_id": codexConversationIdentity(conversation),
+			"revision":        next.revision,
+			"conversation":    conversation,
+		})
+		*previous = &next
+		return
+	}
+
+	upserts, deletes := codexConversationDelta((*previous).eventsByID, conversation.Events)
+	s.sendJSON(conn, map[string]any{
+		"type":            "codex_conversation_delta",
+		"request_id":      subscriptionID,
+		"agent_id":        resolved.targetID,
+		"conversation_id": codexConversationIdentity(conversation),
+		"revision":        next.revision,
+		"available":       conversation.Available,
+		"reason":          conversation.Reason,
+		"source":          conversation.Source,
+		"path":            conversation.Path,
+		"session_id":      conversation.SessionID,
+		"cwd":             conversation.CWD,
+		"updated_at":      conversation.Updated,
+		"active":          conversation.Active,
+		"upserts":         upserts,
+		"deletes":         deletes,
+	})
+	*previous = &next
+}
+
+func codexConversationIdentity(conversation work.CodexConversation) string {
+	return firstNonEmptyString(conversation.SessionID, conversation.Path, conversation.CWD)
+}
+
+func firstNonEmptyString(values ...string) string {
+	for _, value := range values {
+		if strings.TrimSpace(value) != "" {
+			return value
+		}
+	}
+	return ""
+}
+
+func codexConversationSubscriptionFingerprint(conversation work.CodexConversation) string {
+	return fmt.Sprintf("%s:%t:%s:%s:%s:%s:%v:%s",
+		codexConversationIdentity(conversation),
+		conversation.Available,
+		conversation.Reason,
+		conversation.Source,
+		conversation.CWD,
+		codexConversationActiveValue(conversation.Active),
+		conversation.Updated,
+		codexConversationEventsFingerprint(conversation.Events),
+	)
+}
+
+func codexConversationActiveValue(active *bool) string {
+	if active == nil {
+		return ""
+	}
+	if *active {
+		return "true"
+	}
+	return "false"
+}
+
+func codexConversationEventsFingerprint(events []work.CodexConversationEvent) string {
+	data, err := json.Marshal(events)
+	if err != nil {
+		return fmt.Sprintf("%d", len(events))
+	}
+	return string(data)
+}
+
+func codexConversationEventsByID(events []work.CodexConversationEvent) map[string]work.CodexConversationEvent {
+	byID := make(map[string]work.CodexConversationEvent, len(events))
+	for _, event := range events {
+		if strings.TrimSpace(event.ID) == "" {
+			continue
+		}
+		byID[event.ID] = event
+	}
+	return byID
+}
+
+func codexConversationDelta(
+	previous map[string]work.CodexConversationEvent,
+	next []work.CodexConversationEvent,
+) ([]work.CodexConversationEvent, []string) {
+	var upserts []work.CodexConversationEvent
+	nextIDs := make(map[string]struct{}, len(next))
+	for _, event := range next {
+		id := strings.TrimSpace(event.ID)
+		if id == "" {
+			upserts = append(upserts, event)
+			continue
+		}
+		nextIDs[id] = struct{}{}
+		if previousEvent, ok := previous[id]; !ok || codexConversationEventFingerprint(previousEvent) != codexConversationEventFingerprint(event) {
+			upserts = append(upserts, event)
+		}
+	}
+	var deletes []string
+	for id := range previous {
+		if _, ok := nextIDs[id]; !ok {
+			deletes = append(deletes, id)
+		}
+	}
+	return upserts, deletes
+}
+
+func codexConversationEventFingerprint(event work.CodexConversationEvent) string {
+	data, err := json.Marshal(event)
+	if err != nil {
+		return event.ID
+	}
+	return string(data)
 }
 
 func clientStartedAt(raw json.RawMessage) time.Time {

@@ -16,8 +16,8 @@ export interface CodexComposerPresentation {
   sendEnabled: boolean;
   sendIcon: "square" | "arrow-up";
   sendLabel: string;
+  sendElapsedLabel?: string;
   placeholder: string;
-  active: boolean;
   bottomPadding: number;
   keyboardVerticalOffset: number;
 }
@@ -32,7 +32,7 @@ export interface CodexComposerPresentationInput {
   startingNewChat: boolean;
   interrupting: boolean;
   canSend: boolean;
-  composerFocused: boolean;
+  elapsedLabel?: string;
   actionMenuPinned: boolean;
   safeAreaTop: number;
   safeAreaBottom: number;
@@ -49,7 +49,7 @@ export function buildCodexComposerPresentation({
   startingNewChat,
   interrupting,
   canSend,
-  composerFocused,
+  elapsedLabel,
   actionMenuPinned,
   safeAreaTop,
   safeAreaBottom,
@@ -99,9 +99,9 @@ export function buildCodexComposerPresentation({
           : showStopIndicator
             ? "Codex working"
             : "Send message",
+    sendElapsedLabel: showStopIndicator ? elapsedLabel : undefined,
     placeholder:
       connectionState === "connected" ? "Message Codex" : "Daemon unavailable",
-    active: composerFocused || showCommandMenu,
     bottomPadding: Math.max(safeAreaBottom, 8),
     keyboardVerticalOffset: isAndroid
       ? safeAreaTop + TERMINAL_ROUTE_BAR_HEIGHT

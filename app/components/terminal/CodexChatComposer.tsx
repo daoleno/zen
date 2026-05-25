@@ -22,13 +22,13 @@ interface CodexChatComposerProps {
   placeholder: string;
   editable: boolean;
   focused: boolean;
-  floating: boolean;
   canAttach: boolean;
   uploading: boolean;
   sendEnabled: boolean;
   sending: boolean;
   sendIcon: React.ComponentProps<typeof CodexComposerPanel>["sendIcon"];
   sendLabel: string;
+  sendElapsedLabel?: string;
   running: boolean;
   bottomPadding: number;
   showCommandMenu: boolean;
@@ -61,13 +61,13 @@ export function CodexChatComposer({
   placeholder,
   editable,
   focused,
-  floating,
   canAttach,
   uploading,
   sendEnabled,
   sending,
   sendIcon,
   sendLabel,
+  sendElapsedLabel,
   running,
   bottomPadding,
   showCommandMenu,
@@ -132,12 +132,12 @@ export function CodexChatComposer({
         placeholder={placeholder}
         editable={editable}
         focused={focused}
-        floating={floating}
         uploading={uploading}
         sendEnabled={sendEnabled}
         sending={sending}
         sendIcon={sendIcon}
         sendLabel={sendLabel}
+        sendElapsedLabel={sendElapsedLabel}
         running={running}
         actionMenuExpanded={showComposerActions}
         actionMenuButtonEnabled={composerActionButtonEnabled}

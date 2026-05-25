@@ -17,7 +17,6 @@ import {
 import type { ZenTimelineItem } from "./CodexTimelineItemView";
 
 const SCROLL_BOTTOM_THRESHOLD = 96;
-export const SCROLL_TO_BOTTOM_LAYOUT_DELAY_MS = 30;
 const COMPOSER_FOCUS_LOCK_MS = 1000;
 const COMPOSER_REFOCUS_DELAYS_MS = [0, 60, 140, 280, 520, 820] as const;
 
@@ -36,7 +35,7 @@ export function useCodexComposerPresentation({
   startingNewChat,
   interrupting,
   canSend,
-  composerFocused,
+  elapsedLabel,
   actionMenuPinned,
   safeAreaTop,
   safeAreaBottom,
@@ -53,7 +52,7 @@ export function useCodexComposerPresentation({
         startingNewChat,
         interrupting,
         canSend,
-        composerFocused,
+        elapsedLabel,
         actionMenuPinned,
         safeAreaTop,
         safeAreaBottom,
@@ -62,7 +61,7 @@ export function useCodexComposerPresentation({
     [
       attachmentCount,
       canSend,
-      composerFocused,
+      elapsedLabel,
       actionMenuPinned,
       connectionState,
       draft,
@@ -77,14 +76,14 @@ export function useCodexComposerPresentation({
   );
 }
 
-export function usePinnedTimeline(itemCount: number) {
+export function usePinnedTimeline(itemCount: number, resetKey: string) {
   const scrollRef = useRef<FlatList<ZenTimelineItem>>(null);
+  const resetKeyRef = useRef(resetKey);
   const followLatestRef = useRef(true);
   const userDraggingRef = useRef(false);
   const userMomentumRef = useRef(false);
   const scrollRequestSeqRef = useRef(0);
-  const contentHeightRef = useRef(0);
-  const viewportHeightRef = useRef(0);
+  const distanceFromLatestRef = useRef(0);
   const [showJumpToLatest, setShowJumpToLatest] = useState(false);
 
   const updateJumpButton = useCallback(() => {
@@ -93,6 +92,7 @@ export function usePinnedTimeline(itemCount: number) {
 
   const followLatest = useCallback(() => {
     followLatestRef.current = true;
+    distanceFromLatestRef.current = 0;
     setShowJumpToLatest(false);
   }, []);
 
@@ -102,7 +102,7 @@ export function usePinnedTimeline(itemCount: number) {
   }, [updateJumpButton]);
 
   const scrollToLatest = useCallback(
-    (animated: boolean = true, delay: number = SCROLL_TO_BOTTOM_LAYOUT_DELAY_MS) => {
+    (animated: boolean = true, delay: number = 0) => {
       const requestSeq = scrollRequestSeqRef.current + 1;
       scrollRequestSeqRef.current = requestSeq;
       followLatest();
@@ -110,16 +110,19 @@ export function usePinnedTimeline(itemCount: number) {
         if (scrollRequestSeqRef.current !== requestSeq) {
           return;
         }
-        scrollRef.current?.scrollToEnd({ animated: nextAnimated });
-      };
-      const scheduleScroll = (nextDelay: number, nextAnimated: boolean) => {
-        if (nextDelay <= 0) {
-          requestAnimationFrame(() => scroll(nextAnimated));
+        if (!scrollRef.current) {
           return;
         }
-        setTimeout(() => scroll(nextAnimated), nextDelay);
+        scrollRef.current.scrollToOffset({
+          offset: 0,
+          animated: nextAnimated,
+        });
       };
-      scheduleScroll(delay, animated);
+      if (delay <= 0) {
+        scroll(animated);
+        return;
+      }
+      setTimeout(() => scroll(animated), delay);
     },
     [followLatest],
   );
@@ -138,8 +141,7 @@ export function usePinnedTimeline(itemCount: number) {
     userDraggingRef.current = false;
     userMomentumRef.current = false;
     scrollRequestSeqRef.current += 1;
-    contentHeightRef.current = 0;
-    viewportHeightRef.current = 0;
+    distanceFromLatestRef.current = 0;
     setShowJumpToLatest(false);
   }, []);
 
@@ -149,15 +151,9 @@ export function usePinnedTimeline(itemCount: number) {
   ) => {
     const {
       contentOffset,
-      contentSize,
-      layoutMeasurement,
     } = event.nativeEvent;
-    contentHeightRef.current = contentSize.height;
-    viewportHeightRef.current = layoutMeasurement.height;
-    const distanceFromLatest = Math.max(
-      0,
-      contentSize.height - layoutMeasurement.height - contentOffset.y,
-    );
+    const distanceFromLatest = Math.max(0, contentOffset.y);
+    distanceFromLatestRef.current = distanceFromLatest;
     if (distanceFromLatest <= SCROLL_BOTTOM_THRESHOLD) {
       followLatest();
       return;
@@ -205,29 +201,50 @@ export function usePinnedTimeline(itemCount: number) {
   );
 
   const handleContentSizeChange = useCallback((_: number, height: number) => {
-    contentHeightRef.current = height;
-    if (followLatestRef.current) {
+    if (itemCount === 0 || height <= 0) {
+      followLatest();
+      return;
+    }
+    if (followLatestRef.current && distanceFromLatestRef.current > 1) {
       scrollToLatest(false, 0);
-    } else if (
-      itemCount > 0 &&
-      height - viewportHeightRef.current > SCROLL_BOTTOM_THRESHOLD
-    ) {
+      return;
+    }
+    if (!followLatestRef.current) {
       setShowJumpToLatest(true);
     }
-  }, [itemCount, scrollToLatest]);
+  }, [followLatest, itemCount, scrollToLatest]);
 
-  const handleLayout = useCallback((event: LayoutChangeEvent) => {
-    viewportHeightRef.current = event.nativeEvent.layout.height;
-    if (followLatestRef.current) {
-      pinToBottomIfNeeded(false);
+  const handleLayout = useCallback((_event: LayoutChangeEvent) => {
+    if (itemCount === 0) {
+      followLatest();
+      return;
     }
-  }, [pinToBottomIfNeeded]);
+    if (followLatestRef.current && distanceFromLatestRef.current > 1) {
+      scrollToLatest(false, 0);
+      return;
+    }
+    updateJumpButton();
+  }, [followLatest, itemCount, scrollToLatest, updateJumpButton]);
 
   useEffect(() => {
-    if (itemCount > 0 && followLatestRef.current) {
-      scrollToLatest(false, 0);
+    if (resetKeyRef.current === resetKey) {
+      return;
     }
-  }, [itemCount, scrollToLatest]);
+    resetKeyRef.current = resetKey;
+    resetForConversation();
+  }, [resetForConversation, resetKey]);
+
+  useEffect(() => {
+    if (itemCount === 0) {
+      followLatest();
+      return;
+    }
+    if (followLatestRef.current && distanceFromLatestRef.current > 1) {
+      scrollToLatest(false, 0);
+      return;
+    }
+    updateJumpButton();
+  }, [followLatest, itemCount, resetKey, scrollToLatest, updateJumpButton]);
 
   return {
     scrollRef,
@@ -243,6 +260,45 @@ export function usePinnedTimeline(itemCount: number) {
     handleContentSizeChange,
     handleLayout,
   };
+}
+
+export function useRelativeTimeLabel(targetTimestamp?: string) {
+  const [now, setNow] = useState(() => Date.now());
+
+  useEffect(() => {
+    if (!targetTimestamp) {
+      return;
+    }
+    setNow(Date.now());
+    const timer = setInterval(() => {
+      setNow(Date.now());
+    }, 1000);
+    return () => clearInterval(timer);
+  }, [targetTimestamp]);
+
+  return useMemo(() => {
+    if (!targetTimestamp) {
+      return "";
+    }
+    const timestamp = new Date(targetTimestamp).getTime();
+    if (!Number.isFinite(timestamp)) {
+      return "";
+    }
+    const elapsed = Math.max(0, Math.floor((now - timestamp) / 1000));
+    if (elapsed < 60) {
+      return `${Math.max(1, elapsed)}s`;
+    }
+    const minutes = Math.floor(elapsed / 60);
+    if (minutes < 60) {
+      return `${minutes}m`;
+    }
+    const hours = Math.floor(minutes / 60);
+    if (hours < 24) {
+      return `${hours}h`;
+    }
+    const days = Math.floor(hours / 24);
+    return `${days}d`;
+  }, [now, targetTimestamp]);
 }
 
 export function useCodexComposerInput({

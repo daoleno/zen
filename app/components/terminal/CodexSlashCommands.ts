@@ -173,9 +173,9 @@ const CHATUI_SLASH_COMMAND_OVERRIDES: Record<string, SlashCommandOverride> = {
     terminal_supported: true,
   },
   diff: {
-    execution: "terminal-required",
+    execution: "native",
     input: inputNone(),
-    output: { kind: "terminal" },
+    output: { kind: "diff" },
     interactive: false,
     chat_supported: true,
     terminal_supported: true,

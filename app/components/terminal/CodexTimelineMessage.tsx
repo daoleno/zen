@@ -9,7 +9,6 @@ import type {
 } from "../../constants/terminalThemes";
 import {
   MessageBody,
-  StreamingMessageBody,
 } from "./CodexMessageBody";
 import { CodexTimelineAttachmentPreviewList } from "./CodexTimelineAttachmentPreviewList";
 
@@ -69,20 +68,17 @@ export function ZenAssistantMessage({
   item,
   chrome,
   theme,
-  stream,
 }: {
   item: ZenMessageTimelineItem & { role: "assistant" };
   chrome: TerminalThemeChrome;
   theme: TerminalThemePalette;
-  stream: boolean;
 }) {
   return (
     <View style={styles.assistantRow}>
-      <StreamingMessageBody
+      <MessageBody
         value={item.body}
         chrome={chrome}
         theme={theme}
-        stream={stream}
       />
     </View>
   );

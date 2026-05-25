@@ -20,7 +20,7 @@ import {
 } from "./CodexChatControllerModel";
 import type {
   CodexChatLocalState,
-  PendingAssistantMessage,
+  PendingSlashCommand,
   PendingUserMessage,
 } from "./CodexChatSession";
 import { CodexTimelineView } from "./CodexTimelineView";
@@ -37,15 +37,14 @@ interface CodexChatTimelineSectionProps {
   conversation: CodexConversation | null;
   events: CodexConversationEvent[];
   pendingUserMessages: PendingUserMessage[];
-  pendingAssistantMessages: PendingAssistantMessage[];
+  pendingSlashCommands: PendingSlashCommand[];
   loading: boolean;
   localChatState: CodexChatLocalState;
   error?: string | null;
-  composerActive: boolean;
   commandMenuOpen: boolean;
-  composerHeight: number;
   scrollRef: React.RefObject<FlatList<ZenTimelineItem> | null>;
   showJumpToLatest: boolean;
+  jumpLabel?: string;
   chrome: TerminalThemeChrome;
   theme: TerminalThemePalette;
   onLayout(event: LayoutChangeEvent): void;
@@ -65,15 +64,14 @@ export function CodexChatTimelineSection({
   conversation,
   events,
   pendingUserMessages,
-  pendingAssistantMessages,
+  pendingSlashCommands,
   loading,
   localChatState,
   error,
-  composerActive,
   commandMenuOpen,
-  composerHeight,
   scrollRef,
   showJumpToLatest,
+  jumpLabel,
   chrome,
   theme,
   onLayout,
@@ -89,11 +87,8 @@ export function CodexChatTimelineSection({
   const timelineItems = useCodexTimelineItems({
     events,
     pendingUserMessages,
-    pendingAssistantMessages,
+    pendingSlashCommands,
   });
-  const streamingAssistantId = pendingAssistantMessages.find((message) =>
-    message.body.trim(),
-  )?.id ?? "";
   const loadAssetPreview = useCallback(
     async (path: string) => {
       const asset = await wsClient.getCodexAsset(serverId, {
@@ -126,10 +121,9 @@ export function CodexChatTimelineSection({
       }
       unavailableReason={conversationUnavailableReason(conversation?.reason)}
       syncing={syncingConversation && !emptyConversationReady}
-      textSelectable={!composerActive}
+      textSelectable
       showJumpToLatest={showJumpToLatest}
-      jumpButtonBottom={composerHeight + 12}
-      streamingAssistantId={streamingAssistantId}
+      jumpButtonBottom={10}
       chrome={chrome}
       theme={theme}
       onLayout={onLayout}
@@ -144,6 +138,7 @@ export function CodexChatTimelineSection({
       loadAssetPreview={loadAssetPreview}
       formatPatchPath={patchDisplayPath}
       truncateBody={truncateRunes}
+      jumpLabel={jumpLabel}
     />
   );
 }

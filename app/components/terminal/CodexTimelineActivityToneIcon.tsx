@@ -13,12 +13,14 @@ import type {
 interface CodexTimelineActivityToneIconProps {
   tone: ZenActivityTimelineItem["tone"];
   icon: TimelineActivityIconName;
+  activityKind?: ZenActivityTimelineItem["activityKind"];
   color: string;
 }
 
 export function CodexTimelineActivityToneIcon({
   tone,
   icon,
+  activityKind,
   color,
 }: CodexTimelineActivityToneIconProps) {
   if (tone === "running") {
@@ -31,7 +33,11 @@ export function CodexTimelineActivityToneIcon({
 
   return (
     <View style={styles.slot}>
-      <Ionicons name={icon} size={14} color={color} />
+      <Ionicons
+        name={icon}
+        size={activityKind === "reasoning" ? 15 : 14}
+        color={color}
+      />
     </View>
   );
 }

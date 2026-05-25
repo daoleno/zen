@@ -119,6 +119,57 @@ export interface CodexSkillsSnapshot {
   skills: CodexSkill[];
 }
 
+export interface CodexConversationSnapshotPayload {
+  request_id?: string;
+  agent_id?: string;
+  conversation_id?: string;
+  revision: number;
+  conversation: CodexConversation;
+}
+
+export interface CodexConversationDeltaPayload {
+  request_id?: string;
+  agent_id?: string;
+  conversation_id?: string;
+  revision: number;
+  available?: boolean;
+  reason?: string;
+  source?: string;
+  path?: string;
+  session_id?: string;
+  cwd?: string;
+  updated_at?: string;
+  active?: boolean;
+  upserts: CodexConversation["events"];
+  deletes: string[];
+}
+
+export interface CodexConversationSyncStatusPayload {
+  request_id?: string;
+  agent_id?: string;
+  conversation_id?: string;
+  revision: number;
+  state: "syncing" | "ready" | "unavailable" | string;
+  reason?: string;
+}
+
+export interface CodexConversationSubscriptionOptions {
+  targetId?: string;
+  agentId?: string;
+  cwd?: string;
+  command?: string;
+  name?: string;
+  startedAt?: number;
+  processId?: number;
+}
+
+export interface CodexConversationSubscriptionHandlers {
+  onSnapshot(payload: CodexConversationSnapshotPayload): void;
+  onDelta(payload: CodexConversationDeltaPayload): void;
+  onSyncStatus(payload: CodexConversationSyncStatusPayload): void;
+  onError(error: Error): void;
+}
+
 interface ConnectionMeta {
   serverId: string;
   serverName: string;
@@ -731,62 +782,69 @@ class MultiServerWebSocketClient {
     });
   }
 
-  getCodexConversation(
+  subscribeCodexConversation(
     serverId: string,
-    options: {
-      targetId?: string;
-      agentId?: string;
-      cwd?: string;
-      command?: string;
-      name?: string;
-      startedAt?: number;
-      processId?: number;
-    },
+    options: CodexConversationSubscriptionOptions,
+    handlers: CodexConversationSubscriptionHandlers,
   ) {
     const requestId = `${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
 
-    return new Promise<CodexConversation>((resolve, reject) => {
-      const cleanup = () => {
-        if (timer) clearTimeout(timer);
-        this.off("codex_conversation", handleConversation);
-        this.off("error", handleError);
-      };
+    const handleSnapshot = (payload: any) => {
+      if (payload.serverId !== serverId || payload.request_id !== requestId) {
+        return;
+      }
+      handlers.onSnapshot(normalizeCodexConversationSnapshotPayload(payload));
+    };
 
-      const handleConversation = (payload: any) => {
-        if (payload.serverId !== serverId || payload.request_id !== requestId) {
-          return;
-        }
-        cleanup();
-        resolve(normalizeCodexConversation(payload.conversation));
-      };
+    const handleDelta = (payload: any) => {
+      if (payload.serverId !== serverId || payload.request_id !== requestId) {
+        return;
+      }
+      handlers.onDelta(normalizeCodexConversationDeltaPayload(payload));
+    };
 
-      const handleError = (payload: any) => {
-        if (payload.serverId !== serverId || payload.request_id !== requestId) {
-          return;
-        }
-        cleanup();
-        reject(new Error(payload.message || "Failed to load Codex conversation."));
-      };
+    const handleSyncStatus = (payload: any) => {
+      if (payload.serverId !== serverId || payload.request_id !== requestId) {
+        return;
+      }
+      handlers.onSyncStatus(normalizeCodexConversationSyncStatusPayload(payload));
+    };
 
-      const timer = setTimeout(() => {
-        cleanup();
-        reject(new Error("Timed out while loading Codex conversation."));
-      }, 10000);
+    const handleError = (payload: any) => {
+      if (payload.serverId !== serverId || payload.request_id !== requestId) {
+        return;
+      }
+      handlers.onError(new Error(payload.message || "Codex conversation stream failed."));
+    };
 
-      this.on("codex_conversation", handleConversation);
-      this.on("error", handleError);
+    this.on("codex_conversation_snapshot", handleSnapshot);
+    this.on("codex_conversation_delta", handleDelta);
+    this.on("codex_conversation_sync_status", handleSyncStatus);
+    this.on("error", handleError);
+    this.send(serverId, {
+      type: "codex_conversation_subscribe",
+      request_id: requestId,
+      target_id: options.targetId,
+      agent_id: options.agentId,
+      cwd: options.cwd,
+      command: options.command,
+      name: options.name,
+      started_at: options.startedAt,
+      process_id: options.processId,
+    });
+
+    return () => {
+      this.off("codex_conversation_snapshot", handleSnapshot);
+      this.off("codex_conversation_delta", handleDelta);
+      this.off("codex_conversation_sync_status", handleSyncStatus);
+      this.off("error", handleError);
       this.send(serverId, {
-        type: "codex_conversation",
+        type: "codex_conversation_unsubscribe",
         request_id: requestId,
         target_id: options.targetId,
         agent_id: options.agentId,
-        cwd: options.cwd,
-        command: options.command,
-        name: options.name,
-        started_at: options.startedAt,
-        process_id: options.processId,
       });
-    });
+    };
   }
 
   getCodexSlashCommands(serverId: string) {
@@ -1528,6 +1586,73 @@ function toConnectionMeta(server: StoredServer): ConnectionMeta {
     serverUrl: server.url,
     daemonId: server.daemonId,
     daemonPublicKey: server.daemonPublicKey,
+  };
+}
+
+function normalizeCodexConversationSnapshotPayload(
+  payload: any,
+): CodexConversationSnapshotPayload {
+  return {
+    request_id: typeof payload.request_id === "string" ? payload.request_id : undefined,
+    agent_id: typeof payload.agent_id === "string" ? payload.agent_id : undefined,
+    conversation_id:
+      typeof payload.conversation_id === "string" ? payload.conversation_id : undefined,
+    revision:
+      typeof payload.revision === "number" && Number.isFinite(payload.revision)
+        ? payload.revision
+        : 0,
+    conversation: normalizeCodexConversation(payload.conversation),
+  };
+}
+
+function normalizeCodexConversationDeltaPayload(
+  payload: any,
+): CodexConversationDeltaPayload {
+  const normalizedEvents = normalizeCodexConversation({
+    available: true,
+    events: payload.upserts,
+  }).events;
+  return {
+    request_id: typeof payload.request_id === "string" ? payload.request_id : undefined,
+    agent_id: typeof payload.agent_id === "string" ? payload.agent_id : undefined,
+    conversation_id:
+      typeof payload.conversation_id === "string" ? payload.conversation_id : undefined,
+    revision:
+      typeof payload.revision === "number" && Number.isFinite(payload.revision)
+        ? payload.revision
+        : 0,
+    available:
+      typeof payload.available === "boolean" ? payload.available : undefined,
+    reason: typeof payload.reason === "string" ? payload.reason : undefined,
+    source: typeof payload.source === "string" ? payload.source : undefined,
+    path: typeof payload.path === "string" ? payload.path : undefined,
+    session_id:
+      typeof payload.session_id === "string" ? payload.session_id : undefined,
+    cwd: typeof payload.cwd === "string" ? payload.cwd : undefined,
+    updated_at:
+      typeof payload.updated_at === "string" ? payload.updated_at : undefined,
+    active: typeof payload.active === "boolean" ? payload.active : undefined,
+    upserts: normalizedEvents,
+    deletes: Array.isArray(payload.deletes)
+      ? payload.deletes.filter((id: unknown): id is string => typeof id === "string")
+      : [],
+  };
+}
+
+function normalizeCodexConversationSyncStatusPayload(
+  payload: any,
+): CodexConversationSyncStatusPayload {
+  return {
+    request_id: typeof payload.request_id === "string" ? payload.request_id : undefined,
+    agent_id: typeof payload.agent_id === "string" ? payload.agent_id : undefined,
+    conversation_id:
+      typeof payload.conversation_id === "string" ? payload.conversation_id : undefined,
+    revision:
+      typeof payload.revision === "number" && Number.isFinite(payload.revision)
+        ? payload.revision
+        : 0,
+    state: typeof payload.state === "string" ? payload.state : "syncing",
+    reason: typeof payload.reason === "string" ? payload.reason : undefined,
   };
 }
 

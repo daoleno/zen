@@ -49,6 +49,9 @@ function activityToneColor(
   chrome: TerminalThemeChrome,
   theme: TerminalThemePalette,
 ) {
+  if (item.activityKind === "reasoning") {
+    return chrome.accent;
+  }
   if (item.tone === "failed") {
     return theme.red;
   }

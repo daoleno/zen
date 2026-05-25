@@ -1,27 +1,29 @@
 import React from "react";
 import {
   StyleSheet,
-  Text,
   TouchableOpacity,
+  View,
+  Text,
 } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 import type { TerminalThemeChrome } from "../../constants/terminalThemes";
-import { Typography } from "../../constants/tokens";
 
 interface CodexTimelineJumpButtonProps {
   bottom: number;
   chrome: TerminalThemeChrome;
+  label?: string;
   onPress(): void;
 }
 
 export function CodexTimelineJumpButton({
   bottom,
   chrome,
+  label,
   onPress,
 }: CodexTimelineJumpButtonProps) {
   return (
     <TouchableOpacity
-      accessibilityLabel="Jump to latest"
+      accessibilityLabel={label ? `Jump to latest, ${label} ago` : "Jump to latest"}
       accessibilityRole="button"
       style={[
         styles.jumpButton,
@@ -34,10 +36,10 @@ export function CodexTimelineJumpButton({
       onPress={onPress}
       activeOpacity={0.82}
     >
-      <Ionicons name="arrow-down" size={15} color={chrome.accent} />
-      <Text style={[styles.jumpButtonText, { color: chrome.textMuted }]}>
-        Latest
-      </Text>
+      <View style={styles.content}>
+        <Ionicons name="arrow-down" size={18} color={chrome.accent} />
+        {label ? <Text style={[styles.label, { color: chrome.textSubtle }]}>{label}</Text> : null}
+      </View>
     </TouchableOpacity>
   );
 }
@@ -45,20 +47,22 @@ export function CodexTimelineJumpButton({
 const styles = StyleSheet.create({
   jumpButton: {
     position: "absolute",
-    right: 14,
-    minHeight: 32,
-    borderRadius: 8,
-    borderWidth: StyleSheet.hairlineWidth,
-    paddingHorizontal: 10,
-    flexDirection: "row",
     alignItems: "center",
+    borderRadius: 17,
+    borderWidth: StyleSheet.hairlineWidth,
+    minHeight: 34,
+    paddingHorizontal: 10,
     justifyContent: "center",
-    gap: 6,
+    right: 16,
     zIndex: 4,
   },
-  jumpButtonText: {
+  content: {
+    alignItems: "center",
+    flexDirection: "row",
+  },
+  label: {
     fontSize: 12,
     lineHeight: 16,
-    fontFamily: Typography.uiFontMedium,
+    marginLeft: 6,
   },
 });

@@ -7,44 +7,51 @@ import type {
   TerminalThemeChrome,
   TerminalThemePalette,
 } from "../../constants/terminalThemes";
-import type { Agent, ConnectionState } from "../../store/agents";
+import type { ConnectionState } from "../../store/agents";
 import type { ConnectionIssue } from "../../services/connectionIssue";
 import { CodexChatBody } from "./CodexChatBody";
 import { useCodexChatSurfaceState } from "./useCodexChatSurfaceState";
+import type { CodexChatAgentInfo } from "./CodexChatSession";
 
 interface CodexChatSurfaceProps {
+  visible: boolean;
   serverId: string;
   agentId: string;
-  agent?: Agent;
+  agentInfo?: CodexChatAgentInfo;
   connectionState: ConnectionState;
   connectionIssue?: ConnectionIssue | null;
   theme: TerminalThemePalette;
   chrome: TerminalThemeChrome;
   screenFocused: boolean;
   onSwitchToTerminal(): void;
+  onOpenGitDiff(): void;
 }
 
-export function CodexChatSurface({
+function CodexChatSurfaceImpl({
+  visible,
   serverId,
   agentId,
-  agent,
+  agentInfo,
   connectionState,
   connectionIssue,
   theme,
   chrome,
   screenFocused,
   onSwitchToTerminal,
+  onOpenGitDiff,
 }: CodexChatSurfaceProps) {
   const { bodyProps } = useCodexChatSurfaceState({
+    visible,
     serverId,
     agentId,
-    agent,
+    agentInfo,
     connectionState,
     connectionIssue,
     theme,
     chrome,
     screenFocused,
     onSwitchToTerminal,
+    onOpenGitDiff,
   });
 
   return (
@@ -55,6 +62,8 @@ export function CodexChatSurface({
     </View>
   );
 }
+
+export const CodexChatSurface = React.memo(CodexChatSurfaceImpl);
 
 const styles = StyleSheet.create({
   root: {

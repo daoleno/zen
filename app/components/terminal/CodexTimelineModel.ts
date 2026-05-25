@@ -1,6 +1,6 @@
 import type { CodexConversationEvent } from "../../services/codexConversation";
 import type {
-  PendingAssistantMessage,
+  PendingSlashCommand,
   PendingUserMessage,
 } from "./CodexChatSession";
 import {
@@ -10,6 +10,7 @@ import {
 } from "./CodexTimelineActivityTypes";
 import type { DisplayAttachment } from "./CodexTimelineMessage";
 import type { ZenTimelineItem } from "./CodexTimelineItemView";
+import { slashCommandIcon } from "./codexSlashCommandPresentation";
 
 const ATTACHMENT_TAG_RE = /<zen_attachments>\s*([\s\S]*?)\s*<\/zen_attachments>/i;
 const COMMAND_OUTPUT_PREVIEW_LINES = 7;
@@ -160,9 +161,43 @@ export function mergePendingUserMessagesIntoTimeline(
   if (pendingUserMessages.length === 0) {
     return timelineItems;
   }
-  return [
-    ...timelineItems,
-    ...pendingUserMessages.map((message) => ({
+  const merged = [...timelineItems];
+  const claimedTimelineIds = new Set<string>();
+  for (const message of pendingUserMessages) {
+    if (message.confirmedEventId) {
+      const confirmedIndex = merged.findIndex(
+        (item) => item.id === message.confirmedEventId,
+      );
+      if (confirmedIndex >= 0) {
+        const confirmed = merged[confirmedIndex];
+        if (confirmed.type === "message" && confirmed.role === "user") {
+          merged[confirmedIndex] = {
+            ...confirmed,
+            id: message.id,
+          };
+          claimedTimelineIds.add(confirmed.id);
+        }
+      }
+      continue;
+    }
+    const matchedIndex = findPendingUserMessageMatch(
+      merged,
+      message,
+      claimedTimelineIds,
+    );
+    if (matchedIndex >= 0) {
+      const matched = merged[matchedIndex];
+      if (matched.type === "message" && matched.role === "user") {
+        merged[matchedIndex] = {
+          ...matched,
+          id: message.id,
+          pending: true,
+        };
+        claimedTimelineIds.add(matched.id);
+      }
+      continue;
+    }
+    const item = {
       type: "message" as const,
       id: message.id,
       role: "user" as const,
@@ -170,31 +205,108 @@ export function mergePendingUserMessagesIntoTimeline(
       body: message.body,
       attachments: message.attachments,
       pending: true,
-    })),
-  ];
+    };
+    insertTimelineItemByTimestamp(merged, item);
+  }
+  return merged;
 }
 
-export function mergePendingAssistantMessagesIntoTimeline(
+function findPendingUserMessageMatch(
   timelineItems: ZenTimelineItem[],
-  pendingAssistantMessages: PendingAssistantMessage[],
+  message: PendingUserMessage,
+  claimedTimelineIds: Set<string>,
+) {
+  const sentText = comparableUserMessageText(message.sentText);
+  const body = comparableUserMessageText(message.body);
+  const previousEventIds = new Set(message.createdAfterEventIds ?? []);
+  for (let index = timelineItems.length - 1; index >= 0; index -= 1) {
+    const item = timelineItems[index];
+    if (item.type !== "message" || item.role !== "user") {
+      continue;
+    }
+    if (claimedTimelineIds.has(item.id) || previousEventIds.has(item.id)) {
+      continue;
+    }
+    const eventText = comparableUserMessageText(item.body || "");
+    if (!eventText) {
+      continue;
+    }
+    if (
+      (sentText && eventText === sentText) ||
+      (body && eventText === body)
+    ) {
+      return index;
+    }
+  }
+  return -1;
+}
+
+function comparableUserMessageText(value: string) {
+  return value
+    .replace(ATTACHMENT_TAG_RE, "")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+export function mergePendingSlashCommandsIntoTimeline(
+  timelineItems: ZenTimelineItem[],
+  pendingSlashCommands: PendingSlashCommand[],
 ): ZenTimelineItem[] {
-  if (pendingAssistantMessages.length === 0) {
+  if (pendingSlashCommands.length === 0) {
     return timelineItems;
   }
-  return [
-    ...timelineItems,
-    ...pendingAssistantMessages
-      .filter((message) => message.body.trim().length > 0)
-      .map((message) => ({
-        type: "message" as const,
-        id: message.id,
-        role: "assistant" as const,
-        timestamp: message.createdAt,
-        body: message.body,
-        attachments: [],
-        pending: true,
-      })),
-  ];
+  const merged = [...timelineItems];
+  for (const command of pendingSlashCommands) {
+    const done = command.status !== "running";
+    const tone = pendingSlashCommandTone(command.status);
+    const item = {
+      type: "activity" as const,
+      id: command.id,
+      timestamp: command.createdAt,
+      statusKey: command.status,
+      title: done
+        ? command.completedTitle || "Command submitted"
+        : "Sending command",
+      tone,
+      icon: slashCommandIcon(command.name),
+      detail: command.text.trim() || `/${command.name}`,
+      defaultExpanded: false,
+    };
+    insertTimelineItemByTimestamp(merged, item);
+  }
+  return merged;
+}
+
+function pendingSlashCommandTone(
+  status: PendingSlashCommand["status"],
+): ZenActivityTimelineItem["tone"] {
+  if (status === "failed") {
+    return "failed";
+  }
+  return status === "running" ? "running" : "neutral";
+}
+
+function insertTimelineItemByTimestamp(
+  timelineItems: ZenTimelineItem[],
+  item: ZenTimelineItem,
+) {
+  const timestamp = item.timestamp ? new Date(item.timestamp).getTime() : Number.NaN;
+  if (!Number.isFinite(timestamp)) {
+    timelineItems.push(item);
+    return;
+  }
+  const insertAt = timelineItems.findIndex((candidate) => {
+    if (!candidate.timestamp) {
+      return false;
+    }
+    const candidateTimestamp = new Date(candidate.timestamp).getTime();
+    return Number.isFinite(candidateTimestamp) && candidateTimestamp > timestamp;
+  });
+  if (insertAt < 0) {
+    timelineItems.push(item);
+    return;
+  }
+  timelineItems.splice(insertAt, 0, item);
 }
 
 function activityFromEvent(event: CodexConversationEvent): ZenTimelineItem | null {
@@ -273,7 +385,8 @@ function activityFromEvent(event: CodexConversationEvent): ZenTimelineItem | nul
         timestamp: event.timestamp,
         title: event.title || "Reasoning",
         tone: "neutral",
-        icon: "ellipse-outline",
+        icon: "bulb",
+        activityKind: "reasoning",
         body: event.body,
         defaultExpanded: false,
       };
@@ -343,7 +456,7 @@ function explorationActivityFromEntries(
 
   return {
     type: "activity",
-    id: `explore:${first?.event.id || first?.event.seq}:${last?.event.id || last?.event.seq}`,
+    id: `explore:${first?.event.id || first?.event.seq}`,
     timestamp: last?.event.timestamp || first?.event.timestamp,
     statusKey: running ? "running" : failed ? "failed" : "done",
     title: running ? "Exploring" : "Explored",

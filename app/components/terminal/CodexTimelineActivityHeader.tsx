@@ -8,6 +8,7 @@ import {
 import type { TerminalThemeChrome } from "../../constants/terminalThemes";
 import { Typography } from "../../constants/tokens";
 import type { TimelineActivityIconName } from "./CodexTimelineActivityTypes";
+import type { ZenActivityTimelineItem } from "./CodexTimelineActivityTypes";
 import { CodexTimelineActivityExpandIcon } from "./CodexTimelineActivityExpandIcon";
 import { CodexTimelineActivityToneIcon } from "./CodexTimelineActivityToneIcon";
 
@@ -15,6 +16,7 @@ interface CodexTimelineActivityHeaderProps {
   title: string;
   tone: "neutral" | "running" | "success" | "failed";
   icon: TimelineActivityIconName;
+  activityKind?: ZenActivityTimelineItem["activityKind"];
   detail?: string;
   canExpand: boolean;
   expanded: boolean;
@@ -27,6 +29,7 @@ export function CodexTimelineActivityHeader({
   title,
   tone,
   icon,
+  activityKind,
   detail,
   canExpand,
   expanded,
@@ -47,6 +50,7 @@ export function CodexTimelineActivityHeader({
       <CodexTimelineActivityToneIcon
         tone={tone}
         icon={icon}
+        activityKind={activityKind}
         color={toneColor}
       />
       <View style={styles.copy}>

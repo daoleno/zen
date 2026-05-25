@@ -3,7 +3,7 @@ import {
   useMemo,
   type ReactNode,
 } from "react";
-import type { Agent, ConnectionState } from "../../store/agents";
+import type { ConnectionState } from "../../store/agents";
 import type {
   CodexConversation,
   CodexConversationEvent,
@@ -15,7 +15,7 @@ import type {
 import type {
   CodexChatLocalState,
   ComposerAttachment,
-  PendingAssistantMessage,
+  PendingSlashCommand,
   PendingUserMessage,
 } from "./CodexChatSession";
 import type { CodexChatBodyProps } from "./CodexChatBody";
@@ -29,12 +29,12 @@ import type {
 interface UseCodexChatBodyPropsInput {
   screenFocused: boolean;
   serverId: string;
-  agent?: Agent;
+  agentCwd?: string;
   connectionState: ConnectionState;
   conversation: CodexConversation | null;
   events: CodexConversationEvent[];
   pendingUserMessages: PendingUserMessage[];
-  pendingAssistantMessages: PendingAssistantMessage[];
+  pendingSlashCommands: PendingSlashCommand[];
   loading: boolean;
   localChatState: CodexChatLocalState;
   error?: string | null;
@@ -42,6 +42,7 @@ interface UseCodexChatBodyPropsInput {
   attachments: ComposerAttachment[];
   composerPresentation: CodexComposerPresentation;
   timeline: ReturnType<typeof usePinnedTimeline>;
+  jumpLabel?: string;
   composerInput: ReturnType<typeof useCodexComposerInput>;
   controller: ReturnType<typeof useCodexChatController>;
   chrome: TerminalThemeChrome;
@@ -56,12 +57,12 @@ interface UseCodexChatBodyPropsInput {
 export function useCodexChatBodyProps({
   screenFocused,
   serverId,
-  agent,
+  agentCwd,
   connectionState,
   conversation,
   events,
   pendingUserMessages,
-  pendingAssistantMessages,
+  pendingSlashCommands,
   loading,
   localChatState,
   error,
@@ -69,6 +70,7 @@ export function useCodexChatBodyProps({
   attachments,
   composerPresentation,
   timeline,
+  jumpLabel,
   composerInput,
   controller,
   chrome,
@@ -107,16 +109,17 @@ export function useCodexChatBodyProps({
     () => ({
       screenFocused,
       serverId,
-      agentCwd: agent?.cwd,
+      agentCwd,
       conversation,
       events,
       pendingUserMessages,
-      pendingAssistantMessages,
+      pendingSlashCommands,
       loading,
       localChatState,
       error,
       scrollRef: timeline.scrollRef,
       showJumpToLatest: timeline.showJumpToLatest,
+      jumpLabel,
       onTimelineLayout: timeline.handleLayout,
       onTimelineScroll: timeline.handleScroll,
       onTimelineScrollBeginDrag: timeline.handleScrollBeginDrag,
@@ -153,7 +156,7 @@ export function useCodexChatBodyProps({
       skillsSheet,
     }),
     [
-      agent?.cwd,
+      agentCwd,
       attachments,
       chrome,
       composerInput.focus,
@@ -177,12 +180,13 @@ export function useCodexChatBodyProps({
       error,
       events,
       pendingUserMessages,
-      pendingAssistantMessages,
+      pendingSlashCommands,
       handleComposerHeightChange,
       handleSendPress,
       handleUploadPress,
       loading,
       localChatState,
+      jumpLabel,
       onSwitchToTerminal,
       onToggleActionMenu,
       onDismissActionMenu,

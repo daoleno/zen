@@ -37,7 +37,7 @@ interface CodexTimelineViewProps {
   textSelectable: boolean;
   showJumpToLatest: boolean;
   jumpButtonBottom: number;
-  streamingAssistantId: string;
+  jumpLabel?: string;
   chrome: TerminalThemeChrome;
   theme: TerminalThemePalette;
   onLayout(event: LayoutChangeEvent): void;
@@ -69,7 +69,7 @@ export function CodexTimelineView({
   textSelectable,
   showJumpToLatest,
   jumpButtonBottom,
-  streamingAssistantId,
+  jumpLabel,
   chrome,
   theme,
   onLayout,
@@ -85,17 +85,13 @@ export function CodexTimelineView({
   formatPatchPath,
   truncateBody,
 }: CodexTimelineViewProps) {
+  const renderItems = React.useMemo(() => [...items].reverse(), [items]);
   const renderItem = React.useCallback(
     ({ item }: ListRenderItemInfo<ZenTimelineItem>) => (
       <ZenTimelineItemView
         item={item}
         chrome={chrome}
         theme={theme}
-        stream={
-          item.type === "message" &&
-          item.role === "assistant" &&
-          item.id === streamingAssistantId
-        }
         loadAssetPreview={loadAssetPreview}
         formatPatchPath={formatPatchPath}
         truncateBody={truncateBody}
@@ -105,7 +101,6 @@ export function CodexTimelineView({
       chrome,
       formatPatchPath,
       loadAssetPreview,
-      streamingAssistantId,
       theme,
       truncateBody,
     ],
@@ -145,15 +140,20 @@ export function CodexTimelineView({
       <View style={styles.timelineStage}>
         <FlatList
           ref={scrollRef}
-          data={items}
+          data={renderItems}
           keyExtractor={(item) => item.id}
           renderItem={renderItem}
           style={styles.timeline}
           contentContainerStyle={styles.timelineContent}
+          inverted
+          maintainVisibleContentPosition={{
+            minIndexForVisible: 0,
+            autoscrollToTopThreshold: 8,
+          }}
           scrollIndicatorInsets={{ bottom: TIMELINE_BOTTOM_PADDING }}
           keyboardShouldPersistTaps="handled"
           showsVerticalScrollIndicator={false}
-          scrollEventThrottle={80}
+          scrollEventThrottle={32}
           onLayout={onLayout}
           onScroll={onScroll}
           onScrollBeginDrag={onScrollBeginDrag}
@@ -178,6 +178,7 @@ export function CodexTimelineView({
           <CodexTimelineJumpButton
             bottom={jumpButtonBottom}
             chrome={chrome}
+            label={jumpLabel}
             onPress={onJumpToLatest}
           />
         ) : null}
@@ -200,7 +201,6 @@ const styles = StyleSheet.create({
     paddingHorizontal: 16,
     paddingTop: TIMELINE_BOTTOM_PADDING,
     paddingBottom: 14,
-    justifyContent: "flex-end",
     flexGrow: 1,
   },
   emptyOverlay: {

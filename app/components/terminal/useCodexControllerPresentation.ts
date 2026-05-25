@@ -1,5 +1,5 @@
 import { useMemo } from "react";
-import type { Agent, ConnectionState } from "../../store/agents";
+import type { ConnectionState } from "../../store/agents";
 import type {
   CodexConversation,
   CodexConversationEvent,
@@ -9,7 +9,6 @@ import { buildCodexStatusMeta } from "./CodexChatControllerModel";
 import type { ComposerAttachment } from "./CodexChatSession";
 
 interface UseCodexControllerPresentationInput {
-  agent?: Agent;
   connectionState: ConnectionState;
   connectionIssue?: ConnectionIssue | null;
   conversation: CodexConversation | null;
@@ -21,7 +20,6 @@ interface UseCodexControllerPresentationInput {
 }
 
 export function useCodexControllerPresentation({
-  agent,
   connectionState,
   connectionIssue,
   conversation,
@@ -34,14 +32,13 @@ export function useCodexControllerPresentation({
   const statusMeta = useMemo(
     () =>
       buildCodexStatusMeta({
-        agent,
         connectionState,
         connectionIssue,
         conversation,
         events,
         sending,
       }),
-    [agent, connectionIssue, connectionState, conversation, events, sending],
+    [connectionIssue, connectionState, conversation, events, sending],
   );
 
   const canSend =

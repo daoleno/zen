@@ -7,9 +7,11 @@ import {
 } from "react";
 import { Alert, Keyboard } from "react-native";
 import type { ConnectionState } from "../../store/agents";
+import type { CodexSlashCommand } from "../../services/websocket";
 import { wsClient } from "../../services/websocket";
 import type {
   ComposerAttachment,
+  PendingSlashCommandInput,
   PendingUserMessageInput,
 } from "./CodexChatSession";
 
@@ -21,12 +23,12 @@ interface UseCodexMessageTransportInput {
   setAttachments(value: SetStateAction<ComposerAttachment[]>): void;
   addPendingUserMessage(message: PendingUserMessageInput): string;
   removePendingUserMessage(id: string): void;
-  startPendingAssistantMessage(sentText: string, baselineLines: string[]): string;
-  terminalBaselineLines: string[];
+  addPendingSlashCommand(command: PendingSlashCommandInput): string;
+  settlePendingSlashCommand(id: string): void;
+  removePendingSlashCommand(id: string): void;
   resetForNewChat(): void;
   markNewChatReady(): void;
   markNewChatMessageStarted(): void;
-  refreshConversation(showLoading?: boolean): Promise<void>;
   scrollToLatest(animated?: boolean, delay?: number): void;
 }
 
@@ -38,12 +40,12 @@ export function useCodexMessageTransport({
   setAttachments,
   addPendingUserMessage,
   removePendingUserMessage,
-  startPendingAssistantMessage,
-  terminalBaselineLines,
+  addPendingSlashCommand,
+  settlePendingSlashCommand,
+  removePendingSlashCommand,
   resetForNewChat,
   markNewChatReady,
   markNewChatMessageStarted,
-  refreshConversation,
   scrollToLatest,
 }: UseCodexMessageTransportInput) {
   const [sending, setSending] = useState(false);
@@ -51,16 +53,11 @@ export function useCodexMessageTransport({
   const [interrupting, setInterrupting] = useState(false);
   const sendLockedRef = useRef(false);
   const sendingResetTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const refreshTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const clearTransportTimers = useCallback(() => {
     if (sendingResetTimerRef.current) {
       clearTimeout(sendingResetTimerRef.current);
       sendingResetTimerRef.current = null;
-    }
-    if (refreshTimerRef.current) {
-      clearTimeout(refreshTimerRef.current);
-      refreshTimerRef.current = null;
     }
   }, []);
 
@@ -100,19 +97,13 @@ export function useCodexMessageTransport({
       setDraft("");
       setAttachments([]);
       scrollToLatest(false, 0);
-      setTimeout(() => scrollToLatest(false, 0), 40);
       try {
         clearTransportTimers();
         wsClient.sendInput(serverId, agentId, `${text}\n`);
-        startPendingAssistantMessage(text, terminalBaselineLines);
         sendingResetTimerRef.current = setTimeout(() => {
           sendingResetTimerRef.current = null;
           unlockSend();
         }, 520);
-        refreshTimerRef.current = setTimeout(() => {
-          refreshTimerRef.current = null;
-          void refreshConversation(false);
-        }, 650);
       } catch (err: any) {
         clearTransportTimers();
         sendLockedRef.current = false;
@@ -128,14 +119,11 @@ export function useCodexMessageTransport({
       addPendingUserMessage,
       clearTransportTimers,
       markNewChatMessageStarted,
-      refreshConversation,
       removePendingUserMessage,
       scrollToLatest,
       serverId,
       setAttachments,
       setDraft,
-      startPendingAssistantMessage,
-      terminalBaselineLines,
       unlockSend,
     ],
   );
@@ -156,17 +144,12 @@ export function useCodexMessageTransport({
       resetForNewChat();
       wsClient.sendInput(serverId, agentId, `${submittedText}\n`);
       scrollToLatest(false, 0);
-      setTimeout(() => scrollToLatest(false, 0), 40);
       sendingResetTimerRef.current = setTimeout(() => {
         sendingResetTimerRef.current = null;
         unlockSend();
         setStartingNewChat(false);
         markNewChatReady();
       }, 180);
-      refreshTimerRef.current = setTimeout(() => {
-        refreshTimerRef.current = null;
-        void refreshConversation(false);
-      }, 240);
     } catch (err: any) {
       clearTransportTimers();
       sendLockedRef.current = false;
@@ -178,7 +161,6 @@ export function useCodexMessageTransport({
     agentId,
     clearTransportTimers,
     markNewChatReady,
-    refreshConversation,
     resetForNewChat,
     scrollToLatest,
     serverId,
@@ -188,7 +170,7 @@ export function useCodexMessageTransport({
   ]);
 
   const sendSlashCommandToCodex = useCallback(
-    (text: string) => {
+    (text: string, command?: CodexSlashCommand) => {
       if (sendLockedRef.current) {
         return;
       }
@@ -197,38 +179,40 @@ export function useCodexMessageTransport({
       Keyboard.dismiss();
       setDraft("");
       setAttachments([]);
+      const commandName = command?.name || slashCommandNameFromText(text);
+      const pendingCommandId = addPendingSlashCommand({
+        text,
+        name: commandName,
+        title: command?.title,
+        description: command?.description,
+      });
       scrollToLatest(false, 0);
 
       try {
         clearTransportTimers();
         wsClient.sendInput(serverId, agentId, `${text}\n`);
-        if (text.trimStart().startsWith("/")) {
-          startPendingAssistantMessage(text, terminalBaselineLines);
-        }
         sendingResetTimerRef.current = setTimeout(() => {
           sendingResetTimerRef.current = null;
+          settlePendingSlashCommand(pendingCommandId);
           unlockSend();
         }, 420);
-        refreshTimerRef.current = setTimeout(() => {
-          refreshTimerRef.current = null;
-          void refreshConversation(false).finally(unlockSend);
-        }, 760);
       } catch (err: any) {
         clearTransportTimers();
+        removePendingSlashCommand(pendingCommandId);
         unlockSend();
         Alert.alert("Command not sent", err?.message || "Could not send this command to Codex.");
       }
     },
     [
       agentId,
+      addPendingSlashCommand,
       clearTransportTimers,
-      refreshConversation,
+      removePendingSlashCommand,
       scrollToLatest,
       serverId,
+      settlePendingSlashCommand,
       setAttachments,
       setDraft,
-      startPendingAssistantMessage,
-      terminalBaselineLines,
       unlockSend,
     ],
   );
@@ -242,16 +226,14 @@ export function useCodexMessageTransport({
     try {
       wsClient.sendAction(serverId, agentId, "pause");
       setTimeout(() => {
-        void refreshConversation(false).finally(() => {
-          setInterrupting(false);
-          setSending(false);
-        });
+        setInterrupting(false);
+        setSending(false);
       }, 600);
     } catch {
       setInterrupting(false);
       setSending(false);
     }
-  }, [agentId, connectionState, refreshConversation, sending, serverId]);
+  }, [agentId, connectionState, sending, serverId]);
 
   return {
     sending,
@@ -262,4 +244,9 @@ export function useCodexMessageTransport({
     sendSlashCommandToCodex,
     interruptCodex,
   };
+}
+
+function slashCommandNameFromText(text: string) {
+  const match = /^\/([a-z][a-z0-9-]*)/.exec(text.trimStart());
+  return match?.[1] || "command";
 }

@@ -17,12 +17,12 @@ interface CodexComposerPanelProps {
   placeholder: string;
   editable: boolean;
   focused: boolean;
-  floating: boolean;
   uploading: boolean;
   sendEnabled: boolean;
   sending: boolean;
   sendIcon: React.ComponentProps<typeof ComposerSendButton>["icon"];
   sendLabel: string;
+  sendElapsedLabel?: string;
   running: boolean;
   actionMenuExpanded: boolean;
   actionMenuButtonEnabled: boolean;
@@ -44,12 +44,12 @@ export function CodexComposerPanel({
   placeholder,
   editable,
   focused,
-  floating,
   uploading,
   sendEnabled,
   sending,
   sendIcon,
   sendLabel,
+  sendElapsedLabel,
   running,
   actionMenuExpanded,
   actionMenuButtonEnabled,
@@ -67,7 +67,6 @@ export function CodexComposerPanel({
   return (
     <CodexComposerPanelFrame
       focused={focused}
-      floating={floating}
       chrome={chrome}
     >
       <ComposerIconButton
@@ -93,7 +92,6 @@ export function CodexComposerPanel({
         draft={draft}
         placeholder={placeholder}
         editable={editable}
-        busy={sending}
         chrome={chrome}
         onDraftChange={onDraftChange}
         onInputPress={onInputPress}
@@ -111,6 +109,7 @@ export function CodexComposerPanel({
         enabled={sendEnabled}
         loading={sending}
         running={running}
+        elapsedLabel={sendElapsedLabel}
         onPress={onSendPress}
       />
     </CodexComposerPanelFrame>

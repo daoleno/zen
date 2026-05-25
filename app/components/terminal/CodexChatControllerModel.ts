@@ -1,4 +1,4 @@
-import type { Agent, ConnectionState } from "../../store/agents";
+import type { ConnectionState } from "../../store/agents";
 import type {
   CodexConversation,
   CodexConversationEvent,
@@ -8,14 +8,12 @@ import type { ComposerAttachment } from "./CodexChatSession";
 import { isEventRunning } from "./CodexTimelineModel";
 
 export function buildCodexStatusMeta({
-  agent,
   connectionState,
   connectionIssue,
   conversation,
   events,
   sending,
 }: {
-  agent?: Agent;
   connectionState: ConnectionState;
   connectionIssue?: ConnectionIssue | null;
   conversation: CodexConversation | null;
@@ -34,7 +32,6 @@ export function buildCodexStatusMeta({
   if (
     sending ||
     isCodexRequestRunning({
-      agent,
       conversation,
       events,
     })
@@ -51,7 +48,6 @@ export function isCodexRequestRunning({
   conversation,
   events,
 }: {
-  agent?: Agent;
   conversation: CodexConversation | null;
   events: CodexConversationEvent[];
 }) {

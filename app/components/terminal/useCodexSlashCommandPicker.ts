@@ -9,9 +9,10 @@ interface UseCodexSlashCommandPickerInput {
   dismissActionMenu(): void;
   focusComposer(): void;
   startNewCodexChat(commandText?: string): void;
-  sendSlashCommandToCodex(text: string): void;
+  sendSlashCommandToCodex(text: string, command?: CodexSlashCommand): void;
   openSkillsSheet(): void;
-  copyLastAssistantMessage(): void;
+  openGitDiff(): void;
+  copyLastAssistantMessage(command: CodexSlashCommand): void;
   showUnsupportedSlashCommand(command: CodexSlashCommand): void;
 }
 
@@ -23,6 +24,7 @@ export function useCodexSlashCommandPicker({
   startNewCodexChat,
   sendSlashCommandToCodex,
   openSkillsSheet,
+  openGitDiff,
   copyLastAssistantMessage,
   showUnsupportedSlashCommand,
 }: UseCodexSlashCommandPickerInput) {
@@ -54,11 +56,18 @@ export function useCodexSlashCommandPicker({
           return;
         }
         if (command.name === "skills") {
+          setDraft("");
           openSkillsSheet();
           return;
         }
         if (command.name === "copy") {
-          copyLastAssistantMessage();
+          setDraft("");
+          copyLastAssistantMessage(command);
+          return;
+        }
+        if (command.name === "diff") {
+          setDraft("");
+          openGitDiff();
           return;
         }
         setDraft(`${command.value} `);
@@ -70,7 +79,7 @@ export function useCodexSlashCommandPicker({
         return;
       }
       if (!requiresSlashCommandArgs(command)) {
-        sendSlashCommandToCodex(command.value);
+        sendSlashCommandToCodex(command.value, command);
         return;
       }
       setDraft(`${command.value} `);
@@ -81,6 +90,7 @@ export function useCodexSlashCommandPicker({
       dismissActionMenu,
       focusComposer,
       openSkillsSheet,
+      openGitDiff,
       copyLastAssistantMessage,
       sendSlashCommandToCodex,
       setDraft,

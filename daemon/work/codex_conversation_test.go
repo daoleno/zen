@@ -122,6 +122,60 @@ func TestParseCodexConversation_BuildsNativeTimeline(t *testing.T) {
 	}
 }
 
+func TestParseCodexConversation_DedupesUserMessageEchoes(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "rollout.jsonl")
+	writeJSONL(t, path,
+		map[string]any{
+			"type":      "session_meta",
+			"timestamp": "2026-05-20T10:00:00Z",
+			"payload": map[string]any{
+				"id":  "codex-dedupe",
+				"cwd": "/repo",
+			},
+		},
+		map[string]any{
+			"type":      "event_msg",
+			"timestamp": "2026-05-20T10:00:01Z",
+			"payload": map[string]any{
+				"type":    "user_message",
+				"message": "Why does ChatUI flicker?",
+			},
+		},
+		map[string]any{
+			"type":      "response_item",
+			"timestamp": "2026-05-20T10:00:10Z",
+			"payload": map[string]any{
+				"type": "message",
+				"role": "user",
+				"content": []map[string]any{
+					{"type": "input_text", "text": "Why does ChatUI flicker?"},
+				},
+			},
+		},
+		map[string]any{
+			"type":      "response_item",
+			"timestamp": "2026-05-20T10:00:11Z",
+			"payload": map[string]any{
+				"type": "message",
+				"role": "assistant",
+				"content": []map[string]any{
+					{"type": "output_text", "text": "I will inspect the list rendering path."},
+				},
+			},
+		},
+	)
+
+	got, err := parseCodexConversation(path)
+	if err != nil {
+		t.Fatalf("parseCodexConversation: %v", err)
+	}
+	if len(got.Events) != 2 {
+		t.Fatalf("events len = %d, want 2: %#v", len(got.Events), got.Events)
+	}
+	assertEvent(t, got.Events[0], "user_message", "user", "", "Why does ChatUI flicker?")
+	assertEvent(t, got.Events[1], "assistant_message", "assistant", "", "I will inspect")
+}
+
 func TestParseCodexConversation_HidesContextualUserFragments(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "rollout.jsonl")
 	writeJSONL(t, path,

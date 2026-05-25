@@ -22,6 +22,7 @@ export interface ZenActivityTimelineItem {
   title: string;
   tone: "neutral" | "running" | "success" | "failed";
   icon: TimelineActivityIconName;
+  activityKind?: "reasoning";
   detail?: string;
   body?: string;
   files?: string[];

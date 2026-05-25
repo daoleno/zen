@@ -86,6 +86,7 @@ export function ZenActivityEvent({
         title={item.title}
         tone={item.tone}
         icon={item.icon}
+        activityKind={item.activityKind}
         detail={item.detail}
         canExpand={activityPresentation.canExpand}
         expanded={expanded}

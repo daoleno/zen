@@ -7,14 +7,12 @@ import type { TerminalThemeChrome } from "../../constants/terminalThemes";
 
 interface CodexComposerPanelFrameProps {
   focused: boolean;
-  floating: boolean;
   chrome: TerminalThemeChrome;
   children: React.ReactNode;
 }
 
 export function CodexComposerPanelFrame({
   focused,
-  floating,
   chrome,
   children,
 }: CodexComposerPanelFrameProps) {
@@ -23,9 +21,8 @@ export function CodexComposerPanelFrame({
       collapsable={false}
       style={[
         styles.panel,
-        floating ? styles.floating : null,
         {
-          backgroundColor: focused ? chrome.surfaceActive : chrome.surface,
+          backgroundColor: chrome.surface,
           borderColor: focused ? chrome.borderStrong : chrome.border,
         },
       ]}
@@ -37,21 +34,14 @@ export function CodexComposerPanelFrame({
 
 const styles = StyleSheet.create({
   panel: {
-    minHeight: 50,
-    borderRadius: 25,
+    minHeight: 48,
+    borderRadius: 18,
     borderWidth: StyleSheet.hairlineWidth,
-    paddingLeft: 4,
+    paddingLeft: 3,
     paddingRight: 6,
     paddingVertical: 4,
     flexDirection: "row",
     alignItems: "center",
     gap: 4,
-  },
-  floating: {
-    shadowColor: "#000000",
-    shadowOffset: { width: 0, height: 8 },
-    shadowOpacity: 0.16,
-    shadowRadius: 18,
-    elevation: 10,
   },
 });

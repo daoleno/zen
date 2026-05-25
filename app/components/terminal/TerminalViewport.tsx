@@ -11,6 +11,7 @@ import type {
 import type { ConnectionIssue } from "../../services/connectionIssue";
 import type { Agent, ConnectionState } from "../../store/agents";
 import { CodexChatSurface } from "./CodexChatSurface";
+import type { CodexChatAgentInfo } from "./CodexChatSession";
 import { TerminalOutputPane } from "./TerminalOutputPane";
 import type { TerminalSurfaceHandle } from "./TerminalSurface";
 
@@ -43,6 +44,7 @@ export interface TerminalViewportProps {
   daemonId: string;
   keyboardVisible: boolean;
   onSwitchToTerminal(): void;
+  onOpenGitDiff(): void;
   onRetryConnection(): void;
   onAccessoryLayout(event: LayoutChangeEvent): void;
 }
@@ -76,9 +78,30 @@ export function TerminalViewport({
   daemonId,
   keyboardVisible,
   onSwitchToTerminal,
+  onOpenGitDiff,
   onRetryConnection,
   onAccessoryLayout,
 }: TerminalViewportProps) {
+  const codexChatAgentInfo = React.useMemo<CodexChatAgentInfo | undefined>(
+    () =>
+      agent
+        ? {
+            cwd: agent.cwd,
+            command: agent.command,
+            name: agent.name,
+            startedAt: agent.started_at,
+            processId: agent.process_id,
+          }
+        : undefined,
+    [
+      agent?.command,
+      agent?.cwd,
+      agent?.name,
+      agent?.process_id,
+      agent?.started_at,
+    ],
+  );
+
   return (
     <View style={[styles.terminalStage, { backgroundColor: theme.background }]}>
       <View style={[styles.terminalShell, { backgroundColor: theme.background }]}>
@@ -110,19 +133,27 @@ export function TerminalViewport({
             onAccessoryLayout={onAccessoryLayout}
           />
 
-          {showCodexChat && sessionKey && serverId && agentId ? (
-            <View style={styles.chatOverlay}>
+          {sessionKey && serverId && agentId ? (
+            <View
+              pointerEvents={showCodexChat ? "auto" : "none"}
+              style={[
+                styles.chatOverlay,
+                !showCodexChat ? styles.chatOverlayHidden : null,
+              ]}
+            >
               <CodexChatSurface
                 key={`codex-chat:${sessionKey}`}
+                visible={showCodexChat}
                 serverId={serverId}
                 agentId={agentId}
-                agent={agent}
+                agentInfo={codexChatAgentInfo}
                 connectionState={connectionState}
                 connectionIssue={connectionIssue}
                 theme={theme}
                 chrome={chrome}
                 screenFocused={screenFocused}
                 onSwitchToTerminal={onSwitchToTerminal}
+                onOpenGitDiff={onOpenGitDiff}
               />
             </View>
           ) : null}
@@ -155,5 +186,8 @@ const styles = StyleSheet.create({
     bottom: 0,
     left: 0,
     zIndex: 12,
+  },
+  chatOverlayHidden: {
+    opacity: 0,
   },
 });

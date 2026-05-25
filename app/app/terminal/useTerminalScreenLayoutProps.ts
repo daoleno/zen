@@ -176,6 +176,7 @@ export function useTerminalScreenLayoutProps({
     daemonId,
     keyboardVisible,
     sessionActions,
+    onOpenGitDiff: openGitDiff,
     onAccessoryLayout: handleAccessoryLayout,
   });
   const overlayProps = useTerminalScreenOverlayProps({

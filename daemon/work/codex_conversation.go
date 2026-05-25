@@ -17,9 +17,11 @@ import (
 )
 
 const (
-	maxCodexConversationEvents = 240
-	maxCodexConversationBody   = 8000
-	maxCodexConversationRead   = 4 << 20
+	maxCodexConversationEvents   = 240
+	maxCodexConversationBody     = 8000
+	maxCodexConversationRead     = 4 << 20
+	codexMessageDedupeLineWindow = 12
+	codexMessageDedupeTimeWindow = 15 * time.Second
 )
 
 type cachedCodexConversation struct {
@@ -201,30 +203,35 @@ func seekCodexConversationTail(file *os.File) error {
 }
 
 type codexConversationBuilder struct {
-	sourceID               string
-	sessionID              string
-	cwd                    string
-	lifecycleSeen          bool
-	taskActive             bool
-	events                 []CodexConversationEvent
-	commandByCall          map[string]string
-	commandCallBySession   map[string]string
-	eventByCall            map[string]int
-	sessionByCall          map[string]string
-	recentMessageLineByKey map[string]int
-	seenStatusKeys         map[string]struct{}
-	patchEventSeen         bool
+	sourceID             string
+	sessionID            string
+	cwd                  string
+	lifecycleSeen        bool
+	taskActive           bool
+	events               []CodexConversationEvent
+	commandByCall        map[string]string
+	commandCallBySession map[string]string
+	eventByCall          map[string]int
+	sessionByCall        map[string]string
+	recentMessageByKey   map[string]recentCodexMessageFingerprint
+	seenStatusKeys       map[string]struct{}
+	patchEventSeen       bool
+}
+
+type recentCodexMessageFingerprint struct {
+	lineNumber int
+	timestamp  time.Time
 }
 
 func newCodexConversationBuilder(sourceID string) *codexConversationBuilder {
 	return &codexConversationBuilder{
-		sourceID:               sourceID,
-		commandByCall:          map[string]string{},
-		commandCallBySession:   map[string]string{},
-		eventByCall:            map[string]int{},
-		sessionByCall:          map[string]string{},
-		recentMessageLineByKey: map[string]int{},
-		seenStatusKeys:         map[string]struct{}{},
+		sourceID:             sourceID,
+		commandByCall:        map[string]string{},
+		commandCallBySession: map[string]string{},
+		eventByCall:          map[string]int{},
+		sessionByCall:        map[string]string{},
+		recentMessageByKey:   map[string]recentCodexMessageFingerprint{},
+		seenStatusKeys:       map[string]struct{}{},
 	}
 }
 
@@ -456,11 +463,18 @@ func (b *codexConversationBuilder) addMessageWithTitle(lineNumber int, timestamp
 		return
 	}
 	key := role + ":" + text
-	if previousLine, exists := b.recentMessageLineByKey[key]; exists && lineNumber-previousLine <= 12 {
-		b.recentMessageLineByKey[key] = lineNumber
+	currentTimestamp := parseNormalizedCodexTimestamp(timestamp)
+	if previous, exists := b.recentMessageByKey[key]; exists && shouldDedupeCodexMessage(previous, lineNumber, currentTimestamp) {
+		b.recentMessageByKey[key] = recentCodexMessageFingerprint{
+			lineNumber: lineNumber,
+			timestamp:  latestNonZeroTime(previous.timestamp, currentTimestamp),
+		}
 		return
 	}
-	b.recentMessageLineByKey[key] = lineNumber
+	b.recentMessageByKey[key] = recentCodexMessageFingerprint{
+		lineNumber: lineNumber,
+		timestamp:  currentTimestamp,
+	}
 
 	kind := "assistant_message"
 	if role == "user" {
@@ -475,6 +489,37 @@ func (b *codexConversationBuilder) addMessageWithTitle(lineNumber int, timestamp
 		Body:      text,
 		Source:    "codex_rollout",
 	})
+}
+
+func shouldDedupeCodexMessage(
+	previous recentCodexMessageFingerprint,
+	lineNumber int,
+	timestamp time.Time,
+) bool {
+	if lineNumber-previous.lineNumber <= codexMessageDedupeLineWindow {
+		return true
+	}
+	if previous.timestamp.IsZero() || timestamp.IsZero() {
+		return false
+	}
+	delta := timestamp.Sub(previous.timestamp)
+	if delta < 0 {
+		delta = -delta
+	}
+	return delta <= codexMessageDedupeTimeWindow
+}
+
+func latestNonZeroTime(left, right time.Time) time.Time {
+	if left.IsZero() {
+		return right
+	}
+	if right.IsZero() {
+		return left
+	}
+	if right.After(left) {
+		return right
+	}
+	return left
 }
 
 func isCodexSlashCommandInvocation(value string) bool {
@@ -1128,6 +1173,19 @@ func normalizeCodexTimestamp(value string) string {
 		}
 	}
 	return value
+}
+
+func parseNormalizedCodexTimestamp(value string) time.Time {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return time.Time{}
+	}
+	for _, layout := range []string{time.RFC3339Nano, time.RFC3339} {
+		if parsed, err := time.Parse(layout, value); err == nil {
+			return parsed
+		}
+	}
+	return time.Time{}
 }
 
 func cleanConversationText(value string) string {

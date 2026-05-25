@@ -1,14 +1,16 @@
 import { Ionicons } from "@expo/vector-icons";
 import React from "react";
 import {
+  ActivityIndicator,
   StyleSheet,
+  Text,
   TouchableOpacity,
+  View,
 } from "react-native";
 import type {
   TerminalThemeChrome,
   TerminalThemePalette,
 } from "../../constants/terminalThemes";
-import { ComposerLoadingDots } from "./ComposerLoadingDots";
 
 type IoniconName = React.ComponentProps<typeof Ionicons>["name"];
 
@@ -20,6 +22,7 @@ interface ComposerSendButtonProps {
   enabled: boolean;
   loading: boolean;
   running: boolean;
+  elapsedLabel?: string;
   onPress(): void;
 }
 
@@ -31,32 +34,34 @@ export function ComposerSendButton({
   enabled,
   loading,
   running,
+  elapsedLabel,
   onPress,
 }: ComposerSendButtonProps) {
   const animated = loading || running;
-  const foreground = running || (enabled && !loading)
-    ? theme.background
-    : loading
-      ? chrome.text
+  const foreground = running
+    ? chrome.text
+    : enabled && !loading
+      ? theme.background
       : chrome.textSubtle;
-  const backgroundColor = running || (enabled && !loading)
+  const backgroundColor = enabled && !loading && !running
     ? chrome.text
-    : loading
-      ? chrome.surface
-      : chrome.surfaceMuted;
-  const borderColor = running || (enabled && !loading)
-    ? chrome.text
-    : loading
-      ? chrome.borderStrong
-      : chrome.border;
+    : chrome.surfaceMuted;
+  const borderColor = running
+    ? chrome.border
+    : enabled && !loading
+      ? chrome.text
+      : "transparent";
 
   return (
     <TouchableOpacity
-      accessibilityLabel={accessibilityLabel}
+      accessibilityLabel={
+        elapsedLabel ? `${accessibilityLabel}, ${elapsedLabel}` : accessibilityLabel
+      }
       accessibilityRole="button"
       accessibilityState={{ disabled: !enabled, busy: animated }}
       style={[
         styles.button,
+        elapsedLabel ? styles.buttonWithLabel : null,
         { backgroundColor, borderColor },
         !enabled && !loading ? styles.disabled : null,
       ]}
@@ -65,15 +70,20 @@ export function ComposerSendButton({
       disabled={!enabled}
     >
       {loading ? (
-        <ComposerLoadingDots
-          color={chrome.accent}
-          size={4}
-          gap={3}
-        />
+        <ActivityIndicator size="small" color={chrome.textSubtle} />
+      ) : running ? (
+        <View style={styles.runningContent}>
+          <Ionicons name="square" size={8} color={foreground} />
+          {elapsedLabel ? (
+            <Text style={[styles.elapsedLabel, { color: chrome.textSubtle }]}>
+              {elapsedLabel}
+            </Text>
+          ) : null}
+        </View>
       ) : (
         <Ionicons
           name={icon}
-          size={running ? 11 : 18}
+          size={18}
           color={foreground}
         />
       )}
@@ -89,6 +99,20 @@ const styles = StyleSheet.create({
     borderWidth: StyleSheet.hairlineWidth,
     alignItems: "center",
     justifyContent: "center",
+  },
+  buttonWithLabel: {
+    minWidth: 58,
+    paddingHorizontal: 10,
+    width: "auto",
+  },
+  runningContent: {
+    alignItems: "center",
+    flexDirection: "row",
+  },
+  elapsedLabel: {
+    fontSize: 11,
+    lineHeight: 14,
+    marginLeft: 6,
   },
   disabled: {
     opacity: 0.62,

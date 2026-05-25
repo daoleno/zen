@@ -18,7 +18,7 @@ import type { CodexSlashCommand } from "../../services/websocket";
 import type {
   CodexChatLocalState,
   ComposerAttachment,
-  PendingAssistantMessage,
+  PendingSlashCommand,
   PendingUserMessage,
 } from "./CodexChatSession";
 import type { CodexComposerPresentation } from "./CodexChatSurfaceModel";
@@ -35,12 +35,13 @@ export interface CodexChatBodyProps {
   conversation: CodexConversation | null;
   events: CodexConversationEvent[];
   pendingUserMessages: PendingUserMessage[];
-  pendingAssistantMessages: PendingAssistantMessage[];
+  pendingSlashCommands: PendingSlashCommand[];
   loading: boolean;
   localChatState: CodexChatLocalState;
   error?: string | null;
   scrollRef: React.RefObject<FlatList<ZenTimelineItem> | null>;
   showJumpToLatest: boolean;
+  jumpLabel?: string;
   onTimelineLayout(event: LayoutChangeEvent): void;
   onTimelineScroll(event: NativeSyntheticEvent<NativeScrollEvent>): void;
   onTimelineScrollBeginDrag(): void;
@@ -84,12 +85,13 @@ export function CodexChatBody({
   conversation,
   events,
   pendingUserMessages,
-  pendingAssistantMessages,
+  pendingSlashCommands,
   loading,
   localChatState,
   error,
   scrollRef,
   showJumpToLatest,
+  jumpLabel,
   onTimelineLayout,
   onTimelineScroll,
   onTimelineScrollBeginDrag,
@@ -125,7 +127,7 @@ export function CodexChatBody({
   onSendPress,
   skillsSheet,
 }: CodexChatBodyProps) {
-  const { composerHeight, handleComposerLayout } = useCodexComposerLayout({
+  const { handleComposerLayout } = useCodexComposerLayout({
     onHeightChange: onComposerHeightChange,
   });
 
@@ -140,15 +142,14 @@ export function CodexChatBody({
         conversation={conversation}
         events={events}
         pendingUserMessages={pendingUserMessages}
-        pendingAssistantMessages={pendingAssistantMessages}
+        pendingSlashCommands={pendingSlashCommands}
         loading={loading}
         localChatState={localChatState}
         error={error}
-        composerActive={composerPresentation.active}
         commandMenuOpen={composerPresentation.showCommandMenu}
-        composerHeight={composerHeight}
         scrollRef={scrollRef}
         showJumpToLatest={showJumpToLatest}
+        jumpLabel={jumpLabel}
         chrome={chrome}
         theme={theme}
         onLayout={onTimelineLayout}
