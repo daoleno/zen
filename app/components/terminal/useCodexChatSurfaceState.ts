@@ -165,6 +165,7 @@ export function useCodexChatSurfaceState({
     markNewChatMessageStarted,
     scrollToLatest: timeline.scrollToLatest,
     focusComposer: composerInput.focus,
+    clearComposerNativeText: composerInput.clearNativeText,
     dismissActionMenu,
     openSkillsSheet,
     openGitDiff: onOpenGitDiff,

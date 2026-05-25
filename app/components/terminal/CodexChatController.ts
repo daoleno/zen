@@ -47,6 +47,7 @@ interface UseCodexChatControllerInput {
   markNewChatMessageStarted(): void;
   scrollToLatest(animated?: boolean, delay?: number): void;
   focusComposer(): void;
+  clearComposerNativeText(): void;
   dismissActionMenu(): void;
   openSkillsSheet(): void;
   openGitDiff(): void;
@@ -74,6 +75,7 @@ export function useCodexChatController({
   markNewChatMessageStarted,
   scrollToLatest,
   focusComposer,
+  clearComposerNativeText,
   dismissActionMenu,
   openSkillsSheet,
   openGitDiff,
@@ -152,6 +154,7 @@ export function useCodexChatController({
     connectionState,
     setDraft,
     setAttachments,
+    clearComposerNativeText,
     addPendingUserMessage,
     removePendingUserMessage,
     addPendingSlashCommand,

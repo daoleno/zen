@@ -313,6 +313,11 @@ export function useCodexComposerInput({
   const refocusTimersRef = useRef<ReturnType<typeof setTimeout>[]>([]);
   const [focused, setFocused] = useState(false);
 
+  const clearNativeText = useCallback(() => {
+    inputRef.current?.clear();
+    inputRef.current?.setNativeProps?.({ text: "" });
+  }, []);
+
   const clearBlurReleaseTimer = useCallback(() => {
     if (blurReleaseTimerRef.current) {
       clearTimeout(blurReleaseTimerRef.current);
@@ -428,6 +433,7 @@ export function useCodexComposerInput({
     focused,
     focus,
     blur,
+    clearNativeText,
     handleFocus,
     handleBlur,
     handleInputStart,

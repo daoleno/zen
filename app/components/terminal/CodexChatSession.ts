@@ -3,6 +3,7 @@ import {
   useEffect,
   useMemo,
   useReducer,
+  useRef,
   useState,
   type SetStateAction,
 } from "react";
@@ -17,6 +18,8 @@ import {
 
 const PENDING_SLASH_COMMAND_MAX_AGE_MS = 120_000;
 const PENDING_SLASH_COMMAND_SETTLED_MAX_AGE_MS = 45_000;
+const PENDING_USER_MESSAGE_MAX_AGE_MS = 45_000;
+const DRAFT_REPLAY_SUPPRESSION_MS = 1_800;
 const ATTACHMENT_TAG_RE = /<zen_attachments>\s*([\s\S]*?)\s*<\/zen_attachments>/i;
 
 type KeyedState<T> = {
@@ -30,6 +33,12 @@ type NewChatBoundary = {
   previousEventIds: Set<string>;
   previousMaxSeq: number;
   startedAtMs: number;
+};
+
+type RecentlyClearedDraft = {
+  cacheKey: string;
+  text: string;
+  clearedAt: number;
 };
 
 export type ComposerAttachment = UploadedAttachment & {
@@ -111,6 +120,7 @@ type CodexChatThreadAction =
   | { type: "mark_new_chat_message_started" }
   | { type: "add_pending_user_message"; message: PendingUserMessage }
   | { type: "remove_pending_user_message"; id: string }
+  | { type: "prune_pending_user_messages"; now: number }
   | { type: "add_pending_slash_command"; command: PendingSlashCommand }
   | { type: "settle_pending_slash_command"; id: string; status: PendingSlashCommand["status"]; completedAt: string }
   | { type: "remove_pending_slash_command"; id: string }
@@ -206,6 +216,13 @@ function codexChatThreadReducer(
         ...state,
         pendingUserMessages: state.pendingUserMessages.filter(
           (message) => message.id !== action.id,
+        ),
+      };
+    case "prune_pending_user_messages":
+      return {
+        ...state,
+        pendingUserMessages: state.pendingUserMessages.filter(
+          (message) => !shouldPrunePendingUserMessage(message, action.now),
         ),
       };
     case "add_pending_slash_command":
@@ -422,12 +439,15 @@ function reconcilePendingUserMessages(
       .map((message) => message.confirmedEventId)
       .filter((id): id is string => Boolean(id)),
   );
-  return pendingUserMessages.map((message) => {
+  const reconciled: PendingUserMessage[] = [];
+  for (const message of pendingUserMessages) {
     if (message.confirmedEventId) {
-      return message;
+      continue;
     }
     const previousEventIds = new Set(message.createdAfterEventIds ?? []);
-    let confirmedEvent = [...userEvents].find((event) => {
+    const sentText = comparableUserMessageText(message.sentText);
+    const body = comparableUserMessageText(message.body);
+    const confirmedEvent = userEvents.find((event) => {
       if (!event.id || usedEventIds.has(event.id) || previousEventIds.has(event.id)) {
         return false;
       }
@@ -439,33 +459,20 @@ function reconcilePendingUserMessages(
       ) {
         return false;
       }
-      return true;
+      const eventText = comparableUserMessageText(event.body || "");
+      return Boolean(
+        eventText &&
+        ((sentText && eventText === sentText) ||
+          (body && eventText === body)),
+      );
     });
     if (!confirmedEvent) {
-      const sentText = comparableUserMessageText(message.sentText);
-      const body = comparableUserMessageText(message.body);
-      confirmedEvent = [...userEvents].find((event) => {
-        if (!event.id || usedEventIds.has(event.id) || previousEventIds.has(event.id)) {
-          return false;
-        }
-        const eventText = comparableUserMessageText(event.body || "");
-        return Boolean(
-          eventText &&
-          ((sentText && eventText === sentText) ||
-            (body && eventText === body)),
-        );
-      });
-    }
-    if (!confirmedEvent) {
-      return message;
+      reconciled.push(message);
+      continue;
     }
     usedEventIds.add(confirmedEvent.id);
-    return {
-      ...message,
-      confirmedAt: new Date().toISOString(),
-      confirmedEventId: confirmedEvent.id,
-    };
-  });
+  }
+  return reconciled;
 }
 
 function codexEventFingerprint(event: CodexConversation["events"][number]) {
@@ -500,6 +507,7 @@ export function useCodexChatSession({
       value: attachmentCache.get(composerCacheKey) ?? [],
     }),
   );
+  const recentlyClearedDraftRef = useRef<RecentlyClearedDraft | null>(null);
   const conversation = threadState.cacheKey === cacheKey
     ? threadState.conversation
     : conversationCache.get(cacheKey) ?? null;
@@ -547,14 +555,27 @@ export function useCodexChatSession({
 
   const setDraft = useCallback(
     (nextDraft: string) => {
-      if (nextDraft) {
-        draftCache.set(composerCacheKey, nextDraft);
+      const currentDraft = draftCache.get(composerCacheKey) ?? "";
+      const normalizedDraft = normalizeDraftAfterRecentClear(
+        nextDraft,
+        composerCacheKey,
+        recentlyClearedDraftRef.current,
+      );
+      if (!normalizedDraft && currentDraft) {
+        recentlyClearedDraftRef.current = {
+          cacheKey: composerCacheKey,
+          text: currentDraft,
+          clearedAt: Date.now(),
+        };
+      }
+      if (normalizedDraft) {
+        draftCache.set(composerCacheKey, normalizedDraft);
       } else {
         draftCache.delete(composerCacheKey);
       }
       setDraftState({
         cacheKey: composerCacheKey,
-        value: nextDraft,
+        value: normalizedDraft,
       });
     },
     [composerCacheKey],
@@ -737,6 +758,34 @@ export function useCodexChatSession({
   }, [composerCacheKey]);
 
   useEffect(() => {
+    if (pendingUserMessages.length === 0) {
+      return;
+    }
+    const now = Date.now();
+    const nextPruneAt = pendingUserMessages.reduce((soonest, message) => {
+      const createdAt = new Date(message.createdAt).getTime();
+      const maxAgeAt = Number.isFinite(createdAt)
+        ? createdAt + PENDING_USER_MESSAGE_MAX_AGE_MS
+        : now + PENDING_USER_MESSAGE_MAX_AGE_MS;
+      return Math.min(soonest, maxAgeAt);
+    }, Number.POSITIVE_INFINITY);
+
+    const prune = () => {
+      dispatchThread({
+        type: "prune_pending_user_messages",
+        now: Date.now(),
+      });
+    };
+
+    if (nextPruneAt <= now) {
+      prune();
+      return;
+    }
+    const timer = setTimeout(prune, nextPruneAt - now);
+    return () => clearTimeout(timer);
+  }, [pendingUserMessages]);
+
+  useEffect(() => {
     if (pendingSlashCommands.length === 0) {
       return;
     }
@@ -800,6 +849,29 @@ function comparableUserMessageText(value: string) {
     .trim();
 }
 
+function normalizeDraftAfterRecentClear(
+  nextDraft: string,
+  cacheKey: string,
+  recent: RecentlyClearedDraft | null,
+) {
+  if (!recent || recent.cacheKey !== cacheKey || !recent.text) {
+    return nextDraft;
+  }
+  if (Date.now() - recent.clearedAt > DRAFT_REPLAY_SUPPRESSION_MS) {
+    return nextDraft;
+  }
+  if (nextDraft === recent.text) {
+    return "";
+  }
+  const replayIndex = nextDraft.indexOf(recent.text);
+  if (replayIndex < 0) {
+    return nextDraft;
+  }
+  return `${nextDraft.slice(0, replayIndex)}${nextDraft.slice(
+    replayIndex + recent.text.length,
+  )}`;
+}
+
 function filterVisiblePendingUserMessages(
   pendingUserMessages: PendingUserMessage[],
   boundary?: NewChatBoundary,
@@ -845,6 +917,17 @@ function shouldPrunePendingSlashCommand(
   return (
     Number.isFinite(completedAt) &&
     now - completedAt > PENDING_SLASH_COMMAND_SETTLED_MAX_AGE_MS
+  );
+}
+
+function shouldPrunePendingUserMessage(
+  message: PendingUserMessage,
+  now: number,
+) {
+  const createdAt = new Date(message.createdAt).getTime();
+  return (
+    Number.isFinite(createdAt) &&
+    now - createdAt > PENDING_USER_MESSAGE_MAX_AGE_MS
   );
 }
 

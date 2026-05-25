@@ -21,6 +21,7 @@ interface UseCodexMessageTransportInput {
   connectionState: ConnectionState;
   setDraft(value: string): void;
   setAttachments(value: SetStateAction<ComposerAttachment[]>): void;
+  clearComposerNativeText(): void;
   addPendingUserMessage(message: PendingUserMessageInput): string;
   removePendingUserMessage(id: string): void;
   addPendingSlashCommand(command: PendingSlashCommandInput): string;
@@ -38,6 +39,7 @@ export function useCodexMessageTransport({
   connectionState,
   setDraft,
   setAttachments,
+  clearComposerNativeText,
   addPendingUserMessage,
   removePendingUserMessage,
   addPendingSlashCommand,
@@ -95,6 +97,7 @@ export function useCodexMessageTransport({
       });
       setSending(true);
       setDraft("");
+      clearComposerNativeText();
       setAttachments([]);
       scrollToLatest(false, 0);
       try {
@@ -117,6 +120,7 @@ export function useCodexMessageTransport({
     [
       agentId,
       addPendingUserMessage,
+      clearComposerNativeText,
       clearTransportTimers,
       markNewChatMessageStarted,
       removePendingUserMessage,
@@ -138,6 +142,7 @@ export function useCodexMessageTransport({
     setStartingNewChat(true);
     Keyboard.dismiss();
     setDraft("");
+    clearComposerNativeText();
     setAttachments([]);
     try {
       clearTransportTimers();
@@ -159,6 +164,7 @@ export function useCodexMessageTransport({
     }
   }, [
     agentId,
+    clearComposerNativeText,
     clearTransportTimers,
     markNewChatReady,
     resetForNewChat,
@@ -178,6 +184,7 @@ export function useCodexMessageTransport({
       setSending(true);
       Keyboard.dismiss();
       setDraft("");
+      clearComposerNativeText();
       setAttachments([]);
       const commandName = command?.name || slashCommandNameFromText(text);
       const pendingCommandId = addPendingSlashCommand({
@@ -206,6 +213,7 @@ export function useCodexMessageTransport({
     [
       agentId,
       addPendingSlashCommand,
+      clearComposerNativeText,
       clearTransportTimers,
       removePendingSlashCommand,
       scrollToLatest,
