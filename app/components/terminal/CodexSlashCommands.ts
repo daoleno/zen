@@ -81,22 +81,6 @@ const CHATUI_FALLBACK_SLASH_COMMAND_SPECS = [
     description: "switch to Plan mode",
   }),
   fallbackSpec({
-    name: "copy",
-    category: "tools",
-    execution: "native",
-    input: inputNone(),
-    outputKind: "none",
-    description: "copy last response as markdown",
-  }),
-  fallbackSpec({
-    name: "diff",
-    category: "tools",
-    execution: "terminal-required",
-    input: inputNone(),
-    outputKind: "terminal",
-    description: "show git diff (including untracked files)",
-  }),
-  fallbackSpec({
     name: "status",
     category: "session",
     execution: "terminal-required",
@@ -121,22 +105,6 @@ const CHATUI_FALLBACK_SLASH_COMMAND_SPECS = [
     description: "use skills to improve how Codex performs specific tasks",
     interactive: true,
   }),
-  fallbackSpec({
-    name: "rollout",
-    category: "tools",
-    execution: "terminal-required",
-    input: inputNone(),
-    outputKind: "terminal",
-    description: "print the rollout file path",
-  }),
-  fallbackSpec({
-    name: "ps",
-    category: "tools",
-    execution: "terminal-required",
-    input: inputNone(),
-    outputKind: "terminal",
-    description: "list background terminals",
-  }),
 ] satisfies LocalSlashCommandSpec[];
 
 const CHATUI_SLASH_COMMAND_OVERRIDES: Record<string, SlashCommandOverride> = {
@@ -156,27 +124,11 @@ const CHATUI_SLASH_COMMAND_OVERRIDES: Record<string, SlashCommandOverride> = {
     chat_supported: false,
     terminal_supported: true,
   },
-  copy: {
-    execution: "native",
-    input: inputNone(),
-    output: { kind: "none" },
-    interactive: false,
-    chat_supported: true,
-    terminal_supported: true,
-  },
   skills: {
     execution: "native",
     input: inputNone(),
     output: { kind: "management-screen" },
     interactive: true,
-    chat_supported: true,
-    terminal_supported: true,
-  },
-  diff: {
-    execution: "native",
-    input: inputNone(),
-    output: { kind: "diff" },
-    interactive: false,
     chat_supported: true,
     terminal_supported: true,
   },
@@ -236,22 +188,6 @@ const CHATUI_SLASH_COMMAND_OVERRIDES: Record<string, SlashCommandOverride> = {
     chat_supported: true,
     terminal_supported: true,
   },
-  rollout: {
-    execution: "terminal-required",
-    input: inputNone(),
-    output: { kind: "terminal" },
-    interactive: false,
-    chat_supported: true,
-    terminal_supported: true,
-  },
-  ps: {
-    execution: "terminal-required",
-    input: inputNone(),
-    output: { kind: "terminal" },
-    interactive: false,
-    chat_supported: true,
-    terminal_supported: true,
-  },
   goal: {
     chat_supported: false,
   },
@@ -259,6 +195,14 @@ const CHATUI_SLASH_COMMAND_OVERRIDES: Record<string, SlashCommandOverride> = {
     chat_supported: false,
   },
 };
+
+const HIDDEN_CHATUI_SLASH_COMMAND_NAMES = new Set([
+  "copy",
+  "diff",
+  "ps",
+  "rollout",
+  "theme",
+]);
 
 const CHATUI_SLASH_COMMANDS = buildChatuiSlashCommands();
 
@@ -274,16 +218,12 @@ export function useCodexSlashCommands({
   screenFocused: boolean;
 }) {
   const [slashCommands, setSlashCommands] = useState<CodexSlashCommand[]>(
-    () => slashCommandCache.get(serverId) ?? CHATUI_SLASH_COMMANDS,
+    () => chatuiSlashCommandsFromCache(slashCommandCache.get(serverId)),
   );
 
   useEffect(() => {
     const cachedCommands = slashCommandCache.get(serverId);
-    setSlashCommands(
-      cachedCommands && cachedCommands.length > 0
-        ? cachedCommands
-        : CHATUI_SLASH_COMMANDS,
-    );
+    setSlashCommands(chatuiSlashCommandsFromCache(cachedCommands));
 
     if (!screenFocused || connectionState !== "connected") {
       return;
@@ -541,7 +481,8 @@ function isVisibleChatSlashCommand(command: CodexSlashCommand) {
 }
 
 function isHiddenSlashCommand(name: string) {
-  return name === "theme" || name.startsWith("debug-");
+  const normalized = name.toLowerCase();
+  return HIDDEN_CHATUI_SLASH_COMMAND_NAMES.has(normalized) || normalized.startsWith("debug-");
 }
 
 function fallbackSlashCommandCapability(name: string): LocalSlashCommandCapability {
@@ -554,4 +495,10 @@ function fallbackSlashCommandCapability(name: string): LocalSlashCommandCapabili
     chat_supported: false,
     terminal_supported: false,
   };
+}
+
+function chatuiSlashCommandsFromCache(cachedCommands?: CodexSlashCommand[]) {
+  return cachedCommands && cachedCommands.length > 0
+    ? buildChatuiSlashCommands(cachedCommands)
+    : CHATUI_SLASH_COMMANDS;
 }

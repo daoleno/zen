@@ -11,8 +11,6 @@ interface UseCodexSlashCommandPickerInput {
   startNewCodexChat(commandText?: string): void;
   sendSlashCommandToCodex(text: string, command?: CodexSlashCommand): void;
   openSkillsSheet(): void;
-  openGitDiff(): void;
-  copyLastAssistantMessage(command: CodexSlashCommand): void;
   showUnsupportedSlashCommand(command: CodexSlashCommand): void;
 }
 
@@ -24,8 +22,6 @@ export function useCodexSlashCommandPicker({
   startNewCodexChat,
   sendSlashCommandToCodex,
   openSkillsSheet,
-  openGitDiff,
-  copyLastAssistantMessage,
   showUnsupportedSlashCommand,
 }: UseCodexSlashCommandPickerInput) {
   return useCallback(
@@ -60,16 +56,6 @@ export function useCodexSlashCommandPicker({
           openSkillsSheet();
           return;
         }
-        if (command.name === "copy") {
-          setDraft("");
-          copyLastAssistantMessage(command);
-          return;
-        }
-        if (command.name === "diff") {
-          setDraft("");
-          openGitDiff();
-          return;
-        }
         setDraft(`${command.value} `);
         focusComposer();
         return;
@@ -90,8 +76,6 @@ export function useCodexSlashCommandPicker({
       dismissActionMenu,
       focusComposer,
       openSkillsSheet,
-      openGitDiff,
-      copyLastAssistantMessage,
       sendSlashCommandToCodex,
       setDraft,
       showUnsupportedSlashCommand,

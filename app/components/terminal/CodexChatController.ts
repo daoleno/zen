@@ -1,9 +1,7 @@
-import * as Clipboard from "expo-clipboard";
 import {
   useCallback,
   type SetStateAction,
 } from "react";
-import { Alert } from "react-native";
 import type { ConnectionState } from "../../store/agents";
 import type {
   CodexConversation,
@@ -50,7 +48,6 @@ interface UseCodexChatControllerInput {
   clearComposerNativeText(): void;
   dismissActionMenu(): void;
   openSkillsSheet(): void;
-  openGitDiff(): void;
 }
 
 export function useCodexChatController({
@@ -78,7 +75,6 @@ export function useCodexChatController({
   clearComposerNativeText,
   dismissActionMenu,
   openSkillsSheet,
-  openGitDiff,
 }: UseCodexChatControllerInput) {
   const insertSkillMention = useCallback((skill: CodexSkill) => {
     const mention = `$${skill.name}`;
@@ -88,46 +84,6 @@ export function useCodexChatController({
     setDraft(nextDraft);
     focusComposer();
   }, [draft, focusComposer, setDraft]);
-
-  const recordLocalSlashCommand = useCallback((
-    command: CodexSlashCommand,
-    text: string = command.value,
-    completedTitle?: string,
-  ) => {
-    const id = addPendingSlashCommand({
-      text,
-      name: command.name,
-      title: command.title,
-      description: command.description,
-      completedTitle,
-    });
-    settlePendingSlashCommand(id);
-    scrollToLatest(false, 0);
-  }, [addPendingSlashCommand, scrollToLatest, settlePendingSlashCommand]);
-
-  const copyLastAssistantMessage = useCallback((command?: CodexSlashCommand) => {
-    const lastAssistant = [...events]
-      .reverse()
-      .find(
-        (event) =>
-          (event.kind === "assistant_message" || event.kind === "status") &&
-          Boolean(event.body?.trim()),
-      );
-    const text = lastAssistant?.body?.trim();
-    if (!text) {
-      Alert.alert("Nothing to copy", "There is no Codex response in this chat yet.");
-      return;
-    }
-    void Clipboard.setStringAsync(text)
-      .then(() => {
-        if (command) {
-          recordLocalSlashCommand(command, command.value, "Copied response");
-        }
-      })
-      .catch((err: any) => {
-        Alert.alert("Copy failed", err?.message || "Could not copy the last response.");
-      });
-  }, [events, recordLocalSlashCommand]);
 
   const {
     canAttach,
@@ -194,8 +150,6 @@ export function useCodexChatController({
     startNewCodexChat,
     sendSlashCommandToCodex,
     openSkillsSheet,
-    openGitDiff,
-    copyLastAssistantMessage,
   });
 
   const sendDraft = useCodexDraftSubmission({

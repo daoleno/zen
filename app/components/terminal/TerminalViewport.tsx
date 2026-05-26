@@ -44,7 +44,6 @@ export interface TerminalViewportProps {
   daemonId: string;
   keyboardVisible: boolean;
   onSwitchToTerminal(): void;
-  onOpenGitDiff(): void;
   onRetryConnection(): void;
   onAccessoryLayout(event: LayoutChangeEvent): void;
 }
@@ -78,7 +77,6 @@ export function TerminalViewport({
   daemonId,
   keyboardVisible,
   onSwitchToTerminal,
-  onOpenGitDiff,
   onRetryConnection,
   onAccessoryLayout,
 }: TerminalViewportProps) {
@@ -153,7 +151,6 @@ export function TerminalViewport({
                 chrome={chrome}
                 screenFocused={screenFocused}
                 onSwitchToTerminal={onSwitchToTerminal}
-                onOpenGitDiff={onOpenGitDiff}
               />
             </View>
           ) : null}

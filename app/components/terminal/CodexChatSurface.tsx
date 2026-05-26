@@ -24,7 +24,6 @@ interface CodexChatSurfaceProps {
   chrome: TerminalThemeChrome;
   screenFocused: boolean;
   onSwitchToTerminal(): void;
-  onOpenGitDiff(): void;
 }
 
 function CodexChatSurfaceImpl({
@@ -38,7 +37,6 @@ function CodexChatSurfaceImpl({
   chrome,
   screenFocused,
   onSwitchToTerminal,
-  onOpenGitDiff,
 }: CodexChatSurfaceProps) {
   const { bodyProps } = useCodexChatSurfaceState({
     visible,
@@ -51,7 +49,6 @@ function CodexChatSurfaceImpl({
     chrome,
     screenFocused,
     onSwitchToTerminal,
-    onOpenGitDiff,
   });
 
   return (

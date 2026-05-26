@@ -45,7 +45,6 @@ interface UseCodexChatSurfaceStateInput {
   chrome: TerminalThemeChrome;
   screenFocused: boolean;
   onSwitchToTerminal(): void;
-  onOpenGitDiff(): void;
 }
 
 interface CodexChatSurfaceState {
@@ -63,7 +62,6 @@ export function useCodexChatSurfaceState({
   chrome,
   screenFocused,
   onSwitchToTerminal,
-  onOpenGitDiff,
 }: UseCodexChatSurfaceStateInput): CodexChatSurfaceState {
   const insets = useSafeAreaInsets();
   const slashCommands = useCodexSlashCommands({
@@ -168,7 +166,6 @@ export function useCodexChatSurfaceState({
     clearComposerNativeText: composerInput.clearNativeText,
     dismissActionMenu,
     openSkillsSheet,
-    openGitDiff: onOpenGitDiff,
   });
 
   const requestRunning =

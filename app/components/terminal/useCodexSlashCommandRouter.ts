@@ -32,8 +32,6 @@ interface UseCodexSlashCommandRouterInput {
   startNewCodexChat(commandText?: string): void;
   sendSlashCommandToCodex(text: string, command?: CodexSlashCommand): void;
   openSkillsSheet(): void;
-  openGitDiff(): void;
-  copyLastAssistantMessage(command: CodexSlashCommand): void;
 }
 
 export function useCodexSlashCommandRouter({
@@ -47,8 +45,6 @@ export function useCodexSlashCommandRouter({
   startNewCodexChat,
   sendSlashCommandToCodex,
   openSkillsSheet,
-  openGitDiff,
-  copyLastAssistantMessage,
 }: UseCodexSlashCommandRouterInput) {
   const {
     showUnsupportedSlashCommand,
@@ -116,16 +112,6 @@ export function useCodexSlashCommandRouter({
           openSkillsSheet();
           return true;
         }
-        if (command.name === "copy") {
-          setDraft("");
-          copyLastAssistantMessage(command);
-          return true;
-        }
-        if (command.name === "diff") {
-          setDraft("");
-          openGitDiff();
-          return true;
-        }
         setDraft(`${command.value} `);
         focusComposer();
         return true;
@@ -147,8 +133,6 @@ export function useCodexSlashCommandRouter({
       showUnsupportedSlashCommand,
       startNewCodexChat,
       openSkillsSheet,
-      openGitDiff,
-      copyLastAssistantMessage,
     ],
   );
 
@@ -183,8 +167,6 @@ export function useCodexSlashCommandRouter({
     showUnsupportedSlashCommand,
     sendSlashCommandToCodex,
     openSkillsSheet,
-    openGitDiff,
-    copyLastAssistantMessage,
   });
 
   return {

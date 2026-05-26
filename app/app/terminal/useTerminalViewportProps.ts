@@ -33,7 +33,6 @@ interface UseTerminalViewportPropsInput {
   daemonId?: string;
   keyboardVisible: boolean;
   sessionActions: ReturnType<typeof useTerminalSessionActions>;
-  onOpenGitDiff(): void;
   onAccessoryLayout(event: LayoutChangeEvent): void;
 }
 
@@ -59,7 +58,6 @@ export function useTerminalViewportProps({
   daemonId,
   keyboardVisible,
   sessionActions,
-  onOpenGitDiff,
   onAccessoryLayout,
 }: UseTerminalViewportPropsInput): TerminalViewportProps {
   const handleSwitchToTerminal = useCallback(() => {
@@ -103,7 +101,6 @@ export function useTerminalViewportProps({
       daemonId: daemonId || "",
       keyboardVisible,
       onSwitchToTerminal: handleSwitchToTerminal,
-      onOpenGitDiff,
       onRetryConnection: handleRetryConnection,
       onAccessoryLayout,
     }),
@@ -121,7 +118,6 @@ export function useTerminalViewportProps({
       hasTerminalRoute,
       keyboardVisible,
       onAccessoryLayout,
-      onOpenGitDiff,
       onCtrlArmedChange,
       outputBottomInset,
       screenFocused,
