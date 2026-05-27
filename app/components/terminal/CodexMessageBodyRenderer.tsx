@@ -7,7 +7,7 @@ import type {
   TerminalThemePalette,
 } from "../../constants/terminalThemes";
 import { parseMessageBlocks } from "./CodexMessageBodyModel";
-import { CodexFallbackMessageBlock } from "./CodexFallbackMessageBlock";
+import { CodexMessageBlock } from "./CodexMessageBlock";
 
 interface MessageBodyProps {
   value: string;
@@ -31,7 +31,7 @@ export function MessageBody({
       {blocks.map((block, index) => {
         const isLast = index === blocks.length - 1;
         return (
-          <CodexFallbackMessageBlock
+          <CodexMessageBlock
             key={index}
             block={block}
             chrome={chrome}

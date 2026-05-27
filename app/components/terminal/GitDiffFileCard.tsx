@@ -84,8 +84,8 @@ export function GitDiffFileCard({
           ]}
         />
         <View style={styles.diffCardTitleWrap}>
-          <Text style={[styles.diffFileName, { color: chrome.text }]} numberOfLines={1}>
-            {file.path}
+          <Text style={[styles.diffFileName, { color: chrome.text }]} numberOfLines={2}>
+            {pathBaseName(file.path)}
           </Text>
           <Text style={[styles.diffFilePath, { color: chrome.textMuted }]} numberOfLines={1}>
             {buildFilePathMeta(file)}
@@ -234,13 +234,18 @@ function normalizedCount(value: unknown): number {
 
 function buildFilePathMeta(file: GitDiffFileInfo): string {
   if (file.old_path) {
-    return `${statusLabel(file)} · ${file.old_path} -> ${file.path}`;
+    return `${statusLabel(file)} · from ${file.old_path}`;
   }
   const directory = pathDirectoryName(file.path);
   const scope = describeGitDiffScope(file);
   const label = statusLabel(file);
   const state = scope === label ? label : `${label} · ${scope}`;
   return [state, directory].filter(Boolean).join(" · ");
+}
+
+function pathBaseName(path: string): string {
+  const index = path.lastIndexOf("/");
+  return index === -1 ? path : path.slice(index + 1);
 }
 
 function pathDirectoryName(path: string): string {
@@ -300,12 +305,13 @@ const styles = StyleSheet.create({
     paddingVertical: 5,
     borderBottomWidth: StyleSheet.hairlineWidth,
     flexDirection: "row",
-    alignItems: "center",
+    alignItems: "flex-start",
     gap: 7,
   },
   diffCardTitleWrap: {
     flex: 1,
     minWidth: 0,
+    paddingTop: 1,
   },
   diffOpenButton: {
     width: 28,
@@ -334,6 +340,7 @@ const styles = StyleSheet.create({
     height: 7,
     borderRadius: 4,
     flexShrink: 0,
+    marginTop: 7,
   },
   fileStats: {
     minWidth: 46,

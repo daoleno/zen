@@ -61,6 +61,7 @@ export function CodexTimelineActivityDetails({
           chrome={chrome}
           theme={theme}
           activityKind={item.activityKind}
+          bodyKind={item.bodyKind}
           textSelectable={textSelectable}
           truncateBody={truncateBody}
         />

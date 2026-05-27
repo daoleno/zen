@@ -1,1 +1,1 @@
-export { MessageBody } from "./CodexFallbackMessageBody";
+export { MessageBody } from "./CodexMessageBodyRenderer";

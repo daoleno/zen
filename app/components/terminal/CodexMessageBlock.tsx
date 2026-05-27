@@ -6,11 +6,11 @@ import type {
   TerminalThemePalette,
 } from "../../constants/terminalThemes";
 import type { MessageBlock } from "./CodexMessageBodyModel";
-import { CodexFallbackCodeBlock } from "./CodexFallbackCodeBlock";
-import { CodexFallbackInlineMessage } from "./CodexFallbackInlineMessage";
+import { CodexInlineMessage } from "./CodexInlineMessage";
+import { CodexMessageCodeBlock } from "./CodexMessageCodeBlock";
 import { TimelineTextSelectableContext } from "./TimelineTextSelectableContext";
 
-interface CodexFallbackMessageBlockProps {
+interface CodexMessageBlockProps {
   block: MessageBlock;
   chrome: TerminalThemeChrome;
   theme: TerminalThemePalette;
@@ -18,13 +18,13 @@ interface CodexFallbackMessageBlockProps {
   isLast: boolean;
 }
 
-export function CodexFallbackMessageBlock({
+export function CodexMessageBlock({
   block,
   chrome,
   theme,
   compact,
   isLast,
-}: CodexFallbackMessageBlockProps) {
+}: CodexMessageBlockProps) {
   const textSelectable = useContext(TimelineTextSelectableContext);
 
   switch (block.type) {
@@ -39,7 +39,7 @@ export function CodexFallbackMessageBlock({
               { color: chrome.text },
             ]}
           >
-            <CodexFallbackInlineMessage
+            <CodexInlineMessage
               text={block.text}
               chrome={chrome}
               theme={theme}
@@ -68,7 +68,7 @@ export function CodexFallbackMessageBlock({
                   { color: chrome.text },
                 ]}
               >
-                <CodexFallbackInlineMessage
+                <CodexInlineMessage
                   text={item.text}
                   chrome={chrome}
                   theme={theme}
@@ -81,7 +81,7 @@ export function CodexFallbackMessageBlock({
       );
     case "code":
       return (
-        <CodexFallbackCodeBlock
+        <CodexMessageCodeBlock
           text={block.text}
           language={block.language}
           chrome={chrome}
@@ -107,7 +107,7 @@ export function CodexFallbackMessageBlock({
               { color: chrome.textMuted },
             ]}
           >
-            <CodexFallbackInlineMessage
+            <CodexInlineMessage
               text={block.text}
               chrome={chrome}
               theme={theme}
@@ -128,7 +128,7 @@ export function CodexFallbackMessageBlock({
             isLast ? styles.messageBlockLast : null,
           ]}
         >
-          <CodexFallbackInlineMessage
+          <CodexInlineMessage
             text={block.text}
             chrome={chrome}
             theme={theme}

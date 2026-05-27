@@ -9,6 +9,7 @@ import type {
 } from "../../constants/terminalThemes";
 import { Typography } from "../../constants/tokens";
 import { MessageBody } from "./CodexMessageBody";
+import { CodexTimelineActivityOutput } from "./CodexTimelineActivityOutput";
 import type { ZenActivityTimelineItem } from "./CodexTimelineActivityTypes";
 
 interface CodexTimelineActivityBodyProps {
@@ -16,6 +17,7 @@ interface CodexTimelineActivityBodyProps {
   chrome: TerminalThemeChrome;
   theme: TerminalThemePalette;
   activityKind?: ZenActivityTimelineItem["activityKind"];
+  bodyKind?: ZenActivityTimelineItem["bodyKind"];
   textSelectable: boolean;
   truncateBody(value: string, limit: number): string;
 }
@@ -25,6 +27,7 @@ export function CodexTimelineActivityBody({
   chrome,
   theme,
   activityKind,
+  bodyKind,
   textSelectable,
   truncateBody,
 }: CodexTimelineActivityBodyProps) {
@@ -36,6 +39,18 @@ export function CodexTimelineActivityBody({
         chrome={chrome}
         theme={theme}
         compact
+      />
+    );
+  }
+
+  if (bodyKind) {
+    return (
+      <CodexTimelineActivityOutput
+        body={displayBody}
+        bodyKind={bodyKind}
+        chrome={chrome}
+        theme={theme}
+        textSelectable={textSelectable}
       />
     );
   }

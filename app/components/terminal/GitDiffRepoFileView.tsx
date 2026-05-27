@@ -57,10 +57,10 @@ export function GitDiffRepoFileView({
         </TouchableOpacity>
         <View style={styles.repoFileCopy}>
           <Text style={[styles.repoFileTitle, { color: chrome.text }]} numberOfLines={2}>
-            {path}
+            {pathBaseName(path)}
           </Text>
-          <Text style={[styles.repoFilePath, { color: chrome.textMuted }]} numberOfLines={2}>
-            {repoTitle}/{pathDirectoryName(path)}
+          <Text style={[styles.repoFilePath, { color: chrome.textMuted }]} numberOfLines={1}>
+            {[repoTitle, pathDirectoryName(path)].filter(Boolean).join(" / ")}
           </Text>
         </View>
         {changed ? (
@@ -103,6 +103,11 @@ export function GitDiffRepoFileView({
       )}
     </View>
   );
+}
+
+function pathBaseName(path: string): string {
+  const index = path.lastIndexOf("/");
+  return index === -1 ? path : path.slice(index + 1);
 }
 
 function pathDirectoryName(path: string): string {

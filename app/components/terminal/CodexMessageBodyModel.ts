@@ -24,7 +24,7 @@ export function parseMessageBlocks(value: string): MessageBlock[] {
   let code: { fence: string; language?: string; lines: string[] } | null = null;
 
   const flushParagraph = () => {
-    const text = paragraph.join(" ").trim();
+    const text = normalizeProseText(paragraph.join(" ")).trim();
     if (text) {
       blocks.push({ type: "paragraph", text });
     }
@@ -37,7 +37,7 @@ export function parseMessageBlocks(value: string): MessageBlock[] {
     list = [];
   };
   const flushQuote = () => {
-    const text = quote.join(" ").trim();
+    const text = normalizeProseText(quote.join(" ")).trim();
     if (text) {
       blocks.push({ type: "quote", text });
     }
@@ -89,7 +89,7 @@ export function parseMessageBlocks(value: string): MessageBlock[] {
       blocks.push({
         type: "heading",
         level: heading[1].length,
-        text: heading[2].trim(),
+        text: normalizeProseText(heading[2]).trim(),
       });
       continue;
     }
@@ -100,7 +100,7 @@ export function parseMessageBlocks(value: string): MessageBlock[] {
       flushQuote();
       list.push({
         marker: /^\d/.test(listItem[1]) ? listItem[1] : "\u2022",
-        text: listItem[2].trim(),
+        text: normalizeProseText(listItem[2]).trim(),
       });
       continue;
     }
@@ -142,6 +142,12 @@ function normalizeCodeFenceLanguage(value: string): string | undefined {
 
 function escapeRegex(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function normalizeProseText(value: string) {
+  return value
+    .replace(/[\u2018\u2019\u02BC]/g, "'")
+    .replace(/[\u201C\u201D]/g, '"');
 }
 
 export function tokenizeInlineMessage(text: string): InlineMessagePart[] {

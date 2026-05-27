@@ -17,7 +17,7 @@ import {
 } from "./gitDiffSyntaxHighlight";
 import { TimelineTextSelectableContext } from "./TimelineTextSelectableContext";
 
-interface CodexFallbackCodeBlockProps {
+interface CodexMessageCodeBlockProps {
   text: string;
   language?: string;
   chrome: TerminalThemeChrome;
@@ -26,14 +26,14 @@ interface CodexFallbackCodeBlockProps {
   isLast: boolean;
 }
 
-export function CodexFallbackCodeBlock({
+export function CodexMessageCodeBlock({
   text,
   language,
   chrome,
   theme,
   compact,
   isLast,
-}: CodexFallbackCodeBlockProps) {
+}: CodexMessageCodeBlockProps) {
   const textSelectable = useContext(TimelineTextSelectableContext);
   const lines = useMemo(() => splitCodeLines(text), [text]);
   const label = formatLanguageLabel(language);

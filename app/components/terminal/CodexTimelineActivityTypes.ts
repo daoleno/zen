@@ -25,6 +25,7 @@ export interface ZenActivityTimelineItem {
   activityKind?: "reasoning";
   detail?: string;
   body?: string;
+  bodyKind?: "terminal" | "diff-stat";
   files?: string[];
   fileSummaries?: PatchFileSummary[];
   previewPath?: string;

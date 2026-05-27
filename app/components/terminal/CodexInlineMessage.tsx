@@ -7,19 +7,19 @@ import type {
 } from "../../constants/terminalThemes";
 import { tokenizeInlineMessage } from "./CodexMessageBodyModel";
 
-interface CodexFallbackInlineMessageProps {
+interface CodexInlineMessageProps {
   text: string;
   chrome: TerminalThemeChrome;
   theme: TerminalThemePalette;
   compact?: boolean;
 }
 
-export function CodexFallbackInlineMessage({
+export function CodexInlineMessage({
   text,
   chrome,
   theme,
   compact = false,
-}: CodexFallbackInlineMessageProps) {
+}: CodexInlineMessageProps) {
   return (
     <>
       {tokenizeInlineMessage(text).map((part, index) => {

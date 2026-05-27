@@ -416,6 +416,7 @@ function activityFromEvent(event: CodexConversationEvent): ZenTimelineItem | nul
         icon: running ? "time-outline" : failed ? "alert-circle-outline" : presentation.icon,
         detail: commandActivityDetail(command, presentation),
         body: output.text || (!running && !failed ? "(no output)" : undefined),
+        bodyKind: commandOutputBodyKind(command, output.text),
         defaultExpanded: false,
       };
     }
@@ -457,6 +458,7 @@ function activityFromEvent(event: CodexConversationEvent): ZenTimelineItem | nul
         icon: presentation.icon,
         detail: heading.detail || presentation.subtitle || compactToolDetail(event),
         body: result.text || undefined,
+        bodyKind: toolOutputBodyKind(event, result.text),
         previewPath,
         defaultExpanded: false,
       };
@@ -656,7 +658,26 @@ function stripLegacyUploadedFiles(value: string): {
 }
 
 function cleanDisplayText(value: string) {
-  return value.replace(/\n{3,}/g, "\n\n").trim();
+  return stripTerminalControlSequences(value).replace(/\n{3,}/g, "\n\n").trim();
+}
+
+function stripTerminalControlSequences(value: string) {
+  return value
+    .replace(/\r\n/g, "\n")
+    .replace(/\r/g, "\n")
+    .replace(/\u001B\[[0-?]*[ -/]*K\u001B\[[0-?]*[ -/]*G/g, "\n")
+    .replace(/\u001B\[[0-?]*[ -/]*G/g, "\n")
+    .replace(/\u001B(?:\][^\u0007]*(?:\u0007|\u001B\\)|\[[0-?]*[ -/]*[@-~]|[@-Z\\-_])/g, "")
+    .replace(/\[2K\[1G/g, "\n")
+    .replace(/\[(?:\?\d+[hl]|\d+(?:;\d+)*[mKGH])/g, "")
+    .replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/g, "")
+    .split("\n")
+    .map(stripProgressSpinnerPrefix)
+    .join("\n");
+}
+
+function stripProgressSpinnerPrefix(line: string) {
+  return line.replace(/^[\s⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏◐◓◑◒|\\]+(?=\S)/, "");
 }
 
 function patchSummaryFromEvent(event: CodexConversationEvent): PatchSummary {
@@ -1079,6 +1100,28 @@ function commandActivityDetail(
   presentation: CommandPresentation,
 ) {
   return presentation.detail || commandSummary(command);
+}
+
+function commandOutputBodyKind(
+  command: string,
+  output: string,
+): ZenActivityTimelineItem["bodyKind"] {
+  const summary = (commandSummary(command) || "").toLowerCase();
+  if (/\bgit\s+diff\b/.test(summary) && /\s\|\s+\d+\s+[+-]+/.test(output)) {
+    return "diff-stat";
+  }
+  return "terminal";
+}
+
+function toolOutputBodyKind(
+  event: CodexConversationEvent,
+  output: string,
+): ZenActivityTimelineItem["bodyKind"] {
+  const name = (event.tool_name || event.title || "").trim().replace(/^functions\./, "");
+  if (name === "exec_command" || name === "write_stdin") {
+    return commandOutputBodyKind(event.command || "", output);
+  }
+  return output ? "terminal" : undefined;
 }
 
 function commandSummary(command: string) {
