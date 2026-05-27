@@ -41,6 +41,20 @@ export interface HighlightSegment {
 
 export function highlightCodeLine(line: string, path: string): HighlightSegment[] {
   const language = detectSyntaxLanguage(path);
+  return highlightCodeLineWithSyntaxLanguage(line, language);
+}
+
+export function highlightCodeLineForLanguage(
+  line: string,
+  language: string | undefined,
+): HighlightSegment[] {
+  return highlightCodeLineWithSyntaxLanguage(line, detectSyntaxLanguageForFence(language));
+}
+
+function highlightCodeLineWithSyntaxLanguage(
+  line: string,
+  language: SyntaxLanguage,
+): HighlightSegment[] {
   if (language === "plain") {
     return [{ text: line, kind: "plain" }];
   }
@@ -60,6 +74,58 @@ export function highlightCodeLine(line: string, path: string): HighlightSegment[
     return highlightConfigLine(line, language);
   }
   return highlightGenericLine(line, language);
+}
+
+function detectSyntaxLanguageForFence(language: string | undefined): SyntaxLanguage {
+  const normalized = (language || "").trim().toLowerCase();
+  if (!normalized) {
+    return "plain";
+  }
+
+  switch (normalized) {
+    case "bash":
+    case "console":
+    case "fish":
+    case "sh":
+    case "shell":
+    case "terminal":
+    case "zsh":
+      return "shell";
+    case "c++":
+    case "cpp":
+    case "cxx":
+      return "c";
+    case "golang":
+      return "go";
+    case "htm":
+    case "svg":
+    case "xml":
+      return "html";
+    case "javascript":
+    case "jsx":
+      return "javascript";
+    case "jsonc":
+      return "json";
+    case "kt":
+    case "kts":
+      return "kotlin";
+    case "md":
+    case "mdx":
+      return "markdown";
+    case "py":
+      return "python";
+    case "rb":
+      return "ruby";
+    case "rs":
+      return "rust";
+    case "tsx":
+    case "typescript":
+      return "typescript";
+    case "yml":
+      return "yaml";
+    default:
+      return detectSyntaxLanguage(`snippet.${normalized}`);
+  }
 }
 
 function detectSyntaxLanguage(path: string): SyntaxLanguage {

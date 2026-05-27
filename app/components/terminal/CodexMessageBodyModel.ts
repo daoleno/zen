@@ -1,9 +1,14 @@
 export type MessageBlock =
   | { type: "heading"; level: number; text: string }
   | { type: "paragraph"; text: string }
-  | { type: "list"; items: string[] }
-  | { type: "code"; text: string }
+  | { type: "list"; items: MessageListItem[] }
+  | { type: "code"; text: string; language?: string }
   | { type: "quote"; text: string };
+
+export type MessageListItem = {
+  marker: string;
+  text: string;
+};
 
 export type InlineMessagePart = {
   text: string;
@@ -14,9 +19,9 @@ export function parseMessageBlocks(value: string): MessageBlock[] {
   const lines = value.replace(/<!--[\s\S]*?-->/g, "").replace(/\r\n/g, "\n").split("\n");
   const blocks: MessageBlock[] = [];
   let paragraph: string[] = [];
-  let list: string[] = [];
+  let list: MessageListItem[] = [];
   let quote: string[] = [];
-  let code: string[] | null = null;
+  let code: { fence: string; language?: string; lines: string[] } | null = null;
 
   const flushParagraph = () => {
     const text = paragraph.join(" ").trim();
@@ -49,18 +54,27 @@ export function parseMessageBlocks(value: string): MessageBlock[] {
     const trimmed = line.trim();
 
     if (code) {
-      if (/^```/.test(trimmed)) {
-        blocks.push({ type: "code", text: code.join("\n").replace(/\n+$/, "") });
+      if (new RegExp(`^${escapeRegex(code.fence)}\\s*$`).test(trimmed)) {
+        blocks.push({
+          type: "code",
+          text: code.lines.join("\n").replace(/\n+$/, ""),
+          language: code.language,
+        });
         code = null;
       } else {
-        code.push(rawLine);
+        code.lines.push(rawLine);
       }
       continue;
     }
 
-    if (/^```/.test(trimmed)) {
+    const fence = /^(```|~~~)\s*(.*)$/.exec(trimmed);
+    if (fence) {
       flushOpenBlocks();
-      code = [];
+      code = {
+        fence: fence[1],
+        language: normalizeCodeFenceLanguage(fence[2]),
+        lines: [],
+      };
       continue;
     }
 
@@ -80,11 +94,14 @@ export function parseMessageBlocks(value: string): MessageBlock[] {
       continue;
     }
 
-    const listItem = /^(?:[-*]|\d+\.)\s+(.+)$/.exec(trimmed);
+    const listItem = /^((?:[-*+])|\d+[.)])\s+(.+)$/.exec(trimmed);
     if (listItem) {
       flushParagraph();
       flushQuote();
-      list.push(listItem[1].trim());
+      list.push({
+        marker: /^\d/.test(listItem[1]) ? listItem[1] : "\u2022",
+        text: listItem[2].trim(),
+      });
       continue;
     }
 
@@ -102,10 +119,29 @@ export function parseMessageBlocks(value: string): MessageBlock[] {
   }
 
   if (code) {
-    blocks.push({ type: "code", text: code.join("\n").replace(/\n+$/, "") });
+    blocks.push({
+      type: "code",
+      text: code.lines.join("\n").replace(/\n+$/, ""),
+      language: code.language,
+    });
   }
   flushOpenBlocks();
   return blocks;
+}
+
+function normalizeCodeFenceLanguage(value: string): string | undefined {
+  const token = value
+    .trim()
+    .split(/\s+/)[0]
+    ?.replace(/^language-/, "")
+    .replace(/[{}]/g, "")
+    .trim();
+
+  return token ? token.toLowerCase() : undefined;
+}
+
+function escapeRegex(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
 export function tokenizeInlineMessage(text: string): InlineMessagePart[] {

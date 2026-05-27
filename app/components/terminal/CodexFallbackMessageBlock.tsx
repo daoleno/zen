@@ -5,8 +5,8 @@ import type {
   TerminalThemeChrome,
   TerminalThemePalette,
 } from "../../constants/terminalThemes";
-import { isLightTerminalTheme } from "../../constants/terminalThemes";
 import type { MessageBlock } from "./CodexMessageBodyModel";
+import { CodexFallbackCodeBlock } from "./CodexFallbackCodeBlock";
 import { CodexFallbackInlineMessage } from "./CodexFallbackInlineMessage";
 import { TimelineTextSelectableContext } from "./TimelineTextSelectableContext";
 
@@ -30,21 +30,23 @@ export function CodexFallbackMessageBlock({
   switch (block.type) {
     case "heading":
       return (
-        <Text
-          selectable={textSelectable}
-          style={[
-            styles.messageHeading,
-            block.level <= 2 ? styles.messageHeadingLarge : null,
-            { color: chrome.text },
-            isLast ? styles.messageBlockLast : null,
-          ]}
-        >
-          <CodexFallbackInlineMessage
-            text={block.text}
-            chrome={chrome}
-            theme={theme}
-          />
-        </Text>
+        <View style={[styles.messageHeadingWrap, isLast ? styles.messageBlockLast : null]}>
+          <Text
+            selectable={textSelectable}
+            style={[
+              styles.messageHeading,
+              block.level <= 2 ? styles.messageHeadingLarge : null,
+              { color: chrome.text },
+            ]}
+          >
+            <CodexFallbackInlineMessage
+              text={block.text}
+              chrome={chrome}
+              theme={theme}
+              compact={compact}
+            />
+          </Text>
+        </View>
       );
     case "list":
       return (
@@ -53,22 +55,24 @@ export function CodexFallbackMessageBlock({
             <View key={itemIndex} style={styles.messageListItem}>
               <Text
                 selectable={textSelectable}
-                style={[styles.messageBullet, { color: chrome.textSubtle }]}
+                style={[styles.messageListMarker, { color: chrome.textSubtle }]}
               >
-                {"\u2022"}
+                {item.marker}
               </Text>
               <Text
                 selectable={textSelectable}
                 style={[
                   styles.messageText,
-                  styles.messageBlockLast,
+                  compact ? styles.messageTextCompact : null,
+                  styles.messageListText,
                   { color: chrome.text },
                 ]}
               >
                 <CodexFallbackInlineMessage
-                  text={item}
+                  text={item.text}
                   chrome={chrome}
                   theme={theme}
+                  compact={compact}
                 />
               </Text>
             </View>
@@ -76,22 +80,15 @@ export function CodexFallbackMessageBlock({
         </View>
       );
     case "code":
-      const codeBlockDark = !compact && !isLightTerminalTheme(theme);
       return (
-        <Text
-          selectable={textSelectable}
-          style={[
-            styles.messageCodeBlock,
-            {
-              color: codeBlockDark ? theme.brightWhite : chrome.text,
-              backgroundColor: compact ? chrome.surface : theme.black,
-              borderColor: chrome.border,
-            },
-            isLast ? styles.messageBlockLast : null,
-          ]}
-        >
-          {block.text}
-        </Text>
+        <CodexFallbackCodeBlock
+          text={block.text}
+          language={block.language}
+          chrome={chrome}
+          theme={theme}
+          compact={compact}
+          isLast={isLast}
+        />
       );
     case "quote":
       return (
@@ -104,12 +101,17 @@ export function CodexFallbackMessageBlock({
         >
           <Text
             selectable={textSelectable}
-            style={[styles.messageQuoteText, { color: chrome.textMuted }]}
+            style={[
+              styles.messageQuoteText,
+              compact ? styles.messageQuoteTextCompact : null,
+              { color: chrome.textMuted },
+            ]}
           >
             <CodexFallbackInlineMessage
               text={block.text}
               chrome={chrome}
               theme={theme}
+              compact={compact}
             />
           </Text>
         </View>
@@ -121,6 +123,7 @@ export function CodexFallbackMessageBlock({
           selectable={textSelectable}
           style={[
             styles.messageText,
+            compact ? styles.messageTextCompact : null,
             { color: chrome.text },
             isLast ? styles.messageBlockLast : null,
           ]}
@@ -129,6 +132,7 @@ export function CodexFallbackMessageBlock({
             text={block.text}
             chrome={chrome}
             theme={theme}
+            compact={compact}
           />
         </Text>
       );
@@ -137,57 +141,68 @@ export function CodexFallbackMessageBlock({
 
 const styles = StyleSheet.create({
   messageText: {
-    marginBottom: 9,
+    marginBottom: 10,
     fontSize: 15,
-    lineHeight: 23,
+    lineHeight: 24,
     fontFamily: Typography.chatFont,
+    letterSpacing: 0,
+  },
+  messageTextCompact: {
+    marginBottom: 8,
+    fontSize: 14,
+    lineHeight: 22,
+  },
+  messageHeadingWrap: {
+    marginBottom: 8,
   },
   messageHeading: {
-    marginBottom: 8,
     fontSize: 15,
-    lineHeight: 22,
+    lineHeight: 23,
     fontFamily: Typography.chatFontMedium,
+    letterSpacing: 0,
   },
   messageHeadingLarge: {
     fontSize: 16,
-    lineHeight: 24,
+    lineHeight: 25,
   },
   messageList: {
-    marginBottom: 9,
-    gap: 5,
+    marginBottom: 10,
+    gap: 6,
   },
   messageListItem: {
     flexDirection: "row",
     alignItems: "flex-start",
-    gap: 8,
+    minWidth: 0,
   },
-  messageBullet: {
-    width: 9,
-    fontSize: 13,
-    lineHeight: 23,
-    fontFamily: Typography.chatFont,
+  messageListText: {
+    flex: 1,
+    minWidth: 0,
+    marginBottom: 0,
   },
-  messageCodeBlock: {
-    marginTop: 2,
-    marginBottom: 10,
-    borderRadius: 8,
-    borderWidth: StyleSheet.hairlineWidth,
-    overflow: "hidden",
-    paddingHorizontal: 12,
-    paddingVertical: 10,
+  messageListMarker: {
+    width: 22,
+    paddingRight: 8,
+    textAlign: "right",
     fontSize: 13,
-    lineHeight: 20,
-    fontFamily: Typography.chatMonoFont,
+    lineHeight: 24,
+    fontFamily: Typography.chatFontMedium,
+    letterSpacing: 0,
   },
   messageQuote: {
-    marginBottom: 9,
+    marginBottom: 10,
     borderLeftWidth: 2,
     paddingLeft: 10,
+    paddingVertical: 1,
   },
   messageQuoteText: {
     fontSize: 14,
     lineHeight: 22,
     fontFamily: Typography.chatFont,
+    letterSpacing: 0,
+  },
+  messageQuoteTextCompact: {
+    fontSize: 13,
+    lineHeight: 20,
   },
   messageBlockLast: {
     marginBottom: 0,

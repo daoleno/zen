@@ -11,12 +11,14 @@ interface CodexFallbackInlineMessageProps {
   text: string;
   chrome: TerminalThemeChrome;
   theme: TerminalThemePalette;
+  compact?: boolean;
 }
 
 export function CodexFallbackInlineMessage({
   text,
   chrome,
   theme,
+  compact = false,
 }: CodexFallbackInlineMessageProps) {
   return (
     <>
@@ -34,6 +36,7 @@ export function CodexFallbackInlineMessage({
               key={index}
               style={[
                 styles.messageInlineCode,
+                compact ? styles.messageInlineCodeCompact : null,
                 { color: theme.cyan, backgroundColor: chrome.surfaceMuted },
               ]}
             >
@@ -57,13 +60,20 @@ export function CodexFallbackInlineMessage({
 const styles = StyleSheet.create({
   messageBold: {
     fontFamily: Typography.chatFontMedium,
+    letterSpacing: 0,
   },
   messageInlineCode: {
     fontFamily: Typography.chatMonoFont,
     fontSize: 13,
-    lineHeight: 19,
+    lineHeight: 20,
+    letterSpacing: 0,
+  },
+  messageInlineCodeCompact: {
+    fontSize: 12,
+    lineHeight: 18,
   },
   messageLink: {
     fontFamily: Typography.chatFontMedium,
+    letterSpacing: 0,
   },
 });
