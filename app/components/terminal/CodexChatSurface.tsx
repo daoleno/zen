@@ -23,6 +23,12 @@ interface CodexChatSurfaceProps {
   theme: TerminalThemePalette;
   chrome: TerminalThemeChrome;
   screenFocused: boolean;
+  placeholder?: string;
+  minimalComposer?: boolean;
+  keyboardVerticalOffset?: number;
+  showUnavailableAction?: boolean;
+  emptyTitle?: string;
+  emptyBody?: string;
   onSwitchToTerminal(): void;
 }
 
@@ -36,6 +42,12 @@ function CodexChatSurfaceImpl({
   theme,
   chrome,
   screenFocused,
+  placeholder,
+  minimalComposer,
+  keyboardVerticalOffset,
+  showUnavailableAction,
+  emptyTitle,
+  emptyBody,
   onSwitchToTerminal,
 }: CodexChatSurfaceProps) {
   const { bodyProps } = useCodexChatSurfaceState({
@@ -48,6 +60,12 @@ function CodexChatSurfaceImpl({
     theme,
     chrome,
     screenFocused,
+    placeholder,
+    minimalComposer,
+    keyboardVerticalOffset,
+    showUnavailableAction,
+    emptyTitle,
+    emptyBody,
     onSwitchToTerminal,
   });
 

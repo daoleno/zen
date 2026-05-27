@@ -908,6 +908,35 @@ func TestParseCodexConversation_KeepsCodexHistoryEntries(t *testing.T) {
 	}
 }
 
+func TestParseCodexConversation_RendersAgentReasoningAsRunningCommentary(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "rollout.jsonl")
+	writeJSONL(t, path,
+		map[string]any{
+			"type":      "event_msg",
+			"timestamp": "2026-05-20T10:00:01Z",
+			"payload": map[string]any{
+				"type": "agent_reasoning",
+				"text": "**Checking context**\n\nReading the current workspace.",
+			},
+		},
+	)
+
+	got, err := parseCodexConversation(path)
+	if err != nil {
+		t.Fatalf("parseCodexConversation: %v", err)
+	}
+	if len(got.Events) != 1 {
+		t.Fatalf("events len = %d, want 1: %#v", len(got.Events), got.Events)
+	}
+	event := got.Events[0]
+	if event.Kind != "commentary" || event.Title != "Reasoning" || event.Status != "running" {
+		t.Fatalf("reasoning event = %#v, want running commentary", event)
+	}
+	if !strings.Contains(event.Body, "Checking context") {
+		t.Fatalf("reasoning body = %q, want text", event.Body)
+	}
+}
+
 func TestParseCodexConversation_TracksTurnActivityFromLifecycleEvents(t *testing.T) {
 	t.Run("running turn", func(t *testing.T) {
 		path := filepath.Join(t.TempDir(), "running.jsonl")

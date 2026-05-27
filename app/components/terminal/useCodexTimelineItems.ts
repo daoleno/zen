@@ -6,6 +6,7 @@ import type {
 } from "./CodexChatSession";
 import {
   buildZenTimeline,
+  mergeActiveTurnIntoTimeline,
   mergePendingSlashCommandsIntoTimeline,
   mergePendingUserMessagesIntoTimeline,
 } from "./CodexTimelineModel";
@@ -20,10 +21,12 @@ export function useCodexTimelineItems({
   events,
   pendingUserMessages,
   pendingSlashCommands,
+  active,
 }: {
   events: CodexConversationEvent[];
   pendingUserMessages: PendingUserMessage[];
   pendingSlashCommands: PendingSlashCommand[];
+  active?: boolean;
 }) {
   const previousRef = useRef<{
     byId: Map<string, StableTimelineEntry>;
@@ -35,9 +38,12 @@ export function useCodexTimelineItems({
 
   return useMemo(() => {
     const nextItems = mergePendingSlashCommandsIntoTimeline(
-      mergePendingUserMessagesIntoTimeline(
-        buildZenTimeline(events),
-        pendingUserMessages,
+      mergeActiveTurnIntoTimeline(
+        mergePendingUserMessagesIntoTimeline(
+          buildZenTimeline(events),
+          pendingUserMessages,
+        ),
+        active,
       ),
       pendingSlashCommands,
     );
@@ -69,7 +75,7 @@ export function useCodexTimelineItems({
       items: stableItems,
     };
     return stableItems;
-  }, [events, pendingSlashCommands, pendingUserMessages]);
+  }, [active, events, pendingSlashCommands, pendingUserMessages]);
 }
 
 function timelineItemFingerprint(item: ZenTimelineItem) {

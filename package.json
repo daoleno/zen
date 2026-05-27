@@ -11,7 +11,7 @@
     "app:start": "cd app && bun run start",
     "app:android": "cd app && env JAVA_HOME=/usr/lib/jvm/java-17-openjdk PATH=/usr/lib/jvm/java-17-openjdk/bin:$PATH bun run android",
     "app:doctor": "cd app && bunx expo-doctor",
-    "daemon:build": "mkdir -p bin && cd daemon && go build -o ../bin/zen-daemon ./cmd/zen-daemon",
+    "daemon:build": "mkdir -p bin && cd daemon && go build -o ../bin/zen ./cmd/zen",
     "daemon:test": "cd daemon && go test ./..."
   }
 }

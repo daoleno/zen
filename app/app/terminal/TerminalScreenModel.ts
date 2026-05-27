@@ -79,7 +79,7 @@ export function buildTerminalFallbackPresentation({
       : connectionIssue?.detail ||
         (connectionState === "connecting"
           ? "Zen is reconnecting before reopening this terminal."
-          : "Start zen-daemon on that machine, or bring the network or tunnel back."),
+          : "Start zen on that machine, or bring the network or tunnel back."),
     hint: !hasTerminalRoute
       ? "The app kept your route, but the live terminal is not ready yet."
       : connectionIssue?.hint ||

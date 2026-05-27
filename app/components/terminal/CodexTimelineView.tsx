@@ -38,6 +38,8 @@ interface CodexTimelineViewProps {
   showJumpToLatest: boolean;
   jumpButtonBottom: number;
   jumpLabel?: string;
+  emptyTitle?: string;
+  emptyBody?: string;
   chrome: TerminalThemeChrome;
   theme: TerminalThemePalette;
   onLayout(event: LayoutChangeEvent): void;
@@ -49,6 +51,7 @@ interface CodexTimelineViewProps {
   onContentSizeChange(width: number, height: number): void;
   onJumpToLatest(): void;
   onUnavailableAction(): void;
+  showUnavailableAction?: boolean;
   loadAssetPreview(path: string): Promise<string | null>;
   formatPatchPath(file: PatchFileSummary): string;
   truncateBody(value: string, limit: number): string;
@@ -70,6 +73,8 @@ export function CodexTimelineView({
   showJumpToLatest,
   jumpButtonBottom,
   jumpLabel,
+  emptyTitle,
+  emptyBody,
   chrome,
   theme,
   onLayout,
@@ -81,6 +86,7 @@ export function CodexTimelineView({
   onContentSizeChange,
   onJumpToLatest,
   onUnavailableAction,
+  showUnavailableAction,
   loadAssetPreview,
   formatPatchPath,
   truncateBody,
@@ -119,6 +125,9 @@ export function CodexTimelineView({
         syncing={syncing}
         chrome={chrome}
         onUnavailableAction={onUnavailableAction}
+        showUnavailableAction={showUnavailableAction}
+        emptyTitle={emptyTitle}
+        emptyBody={emptyBody}
       />
     ),
     [
@@ -129,6 +138,9 @@ export function CodexTimelineView({
       loading,
       localChatState,
       onUnavailableAction,
+      showUnavailableAction,
+      emptyTitle,
+      emptyBody,
       unavailable,
       unavailableReason,
       syncing,

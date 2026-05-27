@@ -23,6 +23,7 @@ export default function TabLayout() {
         tabBarActiveTintColor: colors.accent,
         tabBarInactiveTintColor: colors.disabledText,
         tabBarShowLabel: false,
+        tabBarHideOnKeyboard: true,
         headerShown: false,
       }}
     >

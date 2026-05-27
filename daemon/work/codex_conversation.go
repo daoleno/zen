@@ -285,6 +285,7 @@ func (b *codexConversationBuilder) consumeEvent(lineNumber int, timestamp string
 		Goal             json.RawMessage `json:"goal"`
 		Explanation      string          `json:"explanation"`
 		Plan             []CodexPlanStep `json:"plan"`
+		Text             string          `json:"text"`
 	}
 	if json.Unmarshal(raw, &payload) != nil {
 		return
@@ -308,6 +309,8 @@ func (b *codexConversationBuilder) consumeEvent(lineNumber int, timestamp string
 			title = strings.TrimSpace(payload.Phase)
 		}
 		b.addMessageWithTitle(lineNumber, timestamp, "assistant", payload.Message, title)
+	case "agent_reasoning":
+		b.addReasoning(lineNumber, timestamp, payload.Text)
 	case "exec_command_end":
 		command := shellCommandLabel(payload.Command)
 		if command == "" {
@@ -819,6 +822,22 @@ func (b *codexConversationBuilder) addStatus(lineNumber int, timestamp, title, b
 		Kind:      "status",
 		Title:     title,
 		Body:      body,
+		Source:    "codex_rollout",
+	})
+}
+
+func (b *codexConversationBuilder) addReasoning(lineNumber int, timestamp, text string) {
+	text = CleanCodexDisplayText(text)
+	if text == "" || isTranscriptBoilerplate(text) {
+		return
+	}
+	b.addEvent(CodexConversationEvent{
+		ID:        b.eventID(lineNumber),
+		Timestamp: timestamp,
+		Kind:      "commentary",
+		Title:     "Reasoning",
+		Body:      text,
+		Status:    "running",
 		Source:    "codex_rollout",
 	})
 }

@@ -1,82 +1,41 @@
-import React, { useMemo, useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import {
-  Alert,
-  ScrollView,
+  ActivityIndicator,
   StyleSheet,
   Text,
-  TouchableOpacity,
   View,
 } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 import { useFocusEffect } from "expo-router";
 import { SafeAreaView } from "react-native-safe-area-context";
-import { MarkdownView } from "../../components/work/MarkdownView";
+import { CodexChatSurface } from "../../components/terminal/CodexChatSurface";
+import {
+  buildTerminalChrome,
+  resolveTerminalTheme,
+} from "../../constants/terminalThemes";
 import {
   Colors,
   Typography,
   useAppColors,
+  useAppTheme,
 } from "../../constants/tokens";
 import { getServers, type StoredServer } from "../../services/storage";
 import { wsClient } from "../../services/websocket";
 import { useAgents, type ConnectionState } from "../../store/agents";
-import { useWork, type WorkItem } from "../../store/work";
-
-type BrainGenerator = "auto" | "codex" | "claude";
-
-const BRAIN_GENERATORS: Array<{ value: BrainGenerator; label: string }> = [
-  { value: "auto", label: "Auto" },
-  { value: "codex", label: "Codex" },
-  { value: "claude", label: "Claude" },
-];
-
-type BrainEntry = {
-  key: string;
-  date: string;
-  project: string;
-  title: string;
-  body: string;
-  sections: BrainSections;
-  score: number;
-  updated: number;
-};
-
-type BrainSections = {
-  outcome: string;
-  readout: string;
-  signals: string[];
-  friction: string;
-  cause: string;
-  insight: string;
-  next: string;
-};
+import { useBrain, type BrainServerState } from "../../store/brain";
 
 export default function BrainScreen() {
   const colors = useAppColors();
+  const { isLight } = useAppTheme();
   const styles = useMemo(() => createStyles(colors), [colors]);
+  const terminalTheme = useMemo(
+    () => resolveTerminalTheme(isLight ? "light" : "dark"),
+    [isLight],
+  );
+  const chrome = useMemo(() => buildTerminalChrome(terminalTheme), [terminalTheme]);
   const { state: agentState } = useAgents();
-  const { state: workState, dispatch: workDispatch } = useWork();
+  const { state: brainState } = useBrain();
   const [servers, setServers] = useState<StoredServer[]>([]);
-  const [updatingBrainGenerator, setUpdatingBrainGenerator] = useState<
-    string | null
-  >(null);
-  const [showBrainSettings, setShowBrainSettings] = useState(false);
-  const brainSettingsServer = useMemo(
-    () => resolveBrainSettingsServer(servers, agentState.serverConnections),
-    [agentState.serverConnections, servers],
-  );
-
-  const brainItems = useMemo(
-    () =>
-      Object.values(workState.byKey).filter(isBrainItem).sort(sortBrainItems),
-    [workState.byKey],
-  );
-  const brainMarkdown = useMemo(
-    () => buildBrainMarkdown(brainItems),
-    [brainItems],
-  );
-  const markdownValue =
-    brainMarkdown ||
-    "## Brain\n\n暂无 agent 会话读数。";
 
   useFocusEffect(
     React.useCallback(() => {
@@ -92,657 +51,181 @@ export default function BrainScreen() {
     }, []),
   );
 
-  const handleBrainGenerator = async (
-    serverId: string,
-    generator: BrainGenerator,
-  ) => {
-    setUpdatingBrainGenerator(serverId);
-    try {
-      const selected = await wsClient.setWorkDigestProvider(serverId, generator);
-      workDispatch({
-        type: "WORK_DIGEST_PROVIDER_SET",
-        serverId,
-        provider: normalizeBrainGenerator(selected),
-      });
-    } catch (error: any) {
-      Alert.alert(
-        "Brain generator",
-        error?.message || "Could not update the Brain generator.",
-      );
-    } finally {
-      setUpdatingBrainGenerator(null);
+  const connectedServers = useMemo(
+    () =>
+      servers.filter(
+        (server) => agentState.serverConnections[server.id] === "connected",
+      ),
+    [agentState.serverConnections, servers],
+  );
+
+  const activeServer = useMemo(
+    () =>
+      resolveActiveServer({
+        connectedServers,
+        servers,
+        brainByServer: brainState.byServer,
+        connectionStates: agentState.serverConnections,
+      }),
+    [
+      agentState.serverConnections,
+      brainState.byServer,
+      connectedServers,
+      servers,
+    ],
+  );
+
+  useEffect(() => {
+    if (!activeServer) {
+      return;
     }
-  };
+    wsClient.requestBrainSnapshot(activeServer.id);
+  }, [activeServer?.id]);
+
+  const activeBrain = activeServer ? brainState.byServer[activeServer.id] : null;
+  const connectionState: ConnectionState = activeServer
+    ? agentState.serverConnections[activeServer.id] || "offline"
+    : "offline";
+  const statusLabel = brainStatusLabel({
+    activeServer,
+    connectionState,
+    activeBrain,
+  });
+  const hostAgent = activeBrain?.host_agent ?? null;
+  const ready = Boolean(activeServer && activeBrain?.hydrated && hostAgent?.id);
+  const keyboardVerticalOffset = 0;
 
   return (
     <SafeAreaView style={styles.screen} edges={["top"]}>
       <View style={styles.header}>
-        <Text style={styles.title}>Brain</Text>
-        {brainSettingsServer ? (
-          <TouchableOpacity
-            accessibilityLabel="Brain settings"
-            accessibilityRole="button"
-            accessibilityState={{ expanded: showBrainSettings }}
-            style={[
-              styles.settingsButton,
-              showBrainSettings && styles.settingsButtonActive,
-            ]}
-            onPress={() => setShowBrainSettings((visible) => !visible)}
-            activeOpacity={0.78}
-          >
-            <Ionicons
-              name="options-outline"
-              size={18}
-              color={
-                showBrainSettings ? colors.textPrimary : colors.textSecondary
-              }
-            />
-          </TouchableOpacity>
-        ) : null}
+        <View style={styles.headerTitleBlock}>
+          <Text style={styles.title}>Brain</Text>
+          <Text style={styles.subtitle} numberOfLines={1}>
+            {statusLabel}
+          </Text>
+        </View>
       </View>
-      <ScrollView
-        style={styles.content}
-        contentContainerStyle={styles.contentContainer}
-        showsVerticalScrollIndicator={false}
-      >
-        {showBrainSettings ? (
-          <BrainGeneratorControls
-            server={brainSettingsServer}
-            digestProviderByServer={workState.digestProviderByServer}
-            connectionStates={agentState.serverConnections}
-            updatingServerId={updatingBrainGenerator}
-            onChange={handleBrainGenerator}
+
+      <View style={styles.surface}>
+        {ready ? (
+          <CodexChatSurface
+            key={`brain-chat:${activeServer?.id}:${hostAgent?.id}`}
+            visible
+            serverId={activeServer?.id ?? ""}
+            agentId={hostAgent?.id ?? ""}
+            agentInfo={{
+              cwd: hostAgent?.cwd,
+              command: hostAgent?.command,
+              name: hostAgent?.name,
+              startedAt: hostAgent?.updated_at
+                ? Date.parse(hostAgent.updated_at)
+                : undefined,
+            }}
+            connectionState={connectionState}
+            theme={terminalTheme}
+            chrome={chrome}
+            screenFocused
+            placeholder="Message Brain"
+            minimalComposer
+            keyboardVerticalOffset={keyboardVerticalOffset}
+            showUnavailableAction={false}
+            emptyTitle="Ready"
+            emptyBody="Send a message to get started."
+            onSwitchToTerminal={() => {}}
           />
-        ) : null}
-        <MarkdownView value={markdownValue} />
-      </ScrollView>
+        ) : (
+          <BrainLoadingState
+            connected={connectionState === "connected"}
+            hydrated={Boolean(activeBrain?.hydrated)}
+            waitingForHost={Boolean(activeBrain?.hydrated && !hostAgent?.id)}
+          />
+        )}
+      </View>
     </SafeAreaView>
   );
 }
 
-function BrainGeneratorControls({
-  server,
-  digestProviderByServer,
-  connectionStates,
-  updatingServerId,
-  onChange,
+function BrainLoadingState({
+  connected,
+  hydrated,
+  waitingForHost,
 }: {
-  server: StoredServer | null;
-  digestProviderByServer: Record<string, string>;
-  connectionStates: Record<string, ConnectionState>;
-  updatingServerId: string | null;
-  onChange(serverId: string, generator: BrainGenerator): void;
+  connected: boolean;
+  hydrated: boolean;
+  waitingForHost?: boolean;
 }) {
   const colors = useAppColors();
-  const styles = useMemo(() => createStyles(colors), [colors]);
-  if (!server) {
-    return null;
-  }
-  const selected = normalizeBrainGenerator(digestProviderByServer[server.id]);
-  const connected = connectionStates[server.id] === "connected";
-  const updating = updatingServerId === server.id;
-
   return (
-    <View style={styles.generatorPanel}>
-      <View style={styles.generatorSegments}>
-        {BRAIN_GENERATORS.map((option) => {
-          const active = selected === option.value;
-          return (
-            <TouchableOpacity
-              key={option.value}
-              style={[
-                styles.generatorSegment,
-                active && styles.generatorSegmentActive,
-                (!connected || updating) && styles.generatorSegmentDisabled,
-              ]}
-              onPress={() => onChange(server.id, option.value)}
-              disabled={!connected || updating}
-              activeOpacity={0.82}
-            >
-              <Text
-                style={[
-                  styles.generatorSegmentText,
-                  active && styles.generatorSegmentTextActive,
-                ]}
-              >
-                {option.label}
-              </Text>
-            </TouchableOpacity>
-          );
-        })}
-      </View>
+    <View style={loadingStyles.root}>
+      {connected ? (
+        <ActivityIndicator size="small" color={colors.accent} />
+      ) : (
+        <Ionicons name="cloud-offline-outline" size={22} color={colors.textSecondary} />
+      )}
+      <Text style={[loadingStyles.title, { color: colors.textPrimary }]}>
+        {connected ? "Starting Brain" : "Offline"}
+      </Text>
+      <Text style={[loadingStyles.body, { color: colors.textSecondary }]}>
+        {connected && waitingForHost
+          ? "Getting your assistant ready."
+          : connected && hydrated
+            ? "Preparing your chat."
+          : connected
+            ? "Syncing Brain."
+            : "Connect to a server to use Brain."}
+      </Text>
     </View>
   );
 }
 
-function resolveBrainSettingsServer(
-  servers: StoredServer[],
-  connectionStates: Record<string, ConnectionState>,
-): StoredServer | null {
-  return (
-    servers.find((server) => connectionStates[server.id] === "connected") ||
-    servers[0] ||
-    null
+function resolveActiveServer({
+  connectedServers,
+  servers,
+  brainByServer,
+  connectionStates,
+}: {
+  connectedServers: StoredServer[];
+  servers: StoredServer[];
+  brainByServer: Record<string, BrainServerState>;
+  connectionStates: Record<string, ConnectionState>;
+}): StoredServer | null {
+  const hydratedConnected = connectedServers.find(
+    (server) => brainByServer[server.id]?.hydrated,
   );
-}
-
-function normalizeBrainGenerator(value?: string): BrainGenerator {
-  switch ((value || "").trim().toLowerCase()) {
-    case "codex":
-      return "codex";
-    case "claude":
-    case "claude-code":
-    case "claude code":
-      return "claude";
-    default:
-      return "auto";
+  if (hydratedConnected) {
+    return hydratedConnected;
   }
-}
-
-function buildBrainMarkdown(items: WorkItem[]): string {
-  const entries = items
-    .flatMap(extractProjectEntries)
-    .filter(hasEntryReadout)
-    .sort(sortEntries);
-  if (entries.length === 0) {
-    return "";
+  if (connectedServers[0]) {
+    return connectedServers[0];
   }
-
-  const lines: string[] = [];
-  for (const group of groupEntriesByDate(entries)) {
-    if (lines.length > 0) {
-      lines.push("");
-    }
-    lines.push(`## ${group.date}`, "");
-
-    const summary = dailyLines(group.entries, (entry) =>
-      firstNonEmpty(entry.sections.outcome, entry.sections.readout),
-    ).slice(0, 4);
-    if (summary.length > 0) {
-      lines.push("### Summary", "");
-      lines.push(...summary);
-      lines.push("");
-    }
-
-    const insights = dailyLines(
-      group.entries,
-      (entry) => entry.sections.insight,
-    ).slice(0, 4);
-    if (insights.length > 0) {
-      lines.push("### Insights", "");
-      lines.push(...insights);
-      lines.push("");
-    }
-
-    const friction = dailyLines(group.entries, dailyFriction).slice(0, 4);
-    if (friction.length > 0) {
-      lines.push("### Friction", "");
-      lines.push(...friction);
-      lines.push("");
-    }
-
-    const next = dailyLines(group.entries, (entry) => entry.sections.next).slice(
-      0,
-      3,
-    );
-    if (next.length > 0) {
-      lines.push("### Next", "");
-      lines.push(...next);
-      lines.push("");
-    }
-
-    const evidence = dailyLines(group.entries, dailyEvidence).slice(0, 8);
-    if (evidence.length > 0) {
-      lines.push("### Evidence", "");
-      lines.push(...evidence);
-    }
-  }
-
-  return `${lines.join("\n").trim()}\n`;
-}
-
-function dailyLines(
-  entries: BrainEntry[],
-  pick: (entry: BrainEntry) => string,
-): string[] {
-  const out: string[] = [];
-  const seen = new Set<string>();
-
-  for (const entry of entries) {
-    const text = cleanDailyText(pick(entry));
-    if (!text) {
-      continue;
-    }
-    const key = text.toLowerCase();
-    if (seen.has(key)) {
-      continue;
-    }
-    seen.add(key);
-    out.push(`- **${entry.project}:** ${truncateText(text, 220)}`);
-  }
-
-  return out;
-}
-
-function dailyFriction(entry: BrainEntry): string {
-  const friction = cleanDailyText(entry.sections.friction);
-  const cause = cleanDailyText(entry.sections.cause);
-  if (friction && cause) {
-    return `${friction}; cause: ${cause}`;
-  }
-  return friction || cause;
-}
-
-function dailyEvidence(entry: BrainEntry): string {
-  const parts = [
-    firstNonEmpty(entry.sections.outcome, entry.sections.readout),
-    entry.sections.signals[0],
-  ]
-    .map(cleanDailyText)
-    .filter(Boolean);
-  return parts.join(" ");
-}
-
-function groupEntriesByDate(entries: BrainEntry[]) {
-  const groups: Array<{ date: string; entries: BrainEntry[] }> = [];
-  for (const entry of entries) {
-    const last = groups[groups.length - 1];
-    if (last?.date === entry.date) {
-      last.entries.push(entry);
-    } else {
-      groups.push({ date: entry.date, entries: [entry] });
-    }
-  }
-  return groups;
-}
-
-function extractProjectEntries(item: WorkItem): BrainEntry[] {
-  const project = projectTitle(item);
-  const entries = parseSessionEntries(item, project);
-  if (entries.length > 0) {
-    return entries;
-  }
-
-  return [fallbackEntry(item, project)];
-}
-
-function parseSessionEntries(item: WorkItem, project: string): BrainEntry[] {
-  const body = item.body || "";
-  const pattern =
-    /<!--\s*zen:session:start\s+([^\s]+)([^>]*)-->([\s\S]*?)<!--\s*zen:session:end\s+\1\s*-->/g;
-  const entries: BrainEntry[] = [];
-  let match: RegExpExecArray | null;
-
-  while ((match = pattern.exec(body)) !== null) {
-    const key = match[1];
-    const meta = parseSessionMeta(match[2]);
-    const rawContent = stripComments(match[3]).trim();
-    const titleMatch = /^###\s+(.+)$/m.exec(rawContent);
-    const title = titleMatch?.[1]?.trim() || project;
-    const content = cleanEntryBody(
-      rawContent.replace(/^\s*###\s+.+(?:\n|$)/, ""),
-    );
-    const sections = splitEntryBody(content);
-
-    entries.push({
-      key: `${item.key}:${key}`,
-      date: meta.date || dateFromItem(item),
-      project,
-      title,
-      body: content,
-      sections,
-      score: parseNumber(meta.score),
-      updated: timestampMillis(meta.updated) || timestampMillis(item.mtime),
-    });
-  }
-
-  return entries;
-}
-
-function fallbackEntry(item: WorkItem, project: string): BrainEntry {
-  const body = bodyFromFrontmatter(item);
-  const sections = splitEntryBody(body);
-  return {
-    key: item.key,
-    date: dateFromItem(item),
-    project,
-    title: project,
-    body,
-    sections,
-    score: body ? 1 : 0,
-    updated: timestampMillis(item.frontmatter.ai_updated || item.mtime),
-  };
-}
-
-function bodyFromFrontmatter(item: WorkItem): string {
-  const lines: string[] = [];
-  const outcome = cleanInline(item.frontmatter.outcome);
-  if (outcome && !isPlaceholderText(outcome)) {
-    lines.push("#### Outcome", "", outcome);
-  }
-
-  const summary = cleanInline(item.frontmatter.summary);
-  if (summary && !isPlaceholderText(summary)) {
-    lines.push("", "#### Read", "", summary);
-  }
-
-  const progress = Array.isArray(item.frontmatter.progress)
-    ? item.frontmatter.progress
-        .map(cleanInline)
-        .filter((entry) => entry && !isPlaceholderText(entry))
-    : [];
-  if (progress.length > 0) {
-    lines.push("", "#### Signals", "", ...progress.map((entry) => `- ${entry}`));
-  }
-
-  const friction = cleanInline(item.frontmatter.friction);
-  if (friction && !isPlaceholderText(friction)) {
-    lines.push("", "#### Friction", "", friction);
-  }
-
-  const cause = cleanInline(item.frontmatter.cause);
-  if (cause && !isPlaceholderText(cause)) {
-    lines.push("", "#### Cause", "", cause);
-  }
-
-  const insight = cleanInline(item.frontmatter.insight);
-  if (insight && !isPlaceholderText(insight)) {
-    lines.push("", "#### Insight", "", insight);
-  }
-
-  const next = cleanInline(item.frontmatter.next);
-  if (next && !isPlaceholderText(next)) {
-    lines.push("", "#### Next", "", next);
-  }
-
-  return cleanEntryBody(lines.join("\n"));
-}
-
-function splitEntryBody(value: string): {
-  outcome: string;
-  readout: string;
-  signals: string[];
-  friction: string;
-  cause: string;
-  insight: string;
-  next: string;
-} {
-  const outcome: string[] = [];
-  const readout: string[] = [];
-  const signals: string[] = [];
-  const friction: string[] = [];
-  const cause: string[] = [];
-  const insight: string[] = [];
-  const next: string[] = [];
-  let section:
-    | "outcome"
-    | "readout"
-    | "signals"
-    | "friction"
-    | "cause"
-    | "insight"
-    | "next" = "readout";
-
-  for (const rawLine of cleanEntryBody(value).split("\n")) {
-    const line = rawLine.trim();
-    if (!line) {
-      continue;
-    }
-
-    const heading = /^#{1,6}\s+(.+)$/.exec(line)?.[1]?.trim().toLowerCase();
-    if (heading) {
-      if (
-        heading === "outcome" ||
-        heading === "result" ||
-        heading === "结果"
-      ) {
-        section = "outcome";
-      } else if (
-        heading === "read" ||
-        heading === "readout" ||
-        heading === "summary" ||
-        heading === "brief" ||
-        heading === "takeaway" ||
-        heading === "总结"
-      ) {
-        section = "readout";
-      } else if (
-        heading === "signals" ||
-        heading === "useful signals" ||
-        heading === "关键结论"
-      ) {
-        section = "signals";
-      } else if (
-        heading === "friction" ||
-        heading === "drag" ||
-        heading === "问题"
-      ) {
-        section = "friction";
-      } else if (
-        heading === "cause" ||
-        heading === "diagnosis" ||
-        heading === "原因"
-      ) {
-        section = "cause";
-      } else if (
-        heading === "insight" ||
-        heading === "lesson" ||
-        heading === "洞察"
-      ) {
-        section = "insight";
-      } else if (
-        heading === "next" ||
-        heading === "next useful move" ||
-        heading === "下一步"
-      ) {
-        section = "next";
-      }
-      continue;
-    }
-
-    const bullet = /^[-*]\s+(.+)$/.exec(line)?.[1]?.trim();
-    const text = cleanInline(bullet || line);
-    if (!text || isPlaceholderText(text)) {
-      continue;
-    }
-    if (section === "signals") {
-      signals.push(text);
-    } else if (section === "outcome") {
-      outcome.push(text);
-    } else if (section === "friction") {
-      friction.push(text);
-    } else if (section === "cause") {
-      cause.push(text);
-    } else if (section === "insight") {
-      insight.push(text);
-    } else if (section === "next") {
-      next.push(text);
-    } else {
-      readout.push(text);
-    }
-  }
-
-  return {
-    outcome: compactText(outcome.join(" ")),
-    readout: compactText(readout.join(" ")),
-    signals: signals.map(compactText).filter(Boolean).slice(0, 3),
-    friction: compactText(friction.join(" ")),
-    cause: compactText(cause.join(" ")),
-    insight: compactText(insight.join(" ")),
-    next: compactText(next.join(" ")),
-  };
-}
-
-function cleanEntryBody(value: string): string {
-  const cleaned = stripComments(value)
-    .replace(/^####\s+Useful Signals\s*$/gim, "#### Signals")
-    .replace(/^####\s+关键结论\s*$/gim, "#### Signals")
-    .replace(/^####\s+Next Useful Move\s*$/gim, "#### Next")
-    .replace(/^####\s+下一步\s*$/gim, "#### Next")
-    .replace(/\n{3,}/g, "\n\n")
-    .trim();
-  return isPlaceholderText(cleaned) ? "" : cleaned;
-}
-
-function stripComments(value: string): string {
-  return value.replace(/<!--[\s\S]*?-->/g, "");
-}
-
-function parseSessionMeta(value: string): Record<string, string> {
-  const meta: Record<string, string> = {};
-  for (const field of value.trim().split(/\s+/)) {
-    const [key, rawValue] = field.split("=");
-    if (!key || rawValue === undefined) {
-      continue;
-    }
-    meta[key.trim()] = rawValue.trim();
-  }
-  return meta;
-}
-
-function entryTitle(entry: BrainEntry): string {
-  if (!entry.title || entry.title === entry.project) {
-    return entry.project;
-  }
-  return `${entry.project} - ${entry.title}`;
-}
-
-function projectTitle(item: WorkItem): string {
-  return (
-    cleanInline(item.frontmatter.title) ||
-    cleanInline(item.project) ||
-    cleanInline(item.title) ||
-    "workspace"
+  const connectedByState = servers.find(
+    (server) => connectionStates[server.id] === "connected",
   );
+  return connectedByState || servers[0] || null;
 }
 
-function hasEntryReadout(entry: BrainEntry): boolean {
-  const sections = entry.sections;
-  return Boolean(
-    sections.outcome ||
-      sections.readout ||
-      sections.signals.length > 0 ||
-      sections.friction ||
-      sections.cause ||
-      sections.insight ||
-      sections.next,
-  );
-}
-
-function cleanInline(value: unknown): string {
-  return typeof value === "string" ? value.replace(/\s+/g, " ").trim() : "";
-}
-
-function cleanDailyText(value: unknown): string {
-  return cleanInline(value)
-    .replace(/\b[Tt]his session\b/g, "this work")
-    .replace(/\b[Tt]he session\b/g, "the work")
-    .replace(/\b[Tt]his agent round\b/g, "this work")
-    .replace(/\b[Tt]his round\b/g, "this work")
-    .replace(/这轮\s*Agent/g, "当天工作")
-    .replace(/本轮\s*Agent/g, "当天工作")
-    .replace(/这轮\s*agent/g, "当天工作")
-    .replace(/本轮\s*agent/g, "当天工作")
-    .trim();
-}
-
-function compactText(value: string): string {
-  return value.replace(/\s+/g, " ").trim();
-}
-
-function firstNonEmpty(...values: Array<string | undefined>): string {
-  for (const value of values) {
-    const text = cleanDailyText(value);
-    if (text) {
-      return text;
-    }
+function brainStatusLabel({
+  activeServer,
+  connectionState,
+  activeBrain,
+}: {
+  activeServer: StoredServer | null;
+  connectionState: ConnectionState;
+  activeBrain: BrainServerState | null;
+}) {
+  if (!activeServer) {
+    return "Offline";
   }
-  return "";
-}
-
-function truncateText(value: string, max: number): string {
-  if (value.length <= max) {
-    return value;
+  if (connectionState !== "connected") {
+    return "Offline";
   }
-  if (max <= 3) {
-    return value.slice(0, max);
+  if (!activeBrain?.hydrated) {
+    return "Syncing";
   }
-  return `${value.slice(0, max - 3).trim()}...`;
-}
-
-function isPlaceholderText(value: string): boolean {
-  const normalized = value.replace(/\s+/g, " ").trim().toLowerCase();
-  return (
-    normalized === "" ||
-    normalized === "ai digest pending." ||
-    normalized === "ai digest pending" ||
-    normalized === "ai digest unavailable." ||
-    normalized.includes("ai digest unavailable") ||
-    normalized.includes("analyzing session") ||
-    normalized.includes("no readout")
-  );
-}
-
-function dateFromItem(item: WorkItem): string {
-  const millis =
-    timestampMillis(item.frontmatter.ai_updated) ||
-    timestampMillis(item.mtime) ||
-    timestampMillis(item.frontmatter.created);
-  if (!millis) {
-    return "Undated";
+  if (!activeBrain.host_agent?.id) {
+    return "Starting";
   }
-  return localDateKey(new Date(millis));
-}
-
-function localDateKey(date: Date): string {
-  const year = date.getFullYear();
-  const month = String(date.getMonth() + 1).padStart(2, "0");
-  const day = String(date.getDate()).padStart(2, "0");
-  return `${year}-${month}-${day}`;
-}
-
-function parseNumber(value?: string): number {
-  const parsed = Number.parseInt(value || "", 10);
-  return Number.isFinite(parsed) ? parsed : 0;
-}
-
-function timestampMillis(value?: string | number | null) {
-  if (typeof value === "number" && Number.isFinite(value)) {
-    return value > 10_000_000_000 ? value : value * 1000;
-  }
-  if (typeof value === "string" && value.trim()) {
-    const parsed = Date.parse(value);
-    return Number.isNaN(parsed) ? 0 : parsed;
-  }
-  return 0;
-}
-
-function sortEntries(left: BrainEntry, right: BrainEntry): number {
-  if (left.date !== right.date) {
-    return right.date.localeCompare(left.date);
-  }
-  if (left.score !== right.score) {
-    return right.score - left.score;
-  }
-  if (left.updated !== right.updated) {
-    return right.updated - left.updated;
-  }
-  return entryTitle(left).localeCompare(entryTitle(right));
-}
-
-function isBrainItem(item: WorkItem): boolean {
-  return (
-    item.frontmatter.kind === "brain_log" &&
-    isNativeAgentSource(item.frontmatter.agent_source)
-  );
-}
-
-function isNativeAgentSource(source: unknown): boolean {
-  return source === "codex" || source === "claude";
-}
-
-function sortBrainItems(left: WorkItem, right: WorkItem): number {
-  return projectTitle(left).localeCompare(projectTitle(right));
+  return "Ready";
 }
 
 function createStyles(colors: typeof Colors) {
@@ -752,69 +235,62 @@ function createStyles(colors: typeof Colors) {
       backgroundColor: colors.bgPrimary,
     },
     header: {
+      minHeight: 58,
+      paddingHorizontal: 16,
+      paddingTop: 6,
+      paddingBottom: 10,
       flexDirection: "row",
       alignItems: "center",
       justifyContent: "space-between",
-      paddingHorizontal: 16,
-      paddingTop: 8,
-      paddingBottom: 10,
+      borderBottomWidth: StyleSheet.hairlineWidth,
+      borderBottomColor: colors.borderSubtle,
+    },
+    headerTitleBlock: {
+      flex: 1,
+      minWidth: 0,
+      paddingRight: 12,
     },
     title: {
-      flexShrink: 0,
       color: colors.textPrimary,
       fontFamily: Typography.uiFontMedium,
       fontSize: 22,
-      lineHeight: 28,
-      opacity: 0.92,
+      lineHeight: 27,
+      letterSpacing: 0,
     },
-    settingsButton: {
-      width: 32,
-      height: 32,
-      borderRadius: 8,
-      alignItems: "center",
-      justifyContent: "center",
-    },
-    settingsButtonActive: {
-      backgroundColor: colors.surfaceSubtle,
-    },
-    content: {
-      flex: 1,
-    },
-    contentContainer: {
-      paddingBottom: 20,
-    },
-    generatorPanel: {
-      marginHorizontal: 18,
-      marginBottom: 6,
-    },
-    generatorSegments: {
-      flexDirection: "row",
-      gap: 4,
-    },
-    generatorSegment: {
-      flex: 1,
-      minHeight: 26,
-      alignItems: "center",
-      justifyContent: "center",
-      borderRadius: 7,
-      borderWidth: StyleSheet.hairlineWidth,
-      borderColor: colors.borderSubtle,
-      backgroundColor: colors.surfaceSubtle,
-    },
-    generatorSegmentActive: {
-      borderColor: colors.accent,
-      backgroundColor: colors.surfaceActive,
-    },
-    generatorSegmentDisabled: {
-      opacity: 0.44,
-    },
-    generatorSegmentText: {
+    subtitle: {
+      marginTop: 2,
       color: colors.textSecondary,
-      fontFamily: Typography.uiFontMedium,
-      fontSize: 11,
+      fontFamily: Typography.uiFont,
+      fontSize: 12,
+      lineHeight: 16,
     },
-    generatorSegmentTextActive: {
-      color: colors.textPrimary,
+    surface: {
+      flex: 1,
+      minHeight: 0,
+      backgroundColor: colors.bgPrimary,
     },
   });
 }
+
+const loadingStyles = StyleSheet.create({
+  root: {
+    flex: 1,
+    alignItems: "center",
+    justifyContent: "center",
+    paddingHorizontal: 28,
+  },
+  title: {
+    marginTop: 14,
+    fontFamily: Typography.uiFontMedium,
+    fontSize: 16,
+    lineHeight: 21,
+    textAlign: "center",
+  },
+  body: {
+    marginTop: 6,
+    fontFamily: Typography.uiFont,
+    fontSize: 13,
+    lineHeight: 19,
+    textAlign: "center",
+  },
+});

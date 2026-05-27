@@ -62,7 +62,7 @@ func run(args []string, stdout, stderr io.Writer) error {
 
 	runner := &devRunner{
 		root:       root,
-		binary:     filepath.Join(tmpDir, "zen-daemon-dev"),
+		binary:     filepath.Join(tmpDir, "zen-dev"),
 		daemonArgs: args,
 		stdout:     stdout,
 		stderr:     stderr,
@@ -255,7 +255,7 @@ func (t *watchTree) relevantPath(path string) (string, bool) {
 }
 
 func (r *devRunner) rebuild() error {
-	cmd := exec.Command("go", "build", "-o", r.binary, "./cmd/zen-daemon")
+	cmd := exec.Command("go", "build", "-o", r.binary, "./cmd/zen")
 	cmd.Dir = r.root
 	output, err := cmd.CombinedOutput()
 	if len(output) > 0 {

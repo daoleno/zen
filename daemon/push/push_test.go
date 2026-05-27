@@ -9,7 +9,7 @@ func TestFormatNotificationAgentLabel(t *testing.T) {
 		agentID   string
 		want      string
 	}{
-		{name: "clean shell path and session suffix", agentName: "./bin/zen-daemon (main:7)", agentID: "main:7", want: "zen-daemon"},
+		{name: "clean shell path and session suffix", agentName: "./bin/zen (main:7)", agentID: "main:7", want: "zen"},
 		{name: "fallback to agent id", agentName: "", agentID: "main:7", want: "main:7"},
 		{name: "keep simple project name", agentName: "backend-api", agentID: "main:7", want: "backend-api"},
 	}

@@ -36,7 +36,7 @@ export function buildCodexStatusMeta({
       events,
     })
   ) {
-    return "Working";
+    return "Thinking";
   }
   if (conversation?.updated_at) {
     return `Updated ${formatTime(conversation.updated_at)}`;
@@ -80,17 +80,19 @@ export function buildCodexComposerMessage(
 export function conversationUnavailableReason(reason?: string) {
   switch (reason) {
     case "not_codex":
-      return "This session is not a Codex process.";
+      return "Chat is only available for supported agent sessions.";
+    case "not_visible":
+      return "This chat is not available from the current view yet.";
     case "missing_cwd":
-      return "The daemon has not captured this session directory yet.";
+      return "This chat is still getting its workspace ready.";
     case "transcript_not_found":
-      return "Codex has not written a matching local transcript for this session.";
+      return "Messages are still syncing for this session.";
     case "agent_not_found":
-      return "The daemon no longer sees this session.";
+      return "This agent session is no longer available.";
     case "session_not_ready":
-      return "This new terminal is still being indexed by the daemon.";
+      return "This chat is getting ready.";
     default:
-      return "Open the terminal renderer for the raw session.";
+      return "Open the terminal view for this session.";
   }
 }
 
@@ -98,7 +100,8 @@ export function isConversationSyncingReason(reason?: string) {
   return (
     reason === "session_not_ready" ||
     reason === "transcript_not_found" ||
-    reason === "missing_cwd"
+    reason === "missing_cwd" ||
+    reason === "not_visible"
   );
 }
 

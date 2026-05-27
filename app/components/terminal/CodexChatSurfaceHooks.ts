@@ -39,6 +39,9 @@ export function useCodexComposerPresentation({
   actionMenuPinned,
   safeAreaTop,
   safeAreaBottom,
+  placeholder,
+  keyboardVerticalOffset,
+  minimalComposer,
 }: UseCodexComposerPresentationInput) {
   return useMemo(
     () =>
@@ -57,6 +60,9 @@ export function useCodexComposerPresentation({
         safeAreaTop,
         safeAreaBottom,
         isAndroid: Platform.OS === "android",
+        placeholder,
+        keyboardVerticalOffset,
+        minimalComposer,
       }),
     [
       attachmentCount,
@@ -72,6 +78,9 @@ export function useCodexComposerPresentation({
       sending,
       startingNewChat,
       slashCommands,
+      placeholder,
+      keyboardVerticalOffset,
+      minimalComposer,
     ],
   );
 }
@@ -299,6 +308,52 @@ export function useRelativeTimeLabel(targetTimestamp?: string) {
     const days = Math.floor(hours / 24);
     return `${days}d`;
   }, [now, targetTimestamp]);
+}
+
+export function useElapsedDurationLabel(
+  startTimestamp?: string,
+  active: boolean = false,
+) {
+  const [now, setNow] = useState(() => Date.now());
+
+  useEffect(() => {
+    if (!startTimestamp || !active) {
+      return;
+    }
+    setNow(Date.now());
+    const timer = setInterval(() => {
+      setNow(Date.now());
+    }, 1000);
+    return () => clearInterval(timer);
+  }, [active, startTimestamp]);
+
+  return useMemo(() => {
+    if (!startTimestamp || !active) {
+      return "";
+    }
+    const timestamp = new Date(startTimestamp).getTime();
+    if (!Number.isFinite(timestamp)) {
+      return "";
+    }
+    const elapsed = Math.max(0, Math.floor((now - timestamp) / 1000));
+    return formatElapsedDuration(elapsed);
+  }, [active, now, startTimestamp]);
+}
+
+function formatElapsedDuration(totalSeconds: number) {
+  const seconds = Math.max(0, totalSeconds);
+  const hours = Math.floor(seconds / 3600);
+  const minutes = Math.floor((seconds % 3600) / 60);
+  const remainder = seconds % 60;
+  const paddedSeconds = remainder.toString().padStart(2, "0");
+
+  if (hours > 0) {
+    return `${hours}h ${minutes.toString().padStart(2, "0")}m ${paddedSeconds}s`;
+  }
+  if (minutes > 0) {
+    return `${minutes}m ${paddedSeconds}s`;
+  }
+  return `${remainder}s`;
 }
 
 export function useCodexComposerInput({

@@ -9,7 +9,7 @@ Mobile-native agent control plane. Manage your AI coding agents from your phone.
     ↕ signed HTTP / WebSocket
 [Your Own Tailnet / Reverse Proxy / Tunnel]
     ↕
-[Homelab: zen-daemon (Go)]
+[Homelab: zen (Go)]
     ↕ tmux session scraping
 [Claude Code] [Codex] [Other CLI Agents]
 ```
@@ -18,12 +18,12 @@ Mobile-native agent control plane. Manage your AI coding agents from your phone.
 
 ## Quick Start
 
-### 1. Start zen-daemon on your homelab
+### 1. Start zen on your homelab
 
 ```bash
 cd daemon
-go build -o bin/zen-daemon ./cmd/zen-daemon/
-./bin/zen-daemon -advertise-url https://your-host.example/ws
+go build -o bin/zen ./cmd/zen/
+./bin/zen -advertise-url https://your-host.example/ws
 ```
 
 The daemon listens on `127.0.0.1:9876` by default. On startup it now prints:
@@ -35,11 +35,11 @@ The daemon listens on `127.0.0.1:9876` by default. On startup it now prints:
 If you do not pass `-advertise-url`, the daemon still starts in `LOCAL-ONLY` mode, but it cannot pair a phone yet. Expose `http://127.0.0.1:9876` through your network layer first, then either restart with `-advertise-url` or generate a fresh link later with:
 
 ```bash
-./bin/zen-daemon pair -advertise-url https://zen.example.com/ws
+./bin/zen pair -advertise-url https://zen.example.com/ws
 ```
 
 ```bash
-./bin/zen-daemon \
+./bin/zen \
   -addr 127.0.0.1:9876 \
   -advertise-url https://zen.example.com/ws \
   -state-dir ~/.config/zen
@@ -72,7 +72,7 @@ cd app
 npx expo start
 ```
 
-Import the pairing link from `zen-daemon`:
+Import the pairing link from `zen`:
 
 - paste the printed `zen://...` link into Settings
 - scan the QR code from Settings
@@ -90,7 +90,7 @@ Remote push registration is optional in OSS builds. To test Expo push with your 
 ```
 zen/
 ├── daemon/                    Go, runs on homelab
-│   ├── cmd/zen-daemon/        Main entry point
+│   ├── cmd/zen/        Main entry point
 │   ├── classifier/            tmux output → agent state
 │   ├── watcher/               tmux polling + send-keys
 │   ├── server/                WebSocket server + message protocol
@@ -115,11 +115,11 @@ zen/
 ```bash
 cd daemon
 go test ./...           # Run tests
-go build -o bin/zen-daemon ./cmd/zen-daemon/  # Build
+go build -o bin/zen ./cmd/zen/  # Build
 go run ./cmd/zen-dev -advertise-url https://your-host.example/ws  # Watch, rebuild, restart
 ```
 
-`zen-dev` is a development watcher for the Go daemon. It uses `fsnotify` to watch `*.go`, `go.mod`, and `go.sum`, rebuilds `zen-daemon`, and restarts it automatically after each save. This is reload, not in-process hot patching, so the process restarts, but daemon identity and persisted state stay stable as long as you keep the same `-state-dir`.
+`zen-dev` is a development watcher for the Go daemon. It uses `fsnotify` to watch `*.go`, `go.mod`, and `go.sum`, rebuilds `zen`, and restarts it automatically after each save. This is reload, not in-process hot patching, so the process restarts, but daemon identity and persisted state stay stable as long as you keep the same `-state-dir`.
 
 ### App
 ```bash

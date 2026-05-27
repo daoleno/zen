@@ -29,7 +29,7 @@
 
 ### Daemon — modified files
 
-- `daemon/cmd/zen-daemon/main.go` — initialize `issue.Store` + `issue.Dispatcher`, pass to `server.New`, drop task store wiring.
+- `daemon/cmd/zen/main.go` — initialize `issue.Store` + `issue.Dispatcher`, pass to `server.New`, drop task store wiring.
 - `daemon/server/server.go` — remove old task/run/comment message handlers and broadcasts; add new issue handlers; change `server.New` signature.
 - `daemon/go.mod` / `daemon/go.sum` — add new deps.
 
@@ -2328,7 +2328,7 @@ func (s *Server) handleDeleteIssue(conn *websocket.Conn, raw rawMessage) {
 
 - [ ] **Step 4: Update the daemon main to supply the new args**
 
-Edit `daemon/cmd/zen-daemon/main.go`:
+Edit `daemon/cmd/zen/main.go`:
 
 ```go
 // Add imports
@@ -2379,7 +2379,7 @@ Expected: success. If signatures differ slightly, adjust minor naming to compile
 - [ ] **Step 6: Commit**
 
 ```bash
-git add daemon/server/server.go daemon/cmd/zen-daemon/main.go
+git add daemon/server/server.go daemon/cmd/zen/main.go
 git commit -m "Wire issue store, dispatcher, and executor list into server"
 ```
 
@@ -3696,7 +3696,7 @@ func New(
 cd /home/daoleno/workspace/zen/daemon && go build ./...
 ```
 
-Will fail because `cmd/zen-daemon/main.go` still passes old stores. Next task.
+Will fail because `cmd/zen/main.go` still passes old stores. Next task.
 
 - [ ] **Step 5: Commit (WIP — build will fail until Task 24)**
 
@@ -3707,7 +3707,7 @@ Do NOT commit yet — Task 24 is the matching main.go change. Continue to Task 2
 ### Task 24: Strip old task init from daemon main + delete `daemon/task` package
 
 **Files:**
-- Modify: `daemon/cmd/zen-daemon/main.go`
+- Modify: `daemon/cmd/zen/main.go`
 - Delete: `daemon/task/`
 
 - [ ] **Step 1: Remove task store initialization from main.go**
@@ -3764,7 +3764,7 @@ git commit -m "Remove daemon/task package and old WebSocket handlers"
 ### Task 25: Clean up leftover state files on startup
 
 **Files:**
-- Modify: `daemon/cmd/zen-daemon/main.go`
+- Modify: `daemon/cmd/zen/main.go`
 
 - [ ] **Step 1: Add cleanup block**
 
@@ -3797,7 +3797,7 @@ Expected: success.
 - [ ] **Step 3: Commit**
 
 ```bash
-git add daemon/cmd/zen-daemon/main.go
+git add daemon/cmd/zen/main.go
 git commit -m "Clean up legacy task state files on daemon startup"
 ```
 
@@ -3837,7 +3837,7 @@ From a shell on the daemon host:
 
 1. Start the daemon:
    ```bash
-   cd /home/daoleno/workspace/zen/daemon && go run ./cmd/zen-daemon -addr 127.0.0.1:9876
+   cd /home/daoleno/workspace/zen/daemon && go run ./cmd/zen -addr 127.0.0.1:9876
    ```
 2. Point the app at `ws://127.0.0.1:9876` (or whatever the existing connection flow uses).
 3. In the app, tap `＋`, enter project `zen`, create the issue. The file should appear at `~/.zen/issues/zen/<slug>.md`.

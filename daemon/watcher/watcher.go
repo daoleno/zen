@@ -32,6 +32,7 @@ type Watcher struct {
 	pollInterval time.Duration
 	agents       map[string]*classifier.Agent
 	prevContent  map[string]string
+	hidden       map[string]bool
 	mu           sync.RWMutex
 	events       chan SessionEvent
 }
@@ -42,6 +43,7 @@ func New(pollInterval time.Duration) *Watcher {
 		pollInterval: pollInterval,
 		agents:       make(map[string]*classifier.Agent),
 		prevContent:  make(map[string]string),
+		hidden:       make(map[string]bool),
 		events:       make(chan SessionEvent, 100),
 	}
 }
@@ -73,6 +75,19 @@ func (w *Watcher) GetAgent(id string) *classifier.Agent {
 	}
 	copy := *a
 	return &copy
+}
+
+// HasSession reports whether tmux still has a session matching the target.
+func (w *Watcher) HasSession(target string) bool {
+	target = strings.TrimSpace(target)
+	if target == "" {
+		return false
+	}
+	sessionName := baseSessionName(target)
+	if sessionName == "" {
+		sessionName = target
+	}
+	return exec.Command("tmux", "has-session", "-t", sessionName).Run() == nil
 }
 
 // Run starts the polling loop. Blocks until context is cancelled.
@@ -124,9 +139,16 @@ func (w *Watcher) poll() {
 		if nextName := formatAgentName(win.name, win.target); nextName != "" {
 			agent.Name = nextName
 		}
+		if w.hidden[win.target] || isBrainHostWindow(win.target, win.name) {
+			w.hidden[win.target] = true
+			agent.Hidden = true
+		}
 		agent.Cwd = win.cwd
 		agent.Project = projectNameFromPath(win.cwd)
 		agent.Command, agent.StartedAt, agent.ProcessID = detectAgentProcess(win.command, win.panePID, processes, processSnapshotAt)
+		if w.hidden[win.target] {
+			agent.Hidden = true
+		}
 
 		if contentChanged {
 			agent.StaleCount = 0
@@ -181,6 +203,7 @@ func (w *Watcher) poll() {
 			old := w.agents[id]
 			delete(w.agents, id)
 			delete(w.prevContent, id)
+			delete(w.hidden, id)
 			w.events <- SessionEvent{
 				Type:     "agent_removed",
 				AgentID:  id,
@@ -222,6 +245,14 @@ func cloneAgent(agent *classifier.Agent) *classifier.Agent {
 		cp.LastLines = append([]string(nil), agent.LastLines...)
 	}
 	return &cp
+}
+
+func isBrainHostWindow(target, windowName string) bool {
+	sessionName, _, ok := strings.Cut(strings.TrimSpace(target), ":")
+	if !ok {
+		return false
+	}
+	return strings.HasPrefix(sessionName, "brain-agent-brain-") && strings.TrimSpace(windowName) == "Brain"
 }
 
 // tmuxWindow represents a single tmux window target.
@@ -382,9 +413,11 @@ func (w *Watcher) SendAction(sessionID, action string) error {
 }
 
 type CreateSessionOptions struct {
-	Cwd     string
-	Command string
-	Name    string
+	Cwd      string
+	Command  string
+	Name     string
+	Detached bool
+	Hidden   bool
 }
 
 // CreateSession creates a new tmux window and returns its target id.
@@ -393,15 +426,24 @@ type CreateSessionOptions struct {
 func (w *Watcher) CreateSession(preferredTarget string, opts CreateSessionOptions) (string, error) {
 	createdAt := time.Now().UTC()
 	sessionName := baseSessionName(preferredTarget)
+	createDetachedSession := opts.Detached
 	if sessionName == "" {
-		sessions, err := listTmuxSessions()
-		if err != nil {
-			return "", err
+		if !createDetachedSession {
+			sessions, err := listTmuxSessions()
+			if err != nil {
+				if !isNoTmuxServerError(err) {
+					return "", err
+				}
+			}
+			if len(sessions) > 0 {
+				sessionName = sessions[0]
+			} else {
+				createDetachedSession = true
+			}
 		}
-		if len(sessions) == 0 {
-			return "", fmt.Errorf("no tmux sessions available")
+		if sessionName == "" {
+			sessionName = newTmuxSessionName(opts)
 		}
-		sessionName = sessions[0]
 	}
 
 	cwd := strings.TrimSpace(opts.Cwd)
@@ -411,30 +453,40 @@ func (w *Watcher) CreateSession(preferredTarget string, opts CreateSessionOption
 			cwd = currentPath
 		}
 	}
+	if cwd == "" {
+		if workingDir, err := os.Getwd(); err == nil {
+			cwd = workingDir
+		}
+	}
 
-	args := []string{
-		"new-window",
-		"-P",
-		"-F",
-		"#{session_name}:#{window_id}",
-		"-t",
-		sessionName,
-	}
-	for _, envEntry := range tmuxWindowEnvironment(os.Environ()) {
-		args = append(args, "-e", envEntry)
-	}
-	if name := strings.TrimSpace(opts.Name); name != "" {
-		args = append(args, "-n", name)
-	}
-	if cwd != "" {
-		args = append(args, "-c", cwd)
-	}
 	if shellCommand, err := buildWindowCommand(strings.TrimSpace(opts.Command)); err != nil {
 		return "", err
 	} else if shellCommand != "" {
-		args = append(args, shellCommand)
+		var args []string
+		if createDetachedSession {
+			args = buildNewSessionArgs(sessionName, cwd, opts, shellCommand)
+		} else {
+			args = buildNewWindowArgs(sessionName, cwd, opts, shellCommand)
+		}
+		out, err := exec.Command("tmux", args...).Output()
+		if err != nil {
+			return "", fmt.Errorf("create tmux window: %w", err)
+		}
+
+		target := strings.TrimSpace(string(out))
+		if target == "" {
+			return "", fmt.Errorf("tmux returned empty window target")
+		}
+		w.registerCreatedSession(target, cwd, opts, createdAt)
+		return target, nil
 	}
 
+	var args []string
+	if createDetachedSession {
+		args = buildNewSessionArgs(sessionName, cwd, opts, "")
+	} else {
+		args = buildNewWindowArgs(sessionName, cwd, opts, "")
+	}
 	out, err := exec.Command("tmux", args...).Output()
 	if err != nil {
 		return "", fmt.Errorf("create tmux window: %w", err)
@@ -446,6 +498,73 @@ func (w *Watcher) CreateSession(preferredTarget string, opts CreateSessionOption
 	}
 	w.registerCreatedSession(target, cwd, opts, createdAt)
 	return target, nil
+}
+
+func buildNewWindowArgs(sessionName, cwd string, opts CreateSessionOptions, shellCommand string) []string {
+	args := []string{
+		"new-window",
+		"-P",
+		"-F",
+		"#{session_name}:#{window_id}",
+		"-t",
+		sessionName,
+	}
+	args = appendTmuxCreateOptions(args, cwd, opts)
+	if shellCommand != "" {
+		args = append(args, shellCommand)
+	}
+	return args
+}
+
+func buildNewSessionArgs(sessionName, cwd string, opts CreateSessionOptions, shellCommand string) []string {
+	args := []string{
+		"new-session",
+		"-d",
+		"-P",
+		"-F",
+		"#{session_name}:#{window_id}",
+		"-s",
+		sessionName,
+	}
+	args = appendTmuxCreateOptions(args, cwd, opts)
+	if shellCommand != "" {
+		args = append(args, shellCommand)
+	}
+	return args
+}
+
+func appendTmuxCreateOptions(args []string, cwd string, opts CreateSessionOptions) []string {
+	for _, envEntry := range tmuxWindowEnvironment(os.Environ()) {
+		args = append(args, "-e", envEntry)
+	}
+	if name := strings.TrimSpace(opts.Name); name != "" {
+		args = append(args, "-n", name)
+	}
+	if cwd != "" {
+		args = append(args, "-c", cwd)
+	}
+	return args
+}
+
+func newTmuxSessionName(opts CreateSessionOptions) string {
+	base := strings.ToLower(createdSessionName(opts))
+	base = strings.Map(func(r rune) rune {
+		switch {
+		case r >= 'a' && r <= 'z':
+			return r
+		case r >= '0' && r <= '9':
+			return r
+		case r == '-' || r == '_':
+			return r
+		default:
+			return '-'
+		}
+	}, base)
+	base = strings.Trim(base, "-_")
+	if base == "" {
+		base = "agent"
+	}
+	return fmt.Sprintf("brain-agent-%s-%d", base, time.Now().UnixNano())
 }
 
 func (w *Watcher) registerCreatedSession(target, cwd string, opts CreateSessionOptions, createdAt time.Time) {
@@ -469,9 +588,13 @@ func (w *Watcher) registerCreatedSession(target, cwd string, opts CreateSessionO
 		StartedAt: createdAt,
 		UpdatedAt: createdAt,
 		PaneAlive: true,
+		Hidden:    opts.Hidden,
 	}
 
 	w.mu.Lock()
+	if opts.Hidden {
+		w.hidden[target] = true
+	}
 	w.agents[target] = agent
 	if _, exists := w.prevContent[target]; !exists {
 		w.prevContent[target] = ""
@@ -621,9 +744,9 @@ func (w *Watcher) KillSession(sessionID string) error {
 }
 
 func listTmuxSessions() ([]string, error) {
-	out, err := exec.Command("tmux", "list-sessions", "-F", "#{session_name}").Output()
+	out, err := exec.Command("tmux", "list-sessions", "-F", "#{session_name}").CombinedOutput()
 	if err != nil {
-		return nil, fmt.Errorf("tmux list-sessions: %w", err)
+		return nil, fmt.Errorf("tmux list-sessions: %w: %s", err, strings.TrimSpace(string(out)))
 	}
 
 	sessions := make([]string, 0)
@@ -635,6 +758,15 @@ func listTmuxSessions() ([]string, error) {
 		sessions = append(sessions, sessionName)
 	}
 	return sessions, nil
+}
+
+func isNoTmuxServerError(err error) bool {
+	if err == nil {
+		return false
+	}
+	text := strings.ToLower(err.Error())
+	return strings.Contains(text, "no server running") ||
+		strings.Contains(text, "failed to connect to server")
 }
 
 func baseSessionName(target string) string {

@@ -208,7 +208,60 @@ export function mergePendingUserMessagesIntoTimeline(
     };
     insertTimelineItemByTimestamp(merged, item);
   }
+  if (shouldShowPendingTurnActivity(merged, pendingUserMessages)) {
+    const latestPending = latestPendingUserMessage(pendingUserMessages);
+    insertTimelineItemByTimestamp(merged, {
+      type: "activity",
+      id: `pending-turn:${latestPending.id}`,
+      timestamp: latestPending.createdAt,
+      statusKey: "running",
+      title: "Thinking",
+      tone: "running",
+      icon: "time-outline",
+      defaultExpanded: false,
+    });
+  }
   return merged;
+}
+
+function shouldShowPendingTurnActivity(
+  timelineItems: ZenTimelineItem[],
+  pendingUserMessages: PendingUserMessage[],
+) {
+  if (pendingUserMessages.length === 0) {
+    return false;
+  }
+  const latestPending = latestPendingUserMessage(pendingUserMessages);
+  const latestTimestamp = new Date(latestPending.createdAt).getTime();
+  const hasLaterAssistantMessage = timelineItems.some((item) => {
+    if (item.type !== "message" || item.role !== "assistant" || !item.timestamp) {
+      return false;
+    }
+    const timestamp = new Date(item.timestamp).getTime();
+    return Number.isFinite(timestamp) && timestamp >= latestTimestamp;
+  });
+  if (hasLaterAssistantMessage) {
+    return false;
+  }
+  return !timelineItems.some(
+    (item) => item.type === "activity" && item.tone === "running",
+  );
+}
+
+function latestPendingUserMessage(
+  pendingUserMessages: PendingUserMessage[],
+): PendingUserMessage {
+  return pendingUserMessages.reduce((latest, message) => {
+    const latestTimestamp = new Date(latest.createdAt).getTime();
+    const messageTimestamp = new Date(message.createdAt).getTime();
+    if (!Number.isFinite(latestTimestamp)) {
+      return message;
+    }
+    if (!Number.isFinite(messageTimestamp)) {
+      return latest;
+    }
+    return messageTimestamp > latestTimestamp ? message : latest;
+  });
 }
 
 function findPendingUserMessageMatch(
@@ -274,6 +327,39 @@ export function mergePendingSlashCommandsIntoTimeline(
     };
     insertTimelineItemByTimestamp(merged, item);
   }
+  return merged;
+}
+
+export function mergeActiveTurnIntoTimeline(
+  timelineItems: ZenTimelineItem[],
+  active?: boolean,
+) {
+  if (!active) {
+    return timelineItems;
+  }
+  if (
+    timelineItems.some(
+      (item) => item.type === "activity" && item.id === "active-turn:running",
+    )
+  ) {
+    return timelineItems;
+  }
+  const merged = [...timelineItems];
+  const hasRunningItem = merged.some(
+    (item) => item.type === "activity" && item.tone === "running",
+  );
+  if (hasRunningItem) {
+    return merged;
+  }
+  insertTimelineItemByTimestamp(merged, {
+    type: "activity",
+    id: "active-turn:running",
+    title: "Thinking",
+    tone: "running",
+    icon: "time-outline",
+    statusKey: "running",
+    defaultExpanded: false,
+  });
   return merged;
 }
 
@@ -384,11 +470,12 @@ function activityFromEvent(event: CodexConversationEvent): ZenTimelineItem | nul
         id: event.id || `commentary:${event.seq}`,
         timestamp: event.timestamp,
         title: event.title || "Reasoning",
-        tone: "neutral",
-        icon: "bulb",
+        statusKey: event.status || "done",
+        tone: event.status === "running" ? "running" : "neutral",
+        icon: event.status === "running" ? "time-outline" : "bulb",
         activityKind: "reasoning",
         body: event.body,
-        defaultExpanded: false,
+        defaultExpanded: event.status === "running",
       };
     }
     case "status": {

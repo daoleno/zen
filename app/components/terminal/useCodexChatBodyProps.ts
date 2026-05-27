@@ -43,6 +43,8 @@ interface UseCodexChatBodyPropsInput {
   composerPresentation: CodexComposerPresentation;
   timeline: ReturnType<typeof usePinnedTimeline>;
   jumpLabel?: string;
+  emptyTitle?: string;
+  emptyBody?: string;
   composerInput: ReturnType<typeof useCodexComposerInput>;
   controller: ReturnType<typeof useCodexChatController>;
   chrome: TerminalThemeChrome;
@@ -51,6 +53,7 @@ interface UseCodexChatBodyPropsInput {
   setDraft(value: string): void;
   onToggleActionMenu(): void;
   onDismissActionMenu(): void;
+  showUnavailableAction?: boolean;
   skillsSheet?: ReactNode;
 }
 
@@ -71,6 +74,8 @@ export function useCodexChatBodyProps({
   composerPresentation,
   timeline,
   jumpLabel,
+  emptyTitle,
+  emptyBody,
   composerInput,
   controller,
   chrome,
@@ -79,6 +84,7 @@ export function useCodexChatBodyProps({
   setDraft,
   onToggleActionMenu,
   onDismissActionMenu,
+  showUnavailableAction,
   skillsSheet,
 }: UseCodexChatBodyPropsInput): CodexChatBodyProps {
   const handleComposerHeightChange = useCallback(() => {
@@ -120,6 +126,8 @@ export function useCodexChatBodyProps({
       scrollRef: timeline.scrollRef,
       showJumpToLatest: timeline.showJumpToLatest,
       jumpLabel,
+      emptyTitle,
+      emptyBody,
       onTimelineLayout: timeline.handleLayout,
       onTimelineScroll: timeline.handleScroll,
       onTimelineScrollBeginDrag: timeline.handleScrollBeginDrag,
@@ -130,6 +138,7 @@ export function useCodexChatBodyProps({
       onScrollToLatest: timeline.scrollToLatest,
       onComposerHeightChange: handleComposerHeightChange,
       onUnavailableAction: onSwitchToTerminal,
+      showUnavailableAction: showUnavailableAction ?? true,
       inputRef: composerInput.inputRef,
       draft,
       editable: connectionState === "connected",
@@ -187,10 +196,13 @@ export function useCodexChatBodyProps({
       loading,
       localChatState,
       jumpLabel,
+      emptyTitle,
+      emptyBody,
       onSwitchToTerminal,
       onToggleActionMenu,
       onDismissActionMenu,
       screenFocused,
+      showUnavailableAction,
       serverId,
       setDraft,
       skillsSheet,

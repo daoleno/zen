@@ -81,6 +81,7 @@ export function CodexChatComposerSection({
       sendElapsedLabel={presentation.sendElapsedLabel}
       running={presentation.showStopIndicator}
       bottomPadding={presentation.bottomPadding}
+      minimalComposer={presentation.minimalComposer}
       showCommandMenu={presentation.showCommandMenu}
       showCommandList={presentation.showCommandList}
       showComposerActions={presentation.showComposerActions}

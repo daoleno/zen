@@ -18,6 +18,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/daoleno/zen/daemon/auth"
+	"github.com/daoleno/zen/daemon/brain"
 	"github.com/daoleno/zen/daemon/classifier"
 	"github.com/daoleno/zen/daemon/push"
 	"github.com/daoleno/zen/daemon/stats"
@@ -29,7 +30,7 @@ import (
 )
 
 const maxCodexAssetBytes = 6 << 20
-const codexConversationSubscriptionInterval = 450 * time.Millisecond
+const codexConversationSubscriptionInterval = 220 * time.Millisecond
 
 var upgrader = websocket.Upgrader{
 	CheckOrigin: func(r *http.Request) bool { return true },
@@ -46,6 +47,7 @@ type Server struct {
 	launcher *work.Launcher
 	workLog  *work.SessionLogger
 	execs    *work.ExecutorConfig
+	brain    *brain.Service
 
 	workSubID int
 	workSub   <-chan work.Event
@@ -63,7 +65,7 @@ type codexConversationSubscription struct {
 }
 
 // New creates a WebSocket server.
-func New(authManager *auth.Manager, w *watcher.Watcher, pusher *push.Client, sc *stats.Collector, workStore *work.Store, launcher *work.Launcher, execs *work.ExecutorConfig) *Server {
+func New(authManager *auth.Manager, w *watcher.Watcher, pusher *push.Client, sc *stats.Collector, workStore *work.Store, launcher *work.Launcher, execs *work.ExecutorConfig, brainService *brain.Service) *Server {
 	srv := &Server{
 		auth:      authManager,
 		watcher:   w,
@@ -73,6 +75,7 @@ func New(authManager *auth.Manager, w *watcher.Watcher, pusher *push.Client, sc 
 		work:      workStore,
 		launcher:  launcher,
 		execs:     execs,
+		brain:     brainService,
 		clients:   make(map[*websocket.Conn]bool),
 		active:    make(map[*websocket.Conn]string),
 		writes:    make(map[*websocket.Conn]*sync.Mutex),
@@ -116,6 +119,9 @@ type clientMessage struct {
 	Frontmatter  map[string]interface{} `json:"frontmatter"`
 	BaseMtime    string                 `json:"base_mtime"`
 	Prompt       string                 `json:"prompt"`
+	Executor     string                 `json:"executor"`
+	Personality  string                 `json:"personality"`
+	Done         bool                   `json:"done"`
 }
 
 // Run starts the HTTP server and event broadcaster.
@@ -143,7 +149,7 @@ func (s *Server) Run(ctx context.Context, addr string) error {
 		srv.Shutdown(context.Background())
 	}()
 
-	log.Printf("zen-daemon listening on %s", addr)
+	log.Printf("zen listening on %s", addr)
 	return srv.ListenAndServe()
 }
 
@@ -189,6 +195,7 @@ func (s *Server) handleWS(w http.ResponseWriter, r *http.Request) {
 			"work_digest_provider": s.workDigestProvider(),
 		})
 	}
+	s.sendBrainSnapshot(conn, "")
 
 	for {
 		_, msg, err := conn.ReadMessage()
@@ -310,6 +317,9 @@ func (s *Server) handleClientMessage(conn *websocket.Conn, msg []byte) {
 
 	case "set_work_digest_provider":
 		s.handleSetWorkDigestProvider(conn, raw)
+
+	case "brain_snapshot":
+		s.sendBrainSnapshot(conn, raw.RequestID)
 
 	case "register_push":
 		if raw.PushToken != "" {
@@ -651,7 +661,7 @@ func (s *Server) handleClientMessage(conn *websocket.Conn, msg []byte) {
 }
 
 func (s *Server) sendAgentSessionList(conn *websocket.Conn) {
-	agentSessions := s.watcher.Agents()
+	agentSessions := visibleAgentSessions(s.watcher.Agents())
 	s.sendJSON(conn, map[string]any{"type": "agent_session_list", "agent_sessions": agentSessions})
 }
 
@@ -1208,6 +1218,36 @@ func (s *Server) handleSetWorkDigestProvider(conn *websocket.Conn, raw clientMes
 	go s.syncWorkLogsForAgents(true)
 }
 
+func (s *Server) sendBrainSnapshot(conn *websocket.Conn, requestID string) {
+	if s.brain == nil {
+		return
+	}
+	snapshot, err := s.brain.Snapshot()
+	if err != nil {
+		s.sendErrorWithRequestID(conn, requestID, "brain_snapshot_failed", err.Error())
+		return
+	}
+	s.sendJSON(conn, map[string]any{
+		"type":       "brain_snapshot",
+		"request_id": requestID,
+		"brain":      snapshot,
+	})
+}
+
+func visibleAgentSessions(agents []*classifier.Agent) []*classifier.Agent {
+	if len(agents) == 0 {
+		return nil
+	}
+	out := make([]*classifier.Agent, 0, len(agents))
+	for _, agent := range agents {
+		if agent == nil || agent.Hidden {
+			continue
+		}
+		out = append(out, agent)
+	}
+	return out
+}
+
 func (s *Server) handleWriteWorkItem(conn *websocket.Conn, raw clientMessage) {
 	if s.work == nil {
 		s.sendErrorWithRequestID(conn, raw.RequestID, "write_work_item_failed", "work store not configured")
@@ -1444,7 +1484,7 @@ func (s *Server) heartbeat(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			agentSessions := s.watcher.Agents()
+			agentSessions := visibleAgentSessions(s.watcher.Agents())
 			s.syncWorkLogs(agentSessions, false)
 			data, _ := json.Marshal(map[string]any{"type": "agent_session_list", "agent_sessions": agentSessions})
 			s.broadcast(data)
@@ -1453,6 +1493,9 @@ func (s *Server) heartbeat(ctx context.Context) {
 }
 
 func (s *Server) handleWatcherEvent(ev watcher.SessionEvent) {
+	if ev.Agent != nil && ev.Agent.Hidden {
+		return
+	}
 	s.recordWorkForSessionEvent(ev)
 
 	switch ev.Type {
@@ -1492,7 +1535,7 @@ func (s *Server) syncWorkLogsForAgents(force bool) {
 	if s.watcher == nil {
 		return
 	}
-	s.syncWorkLogs(s.watcher.Agents(), force)
+	s.syncWorkLogs(visibleAgentSessions(s.watcher.Agents()), force)
 }
 
 func (s *Server) syncWorkLogs(agents []*classifier.Agent, force bool) {

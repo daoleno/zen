@@ -31,6 +31,7 @@ interface CodexChatComposerProps {
   sendElapsedLabel?: string;
   running: boolean;
   bottomPadding: number;
+  minimalComposer: boolean;
   showCommandMenu: boolean;
   showCommandList: boolean;
   showComposerActions: boolean;
@@ -70,6 +71,7 @@ export function CodexChatComposer({
   sendElapsedLabel,
   running,
   bottomPadding,
+  minimalComposer,
   showCommandMenu,
   showCommandList,
   showComposerActions,
@@ -100,31 +102,35 @@ export function CodexChatComposer({
       chrome={chrome}
       theme={theme}
     >
-      <CodexComposerActionMenu
-        visible={showCommandMenu}
-        showComposerActions={showComposerActions}
-        showCommandList={showCommandList}
-        canAttach={canAttach}
-        uploading={uploading}
-        commands={commands}
-        commandQuery={commandQuery}
-        chrome={chrome}
-        onUploadPress={() => {
-          onUploadPress();
-          onDismissActionMenu();
-        }}
-        onSelectCommand={(command) => {
-          onSelectCommand(command);
-          onDismissActionMenu();
-        }}
-      />
+      {minimalComposer ? null : (
+        <CodexComposerActionMenu
+          visible={showCommandMenu}
+          showComposerActions={showComposerActions}
+          showCommandList={showCommandList}
+          canAttach={canAttach}
+          uploading={uploading}
+          commands={commands}
+          commandQuery={commandQuery}
+          chrome={chrome}
+          onUploadPress={() => {
+            onUploadPress();
+            onDismissActionMenu();
+          }}
+          onSelectCommand={(command) => {
+            onSelectCommand(command);
+            onDismissActionMenu();
+          }}
+        />
+      )}
 
-      <CodexComposerAttachmentRail
-        attachments={attachments}
-        uploading={uploading}
-        chrome={chrome}
-        onRemoveAttachment={onRemoveAttachment}
-      />
+      {minimalComposer ? null : (
+        <CodexComposerAttachmentRail
+          attachments={attachments}
+          uploading={uploading}
+          chrome={chrome}
+          onRemoveAttachment={onRemoveAttachment}
+        />
+      )}
 
       <CodexComposerPanel
         inputRef={inputRef}
@@ -138,10 +144,11 @@ export function CodexChatComposer({
         sendIcon={sendIcon}
         sendLabel={sendLabel}
         sendElapsedLabel={sendElapsedLabel}
-        running={running}
-        actionMenuExpanded={showComposerActions}
-        actionMenuButtonEnabled={composerActionButtonEnabled}
-        chrome={chrome}
+      running={running}
+      actionMenuExpanded={showComposerActions}
+      actionMenuButtonEnabled={composerActionButtonEnabled}
+      showActionMenuButton={!minimalComposer}
+      chrome={chrome}
         theme={theme}
         onDraftChange={onDraftChange}
         onActionMenuPress={onToggleActionMenu}

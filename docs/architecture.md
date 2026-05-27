@@ -6,7 +6,7 @@ It focuses on the transport, pairing, trust, and runtime boundaries between:
 
 - the mobile app
 - the externally reachable network endpoint
-- `zen-daemon`
+- `zen`
 - the local CLI agent processes observed by the daemon
 
 ## System Shape
@@ -16,7 +16,7 @@ It focuses on the transport, pairing, trust, and runtime boundaries between:
     ↕ signed HTTP / WebSocket
 [Your Tunnel / Tailnet / Reverse Proxy]
     ↕
-[zen-daemon]
+[zen]
     ↕ local tmux / watcher integration
 [Claude Code] [Codex] [Other CLI Agents]
 ```
@@ -71,7 +71,7 @@ This layer does **not** establish application trust by itself.
 
 ### 2. Daemon identity layer
 
-Each `zen-daemon` instance has a persistent Ed25519 keypair stored in its state directory.
+Each `zen` instance has a persistent Ed25519 keypair stored in its state directory.
 
 From that keypair the daemon derives:
 
@@ -110,7 +110,7 @@ This is why `zen` treats the external URL as a full daemon origin, not just a si
 
 ## Startup Modes
 
-`zen-daemon` has two user-facing startup modes.
+`zen` has two user-facing startup modes.
 
 ### `LOCAL-ONLY`
 
@@ -177,7 +177,7 @@ This is smaller and cleaner than a large query string with multiple long field n
 
 The pairing flow is:
 
-1. `zen-daemon` issues a one-time enrollment token with a short TTL.
+1. `zen` issues a one-time enrollment token with a short TTL.
 2. The daemon prints a compact `zen://settings?p=...` link and QR code.
 3. The app imports the link and decodes the payload.
 4. The app creates or loads its own persistent local device identity.

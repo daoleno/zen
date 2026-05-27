@@ -34,7 +34,7 @@ export function CodexFallbackInlineMessage({
               key={index}
               style={[
                 styles.messageInlineCode,
-                { color: theme.green, backgroundColor: chrome.surfaceMuted },
+                { color: theme.cyan, backgroundColor: chrome.surfaceMuted },
               ]}
             >
               {part.text}
@@ -56,14 +56,14 @@ export function CodexFallbackInlineMessage({
 
 const styles = StyleSheet.create({
   messageBold: {
-    fontFamily: Typography.uiFontMedium,
+    fontFamily: Typography.chatFontMedium,
   },
   messageInlineCode: {
-    fontFamily: Typography.terminalFont,
+    fontFamily: Typography.chatMonoFont,
     fontSize: 13,
-    lineHeight: 18,
+    lineHeight: 19,
   },
   messageLink: {
-    fontFamily: Typography.uiFontMedium,
+    fontFamily: Typography.chatFontMedium,
   },
 });

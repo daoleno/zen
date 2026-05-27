@@ -124,7 +124,7 @@ func syncPricing(ctx context.Context, home string) error {
 	if err != nil {
 		return err
 	}
-	req.Header.Set("User-Agent", "zen-daemon/0.1.0 (+https://github.com/daoleno/zen)")
+	req.Header.Set("User-Agent", "zen/0.1.0 (+https://github.com/daoleno/zen)")
 
 	resp, err := pricingHTTPClient.Do(req)
 	if err != nil {

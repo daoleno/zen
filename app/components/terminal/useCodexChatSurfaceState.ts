@@ -30,6 +30,7 @@ import { useCodexChatBodyProps } from "./useCodexChatBodyProps";
 import {
   useCodexComposerInput,
   useCodexComposerPresentation,
+  useElapsedDurationLabel,
   usePinnedTimeline,
   useRelativeTimeLabel,
 } from "./CodexChatSurfaceHooks";
@@ -44,6 +45,12 @@ interface UseCodexChatSurfaceStateInput {
   theme: TerminalThemePalette;
   chrome: TerminalThemeChrome;
   screenFocused: boolean;
+  placeholder?: string;
+  minimalComposer?: boolean;
+  keyboardVerticalOffset?: number;
+  showUnavailableAction?: boolean;
+  emptyTitle?: string;
+  emptyBody?: string;
   onSwitchToTerminal(): void;
 }
 
@@ -61,6 +68,12 @@ export function useCodexChatSurfaceState({
   theme,
   chrome,
   screenFocused,
+  placeholder,
+  minimalComposer,
+  keyboardVerticalOffset,
+  showUnavailableAction,
+  emptyTitle,
+  emptyBody,
   onSwitchToTerminal,
 }: UseCodexChatSurfaceStateInput): CodexChatSurfaceState {
   const insets = useSafeAreaInsets();
@@ -174,6 +187,14 @@ export function useCodexChatSurfaceState({
       events,
     }) &&
       localChatState === "idle");
+  const turnStartedAt = useMemo(
+    () => currentTurnStartedAt(conversation, events, pendingUserMessages),
+    [conversation, events, pendingUserMessages],
+  );
+  const turnElapsedLabel = useElapsedDurationLabel(
+    turnStartedAt,
+    requestRunning && localChatState === "idle",
+  );
   const composerPresentation = useCodexComposerPresentation({
     draft,
     slashCommands,
@@ -184,10 +205,13 @@ export function useCodexChatSurfaceState({
     startingNewChat: controller.startingNewChat,
     interrupting: controller.interrupting,
     canSend: controller.canSend,
-    elapsedLabel: jumpLabel,
+    elapsedLabel: turnElapsedLabel,
     actionMenuPinned,
     safeAreaTop: insets.top,
     safeAreaBottom: insets.bottom,
+    placeholder,
+    keyboardVerticalOffset,
+    minimalComposer,
   });
   const skillsSheet = useMemo(
     () =>
@@ -230,6 +254,8 @@ export function useCodexChatSurfaceState({
     composerPresentation,
     timeline,
     jumpLabel,
+    emptyTitle,
+    emptyBody,
     composerInput,
     controller,
     chrome,
@@ -238,6 +264,7 @@ export function useCodexChatSurfaceState({
     setDraft,
     onToggleActionMenu: toggleActionMenu,
     onDismissActionMenu: dismissActionMenu,
+    showUnavailableAction,
     skillsSheet,
   });
   return {
@@ -265,6 +292,62 @@ function latestChatTimelineTimestamp(
   });
   pendingSlashCommands.forEach((command) => {
     const timestamp = new Date(command.createdAt).getTime();
+    if (Number.isFinite(timestamp) && timestamp > latest) {
+      latest = timestamp;
+    }
+  });
+  return latest > 0 ? new Date(latest).toISOString() : undefined;
+}
+
+function currentTurnStartedAt(
+  conversation: CodexConversation | null,
+  events: CodexConversationEvent[],
+  pendingUserMessages: PendingUserMessage[],
+) {
+  const activeUserTimestamp = latestUserMessageTimestamp(conversation, events);
+  const pendingTimestamp = latestPendingUserMessageTimestamp(pendingUserMessages);
+
+  if (!activeUserTimestamp) {
+    return pendingTimestamp;
+  }
+  if (!pendingTimestamp) {
+    return activeUserTimestamp;
+  }
+
+  const activeMs = new Date(activeUserTimestamp).getTime();
+  const pendingMs = new Date(pendingTimestamp).getTime();
+  if (!Number.isFinite(activeMs)) {
+    return pendingTimestamp;
+  }
+  if (!Number.isFinite(pendingMs)) {
+    return activeUserTimestamp;
+  }
+  return pendingMs > activeMs ? pendingTimestamp : activeUserTimestamp;
+}
+
+function latestUserMessageTimestamp(
+  conversation: CodexConversation | null,
+  events: CodexConversationEvent[],
+) {
+  for (let index = events.length - 1; index >= 0; index -= 1) {
+    const event = events[index];
+    if (event.kind !== "user_message" || !event.timestamp) {
+      continue;
+    }
+    const timestamp = new Date(event.timestamp).getTime();
+    if (Number.isFinite(timestamp)) {
+      return event.timestamp;
+    }
+  }
+  return conversation?.updated_at;
+}
+
+function latestPendingUserMessageTimestamp(
+  pendingUserMessages: PendingUserMessage[],
+) {
+  let latest = 0;
+  pendingUserMessages.forEach((message) => {
+    const timestamp = new Date(message.createdAt).getTime();
     if (Number.isFinite(timestamp) && timestamp > latest) {
       latest = timestamp;
     }

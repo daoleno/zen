@@ -10,7 +10,7 @@ import (
 func TestParseSSListeningSockets(t *testing.T) {
 	output := `
 LISTEN 0      511                    *:3000             *:*    users:(("next-server (v1",pid=1410617,fd=22))
-LISTEN 0      4096          127.0.0.1:9876        0.0.0.0:*    users:(("zen-daemon",pid=888,fd=9))
+LISTEN 0      4096          127.0.0.1:9876        0.0.0.0:*    users:(("zen",pid=888,fd=9))
 LISTEN 0      4096               [::]:5173          [::]:*    users:(("node",pid=77,fd=18))
 ESTAB  0      0             127.0.0.1:3000      127.0.0.1:1111 users:(("node",pid=55,fd=5))
 LISTEN 0      4096               [::]:bad           [::]:*    users:(("node",pid=99,fd=18))

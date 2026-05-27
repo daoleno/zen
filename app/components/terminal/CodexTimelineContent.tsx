@@ -15,6 +15,9 @@ interface CodexTimelineEmptyContentProps {
   syncing: boolean;
   chrome: TerminalThemeChrome;
   onUnavailableAction(): void;
+  showUnavailableAction?: boolean;
+  emptyTitle?: string;
+  emptyBody?: string;
 }
 
 export function CodexTimelineEmptyContent({
@@ -28,6 +31,9 @@ export function CodexTimelineEmptyContent({
   syncing,
   chrome,
   onUnavailableAction,
+  showUnavailableAction = true,
+  emptyTitle = "Ready",
+  emptyBody = "Message Codex below.",
 }: CodexTimelineEmptyContentProps) {
   if (suppressed && items.length === 0) {
     return null;
@@ -82,7 +88,7 @@ export function CodexTimelineEmptyContent({
       <CodexTimelineEmptyState
         chrome={chrome}
         title="Syncing chat"
-        body={unavailableReason || "Waiting for the daemon to index the latest Codex transcript."}
+        body={unavailableReason || "Messages are still syncing."}
         busy
       />
     );
@@ -94,8 +100,8 @@ export function CodexTimelineEmptyContent({
         chrome={chrome}
         title="Chat view is not available here"
         body={unavailableReason}
-        actionLabel="Show Raw Session"
-        onAction={onUnavailableAction}
+        actionLabel={showUnavailableAction ? "Open Terminal" : undefined}
+        onAction={showUnavailableAction ? onUnavailableAction : undefined}
       />
     );
   }
@@ -104,8 +110,8 @@ export function CodexTimelineEmptyContent({
     return (
       <CodexTimelineEmptyState
         chrome={chrome}
-        title="Ready"
-        body="Message Codex below."
+        title={emptyTitle}
+        body={emptyBody}
       />
     );
   }

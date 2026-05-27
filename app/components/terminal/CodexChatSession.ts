@@ -209,7 +209,7 @@ function codexChatThreadReducer(
         pendingUserMessages: [
           ...state.pendingUserMessages,
           action.message,
-        ].slice(-6),
+        ].slice(-12),
       };
     case "remove_pending_user_message":
       return {
@@ -231,7 +231,7 @@ function codexChatThreadReducer(
         pendingSlashCommands: [
           ...state.pendingSlashCommands,
           action.command,
-        ].slice(-6),
+        ].slice(-12),
       };
     case "settle_pending_slash_command":
       return {

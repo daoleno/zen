@@ -11,6 +11,7 @@ import { GestureHandlerRootView } from "react-native-gesture-handler";
 import { KeyboardProvider } from "react-native-keyboard-controller";
 import { SafeAreaProvider } from "react-native-safe-area-context";
 import { Agent, AgentProvider, useAgents } from "../store/agents";
+import { BrainProvider, useBrain } from "../store/brain";
 import { WorkProvider, useWork } from "../store/work";
 import { useAppTheme } from "../constants/tokens";
 import { wsClient } from "../services/websocket";
@@ -157,6 +158,7 @@ function AppContent() {
   const router = useRouter();
   const segments = useSegments();
   const { state, dispatch } = useAgents();
+  const { dispatch: brainDispatch } = useBrain();
   const { dispatch: workDispatch } = useWork();
   const { colors } = useAppTheme();
   const notificationListener = useRef<Notifications.EventSubscription | null>(
@@ -283,6 +285,10 @@ function AppContent() {
           type: "REMOVE_SERVER",
           serverId: data.serverId,
         });
+        brainDispatch({
+          type: "REMOVE_SERVER",
+          serverId: data.serverId,
+        });
       };
     const onConnectionIssue = (data: any) =>
       dispatch({
@@ -342,11 +348,19 @@ function AppContent() {
             ? data.work_digest_provider
             : "",
       });
-
+    const onBrainSnapshot = (data: any) =>
+      brainDispatch({
+        type: "BRAIN_SNAPSHOT",
+        serverId: data.serverId,
+        serverName: data.serverName,
+        serverUrl: data.serverUrl,
+        brain: data.brain || {},
+      });
     const onConnectedFetchWork = (data: any) => {
       wsClient.listWorkItems(data.serverId);
       wsClient.listExecutors(data.serverId);
       wsClient.listAgentSessions(data.serverId);
+      wsClient.requestBrainSnapshot(data.serverId);
     };
 
     wsClient.on("agent_session_list", onAgentSessionList);
@@ -362,6 +376,7 @@ function AppContent() {
     wsClient.on("work_item_deleted", onWorkItemDeleted);
     wsClient.on("executor_list", onExecutors);
     wsClient.on("work_digest_provider", onWorkDigestProvider);
+    wsClient.on("brain_snapshot", onBrainSnapshot);
     wsClient.on("connected", onConnectedFetchWork);
 
     (async () => {
@@ -414,9 +429,10 @@ function AppContent() {
       wsClient.off("work_item_deleted", onWorkItemDeleted);
       wsClient.off("executor_list", onExecutors);
       wsClient.off("work_digest_provider", onWorkDigestProvider);
+      wsClient.off("brain_snapshot", onBrainSnapshot);
       wsClient.off("connected", onConnectedFetchWork);
     };
-  }, [dispatch, importConnectLink, router, workDispatch]);
+  }, [brainDispatch, dispatch, importConnectLink, router, workDispatch]);
 
   useEffect(() => {
     const subscription = Linking.addEventListener("url", (event) => {
@@ -648,6 +664,10 @@ export default function RootLayout() {
     "SourceHanSansSC-Medium": require("../assets/fonts/SourceHanSansSC-Medium.otf"),
     "MapleMono-CN-Regular": require("../assets/fonts/MapleMono-CN-Regular.ttf"),
     "MapleMono-CN-SemiBold": require("../assets/fonts/MapleMono-CN-SemiBold.ttf"),
+    "SarasaGothicSC-Regular": require("../assets/fonts/SarasaGothicSC-Regular.ttf"),
+    "SarasaGothicSC-Bold": require("../assets/fonts/SarasaGothicSC-Bold.ttf"),
+    "SarasaTermSC-Regular": require("../assets/fonts/SarasaTermSC-Regular.ttf"),
+    "SarasaTermSC-Bold": require("../assets/fonts/SarasaTermSC-Bold.ttf"),
   });
 
   useEffect(() => {
@@ -664,12 +684,14 @@ export default function RootLayout() {
     <GestureHandlerRootView style={{ flex: 1 }}>
       <KeyboardProvider statusBarTranslucent navigationBarTranslucent>
         <AgentProvider>
-          <WorkProvider>
-            <SafeAreaProvider>
-              <StatusBar style={isLight ? "dark" : "light"} />
-              <AppContent />
-            </SafeAreaProvider>
-          </WorkProvider>
+          <BrainProvider>
+            <WorkProvider>
+              <SafeAreaProvider>
+                <StatusBar style={isLight ? "dark" : "light"} />
+                <AppContent />
+              </SafeAreaProvider>
+            </WorkProvider>
+          </BrainProvider>
         </AgentProvider>
       </KeyboardProvider>
     </GestureHandlerRootView>

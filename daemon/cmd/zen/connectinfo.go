@@ -48,7 +48,7 @@ func buildConnectionOffers(advertiseURL string, authManager *auth.Manager, pairi
 
 func printStartupBanner(w io.Writer, listenAddr, daemonID, mode string) {
 	fmt.Fprintln(w, "╔══════════════════════════════════════╗")
-	fmt.Fprintln(w, "║         zen-daemon v0.1.0            ║")
+	fmt.Fprintln(w, "║         zen v0.1.0            ║")
 	fmt.Fprintln(w, "╠══════════════════════════════════════╣")
 	fmt.Fprintf(w, "║  Listening on %-22s ║\n", listenAddr)
 	fmt.Fprintf(w, "║  Auth: %-28s ║\n", "device identity")
@@ -98,7 +98,7 @@ func printPairCommandInfo(w io.Writer, daemonID string, offers []connectionOffer
 }
 
 func pairCommandExample(stateDir string) string {
-	parts := []string{"zen-daemon", "pair", "-advertise-url", "https://your-host/ws"}
+	parts := []string{"zen", "pair", "-advertise-url", "https://your-host/ws"}
 	if strings.TrimSpace(stateDir) != "" {
 		parts = append(parts, "-state-dir", stateDir)
 	}

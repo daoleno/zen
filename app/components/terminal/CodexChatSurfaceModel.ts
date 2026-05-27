@@ -20,6 +20,8 @@ export interface CodexComposerPresentation {
   placeholder: string;
   bottomPadding: number;
   keyboardVerticalOffset: number;
+  automaticKeyboardOffset: boolean;
+  minimalComposer: boolean;
 }
 
 export interface CodexComposerPresentationInput {
@@ -37,6 +39,9 @@ export interface CodexComposerPresentationInput {
   safeAreaTop: number;
   safeAreaBottom: number;
   isAndroid: boolean;
+  placeholder?: string;
+  keyboardVerticalOffset?: number;
+  minimalComposer?: boolean;
 }
 
 export function buildCodexComposerPresentation({
@@ -54,6 +59,9 @@ export function buildCodexComposerPresentation({
   safeAreaTop,
   safeAreaBottom,
   isAndroid,
+  placeholder,
+  keyboardVerticalOffset,
+  minimalComposer,
 }: CodexComposerPresentationInput): CodexComposerPresentation {
   const commandQuery = draft.trimStart();
   const slashQueryActive =
@@ -62,13 +70,19 @@ export function buildCodexComposerPresentation({
     !commandQuery.includes("\n");
   const normalDraftActive = commandQuery.length > 0 && !slashQueryActive;
   const showCommandMenu =
+    !minimalComposer &&
     connectionState === "connected" &&
     (actionMenuPinned || slashQueryActive);
   const showComposerActions =
-    connectionState === "connected" && actionMenuPinned;
+    !minimalComposer &&
+    connectionState === "connected" &&
+    actionMenuPinned;
   const showCommandList =
-    showCommandMenu && (slashQueryActive || !normalDraftActive);
-  const composerActionButtonEnabled = connectionState === "connected";
+    !minimalComposer &&
+    showCommandMenu &&
+    (slashQueryActive || !normalDraftActive);
+  const composerActionButtonEnabled =
+    connectionState === "connected" && !minimalComposer;
   const showStopIndicator =
     connectionState === "connected" &&
     requestRunning &&
@@ -93,18 +107,24 @@ export function buildCodexComposerPresentation({
     sendLabel: startingNewChat
       ? "Starting new chat"
       : showStopButton
-        ? "Stop Codex"
+        ? "Stop response"
         : showStopIndicator && interrupting
-          ? "Stopping Codex"
+          ? "Stopping"
           : showStopIndicator
-            ? "Codex working"
+            ? "Thinking"
             : "Send message",
     sendElapsedLabel: showStopIndicator ? elapsedLabel : undefined,
     placeholder:
-      connectionState === "connected" ? "Message Codex" : "Daemon unavailable",
+      placeholder ||
+      (connectionState === "connected" ? "Message Codex" : "Connection unavailable"),
     bottomPadding: Math.max(safeAreaBottom, 8),
-    keyboardVerticalOffset: isAndroid
-      ? safeAreaTop + TERMINAL_ROUTE_BAR_HEIGHT
-      : 0,
+    keyboardVerticalOffset:
+      typeof keyboardVerticalOffset === "number"
+        ? keyboardVerticalOffset
+        : isAndroid
+          ? safeAreaTop + TERMINAL_ROUTE_BAR_HEIGHT
+          : 0,
+    automaticKeyboardOffset: typeof keyboardVerticalOffset === "number",
+    minimalComposer: Boolean(minimalComposer),
   };
 }

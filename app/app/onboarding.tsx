@@ -27,11 +27,11 @@ export default function OnboardingScreen() {
           <Text style={styles.stepNum}>1</Text>
           <View style={styles.stepContent}>
             <Text style={styles.stepTitle}>
-              Install zen-daemon on your server
+              Install zen on your server
             </Text>
             <View style={styles.codeBlock}>
               <Text style={styles.code}>
-                go install github.com/daoleno/zen/daemon/cmd/zen-daemon@latest
+                go install github.com/daoleno/zen/daemon/cmd/zen@latest
               </Text>
             </View>
           </View>
@@ -40,14 +40,14 @@ export default function OnboardingScreen() {
         <View style={styles.step}>
           <Text style={styles.stepNum}>2</Text>
           <View style={styles.stepContent}>
-            <Text style={styles.stepTitle}>Run zen-daemon</Text>
+            <Text style={styles.stepTitle}>Run zen</Text>
             <View style={styles.codeBlock}>
               <Text style={styles.code}>
-                zen-daemon -advertise-url https://your-host.example/ws
+                zen -advertise-url https://your-host.example/ws
               </Text>
             </View>
             <Text style={styles.stepHint}>
-              zen-daemon listens on 127.0.0.1:9876 by default. Expose that local
+              zen listens on 127.0.0.1:9876 by default. Expose that local
               port through Cloudflare Tunnel, Tailscale, or your own reverse
               proxy, then pass the public /ws URL with -advertise-url.
             </Text>
@@ -59,7 +59,7 @@ export default function OnboardingScreen() {
           <View style={styles.stepContent}>
             <Text style={styles.stepTitle}>Import the pairing link</Text>
             <Text style={styles.stepHint}>
-              Scan the QR or paste the pairing link printed by zen-daemon.
+              Scan the QR or paste the pairing link printed by zen.
             </Text>
           </View>
         </View>

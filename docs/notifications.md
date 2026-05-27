@@ -88,7 +88,7 @@ Examples:
 
 - good: `backend-api`
 - good: `release-cut`
-- bad: `./bin/zen-daemon (main:7)`
+- bad: `./bin/zen (main:7)`
 - bad: `server_mnguamzs_a1sz5a`
 
 ### Body text

@@ -53,8 +53,8 @@ export function CodexTimelineActivityBody({
 const styles = StyleSheet.create({
   body: {
     marginTop: 6,
-    fontSize: 11,
-    lineHeight: 16,
-    fontFamily: Typography.terminalFont,
+    fontSize: 12,
+    lineHeight: 18,
+    fontFamily: Typography.chatMonoFont,
   },
 });

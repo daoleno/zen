@@ -86,7 +86,7 @@ export function ZenAssistantMessage({
 
 const styles = StyleSheet.create({
   userRow: {
-    marginBottom: 16,
+    marginBottom: 17,
     flexDirection: "row",
     justifyContent: "flex-end",
   },
@@ -98,7 +98,7 @@ const styles = StyleSheet.create({
     paddingVertical: 9,
   },
   assistantRow: {
-    marginBottom: 18,
-    paddingRight: 10,
+    marginBottom: 20,
+    paddingRight: 8,
   },
 });

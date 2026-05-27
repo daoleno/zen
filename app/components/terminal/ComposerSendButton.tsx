@@ -11,6 +11,7 @@ import type {
   TerminalThemeChrome,
   TerminalThemePalette,
 } from "../../constants/terminalThemes";
+import { Typography } from "../../constants/tokens";
 
 type IoniconName = React.ComponentProps<typeof Ionicons>["name"];
 
@@ -101,8 +102,8 @@ const styles = StyleSheet.create({
     justifyContent: "center",
   },
   buttonWithLabel: {
-    minWidth: 58,
-    paddingHorizontal: 10,
+    minWidth: 66,
+    paddingHorizontal: 11,
     width: "auto",
   },
   runningContent: {
@@ -110,8 +111,9 @@ const styles = StyleSheet.create({
     flexDirection: "row",
   },
   elapsedLabel: {
+    fontFamily: Typography.chatMonoFont,
     fontSize: 11,
-    lineHeight: 14,
+    lineHeight: 15,
     marginLeft: 6,
   },
   disabled: {

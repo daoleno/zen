@@ -2,7 +2,7 @@
 
 ## Project Structure & Module Organization
 
-This repository is a monorepo for `zen`, a mobile-native agent control plane. The Go daemon lives in `daemon/`; key packages include `daemon/cmd/zen-daemon`, `daemon/server`, `daemon/auth`, `daemon/work`, `daemon/terminal`, and `daemon/watcher`. The Expo/React Native app lives in `app/`; screens are under `app/app`, shared UI under `app/components`, services under `app/services`, state under `app/store`, constants under `app/constants`, and assets under `app/assets`. Design and architecture notes live in `docs/`.
+This repository is a monorepo for `zen`, a mobile-native agent control plane. The Go daemon lives in `daemon/`; key packages include `daemon/cmd/zen`, `daemon/server`, `daemon/auth`, `daemon/work`, `daemon/terminal`, and `daemon/watcher`. The Expo/React Native app lives in `app/`; screens are under `app/app`, shared UI under `app/components`, services under `app/services`, state under `app/store`, constants under `app/constants`, and assets under `app/assets`. Design and architecture notes live in `docs/`.
 
 ## Build, Test, and Development Commands
 
@@ -11,7 +11,7 @@ This repository is a monorepo for `zen`, a mobile-native agent control plane. Th
 - `bun run app:android`: run the Android app with the expected Java 17 environment.
 - `cd app && bunx tsc --noEmit`: type-check the React Native app.
 - `bun run app:doctor`: run Expo project diagnostics.
-- `bun run daemon:build`: build `bin/zen-daemon`.
+- `bun run daemon:build`: build `bin/zen`.
 - `bun run daemon:test`: run all Go daemon tests.
 - `cd daemon && go run ./cmd/zen-dev -advertise-url https://your-host.example/ws`: rebuild and restart the daemon during development.
 

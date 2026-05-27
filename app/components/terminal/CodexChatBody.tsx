@@ -42,6 +42,8 @@ export interface CodexChatBodyProps {
   scrollRef: React.RefObject<FlatList<ZenTimelineItem> | null>;
   showJumpToLatest: boolean;
   jumpLabel?: string;
+  emptyTitle?: string;
+  emptyBody?: string;
   onTimelineLayout(event: LayoutChangeEvent): void;
   onTimelineScroll(event: NativeSyntheticEvent<NativeScrollEvent>): void;
   onTimelineScrollBeginDrag(): void;
@@ -52,6 +54,7 @@ export interface CodexChatBodyProps {
   onScrollToLatest(animated?: boolean, delay?: number): void;
   onComposerHeightChange(height: number): void;
   onUnavailableAction(): void;
+  showUnavailableAction?: boolean;
   inputRef: React.RefObject<TextInput | null>;
   draft: string;
   editable: boolean;
@@ -92,6 +95,8 @@ export function CodexChatBody({
   scrollRef,
   showJumpToLatest,
   jumpLabel,
+  emptyTitle,
+  emptyBody,
   onTimelineLayout,
   onTimelineScroll,
   onTimelineScrollBeginDrag,
@@ -102,6 +107,7 @@ export function CodexChatBody({
   onScrollToLatest,
   onComposerHeightChange,
   onUnavailableAction,
+  showUnavailableAction,
   inputRef,
   draft,
   editable,
@@ -135,6 +141,7 @@ export function CodexChatBody({
     <CodexChatKeyboardFrame
       enabled={screenFocused}
       keyboardVerticalOffset={composerPresentation.keyboardVerticalOffset}
+      automaticOffset={composerPresentation.automaticKeyboardOffset}
     >
       <CodexChatTimelineSection
         serverId={serverId}
@@ -161,6 +168,9 @@ export function CodexChatBody({
         onContentSizeChange={onTimelineContentSizeChange}
         onScrollToLatest={onScrollToLatest}
         onUnavailableAction={onUnavailableAction}
+        showUnavailableAction={showUnavailableAction}
+        emptyTitle={emptyTitle}
+        emptyBody={emptyBody}
       />
 
       <CodexChatComposerSection

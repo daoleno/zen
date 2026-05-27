@@ -1272,6 +1272,10 @@ class MultiServerWebSocketClient {
     this.send(serverId, { type: "list_agent_sessions" });
   }
 
+  requestBrainSnapshot(serverId: string) {
+    this.send(serverId, { type: "brain_snapshot" });
+  }
+
   listSessionServices(serverId: string): Promise<SessionServiceSnapshot> {
     const requestId = `${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
 

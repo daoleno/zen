@@ -85,6 +85,9 @@ func (w *Watcher) DiscoverSessionServices() (SessionServiceSnapshot, error) {
 
 	agentsByID := make(map[string]*classifierAgentSnapshot)
 	for _, agent := range w.Agents() {
+		if agent == nil || agent.Hidden {
+			continue
+		}
 		agentsByID[agent.ID] = &classifierAgentSnapshot{
 			name:    agent.Name,
 			project: agent.Project,

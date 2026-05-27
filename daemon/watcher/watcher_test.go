@@ -2,6 +2,7 @@ package watcher
 
 import (
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
@@ -76,6 +77,34 @@ func TestCreatedSessionNameFallsBackToCommandExecutable(t *testing.T) {
 	}
 }
 
+func TestNewTmuxSessionNameUsesAgentPrefix(t *testing.T) {
+	got := newTmuxSessionName(CreateSessionOptions{Name: "Brain Codex"})
+	if !strings.HasPrefix(got, "brain-agent-brain-codex-") {
+		t.Fatalf("newTmuxSessionName() = %q", got)
+	}
+}
+
+func TestBuildNewSessionArgsCreatesDetachedSession(t *testing.T) {
+	got := buildNewSessionArgs("brain-agent-codex-123", "/repo/zen", CreateSessionOptions{
+		Name: "brain-codex",
+	}, "exec '/bin/zsh' -i -l -c 'codex'")
+	wantPrefix := []string{
+		"new-session",
+		"-d",
+		"-P",
+		"-F",
+		"#{session_name}:#{window_id}",
+		"-s",
+		"brain-agent-codex-123",
+	}
+	if len(got) < len(wantPrefix) || !reflect.DeepEqual(got[:len(wantPrefix)], wantPrefix) {
+		t.Fatalf("buildNewSessionArgs() = %v", got)
+	}
+	if got[len(got)-1] != "exec '/bin/zsh' -i -l -c 'codex'" {
+		t.Fatalf("last arg = %q", got[len(got)-1])
+	}
+}
+
 func TestRegisterCreatedSessionSeedsAgentSnapshotAndEvent(t *testing.T) {
 	w := New(time.Second)
 	startedAt := time.Date(2026, 5, 23, 10, 0, 0, 0, time.UTC)
@@ -109,6 +138,25 @@ func TestRegisterCreatedSessionSeedsAgentSnapshotAndEvent(t *testing.T) {
 		}
 	case <-time.After(time.Second):
 		t.Fatal("timed out waiting for created session event")
+	}
+}
+
+func TestRegisterCreatedSessionMarksHiddenAgent(t *testing.T) {
+	w := New(time.Second)
+	startedAt := time.Date(2026, 5, 23, 10, 0, 0, 0, time.UTC)
+
+	w.registerCreatedSession("main:@43", "/repo/zen", CreateSessionOptions{
+		Command: "codex",
+		Name:    "Brain",
+		Hidden:  true,
+	}, startedAt)
+
+	agent := w.GetAgent("main:@43")
+	if agent == nil {
+		t.Fatal("expected created session to be registered")
+	}
+	if !agent.Hidden || !w.hidden["main:@43"] {
+		t.Fatalf("expected hidden agent, got agent hidden=%v registry=%v", agent.Hidden, w.hidden["main:@43"])
 	}
 }
 

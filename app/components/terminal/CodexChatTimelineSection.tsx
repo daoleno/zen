@@ -45,6 +45,8 @@ interface CodexChatTimelineSectionProps {
   scrollRef: React.RefObject<FlatList<ZenTimelineItem> | null>;
   showJumpToLatest: boolean;
   jumpLabel?: string;
+  emptyTitle?: string;
+  emptyBody?: string;
   chrome: TerminalThemeChrome;
   theme: TerminalThemePalette;
   onLayout(event: LayoutChangeEvent): void;
@@ -56,6 +58,7 @@ interface CodexChatTimelineSectionProps {
   onContentSizeChange(width: number, height: number): void;
   onScrollToLatest(animated?: boolean, delay?: number): void;
   onUnavailableAction(): void;
+  showUnavailableAction?: boolean;
 }
 
 export function CodexChatTimelineSection({
@@ -72,6 +75,8 @@ export function CodexChatTimelineSection({
   scrollRef,
   showJumpToLatest,
   jumpLabel,
+  emptyTitle,
+  emptyBody,
   chrome,
   theme,
   onLayout,
@@ -83,11 +88,13 @@ export function CodexChatTimelineSection({
   onContentSizeChange,
   onScrollToLatest,
   onUnavailableAction,
+  showUnavailableAction,
 }: CodexChatTimelineSectionProps) {
   const timelineItems = useCodexTimelineItems({
     events,
     pendingUserMessages,
     pendingSlashCommands,
+    active: conversation?.active,
   });
   const loadAssetPreview = useCallback(
     async (path: string) => {
@@ -126,6 +133,8 @@ export function CodexChatTimelineSection({
       jumpButtonBottom={10}
       chrome={chrome}
       theme={theme}
+      emptyTitle={emptyTitle}
+      emptyBody={emptyBody}
       onLayout={onLayout}
       onScroll={onScroll}
       onScrollBeginDrag={onScrollBeginDrag}
@@ -135,6 +144,7 @@ export function CodexChatTimelineSection({
       onContentSizeChange={onContentSizeChange}
       onJumpToLatest={() => onScrollToLatest(false, 0)}
       onUnavailableAction={onUnavailableAction}
+      showUnavailableAction={showUnavailableAction}
       loadAssetPreview={loadAssetPreview}
       formatPatchPath={patchDisplayPath}
       truncateBody={truncateRunes}

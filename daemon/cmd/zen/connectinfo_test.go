@@ -123,7 +123,7 @@ func TestPrintLocalOnlyInfo(t *testing.T) {
 	if !strings.Contains(rendered, "State: LOCAL-ONLY") {
 		t.Fatalf("expected LOCAL-ONLY output, got %q", rendered)
 	}
-	if !strings.Contains(rendered, "zen-daemon pair -advertise-url https://your-host/ws -state-dir /tmp/zen-state") {
+	if !strings.Contains(rendered, "zen pair -advertise-url https://your-host/ws -state-dir /tmp/zen-state") {
 		t.Fatalf("expected pair command example, got %q", rendered)
 	}
 }

@@ -197,7 +197,7 @@ export default function SettingsScreen() {
       Alert.alert(
         "Invalid endpoint",
         error?.message ||
-          "Use a full ws://, wss://, http://, or https:// URL that points at zen-daemon.",
+          "Use a full ws://, wss://, http://, or https:// URL that points at zen.",
       );
       return;
     }
@@ -226,7 +226,7 @@ export default function SettingsScreen() {
       if (!savedServer) {
         Alert.alert(
           "Invalid import",
-          "Could not parse the pairing link. Import the zen:// link or QR printed by zen-daemon.",
+          "Could not parse the pairing link. Import the zen:// link or QR printed by zen.",
         );
         return false;
       }
@@ -281,7 +281,7 @@ export default function SettingsScreen() {
     if (!rawValue) {
       Alert.alert(
         "Pairing link required",
-        "Paste the pairing link printed by zen-daemon, or scan its QR code.",
+        "Paste the pairing link printed by zen, or scan its QR code.",
       );
       return;
     }
@@ -593,7 +593,7 @@ export default function SettingsScreen() {
               ) : (
                 <>
                   <Text style={styles.importLead}>
-                    Paste the pairing link from zen-daemon, or scan its QR code.
+                    Paste the pairing link from zen, or scan its QR code.
                   </Text>
 
                   <Text style={styles.fieldLabel}>Pairing Link</Text>
@@ -699,7 +699,7 @@ export default function SettingsScreen() {
                 Camera permission required
               </Text>
               <Text style={styles.scannerNoticeText}>
-                Allow camera access to scan a zen-daemon pairing QR code.
+                Allow camera access to scan a zen pairing QR code.
               </Text>
               <TouchableOpacity
                 style={styles.scannerPrimaryBtn}

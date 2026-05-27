@@ -26,6 +26,7 @@ interface CodexComposerPanelProps {
   running: boolean;
   actionMenuExpanded: boolean;
   actionMenuButtonEnabled: boolean;
+  showActionMenuButton: boolean;
   chrome: TerminalThemeChrome;
   theme: TerminalThemePalette;
   onDraftChange(value: string): void;
@@ -53,6 +54,7 @@ export function CodexComposerPanel({
   running,
   actionMenuExpanded,
   actionMenuButtonEnabled,
+  showActionMenuButton,
   chrome,
   theme,
   onDraftChange,
@@ -69,23 +71,25 @@ export function CodexComposerPanel({
       focused={focused}
       chrome={chrome}
     >
-      <ComposerIconButton
-        accessibilityLabel={
-          actionMenuExpanded ? "Hide composer actions" : "Show composer actions"
-        }
-        icon={actionMenuExpanded ? "close" : "add"}
-        chrome={chrome}
-        loading={uploading}
-        disabled={!actionMenuButtonEnabled}
-        iconColor={
-          actionMenuExpanded
-            ? chrome.accent
-            : actionMenuButtonEnabled
-              ? chrome.text
-              : chrome.textSubtle
-        }
-        onPress={onActionMenuPress}
-      />
+      {showActionMenuButton ? (
+        <ComposerIconButton
+          accessibilityLabel={
+            actionMenuExpanded ? "Hide composer actions" : "Show composer actions"
+          }
+          icon={actionMenuExpanded ? "close" : "add"}
+          chrome={chrome}
+          loading={uploading}
+          disabled={!actionMenuButtonEnabled}
+          iconColor={
+            actionMenuExpanded
+              ? chrome.accent
+              : actionMenuButtonEnabled
+                ? chrome.text
+                : chrome.textSubtle
+          }
+          onPress={onActionMenuPress}
+        />
+      ) : null}
 
       <CodexComposerInput
         inputRef={inputRef}
