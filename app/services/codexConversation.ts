@@ -4,6 +4,7 @@ export type CodexConversationEventKind =
   | "commentary"
   | "command"
   | "tool"
+  | "web_search"
   | "patch"
   | "plan"
   | "status";
@@ -149,6 +150,7 @@ function normalizeKind(value: unknown): CodexConversationEventKind | null {
     case "commentary":
     case "command":
     case "tool":
+    case "web_search":
     case "patch":
     case "plan":
     case "status":

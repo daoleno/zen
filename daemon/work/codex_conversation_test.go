@@ -828,6 +828,121 @@ func TestParseCodexConversation_MarksGenericToolFailures(t *testing.T) {
 	}
 }
 
+func TestParseCodexConversation_RendersResponseItemWebSearchCall(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "rollout.jsonl")
+	writeJSONL(t, path,
+		map[string]any{
+			"type":      "response_item",
+			"timestamp": "2026-05-20T10:00:00Z",
+			"payload": map[string]any{
+				"type":   "web_search_call",
+				"id":     "ws-search",
+				"status": "completed",
+				"action": map[string]any{
+					"type":  "search",
+					"query": "Hyperliquid fees maker taker schedule",
+				},
+			},
+		},
+	)
+
+	got, err := parseCodexConversation(path)
+	if err != nil {
+		t.Fatalf("parseCodexConversation: %v", err)
+	}
+	if len(got.Events) != 1 {
+		t.Fatalf("events len = %d, want 1: %#v", len(got.Events), got.Events)
+	}
+	event := got.Events[0]
+	if event.Kind != "web_search" || event.CallID != "ws-search" || event.Status != "done" {
+		t.Fatalf("web search event = %#v", event)
+	}
+	if event.Body != "Hyperliquid fees maker taker schedule" || !strings.Contains(event.Input, `"type": "search"`) {
+		t.Fatalf("web search payload = %#v", event)
+	}
+}
+
+func TestParseCodexConversation_DedupesWebSearchEventMsgAndResponseItemPair(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "rollout.jsonl")
+	action := map[string]any{
+		"type": "open_page",
+		"url":  "https://docs.example.com/guide",
+	}
+	writeJSONL(t, path,
+		map[string]any{
+			"type":      "event_msg",
+			"timestamp": "2026-05-20T10:00:00Z",
+			"payload": map[string]any{
+				"type":    "web_search_end",
+				"call_id": "ws-open",
+				"query":   "https://docs.example.com/guide",
+				"action":  action,
+			},
+		},
+		map[string]any{
+			"type":      "response_item",
+			"timestamp": "2026-05-20T10:00:00Z",
+			"payload": map[string]any{
+				"type":   "web_search_call",
+				"status": "completed",
+				"action": action,
+			},
+		},
+	)
+
+	got, err := parseCodexConversation(path)
+	if err != nil {
+		t.Fatalf("parseCodexConversation: %v", err)
+	}
+	if len(got.Events) != 1 {
+		t.Fatalf("events len = %d, want 1: %#v", len(got.Events), got.Events)
+	}
+	event := got.Events[0]
+	if event.Kind != "web_search" || event.CallID != "ws-open" || event.Body != "https://docs.example.com/guide" {
+		t.Fatalf("web search event = %#v", event)
+	}
+}
+
+func TestParseCodexConversation_UpdatesWebSearchBeginWithEnd(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "rollout.jsonl")
+	writeJSONL(t, path,
+		map[string]any{
+			"type":      "event_msg",
+			"timestamp": "2026-05-20T10:00:00Z",
+			"payload": map[string]any{
+				"type":    "web_search_begin",
+				"call_id": "ws-find",
+			},
+		},
+		map[string]any{
+			"type":      "event_msg",
+			"timestamp": "2026-05-20T10:00:02Z",
+			"payload": map[string]any{
+				"type":    "web_search_end",
+				"call_id": "ws-find",
+				"query":   "'needle' in https://docs.example.com/guide",
+				"action": map[string]any{
+					"type":    "find_in_page",
+					"url":     "https://docs.example.com/guide",
+					"pattern": "needle",
+				},
+			},
+		},
+	)
+
+	got, err := parseCodexConversation(path)
+	if err != nil {
+		t.Fatalf("parseCodexConversation: %v", err)
+	}
+	if len(got.Events) != 1 {
+		t.Fatalf("events len = %d, want 1: %#v", len(got.Events), got.Events)
+	}
+	event := got.Events[0]
+	if event.Kind != "web_search" || event.Status != "done" || event.Body != "'needle' in https://docs.example.com/guide" {
+		t.Fatalf("web search event = %#v", event)
+	}
+}
+
 func TestParseCodexConversation_RetainsEventsAcrossLargeRollout(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "rollout.jsonl")
 	writeJSONL(t, path,
@@ -934,6 +1049,118 @@ func TestParseCodexConversation_RendersAgentReasoningAsRunningCommentary(t *test
 	}
 	if !strings.Contains(event.Body, "Checking context") {
 		t.Fatalf("reasoning body = %q, want text", event.Body)
+	}
+}
+
+func TestParseCodexConversation_MergesReasoningUpdatesIntoSingleEvent(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "rollout.jsonl")
+	writeJSONL(t, path,
+		map[string]any{
+			"type":      "event_msg",
+			"timestamp": "2026-05-20T10:00:01Z",
+			"payload": map[string]any{
+				"type": "agent_reasoning",
+				"text": "Drafting the next step.",
+			},
+		},
+		map[string]any{
+			"type":      "event_msg",
+			"timestamp": "2026-05-20T10:00:02Z",
+			"payload": map[string]any{
+				"type": "agent_reasoning",
+				"text": "Drafting the next step.\n\nRefining the plan.",
+			},
+		},
+		map[string]any{
+			"type":      "response_item",
+			"timestamp": "2026-05-20T10:00:03Z",
+			"payload": map[string]any{
+				"type": "reasoning",
+				"summary": []map[string]any{
+					{"type": "summary_text", "text": "Drafting the next step.\n\nRefining the plan.\n\nReady to continue."},
+				},
+			},
+		},
+		map[string]any{
+			"type":      "response_item",
+			"timestamp": "2026-05-20T10:00:04Z",
+			"payload": map[string]any{
+				"type": "message",
+				"role": "assistant",
+				"content": []map[string]any{
+					{"type": "output_text", "text": "Done."},
+				},
+			},
+		},
+	)
+
+	got, err := parseCodexConversation(path)
+	if err != nil {
+		t.Fatalf("parseCodexConversation: %v", err)
+	}
+	if len(got.Events) != 2 {
+		t.Fatalf("events len = %d, want 2: %#v", len(got.Events), got.Events)
+	}
+	reasoning := got.Events[0]
+	if reasoning.Kind != "commentary" || reasoning.Title != "Reasoning" || reasoning.Status != "done" {
+		t.Fatalf("reasoning event = %#v", reasoning)
+	}
+	if !strings.Contains(reasoning.Body, "Ready to continue.") {
+		t.Fatalf("reasoning body = %q, want final summary", reasoning.Body)
+	}
+	assistant := got.Events[1]
+	if assistant.Kind != "assistant_message" || assistant.Body != "Done." {
+		t.Fatalf("assistant event = %#v", assistant)
+	}
+}
+
+func TestParseCodexConversation_FinalizesPendingReasoningWhenTurnEnds(t *testing.T) {
+	for _, terminalEvent := range []string{"task_complete", "turn_aborted"} {
+		t.Run(terminalEvent, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), terminalEvent+".jsonl")
+			writeJSONL(t, path,
+				map[string]any{
+					"type":      "event_msg",
+					"timestamp": "2026-05-20T10:00:01Z",
+					"payload": map[string]any{
+						"type": "task_started",
+					},
+				},
+				map[string]any{
+					"type":      "event_msg",
+					"timestamp": "2026-05-20T10:00:02Z",
+					"payload": map[string]any{
+						"type": "agent_reasoning",
+						"text": "Checking the final transcript state.",
+					},
+				},
+				map[string]any{
+					"type":      "event_msg",
+					"timestamp": "2026-05-20T10:00:03Z",
+					"payload": map[string]any{
+						"type": terminalEvent,
+					},
+				},
+			)
+
+			got, err := parseCodexConversation(path)
+			if err != nil {
+				t.Fatalf("parseCodexConversation: %v", err)
+			}
+			if got.Active == nil || *got.Active {
+				t.Fatalf("active = %#v, want false", got.Active)
+			}
+			if len(got.Events) != 1 {
+				t.Fatalf("events len = %d, want 1: %#v", len(got.Events), got.Events)
+			}
+			reasoning := got.Events[0]
+			if reasoning.Kind != "commentary" || reasoning.Status != "done" {
+				t.Fatalf("reasoning event = %#v, want finalized commentary", reasoning)
+			}
+			if !strings.Contains(reasoning.Body, "final transcript state") {
+				t.Fatalf("reasoning body = %q", reasoning.Body)
+			}
+		})
 	}
 }
 

@@ -215,6 +215,7 @@ type codexConversationBuilder struct {
 	sessionByCall        map[string]string
 	recentMessageByKey   map[string]recentCodexMessageFingerprint
 	seenStatusKeys       map[string]struct{}
+	pendingReasoningID   string
 	patchEventSeen       bool
 }
 
@@ -286,9 +287,15 @@ func (b *codexConversationBuilder) consumeEvent(lineNumber int, timestamp string
 		Explanation      string          `json:"explanation"`
 		Plan             []CodexPlanStep `json:"plan"`
 		Text             string          `json:"text"`
+		Query            string          `json:"query"`
+		Action           json.RawMessage `json:"action"`
 	}
 	if json.Unmarshal(raw, &payload) != nil {
 		return
+	}
+
+	if shouldFinishPendingReasoningForEvent(payload.Type) {
+		b.finishPendingReasoning()
 	}
 
 	switch payload.Type {
@@ -310,7 +317,11 @@ func (b *codexConversationBuilder) consumeEvent(lineNumber int, timestamp string
 		}
 		b.addMessageWithTitle(lineNumber, timestamp, "assistant", payload.Message, title)
 	case "agent_reasoning":
-		b.addReasoning(lineNumber, timestamp, payload.Text)
+		b.upsertReasoning(lineNumber, timestamp, payload.Text, false)
+	case "web_search_begin":
+		b.upsertWebSearchBegin(lineNumber, timestamp, payload.CallID)
+	case "web_search_end":
+		b.upsertWebSearchEnd(lineNumber, timestamp, payload.CallID, payload.Query, payload.Action, "done")
 	case "exec_command_end":
 		command := shellCommandLabel(payload.Command)
 		if command == "" {
@@ -345,6 +356,7 @@ func (b *codexConversationBuilder) consumeEvent(lineNumber int, timestamp string
 func (b *codexConversationBuilder) consumeResponseItem(lineNumber int, timestamp string, raw json.RawMessage) {
 	var payload struct {
 		Type      string          `json:"type"`
+		ID        string          `json:"id"`
 		Role      string          `json:"role"`
 		Content   json.RawMessage `json:"content"`
 		Name      string          `json:"name"`
@@ -354,6 +366,7 @@ func (b *codexConversationBuilder) consumeResponseItem(lineNumber int, timestamp
 		Input     string          `json:"input"`
 		Output    json.RawMessage `json:"output"`
 		Summary   json.RawMessage `json:"summary"`
+		Action    json.RawMessage `json:"action"`
 	}
 	if json.Unmarshal(raw, &payload) != nil {
 		return
@@ -361,11 +374,15 @@ func (b *codexConversationBuilder) consumeResponseItem(lineNumber int, timestamp
 
 	switch payload.Type {
 	case "message":
+		b.finishPendingReasoning()
 		text := codexConversationContentText(payload.Content)
 		switch payload.Role {
 		case "user", "assistant":
 			b.addMessage(lineNumber, timestamp, payload.Role, text)
 		}
+	case "web_search_call":
+		callID := firstNonEmpty(payload.CallID, payload.ID)
+		b.upsertWebSearchEnd(lineNumber, timestamp, callID, "", payload.Action, codexWebSearchStatus(payload.Status))
 	case "function_call":
 		if isCodexPlanTool(payload.Name) {
 			explanation, plan := codexPlanToolArguments(payload.Arguments)
@@ -425,16 +442,25 @@ func (b *codexConversationBuilder) consumeResponseItem(lineNumber int, timestamp
 		}
 		b.updateCallOutput(lineNumber, timestamp, payload.CallID, output)
 	case "reasoning":
-		if summary := codexConversationContentText(payload.Summary); summary != "" {
-			b.addEvent(CodexConversationEvent{
-				ID:        b.eventID(lineNumber),
-				Timestamp: timestamp,
-				Kind:      "commentary",
-				Title:     "Reasoning",
-				Body:      summary,
-				Source:    "codex_rollout",
-			})
-		}
+		b.upsertReasoning(lineNumber, timestamp, codexConversationContentText(payload.Summary), true)
+	}
+}
+
+func shouldFinishPendingReasoningForEvent(eventType string) bool {
+	switch eventType {
+	case "task_started",
+		"task_complete",
+		"turn_aborted",
+		"user_message",
+		"history_entry",
+		"agent_message",
+		"exec_command_end",
+		"patch_apply_end",
+		"thread_goal_updated",
+		"plan_update":
+		return true
+	default:
+		return false
 	}
 }
 
@@ -678,6 +704,96 @@ func (b *codexConversationBuilder) updateSessionCommandOutput(lineNumber int, ti
 	b.updateCommandOutput(lineNumber, timestamp, callID, output)
 }
 
+func (b *codexConversationBuilder) upsertWebSearchBegin(lineNumber int, timestamp, callID string) {
+	callID = strings.TrimSpace(callID)
+	if callID == "" {
+		return
+	}
+	if index, exists := b.eventByCall[callID]; exists && index >= 0 && index < len(b.events) {
+		if b.events[index].Kind == "web_search" {
+			b.events[index].Status = "running"
+			if timestamp != "" {
+				b.events[index].Timestamp = timestamp
+			}
+		}
+		return
+	}
+	if b.addEvent(CodexConversationEvent{
+		ID:        b.eventID(lineNumber),
+		Timestamp: timestamp,
+		Kind:      "web_search",
+		Title:     "Web Search",
+		CallID:    callID,
+		Status:    "running",
+		Source:    "codex_rollout",
+	}) && callID != "" {
+		b.eventByCall[callID] = len(b.events) - 1
+	}
+}
+
+func (b *codexConversationBuilder) upsertWebSearchEnd(lineNumber int, timestamp, callID, query string, action json.RawMessage, status string) {
+	callID = strings.TrimSpace(callID)
+	body := codexWebSearchDetail(query, action)
+	input := codexWebSearchActionText(action)
+	status = codexWebSearchStatus(status)
+	if callID != "" {
+		if index, exists := b.eventByCall[callID]; exists && index >= 0 && index < len(b.events) {
+			if b.events[index].Kind == "web_search" {
+				b.events[index].Body = truncateConversationBody(body)
+				b.events[index].Input = truncateConversationBody(input)
+				b.events[index].Status = status
+				if timestamp != "" {
+					b.events[index].Timestamp = timestamp
+				}
+				return
+			}
+		}
+	}
+	if callID == "" && b.isDuplicateRecentWebSearch(timestamp, body, input) {
+		return
+	}
+	if b.addEvent(CodexConversationEvent{
+		ID:        b.eventID(lineNumber),
+		Timestamp: timestamp,
+		Kind:      "web_search",
+		Title:     "Web Search",
+		Body:      body,
+		Input:     input,
+		CallID:    callID,
+		Status:    status,
+		Source:    "codex_rollout",
+	}) && callID != "" {
+		b.eventByCall[callID] = len(b.events) - 1
+	}
+}
+
+func (b *codexConversationBuilder) isDuplicateRecentWebSearch(timestamp, body, input string) bool {
+	if len(b.events) == 0 {
+		return false
+	}
+	previous := b.events[len(b.events)-1]
+	if previous.Kind != "web_search" {
+		return false
+	}
+	if strings.TrimSpace(previous.CallID) == "" {
+		return false
+	}
+	if cleanConversationText(previous.Body) != cleanConversationText(body) ||
+		cleanConversationText(previous.Input) != cleanConversationText(input) {
+		return false
+	}
+	previousTimestamp := parseNormalizedCodexTimestamp(previous.Timestamp)
+	currentTimestamp := parseNormalizedCodexTimestamp(timestamp)
+	if previousTimestamp.IsZero() || currentTimestamp.IsZero() {
+		return true
+	}
+	delta := currentTimestamp.Sub(previousTimestamp)
+	if delta < 0 {
+		delta = -delta
+	}
+	return delta <= 2*time.Second
+}
+
 func (b *codexConversationBuilder) addToolStart(lineNumber int, timestamp, callID, name, input, status, command string) {
 	callID = strings.TrimSpace(callID)
 	name = cleanToolName(name)
@@ -826,12 +942,33 @@ func (b *codexConversationBuilder) addStatus(lineNumber int, timestamp, title, b
 	})
 }
 
-func (b *codexConversationBuilder) addReasoning(lineNumber int, timestamp, text string) {
+func (b *codexConversationBuilder) upsertReasoning(lineNumber int, timestamp, text string, finalize bool) {
 	text = CleanCodexDisplayText(text)
 	if text == "" || isTranscriptBoilerplate(text) {
+		if finalize {
+			b.finishPendingReasoning()
+		}
 		return
 	}
-	b.addEvent(CodexConversationEvent{
+	if index := b.pendingReasoningEventIndex(); index >= 0 {
+		event := &b.events[index]
+		if event.Kind == "commentary" {
+			event.Title = "Reasoning"
+			event.Body = text
+			if event.Timestamp == "" {
+				event.Timestamp = timestamp
+			}
+			if finalize {
+				event.Status = "done"
+				b.pendingReasoningID = ""
+			} else {
+				event.Status = "running"
+			}
+			return
+		}
+	}
+
+	event := CodexConversationEvent{
 		ID:        b.eventID(lineNumber),
 		Timestamp: timestamp,
 		Kind:      "commentary",
@@ -839,7 +976,41 @@ func (b *codexConversationBuilder) addReasoning(lineNumber int, timestamp, text 
 		Body:      text,
 		Status:    "running",
 		Source:    "codex_rollout",
-	})
+	}
+	if finalize {
+		event.Status = "done"
+	}
+	if b.addEvent(event) && !finalize {
+		b.pendingReasoningID = event.ID
+	}
+	if finalize {
+		b.pendingReasoningID = ""
+	}
+}
+
+func (b *codexConversationBuilder) finishPendingReasoning() {
+	index := b.pendingReasoningEventIndex()
+	if index < 0 {
+		b.pendingReasoningID = ""
+		return
+	}
+	event := &b.events[index]
+	if event.Kind == "commentary" && event.Status == "running" {
+		event.Status = "done"
+	}
+	b.pendingReasoningID = ""
+}
+
+func (b *codexConversationBuilder) pendingReasoningEventIndex() int {
+	if strings.TrimSpace(b.pendingReasoningID) == "" {
+		return -1
+	}
+	for index := len(b.events) - 1; index >= 0; index-- {
+		if b.events[index].ID == b.pendingReasoningID {
+			return index
+		}
+	}
+	return -1
 }
 
 func (b *codexConversationBuilder) addEvent(event CodexConversationEvent) bool {
@@ -922,6 +1093,9 @@ func (b *codexConversationBuilder) conversation() CodexConversation {
 	if b.events == nil {
 		b.events = []CodexConversationEvent{}
 	}
+	if b.lifecycleSeen && !b.taskActive {
+		b.finishPendingReasoning()
+	}
 	b.reindexEvents()
 	var active *bool
 	if b.lifecycleSeen {
@@ -1002,6 +1176,83 @@ func codexToolPayloadText(value string) string {
 		return cleanConversationText(pretty.String())
 	}
 	return value
+}
+
+func codexWebSearchStatus(status string) string {
+	switch strings.ToLower(strings.TrimSpace(status)) {
+	case "failed", "error":
+		return "failed"
+	case "running", "in_progress", "in-progress", "inprogress":
+		return "running"
+	default:
+		return "done"
+	}
+}
+
+func codexWebSearchActionText(action json.RawMessage) string {
+	if len(bytes.TrimSpace(action)) == 0 || bytes.Equal(bytes.TrimSpace(action), []byte("null")) {
+		return ""
+	}
+	return codexJSONPayloadText(action)
+}
+
+func codexWebSearchDetail(query string, action json.RawMessage) string {
+	query = cleanConversationText(query)
+	var payload struct {
+		Type    string   `json:"type"`
+		Query   string   `json:"query"`
+		Queries []string `json:"queries"`
+		URL     string   `json:"url"`
+		Pattern string   `json:"pattern"`
+	}
+	if len(bytes.TrimSpace(action)) > 0 && json.Unmarshal(action, &payload) == nil {
+		switch payload.Type {
+		case "search":
+			if value := codexWebSearchQuery(payload.Query, payload.Queries); value != "" {
+				return value
+			}
+		case "open_page":
+			if url := cleanConversationText(payload.URL); url != "" {
+				return url
+			}
+		case "find_in_page":
+			pattern := cleanConversationText(payload.Pattern)
+			url := cleanConversationText(payload.URL)
+			switch {
+			case pattern != "" && url != "":
+				return fmt.Sprintf("'%s' in %s", pattern, url)
+			case pattern != "":
+				return fmt.Sprintf("'%s'", pattern)
+			case url != "":
+				return url
+			}
+		default:
+			if value := firstNonEmpty(payload.Query, payload.URL, payload.Pattern); value != "" {
+				return cleanConversationText(value)
+			}
+		}
+	}
+	return query
+}
+
+func codexWebSearchQuery(query string, queries []string) string {
+	query = cleanConversationText(query)
+	if query != "" {
+		return query
+	}
+	first := ""
+	for _, item := range queries {
+		if first = cleanConversationText(item); first != "" {
+			break
+		}
+	}
+	if first == "" {
+		return ""
+	}
+	if len(queries) > 1 {
+		return first + " ..."
+	}
+	return first
 }
 
 func codexFunctionOutputExitCode(output string) *int {

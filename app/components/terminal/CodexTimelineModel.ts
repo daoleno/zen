@@ -463,6 +463,21 @@ function activityFromEvent(event: CodexConversationEvent): ZenTimelineItem | nul
         defaultExpanded: false,
       };
     }
+    case "web_search": {
+      const failed = event.status === "failed" || (event.exit_code ?? 0) !== 0;
+      const running = event.status === "running";
+      return {
+        type: "activity",
+        id: event.id || `web-search:${event.seq}`,
+        timestamp: event.timestamp,
+        statusKey: event.status || "done",
+        title: running ? "Searching the web" : failed ? "Search failed" : "Searched",
+        tone: running ? "running" : failed ? "failed" : "success",
+        icon: "search-outline",
+        detail: webSearchEventDetail(event),
+        defaultExpanded: false,
+      };
+    }
     case "commentary": {
       if (!event.body?.trim()) {
         return null;
@@ -1122,6 +1137,50 @@ function toolOutputBodyKind(
     return commandOutputBodyKind(event.command || "", output);
   }
   return output ? "terminal" : undefined;
+}
+
+function webSearchEventDetail(event: CodexConversationEvent) {
+  const body = cleanDisplayText(event.body || "");
+  if (body) {
+    return body;
+  }
+  const action = parseToolPayload(event.input);
+  if (!isRecord(action)) {
+    return undefined;
+  }
+  return webSearchActionDetail(action) || undefined;
+}
+
+function webSearchActionDetail(action: Record<string, unknown>) {
+  const type = stringField(action, "type");
+  if (type === "search") {
+    const query = stringField(action, "query");
+    if (query) {
+      return query;
+    }
+    const firstQuery = firstString(action.queries);
+    if (!firstQuery) {
+      return "";
+    }
+    return Array.isArray(action.queries) && action.queries.length > 1
+      ? `${firstQuery} ...`
+      : firstQuery;
+  }
+  if (type === "open_page") {
+    return stringField(action, "url");
+  }
+  if (type === "find_in_page") {
+    const pattern = stringField(action, "pattern");
+    const url = stringField(action, "url");
+    if (pattern && url) {
+      return `'${pattern}' in ${url}`;
+    }
+    if (pattern) {
+      return `'${pattern}'`;
+    }
+    return url;
+  }
+  return stringField(action, "query") || stringField(action, "url") || stringField(action, "pattern");
 }
 
 function commandSummary(command: string) {

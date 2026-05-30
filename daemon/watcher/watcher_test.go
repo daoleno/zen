@@ -1,10 +1,15 @@
 package watcher
 
 import (
+	"fmt"
+	"os"
+	"os/exec"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/daoleno/zen/daemon/classifier"
 )
@@ -178,6 +183,73 @@ func TestSplitTmuxInputCanSendTextWithoutSubmit(t *testing.T) {
 	body, submit := splitTmuxInput("draft")
 	if body != "draft" || submit {
 		t.Fatalf("splitTmuxInput() = (%q, %v), want draft without submit", body, submit)
+	}
+}
+
+func TestSendInputChunksLongText(t *testing.T) {
+	if _, err := exec.LookPath("tmux"); err != nil {
+		t.Skip("tmux unavailable")
+	}
+
+	session := fmt.Sprintf("zen-watcher-send-input-%d-%d", os.Getpid(), time.Now().UnixNano())
+	outputPath := filepath.Join(t.TempDir(), "input.txt")
+	text := strings.Repeat("long input ", 3000)
+	want := text + "\r"
+
+	command := fmt.Sprintf("stty raw -echo; dd of=%q bs=1 count=%d 2>/dev/null", outputPath, len(want))
+	if out, err := exec.Command("tmux", "new-session", "-d", "-s", session, command).CombinedOutput(); err != nil {
+		t.Fatalf("create tmux session: %v%s", err, commandOutputSuffix(out))
+	}
+	t.Cleanup(func() {
+		_ = exec.Command("tmux", "kill-session", "-t", session).Run()
+	})
+
+	time.Sleep(100 * time.Millisecond)
+	if err := New(time.Second).SendInput(session, text+"\n"); err != nil {
+		t.Fatalf("SendInput returned error: %v", err)
+	}
+
+	got := readFileWithMinSize(t, outputPath, len(want), 3*time.Second)
+	if got != want {
+		t.Fatalf("tmux input mismatch: got %d bytes, want %d bytes", len(got), len(want))
+	}
+}
+
+func TestSplitStringByMaxBytesKeepsUTF8RunesIntact(t *testing.T) {
+	got := splitStringByMaxBytes("ab你cd好", 4)
+	want := []string{"ab", "你c", "d好"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("splitStringByMaxBytes() = %#v, want %#v", got, want)
+	}
+	for _, chunk := range got {
+		if !utf8.ValidString(chunk) {
+			t.Fatalf("invalid UTF-8 chunk %q", chunk)
+		}
+		if len(chunk) > 4 {
+			t.Fatalf("chunk %q has %d bytes, want <= 4", chunk, len(chunk))
+		}
+	}
+}
+
+func readFileWithMinSize(t *testing.T, path string, minSize int, timeout time.Duration) string {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	var data []byte
+	for {
+		current, err := os.ReadFile(path)
+		if err == nil {
+			data = current
+			if len(data) >= minSize {
+				return string(data)
+			}
+		}
+		if time.Now().After(deadline) {
+			if len(data) > 0 {
+				return string(data)
+			}
+			t.Fatalf("timed out waiting for %s to reach %d bytes", path, minSize)
+		}
+		time.Sleep(25 * time.Millisecond)
 	}
 }
 

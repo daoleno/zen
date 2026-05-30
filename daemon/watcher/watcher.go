@@ -16,6 +16,8 @@ import (
 	"github.com/daoleno/zen/daemon/classifier"
 )
 
+const tmuxSendInputChunkBytes = 1024
+
 // SessionEvent represents a state change or output update for an agent.
 type SessionEvent struct {
 	Type     string              `json:"type"`
@@ -369,7 +371,7 @@ func allowedTmuxKey(key string) bool {
 func (w *Watcher) SendInput(sessionID, text string) error {
 	body, submit := splitTmuxInput(text)
 	if body != "" {
-		if err := exec.Command("tmux", "send-keys", "-l", "-t", sessionID, body).Run(); err != nil {
+		if err := sendLiteralTmuxInput(sessionID, body); err != nil {
 			return err
 		}
 	}
@@ -382,12 +384,60 @@ func (w *Watcher) SendInput(sessionID, text string) error {
 	return nil
 }
 
+func sendLiteralTmuxInput(sessionID, body string) error {
+	for _, chunk := range splitStringByMaxBytes(body, tmuxSendInputChunkBytes) {
+		if chunk == "" {
+			continue
+		}
+		if out, err := exec.Command("tmux", "send-keys", "-l", "-t", sessionID, "--", chunk).CombinedOutput(); err != nil {
+			return fmt.Errorf("send literal tmux input: %w%s", err, commandOutputSuffix(out))
+		}
+	}
+	return nil
+}
+
 func splitTmuxInput(text string) (body string, submit bool) {
 	submit = strings.HasSuffix(text, "\n") || strings.HasSuffix(text, "\r")
 	if submit {
 		text = strings.TrimRight(text, "\r\n")
 	}
 	return text, submit
+}
+
+func splitStringByMaxBytes(value string, maxBytes int) []string {
+	if value == "" {
+		return nil
+	}
+	if maxBytes <= 0 || len(value) <= maxBytes {
+		return []string{value}
+	}
+	chunks := make([]string, 0, (len(value)/maxBytes)+1)
+	start := 0
+	size := 0
+	for index, r := range value {
+		runeBytes := len(string(r))
+		if size > 0 && size+runeBytes > maxBytes {
+			chunks = append(chunks, value[start:index])
+			start = index
+			size = 0
+		}
+		size += runeBytes
+	}
+	if start < len(value) {
+		chunks = append(chunks, value[start:])
+	}
+	return chunks
+}
+
+func commandOutputSuffix(output []byte) string {
+	if len(output) == 0 {
+		return ""
+	}
+	text := strings.TrimSpace(string(output))
+	if text == "" {
+		return ""
+	}
+	return ": " + text
 }
 
 // SendAction executes a predefined action on a tmux window.

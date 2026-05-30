@@ -43,6 +43,7 @@ import { presentAgent } from '../../services/agentPresentation';
 import {
   filterAgentsByPreferredServers,
   groupAgentsByDirectory,
+  type AgentDirectorySection,
 } from '../../services/serverSelection';
 import type { SessionService } from '../../services/sessionServices';
 
@@ -66,7 +67,6 @@ export default function InboxScreen() {
   const colors = useAppColors();
   const styles = useMemo(() => createStyles(colors), [colors]);
 
-  // Build agent→work lookup for display names.
   const agentWorkMap = useMemo(() => {
     const map: Record<string, WorkItem> = {};
     for (const current of Object.values(workState.byKey)) {
@@ -90,12 +90,12 @@ export default function InboxScreen() {
   const [sessionServices, setSessionServices] = useState<DiscoveredSessionService[]>([]);
   const [servicesLoading, setServicesLoading] = useState(false);
   const [servicesError, setServicesError] = useState<string | null>(null);
+  const [collapsedDirectories, setCollapsedDirectories] = useState<Set<string>>(new Set());
   const agentsHydrated = useMemo(
     () => servers.some(server => state.hydratedServers[server.id]),
     [servers, state.hydratedServers],
   );
 
-  // Context menu state
   const [menuAgent, setMenuAgent] = useState<Agent | null>(null);
   const [renameVisible, setRenameVisible] = useState(false);
   const [renameDraft, setRenameDraft] = useState('');
@@ -195,6 +195,13 @@ export default function InboxScreen() {
     () => groupAgentsByDirectory(sortedAgents, { showServerName: showServerNames }),
     [showServerNames, sortedAgents],
   );
+  const directoryTree = useMemo(
+    () => groupedAgents.map(section => ({
+      ...section,
+      breadcrumb: buildDirectoryBreadcrumb(section, showServerNames),
+    })),
+    [groupedAgents, showServerNames],
+  );
   const headerSummary = useMemo(() => {
     if (sortedAgents.length === 0) {
       if (anyConnecting) return 'reconnecting';
@@ -232,6 +239,18 @@ export default function InboxScreen() {
   const setViewMode = async (mode: StoredInboxViewMode) => {
     setViewModeState(mode);
     await setInboxViewMode(mode);
+  };
+
+  const toggleDirectory = (key: string) => {
+    setCollapsedDirectories(previous => {
+      const next = new Set(previous);
+      if (next.has(key)) {
+        next.delete(key);
+      } else {
+        next.add(key);
+      }
+      return next;
+    });
   };
 
   const openAgent = (agent: Agent) => {
@@ -485,13 +504,15 @@ export default function InboxScreen() {
           ? 'Zen is trying to reconnect. You can still change servers now.'
           : 'Your saved servers are offline. You can edit them or add another one.';
 
-  const renderPromptAgent = ({ item }: { item: Agent }) => {
+  const renderPromptAgent = (item: Agent, index: number, total: number) => {
     const presented = presentAgent(item, agentAliases[item.key]);
-    const directoryLabel = promptDirectoryLabel(item, presented.cwdBase, showServerNames);
     const promptTitle = resolvePromptTitle(item, presented, agentWorkMap);
     return (
       <TouchableOpacity
-        style={styles.promptRow}
+        style={[
+          styles.promptRow,
+          index === total - 1 && styles.promptRowLast,
+        ]}
         onPress={() => openAgent(item)}
         onLongPress={() => openContextMenu(item)}
         activeOpacity={0.82}
@@ -499,11 +520,7 @@ export default function InboxScreen() {
       >
         <View style={styles.promptLine}>
           <View style={styles.promptIcon}>
-            <AgentKindIcon kind={presented.kind} size={13} />
-          </View>
-          <View style={styles.promptPrefix}>
-            <Text style={styles.promptDirectory} numberOfLines={1}>{directoryLabel}</Text>
-            <Text style={styles.promptArrow}>❯</Text>
+            <AgentKindIcon kind={presented.kind} size={14} />
           </View>
           <Text style={styles.promptTitle} numberOfLines={1}>{promptTitle}</Text>
           <View style={[styles.promptStatusDot, { backgroundColor: statusColor(item.status) }]} />
@@ -512,7 +529,57 @@ export default function InboxScreen() {
     );
   };
 
-  // ── Grid: terminal preview card ──
+  const renderDirectory = (section: AgentDirectorySection & {
+    breadcrumb: string[];
+  }) => {
+    const collapsed = collapsedDirectories.has(section.key);
+    return (
+      <View style={styles.directoryGroup}>
+        <TouchableOpacity
+          style={styles.directoryHeader}
+          onPress={() => toggleDirectory(section.key)}
+          activeOpacity={0.72}
+          accessibilityRole="button"
+          accessibilityState={{ expanded: !collapsed }}
+        >
+          <View style={styles.directoryTitleWrap}>
+            <View style={styles.breadcrumbRow}>
+              {section.breadcrumb.map((part, index) => (
+                <React.Fragment key={`${section.key}:${index}:${part}`}>
+                  {index > 0 ? (
+                    <Text style={styles.breadcrumbSeparator}>/</Text>
+                  ) : null}
+                  <Text
+                    style={[
+                      styles.breadcrumbText,
+                      index === section.breadcrumb.length - 1 && styles.breadcrumbLeaf,
+                    ]}
+                    numberOfLines={1}
+                  >
+                    {part}
+                  </Text>
+                </React.Fragment>
+              ))}
+            </View>
+          </View>
+          <Text style={styles.directoryCount}>
+            {section.data.length}
+          </Text>
+        </TouchableOpacity>
+
+        {!collapsed ? (
+          <View style={styles.directoryChildren}>
+            {section.data.map((agent, index) => (
+              <React.Fragment key={agent.key}>
+                {renderPromptAgent(agent, index, section.data.length)}
+              </React.Fragment>
+            ))}
+          </View>
+        ) : null}
+      </View>
+    );
+  };
+
   const renderGridAgent = ({ item }: { item: Agent }) => {
     const presented = presentAgent(item, agentAliases[item.key]);
     return (
@@ -641,10 +708,10 @@ export default function InboxScreen() {
         </View>
       ) : viewMode === 'list' ? (
         <FlatList
-          data={sortedAgents}
+          data={directoryTree}
           key="list"
           keyExtractor={item => item.key}
-          renderItem={renderPromptAgent}
+          renderItem={({ item }) => renderDirectory(item)}
           contentContainerStyle={styles.promptContent}
           removeClippedSubviews={false}
           windowSize={15}
@@ -835,7 +902,6 @@ export default function InboxScreen() {
         </View>
       </Modal>
 
-      {/* Rename Modal */}
       <Modal
         visible={renameVisible}
         transparent
@@ -931,13 +997,45 @@ function resolvePromptTitle(
   return presented.title;
 }
 
-function promptDirectoryLabel(agent: Agent, cwdBase: string, showServerNames: boolean): string {
-  const directory = cwdBase || agent.project?.trim() || lastPathSegment(agent.cwd) || 'session';
-  if (!showServerNames || !agent.serverName) {
-    return directory;
+function buildDirectoryBreadcrumb(section: AgentDirectorySection, showServerName: boolean): string[] {
+  const { serverName, detail } = splitDirectorySubtitle(section.subtitle);
+  const parts = visiblePathParts(detail, section.title);
+  if (!showServerName || !serverName) {
+    return parts;
   }
 
-  return `${agent.serverName}@${directory}`;
+  const allParts = [serverName, ...parts];
+  return allParts.filter((part, index) => part && part !== allParts[index - 1]);
+}
+
+function splitDirectorySubtitle(value: string): { serverName: string; detail: string } {
+  const parts = value.split(' · ');
+  if (parts.length <= 1) {
+    return { serverName: '', detail: value.trim() };
+  }
+
+  return {
+    serverName: parts[0]?.trim() || '',
+    detail: parts.slice(1).join(' · ').trim(),
+  };
+}
+
+function visiblePathParts(detail: string, fallback: string): string[] {
+  const trimmed = detail.trim();
+  if (!trimmed || trimmed === 'Project' || trimmed === 'No directory') {
+    return [fallback || 'session'];
+  }
+
+  if (trimmed === '/') {
+    return ['/'];
+  }
+
+  const parts = trimmed.replace(/\/+$/, '').split('/').filter(Boolean);
+  if (parts.length === 0) {
+    return [fallback || 'session'];
+  }
+
+  return parts.slice(-2);
 }
 
 function lastPathSegment(value?: string): string {
@@ -974,7 +1072,6 @@ function createStyles(colors: typeof Colors) {
     backgroundColor: colors.bgPrimary,
   },
 
-  // Banner
   banner: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -996,7 +1093,6 @@ function createStyles(colors: typeof Colors) {
     fontSize: 12,
   },
 
-  // Header
   header: {
     flexDirection: 'row',
     justifyContent: 'space-between',
@@ -1070,47 +1166,92 @@ function createStyles(colors: typeof Colors) {
     opacity: 0.72,
   },
 
-  // ── Prompt list ──
   promptContent: {
     paddingHorizontal: 16,
     paddingTop: 6,
-    paddingBottom: 28,
+    paddingBottom: 30,
+    gap: 18,
+  },
+  directoryGroup: {
+    width: '100%',
+  },
+  directoryHeader: {
+    minHeight: 26,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 12,
+    paddingHorizontal: 2,
+    paddingBottom: 5,
+  },
+  directoryTitleWrap: {
+    flex: 1,
+    minWidth: 0,
+  },
+  breadcrumbRow: {
+    minWidth: 0,
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
+  breadcrumbText: {
+    flexShrink: 1,
+    maxWidth: 136,
+    color: colors.textSecondary,
+    fontSize: 11,
+    lineHeight: 14,
+    fontFamily: Typography.terminalFont,
+    opacity: 0.58,
+    includeFontPadding: false,
+  },
+  breadcrumbLeaf: {
+    color: colors.textPrimary,
+    fontFamily: Typography.terminalFontBold,
+    opacity: 0.76,
+  },
+  breadcrumbSeparator: {
+    flexShrink: 0,
+    color: colors.textSecondary,
+    fontSize: 11,
+    lineHeight: 14,
+    fontFamily: Typography.terminalFontBold,
+    marginHorizontal: 5,
+    opacity: 0.36,
+    includeFontPadding: false,
+  },
+  directoryCount: {
+    minWidth: 20,
+    color: colors.textSecondary,
+    fontSize: 10,
+    lineHeight: 13,
+    fontFamily: Typography.uiFont,
+    textAlign: 'right',
+    opacity: 0.46,
+  },
+  directoryChildren: {
+    borderTopWidth: StyleSheet.hairlineWidth,
+    borderTopColor: colors.borderSubtle,
   },
   promptRow: {
-    minHeight: 42,
-    paddingVertical: 7,
+    minHeight: 44,
+    paddingVertical: 10,
+    paddingHorizontal: 2,
     borderBottomWidth: StyleSheet.hairlineWidth,
     borderBottomColor: colors.borderSubtle,
+  },
+  promptRowLast: {
+    borderBottomWidth: 0,
   },
   promptLine: {
     minHeight: 24,
     flexDirection: 'row',
     alignItems: 'center',
-  },
-  promptPrefix: {
-    maxWidth: '48%',
-    flexDirection: 'row',
-    alignItems: 'center',
-    flexShrink: 1,
-    marginRight: 10,
-  },
-  promptDirectory: {
-    flexShrink: 1,
-    color: colors.promptGreen,
-    fontSize: 13,
-    lineHeight: 18,
-    fontFamily: Typography.terminalFont,
-    letterSpacing: -0.1,
-  },
-  promptArrow: {
-    color: colors.promptYellow,
-    fontSize: 13,
-    lineHeight: 18,
-    fontFamily: Typography.terminalFontBold,
-    marginLeft: 6,
+    gap: 10,
   },
   promptIcon: {
-    marginRight: 10,
+    width: 20,
+    height: 20,
+    alignItems: 'center',
+    justifyContent: 'center',
     opacity: 0.86,
   },
   promptTitle: {
@@ -1121,6 +1262,8 @@ function createStyles(colors: typeof Colors) {
     lineHeight: 18,
     fontFamily: Typography.uiFontMedium,
     opacity: 0.92,
+    includeFontPadding: false,
+    textAlignVertical: 'center',
   },
   promptStatusDot: {
     width: 6,
@@ -1139,7 +1282,6 @@ function createStyles(colors: typeof Colors) {
     alignItems: 'center',
     justifyContent: 'center',
   },
-  // ── Grid: terminal preview cards ──
   gridContent: {
     paddingHorizontal: 20,
     paddingBottom: 32,
@@ -1187,7 +1329,6 @@ function createStyles(colors: typeof Colors) {
     height: 220,
   },
 
-  // Empty state
   emptyContainer: {
     flex: 1,
     justifyContent: 'center',
@@ -1246,7 +1387,6 @@ function createStyles(colors: typeof Colors) {
     color: colors.textOnAccent,
   },
 
-  // Services sheet
   serviceModalRoot: {
     flex: 1,
     justifyContent: 'flex-end',
@@ -1423,7 +1563,6 @@ function createStyles(colors: typeof Colors) {
     opacity: 0.72,
   },
 
-  // Context menu
   menuRoot: {
     flex: 1,
     justifyContent: 'flex-end',
@@ -1468,7 +1607,6 @@ function createStyles(colors: typeof Colors) {
     color: colors.dangerText,
   },
 
-  // Rename modal
   renameCard: {
     marginHorizontal: 24,
     marginBottom: 100,
