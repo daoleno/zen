@@ -1,8 +1,11 @@
 package brain
 
 import (
+	"errors"
 	"fmt"
+	"os"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -11,12 +14,23 @@ import (
 	"github.com/daoleno/zen/daemon/work"
 )
 
+var (
+	ErrAdapterNotConfigured = errors.New("brain adapter is not configured")
+	ErrAdapterLockedByEnv   = errors.New("brain adapter is locked by ZEN_BRAIN_HOST_ADAPTER")
+)
+
+const (
+	defaultMaxInFlightAgents = 3
+	defaultReviewQueueLimit  = 4
+)
+
 type Watcher interface {
 	Agents() []*classifier.Agent
 	GetAgent(id string) *classifier.Agent
 	HasSession(target string) bool
 	CreateSession(preferredTarget string, opts watcher.CreateSessionOptions) (string, error)
 	SendInput(sessionID, text string) error
+	KillSession(sessionID string) error
 }
 
 type Service struct {
@@ -40,18 +54,60 @@ func (s *Service) Snapshot() (Snapshot, error) {
 	if err != nil {
 		return Snapshot{}, err
 	}
-	host, err := s.ensureHostAgent()
+	chatThreadID, err := s.store.ChatThreadID()
+	if err != nil {
+		return Snapshot{}, err
+	}
+	hostAdapter := s.hostAdapter()
+	host, err := s.ensureHostAgent(hostAdapter)
 	if err != nil {
 		return Snapshot{}, err
 	}
 	if host.ID != "" {
 		snapshot.HostAgent = &host
 	}
+	hostAdapter.Preferred = true
+	snapshot.HostAdapter = &hostAdapter
+	snapshot.Adapters = s.agentAdapters(hostAdapter.ID)
+	snapshot.ChatThreadID = chatThreadID
+	if chatThreadID != "" && host.ID != "" {
+		_ = s.store.TouchChatSession(chatThreadID, host.ID)
+	}
 	snapshot.Agents = s.agentRefs(host.ID)
+	snapshot.Attention = attentionWithAgentLoad(snapshot.Attention, snapshot.Agents)
+	attentionQueue, err := s.store.AttentionQueue(snapshot.Agents)
+	if err != nil {
+		return Snapshot{}, err
+	}
+	snapshot.AttentionQueue = attentionQueue
 	return snapshot, nil
 }
 
-func (s *Service) ensureHostAgent() (AgentRef, error) {
+func (s *Service) SetHostAdapter(adapterID string) (Snapshot, error) {
+	if s == nil || s.store == nil {
+		return Snapshot{}, fmt.Errorf("brain store is not configured")
+	}
+	adapterID = strings.TrimSpace(adapterID)
+	if adapterID == "" {
+		return Snapshot{}, fmt.Errorf("brain adapter id is required")
+	}
+	if locked := strings.TrimSpace(os.Getenv("ZEN_BRAIN_HOST_ADAPTER")); locked != "" && locked != adapterID {
+		return Snapshot{}, ErrAdapterLockedByEnv
+	}
+	if s.execs == nil {
+		return Snapshot{}, ErrAdapterNotConfigured
+	}
+	adapter, ok := s.execs.AgentAdapter(adapterID)
+	if !ok {
+		return Snapshot{}, fmt.Errorf("%w: %s", ErrAdapterNotConfigured, adapterID)
+	}
+	if err := s.store.SetHostAdapterID(adapter.ID); err != nil {
+		return Snapshot{}, err
+	}
+	return s.Snapshot()
+}
+
+func (s *Service) ensureHostAgent(adapter work.AgentAdapter) (AgentRef, error) {
 	if s == nil || s.store == nil || s.watcher == nil {
 		return AgentRef{}, nil
 	}
@@ -59,14 +115,24 @@ func (s *Service) ensureHostAgent() (AgentRef, error) {
 	if err != nil {
 		return AgentRef{}, err
 	}
-	executor := s.hostExecutor()
-	command := s.hostCommand(executor)
+	command := s.hostCommand(adapter)
 	if id := strings.TrimSpace(hostSession.ID); id != "" && s.watcher.HasSession(id) {
 		if agent := s.watcher.GetAgent(id); agent != nil {
-			if s.hostAgentMatches(agent, command) {
+			if s.hostAgentMatches(agent, adapter) {
+				if strings.TrimSpace(hostSession.AdapterID) != adapter.ID {
+					if err := s.store.SetHostSession(id, adapter.ID); err != nil {
+						return AgentRef{}, err
+					}
+				}
 				return agentRefFromClassifier(agent), nil
 			}
+			_ = s.watcher.KillSession(id)
 		} else {
+			if strings.TrimSpace(hostSession.AdapterID) != adapter.ID {
+				if err := s.store.SetHostSession(id, adapter.ID); err != nil {
+					return AgentRef{}, err
+				}
+			}
 			return AgentRef{
 				ID:      id,
 				Name:    "Brain",
@@ -96,10 +162,10 @@ func (s *Service) ensureHostAgent() (AgentRef, error) {
 	if err != nil {
 		return AgentRef{}, err
 	}
-	if err := s.store.SetHostSessionID(agentID); err != nil {
+	if err := s.store.SetHostSession(agentID, adapter.ID); err != nil {
 		return AgentRef{}, err
 	}
-	if prompt := s.hostBootstrapPrompt(); prompt != "" {
+	if prompt := s.hostBootstrapPrompt(adapter); prompt != "" {
 		_ = s.watcher.SendInput(agentID, prompt+"\n")
 	}
 	if agent := s.watcher.GetAgent(agentID); agent != nil {
@@ -117,24 +183,65 @@ func (s *Service) ensureHostAgent() (AgentRef, error) {
 	}, nil
 }
 
-func (s *Service) hostExecutor() string {
-	if s.execs != nil {
-		if _, ok := s.execs.ByName["codex"]; !ok && strings.TrimSpace(s.execs.Default) != "" {
-			return strings.TrimSpace(s.execs.Default)
+func (s *Service) hostAdapter() work.AgentAdapter {
+	preferred := strings.TrimSpace(os.Getenv("ZEN_BRAIN_HOST_ADAPTER"))
+	if preferred == "" && s != nil && s.store != nil {
+		if hostSession, err := s.store.HostSession(); err == nil {
+			preferred = strings.TrimSpace(hostSession.AdapterID)
 		}
 	}
-	return "codex"
+	if s != nil && s.execs != nil {
+		if preferred != "" {
+			if adapter, ok := s.execs.AgentAdapter(preferred); ok {
+				return adapter
+			}
+		}
+		if adapter, ok := s.execs.DefaultAgentAdapter(); ok {
+			return adapter
+		}
+	}
+	return work.NewAgentAdapter("claude", work.Executor{Name: "claude", Command: "claude", Kind: "claude", Runtime: work.AgentRuntimeTmux})
 }
 
-func (s *Service) hostAgentMatches(agent *classifier.Agent, command string) bool {
+func (s *Service) agentAdapters(hostAdapterID string) []work.AgentAdapter {
+	if s == nil || s.execs == nil {
+		if hostAdapterID == "" {
+			hostAdapterID = "claude"
+		}
+		adapter := work.NewAgentAdapter(hostAdapterID, work.Executor{Name: hostAdapterID, Command: hostAdapterID})
+		adapter.Preferred = true
+		return []work.AgentAdapter{adapter}
+	}
+	adapters := s.execs.AgentAdapters()
+	if len(adapters) == 0 {
+		if hostAdapterID == "" {
+			hostAdapterID = "claude"
+		}
+		adapter := work.NewAgentAdapter(hostAdapterID, work.Executor{Name: hostAdapterID, Command: hostAdapterID})
+		adapter.Preferred = true
+		return []work.AgentAdapter{adapter}
+	}
+	for i := range adapters {
+		adapters[i].Preferred = adapters[i].ID == hostAdapterID
+	}
+	sort.Slice(adapters, func(i, j int) bool {
+		if adapters[i].Preferred != adapters[j].Preferred {
+			return adapters[i].Preferred
+		}
+		return adapters[i].ID < adapters[j].ID
+	})
+	return adapters
+}
+
+func (s *Service) hostAgentMatches(agent *classifier.Agent, adapter work.AgentAdapter) bool {
 	if agent == nil || !agent.Hidden {
 		return false
 	}
-	expectedProvider := providerName(command)
-	if expectedProvider == "" {
-		return false
+	expectedProvider := strings.TrimSpace(adapter.Provider)
+	if expectedProvider != "" && expectedProvider != work.AgentProviderCustom {
+		return work.InferAgentProvider(agent.Command) == expectedProvider
 	}
-	return providerName(agent.Command) == expectedProvider
+	return commandBase(agent.Command) == commandBase(adapter.Command)
 }
 
 func firstNonZeroTime(values ...time.Time) time.Time {
@@ -146,18 +253,20 @@ func firstNonZeroTime(values ...time.Time) time.Time {
 	return time.Time{}
 }
 
-func (s *Service) hostCommand(executor string) string {
-	executor = strings.TrimSpace(executor)
-	if executor == "" {
-		executor = "codex"
+func (s *Service) hostCommand(adapter work.AgentAdapter) string {
+	command := strings.TrimSpace(adapter.Command)
+	if command == "" {
+		command = strings.TrimSpace(adapter.ID)
 	}
-	command := s.executorCommand(executor)
-	name := providerName(command)
-	if name == "" {
-		name = providerName(executor)
+	if command == "" {
+		command = "codex"
+	}
+	provider := strings.TrimSpace(adapter.Provider)
+	if provider == "" || provider == work.AgentProviderCustom {
+		provider = work.InferAgentProvider(command, adapter.ID)
 	}
 	workspace := s.brainWorkspace()
-	switch name {
+	switch provider {
 	case "codex":
 		args := []string{command}
 		if !strings.Contains(command, "--no-alt-screen") {
@@ -181,7 +290,7 @@ func shellQuote(value string) string {
 	return "'" + strings.ReplaceAll(value, "'", `'"'"'`) + "'"
 }
 
-func providerName(value string) string {
+func commandBase(value string) string {
 	fields := strings.Fields(strings.TrimSpace(value))
 	if len(fields) == 0 {
 		return ""
@@ -190,17 +299,10 @@ func providerName(value string) string {
 	if slash := strings.LastIndex(base, "/"); slash >= 0 {
 		base = base[slash+1:]
 	}
-	switch {
-	case strings.Contains(base, "codex"):
-		return "codex"
-	case strings.Contains(base, "claude"):
-		return "claude"
-	default:
-		return ""
-	}
+	return base
 }
 
-func (s *Service) hostBootstrapPrompt() string {
+func (s *Service) hostBootstrapPrompt(adapter work.AgentAdapter) string {
 	snapshot, err := s.store.Snapshot()
 	if err != nil {
 		return ""
@@ -211,6 +313,8 @@ You are Brain inside zen, the user's private second brain and agent orchestrator
 Work as a warm, direct, capable chat assistant. Reply in the user's language unless they ask otherwise.
 
 Brain workspace: %s
+Active adapter: %s (%s via %s)
+Adapter capabilities: %s
 
 Durable state rules:
 - Keep long-term memory in memory.md.
@@ -221,6 +325,7 @@ Durable state rules:
 Agent orchestration rules:
 - You are running in a real tmux agent session.
 - The zen app sends user messages directly into this session.
+- Treat the adapter as replaceable; do not make Brain's plans depend on Codex-only or Claude-only behavior unless the user asks for that adapter specifically.
 - Only create or ask for a visible delegated agent session when the user explicitly asks you to delegate real work.
 - Use the zen binary to spawn, send to, and inspect delegated agents.
 - Prefer zen agent spawn with a delegation note in the Brain workspace.
@@ -234,7 +339,48 @@ Current profile notes:
 
 Current memory:
 %s
-`, snapshot.Workspace, strings.TrimSpace(snapshot.Personality), strings.TrimSpace(snapshot.Profile), strings.TrimSpace(snapshot.Memory)))
+`, snapshot.Workspace, adapter.ID, adapter.Provider, adapter.Runtime, adapterCapabilitiesSummary(adapter.Capabilities), strings.TrimSpace(snapshot.Personality), strings.TrimSpace(snapshot.Profile), strings.TrimSpace(snapshot.Memory)))
+}
+
+func adapterCapabilitiesSummary(caps work.AgentCapabilities) string {
+	parts := []string{}
+	if caps.NativeThreads {
+		parts = append(parts, "native_threads")
+	}
+	if caps.NativeSearch {
+		parts = append(parts, "native_search")
+	}
+	if caps.NativePinning {
+		parts = append(parts, "native_pinning")
+	}
+	if caps.NativeArchive {
+		parts = append(parts, "native_archive")
+	}
+	if caps.NativeWorktrees {
+		parts = append(parts, "native_worktrees")
+	}
+	if caps.NativeFork {
+		parts = append(parts, "native_fork")
+	}
+	if caps.NativeResume {
+		parts = append(parts, "native_resume")
+	}
+	if caps.NativeGoals {
+		parts = append(parts, "native_goals")
+	}
+	if caps.NativeAutomation {
+		parts = append(parts, "native_automation")
+	}
+	if caps.InteractiveTTY {
+		parts = append(parts, "interactive_tty")
+	}
+	if caps.StructuredEvents {
+		parts = append(parts, "structured_events")
+	}
+	if len(parts) == 0 {
+		return "none declared"
+	}
+	return strings.Join(parts, ", ")
 }
 
 func (s *Service) agentRefs(hostID string) []AgentRef {
@@ -274,25 +420,74 @@ func agentRefFromClassifier(agent *classifier.Agent) AgentRef {
 	}
 }
 
-func (s *Service) defaultExecutor() string {
-	if s.execs != nil && strings.TrimSpace(s.execs.Default) != "" {
-		return strings.TrimSpace(s.execs.Default)
-	}
-	if s.execs != nil {
-		if _, ok := s.execs.ByName["codex"]; ok {
-			return "codex"
+func attentionWithAgentLoad(summary AttentionSummary, agents []AgentRef) AttentionSummary {
+	summary.ActiveAgents = 0
+	summary.BlockedAgents = 0
+	for _, agent := range agents {
+		switch strings.TrimSpace(agent.Status) {
+		case string(classifier.StateRunning), string(classifier.StateUnknown):
+			summary.ActiveAgents++
+		case string(classifier.StateBlocked):
+			summary.BlockedAgents++
 		}
 	}
-	return "codex"
+	return finalizeAttentionSummary(summary)
 }
 
-func (s *Service) executorCommand(name string) string {
-	if s.execs != nil {
-		if executor, ok := s.execs.ByName[name]; ok && strings.TrimSpace(executor.Command) != "" {
-			return strings.TrimSpace(executor.Command)
-		}
+func finalizeAttentionSummary(summary AttentionSummary) AttentionSummary {
+	maxInFlight := positiveEnvInt("ZEN_BRAIN_MAX_IN_FLIGHT_AGENTS", defaultMaxInFlightAgents)
+	reviewLimit := positiveEnvInt("ZEN_BRAIN_REVIEW_QUEUE_LIMIT", defaultReviewQueueLimit)
+	summary.InFlightAgents = summary.ActiveAgents + summary.BlockedAgents
+	summary.MaxInFlightAgents = maxInFlight
+	summary.ReviewQueueLimit = reviewLimit
+	summary.AvailableAgentSlots = maxInFlight - summary.InFlightAgents
+	if summary.AvailableAgentSlots < 0 {
+		summary.AvailableAgentSlots = 0
 	}
-	return name
+	summary.CanStartAgent = true
+	summary.BackpressureReason = ""
+	switch {
+	case summary.BlockedAgents > 0:
+		summary.CanStartAgent = false
+		summary.BackpressureReason = "blocked_agents_need_attention"
+	case summary.InFlightAgents >= maxInFlight:
+		summary.CanStartAgent = false
+		summary.BackpressureReason = "active_agent_limit_reached"
+	case summary.ReviewQueue >= reviewLimit:
+		summary.CanStartAgent = false
+		summary.BackpressureReason = "review_queue_needs_attention"
+	}
+	summary.Pressure = attentionPressure(summary)
+	return summary
+}
+
+func attentionPressure(summary AttentionSummary) string {
+	switch {
+	case summary.BlockedAgents > 0:
+		return "blocked"
+	case summary.ReviewQueueLimit > 0 && summary.ReviewQueue >= summary.ReviewQueueLimit:
+		return "review"
+	case summary.MaxInFlightAgents > 0 && summary.InFlightAgents >= summary.MaxInFlightAgents:
+		return "loaded"
+	case summary.ReviewQueue > 0:
+		return "review"
+	case summary.ActiveAgents > 0:
+		return "active"
+	default:
+		return "idle"
+	}
+}
+
+func positiveEnvInt(name string, fallback int) int {
+	value := strings.TrimSpace(os.Getenv(name))
+	if value == "" {
+		return fallback
+	}
+	parsed, err := strconv.Atoi(value)
+	if err != nil || parsed <= 0 {
+		return fallback
+	}
+	return parsed
 }
 
 func (s *Service) brainWorkspace() string {

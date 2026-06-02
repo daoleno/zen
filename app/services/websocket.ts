@@ -170,6 +170,115 @@ export interface CodexConversationSubscriptionHandlers {
   onError(error: Error): void;
 }
 
+export interface BrainChatMessage {
+  id: string;
+  thread_id?: string;
+  session_id: string;
+  adapter_id?: string;
+  role: "user" | "assistant" | string;
+  body: string;
+  created_at?: string;
+}
+
+export interface BrainNativeThread {
+  id: string;
+  native_id?: string;
+  provider?: string;
+  session_id?: string;
+  forked_from_id?: string;
+  title?: string;
+  preview?: string;
+  snippet?: string;
+  status?: string;
+  cwd?: string;
+  path?: string;
+  source?: string;
+  model_provider?: string;
+  ephemeral?: boolean;
+  archived?: boolean;
+  pinned?: boolean;
+  review_state?: string;
+  created_at?: string;
+  updated_at?: string;
+}
+
+export interface BrainNativeThreadGoal {
+  thread_id: string;
+  objective?: string;
+  status?: string;
+  token_budget?: number;
+  tokens_used?: number;
+  time_used_seconds?: number;
+  created_at?: string;
+  updated_at?: string;
+}
+
+export interface BrainThreadsSnapshot {
+  adapter?: any;
+  threads: BrainNativeThread[];
+  next_cursor?: string;
+  backwards_cursor?: string;
+}
+
+export interface BrainThreadListOptions {
+  adapterId?: string;
+  limit?: number;
+  cursor?: string;
+  cwd?: string;
+  searchTerm?: string;
+  archived?: boolean;
+}
+
+export interface BrainThreadArchiveOptions {
+  adapterId?: string;
+  archived?: boolean;
+}
+
+export interface BrainThreadPinOptions {
+  pinned?: boolean;
+}
+
+export interface BrainThreadReviewStateOptions {
+  reviewState?: string;
+}
+
+export interface BrainThreadReadOptions {
+  adapterId?: string;
+  includeTurns?: boolean;
+}
+
+export interface BrainThreadForkOptions {
+  adapterId?: string;
+  cwd?: string;
+  model?: string;
+  modelProvider?: string;
+  developerInstructions?: string;
+  baseInstructions?: string;
+  ephemeral?: boolean;
+  excludeTurns?: boolean;
+}
+
+export interface BrainThreadResumeOptions {
+  adapterId?: string;
+  cwd?: string;
+  model?: string;
+  modelProvider?: string;
+  developerInstructions?: string;
+  baseInstructions?: string;
+}
+
+export interface BrainThreadResumeResult {
+  brain?: any;
+  thread: BrainNativeThread;
+}
+
+export interface BrainThreadGoalUpdate {
+  adapterId?: string;
+  objective: string;
+  status?: string;
+  tokenBudget?: number;
+}
+
 interface ConnectionMeta {
   serverId: string;
   serverName: string;
@@ -1214,6 +1323,51 @@ class MultiServerWebSocketClient {
     socket.send({ type: "send_input", agent_id: agentId, text });
   }
 
+  getTerminalSnapshot(serverId: string, targetId: string) {
+    const requestId = `${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
+
+    return new Promise<{ text: string; target_id?: string }>((resolve, reject) => {
+      const cleanup = () => {
+        if (timer) clearTimeout(timer);
+        this.off("terminal_snapshot", handleSnapshot);
+        this.off("error", handleError);
+      };
+
+      const handleSnapshot = (payload: any) => {
+        if (payload.serverId !== serverId || payload.request_id !== requestId) {
+          return;
+        }
+        cleanup();
+        resolve({
+          text: typeof payload.text === "string" ? payload.text : "",
+          target_id:
+            typeof payload.target_id === "string" ? payload.target_id : undefined,
+        });
+      };
+
+      const handleError = (payload: any) => {
+        if (payload.serverId !== serverId || payload.request_id !== requestId) {
+          return;
+        }
+        cleanup();
+        reject(new Error(payload.message || "Failed to load terminal snapshot."));
+      };
+
+      const timer = setTimeout(() => {
+        cleanup();
+        reject(new Error("Timed out while loading terminal snapshot."));
+      }, 10000);
+
+      this.on("terminal_snapshot", handleSnapshot);
+      this.on("error", handleError);
+      this.send(serverId, {
+        type: "terminal_snapshot",
+        request_id: requestId,
+        target_id: targetId,
+      });
+    });
+  }
+
   sendKey(serverId: string, agentId: string, key: string) {
     const socket = this.connections.get(serverId);
     if (!socket?.isConnected) {
@@ -1274,6 +1428,696 @@ class MultiServerWebSocketClient {
 
   requestBrainSnapshot(serverId: string) {
     this.send(serverId, { type: "brain_snapshot" });
+  }
+
+  startNewBrainChat(serverId: string) {
+    const requestId = `${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
+
+    return new Promise<any>((resolve, reject) => {
+      const cleanup = () => {
+        if (timer) clearTimeout(timer);
+        this.off("brain_snapshot", handleSnapshot);
+        this.off("error", handleError);
+      };
+
+      const handleSnapshot = (payload: any) => {
+        if (payload.serverId !== serverId || payload.request_id !== requestId) {
+          return;
+        }
+        cleanup();
+        resolve(payload.brain || {});
+      };
+
+      const handleError = (payload: any) => {
+        if (payload.serverId !== serverId || payload.request_id !== requestId) {
+          return;
+        }
+        cleanup();
+        reject(new Error(payload.message || "Failed to start a new Brain chat."));
+      };
+
+      const timer = setTimeout(() => {
+        cleanup();
+        reject(new Error("Timed out while starting a new Brain chat."));
+      }, 30000);
+
+      this.on("brain_snapshot", handleSnapshot);
+      this.on("error", handleError);
+      this.send(serverId, {
+        type: "brain_chat_new",
+        request_id: requestId,
+      });
+    });
+  }
+
+  getBrainChatSnapshot(serverId: string, targetId: string, threadId?: string) {
+    const requestId = `${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
+
+    return new Promise<BrainChatMessage[]>((resolve, reject) => {
+      const cleanup = () => {
+        if (timer) clearTimeout(timer);
+        this.off("brain_chat_snapshot", handleSnapshot);
+        this.off("error", handleError);
+      };
+
+      const handleSnapshot = (payload: any) => {
+        if (payload.serverId !== serverId || payload.request_id !== requestId) {
+          return;
+        }
+        cleanup();
+        resolve(normalizeBrainChatMessages(payload.messages));
+      };
+
+      const handleError = (payload: any) => {
+        if (payload.serverId !== serverId || payload.request_id !== requestId) {
+          return;
+        }
+        cleanup();
+        reject(new Error(payload.message || "Failed to load Brain chat."));
+      };
+
+      const timer = setTimeout(() => {
+        cleanup();
+        reject(new Error("Timed out while loading Brain chat."));
+      }, 15000);
+
+      this.on("brain_chat_snapshot", handleSnapshot);
+      this.on("error", handleError);
+      this.send(serverId, {
+        type: "brain_chat_snapshot",
+        request_id: requestId,
+        target_id: targetId,
+        thread_id: threadId ?? "",
+      });
+    });
+  }
+
+  sendBrainChatMessage(
+    serverId: string,
+    targetId: string,
+    text: string,
+    threadId?: string,
+  ) {
+    const requestId = `${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
+
+    return new Promise<BrainChatMessage[]>((resolve, reject) => {
+      const cleanup = () => {
+        if (timer) clearTimeout(timer);
+        this.off("brain_chat_snapshot", handleSnapshot);
+        this.off("error", handleError);
+      };
+
+      const handleSnapshot = (payload: any) => {
+        if (payload.serverId !== serverId || payload.request_id !== requestId) {
+          return;
+        }
+        cleanup();
+        resolve(normalizeBrainChatMessages(payload.messages));
+      };
+
+      const handleError = (payload: any) => {
+        if (payload.serverId !== serverId || payload.request_id !== requestId) {
+          return;
+        }
+        cleanup();
+        reject(new Error(payload.message || "Failed to send Brain message."));
+      };
+
+      const timer = setTimeout(() => {
+        cleanup();
+        reject(new Error("Timed out while sending Brain message."));
+      }, 30000);
+
+      this.on("brain_chat_snapshot", handleSnapshot);
+      this.on("error", handleError);
+      this.send(serverId, {
+        type: "brain_chat_send",
+        request_id: requestId,
+        target_id: targetId,
+        thread_id: threadId ?? "",
+        text,
+      });
+    });
+  }
+
+  setBrainAdapter(serverId: string, adapterId: string) {
+    const requestId = `${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
+
+    return new Promise<any>((resolve, reject) => {
+      const cleanup = () => {
+        if (timer) clearTimeout(timer);
+        this.off("brain_snapshot", handleSnapshot);
+        this.off("error", handleError);
+      };
+
+      const handleSnapshot = (payload: any) => {
+        if (payload.serverId !== serverId || payload.request_id !== requestId) {
+          return;
+        }
+        cleanup();
+        resolve(payload.brain || {});
+      };
+
+      const handleError = (payload: any) => {
+        if (payload.serverId !== serverId || payload.request_id !== requestId) {
+          return;
+        }
+        cleanup();
+        reject(new Error(payload.message || "Failed to switch Brain adapter."));
+      };
+
+      const timer = setTimeout(() => {
+        cleanup();
+        reject(new Error("Timed out while switching Brain adapter."));
+      }, 15000);
+
+      this.on("brain_snapshot", handleSnapshot);
+      this.on("error", handleError);
+      this.send(serverId, {
+        type: "brain_set_adapter",
+        request_id: requestId,
+        adapter_id: adapterId,
+      });
+    });
+  }
+
+  listBrainThreads(
+    serverId: string,
+    options: BrainThreadListOptions = {},
+  ): Promise<BrainThreadsSnapshot> {
+    const requestId = `${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
+
+    return new Promise((resolve, reject) => {
+      const cleanup = () => {
+        if (timer) clearTimeout(timer);
+        this.off("brain_threads", handleThreads);
+        this.off("error", handleError);
+      };
+
+      const handleThreads = (payload: any) => {
+        if (payload.serverId !== serverId || payload.request_id !== requestId) {
+          return;
+        }
+        cleanup();
+        resolve({
+          adapter: payload.adapter,
+          threads: normalizeBrainNativeThreads(payload.threads),
+          next_cursor:
+            typeof payload.next_cursor === "string" ? payload.next_cursor : undefined,
+          backwards_cursor:
+            typeof payload.backwards_cursor === "string" ? payload.backwards_cursor : undefined,
+        });
+      };
+
+      const handleError = (payload: any) => {
+        if (payload.serverId !== serverId || payload.request_id !== requestId) {
+          return;
+        }
+        cleanup();
+        reject(new Error(payload.message || "Failed to load Brain threads."));
+      };
+
+      const timer = setTimeout(() => {
+        cleanup();
+        reject(new Error("Timed out while loading Brain threads."));
+      }, 18000);
+
+      this.on("brain_threads", handleThreads);
+      this.on("error", handleError);
+      this.send(serverId, {
+        type: "brain_threads",
+        request_id: requestId,
+        adapter_id: options.adapterId ?? "",
+        limit: options.limit ?? 24,
+        cursor: options.cursor ?? "",
+        cwd: options.cwd ?? "",
+        search_term: options.searchTerm ?? "",
+        archived: options.archived ?? false,
+      });
+    });
+  }
+
+  archiveBrainThread(
+    serverId: string,
+    threadId: string,
+    options: BrainThreadArchiveOptions = {},
+  ): Promise<BrainNativeThread> {
+    const requestId = `${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
+
+    return new Promise((resolve, reject) => {
+      const cleanup = () => {
+        if (timer) clearTimeout(timer);
+        this.off("brain_thread_archived", handleArchived);
+        this.off("error", handleError);
+      };
+
+      const handleArchived = (payload: any) => {
+        if (payload.serverId !== serverId || payload.request_id !== requestId) {
+          return;
+        }
+        cleanup();
+        resolve(normalizeBrainNativeThreads([payload.thread])[0] ?? { id: threadId });
+      };
+
+      const handleError = (payload: any) => {
+        if (payload.serverId !== serverId || payload.request_id !== requestId) {
+          return;
+        }
+        cleanup();
+        reject(new Error(payload.message || "Failed to update Brain thread."));
+      };
+
+      const timer = setTimeout(() => {
+        cleanup();
+        reject(new Error("Timed out while updating Brain thread."));
+      }, 18000);
+
+      this.on("brain_thread_archived", handleArchived);
+      this.on("error", handleError);
+      this.send(serverId, {
+        type: "brain_thread_archive",
+        request_id: requestId,
+        adapter_id: options.adapterId ?? "",
+        thread_id: threadId,
+        archived: options.archived ?? true,
+      });
+    });
+  }
+
+  pinBrainThread(
+    serverId: string,
+    threadId: string,
+    options: BrainThreadPinOptions = {},
+  ): Promise<BrainNativeThread> {
+    const requestId = `${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
+
+    return new Promise((resolve, reject) => {
+      const cleanup = () => {
+        if (timer) clearTimeout(timer);
+        this.off("brain_thread_pinned", handlePinned);
+        this.off("error", handleError);
+      };
+
+      const handlePinned = (payload: any) => {
+        if (payload.serverId !== serverId || payload.request_id !== requestId) {
+          return;
+        }
+        cleanup();
+        const normalized =
+          normalizeBrainNativeThreads([payload.thread])[0] ?? { id: threadId };
+        resolve({
+          ...normalized,
+          id:
+            typeof payload.thread_id === "string" && payload.thread_id
+              ? payload.thread_id
+              : normalized.id,
+          pinned:
+            typeof payload.pinned === "boolean"
+              ? payload.pinned
+              : normalized.pinned,
+        });
+      };
+
+      const handleError = (payload: any) => {
+        if (payload.serverId !== serverId || payload.request_id !== requestId) {
+          return;
+        }
+        cleanup();
+        reject(new Error(payload.message || "Failed to pin Brain thread."));
+      };
+
+      const timer = setTimeout(() => {
+        cleanup();
+        reject(new Error("Timed out while pinning Brain thread."));
+      }, 15000);
+
+      this.on("brain_thread_pinned", handlePinned);
+      this.on("error", handleError);
+      this.send(serverId, {
+        type: "brain_thread_pin",
+        request_id: requestId,
+        thread_id: threadId,
+        pinned: options.pinned ?? true,
+      });
+    });
+  }
+
+  setBrainThreadReviewState(
+    serverId: string,
+    threadId: string,
+    options: BrainThreadReviewStateOptions = {},
+  ): Promise<BrainNativeThread> {
+    const requestId = `${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
+
+    return new Promise((resolve, reject) => {
+      const cleanup = () => {
+        if (timer) clearTimeout(timer);
+        this.off("brain_thread_review_state", handleReviewState);
+        this.off("error", handleError);
+      };
+
+      const handleReviewState = (payload: any) => {
+        if (payload.serverId !== serverId || payload.request_id !== requestId) {
+          return;
+        }
+        cleanup();
+        const normalized =
+          normalizeBrainNativeThreads([payload.thread])[0] ?? { id: threadId };
+        resolve({
+          ...normalized,
+          id:
+            typeof payload.thread_id === "string" && payload.thread_id
+              ? payload.thread_id
+              : normalized.id,
+          review_state:
+            typeof payload.review_state === "string"
+              ? payload.review_state
+              : normalized.review_state,
+        });
+      };
+
+      const handleError = (payload: any) => {
+        if (payload.serverId !== serverId || payload.request_id !== requestId) {
+          return;
+        }
+        cleanup();
+        reject(new Error(payload.message || "Failed to update Brain thread review state."));
+      };
+
+      const timer = setTimeout(() => {
+        cleanup();
+        reject(new Error("Timed out while updating Brain thread review state."));
+      }, 15000);
+
+      this.on("brain_thread_review_state", handleReviewState);
+      this.on("error", handleError);
+      this.send(serverId, {
+        type: "brain_thread_review_state",
+        request_id: requestId,
+        thread_id: threadId,
+        review_state: options.reviewState ?? "",
+      });
+    });
+  }
+
+  readBrainThread(
+    serverId: string,
+    threadId: string,
+    options: BrainThreadReadOptions = {},
+  ): Promise<BrainNativeThread> {
+    const requestId = `${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
+
+    return new Promise((resolve, reject) => {
+      const cleanup = () => {
+        if (timer) clearTimeout(timer);
+        this.off("brain_thread_read", handleRead);
+        this.off("error", handleError);
+      };
+
+      const handleRead = (payload: any) => {
+        if (payload.serverId !== serverId || payload.request_id !== requestId) {
+          return;
+        }
+        cleanup();
+        resolve(normalizeBrainNativeThreads([payload.thread])[0] ?? { id: threadId });
+      };
+
+      const handleError = (payload: any) => {
+        if (payload.serverId !== serverId || payload.request_id !== requestId) {
+          return;
+        }
+        cleanup();
+        reject(new Error(payload.message || "Failed to read Brain thread."));
+      };
+
+      const timer = setTimeout(() => {
+        cleanup();
+        reject(new Error("Timed out while reading Brain thread."));
+      }, 18000);
+
+      this.on("brain_thread_read", handleRead);
+      this.on("error", handleError);
+      this.send(serverId, {
+        type: "brain_thread_read",
+        request_id: requestId,
+        adapter_id: options.adapterId ?? "",
+        thread_id: threadId,
+        include_turns: options.includeTurns ?? false,
+      });
+    });
+  }
+
+  forkBrainThread(
+    serverId: string,
+    threadId: string,
+    options: BrainThreadForkOptions = {},
+  ): Promise<BrainNativeThread> {
+    const requestId = `${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
+
+    return new Promise((resolve, reject) => {
+      const cleanup = () => {
+        if (timer) clearTimeout(timer);
+        this.off("brain_thread_forked", handleForked);
+        this.off("error", handleError);
+      };
+
+      const handleForked = (payload: any) => {
+        if (payload.serverId !== serverId || payload.request_id !== requestId) {
+          return;
+        }
+        cleanup();
+        resolve(normalizeBrainNativeThreads([payload.thread])[0] ?? { id: threadId });
+      };
+
+      const handleError = (payload: any) => {
+        if (payload.serverId !== serverId || payload.request_id !== requestId) {
+          return;
+        }
+        cleanup();
+        reject(new Error(payload.message || "Failed to fork Brain thread."));
+      };
+
+      const timer = setTimeout(() => {
+        cleanup();
+        reject(new Error("Timed out while forking Brain thread."));
+      }, 18000);
+
+      this.on("brain_thread_forked", handleForked);
+      this.on("error", handleError);
+      this.send(serverId, {
+        type: "brain_thread_fork",
+        request_id: requestId,
+        adapter_id: options.adapterId ?? "",
+        thread_id: threadId,
+        cwd: options.cwd ?? "",
+        model: options.model ?? "",
+        model_provider: options.modelProvider ?? "",
+        developer_instructions: options.developerInstructions ?? "",
+        base_instructions: options.baseInstructions ?? "",
+        ephemeral: options.ephemeral ?? false,
+        exclude_turns: options.excludeTurns ?? false,
+      });
+    });
+  }
+
+  resumeBrainThread(
+    serverId: string,
+    threadId: string,
+    options: BrainThreadResumeOptions = {},
+  ): Promise<BrainThreadResumeResult> {
+    const requestId = `${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
+
+    return new Promise((resolve, reject) => {
+      const cleanup = () => {
+        if (timer) clearTimeout(timer);
+        this.off("brain_thread_resumed", handleResumed);
+        this.off("error", handleError);
+      };
+
+      const handleResumed = (payload: any) => {
+        if (payload.serverId !== serverId || payload.request_id !== requestId) {
+          return;
+        }
+        cleanup();
+        resolve({
+          brain: payload.brain,
+          thread: normalizeBrainNativeThreads([payload.thread])[0] ?? { id: threadId },
+        });
+      };
+
+      const handleError = (payload: any) => {
+        if (payload.serverId !== serverId || payload.request_id !== requestId) {
+          return;
+        }
+        cleanup();
+        reject(new Error(payload.message || "Failed to resume Brain thread."));
+      };
+
+      const timer = setTimeout(() => {
+        cleanup();
+        reject(new Error("Timed out while resuming Brain thread."));
+      }, 18000);
+
+      this.on("brain_thread_resumed", handleResumed);
+      this.on("error", handleError);
+      this.send(serverId, {
+        type: "brain_thread_resume",
+        request_id: requestId,
+        adapter_id: options.adapterId ?? "",
+        thread_id: threadId,
+        cwd: options.cwd ?? "",
+        model: options.model ?? "",
+        model_provider: options.modelProvider ?? "",
+        developer_instructions: options.developerInstructions ?? "",
+        base_instructions: options.baseInstructions ?? "",
+      });
+    });
+  }
+
+  getBrainThreadGoal(
+    serverId: string,
+    threadId: string,
+    options: BrainThreadReadOptions = {},
+  ): Promise<BrainNativeThreadGoal | null> {
+    const requestId = `${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
+
+    return new Promise((resolve, reject) => {
+      const cleanup = () => {
+        if (timer) clearTimeout(timer);
+        this.off("brain_thread_goal", handleGoal);
+        this.off("error", handleError);
+      };
+
+      const handleGoal = (payload: any) => {
+        if (payload.serverId !== serverId || payload.request_id !== requestId) {
+          return;
+        }
+        cleanup();
+        resolve(normalizeBrainNativeThreadGoal(payload.goal));
+      };
+
+      const handleError = (payload: any) => {
+        if (payload.serverId !== serverId || payload.request_id !== requestId) {
+          return;
+        }
+        cleanup();
+        reject(new Error(payload.message || "Failed to load Brain thread goal."));
+      };
+
+      const timer = setTimeout(() => {
+        cleanup();
+        reject(new Error("Timed out while loading Brain thread goal."));
+      }, 18000);
+
+      this.on("brain_thread_goal", handleGoal);
+      this.on("error", handleError);
+      this.send(serverId, {
+        type: "brain_thread_goal_get",
+        request_id: requestId,
+        adapter_id: options.adapterId ?? "",
+        thread_id: threadId,
+      });
+    });
+  }
+
+  setBrainThreadGoal(
+    serverId: string,
+    threadId: string,
+    update: BrainThreadGoalUpdate,
+  ): Promise<BrainNativeThreadGoal> {
+    const requestId = `${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
+
+    return new Promise((resolve, reject) => {
+      const cleanup = () => {
+        if (timer) clearTimeout(timer);
+        this.off("brain_thread_goal", handleGoal);
+        this.off("error", handleError);
+      };
+
+      const handleGoal = (payload: any) => {
+        if (payload.serverId !== serverId || payload.request_id !== requestId) {
+          return;
+        }
+        cleanup();
+        const goal = normalizeBrainNativeThreadGoal(payload.goal);
+        if (!goal) {
+          reject(new Error("Brain thread goal was not returned."));
+          return;
+        }
+        resolve(goal);
+      };
+
+      const handleError = (payload: any) => {
+        if (payload.serverId !== serverId || payload.request_id !== requestId) {
+          return;
+        }
+        cleanup();
+        reject(new Error(payload.message || "Failed to update Brain thread goal."));
+      };
+
+      const timer = setTimeout(() => {
+        cleanup();
+        reject(new Error("Timed out while updating Brain thread goal."));
+      }, 18000);
+
+      this.on("brain_thread_goal", handleGoal);
+      this.on("error", handleError);
+      this.send(serverId, {
+        type: "brain_thread_goal_set",
+        request_id: requestId,
+        adapter_id: update.adapterId ?? "",
+        thread_id: threadId,
+        objective: update.objective,
+        status: update.status ?? "",
+        token_budget: update.tokenBudget ?? 0,
+      });
+    });
+  }
+
+  clearBrainThreadGoal(
+    serverId: string,
+    threadId: string,
+    options: BrainThreadReadOptions = {},
+  ): Promise<boolean> {
+    const requestId = `${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
+
+    return new Promise((resolve, reject) => {
+      const cleanup = () => {
+        if (timer) clearTimeout(timer);
+        this.off("brain_thread_goal_cleared", handleCleared);
+        this.off("error", handleError);
+      };
+
+      const handleCleared = (payload: any) => {
+        if (payload.serverId !== serverId || payload.request_id !== requestId) {
+          return;
+        }
+        cleanup();
+        resolve(Boolean(payload.cleared));
+      };
+
+      const handleError = (payload: any) => {
+        if (payload.serverId !== serverId || payload.request_id !== requestId) {
+          return;
+        }
+        cleanup();
+        reject(new Error(payload.message || "Failed to clear Brain thread goal."));
+      };
+
+      const timer = setTimeout(() => {
+        cleanup();
+        reject(new Error("Timed out while clearing Brain thread goal."));
+      }, 18000);
+
+      this.on("brain_thread_goal_cleared", handleCleared);
+      this.on("error", handleError);
+      this.send(serverId, {
+        type: "brain_thread_goal_clear",
+        request_id: requestId,
+        adapter_id: options.adapterId ?? "",
+        thread_id: threadId,
+      });
+    });
   }
 
   listSessionServices(serverId: string): Promise<SessionServiceSnapshot> {
@@ -1581,6 +2425,100 @@ function normalizeSessionService(value: any): SessionService {
     urls: Array.isArray(service.urls) ? service.urls : [],
     local_only: Boolean(service.local_only),
   };
+}
+
+function normalizeBrainChatMessages(value: any): BrainChatMessage[] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+  return value
+    .map((raw): BrainChatMessage => {
+      const item = raw && typeof raw === "object" ? raw : {};
+      return {
+        id: typeof item.id === "string" ? item.id : "",
+        thread_id:
+          typeof item.thread_id === "string" ? item.thread_id : undefined,
+        session_id:
+          typeof item.session_id === "string" ? item.session_id : "",
+        adapter_id:
+          typeof item.adapter_id === "string" ? item.adapter_id : undefined,
+        role: typeof item.role === "string" ? item.role : "assistant",
+        body: typeof item.body === "string" ? item.body : "",
+        created_at:
+          typeof item.created_at === "string" ? item.created_at : undefined,
+      };
+    })
+    .filter((message) => message.id && message.session_id && message.body.trim());
+}
+
+function normalizeBrainNativeThreads(value: any): BrainNativeThread[] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+  return value
+    .map((raw): BrainNativeThread => {
+      const item = raw && typeof raw === "object" ? raw : {};
+      return {
+        id: typeof item.id === "string" ? item.id : "",
+        native_id:
+          typeof item.native_id === "string" ? item.native_id : undefined,
+        provider: typeof item.provider === "string" ? item.provider : undefined,
+        session_id:
+          typeof item.session_id === "string" ? item.session_id : undefined,
+        forked_from_id:
+          typeof item.forked_from_id === "string" ? item.forked_from_id : undefined,
+        title: typeof item.title === "string" ? item.title : undefined,
+        preview: typeof item.preview === "string" ? item.preview : undefined,
+        snippet: typeof item.snippet === "string" ? item.snippet : undefined,
+        status: typeof item.status === "string" ? item.status : undefined,
+        cwd: typeof item.cwd === "string" ? item.cwd : undefined,
+        path: typeof item.path === "string" ? item.path : undefined,
+        source: typeof item.source === "string" ? item.source : undefined,
+        model_provider:
+          typeof item.model_provider === "string" ? item.model_provider : undefined,
+        ephemeral:
+          typeof item.ephemeral === "boolean" ? item.ephemeral : undefined,
+        archived:
+          typeof item.archived === "boolean" ? item.archived : undefined,
+        pinned:
+          typeof item.pinned === "boolean" ? item.pinned : undefined,
+        review_state:
+          typeof item.review_state === "string" ? item.review_state : undefined,
+        created_at:
+          typeof item.created_at === "string" ? item.created_at : undefined,
+        updated_at:
+          typeof item.updated_at === "string" ? item.updated_at : undefined,
+      };
+    })
+    .filter((thread) => thread.id);
+}
+
+function normalizeBrainNativeThreadGoal(value: any): BrainNativeThreadGoal | null {
+  if (!value || typeof value !== "object") {
+    return null;
+  }
+  const goal: BrainNativeThreadGoal = {
+    thread_id: typeof value.thread_id === "string" ? value.thread_id : "",
+    objective:
+      typeof value.objective === "string" ? value.objective : undefined,
+    status: typeof value.status === "string" ? value.status : undefined,
+    token_budget:
+      typeof value.token_budget === "number" ? value.token_budget : undefined,
+    tokens_used:
+      typeof value.tokens_used === "number" ? value.tokens_used : undefined,
+    time_used_seconds:
+      typeof value.time_used_seconds === "number"
+        ? value.time_used_seconds
+        : undefined,
+    created_at:
+      typeof value.created_at === "string" ? value.created_at : undefined,
+    updated_at:
+      typeof value.updated_at === "string" ? value.updated_at : undefined,
+  };
+  if (!goal.thread_id) {
+    return null;
+  }
+  return goal;
 }
 
 function toConnectionMeta(server: StoredServer): ConnectionMeta {

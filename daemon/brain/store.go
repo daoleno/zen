@@ -1,6 +1,7 @@
 package brain
 
 import (
+	"bufio"
 	"bytes"
 	"encoding/json"
 	"errors"
@@ -10,6 +11,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/daoleno/zen/daemon/classifier"
 )
 
 const defaultPersonality = "calm, direct, warm, pragmatic"
@@ -50,6 +53,14 @@ func (s *Store) HostSessionPath() string {
 	return filepath.Join(s.statePath(), "host_session.json")
 }
 
+func (s *Store) ChatStatePath() string {
+	return filepath.Join(s.statePath(), "chat_state.json")
+}
+
+func (s *Store) ThreadMetadataPath() string {
+	return filepath.Join(s.statePath(), "thread_metadata.json")
+}
+
 func (s *Store) Snapshot() (Snapshot, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -66,6 +77,7 @@ func (s *Store) HostSessionID() (string, error) {
 
 type HostSession struct {
 	ID        string
+	AdapterID string
 	UpdatedAt time.Time
 }
 
@@ -76,14 +88,35 @@ func (s *Store) HostSession() (HostSession, error) {
 }
 
 func (s *Store) SetHostSessionID(id string) error {
+	return s.SetHostSession(id, "")
+}
+
+func (s *Store) SetHostSession(id, adapterID string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	id = strings.TrimSpace(id)
+	adapterID = strings.TrimSpace(adapterID)
 	if id == "" {
 		return writeJSONFile(s.HostSessionPath(), hostSessionFile{})
 	}
 	return writeJSONFile(s.HostSessionPath(), hostSessionFile{
 		ID:        id,
+		AdapterID: adapterID,
+		UpdatedAt: time.Now().UTC(),
+	})
+}
+
+func (s *Store) SetHostAdapterID(adapterID string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	adapterID = strings.TrimSpace(adapterID)
+	host, err := s.readHostSessionLocked()
+	if err != nil {
+		return err
+	}
+	return writeJSONFile(s.HostSessionPath(), hostSessionFile{
+		ID:        host.ID,
+		AdapterID: adapterID,
 		UpdatedAt: time.Now().UTC(),
 	})
 }
@@ -104,13 +137,23 @@ func (s *Store) snapshotLocked(agents []AgentRef) (Snapshot, error) {
 	if agents == nil {
 		agents = []AgentRef{}
 	}
+	attention, err := s.attentionSummaryLocked()
+	if err != nil {
+		return Snapshot{}, err
+	}
+	attentionQueue, err := s.attentionQueueLocked(agents)
+	if err != nil {
+		return Snapshot{}, err
+	}
 	return Snapshot{
-		Memory:      memory,
-		Profile:     profileNotes,
-		Personality: firstNonEmpty(profile.Personality, defaultPersonality),
-		Agents:      agents,
-		Workspace:   s.WorkspacePath(),
-		GeneratedAt: time.Now().UTC(),
+		Memory:         memory,
+		Profile:        profileNotes,
+		Personality:    firstNonEmpty(profile.Personality, defaultPersonality),
+		Agents:         agents,
+		Attention:      attention,
+		AttentionQueue: attentionQueue,
+		Workspace:      s.WorkspacePath(),
+		GeneratedAt:    time.Now().UTC(),
 	}, nil
 }
 
@@ -142,6 +185,12 @@ func (s *Store) ensureFiles() error {
 	if err := ensureFile(s.HostSessionPath(), []byte("{}\n")); err != nil {
 		return err
 	}
+	if err := ensureFile(s.ChatStatePath(), []byte("{}\n")); err != nil {
+		return err
+	}
+	if err := ensureFile(s.ThreadMetadataPath(), []byte("{}\n")); err != nil {
+		return err
+	}
 	profilePath := s.profilePath()
 	if _, err := os.Stat(profilePath); errors.Is(err, os.ErrNotExist) {
 		profile := profileFile{
@@ -151,6 +200,438 @@ func (s *Store) ensureFiles() error {
 		return writeJSONFile(profilePath, profile)
 	} else if err != nil {
 		return err
+	}
+	return nil
+}
+
+func (s *Store) AppendChatMessage(message ChatMessage) (ChatMessage, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	message.ID = strings.TrimSpace(message.ID)
+	if message.ID == "" {
+		message.ID = fmt.Sprintf("msg_%d", time.Now().UTC().UnixNano())
+	}
+	message.ThreadID = strings.TrimSpace(message.ThreadID)
+	message.SessionID = strings.TrimSpace(message.SessionID)
+	message.AdapterID = strings.TrimSpace(message.AdapterID)
+	message.Role = strings.TrimSpace(message.Role)
+	message.Body = strings.TrimSpace(message.Body)
+	if message.CreatedAt.IsZero() {
+		message.CreatedAt = time.Now().UTC()
+	}
+	message.ThreadID = strings.TrimSpace(message.ThreadID)
+	if message.ThreadID == "" {
+		return ChatMessage{}, fmt.Errorf("message thread id required")
+	}
+	if message.SessionID == "" {
+		return ChatMessage{}, fmt.Errorf("message session id required")
+	}
+	if message.Role == "" {
+		return ChatMessage{}, fmt.Errorf("message role required")
+	}
+	if message.Body == "" {
+		return ChatMessage{}, fmt.Errorf("message body required")
+	}
+	if err := s.touchChatSessionLocked(message.ThreadID, message.SessionID); err != nil {
+		return ChatMessage{}, err
+	}
+	raw, err := json.Marshal(message)
+	if err != nil {
+		return ChatMessage{}, err
+	}
+	if err := os.MkdirAll(filepath.Dir(s.messagesPath()), 0o700); err != nil {
+		return ChatMessage{}, err
+	}
+	file, err := os.OpenFile(s.messagesPath(), os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
+	if err != nil {
+		return ChatMessage{}, err
+	}
+	defer file.Close()
+	if _, err := file.Write(append(raw, '\n')); err != nil {
+		return ChatMessage{}, err
+	}
+	return message, nil
+}
+
+func (s *Store) ChatThreadID() (string, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	state, err := s.readChatStateLocked("")
+	if err != nil {
+		return "", err
+	}
+	return state.ThreadID, nil
+}
+
+func (s *Store) ChatMessages(threadID string, limit int) ([]ChatMessage, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.chatMessagesLocked(threadID, limit)
+}
+
+func (s *Store) chatMessagesLocked(threadID string, limit int) ([]ChatMessage, error) {
+	state, err := s.readChatStateLocked(threadID)
+	if err != nil {
+		return nil, err
+	}
+	sessionIDs := make(map[string]struct{}, len(state.SessionIDs))
+	for _, sessionID := range state.SessionIDs {
+		sessionID = strings.TrimSpace(sessionID)
+		if sessionID == "" {
+			continue
+		}
+		sessionIDs[sessionID] = struct{}{}
+	}
+	file, err := os.Open(s.messagesPath())
+	if errors.Is(err, os.ErrNotExist) {
+		return []ChatMessage{}, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	defer file.Close()
+
+	out := []ChatMessage{}
+	scanner := bufio.NewScanner(file)
+	buf := make([]byte, 0, 64*1024)
+	scanner.Buffer(buf, 4*1024*1024)
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if line == "" {
+			continue
+		}
+		var message ChatMessage
+		if err := json.Unmarshal([]byte(line), &message); err != nil {
+			continue
+		}
+		message.ThreadID = strings.TrimSpace(message.ThreadID)
+		message.SessionID = strings.TrimSpace(message.SessionID)
+		if message.ThreadID == state.ThreadID {
+			out = append(out, message)
+			continue
+		}
+		if message.ThreadID == "" {
+			if _, ok := sessionIDs[message.SessionID]; ok {
+				out = append(out, message)
+			}
+		}
+	}
+	if err := scanner.Err(); err != nil {
+		return nil, err
+	}
+	if limit > 0 && len(out) > limit {
+		out = out[len(out)-limit:]
+	}
+	return out, nil
+}
+
+type ChatState struct {
+	ThreadID       string
+	SessionIDs     []string
+	LastTranscript string
+	UpdatedAt      time.Time
+}
+
+type ThreadMetadata struct {
+	ThreadID    string
+	Pinned      bool
+	ReviewState string
+	UpdatedAt   time.Time
+}
+
+func (s *Store) ChatState(threadID string) (ChatState, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.readChatStateLocked(threadID)
+}
+
+func (s *Store) SetChatState(state ChatState) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.setChatStateLocked(state)
+}
+
+func (s *Store) TouchChatSession(threadID, sessionID string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.touchChatSessionLocked(strings.TrimSpace(threadID), strings.TrimSpace(sessionID))
+}
+
+func (s *Store) ThreadMetadata(threadID string) (ThreadMetadata, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	threadID = strings.TrimSpace(threadID)
+	if threadID == "" {
+		return ThreadMetadata{}, fmt.Errorf("thread id is required")
+	}
+	file, err := s.readThreadMetadataFileLocked()
+	if err != nil {
+		return ThreadMetadata{}, err
+	}
+	entry := file.Threads[threadID]
+	return ThreadMetadata{
+		ThreadID:    threadID,
+		Pinned:      entry.Pinned,
+		ReviewState: normalizeThreadReviewState(entry.ReviewState),
+		UpdatedAt:   entry.UpdatedAt,
+	}, nil
+}
+
+func (s *Store) ThreadMetadataMap(threadIDs []string) (map[string]ThreadMetadata, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	file, err := s.readThreadMetadataFileLocked()
+	if err != nil {
+		return nil, err
+	}
+	out := make(map[string]ThreadMetadata, len(threadIDs))
+	for _, threadID := range threadIDs {
+		threadID = strings.TrimSpace(threadID)
+		if threadID == "" {
+			continue
+		}
+		entry := file.Threads[threadID]
+		out[threadID] = ThreadMetadata{
+			ThreadID:    threadID,
+			Pinned:      entry.Pinned,
+			ReviewState: normalizeThreadReviewState(entry.ReviewState),
+			UpdatedAt:   entry.UpdatedAt,
+		}
+	}
+	return out, nil
+}
+
+func (s *Store) SetThreadPinned(threadID string, pinned bool) (ThreadMetadata, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	threadID = strings.TrimSpace(threadID)
+	if threadID == "" {
+		return ThreadMetadata{}, fmt.Errorf("thread id is required")
+	}
+	file, err := s.readThreadMetadataFileLocked()
+	if err != nil {
+		return ThreadMetadata{}, err
+	}
+	now := time.Now().UTC()
+	entry := file.Threads[threadID]
+	if pinned {
+		if file.Threads == nil {
+			file.Threads = map[string]threadMetadataEntry{}
+		}
+		entry.Pinned = true
+		entry.UpdatedAt = now
+		file.Threads[threadID] = entry
+	} else {
+		entry.Pinned = false
+		entry.UpdatedAt = now
+		if normalizeThreadReviewState(entry.ReviewState) == "" {
+			delete(file.Threads, threadID)
+		} else {
+			file.Threads[threadID] = entry
+		}
+	}
+	if err := s.writeThreadMetadataFileLocked(file); err != nil {
+		return ThreadMetadata{}, err
+	}
+	return ThreadMetadata{
+		ThreadID:    threadID,
+		Pinned:      pinned,
+		ReviewState: normalizeThreadReviewState(entry.ReviewState),
+		UpdatedAt:   now,
+	}, nil
+}
+
+func (s *Store) SetThreadReviewState(threadID, reviewState string) (ThreadMetadata, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	threadID = strings.TrimSpace(threadID)
+	if threadID == "" {
+		return ThreadMetadata{}, fmt.Errorf("thread id is required")
+	}
+	reviewState = normalizeThreadReviewState(reviewState)
+	file, err := s.readThreadMetadataFileLocked()
+	if err != nil {
+		return ThreadMetadata{}, err
+	}
+	now := time.Now().UTC()
+	entry := file.Threads[threadID]
+	entry.ReviewState = reviewState
+	entry.UpdatedAt = now
+	if entry.Pinned || reviewState != "" {
+		if file.Threads == nil {
+			file.Threads = map[string]threadMetadataEntry{}
+		}
+		file.Threads[threadID] = entry
+	} else {
+		delete(file.Threads, threadID)
+	}
+	if err := s.writeThreadMetadataFileLocked(file); err != nil {
+		return ThreadMetadata{}, err
+	}
+	return ThreadMetadata{
+		ThreadID:    threadID,
+		Pinned:      entry.Pinned,
+		ReviewState: reviewState,
+		UpdatedAt:   now,
+	}, nil
+}
+
+func (s *Store) AttentionSummary() (AttentionSummary, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.attentionSummaryLocked()
+}
+
+func (s *Store) AttentionQueue(agents []AgentRef) ([]AttentionQueueItem, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.attentionQueueLocked(agents)
+}
+
+func (s *Store) attentionSummaryLocked() (AttentionSummary, error) {
+	file, err := s.readThreadMetadataFileLocked()
+	if err != nil {
+		return AttentionSummary{}, err
+	}
+	var summary AttentionSummary
+	for _, entry := range file.Threads {
+		if entry.Pinned {
+			summary.Pinned++
+		}
+		switch normalizeThreadReviewState(entry.ReviewState) {
+		case "needs_review":
+			summary.NeedsReview++
+			summary.ReviewQueue++
+		case "reviewing":
+			summary.Reviewing++
+			summary.ReviewQueue++
+		}
+	}
+	return finalizeAttentionSummary(summary), nil
+}
+
+func (s *Store) attentionQueueLocked(agents []AgentRef) ([]AttentionQueueItem, error) {
+	file, err := s.readThreadMetadataFileLocked()
+	if err != nil {
+		return nil, err
+	}
+	items := make([]AttentionQueueItem, 0)
+	for _, agent := range agents {
+		if agent.Hidden || strings.TrimSpace(agent.Status) != string(classifier.StateBlocked) {
+			continue
+		}
+		agentID := strings.TrimSpace(agent.ID)
+		if agentID == "" {
+			continue
+		}
+		items = append(items, AttentionQueueItem{
+			ID:      "agent:" + agentID,
+			Kind:    "blocked_agent",
+			Title:   firstNonEmpty(strings.TrimSpace(agent.Name), agentID),
+			Summary: strings.TrimSpace(agent.Summary),
+			AgentID: agentID,
+			Status:  strings.TrimSpace(agent.Status),
+			Cwd:     strings.TrimSpace(agent.Cwd),
+			Command: strings.TrimSpace(agent.Command),
+			Updated: agent.Updated,
+		})
+	}
+	for threadID, entry := range file.Threads {
+		threadID = strings.TrimSpace(threadID)
+		reviewState := normalizeThreadReviewState(entry.ReviewState)
+		if threadID == "" || reviewState == "" {
+			continue
+		}
+		items = append(items, AttentionQueueItem{
+			ID:          "thread:" + threadID,
+			Kind:        "review_thread",
+			Title:       threadID,
+			Summary:     reviewStateLabel(reviewState),
+			ThreadID:    threadID,
+			ReviewState: reviewState,
+			Pinned:      entry.Pinned,
+			Updated:     entry.UpdatedAt,
+		})
+	}
+	SortAttentionQueue(items)
+	return items, nil
+}
+
+func (s *Store) readChatStateLocked(threadID string) (ChatState, error) {
+	return s.loadChatStateLocked(threadID)
+}
+
+func (s *Store) loadChatStateLocked(threadID string) (ChatState, error) {
+	state, err := s.readChatStateFileLocked()
+	if err != nil {
+		return ChatState{}, err
+	}
+	changed := false
+	if strings.TrimSpace(state.ThreadID) == "" {
+		if strings.TrimSpace(threadID) != "" {
+			state.ThreadID = strings.TrimSpace(threadID)
+		} else {
+			state.ThreadID = newChatThreadID()
+		}
+		changed = true
+	}
+	state.SessionIDs = normalizeUniqueStrings(state.SessionIDs)
+	if len(state.SessionIDs) == 0 {
+		state.SessionIDs = s.collectChatSessionIDsLocked()
+		changed = true
+	}
+	if len(state.SessionIDs) == 0 {
+		if host, hostErr := s.readHostSessionLocked(); hostErr == nil && strings.TrimSpace(host.ID) != "" {
+			state.SessionIDs = []string{strings.TrimSpace(host.ID)}
+			changed = true
+		}
+	}
+	if strings.TrimSpace(state.ThreadID) == "" {
+		state.ThreadID = newChatThreadID()
+		changed = true
+	}
+	if state.UpdatedAt.IsZero() {
+		state.UpdatedAt = time.Now().UTC()
+		changed = true
+	}
+	if changed {
+		if err := s.writeChatStateLocked(state); err != nil {
+			return ChatState{}, err
+		}
+	}
+	return state, nil
+}
+
+func (s *Store) setChatStateLocked(state ChatState) error {
+	if strings.TrimSpace(state.ThreadID) == "" {
+		loaded, err := s.loadChatStateLocked("")
+		if err != nil {
+			return err
+		}
+		state.ThreadID = loaded.ThreadID
+	}
+	state.ThreadID = strings.TrimSpace(state.ThreadID)
+	state.SessionIDs = normalizeUniqueStrings(state.SessionIDs)
+	if len(state.SessionIDs) == 0 {
+		state.SessionIDs = s.collectChatSessionIDsLocked()
+	}
+	if state.UpdatedAt.IsZero() {
+		state.UpdatedAt = time.Now().UTC()
+	}
+	return s.writeChatStateLocked(state)
+}
+
+func (s *Store) touchChatSessionLocked(threadID, sessionID string) error {
+	if threadID == "" || sessionID == "" {
+		return nil
+	}
+	state, err := s.loadChatStateLocked(threadID)
+	if err != nil {
+		return err
+	}
+	if appendUniqueString(&state.SessionIDs, sessionID) {
+		state.UpdatedAt = time.Now().UTC()
+		return s.writeChatStateLocked(state)
 	}
 	return nil
 }
@@ -220,7 +701,35 @@ type profileFile struct {
 
 type hostSessionFile struct {
 	ID        string    `json:"id,omitempty"`
+	AdapterID string    `json:"adapter_id,omitempty"`
 	UpdatedAt time.Time `json:"updated_at,omitempty"`
+}
+
+type chatStatesFile struct {
+	Sessions map[string]legacyChatStateFile `json:"sessions,omitempty"`
+}
+
+type chatStateFile struct {
+	ThreadID       string    `json:"thread_id,omitempty"`
+	SessionIDs     []string  `json:"session_ids,omitempty"`
+	LastTranscript string    `json:"last_transcript,omitempty"`
+	UpdatedAt      time.Time `json:"updated_at,omitempty"`
+}
+
+type legacyChatStateFile struct {
+	SessionID      string    `json:"session_id,omitempty"`
+	LastTranscript string    `json:"last_transcript,omitempty"`
+	UpdatedAt      time.Time `json:"updated_at,omitempty"`
+}
+
+type threadMetadataFile struct {
+	Threads map[string]threadMetadataEntry `json:"threads,omitempty"`
+}
+
+type threadMetadataEntry struct {
+	Pinned      bool      `json:"pinned,omitempty"`
+	ReviewState string    `json:"review_state,omitempty"`
+	UpdatedAt   time.Time `json:"updated_at,omitempty"`
 }
 
 func (s *Store) readHostSessionLocked() (HostSession, error) {
@@ -240,8 +749,98 @@ func (s *Store) readHostSessionLocked() (HostSession, error) {
 	}
 	return HostSession{
 		ID:        strings.TrimSpace(host.ID),
+		AdapterID: strings.TrimSpace(host.AdapterID),
 		UpdatedAt: host.UpdatedAt,
 	}, nil
+}
+
+func (s *Store) readChatStateFileLocked() (ChatState, error) {
+	raw, err := os.ReadFile(s.ChatStatePath())
+	if errors.Is(err, os.ErrNotExist) {
+		return ChatState{}, nil
+	}
+	if err != nil {
+		return ChatState{}, err
+	}
+	if len(bytes.TrimSpace(raw)) == 0 {
+		return ChatState{}, nil
+	}
+	var file chatStateFile
+	if err := json.Unmarshal(raw, &file); err == nil {
+		if strings.TrimSpace(file.ThreadID) == "" && len(file.SessionIDs) == 0 && strings.TrimSpace(file.LastTranscript) == "" && file.UpdatedAt.IsZero() {
+			// Fall through to legacy / bootstrap handling.
+		} else {
+			return ChatState{
+				ThreadID:       strings.TrimSpace(file.ThreadID),
+				SessionIDs:     normalizeUniqueStrings(file.SessionIDs),
+				LastTranscript: file.LastTranscript,
+				UpdatedAt:      file.UpdatedAt,
+			}, nil
+		}
+	}
+	var legacy chatStatesFile
+	if err := json.Unmarshal(raw, &legacy); err == nil && len(legacy.Sessions) > 0 {
+		state := ChatState{
+			ThreadID:   newChatThreadID(),
+			SessionIDs: make([]string, 0, len(legacy.Sessions)),
+			UpdatedAt:  time.Now().UTC(),
+		}
+		var newest legacyChatStateFile
+		for sessionID, legacyState := range legacy.Sessions {
+			sessionID = strings.TrimSpace(sessionID)
+			if sessionID != "" {
+				state.SessionIDs = append(state.SessionIDs, sessionID)
+			}
+			if legacyState.UpdatedAt.After(newest.UpdatedAt) || newest.UpdatedAt.IsZero() {
+				newest = legacyState
+			}
+		}
+		state.SessionIDs = normalizeUniqueStrings(state.SessionIDs)
+		state.LastTranscript = newest.LastTranscript
+		if !newest.UpdatedAt.IsZero() {
+			state.UpdatedAt = newest.UpdatedAt
+		}
+		if err := s.writeChatStateLocked(state); err != nil {
+			return ChatState{}, err
+		}
+		return state, nil
+	}
+	return ChatState{}, nil
+}
+
+func (s *Store) readThreadMetadataFileLocked() (threadMetadataFile, error) {
+	raw, err := os.ReadFile(s.ThreadMetadataPath())
+	if errors.Is(err, os.ErrNotExist) {
+		return threadMetadataFile{Threads: map[string]threadMetadataEntry{}}, nil
+	}
+	if err != nil {
+		return threadMetadataFile{}, err
+	}
+	if len(bytes.TrimSpace(raw)) == 0 {
+		return threadMetadataFile{Threads: map[string]threadMetadataEntry{}}, nil
+	}
+	var file threadMetadataFile
+	if err := json.Unmarshal(raw, &file); err != nil {
+		return threadMetadataFile{}, err
+	}
+	if file.Threads == nil {
+		file.Threads = map[string]threadMetadataEntry{}
+	}
+	for threadID, entry := range file.Threads {
+		trimmed := strings.TrimSpace(threadID)
+		if trimmed == "" {
+			delete(file.Threads, threadID)
+			continue
+		}
+		entry.ReviewState = normalizeThreadReviewState(entry.ReviewState)
+		if trimmed != threadID {
+			delete(file.Threads, threadID)
+			file.Threads[trimmed] = entry
+		} else {
+			file.Threads[threadID] = entry
+		}
+	}
+	return file, nil
 }
 
 func (s *Store) readProfileLocked() (profileFile, error) {
@@ -260,6 +859,132 @@ func (s *Store) readProfileLocked() (profileFile, error) {
 		profile.Personality = defaultPersonality
 	}
 	return profile, nil
+}
+
+func (s *Store) writeChatStateLocked(state ChatState) error {
+	state.ThreadID = strings.TrimSpace(state.ThreadID)
+	state.SessionIDs = normalizeUniqueStrings(state.SessionIDs)
+	if state.ThreadID == "" {
+		state.ThreadID = newChatThreadID()
+	}
+	if state.UpdatedAt.IsZero() {
+		state.UpdatedAt = time.Now().UTC()
+	}
+	return writeJSONFile(s.ChatStatePath(), chatStateFile{
+		ThreadID:       state.ThreadID,
+		SessionIDs:     state.SessionIDs,
+		LastTranscript: state.LastTranscript,
+		UpdatedAt:      state.UpdatedAt,
+	})
+}
+
+func (s *Store) writeThreadMetadataFileLocked(file threadMetadataFile) error {
+	next := threadMetadataFile{Threads: map[string]threadMetadataEntry{}}
+	for threadID, entry := range file.Threads {
+		threadID = strings.TrimSpace(threadID)
+		entry.ReviewState = normalizeThreadReviewState(entry.ReviewState)
+		if threadID == "" || (!entry.Pinned && entry.ReviewState == "") {
+			continue
+		}
+		if entry.UpdatedAt.IsZero() {
+			entry.UpdatedAt = time.Now().UTC()
+		}
+		next.Threads[threadID] = entry
+	}
+	if len(next.Threads) == 0 {
+		next.Threads = nil
+	}
+	return writeJSONFile(s.ThreadMetadataPath(), next)
+}
+
+func normalizeThreadReviewState(value string) string {
+	switch strings.TrimSpace(strings.ToLower(value)) {
+	case "needs_review", "review", "queued":
+		return "needs_review"
+	case "reviewing", "in_review":
+		return "reviewing"
+	default:
+		return ""
+	}
+}
+
+func reviewStateLabel(value string) string {
+	switch normalizeThreadReviewState(value) {
+	case "needs_review":
+		return "Needs review"
+	case "reviewing":
+		return "Reviewing"
+	default:
+		return ""
+	}
+}
+
+func (s *Store) collectChatSessionIDsLocked() []string {
+	file, err := os.Open(s.messagesPath())
+	if errors.Is(err, os.ErrNotExist) || err != nil {
+		return nil
+	}
+	defer file.Close()
+	seen := map[string]struct{}{}
+	out := []string{}
+	scanner := bufio.NewScanner(file)
+	buf := make([]byte, 0, 64*1024)
+	scanner.Buffer(buf, 4*1024*1024)
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if line == "" {
+			continue
+		}
+		var message ChatMessage
+		if err := json.Unmarshal([]byte(line), &message); err != nil {
+			continue
+		}
+		sessionID := strings.TrimSpace(message.SessionID)
+		if sessionID == "" {
+			continue
+		}
+		if _, ok := seen[sessionID]; ok {
+			continue
+		}
+		seen[sessionID] = struct{}{}
+		out = append(out, sessionID)
+	}
+	return out
+}
+
+func normalizeUniqueStrings(values []string) []string {
+	out := make([]string, 0, len(values))
+	seen := map[string]struct{}{}
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value == "" {
+			continue
+		}
+		if _, ok := seen[value]; ok {
+			continue
+		}
+		seen[value] = struct{}{}
+		out = append(out, value)
+	}
+	return out
+}
+
+func appendUniqueString(values *[]string, value string) bool {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return false
+	}
+	for _, existing := range *values {
+		if strings.TrimSpace(existing) == value {
+			return false
+		}
+	}
+	*values = append(*values, value)
+	return true
+}
+
+func newChatThreadID() string {
+	return fmt.Sprintf("brain_%d", time.Now().UTC().UnixNano())
 }
 
 func ensureFile(path string, initial []byte) error {

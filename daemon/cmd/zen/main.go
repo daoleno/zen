@@ -220,11 +220,17 @@ func runAgentCommand(args []string, stderr io.Writer) error {
 
 func runBrainCommand(args []string, stderr io.Writer) error {
 	if len(args) == 0 {
-		return fmt.Errorf("usage: zen brain <workspace> [flags]")
+		return fmt.Errorf("usage: zen brain <workspace|adapters|threads|use> [flags]")
 	}
 	switch args[0] {
 	case "workspace":
 		return runBrainWorkspace(args[1:], stderr)
+	case "adapters":
+		return runBrainAdapters(args[1:], stderr)
+	case "threads":
+		return runBrainThreads(args[1:], stderr)
+	case "use":
+		return runBrainUse(args[1:], stderr)
 	default:
 		return fmt.Errorf("unknown brain command: %s", args[0])
 	}
@@ -349,6 +355,76 @@ func runBrainWorkspace(args []string, stderr io.Writer) error {
 	return writeControlResponse(os.Stdout, resp, cfg.json)
 }
 
+func runBrainAdapters(args []string, stderr io.Writer) error {
+	cfg, err := parseCLIConfig("zen brain adapters", args, stderr)
+	if err != nil {
+		return err
+	}
+	resp, err := callControl(cfg, control.Request{Type: "brain_adapters"})
+	if err != nil {
+		return err
+	}
+	return writeControlResponse(os.Stdout, resp, cfg.json)
+}
+
+func runBrainThreads(args []string, stderr io.Writer) error {
+	fs := flag.NewFlagSet("zen brain threads", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	cfg := cliConfig{json: true}
+	req := control.Request{Type: "brain_threads", Limit: 20}
+	fs.StringVar(&cfg.stateDir, "state-dir", "", "state directory for daemon identity and control socket")
+	fs.BoolVar(&cfg.json, "json", true, "print JSON output")
+	fs.StringVar(&req.AdapterID, "adapter", "", "adapter id to query instead of the current Brain adapter")
+	fs.IntVar(&req.Limit, "limit", 20, "maximum number of native threads to return")
+	fs.StringVar(&req.Cwd, "cwd", "", "filter native threads by cwd")
+	fs.StringVar(&req.SearchTerm, "search", "", "filter native threads by title or preview")
+	fs.StringVar(&req.Cursor, "cursor", "", "pagination cursor from a previous response")
+	fs.BoolVar(&req.Archived, "archived", false, "list archived native threads")
+	fs.Usage = func() {
+		fmt.Fprintln(stderr, "Usage: zen brain threads [-adapter codex] [-limit 20] [flags]")
+		fmt.Fprintln(stderr, "")
+		fs.PrintDefaults()
+	}
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if fs.NArg() > 0 {
+		return fmt.Errorf("unexpected arguments: %s", strings.Join(fs.Args(), " "))
+	}
+	resp, err := callControl(cfg, req)
+	if err != nil {
+		return err
+	}
+	return writeControlResponse(os.Stdout, resp, cfg.json)
+}
+
+func runBrainUse(args []string, stderr io.Writer) error {
+	fs := flag.NewFlagSet("zen brain use", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	cfg := cliConfig{json: true}
+	fs.StringVar(&cfg.stateDir, "state-dir", "", "state directory for daemon identity and control socket")
+	fs.BoolVar(&cfg.json, "json", true, "print JSON output")
+	fs.Usage = func() {
+		fmt.Fprintln(stderr, "Usage: zen brain use <adapter> [flags]")
+		fmt.Fprintln(stderr, "")
+		fs.PrintDefaults()
+	}
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if fs.NArg() != 1 {
+		return fmt.Errorf("usage: zen brain use <adapter> [flags]")
+	}
+	resp, err := callControl(cfg, control.Request{
+		Type:      "brain_set_adapter",
+		AdapterID: fs.Arg(0),
+	})
+	if err != nil {
+		return err
+	}
+	return writeControlResponse(os.Stdout, resp, cfg.json)
+}
+
 func parseCLIConfig(name string, args []string, stderr io.Writer) (cliConfig, error) {
 	fs := flag.NewFlagSet(name, flag.ContinueOnError)
 	fs.SetOutput(stderr)
@@ -409,6 +485,20 @@ func writeControlResponse(w io.Writer, resp control.Response, asJSON bool) error
 	}
 	if resp.Agent != nil {
 		fmt.Fprintf(w, "%s\t%s\t%s\n", resp.Agent.ID, resp.Agent.Status, resp.Agent.Name)
+		return nil
+	}
+	if len(resp.Adapters) > 0 {
+		for _, adapter := range resp.Adapters {
+			marker := " "
+			if adapter.Preferred || (resp.Adapter != nil && resp.Adapter.ID == adapter.ID) {
+				marker = "*"
+			}
+			fmt.Fprintf(w, "%s%s\t%s\t%s\t%s\n", marker, adapter.ID, adapter.Provider, adapter.Runtime, adapter.Command)
+		}
+		return nil
+	}
+	if resp.Adapter != nil {
+		fmt.Fprintf(w, "%s\t%s\t%s\t%s\n", resp.Adapter.ID, resp.Adapter.Provider, resp.Adapter.Runtime, resp.Adapter.Command)
 		return nil
 	}
 	for _, agent := range resp.Agents {

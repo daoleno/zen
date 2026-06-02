@@ -18,6 +18,7 @@ import { useFocusEffect, useRouter } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Agent, useAgents } from '../../store/agents';
+import { useBrain, type BrainAttentionSummary } from '../../store/brain';
 import { useWork, type WorkItem } from '../../store/work';
 import { AgentStatus, Colors, Typography, statusColor, useAppColors } from '../../constants/tokens';
 import { TerminalPreview } from '../../components/terminal/TerminalPreview';
@@ -62,6 +63,7 @@ type DiscoveredSessionService = SessionService & {
 
 export default function InboxScreen() {
   const { state } = useAgents();
+  const { state: brainState } = useBrain();
   const { state: workState } = useWork();
   const router = useRouter();
   const colors = useAppColors();
@@ -98,6 +100,10 @@ export default function InboxScreen() {
 
   const [menuAgent, setMenuAgent] = useState<Agent | null>(null);
   const [renameVisible, setRenameVisible] = useState(false);
+  const selectedCreateAttention = selectedCreateServerId
+    ? brainState.byServer[selectedCreateServerId]?.attention
+    : undefined;
+  const createAttentionWarning = brainStartBackpressureMessage(selectedCreateAttention);
   const [renameDraft, setRenameDraft] = useState('');
   const [renameAgentKey, setRenameAgentKey] = useState<string | null>(null);
 
@@ -332,11 +338,32 @@ export default function InboxScreen() {
     cwd: string;
     command: string;
     name: string;
-  }) => {
+  }, options?: { bypassAttention?: boolean }) => {
     const server = connectedServers.find(item => item.id === input.serverId);
     if (!server) {
       Alert.alert('Daemon unavailable', 'Connect to a daemon before creating a new terminal.');
       return;
+    }
+    if (!options?.bypassAttention) {
+      const warning = brainStartBackpressureMessage(
+        brainState.byServer[input.serverId]?.attention,
+      );
+      if (warning) {
+        Alert.alert(
+          'Attention limit reached',
+          warning,
+          [
+            { text: 'Cancel', style: 'cancel' },
+            {
+              text: 'Start Anyway',
+              onPress: () => {
+                void createTerminalOnServer(input, { bypassAttention: true });
+              },
+            },
+          ],
+        );
+        return;
+      }
     }
 
     setCreateSheetVisible(false);
@@ -443,6 +470,13 @@ export default function InboxScreen() {
       : connectedServers[0].id);
     setCreateSheetVisible(true);
   };
+
+  useEffect(() => {
+    if (!createSheetVisible || !selectedCreateServerId) {
+      return;
+    }
+    wsClient.requestBrainSnapshot(selectedCreateServerId);
+  }, [createSheetVisible, selectedCreateServerId]);
 
 
   const handleTerminateAgent = () => {
@@ -847,6 +881,7 @@ export default function InboxScreen() {
         title="New Terminal"
         subtitle="Open a plain shell, or launch Claude/Codex in a real working directory."
         initialCwd={selectedCreateServerId ? findSuggestedCwd(selectedCreateServerId) : ''}
+        attentionWarning={createAttentionWarning}
         serverOptions={createServerOptions}
         selectedServerId={selectedCreateServerId}
         onSelectServer={setSelectedCreateServerId}
@@ -948,6 +983,27 @@ export default function InboxScreen() {
 
     </SafeAreaView>
   );
+}
+
+function brainStartBackpressureMessage(attention?: BrainAttentionSummary) {
+  if (!attention || attention.can_start_agent !== false) {
+    return "";
+  }
+  const blocked = attention.blocked_agents ?? 0;
+  const reviewQueue = attention.review_queue ?? 0;
+  const inFlight = attention.in_flight_agents ?? 0;
+  const maxInFlight = attention.max_in_flight_agents ?? 0;
+  const reviewLimit = attention.review_queue_limit ?? 0;
+  switch (attention.backpressure_reason) {
+    case "blocked_agents_need_attention":
+      return `${blocked || 1} agent${blocked === 1 ? "" : "s"} blocked. Resolve the blocked work before starting another agent.`;
+    case "active_agent_limit_reached":
+      return `${inFlight || maxInFlight || 1} agent${inFlight === 1 ? "" : "s"} already in flight. Review or finish one before adding more work.`;
+    case "review_queue_needs_attention":
+      return `${reviewQueue || reviewLimit || 1} thread${reviewQueue === 1 ? "" : "s"} waiting for review. Clear the review queue before starting another agent.`;
+    default:
+      return "Brain is under attention pressure. Starting another agent will add to the queue.";
+  }
 }
 
 function ToggleButton({

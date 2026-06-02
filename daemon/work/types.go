@@ -50,10 +50,12 @@ type Mention struct {
 	Index   int    `json:"index"`
 }
 
-// Executor is one configured agent kind (claude, codex, ...).
+// Executor is one configured agent kind (claude, codex, custom CLI, ...).
 type Executor struct {
 	Name    string `json:"name" toml:"name"`
 	Command string `json:"command" toml:"command"`
+	Kind    string `json:"kind,omitempty" toml:"kind"`
+	Runtime string `json:"runtime,omitempty" toml:"runtime"`
 }
 
 // Project holds the content of one project.toml.

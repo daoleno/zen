@@ -2,8 +2,9 @@ import React from "react";
 import {
   ScrollView,
   StyleSheet,
+  View,
 } from "react-native";
-import { AppButton } from "../ui";
+import { AppButton, AppText } from "../ui";
 import { NewTerminalAdvancedForm } from "./NewTerminalAdvancedForm";
 import {
   NewTerminalQuickLaunchSection,
@@ -16,6 +17,7 @@ interface NewTerminalSheetContentProps {
   selectedServerId?: string | null;
   command: string;
   submitting: boolean;
+  attentionWarning?: string;
   canSubmit: boolean;
   advanced: boolean;
   cwd: string;
@@ -37,6 +39,7 @@ export function NewTerminalSheetContent({
   selectedServerId,
   command,
   submitting,
+  attentionWarning,
   canSubmit,
   advanced,
   cwd,
@@ -71,6 +74,14 @@ export function NewTerminalSheetContent({
         onToggleAdvanced={onToggleAdvanced}
       />
 
+      {attentionWarning ? (
+        <View style={styles.attentionWarning}>
+          <AppText variant="caption" tone="secondary">
+            {attentionWarning}
+          </AppText>
+        </View>
+      ) : null}
+
       {advanced ? (
         <NewTerminalAdvancedForm
           cwd={cwd}
@@ -98,6 +109,13 @@ export function NewTerminalSheetContent({
 }
 
 const styles = StyleSheet.create({
+  attentionWarning: {
+    borderRadius: 8,
+    marginTop: 10,
+    paddingHorizontal: 10,
+    paddingVertical: 8,
+    backgroundColor: "rgba(245, 158, 11, 0.12)",
+  },
   cancelBtn: {
     minHeight: 34,
     borderRadius: 10,

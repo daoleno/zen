@@ -18,6 +18,7 @@ type fakeControlWatcher struct {
 	agents   map[string]*classifier.Agent
 	created  []watcher.CreateSessionOptions
 	sent     []fakeControlSend
+	killed   []string
 	captures map[string]string
 }
 
@@ -51,6 +52,11 @@ func (w *fakeControlWatcher) GetAgent(id string) *classifier.Agent {
 	return &cp
 }
 
+func (w *fakeControlWatcher) HasSession(target string) bool {
+	_, ok := w.agents[target]
+	return ok
+}
+
 func (w *fakeControlWatcher) CreateSession(_ string, opts watcher.CreateSessionOptions) (string, error) {
 	id := "brain-agent-" + strings.ToLower(strings.ReplaceAll(opts.Name, " ", "-")) + ":@1"
 	w.created = append(w.created, opts)
@@ -69,6 +75,12 @@ func (w *fakeControlWatcher) CreateSession(_ string, opts watcher.CreateSessionO
 
 func (w *fakeControlWatcher) SendInput(sessionID, text string) error {
 	w.sent = append(w.sent, fakeControlSend{id: sessionID, text: text})
+	return nil
+}
+
+func (w *fakeControlWatcher) KillSession(sessionID string) error {
+	w.killed = append(w.killed, sessionID)
+	delete(w.agents, sessionID)
 	return nil
 }
 
@@ -199,5 +211,217 @@ func TestControlAppBrainWorkspaceReturnsStoreWorkspace(t *testing.T) {
 
 	if !resp.OK || resp.Workspace != store.WorkspacePath() {
 		t.Fatalf("response = %#v, want workspace %q", resp, store.WorkspacePath())
+	}
+}
+
+func TestControlAppBrainAdaptersListsCurrentAdapter(t *testing.T) {
+	store, err := brain.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	app := &controlApp{
+		brainStore: store,
+		execs: &work.ExecutorConfig{
+			Default: "claude",
+			ByName: map[string]work.Executor{
+				"claude": {Name: "claude", Command: "claude"},
+				"codex":  {Name: "codex", Command: "codex"},
+			},
+		},
+	}
+
+	resp := app.HandleControlRequest(control.Request{Type: "brain_adapters"})
+
+	if !resp.OK || resp.Adapter == nil || resp.Adapter.ID != "claude" {
+		t.Fatalf("response = %#v", resp)
+	}
+	if len(resp.Adapters) != 2 || resp.Adapters[0].ID != "claude" || !resp.Adapters[0].Preferred {
+		t.Fatalf("adapters = %#v", resp.Adapters)
+	}
+	if resp.Adapter.Capabilities.NativeThreads || !resp.Adapter.Capabilities.InteractiveTTY {
+		t.Fatalf("claude capabilities = %+v", resp.Adapter.Capabilities)
+	}
+}
+
+func TestControlAppBrainThreadsRejectsAdapterWithoutNativeThreads(t *testing.T) {
+	store, err := brain.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	app := &controlApp{
+		brainStore: store,
+		execs: &work.ExecutorConfig{
+			Default: "claude",
+			ByName: map[string]work.Executor{
+				"claude": {Name: "claude", Command: "claude"},
+			},
+		},
+	}
+
+	resp := app.HandleControlRequest(control.Request{Type: "brain_threads"})
+
+	if resp.OK || resp.Error == nil || resp.Error.Code != "native_threads_unavailable" {
+		t.Fatalf("response = %#v", resp)
+	}
+}
+
+func TestControlAppBrainThreadsUsesNativeSearch(t *testing.T) {
+	store, err := brain.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	script := filepath.Join(t.TempDir(), "fake-codex")
+	body := `#!/bin/sh
+set -eu
+read init
+case "$init" in
+  *'"method":"initialize"'*) ;;
+  *) echo "bad initialize: $init" >&2; exit 11 ;;
+esac
+printf '%s\n' '{"id":"zen-init","result":{"userAgent":"fake","codexHome":"/tmp/codex","platformFamily":"unix","platformOs":"linux"}}'
+printf '%s\n' '{"method":"remoteControl/status/changed","params":{"status":"disabled"}}'
+read ready
+case "$ready" in
+  *'"method":"initialized"'*) ;;
+  *) echo "bad initialized: $ready" >&2; exit 12 ;;
+esac
+read req
+case "$req" in
+  *'"method":"thread/search"'*) ;;
+  *) echo "bad request method: $req" >&2; exit 13 ;;
+esac
+case "$req" in
+  *'"searchTerm":"Brain"'*) ;;
+  *) echo "bad search term: $req" >&2; exit 14 ;;
+esac
+printf '%s\n' '{"id":"zen-1","result":{"data":[{"thread":{"id":"thread-1","sessionId":"session-1","forkedFromId":null,"preview":"Thread preview","ephemeral":false,"modelProvider":"openai","createdAt":1780331643,"updatedAt":1780333776,"status":{"type":"notLoaded"},"path":"/tmp/codex/rollout.jsonl","cwd":"/repo/zen","source":"cli","name":"Brain result"},"snippet":"Brain matched here"}],"nextCursor":"next","backwardsCursor":"back"}}'
+`
+	if err := os.WriteFile(script, []byte(body), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	app := &controlApp{
+		brainStore: store,
+		execs: &work.ExecutorConfig{
+			Default: "codex",
+			ByName: map[string]work.Executor{
+				"codex": {Name: "codex", Command: script},
+			},
+		},
+	}
+
+	resp := app.HandleControlRequest(control.Request{
+		Type:       "brain_threads",
+		SearchTerm: "Brain",
+		Limit:      3,
+	})
+
+	if !resp.OK || resp.Adapter == nil || resp.Adapter.ID != "codex" {
+		t.Fatalf("response = %#v", resp)
+	}
+	if resp.NextCursor != "next" || resp.BackwardsCursor != "back" {
+		t.Fatalf("cursors = %q / %q", resp.NextCursor, resp.BackwardsCursor)
+	}
+	if len(resp.Threads) != 1 {
+		t.Fatalf("threads = %#v", resp.Threads)
+	}
+	thread := resp.Threads[0]
+	if thread.ID != "codex:thread-1" || thread.Title != "Brain result" || thread.Snippet != "Brain matched here" {
+		t.Fatalf("thread = %+v", thread)
+	}
+}
+
+func TestControlAppBrainSetAdapterPersistsConfiguredAdapter(t *testing.T) {
+	store, err := brain.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	app := &controlApp{
+		brainStore: store,
+		execs: &work.ExecutorConfig{
+			Default: "codex",
+			ByName: map[string]work.Executor{
+				"claude": {Name: "claude", Command: "claude"},
+				"codex":  {Name: "codex", Command: "codex"},
+			},
+		},
+	}
+
+	resp := app.HandleControlRequest(control.Request{Type: "brain_set_adapter", AdapterID: "claude"})
+
+	if !resp.OK || resp.Adapter == nil || resp.Adapter.ID != "claude" {
+		t.Fatalf("response = %#v", resp)
+	}
+	hostSession, err := store.HostSession()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if hostSession.AdapterID != "claude" {
+		t.Fatalf("adapter id = %q", hostSession.AdapterID)
+	}
+	if len(resp.Adapters) != 2 || resp.Adapters[0].ID != "claude" || !resp.Adapters[0].Preferred {
+		t.Fatalf("adapters = %#v", resp.Adapters)
+	}
+}
+
+func TestControlAppBrainSetAdapterStartsSelectedHostWhenWatcherAvailable(t *testing.T) {
+	store, err := brain.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	fw := newFakeControlWatcher()
+	app := &controlApp{
+		watcher:    fw,
+		brainStore: store,
+		execs: &work.ExecutorConfig{
+			Default: "codex",
+			ByName: map[string]work.Executor{
+				"claude": {Name: "claude", Command: "claude"},
+				"codex":  {Name: "codex", Command: "codex"},
+			},
+		},
+	}
+
+	resp := app.HandleControlRequest(control.Request{Type: "brain_set_adapter", AdapterID: "claude"})
+
+	if !resp.OK || resp.Adapter == nil || resp.Adapter.ID != "claude" {
+		t.Fatalf("response = %#v", resp)
+	}
+	if len(fw.created) != 1 {
+		t.Fatalf("created sessions = %#v", fw.created)
+	}
+	if !fw.created[0].Hidden || !strings.HasPrefix(fw.created[0].Command, "claude") {
+		t.Fatalf("created host = %+v", fw.created[0])
+	}
+	if len(fw.sent) != 1 || !strings.Contains(fw.sent[0].text, "Active adapter: claude") {
+		t.Fatalf("bootstrap prompt = %#v", fw.sent)
+	}
+	hostSession, err := store.HostSession()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if hostSession.ID == "" || hostSession.AdapterID != "claude" {
+		t.Fatalf("host session = %+v", hostSession)
+	}
+}
+
+func TestControlAppBrainSetAdapterRejectsUnknownAdapter(t *testing.T) {
+	store, err := brain.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	app := &controlApp{
+		brainStore: store,
+		execs: &work.ExecutorConfig{
+			Default: "codex",
+			ByName: map[string]work.Executor{
+				"codex": {Name: "codex", Command: "codex"},
+			},
+		},
+	}
+
+	resp := app.HandleControlRequest(control.Request{Type: "brain_set_adapter", AdapterID: "claude"})
+
+	if resp.OK || resp.Error == nil || resp.Error.Code != "invalid_adapter" {
+		t.Fatalf("response = %#v", resp)
 	}
 }
