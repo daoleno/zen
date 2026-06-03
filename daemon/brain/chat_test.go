@@ -219,6 +219,70 @@ func TestServiceSyncTerminalTranscriptAppendsAssistantDeltaOnce(t *testing.T) {
 	}
 }
 
+func TestServiceSyncTerminalTranscriptCleansTerminalChrome(t *testing.T) {
+	store, err := NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	service := newChatTestService(store)
+
+	before := "Claude ready"
+	if _, err := service.RecordUserMessage("thread-main", "brain-session", "继续", before); err != nil {
+		t.Fatal(err)
+	}
+	transcript := before + `
+> 继续
+──── ✶ Transfiguring...
+
+────────────────────────────────────────────
+──────────────────────────────────────────── >
+──────────────────────── esc to
+interrupt
+
+或者你有别的事，直接说就行。
+
+✻ Cogitated for 9s
+────────────────────────────────────────────
+──────────── ? for
+`
+	got, err := service.SyncTerminalTranscript("thread-main", "brain-session", transcript)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("messages = %#v", got)
+	}
+	if got[1].Body != "或者你有别的事，直接说就行。" {
+		t.Fatalf("assistant body = %q", got[1].Body)
+	}
+}
+
+func TestChatMessagesCleansStoredTerminalChrome(t *testing.T) {
+	store, err := NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.AppendChatMessage(ChatMessage{
+		ID:        "assistant-1",
+		ThreadID:  "thread-main",
+		SessionID: "brain-session",
+		Role:      "assistant",
+		Body:      "──── ✶ Transfiguring...\n\n真实回复\n\n✻ Cogitated for 9s",
+		CreatedAt: time.Date(2026, 6, 2, 10, 0, 0, 0, time.UTC),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	service := newChatTestService(store)
+
+	got, err := service.ChatMessages("thread-main")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 || got[0].Body != "真实回复" {
+		t.Fatalf("messages = %#v", got)
+	}
+}
+
 func TestServiceSyncTerminalTranscriptSeedsInitialCursor(t *testing.T) {
 	store, err := NewStore(t.TempDir())
 	if err != nil {

@@ -36,7 +36,7 @@ export function buildCodexStatusMeta({
       events,
     })
   ) {
-    return "Thinking";
+    return "Working";
   }
   if (conversation?.updated_at) {
     return `Updated ${formatTime(conversation.updated_at)}`;

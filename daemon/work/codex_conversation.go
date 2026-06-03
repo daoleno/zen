@@ -275,20 +275,25 @@ func (b *codexConversationBuilder) consumeSessionMeta(raw json.RawMessage) {
 
 func (b *codexConversationBuilder) consumeEvent(lineNumber int, timestamp string, raw json.RawMessage) {
 	var payload struct {
-		Type             string          `json:"type"`
-		Message          string          `json:"message"`
-		Phase            string          `json:"phase"`
-		CallID           string          `json:"call_id"`
-		ExitCode         *int            `json:"exit_code"`
-		Status           string          `json:"status"`
-		Command          []string        `json:"command"`
-		AggregatedOutput string          `json:"aggregated_output"`
-		Goal             json.RawMessage `json:"goal"`
-		Explanation      string          `json:"explanation"`
-		Plan             []CodexPlanStep `json:"plan"`
-		Text             string          `json:"text"`
-		Query            string          `json:"query"`
-		Action           json.RawMessage `json:"action"`
+		Type              string          `json:"type"`
+		Message           string          `json:"message"`
+		Phase             string          `json:"phase"`
+		CallID            string          `json:"call_id"`
+		ExitCode          *int            `json:"exit_code"`
+		Status            string          `json:"status"`
+		Command           []string        `json:"command"`
+		AggregatedOutput  string          `json:"aggregated_output"`
+		Goal              json.RawMessage `json:"goal"`
+		Explanation       string          `json:"explanation"`
+		Plan              []CodexPlanStep `json:"plan"`
+		Text              string          `json:"text"`
+		Query             string          `json:"query"`
+		Action            json.RawMessage `json:"action"`
+		AdditionalDetails string          `json:"additional_details"`
+		Reason            string          `json:"reason"`
+		CodexErrorInfo    json.RawMessage `json:"codex_error_info"`
+		NumTurns          *int            `json:"num_turns"`
+		RateLimits        json.RawMessage `json:"rate_limits"`
 	}
 	if json.Unmarshal(raw, &payload) != nil {
 		return
@@ -299,13 +304,58 @@ func (b *codexConversationBuilder) consumeEvent(lineNumber int, timestamp string
 	}
 
 	switch payload.Type {
-	case "task_started":
+	case "task_started", "turn_started":
 		b.lifecycleSeen = true
 		b.taskActive = true
 		b.addStatus(lineNumber, timestamp, "Task started", "")
-	case "task_complete", "turn_aborted":
+	case "task_complete", "turn_complete":
 		b.lifecycleSeen = true
 		b.taskActive = false
+	case "turn_aborted":
+		b.lifecycleSeen = true
+		b.taskActive = false
+		if reason := cleanConversationText(payload.Reason); reason != "" {
+			b.addStatusWithState(lineNumber, timestamp, "Turn aborted", reason, "failed")
+		}
+	case "error":
+		if codexErrorAffectsTurnStatus(payload.CodexErrorInfo) {
+			b.lifecycleSeen = true
+			b.taskActive = false
+			b.finishPendingReasoning()
+		}
+		message := cleanConversationText(payload.Message)
+		if message == "" {
+			message = "Codex reported an error."
+		}
+		b.addStatusWithState(lineNumber, timestamp, "Codex error", message, "failed")
+	case "stream_error":
+		b.lifecycleSeen = true
+		b.taskActive = true
+		title := cleanConversationText(payload.Message)
+		if title == "" {
+			title = "Stream interrupted"
+		}
+		b.addStatusWithState(lineNumber, timestamp, title, payload.AdditionalDetails, "running")
+	case "warning", "guardian_warning":
+		title := "Codex warning"
+		if payload.Type == "guardian_warning" {
+			title = "Guardian warning"
+		}
+		b.addStatusWithState(lineNumber, timestamp, title, payload.Message, "warning")
+	case "context_compacted":
+		body := ""
+		if payload.NumTurns != nil && *payload.NumTurns > 0 {
+			body = fmt.Sprintf("%d user turn", *payload.NumTurns)
+			if *payload.NumTurns != 1 {
+				body += "s"
+			}
+			body += " summarized"
+		}
+		b.addStatusWithState(lineNumber, timestamp, "Context compacted", body, "done")
+	case "token_count":
+		if title, body, ok := codexRateLimitStatus(payload.RateLimits); ok {
+			b.addStatusWithState(lineNumber, timestamp, title, body, "failed")
+		}
 	case "user_message":
 		b.addMessage(lineNumber, timestamp, "user", payload.Message)
 	case "history_entry":
@@ -449,7 +499,9 @@ func (b *codexConversationBuilder) consumeResponseItem(lineNumber int, timestamp
 func shouldFinishPendingReasoningForEvent(eventType string) bool {
 	switch eventType {
 	case "task_started",
+		"turn_started",
 		"task_complete",
+		"turn_complete",
 		"turn_aborted",
 		"user_message",
 		"history_entry",
@@ -922,8 +974,13 @@ func (b *codexConversationBuilder) addPlanUpdate(lineNumber int, timestamp, call
 }
 
 func (b *codexConversationBuilder) addStatus(lineNumber int, timestamp, title, body string) {
+	b.addStatusWithState(lineNumber, timestamp, title, body, "")
+}
+
+func (b *codexConversationBuilder) addStatusWithState(lineNumber int, timestamp, title, body, status string) {
 	title = cleanConversationText(title)
 	body = cleanConversationText(body)
+	status = cleanConversationText(status)
 	if isLowSignalCodexStatus(title, body) {
 		return
 	}
@@ -938,6 +995,7 @@ func (b *codexConversationBuilder) addStatus(lineNumber int, timestamp, title, b
 		Kind:      "status",
 		Title:     title,
 		Body:      body,
+		Status:    status,
 		Source:    "codex_rollout",
 	})
 }
@@ -1187,6 +1245,110 @@ func codexWebSearchStatus(status string) string {
 	default:
 		return "done"
 	}
+}
+
+func codexErrorAffectsTurnStatus(raw json.RawMessage) bool {
+	raw = bytes.TrimSpace(raw)
+	if len(raw) == 0 || bytes.Equal(raw, []byte("null")) {
+		return true
+	}
+	var value any
+	if json.Unmarshal(raw, &value) != nil {
+		return true
+	}
+	return !codexErrorInfoContainsNonTurnFatal(value)
+}
+
+func codexErrorInfoContainsNonTurnFatal(value any) bool {
+	switch typed := value.(type) {
+	case string:
+		return typed == "thread_rollback_failed" || typed == "active_turn_not_steerable"
+	case map[string]any:
+		for key, nested := range typed {
+			if key == "thread_rollback_failed" || key == "active_turn_not_steerable" {
+				return true
+			}
+			if codexErrorInfoContainsNonTurnFatal(nested) {
+				return true
+			}
+		}
+	case []any:
+		for _, item := range typed {
+			if codexErrorInfoContainsNonTurnFatal(item) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func codexRateLimitStatus(raw json.RawMessage) (string, string, bool) {
+	if len(bytes.TrimSpace(raw)) == 0 || bytes.Equal(bytes.TrimSpace(raw), []byte("null")) {
+		return "", "", false
+	}
+	var payload struct {
+		LimitID              string `json:"limit_id"`
+		LimitName            string `json:"limit_name"`
+		PlanType             string `json:"plan_type"`
+		RateLimitReachedType string `json:"rate_limit_reached_type"`
+		Primary              *struct {
+			UsedPercent   float64 `json:"used_percent"`
+			WindowMinutes *int64  `json:"window_minutes"`
+		} `json:"primary"`
+		Secondary *struct {
+			UsedPercent   float64 `json:"used_percent"`
+			WindowMinutes *int64  `json:"window_minutes"`
+		} `json:"secondary"`
+	}
+	if json.Unmarshal(raw, &payload) != nil {
+		return "", "", false
+	}
+	reachedType := strings.TrimSpace(payload.RateLimitReachedType)
+	if reachedType == "" {
+		return "", "", false
+	}
+
+	title := codexRateLimitTitle(reachedType)
+	parts := []string{}
+	if limit := firstNonEmpty(payload.LimitName, payload.LimitID); limit != "" {
+		parts = append(parts, "Limit: "+cleanConversationText(limit))
+	}
+	if plan := cleanConversationText(payload.PlanType); plan != "" {
+		parts = append(parts, "Plan: "+plan)
+	}
+	if payload.Primary != nil {
+		parts = append(parts, codexRateLimitWindowText("Primary", payload.Primary.UsedPercent, payload.Primary.WindowMinutes))
+	}
+	if payload.Secondary != nil {
+		parts = append(parts, codexRateLimitWindowText("Secondary", payload.Secondary.UsedPercent, payload.Secondary.WindowMinutes))
+	}
+	if len(parts) == 0 {
+		parts = append(parts, strings.ReplaceAll(reachedType, "_", " "))
+	}
+	return title, strings.Join(parts, "\n"), true
+}
+
+func codexRateLimitTitle(reachedType string) string {
+	switch strings.TrimSpace(reachedType) {
+	case "workspace_owner_credits_depleted":
+		return "Workspace credits depleted"
+	case "workspace_member_credits_depleted":
+		return "Member credits depleted"
+	case "workspace_owner_usage_limit_reached":
+		return "Workspace usage limit reached"
+	case "workspace_member_usage_limit_reached":
+		return "Member usage limit reached"
+	default:
+		return "Rate limit reached"
+	}
+}
+
+func codexRateLimitWindowText(label string, usedPercent float64, windowMinutes *int64) string {
+	value := fmt.Sprintf("%s window: %.0f%% used", label, usedPercent)
+	if windowMinutes != nil && *windowMinutes > 0 {
+		value += fmt.Sprintf(" over %dm", *windowMinutes)
+	}
+	return value
 }
 
 func codexWebSearchActionText(action json.RawMessage) string {

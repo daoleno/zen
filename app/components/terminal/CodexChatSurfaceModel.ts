@@ -111,7 +111,7 @@ export function buildCodexComposerPresentation({
         : showStopIndicator && interrupting
           ? "Stopping"
           : showStopIndicator
-            ? "Thinking"
+            ? "Working"
             : "Send message",
     sendElapsedLabel: showStopIndicator ? elapsedLabel : undefined,
     placeholder:

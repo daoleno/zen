@@ -828,6 +828,139 @@ func TestParseCodexConversation_MarksGenericToolFailures(t *testing.T) {
 	}
 }
 
+func TestParseCodexConversation_RendersCodexErrorAndStreamErrorStatuses(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "rollout.jsonl")
+	writeJSONL(t, path,
+		map[string]any{
+			"type":      "event_msg",
+			"timestamp": "2026-05-20T10:00:00Z",
+			"payload": map[string]any{
+				"type":               "stream_error",
+				"message":            "Reconnecting... 2/5",
+				"additional_details": "Idle timeout waiting for SSE",
+				"codex_error_info": map[string]any{
+					"response_stream_disconnected": map[string]any{
+						"http_status_code": 524,
+					},
+				},
+			},
+		},
+		map[string]any{
+			"type":      "event_msg",
+			"timestamp": "2026-05-20T10:00:01Z",
+			"payload": map[string]any{
+				"type":    "error",
+				"message": "unexpected status 429 Too Many Requests: rate limit reached",
+				"codex_error_info": map[string]any{
+					"http_connection_failed": map[string]any{
+						"http_status_code": 429,
+					},
+				},
+			},
+		},
+	)
+
+	got, err := parseCodexConversation(path)
+	if err != nil {
+		t.Fatalf("parseCodexConversation: %v", err)
+	}
+	if got.Active == nil || *got.Active {
+		t.Fatalf("active = %#v, want false after error", got.Active)
+	}
+	if len(got.Events) != 2 {
+		t.Fatalf("events len = %d, want 2: %#v", len(got.Events), got.Events)
+	}
+	stream := got.Events[0]
+	if stream.Kind != "status" || stream.Title != "Reconnecting... 2/5" || stream.Status != "running" {
+		t.Fatalf("stream status = %#v", stream)
+	}
+	if !strings.Contains(stream.Body, "Idle timeout") {
+		t.Fatalf("stream body = %q, want additional details", stream.Body)
+	}
+	errEvent := got.Events[1]
+	if errEvent.Kind != "status" || errEvent.Title != "Codex error" || errEvent.Status != "failed" {
+		t.Fatalf("error status = %#v", errEvent)
+	}
+	if !strings.Contains(errEvent.Body, "429") || !strings.Contains(errEvent.Body, "rate limit") {
+		t.Fatalf("error body = %q, want response error text", errEvent.Body)
+	}
+}
+
+func TestParseCodexConversation_RendersReachedRateLimitSnapshot(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "rollout.jsonl")
+	writeJSONL(t, path,
+		map[string]any{
+			"type":      "event_msg",
+			"timestamp": "2026-05-20T10:00:00Z",
+			"payload": map[string]any{
+				"type": "token_count",
+				"rate_limits": map[string]any{
+					"limit_id":                "codex",
+					"plan_type":               "team",
+					"rate_limit_reached_type": "workspace_owner_usage_limit_reached",
+					"primary": map[string]any{
+						"used_percent":   100,
+						"window_minutes": 300,
+					},
+				},
+			},
+		},
+	)
+
+	got, err := parseCodexConversation(path)
+	if err != nil {
+		t.Fatalf("parseCodexConversation: %v", err)
+	}
+	if len(got.Events) != 1 {
+		t.Fatalf("events len = %d, want 1: %#v", len(got.Events), got.Events)
+	}
+	event := got.Events[0]
+	if event.Kind != "status" || event.Title != "Workspace usage limit reached" || event.Status != "failed" {
+		t.Fatalf("rate limit status = %#v", event)
+	}
+	if !strings.Contains(event.Body, "Limit: codex") || !strings.Contains(event.Body, "100% used") {
+		t.Fatalf("rate limit body = %q", event.Body)
+	}
+}
+
+func TestParseCodexConversation_DoesNotEndTurnForNonFatalCodexErrors(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "rollout.jsonl")
+	writeJSONL(t, path,
+		map[string]any{
+			"type": "event_msg",
+			"payload": map[string]any{
+				"type": "task_started",
+			},
+		},
+		map[string]any{
+			"type": "event_msg",
+			"payload": map[string]any{
+				"type":    "error",
+				"message": "Cannot steer this active turn.",
+				"codex_error_info": map[string]any{
+					"active_turn_not_steerable": map[string]any{
+						"turn_kind": "review",
+					},
+				},
+			},
+		},
+	)
+
+	got, err := parseCodexConversation(path)
+	if err != nil {
+		t.Fatalf("parseCodexConversation: %v", err)
+	}
+	if got.Active == nil || !*got.Active {
+		t.Fatalf("active = %#v, want true for non-turn-fatal error", got.Active)
+	}
+	if len(got.Events) != 1 {
+		t.Fatalf("events len = %d, want 1: %#v", len(got.Events), got.Events)
+	}
+	if got.Events[0].Kind != "status" || got.Events[0].Status != "failed" {
+		t.Fatalf("error event = %#v", got.Events[0])
+	}
+}
+
 func TestParseCodexConversation_RendersResponseItemWebSearchCall(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "rollout.jsonl")
 	writeJSONL(t, path,

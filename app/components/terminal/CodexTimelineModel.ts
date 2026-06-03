@@ -119,18 +119,24 @@ export function buildZenTimeline(events: CodexConversationEvent[]): ZenTimelineI
 
     if (event.kind === "status") {
       flushExploration();
-      const body = (event.body || "").trim();
-      if (!body) {
-        continue;
+      if (shouldRenderStatusAsMessage(event)) {
+        const body = (event.body || "").trim();
+        if (body) {
+          items.push({
+            type: "message",
+            id: event.id || `status:${event.seq}`,
+            role: "assistant",
+            timestamp: event.timestamp,
+            body,
+            attachments: [],
+          });
+        }
+      } else {
+        const activity = activityFromEvent(event);
+        if (activity) {
+          items.push(activity);
+        }
       }
-      items.push({
-        type: "message",
-        id: event.id || `status:${event.seq}`,
-        role: "assistant",
-        timestamp: event.timestamp,
-        body,
-        attachments: [],
-      });
       continue;
     }
 
@@ -215,7 +221,7 @@ export function mergePendingUserMessagesIntoTimeline(
       id: `pending-turn:${latestPending.id}`,
       timestamp: latestPending.createdAt,
       statusKey: "running",
-      title: "Thinking",
+      title: "Working",
       tone: "running",
       icon: "time-outline",
       defaultExpanded: false,
@@ -354,7 +360,7 @@ export function mergeActiveTurnIntoTimeline(
   insertTimelineItemByTimestamp(merged, {
     type: "activity",
     id: "active-turn:running",
-    title: "Thinking",
+    title: "Working",
     tone: "running",
     icon: "time-outline",
     statusKey: "running",
@@ -393,6 +399,15 @@ function insertTimelineItemByTimestamp(
     return;
   }
   timelineItems.splice(insertAt, 0, item);
+}
+
+function shouldRenderStatusAsMessage(event: CodexConversationEvent) {
+  return (
+    event.kind === "status" &&
+    (event.title || "").trim() === "Codex" &&
+    !(event.status || "").trim() &&
+    Boolean((event.body || "").trim())
+  );
 }
 
 function activityFromEvent(event: CodexConversationEvent): ZenTimelineItem | null {
@@ -466,16 +481,20 @@ function activityFromEvent(event: CodexConversationEvent): ZenTimelineItem | nul
     case "web_search": {
       const failed = event.status === "failed" || (event.exit_code ?? 0) !== 0;
       const running = event.status === "running";
+      const action = parseToolPayload(event.input);
+      const body = webSearchActivityBody(event);
       return {
         type: "activity",
         id: event.id || `web-search:${event.seq}`,
         timestamp: event.timestamp,
         statusKey: event.status || "done",
-        title: running ? "Searching the web" : failed ? "Search failed" : "Searched",
+        title: webSearchActivityTitle(action, running, failed),
         tone: running ? "running" : failed ? "failed" : "success",
         icon: "search-outline",
         detail: webSearchEventDetail(event),
-        defaultExpanded: false,
+        body,
+        bodyKind: body ? "terminal" : undefined,
+        defaultExpanded: running || failed,
       };
     }
     case "commentary": {
@@ -496,17 +515,24 @@ function activityFromEvent(event: CodexConversationEvent): ZenTimelineItem | nul
       };
     }
     case "status": {
-      const title = [event.title, event.body].filter(Boolean).join(" · ");
-      if (!title || isLowSignalStatus(title)) {
+      const title = cleanDisplayText(event.title || "") || statusActivityTitle(event.status);
+      const body = cleanDisplayText(event.body || "");
+      if ((!title && !body) || (isLowSignalStatus(title) && !body)) {
         return null;
       }
+      const detail = statusActivityDetail(body);
       return {
         type: "activity",
         id: event.id || `status:${event.seq}`,
         timestamp: event.timestamp,
-        title,
-        tone: "neutral",
-        icon: "ellipse-outline",
+        statusKey: event.status || "done",
+        title: title || "Codex status",
+        tone: statusActivityTone(event.status),
+        icon: statusActivityIcon(event.status),
+        detail,
+        body: body || undefined,
+        bodyKind: body && statusActivityTone(event.status) === "failed" ? "terminal" : undefined,
+        defaultExpanded: event.status === "failed" || event.status === "running",
       };
     }
     default:
@@ -1151,6 +1177,37 @@ function webSearchEventDetail(event: CodexConversationEvent) {
   return webSearchActionDetail(action) || undefined;
 }
 
+function webSearchActivityTitle(action: unknown, running: boolean, failed: boolean) {
+  if (running) {
+    return "Searching the web";
+  }
+  if (failed) {
+    return "Search failed";
+  }
+  if (!isRecord(action)) {
+    return "Searched the web";
+  }
+  switch (stringField(action, "type")) {
+    case "open_page":
+      return "Opened page";
+    case "find_in_page":
+      return "Searched page";
+    case "search":
+      return "Searched the web";
+    default:
+      return "Web search";
+  }
+}
+
+function webSearchActivityBody(event: CodexConversationEvent) {
+  const input = cleanDisplayText(event.input || "");
+  if (input) {
+    return input;
+  }
+  const body = cleanDisplayText(event.body || "");
+  return body || undefined;
+}
+
 function webSearchActionDetail(action: Record<string, unknown>) {
   const type = stringField(action, "type");
   if (type === "search") {
@@ -1181,6 +1238,55 @@ function webSearchActionDetail(action: Record<string, unknown>) {
     return url;
   }
   return stringField(action, "query") || stringField(action, "url") || stringField(action, "pattern");
+}
+
+function statusActivityTitle(status?: string) {
+  switch ((status || "").trim()) {
+    case "failed":
+    case "error":
+      return "Codex error";
+    case "running":
+      return "Codex status";
+    case "warning":
+      return "Codex warning";
+    default:
+      return "Codex status";
+  }
+}
+
+function statusActivityTone(status?: string): ZenActivityTimelineItem["tone"] {
+  switch ((status || "").trim()) {
+    case "failed":
+    case "error":
+      return "failed";
+    case "running":
+      return "running";
+    default:
+      return "neutral";
+  }
+}
+
+function statusActivityIcon(status?: string): TimelineIconName {
+  switch ((status || "").trim()) {
+    case "failed":
+    case "error":
+      return "alert-circle-outline";
+    case "warning":
+      return "warning-outline";
+    case "running":
+      return "sync-outline";
+    default:
+      return "information-circle-outline";
+  }
+}
+
+function statusActivityDetail(body: string) {
+  const clean = cleanDisplayText(body);
+  if (!clean) {
+    return undefined;
+  }
+  const firstLine = clean.split("\n").find((line) => line.trim())?.trim() || clean;
+  return truncateRunes(firstLine, 140);
 }
 
 function commandSummary(command: string) {

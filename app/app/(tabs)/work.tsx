@@ -14,7 +14,7 @@ import { SafeAreaView } from "react-native-safe-area-context";
 import { BottomSheetFrame, IconButton, StateView } from "../../components/ui";
 import { AppButton } from "../../components/ui/AppButton";
 import { AppText } from "../../components/ui/AppText";
-import { BrainTmuxChatSurface } from "../../components/brain/BrainTmuxChatSurface";
+import { CodexChatSurface } from "../../components/terminal/CodexChatSurface";
 import {
   buildTerminalChrome,
   resolveTerminalTheme,
@@ -125,6 +125,9 @@ export default function BrainScreen() {
   const connectionState: ConnectionState = activeServer
     ? agentState.serverConnections[activeServer.id] || "offline"
     : "offline";
+  const connectionIssue = activeServer
+    ? agentState.serverConnectionIssues[activeServer.id] ?? null
+    : null;
   const statusLabel = brainStatusLabel({
     activeServer,
     connectionState,
@@ -132,10 +135,12 @@ export default function BrainScreen() {
   });
   const hostAgent = activeBrain?.host_agent ?? null;
   const hostAdapter = activeBrain?.host_adapter ?? null;
-  const chatThreadId = activeBrain?.chat_thread_id ?? "";
   const adapterLabel = brainAdapterLabel(activeBrain?.host_adapter);
   const baseAttentionLabel = brainAttentionLabel(activeBrain?.attention);
   const ready = Boolean(activeServer && activeBrain?.hydrated && hostAgent?.id);
+  const canUseCodexBrainInterface = Boolean(
+    ready && hostAdapter?.provider === "codex",
+  );
   const availableAdapters = activeBrain?.adapters ?? [];
   const canUseNativeThreads = Boolean(
     activeServer && hostAdapter?.capabilities?.native_threads,
@@ -864,19 +869,34 @@ export default function BrainScreen() {
       ) : null}
 
       <View style={styles.surface}>
-        {ready ? (
-          <BrainTmuxChatSurface
-            key={`brain-tmux-chat:${activeServer?.id}:${chatThreadId || hostAgent?.id}`}
+        {canUseCodexBrainInterface ? (
+          <CodexChatSurface
+            key={`brain-codex-chat:${activeServer?.id}:${hostAgent?.id}`}
             visible
             serverId={activeServer?.id ?? ""}
             agentId={hostAgent?.id ?? ""}
-            threadId={chatThreadId}
+            agentInfo={{
+              cwd: hostAgent?.cwd,
+              command: hostAgent?.command,
+              name: hostAgent?.name,
+            }}
             connectionState={connectionState}
+            connectionIssue={connectionIssue}
             theme={terminalTheme}
             chrome={chrome}
             screenFocused
             placeholder="Message Brain"
+            minimalComposer
             keyboardVerticalOffset={keyboardVerticalOffset}
+            showUnavailableAction={false}
+            emptyTitle="Ready"
+            emptyBody="Message Brain below."
+            onSwitchToTerminal={() => {}}
+          />
+        ) : ready ? (
+          <BrainInterfaceUnavailableState
+            adapterLabel={adapterLabel}
+            provider={hostAdapter?.provider}
           />
         ) : (
           <BrainLoadingState
@@ -1608,6 +1628,30 @@ function BrainLoadingState({
           : connected
             ? "Syncing Brain."
             : "Connect to a server to use Brain."}
+      </Text>
+    </View>
+  );
+}
+
+function BrainInterfaceUnavailableState({
+  adapterLabel,
+  provider,
+}: {
+  adapterLabel: string;
+  provider?: string;
+}) {
+  const colors = useAppColors();
+  const label = adapterLabel || brainProviderLabel(provider);
+  return (
+    <View style={loadingStyles.root}>
+      <Ionicons name="layers-outline" size={22} color={colors.textSecondary} />
+      <Text style={[loadingStyles.title, { color: colors.textPrimary }]}>
+        Interface unavailable
+      </Text>
+      <Text style={[loadingStyles.body, { color: colors.textSecondary }]}>
+        {label
+          ? `${label} does not expose a structured Brain interface yet.`
+          : "This adapter does not expose a structured Brain interface yet."}
       </Text>
     </View>
   );

@@ -170,16 +170,6 @@ export interface CodexConversationSubscriptionHandlers {
   onError(error: Error): void;
 }
 
-export interface BrainChatMessage {
-  id: string;
-  thread_id?: string;
-  session_id: string;
-  adapter_id?: string;
-  role: "user" | "assistant" | string;
-  body: string;
-  created_at?: string;
-}
-
 export interface BrainNativeThread {
   id: string;
   native_id?: string;
@@ -1470,96 +1460,6 @@ class MultiServerWebSocketClient {
     });
   }
 
-  getBrainChatSnapshot(serverId: string, targetId: string, threadId?: string) {
-    const requestId = `${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
-
-    return new Promise<BrainChatMessage[]>((resolve, reject) => {
-      const cleanup = () => {
-        if (timer) clearTimeout(timer);
-        this.off("brain_chat_snapshot", handleSnapshot);
-        this.off("error", handleError);
-      };
-
-      const handleSnapshot = (payload: any) => {
-        if (payload.serverId !== serverId || payload.request_id !== requestId) {
-          return;
-        }
-        cleanup();
-        resolve(normalizeBrainChatMessages(payload.messages));
-      };
-
-      const handleError = (payload: any) => {
-        if (payload.serverId !== serverId || payload.request_id !== requestId) {
-          return;
-        }
-        cleanup();
-        reject(new Error(payload.message || "Failed to load Brain chat."));
-      };
-
-      const timer = setTimeout(() => {
-        cleanup();
-        reject(new Error("Timed out while loading Brain chat."));
-      }, 15000);
-
-      this.on("brain_chat_snapshot", handleSnapshot);
-      this.on("error", handleError);
-      this.send(serverId, {
-        type: "brain_chat_snapshot",
-        request_id: requestId,
-        target_id: targetId,
-        thread_id: threadId ?? "",
-      });
-    });
-  }
-
-  sendBrainChatMessage(
-    serverId: string,
-    targetId: string,
-    text: string,
-    threadId?: string,
-  ) {
-    const requestId = `${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
-
-    return new Promise<BrainChatMessage[]>((resolve, reject) => {
-      const cleanup = () => {
-        if (timer) clearTimeout(timer);
-        this.off("brain_chat_snapshot", handleSnapshot);
-        this.off("error", handleError);
-      };
-
-      const handleSnapshot = (payload: any) => {
-        if (payload.serverId !== serverId || payload.request_id !== requestId) {
-          return;
-        }
-        cleanup();
-        resolve(normalizeBrainChatMessages(payload.messages));
-      };
-
-      const handleError = (payload: any) => {
-        if (payload.serverId !== serverId || payload.request_id !== requestId) {
-          return;
-        }
-        cleanup();
-        reject(new Error(payload.message || "Failed to send Brain message."));
-      };
-
-      const timer = setTimeout(() => {
-        cleanup();
-        reject(new Error("Timed out while sending Brain message."));
-      }, 30000);
-
-      this.on("brain_chat_snapshot", handleSnapshot);
-      this.on("error", handleError);
-      this.send(serverId, {
-        type: "brain_chat_send",
-        request_id: requestId,
-        target_id: targetId,
-        thread_id: threadId ?? "",
-        text,
-      });
-    });
-  }
-
   setBrainAdapter(serverId: string, adapterId: string) {
     const requestId = `${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
 
@@ -2425,30 +2325,6 @@ function normalizeSessionService(value: any): SessionService {
     urls: Array.isArray(service.urls) ? service.urls : [],
     local_only: Boolean(service.local_only),
   };
-}
-
-function normalizeBrainChatMessages(value: any): BrainChatMessage[] {
-  if (!Array.isArray(value)) {
-    return [];
-  }
-  return value
-    .map((raw): BrainChatMessage => {
-      const item = raw && typeof raw === "object" ? raw : {};
-      return {
-        id: typeof item.id === "string" ? item.id : "",
-        thread_id:
-          typeof item.thread_id === "string" ? item.thread_id : undefined,
-        session_id:
-          typeof item.session_id === "string" ? item.session_id : "",
-        adapter_id:
-          typeof item.adapter_id === "string" ? item.adapter_id : undefined,
-        role: typeof item.role === "string" ? item.role : "assistant",
-        body: typeof item.body === "string" ? item.body : "",
-        created_at:
-          typeof item.created_at === "string" ? item.created_at : undefined,
-      };
-    })
-    .filter((message) => message.id && message.session_id && message.body.trim());
 }
 
 function normalizeBrainNativeThreads(value: any): BrainNativeThread[] {

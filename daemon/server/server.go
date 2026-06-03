@@ -372,14 +372,11 @@ func (s *Server) handleClientMessage(conn *websocket.Conn, msg []byte) {
 	case "brain_thread_goal_clear":
 		s.handleBrainThreadGoalClear(conn, raw)
 
-	case "brain_chat_snapshot":
-		s.handleBrainChatSnapshot(conn, raw)
+	case "brain_chat_snapshot", "brain_chat_send":
+		s.handleDeprecatedBrainChatProtocol(conn, raw)
 
 	case "brain_chat_new":
 		s.handleBrainChatNew(conn, raw)
-
-	case "brain_chat_send":
-		s.handleBrainChatSend(conn, raw)
 
 	case "register_push":
 		if raw.PushToken != "" {
@@ -1694,37 +1691,14 @@ func (s *Server) handleBrainThreadGoalClear(conn *websocket.Conn, raw clientMess
 	})
 }
 
-func (s *Server) handleBrainChatSnapshot(conn *websocket.Conn, raw clientMessage) {
-	if s.brain == nil {
-		s.sendErrorWithRequestID(conn, raw.RequestID, "brain_unavailable", "Brain is not configured")
+func (s *Server) handleDeprecatedBrainChatProtocol(conn *websocket.Conn, raw clientMessage) {
+	log.Printf("deprecated brain chat protocol message type: %s", raw.Type)
+	message := "Brain no longer supports terminal transcript chat. Reload the app bundle and use a structured Brain provider interface."
+	if raw.RequestID != "" {
+		s.sendErrorWithRequestID(conn, raw.RequestID, "brain_chat_protocol_removed", message)
 		return
 	}
-	targetID := firstNonEmptyString(raw.TargetID, raw.AgentID)
-	if strings.TrimSpace(targetID) == "" {
-		s.sendErrorWithRequestID(conn, raw.RequestID, "brain_chat_snapshot_failed", "target id is required")
-		return
-	}
-	text, err := s.watcher.CapturePaneContent(targetID)
-	if err != nil {
-		s.sendErrorWithRequestID(conn, raw.RequestID, "brain_chat_snapshot_failed", err.Error())
-		return
-	}
-	messages, err := s.brain.SyncTerminalTranscript(raw.ThreadID, targetID, text)
-	if err != nil {
-		s.sendErrorWithRequestID(conn, raw.RequestID, "brain_chat_snapshot_failed", err.Error())
-		return
-	}
-	threadID := firstBrainThreadID(raw.ThreadID, messages)
-	if threadID == "" {
-		threadID, _ = s.brain.ChatThreadID()
-	}
-	s.sendJSON(conn, map[string]any{
-		"type":       "brain_chat_snapshot",
-		"request_id": raw.RequestID,
-		"target_id":  targetID,
-		"thread_id":  threadID,
-		"messages":   messages,
-	})
+	s.sendError(conn, "brain_chat_protocol_removed", message)
 }
 
 func (s *Server) handleBrainChatNew(conn *websocket.Conn, raw clientMessage) {
@@ -1742,57 +1716,6 @@ func (s *Server) handleBrainChatNew(conn *websocket.Conn, raw clientMessage) {
 		"request_id": raw.RequestID,
 		"brain":      s.decorateBrainSnapshot(snapshot),
 	})
-}
-
-func (s *Server) handleBrainChatSend(conn *websocket.Conn, raw clientMessage) {
-	if s.brain == nil {
-		s.sendErrorWithRequestID(conn, raw.RequestID, "brain_unavailable", "Brain is not configured")
-		return
-	}
-	targetID := firstNonEmptyString(raw.TargetID, raw.AgentID)
-	if strings.TrimSpace(targetID) == "" {
-		s.sendErrorWithRequestID(conn, raw.RequestID, "brain_chat_send_failed", "target id is required")
-		return
-	}
-	text := strings.TrimSpace(raw.Text)
-	if text == "" {
-		s.sendErrorWithRequestID(conn, raw.RequestID, "brain_chat_send_failed", "message text is required")
-		return
-	}
-	transcriptBefore, err := s.watcher.CapturePaneContent(targetID)
-	if err != nil {
-		s.sendErrorWithRequestID(conn, raw.RequestID, "brain_chat_send_failed", err.Error())
-		return
-	}
-	if err := s.watcher.SendInput(targetID, text+"\n"); err != nil {
-		s.sendErrorWithRequestID(conn, raw.RequestID, "brain_chat_send_failed", err.Error())
-		return
-	}
-	messages, err := s.brain.RecordUserMessage(raw.ThreadID, targetID, text, transcriptBefore)
-	if err != nil {
-		s.sendErrorWithRequestID(conn, raw.RequestID, "brain_chat_send_failed", err.Error())
-		return
-	}
-	threadID := firstBrainThreadID(raw.ThreadID, messages)
-	if threadID == "" {
-		threadID, _ = s.brain.ChatThreadID()
-	}
-	s.sendJSON(conn, map[string]any{
-		"type":       "brain_chat_snapshot",
-		"request_id": raw.RequestID,
-		"target_id":  targetID,
-		"thread_id":  threadID,
-		"messages":   messages,
-	})
-}
-
-func firstBrainThreadID(fallback string, messages []brain.ChatMessage) string {
-	for _, message := range messages {
-		if strings.TrimSpace(message.ThreadID) != "" {
-			return strings.TrimSpace(message.ThreadID)
-		}
-	}
-	return strings.TrimSpace(fallback)
 }
 
 func visibleAgentSessions(agents []*classifier.Agent) []*classifier.Agent {
