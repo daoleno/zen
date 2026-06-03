@@ -40,6 +40,7 @@ interface CodexTimelineViewProps {
   jumpLabel?: string;
   emptyTitle?: string;
   emptyBody?: string;
+  agentCwd?: string;
   chrome: TerminalThemeChrome;
   theme: TerminalThemePalette;
   onLayout(event: LayoutChangeEvent): void;
@@ -75,6 +76,7 @@ export function CodexTimelineView({
   jumpLabel,
   emptyTitle,
   emptyBody,
+  agentCwd,
   chrome,
   theme,
   onLayout,
@@ -126,11 +128,13 @@ export function CodexTimelineView({
         chrome={chrome}
         onUnavailableAction={onUnavailableAction}
         showUnavailableAction={showUnavailableAction}
+        agentCwd={agentCwd}
         emptyTitle={emptyTitle}
         emptyBody={emptyBody}
       />
     ),
     [
+      agentCwd,
       chrome,
       error,
       emptyStateSuppressed,

@@ -165,6 +165,44 @@ func TestRegisterCreatedSessionMarksHiddenAgent(t *testing.T) {
 	}
 }
 
+func TestAgentMetadataChangedDetectsNameChange(t *testing.T) {
+	agent := &classifier.Agent{
+		Name:      "Codex (main:@42)",
+		Project:   "zen",
+		Cwd:       "/repo/zen",
+		Command:   "codex",
+		ProcessID: 123,
+	}
+	previous := agentMetadataSnapshotFor(agent)
+
+	agent.Name = "Investigate rename sync (main:@42)"
+
+	if !agentMetadataChanged(previous, agent) {
+		t.Fatal("expected metadata change after agent name changed")
+	}
+}
+
+func TestAgentMetadataChangedIgnoresStateOnlyChange(t *testing.T) {
+	agent := &classifier.Agent{
+		Name:      "Codex (main:@42)",
+		Project:   "zen",
+		Cwd:       "/repo/zen",
+		Command:   "codex",
+		State:     classifier.StateRunning,
+		Summary:   "running",
+		ProcessID: 123,
+	}
+	previous := agentMetadataSnapshotFor(agent)
+
+	agent.State = classifier.StateBlocked
+	agent.Summary = "waiting"
+	agent.UpdatedAt = time.Now()
+
+	if agentMetadataChanged(previous, agent) {
+		t.Fatal("state-only updates should not count as metadata changes")
+	}
+}
+
 func TestSplitTmuxInputTreatsTrailingNewlineAsSubmit(t *testing.T) {
 	body, submit := splitTmuxInput("/status\n")
 	if body != "/status" || !submit {

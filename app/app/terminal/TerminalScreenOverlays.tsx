@@ -122,8 +122,8 @@ export function TerminalScreenOverlays({
 
       <NewTerminalSheet
         visible={newTerminalVisible}
-        title="New Terminal"
-        subtitle="Start a plain shell here, or launch Claude/Codex in the current project."
+        title="Session"
+        subtitle=""
         initialCwd={newTerminalInitialCwd}
         selectedServerId={selectedServerId}
         submitting={creatingSession}

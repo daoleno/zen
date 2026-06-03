@@ -3,7 +3,7 @@ import {
   ScrollView,
   StyleSheet,
 } from "react-native";
-import { AppButton } from "../ui";
+import { AppButton, AppText } from "../ui";
 import { NewTerminalAdvancedForm } from "./NewTerminalAdvancedForm";
 import {
   NewTerminalQuickLaunchSection,
@@ -12,6 +12,7 @@ import {
 } from "./NewTerminalQuickLaunchSection";
 
 interface NewTerminalSheetContentProps {
+  title: string;
   serverOptions: NewTerminalServerOption[];
   selectedServerId?: string | null;
   command: string;
@@ -33,6 +34,7 @@ interface NewTerminalSheetContentProps {
 }
 
 export function NewTerminalSheetContent({
+  title,
   serverOptions,
   selectedServerId,
   command,
@@ -59,16 +61,23 @@ export function NewTerminalSheetContent({
       keyboardDismissMode="none"
       bounces={false}
     >
+      <AppText variant="title" tone="primary" style={styles.title}>
+        {title}
+      </AppText>
+
       <NewTerminalQuickLaunchSection
         serverOptions={serverOptions}
         selectedServerId={selectedServerId}
         command={command}
+        cwd={cwd}
         submitting={submitting}
         canSubmit={canSubmit}
         advanced={advanced}
+        canPickDirectory={canPickDirectory}
         onSelectServer={onSelectServer}
         onPresetPress={onPresetPress}
         onToggleAdvanced={onToggleAdvanced}
+        onPickDirectory={onPickDirectory}
       />
 
       {advanced ? (
@@ -98,6 +107,9 @@ export function NewTerminalSheetContent({
 }
 
 const styles = StyleSheet.create({
+  title: {
+    marginBottom: 14,
+  },
   cancelBtn: {
     minHeight: 34,
     borderRadius: 10,

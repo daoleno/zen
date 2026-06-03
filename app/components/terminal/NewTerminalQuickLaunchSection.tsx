@@ -6,6 +6,7 @@ import {
 import { Ionicons } from '@expo/vector-icons';
 import { useAppColors } from '../../constants/tokens';
 import { AppText } from '../ui';
+import { NewTerminalCwdRow } from './NewTerminalCwdRow';
 import {
   NewTerminalLaunchPresetList,
   type NewTerminalLaunchPreset,
@@ -22,24 +23,30 @@ interface NewTerminalQuickLaunchSectionProps {
   serverOptions: NewTerminalServerOption[];
   selectedServerId?: string | null;
   command: string;
+  cwd: string;
   submitting: boolean;
   canSubmit: boolean;
   advanced: boolean;
+  canPickDirectory: boolean;
   onSelectServer?(serverId: string): void;
   onPresetPress(preset: NewTerminalLaunchPreset): void;
   onToggleAdvanced(): void;
+  onPickDirectory(): void;
 }
 
 export function NewTerminalQuickLaunchSection({
   serverOptions,
   selectedServerId,
   command,
+  cwd,
   submitting,
   canSubmit,
   advanced,
+  canPickDirectory,
   onSelectServer,
   onPresetPress,
   onToggleAdvanced,
+  onPickDirectory,
 }: NewTerminalQuickLaunchSectionProps) {
   const colors = useAppColors();
 
@@ -49,6 +56,12 @@ export function NewTerminalQuickLaunchSection({
         serverOptions={serverOptions}
         selectedServerId={selectedServerId}
         onSelectServer={onSelectServer}
+      />
+
+      <NewTerminalCwdRow
+        cwd={cwd}
+        canPickDirectory={canPickDirectory}
+        onPickDirectory={onPickDirectory}
       />
 
       <NewTerminalLaunchPresetList

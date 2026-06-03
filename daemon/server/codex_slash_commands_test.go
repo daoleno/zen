@@ -62,7 +62,7 @@ func TestParseCodexSlashDescriptionsFindsBinaryBlock(t *testing.T) {
 	for command, want := range map[string]string{
 		"model":       "choose what model and reasoning effort to use",
 		"permissions": "choose what Codex is allowed to do",
-		"status":      "show current session configuration and token usage",
+		"skills":      "use skills to improve how Codex performs specific tasks",
 		"agent":       "switch the active agent thread",
 	} {
 		if got := descriptions[command]; got != want {
@@ -87,12 +87,12 @@ func TestDefaultCodexSlashCommandsContainsRealCommandSet(t *testing.T) {
 			t.Fatalf("command %s missing capability metadata: %#v", command.Value, command)
 		}
 	}
-	for _, value := range []string{"/model", "/permissions", "/diff", "/status", "/agent", "/setup-default-sandbox", "/settings"} {
+	for _, value := range []string{"/model", "/permissions", "/diff", "/agent", "/setup-default-sandbox", "/settings"} {
 		if !values[value] {
 			t.Fatalf("missing command %s", value)
 		}
 	}
-	for _, value := range []string{"/test", "/help", "/sandbox", "/voice", "/theme", "/compact", "/plan"} {
+	for _, value := range []string{"/test", "/help", "/sandbox", "/voice", "/theme", "/compact", "/plan", "/status", "/mcp"} {
 		if values[value] {
 			t.Fatalf("unexpected non-Codex command %s", value)
 		}
@@ -106,10 +106,15 @@ func TestSlashCommandCapabilitiesAreConservative(t *testing.T) {
 		values[command.Value] = command
 	}
 
-	for _, value := range []string{"/copy", "/status", "/diff", "/mcp"} {
+	for _, value := range []string{"/copy", "/diff"} {
 		command := values[value]
 		if command.Execution != "terminal-required" || !command.ChatSupported || !command.TerminalSupported {
 			t.Fatalf("%s capability = %#v, want chat-supported Codex terminal command", value, command)
+		}
+	}
+	for _, value := range []string{"/status", "/mcp"} {
+		if command, ok := values[value]; ok {
+			t.Fatalf("%s should be hidden, got %#v", value, command)
 		}
 	}
 
@@ -215,9 +220,14 @@ func TestDiscoverCodexSlashCommandsFromInstalledCodex(t *testing.T) {
 	for _, command := range commands {
 		values[command.Value] = command
 	}
-	for _, value := range []string{"/model", "/fast", "/permissions", "/diff", "/status", "/settings"} {
+	for _, value := range []string{"/model", "/fast", "/permissions", "/diff", "/settings"} {
 		if !strings.HasPrefix(values[value].Value, "/") {
 			t.Fatalf("missing discovered command %s", value)
+		}
+	}
+	for _, value := range []string{"/status", "/mcp"} {
+		if command, ok := values[value]; ok {
+			t.Fatalf("%s should be hidden from discovered commands, got %#v", value, command)
 		}
 	}
 	if fast := values["/fast"].Description; fast == "" || fast == "use fewer credits for upcoming turns" {

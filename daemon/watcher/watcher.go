@@ -138,6 +138,7 @@ func (w *Watcher) poll() {
 			}
 			w.agents[win.target] = agent
 		}
+		previousMetadata := agentMetadataSnapshotFor(agent)
 		if nextName := formatAgentName(win.name, win.target); nextName != "" {
 			agent.Name = nextName
 		}
@@ -197,6 +198,14 @@ func (w *Watcher) poll() {
 				NewState: string(newState),
 			}
 		}
+
+		if exists && !contentChanged && oldState == newState && agentMetadataChanged(previousMetadata, agent) {
+			w.events <- SessionEvent{
+				Type:    "agent_metadata_change",
+				AgentID: win.target,
+				Agent:   cloneAgent(agent),
+			}
+		}
 	}
 
 	// Check for removed windows.
@@ -247,6 +256,33 @@ func cloneAgent(agent *classifier.Agent) *classifier.Agent {
 		cp.LastLines = append([]string(nil), agent.LastLines...)
 	}
 	return &cp
+}
+
+type agentMetadataSnapshot struct {
+	name      string
+	project   string
+	cwd       string
+	command   string
+	processID int
+	hidden    bool
+}
+
+func agentMetadataSnapshotFor(agent *classifier.Agent) agentMetadataSnapshot {
+	if agent == nil {
+		return agentMetadataSnapshot{}
+	}
+	return agentMetadataSnapshot{
+		name:      agent.Name,
+		project:   agent.Project,
+		cwd:       agent.Cwd,
+		command:   agent.Command,
+		processID: agent.ProcessID,
+		hidden:    agent.Hidden,
+	}
+}
+
+func agentMetadataChanged(previous agentMetadataSnapshot, agent *classifier.Agent) bool {
+	return previous != agentMetadataSnapshotFor(agent)
 }
 
 func isBrainHostWindow(target, windowName string) bool {

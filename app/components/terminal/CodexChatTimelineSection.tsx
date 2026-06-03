@@ -133,6 +133,7 @@ export function CodexChatTimelineSection({
       jumpButtonBottom={10}
       chrome={chrome}
       theme={theme}
+      agentCwd={agentCwd}
       emptyTitle={emptyTitle}
       emptyBody={emptyBody}
       onLayout={onLayout}

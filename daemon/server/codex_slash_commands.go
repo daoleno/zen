@@ -114,12 +114,10 @@ var codexSlashCommandSpecs = []codexSlashCommandSpec{
 	{name: "raw", description: "toggle raw scrollback mode for copy-friendly terminal selection"},
 	{name: "diff", description: "show git diff (including untracked files)"},
 	{name: "mention", description: "mention a file"},
-	{name: "status", description: "show current session configuration and token usage"},
 	{name: "debug-config", description: "show config layers and requirement sources for debugging"},
 	{name: "title", description: "configure which items appear in the terminal title"},
 	{name: "statusline", description: "configure which items appear in the status line"},
 	{name: "pets", description: "choose or hide the terminal pet"},
-	{name: "mcp", description: "list configured MCP tools; use /mcp verbose for details"},
 	{name: "apps", description: "manage apps"},
 	{name: "plugins", description: "browse plugins"},
 	{name: "logout", description: "log out of Codex"},
@@ -167,12 +165,10 @@ var codexSlashCommandCapabilities = map[string]codexSlashCommandCapability{
 	"raw":                   terminalCommand("tools", inputNone(), "terminal", true),
 	"diff":                  chatTerminalCommand("tools", inputNone(), "terminal", false),
 	"mention":               terminalCommand("tools", pickerInput("file"), "terminal", true),
-	"status":                chatTerminalCommand("session", inputNone(), "terminal", false),
 	"debug-config":          terminalCommand("debug", inputNone(), "terminal", false),
 	"title":                 terminalCommand("settings", inputNone(), "management-screen", true),
 	"statusline":            terminalCommand("settings", inputNone(), "management-screen", true),
 	"pets":                  terminalCommand("settings", pickerInput("pet"), "management-screen", true),
-	"mcp":                   chatTerminalCommand("management", inlineArgs("verbose"), "terminal", false),
 	"apps":                  terminalCommand("management", inputNone(), "management-screen", true),
 	"plugins":               terminalCommand("management", inputNone(), "management-screen", true),
 	"logout":                terminalCommand("danger", inputNone(), "terminal", true),
@@ -289,7 +285,7 @@ func commandsFromDiscovery(discovery codexSlashCommandDiscovery) []CodexSlashCom
 
 func isHiddenCodexSlashCommand(name string) bool {
 	switch name {
-	case "compact", "plan", "theme":
+	case "compact", "mcp", "plan", "status", "theme":
 		return true
 	default:
 		return false

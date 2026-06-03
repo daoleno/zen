@@ -4,6 +4,7 @@ import {
   Alert,
   FlatList,
   KeyboardAvoidingView,
+  SectionList,
   Linking,
   Modal,
   Platform,
@@ -20,6 +21,7 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { Agent, useAgents } from '../../store/agents';
 import { useWork, type WorkItem } from '../../store/work';
 import { AgentStatus, Colors, Typography, statusColor, useAppColors } from '../../constants/tokens';
+import { IconButton } from '../../components/ui/IconButton';
 import { TerminalPreview } from '../../components/terminal/TerminalPreview';
 import { AgentKindIcon } from '../../components/terminal/AgentKindIcon';
 import { NewTerminalSheet } from '../../components/terminal/NewTerminalSheet';
@@ -43,6 +45,7 @@ import { presentAgent } from '../../services/agentPresentation';
 import {
   filterAgentsByPreferredServers,
   groupAgentsByDirectory,
+  type AgentDirectorySection,
 } from '../../services/serverSelection';
 import type { SessionService } from '../../services/sessionServices';
 
@@ -189,22 +192,11 @@ export default function InboxScreen() {
       hasConfiguredServers &&
       (anyConnecting || waitingForInitialAgentSnapshot)
     );
-  const groupedAgents = useMemo(
+  const listSections = useMemo(
     () => groupAgentsByDirectory(sortedAgents, { showServerName: showServerNames }),
     [showServerNames, sortedAgents],
   );
-  const headerSummary = useMemo(() => {
-    if (sortedAgents.length === 0) {
-      if (anyConnecting) return 'reconnecting';
-      if (anyConnected) return 'connected';
-      if (hasConfiguredServers) return 'offline';
-      return 'no servers';
-    }
-
-    const workspaceLabel = groupedAgents.length === 1 ? '1 workspace' : `${groupedAgents.length} workspaces`;
-    const sessionLabel = sortedAgents.length === 1 ? '1 session' : `${sortedAgents.length} sessions`;
-    return `${workspaceLabel} · ${sessionLabel}`;
-  }, [anyConnected, anyConnecting, groupedAgents.length, hasConfiguredServers, sortedAgents.length]);
+  const useSectionHeaders = listSections.length > 1;
   const primaryIssue = useMemo(() => {
     let nextIssue: (typeof state.serverConnectionIssues)[string] | null = null;
     for (const issue of Object.values(state.serverConnectionIssues)) {
@@ -476,58 +468,55 @@ export default function InboxScreen() {
       : colors.disabledText;
   const bannerText = primaryIssue?.title || (anyConnecting ? 'Connecting' : 'Offline');
   const emptyTitle = !hasConfiguredServers
-    ? 'No servers configured'
+    ? 'No servers'
     : anyConnected
-      ? 'Connected, waiting for agent data'
-      : primaryIssue?.title || (anyConnecting ? 'Connecting to servers' : 'No agents available');
+      ? 'No sessions yet'
+      : primaryIssue?.title || (anyConnecting ? 'Connecting' : 'Offline');
   const emptySubtext = !hasConfiguredServers
-    ? 'Add your first server before Zen can load agents.'
+    ? 'Add a server in Settings.'
     : anyConnected
-      ? 'Zen is connected to your daemon, but no agent data has arrived yet. Start Claude or Codex, or check the tmux watcher.'
-      : primaryIssue
-        ? `${primaryIssue.detail} ${primaryIssue.hint}`
-        : anyConnecting
-          ? 'Zen is trying to reconnect. You can still change servers now.'
-          : 'Your saved servers are offline. You can edit them or add another one.';
+      ? 'Start an agent on your daemon, or create a terminal.'
+      : primaryIssue?.detail || (anyConnecting ? null : 'Check server connection in Settings.');
 
-  const renderListAgent = ({ item, index }: { item: Agent; index: number }) => {
+  const renderListAgent = ({ item }: { item: Agent }) => {
     const presented = presentAgent(item, agentAliases[item.key]);
     const sessionTitle = resolveSessionTitle(item, presented, agentWorkMap);
-    const directoryLabel = relativeDirectoryLabel(item, showServerNames);
-    const activityLine = resolveSessionActivity(item, presented);
     return (
       <TouchableOpacity
-        style={[
-          styles.sessionRow,
-          index === sortedAgents.length - 1 && styles.sessionRowLast,
-        ]}
+        style={styles.sessionRow}
         onPress={() => openAgent(item)}
         onLongPress={() => openContextMenu(item)}
         activeOpacity={0.82}
         delayLongPress={400}
       >
-        <View style={styles.sessionStatusColumn}>
-          <View style={[styles.sessionStatusDot, { backgroundColor: statusColor(item.status) }]} />
+        <View style={styles.sessionIconWrap}>
+          <AgentKindIcon kind={presented.kind} size={15} />
+          <View
+            style={[
+              styles.sessionStatusBadge,
+              { backgroundColor: statusColor(item.status) },
+            ]}
+          />
         </View>
         <View style={styles.sessionBody}>
-          <View style={styles.sessionTitleLine}>
-            <Text style={styles.sessionDirectory} numberOfLines={1}>
-              {directoryLabel}
-            </Text>
-            <Text style={styles.sessionPathSeparator}>{'>'}</Text>
-            <Text style={styles.sessionName} numberOfLines={1}>
-              {sessionTitle}
-            </Text>
-          </View>
-          <View style={styles.sessionMetaLine}>
-            <AgentKindIcon kind={presented.kind} size={11} />
-            <Text style={styles.sessionMetaText} numberOfLines={1}>
-              {activityLine}
-            </Text>
-          </View>
+          <Text style={styles.sessionName} numberOfLines={1}>
+            {sessionTitle}
+          </Text>
         </View>
-        <Ionicons name="chevron-forward" size={14} color={colors.disabledText} />
       </TouchableOpacity>
+    );
+  };
+
+  const renderListSectionHeader = ({ section }: { section: AgentDirectorySection }) => {
+    if (!useSectionHeaders) {
+      return null;
+    }
+    return (
+      <View style={styles.sectionHeader}>
+        <Text style={styles.sectionTitle} numberOfLines={1}>
+          {section.title}
+        </Text>
+      </View>
     );
   };
 
@@ -543,13 +532,12 @@ export default function InboxScreen() {
         delayLongPress={400}
       >
         <View style={styles.gridHeader}>
-          <AgentKindIcon kind={presented.kind} size={16} />
-          <Text style={styles.gridTitle} numberOfLines={1}>
-            {relativeDirectoryLabel(item, showServerNames)} {'>'} {sessionTitle}
-          </Text>
-          {item.serverName ? (
-            <Text style={styles.gridMeta} numberOfLines={1}>{item.serverName}</Text>
-          ) : null}
+          <View style={styles.gridHeaderMain}>
+            <AgentKindIcon kind={presented.kind} size={15} />
+            <Text style={styles.gridTitle} numberOfLines={1}>
+              {sessionTitle}
+            </Text>
+          </View>
           <View style={[styles.statusDot, { backgroundColor: statusColor(item.status) }]} />
         </View>
         <View style={styles.gridPreview}>
@@ -571,43 +559,43 @@ export default function InboxScreen() {
       <View style={styles.header}>
         <View style={styles.headerBrand}>
           <Text style={styles.title}>Zen</Text>
-          <Text style={styles.headerSummary}>{headerSummary}</Text>
         </View>
         <View style={styles.headerActions}>
-          <TouchableOpacity
-            style={[styles.serviceButton, !anyConnected && { opacity: 0.5 }]}
+          <IconButton
+            icon="globe-outline"
+            tone="ghost"
+            size={36}
+            iconSize={18}
+            color={anyConnected ? colors.textSecondary : colors.disabledText}
+            accessibilityLabel="Services"
             onPress={openSessionServices}
-            activeOpacity={0.82}
-          >
-            <Ionicons
-              name="globe-outline"
-              size={18}
-              color={anyConnected ? colors.accent : colors.disabledText}
-            />
-          </TouchableOpacity>
-          <TouchableOpacity
-            style={[styles.addButton, creatingServerId && { opacity: 0.5 }]}
+            disabled={!anyConnected}
+          />
+          <IconButton
+            icon="add"
+            tone="ghost"
+            size={36}
+            iconSize={20}
+            color={colors.accent}
+            accessibilityLabel="New terminal"
             onPress={openCreateTerminal}
-            disabled={!!creatingServerId}
-            activeOpacity={0.82}
-          >
-            <Ionicons name="add" size={19} color={colors.accent} />
-          </TouchableOpacity>
+            disabled={!!creatingServerId || !anyConnected}
+          />
           <View style={styles.viewToggle}>
-          <ToggleButton
-            icon="reorder-three-outline"
-            selected={viewMode === 'list'}
-            onPress={() => setViewMode('list')}
-            colors={colors}
-            styles={styles}
-          />
-          <ToggleButton
-            icon="grid-outline"
-            selected={viewMode === 'grid'}
-            onPress={() => setViewMode('grid')}
-            colors={colors}
-            styles={styles}
-          />
+            <ToggleButton
+              icon="reorder-three-outline"
+              selected={viewMode === 'list'}
+              onPress={() => setViewMode('list')}
+              colors={colors}
+              styles={styles}
+            />
+            <ToggleButton
+              icon="grid-outline"
+              selected={viewMode === 'grid'}
+              onPress={() => setViewMode('grid')}
+              colors={colors}
+              styles={styles}
+            />
           </View>
         </View>
       </View>
@@ -620,7 +608,9 @@ export default function InboxScreen() {
         <View style={styles.emptyContainer}>
           <Text style={styles.emptyIcon}>☯</Text>
           <Text style={styles.emptyText}>{emptyTitle}</Text>
-          <Text style={styles.emptySubtext}>{emptySubtext}</Text>
+          {emptySubtext ? (
+            <Text style={styles.emptySubtext}>{emptySubtext}</Text>
+          ) : null}
           <View style={styles.emptyActions}>
             {connectedServers.length > 0 ? (
               <TouchableOpacity
@@ -630,46 +620,44 @@ export default function InboxScreen() {
                 activeOpacity={0.82}
               >
                 <Text style={[styles.emptyActionText, styles.emptyActionTextPrimary]}>
-                  {creatingServerId ? 'Starting Terminal…' : 'New Terminal'}
+                  {creatingServerId ? 'Starting…' : 'New terminal'}
                 </Text>
               </TouchableOpacity>
-            ) : null}
-            <TouchableOpacity
-              style={[
-                styles.emptyActionBtn,
-                connectedServers.length === 0 && styles.emptyActionBtnPrimary,
-              ]}
-              onPress={() => openServerSettings(!hasConfiguredServers)}
-              activeOpacity={0.82}
-            >
-              <Text style={[
-                styles.emptyActionText,
-                connectedServers.length === 0 && styles.emptyActionTextPrimary,
-              ]}>
-                {hasConfiguredServers ? 'Open Server Settings' : 'Add Server'}
-              </Text>
-            </TouchableOpacity>
-            {hasConfiguredServers ? (
+            ) : (
               <TouchableOpacity
-                style={styles.emptyActionBtn}
+                style={[styles.emptyActionBtn, styles.emptyActionBtnPrimary]}
                 onPress={() => openServerSettings(true)}
                 activeOpacity={0.82}
               >
-                <Text style={styles.emptyActionText}>Add Another Server</Text>
+                <Text style={[styles.emptyActionText, styles.emptyActionTextPrimary]}>
+                  Add server
+                </Text>
+              </TouchableOpacity>
+            )}
+            {hasConfiguredServers ? (
+              <TouchableOpacity
+                style={styles.emptyActionLink}
+                onPress={() => openServerSettings(false)}
+                activeOpacity={0.72}
+              >
+                <Text style={styles.emptyActionLinkText}>Settings</Text>
               </TouchableOpacity>
             ) : null}
           </View>
         </View>
       ) : viewMode === 'list' ? (
-        <FlatList
-          data={sortedAgents}
+        <SectionList
+          sections={listSections}
           key="list"
           keyExtractor={item => item.key}
           renderItem={renderListAgent}
+          renderSectionHeader={renderListSectionHeader}
+          stickySectionHeadersEnabled={false}
           contentContainerStyle={styles.promptContent}
           removeClippedSubviews={false}
           windowSize={15}
           showsVerticalScrollIndicator={false}
+          SectionSeparatorComponent={() => <View style={styles.sectionGap} />}
         />
       ) : (
         <FlatList
@@ -698,12 +686,7 @@ export default function InboxScreen() {
           />
           <View style={styles.serviceSheet}>
             <View style={styles.serviceSheetHeader}>
-              <View style={styles.serviceSheetTitleBlock}>
-                <Text style={styles.serviceSheetTitle}>Services</Text>
-                <Text style={styles.serviceSheetMeta}>
-                  {connectedServers.length} daemon{connectedServers.length === 1 ? '' : 's'} · {sessionServices.length} port{sessionServices.length === 1 ? '' : 's'}
-                </Text>
-              </View>
+              <Text style={styles.serviceSheetTitle}>Services</Text>
               <TouchableOpacity
                 style={styles.serviceIconButton}
                 onPress={() => void refreshSessionServices()}
@@ -798,8 +781,8 @@ export default function InboxScreen() {
 
       <NewTerminalSheet
         visible={createSheetVisible}
-        title="New Terminal"
-        subtitle="Open a plain shell, or launch Claude/Codex in a real working directory."
+        title="Session"
+        subtitle=""
         initialCwd={selectedCreateServerId ? findSuggestedCwd(selectedCreateServerId) : ''}
         serverOptions={createServerOptions}
         selectedServerId={selectedCreateServerId}
@@ -948,105 +931,7 @@ function resolveSessionTitle(
     return workTitle;
   }
 
-  return shortAgentLabel(agent.name) || presented.shortTitle || presented.title;
-}
-
-function relativeDirectoryLabel(agent: Agent, showServerName: boolean): string {
-  const directory = compactDirectoryPath(agent.cwd, agent.project);
-  const fallback = agent.project?.trim() || 'no directory';
-  const label = directory || fallback;
-  if (!showServerName || !agent.serverName) {
-    return label;
-  }
-  return `${agent.serverName}/${label}`;
-}
-
-function compactDirectoryPath(value?: string, project?: string): string {
-  const trimmed = value?.trim().replace(/\/+$/, '') || '';
-  if (!trimmed) {
-    return '';
-  }
-  if (trimmed === '/') {
-    return '/';
-  }
-
-  const relative = trimmed.replace(/^\.\//, '');
-  if (!relative.startsWith('/')) {
-    return relative;
-  }
-
-  const parts = relative.split('/').filter(Boolean);
-  if (parts.length === 0) {
-    return '/';
-  }
-
-  const projectName = project?.trim();
-  if (projectName) {
-    const projectIndex = findLastPathIndex(parts, part => part === projectName);
-    if (projectIndex >= 0) {
-      return parts.slice(projectIndex).join('/');
-    }
-  }
-
-  const markerIndex = findLastPathIndex(parts, part =>
-    ['workspace', 'workspaces', 'project', 'projects', 'code', 'src', 'repo', 'repos'].includes(part.toLowerCase()),
-  );
-  if (markerIndex >= 0 && markerIndex < parts.length - 1) {
-    return parts.slice(markerIndex + 1).join('/');
-  }
-
-  return parts.slice(-2).join('/');
-}
-
-function findLastPathIndex(parts: string[], predicate: (part: string) => boolean): number {
-  for (let index = parts.length - 1; index >= 0; index -= 1) {
-    if (predicate(parts[index])) {
-      return index;
-    }
-  }
-  return -1;
-}
-
-function resolveSessionActivity(agent: Agent, presented: ReturnType<typeof presentAgent>): string {
-  const preview = compactActivityText(agent.summary) || compactActivityText(lastNonEmptyLine(agent.last_output_lines));
-  return [statusLabel(agent.status), presented.typeLabel, preview].filter(Boolean).join(' · ');
-}
-
-function statusLabel(status: AgentStatus): string {
-  switch (status) {
-    case 'running':
-      return 'running';
-    case 'blocked':
-      return 'blocked';
-    case 'done':
-      return 'done';
-    case 'failed':
-      return 'failed';
-    default:
-      return 'unknown';
-  }
-}
-
-function lastNonEmptyLine(lines: string[]): string {
-  for (let index = lines.length - 1; index >= 0; index -= 1) {
-    const line = lines[index]?.trim();
-    if (line) {
-      return line;
-    }
-  }
-  return '';
-}
-
-function compactActivityText(value?: string): string {
-  const compact = stripAnsi(value || '').replace(/\s+/g, ' ').trim();
-  if (!compact) {
-    return '';
-  }
-  return compact.length > 120 ? `${compact.slice(0, 117)}...` : compact;
-}
-
-function stripAnsi(value: string): string {
-  return value.replace(/\x1b\[[0-9;?]*[ -/]*[@-~]/g, '');
+  return presented.shortTitle || shortAgentLabel(agent.name) || presented.title;
 }
 
 function lastPathSegment(value?: string): string {
@@ -1108,9 +993,11 @@ function createStyles(colors: typeof Colors) {
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
-    paddingHorizontal: 16,
-    paddingTop: 8,
-    paddingBottom: 10,
+    paddingHorizontal: 18,
+    paddingTop: 10,
+    paddingBottom: 12,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: colors.borderSubtle,
   },
   headerBrand: {
     flex: 1,
@@ -1118,50 +1005,22 @@ function createStyles(colors: typeof Colors) {
   },
   title: {
     color: colors.textPrimary,
-    fontSize: 22,
-    lineHeight: 28,
+    fontSize: 24,
+    lineHeight: 30,
     fontFamily: Typography.uiFontMedium,
-    letterSpacing: 0,
-    opacity: 0.9,
-    paddingRight: 4,
-  },
-  headerSummary: {
-    marginTop: 2,
-    color: colors.textSecondary,
-    fontSize: 10,
-    lineHeight: 13,
-    fontFamily: Typography.uiFont,
-    opacity: 0.58,
+    letterSpacing: -0.3,
   },
   headerActions: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 8,
-  },
-  addButton: {
-    width: 34,
-    height: 34,
-    borderRadius: 11,
-    alignItems: 'center',
-    justifyContent: 'center',
-    backgroundColor: colors.surfaceActive,
-  },
-  serviceButton: {
-    width: 34,
-    height: 34,
-    borderRadius: 11,
-    alignItems: 'center',
-    justifyContent: 'center',
-    backgroundColor: colors.surfaceSubtle,
-    borderWidth: StyleSheet.hairlineWidth,
-    borderColor: colors.borderSubtle,
+    gap: 2,
   },
   viewToggle: {
     flexDirection: 'row',
-    gap: 2,
-    borderRadius: 12,
+    marginLeft: 4,
+    borderRadius: 10,
     backgroundColor: colors.surfaceSubtle,
-    padding: 3,
+    padding: 2,
   },
   viewBtn: {
     width: 32,
@@ -1178,88 +1037,58 @@ function createStyles(colors: typeof Colors) {
   },
 
   promptContent: {
-    paddingHorizontal: 14,
-    paddingTop: 2,
-    paddingBottom: 30,
+    paddingHorizontal: 18,
+    paddingTop: 6,
+    paddingBottom: 32,
+  },
+  sectionHeader: {
+    paddingTop: 16,
+    paddingBottom: 6,
+    paddingHorizontal: 2,
+  },
+  sectionTitle: {
+    color: colors.textSecondary,
+    fontSize: 11,
+    lineHeight: 14,
+    fontFamily: Typography.uiFontMedium,
+    letterSpacing: 0.5,
+    textTransform: 'uppercase',
+    opacity: 0.62,
+  },
+  sectionGap: {
+    height: 6,
   },
   sessionRow: {
-    minHeight: 52,
+    minHeight: 48,
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 10,
-    paddingVertical: 8,
+    gap: 12,
+    paddingVertical: 9,
     paddingHorizontal: 2,
-    borderBottomWidth: StyleSheet.hairlineWidth,
-    borderBottomColor: colors.borderSubtle,
   },
-  sessionRowLast: {
-    borderBottomWidth: 0,
+  sessionIconWrap: {
+    position: 'relative',
   },
-  sessionStatusColumn: {
-    width: 10,
-    minHeight: 36,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  sessionStatusDot: {
-    width: 6,
-    height: 6,
-    borderRadius: 3,
+  sessionStatusBadge: {
+    position: 'absolute',
+    right: -1,
+    bottom: -1,
+    width: 8,
+    height: 8,
+    borderRadius: 4,
+    borderWidth: 1.5,
+    borderColor: colors.bgPrimary,
   },
   sessionBody: {
     flex: 1,
     minWidth: 0,
-    gap: 4,
-  },
-  sessionTitleLine: {
-    minWidth: 0,
-    flexDirection: 'row',
-    alignItems: 'baseline',
-  },
-  sessionDirectory: {
-    flexShrink: 1,
-    maxWidth: '48%',
-    color: colors.textSecondary,
-    fontSize: 13,
-    lineHeight: 17,
-    fontFamily: Typography.terminalFont,
-    opacity: 0.78,
-    includeFontPadding: false,
-  },
-  sessionPathSeparator: {
-    flexShrink: 0,
-    color: colors.textSecondary,
-    fontSize: 12,
-    lineHeight: 16,
-    fontFamily: Typography.terminalFontBold,
-    marginHorizontal: 7,
-    opacity: 0.46,
-    includeFontPadding: false,
+    justifyContent: 'center',
   },
   sessionName: {
-    flex: 1,
-    minWidth: 0,
     color: colors.textPrimary,
-    fontSize: 14,
-    lineHeight: 18,
+    fontSize: 15,
+    lineHeight: 20,
     fontFamily: Typography.uiFontMedium,
-    opacity: 0.92,
-    includeFontPadding: false,
-  },
-  sessionMetaLine: {
-    minWidth: 0,
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 7,
-  },
-  sessionMetaText: {
-    flex: 1,
-    minWidth: 0,
-    color: colors.textSecondary,
-    fontSize: 11,
-    lineHeight: 14,
-    fontFamily: Typography.uiFont,
-    opacity: 0.58,
     includeFontPadding: false,
   },
   statusDot: {
@@ -1274,14 +1103,14 @@ function createStyles(colors: typeof Colors) {
     justifyContent: 'center',
   },
   gridContent: {
-    paddingHorizontal: 20,
+    paddingHorizontal: 18,
     paddingBottom: 32,
   },
   gridGap: {
-    height: 12,
+    height: 14,
   },
   gridCard: {
-    borderRadius: 14,
+    borderRadius: 16,
     backgroundColor: colors.surfaceSubtle,
     borderWidth: StyleSheet.hairlineWidth,
     borderColor: colors.borderSubtle,
@@ -1290,31 +1119,25 @@ function createStyles(colors: typeof Colors) {
   gridHeader: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 8,
+    gap: 10,
     paddingHorizontal: 14,
-    paddingVertical: 11,
-    minHeight: 44,
-    borderBottomWidth: StyleSheet.hairlineWidth,
-    borderBottomColor: colors.borderSubtle,
+    paddingVertical: 12,
+    minHeight: 48,
+  },
+  gridHeaderMain: {
+    flex: 1,
+    minWidth: 0,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
   },
   gridTitle: {
     flex: 1,
     minWidth: 0,
     color: colors.textPrimary,
-    fontSize: 13,
-    lineHeight: 18,
+    fontSize: 14,
+    lineHeight: 19,
     fontFamily: Typography.uiFontMedium,
-  },
-  gridMeta: {
-    color: colors.textSecondary,
-    fontSize: 11,
-    lineHeight: 16,
-    fontFamily: Typography.uiFont,
-    flexShrink: 1,
-    maxWidth: '42%',
-    marginLeft: 12,
-    textAlign: 'right',
-    opacity: 0.5,
   },
   gridPreview: {
     height: 220,
@@ -1324,34 +1147,45 @@ function createStyles(colors: typeof Colors) {
     flex: 1,
     justifyContent: 'center',
     alignItems: 'center',
-    paddingHorizontal: 24,
+    paddingHorizontal: 32,
   },
   emptyIcon: {
-    fontSize: 44,
-    color: colors.textSecondary,
-    marginBottom: 16,
-    opacity: 0.6,
+    fontSize: 40,
+    color: colors.zenGreen,
+    marginBottom: 14,
+    opacity: 0.75,
   },
   emptyText: {
     color: colors.textPrimary,
-    fontSize: 17,
+    fontSize: 16,
     fontFamily: Typography.uiFontMedium,
-    opacity: 0.8,
   },
   emptySubtext: {
     color: colors.textSecondary,
     fontSize: 13,
     fontFamily: Typography.uiFont,
-    marginTop: 6,
-    maxWidth: 280,
+    marginTop: 8,
+    maxWidth: 260,
     textAlign: 'center',
-    opacity: 0.6,
+    lineHeight: 19,
+    opacity: 0.72,
   },
   emptyActions: {
     width: '100%',
-    maxWidth: 280,
-    gap: 10,
-    marginTop: 22,
+    maxWidth: 240,
+    gap: 12,
+    marginTop: 24,
+    alignItems: 'center',
+  },
+  emptyActionLink: {
+    paddingVertical: 4,
+    paddingHorizontal: 8,
+  },
+  emptyActionLinkText: {
+    color: colors.textSecondary,
+    fontSize: 13,
+    fontFamily: Typography.uiFont,
+    opacity: 0.8,
   },
   emptyActionBtn: {
     width: '100%',
@@ -1393,7 +1227,7 @@ function createStyles(colors: typeof Colors) {
     overflow: 'hidden',
   },
   serviceSheetHeader: {
-    minHeight: 58,
+    minHeight: 52,
     flexDirection: 'row',
     alignItems: 'center',
     gap: 8,
@@ -1402,23 +1236,12 @@ function createStyles(colors: typeof Colors) {
     borderBottomWidth: StyleSheet.hairlineWidth,
     borderBottomColor: colors.borderSubtle,
   },
-  serviceSheetTitleBlock: {
-    flex: 1,
-    minWidth: 0,
-  },
   serviceSheetTitle: {
+    flex: 1,
     color: colors.textPrimary,
     fontSize: 16,
     lineHeight: 21,
     fontFamily: Typography.uiFontMedium,
-  },
-  serviceSheetMeta: {
-    marginTop: 2,
-    color: colors.textSecondary,
-    fontSize: 11,
-    lineHeight: 14,
-    fontFamily: Typography.uiFont,
-    opacity: 0.62,
   },
   serviceIconButton: {
     width: 34,

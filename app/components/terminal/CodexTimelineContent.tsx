@@ -1,6 +1,7 @@
 import React from "react";
 import type { TerminalThemeChrome } from "../../constants/terminalThemes";
 import type { CodexChatLocalState } from "./CodexChatSession";
+import { CodexSessionIdleView } from "./CodexSessionIdleView";
 import { CodexTimelineEmptyState } from "./CodexTimelineEmptyState";
 import type { ZenTimelineItem } from "./CodexTimelineItemView";
 
@@ -14,6 +15,7 @@ interface CodexTimelineEmptyContentProps {
   unavailableReason?: string;
   syncing: boolean;
   chrome: TerminalThemeChrome;
+  agentCwd?: string;
   onUnavailableAction(): void;
   showUnavailableAction?: boolean;
   emptyTitle?: string;
@@ -30,47 +32,31 @@ export function CodexTimelineEmptyContent({
   unavailableReason,
   syncing,
   chrome,
+  agentCwd,
   onUnavailableAction,
   showUnavailableAction = true,
-  emptyTitle = "Ready",
-  emptyBody = "Message Codex below.",
+  emptyTitle,
+  emptyBody,
 }: CodexTimelineEmptyContentProps) {
   if (suppressed && items.length === 0) {
     return null;
   }
 
-  if (localChatState === "starting-new-chat" && items.length === 0) {
+  if (
+    items.length === 0 &&
+    (localChatState === "starting-new-chat" || localChatState === "new-chat-ready")
+  ) {
     return (
-      <CodexTimelineEmptyState
+      <CodexSessionIdleView
         chrome={chrome}
-        title="New chat"
-        body="Starting fresh."
-        busy
-        variant="session"
-      />
-    );
-  }
-
-  if (localChatState === "new-chat-ready" && items.length === 0) {
-    return (
-      <CodexTimelineEmptyState
-        chrome={chrome}
-        title="New chat"
-        body="Ready."
-        variant="session"
+        cwd={agentCwd}
+        busy={localChatState === "starting-new-chat"}
       />
     );
   }
 
   if (loading && items.length === 0) {
-    return (
-      <CodexTimelineEmptyState
-        chrome={chrome}
-        title="Loading chat"
-        body="Syncing messages."
-        busy
-      />
-    );
+    return <CodexSessionIdleView chrome={chrome} cwd={agentCwd} busy />;
   }
 
   if (error && items.length === 0) {
@@ -84,14 +70,7 @@ export function CodexTimelineEmptyContent({
   }
 
   if (syncing && items.length === 0) {
-    return (
-      <CodexTimelineEmptyState
-        chrome={chrome}
-        title="Syncing chat"
-        body={unavailableReason || "Messages are still syncing."}
-        busy
-      />
-    );
+    return <CodexSessionIdleView chrome={chrome} cwd={agentCwd} busy />;
   }
 
   if (unavailable) {
@@ -107,6 +86,9 @@ export function CodexTimelineEmptyContent({
   }
 
   if (items.length === 0) {
+    if (!emptyTitle) {
+      return <CodexSessionIdleView chrome={chrome} cwd={agentCwd} />;
+    }
     return (
       <CodexTimelineEmptyState
         chrome={chrome}

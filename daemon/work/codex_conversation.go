@@ -1151,6 +1151,9 @@ func (b *codexConversationBuilder) conversation() CodexConversation {
 	if b.events == nil {
 		b.events = []CodexConversationEvent{}
 	}
+	if b.lifecycleSeen && b.taskActive && b.latestAssistantMessageCompletesTurn() {
+		b.taskActive = false
+	}
 	if b.lifecycleSeen && !b.taskActive {
 		b.finishPendingReasoning()
 	}
@@ -1168,6 +1171,35 @@ func (b *codexConversationBuilder) conversation() CodexConversation {
 		Active:    active,
 		Events:    b.events,
 	}
+}
+
+func (b *codexConversationBuilder) latestAssistantMessageCompletesTurn() bool {
+	latestUserIndex := -1
+	for index, event := range b.events {
+		if event.Kind == "user_message" {
+			latestUserIndex = index
+		}
+	}
+	if latestUserIndex < 0 {
+		return false
+	}
+
+	latestAssistantIndex := -1
+	for index := latestUserIndex + 1; index < len(b.events); index++ {
+		if b.events[index].Kind == "assistant_message" {
+			latestAssistantIndex = index
+		}
+	}
+	if latestAssistantIndex < 0 {
+		return false
+	}
+
+	for index := latestAssistantIndex + 1; index < len(b.events); index++ {
+		if b.events[index].Status == "running" {
+			return false
+		}
+	}
+	return true
 }
 
 func codexConversationContentText(raw json.RawMessage) string {

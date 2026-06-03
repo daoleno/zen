@@ -2,6 +2,7 @@ import { Ionicons } from "@expo/vector-icons";
 import React, {
   useEffect,
   useMemo,
+  useRef,
   useState,
 } from "react";
 import {
@@ -47,6 +48,18 @@ export function CodexSkillsSheet({
   const [skills, setSkills] = useState<CodexSkill[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const searchInputRef = useRef<TextInput | null>(null);
+
+  useEffect(() => {
+    if (!visible) {
+      searchInputRef.current?.blur();
+      return;
+    }
+    const timer = setTimeout(() => {
+      searchInputRef.current?.focus();
+    }, 90);
+    return () => clearTimeout(timer);
+  }, [visible]);
 
   useEffect(() => {
     if (!visible) {
@@ -100,8 +113,10 @@ export function CodexSkillsSheet({
   return (
     <BottomSheetFrame
       visible={visible}
-      maxHeight="72%"
+      maxHeight="84%"
       cardStyle={styles.sheet}
+      contentStyle={styles.content}
+      keyboardAvoiding
       onClose={onClose}
     >
       <View style={styles.header}>
@@ -127,6 +142,7 @@ export function CodexSkillsSheet({
       >
         <Ionicons name="search-outline" size={15} color={chrome.textSubtle} />
         <TextInput
+          ref={searchInputRef}
           value={query}
           onChangeText={setQuery}
           placeholder="Search skills"
@@ -134,8 +150,21 @@ export function CodexSkillsSheet({
           selectionColor={chrome.accent}
           autoCapitalize="none"
           autoCorrect={false}
+          autoFocus={visible}
+          returnKeyType="search"
           style={[styles.searchInput, { color: chrome.text }]}
         />
+        {query ? (
+          <TouchableOpacity
+            accessibilityLabel="Clear skill search"
+            accessibilityRole="button"
+            hitSlop={8}
+            onPress={() => setQuery("")}
+            activeOpacity={0.72}
+          >
+            <Ionicons name="close-circle" size={16} color={chrome.textSubtle} />
+          </TouchableOpacity>
+        ) : null}
       </View>
 
       {loading ? (
@@ -250,6 +279,10 @@ const styles = StyleSheet.create({
     paddingTop: 10,
     paddingBottom: 18,
   },
+  content: {
+    flexShrink: 1,
+    minHeight: 0,
+  },
   header: {
     flexDirection: "row",
     alignItems: "center",
@@ -274,7 +307,7 @@ const styles = StyleSheet.create({
     justifyContent: "center",
   },
   search: {
-    minHeight: 38,
+    height: 40,
     borderRadius: 8,
     borderWidth: StyleSheet.hairlineWidth,
     flexDirection: "row",
@@ -282,20 +315,29 @@ const styles = StyleSheet.create({
     gap: 8,
     paddingHorizontal: 10,
     marginBottom: 8,
+    zIndex: 2,
+    elevation: 2,
   },
   searchInput: {
     flex: 1,
     minWidth: 0,
-    paddingVertical: 7,
+    height: 38,
+    paddingTop: 0,
+    paddingBottom: 0,
+    paddingVertical: 0,
     fontSize: 14,
     lineHeight: 18,
     fontFamily: Typography.uiFont,
+    includeFontPadding: false,
+    textAlignVertical: "center",
   },
   list: {
+    flexShrink: 1,
+    minHeight: 0,
     maxHeight: 430,
   },
   listContent: {
-    paddingBottom: 6,
+    paddingBottom: 18,
   },
   row: {
     minHeight: 62,

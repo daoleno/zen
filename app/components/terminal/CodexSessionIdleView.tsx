@@ -1,0 +1,86 @@
+import React from "react";
+import { StyleSheet, Text, View } from "react-native";
+import type { TerminalThemeChrome } from "../../constants/terminalThemes";
+import { Typography } from "../../constants/tokens";
+import { ComposerLoadingDots } from "./ComposerLoadingDots";
+
+interface CodexSessionIdleViewProps {
+  chrome: TerminalThemeChrome;
+  busy?: boolean;
+  cwd?: string;
+}
+
+export function CodexSessionIdleView({
+  chrome,
+  busy = false,
+  cwd,
+}: CodexSessionIdleViewProps) {
+  const workspace = compactWorkspaceLabel(cwd);
+
+  return (
+    <View style={styles.root}>
+      {busy ? (
+        <View
+          style={[
+            styles.busyFrame,
+            {
+              borderColor: chrome.border,
+              backgroundColor: chrome.surfaceMuted,
+            },
+          ]}
+        >
+          <ComposerLoadingDots color={chrome.accent} size={5} gap={4} />
+        </View>
+      ) : workspace ? (
+        <Text
+          style={[styles.workspace, { color: chrome.textSubtle }]}
+          numberOfLines={1}
+        >
+          {workspace}
+        </Text>
+      ) : null}
+    </View>
+  );
+}
+
+function compactWorkspaceLabel(value?: string): string {
+  const trimmed = value?.trim().replace(/\/+$/, "") || "";
+  if (!trimmed || trimmed === "/") {
+    return "";
+  }
+  const parts = trimmed.split("/").filter(Boolean);
+  if (parts.length === 0) {
+    return trimmed;
+  }
+  if (parts.length <= 2) {
+    return parts.join("/");
+  }
+  return parts.slice(-2).join("/");
+}
+
+const styles = StyleSheet.create({
+  root: {
+    minHeight: 120,
+    alignItems: "center",
+    justifyContent: "center",
+    paddingHorizontal: 24,
+  },
+  busyFrame: {
+    minWidth: 52,
+    minHeight: 36,
+    borderRadius: 10,
+    borderWidth: StyleSheet.hairlineWidth,
+    alignItems: "center",
+    justifyContent: "center",
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+  },
+  workspace: {
+    maxWidth: 280,
+    fontSize: 12,
+    lineHeight: 16,
+    fontFamily: Typography.terminalFont,
+    textAlign: "center",
+    opacity: 0.72,
+  },
+});

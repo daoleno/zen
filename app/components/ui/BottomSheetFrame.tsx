@@ -53,8 +53,11 @@ export function BottomSheetFrame({
 
   return (
     <Modal visible={visible} transparent animationType="fade" onRequestClose={onClose}>
-      {keyboardAvoiding && Platform.OS === "ios" ? (
-        <KeyboardAvoidingView style={styles.root} behavior="padding">
+      {keyboardAvoiding ? (
+        <KeyboardAvoidingView
+          style={styles.root}
+          behavior={Platform.OS === "ios" ? "padding" : "height"}
+        >
           {body}
         </KeyboardAvoidingView>
       ) : (

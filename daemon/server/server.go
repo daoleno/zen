@@ -687,7 +687,7 @@ func (s *Server) handleClientMessage(conn *websocket.Conn, msg []byte) {
 }
 
 func (s *Server) sendAgentSessionList(conn *websocket.Conn) {
-	agentSessions := visibleAgentSessions(s.watcher.Agents())
+	agentSessions := s.currentVisibleAgentSessions()
 	s.sendJSON(conn, map[string]any{"type": "agent_session_list", "agent_sessions": agentSessions})
 }
 
@@ -1318,6 +1318,48 @@ func visibleAgentSessions(agents []*classifier.Agent) []*classifier.Agent {
 	return out
 }
 
+func (s *Server) currentVisibleAgentSessions() []*classifier.Agent {
+	agentSessions := visibleAgentSessions(s.watcher.Agents())
+	s.enrichCodexAgentSessionTitles(agentSessions)
+	return agentSessions
+}
+
+func (s *Server) enrichCodexAgentSessionTitles(agents []*classifier.Agent) {
+	now := time.Now()
+	for _, agent := range agents {
+		s.enrichCodexAgentSessionTitle(agent, now)
+	}
+}
+
+func (s *Server) enrichCodexAgentSessionTitle(agent *classifier.Agent, now time.Time) {
+	if agent == nil {
+		return
+	}
+	title, ok, err := work.CodexThreadTitleForAgent(*agent, now)
+	if err != nil || !ok {
+		return
+	}
+	if name := agentSessionNameWithTarget(title, agent.ID); name != "" {
+		agent.Name = name
+	}
+}
+
+func agentSessionNameWithTarget(name, target string) string {
+	name = strings.TrimSpace(name)
+	target = strings.TrimSpace(target)
+	if name == "" {
+		return ""
+	}
+	if target == "" {
+		return name
+	}
+	suffix := " (" + target + ")"
+	if strings.HasSuffix(name, suffix) {
+		return name
+	}
+	return name + suffix
+}
+
 func (s *Server) handleWriteWorkItem(conn *websocket.Conn, raw clientMessage) {
 	if s.work == nil {
 		s.sendErrorWithRequestID(conn, raw.RequestID, "write_work_item_failed", "work store not configured")
@@ -1554,7 +1596,7 @@ func (s *Server) heartbeat(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			agentSessions := visibleAgentSessions(s.watcher.Agents())
+			agentSessions := s.currentVisibleAgentSessions()
 			s.syncWorkLogs(agentSessions, false)
 			data, _ := json.Marshal(map[string]any{"type": "agent_session_list", "agent_sessions": agentSessions})
 			s.broadcast(data)
@@ -1565,6 +1607,9 @@ func (s *Server) heartbeat(ctx context.Context) {
 func (s *Server) handleWatcherEvent(ev watcher.SessionEvent) {
 	if ev.Agent != nil && ev.Agent.Hidden {
 		return
+	}
+	if ev.Agent != nil && ev.Type != "agent_output" {
+		s.enrichCodexAgentSessionTitle(ev.Agent, time.Now())
 	}
 	s.recordWorkForSessionEvent(ev)
 
@@ -1582,6 +1627,10 @@ func (s *Server) handleWatcherEvent(ev watcher.SessionEvent) {
 			s.broadcastJSON(map[string]any{"type": "agent_session_updated", "agent_session": ev.Agent})
 		}
 		s.maybeNotifyForSessionEvent(ev)
+	case "agent_metadata_change":
+		if ev.Agent != nil {
+			s.broadcastJSON(map[string]any{"type": "agent_session_updated", "agent_session": ev.Agent})
+		}
 	case "agent_removed":
 		if ev.Agent != nil {
 			s.broadcastJSON(map[string]any{"type": "agent_session_archived", "agent_session": ev.Agent})

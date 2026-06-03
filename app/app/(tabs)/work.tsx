@@ -103,25 +103,17 @@ export default function BrainScreen() {
   const connectionIssue = activeServer
     ? agentState.serverConnectionIssues[activeServer.id] ?? null
     : null;
-  const statusLabel = brainStatusLabel({
-    activeServer,
-    connectionState,
-    activeBrain,
-  });
   const hostAgent = activeBrain?.host_agent ?? null;
   const hostAdapter = activeBrain?.host_adapter ?? null;
   const brainChatScopeKey = activeBrain?.chat_thread_id
     ? `brain-thread:${activeBrain.chat_thread_id}`
     : undefined;
-  const adapterLabel = brainAdapterLabel(activeBrain?.host_adapter);
+  const adapterChipLabel = brainAdapterChipLabel(activeBrain?.host_adapter);
   const ready = Boolean(activeServer && activeBrain?.hydrated && hostAgent?.id);
   const canUseCodexBrainInterface = Boolean(
     ready && hostAdapter?.provider === "codex",
   );
   const availableAdapters = activeBrain?.adapters ?? [];
-  const subtitleLabel = [statusLabel, adapterLabel]
-    .filter(Boolean)
-    .join(" · ");
   const keyboardVerticalOffset = 0;
 
   const openAdapterSheet = useCallback(() => {
@@ -203,34 +195,30 @@ export default function BrainScreen() {
       <View style={styles.header}>
         <View style={styles.headerTitleBlock}>
           <Text style={styles.title}>Brain</Text>
-          {activeBrain?.adapters?.length ? (
+          {activeBrain?.adapters?.length && adapterChipLabel ? (
             <Pressable
               accessibilityRole="button"
-              accessibilityLabel="Brain adapter"
+              accessibilityLabel="Switch Brain adapter"
               onPress={openAdapterSheet}
               style={({ pressed }) => [
-                styles.subtitleChip,
+                styles.adapterChip,
                 {
                   borderColor: colors.borderSubtle,
                   backgroundColor: colors.surfaceSubtle,
                 },
-                pressed ? styles.subtitleChipPressed : null,
+                pressed ? styles.adapterChipPressed : null,
               ]}
             >
-              <Text style={styles.subtitle} numberOfLines={1}>
-                {subtitleLabel}
+              <Text style={styles.adapterChipText} numberOfLines={1}>
+                {adapterChipLabel}
               </Text>
               <Ionicons
                 name="chevron-down"
-                size={13}
+                size={12}
                 color={colors.textSecondary}
               />
             </Pressable>
-          ) : (
-            <Text style={styles.subtitle} numberOfLines={1}>
-              {subtitleLabel}
-            </Text>
-          )}
+          ) : null}
         </View>
         <View style={styles.headerActions}>
           <IconButton
@@ -283,25 +271,16 @@ export default function BrainScreen() {
             theme={terminalTheme}
             chrome={chrome}
             screenFocused
-            placeholder="Message Brain"
+            placeholder="Message"
             minimalComposer
             keyboardVerticalOffset={keyboardVerticalOffset}
             showUnavailableAction
-            emptyTitle="Ready"
-            emptyBody="Message Brain below."
             onSwitchToTerminal={openBrainTerminal}
           />
         ) : ready ? (
-          <BrainInterfaceUnavailableState
-            adapterLabel={adapterLabel}
-            provider={hostAdapter?.provider}
-          />
+          <BrainInterfaceUnavailableState provider={hostAdapter?.provider} />
         ) : (
-          <BrainLoadingState
-            connected={connectionState === "connected"}
-            hydrated={Boolean(activeBrain?.hydrated)}
-            waitingForHost={Boolean(activeBrain?.hydrated && !hostAgent?.id)}
-          />
+          <BrainLoadingState connected={connectionState === "connected"} />
         )}
       </View>
 
@@ -313,10 +292,7 @@ export default function BrainScreen() {
       >
         <View style={styles.sheetHeader}>
           <AppText variant="title" tone="primary">
-            Adapters
-          </AppText>
-          <AppText variant="caption" tone="secondary">
-            {availableAdapters.length} configured
+            Adapter
           </AppText>
         </View>
         <View style={styles.sheetList}>
@@ -350,9 +326,11 @@ export default function BrainScreen() {
                       <Ionicons name="checkmark" size={16} color={colors.accent} />
                     ) : null}
                   </View>
-                  <AppText variant="caption" tone="secondary">
-                    {brainAdapterDetails(adapter)}
-                  </AppText>
+                  {adapter.runtime?.trim() ? (
+                    <AppText variant="caption" tone="secondary">
+                      {adapter.runtime.trim()}
+                    </AppText>
+                  ) : null}
                 </View>
                 {busy ? (
                   <ActivityIndicator size="small" color={colors.accent} />
@@ -374,59 +352,30 @@ export default function BrainScreen() {
   );
 }
 
-function BrainLoadingState({
-  connected,
-  hydrated,
-  waitingForHost,
-}: {
-  connected: boolean;
-  hydrated: boolean;
-  waitingForHost?: boolean;
-}) {
+function BrainLoadingState({ connected }: { connected: boolean }) {
   const colors = useAppColors();
   return (
     <View style={loadingStyles.root}>
       {connected ? (
         <ActivityIndicator size="small" color={colors.accent} />
       ) : (
-        <Ionicons name="cloud-offline-outline" size={22} color={colors.textSecondary} />
+        <Ionicons name="cloud-offline-outline" size={20} color={colors.textSecondary} />
       )}
-      <Text style={[loadingStyles.title, { color: colors.textPrimary }]}>
-        {connected ? "Starting Brain" : "Offline"}
-      </Text>
-      <Text style={[loadingStyles.body, { color: colors.textSecondary }]}>
-        {connected && waitingForHost
-          ? "Getting your assistant ready."
-          : connected && hydrated
-            ? "Preparing your chat."
-          : connected
-            ? "Syncing Brain."
-            : "Connect to a server to use Brain."}
-      </Text>
     </View>
   );
 }
 
-function BrainInterfaceUnavailableState({
-  adapterLabel,
-  provider,
-}: {
-  adapterLabel: string;
-  provider?: string;
-}) {
+function BrainInterfaceUnavailableState({ provider }: { provider?: string }) {
   const colors = useAppColors();
-  const label = adapterLabel || brainProviderLabel(provider);
+  const label = brainProviderLabel(provider);
   return (
     <View style={loadingStyles.root}>
-      <Ionicons name="layers-outline" size={22} color={colors.textSecondary} />
-      <Text style={[loadingStyles.title, { color: colors.textPrimary }]}>
-        Interface unavailable
-      </Text>
-      <Text style={[loadingStyles.body, { color: colors.textSecondary }]}>
-        {label
-          ? `${label} does not expose a structured Brain interface yet.`
-          : "This adapter does not expose a structured Brain interface yet."}
-      </Text>
+      <Ionicons name="layers-outline" size={20} color={colors.textSecondary} />
+      {label ? (
+        <Text style={[loadingStyles.caption, { color: colors.textSecondary }]}>
+          {label}
+        </Text>
+      ) : null}
     </View>
   );
 }
@@ -457,52 +406,18 @@ function resolveActiveServer({
   return connectedByState || servers[0] || null;
 }
 
-function brainStatusLabel({
-  activeServer,
-  connectionState,
-  activeBrain,
-}: {
-  activeServer: StoredServer | null;
-  connectionState: ConnectionState;
-  activeBrain: BrainServerState | null;
-}) {
-  if (!activeServer) {
-    return "Offline";
-  }
-  if (connectionState !== "connected") {
-    return "Offline";
-  }
-  if (!activeBrain?.hydrated) {
-    return "Syncing";
-  }
-  if (!activeBrain.host_agent?.id) {
-    return "Starting";
-  }
-  return "Ready";
-}
-
-function brainAdapterLabel(adapter?: BrainAdapterRef | null) {
+function brainAdapterChipLabel(adapter?: BrainAdapterRef | null) {
   if (!adapter) {
     return "";
   }
-  const provider =
+  if (adapter.name?.trim()) {
+    return adapter.name.trim();
+  }
+  return brainProviderLabel(
     adapter.provider && adapter.provider !== "custom"
       ? adapter.provider
-      : adapter.name || adapter.id;
-  const providerLabel = brainProviderLabel(provider);
-  const runtime = adapter.runtime?.trim();
-  return [providerLabel, runtime].filter(Boolean).join(" · ");
-}
-
-function brainAdapterDetails(adapter: BrainAdapterRef) {
-  const provider = brainProviderLabel(
-    adapter.provider && adapter.provider !== "custom"
-      ? adapter.provider
-      : adapter.name || adapter.id,
+      : adapter.id,
   );
-  const runtime = adapter.runtime?.trim();
-  const command = adapter.command?.trim();
-  return [provider, runtime, command].filter(Boolean).join(" · ");
 }
 
 function brainProviderLabel(value?: string) {
@@ -526,9 +441,9 @@ function createStyles(colors: typeof Colors) {
       backgroundColor: colors.bgPrimary,
     },
     header: {
-      minHeight: 58,
-      paddingHorizontal: 16,
-      paddingTop: 6,
+      minHeight: 54,
+      paddingHorizontal: 18,
+      paddingTop: 10,
       paddingBottom: 10,
       flexDirection: "row",
       alignItems: "center",
@@ -556,31 +471,30 @@ function createStyles(colors: typeof Colors) {
     title: {
       color: colors.textPrimary,
       fontFamily: Typography.uiFontMedium,
-      fontSize: 22,
-      lineHeight: 27,
-      letterSpacing: 0,
+      fontSize: 24,
+      lineHeight: 30,
+      letterSpacing: -0.3,
     },
-    subtitle: {
-      marginTop: 0,
+    adapterChip: {
+      marginTop: 4,
+      alignSelf: "flex-start",
+      flexDirection: "row",
+      alignItems: "center",
+      gap: 3,
+      paddingHorizontal: 8,
+      paddingVertical: 3,
+      borderRadius: 999,
+      borderWidth: StyleSheet.hairlineWidth,
+    },
+    adapterChipPressed: {
+      opacity: 0.7,
+    },
+    adapterChipText: {
       color: colors.textSecondary,
       fontFamily: Typography.uiFont,
       fontSize: 12,
       lineHeight: 16,
       flexShrink: 1,
-    },
-    subtitleChip: {
-      marginTop: 2,
-      alignSelf: "flex-start",
-      flexDirection: "row",
-      alignItems: "center",
-      gap: 4,
-      paddingHorizontal: 8,
-      paddingVertical: 4,
-      borderRadius: 999,
-      borderWidth: StyleSheet.hairlineWidth,
-    },
-    subtitleChipPressed: {
-      opacity: 0.7,
     },
     surface: {
       flex: 1,
@@ -640,19 +554,13 @@ const loadingStyles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "center",
     paddingHorizontal: 28,
+    gap: 10,
   },
-  title: {
-    marginTop: 14,
-    fontFamily: Typography.uiFontMedium,
-    fontSize: 16,
-    lineHeight: 21,
-    textAlign: "center",
-  },
-  body: {
-    marginTop: 6,
+  caption: {
     fontFamily: Typography.uiFont,
-    fontSize: 13,
-    lineHeight: 19,
+    fontSize: 12,
+    lineHeight: 16,
     textAlign: "center",
+    opacity: 0.72,
   },
 });

@@ -1319,6 +1319,46 @@ func TestParseCodexConversation_TracksTurnActivityFromLifecycleEvents(t *testing
 		}
 	})
 
+	t.Run("assistant response completes turn when lifecycle end is missing", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "missing-complete.jsonl")
+		writeJSONL(t, path,
+			map[string]any{
+				"type": "event_msg",
+				"payload": map[string]any{
+					"type":    "task_started",
+					"turn_id": "turn-missing-complete",
+				},
+			},
+			map[string]any{
+				"type":      "event_msg",
+				"timestamp": "2026-05-20T10:00:01Z",
+				"payload": map[string]any{
+					"type":    "user_message",
+					"message": "hi",
+				},
+			},
+			map[string]any{
+				"type":      "response_item",
+				"timestamp": "2026-05-20T10:00:02Z",
+				"payload": map[string]any{
+					"type": "message",
+					"role": "assistant",
+					"content": []map[string]any{
+						{"type": "output_text", "text": "Hello."},
+					},
+				},
+			},
+		)
+
+		got, err := parseCodexConversation(path)
+		if err != nil {
+			t.Fatalf("parseCodexConversation: %v", err)
+		}
+		if got.Active == nil || *got.Active {
+			t.Fatalf("active = %#v, want false after assistant response", got.Active)
+		}
+	})
+
 	for _, terminalEvent := range []string{"task_complete", "turn_aborted"} {
 		t.Run(terminalEvent, func(t *testing.T) {
 			path := filepath.Join(t.TempDir(), terminalEvent+".jsonl")

@@ -88,11 +88,29 @@ func loadCodexTranscript(agent classifier.Agent, now time.Time) (ToolTranscript,
 	}, nil
 }
 
+// CodexThreadTitleForAgent returns the current Codex thread title for a live
+// tmux-backed agent when the local Codex state database can be matched.
+func CodexThreadTitleForAgent(agent classifier.Agent, now time.Time) (string, bool, error) {
+	if agentToolName(agent.Command, agent.Name) != "codex" {
+		return "", false, nil
+	}
+	candidate, ok, err := findCodexTranscript(agent, now)
+	if err != nil || !ok {
+		return "", false, err
+	}
+	title := strings.TrimSpace(candidate.Row.Title)
+	if title == "" {
+		return "", false, nil
+	}
+	return title, true, nil
+}
+
 type codexThreadRow struct {
 	ID          string `json:"id"`
 	RolloutPath string `json:"rollout_path"`
 	CreatedAt   int64  `json:"created_at"`
 	CreatedAtMS int64  `json:"created_at_ms"`
+	Title       string `json:"title"`
 }
 
 type codexTranscriptCandidate struct {
@@ -393,10 +411,24 @@ func candidateCreatedAt(row codexThreadRow) time.Time {
 }
 
 func queryCodexThreads(sqlite3, dbPath, cwd string) ([]codexThreadRow, error) {
-	query := fmt.Sprintf(`SELECT id, rollout_path, created_at, coalesce(created_at_ms, 0) AS created_at_ms FROM threads WHERE archived = 0 AND cwd = %s ORDER BY coalesce(updated_at_ms, updated_at * 1000) DESC LIMIT 48`, sqlString(cwd))
-	out, err := exec.Command(sqlite3, "-json", dbPath, query).Output()
+	query := fmt.Sprintf(`SELECT id, rollout_path, created_at, coalesce(created_at_ms, 0) AS created_at_ms, coalesce(title, '') AS title FROM threads WHERE archived = 0 AND cwd = %s ORDER BY coalesce(updated_at_ms, updated_at * 1000) DESC LIMIT 48`, sqlString(cwd))
+	rows, err := queryCodexThreadRows(sqlite3, dbPath, query)
+	if err == nil {
+		return rows, nil
+	}
+
+	legacyQuery := fmt.Sprintf(`SELECT id, rollout_path, created_at, coalesce(created_at_ms, 0) AS created_at_ms FROM threads WHERE archived = 0 AND cwd = %s ORDER BY coalesce(updated_at_ms, updated_at * 1000) DESC LIMIT 48`, sqlString(cwd))
+	legacyRows, legacyErr := queryCodexThreadRows(sqlite3, dbPath, legacyQuery)
+	if legacyErr == nil {
+		return legacyRows, nil
+	}
+	return nil, err
+}
+
+func queryCodexThreadRows(sqlite3, dbPath, query string) ([]codexThreadRow, error) {
+	out, err := exec.Command(sqlite3, "-json", dbPath, query).CombinedOutput()
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("query codex threads: %w%s", err, stderrSuffix(string(out)))
 	}
 	if len(bytes.TrimSpace(out)) == 0 {
 		return nil, nil

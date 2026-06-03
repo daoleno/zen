@@ -3,6 +3,7 @@ package work
 import (
 	"encoding/json"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -205,6 +206,73 @@ func TestLatestUpdatedCodexTranscriptSupportsResume(t *testing.T) {
 	}
 	if isCodexResumeCommand("codex") {
 		t.Fatal("plain codex should not be detected as resume")
+	}
+}
+
+func TestQueryCodexThreadsIncludesTitle(t *testing.T) {
+	sqlite3, err := exec.LookPath("sqlite3")
+	if err != nil {
+		t.Skip("sqlite3 unavailable")
+	}
+	dbPath := filepath.Join(t.TempDir(), "state_5.sqlite")
+	runSQLite(t, sqlite3, dbPath, `
+CREATE TABLE threads (
+  id TEXT,
+  rollout_path TEXT,
+  created_at INTEGER,
+  updated_at INTEGER,
+  cwd TEXT,
+  title TEXT,
+  archived INTEGER,
+  created_at_ms INTEGER,
+  updated_at_ms INTEGER
+);
+INSERT INTO threads (id, rollout_path, created_at, updated_at, cwd, title, archived, created_at_ms, updated_at_ms)
+VALUES ('thread-1', '/tmp/rollout-1.jsonl', 100, 200, '/repo/zen', 'Renamed from Codex', 0, 100000, 200000);
+`)
+
+	rows, err := queryCodexThreads(sqlite3, dbPath, "/repo/zen")
+	if err != nil {
+		t.Fatalf("queryCodexThreads: %v", err)
+	}
+	if len(rows) != 1 {
+		t.Fatalf("rows len = %d, want 1: %#v", len(rows), rows)
+	}
+	if rows[0].Title != "Renamed from Codex" {
+		t.Fatalf("title = %q, want renamed title", rows[0].Title)
+	}
+}
+
+func TestQueryCodexThreadsFallsBackWithoutTitleColumn(t *testing.T) {
+	sqlite3, err := exec.LookPath("sqlite3")
+	if err != nil {
+		t.Skip("sqlite3 unavailable")
+	}
+	dbPath := filepath.Join(t.TempDir(), "state_5.sqlite")
+	runSQLite(t, sqlite3, dbPath, `
+CREATE TABLE threads (
+  id TEXT,
+  rollout_path TEXT,
+  created_at INTEGER,
+  updated_at INTEGER,
+  cwd TEXT,
+  archived INTEGER,
+  created_at_ms INTEGER,
+  updated_at_ms INTEGER
+);
+INSERT INTO threads (id, rollout_path, created_at, updated_at, cwd, archived, created_at_ms, updated_at_ms)
+VALUES ('thread-1', '/tmp/rollout-1.jsonl', 100, 200, '/repo/zen', 0, 100000, 200000);
+`)
+
+	rows, err := queryCodexThreads(sqlite3, dbPath, "/repo/zen")
+	if err != nil {
+		t.Fatalf("queryCodexThreads: %v", err)
+	}
+	if len(rows) != 1 {
+		t.Fatalf("rows len = %d, want 1: %#v", len(rows), rows)
+	}
+	if rows[0].Title != "" {
+		t.Fatalf("title = %q, want empty fallback title", rows[0].Title)
 	}
 }
 
@@ -571,5 +639,13 @@ func writeJSONL(t *testing.T, path string, values ...any) {
 	}
 	if err := os.WriteFile(path, []byte(builder.String()), 0o644); err != nil {
 		t.Fatalf("WriteFile: %v", err)
+	}
+}
+
+func runSQLite(t *testing.T, sqlite3, dbPath, script string) {
+	t.Helper()
+	out, err := exec.Command(sqlite3, dbPath, script).CombinedOutput()
+	if err != nil {
+		t.Fatalf("sqlite failed: %v%s", err, stderrSuffix(string(out)))
 	}
 }

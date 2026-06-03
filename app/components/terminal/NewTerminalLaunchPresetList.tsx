@@ -4,7 +4,6 @@ import {
   TouchableOpacity,
   View,
 } from "react-native";
-import { Ionicons } from "@expo/vector-icons";
 import { Colors, useAppColors } from "../../constants/tokens";
 import type { AgentKind } from "../../services/agentPresentation";
 import {
@@ -53,54 +52,70 @@ export function NewTerminalLaunchPresetList({
   );
 
   return (
-    <View style={styles.presetList}>
-      {LAUNCH_PRESETS.map((preset) => (
-        <TouchableOpacity
-          key={preset.key}
-          style={[
-            styles.presetCard,
-            activePreset === preset.key && styles.presetCardActive,
-            submitting && styles.presetCardDisabled,
-          ]}
-          onPress={() => onPresetPress(preset)}
-          disabled={!canSubmit}
-          activeOpacity={0.78}
-        >
-          <AgentKindIcon kind={preset.kind} size={18} />
-          <View style={styles.presetCardText}>
-            <AppText variant="button">{preset.label}</AppText>
-          </View>
-          <Ionicons name="chevron-forward" size={14} color={colors.textSecondary} />
-        </TouchableOpacity>
-      ))}
+    <View style={styles.presetGrid}>
+      {LAUNCH_PRESETS.map((preset) => {
+        const active = activePreset === preset.key;
+        return (
+          <TouchableOpacity
+            key={preset.key}
+            style={[
+              styles.presetCard,
+              active && styles.presetCardActive,
+              submitting && styles.presetCardDisabled,
+            ]}
+            onPress={() => onPresetPress(preset)}
+            disabled={!canSubmit}
+            activeOpacity={0.82}
+          >
+            <View style={styles.presetIcon}>
+              <AgentKindIcon kind={preset.kind} size={20} />
+            </View>
+            <AppText
+              variant="label"
+              tone={active ? "primary" : "secondary"}
+              style={styles.presetLabel}
+            >
+              {preset.label}
+            </AppText>
+          </TouchableOpacity>
+        );
+      })}
     </View>
   );
 }
 
 function createStyles(colors: typeof Colors) {
   return StyleSheet.create({
-    presetList: {
-      gap: 0,
+    presetGrid: {
+      flexDirection: "row",
+      gap: 10,
     },
     presetCard: {
-      flexDirection: "row",
+      flex: 1,
+      minHeight: 88,
       alignItems: "center",
-      gap: 12,
-      minHeight: 42,
-      paddingVertical: 8,
-      paddingHorizontal: 4,
-      backgroundColor: "transparent",
-      borderBottomWidth: StyleSheet.hairlineWidth,
-      borderBottomColor: colors.borderSubtle,
+      justifyContent: "center",
+      gap: 10,
+      paddingHorizontal: 8,
+      paddingVertical: 12,
+      borderRadius: 14,
+      backgroundColor: colors.surfaceSubtle,
+      borderWidth: StyleSheet.hairlineWidth,
+      borderColor: colors.borderSubtle,
     },
     presetCardActive: {
       backgroundColor: colors.surfaceActive,
+      borderColor: colors.accent,
     },
     presetCardDisabled: {
       opacity: 0.5,
     },
-    presetCardText: {
-      flex: 1,
+    presetIcon: {
+      alignItems: "center",
+      justifyContent: "center",
+    },
+    presetLabel: {
+      textAlign: "center",
     },
   });
 }

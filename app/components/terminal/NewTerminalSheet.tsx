@@ -28,7 +28,7 @@ interface NewTerminalSheetProps {
 
 export function NewTerminalSheet({
   visible,
-  title: _title,
+  title,
   subtitle: _subtitle,
   initialCwd = '',
   initialCommand = '',
@@ -107,6 +107,7 @@ export function NewTerminalSheet({
       keyboardAvoiding
     >
       <NewTerminalSheetContent
+        title={title}
         serverOptions={serverOptions}
         selectedServerId={selectedServerId}
         command={command}

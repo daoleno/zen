@@ -214,12 +214,22 @@ export function mergePendingUserMessagesIntoTimeline(
     };
     insertTimelineItemByTimestamp(merged, item);
   }
-  if (shouldShowPendingTurnActivity(merged, pendingUserMessages)) {
-    const latestPending = latestPendingUserMessage(pendingUserMessages);
+  const latestPending = latestPendingUserMessage(pendingUserMessages);
+  const pendingTurnTimestamp = pendingUserMessageAnchorTimestamp(
+    merged,
+    latestPending,
+  );
+  if (
+    shouldShowPendingTurnActivity(
+      merged,
+      pendingUserMessages,
+      pendingTurnTimestamp,
+    )
+  ) {
     insertTimelineItemByTimestamp(merged, {
       type: "activity",
       id: `pending-turn:${latestPending.id}`,
-      timestamp: latestPending.createdAt,
+      timestamp: pendingTurnTimestamp,
       statusKey: "running",
       title: "Working",
       tone: "running",
@@ -233,12 +243,12 @@ export function mergePendingUserMessagesIntoTimeline(
 function shouldShowPendingTurnActivity(
   timelineItems: ZenTimelineItem[],
   pendingUserMessages: PendingUserMessage[],
+  pendingTurnTimestamp?: string,
 ) {
   if (pendingUserMessages.length === 0) {
     return false;
   }
-  const latestPending = latestPendingUserMessage(pendingUserMessages);
-  const latestTimestamp = new Date(latestPending.createdAt).getTime();
+  const latestTimestamp = new Date(pendingTurnTimestamp || "").getTime();
   const hasLaterAssistantMessage = timelineItems.some((item) => {
     if (item.type !== "message" || item.role !== "assistant" || !item.timestamp) {
       return false;
@@ -252,6 +262,19 @@ function shouldShowPendingTurnActivity(
   return !timelineItems.some(
     (item) => item.type === "activity" && item.tone === "running",
   );
+}
+
+function pendingUserMessageAnchorTimestamp(
+  timelineItems: ZenTimelineItem[],
+  message: PendingUserMessage,
+) {
+  const item = timelineItems.find(
+    (candidate) =>
+      candidate.type === "message" &&
+      candidate.role === "user" &&
+      candidate.id === message.id,
+  );
+  return item?.timestamp || message.createdAt;
 }
 
 function latestPendingUserMessage(
@@ -357,6 +380,9 @@ export function mergeActiveTurnIntoTimeline(
   if (hasRunningItem) {
     return merged;
   }
+  if (latestVisibleUserTurnHasAssistantResponse(merged)) {
+    return merged;
+  }
   insertTimelineItemByTimestamp(merged, {
     type: "activity",
     id: "active-turn:running",
@@ -367,6 +393,72 @@ export function mergeActiveTurnIntoTimeline(
     defaultExpanded: false,
   });
   return merged;
+}
+
+function latestVisibleUserTurnHasAssistantResponse(
+  timelineItems: ZenTimelineItem[],
+) {
+  const latestUser = latestTimelineMessagePosition(timelineItems, "user");
+  if (!latestUser) {
+    return false;
+  }
+  return timelineItems.some(
+    (item, index) =>
+      item.type === "message" &&
+      item.role === "assistant" &&
+      isTimelinePositionAfter(item.timestamp, index, latestUser),
+  );
+}
+
+function latestTimelineMessagePosition(
+  timelineItems: ZenTimelineItem[],
+  role: "user" | "assistant",
+) {
+  let latest:
+    | {
+        timestamp: number;
+        index: number;
+      }
+    | null = null;
+  timelineItems.forEach((item, index) => {
+    if (item.type !== "message" || item.role !== role) {
+      return;
+    }
+    const timestamp = new Date(item.timestamp || "").getTime();
+    if (!latest) {
+      latest = {
+        timestamp: Number.isFinite(timestamp) ? timestamp : Number.NaN,
+        index,
+      };
+      return;
+    }
+    if (
+      isTimelinePositionAfter(
+        item.timestamp,
+        index,
+        latest,
+      )
+    ) {
+      latest = {
+        timestamp: Number.isFinite(timestamp) ? timestamp : Number.NaN,
+        index,
+      };
+    }
+  });
+  return latest;
+}
+
+function isTimelinePositionAfter(
+  timestampValue: string | undefined,
+  index: number,
+  anchor: { timestamp: number; index: number },
+) {
+  const timestamp = new Date(timestampValue || "").getTime();
+  if (Number.isFinite(timestamp) && Number.isFinite(anchor.timestamp)) {
+    return timestamp > anchor.timestamp ||
+      (timestamp === anchor.timestamp && index > anchor.index);
+  }
+  return index > anchor.index;
 }
 
 function pendingSlashCommandTone(

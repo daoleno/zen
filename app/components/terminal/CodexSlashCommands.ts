@@ -65,22 +65,6 @@ const CHATUI_FALLBACK_SLASH_COMMAND_SPECS = [
     description: "create an AGENTS.md file with instructions for Codex",
   }),
   fallbackSpec({
-    name: "status",
-    category: "session",
-    execution: "terminal-required",
-    input: inputNone(),
-    outputKind: "terminal",
-    description: "show current session configuration and token usage",
-  }),
-  fallbackSpec({
-    name: "mcp",
-    category: "management",
-    execution: "terminal-required",
-    input: optionalInlineArgs("verbose"),
-    outputKind: "terminal",
-    description: "list configured MCP tools; use /mcp verbose for details",
-  }),
-  fallbackSpec({
     name: "skills",
     category: "management",
     execution: "native",
@@ -116,14 +100,6 @@ const CHATUI_SLASH_COMMAND_OVERRIDES: Record<string, SlashCommandOverride> = {
     chat_supported: true,
     terminal_supported: true,
   },
-  status: {
-    execution: "terminal-required",
-    input: inputNone(),
-    output: { kind: "terminal" },
-    interactive: false,
-    chat_supported: true,
-    terminal_supported: true,
-  },
   init: {
     execution: "terminal-required",
     input: inputNone(),
@@ -148,14 +124,6 @@ const CHATUI_SLASH_COMMAND_OVERRIDES: Record<string, SlashCommandOverride> = {
     chat_supported: true,
     terminal_supported: true,
   },
-  mcp: {
-    execution: "terminal-required",
-    input: optionalInlineArgs("verbose"),
-    output: { kind: "terminal" },
-    interactive: false,
-    chat_supported: true,
-    terminal_supported: true,
-  },
   goal: {
     chat_supported: false,
   },
@@ -168,9 +136,11 @@ const HIDDEN_CHATUI_SLASH_COMMAND_NAMES = new Set([
   "compact",
   "copy",
   "diff",
+  "mcp",
   "plan",
   "ps",
   "rollout",
+  "status",
   "theme",
 ]);
 
@@ -428,10 +398,6 @@ function fallbackSpec({
 
 function inputNone(): CodexSlashCommand["input"] {
   return { kind: "none" };
-}
-
-function optionalInlineArgs(placeholder: string): CodexSlashCommand["input"] {
-  return { kind: "inline-args", placeholder, required: false };
 }
 
 function optionalFreeformInput(placeholder: string): CodexSlashCommand["input"] {
