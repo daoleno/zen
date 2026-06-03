@@ -89,57 +89,40 @@ func New(authManager *auth.Manager, w *watcher.Watcher, pusher *push.Client, sc 
 }
 
 type clientMessage struct {
-	Type                  string                 `json:"type"`
-	RequestID             string                 `json:"request_id"`
-	AgentID               string                 `json:"agent_id"`
-	TargetID              string                 `json:"target_id"`
-	Cwd                   string                 `json:"cwd"`
-	Command               string                 `json:"command"`
-	Name                  string                 `json:"name"`
-	StartedAt             json.RawMessage        `json:"started_at"`
-	Backend               string                 `json:"backend"`
-	SessionID             string                 `json:"session_id"`
-	ThreadID              string                 `json:"thread_id"`
-	Text                  string                 `json:"text"`
-	Key                   string                 `json:"key"`
-	Data                  string                 `json:"data"`
-	Body                  string                 `json:"body"`
-	Action                string                 `json:"action"`
-	StateVersion          int64                  `json:"state_version"`
-	PushToken             string                 `json:"push_token"`
-	ServerRef             string                 `json:"server_ref"`
-	Cols                  int                    `json:"cols"`
-	Rows                  int                    `json:"rows"`
-	Col                   int                    `json:"col"`
-	Row                   int                    `json:"row"`
-	Lines                 int                    `json:"lines"`
-	ProcessID             int                    `json:"process_id"`
-	Path                  string                 `json:"path"`
-	ID                    string                 `json:"id"`
-	Project               string                 `json:"project"`
-	Frontmatter           map[string]interface{} `json:"frontmatter"`
-	BaseMtime             string                 `json:"base_mtime"`
-	Prompt                string                 `json:"prompt"`
-	Executor              string                 `json:"executor"`
-	AdapterID             string                 `json:"adapter_id"`
-	Personality           string                 `json:"personality"`
-	Done                  bool                   `json:"done"`
-	Limit                 int                    `json:"limit"`
-	Cursor                string                 `json:"cursor"`
-	SearchTerm            string                 `json:"search_term"`
-	Archived              bool                   `json:"archived"`
-	IncludeTurns          bool                   `json:"include_turns"`
-	Model                 string                 `json:"model"`
-	ModelProvider         string                 `json:"model_provider"`
-	DeveloperInstructions string                 `json:"developer_instructions"`
-	BaseInstructions      string                 `json:"base_instructions"`
-	Ephemeral             bool                   `json:"ephemeral"`
-	ExcludeTurns          bool                   `json:"exclude_turns"`
-	Objective             string                 `json:"objective"`
-	Status                string                 `json:"status"`
-	TokenBudget           int64                  `json:"token_budget"`
-	Pinned                bool                   `json:"pinned"`
-	ReviewState           string                 `json:"review_state"`
+	Type         string                 `json:"type"`
+	RequestID    string                 `json:"request_id"`
+	AgentID      string                 `json:"agent_id"`
+	TargetID     string                 `json:"target_id"`
+	Cwd          string                 `json:"cwd"`
+	Command      string                 `json:"command"`
+	Name         string                 `json:"name"`
+	StartedAt    json.RawMessage        `json:"started_at"`
+	Backend      string                 `json:"backend"`
+	SessionID    string                 `json:"session_id"`
+	Text         string                 `json:"text"`
+	Key          string                 `json:"key"`
+	Data         string                 `json:"data"`
+	Body         string                 `json:"body"`
+	Action       string                 `json:"action"`
+	StateVersion int64                  `json:"state_version"`
+	PushToken    string                 `json:"push_token"`
+	ServerRef    string                 `json:"server_ref"`
+	Cols         int                    `json:"cols"`
+	Rows         int                    `json:"rows"`
+	Col          int                    `json:"col"`
+	Row          int                    `json:"row"`
+	Lines        int                    `json:"lines"`
+	ProcessID    int                    `json:"process_id"`
+	Path         string                 `json:"path"`
+	ID           string                 `json:"id"`
+	Project      string                 `json:"project"`
+	Frontmatter  map[string]interface{} `json:"frontmatter"`
+	BaseMtime    string                 `json:"base_mtime"`
+	Prompt       string                 `json:"prompt"`
+	Executor     string                 `json:"executor"`
+	AdapterID    string                 `json:"adapter_id"`
+	Personality  string                 `json:"personality"`
+	Done         bool                   `json:"done"`
 }
 
 // Run starts the HTTP server and event broadcaster.
@@ -341,36 +324,6 @@ func (s *Server) handleClientMessage(conn *websocket.Conn, msg []byte) {
 
 	case "brain_set_adapter":
 		s.handleBrainSetAdapter(conn, raw)
-
-	case "brain_threads":
-		s.handleBrainThreads(conn, raw)
-
-	case "brain_thread_archive":
-		s.handleBrainThreadArchive(conn, raw)
-
-	case "brain_thread_pin":
-		s.handleBrainThreadPin(conn, raw)
-
-	case "brain_thread_review_state":
-		s.handleBrainThreadReviewState(conn, raw)
-
-	case "brain_thread_read":
-		s.handleBrainThreadRead(conn, raw)
-
-	case "brain_thread_resume":
-		s.handleBrainThreadResume(conn, raw)
-
-	case "brain_thread_fork":
-		s.handleBrainThreadFork(conn, raw)
-
-	case "brain_thread_goal_get":
-		s.handleBrainThreadGoalGet(conn, raw)
-
-	case "brain_thread_goal_set":
-		s.handleBrainThreadGoalSet(conn, raw)
-
-	case "brain_thread_goal_clear":
-		s.handleBrainThreadGoalClear(conn, raw)
 
 	case "brain_chat_snapshot", "brain_chat_send":
 		s.handleDeprecatedBrainChatProtocol(conn, raw)
@@ -1303,80 +1256,8 @@ func (s *Server) sendBrainSnapshot(conn *websocket.Conn, requestID string) {
 	s.sendJSON(conn, map[string]any{
 		"type":       "brain_snapshot",
 		"request_id": requestID,
-		"brain":      s.decorateBrainSnapshot(snapshot),
+		"brain":      snapshot,
 	})
-}
-
-func (s *Server) decorateBrainSnapshot(snapshot brain.Snapshot) brain.Snapshot {
-	queue := append([]brain.AttentionQueueItem(nil), snapshot.AttentionQueue...)
-	if s != nil && s.work != nil {
-		for _, item := range work.FilterAgentWorkItems(s.work.List()) {
-			if brainWorkItemNeedsAttention(item) {
-				queue = append(queue, brainWorkItemToQueueItem(item))
-			}
-		}
-	}
-	brain.SortAttentionQueue(queue)
-	snapshot.AttentionQueue = queue
-	return snapshot
-}
-
-func brainWorkItemNeedsAttention(item *work.Item) bool {
-	if item == nil || item.Frontmatter.Done != nil {
-		return false
-	}
-	status := strings.ToLower(strings.TrimSpace(item.Frontmatter.Status))
-	if status == "blocked" || status == "failed" {
-		return true
-	}
-	return strings.TrimSpace(item.Frontmatter.AIError) != ""
-}
-
-func brainWorkItemToQueueItem(item *work.Item) brain.AttentionQueueItem {
-	if item == nil {
-		return brain.AttentionQueueItem{}
-	}
-	title := strings.TrimSpace(item.Frontmatter.Title)
-	if title == "" {
-		title = strings.TrimSpace(item.Title)
-	}
-	if title == "" {
-		title = strings.TrimSpace(item.Frontmatter.Summary)
-	}
-	if title == "" {
-		title = item.ID
-	}
-	summary := strings.TrimSpace(item.Frontmatter.AIError)
-	if summary == "" {
-		summary = strings.TrimSpace(item.Frontmatter.Friction)
-	}
-	if summary == "" {
-		summary = strings.TrimSpace(item.Frontmatter.Summary)
-	}
-	if summary == "" {
-		summary = strings.TrimSpace(item.Frontmatter.Next)
-	}
-	status := strings.ToLower(strings.TrimSpace(item.Frontmatter.Status))
-	if status == "" && strings.TrimSpace(item.Frontmatter.AIError) != "" {
-		status = "failed"
-	}
-	updated := item.Mtime
-	if item.Frontmatter.AIUpdated != nil && item.Frontmatter.AIUpdated.After(updated) {
-		updated = *item.Frontmatter.AIUpdated
-	}
-	return brain.AttentionQueueItem{
-		ID:         "work:" + item.ID,
-		Kind:       "work_item",
-		Title:      title,
-		Summary:    summary,
-		WorkItemID: item.ID,
-		Status:     status,
-		Project:    item.Project,
-		Cwd:        item.Frontmatter.Cwd,
-		Command:    item.Frontmatter.Command,
-		Path:       item.Path,
-		Updated:    updated,
-	}
 }
 
 func (s *Server) handleBrainSetAdapter(conn *websocket.Conn, raw clientMessage) {
@@ -1392,302 +1273,7 @@ func (s *Server) handleBrainSetAdapter(conn *websocket.Conn, raw clientMessage) 
 	s.sendJSON(conn, map[string]any{
 		"type":       "brain_snapshot",
 		"request_id": raw.RequestID,
-		"brain":      s.decorateBrainSnapshot(snapshot),
-	})
-}
-
-func (s *Server) handleBrainThreads(conn *websocket.Conn, raw clientMessage) {
-	if s.brain == nil {
-		s.sendErrorWithRequestID(conn, raw.RequestID, "brain_unavailable", "Brain is not configured")
-		return
-	}
-	limit := raw.Limit
-	if limit <= 0 {
-		limit = 20
-	}
-	var archived *bool
-	if raw.Archived {
-		archived = &raw.Archived
-	}
-	adapter, page, err := s.brain.NativeThreads(context.Background(), raw.AdapterID, work.NativeThreadListOptions{
-		Cursor:     raw.Cursor,
-		Limit:      limit,
-		Cwd:        raw.Cwd,
-		SearchTerm: raw.SearchTerm,
-		Archived:   archived,
-	})
-	if err != nil {
-		s.sendErrorWithRequestID(conn, raw.RequestID, "brain_threads_failed", err.Error())
-		return
-	}
-	adapter.Preferred = true
-	s.sendJSON(conn, map[string]any{
-		"type":             "brain_threads",
-		"request_id":       raw.RequestID,
-		"adapter":          adapter,
-		"threads":          page.Threads,
-		"next_cursor":      page.NextCursor,
-		"backwards_cursor": page.BackwardsCursor,
-	})
-}
-
-func (s *Server) handleBrainThreadArchive(conn *websocket.Conn, raw clientMessage) {
-	if s.brain == nil {
-		s.sendErrorWithRequestID(conn, raw.RequestID, "brain_unavailable", "Brain is not configured")
-		return
-	}
-	threadID := firstNonEmptyString(raw.ThreadID, raw.TargetID)
-	if strings.TrimSpace(threadID) == "" {
-		s.sendErrorWithRequestID(conn, raw.RequestID, "brain_thread_archive_failed", "thread id is required")
-		return
-	}
-	adapter, thread, err := s.brain.ArchiveNativeThread(context.Background(), raw.AdapterID, threadID, raw.Archived)
-	if err != nil {
-		s.sendErrorWithRequestID(conn, raw.RequestID, "brain_thread_archive_failed", err.Error())
-		return
-	}
-	adapter.Preferred = true
-	s.sendJSON(conn, map[string]any{
-		"type":       "brain_thread_archived",
-		"request_id": raw.RequestID,
-		"adapter":    adapter,
-		"thread":     thread,
-	})
-}
-
-func (s *Server) handleBrainThreadPin(conn *websocket.Conn, raw clientMessage) {
-	if s.brain == nil {
-		s.sendErrorWithRequestID(conn, raw.RequestID, "brain_unavailable", "Brain is not configured")
-		return
-	}
-	threadID := firstNonEmptyString(raw.ThreadID, raw.TargetID)
-	if strings.TrimSpace(threadID) == "" {
-		s.sendErrorWithRequestID(conn, raw.RequestID, "brain_thread_pin_failed", "thread id is required")
-		return
-	}
-	thread, err := s.brain.SetNativeThreadPinned(threadID, raw.Pinned)
-	if err != nil {
-		s.sendErrorWithRequestID(conn, raw.RequestID, "brain_thread_pin_failed", err.Error())
-		return
-	}
-	s.sendJSON(conn, map[string]any{
-		"type":       "brain_thread_pinned",
-		"request_id": raw.RequestID,
-		"thread_id":  thread.ID,
-		"pinned":     thread.Pinned,
-		"thread":     thread,
-	})
-}
-
-func (s *Server) handleBrainThreadReviewState(conn *websocket.Conn, raw clientMessage) {
-	if s.brain == nil {
-		s.sendErrorWithRequestID(conn, raw.RequestID, "brain_unavailable", "Brain is not configured")
-		return
-	}
-	threadID := firstNonEmptyString(raw.ThreadID, raw.TargetID)
-	if strings.TrimSpace(threadID) == "" {
-		s.sendErrorWithRequestID(conn, raw.RequestID, "brain_thread_review_state_failed", "thread id is required")
-		return
-	}
-	thread, err := s.brain.SetNativeThreadReviewState(threadID, raw.ReviewState)
-	if err != nil {
-		s.sendErrorWithRequestID(conn, raw.RequestID, "brain_thread_review_state_failed", err.Error())
-		return
-	}
-	s.sendJSON(conn, map[string]any{
-		"type":         "brain_thread_review_state",
-		"request_id":   raw.RequestID,
-		"thread_id":    thread.ID,
-		"review_state": thread.ReviewState,
-		"thread":       thread,
-	})
-}
-
-func (s *Server) handleBrainThreadRead(conn *websocket.Conn, raw clientMessage) {
-	if s.brain == nil {
-		s.sendErrorWithRequestID(conn, raw.RequestID, "brain_unavailable", "Brain is not configured")
-		return
-	}
-	threadID := firstNonEmptyString(raw.ThreadID, raw.TargetID)
-	if strings.TrimSpace(threadID) == "" {
-		s.sendErrorWithRequestID(conn, raw.RequestID, "brain_thread_read_failed", "thread id is required")
-		return
-	}
-	adapter, thread, err := s.brain.ReadNativeThread(context.Background(), raw.AdapterID, threadID, work.NativeThreadReadOptions{
-		IncludeTurns: raw.IncludeTurns,
-	})
-	if err != nil {
-		s.sendErrorWithRequestID(conn, raw.RequestID, "brain_thread_read_failed", err.Error())
-		return
-	}
-	adapter.Preferred = true
-	s.sendJSON(conn, map[string]any{
-		"type":       "brain_thread_read",
-		"request_id": raw.RequestID,
-		"adapter":    adapter,
-		"thread":     thread,
-	})
-}
-
-func (s *Server) handleBrainThreadResume(conn *websocket.Conn, raw clientMessage) {
-	if s.brain == nil {
-		s.sendErrorWithRequestID(conn, raw.RequestID, "brain_unavailable", "Brain is not configured")
-		return
-	}
-	threadID := firstNonEmptyString(raw.ThreadID, raw.TargetID)
-	if strings.TrimSpace(threadID) == "" {
-		s.sendErrorWithRequestID(conn, raw.RequestID, "brain_thread_resume_failed", "thread id is required")
-		return
-	}
-	snapshot, thread, err := s.brain.ResumeNativeThreadAsHost(context.Background(), raw.AdapterID, threadID, work.NativeThreadResumeOptions{
-		Cwd:                   raw.Cwd,
-		Model:                 raw.Model,
-		ModelProvider:         raw.ModelProvider,
-		DeveloperInstructions: raw.DeveloperInstructions,
-		BaseInstructions:      raw.BaseInstructions,
-	})
-	if err != nil {
-		s.sendErrorWithRequestID(conn, raw.RequestID, "brain_thread_resume_failed", err.Error())
-		return
-	}
-	s.sendJSON(conn, map[string]any{
-		"type":       "brain_thread_resumed",
-		"request_id": raw.RequestID,
-		"brain":      s.decorateBrainSnapshot(snapshot),
-		"thread":     thread,
-	})
-	s.sendJSON(conn, map[string]any{
-		"type":       "brain_snapshot",
-		"request_id": raw.RequestID,
-		"brain":      s.decorateBrainSnapshot(snapshot),
-	})
-}
-
-func (s *Server) handleBrainThreadFork(conn *websocket.Conn, raw clientMessage) {
-	if s.brain == nil {
-		s.sendErrorWithRequestID(conn, raw.RequestID, "brain_unavailable", "Brain is not configured")
-		return
-	}
-	threadID := firstNonEmptyString(raw.ThreadID, raw.TargetID)
-	if strings.TrimSpace(threadID) == "" {
-		s.sendErrorWithRequestID(conn, raw.RequestID, "brain_thread_fork_failed", "thread id is required")
-		return
-	}
-	adapter, thread, err := s.brain.ForkNativeThread(context.Background(), raw.AdapterID, threadID, work.NativeThreadForkOptions{
-		Cwd:                   raw.Cwd,
-		Model:                 raw.Model,
-		ModelProvider:         raw.ModelProvider,
-		DeveloperInstructions: raw.DeveloperInstructions,
-		BaseInstructions:      raw.BaseInstructions,
-		Ephemeral:             raw.Ephemeral,
-		ExcludeTurns:          raw.ExcludeTurns,
-	})
-	if err != nil {
-		s.sendErrorWithRequestID(conn, raw.RequestID, "brain_thread_fork_failed", err.Error())
-		return
-	}
-	adapter.Preferred = true
-	s.sendJSON(conn, map[string]any{
-		"type":       "brain_thread_forked",
-		"request_id": raw.RequestID,
-		"adapter":    adapter,
-		"thread":     thread,
-	})
-}
-
-func (s *Server) handleBrainThreadGoalGet(conn *websocket.Conn, raw clientMessage) {
-	if s.brain == nil {
-		s.sendErrorWithRequestID(conn, raw.RequestID, "brain_unavailable", "Brain is not configured")
-		return
-	}
-	threadID := firstNonEmptyString(raw.ThreadID, raw.TargetID)
-	if strings.TrimSpace(threadID) == "" {
-		s.sendErrorWithRequestID(conn, raw.RequestID, "brain_thread_goal_get_failed", "thread id is required")
-		return
-	}
-	adapter, goal, err := s.brain.GetNativeThreadGoal(context.Background(), raw.AdapterID, threadID)
-	if err != nil {
-		s.sendErrorWithRequestID(conn, raw.RequestID, "brain_thread_goal_get_failed", err.Error())
-		return
-	}
-	adapter.Preferred = true
-	if goal == nil {
-		s.sendJSON(conn, map[string]any{
-			"type":       "brain_thread_goal",
-			"request_id": raw.RequestID,
-			"adapter":    adapter,
-			"goal":       nil,
-		})
-		return
-	}
-	s.sendJSON(conn, map[string]any{
-		"type":       "brain_thread_goal",
-		"request_id": raw.RequestID,
-		"adapter":    adapter,
-		"goal":       goal,
-	})
-}
-
-func (s *Server) handleBrainThreadGoalSet(conn *websocket.Conn, raw clientMessage) {
-	if s.brain == nil {
-		s.sendErrorWithRequestID(conn, raw.RequestID, "brain_unavailable", "Brain is not configured")
-		return
-	}
-	threadID := firstNonEmptyString(raw.ThreadID, raw.TargetID)
-	if strings.TrimSpace(threadID) == "" {
-		s.sendErrorWithRequestID(conn, raw.RequestID, "brain_thread_goal_set_failed", "thread id is required")
-		return
-	}
-	update := work.NativeThreadGoalUpdate{
-		Objective: raw.Objective,
-		Status:    raw.Status,
-	}
-	if raw.TokenBudget > 0 {
-		budget := raw.TokenBudget
-		update.TokenBudget = &budget
-	}
-	if strings.TrimSpace(update.Status) == "" {
-		update.Status = "active"
-	}
-	if strings.TrimSpace(update.Objective) == "" {
-		s.sendErrorWithRequestID(conn, raw.RequestID, "brain_thread_goal_set_failed", "objective is required")
-		return
-	}
-	adapter, goal, err := s.brain.SetNativeThreadGoal(context.Background(), raw.AdapterID, threadID, update)
-	if err != nil {
-		s.sendErrorWithRequestID(conn, raw.RequestID, "brain_thread_goal_set_failed", err.Error())
-		return
-	}
-	adapter.Preferred = true
-	s.sendJSON(conn, map[string]any{
-		"type":       "brain_thread_goal",
-		"request_id": raw.RequestID,
-		"adapter":    adapter,
-		"goal":       goal,
-	})
-}
-
-func (s *Server) handleBrainThreadGoalClear(conn *websocket.Conn, raw clientMessage) {
-	if s.brain == nil {
-		s.sendErrorWithRequestID(conn, raw.RequestID, "brain_unavailable", "Brain is not configured")
-		return
-	}
-	threadID := firstNonEmptyString(raw.ThreadID, raw.TargetID)
-	if strings.TrimSpace(threadID) == "" {
-		s.sendErrorWithRequestID(conn, raw.RequestID, "brain_thread_goal_clear_failed", "thread id is required")
-		return
-	}
-	adapter, cleared, err := s.brain.ClearNativeThreadGoal(context.Background(), raw.AdapterID, threadID)
-	if err != nil {
-		s.sendErrorWithRequestID(conn, raw.RequestID, "brain_thread_goal_clear_failed", err.Error())
-		return
-	}
-	adapter.Preferred = true
-	s.sendJSON(conn, map[string]any{
-		"type":       "brain_thread_goal_cleared",
-		"request_id": raw.RequestID,
-		"adapter":    adapter,
-		"cleared":    cleared,
+		"brain":      snapshot,
 	})
 }
 
@@ -1714,7 +1300,7 @@ func (s *Server) handleBrainChatNew(conn *websocket.Conn, raw clientMessage) {
 	s.sendJSON(conn, map[string]any{
 		"type":       "brain_snapshot",
 		"request_id": raw.RequestID,
-		"brain":      s.decorateBrainSnapshot(snapshot),
+		"brain":      snapshot,
 	})
 }
 

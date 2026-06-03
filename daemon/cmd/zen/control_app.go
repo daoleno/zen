@@ -1,7 +1,6 @@
 package main
 
 import (
-	"context"
 	"fmt"
 	"os"
 	"sort"
@@ -49,8 +48,6 @@ func (a *controlApp) HandleControlRequest(req control.Request) control.Response 
 			return control.ErrorResponse("brain_unavailable", "Brain workspace is not configured.")
 		}
 		return control.Response{OK: true, Workspace: a.brainStore.WorkspacePath()}
-	case "brain_threads":
-		return a.handleBrainThreads(req)
 	default:
 		return control.ErrorResponse("unknown_request", fmt.Sprintf("Unknown control request: %s", req.Type))
 	}
@@ -216,64 +213,6 @@ func (a *controlApp) handleBrainSetAdapter(req control.Request) control.Response
 	return a.handleBrainAdapters()
 }
 
-func (a *controlApp) handleBrainThreads(req control.Request) control.Response {
-	if a == nil || a.execs == nil {
-		return control.ErrorResponse("executors_unavailable", "Executor config is not available.")
-	}
-	adapter, ok := a.currentBrainAdapter()
-	if requested := strings.TrimSpace(req.AdapterID); requested != "" {
-		adapter, ok = a.execs.AgentAdapter(requested)
-	}
-	if !ok {
-		return control.ErrorResponse("adapter_unavailable", "No Brain adapter is configured.")
-	}
-	provider, ok := work.NewNativeThreadProvider(adapter)
-	if !ok {
-		return control.ErrorResponse("native_threads_unavailable", fmt.Sprintf("Brain adapter %q does not expose native threads.", adapter.ID))
-	}
-	limit := req.Limit
-	if limit <= 0 {
-		limit = 20
-	}
-	var (
-		page work.NativeThreadPage
-		err  error
-	)
-	if searchTerm := strings.TrimSpace(req.SearchTerm); searchTerm != "" && adapter.Capabilities.NativeSearch {
-		page, err = provider.SearchThreads(context.Background(), work.NativeThreadSearchOptions{
-			Cursor:     req.Cursor,
-			Limit:      limit,
-			Cwd:        req.Cwd,
-			SearchTerm: searchTerm,
-		})
-	} else {
-		var archived *bool
-		if req.Archived {
-			archived = &req.Archived
-		}
-		page, err = provider.ListThreads(context.Background(), work.NativeThreadListOptions{
-			Cursor:     req.Cursor,
-			Limit:      limit,
-			Cwd:        req.Cwd,
-			SearchTerm: req.SearchTerm,
-			Archived:   archived,
-		})
-	}
-	if err != nil {
-		return control.ErrorResponse("brain_threads_failed", err.Error())
-	}
-	page.Threads = a.annotateBrainThreads(page.Threads)
-	adapter.Preferred = true
-	converted := controlAdapter(adapter)
-	return control.Response{
-		OK:              true,
-		Adapter:         &converted,
-		Threads:         controlThreads(page.Threads),
-		NextCursor:      page.NextCursor,
-		BackwardsCursor: page.BackwardsCursor,
-	}
-}
-
 func (a *controlApp) brainAdapterSnapshot() (*control.Adapter, []control.Adapter, control.Response) {
 	if a == nil || a.brainStore == nil {
 		return nil, nil, control.ErrorResponse("brain_unavailable", "Brain workspace is not configured.")
@@ -317,53 +256,6 @@ func (a *controlApp) currentBrainAdapter() (work.AgentAdapter, bool) {
 		}
 	}
 	return a.execs.DefaultAgentAdapter()
-}
-
-func (a *controlApp) annotateBrainThreads(threads []work.NativeThread) []work.NativeThread {
-	if a == nil || a.brainStore == nil || len(threads) == 0 {
-		return threads
-	}
-	ids := make([]string, 0, len(threads))
-	for _, thread := range threads {
-		if id := strings.TrimSpace(thread.ID); id != "" {
-			ids = append(ids, id)
-		}
-	}
-	metadata, err := a.brainStore.ThreadMetadataMap(ids)
-	if err != nil {
-		return threads
-	}
-	next := append([]work.NativeThread(nil), threads...)
-	for index := range next {
-		meta := metadata[strings.TrimSpace(next[index].ID)]
-		if meta.Pinned {
-			next[index].Pinned = true
-		}
-		if meta.ReviewState != "" {
-			next[index].ReviewState = meta.ReviewState
-		}
-	}
-	sort.SliceStable(next, func(i, j int) bool {
-		if next[i].Pinned != next[j].Pinned {
-			return next[i].Pinned
-		}
-		leftNeedsReview := brainThreadNeedsReview(next[i])
-		rightNeedsReview := brainThreadNeedsReview(next[j])
-		if leftNeedsReview != rightNeedsReview {
-			return leftNeedsReview
-		}
-		return false
-	})
-	return next
-}
-
-func brainThreadNeedsReview(thread work.NativeThread) bool {
-	switch strings.TrimSpace(thread.ReviewState) {
-	case "needs_review", "reviewing":
-		return true
-	default:
-		return false
-	}
 }
 
 func (a *controlApp) resolveSpawnCommand(req control.Request) (string, error) {
@@ -425,48 +317,11 @@ func controlAdapter(adapter work.AgentAdapter) control.Adapter {
 		Command:  adapter.Command,
 		Runtime:  adapter.Runtime,
 		Capabilities: control.AdapterCapabilities{
-			NativeThreads:    adapter.Capabilities.NativeThreads,
-			NativeSearch:     adapter.Capabilities.NativeSearch,
-			NativePinning:    adapter.Capabilities.NativePinning,
-			NativeArchive:    adapter.Capabilities.NativeArchive,
-			NativeWorktrees:  adapter.Capabilities.NativeWorktrees,
-			NativeFork:       adapter.Capabilities.NativeFork,
-			NativeResume:     adapter.Capabilities.NativeResume,
-			NativeGoals:      adapter.Capabilities.NativeGoals,
-			NativeAutomation: adapter.Capabilities.NativeAutomation,
 			InteractiveTTY:   adapter.Capabilities.InteractiveTTY,
 			StructuredEvents: adapter.Capabilities.StructuredEvents,
 		},
 		Preferred: adapter.Preferred,
 	}
-}
-
-func controlThreads(threads []work.NativeThread) []control.Thread {
-	out := make([]control.Thread, 0, len(threads))
-	for _, thread := range threads {
-		out = append(out, control.Thread{
-			ID:            thread.ID,
-			NativeID:      thread.NativeID,
-			Provider:      thread.Provider,
-			SessionID:     thread.SessionID,
-			ForkedFromID:  thread.ForkedFromID,
-			Title:         thread.Title,
-			Preview:       thread.Preview,
-			Snippet:       thread.Snippet,
-			Status:        thread.Status,
-			Cwd:           thread.Cwd,
-			Path:          thread.Path,
-			Source:        thread.Source,
-			ModelProvider: thread.ModelProvider,
-			Ephemeral:     thread.Ephemeral,
-			Archived:      thread.Archived,
-			Pinned:        thread.Pinned,
-			ReviewState:   thread.ReviewState,
-			CreatedAt:     thread.CreatedAt,
-			UpdatedAt:     thread.UpdatedAt,
-		})
-	}
-	return out
 }
 
 func spawnPrompt(req control.Request) (string, error) {

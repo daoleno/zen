@@ -1,7 +1,6 @@
 package brain
 
 import (
-	"context"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -136,6 +135,9 @@ func TestServiceSnapshotCreatesHiddenHostSession(t *testing.T) {
 	if len(fw.sentCalls) == 0 || fw.sentCalls[0].sessionID != fw.created[0].id {
 		t.Fatalf("expected bootstrap prompt to be sent to host, got %#v", fw.sentCalls)
 	}
+	if !strings.Contains(fw.created[0].opts.Command, claudePermissionBypassFlag) {
+		t.Fatalf("default Brain command should bypass Claude permissions: %q", fw.created[0].opts.Command)
+	}
 }
 
 func TestServiceSnapshotReusesMatchingHostSession(t *testing.T) {
@@ -160,6 +162,13 @@ func TestServiceSnapshotReusesMatchingHostSession(t *testing.T) {
 	}
 	if len(fw.created) != 1 {
 		t.Fatalf("expected existing codex host to be reused, got %#v", fw.created)
+	}
+	command := fw.created[0].opts.Command
+	if !strings.Contains(command, codexFullAuthorizationFlag) {
+		t.Fatalf("codex Brain host should bypass approvals and sandbox: %q", command)
+	}
+	if strings.Count(command, codexFullAuthorizationFlag) != 1 {
+		t.Fatalf("codex full authorization flag duplicated: %q", command)
 	}
 	if first.HostAgent == nil || second.HostAgent == nil || first.HostAgent.ID != second.HostAgent.ID {
 		t.Fatalf("host agents = %#v / %#v", first.HostAgent, second.HostAgent)
@@ -218,7 +227,7 @@ func TestServiceSnapshotHonorsHostAdapterOverride(t *testing.T) {
 		t.Fatalf("created sessions = %#v", fw.created)
 	}
 	command := fw.created[0].opts.Command
-	if !strings.HasPrefix(command, "claude") || !strings.Contains(command, " --add-dir ") {
+	if !strings.HasPrefix(command, "claude") || !strings.Contains(command, claudePermissionBypassFlag) || !strings.Contains(command, " --add-dir ") {
 		t.Fatalf("host command = %q", command)
 	}
 	hostSession, err := store.HostSession()
@@ -230,98 +239,6 @@ func TestServiceSnapshotHonorsHostAdapterOverride(t *testing.T) {
 	}
 	if !strings.Contains(fw.sentCalls[0].text, "Active adapter: claude") {
 		t.Fatalf("bootstrap prompt did not include adapter metadata:\n%s", fw.sentCalls[0].text)
-	}
-}
-
-func TestServiceResumeNativeThreadAsHostReplacesBrainHost(t *testing.T) {
-	store, err := NewStore(t.TempDir())
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := store.SetHostSession("old-host", "codex"); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := store.SetThreadPinned("codex:thread-1", true); err != nil {
-		t.Fatal(err)
-	}
-	script := filepath.Join(t.TempDir(), "fake-codex")
-	body := `#!/bin/sh
-set -eu
-read init
-case "$init" in
-  *'"method":"initialize"'*) ;;
-  *) echo "bad initialize: $init" >&2; exit 11 ;;
-esac
-printf '%s\n' '{"id":"zen-init","result":{"userAgent":"fake","codexHome":"/tmp/codex","platformFamily":"unix","platformOs":"linux"}}'
-printf '%s\n' '{"method":"remoteControl/status/changed","params":{"status":"disabled"}}'
-read ready
-case "$ready" in
-  *'"method":"initialized"'*) ;;
-  *) echo "bad initialized: $ready" >&2; exit 12 ;;
-esac
-read req
-case "$req" in
-  *'"method":"thread/resume"'*) ;;
-  *) echo "bad request method: $req" >&2; exit 13 ;;
-esac
-case "$req" in
-  *'"threadId":"thread-1"'*) ;;
-  *) echo "bad thread id: $req" >&2; exit 14 ;;
-esac
-printf '%s\n' '{"id":"zen-1","result":{"thread":{"id":"thread-1","sessionId":"session-1","forkedFromId":null,"preview":"Resumed thread","ephemeral":false,"modelProvider":"openai","createdAt":1780331643,"updatedAt":1780333776,"status":{"type":"idle"},"path":"/repo/zen/.codex/thread.json","cwd":"/repo/zen","source":"cli","name":"Brain thread"}}}'
-`
-	if err := os.WriteFile(script, []byte(body), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	fw := &fakeWatcher{
-		sessions: map[string]*classifier.Agent{
-			"old-host": {
-				ID:      "old-host",
-				Name:    "Brain",
-				State:   classifier.StateRunning,
-				Cwd:     store.WorkspacePath(),
-				Command: "fake-codex --no-alt-screen -C '" + store.WorkspacePath() + "'",
-				Hidden:  true,
-			},
-		},
-	}
-	service := NewService(store, fw, &work.ExecutorConfig{
-		Default: "codex",
-		ByName: map[string]work.Executor{
-			"codex": {Name: "codex", Command: script, Kind: "codex"},
-		},
-	})
-
-	snapshot, thread, err := service.ResumeNativeThreadAsHost(context.Background(), "codex", "codex:thread-1", work.NativeThreadResumeOptions{
-		Cwd: "/repo/zen",
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if thread.ID != "codex:thread-1" || thread.NativeID != "thread-1" || thread.Status != "idle" {
-		t.Fatalf("thread = %+v", thread)
-	}
-	if !thread.Pinned {
-		t.Fatalf("expected resumed thread to keep Brain pin metadata: %+v", thread)
-	}
-	if len(fw.killed) != 1 || fw.killed[0] != "old-host" {
-		t.Fatalf("killed sessions = %#v", fw.killed)
-	}
-	if len(fw.created) != 1 {
-		t.Fatalf("created sessions = %#v", fw.created)
-	}
-	created := fw.created[0].opts
-	if created.Name != "Brain" || !created.Hidden || !created.Detached {
-		t.Fatalf("created host = %+v", created)
-	}
-	if !strings.Contains(created.Command, "resume 'thread-1'") || !strings.Contains(created.Command, "--no-alt-screen") {
-		t.Fatalf("resume command = %q", created.Command)
-	}
-	if snapshot.ChatThreadID != "codex:thread-1" {
-		t.Fatalf("chat thread = %q", snapshot.ChatThreadID)
-	}
-	if snapshot.HostAgent == nil || snapshot.HostAgent.ID != fw.created[0].id {
-		t.Fatalf("host agent = %#v created=%#v", snapshot.HostAgent, fw.created[0])
 	}
 }
 
@@ -458,38 +375,6 @@ func TestServiceNewChatReplacesHostAndStartsFreshThread(t *testing.T) {
 	}
 }
 
-func TestServiceAnnotatesAndSortsPinnedNativeThreads(t *testing.T) {
-	store, err := NewStore(t.TempDir())
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := store.SetThreadPinned("codex:thread-2", true); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := store.SetThreadReviewState("codex:thread-3", "needs_review"); err != nil {
-		t.Fatal(err)
-	}
-	service := NewService(store, nil, nil)
-
-	got := service.annotateNativeThreads([]work.NativeThread{
-		{ID: "codex:thread-1", Title: "First"},
-		{ID: "codex:thread-3", Title: "Third"},
-		{ID: "codex:thread-2", Title: "Second"},
-	})
-	if len(got) != 3 {
-		t.Fatalf("threads = %#v", got)
-	}
-	if got[0].ID != "codex:thread-2" || !got[0].Pinned {
-		t.Fatalf("pinned thread was not promoted: %#v", got)
-	}
-	if got[1].ID != "codex:thread-3" || got[1].ReviewState != "needs_review" {
-		t.Fatalf("review thread was not queued after pinned threads: %#v", got)
-	}
-	if got[2].ID != "codex:thread-1" {
-		t.Fatalf("remaining unpinned thread order changed: %#v", got)
-	}
-}
-
 func TestServiceSetHostAdapterRejectsUnknownAdapter(t *testing.T) {
 	store, err := NewStore(t.TempDir())
 	if err != nil {
@@ -550,6 +435,57 @@ func TestServiceSnapshotReplacesMismatchedHostSession(t *testing.T) {
 	}
 }
 
+func TestServiceSnapshotPreservesCodexHostWithoutFullAuthorization(t *testing.T) {
+	store, err := NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	oldID := "old-brain-host:@1"
+	if err := store.SetHostSession(oldID, "codex"); err != nil {
+		t.Fatal(err)
+	}
+	fw := &fakeWatcher{
+		sessions: map[string]*classifier.Agent{
+			oldID: {
+				ID:      oldID,
+				Name:    "Brain (" + oldID + ")",
+				Cwd:     store.WorkspacePath(),
+				Command: "codex --no-alt-screen -C '" + store.WorkspacePath() + "'",
+				State:   classifier.StateRunning,
+				Hidden:  true,
+			},
+		},
+	}
+	fw.agents = append(fw.agents, fw.sessions[oldID])
+	service := NewService(store, fw, &work.ExecutorConfig{
+		Default: "codex",
+		ByName: map[string]work.Executor{
+			"codex": {Name: "codex", Command: "codex"},
+		},
+	})
+
+	snapshot, err := service.Snapshot()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(fw.killed) != 0 {
+		t.Fatalf("expected existing host to be preserved, killed %#v", fw.killed)
+	}
+	if len(fw.created) != 0 {
+		t.Fatalf("expected no replacement host, got %#v", fw.created)
+	}
+	if snapshot.HostAgent == nil || snapshot.HostAgent.ID != oldID {
+		t.Fatalf("host agent = %#v", snapshot.HostAgent)
+	}
+	hostSession, err := store.HostSession()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if hostSession.ID != oldID || hostSession.AdapterID != "codex" {
+		t.Fatalf("host session = %+v", hostSession)
+	}
+}
+
 func TestServiceSnapshotFiltersHiddenHostFromVisibleAgents(t *testing.T) {
 	store, err := NewStore(t.TempDir())
 	if err != nil {
@@ -574,118 +510,6 @@ func TestServiceSnapshotFiltersHiddenHostFromVisibleAgents(t *testing.T) {
 	}
 	if snapshot.HostAgent == nil || !snapshot.HostAgent.Hidden {
 		t.Fatalf("host agent = %#v", snapshot.HostAgent)
-	}
-}
-
-func TestServiceSnapshotAttentionIncludesVisibleAgentLoad(t *testing.T) {
-	store, err := NewStore(t.TempDir())
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := store.SetThreadReviewState("codex:thread-1", "needs_review"); err != nil {
-		t.Fatal(err)
-	}
-	fw := &fakeWatcher{
-		agents: []*classifier.Agent{
-			{
-				ID:    "running:@1",
-				Name:  "Codex (running:@1)",
-				State: classifier.StateRunning,
-			},
-			{
-				ID:    "unknown:@1",
-				Name:  "Claude (unknown:@1)",
-				State: classifier.StateUnknown,
-			},
-			{
-				ID:    "blocked:@1",
-				Name:  "Codex (blocked:@1)",
-				State: classifier.StateBlocked,
-			},
-			{
-				ID:    "done:@1",
-				Name:  "Codex (done:@1)",
-				State: classifier.StateDone,
-			},
-			{
-				ID:     "hidden:@1",
-				Name:   "Brain (hidden:@1)",
-				State:  classifier.StateRunning,
-				Hidden: true,
-			},
-		},
-	}
-	service := NewService(store, fw, nil)
-
-	snapshot, err := service.Snapshot()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if snapshot.Attention.ReviewQueue != 1 {
-		t.Fatalf("review queue = %d, want 1", snapshot.Attention.ReviewQueue)
-	}
-	if snapshot.Attention.ActiveAgents != 2 || snapshot.Attention.BlockedAgents != 1 {
-		t.Fatalf("attention load = %+v", snapshot.Attention)
-	}
-	if snapshot.Attention.InFlightAgents != 3 || snapshot.Attention.AvailableAgentSlots != 0 {
-		t.Fatalf("attention slots = %+v", snapshot.Attention)
-	}
-	if snapshot.Attention.CanStartAgent || snapshot.Attention.BackpressureReason != "blocked_agents_need_attention" {
-		t.Fatalf("backpressure = %+v", snapshot.Attention)
-	}
-	if snapshot.Attention.Pressure != "blocked" {
-		t.Fatalf("pressure = %q, want blocked", snapshot.Attention.Pressure)
-	}
-	if len(snapshot.AttentionQueue) != 2 {
-		t.Fatalf("attention queue = %#v", snapshot.AttentionQueue)
-	}
-	if snapshot.AttentionQueue[0].Kind != "blocked_agent" || snapshot.AttentionQueue[0].AgentID != "blocked:@1" {
-		t.Fatalf("first queue item = %+v", snapshot.AttentionQueue[0])
-	}
-	if snapshot.AttentionQueue[1].Kind != "review_thread" || snapshot.AttentionQueue[1].ThreadID != "codex:thread-1" {
-		t.Fatalf("second queue item = %+v", snapshot.AttentionQueue[1])
-	}
-	for _, agent := range snapshot.Agents {
-		if agent.ID == "hidden:@1" || agent.Hidden {
-			t.Fatalf("hidden agent leaked into visible load: %#v", snapshot.Agents)
-		}
-	}
-}
-
-func TestServiceSnapshotAttentionAppliesConfiguredInFlightLimit(t *testing.T) {
-	t.Setenv("ZEN_BRAIN_MAX_IN_FLIGHT_AGENTS", "2")
-	store, err := NewStore(t.TempDir())
-	if err != nil {
-		t.Fatal(err)
-	}
-	fw := &fakeWatcher{
-		agents: []*classifier.Agent{
-			{
-				ID:    "running:@1",
-				Name:  "Codex (running:@1)",
-				State: classifier.StateRunning,
-			},
-			{
-				ID:    "running:@2",
-				Name:  "Claude (running:@2)",
-				State: classifier.StateRunning,
-			},
-		},
-	}
-	service := NewService(store, fw, nil)
-
-	snapshot, err := service.Snapshot()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if snapshot.Attention.MaxInFlightAgents != 2 || snapshot.Attention.InFlightAgents != 2 {
-		t.Fatalf("attention limit = %+v", snapshot.Attention)
-	}
-	if snapshot.Attention.CanStartAgent || snapshot.Attention.BackpressureReason != "active_agent_limit_reached" {
-		t.Fatalf("backpressure = %+v", snapshot.Attention)
-	}
-	if snapshot.Attention.Pressure != "loaded" {
-		t.Fatalf("pressure = %q, want loaded", snapshot.Attention.Pressure)
 	}
 }
 

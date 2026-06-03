@@ -11,8 +11,6 @@ import (
 	"strings"
 	"sync"
 	"time"
-
-	"github.com/daoleno/zen/daemon/classifier"
 )
 
 const defaultPersonality = "calm, direct, warm, pragmatic"
@@ -55,10 +53,6 @@ func (s *Store) HostSessionPath() string {
 
 func (s *Store) ChatStatePath() string {
 	return filepath.Join(s.statePath(), "chat_state.json")
-}
-
-func (s *Store) ThreadMetadataPath() string {
-	return filepath.Join(s.statePath(), "thread_metadata.json")
 }
 
 func (s *Store) Snapshot() (Snapshot, error) {
@@ -137,23 +131,13 @@ func (s *Store) snapshotLocked(agents []AgentRef) (Snapshot, error) {
 	if agents == nil {
 		agents = []AgentRef{}
 	}
-	attention, err := s.attentionSummaryLocked()
-	if err != nil {
-		return Snapshot{}, err
-	}
-	attentionQueue, err := s.attentionQueueLocked(agents)
-	if err != nil {
-		return Snapshot{}, err
-	}
 	return Snapshot{
-		Memory:         memory,
-		Profile:        profileNotes,
-		Personality:    firstNonEmpty(profile.Personality, defaultPersonality),
-		Agents:         agents,
-		Attention:      attention,
-		AttentionQueue: attentionQueue,
-		Workspace:      s.WorkspacePath(),
-		GeneratedAt:    time.Now().UTC(),
+		Memory:      memory,
+		Profile:     profileNotes,
+		Personality: firstNonEmpty(profile.Personality, defaultPersonality),
+		Agents:      agents,
+		Workspace:   s.WorkspacePath(),
+		GeneratedAt: time.Now().UTC(),
 	}, nil
 }
 
@@ -186,9 +170,6 @@ func (s *Store) ensureFiles() error {
 		return err
 	}
 	if err := ensureFile(s.ChatStatePath(), []byte("{}\n")); err != nil {
-		return err
-	}
-	if err := ensureFile(s.ThreadMetadataPath(), []byte("{}\n")); err != nil {
 		return err
 	}
 	profilePath := s.profilePath()
@@ -332,13 +313,6 @@ type ChatState struct {
 	UpdatedAt      time.Time
 }
 
-type ThreadMetadata struct {
-	ThreadID    string
-	Pinned      bool
-	ReviewState string
-	UpdatedAt   time.Time
-}
-
 func (s *Store) ChatState(threadID string) (ChatState, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -355,206 +329,6 @@ func (s *Store) TouchChatSession(threadID, sessionID string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.touchChatSessionLocked(strings.TrimSpace(threadID), strings.TrimSpace(sessionID))
-}
-
-func (s *Store) ThreadMetadata(threadID string) (ThreadMetadata, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	threadID = strings.TrimSpace(threadID)
-	if threadID == "" {
-		return ThreadMetadata{}, fmt.Errorf("thread id is required")
-	}
-	file, err := s.readThreadMetadataFileLocked()
-	if err != nil {
-		return ThreadMetadata{}, err
-	}
-	entry := file.Threads[threadID]
-	return ThreadMetadata{
-		ThreadID:    threadID,
-		Pinned:      entry.Pinned,
-		ReviewState: normalizeThreadReviewState(entry.ReviewState),
-		UpdatedAt:   entry.UpdatedAt,
-	}, nil
-}
-
-func (s *Store) ThreadMetadataMap(threadIDs []string) (map[string]ThreadMetadata, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	file, err := s.readThreadMetadataFileLocked()
-	if err != nil {
-		return nil, err
-	}
-	out := make(map[string]ThreadMetadata, len(threadIDs))
-	for _, threadID := range threadIDs {
-		threadID = strings.TrimSpace(threadID)
-		if threadID == "" {
-			continue
-		}
-		entry := file.Threads[threadID]
-		out[threadID] = ThreadMetadata{
-			ThreadID:    threadID,
-			Pinned:      entry.Pinned,
-			ReviewState: normalizeThreadReviewState(entry.ReviewState),
-			UpdatedAt:   entry.UpdatedAt,
-		}
-	}
-	return out, nil
-}
-
-func (s *Store) SetThreadPinned(threadID string, pinned bool) (ThreadMetadata, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	threadID = strings.TrimSpace(threadID)
-	if threadID == "" {
-		return ThreadMetadata{}, fmt.Errorf("thread id is required")
-	}
-	file, err := s.readThreadMetadataFileLocked()
-	if err != nil {
-		return ThreadMetadata{}, err
-	}
-	now := time.Now().UTC()
-	entry := file.Threads[threadID]
-	if pinned {
-		if file.Threads == nil {
-			file.Threads = map[string]threadMetadataEntry{}
-		}
-		entry.Pinned = true
-		entry.UpdatedAt = now
-		file.Threads[threadID] = entry
-	} else {
-		entry.Pinned = false
-		entry.UpdatedAt = now
-		if normalizeThreadReviewState(entry.ReviewState) == "" {
-			delete(file.Threads, threadID)
-		} else {
-			file.Threads[threadID] = entry
-		}
-	}
-	if err := s.writeThreadMetadataFileLocked(file); err != nil {
-		return ThreadMetadata{}, err
-	}
-	return ThreadMetadata{
-		ThreadID:    threadID,
-		Pinned:      pinned,
-		ReviewState: normalizeThreadReviewState(entry.ReviewState),
-		UpdatedAt:   now,
-	}, nil
-}
-
-func (s *Store) SetThreadReviewState(threadID, reviewState string) (ThreadMetadata, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	threadID = strings.TrimSpace(threadID)
-	if threadID == "" {
-		return ThreadMetadata{}, fmt.Errorf("thread id is required")
-	}
-	reviewState = normalizeThreadReviewState(reviewState)
-	file, err := s.readThreadMetadataFileLocked()
-	if err != nil {
-		return ThreadMetadata{}, err
-	}
-	now := time.Now().UTC()
-	entry := file.Threads[threadID]
-	entry.ReviewState = reviewState
-	entry.UpdatedAt = now
-	if entry.Pinned || reviewState != "" {
-		if file.Threads == nil {
-			file.Threads = map[string]threadMetadataEntry{}
-		}
-		file.Threads[threadID] = entry
-	} else {
-		delete(file.Threads, threadID)
-	}
-	if err := s.writeThreadMetadataFileLocked(file); err != nil {
-		return ThreadMetadata{}, err
-	}
-	return ThreadMetadata{
-		ThreadID:    threadID,
-		Pinned:      entry.Pinned,
-		ReviewState: reviewState,
-		UpdatedAt:   now,
-	}, nil
-}
-
-func (s *Store) AttentionSummary() (AttentionSummary, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.attentionSummaryLocked()
-}
-
-func (s *Store) AttentionQueue(agents []AgentRef) ([]AttentionQueueItem, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.attentionQueueLocked(agents)
-}
-
-func (s *Store) attentionSummaryLocked() (AttentionSummary, error) {
-	file, err := s.readThreadMetadataFileLocked()
-	if err != nil {
-		return AttentionSummary{}, err
-	}
-	var summary AttentionSummary
-	for _, entry := range file.Threads {
-		if entry.Pinned {
-			summary.Pinned++
-		}
-		switch normalizeThreadReviewState(entry.ReviewState) {
-		case "needs_review":
-			summary.NeedsReview++
-			summary.ReviewQueue++
-		case "reviewing":
-			summary.Reviewing++
-			summary.ReviewQueue++
-		}
-	}
-	return finalizeAttentionSummary(summary), nil
-}
-
-func (s *Store) attentionQueueLocked(agents []AgentRef) ([]AttentionQueueItem, error) {
-	file, err := s.readThreadMetadataFileLocked()
-	if err != nil {
-		return nil, err
-	}
-	items := make([]AttentionQueueItem, 0)
-	for _, agent := range agents {
-		if agent.Hidden || strings.TrimSpace(agent.Status) != string(classifier.StateBlocked) {
-			continue
-		}
-		agentID := strings.TrimSpace(agent.ID)
-		if agentID == "" {
-			continue
-		}
-		items = append(items, AttentionQueueItem{
-			ID:      "agent:" + agentID,
-			Kind:    "blocked_agent",
-			Title:   firstNonEmpty(strings.TrimSpace(agent.Name), agentID),
-			Summary: strings.TrimSpace(agent.Summary),
-			AgentID: agentID,
-			Status:  strings.TrimSpace(agent.Status),
-			Cwd:     strings.TrimSpace(agent.Cwd),
-			Command: strings.TrimSpace(agent.Command),
-			Updated: agent.Updated,
-		})
-	}
-	for threadID, entry := range file.Threads {
-		threadID = strings.TrimSpace(threadID)
-		reviewState := normalizeThreadReviewState(entry.ReviewState)
-		if threadID == "" || reviewState == "" {
-			continue
-		}
-		items = append(items, AttentionQueueItem{
-			ID:          "thread:" + threadID,
-			Kind:        "review_thread",
-			Title:       threadID,
-			Summary:     reviewStateLabel(reviewState),
-			ThreadID:    threadID,
-			ReviewState: reviewState,
-			Pinned:      entry.Pinned,
-			Updated:     entry.UpdatedAt,
-		})
-	}
-	SortAttentionQueue(items)
-	return items, nil
 }
 
 func (s *Store) readChatStateLocked(threadID string) (ChatState, error) {
@@ -722,16 +496,6 @@ type legacyChatStateFile struct {
 	UpdatedAt      time.Time `json:"updated_at,omitempty"`
 }
 
-type threadMetadataFile struct {
-	Threads map[string]threadMetadataEntry `json:"threads,omitempty"`
-}
-
-type threadMetadataEntry struct {
-	Pinned      bool      `json:"pinned,omitempty"`
-	ReviewState string    `json:"review_state,omitempty"`
-	UpdatedAt   time.Time `json:"updated_at,omitempty"`
-}
-
 func (s *Store) readHostSessionLocked() (HostSession, error) {
 	raw, err := os.ReadFile(s.HostSessionPath())
 	if errors.Is(err, os.ErrNotExist) {
@@ -808,41 +572,6 @@ func (s *Store) readChatStateFileLocked() (ChatState, error) {
 	return ChatState{}, nil
 }
 
-func (s *Store) readThreadMetadataFileLocked() (threadMetadataFile, error) {
-	raw, err := os.ReadFile(s.ThreadMetadataPath())
-	if errors.Is(err, os.ErrNotExist) {
-		return threadMetadataFile{Threads: map[string]threadMetadataEntry{}}, nil
-	}
-	if err != nil {
-		return threadMetadataFile{}, err
-	}
-	if len(bytes.TrimSpace(raw)) == 0 {
-		return threadMetadataFile{Threads: map[string]threadMetadataEntry{}}, nil
-	}
-	var file threadMetadataFile
-	if err := json.Unmarshal(raw, &file); err != nil {
-		return threadMetadataFile{}, err
-	}
-	if file.Threads == nil {
-		file.Threads = map[string]threadMetadataEntry{}
-	}
-	for threadID, entry := range file.Threads {
-		trimmed := strings.TrimSpace(threadID)
-		if trimmed == "" {
-			delete(file.Threads, threadID)
-			continue
-		}
-		entry.ReviewState = normalizeThreadReviewState(entry.ReviewState)
-		if trimmed != threadID {
-			delete(file.Threads, threadID)
-			file.Threads[trimmed] = entry
-		} else {
-			file.Threads[threadID] = entry
-		}
-	}
-	return file, nil
-}
-
 func (s *Store) readProfileLocked() (profileFile, error) {
 	raw, err := os.ReadFile(s.profilePath())
 	if errors.Is(err, os.ErrNotExist) {
@@ -876,47 +605,6 @@ func (s *Store) writeChatStateLocked(state ChatState) error {
 		LastTranscript: state.LastTranscript,
 		UpdatedAt:      state.UpdatedAt,
 	})
-}
-
-func (s *Store) writeThreadMetadataFileLocked(file threadMetadataFile) error {
-	next := threadMetadataFile{Threads: map[string]threadMetadataEntry{}}
-	for threadID, entry := range file.Threads {
-		threadID = strings.TrimSpace(threadID)
-		entry.ReviewState = normalizeThreadReviewState(entry.ReviewState)
-		if threadID == "" || (!entry.Pinned && entry.ReviewState == "") {
-			continue
-		}
-		if entry.UpdatedAt.IsZero() {
-			entry.UpdatedAt = time.Now().UTC()
-		}
-		next.Threads[threadID] = entry
-	}
-	if len(next.Threads) == 0 {
-		next.Threads = nil
-	}
-	return writeJSONFile(s.ThreadMetadataPath(), next)
-}
-
-func normalizeThreadReviewState(value string) string {
-	switch strings.TrimSpace(strings.ToLower(value)) {
-	case "needs_review", "review", "queued":
-		return "needs_review"
-	case "reviewing", "in_review":
-		return "reviewing"
-	default:
-		return ""
-	}
-}
-
-func reviewStateLabel(value string) string {
-	switch normalizeThreadReviewState(value) {
-	case "needs_review":
-		return "Needs review"
-	case "reviewing":
-		return "Reviewing"
-	default:
-		return ""
-	}
 }
 
 func (s *Store) collectChatSessionIDsLocked() []string {

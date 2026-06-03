@@ -47,7 +47,9 @@ interface UseCodexChatControllerInput {
   focusComposer(): void;
   clearComposerNativeText(): void;
   dismissActionMenu(): void;
+  openStatusSheet(): void;
   openSkillsSheet(): void;
+  onSwitchToTerminal(): void;
 }
 
 export function useCodexChatController({
@@ -74,7 +76,9 @@ export function useCodexChatController({
   focusComposer,
   clearComposerNativeText,
   dismissActionMenu,
+  openStatusSheet,
   openSkillsSheet,
+  onSwitchToTerminal,
 }: UseCodexChatControllerInput) {
   const insertSkillMention = useCallback((skill: CodexSkill) => {
     const mention = `$${skill.name}`;
@@ -136,6 +140,11 @@ export function useCodexChatController({
     uploading,
   });
 
+  const runStatusCommand = useCallback((text: string, command?: CodexSlashCommand) => {
+    openStatusSheet();
+    sendSlashCommandToCodex(text, command);
+  }, [openStatusSheet, sendSlashCommandToCodex]);
+
   const {
     pickSlashCommand,
     routeDraftSubmission,
@@ -149,7 +158,9 @@ export function useCodexChatController({
     submitTextToCodex,
     startNewCodexChat,
     sendSlashCommandToCodex,
+    runStatusCommand,
     openSkillsSheet,
+    onSwitchToTerminal,
   });
 
   const sendDraft = useCodexDraftSubmission({
@@ -173,6 +184,7 @@ export function useCodexChatController({
     sendDraft,
     interruptCodex,
     pickSlashCommand,
+    runStatusCommand,
     handleUploadAttachment,
     removeAttachment,
     insertSkillMention,

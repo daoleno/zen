@@ -65,22 +65,6 @@ const CHATUI_FALLBACK_SLASH_COMMAND_SPECS = [
     description: "create an AGENTS.md file with instructions for Codex",
   }),
   fallbackSpec({
-    name: "compact",
-    category: "session",
-    execution: "terminal-required",
-    input: inputNone(),
-    outputKind: "terminal",
-    description: "summarize conversation to prevent hitting the context limit",
-  }),
-  fallbackSpec({
-    name: "plan",
-    category: "session",
-    execution: "terminal-required",
-    input: optionalFreeformInput("optional planning prompt"),
-    outputKind: "terminal",
-    description: "switch to Plan mode",
-  }),
-  fallbackSpec({
     name: "status",
     category: "session",
     execution: "terminal-required",
@@ -148,22 +132,6 @@ const CHATUI_SLASH_COMMAND_OVERRIDES: Record<string, SlashCommandOverride> = {
     chat_supported: true,
     terminal_supported: true,
   },
-  compact: {
-    execution: "terminal-required",
-    input: inputNone(),
-    output: { kind: "terminal" },
-    interactive: false,
-    chat_supported: true,
-    terminal_supported: true,
-  },
-  plan: {
-    execution: "terminal-required",
-    input: optionalFreeformInput("optional planning prompt"),
-    output: { kind: "terminal" },
-    interactive: false,
-    chat_supported: true,
-    terminal_supported: true,
-  },
   rename: {
     execution: "terminal-required",
     input: requiredFreeformInput("new thread title"),
@@ -197,8 +165,10 @@ const CHATUI_SLASH_COMMAND_OVERRIDES: Record<string, SlashCommandOverride> = {
 };
 
 const HIDDEN_CHATUI_SLASH_COMMAND_NAMES = new Set([
+  "compact",
   "copy",
   "diff",
+  "plan",
   "ps",
   "rollout",
   "theme",

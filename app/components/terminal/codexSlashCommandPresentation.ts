@@ -58,10 +58,6 @@ export function slashCommandIcon(name: string): IoniconName {
       return "git-branch-outline";
     case "init":
       return "document-text-outline";
-    case "compact":
-      return "contract-outline";
-    case "plan":
-      return "list-outline";
     case "goal":
       return "flag-outline";
     case "copy":

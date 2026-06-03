@@ -10,8 +10,10 @@ interface UseCodexSlashCommandPickerInput {
   focusComposer(): void;
   startNewCodexChat(commandText?: string): void;
   sendSlashCommandToCodex(text: string, command?: CodexSlashCommand): void;
+  runStatusCommand(text: string, command?: CodexSlashCommand): void;
   openSkillsSheet(): void;
   showUnsupportedSlashCommand(command: CodexSlashCommand): void;
+  showUnavailableSlashCommand(command: CodexSlashCommand): void;
 }
 
 export function useCodexSlashCommandPicker({
@@ -21,8 +23,10 @@ export function useCodexSlashCommandPicker({
   focusComposer,
   startNewCodexChat,
   sendSlashCommandToCodex,
+  runStatusCommand,
   openSkillsSheet,
   showUnsupportedSlashCommand,
+  showUnavailableSlashCommand,
 }: UseCodexSlashCommandPickerInput) {
   return useCallback(
     (command: CodexSlashCommand) => {
@@ -39,11 +43,16 @@ export function useCodexSlashCommandPicker({
       if (!command.chat_supported) {
         setDraft(`${command.value} `);
         focusComposer();
+        showUnavailableSlashCommand(command);
         return;
       }
       if (command.execution === "insert-only") {
         setDraft(`${command.value} `);
         focusComposer();
+        return;
+      }
+      if (command.name === "status") {
+        runStatusCommand(command.value, command);
         return;
       }
       if (command.execution === "native") {
@@ -76,8 +85,10 @@ export function useCodexSlashCommandPicker({
       dismissActionMenu,
       focusComposer,
       openSkillsSheet,
+      runStatusCommand,
       sendSlashCommandToCodex,
       setDraft,
+      showUnavailableSlashCommand,
       showUnsupportedSlashCommand,
       startNewCodexChat,
     ],

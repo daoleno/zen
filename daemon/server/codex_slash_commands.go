@@ -108,8 +108,6 @@ var codexSlashCommandSpecs = []codexSlashCommandSpec{
 	{name: "resume", description: "resume a saved chat"},
 	{name: "fork", description: "fork the current chat"},
 	{name: "init", description: "create an AGENTS.md file with instructions for Codex"},
-	{name: "compact", description: "summarize conversation to prevent hitting the context limit"},
-	{name: "plan", description: "switch to Plan mode"},
 	{name: "goal", description: "set or view the goal for a long-running task"},
 	{name: "side", description: "start a side conversation in an ephemeral fork"},
 	{name: "copy", description: "copy last response as markdown"},
@@ -163,8 +161,6 @@ var codexSlashCommandCapabilities = map[string]codexSlashCommandCapability{
 	"resume":                terminalCommand("navigation", pickerInput("conversation"), "management-screen", true),
 	"fork":                  terminalCommand("navigation", pickerInput("conversation"), "management-screen", true),
 	"init":                  terminalCommand("tools", inputNone(), "terminal", false),
-	"compact":               chatTerminalCommand("session", inputNone(), "terminal", false),
-	"plan":                  chatTerminalCommand("session", inputNone(), "terminal", false),
 	"goal":                  terminalCommand("session", optionalFreeformInput("optional goal text"), "terminal", true),
 	"side":                  terminalCommand("navigation", optionalFreeformInput("side conversation prompt"), "terminal", true),
 	"copy":                  chatTerminalCommand("tools", inputNone(), "terminal", false),
@@ -292,7 +288,12 @@ func commandsFromDiscovery(discovery codexSlashCommandDiscovery) []CodexSlashCom
 }
 
 func isHiddenCodexSlashCommand(name string) bool {
-	return name == "theme"
+	switch name {
+	case "compact", "plan", "theme":
+		return true
+	default:
+		return false
+	}
 }
 
 func codexSlashCommandFromSpec(spec codexSlashCommandSpec, description, source string) CodexSlashCommand {

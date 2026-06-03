@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"os"
 	"sort"
-	"strconv"
 	"strings"
 	"time"
 
@@ -20,8 +19,8 @@ var (
 )
 
 const (
-	defaultMaxInFlightAgents = 3
-	defaultReviewQueueLimit  = 4
+	claudePermissionBypassFlag = "--permission-mode dontAsk"
+	codexFullAuthorizationFlag = "--dangerously-bypass-approvals-and-sandbox"
 )
 
 type Watcher interface {
@@ -74,12 +73,6 @@ func (s *Service) Snapshot() (Snapshot, error) {
 		_ = s.store.TouchChatSession(chatThreadID, host.ID)
 	}
 	snapshot.Agents = s.agentRefs(host.ID)
-	snapshot.Attention = attentionWithAgentLoad(snapshot.Attention, snapshot.Agents)
-	attentionQueue, err := s.store.AttentionQueue(snapshot.Agents)
-	if err != nil {
-		return Snapshot{}, err
-	}
-	snapshot.AttentionQueue = attentionQueue
 	return snapshot, nil
 }
 
@@ -239,7 +232,10 @@ func (s *Service) hostAgentMatches(agent *classifier.Agent, adapter work.AgentAd
 	}
 	expectedProvider := strings.TrimSpace(adapter.Provider)
 	if expectedProvider != "" && expectedProvider != work.AgentProviderCustom {
-		return work.InferAgentProvider(agent.Command) == expectedProvider
+		if work.InferAgentProvider(agent.Command) != expectedProvider {
+			return false
+		}
+		return true
 	}
 	return commandBase(agent.Command) == commandBase(adapter.Command)
 }
@@ -269,6 +265,9 @@ func (s *Service) hostCommand(adapter work.AgentAdapter) string {
 	switch provider {
 	case "codex":
 		args := []string{command}
+		if !codexCommandHasFullAuthorization(command) {
+			args = append(args, codexFullAuthorizationFlag)
+		}
 		if !strings.Contains(command, "--no-alt-screen") {
 			args = append(args, "--no-alt-screen")
 		}
@@ -277,6 +276,9 @@ func (s *Service) hostCommand(adapter work.AgentAdapter) string {
 		}
 		return strings.Join(args, " ")
 	case "claude":
+		if !claudeCommandHasPermissionBypass(command) {
+			command = strings.TrimSpace(command + " " + claudePermissionBypassFlag)
+		}
 		if workspace != "" && !strings.Contains(command, " --add-dir ") {
 			return strings.TrimSpace(command + " --add-dir " + shellQuote(workspace))
 		}
@@ -284,6 +286,14 @@ func (s *Service) hostCommand(adapter work.AgentAdapter) string {
 	default:
 		return command
 	}
+}
+
+func codexCommandHasFullAuthorization(command string) bool {
+	return strings.Contains(command, codexFullAuthorizationFlag)
+}
+
+func claudeCommandHasPermissionBypass(command string) bool {
+	return strings.Contains(command, claudePermissionBypassFlag)
 }
 
 func shellQuote(value string) string {
@@ -324,6 +334,7 @@ Durable state rules:
 
 Agent orchestration rules:
 - You are running in a real tmux agent session.
+- This Brain host is launched with the most permissive available non-interactive authorization mode for its adapter.
 - The zen app sends user messages directly into this session.
 - Treat the adapter as replaceable; do not make Brain's plans depend on Codex-only or Claude-only behavior unless the user asks for that adapter specifically.
 - Only create or ask for a visible delegated agent session when the user explicitly asks you to delegate real work.
@@ -344,33 +355,6 @@ Current memory:
 
 func adapterCapabilitiesSummary(caps work.AgentCapabilities) string {
 	parts := []string{}
-	if caps.NativeThreads {
-		parts = append(parts, "native_threads")
-	}
-	if caps.NativeSearch {
-		parts = append(parts, "native_search")
-	}
-	if caps.NativePinning {
-		parts = append(parts, "native_pinning")
-	}
-	if caps.NativeArchive {
-		parts = append(parts, "native_archive")
-	}
-	if caps.NativeWorktrees {
-		parts = append(parts, "native_worktrees")
-	}
-	if caps.NativeFork {
-		parts = append(parts, "native_fork")
-	}
-	if caps.NativeResume {
-		parts = append(parts, "native_resume")
-	}
-	if caps.NativeGoals {
-		parts = append(parts, "native_goals")
-	}
-	if caps.NativeAutomation {
-		parts = append(parts, "native_automation")
-	}
 	if caps.InteractiveTTY {
 		parts = append(parts, "interactive_tty")
 	}
@@ -418,76 +402,6 @@ func agentRefFromClassifier(agent *classifier.Agent) AgentRef {
 		Updated: agent.UpdatedAt,
 		Hidden:  agent.Hidden,
 	}
-}
-
-func attentionWithAgentLoad(summary AttentionSummary, agents []AgentRef) AttentionSummary {
-	summary.ActiveAgents = 0
-	summary.BlockedAgents = 0
-	for _, agent := range agents {
-		switch strings.TrimSpace(agent.Status) {
-		case string(classifier.StateRunning), string(classifier.StateUnknown):
-			summary.ActiveAgents++
-		case string(classifier.StateBlocked):
-			summary.BlockedAgents++
-		}
-	}
-	return finalizeAttentionSummary(summary)
-}
-
-func finalizeAttentionSummary(summary AttentionSummary) AttentionSummary {
-	maxInFlight := positiveEnvInt("ZEN_BRAIN_MAX_IN_FLIGHT_AGENTS", defaultMaxInFlightAgents)
-	reviewLimit := positiveEnvInt("ZEN_BRAIN_REVIEW_QUEUE_LIMIT", defaultReviewQueueLimit)
-	summary.InFlightAgents = summary.ActiveAgents + summary.BlockedAgents
-	summary.MaxInFlightAgents = maxInFlight
-	summary.ReviewQueueLimit = reviewLimit
-	summary.AvailableAgentSlots = maxInFlight - summary.InFlightAgents
-	if summary.AvailableAgentSlots < 0 {
-		summary.AvailableAgentSlots = 0
-	}
-	summary.CanStartAgent = true
-	summary.BackpressureReason = ""
-	switch {
-	case summary.BlockedAgents > 0:
-		summary.CanStartAgent = false
-		summary.BackpressureReason = "blocked_agents_need_attention"
-	case summary.InFlightAgents >= maxInFlight:
-		summary.CanStartAgent = false
-		summary.BackpressureReason = "active_agent_limit_reached"
-	case summary.ReviewQueue >= reviewLimit:
-		summary.CanStartAgent = false
-		summary.BackpressureReason = "review_queue_needs_attention"
-	}
-	summary.Pressure = attentionPressure(summary)
-	return summary
-}
-
-func attentionPressure(summary AttentionSummary) string {
-	switch {
-	case summary.BlockedAgents > 0:
-		return "blocked"
-	case summary.ReviewQueueLimit > 0 && summary.ReviewQueue >= summary.ReviewQueueLimit:
-		return "review"
-	case summary.MaxInFlightAgents > 0 && summary.InFlightAgents >= summary.MaxInFlightAgents:
-		return "loaded"
-	case summary.ReviewQueue > 0:
-		return "review"
-	case summary.ActiveAgents > 0:
-		return "active"
-	default:
-		return "idle"
-	}
-}
-
-func positiveEnvInt(name string, fallback int) int {
-	value := strings.TrimSpace(os.Getenv(name))
-	if value == "" {
-		return fallback
-	}
-	parsed, err := strconv.Atoi(value)
-	if err != nil || parsed <= 0 {
-		return fallback
-	}
-	return parsed
 }
 
 func (s *Service) brainWorkspace() string {

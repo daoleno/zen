@@ -162,7 +162,46 @@ func findCodexTranscript(agent classifier.Agent, now time.Time) (codexTranscript
 	if isCodexResumeCommand(agent.Command) {
 		return latestUpdatedCodexTranscript(candidates), true, nil
 	}
+	if matched, ok := fallbackCodexTranscriptForAgent(candidates, agent); ok {
+		return matched, true, nil
+	}
 	return codexTranscriptCandidate{}, false, nil
+}
+
+func fallbackCodexTranscriptForAgent(candidates []codexTranscriptCandidate, agent classifier.Agent) (codexTranscriptCandidate, bool) {
+	if len(candidates) == 0 || !isBrainCodexAgent(agent) {
+		return codexTranscriptCandidate{}, false
+	}
+	if !agent.StartedAt.IsZero() {
+		var eligible []codexTranscriptCandidate
+		minCreatedAt := agent.StartedAt.UTC().Add(-5 * time.Second)
+		for _, candidate := range candidates {
+			createdAt := candidateCreatedAt(candidate.Row)
+			if !createdAt.IsZero() && createdAt.Before(minCreatedAt) {
+				continue
+			}
+			if candidate.Updated.IsZero() || candidate.Updated.Before(minCreatedAt) {
+				continue
+			}
+			eligible = append(eligible, candidate)
+		}
+		if len(eligible) == 0 {
+			return codexTranscriptCandidate{}, false
+		}
+		return latestUpdatedCodexTranscript(eligible), true
+	}
+	return latestUpdatedCodexTranscript(candidates), true
+}
+
+func isBrainCodexAgent(agent classifier.Agent) bool {
+	if !agent.Hidden {
+		return false
+	}
+	if strings.EqualFold(strings.TrimSpace(agent.Name), "Brain") {
+		return true
+	}
+	sessionName, _, _ := strings.Cut(strings.TrimSpace(agent.ID), ":")
+	return strings.HasPrefix(sessionName, "brain-agent-brain-")
 }
 
 func matchCodexTranscriptToAgentProcess(candidates []codexTranscriptCandidate, processID int) (codexTranscriptCandidate, bool) {

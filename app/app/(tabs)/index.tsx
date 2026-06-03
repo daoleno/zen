@@ -18,7 +18,6 @@ import { useFocusEffect, useRouter } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Agent, useAgents } from '../../store/agents';
-import { useBrain, type BrainAttentionSummary } from '../../store/brain';
 import { useWork, type WorkItem } from '../../store/work';
 import { AgentStatus, Colors, Typography, statusColor, useAppColors } from '../../constants/tokens';
 import { TerminalPreview } from '../../components/terminal/TerminalPreview';
@@ -44,7 +43,6 @@ import { presentAgent } from '../../services/agentPresentation';
 import {
   filterAgentsByPreferredServers,
   groupAgentsByDirectory,
-  type AgentDirectorySection,
 } from '../../services/serverSelection';
 import type { SessionService } from '../../services/sessionServices';
 
@@ -63,7 +61,6 @@ type DiscoveredSessionService = SessionService & {
 
 export default function InboxScreen() {
   const { state } = useAgents();
-  const { state: brainState } = useBrain();
   const { state: workState } = useWork();
   const router = useRouter();
   const colors = useAppColors();
@@ -92,7 +89,6 @@ export default function InboxScreen() {
   const [sessionServices, setSessionServices] = useState<DiscoveredSessionService[]>([]);
   const [servicesLoading, setServicesLoading] = useState(false);
   const [servicesError, setServicesError] = useState<string | null>(null);
-  const [collapsedDirectories, setCollapsedDirectories] = useState<Set<string>>(new Set());
   const agentsHydrated = useMemo(
     () => servers.some(server => state.hydratedServers[server.id]),
     [servers, state.hydratedServers],
@@ -100,10 +96,6 @@ export default function InboxScreen() {
 
   const [menuAgent, setMenuAgent] = useState<Agent | null>(null);
   const [renameVisible, setRenameVisible] = useState(false);
-  const selectedCreateAttention = selectedCreateServerId
-    ? brainState.byServer[selectedCreateServerId]?.attention
-    : undefined;
-  const createAttentionWarning = brainStartBackpressureMessage(selectedCreateAttention);
   const [renameDraft, setRenameDraft] = useState('');
   const [renameAgentKey, setRenameAgentKey] = useState<string | null>(null);
 
@@ -201,13 +193,6 @@ export default function InboxScreen() {
     () => groupAgentsByDirectory(sortedAgents, { showServerName: showServerNames }),
     [showServerNames, sortedAgents],
   );
-  const directoryTree = useMemo(
-    () => groupedAgents.map(section => ({
-      ...section,
-      breadcrumb: buildDirectoryBreadcrumb(section, showServerNames),
-    })),
-    [groupedAgents, showServerNames],
-  );
   const headerSummary = useMemo(() => {
     if (sortedAgents.length === 0) {
       if (anyConnecting) return 'reconnecting';
@@ -245,18 +230,6 @@ export default function InboxScreen() {
   const setViewMode = async (mode: StoredInboxViewMode) => {
     setViewModeState(mode);
     await setInboxViewMode(mode);
-  };
-
-  const toggleDirectory = (key: string) => {
-    setCollapsedDirectories(previous => {
-      const next = new Set(previous);
-      if (next.has(key)) {
-        next.delete(key);
-      } else {
-        next.add(key);
-      }
-      return next;
-    });
   };
 
   const openAgent = (agent: Agent) => {
@@ -338,32 +311,11 @@ export default function InboxScreen() {
     cwd: string;
     command: string;
     name: string;
-  }, options?: { bypassAttention?: boolean }) => {
+  }) => {
     const server = connectedServers.find(item => item.id === input.serverId);
     if (!server) {
       Alert.alert('Daemon unavailable', 'Connect to a daemon before creating a new terminal.');
       return;
-    }
-    if (!options?.bypassAttention) {
-      const warning = brainStartBackpressureMessage(
-        brainState.byServer[input.serverId]?.attention,
-      );
-      if (warning) {
-        Alert.alert(
-          'Attention limit reached',
-          warning,
-          [
-            { text: 'Cancel', style: 'cancel' },
-            {
-              text: 'Start Anyway',
-              onPress: () => {
-                void createTerminalOnServer(input, { bypassAttention: true });
-              },
-            },
-          ],
-        );
-        return;
-      }
     }
 
     setCreateSheetVisible(false);
@@ -538,84 +490,50 @@ export default function InboxScreen() {
           ? 'Zen is trying to reconnect. You can still change servers now.'
           : 'Your saved servers are offline. You can edit them or add another one.';
 
-  const renderPromptAgent = (item: Agent, index: number, total: number) => {
+  const renderListAgent = ({ item, index }: { item: Agent; index: number }) => {
     const presented = presentAgent(item, agentAliases[item.key]);
-    const promptTitle = resolvePromptTitle(item, presented, agentWorkMap);
+    const sessionTitle = resolveSessionTitle(item, presented, agentWorkMap);
+    const directoryLabel = relativeDirectoryLabel(item, showServerNames);
+    const activityLine = resolveSessionActivity(item, presented);
     return (
       <TouchableOpacity
         style={[
-          styles.promptRow,
-          index === total - 1 && styles.promptRowLast,
+          styles.sessionRow,
+          index === sortedAgents.length - 1 && styles.sessionRowLast,
         ]}
         onPress={() => openAgent(item)}
         onLongPress={() => openContextMenu(item)}
         activeOpacity={0.82}
         delayLongPress={400}
       >
-        <View style={styles.promptLine}>
-          <View style={styles.promptIcon}>
-            <AgentKindIcon kind={presented.kind} size={14} />
-          </View>
-          <Text style={styles.promptTitle} numberOfLines={1}>{promptTitle}</Text>
-          <View style={[styles.promptStatusDot, { backgroundColor: statusColor(item.status) }]} />
+        <View style={styles.sessionStatusColumn}>
+          <View style={[styles.sessionStatusDot, { backgroundColor: statusColor(item.status) }]} />
         </View>
+        <View style={styles.sessionBody}>
+          <View style={styles.sessionTitleLine}>
+            <Text style={styles.sessionDirectory} numberOfLines={1}>
+              {directoryLabel}
+            </Text>
+            <Text style={styles.sessionPathSeparator}>{'>'}</Text>
+            <Text style={styles.sessionName} numberOfLines={1}>
+              {sessionTitle}
+            </Text>
+          </View>
+          <View style={styles.sessionMetaLine}>
+            <AgentKindIcon kind={presented.kind} size={11} />
+            <Text style={styles.sessionMetaText} numberOfLines={1}>
+              {activityLine}
+            </Text>
+          </View>
+        </View>
+        <Ionicons name="chevron-forward" size={14} color={colors.disabledText} />
       </TouchableOpacity>
-    );
-  };
-
-  const renderDirectory = (section: AgentDirectorySection & {
-    breadcrumb: string[];
-  }) => {
-    const collapsed = collapsedDirectories.has(section.key);
-    return (
-      <View style={styles.directoryGroup}>
-        <TouchableOpacity
-          style={styles.directoryHeader}
-          onPress={() => toggleDirectory(section.key)}
-          activeOpacity={0.72}
-          accessibilityRole="button"
-          accessibilityState={{ expanded: !collapsed }}
-        >
-          <View style={styles.directoryTitleWrap}>
-            <View style={styles.breadcrumbRow}>
-              {section.breadcrumb.map((part, index) => (
-                <React.Fragment key={`${section.key}:${index}:${part}`}>
-                  {index > 0 ? (
-                    <Text style={styles.breadcrumbSeparator}>/</Text>
-                  ) : null}
-                  <Text
-                    style={[
-                      styles.breadcrumbText,
-                      index === section.breadcrumb.length - 1 && styles.breadcrumbLeaf,
-                    ]}
-                    numberOfLines={1}
-                  >
-                    {part}
-                  </Text>
-                </React.Fragment>
-              ))}
-            </View>
-          </View>
-          <Text style={styles.directoryCount}>
-            {section.data.length}
-          </Text>
-        </TouchableOpacity>
-
-        {!collapsed ? (
-          <View style={styles.directoryChildren}>
-            {section.data.map((agent, index) => (
-              <React.Fragment key={agent.key}>
-                {renderPromptAgent(agent, index, section.data.length)}
-              </React.Fragment>
-            ))}
-          </View>
-        ) : null}
-      </View>
     );
   };
 
   const renderGridAgent = ({ item }: { item: Agent }) => {
     const presented = presentAgent(item, agentAliases[item.key]);
+    const sessionTitle = resolveSessionTitle(item, presented, agentWorkMap);
     return (
       <TouchableOpacity
         style={styles.gridCard}
@@ -626,7 +544,9 @@ export default function InboxScreen() {
       >
         <View style={styles.gridHeader}>
           <AgentKindIcon kind={presented.kind} size={16} />
-          <Text style={styles.gridTitle} numberOfLines={1}>{presented.cwdBase || presented.title}</Text>
+          <Text style={styles.gridTitle} numberOfLines={1}>
+            {relativeDirectoryLabel(item, showServerNames)} {'>'} {sessionTitle}
+          </Text>
           {item.serverName ? (
             <Text style={styles.gridMeta} numberOfLines={1}>{item.serverName}</Text>
           ) : null}
@@ -742,10 +662,10 @@ export default function InboxScreen() {
         </View>
       ) : viewMode === 'list' ? (
         <FlatList
-          data={directoryTree}
+          data={sortedAgents}
           key="list"
           keyExtractor={item => item.key}
-          renderItem={({ item }) => renderDirectory(item)}
+          renderItem={renderListAgent}
           contentContainerStyle={styles.promptContent}
           removeClippedSubviews={false}
           windowSize={15}
@@ -881,7 +801,6 @@ export default function InboxScreen() {
         title="New Terminal"
         subtitle="Open a plain shell, or launch Claude/Codex in a real working directory."
         initialCwd={selectedCreateServerId ? findSuggestedCwd(selectedCreateServerId) : ''}
-        attentionWarning={createAttentionWarning}
         serverOptions={createServerOptions}
         selectedServerId={selectedCreateServerId}
         onSelectServer={setSelectedCreateServerId}
@@ -985,27 +904,6 @@ export default function InboxScreen() {
   );
 }
 
-function brainStartBackpressureMessage(attention?: BrainAttentionSummary) {
-  if (!attention || attention.can_start_agent !== false) {
-    return "";
-  }
-  const blocked = attention.blocked_agents ?? 0;
-  const reviewQueue = attention.review_queue ?? 0;
-  const inFlight = attention.in_flight_agents ?? 0;
-  const maxInFlight = attention.max_in_flight_agents ?? 0;
-  const reviewLimit = attention.review_queue_limit ?? 0;
-  switch (attention.backpressure_reason) {
-    case "blocked_agents_need_attention":
-      return `${blocked || 1} agent${blocked === 1 ? "" : "s"} blocked. Resolve the blocked work before starting another agent.`;
-    case "active_agent_limit_reached":
-      return `${inFlight || maxInFlight || 1} agent${inFlight === 1 ? "" : "s"} already in flight. Review or finish one before adding more work.`;
-    case "review_queue_needs_attention":
-      return `${reviewQueue || reviewLimit || 1} thread${reviewQueue === 1 ? "" : "s"} waiting for review. Clear the review queue before starting another agent.`;
-    default:
-      return "Brain is under attention pressure. Starting another agent will add to the queue.";
-  }
-}
-
 function ToggleButton({
   icon,
   selected,
@@ -1035,7 +933,7 @@ function ToggleButton({
   );
 }
 
-function resolvePromptTitle(
+function resolveSessionTitle(
   agent: Agent,
   presented: ReturnType<typeof presentAgent>,
   workMap: Record<string, WorkItem>,
@@ -1050,48 +948,105 @@ function resolvePromptTitle(
     return workTitle;
   }
 
-  return presented.title;
+  return shortAgentLabel(agent.name) || presented.shortTitle || presented.title;
 }
 
-function buildDirectoryBreadcrumb(section: AgentDirectorySection, showServerName: boolean): string[] {
-  const { serverName, detail } = splitDirectorySubtitle(section.subtitle);
-  const parts = visiblePathParts(detail, section.title);
-  if (!showServerName || !serverName) {
-    return parts;
+function relativeDirectoryLabel(agent: Agent, showServerName: boolean): string {
+  const directory = compactDirectoryPath(agent.cwd, agent.project);
+  const fallback = agent.project?.trim() || 'no directory';
+  const label = directory || fallback;
+  if (!showServerName || !agent.serverName) {
+    return label;
   }
-
-  const allParts = [serverName, ...parts];
-  return allParts.filter((part, index) => part && part !== allParts[index - 1]);
+  return `${agent.serverName}/${label}`;
 }
 
-function splitDirectorySubtitle(value: string): { serverName: string; detail: string } {
-  const parts = value.split(' · ');
-  if (parts.length <= 1) {
-    return { serverName: '', detail: value.trim() };
+function compactDirectoryPath(value?: string, project?: string): string {
+  const trimmed = value?.trim().replace(/\/+$/, '') || '';
+  if (!trimmed) {
+    return '';
   }
-
-  return {
-    serverName: parts[0]?.trim() || '',
-    detail: parts.slice(1).join(' · ').trim(),
-  };
-}
-
-function visiblePathParts(detail: string, fallback: string): string[] {
-  const trimmed = detail.trim();
-  if (!trimmed || trimmed === 'Project' || trimmed === 'No directory') {
-    return [fallback || 'session'];
-  }
-
   if (trimmed === '/') {
-    return ['/'];
+    return '/';
   }
 
-  const parts = trimmed.replace(/\/+$/, '').split('/').filter(Boolean);
+  const relative = trimmed.replace(/^\.\//, '');
+  if (!relative.startsWith('/')) {
+    return relative;
+  }
+
+  const parts = relative.split('/').filter(Boolean);
   if (parts.length === 0) {
-    return [fallback || 'session'];
+    return '/';
   }
 
-  return parts.slice(-2);
+  const projectName = project?.trim();
+  if (projectName) {
+    const projectIndex = findLastPathIndex(parts, part => part === projectName);
+    if (projectIndex >= 0) {
+      return parts.slice(projectIndex).join('/');
+    }
+  }
+
+  const markerIndex = findLastPathIndex(parts, part =>
+    ['workspace', 'workspaces', 'project', 'projects', 'code', 'src', 'repo', 'repos'].includes(part.toLowerCase()),
+  );
+  if (markerIndex >= 0 && markerIndex < parts.length - 1) {
+    return parts.slice(markerIndex + 1).join('/');
+  }
+
+  return parts.slice(-2).join('/');
+}
+
+function findLastPathIndex(parts: string[], predicate: (part: string) => boolean): number {
+  for (let index = parts.length - 1; index >= 0; index -= 1) {
+    if (predicate(parts[index])) {
+      return index;
+    }
+  }
+  return -1;
+}
+
+function resolveSessionActivity(agent: Agent, presented: ReturnType<typeof presentAgent>): string {
+  const preview = compactActivityText(agent.summary) || compactActivityText(lastNonEmptyLine(agent.last_output_lines));
+  return [statusLabel(agent.status), presented.typeLabel, preview].filter(Boolean).join(' · ');
+}
+
+function statusLabel(status: AgentStatus): string {
+  switch (status) {
+    case 'running':
+      return 'running';
+    case 'blocked':
+      return 'blocked';
+    case 'done':
+      return 'done';
+    case 'failed':
+      return 'failed';
+    default:
+      return 'unknown';
+  }
+}
+
+function lastNonEmptyLine(lines: string[]): string {
+  for (let index = lines.length - 1; index >= 0; index -= 1) {
+    const line = lines[index]?.trim();
+    if (line) {
+      return line;
+    }
+  }
+  return '';
+}
+
+function compactActivityText(value?: string): string {
+  const compact = stripAnsi(value || '').replace(/\s+/g, ' ').trim();
+  if (!compact) {
+    return '';
+  }
+  return compact.length > 120 ? `${compact.slice(0, 117)}...` : compact;
+}
+
+function stripAnsi(value: string): string {
+  return value.replace(/\x1b\[[0-9;?]*[ -/]*[@-~]/g, '');
 }
 
 function lastPathSegment(value?: string): string {
@@ -1223,94 +1178,65 @@ function createStyles(colors: typeof Colors) {
   },
 
   promptContent: {
-    paddingHorizontal: 16,
-    paddingTop: 6,
+    paddingHorizontal: 14,
+    paddingTop: 2,
     paddingBottom: 30,
-    gap: 18,
   },
-  directoryGroup: {
-    width: '100%',
-  },
-  directoryHeader: {
-    minHeight: 26,
+  sessionRow: {
+    minHeight: 52,
     flexDirection: 'row',
     alignItems: 'center',
-    justifyContent: 'space-between',
-    gap: 12,
-    paddingHorizontal: 2,
-    paddingBottom: 5,
-  },
-  directoryTitleWrap: {
-    flex: 1,
-    minWidth: 0,
-  },
-  breadcrumbRow: {
-    minWidth: 0,
-    flexDirection: 'row',
-    alignItems: 'center',
-  },
-  breadcrumbText: {
-    flexShrink: 1,
-    maxWidth: 136,
-    color: colors.textSecondary,
-    fontSize: 11,
-    lineHeight: 14,
-    fontFamily: Typography.terminalFont,
-    opacity: 0.58,
-    includeFontPadding: false,
-  },
-  breadcrumbLeaf: {
-    color: colors.textPrimary,
-    fontFamily: Typography.terminalFontBold,
-    opacity: 0.76,
-  },
-  breadcrumbSeparator: {
-    flexShrink: 0,
-    color: colors.textSecondary,
-    fontSize: 11,
-    lineHeight: 14,
-    fontFamily: Typography.terminalFontBold,
-    marginHorizontal: 5,
-    opacity: 0.36,
-    includeFontPadding: false,
-  },
-  directoryCount: {
-    minWidth: 20,
-    color: colors.textSecondary,
-    fontSize: 10,
-    lineHeight: 13,
-    fontFamily: Typography.uiFont,
-    textAlign: 'right',
-    opacity: 0.46,
-  },
-  directoryChildren: {
-    borderTopWidth: StyleSheet.hairlineWidth,
-    borderTopColor: colors.borderSubtle,
-  },
-  promptRow: {
-    minHeight: 44,
-    paddingVertical: 10,
+    gap: 10,
+    paddingVertical: 8,
     paddingHorizontal: 2,
     borderBottomWidth: StyleSheet.hairlineWidth,
     borderBottomColor: colors.borderSubtle,
   },
-  promptRowLast: {
+  sessionRowLast: {
     borderBottomWidth: 0,
   },
-  promptLine: {
-    minHeight: 24,
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 10,
-  },
-  promptIcon: {
-    width: 20,
-    height: 20,
+  sessionStatusColumn: {
+    width: 10,
+    minHeight: 36,
     alignItems: 'center',
     justifyContent: 'center',
-    opacity: 0.86,
   },
-  promptTitle: {
+  sessionStatusDot: {
+    width: 6,
+    height: 6,
+    borderRadius: 3,
+  },
+  sessionBody: {
+    flex: 1,
+    minWidth: 0,
+    gap: 4,
+  },
+  sessionTitleLine: {
+    minWidth: 0,
+    flexDirection: 'row',
+    alignItems: 'baseline',
+  },
+  sessionDirectory: {
+    flexShrink: 1,
+    maxWidth: '48%',
+    color: colors.textSecondary,
+    fontSize: 13,
+    lineHeight: 17,
+    fontFamily: Typography.terminalFont,
+    opacity: 0.78,
+    includeFontPadding: false,
+  },
+  sessionPathSeparator: {
+    flexShrink: 0,
+    color: colors.textSecondary,
+    fontSize: 12,
+    lineHeight: 16,
+    fontFamily: Typography.terminalFontBold,
+    marginHorizontal: 7,
+    opacity: 0.46,
+    includeFontPadding: false,
+  },
+  sessionName: {
     flex: 1,
     minWidth: 0,
     color: colors.textPrimary,
@@ -1319,13 +1245,22 @@ function createStyles(colors: typeof Colors) {
     fontFamily: Typography.uiFontMedium,
     opacity: 0.92,
     includeFontPadding: false,
-    textAlignVertical: 'center',
   },
-  promptStatusDot: {
-    width: 6,
-    height: 6,
-    borderRadius: 3,
-    marginLeft: 8,
+  sessionMetaLine: {
+    minWidth: 0,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 7,
+  },
+  sessionMetaText: {
+    flex: 1,
+    minWidth: 0,
+    color: colors.textSecondary,
+    fontSize: 11,
+    lineHeight: 14,
+    fontFamily: Typography.uiFont,
+    opacity: 0.58,
+    includeFontPadding: false,
   },
   statusDot: {
     width: 6,

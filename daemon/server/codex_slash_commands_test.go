@@ -27,8 +27,6 @@ func TestParseCodexSlashDescriptionsFindsBinaryBlock(t *testing.T) {
 		"resume a saved chat" +
 		"fork the current chat" +
 		"create an AGENTS.md file with instructions for Codex" +
-		"summarize conversation to prevent hitting the context limit" +
-		"switch to Plan mode" +
 		"set or view the goal for a long-running task" +
 		"start a side conversation in an ephemeral fork" +
 		"copy last response as markdown" +
@@ -94,7 +92,7 @@ func TestDefaultCodexSlashCommandsContainsRealCommandSet(t *testing.T) {
 			t.Fatalf("missing command %s", value)
 		}
 	}
-	for _, value := range []string{"/test", "/help", "/sandbox", "/voice", "/theme"} {
+	for _, value := range []string{"/test", "/help", "/sandbox", "/voice", "/theme", "/compact", "/plan"} {
 		if values[value] {
 			t.Fatalf("unexpected non-Codex command %s", value)
 		}
@@ -140,9 +138,11 @@ func TestSlashCommandCapabilitiesAreConservative(t *testing.T) {
 
 func TestCommandsFromDiscoveryIncludesNewBinaryCommands(t *testing.T) {
 	commands := commandsFromDiscovery(codexSlashCommandDiscovery{
-		names: []string{"model", "new-upstream-command"},
+		names: []string{"model", "compact", "plan", "new-upstream-command"},
 		descriptions: map[string]string{
 			"model":                "model description from binary",
+			"compact":              "compact description from binary",
+			"plan":                 "plan description from binary",
 			"new-upstream-command": "new command description",
 		},
 	})
@@ -159,6 +159,11 @@ func TestCommandsFromDiscoveryIncludesNewBinaryCommands(t *testing.T) {
 	}
 	if command := values["/new-upstream-command"]; command.Execution != "terminal-required" || command.Category != "unknown" || command.ChatSupported {
 		t.Fatalf("/new-upstream-command capability = %#v, want conservative unknown terminal command", command)
+	}
+	for _, value := range []string{"/compact", "/plan"} {
+		if _, ok := values[value]; ok {
+			t.Fatalf("unexpected hidden command %s from discovery", value)
+		}
 	}
 }
 

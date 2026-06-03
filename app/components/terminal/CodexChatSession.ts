@@ -87,6 +87,7 @@ export type CodexChatAgentInfo = {
 interface UseCodexChatSessionInput {
   serverId: string;
   agentId: string;
+  conversationScopeKey?: string;
   agentInfo?: CodexChatAgentInfo;
   connectionState: ConnectionState;
   screenFocused: boolean;
@@ -482,11 +483,15 @@ function codexEventFingerprint(event: CodexConversation["events"][number]) {
 export function useCodexChatSession({
   serverId,
   agentId,
+  conversationScopeKey,
   agentInfo,
   connectionState,
   screenFocused,
 }: UseCodexChatSessionInput) {
-  const composerCacheKey = `${serverId}:${agentId}`;
+  const scopedAgentId = conversationScopeKey
+    ? `${agentId}:${conversationScopeKey}`
+    : agentId;
+  const composerCacheKey = `${serverId}:${scopedAgentId}`;
   const cacheKey = composerCacheKey;
   const [threadState, dispatchThread] = useReducer(
     codexChatThreadReducer,
@@ -741,6 +746,7 @@ export function useCodexChatSession({
     agentInfo?.name,
     agentInfo?.processId,
     agentInfo?.startedAt,
+    conversationScopeKey,
     connectionState,
     screenFocused,
     serverId,

@@ -18,7 +18,6 @@ interface NewTerminalSheetProps {
   initialCwd?: string;
   initialCommand?: string;
   initialName?: string;
-  attentionWarning?: string;
   submitting?: boolean;
   serverOptions?: NewTerminalServerOption[];
   selectedServerId?: string | null;
@@ -34,7 +33,6 @@ export function NewTerminalSheet({
   initialCwd = '',
   initialCommand = '',
   initialName = '',
-  attentionWarning,
   submitting = false,
   serverOptions = [],
   selectedServerId,
@@ -113,7 +111,6 @@ export function NewTerminalSheet({
         selectedServerId={selectedServerId}
         command={command}
         submitting={submitting}
-        attentionWarning={attentionWarning}
         canSubmit={canSubmit}
         advanced={advanced}
         cwd={cwd}

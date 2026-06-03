@@ -17,6 +17,7 @@ interface CodexChatSurfaceProps {
   visible: boolean;
   serverId: string;
   agentId: string;
+  conversationScopeKey?: string;
   agentInfo?: CodexChatAgentInfo;
   connectionState: ConnectionState;
   connectionIssue?: ConnectionIssue | null;
@@ -36,6 +37,7 @@ function CodexChatSurfaceImpl({
   visible,
   serverId,
   agentId,
+  conversationScopeKey,
   agentInfo,
   connectionState,
   connectionIssue,
@@ -54,6 +56,7 @@ function CodexChatSurfaceImpl({
     visible,
     serverId,
     agentId,
+    conversationScopeKey,
     agentInfo,
     connectionState,
     connectionIssue,

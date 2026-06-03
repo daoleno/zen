@@ -7,6 +7,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/daoleno/zen/daemon/classifier"
 )
 
 func TestSummarizeCodexTranscript_ExtractsWorkflowSignals(t *testing.T) {
@@ -203,6 +205,95 @@ func TestLatestUpdatedCodexTranscriptSupportsResume(t *testing.T) {
 	}
 	if isCodexResumeCommand("codex") {
 		t.Fatal("plain codex should not be detected as resume")
+	}
+}
+
+func TestBrainCodexTranscriptFallbackUsesLatestUpdated(t *testing.T) {
+	base := time.Date(2026, 5, 21, 8, 0, 0, 0, time.UTC)
+	candidates := []codexTranscriptCandidate{
+		{
+			Row:     codexThreadRow{ID: "older-brain-thread"},
+			Updated: base.Add(time.Minute),
+		},
+		{
+			Row:     codexThreadRow{ID: "latest-brain-thread"},
+			Updated: base.Add(10 * time.Minute),
+		},
+	}
+
+	got, ok := fallbackCodexTranscriptForAgent(candidates, classifier.Agent{
+		ID:     "brain-agent-brain-123:@1",
+		Name:   "Brain",
+		Hidden: true,
+	})
+	if !ok {
+		t.Fatal("expected Brain fallback match")
+	}
+	if got.Row.ID != "latest-brain-thread" {
+		t.Fatalf("matched %q, want latest-brain-thread", got.Row.ID)
+	}
+
+	if _, ok := fallbackCodexTranscriptForAgent(candidates, classifier.Agent{
+		ID:     "main:@1",
+		Name:   "codex",
+		Hidden: false,
+	}); ok {
+		t.Fatal("ordinary Codex agent should not use Brain fallback")
+	}
+}
+
+func TestBrainCodexTranscriptFallbackDoesNotUseThreadBeforeAgentStart(t *testing.T) {
+	base := time.Date(2026, 5, 21, 8, 0, 0, 0, time.UTC)
+	candidates := []codexTranscriptCandidate{
+		{
+			Row: codexThreadRow{
+				ID:          "previous-brain-thread",
+				CreatedAtMS: base.Add(-10 * time.Minute).UnixMilli(),
+			},
+			Updated: base.Add(10 * time.Minute),
+		},
+	}
+
+	if got, ok := fallbackCodexTranscriptForAgent(candidates, classifier.Agent{
+		ID:        "brain-agent-brain-123:@1",
+		Name:      "Brain",
+		Hidden:    true,
+		StartedAt: base,
+	}); ok {
+		t.Fatalf("matched %#v, want no previous thread match", got)
+	}
+}
+
+func TestBrainCodexTranscriptFallbackPrefersPostStartThread(t *testing.T) {
+	base := time.Date(2026, 5, 21, 8, 0, 0, 0, time.UTC)
+	candidates := []codexTranscriptCandidate{
+		{
+			Row: codexThreadRow{
+				ID:          "previous-brain-thread",
+				CreatedAtMS: base.Add(-10 * time.Minute).UnixMilli(),
+			},
+			Updated: base.Add(10 * time.Minute),
+		},
+		{
+			Row: codexThreadRow{
+				ID:          "current-brain-thread",
+				CreatedAtMS: base.Add(2 * time.Second).UnixMilli(),
+			},
+			Updated: base.Add(20 * time.Second),
+		},
+	}
+
+	got, ok := fallbackCodexTranscriptForAgent(candidates, classifier.Agent{
+		ID:        "brain-agent-brain-123:@1",
+		Name:      "Brain",
+		Hidden:    true,
+		StartedAt: base,
+	})
+	if !ok {
+		t.Fatal("expected current Brain fallback match")
+	}
+	if got.Row.ID != "current-brain-thread" {
+		t.Fatalf("matched %q, want current-brain-thread", got.Row.ID)
 	}
 }
 

@@ -9,10 +9,12 @@ interface UseCodexSlashCommandDialogsInput {
     previousDraft: string,
     previousAttachments: ComposerAttachment[],
   ): void;
+  onSwitchToTerminal(): void;
 }
 
 export function useCodexSlashCommandDialogs({
   submitTextToCodex,
+  onSwitchToTerminal,
 }: UseCodexSlashCommandDialogsInput) {
   const showUnsupportedSlashCommand = useCallback(
     (command: CodexSlashCommand) => {
@@ -30,10 +32,13 @@ export function useCodexSlashCommandDialogs({
       Alert.alert(
         `${command.value} is not available`,
         "This command opens an interactive Codex control that is not available in ChatUI yet.",
-        [{ text: "OK", style: "cancel" }],
+        [
+          { text: "Cancel", style: "cancel" },
+          { text: "Open Terminal", onPress: onSwitchToTerminal },
+        ],
       );
     },
-    [],
+    [onSwitchToTerminal],
   );
 
   const showSlashCommandAttachmentAlert = useCallback(

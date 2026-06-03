@@ -31,7 +31,9 @@ interface UseCodexSlashCommandRouterInput {
   ): void;
   startNewCodexChat(commandText?: string): void;
   sendSlashCommandToCodex(text: string, command?: CodexSlashCommand): void;
+  runStatusCommand(text: string, command?: CodexSlashCommand): void;
   openSkillsSheet(): void;
+  onSwitchToTerminal(): void;
 }
 
 export function useCodexSlashCommandRouter({
@@ -44,7 +46,9 @@ export function useCodexSlashCommandRouter({
   submitTextToCodex,
   startNewCodexChat,
   sendSlashCommandToCodex,
+  runStatusCommand,
   openSkillsSheet,
+  onSwitchToTerminal,
 }: UseCodexSlashCommandRouterInput) {
   const {
     showUnsupportedSlashCommand,
@@ -52,6 +56,7 @@ export function useCodexSlashCommandRouter({
     showSlashCommandAttachmentAlert,
   } = useCodexSlashCommandDialogs({
     submitTextToCodex,
+    onSwitchToTerminal,
   });
 
   const routeSlashCommandSubmission = useCallback(
@@ -102,6 +107,10 @@ export function useCodexSlashCommandRouter({
       if (command.execution === "insert-only") {
         return false;
       }
+      if (command.name === "status") {
+        runStatusCommand(rawText, command);
+        return true;
+      }
       if (command.execution === "native") {
         if (command.name === "new" || command.name === "clear") {
           startNewCodexChat(rawText);
@@ -133,6 +142,7 @@ export function useCodexSlashCommandRouter({
       showUnsupportedSlashCommand,
       startNewCodexChat,
       openSkillsSheet,
+      runStatusCommand,
     ],
   );
 
@@ -165,7 +175,9 @@ export function useCodexSlashCommandRouter({
     focusComposer,
     startNewCodexChat,
     showUnsupportedSlashCommand,
+    showUnavailableSlashCommand,
     sendSlashCommandToCodex,
+    runStatusCommand,
     openSkillsSheet,
   });
 
