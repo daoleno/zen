@@ -30,6 +30,26 @@ export function CodexInlineMessage({
             </Text>
           );
         }
+        if (part.kind === "italic") {
+          return (
+            <Text key={index} style={[styles.messageItalic, { color: chrome.text }]}>
+              {part.text}
+            </Text>
+          );
+        }
+        if (part.kind === "strike") {
+          return (
+            <Text
+              key={index}
+              style={[
+                styles.messageStrike,
+                { color: chrome.textMuted, textDecorationColor: chrome.textSubtle },
+              ]}
+            >
+              {part.text}
+            </Text>
+          );
+        }
         if (part.kind === "code") {
           return (
             <Text
@@ -60,6 +80,16 @@ export function CodexInlineMessage({
 const styles = StyleSheet.create({
   messageBold: {
     fontFamily: Typography.chatFontMedium,
+    letterSpacing: 0,
+  },
+  messageItalic: {
+    fontFamily: Typography.chatFont,
+    fontStyle: "italic",
+    letterSpacing: 0,
+  },
+  messageStrike: {
+    fontFamily: Typography.chatFont,
+    textDecorationLine: "line-through",
     letterSpacing: 0,
   },
   messageInlineCode: {

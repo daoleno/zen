@@ -35,8 +35,12 @@ export function CodexMessageCodeBlock({
   isLast,
 }: CodexMessageCodeBlockProps) {
   const textSelectable = useContext(TimelineTextSelectableContext);
-  const lines = useMemo(() => splitCodeLines(text), [text]);
-  const label = formatLanguageLabel(language);
+  const prepared = useMemo(
+    () => prepareCodeBlockText(text, language),
+    [language, text],
+  );
+  const lines = useMemo(() => splitCodeLines(prepared.text), [prepared.text]);
+  const label = formatLanguageLabel(prepared.language);
   const baseColor = chrome.text || theme.foreground;
 
   return (
@@ -86,7 +90,7 @@ export function CodexMessageCodeBlock({
                 { color: baseColor },
               ]}
             >
-              {highlightCodeLineForLanguage(line || " ", language).map((segment, segmentIndex) => (
+              {highlightCodeLineForLanguage(line || " ", prepared.language).map((segment, segmentIndex) => (
                 <Text
                   key={`${segmentIndex}:${segment.kind}`}
                   style={{
@@ -105,10 +109,72 @@ export function CodexMessageCodeBlock({
   );
 }
 
+const MAX_JSON_FORMAT_CHARS = 220_000;
+
+function prepareCodeBlockText(
+  text: string,
+  language: string | undefined,
+): { text: string; language?: string } {
+  const normalized = normalizeCodeBlockText(text);
+  const normalizedLanguage = normalizeLanguage(language);
+  const shouldTryJson =
+    isJsonLanguage(normalizedLanguage)
+    || (!normalizedLanguage && looksLikeJsonContainer(normalized));
+  if (!shouldTryJson || normalized.length > MAX_JSON_FORMAT_CHARS) {
+    return { text: normalized, language: normalizedLanguage };
+  }
+
+  const formatted = formatJsonContainer(normalized);
+  if (!formatted) {
+    return { text: normalized, language: normalizedLanguage };
+  }
+
+  return {
+    text: formatted,
+    language: isJsonLanguage(normalizedLanguage) ? normalizedLanguage : "json",
+  };
+}
+
+function normalizeCodeBlockText(text: string) {
+  return text.replace(/\r\n/g, "\n").replace(/\n+$/, "");
+}
+
 function splitCodeLines(text: string) {
-  const normalized = text.replace(/\r\n/g, "\n").replace(/\n+$/, "");
+  const normalized = normalizeCodeBlockText(text);
   const lines = normalized.split("\n");
   return lines.length > 0 ? lines : [" "];
+}
+
+function normalizeLanguage(language: string | undefined) {
+  const value = language?.trim().toLowerCase();
+  return value || undefined;
+}
+
+function isJsonLanguage(language: string | undefined) {
+  return language === "json" || language === "jsonc";
+}
+
+function looksLikeJsonContainer(value: string) {
+  const trimmed = value.trim();
+  if (trimmed.length < 2) {
+    return false;
+  }
+  return (
+    (trimmed.startsWith("{") && trimmed.endsWith("}"))
+    || (trimmed.startsWith("[") && trimmed.endsWith("]"))
+  );
+}
+
+function formatJsonContainer(value: string) {
+  try {
+    const parsed: unknown = JSON.parse(value.trim());
+    if (!parsed || typeof parsed !== "object") {
+      return null;
+    }
+    return JSON.stringify(parsed, null, 2);
+  } catch {
+    return null;
+  }
 }
 
 function formatLanguageLabel(language: string | undefined) {

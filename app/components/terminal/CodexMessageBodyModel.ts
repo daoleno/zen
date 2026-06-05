@@ -16,7 +16,7 @@ export type MessageListItem = {
 
 export type InlineMessagePart = {
   text: string;
-  kind?: "bold" | "code" | "link";
+  kind?: "bold" | "code" | "italic" | "link" | "strike";
 };
 
 export type MessageTableAlignment = "left" | "center" | "right";
@@ -27,6 +27,9 @@ export type MessageTableBlock = {
   alignments: MessageTableAlignment[];
   rows: string[][];
 };
+
+const MAX_BARE_JSON_LINES = 240;
+const MAX_BARE_JSON_CHARS = 140_000;
 
 export function parseMessageBlocks(value: string): MessageBlock[] {
   const lines = value.replace(/<!--[\s\S]*?-->/g, "").replace(/\r\n/g, "\n").split("\n");
@@ -97,6 +100,18 @@ export function parseMessageBlocks(value: string): MessageBlock[] {
       continue;
     }
 
+    const jsonBlock = parseBareJsonBlockAt(lines, lineIndex);
+    if (jsonBlock) {
+      flushOpenBlocks();
+      blocks.push({
+        type: "code",
+        text: jsonBlock.text,
+        language: "json",
+      });
+      lineIndex = jsonBlock.nextLineIndex - 1;
+      continue;
+    }
+
     const table = parseTableAt(lines, lineIndex);
     if (table) {
       flushOpenBlocks();
@@ -105,7 +120,7 @@ export function parseMessageBlocks(value: string): MessageBlock[] {
       continue;
     }
 
-    const heading = /^(#{1,4})\s+(.+)$/.exec(trimmed);
+    const heading = /^(#{1,6})\s+(.+)$/.exec(trimmed);
     if (heading) {
       flushOpenBlocks();
       blocks.push({
@@ -164,14 +179,29 @@ function appendListContinuation(list: MessageListItem[], line: string) {
     return false;
   }
 
-  const lastItem = list[list.length - 1];
+  const leading = line.match(/^\s*/)?.[0] ?? "";
   const text = normalizeProseText(line.trim()).trim();
   if (!text) {
     return false;
   }
 
-  lastItem.text = normalizeProseText(`${lastItem.text} ${text}`).trim();
+  const continuationDepth = listDepthForIndent(leading);
+  const targetItem = findListContinuationTarget(list, continuationDepth);
+  const separator = continuationDepth > targetItem.depth ? "\n" : " ";
+  targetItem.text = normalizeProseText(`${targetItem.text}${separator}${text}`).trim();
   return true;
+}
+
+function findListContinuationTarget(
+  list: MessageListItem[],
+  continuationDepth: number,
+) {
+  for (let index = list.length - 1; index >= 0; index -= 1) {
+    if (list[index].depth <= continuationDepth) {
+      return list[index];
+    }
+  }
+  return list[list.length - 1];
 }
 
 function normalizeListMarker(value: string) {
@@ -183,7 +213,91 @@ function normalizeListMarker(value: string) {
 
 function listDepthForIndent(value: string) {
   const spaces = value.replace(/\t/g, "    ").length;
-  return Math.min(6, Math.floor(spaces / 2));
+  if (spaces === 0) {
+    return 0;
+  }
+  return Math.min(6, Math.max(1, Math.floor((spaces + 2) / 4)));
+}
+
+function parseBareJsonBlockAt(
+  lines: string[],
+  startIndex: number,
+): { text: string; nextLineIndex: number } | null {
+  const firstLine = lines[startIndex]?.trim();
+  if (!looksLikeJsonContainerStart(firstLine)) {
+    return null;
+  }
+
+  let charCount = 0;
+  const collected: string[] = [];
+  const maxLineIndex = Math.min(lines.length, startIndex + MAX_BARE_JSON_LINES);
+  for (let lineIndex = startIndex; lineIndex < maxLineIndex; lineIndex += 1) {
+    const line = lines[lineIndex];
+    collected.push(line);
+    charCount += line.length + 1;
+    if (charCount > MAX_BARE_JSON_CHARS) {
+      return null;
+    }
+
+    const candidate = collected.join("\n").trim();
+    if (!looksLikeCompleteJsonContainer(candidate)) {
+      continue;
+    }
+
+    const parsed = parseJsonContainer(candidate);
+    if (!parsed.ok || !isProbablyStandaloneJson(candidate)) {
+      continue;
+    }
+
+    return {
+      text: candidate,
+      nextLineIndex: lineIndex + 1,
+    };
+  }
+
+  return null;
+}
+
+function looksLikeJsonContainerStart(value: string | undefined) {
+  if (!value) {
+    return false;
+  }
+  return value.startsWith("{") || value.startsWith("[");
+}
+
+function looksLikeCompleteJsonContainer(value: string) {
+  if (value.startsWith("{")) {
+    return value.endsWith("}");
+  }
+  if (value.startsWith("[")) {
+    return value.endsWith("]");
+  }
+  return false;
+}
+
+function parseJsonContainer(value: string): { ok: true; value: unknown } | { ok: false } {
+  try {
+    const parsed: unknown = JSON.parse(value);
+    if (parsed && typeof parsed === "object") {
+      return { ok: true, value: parsed };
+    }
+  } catch {
+    return { ok: false };
+  }
+  return { ok: false };
+}
+
+function isProbablyStandaloneJson(value: string) {
+  if (value === "{}" || value === "[]") {
+    return true;
+  }
+  if (value.startsWith("{")) {
+    return value.includes(":");
+  }
+  if (value.startsWith("[")) {
+    return /[,:{\[]/.test(value.slice(1, -1));
+  }
+  return false;
 }
 
 function parseTableAt(
@@ -348,6 +462,7 @@ function normalizeCodeFenceLanguage(value: string): string | undefined {
     .split(/\s+/)[0]
     ?.replace(/^language-/, "")
     .replace(/[{}]/g, "")
+    .replace(/^\./, "")
     .trim();
 
   return token ? token.toLowerCase() : undefined;
@@ -364,7 +479,7 @@ function normalizeProseText(value: string) {
 }
 
 export function tokenizeInlineMessage(text: string): InlineMessagePart[] {
-  const pattern = /(`[^`]+`|\*\*[^*]+\*\*|\[[^\]]+\]\([^)]+\))/g;
+  const pattern = /(`[^`]+`|~~[^~]+~~|\*\*[^*]+\*\*|__[^_]+__|\*[^*\s][^*]*\*|\[[^\]]+\]\([^)]+\))/g;
   const parts: InlineMessagePart[] = [];
   let lastIndex = 0;
   let match: RegExpExecArray | null;
@@ -376,8 +491,14 @@ export function tokenizeInlineMessage(text: string): InlineMessagePart[] {
     const token = match[0];
     if (token.startsWith("`")) {
       parts.push({ kind: "code", text: token.slice(1, -1) });
+    } else if (token.startsWith("~~")) {
+      parts.push({ kind: "strike", text: token.slice(2, -2) });
     } else if (token.startsWith("**")) {
       parts.push({ kind: "bold", text: token.slice(2, -2) });
+    } else if (token.startsWith("__")) {
+      parts.push({ kind: "bold", text: token.slice(2, -2) });
+    } else if (token.startsWith("*")) {
+      parts.push({ kind: "italic", text: token.slice(1, -1) });
     } else {
       const label = /^\[([^\]]+)\]/.exec(token)?.[1] || token;
       parts.push({ kind: "link", text: label });

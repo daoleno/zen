@@ -287,7 +287,7 @@ export function CodexMessageBlock({
 }
 
 function listItemIndent(depth: number) {
-  return Math.min(depth, 6) * 18;
+  return Math.min(depth, 6) * 16;
 }
 
 function listMarkerText(item: MessageListItem) {
@@ -344,7 +344,7 @@ const styles = StyleSheet.create({
   },
   messageList: {
     marginBottom: 10,
-    gap: 7,
+    gap: 6,
   },
   messageListItem: {
     flexDirection: "row",
@@ -352,12 +352,12 @@ const styles = StyleSheet.create({
     minWidth: 0,
   },
   messageListMarkerWrap: {
-    width: 24,
-    paddingRight: 8,
+    width: 22,
+    paddingRight: 7,
     alignItems: "flex-end",
   },
   messageListMarkerWrapOrdered: {
-    width: 34,
+    width: 32,
   },
   messageListText: {
     flex: 1,
