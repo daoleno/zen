@@ -98,19 +98,20 @@ func CodexThreadTitleForAgent(agent classifier.Agent, now time.Time) (string, bo
 	if err != nil || !ok {
 		return "", false, err
 	}
-	title := strings.TrimSpace(candidate.Row.Title)
-	if title == "" {
+	title, ok := explicitCodexThreadTitle(candidate.Row)
+	if !ok {
 		return "", false, nil
 	}
 	return title, true, nil
 }
 
 type codexThreadRow struct {
-	ID          string `json:"id"`
-	RolloutPath string `json:"rollout_path"`
-	CreatedAt   int64  `json:"created_at"`
-	CreatedAtMS int64  `json:"created_at_ms"`
-	Title       string `json:"title"`
+	ID               string `json:"id"`
+	RolloutPath      string `json:"rollout_path"`
+	CreatedAt        int64  `json:"created_at"`
+	CreatedAtMS      int64  `json:"created_at_ms"`
+	Title            string `json:"title"`
+	FirstUserMessage string `json:"first_user_message"`
 }
 
 type codexTranscriptCandidate struct {
@@ -410,11 +411,33 @@ func candidateCreatedAt(row codexThreadRow) time.Time {
 	}
 }
 
+func explicitCodexThreadTitle(row codexThreadRow) (string, bool) {
+	title := strings.TrimSpace(row.Title)
+	if title == "" {
+		return "", false
+	}
+	firstUserMessage := strings.TrimSpace(row.FirstUserMessage)
+	if firstUserMessage != "" && compactWhitespace(title) == compactWhitespace(firstUserMessage) {
+		return "", false
+	}
+	return title, true
+}
+
+func compactWhitespace(value string) string {
+	return strings.Join(strings.Fields(value), " ")
+}
+
 func queryCodexThreads(sqlite3, dbPath, cwd string) ([]codexThreadRow, error) {
-	query := fmt.Sprintf(`SELECT id, rollout_path, created_at, coalesce(created_at_ms, 0) AS created_at_ms, coalesce(title, '') AS title FROM threads WHERE archived = 0 AND cwd = %s ORDER BY coalesce(updated_at_ms, updated_at * 1000) DESC LIMIT 48`, sqlString(cwd))
+	query := fmt.Sprintf(`SELECT id, rollout_path, created_at, coalesce(created_at_ms, 0) AS created_at_ms, coalesce(title, '') AS title, coalesce(first_user_message, '') AS first_user_message FROM threads WHERE archived = 0 AND cwd = %s ORDER BY coalesce(updated_at_ms, updated_at * 1000) DESC LIMIT 48`, sqlString(cwd))
 	rows, err := queryCodexThreadRows(sqlite3, dbPath, query)
 	if err == nil {
 		return rows, nil
+	}
+
+	titleOnlyQuery := fmt.Sprintf(`SELECT id, rollout_path, created_at, coalesce(created_at_ms, 0) AS created_at_ms, coalesce(title, '') AS title FROM threads WHERE archived = 0 AND cwd = %s ORDER BY coalesce(updated_at_ms, updated_at * 1000) DESC LIMIT 48`, sqlString(cwd))
+	titleOnlyRows, titleOnlyErr := queryCodexThreadRows(sqlite3, dbPath, titleOnlyQuery)
+	if titleOnlyErr == nil {
+		return titleOnlyRows, nil
 	}
 
 	legacyQuery := fmt.Sprintf(`SELECT id, rollout_path, created_at, coalesce(created_at_ms, 0) AS created_at_ms FROM threads WHERE archived = 0 AND cwd = %s ORDER BY coalesce(updated_at_ms, updated_at * 1000) DESC LIMIT 48`, sqlString(cwd))

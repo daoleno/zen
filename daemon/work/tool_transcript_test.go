@@ -209,6 +209,29 @@ func TestLatestUpdatedCodexTranscriptSupportsResume(t *testing.T) {
 	}
 }
 
+func TestExplicitCodexThreadTitleSkipsFirstUserMessage(t *testing.T) {
+	row := codexThreadRow{
+		Title:            "感觉 status 命令解析 tty 来展示不太对啊",
+		FirstUserMessage: "感觉 status 命令解析 tty 来展示不太对啊",
+	}
+
+	if title, ok := explicitCodexThreadTitle(row); ok || title != "" {
+		t.Fatalf("explicit title = (%q, %v), want none", title, ok)
+	}
+}
+
+func TestExplicitCodexThreadTitleKeepsRenamedTitle(t *testing.T) {
+	row := codexThreadRow{
+		Title:            "Polish Codex session names",
+		FirstUserMessage: "为什么首页 Session name 没有跟着 rename 变化",
+	}
+
+	title, ok := explicitCodexThreadTitle(row)
+	if !ok || title != "Polish Codex session names" {
+		t.Fatalf("explicit title = (%q, %v), want renamed title", title, ok)
+	}
+}
+
 func TestQueryCodexThreadsIncludesTitle(t *testing.T) {
 	sqlite3, err := exec.LookPath("sqlite3")
 	if err != nil {
@@ -223,12 +246,13 @@ CREATE TABLE threads (
   updated_at INTEGER,
   cwd TEXT,
   title TEXT,
+  first_user_message TEXT,
   archived INTEGER,
   created_at_ms INTEGER,
   updated_at_ms INTEGER
 );
-INSERT INTO threads (id, rollout_path, created_at, updated_at, cwd, title, archived, created_at_ms, updated_at_ms)
-VALUES ('thread-1', '/tmp/rollout-1.jsonl', 100, 200, '/repo/zen', 'Renamed from Codex', 0, 100000, 200000);
+INSERT INTO threads (id, rollout_path, created_at, updated_at, cwd, title, first_user_message, archived, created_at_ms, updated_at_ms)
+VALUES ('thread-1', '/tmp/rollout-1.jsonl', 100, 200, '/repo/zen', 'Renamed from Codex', 'First prompt', 0, 100000, 200000);
 `)
 
 	rows, err := queryCodexThreads(sqlite3, dbPath, "/repo/zen")
@@ -240,6 +264,9 @@ VALUES ('thread-1', '/tmp/rollout-1.jsonl', 100, 200, '/repo/zen', 'Renamed from
 	}
 	if rows[0].Title != "Renamed from Codex" {
 		t.Fatalf("title = %q, want renamed title", rows[0].Title)
+	}
+	if rows[0].FirstUserMessage != "First prompt" {
+		t.Fatalf("first_user_message = %q, want first prompt", rows[0].FirstUserMessage)
 	}
 }
 
