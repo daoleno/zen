@@ -153,6 +153,7 @@ export function buildGhosttyTerminalHtml(theme: TerminalThemePalette, fontUri: s
         let lastReportedCellHeight = 0;
         let viewportMode = 'live';
         let nativeSelectionActive = false;
+        let pendingViewportSyncAfterSelection = false;
         let cursorBlinkVisible = true;
         let drawRAF = null;
 
@@ -264,6 +265,11 @@ export function buildGhosttyTerminalHtml(theme: TerminalThemePalette, fontUri: s
         };
 
         const syncViewport = (force) => {
+          if (nativeSelectionActive && !force) {
+            pendingViewportSyncAfterSelection = true;
+            return;
+          }
+
           const viewport = getViewportSize();
           const nextWidth = viewport.width;
           const nextHeight = viewport.height;
@@ -400,6 +406,10 @@ export function buildGhosttyTerminalHtml(theme: TerminalThemePalette, fontUri: s
 
           nativeSelectionActive = nextActive;
           send({ type: 'selectionActive', active: nextActive });
+          if (!nextActive && pendingViewportSyncAfterSelection) {
+            pendingViewportSyncAfterSelection = false;
+            syncViewport(true);
+          }
           scheduleDraw();
           return nextActive;
         };

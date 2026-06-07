@@ -19,8 +19,8 @@ import type { ZenTimelineItem } from "./CodexTimelineItemView";
 const SCROLL_BOTTOM_THRESHOLD = 96;
 const COMPOSER_FOCUS_LOCK_MS = 1000;
 const COMPOSER_REFOCUS_DELAYS_MS = [0, 60, 140, 280, 520, 820] as const;
-const TEXT_SELECTION_ANCHOR_SETTLE_MS = 1800;
-const TEXT_SELECTION_ANCHOR_MAX_MS = 6000;
+const TEXT_SELECTION_ANCHOR_SETTLE_MS = 30000;
+const TEXT_SELECTION_ANCHOR_MAX_MS = 60000;
 
 type UseCodexComposerPresentationInput = Omit<
   CodexComposerPresentationInput,
@@ -242,7 +242,9 @@ export function usePinnedTimeline(itemCount: number, resetKey: string) {
   );
 
   const handleScrollBeginDrag = useCallback(() => {
-    resumeImplicitAnchorAfterTextSelection();
+    if (!textSelectionActiveRef.current) {
+      resumeImplicitAnchorAfterTextSelection();
+    }
     userDraggingRef.current = true;
     scrollRequestSeqRef.current += 1;
   }, [resumeImplicitAnchorAfterTextSelection]);

@@ -410,7 +410,6 @@ export function useGhosttyTerminalController({
           return;
         }
         clearInputMirror();
-        inputRef.current?.blur();
         onCtrlArmedChange?.(false);
         return;
       }
