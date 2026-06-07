@@ -15,7 +15,10 @@ import type {
 import { CodexTimelineEmptyContent } from "./CodexTimelineContent";
 import { CodexTimelineJumpButton } from "./CodexTimelineJumpButton";
 import type { CodexChatLocalState } from "./CodexChatSession";
-import { TimelineTextSelectableContext } from "./TimelineTextSelectableContext";
+import {
+  TimelineTextSelectableContext,
+  type TimelineTextSelectableContextValue,
+} from "./TimelineTextSelectableContext";
 import {
   ZenTimelineItemView,
   type ZenTimelineItem,
@@ -50,6 +53,8 @@ interface CodexTimelineViewProps {
   onMomentumScrollBegin(): void;
   onMomentumScrollEnd(event: NativeSyntheticEvent<NativeScrollEvent>): void;
   onContentSizeChange(width: number, height: number): void;
+  onTextSelectionGestureStart: TimelineTextSelectableContextValue["onTextSelectionGestureStart"];
+  onTextSelectionGestureEnd: TimelineTextSelectableContextValue["onTextSelectionGestureEnd"];
   onJumpToLatest(): void;
   onUnavailableAction(): void;
   showUnavailableAction?: boolean;
@@ -86,6 +91,8 @@ export function CodexTimelineView({
   onMomentumScrollBegin,
   onMomentumScrollEnd,
   onContentSizeChange,
+  onTextSelectionGestureStart,
+  onTextSelectionGestureEnd,
   onJumpToLatest,
   onUnavailableAction,
   showUnavailableAction,
@@ -94,6 +101,18 @@ export function CodexTimelineView({
   truncateBody,
 }: CodexTimelineViewProps) {
   const renderItems = React.useMemo(() => [...items].reverse(), [items]);
+  const textSelectionContext = React.useMemo(
+    () => ({
+      selectable: textSelectable,
+      onTextSelectionGestureStart,
+      onTextSelectionGestureEnd,
+    }),
+    [
+      onTextSelectionGestureEnd,
+      onTextSelectionGestureStart,
+      textSelectable,
+    ],
+  );
   const renderItem = React.useCallback(
     ({ item }: ListRenderItemInfo<ZenTimelineItem>) => (
       <ZenTimelineItemView
@@ -152,7 +171,7 @@ export function CodexTimelineView({
   );
 
   return (
-    <TimelineTextSelectableContext.Provider value={textSelectable}>
+    <TimelineTextSelectableContext.Provider value={textSelectionContext}>
       <View style={styles.timelineStage}>
         <FlatList
           ref={scrollRef}
@@ -162,10 +181,6 @@ export function CodexTimelineView({
           style={styles.timeline}
           contentContainerStyle={styles.timelineContent}
           inverted
-          maintainVisibleContentPosition={{
-            minIndexForVisible: 0,
-            autoscrollToTopThreshold: 8,
-          }}
           scrollIndicatorInsets={{ bottom: TIMELINE_BOTTOM_PADDING }}
           keyboardShouldPersistTaps="handled"
           showsVerticalScrollIndicator={false}

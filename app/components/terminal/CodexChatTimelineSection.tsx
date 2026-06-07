@@ -56,6 +56,8 @@ interface CodexChatTimelineSectionProps {
   onMomentumScrollBegin(): void;
   onMomentumScrollEnd(event: NativeSyntheticEvent<NativeScrollEvent>): void;
   onContentSizeChange(width: number, height: number): void;
+  onTextSelectionGestureStart(): void;
+  onTextSelectionGestureEnd(): void;
   onScrollToLatest(animated?: boolean, delay?: number): void;
   onUnavailableAction(): void;
   showUnavailableAction?: boolean;
@@ -86,6 +88,8 @@ export function CodexChatTimelineSection({
   onMomentumScrollBegin,
   onMomentumScrollEnd,
   onContentSizeChange,
+  onTextSelectionGestureStart,
+  onTextSelectionGestureEnd,
   onScrollToLatest,
   onUnavailableAction,
   showUnavailableAction,
@@ -143,6 +147,8 @@ export function CodexChatTimelineSection({
       onMomentumScrollBegin={onMomentumScrollBegin}
       onMomentumScrollEnd={onMomentumScrollEnd}
       onContentSizeChange={onContentSizeChange}
+      onTextSelectionGestureStart={onTextSelectionGestureStart}
+      onTextSelectionGestureEnd={onTextSelectionGestureEnd}
       onJumpToLatest={() => onScrollToLatest(false, 0)}
       onUnavailableAction={onUnavailableAction}
       showUnavailableAction={showUnavailableAction}

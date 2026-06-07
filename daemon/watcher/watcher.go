@@ -215,12 +215,17 @@ func (w *Watcher) poll() {
 			delete(w.agents, id)
 			delete(w.prevContent, id)
 			delete(w.hidden, id)
+			archived := cloneAgent(old)
+			if archived != nil {
+				archived.State = classifier.StateRemoved
+				archived.StateVersion++
+			}
 			w.events <- SessionEvent{
 				Type:     "agent_removed",
 				AgentID:  id,
-				Agent:    cloneAgent(old),
+				Agent:    archived,
 				OldState: string(old.State),
-				NewState: string(classifier.StateDone),
+				NewState: string(classifier.StateRemoved),
 			}
 		}
 	}

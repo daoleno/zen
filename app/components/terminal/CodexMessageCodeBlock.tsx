@@ -1,4 +1,4 @@
-import React, { useContext, useMemo } from "react";
+import React, { useMemo } from "react";
 import {
   ScrollView,
   StyleSheet,
@@ -15,7 +15,7 @@ import {
   highlightCodeLineForLanguage,
   type HighlightTokenKind,
 } from "./gitDiffSyntaxHighlight";
-import { TimelineTextSelectableContext } from "./TimelineTextSelectableContext";
+import { useTimelineSelectableTextProps } from "./TimelineTextSelectableContext";
 
 interface CodexMessageCodeBlockProps {
   text: string;
@@ -34,7 +34,7 @@ export function CodexMessageCodeBlock({
   compact,
   isLast,
 }: CodexMessageCodeBlockProps) {
-  const textSelectable = useContext(TimelineTextSelectableContext);
+  const selectableTextProps = useTimelineSelectableTextProps();
   const prepared = useMemo(
     () => prepareCodeBlockText(text, language),
     [language, text],
@@ -83,7 +83,7 @@ export function CodexMessageCodeBlock({
           {lines.map((line, index) => (
             <Text
               key={index}
-              selectable={textSelectable}
+              {...selectableTextProps}
               style={[
                 styles.codeLine,
                 compact ? styles.codeLineCompact : null,

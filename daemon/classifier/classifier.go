@@ -14,6 +14,7 @@ const (
 	StateBlocked AgentState = "blocked"
 	StateDone    AgentState = "done"
 	StateFailed  AgentState = "failed"
+	StateRemoved AgentState = "removed"
 	StateUnknown AgentState = "unknown"
 )
 

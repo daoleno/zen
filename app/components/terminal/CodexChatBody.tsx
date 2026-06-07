@@ -51,6 +51,8 @@ export interface CodexChatBodyProps {
   onTimelineMomentumScrollBegin(): void;
   onTimelineMomentumScrollEnd(event: NativeSyntheticEvent<NativeScrollEvent>): void;
   onTimelineContentSizeChange(width: number, height: number): void;
+  onTimelineTextSelectionGestureStart(): void;
+  onTimelineTextSelectionGestureEnd(): void;
   onScrollToLatest(animated?: boolean, delay?: number): void;
   onComposerHeightChange(height: number): void;
   onUnavailableAction(): void;
@@ -104,6 +106,8 @@ export function CodexChatBody({
   onTimelineMomentumScrollBegin,
   onTimelineMomentumScrollEnd,
   onTimelineContentSizeChange,
+  onTimelineTextSelectionGestureStart,
+  onTimelineTextSelectionGestureEnd,
   onScrollToLatest,
   onComposerHeightChange,
   onUnavailableAction,
@@ -166,6 +170,8 @@ export function CodexChatBody({
         onMomentumScrollBegin={onTimelineMomentumScrollBegin}
         onMomentumScrollEnd={onTimelineMomentumScrollEnd}
         onContentSizeChange={onTimelineContentSizeChange}
+        onTextSelectionGestureStart={onTimelineTextSelectionGestureStart}
+        onTextSelectionGestureEnd={onTimelineTextSelectionGestureEnd}
         onScrollToLatest={onScrollToLatest}
         onUnavailableAction={onUnavailableAction}
         showUnavailableAction={showUnavailableAction}

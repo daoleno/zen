@@ -396,6 +396,8 @@ function workStatusInfo(item: WorkItem, colors: typeof Colors = Colors): {
       return { icon: "alert-circle", label: "Blocked", color: colors.statusBlocked };
     case "done":
       return { icon: "checkmark-circle", label: "Done", color: colors.statusDone };
+    case "removed":
+      return { icon: "archive", label: "Removed", color: colors.statusDone };
     case "running":
       return { icon: "play-circle", label: "Running", color: colors.statusRunning };
     case "unknown":

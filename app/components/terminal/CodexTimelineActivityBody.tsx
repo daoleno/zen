@@ -11,6 +11,7 @@ import { Typography } from "../../constants/tokens";
 import { MessageBody } from "./CodexMessageBody";
 import { CodexTimelineActivityOutput } from "./CodexTimelineActivityOutput";
 import type { ZenActivityTimelineItem } from "./CodexTimelineActivityTypes";
+import { useTimelineSelectableTextProps } from "./TimelineTextSelectableContext";
 
 interface CodexTimelineActivityBodyProps {
   body: string;
@@ -18,7 +19,6 @@ interface CodexTimelineActivityBodyProps {
   theme: TerminalThemePalette;
   activityKind?: ZenActivityTimelineItem["activityKind"];
   bodyKind?: ZenActivityTimelineItem["bodyKind"];
-  textSelectable: boolean;
   truncateBody(value: string, limit: number): string;
 }
 
@@ -28,9 +28,9 @@ export function CodexTimelineActivityBody({
   theme,
   activityKind,
   bodyKind,
-  textSelectable,
   truncateBody,
 }: CodexTimelineActivityBodyProps) {
+  const selectableTextProps = useTimelineSelectableTextProps();
   const displayBody = truncateBody(body, 1800);
   if (activityKind === "reasoning") {
     return (
@@ -50,14 +50,13 @@ export function CodexTimelineActivityBody({
         bodyKind={bodyKind}
         chrome={chrome}
         theme={theme}
-        textSelectable={textSelectable}
       />
     );
   }
 
   return (
     <Text
-      selectable={textSelectable}
+      {...selectableTextProps}
       style={[styles.body, { color: chrome.textSubtle }]}
     >
       {displayBody}

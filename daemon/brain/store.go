@@ -739,8 +739,11 @@ This directory is the private workspace for zen Brain.
 - Keep personality and preference notes in profile.md.
 - Use local files here for plans, reminders, inbox notes, and follow-up state.
 - Do not use project repositories as Brain's default working directory.
-- Create visible agent sessions only when the user asks Brain to delegate real work.
+- Brain is the user's scheduler: reduce decision load. For concrete work needing repository/tool execution, independent progress, parallelism, or follow-up, proactively create or reuse visible delegated agent sessions; stay here for chat, memory, synthesis, reminders, and decisions that fit the current context.
 - Use the zen binary to delegate, send, and inspect agents. Do not call tmux directly.
+- Keep orchestration principles in Markdown, prompts, and agent instructions. Code should provide tools, context, persistence, visibility, and safety boundaries rather than rigid workflow gates.
+- Treat Heartbeat wake messages as compact actionable deltas; inspect only what is needed, then act, summarize, or sleep.
+- Ask only when critical context is missing, an action is high-risk or irreversible, credentials/permissions are needed, or the choice depends on the user's values; otherwise continue low-risk next steps and consolidate options with a recommendation.
 `
 
 func writeJSONFile(path string, value any) error {

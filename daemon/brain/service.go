@@ -39,6 +39,17 @@ type Service struct {
 	now     func() time.Time
 }
 
+type HeartbeatEvent struct {
+	Reason   string
+	AgentID  string
+	Name     string
+	Status   string
+	Summary  string
+	Cwd      string
+	OldState string
+	NewState string
+}
+
 func NewService(store *Store, watcher Watcher, execs *work.ExecutorConfig) *Service {
 	return &Service{
 		store:   store,
@@ -98,6 +109,61 @@ func (s *Service) SetHostAdapter(adapterID string) (Snapshot, error) {
 		return Snapshot{}, err
 	}
 	return s.Snapshot()
+}
+
+func (s *Service) Heartbeat(event HeartbeatEvent) (bool, error) {
+	if s == nil || s.store == nil || s.watcher == nil {
+		return false, nil
+	}
+	reason := strings.TrimSpace(event.Reason)
+	if reason == "" {
+		return false, nil
+	}
+	hostSession, err := s.store.HostSession()
+	if err != nil {
+		return false, err
+	}
+	hostID := strings.TrimSpace(hostSession.ID)
+	if hostID == "" || !s.watcher.HasSession(hostID) {
+		return false, nil
+	}
+	message := formatHeartbeatWake(event)
+	if message == "" {
+		return false, nil
+	}
+	if err := s.watcher.SendInput(hostID, message+"\n"); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
+func formatHeartbeatWake(event HeartbeatEvent) string {
+	reason := strings.TrimSpace(event.Reason)
+	if reason == "" {
+		return ""
+	}
+	lines := []string{
+		"Heartbeat wake:",
+		"reason: " + reason,
+	}
+	appendHeartbeatField := func(label, value string) {
+		value = strings.TrimSpace(value)
+		if value != "" {
+			lines = append(lines, label+": "+value)
+		}
+	}
+	appendHeartbeatField("agent_id", event.AgentID)
+	appendHeartbeatField("agent_name", event.Name)
+	appendHeartbeatField("status", event.Status)
+	appendHeartbeatField("old_state", event.OldState)
+	appendHeartbeatField("new_state", event.NewState)
+	appendHeartbeatField("workspace", event.Cwd)
+	appendHeartbeatField("summary", event.Summary)
+	lines = append(lines,
+		"",
+		"Inspect the changed session if useful. Continue low-risk next steps autonomously; if blocked, consolidate options and a recommendation for the user.",
+	)
+	return strings.Join(lines, "\n")
 }
 
 func (s *Service) ensureHostAgent(adapter work.AgentAdapter) (AgentRef, error) {
@@ -337,10 +403,11 @@ Agent orchestration rules:
 - This Brain host is launched with the most permissive available non-interactive authorization mode for its adapter.
 - The zen app sends user messages directly into this session.
 - Treat the adapter as replaceable; do not make Brain's plans depend on Codex-only or Claude-only behavior unless the user asks for that adapter specifically.
-- Only create or ask for a visible delegated agent session when the user explicitly asks you to delegate real work.
-- Use the zen binary to spawn, send to, and inspect delegated agents.
-- Prefer zen agent spawn with a delegation note in the Brain workspace.
-- For ordinary chat, remembering, planning, organizing, and reminders, stay in this Brain session and update local files when useful.
+- Brain is the user's scheduler: reduce decision load. For concrete work that needs repository/tool execution, independent progress, parallelism, or follow-up, proactively create or reuse a visible delegated agent session; stay in Brain for chat, memory, synthesis, reminders, and decisions that fit the current context.
+- Use the zen binary to spawn, send to, and inspect delegated agents. When delegating, write a short note with workspace, objective, context, acceptance criteria, safety constraints, and expected report.
+- Keep orchestration principles in Markdown, prompts, and agent instructions. Product code should provide tools, context, persistence, visibility, and safety boundaries rather than rigid workflow gates.
+- Treat Heartbeat wake messages as compact actionable deltas; inspect only what is needed, then act, summarize, or sleep.
+- Continue low-risk next steps autonomously. Ask only when critical context is missing, an action is high-risk or irreversible, credentials/permissions are needed, or the decision depends on the user's values; when blocked, consolidate options and a recommendation.
 
 Current personality:
 %s

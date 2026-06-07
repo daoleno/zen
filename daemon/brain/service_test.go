@@ -242,6 +242,123 @@ func TestServiceSnapshotHonorsHostAdapterOverride(t *testing.T) {
 	}
 }
 
+func TestServiceBootstrapPromptDefaultsToAutonomousScheduling(t *testing.T) {
+	store, err := NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	fw := &fakeWatcher{}
+	service := NewService(store, fw, &work.ExecutorConfig{
+		Default: "codex",
+		ByName: map[string]work.Executor{
+			"codex": {Name: "codex", Command: "codex"},
+		},
+	})
+
+	if _, err := service.Snapshot(); err != nil {
+		t.Fatal(err)
+	}
+	if len(fw.sentCalls) != 1 {
+		t.Fatalf("bootstrap sends = %#v", fw.sentCalls)
+	}
+	prompt := fw.sentCalls[0].text
+	for _, want := range []string{
+		"Brain is the user's scheduler",
+		"proactively create or reuse a visible delegated agent session",
+		"Keep orchestration principles in Markdown, prompts, and agent instructions",
+		"Treat Heartbeat wake messages as compact actionable deltas",
+		"consolidate options and a recommendation",
+	} {
+		if !strings.Contains(prompt, want) {
+			t.Fatalf("bootstrap prompt missing %q:\n%s", want, prompt)
+		}
+	}
+	if strings.Contains(prompt, "Only create or ask for a visible delegated agent session when the user explicitly asks") {
+		t.Fatalf("bootstrap prompt still requires explicit delegation:\n%s", prompt)
+	}
+}
+
+func TestServiceHeartbeatWakesExistingHost(t *testing.T) {
+	store, err := NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	hostID := "brain-agent-brain-hidden:@1"
+	if err := store.SetHostSession(hostID, "codex"); err != nil {
+		t.Fatal(err)
+	}
+	fw := &fakeWatcher{
+		sessions: map[string]*classifier.Agent{
+			hostID: {
+				ID:      hostID,
+				Name:    "Brain",
+				State:   classifier.StateRunning,
+				Hidden:  true,
+				Command: "codex",
+			},
+		},
+	}
+	service := NewService(store, fw, nil)
+
+	woke, err := service.Heartbeat(HeartbeatEvent{
+		Reason:   "agent_state_change",
+		AgentID:  "worker:@2",
+		Name:     "Worker (worker:@2)",
+		Status:   "blocked",
+		Summary:  "Needs user input",
+		Cwd:      "/repo",
+		OldState: "running",
+		NewState: "blocked",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !woke {
+		t.Fatal("heartbeat did not wake existing host")
+	}
+	if len(fw.created) != 0 {
+		t.Fatalf("heartbeat should not create host sessions, got %#v", fw.created)
+	}
+	if len(fw.sentCalls) != 1 || fw.sentCalls[0].sessionID != hostID {
+		t.Fatalf("heartbeat sends = %#v", fw.sentCalls)
+	}
+	for _, want := range []string{
+		"Heartbeat wake:",
+		"reason: agent_state_change",
+		"agent_id: worker:@2",
+		"status: blocked",
+		"Inspect the changed session if useful",
+	} {
+		if !strings.Contains(fw.sentCalls[0].text, want) {
+			t.Fatalf("heartbeat message missing %q:\n%s", want, fw.sentCalls[0].text)
+		}
+	}
+}
+
+func TestServiceHeartbeatNoopsWithoutHost(t *testing.T) {
+	store, err := NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	fw := &fakeWatcher{}
+	service := NewService(store, fw, nil)
+
+	woke, err := service.Heartbeat(HeartbeatEvent{
+		Reason:  "agent_state_change",
+		AgentID: "worker:@2",
+		Status:  "done",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if woke {
+		t.Fatal("heartbeat unexpectedly woke without a host")
+	}
+	if len(fw.created) != 0 || len(fw.sentCalls) != 0 {
+		t.Fatalf("heartbeat side effects created=%#v sent=%#v", fw.created, fw.sentCalls)
+	}
+}
+
 func TestServiceSetHostAdapterPersistsAndStartsSelectedHost(t *testing.T) {
 	store, err := NewStore(t.TempDir())
 	if err != nil {
@@ -531,6 +648,22 @@ func TestStoreUsesStateAndWorkspaceDirectories(t *testing.T) {
 	}
 	if !pathExists(filepath.Join(root, "workspace", "memory.md")) {
 		t.Fatalf("missing workspace memory file")
+	}
+	instructions, err := os.ReadFile(filepath.Join(root, "workspace", "AGENTS.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(instructions), "Brain is the user's scheduler") {
+		t.Fatalf("workspace instructions do not describe scheduler behavior:\n%s", instructions)
+	}
+	if !strings.Contains(string(instructions), "Keep orchestration principles in Markdown, prompts, and agent instructions") {
+		t.Fatalf("workspace instructions do not describe prompt-first orchestration:\n%s", instructions)
+	}
+	if !strings.Contains(string(instructions), "Treat Heartbeat wake messages as compact actionable deltas") {
+		t.Fatalf("workspace instructions do not describe heartbeat handling:\n%s", instructions)
+	}
+	if strings.Contains(string(instructions), "only when the user asks Brain to delegate real work") {
+		t.Fatalf("workspace instructions still require explicit delegation:\n%s", instructions)
 	}
 }
 

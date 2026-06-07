@@ -19,6 +19,8 @@ import type { ZenTimelineItem } from "./CodexTimelineItemView";
 const SCROLL_BOTTOM_THRESHOLD = 96;
 const COMPOSER_FOCUS_LOCK_MS = 1000;
 const COMPOSER_REFOCUS_DELAYS_MS = [0, 60, 140, 280, 520, 820] as const;
+const TEXT_SELECTION_ANCHOR_SETTLE_MS = 1800;
+const TEXT_SELECTION_ANCHOR_MAX_MS = 6000;
 
 type UseCodexComposerPresentationInput = Omit<
   CodexComposerPresentationInput,
@@ -93,11 +95,44 @@ export function usePinnedTimeline(itemCount: number, resetKey: string) {
   const userMomentumRef = useRef(false);
   const scrollRequestSeqRef = useRef(0);
   const distanceFromLatestRef = useRef(0);
+  const textSelectionActiveRef = useRef(false);
+  const textSelectionTimerRef = useRef<ReturnType<typeof setTimeout> | null>(
+    null,
+  );
   const [showJumpToLatest, setShowJumpToLatest] = useState(false);
 
   const updateJumpButton = useCallback(() => {
     setShowJumpToLatest(!followLatestRef.current && itemCount > 0);
   }, [itemCount]);
+
+  const clearTextSelectionTimer = useCallback(() => {
+    if (!textSelectionTimerRef.current) {
+      return;
+    }
+    clearTimeout(textSelectionTimerRef.current);
+    textSelectionTimerRef.current = null;
+  }, []);
+
+  const resumeImplicitAnchorAfterTextSelection = useCallback(() => {
+    clearTextSelectionTimer();
+    textSelectionActiveRef.current = false;
+    updateJumpButton();
+  }, [clearTextSelectionTimer, updateJumpButton]);
+
+  const scheduleTextSelectionAnchorResume = useCallback((delay: number) => {
+    clearTextSelectionTimer();
+    textSelectionTimerRef.current = setTimeout(() => {
+      textSelectionTimerRef.current = null;
+      textSelectionActiveRef.current = false;
+      updateJumpButton();
+    }, delay);
+  }, [clearTextSelectionTimer, updateJumpButton]);
+
+  const implicitAnchorSuspended = useCallback(() => (
+    textSelectionActiveRef.current ||
+    userDraggingRef.current ||
+    userMomentumRef.current
+  ), []);
 
   const followLatest = useCallback(() => {
     followLatestRef.current = true;
@@ -114,6 +149,7 @@ export function usePinnedTimeline(itemCount: number, resetKey: string) {
     (animated: boolean = true, delay: number = 0) => {
       const requestSeq = scrollRequestSeqRef.current + 1;
       scrollRequestSeqRef.current = requestSeq;
+      resumeImplicitAnchorAfterTextSelection();
       followLatest();
       const scroll = (nextAnimated: boolean) => {
         if (scrollRequestSeqRef.current !== requestSeq) {
@@ -133,26 +169,43 @@ export function usePinnedTimeline(itemCount: number, resetKey: string) {
       }
       setTimeout(() => scroll(animated), delay);
     },
-    [followLatest],
+    [followLatest, resumeImplicitAnchorAfterTextSelection],
   );
 
   const pinToBottomIfNeeded = useCallback(
     (animated: boolean = false, delay: number = 0) => {
+      if (implicitAnchorSuspended()) {
+        return;
+      }
       if (followLatestRef.current) {
         scrollToLatest(animated, delay);
       }
     },
-    [scrollToLatest],
+    [implicitAnchorSuspended, scrollToLatest],
   );
 
   const resetForConversation = useCallback(() => {
+    resumeImplicitAnchorAfterTextSelection();
     followLatestRef.current = true;
     userDraggingRef.current = false;
     userMomentumRef.current = false;
     scrollRequestSeqRef.current += 1;
     distanceFromLatestRef.current = 0;
     setShowJumpToLatest(false);
-  }, []);
+  }, [resumeImplicitAnchorAfterTextSelection]);
+
+  const handleTextSelectionGestureStart = useCallback(() => {
+    textSelectionActiveRef.current = true;
+    scrollRequestSeqRef.current += 1;
+    scheduleTextSelectionAnchorResume(TEXT_SELECTION_ANCHOR_MAX_MS);
+  }, [scheduleTextSelectionAnchorResume]);
+
+  const handleTextSelectionGestureEnd = useCallback(() => {
+    if (!textSelectionActiveRef.current) {
+      return;
+    }
+    scheduleTextSelectionAnchorResume(TEXT_SELECTION_ANCHOR_SETTLE_MS);
+  }, [scheduleTextSelectionAnchorResume]);
 
   const updateScrollPosition = useCallback((
     event: NativeSyntheticEvent<NativeScrollEvent>,
@@ -163,6 +216,10 @@ export function usePinnedTimeline(itemCount: number, resetKey: string) {
     } = event.nativeEvent;
     const distanceFromLatest = Math.max(0, contentOffset.y);
     distanceFromLatestRef.current = distanceFromLatest;
+    if (textSelectionActiveRef.current && !userDriven) {
+      updateJumpButton();
+      return;
+    }
     if (distanceFromLatest <= SCROLL_BOTTOM_THRESHOLD) {
       followLatest();
       return;
@@ -185,9 +242,10 @@ export function usePinnedTimeline(itemCount: number, resetKey: string) {
   );
 
   const handleScrollBeginDrag = useCallback(() => {
+    resumeImplicitAnchorAfterTextSelection();
     userDraggingRef.current = true;
     scrollRequestSeqRef.current += 1;
-  }, []);
+  }, [resumeImplicitAnchorAfterTextSelection]);
 
   const handleScrollEndDrag = useCallback(
     (event: NativeSyntheticEvent<NativeScrollEvent>) => {
@@ -214,6 +272,10 @@ export function usePinnedTimeline(itemCount: number, resetKey: string) {
       followLatest();
       return;
     }
+    if (implicitAnchorSuspended()) {
+      updateJumpButton();
+      return;
+    }
     if (followLatestRef.current && distanceFromLatestRef.current > 1) {
       scrollToLatest(false, 0);
       return;
@@ -221,11 +283,21 @@ export function usePinnedTimeline(itemCount: number, resetKey: string) {
     if (!followLatestRef.current) {
       setShowJumpToLatest(true);
     }
-  }, [followLatest, itemCount, scrollToLatest]);
+  }, [
+    followLatest,
+    implicitAnchorSuspended,
+    itemCount,
+    scrollToLatest,
+    updateJumpButton,
+  ]);
 
   const handleLayout = useCallback((_event: LayoutChangeEvent) => {
     if (itemCount === 0) {
       followLatest();
+      return;
+    }
+    if (implicitAnchorSuspended()) {
+      updateJumpButton();
       return;
     }
     if (followLatestRef.current && distanceFromLatestRef.current > 1) {
@@ -233,7 +305,18 @@ export function usePinnedTimeline(itemCount: number, resetKey: string) {
       return;
     }
     updateJumpButton();
-  }, [followLatest, itemCount, scrollToLatest, updateJumpButton]);
+  }, [
+    followLatest,
+    implicitAnchorSuspended,
+    itemCount,
+    scrollToLatest,
+    updateJumpButton,
+  ]);
+
+  useEffect(
+    () => clearTextSelectionTimer,
+    [clearTextSelectionTimer],
+  );
 
   useEffect(() => {
     if (resetKeyRef.current === resetKey) {
@@ -248,12 +331,23 @@ export function usePinnedTimeline(itemCount: number, resetKey: string) {
       followLatest();
       return;
     }
+    if (implicitAnchorSuspended()) {
+      updateJumpButton();
+      return;
+    }
     if (followLatestRef.current && distanceFromLatestRef.current > 1) {
       scrollToLatest(false, 0);
       return;
     }
     updateJumpButton();
-  }, [followLatest, itemCount, resetKey, scrollToLatest, updateJumpButton]);
+  }, [
+    followLatest,
+    implicitAnchorSuspended,
+    itemCount,
+    resetKey,
+    scrollToLatest,
+    updateJumpButton,
+  ]);
 
   return {
     scrollRef,
@@ -268,6 +362,8 @@ export function usePinnedTimeline(itemCount: number, resetKey: string) {
     handleMomentumScrollEnd,
     handleContentSizeChange,
     handleLayout,
+    handleTextSelectionGestureStart,
+    handleTextSelectionGestureEnd,
   };
 }
 

@@ -5,12 +5,9 @@ import { Colors, Typography, useAppColors } from "../../constants/tokens";
 import type { WorkItem } from "../../store/work";
 
 type GlyphInfo = { glyph: string; color: string; label: string };
-export type WorkStatus = "queued" | "running" | "blocked" | "done" | "failed" | "unknown";
+export type WorkStatus = "queued" | "running" | "blocked" | "done" | "failed" | "removed" | "unknown";
 
 export function workItemStatus(item: WorkItem): WorkStatus {
-  if (item.frontmatter.kind === "brain_log") {
-    return "running";
-  }
   const raw =
     typeof item.frontmatter.status === "string"
       ? item.frontmatter.status.trim().toLowerCase()
@@ -22,12 +19,17 @@ export function workItemStatus(item: WorkItem): WorkStatus {
       return "blocked";
     case "done":
       return "done";
+    case "removed":
+      return "removed";
     case "running":
       return "running";
     case "unknown":
       return "unknown";
     default:
       break;
+  }
+  if (item.frontmatter.kind === "brain_log") {
+    return "running";
   }
   if (item.frontmatter.done) {
     return "done";
@@ -46,6 +48,8 @@ export function statusGlyph(item: WorkItem, colors: typeof Colors = Colors): Gly
       return { glyph: "!", color: colors.statusBlocked, label: "Blocked" };
     case "done":
       return { glyph: "✓", color: colors.statusDone, label: "Done" };
+    case "removed":
+      return { glyph: "−", color: colors.statusDone, label: "Removed" };
     case "running":
       return { glyph: "▸", color: colors.statusRunning, label: "Running" };
     case "unknown":

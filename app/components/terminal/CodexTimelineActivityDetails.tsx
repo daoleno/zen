@@ -21,7 +21,6 @@ interface CodexTimelineActivityDetailsProps {
   theme: TerminalThemePalette;
   assetPreviewUri: string | null;
   assetPreviewFailed: boolean;
-  textSelectable: boolean;
   formatPatchPath(file: PatchFileSummary): string;
   truncateBody(value: string, limit: number): string;
 }
@@ -32,7 +31,6 @@ export function CodexTimelineActivityDetails({
   theme,
   assetPreviewUri,
   assetPreviewFailed,
-  textSelectable,
   formatPatchPath,
   truncateBody,
 }: CodexTimelineActivityDetailsProps) {
@@ -62,7 +60,6 @@ export function CodexTimelineActivityDetails({
           theme={theme}
           activityKind={item.activityKind}
           bodyKind={item.bodyKind}
-          textSelectable={textSelectable}
           truncateBody={truncateBody}
         />
       ) : null}

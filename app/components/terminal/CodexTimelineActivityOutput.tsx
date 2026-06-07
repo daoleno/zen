@@ -11,13 +11,13 @@ import type {
 } from "../../constants/terminalThemes";
 import { Typography } from "../../constants/tokens";
 import type { ZenActivityTimelineItem } from "./CodexTimelineActivityTypes";
+import { useTimelineSelectableTextProps } from "./TimelineTextSelectableContext";
 
 interface CodexTimelineActivityOutputProps {
   body: string;
   bodyKind?: ZenActivityTimelineItem["bodyKind"];
   chrome: TerminalThemeChrome;
   theme: TerminalThemePalette;
-  textSelectable: boolean;
 }
 
 export function CodexTimelineActivityOutput({
@@ -25,8 +25,8 @@ export function CodexTimelineActivityOutput({
   bodyKind,
   chrome,
   theme,
-  textSelectable,
 }: CodexTimelineActivityOutputProps) {
+  const selectableTextProps = useTimelineSelectableTextProps();
   const lines = splitOutputLines(body);
   if (lines.length === 0) {
     return null;
@@ -43,7 +43,7 @@ export function CodexTimelineActivityOutput({
         {lines.map((line, index) => (
           <Text
             key={index}
-            selectable={textSelectable}
+            {...selectableTextProps}
             style={[styles.line, { color: chrome.textSubtle }]}
           >
             {bodyKind === "diff-stat"

@@ -37,7 +37,7 @@ export function CodexNativeMarkdownBody({
   streaming = false,
   renderFallback,
 }: CodexNativeMarkdownBodyProps) {
-  const textSelectable = useContext(TimelineTextSelectableContext);
+  const { selectable: textSelectable } = useContext(TimelineTextSelectableContext);
   const markdown = useMemo(() => prepareCodexMarkdown(value, streaming), [streaming, value]);
   const markdownStyle = useMemo(
     () => codexMarkdownStyle(chrome, theme, compact),

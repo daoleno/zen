@@ -208,6 +208,39 @@ func TestSessionLogger_FinalizesFailedAgent(t *testing.T) {
 	}
 }
 
+func TestSessionLogger_PreservesRemovedAgentStatus(t *testing.T) {
+	root := t.TempDir()
+	store, err := NewStore(root)
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	defer store.Close()
+
+	logger := NewSessionLogger(store, testDigestProvider("Removed task", "The session was removed"))
+	logger.syncDigest = true
+	enableTestTranscript(logger, "codex")
+	now := time.Date(2026, 5, 8, 10, 0, 0, 0, time.UTC)
+	logger.now = func() time.Time { return now }
+
+	written, err := logger.RecordAgent(&classifier.Agent{
+		ID:      "main:@removed",
+		Name:    "codex (main:@removed)",
+		Project: "zen",
+		Command: "codex",
+		State:   classifier.StateRemoved,
+		Summary: "window removed",
+	}, true, true)
+	if err != nil {
+		t.Fatalf("RecordAgent: %v", err)
+	}
+	if written.Frontmatter.Status != "removed" {
+		t.Fatalf("status = %q, want removed", written.Frontmatter.Status)
+	}
+	if !strings.Contains(written.Body, "status=removed") {
+		t.Fatalf("body missing removed status: %q", written.Body)
+	}
+}
+
 func TestSessionLogger_ReplacesAutoBlockAndPreservesNotes(t *testing.T) {
 	root := t.TempDir()
 	store, err := NewStore(root)

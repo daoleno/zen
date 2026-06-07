@@ -1,4 +1,4 @@
-import React, { useContext } from "react";
+import React from "react";
 import { ScrollView, StyleSheet, Text, View } from "react-native";
 import { Typography } from "../../constants/tokens";
 import type {
@@ -12,7 +12,7 @@ import type {
 } from "./CodexMessageBodyModel";
 import { CodexInlineMessage } from "./CodexInlineMessage";
 import { CodexMessageCodeBlock } from "./CodexMessageCodeBlock";
-import { TimelineTextSelectableContext } from "./TimelineTextSelectableContext";
+import { useTimelineSelectableTextProps } from "./TimelineTextSelectableContext";
 
 interface CodexMessageBlockProps {
   block: MessageBlock;
@@ -29,14 +29,14 @@ export function CodexMessageBlock({
   compact,
   isLast,
 }: CodexMessageBlockProps) {
-  const textSelectable = useContext(TimelineTextSelectableContext);
+  const selectableTextProps = useTimelineSelectableTextProps();
 
   switch (block.type) {
     case "heading":
       return (
         <View style={[styles.messageHeadingWrap, isLast ? styles.messageBlockLast : null]}>
           <Text
-            selectable={textSelectable}
+            {...selectableTextProps}
             style={[
               styles.messageHeading,
               block.level <= 2 ? styles.messageHeadingLarge : null,
@@ -91,7 +91,7 @@ export function CodexMessageBlock({
                   </View>
                 ) : (
                   <Text
-                    selectable={textSelectable}
+                    {...selectableTextProps}
                     style={[styles.messageListMarker, { color: chrome.textSubtle }]}
                   >
                     {listMarkerText(item)}
@@ -99,7 +99,7 @@ export function CodexMessageBlock({
                 )}
               </View>
               <Text
-                selectable={textSelectable}
+                {...selectableTextProps}
                 style={[
                   styles.messageText,
                   compact ? styles.messageTextCompact : null,
@@ -157,7 +157,7 @@ export function CodexMessageBlock({
                     ]}
                   >
                     <Text
-                      selectable={textSelectable}
+                      {...selectableTextProps}
                       style={[
                         styles.messageTableHeaderText,
                         compact ? styles.messageTableTextCompact : null,
@@ -201,7 +201,7 @@ export function CodexMessageBlock({
                       ]}
                     >
                       <Text
-                        selectable={textSelectable}
+                        {...selectableTextProps}
                         style={[
                           styles.messageTableText,
                           compact ? styles.messageTableTextCompact : null,
@@ -247,7 +247,7 @@ export function CodexMessageBlock({
           ]}
         >
           <Text
-            selectable={textSelectable}
+            {...selectableTextProps}
             style={[
               styles.messageQuoteText,
               compact ? styles.messageQuoteTextCompact : null,
@@ -267,7 +267,7 @@ export function CodexMessageBlock({
     default:
       return (
         <Text
-          selectable={textSelectable}
+          {...selectableTextProps}
           style={[
             styles.messageText,
             compact ? styles.messageTextCompact : null,

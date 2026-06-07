@@ -300,7 +300,8 @@ func cloneDigestAgent(agent *classifier.Agent) *classifier.Agent {
 func isDigestUrgentStatus(status string) bool {
 	return status == string(classifier.StateBlocked) ||
 		status == string(classifier.StateDone) ||
-		status == string(classifier.StateFailed)
+		status == string(classifier.StateFailed) ||
+		status == string(classifier.StateRemoved)
 }
 
 func buildSessionItem(root string, existing *Item, agent *classifier.Agent, now time.Time, status string, digest AgentDigest, digestHash string, transcript ToolTranscript) *Item {
@@ -693,11 +694,14 @@ func sessionStatus(agent *classifier.Agent, final bool) string {
 		}
 		return string(classifier.StateUnknown)
 	}
-	if final && agent.State != classifier.StateFailed {
-		return string(classifier.StateDone)
-	}
 	if strings.TrimSpace(string(agent.State)) == "" {
 		return string(classifier.StateUnknown)
+	}
+	if agent.State == classifier.StateRemoved {
+		return string(classifier.StateRemoved)
+	}
+	if final && agent.State != classifier.StateFailed {
+		return string(classifier.StateDone)
 	}
 	return string(agent.State)
 }

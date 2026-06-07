@@ -1,4 +1,4 @@
-import React, { useContext, useEffect, useState } from "react";
+import React, { useEffect, useState } from "react";
 import {
   StyleSheet,
   View,
@@ -7,9 +7,6 @@ import type {
   TerminalThemeChrome,
   TerminalThemePalette,
 } from "../../constants/terminalThemes";
-import {
-  TimelineTextSelectableContext,
-} from "./TimelineTextSelectableContext";
 import { CodexTimelineActivityDetails } from "./CodexTimelineActivityDetails";
 import {
   CodexTimelineActivityHeader,
@@ -44,7 +41,6 @@ export function ZenActivityEvent({
   const [expanded, setExpanded] = useState(defaultExpanded);
   const [assetPreviewUri, setAssetPreviewUri] = useState<string | null>(null);
   const [assetPreviewFailed, setAssetPreviewFailed] = useState(false);
-  const textSelectable = useContext(TimelineTextSelectableContext);
   const activityPresentation = buildCodexTimelineActivityPresentation(
     item,
     chrome,
@@ -106,7 +102,6 @@ export function ZenActivityEvent({
           theme={theme}
           assetPreviewUri={assetPreviewUri}
           assetPreviewFailed={assetPreviewFailed}
-          textSelectable={textSelectable}
           formatPatchPath={formatPatchPath}
           truncateBody={truncateBody}
         />

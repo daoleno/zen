@@ -1627,6 +1627,7 @@ func (s *Server) handleWatcherEvent(ev watcher.SessionEvent) {
 			s.broadcastJSON(map[string]any{"type": "agent_session_updated", "agent_session": ev.Agent})
 		}
 		s.maybeNotifyForSessionEvent(ev)
+		s.maybeWakeBrainForSessionEvent(ev)
 	case "agent_metadata_change":
 		if ev.Agent != nil {
 			s.broadcastJSON(map[string]any{"type": "agent_session_updated", "agent_session": ev.Agent})
@@ -1636,6 +1637,7 @@ func (s *Server) handleWatcherEvent(ev watcher.SessionEvent) {
 			s.broadcastJSON(map[string]any{"type": "agent_session_archived", "agent_session": ev.Agent})
 		}
 		s.maybeNotifyForSessionEvent(ev)
+		s.maybeWakeBrainForSessionEvent(ev)
 	}
 }
 
@@ -1674,6 +1676,45 @@ func (s *Server) syncWorkLogs(agents []*classifier.Agent, force bool) {
 
 func isFinalAgentState(state string) bool {
 	return state == "done" || state == "failed"
+}
+
+func isActionableBrainHeartbeatState(state string) bool {
+	return state == string(classifier.StateBlocked) ||
+		state == string(classifier.StateDone) ||
+		state == string(classifier.StateFailed)
+}
+
+func (s *Server) maybeWakeBrainForSessionEvent(ev watcher.SessionEvent) {
+	if s.brain == nil || ev.Agent == nil {
+		return
+	}
+	status := ev.NewState
+	reason := "agent_state_change"
+	if ev.Type == "agent_removed" {
+		reason = "agent_removed"
+		if status == "" {
+			status = string(classifier.StateDone)
+		}
+	} else if !isActionableBrainHeartbeatState(status) {
+		return
+	}
+	woke, err := s.brain.Heartbeat(brain.HeartbeatEvent{
+		Reason:   reason,
+		AgentID:  ev.AgentID,
+		Name:     ev.Agent.Name,
+		Status:   status,
+		Summary:  ev.Agent.Summary,
+		Cwd:      ev.Agent.Cwd,
+		OldState: ev.OldState,
+		NewState: ev.NewState,
+	})
+	if err != nil {
+		log.Printf("brain heartbeat wake failed for %s: %v", ev.AgentID, err)
+		return
+	}
+	if woke {
+		log.Printf("brain heartbeat wake sent for %s (%s)", ev.AgentID, reason)
+	}
 }
 
 func (s *Server) maybeNotifyForSessionEvent(ev watcher.SessionEvent) {
