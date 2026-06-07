@@ -40,6 +40,8 @@ func (a *controlApp) HandleControlRequest(req control.Request) control.Response 
 		return a.handleAgentSend(req)
 	case "agent_capture":
 		return a.handleAgentCapture(req)
+	case "agent_close", "agent_kill":
+		return a.handleAgentClose(req)
 	case "brain_adapters":
 		return a.handleBrainAdapters()
 	case "brain_set_adapter":
@@ -172,6 +174,26 @@ func (a *controlApp) handleAgentCapture(req control.Request) control.Response {
 	}
 	out := controlAgent(agent)
 	return control.Response{OK: true, Text: text, Agent: &out}
+}
+
+func (a *controlApp) handleAgentClose(req control.Request) control.Response {
+	if a == nil || a.watcher == nil {
+		return control.ErrorResponse("watcher_unavailable", "Agent watcher is not running.")
+	}
+	agentID := strings.TrimSpace(req.AgentID)
+	if agentID == "" {
+		return control.ErrorResponse("missing_agent_id", "Agent id is required.")
+	}
+	agent := a.watcher.GetAgent(agentID)
+	if err := a.watcher.KillSession(agentID); err != nil {
+		return control.ErrorResponse("close_failed", err.Error())
+	}
+	if agent == nil {
+		return control.Response{OK: true}
+	}
+	out := controlAgent(agent)
+	out.Status = string(classifier.StateRemoved)
+	return control.Response{OK: true, Agent: &out}
 }
 
 func (a *controlApp) handleBrainAdapters() control.Response {

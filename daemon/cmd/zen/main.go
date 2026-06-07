@@ -202,7 +202,7 @@ func runDaemon(args []string, stderr io.Writer) error {
 
 func runAgentCommand(args []string, stderr io.Writer) error {
 	if len(args) == 0 {
-		return fmt.Errorf("usage: zen agent <list|spawn|send|capture> [flags]")
+		return fmt.Errorf("usage: zen agent <list|spawn|send|capture|close|kill> [flags]")
 	}
 	switch args[0] {
 	case "list":
@@ -213,6 +213,8 @@ func runAgentCommand(args []string, stderr io.Writer) error {
 		return runAgentSend(args[1:], stderr)
 	case "capture":
 		return runAgentCapture(args[1:], stderr)
+	case "close", "kill":
+		return runAgentClose(args[1:], stderr)
 	default:
 		return fmt.Errorf("unknown agent command: %s", args[0])
 	}
@@ -325,6 +327,32 @@ func runAgentCapture(args []string, stderr io.Writer) error {
 	fs.StringVar(&req.AgentID, "id", "", "agent session id")
 	fs.Usage = func() {
 		fmt.Fprintln(stderr, "Usage: zen agent capture -id main:@42 [flags]")
+		fmt.Fprintln(stderr, "")
+		fs.PrintDefaults()
+	}
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if fs.NArg() > 0 {
+		return fmt.Errorf("unexpected arguments: %s", strings.Join(fs.Args(), " "))
+	}
+	resp, err := callControl(cfg, req)
+	if err != nil {
+		return err
+	}
+	return writeControlResponse(os.Stdout, resp, cfg.json)
+}
+
+func runAgentClose(args []string, stderr io.Writer) error {
+	fs := flag.NewFlagSet("zen agent close", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	cfg := cliConfig{json: true}
+	req := control.Request{Type: "agent_close"}
+	fs.StringVar(&cfg.stateDir, "state-dir", "", "state directory for daemon identity and control socket")
+	fs.BoolVar(&cfg.json, "json", true, "print JSON output")
+	fs.StringVar(&req.AgentID, "id", "", "agent session id")
+	fs.Usage = func() {
+		fmt.Fprintln(stderr, "Usage: zen agent close -id main:@42 [flags]")
 		fmt.Fprintln(stderr, "")
 		fs.PrintDefaults()
 	}

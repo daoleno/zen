@@ -208,6 +208,32 @@ func TestControlAppAgentSendAndCapture(t *testing.T) {
 	}
 }
 
+func TestControlAppAgentCloseKillsSession(t *testing.T) {
+	fw := newFakeControlWatcher()
+	fw.agents["brain-agent-worker:@1"] = &classifier.Agent{
+		ID:        "brain-agent-worker:@1",
+		Name:      "Worker",
+		State:     classifier.StateUnknown,
+		Delegated: true,
+	}
+	app := &controlApp{watcher: fw}
+
+	resp := app.HandleControlRequest(control.Request{Type: "agent_close", AgentID: "brain-agent-worker:@1"})
+
+	if !resp.OK || resp.Agent == nil {
+		t.Fatalf("close response = %#v", resp)
+	}
+	if len(fw.killed) != 1 || fw.killed[0] != "brain-agent-worker:@1" {
+		t.Fatalf("killed sessions = %#v", fw.killed)
+	}
+	if fw.HasSession("brain-agent-worker:@1") {
+		t.Fatal("closed session still exists")
+	}
+	if resp.Agent.Status != string(classifier.StateRemoved) {
+		t.Fatalf("closed status = %q", resp.Agent.Status)
+	}
+}
+
 func TestControlAppBrainWorkspaceReturnsStoreWorkspace(t *testing.T) {
 	store, err := brain.NewStore(t.TempDir())
 	if err != nil {

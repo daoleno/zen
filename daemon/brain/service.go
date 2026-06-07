@@ -162,7 +162,7 @@ func formatHeartbeatWake(event HeartbeatEvent) string {
 	appendHeartbeatField("summary", event.Summary)
 	lines = append(lines,
 		"",
-		"Inspect the changed session if useful. Continue low-risk next steps autonomously; if blocked, consolidate options and a recommendation for the user.",
+		"Inspect the changed session if useful. Continue low-risk next steps autonomously; close completed delegated sessions after incorporating their result; if blocked, consolidate options and a recommendation for the user.",
 	)
 	return strings.Join(lines, "\n")
 }
@@ -411,6 +411,8 @@ Agent orchestration rules:
   - %s agent spawn -name "<name>" -executor <executor> -cwd <workspace> -prompt "<task>" creates a visible delegated agent.
   - %s agent capture -id <agent_id> --json inspects a delegated agent.
   - %s agent send -id <agent_id> -text "<message>" --submit=true continues a delegated agent.
+  - %s agent close -id <agent_id> closes a completed delegated agent after its result is recorded or reported.
+- Delegated agent lifecycle: keep ownership from spawn through inspection, follow-up, result consolidation, and close. Do not leave completed delegated sessions open after their output is no longer needed.
 - Keep orchestration principles in Markdown, prompts, and agent instructions. Product code should provide tools, context, persistence, visibility, and safety boundaries rather than rigid workflow gates.
 - Treat Heartbeat wake messages as compact actionable deltas; inspect only what is needed, then act, summarize, or sleep.
 - Continue low-risk next steps autonomously. Ask only when critical context is missing, an action is high-risk or irreversible, credentials/permissions are needed, or the decision depends on the user's values; when blocked, consolidate options and a recommendation.
@@ -423,7 +425,7 @@ Current profile notes:
 
 Current memory:
 %s
-`, snapshot.Workspace, adapter.ID, adapter.Provider, adapter.Runtime, adapterCapabilitiesSummary(adapter.Capabilities), zenCLICommand(), zenCLICommand(), zenCLICommand(), zenCLICommand(), strings.TrimSpace(snapshot.Personality), strings.TrimSpace(snapshot.Profile), strings.TrimSpace(snapshot.Memory)))
+`, snapshot.Workspace, adapter.ID, adapter.Provider, adapter.Runtime, adapterCapabilitiesSummary(adapter.Capabilities), zenCLICommand(), zenCLICommand(), zenCLICommand(), zenCLICommand(), zenCLICommand(), strings.TrimSpace(snapshot.Personality), strings.TrimSpace(snapshot.Profile), strings.TrimSpace(snapshot.Memory)))
 }
 
 func zenCLICommand() string {

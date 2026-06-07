@@ -38,16 +38,17 @@ var upgrader = websocket.Upgrader{
 
 // Server handles WebSocket connections from the zen mobile app.
 type Server struct {
-	auth     *auth.Manager
-	watcher  *watcher.Watcher
-	terminal *terminal.Manager
-	pusher   *push.Client
-	stats    *stats.Collector
-	work     *work.Store
-	launcher *work.Launcher
-	workLog  *work.SessionLogger
-	execs    *work.ExecutorConfig
-	brain    *brain.Service
+	auth      *auth.Manager
+	watcher   *watcher.Watcher
+	terminal  *terminal.Manager
+	pusher    *push.Client
+	stats     *stats.Collector
+	work      *work.Store
+	launcher  *work.Launcher
+	workLog   *work.SessionLogger
+	execs     *work.ExecutorConfig
+	brain     *brain.Service
+	lifecycle *delegatedLifecycleManager
 
 	workSubID int
 	workSub   <-chan work.Event
@@ -81,6 +82,20 @@ func New(authManager *auth.Manager, w *watcher.Watcher, pusher *push.Client, sc 
 		writes:    make(map[*websocket.Conn]*sync.Mutex),
 		codexSubs: make(map[*websocket.Conn]map[string]codexConversationSubscription),
 	}
+	srv.lifecycle = newDelegatedLifecycleManager(
+		func(event brain.HeartbeatEvent) (bool, error) {
+			if brainService == nil {
+				return false, nil
+			}
+			return brainService.Heartbeat(event)
+		},
+		func(agentID string) error {
+			if w == nil {
+				return nil
+			}
+			return w.KillSession(agentID)
+		},
+	)
 	if workStore != nil {
 		srv.workSubID, srv.workSub = workStore.Subscribe()
 		srv.workLog = work.NewSessionLogger(workStore, work.NewAgentCLIDigestProvider(execs))
@@ -1598,6 +1613,7 @@ func (s *Server) heartbeat(ctx context.Context) {
 		case <-ticker.C:
 			agentSessions := s.currentVisibleAgentSessions()
 			s.syncWorkLogs(agentSessions, false)
+			s.observeDelegatedLifecycleAgents(agentSessions)
 			data, _ := json.Marshal(map[string]any{"type": "agent_session_list", "agent_sessions": agentSessions})
 			s.broadcast(data)
 		}
@@ -1612,6 +1628,7 @@ func (s *Server) handleWatcherEvent(ev watcher.SessionEvent) {
 		s.enrichCodexAgentSessionTitle(ev.Agent, time.Now())
 	}
 	s.recordWorkForSessionEvent(ev)
+	brainWoke := false
 
 	switch ev.Type {
 	case "agent_discovered":
@@ -1627,7 +1644,7 @@ func (s *Server) handleWatcherEvent(ev watcher.SessionEvent) {
 			s.broadcastJSON(map[string]any{"type": "agent_session_updated", "agent_session": ev.Agent})
 		}
 		s.maybeNotifyForSessionEvent(ev)
-		s.maybeWakeBrainForSessionEvent(ev)
+		brainWoke = s.maybeWakeBrainForSessionEvent(ev)
 	case "agent_metadata_change":
 		if ev.Agent != nil {
 			s.broadcastJSON(map[string]any{"type": "agent_session_updated", "agent_session": ev.Agent})
@@ -1637,8 +1654,9 @@ func (s *Server) handleWatcherEvent(ev watcher.SessionEvent) {
 			s.broadcastJSON(map[string]any{"type": "agent_session_archived", "agent_session": ev.Agent})
 		}
 		s.maybeNotifyForSessionEvent(ev)
-		s.maybeWakeBrainForSessionEvent(ev)
+		brainWoke = s.maybeWakeBrainForSessionEvent(ev)
 	}
+	s.observeDelegatedLifecycleEvent(ev, brainWoke)
 }
 
 func (s *Server) recordWorkForSessionEvent(ev watcher.SessionEvent) {
@@ -1674,6 +1692,29 @@ func (s *Server) syncWorkLogs(agents []*classifier.Agent, force bool) {
 	}
 }
 
+func (s *Server) observeDelegatedLifecycleEvent(ev watcher.SessionEvent, alreadyWokeBrain bool) {
+	if s.lifecycle == nil {
+		return
+	}
+	if ev.Type == "agent_removed" {
+		s.lifecycle.Forget(ev.AgentID)
+		return
+	}
+	if ev.Agent == nil {
+		return
+	}
+	s.lifecycle.Observe(ev.Agent, alreadyWokeBrain)
+}
+
+func (s *Server) observeDelegatedLifecycleAgents(agents []*classifier.Agent) {
+	if s.lifecycle == nil {
+		return
+	}
+	for _, agent := range agents {
+		s.lifecycle.Observe(agent, false)
+	}
+}
+
 func isFinalAgentState(state string) bool {
 	return state == "done" || state == "failed"
 }
@@ -1684,9 +1725,9 @@ func isActionableBrainHeartbeatState(state string) bool {
 		state == string(classifier.StateFailed)
 }
 
-func (s *Server) maybeWakeBrainForSessionEvent(ev watcher.SessionEvent) {
+func (s *Server) maybeWakeBrainForSessionEvent(ev watcher.SessionEvent) bool {
 	if s.brain == nil || ev.Agent == nil {
-		return
+		return false
 	}
 	status := ev.NewState
 	reason := "agent_state_change"
@@ -1696,7 +1737,7 @@ func (s *Server) maybeWakeBrainForSessionEvent(ev watcher.SessionEvent) {
 			status = string(classifier.StateDone)
 		}
 	} else if !isActionableBrainHeartbeatState(status) {
-		return
+		return false
 	}
 	woke, err := s.brain.Heartbeat(brain.HeartbeatEvent{
 		Reason:   reason,
@@ -1710,11 +1751,12 @@ func (s *Server) maybeWakeBrainForSessionEvent(ev watcher.SessionEvent) {
 	})
 	if err != nil {
 		log.Printf("brain heartbeat wake failed for %s: %v", ev.AgentID, err)
-		return
+		return false
 	}
 	if woke {
 		log.Printf("brain heartbeat wake sent for %s (%s)", ev.AgentID, reason)
 	}
+	return woke
 }
 
 func (s *Server) maybeNotifyForSessionEvent(ev watcher.SessionEvent) {
