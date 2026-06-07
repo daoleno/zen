@@ -34,10 +34,11 @@ func (f *fakeRegistry) IdleSessions(role, cwd string) []SessionInfo {
 }
 
 type fakeRunner struct {
-	spawnCalls int
-	sendCalls  []string
-	spawnErr   error
-	newID      string
+	spawnCalls     int
+	sendCalls      []string
+	sendReadyCalls []string
+	spawnErr       error
+	newID          string
 }
 
 func (f *fakeRunner) Spawn(role, cwd, command string) (string, error) {
@@ -50,6 +51,11 @@ func (f *fakeRunner) Spawn(role, cwd, command string) (string, error) {
 
 func (f *fakeRunner) Send(sessionID, text string) error {
 	f.sendCalls = append(f.sendCalls, sessionID+"|"+text)
+	return nil
+}
+
+func (f *fakeRunner) SendWhenReady(sessionID, command, text string) error {
+	f.sendReadyCalls = append(f.sendReadyCalls, sessionID+"|"+command+"|"+text)
 	return nil
 }
 
@@ -111,6 +117,12 @@ func TestLauncher_StartSpawnsWhenNoIdle(t *testing.T) {
 	}
 	if run.spawnCalls != 1 {
 		t.Fatalf("spawnCalls = %d, want 1", run.spawnCalls)
+	}
+	if len(run.sendReadyCalls) != 1 {
+		t.Fatalf("sendReadyCalls = %#v, want one ready send", run.sendReadyCalls)
+	}
+	if len(run.sendCalls) != 0 {
+		t.Fatalf("sendCalls = %#v, want ready send for spawned session", run.sendCalls)
 	}
 	if updated.Frontmatter.AgentSession != "claude-new" {
 		t.Fatalf("agent_session = %q", updated.Frontmatter.AgentSession)

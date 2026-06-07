@@ -26,6 +26,10 @@ type SessionRunner interface {
 	Send(sessionID, text string) error
 }
 
+type readySessionRunner interface {
+	SendWhenReady(sessionID, command, text string) error
+}
+
 var (
 	ErrAlreadyStarted        = errors.New("work item already started")
 	ErrExecutorNotConfigured = errors.New("executor not configured")
@@ -91,6 +95,7 @@ func (l *Launcher) startInternal(item *Item, proj Project) (*Item, error) {
 	}
 
 	sessionID := strings.TrimSpace(targetSession)
+	spawnedCommand := ""
 	if sessionID == "" {
 		cwd := strings.TrimSpace(proj.Cwd)
 		if cwd == "" {
@@ -105,10 +110,20 @@ func (l *Launcher) startInternal(item *Item, proj Project) (*Item, error) {
 				return nil, fmt.Errorf("%w: %v", ErrSpawnFailed, err)
 			}
 			sessionID = newID
+			spawnedCommand = executor.Command
 		}
 	}
 
-	if err := l.run.Send(sessionID, buildInitialPrompt(item.Path)); err != nil {
+	prompt := buildInitialPrompt(item.Path)
+	if spawnedCommand != "" {
+		if runner, ok := l.run.(readySessionRunner); ok {
+			if err := runner.SendWhenReady(sessionID, spawnedCommand, prompt); err != nil {
+				return nil, fmt.Errorf("%w: send prompt: %v", ErrSpawnFailed, err)
+			}
+		} else if err := l.run.Send(sessionID, prompt); err != nil {
+			return nil, fmt.Errorf("%w: send prompt: %v", ErrSpawnFailed, err)
+		}
+	} else if err := l.run.Send(sessionID, prompt); err != nil {
 		return nil, fmt.Errorf("%w: send prompt: %v", ErrSpawnFailed, err)
 	}
 

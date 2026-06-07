@@ -269,6 +269,24 @@ func TestSplitStringByMaxBytesKeepsUTF8RunesIntact(t *testing.T) {
 	}
 }
 
+func TestCodexInputReadyRequiresPrompt(t *testing.T) {
+	starting := "╭────╮\n│ >_ OpenAI Codex │\n│ model: loading │\n╰────╯\n"
+	if isAgentInputReady("codex", starting) {
+		t.Fatal("Codex loading screen should not be input-ready")
+	}
+
+	ready := starting + "\n› Find and fix a bug in @filename\n"
+	if !isAgentInputReady("codex", ready) {
+		t.Fatal("Codex prompt should be input-ready")
+	}
+}
+
+func TestUnknownCommandDoesNotWaitForInputReady(t *testing.T) {
+	if !isAgentInputReady("zsh", "") {
+		t.Fatal("unknown commands should be treated as immediately ready")
+	}
+}
+
 func readFileWithMinSize(t *testing.T, path string, minSize int, timeout time.Duration) string {
 	t.Helper()
 	deadline := time.Now().Add(timeout)

@@ -78,6 +78,10 @@ func (w *fakeControlWatcher) SendInput(sessionID, text string) error {
 	return nil
 }
 
+func (w *fakeControlWatcher) SendInputWhenReady(sessionID, _ string, text string) error {
+	return w.SendInput(sessionID, text)
+}
+
 func (w *fakeControlWatcher) KillSession(sessionID string) error {
 	w.killed = append(w.killed, sessionID)
 	delete(w.agents, sessionID)

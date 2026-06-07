@@ -107,9 +107,11 @@ func (TmuxRunner) Spawn(role, cwd, command string) (string, error) {
 
 // Send writes text followed by Enter into the session's active pane.
 func (TmuxRunner) Send(agentID, text string) error {
-	cmd := exec.Command("tmux", "send-keys", "-t", agentID, text, "C-m")
-	if out, err := cmd.CombinedOutput(); err != nil {
-		return fmt.Errorf("tmux send-keys: %w: %s", err, strings.TrimSpace(string(out)))
-	}
-	return nil
+	return watcher.SendInput(agentID, strings.TrimRight(text, "\r\n")+"\n")
+}
+
+// SendWhenReady waits for a freshly spawned known agent UI before sending the
+// initial prompt.
+func (TmuxRunner) SendWhenReady(agentID, command, text string) error {
+	return watcher.SendInputWhenReady(agentID, command, strings.TrimRight(text, "\r\n")+"\n")
 }

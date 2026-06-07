@@ -7,6 +7,7 @@ import (
 	"os/exec"
 	"os/user"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -17,6 +18,10 @@ import (
 )
 
 const tmuxSendInputChunkBytes = 1024
+
+const initialInputReadyTimeout = 8 * time.Second
+
+var codexInputPromptRe = regexp.MustCompile(`(?m)^›\s`)
 
 // SessionEvent represents a state change or output update for an agent.
 type SessionEvent struct {
@@ -410,6 +415,19 @@ func allowedTmuxKey(key string) bool {
 
 // SendInput sends text to a tmux window and treats trailing newlines as submit.
 func (w *Watcher) SendInput(sessionID, text string) error {
+	return SendInput(sessionID, text)
+}
+
+// SendInputWhenReady waits for a newly started agent UI to be ready, then sends
+// text. If readiness cannot be confirmed before the timeout, it still sends the
+// text so manual terminals and unknown adapters do not deadlock.
+func (w *Watcher) SendInputWhenReady(sessionID, command, text string) error {
+	WaitForInputReady(sessionID, command, initialInputReadyTimeout)
+	return SendInput(sessionID, text)
+}
+
+// SendInput sends text to a tmux window and treats trailing newlines as submit.
+func SendInput(sessionID, text string) error {
 	body, submit := splitTmuxInput(text)
 	if body != "" {
 		if err := sendLiteralTmuxInput(sessionID, body); err != nil {
@@ -423,6 +441,58 @@ func (w *Watcher) SendInput(sessionID, text string) error {
 		return exec.Command("tmux", "send-keys", "-t", sessionID, "Enter").Run()
 	}
 	return nil
+}
+
+// SendInputWhenReady is the package-level form used by adapter shims that do
+// not hold a Watcher instance.
+func SendInputWhenReady(sessionID, command, text string) error {
+	WaitForInputReady(sessionID, command, initialInputReadyTimeout)
+	return SendInput(sessionID, text)
+}
+
+// WaitForInputReady reports whether a known agent UI reached an input prompt.
+// Unknown commands return immediately.
+func WaitForInputReady(sessionID, command string, timeout time.Duration) bool {
+	if !needsInputReadinessWait(command, "") {
+		return true
+	}
+	deadline := time.Now().Add(timeout)
+	for {
+		content, alive := capturePaneContent(sessionID)
+		if !alive {
+			return false
+		}
+		if isAgentInputReady(command, content) {
+			return true
+		}
+		if time.Now().After(deadline) {
+			return false
+		}
+		time.Sleep(150 * time.Millisecond)
+	}
+}
+
+func isAgentInputReady(command, content string) bool {
+	if !needsInputReadinessWait(command, content) {
+		return true
+	}
+	if isCodexCommand(command) || strings.Contains(strings.ToLower(content), "openai codex") {
+		return strings.Contains(content, "OpenAI Codex") && codexInputPromptRe.MatchString(content)
+	}
+	return strings.TrimSpace(content) != ""
+}
+
+func needsInputReadinessWait(command, content string) bool {
+	return isCodexCommand(command) || strings.Contains(strings.ToLower(content), "openai codex")
+}
+
+func isCodexCommand(command string) bool {
+	fields := strings.Fields(strings.TrimSpace(command))
+	if len(fields) == 0 {
+		return false
+	}
+	base := filepath.Base(fields[0])
+	return base == "codex"
 }
 
 func sendLiteralTmuxInput(sessionID, body string) error {

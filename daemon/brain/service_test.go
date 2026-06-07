@@ -87,6 +87,10 @@ func (w *fakeWatcher) SendInput(sessionID, text string) error {
 	return nil
 }
 
+func (w *fakeWatcher) SendInputWhenReady(sessionID, _ string, text string) error {
+	return w.SendInput(sessionID, text)
+}
+
 func (w *fakeWatcher) KillSession(sessionID string) error {
 	w.killed = append(w.killed, sessionID)
 	if w.sessions != nil {
@@ -265,6 +269,10 @@ func TestServiceBootstrapPromptDefaultsToAutonomousScheduling(t *testing.T) {
 	for _, want := range []string{
 		"Brain is the user's scheduler",
 		"proactively create or reuse a visible delegated agent session",
+		"Zen CLI quick reference",
+		"agent spawn -name",
+		"agent capture -id",
+		"agent send -id",
 		"Keep orchestration principles in Markdown, prompts, and agent instructions",
 		"Treat Heartbeat wake messages as compact actionable deltas",
 		"consolidate options and a recommendation",
@@ -661,6 +669,11 @@ func TestStoreUsesStateAndWorkspaceDirectories(t *testing.T) {
 	}
 	if !strings.Contains(string(instructions), "Treat Heartbeat wake messages as compact actionable deltas") {
 		t.Fatalf("workspace instructions do not describe heartbeat handling:\n%s", instructions)
+	}
+	for _, want := range []string{"zen agent list --json", "zen agent spawn -name", "zen agent capture -id", "zen agent send -id"} {
+		if !strings.Contains(string(instructions), want) {
+			t.Fatalf("workspace instructions missing %q:\n%s", want, instructions)
+		}
 	}
 	if strings.Contains(string(instructions), "only when the user asks Brain to delegate real work") {
 		t.Fatalf("workspace instructions still require explicit delegation:\n%s", instructions)

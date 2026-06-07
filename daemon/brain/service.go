@@ -29,6 +29,7 @@ type Watcher interface {
 	HasSession(target string) bool
 	CreateSession(preferredTarget string, opts watcher.CreateSessionOptions) (string, error)
 	SendInput(sessionID, text string) error
+	SendInputWhenReady(sessionID, command, text string) error
 	KillSession(sessionID string) error
 }
 
@@ -225,7 +226,7 @@ func (s *Service) ensureHostAgent(adapter work.AgentAdapter) (AgentRef, error) {
 		return AgentRef{}, err
 	}
 	if prompt := s.hostBootstrapPrompt(adapter); prompt != "" {
-		_ = s.watcher.SendInput(agentID, prompt+"\n")
+		_ = s.watcher.SendInputWhenReady(agentID, command, prompt+"\n")
 	}
 	if agent := s.watcher.GetAgent(agentID); agent != nil {
 		return agentRefFromClassifier(agent), nil
@@ -405,6 +406,11 @@ Agent orchestration rules:
 - Treat the adapter as replaceable; do not make Brain's plans depend on Codex-only or Claude-only behavior unless the user asks for that adapter specifically.
 - Brain is the user's scheduler: reduce decision load. For concrete work that needs repository/tool execution, independent progress, parallelism, or follow-up, proactively create or reuse a visible delegated agent session; stay in Brain for chat, memory, synthesis, reminders, and decisions that fit the current context.
 - Use the zen binary to spawn, send to, and inspect delegated agents. When delegating, write a short note with workspace, objective, context, acceptance criteria, safety constraints, and expected report.
+- Zen CLI quick reference:
+  - %s agent list --json lists visible delegated agents.
+  - %s agent spawn -name "<name>" -executor <executor> -cwd <workspace> -prompt "<task>" creates a visible delegated agent.
+  - %s agent capture -id <agent_id> --json inspects a delegated agent.
+  - %s agent send -id <agent_id> -text "<message>" --submit=true continues a delegated agent.
 - Keep orchestration principles in Markdown, prompts, and agent instructions. Product code should provide tools, context, persistence, visibility, and safety boundaries rather than rigid workflow gates.
 - Treat Heartbeat wake messages as compact actionable deltas; inspect only what is needed, then act, summarize, or sleep.
 - Continue low-risk next steps autonomously. Ask only when critical context is missing, an action is high-risk or irreversible, credentials/permissions are needed, or the decision depends on the user's values; when blocked, consolidate options and a recommendation.
@@ -417,7 +423,18 @@ Current profile notes:
 
 Current memory:
 %s
-`, snapshot.Workspace, adapter.ID, adapter.Provider, adapter.Runtime, adapterCapabilitiesSummary(adapter.Capabilities), strings.TrimSpace(snapshot.Personality), strings.TrimSpace(snapshot.Profile), strings.TrimSpace(snapshot.Memory)))
+`, snapshot.Workspace, adapter.ID, adapter.Provider, adapter.Runtime, adapterCapabilitiesSummary(adapter.Capabilities), zenCLICommand(), zenCLICommand(), zenCLICommand(), zenCLICommand(), strings.TrimSpace(snapshot.Personality), strings.TrimSpace(snapshot.Profile), strings.TrimSpace(snapshot.Memory)))
+}
+
+func zenCLICommand() string {
+	exe, err := os.Executable()
+	if err != nil || strings.TrimSpace(exe) == "" {
+		return "zen"
+	}
+	if strings.ContainsAny(exe, " \t'") {
+		return shellQuote(exe)
+	}
+	return exe
 }
 
 func adapterCapabilitiesSummary(caps work.AgentCapabilities) string {

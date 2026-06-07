@@ -19,6 +19,7 @@ type controlWatcher interface {
 	HasSession(target string) bool
 	CreateSession(preferredTarget string, opts watcher.CreateSessionOptions) (string, error)
 	SendInput(sessionID, text string) error
+	SendInputWhenReady(sessionID, command, text string) error
 	KillSession(sessionID string) error
 	CapturePaneContent(sessionID string) (string, error)
 }
@@ -101,7 +102,7 @@ func (a *controlApp) handleAgentSpawn(req control.Request) control.Response {
 	}
 
 	if prompt != "" {
-		if err := a.watcher.SendInput(agentID, ensureTrailingNewline(prompt)); err != nil {
+		if err := a.watcher.SendInputWhenReady(agentID, command, ensureTrailingNewline(prompt)); err != nil {
 			return control.ErrorResponse("send_prompt_failed", err.Error())
 		}
 	}
