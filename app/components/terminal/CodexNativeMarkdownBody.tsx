@@ -31,7 +31,7 @@ interface CodexNativeMarkdownBodyProps {
   renderFallback(value: string): React.ReactNode;
 }
 
-const MARKDOWN_SELECTION_FREEZE_DELAY_MS = 280;
+const MARKDOWN_SELECTION_FREEZE_DELAY_MS = 520;
 
 export function CodexNativeMarkdownBody({
   value,
@@ -43,6 +43,7 @@ export function CodexNativeMarkdownBody({
 }: CodexNativeMarkdownBodyProps) {
   const {
     selectable: textSelectable,
+    onTextSelectionPressIn,
     onTextSelectionGestureStart,
     onTextSelectionGestureEnd,
   } = useContext(TimelineTextSelectableContext);
@@ -69,11 +70,12 @@ export function CodexNativeMarkdownBody({
     selectionStartTimerRef.current = null;
   }, []);
   const handleTouchStart = useCallback(() => {
-    if (!textSelectable || !onTextSelectionGestureStart) {
+    if (!onTextSelectionGestureStart) {
       return;
     }
     clearSelectionStartTimer();
     selectionFreezeActiveRef.current = false;
+    onTextSelectionPressIn?.();
     selectionStartTimerRef.current = setTimeout(() => {
       selectionStartTimerRef.current = null;
       selectionFreezeActiveRef.current = true;
@@ -81,8 +83,8 @@ export function CodexNativeMarkdownBody({
     }, MARKDOWN_SELECTION_FREEZE_DELAY_MS);
   }, [
     clearSelectionStartTimer,
+    onTextSelectionPressIn,
     onTextSelectionGestureStart,
-    textSelectable,
   ]);
   const handleTouchEnd = useCallback(() => {
     const freezeStarted = selectionFreezeActiveRef.current;

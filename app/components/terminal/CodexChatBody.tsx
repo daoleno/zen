@@ -40,6 +40,7 @@ export interface CodexChatBodyProps {
   localChatState: CodexChatLocalState;
   error?: string | null;
   scrollRef: React.RefObject<FlatList<ZenTimelineItem> | null>;
+  timelineTextSelectable: boolean;
   showJumpToLatest: boolean;
   jumpLabel?: string;
   emptyTitle?: string;
@@ -51,6 +52,7 @@ export interface CodexChatBodyProps {
   onTimelineMomentumScrollBegin(): void;
   onTimelineMomentumScrollEnd(event: NativeSyntheticEvent<NativeScrollEvent>): void;
   onTimelineContentSizeChange(width: number, height: number): void;
+  onTimelineTextSelectionPressIn(): void;
   onTimelineTextSelectionGestureStart(): void;
   onTimelineTextSelectionGestureEnd(): void;
   onScrollToLatest(animated?: boolean, delay?: number): void;
@@ -95,6 +97,7 @@ export function CodexChatBody({
   localChatState,
   error,
   scrollRef,
+  timelineTextSelectable,
   showJumpToLatest,
   jumpLabel,
   emptyTitle,
@@ -106,6 +109,7 @@ export function CodexChatBody({
   onTimelineMomentumScrollBegin,
   onTimelineMomentumScrollEnd,
   onTimelineContentSizeChange,
+  onTimelineTextSelectionPressIn,
   onTimelineTextSelectionGestureStart,
   onTimelineTextSelectionGestureEnd,
   onScrollToLatest,
@@ -159,6 +163,7 @@ export function CodexChatBody({
         error={error}
         commandMenuOpen={composerPresentation.showCommandMenu}
         scrollRef={scrollRef}
+        textSelectable={timelineTextSelectable}
         showJumpToLatest={showJumpToLatest}
         jumpLabel={jumpLabel}
         chrome={chrome}
@@ -170,6 +175,7 @@ export function CodexChatBody({
         onMomentumScrollBegin={onTimelineMomentumScrollBegin}
         onMomentumScrollEnd={onTimelineMomentumScrollEnd}
         onContentSizeChange={onTimelineContentSizeChange}
+        onTextSelectionPressIn={onTimelineTextSelectionPressIn}
         onTextSelectionGestureStart={onTimelineTextSelectionGestureStart}
         onTextSelectionGestureEnd={onTimelineTextSelectionGestureEnd}
         onScrollToLatest={onScrollToLatest}
