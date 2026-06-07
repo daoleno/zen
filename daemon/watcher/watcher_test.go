@@ -311,7 +311,12 @@ func TestCodexInputReadyRequiresPrompt(t *testing.T) {
 		t.Fatal("Codex loading screen should not be input-ready")
 	}
 
-	ready := starting + "\n› Find and fix a bug in @filename\n"
+	loadingWithPrompt := starting + "\n› Find and fix a bug in @filename\n"
+	if isAgentInputReady("codex", loadingWithPrompt) {
+		t.Fatal("Codex prompt should not be input-ready while model is loading")
+	}
+
+	ready := "╭────╮\n│ >_ OpenAI Codex │\n│ model: gpt-5.5 xhigh │\n╰────╯\n\n› Find and fix a bug in @filename\n"
 	if !isAgentInputReady("codex", ready) {
 		t.Fatal("Codex prompt should be input-ready")
 	}

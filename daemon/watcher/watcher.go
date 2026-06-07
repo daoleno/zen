@@ -22,6 +22,7 @@ const tmuxSendInputChunkBytes = 1024
 const initialInputReadyTimeout = 8 * time.Second
 
 var codexInputPromptRe = regexp.MustCompile(`(?m)^›\s`)
+var codexModelLoadingRe = regexp.MustCompile(`(?im)\bmodel:\s+loading\b`)
 
 // SessionEvent represents a state change or output update for an agent.
 type SessionEvent struct {
@@ -490,7 +491,9 @@ func isAgentInputReady(command, content string) bool {
 		return true
 	}
 	if isCodexCommand(command) || strings.Contains(strings.ToLower(content), "openai codex") {
-		return strings.Contains(content, "OpenAI Codex") && codexInputPromptRe.MatchString(content)
+		return strings.Contains(content, "OpenAI Codex") &&
+			!codexModelLoadingRe.MatchString(content) &&
+			codexInputPromptRe.MatchString(content)
 	}
 	return strings.TrimSpace(content) != ""
 }
