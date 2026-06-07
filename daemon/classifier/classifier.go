@@ -72,6 +72,12 @@ var failedPatterns = []*regexp.Regexp{
 	regexp.MustCompile(`(?i)segmentation fault`),
 }
 
+var nonFatalDiagnosticStartPatterns = []*regexp.Regexp{
+	regexp.MustCompile(`(?i)\bwork transcript lookup failed for (codex|claude)\b`),
+}
+
+var timestampedLogLineRe = regexp.MustCompile(`^\d{4}/\d{2}/\d{2} \d{2}:\d{2}:\d{2}\b`)
+
 // Classify determines the state of an agent based on its tmux pane output and liveness.
 //
 //	tmux pane alive? ──no──→ check last lines ──failed patterns?──→ FAILED
@@ -108,12 +114,8 @@ func Classify(paneAlive bool, lines []string, staleCount int) (AgentState, strin
 
 	if !paneAlive {
 		// Pane is dead. Check if it failed or completed normally.
-		for _, p := range failedPatterns {
-			for _, line := range tail {
-				if p.MatchString(strings.TrimSpace(line)) {
-					return StateFailed, truncate(line, 100)
-				}
-			}
+		if line := matchingFailedLine(tail); line != "" {
+			return StateFailed, truncate(line, 100)
 		}
 		return StateDone, summarize(tail)
 	}
@@ -126,12 +128,8 @@ func Classify(paneAlive bool, lines []string, staleCount int) (AgentState, strin
 	}
 
 	// Check for failed patterns in recent output.
-	for _, p := range failedPatterns {
-		for _, line := range tail {
-			if p.MatchString(strings.TrimSpace(line)) {
-				return StateFailed, truncate(line, 100)
-			}
-		}
+	if line := matchingFailedLine(tail); line != "" {
+		return StateFailed, truncate(line, 100)
 	}
 
 	// If output is actively changing, the agent is running.
@@ -149,6 +147,41 @@ func Classify(paneAlive bool, lines []string, staleCount int) (AgentState, strin
 	}
 
 	return StateUnknown, "No new output for " + time.Duration(time.Duration(staleCount)*500*time.Millisecond).String()
+}
+
+func matchingFailedLine(lines []string) string {
+	inNonFatalBlock := false
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" {
+			continue
+		}
+		if timestampedLogLineRe.MatchString(trimmed) {
+			inNonFatalBlock = false
+		}
+		if startsNonFatalDiagnosticBlock(trimmed) {
+			inNonFatalBlock = true
+			continue
+		}
+		if inNonFatalBlock {
+			continue
+		}
+		for _, p := range failedPatterns {
+			if p.MatchString(trimmed) {
+				return trimmed
+			}
+		}
+	}
+	return ""
+}
+
+func startsNonFatalDiagnosticBlock(line string) bool {
+	for _, p := range nonFatalDiagnosticStartPatterns {
+		if p.MatchString(line) {
+			return true
+		}
+	}
+	return false
 }
 
 func lastNonEmpty(lines []string, n int) []string {

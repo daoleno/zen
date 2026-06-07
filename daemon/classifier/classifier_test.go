@@ -63,9 +63,9 @@ func TestClassify(t *testing.T) {
 			wantState: StateBlocked,
 		},
 		{
-			name:      "blocked after stale period",
-			paneAlive: true,
-			lines:     []string{"Shall I apply these changes?"},
+			name:       "blocked after stale period",
+			paneAlive:  true,
+			lines:      []string{"Shall I apply these changes?"},
 			staleCount: 50,
 			wantState:  StateBlocked,
 		},
@@ -139,6 +139,27 @@ func TestClassify(t *testing.T) {
 			lines:      []string{"some random output that doesn't match anything"},
 			staleCount: 50,
 			wantState:  StateUnknown,
+		},
+		{
+			name:      "daemon transcript lookup warning is nonfatal",
+			paneAlive: true,
+			lines: []string{
+				"2026/06/07 15:33:54 work transcript lookup failed for codex (/home/daoleno/workspace/onlora):",
+				"query codex threads: exit status 5: Error: in prepare, database is locked (5)",
+			},
+			staleCount: 50,
+			wantState:  StateUnknown,
+		},
+		{
+			name:      "daemon transcript lookup warning block ends at next timestamped log",
+			paneAlive: true,
+			lines: []string{
+				"2026/06/07 15:33:54 work transcript lookup failed for codex (/home/daoleno/workspace/onlora):",
+				"query codex threads: exit status 5: Error: in prepare, database is locked (5)",
+				"2026/06/07 15:33:55 [stats] refresh complete",
+				"error: daemon crashed",
+			},
+			wantState: StateFailed,
 		},
 		{
 			name:      "alive but empty output",
