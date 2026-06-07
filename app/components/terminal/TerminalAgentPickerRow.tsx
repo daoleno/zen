@@ -45,12 +45,21 @@ export function TerminalAgentPickerRow({
     >
       <AgentKindIcon kind={presented.kind} size={15} />
       <View style={styles.agentRowBody}>
-        <Text
-          style={[styles.agentRowTitle, { color: chrome.text }]}
-          numberOfLines={1}
-        >
-          {presented.title}
-        </Text>
+        <View style={styles.agentRowTitleLine}>
+          <Text
+            style={[styles.agentRowTitle, { color: chrome.text }]}
+            numberOfLines={1}
+          >
+            {presented.title}
+          </Text>
+          {agent.delegated ? (
+            <View style={[styles.brainBadge, { borderColor: chrome.border }]}>
+              <Text style={[styles.brainBadgeText, { color: chrome.textMuted }]}>
+                Brain
+              </Text>
+            </View>
+          ) : null}
+        </View>
         <Text
           style={[styles.agentRowMeta, { color: chrome.textMuted }]}
           numberOfLines={1}
@@ -84,15 +93,36 @@ const styles = StyleSheet.create({
     minWidth: 0,
     gap: 2,
   },
+  agentRowTitleLine: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+    minWidth: 0,
+  },
   agentRowStatusDot: {
     width: 7,
     height: 7,
     borderRadius: 4,
   },
   agentRowTitle: {
-    flex: 1,
+    flexShrink: 1,
+    minWidth: 0,
     fontSize: 14,
     fontFamily: Typography.uiFontMedium,
+  },
+  brainBadge: {
+    height: 16,
+    paddingHorizontal: 5,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderRadius: 4,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  brainBadgeText: {
+    fontSize: 9,
+    lineHeight: 11,
+    fontFamily: Typography.uiFontMedium,
+    includeFontPadding: false,
   },
   agentRowMeta: {
     fontSize: 11,

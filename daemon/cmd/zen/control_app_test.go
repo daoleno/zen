@@ -68,6 +68,7 @@ func (w *fakeControlWatcher) CreateSession(_ string, opts watcher.CreateSessionO
 		Cwd:       opts.Cwd,
 		Command:   opts.Command,
 		Hidden:    opts.Hidden,
+		Delegated: !opts.Hidden && !strings.HasPrefix(id, "brain-agent-brain-"),
 		UpdatedAt: time.Date(2026, 5, 27, 9, 0, 0, 0, time.UTC),
 	}
 	return id, nil
@@ -125,6 +126,9 @@ func TestControlAppAgentSpawnCreatesVisibleDetachedSession(t *testing.T) {
 	}
 	if resp.Agent.Hidden {
 		t.Fatal("delegated agent should be visible by default")
+	}
+	if !resp.Agent.Delegated {
+		t.Fatal("brain-spawned visible agent should be marked delegated")
 	}
 	if len(fw.created) != 1 {
 		t.Fatalf("created sessions = %#v", fw.created)

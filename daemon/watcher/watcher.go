@@ -157,6 +157,7 @@ func (w *Watcher) poll() {
 		if w.hidden[win.target] {
 			agent.Hidden = true
 		}
+		agent.Delegated = isDelegatedAgentWindow(win.target, agent.Hidden)
 
 		if contentChanged {
 			agent.StaleCount = 0
@@ -301,6 +302,18 @@ func isBrainHostWindow(target, windowName string) bool {
 		return false
 	}
 	return strings.HasPrefix(sessionName, "brain-agent-brain-") && strings.TrimSpace(windowName) == "Brain"
+}
+
+func isDelegatedAgentWindow(target string, hidden bool) bool {
+	if hidden {
+		return false
+	}
+	sessionName, _, ok := strings.Cut(strings.TrimSpace(target), ":")
+	if !ok {
+		return false
+	}
+	return strings.HasPrefix(sessionName, "brain-agent-") &&
+		!strings.HasPrefix(sessionName, "brain-agent-brain-")
 }
 
 // tmuxWindow represents a single tmux window target.
@@ -750,6 +763,7 @@ func (w *Watcher) registerCreatedSession(target, cwd string, opts CreateSessionO
 		UpdatedAt: createdAt,
 		PaneAlive: true,
 		Hidden:    opts.Hidden,
+		Delegated: isDelegatedAgentWindow(target, opts.Hidden),
 	}
 
 	w.mu.Lock()

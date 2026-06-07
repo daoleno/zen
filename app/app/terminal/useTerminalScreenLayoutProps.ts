@@ -150,6 +150,7 @@ export function useTerminalScreenLayoutProps({
     gitDiffDisabled: gitDiff.actionDisabled,
     gitDiffSummary: gitDiff.summary,
     isCodexAgent,
+    delegated: agent?.delegated,
     onOpenPicker: () => setPickerVisible(true),
     openGitDiff,
     onToggleCodexRenderMode: handleToggleCodexRenderMode,

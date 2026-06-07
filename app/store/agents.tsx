@@ -20,6 +20,7 @@ export interface Agent {
   started_at?: number;
   updated_at: number;
   process_id?: number;
+  delegated?: boolean;
 }
 
 export type ConnectionState = 'offline' | 'connecting' | 'connected';
@@ -44,6 +45,7 @@ type RawAgent = {
   started_at?: string | number | Date;
   updated_at?: string | number | Date;
   process_id?: number;
+  delegated?: boolean;
 };
 
 type Action =
@@ -185,6 +187,7 @@ function normalizeAgent(
     process_id: typeof agent.process_id === 'number' && Number.isFinite(agent.process_id)
       ? agent.process_id
       : undefined,
+    delegated: agent.delegated === true,
   };
 }
 

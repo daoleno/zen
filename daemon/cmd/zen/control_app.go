@@ -118,6 +118,9 @@ func (a *controlApp) handleAgentSpawn(req control.Request) control.Response {
 				Cwd:     cwd,
 				Command: command,
 				Hidden:  req.Hidden,
+				Delegated: !req.Hidden &&
+					strings.HasPrefix(agentID, "brain-agent-") &&
+					!strings.HasPrefix(agentID, "brain-agent-brain-"),
 			},
 		}
 	}
@@ -307,6 +310,7 @@ func controlAgent(agent *classifier.Agent) control.Agent {
 		Command:   agent.Command,
 		UpdatedAt: agent.UpdatedAt,
 		Hidden:    agent.Hidden,
+		Delegated: agent.Delegated,
 	}
 }
 

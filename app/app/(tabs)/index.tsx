@@ -499,9 +499,12 @@ export default function InboxScreen() {
           />
         </View>
         <View style={styles.sessionBody}>
-          <Text style={styles.sessionName} numberOfLines={1}>
-            {sessionTitle}
-          </Text>
+          <View style={styles.sessionTitleRow}>
+            <Text style={styles.sessionName} numberOfLines={1}>
+              {sessionTitle}
+            </Text>
+            {item.delegated ? <BrainSessionBadge colors={colors} styles={styles} /> : null}
+          </View>
         </View>
       </TouchableOpacity>
     );
@@ -537,6 +540,9 @@ export default function InboxScreen() {
             <Text style={styles.gridTitle} numberOfLines={1}>
               {sessionTitle}
             </Text>
+            {item.delegated ? (
+              <BrainSessionBadge colors={colors} styles={styles} compact />
+            ) : null}
           </View>
           <View style={[styles.statusDot, { backgroundColor: statusColor(item.status) }]} />
         </View>
@@ -916,6 +922,30 @@ function ToggleButton({
   );
 }
 
+function BrainSessionBadge({
+  colors,
+  styles,
+  compact = false,
+}: {
+  colors: typeof Colors;
+  styles: ReturnType<typeof createStyles>;
+  compact?: boolean;
+}) {
+  return (
+    <View
+      style={[
+        styles.brainBadge,
+        compact && styles.brainBadgeCompact,
+        { borderColor: colors.borderStrong, backgroundColor: colors.surfaceSubtle },
+      ]}
+    >
+      <Text style={[styles.brainBadgeText, { color: colors.textSecondary }]}>
+        Brain
+      </Text>
+    </View>
+  );
+}
+
 function resolveSessionTitle(
   agent: Agent,
   presented: ReturnType<typeof presentAgent>,
@@ -1084,10 +1114,36 @@ function createStyles(colors: typeof Colors) {
     minWidth: 0,
     justifyContent: 'center',
   },
+  sessionTitleRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    minWidth: 0,
+  },
   sessionName: {
+    flexShrink: 1,
+    minWidth: 0,
     color: colors.textPrimary,
     fontSize: 15,
     lineHeight: 20,
+    fontFamily: Typography.uiFontMedium,
+    includeFontPadding: false,
+  },
+  brainBadge: {
+    height: 17,
+    paddingHorizontal: 5,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderRadius: 4,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  brainBadgeCompact: {
+    height: 16,
+    paddingHorizontal: 4,
+  },
+  brainBadgeText: {
+    fontSize: 9,
+    lineHeight: 11,
     fontFamily: Typography.uiFontMedium,
     includeFontPadding: false,
   },

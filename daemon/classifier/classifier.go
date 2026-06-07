@@ -33,6 +33,7 @@ type Agent struct {
 	StateVersion  int64      `json:"state_version"` // increments on every state change
 	ProcessID     int        `json:"process_id,omitempty"`
 	Hidden        bool       `json:"hidden,omitempty"`
+	Delegated     bool       `json:"delegated,omitempty"`
 	PaneAlive     bool       `json:"-"`
 	LastOutputLen int        `json:"-"`
 	StaleCount    int        `json:"-"` // consecutive polls with no new output

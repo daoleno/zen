@@ -163,6 +163,42 @@ func TestRegisterCreatedSessionMarksHiddenAgent(t *testing.T) {
 	if !agent.Hidden || !w.hidden["main:@43"] {
 		t.Fatalf("expected hidden agent, got agent hidden=%v registry=%v", agent.Hidden, w.hidden["main:@43"])
 	}
+	if agent.Delegated {
+		t.Fatal("hidden Brain host should not be marked delegated")
+	}
+}
+
+func TestRegisterCreatedSessionMarksVisibleBrainSpawnAsDelegated(t *testing.T) {
+	w := New(time.Second)
+	startedAt := time.Date(2026, 5, 23, 10, 0, 0, 0, time.UTC)
+
+	w.registerCreatedSession("brain-agent-verify-123:@44", "/repo/zen", CreateSessionOptions{
+		Command: "codex",
+		Name:    "Verify",
+	}, startedAt)
+
+	agent := w.GetAgent("brain-agent-verify-123:@44")
+	if agent == nil {
+		t.Fatal("expected created session to be registered")
+	}
+	if !agent.Delegated {
+		t.Fatal("visible brain-agent session should be marked delegated")
+	}
+}
+
+func TestDelegatedAgentWindowExcludesBrainHost(t *testing.T) {
+	if !isDelegatedAgentWindow("brain-agent-check-123:@1", false) {
+		t.Fatal("visible non-host brain agent should be delegated")
+	}
+	if isDelegatedAgentWindow("brain-agent-brain-123:@1", false) {
+		t.Fatal("Brain host should not be delegated")
+	}
+	if isDelegatedAgentWindow("brain-agent-check-123:@1", true) {
+		t.Fatal("hidden sessions should not be delegated")
+	}
+	if isDelegatedAgentWindow("main:@1", false) {
+		t.Fatal("ordinary tmux session should not be delegated")
+	}
 }
 
 func TestAgentMetadataChangedDetectsNameChange(t *testing.T) {

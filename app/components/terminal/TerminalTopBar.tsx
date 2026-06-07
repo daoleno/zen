@@ -33,6 +33,7 @@ export interface TerminalTopBarProps {
   gitDiffDisabled: boolean;
   gitDiffPresentation: TerminalTopBarGitDiffPresentation;
   isCodexAgent: boolean;
+  delegated?: boolean;
   onBack(): void;
   onOpenPicker(): void;
   onOpenGitDiff(): void;
@@ -50,6 +51,7 @@ export function TerminalTopBar({
   gitDiffDisabled,
   gitDiffPresentation,
   isCodexAgent,
+  delegated,
   onBack,
   onOpenPicker,
   onOpenGitDiff,
@@ -83,6 +85,13 @@ export function TerminalTopBar({
         <Text style={[styles.title, { color: chrome.text }]} numberOfLines={1}>
           {title}
         </Text>
+        {delegated ? (
+          <View style={[styles.brainBadge, { borderColor: chrome.border }]}>
+            <Text style={[styles.brainBadgeText, { color: chrome.textMuted }]}>
+              Brain
+            </Text>
+          </View>
+        ) : null}
       </TouchableOpacity>
 
       <TouchableOpacity
@@ -165,6 +174,20 @@ const styles = StyleSheet.create({
     includeFontPadding: false,
     textAlignVertical: "center",
     transform: [{ translateY: -0.5 }],
+  },
+  brainBadge: {
+    height: 16,
+    paddingHorizontal: 5,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderRadius: 4,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  brainBadgeText: {
+    fontSize: 9,
+    lineHeight: 11,
+    fontFamily: Typography.uiFontMedium,
+    includeFontPadding: false,
   },
   gitDiffButton: {
     width: 32,
