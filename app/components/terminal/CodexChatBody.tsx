@@ -52,7 +52,6 @@ export interface CodexChatBodyProps {
   onTimelineMomentumScrollBegin(): void;
   onTimelineMomentumScrollEnd(event: NativeSyntheticEvent<NativeScrollEvent>): void;
   onTimelineContentSizeChange(width: number, height: number): void;
-  onTimelineTextSelectionPressIn(): void;
   onTimelineTextSelectionGestureStart(): void;
   onTimelineTextSelectionGestureEnd(): void;
   onScrollToLatest(animated?: boolean, delay?: number): void;
@@ -109,7 +108,6 @@ export function CodexChatBody({
   onTimelineMomentumScrollBegin,
   onTimelineMomentumScrollEnd,
   onTimelineContentSizeChange,
-  onTimelineTextSelectionPressIn,
   onTimelineTextSelectionGestureStart,
   onTimelineTextSelectionGestureEnd,
   onScrollToLatest,
@@ -175,7 +173,6 @@ export function CodexChatBody({
         onMomentumScrollBegin={onTimelineMomentumScrollBegin}
         onMomentumScrollEnd={onTimelineMomentumScrollEnd}
         onContentSizeChange={onTimelineContentSizeChange}
-        onTextSelectionPressIn={onTimelineTextSelectionPressIn}
         onTextSelectionGestureStart={onTimelineTextSelectionGestureStart}
         onTextSelectionGestureEnd={onTimelineTextSelectionGestureEnd}
         onScrollToLatest={onScrollToLatest}

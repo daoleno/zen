@@ -53,7 +53,6 @@ interface CodexTimelineViewProps {
   onMomentumScrollBegin(): void;
   onMomentumScrollEnd(event: NativeSyntheticEvent<NativeScrollEvent>): void;
   onContentSizeChange(width: number, height: number): void;
-  onTextSelectionPressIn: TimelineTextSelectableContextValue["onTextSelectionPressIn"];
   onTextSelectionGestureStart: TimelineTextSelectableContextValue["onTextSelectionGestureStart"];
   onTextSelectionGestureEnd: TimelineTextSelectableContextValue["onTextSelectionGestureEnd"];
   onJumpToLatest(): void;
@@ -92,7 +91,6 @@ export function CodexTimelineView({
   onMomentumScrollBegin,
   onMomentumScrollEnd,
   onContentSizeChange,
-  onTextSelectionPressIn,
   onTextSelectionGestureStart,
   onTextSelectionGestureEnd,
   onJumpToLatest,
@@ -106,14 +104,12 @@ export function CodexTimelineView({
   const textSelectionContext = React.useMemo(
     () => ({
       selectable: textSelectable,
-      onTextSelectionPressIn,
       onTextSelectionGestureStart,
       onTextSelectionGestureEnd,
     }),
     [
       onTextSelectionGestureEnd,
       onTextSelectionGestureStart,
-      onTextSelectionPressIn,
       textSelectable,
     ],
   );

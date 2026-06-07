@@ -3,12 +3,11 @@ import type { TextProps } from "react-native";
 
 type TimelineSelectableTextProps = Pick<
   TextProps,
-  "selectable" | "onPressIn" | "onLongPress" | "onPressOut"
+  "selectable" | "onLongPress" | "onPressOut"
 >;
 
 export interface TimelineTextSelectableContextValue {
   selectable: boolean;
-  onTextSelectionPressIn?: () => void;
   onTextSelectionGestureStart?: () => void;
   onTextSelectionGestureEnd?: () => void;
 }
@@ -21,7 +20,6 @@ export const TimelineTextSelectableContext =
 export function useTimelineSelectableTextProps(): TimelineSelectableTextProps {
   const {
     selectable,
-    onTextSelectionPressIn,
     onTextSelectionGestureStart,
     onTextSelectionGestureEnd,
   } = React.useContext(TimelineTextSelectableContext);
@@ -29,14 +27,12 @@ export function useTimelineSelectableTextProps(): TimelineSelectableTextProps {
   return React.useMemo(() => {
     return {
       selectable,
-      onPressIn: onTextSelectionPressIn,
       onLongPress: onTextSelectionGestureStart,
       onPressOut: onTextSelectionGestureEnd,
     };
   }, [
     onTextSelectionGestureEnd,
     onTextSelectionGestureStart,
-    onTextSelectionPressIn,
     selectable,
   ]);
 }

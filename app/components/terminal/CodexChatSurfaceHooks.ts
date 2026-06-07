@@ -19,7 +19,6 @@ import type { ZenTimelineItem } from "./CodexTimelineItemView";
 const SCROLL_BOTTOM_THRESHOLD = 96;
 const COMPOSER_FOCUS_LOCK_MS = 1000;
 const COMPOSER_REFOCUS_DELAYS_MS = [0, 60, 140, 280, 520, 820] as const;
-const TEXT_SELECTION_ENABLE_DELAY_MS = 280;
 const TEXT_SELECTION_ANCHOR_SETTLE_MS = 30000;
 const TEXT_SELECTION_ANCHOR_MAX_MS = 60000;
 
@@ -97,9 +96,6 @@ export function usePinnedTimeline(itemCount: number, resetKey: string) {
   const scrollRequestSeqRef = useRef(0);
   const distanceFromLatestRef = useRef(0);
   const textSelectionActiveRef = useRef(false);
-  const textSelectionEnableTimerRef = useRef<ReturnType<typeof setTimeout> | null>(
-    null,
-  );
   const textSelectionTimerRef = useRef<ReturnType<typeof setTimeout> | null>(
     null,
   );
@@ -118,18 +114,9 @@ export function usePinnedTimeline(itemCount: number, resetKey: string) {
     textSelectionTimerRef.current = null;
   }, []);
 
-  const clearTextSelectionEnableTimer = useCallback(() => {
-    if (!textSelectionEnableTimerRef.current) {
-      return;
-    }
-    clearTimeout(textSelectionEnableTimerRef.current);
-    textSelectionEnableTimerRef.current = null;
-  }, []);
-
   const disableTextSelection = useCallback(() => {
-    clearTextSelectionEnableTimer();
     setTextSelectable(false);
-  }, [clearTextSelectionEnableTimer]);
+  }, []);
 
   const resumeImplicitAnchorAfterTextSelection = useCallback(() => {
     clearTextSelectionTimer();
@@ -214,30 +201,20 @@ export function usePinnedTimeline(itemCount: number, resetKey: string) {
     setShowJumpToLatest(false);
   }, [resumeImplicitAnchorAfterTextSelection]);
 
-  const handleTextSelectionPressIn = useCallback(() => {
-    clearTextSelectionEnableTimer();
-    textSelectionEnableTimerRef.current = setTimeout(() => {
-      textSelectionEnableTimerRef.current = null;
-      setTextSelectable(true);
-    }, TEXT_SELECTION_ENABLE_DELAY_MS);
-  }, [clearTextSelectionEnableTimer]);
-
   const handleTextSelectionGestureStart = useCallback(() => {
-    clearTextSelectionEnableTimer();
     setTextSelectable(true);
     textSelectionActiveRef.current = true;
     scrollRequestSeqRef.current += 1;
     scheduleTextSelectionAnchorResume(TEXT_SELECTION_ANCHOR_MAX_MS);
-  }, [clearTextSelectionEnableTimer, scheduleTextSelectionAnchorResume]);
+  }, [scheduleTextSelectionAnchorResume]);
 
   const handleTextSelectionGestureEnd = useCallback(() => {
-    clearTextSelectionEnableTimer();
     if (!textSelectionActiveRef.current) {
       setTextSelectable(false);
       return;
     }
     scheduleTextSelectionAnchorResume(TEXT_SELECTION_ANCHOR_SETTLE_MS);
-  }, [clearTextSelectionEnableTimer, scheduleTextSelectionAnchorResume]);
+  }, [scheduleTextSelectionAnchorResume]);
 
   const updateScrollPosition = useCallback((
     event: NativeSyntheticEvent<NativeScrollEvent>,
@@ -350,9 +327,8 @@ export function usePinnedTimeline(itemCount: number, resetKey: string) {
   useEffect(
     () => () => {
       clearTextSelectionTimer();
-      clearTextSelectionEnableTimer();
     },
-    [clearTextSelectionEnableTimer, clearTextSelectionTimer],
+    [clearTextSelectionTimer],
   );
 
   useEffect(() => {
@@ -400,7 +376,6 @@ export function usePinnedTimeline(itemCount: number, resetKey: string) {
     handleMomentumScrollEnd,
     handleContentSizeChange,
     handleLayout,
-    handleTextSelectionPressIn,
     handleTextSelectionGestureStart,
     handleTextSelectionGestureEnd,
   };

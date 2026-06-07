@@ -43,7 +43,6 @@ export function CodexNativeMarkdownBody({
 }: CodexNativeMarkdownBodyProps) {
   const {
     selectable: textSelectable,
-    onTextSelectionPressIn,
     onTextSelectionGestureStart,
     onTextSelectionGestureEnd,
   } = useContext(TimelineTextSelectableContext);
@@ -75,7 +74,6 @@ export function CodexNativeMarkdownBody({
     }
     clearSelectionStartTimer();
     selectionFreezeActiveRef.current = false;
-    onTextSelectionPressIn?.();
     selectionStartTimerRef.current = setTimeout(() => {
       selectionStartTimerRef.current = null;
       selectionFreezeActiveRef.current = true;
@@ -83,7 +81,6 @@ export function CodexNativeMarkdownBody({
     }, MARKDOWN_SELECTION_FREEZE_DELAY_MS);
   }, [
     clearSelectionStartTimer,
-    onTextSelectionPressIn,
     onTextSelectionGestureStart,
   ]);
   const handleTouchEnd = useCallback(() => {
