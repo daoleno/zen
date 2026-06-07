@@ -5,6 +5,8 @@ import (
 	"encoding/base64"
 	"encoding/binary"
 	"encoding/hex"
+	"errors"
+	"flag"
 	"net/url"
 	"strings"
 	"testing"
@@ -145,5 +147,55 @@ func TestPrintPairingInfo(t *testing.T) {
 	}
 	if !strings.Contains(rendered, "zen://settings?p=compact-payload") {
 		t.Fatalf("expected connect link, got %q", rendered)
+	}
+}
+
+func TestTopLevelHelpIncludesAgentAndBrainCommands(t *testing.T) {
+	var output bytes.Buffer
+	_, err := parseDaemonConfig([]string{"--help"}, &output)
+	if !errors.Is(err, flag.ErrHelp) {
+		t.Fatalf("parseDaemonConfig error = %v, want ErrHelp", err)
+	}
+	rendered := output.String()
+	for _, want := range []string{
+		"agent      List, spawn, inspect, message, and close agent sessions",
+		"brain      Inspect Brain workspace and host adapter configuration",
+	} {
+		if !strings.Contains(rendered, want) {
+			t.Fatalf("top-level help missing %q:\n%s", want, rendered)
+		}
+	}
+}
+
+func TestAgentAndBrainHelpAreDiscoverable(t *testing.T) {
+	var agentOutput bytes.Buffer
+	if err := runAgentCommand([]string{"--help"}, &agentOutput); !errors.Is(err, flag.ErrHelp) {
+		t.Fatalf("runAgentCommand error = %v, want ErrHelp", err)
+	}
+	agentHelp := agentOutput.String()
+	for _, want := range []string{
+		"Usage: zen agent <list|spawn|send|capture|close|kill> [flags]",
+		"zen agent spawn -name",
+		"zen agent capture -id",
+		"zen agent close -id",
+	} {
+		if !strings.Contains(agentHelp, want) {
+			t.Fatalf("agent help missing %q:\n%s", want, agentHelp)
+		}
+	}
+
+	var brainOutput bytes.Buffer
+	if err := runBrainCommand([]string{"--help"}, &brainOutput); !errors.Is(err, flag.ErrHelp) {
+		t.Fatalf("runBrainCommand error = %v, want ErrHelp", err)
+	}
+	brainHelp := brainOutput.String()
+	for _, want := range []string{
+		"Usage: zen brain <workspace|adapters|use> [flags]",
+		"zen brain workspace --json",
+		"zen brain adapters --json",
+	} {
+		if !strings.Contains(brainHelp, want) {
+			t.Fatalf("brain help missing %q:\n%s", want, brainHelp)
+		}
 	}
 }

@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 	"time"
@@ -341,18 +342,59 @@ func (s *Service) hostCommand(adapter work.AgentAdapter) string {
 		if workspace != "" && !strings.Contains(command, " -C ") && !strings.Contains(command, " --cd ") {
 			args = append(args, "-C", shellQuote(workspace))
 		}
-		return strings.Join(args, " ")
+		return withZenCLIOnPath(strings.Join(args, " "))
 	case "claude":
 		if !claudeCommandHasPermissionBypass(command) {
 			command = strings.TrimSpace(command + " " + claudePermissionBypassFlag)
 		}
 		if workspace != "" && !strings.Contains(command, " --add-dir ") {
-			return strings.TrimSpace(command + " --add-dir " + shellQuote(workspace))
+			return withZenCLIOnPath(strings.TrimSpace(command + " --add-dir " + shellQuote(workspace)))
 		}
-		return command
+		return withZenCLIOnPath(command)
 	default:
+		return withZenCLIOnPath(command)
+	}
+}
+
+func withZenCLIOnPath(command string) string {
+	command = strings.TrimSpace(command)
+	if command == "" {
 		return command
 	}
+	dir := zenExecutableDir()
+	if dir == "" || pathContainsDir(os.Getenv("PATH"), dir) {
+		return command
+	}
+	return "env PATH=" + shellQuote(dir) + ":$PATH " + command
+}
+
+func zenExecutableDir() string {
+	exe, err := os.Executable()
+	if err != nil {
+		return ""
+	}
+	exe = strings.TrimSpace(exe)
+	if exe == "" {
+		return ""
+	}
+	base := strings.ToLower(commandBase(exe))
+	if base != "zen" && base != "zen.exe" {
+		return ""
+	}
+	return strings.TrimSpace(filepath.Dir(exe))
+}
+
+func pathContainsDir(pathValue, dir string) bool {
+	dir = strings.TrimSpace(dir)
+	if dir == "" {
+		return false
+	}
+	for _, entry := range filepath.SplitList(pathValue) {
+		if strings.TrimSpace(entry) == dir {
+			return true
+		}
+	}
+	return false
 }
 
 func codexCommandHasFullAuthorization(command string) bool {

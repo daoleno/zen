@@ -160,7 +160,7 @@ func (s *Store) ensureFiles() error {
 	if err := ensureFile(s.profileNotesPath(), []byte("# Brain Profile\n\n")); err != nil {
 		return err
 	}
-	if err := ensureFile(s.workspaceInstructionsPath(), []byte(defaultWorkspaceInstructions)); err != nil {
+	if err := ensureWorkspaceInstructionsFile(s.workspaceInstructionsPath()); err != nil {
 		return err
 	}
 	if err := ensureFile(s.remindersPath(), []byte("[]\n")); err != nil {
@@ -690,6 +690,55 @@ func ensureFile(path string, initial []byte) error {
 	return os.WriteFile(path, initial, 0o600)
 }
 
+func ensureWorkspaceInstructionsFile(path string) error {
+	raw, err := os.ReadFile(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return writeAtomic(path, []byte(defaultWorkspaceInstructions), 0o600)
+	}
+	if err != nil {
+		return err
+	}
+	current := string(raw)
+	if workspaceInstructionsCurrent(current) {
+		return nil
+	}
+	updated := removeStaleWorkspaceInstructionSnippets(current)
+	updated = strings.TrimRight(updated, "\n") + "\n\n" + currentWorkspaceInstructionAppend
+	return writeAtomic(path, []byte(updated), 0o600)
+}
+
+func workspaceInstructionsCurrent(value string) bool {
+	if strings.TrimSpace(value) == "" {
+		return false
+	}
+	for _, stale := range staleWorkspaceInstructionSnippets {
+		if strings.Contains(value, stale) {
+			return false
+		}
+	}
+	for _, marker := range currentWorkspaceInstructionMarkers {
+		if !strings.Contains(value, marker) {
+			return false
+		}
+	}
+	return true
+}
+
+func removeStaleWorkspaceInstructionSnippets(value string) string {
+	for _, stale := range staleWorkspaceInstructionSnippets {
+		value = strings.ReplaceAll(value, stale, "")
+	}
+	lines := strings.Split(value, "\n")
+	out := make([]string, 0, len(lines))
+	for _, line := range lines {
+		if strings.TrimSpace(line) == "-" {
+			continue
+		}
+		out = append(out, line)
+	}
+	return strings.Join(out, "\n")
+}
+
 func readTextFile(path string) (string, error) {
 	raw, err := os.ReadFile(path)
 	if errors.Is(err, os.ErrNotExist) {
@@ -745,6 +794,33 @@ This directory is the private workspace for zen Brain.
 - Keep orchestration principles in Markdown, prompts, and agent instructions. Code should provide tools, context, persistence, visibility, and safety boundaries rather than rigid workflow gates.
 - Treat Heartbeat wake messages as compact actionable deltas; inspect only what is needed, then act, summarize, or sleep.
 - Ask only when critical context is missing, an action is high-risk or irreversible, credentials/permissions are needed, or the choice depends on the user's values; otherwise continue low-risk next steps and consolidate options with a recommendation.
+`
+
+var currentWorkspaceInstructionMarkers = []string{
+	"Brain is the user's scheduler",
+	"proactively create or reuse visible delegated agent sessions",
+	"Common command shapes: zen agent list --json",
+	"zen agent spawn -name",
+	"zen agent capture -id",
+	"zen agent send -id",
+	"zen agent close -id",
+	"Keep delegated agent lifecycle ownership",
+	"Keep orchestration principles in Markdown, prompts, and agent instructions",
+	"Treat Heartbeat wake messages as compact actionable deltas",
+}
+
+var staleWorkspaceInstructionSnippets = []string{
+	"Only create or ask for a visible delegated agent session when the user explicitly asks you to delegate real work.",
+	"only when the user asks Brain to delegate real work",
+}
+
+const currentWorkspaceInstructionAppend = `## Current Brain Orchestration Rules
+
+- Brain is the user's scheduler: reduce decision load. For concrete work needing repository/tool execution, independent progress, parallelism, or follow-up, proactively create or reuse visible delegated agent sessions; stay here for chat, memory, synthesis, reminders, and decisions that fit the current context.
+- Use the zen binary to delegate, send, inspect, and close agents. Do not call tmux directly. Common command shapes: zen agent list --json; zen agent spawn -name "<name>" -executor <executor> -cwd <workspace> -prompt "<task>"; zen agent capture -id <agent_id> --json; zen agent send -id <agent_id> -text "<message>" --submit=true; zen agent close -id <agent_id>.
+- Keep delegated agent lifecycle ownership from spawn through inspection, follow-up, result consolidation, and close. Do not leave completed delegated sessions open after their output is no longer needed.
+- Keep orchestration principles in Markdown, prompts, and agent instructions. Code should provide tools, context, persistence, visibility, and safety boundaries rather than rigid workflow gates.
+- Treat Heartbeat wake messages as compact actionable deltas; inspect only what is needed, then act, summarize, or sleep.
 `
 
 func writeJSONFile(path string, value any) error {

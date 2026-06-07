@@ -201,8 +201,9 @@ func runDaemon(args []string, stderr io.Writer) error {
 }
 
 func runAgentCommand(args []string, stderr io.Writer) error {
-	if len(args) == 0 {
-		return fmt.Errorf("usage: zen agent <list|spawn|send|capture|close|kill> [flags]")
+	if len(args) == 0 || isHelpArg(args[0]) {
+		printAgentUsage(stderr)
+		return flag.ErrHelp
 	}
 	switch args[0] {
 	case "list":
@@ -221,8 +222,9 @@ func runAgentCommand(args []string, stderr io.Writer) error {
 }
 
 func runBrainCommand(args []string, stderr io.Writer) error {
-	if len(args) == 0 {
-		return fmt.Errorf("usage: zen brain <workspace|adapters|use> [flags]")
+	if len(args) == 0 || isHelpArg(args[0]) {
+		printBrainUsage(stderr)
+		return flag.ErrHelp
 	}
 	switch args[0] {
 	case "workspace":
@@ -234,6 +236,43 @@ func runBrainCommand(args []string, stderr io.Writer) error {
 	default:
 		return fmt.Errorf("unknown brain command: %s", args[0])
 	}
+}
+
+func isHelpArg(value string) bool {
+	return value == "-h" || value == "--help" || value == "help"
+}
+
+func printAgentUsage(w io.Writer) {
+	fmt.Fprintln(w, "Usage: zen agent <list|spawn|send|capture|close|kill> [flags]")
+	fmt.Fprintln(w, "")
+	fmt.Fprintln(w, "Subcommands:")
+	fmt.Fprintln(w, "  list       List visible agent sessions")
+	fmt.Fprintln(w, "  spawn      Create a visible delegated agent session")
+	fmt.Fprintln(w, "  send       Send text to an agent session")
+	fmt.Fprintln(w, "  capture    Capture an agent session transcript")
+	fmt.Fprintln(w, "  close      Close an agent session")
+	fmt.Fprintln(w, "  kill       Alias for close")
+	fmt.Fprintln(w, "")
+	fmt.Fprintln(w, "Examples:")
+	fmt.Fprintln(w, "  zen agent list --json")
+	fmt.Fprintln(w, "  zen agent spawn -name \"Review docs\" -executor codex -cwd /repo -prompt \"Inspect docs\"")
+	fmt.Fprintln(w, "  zen agent capture -id brain-agent-review-docs:@1 --json")
+	fmt.Fprintln(w, "  zen agent send -id brain-agent-review-docs:@1 -text \"continue\" --submit=true")
+	fmt.Fprintln(w, "  zen agent close -id brain-agent-review-docs:@1")
+}
+
+func printBrainUsage(w io.Writer) {
+	fmt.Fprintln(w, "Usage: zen brain <workspace|adapters|use> [flags]")
+	fmt.Fprintln(w, "")
+	fmt.Fprintln(w, "Subcommands:")
+	fmt.Fprintln(w, "  workspace  Print the Brain workspace path")
+	fmt.Fprintln(w, "  adapters   List configured Brain host adapters")
+	fmt.Fprintln(w, "  use        Switch the Brain host adapter")
+	fmt.Fprintln(w, "")
+	fmt.Fprintln(w, "Examples:")
+	fmt.Fprintln(w, "  zen brain workspace --json")
+	fmt.Fprintln(w, "  zen brain adapters --json")
+	fmt.Fprintln(w, "  zen brain use codex")
 }
 
 func runAgentList(args []string, stderr io.Writer) error {
@@ -552,8 +591,11 @@ func parseDaemonConfig(args []string, stderr io.Writer) (daemonConfig, error) {
 		fs.PrintDefaults()
 		fmt.Fprintln(stderr, "")
 		fmt.Fprintln(stderr, "Subcommands:")
+		fmt.Fprintln(stderr, "  serve      Start the daemon")
 		fmt.Fprintln(stderr, "  pair       Generate a fresh pairing link without restarting the daemon")
 		fmt.Fprintln(stderr, "  print-link Alias for pair")
+		fmt.Fprintln(stderr, "  agent      List, spawn, inspect, message, and close agent sessions")
+		fmt.Fprintln(stderr, "  brain      Inspect Brain workspace and host adapter configuration")
 	}
 
 	if err := fs.Parse(args); err != nil {

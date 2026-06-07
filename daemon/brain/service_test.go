@@ -685,6 +685,43 @@ func TestStoreUsesStateAndWorkspaceDirectories(t *testing.T) {
 	}
 }
 
+func TestStoreUpgradesStaleWorkspaceInstructions(t *testing.T) {
+	root := t.TempDir()
+	workspace := filepath.Join(root, "workspace")
+	if err := os.MkdirAll(workspace, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	staleInstructions := `# Brain Workspace
+
+Custom local note.
+
+- Only create or ask for a visible delegated agent session when the user explicitly asks you to delegate real work.
+`
+	if err := os.WriteFile(filepath.Join(workspace, "AGENTS.md"), []byte(staleInstructions), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := NewStore(root); err != nil {
+		t.Fatal(err)
+	}
+	raw, err := os.ReadFile(filepath.Join(workspace, "AGENTS.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	instructions := string(raw)
+	if !strings.Contains(instructions, "Custom local note.") {
+		t.Fatalf("workspace instructions lost existing content:\n%s", instructions)
+	}
+	if strings.Contains(instructions, "explicitly asks you to delegate real work") {
+		t.Fatalf("workspace instructions still contain stale explicit-only rule:\n%s", instructions)
+	}
+	for _, want := range currentWorkspaceInstructionMarkers {
+		if !strings.Contains(instructions, want) {
+			t.Fatalf("workspace instructions missing %q:\n%s", want, instructions)
+		}
+	}
+}
+
 func pathExists(path string) bool {
 	_, err := os.Stat(path)
 	return err == nil
