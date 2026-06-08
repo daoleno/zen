@@ -119,6 +119,31 @@ export interface CodexSkillsSnapshot {
   skills: CodexSkill[];
 }
 
+export interface BrainWorkspaceEntry {
+  name: string;
+  path: string;
+  kind: "directory" | "file" | string;
+  size?: number;
+  modified_at?: string;
+  children: BrainWorkspaceEntry[];
+}
+
+export interface BrainWorkspaceTree {
+  workspace?: string;
+  generated_at?: string;
+  entries: BrainWorkspaceEntry[];
+}
+
+export interface BrainWorkspaceFile {
+  name: string;
+  path: string;
+  kind: "file" | string;
+  language: "markdown" | "text" | string;
+  content: string;
+  size?: number;
+  modified_at?: string;
+}
+
 export interface CodexConversationSnapshotPayload {
   request_id?: string;
   agent_id?: string;
@@ -1402,6 +1427,90 @@ class MultiServerWebSocketClient {
     });
   }
 
+  getBrainWorkspaceTree(serverId: string): Promise<BrainWorkspaceTree> {
+    const requestId = `${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
+
+    return new Promise((resolve, reject) => {
+      const cleanup = () => {
+        if (timer) clearTimeout(timer);
+        this.off("brain_workspace_tree", handleTree);
+        this.off("error", handleError);
+      };
+
+      const handleTree = (payload: any) => {
+        if (payload.serverId !== serverId || payload.request_id !== requestId) {
+          return;
+        }
+        cleanup();
+        resolve(normalizeBrainWorkspaceTree(payload.workspace_tree));
+      };
+
+      const handleError = (payload: any) => {
+        if (payload.serverId !== serverId || payload.request_id !== requestId) {
+          return;
+        }
+        cleanup();
+        reject(new Error(payload.message || "Failed to load Brain workspace."));
+      };
+
+      const timer = setTimeout(() => {
+        cleanup();
+        reject(new Error("Timed out while loading Brain workspace."));
+      }, 15000);
+
+      this.on("brain_workspace_tree", handleTree);
+      this.on("error", handleError);
+      this.send(serverId, {
+        type: "brain_workspace_tree",
+        request_id: requestId,
+      });
+    });
+  }
+
+  getBrainWorkspaceFile(
+    serverId: string,
+    path: string,
+  ): Promise<BrainWorkspaceFile> {
+    const requestId = `${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
+
+    return new Promise((resolve, reject) => {
+      const cleanup = () => {
+        if (timer) clearTimeout(timer);
+        this.off("brain_workspace_file", handleFile);
+        this.off("error", handleError);
+      };
+
+      const handleFile = (payload: any) => {
+        if (payload.serverId !== serverId || payload.request_id !== requestId) {
+          return;
+        }
+        cleanup();
+        resolve(normalizeBrainWorkspaceFile(payload.file));
+      };
+
+      const handleError = (payload: any) => {
+        if (payload.serverId !== serverId || payload.request_id !== requestId) {
+          return;
+        }
+        cleanup();
+        reject(new Error(payload.message || "Failed to load Brain workspace file."));
+      };
+
+      const timer = setTimeout(() => {
+        cleanup();
+        reject(new Error("Timed out while loading Brain workspace file."));
+      }, 15000);
+
+      this.on("brain_workspace_file", handleFile);
+      this.on("error", handleError);
+      this.send(serverId, {
+        type: "brain_workspace_file",
+        request_id: requestId,
+        path,
+      });
+    });
+  }
+
   listSessionServices(serverId: string): Promise<SessionServiceSnapshot> {
     const requestId = `${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
 
@@ -1706,6 +1815,52 @@ function normalizeSessionService(value: any): SessionService {
     binds: Array.isArray(service.binds) ? service.binds : [],
     urls: Array.isArray(service.urls) ? service.urls : [],
     local_only: Boolean(service.local_only),
+  };
+}
+
+function normalizeBrainWorkspaceTree(raw: any): BrainWorkspaceTree {
+  const source = raw && typeof raw === "object" ? raw : {};
+  return {
+    workspace:
+      typeof source.workspace === "string" ? source.workspace : undefined,
+    generated_at:
+      typeof source.generated_at === "string" ? source.generated_at : undefined,
+    entries: Array.isArray(source.entries)
+      ? source.entries
+          .map(normalizeBrainWorkspaceEntry)
+          .filter((entry: BrainWorkspaceEntry) => entry.name)
+      : [],
+  };
+}
+
+function normalizeBrainWorkspaceEntry(raw: any): BrainWorkspaceEntry {
+  const source = raw && typeof raw === "object" ? raw : {};
+  return {
+    name: typeof source.name === "string" ? source.name : "",
+    path: typeof source.path === "string" ? source.path : "",
+    kind: typeof source.kind === "string" ? source.kind : "file",
+    size: typeof source.size === "number" ? source.size : undefined,
+    modified_at:
+      typeof source.modified_at === "string" ? source.modified_at : undefined,
+    children: Array.isArray(source.children)
+      ? source.children
+          .map(normalizeBrainWorkspaceEntry)
+          .filter((entry: BrainWorkspaceEntry) => entry.name)
+      : [],
+  };
+}
+
+function normalizeBrainWorkspaceFile(raw: any): BrainWorkspaceFile {
+  const source = raw && typeof raw === "object" ? raw : {};
+  return {
+    name: typeof source.name === "string" ? source.name : "",
+    path: typeof source.path === "string" ? source.path : "",
+    kind: typeof source.kind === "string" ? source.kind : "file",
+    language: typeof source.language === "string" ? source.language : "text",
+    content: typeof source.content === "string" ? source.content : "",
+    size: typeof source.size === "number" ? source.size : undefined,
+    modified_at:
+      typeof source.modified_at === "string" ? source.modified_at : undefined,
   };
 }
 

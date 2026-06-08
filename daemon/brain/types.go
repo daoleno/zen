@@ -39,3 +39,28 @@ type Snapshot struct {
 	Workspace    string              `json:"workspace,omitempty"`
 	GeneratedAt  time.Time           `json:"generated_at"`
 }
+
+type WorkspaceTree struct {
+	Workspace   string           `json:"workspace,omitempty"`
+	Entries     []WorkspaceEntry `json:"entries"`
+	GeneratedAt time.Time        `json:"generated_at"`
+}
+
+type WorkspaceEntry struct {
+	Name       string           `json:"name"`
+	Path       string           `json:"path"`
+	Kind       string           `json:"kind"`
+	Size       int64            `json:"size,omitempty"`
+	ModifiedAt time.Time        `json:"modified_at,omitempty"`
+	Children   []WorkspaceEntry `json:"children,omitempty"`
+}
+
+type WorkspaceFile struct {
+	Name       string    `json:"name"`
+	Path       string    `json:"path"`
+	Kind       string    `json:"kind"`
+	Language   string    `json:"language"`
+	Content    string    `json:"content"`
+	Size       int64     `json:"size,omitempty"`
+	ModifiedAt time.Time `json:"modified_at,omitempty"`
+}

@@ -9,6 +9,7 @@ import {
 import { Ionicons } from "@expo/vector-icons";
 import { useFocusEffect, useRouter } from "expo-router";
 import { SafeAreaView } from "react-native-safe-area-context";
+import { BrainWorkspaceViewer } from "../../components/brain/BrainWorkspaceViewer";
 import { BottomSheetFrame, IconButton } from "../../components/ui";
 import { AppButton } from "../../components/ui/AppButton";
 import { AppText } from "../../components/ui/AppText";
@@ -50,6 +51,7 @@ export default function BrainScreen() {
   const [adapterSwitchError, setAdapterSwitchError] = useState<string | null>(null);
   const [newChatLoading, setNewChatLoading] = useState(false);
   const [brainActionError, setBrainActionError] = useState<string | null>(null);
+  const [workspaceViewerVisible, setWorkspaceViewerVisible] = useState(false);
 
   useFocusEffect(
     React.useCallback(() => {
@@ -127,6 +129,17 @@ export default function BrainScreen() {
   const closeAdapterSheet = useCallback(() => {
     setAdapterSheetVisible(false);
     setAdapterSwitchError(null);
+  }, []);
+
+  const openWorkspaceViewer = useCallback(() => {
+    if (!activeServer) {
+      return;
+    }
+    setWorkspaceViewerVisible(true);
+  }, [activeServer]);
+
+  const closeWorkspaceViewer = useCallback(() => {
+    setWorkspaceViewerVisible(false);
   }, []);
 
   const openBrainTerminal = useCallback(() => {
@@ -222,6 +235,17 @@ export default function BrainScreen() {
         </View>
         <View style={styles.headerActions}>
           <IconButton
+            icon="folder-open-outline"
+            size={36}
+            iconSize={17}
+            tone="ghost"
+            color={colors.textSecondary}
+            accessibilityRole="button"
+            accessibilityLabel="Browse Brain workspace"
+            onPress={openWorkspaceViewer}
+            disabled={!activeServer || connectionState !== "connected"}
+          />
+          <IconButton
             icon="terminal-outline"
             size={36}
             iconSize={17}
@@ -273,6 +297,7 @@ export default function BrainScreen() {
             screenFocused
             placeholder="Message"
             minimalComposer
+            showAttachmentControl
             keyboardVerticalOffset={keyboardVerticalOffset}
             showUnavailableAction
             onSwitchToTerminal={openBrainTerminal}
@@ -348,6 +373,15 @@ export default function BrainScreen() {
           <AppButton label="Close" variant="ghost" onPress={closeAdapterSheet} />
         </View>
       </BottomSheetFrame>
+
+      <BrainWorkspaceViewer
+        visible={workspaceViewerVisible}
+        serverId={activeServer?.id}
+        workspace={activeBrain?.workspace}
+        chrome={chrome}
+        theme={terminalTheme}
+        onClose={closeWorkspaceViewer}
+      />
     </SafeAreaView>
   );
 }

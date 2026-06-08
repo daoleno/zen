@@ -159,6 +159,7 @@ func runDaemon(args []string, stderr io.Writer) error {
 		watcher:    w,
 		execs:      execs,
 		brainStore: brainStore,
+		stateDir:   authManager.StorageDir(),
 	}
 
 	pusher := push.New()
@@ -214,6 +215,10 @@ func runAgentCommand(args []string, stderr io.Writer) error {
 		return runAgentSend(args[1:], stderr)
 	case "capture":
 		return runAgentCapture(args[1:], stderr)
+	case "status":
+		return runAgentStatus(args[1:], stderr)
+	case "progress":
+		return runAgentProgress(args[1:], stderr)
 	case "close", "kill":
 		return runAgentClose(args[1:], stderr)
 	default:
@@ -243,13 +248,15 @@ func isHelpArg(value string) bool {
 }
 
 func printAgentUsage(w io.Writer) {
-	fmt.Fprintln(w, "Usage: zen agent <list|spawn|send|capture|close|kill> [flags]")
+	fmt.Fprintln(w, "Usage: zen agent <list|spawn|send|capture|status|progress|close|kill> [flags]")
 	fmt.Fprintln(w, "")
 	fmt.Fprintln(w, "Subcommands:")
 	fmt.Fprintln(w, "  list       List visible agent sessions")
 	fmt.Fprintln(w, "  spawn      Create a visible delegated agent session")
 	fmt.Fprintln(w, "  send       Send text to an agent session")
 	fmt.Fprintln(w, "  capture    Capture an agent session transcript")
+	fmt.Fprintln(w, "  status     Print compact status for one agent session")
+	fmt.Fprintln(w, "  progress   Report lifecycle progress for the current or selected agent")
 	fmt.Fprintln(w, "  close      Close an agent session")
 	fmt.Fprintln(w, "  kill       Alias for close")
 	fmt.Fprintln(w, "")
@@ -257,8 +264,10 @@ func printAgentUsage(w io.Writer) {
 	fmt.Fprintln(w, "  zen agent list --json")
 	fmt.Fprintln(w, "  zen agent spawn -name \"Review docs\" -executor codex -cwd /repo -prompt \"Inspect docs\"")
 	fmt.Fprintln(w, "  zen agent capture -id brain-agent-review-docs:@1 --json")
+	fmt.Fprintln(w, "  zen agent status -id brain-agent-review-docs:@1 --json")
+	fmt.Fprintln(w, "  zen agent progress --status running --phase working --attention none --summary \"Reading files\" --lease 300")
 	fmt.Fprintln(w, "  zen agent send -id brain-agent-review-docs:@1 -text \"continue\" --submit=true")
-	fmt.Fprintln(w, "  zen agent close -id brain-agent-review-docs:@1")
+	fmt.Fprintln(w, "  zen agent close -id brain-agent-review-docs:@1 --force")
 }
 
 func printBrainUsage(w io.Writer) {
@@ -300,6 +309,7 @@ func runAgentSpawn(args []string, stderr io.Writer) error {
 	fs.StringVar(&req.Cwd, "cwd", "", "agent working directory")
 	fs.StringVar(&req.Prompt, "prompt", "", "initial prompt text")
 	fs.StringVar(&req.PromptFile, "prompt-file", "", "file containing the initial prompt")
+	fs.StringVar(&req.Profile, "profile", "implementation", "agent lifecycle profile: quick, research, implementation, or long_running")
 	fs.BoolVar(&req.Hidden, "hidden", false, "create a hidden session")
 	fs.Usage = func() {
 		fmt.Fprintln(stderr, "Usage: zen agent spawn -name Franklin -executor codex -cwd /repo -prompt-file task.md [flags]")
@@ -382,6 +392,72 @@ func runAgentCapture(args []string, stderr io.Writer) error {
 	return writeControlResponse(os.Stdout, resp, cfg.json)
 }
 
+func runAgentStatus(args []string, stderr io.Writer) error {
+	fs := flag.NewFlagSet("zen agent status", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	cfg := cliConfig{json: true}
+	req := control.Request{Type: "agent_status"}
+	fs.StringVar(&cfg.stateDir, "state-dir", "", "state directory for daemon identity and control socket")
+	fs.BoolVar(&cfg.json, "json", true, "print JSON output")
+	fs.StringVar(&req.AgentID, "id", "", "agent session id")
+	fs.Usage = func() {
+		fmt.Fprintln(stderr, "Usage: zen agent status -id main:@42 [flags]")
+		fmt.Fprintln(stderr, "")
+		fs.PrintDefaults()
+	}
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if fs.NArg() > 0 {
+		return fmt.Errorf("unexpected arguments: %s", strings.Join(fs.Args(), " "))
+	}
+	resp, err := callControl(cfg, req)
+	if err != nil {
+		return err
+	}
+	return writeControlResponse(os.Stdout, resp, cfg.json)
+}
+
+func runAgentProgress(args []string, stderr io.Writer) error {
+	fs := flag.NewFlagSet("zen agent progress", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	cfg := cliConfig{
+		stateDir: strings.TrimSpace(os.Getenv("ZEN_STATE_DIR")),
+		json:     true,
+	}
+	req := control.Request{
+		Type:    "agent_progress",
+		AgentID: strings.TrimSpace(os.Getenv("ZEN_AGENT_ID")),
+	}
+	fs.StringVar(&cfg.stateDir, "state-dir", cfg.stateDir, "state directory for daemon identity and control socket")
+	fs.BoolVar(&cfg.json, "json", true, "print JSON output")
+	fs.StringVar(&req.AgentID, "id", req.AgentID, "agent session id; defaults to ZEN_AGENT_ID")
+	fs.StringVar(&req.Status, "status", "", "progress status: running, done, failed, or blocked")
+	fs.StringVar(&req.Phase, "phase", "", "progress phase: starting, reading, planning, working, verifying, or reporting")
+	fs.StringVar(&req.Attention, "attention", "", "attention state: none, done, blocked, failed, user_input, or stale")
+	fs.StringVar(&req.Summary, "summary", "", "short progress summary")
+	fs.IntVar(&req.LeaseSeconds, "lease", 0, "seconds until the next expected progress update")
+	fs.Usage = func() {
+		fmt.Fprintln(stderr, "Usage: zen agent progress --status running --phase working --attention none --summary 'Reading files' --lease 300 [flags]")
+		fmt.Fprintln(stderr, "")
+		fs.PrintDefaults()
+	}
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if fs.NArg() > 0 {
+		return fmt.Errorf("unexpected arguments: %s", strings.Join(fs.Args(), " "))
+	}
+	if strings.TrimSpace(req.AgentID) == "" {
+		return fmt.Errorf("agent id is required; pass -id or set ZEN_AGENT_ID")
+	}
+	resp, err := callControl(cfg, req)
+	if err != nil {
+		return err
+	}
+	return writeControlResponse(os.Stdout, resp, cfg.json)
+}
+
 func runAgentClose(args []string, stderr io.Writer) error {
 	fs := flag.NewFlagSet("zen agent close", flag.ContinueOnError)
 	fs.SetOutput(stderr)
@@ -390,6 +466,7 @@ func runAgentClose(args []string, stderr io.Writer) error {
 	fs.StringVar(&cfg.stateDir, "state-dir", "", "state directory for daemon identity and control socket")
 	fs.BoolVar(&cfg.json, "json", true, "print JSON output")
 	fs.StringVar(&req.AgentID, "id", "", "agent session id")
+	fs.BoolVar(&req.Force, "force", false, "force close even if a delegated agent is still running")
 	fs.Usage = func() {
 		fmt.Fprintln(stderr, "Usage: zen agent close -id main:@42 [flags]")
 		fmt.Fprintln(stderr, "")
@@ -594,7 +671,7 @@ func parseDaemonConfig(args []string, stderr io.Writer) (daemonConfig, error) {
 		fmt.Fprintln(stderr, "  serve      Start the daemon")
 		fmt.Fprintln(stderr, "  pair       Generate a fresh pairing link without restarting the daemon")
 		fmt.Fprintln(stderr, "  print-link Alias for pair")
-		fmt.Fprintln(stderr, "  agent      List, spawn, inspect, message, and close agent sessions")
+		fmt.Fprintln(stderr, "  agent      List, spawn, inspect, message, progress, and close agent sessions")
 		fmt.Fprintln(stderr, "  brain      Inspect Brain workspace and host adapter configuration")
 	}
 

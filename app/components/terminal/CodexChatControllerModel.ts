@@ -4,6 +4,7 @@ import type {
   CodexConversationEvent,
 } from "../../services/codexConversation";
 import type { ConnectionIssue } from "../../services/connectionIssue";
+import type { AgentStatus } from "../../constants/tokens";
 import type { ComposerAttachment } from "./CodexChatSession";
 import { isEventRunning } from "./CodexTimelineModel";
 
@@ -12,12 +13,14 @@ export function buildCodexStatusMeta({
   connectionIssue,
   conversation,
   events,
+  agentStatus,
   sending,
 }: {
   connectionState: ConnectionState;
   connectionIssue?: ConnectionIssue | null;
   conversation: CodexConversation | null;
   events: CodexConversationEvent[];
+  agentStatus?: AgentStatus;
   sending: boolean;
 }) {
   if (connectionIssue) {
@@ -34,6 +37,7 @@ export function buildCodexStatusMeta({
     isCodexRequestRunning({
       conversation,
       events,
+      agentStatus,
     })
   ) {
     return "Working";
@@ -47,102 +51,20 @@ export function buildCodexStatusMeta({
 export function isCodexRequestRunning({
   conversation,
   events,
+  agentStatus,
 }: {
   conversation: CodexConversation | null;
   events: CodexConversationEvent[];
+  agentStatus?: AgentStatus;
 }) {
-  const latestAssistantResponse = latestAssistantResponseForLatestUserTurn(events);
+  const agentSessionRunning = agentStatus === "running";
   if (typeof conversation?.active === "boolean") {
-    if (!conversation.active) {
-      return false;
-    }
-    if (!latestAssistantResponse) {
-      return true;
-    }
-    return events.some((event, index) =>
-      isEventRunning(event) &&
-      isConversationEventPositionAfter(event, index, latestAssistantResponse),
-    );
+    return conversation.active || agentSessionRunning;
   }
   if (conversation) {
-    return events.some(isEventRunning);
+    return agentSessionRunning || events.some(isEventRunning);
   }
-  return events.some(isEventRunning);
-}
-
-function latestAssistantResponseForLatestUserTurn(
-  events: CodexConversationEvent[],
-) {
-  const latestUser = latestConversationEventPosition(events, "user_message");
-  if (!latestUser) {
-    return null;
-  }
-  let latestAssistant:
-    | {
-        timestamp: number;
-        index: number;
-      }
-    | null = null;
-  events.forEach((event, index) => {
-    if (
-      event.kind !== "assistant_message" ||
-      !isConversationEventPositionAfter(event, index, latestUser)
-    ) {
-      return;
-    }
-    if (
-      !latestAssistant ||
-      isConversationEventPositionAfter(event, index, latestAssistant)
-    ) {
-      latestAssistant = conversationEventPosition(event, index);
-    }
-  });
-  return latestAssistant;
-}
-
-function latestConversationEventPosition(
-  events: CodexConversationEvent[],
-  kind: CodexConversationEvent["kind"],
-) {
-  let latest:
-    | {
-        timestamp: number;
-        index: number;
-      }
-    | null = null;
-  events.forEach((event, index) => {
-    if (event.kind !== kind) {
-      return;
-    }
-    if (!latest || isConversationEventPositionAfter(event, index, latest)) {
-      latest = conversationEventPosition(event, index);
-    }
-  });
-  return latest;
-}
-
-function conversationEventPosition(
-  event: CodexConversationEvent,
-  index: number,
-) {
-  const timestamp = new Date(event.timestamp || "").getTime();
-  return {
-    timestamp: Number.isFinite(timestamp) ? timestamp : Number.NaN,
-    index,
-  };
-}
-
-function isConversationEventPositionAfter(
-  event: CodexConversationEvent,
-  index: number,
-  anchor: { timestamp: number; index: number },
-) {
-  const timestamp = new Date(event.timestamp || "").getTime();
-  if (Number.isFinite(timestamp) && Number.isFinite(anchor.timestamp)) {
-    return timestamp > anchor.timestamp ||
-      (timestamp === anchor.timestamp && index > anchor.index);
-  }
-  return index > anchor.index;
+  return agentSessionRunning || events.some(isEventRunning);
 }
 
 export function buildCodexComposerMessage(

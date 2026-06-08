@@ -44,6 +44,7 @@ export function useCodexComposerPresentation({
   placeholder,
   keyboardVerticalOffset,
   minimalComposer,
+  showAttachmentControl,
 }: UseCodexComposerPresentationInput) {
   return useMemo(
     () =>
@@ -65,6 +66,7 @@ export function useCodexComposerPresentation({
         placeholder,
         keyboardVerticalOffset,
         minimalComposer,
+        showAttachmentControl,
       }),
     [
       attachmentCount,
@@ -83,6 +85,7 @@ export function useCodexComposerPresentation({
       placeholder,
       keyboardVerticalOffset,
       minimalComposer,
+      showAttachmentControl,
     ],
   );
 }

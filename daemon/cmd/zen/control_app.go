@@ -18,6 +18,7 @@ type controlWatcher interface {
 	GetAgent(id string) *classifier.Agent
 	HasSession(target string) bool
 	CreateSession(preferredTarget string, opts watcher.CreateSessionOptions) (string, error)
+	UpdateAgentProgress(id string, progress classifier.AgentProgress) (*classifier.Agent, error)
 	SendInput(sessionID, text string) error
 	SendInputWhenReady(sessionID, command, text string) error
 	KillSession(sessionID string) error
@@ -28,6 +29,7 @@ type controlApp struct {
 	watcher    controlWatcher
 	execs      *work.ExecutorConfig
 	brainStore *brain.Store
+	stateDir   string
 }
 
 func (a *controlApp) HandleControlRequest(req control.Request) control.Response {
@@ -40,6 +42,10 @@ func (a *controlApp) HandleControlRequest(req control.Request) control.Response 
 		return a.handleAgentSend(req)
 	case "agent_capture":
 		return a.handleAgentCapture(req)
+	case "agent_status":
+		return a.handleAgentStatus(req)
+	case "agent_progress":
+		return a.handleAgentProgress(req)
 	case "agent_close", "agent_kill":
 		return a.handleAgentClose(req)
 	case "brain_adapters":
@@ -93,11 +99,13 @@ func (a *controlApp) handleAgentSpawn(req control.Request) control.Response {
 	}
 
 	agentID, err := a.watcher.CreateSession("", watcher.CreateSessionOptions{
-		Cwd:      cwd,
-		Command:  command,
-		Name:     name,
-		Detached: true,
-		Hidden:   req.Hidden,
+		Cwd:         cwd,
+		Command:     command,
+		Name:        name,
+		Detached:    true,
+		Hidden:      req.Hidden,
+		ProgressEnv: true,
+		Env:         progressEnvForStateDir(a.stateDir),
 	})
 	if err != nil {
 		return control.ErrorResponse("spawn_failed", err.Error())
@@ -176,6 +184,51 @@ func (a *controlApp) handleAgentCapture(req control.Request) control.Response {
 	return control.Response{OK: true, Text: text, Agent: &out}
 }
 
+func (a *controlApp) handleAgentStatus(req control.Request) control.Response {
+	if a == nil || a.watcher == nil {
+		return control.ErrorResponse("watcher_unavailable", "Agent watcher is not running.")
+	}
+	agentID := strings.TrimSpace(req.AgentID)
+	if agentID == "" {
+		return control.ErrorResponse("missing_agent_id", "Agent id is required.")
+	}
+	agent := a.watcher.GetAgent(agentID)
+	if agent == nil {
+		return control.ErrorResponse("agent_not_found", "Agent session was not found.")
+	}
+	out := controlAgent(agent)
+	return control.Response{OK: true, Agent: &out}
+}
+
+func (a *controlApp) handleAgentProgress(req control.Request) control.Response {
+	if a == nil || a.watcher == nil {
+		return control.ErrorResponse("watcher_unavailable", "Agent watcher is not running.")
+	}
+	agentID := strings.TrimSpace(req.AgentID)
+	if agentID == "" {
+		return control.ErrorResponse("missing_agent_id", "Agent id is required.")
+	}
+	if agent := a.watcher.GetAgent(agentID); agent == nil {
+		return control.ErrorResponse("agent_not_found", "Agent session was not found.")
+	}
+	progress, err := classifier.ValidateProgress(classifier.AgentProgress{
+		Status:       req.Status,
+		Phase:        req.Phase,
+		Attention:    req.Attention,
+		Summary:      req.Summary,
+		LeaseSeconds: req.LeaseSeconds,
+	})
+	if err != nil {
+		return control.ErrorResponse("invalid_progress", err.Error())
+	}
+	agent, err := a.watcher.UpdateAgentProgress(agentID, progress)
+	if err != nil {
+		return control.ErrorResponse("progress_failed", err.Error())
+	}
+	out := controlAgent(agent)
+	return control.Response{OK: true, Agent: &out}
+}
+
 func (a *controlApp) handleAgentClose(req control.Request) control.Response {
 	if a == nil || a.watcher == nil {
 		return control.ErrorResponse("watcher_unavailable", "Agent watcher is not running.")
@@ -185,6 +238,9 @@ func (a *controlApp) handleAgentClose(req control.Request) control.Response {
 		return control.ErrorResponse("missing_agent_id", "Agent id is required.")
 	}
 	agent := a.watcher.GetAgent(agentID)
+	if agent != nil && !req.Force && closeRequiresForce(agent) {
+		return control.ErrorResponse("agent_running_requires_force", "Agent is still running or unresolved. Send it a cancellation request first, wait for done/failed/blocked, or close with force.")
+	}
 	if err := a.watcher.KillSession(agentID); err != nil {
 		return control.ErrorResponse("close_failed", err.Error())
 	}
@@ -324,15 +380,21 @@ func controlAgent(agent *classifier.Agent) control.Agent {
 		return control.Agent{}
 	}
 	return control.Agent{
-		ID:        agent.ID,
-		Name:      agent.Name,
-		Status:    string(agent.State),
-		Summary:   agent.Summary,
-		Cwd:       agent.Cwd,
-		Command:   agent.Command,
-		UpdatedAt: agent.UpdatedAt,
-		Hidden:    agent.Hidden,
-		Delegated: agent.Delegated,
+		ID:                  agent.ID,
+		Name:                agent.Name,
+		Status:              string(agent.State),
+		Summary:             agent.Summary,
+		Phase:               agent.Phase,
+		Attention:           agent.Attention,
+		NeedsAttention:      agent.NeedsAttention,
+		LastProgressAt:      agent.LastProgressAt,
+		ExpectedNextCheckAt: agent.ExpectedNextCheckAt,
+		LeaseSeconds:        agent.LeaseSeconds,
+		Cwd:                 agent.Cwd,
+		Command:             agent.Command,
+		UpdatedAt:           agent.UpdatedAt,
+		Hidden:              agent.Hidden,
+		Delegated:           agent.Delegated,
 	}
 }
 
@@ -354,21 +416,71 @@ func controlAdapter(adapter work.AgentAdapter) control.Adapter {
 func spawnPrompt(req control.Request) (string, error) {
 	prompt := strings.TrimSpace(req.Prompt)
 	promptFile := strings.TrimSpace(req.PromptFile)
-	if promptFile == "" {
-		return prompt, nil
+	if promptFile != "" {
+		raw, err := os.ReadFile(promptFile)
+		if err != nil {
+			return "", fmt.Errorf("read prompt file: %w", err)
+		}
+		filePrompt := strings.TrimSpace(string(raw))
+		switch {
+		case prompt == "":
+			prompt = filePrompt
+		case filePrompt != "":
+			prompt = strings.TrimSpace(prompt + "\n\n" + filePrompt)
+		}
 	}
-	raw, err := os.ReadFile(promptFile)
-	if err != nil {
-		return "", fmt.Errorf("read prompt file: %w", err)
+	protocol := lifecycleProtocol(req.Profile)
+	if prompt == "" {
+		return protocol, nil
 	}
-	filePrompt := strings.TrimSpace(string(raw))
-	switch {
-	case prompt == "":
-		return filePrompt, nil
-	case filePrompt == "":
-		return prompt, nil
+	return strings.TrimSpace(prompt + "\n\n" + protocol), nil
+}
+
+func progressEnvForStateDir(stateDir string) map[string]string {
+	env := map[string]string{
+		"ZEN_AGENT_PROGRESS_CMD": "zen agent progress",
+	}
+	if stateDir = strings.TrimSpace(stateDir); stateDir != "" {
+		env["ZEN_STATE_DIR"] = stateDir
+	}
+	return env
+}
+
+func closeRequiresForce(agent *classifier.Agent) bool {
+	if agent == nil || !agent.Delegated || agent.Hidden {
+		return false
+	}
+	switch agent.State {
+	case classifier.StateDone, classifier.StateFailed, classifier.StateBlocked:
+		return false
 	default:
-		return strings.TrimSpace(prompt + "\n\n" + filePrompt), nil
+		return true
+	}
+}
+
+func lifecycleProtocol(profile string) string {
+	profile = normalizeAgentProfile(profile)
+	return strings.TrimSpace(fmt.Sprintf(`Zen lifecycle protocol:
+- Profile: %s.
+- Report progress through the Zen control plane only when your phase changes, when you take a meaningful long-running step, when you need attention, and when you finish.
+- ZEN_AGENT_ID is already set for this session. ZEN_AGENT_PROGRESS_CMD contains the base command.
+- Command shape:
+  $ZEN_AGENT_PROGRESS_CMD --status running --phase working --attention none --summary "Short current work" --lease 300
+- Valid status values: running, done, failed, blocked.
+- Valid phase values: starting, reading, planning, working, verifying, reporting.
+- Valid attention values: none, done, blocked, failed, user_input, stale.
+- Use attention "none" while you are making normal progress.
+- Use attention "user_input" only when user input is required.
+- Use attention "done" with status "done" only after the requested work and feasible verification are complete.
+- For implementation work, several minutes of reading before file edits is normal.`, profile))
+}
+
+func normalizeAgentProfile(profile string) string {
+	switch strings.TrimSpace(profile) {
+	case "quick", "research", "implementation", "long_running":
+		return strings.TrimSpace(profile)
+	default:
+		return "implementation"
 	}
 }
 

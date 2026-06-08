@@ -12,9 +12,13 @@ import { Typography, useAppColors } from "../constants/tokens";
 import { BottomSheetFrame } from "./ui/BottomSheetFrame";
 import {
   groupSessionServices,
-  shortAgentLabel,
-  shortProcessLabel,
+  presentSessionServiceURL,
+  serviceAgentLabel,
+  serviceBindLabel,
+  serviceCommandDetail,
+  serviceProcessLabel,
   type DiscoveredSessionService,
+  type SessionServiceGroup,
 } from "../services/sessionServicesPresentation";
 
 interface SessionServicesSheetProps {
@@ -59,7 +63,9 @@ export function SessionServicesSheet({
         <View style={styles.headerMain}>
           <Text style={styles.title}>Services</Text>
           {serviceCount > 0 ? (
-            <Text style={styles.count}>{serviceCount}</Text>
+            <Text style={styles.count}>
+              {serviceCount} port{serviceCount === 1 ? "" : "s"}
+            </Text>
           ) : null}
         </View>
         <TouchableOpacity
@@ -103,95 +109,166 @@ export function SessionServicesSheet({
           {sections.map((section) => (
             <View key={section.key} style={styles.section}>
               {section.title ? (
-                <Text style={styles.sectionTitle} numberOfLines={1}>
-                  {section.title}
-                </Text>
+                <View style={styles.sectionHeader}>
+                  <Text style={styles.sectionTitle} numberOfLines={1}>
+                    {section.title}
+                  </Text>
+                  <Text style={styles.sectionMeta} numberOfLines={1}>
+                    {section.groups.length} project
+                    {section.groups.length === 1 ? "" : "s"}
+                  </Text>
+                </View>
               ) : null}
 
               {section.groups.map((group) => (
-                <View key={group.key} style={styles.projectCard}>
-                  <View style={styles.projectHeader}>
-                    <Text style={styles.projectTitle} numberOfLines={1}>
-                      {group.project}
-                    </Text>
-                    <Text style={styles.projectMeta}>
-                      {group.services.length} port
-                      {group.services.length === 1 ? "" : "s"}
-                    </Text>
-                  </View>
-
-                  {group.services.map((service, index) => (
-                    <View
-                      key={`${service.serverId}:${service.id}`}
-                      style={[
-                        styles.portRow,
-                        index < group.services.length - 1
-                          ? styles.portRowDivider
-                          : null,
-                      ]}
-                    >
-                      <View style={styles.portMain}>
-                        <View style={styles.portTopRow}>
-                          <Text style={styles.portNumber}>:{service.port}</Text>
-                          <Text style={styles.portProcess} numberOfLines={1}>
-                            {shortProcessLabel(
-                              service.process || service.command || "",
-                            )}
-                          </Text>
-                          <TouchableOpacity
-                            style={styles.terminalButton}
-                            onPress={() => onOpenTerminal(service)}
-                            activeOpacity={0.82}
-                            accessibilityLabel="Open terminal"
-                          >
-                            <Ionicons
-                              name="terminal-outline"
-                              size={15}
-                              color={colors.textSecondary}
-                            />
-                          </TouchableOpacity>
-                        </View>
-
-                        <Text style={styles.portAgent} numberOfLines={1}>
-                          {shortAgentLabel(service.agent_name)}
-                        </Text>
-
-                        <View style={styles.linkRow}>
-                          {(service.urls ?? []).length > 0 ? (
-                            (service.urls ?? []).map((item) => (
-                              <TouchableOpacity
-                                key={item.url}
-                                style={styles.linkChip}
-                                onPress={() => onOpenURL(item.url)}
-                                activeOpacity={0.82}
-                              >
-                                <Text style={styles.linkLabel}>{item.label}</Text>
-                                <Text style={styles.linkHost} numberOfLines={1}>
-                                  {item.address}
-                                </Text>
-                              </TouchableOpacity>
-                            ))
-                          ) : (
-                            <View style={styles.localChip}>
-                              <Text style={styles.localText} numberOfLines={1}>
-                                {(service.binds ?? []).length > 0
-                                  ? (service.binds ?? []).join(", ")
-                                  : "localhost"}
-                                :{service.port}
-                              </Text>
-                            </View>
-                          )}
-                        </View>
-                      </View>
-                    </View>
-                  ))}
-                </View>
+                <ServiceProjectCard
+                  key={group.key}
+                  group={group}
+                  colors={colors}
+                  styles={styles}
+                  onOpenTerminal={onOpenTerminal}
+                  onOpenURL={onOpenURL}
+                />
               ))}
             </View>
           ))}
         </ScrollView>
       )}
     </BottomSheetFrame>
+  );
+}
+
+function ServiceProjectCard({
+  group,
+  colors,
+  styles,
+  onOpenTerminal,
+  onOpenURL,
+}: {
+  group: SessionServiceGroup;
+  colors: ReturnType<typeof useAppColors>;
+  styles: ReturnType<typeof createStyles>;
+  onOpenTerminal(service: DiscoveredSessionService): void;
+  onOpenURL(url: string): void;
+}) {
+  return (
+    <View style={styles.projectCard}>
+      <View style={styles.projectHeader}>
+        <View style={styles.projectHeaderIcon}>
+          <Ionicons name="folder-open-outline" size={15} color={colors.promptYellow} />
+        </View>
+        <View style={styles.projectHeaderCopy}>
+          <Text style={styles.projectTitle} numberOfLines={1}>
+            {group.project}
+          </Text>
+          <Text style={styles.projectMeta} numberOfLines={1}>
+            {group.headerMeta}
+          </Text>
+        </View>
+      </View>
+
+      {group.services.map((service, index) => (
+        <ServicePortRow
+          key={`${service.serverId}:${service.id}`}
+          service={service}
+          last={index >= group.services.length - 1}
+          colors={colors}
+          styles={styles}
+          onOpenTerminal={onOpenTerminal}
+          onOpenURL={onOpenURL}
+        />
+      ))}
+    </View>
+  );
+}
+
+function ServicePortRow({
+  service,
+  last,
+  colors,
+  styles,
+  onOpenTerminal,
+  onOpenURL,
+}: {
+  service: DiscoveredSessionService;
+  last: boolean;
+  colors: ReturnType<typeof useAppColors>;
+  styles: ReturnType<typeof createStyles>;
+  onOpenTerminal(service: DiscoveredSessionService): void;
+  onOpenURL(url: string): void;
+}) {
+  const urls = (service.urls ?? []).map(presentSessionServiceURL);
+  const commandDetail = serviceCommandDetail(service);
+
+  return (
+    <View style={[styles.portRow, !last ? styles.portRowDivider : null]}>
+      <View style={styles.portPill}>
+        <Text style={styles.portNumber}>:{service.port}</Text>
+      </View>
+      <View style={styles.portMain}>
+        <View style={styles.portTopRow}>
+          <Text style={styles.portProcess} numberOfLines={1}>
+            {serviceProcessLabel(service)}
+          </Text>
+          <TouchableOpacity
+            style={styles.terminalButton}
+            onPress={() => onOpenTerminal(service)}
+            activeOpacity={0.82}
+            accessibilityLabel={`Open terminal for port ${service.port}`}
+          >
+            <Ionicons
+              name="terminal-outline"
+              size={15}
+              color={colors.textSecondary}
+            />
+          </TouchableOpacity>
+        </View>
+
+        {commandDetail ? (
+          <Text style={styles.commandDetail} numberOfLines={1}>
+            {commandDetail}
+          </Text>
+        ) : null}
+
+        <View style={styles.agentRow}>
+          <Ionicons
+            name="person-circle-outline"
+            size={13}
+            color={colors.textSecondary}
+          />
+          <Text style={styles.portAgent} numberOfLines={1}>
+            {serviceAgentLabel(service)}
+          </Text>
+        </View>
+
+        <View style={styles.linkRow}>
+          {urls.length > 0 ? (
+            urls.map((item) => (
+              <TouchableOpacity
+                key={item.key}
+                style={styles.linkChip}
+                onPress={() => onOpenURL(item.url)}
+                activeOpacity={0.82}
+                accessibilityLabel={`Open ${item.label} URL for port ${service.port}`}
+              >
+                <Text style={styles.linkLabel}>{item.label}</Text>
+                <Text style={styles.linkHost} numberOfLines={1}>
+                  {item.address}
+                </Text>
+                <Ionicons name="open-outline" size={12} color={colors.textSecondary} />
+              </TouchableOpacity>
+            ))
+          ) : (
+            <View style={styles.localChip}>
+              <Text style={styles.localLabel}>Bind</Text>
+              <Text style={styles.localText} numberOfLines={1}>
+                {serviceBindLabel(service)}
+              </Text>
+            </View>
+          )}
+        </View>
+      </View>
+    </View>
   );
 }
 
@@ -277,9 +354,17 @@ function createStyles(colors: ReturnType<typeof useAppColors>) {
       gap: 8,
       minWidth: 0,
     },
-    sectionTitle: {
+    sectionHeader: {
+      minHeight: 18,
+      flexDirection: "row",
+      alignItems: "center",
+      gap: 8,
       paddingHorizontal: 4,
       paddingTop: 2,
+    },
+    sectionTitle: {
+      flex: 1,
+      minWidth: 0,
       color: colors.textSecondary,
       fontSize: 11,
       lineHeight: 14,
@@ -288,8 +373,15 @@ function createStyles(colors: ReturnType<typeof useAppColors>) {
       textTransform: "uppercase",
       opacity: 0.62,
     },
+    sectionMeta: {
+      color: colors.textSecondary,
+      fontSize: 10,
+      lineHeight: 13,
+      fontFamily: Typography.uiFont,
+      opacity: 0.52,
+    },
     projectCard: {
-      borderRadius: 14,
+      borderRadius: 8,
       backgroundColor: colors.surfaceSubtle,
       borderWidth: StyleSheet.hairlineWidth,
       borderColor: colors.borderSubtle,
@@ -299,16 +391,27 @@ function createStyles(colors: ReturnType<typeof useAppColors>) {
     projectHeader: {
       flexDirection: "row",
       alignItems: "center",
-      gap: 8,
+      gap: 9,
       paddingHorizontal: 12,
-      paddingTop: 11,
-      paddingBottom: 8,
+      paddingTop: 10,
+      paddingBottom: 9,
       borderBottomWidth: StyleSheet.hairlineWidth,
       borderBottomColor: colors.borderSubtle,
     },
-    projectTitle: {
+    projectHeaderIcon: {
+      width: 26,
+      height: 26,
+      borderRadius: 8,
+      alignItems: "center",
+      justifyContent: "center",
+      backgroundColor: colors.surfacePressed,
+    },
+    projectHeaderCopy: {
       flex: 1,
       minWidth: 0,
+      gap: 1,
+    },
+    projectTitle: {
       color: colors.textPrimary,
       fontSize: 14,
       lineHeight: 18,
@@ -319,11 +422,14 @@ function createStyles(colors: ReturnType<typeof useAppColors>) {
       fontSize: 11,
       lineHeight: 14,
       fontFamily: Typography.uiFont,
-      opacity: 0.68,
+      opacity: 0.72,
     },
     portRow: {
+      flexDirection: "row",
+      alignItems: "flex-start",
+      gap: 10,
       paddingHorizontal: 12,
-      paddingVertical: 10,
+      paddingVertical: 9,
       minWidth: 0,
     },
     portRowDivider: {
@@ -331,15 +437,25 @@ function createStyles(colors: ReturnType<typeof useAppColors>) {
       borderBottomColor: colors.borderSubtle,
     },
     portMain: {
+      flex: 1,
       minWidth: 0,
       gap: 4,
     },
     portTopRow: {
       flexDirection: "row",
       alignItems: "center",
-      gap: 8,
-      minHeight: 22,
+      gap: 6,
+      minHeight: 24,
       minWidth: 0,
+    },
+    portPill: {
+      minWidth: 48,
+      minHeight: 24,
+      borderRadius: 8,
+      alignItems: "center",
+      justifyContent: "center",
+      paddingHorizontal: 7,
+      backgroundColor: colors.surfacePressed,
     },
     portNumber: {
       color: colors.promptYellow,
@@ -353,7 +469,7 @@ function createStyles(colors: ReturnType<typeof useAppColors>) {
       color: colors.textPrimary,
       fontSize: 12,
       lineHeight: 16,
-      fontFamily: Typography.terminalFont,
+      fontFamily: Typography.terminalFontBold,
     },
     terminalButton: {
       width: 28,
@@ -363,18 +479,33 @@ function createStyles(colors: ReturnType<typeof useAppColors>) {
       justifyContent: "center",
       backgroundColor: colors.surfaceActive,
     },
+    commandDetail: {
+      color: colors.textSecondary,
+      fontSize: 11,
+      lineHeight: 14,
+      fontFamily: Typography.terminalFont,
+      opacity: 0.64,
+    },
+    agentRow: {
+      flexDirection: "row",
+      alignItems: "center",
+      gap: 4,
+      minWidth: 0,
+    },
     portAgent: {
+      flex: 1,
+      minWidth: 0,
       color: colors.textSecondary,
       fontSize: 11,
       lineHeight: 14,
       fontFamily: Typography.uiFont,
-      opacity: 0.66,
+      opacity: 0.74,
     },
     linkRow: {
       flexDirection: "row",
       flexWrap: "wrap",
       gap: 6,
-      marginTop: 2,
+      marginTop: 1,
     },
     linkChip: {
       flexDirection: "row",
@@ -405,6 +536,9 @@ function createStyles(colors: ReturnType<typeof useAppColors>) {
       opacity: 0.88,
     },
     localChip: {
+      flexDirection: "row",
+      alignItems: "center",
+      gap: 6,
       minHeight: 26,
       borderRadius: 8,
       paddingHorizontal: 8,
@@ -412,7 +546,16 @@ function createStyles(colors: ReturnType<typeof useAppColors>) {
       backgroundColor: colors.surfacePressed,
       maxWidth: "100%",
     },
+    localLabel: {
+      color: colors.textSecondary,
+      fontSize: 10,
+      lineHeight: 12,
+      fontFamily: Typography.uiFontMedium,
+      textTransform: "uppercase",
+      opacity: 0.7,
+    },
     localText: {
+      flexShrink: 1,
       color: colors.textSecondary,
       fontSize: 11,
       lineHeight: 14,

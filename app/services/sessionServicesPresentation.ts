@@ -1,4 +1,4 @@
-import type { SessionService } from "./sessionServices";
+import type { SessionService, SessionServiceURL } from "./sessionServices";
 
 export type DiscoveredSessionService = SessionService & {
   serverId: string;
@@ -11,6 +11,10 @@ export type SessionServiceGroup = {
   serverId: string;
   serverName: string;
   services: DiscoveredSessionService[];
+  serverNames: string[];
+  portCount: number;
+  urlCount: number;
+  headerMeta: string;
 };
 
 export type SessionServiceSection = {
@@ -41,13 +45,34 @@ export function groupSessionServices(
       serverId: service.serverId,
       serverName: service.serverName,
       services: [service],
+      serverNames: [service.serverName],
+      portCount: 1,
+      urlCount: 0,
+      headerMeta: "",
     });
   }
 
-  const groups = [...groupMap.values()].map((group) => ({
-    ...group,
-    services: [...group.services].sort(compareServices),
-  }));
+  const groups = [...groupMap.values()].map((group) => {
+    const sortedServices = [...group.services].sort(compareServices);
+    const serverNames = uniqueStrings(sortedServices.map((service) => service.serverName));
+    const portCount = sortedServices.length;
+    const urlCount = uniqueStrings(
+      sortedServices.flatMap((service) => (service.urls ?? []).map((item) => item.url)),
+    ).length;
+
+    return {
+      ...group,
+      services: sortedServices,
+      serverNames,
+      portCount,
+      urlCount,
+      headerMeta: serviceGroupHeaderMeta({
+        serverNames,
+        portCount,
+        urlCount,
+      }),
+    };
+  });
 
   groups.sort((left, right) => {
     if (left.serverName !== right.serverName) {
@@ -104,6 +129,60 @@ export function shortProcessLabel(value: string): string {
   return trimmed.length > 72 ? `${trimmed.slice(0, 69)}...` : trimmed;
 }
 
+export function serviceAgentLabel(
+  service: Pick<DiscoveredSessionService, "agent_name" | "agent_id">,
+): string {
+  return shortAgentLabel(service.agent_name) || service.agent_id || "agent";
+}
+
+export function serviceProcessLabel(
+  service: Pick<DiscoveredSessionService, "process" | "command">,
+): string {
+  return shortProcessLabel(service.process || service.command || "");
+}
+
+export function serviceCommandDetail(
+  service: Pick<DiscoveredSessionService, "process" | "command">,
+): string {
+  const process = (service.process || "").replace(/\s+/g, " ").trim();
+  const command = (service.command || "").replace(/\s+/g, " ").trim();
+  if (!command || command === process) {
+    return "";
+  }
+  return shortProcessLabel(command);
+}
+
+export type PresentedSessionServiceURL = {
+  key: string;
+  label: string;
+  address: string;
+  url: string;
+};
+
+export function presentSessionServiceURL(
+  item: SessionServiceURL,
+): PresentedSessionServiceURL {
+  return {
+    key: item.url || `${item.kind}:${item.address}`,
+    label: serviceUrlKindLabel(item.kind || item.label),
+    address: item.address || stripUrlScheme(item.url),
+    url: item.url,
+  };
+}
+
+export function serviceBindLabel(
+  service: Pick<DiscoveredSessionService, "binds" | "port">,
+): string {
+  const binds = (service.binds ?? []).map((item) => item.trim()).filter(Boolean);
+  if (binds.length === 0) {
+    return `localhost:${service.port}`;
+  }
+  if (binds.length === 1) {
+    return `${binds[0]}:${service.port}`;
+  }
+  return `${binds[0]}:${service.port} +${binds.length - 1}`;
+}
+
 function compareServices(
   left: DiscoveredSessionService,
   right: DiscoveredSessionService,
@@ -129,4 +208,62 @@ function lastPathSegment(value?: string): string {
 
   const parts = trimmed.split("/").filter(Boolean);
   return parts[parts.length - 1] || trimmed;
+}
+
+function serviceGroupHeaderMeta({
+  serverNames,
+  portCount,
+  urlCount,
+}: {
+  serverNames: string[];
+  portCount: number;
+  urlCount: number;
+}): string {
+  const serverLabel = serverNames.length > 1
+    ? `${serverNames[0]} +${serverNames.length - 1}`
+    : serverNames[0] || "server";
+  return [
+    serverLabel,
+    `${portCount} port${portCount === 1 ? "" : "s"}`,
+    `${urlCount} URL${urlCount === 1 ? "" : "s"}`,
+  ].join(" · ");
+}
+
+function serviceUrlKindLabel(value?: string): string {
+  const normalized = (value || "").trim().toLowerCase();
+  if (!normalized) {
+    return "URL";
+  }
+  if (normalized === "lan") {
+    return "LAN";
+  }
+  if (normalized === "tailscale") {
+    return "Tailscale";
+  }
+  if (normalized === "local" || normalized === "localhost") {
+    return "Local";
+  }
+  return normalized
+    .split(/[_\s-]+/)
+    .filter(Boolean)
+    .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+    .join(" ");
+}
+
+function stripUrlScheme(value: string) {
+  return value.replace(/^[a-z][a-z0-9+.-]*:\/\//i, "");
+}
+
+function uniqueStrings(values: string[]): string[] {
+  const seen = new Set<string>();
+  const result: string[] = [];
+  for (const value of values) {
+    const trimmed = value.trim();
+    if (!trimmed || seen.has(trimmed)) {
+      continue;
+    }
+    seen.add(trimmed);
+    result.push(trimmed);
+  }
+  return result;
 }

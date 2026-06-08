@@ -12,7 +12,6 @@ import (
 
 const (
 	defaultDelegatedDoneCloseAfter = 45 * time.Second
-	defaultDelegatedIdleCloseAfter = 5 * time.Minute
 )
 
 type delegatedLifecycleManager struct {
@@ -23,7 +22,6 @@ type delegatedLifecycleManager struct {
 	close     func(string) error
 
 	doneCloseAfter time.Duration
-	idleCloseAfter time.Duration
 }
 
 type delegatedLifecycleEntry struct {
@@ -48,7 +46,6 @@ func newDelegatedLifecycleManager(wakeBrain func(brain.HeartbeatEvent) (bool, er
 		wakeBrain:      wakeBrain,
 		close:          close,
 		doneCloseAfter: defaultDelegatedDoneCloseAfter,
-		idleCloseAfter: defaultDelegatedIdleCloseAfter,
 	}
 }
 
@@ -161,18 +158,6 @@ func (m *delegatedLifecycleManager) candidate(agent *classifier.Agent) (delegate
 			closeAfter: m.durationOrDefault(m.doneCloseAfter, defaultDelegatedDoneCloseAfter),
 			wake:       true,
 		}, true
-	case classifier.StateUnknown:
-		if agent.StaleCount < 30 || !looksLikeCodexIdleAfterAssistantResponse(agent.LastLines) {
-			return delegatedLifecycleCandidate{}, false
-		}
-		return delegatedLifecycleCandidate{
-			reason:     "delegated_agent_idle_completion",
-			status:     string(classifier.StateUnknown),
-			summary:    fallbackLifecycleSummary(lastCodexAssistantLine(agent.LastLines), agent.LastLines),
-			signature:  lifecycleSignature(agent),
-			closeAfter: m.durationOrDefault(m.idleCloseAfter, defaultDelegatedIdleCloseAfter),
-			wake:       true,
-		}, true
 	default:
 		return delegatedLifecycleCandidate{}, false
 	}
@@ -190,29 +175,6 @@ func (m *delegatedLifecycleManager) durationOrDefault(value, fallback time.Durat
 		return value
 	}
 	return fallback
-}
-
-func looksLikeCodexIdleAfterAssistantResponse(lines []string) bool {
-	meaningful := nonEmptyLifecycleLines(lines)
-	if len(meaningful) < 2 {
-		return false
-	}
-	lastPrompt := -1
-	for i := len(meaningful) - 1; i >= 0; i-- {
-		if isCodexInputPromptLine(meaningful[i]) {
-			lastPrompt = i
-			break
-		}
-	}
-	if lastPrompt <= 0 {
-		return false
-	}
-	for _, line := range meaningful[:lastPrompt] {
-		if isCodexAssistantLine(line) {
-			return true
-		}
-	}
-	return false
 }
 
 func lifecycleSignature(agent *classifier.Agent) string {
@@ -237,18 +199,6 @@ func fallbackLifecycleSummary(primary string, lines []string) string {
 	return truncateLifecycleText(meaningful[len(meaningful)-1], 160)
 }
 
-func lastCodexAssistantLine(lines []string) string {
-	meaningful := nonEmptyLifecycleLines(lines)
-	for i := len(meaningful) - 1; i >= 0; i-- {
-		line := strings.TrimSpace(meaningful[i])
-		if isCodexAssistantLine(line) {
-			line = strings.TrimSpace(strings.TrimPrefix(line, "•"))
-			return truncateLifecycleText(line, 160)
-		}
-	}
-	return ""
-}
-
 func nonEmptyLifecycleLines(lines []string) []string {
 	out := make([]string, 0, len(lines))
 	for _, line := range lines {
@@ -258,14 +208,6 @@ func nonEmptyLifecycleLines(lines []string) []string {
 		}
 	}
 	return out
-}
-
-func isCodexInputPromptLine(line string) bool {
-	return strings.HasPrefix(strings.TrimSpace(line), "›")
-}
-
-func isCodexAssistantLine(line string) bool {
-	return strings.HasPrefix(strings.TrimSpace(line), "•")
 }
 
 func truncateLifecycleText(value string, maxLen int) string {

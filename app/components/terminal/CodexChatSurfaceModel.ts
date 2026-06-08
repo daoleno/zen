@@ -10,6 +10,8 @@ export interface CodexComposerPresentation {
   showCommandMenu: boolean;
   showCommandList: boolean;
   showComposerActions: boolean;
+  showActionMenuButton: boolean;
+  showAttachmentRail: boolean;
   composerActionButtonEnabled: boolean;
   showStopButton: boolean;
   showStopIndicator: boolean;
@@ -42,6 +44,7 @@ export interface CodexComposerPresentationInput {
   placeholder?: string;
   keyboardVerticalOffset?: number;
   minimalComposer?: boolean;
+  showAttachmentControl?: boolean;
 }
 
 export function buildCodexComposerPresentation({
@@ -62,6 +65,7 @@ export function buildCodexComposerPresentation({
   placeholder,
   keyboardVerticalOffset,
   minimalComposer,
+  showAttachmentControl,
 }: CodexComposerPresentationInput): CodexComposerPresentation {
   const commandQuery = draft.trimStart();
   const slashQueryActive =
@@ -69,20 +73,20 @@ export function buildCodexComposerPresentation({
     !commandQuery.includes(" ") &&
     !commandQuery.includes("\n");
   const normalDraftActive = commandQuery.length > 0 && !slashQueryActive;
-  const showCommandMenu =
-    !minimalComposer &&
-    connectionState === "connected" &&
-    (actionMenuPinned || slashQueryActive);
+  const composerActionsAvailable =
+    !minimalComposer || Boolean(showAttachmentControl);
   const showComposerActions =
-    !minimalComposer &&
     connectionState === "connected" &&
-    actionMenuPinned;
+    actionMenuPinned &&
+    composerActionsAvailable;
   const showCommandList =
     !minimalComposer &&
-    showCommandMenu &&
+    connectionState === "connected" &&
+    (actionMenuPinned || slashQueryActive) &&
     (slashQueryActive || !normalDraftActive);
+  const showCommandMenu = showComposerActions || showCommandList;
   const composerActionButtonEnabled =
-    connectionState === "connected" && !minimalComposer;
+    connectionState === "connected" && composerActionsAvailable;
   const showStopIndicator =
     connectionState === "connected" &&
     requestRunning &&
@@ -99,6 +103,8 @@ export function buildCodexComposerPresentation({
     showCommandMenu,
     showCommandList,
     showComposerActions,
+    showActionMenuButton: composerActionsAvailable,
+    showAttachmentRail: composerActionsAvailable,
     composerActionButtonEnabled,
     showStopButton,
     showStopIndicator,

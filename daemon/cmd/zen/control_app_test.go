@@ -20,11 +20,17 @@ type fakeControlWatcher struct {
 	sent     []fakeControlSend
 	killed   []string
 	captures map[string]string
+	progress []fakeControlProgress
 }
 
 type fakeControlSend struct {
 	id   string
 	text string
+}
+
+type fakeControlProgress struct {
+	id       string
+	progress classifier.AgentProgress
 }
 
 func newFakeControlWatcher() *fakeControlWatcher {
@@ -74,6 +80,17 @@ func (w *fakeControlWatcher) CreateSession(_ string, opts watcher.CreateSessionO
 	return id, nil
 }
 
+func (w *fakeControlWatcher) UpdateAgentProgress(id string, progress classifier.AgentProgress) (*classifier.Agent, error) {
+	agent := w.agents[id]
+	if agent == nil {
+		return nil, os.ErrNotExist
+	}
+	w.progress = append(w.progress, fakeControlProgress{id: id, progress: progress})
+	classifier.ApplyProgress(agent, progress, time.Date(2026, 6, 8, 9, 0, 0, 0, time.UTC))
+	cp := *agent
+	return &cp, nil
+}
+
 func (w *fakeControlWatcher) SendInput(sessionID, text string) error {
 	w.sent = append(w.sent, fakeControlSend{id: sessionID, text: text})
 	return nil
@@ -103,6 +120,7 @@ func TestControlAppAgentSpawnCreatesVisibleDetachedSession(t *testing.T) {
 				"codex": {Name: "codex", Command: "codex --no-alt-screen"},
 			},
 		},
+		stateDir: "/tmp/zen state",
 	}
 	promptPath := filepath.Join(t.TempDir(), "prompt.md")
 	if err := os.WriteFile(promptPath, []byte("implement this"), 0o600); err != nil {
@@ -140,12 +158,31 @@ func TestControlAppAgentSpawnCreatesVisibleDetachedSession(t *testing.T) {
 	if !created.Detached || created.Hidden {
 		t.Fatalf("create visibility options = %+v", created)
 	}
+	if !created.ProgressEnv {
+		t.Fatalf("progress env was not enabled: %+v", created)
+	}
+	if created.Env["ZEN_AGENT_PROGRESS_CMD"] != "zen agent progress" || created.Env["ZEN_STATE_DIR"] != "/tmp/zen state" {
+		t.Fatalf("progress command env = %#v", created.Env)
+	}
 	if len(fw.sent) != 1 {
 		t.Fatalf("sent calls = %#v", fw.sent)
 	}
-	wantPrompt := "delegated by Brain\n\nimplement this\n"
-	if fw.sent[0].id != resp.Agent.ID || fw.sent[0].text != wantPrompt {
-		t.Fatalf("prompt send = %#v, want id %q text %q", fw.sent[0], resp.Agent.ID, wantPrompt)
+	if fw.sent[0].id != resp.Agent.ID {
+		t.Fatalf("prompt sent to %q, want %q", fw.sent[0].id, resp.Agent.ID)
+	}
+	for _, want := range []string{
+		"delegated by Brain\n\nimplement this",
+		"Zen lifecycle protocol:",
+		`$ZEN_AGENT_PROGRESS_CMD --status running --phase working --attention none --summary "Short current work" --lease 300`,
+		"ZEN_AGENT_ID is already set for this session.",
+		"Valid status values: running, done, failed, blocked.",
+	} {
+		if !strings.Contains(fw.sent[0].text, want) {
+			t.Fatalf("prompt missing %q:\n%s", want, fw.sent[0].text)
+		}
+	}
+	if strings.Contains(fw.sent[0].text, "[zen:"+"progress]") {
+		t.Fatalf("prompt should not contain stdout marker protocol:\n%s", fw.sent[0].text)
 	}
 }
 
@@ -208,12 +245,101 @@ func TestControlAppAgentSendAndCapture(t *testing.T) {
 	}
 }
 
+func TestControlAppAgentStatusReturnsProgressFields(t *testing.T) {
+	fw := newFakeControlWatcher()
+	now := time.Date(2026, 6, 7, 8, 0, 0, 0, time.UTC)
+	nextCheck := now.Add(5 * time.Minute)
+	fw.agents["main:@1"] = &classifier.Agent{
+		ID:                  "main:@1",
+		Name:                "Franklin",
+		State:               classifier.StateRunning,
+		Summary:             "Adding close guard",
+		Phase:               "working",
+		Attention:           "none",
+		NeedsAttention:      false,
+		LastProgressAt:      &now,
+		ExpectedNextCheckAt: &nextCheck,
+		LeaseSeconds:        300,
+	}
+	app := &controlApp{watcher: fw}
+
+	resp := app.HandleControlRequest(control.Request{Type: "agent_status", AgentID: "main:@1"})
+
+	if !resp.OK || resp.Agent == nil {
+		t.Fatalf("status response = %#v", resp)
+	}
+	if resp.Agent.Phase != "working" || resp.Agent.Attention != "none" || resp.Agent.LeaseSeconds != 300 {
+		t.Fatalf("agent progress fields = %#v", resp.Agent)
+	}
+	if resp.Agent.LastProgressAt == nil || !resp.Agent.LastProgressAt.Equal(now) {
+		t.Fatalf("last progress = %#v, want %s", resp.Agent.LastProgressAt, now)
+	}
+}
+
+func TestControlAppAgentProgressUpdatesAgent(t *testing.T) {
+	fw := newFakeControlWatcher()
+	fw.agents["brain-agent-worker:@1"] = &classifier.Agent{
+		ID:        "brain-agent-worker:@1",
+		Name:      "Worker",
+		State:     classifier.StateRunning,
+		Delegated: true,
+	}
+	app := &controlApp{watcher: fw}
+
+	resp := app.HandleControlRequest(control.Request{
+		Type:         "agent_progress",
+		AgentID:      "brain-agent-worker:@1",
+		Status:       "blocked",
+		Phase:        "working",
+		Attention:    "user_input",
+		Summary:      "Need a decision",
+		LeaseSeconds: 300,
+	})
+
+	if !resp.OK || resp.Agent == nil {
+		t.Fatalf("progress response = %#v", resp)
+	}
+	if resp.Agent.Status != "blocked" || resp.Agent.Phase != "working" || resp.Agent.Attention != "user_input" {
+		t.Fatalf("agent response = %#v", resp.Agent)
+	}
+	if !resp.Agent.NeedsAttention || resp.Agent.Summary != "Need a decision" || resp.Agent.LeaseSeconds != 300 {
+		t.Fatalf("agent progress metadata = %#v", resp.Agent)
+	}
+	if resp.Agent.LastProgressAt == nil || resp.Agent.ExpectedNextCheckAt == nil {
+		t.Fatalf("progress timestamps missing: %#v", resp.Agent)
+	}
+	if len(fw.progress) != 1 || fw.progress[0].id != "brain-agent-worker:@1" {
+		t.Fatalf("progress calls = %#v", fw.progress)
+	}
+}
+
+func TestControlAppAgentProgressRejectsInvalidValues(t *testing.T) {
+	fw := newFakeControlWatcher()
+	fw.agents["brain-agent-worker:@1"] = &classifier.Agent{ID: "brain-agent-worker:@1", State: classifier.StateRunning}
+	app := &controlApp{watcher: fw}
+
+	resp := app.HandleControlRequest(control.Request{
+		Type:      "agent_progress",
+		AgentID:   "brain-agent-worker:@1",
+		Status:    "completed",
+		Phase:     "working",
+		Attention: "none",
+	})
+
+	if resp.OK || resp.Error == nil || resp.Error.Code != "invalid_progress" {
+		t.Fatalf("progress response = %#v", resp)
+	}
+	if len(fw.progress) != 0 {
+		t.Fatalf("unexpected progress calls = %#v", fw.progress)
+	}
+}
+
 func TestControlAppAgentCloseKillsSession(t *testing.T) {
 	fw := newFakeControlWatcher()
 	fw.agents["brain-agent-worker:@1"] = &classifier.Agent{
 		ID:        "brain-agent-worker:@1",
 		Name:      "Worker",
-		State:     classifier.StateUnknown,
+		State:     classifier.StateDone,
 		Delegated: true,
 	}
 	app := &controlApp{watcher: fw}
@@ -231,6 +357,31 @@ func TestControlAppAgentCloseKillsSession(t *testing.T) {
 	}
 	if resp.Agent.Status != string(classifier.StateRemoved) {
 		t.Fatalf("closed status = %q", resp.Agent.Status)
+	}
+}
+
+func TestControlAppAgentCloseRequiresForceForRunningDelegatedAgent(t *testing.T) {
+	fw := newFakeControlWatcher()
+	fw.agents["brain-agent-worker:@1"] = &classifier.Agent{
+		ID:        "brain-agent-worker:@1",
+		Name:      "Worker",
+		State:     classifier.StateRunning,
+		Delegated: true,
+	}
+	app := &controlApp{watcher: fw}
+
+	resp := app.HandleControlRequest(control.Request{Type: "agent_close", AgentID: "brain-agent-worker:@1"})
+
+	if resp.OK || resp.Error == nil || resp.Error.Code != "agent_running_requires_force" {
+		t.Fatalf("close response = %#v", resp)
+	}
+	if len(fw.killed) != 0 {
+		t.Fatalf("killed sessions = %#v", fw.killed)
+	}
+
+	forced := app.HandleControlRequest(control.Request{Type: "agent_close", AgentID: "brain-agent-worker:@1", Force: true})
+	if !forced.OK || len(fw.killed) != 1 {
+		t.Fatalf("forced close response = %#v killed=%#v", forced, fw.killed)
 	}
 }
 

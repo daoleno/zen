@@ -30,6 +30,20 @@ func TestBuildWindowCommandForShellWrapsCommandInInteractiveLoginShell(t *testin
 	}
 }
 
+func TestBuildWindowCommandForShellInjectsAgentProgressEnv(t *testing.T) {
+	got := buildWindowCommandForShellWithOptions("/bin/zsh", "codex --dangerously-bypass-approvals-and-sandbox", true)
+	for _, want := range []string{
+		"ZEN_AGENT_ID",
+		"ZEN_AGENT_PROGRESS_CMD",
+		"tmux display-message",
+		"codex --dangerously-bypass-approvals-and-sandbox",
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("progress shell command missing %q:\n%s", want, got)
+		}
+	}
+}
+
 func TestTmuxWindowEnvironmentPreservesUsefulEnvAndSkipsTmuxManagedKeys(t *testing.T) {
 	got := tmuxWindowEnvironment([]string{
 		"OPENAI_API_KEY=test-key",
@@ -236,6 +250,77 @@ func TestAgentMetadataChangedIgnoresStateOnlyChange(t *testing.T) {
 
 	if agentMetadataChanged(previous, agent) {
 		t.Fatal("state-only updates should not count as metadata changes")
+	}
+}
+
+func TestAgentMetadataChangedDetectsProgressAttentionChange(t *testing.T) {
+	agent := &classifier.Agent{
+		Name:           "Worker (brain-agent-worker:@1)",
+		State:          classifier.StateRunning,
+		Phase:          "working",
+		Attention:      "none",
+		LeaseSeconds:   300,
+		NeedsAttention: false,
+	}
+	previous := agentMetadataSnapshotFor(agent)
+
+	agent.Attention = "user_input"
+	agent.NeedsAttention = true
+	progressAt := time.Date(2026, 6, 8, 9, 0, 0, 0, time.UTC)
+	agent.LastProgressAt = &progressAt
+
+	if !agentMetadataChanged(previous, agent) {
+		t.Fatal("expected progress attention change to count as metadata")
+	}
+}
+
+func TestUpdateAgentProgressUpdatesAgentAndEmitsStateEvent(t *testing.T) {
+	w := New(time.Second)
+	startedAt := time.Date(2026, 6, 8, 8, 0, 0, 0, time.UTC)
+	w.registerCreatedSession("brain-agent-worker:@1", "/repo/zen", CreateSessionOptions{
+		Command: "codex",
+		Name:    "Worker",
+	}, startedAt)
+	<-w.Events()
+
+	agent, err := w.UpdateAgentProgress("brain-agent-worker:@1", classifier.AgentProgress{
+		Status:       "done",
+		Phase:        "reporting",
+		Attention:    "done",
+		Summary:      "Finished verification",
+		LeaseSeconds: 300,
+	})
+	if err != nil {
+		t.Fatalf("UpdateAgentProgress returned error: %v", err)
+	}
+	if agent.State != classifier.StateDone || agent.Phase != "reporting" || agent.Attention != "done" {
+		t.Fatalf("agent progress = %#v", agent)
+	}
+	if !agent.NeedsAttention || agent.LastProgressAt == nil || agent.ExpectedNextCheckAt == nil {
+		t.Fatalf("agent progress metadata = %#v", agent)
+	}
+
+	select {
+	case ev := <-w.Events():
+		if ev.Type != "agent_state_change" || ev.OldState != "running" || ev.NewState != "done" {
+			t.Fatalf("event = %#v", ev)
+		}
+		if ev.Agent == nil || ev.Agent.Summary != "Finished verification" {
+			t.Fatalf("event agent = %#v", ev.Agent)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for progress event")
+	}
+}
+
+func TestUpdateAgentProgressRejectsUnknownAgent(t *testing.T) {
+	w := New(time.Second)
+	if _, err := w.UpdateAgentProgress("missing:@1", classifier.AgentProgress{
+		Status:    "running",
+		Phase:     "working",
+		Attention: "none",
+	}); err == nil {
+		t.Fatal("expected missing agent error")
 	}
 }
 

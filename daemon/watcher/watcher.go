@@ -85,6 +85,47 @@ func (w *Watcher) GetAgent(id string) *classifier.Agent {
 	return &copy
 }
 
+// UpdateAgentProgress applies a control-plane lifecycle progress update to a
+// known agent and emits the same state/metadata events used by watcher polling.
+func (w *Watcher) UpdateAgentProgress(id string, progress classifier.AgentProgress) (*classifier.Agent, error) {
+	id = strings.TrimSpace(id)
+	if id == "" {
+		return nil, fmt.Errorf("missing agent id")
+	}
+	progress, err := classifier.ValidateProgress(progress)
+	if err != nil {
+		return nil, err
+	}
+
+	now := time.Now().UTC()
+	var event SessionEvent
+	var snapshot *classifier.Agent
+
+	w.mu.Lock()
+	agent, ok := w.agents[id]
+	if !ok {
+		w.mu.Unlock()
+		return nil, fmt.Errorf("agent session not found")
+	}
+	oldState := agent.State
+	classifier.ApplyProgress(agent, progress, now)
+	snapshot = cloneAgent(agent)
+	event = SessionEvent{
+		Type:    "agent_metadata_change",
+		AgentID: id,
+		Agent:   snapshot,
+	}
+	if oldState != agent.State {
+		event.Type = "agent_state_change"
+		event.OldState = string(oldState)
+		event.NewState = string(agent.State)
+	}
+	w.mu.Unlock()
+
+	w.events <- event
+	return snapshot, nil
+}
+
 // HasSession reports whether tmux still has a session matching the target.
 func (w *Watcher) HasSession(target string) bool {
 	target = strings.TrimSpace(target)
@@ -168,10 +209,15 @@ func (w *Watcher) poll() {
 
 		agent.PaneAlive = alive
 		agent.LastLines = lastN(lines, 120)
-		agent.UpdatedAt = time.Now()
+		now := time.Now()
+		agent.UpdatedAt = now
 
 		oldState := agent.State
 		newState, summary := classifier.Classify(alive, lines, agent.StaleCount)
+		if agent.LastProgressAt != nil && alive {
+			newState = agent.State
+			summary = agent.Summary
+		}
 		agent.State = newState
 		agent.Summary = summary
 
@@ -206,7 +252,7 @@ func (w *Watcher) poll() {
 			}
 		}
 
-		if exists && !contentChanged && oldState == newState && agentMetadataChanged(previousMetadata, agent) {
+		if exists && oldState == newState && agentMetadataChanged(previousMetadata, agent) {
 			w.events <- SessionEvent{
 				Type:    "agent_metadata_change",
 				AgentID: win.target,
@@ -271,12 +317,18 @@ func cloneAgent(agent *classifier.Agent) *classifier.Agent {
 }
 
 type agentMetadataSnapshot struct {
-	name      string
-	project   string
-	cwd       string
-	command   string
-	processID int
-	hidden    bool
+	name                string
+	project             string
+	cwd                 string
+	command             string
+	processID           int
+	hidden              bool
+	phase               string
+	attention           string
+	needsAttention      bool
+	lastProgressAt      int64
+	expectedNextCheckAt int64
+	leaseSeconds        int
 }
 
 func agentMetadataSnapshotFor(agent *classifier.Agent) agentMetadataSnapshot {
@@ -284,17 +336,30 @@ func agentMetadataSnapshotFor(agent *classifier.Agent) agentMetadataSnapshot {
 		return agentMetadataSnapshot{}
 	}
 	return agentMetadataSnapshot{
-		name:      agent.Name,
-		project:   agent.Project,
-		cwd:       agent.Cwd,
-		command:   agent.Command,
-		processID: agent.ProcessID,
-		hidden:    agent.Hidden,
+		name:                agent.Name,
+		project:             agent.Project,
+		cwd:                 agent.Cwd,
+		command:             agent.Command,
+		processID:           agent.ProcessID,
+		hidden:              agent.Hidden,
+		phase:               agent.Phase,
+		attention:           agent.Attention,
+		needsAttention:      agent.NeedsAttention,
+		leaseSeconds:        agent.LeaseSeconds,
+		lastProgressAt:      unixNanoOrZero(agent.LastProgressAt),
+		expectedNextCheckAt: unixNanoOrZero(agent.ExpectedNextCheckAt),
 	}
 }
 
 func agentMetadataChanged(previous agentMetadataSnapshot, agent *classifier.Agent) bool {
 	return previous != agentMetadataSnapshotFor(agent)
+}
+
+func unixNanoOrZero(value *time.Time) int64 {
+	if value == nil {
+		return 0
+	}
+	return value.UnixNano()
 }
 
 func isBrainHostWindow(target, windowName string) bool {
@@ -590,11 +655,13 @@ func (w *Watcher) SendAction(sessionID, action string) error {
 }
 
 type CreateSessionOptions struct {
-	Cwd      string
-	Command  string
-	Name     string
-	Detached bool
-	Hidden   bool
+	Cwd         string
+	Command     string
+	Name        string
+	Detached    bool
+	Hidden      bool
+	Env         map[string]string
+	ProgressEnv bool
 }
 
 // CreateSession creates a new tmux window and returns its target id.
@@ -636,7 +703,7 @@ func (w *Watcher) CreateSession(preferredTarget string, opts CreateSessionOption
 		}
 	}
 
-	if shellCommand, err := buildWindowCommand(strings.TrimSpace(opts.Command)); err != nil {
+	if shellCommand, err := buildWindowCommand(opts); err != nil {
 		return "", err
 	} else if shellCommand != "" {
 		var args []string
@@ -711,7 +778,22 @@ func buildNewSessionArgs(sessionName, cwd string, opts CreateSessionOptions, she
 }
 
 func appendTmuxCreateOptions(args []string, cwd string, opts CreateSessionOptions) []string {
-	for _, envEntry := range tmuxWindowEnvironment(os.Environ()) {
+	baseEnv := os.Environ()
+	if len(opts.Env) > 0 {
+		keys := make([]string, 0, len(opts.Env))
+		for key := range opts.Env {
+			keys = append(keys, key)
+		}
+		sort.Strings(keys)
+		for _, key := range keys {
+			key = strings.TrimSpace(key)
+			if key == "" {
+				continue
+			}
+			baseEnv = append(baseEnv, key+"="+opts.Env[key])
+		}
+	}
+	for _, envEntry := range tmuxWindowEnvironment(baseEnv) {
 		args = append(args, "-e", envEntry)
 	}
 	if name := strings.TrimSpace(opts.Name); name != "" {
@@ -798,21 +880,37 @@ func createdSessionName(opts CreateSessionOptions) string {
 	return filepath.Base(fields[0])
 }
 
-func buildWindowCommand(command string) (string, error) {
+func buildWindowCommand(opts CreateSessionOptions) (string, error) {
 	shellPath, err := currentLoginShell()
 	if err != nil {
 		return "", err
 	}
 
-	return buildWindowCommandForShell(shellPath, command), nil
+	return buildWindowCommandForShellWithOptions(shellPath, strings.TrimSpace(opts.Command), opts.ProgressEnv), nil
 }
 
 func buildWindowCommandForShell(shellPath, command string) string {
+	return buildWindowCommandForShellWithOptions(shellPath, command, false)
+}
+
+func buildWindowCommandForShellWithOptions(shellPath, command string, progressEnv bool) string {
 	quotedShell := shellQuote(shellPath)
+	command = strings.TrimSpace(command)
+	if progressEnv {
+		prefix := agentProgressEnvScript()
+		if command == "" {
+			return "exec " + quotedShell + " -i -l -c " + shellQuote(prefix+"; exec "+quotedShell+" -i -l")
+		}
+		command = prefix + "; " + command
+	}
 	if command == "" {
 		return "exec " + quotedShell + " -i -l"
 	}
 	return "exec " + quotedShell + " -i -l -c " + shellQuote(command)
+}
+
+func agentProgressEnvScript() string {
+	return `if [ -z "${ZEN_AGENT_ID:-}" ] && [ -n "${TMUX_PANE:-}" ]; then ZEN_AGENT_ID="$(tmux display-message -p -t "$TMUX_PANE" "#{session_name}:#{window_id}" 2>/dev/null || true)"; export ZEN_AGENT_ID; fi; if [ -z "${ZEN_AGENT_PROGRESS_CMD:-}" ]; then ZEN_AGENT_PROGRESS_CMD="zen agent progress"; export ZEN_AGENT_PROGRESS_CMD; fi`
 }
 
 func formatAgentName(windowName, target string) string {

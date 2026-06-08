@@ -5,6 +5,7 @@ import type {
   CodexConversationEvent,
 } from "../../services/codexConversation";
 import type { ConnectionIssue } from "../../services/connectionIssue";
+import type { AgentStatus } from "../../constants/tokens";
 import { buildCodexStatusMeta } from "./CodexChatControllerModel";
 import type { ComposerAttachment } from "./CodexChatSession";
 
@@ -13,6 +14,7 @@ interface UseCodexControllerPresentationInput {
   connectionIssue?: ConnectionIssue | null;
   conversation: CodexConversation | null;
   events: CodexConversationEvent[];
+  agentStatus?: AgentStatus;
   draft: string;
   attachments: ComposerAttachment[];
   sending: boolean;
@@ -24,6 +26,7 @@ export function useCodexControllerPresentation({
   connectionIssue,
   conversation,
   events,
+  agentStatus,
   draft,
   attachments,
   sending,
@@ -36,9 +39,10 @@ export function useCodexControllerPresentation({
         connectionIssue,
         conversation,
         events,
+        agentStatus,
         sending,
       }),
-    [connectionIssue, connectionState, conversation, events, sending],
+    [agentStatus, connectionIssue, connectionState, conversation, events, sending],
   );
 
   const canSend =

@@ -58,58 +58,6 @@ func TestDelegatedLifecycleWakesAndClosesDoneAgent(t *testing.T) {
 	}
 }
 
-func TestDelegatedLifecycleRecognizesCodexIdleCompletion(t *testing.T) {
-	now := time.Date(2026, 6, 7, 10, 0, 0, 0, time.UTC)
-	var wakes []brain.HeartbeatEvent
-	var closed []string
-	manager := newDelegatedLifecycleManager(
-		func(event brain.HeartbeatEvent) (bool, error) {
-			wakes = append(wakes, event)
-			return true, nil
-		},
-		func(agentID string) error {
-			closed = append(closed, agentID)
-			return nil
-		},
-	)
-	manager.now = func() time.Time { return now }
-	manager.idleCloseAfter = time.Second
-
-	agent := &classifier.Agent{
-		ID:         "brain-agent-smoke:@2",
-		Name:       "Smoke",
-		State:      classifier.StateUnknown,
-		Summary:    "No new output",
-		Delegated:  true,
-		StaleCount: 30,
-		LastLines: []string{
-			"› Delegated smoke test. Do not edit files.",
-			"• DELEGATE_SMOKE_OK",
-			"› Find and fix a bug in @filename",
-		},
-	}
-	manager.Observe(agent, false)
-
-	if len(wakes) != 1 {
-		t.Fatalf("wakes = %#v", wakes)
-	}
-	if wakes[0].Reason != "delegated_agent_idle_completion" {
-		t.Fatalf("wake reason = %q", wakes[0].Reason)
-	}
-	if wakes[0].Summary != "DELEGATE_SMOKE_OK" {
-		t.Fatalf("wake summary = %q", wakes[0].Summary)
-	}
-	if len(closed) != 0 {
-		t.Fatalf("closed before ttl = %#v", closed)
-	}
-
-	now = now.Add(time.Second)
-	manager.Observe(agent, false)
-	if len(closed) != 1 || closed[0] != agent.ID {
-		t.Fatalf("closed after ttl = %#v", closed)
-	}
-}
-
 func TestDelegatedLifecycleDoesNotCloseUnsafeStates(t *testing.T) {
 	now := time.Date(2026, 6, 7, 10, 0, 0, 0, time.UTC)
 	var wakes []brain.HeartbeatEvent
@@ -126,7 +74,6 @@ func TestDelegatedLifecycleDoesNotCloseUnsafeStates(t *testing.T) {
 	)
 	manager.now = func() time.Time { return now }
 	manager.doneCloseAfter = time.Nanosecond
-	manager.idleCloseAfter = time.Nanosecond
 
 	agents := []*classifier.Agent{
 		{
@@ -155,11 +102,12 @@ func TestDelegatedLifecycleDoesNotCloseUnsafeStates(t *testing.T) {
 			LastLines: []string{"complete"},
 		},
 		{
-			ID:         "brain-agent-prompt-only:@1",
-			State:      classifier.StateUnknown,
-			Delegated:  true,
-			StaleCount: 30,
-			LastLines:  []string{"› Find and fix a bug in @filename"},
+			ID:        "brain-agent-unknown:@1",
+			State:     classifier.StateUnknown,
+			Delegated: true,
+			LastLines: []string{
+				`$ZEN_AGENT_PROGRESS_CMD --status running --phase working --attention none --summary "Still editing" --lease 300`,
+			},
 		},
 	}
 

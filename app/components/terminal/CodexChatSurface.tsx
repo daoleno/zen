@@ -26,6 +26,7 @@ interface CodexChatSurfaceProps {
   screenFocused: boolean;
   placeholder?: string;
   minimalComposer?: boolean;
+  showAttachmentControl?: boolean;
   keyboardVerticalOffset?: number;
   showUnavailableAction?: boolean;
   emptyTitle?: string;
@@ -46,6 +47,7 @@ function CodexChatSurfaceImpl({
   screenFocused,
   placeholder,
   minimalComposer,
+  showAttachmentControl,
   keyboardVerticalOffset,
   showUnavailableAction,
   emptyTitle,
@@ -65,6 +67,7 @@ function CodexChatSurfaceImpl({
     screenFocused,
     placeholder,
     minimalComposer,
+    showAttachmentControl,
     keyboardVerticalOffset,
     showUnavailableAction,
     emptyTitle,

@@ -42,14 +42,16 @@ type Service struct {
 }
 
 type HeartbeatEvent struct {
-	Reason   string
-	AgentID  string
-	Name     string
-	Status   string
-	Summary  string
-	Cwd      string
-	OldState string
-	NewState string
+	Reason    string
+	AgentID   string
+	Name      string
+	Status    string
+	Summary   string
+	Cwd       string
+	Phase     string
+	Attention string
+	OldState  string
+	NewState  string
 }
 
 func NewService(store *Store, watcher Watcher, execs *work.ExecutorConfig) *Service {
@@ -87,6 +89,20 @@ func (s *Service) Snapshot() (Snapshot, error) {
 	}
 	snapshot.Agents = s.agentRefs(host.ID)
 	return snapshot, nil
+}
+
+func (s *Service) WorkspaceTree() (WorkspaceTree, error) {
+	if s == nil || s.store == nil {
+		return WorkspaceTree{}, fmt.Errorf("brain store is not configured")
+	}
+	return s.store.WorkspaceTree()
+}
+
+func (s *Service) ReadWorkspaceFile(path string) (WorkspaceFile, error) {
+	if s == nil || s.store == nil {
+		return WorkspaceFile{}, fmt.Errorf("brain store is not configured")
+	}
+	return s.store.ReadWorkspaceFile(path)
 }
 
 func (s *Service) SetHostAdapter(adapterID string) (Snapshot, error) {
@@ -157,6 +173,8 @@ func formatHeartbeatWake(event HeartbeatEvent) string {
 	appendHeartbeatField("agent_id", event.AgentID)
 	appendHeartbeatField("agent_name", event.Name)
 	appendHeartbeatField("status", event.Status)
+	appendHeartbeatField("phase", event.Phase)
+	appendHeartbeatField("attention", event.Attention)
 	appendHeartbeatField("old_state", event.OldState)
 	appendHeartbeatField("new_state", event.NewState)
 	appendHeartbeatField("workspace", event.Cwd)

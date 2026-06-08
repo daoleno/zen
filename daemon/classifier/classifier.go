@@ -20,23 +20,29 @@ const (
 
 // Agent holds the current state and metadata for a single agent session.
 type Agent struct {
-	ID            string     `json:"id"`
-	Name          string     `json:"name"`
-	Project       string     `json:"project,omitempty"`
-	Cwd           string     `json:"cwd,omitempty"`
-	Command       string     `json:"command,omitempty"`
-	State         AgentState `json:"status"`
-	Summary       string     `json:"summary"`
-	LastLines     []string   `json:"last_output_lines"`
-	StartedAt     time.Time  `json:"started_at,omitempty"`
-	UpdatedAt     time.Time  `json:"updated_at"`
-	StateVersion  int64      `json:"state_version"` // increments on every state change
-	ProcessID     int        `json:"process_id,omitempty"`
-	Hidden        bool       `json:"hidden,omitempty"`
-	Delegated     bool       `json:"delegated,omitempty"`
-	PaneAlive     bool       `json:"-"`
-	LastOutputLen int        `json:"-"`
-	StaleCount    int        `json:"-"` // consecutive polls with no new output
+	ID                  string     `json:"id"`
+	Name                string     `json:"name"`
+	Project             string     `json:"project,omitempty"`
+	Cwd                 string     `json:"cwd,omitempty"`
+	Command             string     `json:"command,omitempty"`
+	State               AgentState `json:"status"`
+	Summary             string     `json:"summary"`
+	Phase               string     `json:"phase,omitempty"`
+	Attention           string     `json:"attention,omitempty"`
+	NeedsAttention      bool       `json:"needs_attention,omitempty"`
+	LastProgressAt      *time.Time `json:"last_progress_at,omitempty"`
+	ExpectedNextCheckAt *time.Time `json:"expected_next_check_at,omitempty"`
+	LeaseSeconds        int        `json:"lease_seconds,omitempty"`
+	LastLines           []string   `json:"last_output_lines"`
+	StartedAt           time.Time  `json:"started_at,omitempty"`
+	UpdatedAt           time.Time  `json:"updated_at"`
+	StateVersion        int64      `json:"state_version"` // increments on every state change
+	ProcessID           int        `json:"process_id,omitempty"`
+	Hidden              bool       `json:"hidden,omitempty"`
+	Delegated           bool       `json:"delegated,omitempty"`
+	PaneAlive           bool       `json:"-"`
+	LastOutputLen       int        `json:"-"`
+	StaleCount          int        `json:"-"` // consecutive polls with no new output
 }
 
 // blockedPatterns match output that indicates the agent is waiting for user input.
@@ -66,7 +72,7 @@ var failedPatterns = []*regexp.Regexp{
 	regexp.MustCompile(`(?i)^panic:`),
 	regexp.MustCompile(`(?i)traceback \(most recent call last\)`),
 	regexp.MustCompile(`(?i)unhandled exception`),
-	regexp.MustCompile(`(?i)FAILED`),
+	regexp.MustCompile(`\bFAILED\b`),
 	regexp.MustCompile(`(?i)command not found`),
 	regexp.MustCompile(`(?i)permission denied`),
 	regexp.MustCompile(`(?i)segmentation fault`),

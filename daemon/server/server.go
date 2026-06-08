@@ -346,6 +346,12 @@ func (s *Server) handleClientMessage(conn *websocket.Conn, msg []byte) {
 	case "brain_chat_new":
 		s.handleBrainChatNew(conn, raw)
 
+	case "brain_workspace_tree":
+		s.handleBrainWorkspaceTree(conn, raw)
+
+	case "brain_workspace_file":
+		s.handleBrainWorkspaceFile(conn, raw)
+
 	case "register_push":
 		if raw.PushToken != "" {
 			s.pusher.SetRegistration(raw.PushToken, raw.ServerRef)
@@ -1649,6 +1655,7 @@ func (s *Server) handleWatcherEvent(ev watcher.SessionEvent) {
 		if ev.Agent != nil {
 			s.broadcastJSON(map[string]any{"type": "agent_session_updated", "agent_session": ev.Agent})
 		}
+		brainWoke = s.maybeWakeBrainForSessionEvent(ev)
 	case "agent_removed":
 		if ev.Agent != nil {
 			s.broadcastJSON(map[string]any{"type": "agent_session_archived", "agent_session": ev.Agent})
@@ -1664,7 +1671,7 @@ func (s *Server) recordWorkForSessionEvent(ev watcher.SessionEvent) {
 		return
 	}
 	final := ev.Type == "agent_removed" || isFinalAgentState(ev.NewState)
-	force := ev.Type != "agent_output"
+	force := ev.Type != "agent_output" && ev.Type != "agent_metadata_change"
 	if _, err := s.workLog.RecordAgent(ev.Agent, final, force); err != nil {
 		log.Printf("work log sync failed for %s: %v", ev.AgentID, err)
 	}
@@ -1736,18 +1743,23 @@ func (s *Server) maybeWakeBrainForSessionEvent(ev watcher.SessionEvent) bool {
 		if status == "" {
 			status = string(classifier.StateDone)
 		}
+	} else if ev.Type == "agent_metadata_change" && ev.Agent.NeedsAttention {
+		reason = "agent_attention"
+		status = string(ev.Agent.State)
 	} else if !isActionableBrainHeartbeatState(status) {
 		return false
 	}
 	woke, err := s.brain.Heartbeat(brain.HeartbeatEvent{
-		Reason:   reason,
-		AgentID:  ev.AgentID,
-		Name:     ev.Agent.Name,
-		Status:   status,
-		Summary:  ev.Agent.Summary,
-		Cwd:      ev.Agent.Cwd,
-		OldState: ev.OldState,
-		NewState: ev.NewState,
+		Reason:    reason,
+		AgentID:   ev.AgentID,
+		Name:      ev.Agent.Name,
+		Status:    status,
+		Summary:   ev.Agent.Summary,
+		Cwd:       ev.Agent.Cwd,
+		Phase:     ev.Agent.Phase,
+		Attention: ev.Agent.Attention,
+		OldState:  ev.OldState,
+		NewState:  ev.NewState,
 	})
 	if err != nil {
 		log.Printf("brain heartbeat wake failed for %s: %v", ev.AgentID, err)

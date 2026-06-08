@@ -50,6 +50,7 @@ interface UseCodexChatSurfaceStateInput {
   screenFocused: boolean;
   placeholder?: string;
   minimalComposer?: boolean;
+  showAttachmentControl?: boolean;
   keyboardVerticalOffset?: number;
   showUnavailableAction?: boolean;
   emptyTitle?: string;
@@ -99,6 +100,7 @@ export function useCodexChatSurfaceState({
   screenFocused,
   placeholder,
   minimalComposer,
+  showAttachmentControl,
   keyboardVerticalOffset,
   showUnavailableAction,
   emptyTitle,
@@ -295,6 +297,7 @@ export function useCodexChatSurfaceState({
   const controller = useCodexChatController({
     serverId,
     agentId,
+    agentStatus: agentInfo?.status,
     connectionState,
     connectionIssue,
     conversation,
@@ -325,6 +328,7 @@ export function useCodexChatSurfaceState({
     (isCodexRequestRunning({
       conversation,
       events,
+      agentStatus: agentInfo?.status,
     }) &&
       localChatState === "idle");
   const turnStartedAt = useMemo(
@@ -352,6 +356,7 @@ export function useCodexChatSurfaceState({
     placeholder,
     keyboardVerticalOffset,
     minimalComposer,
+    showAttachmentControl,
   });
   const skillsSheet = useMemo(
     () =>

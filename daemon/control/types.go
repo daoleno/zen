@@ -9,18 +9,25 @@ import (
 const SocketName = "zen.sock"
 
 type Request struct {
-	Type       string `json:"type"`
-	Name       string `json:"name,omitempty"`
-	Executor   string `json:"executor,omitempty"`
-	AdapterID  string `json:"adapter_id,omitempty"`
-	Command    string `json:"command,omitempty"`
-	Cwd        string `json:"cwd,omitempty"`
-	Prompt     string `json:"prompt,omitempty"`
-	PromptFile string `json:"prompt_file,omitempty"`
-	AgentID    string `json:"agent_id,omitempty"`
-	Text       string `json:"text,omitempty"`
-	Submit     bool   `json:"submit,omitempty"`
-	Hidden     bool   `json:"hidden,omitempty"`
+	Type         string `json:"type"`
+	Name         string `json:"name,omitempty"`
+	Executor     string `json:"executor,omitempty"`
+	AdapterID    string `json:"adapter_id,omitempty"`
+	Command      string `json:"command,omitempty"`
+	Cwd          string `json:"cwd,omitempty"`
+	Prompt       string `json:"prompt,omitempty"`
+	PromptFile   string `json:"prompt_file,omitempty"`
+	Profile      string `json:"profile,omitempty"`
+	AgentID      string `json:"agent_id,omitempty"`
+	Status       string `json:"status,omitempty"`
+	Phase        string `json:"phase,omitempty"`
+	Attention    string `json:"attention,omitempty"`
+	Summary      string `json:"summary,omitempty"`
+	LeaseSeconds int    `json:"lease_seconds,omitempty"`
+	Text         string `json:"text,omitempty"`
+	Submit       bool   `json:"submit,omitempty"`
+	Hidden       bool   `json:"hidden,omitempty"`
+	Force        bool   `json:"force,omitempty"`
 }
 
 type Response struct {
@@ -40,15 +47,21 @@ type Error struct {
 }
 
 type Agent struct {
-	ID        string    `json:"id"`
-	Name      string    `json:"name"`
-	Status    string    `json:"status"`
-	Summary   string    `json:"summary,omitempty"`
-	Cwd       string    `json:"cwd,omitempty"`
-	Command   string    `json:"command,omitempty"`
-	UpdatedAt time.Time `json:"updated_at,omitempty"`
-	Hidden    bool      `json:"hidden,omitempty"`
-	Delegated bool      `json:"delegated,omitempty"`
+	ID                  string     `json:"id"`
+	Name                string     `json:"name"`
+	Status              string     `json:"status"`
+	Summary             string     `json:"summary,omitempty"`
+	Phase               string     `json:"phase,omitempty"`
+	Attention           string     `json:"attention,omitempty"`
+	NeedsAttention      bool       `json:"needs_attention,omitempty"`
+	LastProgressAt      *time.Time `json:"last_progress_at,omitempty"`
+	ExpectedNextCheckAt *time.Time `json:"expected_next_check_at,omitempty"`
+	LeaseSeconds        int        `json:"lease_seconds,omitempty"`
+	Cwd                 string     `json:"cwd,omitempty"`
+	Command             string     `json:"command,omitempty"`
+	UpdatedAt           time.Time  `json:"updated_at,omitempty"`
+	Hidden              bool       `json:"hidden,omitempty"`
+	Delegated           bool       `json:"delegated,omitempty"`
 }
 
 type AdapterCapabilities struct {

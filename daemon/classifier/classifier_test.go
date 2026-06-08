@@ -96,6 +96,12 @@ func TestClassify(t *testing.T) {
 			wantState: StateFailed,
 		},
 		{
+			name:      "uppercase failed diagnostic",
+			paneAlive: true,
+			lines:     []string{"Running tests...", "FAILED: 3 tests failed"},
+			wantState: StateFailed,
+		},
+		{
 			name:      "dead pane with error",
 			paneAlive: false,
 			lines:     []string{"Running tests...", "FAILED: 3 tests failed"},
@@ -130,6 +136,25 @@ func TestClassify(t *testing.T) {
 			lines:      []string{"Writing test file..."},
 			staleCount: 10,
 			wantState:  StateRunning,
+		},
+		{
+			name:      "heartbeat log with failed in agent name is not failure",
+			paneAlive: true,
+			lines: []string{
+				"2026/06/08 00:20:19 brain heartbeat wake sent for brain-agent-zen-classifier-false-failed-1780",
+			},
+			wantState: StateRunning,
+		},
+		{
+			name:      "lifecycle valid values mention failed without failure",
+			paneAlive: true,
+			lines: []string{
+				`$ZEN_AGENT_PROGRESS_CMD --status running --phase working --attention none --summary "Still checking" --lease 300`,
+				`- Valid status values: running, done, failed, blocked.`,
+				`- Valid phase values: starting, reading, planning, working, verifying, reporting.`,
+				`- Valid attention values: none, done, blocked, failed, user_input, stale.`,
+			},
+			wantState: StateRunning,
 		},
 
 		// === UNKNOWN states ===

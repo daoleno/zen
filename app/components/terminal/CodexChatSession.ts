@@ -15,6 +15,7 @@ import {
   type CodexConversationDeltaPayload,
   type CodexConversationSyncStatusPayload,
 } from "../../services/websocket";
+import type { AgentStatus } from "../../constants/tokens";
 
 const PENDING_SLASH_COMMAND_MAX_AGE_MS = 120_000;
 const PENDING_SLASH_COMMAND_SETTLED_MAX_AGE_MS = 45_000;
@@ -77,6 +78,7 @@ export type PendingSlashCommandInput = Omit<
 >;
 
 export type CodexChatAgentInfo = {
+  status?: AgentStatus;
   cwd?: string;
   command?: string;
   name?: string;

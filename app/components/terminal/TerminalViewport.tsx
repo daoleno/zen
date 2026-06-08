@@ -84,6 +84,7 @@ export function TerminalViewport({
     () =>
       agent
         ? {
+            status: agent.status,
             cwd: agent.cwd,
             command: agent.command,
             name: agent.name,
@@ -97,6 +98,7 @@ export function TerminalViewport({
       agent?.name,
       agent?.process_id,
       agent?.started_at,
+      agent?.status,
     ],
   );
 

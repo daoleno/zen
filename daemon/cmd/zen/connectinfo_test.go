@@ -2,17 +2,20 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/base64"
 	"encoding/binary"
 	"encoding/hex"
 	"errors"
 	"flag"
 	"net/url"
+	"os"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/daoleno/zen/daemon/auth"
+	"github.com/daoleno/zen/daemon/control"
 )
 
 func TestNormalizeAdvertiseURL(t *testing.T) {
@@ -158,7 +161,7 @@ func TestTopLevelHelpIncludesAgentAndBrainCommands(t *testing.T) {
 	}
 	rendered := output.String()
 	for _, want := range []string{
-		"agent      List, spawn, inspect, message, and close agent sessions",
+		"agent      List, spawn, inspect, message, progress, and close agent sessions",
 		"brain      Inspect Brain workspace and host adapter configuration",
 	} {
 		if !strings.Contains(rendered, want) {
@@ -174,13 +177,31 @@ func TestAgentAndBrainHelpAreDiscoverable(t *testing.T) {
 	}
 	agentHelp := agentOutput.String()
 	for _, want := range []string{
-		"Usage: zen agent <list|spawn|send|capture|close|kill> [flags]",
+		"Usage: zen agent <list|spawn|send|capture|status|progress|close|kill> [flags]",
 		"zen agent spawn -name",
 		"zen agent capture -id",
+		"zen agent status -id",
+		"zen agent progress --status running",
 		"zen agent close -id",
 	} {
 		if !strings.Contains(agentHelp, want) {
 			t.Fatalf("agent help missing %q:\n%s", want, agentHelp)
+		}
+	}
+
+	var progressOutput bytes.Buffer
+	if err := runAgentCommand([]string{"progress", "--help"}, &progressOutput); !errors.Is(err, flag.ErrHelp) {
+		t.Fatalf("runAgentCommand progress help error = %v, want ErrHelp", err)
+	}
+	progressHelp := progressOutput.String()
+	for _, want := range []string{
+		"Usage: zen agent progress --status running --phase working --attention none",
+		"-id",
+		"-lease",
+		"-status",
+	} {
+		if !strings.Contains(progressHelp, want) {
+			t.Fatalf("progress help missing %q:\n%s", want, progressHelp)
 		}
 	}
 
@@ -198,4 +219,169 @@ func TestAgentAndBrainHelpAreDiscoverable(t *testing.T) {
 			t.Fatalf("brain help missing %q:\n%s", want, brainHelp)
 		}
 	}
+}
+
+type captureCLIControlHandler struct {
+	requests chan control.Request
+}
+
+func (h *captureCLIControlHandler) HandleControlRequest(req control.Request) control.Response {
+	h.requests <- req
+	return control.Response{OK: true}
+}
+
+func TestAgentProgressCommandUsesZenAgentIDFallback(t *testing.T) {
+	req := runProgressCLIAndCaptureRequest(t,
+		"brain-agent-env:@1",
+		[]string{
+			"--status", "running",
+			"--phase", "working",
+			"--attention", "none",
+			"--summary", "Reading files",
+			"--lease", "300",
+			"--json=false",
+		},
+	)
+
+	if req.Type != "agent_progress" || req.AgentID != "brain-agent-env:@1" {
+		t.Fatalf("request identity = %#v", req)
+	}
+	if req.Status != "running" || req.Phase != "working" || req.Attention != "none" {
+		t.Fatalf("request progress = %#v", req)
+	}
+	if req.Summary != "Reading files" || req.LeaseSeconds != 300 {
+		t.Fatalf("request progress metadata = %#v", req)
+	}
+}
+
+func TestAgentProgressCommandExplicitIDOverridesEnv(t *testing.T) {
+	req := runProgressCLIAndCaptureRequest(t,
+		"brain-agent-env:@1",
+		[]string{
+			"-id", "brain-agent-explicit:@2",
+			"--status", "done",
+			"--phase", "reporting",
+			"--attention", "done",
+			"--summary", "Finished",
+			"--json=false",
+		},
+	)
+
+	if req.AgentID != "brain-agent-explicit:@2" {
+		t.Fatalf("request agent id = %q", req.AgentID)
+	}
+	if req.Status != "done" || req.Phase != "reporting" || req.Attention != "done" {
+		t.Fatalf("request progress = %#v", req)
+	}
+}
+
+func TestAgentProgressCommandUsesZenStateDirFallback(t *testing.T) {
+	stateDir := t.TempDir()
+	handler, done, cancel := startCLIControlServer(t, stateDir)
+	defer cancel()
+
+	t.Setenv("ZEN_AGENT_ID", "brain-agent-env:@1")
+	t.Setenv("ZEN_STATE_DIR", stateDir)
+	var stderr bytes.Buffer
+	if err := runAgentProgress([]string{
+		"--status", "running",
+		"--phase", "working",
+		"--attention", "none",
+		"--summary", "Reading files",
+		"--json=false",
+	}, &stderr); err != nil {
+		t.Fatalf("runAgentProgress returned error: %v stderr=%s", err, stderr.String())
+	}
+
+	select {
+	case req := <-handler.requests:
+		if req.AgentID != "brain-agent-env:@1" || req.Status != "running" {
+			t.Fatalf("request = %#v", req)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for control request")
+	}
+
+	cancel()
+	waitForCLIControlServerShutdown(t, done)
+}
+
+func TestAgentProgressCommandRequiresIDOrEnv(t *testing.T) {
+	var stderr bytes.Buffer
+	t.Setenv("ZEN_AGENT_ID", "")
+	err := runAgentProgress([]string{
+		"--status", "running",
+		"--phase", "working",
+		"--attention", "none",
+		"--json=false",
+	}, &stderr)
+	if err == nil || !strings.Contains(err.Error(), "agent id is required") {
+		t.Fatalf("runAgentProgress error = %v", err)
+	}
+}
+
+func runProgressCLIAndCaptureRequest(t *testing.T, envAgentID string, args []string) control.Request {
+	t.Helper()
+	stateDir := t.TempDir()
+	handler, done, cancel := startCLIControlServer(t, stateDir)
+	defer cancel()
+
+	t.Setenv("ZEN_AGENT_ID", envAgentID)
+	commandArgs := append([]string{"--state-dir", stateDir}, args...)
+	var stderr bytes.Buffer
+	if err := runAgentProgress(commandArgs, &stderr); err != nil {
+		t.Fatalf("runAgentProgress returned error: %v stderr=%s", err, stderr.String())
+	}
+
+	var req control.Request
+	select {
+	case req = <-handler.requests:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for control request")
+	}
+
+	cancel()
+	waitForCLIControlServerShutdown(t, done)
+	return req
+}
+
+func startCLIControlServer(t *testing.T, stateDir string) (*captureCLIControlHandler, chan error, context.CancelFunc) {
+	t.Helper()
+	socketPath, err := control.DefaultSocketPath(stateDir)
+	if err != nil {
+		t.Fatalf("DefaultSocketPath returned error: %v", err)
+	}
+	handler := &captureCLIControlHandler{requests: make(chan control.Request, 1)}
+	server := &control.Server{Path: socketPath, Handler: handler}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() {
+		done <- server.Run(ctx)
+	}()
+	waitForCLISocketPath(t, socketPath)
+	return handler, done, cancel
+}
+
+func waitForCLIControlServerShutdown(t *testing.T, done chan error) {
+	t.Helper()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("server exited with error: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for control server shutdown")
+	}
+}
+
+func waitForCLISocketPath(t *testing.T, path string) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if info, err := os.Lstat(path); err == nil && info.Mode()&os.ModeSocket != 0 {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("timed out waiting for control socket at %s", path)
 }

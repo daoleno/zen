@@ -31,7 +31,8 @@ interface CodexChatComposerProps {
   sendElapsedLabel?: string;
   running: boolean;
   bottomPadding: number;
-  minimalComposer: boolean;
+  showActionMenuButton: boolean;
+  showAttachmentRail: boolean;
   showCommandMenu: boolean;
   showCommandList: boolean;
   showComposerActions: boolean;
@@ -71,7 +72,8 @@ export function CodexChatComposer({
   sendElapsedLabel,
   running,
   bottomPadding,
-  minimalComposer,
+  showActionMenuButton,
+  showAttachmentRail,
   showCommandMenu,
   showCommandList,
   showComposerActions,
@@ -102,7 +104,7 @@ export function CodexChatComposer({
       chrome={chrome}
       theme={theme}
     >
-      {minimalComposer ? null : (
+      {showCommandMenu ? (
         <CodexComposerActionMenu
           visible={showCommandMenu}
           showComposerActions={showComposerActions}
@@ -121,16 +123,16 @@ export function CodexChatComposer({
             onDismissActionMenu();
           }}
         />
-      )}
+      ) : null}
 
-      {minimalComposer ? null : (
+      {showAttachmentRail ? (
         <CodexComposerAttachmentRail
           attachments={attachments}
           uploading={uploading}
           chrome={chrome}
           onRemoveAttachment={onRemoveAttachment}
         />
-      )}
+      ) : null}
 
       <CodexComposerPanel
         inputRef={inputRef}
@@ -144,11 +146,11 @@ export function CodexChatComposer({
         sendIcon={sendIcon}
         sendLabel={sendLabel}
         sendElapsedLabel={sendElapsedLabel}
-      running={running}
-      actionMenuExpanded={showComposerActions}
-      actionMenuButtonEnabled={composerActionButtonEnabled}
-      showActionMenuButton={!minimalComposer}
-      chrome={chrome}
+        running={running}
+        actionMenuExpanded={showComposerActions}
+        actionMenuButtonEnabled={composerActionButtonEnabled}
+        showActionMenuButton={showActionMenuButton}
+        chrome={chrome}
         theme={theme}
         onDraftChange={onDraftChange}
         onActionMenuPress={onToggleActionMenu}

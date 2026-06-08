@@ -1,4 +1,5 @@
 import type { CodexConversationEvent } from "../../services/codexConversation";
+import { parseHeartbeatWakeMessage } from "./CodexHeartbeatWake";
 import type {
   PendingSlashCommand,
   PendingUserMessage,
@@ -91,7 +92,10 @@ export function buildZenTimeline(events: CodexConversationEvent[]): ZenTimelineI
     if (event.kind === "user_message" || event.kind === "assistant_message") {
       flushExploration();
       const extracted = extractDisplayMessage(event.body || "");
-      if (!extracted.body && extracted.attachments.length === 0) {
+      const heartbeatWake = event.kind === "user_message"
+        ? parseHeartbeatWakeMessage(extracted.body)
+        : null;
+      if (!extracted.body && extracted.attachments.length === 0 && !heartbeatWake) {
         continue;
       }
       items.push({
@@ -99,8 +103,9 @@ export function buildZenTimeline(events: CodexConversationEvent[]): ZenTimelineI
         id: event.id || `${event.kind}:${event.seq}`,
         role: event.kind === "user_message" ? "user" : "assistant",
         timestamp: event.timestamp,
-        body: extracted.body,
+        body: heartbeatWake ? "" : extracted.body,
         attachments: extracted.attachments,
+        heartbeatWake: heartbeatWake || undefined,
       });
       continue;
     }

@@ -8,6 +8,7 @@ import type {
   CodexConversationEvent,
 } from "../../services/codexConversation";
 import type { ConnectionIssue } from "../../services/connectionIssue";
+import type { AgentStatus } from "../../constants/tokens";
 import type {
   CodexSkill,
   CodexSlashCommand,
@@ -26,6 +27,7 @@ import { useCodexSlashCommandRouter } from "./useCodexSlashCommandRouter";
 interface UseCodexChatControllerInput {
   serverId: string;
   agentId: string;
+  agentStatus?: AgentStatus;
   connectionState: ConnectionState;
   connectionIssue?: ConnectionIssue | null;
   conversation: CodexConversation | null;
@@ -55,6 +57,7 @@ interface UseCodexChatControllerInput {
 export function useCodexChatController({
   serverId,
   agentId,
+  agentStatus,
   connectionState,
   connectionIssue,
   conversation,
@@ -134,6 +137,7 @@ export function useCodexChatController({
     connectionIssue,
     conversation,
     events,
+    agentStatus,
     draft,
     attachments,
     sending,
