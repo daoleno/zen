@@ -21,6 +21,7 @@ export default function TerminalScreen() {
     agentId,
     serverId,
     sessionKey,
+    initialCodexRenderMode,
     routeSessionHint,
     pickerVisible,
     setPickerVisible,
@@ -61,6 +62,7 @@ export default function TerminalScreen() {
   } = useTerminalScreenStorage({
     serverId,
     sessionKey,
+    initialCodexRenderMode,
   });
   const {
     gitDiff,

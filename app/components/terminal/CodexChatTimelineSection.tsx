@@ -60,7 +60,7 @@ interface CodexChatTimelineSectionProps {
   onTextSelectionGestureStart(): void;
   onTextSelectionGestureEnd(): void;
   onScrollToLatest(animated?: boolean, delay?: number): void;
-  onUnavailableAction(): void;
+  onUnavailableAction?: () => void;
   showUnavailableAction?: boolean;
 }
 

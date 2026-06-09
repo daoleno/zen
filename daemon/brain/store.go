@@ -13,7 +13,10 @@ import (
 	"time"
 )
 
-const defaultPersonality = "calm, direct, warm, pragmatic"
+const (
+	defaultPersonality = "calm, direct, warm, pragmatic"
+	worklogDirName     = "worklog"
+)
 
 type Store struct {
 	Root string
@@ -161,6 +164,9 @@ func (s *Store) ensureFiles() error {
 		return err
 	}
 	if err := ensureWorkspaceInstructionsFile(s.workspaceInstructionsPath()); err != nil {
+		return err
+	}
+	if err := s.ensureWorklog(); err != nil {
 		return err
 	}
 	if err := ensureFile(s.remindersPath(), []byte("[]\n")); err != nil {
@@ -468,6 +474,14 @@ func (s *Store) workspaceInstructionsPath() string {
 	return filepath.Join(s.WorkspacePath(), "AGENTS.md")
 }
 
+func (s *Store) worklogPath() string {
+	return filepath.Join(s.WorkspacePath(), worklogDirName)
+}
+
+func (s *Store) worklogReadmePath() string {
+	return filepath.Join(s.worklogPath(), "README.md")
+}
+
 type profileFile struct {
 	Personality string `json:"personality"`
 	Notes       string `json:"notes,omitempty"`
@@ -707,6 +721,13 @@ func ensureWorkspaceInstructionsFile(path string) error {
 	return writeAtomic(path, []byte(updated), 0o600)
 }
 
+func (s *Store) ensureWorklog() error {
+	if err := os.MkdirAll(s.worklogPath(), 0o700); err != nil {
+		return err
+	}
+	return ensureFile(s.worklogReadmePath(), []byte(defaultWorklogReadme))
+}
+
 func workspaceInstructionsCurrent(value string) bool {
 	if strings.TrimSpace(value) == "" {
 		return false
@@ -787,6 +808,7 @@ This directory is the private workspace for zen Brain.
 - Keep durable user memory in memory.md.
 - Keep personality and preference notes in profile.md.
 - Use local files here for plans, reminders, inbox notes, and follow-up state.
+- Keep task tracking and archival records in worklog/: create one Markdown file per problem, feature, fix, or workflow that needs durable context, progress, verification, results, or follow-up.
 - Do not use project repositories as Brain's default working directory.
 - Brain is the user's scheduler: reduce decision load. For concrete work needing repository/tool execution, independent progress, parallelism, or follow-up, proactively create or reuse visible delegated agent sessions; stay here for chat, memory, synthesis, reminders, and decisions that fit the current context.
 - Use the zen binary to delegate, send, inspect, and close agents. Do not call tmux directly. Common command shapes: zen agent list --json; zen agent spawn -name "<name>" -executor <executor> -cwd <workspace> -prompt "<task>"; zen agent capture -id <agent_id> --json; zen agent send -id <agent_id> -text "<message>" --submit=true; zen agent close -id <agent_id>.
@@ -794,6 +816,38 @@ This directory is the private workspace for zen Brain.
 - Keep orchestration principles in Markdown, prompts, and agent instructions. Code should provide tools, context, persistence, visibility, and safety boundaries rather than rigid workflow gates.
 - Treat Heartbeat wake messages as compact actionable deltas; inspect only what is needed, then act, summarize, or sleep.
 - Ask only when critical context is missing, an action is high-risk or irreversible, credentials/permissions are needed, or the choice depends on the user's values; otherwise continue low-risk next steps and consolidate options with a recommendation.
+`
+
+const defaultWorklogReadme = `# Brain Worklog
+
+This directory stores one Markdown record for each problem, feature, fix, or workflow Brain tracks for the user. Use it as a durable archive and as lightweight task progress state.
+
+Suggested filename: ` + "`YYYY-MM-DD-short-title.md`" + `
+
+## Task Record Template
+
+` + "```markdown" + `
+# <Task Title>
+
+- Status: planned | in_progress | blocked | done
+- Date: YYYY-MM-DD
+
+## Context
+
+## Goal
+
+## Todo
+
+- [ ]
+
+## Progress
+
+## Verification
+
+## Result
+
+## Follow-up
+` + "```" + `
 `
 
 var currentWorkspaceInstructionMarkers = []string{

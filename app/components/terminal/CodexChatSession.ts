@@ -100,6 +100,7 @@ const draftCache = new Map<string, string>();
 const attachmentCache = new Map<string, ComposerAttachment[]>();
 const localChatStateCache = new Map<string, CodexChatLocalState>();
 const newChatBoundaryCache = new Map<string, NewChatBoundary>();
+const pendingUserMessageCache = new Map<string, PendingUserMessage[]>();
 
 type CodexChatThreadState = {
   cacheKey: string;
@@ -136,7 +137,7 @@ function initialCodexChatThreadState(cacheKey: string): CodexChatThreadState {
     localChatState: localChatStateCache.get(cacheKey) ?? "idle",
     loading: !conversationCache.has(cacheKey),
     error: null,
-    pendingUserMessages: [],
+    pendingUserMessages: cachedPendingUserMessages(cacheKey),
     pendingSlashCommands: [],
   };
 }
@@ -173,6 +174,7 @@ function codexChatThreadReducer(
       newChatBoundaryCache.set(state.cacheKey, action.boundary);
       conversationCache.delete(state.cacheKey);
       localChatStateCache.set(state.cacheKey, "starting-new-chat");
+      pendingUserMessageCache.delete(state.cacheKey);
       return {
         ...state,
         conversation: null,
@@ -206,28 +208,37 @@ function codexChatThreadReducer(
         loading: false,
         localChatState: "idle",
       };
-    case "add_pending_user_message":
+    case "add_pending_user_message": {
+      const pendingUserMessages = cachePendingUserMessages(state.cacheKey, [
+        ...state.pendingUserMessages,
+        action.message,
+      ]);
       return {
         ...state,
-        pendingUserMessages: [
-          ...state.pendingUserMessages,
-          action.message,
-        ].slice(-12),
+        pendingUserMessages,
       };
-    case "remove_pending_user_message":
+    }
+    case "remove_pending_user_message": {
+      const pendingUserMessages = cachePendingUserMessages(
+        state.cacheKey,
+        state.pendingUserMessages.filter((message) => message.id !== action.id),
+      );
       return {
         ...state,
-        pendingUserMessages: state.pendingUserMessages.filter(
-          (message) => message.id !== action.id,
-        ),
+        pendingUserMessages,
       };
-    case "prune_pending_user_messages":
+    }
+    case "prune_pending_user_messages": {
+      const pendingUserMessages = cachePendingUserMessages(
+        state.cacheKey,
+        state.pendingUserMessages,
+        action.now,
+      );
       return {
         ...state,
-        pendingUserMessages: state.pendingUserMessages.filter(
-          (message) => !shouldPrunePendingUserMessage(message, action.now),
-        ),
+        pendingUserMessages,
       };
+    }
     case "add_pending_slash_command":
       return {
         ...state,
@@ -312,13 +323,17 @@ function applyIncomingConversation(
   } else {
     localChatStateCache.set(state.cacheKey, localChatState);
   }
-  return {
-    ...state,
-    conversation: nextConversation,
-    pendingUserMessages: reconcilePendingUserMessages(
+  const pendingUserMessages = cachePendingUserMessages(
+    state.cacheKey,
+    reconcilePendingUserMessages(
       state.pendingUserMessages,
       nextConversation,
     ),
+  );
+  return {
+    ...state,
+    conversation: nextConversation,
+    pendingUserMessages,
     localChatState,
     loading: false,
     error: null,
@@ -482,6 +497,30 @@ function codexEventFingerprint(event: CodexConversation["events"][number]) {
   return JSON.stringify(event);
 }
 
+function cachedPendingUserMessages(cacheKey: string): PendingUserMessage[] {
+  return cachePendingUserMessages(
+    cacheKey,
+    pendingUserMessageCache.get(cacheKey) ?? [],
+    Date.now(),
+  );
+}
+
+function cachePendingUserMessages(
+  cacheKey: string,
+  messages: PendingUserMessage[],
+  now: number = Date.now(),
+): PendingUserMessage[] {
+  const nextMessages = messages
+    .filter((message) => !shouldPrunePendingUserMessage(message, now))
+    .slice(-12);
+  if (nextMessages.length > 0) {
+    pendingUserMessageCache.set(cacheKey, nextMessages);
+  } else {
+    pendingUserMessageCache.delete(cacheKey);
+  }
+  return nextMessages;
+}
+
 export function useCodexChatSession({
   serverId,
   agentId,
@@ -535,7 +574,7 @@ export function useCodexChatSession({
       : attachmentCache.get(composerCacheKey) ?? [];
   const pendingUserMessages = threadState.cacheKey === composerCacheKey
     ? threadState.pendingUserMessages
-    : [];
+    : cachedPendingUserMessages(composerCacheKey);
   const pendingSlashCommands = threadState.cacheKey === composerCacheKey
     ? threadState.pendingSlashCommands
     : [];
@@ -616,25 +655,36 @@ export function useCodexChatSession({
   const addPendingUserMessage = useCallback((message: PendingUserMessageInput) => {
     const id = `pending-user:${Date.now().toString(36)}:${Math.random().toString(36).slice(2, 8)}`;
     const baseConversation = conversation ?? conversationCache.get(cacheKey) ?? null;
+    const pendingMessage = {
+      ...message,
+      id,
+      createdAt: new Date().toISOString(),
+      createdAfterMaxSeq: maxConversationEventSeq(baseConversation),
+      createdAfterEventIds: Array.from(conversationEventIdSet(baseConversation)),
+    };
+    cachePendingUserMessages(composerCacheKey, [
+      ...cachedPendingUserMessages(composerCacheKey),
+      pendingMessage,
+    ]);
     dispatchThread({
       type: "add_pending_user_message",
-      message: {
-        ...message,
-        id,
-        createdAt: new Date().toISOString(),
-        createdAfterMaxSeq: maxConversationEventSeq(baseConversation),
-        createdAfterEventIds: Array.from(conversationEventIdSet(baseConversation)),
-      },
+      message: pendingMessage,
     });
     return id;
-  }, [cacheKey, conversation]);
+  }, [cacheKey, composerCacheKey, conversation]);
 
   const removePendingUserMessage = useCallback((id: string) => {
+    cachePendingUserMessages(
+      composerCacheKey,
+      cachedPendingUserMessages(composerCacheKey).filter(
+        (message) => message.id !== id,
+      ),
+    );
     dispatchThread({
       type: "remove_pending_user_message",
       id,
     });
-  }, []);
+  }, [composerCacheKey]);
 
   const addPendingSlashCommand = useCallback((command: PendingSlashCommandInput) => {
     const id = `pending-slash:${Date.now().toString(36)}:${Math.random().toString(36).slice(2, 8)}`;
@@ -671,6 +721,7 @@ export function useCodexChatSession({
 
   const resetForNewChat = useCallback(() => {
     const baseConversation = conversation ?? conversationCache.get(cacheKey) ?? null;
+    pendingUserMessageCache.delete(composerCacheKey);
     dispatchThread({
       type: "reset_for_new_chat",
       boundary: {
@@ -681,6 +732,7 @@ export function useCodexChatSession({
     });
   }, [
     cacheKey,
+    composerCacheKey,
     conversation,
   ]);
 

@@ -67,7 +67,7 @@ export function groupSessionServices(
       portCount,
       urlCount,
       headerMeta: serviceGroupHeaderMeta({
-        serverNames,
+        serverNames: showServerSections ? [] : serverNames,
         portCount,
         urlCount,
       }),
@@ -223,10 +223,10 @@ function serviceGroupHeaderMeta({
     ? `${serverNames[0]} +${serverNames.length - 1}`
     : serverNames[0] || "server";
   return [
-    serverLabel,
+    serverNames.length > 0 ? serverLabel : "",
     `${portCount} port${portCount === 1 ? "" : "s"}`,
     `${urlCount} URL${urlCount === 1 ? "" : "s"}`,
-  ].join(" · ");
+  ].filter(Boolean).join(" · ");
 }
 
 function serviceUrlKindLabel(value?: string): string {

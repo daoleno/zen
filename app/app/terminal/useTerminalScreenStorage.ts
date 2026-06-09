@@ -6,6 +6,7 @@ import {
   getServers,
   markAgentOpened,
   type StoredAgentAliases,
+  type StoredCodexRenderMode,
   type StoredCodexRenderModes,
   type StoredRecentAgentOpens,
   type StoredServer,
@@ -14,15 +15,21 @@ import {
 interface UseTerminalScreenStorageInput {
   serverId: string;
   sessionKey: string | null;
+  initialCodexRenderMode?: StoredCodexRenderMode;
 }
 
 export function useTerminalScreenStorage({
   serverId,
   sessionKey,
+  initialCodexRenderMode,
 }: UseTerminalScreenStorageInput) {
   const [agentAliases, setAgentAliases] = useState<StoredAgentAliases>({});
   const [codexRenderModes, setCodexRenderModes] =
-    useState<StoredCodexRenderModes>({});
+    useState<StoredCodexRenderModes>(() =>
+      sessionKey && initialCodexRenderMode
+        ? { [sessionKey]: initialCodexRenderMode }
+        : {},
+    );
   const [recentAgentOpens, setRecentAgentOpens] =
     useState<StoredRecentAgentOpens>({});
   const [server, setServer] = useState<StoredServer | null>(null);
@@ -47,6 +54,13 @@ export function useTerminalScreenStorage({
       const storedServer = serverId
         ? storedServers.find((current) => current.id === serverId) || null
         : null;
+      const nextCodexRenderModes =
+        sessionKey && initialCodexRenderMode
+          ? {
+              ...storedCodexRenderModes,
+              [sessionKey]: initialCodexRenderMode,
+            }
+          : storedCodexRenderModes;
 
       const openedAt = sessionKey ? Date.now() : 0;
       if (sessionKey) {
@@ -55,7 +69,7 @@ export function useTerminalScreenStorage({
 
       if (!cancelled) {
         setAgentAliases(storedAliases);
-        setCodexRenderModes(storedCodexRenderModes);
+        setCodexRenderModes(nextCodexRenderModes);
         setRecentAgentOpens(
           sessionKey
             ? {
@@ -72,7 +86,7 @@ export function useTerminalScreenStorage({
     return () => {
       cancelled = true;
     };
-  }, [serverId, sessionKey]);
+  }, [initialCodexRenderMode, serverId, sessionKey]);
 
   return {
     agentAliases,

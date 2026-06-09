@@ -49,7 +49,7 @@ interface UseCodexChatBodyPropsInput {
   controller: ReturnType<typeof useCodexChatController>;
   chrome: TerminalThemeChrome;
   theme: TerminalThemePalette;
-  onSwitchToTerminal(): void;
+  onSwitchToTerminal?: () => void;
   setDraft(value: string): void;
   onToggleActionMenu(): void;
   onDismissActionMenu(): void;
@@ -141,7 +141,7 @@ export function useCodexChatBodyProps({
       onScrollToLatest: timeline.scrollToLatest,
       onComposerHeightChange: handleComposerHeightChange,
       onUnavailableAction: onSwitchToTerminal,
-      showUnavailableAction: showUnavailableAction ?? true,
+      showUnavailableAction: Boolean(onSwitchToTerminal) && (showUnavailableAction ?? true),
       inputRef: composerInput.inputRef,
       draft,
       editable: connectionState === "connected",

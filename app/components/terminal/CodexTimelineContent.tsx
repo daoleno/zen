@@ -16,7 +16,7 @@ interface CodexTimelineEmptyContentProps {
   syncing: boolean;
   chrome: TerminalThemeChrome;
   agentCwd?: string;
-  onUnavailableAction(): void;
+  onUnavailableAction?: () => void;
   showUnavailableAction?: boolean;
   emptyTitle?: string;
   emptyBody?: string;

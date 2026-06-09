@@ -31,7 +31,7 @@ interface CodexChatSurfaceProps {
   showUnavailableAction?: boolean;
   emptyTitle?: string;
   emptyBody?: string;
-  onSwitchToTerminal(): void;
+  onSwitchToTerminal?: () => void;
 }
 
 function CodexChatSurfaceImpl({

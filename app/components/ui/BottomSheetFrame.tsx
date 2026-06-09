@@ -15,6 +15,7 @@ interface BottomSheetFrameProps {
   visible: boolean;
   children: React.ReactNode;
   maxHeight?: `${number}%` | number;
+  rootStyle?: StyleProp<ViewStyle>;
   cardStyle?: StyleProp<ViewStyle>;
   contentStyle?: StyleProp<ViewStyle>;
   keyboardAvoiding?: boolean;
@@ -25,6 +26,7 @@ export function BottomSheetFrame({
   visible,
   children,
   maxHeight = "75%",
+  rootStyle,
   cardStyle,
   contentStyle,
   keyboardAvoiding = false,
@@ -55,13 +57,13 @@ export function BottomSheetFrame({
     <Modal visible={visible} transparent animationType="fade" onRequestClose={onClose}>
       {keyboardAvoiding ? (
         <KeyboardAvoidingView
-          style={styles.root}
+          style={[styles.root, rootStyle]}
           behavior={Platform.OS === "ios" ? "padding" : "height"}
         >
           {body}
         </KeyboardAvoidingView>
       ) : (
-        <View style={styles.root}>{body}</View>
+        <View style={[styles.root, rootStyle]}>{body}</View>
       )}
     </Modal>
   );

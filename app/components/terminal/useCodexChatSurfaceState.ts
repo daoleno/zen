@@ -55,7 +55,7 @@ interface UseCodexChatSurfaceStateInput {
   showUnavailableAction?: boolean;
   emptyTitle?: string;
   emptyBody?: string;
-  onSwitchToTerminal(): void;
+  onSwitchToTerminal?: () => void;
 }
 
 interface CodexChatSurfaceState {
@@ -194,6 +194,9 @@ export function useCodexChatSurfaceState({
     setStatusSheetVisible(false);
   }, []);
   const switchFromStatusToTerminal = useCallback(() => {
+    if (!onSwitchToTerminal) {
+      return;
+    }
     setStatusSheetVisible(false);
     onSwitchToTerminal();
   }, [onSwitchToTerminal]);
@@ -398,12 +401,13 @@ export function useCodexChatSurfaceState({
         chrome,
         theme,
         onRetry: retryStatusCommand,
-        onSwitchToTerminal: switchFromStatusToTerminal,
+        onSwitchToTerminal: onSwitchToTerminal ? switchFromStatusToTerminal : undefined,
         onClose: closeStatusSheet,
       }),
     [
       chrome,
       closeStatusSheet,
+      onSwitchToTerminal,
       retryStatusCommand,
       statusDisplayEvent,
       statusRequest,

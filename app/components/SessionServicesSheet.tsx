@@ -56,6 +56,8 @@ export function SessionServicesSheet({
     <BottomSheetFrame
       visible={visible}
       maxHeight="78%"
+      rootStyle={styles.sheetRoot}
+      cardStyle={styles.sheetCard}
       contentStyle={styles.sheetContent}
       onClose={onClose}
     >
@@ -274,7 +276,23 @@ function ServicePortRow({
 
 function createStyles(colors: ReturnType<typeof useAppColors>) {
   return StyleSheet.create({
+    sheetRoot: {
+      position: "absolute",
+      top: 0,
+      right: 0,
+      bottom: 0,
+      left: 0,
+      width: "100%",
+      minWidth: "100%",
+    },
+    sheetCard: {
+      width: "100%",
+      maxWidth: 1040,
+      alignSelf: "center",
+      paddingHorizontal: 8,
+    },
     sheetContent: {
+      width: "100%",
       paddingHorizontal: 0,
       paddingBottom: 8,
       minWidth: 0,
@@ -284,7 +302,7 @@ function createStyles(colors: ReturnType<typeof useAppColors>) {
       flexDirection: "row",
       alignItems: "center",
       gap: 8,
-      paddingHorizontal: 18,
+      paddingHorizontal: 6,
       marginBottom: 4,
     },
     headerMain: {
@@ -317,7 +335,7 @@ function createStyles(colors: ReturnType<typeof useAppColors>) {
       backgroundColor: colors.surfaceSubtle,
     },
     error: {
-      paddingHorizontal: 18,
+      paddingHorizontal: 6,
       paddingBottom: 8,
       color: colors.dangerText,
       fontSize: 12,
@@ -342,15 +360,20 @@ function createStyles(colors: ReturnType<typeof useAppColors>) {
       fontFamily: Typography.uiFont,
     },
     scroll: {
+      width: "100%",
       flexGrow: 0,
       maxHeight: 520,
     },
     list: {
-      paddingHorizontal: 14,
+      width: "100%",
+      alignSelf: "stretch",
+      paddingHorizontal: 6,
       paddingBottom: 12,
       gap: 10,
     },
     section: {
+      width: "100%",
+      alignSelf: "stretch",
       gap: 8,
       minWidth: 0,
     },
@@ -381,6 +404,8 @@ function createStyles(colors: ReturnType<typeof useAppColors>) {
       opacity: 0.52,
     },
     projectCard: {
+      width: "100%",
+      alignSelf: "stretch",
       borderRadius: 8,
       backgroundColor: colors.surfaceSubtle,
       borderWidth: StyleSheet.hairlineWidth,
@@ -506,11 +531,13 @@ function createStyles(colors: ReturnType<typeof useAppColors>) {
       flexWrap: "wrap",
       gap: 6,
       marginTop: 1,
+      minWidth: 0,
     },
     linkChip: {
       flexDirection: "row",
       alignItems: "center",
       gap: 5,
+      minWidth: 0,
       maxWidth: "100%",
       minHeight: 26,
       borderRadius: 8,
@@ -528,6 +555,7 @@ function createStyles(colors: ReturnType<typeof useAppColors>) {
       textTransform: "uppercase",
     },
     linkHost: {
+      minWidth: 0,
       flexShrink: 1,
       color: colors.textPrimary,
       fontSize: 11,

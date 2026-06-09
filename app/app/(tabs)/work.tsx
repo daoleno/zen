@@ -142,29 +142,6 @@ export default function BrainScreen() {
     setWorkspaceViewerVisible(false);
   }, []);
 
-  const openBrainTerminal = useCallback(() => {
-    if (!activeServer || !hostAgent?.id) {
-      return;
-    }
-    router.push({
-      pathname: "/terminal/[id]",
-      params: {
-        id: hostAgent.id,
-        serverId: activeServer.id,
-        cwd: hostAgent.cwd ?? "",
-        command: hostAgent.command ?? "",
-        name: hostAgent.name || "Brain",
-      },
-    });
-  }, [
-    activeServer,
-    hostAgent?.command,
-    hostAgent?.cwd,
-    hostAgent?.id,
-    hostAgent?.name,
-    router,
-  ]);
-
   const startNewBrainChat = useCallback(async () => {
     if (!activeServer || !activeBrain?.hydrated || newChatLoading) {
       return;
@@ -246,17 +223,6 @@ export default function BrainScreen() {
             disabled={!activeServer || connectionState !== "connected"}
           />
           <IconButton
-            icon="terminal-outline"
-            size={36}
-            iconSize={17}
-            tone="ghost"
-            color={colors.textSecondary}
-            accessibilityRole="button"
-            accessibilityLabel="Open Brain terminal"
-            onPress={openBrainTerminal}
-            disabled={!ready}
-          />
-          <IconButton
             icon="add-circle-outline"
             size={36}
             iconSize={17}
@@ -300,7 +266,6 @@ export default function BrainScreen() {
             showAttachmentControl
             keyboardVerticalOffset={keyboardVerticalOffset}
             showUnavailableAction
-            onSwitchToTerminal={openBrainTerminal}
           />
         ) : ready ? (
           <BrainInterfaceUnavailableState provider={hostAdapter?.provider} />

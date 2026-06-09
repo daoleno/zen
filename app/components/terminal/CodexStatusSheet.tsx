@@ -24,7 +24,7 @@ interface CodexStatusSheetProps {
   chrome: TerminalThemeChrome;
   theme: TerminalThemePalette;
   onRetry(): void;
-  onSwitchToTerminal(): void;
+  onSwitchToTerminal?: () => void;
   onClose(): void;
 }
 
@@ -165,22 +165,24 @@ export function CodexStatusSheet({
                 Retry
               </Text>
             </TouchableOpacity>
-            <TouchableOpacity
-              accessibilityLabel="Open terminal"
-              accessibilityRole="button"
-              style={[
-                styles.actionButton,
-                styles.secondaryActionButton,
-                { borderColor: chrome.border, backgroundColor: chrome.surfaceMuted },
-              ]}
-              onPress={onSwitchToTerminal}
-              activeOpacity={0.78}
-            >
-              <Ionicons name="terminal-outline" size={15} color={chrome.textSubtle} />
-              <Text style={[styles.secondaryActionText, { color: chrome.text }]}>
-                Terminal
-              </Text>
-            </TouchableOpacity>
+            {onSwitchToTerminal ? (
+              <TouchableOpacity
+                accessibilityLabel="Open terminal"
+                accessibilityRole="button"
+                style={[
+                  styles.actionButton,
+                  styles.secondaryActionButton,
+                  { borderColor: chrome.border, backgroundColor: chrome.surfaceMuted },
+                ]}
+                onPress={onSwitchToTerminal}
+                activeOpacity={0.78}
+              >
+                <Ionicons name="terminal-outline" size={15} color={chrome.textSubtle} />
+                <Text style={[styles.secondaryActionText, { color: chrome.text }]}>
+                  Terminal
+                </Text>
+              </TouchableOpacity>
+            ) : null}
           </View>
         </View>
       ) : (

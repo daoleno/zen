@@ -51,7 +51,7 @@ interface UseCodexChatControllerInput {
   dismissActionMenu(): void;
   openStatusSheet(): void;
   openSkillsSheet(): void;
-  onSwitchToTerminal(): void;
+  onSwitchToTerminal?: () => void;
 }
 
 export function useCodexChatController({

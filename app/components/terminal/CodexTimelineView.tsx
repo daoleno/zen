@@ -56,7 +56,7 @@ interface CodexTimelineViewProps {
   onTextSelectionGestureStart: TimelineTextSelectableContextValue["onTextSelectionGestureStart"];
   onTextSelectionGestureEnd: TimelineTextSelectableContextValue["onTextSelectionGestureEnd"];
   onJumpToLatest(): void;
-  onUnavailableAction(): void;
+  onUnavailableAction?: () => void;
   showUnavailableAction?: boolean;
   loadAssetPreview(path: string): Promise<string | null>;
   formatPatchPath(file: PatchFileSummary): string;

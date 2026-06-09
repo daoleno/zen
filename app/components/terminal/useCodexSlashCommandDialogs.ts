@@ -9,7 +9,7 @@ interface UseCodexSlashCommandDialogsInput {
     previousDraft: string,
     previousAttachments: ComposerAttachment[],
   ): void;
-  onSwitchToTerminal(): void;
+  onSwitchToTerminal?: () => void;
 }
 
 export function useCodexSlashCommandDialogs({
@@ -32,10 +32,12 @@ export function useCodexSlashCommandDialogs({
       Alert.alert(
         `${command.value} is not available`,
         "This command opens an interactive Codex control that is not available in ChatUI yet.",
-        [
-          { text: "Cancel", style: "cancel" },
-          { text: "Open Terminal", onPress: onSwitchToTerminal },
-        ],
+        onSwitchToTerminal
+          ? [
+              { text: "Cancel", style: "cancel" },
+              { text: "Open Terminal", onPress: onSwitchToTerminal },
+            ]
+          : [{ text: "OK", style: "cancel" }],
       );
     },
     [onSwitchToTerminal],

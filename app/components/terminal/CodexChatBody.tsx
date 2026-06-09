@@ -56,7 +56,7 @@ export interface CodexChatBodyProps {
   onTimelineTextSelectionGestureEnd(): void;
   onScrollToLatest(animated?: boolean, delay?: number): void;
   onComposerHeightChange(height: number): void;
-  onUnavailableAction(): void;
+  onUnavailableAction?: () => void;
   showUnavailableAction?: boolean;
   inputRef: React.RefObject<TextInput | null>;
   draft: string;

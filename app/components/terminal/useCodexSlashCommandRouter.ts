@@ -33,7 +33,7 @@ interface UseCodexSlashCommandRouterInput {
   sendSlashCommandToCodex(text: string, command?: CodexSlashCommand): void;
   runStatusCommand(text: string, command?: CodexSlashCommand): void;
   openSkillsSheet(): void;
-  onSwitchToTerminal(): void;
+  onSwitchToTerminal?: () => void;
 }
 
 export function useCodexSlashCommandRouter({

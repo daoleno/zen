@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useLocalSearchParams } from "expo-router";
 import { makeSessionKey } from "../../services/sessionKeys";
+import type { StoredCodexRenderMode } from "../../services/storage";
 import type { TerminalSurfaceHandle } from "../../components/terminal/TerminalSurface";
 
 export interface TerminalRouteSessionHint {
@@ -18,9 +19,13 @@ export function useTerminalScreenLocalState() {
     cwd?: string;
     command?: string;
     startedAt?: string;
+    initialCodexRenderMode?: string;
   }>();
   const agentId = paramString(params.id);
   const serverId = paramString(params.serverId);
+  const initialCodexRenderMode = paramCodexRenderMode(
+    params.initialCodexRenderMode,
+  );
   const sessionKey =
     agentId && serverId ? makeSessionKey(serverId, agentId) : null;
   const routeSessionHint = useMemo<TerminalRouteSessionHint>(
@@ -49,6 +54,7 @@ export function useTerminalScreenLocalState() {
     agentId,
     serverId,
     sessionKey,
+    initialCodexRenderMode,
     routeSessionHint,
     pickerVisible,
     setPickerVisible,
@@ -78,4 +84,11 @@ function paramTimestamp(value: string | string[] | undefined): number | undefine
   if (!raw) return undefined;
   const numeric = Number(raw);
   return Number.isFinite(numeric) && numeric > 0 ? numeric : undefined;
+}
+
+function paramCodexRenderMode(
+  value: string | string[] | undefined,
+): StoredCodexRenderMode | undefined {
+  const raw = paramString(value);
+  return raw === "chat" || raw === "terminal" ? raw : undefined;
 }
