@@ -1736,6 +1736,9 @@ func (s *Server) maybeWakeBrainForSessionEvent(ev watcher.SessionEvent) bool {
 	if s.brain == nil || ev.Agent == nil {
 		return false
 	}
+	if !ev.Agent.Delegated || ev.Agent.Hidden {
+		return false
+	}
 	status := ev.NewState
 	reason := "agent_state_change"
 	if ev.Type == "agent_removed" {

@@ -181,7 +181,7 @@ func formatHeartbeatWake(event HeartbeatEvent) string {
 	appendHeartbeatField("summary", event.Summary)
 	lines = append(lines,
 		"",
-		"Inspect the changed session if useful. Continue low-risk next steps autonomously; close completed delegated sessions after incorporating their result; if blocked, consolidate options and a recommendation for the user.",
+		"Inspect the changed session if useful. Continue low-risk next steps autonomously; reuse the same delegated session while it still belongs to the larger task, and close it only after the task is complete and its result is recorded or reported; if blocked, consolidate options and a recommendation for the user.",
 	)
 	return strings.Join(lines, "\n")
 }
@@ -465,14 +465,16 @@ Agent orchestration rules:
 - The zen app sends user messages directly into this session.
 - Treat the adapter as replaceable; do not make Brain's plans depend on Codex-only or Claude-only behavior unless the user asks for that adapter specifically.
 - Brain is the user's scheduler: reduce decision load. For concrete work that needs repository/tool execution, independent progress, parallelism, or follow-up, proactively create or reuse a visible delegated agent session; stay in Brain for chat, memory, synthesis, reminders, and decisions that fit the current context.
+- For a single larger task, prefer reusing the same delegated agent session across stages. Send follow-up instructions to that session until the task is genuinely complete. Open a separate delegated session only when the work is meaningfully independent, benefits from parallelism, needs a different repository/context, or the current session is blocked or unusable.
 - Use the zen binary to spawn, send to, and inspect delegated agents. When delegating, write a short note with workspace, objective, context, acceptance criteria, safety constraints, and expected report.
 - Zen CLI quick reference:
-  - %s agent list --json lists visible delegated agents.
+  - %s agent list --json lists visible sessions; only sessions with delegated=true are Brain-owned.
   - %s agent spawn -name "<name>" -executor <executor> -cwd <workspace> -prompt "<task>" creates a visible delegated agent.
   - %s agent capture -id <agent_id> --json inspects a delegated agent.
   - %s agent send -id <agent_id> -text "<message>" --submit=true continues a delegated agent.
-  - %s agent close -id <agent_id> closes a completed delegated agent after its result is recorded or reported.
-- Delegated agent lifecycle: keep ownership from spawn through inspection, follow-up, result consolidation, and close. Do not leave completed delegated sessions open after their output is no longer needed.
+  - %s agent close -id <agent_id> closes a delegated agent after the larger task is complete and its result is recorded or reported.
+- Delegated agent lifecycle: keep ownership from spawn through inspection, follow-up, result consolidation, and close. Do not close a delegated session merely because a small stage finished; close it when the larger task is complete or you have intentionally moved the remaining work elsewhere.
+- Never close, kill, rename, repurpose, or otherwise manage sessions whose agent list entry does not have delegated=true. Those belong to the user or another tool.
 - Keep orchestration principles in Markdown, prompts, and agent instructions. Product code should provide tools, context, persistence, visibility, and safety boundaries rather than rigid workflow gates.
 - Treat Heartbeat wake messages as compact actionable deltas; inspect only what is needed, then act, summarize, or sleep.
 - Continue low-risk next steps autonomously. Ask only when critical context is missing, an action is high-risk or irreversible, credentials/permissions are needed, or the decision depends on the user's values; when blocked, consolidate options and a recommendation.
@@ -539,14 +541,15 @@ func agentRefFromClassifier(agent *classifier.Agent) AgentRef {
 		return AgentRef{}
 	}
 	return AgentRef{
-		ID:      agent.ID,
-		Name:    agent.Name,
-		Status:  string(agent.State),
-		Summary: agent.Summary,
-		Cwd:     agent.Cwd,
-		Command: agent.Command,
-		Updated: agent.UpdatedAt,
-		Hidden:  agent.Hidden,
+		ID:        agent.ID,
+		Name:      agent.Name,
+		Status:    string(agent.State),
+		Summary:   agent.Summary,
+		Cwd:       agent.Cwd,
+		Command:   agent.Command,
+		Updated:   agent.UpdatedAt,
+		Hidden:    agent.Hidden,
+		Delegated: agent.Delegated,
 	}
 }
 

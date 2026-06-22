@@ -83,6 +83,7 @@ func TestMaybeWakeBrainForProgressAttentionMetadata(t *testing.T) {
 			Phase:          "working",
 			Attention:      "user_input",
 			NeedsAttention: true,
+			Delegated:      true,
 		},
 	})
 
@@ -131,6 +132,41 @@ func TestMaybeWakeBrainIgnoresProgressMetadataWithoutAttention(t *testing.T) {
 			Summary:   "Still working",
 			Phase:     "working",
 			Attention: "none",
+		},
+	})
+
+	if woke || len(fw.sent) != 0 {
+		t.Fatalf("unexpected wake=%v sent=%#v", woke, fw.sent)
+	}
+}
+
+func TestMaybeWakeBrainIgnoresExternalSession(t *testing.T) {
+	store, err := brain.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	hostID := "brain-agent-brain-hidden:@1"
+	if err := store.SetHostSession(hostID, "codex"); err != nil {
+		t.Fatal(err)
+	}
+	fw := &brainWakeWatcher{
+		sessions: map[string]*classifier.Agent{
+			hostID: {ID: hostID, Name: "Brain", Hidden: true, State: classifier.StateRunning},
+		},
+	}
+	srv := &Server{brain: brain.NewService(store, fw, nil)}
+
+	woke := srv.maybeWakeBrainForSessionEvent(watcher.SessionEvent{
+		Type:     "agent_state_change",
+		AgentID:  "brain-agent-user-owned:@1",
+		NewState: string(classifier.StateDone),
+		Agent: &classifier.Agent{
+			ID:        "brain-agent-user-owned:@1",
+			Name:      "User owned",
+			State:     classifier.StateDone,
+			Summary:   "complete",
+			Cwd:       "/repo",
+			Delegated: false,
 		},
 	})
 

@@ -74,7 +74,7 @@ func (w *fakeControlWatcher) CreateSession(_ string, opts watcher.CreateSessionO
 		Cwd:       opts.Cwd,
 		Command:   opts.Command,
 		Hidden:    opts.Hidden,
-		Delegated: !opts.Hidden && !strings.HasPrefix(id, "brain-agent-brain-"),
+		Delegated: opts.Delegated && !opts.Hidden,
 		UpdatedAt: time.Date(2026, 5, 27, 9, 0, 0, 0, time.UTC),
 	}
 	return id, nil
@@ -222,13 +222,18 @@ func TestControlAppAgentListFiltersHiddenAgents(t *testing.T) {
 
 func TestControlAppAgentSendAndCapture(t *testing.T) {
 	fw := newFakeControlWatcher()
-	fw.agents["main:@1"] = &classifier.Agent{ID: "main:@1", Name: "Franklin", State: classifier.StateRunning}
-	fw.captures["main:@1"] = "current pane"
+	fw.agents["brain-agent-worker:@1"] = &classifier.Agent{
+		ID:        "brain-agent-worker:@1",
+		Name:      "Franklin",
+		State:     classifier.StateRunning,
+		Delegated: true,
+	}
+	fw.captures["brain-agent-worker:@1"] = "current pane"
 	app := &controlApp{watcher: fw}
 
 	sendResp := app.HandleControlRequest(control.Request{
 		Type:    "agent_send",
-		AgentID: "main:@1",
+		AgentID: "brain-agent-worker:@1",
 		Text:    "continue",
 		Submit:  true,
 	})
@@ -239,9 +244,45 @@ func TestControlAppAgentSendAndCapture(t *testing.T) {
 		t.Fatalf("sent calls = %#v", fw.sent)
 	}
 
-	captureResp := app.HandleControlRequest(control.Request{Type: "agent_capture", AgentID: "main:@1"})
+	captureResp := app.HandleControlRequest(control.Request{Type: "agent_capture", AgentID: "brain-agent-worker:@1"})
 	if !captureResp.OK || captureResp.Text != "current pane" || captureResp.Agent == nil {
 		t.Fatalf("capture response = %#v", captureResp)
+	}
+}
+
+func TestControlAppAgentSendRejectsExternalSessionWithoutForce(t *testing.T) {
+	fw := newFakeControlWatcher()
+	fw.agents["brain-agent-user-owned:@1"] = &classifier.Agent{
+		ID:        "brain-agent-user-owned:@1",
+		Name:      "User owned",
+		State:     classifier.StateRunning,
+		Delegated: false,
+	}
+	app := &controlApp{watcher: fw}
+
+	resp := app.HandleControlRequest(control.Request{
+		Type:    "agent_send",
+		AgentID: "brain-agent-user-owned:@1",
+		Text:    "continue",
+		Submit:  true,
+	})
+
+	if resp.OK || resp.Error == nil || resp.Error.Code != "agent_not_delegated" {
+		t.Fatalf("send response = %#v", resp)
+	}
+	if len(fw.sent) != 0 {
+		t.Fatalf("sent input = %#v", fw.sent)
+	}
+
+	forced := app.HandleControlRequest(control.Request{
+		Type:    "agent_send",
+		AgentID: "brain-agent-user-owned:@1",
+		Text:    "continue",
+		Submit:  true,
+		Force:   true,
+	})
+	if !forced.OK || len(fw.sent) != 1 {
+		t.Fatalf("forced send response = %#v sent=%#v", forced, fw.sent)
 	}
 }
 
@@ -380,6 +421,31 @@ func TestControlAppAgentCloseRequiresForceForRunningDelegatedAgent(t *testing.T)
 	}
 
 	forced := app.HandleControlRequest(control.Request{Type: "agent_close", AgentID: "brain-agent-worker:@1", Force: true})
+	if !forced.OK || len(fw.killed) != 1 {
+		t.Fatalf("forced close response = %#v killed=%#v", forced, fw.killed)
+	}
+}
+
+func TestControlAppAgentCloseRejectsExternalSessionWithoutForce(t *testing.T) {
+	fw := newFakeControlWatcher()
+	fw.agents["brain-agent-user-owned:@1"] = &classifier.Agent{
+		ID:        "brain-agent-user-owned:@1",
+		Name:      "User owned",
+		State:     classifier.StateDone,
+		Delegated: false,
+	}
+	app := &controlApp{watcher: fw}
+
+	resp := app.HandleControlRequest(control.Request{Type: "agent_close", AgentID: "brain-agent-user-owned:@1"})
+
+	if resp.OK || resp.Error == nil || resp.Error.Code != "agent_not_delegated" {
+		t.Fatalf("close response = %#v", resp)
+	}
+	if len(fw.killed) != 0 {
+		t.Fatalf("killed sessions = %#v", fw.killed)
+	}
+
+	forced := app.HandleControlRequest(control.Request{Type: "agent_close", AgentID: "brain-agent-user-owned:@1", Force: true})
 	if !forced.OK || len(fw.killed) != 1 {
 		t.Fatalf("forced close response = %#v killed=%#v", forced, fw.killed)
 	}

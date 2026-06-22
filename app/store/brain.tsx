@@ -8,6 +8,7 @@ export type BrainAgentRef = {
   cwd?: string;
   command?: string;
   updated_at?: string;
+  delegated?: boolean;
 };
 
 export type BrainAdapterCapabilities = {
@@ -107,6 +108,7 @@ function normalizeAgentRef(raw: any): BrainAgentRef {
     command: typeof raw?.command === "string" ? raw.command : undefined,
     updated_at:
       typeof raw?.updated_at === "string" ? raw.updated_at : undefined,
+    delegated: raw?.delegated === true,
   };
 }
 

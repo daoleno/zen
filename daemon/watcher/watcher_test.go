@@ -187,8 +187,9 @@ func TestRegisterCreatedSessionMarksVisibleBrainSpawnAsDelegated(t *testing.T) {
 	startedAt := time.Date(2026, 5, 23, 10, 0, 0, 0, time.UTC)
 
 	w.registerCreatedSession("brain-agent-verify-123:@44", "/repo/zen", CreateSessionOptions{
-		Command: "codex",
-		Name:    "Verify",
+		Command:   "codex",
+		Name:      "Verify",
+		Delegated: true,
 	}, startedAt)
 
 	agent := w.GetAgent("brain-agent-verify-123:@44")
@@ -200,18 +201,31 @@ func TestRegisterCreatedSessionMarksVisibleBrainSpawnAsDelegated(t *testing.T) {
 	}
 }
 
-func TestDelegatedAgentWindowExcludesBrainHost(t *testing.T) {
-	if !isDelegatedAgentWindow("brain-agent-check-123:@1", false) {
-		t.Fatal("visible non-host brain agent should be delegated")
+func TestRegisterCreatedSessionDoesNotInferDelegatedFromName(t *testing.T) {
+	w := New(time.Second)
+
+	w.registerCreatedSession("brain-agent-user-owned:@44", "/repo/zen", CreateSessionOptions{
+		Command: "codex",
+		Name:    "User owned",
+	}, time.Date(2026, 5, 23, 10, 0, 0, 0, time.UTC))
+
+	agent := w.GetAgent("brain-agent-user-owned:@44")
+	if agent == nil {
+		t.Fatal("expected created session to be registered")
 	}
-	if isDelegatedAgentWindow("brain-agent-brain-123:@1", false) {
-		t.Fatal("Brain host should not be delegated")
+	if agent.Delegated {
+		t.Fatal("session name alone should not mark an agent delegated")
 	}
-	if isDelegatedAgentWindow("brain-agent-check-123:@1", true) {
-		t.Fatal("hidden sessions should not be delegated")
+}
+
+func TestAllowedTmuxKeyIncludesCodexPickerShortcuts(t *testing.T) {
+	for _, key := range []string{"1", "2", "3", "9", "y", "p", "A", "Enter", "Escape"} {
+		if !allowedTmuxKey(key) {
+			t.Fatalf("expected key %q to be allowed", key)
+		}
 	}
-	if isDelegatedAgentWindow("main:@1", false) {
-		t.Fatal("ordinary tmux session should not be delegated")
+	if allowedTmuxKey("0") {
+		t.Fatal("did not expect 0 to be allowed")
 	}
 }
 

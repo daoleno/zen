@@ -54,6 +54,8 @@ var blockedPatterns = []*regexp.Regexp{
 	regexp.MustCompile(`(?i)Should I continue`),
 	regexp.MustCompile(`(?i)approve|reject`),
 	regexp.MustCompile(`(?i)Press enter to continue`),
+	regexp.MustCompile(`(?i)Press enter to confirm or esc to cancel`),
+	regexp.MustCompile(`(?i)Action Required`),
 	regexp.MustCompile(`(?i)Would you like`),
 	regexp.MustCompile(`(?i)Is this ok`),
 	regexp.MustCompile(`(?i)Shall I`),
@@ -63,6 +65,12 @@ var blockedPatterns = []*regexp.Regexp{
 	regexp.MustCompile(`(?i)Do you want to edit`),
 	regexp.MustCompile(`(?i)Do you want to delete`),
 	regexp.MustCompile(`(?i)Allow .+ to`),
+}
+
+var immediateBlockedPatterns = []*regexp.Regexp{
+	regexp.MustCompile(`(?i)Press enter to confirm or esc to cancel`),
+	regexp.MustCompile(`(?i)Press enter to continue`),
+	regexp.MustCompile(`(?i)Action Required`),
 }
 
 // failedPatterns match output that indicates the agent has encountered an error.
@@ -126,6 +134,10 @@ func Classify(paneAlive bool, lines []string, staleCount int) (AgentState, strin
 		return StateDone, summarize(tail)
 	}
 
+	if line := matchingImmediateBlockedLine(tail); line != "" {
+		return StateBlocked, truncate(line, 100)
+	}
+
 	// Pane is alive. Check for blocked state first (highest priority after dead).
 	for _, p := range blockedPatterns {
 		if p.MatchString(strings.TrimSpace(lastLine)) {
@@ -153,6 +165,18 @@ func Classify(paneAlive bool, lines []string, staleCount int) (AgentState, strin
 	}
 
 	return StateUnknown, "No new output for " + time.Duration(time.Duration(staleCount)*500*time.Millisecond).String()
+}
+
+func matchingImmediateBlockedLine(lines []string) string {
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		for _, p := range immediateBlockedPatterns {
+			if p.MatchString(trimmed) {
+				return trimmed
+			}
+		}
+	}
+	return ""
 }
 
 func matchingFailedLine(lines []string) string {

@@ -79,6 +79,11 @@ export type PendingSlashCommandInput = Omit<
 
 export type CodexChatAgentInfo = {
   status?: AgentStatus;
+  summary?: string;
+  phase?: string;
+  attention?: string;
+  needsAttention?: boolean;
+  lastOutputLines?: string[];
   cwd?: string;
   command?: string;
   name?: string;

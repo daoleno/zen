@@ -1289,7 +1289,45 @@ class MultiServerWebSocketClient {
     if (!socket?.isConnected) {
       throw new Error("Daemon is not connected.");
     }
-    socket.send({ type: "send_key", agent_id: agentId, key });
+    const requestId = `${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
+
+    return new Promise<void>((resolve, reject) => {
+      const cleanup = () => {
+        clearTimeout(timer);
+        this.off("key_sent", handleSent);
+        this.off("error", handleError);
+      };
+
+      const handleSent = (payload: any) => {
+        if (payload.serverId !== serverId || payload.request_id !== requestId) {
+          return;
+        }
+        cleanup();
+        resolve();
+      };
+
+      const handleError = (payload: any) => {
+        if (payload.serverId !== serverId || payload.request_id !== requestId) {
+          return;
+        }
+        cleanup();
+        reject(new Error(payload.message || "Failed to send terminal key."));
+      };
+
+      const timer = setTimeout(() => {
+        cleanup();
+        reject(new Error("Timed out while sending terminal key."));
+      }, 5000);
+
+      this.on("key_sent", handleSent);
+      this.on("error", handleError);
+      socket.send({
+        type: "send_key",
+        request_id: requestId,
+        agent_id: agentId,
+        key,
+      });
+    });
   }
 
   setActiveAgent(serverId: string, agentId: string | null) {

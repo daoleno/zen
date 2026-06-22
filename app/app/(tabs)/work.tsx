@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useState } from "react";
+import React, { useCallback, useMemo, useState } from "react";
 import {
   ActivityIndicator,
   Pressable,
@@ -91,13 +91,6 @@ export default function BrainScreen() {
     ],
   );
 
-  useEffect(() => {
-    if (!activeServer) {
-      return;
-    }
-    wsClient.requestBrainSnapshot(activeServer.id);
-  }, [activeServer?.id]);
-
   const activeBrain = activeServer ? brainState.byServer[activeServer.id] : null;
   const connectionState: ConnectionState = activeServer
     ? agentState.serverConnections[activeServer.id] || "offline"
@@ -117,6 +110,15 @@ export default function BrainScreen() {
   );
   const availableAdapters = activeBrain?.adapters ?? [];
   const keyboardVerticalOffset = 0;
+
+  useFocusEffect(
+    useCallback(() => {
+      if (!activeServer || connectionState !== "connected") {
+        return;
+      }
+      wsClient.requestBrainSnapshot(activeServer.id);
+    }, [activeServer?.id, connectionState]),
+  );
 
   const openAdapterSheet = useCallback(() => {
     if (!activeBrain?.adapters?.length || !activeServer) {

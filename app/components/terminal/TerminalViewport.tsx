@@ -85,6 +85,11 @@ export function TerminalViewport({
       agent
         ? {
             status: agent.status,
+            summary: agent.summary,
+            phase: agent.phase,
+            attention: agent.attention,
+            needsAttention: agent.needs_attention,
+            lastOutputLines: agent.last_output_lines,
             cwd: agent.cwd,
             command: agent.command,
             name: agent.name,
@@ -95,10 +100,15 @@ export function TerminalViewport({
     [
       agent?.command,
       agent?.cwd,
+      agent?.attention,
       agent?.name,
+      agent?.needs_attention,
+      agent?.phase,
       agent?.process_id,
       agent?.started_at,
       agent?.status,
+      agent?.summary,
+      agent?.last_output_lines,
     ],
   );
 

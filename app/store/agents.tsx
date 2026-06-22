@@ -16,6 +16,9 @@ export interface Agent {
   cwd?: string;
   command?: string;
   summary: string;
+  phase?: string;
+  attention?: string;
+  needs_attention?: boolean;
   last_output_lines: string[];
   started_at?: number;
   updated_at: number;
@@ -41,6 +44,9 @@ type RawAgent = {
   cwd?: string;
   command?: string;
   summary?: string;
+  phase?: string;
+  attention?: string;
+  needs_attention?: boolean;
   last_output_lines?: string[];
   started_at?: string | number | Date;
   updated_at?: string | number | Date;
@@ -181,6 +187,9 @@ function normalizeAgent(
     cwd: agent.cwd,
     command: agent.command,
     summary: agent.summary || '',
+    phase: typeof agent.phase === 'string' ? agent.phase : undefined,
+    attention: typeof agent.attention === 'string' ? agent.attention : undefined,
+    needs_attention: agent.needs_attention === true,
     last_output_lines: Array.isArray(agent.last_output_lines) ? agent.last_output_lines : [],
     started_at: agent.started_at === undefined ? undefined : normalizeTimestamp(agent.started_at),
     updated_at: normalizeTimestamp(agent.updated_at),

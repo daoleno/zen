@@ -105,6 +105,7 @@ func (a *controlApp) handleAgentSpawn(req control.Request) control.Response {
 		Detached:    true,
 		Hidden:      req.Hidden,
 		ProgressEnv: true,
+		Delegated:   !req.Hidden,
 		Env:         progressEnvForStateDir(a.stateDir),
 	})
 	if err != nil {
@@ -122,15 +123,13 @@ func (a *controlApp) handleAgentSpawn(req control.Request) control.Response {
 		return control.Response{
 			OK: true,
 			Agent: &control.Agent{
-				ID:      agentID,
-				Name:    name,
-				Status:  string(classifier.StateRunning),
-				Cwd:     cwd,
-				Command: command,
-				Hidden:  req.Hidden,
-				Delegated: !req.Hidden &&
-					strings.HasPrefix(agentID, "brain-agent-") &&
-					!strings.HasPrefix(agentID, "brain-agent-brain-"),
+				ID:        agentID,
+				Name:      name,
+				Status:    string(classifier.StateRunning),
+				Cwd:       cwd,
+				Command:   command,
+				Hidden:    req.Hidden,
+				Delegated: !req.Hidden,
 			},
 		}
 	}
@@ -146,6 +145,10 @@ func (a *controlApp) handleAgentSend(req control.Request) control.Response {
 	if agentID == "" {
 		return control.ErrorResponse("missing_agent_id", "Agent id is required.")
 	}
+	agent := a.watcher.GetAgent(agentID)
+	if agent != nil && !agent.Delegated && !agent.Hidden && !req.Force {
+		return control.ErrorResponse("agent_not_delegated", "Refusing to send input to a session that was not created as a Brain delegated agent. Use --force only when you intentionally want to control this external session.")
+	}
 	text := req.Text
 	if strings.TrimSpace(text) == "" {
 		return control.ErrorResponse("missing_text", "Text is required.")
@@ -156,7 +159,7 @@ func (a *controlApp) handleAgentSend(req control.Request) control.Response {
 	if err := a.watcher.SendInput(agentID, text); err != nil {
 		return control.ErrorResponse("send_failed", err.Error())
 	}
-	agent := a.watcher.GetAgent(agentID)
+	agent = a.watcher.GetAgent(agentID)
 	if agent == nil {
 		return control.Response{OK: true}
 	}
@@ -238,6 +241,9 @@ func (a *controlApp) handleAgentClose(req control.Request) control.Response {
 		return control.ErrorResponse("missing_agent_id", "Agent id is required.")
 	}
 	agent := a.watcher.GetAgent(agentID)
+	if agent != nil && !agent.Delegated && !agent.Hidden && !req.Force {
+		return control.ErrorResponse("agent_not_delegated", "Refusing to close a session that was not created as a Brain delegated agent. Use --force only when you intentionally want to close this external session.")
+	}
 	if agent != nil && !req.Force && closeRequiresForce(agent) {
 		return control.ErrorResponse("agent_running_requires_force", "Agent is still running or unresolved. Send it a cancellation request first, wait for done/failed/blocked, or close with force.")
 	}

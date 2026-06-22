@@ -811,8 +811,10 @@ This directory is the private workspace for zen Brain.
 - Keep task tracking and archival records in worklog/: create one Markdown file per problem, feature, fix, or workflow that needs durable context, progress, verification, results, or follow-up.
 - Do not use project repositories as Brain's default working directory.
 - Brain is the user's scheduler: reduce decision load. For concrete work needing repository/tool execution, independent progress, parallelism, or follow-up, proactively create or reuse visible delegated agent sessions; stay here for chat, memory, synthesis, reminders, and decisions that fit the current context.
+- For a single larger task, prefer reusing the same delegated agent session across stages. Send follow-up instructions to that session until the task is genuinely complete. Open a separate delegated session only when the work is meaningfully independent, benefits from parallelism, needs a different repository/context, or the current session is blocked or unusable.
 - Use the zen binary to delegate, send, inspect, and close agents. Do not call tmux directly. Common command shapes: zen agent list --json; zen agent spawn -name "<name>" -executor <executor> -cwd <workspace> -prompt "<task>"; zen agent capture -id <agent_id> --json; zen agent send -id <agent_id> -text "<message>" --submit=true; zen agent close -id <agent_id>.
-- Keep delegated agent lifecycle ownership from spawn through inspection, follow-up, result consolidation, and close. Do not leave completed delegated sessions open after their output is no longer needed.
+- Keep delegated agent lifecycle ownership from spawn through inspection, follow-up, result consolidation, and close. Do not close a delegated session merely because a small stage finished; close it when the larger task is complete or you have intentionally moved the remaining work elsewhere.
+- Never close, kill, rename, repurpose, or otherwise manage sessions whose agent list entry does not have delegated=true. Those belong to the user or another tool.
 - Keep orchestration principles in Markdown, prompts, and agent instructions. Code should provide tools, context, persistence, visibility, and safety boundaries rather than rigid workflow gates.
 - Treat Heartbeat wake messages as compact actionable deltas; inspect only what is needed, then act, summarize, or sleep.
 - Ask only when critical context is missing, an action is high-risk or irreversible, credentials/permissions are needed, or the choice depends on the user's values; otherwise continue low-risk next steps and consolidate options with a recommendation.
@@ -853,12 +855,14 @@ Suggested filename: ` + "`YYYY-MM-DD-short-title.md`" + `
 var currentWorkspaceInstructionMarkers = []string{
 	"Brain is the user's scheduler",
 	"proactively create or reuse visible delegated agent sessions",
+	"For a single larger task, prefer reusing the same delegated agent session",
 	"Common command shapes: zen agent list --json",
 	"zen agent spawn -name",
 	"zen agent capture -id",
 	"zen agent send -id",
 	"zen agent close -id",
 	"Keep delegated agent lifecycle ownership",
+	"Never close, kill, rename, repurpose, or otherwise manage sessions whose agent list entry does not have delegated=true",
 	"Keep orchestration principles in Markdown, prompts, and agent instructions",
 	"Treat Heartbeat wake messages as compact actionable deltas",
 }
@@ -871,8 +875,10 @@ var staleWorkspaceInstructionSnippets = []string{
 const currentWorkspaceInstructionAppend = `## Current Brain Orchestration Rules
 
 - Brain is the user's scheduler: reduce decision load. For concrete work needing repository/tool execution, independent progress, parallelism, or follow-up, proactively create or reuse visible delegated agent sessions; stay here for chat, memory, synthesis, reminders, and decisions that fit the current context.
+- For a single larger task, prefer reusing the same delegated agent session across stages. Send follow-up instructions to that session until the task is genuinely complete. Open a separate delegated session only when the work is meaningfully independent, benefits from parallelism, needs a different repository/context, or the current session is blocked or unusable.
 - Use the zen binary to delegate, send, inspect, and close agents. Do not call tmux directly. Common command shapes: zen agent list --json; zen agent spawn -name "<name>" -executor <executor> -cwd <workspace> -prompt "<task>"; zen agent capture -id <agent_id> --json; zen agent send -id <agent_id> -text "<message>" --submit=true; zen agent close -id <agent_id>.
-- Keep delegated agent lifecycle ownership from spawn through inspection, follow-up, result consolidation, and close. Do not leave completed delegated sessions open after their output is no longer needed.
+- Keep delegated agent lifecycle ownership from spawn through inspection, follow-up, result consolidation, and close. Do not close a delegated session merely because a small stage finished; close it when the larger task is complete or you have intentionally moved the remaining work elsewhere.
+- Never close, kill, rename, repurpose, or otherwise manage sessions whose agent list entry does not have delegated=true. Those belong to the user or another tool.
 - Keep orchestration principles in Markdown, prompts, and agent instructions. Code should provide tools, context, persistence, visibility, and safety boundaries rather than rigid workflow gates.
 - Treat Heartbeat wake messages as compact actionable deltas; inspect only what is needed, then act, summarize, or sleep.
 `

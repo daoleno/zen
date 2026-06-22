@@ -25,6 +25,8 @@ import type { CodexComposerPresentation } from "./CodexChatSurfaceModel";
 import { CodexChatComposerSection } from "./CodexChatComposerSection";
 import { CodexChatKeyboardFrame } from "./CodexChatKeyboardFrame";
 import { CodexChatTimelineSection } from "./CodexChatTimelineSection";
+import { TerminalActionPromptCard } from "./TerminalActionPromptCard";
+import type { TerminalActionPrompt } from "./TerminalActionPromptModel";
 import type { ZenTimelineItem } from "./CodexTimelineItemView";
 import { useCodexComposerLayout } from "./useCodexComposerLayout";
 
@@ -67,6 +69,7 @@ export interface CodexChatBodyProps {
   sending: boolean;
   attachments: ComposerAttachment[];
   composerPresentation: CodexComposerPresentation;
+  terminalActionPrompt?: TerminalActionPrompt | null;
   chrome: TerminalThemeChrome;
   theme: TerminalThemePalette;
   onSelectCommand(command: CodexSlashCommand): void;
@@ -81,6 +84,7 @@ export interface CodexChatBodyProps {
   onInputStart(): boolean;
   onSubmit(): void;
   onSendPress(): void;
+  onTerminalActionKey(key: string): Promise<void> | void;
   skillsSheet?: React.ReactNode;
 }
 
@@ -123,6 +127,7 @@ export function CodexChatBody({
   sending,
   attachments,
   composerPresentation,
+  terminalActionPrompt,
   chrome,
   theme,
   onSelectCommand,
@@ -137,6 +142,7 @@ export function CodexChatBody({
   onInputStart,
   onSubmit,
   onSendPress,
+  onTerminalActionKey,
   skillsSheet,
 }: CodexChatBodyProps) {
   const { handleComposerLayout } = useCodexComposerLayout({
@@ -181,6 +187,16 @@ export function CodexChatBody({
         emptyTitle={emptyTitle}
         emptyBody={emptyBody}
       />
+
+      {terminalActionPrompt ? (
+        <TerminalActionPromptCard
+          prompt={terminalActionPrompt}
+          chrome={chrome}
+          theme={theme}
+          onSendKey={onTerminalActionKey}
+          onSwitchToTerminal={onUnavailableAction}
+        />
+      ) : null}
 
       <CodexChatComposerSection
         inputRef={inputRef}

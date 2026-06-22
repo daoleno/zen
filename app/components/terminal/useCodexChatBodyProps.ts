@@ -20,6 +20,7 @@ import type {
 } from "./CodexChatSession";
 import type { CodexChatBodyProps } from "./CodexChatBody";
 import type { CodexComposerPresentation } from "./CodexChatSurfaceModel";
+import type { TerminalActionPrompt } from "./TerminalActionPromptModel";
 import type { useCodexChatController } from "./CodexChatController";
 import type {
   useCodexComposerInput,
@@ -41,6 +42,7 @@ interface UseCodexChatBodyPropsInput {
   draft: string;
   attachments: ComposerAttachment[];
   composerPresentation: CodexComposerPresentation;
+  terminalActionPrompt?: TerminalActionPrompt | null;
   timeline: ReturnType<typeof usePinnedTimeline>;
   jumpLabel?: string;
   emptyTitle?: string;
@@ -53,6 +55,7 @@ interface UseCodexChatBodyPropsInput {
   setDraft(value: string): void;
   onToggleActionMenu(): void;
   onDismissActionMenu(): void;
+  onTerminalActionKey(key: string): Promise<void> | void;
   showUnavailableAction?: boolean;
   skillsSheet?: ReactNode;
 }
@@ -72,6 +75,7 @@ export function useCodexChatBodyProps({
   draft,
   attachments,
   composerPresentation,
+  terminalActionPrompt,
   timeline,
   jumpLabel,
   emptyTitle,
@@ -84,6 +88,7 @@ export function useCodexChatBodyProps({
   setDraft,
   onToggleActionMenu,
   onDismissActionMenu,
+  onTerminalActionKey,
   showUnavailableAction,
   skillsSheet,
 }: UseCodexChatBodyPropsInput): CodexChatBodyProps {
@@ -151,6 +156,7 @@ export function useCodexChatBodyProps({
       sending: controller.sending || controller.startingNewChat,
       attachments,
       composerPresentation,
+      terminalActionPrompt,
       chrome,
       theme,
       onSelectCommand: controller.pickSlashCommand,
@@ -165,6 +171,7 @@ export function useCodexChatBodyProps({
       onInputStart: composerInput.handleInputStart,
       onSubmit: controller.sendDraft,
       onSendPress: handleSendPress,
+      onTerminalActionKey,
       skillsSheet,
     }),
     [
@@ -178,6 +185,7 @@ export function useCodexChatBodyProps({
       composerInput.handleInputStart,
       composerInput.inputRef,
       composerPresentation,
+      terminalActionPrompt,
       connectionState,
       conversation,
       controller.canAttach,
@@ -204,6 +212,7 @@ export function useCodexChatBodyProps({
       onSwitchToTerminal,
       onToggleActionMenu,
       onDismissActionMenu,
+      onTerminalActionKey,
       screenFocused,
       showUnavailableAction,
       serverId,

@@ -341,6 +341,7 @@ func runAgentSend(args []string, stderr io.Writer) error {
 	fs.StringVar(&req.Text, "text", "", "text to send")
 	fs.BoolVar(&stdin, "stdin", false, "read text from stdin")
 	fs.BoolVar(&req.Submit, "submit", true, "submit after sending text")
+	fs.BoolVar(&req.Force, "force", false, "force send to a non-delegated external session")
 	fs.Usage = func() {
 		fmt.Fprintln(stderr, "Usage: zen agent send -id main:@42 -text 'continue' [flags]")
 		fmt.Fprintln(stderr, "")

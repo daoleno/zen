@@ -68,13 +68,14 @@ func (w *fakeWatcher) CreateSession(_ string, opts watcher.CreateSessionOptions)
 	}
 	id += fmt.Sprintf(":@%d", len(w.created)+1)
 	agent := &classifier.Agent{
-		ID:      id,
-		Name:    opts.Name + " (" + id + ")",
-		Cwd:     opts.Cwd,
-		Command: opts.Command,
-		State:   classifier.StateRunning,
-		Summary: "Session starting",
-		Hidden:  opts.Hidden,
+		ID:        id,
+		Name:      opts.Name + " (" + id + ")",
+		Cwd:       opts.Cwd,
+		Command:   opts.Command,
+		State:     classifier.StateRunning,
+		Summary:   "Session starting",
+		Hidden:    opts.Hidden,
+		Delegated: opts.Delegated && !opts.Hidden,
 	}
 	w.created = append(w.created, createdCall{id: id, opts: opts})
 	w.sessions[id] = agent
@@ -269,12 +270,15 @@ func TestServiceBootstrapPromptDefaultsToAutonomousScheduling(t *testing.T) {
 	for _, want := range []string{
 		"Brain is the user's scheduler",
 		"proactively create or reuse a visible delegated agent session",
+		"For a single larger task, prefer reusing the same delegated agent session",
 		"Zen CLI quick reference",
+		"only sessions with delegated=true are Brain-owned",
 		"agent spawn -name",
 		"agent capture -id",
 		"agent send -id",
 		"agent close -id",
 		"Delegated agent lifecycle",
+		"Never close, kill, rename, repurpose, or otherwise manage sessions whose agent list entry does not have delegated=true",
 		"Keep orchestration principles in Markdown, prompts, and agent instructions",
 		"Treat Heartbeat wake messages as compact actionable deltas",
 		"consolidate options and a recommendation",
@@ -666,6 +670,9 @@ func TestStoreUsesStateAndWorkspaceDirectories(t *testing.T) {
 	if !strings.Contains(string(instructions), "Brain is the user's scheduler") {
 		t.Fatalf("workspace instructions do not describe scheduler behavior:\n%s", instructions)
 	}
+	if !strings.Contains(string(instructions), "For a single larger task, prefer reusing the same delegated agent session") {
+		t.Fatalf("workspace instructions do not describe delegated session reuse:\n%s", instructions)
+	}
 	if !strings.Contains(string(instructions), "Keep orchestration principles in Markdown, prompts, and agent instructions") {
 		t.Fatalf("workspace instructions do not describe prompt-first orchestration:\n%s", instructions)
 	}
@@ -679,6 +686,9 @@ func TestStoreUsesStateAndWorkspaceDirectories(t *testing.T) {
 	}
 	if !strings.Contains(string(instructions), "Keep delegated agent lifecycle ownership") {
 		t.Fatalf("workspace instructions missing lifecycle ownership:\n%s", instructions)
+	}
+	if !strings.Contains(string(instructions), "Never close, kill, rename, repurpose, or otherwise manage sessions whose agent list entry does not have delegated=true") {
+		t.Fatalf("workspace instructions missing external session guard:\n%s", instructions)
 	}
 	if strings.Contains(string(instructions), "only when the user asks Brain to delegate real work") {
 		t.Fatalf("workspace instructions still require explicit delegation:\n%s", instructions)

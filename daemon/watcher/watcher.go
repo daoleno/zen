@@ -41,6 +41,7 @@ type Watcher struct {
 	agents       map[string]*classifier.Agent
 	prevContent  map[string]string
 	hidden       map[string]bool
+	delegated    map[string]bool
 	mu           sync.RWMutex
 	events       chan SessionEvent
 }
@@ -52,6 +53,7 @@ func New(pollInterval time.Duration) *Watcher {
 		agents:       make(map[string]*classifier.Agent),
 		prevContent:  make(map[string]string),
 		hidden:       make(map[string]bool),
+		delegated:    make(map[string]bool),
 		events:       make(chan SessionEvent, 100),
 	}
 }
@@ -133,6 +135,9 @@ func (w *Watcher) HasSession(target string) bool {
 		return false
 	}
 	sessionName := baseSessionName(target)
+	if strings.Contains(target, ":") {
+		return exec.Command("tmux", "has-session", "-t", target).Run() == nil
+	}
 	if sessionName == "" {
 		sessionName = target
 	}
@@ -189,7 +194,7 @@ func (w *Watcher) poll() {
 		if nextName := formatAgentName(win.name, win.target); nextName != "" {
 			agent.Name = nextName
 		}
-		if w.hidden[win.target] || isBrainHostWindow(win.target, win.name) {
+		if w.hidden[win.target] || win.hidden || isBrainHostWindow(win.target, win.name) {
 			w.hidden[win.target] = true
 			agent.Hidden = true
 		}
@@ -199,7 +204,10 @@ func (w *Watcher) poll() {
 		if w.hidden[win.target] {
 			agent.Hidden = true
 		}
-		agent.Delegated = isDelegatedAgentWindow(win.target, agent.Hidden)
+		if win.delegated {
+			w.delegated[win.target] = true
+		}
+		agent.Delegated = (w.delegated[win.target] || win.delegated) && !agent.Hidden
 
 		if contentChanged {
 			agent.StaleCount = 0
@@ -214,7 +222,12 @@ func (w *Watcher) poll() {
 
 		oldState := agent.State
 		newState, summary := classifier.Classify(alive, lines, agent.StaleCount)
-		if agent.LastProgressAt != nil && alive {
+		if terminalStateInvalidatesProgress(newState) {
+			agent.LastProgressAt = nil
+			agent.ExpectedNextCheckAt = nil
+			agent.LeaseSeconds = 0
+		}
+		if shouldKeepProgressState(agent, alive, newState) {
 			newState = agent.State
 			summary = agent.Summary
 		}
@@ -268,6 +281,7 @@ func (w *Watcher) poll() {
 			delete(w.agents, id)
 			delete(w.prevContent, id)
 			delete(w.hidden, id)
+			delete(w.delegated, id)
 			archived := cloneAgent(old)
 			if archived != nil {
 				archived.State = classifier.StateRemoved
@@ -329,6 +343,7 @@ type agentMetadataSnapshot struct {
 	lastProgressAt      int64
 	expectedNextCheckAt int64
 	leaseSeconds        int
+	delegated           bool
 }
 
 func agentMetadataSnapshotFor(agent *classifier.Agent) agentMetadataSnapshot {
@@ -346,6 +361,7 @@ func agentMetadataSnapshotFor(agent *classifier.Agent) agentMetadataSnapshot {
 		attention:           agent.Attention,
 		needsAttention:      agent.NeedsAttention,
 		leaseSeconds:        agent.LeaseSeconds,
+		delegated:           agent.Delegated,
 		lastProgressAt:      unixNanoOrZero(agent.LastProgressAt),
 		expectedNextCheckAt: unixNanoOrZero(agent.ExpectedNextCheckAt),
 	}
@@ -362,6 +378,17 @@ func unixNanoOrZero(value *time.Time) int64 {
 	return value.UnixNano()
 }
 
+func shouldKeepProgressState(agent *classifier.Agent, alive bool, terminalState classifier.AgentState) bool {
+	if agent == nil || agent.LastProgressAt == nil || !alive {
+		return false
+	}
+	return !terminalStateInvalidatesProgress(terminalState)
+}
+
+func terminalStateInvalidatesProgress(state classifier.AgentState) bool {
+	return state == classifier.StateBlocked || state == classifier.StateFailed
+}
+
 func isBrainHostWindow(target, windowName string) bool {
 	sessionName, _, ok := strings.Cut(strings.TrimSpace(target), ":")
 	if !ok {
@@ -370,30 +397,20 @@ func isBrainHostWindow(target, windowName string) bool {
 	return strings.HasPrefix(sessionName, "brain-agent-brain-") && strings.TrimSpace(windowName) == "Brain"
 }
 
-func isDelegatedAgentWindow(target string, hidden bool) bool {
-	if hidden {
-		return false
-	}
-	sessionName, _, ok := strings.Cut(strings.TrimSpace(target), ":")
-	if !ok {
-		return false
-	}
-	return strings.HasPrefix(sessionName, "brain-agent-") &&
-		!strings.HasPrefix(sessionName, "brain-agent-brain-")
-}
-
 // tmuxWindow represents a single tmux window target.
 type tmuxWindow struct {
-	target  string // "session:window_id" — stable tmux target usable as -t
-	name    string // window name (e.g. "claude", "node")
-	cwd     string // active pane cwd
-	command string // active pane command
-	panePID int
+	target    string // "session:window_id" — stable tmux target usable as -t
+	name      string // window name (e.g. "claude", "node")
+	cwd       string // active pane cwd
+	command   string // active pane command
+	panePID   int
+	hidden    bool
+	delegated bool
 }
 
 // listTmuxWindows returns all windows across all tmux sessions.
 func listTmuxWindows() ([]tmuxWindow, error) {
-	cmd := exec.Command("tmux", "list-windows", "-a", "-F", "#{session_name}:#{window_id}\t#{window_name}\t#{pane_current_path}\t#{pane_current_command}\t#{pane_pid}")
+	cmd := exec.Command("tmux", "list-windows", "-a", "-F", "#{session_name}:#{window_id}\t#{window_name}\t#{pane_current_path}\t#{pane_current_command}\t#{pane_pid}\t#{@zen_agent_hidden}\t#{@zen_agent_delegated}")
 	out, err := cmd.Output()
 	if err != nil {
 		return nil, fmt.Errorf("tmux list-windows: %w", err)
@@ -404,7 +421,7 @@ func listTmuxWindows() ([]tmuxWindow, error) {
 		if line == "" {
 			continue
 		}
-		parts := strings.SplitN(line, "\t", 5)
+		parts := strings.SplitN(line, "\t", 7)
 		target := parts[0]
 		// Skip grouped sessions created by the terminal backend (zen-<pid>-<counter>).
 		sessionName := strings.SplitN(target, ":", 2)[0]
@@ -424,12 +441,29 @@ func listTmuxWindows() ([]tmuxWindow, error) {
 			command = strings.TrimSpace(parts[3])
 		}
 		panePID := 0
-		if len(parts) == 5 {
+		if len(parts) >= 5 {
 			panePID, _ = strconv.Atoi(strings.TrimSpace(parts[4]))
 		}
-		windows = append(windows, tmuxWindow{target: target, name: name, cwd: cwd, command: command, panePID: panePID})
+		hidden := false
+		if len(parts) >= 6 {
+			hidden = tmuxBoolOption(parts[5])
+		}
+		delegated := false
+		if len(parts) >= 7 {
+			delegated = tmuxBoolOption(parts[6])
+		}
+		windows = append(windows, tmuxWindow{target: target, name: name, cwd: cwd, command: command, panePID: panePID, hidden: hidden, delegated: delegated})
 	}
 	return windows, nil
+}
+
+func tmuxBoolOption(value string) bool {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "1", "true", "yes", "on":
+		return true
+	default:
+		return false
+	}
 }
 
 // capturePaneContent captures the visible content of a tmux window's active pane.
@@ -484,12 +518,21 @@ func (w *Watcher) SendKey(sessionID, key string) error {
 }
 
 func allowedTmuxKey(key string) bool {
+	if len(key) == 1 && allowedLiteralKeyByte(key[0]) {
+		return true
+	}
 	switch key {
 	case "Enter", "Escape", "Up", "Down", "Left", "Right", "Tab", "BTab", "Space":
 		return true
 	default:
 		return false
 	}
+}
+
+func allowedLiteralKeyByte(key byte) bool {
+	return (key >= '1' && key <= '9') ||
+		(key >= 'a' && key <= 'z') ||
+		(key >= 'A' && key <= 'Z')
 }
 
 // SendInput sends text to a tmux window and treats trailing newlines as submit.
@@ -662,6 +705,7 @@ type CreateSessionOptions struct {
 	Hidden      bool
 	Env         map[string]string
 	ProgressEnv bool
+	Delegated   bool
 }
 
 // CreateSession creates a new tmux window and returns its target id.
@@ -834,6 +878,7 @@ func (w *Watcher) registerCreatedSession(target, cwd string, opts CreateSessionO
 	if createdAt.IsZero() {
 		createdAt = time.Now().UTC()
 	}
+	markCreatedSession(target, opts)
 
 	agent := &classifier.Agent{
 		ID:        target,
@@ -848,12 +893,17 @@ func (w *Watcher) registerCreatedSession(target, cwd string, opts CreateSessionO
 		UpdatedAt: createdAt,
 		PaneAlive: true,
 		Hidden:    opts.Hidden,
-		Delegated: isDelegatedAgentWindow(target, opts.Hidden),
+		Delegated: opts.Delegated && !opts.Hidden,
 	}
 
 	w.mu.Lock()
 	if opts.Hidden {
 		w.hidden[target] = true
+	}
+	if agent.Delegated {
+		w.delegated[target] = true
+	} else {
+		delete(w.delegated, target)
 	}
 	w.agents[target] = agent
 	if _, exists := w.prevContent[target]; !exists {
@@ -867,6 +917,26 @@ func (w *Watcher) registerCreatedSession(target, cwd string, opts CreateSessionO
 		AgentID: target,
 		Agent:   snapshot,
 	}
+}
+
+func markCreatedSession(target string, opts CreateSessionOptions) {
+	setTmuxWindowUserOption(target, "zen_agent_created", "1")
+	if opts.Hidden {
+		setTmuxWindowUserOption(target, "zen_agent_hidden", "1")
+	}
+	if opts.Delegated && !opts.Hidden {
+		setTmuxWindowUserOption(target, "zen_agent_delegated", "1")
+	}
+}
+
+func setTmuxWindowUserOption(target, key, value string) {
+	target = strings.TrimSpace(target)
+	key = strings.TrimSpace(key)
+	value = strings.TrimSpace(value)
+	if target == "" || key == "" || value == "" {
+		return
+	}
+	_ = exec.Command("tmux", "set-option", "-w", "-t", target, "@"+key, value).Run()
 }
 
 func createdSessionName(opts CreateSessionOptions) string {

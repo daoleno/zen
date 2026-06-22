@@ -27,6 +27,7 @@ import {
 } from "./CodexChatSession";
 import { CodexStatusSheet } from "./CodexStatusSheet";
 import { CodexSkillsSheet } from "./CodexSkillsSheet";
+import { buildTerminalActionPrompt } from "./TerminalActionPromptModel";
 import { useCodexSlashCommands } from "./CodexSlashCommands";
 import { useCodexChatBodyProps } from "./useCodexChatBodyProps";
 import {
@@ -361,6 +362,24 @@ export function useCodexChatSurfaceState({
     minimalComposer,
     showAttachmentControl,
   });
+  const terminalActionPrompt = useMemo(
+    () =>
+      buildTerminalActionPrompt({
+        status: agentInfo?.status,
+        summary: agentInfo?.summary,
+        lastOutputLines: agentInfo?.lastOutputLines,
+      }),
+    [agentInfo?.lastOutputLines, agentInfo?.status, agentInfo?.summary],
+  );
+  const sendTerminalActionKey = useCallback(
+    (key: string) => {
+      if (connectionState !== "connected" || !serverId || !agentId) {
+        throw new Error("Daemon is not connected.");
+      }
+      return wsClient.sendKey(serverId, agentId, key);
+    },
+    [agentId, connectionState, serverId],
+  );
   const skillsSheet = useMemo(
     () =>
       React.createElement(CodexSkillsSheet, {
@@ -436,6 +455,7 @@ export function useCodexChatSurfaceState({
     draft,
     attachments,
     composerPresentation,
+    terminalActionPrompt,
     timeline,
     jumpLabel,
     emptyTitle,
@@ -448,6 +468,7 @@ export function useCodexChatSurfaceState({
     setDraft,
     onToggleActionMenu: toggleActionMenu,
     onDismissActionMenu: dismissActionMenu,
+    onTerminalActionKey: sendTerminalActionKey,
     showUnavailableAction,
     skillsSheet: sheets,
   });

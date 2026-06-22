@@ -11,7 +11,7 @@ import (
 )
 
 const (
-	defaultDelegatedDoneCloseAfter = 45 * time.Second
+	defaultDelegatedDoneCloseAfter = 0
 )
 
 type delegatedLifecycleManager struct {
@@ -101,7 +101,7 @@ func (m *delegatedLifecycleManager) Observe(agent *classifier.Agent, alreadyWoke
 		}
 		wakeEvent = &event
 	}
-	if entry.woken && candidate.closeAfter > 0 && !entry.candidateSince.IsZero() && !now.Before(entry.candidateSince.Add(candidate.closeAfter)) {
+	if candidate.closeAfter > 0 && entry.woken && !entry.candidateSince.IsZero() && !now.Before(entry.candidateSince.Add(candidate.closeAfter)) {
 		closeID = agent.ID
 	}
 	if closeID == "" {
@@ -155,7 +155,7 @@ func (m *delegatedLifecycleManager) candidate(agent *classifier.Agent) (delegate
 			status:     string(classifier.StateDone),
 			summary:    fallbackLifecycleSummary(agent.Summary, agent.LastLines),
 			signature:  lifecycleSignature(agent),
-			closeAfter: m.durationOrDefault(m.doneCloseAfter, defaultDelegatedDoneCloseAfter),
+			closeAfter: m.doneCloseAfter,
 			wake:       true,
 		}, true
 	default:

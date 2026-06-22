@@ -8,7 +8,7 @@ import (
 	"github.com/daoleno/zen/daemon/classifier"
 )
 
-func TestDelegatedLifecycleWakesAndClosesDoneAgent(t *testing.T) {
+func TestDelegatedLifecycleWakesDoneAgentWithoutAutoClose(t *testing.T) {
 	now := time.Date(2026, 6, 7, 10, 0, 0, 0, time.UTC)
 	var wakes []brain.HeartbeatEvent
 	var closed []string
@@ -23,7 +23,6 @@ func TestDelegatedLifecycleWakesAndClosesDoneAgent(t *testing.T) {
 		},
 	)
 	manager.now = func() time.Time { return now }
-	manager.doneCloseAfter = time.Second
 
 	agent := &classifier.Agent{
 		ID:        "brain-agent-worker:@1",
@@ -42,19 +41,13 @@ func TestDelegatedLifecycleWakesAndClosesDoneAgent(t *testing.T) {
 		t.Fatalf("wake event = %#v", wakes[0])
 	}
 	if len(closed) != 0 {
-		t.Fatalf("closed before ttl = %#v", closed)
+		t.Fatalf("unexpected close = %#v", closed)
 	}
 
-	now = now.Add(500 * time.Millisecond)
+	now = now.Add(time.Minute)
 	manager.Observe(agent, false)
 	if len(wakes) != 1 || len(closed) != 0 {
-		t.Fatalf("mid-ttl wakes=%#v closed=%#v", wakes, closed)
-	}
-
-	now = now.Add(500 * time.Millisecond)
-	manager.Observe(agent, false)
-	if len(closed) != 1 || closed[0] != agent.ID {
-		t.Fatalf("closed after ttl = %#v", closed)
+		t.Fatalf("wakes=%#v closed=%#v", wakes, closed)
 	}
 }
 
@@ -162,7 +155,7 @@ func TestDelegatedLifecycleDoesNotCloseBeforeBrainWakeSucceeds(t *testing.T) {
 	}
 }
 
-func TestDelegatedLifecycleResetsCandidateWhenOutputChanges(t *testing.T) {
+func TestDelegatedLifecycleCanStillCloseWhenExplicitCloseAfterConfigured(t *testing.T) {
 	now := time.Date(2026, 6, 7, 10, 0, 0, 0, time.UTC)
 	var closed []string
 	manager := newDelegatedLifecycleManager(
