@@ -1,11 +1,12 @@
 import React from "react";
 import {
+  ActivityIndicator,
   StyleSheet,
   Text,
   TouchableOpacity,
   View,
 } from "react-native";
-import { Typography, statusColor } from "../../constants/tokens";
+import { Typography } from "../../constants/tokens";
 import type { TerminalThemeChrome } from "../../constants/terminalThemes";
 import { presentAgent } from "../../services/agentPresentation";
 import type { Agent } from "../../store/agents";
@@ -67,12 +68,22 @@ export function TerminalAgentPickerRow({
           {meta}
         </Text>
       </View>
-      <View
-        style={[
-          styles.agentRowStatusDot,
-          { backgroundColor: statusColor(agent.status) },
-        ]}
-      />
+      {agent.status === "running" ? (
+        <View style={styles.agentRowStatusIndicator}>
+          <ActivityIndicator
+            size="small"
+            color={chrome.accent}
+            style={styles.agentRowStatusSpinner}
+          />
+        </View>
+      ) : (
+        <View
+          style={[
+            styles.agentRowStatusDot,
+            { backgroundColor: chrome.textMuted },
+          ]}
+        />
+      )}
     </TouchableOpacity>
   );
 }
@@ -103,6 +114,15 @@ const styles = StyleSheet.create({
     width: 7,
     height: 7,
     borderRadius: 4,
+  },
+  agentRowStatusIndicator: {
+    width: 14,
+    height: 14,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  agentRowStatusSpinner: {
+    transform: [{ scale: 0.55 }],
   },
   agentRowTitle: {
     flexShrink: 1,

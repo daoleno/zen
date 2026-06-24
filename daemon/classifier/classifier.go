@@ -29,6 +29,9 @@ type Agent struct {
 	Summary             string     `json:"summary"`
 	Phase               string     `json:"phase,omitempty"`
 	Attention           string     `json:"attention,omitempty"`
+	TaskClass           string     `json:"task_class,omitempty"`
+	EventKind           string     `json:"event_kind,omitempty"`
+	DetailsJSON         string     `json:"details_json,omitempty"`
 	NeedsAttention      bool       `json:"needs_attention,omitempty"`
 	LastProgressAt      *time.Time `json:"last_progress_at,omitempty"`
 	ExpectedNextCheckAt *time.Time `json:"expected_next_check_at,omitempty"`

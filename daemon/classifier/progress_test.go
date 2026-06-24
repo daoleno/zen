@@ -12,6 +12,9 @@ func TestValidateProgressAcceptsStrictValues(t *testing.T) {
 		Phase:        "working",
 		Attention:    "none",
 		Summary:      "Adding close guard",
+		TaskClass:    "lasting_design",
+		EventKind:    "invariant",
+		DetailsJSON:  `{"invariants":["state is durable"]}`,
 		LeaseSeconds: 900,
 	})
 	if err != nil {
@@ -23,6 +26,9 @@ func TestValidateProgressAcceptsStrictValues(t *testing.T) {
 	if progress.Summary != "Adding close guard" || progress.LeaseSeconds != 900 {
 		t.Fatalf("progress metadata = %#v", progress)
 	}
+	if progress.TaskClass != "lasting_design" || progress.EventKind != "invariant" || progress.DetailsJSON == "" {
+		t.Fatalf("semantic progress metadata = %#v", progress)
+	}
 }
 
 func TestValidateProgressRejectsAliasesAndCamelCaseLeaseIsNotAField(t *testing.T) {
@@ -32,6 +38,9 @@ func TestValidateProgressRejectsAliasesAndCamelCaseLeaseIsNotAField(t *testing.T
 		{Status: "running", Phase: "working", Attention: "waiting"},
 		{Status: "RUNNING", Phase: "working", Attention: "none"},
 		{Status: "running", Phase: "working", Attention: "none", LeaseSeconds: -1},
+		{Status: "running", Phase: "working", Attention: "none", TaskClass: "bugfix"},
+		{Status: "running", Phase: "working", Attention: "none", EventKind: "checkpoint"},
+		{Status: "running", Phase: "working", Attention: "none", DetailsJSON: `{"broken"`},
 	}
 
 	for _, progress := range cases {
@@ -54,6 +63,9 @@ func TestApplyProgressUpdatesLifecycleFields(t *testing.T) {
 		Phase:        "working",
 		Attention:    "user_input",
 		Summary:      "Need confirmation",
+		TaskClass:    "lasting_design",
+		EventKind:    "needs_judgment",
+		DetailsJSON:  `{"question":"root design or patch"}`,
 		LeaseSeconds: 300,
 	}, now)
 
@@ -65,6 +77,9 @@ func TestApplyProgressUpdatesLifecycleFields(t *testing.T) {
 	}
 	if agent.Summary != "Need confirmation" {
 		t.Fatalf("summary = %q", agent.Summary)
+	}
+	if agent.TaskClass != "lasting_design" || agent.EventKind != "needs_judgment" || agent.DetailsJSON == "" {
+		t.Fatalf("semantic progress fields = %#v", agent)
 	}
 	if agent.LastProgressAt == nil || !agent.LastProgressAt.Equal(now) {
 		t.Fatalf("last progress = %#v, want %s", agent.LastProgressAt, now)

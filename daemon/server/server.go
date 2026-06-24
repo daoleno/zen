@@ -57,6 +57,8 @@ type Server struct {
 	active    map[*websocket.Conn]string
 	writes    map[*websocket.Conn]*sync.Mutex
 	codexSubs map[*websocket.Conn]map[string]codexConversationSubscription
+	notified  map[string]struct{}
+	brainSent map[string]struct{}
 	mu        sync.Mutex
 }
 
@@ -81,6 +83,8 @@ func New(authManager *auth.Manager, w *watcher.Watcher, pusher *push.Client, sc 
 		active:    make(map[*websocket.Conn]string),
 		writes:    make(map[*websocket.Conn]*sync.Mutex),
 		codexSubs: make(map[*websocket.Conn]map[string]codexConversationSubscription),
+		notified:  make(map[string]struct{}),
+		brainSent: make(map[string]struct{}),
 	}
 	srv.lifecycle = newDelegatedLifecycleManager(
 		func(event brain.HeartbeatEvent) (bool, error) {
@@ -1732,6 +1736,15 @@ func isActionableBrainHeartbeatState(state string) bool {
 		state == string(classifier.StateFailed)
 }
 
+func isAttentionSignal(attention string) bool {
+	switch strings.TrimSpace(attention) {
+	case "user_input", "blocked", "failed":
+		return true
+	default:
+		return false
+	}
+}
+
 func (s *Server) maybeWakeBrainForSessionEvent(ev watcher.SessionEvent) bool {
 	if s.brain == nil || ev.Agent == nil {
 		return false
@@ -1742,14 +1755,15 @@ func (s *Server) maybeWakeBrainForSessionEvent(ev watcher.SessionEvent) bool {
 	status := ev.NewState
 	reason := "agent_state_change"
 	if ev.Type == "agent_removed" {
-		reason = "agent_removed"
-		if status == "" {
-			status = string(classifier.StateDone)
-		}
-	} else if ev.Type == "agent_metadata_change" && ev.Agent.NeedsAttention {
+		return false
+	} else if ev.Type == "agent_metadata_change" && ev.Agent.NeedsAttention && isAttentionSignal(ev.Agent.Attention) {
 		reason = "agent_attention"
 		status = string(ev.Agent.State)
-	} else if !isActionableBrainHeartbeatState(status) {
+	} else if ev.Type != "agent_state_change" || ev.OldState == ev.NewState || !isActionableBrainHeartbeatState(status) {
+		return false
+	}
+	signalKey := brainSignalKey(ev.AgentID, reason, status, ev.Agent.Attention)
+	if s.rememberBrainSignal(signalKey) {
 		return false
 	}
 	woke, err := s.brain.Heartbeat(brain.HeartbeatEvent{
@@ -1766,32 +1780,98 @@ func (s *Server) maybeWakeBrainForSessionEvent(ev watcher.SessionEvent) bool {
 	})
 	if err != nil {
 		log.Printf("brain heartbeat wake failed for %s: %v", ev.AgentID, err)
+		s.forgetBrainSignal(signalKey)
 		return false
 	}
 	if woke {
 		log.Printf("brain heartbeat wake sent for %s (%s)", ev.AgentID, reason)
+	} else {
+		s.forgetBrainSignal(signalKey)
 	}
 	return woke
 }
 
 func (s *Server) maybeNotifyForSessionEvent(ev watcher.SessionEvent) {
-	if s.hasAnyActiveViewer() || ev.Agent == nil {
+	if s.pusher == nil || s.hasAnyActiveViewer() || ev.Agent == nil || ev.Agent.Hidden || !ev.Agent.Delegated {
+		return
+	}
+	if ev.Type == "agent_removed" {
+		return
+	}
+	if ev.Type != "agent_state_change" || ev.OldState == ev.NewState {
 		return
 	}
 
 	state := ev.NewState
-	if ev.Type == "agent_removed" {
-		state = ev.OldState
-	}
-
 	switch state {
 	case "blocked":
+		if s.rememberNotificationSignal(notificationSignalKey(ev.AgentID, state)) {
+			return
+		}
 		s.pusher.NotifyAgentBlocked(ev.AgentID, ev.Agent.Name, ev.Agent.Summary)
 	case "failed":
+		if s.rememberNotificationSignal(notificationSignalKey(ev.AgentID, state)) {
+			return
+		}
 		s.pusher.NotifyAgentFailed(ev.AgentID, ev.Agent.Name, ev.Agent.Summary)
 	case "done":
+		if s.rememberNotificationSignal(notificationSignalKey(ev.AgentID, state)) {
+			return
+		}
 		s.pusher.NotifyAgentDone(ev.AgentID, ev.Agent.Name, ev.Agent.Summary)
 	}
+}
+
+func notificationSignalKey(agentID, state string) string {
+	return strings.TrimSpace(agentID) + "|notification|" + strings.TrimSpace(state)
+}
+
+func brainSignalKey(agentID, reason, status, attention string) string {
+	if reason == "agent_attention" {
+		return strings.TrimSpace(agentID) + "|brain|" + reason + "|" + strings.TrimSpace(attention)
+	}
+	return strings.TrimSpace(agentID) + "|brain|" + strings.TrimSpace(status)
+}
+
+func (s *Server) rememberNotificationSignal(key string) bool {
+	if key == "" {
+		return false
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.notified == nil {
+		s.notified = make(map[string]struct{})
+	}
+	if _, ok := s.notified[key]; ok {
+		return true
+	}
+	s.notified[key] = struct{}{}
+	return false
+}
+
+func (s *Server) rememberBrainSignal(key string) bool {
+	if key == "" {
+		return false
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.brainSent == nil {
+		s.brainSent = make(map[string]struct{})
+	}
+	if _, ok := s.brainSent[key]; ok {
+		return true
+	}
+	s.brainSent[key] = struct{}{}
+	return false
+}
+
+func (s *Server) forgetBrainSignal(key string) {
+	if key == "" {
+		return
+	}
+	s.mu.Lock()
+	delete(s.brainSent, key)
+	s.mu.Unlock()
 }
 
 func (s *Server) broadcast(data []byte) {

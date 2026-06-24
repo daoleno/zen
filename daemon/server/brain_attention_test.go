@@ -174,3 +174,81 @@ func TestMaybeWakeBrainIgnoresExternalSession(t *testing.T) {
 		t.Fatalf("unexpected wake=%v sent=%#v", woke, fw.sent)
 	}
 }
+
+func TestMaybeWakeBrainDedupesRepeatedDoneSignal(t *testing.T) {
+	store, err := brain.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	hostID := "brain-agent-brain-hidden:@1"
+	if err := store.SetHostSession(hostID, "codex"); err != nil {
+		t.Fatal(err)
+	}
+	fw := &brainWakeWatcher{
+		sessions: map[string]*classifier.Agent{
+			hostID: {ID: hostID, Name: "Brain", Hidden: true, State: classifier.StateRunning},
+		},
+	}
+	srv := &Server{brain: brain.NewService(store, fw, nil)}
+	agent := &classifier.Agent{
+		ID:        "brain-agent-worker:@1",
+		Name:      "Worker",
+		State:     classifier.StateDone,
+		Summary:   "complete",
+		Cwd:       "/repo",
+		Delegated: true,
+	}
+	event := watcher.SessionEvent{
+		Type:     "agent_state_change",
+		AgentID:  agent.ID,
+		OldState: string(classifier.StateRunning),
+		NewState: string(classifier.StateDone),
+		Agent:    agent,
+	}
+
+	if !srv.maybeWakeBrainForSessionEvent(event) {
+		t.Fatal("expected first done transition to wake Brain")
+	}
+	agent.Summary = "late transcript update"
+	if srv.maybeWakeBrainForSessionEvent(event) {
+		t.Fatal("expected repeated done transition to be deduped")
+	}
+	if len(fw.sent) != 1 {
+		t.Fatalf("sent = %#v", fw.sent)
+	}
+}
+
+func TestMaybeWakeBrainIgnoresRemovedDelegatedSession(t *testing.T) {
+	store, err := brain.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	hostID := "brain-agent-brain-hidden:@1"
+	if err := store.SetHostSession(hostID, "codex"); err != nil {
+		t.Fatal(err)
+	}
+	fw := &brainWakeWatcher{
+		sessions: map[string]*classifier.Agent{
+			hostID: {ID: hostID, Name: "Brain", Hidden: true, State: classifier.StateRunning},
+		},
+	}
+	srv := &Server{brain: brain.NewService(store, fw, nil)}
+
+	woke := srv.maybeWakeBrainForSessionEvent(watcher.SessionEvent{
+		Type:     "agent_removed",
+		AgentID:  "brain-agent-worker:@1",
+		OldState: string(classifier.StateDone),
+		Agent: &classifier.Agent{
+			ID:        "brain-agent-worker:@1",
+			Name:      "Worker",
+			State:     classifier.StateDone,
+			Summary:   "complete",
+			Cwd:       "/repo",
+			Delegated: true,
+		},
+	})
+
+	if woke || len(fw.sent) != 0 {
+		t.Fatalf("unexpected wake=%v sent=%#v", woke, fw.sent)
+	}
+}

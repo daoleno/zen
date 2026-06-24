@@ -19,7 +19,7 @@ import { Ionicons } from '@expo/vector-icons';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Agent, useAgents } from '../../store/agents';
 import { useWork, type WorkItem } from '../../store/work';
-import { AgentStatus, Colors, Typography, statusColor, useAppColors } from '../../constants/tokens';
+import { AgentStatus, Colors, Typography, useAppColors } from '../../constants/tokens';
 import { IconButton } from '../../components/ui/IconButton';
 import { TerminalPreview } from '../../components/terminal/TerminalPreview';
 import { AgentKindIcon } from '../../components/terminal/AgentKindIcon';
@@ -54,11 +54,11 @@ import {
 } from '../../services/sessionServicesPresentation';
 
 const STATUS_PRIORITY: Record<AgentStatus, number> = {
-  failed: 0,
+  running: 0,
   blocked: 1,
-  unknown: 2,
-  running: 3,
-  done: 4,
+  failed: 1,
+  unknown: 1,
+  done: 1,
 };
 
 export default function InboxScreen() {
@@ -488,15 +488,7 @@ export default function InboxScreen() {
         activeOpacity={0.82}
         delayLongPress={400}
       >
-        <View style={styles.sessionIconWrap}>
-          <AgentKindIcon kind={presented.kind} size={15} />
-          <View
-            style={[
-              styles.sessionStatusBadge,
-              { backgroundColor: statusColor(item.status) },
-            ]}
-          />
-        </View>
+        <AgentKindIcon kind={presented.kind} size={15} />
         <View style={styles.sessionBody}>
           <View style={styles.sessionTitleRow}>
             <Text style={styles.sessionName} numberOfLines={1}>
@@ -505,6 +497,12 @@ export default function InboxScreen() {
             {item.delegated ? <BrainSessionBadge colors={colors} styles={styles} /> : null}
           </View>
         </View>
+        <AgentRunningIndicator
+          running={item.status === 'running'}
+          colors={colors}
+          styles={styles}
+          compact
+        />
       </TouchableOpacity>
     );
   };
@@ -543,7 +541,11 @@ export default function InboxScreen() {
               <BrainSessionBadge colors={colors} styles={styles} compact />
             ) : null}
           </View>
-          <View style={[styles.statusDot, { backgroundColor: statusColor(item.status) }]} />
+          <AgentRunningIndicator
+            running={item.status === 'running'}
+            colors={colors}
+            styles={styles}
+          />
         </View>
         <View style={styles.gridPreview}>
           <TerminalPreview key={item.key} lines={item.last_output_lines} />
@@ -850,6 +852,39 @@ function BrainSessionBadge({
   );
 }
 
+function AgentRunningIndicator({
+  running,
+  compact = false,
+  colors,
+  styles,
+}: {
+  running: boolean;
+  compact?: boolean;
+  colors: typeof Colors;
+  styles: ReturnType<typeof createStyles>;
+}) {
+  if (running) {
+    return (
+      <View style={compact ? styles.sessionStatusBadge : styles.statusIndicator}>
+        <ActivityIndicator
+          size="small"
+          color={colors.statusRunning}
+          style={compact ? styles.compactSpinner : styles.statusSpinner}
+        />
+      </View>
+    );
+  }
+
+  return (
+    <View
+      style={[
+        compact ? styles.sessionStatusBadge : styles.statusDot,
+        { backgroundColor: colors.disabledText },
+      ]}
+    />
+  );
+}
+
 function resolveSessionTitle(
   agent: Agent,
   presented: ReturnType<typeof presentAgent>,
@@ -973,18 +1008,12 @@ function createStyles(colors: typeof Colors) {
     paddingVertical: 9,
     paddingHorizontal: 2,
   },
-  sessionIconWrap: {
-    position: 'relative',
-  },
   sessionStatusBadge: {
-    position: 'absolute',
-    right: -1,
-    bottom: -1,
-    width: 8,
-    height: 8,
-    borderRadius: 4,
-    borderWidth: 1.5,
-    borderColor: colors.bgPrimary,
+    width: 10,
+    height: 10,
+    borderRadius: 5,
+    alignItems: 'center',
+    justifyContent: 'center',
   },
   sessionBody: {
     flex: 1,
@@ -1028,6 +1057,18 @@ function createStyles(colors: typeof Colors) {
     width: 6,
     height: 6,
     borderRadius: 3,
+  },
+  statusIndicator: {
+    width: 14,
+    height: 14,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  compactSpinner: {
+    transform: [{ scale: 0.42 }],
+  },
+  statusSpinner: {
+    transform: [{ scale: 0.55 }],
   },
 
   loadingContainer: {

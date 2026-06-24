@@ -82,6 +82,9 @@ export type CodexChatAgentInfo = {
   summary?: string;
   phase?: string;
   attention?: string;
+  taskClass?: string;
+  eventKind?: string;
+  detailsJson?: string;
   needsAttention?: boolean;
   lastOutputLines?: string[];
   cwd?: string;

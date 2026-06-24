@@ -265,7 +265,7 @@ func printAgentUsage(w io.Writer) {
 	fmt.Fprintln(w, "  zen agent spawn -name \"Review docs\" -executor codex -cwd /repo -prompt \"Inspect docs\"")
 	fmt.Fprintln(w, "  zen agent capture -id brain-agent-review-docs:@1 --json")
 	fmt.Fprintln(w, "  zen agent status -id brain-agent-review-docs:@1 --json")
-	fmt.Fprintln(w, "  zen agent progress --status running --phase working --attention none --summary \"Reading files\" --lease 300")
+	fmt.Fprintln(w, "  zen agent progress --status running --phase working --attention none --summary \"Reading files\" --task-class lasting_design --event-kind invariant --lease 300")
 	fmt.Fprintln(w, "  zen agent send -id brain-agent-review-docs:@1 -text \"continue\" --submit=true")
 	fmt.Fprintln(w, "  zen agent close -id brain-agent-review-docs:@1 --force")
 }
@@ -437,6 +437,9 @@ func runAgentProgress(args []string, stderr io.Writer) error {
 	fs.StringVar(&req.Phase, "phase", "", "progress phase: starting, reading, planning, working, verifying, or reporting")
 	fs.StringVar(&req.Attention, "attention", "", "attention state: none, done, blocked, failed, user_input, or stale")
 	fs.StringVar(&req.Summary, "summary", "", "short progress summary")
+	fs.StringVar(&req.TaskClass, "task-class", "", "semantic task class: exploration, mechanical_change, or lasting_design")
+	fs.StringVar(&req.EventKind, "event-kind", "", "semantic progress event: progress, invariant, artifact, risk, needs_judgment, verification, or done")
+	fs.StringVar(&req.DetailsJSON, "details-json", "", "optional JSON details for the semantic event")
 	fs.IntVar(&req.LeaseSeconds, "lease", 0, "seconds until the next expected progress update")
 	fs.Usage = func() {
 		fmt.Fprintln(stderr, "Usage: zen agent progress --status running --phase working --attention none --summary 'Reading files' --lease 300 [flags]")

@@ -199,6 +199,9 @@ func TestAgentAndBrainHelpAreDiscoverable(t *testing.T) {
 		"-id",
 		"-lease",
 		"-status",
+		"-task-class",
+		"-event-kind",
+		"-details-json",
 	} {
 		if !strings.Contains(progressHelp, want) {
 			t.Fatalf("progress help missing %q:\n%s", want, progressHelp)
@@ -238,6 +241,9 @@ func TestAgentProgressCommandUsesZenAgentIDFallback(t *testing.T) {
 			"--phase", "working",
 			"--attention", "none",
 			"--summary", "Reading files",
+			"--task-class", "exploration",
+			"--event-kind", "progress",
+			"--details-json", `{"files":3}`,
 			"--lease", "300",
 			"--json=false",
 		},
@@ -251,6 +257,9 @@ func TestAgentProgressCommandUsesZenAgentIDFallback(t *testing.T) {
 	}
 	if req.Summary != "Reading files" || req.LeaseSeconds != 300 {
 		t.Fatalf("request progress metadata = %#v", req)
+	}
+	if req.TaskClass != "exploration" || req.EventKind != "progress" || req.DetailsJSON != `{"files":3}` {
+		t.Fatalf("semantic request metadata = %#v", req)
 	}
 }
 

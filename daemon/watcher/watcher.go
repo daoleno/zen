@@ -23,6 +23,7 @@ const initialInputReadyTimeout = 8 * time.Second
 
 var codexInputPromptRe = regexp.MustCompile(`(?m)^›\s`)
 var codexModelLoadingRe = regexp.MustCompile(`(?im)\bmodel:\s+loading\b`)
+var codexStartupContinueRe = regexp.MustCompile(`(?im)\bpress\s+enter\s+to\s+continue\b`)
 
 // SessionEvent represents a state change or output update for an agent.
 type SessionEvent struct {
@@ -339,6 +340,9 @@ type agentMetadataSnapshot struct {
 	hidden              bool
 	phase               string
 	attention           string
+	taskClass           string
+	eventKind           string
+	detailsJSON         string
 	needsAttention      bool
 	lastProgressAt      int64
 	expectedNextCheckAt int64
@@ -359,6 +363,9 @@ func agentMetadataSnapshotFor(agent *classifier.Agent) agentMetadataSnapshot {
 		hidden:              agent.Hidden,
 		phase:               agent.Phase,
 		attention:           agent.Attention,
+		taskClass:           agent.TaskClass,
+		eventKind:           agent.EventKind,
+		detailsJSON:         agent.DetailsJSON,
 		needsAttention:      agent.NeedsAttention,
 		leaseSeconds:        agent.LeaseSeconds,
 		delegated:           agent.Delegated,
@@ -541,10 +548,12 @@ func (w *Watcher) SendInput(sessionID, text string) error {
 }
 
 // SendInputWhenReady waits for a newly started agent UI to be ready, then sends
-// text. If readiness cannot be confirmed before the timeout, it still sends the
-// text so manual terminals and unknown adapters do not deadlock.
+// text. Unknown adapters are treated as ready immediately. Known Codex UIs must
+// reach the input prompt so Zen does not paste a task into a startup/approval card.
 func (w *Watcher) SendInputWhenReady(sessionID, command, text string) error {
-	WaitForInputReady(sessionID, command, initialInputReadyTimeout)
+	if !WaitForInputReady(sessionID, command, initialInputReadyTimeout) && needsInputReadinessWait(command, "") {
+		return fmt.Errorf("agent input not ready for %q", command)
+	}
 	return SendInput(sessionID, text)
 }
 
@@ -568,7 +577,9 @@ func SendInput(sessionID, text string) error {
 // SendInputWhenReady is the package-level form used by adapter shims that do
 // not hold a Watcher instance.
 func SendInputWhenReady(sessionID, command, text string) error {
-	WaitForInputReady(sessionID, command, initialInputReadyTimeout)
+	if !WaitForInputReady(sessionID, command, initialInputReadyTimeout) && needsInputReadinessWait(command, "") {
+		return fmt.Errorf("agent input not ready for %q", command)
+	}
 	return SendInput(sessionID, text)
 }
 
@@ -579,10 +590,17 @@ func WaitForInputReady(sessionID, command string, timeout time.Duration) bool {
 		return true
 	}
 	deadline := time.Now().Add(timeout)
+	advancedStartupPrompt := false
 	for {
 		content, alive := capturePaneContent(sessionID)
 		if !alive {
 			return false
+		}
+		if !advancedStartupPrompt && isCodexStartupContinuePrompt(command, content) {
+			_ = exec.Command("tmux", "send-keys", "-t", sessionID, "Enter").Run()
+			advancedStartupPrompt = true
+			time.Sleep(250 * time.Millisecond)
+			continue
 		}
 		if isAgentInputReady(command, content) {
 			return true
@@ -599,11 +617,32 @@ func isAgentInputReady(command, content string) bool {
 		return true
 	}
 	if isCodexCommand(command) || strings.Contains(strings.ToLower(content), "openai codex") {
-		return strings.Contains(content, "OpenAI Codex") &&
-			!codexModelLoadingRe.MatchString(content) &&
-			codexInputPromptRe.MatchString(content)
+		current := latestCodexPaneContent(content)
+		return strings.Contains(current, "OpenAI Codex") &&
+			!codexModelLoadingRe.MatchString(current) &&
+			codexInputPromptRe.MatchString(current)
 	}
 	return strings.TrimSpace(content) != ""
+}
+
+func isCodexStartupContinuePrompt(command, content string) bool {
+	if !isCodexCommand(command) && !strings.Contains(strings.ToLower(content), "openai codex") {
+		return false
+	}
+	return codexStartupContinueRe.MatchString(latestCodexPaneContent(content))
+}
+
+func latestCodexPaneContent(content string) string {
+	normalized := strings.ReplaceAll(content, "\r\n", "\n")
+	lower := strings.ToLower(normalized)
+	if idx := strings.LastIndex(lower, "openai codex"); idx >= 0 {
+		return normalized[idx:]
+	}
+	lines := strings.Split(normalized, "\n")
+	if len(lines) > 60 {
+		return strings.Join(lines[len(lines)-60:], "\n")
+	}
+	return normalized
 }
 
 func needsInputReadinessWait(command, content string) bool {

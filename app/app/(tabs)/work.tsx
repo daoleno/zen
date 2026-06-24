@@ -144,6 +144,20 @@ export default function BrainScreen() {
     setWorkspaceViewerVisible(false);
   }, []);
 
+  const openBrainTerminal = useCallback(() => {
+    if (!activeServer || !hostAgent?.id) {
+      return;
+    }
+    router.push({
+      pathname: "/terminal/[id]",
+      params: {
+        id: hostAgent.id,
+        serverId: activeServer.id,
+        initialCodexRenderMode: "terminal",
+      },
+    });
+  }, [activeServer, hostAgent?.id, router]);
+
   const startNewBrainChat = useCallback(async () => {
     if (!activeServer || !activeBrain?.hydrated || newChatLoading) {
       return;
@@ -213,6 +227,60 @@ export default function BrainScreen() {
           ) : null}
         </View>
         <View style={styles.headerActions}>
+          <View
+            style={[
+              styles.renderModeToggle,
+              {
+                backgroundColor: colors.surfaceSubtle,
+                borderColor: colors.borderSubtle,
+              },
+            ]}
+          >
+            <View style={[styles.renderModeButton, styles.renderModeButtonActive]}>
+              <Ionicons
+                name="chatbubble-outline"
+                size={16}
+                color={colors.accent}
+              />
+              <Text style={[styles.renderModeLabel, { color: colors.accent }]}>
+                Chat
+              </Text>
+            </View>
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel="Open Brain terminal"
+              onPress={openBrainTerminal}
+              disabled={!activeServer || !hostAgent?.id}
+              style={({ pressed }) => [
+                styles.renderModeButton,
+                pressed ? styles.renderModeButtonPressed : null,
+                !activeServer || !hostAgent?.id ? styles.renderModeButtonDisabled : null,
+              ]}
+            >
+              <Ionicons
+                name="terminal-outline"
+                size={16}
+                color={
+                  !activeServer || !hostAgent?.id
+                    ? colors.disabledText
+                    : colors.textSecondary
+                }
+              />
+              <Text
+                style={[
+                  styles.renderModeLabel,
+                  {
+                    color:
+                      !activeServer || !hostAgent?.id
+                        ? colors.disabledText
+                        : colors.textSecondary,
+                  },
+                ]}
+              >
+                Terminal
+              </Text>
+            </Pressable>
+          </View>
           <IconButton
             icon="folder-open-outline"
             size={36}
@@ -461,6 +529,38 @@ function createStyles(colors: typeof Colors) {
       flexDirection: "row",
       alignItems: "center",
       gap: 6,
+    },
+    renderModeToggle: {
+      height: 34,
+      flexDirection: "row",
+      alignItems: "center",
+      borderRadius: 10,
+      borderWidth: StyleSheet.hairlineWidth,
+      padding: 2,
+    },
+    renderModeButton: {
+      height: 28,
+      minWidth: 38,
+      paddingHorizontal: 7,
+      borderRadius: 8,
+      flexDirection: "row",
+      alignItems: "center",
+      justifyContent: "center",
+      gap: 4,
+    },
+    renderModeButtonActive: {
+      backgroundColor: colors.surfaceActive,
+    },
+    renderModeButtonPressed: {
+      opacity: 0.72,
+    },
+    renderModeButtonDisabled: {
+      opacity: 0.52,
+    },
+    renderModeLabel: {
+      fontFamily: Typography.uiFontMedium,
+      fontSize: 11,
+      lineHeight: 14,
     },
     headerError: {
       paddingHorizontal: 16,

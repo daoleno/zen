@@ -1,6 +1,7 @@
 package classifier
 
 import (
+	"encoding/json"
 	"fmt"
 	"strings"
 	"time"
@@ -11,6 +12,9 @@ type AgentProgress struct {
 	Phase        string
 	Attention    string
 	Summary      string
+	TaskClass    string
+	EventKind    string
+	DetailsJSON  string
 	LeaseSeconds int
 }
 
@@ -19,6 +23,9 @@ func ValidateProgress(progress AgentProgress) (AgentProgress, error) {
 	progress.Phase = strings.TrimSpace(progress.Phase)
 	progress.Attention = strings.TrimSpace(progress.Attention)
 	progress.Summary = truncate(strings.TrimSpace(progress.Summary), 160)
+	progress.TaskClass = strings.TrimSpace(progress.TaskClass)
+	progress.EventKind = strings.TrimSpace(progress.EventKind)
+	progress.DetailsJSON = strings.TrimSpace(progress.DetailsJSON)
 
 	if !validProgressStatus(progress.Status) {
 		return AgentProgress{}, fmt.Errorf("invalid status %q; valid values are running, done, failed, blocked", progress.Status)
@@ -28,6 +35,15 @@ func ValidateProgress(progress AgentProgress) (AgentProgress, error) {
 	}
 	if !validProgressAttention(progress.Attention) {
 		return AgentProgress{}, fmt.Errorf("invalid attention %q; valid values are none, done, blocked, failed, user_input, stale", progress.Attention)
+	}
+	if progress.TaskClass != "" && !validProgressTaskClass(progress.TaskClass) {
+		return AgentProgress{}, fmt.Errorf("invalid task_class %q; valid values are exploration, mechanical_change, lasting_design", progress.TaskClass)
+	}
+	if progress.EventKind != "" && !validProgressEventKind(progress.EventKind) {
+		return AgentProgress{}, fmt.Errorf("invalid event_kind %q; valid values are progress, invariant, artifact, risk, needs_judgment, verification, done", progress.EventKind)
+	}
+	if progress.DetailsJSON != "" && !json.Valid([]byte(progress.DetailsJSON)) {
+		return AgentProgress{}, fmt.Errorf("details_json must be valid JSON")
 	}
 	if progress.LeaseSeconds < 0 {
 		return AgentProgress{}, fmt.Errorf("lease seconds must be zero or greater")
@@ -48,6 +64,9 @@ func ApplyProgress(agent *Agent, progress AgentProgress, now time.Time) {
 	agent.Attention = progress.Attention
 	agent.NeedsAttention = ProgressNeedsAttention(progress)
 	agent.Summary = truncate(strings.TrimSpace(progress.Summary), 160)
+	agent.TaskClass = progress.TaskClass
+	agent.EventKind = progress.EventKind
+	agent.DetailsJSON = progress.DetailsJSON
 	agent.LeaseSeconds = progress.LeaseSeconds
 	progressAt := now.UTC()
 	agent.LastProgressAt = &progressAt
@@ -112,6 +131,24 @@ func validProgressPhase(value string) bool {
 func validProgressAttention(value string) bool {
 	switch value {
 	case "none", "done", "blocked", "failed", "user_input", "stale":
+		return true
+	default:
+		return false
+	}
+}
+
+func validProgressTaskClass(value string) bool {
+	switch value {
+	case "exploration", "mechanical_change", "lasting_design":
+		return true
+	default:
+		return false
+	}
+}
+
+func validProgressEventKind(value string) bool {
+	switch value {
+	case "progress", "invariant", "artifact", "risk", "needs_judgment", "verification", "done":
 		return true
 	default:
 		return false

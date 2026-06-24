@@ -51,6 +51,37 @@ func TestDelegatedLifecycleWakesDoneAgentWithoutAutoClose(t *testing.T) {
 	}
 }
 
+func TestDelegatedLifecycleDoneWakeIsStableAfterTranscriptChanges(t *testing.T) {
+	now := time.Date(2026, 6, 7, 10, 0, 0, 0, time.UTC)
+	var wakes []brain.HeartbeatEvent
+	manager := newDelegatedLifecycleManager(
+		func(event brain.HeartbeatEvent) (bool, error) {
+			wakes = append(wakes, event)
+			return true, nil
+		},
+		nil,
+	)
+	manager.now = func() time.Time { return now }
+
+	agent := &classifier.Agent{
+		ID:        "brain-agent-worker:@1",
+		Name:      "Worker",
+		State:     classifier.StateDone,
+		Summary:   "complete",
+		Delegated: true,
+		LastLines: []string{"complete"},
+	}
+	manager.Observe(agent, false)
+
+	now = now.Add(time.Minute)
+	agent.LastLines = []string{"complete", "late log line"}
+	manager.Observe(agent, false)
+
+	if len(wakes) != 1 {
+		t.Fatalf("wakes = %#v", wakes)
+	}
+}
+
 func TestDelegatedLifecycleDoesNotCloseUnsafeStates(t *testing.T) {
 	now := time.Date(2026, 6, 7, 10, 0, 0, 0, time.UTC)
 	var wakes []brain.HeartbeatEvent
@@ -155,7 +186,7 @@ func TestDelegatedLifecycleDoesNotCloseBeforeBrainWakeSucceeds(t *testing.T) {
 	}
 }
 
-func TestDelegatedLifecycleCanStillCloseWhenExplicitCloseAfterConfigured(t *testing.T) {
+func TestDelegatedLifecycleCanStillCloseCompletedAgentWhenExplicitCloseAfterConfigured(t *testing.T) {
 	now := time.Date(2026, 6, 7, 10, 0, 0, 0, time.UTC)
 	var closed []string
 	manager := newDelegatedLifecycleManager(
@@ -182,13 +213,13 @@ func TestDelegatedLifecycleCanStillCloseWhenExplicitCloseAfterConfigured(t *test
 
 	now = now.Add(200 * time.Millisecond)
 	manager.Observe(agent, true)
-	if len(closed) != 0 {
-		t.Fatalf("candidate did not reset, closed = %#v", closed)
+	if len(closed) != 1 || closed[0] != agent.ID {
+		t.Fatalf("closed after terminal-state ttl = %#v", closed)
 	}
 
 	now = now.Add(800 * time.Millisecond)
 	manager.Observe(agent, true)
-	if len(closed) != 1 || closed[0] != agent.ID {
-		t.Fatalf("closed after reset ttl = %#v", closed)
+	if len(closed) != 1 {
+		t.Fatalf("unexpected repeated close = %#v", closed)
 	}
 }

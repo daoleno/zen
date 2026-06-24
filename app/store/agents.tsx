@@ -18,6 +18,9 @@ export interface Agent {
   summary: string;
   phase?: string;
   attention?: string;
+  task_class?: string;
+  event_kind?: string;
+  details_json?: string;
   needs_attention?: boolean;
   last_output_lines: string[];
   started_at?: number;
@@ -46,6 +49,9 @@ type RawAgent = {
   summary?: string;
   phase?: string;
   attention?: string;
+  task_class?: string;
+  event_kind?: string;
+  details_json?: string;
   needs_attention?: boolean;
   last_output_lines?: string[];
   started_at?: string | number | Date;
@@ -189,6 +195,9 @@ function normalizeAgent(
     summary: agent.summary || '',
     phase: typeof agent.phase === 'string' ? agent.phase : undefined,
     attention: typeof agent.attention === 'string' ? agent.attention : undefined,
+    task_class: typeof agent.task_class === 'string' ? agent.task_class : undefined,
+    event_kind: typeof agent.event_kind === 'string' ? agent.event_kind : undefined,
+    details_json: typeof agent.details_json === 'string' ? agent.details_json : undefined,
     needs_attention: agent.needs_attention === true,
     last_output_lines: Array.isArray(agent.last_output_lines) ? agent.last_output_lines : [],
     started_at: agent.started_at === undefined ? undefined : normalizeTimestamp(agent.started_at),

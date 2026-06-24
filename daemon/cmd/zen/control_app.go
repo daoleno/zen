@@ -150,11 +150,14 @@ func (a *controlApp) handleAgentSend(req control.Request) control.Response {
 		return control.ErrorResponse("agent_not_delegated", "Refusing to send input to a session that was not created as a Brain delegated agent. Use --force only when you intentionally want to control this external session.")
 	}
 	text := req.Text
-	if strings.TrimSpace(text) == "" {
+	if strings.TrimSpace(text) == "" && !req.Submit {
 		return control.ErrorResponse("missing_text", "Text is required.")
 	}
 	if req.Submit {
 		text = ensureTrailingNewline(text)
+	}
+	if agent != nil && !a.watcher.HasSession(agentID) {
+		return control.ErrorResponse("agent_session_unavailable", "Agent is listed but the tmux target is no longer available. Refresh the agent list and spawn a new session if needed.")
 	}
 	if err := a.watcher.SendInput(agentID, text); err != nil {
 		return control.ErrorResponse("send_failed", err.Error())
@@ -174,6 +177,9 @@ func (a *controlApp) handleAgentCapture(req control.Request) control.Response {
 	agentID := strings.TrimSpace(req.AgentID)
 	if agentID == "" {
 		return control.ErrorResponse("missing_agent_id", "Agent id is required.")
+	}
+	if agent := a.watcher.GetAgent(agentID); agent != nil && !a.watcher.HasSession(agentID) {
+		return control.ErrorResponse("agent_session_unavailable", "Agent is listed but the tmux target is no longer available. Refresh the agent list and spawn a new session if needed.")
 	}
 	text, err := a.watcher.CapturePaneContent(agentID)
 	if err != nil {
@@ -219,6 +225,9 @@ func (a *controlApp) handleAgentProgress(req control.Request) control.Response {
 		Phase:        req.Phase,
 		Attention:    req.Attention,
 		Summary:      req.Summary,
+		TaskClass:    req.TaskClass,
+		EventKind:    req.EventKind,
+		DetailsJSON:  req.DetailsJSON,
 		LeaseSeconds: req.LeaseSeconds,
 	})
 	if err != nil {
@@ -392,6 +401,9 @@ func controlAgent(agent *classifier.Agent) control.Agent {
 		Summary:             agent.Summary,
 		Phase:               agent.Phase,
 		Attention:           agent.Attention,
+		TaskClass:           agent.TaskClass,
+		EventKind:           agent.EventKind,
+		DetailsJSON:         agent.DetailsJSON,
 		NeedsAttention:      agent.NeedsAttention,
 		LastProgressAt:      agent.LastProgressAt,
 		ExpectedNextCheckAt: agent.ExpectedNextCheckAt,
@@ -468,15 +480,23 @@ func lifecycleProtocol(profile string) string {
 	profile = normalizeAgentProfile(profile)
 	return strings.TrimSpace(fmt.Sprintf(`Zen lifecycle protocol:
 - Profile: %s.
+- Treat the prompt as a loop contract: preserve the objective, acceptance criteria, safety constraints, verification, and expected report.
+- Start lasting design or implementation work by identifying the core invariants. Prefer making invalid states unrepresentable over adding fallback paths.
+- Use task classes consistently: exploration for research/scanning, mechanical_change for bounded repeatable edits, lasting_design for product semantics, data models, architecture, and long-lived code.
 - Report progress through the Zen control plane only when your phase changes, when you take a meaningful long-running step, when you need attention, and when you finish.
 - ZEN_AGENT_ID is already set for this session. ZEN_AGENT_PROGRESS_CMD contains the base command.
 - Command shape:
   $ZEN_AGENT_PROGRESS_CMD --status running --phase working --attention none --summary "Short current work" --lease 300
+- Semantic event shape:
+  $ZEN_AGENT_PROGRESS_CMD --status running --phase planning --attention none --task-class lasting_design --event-kind invariant --summary "Defined durable state invariants" --details-json '{"invariants":["canonical source is X"]}' --lease 300
 - Valid status values: running, done, failed, blocked.
 - Valid phase values: starting, reading, planning, working, verifying, reporting.
 - Valid attention values: none, done, blocked, failed, user_input, stale.
+- Valid task classes: exploration, mechanical_change, lasting_design.
+- Valid event kinds: progress, invariant, artifact, risk, needs_judgment, verification, done.
 - Use attention "none" while you are making normal progress.
 - Use attention "user_input" only when user input is required.
+- Use event-kind "needs_judgment" when the next step depends on product values, user risk tolerance, or a choice between root design and patching.
 - Use attention "done" with status "done" only after the requested work and feasible verification are complete.
 - For implementation work, several minutes of reading before file edits is normal.`, profile))
 }

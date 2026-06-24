@@ -302,6 +302,9 @@ func TestUpdateAgentProgressUpdatesAgentAndEmitsStateEvent(t *testing.T) {
 		Phase:        "reporting",
 		Attention:    "done",
 		Summary:      "Finished verification",
+		TaskClass:    "mechanical_change",
+		EventKind:    "verification",
+		DetailsJSON:  `{"command":"go test ./..."}`,
 		LeaseSeconds: 300,
 	})
 	if err != nil {
@@ -313,13 +316,16 @@ func TestUpdateAgentProgressUpdatesAgentAndEmitsStateEvent(t *testing.T) {
 	if !agent.NeedsAttention || agent.LastProgressAt == nil || agent.ExpectedNextCheckAt == nil {
 		t.Fatalf("agent progress metadata = %#v", agent)
 	}
+	if agent.TaskClass != "mechanical_change" || agent.EventKind != "verification" || agent.DetailsJSON == "" {
+		t.Fatalf("agent semantic metadata = %#v", agent)
+	}
 
 	select {
 	case ev := <-w.Events():
 		if ev.Type != "agent_state_change" || ev.OldState != "running" || ev.NewState != "done" {
 			t.Fatalf("event = %#v", ev)
 		}
-		if ev.Agent == nil || ev.Agent.Summary != "Finished verification" {
+		if ev.Agent == nil || ev.Agent.Summary != "Finished verification" || ev.Agent.EventKind != "verification" {
 			t.Fatalf("event agent = %#v", ev.Agent)
 		}
 	case <-time.After(time.Second):
@@ -418,6 +424,24 @@ func TestCodexInputReadyRequiresPrompt(t *testing.T) {
 	ready := "╭────╮\n│ >_ OpenAI Codex │\n│ model: gpt-5.5 xhigh │\n╰────╯\n\n› Find and fix a bug in @filename\n"
 	if !isAgentInputReady("codex", ready) {
 		t.Fatal("Codex prompt should be input-ready")
+	}
+}
+
+func TestCodexStartupContinuePromptIsNotInputReady(t *testing.T) {
+	continuePrompt := "╭────╮\n│ >_ OpenAI Codex │\n╰────╯\n\nPress enter to continue\n"
+	if !isCodexStartupContinuePrompt("codex", continuePrompt) {
+		t.Fatal("Codex startup continue prompt should be detected")
+	}
+	if isAgentInputReady("codex", continuePrompt) {
+		t.Fatal("Codex startup continue prompt should not be treated as task input-ready")
+	}
+}
+
+func TestCodexInputReadyIgnoresStaleLoadingInScrollback(t *testing.T) {
+	content := "╭────╮\n│ >_ OpenAI Codex │\n│ model: loading │\n╰────╯\n\n› Improve documentation in @filename\n\n" +
+		"╭────╮\n│ >_ OpenAI Codex │\n│ model: gpt-5.5 medium │\n╰────╯\n\n› Improve documentation in @filename\n"
+	if !isAgentInputReady("codex", content) {
+		t.Fatal("current Codex prompt should be ready even when scrollback contains an older loading screen")
 	}
 }
 

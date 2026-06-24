@@ -84,6 +84,10 @@ async function registerForPushNotificationsAsync(): Promise<
 function buildNotificationContent(
   agent: Agent,
 ): Notifications.NotificationContentInput | null {
+  if (!agent.delegated) {
+    return null;
+  }
+
   const label = formatNotificationAgentLabel(agent);
   const summary = normalizeNotificationSummary(agent.summary);
 
@@ -154,6 +158,28 @@ function normalizeNotificationSummary(summary: string | undefined): string {
   return `${collapsed.slice(0, 107)}...`;
 }
 
+function shouldNotifyForAgentTransition(
+  previousState: Agent["status"] | undefined,
+  agent: Agent,
+): boolean {
+  if (!previousState || previousState === agent.status || !agent.delegated) {
+    return false;
+  }
+
+  if (agent.status === "blocked" || agent.status === "failed") {
+    return true;
+  }
+
+  return previousState === "running" && agent.status === "done";
+}
+
+function localNotificationSignalKey(agent: Agent): string | null {
+  if (agent.status !== "blocked" && agent.status !== "failed" && agent.status !== "done") {
+    return null;
+  }
+  return `${agent.key}:${agent.status}`;
+}
+
 function AppContent() {
   const router = useRouter();
   const segments = useSegments();
@@ -168,6 +194,7 @@ function AppContent() {
   const appStateRef = useRef<AppStateStatus>(AppState.currentState);
   const notificationsEnabledRef = useRef(false);
   const previousAgentStatesRef = useRef(new Map<string, Agent["status"]>());
+  const localNotificationSignalsRef = useRef(new Set<string>());
   const handledConnectLinksRef = useRef(new Set<string>());
   const rootSegment = segments[0];
   const rootSegmentRef = useRef(rootSegment);
@@ -540,7 +567,12 @@ function AppContent() {
 
     for (const agent of state.agents) {
       const previousState = previousAgentStates.get(agent.key);
-      if (!previousState || previousState === agent.status) {
+      if (!shouldNotifyForAgentTransition(previousState, agent)) {
+        continue;
+      }
+
+      const signalKey = localNotificationSignalKey(agent);
+      if (!signalKey || localNotificationSignalsRef.current.has(signalKey)) {
         continue;
       }
 
@@ -548,6 +580,7 @@ function AppContent() {
       if (!content) {
         continue;
       }
+      localNotificationSignalsRef.current.add(signalKey);
 
       void Notifications.scheduleNotificationAsync({
         content,

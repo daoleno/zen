@@ -181,11 +181,7 @@ func lifecycleSignature(agent *classifier.Agent) string {
 	if agent == nil {
 		return ""
 	}
-	lines := nonEmptyLifecycleLines(agent.LastLines)
-	if len(lines) > 20 {
-		lines = lines[len(lines)-20:]
-	}
-	return string(agent.State) + "\n" + strings.Join(lines, "\n")
+	return string(agent.State)
 }
 
 func fallbackLifecycleSummary(primary string, lines []string) string {

@@ -174,6 +174,10 @@ func TestControlAppAgentSpawnCreatesVisibleDetachedSession(t *testing.T) {
 		"delegated by Brain\n\nimplement this",
 		"Zen lifecycle protocol:",
 		`$ZEN_AGENT_PROGRESS_CMD --status running --phase working --attention none --summary "Short current work" --lease 300`,
+		`--task-class lasting_design --event-kind invariant`,
+		"loop contract",
+		"core invariants",
+		`event-kind "needs_judgment"`,
 		"ZEN_AGENT_ID is already set for this session.",
 		"Valid status values: running, done, failed, blocked.",
 	} {
@@ -250,6 +254,30 @@ func TestControlAppAgentSendAndCapture(t *testing.T) {
 	}
 }
 
+func TestControlAppAgentSendAllowsSubmitOnlyEnter(t *testing.T) {
+	fw := newFakeControlWatcher()
+	fw.agents["brain-agent-worker:@1"] = &classifier.Agent{
+		ID:        "brain-agent-worker:@1",
+		Name:      "Franklin",
+		State:     classifier.StateRunning,
+		Delegated: true,
+	}
+	app := &controlApp{watcher: fw}
+
+	resp := app.HandleControlRequest(control.Request{
+		Type:    "agent_send",
+		AgentID: "brain-agent-worker:@1",
+		Submit:  true,
+	})
+
+	if !resp.OK {
+		t.Fatalf("send response = %#v", resp)
+	}
+	if len(fw.sent) != 1 || fw.sent[0].text != "\n" {
+		t.Fatalf("sent calls = %#v", fw.sent)
+	}
+}
+
 func TestControlAppAgentSendRejectsExternalSessionWithoutForce(t *testing.T) {
 	fw := newFakeControlWatcher()
 	fw.agents["brain-agent-user-owned:@1"] = &classifier.Agent{
@@ -297,6 +325,9 @@ func TestControlAppAgentStatusReturnsProgressFields(t *testing.T) {
 		Summary:             "Adding close guard",
 		Phase:               "working",
 		Attention:           "none",
+		TaskClass:           "lasting_design",
+		EventKind:           "invariant",
+		DetailsJSON:         `{"invariants":["durable state is canonical"]}`,
 		NeedsAttention:      false,
 		LastProgressAt:      &now,
 		ExpectedNextCheckAt: &nextCheck,
@@ -311,6 +342,9 @@ func TestControlAppAgentStatusReturnsProgressFields(t *testing.T) {
 	}
 	if resp.Agent.Phase != "working" || resp.Agent.Attention != "none" || resp.Agent.LeaseSeconds != 300 {
 		t.Fatalf("agent progress fields = %#v", resp.Agent)
+	}
+	if resp.Agent.TaskClass != "lasting_design" || resp.Agent.EventKind != "invariant" {
+		t.Fatalf("agent semantic progress fields = %#v", resp.Agent)
 	}
 	if resp.Agent.LastProgressAt == nil || !resp.Agent.LastProgressAt.Equal(now) {
 		t.Fatalf("last progress = %#v, want %s", resp.Agent.LastProgressAt, now)
@@ -334,6 +368,9 @@ func TestControlAppAgentProgressUpdatesAgent(t *testing.T) {
 		Phase:        "working",
 		Attention:    "user_input",
 		Summary:      "Need a decision",
+		TaskClass:    "lasting_design",
+		EventKind:    "needs_judgment",
+		DetailsJSON:  `{"question":"choose root model"}`,
 		LeaseSeconds: 300,
 	})
 
@@ -346,11 +383,17 @@ func TestControlAppAgentProgressUpdatesAgent(t *testing.T) {
 	if !resp.Agent.NeedsAttention || resp.Agent.Summary != "Need a decision" || resp.Agent.LeaseSeconds != 300 {
 		t.Fatalf("agent progress metadata = %#v", resp.Agent)
 	}
+	if resp.Agent.TaskClass != "lasting_design" || resp.Agent.EventKind != "needs_judgment" || resp.Agent.DetailsJSON == "" {
+		t.Fatalf("agent semantic metadata = %#v", resp.Agent)
+	}
 	if resp.Agent.LastProgressAt == nil || resp.Agent.ExpectedNextCheckAt == nil {
 		t.Fatalf("progress timestamps missing: %#v", resp.Agent)
 	}
 	if len(fw.progress) != 1 || fw.progress[0].id != "brain-agent-worker:@1" {
 		t.Fatalf("progress calls = %#v", fw.progress)
+	}
+	if fw.progress[0].progress.TaskClass != "lasting_design" || fw.progress[0].progress.EventKind != "needs_judgment" {
+		t.Fatalf("watcher progress semantic fields = %#v", fw.progress[0].progress)
 	}
 }
 
