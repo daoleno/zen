@@ -1,13 +1,12 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
   FlatList,
-  KeyboardAvoidingView,
+  LayoutAnimation,
+  Platform,
   SectionList,
   Linking,
-  Modal,
-  Platform,
   StyleSheet,
   Text,
   TextInput,
@@ -16,11 +15,15 @@ import {
 } from 'react-native';
 import { useFocusEffect, useRouter } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
+import * as Haptics from 'expo-haptics';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Agent, useAgents } from '../../store/agents';
 import { useWork, type WorkItem } from '../../store/work';
-import { AgentStatus, Colors, Typography, useAppColors } from '../../constants/tokens';
+import { AgentStatus, Colors, Radii, Typography, useAppColors, shadow } from '../../constants/tokens';
 import { IconButton } from '../../components/ui/IconButton';
+import { AnimatedPressable } from '../../components/ui/AnimatedPressable';
+import { RisingSheet } from '../../components/ui/RisingSheet';
+import { Enter } from '../../components/ui/Enter';
 import { TerminalPreview } from '../../components/terminal/TerminalPreview';
 import { AgentKindIcon } from '../../components/terminal/AgentKindIcon';
 import { NewTerminalSheet } from '../../components/terminal/NewTerminalSheet';
@@ -171,6 +174,27 @@ export default function InboxScreen() {
     () => new Set(sortedAgents.map((agent) => agent.serverId)).size > 1,
     [sortedAgents],
   );
+
+  // Animate row insertions/removals/reorders with a gentle layout transition,
+  // so the list settles instead of snapping when sessions come and go.
+  const prevAgentKeysRef = useRef<string[]>([]);
+  useEffect(() => {
+    const nextKeys = sortedAgents.map(a => a.key);
+    const prevKeys = prevAgentKeysRef.current;
+    const changed =
+      nextKeys.length !== prevKeys.length ||
+      nextKeys.some((k, i) => prevKeys[i] !== k);
+    if (changed && prevKeys.length > 0 && nextKeys.length > 0) {
+      LayoutAnimation.configureNext(
+        LayoutAnimation.create(
+          260,
+          LayoutAnimation.Types.easeInEaseOut,
+          LayoutAnimation.Properties.opacity,
+        ),
+      );
+    }
+    prevAgentKeysRef.current = nextKeys;
+  }, [sortedAgents]);
   const hasConfiguredServers = configuredServerCount > 0;
   const hasConnection = Object.keys(state.serverConnections).length > 0;
   const anyConnected = Object.values(state.serverConnections).includes('connected');
@@ -481,11 +505,14 @@ export default function InboxScreen() {
     const presented = presentAgent(item, agentAliases[item.key]);
     const sessionTitle = resolveSessionTitle(item, presented, agentWorkMap);
     return (
-      <TouchableOpacity
+      <AnimatedPressable
         style={styles.sessionRow}
+        preset="card"
         onPress={() => openAgent(item)}
-        onLongPress={() => openContextMenu(item)}
-        activeOpacity={0.82}
+        onLongPress={() => {
+          Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+          openContextMenu(item);
+        }}
         delayLongPress={400}
       >
         <AgentKindIcon kind={presented.kind} size={15} />
@@ -503,7 +530,7 @@ export default function InboxScreen() {
           styles={styles}
           compact
         />
-      </TouchableOpacity>
+      </AnimatedPressable>
     );
   };
 
@@ -524,11 +551,15 @@ export default function InboxScreen() {
     const presented = presentAgent(item, agentAliases[item.key]);
     const sessionTitle = resolveSessionTitle(item, presented, agentWorkMap);
     return (
-      <TouchableOpacity
+      <AnimatedPressable
         style={styles.gridCard}
+        preset="card"
+        scale={0.97}
         onPress={() => openAgent(item)}
-        onLongPress={() => openContextMenu(item)}
-        activeOpacity={0.84}
+        onLongPress={() => {
+          Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+          openContextMenu(item);
+        }}
         delayLongPress={400}
       >
         <View style={styles.gridHeader}>
@@ -550,7 +581,7 @@ export default function InboxScreen() {
         <View style={styles.gridPreview}>
           <TerminalPreview key={item.key} lines={item.last_output_lines} />
         </View>
-      </TouchableOpacity>
+      </AnimatedPressable>
     );
   };
 
@@ -564,45 +595,47 @@ export default function InboxScreen() {
       )}
 
       <View style={styles.header}>
-        <View style={styles.headerBrand}>
-          <Text style={styles.title}>Zen</Text>
-        </View>
-        <View style={styles.headerActions}>
-          <IconButton
-            icon="globe-outline"
-            tone="ghost"
-            size={36}
-            iconSize={18}
-            color={anyConnected ? colors.textSecondary : colors.disabledText}
-            accessibilityLabel="Services"
-            onPress={openSessionServices}
-            disabled={!anyConnected}
-          />
-          <IconButton
-            icon="add"
-            tone="ghost"
-            size={36}
-            iconSize={20}
-            color={colors.accent}
-            accessibilityLabel="New terminal"
-            onPress={openCreateTerminal}
-            disabled={!!creatingServerId || !anyConnected}
-          />
-          <View style={styles.viewToggle}>
-            <ToggleButton
-              icon="reorder-three-outline"
-              selected={viewMode === 'list'}
-              onPress={() => setViewMode('list')}
-              colors={colors}
-              styles={styles}
+        <View style={styles.headerTop}>
+          <View style={styles.headerBrand}>
+            <Text style={styles.title}>Zen</Text>
+          </View>
+          <View style={styles.headerActions}>
+            <IconButton
+              icon="globe-outline"
+              tone="ghost"
+              size={40}
+              iconSize={20}
+              color={anyConnected ? colors.textSecondary : colors.disabledText}
+              accessibilityLabel="Services"
+              onPress={openSessionServices}
+              disabled={!anyConnected}
             />
-            <ToggleButton
-              icon="grid-outline"
-              selected={viewMode === 'grid'}
-              onPress={() => setViewMode('grid')}
-              colors={colors}
-              styles={styles}
-            />
+            <View style={styles.viewToggle}>
+              <ToggleButton
+                icon="reorder-three-outline"
+                selected={viewMode === 'list'}
+                onPress={() => setViewMode('list')}
+                colors={colors}
+                styles={styles}
+              />
+              <ToggleButton
+                icon="grid-outline"
+                selected={viewMode === 'grid'}
+                onPress={() => setViewMode('grid')}
+                colors={colors}
+                styles={styles}
+              />
+            </View>
+            <AnimatedPressable
+              style={[styles.fab, (!anyConnected || !!creatingServerId) && styles.fabDisabled]}
+              preset="press"
+              scale={0.9}
+              onPress={openCreateTerminal}
+              disabled={!!creatingServerId || !anyConnected}
+              accessibilityLabel="New terminal"
+            >
+              <Ionicons name={creatingServerId ? 'hourglass-outline' : 'add'} size={22} color={colors.textOnAccent} />
+            </AnimatedPressable>
           </View>
         </View>
       </View>
@@ -612,46 +645,55 @@ export default function InboxScreen() {
           <ActivityIndicator color={colors.accent} />
         </View>
       ) : sortedAgents.length === 0 ? (
-        <View style={styles.emptyContainer}>
-          <Text style={styles.emptyIcon}>☯</Text>
+        <Enter preset="rise" style={styles.emptyContainer}>
+          <Enter preset="pop">
+            <View style={styles.emptyBadge}>
+              <Text style={styles.emptyIcon}>☯</Text>
+            </View>
+          </Enter>
           <Text style={styles.emptyText}>{emptyTitle}</Text>
           {emptySubtext ? (
             <Text style={styles.emptySubtext}>{emptySubtext}</Text>
           ) : null}
           <View style={styles.emptyActions}>
             {connectedServers.length > 0 ? (
-              <TouchableOpacity
+              <AnimatedPressable
                 style={[styles.emptyActionBtn, styles.emptyActionBtnPrimary]}
+                preset="press"
+                scale={0.95}
                 onPress={openCreateTerminal}
                 disabled={!!creatingServerId}
-                activeOpacity={0.82}
               >
+                <Ionicons name="add" size={18} color={colors.textOnAccent} style={styles.emptyActionIcon} />
                 <Text style={[styles.emptyActionText, styles.emptyActionTextPrimary]}>
                   {creatingServerId ? 'Starting…' : 'New terminal'}
                 </Text>
-              </TouchableOpacity>
+              </AnimatedPressable>
             ) : (
-              <TouchableOpacity
+              <AnimatedPressable
                 style={[styles.emptyActionBtn, styles.emptyActionBtnPrimary]}
+                preset="press"
+                scale={0.95}
                 onPress={() => openServerSettings(true)}
-                activeOpacity={0.82}
               >
+                <Ionicons name="server-outline" size={18} color={colors.textOnAccent} style={styles.emptyActionIcon} />
                 <Text style={[styles.emptyActionText, styles.emptyActionTextPrimary]}>
                   Add server
                 </Text>
-              </TouchableOpacity>
+              </AnimatedPressable>
             )}
             {hasConfiguredServers ? (
-              <TouchableOpacity
+              <AnimatedPressable
                 style={styles.emptyActionLink}
+                preset="press"
+                scale={0.96}
                 onPress={() => openServerSettings(false)}
-                activeOpacity={0.72}
               >
-                <Text style={styles.emptyActionLinkText}>Settings</Text>
-              </TouchableOpacity>
+                <Text style={styles.emptyActionLinkText}>Open Settings</Text>
+              </AnimatedPressable>
             ) : null}
           </View>
-        </View>
+        </Enter>
       ) : viewMode === 'list' ? (
         <SectionList
           sections={listSections}
@@ -664,6 +706,7 @@ export default function InboxScreen() {
           removeClippedSubviews={false}
           windowSize={15}
           showsVerticalScrollIndicator={false}
+          ItemSeparatorComponent={() => <View style={styles.rowGap} />}
           SectionSeparatorComponent={() => <View style={styles.sectionGap} />}
         />
       ) : (
@@ -712,88 +755,79 @@ export default function InboxScreen() {
         }}
       />
 
-      <Modal
+      <RisingSheet
         visible={menuAgent !== null && !renameVisible}
-        transparent
-        animationType="fade"
-        onRequestClose={closeContextMenu}
+        onClose={closeContextMenu}
+        cardStyle={styles.menuCard}
+        align="bottom"
       >
-        <View style={styles.menuRoot}>
-          <TouchableOpacity
-            style={styles.menuBackdrop}
-            activeOpacity={1}
-            onPress={closeContextMenu}
-          />
-          <View style={styles.menuCard}>
-            <Text style={styles.menuTitle} numberOfLines={1}>
-              {menuAgent ? presentAgent(menuAgent, agentAliases[menuAgent.key]).title : ''}
-            </Text>
+        <Text style={styles.menuTitle} numberOfLines={1}>
+          {menuAgent ? presentAgent(menuAgent, agentAliases[menuAgent.key]).title : ''}
+        </Text>
 
-            <TouchableOpacity style={styles.menuItem} onPress={openRename} activeOpacity={0.82}>
-              <Ionicons name="pencil-outline" size={16} color={colors.textPrimary} />
-              <Text style={styles.menuItemText}>Rename</Text>
-            </TouchableOpacity>
-
-            <TouchableOpacity
-              style={styles.menuItem}
-              onPress={() => { if (menuAgent) openAgent(menuAgent); closeContextMenu(); }}
-              activeOpacity={0.82}
-            >
-              <Ionicons name="terminal-outline" size={16} color={colors.textPrimary} />
-              <Text style={styles.menuItemText}>Open Terminal</Text>
-            </TouchableOpacity>
-
-            <TouchableOpacity style={styles.menuItem} onPress={handleTerminateAgent} activeOpacity={0.82}>
-              <Ionicons name="power-outline" size={16} color={colors.dangerText} />
-              <Text style={[styles.menuItemText, styles.menuItemTextDestructive]}>Terminate</Text>
-            </TouchableOpacity>
-          </View>
-        </View>
-      </Modal>
-
-      <Modal
-        visible={renameVisible}
-        transparent
-        animationType="fade"
-        onRequestClose={closeRename}
-      >
-        <KeyboardAvoidingView
-          style={styles.menuRoot}
-          behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+        <AnimatedPressable
+          style={styles.menuItem}
+          preset="press"
+          scale={0.98}
+          onPress={openRename}
         >
-          <TouchableOpacity
-            style={styles.menuBackdrop}
-            activeOpacity={1}
-            onPress={closeRename}
-          />
-          <View style={styles.renameCard}>
-            <Text style={styles.renameTitle}>Rename</Text>
-            <TextInput
-              style={styles.renameInput}
-              value={renameDraft}
-              onChangeText={setRenameDraft}
-              placeholder="Agent name"
-              placeholderTextColor={colors.textSecondary}
-              autoCapitalize="none"
-              autoCorrect={false}
-              autoFocus
-              selectTextOnFocus
-            />
-            <View style={styles.renameActions}>
-              <TouchableOpacity style={styles.renameBtn} onPress={closeRename} activeOpacity={0.82}>
-                <Text style={styles.renameBtnText}>Cancel</Text>
-              </TouchableOpacity>
-              <TouchableOpacity
-                style={[styles.renameBtn, styles.renameBtnPrimary]}
-                onPress={handleRename}
-                activeOpacity={0.82}
-              >
-                <Text style={[styles.renameBtnText, styles.renameBtnPrimaryText]}>Save</Text>
-              </TouchableOpacity>
-            </View>
-          </View>
-        </KeyboardAvoidingView>
-      </Modal>
+          <Ionicons name="pencil-outline" size={16} color={colors.textPrimary} />
+          <Text style={styles.menuItemText}>Rename</Text>
+        </AnimatedPressable>
+
+        <AnimatedPressable
+          style={styles.menuItem}
+          preset="press"
+          scale={0.98}
+          onPress={() => { if (menuAgent) openAgent(menuAgent); closeContextMenu(); }}
+        >
+          <Ionicons name="terminal-outline" size={16} color={colors.textPrimary} />
+          <Text style={styles.menuItemText}>Open Terminal</Text>
+        </AnimatedPressable>
+
+        <AnimatedPressable
+          style={styles.menuItem}
+          preset="press"
+          scale={0.98}
+          onPress={handleTerminateAgent}
+        >
+          <Ionicons name="power-outline" size={16} color={colors.dangerText} />
+          <Text style={[styles.menuItemText, styles.menuItemTextDestructive]}>Terminate</Text>
+        </AnimatedPressable>
+      </RisingSheet>
+
+      <RisingSheet
+        visible={renameVisible}
+        onClose={closeRename}
+        cardStyle={styles.renameCard}
+        avoidKeyboard
+      >
+        <Text style={styles.renameTitle}>Rename</Text>
+        <TextInput
+          style={styles.renameInput}
+          value={renameDraft}
+          onChangeText={setRenameDraft}
+          placeholder="Agent name"
+          placeholderTextColor={colors.textSecondary}
+          autoCapitalize="none"
+          autoCorrect={false}
+          autoFocus
+          selectTextOnFocus
+        />
+        <View style={styles.renameActions}>
+          <AnimatedPressable style={styles.renameBtn} preset="press" scale={0.94} onPress={closeRename}>
+            <Text style={styles.renameBtnText}>Cancel</Text>
+          </AnimatedPressable>
+          <AnimatedPressable
+            style={[styles.renameBtn, styles.renameBtnPrimary]}
+            preset="press"
+            scale={0.94}
+            onPress={handleRename}
+          >
+            <Text style={[styles.renameBtnText, styles.renameBtnPrimaryText]}>Save</Text>
+          </AnimatedPressable>
+        </View>
+      </RisingSheet>
 
     </SafeAreaView>
   );
@@ -820,7 +854,7 @@ function ToggleButton({
     >
       <Ionicons
         name={icon}
-        size={17}
+        size={18}
         color={selected ? colors.accent : colors.disabledText}
         style={!selected && styles.viewIconInactive}
       />
@@ -914,11 +948,14 @@ function createStyles(colors: typeof Colors) {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
-    gap: 6,
-    paddingVertical: 6,
+    gap: 7,
+    paddingVertical: 8,
+    marginHorizontal: 18,
+    marginTop: 6,
+    borderRadius: Radii.pill,
     backgroundColor: colors.surfaceSubtle,
-    borderBottomWidth: StyleSheet.hairlineWidth,
-    borderBottomColor: colors.borderSubtle,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: colors.borderSubtle,
   },
   bannerDot: {
     width: 6,
@@ -927,19 +964,24 @@ function createStyles(colors: typeof Colors) {
   },
   bannerText: {
     color: colors.textSecondary,
-    fontFamily: Typography.uiFont,
-    fontSize: 12,
+    fontFamily: Typography.uiFontMedium,
+    fontSize: 12.5,
   },
 
   header: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
-    paddingHorizontal: 18,
-    paddingTop: 10,
-    paddingBottom: 12,
-    borderBottomWidth: StyleSheet.hairlineWidth,
-    borderBottomColor: colors.borderSubtle,
+    paddingHorizontal: 20,
+    paddingTop: 16,
+    paddingBottom: 14,
+  },
+  headerTop: {
+    flex: 1,
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    minWidth: 0,
   },
   headerBrand: {
     flex: 1,
@@ -947,71 +989,92 @@ function createStyles(colors: typeof Colors) {
   },
   title: {
     color: colors.textPrimary,
-    fontSize: 24,
-    lineHeight: 30,
+    fontSize: 32,
+    lineHeight: 36,
     fontFamily: Typography.uiFontMedium,
-    letterSpacing: -0.3,
+    letterSpacing: -0.8,
   },
   headerActions: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 2,
+    gap: 6,
+    marginLeft: 12,
   },
   viewToggle: {
     flexDirection: 'row',
-    marginLeft: 4,
-    borderRadius: 10,
+    marginLeft: 2,
+    borderRadius: Radii.sm,
     backgroundColor: colors.surfaceSubtle,
-    padding: 2,
+    padding: 3,
   },
   viewBtn: {
-    width: 32,
-    height: 32,
-    borderRadius: 10,
+    width: 34,
+    height: 34,
+    borderRadius: 9,
     alignItems: 'center',
     justifyContent: 'center',
   },
   viewBtnActive: {
-    backgroundColor: colors.surfaceActive,
+    backgroundColor: colors.bgSurface,
   },
   viewIconInactive: {
     opacity: 0.72,
+  },
+  fab: {
+    width: 42,
+    height: 42,
+    borderRadius: 21,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: colors.accent,
+    marginLeft: 2,
+    ...shadow('card', colors.shadowColor),
+  },
+  fabDisabled: {
+    backgroundColor: colors.surfaceSubtle,
   },
 
   promptContent: {
     paddingHorizontal: 18,
     paddingTop: 6,
-    paddingBottom: 32,
+    paddingBottom: 40,
   },
   sectionHeader: {
-    paddingTop: 16,
-    paddingBottom: 6,
-    paddingHorizontal: 2,
+    paddingTop: 18,
+    paddingBottom: 12,
+    paddingHorizontal: 4,
   },
   sectionTitle: {
-    color: colors.textSecondary,
+    color: colors.textTertiary,
     fontSize: 11,
     lineHeight: 14,
     fontFamily: Typography.uiFontMedium,
-    letterSpacing: 0.5,
+    letterSpacing: 1,
     textTransform: 'uppercase',
-    opacity: 0.62,
   },
   sectionGap: {
-    height: 6,
+    height: 8,
+  },
+  rowGap: {
+    height: 10,
   },
   sessionRow: {
-    minHeight: 48,
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 12,
-    paddingVertical: 9,
-    paddingHorizontal: 2,
+    minHeight: 60,
+    gap: 13,
+    paddingVertical: 13,
+    paddingHorizontal: 16,
+    borderRadius: Radii.md,
+    backgroundColor: colors.bgSurface,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: colors.borderSubtle,
+    ...shadow('card', colors.shadowColor),
   },
   sessionStatusBadge: {
-    width: 10,
-    height: 10,
-    borderRadius: 5,
+    width: 11,
+    height: 11,
+    borderRadius: 6,
     alignItems: 'center',
     justifyContent: 'center',
   },
@@ -1023,40 +1086,40 @@ function createStyles(colors: typeof Colors) {
   sessionTitleRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 6,
+    gap: 7,
     minWidth: 0,
   },
   sessionName: {
     flexShrink: 1,
     minWidth: 0,
     color: colors.textPrimary,
-    fontSize: 15,
+    fontSize: 15.5,
     lineHeight: 20,
     fontFamily: Typography.uiFontMedium,
     includeFontPadding: false,
   },
   brainBadge: {
-    height: 17,
-    paddingHorizontal: 5,
+    height: 19,
+    paddingHorizontal: 7,
     borderWidth: StyleSheet.hairlineWidth,
-    borderRadius: 4,
+    borderRadius: 6,
     alignItems: 'center',
     justifyContent: 'center',
   },
   brainBadgeCompact: {
-    height: 16,
-    paddingHorizontal: 4,
+    height: 18,
+    paddingHorizontal: 6,
   },
   brainBadgeText: {
-    fontSize: 9,
-    lineHeight: 11,
+    fontSize: 10,
+    lineHeight: 12,
     fontFamily: Typography.uiFontMedium,
     includeFontPadding: false,
   },
   statusDot: {
-    width: 6,
-    height: 6,
-    borderRadius: 3,
+    width: 7,
+    height: 7,
+    borderRadius: 4,
   },
   statusIndicator: {
     width: 14,
@@ -1078,25 +1141,26 @@ function createStyles(colors: typeof Colors) {
   },
   gridContent: {
     paddingHorizontal: 18,
-    paddingBottom: 32,
+    paddingBottom: 40,
   },
   gridGap: {
     height: 14,
   },
   gridCard: {
-    borderRadius: 16,
-    backgroundColor: colors.surfaceSubtle,
+    borderRadius: Radii.lg,
+    backgroundColor: colors.bgSurface,
     borderWidth: StyleSheet.hairlineWidth,
     borderColor: colors.borderSubtle,
     overflow: 'hidden',
+    ...shadow('card', colors.shadowColor),
   },
   gridHeader: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 10,
-    paddingHorizontal: 14,
-    paddingVertical: 12,
-    minHeight: 48,
+    gap: 11,
+    paddingHorizontal: 15,
+    paddingVertical: 13,
+    minHeight: 52,
   },
   gridHeaderMain: {
     flex: 1,
@@ -1109,76 +1173,91 @@ function createStyles(colors: typeof Colors) {
     flex: 1,
     minWidth: 0,
     color: colors.textPrimary,
-    fontSize: 14,
+    fontSize: 14.5,
     lineHeight: 19,
     fontFamily: Typography.uiFontMedium,
   },
   gridPreview: {
-    height: 220,
+    height: 216,
+    borderTopWidth: StyleSheet.hairlineWidth,
+    borderTopColor: colors.borderSubtle,
   },
 
   emptyContainer: {
     flex: 1,
     justifyContent: 'center',
     alignItems: 'center',
-    paddingHorizontal: 32,
+    paddingHorizontal: 36,
+  },
+  emptyBadge: {
+    width: 88,
+    height: 88,
+    borderRadius: 44,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: colors.accentSoft,
+    marginBottom: 22,
   },
   emptyIcon: {
-    fontSize: 40,
-    color: colors.zenGreen,
-    marginBottom: 14,
-    opacity: 0.75,
+    fontSize: 42,
+    color: colors.accent,
+    lineHeight: 48,
   },
   emptyText: {
     color: colors.textPrimary,
-    fontSize: 16,
+    fontSize: 18,
     fontFamily: Typography.uiFontMedium,
   },
   emptySubtext: {
     color: colors.textSecondary,
-    fontSize: 13,
+    fontSize: 14,
     fontFamily: Typography.uiFont,
-    marginTop: 8,
-    maxWidth: 260,
+    marginTop: 9,
+    maxWidth: 280,
     textAlign: 'center',
-    lineHeight: 19,
-    opacity: 0.72,
+    lineHeight: 20,
+    opacity: 0.85,
   },
   emptyActions: {
     width: '100%',
-    maxWidth: 240,
-    gap: 12,
-    marginTop: 24,
+    maxWidth: 260,
+    gap: 14,
+    marginTop: 30,
     alignItems: 'center',
   },
   emptyActionLink: {
-    paddingVertical: 4,
-    paddingHorizontal: 8,
+    paddingVertical: 6,
+    paddingHorizontal: 10,
   },
   emptyActionLinkText: {
-    color: colors.textSecondary,
-    fontSize: 13,
-    fontFamily: Typography.uiFont,
-    opacity: 0.8,
+    color: colors.accent,
+    fontSize: 14,
+    fontFamily: Typography.uiFontMedium,
   },
   emptyActionBtn: {
     width: '100%',
-    minHeight: 40,
-    paddingHorizontal: 14,
-    borderRadius: 12,
+    flexDirection: 'row',
+    minHeight: 50,
+    paddingHorizontal: 18,
+    borderRadius: Radii.sm,
     alignItems: 'center',
     justifyContent: 'center',
     borderWidth: StyleSheet.hairlineWidth,
     borderColor: colors.borderStrong,
     backgroundColor: colors.surfaceSubtle,
+    gap: 8,
   },
   emptyActionBtnPrimary: {
     backgroundColor: colors.accent,
     borderColor: colors.accent,
+    ...shadow('card', colors.shadowColor),
+  },
+  emptyActionIcon: {
+    marginTop: 1,
   },
   emptyActionText: {
     color: colors.textPrimary,
-    fontSize: 13,
+    fontSize: 15,
     fontFamily: Typography.uiFontMedium,
     textAlign: 'center',
   },
@@ -1186,26 +1265,17 @@ function createStyles(colors: typeof Colors) {
     color: colors.textOnAccent,
   },
 
-  menuRoot: {
-    flex: 1,
-    justifyContent: 'flex-end',
-  },
-  menuBackdrop: {
-    ...StyleSheet.absoluteFill,
-    backgroundColor: colors.modalBackdrop,
-  },
   menuCard: {
-    marginHorizontal: 12,
-    marginBottom: 32,
-    borderRadius: 16,
+    borderRadius: Radii.lg,
     backgroundColor: colors.modalSurfaceAlt,
     borderWidth: StyleSheet.hairlineWidth,
     borderColor: colors.border,
     overflow: 'hidden',
+    ...shadow('float', colors.shadowColor),
   },
   menuTitle: {
     color: colors.textSecondary,
-    fontSize: 12,
+    fontSize: 12.5,
     fontFamily: Typography.uiFontMedium,
     paddingHorizontal: 18,
     paddingTop: 16,
@@ -1217,13 +1287,13 @@ function createStyles(colors: typeof Colors) {
     alignItems: 'center',
     gap: 12,
     paddingHorizontal: 18,
-    paddingVertical: 14,
+    paddingVertical: 15,
     borderTopWidth: StyleSheet.hairlineWidth,
     borderTopColor: colors.borderSubtle,
   },
   menuItemText: {
     color: colors.textPrimary,
-    fontSize: 15,
+    fontSize: 15.5,
     fontFamily: Typography.uiFont,
   },
   menuItemTextDestructive: {
@@ -1231,9 +1301,7 @@ function createStyles(colors: typeof Colors) {
   },
 
   renameCard: {
-    marginHorizontal: 24,
-    marginBottom: 100,
-    borderRadius: 16,
+    borderRadius: Radii.lg,
     padding: 20,
     backgroundColor: colors.modalSurface,
     borderWidth: StyleSheet.hairlineWidth,
@@ -1241,15 +1309,15 @@ function createStyles(colors: typeof Colors) {
   },
   renameTitle: {
     color: colors.textPrimary,
-    fontSize: 16,
+    fontSize: 17,
     fontFamily: Typography.uiFontMedium,
     marginBottom: 16,
   },
   renameInput: {
     backgroundColor: colors.inputBackground,
-    borderRadius: 10,
+    borderRadius: Radii.sm,
     paddingHorizontal: 14,
-    paddingVertical: 10,
+    paddingVertical: 12,
     color: colors.textPrimary,
     fontSize: 14,
     fontFamily: Typography.terminalFont,
@@ -1263,9 +1331,9 @@ function createStyles(colors: typeof Colors) {
     marginTop: 20,
   },
   renameBtn: {
-    minWidth: 70,
-    height: 36,
-    borderRadius: 10,
+    minWidth: 76,
+    height: 40,
+    borderRadius: Radii.sm,
     alignItems: 'center',
     justifyContent: 'center',
     backgroundColor: colors.surfacePressed,
@@ -1275,7 +1343,7 @@ function createStyles(colors: typeof Colors) {
   },
   renameBtnText: {
     color: colors.textPrimary,
-    fontSize: 13,
+    fontSize: 14,
     fontFamily: Typography.uiFontMedium,
   },
   renameBtnPrimaryText: {

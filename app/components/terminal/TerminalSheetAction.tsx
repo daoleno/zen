@@ -1,11 +1,13 @@
 import React from "react";
-import { StyleSheet, Text, TouchableOpacity } from "react-native";
+import { StyleSheet, Text } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
+import * as Haptics from "expo-haptics";
 import type {
   TerminalThemeChrome,
   TerminalThemePalette,
 } from "../../constants/terminalThemes";
 import { Typography } from "../../constants/tokens";
+import { AnimatedPressable } from "../ui/AnimatedPressable";
 
 export type TerminalSheetActionIcon = React.ComponentProps<typeof Ionicons>["name"];
 
@@ -35,20 +37,30 @@ export function TerminalSheetAction({
       : chrome.text;
 
   return (
-    <TouchableOpacity
+    <AnimatedPressable
       accessibilityLabel={label}
       accessibilityRole="button"
       accessibilityState={{ disabled }}
       style={[styles.action, disabled ? styles.disabled : null]}
-      onPress={onPress}
+      preset="press"
+      scale={0.97}
       disabled={disabled}
-      activeOpacity={0.84}
+      onPress={() => {
+        if (!disabled) {
+          Haptics.impactAsync(
+            destructive
+              ? Haptics.ImpactFeedbackStyle.Medium
+              : Haptics.ImpactFeedbackStyle.Light,
+          );
+          onPress();
+        }
+      }}
     >
       <Ionicons name={icon} size={16} color={color} />
       <Text style={[styles.label, { color }]} numberOfLines={1}>
         {label}
       </Text>
-    </TouchableOpacity>
+    </AnimatedPressable>
   );
 }
 

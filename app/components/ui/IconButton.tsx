@@ -7,7 +7,9 @@ import {
   type ViewStyle,
 } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
+import * as Haptics from "expo-haptics";
 import { useAppColors } from "../../constants/tokens";
+import { AnimatedPressable } from "./AnimatedPressable";
 
 type IoniconName = React.ComponentProps<typeof Ionicons>["name"];
 type IconButtonTone = "default" | "input" | "ghost";
@@ -18,6 +20,8 @@ interface IconButtonProps extends Omit<PressableProps, "style" | "children"> {
   iconSize?: number;
   color?: string;
   tone?: IconButtonTone;
+  /** Light haptic on press. Defaults to true for ghost/default tones. */
+  haptic?: boolean;
   style?: StyleProp<ViewStyle>;
 }
 
@@ -27,8 +31,10 @@ export function IconButton({
   iconSize = 18,
   color,
   tone = "default",
+  haptic = true,
   disabled,
   style,
+  onPress,
   ...props
 }: IconButtonProps) {
   const colors = useAppColors();
@@ -41,26 +47,31 @@ export function IconButton({
   const borderColor = tone === "ghost" ? "transparent" : colors.borderSubtle;
 
   return (
-    <Pressable
+    <AnimatedPressable
       {...props}
+      preset="press"
+      scale={0.92}
       disabled={disabled}
-      hitSlop={8}
-      style={({ pressed }) => [
+      onPress={(e) => {
+        if (haptic && !disabled) {
+          Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+        }
+        onPress?.(e);
+      }}
+      style={[
         styles.button,
         {
           width: size,
           minHeight: size,
-          borderRadius: Math.max(8, Math.round(size / 3)),
+          borderRadius: Math.max(10, Math.round(size / 3)),
           backgroundColor,
           borderColor,
         },
-        pressed && !disabled ? styles.pressed : null,
-        disabled ? styles.disabled : null,
         style,
       ]}
     >
       <Ionicons name={icon} size={iconSize} color={color ?? colors.textSecondary} />
-    </Pressable>
+    </AnimatedPressable>
   );
 }
 
@@ -69,11 +80,5 @@ const styles = StyleSheet.create({
     borderWidth: StyleSheet.hairlineWidth,
     alignItems: "center",
     justifyContent: "center",
-  },
-  pressed: {
-    opacity: 0.72,
-  },
-  disabled: {
-    opacity: 0.5,
   },
 });

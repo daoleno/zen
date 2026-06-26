@@ -1,16 +1,26 @@
-import React from "react";
+import React, { useEffect } from "react";
 import {
   KeyboardAvoidingView,
   Modal,
   Platform,
   StyleSheet,
-  TouchableOpacity,
+  Pressable,
 } from "react-native";
+import Animated, {
+  useSharedValue,
+  useAnimatedStyle,
+  withSpring,
+  withTiming,
+  Easing,
+} from "react-native-reanimated";
 import type {
   TerminalThemeChrome,
   TerminalThemePalette,
 } from "../../constants/terminalThemes";
+import { Spring } from "../../constants/motion";
 import { TerminalRenameCard } from "./TerminalRenameCard";
+
+const AnimatedPressable = Animated.createAnimatedComponent(Pressable);
 
 interface TerminalRenameModalProps {
   visible: boolean;
@@ -23,6 +33,11 @@ interface TerminalRenameModalProps {
   onSave(): void;
 }
 
+/**
+ * Rename dialog for a terminal session. Keeps the terminal-themed card, but
+ * opens with the app-wide spring rise + backdrop fade so the motion matches
+ * every other dialog in zen.
+ */
 export function TerminalRenameModal({
   visible,
   draft,
@@ -33,32 +48,41 @@ export function TerminalRenameModal({
   onClose,
   onSave,
 }: TerminalRenameModalProps) {
+  const progress = useSharedValue(0);
+
+  useEffect(() => {
+    if (visible) {
+      progress.value = withSpring(1, Spring.rise);
+    } else {
+      progress.value = withTiming(0, { duration: 160, easing: Easing.out(Easing.ease) });
+    }
+  }, [visible, progress]);
+
+  const backdropStyle = useAnimatedStyle(() => ({ opacity: progress.value }));
+  const cardAnimStyle = useAnimatedStyle(() => ({
+    transform: [{ translateY: (1 - progress.value) * 18 }],
+    opacity: progress.value,
+  }));
+
   return (
-    <Modal
-      visible={visible}
-      transparent
-      animationType="fade"
-      onRequestClose={onClose}
-    >
+    <Modal visible={visible} transparent animationType="none" onRequestClose={onClose}>
       <KeyboardAvoidingView
         style={styles.renameRoot}
         behavior={Platform.OS === "ios" ? "padding" : "height"}
       >
-        <TouchableOpacity
-          style={styles.modalBackdrop}
-          activeOpacity={1}
-          onPress={onClose}
-        />
+        <AnimatedPressable style={[styles.modalBackdrop, backdropStyle]} onPress={onClose} />
 
-        <TerminalRenameCard
-          draft={draft}
-          placeholder={placeholder}
-          chrome={chrome}
-          theme={theme}
-          onDraftChange={onDraftChange}
-          onClose={onClose}
-          onSave={onSave}
-        />
+        <Animated.View style={cardAnimStyle}>
+          <TerminalRenameCard
+            draft={draft}
+            placeholder={placeholder}
+            chrome={chrome}
+            theme={theme}
+            onDraftChange={onDraftChange}
+            onClose={onClose}
+            onSave={onSave}
+          />
+        </Animated.View>
       </KeyboardAvoidingView>
     </Modal>
   );

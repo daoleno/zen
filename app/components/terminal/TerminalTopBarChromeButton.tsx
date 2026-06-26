@@ -1,10 +1,11 @@
 import React from "react";
 import {
   StyleSheet,
-  TouchableOpacity,
 } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
+import * as Haptics from "expo-haptics";
 import type { TerminalThemeChrome } from "../../constants/terminalThemes";
+import { AnimatedPressable } from "../ui/AnimatedPressable";
 
 type IoniconName = React.ComponentProps<typeof Ionicons>["name"];
 
@@ -24,17 +25,23 @@ export function TerminalTopBarChromeButton({
   onPress,
 }: TerminalTopBarChromeButtonProps) {
   return (
-    <TouchableOpacity
+    <AnimatedPressable
       accessibilityLabel={accessibilityLabel}
       accessibilityRole="button"
       accessibilityState={{ disabled }}
-      onPress={onPress}
+      onPress={() => {
+        if (!disabled) {
+          Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+          onPress();
+        }
+      }}
       disabled={disabled}
       style={[styles.button, disabled ? styles.disabled : null]}
-      activeOpacity={0.75}
+      preset="press"
+      scale={0.88}
     >
       <Ionicons name={icon} size={20} color={disabled ? chrome.textSubtle : chrome.textMuted} />
-    </TouchableOpacity>
+    </AnimatedPressable>
   );
 }
 

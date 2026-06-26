@@ -1,16 +1,28 @@
-import React from "react";
+import React, { useEffect } from "react";
 import {
   Modal,
   StyleSheet,
   Text,
-  TouchableOpacity,
+  Pressable,
   View,
 } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
+import * as Haptics from "expo-haptics";
+import Animated, {
+  useSharedValue,
+  useAnimatedStyle,
+  withSpring,
+  withTiming,
+  Easing,
+} from "react-native-reanimated";
 import { Colors, Typography } from "../../constants/tokens";
+import { Spring } from "../../constants/motion";
 import type { TerminalThemeChrome } from "../../constants/terminalThemes";
 import type { AgentDirectorySection } from "../../services/serverSelection";
 import { TerminalAgentPickerList } from "./TerminalAgentPickerList";
+import { AnimatedPressable } from "../ui/AnimatedPressable";
+
+const AnimatedPressableBackdrop = Animated.createAnimatedComponent(Pressable);
 
 interface TerminalAgentPickerSheetProps {
   visible: boolean;
@@ -26,6 +38,11 @@ interface TerminalAgentPickerSheetProps {
   onNewTerminal(): void;
 }
 
+/**
+ * Bottom sheet for picking a terminal session. Uses terminal chrome colors but
+ * opens with the app-wide backdrop fade + spring rise so it feels like the
+ * other sheets in zen.
+ */
 export function TerminalAgentPickerSheet({
   visible,
   sections,
@@ -39,34 +56,42 @@ export function TerminalAgentPickerSheet({
   onOpenAgent,
   onNewTerminal,
 }: TerminalAgentPickerSheetProps) {
+  const progress = useSharedValue(0);
+
+  useEffect(() => {
+    if (visible) {
+      progress.value = withSpring(1, Spring.rise);
+    } else {
+      progress.value = withTiming(0, { duration: 160, easing: Easing.out(Easing.ease) });
+    }
+  }, [visible, progress]);
+
+  const backdropStyle = useAnimatedStyle(() => ({ opacity: progress.value }));
+  const cardAnimStyle = useAnimatedStyle(() => ({
+    transform: [{ translateY: (1 - progress.value) * 24 }],
+    opacity: progress.value,
+  }));
+
   return (
-    <Modal
-      visible={visible}
-      transparent
-      animationType="fade"
-      onRequestClose={onClose}
-    >
+    <Modal visible={visible} transparent animationType="none" onRequestClose={onClose}>
       <View style={styles.modalRoot}>
-        <TouchableOpacity
-          style={styles.modalBackdrop}
-          activeOpacity={1}
+        <AnimatedPressableBackdrop
+          style={[styles.modalBackdrop, backdropStyle]}
           onPress={onClose}
         />
 
-        <View
+        <Animated.View
           style={[
             styles.sheetCard,
             {
               backgroundColor: chrome.surface,
               borderColor: chrome.border,
             },
+            cardAnimStyle,
           ]}
         >
           <View
-            style={[
-              styles.sheetHandle,
-              { backgroundColor: chrome.textSubtle },
-            ]}
+            style={[styles.sheetHandle, { backgroundColor: chrome.textSubtle }]}
           />
 
           <TerminalAgentPickerList
@@ -79,7 +104,7 @@ export function TerminalAgentPickerSheet({
             onOpenAgent={onOpenAgent}
           />
 
-          <TouchableOpacity
+          <AnimatedPressable
             style={[
               styles.sheetCreateButton,
               {
@@ -88,18 +113,20 @@ export function TerminalAgentPickerSheet({
               },
               creatingSession && styles.sheetCreateButtonDisabled,
             ]}
-            onPress={onNewTerminal}
+            preset="press"
+            scale={0.97}
             disabled={creatingSession}
-            activeOpacity={0.84}
+            onPress={() => {
+              Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+              onNewTerminal();
+            }}
           >
             <Ionicons name="add" size={16} color={chrome.textMuted} />
-            <Text
-              style={[styles.sheetCreateButtonText, { color: chrome.textMuted }]}
-            >
+            <Text style={[styles.sheetCreateButtonText, { color: chrome.textMuted }]}>
               {creatingSession ? "Starting…" : "New Terminal"}
             </Text>
-          </TouchableOpacity>
-        </View>
+          </AnimatedPressable>
+        </Animated.View>
       </View>
     </Modal>
   );
@@ -135,7 +162,7 @@ const styles = StyleSheet.create({
   },
   sheetCreateButton: {
     marginTop: 12,
-    height: 40,
+    height: 42,
     borderRadius: 12,
     backgroundColor: "rgba(255,255,255,0.04)",
     borderWidth: StyleSheet.hairlineWidth,

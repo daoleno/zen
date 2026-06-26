@@ -40,7 +40,7 @@ export function AgentKindIcon({ kind, size = 16 }: AgentKindIconProps) {
 function createStyles(colors: typeof Colors) {
   return StyleSheet.create({
   frame: {
-    borderRadius: 10,
+    borderRadius: 12,
     alignItems: 'center',
     justifyContent: 'center',
   },

@@ -1,9 +1,12 @@
 import React, { useMemo } from "react";
-import { Image, View, Text, TouchableOpacity, StyleSheet } from "react-native";
+import { Image, View, Text, StyleSheet } from "react-native";
+import * as Haptics from "expo-haptics";
 import { useRouter } from "expo-router";
 import { SafeAreaView } from "react-native-safe-area-context";
-import { Colors, Spacing, Typography, useAppColors } from "../constants/tokens";
+import { Colors, Radii, Spacing, Typography, useAppColors, shadow } from "../constants/tokens";
 import { markOnboarded } from "../services/storage";
+import { AnimatedPressable } from "../components/ui/AnimatedPressable";
+import { Enter } from "../components/ui/Enter";
 
 export default function OnboardingScreen() {
   const router = useRouter();
@@ -11,71 +14,93 @@ export default function OnboardingScreen() {
   const styles = useMemo(() => createStyles(colors), [colors]);
 
   return (
-    <SafeAreaView style={styles.container}>
+    <SafeAreaView style={styles.container} edges={["top", "bottom"]}>
       <View style={styles.content}>
-        <Image
-          source={require("../assets/branding/zen-logo-transparent.png")}
-          style={styles.logo}
-          resizeMode="contain"
-        />
-        <Text style={styles.title}>Welcome to Zen</Text>
-        <Text style={styles.subtitle}>
-          Pair your phone with a trusted daemon identity
-        </Text>
+        <Enter preset="pop">
+          <Image
+            source={require("../assets/branding/zen-logo-transparent.png")}
+            style={styles.logo}
+            resizeMode="contain"
+          />
+        </Enter>
 
-        <View style={styles.step}>
-          <Text style={styles.stepNum}>1</Text>
-          <View style={styles.stepContent}>
-            <Text style={styles.stepTitle}>
-              Install zen on your server
-            </Text>
-            <View style={styles.codeBlock}>
-              <Text style={styles.code}>
-                go install github.com/daoleno/zen/daemon/cmd/zen@latest
-              </Text>
+        <Enter preset="rise" delay={80}>
+          <Text style={styles.title}>Welcome to Zen</Text>
+          <Text style={styles.subtitle}>
+            Pair your phone with a trusted daemon identity
+          </Text>
+        </Enter>
+
+        <View style={styles.steps}>
+          <Enter preset="rise" delay={160}>
+            <View style={styles.step}>
+              <View style={styles.stepBadge}>
+                <Text style={styles.stepNum}>1</Text>
+              </View>
+              <View style={styles.stepContent}>
+                <Text style={styles.stepTitle}>Install zen on your server</Text>
+                <View style={styles.codeBlock}>
+                  <Text style={styles.code}>
+                    go install github.com/daoleno/zen/daemon/cmd/zen@latest
+                  </Text>
+                </View>
+              </View>
             </View>
-          </View>
-        </View>
+          </Enter>
 
-        <View style={styles.step}>
-          <Text style={styles.stepNum}>2</Text>
-          <View style={styles.stepContent}>
-            <Text style={styles.stepTitle}>Run zen</Text>
-            <View style={styles.codeBlock}>
-              <Text style={styles.code}>
-                zen -advertise-url https://your-host.example/ws
-              </Text>
+          <Enter preset="rise" delay={220}>
+            <View style={styles.step}>
+              <View style={styles.stepBadge}>
+                <Text style={styles.stepNum}>2</Text>
+              </View>
+              <View style={styles.stepContent}>
+                <Text style={styles.stepTitle}>Run zen</Text>
+                <View style={styles.codeBlock}>
+                  <Text style={styles.code}>
+                    zen -advertise-url https://your-host.example/ws
+                  </Text>
+                </View>
+                <Text style={styles.stepHint}>
+                  zen listens on 127.0.0.1:9876 by default. Expose that local
+                  port through Cloudflare Tunnel, Tailscale, or your own reverse
+                  proxy, then pass the public /ws URL with -advertise-url.
+                </Text>
+              </View>
             </View>
-            <Text style={styles.stepHint}>
-              zen listens on 127.0.0.1:9876 by default. Expose that local
-              port through Cloudflare Tunnel, Tailscale, or your own reverse
-              proxy, then pass the public /ws URL with -advertise-url.
-            </Text>
-          </View>
+          </Enter>
+
+          <Enter preset="rise" delay={280}>
+            <View style={styles.step}>
+              <View style={styles.stepBadge}>
+                <Text style={styles.stepNum}>3</Text>
+              </View>
+              <View style={styles.stepContent}>
+                <Text style={styles.stepTitle}>Import the pairing link</Text>
+                <Text style={styles.stepHint}>
+                  Scan the QR or paste the pairing link printed by zen.
+                </Text>
+              </View>
+            </View>
+          </Enter>
         </View>
 
-        <View style={styles.step}>
-          <Text style={styles.stepNum}>3</Text>
-          <View style={styles.stepContent}>
-            <Text style={styles.stepTitle}>Import the pairing link</Text>
-            <Text style={styles.stepHint}>
-              Scan the QR or paste the pairing link printed by zen.
-            </Text>
-          </View>
-        </View>
-
-        <TouchableOpacity
-          style={styles.doneBtn}
-          onPress={async () => {
-            await markOnboarded();
-            router.replace({
-              pathname: "/settings",
-              params: { addServer: Date.now().toString() },
-            });
-          }}
-        >
-          <Text style={styles.doneBtnText}>Get Started</Text>
-        </TouchableOpacity>
+        <Enter preset="rise" delay={340}>
+          <AnimatedPressable
+            style={styles.doneBtn}
+            preset="press"
+            scale={0.97}
+            onPress={async () => {
+              Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+              await markOnboarded();
+              router.replace({
+                pathname: "/settings",
+                params: { addServer: Date.now().toString() },
+              });
+            }}
+          >
+            <Text style={styles.doneBtnText}>Get Started</Text>
+          </AnimatedPressable>
+        </Enter>
       </View>
     </SafeAreaView>
   );
@@ -86,54 +111,77 @@ function createStyles(colors: typeof Colors) {
   container: { flex: 1, backgroundColor: colors.bgPrimary },
   content: {
     flex: 1,
-    padding: Spacing.screenMargin * 2,
+    paddingHorizontal: Spacing.screenMargin * 2,
     justifyContent: "center",
+    paddingVertical: 28,
   },
   logo: {
-    width: 120,
-    height: 120,
+    width: 104,
+    height: 104,
     alignSelf: "center",
-    marginBottom: 12,
+    marginBottom: 18,
   },
   title: {
     color: colors.textPrimary,
-    fontSize: 28,
+    fontSize: 30,
+    lineHeight: 36,
     fontFamily: Typography.uiFontMedium,
     textAlign: "center",
+    letterSpacing: -0.6,
   },
   subtitle: {
     color: colors.textSecondary,
     fontSize: 15,
+    lineHeight: 22,
     fontFamily: Typography.uiFont,
     textAlign: "center",
-    marginTop: 8,
+    marginTop: 10,
     marginBottom: 40,
+    paddingHorizontal: 8,
   },
-  step: { flexDirection: "row", marginBottom: 24 },
+  steps: {
+    gap: 18,
+    marginBottom: 36,
+  },
+  step: {
+    flexDirection: "row",
+    gap: 14,
+  },
+  stepBadge: {
+    width: 30,
+    height: 30,
+    borderRadius: Radii.pill,
+    backgroundColor: colors.accentSoft,
+    alignItems: "center",
+    justifyContent: "center",
+    marginTop: 1,
+  },
   stepNum: {
     color: colors.accent,
-    fontSize: 20,
+    fontSize: 14,
     fontFamily: Typography.uiFontMedium,
-    width: 32,
-    marginTop: 2,
   },
-  stepContent: { flex: 1 },
+  stepContent: { flex: 1, minWidth: 0 },
   stepTitle: {
     color: colors.textPrimary,
     fontSize: 16,
     fontFamily: Typography.uiFontMedium,
-    marginBottom: 8,
+    marginBottom: 10,
   },
   stepHint: {
-    color: colors.textSecondary,
+    color: colors.textTertiary,
     fontSize: 13,
+    lineHeight: 19,
     fontFamily: Typography.uiFont,
-    marginTop: 6,
+    marginTop: 8,
   },
   codeBlock: {
     backgroundColor: colors.bgSurface,
-    borderRadius: 8,
-    padding: 12,
+    borderRadius: Radii.sm,
+    padding: 13,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: colors.borderSubtle,
+    ...shadow("card", colors.shadowColor),
   },
   code: {
     color: colors.accent,
@@ -142,12 +190,12 @@ function createStyles(colors: typeof Colors) {
   },
   doneBtn: {
     backgroundColor: colors.accent,
-    borderRadius: 12,
-    paddingVertical: 16,
+    borderRadius: Radii.md,
+    paddingVertical: 17,
     alignItems: "center",
-    marginTop: 32,
-    minHeight: 52,
+    minHeight: 56,
     justifyContent: "center",
+    ...shadow("float", colors.shadowColor),
   },
   doneBtnText: {
     color: colors.textOnAccent,

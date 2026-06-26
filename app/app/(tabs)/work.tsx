@@ -1,12 +1,12 @@
 import React, { useCallback, useMemo, useState } from "react";
 import {
   ActivityIndicator,
-  Pressable,
   StyleSheet,
   Text,
   View,
 } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
+import * as Haptics from "expo-haptics";
 import { useFocusEffect, useRouter } from "expo-router";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { BrainWorkspaceViewer } from "../../components/brain/BrainWorkspaceViewer";
@@ -14,12 +14,14 @@ import { BottomSheetFrame, IconButton } from "../../components/ui";
 import { AppButton } from "../../components/ui/AppButton";
 import { AppText } from "../../components/ui/AppText";
 import { CodexChatSurface } from "../../components/terminal/CodexChatSurface";
+import { AnimatedPressable } from "../../components/ui/AnimatedPressable";
 import {
   buildTerminalChrome,
   resolveTerminalTheme,
 } from "../../constants/terminalThemes";
 import {
   Colors,
+  Radii,
   Typography,
   useAppColors,
   useAppTheme,
@@ -199,92 +201,43 @@ export default function BrainScreen() {
   return (
     <SafeAreaView style={styles.screen} edges={["top"]}>
       <View style={styles.header}>
-        <View style={styles.headerTitleBlock}>
+        <View style={styles.headerLeft}>
           <Text style={styles.title}>Brain</Text>
           {activeBrain?.adapters?.length && adapterChipLabel ? (
-            <Pressable
+            <AnimatedPressable
               accessibilityRole="button"
               accessibilityLabel="Switch Brain adapter"
-              onPress={openAdapterSheet}
-              style={({ pressed }) => [
-                styles.adapterChip,
-                {
-                  borderColor: colors.borderSubtle,
-                  backgroundColor: colors.surfaceSubtle,
-                },
-                pressed ? styles.adapterChipPressed : null,
-              ]}
+              onPress={() => {
+                Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+                openAdapterSheet();
+              }}
+              preset="press"
+              scale={0.98}
+              style={styles.adapterRow}
             >
-              <Text style={styles.adapterChipText} numberOfLines={1}>
+              <Text style={styles.adapterText} numberOfLines={1}>
                 {adapterChipLabel}
               </Text>
-              <Ionicons
-                name="chevron-down"
-                size={12}
-                color={colors.textSecondary}
-              />
-            </Pressable>
+              <Ionicons name="chevron-down" size={13} color={colors.textTertiary} />
+            </AnimatedPressable>
           ) : null}
         </View>
         <View style={styles.headerActions}>
-          <View
-            style={[
-              styles.renderModeToggle,
-              {
-                backgroundColor: colors.surfaceSubtle,
-                borderColor: colors.borderSubtle,
-              },
-            ]}
-          >
-            <View style={[styles.renderModeButton, styles.renderModeButtonActive]}>
-              <Ionicons
-                name="chatbubble-outline"
-                size={16}
-                color={colors.accent}
-              />
-              <Text style={[styles.renderModeLabel, { color: colors.accent }]}>
-                Chat
-              </Text>
-            </View>
-            <Pressable
-              accessibilityRole="button"
-              accessibilityLabel="Open Brain terminal"
-              onPress={openBrainTerminal}
-              disabled={!activeServer || !hostAgent?.id}
-              style={({ pressed }) => [
-                styles.renderModeButton,
-                pressed ? styles.renderModeButtonPressed : null,
-                !activeServer || !hostAgent?.id ? styles.renderModeButtonDisabled : null,
-              ]}
-            >
-              <Ionicons
-                name="terminal-outline"
-                size={16}
-                color={
-                  !activeServer || !hostAgent?.id
-                    ? colors.disabledText
-                    : colors.textSecondary
-                }
-              />
-              <Text
-                style={[
-                  styles.renderModeLabel,
-                  {
-                    color:
-                      !activeServer || !hostAgent?.id
-                        ? colors.disabledText
-                        : colors.textSecondary,
-                  },
-                ]}
-              >
-                Terminal
-              </Text>
-            </Pressable>
-          </View>
+          <IconButton
+            icon="terminal-outline"
+            size={36}
+            iconSize={18}
+            tone="ghost"
+            color={colors.textSecondary}
+            accessibilityRole="button"
+            accessibilityLabel="Open Brain terminal"
+            onPress={openBrainTerminal}
+            disabled={!activeServer || !hostAgent?.id}
+          />
           <IconButton
             icon="folder-open-outline"
             size={36}
-            iconSize={17}
+            iconSize={18}
             tone="ghost"
             color={colors.textSecondary}
             accessibilityRole="button"
@@ -293,9 +246,9 @@ export default function BrainScreen() {
             disabled={!activeServer || connectionState !== "connected"}
           />
           <IconButton
-            icon="add-circle-outline"
+            icon="add"
             size={36}
-            iconSize={17}
+            iconSize={20}
             tone="ghost"
             color={colors.textSecondary}
             accessibilityRole="button"
@@ -360,12 +313,19 @@ export default function BrainScreen() {
             const active = adapter.id === hostAdapter?.id;
             const busy = switchingAdapterId === adapter.id;
             return (
-              <Pressable
+              <AnimatedPressable
                 key={adapter.id}
                 accessibilityRole="button"
-                onPress={() => void switchBrainAdapter(adapter)}
+                onPress={() => {
+                  if (!busy) {
+                    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+                    void switchBrainAdapter(adapter);
+                  }
+                }}
                 disabled={busy}
-                style={({ pressed }) => [
+                preset="press"
+                scale={0.98}
+                style={[
                   styles.sheetRow,
                   {
                     borderColor: colors.borderSubtle,
@@ -373,7 +333,6 @@ export default function BrainScreen() {
                       ? colors.surfaceActive
                       : colors.surfaceSubtle,
                   },
-                  pressed && !busy ? styles.sheetRowPressed : null,
                   busy ? styles.sheetRowBusy : null,
                 ]}
               >
@@ -395,7 +354,7 @@ export default function BrainScreen() {
                 {busy ? (
                   <ActivityIndicator size="small" color={colors.accent} />
                 ) : null}
-              </Pressable>
+              </AnimatedPressable>
             );
           })}
         </View>
@@ -510,57 +469,49 @@ function createStyles(colors: typeof Colors) {
       backgroundColor: colors.bgPrimary,
     },
     header: {
-      minHeight: 54,
       paddingHorizontal: 18,
-      paddingTop: 10,
-      paddingBottom: 10,
+      paddingTop: 14,
+      paddingBottom: 12,
       flexDirection: "row",
-      alignItems: "center",
+      alignItems: "flex-start",
       justifyContent: "space-between",
       borderBottomWidth: StyleSheet.hairlineWidth,
       borderBottomColor: colors.borderSubtle,
     },
-    headerTitleBlock: {
+    headerLeft: {
       flex: 1,
       minWidth: 0,
       paddingRight: 12,
+      gap: 2,
     },
     headerActions: {
       flexDirection: "row",
       alignItems: "center",
-      gap: 6,
+      gap: 2,
+      paddingTop: 2,
     },
-    renderModeToggle: {
-      height: 34,
-      flexDirection: "row",
-      alignItems: "center",
-      borderRadius: 10,
-      borderWidth: StyleSheet.hairlineWidth,
-      padding: 2,
-    },
-    renderModeButton: {
-      height: 28,
-      minWidth: 38,
-      paddingHorizontal: 7,
-      borderRadius: 8,
-      flexDirection: "row",
-      alignItems: "center",
-      justifyContent: "center",
-      gap: 4,
-    },
-    renderModeButtonActive: {
-      backgroundColor: colors.surfaceActive,
-    },
-    renderModeButtonPressed: {
-      opacity: 0.72,
-    },
-    renderModeButtonDisabled: {
-      opacity: 0.52,
-    },
-    renderModeLabel: {
+    title: {
+      color: colors.textPrimary,
       fontFamily: Typography.uiFontMedium,
-      fontSize: 11,
-      lineHeight: 14,
+      fontSize: 30,
+      lineHeight: 34,
+      letterSpacing: -0.6,
+    },
+    adapterRow: {
+      flexDirection: "row",
+      alignItems: "center",
+      alignSelf: "flex-start",
+      gap: 2,
+      marginTop: 2,
+      paddingVertical: 2,
+      paddingRight: 4,
+    },
+    adapterText: {
+      color: colors.textSecondary,
+      fontFamily: Typography.uiFont,
+      fontSize: 13,
+      lineHeight: 18,
+      flexShrink: 1,
     },
     headerError: {
       paddingHorizontal: 16,
@@ -568,34 +519,6 @@ function createStyles(colors: typeof Colors) {
       borderBottomWidth: StyleSheet.hairlineWidth,
       borderBottomColor: colors.borderSubtle,
       backgroundColor: colors.surfaceSubtle,
-    },
-    title: {
-      color: colors.textPrimary,
-      fontFamily: Typography.uiFontMedium,
-      fontSize: 24,
-      lineHeight: 30,
-      letterSpacing: -0.3,
-    },
-    adapterChip: {
-      marginTop: 4,
-      alignSelf: "flex-start",
-      flexDirection: "row",
-      alignItems: "center",
-      gap: 3,
-      paddingHorizontal: 8,
-      paddingVertical: 3,
-      borderRadius: 999,
-      borderWidth: StyleSheet.hairlineWidth,
-    },
-    adapterChipPressed: {
-      opacity: 0.7,
-    },
-    adapterChipText: {
-      color: colors.textSecondary,
-      fontFamily: Typography.uiFont,
-      fontSize: 12,
-      lineHeight: 16,
-      flexShrink: 1,
     },
     surface: {
       flex: 1,
@@ -610,7 +533,7 @@ function createStyles(colors: typeof Colors) {
     },
     sheetRow: {
       minHeight: 56,
-      borderRadius: 14,
+      borderRadius: Radii.md,
       borderWidth: StyleSheet.hairlineWidth,
       paddingHorizontal: 14,
       paddingVertical: 10,
@@ -618,9 +541,6 @@ function createStyles(colors: typeof Colors) {
       alignItems: "center",
       justifyContent: "space-between",
       gap: 12,
-    },
-    sheetRowPressed: {
-      opacity: 0.75,
     },
     sheetRowBusy: {
       opacity: 0.55,

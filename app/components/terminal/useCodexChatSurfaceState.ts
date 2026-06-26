@@ -70,6 +70,9 @@ type CodexStatusRequest = {
 
 const CODEX_STATUS_OUTPUT_TIMEOUT_MS = 9000;
 const CODEX_STATUS_TERMINAL_POLL_INTERVAL_MS = 750;
+const EMPTY_CHAT_TERMINAL_FALLBACK_POLL_MS = 1800;
+const TERMINAL_FALLBACK_MAX_LINES = 160;
+const TERMINAL_FALLBACK_MAX_CHARS = 12000;
 const CODEX_STATUS_KEYS = new Set([
   "account",
   "agentsmd",
@@ -119,6 +122,8 @@ export function useCodexChatSurfaceState({
   const [statusSheetVisible, setStatusSheetVisible] = useState(false);
   const [statusRequest, setStatusRequest] = useState<CodexStatusRequest | null>(null);
   const [statusTerminalEvent, setStatusTerminalEvent] =
+    useState<CodexConversationEvent | null>(null);
+  const [terminalFallbackEvent, setTerminalFallbackEvent] =
     useState<CodexConversationEvent | null>(null);
   const [statusTimedOut, setStatusTimedOut] = useState(false);
   const session = useCodexChatSession({
@@ -181,6 +186,86 @@ export function useCodexChatSurfaceState({
     setSkillsSheetVisible(false);
   }, []);
   const events = conversation?.events ?? [];
+  const shouldUseTerminalFallback =
+    visible &&
+    connectionState === "connected" &&
+    localChatState === "idle" &&
+    events.length === 0 &&
+    pendingUserMessages.length === 0 &&
+    pendingSlashCommands.length === 0 &&
+    Boolean(serverId && agentId);
+  const timelineEvents =
+    shouldUseTerminalFallback && terminalFallbackEvent
+      ? [terminalFallbackEvent]
+      : events;
+
+  useEffect(() => {
+    if (!shouldUseTerminalFallback) {
+      setTerminalFallbackEvent(null);
+      return;
+    }
+
+    let cancelled = false;
+    let inFlight = false;
+
+    const refreshTerminalFallback = () => {
+      if (cancelled || inFlight) {
+        return;
+      }
+      inFlight = true;
+      void wsClient
+        .getCodexTerminalSnapshot(serverId, agentId)
+        .then((text) => {
+          if (cancelled) {
+            return;
+          }
+          const body = terminalFallbackBodyFromSnapshot(text);
+          setTerminalFallbackEvent(
+            body
+              ? {
+                  id: `terminal-fallback:${serverId}:${agentId}`,
+                  seq: 0,
+                  timestamp: new Date().toISOString(),
+                  kind: "assistant_message",
+                  role: "assistant",
+                  body,
+                  source: "terminal_snapshot",
+                }
+              : null,
+          );
+        })
+        .catch(() => {
+          if (!cancelled) {
+            setTerminalFallbackEvent(null);
+          }
+        })
+        .finally(() => {
+          inFlight = false;
+        });
+    };
+
+    refreshTerminalFallback();
+    const interval = setInterval(
+      refreshTerminalFallback,
+      EMPTY_CHAT_TERMINAL_FALLBACK_POLL_MS,
+    );
+
+    return () => {
+      cancelled = true;
+      clearInterval(interval);
+    };
+  }, [
+    agentId,
+    connectionState,
+    events.length,
+    localChatState,
+    pendingSlashCommands.length,
+    pendingUserMessages.length,
+    serverId,
+    shouldUseTerminalFallback,
+    visible,
+  ]);
+
   const openStatusSheet = useCallback(() => {
     setActionMenuPinned(false);
     setStatusTimedOut(false);
@@ -288,12 +373,18 @@ export function useCodexChatSurfaceState({
     }
   }, [statusDisplayEvent, statusTimedOut]);
   const latestTimelineTimestamp = useMemo(
-    () => latestChatTimelineTimestamp(conversation, pendingUserMessages, pendingSlashCommands),
-    [conversation, pendingSlashCommands, pendingUserMessages],
+    () =>
+      latestChatTimelineTimestamp(
+        timelineEvents,
+        conversation,
+        pendingUserMessages,
+        pendingSlashCommands,
+      ),
+    [conversation, pendingSlashCommands, pendingUserMessages, timelineEvents],
   );
   const jumpLabel = useRelativeTimeLabel(latestTimelineTimestamp);
   const timeline = usePinnedTimeline(
-    events.length +
+    timelineEvents.length +
       pendingUserMessages.length +
       pendingSlashCommands.length,
     conversationCacheKey,
@@ -446,7 +537,7 @@ export function useCodexChatSurfaceState({
     agentCwd: agentInfo?.cwd,
     connectionState,
     conversation,
-    events,
+    events: timelineEvents,
     pendingUserMessages,
     pendingSlashCommands,
     loading,
@@ -478,12 +569,13 @@ export function useCodexChatSurfaceState({
 }
 
 function latestChatTimelineTimestamp(
+  events: CodexConversationEvent[],
   conversation: CodexConversation | null,
   pendingUserMessages: PendingUserMessage[],
   pendingSlashCommands: PendingSlashCommand[],
 ) {
   let latest = 0;
-  conversation?.events.forEach((event: CodexConversationEvent) => {
+  events.forEach((event: CodexConversationEvent) => {
     const timestamp = new Date(event.timestamp || "").getTime();
     if (Number.isFinite(timestamp) && timestamp > latest) {
       latest = timestamp;
@@ -595,6 +687,23 @@ function cleanCodexStatusTerminalLine(line: string) {
     .replace(/^[\s│┃|>]+/, "")
     .replace(/[\s│┃|]+$/, "")
     .trim();
+}
+
+function terminalFallbackBodyFromSnapshot(text: string) {
+  const lines = text
+    .replace(/\r/g, "")
+    .split("\n")
+    .map((line) => line.replace(/\x1b\[[0-9;?]*[ -/]*[@-~]/g, "").trimEnd());
+  const firstContentIndex = lines.findIndex((line) => line.trim().length > 0);
+  if (firstContentIndex < 0) {
+    return "";
+  }
+  const meaningfulLines = lines.slice(firstContentIndex).slice(-TERMINAL_FALLBACK_MAX_LINES);
+  const body = meaningfulLines.join("\n").trim();
+  if (body.length <= TERMINAL_FALLBACK_MAX_CHARS) {
+    return body;
+  }
+  return body.slice(body.length - TERMINAL_FALLBACK_MAX_CHARS).trimStart();
 }
 
 function isEventAfterStatusRequest(

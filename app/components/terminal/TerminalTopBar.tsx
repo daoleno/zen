@@ -2,16 +2,17 @@ import React from "react";
 import {
   StyleSheet,
   Text,
-  TouchableOpacity,
   View,
 } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
+import * as Haptics from "expo-haptics";
 import { Typography } from "../../constants/tokens";
 import type { TerminalThemeChrome } from "../../constants/terminalThemes";
 import type { AgentKind } from "../../services/agentPresentation";
 import type { StoredCodexRenderMode } from "../../services/storage";
 import { AgentKindIcon } from "./AgentKindIcon";
 import { TerminalTopBarChromeButton } from "./TerminalTopBarChromeButton";
+import { AnimatedPressable } from "../ui/AnimatedPressable";
 
 export interface TerminalTopBarGitDiffPresentation {
   accessibilityLabel: string;
@@ -72,12 +73,16 @@ export function TerminalTopBar({
         onPress={onBack}
       />
 
-      <TouchableOpacity
+      <AnimatedPressable
         accessibilityLabel="Open session switcher"
         accessibilityRole="button"
         style={styles.titleButton}
-        onPress={onOpenPicker}
-        activeOpacity={0.78}
+        preset="press"
+        scale={0.98}
+        onPress={() => {
+          Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+          onOpenPicker();
+        }}
       >
         <View style={styles.titleIconWrap}>
           <AgentKindIcon kind={kind} size={15} />
@@ -92,9 +97,9 @@ export function TerminalTopBar({
             </Text>
           </View>
         ) : null}
-      </TouchableOpacity>
+      </AnimatedPressable>
 
-      <TouchableOpacity
+      <AnimatedPressable
         accessibilityLabel={gitDiffPresentation.accessibilityLabel}
         accessibilityRole="button"
         accessibilityState={{ disabled: gitDiffDisabled }}
@@ -104,15 +109,21 @@ export function TerminalTopBar({
           { backgroundColor: gitDiffPresentation.backgroundColor },
           gitDiffDisabled ? styles.disabled : null,
         ]}
-        activeOpacity={0.75}
-        onPress={onOpenGitDiff}
+        preset="press"
+        scale={0.9}
+        onPress={() => {
+          if (!gitDiffDisabled) {
+            Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+            onOpenGitDiff();
+          }
+        }}
       >
         <Ionicons
           name="git-branch-outline"
           size={20}
           color={gitDiffPresentation.iconColor}
         />
-      </TouchableOpacity>
+      </AnimatedPressable>
 
       {isCodexAgent ? (
         <TerminalTopBarChromeButton

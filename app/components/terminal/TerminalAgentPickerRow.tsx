@@ -3,14 +3,15 @@ import {
   ActivityIndicator,
   StyleSheet,
   Text,
-  TouchableOpacity,
   View,
 } from "react-native";
+import * as Haptics from "expo-haptics";
 import { Typography } from "../../constants/tokens";
 import type { TerminalThemeChrome } from "../../constants/terminalThemes";
 import { presentAgent } from "../../services/agentPresentation";
 import type { Agent } from "../../store/agents";
 import { AgentKindIcon } from "./AgentKindIcon";
+import { AnimatedPressable } from "../ui/AnimatedPressable";
 
 interface TerminalAgentPickerRowProps {
   agent: Agent;
@@ -35,14 +36,18 @@ export function TerminalAgentPickerRow({
     .join(" · ");
 
   return (
-    <TouchableOpacity
+    <AnimatedPressable
       style={[
         styles.agentRow,
         { borderBottomColor: chrome.border },
         active && styles.agentRowActive,
       ]}
-      onPress={() => onOpenAgent(agent.key)}
-      activeOpacity={0.84}
+      preset="press"
+      scale={0.99}
+      onPress={() => {
+        Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+        onOpenAgent(agent.key);
+      }}
     >
       <AgentKindIcon kind={presented.kind} size={15} />
       <View style={styles.agentRowBody}>
@@ -84,7 +89,7 @@ export function TerminalAgentPickerRow({
           ]}
         />
       )}
-    </TouchableOpacity>
+    </AnimatedPressable>
   );
 }
 

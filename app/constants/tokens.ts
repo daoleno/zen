@@ -1,4 +1,4 @@
-import { useColorScheme } from "react-native";
+import { Platform, useColorScheme, type ViewStyle } from "react-native";
 
 export interface AppColors {
   bgPrimary: string;
@@ -6,7 +6,10 @@ export interface AppColors {
   bgElevated: string;
   textPrimary: string;
   textSecondary: string;
+  textTertiary: string;
   accent: string;
+  accentSoft: string;
+  accentStrong: string;
   statusFailed: string;
   statusBlocked: string;
   statusUnknown: string;
@@ -33,76 +36,93 @@ export interface AppColors {
   warning: string;
   dangerText: string;
   disabledText: string;
+  dangerSoft: string;
+  warningSoft: string;
+  shadowColor: string;
 }
 
+// "Slate & Sky" — clean cool neutrals with a fresh sky-blue accent. Playful
+// structure (rounded, soft) but a crisper, less muddy palette than warm clay.
 export const DarkColors: AppColors = {
-  bgPrimary: '#0F0F14',
-  bgSurface: '#1A1A24',
-  bgElevated: '#242434',
-  textPrimary: '#E8E8ED',
-  textSecondary: '#8888A0',
-  accent: '#5B9DFF',
-  statusFailed: '#FF5252',
-  statusBlocked: '#FF5252',
-  statusUnknown: '#FFB74D',
-  statusRunning: '#4CAF50',
-  statusDone: '#666680',
-  zenGreen: '#2E7D32',
-  priorityUrgent: '#FF5252',
-  priorityHigh: '#FF9500',
-  priorityMedium: '#FFB74D',
-  priorityLow: '#8888A0',
-  border: 'rgba(255,255,255,0.08)',
-  borderSubtle: 'rgba(255,255,255,0.05)',
-  borderStrong: 'rgba(255,255,255,0.12)',
-  surfaceSubtle: 'rgba(255,255,255,0.03)',
-  surfacePressed: 'rgba(255,255,255,0.05)',
-  surfaceActive: 'rgba(255,255,255,0.08)',
-  inputBackground: 'rgba(255,255,255,0.045)',
-  modalBackdrop: 'rgba(0,0,0,0.66)',
-  modalSurface: '#15151C',
-  modalSurfaceAlt: '#1A1A22',
-  textOnAccent: '#0F0F14',
+  bgPrimary: '#0E1116',
+  bgSurface: '#161A22',
+  bgElevated: '#1E232E',
+  textPrimary: '#F2F4F8',
+  textSecondary: '#8B95A7',
+  textTertiary: '#525C6E',
+  accent: '#4C8DFF',
+  accentSoft: 'rgba(76,141,255,0.16)',
+  accentStrong: '#6BA0FF',
+  statusFailed: '#FF6B81',
+  statusBlocked: '#FF6B81',
+  statusUnknown: '#F2B441',
+  statusRunning: '#3DD682',
+  statusDone: '#525C6E',
+  zenGreen: '#3DD682',
+  priorityUrgent: '#FF6B81',
+  priorityHigh: '#FF9F45',
+  priorityMedium: '#F2B441',
+  priorityLow: '#8B95A7',
+  border: 'rgba(242,244,248,0.09)',
+  borderSubtle: 'rgba(242,244,248,0.05)',
+  borderStrong: 'rgba(242,244,248,0.15)',
+  surfaceSubtle: 'rgba(242,244,248,0.045)',
+  surfacePressed: 'rgba(242,244,248,0.07)',
+  surfaceActive: 'rgba(76,141,255,0.18)',
+  inputBackground: 'rgba(242,244,248,0.06)',
+  modalBackdrop: 'rgba(0,0,0,0.62)',
+  modalSurface: '#181C24',
+  modalSurfaceAlt: '#1E232E',
+  textOnAccent: '#0E1116',
   promptGreen: '#8FB573',
   promptYellow: '#E6B450',
-  warning: '#E7B65C',
-  dangerText: '#F09999',
-  disabledText: '#65758A',
+  warning: '#F2B441',
+  dangerText: '#FF8A9B',
+  disabledText: '#525C6E',
+  dangerSoft: 'rgba(255,107,129,0.14)',
+  warningSoft: 'rgba(242,180,65,0.14)',
+  shadowColor: '#000000',
 };
 
 export const LightColors: AppColors = {
-  bgPrimary: '#F7F8FB',
+  bgPrimary: '#F6F8FB',
   bgSurface: '#FFFFFF',
-  bgElevated: '#E8EEF6',
-  textPrimary: '#151922',
-  textSecondary: '#667085',
-  accent: '#2563EB',
-  statusFailed: '#D92D20',
-  statusBlocked: '#D92D20',
-  statusUnknown: '#B7791F',
-  statusRunning: '#16803A',
-  statusDone: '#8A94A6',
-  zenGreen: '#2E7D32',
-  priorityUrgent: '#D92D20',
-  priorityHigh: '#D97706',
-  priorityMedium: '#B7791F',
-  priorityLow: '#667085',
-  border: 'rgba(21,25,34,0.10)',
-  borderSubtle: 'rgba(21,25,34,0.07)',
-  borderStrong: 'rgba(21,25,34,0.16)',
-  surfaceSubtle: 'rgba(21,25,34,0.035)',
-  surfacePressed: 'rgba(21,25,34,0.06)',
-  surfaceActive: 'rgba(37,99,235,0.10)',
-  inputBackground: 'rgba(21,25,34,0.045)',
-  modalBackdrop: 'rgba(15,23,42,0.34)',
+  bgElevated: '#EEF2F8',
+  textPrimary: '#14181F',
+  textSecondary: '#5A6577',
+  textTertiary: '#9AA4B5',
+  accent: '#2E7CFF',
+  accentSoft: 'rgba(46,124,255,0.10)',
+  accentStrong: '#1E6AEF',
+  statusFailed: '#E0414E',
+  statusBlocked: '#E0414E',
+  statusUnknown: '#C99522',
+  statusRunning: '#1FA861',
+  statusDone: '#9AA4B5',
+  zenGreen: '#1FA861',
+  priorityUrgent: '#E0414E',
+  priorityHigh: '#D98424',
+  priorityMedium: '#C99522',
+  priorityLow: '#5A6577',
+  border: 'rgba(20,24,31,0.10)',
+  borderSubtle: 'rgba(20,24,31,0.06)',
+  borderStrong: 'rgba(20,24,31,0.16)',
+  surfaceSubtle: 'rgba(20,24,31,0.04)',
+  surfacePressed: 'rgba(20,24,31,0.06)',
+  surfaceActive: 'rgba(46,124,255,0.12)',
+  inputBackground: 'rgba(20,24,31,0.05)',
+  modalBackdrop: 'rgba(20,24,31,0.36)',
   modalSurface: '#FFFFFF',
-  modalSurfaceAlt: '#F2F5F9',
+  modalSurfaceAlt: '#EEF2F8',
   textOnAccent: '#FFFFFF',
   promptGreen: '#3F7C50',
   promptYellow: '#9A6B1F',
-  warning: '#A36A00',
-  dangerText: '#C24141',
-  disabledText: '#94A3B8',
+  warning: '#C99522',
+  dangerText: '#C8323F',
+  disabledText: '#9AA4B5',
+  dangerSoft: 'rgba(224,65,78,0.10)',
+  warningSoft: 'rgba(201,149,34,0.12)',
+  shadowColor: '#243044',
 };
 
 export const Colors = DarkColors;
@@ -149,9 +169,12 @@ export const Spacing = {
 } as const;
 
 export const Radii = {
-  sm: 8,
-  md: 12,
-  lg: 16,
+  xs: 8,
+  sm: 12,
+  md: 16,
+  lg: 20,
+  xl: 24,
+  xxl: 28,
   pill: 999,
 } as const;
 
@@ -194,3 +217,44 @@ export const runStatusColor = (status: RunStatus | string): string => {
     default: return Colors.textSecondary;
   }
 };
+
+type ShadowStyle = Pick<
+  ViewStyle,
+  'shadowColor' | 'shadowOffset' | 'shadowOpacity' | 'shadowRadius' | 'elevation'
+>;
+
+function makeShadow(
+  color: string,
+  opacity: number,
+  radius: number,
+  height: number,
+  elevation: number,
+): ShadowStyle {
+  return Platform.select<ShadowStyle>({
+    ios: {
+      shadowColor: color,
+      shadowOffset: { width: 0, height },
+      shadowOpacity: opacity,
+      shadowRadius: radius,
+    },
+    default: {
+      shadowColor: color,
+      elevation,
+    },
+  }) as ShadowStyle;
+}
+
+/** Soft, tactile elevation — the gentle lift that makes playful UI feel friendly. */
+export function shadow(
+  level: 'card' | 'raised' | 'float',
+  color = '#000000',
+): ShadowStyle {
+  switch (level) {
+    case 'card':
+      return makeShadow(color, 0.06, 10, 4, 2);
+    case 'raised':
+      return makeShadow(color, 0.10, 18, 8, 4);
+    case 'float':
+      return makeShadow(color, 0.18, 28, 14, 8);
+  }
+}

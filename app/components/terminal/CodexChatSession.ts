@@ -292,12 +292,24 @@ function applyIncomingConversation(
   conversation: CodexConversation,
 ): CodexChatThreadState {
   const boundary = newChatBoundaryCache.get(state.cacheKey);
-  const filteredConversation = conversationForNewChatBoundary(
+  let filteredConversation = conversationForNewChatBoundary(
     conversation,
     boundary,
     state.localChatState === "starting-new-chat" ||
       state.localChatState === "new-chat-ready",
   );
+  if (
+    boundary &&
+    state.localChatState === "idle" &&
+    state.pendingUserMessages.length === 0 &&
+    filteredConversation?.events.length === 0
+  ) {
+    const unboundedConversation = filterCodexConversationForChat(conversation);
+    if (unboundedConversation.events.length > 0) {
+      newChatBoundaryCache.delete(state.cacheKey);
+      filteredConversation = unboundedConversation;
+    }
+  }
   if (!filteredConversation) {
     return {
       ...state,

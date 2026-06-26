@@ -2,9 +2,7 @@ import React, { useEffect, useMemo, useRef, useState } from "react";
 import {
   Alert,
   KeyboardAvoidingView,
-  Modal,
   Platform,
-  Pressable,
   ScrollView,
   StyleSheet,
   Text,
@@ -12,8 +10,9 @@ import {
 } from "react-native";
 import { useLocalSearchParams, useRouter } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
+import * as Haptics from "expo-haptics";
 import { SafeAreaView, useSafeAreaInsets } from "react-native-safe-area-context";
-import { Colors, Radii, Spacing, Typography, useAppColors } from "../../constants/tokens";
+import { Colors, Radii, Spacing, Typography, useAppColors, shadow } from "../../constants/tokens";
 import { useWork, type WorkItem } from "../../store/work";
 import {
   WorkEditor,
@@ -25,6 +24,8 @@ import {
   workItemTitle,
 } from "../../components/work/WorkRow";
 import { wsClient } from "../../services/websocket";
+import { AnimatedPressable } from "../../components/ui/AnimatedPressable";
+import { RisingSheet } from "../../components/ui/RisingSheet";
 
 const AUTOSAVE_DELAY_MS = 600;
 type IconName = React.ComponentProps<typeof Ionicons>["name"];
@@ -168,6 +169,7 @@ export default function WorkDetailScreen() {
   };
 
   const toggleEditing = async () => {
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
     if (editing && dirty && !remoteBanner) {
       await saveWorkItem();
     }
@@ -202,13 +204,17 @@ export default function WorkDetailScreen() {
         behavior={Platform.OS === "ios" ? "padding" : undefined}
       >
         <View style={styles.header}>
-          <Pressable
-            onPress={() => router.back()}
-            hitSlop={10}
-            style={({ pressed }) => [styles.iconButton, pressed && styles.iconButtonPressed]}
+          <AnimatedPressable
+            onPress={() => {
+              Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+              router.back();
+            }}
+            preset="press"
+            scale={0.88}
+            style={styles.iconButton}
           >
             <Ionicons name="chevron-back" size={22} color={colors.textPrimary} />
-          </Pressable>
+          </AnimatedPressable>
 
           <View style={styles.headerCenter}>
             <Text style={styles.headerTitle} numberOfLines={1}>
@@ -216,27 +222,30 @@ export default function WorkDetailScreen() {
             </Text>
           </View>
 
-          <Pressable
-            onPress={() => {
-              void toggleEditing();
-            }}
-            hitSlop={10}
-            style={({ pressed }) => [styles.iconButton, pressed && styles.iconButtonPressed]}
+          <AnimatedPressable
+            onPress={() => void toggleEditing()}
+            preset="press"
+            scale={0.88}
+            style={styles.iconButton}
           >
             <Ionicons
               name={editing ? "eye-outline" : "create-outline"}
               size={19}
               color={colors.textPrimary}
             />
-          </Pressable>
+          </AnimatedPressable>
 
-          <Pressable
-            onPress={() => setMenuOpen(true)}
-            hitSlop={10}
-            style={({ pressed }) => [styles.iconButton, pressed && styles.iconButtonPressed]}
+          <AnimatedPressable
+            onPress={() => {
+              Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+              setMenuOpen(true);
+            }}
+            preset="press"
+            scale={0.88}
+            style={styles.iconButton}
           >
             <Ionicons name="ellipsis-horizontal" size={20} color={colors.textPrimary} />
-          </Pressable>
+          </AnimatedPressable>
         </View>
 
         <View style={styles.context}>
@@ -259,13 +268,16 @@ export default function WorkDetailScreen() {
         </View>
 
         {remoteBanner ? (
-          <Pressable
+          <AnimatedPressable
             onPress={() => {
+              Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
               setDraftBody(item.body);
               setBaseMtime(item.mtime);
               setDirty(false);
               setRemoteBanner(false);
             }}
+            preset="press"
+            scale={0.98}
             style={styles.banner}
           >
             <Ionicons
@@ -276,7 +288,7 @@ export default function WorkDetailScreen() {
             <Text style={styles.bannerText}>
               Remote changes — tap to load.
             </Text>
-          </Pressable>
+          </AnimatedPressable>
         ) : null}
 
         <View style={styles.contentShell}>
@@ -308,16 +320,15 @@ export default function WorkDetailScreen() {
           <SaveState saving={saving} dirty={dirty} />
           <View style={styles.footerActions}>
             {brainLog ? null : (
-              <Pressable
+              <AnimatedPressable
                 onPress={() => {
+                  Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
                   void handleToggleDone();
                 }}
                 disabled={saving}
-                style={({ pressed }) => [
-                  styles.secondaryButton,
-                  saving && styles.primaryButtonDisabled,
-                  pressed && styles.secondaryButtonPressed,
-                ]}
+                preset="press"
+                scale={0.94}
+                style={[styles.secondaryButton, saving && styles.primaryButtonDisabled]}
               >
                 <Ionicons
                   name={done ? "return-up-back-outline" : "checkmark"}
@@ -325,7 +336,7 @@ export default function WorkDetailScreen() {
                   color={colors.textPrimary}
                 />
                 <Text style={styles.secondaryButtonText}>{done ? "Reopen" : "Done"}</Text>
-              </Pressable>
+              </AnimatedPressable>
             )}
           </View>
         </View>
@@ -444,38 +455,43 @@ function OverflowMenu({
   const menuStyles = useMemo(() => createMenuStyles(colors), [colors]);
 
   return (
-    <Modal visible={visible} transparent animationType="fade" onRequestClose={onClose}>
-      <View style={menuStyles.root}>
-        <Pressable style={menuStyles.backdrop} onPress={onClose} />
-        <View style={menuStyles.card}>
-          {showDone ? (
-            <>
-              <Pressable
-                onPress={onToggleDone}
-                style={({ pressed }) => [menuStyles.item, pressed && menuStyles.itemPressed]}
-              >
-                <Ionicons
-                  name={done ? "refresh-outline" : "checkmark-circle-outline"}
-                  size={18}
-                  color={colors.textPrimary}
-                />
-                <Text style={menuStyles.itemText}>{done ? "Reopen" : "Mark done"}</Text>
-              </Pressable>
-              <View style={menuStyles.divider} />
-            </>
-          ) : null}
-          <Pressable
-            onPress={onDelete}
-            style={({ pressed }) => [menuStyles.item, pressed && menuStyles.itemPressed]}
+    <RisingSheet visible={visible} onClose={onClose} align="bottom" cardStyle={menuStyles.card}>
+      {showDone ? (
+        <>
+          <AnimatedPressable
+            onPress={() => {
+              Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+              onToggleDone();
+            }}
+            preset="press"
+            scale={0.98}
+            style={menuStyles.item}
           >
-            <Ionicons name="trash-outline" size={18} color={colors.statusFailed} />
-            <Text style={[menuStyles.itemText, menuStyles.itemTextDestructive]}>
-              Delete
-            </Text>
-          </Pressable>
-        </View>
-      </View>
-    </Modal>
+            <Ionicons
+              name={done ? "refresh-outline" : "checkmark-circle-outline"}
+              size={18}
+              color={colors.textPrimary}
+            />
+            <Text style={menuStyles.itemText}>{done ? "Reopen" : "Mark done"}</Text>
+          </AnimatedPressable>
+          <View style={menuStyles.divider} />
+        </>
+      ) : null}
+      <AnimatedPressable
+        onPress={() => {
+          Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+          onDelete();
+        }}
+        preset="press"
+        scale={0.98}
+        style={menuStyles.item}
+      >
+        <Ionicons name="trash-outline" size={18} color={colors.statusFailed} />
+        <Text style={[menuStyles.itemText, menuStyles.itemTextDestructive]}>
+          Delete
+        </Text>
+      </AnimatedPressable>
+    </RisingSheet>
   );
 }
 
@@ -513,9 +529,6 @@ function createStyles(colors: typeof Colors) {
     justifyContent: "center",
     borderRadius: Radii.pill,
   },
-  iconButtonPressed: {
-    backgroundColor: colors.surfacePressed,
-  },
   headerCenter: {
     flex: 1,
     alignItems: "center",
@@ -524,9 +537,8 @@ function createStyles(colors: typeof Colors) {
   headerTitle: {
     color: colors.textPrimary,
     fontFamily: Typography.uiFontMedium,
-    fontSize: 14,
+    fontSize: 15,
     lineHeight: 18,
-    opacity: 0.86,
   },
   context: {
     paddingHorizontal: 16,
@@ -557,20 +569,18 @@ function createStyles(colors: typeof Colors) {
   },
   contextPath: {
     flex: 1,
-    color: colors.textSecondary,
+    color: colors.textTertiary,
     fontFamily: Typography.uiFont,
     fontSize: 11,
     lineHeight: 15,
-    opacity: 0.56,
   },
   workTitle: {
     marginTop: 9,
     color: colors.textPrimary,
     fontFamily: Typography.uiFontMedium,
-    fontSize: 20,
-    lineHeight: 26,
-    letterSpacing: -0.2,
-    opacity: 0.94,
+    fontSize: 22,
+    lineHeight: 28,
+    letterSpacing: -0.3,
   },
   banner: {
     flexDirection: "row",
@@ -581,7 +591,7 @@ function createStyles(colors: typeof Colors) {
     paddingHorizontal: Spacing.md,
     paddingVertical: Spacing.sm,
     borderRadius: Radii.md,
-    backgroundColor: `${colors.statusUnknown}24`,
+    backgroundColor: colors.warningSoft,
   },
   bannerText: {
     color: colors.textPrimary,
@@ -593,11 +603,12 @@ function createStyles(colors: typeof Colors) {
     marginHorizontal: 10,
     marginTop: 8,
     marginBottom: 8,
-    borderRadius: 10,
+    borderRadius: Radii.md,
     overflow: "hidden",
-    backgroundColor: colors.surfaceSubtle,
+    backgroundColor: colors.bgSurface,
     borderWidth: StyleSheet.hairlineWidth,
     borderColor: colors.borderSubtle,
+    ...shadow("card", colors.shadowColor),
   },
   previewScroll: {
     flex: 1,
@@ -656,12 +667,9 @@ function createStyles(colors: typeof Colors) {
     flexDirection: "row",
     alignItems: "center",
     gap: 5,
-    paddingHorizontal: 10,
+    paddingHorizontal: 12,
     borderRadius: Radii.pill,
     backgroundColor: colors.surfacePressed,
-  },
-  secondaryButtonPressed: {
-    opacity: 0.78,
   },
   secondaryButtonText: {
     color: colors.textPrimary,
@@ -695,22 +703,16 @@ function createStyles(colors: typeof Colors) {
 
 function createMenuStyles(colors: typeof Colors) {
   return StyleSheet.create({
-  root: {
-    flex: 1,
-    justifyContent: "flex-end",
-  },
-  backdrop: {
-    ...StyleSheet.absoluteFill,
-    backgroundColor: colors.modalBackdrop,
-  },
   card: {
     marginHorizontal: Spacing.md,
     marginBottom: Spacing.xl,
     borderRadius: Radii.lg,
-    backgroundColor: colors.bgSurface,
+    backgroundColor: colors.modalSurface,
     borderWidth: StyleSheet.hairlineWidth,
     borderColor: colors.border,
     overflow: "hidden",
+    paddingVertical: 6,
+    ...shadow("float", colors.shadowColor),
   },
   item: {
     flexDirection: "row",
@@ -718,9 +720,6 @@ function createMenuStyles(colors: typeof Colors) {
     gap: Spacing.md,
     paddingHorizontal: Spacing.lg,
     paddingVertical: Spacing.lg,
-  },
-  itemPressed: {
-    backgroundColor: colors.bgElevated,
   },
   divider: {
     height: StyleSheet.hairlineWidth,

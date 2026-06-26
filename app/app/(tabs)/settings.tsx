@@ -1,18 +1,17 @@
 import React, { useEffect, useMemo, useState } from "react";
 import {
   Alert,
-  KeyboardAvoidingView,
+  LayoutAnimation,
   Modal,
-  Platform,
   ScrollView,
   StyleSheet,
   Text,
   TextInput,
-  TouchableOpacity,
   View,
 } from "react-native";
 import { useFocusEffect, useLocalSearchParams } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
+import * as Haptics from "expo-haptics";
 import { SafeAreaView } from "react-native-safe-area-context";
 import * as Clipboard from "expo-clipboard";
 import * as DocumentPicker from "expo-document-picker";
@@ -23,12 +22,14 @@ import {
   scanFromURLAsync,
   useCameraPermissions,
 } from "expo-camera";
-import { Colors, Typography, statusColor, useAppColors } from "../../constants/tokens";
+import { Colors, Radii, Typography, useAppColors, shadow } from "../../constants/tokens";
 import { importConnection } from "../../services/importConnection";
 import { wsClient } from "../../services/websocket";
 import { ConnectionState, useAgents } from "../../store/agents";
 import * as Storage from "../../services/storage";
 import { connectionIssueAccent } from "../../services/connectionIssue";
+import { AnimatedPressable } from "../../components/ui/AnimatedPressable";
+import { RisingSheet } from "../../components/ui/RisingSheet";
 
 const QR_BARCODE_TYPES: BarcodeType[] = ["qr"];
 
@@ -264,6 +265,14 @@ export default function SettingsScreen() {
   };
 
   const toggleServerExpand = (serverId: string) => {
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+    LayoutAnimation.configureNext(
+      LayoutAnimation.create(
+        200,
+        LayoutAnimation.Types.easeInEaseOut,
+        LayoutAnimation.Properties.opacity,
+      ),
+    );
     setExpandedServer((prev) => (prev === serverId ? null : serverId));
   };
 
@@ -340,340 +349,324 @@ export default function SettingsScreen() {
       <View style={styles.header}>
         <Text style={styles.pageTitle}>Settings</Text>
       </View>
-      <ScrollView contentContainerStyle={styles.content}>
-        {/* Servers */}
-        <View style={styles.sectionHeader}>
-          <Text style={[styles.sectionLabel, { marginTop: 0 }]}>Servers</Text>
-          {servers.length > 0 && (
-            <Text style={styles.sectionCount}>
-              {connectedCount}/{servers.length}
-            </Text>
-          )}
-        </View>
+      <ScrollView contentContainerStyle={styles.content} showsVerticalScrollIndicator={false}>
+          {/* Servers */}
+          <View style={styles.sectionHeader}>
+            <Text style={[styles.sectionLabel, { marginTop: 0 }]}>Servers</Text>
+            {servers.length > 0 && (
+              <Text style={styles.sectionCount}>
+                {connectedCount}/{servers.length}
+              </Text>
+            )}
+          </View>
 
-        <View style={styles.serverList}>
-          {servers.length === 0 ? (
-            <View style={styles.emptyCard}>
-              <Text style={styles.emptyText}>No paired daemons yet</Text>
-            </View>
-          ) : (
-            servers.map((server) => {
-              const connectionState =
-                state.serverConnections[server.id] || "offline";
-              const latencySample = serverLatencyById[server.id];
-              const connectionIssue =
-                state.serverConnectionIssues[server.id] || null;
-              const expanded = expandedServer === server.id;
-              const agentCount = agentCountByServer[server.id] || 0;
-              const hydrated = Boolean(state.hydratedServers[server.id]);
-              const waitingForAgents =
-                connectionState === "connected" &&
-                (!hydrated || agentCount === 0);
-              const actionLabel =
-                connectionState === "connected"
-                  ? "Disconnect"
-                  : connectionState === "connecting" || connectionIssue
-                    ? "Retry"
-                    : "Connect";
+          <View style={styles.serverList}>
+            {servers.length === 0 ? (
+              <View style={styles.emptyCard}>
+                <Text style={styles.emptyText}>No paired daemons yet</Text>
+              </View>
+            ) : (
+              servers.map((server) => {
+                const connectionState =
+                  state.serverConnections[server.id] || "offline";
+                const latencySample = serverLatencyById[server.id];
+                const connectionIssue =
+                  state.serverConnectionIssues[server.id] || null;
+                const expanded = expandedServer === server.id;
+                const agentCount = agentCountByServer[server.id] || 0;
+                const hydrated = Boolean(state.hydratedServers[server.id]);
+                const waitingForAgents =
+                  connectionState === "connected" &&
+                  (!hydrated || agentCount === 0);
+                const actionLabel =
+                  connectionState === "connected"
+                    ? "Disconnect"
+                    : connectionState === "connecting" || connectionIssue
+                      ? "Retry"
+                      : "Connect";
 
-              return (
-                <TouchableOpacity
-                  key={server.id}
-                  style={styles.serverCard}
-                  onPress={() => toggleServerExpand(server.id)}
-                  activeOpacity={0.82}
-                >
-                  <View style={styles.serverRow}>
-                    <View
-                      style={[
-                        styles.statusDot,
-                        { backgroundColor: connectionColor(connectionState, colors) },
-                      ]}
-                    />
-                    <View style={styles.serverInfo}>
-                      <Text style={styles.serverName}>{server.name}</Text>
-                      <Text style={styles.serverUrl} numberOfLines={1}>
-                        {server.url}
-                      </Text>
-                    </View>
-                    <View style={styles.serverStatus}>
-                      {connectionState === "connected" && latencySample ? (
-                        <Text
-                          style={[
-                            styles.latencyLabel,
-                            {
-                              color: latencyColor(latencySample.latencyMs, colors),
-                            },
-                          ]}
-                        >
-                          {formatLatency(latencySample.latencyMs)}
-                        </Text>
-                      ) : null}
-                      <Text
+                return (
+                  <AnimatedPressable
+                    key={server.id}
+                    style={styles.serverCard}
+                    preset="card"
+                    scale={0.99}
+                    onPress={() => toggleServerExpand(server.id)}
+                  >
+                    <View style={styles.serverRow}>
+                      <View
                         style={[
-                          styles.connectionLabel,
-                          connectionState === "connected" &&
-                            styles.connectionLabelActive,
+                          styles.statusDot,
+                          { backgroundColor: connectionColor(connectionState, colors) },
                         ]}
-                      >
-                        {connectionLabel(connectionState)}
-                      </Text>
-                    </View>
-                  </View>
-
-                  {expanded && (
-                    <>
-                      {connectionIssue ? (
-                        <ServerNoticeCard
-                          icon="alert-circle-outline"
-                          accent={connectionIssueAccent(connectionIssue, colors)}
-                          title={connectionIssue.title}
-                          detail={connectionIssue.detail}
-                          hint={connectionIssue.hint}
-                        />
-                      ) : null}
-
-                      {waitingForAgents ? (
-                        <ServerNoticeCard
-                          icon="information-circle-outline"
-                          accent={colors.accent}
-                          title={
-                            hydrated
-                              ? "Connected, no active agents yet"
-                              : "Connected, waiting for agent data"
-                          }
-                          detail={
-                            hydrated
-                              ? "Zen is connected to this daemon, but it has not reported any live agents yet."
-                              : "Zen is connected to this daemon and waiting for the first agent list to arrive."
-                          }
-                          hint="Start Claude or Codex on that machine, or verify the watcher/tmux bridge is forwarding terminals."
-                        />
-                      ) : null}
-
-                      <View style={styles.serverActions}>
-                        <TouchableOpacity
-                          style={styles.actionBtn}
-                          onPress={() => void (
-                            connectionState === "connected"
-                              ? disconnectServer(server.id)
-                              : connectServer(server)
-                          )}
-                          activeOpacity={0.82}
-                        >
-                          <Text style={styles.actionBtnText}>
-                            {actionLabel}
-                          </Text>
-                        </TouchableOpacity>
-                        <TouchableOpacity
-                          style={styles.actionBtn}
-                          onPress={() => openEditServer(server)}
-                          activeOpacity={0.82}
-                        >
-                          <Text style={styles.actionBtnText}>Edit</Text>
-                        </TouchableOpacity>
-                        <TouchableOpacity
-                          style={[styles.actionBtn, styles.actionBtnDanger]}
-                          onPress={() => handleDeleteServer(server)}
-                          activeOpacity={0.82}
-                        >
+                      />
+                      <View style={styles.serverInfo}>
+                        <Text style={styles.serverName}>{server.name}</Text>
+                        <Text style={styles.serverUrl} numberOfLines={1}>
+                          {server.url}
+                        </Text>
+                      </View>
+                      <View style={styles.serverStatus}>
+                        {connectionState === "connected" && latencySample ? (
                           <Text
                             style={[
-                              styles.actionBtnText,
-                              styles.actionBtnDangerText,
+                              styles.latencyLabel,
+                              {
+                                color: latencyColor(latencySample.latencyMs, colors),
+                              },
                             ]}
                           >
-                            Remove
+                            {formatLatency(latencySample.latencyMs)}
                           </Text>
-                        </TouchableOpacity>
+                        ) : null}
+                        <Text
+                          style={[
+                            styles.connectionLabel,
+                            connectionState === "connected" &&
+                              styles.connectionLabelActive,
+                          ]}
+                        >
+                          {connectionLabel(connectionState)}
+                        </Text>
                       </View>
-                    </>
-                  )}
-                </TouchableOpacity>
-              );
-            })
-          )}
-        </View>
+                    </View>
 
-        <TouchableOpacity
-          style={styles.addBtn}
-          onPress={openCreateServer}
-          activeOpacity={0.82}
-        >
-          <Ionicons name="add" size={16} color={colors.textSecondary} />
-          <Text style={styles.addBtnText}>Pair Server</Text>
-        </TouchableOpacity>
+                    {expanded && (
+                      <>
+                        {connectionIssue ? (
+                          <ServerNoticeCard
+                            icon="alert-circle-outline"
+                            accent={connectionIssueAccent(connectionIssue, colors)}
+                            title={connectionIssue.title}
+                            detail={connectionIssue.detail}
+                            hint={connectionIssue.hint}
+                          />
+                        ) : null}
 
-        <Text style={styles.version}>Zen v0.1.0</Text>
+                        {waitingForAgents ? (
+                          <ServerNoticeCard
+                            icon="information-circle-outline"
+                            accent={colors.accent}
+                            title={
+                              hydrated
+                                ? "Connected, no active agents yet"
+                                : "Connected, waiting for agent data"
+                            }
+                            detail={
+                              hydrated
+                                ? "Zen is connected to this daemon, but it has not reported any live agents yet."
+                                : "Zen is connected to this daemon and waiting for the first agent list to arrive."
+                            }
+                            hint="Start Claude or Codex on that machine, or verify the watcher/tmux bridge is forwarding terminals."
+                          />
+                        ) : null}
+
+                        <View style={styles.serverActions}>
+                          <AnimatedPressable
+                            style={styles.actionBtn}
+                            preset="press"
+                            scale={0.95}
+                            onPress={() => {
+                              Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+                              void (
+                                connectionState === "connected"
+                                  ? disconnectServer(server.id)
+                                  : connectServer(server)
+                              );
+                            }}
+                          >
+                            <Text style={styles.actionBtnText}>
+                              {actionLabel}
+                            </Text>
+                          </AnimatedPressable>
+                          <AnimatedPressable
+                            style={styles.actionBtn}
+                            preset="press"
+                            scale={0.95}
+                            onPress={() => {
+                              Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+                              openEditServer(server);
+                            }}
+                          >
+                            <Text style={styles.actionBtnText}>Edit</Text>
+                          </AnimatedPressable>
+                          <AnimatedPressable
+                            style={[styles.actionBtn, styles.actionBtnDanger]}
+                            preset="press"
+                            scale={0.95}
+                            onPress={() => {
+                              Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+                              handleDeleteServer(server);
+                            }}
+                          >
+                            <Text style={[styles.actionBtnText, styles.actionBtnDangerText]}>
+                              Remove
+                            </Text>
+                          </AnimatedPressable>
+                        </View>
+                      </>
+                    )}
+                  </AnimatedPressable>
+                );
+              })
+            )}
+          </View>
+
+          <AnimatedPressable
+            style={styles.addBtn}
+            preset="press"
+            scale={0.98}
+            onPress={() => {
+              Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+              openCreateServer();
+            }}
+          >
+            <Ionicons name="add" size={17} color={colors.accent} />
+            <Text style={styles.addBtnText}>Pair Server</Text>
+          </AnimatedPressable>
+
+          <Text style={styles.version}>Zen v0.1.0</Text>
       </ScrollView>
 
       {/* Unified Add/Edit Server modal */}
-      <Modal
+      <RisingSheet
         visible={editorVisible}
-        transparent
-        animationType="fade"
-        onRequestClose={closeEditor}
+        onClose={closeEditor}
+        cardStyle={styles.modalCard}
+        avoidKeyboard
       >
-        <KeyboardAvoidingView
-          style={styles.modalRoot}
-          behavior={Platform.OS === "ios" ? "padding" : undefined}
-        >
-          <TouchableOpacity
-            style={styles.modalBackdrop}
-            activeOpacity={1}
-            onPress={closeEditor}
-          />
-          <View style={styles.modalContent}>
-            <View style={styles.modalCard}>
-              <Text style={styles.modalTitle}>
-                {editingServerId ? "Edit Server" : "Pair Server"}
+        <Text style={styles.modalTitle}>
+          {editingServerId ? "Edit Server" : "Pair Server"}
+        </Text>
+
+        {editingServer ? (
+          <>
+            <Text style={styles.fieldLabel}>Name</Text>
+            <TextInput
+              style={styles.input}
+              value={draftName}
+              onChangeText={setDraftName}
+              placeholder="workstation"
+              placeholderTextColor={colors.textSecondary}
+              autoCapitalize="none"
+              autoCorrect={false}
+            />
+
+            <Text style={[styles.fieldLabel, { marginTop: 16 }]}>
+              Endpoint
+            </Text>
+            <TextInput
+              style={styles.input}
+              value={draftEndpoint}
+              onChangeText={setDraftEndpoint}
+              placeholder="wss://zen.example.com/ws"
+              placeholderTextColor={colors.textSecondary}
+              autoCapitalize="none"
+              autoCorrect={false}
+            />
+            <Text style={styles.fieldHint}>
+              This is the externally reachable WebSocket endpoint exposed
+              by your tunnel, reverse proxy, or private network.
+            </Text>
+
+            <View style={styles.identityCard}>
+              <Text style={styles.identityLabel}>Trusted Daemon</Text>
+              <Text style={styles.identityCode} numberOfLines={1}>
+                {editingServer.daemonId}
               </Text>
-
-              {editingServer ? (
-                <>
-                  <Text style={styles.fieldLabel}>Name</Text>
-                  <TextInput
-                    style={styles.input}
-                    value={draftName}
-                    onChangeText={setDraftName}
-                    placeholder="workstation"
-                    placeholderTextColor={colors.textSecondary}
-                    autoCapitalize="none"
-                    autoCorrect={false}
-                  />
-
-                  <Text style={[styles.fieldLabel, { marginTop: 16 }]}>
-                    Endpoint
-                  </Text>
-                  <TextInput
-                    style={styles.input}
-                    value={draftEndpoint}
-                    onChangeText={setDraftEndpoint}
-                    placeholder="wss://zen.example.com/ws"
-                    placeholderTextColor={colors.textSecondary}
-                    autoCapitalize="none"
-                    autoCorrect={false}
-                  />
-                  <Text style={styles.fieldHint}>
-                    This is the externally reachable WebSocket endpoint exposed
-                    by your tunnel, reverse proxy, or private network.
-                  </Text>
-
-                  <View style={styles.identityCard}>
-                    <Text style={styles.identityLabel}>Trusted Daemon</Text>
-                    <Text style={styles.identityCode} numberOfLines={1}>
-                      {editingServer.daemonId}
-                    </Text>
-                  </View>
-
-                  <View style={styles.modalActions}>
-                    <TouchableOpacity
-                      style={styles.modalBtn}
-                      onPress={closeEditor}
-                      activeOpacity={0.82}
-                    >
-                      <Text style={styles.modalBtnText}>Cancel</Text>
-                    </TouchableOpacity>
-                    <TouchableOpacity
-                      style={[styles.modalBtn, styles.modalBtnPrimary]}
-                      onPress={() => void handleSaveServer()}
-                      activeOpacity={0.82}
-                    >
-                      <Text
-                        style={[
-                          styles.modalBtnText,
-                          styles.modalBtnPrimaryText,
-                        ]}
-                      >
-                        Save
-                      </Text>
-                    </TouchableOpacity>
-                  </View>
-                </>
-              ) : (
-                <>
-                  <Text style={styles.importLead}>
-                    Paste the pairing link from zen, or scan its QR code.
-                  </Text>
-
-                  <Text style={styles.fieldLabel}>Pairing Link</Text>
-                  <TextInput
-                    style={[styles.input, styles.importInput]}
-                    value={draftImportValue}
-                    onChangeText={setDraftImportValue}
-                    placeholder="zen://settings?p=..."
-                    placeholderTextColor={colors.textSecondary}
-                    autoCapitalize="none"
-                    autoCorrect={false}
-                    multiline
-                    textAlignVertical="top"
-                  />
-                  <Text style={styles.fieldHint}>
-                    You can also import a screenshot or photo of the QR.
-                  </Text>
-
-                  <View style={styles.modalActions}>
-                    <TouchableOpacity
-                      style={styles.modalBtn}
-                      onPress={closeEditor}
-                      activeOpacity={0.82}
-                    >
-                      <Text style={styles.modalBtnText}>Cancel</Text>
-                    </TouchableOpacity>
-                    <TouchableOpacity
-                      style={[styles.modalBtn, styles.modalBtnPrimary]}
-                      onPress={() => void handleImportDraft()}
-                      activeOpacity={0.82}
-                    >
-                      <Text
-                        style={[
-                          styles.modalBtnText,
-                          styles.modalBtnPrimaryText,
-                        ]}
-                      >
-                        Import
-                      </Text>
-                    </TouchableOpacity>
-                  </View>
-
-                  <View style={styles.divider}>
-                    <View style={styles.dividerLine} />
-                    <Text style={styles.dividerText}>or</Text>
-                    <View style={styles.dividerLine} />
-                  </View>
-
-                  <View style={styles.importRow}>
-                    <TouchableOpacity
-                      style={styles.importBtn}
-                      onPress={() => void handlePasteImport()}
-                      activeOpacity={0.82}
-                    >
-                      <Ionicons
-                        name="clipboard-outline"
-                        size={15}
-                        color={colors.textSecondary}
-                      />
-                      <Text style={styles.importBtnText}>Paste Link</Text>
-                    </TouchableOpacity>
-                    <TouchableOpacity
-                      style={styles.importBtn}
-                      onPress={openScanner}
-                      activeOpacity={0.82}
-                    >
-                      <Ionicons
-                        name="qr-code-outline"
-                        size={15}
-                        color={colors.textSecondary}
-                      />
-                      <Text style={styles.importBtnText}>Scan QR</Text>
-                    </TouchableOpacity>
-                  </View>
-                </>
-              )}
             </View>
-          </View>
-        </KeyboardAvoidingView>
-      </Modal>
+
+            <View style={styles.modalActions}>
+              <AnimatedPressable style={styles.modalBtn} preset="press" scale={0.94} onPress={closeEditor}>
+                <Text style={styles.modalBtnText}>Cancel</Text>
+              </AnimatedPressable>
+              <AnimatedPressable
+                style={[styles.modalBtn, styles.modalBtnPrimary]}
+                preset="press"
+                scale={0.94}
+                onPress={() => {
+                  Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+                  void handleSaveServer();
+                }}
+              >
+                <Text style={[styles.modalBtnText, styles.modalBtnPrimaryText]}>Save</Text>
+              </AnimatedPressable>
+            </View>
+          </>
+        ) : (
+          <>
+            <Text style={styles.importLead}>
+              Paste the pairing link from zen, or scan its QR code.
+            </Text>
+
+            <Text style={styles.fieldLabel}>Pairing Link</Text>
+            <TextInput
+              style={[styles.input, styles.importInput]}
+              value={draftImportValue}
+              onChangeText={setDraftImportValue}
+              placeholder="zen://settings?p=..."
+              placeholderTextColor={colors.textSecondary}
+              autoCapitalize="none"
+              autoCorrect={false}
+              multiline
+              textAlignVertical="top"
+            />
+            <Text style={styles.fieldHint}>
+              You can also import a screenshot or photo of the QR.
+            </Text>
+
+            <View style={styles.modalActions}>
+              <AnimatedPressable style={styles.modalBtn} preset="press" scale={0.94} onPress={closeEditor}>
+                <Text style={styles.modalBtnText}>Cancel</Text>
+              </AnimatedPressable>
+              <AnimatedPressable
+                style={[styles.modalBtn, styles.modalBtnPrimary]}
+                preset="press"
+                scale={0.94}
+                onPress={() => {
+                  Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+                  void handleImportDraft();
+                }}
+              >
+                <Text style={[styles.modalBtnText, styles.modalBtnPrimaryText]}>Import</Text>
+              </AnimatedPressable>
+            </View>
+
+            <View style={styles.divider}>
+              <View style={styles.dividerLine} />
+              <Text style={styles.dividerText}>or</Text>
+              <View style={styles.dividerLine} />
+            </View>
+
+            <View style={styles.importRow}>
+              <AnimatedPressable
+                style={styles.importBtn}
+                preset="press"
+                scale={0.96}
+                onPress={() => {
+                  Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+                  void handlePasteImport();
+                }}
+              >
+                <Ionicons name="clipboard-outline" size={15} color={colors.textSecondary} />
+                <Text style={styles.importBtnText}>Paste Link</Text>
+              </AnimatedPressable>
+              <AnimatedPressable
+                style={styles.importBtn}
+                preset="press"
+                scale={0.96}
+                onPress={() => {
+                  Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+                  openScanner();
+                }}
+              >
+                <Ionicons name="qr-code-outline" size={15} color={colors.textSecondary} />
+                <Text style={styles.importBtnText}>Scan QR</Text>
+              </AnimatedPressable>
+            </View>
+          </>
+        )}
+      </RisingSheet>
 
       {/* QR Scanner */}
       <Modal
@@ -684,9 +677,16 @@ export default function SettingsScreen() {
         <View style={styles.scannerScreen}>
           <View style={styles.scannerHeader}>
             <Text style={styles.scannerTitle}>Scan Pairing QR</Text>
-            <TouchableOpacity onPress={closeScanner} activeOpacity={0.82}>
+            <AnimatedPressable
+              preset="press"
+              scale={0.9}
+              onPress={() => {
+                Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+                closeScanner();
+              }}
+            >
               <Ionicons name="close" size={24} color={colors.textPrimary} />
-            </TouchableOpacity>
+            </AnimatedPressable>
           </View>
 
           {!cameraPermission ? (
@@ -701,15 +701,16 @@ export default function SettingsScreen() {
               <Text style={styles.scannerNoticeText}>
                 Allow camera access to scan a zen pairing QR code.
               </Text>
-              <TouchableOpacity
+              <AnimatedPressable
                 style={styles.scannerPrimaryBtn}
+                preset="press"
+                scale={0.96}
                 onPress={() => void requestCameraPermission()}
-                activeOpacity={0.82}
               >
                 <Text style={styles.scannerPrimaryBtnText}>
                   Grant Camera Access
                 </Text>
-              </TouchableOpacity>
+              </AnimatedPressable>
             </View>
           ) : (
             <>
@@ -745,26 +746,28 @@ export default function SettingsScreen() {
           )}
 
           <View style={styles.scannerActions}>
-            <TouchableOpacity
-              style={[
-                styles.scannerSecondaryBtn,
-                scannerLocked && styles.scannerBtnDisabled,
-              ]}
-              onPress={() => void handlePickScannerImage()}
+            <AnimatedPressable
+              style={[styles.scannerSecondaryBtn, scannerLocked && styles.scannerBtnDisabled]}
+              preset="press"
+              scale={0.96}
               disabled={scannerLocked}
-              activeOpacity={0.82}
+              onPress={() => void handlePickScannerImage()}
             >
               <Text style={styles.scannerSecondaryBtnText}>
                 {scannerLocked ? "Reading Image..." : "Pick QR Image"}
               </Text>
-            </TouchableOpacity>
-            <TouchableOpacity
+            </AnimatedPressable>
+            <AnimatedPressable
               style={styles.scannerPrimaryBtn}
-              onPress={closeScanner}
-              activeOpacity={0.82}
+              preset="press"
+              scale={0.96}
+              onPress={() => {
+                Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+                closeScanner();
+              }}
             >
               <Text style={styles.scannerPrimaryBtnText}>Done</Text>
-            </TouchableOpacity>
+            </AnimatedPressable>
           </View>
         </View>
       </Modal>
@@ -847,19 +850,19 @@ function createStyles(colors: typeof Colors) {
   },
   header: {
     paddingHorizontal: 20,
-    paddingTop: 8,
-    paddingBottom: 12,
+    paddingTop: 16,
+    paddingBottom: 14,
   },
   content: {
     paddingHorizontal: 20,
-    paddingBottom: 40,
+    paddingBottom: 48,
   },
   pageTitle: {
     color: colors.textPrimary,
-    fontSize: 22,
+    fontSize: 30,
+    lineHeight: 34,
     fontFamily: Typography.uiFontMedium,
-    letterSpacing: 1,
-    opacity: 0.9,
+    letterSpacing: -0.6,
   },
 
   // Section
@@ -867,45 +870,45 @@ function createStyles(colors: typeof Colors) {
     flexDirection: "row",
     alignItems: "baseline",
     justifyContent: "space-between",
-    marginBottom: 10,
+    marginBottom: 12,
+    marginTop: 4,
   },
   sectionLabel: {
-    color: colors.textSecondary,
-    fontSize: 12,
+    color: colors.textTertiary,
+    fontSize: 11,
     fontFamily: Typography.uiFontMedium,
     textTransform: "uppercase",
     letterSpacing: 1.2,
     marginBottom: 10,
     marginTop: 20,
-    opacity: 0.7,
   },
   sectionCount: {
-    color: colors.textSecondary,
-    fontSize: 12,
+    color: colors.textTertiary,
+    fontSize: 11.5,
     fontFamily: Typography.terminalFont,
-    opacity: 0.5,
   },
 
   // Server list
   serverList: {
-    gap: 6,
+    gap: 10,
   },
   serverCard: {
-    borderRadius: 12,
-    paddingHorizontal: 14,
-    paddingVertical: 12,
-    backgroundColor: colors.surfaceSubtle,
+    borderRadius: Radii.md,
+    paddingHorizontal: 16,
+    paddingVertical: 14,
+    backgroundColor: colors.bgSurface,
     borderWidth: StyleSheet.hairlineWidth,
     borderColor: colors.borderSubtle,
+    ...shadow("card", colors.shadowColor),
   },
   serverRow: {
     flexDirection: "row",
     alignItems: "center",
-    gap: 10,
+    gap: 11,
   },
   statusDot: {
-    width: 7,
-    height: 7,
+    width: 8,
+    height: 8,
     borderRadius: 4,
   },
   serverInfo: {
@@ -918,35 +921,31 @@ function createStyles(colors: typeof Colors) {
   },
   serverName: {
     color: colors.textPrimary,
-    fontSize: 14,
+    fontSize: 15,
     fontFamily: Typography.uiFontMedium,
   },
   serverUrl: {
-    color: colors.textSecondary,
-    fontSize: 11,
+    color: colors.textTertiary,
+    fontSize: 11.5,
     fontFamily: Typography.terminalFont,
-    marginTop: 2,
-    opacity: 0.6,
+    marginTop: 3,
   },
   connectionLabel: {
-    color: colors.textSecondary,
+    color: colors.textTertiary,
     fontSize: 11,
     fontFamily: Typography.uiFont,
-    opacity: 0.5,
   },
   connectionLabelActive: {
     color: colors.statusRunning,
-    opacity: 0.8,
   },
   latencyLabel: {
     fontSize: 11,
     fontFamily: Typography.terminalFont,
-    opacity: 0.86,
   },
   noticeCard: {
     marginTop: 12,
-    padding: 12,
-    borderRadius: 10,
+    padding: 14,
+    borderRadius: Radii.sm,
     borderWidth: StyleSheet.hairlineWidth,
     backgroundColor: colors.surfaceSubtle,
   },
@@ -958,47 +957,44 @@ function createStyles(colors: typeof Colors) {
   noticeTitle: {
     flex: 1,
     color: colors.textPrimary,
-    fontSize: 13,
+    fontSize: 13.5,
     fontFamily: Typography.uiFontMedium,
   },
   noticeDetail: {
     marginTop: 8,
     color: colors.textSecondary,
-    fontSize: 12,
+    fontSize: 12.5,
     lineHeight: 18,
     fontFamily: Typography.uiFont,
-    opacity: 0.86,
   },
   noticeHint: {
     marginTop: 8,
-    color: colors.textSecondary,
+    color: colors.textTertiary,
     fontSize: 12,
     lineHeight: 18,
     fontFamily: Typography.uiFont,
-    opacity: 0.62,
   },
   serverActions: {
     flexDirection: "row",
     gap: 8,
-    marginTop: 12,
-    paddingTop: 12,
+    marginTop: 14,
+    paddingTop: 14,
     borderTopWidth: StyleSheet.hairlineWidth,
     borderTopColor: colors.borderSubtle,
   },
   actionBtn: {
-    paddingHorizontal: 12,
-    paddingVertical: 6,
-    borderRadius: 8,
+    paddingHorizontal: 14,
+    paddingVertical: 8,
+    borderRadius: Radii.xs,
     backgroundColor: colors.surfacePressed,
   },
   actionBtnText: {
     color: colors.textPrimary,
-    fontSize: 12,
+    fontSize: 12.5,
     fontFamily: Typography.uiFontMedium,
-    opacity: 0.8,
   },
   actionBtnDanger: {
-    backgroundColor: `${colors.statusFailed}14`,
+    backgroundColor: colors.dangerSoft,
     marginLeft: "auto",
   },
   actionBtnDangerText: {
@@ -1008,89 +1004,75 @@ function createStyles(colors: typeof Colors) {
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "center",
-    gap: 6,
-    paddingVertical: 10,
-    marginTop: 8,
-    borderRadius: 10,
+    gap: 7,
+    paddingVertical: 14,
+    marginTop: 14,
+    borderRadius: Radii.sm,
     borderWidth: StyleSheet.hairlineWidth,
     borderColor: colors.border,
     borderStyle: "dashed",
   },
   addBtnText: {
-    color: colors.textSecondary,
-    fontSize: 13,
-    fontFamily: Typography.uiFont,
+    color: colors.accent,
+    fontSize: 14,
+    fontFamily: Typography.uiFontMedium,
   },
   emptyCard: {
-    paddingVertical: 20,
+    paddingVertical: 28,
     alignItems: "center",
   },
   emptyText: {
-    color: colors.textSecondary,
-    fontSize: 13,
+    color: colors.textTertiary,
+    fontSize: 13.5,
     fontFamily: Typography.uiFont,
-    opacity: 0.5,
   },
 
   version: {
-    color: colors.textSecondary,
+    color: colors.textTertiary,
     fontSize: 11,
-    fontFamily: Typography.uiFont,
+    fontFamily: Typography.terminalFont,
     textAlign: "center",
-    marginTop: 40,
-    opacity: 0.3,
+    marginTop: 44,
   },
 
-  // Modal
-  modalRoot: {
-    flex: 1,
-    paddingHorizontal: 24,
-    paddingVertical: 24,
-  },
-  modalContent: {
-    flex: 1,
-    justifyContent: "center",
-  },
-  modalBackdrop: {
-    ...StyleSheet.absoluteFill,
-    backgroundColor: colors.modalBackdrop,
-  },
+  // Modal / editor
   modalCard: {
-    borderRadius: 16,
-    padding: 20,
-    maxWidth: 520,
+    borderRadius: Radii.lg,
+    padding: 22,
+    maxWidth: 480,
     width: "100%",
     alignSelf: "center",
     backgroundColor: colors.modalSurface,
     borderWidth: StyleSheet.hairlineWidth,
     borderColor: colors.border,
+    ...shadow("float", colors.shadowColor),
   },
   modalTitle: {
     color: colors.textPrimary,
-    fontSize: 17,
+    fontSize: 18,
     fontFamily: Typography.uiFontMedium,
     marginBottom: 20,
   },
   importLead: {
     color: colors.textSecondary,
-    fontSize: 13,
+    fontSize: 13.5,
     lineHeight: 20,
     fontFamily: Typography.uiFont,
     marginBottom: 18,
-    opacity: 0.82,
   },
   fieldLabel: {
-    color: colors.textSecondary,
-    fontSize: 12,
-    fontFamily: Typography.uiFont,
-    marginBottom: 6,
-    opacity: 0.6,
+    color: colors.textTertiary,
+    fontSize: 11,
+    fontFamily: Typography.uiFontMedium,
+    letterSpacing: 0.4,
+    textTransform: "uppercase",
+    marginBottom: 7,
   },
   input: {
     backgroundColor: colors.inputBackground,
-    borderRadius: 10,
+    borderRadius: Radii.sm,
     paddingHorizontal: 14,
-    paddingVertical: 10,
+    paddingVertical: 12,
     color: colors.textPrimary,
     fontSize: 14,
     fontFamily: Typography.terminalFont,
@@ -1098,37 +1080,36 @@ function createStyles(colors: typeof Colors) {
     borderColor: colors.border,
   },
   importInput: {
-    minHeight: 116,
+    minHeight: 120,
     paddingTop: 12,
   },
   fieldHint: {
     marginTop: 8,
-    color: colors.textSecondary,
+    color: colors.textTertiary,
     fontSize: 12,
     lineHeight: 18,
     fontFamily: Typography.uiFont,
-    opacity: 0.65,
   },
   identityCard: {
     marginTop: 16,
-    borderRadius: 10,
-    padding: 12,
+    borderRadius: Radii.sm,
+    padding: 14,
     backgroundColor: colors.surfaceSubtle,
     borderWidth: StyleSheet.hairlineWidth,
     borderColor: colors.border,
   },
   identityLabel: {
-    color: colors.textSecondary,
-    fontSize: 12,
+    color: colors.textTertiary,
+    fontSize: 11,
     fontFamily: Typography.uiFontMedium,
     marginBottom: 8,
-    opacity: 0.7,
+    letterSpacing: 0.4,
+    textTransform: "uppercase",
   },
   identityCode: {
     color: colors.textPrimary,
-    fontSize: 12,
+    fontSize: 12.5,
     fontFamily: Typography.terminalFont,
-    opacity: 0.86,
   },
   modalActions: {
     flexDirection: "row",
@@ -1137,9 +1118,9 @@ function createStyles(colors: typeof Colors) {
     marginTop: 24,
   },
   modalBtn: {
-    minWidth: 70,
-    height: 36,
-    borderRadius: 10,
+    minWidth: 76,
+    height: 40,
+    borderRadius: Radii.sm,
     alignItems: "center",
     justifyContent: "center",
     backgroundColor: colors.surfacePressed,
@@ -1149,7 +1130,7 @@ function createStyles(colors: typeof Colors) {
   },
   modalBtnText: {
     color: colors.textPrimary,
-    fontSize: 13,
+    fontSize: 14,
     fontFamily: Typography.uiFontMedium,
   },
   modalBtnPrimaryText: {
@@ -1159,7 +1140,7 @@ function createStyles(colors: typeof Colors) {
     flexDirection: "row",
     alignItems: "center",
     gap: 12,
-    marginTop: 20,
+    marginTop: 22,
     marginBottom: 16,
   },
   dividerLine: {
@@ -1168,10 +1149,9 @@ function createStyles(colors: typeof Colors) {
     backgroundColor: colors.border,
   },
   dividerText: {
-    color: colors.textSecondary,
+    color: colors.textTertiary,
     fontSize: 12,
     fontFamily: Typography.uiFont,
-    opacity: 0.5,
   },
   importRow: {
     flexDirection: "row",
@@ -1182,16 +1162,16 @@ function createStyles(colors: typeof Colors) {
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "center",
-    gap: 6,
-    height: 40,
-    borderRadius: 10,
+    gap: 7,
+    height: 44,
+    borderRadius: Radii.sm,
     borderWidth: StyleSheet.hairlineWidth,
     borderColor: colors.border,
     backgroundColor: colors.surfaceSubtle,
   },
   importBtnText: {
     color: colors.textSecondary,
-    fontSize: 13,
+    fontSize: 13.5,
     fontFamily: Typography.uiFontMedium,
   },
 
@@ -1310,7 +1290,7 @@ function createStyles(colors: typeof Colors) {
   scannerNoticeCard: {
     marginTop: 24,
     borderRadius: 18,
-    padding: 20,
+    padding: 24,
     backgroundColor: colors.surfaceSubtle,
     borderWidth: StyleSheet.hairlineWidth,
     borderColor: colors.border,
@@ -1333,8 +1313,8 @@ function createStyles(colors: typeof Colors) {
   scannerPrimaryBtn: {
     flex: 1,
     marginTop: 16,
-    minHeight: 44,
-    borderRadius: 12,
+    minHeight: 46,
+    borderRadius: Radii.sm,
     alignItems: "center",
     justifyContent: "center",
     backgroundColor: colors.accent,
@@ -1342,14 +1322,14 @@ function createStyles(colors: typeof Colors) {
   },
   scannerPrimaryBtnText: {
     color: colors.textOnAccent,
-    fontSize: 13,
+    fontSize: 14,
     fontFamily: Typography.uiFontMedium,
   },
   scannerSecondaryBtn: {
     flex: 1,
     marginTop: 16,
-    minHeight: 44,
-    borderRadius: 12,
+    minHeight: 46,
+    borderRadius: Radii.sm,
     alignItems: "center",
     justifyContent: "center",
     backgroundColor: colors.surfacePressed,
@@ -1362,7 +1342,7 @@ function createStyles(colors: typeof Colors) {
   },
   scannerSecondaryBtnText: {
     color: colors.textPrimary,
-    fontSize: 13,
+    fontSize: 14,
     fontFamily: Typography.uiFontMedium,
   },
   });

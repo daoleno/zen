@@ -1,18 +1,25 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
-  Modal,
   ScrollView,
   StyleSheet,
   Text,
-  TouchableOpacity,
   View,
 } from 'react-native';
 import { useFocusEffect } from 'expo-router';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { Colors, Typography, useAppColors } from '../../constants/tokens';
+import * as Haptics from 'expo-haptics';
+import Animated, {
+  useSharedValue,
+  useAnimatedStyle,
+  withTiming,
+  interpolate,
+} from 'react-native-reanimated';
+import { Colors, Radii, Typography, useAppColors, shadow } from '../../constants/tokens';
 import { useAgents } from '../../store/agents';
 import { wsClient } from '../../services/websocket';
+import { AnimatedPressable } from '../../components/ui/AnimatedPressable';
+import { RisingSheet } from '../../components/ui/RisingSheet';
 
 // ── Types (mirror daemon/stats/types.go) ───────────────────
 
@@ -301,6 +308,30 @@ function hasRangeStats(data?: RangeData | null): boolean {
     (data.days?.length ?? 0) > 0;
 }
 
+function dayOfWeekMon0(dateStr: string): number {
+  const d = new Date(`${dateStr}T12:00:00`);
+  return (d.getDay() + 6) % 7;
+}
+
+/** GitHub-style columns: each column is Mon→Sun (7 rows). */
+function buildHeatmapColumns(days: DayCell[]): (DayCell | null)[][] {
+  if (days.length === 0) return [];
+  const sorted = [...days].sort((a, b) => a.date.localeCompare(b.date));
+  const columns: (DayCell | null)[][] = [];
+  let col: (DayCell | null)[] = Array(7).fill(null);
+
+  for (const day of sorted) {
+    const row = dayOfWeekMon0(day.date);
+    if (row === 0 && col.some((c) => c !== null)) {
+      columns.push(col);
+      col = Array(7).fill(null);
+    }
+    col[row] = day;
+  }
+  if (col.some((c) => c !== null)) columns.push(col);
+  return columns;
+}
+
 // ── Component ──────────────────────────────────────────────
 
 export default function StatsScreen() {
@@ -444,21 +475,26 @@ export default function StatsScreen() {
     <SafeAreaView style={s.container} edges={['top']}>
       <View style={s.header}>
         <Text style={s.title}>Stats</Text>
-        <View style={s.rangeToggle}>
-          {RANGE_OPTIONS.map(opt => {
+        <View style={s.rangeRow}>
+          {RANGE_OPTIONS.map((opt) => {
             const active = range === opt.key;
             return (
-              <TouchableOpacity
+              <AnimatedPressable
                 key={opt.key}
-                style={s.rangeBtn}
-                onPress={() => setRange(opt.key)}
-                activeOpacity={0.82}
+                style={s.rangeTab}
+                scale={1}
+                onPress={() => {
+                  if (!active) {
+                    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+                    setRange(opt.key);
+                  }
+                }}
               >
-                <Text style={[s.rangeBtnText, active && s.rangeBtnTextOn]}>
+                <Text style={[s.rangeTabText, active && s.rangeTabTextActive]}>
                   {opt.label}
                 </Text>
-                {active && <View style={s.rangeBtnBar} />}
-              </TouchableOpacity>
+                {active ? <View style={s.rangeTabIndicator} /> : null}
+              </AnimatedPressable>
             );
           })}
         </View>
@@ -475,178 +511,176 @@ export default function StatsScreen() {
           <Text style={s.emptySubtext}>{emptySubtext}</Text>
         </View>
       ) : (
-        <ScrollView contentContainerStyle={s.scroll} showsVerticalScrollIndicator={false}>
-
-          {/* ── Cost ── */}
-          <View style={s.card}>
-            <View style={s.costRow}>
-              <Text style={s.costBig}>{fmtCost(data.cost)}</Text>
-              <View style={s.costRight}>
-                <Text style={s.costMeta}>{fmt(data.totalTokens)} tokens · {data.sessions} sessions</Text>
-              </View>
-            </View>
-          </View>
-
-          {/* ── Daily activity bars ── */}
-          {days.length > 1 && (
+        <ScrollView
+          style={s.scrollView}
+          contentContainerStyle={s.scroll}
+          showsVerticalScrollIndicator={false}
+        >
+            {/* ── Cost ── */}
             <View style={s.card}>
-              <Text style={s.label}>Activity</Text>
-              {days.length <= 14 ? (
-                <View style={s.barChartFlex}>
-                  {days.map((d) => {
-                    const intensity = barIntensity(d.cost, maxDayCost);
-                    return (
-                      <TouchableOpacity key={d.date} style={s.barColFlex} activeOpacity={0.7} onPress={() => setSelectedDay(d)}>
-                        <View style={s.barOuter}>
-                          <View
-                            style={[s.barInner, {
-                              height: `${Math.max(d.cost / maxDayCost * 100, 4)}%`,
-                              backgroundColor: intensityColors[intensity],
-                            }]}
-                          />
-                        </View>
-                        <Text style={s.barDate}>{shortDate(d.date)}</Text>
-                      </TouchableOpacity>
-                    );
-                  })}
-                </View>
-              ) : (
+              <Text style={s.costBig}>{fmtCost(data.cost)}</Text>
+              <Text style={s.costMeta}>
+                {fmt(data.totalTokens)} tokens · {data.sessions} sessions
+              </Text>
+            </View>
+
+            {/* ── Activity heatmap ── */}
+            {days.length > 0 && (
+              <View style={s.card}>
+                <Text style={s.label}>Activity</Text>
                 <ScrollView horizontal showsHorizontalScrollIndicator={false}>
-                  <View style={s.barChartScroll}>
-                    {days.map((d) => {
-                      const intensity = barIntensity(d.cost, maxDayCost);
-                      return (
-                        <TouchableOpacity key={d.date} style={s.barColFixed} activeOpacity={0.7} onPress={() => setSelectedDay(d)}>
-                          <View style={s.barOuter}>
-                            <View
-                              style={[s.barInner, {
-                                height: `${Math.max(d.cost / maxDayCost * 100, 4)}%`,
-                                backgroundColor: intensityColors[intensity],
-                              }]}
+                  <View style={s.heatmapRow}>
+                    {buildHeatmapColumns(days).map((col, colIndex) => (
+                      <View key={`col-${colIndex}`} style={s.heatmapColumn}>
+                        {col.map((day, rowIndex) => {
+                          if (!day) {
+                            return (
+                              <View
+                                key={`empty-${colIndex}-${rowIndex}`}
+                                style={s.heatCellEmpty}
+                              />
+                            );
+                          }
+                          const intensity = barIntensity(day.cost, maxDayCost);
+                          return (
+                            <AnimatedPressable
+                              key={day.date}
+                              style={[
+                                s.heatCell,
+                                { backgroundColor: intensityColors[intensity] },
+                              ]}
+                              scale={0.92}
+                              onPress={() => {
+                                Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+                                setSelectedDay(day);
+                              }}
                             />
-                          </View>
-                          <Text style={s.barDate}>{shortDate(d.date)}</Text>
-                        </TouchableOpacity>
-                      );
-                    })}
+                          );
+                        })}
+                      </View>
+                    ))}
                   </View>
                 </ScrollView>
-              )}
-            </View>
-          )}
-
-          {/* ── Models ── */}
-          {(data.models?.length ?? 0) > 0 && (
-            <View style={s.card}>
-              <Text style={s.label}>Models</Text>
-              {(expandedSections.has('models') ? data.models : visibleModels).map((m) => (
-                <View key={m.name} style={s.row}>
-                  <View style={s.rowInfo}>
-                    <Text style={s.rowName} numberOfLines={1}>{m.name}</Text>
-                    <Text style={s.rowMeta}>{fmt(m.totalTokens)} tokens · {m.sessions} sessions</Text>
-                  </View>
-                  <Text style={s.rowCost}>{fmtCost(m.cost)}</Text>
-                  <Bar ratio={m.cost / maxModelCost} color={colors.accent} styles={s} />
+                <View style={s.heatmapLegend}>
+                  <Text style={s.heatmapLegendLabel}>Less</Text>
+                  {intensityColors.slice(1).map((c, i) => (
+                    <View key={i} style={[s.heatCellLegend, { backgroundColor: c }]} />
+                  ))}
+                  <Text style={s.heatmapLegendLabel}>More</Text>
                 </View>
-              ))}
-              {data.models.length > MAX_LIST_ITEMS && (
-                <ExpandToggle expanded={expandedSections.has('models')} total={data.models.length} onPress={() => toggleSection('models')} styles={s} />
-              )}
-            </View>
-          )}
-
-          {/* ── Projects ── */}
-          {(data.projects?.length ?? 0) > 0 && (
-            <View style={s.card}>
-              <Text style={s.label}>Projects</Text>
-              {(expandedSections.has('projects') ? data.projects : visibleProjects).map((p) => (
-                <View key={p.name} style={s.row}>
-                  <View style={s.rowInfo}>
-                    <Text style={s.rowName} numberOfLines={1}>{p.name}</Text>
-                    <Text style={s.rowMeta}>{p.sessions} sessions</Text>
-                  </View>
-                  <Text style={s.rowCost}>{p.cost > 0 ? fmtCost(p.cost) : fmt(p.totalTokens)}</Text>
-                  <Bar ratio={p.cost > 0 ? p.cost / maxProjectCost : p.totalTokens / maxProjectTokens} color={colors.accent} styles={s} />
-                </View>
-              ))}
-              {data.projects.length > MAX_LIST_ITEMS && (
-                <ExpandToggle expanded={expandedSections.has('projects')} total={data.projects.length} onPress={() => toggleSection('projects')} styles={s} />
-              )}
-            </View>
-          )}
-
-          {/* ── Skills ── */}
-          {totalSkills > 0 && (
-            <View style={s.card}>
-              <View style={s.labelRow}>
-                <Text style={s.label}>Skills</Text>
-                <Text style={s.labelCount}>{totalSkillCalls} calls</Text>
               </View>
-              {(expandedSections.has('skills') ? data.skills : visibleSkills).map((sk) => (
-                <View key={sk.name} style={s.row}>
-                  <View style={s.rowInfo}>
-                    <Text style={s.skillCmd}>{sk.name}</Text>
-                    <Text style={s.rowMeta}>{sk.projects?.join(' · ')}</Text>
-                  </View>
-                  <Text style={s.rowCount}>{sk.calls}</Text>
-                  <Bar ratio={sk.calls / maxSkillCalls} color={colors.statusUnknown} styles={s} />
-                </View>
-              ))}
-              {totalSkills > MAX_LIST_ITEMS && (
-                <ExpandToggle expanded={expandedSections.has('skills')} total={totalSkills} onPress={() => toggleSection('skills')} styles={s} />
-              )}
-            </View>
-          )}
+            )}
 
-          {/* ── Tools ── */}
-          {totalToolCalls > 0 && (
-            <View style={s.card}>
-              <View style={s.labelRow}>
-                <Text style={s.label}>Tools</Text>
-                <Text style={s.labelCount}>{totalToolCalls} calls</Text>
+            {/* ── Models ── */}
+            {(data.models?.length ?? 0) > 0 && (
+              <View style={s.card}>
+                <Text style={s.label}>Models</Text>
+                {(expandedSections.has('models') ? data.models : visibleModels).map((m) => (
+                  <View key={m.name} style={s.row}>
+                    <View style={s.rowInfo}>
+                      <Text style={s.rowName} numberOfLines={1}>{m.name}</Text>
+                      <Text style={s.rowMeta}>{fmt(m.totalTokens)} tokens · {m.sessions} sessions</Text>
+                    </View>
+                    <Text style={s.rowCost}>{fmtCost(m.cost)}</Text>
+                    <Bar ratio={m.cost / maxModelCost} color={colors.accent} trackColor={colors.borderSubtle} />
+                  </View>
+                ))}
+                {data.models.length > MAX_LIST_ITEMS && (
+                  <ExpandToggle expanded={expandedSections.has('models')} total={data.models.length} onPress={() => toggleSection('models')} colors={colors} />
+                )}
               </View>
-              {(expandedSections.has('tools') ? data.tools : visibleTools).map((t) => (
-                <View key={t.name} style={s.row}>
-                  <View style={s.rowInfo}>
-                    <Text style={s.rowName}>{t.name}</Text>
-                  </View>
-                  <Text style={s.rowCount}>{t.calls}</Text>
-                  <Bar ratio={t.calls / maxToolCalls} color={colors.statusRunning} styles={s} />
-                </View>
-              ))}
-              {(data.tools?.length ?? 0) > MAX_LIST_ITEMS && (
-                <ExpandToggle expanded={expandedSections.has('tools')} total={data.tools.length} onPress={() => toggleSection('tools')} styles={s} />
-              )}
-            </View>
-          )}
+            )}
 
-          <View style={{ height: 24 }} />
+            {/* ── Projects ── */}
+            {(data.projects?.length ?? 0) > 0 && (
+              <View style={s.card}>
+                <Text style={s.label}>Projects</Text>
+                {(expandedSections.has('projects') ? data.projects : visibleProjects).map((p) => (
+                  <View key={p.name} style={s.row}>
+                    <View style={s.rowInfo}>
+                      <Text style={s.rowName} numberOfLines={1}>{p.name}</Text>
+                      <Text style={s.rowMeta}>{p.sessions} sessions</Text>
+                    </View>
+                    <Text style={s.rowCost}>{p.cost > 0 ? fmtCost(p.cost) : fmt(p.totalTokens)}</Text>
+                    <Bar ratio={p.cost > 0 ? p.cost / maxProjectCost : p.totalTokens / maxProjectTokens} color={colors.accent} trackColor={colors.borderSubtle} />
+                  </View>
+                ))}
+                {data.projects.length > MAX_LIST_ITEMS && (
+                  <ExpandToggle expanded={expandedSections.has('projects')} total={data.projects.length} onPress={() => toggleSection('projects')} colors={colors} />
+                )}
+              </View>
+            )}
+
+            {/* ── Skills ── */}
+            {totalSkills > 0 && (
+              <View style={s.card}>
+                <View style={s.labelRow}>
+                  <Text style={s.label}>Skills</Text>
+                  <Text style={s.labelCount}>{totalSkillCalls} calls</Text>
+                </View>
+                {(expandedSections.has('skills') ? data.skills : visibleSkills).map((sk) => (
+                  <View key={sk.name} style={s.row}>
+                    <View style={s.rowInfo}>
+                      <Text style={s.skillCmd}>{sk.name}</Text>
+                      <Text style={s.rowMeta}>{sk.projects?.join(' · ')}</Text>
+                    </View>
+                    <Text style={s.rowCount}>{sk.calls}</Text>
+                    <Bar ratio={sk.calls / maxSkillCalls} color={colors.statusUnknown} trackColor={colors.borderSubtle} />
+                  </View>
+                ))}
+                {totalSkills > MAX_LIST_ITEMS && (
+                  <ExpandToggle expanded={expandedSections.has('skills')} total={totalSkills} onPress={() => toggleSection('skills')} colors={colors} />
+                )}
+              </View>
+            )}
+
+            {/* ── Tools ── */}
+            {totalToolCalls > 0 && (
+              <View style={s.card}>
+                <View style={s.labelRow}>
+                  <Text style={s.label}>Tools</Text>
+                  <Text style={s.labelCount}>{totalToolCalls} calls</Text>
+                </View>
+                {(expandedSections.has('tools') ? data.tools : visibleTools).map((t) => (
+                  <View key={t.name} style={s.row}>
+                    <View style={s.rowInfo}>
+                      <Text style={s.rowName}>{t.name}</Text>
+                    </View>
+                    <Text style={s.rowCount}>{t.calls}</Text>
+                    <Bar ratio={t.calls / maxToolCalls} color={colors.statusRunning} trackColor={colors.borderSubtle} />
+                  </View>
+                ))}
+                {(data.tools?.length ?? 0) > MAX_LIST_ITEMS && (
+                  <ExpandToggle expanded={expandedSections.has('tools')} total={data.tools.length} onPress={() => toggleSection('tools')} colors={colors} />
+                )}
+              </View>
+            )}
+
+            <View style={{ height: 28 }} />
         </ScrollView>
       )}
+
       {/* ── Day detail modal ── */}
-      <Modal
+      <RisingSheet
         visible={selectedDay !== null}
-        transparent animationType="fade"
-        onRequestClose={() => setSelectedDay(null)}
+        onClose={() => setSelectedDay(null)}
+        cardStyle={s.detailCard}
       >
-        <View style={s.modalRoot}>
-          <TouchableOpacity style={s.modalBg} activeOpacity={1} onPress={() => setSelectedDay(null)} />
-          {selectedDay && (
-            <View style={s.detailCard}>
-              <Text style={s.detailTitle}>{selectedDay.date}</Text>
-              <View style={s.detailGrid}>
-                <DItem label="Cost" value={fmtCost(selectedDay.cost)} accent colors={colors} styles={s} />
-                <DItem label="Sessions" value={`${selectedDay.sessions}`} colors={colors} styles={s} />
-                <DItem label="Total" value={fmt(selectedDay.totalTokens)} colors={colors} styles={s} />
-                <DItem label="Input" value={fmt(selectedDay.inputTokens)} colors={colors} styles={s} />
-                <DItem label="Cache" value={fmt(selectedDay.cacheRead)} colors={colors} styles={s} />
-                <DItem label="Output" value={fmt(selectedDay.outputTokens)} colors={colors} styles={s} />
-                <DItem label="Reason" value={fmt(selectedDay.reasoningTokens)} colors={colors} styles={s} />
-              </View>
+        {selectedDay && (
+          <>
+            <Text style={s.detailTitle}>{selectedDay.date}</Text>
+            <View style={s.detailGrid}>
+              <DItem label="Cost" value={fmtCost(selectedDay.cost)} accent colors={colors} styles={s} />
+              <DItem label="Sessions" value={`${selectedDay.sessions}`} colors={colors} styles={s} />
+              <DItem label="Total" value={fmt(selectedDay.totalTokens)} colors={colors} styles={s} />
+              <DItem label="Input" value={fmt(selectedDay.inputTokens)} colors={colors} styles={s} />
+              <DItem label="Cache" value={fmt(selectedDay.cacheRead)} colors={colors} styles={s} />
+              <DItem label="Output" value={fmt(selectedDay.outputTokens)} colors={colors} styles={s} />
+              <DItem label="Reason" value={fmt(selectedDay.reasoningTokens)} colors={colors} styles={s} />
             </View>
-          )}
-        </View>
-      </Modal>
+          </>
+        )}
+      </RisingSheet>
     </SafeAreaView>
   );
 }
@@ -677,15 +711,24 @@ function DItem({
 function Bar({
   ratio,
   color,
-  styles,
+  trackColor,
 }: {
   ratio: number;
   color: string;
-  styles: ReturnType<typeof createStyles>;
+  trackColor: string;
 }) {
+  const width = useSharedValue(0);
+  React.useEffect(() => {
+    width.value = withTiming(Math.min(ratio, 1), { duration: 320 });
+  }, [ratio, width]);
+  const style = useAnimatedStyle(() => ({
+    width: `${interpolate(width.value, [0, 1], [0, 100])}%`,
+  }));
   return (
-    <View style={styles.barTrack}>
-      <View style={[styles.barFill, { width: `${Math.min(ratio, 1) * 100}%`, backgroundColor: color }]} />
+    <View style={{ width: 44, height: 2.5, borderRadius: 1.5, backgroundColor: trackColor }}>
+      <Animated.View
+        style={[{ height: 2.5, borderRadius: 1.5, backgroundColor: color, opacity: 0.7 }, style]}
+      />
     </View>
   );
 }
@@ -694,19 +737,23 @@ function ExpandToggle({
   expanded,
   total,
   onPress,
-  styles,
+  colors,
 }: {
   expanded: boolean;
   total: number;
   onPress: () => void;
-  styles: ReturnType<typeof createStyles>;
+  colors: typeof Colors;
 }) {
   return (
-    <TouchableOpacity style={styles.expandBtn} onPress={onPress} activeOpacity={0.7}>
-      <Text style={styles.expandText}>
+    <AnimatedPressable
+      style={{ alignItems: 'center', paddingVertical: 10, marginTop: 6 }}
+      scale={0.97}
+      onPress={onPress}
+    >
+      <Text style={{ color: colors.accent, fontSize: 11.5, fontFamily: Typography.uiFontMedium, opacity: 0.75 }}>
         {expanded ? 'less' : `${total - MAX_LIST_ITEMS} more`}
       </Text>
-    </TouchableOpacity>
+    </AnimatedPressable>
   );
 }
 
@@ -716,119 +763,194 @@ function createStyles(colors: typeof Colors) {
   return StyleSheet.create({
   container: { flex: 1, backgroundColor: colors.bgPrimary },
   header: {
-    flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center',
-    paddingHorizontal: 16, paddingTop: 6, paddingBottom: 8,
+    paddingHorizontal: 18,
+    paddingTop: 16,
+    paddingBottom: 12,
+    gap: 14,
+    backgroundColor: colors.bgPrimary,
+    zIndex: 2,
   },
   title: {
-    color: colors.textPrimary, fontSize: 22, fontFamily: Typography.uiFontMedium,
-    letterSpacing: 1, opacity: 0.9,
+    color: colors.textPrimary,
+    fontSize: 30,
+    lineHeight: 34,
+    fontFamily: Typography.uiFontMedium,
+    letterSpacing: -0.6,
   },
-  rangeToggle: { flexDirection: 'row', gap: 16 },
-  rangeBtn: { alignItems: 'center', paddingVertical: 2 },
-  rangeBtnText: {
-    color: colors.textSecondary, fontSize: 13, fontFamily: Typography.uiFont,
-    letterSpacing: 0.3, opacity: 0.4,
+  rangeRow: {
+    flexDirection: 'row',
+    gap: 20,
   },
-  rangeBtnTextOn: { color: colors.textPrimary, opacity: 0.9 },
-  rangeBtnBar: {
-    width: 12, height: 1.5, borderRadius: 1,
-    backgroundColor: colors.accent, marginTop: 3, opacity: 0.6,
+  rangeTab: {
+    alignItems: 'center',
+    paddingVertical: 4,
+    minWidth: 36,
+  },
+  rangeTabText: {
+    color: colors.textTertiary,
+    fontSize: 14,
+    fontFamily: Typography.uiFont,
+  },
+  rangeTabTextActive: {
+    color: colors.textPrimary,
+    fontFamily: Typography.uiFontMedium,
+  },
+  rangeTabIndicator: {
+    marginTop: 5,
+    width: 16,
+    height: 2,
+    borderRadius: 1,
+    backgroundColor: colors.accent,
   },
 
-  scroll: { paddingHorizontal: 16, gap: 10 },
+  scrollView: { flex: 1 },
+  scroll: { paddingHorizontal: 18, gap: 12, paddingTop: 6, paddingBottom: 36 },
 
   // Empty
-  emptyContainer: { flex: 1, justifyContent: 'center', alignItems: 'center', paddingHorizontal: 24 },
-  emptyIcon: { fontSize: 44, color: colors.textSecondary, marginBottom: 16, opacity: 0.6 },
-  emptyText: { color: colors.textPrimary, fontSize: 17, fontFamily: Typography.uiFontMedium, opacity: 0.8 },
-  emptySubtext: { color: colors.textSecondary, fontSize: 13, fontFamily: Typography.uiFont, marginTop: 6, textAlign: 'center', opacity: 0.6 },
+  emptyContainer: { flex: 1, justifyContent: 'center', alignItems: 'center', paddingHorizontal: 36 },
+  emptyIcon: {
+    fontSize: 40,
+    color: colors.accent,
+    lineHeight: 46,
+    marginBottom: 20,
+  },
+  emptyText: { color: colors.textPrimary, fontSize: 17, fontFamily: Typography.uiFontMedium },
+  emptySubtext: {
+    color: colors.textSecondary,
+    fontSize: 13.5,
+    fontFamily: Typography.uiFont,
+    marginTop: 8,
+    maxWidth: 300,
+    textAlign: 'center',
+    lineHeight: 19,
+    opacity: 0.8,
+  },
 
   // Card
   card: {
-    borderRadius: 12, backgroundColor: colors.surfaceSubtle,
-    borderWidth: StyleSheet.hairlineWidth, borderColor: colors.borderSubtle,
-    paddingHorizontal: 14, paddingVertical: 12,
+    borderRadius: Radii.md,
+    backgroundColor: colors.bgSurface,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: colors.borderSubtle,
+    paddingHorizontal: 16,
+    paddingVertical: 14,
+    ...shadow('card', colors.shadowColor),
   },
   label: {
-    color: colors.textSecondary, fontSize: 10, fontFamily: Typography.uiFont,
-    letterSpacing: 0.4, marginBottom: 8, opacity: 0.5,
+    color: colors.textTertiary,
+    fontSize: 11,
+    fontFamily: Typography.uiFontMedium,
+    letterSpacing: 1,
+    textTransform: 'uppercase',
+    marginBottom: 10,
   },
   labelRow: {
-    flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8,
+    flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10,
   },
   labelCount: {
-    color: colors.textSecondary, fontSize: 10, fontFamily: Typography.terminalFont, opacity: 0.35,
+    color: colors.textTertiary,
+    fontSize: 11,
+    fontFamily: Typography.terminalFont,
   },
 
-  // Cost hero — horizontal: big number left, meta right-aligned
-  costRow: { flexDirection: 'row', alignItems: 'center' },
+  // Cost hero
   costBig: {
-    color: colors.accent, fontSize: 28, fontFamily: Typography.terminalFontBold, lineHeight: 34,
+    color: colors.accent,
+    fontSize: 32,
+    fontFamily: Typography.terminalFontBold,
+    lineHeight: 38,
+    marginBottom: 6,
   },
-  costRight: { flex: 1, alignItems: 'flex-end', gap: 2 },
   costMeta: {
-    color: colors.textSecondary, fontSize: 11, fontFamily: Typography.terminalFont, opacity: 0.45,
+    color: colors.textSecondary,
+    fontSize: 13,
+    fontFamily: Typography.terminalFont,
+    lineHeight: 18,
   },
 
-  // Daily bar chart — flex layout (<=14 days, fills width)
-  barChartFlex: {
-    flexDirection: 'row', gap: 3, alignItems: 'flex-end', paddingVertical: 4,
+  // Activity heatmap
+  heatmapRow: {
+    flexDirection: 'row',
+    gap: 3,
+    paddingVertical: 4,
   },
-  barColFlex: { flex: 1, alignItems: 'center' },
-  // Daily bar chart — scroll layout (>14 days)
-  barChartScroll: {
-    flexDirection: 'row', gap: 3, alignItems: 'flex-end', paddingVertical: 4,
+  heatmapColumn: {
+    gap: 3,
   },
-  barColFixed: { alignItems: 'center', width: 24 },
-  barOuter: {
-    width: '100%', maxWidth: 20, height: 48, borderRadius: 3,
-    backgroundColor: colors.surfaceSubtle,
-    justifyContent: 'flex-end', overflow: 'hidden',
-    alignSelf: 'center',
+  heatCell: {
+    width: 12,
+    height: 12,
+    borderRadius: 2,
   },
-  barInner: { width: '100%', borderRadius: 3, minHeight: 2 },
-  barDate: {
-    color: colors.textSecondary, fontSize: 7, fontFamily: Typography.uiFont,
-    marginTop: 3, opacity: 0.4,
+  heatCellEmpty: {
+    width: 12,
+    height: 12,
+  },
+  heatCellLegend: {
+    width: 10,
+    height: 10,
+    borderRadius: 2,
+  },
+  heatmapLegend: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'flex-end',
+    gap: 4,
+    marginTop: 10,
+  },
+  heatmapLegendLabel: {
+    color: colors.textTertiary,
+    fontSize: 10,
+    fontFamily: Typography.uiFont,
+    marginHorizontal: 2,
   },
 
   // Rank rows
   row: {
-    flexDirection: 'row', alignItems: 'center', gap: 8,
-    paddingVertical: 7,
+    flexDirection: 'row', alignItems: 'center', gap: 10,
+    paddingVertical: 8,
     borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: colors.borderSubtle,
   },
   rowInfo: { flex: 1, minWidth: 0 },
-  rowName: { color: colors.textPrimary, fontSize: 12, fontFamily: Typography.terminalFont },
-  rowMeta: { color: colors.textSecondary, fontSize: 9, fontFamily: Typography.uiFont, marginTop: 1, opacity: 0.45 },
-  rowCost: { color: colors.accent, fontSize: 12, fontFamily: Typography.terminalFontBold, minWidth: 42, textAlign: 'right' },
-  rowCount: { color: colors.textSecondary, fontSize: 12, fontFamily: Typography.terminalFontBold, minWidth: 32, textAlign: 'right' },
+  rowName: { color: colors.textPrimary, fontSize: 12.5, fontFamily: Typography.terminalFont },
+  rowMeta: { color: colors.textTertiary, fontSize: 10, fontFamily: Typography.uiFont, marginTop: 2 },
+  rowCost: {
+    color: colors.accent,
+    fontSize: 12.5,
+    fontFamily: Typography.terminalFontBold,
+    minWidth: 44,
+    textAlign: 'right',
+  },
+  rowCount: {
+    color: colors.textSecondary,
+    fontSize: 12.5,
+    fontFamily: Typography.terminalFontBold,
+    minWidth: 34,
+    textAlign: 'right',
+  },
 
   // Skill
-  skillCmd: { color: colors.statusUnknown, fontSize: 12, fontFamily: Typography.terminalFontBold },
+  skillCmd: { color: colors.statusUnknown, fontSize: 12.5, fontFamily: Typography.terminalFontBold },
 
-  // Expand
-  expandBtn: { alignItems: 'center', paddingVertical: 8, marginTop: 4 },
-  expandText: { color: colors.accent, fontSize: 11, fontFamily: Typography.uiFontMedium, opacity: 0.7 },
-
-  // Modal
-  modalRoot: { flex: 1, justifyContent: 'center', alignItems: 'center' },
-  modalBg: { ...StyleSheet.absoluteFill, backgroundColor: colors.modalBackdrop },
+  // Modal / day detail
   detailCard: {
-    width: 240, borderRadius: 14, padding: 16,
-    backgroundColor: colors.modalSurfaceAlt, borderWidth: StyleSheet.hairlineWidth, borderColor: colors.border,
+    width: 260,
+    borderRadius: Radii.lg,
+    padding: 20,
+    backgroundColor: colors.modalSurface,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: colors.border,
   },
   detailTitle: {
-    color: colors.textPrimary, fontSize: 14, fontFamily: Typography.uiFontMedium,
-    marginBottom: 12, textAlign: 'center',
+    color: colors.textPrimary,
+    fontSize: 16,
+    fontFamily: Typography.uiFontMedium,
+    marginBottom: 16,
+    textAlign: 'center',
   },
-  detailGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: 10 },
+  detailGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: 12 },
   dItem: { width: '46%', alignItems: 'center' },
-  dLabel: { color: colors.textSecondary, fontSize: 9, fontFamily: Typography.uiFont, opacity: 0.5, marginBottom: 3 },
-  dValue: { color: colors.textPrimary, fontSize: 16, fontFamily: Typography.terminalFontBold },
-
-  // Bar (inline rank bar)
-  barTrack: { width: 40, height: 2.5, borderRadius: 1.5, backgroundColor: colors.borderSubtle },
-  barFill: { height: 2.5, borderRadius: 1.5, opacity: 0.55 },
+  dLabel: { color: colors.textTertiary, fontSize: 10, fontFamily: Typography.uiFont, marginBottom: 4, letterSpacing: 0.4 },
+  dValue: { color: colors.textPrimary, fontSize: 17, fontFamily: Typography.terminalFontBold },
   });
 }

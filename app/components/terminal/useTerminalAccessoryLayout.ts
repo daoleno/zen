@@ -100,7 +100,7 @@ export function useTerminalAccessoryLayout({
   // directly; Android subtracts the portion already handled by window resize.
   const accessoryBottomOffset = Platform.OS === "ios"
     ? (keyboardVisible ? keyboardHeightRef.current : insets.bottom)
-    : (keyboardVisible ? androidKeyboardInset + insets.bottom + 6 : insets.bottom);
+    : (keyboardVisible ? androidKeyboardInset : insets.bottom);
   const outputBottomInset = accessoryVisible
     ? accessoryHeight + accessoryBottomOffset
     : 0;

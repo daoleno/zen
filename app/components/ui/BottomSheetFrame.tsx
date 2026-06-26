@@ -1,4 +1,4 @@
-import React from "react";
+import React, { useEffect } from "react";
 import {
   KeyboardAvoidingView,
   Modal,
@@ -9,7 +9,17 @@ import {
   View,
   type ViewStyle,
 } from "react-native";
+import Animated, {
+  useSharedValue,
+  useAnimatedStyle,
+  withSpring,
+  withTiming,
+  Easing,
+} from "react-native-reanimated";
 import { useAppColors } from "../../constants/tokens";
+import { Spring } from "../../constants/motion";
+
+const AnimatedPressable = Animated.createAnimatedComponent(Pressable);
 
 interface BottomSheetFrameProps {
   visible: boolean;
@@ -22,6 +32,12 @@ interface BottomSheetFrameProps {
   onClose(): void;
 }
 
+/**
+ * The shared bottom-sheet primitive used across the app (Brain adapter sheet,
+ * new-terminal sheet, agent picker, etc.). It fades the backdrop and springs
+ * the card up from the bottom on open — one consistent gesture everywhere,
+ * matching the RisingSheet language used by centered dialogs.
+ */
 export function BottomSheetFrame({
   visible,
   children,
@@ -33,10 +49,32 @@ export function BottomSheetFrame({
   onClose,
 }: BottomSheetFrameProps) {
   const colors = useAppColors();
+  const progress = useSharedValue(0);
+
+  useEffect(() => {
+    if (visible) {
+      progress.value = withSpring(1, Spring.rise);
+    } else {
+      progress.value = withTiming(0, { duration: 180, easing: Easing.out(Easing.ease) });
+    }
+  }, [visible, progress]);
+
+  const backdropStyle = useAnimatedStyle(() => ({
+    opacity: progress.value,
+  }));
+
+  const cardStyleAnim = useAnimatedStyle(() => ({
+    transform: [{ translateY: (1 - progress.value) * 24 }],
+    opacity: progress.value,
+  }));
+
   const body = (
     <>
-      <Pressable style={[styles.backdrop, { backgroundColor: colors.modalBackdrop }]} onPress={onClose} />
-      <View
+      <AnimatedPressable
+        style={[styles.backdrop, { backgroundColor: colors.modalBackdrop }, backdropStyle]}
+        onPress={onClose}
+      />
+      <Animated.View
         style={[
           styles.card,
           {
@@ -44,17 +82,18 @@ export function BottomSheetFrame({
             backgroundColor: colors.modalSurface,
             borderColor: colors.borderSubtle,
           },
+          cardStyleAnim,
           cardStyle,
         ]}
       >
         <View style={[styles.handle, { backgroundColor: colors.borderStrong }]} />
         <View style={contentStyle}>{children}</View>
-      </View>
+      </Animated.View>
     </>
   );
 
   return (
-    <Modal visible={visible} transparent animationType="fade" onRequestClose={onClose}>
+    <Modal visible={visible} transparent animationType="none" onRequestClose={onClose}>
       {keyboardAvoiding ? (
         <KeyboardAvoidingView
           style={[styles.root, rootStyle]}
