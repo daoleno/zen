@@ -159,6 +159,42 @@ function shortDate(dateStr: string): string {
   return `${parseInt(parts[1])}/${parseInt(parts[2])}`;
 }
 
+function weekdayShort(dateStr: string): string {
+  const date = parseDateOnly(dateStr);
+  if (!date) return '';
+  return ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'][date.getDay()];
+}
+
+function monthShort(dateStr: string): string {
+  const date = parseDateOnly(dateStr);
+  if (!date) return '';
+  return ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'][date.getMonth()];
+}
+
+function parseDateOnly(dateStr: string): Date | null {
+  const parts = dateStr.split('-').map((part) => Number(part));
+  if (parts.length < 3 || parts.some((part) => !Number.isFinite(part))) return null;
+  return new Date(parts[0], parts[1] - 1, parts[2], 12, 0, 0, 0);
+}
+
+function dateOnlyString(date: Date): string {
+  const year = date.getFullYear();
+  const month = `${date.getMonth() + 1}`.padStart(2, '0');
+  const day = `${date.getDate()}`.padStart(2, '0');
+  return `${year}-${month}-${day}`;
+}
+
+function addDays(date: Date, days: number): Date {
+  const next = new Date(date);
+  next.setDate(next.getDate() + days);
+  return next;
+}
+
+function todayDateOnly(): Date {
+  const now = new Date();
+  return new Date(now.getFullYear(), now.getMonth(), now.getDate(), 12, 0, 0, 0);
+}
+
 function topItems<T>(items: T[]): T[] {
   return items.slice(0, MAX_LIST_ITEMS);
 }
@@ -313,23 +349,67 @@ function dayOfWeekMon0(dateStr: string): number {
   return (d.getDay() + 6) % 7;
 }
 
-/** GitHub-style columns: each column is Mon→Sun (7 rows). */
-function buildHeatmapColumns(days: DayCell[]): (DayCell | null)[][] {
-  if (days.length === 0) return [];
-  const sorted = [...days].sort((a, b) => a.date.localeCompare(b.date));
-  const columns: (DayCell | null)[][] = [];
-  let col: (DayCell | null)[] = Array(7).fill(null);
+type ActivityDay = {
+  date: string;
+  day: DayCell | null;
+};
 
-  for (const day of sorted) {
+function buildDailyActivitySeries(days: DayCell[], range: TimeRange): ActivityDay[] {
+  const byDate = new Map(days.map((day) => [day.date, day]));
+  const sortedDates = [...byDate.keys()].sort();
+  const latestDataDate = sortedDates.length > 0 ? parseDateOnly(sortedDates[sortedDates.length - 1]) : null;
+  const today = todayDateOnly();
+  const end =
+    latestDataDate && latestDataDate > today && range === 'all'
+      ? latestDataDate
+      : today;
+  let start: Date;
+  switch (range) {
+    case 'day':
+      start = end;
+      break;
+    case 'week':
+      start = addDays(end, -6);
+      break;
+    case 'month':
+      start = addDays(end, -30);
+      break;
+    case 'all':
+    default:
+      start = sortedDates.length > 0 ? parseDateOnly(sortedDates[0]) ?? end : end;
+      break;
+  }
+
+  const out: ActivityDay[] = [];
+  for (let cursor = start; cursor <= end; cursor = addDays(cursor, 1)) {
+    const date = dateOnlyString(cursor);
+    out.push({ date, day: byDate.get(date) ?? null });
+  }
+  return out;
+}
+
+function buildActivityCalendarColumns(days: ActivityDay[]): (ActivityDay | null)[][] {
+  if (days.length === 0) return [];
+  const columns: (ActivityDay | null)[][] = [];
+  let col: (ActivityDay | null)[] = Array(7).fill(null);
+
+  for (const day of days) {
     const row = dayOfWeekMon0(day.date);
-    if (row === 0 && col.some((c) => c !== null)) {
+    if (row === 0 && col.some((cell) => cell !== null)) {
       columns.push(col);
       col = Array(7).fill(null);
     }
     col[row] = day;
   }
-  if (col.some((c) => c !== null)) columns.push(col);
+  if (col.some((cell) => cell !== null)) columns.push(col);
   return columns;
+}
+
+function dailyActivityLayout(range: TimeRange, dayCount: number) {
+  if (range === 'day') return { height: 34, gap: 0 };
+  if (range === 'week') return { height: 30, gap: 5 };
+  if (dayCount <= 45) return { height: 20, gap: 3 };
+  return { height: 14, gap: 2 };
 }
 
 // ── Component ──────────────────────────────────────────────
@@ -453,6 +533,17 @@ export default function StatsScreen() {
   const visibleSkills = useMemo(() => topItems(data.skills ?? []), [data.skills]);
   const visibleTools = useMemo(() => topItems(data.tools ?? []), [data.tools]);
   const maxDayCost = useMemo(() => Math.max(...days.map(d => d.cost), 0.01), [days]);
+  const activityDays = useMemo(() => buildDailyActivitySeries(days, range), [days, range]);
+  const compactDailyActivity = range !== 'all' || activityDays.length <= 45;
+  const activityLayout = dailyActivityLayout(range, activityDays.length);
+  const activityStartLabel = activityDays[0]?.date ? shortDate(activityDays[0].date) : '';
+  const activityMiddleLabel = activityDays.length > 12
+    ? shortDate(activityDays[Math.floor(activityDays.length / 2)].date)
+    : '';
+  const activityEndLabel = activityDays[activityDays.length - 1]?.date
+    ? shortDate(activityDays[activityDays.length - 1].date)
+    : '';
+  const heatmapColumns = useMemo(() => buildActivityCalendarColumns(activityDays), [activityDays]);
 
   const hasData = hasRangeStats(data);
   const hasAnyStats = useMemo(
@@ -528,39 +619,118 @@ export default function StatsScreen() {
             {days.length > 0 && (
               <View style={s.card}>
                 <Text style={s.label}>Activity</Text>
-                <ScrollView horizontal showsHorizontalScrollIndicator={false}>
-                  <View style={s.heatmapRow}>
-                    {buildHeatmapColumns(days).map((col, colIndex) => (
-                      <View key={`col-${colIndex}`} style={s.heatmapColumn}>
-                        {col.map((day, rowIndex) => {
-                          if (!day) {
-                            return (
-                              <View
-                                key={`empty-${colIndex}-${rowIndex}`}
-                                style={s.heatCellEmpty}
-                              />
-                            );
-                          }
-                          const intensity = barIntensity(day.cost, maxDayCost);
+                {compactDailyActivity ? (
+                  <>
+                    <View style={s.activityMonthRow}>
+                      <Text style={s.activityMonthText}>{monthShort(activityDays[0]?.date ?? '')}</Text>
+                      {activityDays.length > 10 && monthShort(activityDays[0]?.date ?? '') !== monthShort(activityDays[activityDays.length - 1]?.date ?? '') ? (
+                        <Text style={s.activityMonthText}>{monthShort(activityDays[activityDays.length - 1]?.date ?? '')}</Text>
+                      ) : null}
+                    </View>
+                    <View style={[s.dailyHeatmapRow, { gap: activityLayout.gap }]}>
+                      {activityDays.map(({ date, day }) => {
+                        const intensity = day ? barIntensity(day.cost, maxDayCost) : 0;
+                        const backgroundColor = day ? intensityColors[intensity] : colors.borderSubtle;
+                        return (
+                          <AnimatedPressable
+                            key={date}
+                            disabled={!day}
+                            style={[
+                              s.dailyHeatCell,
+                              {
+                                height: activityLayout.height,
+                                backgroundColor,
+                                opacity: day ? 1 : 0.38,
+                              },
+                            ]}
+                            scale={day ? 0.94 : 1}
+                            onPress={() => {
+                              if (!day) return;
+                              Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+                              setSelectedDay(day);
+                            }}
+                          />
+                        );
+                      })}
+                    </View>
+                    {range === 'week' ? (
+                      <View style={s.activityWeekdayRow}>
+                        {activityDays.map(({ date }) => (
+                          <Text key={date} style={s.activityWeekdayText}>
+                            {weekdayShort(date).slice(0, 1)}
+                          </Text>
+                        ))}
+                      </View>
+                    ) : (
+                      <View style={s.activityAxisRow}>
+                        <Text style={s.activityAxisLabel}>{activityStartLabel}</Text>
+                        {activityMiddleLabel ? <Text style={s.activityAxisLabel}>{activityMiddleLabel}</Text> : <View />}
+                        <Text style={s.activityAxisLabel}>{activityEndLabel}</Text>
+                      </View>
+                    )}
+                  </>
+                ) : (
+                  <ScrollView horizontal showsHorizontalScrollIndicator={false}>
+                    <View>
+                      <View style={s.heatmapMonthRow}>
+                        {heatmapColumns.map((col, colIndex) => {
+                          const firstCell = col.find(Boolean);
+                          const previousFirstCell = colIndex > 0 ? heatmapColumns[colIndex - 1].find(Boolean) : null;
+                          const label = firstCell && (
+                            colIndex === 0 ||
+                            monthShort(firstCell.date) !== monthShort(previousFirstCell?.date ?? '')
+                          )
+                            ? monthShort(firstCell.date)
+                            : '';
                           return (
-                            <AnimatedPressable
-                              key={day.date}
-                              style={[
-                                s.heatCell,
-                                { backgroundColor: intensityColors[intensity] },
-                              ]}
-                              scale={0.92}
-                              onPress={() => {
-                                Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-                                setSelectedDay(day);
-                              }}
-                            />
+                            <Text key={`month-${colIndex}`} style={s.heatmapMonthLabel}>
+                              {label}
+                            </Text>
                           );
                         })}
                       </View>
-                    ))}
-                  </View>
-                </ScrollView>
+                      <View style={s.heatmapWithAxis}>
+                        <View style={s.heatmapWeekdayColumn}>
+                          <Text style={s.heatmapWeekdayLabel}>M</Text>
+                          <Text style={s.heatmapWeekdayLabel}>W</Text>
+                          <Text style={s.heatmapWeekdayLabel}>F</Text>
+                        </View>
+                        <View style={s.heatmapRow}>
+                          {heatmapColumns.map((col, colIndex) => (
+                            <View key={`col-${colIndex}`} style={s.heatmapColumn}>
+                              {col.map((cell, rowIndex) => {
+                                if (!cell?.day) {
+                                  return (
+                                    <View
+                                      key={`empty-${colIndex}-${rowIndex}`}
+                                      style={s.heatCellEmpty}
+                                    />
+                                  );
+                                }
+                                const day = cell.day;
+                                const intensity = barIntensity(day.cost, maxDayCost);
+                                return (
+                                  <AnimatedPressable
+                                    key={day.date}
+                                    style={[
+                                      s.heatCell,
+                                      { backgroundColor: intensityColors[intensity] },
+                                    ]}
+                                    scale={0.92}
+                                    onPress={() => {
+                                      Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+                                      setSelectedDay(day);
+                                    }}
+                                  />
+                                );
+                              })}
+                            </View>
+                          ))}
+                        </View>
+                      </View>
+                    </View>
+                  </ScrollView>
+                )}
                 <View style={s.heatmapLegend}>
                   <Text style={s.heatmapLegendLabel}>Less</Text>
                   {intensityColors.slice(1).map((c, i) => (
@@ -869,6 +1039,79 @@ function createStyles(colors: typeof Colors) {
   },
 
   // Activity heatmap
+  activityMonthRow: {
+    minHeight: 16,
+    marginBottom: 6,
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+  },
+  activityMonthText: {
+    color: colors.textTertiary,
+    fontSize: 10,
+    fontFamily: Typography.uiFontMedium,
+  },
+  dailyHeatmapRow: {
+    flexDirection: 'row',
+    alignItems: 'stretch',
+  },
+  dailyHeatCell: {
+    flex: 1,
+    minWidth: 0,
+    borderRadius: 3,
+  },
+  activityAxisRow: {
+    minHeight: 16,
+    marginTop: 7,
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+  },
+  activityAxisLabel: {
+    color: colors.textTertiary,
+    fontSize: 10,
+    fontFamily: Typography.uiFont,
+  },
+  activityWeekdayRow: {
+    flexDirection: 'row',
+    gap: 5,
+    marginTop: 7,
+  },
+  activityWeekdayText: {
+    flex: 1,
+    minWidth: 0,
+    color: colors.textTertiary,
+    fontSize: 10,
+    fontFamily: Typography.uiFont,
+    textAlign: 'center',
+  },
+  heatmapWithAxis: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+  },
+  heatmapWeekdayColumn: {
+    width: 14,
+    paddingTop: 1,
+    marginRight: 5,
+    gap: 16,
+  },
+  heatmapWeekdayLabel: {
+    color: colors.textTertiary,
+    fontSize: 9,
+    fontFamily: Typography.uiFont,
+    lineHeight: 10,
+  },
+  heatmapMonthRow: {
+    flexDirection: 'row',
+    paddingLeft: 19,
+    marginBottom: 5,
+    gap: 3,
+  },
+  heatmapMonthLabel: {
+    width: 12,
+    color: colors.textTertiary,
+    fontSize: 9,
+    fontFamily: Typography.uiFont,
+  },
   heatmapRow: {
     flexDirection: 'row',
     gap: 3,
