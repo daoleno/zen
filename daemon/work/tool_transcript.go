@@ -19,10 +19,11 @@ import (
 )
 
 const (
-	maxTranscriptEvents = 96
-	maxTranscriptChars  = 12000
-	maxTranscriptLine   = 240
-	maxTranscriptAge    = 72 * time.Hour
+	maxTranscriptEvents                   = 96
+	maxTranscriptChars                    = 12000
+	maxTranscriptLine                     = 240
+	maxTranscriptAge                      = 72 * time.Hour
+	maxCodexActiveTranscriptStartBackdate = 2 * time.Minute
 )
 
 type ToolTranscript struct {
@@ -181,10 +182,35 @@ func findCodexTranscript(agent classifier.Agent, now time.Time) (codexTranscript
 	if isCodexResumeCommand(agent.Command) {
 		return latestUpdatedCodexTranscript(candidates), true, nil
 	}
+	if matched, ok := matchCodexTranscriptToActiveSession(candidates, agent.StartedAt); ok {
+		return matched, true, nil
+	}
 	if matched, ok := fallbackCodexTranscriptForAgent(candidates, agent); ok {
 		return matched, true, nil
 	}
 	return codexTranscriptCandidate{}, false, nil
+}
+
+func matchCodexTranscriptToActiveSession(candidates []codexTranscriptCandidate, startedAt time.Time) (codexTranscriptCandidate, bool) {
+	if len(candidates) == 0 || startedAt.IsZero() {
+		return codexTranscriptCandidate{}, false
+	}
+	startedAt = startedAt.UTC()
+	minCreatedAt := startedAt.Add(-maxCodexActiveTranscriptStartBackdate)
+	var eligible []codexTranscriptCandidate
+	for _, candidate := range candidates {
+		if candidate.Updated.IsZero() || candidate.Updated.Before(startedAt) {
+			continue
+		}
+		if createdAt := candidateCreatedAt(candidate.Row); !createdAt.IsZero() && createdAt.Before(minCreatedAt) {
+			continue
+		}
+		eligible = append(eligible, candidate)
+	}
+	if len(eligible) == 0 {
+		return codexTranscriptCandidate{}, false
+	}
+	return latestUpdatedCodexTranscript(eligible), true
 }
 
 func fallbackCodexTranscriptForAgent(candidates []codexTranscriptCandidate, agent classifier.Agent) (codexTranscriptCandidate, bool) {

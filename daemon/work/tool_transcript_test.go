@@ -184,6 +184,60 @@ func TestMatchCodexTranscriptToAgentStart_DoesNotUseStaleUpdatedThread(t *testin
 	}
 }
 
+func TestMatchCodexTranscriptToActiveSession_UsesTranscriptUpdatedAfterStart(t *testing.T) {
+	base := time.Date(2026, 5, 21, 8, 0, 0, 0, time.UTC)
+	candidates := []codexTranscriptCandidate{
+		{
+			Row:     codexThreadRow{ID: "old-ended", CreatedAtMS: base.Add(-30 * time.Minute).UnixMilli()},
+			Updated: base.Add(-10 * time.Minute),
+		},
+		{
+			Row:     codexThreadRow{ID: "active-private", CreatedAtMS: base.Add(-30 * time.Second).UnixMilli()},
+			Updated: base.Add(12 * time.Minute),
+		},
+	}
+
+	got, ok := matchCodexTranscriptToActiveSession(candidates, base)
+	if !ok {
+		t.Fatal("expected active transcript match")
+	}
+	if got.Row.ID != "active-private" {
+		t.Fatalf("matched %q, want active-private", got.Row.ID)
+	}
+}
+
+func TestMatchCodexTranscriptToActiveSession_DoesNotUseOldCreatedThread(t *testing.T) {
+	base := time.Date(2026, 5, 21, 8, 0, 0, 0, time.UTC)
+	candidates := []codexTranscriptCandidate{
+		{
+			Row:     codexThreadRow{ID: "old-thread-still-touched", CreatedAtMS: base.Add(-20 * time.Minute).UnixMilli()},
+			Updated: base.Add(12 * time.Minute),
+		},
+	}
+
+	if got, ok := matchCodexTranscriptToActiveSession(candidates, base); ok {
+		t.Fatalf("matched %#v, want no match", got)
+	}
+}
+
+func TestMatchCodexTranscriptToActiveSession_UsesUpdatedWhenCreatedUnknown(t *testing.T) {
+	base := time.Date(2026, 5, 21, 8, 0, 0, 0, time.UTC)
+	candidates := []codexTranscriptCandidate{
+		{
+			Row:     codexThreadRow{ID: "active-without-created"},
+			Updated: base.Add(2 * time.Minute),
+		},
+	}
+
+	got, ok := matchCodexTranscriptToActiveSession(candidates, base)
+	if !ok {
+		t.Fatal("expected active transcript match")
+	}
+	if got.Row.ID != "active-without-created" {
+		t.Fatalf("matched %q, want active-without-created", got.Row.ID)
+	}
+}
+
 func TestLatestUpdatedCodexTranscriptSupportsResume(t *testing.T) {
 	base := time.Date(2026, 5, 21, 8, 0, 0, 0, time.UTC)
 	candidates := []codexTranscriptCandidate{
