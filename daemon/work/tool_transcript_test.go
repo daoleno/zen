@@ -478,6 +478,106 @@ func TestMatchCodexTranscriptToOpenRolloutsUsesNewestOpenFile(t *testing.T) {
 	}
 }
 
+func TestFindCodexTranscriptAllowsStaleOpenRollout(t *testing.T) {
+	sqlite3, err := exec.LookPath("sqlite3")
+	if err != nil {
+		t.Skip("sqlite3 unavailable")
+	}
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	cwd := filepath.Join(t.TempDir(), "freeride")
+	if err := os.MkdirAll(cwd, 0o755); err != nil {
+		t.Fatalf("MkdirAll(cwd): %v", err)
+	}
+	rolloutPath := filepath.Join(home, ".codex", "sessions", "2026", "06", "22", "rollout-2026-06-22T16-07-10-019eee5e-7dec-71b1-bc2b-adcb2bad1c4c.jsonl")
+	if err := os.MkdirAll(filepath.Dir(rolloutPath), 0o755); err != nil {
+		t.Fatalf("MkdirAll(rollout): %v", err)
+	}
+	writeJSONL(t, rolloutPath,
+		map[string]any{
+			"type": "session_meta",
+			"payload": map[string]any{
+				"id":         "019eee5e-7dec-71b1-bc2b-adcb2bad1c4c",
+				"cwd":        cwd,
+				"originator": "codex-tui",
+			},
+		},
+		map[string]any{
+			"type": "event_msg",
+			"payload": map[string]any{
+				"type":    "user_message",
+				"message": "Improve documentation in @filename",
+			},
+		},
+	)
+
+	now := time.Date(2026, 6, 27, 2, 30, 0, 0, time.Local)
+	stale := now.Add(-5 * 24 * time.Hour)
+	if err := os.Chtimes(rolloutPath, stale, stale); err != nil {
+		t.Fatalf("Chtimes: %v", err)
+	}
+
+	dbPath := filepath.Join(home, ".codex", "state_5.sqlite")
+	if err := os.MkdirAll(filepath.Dir(dbPath), 0o755); err != nil {
+		t.Fatalf("MkdirAll(db): %v", err)
+	}
+	runSQLite(t, sqlite3, dbPath, `
+CREATE TABLE threads (
+  id TEXT,
+  rollout_path TEXT,
+  created_at INTEGER,
+  updated_at INTEGER,
+  cwd TEXT,
+  title TEXT,
+  first_user_message TEXT,
+  archived INTEGER,
+  created_at_ms INTEGER,
+  updated_at_ms INTEGER
+);
+`)
+	insert := `INSERT INTO threads (id, rollout_path, created_at, updated_at, cwd, title, first_user_message, archived, created_at_ms, updated_at_ms)
+VALUES ('019eee5e-7dec-71b1-bc2b-adcb2bad1c4c', ` + sqlString(rolloutPath) + `, 1782115630, 1782116683, ` + sqlString(cwd) + `, '', '', 0, 1782115630572, 1782116683915);`
+	runSQLite(t, sqlite3, dbPath, insert)
+
+	file, err := os.Open(rolloutPath)
+	if err != nil {
+		t.Fatalf("Open rollout: %v", err)
+	}
+	defer file.Close()
+
+	got, ok, err := findCodexTranscript(classifier.Agent{
+		ID:        "brain-agent-brain-1781166359611353356:@3747",
+		Name:      "node (brain-agent-brain-1781166359611353356:@3747)",
+		Cwd:       cwd,
+		Command:   "codex",
+		ProcessID: os.Getpid(),
+		StartedAt: now.Add(-5 * 24 * time.Hour),
+	}, now)
+	if err != nil {
+		t.Fatalf("findCodexTranscript: %v", err)
+	}
+	if !ok {
+		t.Fatal("expected stale rollout to match while current process has it open")
+	}
+	if got.Path != rolloutPath || got.Row.ID != "019eee5e-7dec-71b1-bc2b-adcb2bad1c4c" {
+		t.Fatalf("matched %+v, want rollout %q", got, rolloutPath)
+	}
+}
+
+func TestFreshCodexTranscriptCandidatesFiltersStaleNonOpenCandidates(t *testing.T) {
+	now := time.Date(2026, 6, 27, 2, 30, 0, 0, time.UTC)
+	candidates := []codexTranscriptCandidate{
+		{Row: codexThreadRow{ID: "stale"}, Updated: now.Add(-5 * 24 * time.Hour)},
+		{Row: codexThreadRow{ID: "fresh"}, Updated: now.Add(-time.Hour)},
+	}
+
+	got := freshCodexTranscriptCandidates(candidates, now)
+	if len(got) != 1 || got[0].Row.ID != "fresh" {
+		t.Fatalf("fresh candidates = %#v, want only fresh", got)
+	}
+}
+
 func TestParseLsofCodexRolloutPathsFiltersCodexRollouts(t *testing.T) {
 	output := strings.Join([]string{
 		"p123",

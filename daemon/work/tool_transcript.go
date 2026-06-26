@@ -139,6 +139,7 @@ func findCodexTranscript(agent classifier.Agent, now time.Time) (codexTranscript
 	if err != nil {
 		return codexTranscriptCandidate{}, false, nil
 	}
+	openRolloutPaths := openCodexRolloutPathsForProcess(agent.ProcessID)
 
 	var candidates []codexTranscriptCandidate
 	for _, candidateCWD := range transcriptCWDCandidates(cwd) {
@@ -159,7 +160,7 @@ func findCodexTranscript(agent classifier.Agent, now time.Time) (codexTranscript
 				continue
 			}
 			info, err := os.Stat(path)
-			if err != nil || !isTranscriptFresh(info.ModTime(), now) {
+			if err != nil {
 				continue
 			}
 			candidates = append(candidates, codexTranscriptCandidate{
@@ -173,22 +174,39 @@ func findCodexTranscript(agent classifier.Agent, now time.Time) (codexTranscript
 	if len(candidates) == 0 {
 		return codexTranscriptCandidate{}, false, nil
 	}
-	if matched, ok := matchCodexTranscriptToAgentProcess(candidates, agent.ProcessID); ok {
+	if matched, ok := matchCodexTranscriptToOpenRollouts(candidates, openRolloutPaths); ok {
 		return matched, true, nil
 	}
-	if matched, ok := matchCodexTranscriptToAgentStart(candidates, agent.StartedAt); ok {
+	freshCandidates := freshCodexTranscriptCandidates(candidates, now)
+	if len(freshCandidates) == 0 {
+		return codexTranscriptCandidate{}, false, nil
+	}
+	if matched, ok := matchCodexTranscriptToAgentStart(freshCandidates, agent.StartedAt); ok {
 		return matched, true, nil
 	}
 	if isCodexResumeCommand(agent.Command) {
-		return latestUpdatedCodexTranscript(candidates), true, nil
+		return latestUpdatedCodexTranscript(freshCandidates), true, nil
 	}
-	if matched, ok := matchCodexTranscriptToActiveSession(candidates, agent.StartedAt); ok {
+	if matched, ok := matchCodexTranscriptToActiveSession(freshCandidates, agent.StartedAt); ok {
 		return matched, true, nil
 	}
-	if matched, ok := fallbackCodexTranscriptForAgent(candidates, agent); ok {
+	if matched, ok := fallbackCodexTranscriptForAgent(freshCandidates, agent); ok {
 		return matched, true, nil
 	}
 	return codexTranscriptCandidate{}, false, nil
+}
+
+func freshCodexTranscriptCandidates(candidates []codexTranscriptCandidate, now time.Time) []codexTranscriptCandidate {
+	if len(candidates) == 0 {
+		return nil
+	}
+	fresh := make([]codexTranscriptCandidate, 0, len(candidates))
+	for _, candidate := range candidates {
+		if isTranscriptFresh(candidate.Updated, now) {
+			fresh = append(fresh, candidate)
+		}
+	}
+	return fresh
 }
 
 func matchCodexTranscriptToActiveSession(candidates []codexTranscriptCandidate, startedAt time.Time) (codexTranscriptCandidate, bool) {
