@@ -588,7 +588,7 @@ export default function InboxScreen() {
 
   return (
     <SafeAreaView style={styles.container} edges={['top']}>
-      <SkyNatureBackdrop height={380} />
+      <SkyNatureBackdrop height={640} />
 
       {hasConnection && !anyConnected && (
         <View style={styles.banner}>
@@ -941,6 +941,12 @@ function resolveSessionTitle(
 }
 
 function createStyles(colors: typeof Colors) {
+  const light = colors.bgPrimary === '#F6F8FB';
+  const themedSurface = light ? 'rgba(255,255,255,0.76)' : 'rgba(16,22,34,0.72)';
+  const themedSurfaceStrong = light ? 'rgba(255,255,255,0.86)' : 'rgba(20,28,42,0.82)';
+  const themedBorder = light ? 'rgba(46,124,255,0.16)' : 'rgba(107,160,255,0.18)';
+  const themedSubtle = light ? 'rgba(255,255,255,0.44)' : 'rgba(76,141,255,0.10)';
+
   return StyleSheet.create({
   container: {
     flex: 1,
@@ -956,9 +962,9 @@ function createStyles(colors: typeof Colors) {
     marginHorizontal: 18,
     marginTop: 6,
     borderRadius: Radii.pill,
-    backgroundColor: colors.surfaceSubtle,
+    backgroundColor: themedSurface,
     borderWidth: StyleSheet.hairlineWidth,
-    borderColor: colors.borderSubtle,
+    borderColor: themedBorder,
   },
   bannerDot: {
     width: 6,
@@ -1007,8 +1013,10 @@ function createStyles(colors: typeof Colors) {
     flexDirection: 'row',
     marginLeft: 2,
     borderRadius: Radii.sm,
-    backgroundColor: colors.surfaceSubtle,
+    backgroundColor: themedSubtle,
     padding: 3,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: themedBorder,
   },
   viewBtn: {
     width: 34,
@@ -1018,7 +1026,7 @@ function createStyles(colors: typeof Colors) {
     justifyContent: 'center',
   },
   viewBtnActive: {
-    backgroundColor: colors.bgSurface,
+    backgroundColor: themedSurfaceStrong,
   },
   viewIconInactive: {
     opacity: 0.72,
@@ -1069,9 +1077,9 @@ function createStyles(colors: typeof Colors) {
     paddingVertical: 13,
     paddingHorizontal: 16,
     borderRadius: Radii.md,
-    backgroundColor: colors.bgSurface,
+    backgroundColor: themedSurface,
     borderWidth: StyleSheet.hairlineWidth,
-    borderColor: colors.borderSubtle,
+    borderColor: themedBorder,
     ...shadow('card', colors.shadowColor),
   },
   sessionStatusBadge: {
@@ -1151,9 +1159,9 @@ function createStyles(colors: typeof Colors) {
   },
   gridCard: {
     borderRadius: Radii.lg,
-    backgroundColor: colors.bgSurface,
+    backgroundColor: themedSurface,
     borderWidth: StyleSheet.hairlineWidth,
-    borderColor: colors.borderSubtle,
+    borderColor: themedBorder,
     overflow: 'hidden',
     ...shadow('card', colors.shadowColor),
   },

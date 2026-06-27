@@ -565,7 +565,7 @@ export default function StatsScreen() {
 
   return (
     <SafeAreaView style={s.container} edges={['top']}>
-      <SkyNatureBackdrop height={360} />
+      <SkyNatureBackdrop height={620} />
 
       <View style={s.header}>
         <Text style={s.title}>Stats</Text>
@@ -933,6 +933,10 @@ function ExpandToggle({
 // ── Styles ─────────────────────────────────────────────────
 
 function createStyles(colors: typeof Colors) {
+  const light = colors.bgPrimary === '#F6F8FB';
+  const themedSurface = light ? 'rgba(255,255,255,0.76)' : 'rgba(16,22,34,0.72)';
+  const themedBorder = light ? 'rgba(46,124,255,0.16)' : 'rgba(107,160,255,0.18)';
+
   return StyleSheet.create({
   container: { flex: 1, backgroundColor: colors.bgPrimary },
   header: {
@@ -1002,9 +1006,9 @@ function createStyles(colors: typeof Colors) {
   // Card
   card: {
     borderRadius: Radii.md,
-    backgroundColor: colors.bgSurface,
+    backgroundColor: themedSurface,
     borderWidth: StyleSheet.hairlineWidth,
-    borderColor: colors.borderSubtle,
+    borderColor: themedBorder,
     paddingHorizontal: 16,
     paddingVertical: 14,
     ...shadow('card', colors.shadowColor),

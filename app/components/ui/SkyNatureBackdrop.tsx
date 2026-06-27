@@ -20,13 +20,13 @@ type SkyNatureBackdropProps = {
 };
 
 export function SkyNatureBackdrop({
-  height = 280,
+  height = 620,
   style,
 }: SkyNatureBackdropProps) {
   const { colors, isLight } = useAppTheme();
   const overlay: readonly [ColorValue, ColorValue, ColorValue] = isLight
-    ? ["rgba(246,248,251,0.00)", "rgba(246,248,251,0.20)", colors.bgPrimary]
-    : ["rgba(14,17,22,0.04)", "rgba(14,17,22,0.34)", colors.bgPrimary];
+    ? ["rgba(246,248,251,0.00)", "rgba(246,248,251,0.12)", colors.bgPrimary]
+    : ["rgba(14,17,22,0.00)", "rgba(14,17,22,0.18)", colors.bgPrimary];
   const source = isLight ? SKY_MEADOW : MOONLIT_MEADOW;
 
   return (
@@ -53,7 +53,7 @@ export function SkyNatureBackdrop({
         <LinearGradient
           pointerEvents="none"
           colors={overlay}
-          locations={[0, 0.62, 1]}
+          locations={[0, 0.74, 1]}
           style={StyleSheet.absoluteFill}
         />
       </ImageBackground>
