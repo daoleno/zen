@@ -6,6 +6,7 @@ import {
   LayoutAnimation,
   NativeScrollEvent,
   NativeSyntheticEvent,
+  PanResponder,
   Platform,
   SectionList,
   Linking,
@@ -104,6 +105,7 @@ export default function InboxScreen() {
   const [meditationVisible, setMeditationVisible] = useState(false);
   const [meditationPullDistance, setMeditationPullDistance] = useState(0);
   const meditationPullDistanceRef = useRef(0);
+  const scrollYRef = useRef(0);
   const agentsHydrated = useMemo(
     () => servers.some(server => state.hydratedServers[server.id]),
     [servers, state.hydratedServers],
@@ -425,21 +427,46 @@ export default function InboxScreen() {
     setMeditationVisible(true);
   };
 
-  const handleMeditationScroll = (event: NativeSyntheticEvent<NativeScrollEvent>) => {
-    const offsetY = event.nativeEvent.contentOffset.y;
-    const distance = Math.max(0, -offsetY);
-    meditationPullDistanceRef.current = distance;
-    setMeditationPullDistance(distance);
+  const updateMeditationPull = (distance: number) => {
+    const nextDistance = Math.max(0, distance);
+    meditationPullDistanceRef.current = nextDistance;
+    setMeditationPullDistance(nextDistance);
   };
 
-  const handleMeditationRelease = () => {
+  const handleContentScroll = (event: NativeSyntheticEvent<NativeScrollEvent>) => {
+    scrollYRef.current = Math.max(0, event.nativeEvent.contentOffset.y);
+    if (scrollYRef.current > 0 && meditationPullDistanceRef.current > 0) {
+      updateMeditationPull(0);
+    }
+  };
+
+  const finishMeditationPull = () => {
     if (meditationPullDistanceRef.current >= MEDITATION_PULL_THRESHOLD) {
       openMeditation();
       return;
     }
-    meditationPullDistanceRef.current = 0;
-    setMeditationPullDistance(0);
+    updateMeditationPull(0);
   };
+
+  const meditationPullResponder = useMemo(
+    () =>
+      PanResponder.create({
+        onMoveShouldSetPanResponderCapture: (_, gesture) =>
+          scrollYRef.current <= 0 &&
+          gesture.dy > 8 &&
+          Math.abs(gesture.dy) > Math.abs(gesture.dx) * 1.25,
+        onPanResponderMove: (_, gesture) => {
+          if (scrollYRef.current > 0) {
+            updateMeditationPull(0);
+            return;
+          }
+          updateMeditationPull(gesture.dy);
+        },
+        onPanResponderRelease: finishMeditationPull,
+        onPanResponderTerminate: finishMeditationPull,
+      }),
+    [],
+  );
 
   const openServiceTerminal = (service: DiscoveredSessionService) => {
     setServiceSheetVisible(false);
@@ -619,7 +646,11 @@ export default function InboxScreen() {
   };
 
   return (
-    <SafeAreaView style={styles.container} edges={['top']}>
+    <SafeAreaView
+      style={styles.container}
+      edges={['top']}
+      {...meditationPullResponder.panHandlers}
+    >
       <SkyNatureBackdrop height={640} />
       <MeditationPullPreview
         pullDistance={meditationPullDistance}
@@ -683,8 +714,7 @@ export default function InboxScreen() {
         <ScrollView
           style={styles.flex}
           contentContainerStyle={styles.loadingContainer}
-          onScroll={handleMeditationScroll}
-          onScrollEndDrag={handleMeditationRelease}
+          onScroll={handleContentScroll}
           scrollEventThrottle={16}
           alwaysBounceVertical
           showsVerticalScrollIndicator={false}
@@ -695,8 +725,7 @@ export default function InboxScreen() {
         <ScrollView
           style={styles.flex}
           contentContainerStyle={styles.emptyScrollContent}
-          onScroll={handleMeditationScroll}
-          onScrollEndDrag={handleMeditationRelease}
+          onScroll={handleContentScroll}
           scrollEventThrottle={16}
           alwaysBounceVertical
           showsVerticalScrollIndicator={false}
@@ -760,8 +789,7 @@ export default function InboxScreen() {
           renderSectionHeader={renderListSectionHeader}
           stickySectionHeadersEnabled={false}
           contentContainerStyle={styles.promptContent}
-          onScroll={handleMeditationScroll}
-          onScrollEndDrag={handleMeditationRelease}
+          onScroll={handleContentScroll}
           scrollEventThrottle={16}
           alwaysBounceVertical
           removeClippedSubviews={false}
@@ -777,8 +805,7 @@ export default function InboxScreen() {
           keyExtractor={item => item.key}
           renderItem={renderGridAgent}
           contentContainerStyle={styles.gridContent}
-          onScroll={handleMeditationScroll}
-          onScrollEndDrag={handleMeditationRelease}
+          onScroll={handleContentScroll}
           scrollEventThrottle={16}
           alwaysBounceVertical
           ItemSeparatorComponent={() => <View style={styles.gridGap} />}
