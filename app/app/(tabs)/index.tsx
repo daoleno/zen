@@ -5,8 +5,10 @@ import {
   FlatList,
   LayoutAnimation,
   Platform,
+  RefreshControl,
   SectionList,
   Linking,
+  ScrollView,
   StyleSheet,
   Text,
   TextInput,
@@ -23,6 +25,7 @@ import { AgentStatus, Colors, Radii, Typography, useAppColors, shadow } from '..
 import { IconButton } from '../../components/ui/IconButton';
 import { AnimatedPressable } from '../../components/ui/AnimatedPressable';
 import { SkyNatureBackdrop } from '../../components/ui/SkyNatureBackdrop';
+import { MeditationModal } from '../../components/meditation/MeditationModal';
 import { RisingSheet } from '../../components/ui/RisingSheet';
 import { Enter } from '../../components/ui/Enter';
 import { TerminalPreview } from '../../components/terminal/TerminalPreview';
@@ -95,6 +98,7 @@ export default function InboxScreen() {
   const [sessionServices, setSessionServices] = useState<DiscoveredSessionService[]>([]);
   const [servicesLoading, setServicesLoading] = useState(false);
   const [servicesError, setServicesError] = useState<string | null>(null);
+  const [meditationVisible, setMeditationVisible] = useState(false);
   const agentsHydrated = useMemo(
     () => servers.some(server => state.hydratedServers[server.id]),
     [servers, state.hydratedServers],
@@ -409,6 +413,23 @@ export default function InboxScreen() {
     void refreshSessionServices();
   };
 
+  const openMeditation = () => {
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+    setMeditationVisible(true);
+  };
+
+  const meditationRefreshControl = (
+    <RefreshControl
+      refreshing={false}
+      onRefresh={openMeditation}
+      tintColor={colors.accent}
+      colors={[colors.accent]}
+      progressBackgroundColor={colors.bgSurface}
+      title="Release to breathe"
+      titleColor={colors.textSecondary}
+    />
+  );
+
   const openServiceTerminal = (service: DiscoveredSessionService) => {
     setServiceSheetVisible(false);
     router.push({
@@ -644,59 +665,71 @@ export default function InboxScreen() {
       </View>
 
       {shouldShowInitialLoading ? (
-        <View style={styles.loadingContainer}>
+        <ScrollView
+          style={styles.flex}
+          contentContainerStyle={styles.loadingContainer}
+          refreshControl={meditationRefreshControl}
+          showsVerticalScrollIndicator={false}
+        >
           <ActivityIndicator color={colors.accent} />
-        </View>
+        </ScrollView>
       ) : sortedAgents.length === 0 ? (
-        <Enter preset="rise" style={styles.emptyContainer}>
-          <Enter preset="pop">
-            <View style={styles.emptyBadge}>
-              <Text style={styles.emptyIcon}>☯</Text>
+        <ScrollView
+          style={styles.flex}
+          contentContainerStyle={styles.emptyScrollContent}
+          refreshControl={meditationRefreshControl}
+          showsVerticalScrollIndicator={false}
+        >
+          <Enter preset="rise" style={styles.emptyContainer}>
+            <Enter preset="pop">
+              <View style={styles.emptyBadge}>
+                <Text style={styles.emptyIcon}>☯</Text>
+              </View>
+            </Enter>
+            <Text style={styles.emptyText}>{emptyTitle}</Text>
+            {emptySubtext ? (
+              <Text style={styles.emptySubtext}>{emptySubtext}</Text>
+            ) : null}
+            <View style={styles.emptyActions}>
+              {connectedServers.length > 0 ? (
+                <AnimatedPressable
+                  style={[styles.emptyActionBtn, styles.emptyActionBtnPrimary]}
+                  preset="press"
+                  scale={0.95}
+                  onPress={openCreateTerminal}
+                  disabled={!!creatingServerId}
+                >
+                  <Ionicons name="add" size={18} color={colors.textOnAccent} style={styles.emptyActionIcon} />
+                  <Text style={[styles.emptyActionText, styles.emptyActionTextPrimary]}>
+                    {creatingServerId ? 'Starting…' : 'New terminal'}
+                  </Text>
+                </AnimatedPressable>
+              ) : (
+                <AnimatedPressable
+                  style={[styles.emptyActionBtn, styles.emptyActionBtnPrimary]}
+                  preset="press"
+                  scale={0.95}
+                  onPress={() => openServerSettings(true)}
+                >
+                  <Ionicons name="server-outline" size={18} color={colors.textOnAccent} style={styles.emptyActionIcon} />
+                  <Text style={[styles.emptyActionText, styles.emptyActionTextPrimary]}>
+                    Add server
+                  </Text>
+                </AnimatedPressable>
+              )}
+              {hasConfiguredServers ? (
+                <AnimatedPressable
+                  style={styles.emptyActionLink}
+                  preset="press"
+                  scale={0.96}
+                  onPress={() => openServerSettings(false)}
+                >
+                  <Text style={styles.emptyActionLinkText}>Open Settings</Text>
+                </AnimatedPressable>
+              ) : null}
             </View>
           </Enter>
-          <Text style={styles.emptyText}>{emptyTitle}</Text>
-          {emptySubtext ? (
-            <Text style={styles.emptySubtext}>{emptySubtext}</Text>
-          ) : null}
-          <View style={styles.emptyActions}>
-            {connectedServers.length > 0 ? (
-              <AnimatedPressable
-                style={[styles.emptyActionBtn, styles.emptyActionBtnPrimary]}
-                preset="press"
-                scale={0.95}
-                onPress={openCreateTerminal}
-                disabled={!!creatingServerId}
-              >
-                <Ionicons name="add" size={18} color={colors.textOnAccent} style={styles.emptyActionIcon} />
-                <Text style={[styles.emptyActionText, styles.emptyActionTextPrimary]}>
-                  {creatingServerId ? 'Starting…' : 'New terminal'}
-                </Text>
-              </AnimatedPressable>
-            ) : (
-              <AnimatedPressable
-                style={[styles.emptyActionBtn, styles.emptyActionBtnPrimary]}
-                preset="press"
-                scale={0.95}
-                onPress={() => openServerSettings(true)}
-              >
-                <Ionicons name="server-outline" size={18} color={colors.textOnAccent} style={styles.emptyActionIcon} />
-                <Text style={[styles.emptyActionText, styles.emptyActionTextPrimary]}>
-                  Add server
-                </Text>
-              </AnimatedPressable>
-            )}
-            {hasConfiguredServers ? (
-              <AnimatedPressable
-                style={styles.emptyActionLink}
-                preset="press"
-                scale={0.96}
-                onPress={() => openServerSettings(false)}
-              >
-                <Text style={styles.emptyActionLinkText}>Open Settings</Text>
-              </AnimatedPressable>
-            ) : null}
-          </View>
-        </Enter>
+        </ScrollView>
       ) : viewMode === 'list' ? (
         <SectionList
           sections={listSections}
@@ -706,6 +739,7 @@ export default function InboxScreen() {
           renderSectionHeader={renderListSectionHeader}
           stickySectionHeadersEnabled={false}
           contentContainerStyle={styles.promptContent}
+          refreshControl={meditationRefreshControl}
           removeClippedSubviews={false}
           windowSize={15}
           showsVerticalScrollIndicator={false}
@@ -719,6 +753,7 @@ export default function InboxScreen() {
           keyExtractor={item => item.key}
           renderItem={renderGridAgent}
           contentContainerStyle={styles.gridContent}
+          refreshControl={meditationRefreshControl}
           ItemSeparatorComponent={() => <View style={styles.gridGap} />}
           removeClippedSubviews={false}
           windowSize={21}
@@ -757,6 +792,14 @@ export default function InboxScreen() {
           });
         }}
       />
+
+      {meditationVisible ? (
+        <MeditationModal
+          visible={meditationVisible}
+          colors={colors}
+          onClose={() => setMeditationVisible(false)}
+        />
+      ) : null}
 
       <RisingSheet
         visible={menuAgent !== null && !renameVisible}
@@ -952,6 +995,9 @@ function createStyles(colors: typeof Colors) {
     flex: 1,
     backgroundColor: colors.bgPrimary,
   },
+  flex: {
+    flex: 1,
+  },
 
   banner: {
     flexDirection: 'row',
@@ -1146,7 +1192,8 @@ function createStyles(colors: typeof Colors) {
   },
 
   loadingContainer: {
-    flex: 1,
+    flexGrow: 1,
+    minHeight: 420,
     alignItems: 'center',
     justifyContent: 'center',
   },
@@ -1195,10 +1242,14 @@ function createStyles(colors: typeof Colors) {
   },
 
   emptyContainer: {
-    flex: 1,
     justifyContent: 'center',
     alignItems: 'center',
     paddingHorizontal: 36,
+  },
+  emptyScrollContent: {
+    flexGrow: 1,
+    justifyContent: 'center',
+    paddingVertical: 44,
   },
   emptyBadge: {
     width: 88,

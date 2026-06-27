@@ -14,6 +14,7 @@
         "@lobehub/icons-rn": "^2.7.1",
         "@react-native-async-storage/async-storage": "2.2.0",
         "expo": "^56.0.3",
+        "expo-audio": "~56.0.12",
         "expo-camera": "~56.0.7",
         "expo-clipboard": "~56.0.3",
         "expo-constants": "~56.0.14",
@@ -608,6 +609,8 @@
     "expo-application": ["expo-application@56.0.3", "https://registry.npmmirror.com/expo-application/-/expo-application-56.0.3.tgz", { "peerDependencies": { "expo": "*" } }, "sha512-DdGGPlMuM6cSTeKhbvh6OeLr2O/+EI5BHKYrD+Do8sJPYgLwzGrgESELfyjJCpEhFzT+TgKIdmLmWXhNUQnHiw=="],
 
     "expo-asset": ["expo-asset@56.0.13", "https://registry.npmmirror.com/expo-asset/-/expo-asset-56.0.13.tgz", { "dependencies": { "@expo/image-utils": "^0.10.0", "expo-constants": "~56.0.14" }, "peerDependencies": { "expo": "*", "react": "*", "react-native": "*" } }, "sha512-lNCZzRa9sk842/xULSZis0yT396DNTHIgkLDcuwjaHZgSLYEkHF32azyHlWrbCUaCu62yRaFSCXSQYKMaL/vYQ=="],
+
+    "expo-audio": ["expo-audio@56.0.12", "https://registry.npmmirror.com/expo-audio/-/expo-audio-56.0.12.tgz", { "peerDependencies": { "expo": "*", "expo-asset": "*", "react": "*", "react-native": "*" } }, "sha512-ne2UIO/HsQoBL9e+tGs5N9Sf3NyW5sJMm4sDkexbSJRc2IchLDG+9Msu/+l5N4RlZ8SiF42wRyWsh/Usg+SwOw=="],
 
     "expo-camera": ["expo-camera@56.0.7", "https://registry.npmmirror.com/expo-camera/-/expo-camera-56.0.7.tgz", { "dependencies": { "barcode-detector": "^3.0.0" }, "peerDependencies": { "expo": "*", "react": "*", "react-native": "*", "react-native-web": "*" }, "optionalPeers": ["react-native-web"] }, "sha512-c8z+UheidFintQyP9XLEDP43aK4PS/o9+TFLW0zEOjdqkYCBgoWq6Mw/Ps62kjBeftFY7xrp5ZLITbenNvbTaw=="],
 
