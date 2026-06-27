@@ -1,9 +1,13 @@
-import React, { useEffect, useMemo } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import {
   ImageBackground,
   Modal,
+  NativeScrollEvent,
+  NativeSyntheticEvent,
+  ScrollView,
   StyleSheet,
   Text,
+  useWindowDimensions,
   View,
 } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
@@ -25,6 +29,36 @@ import { AnimatedPressable } from "../ui/AnimatedPressable";
 const MEDITATION_BACKGROUND = require("../../assets/theme/meditation-sky-garden.webp");
 const MEDITATION_AUDIO = require("../../assets/audio/meditation-ambient.m4a");
 
+const MEDITATION_MODES = [
+  {
+    key: "breathe",
+    title: "Breathe",
+    subtitle: "Let the build finish somewhere else for a minute.",
+    duration: 5200,
+    volume: 0.42,
+    orb: ["rgba(255,255,255,0.88)", "rgba(108,174,255,0.36)", "rgba(42,99,202,0.22)"] as const,
+    halo: "rgba(128,190,255,0.72)",
+  },
+  {
+    key: "focus",
+    title: "Focus",
+    subtitle: "A clear blue pause before the next decision.",
+    duration: 4200,
+    volume: 0.34,
+    orb: ["rgba(222,246,255,0.90)", "rgba(64,190,255,0.34)", "rgba(26,82,170,0.24)"] as const,
+    halo: "rgba(64,190,255,0.64)",
+  },
+  {
+    key: "unwind",
+    title: "Unwind",
+    subtitle: "Drop the stack trace from your shoulders.",
+    duration: 7200,
+    volume: 0.46,
+    orb: ["rgba(255,255,245,0.88)", "rgba(172,146,255,0.30)", "rgba(58,46,144,0.24)"] as const,
+    halo: "rgba(172,146,255,0.58)",
+  },
+] as const;
+
 type MeditationModalProps = {
   visible: boolean;
   colors: typeof Colors;
@@ -37,6 +71,9 @@ export function MeditationModal({
   onClose,
 }: MeditationModalProps) {
   const styles = useMemo(() => createStyles(colors), [colors]);
+  const { width } = useWindowDimensions();
+  const [modeIndex, setModeIndex] = useState(0);
+  const mode = MEDITATION_MODES[modeIndex] ?? MEDITATION_MODES[0];
   const player = useAudioPlayer(MEDITATION_AUDIO);
   const status = useAudioPlayerStatus(player);
   const breath = useSharedValue(0);
@@ -51,11 +88,11 @@ export function MeditationModal({
 
   useEffect(() => {
     player.loop = true;
-    player.volume = 0.42;
+    player.volume = mode.volume;
     if (visible) {
       breath.value = withRepeat(
         withTiming(1, {
-          duration: 5200,
+          duration: mode.duration,
           easing: Easing.inOut(Easing.sin),
         }),
         -1,
@@ -66,7 +103,7 @@ export function MeditationModal({
       player.pause();
       breath.value = withTiming(0, { duration: 420 });
     }
-  }, [breath, player, visible]);
+  }, [breath, mode.duration, mode.volume, player, visible]);
 
   const orbStyle = useAnimatedStyle(() => {
     const scale = interpolate(breath.value, [0, 1], [0.86, 1.16]);
@@ -100,6 +137,15 @@ export function MeditationModal({
     onClose();
   };
 
+  const handleModeScrollEnd = (event: NativeSyntheticEvent<NativeScrollEvent>) => {
+    const nextIndex = Math.round(event.nativeEvent.contentOffset.x / Math.max(width, 1));
+    const clamped = Math.max(0, Math.min(MEDITATION_MODES.length - 1, nextIndex));
+    if (clamped !== modeIndex) {
+      Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+      setModeIndex(clamped);
+    }
+  };
+
   return (
     <Modal visible={visible} animationType="fade" presentationStyle="fullScreen">
       <ImageBackground
@@ -118,7 +164,7 @@ export function MeditationModal({
         />
         <SafeAreaView style={styles.safe} edges={["top", "bottom"]}>
           <View style={styles.topBar}>
-            <Text style={styles.kicker}>Quiet Mode</Text>
+            <Text style={styles.kicker}>Quiet Mode · Swipe</Text>
             <AnimatedPressable
               style={styles.closeButton}
               preset="press"
@@ -130,27 +176,51 @@ export function MeditationModal({
             </AnimatedPressable>
           </View>
 
-          <View style={styles.center}>
-            <View style={styles.orbWrap}>
-              <Animated.View style={[styles.orbHalo, haloStyle]} />
-              <Animated.View style={[styles.orb, orbStyle]}>
-                <LinearGradient
-                  colors={[
-                    "rgba(255,255,255,0.88)",
-                    "rgba(108,174,255,0.36)",
-                    "rgba(42,99,202,0.22)",
-                  ]}
-                  start={{ x: 0.24, y: 0.08 }}
-                  end={{ x: 0.78, y: 0.92 }}
-                  style={StyleSheet.absoluteFill}
-                />
-              </Animated.View>
-            </View>
-            <Text style={styles.title}>Breathe</Text>
-            <Text style={styles.subtitle}>Let the build finish somewhere else for a minute.</Text>
-          </View>
+          <ScrollView
+            horizontal
+            pagingEnabled
+            bounces={false}
+            showsHorizontalScrollIndicator={false}
+            onMomentumScrollEnd={handleModeScrollEnd}
+            style={styles.modePager}
+          >
+            {MEDITATION_MODES.map((item) => (
+              <View key={item.key} style={[styles.center, { width }]}>
+                <View style={styles.orbWrap}>
+                  <Animated.View
+                    style={[
+                      styles.orbHalo,
+                      { backgroundColor: item.halo },
+                      haloStyle,
+                    ]}
+                  />
+                  <Animated.View style={[styles.orb, orbStyle]}>
+                    <LinearGradient
+                      colors={item.orb}
+                      start={{ x: 0.24, y: 0.08 }}
+                      end={{ x: 0.78, y: 0.92 }}
+                      style={StyleSheet.absoluteFill}
+                    />
+                  </Animated.View>
+                </View>
+                <Text style={styles.title}>{item.title}</Text>
+                <Text style={styles.subtitle}>{item.subtitle}</Text>
+              </View>
+            ))}
+          </ScrollView>
 
           <View style={styles.bottom}>
+            <View style={styles.modeDots}>
+              {MEDITATION_MODES.map((item, index) => (
+                <View
+                  key={item.key}
+                  style={[
+                    styles.modeDot,
+                    index === modeIndex && styles.modeDotActive,
+                  ]}
+                />
+              ))}
+            </View>
             <View style={styles.breathRow}>
               <View style={styles.breathTick} />
               <View style={[styles.breathTick, styles.breathTickSoft]} />
@@ -169,7 +239,7 @@ export function MeditationModal({
                 color="#07111F"
               />
               <Text style={styles.audioButtonText}>
-                {status.playing ? "Ambient playing" : "Play ambient"}
+                {status.playing ? `${mode.title} playing` : `Play ${mode.title.toLowerCase()}`}
               </Text>
             </AnimatedPressable>
           </View>
@@ -212,10 +282,15 @@ function createStyles(_colors: typeof Colors) {
       borderWidth: StyleSheet.hairlineWidth,
       borderColor: "rgba(255,255,255,0.22)",
     },
+    modePager: {
+      flex: 1,
+      marginHorizontal: -22,
+    },
     center: {
       flex: 1,
       alignItems: "center",
       justifyContent: "center",
+      paddingHorizontal: 22,
       paddingBottom: 30,
     },
     orbWrap: {
@@ -262,6 +337,21 @@ function createStyles(_colors: typeof Colors) {
       alignItems: "center",
       paddingBottom: 18,
       gap: 20,
+    },
+    modeDots: {
+      flexDirection: "row",
+      alignItems: "center",
+      gap: 7,
+    },
+    modeDot: {
+      width: 6,
+      height: 6,
+      borderRadius: 3,
+      backgroundColor: "rgba(255,255,255,0.28)",
+    },
+    modeDotActive: {
+      width: 18,
+      backgroundColor: "rgba(255,255,255,0.84)",
     },
     breathRow: {
       flexDirection: "row",

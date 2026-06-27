@@ -4,8 +4,9 @@ import {
   Alert,
   FlatList,
   LayoutAnimation,
+  NativeScrollEvent,
+  NativeSyntheticEvent,
   Platform,
-  RefreshControl,
   SectionList,
   Linking,
   ScrollView,
@@ -26,6 +27,7 @@ import { IconButton } from '../../components/ui/IconButton';
 import { AnimatedPressable } from '../../components/ui/AnimatedPressable';
 import { SkyNatureBackdrop } from '../../components/ui/SkyNatureBackdrop';
 import { MeditationModal } from '../../components/meditation/MeditationModal';
+import { MeditationPullPreview } from '../../components/meditation/MeditationPullPreview';
 import { RisingSheet } from '../../components/ui/RisingSheet';
 import { Enter } from '../../components/ui/Enter';
 import { TerminalPreview } from '../../components/terminal/TerminalPreview';
@@ -67,6 +69,7 @@ const STATUS_PRIORITY: Record<AgentStatus, number> = {
   unknown: 1,
   done: 1,
 };
+const MEDITATION_PULL_THRESHOLD = 132;
 
 export default function InboxScreen() {
   const { state } = useAgents();
@@ -99,6 +102,8 @@ export default function InboxScreen() {
   const [servicesLoading, setServicesLoading] = useState(false);
   const [servicesError, setServicesError] = useState<string | null>(null);
   const [meditationVisible, setMeditationVisible] = useState(false);
+  const [meditationPullDistance, setMeditationPullDistance] = useState(0);
+  const meditationPullDistanceRef = useRef(0);
   const agentsHydrated = useMemo(
     () => servers.some(server => state.hydratedServers[server.id]),
     [servers, state.hydratedServers],
@@ -415,20 +420,26 @@ export default function InboxScreen() {
 
   const openMeditation = () => {
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+    meditationPullDistanceRef.current = 0;
+    setMeditationPullDistance(0);
     setMeditationVisible(true);
   };
 
-  const meditationRefreshControl = (
-    <RefreshControl
-      refreshing={false}
-      onRefresh={openMeditation}
-      tintColor={colors.accent}
-      colors={[colors.accent]}
-      progressBackgroundColor={colors.bgSurface}
-      title="Release to breathe"
-      titleColor={colors.textSecondary}
-    />
-  );
+  const handleMeditationScroll = (event: NativeSyntheticEvent<NativeScrollEvent>) => {
+    const offsetY = event.nativeEvent.contentOffset.y;
+    const distance = Math.max(0, -offsetY);
+    meditationPullDistanceRef.current = distance;
+    setMeditationPullDistance(distance);
+  };
+
+  const handleMeditationRelease = () => {
+    if (meditationPullDistanceRef.current >= MEDITATION_PULL_THRESHOLD) {
+      openMeditation();
+      return;
+    }
+    meditationPullDistanceRef.current = 0;
+    setMeditationPullDistance(0);
+  };
 
   const openServiceTerminal = (service: DiscoveredSessionService) => {
     setServiceSheetVisible(false);
@@ -610,6 +621,10 @@ export default function InboxScreen() {
   return (
     <SafeAreaView style={styles.container} edges={['top']}>
       <SkyNatureBackdrop height={640} />
+      <MeditationPullPreview
+        pullDistance={meditationPullDistance}
+        progress={meditationPullDistance / MEDITATION_PULL_THRESHOLD}
+      />
 
       {hasConnection && !anyConnected && (
         <View style={styles.banner}>
@@ -668,7 +683,10 @@ export default function InboxScreen() {
         <ScrollView
           style={styles.flex}
           contentContainerStyle={styles.loadingContainer}
-          refreshControl={meditationRefreshControl}
+          onScroll={handleMeditationScroll}
+          onScrollEndDrag={handleMeditationRelease}
+          scrollEventThrottle={16}
+          alwaysBounceVertical
           showsVerticalScrollIndicator={false}
         >
           <ActivityIndicator color={colors.accent} />
@@ -677,7 +695,10 @@ export default function InboxScreen() {
         <ScrollView
           style={styles.flex}
           contentContainerStyle={styles.emptyScrollContent}
-          refreshControl={meditationRefreshControl}
+          onScroll={handleMeditationScroll}
+          onScrollEndDrag={handleMeditationRelease}
+          scrollEventThrottle={16}
+          alwaysBounceVertical
           showsVerticalScrollIndicator={false}
         >
           <Enter preset="rise" style={styles.emptyContainer}>
@@ -739,7 +760,10 @@ export default function InboxScreen() {
           renderSectionHeader={renderListSectionHeader}
           stickySectionHeadersEnabled={false}
           contentContainerStyle={styles.promptContent}
-          refreshControl={meditationRefreshControl}
+          onScroll={handleMeditationScroll}
+          onScrollEndDrag={handleMeditationRelease}
+          scrollEventThrottle={16}
+          alwaysBounceVertical
           removeClippedSubviews={false}
           windowSize={15}
           showsVerticalScrollIndicator={false}
@@ -753,7 +777,10 @@ export default function InboxScreen() {
           keyExtractor={item => item.key}
           renderItem={renderGridAgent}
           contentContainerStyle={styles.gridContent}
-          refreshControl={meditationRefreshControl}
+          onScroll={handleMeditationScroll}
+          onScrollEndDrag={handleMeditationRelease}
+          scrollEventThrottle={16}
+          alwaysBounceVertical
           ItemSeparatorComponent={() => <View style={styles.gridGap} />}
           removeClippedSubviews={false}
           windowSize={21}
