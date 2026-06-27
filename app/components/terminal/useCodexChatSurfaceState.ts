@@ -109,10 +109,11 @@ export function useCodexChatSurfaceState({
   onSwitchToTerminal,
 }: UseCodexChatSurfaceStateInput): CodexChatSurfaceState {
   const insets = useSafeAreaInsets();
+  const active = visible && screenFocused;
   const slashCommands = useCodexSlashCommands({
     serverId,
     connectionState,
-    screenFocused,
+    screenFocused: active,
   });
   const [actionMenuPinned, setActionMenuPinned] = useState(false);
   const [skillsSheetVisible, setSkillsSheetVisible] = useState(false);
@@ -127,7 +128,7 @@ export function useCodexChatSurfaceState({
     conversationScopeKey,
     agentInfo,
     connectionState,
-    screenFocused,
+    screenFocused: active,
   });
   const {
     cacheKey: conversationCacheKey,
@@ -151,7 +152,7 @@ export function useCodexChatSurfaceState({
     markNewChatMessageStarted,
   } = session;
   const composerInput = useCodexComposerInput({
-    enabled: visible && screenFocused && connectionState === "connected",
+    enabled: active && connectionState === "connected",
   });
   useEffect(() => {
     if ((!visible || connectionState !== "connected") && actionMenuPinned) {

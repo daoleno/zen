@@ -1,6 +1,7 @@
 import React from "react";
 import {
   FlatList,
+  Platform,
   StyleSheet,
   View,
   type LayoutChangeEvent,
@@ -192,11 +193,11 @@ export function CodexTimelineView({
           onMomentumScrollBegin={onMomentumScrollBegin}
           onMomentumScrollEnd={onMomentumScrollEnd}
           onContentSizeChange={onContentSizeChange}
-          initialNumToRender={12}
-          maxToRenderPerBatch={8}
-          updateCellsBatchingPeriod={32}
-          windowSize={7}
-          removeClippedSubviews={false}
+          initialNumToRender={8}
+          maxToRenderPerBatch={6}
+          updateCellsBatchingPeriod={48}
+          windowSize={5}
+          removeClippedSubviews={Platform.OS === "android"}
         />
 
         {items.length === 0 ? (

@@ -42,7 +42,7 @@ interface TerminalOutputPaneProps {
   onAccessoryLayout(event: LayoutChangeEvent): void;
 }
 
-export function TerminalOutputPane({
+function TerminalOutputPaneImpl({
   sessionKey,
   serverId,
   agentId,
@@ -119,6 +119,8 @@ export function TerminalOutputPane({
     </>
   );
 }
+
+export const TerminalOutputPane = React.memo(TerminalOutputPaneImpl);
 
 const styles = StyleSheet.create({
   output: {

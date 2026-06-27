@@ -48,7 +48,7 @@ export interface TerminalViewportProps {
   onAccessoryLayout(event: LayoutChangeEvent): void;
 }
 
-export function TerminalViewport({
+function TerminalViewportImpl({
   showCodexChat,
   sessionKey,
   serverId,
@@ -149,17 +149,11 @@ export function TerminalViewport({
             onAccessoryLayout={onAccessoryLayout}
           />
 
-          {sessionKey && serverId && agentId ? (
-            <View
-              pointerEvents={showCodexChat ? "auto" : "none"}
-              style={[
-                styles.chatOverlay,
-                !showCodexChat ? styles.chatOverlayHidden : null,
-              ]}
-            >
+          {showCodexChat && sessionKey && serverId && agentId ? (
+            <View pointerEvents="auto" style={styles.chatOverlay}>
               <CodexChatSurface
                 key={`codex-chat:${sessionKey}`}
-                visible={showCodexChat}
+                visible
                 serverId={serverId}
                 agentId={agentId}
                 agentInfo={codexChatAgentInfo}
@@ -177,6 +171,8 @@ export function TerminalViewport({
     </View>
   );
 }
+
+export const TerminalViewport = React.memo(TerminalViewportImpl);
 
 const styles = StyleSheet.create({
   terminalStage: {
@@ -201,8 +197,5 @@ const styles = StyleSheet.create({
     bottom: 0,
     left: 0,
     zIndex: 12,
-  },
-  chatOverlayHidden: {
-    opacity: 0,
   },
 });

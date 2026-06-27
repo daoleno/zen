@@ -441,7 +441,7 @@ function reuseStableConversationEvents(
   let changed = previousConversation.events.length !== nextConversation.events.length;
   const events = nextConversation.events.map((event, index) => {
     const previousEvent = previousById.get(event.id);
-    if (previousEvent && codexEventFingerprint(previousEvent) === codexEventFingerprint(event)) {
+    if (previousEvent && codexEventsEqual(previousEvent, event)) {
       if (previousConversation.events[index] !== previousEvent) {
         changed = true;
       }
@@ -513,8 +513,71 @@ function reconcilePendingUserMessages(
   return reconciled;
 }
 
-function codexEventFingerprint(event: CodexConversation["events"][number]) {
-  return JSON.stringify(event);
+function codexEventsEqual(
+  left: CodexConversation["events"][number],
+  right: CodexConversation["events"][number],
+) {
+  return (
+    left === right ||
+    (
+      left.id === right.id &&
+      left.seq === right.seq &&
+      left.timestamp === right.timestamp &&
+      left.kind === right.kind &&
+      left.role === right.role &&
+      left.title === right.title &&
+      left.body === right.body &&
+      left.command === right.command &&
+      left.tool_name === right.tool_name &&
+      left.input === right.input &&
+      left.output === right.output &&
+      left.call_id === right.call_id &&
+      left.exit_code === right.exit_code &&
+      left.status === right.status &&
+      left.explanation === right.explanation &&
+      left.source === right.source &&
+      stringArraysEqual(left.files, right.files) &&
+      planStepsEqual(left.plan, right.plan)
+    )
+  );
+}
+
+function stringArraysEqual(left?: string[], right?: string[]) {
+  if (left === right) {
+    return true;
+  }
+  if (!left || !right || left.length !== right.length) {
+    return false;
+  }
+  for (let index = 0; index < left.length; index += 1) {
+    if (left[index] !== right[index]) {
+      return false;
+    }
+  }
+  return true;
+}
+
+function planStepsEqual(
+  left?: CodexConversation["events"][number]["plan"],
+  right?: CodexConversation["events"][number]["plan"],
+) {
+  if (left === right) {
+    return true;
+  }
+  if (!left || !right || left.length !== right.length) {
+    return false;
+  }
+  for (let index = 0; index < left.length; index += 1) {
+    const leftStep = left[index];
+    const rightStep = right[index];
+    if (
+      leftStep?.step !== rightStep?.step ||
+      leftStep?.status !== rightStep?.status
+    ) {
+      return false;
+    }
+  }
+  return true;
 }
 
 function cachedPendingUserMessages(cacheKey: string): PendingUserMessage[] {
