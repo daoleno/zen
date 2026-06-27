@@ -565,7 +565,7 @@ export default function StatsScreen() {
 
   return (
     <SafeAreaView style={s.container} edges={['top']}>
-      <SkyNatureBackdrop height={280} />
+      <SkyNatureBackdrop height={360} />
 
       <View style={s.header}>
         <Text style={s.title}>Stats</Text>

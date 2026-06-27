@@ -12,6 +12,7 @@ import { LinearGradient } from "expo-linear-gradient";
 import { useAppTheme } from "../../constants/tokens";
 
 const SKY_MEADOW: ImageSourcePropType = require("../../assets/theme/sky-meadow-ambient.webp");
+const MOONLIT_MEADOW: ImageSourcePropType = require("../../assets/theme/moonlit-meadow-ambient.webp");
 
 type SkyNatureBackdropProps = {
   height?: number;
@@ -24,8 +25,9 @@ export function SkyNatureBackdrop({
 }: SkyNatureBackdropProps) {
   const { colors, isLight } = useAppTheme();
   const overlay: readonly [ColorValue, ColorValue, ColorValue] = isLight
-    ? ["rgba(246,248,251,0.00)", "rgba(246,248,251,0.32)", colors.bgPrimary]
-    : ["rgba(14,17,22,0.20)", "rgba(14,17,22,0.62)", colors.bgPrimary];
+    ? ["rgba(246,248,251,0.00)", "rgba(246,248,251,0.20)", colors.bgPrimary]
+    : ["rgba(14,17,22,0.04)", "rgba(14,17,22,0.34)", colors.bgPrimary];
+  const source = isLight ? SKY_MEADOW : MOONLIT_MEADOW;
 
   return (
     <View
@@ -33,18 +35,18 @@ export function SkyNatureBackdrop({
       style={[styles.root, { height, backgroundColor: colors.bgPrimary }, style]}
     >
       <ImageBackground
-        source={SKY_MEADOW}
+        source={source}
         resizeMode="cover"
         style={styles.image}
-        imageStyle={styles.imageInner}
+        imageStyle={[styles.imageInner, { opacity: isLight ? 0.98 : 0.92 }]}
       >
         <View
           style={[
             StyleSheet.absoluteFill,
             {
               backgroundColor: isLight
-                ? "rgba(46,124,255,0.04)"
-                : "rgba(46,124,255,0.10)",
+                ? "rgba(46,124,255,0.03)"
+                : "rgba(76,141,255,0.08)",
             },
           ]}
         />
@@ -71,6 +73,6 @@ const styles = StyleSheet.create({
     flex: 1,
   },
   imageInner: {
-    opacity: 0.82,
+    opacity: 1,
   },
 });

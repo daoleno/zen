@@ -588,7 +588,7 @@ export default function InboxScreen() {
 
   return (
     <SafeAreaView style={styles.container} edges={['top']}>
-      <SkyNatureBackdrop height={300} />
+      <SkyNatureBackdrop height={380} />
 
       {hasConnection && !anyConnected && (
         <View style={styles.banner}>
