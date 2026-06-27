@@ -22,6 +22,7 @@ import { useWork, type WorkItem } from '../../store/work';
 import { AgentStatus, Colors, Radii, Typography, useAppColors, shadow } from '../../constants/tokens';
 import { IconButton } from '../../components/ui/IconButton';
 import { AnimatedPressable } from '../../components/ui/AnimatedPressable';
+import { SkyNatureBackdrop } from '../../components/ui/SkyNatureBackdrop';
 import { RisingSheet } from '../../components/ui/RisingSheet';
 import { Enter } from '../../components/ui/Enter';
 import { TerminalPreview } from '../../components/terminal/TerminalPreview';
@@ -587,6 +588,8 @@ export default function InboxScreen() {
 
   return (
     <SafeAreaView style={styles.container} edges={['top']}>
+      <SkyNatureBackdrop height={300} />
+
       {hasConnection && !anyConnected && (
         <View style={styles.banner}>
           <View style={[styles.bannerDot, { backgroundColor: bannerAccent }]} />

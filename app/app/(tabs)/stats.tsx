@@ -20,6 +20,7 @@ import { useAgents } from '../../store/agents';
 import { wsClient } from '../../services/websocket';
 import { AnimatedPressable } from '../../components/ui/AnimatedPressable';
 import { RisingSheet } from '../../components/ui/RisingSheet';
+import { SkyNatureBackdrop } from '../../components/ui/SkyNatureBackdrop';
 
 // ── Types (mirror daemon/stats/types.go) ───────────────────
 
@@ -564,6 +565,8 @@ export default function StatsScreen() {
 
   return (
     <SafeAreaView style={s.container} edges={['top']}>
+      <SkyNatureBackdrop height={280} />
+
       <View style={s.header}>
         <Text style={s.title}>Stats</Text>
         <View style={s.rangeRow}>
@@ -937,7 +940,7 @@ function createStyles(colors: typeof Colors) {
     paddingTop: 16,
     paddingBottom: 12,
     gap: 14,
-    backgroundColor: colors.bgPrimary,
+    backgroundColor: 'transparent',
     zIndex: 2,
   },
   title: {
