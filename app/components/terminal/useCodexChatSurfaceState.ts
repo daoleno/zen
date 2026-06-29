@@ -53,6 +53,7 @@ interface UseCodexChatSurfaceStateInput {
   placeholder?: string;
   minimalComposer?: boolean;
   showAttachmentControl?: boolean;
+  composerBottomInset?: number;
   keyboardVerticalOffset?: number;
   showUnavailableAction?: boolean;
   emptyTitle?: string;
@@ -103,6 +104,7 @@ export function useCodexChatSurfaceState({
   placeholder,
   minimalComposer,
   showAttachmentControl,
+  composerBottomInset,
   keyboardVerticalOffset,
   showUnavailableAction,
   emptyTitle,
@@ -366,6 +368,7 @@ export function useCodexChatSurfaceState({
     keyboardVerticalOffset,
     minimalComposer,
     showAttachmentControl,
+    composerBottomInset,
   });
   const terminalActionPrompt = useMemo(
     () =>

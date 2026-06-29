@@ -7,7 +7,8 @@ import {
 } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 import { useFocusEffect, useRouter } from "expo-router";
-import { SafeAreaView } from "react-native-safe-area-context";
+import { SafeAreaView, useSafeAreaInsets } from "react-native-safe-area-context";
+import { getFloatingTabBarInset } from "../../components/navigation/floatingTabBarMetrics";
 import { BrainAdapterSheet } from "../../components/brain/BrainAdapterSheet";
 import { BrainChatHeader } from "../../components/brain/BrainChatHeader";
 import { BrainOverflowMenu } from "../../components/brain/BrainOverflowMenu";
@@ -45,6 +46,11 @@ export default function BrainScreen() {
   );
   const { state: agentState } = useAgents();
   const { state: brainState } = useBrain();
+  const insets = useSafeAreaInsets();
+  const composerBottomInset = useMemo(
+    () => getFloatingTabBarInset(insets.bottom),
+    [insets.bottom],
+  );
   const [servers, setServers] = useState<StoredServer[]>([]);
   const [adapterSheetVisible, setAdapterSheetVisible] = useState(false);
   const [menuVisible, setMenuVisible] = useState(false);
@@ -288,6 +294,7 @@ export default function BrainScreen() {
             placeholder="Message"
             minimalComposer
             showAttachmentControl
+            composerBottomInset={composerBottomInset}
             keyboardVerticalOffset={keyboardVerticalOffset}
             showUnavailableAction
             emptyTitle={BRAIN_EMPTY_TITLE}

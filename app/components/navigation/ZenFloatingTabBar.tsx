@@ -4,10 +4,12 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { AnimatedPressable } from "../ui/AnimatedPressable";
 import { createThemedSurfaces } from "../../constants/themedSurfaces";
 import { Radii, Typography, shadow, useAppTheme } from "../../constants/tokens";
+import {
+  FLOATING_TAB_BAR_BOTTOM_GAP,
+  FLOATING_TAB_BAR_HEIGHT,
+  FLOATING_TAB_BAR_HORIZONTAL_INSET,
+} from "./floatingTabBarMetrics";
 
-const TAB_BAR_HEIGHT = 54;
-const TAB_BAR_HORIZONTAL_INSET = 16;
-const TAB_BAR_BOTTOM_GAP = 10;
 /** Compact inner highlight — stadium/squircle, not a full-width pill. */
 const TAB_SELECTION_RADIUS = 18;
 
@@ -53,7 +55,7 @@ export function ZenFloatingTabBar({
   const colors = theme.colors;
   const surfaces = useMemo(() => createThemedSurfaces(theme), [theme]);
   const insets = useSafeAreaInsets();
-  const bottom = Math.max(insets.bottom, TAB_BAR_BOTTOM_GAP);
+  const bottom = Math.max(insets.bottom, FLOATING_TAB_BAR_BOTTOM_GAP);
   const styles = useMemo(() => createStyles(), []);
 
   const capsuleBackground =
@@ -147,11 +149,11 @@ function createStyles() {
   return StyleSheet.create({
     host: {
       position: "absolute",
-      left: TAB_BAR_HORIZONTAL_INSET,
-      right: TAB_BAR_HORIZONTAL_INSET,
+      left: FLOATING_TAB_BAR_HORIZONTAL_INSET,
+      right: FLOATING_TAB_BAR_HORIZONTAL_INSET,
     },
     capsule: {
-      minHeight: TAB_BAR_HEIGHT,
+      minHeight: FLOATING_TAB_BAR_HEIGHT,
       borderRadius: Radii.pill,
       borderWidth: StyleSheet.hairlineWidth,
       paddingHorizontal: 4,

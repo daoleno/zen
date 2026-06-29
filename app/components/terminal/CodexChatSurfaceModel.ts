@@ -53,6 +53,7 @@ export interface CodexComposerPresentationInput {
   keyboardVerticalOffset?: number;
   minimalComposer?: boolean;
   showAttachmentControl?: boolean;
+  composerBottomInset?: number;
 }
 
 export function buildCodexComposerPresentation({
@@ -75,6 +76,7 @@ export function buildCodexComposerPresentation({
   keyboardVerticalOffset,
   minimalComposer,
   showAttachmentControl,
+  composerBottomInset,
 }: CodexComposerPresentationInput): CodexComposerPresentation {
   const commandQuery = draft.trimStart();
   const slashCommandsEnabled = chatAgentSupportsSlashCommands(agentKind);
@@ -143,7 +145,8 @@ export function buildCodexComposerPresentation({
       slashQueryActive,
       explicitPlaceholder: placeholder,
     }),
-    bottomPadding: Math.max(safeAreaBottom, 8),
+    bottomPadding:
+      composerBottomInset ?? Math.max(safeAreaBottom, 8),
     keyboardVerticalOffset:
       typeof keyboardVerticalOffset === "number"
         ? keyboardVerticalOffset

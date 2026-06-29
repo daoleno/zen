@@ -49,6 +49,7 @@ export function useCodexComposerPresentation({
   keyboardVerticalOffset,
   minimalComposer,
   showAttachmentControl,
+  composerBottomInset,
 }: UseCodexComposerPresentationInput) {
   const agentKind = agentKindFromCommand(agentCommand);
   return useMemo(
@@ -73,6 +74,7 @@ export function useCodexComposerPresentation({
         keyboardVerticalOffset,
         minimalComposer,
         showAttachmentControl,
+        composerBottomInset,
       }),
     [
       attachmentCount,
@@ -93,6 +95,7 @@ export function useCodexComposerPresentation({
       keyboardVerticalOffset,
       minimalComposer,
       showAttachmentControl,
+      composerBottomInset,
     ],
   );
 }

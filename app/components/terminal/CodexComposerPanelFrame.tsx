@@ -32,7 +32,7 @@ export function CodexComposerPanelFrame({
         telegram ? styles.panelTelegramAmbient : null,
         {
           backgroundColor: chatgpt
-            ? chrome.surfaceActive
+            ? chrome.surfaceMuted
             : telegram
               ? chrome.surface
               : ambient

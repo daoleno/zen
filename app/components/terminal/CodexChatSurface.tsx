@@ -28,6 +28,7 @@ interface CodexChatSurfaceProps {
   placeholder?: string;
   minimalComposer?: boolean;
   showAttachmentControl?: boolean;
+  composerBottomInset?: number;
   keyboardVerticalOffset?: number;
   showUnavailableAction?: boolean;
   emptyTitle?: string;
@@ -49,6 +50,7 @@ function CodexChatSurfaceImpl({
   placeholder,
   minimalComposer,
   showAttachmentControl,
+  composerBottomInset,
   keyboardVerticalOffset,
   showUnavailableAction,
   emptyTitle,
@@ -69,6 +71,7 @@ function CodexChatSurfaceImpl({
     placeholder,
     minimalComposer,
     showAttachmentControl,
+    composerBottomInset,
     keyboardVerticalOffset,
     showUnavailableAction,
     emptyTitle,
