@@ -1,28 +1,46 @@
-import { StyleSheet } from 'react-native';
+import { StyleSheet, View } from 'react-native';
 import type { ColorValue } from 'react-native';
 import type { ComponentProps } from 'react';
 import { Tabs } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { Typography, useAppColors } from '../../constants/tokens';
+import { Radii, Typography, shadow, useAppColors } from '../../constants/tokens';
+
+const TAB_BAR_HEIGHT = 58;
+const TAB_BAR_HORIZONTAL_INSET = 14;
+const TAB_BAR_BOTTOM_GAP = 10;
 
 export default function TabLayout() {
   const colors = useAppColors();
   const insets = useSafeAreaInsets();
-  const tabBarBottom = Math.max(insets.bottom, 0);
+  const bottom = Math.max(insets.bottom, TAB_BAR_BOTTOM_GAP);
 
   return (
     <Tabs
       screenOptions={{
+        tabBarBackground: () => (
+          <View
+            style={{
+              flex: 1,
+              borderRadius: Radii.pill,
+              backgroundColor: colors.bgElevated,
+              borderWidth: StyleSheet.hairlineWidth,
+              borderColor: colors.borderSubtle,
+            }}
+          />
+        ),
         tabBarStyle: {
-          backgroundColor: colors.bgPrimary,
-          borderTopColor: colors.borderSubtle,
-          borderTopWidth: StyleSheet.hairlineWidth,
-          height: 50 + tabBarBottom,
-          paddingBottom: tabBarBottom,
-          paddingTop: 4,
-          elevation: 0,
-          shadowOpacity: 0,
+          position: 'absolute',
+          left: TAB_BAR_HORIZONTAL_INSET,
+          right: TAB_BAR_HORIZONTAL_INSET,
+          bottom,
+          height: TAB_BAR_HEIGHT,
+          borderRadius: Radii.pill,
+          backgroundColor: 'transparent',
+          borderTopWidth: 0,
+          paddingTop: 6,
+          paddingBottom: 6,
+          ...shadow('float', colors.shadowColor),
         },
         tabBarActiveTintColor: colors.accent,
         tabBarInactiveTintColor: colors.textTertiary,
