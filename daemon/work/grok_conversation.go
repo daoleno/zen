@@ -302,6 +302,7 @@ type grokConversationBuilder struct {
 	pendingThought string
 	taskActive     bool
 	lifecycleSeen  bool
+	nextEventID    int
 }
 
 func newGrokConversationBuilder(sourceID string) *grokConversationBuilder {
@@ -652,11 +653,12 @@ func (b *grokConversationBuilder) reindexEvents() {
 	}
 }
 
-func (b *grokConversationBuilder) eventID(lineNumber int) string {
+func (b *grokConversationBuilder) eventID(_ int) string {
+	b.nextEventID++
 	if b.sessionID != "" {
-		return fmt.Sprintf("%s:%d", b.sessionID, lineNumber)
+		return fmt.Sprintf("%s:%d", b.sessionID, b.nextEventID)
 	}
-	return fmt.Sprintf("%s:%d", b.sourceID, lineNumber)
+	return fmt.Sprintf("%s:%d", b.sourceID, b.nextEventID)
 }
 
 func (b *grokConversationBuilder) conversation() CodexConversation {

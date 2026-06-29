@@ -26,7 +26,22 @@ export function buildTimelineRenderItems(
 ): TimelineRenderItem[] {
   const withDividers =
     options?.showDateDividers === false ? items : injectDateDividers(items);
-  return annotateMessageGrouping(withDividers);
+  return dedupeTimelineRenderItems(annotateMessageGrouping(withDividers));
+}
+
+function dedupeTimelineRenderItems(
+  items: TimelineRenderItem[],
+): TimelineRenderItem[] {
+  const seen = new Set<string>();
+  const output: TimelineRenderItem[] = [];
+  for (const item of items) {
+    if (seen.has(item.id)) {
+      continue;
+    }
+    seen.add(item.id);
+    output.push(item);
+  }
+  return output;
 }
 
 function injectDateDividers(items: ZenTimelineItem[]): TimelineRenderItem[] {

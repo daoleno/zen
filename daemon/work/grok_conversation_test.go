@@ -26,6 +26,43 @@ func TestAgentToolNameRecognizesGrok(t *testing.T) {
 	}
 }
 
+func TestParseGrokConversation_AssistantToolCallsUseUniqueEventIDs(t *testing.T) {
+	dir := t.TempDir()
+	writeGrokSummary(t, filepath.Join(dir, grokSummaryFile), map[string]any{
+		"info": map[string]any{
+			"id":  "grok-tools-1",
+			"cwd": "/repo",
+		},
+	})
+	writeJSONL(t, filepath.Join(dir, grokChatHistoryFile),
+		map[string]any{
+			"type":    "assistant",
+			"content": "Running lookups.",
+			"tool_calls": []map[string]any{
+				{"id": "call-a", "name": "Grep", "arguments": `{"pattern":"foo"}`},
+				{"id": "call-b", "name": "Glob", "arguments": `{"glob_pattern":"**/*.go"}`},
+			},
+		},
+	)
+
+	got, err := parseGrokConversation(dir)
+	if err != nil {
+		t.Fatalf("parseGrokConversation: %v", err)
+	}
+	seen := map[string]int{}
+	for _, event := range got.Events {
+		seen[event.ID]++
+	}
+	for id, count := range seen {
+		if count > 1 {
+			t.Fatalf("duplicate event id %q (%d times)", id, count)
+		}
+	}
+	if len(got.Events) < 3 {
+		t.Fatalf("events = %#v, want assistant + 2 tools", got.Events)
+	}
+}
+
 func TestParseGrokConversation_BuildsStructuredTimeline(t *testing.T) {
 	dir := t.TempDir()
 	writeGrokSummary(t, filepath.Join(dir, grokSummaryFile), map[string]any{
@@ -119,6 +156,34 @@ func TestLoadCodexConversationForAgent_GrokUnavailableWithoutSession(t *testing.
 	if got.Available || got.Reason != "session_not_found" {
 		t.Fatalf("conversation = %#v", got)
 	}
+}
+
+func TestLoadCodexConversationForAgent_GrokGoalSessionHasUniqueEventIDs(t *testing.T) {
+	sessionDir := filepath.Join(
+		os.Getenv("HOME"),
+		".grok",
+		"sessions",
+		"%2Fhome%2Fdaoleno%2Fworkspace%2Fzen",
+		"019f11c1-341e-7483-8b72-3a253c152796",
+	)
+	if _, err := os.Stat(filepath.Join(sessionDir, grokChatHistoryFile)); err != nil {
+		t.Skipf("goal grok session unavailable: %v", err)
+	}
+
+	got, err := parseGrokConversation(sessionDir)
+	if err != nil {
+		t.Fatalf("parseGrokConversation: %v", err)
+	}
+	seen := map[string]int{}
+	for _, event := range got.Events {
+		seen[event.ID]++
+	}
+	for id, count := range seen {
+		if count > 1 {
+			t.Fatalf("duplicate event id %q (%d times)", id, count)
+		}
+	}
+	t.Logf("parsed %d unique grok events from goal session", len(got.Events))
 }
 
 func TestLoadCodexConversationForAgent_GrokRealSessionFixture(t *testing.T) {
