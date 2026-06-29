@@ -7,7 +7,6 @@ import {
 } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 import { useFocusEffect, useRouter } from "expo-router";
-import { useIsFocused } from "@react-navigation/native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { BrainAdapterSheet } from "../../components/brain/BrainAdapterSheet";
 import { BrainChatHeader } from "../../components/brain/BrainChatHeader";
@@ -46,7 +45,7 @@ export default function BrainScreen() {
   );
   const { state: agentState } = useAgents();
   const { state: brainState } = useBrain();
-  const screenFocused = useIsFocused();
+  const [screenFocused, setScreenFocused] = useState(false);
   const [servers, setServers] = useState<StoredServer[]>([]);
   const [adapterSheetVisible, setAdapterSheetVisible] = useState(false);
   const [menuVisible, setMenuVisible] = useState(false);
@@ -112,6 +111,15 @@ export default function BrainScreen() {
   );
   const availableAdapters = activeBrain?.adapters ?? [];
   const canSwitchAdapter = availableAdapters.length > 1;
+  useFocusEffect(
+    useCallback(() => {
+      setScreenFocused(true);
+      return () => {
+        setScreenFocused(false);
+      };
+    }, []),
+  );
+
   useFocusEffect(
     useCallback(() => {
       if (!activeServer || connectionState !== "connected") {
