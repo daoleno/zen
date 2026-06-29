@@ -1,61 +1,21 @@
-import { StyleSheet, View } from 'react-native';
 import type { ColorValue } from 'react-native';
 import type { ComponentProps } from 'react';
 import { Tabs } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
-import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { Radii, Typography, shadow, useAppColors } from '../../constants/tokens';
-
-const TAB_BAR_HEIGHT = 58;
-const TAB_BAR_HORIZONTAL_INSET = 14;
-const TAB_BAR_BOTTOM_GAP = 10;
+import {
+  ZenFloatingTabBar,
+  type ZenFloatingTabBarProps,
+} from '../../components/navigation/ZenFloatingTabBar';
 
 export default function TabLayout() {
-  const colors = useAppColors();
-  const insets = useSafeAreaInsets();
-  const bottom = Math.max(insets.bottom, TAB_BAR_BOTTOM_GAP);
-
   return (
     <Tabs
+      tabBar={(props) => (
+        <ZenFloatingTabBar {...(props as unknown as ZenFloatingTabBarProps)} />
+      )}
       screenOptions={{
-        tabBarBackground: () => (
-          <View
-            style={{
-              flex: 1,
-              borderRadius: Radii.pill,
-              backgroundColor: colors.bgElevated,
-              borderWidth: StyleSheet.hairlineWidth,
-              borderColor: colors.borderSubtle,
-            }}
-          />
-        ),
-        tabBarStyle: {
-          position: 'absolute',
-          left: TAB_BAR_HORIZONTAL_INSET,
-          right: TAB_BAR_HORIZONTAL_INSET,
-          bottom,
-          height: TAB_BAR_HEIGHT,
-          borderRadius: Radii.pill,
-          backgroundColor: 'transparent',
-          borderTopWidth: 0,
-          paddingTop: 6,
-          paddingBottom: 6,
-          ...shadow('float', colors.shadowColor),
-        },
-        tabBarActiveTintColor: colors.accent,
-        tabBarInactiveTintColor: colors.textTertiary,
-        tabBarShowLabel: true,
-        tabBarLabelStyle: {
-          fontFamily: Typography.uiFont,
-          fontSize: 11,
-          lineHeight: 13,
-          marginTop: 1,
-        },
-        tabBarItemStyle: {
-          paddingVertical: 0,
-        },
-        tabBarHideOnKeyboard: true,
         headerShown: false,
+        tabBarShowLabel: false,
       }}
     >
       <Tabs.Screen
@@ -117,5 +77,5 @@ function TabIcon({
   icon: ComponentProps<typeof Ionicons>['name'];
   color: ColorValue;
 }) {
-  return <Ionicons name={icon} size={24} color={color} />;
+  return <Ionicons name={icon} size={22} color={color} />;
 }
