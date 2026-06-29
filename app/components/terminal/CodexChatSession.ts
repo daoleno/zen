@@ -1091,6 +1091,10 @@ function filterCodexConversationForChat(
   let changed = false;
   const events: CodexConversation["events"] = [];
   for (const event of conversation.events) {
+    if (shouldDropGrokChatNoiseEvent(conversation, event)) {
+      changed = true;
+      continue;
+    }
     const cleaned = cleanCodexConversationEventForChat(event);
     if (!cleaned) {
       changed = true;
@@ -1102,6 +1106,16 @@ function filterCodexConversationForChat(
     events.push(cleaned);
   }
   return changed ? { ...conversation, events } : conversation;
+}
+
+function shouldDropGrokChatNoiseEvent(
+  conversation: CodexConversation,
+  event: CodexConversation["events"][number],
+): boolean {
+  if (conversation.source !== "grok_session") {
+    return false;
+  }
+  return event.kind === "plan" || event.kind === "commentary";
 }
 
 function cleanCodexConversationEventForChat(

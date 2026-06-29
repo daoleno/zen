@@ -741,15 +741,11 @@ func grokToolEventIsVisible(event CodexConversationEvent) bool {
 	if strings.TrimSpace(event.Output) != "" {
 		return true
 	}
-	input := strings.TrimSpace(event.Input)
-	if input == "" {
-		return false
+	status := strings.TrimSpace(strings.ToLower(event.Status))
+	if status == "running" || status == "failed" {
+		return true
 	}
-	name := strings.TrimSpace(event.ToolName)
-	if isConversationToolDisplayOptional(name) && strings.TrimSpace(event.Status) == "running" {
-		return false
-	}
-	return true
+	return false
 }
 
 func grokMessageText(raw json.RawMessage) string {

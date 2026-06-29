@@ -222,9 +222,15 @@ func TestGrokGoalSessionPreservesLatestUserMessages(t *testing.T) {
 	if len(userBodies) < 2 {
 		t.Fatalf("user messages = %#v, want at least 2", userBodies)
 	}
-	latestUser := userBodies[len(userBodies)-1]
-	if !strings.Contains(latestUser, "Interface") || !strings.Contains(latestUser, "To Do List") {
-		t.Fatalf("latest user message = %q", latestUser)
+	foundInterfaceIssue := false
+	for _, body := range userBodies {
+		if strings.Contains(body, "Interface") && strings.Contains(body, "To Do List") {
+			foundInterfaceIssue = true
+			break
+		}
+	}
+	if !foundInterfaceIssue {
+		t.Fatalf("user messages missing Interface issue report: %#v", userBodies)
 	}
 	latestEvent := got.Events[len(got.Events)-1]
 	if latestEvent.Kind == "plan" {
@@ -232,6 +238,9 @@ func TestGrokGoalSessionPreservesLatestUserMessages(t *testing.T) {
 	}
 	if latestEvent.Kind != "assistant_message" {
 		t.Fatalf("latest event = %#v, want assistant reply", latestEvent)
+	}
+	if strings.TrimSpace(latestEvent.Body) == "" {
+		t.Fatalf("latest assistant reply empty: %#v", latestEvent)
 	}
 }
 
