@@ -26,6 +26,49 @@ func TestAgentToolNameRecognizesGrok(t *testing.T) {
 	}
 }
 
+func TestParseGrokConversation_AssistantToolCallsUseUniqueEventIDsBeforeChatTrim(t *testing.T) {
+	dir := t.TempDir()
+	writeGrokSummary(t, filepath.Join(dir, grokSummaryFile), map[string]any{
+		"info": map[string]any{
+			"id":  "grok-tools-1",
+			"cwd": "/repo",
+		},
+	})
+	writeJSONL(t, filepath.Join(dir, grokChatHistoryFile),
+		map[string]any{
+			"type":    "assistant",
+			"content": "Running lookups.",
+			"tool_calls": []map[string]any{
+				{"id": "call-a", "name": "Grep", "arguments": `{"pattern":"foo"}`},
+				{"id": "call-b", "name": "Glob", "arguments": `{"glob_pattern":"**/*.go"}`},
+			},
+		},
+		map[string]any{
+			"type":         "tool_result",
+			"tool_call_id": "call-a",
+			"content":      "found 1",
+		},
+		map[string]any{
+			"type":    "assistant",
+			"content": "Done checking.",
+		},
+	)
+
+	builder := newGrokConversationBuilder(filepath.Base(dir))
+	if err := consumeGrokJSONL(filepath.Join(dir, grokChatHistoryFile), builder.consumeChatHistoryLine); err != nil {
+		t.Fatalf("consumeGrokJSONL: %v", err)
+	}
+	seen := map[string]int{}
+	for _, event := range builder.events {
+		seen[event.ID]++
+	}
+	for id, count := range seen {
+		if count > 1 {
+			t.Fatalf("duplicate event id %q (%d times)", id, count)
+		}
+	}
+}
+
 func TestParseGrokConversation_AssistantToolCallsUseUniqueEventIDs(t *testing.T) {
 	dir := t.TempDir()
 	writeGrokSummary(t, filepath.Join(dir, grokSummaryFile), map[string]any{
@@ -58,8 +101,11 @@ func TestParseGrokConversation_AssistantToolCallsUseUniqueEventIDs(t *testing.T)
 			t.Fatalf("duplicate event id %q (%d times)", id, count)
 		}
 	}
-	if len(got.Events) < 3 {
-		t.Fatalf("events = %#v, want assistant + 2 tools", got.Events)
+	if len(got.Events) != 1 {
+		t.Fatalf("events = %#v, want assistant message only in chat feed", got.Events)
+	}
+	if got.Events[0].Kind != "assistant_message" {
+		t.Fatalf("event = %#v", got.Events[0])
 	}
 }
 
@@ -124,25 +170,12 @@ func TestParseGrokConversation_BuildsStructuredTimeline(t *testing.T) {
 	if got.SessionID != "grok-test-1" || got.CWD != "/repo" {
 		t.Fatalf("metadata = (%q, %q)", got.SessionID, got.CWD)
 	}
-	if len(got.Events) < 4 {
-		t.Fatalf("events len = %d, want >= 4: %#v", len(got.Events), got.Events)
+	if len(got.Events) != 2 {
+		t.Fatalf("events len = %d, want 2: %#v", len(got.Events), got.Events)
 	}
 
 	assertEvent(t, got.Events[0], "user_message", "user", "", "Ship the Grok chat interface")
 	assertEvent(t, got.Events[1], "assistant_message", "assistant", "", "I'll inspect the existing Codex interface first.")
-
-	tool := got.Events[2]
-	if tool.Kind != "tool" || tool.ToolName != "Grep" {
-		t.Fatalf("tool event = %#v", tool)
-	}
-	if tool.Output != "found 3 matches" {
-		t.Fatalf("tool output = %q", tool.Output)
-	}
-
-	plan := got.Events[len(got.Events)-1]
-	if plan.Kind != "plan" || len(plan.Plan) != 2 {
-		t.Fatalf("plan event = %#v", plan)
-	}
 }
 
 func TestLoadCodexConversationForAgent_GrokUnavailableWithoutSession(t *testing.T) {
@@ -155,6 +188,83 @@ func TestLoadCodexConversationForAgent_GrokUnavailableWithoutSession(t *testing.
 	}
 	if got.Available || got.Reason != "session_not_found" {
 		t.Fatalf("conversation = %#v", got)
+	}
+}
+
+func TestGrokGoalSessionPreservesLatestUserMessages(t *testing.T) {
+	sessionDir := filepath.Join(
+		os.Getenv("HOME"),
+		".grok",
+		"sessions",
+		"%2Fhome%2Fdaoleno%2Fworkspace%2Fzen",
+		"019f11c1-341e-7483-8b72-3a253c152796",
+	)
+	if _, err := os.Stat(filepath.Join(sessionDir, grokChatHistoryFile)); err != nil {
+		t.Skipf("goal grok session unavailable: %v", err)
+	}
+	got, err := parseGrokConversation(sessionDir)
+	if err != nil {
+		t.Fatalf("parseGrokConversation: %v", err)
+	}
+	for _, kind := range []string{"plan", "commentary"} {
+		for _, event := range got.Events {
+			if event.Kind == kind {
+				t.Fatalf("unexpected %s event in grok chat feed: %#v", kind, event)
+			}
+		}
+	}
+	userBodies := make([]string, 0, 4)
+	for _, event := range got.Events {
+		if event.Kind == "user_message" {
+			userBodies = append(userBodies, event.Body)
+		}
+	}
+	if len(userBodies) < 2 {
+		t.Fatalf("user messages = %#v, want at least 2", userBodies)
+	}
+	latestUser := userBodies[len(userBodies)-1]
+	if !strings.Contains(latestUser, "Interface") || !strings.Contains(latestUser, "To Do List") {
+		t.Fatalf("latest user message = %q", latestUser)
+	}
+	latestEvent := got.Events[len(got.Events)-1]
+	if latestEvent.Kind == "plan" {
+		t.Fatal("latest event should not be a plan checklist")
+	}
+	if latestEvent.Kind != "assistant_message" {
+		t.Fatalf("latest event = %#v, want assistant reply", latestEvent)
+	}
+}
+
+func TestGrokGoalSessionEventMix(t *testing.T) {
+	sessionDir := filepath.Join(
+		os.Getenv("HOME"),
+		".grok",
+		"sessions",
+		"%2Fhome%2Fdaoleno%2Fworkspace%2Fzen",
+		"019f11c1-341e-7483-8b72-3a253c152796",
+	)
+	if _, err := os.Stat(filepath.Join(sessionDir, grokChatHistoryFile)); err != nil {
+		t.Skipf("goal grok session unavailable: %v", err)
+	}
+	got, err := parseGrokConversation(sessionDir)
+	if err != nil {
+		t.Fatalf("parseGrokConversation: %v", err)
+	}
+	counts := map[string]int{}
+	for _, event := range got.Events {
+		counts[event.Kind]++
+	}
+	t.Logf("event mix: %#v total=%d", counts, len(got.Events))
+	for i := len(got.Events) - 8; i < len(got.Events); i++ {
+		if i < 0 {
+			continue
+		}
+		event := got.Events[i]
+		body := event.Body
+		if len(body) > 60 {
+			body = body[:60] + "..."
+		}
+		t.Logf("tail[%d] kind=%s ts=%q body=%q plan=%d", i, event.Kind, event.Timestamp, body, len(event.Plan))
 	}
 }
 

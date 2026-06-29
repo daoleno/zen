@@ -19,6 +19,7 @@ import (
 
 const (
 	maxGrokConversationEvents = 240
+	maxGrokToolEventsInChat   = 48
 	maxGrokSessionAge         = 72 * time.Hour
 	grokChatHistoryFile       = "chat_history.jsonl"
 	grokUpdatesFile           = "updates.jsonl"
@@ -342,12 +343,6 @@ func (b *grokConversationBuilder) consumeChatHistoryLine(lineNumber int, line []
 			b.addMessage(lineNumber, "", "assistant", text)
 		}
 		b.consumeAssistantToolCalls(lineNumber, "", record.ToolCalls)
-	case "reasoning":
-		text := grokReasoningText(record.Summary)
-		if text == "" {
-			return
-		}
-		b.upsertThought(lineNumber, "", text, strings.EqualFold(strings.TrimSpace(record.Status), "completed"))
 	case "tool_result":
 		callID := strings.TrimSpace(record.ToolCallID)
 		output := grokMessageText(record.Content)
@@ -382,15 +377,12 @@ func (b *grokConversationBuilder) consumeUpdatesLine(lineNumber int, line []byte
 		return
 	}
 
-	timestamp := grokUpdateTimestamp(envelope.Timestamp)
 	if b.sessionID == "" {
 		b.sessionID = strings.TrimSpace(envelope.Params.SessionID)
 	}
 
 	update := envelope.Params.Update
 	switch update.SessionUpdate {
-	case "plan":
-		b.addPlanUpdate(lineNumber, timestamp, update.Entries)
 	case "turn_completed":
 		b.lifecycleSeen = true
 		b.taskActive = false
@@ -635,11 +627,6 @@ func (b *grokConversationBuilder) addEvent(event CodexConversationEvent) bool {
 		event.ID = b.eventID(len(b.events) + 1)
 	}
 	b.events = append(b.events, event)
-	if len(b.events) > maxGrokConversationEvents {
-		copy(b.events, b.events[len(b.events)-maxGrokConversationEvents:])
-		b.events = b.events[:maxGrokConversationEvents]
-	}
-	b.reindexEvents()
 	return true
 }
 
@@ -669,6 +656,7 @@ func (b *grokConversationBuilder) conversation() CodexConversation {
 		b.taskActive = false
 	}
 	b.finishPendingThought()
+	b.events = trimTrailingGrokTools(pruneGrokEventsForChat(b.events, maxGrokConversationEvents))
 	b.reindexEvents()
 	var active *bool
 	if b.lifecycleSeen {
@@ -683,6 +671,85 @@ func (b *grokConversationBuilder) conversation() CodexConversation {
 		Active:    active,
 		Events:    b.events,
 	}
+}
+
+func pruneGrokEventsForChat(events []CodexConversationEvent, max int) []CodexConversationEvent {
+	if len(events) == 0 {
+		return events
+	}
+	kept := make([]CodexConversationEvent, 0, len(events))
+	toolIndexes := make([]int, 0, len(events))
+	for _, event := range events {
+		switch event.Kind {
+		case "user_message", "assistant_message":
+			kept = append(kept, event)
+		case "tool":
+			if !grokToolEventIsVisible(event) {
+				continue
+			}
+			toolIndexes = append(toolIndexes, len(kept))
+			kept = append(kept, event)
+		default:
+			continue
+		}
+	}
+	for len(kept) > max && len(toolIndexes) > 0 {
+		dropAt := toolIndexes[0]
+		toolIndexes = toolIndexes[1:]
+		kept = append(kept[:dropAt], kept[dropAt+1:]...)
+		for index := range toolIndexes {
+			if toolIndexes[index] > dropAt {
+				toolIndexes[index]--
+			}
+		}
+	}
+	if len(toolIndexes) > maxGrokToolEventsInChat {
+		dropCount := len(toolIndexes) - maxGrokToolEventsInChat
+		for dropCount > 0 && len(toolIndexes) > 0 {
+			dropAt := toolIndexes[0]
+			toolIndexes = toolIndexes[1:]
+			kept = append(kept[:dropAt], kept[dropAt+1:]...)
+			for index := range toolIndexes {
+				if toolIndexes[index] > dropAt {
+					toolIndexes[index]--
+				}
+			}
+			dropCount--
+		}
+	}
+	return kept
+}
+
+func trimTrailingGrokTools(events []CodexConversationEvent) []CodexConversationEvent {
+	lastMessageIndex := -1
+	for index, event := range events {
+		if event.Kind != "user_message" && event.Kind != "assistant_message" {
+			continue
+		}
+		if strings.TrimSpace(event.Body) == "" {
+			continue
+		}
+		lastMessageIndex = index
+	}
+	if lastMessageIndex < 0 {
+		return events
+	}
+	return events[:lastMessageIndex+1]
+}
+
+func grokToolEventIsVisible(event CodexConversationEvent) bool {
+	if strings.TrimSpace(event.Output) != "" {
+		return true
+	}
+	input := strings.TrimSpace(event.Input)
+	if input == "" {
+		return false
+	}
+	name := strings.TrimSpace(event.ToolName)
+	if isConversationToolDisplayOptional(name) && strings.TrimSpace(event.Status) == "running" {
+		return false
+	}
+	return true
 }
 
 func grokMessageText(raw json.RawMessage) string {
@@ -803,6 +870,9 @@ func grokVisibleUserText(text string) string {
 	text = strings.TrimSpace(text)
 	if text == "" {
 		return ""
+	}
+	if idx := strings.Index(text, "<zen_attachments>"); idx >= 0 {
+		text = strings.TrimSpace(text[:idx])
 	}
 	const openTag = "<user_query>"
 	const closeTag = "</user_query>"
