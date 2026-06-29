@@ -10,6 +10,7 @@ import type {
   TerminalThemePalette,
 } from "../../constants/terminalThemes";
 import type { ConnectionState } from "../../store/agents";
+import { agentKindFromCommand } from "../../services/chatComposerPresentation";
 import type { ConnectionIssue } from "../../services/connectionIssue";
 import type {
   CodexConversation,
@@ -110,10 +111,12 @@ export function useCodexChatSurfaceState({
 }: UseCodexChatSurfaceStateInput): CodexChatSurfaceState {
   const insets = useSafeAreaInsets();
   const active = visible && screenFocused;
+  const chatAgentKind = agentKindFromCommand(agentInfo?.command);
   const slashCommands = useCodexSlashCommands({
     serverId,
     connectionState,
     screenFocused: active,
+    agentKind: chatAgentKind,
   });
   const [actionMenuPinned, setActionMenuPinned] = useState(false);
   const [skillsSheetVisible, setSkillsSheetVisible] = useState(false);
@@ -347,6 +350,7 @@ export function useCodexChatSurfaceState({
   const composerPresentation = useCodexComposerPresentation({
     draft,
     slashCommands,
+    agentCommand: agentInfo?.command,
     connectionState,
     requestRunning,
     attachmentCount: attachments.length,

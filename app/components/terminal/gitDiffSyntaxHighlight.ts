@@ -123,6 +123,13 @@ function detectSyntaxLanguageForFence(language: string | undefined): SyntaxLangu
       return "typescript";
     case "yml":
       return "yaml";
+    case "ascii":
+    case "art":
+    case "plain":
+    case "plaintext":
+    case "text":
+    case "txt":
+      return "plain";
     default:
       return detectSyntaxLanguage(`snippet.${normalized}`);
   }

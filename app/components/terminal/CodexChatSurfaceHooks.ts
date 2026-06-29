@@ -9,6 +9,7 @@ import {
   type TextInput,
 } from "react-native";
 import type { ConnectionState } from "../../store/agents";
+import { agentKindFromCommand } from "../../services/chatComposerPresentation";
 import type { CodexSlashCommand } from "../../services/websocket";
 import {
   buildCodexComposerPresentation,
@@ -24,12 +25,15 @@ const TEXT_SELECTION_ANCHOR_MAX_MS = 60000;
 
 type UseCodexComposerPresentationInput = Omit<
   CodexComposerPresentationInput,
-  "isAndroid"
->;
+  "isAndroid" | "agentKind"
+> & {
+  agentCommand?: string;
+};
 
 export function useCodexComposerPresentation({
   draft,
   slashCommands,
+  agentCommand,
   connectionState,
   requestRunning,
   attachmentCount,
@@ -46,11 +50,13 @@ export function useCodexComposerPresentation({
   minimalComposer,
   showAttachmentControl,
 }: UseCodexComposerPresentationInput) {
+  const agentKind = agentKindFromCommand(agentCommand);
   return useMemo(
     () =>
       buildCodexComposerPresentation({
         draft,
         slashCommands,
+        agentKind,
         connectionState,
         requestRunning,
         attachmentCount,
@@ -82,6 +88,7 @@ export function useCodexComposerPresentation({
       sending,
       startingNewChat,
       slashCommands,
+      agentKind,
       placeholder,
       keyboardVerticalOffset,
       minimalComposer,

@@ -1,5 +1,7 @@
 import { useEffect, useState } from "react";
 import type { ConnectionState } from "../../store/agents";
+import { chatAgentSupportsSlashCommands } from "../../services/chatComposerPresentation";
+import type { AgentKind } from "../../services/agentPresentation";
 import { wsClient, type CodexSlashCommand } from "../../services/websocket";
 import { slashCommandTitle } from "./codexSlashCommandPresentation";
 
@@ -63,6 +65,7 @@ const CHATUI_FALLBACK_SLASH_COMMAND_SPECS = [
     input: inputNone(),
     outputKind: "terminal",
     description: "create an AGENTS.md file with instructions for Codex",
+    chatSupported: false,
   }),
   fallbackSpec({
     name: "skills",
@@ -105,7 +108,7 @@ const CHATUI_SLASH_COMMAND_OVERRIDES: Record<string, SlashCommandOverride> = {
     input: inputNone(),
     output: { kind: "terminal" },
     interactive: false,
-    chat_supported: true,
+    chat_supported: false,
     terminal_supported: true,
   },
   rename: {
@@ -152,16 +155,27 @@ export function useCodexSlashCommands({
   serverId,
   connectionState,
   screenFocused,
+  agentKind = "codex",
 }: {
   serverId: string;
   connectionState: ConnectionState;
   screenFocused: boolean;
+  agentKind?: AgentKind;
 }) {
+  const slashCommandsEnabled = chatAgentSupportsSlashCommands(agentKind);
   const [slashCommands, setSlashCommands] = useState<CodexSlashCommand[]>(
-    () => chatuiSlashCommandsFromCache(slashCommandCache.get(serverId)),
+    () =>
+      slashCommandsEnabled
+        ? chatuiSlashCommandsFromCache(slashCommandCache.get(serverId))
+        : [],
   );
 
   useEffect(() => {
+    if (!slashCommandsEnabled) {
+      setSlashCommands([]);
+      return;
+    }
+
     const cachedCommands = slashCommandCache.get(serverId);
     setSlashCommands(chatuiSlashCommandsFromCache(cachedCommands));
 
@@ -187,7 +201,7 @@ export function useCodexSlashCommands({
     return () => {
       cancelled = true;
     };
-  }, [connectionState, screenFocused, serverId]);
+  }, [connectionState, screenFocused, serverId, slashCommandsEnabled]);
 
   return slashCommands;
 }
@@ -374,6 +388,7 @@ function fallbackSpec({
   outputKind,
   description,
   interactive = false,
+  chatSupported = true,
 }: {
   name: string;
   category: string;
@@ -382,6 +397,7 @@ function fallbackSpec({
   outputKind: string;
   description: string;
   interactive?: boolean;
+  chatSupported?: boolean;
 }): LocalSlashCommandSpec {
   return {
     name,
@@ -391,7 +407,7 @@ function fallbackSpec({
     input,
     output: { kind: outputKind },
     interactive,
-    chat_supported: true,
+    chat_supported: chatSupported,
     terminal_supported: true,
   };
 }

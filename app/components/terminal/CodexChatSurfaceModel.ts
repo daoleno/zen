@@ -1,4 +1,9 @@
 import type { ConnectionState } from "../../store/agents";
+import {
+  buildChatComposerPlaceholder,
+  chatAgentSupportsSlashCommands,
+} from "../../services/chatComposerPresentation";
+import type { AgentKind } from "../../services/agentPresentation";
 import type { CodexSlashCommand } from "../../services/websocket";
 import { filterSlashCommands } from "./CodexSlashCommands";
 
@@ -31,6 +36,7 @@ export interface CodexComposerPresentation {
 export interface CodexComposerPresentationInput {
   draft: string;
   slashCommands: CodexSlashCommand[];
+  agentKind: AgentKind;
   connectionState: ConnectionState;
   requestRunning: boolean;
   attachmentCount: number;
@@ -52,6 +58,7 @@ export interface CodexComposerPresentationInput {
 export function buildCodexComposerPresentation({
   draft,
   slashCommands,
+  agentKind,
   connectionState,
   requestRunning,
   attachmentCount,
@@ -70,11 +77,19 @@ export function buildCodexComposerPresentation({
   showAttachmentControl,
 }: CodexComposerPresentationInput): CodexComposerPresentation {
   const commandQuery = draft.trimStart();
+  const slashCommandsEnabled = chatAgentSupportsSlashCommands(agentKind);
   const slashQueryActive =
+    slashCommandsEnabled &&
     commandQuery.startsWith("/") &&
     !commandQuery.includes(" ") &&
     !commandQuery.includes("\n");
   const normalDraftActive = commandQuery.length > 0 && !slashQueryActive;
+  const visibleSlashCommands = slashCommandsEnabled
+    ? filterSlashCommands(
+        slashCommands,
+        slashQueryActive ? commandQuery : "/",
+      )
+    : [];
   const composerActionsAvailable =
     !minimalComposer || Boolean(showAttachmentControl);
   const showComposerActions =
@@ -82,10 +97,12 @@ export function buildCodexComposerPresentation({
     actionMenuPinned &&
     composerActionsAvailable;
   const showCommandList =
+    slashCommandsEnabled &&
     !minimalComposer &&
     connectionState === "connected" &&
     (actionMenuPinned || slashQueryActive) &&
-    (slashQueryActive || !normalDraftActive);
+    (slashQueryActive || !normalDraftActive) &&
+    (slashQueryActive || visibleSlashCommands.length > 0);
   const showCommandMenu = showComposerActions || showCommandList;
   const composerActionButtonEnabled =
     connectionState === "connected" && composerActionsAvailable;
@@ -98,10 +115,7 @@ export function buildCodexComposerPresentation({
 
   return {
     commandQuery,
-    visibleSlashCommands: filterSlashCommands(
-      slashCommands,
-      slashQueryActive ? commandQuery : "/",
-    ),
+    visibleSlashCommands,
     showCommandMenu,
     showCommandList,
     showComposerActions,
@@ -123,9 +137,12 @@ export function buildCodexComposerPresentation({
             ? "Working"
             : "Send message",
     sendElapsedLabel: showStopIndicator ? elapsedLabel : undefined,
-    placeholder:
-      placeholder ||
-      (connectionState === "connected" ? "Message Codex" : "Connection unavailable"),
+    placeholder: buildChatComposerPlaceholder({
+      agentKind,
+      connectionState,
+      slashQueryActive,
+      explicitPlaceholder: placeholder,
+    }),
     bottomPadding: Math.max(safeAreaBottom, 8),
     keyboardVerticalOffset:
       typeof keyboardVerticalOffset === "number"

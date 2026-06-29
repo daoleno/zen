@@ -15,6 +15,8 @@ import {
   highlightCodeLineForLanguage,
   type HighlightTokenKind,
 } from "./gitDiffSyntaxHighlight";
+import { shouldRenderPlainMonospaceCodeBlock } from "./codeBlockPresentation";
+import { PreformattedCodeWebView } from "./PreformattedCodeWebView";
 import { useTimelineSelectableTextProps } from "./TimelineTextSelectableContext";
 
 interface CodexMessageCodeBlockProps {
@@ -40,8 +42,13 @@ export function CodexMessageCodeBlock({
     [language, text],
   );
   const lines = useMemo(() => splitCodeLines(prepared.text), [prepared.text]);
-  const label = formatLanguageLabel(prepared.language);
+  const label = prepared.usePlainMonospace ? "" : formatLanguageLabel(prepared.language);
   const baseColor = chrome.text || theme.foreground;
+  const codeTextStyle = [
+    styles.codeLine,
+    compact ? styles.codeLineCompact : null,
+    { color: baseColor, fontFamily: Typography.chatMonoFont },
+  ];
 
   return (
     <View
@@ -73,41 +80,45 @@ export function CodexMessageCodeBlock({
           </Text>
         </View>
       ) : null}
-      <ScrollView
-        horizontal
-        nestedScrollEnabled
-        showsHorizontalScrollIndicator={false}
-        contentContainerStyle={[
-          styles.scrollContent,
-          compact ? styles.scrollContentCompact : null,
-        ]}
-      >
-        <View style={styles.codeContent}>
-          {lines.map((line, index) => (
-            <Text
-              key={index}
-              {...selectableTextProps}
-              style={[
-                styles.codeLine,
-                compact ? styles.codeLineCompact : null,
-                { color: baseColor },
-              ]}
-            >
-              {highlightCodeLineForLanguage(line || " ", prepared.language).map((segment, segmentIndex) => (
-                <Text
-                  key={`${segmentIndex}:${segment.kind}`}
-                  style={{
-                    color: syntaxColor(segment.kind, theme, chrome, baseColor),
-                    fontFamily: fontFamilyForSegment(segment.kind),
-                  }}
-                >
-                  {segment.text}
-                </Text>
-              ))}
-            </Text>
-          ))}
-        </View>
-      </ScrollView>
+      {prepared.usePlainMonospace ? (
+        <PreformattedCodeWebView
+          text={prepared.text}
+          color={baseColor}
+          compact={compact}
+        />
+      ) : (
+        <ScrollView
+          horizontal
+          nestedScrollEnabled
+          showsHorizontalScrollIndicator={false}
+          contentContainerStyle={[
+            styles.scrollContent,
+            compact ? styles.scrollContentCompact : null,
+          ]}
+        >
+          <View style={styles.codeContent}>
+            {lines.map((line, index) => (
+              <Text
+                key={index}
+                {...selectableTextProps}
+                style={codeTextStyle}
+              >
+                {highlightCodeLineForLanguage(line || " ", prepared.language).map((segment, segmentIndex) => (
+                  <Text
+                    key={`${segmentIndex}:${segment.kind}`}
+                    style={{
+                      color: syntaxColor(segment.kind, theme, chrome, baseColor),
+                      fontFamily: fontFamilyForSegment(segment.kind),
+                    }}
+                  >
+                    {segment.text}
+                  </Text>
+                ))}
+              </Text>
+            ))}
+          </View>
+        </ScrollView>
+      )}
     </View>
   );
 }
@@ -117,24 +128,45 @@ const MAX_JSON_FORMAT_CHARS = 220_000;
 function prepareCodeBlockText(
   text: string,
   language: string | undefined,
-): { text: string; language?: string } {
+): { text: string; language?: string; usePlainMonospace: boolean } {
   const normalized = normalizeCodeBlockText(text);
   const normalizedLanguage = normalizeLanguage(language);
+  const usePlainMonospace = shouldRenderPlainMonospaceCodeBlock(
+    normalized,
+    normalizedLanguage,
+  );
+  if (usePlainMonospace) {
+    return {
+      text: normalized,
+      language: normalizedLanguage,
+      usePlainMonospace: true,
+    };
+  }
+
   const shouldTryJson =
     isJsonLanguage(normalizedLanguage)
     || (!normalizedLanguage && looksLikeJsonContainer(normalized));
   if (!shouldTryJson || normalized.length > MAX_JSON_FORMAT_CHARS) {
-    return { text: normalized, language: normalizedLanguage };
+    return {
+      text: normalized,
+      language: normalizedLanguage,
+      usePlainMonospace: false,
+    };
   }
 
   const formatted = formatJsonContainer(normalized);
   if (!formatted) {
-    return { text: normalized, language: normalizedLanguage };
+    return {
+      text: normalized,
+      language: normalizedLanguage,
+      usePlainMonospace: false,
+    };
   }
 
   return {
     text: formatted,
     language: isJsonLanguage(normalizedLanguage) ? normalizedLanguage : "json",
+    usePlainMonospace: false,
   };
 }
 
@@ -319,7 +351,7 @@ const styles = StyleSheet.create({
     fontFamily: Typography.chatMonoFontBold,
   },
   scrollContent: {
-    minWidth: "100%",
+    flexGrow: 1,
     paddingHorizontal: 12,
     paddingVertical: 10,
   },
@@ -328,12 +360,16 @@ const styles = StyleSheet.create({
     paddingVertical: 9,
   },
   codeContent: {
-    minWidth: "100%",
+    flexShrink: 0,
+    alignSelf: "flex-start",
   },
   codeLine: {
     fontSize: 13,
     lineHeight: 20,
     fontFamily: Typography.chatMonoFont,
+    includeFontPadding: false,
+    textAlign: "left",
+    letterSpacing: 0,
   },
   codeLineCompact: {
     fontSize: 12,
