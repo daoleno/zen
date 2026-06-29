@@ -22,7 +22,9 @@ import {
   scanFromURLAsync,
   useCameraPermissions,
 } from "expo-camera";
-import { Colors, Radii, Typography, useAppColors, shadow } from "../../constants/tokens";
+import { Colors, Radii, Typography, useAppColors, useAppTheme, shadow } from "../../constants/tokens";
+import type { ResolvedZenTheme } from "../../theme";
+import { createThemedSurfaces } from "../../constants/themedSurfaces";
 import { importConnection } from "../../services/importConnection";
 import { wsClient } from "../../services/websocket";
 import { ConnectionState, useAgents } from "../../store/agents";
@@ -30,13 +32,15 @@ import * as Storage from "../../services/storage";
 import { connectionIssueAccent } from "../../services/connectionIssue";
 import { AnimatedPressable } from "../../components/ui/AnimatedPressable";
 import { RisingSheet } from "../../components/ui/RisingSheet";
+import { TelegramSettingsRow } from "../../components/ui/TelegramSettingsRow";
 
 const QR_BARCODE_TYPES: BarcodeType[] = ["qr"];
 
 export default function SettingsScreen() {
   const { state, dispatch } = useAgents();
   const colors = useAppColors();
-  const styles = useMemo(() => createStyles(colors), [colors]);
+  const { theme } = useAppTheme();
+  const styles = useMemo(() => createStyles(theme), [theme]);
   const params = useLocalSearchParams<{
     addServer?: string;
     refresh?: string;
@@ -276,17 +280,11 @@ export default function SettingsScreen() {
     setExpandedServer((prev) => (prev === serverId ? null : serverId));
   };
 
-  const handlePasteImport = async () => {
-    const clipboardValue = await Clipboard.getStringAsync();
-    if (!clipboardValue.trim()) {
-      Alert.alert("Clipboard is empty", "Copy a zen:// pairing link first.");
-      return;
-    }
-    await importServer(clipboardValue);
-  };
-
   const handleImportDraft = async () => {
-    const rawValue = draftImportValue.trim();
+    let rawValue = draftImportValue.trim();
+    if (!rawValue) {
+      rawValue = (await Clipboard.getStringAsync()).trim();
+    }
     if (!rawValue) {
       Alert.alert(
         "Pairing link required",
@@ -347,23 +345,27 @@ export default function SettingsScreen() {
   return (
     <SafeAreaView style={styles.container} edges={["top"]}>
       <View style={styles.header}>
+        <View style={styles.profileAvatar}>
+          <Ionicons name="person" size={34} color={colors.textPrimary} />
+        </View>
         <Text style={styles.pageTitle}>Settings</Text>
+        <Text style={styles.pageSubtitle}>Pair and manage daemon endpoints</Text>
       </View>
       <ScrollView contentContainerStyle={styles.content} showsVerticalScrollIndicator={false}>
-          {/* Servers */}
           <View style={styles.sectionHeader}>
             <Text style={[styles.sectionLabel, { marginTop: 0 }]}>Servers</Text>
-            {servers.length > 0 && (
+            {servers.length > 0 ? (
               <Text style={styles.sectionCount}>
-                {connectedCount}/{servers.length}
+                {connectedCount} of {servers.length} connected
               </Text>
-            )}
+            ) : null}
           </View>
 
           <View style={styles.serverList}>
             {servers.length === 0 ? (
               <View style={styles.emptyCard}>
                 <Text style={styles.emptyText}>No paired daemons yet</Text>
+                <Text style={styles.emptyHint}>Pair your first server below</Text>
               </View>
             ) : (
               servers.map((server) => {
@@ -510,20 +512,18 @@ export default function SettingsScreen() {
                 );
               })
             )}
+            <TelegramSettingsRow
+              icon="add-circle-outline"
+              iconColor={colors.accent}
+              title="Add Server"
+              subtitle="Pair via link or QR code"
+              onPress={() => {
+                Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+                openCreateServer();
+              }}
+              isLast
+            />
           </View>
-
-          <AnimatedPressable
-            style={styles.addBtn}
-            preset="press"
-            scale={0.98}
-            onPress={() => {
-              Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-              openCreateServer();
-            }}
-          >
-            <Ionicons name="add" size={17} color={colors.accent} />
-            <Text style={styles.addBtnText}>Pair Server</Text>
-          </AnimatedPressable>
 
           <Text style={styles.version}>Zen v0.1.0</Text>
       </ScrollView>
@@ -632,38 +632,18 @@ export default function SettingsScreen() {
               </AnimatedPressable>
             </View>
 
-            <View style={styles.divider}>
-              <View style={styles.dividerLine} />
-              <Text style={styles.dividerText}>or</Text>
-              <View style={styles.dividerLine} />
-            </View>
-
-            <View style={styles.importRow}>
-              <AnimatedPressable
-                style={styles.importBtn}
-                preset="press"
-                scale={0.96}
-                onPress={() => {
-                  Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-                  void handlePasteImport();
-                }}
-              >
-                <Ionicons name="clipboard-outline" size={15} color={colors.textSecondary} />
-                <Text style={styles.importBtnText}>Paste Link</Text>
-              </AnimatedPressable>
-              <AnimatedPressable
-                style={styles.importBtn}
-                preset="press"
-                scale={0.96}
-                onPress={() => {
-                  Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-                  openScanner();
-                }}
-              >
-                <Ionicons name="qr-code-outline" size={15} color={colors.textSecondary} />
-                <Text style={styles.importBtnText}>Scan QR</Text>
-              </AnimatedPressable>
-            </View>
+            <AnimatedPressable
+              style={styles.scanQrBtn}
+              preset="press"
+              scale={0.98}
+              onPress={() => {
+                Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+                openScanner();
+              }}
+            >
+              <Ionicons name="qr-code-outline" size={18} color={colors.accent} />
+              <Text style={styles.scanQrBtnText}>Scan QR Code</Text>
+            </AnimatedPressable>
           </>
         )}
       </RisingSheet>
@@ -788,8 +768,8 @@ function ServerNoticeCard({
   detail: string;
   hint: string;
 }) {
-  const colors = useAppColors();
-  const styles = useMemo(() => createStyles(colors), [colors]);
+  const { theme } = useAppTheme();
+  const styles = useMemo(() => createStyles(theme), [theme]);
 
   return (
     <View style={[styles.noticeCard, { borderColor: accent }]}>
@@ -842,7 +822,14 @@ function latencyColor(latencyMs: number, colors: typeof Colors = Colors): string
   return colors.dangerText;
 }
 
-function createStyles(colors: typeof Colors) {
+function createStyles(theme: ResolvedZenTheme) {
+  const colors = theme.colors;
+  const {
+    surface: themedSurface,
+    border: themedBorder,
+    sectionLabel,
+  } = createThemedSurfaces(theme);
+
   return StyleSheet.create({
   container: {
     flex: 1,
@@ -850,19 +837,39 @@ function createStyles(colors: typeof Colors) {
   },
   header: {
     paddingHorizontal: 20,
-    paddingTop: 16,
-    paddingBottom: 14,
+    paddingTop: 18,
+    paddingBottom: 18,
+    alignItems: "center",
+    zIndex: 2,
   },
   content: {
     paddingHorizontal: 20,
-    paddingBottom: 48,
+    paddingBottom: 110,
+  },
+  profileAvatar: {
+    width: 82,
+    height: 82,
+    borderRadius: 41,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: colors.bgElevated,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: colors.border,
+    marginBottom: 10,
   },
   pageTitle: {
     color: colors.textPrimary,
     fontSize: 30,
     lineHeight: 34,
     fontFamily: Typography.uiFontMedium,
-    letterSpacing: -0.6,
+    letterSpacing: 0,
+  },
+  pageSubtitle: {
+    marginTop: 3,
+    color: colors.textSecondary,
+    fontSize: 13,
+    lineHeight: 18,
+    fontFamily: Typography.uiFont,
   },
 
   // Section
@@ -874,7 +881,7 @@ function createStyles(colors: typeof Colors) {
     marginTop: 4,
   },
   sectionLabel: {
-    color: colors.textTertiary,
+    color: sectionLabel,
     fontSize: 11,
     fontFamily: Typography.uiFontMedium,
     textTransform: "uppercase",
@@ -890,16 +897,20 @@ function createStyles(colors: typeof Colors) {
 
   // Server list
   serverList: {
-    gap: 10,
-  },
-  serverCard: {
-    borderRadius: Radii.md,
-    paddingHorizontal: 16,
-    paddingVertical: 14,
+    gap: 0,
+    overflow: "hidden",
+    borderRadius: Radii.lg,
     backgroundColor: colors.bgSurface,
     borderWidth: StyleSheet.hairlineWidth,
     borderColor: colors.borderSubtle,
-    ...shadow("card", colors.shadowColor),
+  },
+  serverCard: {
+    borderRadius: 0,
+    paddingHorizontal: 16,
+    paddingVertical: 14,
+    backgroundColor: colors.bgSurface,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: colors.borderSubtle,
   },
   serverRow: {
     flexDirection: "row",
@@ -947,7 +958,8 @@ function createStyles(colors: typeof Colors) {
     padding: 14,
     borderRadius: Radii.sm,
     borderWidth: StyleSheet.hairlineWidth,
-    backgroundColor: colors.surfaceSubtle,
+    borderColor: themedBorder,
+    backgroundColor: themedSurface,
   },
   noticeHeader: {
     flexDirection: "row",
@@ -1000,31 +1012,21 @@ function createStyles(colors: typeof Colors) {
   actionBtnDangerText: {
     color: colors.dangerText,
   },
-  addBtn: {
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "center",
-    gap: 7,
-    paddingVertical: 14,
-    marginTop: 14,
-    borderRadius: Radii.sm,
-    borderWidth: StyleSheet.hairlineWidth,
-    borderColor: colors.border,
-    borderStyle: "dashed",
-  },
-  addBtnText: {
-    color: colors.accent,
-    fontSize: 14,
-    fontFamily: Typography.uiFontMedium,
-  },
   emptyCard: {
     paddingVertical: 28,
     alignItems: "center",
+    gap: 4,
   },
   emptyText: {
     color: colors.textTertiary,
     fontSize: 13.5,
     fontFamily: Typography.uiFont,
+  },
+  emptyHint: {
+    color: colors.textTertiary,
+    fontSize: 12,
+    fontFamily: Typography.uiFont,
+    opacity: 0.75,
   },
 
   version: {
@@ -1136,42 +1138,21 @@ function createStyles(colors: typeof Colors) {
   modalBtnPrimaryText: {
     color: colors.textOnAccent,
   },
-  divider: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 12,
-    marginTop: 22,
-    marginBottom: 16,
-  },
-  dividerLine: {
-    flex: 1,
-    height: StyleSheet.hairlineWidth,
-    backgroundColor: colors.border,
-  },
-  dividerText: {
-    color: colors.textTertiary,
-    fontSize: 12,
-    fontFamily: Typography.uiFont,
-  },
-  importRow: {
-    flexDirection: "row",
-    gap: 10,
-  },
-  importBtn: {
-    flex: 1,
+  scanQrBtn: {
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "center",
-    gap: 7,
+    gap: 8,
     height: 44,
+    marginTop: 14,
     borderRadius: Radii.sm,
     borderWidth: StyleSheet.hairlineWidth,
     borderColor: colors.border,
     backgroundColor: colors.surfaceSubtle,
   },
-  importBtnText: {
-    color: colors.textSecondary,
-    fontSize: 13.5,
+  scanQrBtnText: {
+    color: colors.accent,
+    fontSize: 14,
     fontFamily: Typography.uiFontMedium,
   },
 

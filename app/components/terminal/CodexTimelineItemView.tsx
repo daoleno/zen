@@ -14,6 +14,7 @@ import {
   ZenPlanUpdate,
 } from "./CodexTimelinePlan";
 import type { ZenPlanTimelineItem } from "./CodexTimelinePlanTypes";
+import type { MessagePresentation } from "./CodexTimelineGrouping";
 import {
   ZenAssistantMessage,
   ZenUserMessage,
@@ -28,6 +29,7 @@ export type ZenTimelineItem =
 
 interface ZenTimelineItemViewProps {
   item: ZenTimelineItem;
+  presentation?: MessagePresentation;
   chrome: TerminalThemeChrome;
   theme: TerminalThemePalette;
   loadAssetPreview(path: string): Promise<string | null>;
@@ -37,6 +39,7 @@ interface ZenTimelineItemViewProps {
 
 function ZenTimelineItemViewImpl({
   item,
+  presentation,
   chrome,
   theme,
   loadAssetPreview,
@@ -45,11 +48,19 @@ function ZenTimelineItemViewImpl({
 }: ZenTimelineItemViewProps) {
   if (item.type === "message") {
     if (item.role === "user") {
-      return <ZenUserMessage item={item} chrome={chrome} theme={theme} />;
+      return (
+        <ZenUserMessage
+          item={item}
+          presentation={presentation}
+          chrome={chrome}
+          theme={theme}
+        />
+      );
     }
     return (
       <ZenAssistantMessage
         item={item}
+        presentation={presentation}
         chrome={chrome}
         theme={theme}
       />
@@ -80,6 +91,7 @@ function areZenTimelineItemViewPropsEqual(
   next: ZenTimelineItemViewProps,
 ) {
   return (
+    previous.presentation === next.presentation &&
     previous.item === next.item &&
     previous.chrome === next.chrome &&
     previous.theme === next.theme &&

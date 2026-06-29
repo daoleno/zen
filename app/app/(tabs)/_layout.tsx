@@ -1,28 +1,48 @@
-import { StyleSheet, Text as RNText } from 'react-native';
+import { StyleSheet, View } from 'react-native';
 import type { ColorValue } from 'react-native';
+import type { ComponentProps } from 'react';
 import { Tabs } from 'expo-router';
+import { Ionicons } from '@expo/vector-icons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { useAppColors } from '../../constants/tokens';
+import { Typography, useAppColors } from '../../constants/tokens';
 
 export default function TabLayout() {
   const colors = useAppColors();
   const insets = useSafeAreaInsets();
-  const tabBarBottom = Math.max(insets.bottom, 8);
+  const tabBarBottom = Math.max(insets.bottom, 0);
 
   return (
     <Tabs
       screenOptions={{
         tabBarStyle: {
-          backgroundColor: colors.bgPrimary,
-          borderTopColor: colors.borderSubtle,
-          borderTopWidth: 0.5,
-          height: 52 + tabBarBottom,
+          position: 'absolute',
+          left: 0,
+          right: 0,
+          bottom: 0,
+          height: 56 + tabBarBottom,
           paddingBottom: tabBarBottom,
-          paddingTop: 4,
+          paddingTop: 6,
+          paddingHorizontal: 4,
+          backgroundColor: colors.bgElevated,
+          borderTopColor: colors.borderSubtle,
+          borderTopWidth: StyleSheet.hairlineWidth,
+          elevation: 0,
+          shadowOpacity: 0,
         },
         tabBarActiveTintColor: colors.accent,
-        tabBarInactiveTintColor: colors.disabledText,
-        tabBarShowLabel: false,
+        tabBarInactiveTintColor: colors.textTertiary,
+        tabBarShowLabel: true,
+        tabBarLabelStyle: {
+          fontFamily: Typography.uiFontMedium,
+          fontSize: 10,
+          lineHeight: 12,
+          marginTop: 2,
+        },
+        tabBarItemStyle: {
+          borderRadius: 12,
+          minHeight: 44,
+          paddingVertical: 2,
+        },
         tabBarHideOnKeyboard: true,
         headerShown: false,
       }}
@@ -32,7 +52,7 @@ export default function TabLayout() {
         options={{
           title: 'Agents',
           tabBarIcon: ({ color, focused }) => (
-            <TabSymbol glyph={focused ? '●' : '○'} color={color} focused={focused} fontSize={14} />
+            <TabSymbol icon={focused ? 'chatbubbles' : 'chatbubbles-outline'} color={color} focused={focused} />
           ),
         }}
       />
@@ -41,7 +61,7 @@ export default function TabLayout() {
         options={{
           title: 'Brain',
           tabBarIcon: ({ color, focused }) => (
-            <TabSymbol glyph="✦" color={color} focused={focused} fontSize={17} />
+            <TabSymbol icon={focused ? 'hardware-chip' : 'hardware-chip-outline'} color={color} focused={focused} />
           ),
         }}
       />
@@ -50,7 +70,7 @@ export default function TabLayout() {
         options={{
           title: 'Stats',
           tabBarIcon: ({ color, focused }) => (
-            <TabSymbol glyph="∷" color={color} focused={focused} fontSize={20} />
+            <TabSymbol icon={focused ? 'bar-chart' : 'bar-chart-outline'} color={color} focused={focused} />
           ),
         }}
       />
@@ -59,7 +79,7 @@ export default function TabLayout() {
         options={{
           title: 'Settings',
           tabBarIcon: ({ color, focused }) => (
-            <TabSymbol glyph="///" color={color} focused={focused} fontSize={16} />
+            <TabSymbol icon={focused ? 'settings' : 'settings-outline'} color={color} focused={focused} />
           ),
         }}
       />
@@ -68,36 +88,35 @@ export default function TabLayout() {
 }
 
 function TabSymbol({
-  glyph,
+  icon,
   color,
   focused,
-  fontSize,
 }: {
-  glyph: string;
+  icon: ComponentProps<typeof Ionicons>['name'];
   color: ColorValue;
   focused: boolean;
-  fontSize: number;
 }) {
+  const colors = useAppColors();
   return (
-    <RNText
+    <View
       style={[
-        styles.tabSymbol,
+        styles.tabIconWrap,
         {
-          color,
-          fontSize,
-          opacity: focused ? 1 : 0.52,
+          backgroundColor: focused ? colors.accentSoft : 'transparent',
         },
       ]}
     >
-      {glyph}
-    </RNText>
+      <Ionicons name={icon} size={20} color={color} />
+    </View>
   );
 }
 
 const styles = StyleSheet.create({
-  tabSymbol: {
-    minWidth: 28,
-    lineHeight: 22,
-    textAlign: 'center',
+  tabIconWrap: {
+    minWidth: 52,
+    height: 30,
+    borderRadius: 15,
+    alignItems: 'center',
+    justifyContent: 'center',
   },
 });

@@ -9,7 +9,21 @@ import type {
   TerminalThemeChrome,
   TerminalThemePalette,
 } from "../../constants/terminalThemes";
-import { Typography } from "../../constants/tokens";
+import { Typography, useAppTheme } from "../../constants/tokens";
+import { isAmbientChatChrome } from "../../constants/themedSurfaces";
+import type { MessagePresentation } from "./CodexTimelineGrouping";
+import {
+  chromeForSentBubble,
+  resolveReceivedBubbleColor,
+  resolveSentBubbleColor,
+} from "./chatBubbleColors";
+import { MessageBubbleFooter } from "./MessageBubbleFooter";
+import {
+  assistantBubbleRadii,
+  chatgptUserBubbleRadii,
+  messageRowSpacing,
+  userBubbleRadii,
+} from "./messageBubbleShape";
 import type { HeartbeatWakeEvent } from "./CodexHeartbeatWake";
 import {
   formatHeartbeatReason,
@@ -37,15 +51,28 @@ export interface ZenMessageTimelineItem {
   heartbeatWake?: HeartbeatWakeEvent;
 }
 
+const DEFAULT_PRESENTATION: MessagePresentation = {
+  showAvatar: false,
+  groupPosition: "single",
+  compactTop: false,
+  compactBottom: false,
+};
+
 export function ZenUserMessage({
   item,
+  presentation = DEFAULT_PRESENTATION,
   chrome,
   theme,
 }: {
   item: ZenMessageTimelineItem & { role: "user" };
+  presentation?: MessagePresentation;
   chrome: TerminalThemeChrome;
   theme: TerminalThemePalette;
 }) {
+  const { theme: zenTheme } = useAppTheme();
+  const chatLayout = zenTheme.chat.layout;
+  const isChatGpt = chatLayout === "chatgpt";
+
   if (item.heartbeatWake) {
     return (
       <HeartbeatWakeCard
@@ -57,26 +84,53 @@ export function ZenUserMessage({
   }
 
   const hasBody = item.body.trim().length > 0;
+  const sentBubbleColor = isChatGpt
+    ? zenTheme.chat.sentBubble
+    : resolveSentBubbleColor(chrome);
+  const sentChrome = chromeForSentBubble(
+    isChatGpt
+      ? { ...chrome, text: zenTheme.chat.sentText }
+      : chrome,
+    sentBubbleColor,
+  );
+  const spacing = messageRowSpacing(
+    presentation.compactTop,
+    presentation.compactBottom,
+    chatLayout,
+  );
+  const bubbleRadii = isChatGpt
+    ? chatgptUserBubbleRadii()
+    : userBubbleRadii(presentation.groupPosition);
+
   return (
-    <View style={styles.userRow}>
+    <View style={[styles.userRow, spacing]}>
       <View
         style={[
-          styles.userBubble,
+          isChatGpt ? styles.userBubbleChatGpt : styles.userBubble,
+          bubbleRadii,
           {
-            backgroundColor: chrome.surfaceMuted,
+            backgroundColor: sentBubbleColor,
             borderColor: item.pending ? chrome.borderStrong : "transparent",
             opacity: item.pending ? 0.88 : 1,
           },
         ]}
       >
         {hasBody ? (
-          <MessageBody value={item.body} chrome={chrome} theme={theme} compact />
+          <MessageBody value={item.body} chrome={sentChrome} theme={theme} compact />
         ) : null}
         {item.attachments.length > 0 ? (
           <CodexTimelineAttachmentPreviewList
             attachments={item.attachments}
-            chrome={chrome}
+            chrome={sentChrome}
             compact={hasBody}
+          />
+        ) : null}
+        {zenTheme.chat.showTimestamps ? (
+          <MessageBubbleFooter
+            timestamp={item.timestamp}
+            tone="sent"
+            showChecks={!item.pending}
+            pending={item.pending}
           />
         ) : null}
       </View>
@@ -107,7 +161,9 @@ function HeartbeatWakeCard({
         style={[
           styles.heartbeatCard,
           {
-            backgroundColor: chrome.surfaceMuted,
+            backgroundColor: isAmbientChatChrome(chrome)
+              ? chrome.surface
+              : chrome.surfaceMuted,
             borderColor: chrome.borderStrong,
           },
         ]}
@@ -232,40 +288,127 @@ function HeartbeatField({
 
 export function ZenAssistantMessage({
   item,
+  presentation = DEFAULT_PRESENTATION,
   chrome,
   theme,
+  senderLabel,
 }: {
   item: ZenMessageTimelineItem & { role: "assistant" };
+  presentation?: MessagePresentation;
   chrome: TerminalThemeChrome;
   theme: TerminalThemePalette;
+  senderLabel?: string;
 }) {
+  const { theme: zenTheme } = useAppTheme();
+  const chatLayout = zenTheme.chat.layout;
+  const isChatGpt = chatLayout === "chatgpt";
+  const spacing = messageRowSpacing(
+    presentation.compactTop,
+    presentation.compactBottom,
+    chatLayout,
+  );
+  const assistantChrome = isChatGpt
+    ? { ...chrome, text: zenTheme.chat.receivedText }
+    : chrome;
+
+  if (isChatGpt) {
+    return (
+      <View style={[styles.assistantRowChatGpt, spacing]}>
+        <MessageBody
+          value={item.body}
+          chrome={assistantChrome}
+          theme={theme}
+          dense
+        />
+      </View>
+    );
+  }
+
+  const ambient = isAmbientChatChrome(chrome);
+  const receivedBubbleColor = resolveReceivedBubbleColor(chrome);
+  const showSender =
+    senderLabel &&
+    presentation.groupPosition !== "middle" &&
+    presentation.groupPosition !== "last";
+
   return (
-    <View style={styles.assistantRow}>
-      <MessageBody
-        value={item.body}
-        chrome={chrome}
-        theme={theme}
-      />
+    <View
+      style={[
+        styles.assistantRow,
+        ambient ? styles.assistantRowAmbient : null,
+        spacing,
+      ]}
+    >
+      <View
+        style={[
+          styles.assistantStrip,
+          assistantBubbleRadii(presentation.groupPosition),
+          {
+            backgroundColor: receivedBubbleColor,
+            borderColor: chrome.borderStrong,
+          },
+        ]}
+      >
+        {showSender ? (
+          <Text style={[styles.assistantSender, { color: chrome.accent }]}>
+            {senderLabel}
+          </Text>
+        ) : null}
+        <MessageBody
+          value={item.body}
+          chrome={chrome}
+          theme={theme}
+        />
+        {zenTheme.chat.showTimestamps ? (
+          <MessageBubbleFooter
+            timestamp={item.timestamp}
+            tone="received"
+          />
+        ) : null}
+      </View>
     </View>
   );
 }
 
 const styles = StyleSheet.create({
   userRow: {
-    marginBottom: 17,
     flexDirection: "row",
     justifyContent: "flex-end",
   },
   userBubble: {
-    maxWidth: "86%",
-    borderRadius: 8,
+    maxWidth: "92%",
     borderWidth: StyleSheet.hairlineWidth,
-    paddingHorizontal: 12,
-    paddingVertical: 9,
+    paddingHorizontal: 13,
+    paddingTop: 9,
+    paddingBottom: 6,
+  },
+  userBubbleChatGpt: {
+    maxWidth: "88%",
+    borderWidth: 0,
+    paddingHorizontal: 14,
+    paddingVertical: 10,
   },
   assistantRow: {
-    marginBottom: 20,
-    paddingRight: 8,
+    flexDirection: "row",
+    justifyContent: "flex-start",
+  },
+  assistantRowAmbient: {},
+  assistantRowChatGpt: {
+    alignSelf: "stretch",
+    paddingRight: 4,
+  },
+  assistantSender: {
+    fontFamily: Typography.uiFontMedium,
+    fontSize: 12.5,
+    lineHeight: 16,
+    marginBottom: 2,
+  },
+  assistantStrip: {
+    maxWidth: "92%",
+    borderWidth: StyleSheet.hairlineWidth,
+    paddingHorizontal: 13,
+    paddingTop: 10,
+    paddingBottom: 6,
   },
   eventRow: {
     marginBottom: 17,

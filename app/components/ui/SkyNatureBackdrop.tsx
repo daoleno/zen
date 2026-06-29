@@ -16,11 +16,13 @@ const MOONLIT_MEADOW: ImageSourcePropType = require("../../assets/theme/moonlit-
 
 type SkyNatureBackdropProps = {
   height?: number;
+  fill?: boolean;
   style?: StyleProp<ViewStyle>;
 };
 
 export function SkyNatureBackdrop({
   height = 620,
+  fill = false,
   style,
 }: SkyNatureBackdropProps) {
   const { colors, isLight } = useAppTheme();
@@ -32,7 +34,13 @@ export function SkyNatureBackdrop({
   return (
     <View
       pointerEvents="none"
-      style={[styles.root, { height, backgroundColor: colors.bgPrimary }, style]}
+      style={[
+        styles.root,
+        fill
+          ? { top: 0, bottom: 0, backgroundColor: colors.bgPrimary }
+          : { height, backgroundColor: colors.bgPrimary },
+        style,
+      ]}
     >
       <ImageBackground
         source={source}

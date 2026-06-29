@@ -1,129 +1,17 @@
 import { Platform, useColorScheme, type ViewStyle } from "react-native";
+import { classicDarkTheme } from "../theme/definitions/classicDark";
+import { classicLightTheme } from "../theme/definitions/classicLight";
+import type { AppColors } from "../theme/palette";
+import { useZenTheme } from "../theme/provider";
+import { resolveTheme } from "../theme/resolve";
 
-export interface AppColors {
-  bgPrimary: string;
-  bgSurface: string;
-  bgElevated: string;
-  textPrimary: string;
-  textSecondary: string;
-  textTertiary: string;
-  accent: string;
-  accentSoft: string;
-  accentStrong: string;
-  statusFailed: string;
-  statusBlocked: string;
-  statusUnknown: string;
-  statusRunning: string;
-  statusDone: string;
-  zenGreen: string;
-  priorityUrgent: string;
-  priorityHigh: string;
-  priorityMedium: string;
-  priorityLow: string;
-  border: string;
-  borderSubtle: string;
-  borderStrong: string;
-  surfaceSubtle: string;
-  surfacePressed: string;
-  surfaceActive: string;
-  inputBackground: string;
-  modalBackdrop: string;
-  modalSurface: string;
-  modalSurfaceAlt: string;
-  textOnAccent: string;
-  promptGreen: string;
-  promptYellow: string;
-  warning: string;
-  dangerText: string;
-  disabledText: string;
-  dangerSoft: string;
-  warningSoft: string;
-  shadowColor: string;
-}
+export type { AppColors } from "../theme/palette";
 
-// "Slate & Sky" — clean cool neutrals with a fresh sky-blue accent. Playful
-// structure (rounded, soft) but a crisper, less muddy palette than warm clay.
-export const DarkColors: AppColors = {
-  bgPrimary: '#0E1116',
-  bgSurface: '#161A22',
-  bgElevated: '#1E232E',
-  textPrimary: '#F2F4F8',
-  textSecondary: '#8B95A7',
-  textTertiary: '#525C6E',
-  accent: '#4C8DFF',
-  accentSoft: 'rgba(76,141,255,0.16)',
-  accentStrong: '#6BA0FF',
-  statusFailed: '#FF6B81',
-  statusBlocked: '#FF6B81',
-  statusUnknown: '#F2B441',
-  statusRunning: '#3DD682',
-  statusDone: '#525C6E',
-  zenGreen: '#3DD682',
-  priorityUrgent: '#FF6B81',
-  priorityHigh: '#FF9F45',
-  priorityMedium: '#F2B441',
-  priorityLow: '#8B95A7',
-  border: 'rgba(242,244,248,0.09)',
-  borderSubtle: 'rgba(242,244,248,0.05)',
-  borderStrong: 'rgba(242,244,248,0.15)',
-  surfaceSubtle: 'rgba(242,244,248,0.045)',
-  surfacePressed: 'rgba(242,244,248,0.07)',
-  surfaceActive: 'rgba(76,141,255,0.18)',
-  inputBackground: 'rgba(242,244,248,0.06)',
-  modalBackdrop: 'rgba(0,0,0,0.62)',
-  modalSurface: '#181C24',
-  modalSurfaceAlt: '#1E232E',
-  textOnAccent: '#0E1116',
-  promptGreen: '#8FB573',
-  promptYellow: '#E6B450',
-  warning: '#F2B441',
-  dangerText: '#FF8A9B',
-  disabledText: '#525C6E',
-  dangerSoft: 'rgba(255,107,129,0.14)',
-  warningSoft: 'rgba(242,180,65,0.14)',
-  shadowColor: '#000000',
-};
+/** @deprecated Use useAppColors() or classicDarkTheme.colors. */
+export const DarkColors: AppColors = classicDarkTheme.colors;
 
-export const LightColors: AppColors = {
-  bgPrimary: '#F6F8FB',
-  bgSurface: '#FFFFFF',
-  bgElevated: '#EEF2F8',
-  textPrimary: '#14181F',
-  textSecondary: '#5A6577',
-  textTertiary: '#9AA4B5',
-  accent: '#2E7CFF',
-  accentSoft: 'rgba(46,124,255,0.10)',
-  accentStrong: '#1E6AEF',
-  statusFailed: '#E0414E',
-  statusBlocked: '#E0414E',
-  statusUnknown: '#C99522',
-  statusRunning: '#1FA861',
-  statusDone: '#9AA4B5',
-  zenGreen: '#1FA861',
-  priorityUrgent: '#E0414E',
-  priorityHigh: '#D98424',
-  priorityMedium: '#C99522',
-  priorityLow: '#5A6577',
-  border: 'rgba(20,24,31,0.10)',
-  borderSubtle: 'rgba(20,24,31,0.06)',
-  borderStrong: 'rgba(20,24,31,0.16)',
-  surfaceSubtle: 'rgba(20,24,31,0.04)',
-  surfacePressed: 'rgba(20,24,31,0.06)',
-  surfaceActive: 'rgba(46,124,255,0.12)',
-  inputBackground: 'rgba(20,24,31,0.05)',
-  modalBackdrop: 'rgba(20,24,31,0.36)',
-  modalSurface: '#FFFFFF',
-  modalSurfaceAlt: '#EEF2F8',
-  textOnAccent: '#FFFFFF',
-  promptGreen: '#3F7C50',
-  promptYellow: '#9A6B1F',
-  warning: '#C99522',
-  dangerText: '#C8323F',
-  disabledText: '#9AA4B5',
-  dangerSoft: 'rgba(224,65,78,0.10)',
-  warningSoft: 'rgba(201,149,34,0.12)',
-  shadowColor: '#243044',
-};
+/** @deprecated Use useAppColors() or classicLightTheme.colors. */
+export const LightColors: AppColors = classicLightTheme.colors;
 
 export const Colors = DarkColors;
 
@@ -132,25 +20,28 @@ export type AppColorScheme = 'light' | 'dark';
 export function colorsForScheme(
   scheme: ReturnType<typeof useColorScheme>,
 ): AppColors {
-  return scheme === 'light' ? LightColors : DarkColors;
+  return resolveTheme({
+    colorScheme: scheme === 'light' ? 'light' : 'dark',
+  }).colors;
 }
 
 export function useAppTheme(): {
   colors: AppColors;
   colorScheme: AppColorScheme;
   isLight: boolean;
+  theme: ReturnType<typeof useZenTheme>['theme'];
 } {
-  const scheme = useColorScheme();
-  const isLight = scheme === 'light';
+  const { theme } = useZenTheme();
   return {
-    colors: isLight ? LightColors : DarkColors,
-    colorScheme: isLight ? 'light' : 'dark',
-    isLight,
+    colors: theme.colors,
+    colorScheme: theme.colorScheme,
+    isLight: theme.isLight,
+    theme,
   };
 }
 
 export function useAppColors(): AppColors {
-  return useAppTheme().colors;
+  return useZenTheme().theme.colors;
 }
 
 export const Spacing = {

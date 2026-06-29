@@ -15,12 +15,11 @@ import Animated, {
   withTiming,
   interpolate,
 } from 'react-native-reanimated';
-import { Colors, Radii, Typography, useAppColors, shadow } from '../../constants/tokens';
+import { Colors, Radii, Typography, useAppColors } from '../../constants/tokens';
 import { useAgents } from '../../store/agents';
 import { wsClient } from '../../services/websocket';
 import { AnimatedPressable } from '../../components/ui/AnimatedPressable';
 import { RisingSheet } from '../../components/ui/RisingSheet';
-import { SkyNatureBackdrop } from '../../components/ui/SkyNatureBackdrop';
 
 // ── Types (mirror daemon/stats/types.go) ───────────────────
 
@@ -565,8 +564,6 @@ export default function StatsScreen() {
 
   return (
     <SafeAreaView style={s.container} edges={['top']}>
-      <SkyNatureBackdrop height={620} />
-
       <View style={s.header}>
         <Text style={s.title}>Stats</Text>
         <View style={s.rangeRow}>
@@ -575,7 +572,7 @@ export default function StatsScreen() {
             return (
               <AnimatedPressable
                 key={opt.key}
-                style={s.rangeTab}
+                style={[s.rangeTab, active && s.rangeTabActive]}
                 scale={1}
                 onPress={() => {
                   if (!active) {
@@ -587,7 +584,6 @@ export default function StatsScreen() {
                 <Text style={[s.rangeTabText, active && s.rangeTabTextActive]}>
                   {opt.label}
                 </Text>
-                {active ? <View style={s.rangeTabIndicator} /> : null}
               </AnimatedPressable>
             );
           })}
@@ -933,10 +929,6 @@ function ExpandToggle({
 // ── Styles ─────────────────────────────────────────────────
 
 function createStyles(colors: typeof Colors) {
-  const light = colors.bgPrimary === '#F6F8FB';
-  const themedSurface = light ? 'rgba(255,255,255,0.76)' : 'rgba(16,22,34,0.72)';
-  const themedBorder = light ? 'rgba(46,124,255,0.16)' : 'rgba(107,160,255,0.18)';
-
   return StyleSheet.create({
   container: { flex: 1, backgroundColor: colors.bgPrimary },
   header: {
@@ -952,16 +944,25 @@ function createStyles(colors: typeof Colors) {
     fontSize: 30,
     lineHeight: 34,
     fontFamily: Typography.uiFontMedium,
-    letterSpacing: -0.6,
+    letterSpacing: 0,
   },
   rangeRow: {
     flexDirection: 'row',
-    gap: 20,
+    gap: 6,
+    padding: 4,
+    borderRadius: Radii.pill,
+    backgroundColor: colors.inputBackground,
   },
   rangeTab: {
     alignItems: 'center',
-    paddingVertical: 4,
-    minWidth: 36,
+    justifyContent: 'center',
+    paddingVertical: 7,
+    paddingHorizontal: 12,
+    minWidth: 52,
+    borderRadius: Radii.pill,
+  },
+  rangeTabActive: {
+    backgroundColor: colors.accentSoft,
   },
   rangeTabText: {
     color: colors.textTertiary,
@@ -972,16 +973,8 @@ function createStyles(colors: typeof Colors) {
     color: colors.textPrimary,
     fontFamily: Typography.uiFontMedium,
   },
-  rangeTabIndicator: {
-    marginTop: 5,
-    width: 16,
-    height: 2,
-    borderRadius: 1,
-    backgroundColor: colors.accent,
-  },
-
   scrollView: { flex: 1 },
-  scroll: { paddingHorizontal: 18, gap: 12, paddingTop: 6, paddingBottom: 36 },
+  scroll: { paddingHorizontal: 18, gap: 12, paddingTop: 6, paddingBottom: 110 },
 
   // Empty
   emptyContainer: { flex: 1, justifyContent: 'center', alignItems: 'center', paddingHorizontal: 36 },
@@ -1005,13 +998,12 @@ function createStyles(colors: typeof Colors) {
 
   // Card
   card: {
-    borderRadius: Radii.md,
-    backgroundColor: themedSurface,
+    borderRadius: Radii.lg,
+    backgroundColor: colors.bgSurface,
     borderWidth: StyleSheet.hairlineWidth,
-    borderColor: themedBorder,
+    borderColor: colors.borderSubtle,
     paddingHorizontal: 16,
     paddingVertical: 14,
-    ...shadow('card', colors.shadowColor),
   },
   label: {
     color: colors.textTertiary,

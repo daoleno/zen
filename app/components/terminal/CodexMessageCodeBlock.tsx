@@ -49,7 +49,10 @@ export function CodexMessageCodeBlock({
         styles.frame,
         compact ? styles.frameCompact : null,
         {
-          backgroundColor: compact ? chrome.surface : mixCodeSurface(theme),
+          backgroundColor:
+            compact || theme.background === "transparent"
+              ? chrome.surface
+              : mixCodeSurface(theme),
           borderColor: chrome.border,
         },
         isLast ? styles.blockLast : null,

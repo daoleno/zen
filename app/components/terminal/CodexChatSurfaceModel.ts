@@ -11,12 +11,13 @@ export interface CodexComposerPresentation {
   showCommandList: boolean;
   showComposerActions: boolean;
   showActionMenuButton: boolean;
+  actionMenuIcon: "add" | "happy-outline";
   showAttachmentRail: boolean;
   composerActionButtonEnabled: boolean;
   showStopButton: boolean;
   showStopIndicator: boolean;
   sendEnabled: boolean;
-  sendIcon: "square" | "arrow-up";
+  sendIcon: "square" | "arrow-up" | "send";
   sendLabel: string;
   sendElapsedLabel?: string;
   placeholder: string;
@@ -24,6 +25,7 @@ export interface CodexComposerPresentation {
   keyboardVerticalOffset: number;
   automaticKeyboardOffset: boolean;
   minimalComposer: boolean;
+  composerLayout: "chatgpt" | "telegram" | "classic";
 }
 
 export interface CodexComposerPresentationInput {
@@ -104,12 +106,13 @@ export function buildCodexComposerPresentation({
     showCommandList,
     showComposerActions,
     showActionMenuButton: composerActionsAvailable,
+    actionMenuIcon: "add",
     showAttachmentRail: composerActionsAvailable,
     composerActionButtonEnabled,
     showStopButton,
     showStopIndicator,
     sendEnabled: canSend || showStopButton || startingNewChat,
-    sendIcon: showStopIndicator ? "square" : "arrow-up",
+    sendIcon: showStopIndicator ? "square" : minimalComposer ? "arrow-up" : "arrow-up",
     sendLabel: startingNewChat
       ? "Starting new chat"
       : showStopButton
@@ -132,5 +135,6 @@ export function buildCodexComposerPresentation({
           : 0,
     automaticKeyboardOffset: typeof keyboardVerticalOffset === "number",
     minimalComposer: Boolean(minimalComposer),
+    composerLayout: minimalComposer ? "chatgpt" : "classic",
   };
 }

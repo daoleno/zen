@@ -1,0 +1,178 @@
+import React, { useMemo } from "react";
+import { ActivityIndicator, StyleSheet, Text, View } from "react-native";
+import { Ionicons } from "@expo/vector-icons";
+import * as Haptics from "expo-haptics";
+import { BottomSheetFrame } from "../ui/BottomSheetFrame";
+import { AnimatedPressable } from "../ui/AnimatedPressable";
+import { Colors, Radii, Typography, useAppTheme } from "../../constants/tokens";
+import type { ResolvedZenTheme } from "../../theme";
+import { createThemedSurfaces } from "../../constants/themedSurfaces";
+import type { BrainAdapterRef } from "../../store/brain";
+import { BrainAdapterIcon } from "./BrainAdapterIcon";
+import { brainAdapterLabel, brainProviderLabel } from "./brainPresentation";
+
+interface BrainAdapterSheetProps {
+  visible: boolean;
+  adapters: BrainAdapterRef[];
+  activeAdapterId?: string;
+  switchingAdapterId: string | null;
+  error?: string | null;
+  onClose: () => void;
+  onSelect: (adapter: BrainAdapterRef) => void;
+}
+
+export function BrainAdapterSheet({
+  visible,
+  adapters,
+  activeAdapterId,
+  switchingAdapterId,
+  error,
+  onClose,
+  onSelect,
+}: BrainAdapterSheetProps) {
+  const { theme } = useAppTheme();
+  const colors = theme.colors;
+  const themed = useMemo(() => createThemedSurfaces(theme), [theme]);
+  const styles = useMemo(() => createStyles(theme), [theme]);
+
+  return (
+    <BottomSheetFrame
+      visible={visible}
+      onClose={onClose}
+      keyboardAvoiding
+      maxHeight="72%"
+    >
+      <Text style={styles.title}>Engine</Text>
+      <Text style={styles.lead}>
+        Choose which runtime powers Brain chat and delegated work.
+      </Text>
+
+      <View style={styles.list}>
+        {adapters.map((adapter) => {
+          const active = adapter.id === activeAdapterId;
+          const busy = switchingAdapterId === adapter.id;
+          const provider = brainProviderLabel(adapter.provider);
+          const label = brainAdapterLabel(adapter);
+
+          return (
+            <AnimatedPressable
+              key={adapter.id}
+              accessibilityRole="button"
+              accessibilityLabel={`Switch to ${label}`}
+              disabled={busy}
+              preset="press"
+              scale={0.98}
+              style={[
+                styles.row,
+                {
+                  borderColor: active ? colors.accent : themed.border,
+                  backgroundColor: active ? colors.surfaceActive : themed.surface,
+                },
+                busy ? styles.rowBusy : null,
+              ]}
+              onPress={() => {
+                if (busy) {
+                  return;
+                }
+                Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+                onSelect(adapter);
+              }}
+            >
+              <BrainAdapterIcon adapter={adapter} size={17} />
+              <View style={styles.rowMain}>
+                <Text style={styles.rowTitle} numberOfLines={1}>
+                  {label}
+                </Text>
+                <Text style={styles.rowMeta} numberOfLines={1}>
+                  {provider}
+                  {adapter.runtime?.trim() ? ` · ${adapter.runtime.trim()}` : ""}
+                </Text>
+              </View>
+              {busy ? (
+                <ActivityIndicator size="small" color={colors.accent} />
+              ) : active ? (
+                <View style={[styles.activePill, { backgroundColor: colors.accentSoft }]}>
+                  <Text style={[styles.activePillText, { color: colors.accent }]}>Active</Text>
+                </View>
+              ) : (
+                <Ionicons name="ellipse-outline" size={18} color={colors.textTertiary} />
+              )}
+            </AnimatedPressable>
+          );
+        })}
+      </View>
+
+      {error ? <Text style={styles.error}>{error}</Text> : null}
+    </BottomSheetFrame>
+  );
+}
+
+function createStyles(theme: ResolvedZenTheme) {
+  const colors = theme.colors;
+  return StyleSheet.create({
+    title: {
+      color: colors.textPrimary,
+      fontFamily: Typography.uiFontMedium,
+      fontSize: 20,
+      lineHeight: 26,
+      marginBottom: 6,
+    },
+    lead: {
+      color: colors.textSecondary,
+      fontFamily: Typography.uiFont,
+      fontSize: 13.5,
+      lineHeight: 19,
+      marginBottom: 16,
+    },
+    list: {
+      gap: 10,
+    },
+    row: {
+      minHeight: 64,
+      borderRadius: Radii.md,
+      borderWidth: StyleSheet.hairlineWidth,
+      paddingHorizontal: 14,
+      paddingVertical: 12,
+      flexDirection: "row",
+      alignItems: "center",
+      gap: 12,
+    },
+    rowBusy: {
+      opacity: 0.6,
+    },
+    rowMain: {
+      flex: 1,
+      minWidth: 0,
+      gap: 2,
+    },
+    rowTitle: {
+      color: colors.textPrimary,
+      fontFamily: Typography.uiFontMedium,
+      fontSize: 15,
+      lineHeight: 20,
+    },
+    rowMeta: {
+      color: colors.textTertiary,
+      fontFamily: Typography.uiFont,
+      fontSize: 12,
+      lineHeight: 16,
+    },
+    activePill: {
+      borderRadius: Radii.pill,
+      paddingHorizontal: 10,
+      paddingVertical: 4,
+    },
+    activePillText: {
+      fontFamily: Typography.uiFontMedium,
+      fontSize: 11,
+      lineHeight: 14,
+    },
+    error: {
+      marginTop: 12,
+      color: colors.dangerText,
+      fontFamily: Typography.uiFont,
+      fontSize: 12.5,
+      lineHeight: 17,
+    },
+  });
+}

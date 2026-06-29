@@ -14,6 +14,7 @@ import { Agent, AgentProvider, useAgents } from "../store/agents";
 import { BrainProvider, useBrain } from "../store/brain";
 import { WorkProvider, useWork } from "../store/work";
 import { useAppTheme } from "../constants/tokens";
+import { ThemeProvider } from "../theme";
 import { wsClient } from "../services/websocket";
 import {
   getDisabledServerIds,
@@ -690,8 +691,12 @@ function AppContent() {
   );
 }
 
-export default function RootLayout() {
+function ThemedStatusBar() {
   const { isLight } = useAppTheme();
+  return <StatusBar style={isLight ? "dark" : "light"} />;
+}
+
+export default function RootLayout() {
   const [fontsLoaded, fontError] = useFonts({
     "SourceHanSansSC-Regular": require("../assets/fonts/SourceHanSansSC-Regular.otf"),
     "SourceHanSansSC-Medium": require("../assets/fonts/SourceHanSansSC-Medium.otf"),
@@ -715,18 +720,20 @@ export default function RootLayout() {
 
   return (
     <GestureHandlerRootView style={{ flex: 1 }}>
-      <KeyboardProvider statusBarTranslucent navigationBarTranslucent>
-        <AgentProvider>
-          <BrainProvider>
-            <WorkProvider>
-              <SafeAreaProvider>
-                <StatusBar style={isLight ? "dark" : "light"} />
-                <AppContent />
-              </SafeAreaProvider>
-            </WorkProvider>
-          </BrainProvider>
-        </AgentProvider>
-      </KeyboardProvider>
+      <ThemeProvider>
+        <KeyboardProvider statusBarTranslucent navigationBarTranslucent>
+          <AgentProvider>
+            <BrainProvider>
+              <WorkProvider>
+                <SafeAreaProvider>
+                  <ThemedStatusBar />
+                  <AppContent />
+                </SafeAreaProvider>
+              </WorkProvider>
+            </BrainProvider>
+          </AgentProvider>
+        </KeyboardProvider>
+      </ThemeProvider>
     </GestureHandlerRootView>
   );
 }

@@ -23,16 +23,20 @@ import * as Haptics from 'expo-haptics';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Agent, useAgents } from '../../store/agents';
 import { useWork, type WorkItem } from '../../store/work';
-import { AgentStatus, Colors, Radii, Typography, useAppColors, shadow } from '../../constants/tokens';
-import { IconButton } from '../../components/ui/IconButton';
+import { AgentStatus, Colors, Radii, Typography, useAppColors, useAppTheme, shadow } from '../../constants/tokens';
+import type { ResolvedZenTheme } from '../../theme';
+import { createThemedSurfaces, glassCardShadow } from '../../constants/themedSurfaces';
+import { AgentsListHeader, type AgentsStatusFilter } from '../../components/agents/AgentsListHeader';
 import { AnimatedPressable } from '../../components/ui/AnimatedPressable';
-import { SkyNatureBackdrop } from '../../components/ui/SkyNatureBackdrop';
 import { MeditationModal } from '../../components/meditation/MeditationModal';
 import { MeditationPullPreview } from '../../components/meditation/MeditationPullPreview';
 import { RisingSheet } from '../../components/ui/RisingSheet';
 import { Enter } from '../../components/ui/Enter';
 import { TerminalPreview } from '../../components/terminal/TerminalPreview';
 import { AgentKindIcon } from '../../components/terminal/AgentKindIcon';
+import { AgentSessionRow } from '../../components/agents/AgentSessionRow';
+import { formatTelegramListTime } from '../../constants/telegramPresentation';
+import { formatAgentSessionPreview } from '../../services/sessionPreview';
 import { NewTerminalSheet } from '../../components/terminal/NewTerminalSheet';
 import { SessionServicesSheet } from '../../components/SessionServicesSheet';
 import {
@@ -77,7 +81,8 @@ export default function InboxScreen() {
   const { state: workState } = useWork();
   const router = useRouter();
   const colors = useAppColors();
-  const styles = useMemo(() => createStyles(colors), [colors]);
+  const { theme } = useAppTheme();
+  const styles = useMemo(() => createStyles(theme), [theme]);
 
   const agentWorkMap = useMemo(() => {
     const map: Record<string, WorkItem> = {};
@@ -90,6 +95,9 @@ export default function InboxScreen() {
     return map;
   }, [workState.byKey]);
   const [viewMode, setViewModeState] = useState<StoredInboxViewMode>('list');
+  const [searchQuery, setSearchQuery] = useState('');
+  const [statusFilter, setStatusFilter] = useState<AgentsStatusFilter>('all');
+  const [headerMenuVisible, setHeaderMenuVisible] = useState(false);
   const [agentAliases, setAgentAliases] = useState<StoredAgentAliases>({});
   const [recentAgentOpens, setRecentAgentOpens] = useState<StoredRecentAgentOpens>({});
   const [configuredServerCount, setConfiguredServerCount] = useState(0);
@@ -182,9 +190,47 @@ export default function InboxScreen() {
     return groupAgentsByDirectory(agentsByPriority).flatMap(section => section.data);
   }, [displayAgents, recentAgentOpens]);
 
-  const showServerNames = useMemo(
-    () => new Set(sortedAgents.map((agent) => agent.serverId)).size > 1,
+  const filterOptions = useMemo(
+    () => [
+      { key: 'all' as const, label: 'All', count: sortedAgents.length },
+      {
+        key: 'running' as const,
+        label: 'Running',
+        count: sortedAgents.filter((agent) => agent.status === 'running').length,
+      },
+      {
+        key: 'brain' as const,
+        label: 'Brain',
+        count: sortedAgents.filter((agent) => agent.delegated).length,
+      },
+    ],
     [sortedAgents],
+  );
+
+  const visibleAgents = useMemo(() => {
+    const query = searchQuery.trim().toLowerCase();
+    return sortedAgents.filter((agent) => {
+      if (statusFilter === 'running' && agent.status !== 'running') return false;
+      if (statusFilter === 'brain' && !agent.delegated) return false;
+      if (!query) return true;
+
+      const presented = presentAgent(agent, agentAliases[agent.key]);
+      const linkedWork = agentWorkMap[`${agent.serverId}:${agent.id}`];
+      return [
+        presented.title,
+        presented.shortTitle,
+        agent.name,
+        agent.cwd,
+        agent.command,
+        agent.serverName,
+        linkedWork?.title,
+      ].some(value => (value || '').toLowerCase().includes(query));
+    });
+  }, [agentAliases, agentWorkMap, searchQuery, sortedAgents, statusFilter]);
+
+  const showServerNames = useMemo(
+    () => new Set(visibleAgents.map((agent) => agent.serverId)).size > 1,
+    [visibleAgents],
   );
 
   // Animate row insertions/removals/reorders with a gentle layout transition,
@@ -228,8 +274,8 @@ export default function InboxScreen() {
       (anyConnecting || waitingForInitialAgentSnapshot)
     );
   const listSections = useMemo(
-    () => groupAgentsByDirectory(sortedAgents, { showServerName: showServerNames }),
-    [showServerNames, sortedAgents],
+    () => groupAgentsByDirectory(visibleAgents, { showServerName: showServerNames }),
+    [showServerNames, visibleAgents],
   );
   const useSectionHeaders = listSections.length > 1;
   const primaryIssue = useMemo(() => {
@@ -564,33 +610,28 @@ export default function InboxScreen() {
   const renderListAgent = ({ item }: { item: Agent }) => {
     const presented = presentAgent(item, agentAliases[item.key]);
     const sessionTitle = resolveSessionTitle(item, presented, agentWorkMap);
+    const sessionPreview = formatAgentSessionPreview(item, {
+      showServerName: showServerNames,
+      serverName: item.serverName,
+    });
     return (
-      <AnimatedPressable
-        style={styles.sessionRow}
-        preset="card"
+      <AgentSessionRow
+        title={sessionTitle}
+        avatarSeed={item.key}
+        preview={sessionPreview.text}
+        previewTone={sessionPreview.tone}
+        previewPrefix={sessionPreview.prefix}
+        timeLabel={item.status === 'running' ? 'live' : formatTelegramListTime(item.updated_at)}
+        timeActive={item.status === 'running'}
+        running={item.status === 'running'}
+        showBrainBadge={Boolean(item.delegated)}
+        active={item.status === 'running'}
         onPress={() => openAgent(item)}
         onLongPress={() => {
           Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
           openContextMenu(item);
         }}
-        delayLongPress={400}
-      >
-        <AgentKindIcon kind={presented.kind} size={15} />
-        <View style={styles.sessionBody}>
-          <View style={styles.sessionTitleRow}>
-            <Text style={styles.sessionName} numberOfLines={1}>
-              {sessionTitle}
-            </Text>
-            {item.delegated ? <BrainSessionBadge colors={colors} styles={styles} /> : null}
-          </View>
-        </View>
-        <AgentRunningIndicator
-          running={item.status === 'running'}
-          colors={colors}
-          styles={styles}
-          compact
-        />
-      </AnimatedPressable>
+      />
     );
   };
 
@@ -651,7 +692,6 @@ export default function InboxScreen() {
       edges={['top']}
       {...meditationPullResponder.panHandlers}
     >
-      <SkyNatureBackdrop height={640} />
       <MeditationPullPreview
         pullDistance={meditationPullDistance}
         progress={meditationPullDistance / MEDITATION_PULL_THRESHOLD}
@@ -664,51 +704,14 @@ export default function InboxScreen() {
         </View>
       )}
 
-      <View style={styles.header}>
-        <View style={styles.headerTop}>
-          <View style={styles.headerBrand}>
-            <Text style={styles.title}>Zen</Text>
-          </View>
-          <View style={styles.headerActions}>
-            <IconButton
-              icon="globe-outline"
-              tone="ghost"
-              size={40}
-              iconSize={20}
-              color={anyConnected ? colors.textSecondary : colors.disabledText}
-              accessibilityLabel="Services"
-              onPress={openSessionServices}
-              disabled={!anyConnected}
-            />
-            <View style={styles.viewToggle}>
-              <ToggleButton
-                icon="reorder-three-outline"
-                selected={viewMode === 'list'}
-                onPress={() => setViewMode('list')}
-                colors={colors}
-                styles={styles}
-              />
-              <ToggleButton
-                icon="grid-outline"
-                selected={viewMode === 'grid'}
-                onPress={() => setViewMode('grid')}
-                colors={colors}
-                styles={styles}
-              />
-            </View>
-            <AnimatedPressable
-              style={[styles.fab, (!anyConnected || !!creatingServerId) && styles.fabDisabled]}
-              preset="press"
-              scale={0.9}
-              onPress={openCreateTerminal}
-              disabled={!!creatingServerId || !anyConnected}
-              accessibilityLabel="New terminal"
-            >
-              <Ionicons name={creatingServerId ? 'hourglass-outline' : 'add'} size={22} color={colors.textOnAccent} />
-            </AnimatedPressable>
-          </View>
-        </View>
-      </View>
+      <AgentsListHeader
+        searchQuery={searchQuery}
+        statusFilter={statusFilter}
+        filterOptions={filterOptions}
+        onSearchChange={setSearchQuery}
+        onFilterChange={setStatusFilter}
+        onOpenMenu={() => setHeaderMenuVisible(true)}
+      />
 
       {shouldShowInitialLoading ? (
         <ScrollView
@@ -721,7 +724,7 @@ export default function InboxScreen() {
         >
           <ActivityIndicator color={colors.accent} />
         </ScrollView>
-      ) : sortedAgents.length === 0 ? (
+      ) : visibleAgents.length === 0 ? (
         <ScrollView
           style={styles.flex}
           contentContainerStyle={styles.emptyScrollContent}
@@ -800,7 +803,7 @@ export default function InboxScreen() {
         />
       ) : (
         <FlatList
-          data={sortedAgents}
+          data={visibleAgents}
           key="grid"
           keyExtractor={item => item.key}
           renderItem={renderGridAgent}
@@ -847,6 +850,23 @@ export default function InboxScreen() {
         }}
       />
 
+      {visibleAgents.length > 0 ? (
+        <AnimatedPressable
+          style={[styles.listFab, (!anyConnected || !!creatingServerId) && styles.listFabDisabled]}
+          preset="press"
+          scale={0.92}
+          onPress={openCreateTerminal}
+          disabled={!!creatingServerId || !anyConnected}
+          accessibilityLabel="New terminal"
+        >
+          <Ionicons
+            name={creatingServerId ? 'hourglass-outline' : 'add'}
+            size={28}
+            color={colors.textOnAccent}
+          />
+        </AnimatedPressable>
+      ) : null}
+
       {meditationVisible ? (
         <MeditationModal
           visible={meditationVisible}
@@ -854,6 +874,82 @@ export default function InboxScreen() {
           onClose={() => setMeditationVisible(false)}
         />
       ) : null}
+
+      <RisingSheet
+        visible={headerMenuVisible}
+        onClose={() => setHeaderMenuVisible(false)}
+        cardStyle={styles.menuCard}
+        align="bottom"
+      >
+        <Text style={styles.menuTitle}>Agents</Text>
+
+        <AnimatedPressable
+          style={styles.menuItem}
+          preset="press"
+          scale={0.98}
+          onPress={() => {
+            setHeaderMenuVisible(false);
+            void setViewMode('list');
+          }}
+        >
+          <Ionicons
+            name="reorder-three-outline"
+            size={16}
+            color={viewMode === 'list' ? colors.accent : colors.textPrimary}
+          />
+          <Text style={styles.menuItemText}>List view</Text>
+        </AnimatedPressable>
+
+        <AnimatedPressable
+          style={styles.menuItem}
+          preset="press"
+          scale={0.98}
+          onPress={() => {
+            setHeaderMenuVisible(false);
+            void setViewMode('grid');
+          }}
+        >
+          <Ionicons
+            name="grid-outline"
+            size={16}
+            color={viewMode === 'grid' ? colors.accent : colors.textPrimary}
+          />
+          <Text style={styles.menuItemText}>Grid view</Text>
+        </AnimatedPressable>
+
+        <AnimatedPressable
+          style={styles.menuItem}
+          preset="press"
+          scale={0.98}
+          disabled={!anyConnected}
+          onPress={() => {
+            setHeaderMenuVisible(false);
+            openSessionServices();
+          }}
+        >
+          <Ionicons
+            name="globe-outline"
+            size={16}
+            color={anyConnected ? colors.textPrimary : colors.disabledText}
+          />
+          <Text style={[styles.menuItemText, !anyConnected && { color: colors.disabledText }]}>
+            Session services
+          </Text>
+        </AnimatedPressable>
+
+        <AnimatedPressable
+          style={styles.menuItem}
+          preset="press"
+          scale={0.98}
+          onPress={() => {
+            setHeaderMenuVisible(false);
+            openServerSettings(false);
+          }}
+        >
+          <Ionicons name="settings-outline" size={16} color={colors.textPrimary} />
+          <Text style={styles.menuItemText}>Settings</Text>
+        </AnimatedPressable>
+      </RisingSheet>
 
       <RisingSheet
         visible={menuAgent !== null && !renameVisible}
@@ -933,35 +1029,6 @@ export default function InboxScreen() {
   );
 }
 
-function ToggleButton({
-  icon,
-  selected,
-  onPress,
-  colors,
-  styles,
-}: {
-  icon: React.ComponentProps<typeof Ionicons>['name'];
-  selected: boolean;
-  onPress: () => void;
-  colors: typeof Colors;
-  styles: ReturnType<typeof createStyles>;
-}) {
-  return (
-    <TouchableOpacity
-      style={[styles.viewBtn, selected && styles.viewBtnActive]}
-      onPress={onPress}
-      activeOpacity={0.82}
-    >
-      <Ionicons
-        name={icon}
-        size={18}
-        color={selected ? colors.accent : colors.disabledText}
-        style={!selected && styles.viewIconInactive}
-      />
-    </TouchableOpacity>
-  );
-}
-
 function BrainSessionBadge({
   colors,
   styles,
@@ -1037,12 +1104,13 @@ function resolveSessionTitle(
   return presented.shortTitle || shortAgentLabel(agent.name) || presented.title;
 }
 
-function createStyles(colors: typeof Colors) {
-  const light = colors.bgPrimary === '#F6F8FB';
-  const themedSurface = light ? 'rgba(255,255,255,0.76)' : 'rgba(16,22,34,0.72)';
-  const themedSurfaceStrong = light ? 'rgba(255,255,255,0.86)' : 'rgba(20,28,42,0.82)';
-  const themedBorder = light ? 'rgba(46,124,255,0.16)' : 'rgba(107,160,255,0.18)';
-  const themedSubtle = light ? 'rgba(255,255,255,0.44)' : 'rgba(76,141,255,0.10)';
+function createStyles(theme: ResolvedZenTheme) {
+  const colors = theme.colors;
+  const {
+    surface: themedSurface,
+    border: themedBorder,
+    sectionLabel,
+  } = createThemedSurfaces(theme);
 
   return StyleSheet.create({
   container: {
@@ -1077,78 +1145,27 @@ function createStyles(colors: typeof Colors) {
     fontSize: 12.5,
   },
 
-  header: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    paddingHorizontal: 20,
-    paddingTop: 16,
-    paddingBottom: 14,
-  },
-  headerTop: {
-    flex: 1,
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    minWidth: 0,
-  },
-  headerBrand: {
-    flex: 1,
-    minWidth: 0,
-  },
-  title: {
-    color: colors.textPrimary,
-    fontSize: 32,
-    lineHeight: 36,
-    fontFamily: Typography.uiFontMedium,
-    letterSpacing: -0.8,
-  },
-  headerActions: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 6,
-    marginLeft: 12,
-  },
-  viewToggle: {
-    flexDirection: 'row',
-    marginLeft: 2,
-    borderRadius: Radii.sm,
-    backgroundColor: themedSubtle,
-    padding: 3,
-    borderWidth: StyleSheet.hairlineWidth,
-    borderColor: themedBorder,
-  },
-  viewBtn: {
-    width: 34,
-    height: 34,
-    borderRadius: 9,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  viewBtnActive: {
-    backgroundColor: themedSurfaceStrong,
-  },
-  viewIconInactive: {
-    opacity: 0.72,
-  },
-  fab: {
-    width: 42,
-    height: 42,
-    borderRadius: 21,
+  listFab: {
+    position: 'absolute',
+    right: 20,
+    bottom: 88,
+    width: 56,
+    height: 56,
+    borderRadius: 28,
     alignItems: 'center',
     justifyContent: 'center',
     backgroundColor: colors.accent,
-    marginLeft: 2,
-    ...shadow('card', colors.shadowColor),
+    ...shadow('float', colors.shadowColor),
+    zIndex: 4,
   },
-  fabDisabled: {
+  listFabDisabled: {
     backgroundColor: colors.surfaceSubtle,
+    opacity: 0.72,
   },
-
   promptContent: {
-    paddingHorizontal: 18,
+    paddingHorizontal: 0,
     paddingTop: 6,
-    paddingBottom: 40,
+    paddingBottom: 120,
   },
   sectionHeader: {
     paddingTop: 18,
@@ -1156,7 +1173,7 @@ function createStyles(colors: typeof Colors) {
     paddingHorizontal: 4,
   },
   sectionTitle: {
-    color: colors.textTertiary,
+    color: sectionLabel,
     fontSize: 11,
     lineHeight: 14,
     fontFamily: Typography.uiFontMedium,
@@ -1167,20 +1184,7 @@ function createStyles(colors: typeof Colors) {
     height: 8,
   },
   rowGap: {
-    height: 10,
-  },
-  sessionRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    minHeight: 60,
-    gap: 13,
-    paddingVertical: 13,
-    paddingHorizontal: 16,
-    borderRadius: Radii.md,
-    backgroundColor: themedSurface,
-    borderWidth: StyleSheet.hairlineWidth,
-    borderColor: themedBorder,
-    ...shadow('card', colors.shadowColor),
+    height: 0,
   },
   sessionStatusBadge: {
     width: 11,
@@ -1188,26 +1192,6 @@ function createStyles(colors: typeof Colors) {
     borderRadius: 6,
     alignItems: 'center',
     justifyContent: 'center',
-  },
-  sessionBody: {
-    flex: 1,
-    minWidth: 0,
-    justifyContent: 'center',
-  },
-  sessionTitleRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 7,
-    minWidth: 0,
-  },
-  sessionName: {
-    flexShrink: 1,
-    minWidth: 0,
-    color: colors.textPrimary,
-    fontSize: 15.5,
-    lineHeight: 20,
-    fontFamily: Typography.uiFontMedium,
-    includeFontPadding: false,
   },
   brainBadge: {
     height: 19,
@@ -1264,7 +1248,7 @@ function createStyles(colors: typeof Colors) {
     borderWidth: StyleSheet.hairlineWidth,
     borderColor: themedBorder,
     overflow: 'hidden',
-    ...shadow('card', colors.shadowColor),
+    ...glassCardShadow(colors.shadowColor),
   },
   gridHeader: {
     flexDirection: 'row',
@@ -1286,7 +1270,7 @@ function createStyles(colors: typeof Colors) {
     minWidth: 0,
     color: colors.textPrimary,
     fontSize: 14.5,
-    lineHeight: 19,
+    lineHeight: 22,
     fontFamily: Typography.uiFontMedium,
   },
   gridPreview: {
@@ -1359,8 +1343,8 @@ function createStyles(colors: typeof Colors) {
     alignItems: 'center',
     justifyContent: 'center',
     borderWidth: StyleSheet.hairlineWidth,
-    borderColor: colors.borderStrong,
-    backgroundColor: colors.surfaceSubtle,
+    borderColor: themedBorder,
+    backgroundColor: themedSurface,
     gap: 8,
   },
   emptyActionBtnPrimary: {

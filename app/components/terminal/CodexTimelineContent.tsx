@@ -46,6 +46,16 @@ export function CodexTimelineEmptyContent({
     items.length === 0 &&
     (localChatState === "starting-new-chat" || localChatState === "new-chat-ready")
   ) {
+    if (emptyTitle) {
+      return (
+        <CodexTimelineEmptyState
+          chrome={chrome}
+          title={emptyTitle}
+          body={emptyBody}
+          busy={localChatState === "starting-new-chat"}
+        />
+      );
+    }
     return (
       <CodexSessionIdleView
         chrome={chrome}
@@ -56,6 +66,16 @@ export function CodexTimelineEmptyContent({
   }
 
   if (loading && items.length === 0) {
+    if (emptyTitle) {
+      return (
+        <CodexTimelineEmptyState
+          chrome={chrome}
+          title={emptyTitle}
+          body={emptyBody}
+          busy
+        />
+      );
+    }
     return <CodexSessionIdleView chrome={chrome} cwd={agentCwd} busy />;
   }
 
@@ -70,6 +90,16 @@ export function CodexTimelineEmptyContent({
   }
 
   if (syncing && items.length === 0) {
+    if (emptyTitle) {
+      return (
+        <CodexTimelineEmptyState
+          chrome={chrome}
+          title={emptyTitle}
+          body={emptyBody}
+          busy
+        />
+      );
+    }
     return <CodexSessionIdleView chrome={chrome} cwd={agentCwd} busy />;
   }
 

@@ -12,6 +12,7 @@ import type { useTerminalNavigationActions } from "./useTerminalNavigationAction
 
 interface UseTerminalTopBarPropsInput {
   title: string;
+  subtitle?: string;
   kind: AgentKind;
   terminalTheme: TerminalThemePalette;
   chrome: TerminalThemeChrome;
@@ -35,6 +36,7 @@ interface UseTerminalTopBarPropsInput {
 
 export function useTerminalTopBarProps({
   title,
+  subtitle,
   kind,
   terminalTheme,
   chrome,
@@ -52,6 +54,7 @@ export function useTerminalTopBarProps({
   return useMemo(
     () => ({
       title,
+      subtitle,
       kind,
       backgroundColor: terminalTheme.background,
       chrome,
@@ -74,6 +77,7 @@ export function useTerminalTopBarProps({
     }),
     [
       title,
+      subtitle,
       kind,
       chrome,
       chromeLayout.menuAnchorRef,

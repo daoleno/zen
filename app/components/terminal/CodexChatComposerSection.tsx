@@ -82,6 +82,8 @@ export function CodexChatComposerSection({
       running={presentation.showStopIndicator}
       bottomPadding={presentation.bottomPadding}
       showActionMenuButton={presentation.showActionMenuButton}
+      actionMenuIcon={presentation.actionMenuIcon}
+      composerLayout={presentation.composerLayout}
       showAttachmentRail={presentation.showAttachmentRail}
       showCommandMenu={presentation.showCommandMenu}
       showCommandList={presentation.showCommandList}

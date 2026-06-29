@@ -14,6 +14,7 @@ interface MessageBodyProps {
   chrome: TerminalThemeChrome;
   theme: TerminalThemePalette;
   compact?: boolean;
+  dense?: boolean;
 }
 
 export function MessageBody({
@@ -21,6 +22,7 @@ export function MessageBody({
   chrome,
   theme,
   compact = false,
+  dense = false,
 }: MessageBodyProps) {
   const blocks = useMemo(() => parseMessageBlocks(value), [value]);
   if (blocks.length === 0) {
@@ -37,6 +39,7 @@ export function MessageBody({
             chrome={chrome}
             theme={theme}
             compact={compact}
+            dense={dense}
             isLast={isLast}
           />
         );

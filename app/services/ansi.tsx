@@ -27,6 +27,13 @@ const ANSI_COLORS: Record<number, string> = {
   97: '#FFFFFF', // bright white
 };
 
+export function stripAnsiText(raw: string): string {
+  return raw
+    .replace(/\x1b\[[0-9;]*m/g, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
 export function parseAnsiLine(raw: string): AnsiSegment[] {
   const segments: AnsiSegment[] = [];
   let bold = false;

@@ -9,10 +9,14 @@ import {
   type NativeScrollEvent,
   type NativeSyntheticEvent,
 } from "react-native";
+import { ChatWallpaper } from "../ui/ChatWallpaper";
+import { useAppTheme } from "../../constants/tokens";
 import type {
   TerminalThemeChrome,
   TerminalThemePalette,
 } from "../../constants/terminalThemes";
+import { isAmbientChatChrome } from "../../constants/themedSurfaces";
+
 import { CodexTimelineEmptyContent } from "./CodexTimelineContent";
 import { CodexTimelineJumpButton } from "./CodexTimelineJumpButton";
 import type { CodexChatLocalState } from "./CodexChatSession";
@@ -24,6 +28,11 @@ import {
   ZenTimelineItemView,
   type ZenTimelineItem,
 } from "./CodexTimelineItemView";
+import { CodexTimelineDateDivider } from "./CodexTimelineDateDivider";
+import {
+  buildTimelineRenderItems,
+  type TimelineRenderItem,
+} from "./CodexTimelineGrouping";
 import type {
   PatchFileSummary,
 } from "./CodexTimelineActivityTypes";
@@ -101,7 +110,14 @@ export function CodexTimelineView({
   formatPatchPath,
   truncateBody,
 }: CodexTimelineViewProps) {
-  const renderItems = React.useMemo(() => [...items].reverse(), [items]);
+  const { theme: zenTheme } = useAppTheme();
+  const renderItems = React.useMemo(
+    () =>
+      buildTimelineRenderItems([...items].reverse(), {
+        showDateDividers: zenTheme.chat.showDateDividers,
+      }),
+    [items, zenTheme.chat.showDateDividers],
+  );
   const textSelectionContext = React.useMemo(
     () => ({
       selectable: textSelectable,
@@ -115,16 +131,22 @@ export function CodexTimelineView({
     ],
   );
   const renderItem = React.useCallback(
-    ({ item }: ListRenderItemInfo<ZenTimelineItem>) => (
-      <ZenTimelineItemView
-        item={item}
-        chrome={chrome}
-        theme={theme}
-        loadAssetPreview={loadAssetPreview}
-        formatPatchPath={formatPatchPath}
-        truncateBody={truncateBody}
-      />
-    ),
+    ({ item }: ListRenderItemInfo<TimelineRenderItem>) => {
+      if (item.type === "date-divider") {
+        return <CodexTimelineDateDivider label={item.label} chrome={chrome} />;
+      }
+      return (
+        <ZenTimelineItemView
+          item={item}
+          presentation={item.type === "message" ? item.presentation : undefined}
+          chrome={chrome}
+          theme={theme}
+          loadAssetPreview={loadAssetPreview}
+          formatPatchPath={formatPatchPath}
+          truncateBody={truncateBody}
+        />
+      );
+    },
     [
       chrome,
       formatPatchPath,
@@ -174,8 +196,11 @@ export function CodexTimelineView({
   return (
     <TimelineTextSelectableContext.Provider value={textSelectionContext}>
       <View style={styles.timelineStage}>
-        <FlatList
-          ref={scrollRef}
+        {!isAmbientChatChrome(chrome) && zenTheme.chat.showWallpaper ? (
+          <ChatWallpaper />
+        ) : null}
+        <FlatList<TimelineRenderItem>
+          ref={scrollRef as React.RefObject<FlatList<TimelineRenderItem> | null>}
           data={renderItems}
           keyExtractor={(item) => item.id}
           renderItem={renderItem}
@@ -232,7 +257,7 @@ const styles = StyleSheet.create({
   timelineContent: {
     paddingHorizontal: 16,
     paddingTop: TIMELINE_BOTTOM_PADDING,
-    paddingBottom: 14,
+    paddingBottom: 10,
     flexGrow: 1,
   },
   emptyOverlay: {

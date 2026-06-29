@@ -19,6 +19,7 @@ interface CodexMessageBlockProps {
   chrome: TerminalThemeChrome;
   theme: TerminalThemePalette;
   compact: boolean;
+  dense?: boolean;
   isLast: boolean;
 }
 
@@ -27,6 +28,7 @@ export function CodexMessageBlock({
   chrome,
   theme,
   compact,
+  dense = false,
   isLast,
 }: CodexMessageBlockProps) {
   const selectableTextProps = useTimelineSelectableTextProps();
@@ -84,7 +86,12 @@ export function CodexMessageBlock({
                       <View
                         style={[
                           styles.messageTaskCheckboxDot,
-                          { backgroundColor: theme.background },
+                          {
+                            backgroundColor:
+                              theme.background === "transparent"
+                                ? theme.cursorAccent
+                                : theme.background,
+                          },
                         ]}
                       />
                     ) : null}
@@ -103,6 +110,7 @@ export function CodexMessageBlock({
                 style={[
                   styles.messageText,
                   compact ? styles.messageTextCompact : null,
+                  dense ? styles.messageTextDense : null,
                   styles.messageListText,
                   { color: chrome.text },
                 ]}
@@ -271,6 +279,7 @@ export function CodexMessageBlock({
           style={[
             styles.messageText,
             compact ? styles.messageTextCompact : null,
+            dense ? styles.messageTextDense : null,
             { color: chrome.text },
             isLast ? styles.messageBlockLast : null,
           ]}
@@ -327,6 +336,11 @@ const styles = StyleSheet.create({
   messageTextCompact: {
     marginBottom: 8,
     fontSize: 14,
+    lineHeight: 22,
+  },
+  messageTextDense: {
+    marginBottom: 6,
+    fontSize: 15,
     lineHeight: 22,
   },
   messageHeadingWrap: {

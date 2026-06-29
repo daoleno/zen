@@ -141,6 +141,7 @@ export function useTerminalScreenLayoutProps({
 
   const topBarProps = useTerminalTopBarProps({
     title: displayName || presentedAgent.title || agent?.name || agentId || "Terminal",
+    subtitle: agent?.cwd?.trim() || agent?.command?.trim() || undefined,
     kind: presentedAgent.kind,
     terminalTheme,
     chrome,

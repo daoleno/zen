@@ -2,7 +2,9 @@ import React, { useMemo } from 'react';
 import { Ionicons } from '@expo/vector-icons';
 import { StyleSheet, View } from 'react-native';
 import { Claude, OpenAI } from '@lobehub/icons-rn';
-import { Colors, useAppColors } from '../../constants/tokens';
+import { Colors, useAppColors, useAppTheme } from '../../constants/tokens';
+import type { ResolvedZenTheme } from '../../theme';
+import { createThemedSurfaces } from '../../constants/themedSurfaces';
 import type { AgentKind } from '../../services/agentPresentation';
 
 interface AgentKindIconProps {
@@ -12,7 +14,8 @@ interface AgentKindIconProps {
 
 export function AgentKindIcon({ kind, size = 16 }: AgentKindIconProps) {
   const colors = useAppColors();
-  const styles = useMemo(() => createStyles(colors), [colors]);
+  const { theme } = useAppTheme();
+  const styles = useMemo(() => createStyles(theme), [theme]);
   const frameSize = size + 8;
   if (kind === 'claude') {
     return (
@@ -37,7 +40,10 @@ export function AgentKindIcon({ kind, size = 16 }: AgentKindIconProps) {
   );
 }
 
-function createStyles(colors: typeof Colors) {
+function createStyles(theme: ResolvedZenTheme) {
+  const colors = theme.colors;
+  const { subtle: themedSubtle, border: themedBorder } = createThemedSurfaces(theme);
+
   return StyleSheet.create({
   frame: {
     borderRadius: 12,
@@ -45,9 +51,9 @@ function createStyles(colors: typeof Colors) {
     justifyContent: 'center',
   },
   terminalFrame: {
-    backgroundColor: colors.surfaceSubtle,
+    backgroundColor: themedSubtle,
     borderWidth: StyleSheet.hairlineWidth,
-    borderColor: colors.borderSubtle,
+    borderColor: themedBorder,
   },
   });
 }

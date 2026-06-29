@@ -1,18 +1,8 @@
-import React from "react";
-import {
-  StyleSheet,
-  Text,
-  View,
-} from "react-native";
-import { Ionicons } from "@expo/vector-icons";
-import * as Haptics from "expo-haptics";
-import { Typography } from "../../constants/tokens";
+import React, { useMemo } from "react";
 import type { TerminalThemeChrome } from "../../constants/terminalThemes";
 import type { AgentKind } from "../../services/agentPresentation";
 import type { StoredCodexRenderMode } from "../../services/storage";
-import { AgentKindIcon } from "./AgentKindIcon";
-import { TerminalTopBarChromeButton } from "./TerminalTopBarChromeButton";
-import { AnimatedPressable } from "../ui/AnimatedPressable";
+import { TelegramChatHeader } from "./TelegramChatHeader";
 
 export interface TerminalTopBarGitDiffPresentation {
   accessibilityLabel: string;
@@ -26,10 +16,11 @@ export interface TerminalTopBarGitDiffPresentation {
 
 export interface TerminalTopBarProps {
   title: string;
+  subtitle?: string;
   kind: AgentKind;
   backgroundColor: string;
   chrome: TerminalThemeChrome;
-  menuAnchorRef: React.RefObject<View | null>;
+  menuAnchorRef: React.RefObject<import("react-native").View | null>;
   codexRenderMode: StoredCodexRenderMode;
   gitDiffDisabled: boolean;
   gitDiffPresentation: TerminalTopBarGitDiffPresentation;
@@ -44,13 +35,10 @@ export interface TerminalTopBarProps {
 
 export function TerminalTopBar({
   title,
-  kind,
-  backgroundColor,
-  chrome,
+  subtitle,
   menuAnchorRef,
   codexRenderMode,
   gitDiffDisabled,
-  gitDiffPresentation,
   isCodexAgent,
   delegated,
   onBack,
@@ -59,155 +47,66 @@ export function TerminalTopBar({
   onOpenMenu,
   onToggleCodexRenderMode,
 }: TerminalTopBarProps) {
+  const rightActions = useMemo(() => {
+    const actions: Array<{
+      key: string;
+      icon: React.ComponentProps<typeof import("@expo/vector-icons").Ionicons>["name"];
+      accessibilityLabel: string;
+      disabled?: boolean;
+      onPress: () => void;
+    }> = [];
+
+    if (isCodexAgent) {
+      actions.push({
+        key: "render-mode",
+        icon: codexRenderMode === "chat" ? "terminal-outline" : "chatbubble-outline",
+        accessibilityLabel:
+          codexRenderMode === "chat"
+            ? "Open terminal renderer"
+            : "Open Codex chat renderer",
+        onPress: onToggleCodexRenderMode,
+      });
+    }
+
+    actions.push({
+      key: "git-diff",
+      icon: "git-branch-outline",
+      accessibilityLabel: "Open Git diff",
+      disabled: gitDiffDisabled,
+      onPress: onOpenGitDiff,
+    });
+
+    actions.push({
+      key: "menu",
+      icon: "ellipsis-vertical",
+      accessibilityLabel: "Session actions",
+      onPress: onOpenMenu,
+    });
+
+    return actions;
+  }, [
+    codexRenderMode,
+    gitDiffDisabled,
+    isCodexAgent,
+    onOpenGitDiff,
+    onOpenMenu,
+    onToggleCodexRenderMode,
+  ]);
+
+  const resolvedSubtitle =
+    subtitle ??
+    (delegated ? "Brain session" : undefined);
+
   return (
-    <View
-      style={[
-        styles.topBar,
-        { backgroundColor },
-      ]}
-    >
-      <TerminalTopBarChromeButton
-        accessibilityLabel="Back"
-        chrome={chrome}
-        icon="chevron-back"
-        onPress={onBack}
-      />
-
-      <AnimatedPressable
-        accessibilityLabel="Open session switcher"
-        accessibilityRole="button"
-        style={styles.titleButton}
-        preset="press"
-        scale={0.98}
-        onPress={() => {
-          Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-          onOpenPicker();
-        }}
-      >
-        <View style={styles.titleIconWrap}>
-          <AgentKindIcon kind={kind} size={15} />
-        </View>
-        <Text style={[styles.title, { color: chrome.text }]} numberOfLines={1}>
-          {title}
-        </Text>
-        {delegated ? (
-          <View style={[styles.brainBadge, { borderColor: chrome.border }]}>
-            <Text style={[styles.brainBadgeText, { color: chrome.textMuted }]}>
-              Brain
-            </Text>
-          </View>
-        ) : null}
-      </AnimatedPressable>
-
-      <AnimatedPressable
-        accessibilityLabel={gitDiffPresentation.accessibilityLabel}
-        accessibilityRole="button"
-        accessibilityState={{ disabled: gitDiffDisabled }}
-        disabled={gitDiffDisabled}
-        style={[
-          styles.gitDiffButton,
-          { backgroundColor: gitDiffPresentation.backgroundColor },
-          gitDiffDisabled ? styles.disabled : null,
-        ]}
-        preset="press"
-        scale={0.9}
-        onPress={() => {
-          if (!gitDiffDisabled) {
-            Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-            onOpenGitDiff();
-          }
-        }}
-      >
-        <Ionicons
-          name="git-branch-outline"
-          size={20}
-          color={gitDiffPresentation.iconColor}
-        />
-      </AnimatedPressable>
-
-      {isCodexAgent ? (
-        <TerminalTopBarChromeButton
-          accessibilityLabel={
-            codexRenderMode === "chat"
-              ? "Open terminal renderer"
-              : "Open Codex chat renderer"
-          }
-          chrome={chrome}
-          icon={codexRenderMode === "chat" ? "terminal-outline" : "chatbubble-outline"}
-          onPress={onToggleCodexRenderMode}
-        />
-      ) : null}
-
-      <View ref={menuAnchorRef} collapsable={false}>
-        <TerminalTopBarChromeButton
-          accessibilityLabel="Terminal actions"
-          chrome={chrome}
-          icon="ellipsis-vertical"
-          onPress={onOpenMenu}
-        />
-      </View>
-    </View>
+    <TelegramChatHeader
+      title={title}
+      subtitle={resolvedSubtitle}
+      avatarLabel={title}
+      avatarSeed={title}
+      onBack={onBack}
+      onPressTitle={onOpenPicker}
+      rightActions={rightActions}
+      menuAnchorRef={menuAnchorRef}
+    />
   );
 }
-
-const styles = StyleSheet.create({
-  topBar: {
-    flexDirection: "row",
-    alignItems: "center",
-    paddingHorizontal: 8,
-    paddingTop: 3,
-    paddingBottom: 5,
-  },
-  titleButton: {
-    flex: 1,
-    minWidth: 0,
-    height: 32,
-    marginHorizontal: 6,
-    paddingHorizontal: 6,
-    borderRadius: 8,
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 8,
-  },
-  titleIconWrap: {
-    width: 16,
-    height: 18,
-    alignItems: "center",
-    justifyContent: "center",
-  },
-  title: {
-    flex: 1,
-    minWidth: 0,
-    flexShrink: 1,
-    fontSize: 14,
-    lineHeight: 17,
-    fontFamily: Typography.uiFontMedium,
-    includeFontPadding: false,
-    textAlignVertical: "center",
-    transform: [{ translateY: -0.5 }],
-  },
-  brainBadge: {
-    height: 16,
-    paddingHorizontal: 5,
-    borderWidth: StyleSheet.hairlineWidth,
-    borderRadius: 4,
-    alignItems: "center",
-    justifyContent: "center",
-  },
-  brainBadgeText: {
-    fontSize: 9,
-    lineHeight: 11,
-    fontFamily: Typography.uiFontMedium,
-    includeFontPadding: false,
-  },
-  gitDiffButton: {
-    width: 32,
-    height: 32,
-    borderRadius: 8,
-    alignItems: "center",
-    justifyContent: "center",
-  },
-  disabled: {
-    opacity: 0.48,
-  },
-});

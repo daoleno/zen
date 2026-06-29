@@ -24,6 +24,7 @@ interface ComposerSendButtonProps {
   loading: boolean;
   running: boolean;
   elapsedLabel?: string;
+  variant?: "default" | "chatgpt";
   onPress(): void;
 }
 
@@ -36,21 +37,23 @@ export function ComposerSendButton({
   loading,
   running,
   elapsedLabel,
+  variant = "default",
   onPress,
 }: ComposerSendButtonProps) {
+  const chatgpt = variant === "chatgpt";
   const animated = loading || running;
   const foreground = running
     ? chrome.text
     : enabled && !loading
-      ? theme.background
+      ? "#FFFFFF"
       : chrome.textSubtle;
   const backgroundColor = enabled && !loading && !running
-    ? chrome.text
+    ? chrome.accent
     : chrome.surfaceMuted;
   const borderColor = running
     ? chrome.border
     : enabled && !loading
-      ? chrome.text
+      ? chrome.accent
       : "transparent";
 
   return (
@@ -62,6 +65,7 @@ export function ComposerSendButton({
       accessibilityState={{ disabled: !enabled, busy: animated }}
       style={[
         styles.button,
+        chatgpt ? styles.buttonChatGpt : null,
         elapsedLabel ? styles.buttonWithLabel : null,
         { backgroundColor, borderColor },
         !enabled && !loading ? styles.disabled : null,
@@ -93,10 +97,15 @@ export function ComposerSendButton({
 }
 
 const styles = StyleSheet.create({
+  buttonChatGpt: {
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+  },
   button: {
-    width: 38,
-    height: 38,
-    borderRadius: 19,
+    width: 40,
+    height: 40,
+    borderRadius: 20,
     borderWidth: StyleSheet.hairlineWidth,
     alignItems: "center",
     justifyContent: "center",

@@ -7,6 +7,7 @@ import type {
   TerminalThemeChrome,
   TerminalThemePalette,
 } from "../../constants/terminalThemes";
+import { isAmbientChatChrome } from "../../constants/themedSurfaces";
 import type { ConnectionState } from "../../store/agents";
 import type { ConnectionIssue } from "../../services/connectionIssue";
 import { CodexChatBody } from "./CodexChatBody";
@@ -75,9 +76,13 @@ function CodexChatSurfaceImpl({
     onSwitchToTerminal,
   });
 
+  const canvasBackground = isAmbientChatChrome(chrome)
+    ? "transparent"
+    : theme.background;
+
   return (
     <View
-      style={[styles.root, { backgroundColor: theme.background }]}
+      style={[styles.root, { backgroundColor: canvasBackground }]}
     >
       <CodexChatBody {...bodyProps} />
     </View>

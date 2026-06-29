@@ -6,22 +6,17 @@ import {
   View,
 } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
-import * as Haptics from "expo-haptics";
 import { useFocusEffect, useRouter } from "expo-router";
 import { SafeAreaView } from "react-native-safe-area-context";
+import { BrainAdapterSheet } from "../../components/brain/BrainAdapterSheet";
+import { BrainChatHeader } from "../../components/brain/BrainChatHeader";
+import { BrainOverflowMenu } from "../../components/brain/BrainOverflowMenu";
 import { BrainWorkspaceViewer } from "../../components/brain/BrainWorkspaceViewer";
-import { BottomSheetFrame, IconButton } from "../../components/ui";
-import { AppButton } from "../../components/ui/AppButton";
-import { AppText } from "../../components/ui/AppText";
+import { brainProviderLabel } from "../../components/brain/brainPresentation";
 import { CodexChatSurface } from "../../components/terminal/CodexChatSurface";
-import { AnimatedPressable } from "../../components/ui/AnimatedPressable";
-import {
-  buildTerminalChrome,
-  resolveTerminalTheme,
-} from "../../constants/terminalThemes";
+import { buildChatChrome } from "../../theme";
 import {
   Colors,
-  Radii,
   Typography,
   useAppColors,
   useAppTheme,
@@ -35,20 +30,24 @@ import {
   type BrainServerState,
 } from "../../store/brain";
 
+const BRAIN_EMPTY_TITLE = "Ready when you are";
+const BRAIN_EMPTY_BODY =
+  "Message Brain to delegate work, plan a task, or inspect the workspace.";
+
 export default function BrainScreen() {
   const router = useRouter();
   const colors = useAppColors();
-  const { isLight } = useAppTheme();
+  const { theme: zenTheme } = useAppTheme();
   const styles = useMemo(() => createStyles(colors), [colors]);
-  const terminalTheme = useMemo(
-    () => resolveTerminalTheme(isLight ? "light" : "dark"),
-    [isLight],
+  const { chrome, theme } = useMemo(
+    () => buildChatChrome(zenTheme),
+    [zenTheme],
   );
-  const chrome = useMemo(() => buildTerminalChrome(terminalTheme), [terminalTheme]);
   const { state: agentState } = useAgents();
   const { state: brainState } = useBrain();
   const [servers, setServers] = useState<StoredServer[]>([]);
   const [adapterSheetVisible, setAdapterSheetVisible] = useState(false);
+  const [menuVisible, setMenuVisible] = useState(false);
   const [switchingAdapterId, setSwitchingAdapterId] = useState<string | null>(null);
   const [adapterSwitchError, setAdapterSwitchError] = useState<string | null>(null);
   const [newChatLoading, setNewChatLoading] = useState(false);
@@ -105,12 +104,12 @@ export default function BrainScreen() {
   const brainChatScopeKey = activeBrain?.chat_thread_id
     ? `brain-thread:${activeBrain.chat_thread_id}`
     : undefined;
-  const adapterChipLabel = brainAdapterChipLabel(activeBrain?.host_adapter);
   const ready = Boolean(activeServer && activeBrain?.hydrated && hostAgent?.id);
   const canUseCodexBrainInterface = Boolean(
     ready && hostAdapter?.provider === "codex",
   );
   const availableAdapters = activeBrain?.adapters ?? [];
+  const canSwitchAdapter = availableAdapters.length > 1;
   const keyboardVerticalOffset = 0;
 
   useFocusEffect(
@@ -123,16 +122,24 @@ export default function BrainScreen() {
   );
 
   const openAdapterSheet = useCallback(() => {
-    if (!activeBrain?.adapters?.length || !activeServer) {
+    if (!canSwitchAdapter || !activeServer) {
       return;
     }
     setAdapterSwitchError(null);
     setAdapterSheetVisible(true);
-  }, [activeBrain?.adapters?.length, activeServer]);
+  }, [activeServer, canSwitchAdapter]);
 
   const closeAdapterSheet = useCallback(() => {
     setAdapterSheetVisible(false);
     setAdapterSwitchError(null);
+  }, []);
+
+  const openMenu = useCallback(() => {
+    setMenuVisible(true);
+  }, []);
+
+  const closeMenu = useCallback(() => {
+    setMenuVisible(false);
   }, []);
 
   const openWorkspaceViewer = useCallback(() => {
@@ -198,75 +205,69 @@ export default function BrainScreen() {
     [activeServer, closeAdapterSheet, hostAdapter?.id, switchingAdapterId],
   );
 
+  const menuActions = useMemo(
+    () => [
+      ...(canSwitchAdapter
+        ? [
+            {
+              key: "engine",
+              label: "Switch engine",
+              detail: brainProviderLabel(hostAdapter?.provider),
+              icon: "swap-horizontal-outline" as const,
+              onPress: openAdapterSheet,
+            },
+          ]
+        : []),
+      {
+        key: "terminal",
+        label: "Open terminal",
+        detail: "Raw session view",
+        icon: "terminal-outline" as const,
+        disabled: !activeServer || !hostAgent?.id,
+        onPress: openBrainTerminal,
+      },
+      {
+        key: "workspace",
+        label: "Browse workspace",
+        icon: "folder-open-outline" as const,
+        disabled: !activeServer || connectionState !== "connected",
+        onPress: openWorkspaceViewer,
+      },
+    ],
+    [
+      activeServer,
+      canSwitchAdapter,
+      connectionState,
+      hostAdapter?.provider,
+      hostAgent?.id,
+      openAdapterSheet,
+      openBrainTerminal,
+      openWorkspaceViewer,
+    ],
+  );
+
   return (
     <SafeAreaView style={styles.screen} edges={["top"]}>
-      <View style={styles.header}>
-        <View style={styles.headerLeft}>
-          <Text style={styles.title}>Brain</Text>
-          {activeBrain?.adapters?.length && adapterChipLabel ? (
-            <AnimatedPressable
-              accessibilityRole="button"
-              accessibilityLabel="Switch Brain adapter"
-              onPress={() => {
-                Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-                openAdapterSheet();
-              }}
-              preset="press"
-              scale={0.98}
-              style={styles.adapterRow}
-            >
-              <Text style={styles.adapterText} numberOfLines={1}>
-                {adapterChipLabel}
-              </Text>
-              <Ionicons name="chevron-down" size={13} color={colors.textTertiary} />
-            </AnimatedPressable>
-          ) : null}
-        </View>
-        <View style={styles.headerActions}>
-          <IconButton
-            icon="terminal-outline"
-            size={36}
-            iconSize={18}
-            tone="ghost"
-            color={colors.textSecondary}
-            accessibilityRole="button"
-            accessibilityLabel="Open Brain terminal"
-            onPress={openBrainTerminal}
-            disabled={!activeServer || !hostAgent?.id}
-          />
-          <IconButton
-            icon="folder-open-outline"
-            size={36}
-            iconSize={18}
-            tone="ghost"
-            color={colors.textSecondary}
-            accessibilityRole="button"
-            accessibilityLabel="Browse Brain workspace"
-            onPress={openWorkspaceViewer}
-            disabled={!activeServer || connectionState !== "connected"}
-          />
-          <IconButton
-            icon="add"
-            size={36}
-            iconSize={20}
-            tone="ghost"
-            color={colors.textSecondary}
-            accessibilityRole="button"
-            accessibilityLabel="New Brain chat"
-            onPress={() => void startNewBrainChat()}
-            disabled={!activeServer || !activeBrain?.hydrated || newChatLoading}
-          />
-        </View>
-      </View>
+      <BrainChatHeader
+        adapter={hostAdapter}
+        workspace={hostAgent?.cwd}
+        canSwitchAdapter={canSwitchAdapter}
+        newChatLoading={newChatLoading}
+        canNewChat={Boolean(activeServer && activeBrain?.hydrated)}
+        canOpenTerminal={Boolean(activeServer && hostAgent?.id)}
+        canOpenWorkspace={Boolean(activeServer && connectionState === "connected")}
+        onOpenAdapterSheet={openAdapterSheet}
+        onOpenMenu={openMenu}
+        onNewChat={() => void startNewBrainChat()}
+      />
+
       {brainActionError ? (
-        <View style={styles.headerError}>
-          <AppText variant="caption" tone="danger">
-            {brainActionError}
-          </AppText>
+        <View style={styles.bannerError}>
+          <Text style={styles.bannerErrorText}>{brainActionError}</Text>
         </View>
       ) : null}
 
-      <View style={styles.surface}>
+      <View style={styles.chatSurface}>
         {canUseCodexBrainInterface ? (
           <CodexChatSurface
             key={`brain-codex-chat:${activeServer?.id}:${hostAgent?.id}:${brainChatScopeKey ?? ""}`}
@@ -281,7 +282,7 @@ export default function BrainScreen() {
             }}
             connectionState={connectionState}
             connectionIssue={connectionIssue}
-            theme={terminalTheme}
+            theme={theme}
             chrome={chrome}
             screenFocused
             placeholder="Message"
@@ -289,6 +290,8 @@ export default function BrainScreen() {
             showAttachmentControl
             keyboardVerticalOffset={keyboardVerticalOffset}
             showUnavailableAction
+            emptyTitle={BRAIN_EMPTY_TITLE}
+            emptyBody={BRAIN_EMPTY_BODY}
           />
         ) : ready ? (
           <BrainInterfaceUnavailableState provider={hostAdapter?.provider} />
@@ -297,99 +300,73 @@ export default function BrainScreen() {
         )}
       </View>
 
-      <BottomSheetFrame
+      <BrainAdapterSheet
         visible={adapterSheetVisible}
+        adapters={availableAdapters}
+        activeAdapterId={hostAdapter?.id}
+        switchingAdapterId={switchingAdapterId}
+        error={adapterSwitchError}
         onClose={closeAdapterSheet}
-        keyboardAvoiding
-        maxHeight="68%"
-      >
-        <View style={styles.sheetHeader}>
-          <AppText variant="title" tone="primary">
-            Adapter
-          </AppText>
-        </View>
-        <View style={styles.sheetList}>
-          {availableAdapters.map((adapter) => {
-            const active = adapter.id === hostAdapter?.id;
-            const busy = switchingAdapterId === adapter.id;
-            return (
-              <AnimatedPressable
-                key={adapter.id}
-                accessibilityRole="button"
-                onPress={() => {
-                  if (!busy) {
-                    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-                    void switchBrainAdapter(adapter);
-                  }
-                }}
-                disabled={busy}
-                preset="press"
-                scale={0.98}
-                style={[
-                  styles.sheetRow,
-                  {
-                    borderColor: colors.borderSubtle,
-                    backgroundColor: active
-                      ? colors.surfaceActive
-                      : colors.surfaceSubtle,
-                  },
-                  busy ? styles.sheetRowBusy : null,
-                ]}
-              >
-                <View style={styles.sheetRowMain}>
-                  <View style={styles.sheetRowTitleLine}>
-                    <AppText variant="body" tone="primary" style={styles.sheetRowTitle}>
-                      {adapter.name || adapter.id}
-                    </AppText>
-                    {active ? (
-                      <Ionicons name="checkmark" size={16} color={colors.accent} />
-                    ) : null}
-                  </View>
-                  {adapter.runtime?.trim() ? (
-                    <AppText variant="caption" tone="secondary">
-                      {adapter.runtime.trim()}
-                    </AppText>
-                  ) : null}
-                </View>
-                {busy ? (
-                  <ActivityIndicator size="small" color={colors.accent} />
-                ) : null}
-              </AnimatedPressable>
-            );
-          })}
-        </View>
-        {adapterSwitchError ? (
-          <AppText variant="caption" tone="danger" style={styles.sheetError}>
-            {adapterSwitchError}
-          </AppText>
-        ) : null}
-        <View style={styles.sheetFooter}>
-          <AppButton label="Close" variant="ghost" onPress={closeAdapterSheet} />
-        </View>
-      </BottomSheetFrame>
+        onSelect={(adapter) => void switchBrainAdapter(adapter)}
+      />
+
+      <BrainOverflowMenu
+        visible={menuVisible}
+        actions={menuActions}
+        onClose={closeMenu}
+      />
 
       <BrainWorkspaceViewer
         visible={workspaceViewerVisible}
         serverId={activeServer?.id}
         workspace={activeBrain?.workspace}
         chrome={chrome}
-        theme={terminalTheme}
+        theme={theme}
         onClose={closeWorkspaceViewer}
       />
     </SafeAreaView>
   );
 }
 
+function BrainStateCard({
+  glyph,
+  title,
+  detail,
+}: {
+  glyph: React.ReactNode;
+  title: string;
+  detail?: string;
+}) {
+  const colors = useAppColors();
+  const styles = useMemo(() => createStateCardStyles(colors), [colors]);
+
+  return (
+    <View style={styles.card}>
+      <View style={styles.glyphWrap}>{glyph}</View>
+      <Text style={styles.title}>{title}</Text>
+      {detail ? <Text style={styles.detail}>{detail}</Text> : null}
+    </View>
+  );
+}
+
 function BrainLoadingState({ connected }: { connected: boolean }) {
   const colors = useAppColors();
   return (
-    <View style={loadingStyles.root}>
-      {connected ? (
-        <ActivityIndicator size="small" color={colors.accent} />
-      ) : (
-        <Ionicons name="cloud-offline-outline" size={20} color={colors.textSecondary} />
-      )}
-    </View>
+    <BrainStateCard
+      glyph={
+        connected ? (
+          <ActivityIndicator size="small" color={colors.accent} />
+        ) : (
+          <Ionicons name="cloud-offline-outline" size={22} color={colors.textSecondary} />
+        )
+      }
+      title={connected ? "Connecting to Brain" : "Brain is offline"}
+      detail={
+        connected
+          ? "Fetching the latest workspace and chat thread."
+          : "Connect a server in Settings to use Brain."
+      }
+    />
   );
 }
 
@@ -397,14 +374,15 @@ function BrainInterfaceUnavailableState({ provider }: { provider?: string }) {
   const colors = useAppColors();
   const label = brainProviderLabel(provider);
   return (
-    <View style={loadingStyles.root}>
-      <Ionicons name="layers-outline" size={20} color={colors.textSecondary} />
-      {label ? (
-        <Text style={[loadingStyles.caption, { color: colors.textSecondary }]}>
-          {label}
-        </Text>
-      ) : null}
-    </View>
+    <BrainStateCard
+      glyph={<Ionicons name="layers-outline" size={22} color={colors.textSecondary} />}
+      title="Chat UI not available"
+      detail={
+        label
+          ? `${label} is connected, but Brain chat currently requires a Codex engine.`
+          : "Switch the Brain engine to Codex to use this chat surface."
+      }
+    />
   );
 }
 
@@ -434,32 +412,41 @@ function resolveActiveServer({
   return connectedByState || servers[0] || null;
 }
 
-function brainAdapterChipLabel(adapter?: BrainAdapterRef | null) {
-  if (!adapter) {
-    return "";
-  }
-  if (adapter.name?.trim()) {
-    return adapter.name.trim();
-  }
-  return brainProviderLabel(
-    adapter.provider && adapter.provider !== "custom"
-      ? adapter.provider
-      : adapter.id,
-  );
-}
-
-function brainProviderLabel(value?: string) {
-  const normalized = value?.trim().toLowerCase();
-  switch (normalized) {
-    case "codex":
-      return "Codex";
-    case "claude":
-      return "Claude Code";
-    case "tmux":
-      return "tmux";
-    default:
-      return value?.trim() || "";
-  }
+function createStateCardStyles(colors: typeof Colors) {
+  return StyleSheet.create({
+    card: {
+      flex: 1,
+      alignItems: "center",
+      justifyContent: "center",
+      paddingHorizontal: 36,
+      gap: 10,
+    },
+    glyphWrap: {
+      width: 72,
+      height: 72,
+      borderRadius: 36,
+      alignItems: "center",
+      justifyContent: "center",
+      backgroundColor: colors.accentSoft,
+      marginBottom: 4,
+    },
+    title: {
+      color: colors.textPrimary,
+      fontFamily: Typography.uiFontMedium,
+      fontSize: 18,
+      lineHeight: 24,
+      textAlign: "center",
+    },
+    detail: {
+      color: colors.textSecondary,
+      fontFamily: Typography.uiFont,
+      fontSize: 14,
+      lineHeight: 20,
+      textAlign: "center",
+      maxWidth: 280,
+      opacity: 0.9,
+    },
+  });
 }
 
 function createStyles(colors: typeof Colors) {
@@ -468,120 +455,24 @@ function createStyles(colors: typeof Colors) {
       flex: 1,
       backgroundColor: colors.bgPrimary,
     },
-    header: {
-      paddingHorizontal: 18,
-      paddingTop: 14,
-      paddingBottom: 12,
-      flexDirection: "row",
-      alignItems: "flex-start",
-      justifyContent: "space-between",
-      borderBottomWidth: StyleSheet.hairlineWidth,
-      borderBottomColor: colors.borderSubtle,
-    },
-    headerLeft: {
-      flex: 1,
-      minWidth: 0,
-      paddingRight: 12,
-      gap: 2,
-    },
-    headerActions: {
-      flexDirection: "row",
-      alignItems: "center",
-      gap: 2,
-      paddingTop: 2,
-    },
-    title: {
-      color: colors.textPrimary,
-      fontFamily: Typography.uiFontMedium,
-      fontSize: 30,
-      lineHeight: 34,
-      letterSpacing: -0.6,
-    },
-    adapterRow: {
-      flexDirection: "row",
-      alignItems: "center",
-      alignSelf: "flex-start",
-      gap: 2,
-      marginTop: 2,
-      paddingVertical: 2,
-      paddingRight: 4,
-    },
-    adapterText: {
-      color: colors.textSecondary,
-      fontFamily: Typography.uiFont,
-      fontSize: 13,
-      lineHeight: 18,
-      flexShrink: 1,
-    },
-    headerError: {
-      paddingHorizontal: 16,
-      paddingVertical: 7,
-      borderBottomWidth: StyleSheet.hairlineWidth,
-      borderBottomColor: colors.borderSubtle,
-      backgroundColor: colors.surfaceSubtle,
-    },
-    surface: {
+    chatSurface: {
       flex: 1,
       minHeight: 0,
-      backgroundColor: colors.bgPrimary,
     },
-    sheetHeader: {
-      marginBottom: 12,
-    },
-    sheetList: {
-      gap: 8,
-    },
-    sheetRow: {
-      minHeight: 56,
-      borderRadius: Radii.md,
-      borderWidth: StyleSheet.hairlineWidth,
+    bannerError: {
+      marginHorizontal: 12,
+      marginBottom: 6,
       paddingHorizontal: 14,
-      paddingVertical: 10,
-      flexDirection: "row",
-      alignItems: "center",
-      justifyContent: "space-between",
-      gap: 12,
+      paddingVertical: 8,
+      borderRadius: 12,
+      backgroundColor: colors.dangerSoft,
+      zIndex: 2,
     },
-    sheetRowBusy: {
-      opacity: 0.55,
-    },
-    sheetRowMain: {
-      flex: 1,
-      minWidth: 0,
-    },
-    sheetRowTitleLine: {
-      flexDirection: "row",
-      alignItems: "center",
-      justifyContent: "space-between",
-      gap: 8,
-    },
-    sheetRowTitle: {
-      flex: 1,
-      minWidth: 0,
-    },
-    sheetError: {
-      marginTop: 10,
-    },
-    sheetFooter: {
-      marginTop: 12,
-      alignItems: "flex-end",
+    bannerErrorText: {
+      color: colors.dangerText,
+      fontFamily: Typography.uiFont,
+      fontSize: 12.5,
+      lineHeight: 17,
     },
   });
 }
-
-const loadingStyles = StyleSheet.create({
-  root: {
-    flex: 1,
-    alignItems: "center",
-    justifyContent: "center",
-    paddingHorizontal: 28,
-    gap: 10,
-  },
-  caption: {
-    fontFamily: Typography.uiFont,
-    fontSize: 12,
-    lineHeight: 16,
-    textAlign: "center",
-    opacity: 0.72,
-  },
-});

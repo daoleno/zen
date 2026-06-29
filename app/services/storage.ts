@@ -10,7 +10,10 @@ const KEYS = {
   recentAgentOpens: "zen:recent_agent_opens",
   agentAliases: "zen:agent_aliases",
   codexRenderModes: "zen:codex_render_modes",
+  themePreference: "zen:theme_preference",
 } as const;
+
+export type StoredThemePreference = "system" | string;
 
 export type StoredInboxViewMode = "list" | "grid";
 export type StoredRecentAgentOpens = Record<string, number>;
@@ -335,4 +338,17 @@ function deriveServerName(url: string): string {
   } catch {
     return url;
   }
+}
+
+export async function getThemePreference(): Promise<StoredThemePreference | null> {
+  const value = await AsyncStorage.getItem(KEYS.themePreference);
+  if (!value) return null;
+  const trimmed = value.trim();
+  return trimmed.length > 0 ? trimmed : null;
+}
+
+export async function setThemePreference(
+  preference: StoredThemePreference,
+): Promise<void> {
+  await AsyncStorage.setItem(KEYS.themePreference, preference);
 }

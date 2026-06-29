@@ -1,4 +1,4 @@
-import React from "react";
+import React, { useState } from "react";
 import {
   type LayoutChangeEvent,
   type TextInput as TextInputInstance,
@@ -15,6 +15,7 @@ import {
 import { CodexComposerActionMenu } from "./CodexComposerActionMenu";
 import { CodexChatComposerFrame } from "./CodexChatComposerFrame";
 import { CodexComposerPanel } from "./CodexComposerPanel";
+import { ComposerEmojiStrip } from "./ComposerEmojiStrip";
 
 interface CodexChatComposerProps {
   inputRef: React.RefObject<TextInputInstance | null>;
@@ -32,6 +33,8 @@ interface CodexChatComposerProps {
   running: boolean;
   bottomPadding: number;
   showActionMenuButton: boolean;
+  actionMenuIcon: "add" | "happy-outline";
+  composerLayout: "chatgpt" | "telegram" | "classic";
   showAttachmentRail: boolean;
   showCommandMenu: boolean;
   showCommandList: boolean;
@@ -73,6 +76,8 @@ export function CodexChatComposer({
   running,
   bottomPadding,
   showActionMenuButton,
+  actionMenuIcon,
+  composerLayout,
   showAttachmentRail,
   showCommandMenu,
   showCommandList,
@@ -97,6 +102,10 @@ export function CodexChatComposer({
   onSubmit,
   onSendPress,
 }: CodexChatComposerProps) {
+  const [emojiStripOpen, setEmojiStripOpen] = useState(false);
+  const telegramComposer = composerLayout === "telegram";
+  const chatgptComposer = composerLayout === "chatgpt";
+
   return (
     <CodexChatComposerFrame
       onLayout={onLayout}
@@ -134,6 +143,13 @@ export function CodexChatComposer({
         />
       ) : null}
 
+      {telegramComposer && !chatgptComposer && emojiStripOpen ? (
+        <ComposerEmojiStrip
+          chrome={chrome}
+          onPick={(emoji) => onDraftChange(`${draft}${emoji}`)}
+        />
+      ) : null}
+
       <CodexComposerPanel
         inputRef={inputRef}
         draft={draft}
@@ -147,13 +163,21 @@ export function CodexChatComposer({
         sendLabel={sendLabel}
         sendElapsedLabel={sendElapsedLabel}
         running={running}
-        actionMenuExpanded={showComposerActions}
+        actionMenuExpanded={telegramComposer ? emojiStripOpen : showComposerActions}
         actionMenuButtonEnabled={composerActionButtonEnabled}
         showActionMenuButton={showActionMenuButton}
+        actionMenuIcon={actionMenuIcon}
+        composerLayout={composerLayout}
+        emojiStripOpen={emojiStripOpen}
         chrome={chrome}
         theme={theme}
         onDraftChange={onDraftChange}
         onActionMenuPress={onToggleActionMenu}
+        onAttachPress={() => {
+          onUploadPress();
+          onDismissActionMenu();
+        }}
+        onEmojiToggle={() => setEmojiStripOpen((open) => !open)}
         onInputPress={onInputPress}
         onInputFocus={onInputFocus}
         onInputBlur={onInputBlur}

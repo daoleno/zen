@@ -19,6 +19,10 @@ interface CodexTimelineEmptyStateProps {
   onAction?: () => void;
 }
 
+function isAmbientChrome(chrome: TerminalThemeChrome): boolean {
+  return chrome.appBackground === "transparent";
+}
+
 export function CodexTimelineEmptyState({
   chrome,
   title,
@@ -27,9 +31,17 @@ export function CodexTimelineEmptyState({
   actionLabel,
   onAction,
 }: CodexTimelineEmptyStateProps) {
+  const ambient = isAmbientChrome(chrome);
+
   return (
-    <View style={styles.emptyState}>
-      {busy ? <BusyGlyph chrome={chrome} /> : null}
+    <View style={[styles.emptyState, ambient && styles.emptyStateAmbient]}>
+      {busy ? (
+        <BusyGlyph chrome={chrome} />
+      ) : ambient ? (
+        <View style={[styles.emptyBadge, { backgroundColor: chrome.accentSoft }]}>
+          <Text style={[styles.emptyGlyph, { color: chrome.accent }]}>✦</Text>
+        </View>
+      ) : null}
       <Text style={[styles.emptyTitle, { color: chrome.text }]}>{title}</Text>
       {body ? (
         <Text style={[styles.emptyBody, { color: chrome.textMuted }]}>{body}</Text>
@@ -91,6 +103,23 @@ const styles = StyleSheet.create({
     justifyContent: "center",
     paddingHorizontal: 24,
   },
+  emptyStateAmbient: {
+    minHeight: 320,
+    paddingHorizontal: 32,
+  },
+  emptyBadge: {
+    width: 72,
+    height: 72,
+    borderRadius: 36,
+    alignItems: "center",
+    justifyContent: "center",
+    marginBottom: 4,
+  },
+  emptyGlyph: {
+    fontSize: 34,
+    lineHeight: 40,
+    textAlign: "center",
+  },
   busyGlyph: {
     borderRadius: 8,
     borderWidth: StyleSheet.hairlineWidth,
@@ -101,17 +130,19 @@ const styles = StyleSheet.create({
   },
   emptyTitle: {
     marginTop: 10,
-    fontSize: 16,
-    lineHeight: 21,
+    fontSize: 18,
+    lineHeight: 24,
     textAlign: "center",
     fontFamily: Typography.uiFontMedium,
   },
   emptyBody: {
-    marginTop: 7,
-    fontSize: 12,
-    lineHeight: 18,
+    marginTop: 8,
+    fontSize: 14,
+    lineHeight: 20,
     textAlign: "center",
     fontFamily: Typography.uiFont,
+    maxWidth: 280,
+    opacity: 0.88,
   },
   emptyAction: {
     marginTop: 14,
