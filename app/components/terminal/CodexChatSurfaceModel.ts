@@ -29,7 +29,6 @@ export interface CodexComposerPresentation {
   bottomPadding: number;
   keyboardVerticalOffset: number;
   automaticKeyboardOffset: boolean;
-  minimalComposer: boolean;
   composerLayout: "chatgpt" | "telegram" | "classic";
 }
 
@@ -51,8 +50,6 @@ export interface CodexComposerPresentationInput {
   isAndroid: boolean;
   placeholder?: string;
   keyboardVerticalOffset?: number;
-  minimalComposer?: boolean;
-  showAttachmentControl?: boolean;
   composerBottomInset?: number;
 }
 
@@ -74,8 +71,6 @@ export function buildCodexComposerPresentation({
   isAndroid,
   placeholder,
   keyboardVerticalOffset,
-  minimalComposer,
-  showAttachmentControl,
   composerBottomInset,
 }: CodexComposerPresentationInput): CodexComposerPresentation {
   const commandQuery = draft.trimStart();
@@ -92,22 +87,16 @@ export function buildCodexComposerPresentation({
         slashQueryActive ? commandQuery : "/",
       )
     : [];
-  const composerActionsAvailable =
-    !minimalComposer || Boolean(showAttachmentControl);
   const showComposerActions =
-    connectionState === "connected" &&
-    actionMenuPinned &&
-    composerActionsAvailable;
+    connectionState === "connected" && actionMenuPinned;
   const showCommandList =
     slashCommandsEnabled &&
-    !minimalComposer &&
     connectionState === "connected" &&
     (actionMenuPinned || slashQueryActive) &&
     (slashQueryActive || !normalDraftActive) &&
     (slashQueryActive || visibleSlashCommands.length > 0);
   const showCommandMenu = showComposerActions || showCommandList;
-  const composerActionButtonEnabled =
-    connectionState === "connected" && composerActionsAvailable;
+  const composerActionButtonEnabled = connectionState === "connected";
   const showStopIndicator =
     connectionState === "connected" &&
     requestRunning &&
@@ -121,14 +110,14 @@ export function buildCodexComposerPresentation({
     showCommandMenu,
     showCommandList,
     showComposerActions,
-    showActionMenuButton: composerActionsAvailable,
+    showActionMenuButton: true,
     actionMenuIcon: "add",
-    showAttachmentRail: composerActionsAvailable,
+    showAttachmentRail: true,
     composerActionButtonEnabled,
     showStopButton,
     showStopIndicator,
     sendEnabled: canSend || showStopButton || startingNewChat,
-    sendIcon: showStopIndicator ? "square" : minimalComposer ? "arrow-up" : "arrow-up",
+    sendIcon: showStopIndicator ? "square" : "arrow-up",
     sendLabel: startingNewChat
       ? "Starting new chat"
       : showStopButton
@@ -154,7 +143,6 @@ export function buildCodexComposerPresentation({
           ? safeAreaTop + TERMINAL_ROUTE_BAR_HEIGHT
           : 0,
     automaticKeyboardOffset: typeof keyboardVerticalOffset === "number",
-    minimalComposer: Boolean(minimalComposer),
-    composerLayout: minimalComposer ? "chatgpt" : "classic",
+    composerLayout: "classic",
   };
 }

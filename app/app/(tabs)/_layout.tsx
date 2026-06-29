@@ -1,14 +1,25 @@
+import { useMemo } from 'react';
 import type { ColorValue } from 'react-native';
 import type { ComponentProps } from 'react';
 import { Tabs } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { getFloatingTabBarInset } from '../../components/navigation/floatingTabBarMetrics';
+import { TabScreenInsetProvider } from '../../components/navigation/TabScreenInsetContext';
 import {
   ZenFloatingTabBar,
   type ZenFloatingTabBarProps,
 } from '../../components/navigation/ZenFloatingTabBar';
 
 export default function TabLayout() {
+  const insets = useSafeAreaInsets();
+  const tabScreenBottomInset = useMemo(
+    () => getFloatingTabBarInset(insets.bottom),
+    [insets.bottom],
+  );
+
   return (
+    <TabScreenInsetProvider inset={tabScreenBottomInset}>
     <Tabs
       tabBar={(props) => (
         <ZenFloatingTabBar {...(props as unknown as ZenFloatingTabBarProps)} />
@@ -67,6 +78,7 @@ export default function TabLayout() {
         }}
       />
     </Tabs>
+    </TabScreenInsetProvider>
   );
 }
 

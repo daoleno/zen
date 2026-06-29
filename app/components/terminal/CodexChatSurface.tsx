@@ -26,9 +26,6 @@ interface CodexChatSurfaceProps {
   chrome: TerminalThemeChrome;
   screenFocused: boolean;
   placeholder?: string;
-  minimalComposer?: boolean;
-  showAttachmentControl?: boolean;
-  composerBottomInset?: number;
   keyboardVerticalOffset?: number;
   showUnavailableAction?: boolean;
   emptyTitle?: string;
@@ -48,9 +45,6 @@ function CodexChatSurfaceImpl({
   chrome,
   screenFocused,
   placeholder,
-  minimalComposer,
-  showAttachmentControl,
-  composerBottomInset,
   keyboardVerticalOffset,
   showUnavailableAction,
   emptyTitle,
@@ -69,9 +63,6 @@ function CodexChatSurfaceImpl({
     chrome,
     screenFocused,
     placeholder,
-    minimalComposer,
-    showAttachmentControl,
-    composerBottomInset,
     keyboardVerticalOffset,
     showUnavailableAction,
     emptyTitle,

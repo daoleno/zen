@@ -47,8 +47,6 @@ export function useCodexComposerPresentation({
   safeAreaBottom,
   placeholder,
   keyboardVerticalOffset,
-  minimalComposer,
-  showAttachmentControl,
   composerBottomInset,
 }: UseCodexComposerPresentationInput) {
   const agentKind = agentKindFromCommand(agentCommand);
@@ -72,8 +70,6 @@ export function useCodexComposerPresentation({
         isAndroid: Platform.OS === "android",
         placeholder,
         keyboardVerticalOffset,
-        minimalComposer,
-        showAttachmentControl,
         composerBottomInset,
       }),
     [
@@ -93,8 +89,6 @@ export function useCodexComposerPresentation({
       agentKind,
       placeholder,
       keyboardVerticalOffset,
-      minimalComposer,
-      showAttachmentControl,
       composerBottomInset,
     ],
   );

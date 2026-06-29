@@ -7,8 +7,8 @@ import {
 } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 import { useFocusEffect, useRouter } from "expo-router";
-import { SafeAreaView, useSafeAreaInsets } from "react-native-safe-area-context";
-import { getFloatingTabBarInset } from "../../components/navigation/floatingTabBarMetrics";
+import { useIsFocused } from "@react-navigation/native";
+import { SafeAreaView } from "react-native-safe-area-context";
 import { BrainAdapterSheet } from "../../components/brain/BrainAdapterSheet";
 import { BrainChatHeader } from "../../components/brain/BrainChatHeader";
 import { BrainOverflowMenu } from "../../components/brain/BrainOverflowMenu";
@@ -46,11 +46,7 @@ export default function BrainScreen() {
   );
   const { state: agentState } = useAgents();
   const { state: brainState } = useBrain();
-  const insets = useSafeAreaInsets();
-  const composerBottomInset = useMemo(
-    () => getFloatingTabBarInset(insets.bottom),
-    [insets.bottom],
-  );
+  const screenFocused = useIsFocused();
   const [servers, setServers] = useState<StoredServer[]>([]);
   const [adapterSheetVisible, setAdapterSheetVisible] = useState(false);
   const [menuVisible, setMenuVisible] = useState(false);
@@ -116,8 +112,6 @@ export default function BrainScreen() {
   );
   const availableAdapters = activeBrain?.adapters ?? [];
   const canSwitchAdapter = availableAdapters.length > 1;
-  const keyboardVerticalOffset = 0;
-
   useFocusEffect(
     useCallback(() => {
       if (!activeServer || connectionState !== "connected") {
@@ -290,13 +284,8 @@ export default function BrainScreen() {
             connectionIssue={connectionIssue}
             theme={theme}
             chrome={chrome}
-            screenFocused
-            placeholder="Message"
-            minimalComposer
-            showAttachmentControl
-            composerBottomInset={composerBottomInset}
-            keyboardVerticalOffset={keyboardVerticalOffset}
-            showUnavailableAction
+            screenFocused={screenFocused}
+            onSwitchToTerminal={openBrainTerminal}
             emptyTitle={BRAIN_EMPTY_TITLE}
             emptyBody={BRAIN_EMPTY_BODY}
           />

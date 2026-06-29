@@ -5,6 +5,7 @@ import React, {
   useState,
 } from "react";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
+import { useTabScreenBottomInset } from "../navigation/TabScreenInsetContext";
 import type {
   TerminalThemeChrome,
   TerminalThemePalette,
@@ -51,9 +52,6 @@ interface UseCodexChatSurfaceStateInput {
   chrome: TerminalThemeChrome;
   screenFocused: boolean;
   placeholder?: string;
-  minimalComposer?: boolean;
-  showAttachmentControl?: boolean;
-  composerBottomInset?: number;
   keyboardVerticalOffset?: number;
   showUnavailableAction?: boolean;
   emptyTitle?: string;
@@ -102,9 +100,6 @@ export function useCodexChatSurfaceState({
   chrome,
   screenFocused,
   placeholder,
-  minimalComposer,
-  showAttachmentControl,
-  composerBottomInset,
   keyboardVerticalOffset,
   showUnavailableAction,
   emptyTitle,
@@ -112,6 +107,7 @@ export function useCodexChatSurfaceState({
   onSwitchToTerminal,
 }: UseCodexChatSurfaceStateInput): CodexChatSurfaceState {
   const insets = useSafeAreaInsets();
+  const tabScreenBottomInset = useTabScreenBottomInset();
   const active = visible && screenFocused;
   const chatAgentKind = agentKindFromCommand(agentInfo?.command);
   const slashCommands = useCodexSlashCommands({
@@ -366,9 +362,7 @@ export function useCodexChatSurfaceState({
     safeAreaBottom: insets.bottom,
     placeholder,
     keyboardVerticalOffset,
-    minimalComposer,
-    showAttachmentControl,
-    composerBottomInset,
+    composerBottomInset: tabScreenBottomInset ?? undefined,
   });
   const terminalActionPrompt = useMemo(
     () =>
