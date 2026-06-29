@@ -1,4 +1,4 @@
-import { StyleSheet, View } from 'react-native';
+import { StyleSheet } from 'react-native';
 import type { ColorValue } from 'react-native';
 import type { ComponentProps } from 'react';
 import { Tabs } from 'expo-router';
@@ -15,17 +15,12 @@ export default function TabLayout() {
     <Tabs
       screenOptions={{
         tabBarStyle: {
-          position: 'absolute',
-          left: 0,
-          right: 0,
-          bottom: 0,
-          height: 56 + tabBarBottom,
-          paddingBottom: tabBarBottom,
-          paddingTop: 6,
-          paddingHorizontal: 4,
-          backgroundColor: colors.bgElevated,
+          backgroundColor: colors.bgPrimary,
           borderTopColor: colors.borderSubtle,
           borderTopWidth: StyleSheet.hairlineWidth,
+          height: 50 + tabBarBottom,
+          paddingBottom: tabBarBottom,
+          paddingTop: 4,
           elevation: 0,
           shadowOpacity: 0,
         },
@@ -33,15 +28,13 @@ export default function TabLayout() {
         tabBarInactiveTintColor: colors.textTertiary,
         tabBarShowLabel: true,
         tabBarLabelStyle: {
-          fontFamily: Typography.uiFontMedium,
-          fontSize: 10,
-          lineHeight: 12,
-          marginTop: 2,
+          fontFamily: Typography.uiFont,
+          fontSize: 11,
+          lineHeight: 13,
+          marginTop: 1,
         },
         tabBarItemStyle: {
-          borderRadius: 12,
-          minHeight: 44,
-          paddingVertical: 2,
+          paddingVertical: 0,
         },
         tabBarHideOnKeyboard: true,
         headerShown: false,
@@ -52,7 +45,10 @@ export default function TabLayout() {
         options={{
           title: 'Agents',
           tabBarIcon: ({ color, focused }) => (
-            <TabSymbol icon={focused ? 'chatbubbles' : 'chatbubbles-outline'} color={color} focused={focused} />
+            <TabIcon
+              icon={focused ? 'chatbubbles' : 'chatbubbles-outline'}
+              color={color}
+            />
           ),
         }}
       />
@@ -61,7 +57,10 @@ export default function TabLayout() {
         options={{
           title: 'Brain',
           tabBarIcon: ({ color, focused }) => (
-            <TabSymbol icon={focused ? 'hardware-chip' : 'hardware-chip-outline'} color={color} focused={focused} />
+            <TabIcon
+              icon={focused ? 'hardware-chip' : 'hardware-chip-outline'}
+              color={color}
+            />
           ),
         }}
       />
@@ -70,7 +69,10 @@ export default function TabLayout() {
         options={{
           title: 'Stats',
           tabBarIcon: ({ color, focused }) => (
-            <TabSymbol icon={focused ? 'bar-chart' : 'bar-chart-outline'} color={color} focused={focused} />
+            <TabIcon
+              icon={focused ? 'bar-chart' : 'bar-chart-outline'}
+              color={color}
+            />
           ),
         }}
       />
@@ -79,7 +81,10 @@ export default function TabLayout() {
         options={{
           title: 'Settings',
           tabBarIcon: ({ color, focused }) => (
-            <TabSymbol icon={focused ? 'settings' : 'settings-outline'} color={color} focused={focused} />
+            <TabIcon
+              icon={focused ? 'settings' : 'settings-outline'}
+              color={color}
+            />
           ),
         }}
       />
@@ -87,36 +92,12 @@ export default function TabLayout() {
   );
 }
 
-function TabSymbol({
+function TabIcon({
   icon,
   color,
-  focused,
 }: {
   icon: ComponentProps<typeof Ionicons>['name'];
   color: ColorValue;
-  focused: boolean;
 }) {
-  const colors = useAppColors();
-  return (
-    <View
-      style={[
-        styles.tabIconWrap,
-        {
-          backgroundColor: focused ? colors.accentSoft : 'transparent',
-        },
-      ]}
-    >
-      <Ionicons name={icon} size={20} color={color} />
-    </View>
-  );
+  return <Ionicons name={icon} size={24} color={color} />;
 }
-
-const styles = StyleSheet.create({
-  tabIconWrap: {
-    minWidth: 52,
-    height: 30,
-    borderRadius: 15,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-});
