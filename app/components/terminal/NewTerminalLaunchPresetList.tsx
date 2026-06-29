@@ -9,6 +9,7 @@ import type { AgentKind } from "../../services/agentPresentation";
 import {
   CLAUDE_CODE_COMMAND,
   CODEX_COMMAND,
+  GROK_COMMAND,
 } from "../../services/agentCommands";
 import { AgentKindIcon } from "./AgentKindIcon";
 import { AppText } from "../ui";
@@ -29,6 +30,7 @@ const LAUNCH_PRESETS: readonly NewTerminalLaunchPreset[] = [
     command: CLAUDE_CODE_COMMAND,
   },
   { key: "codex", kind: "codex", label: "Codex", command: CODEX_COMMAND },
+  { key: "grok", kind: "grok", label: "Grok", command: GROK_COMMAND },
 ];
 
 interface NewTerminalLaunchPresetListProps {

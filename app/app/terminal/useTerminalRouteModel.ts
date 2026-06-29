@@ -75,11 +75,13 @@ export function useTerminalRouteModel({
     : null;
   const hasTerminalRoute = Boolean(sessionKey && serverId && agentId);
   const isCodexAgent = presentedAgent.kind === "codex";
+  const isGrokAgent = presentedAgent.kind === "grok";
+  const isStructuredChatAgent = isCodexAgent || isGrokAgent;
   const codexRenderMode: StoredCodexRenderMode = sessionKey
     ? codexRenderModes[sessionKey] ?? DefaultCodexRenderMode
     : DefaultCodexRenderMode;
   const showCodexChat =
-    hasTerminalRoute && isCodexAgent && codexRenderMode === "chat";
+    hasTerminalRoute && isStructuredChatAgent && codexRenderMode === "chat";
 
   return {
     agent,
@@ -90,6 +92,8 @@ export function useTerminalRouteModel({
     gitDiffCwd,
     hasTerminalRoute,
     isCodexAgent,
+    isGrokAgent,
+    isStructuredChatAgent,
     linkedWork,
     presentedAgent,
     showCodexChat,

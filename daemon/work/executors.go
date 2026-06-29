@@ -38,6 +38,7 @@ func LoadExecutors(path string) (*ExecutorConfig, error) {
 		ByName: map[string]Executor{
 			"claude": {Name: "claude", Command: "claude"},
 			"codex":  {Name: "codex", Command: "codex"},
+			"grok":   {Name: "grok", Command: "grok --no-alt-screen --permission-mode bypassPermissions"},
 		},
 	}
 

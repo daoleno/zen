@@ -1,0 +1,301 @@
+package work
+
+import (
+	"encoding/json"
+	"io"
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/daoleno/zen/daemon/classifier"
+)
+
+func TestEncodeGrokSessionCWD(t *testing.T) {
+	got := encodeGrokSessionCWD("/home/daoleno/workspace/zen")
+	want := "%2Fhome%2Fdaoleno%2Fworkspace%2Fzen"
+	if got != want {
+		t.Fatalf("encodeGrokSessionCWD = %q, want %q", got, want)
+	}
+}
+
+func TestAgentToolNameRecognizesGrok(t *testing.T) {
+	if got := agentToolName("grok --no-alt-screen --permission-mode bypassPermissions", ""); got != "grok" {
+		t.Fatalf("agentToolName = %q, want grok", got)
+	}
+}
+
+func TestParseGrokConversation_BuildsStructuredTimeline(t *testing.T) {
+	dir := t.TempDir()
+	writeGrokSummary(t, filepath.Join(dir, grokSummaryFile), map[string]any{
+		"info": map[string]any{
+			"id":  "grok-test-1",
+			"cwd": "/repo",
+		},
+	})
+	writeJSONL(t, filepath.Join(dir, grokChatHistoryFile),
+		map[string]any{
+			"type": "user",
+			"content": []map[string]any{
+				{"type": "text", "text": "<user_query>\nShip the Grok chat interface\n</user_query>"},
+			},
+		},
+		map[string]any{
+			"type":    "assistant",
+			"content": "I'll inspect the existing Codex interface first.",
+		},
+		map[string]any{
+			"type": "assistant",
+			"tool_calls": []map[string]any{
+				{
+					"id":        "call-grep",
+					"name":      "Grep",
+					"arguments": `{"pattern":"codex"}`,
+				},
+			},
+		},
+		map[string]any{
+			"type":         "tool_result",
+			"tool_call_id": "call-grep",
+			"content":      "found 3 matches",
+		},
+	)
+	writeJSONL(t, filepath.Join(dir, grokUpdatesFile),
+		map[string]any{
+			"timestamp": "2026-06-29T10:00:00Z",
+			"params": map[string]any{
+				"sessionId": "grok-test-1",
+				"update": map[string]any{
+					"sessionUpdate": "plan",
+					"entries": []map[string]any{
+						{"content": "Add grok parser", "status": "in_progress"},
+						{"content": "Wire app chat surface", "status": "pending"},
+					},
+				},
+			},
+		},
+	)
+
+	got, err := parseGrokConversation(dir)
+	if err != nil {
+		t.Fatalf("parseGrokConversation: %v", err)
+	}
+	if !got.Available {
+		t.Fatal("conversation should be available")
+	}
+	if got.SessionID != "grok-test-1" || got.CWD != "/repo" {
+		t.Fatalf("metadata = (%q, %q)", got.SessionID, got.CWD)
+	}
+	if len(got.Events) < 4 {
+		t.Fatalf("events len = %d, want >= 4: %#v", len(got.Events), got.Events)
+	}
+
+	assertEvent(t, got.Events[0], "user_message", "user", "", "Ship the Grok chat interface")
+	assertEvent(t, got.Events[1], "assistant_message", "assistant", "", "I'll inspect the existing Codex interface first.")
+
+	tool := got.Events[2]
+	if tool.Kind != "tool" || tool.ToolName != "Grep" {
+		t.Fatalf("tool event = %#v", tool)
+	}
+	if tool.Output != "found 3 matches" {
+		t.Fatalf("tool output = %q", tool.Output)
+	}
+
+	plan := got.Events[len(got.Events)-1]
+	if plan.Kind != "plan" || len(plan.Plan) != 2 {
+		t.Fatalf("plan event = %#v", plan)
+	}
+}
+
+func TestLoadCodexConversationForAgent_GrokUnavailableWithoutSession(t *testing.T) {
+	got, err := LoadCodexConversationForAgent(classifier.Agent{
+		Command: "grok --no-alt-screen",
+		Cwd:     filepath.Join(t.TempDir(), "missing-grok-session"),
+	}, time.Now())
+	if err != nil {
+		t.Fatalf("LoadCodexConversationForAgent: %v", err)
+	}
+	if got.Available || got.Reason != "session_not_found" {
+		t.Fatalf("conversation = %#v", got)
+	}
+}
+
+func TestLoadCodexConversationForAgent_GrokRealSessionFixture(t *testing.T) {
+	sourceDir := findLocalGrokSessionDir(t)
+	fixtureHome, cwd := installGrokSessionFixture(t, sourceDir)
+
+	t.Setenv("HOME", fixtureHome)
+	got, err := LoadCodexConversationForAgent(classifier.Agent{
+		Command:   "grok --no-alt-screen --permission-mode bypassPermissions",
+		Cwd:       cwd,
+		StartedAt: time.Now().Add(-time.Hour),
+	}, time.Now())
+	if err != nil {
+		t.Fatalf("LoadCodexConversationForAgent: %v", err)
+	}
+	if !got.Available {
+		t.Fatalf("conversation unavailable: %#v", got)
+	}
+	if len(got.Events) == 0 {
+		t.Fatal("expected parsed grok events")
+	}
+
+	hasUser := false
+	hasAssistant := false
+	hasTool := false
+	for _, event := range got.Events {
+		switch event.Kind {
+		case "user_message":
+			hasUser = true
+		case "assistant_message":
+			hasAssistant = true
+		case "tool":
+			hasTool = true
+		}
+	}
+	if !hasUser || !hasAssistant || !hasTool {
+		t.Fatalf("missing event kinds: user=%v assistant=%v tool=%v events=%#v", hasUser, hasAssistant, hasTool, got.Events)
+	}
+	t.Logf("parsed %d grok events from fixture", len(got.Events))
+}
+
+func findLocalGrokSessionDir(t *testing.T) string {
+	t.Helper()
+	source := filepath.Join(os.Getenv("HOME"), ".grok", "sessions", "%2Fhome%2Fdaoleno%2Fworkspace%2Fzen")
+	entries, err := os.ReadDir(source)
+	if err != nil {
+		t.Skipf("real grok sessions unavailable: %v", err)
+	}
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			continue
+		}
+		candidate := filepath.Join(source, entry.Name())
+		if _, err := os.Stat(filepath.Join(candidate, grokChatHistoryFile)); err != nil {
+			continue
+		}
+		return candidate
+	}
+	t.Skip("no grok session with chat history found")
+	return ""
+}
+
+func installGrokSessionFixture(t *testing.T, sourceDir string) (home string, cwd string) {
+	t.Helper()
+	cwd = "/tmp/zen-grok-fixture"
+	homeRoot := t.TempDir()
+	home = filepath.Join(homeRoot, "home")
+	sessionRoot := filepath.Join(home, ".grok", "sessions", encodeGrokSessionCWD(cwd), filepath.Base(sourceDir))
+	if err := os.MkdirAll(sessionRoot, 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	for _, name := range []string{grokChatHistoryFile, grokUpdatesFile} {
+		sourcePath := filepath.Join(sourceDir, name)
+		if _, err := os.Stat(sourcePath); err != nil {
+			continue
+		}
+		copyFixtureFile(t, sourcePath, filepath.Join(sessionRoot, name))
+	}
+	writeGrokSummary(t, filepath.Join(sessionRoot, grokSummaryFile), map[string]any{
+		"info": map[string]any{
+			"id":  filepath.Base(sourceDir),
+			"cwd": cwd,
+		},
+		"updated_at": time.Now().UTC().Format(time.RFC3339Nano),
+		"created_at": time.Now().UTC().Add(-time.Hour).Format(time.RFC3339Nano),
+	})
+	return home, cwd
+}
+
+func writeGrokSummary(t *testing.T, path string, value any) {
+	t.Helper()
+	raw, err := json.Marshal(value)
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+	if err := os.WriteFile(path, raw, 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+}
+
+func copyFixtureFile(t *testing.T, source, dest string) {
+	t.Helper()
+	in, err := os.Open(source)
+	if err != nil {
+		t.Fatalf("Open %s: %v", source, err)
+	}
+	defer in.Close()
+	out, err := os.Create(dest)
+	if err != nil {
+		t.Fatalf("Create %s: %v", dest, err)
+	}
+	defer out.Close()
+	if _, err := io.Copy(out, in); err != nil {
+		t.Fatalf("Copy %s: %v", source, err)
+	}
+}
+
+func TestGrokVisibleUserTextExtractsUserQuery(t *testing.T) {
+	got := grokVisibleUserText("<user_query>\nHello Grok\n</user_query>")
+	if got != "Hello Grok" {
+		t.Fatalf("grokVisibleUserText = %q", got)
+	}
+}
+
+func TestIsGrokBootstrapUserMessage(t *testing.T) {
+	if !isGrokBootstrapUserMessage("<user_info>\nOS Version: linux\n</user_info>") {
+		t.Fatal("expected bootstrap detection")
+	}
+	if isGrokBootstrapUserMessage("Implement the Grok interface") {
+		t.Fatal("did not expect bootstrap detection")
+	}
+}
+
+func TestAgentAdapterInfersGrokProviderAndCapabilities(t *testing.T) {
+	cfg := &ExecutorConfig{
+		Default: "claude",
+		ByName: map[string]Executor{
+			"grok": {Name: "grok", Command: "grok --no-alt-screen --permission-mode bypassPermissions"},
+		},
+	}
+	adapter, ok := cfg.AgentAdapter("grok")
+	if !ok {
+		t.Fatal("grok adapter missing")
+	}
+	if adapter.Provider != AgentProviderGrok {
+		t.Fatalf("provider = %q", adapter.Provider)
+	}
+	if !adapter.Capabilities.StructuredEvents || adapter.Capabilities.NativeThreads {
+		t.Fatalf("capabilities = %+v", adapter.Capabilities)
+	}
+}
+
+func TestIsAgentCommandRecognizesGrok(t *testing.T) {
+	if !IsAgentCommand("grok --no-alt-screen --permission-mode bypassPermissions") {
+		t.Fatal("expected grok command recognition")
+	}
+}
+
+func TestIsNativeAgentSourceIncludesGrok(t *testing.T) {
+	if !IsNativeAgentSource("grok") {
+		t.Fatal("expected grok native source")
+	}
+}
+
+func TestLoadExecutorsIncludesGrokDefault(t *testing.T) {
+	cfg, err := LoadExecutors(filepath.Join(t.TempDir(), "missing.toml"))
+	if err != nil {
+		t.Fatalf("LoadExecutors: %v", err)
+	}
+	executor, ok := cfg.ByName["grok"]
+	if !ok {
+		t.Fatal("grok missing from defaults")
+	}
+	if !strings.Contains(executor.Command, "--no-alt-screen") || !strings.Contains(executor.Command, "bypassPermissions") {
+		t.Fatalf("grok command = %q", executor.Command)
+	}
+	if cfg.Default != "claude" {
+		t.Fatalf("default executor changed to %q", cfg.Default)
+	}
+}

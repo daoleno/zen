@@ -2,8 +2,10 @@ const QUOTE_TRIM_RE = /^['"]|['"]$/g;
 
 export const CLAUDE_CODE_COMMAND = "claude --dangerously-skip-permissions";
 export const CODEX_COMMAND = "codex --dangerously-bypass-approvals-and-sandbox";
+export const GROK_COMMAND =
+  "grok --no-alt-screen --permission-mode bypassPermissions";
 
-export type SupportedAgentID = "claude" | "codex";
+export type SupportedAgentID = "claude" | "codex" | "grok";
 
 export interface SupportedAgentTarget {
   id: SupportedAgentID;
@@ -27,6 +29,13 @@ export const SUPPORTED_AGENT_TARGETS: SupportedAgentTarget[] = [
     label: "Codex",
     command: CODEX_COMMAND,
     description: "Autonomous Codex run for this work item.",
+  },
+  {
+    id: "grok",
+    handle: "grok",
+    label: "Grok",
+    command: GROK_COMMAND,
+    description: "Autonomous Grok run for this work item.",
   },
 ];
 
@@ -69,6 +78,19 @@ export function isCodexCommand(command?: string) {
     normalized === "codex" ||
     normalized.startsWith("codex ") ||
     commandBinary(normalized) === "codex"
+  );
+}
+
+export function isGrokCommand(command?: string) {
+  const normalized = normalizeCommand(command);
+  if (!normalized) {
+    return false;
+  }
+
+  return (
+    normalized === "grok" ||
+    normalized.startsWith("grok ") ||
+    commandBinary(normalized) === "grok"
   );
 }
 

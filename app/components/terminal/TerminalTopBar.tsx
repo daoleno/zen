@@ -24,7 +24,7 @@ export interface TerminalTopBarProps {
   codexRenderMode: StoredCodexRenderMode;
   gitDiffDisabled: boolean;
   gitDiffPresentation: TerminalTopBarGitDiffPresentation;
-  isCodexAgent: boolean;
+  isStructuredChatAgent: boolean;
   delegated?: boolean;
   onBack(): void;
   onOpenPicker(): void;
@@ -39,7 +39,7 @@ export function TerminalTopBar({
   menuAnchorRef,
   codexRenderMode,
   gitDiffDisabled,
-  isCodexAgent,
+  isStructuredChatAgent,
   delegated,
   onBack,
   onOpenPicker,
@@ -56,14 +56,14 @@ export function TerminalTopBar({
       onPress: () => void;
     }> = [];
 
-    if (isCodexAgent) {
+    if (isStructuredChatAgent) {
       actions.push({
         key: "render-mode",
         icon: codexRenderMode === "chat" ? "terminal-outline" : "chatbubble-outline",
         accessibilityLabel:
           codexRenderMode === "chat"
             ? "Open terminal renderer"
-            : "Open Codex chat renderer",
+            : "Open chat renderer",
         onPress: onToggleCodexRenderMode,
       });
     }
@@ -87,7 +87,7 @@ export function TerminalTopBar({
   }, [
     codexRenderMode,
     gitDiffDisabled,
-    isCodexAgent,
+    isStructuredChatAgent,
     onOpenGitDiff,
     onOpenMenu,
     onToggleCodexRenderMode,

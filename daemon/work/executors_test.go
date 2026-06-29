@@ -20,6 +20,9 @@ func TestLoadExecutors_Defaults(t *testing.T) {
 	if _, ok := cfg.ByName["codex"]; !ok {
 		t.Fatal("codex missing")
 	}
+	if _, ok := cfg.ByName["grok"]; !ok {
+		t.Fatal("grok missing")
+	}
 }
 
 func TestLoadExecutors_CustomFile(t *testing.T) {

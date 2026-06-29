@@ -43,6 +43,12 @@ func loadToolTranscript(agent classifier.Agent, now time.Time) ToolTranscript {
 			log.Printf("work transcript lookup failed for codex (%s): %v", agent.Cwd, err)
 		}
 		return transcript
+	case "grok":
+		transcript, err := loadGrokTranscript(agent, now)
+		if err != nil {
+			log.Printf("work transcript lookup failed for grok (%s): %v", agent.Cwd, err)
+		}
+		return transcript
 	case "claude":
 		transcript, err := loadClaudeTranscript(agent.Cwd, now)
 		if err != nil {
@@ -64,6 +70,8 @@ func agentToolName(command, name string) string {
 	switch {
 	case strings.Contains(command, "codex") || strings.Contains(name, "codex"):
 		return "codex"
+	case strings.Contains(command, "grok") || strings.Contains(name, "grok"):
+		return "grok"
 	case command == "cc" || strings.Contains(command, "claude") || strings.Contains(name, "claude"):
 		return "claude"
 	default:
@@ -87,6 +95,54 @@ func loadCodexTranscript(agent classifier.Agent, now time.Time) (ToolTranscript,
 		Updated:   candidate.Updated,
 		Excerpt:   excerpt,
 	}, nil
+}
+
+func loadGrokTranscript(agent classifier.Agent, now time.Time) (ToolTranscript, error) {
+	candidate, ok, err := findGrokSession(agent, now)
+	if err != nil || !ok {
+		return ToolTranscript{}, err
+	}
+	conversation, err := parseGrokConversation(candidate.Dir)
+	if err != nil || len(conversation.Events) == 0 {
+		return ToolTranscript{}, err
+	}
+	excerpt := summarizeGrokConversation(conversation.Events)
+	if strings.TrimSpace(excerpt) == "" {
+		return ToolTranscript{}, nil
+	}
+	return ToolTranscript{
+		Source:    "grok",
+		Path:      candidate.Dir,
+		SessionID: candidate.ID,
+		Updated:   candidate.Updated,
+		Excerpt:   excerpt,
+	}, nil
+}
+
+func summarizeGrokConversation(events []CodexConversationEvent) string {
+	var lines []string
+	for _, event := range events {
+		switch event.Kind {
+		case "user_message":
+			if body := cleanConversationText(event.Body); body != "" {
+				lines = append(lines, "User: "+truncateRunes(body, maxTranscriptLine))
+			}
+		case "assistant_message":
+			if body := cleanConversationText(event.Body); body != "" {
+				lines = append(lines, "Assistant: "+truncateRunes(body, maxTranscriptLine))
+			}
+		case "tool":
+			label := firstNonEmpty(event.ToolName, event.Title, "tool")
+			lines = append(lines, "Tool: "+truncateRunes(label, maxTranscriptLine))
+		}
+		if len(lines) >= 8 {
+			break
+		}
+	}
+	if len(lines) == 0 {
+		return ""
+	}
+	return strings.Join(lines, "\n")
 }
 
 // CodexThreadTitleForAgent returns the current Codex thread title for a live

@@ -1,7 +1,7 @@
 import type { Agent } from '../store/agents';
-import { isClaudeCommand, isCodexCommand } from './agentCommands';
+import { isClaudeCommand, isCodexCommand, isGrokCommand } from './agentCommands';
 
-export type AgentKind = 'terminal' | 'claude' | 'codex';
+export type AgentKind = 'terminal' | 'claude' | 'codex' | 'grok';
 export type AgentTitleSource = 'alias' | 'explicit_name' | 'default';
 
 export type PresentedAgent = {
@@ -54,6 +54,7 @@ export function presentAgent(agent: Pick<Agent, 'name' | 'project' | 'cwd' | 'co
 function detectAgentKind(agent: Pick<Agent, 'name' | 'project' | 'cwd' | 'command' | 'summary' | 'last_output_lines'>): AgentKind {
   if (isClaudeCommand(agent.command)) return 'claude';
   if (isCodexCommand(agent.command)) return 'codex';
+  if (isGrokCommand(agent.command)) return 'grok';
   return 'terminal';
 }
 
@@ -68,6 +69,7 @@ function isGenericAgentTitle(name: string, kind: AgentKind): boolean {
     )
   ) return true;
   if (kind === 'codex' && (lower === 'codex' || lower === 'openai codex')) return true;
+  if (kind === 'grok' && (lower === 'grok' || lower === 'grok cli' || lower === 'xai grok')) return true;
   if (
     lower === 'zsh' ||
     lower === 'bash' ||
@@ -111,6 +113,8 @@ function defaultTitle(kind: AgentKind): string {
       return 'Claude';
     case 'codex':
       return 'Codex';
+    case 'grok':
+      return 'Grok';
     default:
       return 'Shell';
   }
@@ -122,6 +126,8 @@ function shortDefaultTitle(kind: AgentKind): string {
       return 'Claude';
     case 'codex':
       return 'Codex';
+    case 'grok':
+      return 'Grok';
     default:
       return 'Shell';
   }
@@ -133,6 +139,8 @@ function typeLabel(kind: AgentKind): string {
       return 'Claude Code';
     case 'codex':
       return 'OpenAI Codex';
+    case 'grok':
+      return 'Grok';
     default:
       return 'Shell terminal';
   }

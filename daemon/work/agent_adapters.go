@@ -9,6 +9,7 @@ import (
 const (
 	AgentRuntimeTmux    = "tmux"
 	AgentProviderCodex  = "codex"
+	AgentProviderGrok   = "grok"
 	AgentProviderClaude = "claude"
 	AgentProviderCustom = "custom"
 )
@@ -142,6 +143,8 @@ func inferAgentProviderOne(value string) string {
 		switch {
 		case strings.Contains(base, "codex"):
 			return AgentProviderCodex
+		case strings.Contains(base, "grok"):
+			return AgentProviderGrok
 		case strings.Contains(base, "claude") || base == "cc":
 			return AgentProviderClaude
 		}
@@ -172,6 +175,8 @@ func agentCapabilities(provider, runtime string) AgentCapabilities {
 		caps.NativeResume = true
 		caps.NativeGoals = true
 		caps.NativeAutomation = true
+		caps.StructuredEvents = true
+	case AgentProviderGrok:
 		caps.StructuredEvents = true
 	case AgentProviderClaude:
 		// Claude Code is currently treated as a portable TTY adapter here.

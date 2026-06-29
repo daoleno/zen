@@ -76,10 +76,15 @@ type CodexPlanStep struct {
 }
 
 func LoadCodexConversationForAgent(agent classifier.Agent, now time.Time) (CodexConversation, error) {
-	if agentToolName(agent.Command, agent.Name) != "codex" {
+	switch agentToolName(agent.Command, agent.Name) {
+	case "grok":
+		return loadGrokConversationForAgent(agent, now)
+	case "codex":
+		// continue below
+	default:
 		return CodexConversation{
 			Available: false,
-			Reason:    "not_codex",
+			Reason:    "not_structured_agent",
 			Events:    []CodexConversationEvent{},
 		}, nil
 	}

@@ -33,6 +33,14 @@ export function AgentKindIcon({ kind, size = 16 }: AgentKindIconProps) {
     );
   }
 
+  if (kind === 'grok') {
+    return (
+      <View style={[styles.frame, styles.grokFrame, { width: frameSize, height: frameSize }]}>
+        <Ionicons name="sparkles" size={size} color={colors.textPrimary} />
+      </View>
+    );
+  }
+
   return (
     <View style={[styles.frame, styles.terminalFrame, { width: frameSize, height: frameSize }]}>
       <Ionicons name="terminal-outline" size={size} color={colors.textSecondary} />
@@ -51,6 +59,11 @@ function createStyles(theme: ResolvedZenTheme) {
     justifyContent: 'center',
   },
   terminalFrame: {
+    backgroundColor: themedSubtle,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: themedBorder,
+  },
+  grokFrame: {
     backgroundColor: themedSubtle,
     borderWidth: StyleSheet.hairlineWidth,
     borderColor: themedBorder,

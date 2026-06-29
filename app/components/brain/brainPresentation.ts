@@ -5,6 +5,8 @@ export function brainProviderLabel(value?: string): string {
   switch (normalized) {
     case "codex":
       return "Codex";
+    case "grok":
+      return "Grok";
     case "claude":
       return "Claude Code";
     case "tmux":
@@ -30,7 +32,7 @@ export function brainAdapterLabel(adapter?: BrainAdapterRef | null): string {
 
 export function brainAdapterProviderKey(adapter?: BrainAdapterRef | null): string {
   const normalized = adapter?.provider?.trim().toLowerCase();
-  if (normalized === "codex" || normalized === "claude" || normalized === "tmux") {
+  if (normalized === "codex" || normalized === "grok" || normalized === "claude" || normalized === "tmux") {
     return normalized;
   }
   return "custom";

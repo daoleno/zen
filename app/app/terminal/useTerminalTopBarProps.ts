@@ -27,7 +27,7 @@ interface UseTerminalTopBarPropsInput {
   codexRenderMode: StoredCodexRenderMode;
   gitDiffDisabled: boolean;
   gitDiffSummary: TerminalGitDiffSummary | null;
-  isCodexAgent: boolean;
+  isStructuredChatAgent: boolean;
   delegated?: boolean;
   onOpenPicker(): void;
   openGitDiff(): void;
@@ -45,7 +45,7 @@ export function useTerminalTopBarProps({
   codexRenderMode,
   gitDiffDisabled,
   gitDiffSummary,
-  isCodexAgent,
+  isStructuredChatAgent,
   delegated,
   onOpenPicker,
   openGitDiff,
@@ -67,7 +67,7 @@ export function useTerminalTopBarProps({
         summary: gitDiffSummary,
         terminalTheme,
       }),
-      isCodexAgent,
+      isStructuredChatAgent,
       delegated,
       onBack: navigationActions.goToInbox,
       onOpenPicker,
@@ -85,7 +85,7 @@ export function useTerminalTopBarProps({
       codexRenderMode,
       gitDiffDisabled,
       gitDiffSummary,
-      isCodexAgent,
+      isStructuredChatAgent,
       delegated,
       onOpenPicker,
       openGitDiff,

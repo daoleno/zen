@@ -33,6 +33,14 @@ export function BrainAdapterIcon({ adapter, size = 18 }: BrainAdapterIconProps) 
     );
   }
 
+  if (provider === "grok") {
+    return (
+      <View style={[styles.frame, styles.custom, { width: frameSize, height: frameSize }]}>
+        <Ionicons name="sparkles" size={size} color={colors.textSecondary} />
+      </View>
+    );
+  }
+
   return (
     <View style={[styles.frame, styles.custom, { width: frameSize, height: frameSize }]}>
       <Ionicons

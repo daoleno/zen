@@ -41,7 +41,7 @@ interface UseTerminalScreenLayoutPropsInput {
   handleCtrlArmedChange(next: boolean): void;
   hasLinkedWork: boolean;
   hasTerminalRoute: boolean;
-  isCodexAgent: boolean;
+  isStructuredChatAgent: boolean;
   keyboardVisible: boolean;
   menuPosition: { left: number; top: number };
   menuVisible: boolean;
@@ -94,7 +94,7 @@ export function useTerminalScreenLayoutProps({
   handleCtrlArmedChange,
   hasLinkedWork,
   hasTerminalRoute,
-  isCodexAgent,
+  isStructuredChatAgent,
   keyboardVisible,
   menuPosition,
   menuVisible,
@@ -150,7 +150,7 @@ export function useTerminalScreenLayoutProps({
     codexRenderMode,
     gitDiffDisabled: gitDiff.actionDisabled,
     gitDiffSummary: gitDiff.summary,
-    isCodexAgent,
+    isStructuredChatAgent,
     delegated: agent?.delegated,
     onOpenPicker: () => setPickerVisible(true),
     openGitDiff,
