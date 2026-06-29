@@ -1,11 +1,18 @@
 import type { Agent } from '../store/agents';
 import { isClaudeCommand, isCodexCommand, isGrokCommand } from './agentCommands';
+import {
+  detectTerminalFlavor,
+  terminalFlavorLabel,
+  type TerminalFlavor,
+} from './terminalFlavor';
 
 export type AgentKind = 'terminal' | 'claude' | 'codex' | 'grok';
 export type AgentTitleSource = 'alias' | 'explicit_name' | 'default';
+export type { TerminalFlavor };
 
 export type PresentedAgent = {
   kind: AgentKind;
+  terminalFlavor: TerminalFlavor;
   title: string;
   shortTitle: string;
   subtitle: string;
@@ -16,7 +23,9 @@ export type PresentedAgent = {
 
 export function presentAgent(agent: Pick<Agent, 'name' | 'project' | 'cwd' | 'command' | 'summary' | 'last_output_lines'>, alias?: string): PresentedAgent {
   const kind = detectAgentKind(agent);
-  const label = typeLabel(kind);
+  const terminalFlavor =
+    kind === 'terminal' ? detectTerminalFlavor(agent) : 'shell';
+  const label = typeLabel(kind, terminalFlavor);
   const cwd = normalize(agent.cwd);
   const cwdBase = basename(cwd);
   const project = normalize(agent.project);
@@ -28,6 +37,7 @@ export function presentAgent(agent: Pick<Agent, 'name' | 'project' | 'cwd' | 'co
   if (explicitAlias) {
     return {
       kind,
+      terminalFlavor,
       title: explicitAlias,
       shortTitle: explicitAlias,
       subtitle: buildSubtitle(label, cwd || project),
@@ -42,6 +52,7 @@ export function presentAgent(agent: Pick<Agent, 'name' | 'project' | 'cwd' | 'co
 
   return {
     kind,
+    terminalFlavor,
     title,
     shortTitle: hasAgentTitle ? title : (location || shortDefaultTitle(kind)),
     subtitle: buildSubtitle(label, location || cwd),
@@ -133,7 +144,7 @@ function shortDefaultTitle(kind: AgentKind): string {
   }
 }
 
-function typeLabel(kind: AgentKind): string {
+function typeLabel(kind: AgentKind, terminalFlavor: TerminalFlavor): string {
   switch (kind) {
     case 'claude':
       return 'Claude Code';
@@ -142,7 +153,7 @@ function typeLabel(kind: AgentKind): string {
     case 'grok':
       return 'Grok';
     default:
-      return 'Shell terminal';
+      return terminalFlavorLabel(terminalFlavor);
   }
 }
 

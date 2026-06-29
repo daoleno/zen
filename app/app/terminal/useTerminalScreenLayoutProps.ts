@@ -143,6 +143,7 @@ export function useTerminalScreenLayoutProps({
     title: displayName || presentedAgent.title || agent?.name || agentId || "Terminal",
     subtitle: agent?.cwd?.trim() || agent?.command?.trim() || undefined,
     kind: presentedAgent.kind,
+    terminalFlavor: presentedAgent.terminalFlavor,
     terminalTheme,
     chrome,
     chromeLayout,

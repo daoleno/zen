@@ -43,7 +43,7 @@ function normalizeCommand(command?: string) {
   return command?.trim().toLowerCase() || "";
 }
 
-function commandBinary(command?: string) {
+export function commandBinary(command?: string) {
   const normalized = normalizeCommand(command);
   if (!normalized) {
     return "";

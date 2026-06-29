@@ -4,6 +4,7 @@ import type {
   TerminalThemePalette,
 } from "../../constants/terminalThemes";
 import type { AgentKind } from "../../services/agentPresentation";
+import type { TerminalFlavor } from "../../services/terminalFlavor";
 import type { StoredCodexRenderMode } from "../../services/storage";
 import type { TerminalTopBarProps } from "../../components/terminal/TerminalTopBar";
 import type { TerminalGitDiffSummary } from "../../components/terminal/useTerminalGitDiff";
@@ -14,6 +15,7 @@ interface UseTerminalTopBarPropsInput {
   title: string;
   subtitle?: string;
   kind: AgentKind;
+  terminalFlavor?: TerminalFlavor;
   terminalTheme: TerminalThemePalette;
   chrome: TerminalThemeChrome;
   chromeLayout: Pick<
@@ -38,6 +40,7 @@ export function useTerminalTopBarProps({
   title,
   subtitle,
   kind,
+  terminalFlavor,
   terminalTheme,
   chrome,
   chromeLayout,
@@ -56,6 +59,7 @@ export function useTerminalTopBarProps({
       title,
       subtitle,
       kind,
+      terminalFlavor,
       backgroundColor: terminalTheme.background,
       chrome,
       menuAnchorRef: chromeLayout.menuAnchorRef,
@@ -79,6 +83,7 @@ export function useTerminalTopBarProps({
       title,
       subtitle,
       kind,
+      terminalFlavor,
       chrome,
       chromeLayout.menuAnchorRef,
       chromeLayout.openMenu,

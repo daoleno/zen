@@ -617,7 +617,8 @@ export default function InboxScreen() {
     return (
       <AgentSessionRow
         title={sessionTitle}
-        avatarSeed={item.key}
+        kind={presented.kind}
+        terminalFlavor={presented.terminalFlavor}
         preview={sessionPreview.text}
         previewTone={sessionPreview.tone}
         previewPrefix={sessionPreview.prefix}
@@ -665,7 +666,11 @@ export default function InboxScreen() {
       >
         <View style={styles.gridHeader}>
           <View style={styles.gridHeaderMain}>
-            <AgentKindIcon kind={presented.kind} size={15} />
+            <AgentKindIcon
+              kind={presented.kind}
+              flavor={presented.terminalFlavor}
+              size={15}
+            />
             <Text style={styles.gridTitle} numberOfLines={1}>
               {sessionTitle}
             </Text>

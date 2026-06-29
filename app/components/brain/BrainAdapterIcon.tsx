@@ -1,7 +1,7 @@
 import React, { useMemo } from "react";
 import { Ionicons } from "@expo/vector-icons";
 import { StyleSheet, View } from "react-native";
-import { Claude, OpenAI } from "@lobehub/icons-rn";
+import { Claude, Codex, Grok } from "@lobehub/icons-rn";
 import { Colors, useAppColors } from "../../constants/tokens";
 import type { BrainAdapterRef } from "../../store/brain";
 import { brainAdapterProviderKey } from "./brainPresentation";
@@ -18,25 +18,17 @@ export function BrainAdapterIcon({ adapter, size = 18 }: BrainAdapterIconProps) 
   const frameSize = size + 14;
 
   if (provider === "claude") {
-    return (
-      <View style={[styles.frame, styles.claude, { width: frameSize, height: frameSize }]}>
-        <Claude.Color size={size} />
-      </View>
-    );
+    return <Claude.Color size={size} />;
   }
 
   if (provider === "codex") {
-    return (
-      <View style={[styles.frame, styles.codex, { width: frameSize, height: frameSize }]}>
-        <OpenAI.Avatar size={size} />
-      </View>
-    );
+    return <Codex.Color size={size} />;
   }
 
   if (provider === "grok") {
     return (
-      <View style={[styles.frame, styles.custom, { width: frameSize, height: frameSize }]}>
-        <Ionicons name="sparkles" size={size} color={colors.textSecondary} />
+      <View style={[styles.frame, styles.grok, { width: frameSize, height: frameSize }]}>
+        <Grok size={size} color={colors.textPrimary} />
       </View>
     );
   }
@@ -60,11 +52,7 @@ function createStyles(colors: typeof Colors) {
       justifyContent: "center",
       borderWidth: StyleSheet.hairlineWidth,
     },
-    codex: {
-      backgroundColor: colors.accentSoft,
-      borderColor: colors.borderSubtle,
-    },
-    claude: {
+    grok: {
       backgroundColor: colors.surfaceSubtle,
       borderColor: colors.borderSubtle,
     },

@@ -49,7 +49,11 @@ export function TerminalAgentPickerRow({
         onOpenAgent(agent.key);
       }}
     >
-      <AgentKindIcon kind={presented.kind} size={15} />
+      <AgentKindIcon
+        kind={presented.kind}
+        flavor={presented.terminalFlavor}
+        size={15}
+      />
       <View style={styles.agentRowBody}>
         <View style={styles.agentRowTitleLine}>
           <Text

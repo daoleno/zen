@@ -1,5 +1,7 @@
 import React, { useMemo } from "react";
+import { StyleSheet, View } from "react-native";
 import { TelegramChatHeader } from "../terminal/TelegramChatHeader";
+import { BrainAdapterIcon } from "./BrainAdapterIcon";
 import { brainStatusLine } from "./brainPresentation";
 import type { BrainAdapterRef } from "../../store/brain";
 
@@ -60,14 +62,28 @@ export function BrainChatHeader({
     ],
   );
 
+  const headerAvatar = adapter ? (
+    <View style={styles.avatarSlot}>
+      <BrainAdapterIcon adapter={adapter} size={22} />
+    </View>
+  ) : undefined;
+
   return (
     <TelegramChatHeader
       title="Brain"
       subtitle={statusLine}
-      avatarLabel="Brain"
-      avatarSeed="brain"
+      avatar={headerAvatar}
       onPressTitle={canSwitchAdapter ? onOpenAdapterSheet : undefined}
       rightActions={rightActions}
     />
   );
 }
+
+const styles = StyleSheet.create({
+  avatarSlot: {
+    width: 40,
+    height: 40,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+});

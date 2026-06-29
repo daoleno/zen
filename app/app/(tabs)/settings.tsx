@@ -351,7 +351,11 @@ export default function SettingsScreen() {
         <Text style={styles.pageTitle}>Settings</Text>
         <Text style={styles.pageSubtitle}>Pair and manage daemon endpoints</Text>
       </View>
-      <ScrollView contentContainerStyle={styles.content} showsVerticalScrollIndicator={false}>
+      <ScrollView
+        style={styles.scrollView}
+        contentContainerStyle={styles.content}
+        showsVerticalScrollIndicator={false}
+      >
           <View style={styles.sectionHeader}>
             <Text style={[styles.sectionLabel, { marginTop: 0 }]}>Servers</Text>
             {servers.length > 0 ? (
@@ -838,12 +842,17 @@ function createStyles(theme: ResolvedZenTheme) {
   header: {
     paddingHorizontal: 20,
     paddingTop: 18,
-    paddingBottom: 18,
+    paddingBottom: 20,
     alignItems: "center",
+    backgroundColor: colors.bgPrimary,
     zIndex: 2,
+  },
+  scrollView: {
+    flex: 1,
   },
   content: {
     paddingHorizontal: 20,
+    paddingTop: 4,
     paddingBottom: 110,
   },
   profileAvatar: {
@@ -860,7 +869,7 @@ function createStyles(theme: ResolvedZenTheme) {
   pageTitle: {
     color: colors.textPrimary,
     fontSize: 30,
-    lineHeight: 34,
+    lineHeight: 38,
     fontFamily: Typography.uiFontMedium,
     letterSpacing: 0,
   },

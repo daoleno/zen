@@ -4,6 +4,9 @@ import { Ionicons } from '@expo/vector-icons';
 import * as Haptics from 'expo-haptics';
 import { Colors, Typography, useAppColors } from '../../constants/tokens';
 import { AnimatedPressable } from '../ui/AnimatedPressable';
+import type { AgentKind } from '../../services/agentPresentation';
+import type { TerminalFlavor } from '../../services/terminalFlavor';
+import { AgentKindIcon } from './AgentKindIcon';
 import { SessionAvatar } from '../ui/SessionAvatar';
 
 interface TelegramChatHeaderAction {
@@ -19,6 +22,9 @@ interface TelegramChatHeaderProps {
   subtitle?: string;
   avatarLabel?: string;
   avatarSeed?: string;
+  agentKind?: AgentKind;
+  terminalFlavor?: TerminalFlavor;
+  avatar?: React.ReactNode;
   onBack?: () => void;
   onPressTitle?: () => void;
   rightActions?: TelegramChatHeaderAction[];
@@ -30,6 +36,9 @@ export function TelegramChatHeader({
   subtitle,
   avatarLabel,
   avatarSeed,
+  agentKind,
+  terminalFlavor,
+  avatar,
   onBack,
   onPressTitle,
   rightActions = [],
@@ -72,7 +81,17 @@ export function TelegramChatHeader({
           onPressTitle();
         }}
       >
-        <SessionAvatar label={avatarText} seed={avatarKey} size={40} />
+        {avatar ? (
+          avatar
+        ) : agentKind ? (
+          <AgentKindIcon
+            kind={agentKind}
+            flavor={terminalFlavor}
+            variant="avatar"
+          />
+        ) : (
+          <SessionAvatar label={avatarText} seed={avatarKey} size={40} />
+        )}
         <View style={styles.copy}>
           <Text style={styles.title} numberOfLines={1}>
             {title}

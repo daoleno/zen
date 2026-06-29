@@ -1,6 +1,7 @@
 import React, { useMemo } from "react";
 import type { TerminalThemeChrome } from "../../constants/terminalThemes";
 import type { AgentKind } from "../../services/agentPresentation";
+import type { TerminalFlavor } from "../../services/terminalFlavor";
 import type { StoredCodexRenderMode } from "../../services/storage";
 import { TelegramChatHeader } from "./TelegramChatHeader";
 
@@ -18,6 +19,7 @@ export interface TerminalTopBarProps {
   title: string;
   subtitle?: string;
   kind: AgentKind;
+  terminalFlavor?: TerminalFlavor;
   backgroundColor: string;
   chrome: TerminalThemeChrome;
   menuAnchorRef: React.RefObject<import("react-native").View | null>;
@@ -36,6 +38,8 @@ export interface TerminalTopBarProps {
 export function TerminalTopBar({
   title,
   subtitle,
+  kind,
+  terminalFlavor,
   menuAnchorRef,
   codexRenderMode,
   gitDiffDisabled,
@@ -101,6 +105,8 @@ export function TerminalTopBar({
     <TelegramChatHeader
       title={title}
       subtitle={resolvedSubtitle}
+      agentKind={kind}
+      terminalFlavor={terminalFlavor}
       avatarLabel={title}
       avatarSeed={title}
       onBack={onBack}

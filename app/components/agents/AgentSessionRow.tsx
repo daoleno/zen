@@ -1,13 +1,16 @@
 import React, { useMemo } from 'react';
 import { ActivityIndicator, StyleSheet, Text, View } from 'react-native';
 import { Colors, Typography, useAppColors } from '../../constants/tokens';
+import type { AgentKind } from '../../services/agentPresentation';
+import type { TerminalFlavor } from '../../services/terminalFlavor';
 import type { SessionPreviewTone } from '../../services/sessionPreview';
 import { AnimatedPressable } from '../ui/AnimatedPressable';
-import { SessionAvatar } from '../ui/SessionAvatar';
+import { AgentKindIcon } from '../terminal/AgentKindIcon';
 
 interface AgentSessionRowProps {
   title: string;
-  avatarSeed: string;
+  kind: AgentKind;
+  terminalFlavor?: TerminalFlavor;
   preview: string;
   previewTone: SessionPreviewTone;
   previewPrefix?: string;
@@ -22,7 +25,8 @@ interface AgentSessionRowProps {
 
 export function AgentSessionRow({
   title,
-  avatarSeed,
+  kind,
+  terminalFlavor,
   preview,
   previewTone,
   previewPrefix,
@@ -46,7 +50,9 @@ export function AgentSessionRow({
       onLongPress={onLongPress}
       delayLongPress={400}
     >
-      <SessionAvatar label={title} seed={avatarSeed} size={48} />
+      <View style={styles.iconSlot}>
+        <AgentKindIcon kind={kind} flavor={terminalFlavor} size={40} />
+      </View>
       <View style={styles.body}>
         <View style={styles.titleRow}>
           <Text style={styles.title} numberOfLines={1}>
@@ -100,6 +106,12 @@ function previewToneColor(tone: SessionPreviewTone, colors: typeof Colors): stri
 
 function createStyles(colors: typeof Colors) {
   return StyleSheet.create({
+    iconSlot: {
+      width: 48,
+      height: 48,
+      alignItems: 'center',
+      justifyContent: 'center',
+    },
     row: {
       flexDirection: 'row',
       alignItems: 'center',
