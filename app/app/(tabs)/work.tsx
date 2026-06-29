@@ -105,8 +105,8 @@ export default function BrainScreen() {
     ? `brain-thread:${activeBrain.chat_thread_id}`
     : undefined;
   const ready = Boolean(activeServer && activeBrain?.hydrated && hostAgent?.id);
-  const canUseCodexBrainInterface = Boolean(
-    ready && hostAdapter?.provider === "codex",
+  const canUseStructuredBrainInterface = Boolean(
+    ready && hostAdapter?.capabilities?.structured_events,
   );
   const availableAdapters = activeBrain?.adapters ?? [];
   const canSwitchAdapter = availableAdapters.length > 1;
@@ -268,9 +268,9 @@ export default function BrainScreen() {
       ) : null}
 
       <View style={styles.chatSurface}>
-        {canUseCodexBrainInterface ? (
+        {canUseStructuredBrainInterface ? (
           <CodexChatSurface
-            key={`brain-codex-chat:${activeServer?.id}:${hostAgent?.id}:${brainChatScopeKey ?? ""}`}
+            key={`brain-chat:${activeServer?.id}:${hostAgent?.id}:${brainChatScopeKey ?? ""}`}
             visible
             serverId={activeServer?.id ?? ""}
             agentId={hostAgent?.id ?? ""}
@@ -379,8 +379,8 @@ function BrainInterfaceUnavailableState({ provider }: { provider?: string }) {
       title="Chat UI not available"
       detail={
         label
-          ? `${label} is connected, but Brain chat currently requires a Codex engine.`
-          : "Switch the Brain engine to Codex to use this chat surface."
+          ? `${label} is connected, but Brain chat requires Codex or Grok.`
+          : "Switch the Brain engine to Codex or Grok to use this chat surface."
       }
     />
   );
