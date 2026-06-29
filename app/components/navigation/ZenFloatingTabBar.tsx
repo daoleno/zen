@@ -8,6 +8,8 @@ import { Radii, Typography, shadow, useAppTheme } from "../../constants/tokens";
 const TAB_BAR_HEIGHT = 54;
 const TAB_BAR_HORIZONTAL_INSET = 16;
 const TAB_BAR_BOTTOM_GAP = 10;
+/** Compact inner highlight — stadium/squircle, not a full-width pill. */
+const TAB_SELECTION_RADIUS = 18;
 
 type TabRoute = {
   key: string;
@@ -106,8 +108,9 @@ export function ZenFloatingTabBar({
                 <View
                   style={[
                     styles.tabInner,
+                    focused ? styles.tabInnerSelected : null,
                     focused
-                      ? { backgroundColor: colors.accentSoft }
+                      ? { backgroundColor: colors.surfaceActive }
                       : null,
                   ]}
                 >
@@ -165,15 +168,22 @@ function createStyles() {
     tab: {
       flex: 1,
       minWidth: 0,
+      alignItems: "center",
+      justifyContent: "center",
     },
     tabInner: {
-      minHeight: 46,
-      borderRadius: Radii.pill,
+      alignSelf: "center",
       alignItems: "center",
       justifyContent: "center",
       gap: 2,
-      paddingHorizontal: 6,
-      paddingVertical: 5,
+      paddingHorizontal: 10,
+      paddingVertical: 6,
+    },
+    tabInnerSelected: {
+      borderRadius: TAB_SELECTION_RADIUS,
+      minWidth: 56,
+      paddingHorizontal: 14,
+      paddingVertical: 7,
     },
     label: {
       fontSize: 10.5,
