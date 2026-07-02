@@ -1,15 +1,11 @@
 import { useMemo } from 'react';
-import type { ColorValue } from 'react-native';
-import type { ComponentProps } from 'react';
-import { Tabs } from 'expo-router';
-import { Ionicons } from '@expo/vector-icons';
+import { StyleSheet } from 'react-native';
+import { Tabs, TabList, TabTrigger, TabSlot } from 'expo-router/ui';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { getFloatingTabBarInset } from '../../components/navigation/floatingTabBarMetrics';
 import { TabScreenInsetProvider } from '../../components/navigation/TabScreenInsetContext';
-import {
-  ZenFloatingTabBar,
-  type ZenFloatingTabBarProps,
-} from '../../components/navigation/ZenFloatingTabBar';
+import { ZenFloatingTabList } from '../../components/navigation/ZenFloatingTabList';
+import { ZenTabTrigger } from '../../components/navigation/ZenTabTrigger';
 
 export default function TabLayout() {
   const insets = useSafeAreaInsets();
@@ -20,74 +16,50 @@ export default function TabLayout() {
 
   return (
     <TabScreenInsetProvider inset={tabScreenBottomInset}>
-    <Tabs
-      tabBar={(props) => (
-        <ZenFloatingTabBar {...(props as unknown as ZenFloatingTabBarProps)} />
-      )}
-      screenOptions={{
-        headerShown: false,
-        tabBarShowLabel: false,
-      }}
-    >
-      <Tabs.Screen
-        name="index"
-        options={{
-          title: 'Agents',
-          tabBarIcon: ({ color, focused }) => (
-            <TabIcon
-              icon={focused ? 'chatbubbles' : 'chatbubbles-outline'}
-              color={color}
-            />
-          ),
-        }}
-      />
-      <Tabs.Screen
-        name="work"
-        options={{
-          title: 'Brain',
-          tabBarIcon: ({ color, focused }) => (
-            <TabIcon
-              icon={focused ? 'hardware-chip' : 'hardware-chip-outline'}
-              color={color}
-            />
-          ),
-        }}
-      />
-      <Tabs.Screen
-        name="stats"
-        options={{
-          title: 'Stats',
-          tabBarIcon: ({ color, focused }) => (
-            <TabIcon
-              icon={focused ? 'bar-chart' : 'bar-chart-outline'}
-              color={color}
-            />
-          ),
-        }}
-      />
-      <Tabs.Screen
-        name="settings"
-        options={{
-          title: 'Settings',
-          tabBarIcon: ({ color, focused }) => (
-            <TabIcon
-              icon={focused ? 'settings' : 'settings-outline'}
-              color={color}
-            />
-          ),
-        }}
-      />
-    </Tabs>
+      <Tabs style={styles.tabs}>
+        <TabSlot />
+        <ZenFloatingTabList>
+          <ZenTabTrigger
+            name="agents"
+            label="Agents"
+            icon="chatbubbles-outline"
+            iconFocused="chatbubbles"
+          />
+          <ZenTabTrigger
+            name="brain"
+            label="Brain"
+            icon="hardware-chip-outline"
+            iconFocused="hardware-chip"
+          />
+          <ZenTabTrigger
+            name="stats"
+            label="Stats"
+            icon="bar-chart-outline"
+            iconFocused="bar-chart"
+          />
+          <ZenTabTrigger
+            name="settings"
+            label="Settings"
+            icon="settings-outline"
+            iconFocused="settings"
+          />
+        </ZenFloatingTabList>
+        <TabList style={styles.hiddenTabList}>
+          <TabTrigger name="agents" href="/" />
+          <TabTrigger name="brain" href="/work" />
+          <TabTrigger name="stats" href="/stats" />
+          <TabTrigger name="settings" href="/settings" />
+        </TabList>
+      </Tabs>
     </TabScreenInsetProvider>
   );
 }
 
-function TabIcon({
-  icon,
-  color,
-}: {
-  icon: ComponentProps<typeof Ionicons>['name'];
-  color: ColorValue;
-}) {
-  return <Ionicons name={icon} size={22} color={color} />;
-}
+const styles = StyleSheet.create({
+  tabs: {
+    flex: 1,
+  },
+  hiddenTabList: {
+    display: 'none',
+  },
+});

@@ -91,6 +91,111 @@ func (s *Service) Snapshot() (Snapshot, error) {
 	return snapshot, nil
 }
 
+func (s *Service) Context(messageLimit int) (BrainContext, error) {
+	if s == nil || s.store == nil {
+		return BrainContext{}, fmt.Errorf("brain service is not configured")
+	}
+	if messageLimit <= 0 {
+		messageLimit = 12
+	}
+	snapshot, err := s.Snapshot()
+	if err != nil {
+		return BrainContext{}, err
+	}
+	messages, err := s.store.ChatMessages(snapshot.ChatThreadID, messageLimit)
+	if err != nil {
+		return BrainContext{}, err
+	}
+	return BrainContext{
+		ThreadID:       snapshot.ChatThreadID,
+		Workspace:      snapshot.Workspace,
+		Current:        snapshot.Current,
+		Memory:         snapshot.Memory,
+		Profile:        snapshot.Profile,
+		Personality:    snapshot.Personality,
+		HostAgent:      snapshot.HostAgent,
+		HostAdapter:    snapshot.HostAdapter,
+		Adapters:       snapshot.Adapters,
+		Agents:         snapshot.Agents,
+		RecentMessages: messages,
+		GeneratedAt:    s.nowUTC(),
+	}, nil
+}
+
+func (s *Service) Housekeeping() (HousekeepingReport, error) {
+	if s == nil || s.store == nil {
+		return HousekeepingReport{}, fmt.Errorf("brain service is not configured")
+	}
+	before := workspaceHousekeepingState(s.store)
+	if err := s.store.ensureFiles(); err != nil {
+		return HousekeepingReport{}, err
+	}
+	after := workspaceHousekeepingState(s.store)
+	context, err := s.Context(8)
+	if err != nil {
+		return HousekeepingReport{}, err
+	}
+	delegated := []AgentRef{}
+	for _, agent := range context.Agents {
+		if agent.Delegated {
+			delegated = append(delegated, agent)
+		}
+	}
+	steps := []string{}
+	if strings.TrimSpace(context.Current) == "" || strings.Contains(context.Current, "None recorded yet.") {
+		steps = append(steps, "Update current.md with the active objective, decisions, open threads, and next step.")
+	}
+	if len(delegated) > 0 {
+		steps = append(steps, "Inspect open delegated agents and close only those whose larger task is complete and reported.")
+	}
+	return HousekeepingReport{
+		Workspace:            s.store.WorkspacePath(),
+		CurrentPath:          "current.md",
+		PolicyPaths:          []string{"policies/delegation.md", "policies/engine.md", "policies/handoff.md"},
+		WorklogPath:          worklogDirName,
+		OpenDelegatedAgents:  delegated,
+		RecentMessageCount:   len(context.RecentMessages),
+		BackfilledWorkspace:  !before.equal(after),
+		RecommendedNextSteps: steps,
+		GeneratedAt:          s.nowUTC(),
+	}, nil
+}
+
+type workspaceHousekeepingSnapshot struct {
+	current bool
+	policy  map[string]bool
+	worklog bool
+}
+
+func workspaceHousekeepingState(store *Store) workspaceHousekeepingSnapshot {
+	state := workspaceHousekeepingSnapshot{
+		current: brainFileExists(store.currentPath()),
+		policy:  map[string]bool{},
+		worklog: brainFileExists(store.worklogReadmePath()),
+	}
+	for _, name := range []string{"delegation.md", "engine.md", "handoff.md"} {
+		state.policy[name] = brainFileExists(store.policyPath(name))
+	}
+	return state
+}
+
+func (s workspaceHousekeepingSnapshot) equal(other workspaceHousekeepingSnapshot) bool {
+	if s.current != other.current || s.worklog != other.worklog || len(s.policy) != len(other.policy) {
+		return false
+	}
+	for key, value := range s.policy {
+		if other.policy[key] != value {
+			return false
+		}
+	}
+	return true
+}
+
+func brainFileExists(path string) bool {
+	_, err := os.Stat(path)
+	return err == nil
+}
+
 func (s *Service) WorkspaceTree() (WorkspaceTree, error) {
 	if s == nil || s.store == nil {
 		return WorkspaceTree{}, fmt.Errorf("brain store is not configured")
@@ -123,10 +228,32 @@ func (s *Service) SetHostAdapter(adapterID string) (Snapshot, error) {
 	if !ok {
 		return Snapshot{}, fmt.Errorf("%w: %s", ErrAdapterNotConfigured, adapterID)
 	}
+	var previousHost HostSession
+	var previousMessages []ChatMessage
+	var currentContext string
+	chatThreadID, _ := s.store.ChatThreadID()
+	if host, err := s.store.HostSession(); err == nil {
+		previousHost = host
+	}
+	if snapshot, err := s.store.Snapshot(); err == nil {
+		currentContext = snapshot.Current
+	}
+	if strings.TrimSpace(chatThreadID) != "" {
+		if messages, err := s.store.ChatMessages(chatThreadID, 12); err == nil {
+			previousMessages = messages
+		}
+	}
 	if err := s.store.SetHostAdapterID(adapter.ID); err != nil {
 		return Snapshot{}, err
 	}
-	return s.Snapshot()
+	snapshot, err := s.Snapshot()
+	if err != nil {
+		return Snapshot{}, err
+	}
+	if snapshot.HostAgent != nil && strings.TrimSpace(previousHost.ID) != "" && strings.TrimSpace(snapshot.HostAgent.ID) != "" && snapshot.HostAgent.ID != strings.TrimSpace(previousHost.ID) {
+		_ = s.handoffHostSession(chatThreadID, previousHost.AdapterID, adapter.ID, snapshot.HostAgent.ID, currentContext, previousMessages, snapshot.Agents)
+	}
+	return snapshot, nil
 }
 
 func (s *Service) Heartbeat(event HeartbeatEvent) (bool, error) {
@@ -232,11 +359,12 @@ func (s *Service) ensureHostAgent(adapter work.AgentAdapter) (AgentRef, error) {
 	}
 
 	agentID, err := s.watcher.CreateSession("", watcher.CreateSessionOptions{
-		Cwd:      s.brainWorkspace(),
-		Command:  command,
-		Name:     "Brain",
-		Detached: true,
-		Hidden:   true,
+		Cwd:         s.brainWorkspace(),
+		Command:     command,
+		Name:        "Brain",
+		Detached:    true,
+		Hidden:      true,
+		ProgressEnv: true,
 	})
 	if err != nil {
 		return AgentRef{}, err
@@ -456,6 +584,8 @@ Adapter capabilities: %s
 Durable state rules:
 - Keep long-term memory in memory.md.
 - Keep personality, preferences, and profile notes in profile.md.
+- Keep the current active objective, decisions, open threads, and next step in current.md.
+- Use policies/delegation.md, policies/engine.md, and policies/handoff.md for stable orchestration rules.
 - Use files in this workspace for plans, inbox notes, reminders, and follow-up state.
 - Do not use arbitrary project repositories as Brain's default workspace.
 
@@ -464,12 +594,16 @@ Agent orchestration rules:
 - This Brain host is launched with the most permissive available non-interactive authorization mode for its adapter.
 - The zen app sends user messages directly into this session.
 - Treat the adapter as replaceable; do not make Brain's plans depend on Codex-only or Claude-only behavior unless the user asks for that adapter specifically.
+- The active Brain adapter is also the default executor for delegated agents. Use a different executor only when the user explicitly mentions or asks for that engine, such as @codex, @grok, or @claude. Do not switch executors based on private task-type judgment.
 - Brain is the user's scheduler: reduce decision load. For concrete work that needs repository/tool execution, independent progress, parallelism, or follow-up, proactively create or reuse a visible delegated agent session; stay in Brain for chat, memory, synthesis, reminders, and decisions that fit the current context.
 - For a single larger task, prefer reusing the same delegated agent session across stages. Send follow-up instructions to that session until the task is genuinely complete. Open a separate delegated session only when the work is meaningfully independent, benefits from parallelism, needs a different repository/context, or the current session is blocked or unusable.
 - Use the zen binary to spawn, send to, and inspect delegated agents. When delegating, write a short note with workspace, objective, context, acceptance criteria, safety constraints, and expected report.
 - Zen CLI quick reference:
+  - %s brain context --json returns structured Brain context: current.md, recent visible messages, host adapter, and delegated agents.
+  - %s brain gc --json backfills missing standard Brain workspace files and reports open delegated sessions without rewriting user content.
   - %s agent list --json lists visible sessions; only sessions with delegated=true are Brain-owned.
-  - %s agent spawn -name "<name>" -executor <executor> -cwd <workspace> -prompt "<task>" creates a visible delegated agent.
+  - %s agent spawn -name "<name>" -cwd <workspace> -prompt "<task>" creates a visible delegated agent with the current Brain adapter as executor.
+  - %s agent spawn -name "<name>" -executor <executor> -cwd <workspace> -prompt "<task>" creates a visible delegated agent with an explicit user-requested executor override.
   - %s agent capture -id <agent_id> --json inspects a delegated agent.
   - %s agent send -id <agent_id> -text "<message>" --submit=true continues a delegated agent.
   - %s agent close -id <agent_id> closes a delegated agent after the larger task is complete and its result is recorded or reported.
@@ -487,7 +621,112 @@ Current profile notes:
 
 Current memory:
 %s
-`, snapshot.Workspace, adapter.ID, adapter.Provider, adapter.Runtime, adapterCapabilitiesSummary(adapter.Capabilities), zenCLICommand(), zenCLICommand(), zenCLICommand(), zenCLICommand(), zenCLICommand(), strings.TrimSpace(snapshot.Personality), strings.TrimSpace(snapshot.Profile), strings.TrimSpace(snapshot.Memory)))
+`, snapshot.Workspace, adapter.ID, adapter.Provider, adapter.Runtime, adapterCapabilitiesSummary(adapter.Capabilities), zenCLICommand(), zenCLICommand(), zenCLICommand(), zenCLICommand(), zenCLICommand(), zenCLICommand(), zenCLICommand(), zenCLICommand(), strings.TrimSpace(snapshot.Personality), strings.TrimSpace(snapshot.Profile), strings.TrimSpace(snapshot.Memory)))
+}
+
+func (s *Service) handoffHostSession(threadID, previousAdapterID, nextAdapterID, nextHostID, currentContext string, messages []ChatMessage, agents []AgentRef) error {
+	if s == nil || s.store == nil || s.watcher == nil {
+		return nil
+	}
+	threadID = strings.TrimSpace(threadID)
+	nextHostID = strings.TrimSpace(nextHostID)
+	if threadID == "" || nextHostID == "" {
+		return nil
+	}
+	prompt := formatHostHandoffPrompt(threadID, previousAdapterID, nextAdapterID, currentContext, messages, agents)
+	if prompt != "" {
+		if err := s.watcher.SendInputWhenReady(nextHostID, s.hostCommand(s.hostAdapter()), prompt+"\n"); err != nil {
+			return err
+		}
+	}
+	state, err := s.store.ChatState(threadID)
+	if err != nil {
+		return err
+	}
+	state.ThreadID = threadID
+	appendUniqueString(&state.SessionIDs, nextHostID)
+	state.LastTranscript = ""
+	state.UpdatedAt = s.nowUTC()
+	return s.store.SetChatState(state)
+}
+
+func formatHostHandoffPrompt(threadID, previousAdapterID, nextAdapterID, currentContext string, messages []ChatMessage, agents []AgentRef) string {
+	threadID = strings.TrimSpace(threadID)
+	if threadID == "" {
+		return ""
+	}
+	lines := []string{
+		"Brain engine handoff:",
+		"The user switched Brain engines. This is the same visible Brain chat, not a new conversation.",
+		"Continue naturally in the user's current language. Do not mention this handoff unless the user asks.",
+		"Current thread id: " + threadID,
+	}
+	if strings.TrimSpace(previousAdapterID) != "" {
+		lines = append(lines, "Previous engine: "+strings.TrimSpace(previousAdapterID))
+	}
+	if strings.TrimSpace(nextAdapterID) != "" {
+		lines = append(lines, "Current engine: "+strings.TrimSpace(nextAdapterID))
+	}
+	lines = append(lines,
+		"",
+		"Primary persisted context:",
+		"Read current.md in the Brain workspace before continuing. Its current contents are included below when available.",
+	)
+	if strings.TrimSpace(currentContext) != "" {
+		lines = append(lines, "", "current.md:", strings.TrimSpace(currentContext))
+	}
+	lines = append(lines,
+		"",
+		"Executor policy:",
+		"- Delegated agents default to the current Brain engine.",
+		"- Use a different executor only when the user explicitly mentions or asks for it, such as @codex, @grok, or @claude.",
+	)
+	if len(messages) > 0 {
+		lines = append(lines, "", "Recent visible Brain messages:")
+		for _, message := range messages {
+			role := strings.TrimSpace(message.Role)
+			body := strings.TrimSpace(message.Body)
+			if role == "" || body == "" {
+				continue
+			}
+			lines = append(lines, chatRoleLabel(role)+": "+body)
+		}
+	}
+	delegated := []string{}
+	for _, agent := range agents {
+		if !agent.Delegated {
+			continue
+		}
+		entry := strings.TrimSpace(agent.Name)
+		if entry == "" {
+			entry = strings.TrimSpace(agent.ID)
+		}
+		if status := strings.TrimSpace(agent.Status); status != "" {
+			entry += " [" + status + "]"
+		}
+		if summary := strings.TrimSpace(agent.Summary); summary != "" {
+			entry += ": " + summary
+		}
+		if entry != "" {
+			delegated = append(delegated, entry)
+		}
+	}
+	if len(delegated) > 0 {
+		lines = append(lines, "", "Open delegated agents:")
+		for _, entry := range delegated {
+			lines = append(lines, "- "+entry)
+		}
+	}
+	lines = append(lines, "", "Wait for the next user message unless a low-risk continuation is clearly already pending.")
+	return strings.TrimSpace(strings.Join(lines, "\n"))
+}
+
+func chatRoleLabel(role string) string {
+	role = strings.TrimSpace(role)
+	if role == "" {
+		return "Message"
+	}
+	return strings.ToUpper(role[:1]) + role[1:]
 }
 
 func zenCLICommand() string {

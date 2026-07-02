@@ -2,7 +2,14 @@ import React, { useMemo } from 'react';
 import { StyleSheet, Text, View } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import * as Haptics from 'expo-haptics';
-import { Colors, Typography, useAppColors } from '../../constants/tokens';
+import type { TerminalThemeChrome } from '../../constants/terminalThemes';
+import {
+  Colors,
+  Typography,
+  UiTextMetrics,
+  uiLineHeight,
+  useAppColors,
+} from '../../constants/tokens';
 import { AnimatedPressable } from '../ui/AnimatedPressable';
 import type { AgentKind } from '../../services/agentPresentation';
 import type { TerminalFlavor } from '../../services/terminalFlavor';
@@ -18,6 +25,8 @@ interface TelegramChatHeaderAction {
 }
 
 interface TelegramChatHeaderProps {
+  /** When set, header shares the chat canvas instead of app shell colors. */
+  chrome?: TerminalThemeChrome;
   title: string;
   subtitle?: string;
   avatarLabel?: string;
@@ -32,6 +41,7 @@ interface TelegramChatHeaderProps {
 }
 
 export function TelegramChatHeader({
+  chrome,
   title,
   subtitle,
   avatarLabel,
@@ -45,7 +55,10 @@ export function TelegramChatHeader({
   menuAnchorRef,
 }: TelegramChatHeaderProps) {
   const colors = useAppColors();
-  const styles = useMemo(() => createStyles(colors), [colors]);
+  const styles = useMemo(
+    () => createStyles(colors, chrome),
+    [chrome, colors],
+  );
   const avatarText = avatarLabel ?? title;
   const avatarKey = avatarSeed ?? title;
 
@@ -146,7 +159,11 @@ export function TelegramChatHeader({
   );
 }
 
-function createStyles(colors: typeof Colors) {
+function createStyles(
+  colors: typeof Colors,
+  chrome?: TerminalThemeChrome,
+) {
+  const onChatCanvas = Boolean(chrome);
   return StyleSheet.create({
     root: {
       flexDirection: 'row',
@@ -155,9 +172,9 @@ function createStyles(colors: typeof Colors) {
       paddingTop: 4,
       paddingBottom: 8,
       gap: 2,
-      backgroundColor: colors.bgSurface,
+      backgroundColor: chrome?.appBackground ?? colors.bgSurface,
       borderBottomWidth: StyleSheet.hairlineWidth,
-      borderBottomColor: colors.borderSubtle,
+      borderBottomColor: chrome?.border ?? colors.borderSubtle,
     },
     backButton: {
       width: 40,
@@ -165,7 +182,7 @@ function createStyles(colors: typeof Colors) {
       borderRadius: 20,
       alignItems: 'center',
       justifyContent: 'center',
-      backgroundColor: colors.surfaceSubtle,
+      backgroundColor: onChatCanvas ? 'transparent' : colors.surfaceSubtle,
     },
     backSpacer: {
       width: 8,
@@ -186,16 +203,18 @@ function createStyles(colors: typeof Colors) {
       gap: 1,
     },
     title: {
+      ...UiTextMetrics,
       color: colors.textPrimary,
       fontFamily: Typography.uiFontMedium,
       fontSize: 16,
-      lineHeight: 20,
+      lineHeight: uiLineHeight(16),
     },
     subtitle: {
+      ...UiTextMetrics,
       color: colors.textSecondary,
       fontFamily: Typography.uiFont,
       fontSize: 13,
-      lineHeight: 17,
+      lineHeight: uiLineHeight(13),
     },
     actions: {
       flexDirection: 'row',

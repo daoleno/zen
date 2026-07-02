@@ -28,6 +28,8 @@ export interface TerminalThemeChrome {
   surface: string;
   surfaceMuted: string;
   surfaceActive: string;
+  /** Rounded composer input field — slightly lifted from appBackground. */
+  composerInput: string;
   border: string;
   borderStrong: string;
   text: string;
@@ -165,6 +167,7 @@ export function buildTerminalChrome(theme: TerminalThemePalette): TerminalThemeC
     surface: mixHex(theme.background, theme.foreground, 0.06),
     surfaceMuted: mixHex(theme.background, theme.foreground, 0.035),
     surfaceActive: mixHex(theme.background, theme.cursor, 0.14),
+    composerInput: mixHex(theme.background, theme.foreground, 0.08),
     border: withAlpha(theme.foreground, 0.08),
     borderStrong: withAlpha(theme.cursor, 0.22),
     text: theme.foreground,

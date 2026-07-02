@@ -9,12 +9,12 @@ import type {
   TerminalThemePalette,
 } from "../../constants/terminalThemes";
 import { isAmbientChatChrome } from "../../constants/themedSurfaces";
-import { useAppTheme } from "../../constants/tokens";
 
 interface CodexChatComposerFrameProps {
   bottomPadding: number;
   chrome: TerminalThemeChrome;
   theme: TerminalThemePalette;
+  composerLayout: "chatgpt" | "telegram" | "classic";
   children: React.ReactNode;
   onLayout(event: LayoutChangeEvent): void;
 }
@@ -23,12 +23,12 @@ export function CodexChatComposerFrame({
   bottomPadding,
   chrome,
   theme,
+  composerLayout,
   children,
   onLayout,
 }: CodexChatComposerFrameProps) {
   const ambient = isAmbientChatChrome(chrome);
-  const { theme: zenTheme } = useAppTheme();
-  const chatgptDock = zenTheme.chat.layout === "chatgpt";
+  const chatgptDock = !ambient && composerLayout === "chatgpt";
 
   return (
     <View
@@ -39,15 +39,12 @@ export function CodexChatComposerFrame({
         chatgptDock ? styles.composerChatGpt : null,
         {
           paddingBottom: bottomPadding,
-          borderTopWidth: ambient || chatgptDock ? 0 : undefined,
-          borderTopColor: chrome.border,
-          backgroundColor: chatgptDock
-            ? zenTheme.chat.composerDock
-            : ambient
-              ? chrome.surfaceActive
-              : theme.background === "transparent"
-                ? "transparent"
-                : chrome.appBackground,
+          borderTopWidth: 0,
+          backgroundColor: ambient
+            ? chrome.surfaceActive
+            : theme.background === "transparent"
+              ? "transparent"
+              : chrome.appBackground,
         },
       ]}
     >

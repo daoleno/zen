@@ -16,6 +16,7 @@ import (
 const (
 	defaultPersonality = "calm, direct, warm, pragmatic"
 	worklogDirName     = "worklog"
+	policiesDirName    = "policies"
 )
 
 type Store struct {
@@ -131,12 +132,17 @@ func (s *Store) snapshotLocked(agents []AgentRef) (Snapshot, error) {
 	if err != nil {
 		return Snapshot{}, err
 	}
+	current, err := readTextFile(s.currentPath())
+	if err != nil {
+		return Snapshot{}, err
+	}
 	if agents == nil {
 		agents = []AgentRef{}
 	}
 	return Snapshot{
 		Memory:      memory,
 		Profile:     profileNotes,
+		Current:     current,
 		Personality: firstNonEmpty(profile.Personality, defaultPersonality),
 		Agents:      agents,
 		Workspace:   s.WorkspacePath(),
@@ -163,7 +169,13 @@ func (s *Store) ensureFiles() error {
 	if err := ensureFile(s.profileNotesPath(), []byte("# Brain Profile\n\n")); err != nil {
 		return err
 	}
+	if err := ensureFile(s.currentPath(), []byte(defaultCurrentContext)); err != nil {
+		return err
+	}
 	if err := ensureWorkspaceInstructionsFile(s.workspaceInstructionsPath()); err != nil {
+		return err
+	}
+	if err := s.ensurePolicies(); err != nil {
 		return err
 	}
 	if err := s.ensureWorklog(); err != nil {
@@ -470,8 +482,20 @@ func (s *Store) profileNotesPath() string {
 	return filepath.Join(s.WorkspacePath(), "profile.md")
 }
 
+func (s *Store) currentPath() string {
+	return filepath.Join(s.WorkspacePath(), "current.md")
+}
+
 func (s *Store) workspaceInstructionsPath() string {
 	return filepath.Join(s.WorkspacePath(), "AGENTS.md")
+}
+
+func (s *Store) policiesPath() string {
+	return filepath.Join(s.WorkspacePath(), policiesDirName)
+}
+
+func (s *Store) policyPath(name string) string {
+	return filepath.Join(s.policiesPath(), name)
 }
 
 func (s *Store) worklogPath() string {
@@ -728,6 +752,23 @@ func (s *Store) ensureWorklog() error {
 	return ensureFile(s.worklogReadmePath(), []byte(defaultWorklogReadme))
 }
 
+func (s *Store) ensurePolicies() error {
+	if err := os.MkdirAll(s.policiesPath(), 0o700); err != nil {
+		return err
+	}
+	policies := map[string]string{
+		"delegation.md": defaultDelegationPolicy,
+		"engine.md":     defaultEnginePolicy,
+		"handoff.md":    defaultHandoffPolicy,
+	}
+	for name, content := range policies {
+		if err := ensureFile(s.policyPath(name), []byte(content)); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 func workspaceInstructionsCurrent(value string) bool {
 	if strings.TrimSpace(value) == "" {
 		return false
@@ -801,23 +842,104 @@ func moveIfMissing(from string, to string) error {
 	return os.Remove(from)
 }
 
+const defaultCurrentContext = `# Current Brain Context
+
+## Active Objective
+
+None recorded yet.
+
+## Decisions
+
+- Brain's current engine is the default delegated executor.
+- Use a different delegated executor only when the user explicitly mentions or asks for it.
+- Switching Brain engines preserves the visible chat and uses private handoff context.
+
+## Open Threads
+
+- Keep this file current when a task, plan, or delegated session should survive engine switching, daemon restarts, or transcript compaction.
+
+## Next
+
+- Update this file before and after larger delegated work.
+`
+
 const defaultWorkspaceInstructions = `# Brain Workspace
 
 This directory is the private workspace for zen Brain.
 
 - Keep durable user memory in memory.md.
 - Keep personality and preference notes in profile.md.
+- Keep the current active objective, decisions, open threads, and next step in current.md.
+- Use policies/ for stable Brain orchestration rules; read policies/delegation.md, policies/engine.md, and policies/handoff.md when delegating, switching engines, or recovering context.
 - Use local files here for plans, reminders, inbox notes, and follow-up state.
 - Keep task tracking and archival records in worklog/: create one Markdown file per problem, feature, fix, or workflow that needs durable context, progress, verification, results, or follow-up.
 - Do not use project repositories as Brain's default working directory.
 - Brain is the user's scheduler: reduce decision load. For concrete work needing repository/tool execution, independent progress, parallelism, or follow-up, proactively create or reuse visible delegated agent sessions; stay here for chat, memory, synthesis, reminders, and decisions that fit the current context.
 - For a single larger task, prefer reusing the same delegated agent session across stages. Send follow-up instructions to that session until the task is genuinely complete. Open a separate delegated session only when the work is meaningfully independent, benefits from parallelism, needs a different repository/context, or the current session is blocked or unusable.
-- Use the zen binary to delegate, send, inspect, and close agents. Do not call tmux directly. Common command shapes: zen agent list --json; zen agent spawn -name "<name>" -executor <executor> -cwd <workspace> -prompt "<task>"; zen agent capture -id <agent_id> --json; zen agent send -id <agent_id> -text "<message>" --submit=true; zen agent close -id <agent_id>.
+- Use the zen binary to inspect Brain context, perform safe housekeeping, and delegate work. Common command shapes: zen brain context --json; zen brain gc --json; zen agent list --json; zen agent spawn -name "<name>" -cwd <workspace> -prompt "<task>"; zen agent spawn -name "<name>" -executor <executor> -cwd <workspace> -prompt "<task>"; zen agent capture -id <agent_id> --json; zen agent send -id <agent_id> -text "<message>" --submit=true; zen agent close -id <agent_id>.
 - Keep delegated agent lifecycle ownership from spawn through inspection, follow-up, result consolidation, and close. Do not close a delegated session merely because a small stage finished; close it when the larger task is complete or you have intentionally moved the remaining work elsewhere.
 - Never close, kill, rename, repurpose, or otherwise manage sessions whose agent list entry does not have delegated=true. Those belong to the user or another tool.
 - Keep orchestration principles in Markdown, prompts, and agent instructions. Code should provide tools, context, persistence, visibility, and safety boundaries rather than rigid workflow gates.
 - Treat Heartbeat wake messages as compact actionable deltas; inspect only what is needed, then act, summarize, or sleep.
 - Ask only when critical context is missing, an action is high-risk or irreversible, credentials/permissions are needed, or the choice depends on the user's values; otherwise continue low-risk next steps and consolidate options with a recommendation.
+`
+
+const defaultDelegationPolicy = `# Brain Delegation Policy
+
+Brain is the user's scheduler and agent operations lead.
+
+## Default Behavior
+
+- Stay in Brain for chat, memory, synthesis, reminders, and low-tool decisions.
+- Delegate concrete work that needs repository/tool execution, independent progress, parallelism, or follow-up.
+- Reuse the same delegated session for one larger task until the task is genuinely complete, blocked beyond recovery, or intentionally moved elsewhere.
+- Open a separate delegated session only when the work is independent, benefits from parallelism, needs a different workspace/context, or the current session is unusable.
+
+## Delegation Contract
+
+Every delegated prompt should include:
+
+- Workspace
+- Objective
+- Context
+- Acceptance criteria
+- Safety constraints
+- Verification plan
+- Expected report
+
+## Lifecycle
+
+- Inspect delegated sessions before deciding they are done.
+- Send follow-up instructions when the larger task is still active.
+- Close only Brain-owned sessions with delegated=true, and only after the result is recorded or reported.
+- Ask the user only for critical missing context, high-risk or irreversible actions, credentials/permissions, or value judgments.
+`
+
+const defaultEnginePolicy = `# Brain Engine Policy
+
+The active Brain engine is the default delegated executor.
+
+## Rules
+
+- Default delegated agents to the current Brain engine.
+- Use a different executor only when the user explicitly mentions or asks for it, such as @codex, @grok, or @claude.
+- Do not switch executors based on private task-type judgment.
+- If the user explicitly names an engine, honor that instruction for the delegated session.
+- Do not imply the previous engine's hidden model state was transferred; rely on current.md, recent messages, and structured context.
+`
+
+const defaultHandoffPolicy = `# Brain Handoff Policy
+
+Engine switching preserves the visible Brain chat.
+
+## Rules
+
+- Treat an engine switch as a host replacement, not a new conversation.
+- Load current.md before continuing a switched or restored Brain session.
+- Use recent visible Brain messages and active delegated agent state as supplemental context.
+- Keep handoff prompts private; they must not be appended as visible chat messages.
+- Reset transcript baselines after handoff so bootstrap and handoff text do not appear as assistant replies.
+- Continue in the user's current language and do not mention the handoff unless asked.
 `
 
 const defaultWorklogReadme = `# Brain Worklog
@@ -853,10 +975,14 @@ Suggested filename: ` + "`YYYY-MM-DD-short-title.md`" + `
 `
 
 var currentWorkspaceInstructionMarkers = []string{
+	"Keep the current active objective, decisions, open threads, and next step in current.md",
+	"Use policies/ for stable Brain orchestration rules",
 	"Brain is the user's scheduler",
 	"proactively create or reuse visible delegated agent sessions",
 	"For a single larger task, prefer reusing the same delegated agent session",
-	"Common command shapes: zen agent list --json",
+	"zen brain context --json",
+	"zen brain gc --json",
+	"zen agent list --json",
 	"zen agent spawn -name",
 	"zen agent capture -id",
 	"zen agent send -id",
@@ -874,9 +1000,11 @@ var staleWorkspaceInstructionSnippets = []string{
 
 const currentWorkspaceInstructionAppend = `## Current Brain Orchestration Rules
 
+- Keep the current active objective, decisions, open threads, and next step in current.md.
+- Use policies/ for stable Brain orchestration rules; read policies/delegation.md, policies/engine.md, and policies/handoff.md when delegating, switching engines, or recovering context.
 - Brain is the user's scheduler: reduce decision load. For concrete work needing repository/tool execution, independent progress, parallelism, or follow-up, proactively create or reuse visible delegated agent sessions; stay here for chat, memory, synthesis, reminders, and decisions that fit the current context.
 - For a single larger task, prefer reusing the same delegated agent session across stages. Send follow-up instructions to that session until the task is genuinely complete. Open a separate delegated session only when the work is meaningfully independent, benefits from parallelism, needs a different repository/context, or the current session is blocked or unusable.
-- Use the zen binary to delegate, send, inspect, and close agents. Do not call tmux directly. Common command shapes: zen agent list --json; zen agent spawn -name "<name>" -executor <executor> -cwd <workspace> -prompt "<task>"; zen agent capture -id <agent_id> --json; zen agent send -id <agent_id> -text "<message>" --submit=true; zen agent close -id <agent_id>.
+- Use the zen binary to inspect Brain context, perform safe housekeeping, and delegate work. Common command shapes: zen brain context --json; zen brain gc --json; zen agent list --json; zen agent spawn -name "<name>" -cwd <workspace> -prompt "<task>"; zen agent spawn -name "<name>" -executor <executor> -cwd <workspace> -prompt "<task>"; zen agent capture -id <agent_id> --json; zen agent send -id <agent_id> -text "<message>" --submit=true; zen agent close -id <agent_id>.
 - Keep delegated agent lifecycle ownership from spawn through inspection, follow-up, result consolidation, and close. Do not close a delegated session merely because a small stage finished; close it when the larger task is complete or you have intentionally moved the remaining work elsewhere.
 - Never close, kill, rename, repurpose, or otherwise manage sessions whose agent list entry does not have delegated=true. Those belong to the user or another tool.
 - Keep orchestration principles in Markdown, prompts, and agent instructions. Code should provide tools, context, persistence, visibility, and safety boundaries rather than rigid workflow gates.

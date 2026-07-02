@@ -3,6 +3,7 @@ package brain
 import (
 	"encoding/json"
 	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -241,6 +242,40 @@ func TestServiceChatThreadSurvivesHostSessionSwap(t *testing.T) {
 	}
 	if !containsString(state.SessionIDs, "host-a") || !containsString(state.SessionIDs, "host-b") {
 		t.Fatalf("thread did not retain host sessions: %+v", state)
+	}
+}
+
+func TestServiceContextIncludesCurrentAndRecentMessages(t *testing.T) {
+	store, err := NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(store.currentPath(), []byte("# Current Brain Context\n\n## Active Objective\n\nKeep going.\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	service := newChatTestService(store)
+	if _, err := service.RecordUserMessage("thread-main", "host-a", "first", "ready"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.SyncTerminalTranscript("thread-main", "host-a", "ready\n> first\nreply one"); err != nil {
+		t.Fatal(err)
+	}
+
+	context, err := service.Context(10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if context.ThreadID != "thread-main" {
+		t.Fatalf("thread id = %q", context.ThreadID)
+	}
+	if !strings.Contains(context.Current, "Keep going.") {
+		t.Fatalf("current context = %q", context.Current)
+	}
+	if len(context.RecentMessages) != 2 {
+		t.Fatalf("recent messages = %#v", context.RecentMessages)
+	}
+	if context.RecentMessages[0].Body != "first" || context.RecentMessages[1].Body != "reply one" {
+		t.Fatalf("recent messages = %#v", context.RecentMessages)
 	}
 }
 

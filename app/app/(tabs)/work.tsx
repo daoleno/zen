@@ -1,19 +1,17 @@
 import React, { useCallback, useMemo, useState } from "react";
-import {
-  ActivityIndicator,
-  StyleSheet,
-  Text,
-  View,
-} from "react-native";
+import { ActivityIndicator, StyleSheet, Text, View } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 import { useFocusEffect, useRouter } from "expo-router";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { BrainAdapterSheet } from "../../components/brain/BrainAdapterSheet";
 import { BrainChatHeader } from "../../components/brain/BrainChatHeader";
+import { BrainExecutorMentionPicker } from "../../components/brain/BrainExecutorMentionPicker";
 import { BrainOverflowMenu } from "../../components/brain/BrainOverflowMenu";
 import { BrainWorkspaceViewer } from "../../components/brain/BrainWorkspaceViewer";
 import { brainProviderLabel } from "../../components/brain/brainPresentation";
+import { ChatCanvas } from "../../components/terminal/ChatCanvas";
 import { CodexChatSurface } from "../../components/terminal/CodexChatSurface";
+import type { TerminalThemeChrome } from "../../constants/terminalThemes";
 import { buildChatChrome } from "../../theme";
 import {
   Colors,
@@ -49,8 +47,12 @@ export default function BrainScreen() {
   const [servers, setServers] = useState<StoredServer[]>([]);
   const [adapterSheetVisible, setAdapterSheetVisible] = useState(false);
   const [menuVisible, setMenuVisible] = useState(false);
-  const [switchingAdapterId, setSwitchingAdapterId] = useState<string | null>(null);
-  const [adapterSwitchError, setAdapterSwitchError] = useState<string | null>(null);
+  const [switchingAdapterId, setSwitchingAdapterId] = useState<string | null>(
+    null,
+  );
+  const [adapterSwitchError, setAdapterSwitchError] = useState<string | null>(
+    null,
+  );
   const [newChatLoading, setNewChatLoading] = useState(false);
   const [brainActionError, setBrainActionError] = useState<string | null>(null);
   const [workspaceViewerVisible, setWorkspaceViewerVisible] = useState(false);
@@ -93,12 +95,14 @@ export default function BrainScreen() {
     ],
   );
 
-  const activeBrain = activeServer ? brainState.byServer[activeServer.id] : null;
+  const activeBrain = activeServer
+    ? brainState.byServer[activeServer.id]
+    : null;
   const connectionState: ConnectionState = activeServer
     ? agentState.serverConnections[activeServer.id] || "offline"
     : "offline";
   const connectionIssue = activeServer
-    ? agentState.serverConnectionIssues[activeServer.id] ?? null
+    ? (agentState.serverConnectionIssues[activeServer.id] ?? null)
     : null;
   const hostAgent = activeBrain?.host_agent ?? null;
   const hostAdapter = activeBrain?.host_adapter ?? null;
@@ -184,7 +188,9 @@ export default function BrainScreen() {
     try {
       await wsClient.startNewBrainChat(activeServer.id);
     } catch (error: any) {
-      setBrainActionError(error?.message || "Failed to start a new Brain chat.");
+      setBrainActionError(
+        error?.message || "Failed to start a new Brain chat.",
+      );
     } finally {
       setNewChatLoading(false);
     }
@@ -254,16 +260,51 @@ export default function BrainScreen() {
     ],
   );
 
+  const renderBrainComposerAccessory = useCallback(
+    ({
+      draft,
+      setDraft,
+    }: {
+      draft: string;
+      setDraft: (value: string) => void;
+    }) => {
+      const activeMention = activeExecutorMentionAtEnd(draft);
+      if (!activeMention || availableAdapters.length === 0) {
+        return null;
+      }
+      return (
+        <BrainExecutorMentionPicker
+          adapters={availableAdapters}
+          activeAdapterId={hostAdapter?.id}
+          query={activeMention.query}
+          chrome={chrome}
+          onSelect={(adapter) => {
+            const before = draft.slice(0, activeMention.start);
+            const next = `${before}@${adapter.id} `;
+            setDraft(next);
+          }}
+        />
+      );
+    },
+    [availableAdapters, chrome, hostAdapter?.id],
+  );
+
   return (
-    <SafeAreaView style={styles.screen} edges={["top"]}>
+    <SafeAreaView
+      style={[styles.screen, { backgroundColor: chrome.appBackground }]}
+      edges={["top"]}
+    >
       <BrainChatHeader
+        chrome={chrome}
         adapter={hostAdapter}
         workspace={hostAgent?.cwd}
         canSwitchAdapter={canSwitchAdapter}
         newChatLoading={newChatLoading}
         canNewChat={Boolean(activeServer && activeBrain?.hydrated)}
         canOpenTerminal={Boolean(activeServer && hostAgent?.id)}
-        canOpenWorkspace={Boolean(activeServer && connectionState === "connected")}
+        canOpenWorkspace={Boolean(
+          activeServer && connectionState === "connected",
+        )}
         onOpenAdapterSheet={openAdapterSheet}
         onOpenMenu={openMenu}
         onNewChat={() => void startNewBrainChat()}
@@ -275,7 +316,10 @@ export default function BrainScreen() {
         </View>
       ) : null}
 
-      <View style={styles.chatSurface}>
+      <ChatCanvas
+        chrome={chrome}
+        showWallpaper={!canUseStructuredBrainInterface}
+      >
         {canUseStructuredBrainInterface ? (
           <CodexChatSurface
             key={`brain-chat:${activeServer?.id}:${hostAgent?.id}:${brainChatScopeKey ?? ""}`}
@@ -296,13 +340,20 @@ export default function BrainScreen() {
             onSwitchToTerminal={openBrainTerminal}
             emptyTitle={BRAIN_EMPTY_TITLE}
             emptyBody={BRAIN_EMPTY_BODY}
+            renderComposerAccessory={renderBrainComposerAccessory}
           />
         ) : ready ? (
-          <BrainInterfaceUnavailableState provider={hostAdapter?.provider} />
+          <BrainInterfaceUnavailableState
+            chrome={chrome}
+            provider={hostAdapter?.provider}
+          />
         ) : (
-          <BrainLoadingState connected={connectionState === "connected"} />
+          <BrainLoadingState
+            chrome={chrome}
+            connected={connectionState === "connected"}
+          />
         )}
-      </View>
+      </ChatCanvas>
 
       <BrainAdapterSheet
         visible={adapterSheetVisible}
@@ -333,16 +384,17 @@ export default function BrainScreen() {
 }
 
 function BrainStateCard({
+  chrome,
   glyph,
   title,
   detail,
 }: {
+  chrome: TerminalThemeChrome;
   glyph: React.ReactNode;
   title: string;
   detail?: string;
 }) {
-  const colors = useAppColors();
-  const styles = useMemo(() => createStateCardStyles(colors), [colors]);
+  const styles = useMemo(() => createStateCardStyles(chrome), [chrome]);
 
   return (
     <View style={styles.card}>
@@ -353,15 +405,25 @@ function BrainStateCard({
   );
 }
 
-function BrainLoadingState({ connected }: { connected: boolean }) {
-  const colors = useAppColors();
+function BrainLoadingState({
+  chrome,
+  connected,
+}: {
+  chrome: TerminalThemeChrome;
+  connected: boolean;
+}) {
   return (
     <BrainStateCard
+      chrome={chrome}
       glyph={
         connected ? (
-          <ActivityIndicator size="small" color={colors.accent} />
+          <ActivityIndicator size="small" color={chrome.accent} />
         ) : (
-          <Ionicons name="cloud-offline-outline" size={22} color={colors.textSecondary} />
+          <Ionicons
+            name="cloud-offline-outline"
+            size={22}
+            color={chrome.textMuted}
+          />
         )
       }
       title={connected ? "Connecting to Brain" : "Brain is offline"}
@@ -374,12 +436,20 @@ function BrainLoadingState({ connected }: { connected: boolean }) {
   );
 }
 
-function BrainInterfaceUnavailableState({ provider }: { provider?: string }) {
-  const colors = useAppColors();
+function BrainInterfaceUnavailableState({
+  chrome,
+  provider,
+}: {
+  chrome: TerminalThemeChrome;
+  provider?: string;
+}) {
   const label = brainProviderLabel(provider);
   return (
     <BrainStateCard
-      glyph={<Ionicons name="layers-outline" size={22} color={colors.textSecondary} />}
+      chrome={chrome}
+      glyph={
+        <Ionicons name="layers-outline" size={22} color={chrome.textMuted} />
+      }
       title="Chat UI not available"
       detail={
         label
@@ -416,7 +486,7 @@ function resolveActiveServer({
   return connectedByState || servers[0] || null;
 }
 
-function createStateCardStyles(colors: typeof Colors) {
+function createStateCardStyles(chrome: TerminalThemeChrome) {
   return StyleSheet.create({
     card: {
       flex: 1,
@@ -431,18 +501,20 @@ function createStateCardStyles(colors: typeof Colors) {
       borderRadius: 36,
       alignItems: "center",
       justifyContent: "center",
-      backgroundColor: colors.accentSoft,
+      backgroundColor: chrome.accentSoft,
+      borderWidth: StyleSheet.hairlineWidth,
+      borderColor: chrome.border,
       marginBottom: 4,
     },
     title: {
-      color: colors.textPrimary,
+      color: chrome.text,
       fontFamily: Typography.uiFontMedium,
       fontSize: 18,
       lineHeight: 24,
       textAlign: "center",
     },
     detail: {
-      color: colors.textSecondary,
+      color: chrome.textMuted,
       fontFamily: Typography.uiFont,
       fontSize: 14,
       lineHeight: 20,
@@ -453,15 +525,34 @@ function createStateCardStyles(colors: typeof Colors) {
   });
 }
 
+function activeExecutorMentionAtEnd(
+  value: string,
+): { start: number; query: string } | null {
+  const end = value.length;
+  let cursor = end - 1;
+  while (cursor >= 0) {
+    const char = value[cursor];
+    if (char === "@") {
+      if (cursor === 0 || /\s/.test(value[cursor - 1])) {
+        return {
+          start: cursor,
+          query: value.slice(cursor + 1, end),
+        };
+      }
+      return null;
+    }
+    if (!/[a-z0-9_.-]/i.test(char)) {
+      return null;
+    }
+    cursor -= 1;
+  }
+  return null;
+}
+
 function createStyles(colors: typeof Colors) {
   return StyleSheet.create({
     screen: {
       flex: 1,
-      backgroundColor: colors.bgPrimary,
-    },
-    chatSurface: {
-      flex: 1,
-      minHeight: 0,
     },
     bannerError: {
       marginHorizontal: 12,

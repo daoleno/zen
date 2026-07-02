@@ -1,11 +1,13 @@
 import React, { useMemo } from "react";
 import { StyleSheet, View } from "react-native";
+import type { TerminalThemeChrome } from "../../constants/terminalThemes";
 import { TelegramChatHeader } from "../terminal/TelegramChatHeader";
 import { BrainAdapterIcon } from "./BrainAdapterIcon";
 import { brainStatusLine } from "./brainPresentation";
 import type { BrainAdapterRef } from "../../store/brain";
 
 interface BrainChatHeaderProps {
+  chrome: TerminalThemeChrome;
   adapter?: BrainAdapterRef | null;
   workspace?: string;
   canSwitchAdapter: boolean;
@@ -19,6 +21,7 @@ interface BrainChatHeaderProps {
 }
 
 export function BrainChatHeader({
+  chrome,
   adapter,
   workspace,
   canSwitchAdapter,
@@ -70,6 +73,7 @@ export function BrainChatHeader({
 
   return (
     <TelegramChatHeader
+      chrome={chrome}
       title="Brain"
       subtitle={statusLine}
       avatar={headerAvatar}

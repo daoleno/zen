@@ -31,6 +31,7 @@ type ChatMessage struct {
 type Snapshot struct {
 	Memory       string              `json:"memory"`
 	Profile      string              `json:"profile"`
+	Current      string              `json:"current,omitempty"`
 	Personality  string              `json:"personality"`
 	Agents       []AgentRef          `json:"agents"`
 	HostAgent    *AgentRef           `json:"host_agent,omitempty"`
@@ -39,6 +40,33 @@ type Snapshot struct {
 	ChatThreadID string              `json:"chat_thread_id,omitempty"`
 	Workspace    string              `json:"workspace,omitempty"`
 	GeneratedAt  time.Time           `json:"generated_at"`
+}
+
+type BrainContext struct {
+	ThreadID       string              `json:"thread_id,omitempty"`
+	Workspace      string              `json:"workspace,omitempty"`
+	Current        string              `json:"current,omitempty"`
+	Memory         string              `json:"memory,omitempty"`
+	Profile        string              `json:"profile,omitempty"`
+	Personality    string              `json:"personality,omitempty"`
+	HostAgent      *AgentRef           `json:"host_agent,omitempty"`
+	HostAdapter    *work.AgentAdapter  `json:"host_adapter,omitempty"`
+	Adapters       []work.AgentAdapter `json:"adapters"`
+	Agents         []AgentRef          `json:"agents"`
+	RecentMessages []ChatMessage       `json:"recent_messages"`
+	GeneratedAt    time.Time           `json:"generated_at"`
+}
+
+type HousekeepingReport struct {
+	Workspace            string     `json:"workspace,omitempty"`
+	CurrentPath          string     `json:"current_path"`
+	PolicyPaths          []string   `json:"policy_paths"`
+	WorklogPath          string     `json:"worklog_path"`
+	OpenDelegatedAgents  []AgentRef `json:"open_delegated_agents"`
+	RecentMessageCount   int        `json:"recent_message_count"`
+	BackfilledWorkspace  bool       `json:"backfilled_workspace"`
+	RecommendedNextSteps []string   `json:"recommended_next_steps,omitempty"`
+	GeneratedAt          time.Time  `json:"generated_at"`
 }
 
 type WorkspaceTree struct {

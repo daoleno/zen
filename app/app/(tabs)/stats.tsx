@@ -15,7 +15,14 @@ import Animated, {
   withTiming,
   interpolate,
 } from 'react-native-reanimated';
-import { Colors, Radii, Typography, useAppColors } from '../../constants/tokens';
+import {
+  Colors,
+  Radii,
+  Typography,
+  UiTextMetrics,
+  uiLineHeight,
+  useAppColors,
+} from '../../constants/tokens';
 import { useAgents } from '../../store/agents';
 import { wsClient } from '../../services/websocket';
 import { AnimatedPressable } from '../../components/ui/AnimatedPressable';
@@ -940,9 +947,10 @@ function createStyles(colors: typeof Colors) {
     zIndex: 2,
   },
   title: {
+    ...UiTextMetrics,
     color: colors.textPrimary,
     fontSize: 30,
-    lineHeight: 34,
+    lineHeight: uiLineHeight(30),
     fontFamily: Typography.uiFontMedium,
     letterSpacing: 0,
   },

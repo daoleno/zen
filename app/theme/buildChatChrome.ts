@@ -17,6 +17,7 @@ export function buildChatChrome(theme: ResolvedZenTheme): {
     surface: chat.receivedBubble,
     surfaceMuted: chat.sentBubble,
     surfaceActive: chat.composerDock,
+    composerInput: chat.composerBackground,
     border: chat.composerBorder,
     borderStrong: colors.borderStrong,
     text: chat.receivedText,

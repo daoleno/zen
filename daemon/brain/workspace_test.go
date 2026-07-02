@@ -28,11 +28,67 @@ func TestWorkspaceTreeListsDefaultMarkdownFiles(t *testing.T) {
 	if !workspaceTreeHasFile(tree.Entries, "profile.md") {
 		t.Fatal("WorkspaceTree() missing profile.md")
 	}
+	if !workspaceTreeHasFile(tree.Entries, "current.md") {
+		t.Fatal("WorkspaceTree() missing current.md")
+	}
+	if !workspaceTreeHasDirectory(tree.Entries, "policies") {
+		t.Fatal("WorkspaceTree() missing policies directory")
+	}
+	if !workspaceTreeHasFile(tree.Entries, "policies/delegation.md") {
+		t.Fatal("WorkspaceTree() missing policies/delegation.md")
+	}
+	if !workspaceTreeHasFile(tree.Entries, "policies/engine.md") {
+		t.Fatal("WorkspaceTree() missing policies/engine.md")
+	}
+	if !workspaceTreeHasFile(tree.Entries, "policies/handoff.md") {
+		t.Fatal("WorkspaceTree() missing policies/handoff.md")
+	}
 	if !workspaceTreeHasDirectory(tree.Entries, "worklog") {
 		t.Fatal("WorkspaceTree() missing worklog directory")
 	}
 	if !workspaceTreeHasFile(tree.Entries, "worklog/README.md") {
 		t.Fatal("WorkspaceTree() missing worklog/README.md")
+	}
+}
+
+func TestNewStoreEnsuresCurrentAndPolicyDocs(t *testing.T) {
+	root := t.TempDir()
+	store, err := NewStore(root)
+	if err != nil {
+		t.Fatalf("NewStore() error = %v", err)
+	}
+
+	current, err := os.ReadFile(store.currentPath())
+	if err != nil {
+		t.Fatalf("read current.md: %v", err)
+	}
+	for _, marker := range []string{
+		"# Current Brain Context",
+		"## Active Objective",
+		"## Decisions",
+		"## Open Threads",
+		"## Next",
+	} {
+		if !strings.Contains(string(current), marker) {
+			t.Fatalf("current.md missing %q:\n%s", marker, current)
+		}
+	}
+
+	for _, policy := range []struct {
+		path   string
+		marker string
+	}{
+		{store.policyPath("delegation.md"), "## Delegation Contract"},
+		{store.policyPath("engine.md"), "The active Brain engine is the default delegated executor."},
+		{store.policyPath("handoff.md"), "Engine switching preserves the visible Brain chat."},
+	} {
+		raw, err := os.ReadFile(policy.path)
+		if err != nil {
+			t.Fatalf("read policy %s: %v", policy.path, err)
+		}
+		if !strings.Contains(string(raw), policy.marker) {
+			t.Fatalf("policy %s missing %q:\n%s", policy.path, policy.marker, raw)
+		}
 	}
 }
 
@@ -133,6 +189,41 @@ func TestNewStoreDoesNotOverwriteExistingWorklogFiles(t *testing.T) {
 	}
 	if string(task) != taskRecord {
 		t.Fatalf("task record was overwritten:\n%s", string(task))
+	}
+}
+
+func TestNewStoreDoesNotOverwriteExistingCurrentOrPolicyDocs(t *testing.T) {
+	root := t.TempDir()
+	workspace := filepath.Join(root, "workspace")
+	policies := filepath.Join(workspace, "policies")
+	if err := os.MkdirAll(policies, 0o700); err != nil {
+		t.Fatalf("create policies: %v", err)
+	}
+	customCurrent := "# Custom Current\n\nKeep this.\n"
+	customEngine := "# Custom Engine Policy\n\nKeep this too.\n"
+	if err := os.WriteFile(filepath.Join(workspace, "current.md"), []byte(customCurrent), 0o600); err != nil {
+		t.Fatalf("write current.md: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(policies, "engine.md"), []byte(customEngine), 0o600); err != nil {
+		t.Fatalf("write engine policy: %v", err)
+	}
+
+	if _, err := NewStore(root); err != nil {
+		t.Fatalf("NewStore() error = %v", err)
+	}
+	readCurrent, err := os.ReadFile(filepath.Join(workspace, "current.md"))
+	if err != nil {
+		t.Fatalf("read current.md: %v", err)
+	}
+	if string(readCurrent) != customCurrent {
+		t.Fatalf("current.md was overwritten:\n%s", readCurrent)
+	}
+	readEngine, err := os.ReadFile(filepath.Join(policies, "engine.md"))
+	if err != nil {
+		t.Fatalf("read engine policy: %v", err)
+	}
+	if string(readEngine) != customEngine {
+		t.Fatalf("engine policy was overwritten:\n%s", readEngine)
 	}
 }
 

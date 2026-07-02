@@ -9,7 +9,6 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
-	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -40,11 +39,12 @@ var grokConversationCache = struct {
 }
 
 type grokSessionCandidate struct {
-	ID      string
-	CWD     string
-	Dir     string
-	Updated time.Time
-	Active  bool
+	ID        string
+	CWD       string
+	Dir       string
+	CreatedAt time.Time
+	Updated   time.Time
+	Active    bool
 }
 
 func loadGrokConversationForAgent(agent classifier.Agent, now time.Time) (CodexConversation, error) {
@@ -156,15 +156,17 @@ func findGrokSession(agent classifier.Agent, now time.Time) (grokSessionCandidat
 			if !pathsEquivalent(sessionCWD, candidateCWD) && !pathsEquivalent(sessionCWD, cwd) {
 				continue
 			}
+			createdAt := grokSessionCreatedAt(summary, sessionDir)
 			updated := grokSessionUpdatedAt(summary, sessionDir)
 			if now.Sub(updated) > maxGrokSessionAge {
 				continue
 			}
 			candidates = append(candidates, grokSessionCandidate{
-				ID:      firstNonEmpty(summary.Info.ID, entry.Name()),
-				CWD:     sessionCWD,
-				Dir:     sessionDir,
-				Updated: updated,
+				ID:        firstNonEmpty(summary.Info.ID, entry.Name()),
+				CWD:       sessionCWD,
+				Dir:       sessionDir,
+				CreatedAt: createdAt,
+				Updated:   updated,
 			})
 		}
 	}
@@ -172,19 +174,91 @@ func findGrokSession(agent classifier.Agent, now time.Time) (grokSessionCandidat
 		return grokSessionCandidate{}, false, nil
 	}
 
-	sort.Slice(candidates, func(i, j int) bool {
-		return candidates[i].Updated.After(candidates[j].Updated)
-	})
+	freshCandidates := freshGrokSessionCandidates(candidates, now)
+	if len(freshCandidates) == 0 {
+		return grokSessionCandidate{}, false, nil
+	}
+	if matched, ok := matchGrokSessionToAgentStart(freshCandidates, agent.StartedAt); ok {
+		return matched, true, nil
+	}
+	if matched, ok := matchGrokSessionToActiveSession(freshCandidates, agent.StartedAt); ok {
+		return matched, true, nil
+	}
+	return grokSessionCandidate{}, false, nil
+}
 
-	if !agent.StartedAt.IsZero() {
-		startedAt := agent.StartedAt
-		for _, candidate := range candidates {
-			if candidate.Updated.After(startedAt.Add(-5 * time.Minute)) {
-				return candidate, true, nil
-			}
+func freshGrokSessionCandidates(candidates []grokSessionCandidate, now time.Time) []grokSessionCandidate {
+	if len(candidates) == 0 {
+		return nil
+	}
+	fresh := make([]grokSessionCandidate, 0, len(candidates))
+	for _, candidate := range candidates {
+		if isTranscriptFresh(candidate.Updated, now) {
+			fresh = append(fresh, candidate)
 		}
 	}
-	return candidates[0], true, nil
+	return fresh
+}
+
+func matchGrokSessionToAgentStart(candidates []grokSessionCandidate, startedAt time.Time) (grokSessionCandidate, bool) {
+	if startedAt.IsZero() {
+		return grokSessionCandidate{}, false
+	}
+	startedAt = startedAt.UTC()
+	minCreatedAt := startedAt.Add(-5 * time.Second)
+	bestIndex := -1
+	var bestDelta time.Duration
+	for index, candidate := range candidates {
+		createdAt := candidate.CreatedAt
+		if createdAt.IsZero() || createdAt.Before(minCreatedAt) || candidate.Updated.Before(startedAt) {
+			continue
+		}
+		delta := createdAt.Sub(startedAt)
+		if delta < 0 {
+			delta = -delta
+		}
+		if bestIndex == -1 || delta < bestDelta ||
+			(delta == bestDelta && candidate.Updated.After(candidates[bestIndex].Updated)) {
+			bestIndex = index
+			bestDelta = delta
+		}
+	}
+	if bestIndex == -1 {
+		return grokSessionCandidate{}, false
+	}
+	return candidates[bestIndex], true
+}
+
+func matchGrokSessionToActiveSession(candidates []grokSessionCandidate, startedAt time.Time) (grokSessionCandidate, bool) {
+	if len(candidates) == 0 || startedAt.IsZero() {
+		return grokSessionCandidate{}, false
+	}
+	startedAt = startedAt.UTC()
+	minCreatedAt := startedAt.Add(-maxCodexActiveTranscriptStartBackdate)
+	var eligible []grokSessionCandidate
+	for _, candidate := range candidates {
+		if candidate.Updated.IsZero() || candidate.Updated.Before(startedAt) {
+			continue
+		}
+		if !candidate.CreatedAt.IsZero() && candidate.CreatedAt.Before(minCreatedAt) {
+			continue
+		}
+		eligible = append(eligible, candidate)
+	}
+	if len(eligible) == 0 {
+		return grokSessionCandidate{}, false
+	}
+	return latestUpdatedGrokSession(eligible), true
+}
+
+func latestUpdatedGrokSession(candidates []grokSessionCandidate) grokSessionCandidate {
+	best := candidates[0]
+	for _, candidate := range candidates[1:] {
+		if candidate.Updated.After(best.Updated) {
+			best = candidate
+		}
+	}
+	return best
 }
 
 func encodeGrokSessionCWD(cwd string) string {
@@ -228,17 +302,32 @@ func readGrokSummary(sessionDir string) (grokSummary, error) {
 	return summary, nil
 }
 
+func grokSessionCreatedAt(summary grokSummary, sessionDir string) time.Time {
+	return parseGrokSummaryTimestamp(summary.CreatedAt, sessionDir, false)
+}
+
 func grokSessionUpdatedAt(summary grokSummary, sessionDir string) time.Time {
-	for _, value := range []string{summary.UpdatedAt, summary.CreatedAt} {
-		value = strings.TrimSpace(value)
-		if value == "" {
+	updated := parseGrokSummaryTimestamp(summary.UpdatedAt, sessionDir, true)
+	if !updated.IsZero() {
+		return updated
+	}
+	return grokSessionCreatedAt(summary, sessionDir)
+}
+
+func parseGrokSummaryTimestamp(value string, sessionDir string, allowFileFallback bool) time.Time {
+	for _, candidate := range []string{value} {
+		candidate = strings.TrimSpace(candidate)
+		if candidate == "" {
 			continue
 		}
 		for _, layout := range []string{time.RFC3339Nano, time.RFC3339} {
-			if parsed, err := time.Parse(layout, value); err == nil {
+			if parsed, err := time.Parse(layout, candidate); err == nil {
 				return parsed
 			}
 		}
+	}
+	if !allowFileFallback {
+		return time.Time{}
 	}
 	if info, err := os.Stat(filepath.Join(sessionDir, grokChatHistoryFile)); err == nil {
 		return info.ModTime()

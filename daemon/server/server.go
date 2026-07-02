@@ -341,6 +341,12 @@ func (s *Server) handleClientMessage(conn *websocket.Conn, msg []byte) {
 	case "brain_snapshot":
 		s.sendBrainSnapshot(conn, raw.RequestID)
 
+	case "brain_context":
+		s.handleBrainContext(conn, raw)
+
+	case "brain_gc":
+		s.handleBrainGC(conn, raw)
+
 	case "brain_set_adapter":
 		s.handleBrainSetAdapter(conn, raw)
 
@@ -1299,6 +1305,40 @@ func (s *Server) handleBrainSetAdapter(conn *websocket.Conn, raw clientMessage) 
 		"type":       "brain_snapshot",
 		"request_id": raw.RequestID,
 		"brain":      snapshot,
+	})
+}
+
+func (s *Server) handleBrainContext(conn *websocket.Conn, raw clientMessage) {
+	if s.brain == nil {
+		s.sendErrorWithRequestID(conn, raw.RequestID, "brain_unavailable", "Brain is not configured")
+		return
+	}
+	context, err := s.brain.Context(12)
+	if err != nil {
+		s.sendErrorWithRequestID(conn, raw.RequestID, "brain_context_failed", err.Error())
+		return
+	}
+	s.sendJSON(conn, map[string]any{
+		"type":       "brain_context",
+		"request_id": raw.RequestID,
+		"context":    context,
+	})
+}
+
+func (s *Server) handleBrainGC(conn *websocket.Conn, raw clientMessage) {
+	if s.brain == nil {
+		s.sendErrorWithRequestID(conn, raw.RequestID, "brain_unavailable", "Brain is not configured")
+		return
+	}
+	report, err := s.brain.Housekeeping()
+	if err != nil {
+		s.sendErrorWithRequestID(conn, raw.RequestID, "brain_gc_failed", err.Error())
+		return
+	}
+	s.sendJSON(conn, map[string]any{
+		"type":         "brain_gc",
+		"request_id":   raw.RequestID,
+		"housekeeping": report,
 	})
 }
 

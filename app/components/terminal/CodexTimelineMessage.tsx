@@ -14,12 +14,10 @@ import { isAmbientChatChrome } from "../../constants/themedSurfaces";
 import type { MessagePresentation } from "./CodexTimelineGrouping";
 import {
   chromeForSentBubble,
-  resolveReceivedBubbleColor,
   resolveSentBubbleColor,
 } from "./chatBubbleColors";
 import { MessageBubbleFooter } from "./MessageBubbleFooter";
 import {
-  assistantBubbleRadii,
   chatgptUserBubbleRadii,
   messageRowSpacing,
   userBubbleRadii,
@@ -129,7 +127,6 @@ export function ZenUserMessage({
           <MessageBubbleFooter
             timestamp={item.timestamp}
             tone="sent"
-            showChecks={!item.pending}
             pending={item.pending}
           />
         ) : null}
@@ -310,22 +307,6 @@ export function ZenAssistantMessage({
   const assistantChrome = isChatGpt
     ? { ...chrome, text: zenTheme.chat.receivedText }
     : chrome;
-
-  if (isChatGpt) {
-    return (
-      <View style={[styles.assistantRowChatGpt, spacing]}>
-        <MessageBody
-          value={item.body}
-          chrome={assistantChrome}
-          theme={theme}
-          dense
-        />
-      </View>
-    );
-  }
-
-  const ambient = isAmbientChatChrome(chrome);
-  const receivedBubbleColor = resolveReceivedBubbleColor(chrome);
   const showSender =
     senderLabel &&
     presentation.groupPosition !== "middle" &&
@@ -334,38 +315,27 @@ export function ZenAssistantMessage({
   return (
     <View
       style={[
-        styles.assistantRow,
-        ambient ? styles.assistantRowAmbient : null,
+        isChatGpt ? styles.assistantRowChatGpt : styles.assistantRowFlat,
         spacing,
       ]}
     >
-      <View
-        style={[
-          styles.assistantStrip,
-          assistantBubbleRadii(presentation.groupPosition),
-          {
-            backgroundColor: receivedBubbleColor,
-            borderColor: chrome.borderStrong,
-          },
-        ]}
-      >
-        {showSender ? (
-          <Text style={[styles.assistantSender, { color: chrome.accent }]}>
-            {senderLabel}
-          </Text>
-        ) : null}
-        <MessageBody
-          value={item.body}
-          chrome={chrome}
-          theme={theme}
+      {showSender ? (
+        <Text style={[styles.assistantSender, { color: chrome.accent }]}>
+          {senderLabel}
+        </Text>
+      ) : null}
+      <MessageBody
+        value={item.body}
+        chrome={assistantChrome}
+        theme={theme}
+        dense
+      />
+      {zenTheme.chat.showTimestamps ? (
+        <MessageBubbleFooter
+          timestamp={item.timestamp}
+          tone="received"
         />
-        {zenTheme.chat.showTimestamps ? (
-          <MessageBubbleFooter
-            timestamp={item.timestamp}
-            tone="received"
-          />
-        ) : null}
-      </View>
+      ) : null}
     </View>
   );
 }
@@ -388,11 +358,10 @@ const styles = StyleSheet.create({
     paddingHorizontal: 14,
     paddingVertical: 10,
   },
-  assistantRow: {
-    flexDirection: "row",
-    justifyContent: "flex-start",
+  assistantRowFlat: {
+    alignSelf: "stretch",
+    paddingRight: 2,
   },
-  assistantRowAmbient: {},
   assistantRowChatGpt: {
     alignSelf: "stretch",
     paddingRight: 4,
@@ -401,14 +370,7 @@ const styles = StyleSheet.create({
     fontFamily: Typography.uiFontMedium,
     fontSize: 12.5,
     lineHeight: 16,
-    marginBottom: 2,
-  },
-  assistantStrip: {
-    maxWidth: "92%",
-    borderWidth: StyleSheet.hairlineWidth,
-    paddingHorizontal: 13,
-    paddingTop: 10,
-    paddingBottom: 6,
+    marginBottom: 4,
   },
   eventRow: {
     marginBottom: 17,

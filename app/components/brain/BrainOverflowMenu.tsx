@@ -4,7 +4,14 @@ import { Ionicons } from "@expo/vector-icons";
 import * as Haptics from "expo-haptics";
 import { BottomSheetFrame } from "../ui/BottomSheetFrame";
 import { AnimatedPressable } from "../ui/AnimatedPressable";
-import { Colors, Radii, Typography, useAppTheme } from "../../constants/tokens";
+import {
+  Colors,
+  Radii,
+  Typography,
+  UiTextMetrics,
+  uiLineHeight,
+  useAppTheme,
+} from "../../constants/tokens";
 import type { ResolvedZenTheme } from "../../theme";
 import { createThemedSurfaces } from "../../constants/themedSurfaces";
 
@@ -85,10 +92,11 @@ function createStyles(theme: ResolvedZenTheme) {
   const colors = theme.colors;
   return StyleSheet.create({
     title: {
+      ...UiTextMetrics,
       color: colors.textPrimary,
       fontFamily: Typography.uiFontMedium,
       fontSize: 20,
-      lineHeight: 26,
+      lineHeight: uiLineHeight(20),
       marginBottom: 14,
     },
     list: {
@@ -117,16 +125,18 @@ function createStyles(theme: ResolvedZenTheme) {
       gap: 2,
     },
     rowTitle: {
+      ...UiTextMetrics,
       color: colors.textPrimary,
       fontFamily: Typography.uiFontMedium,
       fontSize: 15,
-      lineHeight: 20,
+      lineHeight: uiLineHeight(15),
     },
     rowDetail: {
+      ...UiTextMetrics,
       color: colors.textTertiary,
       fontFamily: Typography.uiFont,
       fontSize: 12,
-      lineHeight: 16,
+      lineHeight: uiLineHeight(12),
     },
   });
 }

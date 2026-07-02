@@ -52,7 +52,9 @@ export interface CodexChatBodyProps {
   onTimelineScrollBeginDrag(): void;
   onTimelineScrollEndDrag(event: NativeSyntheticEvent<NativeScrollEvent>): void;
   onTimelineMomentumScrollBegin(): void;
-  onTimelineMomentumScrollEnd(event: NativeSyntheticEvent<NativeScrollEvent>): void;
+  onTimelineMomentumScrollEnd(
+    event: NativeSyntheticEvent<NativeScrollEvent>,
+  ): void;
   onTimelineContentSizeChange(width: number, height: number): void;
   onTimelineTextSelectionGestureStart(): void;
   onTimelineTextSelectionGestureEnd(): void;
@@ -85,6 +87,7 @@ export interface CodexChatBodyProps {
   onSubmit(): void;
   onSendPress(): void;
   onTerminalActionKey(key: string): Promise<void> | void;
+  composerAccessory?: React.ReactNode;
   skillsSheet?: React.ReactNode;
 }
 
@@ -143,6 +146,7 @@ export function CodexChatBody({
   onSubmit,
   onSendPress,
   onTerminalActionKey,
+  composerAccessory,
   skillsSheet,
 }: CodexChatBodyProps) {
   const { handleComposerLayout } = useCodexComposerLayout({
@@ -198,6 +202,7 @@ export function CodexChatBody({
         />
       ) : null}
 
+      {composerAccessory}
       <CodexChatComposerSection
         inputRef={inputRef}
         draft={draft}

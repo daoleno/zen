@@ -112,6 +112,7 @@ export function CodexChatComposer({
       bottomPadding={bottomPadding}
       chrome={chrome}
       theme={theme}
+      composerLayout={composerLayout}
     >
       {showCommandMenu ? (
         <CodexComposerActionMenu

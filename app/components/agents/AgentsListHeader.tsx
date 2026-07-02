@@ -8,7 +8,13 @@ import {
   View,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
-import { Colors, Typography, useAppColors } from '../../constants/tokens';
+import {
+  Colors,
+  Typography,
+  UiTextMetrics,
+  uiLineHeight,
+  useAppColors,
+} from '../../constants/tokens';
 import { IconButton } from '../ui/IconButton';
 
 export type AgentsStatusFilter = 'all' | 'running' | 'brain';
@@ -124,9 +130,10 @@ function createStyles(colors: typeof Colors) {
       minHeight: 44,
     },
     title: {
+      ...UiTextMetrics,
       color: colors.textPrimary,
       fontSize: 28,
-      lineHeight: 32,
+      lineHeight: uiLineHeight(28),
       fontFamily: Typography.uiFontMedium,
       letterSpacing: -0.3,
     },

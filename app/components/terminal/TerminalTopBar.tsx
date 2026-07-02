@@ -40,6 +40,7 @@ export function TerminalTopBar({
   subtitle,
   kind,
   terminalFlavor,
+  chrome,
   menuAnchorRef,
   codexRenderMode,
   gitDiffDisabled,
@@ -103,6 +104,7 @@ export function TerminalTopBar({
 
   return (
     <TelegramChatHeader
+      chrome={chrome}
       title={title}
       subtitle={resolvedSubtitle}
       agentKind={kind}

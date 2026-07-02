@@ -1,8 +1,5 @@
 import React from "react";
-import {
-  StyleSheet,
-  View,
-} from "react-native";
+import { StyleSheet, View } from "react-native";
 import type {
   TerminalThemeChrome,
   TerminalThemePalette,
@@ -30,6 +27,12 @@ interface CodexChatSurfaceProps {
   showUnavailableAction?: boolean;
   emptyTitle?: string;
   emptyBody?: string;
+  composerAccessory?: React.ReactNode;
+  onDraftChange?: (value: string) => void;
+  renderComposerAccessory?: (args: {
+    draft: string;
+    setDraft: (value: string) => void;
+  }) => React.ReactNode;
   onSwitchToTerminal?: () => void;
 }
 
@@ -49,6 +52,9 @@ function CodexChatSurfaceImpl({
   showUnavailableAction,
   emptyTitle,
   emptyBody,
+  composerAccessory,
+  onDraftChange,
+  renderComposerAccessory,
   onSwitchToTerminal,
 }: CodexChatSurfaceProps) {
   const { bodyProps } = useCodexChatSurfaceState({
@@ -67,6 +73,9 @@ function CodexChatSurfaceImpl({
     showUnavailableAction,
     emptyTitle,
     emptyBody,
+    composerAccessory,
+    onDraftChange,
+    renderComposerAccessory,
     onSwitchToTerminal,
   });
 
@@ -75,9 +84,7 @@ function CodexChatSurfaceImpl({
     : theme.background;
 
   return (
-    <View
-      style={[styles.root, { backgroundColor: canvasBackground }]}
-    >
+    <View style={[styles.root, { backgroundColor: canvasBackground }]}>
       <CodexChatBody {...bodyProps} />
     </View>
   );

@@ -214,8 +214,10 @@ func TestAgentAndBrainHelpAreDiscoverable(t *testing.T) {
 	}
 	brainHelp := brainOutput.String()
 	for _, want := range []string{
-		"Usage: zen brain <workspace|adapters|use> [flags]",
+		"Usage: zen brain <workspace|context|gc|adapters|use> [flags]",
 		"zen brain workspace --json",
+		"zen brain context --json",
+		"zen brain gc --json",
 		"zen brain adapters --json",
 	} {
 		if !strings.Contains(brainHelp, want) {

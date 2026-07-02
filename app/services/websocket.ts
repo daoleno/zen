@@ -19,25 +19,18 @@ type MessageHandler = (data: any) => void;
 function normalizeCodexSlashCommandInput(value: any): CodexSlashCommandInput {
   const input = value && typeof value === "object" ? value : {};
   return {
-    kind:
-      typeof input.kind === "string" && input.kind
-        ? input.kind
-        : "",
+    kind: typeof input.kind === "string" && input.kind ? input.kind : "",
     placeholder:
       typeof input.placeholder === "string" ? input.placeholder : undefined,
     picker: typeof input.picker === "string" ? input.picker : undefined,
-    required:
-      typeof input.required === "boolean" ? input.required : undefined,
+    required: typeof input.required === "boolean" ? input.required : undefined,
   };
 }
 
 function normalizeCodexSlashCommandOutput(value: any): CodexSlashCommandOutput {
   const output = value && typeof value === "object" ? value : {};
   return {
-    kind:
-      typeof output.kind === "string" && output.kind
-        ? output.kind
-        : "",
+    kind: typeof output.kind === "string" && output.kind ? output.kind : "",
   };
 }
 
@@ -74,11 +67,7 @@ export type CodexSlashCommandCategory =
   | string;
 
 export type CodexSlashCommandExecution =
-  | "terminal-required"
-  | "insert-only"
-  | "native"
-  | "unsupported"
-  | string;
+  "terminal-required" | "insert-only" | "native" | "unsupported" | string;
 
 export interface CodexSlashCommandInput {
   kind: "none" | "inline-args" | "form" | "picker" | "freeform" | string;
@@ -142,6 +131,33 @@ export interface BrainWorkspaceFile {
   content: string;
   size?: number;
   modified_at?: string;
+}
+
+export interface BrainContextPayload {
+  thread_id?: string;
+  workspace?: string;
+  current?: string;
+  memory?: string;
+  profile?: string;
+  personality?: string;
+  host_agent?: any;
+  host_adapter?: any;
+  adapters?: any[];
+  agents?: any[];
+  recent_messages?: any[];
+  generated_at?: string;
+}
+
+export interface BrainHousekeepingPayload {
+  workspace?: string;
+  current_path?: string;
+  policy_paths?: string[];
+  worklog_path?: string;
+  open_delegated_agents?: any[];
+  recent_message_count?: number;
+  backfilled_workspace?: boolean;
+  recommended_next_steps?: string[];
+  generated_at?: string;
 }
 
 export interface CodexConversationSnapshotPayload {
@@ -468,7 +484,10 @@ class MultiServerWebSocketClient {
         if (payload.serverId !== serverId || payload.request_id !== requestId)
           return;
         cleanup();
-        if (payload.agent_session && typeof payload.agent_session === "object") {
+        if (
+          payload.agent_session &&
+          typeof payload.agent_session === "object"
+        ) {
           this.emit("agent_session_created", serverId, {
             agent_session: payload.agent_session,
           });
@@ -687,7 +706,9 @@ class MultiServerWebSocketClient {
           return;
         }
         cleanup();
-        reject(new Error(payload.message || "Failed to load git diff file content."));
+        reject(
+          new Error(payload.message || "Failed to load git diff file content."),
+        );
       };
 
       const timer = setTimeout(() => {
@@ -737,7 +758,9 @@ class MultiServerWebSocketClient {
           return;
         }
         cleanup();
-        reject(new Error(payload.message || "Failed to load repository files."));
+        reject(
+          new Error(payload.message || "Failed to load repository files."),
+        );
       };
 
       const timer = setTimeout(() => {
@@ -832,14 +855,18 @@ class MultiServerWebSocketClient {
       if (payload.serverId !== serverId || payload.request_id !== requestId) {
         return;
       }
-      handlers.onSyncStatus(normalizeCodexConversationSyncStatusPayload(payload));
+      handlers.onSyncStatus(
+        normalizeCodexConversationSyncStatusPayload(payload),
+      );
     };
 
     const handleError = (payload: any) => {
       if (payload.serverId !== serverId || payload.request_id !== requestId) {
         return;
       }
-      handlers.onError(new Error(payload.message || "Codex conversation stream failed."));
+      handlers.onError(
+        new Error(payload.message || "Codex conversation stream failed."),
+      );
     };
 
     this.on("codex_conversation_snapshot", handleSnapshot);
@@ -897,7 +924,10 @@ class MultiServerWebSocketClient {
                   typeof command.description === "string"
                     ? command.description
                     : "",
-                source: typeof command.source === "string" ? command.source : undefined,
+                source:
+                  typeof command.source === "string"
+                    ? command.source
+                    : undefined,
                 category:
                   typeof command.category === "string" && command.category
                     ? command.category
@@ -922,9 +952,13 @@ class MultiServerWebSocketClient {
           : [];
         resolve({
           generated_at:
-            typeof payload.generated_at === "string" ? payload.generated_at : undefined,
-          source: typeof payload.source === "string" ? payload.source : undefined,
-          version: typeof payload.version === "string" ? payload.version : undefined,
+            typeof payload.generated_at === "string"
+              ? payload.generated_at
+              : undefined,
+          source:
+            typeof payload.source === "string" ? payload.source : undefined,
+          version:
+            typeof payload.version === "string" ? payload.version : undefined,
           commands,
         });
       };
@@ -1044,7 +1078,9 @@ class MultiServerWebSocketClient {
           return;
         }
         cleanup();
-        reject(new Error(payload.message || "Failed to load Codex terminal output."));
+        reject(
+          new Error(payload.message || "Failed to load Codex terminal output."),
+        );
       };
 
       const timer = setTimeout(() => {
@@ -1086,8 +1122,11 @@ class MultiServerWebSocketClient {
         resolve({
           path: typeof payload.path === "string" ? payload.path : options.path,
           content_type:
-            typeof payload.content_type === "string" ? payload.content_type : "image/*",
-          data_url: typeof payload.data_url === "string" ? payload.data_url : "",
+            typeof payload.content_type === "string"
+              ? payload.content_type
+              : "image/*",
+          data_url:
+            typeof payload.data_url === "string" ? payload.data_url : "",
         });
       };
 
@@ -1205,7 +1244,9 @@ class MultiServerWebSocketClient {
           return;
         }
         cleanup();
-        reject(new Error(payload.message || "Failed to load terminal copy buffer."));
+        reject(
+          new Error(payload.message || "Failed to load terminal copy buffer."),
+        );
       };
 
       const timer = setTimeout(() => {
@@ -1242,46 +1283,58 @@ class MultiServerWebSocketClient {
   getTerminalSnapshot(serverId: string, targetId: string) {
     const requestId = `${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
 
-    return new Promise<{ text: string; target_id?: string }>((resolve, reject) => {
-      const cleanup = () => {
-        if (timer) clearTimeout(timer);
-        this.off("terminal_snapshot", handleSnapshot);
-        this.off("error", handleError);
-      };
+    return new Promise<{ text: string; target_id?: string }>(
+      (resolve, reject) => {
+        const cleanup = () => {
+          if (timer) clearTimeout(timer);
+          this.off("terminal_snapshot", handleSnapshot);
+          this.off("error", handleError);
+        };
 
-      const handleSnapshot = (payload: any) => {
-        if (payload.serverId !== serverId || payload.request_id !== requestId) {
-          return;
-        }
-        cleanup();
-        resolve({
-          text: typeof payload.text === "string" ? payload.text : "",
-          target_id:
-            typeof payload.target_id === "string" ? payload.target_id : undefined,
+        const handleSnapshot = (payload: any) => {
+          if (
+            payload.serverId !== serverId ||
+            payload.request_id !== requestId
+          ) {
+            return;
+          }
+          cleanup();
+          resolve({
+            text: typeof payload.text === "string" ? payload.text : "",
+            target_id:
+              typeof payload.target_id === "string"
+                ? payload.target_id
+                : undefined,
+          });
+        };
+
+        const handleError = (payload: any) => {
+          if (
+            payload.serverId !== serverId ||
+            payload.request_id !== requestId
+          ) {
+            return;
+          }
+          cleanup();
+          reject(
+            new Error(payload.message || "Failed to load terminal snapshot."),
+          );
+        };
+
+        const timer = setTimeout(() => {
+          cleanup();
+          reject(new Error("Timed out while loading terminal snapshot."));
+        }, 10000);
+
+        this.on("terminal_snapshot", handleSnapshot);
+        this.on("error", handleError);
+        this.send(serverId, {
+          type: "terminal_snapshot",
+          request_id: requestId,
+          target_id: targetId,
         });
-      };
-
-      const handleError = (payload: any) => {
-        if (payload.serverId !== serverId || payload.request_id !== requestId) {
-          return;
-        }
-        cleanup();
-        reject(new Error(payload.message || "Failed to load terminal snapshot."));
-      };
-
-      const timer = setTimeout(() => {
-        cleanup();
-        reject(new Error("Timed out while loading terminal snapshot."));
-      }, 10000);
-
-      this.on("terminal_snapshot", handleSnapshot);
-      this.on("error", handleError);
-      this.send(serverId, {
-        type: "terminal_snapshot",
-        request_id: requestId,
-        target_id: targetId,
-      });
-    });
+      },
+    );
   }
 
   sendKey(serverId: string, agentId: string, key: string) {
@@ -1384,6 +1437,86 @@ class MultiServerWebSocketClient {
     this.send(serverId, { type: "brain_snapshot" });
   }
 
+  getBrainContext(serverId: string): Promise<BrainContextPayload> {
+    const requestId = `${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
+
+    return new Promise((resolve, reject) => {
+      const cleanup = () => {
+        if (timer) clearTimeout(timer);
+        this.off("brain_context", handleContext);
+        this.off("error", handleError);
+      };
+
+      const handleContext = (payload: any) => {
+        if (payload.serverId !== serverId || payload.request_id !== requestId) {
+          return;
+        }
+        cleanup();
+        resolve((payload.context || {}) as BrainContextPayload);
+      };
+
+      const handleError = (payload: any) => {
+        if (payload.serverId !== serverId || payload.request_id !== requestId) {
+          return;
+        }
+        cleanup();
+        reject(new Error(payload.message || "Failed to load Brain context."));
+      };
+
+      const timer = setTimeout(() => {
+        cleanup();
+        reject(new Error("Timed out while loading Brain context."));
+      }, 15000);
+
+      this.on("brain_context", handleContext);
+      this.on("error", handleError);
+      this.send(serverId, {
+        type: "brain_context",
+        request_id: requestId,
+      });
+    });
+  }
+
+  runBrainGC(serverId: string): Promise<BrainHousekeepingPayload> {
+    const requestId = `${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
+
+    return new Promise((resolve, reject) => {
+      const cleanup = () => {
+        if (timer) clearTimeout(timer);
+        this.off("brain_gc", handleGC);
+        this.off("error", handleError);
+      };
+
+      const handleGC = (payload: any) => {
+        if (payload.serverId !== serverId || payload.request_id !== requestId) {
+          return;
+        }
+        cleanup();
+        resolve((payload.housekeeping || {}) as BrainHousekeepingPayload);
+      };
+
+      const handleError = (payload: any) => {
+        if (payload.serverId !== serverId || payload.request_id !== requestId) {
+          return;
+        }
+        cleanup();
+        reject(new Error(payload.message || "Failed to run Brain housekeeping."));
+      };
+
+      const timer = setTimeout(() => {
+        cleanup();
+        reject(new Error("Timed out while running Brain housekeeping."));
+      }, 15000);
+
+      this.on("brain_gc", handleGC);
+      this.on("error", handleError);
+      this.send(serverId, {
+        type: "brain_gc",
+        request_id: requestId,
+      });
+    });
+  }
+
   startNewBrainChat(serverId: string) {
     const requestId = `${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
 
@@ -1407,7 +1540,9 @@ class MultiServerWebSocketClient {
           return;
         }
         cleanup();
-        reject(new Error(payload.message || "Failed to start a new Brain chat."));
+        reject(
+          new Error(payload.message || "Failed to start a new Brain chat."),
+        );
       };
 
       const timer = setTimeout(() => {
@@ -1531,7 +1666,9 @@ class MultiServerWebSocketClient {
           return;
         }
         cleanup();
-        reject(new Error(payload.message || "Failed to load Brain workspace file."));
+        reject(
+          new Error(payload.message || "Failed to load Brain workspace file."),
+        );
       };
 
       const timer = setTimeout(() => {
@@ -1566,7 +1703,9 @@ class MultiServerWebSocketClient {
         cleanup();
         resolve({
           generated_at: payload.generated_at,
-          interfaces: Array.isArray(payload.interfaces) ? payload.interfaces : [],
+          interfaces: Array.isArray(payload.interfaces)
+            ? payload.interfaces
+            : [],
           services: Array.isArray(payload.services)
             ? payload.services.map(normalizeSessionService)
             : [],
@@ -1578,7 +1717,9 @@ class MultiServerWebSocketClient {
           return;
         }
         cleanup();
-        reject(new Error(payload.message || "Failed to load session services."));
+        reject(
+          new Error(payload.message || "Failed to load session services."),
+        );
       };
 
       const timer = setTimeout(() => {
@@ -1683,9 +1824,12 @@ class MultiServerWebSocketClient {
           return;
         }
         cleanup();
-        const error = new Error(payload.message || "Failed to write work item.");
+        const error = new Error(
+          payload.message || "Failed to write work item.",
+        );
         (error as Error & { code?: string; current?: any }).code = payload.code;
-        (error as Error & { code?: string; current?: any }).current = payload.current;
+        (error as Error & { code?: string; current?: any }).current =
+          payload.current;
         reject(error);
       };
 
@@ -1710,7 +1854,13 @@ class MultiServerWebSocketClient {
   }
 
   startWorkItem(serverId: string, id: string) {
-    return this.workItemAction(serverId, "start_work_item", "work_item_started", id, "Failed to start work item.");
+    return this.workItemAction(
+      serverId,
+      "start_work_item",
+      "work_item_started",
+      id,
+      "Failed to start work item.",
+    );
   }
 
   rerunWorkItem(serverId: string, id: string) {
@@ -1842,7 +1992,8 @@ function normalizeSessionService(value: any): SessionService {
     ...service,
     id: typeof service.id === "string" ? service.id : "",
     agent_id: typeof service.agent_id === "string" ? service.agent_id : "",
-    agent_name: typeof service.agent_name === "string" ? service.agent_name : "",
+    agent_name:
+      typeof service.agent_name === "string" ? service.agent_name : "",
     project: typeof service.project === "string" ? service.project : undefined,
     cwd: typeof service.cwd === "string" ? service.cwd : undefined,
     command: typeof service.command === "string" ? service.command : undefined,
@@ -1916,10 +2067,14 @@ function normalizeCodexConversationSnapshotPayload(
   payload: any,
 ): CodexConversationSnapshotPayload {
   return {
-    request_id: typeof payload.request_id === "string" ? payload.request_id : undefined,
-    agent_id: typeof payload.agent_id === "string" ? payload.agent_id : undefined,
+    request_id:
+      typeof payload.request_id === "string" ? payload.request_id : undefined,
+    agent_id:
+      typeof payload.agent_id === "string" ? payload.agent_id : undefined,
     conversation_id:
-      typeof payload.conversation_id === "string" ? payload.conversation_id : undefined,
+      typeof payload.conversation_id === "string"
+        ? payload.conversation_id
+        : undefined,
     revision:
       typeof payload.revision === "number" && Number.isFinite(payload.revision)
         ? payload.revision
@@ -1936,10 +2091,14 @@ function normalizeCodexConversationDeltaPayload(
     events: payload.upserts,
   }).events;
   return {
-    request_id: typeof payload.request_id === "string" ? payload.request_id : undefined,
-    agent_id: typeof payload.agent_id === "string" ? payload.agent_id : undefined,
+    request_id:
+      typeof payload.request_id === "string" ? payload.request_id : undefined,
+    agent_id:
+      typeof payload.agent_id === "string" ? payload.agent_id : undefined,
     conversation_id:
-      typeof payload.conversation_id === "string" ? payload.conversation_id : undefined,
+      typeof payload.conversation_id === "string"
+        ? payload.conversation_id
+        : undefined,
     revision:
       typeof payload.revision === "number" && Number.isFinite(payload.revision)
         ? payload.revision
@@ -1957,7 +2116,9 @@ function normalizeCodexConversationDeltaPayload(
     active: typeof payload.active === "boolean" ? payload.active : undefined,
     upserts: normalizedEvents,
     deletes: Array.isArray(payload.deletes)
-      ? payload.deletes.filter((id: unknown): id is string => typeof id === "string")
+      ? payload.deletes.filter(
+          (id: unknown): id is string => typeof id === "string",
+        )
       : [],
   };
 }
@@ -1966,10 +2127,14 @@ function normalizeCodexConversationSyncStatusPayload(
   payload: any,
 ): CodexConversationSyncStatusPayload {
   return {
-    request_id: typeof payload.request_id === "string" ? payload.request_id : undefined,
-    agent_id: typeof payload.agent_id === "string" ? payload.agent_id : undefined,
+    request_id:
+      typeof payload.request_id === "string" ? payload.request_id : undefined,
+    agent_id:
+      typeof payload.agent_id === "string" ? payload.agent_id : undefined,
     conversation_id:
-      typeof payload.conversation_id === "string" ? payload.conversation_id : undefined,
+      typeof payload.conversation_id === "string"
+        ? payload.conversation_id
+        : undefined,
     revision:
       typeof payload.revision === "number" && Number.isFinite(payload.revision)
         ? payload.revision

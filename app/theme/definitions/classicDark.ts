@@ -1,7 +1,7 @@
 import type { ZenThemeDefinition } from '../types';
 import { TELEGRAM_AVATAR_COLORS } from './shared';
 
-/** ChatGPT Night — pure black canvas, flat assistant prose, compact user pills. */
+/** Telegram Night — unified canvas, wallpaper, compact composer dock. */
 export const classicDarkTheme: ZenThemeDefinition = {
   id: 'classic-dark',
   name: 'Classic Night',
@@ -47,22 +47,22 @@ export const classicDarkTheme: ZenThemeDefinition = {
     shadowColor: '#000000',
   },
   chat: {
-    layout: 'chatgpt',
-    showWallpaper: false,
+    layout: 'telegram',
+    showWallpaper: true,
     showTimestamps: false,
     showDateDividers: false,
-    background: '#000000',
-    sentBubble: '#2F2F2F',
-    receivedBubble: '#000000',
-    sentText: '#F5F5F7',
+    background: '#0E0E10',
+    sentBubble: '#2B5278',
+    receivedBubble: '#182533',
+    sentText: '#FFFFFF',
     receivedText: '#F5F5F7',
     sentTimestamp: 'rgba(255,255,255,0.45)',
-    receivedTimestamp: '#636366',
-    composerBackground: '#1C1C1E',
-    composerBorder: 'transparent',
-    composerDock: '#000000',
-    link: '#0A84FF',
-    patternIcon: 'rgba(255,255,255,0.03)',
+    receivedTimestamp: 'rgba(255,255,255,0.45)',
+    composerBackground: '#2F2F2F',
+    composerBorder: 'rgba(255,255,255,0.06)',
+    composerDock: '#0E0E10',
+    link: '#6AB3F3',
+    patternIcon: 'rgba(255,255,255,0.04)',
   },
   surfaces: {
     card: '#1C1C1E',

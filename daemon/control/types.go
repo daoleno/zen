@@ -34,14 +34,16 @@ type Request struct {
 }
 
 type Response struct {
-	OK        bool      `json:"ok"`
-	Error     *Error    `json:"error,omitempty"`
-	Agent     *Agent    `json:"agent,omitempty"`
-	Agents    []Agent   `json:"agents,omitempty"`
-	Adapter   *Adapter  `json:"adapter,omitempty"`
-	Adapters  []Adapter `json:"adapters,omitempty"`
-	Text      string    `json:"text,omitempty"`
-	Workspace string    `json:"workspace,omitempty"`
+	OK           bool      `json:"ok"`
+	Error        *Error    `json:"error,omitempty"`
+	Agent        *Agent    `json:"agent,omitempty"`
+	Agents       []Agent   `json:"agents,omitempty"`
+	Adapter      *Adapter  `json:"adapter,omitempty"`
+	Adapters     []Adapter `json:"adapters,omitempty"`
+	Context      any       `json:"context,omitempty"`
+	Housekeeping any       `json:"housekeeping,omitempty"`
+	Text         string    `json:"text,omitempty"`
+	Workspace    string    `json:"workspace,omitempty"`
 }
 
 type Error struct {

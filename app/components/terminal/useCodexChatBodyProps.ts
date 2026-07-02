@@ -1,8 +1,4 @@
-import {
-  useCallback,
-  useMemo,
-  type ReactNode,
-} from "react";
+import { useCallback, useMemo, type ReactNode } from "react";
 import type { ConnectionState } from "../../store/agents";
 import type {
   CodexConversation,
@@ -57,6 +53,7 @@ interface UseCodexChatBodyPropsInput {
   onDismissActionMenu(): void;
   onTerminalActionKey(key: string): Promise<void> | void;
   showUnavailableAction?: boolean;
+  composerAccessory?: ReactNode;
   skillsSheet?: ReactNode;
 }
 
@@ -90,6 +87,7 @@ export function useCodexChatBodyProps({
   onDismissActionMenu,
   onTerminalActionKey,
   showUnavailableAction,
+  composerAccessory,
   skillsSheet,
 }: UseCodexChatBodyPropsInput): CodexChatBodyProps {
   const handleComposerHeightChange = useCallback(() => {
@@ -141,12 +139,14 @@ export function useCodexChatBodyProps({
       onTimelineMomentumScrollBegin: timeline.handleMomentumScrollBegin,
       onTimelineMomentumScrollEnd: timeline.handleMomentumScrollEnd,
       onTimelineContentSizeChange: timeline.handleContentSizeChange,
-      onTimelineTextSelectionGestureStart: timeline.handleTextSelectionGestureStart,
+      onTimelineTextSelectionGestureStart:
+        timeline.handleTextSelectionGestureStart,
       onTimelineTextSelectionGestureEnd: timeline.handleTextSelectionGestureEnd,
       onScrollToLatest: timeline.scrollToLatest,
       onComposerHeightChange: handleComposerHeightChange,
       onUnavailableAction: onSwitchToTerminal,
-      showUnavailableAction: Boolean(onSwitchToTerminal) && (showUnavailableAction ?? true),
+      showUnavailableAction:
+        Boolean(onSwitchToTerminal) && (showUnavailableAction ?? true),
       inputRef: composerInput.inputRef,
       draft,
       editable: connectionState === "connected",
@@ -172,6 +172,7 @@ export function useCodexChatBodyProps({
       onSubmit: controller.sendDraft,
       onSendPress: handleSendPress,
       onTerminalActionKey,
+      composerAccessory,
       skillsSheet,
     }),
     [
@@ -213,6 +214,7 @@ export function useCodexChatBodyProps({
       onToggleActionMenu,
       onDismissActionMenu,
       onTerminalActionKey,
+      composerAccessory,
       screenFocused,
       showUnavailableAction,
       serverId,

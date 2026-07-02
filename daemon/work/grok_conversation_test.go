@@ -12,6 +12,107 @@ import (
 	"github.com/daoleno/zen/daemon/classifier"
 )
 
+func TestMatchGrokSessionToAgentStart_UsesNearestCreatedSession(t *testing.T) {
+	base := time.Date(2026, 6, 29, 10, 0, 0, 0, time.UTC)
+	candidates := []grokSessionCandidate{
+		{
+			ID:        "newer-other-window",
+			CreatedAt: base.Add(90 * time.Second),
+			Updated:   base.Add(5 * time.Minute),
+		},
+		{
+			ID:        "this-window",
+			CreatedAt: base.Add(3 * time.Second),
+			Updated:   base.Add(2 * time.Minute),
+		},
+		{
+			ID:        "old-window",
+			CreatedAt: base.Add(-10 * time.Minute),
+			Updated:   base.Add(6 * time.Minute),
+		},
+	}
+
+	got, ok := matchGrokSessionToAgentStart(candidates, base)
+	if !ok {
+		t.Fatal("expected a grok session match")
+	}
+	if got.ID != "this-window" {
+		t.Fatalf("matched %q, want this-window", got.ID)
+	}
+}
+
+func TestMatchGrokSessionToAgentStart_DoesNotFallBackToOldSession(t *testing.T) {
+	base := time.Date(2026, 6, 29, 10, 0, 0, 0, time.UTC)
+	candidates := []grokSessionCandidate{
+		{
+			ID:        "old-window",
+			CreatedAt: base.Add(-30 * time.Second),
+			Updated:   base.Add(5 * time.Minute),
+		},
+	}
+
+	if got, ok := matchGrokSessionToAgentStart(candidates, base); ok {
+		t.Fatalf("matched %#v, want no match", got)
+	}
+}
+
+func TestMatchGrokSessionToActiveSession_UsesSessionUpdatedAfterStart(t *testing.T) {
+	base := time.Date(2026, 6, 29, 10, 0, 0, 0, time.UTC)
+	candidates := []grokSessionCandidate{
+		{
+			ID:        "old-ended",
+			CreatedAt: base.Add(-30 * time.Minute),
+			Updated:   base.Add(-10 * time.Minute),
+		},
+		{
+			ID:        "active-private",
+			CreatedAt: base.Add(-30 * time.Second),
+			Updated:   base.Add(12 * time.Minute),
+		},
+	}
+
+	got, ok := matchGrokSessionToActiveSession(candidates, base)
+	if !ok {
+		t.Fatal("expected active grok session match")
+	}
+	if got.ID != "active-private" {
+		t.Fatalf("matched %q, want active-private", got.ID)
+	}
+}
+
+func TestFindGrokSession_DoesNotReturnStaleSessionForNewAgent(t *testing.T) {
+	fixtureHome, cwd := installGrokSessionFixture(t, findLocalGrokSessionDir(t))
+	oldSessionDir := filepath.Join(
+		fixtureHome,
+		".grok",
+		"sessions",
+		encodeGrokSessionCWD(cwd),
+		filepath.Base(findLocalGrokSessionDir(t)),
+	)
+	writeGrokSummary(t, filepath.Join(oldSessionDir, grokSummaryFile), map[string]any{
+		"info": map[string]any{
+			"id":  "old-grok-session",
+			"cwd": cwd,
+		},
+		"updated_at": time.Now().UTC().Format(time.RFC3339Nano),
+		"created_at": time.Now().UTC().Add(-2 * time.Hour).Format(time.RFC3339Nano),
+	})
+
+	t.Setenv("HOME", fixtureHome)
+	agentStart := time.Now().UTC()
+	got, ok, err := findGrokSession(classifier.Agent{
+		Command:   "grok --no-alt-screen --permission-mode bypassPermissions",
+		Cwd:       cwd,
+		StartedAt: agentStart,
+	}, time.Now())
+	if err != nil {
+		t.Fatalf("findGrokSession: %v", err)
+	}
+	if ok {
+		t.Fatalf("matched stale grok session %#v, want no match for fresh agent", got)
+	}
+}
+
 func TestEncodeGrokSessionCWD(t *testing.T) {
 	got := encodeGrokSessionCWD("/home/daoleno/workspace/zen")
 	want := "%2Fhome%2Fdaoleno%2Fworkspace%2Fzen"
@@ -222,15 +323,15 @@ func TestGrokGoalSessionPreservesLatestUserMessages(t *testing.T) {
 	if len(userBodies) < 2 {
 		t.Fatalf("user messages = %#v, want at least 2", userBodies)
 	}
-	foundInterfaceIssue := false
+	foundVisibleUserMessage := false
 	for _, body := range userBodies {
-		if strings.Contains(body, "Interface") && strings.Contains(body, "To Do List") {
-			foundInterfaceIssue = true
+		if !strings.Contains(body, "<summary_content>") && len(strings.TrimSpace(body)) < 2000 {
+			foundVisibleUserMessage = true
 			break
 		}
 	}
-	if !foundInterfaceIssue {
-		t.Fatalf("user messages missing Interface issue report: %#v", userBodies)
+	if !foundVisibleUserMessage {
+		t.Fatalf("user messages missing visible user message: %#v", userBodies)
 	}
 	latestEvent := got.Events[len(got.Events)-1]
 	if latestEvent.Kind == "plan" {

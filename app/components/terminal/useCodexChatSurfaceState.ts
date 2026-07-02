@@ -1,4 +1,5 @@
 import React, {
+  type ReactNode,
   useCallback,
   useEffect,
   useMemo,
@@ -56,6 +57,12 @@ interface UseCodexChatSurfaceStateInput {
   showUnavailableAction?: boolean;
   emptyTitle?: string;
   emptyBody?: string;
+  composerAccessory?: ReactNode;
+  onDraftChange?: (value: string) => void;
+  renderComposerAccessory?: (args: {
+    draft: string;
+    setDraft: (value: string) => void;
+  }) => ReactNode;
   onSwitchToTerminal?: () => void;
 }
 
@@ -104,6 +111,9 @@ export function useCodexChatSurfaceState({
   showUnavailableAction,
   emptyTitle,
   emptyBody,
+  composerAccessory,
+  onDraftChange,
+  renderComposerAccessory,
   onSwitchToTerminal,
 }: UseCodexChatSurfaceStateInput): CodexChatSurfaceState {
   const insets = useSafeAreaInsets();
@@ -119,7 +129,9 @@ export function useCodexChatSurfaceState({
   const [actionMenuPinned, setActionMenuPinned] = useState(false);
   const [skillsSheetVisible, setSkillsSheetVisible] = useState(false);
   const [statusSheetVisible, setStatusSheetVisible] = useState(false);
-  const [statusRequest, setStatusRequest] = useState<CodexStatusRequest | null>(null);
+  const [statusRequest, setStatusRequest] = useState<CodexStatusRequest | null>(
+    null,
+  );
   const [statusTerminalEvent, setStatusTerminalEvent] =
     useState<CodexConversationEvent | null>(null);
   const [statusTimedOut, setStatusTimedOut] = useState(false);
@@ -152,6 +164,16 @@ export function useCodexChatSurfaceState({
     markNewChatReady,
     markNewChatMessageStarted,
   } = session;
+  const setObservedDraft = useCallback(
+    (value: string) => {
+      setDraft(value);
+      onDraftChange?.(value);
+    },
+    [onDraftChange, setDraft],
+  );
+  const renderedComposerAccessory = renderComposerAccessory
+    ? renderComposerAccessory({ draft, setDraft: setObservedDraft })
+    : composerAccessory;
   const composerInput = useCodexComposerInput({
     enabled: active && connectionState === "connected",
   });
@@ -170,7 +192,12 @@ export function useCodexChatSurfaceState({
       composerInput.blur();
     }
     setActionMenuPinned(!actionMenuPinned);
-  }, [actionMenuPinned, composerInput.blur, composerInput.focus, connectionState]);
+  }, [
+    actionMenuPinned,
+    composerInput.blur,
+    composerInput.focus,
+    connectionState,
+  ]);
 
   const dismissActionMenu = useCallback(() => {
     setActionMenuPinned(false);
@@ -290,14 +317,17 @@ export function useCodexChatSurfaceState({
     }
   }, [statusDisplayEvent, statusTimedOut]);
   const latestTimelineTimestamp = useMemo(
-    () => latestChatTimelineTimestamp(conversation, pendingUserMessages, pendingSlashCommands),
+    () =>
+      latestChatTimelineTimestamp(
+        conversation,
+        pendingUserMessages,
+        pendingSlashCommands,
+      ),
     [conversation, pendingSlashCommands, pendingUserMessages],
   );
   const jumpLabel = useRelativeTimeLabel(latestTimelineTimestamp);
   const timeline = usePinnedTimeline(
-    events.length +
-      pendingUserMessages.length +
-      pendingSlashCommands.length,
+    events.length + pendingUserMessages.length + pendingSlashCommands.length,
     conversationCacheKey,
   );
   const controller = useCodexChatController({
@@ -309,7 +339,7 @@ export function useCodexChatSurfaceState({
     conversation,
     events,
     draft,
-    setDraft,
+    setDraft: setObservedDraft,
     attachments,
     setAttachments,
     slashCommands,
@@ -331,12 +361,11 @@ export function useCodexChatSurfaceState({
   });
 
   const requestRunning =
-    (isCodexRequestRunning({
+    isCodexRequestRunning({
       conversation,
       events,
       agentStatus: agentInfo?.status,
-    }) &&
-      localChatState === "idle");
+    }) && localChatState === "idle";
   const turnStartedAt = useMemo(
     () => currentTurnStartedAt(conversation, events, pendingUserMessages),
     [conversation, events, pendingUserMessages],
@@ -417,12 +446,16 @@ export function useCodexChatSurfaceState({
       React.createElement(CodexStatusSheet, {
         visible: statusSheetVisible,
         event: statusDisplayEvent,
-        loading: Boolean(statusRequest && !statusDisplayEvent && !statusTimedOut),
+        loading: Boolean(
+          statusRequest && !statusDisplayEvent && !statusTimedOut,
+        ),
         timedOut: statusTimedOut,
         chrome,
         theme,
         onRetry: retryStatusCommand,
-        onSwitchToTerminal: onSwitchToTerminal ? switchFromStatusToTerminal : undefined,
+        onSwitchToTerminal: onSwitchToTerminal
+          ? switchFromStatusToTerminal
+          : undefined,
         onClose: closeStatusSheet,
       }),
     [
@@ -467,11 +500,12 @@ export function useCodexChatSurfaceState({
     chrome,
     theme,
     onSwitchToTerminal,
-    setDraft,
+    setDraft: setObservedDraft,
     onToggleActionMenu: toggleActionMenu,
     onDismissActionMenu: dismissActionMenu,
     onTerminalActionKey: sendTerminalActionKey,
     showUnavailableAction,
+    composerAccessory: renderedComposerAccessory,
     skillsSheet: sheets,
   });
   return {
@@ -523,7 +557,10 @@ function latestCodexStatusOutputEvent(
   }
   for (let index = events.length - 1; index >= 0; index -= 1) {
     const event = events[index];
-    if (!isCodexStatusOutputEvent(event) || !isEventAfterStatusRequest(event, request)) {
+    if (
+      !isCodexStatusOutputEvent(event) ||
+      !isEventAfterStatusRequest(event, request)
+    ) {
       continue;
     }
     return event;
@@ -574,7 +611,10 @@ function codexStatusBodyFromTerminalSnapshot(text: string) {
   }
   const start = statusLineIndexes[0];
   const end = statusLineIndexes[statusLineIndexes.length - 1];
-  return lines.slice(start, end + 1).join("\n").trim();
+  return lines
+    .slice(start, end + 1)
+    .join("\n")
+    .trim();
 }
 
 function codexStatusKeyFromLine(line: string) {
@@ -621,7 +661,8 @@ function currentTurnStartedAt(
   pendingUserMessages: PendingUserMessage[],
 ) {
   const activeUserTimestamp = latestUserMessageTimestamp(conversation, events);
-  const pendingTimestamp = latestPendingUserMessageTimestamp(pendingUserMessages);
+  const pendingTimestamp =
+    latestPendingUserMessageTimestamp(pendingUserMessages);
 
   if (!activeUserTimestamp) {
     return pendingTimestamp;

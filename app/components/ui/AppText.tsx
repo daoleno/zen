@@ -1,8 +1,15 @@
 import React from "react";
 import { Text, type StyleProp, StyleSheet, type TextProps, type TextStyle } from "react-native";
-import { Typography, useAppColors } from "../../constants/tokens";
+import {
+  Typography,
+  UiTextMetrics,
+  uiLineHeight,
+  useAppColors,
+} from "../../constants/tokens";
 
 type AppTextVariant =
+  | "display"
+  | "sheetTitle"
   | "title"
   | "subtitle"
   | "label"
@@ -56,45 +63,53 @@ function toneColor(tone: AppTextTone, colors: ReturnType<typeof useAppColors>) {
 }
 
 const styles = StyleSheet.create({
-  base: {
-    includeFontPadding: false,
-  },
+  base: UiTextMetrics,
 });
 
 const variantStyles = StyleSheet.create({
+  display: {
+    fontSize: 30,
+    lineHeight: uiLineHeight(30),
+    fontFamily: Typography.uiFontMedium,
+  },
+  sheetTitle: {
+    fontSize: 20,
+    lineHeight: uiLineHeight(20),
+    fontFamily: Typography.uiFontMedium,
+  },
   title: {
     fontSize: 16,
-    lineHeight: 22,
+    lineHeight: uiLineHeight(16),
     fontFamily: Typography.uiFontMedium,
   },
   subtitle: {
     fontSize: 14,
-    lineHeight: 20,
+    lineHeight: uiLineHeight(14),
     fontFamily: Typography.uiFont,
   },
   label: {
     fontSize: 12,
-    lineHeight: 16,
+    lineHeight: uiLineHeight(12),
     fontFamily: Typography.uiFontMedium,
   },
   body: {
     fontSize: 14,
-    lineHeight: 20,
+    lineHeight: uiLineHeight(14),
     fontFamily: Typography.uiFont,
   },
   caption: {
     fontSize: 12,
-    lineHeight: 18,
+    lineHeight: uiLineHeight(12),
     fontFamily: Typography.uiFont,
   },
   mono: {
     fontSize: 13,
-    lineHeight: 18,
+    lineHeight: uiLineHeight(13),
     fontFamily: Typography.terminalFont,
   },
   button: {
     fontSize: 14,
-    lineHeight: 18,
+    lineHeight: uiLineHeight(14),
     fontFamily: Typography.uiFontMedium,
   },
 });

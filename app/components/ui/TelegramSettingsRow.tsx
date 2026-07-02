@@ -2,7 +2,13 @@ import React from 'react';
 import { StyleSheet, Text, View } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import type { ComponentProps } from 'react';
-import { Colors, Typography, useAppColors } from '../../constants/tokens';
+import {
+  Colors,
+  Typography,
+  UiTextMetrics,
+  uiLineHeight,
+  useAppColors,
+} from '../../constants/tokens';
 import { AnimatedPressable } from './AnimatedPressable';
 
 type IoniconName = ComponentProps<typeof Ionicons>['name'];
@@ -98,16 +104,18 @@ function createStyles(colors: typeof Colors) {
       gap: 1,
     },
     title: {
+      ...UiTextMetrics,
       color: colors.textPrimary,
       fontFamily: Typography.uiFontMedium,
       fontSize: 15.5,
-      lineHeight: 20,
+      lineHeight: uiLineHeight(15.5),
     },
     subtitle: {
+      ...UiTextMetrics,
       color: colors.textSecondary,
       fontFamily: Typography.uiFont,
       fontSize: 13,
-      lineHeight: 17,
+      lineHeight: uiLineHeight(13),
     },
   });
 }

@@ -29,6 +29,18 @@ export function initialsFromLabel(label: string): string {
   return trimmed[0]?.toUpperCase() ?? '?';
 }
 
+/** Compact bubble time — HH:mm today, short label otherwise. */
+export function formatChatBubbleTime(timestamp?: string): string {
+  if (!timestamp?.trim()) {
+    return '';
+  }
+  const date = new Date(timestamp);
+  if (!Number.isFinite(date.getTime())) {
+    return '';
+  }
+  return formatTelegramListTime(date.getTime());
+}
+
 export function formatTelegramListTime(timestamp?: number): string {
   if (!timestamp) {
     return '';

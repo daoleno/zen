@@ -9,6 +9,7 @@ import (
 	"io"
 	"log"
 	"os"
+	"os/exec"
 	"os/signal"
 	"path/filepath"
 	"strings"
@@ -234,6 +235,10 @@ func runBrainCommand(args []string, stderr io.Writer) error {
 	switch args[0] {
 	case "workspace":
 		return runBrainWorkspace(args[1:], stderr)
+	case "context":
+		return runBrainContext(args[1:], stderr)
+	case "gc":
+		return runBrainGC(args[1:], stderr)
 	case "adapters":
 		return runBrainAdapters(args[1:], stderr)
 	case "use":
@@ -271,15 +276,19 @@ func printAgentUsage(w io.Writer) {
 }
 
 func printBrainUsage(w io.Writer) {
-	fmt.Fprintln(w, "Usage: zen brain <workspace|adapters|use> [flags]")
+	fmt.Fprintln(w, "Usage: zen brain <workspace|context|gc|adapters|use> [flags]")
 	fmt.Fprintln(w, "")
 	fmt.Fprintln(w, "Subcommands:")
 	fmt.Fprintln(w, "  workspace  Print the Brain workspace path")
+	fmt.Fprintln(w, "  context    Print structured Brain context")
+	fmt.Fprintln(w, "  gc         Backfill Brain workspace files and print housekeeping status")
 	fmt.Fprintln(w, "  adapters   List configured Brain host adapters")
 	fmt.Fprintln(w, "  use        Switch the Brain host adapter")
 	fmt.Fprintln(w, "")
 	fmt.Fprintln(w, "Examples:")
 	fmt.Fprintln(w, "  zen brain workspace --json")
+	fmt.Fprintln(w, "  zen brain context --json")
+	fmt.Fprintln(w, "  zen brain gc --json")
 	fmt.Fprintln(w, "  zen brain adapters --json")
 	fmt.Fprintln(w, "  zen brain use codex")
 }
@@ -322,11 +331,27 @@ func runAgentSpawn(args []string, stderr io.Writer) error {
 	if fs.NArg() > 0 {
 		return fmt.Errorf("unexpected arguments: %s", strings.Join(fs.Args(), " "))
 	}
+	req.AgentID = currentAgentID()
 	resp, err := callControl(cfg, req)
 	if err != nil {
 		return err
 	}
 	return writeControlResponse(os.Stdout, resp, cfg.json)
+}
+
+func currentAgentID() string {
+	if agentID := strings.TrimSpace(os.Getenv("ZEN_AGENT_ID")); agentID != "" {
+		return agentID
+	}
+	pane := strings.TrimSpace(os.Getenv("TMUX_PANE"))
+	if pane == "" {
+		return ""
+	}
+	out, err := exec.Command("tmux", "display-message", "-p", "-t", pane, "#{session_name}:#{window_id}").Output()
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(out))
 }
 
 func runAgentSend(args []string, stderr io.Writer) error {
@@ -495,6 +520,30 @@ func runBrainWorkspace(args []string, stderr io.Writer) error {
 		return err
 	}
 	resp, err := callControl(cfg, control.Request{Type: "brain_workspace"})
+	if err != nil {
+		return err
+	}
+	return writeControlResponse(os.Stdout, resp, cfg.json)
+}
+
+func runBrainContext(args []string, stderr io.Writer) error {
+	cfg, err := parseCLIConfig("zen brain context", args, stderr)
+	if err != nil {
+		return err
+	}
+	resp, err := callControl(cfg, control.Request{Type: "brain_context"})
+	if err != nil {
+		return err
+	}
+	return writeControlResponse(os.Stdout, resp, cfg.json)
+}
+
+func runBrainGC(args []string, stderr io.Writer) error {
+	cfg, err := parseCLIConfig("zen brain gc", args, stderr)
+	if err != nil {
+		return err
+	}
+	resp, err := callControl(cfg, control.Request{Type: "brain_gc"})
 	if err != nil {
 		return err
 	}

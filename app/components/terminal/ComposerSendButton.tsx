@@ -49,7 +49,7 @@ export function ComposerSendButton({
       : chrome.textSubtle;
   const backgroundColor = enabled && !loading && !running
     ? chrome.accent
-    : chrome.surfaceMuted;
+    : chrome.composerInput;
   const borderColor = running
     ? chrome.border
     : enabled && !loading

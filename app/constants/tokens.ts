@@ -1,4 +1,4 @@
-import { Platform, useColorScheme, type ViewStyle } from "react-native";
+import { Platform, useColorScheme, type TextStyle, type ViewStyle } from "react-native";
 import { classicDarkTheme } from "../theme/definitions/classicDark";
 import { classicLightTheme } from "../theme/definitions/classicLight";
 import type { AppColors } from "../theme/palette";
@@ -68,6 +68,25 @@ export const Radii = {
   xxl: 28,
   pill: 999,
 } as const;
+
+/** Prevents Latin descenders (g, y, p) from clipping with Source Han Sans. */
+export const UiTextMetrics: Pick<
+  TextStyle,
+  'includeFontPadding' | 'textAlignVertical'
+> = Platform.select({
+  android: {
+    includeFontPadding: false,
+    textAlignVertical: 'center',
+  },
+  default: {
+    includeFontPadding: false,
+  },
+}) ?? { includeFontPadding: false };
+
+/** Line height tuned for mixed Latin + CJK UI copy. */
+export function uiLineHeight(fontSize: number): number {
+  return Math.ceil(fontSize * 1.48);
+}
 
 export const Typography = {
   uiFont: 'SourceHanSansSC-Regular',

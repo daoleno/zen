@@ -50,6 +50,10 @@ func (a *controlApp) HandleControlRequest(req control.Request) control.Response 
 		return a.handleAgentClose(req)
 	case "brain_adapters":
 		return a.handleBrainAdapters()
+	case "brain_context":
+		return a.handleBrainContext()
+	case "brain_gc":
+		return a.handleBrainGC()
 	case "brain_set_adapter":
 		return a.handleBrainSetAdapter(req)
 	case "brain_workspace":
@@ -279,6 +283,36 @@ func (a *controlApp) handleBrainAdapters() control.Response {
 	}
 }
 
+func (a *controlApp) handleBrainContext() control.Response {
+	if a == nil || a.brainStore == nil {
+		return control.ErrorResponse("brain_unavailable", "Brain workspace is not configured.")
+	}
+	service := brain.NewService(a.brainStore, a.watcher, a.execs)
+	context, err := service.Context(12)
+	if err != nil {
+		return control.ErrorResponse("brain_context_failed", err.Error())
+	}
+	return control.Response{
+		OK:      true,
+		Context: context,
+	}
+}
+
+func (a *controlApp) handleBrainGC() control.Response {
+	if a == nil || a.brainStore == nil {
+		return control.ErrorResponse("brain_unavailable", "Brain workspace is not configured.")
+	}
+	service := brain.NewService(a.brainStore, a.watcher, a.execs)
+	report, err := service.Housekeeping()
+	if err != nil {
+		return control.ErrorResponse("brain_gc_failed", err.Error())
+	}
+	return control.Response{
+		OK:           true,
+		Housekeeping: report,
+	}
+}
+
 func (a *controlApp) handleBrainSetAdapter(req control.Request) control.Response {
 	if a == nil || a.brainStore == nil {
 		return control.ErrorResponse("brain_unavailable", "Brain workspace is not configured.")
@@ -360,6 +394,11 @@ func (a *controlApp) resolveSpawnCommand(req control.Request) (string, error) {
 		return command, nil
 	}
 	executorName := strings.TrimSpace(req.Executor)
+	if executorName == "" {
+		if brainExecutor, ok := a.brainCallerExecutor(req.AgentID); ok {
+			executorName = brainExecutor
+		}
+	}
 	if executorName == "" && a != nil && a.execs != nil {
 		executorName = strings.TrimSpace(a.execs.Default)
 	}
@@ -377,6 +416,29 @@ func (a *controlApp) resolveSpawnCommand(req control.Request) (string, error) {
 		return executorName, nil
 	}
 	return executorName, nil
+}
+
+func (a *controlApp) brainCallerExecutor(agentID string) (string, bool) {
+	if a == nil || a.brainStore == nil || a.execs == nil {
+		return "", false
+	}
+	agentID = strings.TrimSpace(agentID)
+	if agentID == "" {
+		return "", false
+	}
+	host, err := a.brainStore.HostSession()
+	if err != nil || strings.TrimSpace(host.ID) == "" || strings.TrimSpace(host.ID) != agentID {
+		return "", false
+	}
+	if adapterID := strings.TrimSpace(host.AdapterID); adapterID != "" {
+		if _, ok := a.execs.ByName[adapterID]; ok {
+			return adapterID, true
+		}
+	}
+	if adapter, ok := a.currentBrainAdapter(); ok {
+		return adapter.ID, true
+	}
+	return "", false
 }
 
 func visibleControlAgents(agents []*classifier.Agent) []control.Agent {

@@ -409,6 +409,146 @@ func TestServiceSetHostAdapterPersistsAndStartsSelectedHost(t *testing.T) {
 	}
 }
 
+func TestServiceSetHostAdapterHandsOffExistingThread(t *testing.T) {
+	store, err := NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	oldHostID := "brain-agent-brain-old:@1"
+	if err := store.SetHostSession(oldHostID, "grok"); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SetChatState(ChatState{
+		ThreadID:       "thread-main",
+		SessionIDs:     []string{oldHostID},
+		LastTranscript: "old transcript",
+		UpdatedAt:      time.Date(2026, 6, 2, 10, 0, 0, 0, time.UTC),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(store.currentPath(), []byte("# Current Brain Context\n\n## Active Objective\n\nPreserve handoff objective.\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.AppendChatMessage(ChatMessage{
+		ID:        "user-one",
+		ThreadID:  "thread-main",
+		SessionID: oldHostID,
+		AdapterID: "grok",
+		Role:      "user",
+		Body:      "继续刚才的 Brain engine 切换方案",
+		CreatedAt: time.Date(2026, 6, 2, 10, 1, 0, 0, time.UTC),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	fw := &fakeWatcher{
+		sessions: map[string]*classifier.Agent{
+			oldHostID: {
+				ID:      oldHostID,
+				Name:    "Brain",
+				State:   classifier.StateRunning,
+				Cwd:     store.WorkspacePath(),
+				Command: "grok --no-alt-screen --permission-mode bypassPermissions",
+				Hidden:  true,
+			},
+		},
+	}
+	service := NewService(store, fw, &work.ExecutorConfig{
+		Default: "grok",
+		ByName: map[string]work.Executor{
+			"grok":  {Name: "grok", Command: "grok --no-alt-screen --permission-mode bypassPermissions", Kind: "grok", Runtime: work.AgentRuntimeTmux},
+			"codex": {Name: "codex", Command: "codex", Kind: "codex", Runtime: work.AgentRuntimeTmux},
+		},
+	})
+
+	snapshot, err := service.SetHostAdapter("codex")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if snapshot.HostAgent == nil || snapshot.HostAgent.ID == oldHostID {
+		t.Fatalf("host agent = %#v", snapshot.HostAgent)
+	}
+	if len(fw.killed) != 1 || fw.killed[0] != oldHostID {
+		t.Fatalf("killed = %#v", fw.killed)
+	}
+	if len(fw.sentCalls) != 2 {
+		t.Fatalf("sent calls = %#v", fw.sentCalls)
+	}
+	handoff := fw.sentCalls[1].text
+	for _, want := range []string{
+		"Brain engine handoff:",
+		"Previous engine: grok",
+		"Current engine: codex",
+		"Read current.md in the Brain workspace before continuing.",
+		"Preserve handoff objective.",
+		"User: 继续刚才的 Brain engine 切换方案",
+		"Delegated agents default to the current Brain engine.",
+	} {
+		if !strings.Contains(handoff, want) {
+			t.Fatalf("handoff missing %q:\n%s", want, handoff)
+		}
+	}
+	state, err := store.ChatState("thread-main")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if state.LastTranscript != "" {
+		t.Fatalf("last transcript = %q", state.LastTranscript)
+	}
+	if !containsString(state.SessionIDs, oldHostID) || !containsString(state.SessionIDs, snapshot.HostAgent.ID) {
+		t.Fatalf("session ids = %#v", state.SessionIDs)
+	}
+}
+
+func TestServiceHousekeepingBackfillsWorkspaceAndReportsDelegatedAgents(t *testing.T) {
+	root := t.TempDir()
+	store, err := NewStore(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(store.currentPath()); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(store.policyPath("engine.md")); err != nil {
+		t.Fatal(err)
+	}
+	delegatedID := "brain-agent-worker:@1"
+	fw := &fakeWatcher{
+		agents: []*classifier.Agent{
+			{
+				ID:        delegatedID,
+				Name:      "Worker",
+				State:     classifier.StateRunning,
+				Cwd:       "/repo",
+				Command:   "codex",
+				Delegated: true,
+			},
+		},
+	}
+	service := NewService(store, fw, &work.ExecutorConfig{
+		Default: "codex",
+		ByName: map[string]work.Executor{
+			"codex": {Name: "codex", Command: "codex", Kind: "codex", Runtime: work.AgentRuntimeTmux},
+		},
+	})
+
+	report, err := service.Housekeeping()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !report.BackfilledWorkspace {
+		t.Fatalf("expected backfilled workspace report: %+v", report)
+	}
+	if !pathExists(store.currentPath()) || !pathExists(store.policyPath("engine.md")) {
+		t.Fatalf("housekeeping did not backfill current/policy files")
+	}
+	if len(report.OpenDelegatedAgents) != 1 || report.OpenDelegatedAgents[0].ID != delegatedID {
+		t.Fatalf("delegated agents = %#v", report.OpenDelegatedAgents)
+	}
+	if len(report.RecommendedNextSteps) == 0 {
+		t.Fatalf("expected recommended next steps: %+v", report)
+	}
+}
+
 func TestServiceNewChatReplacesHostAndStartsFreshThread(t *testing.T) {
 	store, err := NewStore(t.TempDir())
 	if err != nil {
@@ -663,9 +803,23 @@ func TestStoreUsesStateAndWorkspaceDirectories(t *testing.T) {
 	if !pathExists(filepath.Join(root, "workspace", "memory.md")) {
 		t.Fatalf("missing workspace memory file")
 	}
+	if !pathExists(filepath.Join(root, "workspace", "current.md")) {
+		t.Fatalf("missing workspace current file")
+	}
+	for _, policy := range []string{"delegation.md", "engine.md", "handoff.md"} {
+		if !pathExists(filepath.Join(root, "workspace", "policies", policy)) {
+			t.Fatalf("missing workspace policy file %s", policy)
+		}
+	}
 	instructions, err := os.ReadFile(filepath.Join(root, "workspace", "AGENTS.md"))
 	if err != nil {
 		t.Fatal(err)
+	}
+	if !strings.Contains(string(instructions), "Keep the current active objective, decisions, open threads, and next step in current.md") {
+		t.Fatalf("workspace instructions do not describe current.md:\n%s", instructions)
+	}
+	if !strings.Contains(string(instructions), "Use policies/ for stable Brain orchestration rules") {
+		t.Fatalf("workspace instructions do not describe policies:\n%s", instructions)
 	}
 	if !strings.Contains(string(instructions), "Brain is the user's scheduler") {
 		t.Fatalf("workspace instructions do not describe scheduler behavior:\n%s", instructions)
@@ -679,7 +833,7 @@ func TestStoreUsesStateAndWorkspaceDirectories(t *testing.T) {
 	if !strings.Contains(string(instructions), "Treat Heartbeat wake messages as compact actionable deltas") {
 		t.Fatalf("workspace instructions do not describe heartbeat handling:\n%s", instructions)
 	}
-	for _, want := range []string{"zen agent list --json", "zen agent spawn -name", "zen agent capture -id", "zen agent send -id", "zen agent close -id"} {
+	for _, want := range []string{"zen brain context --json", "zen agent list --json", "zen agent spawn -name", "zen agent capture -id", "zen agent send -id", "zen agent close -id"} {
 		if !strings.Contains(string(instructions), want) {
 			t.Fatalf("workspace instructions missing %q:\n%s", want, instructions)
 		}

@@ -22,7 +22,16 @@ import {
   scanFromURLAsync,
   useCameraPermissions,
 } from "expo-camera";
-import { Colors, Radii, Typography, useAppColors, useAppTheme, shadow } from "../../constants/tokens";
+import {
+  Colors,
+  Radii,
+  Typography,
+  UiTextMetrics,
+  uiLineHeight,
+  useAppColors,
+  useAppTheme,
+  shadow,
+} from "../../constants/tokens";
 import type { ResolvedZenTheme } from "../../theme";
 import { createThemedSurfaces } from "../../constants/themedSurfaces";
 import { importConnection } from "../../services/importConnection";
@@ -867,17 +876,19 @@ function createStyles(theme: ResolvedZenTheme) {
     marginBottom: 10,
   },
   pageTitle: {
+    ...UiTextMetrics,
     color: colors.textPrimary,
     fontSize: 30,
-    lineHeight: 38,
+    lineHeight: uiLineHeight(30),
     fontFamily: Typography.uiFontMedium,
     letterSpacing: 0,
   },
   pageSubtitle: {
+    ...UiTextMetrics,
     marginTop: 3,
     color: colors.textSecondary,
     fontSize: 13,
-    lineHeight: 18,
+    lineHeight: uiLineHeight(13),
     fontFamily: Typography.uiFont,
   },
 

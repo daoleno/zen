@@ -200,6 +200,46 @@ func TestControlAppAgentSpawnRequiresExplicitWorkingDirectory(t *testing.T) {
 	}
 }
 
+func TestControlAppAgentSpawnFromBrainDefaultsToBrainAdapter(t *testing.T) {
+	store, err := brain.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SetHostSession("brain-agent-brain-hidden:@1", "grok"); err != nil {
+		t.Fatal(err)
+	}
+	fw := newFakeControlWatcher()
+	app := &controlApp{
+		watcher:    fw,
+		brainStore: store,
+		execs: &work.ExecutorConfig{
+			Default: "codex",
+			ByName: map[string]work.Executor{
+				"codex": {Name: "codex", Command: "codex"},
+				"grok":  {Name: "grok", Command: "grok --no-alt-screen --permission-mode bypassPermissions"},
+			},
+		},
+	}
+
+	resp := app.HandleControlRequest(control.Request{
+		Type:    "agent_spawn",
+		AgentID: "brain-agent-brain-hidden:@1",
+		Name:    "Research",
+		Cwd:     "/repo/zen",
+		Prompt:  "look around",
+	})
+
+	if !resp.OK || resp.Agent == nil {
+		t.Fatalf("response = %#v", resp)
+	}
+	if len(fw.created) != 1 {
+		t.Fatalf("created = %#v", fw.created)
+	}
+	if got := fw.created[0].Command; got != "grok --no-alt-screen --permission-mode bypassPermissions" {
+		t.Fatalf("command = %q", got)
+	}
+}
+
 func TestControlAppAgentListFiltersHiddenAgents(t *testing.T) {
 	fw := newFakeControlWatcher()
 	fw.agents["main:@1"] = &classifier.Agent{
@@ -505,6 +545,93 @@ func TestControlAppBrainWorkspaceReturnsStoreWorkspace(t *testing.T) {
 
 	if !resp.OK || resp.Workspace != store.WorkspacePath() {
 		t.Fatalf("response = %#v, want workspace %q", resp, store.WorkspacePath())
+	}
+}
+
+func TestControlAppBrainContextReturnsStructuredContext(t *testing.T) {
+	store, err := brain.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(store.WorkspacePath(), "current.md"), []byte("# Current Brain Context\n\n## Active Objective\n\nShip context.\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.AppendChatMessage(brain.ChatMessage{
+		ID:        "msg-user",
+		ThreadID:  "thread-main",
+		SessionID: "host-a",
+		Role:      "user",
+		Body:      "remember context",
+		CreatedAt: time.Date(2026, 6, 2, 10, 0, 0, 0, time.UTC),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SetChatState(brain.ChatState{
+		ThreadID:   "thread-main",
+		SessionIDs: []string{"host-a"},
+		UpdatedAt:  time.Date(2026, 6, 2, 10, 1, 0, 0, time.UTC),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	app := &controlApp{
+		brainStore: store,
+		execs: &work.ExecutorConfig{
+			Default: "codex",
+			ByName: map[string]work.Executor{
+				"codex": {Name: "codex", Command: "codex"},
+			},
+		},
+	}
+
+	resp := app.HandleControlRequest(control.Request{Type: "brain_context"})
+
+	if !resp.OK || resp.Context == nil {
+		t.Fatalf("response = %#v", resp)
+	}
+	context, ok := resp.Context.(brain.BrainContext)
+	if !ok {
+		t.Fatalf("context type = %T", resp.Context)
+	}
+	if context.ThreadID != "thread-main" || !strings.Contains(context.Current, "Ship context.") {
+		t.Fatalf("context = %#v", context)
+	}
+	if len(context.RecentMessages) != 1 || context.RecentMessages[0].Body != "remember context" {
+		t.Fatalf("recent messages = %#v", context.RecentMessages)
+	}
+}
+
+func TestControlAppBrainGCReturnsHousekeepingReport(t *testing.T) {
+	store, err := brain.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(filepath.Join(store.WorkspacePath(), "current.md")); err != nil {
+		t.Fatal(err)
+	}
+	app := &controlApp{
+		brainStore: store,
+		execs: &work.ExecutorConfig{
+			Default: "codex",
+			ByName: map[string]work.Executor{
+				"codex": {Name: "codex", Command: "codex"},
+			},
+		},
+	}
+
+	resp := app.HandleControlRequest(control.Request{Type: "brain_gc"})
+
+	if !resp.OK || resp.Housekeeping == nil {
+		t.Fatalf("response = %#v", resp)
+	}
+	report, ok := resp.Housekeeping.(brain.HousekeepingReport)
+	if !ok {
+		t.Fatalf("housekeeping type = %T", resp.Housekeeping)
+	}
+	if !report.BackfilledWorkspace || report.CurrentPath != "current.md" {
+		t.Fatalf("housekeeping report = %#v", report)
+	}
+	if _, err := os.Stat(filepath.Join(store.WorkspacePath(), "current.md")); err != nil {
+		t.Fatalf("brain gc did not backfill current.md: %v", err)
 	}
 }
 

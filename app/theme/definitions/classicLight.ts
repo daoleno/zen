@@ -1,7 +1,7 @@
 import type { ZenThemeDefinition } from '../types';
 import { TELEGRAM_AVATAR_COLORS } from './shared';
 
-/** ChatGPT Day — white canvas, flat assistant prose, light gray user pills. */
+/** Telegram Day — unified canvas, wallpaper, compact composer dock. */
 export const classicLightTheme: ZenThemeDefinition = {
   id: 'classic-light',
   name: 'Classic Day',
@@ -47,19 +47,19 @@ export const classicLightTheme: ZenThemeDefinition = {
     shadowColor: '#1C1C1E',
   },
   chat: {
-    layout: 'chatgpt',
-    showWallpaper: false,
+    layout: 'telegram',
+    showWallpaper: true,
     showTimestamps: false,
     showDateDividers: false,
     background: '#FFFFFF',
-    sentBubble: '#F4F4F4',
+    sentBubble: '#EFFDDE',
     receivedBubble: '#FFFFFF',
     sentText: '#000000',
     receivedText: '#000000',
     sentTimestamp: 'rgba(0,0,0,0.40)',
     receivedTimestamp: 'rgba(0,0,0,0.35)',
     composerBackground: '#F4F4F4',
-    composerBorder: 'transparent',
+    composerBorder: 'rgba(0,0,0,0.06)',
     composerDock: '#FFFFFF',
     link: '#007AFF',
     patternIcon: 'rgba(0,0,0,0.03)',
