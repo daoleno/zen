@@ -74,9 +74,9 @@ func (s *Store) HostSessionID() (string, error) {
 }
 
 type HostSession struct {
-	ID        string
-	AdapterID string
-	UpdatedAt time.Time
+	ID         string
+	ExecutorID string
+	UpdatedAt  time.Time
 }
 
 func (s *Store) HostSession() (HostSession, error) {
@@ -89,33 +89,33 @@ func (s *Store) SetHostSessionID(id string) error {
 	return s.SetHostSession(id, "")
 }
 
-func (s *Store) SetHostSession(id, adapterID string) error {
+func (s *Store) SetHostSession(id, executorID string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	id = strings.TrimSpace(id)
-	adapterID = strings.TrimSpace(adapterID)
+	executorID = strings.TrimSpace(executorID)
 	if id == "" {
 		return writeJSONFile(s.HostSessionPath(), hostSessionFile{})
 	}
 	return writeJSONFile(s.HostSessionPath(), hostSessionFile{
-		ID:        id,
-		AdapterID: adapterID,
-		UpdatedAt: time.Now().UTC(),
+		ID:         id,
+		ExecutorID: executorID,
+		UpdatedAt:  time.Now().UTC(),
 	})
 }
 
-func (s *Store) SetHostAdapterID(adapterID string) error {
+func (s *Store) SetHostExecutorID(executorID string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	adapterID = strings.TrimSpace(adapterID)
+	executorID = strings.TrimSpace(executorID)
 	host, err := s.readHostSessionLocked()
 	if err != nil {
 		return err
 	}
 	return writeJSONFile(s.HostSessionPath(), hostSessionFile{
-		ID:        host.ID,
-		AdapterID: adapterID,
-		UpdatedAt: time.Now().UTC(),
+		ID:         host.ID,
+		ExecutorID: executorID,
+		UpdatedAt:  time.Now().UTC(),
 	})
 }
 
@@ -212,7 +212,7 @@ func (s *Store) AppendChatMessage(message ChatMessage) (ChatMessage, error) {
 	}
 	message.ThreadID = strings.TrimSpace(message.ThreadID)
 	message.SessionID = strings.TrimSpace(message.SessionID)
-	message.AdapterID = strings.TrimSpace(message.AdapterID)
+	message.ExecutorID = strings.TrimSpace(message.ExecutorID)
 	message.Role = strings.TrimSpace(message.Role)
 	message.Body = strings.TrimSpace(message.Body)
 	if message.CreatedAt.IsZero() {
@@ -512,9 +512,9 @@ type profileFile struct {
 }
 
 type hostSessionFile struct {
-	ID        string    `json:"id,omitempty"`
-	AdapterID string    `json:"adapter_id,omitempty"`
-	UpdatedAt time.Time `json:"updated_at,omitempty"`
+	ID         string    `json:"id,omitempty"`
+	ExecutorID string    `json:"executor_id,omitempty"`
+	UpdatedAt  time.Time `json:"updated_at,omitempty"`
 }
 
 type chatStatesFile struct {
@@ -550,9 +550,9 @@ func (s *Store) readHostSessionLocked() (HostSession, error) {
 		return HostSession{}, err
 	}
 	return HostSession{
-		ID:        strings.TrimSpace(host.ID),
-		AdapterID: strings.TrimSpace(host.AdapterID),
-		UpdatedAt: host.UpdatedAt,
+		ID:         strings.TrimSpace(host.ID),
+		ExecutorID: strings.TrimSpace(host.ExecutorID),
+		UpdatedAt:  host.UpdatedAt,
 	}, nil
 }
 
@@ -756,17 +756,55 @@ func (s *Store) ensurePolicies() error {
 	if err := os.MkdirAll(s.policiesPath(), 0o700); err != nil {
 		return err
 	}
-	policies := map[string]string{
-		"delegation.md": defaultDelegationPolicy,
-		"engine.md":     defaultEnginePolicy,
-		"handoff.md":    defaultHandoffPolicy,
+	policies := []struct {
+		name    string
+		initial string
+		markers []string
+		append  string
+		stale   []string
+	}{
+		{"delegation.md", defaultDelegationPolicy, currentDelegationPolicyMarkers, currentDelegationPolicyAppend, nil},
+		{"engine.md", defaultEnginePolicy, currentEnginePolicyMarkers, currentEnginePolicyAppend, staleEnginePolicySnippets},
+		{"handoff.md", defaultHandoffPolicy, currentHandoffPolicyMarkers, currentHandoffPolicyAppend, nil},
 	}
-	for name, content := range policies {
-		if err := ensureFile(s.policyPath(name), []byte(content)); err != nil {
+	for _, policy := range policies {
+		if err := ensurePolicyFile(s.policyPath(policy.name), policy.initial, policy.markers, policy.append, policy.stale); err != nil {
 			return err
 		}
 	}
 	return nil
+}
+
+func ensurePolicyFile(path, initial string, markers []string, appendContent string, staleSnippets []string) error {
+	raw, err := os.ReadFile(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return writeAtomic(path, []byte(initial), 0o600)
+	}
+	if err != nil {
+		return err
+	}
+	current := string(raw)
+	cleaned := removeStalePolicySnippets(current, staleSnippets)
+	if policyCurrent(cleaned, markers) {
+		if cleaned != current {
+			return writeAtomic(path, []byte(cleaned), 0o600)
+		}
+		return nil
+	}
+	updated := strings.TrimRight(cleaned, "\n") + "\n\n" + appendContent
+	return writeAtomic(path, []byte(updated), 0o600)
+}
+
+func policyCurrent(value string, markers []string) bool {
+	if strings.TrimSpace(value) == "" {
+		return false
+	}
+	for _, marker := range markers {
+		if !strings.Contains(value, marker) {
+			return false
+		}
+	}
+	return true
 }
 
 func workspaceInstructionsCurrent(value string) bool {
@@ -799,6 +837,13 @@ func removeStaleWorkspaceInstructionSnippets(value string) string {
 		out = append(out, line)
 	}
 	return strings.Join(out, "\n")
+}
+
+func removeStalePolicySnippets(value string, snippets []string) string {
+	for _, stale := range snippets {
+		value = strings.ReplaceAll(value, stale, "")
+	}
+	return value
 }
 
 func readTextFile(path string) (string, error) {
@@ -850,13 +895,15 @@ None recorded yet.
 
 ## Decisions
 
-- Brain's current engine is the default delegated executor.
-- Use a different delegated executor only when the user explicitly mentions or asks for it.
-- Switching Brain engines preserves the visible chat and uses private handoff context.
+- Brain's current host executor is the orchestrator for planning, delegation, review, and final synthesis.
+- Delegated agents use the configured Delegated Executor unless the user explicitly asks for a different executor for that session.
+- delegated_executor controls delegated execution and ordinary non-Brain session creation.
+- Use a different executor for a session only when the user explicitly mentions or asks for it.
+- Switching Brain host executors preserves the visible chat and uses private handoff context.
 
 ## Open Threads
 
-- Keep this file current when a task, plan, or delegated session should survive engine switching, daemon restarts, or transcript compaction.
+- Keep this file current when a task, plan, or delegated session should survive host executor switching, daemon restarts, or transcript compaction.
 
 ## Next
 
@@ -870,11 +917,15 @@ This directory is the private workspace for zen Brain.
 - Keep durable user memory in memory.md.
 - Keep personality and preference notes in profile.md.
 - Keep the current active objective, decisions, open threads, and next step in current.md.
-- Use policies/ for stable Brain orchestration rules; read policies/delegation.md, policies/engine.md, and policies/handoff.md when delegating, switching engines, or recovering context.
+- Use policies/ for stable Brain orchestration rules; read policies/delegation.md, policies/engine.md, and policies/handoff.md when delegating, switching host executors, or recovering context.
 - Use local files here for plans, reminders, inbox notes, and follow-up state.
 - Keep task tracking and archival records in worklog/: create one Markdown file per problem, feature, fix, or workflow that needs durable context, progress, verification, results, or follow-up.
 - Do not use project repositories as Brain's default working directory.
+- Brain's active host executor is the orchestrator. Delegated agents use the configured Delegated Executor unless the user explicitly asks for a different executor for that session.
 - Brain is the user's scheduler: reduce decision load. For concrete work needing repository/tool execution, independent progress, parallelism, or follow-up, proactively create or reuse visible delegated agent sessions; stay here for chat, memory, synthesis, reminders, and decisions that fit the current context.
+- Brain is the orchestrator, not the execution pool: keep decomposition, ordering, judgment, result review, and final synthesis in Brain. Use delegated agents for scoped execution.
+- Delegate only clean subtasks with one concern, enough context, acceptance criteria, safety constraints, feasible verification, and a short expected report. Do not ask delegated agents to invent the whole plan.
+- Run independent delegated subtasks in parallel when useful, then inspect their reports before integrating results. Keep coupled design decisions and gnarly single-thread debugging in Brain.
 - For a single larger task, prefer reusing the same delegated agent session across stages. Send follow-up instructions to that session until the task is genuinely complete. Open a separate delegated session only when the work is meaningfully independent, benefits from parallelism, needs a different repository/context, or the current session is blocked or unusable.
 - Use the zen binary to inspect Brain context, perform safe housekeeping, and delegate work. Common command shapes: zen brain context --json; zen brain gc --json; zen agent list --json; zen agent spawn -name "<name>" -cwd <workspace> -prompt "<task>"; zen agent spawn -name "<name>" -executor <executor> -cwd <workspace> -prompt "<task>"; zen agent capture -id <agent_id> --json; zen agent send -id <agent_id> -text "<message>" --submit=true; zen agent close -id <agent_id>.
 - Keep delegated agent lifecycle ownership from spawn through inspection, follow-up, result consolidation, and close. Do not close a delegated session merely because a small stage finished; close it when the larger task is complete or you have intentionally moved the remaining work elsewhere.
@@ -887,6 +938,14 @@ This directory is the private workspace for zen Brain.
 const defaultDelegationPolicy = `# Brain Delegation Policy
 
 Brain is the user's scheduler and agent operations lead.
+
+## Orchestrator / Delegation Model
+
+- Brain owns decomposition, ordering, judgment, result review, and final synthesis.
+- Delegated agents are scoped execution sessions, not independent planners for the whole task.
+- Keep the work in Brain when the hard part is a product/design judgment, a gnarly bug that needs one coherent thread, or a plan that cannot yet be cleanly split.
+- Use delegated agents for clean subtasks that can be checked independently: reading a bounded area, making a scoped edit, running verification, reproducing a bug, or comparing alternatives.
+- Run independent delegated subtasks in parallel when it reduces elapsed time without creating shared-state risk.
 
 ## Default Behavior
 
@@ -902,39 +961,45 @@ Every delegated prompt should include:
 - Workspace
 - Objective
 - Context
+- One concern
 - Acceptance criteria
 - Safety constraints
 - Verification plan
 - Expected report
 
+Do not ask a delegated agent to invent the plan. Give it enough context to avoid re-exploring the whole repo, a definition of done it can check itself, and the exact report Brain needs to decide quickly.
+
 ## Lifecycle
 
 - Inspect delegated sessions before deciding they are done.
 - Send follow-up instructions when the larger task is still active.
+- Review delegated output before integrating it. If something is off, rewrite the brief and send a focused follow-up or spawn another delegated agent; patch over it yourself only when the fix is trivial.
 - Close only Brain-owned sessions with delegated=true, and only after the result is recorded or reported.
 - Ask the user only for critical missing context, high-risk or irreversible actions, credentials/permissions, or value judgments.
 `
 
-const defaultEnginePolicy = `# Brain Engine Policy
+const defaultEnginePolicy = `# Brain Executor Policy
 
-The active Brain engine is the default delegated executor.
+Brain separates the Host Executor from the Delegated Executor.
 
 ## Rules
 
-- Default delegated agents to the current Brain engine.
+- The active Brain host executor is the orchestrator for planning, delegation, review, and final synthesis.
+- Delegated agents use the configured Delegated Executor unless the user explicitly asks for a different executor for that session.
+- delegated_executor controls delegated execution and ordinary non-Brain session creation.
 - Use a different executor only when the user explicitly mentions or asks for it, such as @codex, @grok, or @claude.
 - Do not switch executors based on private task-type judgment.
-- If the user explicitly names an engine, honor that instruction for the delegated session.
-- Do not imply the previous engine's hidden model state was transferred; rely on current.md, recent messages, and structured context.
+- If the user explicitly names an executor, honor that instruction for the delegated session.
+- Do not imply the previous executor's hidden model state was transferred; rely on current.md, recent messages, and structured context.
 `
 
 const defaultHandoffPolicy = `# Brain Handoff Policy
 
-Engine switching preserves the visible Brain chat.
+Host executor switching preserves the visible Brain chat.
 
 ## Rules
 
-- Treat an engine switch as a host replacement, not a new conversation.
+- Treat a host executor switch as a host replacement, not a new conversation.
 - Load current.md before continuing a switched or restored Brain session.
 - Use recent visible Brain messages and active delegated agent state as supplemental context.
 - Keep handoff prompts private; they must not be appended as visible chat messages.
@@ -974,11 +1039,37 @@ Suggested filename: ` + "`YYYY-MM-DD-short-title.md`" + `
 ` + "```" + `
 `
 
+var currentDelegationPolicyMarkers = []string{
+	"## Orchestrator / Delegation Model",
+	"Brain owns decomposition, ordering, judgment, result review, and final synthesis",
+	"Delegated agents are scoped execution sessions",
+	"Do not ask a delegated agent to invent the plan",
+	"Review delegated output before integrating it",
+}
+
+var currentEnginePolicyMarkers = []string{
+	"Brain separates the Host Executor from the Delegated Executor",
+	"Delegated agents use the configured Delegated Executor unless the user explicitly asks for a different executor for that session",
+	"Use a different executor only when the user explicitly mentions or asks for it",
+	"Do not switch executors based on private task-type judgment",
+}
+
+var currentHandoffPolicyMarkers = []string{
+	"Host executor switching preserves the visible Brain chat",
+	"Treat a host executor switch as a host replacement, not a new conversation",
+	"Load current.md before continuing a switched or restored Brain session",
+	"Keep handoff prompts private",
+}
+
 var currentWorkspaceInstructionMarkers = []string{
 	"Keep the current active objective, decisions, open threads, and next step in current.md",
 	"Use policies/ for stable Brain orchestration rules",
+	"Delegated agents use the configured Delegated Executor unless the user explicitly asks for a different executor for that session",
 	"Brain is the user's scheduler",
 	"proactively create or reuse visible delegated agent sessions",
+	"Brain is the orchestrator, not the execution pool",
+	"Delegate only clean subtasks with one concern",
+	"inspect their reports before integrating results",
 	"For a single larger task, prefer reusing the same delegated agent session",
 	"zen brain context --json",
 	"zen brain gc --json",
@@ -996,13 +1087,68 @@ var currentWorkspaceInstructionMarkers = []string{
 var staleWorkspaceInstructionSnippets = []string{
 	"Only create or ask for a visible delegated agent session when the user explicitly asks you to delegate real work.",
 	"only when the user asks Brain to delegate real work",
+	"Default delegated agents to the current Brain engine.",
+	"Delegated agents default to the current Brain engine.",
+	"creates a visible delegated agent with the current Brain executor as executor.",
+	"Brain's active engine is the host/orchestrator.",
+	"Brain is the orchestrator, not the worker pool:",
+	"Run independent worker subtasks in parallel",
 }
+
+var staleEnginePolicySnippets = []string{
+	"- Default delegated agents to the current Brain engine.",
+	"- Delegated agents default to the current Brain engine.",
+	"- The active Brain engine is the host/orchestrator for planning, delegation, review, and final synthesis.",
+}
+
+const currentDelegationPolicyAppend = `## Orchestrator / Delegation Model
+
+- Brain owns decomposition, ordering, judgment, result review, and final synthesis.
+- Delegated agents are scoped execution sessions, not independent planners for the whole task.
+- Keep the work in Brain when the hard part is a product/design judgment, a gnarly bug that needs one coherent thread, or a plan that cannot yet be cleanly split.
+- Use delegated agents for clean subtasks that can be checked independently: reading a bounded area, making a scoped edit, running verification, reproducing a bug, or comparing alternatives.
+- Run independent delegated subtasks in parallel when it reduces elapsed time without creating shared-state risk.
+
+## Delegated Brief And Review Gate
+
+- Give each delegated agent one concern, the workspace, enough context to avoid re-exploring the whole repo, acceptance criteria, safety constraints, feasible verification, and a short expected report.
+- Do not ask a delegated agent to invent the plan.
+- Review delegated output before integrating it. If something is off, rewrite the brief and send a focused follow-up or spawn another delegated agent; patch over it yourself only when the fix is trivial.
+`
+
+const currentEnginePolicyAppend = `## Current Executor Rules
+
+Brain separates the Host Executor from the Delegated Executor.
+
+- The active Brain host executor is the orchestrator for planning, delegation, review, and final synthesis.
+- Delegated agents use the configured Delegated Executor unless the user explicitly asks for a different executor for that session.
+- delegated_executor controls delegated execution and ordinary non-Brain session creation.
+- Use a different executor only when the user explicitly mentions or asks for it, such as @codex, @grok, or @claude.
+- Do not switch executors based on private task-type judgment.
+- If the user explicitly names an executor, honor that instruction for the delegated session.
+- Do not imply the previous executor's hidden model state was transferred; rely on current.md, recent messages, and structured context.
+`
+
+const currentHandoffPolicyAppend = `## Current Handoff Rules
+
+- Host executor switching preserves the visible Brain chat.
+- Treat a host executor switch as a host replacement, not a new conversation.
+- Load current.md before continuing a switched or restored Brain session.
+- Use recent visible Brain messages and active delegated agent state as supplemental context.
+- Keep handoff prompts private; they must not be appended as visible chat messages.
+- Reset transcript baselines after handoff so bootstrap and handoff text do not appear as assistant replies.
+- Continue in the user's current language and do not mention the handoff unless asked.
+`
 
 const currentWorkspaceInstructionAppend = `## Current Brain Orchestration Rules
 
 - Keep the current active objective, decisions, open threads, and next step in current.md.
-- Use policies/ for stable Brain orchestration rules; read policies/delegation.md, policies/engine.md, and policies/handoff.md when delegating, switching engines, or recovering context.
+- Use policies/ for stable Brain orchestration rules; read policies/delegation.md, policies/engine.md, and policies/handoff.md when delegating, switching host executors, or recovering context.
+- Brain's active host executor is the orchestrator. Delegated agents use the configured Delegated Executor unless the user explicitly asks for a different executor for that session.
 - Brain is the user's scheduler: reduce decision load. For concrete work needing repository/tool execution, independent progress, parallelism, or follow-up, proactively create or reuse visible delegated agent sessions; stay here for chat, memory, synthesis, reminders, and decisions that fit the current context.
+- Brain is the orchestrator, not the execution pool: keep decomposition, ordering, judgment, result review, and final synthesis in Brain. Use delegated agents for scoped execution.
+- Delegate only clean subtasks with one concern, enough context, acceptance criteria, safety constraints, feasible verification, and a short expected report. Do not ask delegated agents to invent the whole plan.
+- Run independent delegated subtasks in parallel when useful, then inspect their reports before integrating results. Keep coupled design decisions and gnarly single-thread debugging in Brain.
 - For a single larger task, prefer reusing the same delegated agent session across stages. Send follow-up instructions to that session until the task is genuinely complete. Open a separate delegated session only when the work is meaningfully independent, benefits from parallelism, needs a different repository/context, or the current session is blocked or unusable.
 - Use the zen binary to inspect Brain context, perform safe housekeeping, and delegate work. Common command shapes: zen brain context --json; zen brain gc --json; zen agent list --json; zen agent spawn -name "<name>" -cwd <workspace> -prompt "<task>"; zen agent spawn -name "<name>" -executor <executor> -cwd <workspace> -prompt "<task>"; zen agent capture -id <agent_id> --json; zen agent send -id <agent_id> -text "<message>" --submit=true; zen agent close -id <agent_id>.
 - Keep delegated agent lifecycle ownership from spawn through inspection, follow-up, result consolidation, and close. Do not close a delegated session merely because a small stage finished; close it when the larger task is complete or you have intentionally moved the remaining work elsewhere.

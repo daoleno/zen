@@ -6,6 +6,7 @@ import {
 } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 import { Colors, Typography, useAppColors } from "../../constants/tokens";
+import { compactPathLabel } from "../../services/pathDisplay";
 import { AppText } from "../ui";
 
 interface NewTerminalCwdRowProps {
@@ -43,6 +44,7 @@ export function NewTerminalCwdRow({
         tone="primary"
         style={styles.path}
         numberOfLines={1}
+        ellipsizeMode="head"
       >
         {label}
       </AppText>
@@ -58,14 +60,7 @@ function formatCwdLabel(value: string): string {
   if (!trimmed) {
     return "Default directory";
   }
-  if (trimmed === "/") {
-    return "/";
-  }
-  const parts = trimmed.split("/").filter(Boolean);
-  if (parts.length <= 3) {
-    return trimmed.startsWith("/") ? `/${parts.join("/")}` : parts.join("/");
-  }
-  return `…/${parts.slice(-2).join("/")}`;
+  return compactPathLabel(trimmed);
 }
 
 function createStyles(colors: typeof Colors) {

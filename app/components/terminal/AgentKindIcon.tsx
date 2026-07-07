@@ -11,6 +11,7 @@ import { createThemedSurfaces } from '../../constants/themedSurfaces';
 import type { AgentKind } from '../../services/agentPresentation';
 import type { TerminalFlavor } from '../../services/terminalFlavor';
 import { FlavorLetterBadge } from './FlavorLetterBadge';
+import { CursorMark } from '../icons/CursorMark';
 
 type IoniconName = ComponentProps<typeof Ionicons>['name'];
 type MaterialIconName = ComponentProps<typeof MaterialCommunityIcons>['name'];
@@ -114,7 +115,7 @@ export function AgentKindIcon({
     );
   }
 
-  if (kind === 'claude' || kind === 'codex' || kind === 'grok') {
+  if (kind === 'claude' || kind === 'codex' || kind === 'cursor' || kind === 'grok') {
     return content;
   }
 
@@ -146,6 +147,10 @@ function renderContent({
 
   if (kind === 'codex') {
     return <Codex.Color size={iconSize} />;
+  }
+
+  if (kind === 'cursor') {
+    return <CursorMark size={iconSize} color={theme.isLight ? '#000' : '#fff'} />;
   }
 
   if (kind === 'grok') {

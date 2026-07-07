@@ -22,7 +22,7 @@ func IsAgentCommand(command string) bool {
 
 	name := strings.ToLower(filepath.Base(fields[0]))
 	name = strings.TrimSuffix(name, ".exe")
-	return name == "claude" || name == "claude-code" || name == "codex" || name == "grok" || name == "cc"
+	return name == "claude" || name == "claude-code" || name == "codex" || name == "cursor-agent" || name == "grok" || name == "cc"
 }
 
 func IsAgentWorkItem(item *Item) bool {
@@ -37,7 +37,7 @@ func IsAgentWorkItem(item *Item) bool {
 
 func IsNativeAgentSource(source string) bool {
 	switch strings.ToLower(strings.TrimSpace(source)) {
-	case "codex", "claude", "grok":
+	case "codex", "claude", "cursor", "grok":
 		return true
 	default:
 		return false

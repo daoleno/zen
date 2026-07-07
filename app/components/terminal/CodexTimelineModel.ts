@@ -628,7 +628,7 @@ function activityFromEvent(event: CodexConversationEvent): ZenTimelineItem | nul
         icon: statusActivityIcon(event.status),
         detail,
         body: body || undefined,
-        bodyKind: body && statusActivityTone(event.status) === "failed" ? "terminal" : undefined,
+        bodyKind: statusActivityBodyKind(event, body),
         defaultExpanded: event.status === "failed" || event.status === "running",
       };
     }
@@ -1384,6 +1384,19 @@ function statusActivityDetail(body: string) {
   }
   const firstLine = clean.split("\n").find((line) => line.trim())?.trim() || clean;
   return truncateRunes(firstLine, 140);
+}
+
+function statusActivityBodyKind(
+  event: CodexConversationEvent,
+  body: string,
+): ZenActivityTimelineItem["bodyKind"] {
+  if (!body) {
+    return undefined;
+  }
+  if (event.source === "terminal_snapshot") {
+    return "terminal";
+  }
+  return statusActivityTone(event.status) === "failed" ? "terminal" : undefined;
 }
 
 function commandSummary(command: string) {

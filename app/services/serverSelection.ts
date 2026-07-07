@@ -1,4 +1,5 @@
 import type { Agent, ConnectionState } from "../store/agents";
+import { compactPathLabel } from "./pathDisplay";
 import type { ServerLatencySample } from "./serverLatency";
 import type { StoredServer } from "./storage";
 
@@ -120,9 +121,10 @@ export function groupAgentsByDirectory(
     if (directory) {
       key = `${agent.serverId}::cwd::${directory}`;
       title = basename(directory);
+      const directoryLabel = compactPathLabel(directory);
       subtitle = options.showServerName && serverName
-        ? `${serverName} · ${directory}`
-        : directory;
+        ? `${serverName} · ${directoryLabel}`
+        : directoryLabel;
     } else if (project) {
       key = `${agent.serverId}::project::${project}`;
       title = project;

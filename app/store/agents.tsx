@@ -33,6 +33,7 @@ export type ConnectionState = 'offline' | 'connecting' | 'connected';
 
 interface State {
   agents: Agent[];
+  agentCountsByServer: Record<string, number>;
   serverConnections: Record<string, ConnectionState>;
   serverConnectionIssues: Record<string, ConnectionIssue | null>;
   serverLatencyById: Record<string, ServerLatencySample | undefined>;
@@ -83,6 +84,7 @@ type Action =
 
 const initialState: State = {
   agents: [],
+  agentCountsByServer: {},
   serverConnections: {},
   serverConnectionIssues: {},
   serverLatencyById: {},
@@ -92,9 +94,35 @@ const initialState: State = {
 function reducer(state: State, action: Action): State {
   switch (action.type) {
     case 'UPSERT_SERVER_AGENTS': {
-      const nextAgents = action.agents.map(agent =>
-        normalizeAgent(agent, action.serverId, action.serverName, action.serverUrl),
+      const previousServerAgents = state.agents.filter(agent => agent.serverId === action.serverId);
+      const previousByKey = new Map(previousServerAgents.map(agent => [agent.key, agent]));
+      let agentsChanged = previousServerAgents.length !== action.agents.length;
+      const nextAgents = action.agents.map((agent, index) => {
+        const normalized = normalizeAgent(agent, action.serverId, action.serverName, action.serverUrl);
+        const previous = previousByKey.get(normalized.key);
+        if (previousServerAgents[index]?.key !== normalized.key) {
+          agentsChanged = true;
+        }
+        if (previous && agentsEqual(previous, normalized)) {
+          return previous;
+        }
+        agentsChanged = true;
+        return normalized;
+      });
+      const hydratedServers = markServerHydrated(state.hydratedServers, action.serverId);
+      const agentCountsByServer = setServerAgentCount(
+        state.agentCountsByServer,
+        action.serverId,
+        nextAgents.length,
       );
+
+      if (
+        !agentsChanged &&
+        hydratedServers === state.hydratedServers &&
+        agentCountsByServer === state.agentCountsByServer
+      ) {
+        return state;
+      }
 
       return {
         ...state,
@@ -102,34 +130,58 @@ function reducer(state: State, action: Action): State {
           ...state.agents.filter(agent => agent.serverId !== action.serverId),
           ...nextAgents,
         ],
-        hydratedServers: {
-          ...state.hydratedServers,
-          [action.serverId]: true,
-        },
+        agentCountsByServer,
+        hydratedServers,
       };
     }
     case 'UPSERT_AGENT': {
       const nextAgent = normalizeAgent(action.agent, action.serverId, action.serverName, action.serverUrl);
-      const exists = state.agents.some(agent => agent.key === nextAgent.key);
+      const existingIndex = state.agents.findIndex(agent => agent.key === nextAgent.key);
+      const existing = existingIndex >= 0 ? state.agents[existingIndex] : undefined;
+      const hydratedServers = markServerHydrated(state.hydratedServers, action.serverId);
+      const agentCountsByServer = existing
+        ? state.agentCountsByServer
+        : setServerAgentCount(
+            state.agentCountsByServer,
+            action.serverId,
+            (state.agentCountsByServer[action.serverId] ?? 0) + 1,
+          );
+      if (
+        existing &&
+        agentsEqual(existing, nextAgent) &&
+        hydratedServers === state.hydratedServers &&
+        agentCountsByServer === state.agentCountsByServer
+      ) {
+        return state;
+      }
       return {
         ...state,
-        agents: exists
+        agents: existing
           ? state.agents.map(agent => (agent.key === nextAgent.key ? nextAgent : agent))
           : [...state.agents, nextAgent],
-        hydratedServers: {
-          ...state.hydratedServers,
-          [action.serverId]: true,
-        },
+        agentCountsByServer,
+        hydratedServers,
       };
     }
     case 'REMOVE_AGENT': {
       const targetKey = makeSessionKey(action.serverId, action.agent_id);
+      if (!state.agents.some(agent => agent.key === targetKey)) {
+        return state;
+      }
       return {
         ...state,
         agents: state.agents.filter(agent => agent.key !== targetKey),
+        agentCountsByServer: setServerAgentCount(
+          state.agentCountsByServer,
+          action.serverId,
+          Math.max(0, (state.agentCountsByServer[action.serverId] ?? 0) - 1),
+        ),
       };
     }
     case 'SET_SERVER_CONNECTION_STATE':
+      if (state.serverConnections[action.serverId] === action.connectionState) {
+        return state;
+      }
       return {
         ...state,
         serverConnections: {
@@ -138,6 +190,9 @@ function reducer(state: State, action: Action): State {
         },
       };
     case 'SET_SERVER_CONNECTION_ISSUE':
+      if (connectionIssuesEqual(state.serverConnectionIssues[action.serverId] ?? null, action.issue)) {
+        return state;
+      }
       return {
         ...state,
         serverConnectionIssues: {
@@ -146,6 +201,9 @@ function reducer(state: State, action: Action): State {
         },
       };
     case 'SET_SERVER_LATENCY':
+      if (serverLatencySamplesEqual(state.serverLatencyById[action.serverId], action.sample)) {
+        return state;
+      }
       return {
         ...state,
         serverLatencyById: {
@@ -154,9 +212,22 @@ function reducer(state: State, action: Action): State {
         },
       };
     case 'REMOVE_SERVER':
+      if (
+        !state.agents.some(agent => agent.serverId === action.serverId) &&
+        !(action.serverId in state.agentCountsByServer) &&
+        !(action.serverId in state.serverConnections) &&
+        !(action.serverId in state.serverConnectionIssues) &&
+        !(action.serverId in state.serverLatencyById) &&
+        !(action.serverId in state.hydratedServers)
+      ) {
+        return state;
+      }
       return {
         ...state,
         agents: state.agents.filter(agent => agent.serverId !== action.serverId),
+        agentCountsByServer: Object.fromEntries(
+          Object.entries(state.agentCountsByServer).filter(([serverId]) => serverId !== action.serverId),
+        ),
         serverConnections: Object.fromEntries(
           Object.entries(state.serverConnections).filter(([serverId]) => serverId !== action.serverId),
         ),
@@ -173,6 +244,120 @@ function reducer(state: State, action: Action): State {
     default:
       return state;
   }
+}
+
+function setServerAgentCount(
+  counts: State['agentCountsByServer'],
+  serverId: string,
+  count: number,
+): State['agentCountsByServer'] {
+  const nextCount = Math.max(0, count);
+  if ((counts[serverId] ?? 0) === nextCount) {
+    return counts;
+  }
+  if (nextCount === 0) {
+    if (!(serverId in counts)) {
+      return counts;
+    }
+    const next = { ...counts };
+    delete next[serverId];
+    return next;
+  }
+  return {
+    ...counts,
+    [serverId]: nextCount,
+  };
+}
+
+function markServerHydrated(
+  hydratedServers: State['hydratedServers'],
+  serverId: string,
+): State['hydratedServers'] {
+  if (hydratedServers[serverId]) {
+    return hydratedServers;
+  }
+  return {
+    ...hydratedServers,
+    [serverId]: true,
+  };
+}
+
+function agentsEqual(left: Agent, right: Agent): boolean {
+  return (
+    left === right ||
+    (
+      left.key === right.key &&
+      left.id === right.id &&
+      left.serverId === right.serverId &&
+      left.serverName === right.serverName &&
+      left.serverUrl === right.serverUrl &&
+      left.name === right.name &&
+      left.status === right.status &&
+      left.project === right.project &&
+      left.cwd === right.cwd &&
+      left.command === right.command &&
+      left.summary === right.summary &&
+      left.phase === right.phase &&
+      left.attention === right.attention &&
+      left.task_class === right.task_class &&
+      left.event_kind === right.event_kind &&
+      left.details_json === right.details_json &&
+      left.needs_attention === right.needs_attention &&
+      stringArraysEqual(left.last_output_lines, right.last_output_lines) &&
+      left.started_at === right.started_at &&
+      left.updated_at === right.updated_at &&
+      left.process_id === right.process_id &&
+      left.delegated === right.delegated
+    )
+  );
+}
+
+function connectionIssuesEqual(
+  left: ConnectionIssue | null | undefined,
+  right: ConnectionIssue | null | undefined,
+): boolean {
+  if (left === right) {
+    return true;
+  }
+  if (!left || !right) {
+    return false;
+  }
+  return (
+    left.code === right.code &&
+    left.title === right.title &&
+    left.detail === right.detail &&
+    left.hint === right.hint &&
+    left.checkedAt === right.checkedAt &&
+    left.httpStatus === right.httpStatus
+  );
+}
+
+function serverLatencySamplesEqual(
+  left: ServerLatencySample | undefined,
+  right: ServerLatencySample | undefined,
+): boolean {
+  if (left === right) {
+    return true;
+  }
+  if (!left || !right) {
+    return false;
+  }
+  return left.latencyMs === right.latencyMs && left.measuredAt === right.measuredAt;
+}
+
+function stringArraysEqual(left: string[], right: string[]): boolean {
+  if (left === right) {
+    return true;
+  }
+  if (left.length !== right.length) {
+    return false;
+  }
+  for (let index = 0; index < left.length; index += 1) {
+    if (left[index] !== right[index]) {
+      return false;
+    }
+  }
+  return true;
 }
 
 function normalizeAgent(
@@ -227,12 +412,40 @@ function normalizeTimestamp(value: RawAgent['updated_at']): number {
 }
 
 const AgentContext = createContext<{ state: State; dispatch: React.Dispatch<Action> } | null>(null);
+const AgentServerSummaryContext = createContext<{
+  agentCountsByServer: State['agentCountsByServer'];
+  serverConnections: State['serverConnections'];
+  serverConnectionIssues: State['serverConnectionIssues'];
+  serverLatencyById: State['serverLatencyById'];
+  hydratedServers: State['hydratedServers'];
+  dispatch: React.Dispatch<Action>;
+} | null>(null);
 
 export function AgentProvider({ children }: { children: ReactNode }) {
   const [state, dispatch] = useReducer(reducer, initialState);
+  const value = React.useMemo(() => ({ state, dispatch }), [state]);
+  const serverSummaryValue = React.useMemo(
+    () => ({
+      agentCountsByServer: state.agentCountsByServer,
+      serverConnections: state.serverConnections,
+      serverConnectionIssues: state.serverConnectionIssues,
+      serverLatencyById: state.serverLatencyById,
+      hydratedServers: state.hydratedServers,
+      dispatch,
+    }),
+    [
+      state.agentCountsByServer,
+      state.hydratedServers,
+      state.serverConnectionIssues,
+      state.serverConnections,
+      state.serverLatencyById,
+    ],
+  );
   return (
-    <AgentContext.Provider value={{ state, dispatch }}>
-      {children}
+    <AgentContext.Provider value={value}>
+      <AgentServerSummaryContext.Provider value={serverSummaryValue}>
+        {children}
+      </AgentServerSummaryContext.Provider>
     </AgentContext.Provider>
   );
 }
@@ -240,5 +453,13 @@ export function AgentProvider({ children }: { children: ReactNode }) {
 export function useAgents() {
   const ctx = useContext(AgentContext);
   if (!ctx) throw new Error('useAgents must be used within AgentProvider');
+  return ctx;
+}
+
+export function useAgentServerSummary() {
+  const ctx = useContext(AgentServerSummaryContext);
+  if (!ctx) {
+    throw new Error('useAgentServerSummary must be used within AgentProvider');
+  }
   return ctx;
 }

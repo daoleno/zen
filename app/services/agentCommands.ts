@@ -2,10 +2,11 @@ const QUOTE_TRIM_RE = /^['"]|['"]$/g;
 
 export const CLAUDE_CODE_COMMAND = "claude --dangerously-skip-permissions";
 export const CODEX_COMMAND = "codex --dangerously-bypass-approvals-and-sandbox";
+export const CURSOR_AGENT_COMMAND = "cursor-agent --force --sandbox disabled";
 export const GROK_COMMAND =
   "grok --no-alt-screen --permission-mode bypassPermissions";
 
-export type SupportedAgentID = "claude" | "codex" | "grok";
+export type SupportedAgentID = "claude" | "codex" | "cursor" | "grok";
 
 export interface SupportedAgentTarget {
   id: SupportedAgentID;
@@ -29,6 +30,13 @@ export const SUPPORTED_AGENT_TARGETS: SupportedAgentTarget[] = [
     label: "Codex",
     command: CODEX_COMMAND,
     description: "Autonomous Codex run for this work item.",
+  },
+  {
+    id: "cursor",
+    handle: "agent",
+    label: "Cursor Agent",
+    command: CURSOR_AGENT_COMMAND,
+    description: "Autonomous Cursor Agent run for this work item.",
   },
   {
     id: "grok",
@@ -91,6 +99,19 @@ export function isGrokCommand(command?: string) {
     normalized === "grok" ||
     normalized.startsWith("grok ") ||
     commandBinary(normalized) === "grok"
+  );
+}
+
+export function isCursorAgentCommand(command?: string) {
+  const normalized = normalizeCommand(command);
+  if (!normalized) {
+    return false;
+  }
+
+  return (
+    normalized === "cursor-agent" ||
+    normalized.startsWith("cursor-agent ") ||
+    commandBinary(normalized) === "cursor-agent"
   );
 }
 

@@ -77,6 +77,8 @@ type CodexPlanStep struct {
 
 func LoadCodexConversationForAgent(agent classifier.Agent, now time.Time) (CodexConversation, error) {
 	switch agentToolName(agent.Command, agent.Name) {
+	case "cursor":
+		return loadCursorConversationForAgent(agent, now)
 	case "grok":
 		return loadGrokConversationForAgent(agent, now)
 	case "codex":
@@ -124,6 +126,70 @@ func LoadCodexConversationForAgent(agent classifier.Agent, now time.Time) (Codex
 	return conversation, nil
 }
 
+// ShouldUseTerminalSnapshotConversationFallback reports whether a session can
+// use tmux pane content when no native structured transcript is available.
+func ShouldUseTerminalSnapshotConversationFallback(agent classifier.Agent, conversation CodexConversation) bool {
+	if conversation.Available || conversation.Reason != "not_structured_agent" {
+		return false
+	}
+	return agentToolName(agent.Command, agent.Name) == "cursor"
+}
+
+// TerminalSnapshotConversationForAgent adapts visible terminal output into the
+// same conversation shape used by native agent chat surfaces.
+func TerminalSnapshotConversationForAgent(agent classifier.Agent, snapshot string, now time.Time) CodexConversation {
+	active := agent.State == classifier.StateRunning
+	conversation := CodexConversation{
+		Available: false,
+		Reason:    "terminal_snapshot_empty",
+		Source:    "terminal_snapshot",
+		SessionID: agent.ID,
+		CWD:       agent.Cwd,
+		Updated:   &now,
+		Active:    &active,
+		Events:    []CodexConversationEvent{},
+	}
+	body := truncateConversationBody(snapshot)
+	if body == "" {
+		return conversation
+	}
+
+	conversation.Available = true
+	conversation.Reason = ""
+	conversation.Events = []CodexConversationEvent{
+		{
+			ID:     firstNonEmpty(agent.ID, agent.Name, "terminal") + ":terminal-snapshot",
+			Seq:    1,
+			Kind:   "status",
+			Title:  "Terminal snapshot",
+			Status: "done",
+			Body:   body,
+			Source: "terminal_snapshot",
+		},
+	}
+	return conversation
+}
+
+// TerminalSnapshotConversationUnavailableForAgent returns a stable unavailable
+// conversation for sessions whose pane cannot be captured.
+func TerminalSnapshotConversationUnavailableForAgent(agent classifier.Agent, reason string, now time.Time) CodexConversation {
+	reason = strings.TrimSpace(reason)
+	if reason == "" {
+		reason = "terminal_snapshot_unavailable"
+	}
+	active := agent.State == classifier.StateRunning
+	return CodexConversation{
+		Available: false,
+		Reason:    reason,
+		Source:    "terminal_snapshot",
+		SessionID: agent.ID,
+		CWD:       agent.Cwd,
+		Updated:   &now,
+		Active:    &active,
+		Events:    []CodexConversationEvent{},
+	}
+}
+
 func loadCachedCodexConversation(path string) (CodexConversation, error) {
 	info, err := os.Stat(path)
 	if err != nil {
@@ -162,14 +228,21 @@ func parseCodexConversation(path string) (CodexConversation, error) {
 	}
 	defer file.Close()
 
+	if err := seekCodexConversationTail(file); err != nil {
+		return CodexConversation{}, err
+	}
+	lineOffset, err := file.Seek(0, io.SeekCurrent)
+	if err != nil {
+		return CodexConversation{}, err
+	}
 	builder := newCodexConversationBuilder(filepath.Base(path))
 	reader := bufio.NewReader(file)
-	lineNumber := 0
 	for {
+		currentLineOffset := lineOffset
 		line, err := reader.ReadBytes('\n')
+		lineOffset += int64(len(line))
 		if len(bytes.TrimSpace(line)) > 0 {
-			lineNumber++
-			builder.consumeLine(lineNumber, line)
+			builder.consumeLine(codexConversationLineMarker(currentLineOffset), line)
 		}
 		if err != nil {
 			if err == io.EOF {
@@ -179,6 +252,13 @@ func parseCodexConversation(path string) (CodexConversation, error) {
 		}
 	}
 	return builder.conversation(), nil
+}
+
+func codexConversationLineMarker(offset int64) int {
+	if offset < 0 {
+		return 1
+	}
+	return int(offset) + 1
 }
 
 func seekCodexConversationTail(file *os.File) error {
@@ -1138,11 +1218,25 @@ func filterVisibleCodexPlanSteps(steps []CodexPlanStep) []CodexPlanStep {
 func (b *codexConversationBuilder) reindexEvents() {
 	b.eventByCall = map[string]int{}
 	for index := range b.events {
-		b.events[index].Seq = index + 1
+		if b.events[index].Seq <= 0 {
+			b.events[index].Seq = stableCodexEventSeq(b.events[index].ID, index)
+		}
 		if callID := strings.TrimSpace(b.events[index].CallID); callID != "" {
 			b.eventByCall[callID] = index
 		}
 	}
+}
+
+func stableCodexEventSeq(eventID string, fallbackIndex int) int {
+	trimmed := strings.TrimSpace(eventID)
+	if trimmed != "" {
+		if separator := strings.LastIndex(trimmed, ":"); separator >= 0 && separator+1 < len(trimmed) {
+			if value, err := strconv.Atoi(trimmed[separator+1:]); err == nil && value > 0 {
+				return value
+			}
+		}
+	}
+	return fallbackIndex + 1
 }
 
 func (b *codexConversationBuilder) eventID(lineNumber int) string {

@@ -34,6 +34,7 @@ type BridgeMessage =
     };
 
 type TerminalViewportMode = 'live' | 'scrolled';
+type RendererCommand = 'blur' | 'resumeInput' | 'scrollToBottom';
 
 type RendererStateMessage =
   | { type: 'renderSnapshot'; snapshot: RenderSnapshot }
@@ -78,6 +79,7 @@ export function useGhosttyTerminalController({
   const inputRef = useRef<TerminalInputHandleRef>(null);
   const webReadyRef = useRef(false);
   const pendingRef = useRef<RendererStateMessage[]>([]);
+  const pendingRendererCommandRef = useRef<RendererCommand | null>(null);
   const pendingTerminalRef = useRef<PendingTerminalEvent[]>([]);
   const renderFrameRef = useRef<number>(0);
   const pendingRemoteScrollRef = useRef(0);
@@ -123,11 +125,7 @@ export function useGhosttyTerminalController({
     setViewportModeState((current) => (current === next ? current : next));
   }, []);
 
-  const runRendererCommand = useCallback((command: 'blur' | 'resumeInput' | 'scrollToBottom') => {
-    if (!webReadyRef.current) {
-      return;
-    }
-
+  const injectRendererCommand = useCallback((command: RendererCommand) => {
     let script = '';
     if (command === 'blur') {
       script = 'window.__zenBlur && window.__zenBlur(); true;';
@@ -141,6 +139,15 @@ export function useGhosttyTerminalController({
       webviewRef.current?.injectJavaScript(script);
     }
   }, []);
+
+  const runRendererCommand = useCallback((command: RendererCommand) => {
+    if (!webReadyRef.current) {
+      pendingRendererCommandRef.current = command;
+      return;
+    }
+
+    injectRendererCommand(command);
+  }, [injectRendererCommand]);
 
   const flushRenderState = useCallback(() => {
     renderFrameRef.current = 0;
@@ -376,6 +383,11 @@ export function useGhosttyTerminalController({
         for (const message of queued) {
           injectRendererMessage(message);
         }
+        const pendingCommand = pendingRendererCommandRef.current;
+        pendingRendererCommandRef.current = null;
+        if (pendingCommand) {
+          injectRendererCommand(pendingCommand);
+        }
         scheduleRenderState();
         return;
       }
@@ -489,6 +501,7 @@ export function useGhosttyTerminalController({
   }, [
     ghostty,
     injectRendererMessage,
+    injectRendererCommand,
     postToRenderer,
     resize,
     flushPendingTerminal,

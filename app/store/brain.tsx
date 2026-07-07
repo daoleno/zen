@@ -23,13 +23,15 @@ export type BrainAdapterRef = {
   command?: string;
   runtime?: string;
   capabilities?: BrainAdapterCapabilities;
-  preferred?: boolean;
+  host?: boolean;
+  delegated?: boolean;
 };
 
 export type BrainSnapshot = {
   agents?: BrainAgentRef[];
   host_agent?: BrainAgentRef | null;
   host_adapter?: BrainAdapterRef | null;
+  delegated_adapter?: BrainAdapterRef | null;
   adapters?: BrainAdapterRef[];
   chat_thread_id?: string;
   workspace?: string;
@@ -51,7 +53,11 @@ export const initialBrainState: BrainState = {
   byServer: {},
 };
 
-type RawBrainSnapshot = Partial<BrainSnapshot>;
+type RawBrainSnapshot = Partial<BrainSnapshot> & {
+  host_executor?: BrainAdapterRef | null;
+  delegated_executor?: BrainAdapterRef | null;
+  executors?: BrainAdapterRef[];
+};
 
 type Action =
   | {
@@ -69,6 +75,13 @@ function normalizeSnapshot(
   serverName: string,
   serverUrl: string,
 ): BrainServerState {
+  const hostAdapter = raw?.host_adapter ?? raw?.host_executor;
+  const delegatedAdapter = raw?.delegated_adapter ?? raw?.delegated_executor;
+  const adapters = Array.isArray(raw?.adapters)
+    ? raw.adapters
+    : Array.isArray(raw?.executors)
+      ? raw.executors
+      : [];
   return {
     serverId,
     serverName,
@@ -82,12 +95,14 @@ function normalizeSnapshot(
         ? normalizeAgentRef(raw.host_agent)
         : undefined,
     host_adapter:
-      raw?.host_adapter && typeof raw.host_adapter === "object"
-        ? normalizeAdapterRef(raw.host_adapter)
+      hostAdapter && typeof hostAdapter === "object"
+        ? normalizeAdapterRef(hostAdapter)
         : undefined,
-    adapters: Array.isArray(raw?.adapters)
-      ? raw.adapters.map(normalizeAdapterRef).filter((adapter) => adapter.id)
-      : [],
+    delegated_adapter:
+      delegatedAdapter && typeof delegatedAdapter === "object"
+        ? normalizeAdapterRef(delegatedAdapter)
+        : undefined,
+    adapters: adapters.map(normalizeAdapterRef).filter((adapter) => adapter.id),
     chat_thread_id:
       typeof raw?.chat_thread_id === "string"
         ? raw.chat_thread_id
@@ -121,8 +136,9 @@ function normalizeAdapterRef(raw: any): BrainAdapterRef {
     command: typeof raw?.command === "string" ? raw.command : undefined,
     runtime: typeof raw?.runtime === "string" ? raw.runtime : undefined,
     capabilities: normalizeAdapterCapabilities(raw?.capabilities),
-    preferred:
-      typeof raw?.preferred === "boolean" ? raw.preferred : undefined,
+    host: typeof raw?.host === "boolean" ? raw.host : undefined,
+    delegated:
+      typeof raw?.delegated === "boolean" ? raw.delegated : undefined,
   };
 }
 
@@ -145,6 +161,9 @@ function brainReducer(state: BrainState, action: Action): BrainState {
         action.serverName,
         action.serverUrl,
       );
+      if (brainServerStatesEqual(state.byServer[action.serverId], next)) {
+        return state;
+      }
       return {
         ...state,
         byServer: {
@@ -154,6 +173,9 @@ function brainReducer(state: BrainState, action: Action): BrainState {
       };
     }
     case "REMOVE_SERVER": {
+      if (!(action.serverId in state.byServer)) {
+        return state;
+      }
       const byServer = { ...state.byServer };
       delete byServer[action.serverId];
       return { byServer };
@@ -163,6 +185,127 @@ function brainReducer(state: BrainState, action: Action): BrainState {
   }
 }
 
+function brainServerStatesEqual(
+  left: BrainServerState | undefined,
+  right: BrainServerState,
+): boolean {
+  if (left === right) {
+    return true;
+  }
+  if (!left) {
+    return false;
+  }
+  return (
+    left.serverId === right.serverId &&
+    left.serverName === right.serverName &&
+    left.serverUrl === right.serverUrl &&
+    left.hydrated === right.hydrated &&
+    left.chat_thread_id === right.chat_thread_id &&
+    left.workspace === right.workspace &&
+    agentRefsEqual(left.host_agent, right.host_agent) &&
+    adapterRefsEqual(left.host_adapter, right.host_adapter) &&
+    adapterRefsEqual(left.delegated_adapter, right.delegated_adapter) &&
+    agentRefArraysEqual(left.agents ?? [], right.agents ?? []) &&
+    adapterRefArraysEqual(left.adapters ?? [], right.adapters ?? [])
+  );
+}
+
+function agentRefArraysEqual(
+  left: BrainAgentRef[],
+  right: BrainAgentRef[],
+): boolean {
+  if (left === right) {
+    return true;
+  }
+  if (left.length !== right.length) {
+    return false;
+  }
+  for (let index = 0; index < left.length; index += 1) {
+    if (!agentRefsEqual(left[index], right[index])) {
+      return false;
+    }
+  }
+  return true;
+}
+
+function agentRefsEqual(
+  left: BrainAgentRef | null | undefined,
+  right: BrainAgentRef | null | undefined,
+): boolean {
+  if (left === right) {
+    return true;
+  }
+  if (!left || !right) {
+    return false;
+  }
+  return (
+    left.id === right.id &&
+    left.name === right.name &&
+    left.status === right.status &&
+    left.summary === right.summary &&
+    left.cwd === right.cwd &&
+    left.command === right.command &&
+    left.updated_at === right.updated_at &&
+    left.delegated === right.delegated
+  );
+}
+
+function adapterRefArraysEqual(
+  left: BrainAdapterRef[],
+  right: BrainAdapterRef[],
+): boolean {
+  if (left === right) {
+    return true;
+  }
+  if (left.length !== right.length) {
+    return false;
+  }
+  for (let index = 0; index < left.length; index += 1) {
+    if (!adapterRefsEqual(left[index], right[index])) {
+      return false;
+    }
+  }
+  return true;
+}
+
+function adapterRefsEqual(
+  left: BrainAdapterRef | null | undefined,
+  right: BrainAdapterRef | null | undefined,
+): boolean {
+  if (left === right) {
+    return true;
+  }
+  if (!left || !right) {
+    return false;
+  }
+  return (
+    left.id === right.id &&
+    left.name === right.name &&
+    left.provider === right.provider &&
+    left.command === right.command &&
+    left.runtime === right.runtime &&
+    left.host === right.host &&
+    left.delegated === right.delegated &&
+    adapterCapabilitiesEqual(left.capabilities, right.capabilities)
+  );
+}
+
+function adapterCapabilitiesEqual(
+  left: BrainAdapterCapabilities | undefined,
+  right: BrainAdapterCapabilities | undefined,
+): boolean {
+  if (left === right) {
+    return true;
+  }
+  if (!left || !right) {
+    return false;
+  }
+  return (
+    left.interactive_tty === right.interactive_tty &&
+    left.structured_events === right.structured_events
+  );
+}
+
 const BrainContext = createContext<{
   state: BrainState;
   dispatch: React.Dispatch<Action>;
@@ -170,8 +313,9 @@ const BrainContext = createContext<{
 
 export function BrainProvider({ children }: { children: ReactNode }) {
   const [state, dispatch] = useReducer(brainReducer, initialBrainState);
+  const value = React.useMemo(() => ({ state, dispatch }), [state]);
   return (
-    <BrainContext.Provider value={{ state, dispatch }}>
+    <BrainContext.Provider value={value}>
       {children}
     </BrainContext.Provider>
   );

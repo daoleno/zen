@@ -174,6 +174,12 @@ func findGrokSession(agent classifier.Agent, now time.Time) (grokSessionCandidat
 		return grokSessionCandidate{}, false, nil
 	}
 
+	if sessionID := grokResumeSessionID(agent.Command); sessionID != "" {
+		if matched, ok := matchGrokSessionID(candidates, sessionID); ok {
+			return matched, true, nil
+		}
+	}
+
 	freshCandidates := freshGrokSessionCandidates(candidates, now)
 	if len(freshCandidates) == 0 {
 		return grokSessionCandidate{}, false, nil
@@ -187,6 +193,20 @@ func findGrokSession(agent classifier.Agent, now time.Time) (grokSessionCandidat
 	return grokSessionCandidate{}, false, nil
 }
 
+func matchGrokSessionID(candidates []grokSessionCandidate, sessionID string) (grokSessionCandidate, bool) {
+	sessionID = strings.TrimSpace(strings.ToLower(sessionID))
+	if sessionID == "" {
+		return grokSessionCandidate{}, false
+	}
+	for _, candidate := range candidates {
+		if strings.ToLower(strings.TrimSpace(candidate.ID)) == sessionID ||
+			strings.ToLower(filepath.Base(candidate.Dir)) == sessionID {
+			return candidate, true
+		}
+	}
+	return grokSessionCandidate{}, false
+}
+
 func freshGrokSessionCandidates(candidates []grokSessionCandidate, now time.Time) []grokSessionCandidate {
 	if len(candidates) == 0 {
 		return nil
@@ -198,6 +218,32 @@ func freshGrokSessionCandidates(candidates []grokSessionCandidate, now time.Time
 		}
 	}
 	return fresh
+}
+
+func grokResumeSessionID(command string) string {
+	fields := strings.Fields(strings.ToLower(strings.TrimSpace(command)))
+	if len(fields) == 0 {
+		return ""
+	}
+	if filepath.Base(strings.Trim(fields[0], `"'`)) != "grok" {
+		return ""
+	}
+	for index, field := range fields[1:] {
+		field = strings.Trim(field, `"'`)
+		switch {
+		case field == "resume" || field == "--resume":
+			nextIndex := index + 2
+			if nextIndex < len(fields) {
+				sessionID := strings.Trim(fields[nextIndex], `"'`)
+				if sessionID != "" && !strings.HasPrefix(sessionID, "-") {
+					return sessionID
+				}
+			}
+		case strings.HasPrefix(field, "--resume="):
+			return strings.Trim(strings.TrimPrefix(field, "--resume="), `"'`)
+		}
+	}
+	return ""
 }
 
 func matchGrokSessionToAgentStart(candidates []grokSessionCandidate, startedAt time.Time) (grokSessionCandidate, bool) {
@@ -596,15 +642,15 @@ func (b *grokConversationBuilder) addToolStart(lineNumber int, timestamp, callID
 		status = "running"
 	}
 	event := CodexConversationEvent{
-		ID:       b.eventID(lineNumber),
+		ID:        b.eventID(lineNumber),
 		Timestamp: timestamp,
-		Kind:     "tool",
-		Title:    "Tool",
-		ToolName: name,
-		Input:    truncateConversationBody(input),
-		CallID:   callID,
-		Status:   status,
-		Source:   "grok_session",
+		Kind:      "tool",
+		Title:     "Tool",
+		ToolName:  name,
+		Input:     truncateConversationBody(input),
+		CallID:    callID,
+		Status:    status,
+		Source:    "grok_session",
 	}
 	if callID != "" {
 		if index, exists := b.eventByCall[callID]; exists && index >= 0 && index < len(b.events) {
@@ -642,15 +688,15 @@ func (b *grokConversationBuilder) updateToolOutput(lineNumber int, timestamp, ca
 		return
 	}
 	b.addEvent(CodexConversationEvent{
-		ID:       b.eventID(lineNumber),
+		ID:        b.eventID(lineNumber),
 		Timestamp: timestamp,
-		Kind:     "tool",
-		Title:    "Tool output",
-		ToolName: "tool",
-		Output:   output,
-		CallID:   callID,
-		Status:   codexToolOutputStatus(output),
-		Source:   "grok_session",
+		Kind:      "tool",
+		Title:     "Tool output",
+		ToolName:  "tool",
+		Output:    output,
+		CallID:    callID,
+		Status:    codexToolOutputStatus(output),
+		Source:    "grok_session",
 	})
 }
 

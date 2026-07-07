@@ -11,11 +11,16 @@ func TestLoadExecutors_Defaults(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LoadExecutors: %v", err)
 	}
-	if cfg.Default != "claude" {
-		t.Fatalf("default = %q", cfg.Default)
+	if cfg.DelegatedExecutor != "codex" {
+		t.Fatalf("delegated executor = %q", cfg.DelegatedExecutor)
 	}
 	if _, ok := cfg.ByName["claude"]; !ok {
 		t.Fatal("claude missing")
+	}
+	if agent, ok := cfg.ByName["agent"]; !ok {
+		t.Fatal("agent missing")
+	} else if agent.Command != "cursor-agent --force --sandbox disabled" || agent.Kind != "cursor" {
+		t.Fatalf("agent = %+v", agent)
 	}
 	if _, ok := cfg.ByName["codex"]; !ok {
 		t.Fatal("codex missing")
@@ -29,7 +34,7 @@ func TestLoadExecutors_CustomFile(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "executors.toml")
 	err := os.WriteFile(path, []byte(`
-default_executor = "codex"
+delegated_executor = "gpt5"
 
 [[executors]]
 name = "claude"
@@ -51,8 +56,8 @@ command = "/opt/gpt5"
 	if err != nil {
 		t.Fatalf("LoadExecutors: %v", err)
 	}
-	if cfg.Default != "codex" {
-		t.Fatalf("default = %q", cfg.Default)
+	if cfg.DelegatedExecutor != "gpt5" {
+		t.Fatalf("delegated executor = %q", cfg.DelegatedExecutor)
 	}
 	if cfg.ByName["claude"].Command != "/opt/claude" {
 		t.Fatalf("claude = %+v", cfg.ByName["claude"])

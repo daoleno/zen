@@ -161,6 +161,9 @@ function codexChatThreadReducer(
       }
       return initialCodexChatThreadState(action.cacheKey);
     case "stream_start":
+      if (state.error === null && state.loading === !state.conversation?.events.length) {
+        return state;
+      }
       return {
         ...state,
         loading: !state.conversation?.events.length,
@@ -242,6 +245,9 @@ function codexChatThreadReducer(
         state.pendingUserMessages,
         action.now,
       );
+      if (pendingUserMessages === state.pendingUserMessages) {
+        return state;
+      }
       return {
         ...state,
         pendingUserMessages,
@@ -256,6 +262,14 @@ function codexChatThreadReducer(
         ].slice(-12),
       };
     case "settle_pending_slash_command":
+      if (
+        !state.pendingSlashCommands.some((command) =>
+          command.id === action.id &&
+          (command.status !== action.status || !command.completedAt)
+        )
+      ) {
+        return state;
+      }
       return {
         ...state,
         pendingSlashCommands: state.pendingSlashCommands.map((command) =>
@@ -276,6 +290,13 @@ function codexChatThreadReducer(
         ),
       };
     case "prune_pending_slash_commands":
+      if (
+        !state.pendingSlashCommands.some((command) =>
+          shouldPrunePendingSlashCommand(command, action.now),
+        )
+      ) {
+        return state;
+      }
       return {
         ...state,
         pendingSlashCommands: state.pendingSlashCommands.filter(
@@ -350,6 +371,15 @@ function applyIncomingConversation(
       nextConversation,
     ),
   );
+  if (
+    state.conversation === nextConversation &&
+    state.pendingUserMessages === pendingUserMessages &&
+    state.localChatState === localChatState &&
+    state.loading === false &&
+    state.error === null
+  ) {
+    return state;
+  }
   return {
     ...state,
     conversation: nextConversation,
@@ -375,6 +405,20 @@ function applyCodexConversationDelta(
     active: delta.active,
     events: [],
   };
+  if (
+    delta.upserts.length === 0 &&
+    delta.deletes.length === 0 &&
+    !codexDeltaMetadataChanged(baseConversation, delta)
+  ) {
+    if (state.loading || state.error !== null) {
+      return {
+        ...state,
+        loading: false,
+        error: null,
+      };
+    }
+    return state;
+  }
   const deleted = new Set(delta.deletes);
   const byId = new Map(baseConversation.events.map((event) => [event.id, event]));
   delta.upserts.forEach((event) => {
@@ -402,6 +446,22 @@ function applyCodexConversationDelta(
     events: nextEvents.sort((left, right) => left.seq - right.seq),
   };
   return applyIncomingConversation(state, nextConversation);
+}
+
+function codexDeltaMetadataChanged(
+  baseConversation: CodexConversation,
+  delta: CodexConversationDeltaPayload,
+) {
+  return (
+    (delta.available !== undefined && delta.available !== baseConversation.available) ||
+    (delta.reason !== undefined && delta.reason !== baseConversation.reason) ||
+    (delta.source !== undefined && delta.source !== baseConversation.source) ||
+    (delta.path !== undefined && delta.path !== baseConversation.path) ||
+    (delta.session_id !== undefined && delta.session_id !== baseConversation.session_id) ||
+    (delta.cwd !== undefined && delta.cwd !== baseConversation.cwd) ||
+    (delta.updated_at !== undefined && delta.updated_at !== baseConversation.updated_at) ||
+    (delta.active !== undefined && delta.active !== baseConversation.active)
+  );
 }
 
 function applyCodexConversationSyncStatus(
@@ -450,13 +510,29 @@ function reuseStableConversationEvents(
     changed = true;
     return event;
   });
-  if (!changed) {
+  if (!changed && codexConversationMetadataEqual(previousConversation, nextConversation)) {
     return previousConversation;
   }
   return {
     ...nextConversation,
-    events,
+    events: changed ? events : previousConversation.events,
   };
+}
+
+function codexConversationMetadataEqual(
+  left: CodexConversation,
+  right: CodexConversation,
+) {
+  return (
+    left.available === right.available &&
+    left.reason === right.reason &&
+    left.source === right.source &&
+    left.path === right.path &&
+    left.session_id === right.session_id &&
+    left.cwd === right.cwd &&
+    left.updated_at === right.updated_at &&
+    left.active === right.active
+  );
 }
 
 function reconcilePendingUserMessages(
@@ -593,15 +669,36 @@ function cachePendingUserMessages(
   messages: PendingUserMessage[],
   now: number = Date.now(),
 ): PendingUserMessage[] {
-  const nextMessages = messages
+  let nextMessages = messages
     .filter((message) => !shouldPrunePendingUserMessage(message, now))
     .slice(-12);
+  if (pendingUserMessagesShallowEqual(messages, nextMessages)) {
+    nextMessages = messages;
+  }
   if (nextMessages.length > 0) {
     pendingUserMessageCache.set(cacheKey, nextMessages);
   } else {
     pendingUserMessageCache.delete(cacheKey);
   }
   return nextMessages;
+}
+
+function pendingUserMessagesShallowEqual(
+  left: PendingUserMessage[],
+  right: PendingUserMessage[],
+) {
+  if (left === right) {
+    return true;
+  }
+  if (left.length !== right.length) {
+    return false;
+  }
+  for (let index = 0; index < left.length; index += 1) {
+    if (left[index] !== right[index]) {
+      return false;
+    }
+  }
+  return true;
 }
 
 export function useCodexChatSession({

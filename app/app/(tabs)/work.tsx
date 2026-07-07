@@ -208,10 +208,10 @@ export default function BrainScreen() {
       setSwitchingAdapterId(adapter.id);
       setAdapterSwitchError(null);
       try {
-        await wsClient.setBrainAdapter(activeServer.id, adapter.id);
+        await wsClient.setBrainExecutor(activeServer.id, adapter.id);
         closeAdapterSheet();
       } catch (error: any) {
-        setAdapterSwitchError(error?.message || "Failed to switch adapter.");
+        setAdapterSwitchError(error?.message || "Failed to switch executor.");
       } finally {
         setSwitchingAdapterId(null);
       }
@@ -224,8 +224,8 @@ export default function BrainScreen() {
       ...(canSwitchAdapter
         ? [
             {
-              key: "engine",
-              label: "Switch engine",
+              key: "executor",
+              label: "Switch executor",
               detail: brainProviderLabel(hostAdapter?.provider),
               icon: "swap-horizontal-outline" as const,
               onPress: openAdapterSheet,
@@ -454,7 +454,7 @@ function BrainInterfaceUnavailableState({
       detail={
         label
           ? `${label} is connected, but Brain chat requires Codex or Grok.`
-          : "Switch the Brain engine to Codex or Grok to use this chat surface."
+          : "Switch the Brain host executor to Codex or Grok to use this chat surface."
       }
     />
   );

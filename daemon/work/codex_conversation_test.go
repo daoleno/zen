@@ -1,6 +1,7 @@
 package work
 
 import (
+	"fmt"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -109,10 +110,12 @@ func TestParseCodexConversation_BuildsNativeTimeline(t *testing.T) {
 	if patch.Kind != "patch" || len(patch.Files) != 1 || patch.Files[0] != "app/app/terminal/TerminalScreenImpl.tsx" {
 		t.Fatalf("patch event = %#v", patch)
 	}
+	previousSeq := 0
 	for index, event := range got.Events {
-		if event.Seq != index+1 {
-			t.Fatalf("event %d seq = %d", index, event.Seq)
+		if event.Seq <= previousSeq {
+			t.Fatalf("event %d seq = %d after %d", index, event.Seq, previousSeq)
 		}
+		previousSeq = event.Seq
 		if strings.Contains(event.Body, "environment_context") {
 			t.Fatalf("boilerplate leaked: %#v", event)
 		}
@@ -1107,11 +1110,34 @@ func TestParseCodexConversation_RetainsEventsAcrossLargeRollout(t *testing.T) {
 	if err != nil {
 		t.Fatalf("parseCodexConversation: %v", err)
 	}
-	if len(got.Events) != 2 {
-		t.Fatalf("events len = %d, want 2: %#v", len(got.Events), got.Events)
+	if len(got.Events) != 1 {
+		t.Fatalf("events len = %d, want latest tail event: %#v", len(got.Events), got.Events)
 	}
-	assertEvent(t, got.Events[0], "assistant_message", "assistant", "", "xxxxx")
-	assertEvent(t, got.Events[1], "user_message", "user", "", "latest prompt")
+	assertEvent(t, got.Events[0], "user_message", "user", "", "latest prompt")
+}
+
+func TestCodexConversationSeqStableAcrossTrim(t *testing.T) {
+	builder := newCodexConversationBuilder("rollout.jsonl")
+	for index := 1; index <= maxCodexConversationEvents+2; index++ {
+		builder.addEvent(CodexConversationEvent{
+			ID:   builder.eventID(index),
+			Kind: "assistant_message",
+			Role: "assistant",
+			Body: fmt.Sprintf("event %d", index),
+		})
+	}
+
+	got := builder.conversation()
+	if len(got.Events) != maxCodexConversationEvents {
+		t.Fatalf("events len = %d, want %d", len(got.Events), maxCodexConversationEvents)
+	}
+	if got.Events[0].Seq != 3 || !strings.HasSuffix(got.Events[0].ID, ":3") {
+		t.Fatalf("first event = %#v, want stable seq/id 3 after trim", got.Events[0])
+	}
+	last := got.Events[len(got.Events)-1]
+	if last.Seq != maxCodexConversationEvents+2 {
+		t.Fatalf("last seq = %d, want %d", last.Seq, maxCodexConversationEvents+2)
+	}
 }
 
 func TestParseCodexConversation_KeepsCodexHistoryEntries(t *testing.T) {

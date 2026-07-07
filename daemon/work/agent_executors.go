@@ -9,12 +9,38 @@ import (
 const (
 	AgentRuntimeTmux    = "tmux"
 	AgentProviderCodex  = "codex"
+	AgentProviderCursor = "cursor"
 	AgentProviderGrok   = "grok"
 	AgentProviderClaude = "claude"
 	AgentProviderCustom = "custom"
+
+	// CodexFullAuthorizationFlag is the Codex CLI flag that skips all
+	// confirmation prompts and disables sandbox restrictions, providing the
+	// most permissive non-interactive authorization mode available.
+	// Brain-delegated Codex sessions use this so internal progress commands
+	// never block on approval prompts (e.g. when the Zen control socket lives
+	// outside the Codex sandbox).
+	CodexFullAuthorizationFlag = "--dangerously-bypass-approvals-and-sandbox"
 )
 
-// AgentCapabilities describes capabilities Brain can delegate to an adapter.
+// HardenCodexDelegatedCommand returns a Codex launch command configured for
+// non-interactive delegated execution. When command does not already declare
+// the full-authorization flag, it is appended so Brain-delegated Codex
+// sessions do not stop on approval prompts for internal shell/progress
+// commands. Commands that already include the flag are returned unchanged so
+// explicit user-provided authorization configuration is preserved.
+func HardenCodexDelegatedCommand(command string) string {
+	command = strings.TrimSpace(command)
+	if command == "" {
+		command = AgentProviderCodex
+	}
+	if strings.Contains(command, CodexFullAuthorizationFlag) {
+		return command
+	}
+	return command + " " + CodexFullAuthorizationFlag
+}
+
+// AgentCapabilities describes capabilities Brain can delegate to an executor.
 // Native capabilities are tool-owned features. Runtime capabilities are the
 // portable substrate Brain can rely on even when the tool has no native thread
 // model.
@@ -32,25 +58,26 @@ type AgentCapabilities struct {
 	StructuredEvents bool `json:"structured_events"`
 }
 
-// AgentAdapter is the portable Brain-facing view of a configured executor.
-type AgentAdapter struct {
+// AgentExecutor is the portable Brain-facing view of a configured executor.
+type AgentExecutor struct {
 	ID           string            `json:"id"`
 	Name         string            `json:"name"`
 	Provider     string            `json:"provider"`
 	Command      string            `json:"command,omitempty"`
 	Runtime      string            `json:"runtime"`
 	Capabilities AgentCapabilities `json:"capabilities"`
-	Preferred    bool              `json:"preferred,omitempty"`
+	Host         bool              `json:"host,omitempty"`
+	Delegated    bool              `json:"delegated,omitempty"`
 }
 
-// AgentAdapters returns all configured executors as portable adapter records.
-func (c *ExecutorConfig) AgentAdapters() []AgentAdapter {
+// AgentExecutors returns all configured executors as portable executor records.
+func (c *ExecutorConfig) AgentExecutors() []AgentExecutor {
 	if c == nil || len(c.ByName) == 0 {
 		return nil
 	}
-	out := make([]AgentAdapter, 0, len(c.ByName))
+	out := make([]AgentExecutor, 0, len(c.ByName))
 	for name, executor := range c.ByName {
-		out = append(out, NewAgentAdapter(name, executor))
+		out = append(out, NewAgentExecutor(name, executor))
 	}
 	sort.Slice(out, func(i, j int) bool {
 		return out[i].ID < out[j].ID
@@ -58,42 +85,46 @@ func (c *ExecutorConfig) AgentAdapters() []AgentAdapter {
 	return out
 }
 
-// AgentAdapter returns one configured executor as a portable adapter record.
-func (c *ExecutorConfig) AgentAdapter(name string) (AgentAdapter, bool) {
+// AgentExecutor returns one configured executor as a portable executor record.
+func (c *ExecutorConfig) AgentExecutor(name string) (AgentExecutor, bool) {
 	if c == nil {
-		return AgentAdapter{}, false
+		return AgentExecutor{}, false
 	}
 	name = strings.TrimSpace(name)
 	if name == "" {
-		return AgentAdapter{}, false
+		return AgentExecutor{}, false
 	}
 	executor, ok := c.ByName[name]
 	if !ok {
-		return AgentAdapter{}, false
+		return AgentExecutor{}, false
 	}
-	return NewAgentAdapter(name, executor), true
+	return NewAgentExecutor(name, executor), true
 }
 
-// DefaultAgentAdapter returns the configured default executor as an adapter.
-func (c *ExecutorConfig) DefaultAgentAdapter() (AgentAdapter, bool) {
+// DelegatedAgentExecutor returns the configured executor for delegated execution.
+func (c *ExecutorConfig) DelegatedAgentExecutor() (AgentExecutor, bool) {
 	if c == nil {
-		return AgentAdapter{}, false
+		return AgentExecutor{}, false
 	}
-	if adapter, ok := c.AgentAdapter(c.Default); ok {
-		adapter.Preferred = true
-		return adapter, true
+	if executor, ok := c.AgentExecutor(c.DelegatedExecutor); ok {
+		executor.Delegated = true
+		return executor, true
 	}
-	adapters := c.AgentAdapters()
-	if len(adapters) == 0 {
-		return AgentAdapter{}, false
+	if executor, ok := c.AgentExecutor("codex"); ok {
+		executor.Delegated = true
+		return executor, true
 	}
-	adapters[0].Preferred = true
-	return adapters[0], true
+	executors := c.AgentExecutors()
+	if len(executors) == 0 {
+		return AgentExecutor{}, false
+	}
+	executors[0].Delegated = true
+	return executors[0], true
 }
 
-// NewAgentAdapter converts one executor entry into Brain's portable adapter
+// NewAgentExecutor converts one executor entry into Brain's portable executor
 // vocabulary.
-func NewAgentAdapter(name string, executor Executor) AgentAdapter {
+func NewAgentExecutor(name string, executor Executor) AgentExecutor {
 	id := strings.TrimSpace(name)
 	if id == "" {
 		id = strings.TrimSpace(executor.Name)
@@ -107,7 +138,7 @@ func NewAgentAdapter(name string, executor Executor) AgentAdapter {
 		provider = AgentProviderCustom
 	}
 	runtime := normalizeAgentRuntime(executor.Runtime)
-	return AgentAdapter{
+	return AgentExecutor{
 		ID:           id,
 		Name:         firstNonEmptyString(strings.TrimSpace(executor.Name), id),
 		Provider:     provider,
@@ -141,8 +172,12 @@ func inferAgentProviderOne(value string) string {
 	for _, candidate := range candidates {
 		base := filepath.Base(strings.Trim(candidate, `"'`))
 		switch {
+		case base == AgentProviderCursor:
+			return AgentProviderCursor
 		case strings.Contains(base, "codex"):
 			return AgentProviderCodex
+		case base == "cursor-agent" || strings.Contains(base, "cursor-agent"):
+			return AgentProviderCursor
 		case strings.Contains(base, "grok"):
 			return AgentProviderGrok
 		case strings.Contains(base, "claude") || base == "cc":
@@ -179,7 +214,7 @@ func agentCapabilities(provider, runtime string) AgentCapabilities {
 	case AgentProviderGrok:
 		caps.StructuredEvents = true
 	case AgentProviderClaude:
-		// Claude Code is currently treated as a portable TTY adapter here.
+		// Claude Code is currently treated as a portable TTY executor here.
 		// Brain can still manage it via tmux, transcript capture, and worktree
 		// isolation without assuming Claude-native thread semantics.
 	}

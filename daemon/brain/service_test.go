@@ -131,17 +131,17 @@ func TestServiceSnapshotCreatesHiddenHostSession(t *testing.T) {
 	if snapshot.HostAgent == nil || snapshot.HostAgent.ID != fw.created[0].id {
 		t.Fatalf("host agent = %#v", snapshot.HostAgent)
 	}
-	if snapshot.HostAdapter == nil || snapshot.HostAdapter.Provider != "claude" || snapshot.HostAdapter.Runtime != work.AgentRuntimeTmux {
-		t.Fatalf("host adapter = %#v", snapshot.HostAdapter)
+	if snapshot.HostExecutor == nil || snapshot.HostExecutor.Provider != "codex" || snapshot.HostExecutor.Runtime != work.AgentRuntimeTmux {
+		t.Fatalf("host executor = %#v", snapshot.HostExecutor)
 	}
-	if len(snapshot.Adapters) == 0 || !snapshot.Adapters[0].Preferred {
-		t.Fatalf("adapters = %#v", snapshot.Adapters)
+	if len(snapshot.Executors) == 0 || !snapshot.Executors[0].Host {
+		t.Fatalf("executors = %#v", snapshot.Executors)
 	}
 	if len(fw.sentCalls) == 0 || fw.sentCalls[0].sessionID != fw.created[0].id {
 		t.Fatalf("expected bootstrap prompt to be sent to host, got %#v", fw.sentCalls)
 	}
-	if !strings.Contains(fw.created[0].opts.Command, claudePermissionBypassFlag) {
-		t.Fatalf("default Brain command should bypass Claude permissions: %q", fw.created[0].opts.Command)
+	if !strings.Contains(fw.created[0].opts.Command, codexFullAuthorizationFlag) {
+		t.Fatalf("built-in Brain command should bypass Codex approvals and sandbox: %q", fw.created[0].opts.Command)
 	}
 }
 
@@ -180,14 +180,14 @@ func TestServiceSnapshotReusesMatchingHostSession(t *testing.T) {
 	}
 }
 
-func TestServiceSnapshotUsesConfiguredDefaultAdapter(t *testing.T) {
+func TestServiceSnapshotFallsBackToCodexNotDelegatedExecutor(t *testing.T) {
 	store, err := NewStore(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
 	}
 	fw := &fakeWatcher{}
 	service := NewService(store, fw, &work.ExecutorConfig{
-		Default: "claude",
+		DelegatedExecutor: "claude",
 		ByName: map[string]work.Executor{
 			"claude": {Name: "claude", Command: "claude"},
 			"codex":  {Name: "codex", Command: "codex"},
@@ -198,23 +198,23 @@ func TestServiceSnapshotUsesConfiguredDefaultAdapter(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if snapshot.HostAdapter == nil || snapshot.HostAdapter.ID != "claude" {
-		t.Fatalf("host adapter = %#v", snapshot.HostAdapter)
+	if snapshot.HostExecutor == nil || snapshot.HostExecutor.ID != "codex" {
+		t.Fatalf("host executor = %#v", snapshot.HostExecutor)
 	}
-	if len(fw.created) != 1 || !strings.HasPrefix(fw.created[0].opts.Command, "claude") {
+	if len(fw.created) != 1 || !strings.HasPrefix(fw.created[0].opts.Command, "codex") {
 		t.Fatalf("created host = %#v", fw.created)
 	}
 }
 
-func TestServiceSnapshotHonorsHostAdapterOverride(t *testing.T) {
-	t.Setenv("ZEN_BRAIN_HOST_ADAPTER", "claude")
+func TestServiceSnapshotHonorsHostExecutorOverride(t *testing.T) {
+	t.Setenv("ZEN_BRAIN_HOST_EXECUTOR", "claude")
 	store, err := NewStore(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
 	}
 	fw := &fakeWatcher{}
 	service := NewService(store, fw, &work.ExecutorConfig{
-		Default: "codex",
+		DelegatedExecutor: "codex",
 		ByName: map[string]work.Executor{
 			"codex":  {Name: "codex", Command: "codex"},
 			"claude": {Name: "claude", Command: "claude"},
@@ -225,8 +225,8 @@ func TestServiceSnapshotHonorsHostAdapterOverride(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if snapshot.HostAdapter == nil || snapshot.HostAdapter.ID != "claude" || snapshot.HostAdapter.Provider != "claude" {
-		t.Fatalf("host adapter = %#v", snapshot.HostAdapter)
+	if snapshot.HostExecutor == nil || snapshot.HostExecutor.ID != "claude" || snapshot.HostExecutor.Provider != "claude" {
+		t.Fatalf("host executor = %#v", snapshot.HostExecutor)
 	}
 	if len(fw.created) != 1 {
 		t.Fatalf("created sessions = %#v", fw.created)
@@ -239,11 +239,11 @@ func TestServiceSnapshotHonorsHostAdapterOverride(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if hostSession.AdapterID != "claude" {
-		t.Fatalf("host adapter id = %q", hostSession.AdapterID)
+	if hostSession.ExecutorID != "claude" {
+		t.Fatalf("host executor id = %q", hostSession.ExecutorID)
 	}
-	if !strings.Contains(fw.sentCalls[0].text, "Active adapter: claude") {
-		t.Fatalf("bootstrap prompt did not include adapter metadata:\n%s", fw.sentCalls[0].text)
+	if !strings.Contains(fw.sentCalls[0].text, "Host executor: claude") {
+		t.Fatalf("bootstrap prompt did not include host executor metadata:\n%s", fw.sentCalls[0].text)
 	}
 }
 
@@ -254,7 +254,7 @@ func TestServiceBootstrapPromptDefaultsToAutonomousScheduling(t *testing.T) {
 	}
 	fw := &fakeWatcher{}
 	service := NewService(store, fw, &work.ExecutorConfig{
-		Default: "codex",
+		DelegatedExecutor: "codex",
 		ByName: map[string]work.Executor{
 			"codex": {Name: "codex", Command: "codex"},
 		},
@@ -268,8 +268,15 @@ func TestServiceBootstrapPromptDefaultsToAutonomousScheduling(t *testing.T) {
 	}
 	prompt := fw.sentCalls[0].text
 	for _, want := range []string{
+		"Delegated executor: codex",
+		"Host Executor runs Brain chat, planning, delegation, review, and final synthesis.",
+		"Delegated Executor runs delegated agents and ordinary non-Brain sessions unless the user explicitly asks for a different executor for that session",
 		"Brain is the user's scheduler",
 		"proactively create or reuse a visible delegated agent session",
+		"Brain is the orchestrator, not the execution pool",
+		"Delegate a subtask only when it can be named clearly",
+		"Delegated agents should not invent the overall plan",
+		"Review delegated results before integrating them",
 		"For a single larger task, prefer reusing the same delegated agent session",
 		"Zen CLI quick reference",
 		"only sessions with delegated=true are Brain-owned",
@@ -289,6 +296,68 @@ func TestServiceBootstrapPromptDefaultsToAutonomousScheduling(t *testing.T) {
 	}
 	if strings.Contains(prompt, "Only create or ask for a visible delegated agent session when the user explicitly asks") {
 		t.Fatalf("bootstrap prompt still requires explicit delegation:\n%s", prompt)
+	}
+	if strings.Contains(prompt, "creates a visible delegated agent with the current Brain executor as executor") {
+		t.Fatalf("bootstrap prompt still routes delegated agents to the current Brain executor:\n%s", prompt)
+	}
+}
+
+func TestServiceBootstrapPromptReferencesMemoryWithoutEmbeddingIt(t *testing.T) {
+	store, err := NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	memorySecret := "MEMORY_SECRET_SHOULD_NOT_BE_IN_BOOTSTRAP"
+	profileSecret := "PROFILE_SECRET_SHOULD_NOT_BE_IN_BOOTSTRAP"
+	if err := os.WriteFile(store.memoryPath(), []byte("# Brain Memory\n\n"+memorySecret+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(store.profileNotesPath(), []byte("# Brain Profile\n\n"+profileSecret+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	fw := &fakeWatcher{}
+	service := NewService(store, fw, &work.ExecutorConfig{
+		DelegatedExecutor: "codex",
+		ByName: map[string]work.Executor{
+			"codex": {Name: "codex", Command: "codex"},
+		},
+	})
+
+	snapshot, err := service.Snapshot()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(snapshot.Memory, memorySecret) || !strings.Contains(snapshot.Profile, profileSecret) {
+		t.Fatalf("snapshot should still expose stored memory/profile: %#v", snapshot)
+	}
+	if len(fw.sentCalls) != 1 {
+		t.Fatalf("bootstrap sends = %#v", fw.sentCalls)
+	}
+	prompt := fw.sentCalls[0].text
+	for _, want := range []string{
+		"Treat this bootstrap as a map, not the full context",
+		"read memory.md/profile.md on demand",
+		"zen brain context --json",
+		"current.md",
+		"memory.md",
+		"profile.md",
+		"policies/delegation.md",
+		"policies/engine.md",
+		"policies/handoff.md",
+	} {
+		if !strings.Contains(prompt, want) {
+			t.Fatalf("bootstrap prompt missing %q:\n%s", want, prompt)
+		}
+	}
+	for _, unexpected := range []string{
+		memorySecret,
+		profileSecret,
+		"Current memory:",
+		"Current profile notes:",
+	} {
+		if strings.Contains(prompt, unexpected) {
+			t.Fatalf("bootstrap prompt should not include %q:\n%s", unexpected, prompt)
+		}
 	}
 }
 
@@ -373,26 +442,26 @@ func TestServiceHeartbeatNoopsWithoutHost(t *testing.T) {
 	}
 }
 
-func TestServiceSetHostAdapterPersistsAndStartsSelectedHost(t *testing.T) {
+func TestServiceSetHostExecutorPersistsAndStartsSelectedHost(t *testing.T) {
 	store, err := NewStore(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
 	}
 	fw := &fakeWatcher{}
 	service := NewService(store, fw, &work.ExecutorConfig{
-		Default: "codex",
+		DelegatedExecutor: "codex",
 		ByName: map[string]work.Executor{
 			"codex":  {Name: "codex", Command: "codex"},
 			"claude": {Name: "claude", Command: "claude"},
 		},
 	})
 
-	snapshot, err := service.SetHostAdapter("claude")
+	snapshot, err := service.SetHostExecutor("claude")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if snapshot.HostAdapter == nil || snapshot.HostAdapter.ID != "claude" {
-		t.Fatalf("host adapter = %#v", snapshot.HostAdapter)
+	if snapshot.HostExecutor == nil || snapshot.HostExecutor.ID != "claude" {
+		t.Fatalf("host executor = %#v", snapshot.HostExecutor)
 	}
 	if snapshot.HostAgent == nil || snapshot.HostAgent.ID == "" {
 		t.Fatalf("host agent = %#v", snapshot.HostAgent)
@@ -404,12 +473,12 @@ func TestServiceSetHostAdapterPersistsAndStartsSelectedHost(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if hostSession.AdapterID != "claude" || hostSession.ID != fw.created[0].id {
+	if hostSession.ExecutorID != "claude" || hostSession.ID != fw.created[0].id {
 		t.Fatalf("host session = %+v", hostSession)
 	}
 }
 
-func TestServiceSetHostAdapterHandsOffExistingThread(t *testing.T) {
+func TestServiceSetHostExecutorHandsOffExistingThread(t *testing.T) {
 	store, err := NewStore(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
@@ -430,13 +499,13 @@ func TestServiceSetHostAdapterHandsOffExistingThread(t *testing.T) {
 		t.Fatal(err)
 	}
 	if _, err := store.AppendChatMessage(ChatMessage{
-		ID:        "user-one",
-		ThreadID:  "thread-main",
-		SessionID: oldHostID,
-		AdapterID: "grok",
-		Role:      "user",
-		Body:      "继续刚才的 Brain engine 切换方案",
-		CreatedAt: time.Date(2026, 6, 2, 10, 1, 0, 0, time.UTC),
+		ID:         "user-one",
+		ThreadID:   "thread-main",
+		SessionID:  oldHostID,
+		ExecutorID: "grok",
+		Role:       "user",
+		Body:       "继续刚才的 Brain engine 切换方案",
+		CreatedAt:  time.Date(2026, 6, 2, 10, 1, 0, 0, time.UTC),
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -453,14 +522,14 @@ func TestServiceSetHostAdapterHandsOffExistingThread(t *testing.T) {
 		},
 	}
 	service := NewService(store, fw, &work.ExecutorConfig{
-		Default: "grok",
+		DelegatedExecutor: "grok",
 		ByName: map[string]work.Executor{
 			"grok":  {Name: "grok", Command: "grok --no-alt-screen --permission-mode bypassPermissions", Kind: "grok", Runtime: work.AgentRuntimeTmux},
 			"codex": {Name: "codex", Command: "codex", Kind: "codex", Runtime: work.AgentRuntimeTmux},
 		},
 	})
 
-	snapshot, err := service.SetHostAdapter("codex")
+	snapshot, err := service.SetHostExecutor("codex")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -475,13 +544,19 @@ func TestServiceSetHostAdapterHandsOffExistingThread(t *testing.T) {
 	}
 	handoff := fw.sentCalls[1].text
 	for _, want := range []string{
-		"Brain engine handoff:",
-		"Previous engine: grok",
-		"Current engine: codex",
+		"Brain host executor handoff:",
+		"Previous host executor: grok",
+		"Current host executor: codex",
+		"Delegated executor: grok",
 		"Read current.md in the Brain workspace before continuing.",
 		"Preserve handoff objective.",
 		"User: 继续刚才的 Brain engine 切换方案",
-		"Delegated agents default to the current Brain engine.",
+		"Host Executor runs Brain chat, planning, delegation, review, and final synthesis.",
+		"Delegated Executor runs delegated agents and ordinary non-Brain sessions unless the user explicitly asks for a different executor for that session.",
+		"Brain keeps decomposition, ordering, judgment, result review, and final synthesis.",
+		"Delegated agents are scoped execution sessions",
+		"Run independent subtasks in parallel",
+		"Inspect delegated results before integrating them.",
 	} {
 		if !strings.Contains(handoff, want) {
 			t.Fatalf("handoff missing %q:\n%s", want, handoff)
@@ -511,6 +586,12 @@ func TestServiceHousekeepingBackfillsWorkspaceAndReportsDelegatedAgents(t *testi
 	if err := os.Remove(store.policyPath("engine.md")); err != nil {
 		t.Fatal(err)
 	}
+	if err := os.WriteFile(store.policyPath("delegation.md"), []byte("# Old Delegation\n\nKeep delegated notes.\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(store.policyPath("handoff.md"), []byte("# Old Handoff\n\nKeep handoff notes.\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
 	delegatedID := "brain-agent-worker:@1"
 	fw := &fakeWatcher{
 		agents: []*classifier.Agent{
@@ -525,7 +606,7 @@ func TestServiceHousekeepingBackfillsWorkspaceAndReportsDelegatedAgents(t *testi
 		},
 	}
 	service := NewService(store, fw, &work.ExecutorConfig{
-		Default: "codex",
+		DelegatedExecutor: "codex",
 		ByName: map[string]work.Executor{
 			"codex": {Name: "codex", Command: "codex", Kind: "codex", Runtime: work.AgentRuntimeTmux},
 		},
@@ -540,6 +621,39 @@ func TestServiceHousekeepingBackfillsWorkspaceAndReportsDelegatedAgents(t *testi
 	}
 	if !pathExists(store.currentPath()) || !pathExists(store.policyPath("engine.md")) {
 		t.Fatalf("housekeeping did not backfill current/policy files")
+	}
+	delegation, err := os.ReadFile(store.policyPath("delegation.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{
+		"Keep delegated notes.",
+		"## Orchestrator / Delegation Model",
+		"Review delegated output before integrating it",
+	} {
+		if !strings.Contains(string(delegation), want) {
+			t.Fatalf("delegation policy missing %q:\n%s", want, delegation)
+		}
+	}
+	engine, err := os.ReadFile(store.policyPath("engine.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(engine), "Delegated agents use the configured Delegated Executor unless the user explicitly asks for a different executor for that session.") {
+		t.Fatalf("engine policy was not backfilled:\n%s", engine)
+	}
+	handoff, err := os.ReadFile(store.policyPath("handoff.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{
+		"Keep handoff notes.",
+		"## Current Handoff Rules",
+		"Treat a host executor switch as a host replacement, not a new conversation.",
+	} {
+		if !strings.Contains(string(handoff), want) {
+			t.Fatalf("handoff policy missing %q:\n%s", want, handoff)
+		}
 	}
 	if len(report.OpenDelegatedAgents) != 1 || report.OpenDelegatedAgents[0].ID != delegatedID {
 		t.Fatalf("delegated agents = %#v", report.OpenDelegatedAgents)
@@ -591,7 +705,7 @@ func TestServiceNewChatReplacesHostAndStartsFreshThread(t *testing.T) {
 		},
 	}
 	service := NewService(store, fw, &work.ExecutorConfig{
-		Default: "claude",
+		DelegatedExecutor: "claude",
 		ByName: map[string]work.Executor{
 			"claude": {Name: "claude", Command: "claude", Kind: "claude", Runtime: work.AgentRuntimeTmux},
 		},
@@ -614,8 +728,8 @@ func TestServiceNewChatReplacesHostAndStartsFreshThread(t *testing.T) {
 	if snapshot.HostAgent == nil || snapshot.HostAgent.ID != created.id {
 		t.Fatalf("host agent = %#v created=%#v", snapshot.HostAgent, created)
 	}
-	if snapshot.HostAdapter == nil || snapshot.HostAdapter.ID != "claude" {
-		t.Fatalf("host adapter = %#v", snapshot.HostAdapter)
+	if snapshot.HostExecutor == nil || snapshot.HostExecutor.ID != "claude" {
+		t.Fatalf("host executor = %#v", snapshot.HostExecutor)
 	}
 	if snapshot.ChatThreadID == "" || snapshot.ChatThreadID == oldThreadID {
 		t.Fatalf("chat thread = %q, old = %q", snapshot.ChatThreadID, oldThreadID)
@@ -624,7 +738,7 @@ func TestServiceNewChatReplacesHostAndStartsFreshThread(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if hostSession.ID != created.id || hostSession.AdapterID != "claude" {
+	if hostSession.ID != created.id || hostSession.ExecutorID != "claude" {
 		t.Fatalf("host session = %+v", hostSession)
 	}
 	messages, err := store.ChatMessages(snapshot.ChatThreadID, 10)
@@ -644,22 +758,33 @@ func TestServiceNewChatReplacesHostAndStartsFreshThread(t *testing.T) {
 	if len(fw.sentCalls) != 1 || fw.sentCalls[0].sessionID != created.id {
 		t.Fatalf("bootstrap sends = %#v", fw.sentCalls)
 	}
+	bootstrap := fw.sentCalls[0].text
+	for _, want := range []string{
+		"Brain is the orchestrator, not the execution pool",
+		"Delegate a subtask only when it can be named clearly",
+		"Run independent delegated subtasks in parallel",
+		"Review delegated results before integrating them",
+	} {
+		if !strings.Contains(bootstrap, want) {
+			t.Fatalf("new chat bootstrap missing %q:\n%s", want, bootstrap)
+		}
+	}
 }
 
-func TestServiceSetHostAdapterRejectsUnknownAdapter(t *testing.T) {
+func TestServiceSetHostExecutorRejectsUnknownAdapter(t *testing.T) {
 	store, err := NewStore(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
 	}
 	service := NewService(store, &fakeWatcher{}, &work.ExecutorConfig{
-		Default: "codex",
+		DelegatedExecutor: "codex",
 		ByName: map[string]work.Executor{
 			"codex": {Name: "codex", Command: "codex"},
 		},
 	})
 
-	if _, err := service.SetHostAdapter("claude"); err == nil {
-		t.Fatal("expected unknown adapter error")
+	if _, err := service.SetHostExecutor("claude"); err == nil {
+		t.Fatal("expected unknown executor error")
 	}
 }
 
@@ -729,7 +854,7 @@ func TestServiceSnapshotPreservesCodexHostWithoutFullAuthorization(t *testing.T)
 	}
 	fw.agents = append(fw.agents, fw.sessions[oldID])
 	service := NewService(store, fw, &work.ExecutorConfig{
-		Default: "codex",
+		DelegatedExecutor: "codex",
 		ByName: map[string]work.Executor{
 			"codex": {Name: "codex", Command: "codex"},
 		},
@@ -752,7 +877,7 @@ func TestServiceSnapshotPreservesCodexHostWithoutFullAuthorization(t *testing.T)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if hostSession.ID != oldID || hostSession.AdapterID != "codex" {
+	if hostSession.ID != oldID || hostSession.ExecutorID != "codex" {
 		t.Fatalf("host session = %+v", hostSession)
 	}
 }
@@ -823,6 +948,15 @@ func TestStoreUsesStateAndWorkspaceDirectories(t *testing.T) {
 	}
 	if !strings.Contains(string(instructions), "Brain is the user's scheduler") {
 		t.Fatalf("workspace instructions do not describe scheduler behavior:\n%s", instructions)
+	}
+	if !strings.Contains(string(instructions), "Brain is the orchestrator, not the execution pool") {
+		t.Fatalf("workspace instructions do not describe orchestrator behavior:\n%s", instructions)
+	}
+	if !strings.Contains(string(instructions), "Delegate only clean subtasks with one concern") {
+		t.Fatalf("workspace instructions do not describe scoped delegated briefs:\n%s", instructions)
+	}
+	if !strings.Contains(string(instructions), "inspect their reports before integrating results") {
+		t.Fatalf("workspace instructions do not describe delegated result review:\n%s", instructions)
 	}
 	if !strings.Contains(string(instructions), "For a single larger task, prefer reusing the same delegated agent session") {
 		t.Fatalf("workspace instructions do not describe delegated session reuse:\n%s", instructions)

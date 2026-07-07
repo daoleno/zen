@@ -2,9 +2,10 @@ import React, { useMemo } from "react";
 import { Ionicons } from "@expo/vector-icons";
 import { StyleSheet, View } from "react-native";
 import { Claude, Codex, Grok } from "@lobehub/icons-rn";
-import { Colors, useAppColors } from "../../constants/tokens";
+import { Colors, useAppTheme } from "../../constants/tokens";
 import type { BrainAdapterRef } from "../../store/brain";
 import { brainAdapterProviderKey } from "./brainPresentation";
+import { CursorMark } from "../icons/CursorMark";
 
 interface BrainAdapterIconProps {
   adapter: BrainAdapterRef;
@@ -12,7 +13,7 @@ interface BrainAdapterIconProps {
 }
 
 export function BrainAdapterIcon({ adapter, size = 18 }: BrainAdapterIconProps) {
-  const colors = useAppColors();
+  const { colors, isLight } = useAppTheme();
   const styles = useMemo(() => createStyles(colors), [colors]);
   const provider = brainAdapterProviderKey(adapter);
   const frameSize = size + 14;
@@ -23,6 +24,10 @@ export function BrainAdapterIcon({ adapter, size = 18 }: BrainAdapterIconProps) 
 
   if (provider === "codex") {
     return <Codex.Color size={size} />;
+  }
+
+  if (provider === "cursor") {
+    return <CursorMark size={size} color={isLight ? "#000" : "#fff"} />;
   }
 
   if (provider === "grok") {

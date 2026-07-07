@@ -110,7 +110,11 @@ export function TelegramChatHeader({
             {title}
           </Text>
           {subtitle ? (
-            <Text style={styles.subtitle} numberOfLines={1}>
+            <Text
+              style={styles.subtitle}
+              numberOfLines={1}
+              ellipsizeMode="head"
+            >
               {subtitle}
             </Text>
           ) : null}

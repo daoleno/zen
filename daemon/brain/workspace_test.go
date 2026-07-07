@@ -78,9 +78,9 @@ func TestNewStoreEnsuresCurrentAndPolicyDocs(t *testing.T) {
 		path   string
 		marker string
 	}{
-		{store.policyPath("delegation.md"), "## Delegation Contract"},
-		{store.policyPath("engine.md"), "The active Brain engine is the default delegated executor."},
-		{store.policyPath("handoff.md"), "Engine switching preserves the visible Brain chat."},
+		{store.policyPath("delegation.md"), "## Orchestrator / Delegation Model"},
+		{store.policyPath("engine.md"), "Delegated agents use the configured Delegated Executor unless the user explicitly asks for a different executor for that session."},
+		{store.policyPath("handoff.md"), "Host executor switching preserves the visible Brain chat."},
 	} {
 		raw, err := os.ReadFile(policy.path)
 		if err != nil {
@@ -88,6 +88,40 @@ func TestNewStoreEnsuresCurrentAndPolicyDocs(t *testing.T) {
 		}
 		if !strings.Contains(string(raw), policy.marker) {
 			t.Fatalf("policy %s missing %q:\n%s", policy.path, policy.marker, raw)
+		}
+	}
+}
+
+func TestNewStoreUpgradesExistingDelegationPolicyWithoutOverwriting(t *testing.T) {
+	root := t.TempDir()
+	workspace := filepath.Join(root, "workspace")
+	policies := filepath.Join(workspace, "policies")
+	if err := os.MkdirAll(policies, 0o700); err != nil {
+		t.Fatalf("create policies: %v", err)
+	}
+	customDelegation := "# Custom Delegation\n\nKeep my local rule.\n"
+	if err := os.WriteFile(filepath.Join(policies, "delegation.md"), []byte(customDelegation), 0o600); err != nil {
+		t.Fatalf("write delegation policy: %v", err)
+	}
+
+	if _, err := NewStore(root); err != nil {
+		t.Fatalf("NewStore() error = %v", err)
+	}
+	readDelegation, err := os.ReadFile(filepath.Join(policies, "delegation.md"))
+	if err != nil {
+		t.Fatalf("read delegation policy: %v", err)
+	}
+	content := string(readDelegation)
+	for _, want := range []string{
+		"Keep my local rule.",
+		"## Orchestrator / Delegation Model",
+		"Brain owns decomposition, ordering, judgment, result review, and final synthesis",
+		"Delegated agents are scoped execution sessions",
+		"Do not ask a delegated agent to invent the plan",
+		"Review delegated output before integrating it",
+	} {
+		if !strings.Contains(content, want) {
+			t.Fatalf("delegation policy missing %q:\n%s", want, content)
 		}
 	}
 }
@@ -192,7 +226,7 @@ func TestNewStoreDoesNotOverwriteExistingWorklogFiles(t *testing.T) {
 	}
 }
 
-func TestNewStoreDoesNotOverwriteExistingCurrentOrPolicyDocs(t *testing.T) {
+func TestNewStorePreservesCurrentAndUpgradesExistingPolicyDocs(t *testing.T) {
 	root := t.TempDir()
 	workspace := filepath.Join(root, "workspace")
 	policies := filepath.Join(workspace, "policies")
@@ -201,11 +235,15 @@ func TestNewStoreDoesNotOverwriteExistingCurrentOrPolicyDocs(t *testing.T) {
 	}
 	customCurrent := "# Custom Current\n\nKeep this.\n"
 	customEngine := "# Custom Engine Policy\n\nKeep this too.\n"
+	customHandoff := "# Custom Handoff Policy\n\nKeep this handoff rule.\n"
 	if err := os.WriteFile(filepath.Join(workspace, "current.md"), []byte(customCurrent), 0o600); err != nil {
 		t.Fatalf("write current.md: %v", err)
 	}
 	if err := os.WriteFile(filepath.Join(policies, "engine.md"), []byte(customEngine), 0o600); err != nil {
 		t.Fatalf("write engine policy: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(policies, "handoff.md"), []byte(customHandoff), 0o600); err != nil {
+		t.Fatalf("write handoff policy: %v", err)
 	}
 
 	if _, err := NewStore(root); err != nil {
@@ -222,8 +260,31 @@ func TestNewStoreDoesNotOverwriteExistingCurrentOrPolicyDocs(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read engine policy: %v", err)
 	}
-	if string(readEngine) != customEngine {
-		t.Fatalf("engine policy was overwritten:\n%s", readEngine)
+	engineContent := string(readEngine)
+	for _, want := range []string{
+		"Keep this too.",
+		"## Current Executor Rules",
+		"Delegated agents use the configured Delegated Executor unless the user explicitly asks for a different executor for that session.",
+		"Do not switch executors based on private task-type judgment.",
+	} {
+		if !strings.Contains(engineContent, want) {
+			t.Fatalf("engine policy missing %q:\n%s", want, engineContent)
+		}
+	}
+	readHandoff, err := os.ReadFile(filepath.Join(policies, "handoff.md"))
+	if err != nil {
+		t.Fatalf("read handoff policy: %v", err)
+	}
+	handoffContent := string(readHandoff)
+	for _, want := range []string{
+		"Keep this handoff rule.",
+		"## Current Handoff Rules",
+		"Treat a host executor switch as a host replacement, not a new conversation.",
+		"Keep handoff prompts private",
+	} {
+		if !strings.Contains(handoffContent, want) {
+			t.Fatalf("handoff policy missing %q:\n%s", want, handoffContent)
+		}
 	}
 }
 

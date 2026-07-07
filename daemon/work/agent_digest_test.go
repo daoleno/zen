@@ -10,7 +10,7 @@ import (
 )
 
 func TestAgentCLIDigestProvider_AutoClearsPreferredProvider(t *testing.T) {
-	provider := NewAgentCLIDigestProvider(&ExecutorConfig{Default: "claude"})
+	provider := NewAgentCLIDigestProvider(&ExecutorConfig{DelegatedExecutor: "claude"})
 
 	selected, ok := provider.SetPreferredProvider("codex")
 	if !ok {

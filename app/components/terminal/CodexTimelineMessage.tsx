@@ -14,6 +14,7 @@ import { isAmbientChatChrome } from "../../constants/themedSurfaces";
 import type { MessagePresentation } from "./CodexTimelineGrouping";
 import {
   chromeForSentBubble,
+  resolveReceivedBubbleColor,
   resolveSentBubbleColor,
 } from "./chatBubbleColors";
 import { MessageBubbleFooter } from "./MessageBubbleFooter";
@@ -152,16 +153,26 @@ function HeartbeatWakeCard({
       event.status.trim().toLowerCase() !== event.newState.trim().toLowerCase(),
   );
 
+  // The card sits on the sent (or, in ambient chrome, received) bubble color.
+  // The base chrome text tokens are calibrated for the chat background, not the
+  // bubble, so on dark sent bubbles (e.g. #2B5278) textSubtle/textMuted and the
+  // accentSoft icon badge become near-invisible. Re-derive the bubble chrome the
+  // same way ZenUserMessage does so text/borders switch to white-based on dark
+  // bubbles while light mode is left untouched.
+  const ambient = isAmbientChatChrome(chrome);
+  const cardColor = ambient
+    ? resolveReceivedBubbleColor(chrome)
+    : resolveSentBubbleColor(chrome);
+  const cardChrome = chromeForSentBubble(chrome, cardColor);
+
   return (
     <View style={styles.eventRow}>
       <View
         style={[
           styles.heartbeatCard,
           {
-            backgroundColor: isAmbientChatChrome(chrome)
-              ? chrome.surface
-              : chrome.surfaceMuted,
-            borderColor: chrome.borderStrong,
+            backgroundColor: cardColor,
+            borderColor: cardChrome.borderStrong,
           },
         ]}
       >
@@ -169,13 +180,16 @@ function HeartbeatWakeCard({
           <View
             style={[
               styles.heartbeatIcon,
-              { backgroundColor: chrome.accentSoft },
+              {
+                backgroundColor: cardChrome.accentSoft,
+                borderColor: cardChrome.borderStrong,
+              },
             ]}
           >
-            <Ionicons name="pulse-outline" size={15} color={chrome.accent} />
+            <Ionicons name="pulse-outline" size={15} color={cardChrome.accent} />
           </View>
           <View style={styles.heartbeatHeaderCopy}>
-            <Text style={[styles.heartbeatTitle, { color: chrome.text }]} numberOfLines={1}>
+            <Text style={[styles.heartbeatTitle, { color: cardChrome.text }]} numberOfLines={1}>
               Heartbeat
             </Text>
             <Text
@@ -191,34 +205,34 @@ function HeartbeatWakeCard({
           <HeartbeatField
             label="Agent"
             value={agentTitle}
-            chrome={chrome}
+            chrome={cardChrome}
             monospace={!event.agentName}
           />
           {showAgentId ? (
             <HeartbeatField
               label="ID"
               value={event.agentId || ""}
-              chrome={chrome}
+              chrome={cardChrome}
               monospace
             />
           ) : null}
           <HeartbeatField
             label={event.oldState || event.newState ? "State" : "Status"}
             value={formatHeartbeatStateChange(event)}
-            chrome={chrome}
+            chrome={cardChrome}
           />
           {showSeparateStatus ? (
             <HeartbeatField
               label="Status"
               value={formatHeartbeatValue(event.status)}
-              chrome={chrome}
+              chrome={cardChrome}
             />
           ) : null}
           {event.workspace ? (
             <HeartbeatField
               label="Workspace"
               value={event.workspace}
-              chrome={chrome}
+              chrome={cardChrome}
               monospace
             />
           ) : null}
@@ -229,13 +243,13 @@ function HeartbeatWakeCard({
             style={[
               styles.heartbeatSummary,
               {
-                backgroundColor: chrome.surface,
-                borderColor: chrome.border,
+                backgroundColor: cardChrome.surface,
+                borderColor: cardChrome.borderStrong,
               },
             ]}
           >
             <Text
-              style={[styles.heartbeatSummaryText, { color: chrome.textMuted }]}
+              style={[styles.heartbeatSummaryText, { color: cardChrome.textMuted }]}
               numberOfLines={3}
             >
               {event.summary}
@@ -394,6 +408,7 @@ const styles = StyleSheet.create({
     width: 28,
     height: 28,
     borderRadius: 8,
+    borderWidth: StyleSheet.hairlineWidth,
     alignItems: "center",
     justifyContent: "center",
   },

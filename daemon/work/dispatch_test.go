@@ -62,7 +62,7 @@ func (f *fakeRunner) SendWhenReady(sessionID, command, text string) error {
 func TestLauncher_StartUsesIdleSession(t *testing.T) {
 	reg := &fakeRegistry{sessions: []fakeSession{{id: "claude-1", cwd: "/p", role: "claude", state: "idle"}}}
 	run := &fakeRunner{}
-	execs := &ExecutorConfig{Default: "claude", ByName: map[string]Executor{"claude": {Name: "claude", Command: "claude"}}}
+	execs := &ExecutorConfig{DelegatedExecutor: "claude", ByName: map[string]Executor{"claude": {Name: "claude", Command: "claude"}}}
 
 	iss := &Item{
 		Path:     "/tmp/t.md",
@@ -98,7 +98,7 @@ func TestLauncher_StartUsesIdleSession(t *testing.T) {
 func TestLauncher_StartSpawnsWhenNoIdle(t *testing.T) {
 	reg := &fakeRegistry{}
 	run := &fakeRunner{newID: "claude-new"}
-	execs := &ExecutorConfig{Default: "claude", ByName: map[string]Executor{"claude": {Name: "claude", Command: "claude"}}}
+	execs := &ExecutorConfig{DelegatedExecutor: "claude", ByName: map[string]Executor{"claude": {Name: "claude", Command: "claude"}}}
 	iss := &Item{
 		Path:     "/tmp/t.md",
 		Project:  "p",
@@ -131,7 +131,7 @@ func TestLauncher_StartSpawnsWhenNoIdle(t *testing.T) {
 
 func TestLauncher_StartAlreadyStartedError(t *testing.T) {
 	now := time.Now()
-	launcher := NewLauncher(&fakeRegistry{}, &fakeRunner{}, &ExecutorConfig{Default: "claude"})
+	launcher := NewLauncher(&fakeRegistry{}, &fakeRunner{}, &ExecutorConfig{DelegatedExecutor: "claude"})
 	iss := &Item{Frontmatter: Frontmatter{ID: "T", Started: &now}}
 	if _, err := launcher.Start(iss, Project{Cwd: "/p"}); !errors.Is(err, ErrAlreadyStarted) {
 		t.Fatalf("err = %v, want ErrAlreadyStarted", err)
@@ -139,7 +139,7 @@ func TestLauncher_StartAlreadyStartedError(t *testing.T) {
 }
 
 func TestLauncher_StartNoExecutorError(t *testing.T) {
-	execs := &ExecutorConfig{Default: "missing", ByName: map[string]Executor{}}
+	execs := &ExecutorConfig{DelegatedExecutor: "missing", ByName: map[string]Executor{}}
 	iss := &Item{Frontmatter: Frontmatter{ID: "T"}, Mentions: []Mention{{Role: "missing"}}}
 	launcher := NewLauncher(&fakeRegistry{}, &fakeRunner{}, execs)
 	if _, err := launcher.Start(iss, Project{Cwd: "/p"}); !errors.Is(err, ErrExecutorNotConfigured) {
@@ -153,7 +153,7 @@ func TestLauncher_StartRespectsSessionMention(t *testing.T) {
 		{id: "claude-2", cwd: "/p", role: "claude", state: "idle"},
 	}}
 	run := &fakeRunner{}
-	execs := &ExecutorConfig{Default: "claude", ByName: map[string]Executor{"claude": {Name: "claude", Command: "claude"}}}
+	execs := &ExecutorConfig{DelegatedExecutor: "claude", ByName: map[string]Executor{"claude": {Name: "claude", Command: "claude"}}}
 	iss := &Item{
 		Path:     "/tmp/t.md",
 		Project:  "p",
@@ -177,7 +177,7 @@ func TestLauncher_StartRespectsSessionMention(t *testing.T) {
 
 func TestLauncher_StartSessionMentionSkipsProjectCwdRequirement(t *testing.T) {
 	run := &fakeRunner{}
-	execs := &ExecutorConfig{Default: "claude", ByName: map[string]Executor{"claude": {Name: "claude", Command: "claude"}}}
+	execs := &ExecutorConfig{DelegatedExecutor: "claude", ByName: map[string]Executor{"claude": {Name: "claude", Command: "claude"}}}
 	iss := &Item{
 		Path:     "/tmp/t.md",
 		Project:  "inbox",
@@ -208,7 +208,7 @@ func TestLauncher_RerunClearsFields(t *testing.T) {
 	now := time.Now()
 	reg := &fakeRegistry{sessions: []fakeSession{{id: "claude-1", cwd: "/p", role: "claude", state: "idle"}}}
 	run := &fakeRunner{}
-	execs := &ExecutorConfig{Default: "claude", ByName: map[string]Executor{"claude": {Name: "claude", Command: "claude"}}}
+	execs := &ExecutorConfig{DelegatedExecutor: "claude", ByName: map[string]Executor{"claude": {Name: "claude", Command: "claude"}}}
 	iss := &Item{
 		Path:     "/tmp/t.md",
 		Project:  "p",

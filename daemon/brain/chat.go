@@ -33,7 +33,7 @@ func (s *Service) NewChat() (Snapshot, error) {
 	if s == nil || s.store == nil || s.watcher == nil {
 		return Snapshot{}, fmt.Errorf("brain service is not configured")
 	}
-	adapter := s.hostAdapter()
+	executor := s.hostExecutor()
 	if hostSession, err := s.store.HostSession(); err == nil {
 		if id := strings.TrimSpace(hostSession.ID); id != "" && s.watcher.HasSession(id) {
 			if err := s.watcher.KillSession(id); err != nil {
@@ -43,10 +43,10 @@ func (s *Service) NewChat() (Snapshot, error) {
 	} else {
 		return Snapshot{}, err
 	}
-	if err := s.store.SetHostSession("", adapter.ID); err != nil {
+	if err := s.store.SetHostSession("", executor.ID); err != nil {
 		return Snapshot{}, err
 	}
-	host, err := s.ensureHostAgent(adapter)
+	host, err := s.ensureHostAgent(executor)
 	if err != nil {
 		return Snapshot{}, err
 	}
@@ -95,7 +95,7 @@ func (s *Service) RecordUserMessage(threadID, hostSessionID, body, transcriptBef
 		ID:        chatMessageID("user", now),
 		ThreadID:  state.ThreadID,
 		SessionID: hostSessionID,
-		AdapterID: s.hostAdapter().ID,
+		ExecutorID: s.hostExecutor().ID,
 		Role:      "user",
 		Body:      body,
 		CreatedAt: now,
@@ -145,7 +145,7 @@ func (s *Service) SyncTerminalTranscript(threadID, hostSessionID, transcript str
 			ID:        chatMessageID("assistant", now),
 			ThreadID:  state.ThreadID,
 			SessionID: hostSessionID,
-			AdapterID: s.hostAdapter().ID,
+			ExecutorID: s.hostExecutor().ID,
 			Role:      "assistant",
 			Body:      delta,
 			CreatedAt: now,

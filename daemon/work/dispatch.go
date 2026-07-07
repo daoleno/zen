@@ -85,7 +85,7 @@ func (l *Launcher) startInternal(item *Item, proj Project) (*Item, error) {
 	if role == "" {
 		role = strings.TrimSpace(proj.Executor)
 		if role == "" {
-			role = strings.TrimSpace(l.execs.Default)
+			role = strings.TrimSpace(l.execs.DelegatedExecutor)
 		}
 	}
 

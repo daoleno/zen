@@ -239,8 +239,8 @@ func runBrainCommand(args []string, stderr io.Writer) error {
 		return runBrainContext(args[1:], stderr)
 	case "gc":
 		return runBrainGC(args[1:], stderr)
-	case "adapters":
-		return runBrainAdapters(args[1:], stderr)
+	case "executors":
+		return runBrainExecutors(args[1:], stderr)
 	case "use":
 		return runBrainUse(args[1:], stderr)
 	default:
@@ -276,20 +276,20 @@ func printAgentUsage(w io.Writer) {
 }
 
 func printBrainUsage(w io.Writer) {
-	fmt.Fprintln(w, "Usage: zen brain <workspace|context|gc|adapters|use> [flags]")
+	fmt.Fprintln(w, "Usage: zen brain <workspace|context|gc|executors|use> [flags]")
 	fmt.Fprintln(w, "")
 	fmt.Fprintln(w, "Subcommands:")
 	fmt.Fprintln(w, "  workspace  Print the Brain workspace path")
 	fmt.Fprintln(w, "  context    Print structured Brain context")
 	fmt.Fprintln(w, "  gc         Backfill Brain workspace files and print housekeeping status")
-	fmt.Fprintln(w, "  adapters   List configured Brain host adapters")
-	fmt.Fprintln(w, "  use        Switch the Brain host adapter")
+	fmt.Fprintln(w, "  executors  List configured Brain host executors")
+	fmt.Fprintln(w, "  use        Switch the Brain host executor")
 	fmt.Fprintln(w, "")
 	fmt.Fprintln(w, "Examples:")
 	fmt.Fprintln(w, "  zen brain workspace --json")
 	fmt.Fprintln(w, "  zen brain context --json")
 	fmt.Fprintln(w, "  zen brain gc --json")
-	fmt.Fprintln(w, "  zen brain adapters --json")
+	fmt.Fprintln(w, "  zen brain executors --json")
 	fmt.Fprintln(w, "  zen brain use codex")
 }
 
@@ -550,12 +550,12 @@ func runBrainGC(args []string, stderr io.Writer) error {
 	return writeControlResponse(os.Stdout, resp, cfg.json)
 }
 
-func runBrainAdapters(args []string, stderr io.Writer) error {
-	cfg, err := parseCLIConfig("zen brain adapters", args, stderr)
+func runBrainExecutors(args []string, stderr io.Writer) error {
+	cfg, err := parseCLIConfig("zen brain executors", args, stderr)
 	if err != nil {
 		return err
 	}
-	resp, err := callControl(cfg, control.Request{Type: "brain_adapters"})
+	resp, err := callControl(cfg, control.Request{Type: "brain_executors"})
 	if err != nil {
 		return err
 	}
@@ -569,7 +569,7 @@ func runBrainUse(args []string, stderr io.Writer) error {
 	fs.StringVar(&cfg.stateDir, "state-dir", "", "state directory for daemon identity and control socket")
 	fs.BoolVar(&cfg.json, "json", true, "print JSON output")
 	fs.Usage = func() {
-		fmt.Fprintln(stderr, "Usage: zen brain use <adapter> [flags]")
+		fmt.Fprintln(stderr, "Usage: zen brain use <executor> [flags]")
 		fmt.Fprintln(stderr, "")
 		fs.PrintDefaults()
 	}
@@ -577,11 +577,11 @@ func runBrainUse(args []string, stderr io.Writer) error {
 		return err
 	}
 	if fs.NArg() != 1 {
-		return fmt.Errorf("usage: zen brain use <adapter> [flags]")
+		return fmt.Errorf("usage: zen brain use <executor> [flags]")
 	}
 	resp, err := callControl(cfg, control.Request{
-		Type:      "brain_set_adapter",
-		AdapterID: fs.Arg(0),
+		Type:       "brain_set_executor",
+		ExecutorID: fs.Arg(0),
 	})
 	if err != nil {
 		return err
@@ -651,18 +651,25 @@ func writeControlResponse(w io.Writer, resp control.Response, asJSON bool) error
 		fmt.Fprintf(w, "%s\t%s\t%s\n", resp.Agent.ID, resp.Agent.Status, resp.Agent.Name)
 		return nil
 	}
-	if len(resp.Adapters) > 0 {
-		for _, adapter := range resp.Adapters {
-			marker := " "
-			if adapter.Preferred || (resp.Adapter != nil && resp.Adapter.ID == adapter.ID) {
-				marker = "*"
+	if len(resp.Executors) > 0 {
+		for _, executor := range resp.Executors {
+			marker := "  "
+			if executor.Host || (resp.Executor != nil && resp.Executor.ID == executor.ID) {
+				marker = "H "
 			}
-			fmt.Fprintf(w, "%s%s\t%s\t%s\t%s\n", marker, adapter.ID, adapter.Provider, adapter.Runtime, adapter.Command)
+			if executor.Delegated || (resp.DelegatedExecutor != nil && resp.DelegatedExecutor.ID == executor.ID) {
+				if strings.TrimSpace(marker) == "H" {
+					marker = "HD"
+				} else {
+					marker = "D "
+				}
+			}
+			fmt.Fprintf(w, "%s%s\t%s\t%s\t%s\n", marker, executor.ID, executor.Provider, executor.Runtime, executor.Command)
 		}
 		return nil
 	}
-	if resp.Adapter != nil {
-		fmt.Fprintf(w, "%s\t%s\t%s\t%s\n", resp.Adapter.ID, resp.Adapter.Provider, resp.Adapter.Runtime, resp.Adapter.Command)
+	if resp.Executor != nil {
+		fmt.Fprintf(w, "%s\t%s\t%s\t%s\n", resp.Executor.ID, resp.Executor.Provider, resp.Executor.Runtime, resp.Executor.Command)
 		return nil
 	}
 	for _, agent := range resp.Agents {
@@ -725,7 +732,7 @@ func parseDaemonConfig(args []string, stderr io.Writer) (daemonConfig, error) {
 		fmt.Fprintln(stderr, "  pair       Generate a fresh pairing link without restarting the daemon")
 		fmt.Fprintln(stderr, "  print-link Alias for pair")
 		fmt.Fprintln(stderr, "  agent      List, spawn, inspect, message, progress, and close agent sessions")
-		fmt.Fprintln(stderr, "  brain      Inspect Brain workspace and host adapter configuration")
+		fmt.Fprintln(stderr, "  brain      Inspect Brain workspace and host executor configuration")
 	}
 
 	if err := fs.Parse(args); err != nil {

@@ -33,7 +33,7 @@ interface BottomSheetFrameProps {
 }
 
 /**
- * The shared bottom-sheet primitive used across the app (Brain adapter sheet,
+ * The shared bottom-sheet primitive used across the app (Brain executor sheet,
  * new-terminal sheet, agent picker, etc.). It fades the backdrop and springs
  * the card up from the bottom on open — one consistent gesture everywhere,
  * matching the RisingSheet language used by centered dialogs.

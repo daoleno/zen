@@ -17,6 +17,7 @@ import {
   Typography,
   useAppColors,
 } from "../../constants/tokens";
+import { compactPathLabel } from "../../services/pathDisplay";
 import { wsClient, type BrainWorkspaceEntry, type BrainWorkspaceFile, type BrainWorkspaceTree } from "../../services/websocket";
 import { AppText, BottomSheetFrame, IconButton } from "../ui";
 import { CodexNativeMarkdownBody } from "../terminal/CodexNativeMarkdownBody";
@@ -35,6 +36,12 @@ type BrainWorkspaceRow = {
   depth: number;
 };
 
+type BrainWorkspaceCache = {
+  cacheKey: string;
+  tree: BrainWorkspaceTree | null;
+  files: Map<string, BrainWorkspaceFile>;
+};
+
 export function BrainWorkspaceViewer({
   visible,
   serverId,
@@ -45,31 +52,76 @@ export function BrainWorkspaceViewer({
 }: BrainWorkspaceViewerProps) {
   const colors = useAppColors();
   const styles = useMemo(() => createStyles(colors), [colors]);
+  const workspaceCacheKey = useMemo(
+    () => (serverId ? `${serverId}:${workspace || ""}` : ""),
+    [serverId, workspace],
+  );
   const [tree, setTree] = useState<BrainWorkspaceTree | null>(null);
+  const [treeCacheKey, setTreeCacheKey] = useState("");
   const [treeLoading, setTreeLoading] = useState(false);
   const [treeError, setTreeError] = useState<string | null>(null);
   const [selectedPath, setSelectedPath] = useState<string | null>(null);
   const [selectedFile, setSelectedFile] = useState<BrainWorkspaceFile | null>(null);
+  const [selectedFileCacheKey, setSelectedFileCacheKey] = useState("");
   const [fileLoading, setFileLoading] = useState(false);
   const [fileError, setFileError] = useState<string | null>(null);
+  const cacheRef = useRef<BrainWorkspaceCache>({
+    cacheKey: "",
+    tree: null,
+    files: new Map(),
+  });
   const fileRequestRef = useRef(0);
+  const currentTree = treeCacheKey === workspaceCacheKey ? tree : null;
+  const currentSelectedFile =
+    selectedFileCacheKey === workspaceCacheKey ? selectedFile : null;
 
   useEffect(() => {
     if (!visible || !serverId) {
       return;
     }
+    if (cacheRef.current.cacheKey !== workspaceCacheKey) {
+      cacheRef.current = {
+        cacheKey: workspaceCacheKey,
+        tree: null,
+        files: new Map(),
+      };
+      fileRequestRef.current += 1;
+      setSelectedPath(null);
+      setSelectedFile(null);
+      setSelectedFileCacheKey("");
+      setFileLoading(false);
+      setFileError(null);
+    }
+
+    const cache = cacheRef.current;
+    if (cache.tree) {
+      setTree(cache.tree);
+      setTreeCacheKey(workspaceCacheKey);
+      setTreeLoading(false);
+      setTreeError(null);
+      return;
+    }
+
     let cancelled = false;
     setTreeLoading(true);
     setTreeError(null);
     setTree(null);
+    setTreeCacheKey(workspaceCacheKey);
     setSelectedPath(null);
     setSelectedFile(null);
+    setSelectedFileCacheKey("");
     setFileError(null);
     void wsClient
       .getBrainWorkspaceTree(serverId)
       .then((nextTree) => {
         if (!cancelled) {
+          cacheRef.current = {
+            ...cacheRef.current,
+            cacheKey: workspaceCacheKey,
+            tree: nextTree,
+          };
           setTree(nextTree);
+          setTreeCacheKey(workspaceCacheKey);
         }
       })
       .catch((error: any) => {
@@ -85,11 +137,11 @@ export function BrainWorkspaceViewer({
     return () => {
       cancelled = true;
     };
-  }, [serverId, visible]);
+  }, [serverId, visible, workspaceCacheKey]);
 
   const rows = useMemo(
-    () => flattenWorkspaceEntries(tree?.entries ?? []),
-    [tree?.entries],
+    () => flattenWorkspaceEntries(currentTree?.entries ?? []),
+    [currentTree?.entries],
   );
 
   const loadFile = useCallback(
@@ -97,16 +149,31 @@ export function BrainWorkspaceViewer({
       if (!serverId || entry.kind === "directory") {
         return;
       }
+      const cache = cacheRef.current.cacheKey === workspaceCacheKey
+        ? cacheRef.current
+        : null;
+      const cachedFile = cache?.files.get(entry.path);
       const request = fileRequestRef.current + 1;
       fileRequestRef.current = request;
       setSelectedPath(entry.path);
-      setSelectedFile(null);
       setFileError(null);
+      if (cachedFile) {
+        setSelectedFile(cachedFile);
+        setSelectedFileCacheKey(workspaceCacheKey);
+        setFileLoading(false);
+        return;
+      }
+      setSelectedFile(null);
+      setSelectedFileCacheKey(workspaceCacheKey);
       setFileLoading(true);
       try {
         const file = await wsClient.getBrainWorkspaceFile(serverId, entry.path);
         if (fileRequestRef.current === request) {
+          if (cacheRef.current.cacheKey === workspaceCacheKey) {
+            cacheRef.current.files.set(entry.path, file);
+          }
           setSelectedFile(file);
+          setSelectedFileCacheKey(workspaceCacheKey);
         }
       } catch (error: any) {
         if (fileRequestRef.current === request) {
@@ -118,7 +185,7 @@ export function BrainWorkspaceViewer({
         }
       }
     },
-    [serverId],
+    [serverId, workspaceCacheKey],
   );
 
   return (
@@ -135,7 +202,7 @@ export function BrainWorkspaceViewer({
             Brain workspace
           </AppText>
           <AppText variant="caption" tone="secondary" numberOfLines={1}>
-            {compactWorkspaceLabel(tree?.workspace || workspace)}
+            {compactWorkspaceLabel(currentTree?.workspace || workspace)}
           </AppText>
         </View>
         <IconButton
@@ -209,7 +276,7 @@ export function BrainWorkspaceViewer({
                         },
                       ]}
                       numberOfLines={1}
-                      ellipsizeMode="middle"
+                      ellipsizeMode="head"
                     >
                       {entry.name}
                     </Text>
@@ -232,9 +299,9 @@ export function BrainWorkspaceViewer({
                 {fileError}
               </AppText>
             </View>
-          ) : selectedFile ? (
+          ) : currentSelectedFile ? (
             <BrainWorkspaceFilePreview
-              file={selectedFile}
+              file={currentSelectedFile}
               chrome={chrome}
               theme={theme}
               styles={styles}
@@ -270,7 +337,7 @@ function BrainWorkspaceFilePreview({
     <View style={styles.previewContent}>
       <View style={styles.previewHeader}>
         <View style={styles.previewTitleBlock}>
-          <AppText variant="label" tone="primary" numberOfLines={1} ellipsizeMode="middle">
+          <AppText variant="label" tone="primary" numberOfLines={1} ellipsizeMode="head">
             {file.path}
           </AppText>
           <AppText variant="caption" tone="secondary" numberOfLines={1}>
@@ -330,12 +397,8 @@ function markdownFile(path: string) {
 }
 
 function compactWorkspaceLabel(path?: string) {
-  const value = path?.trim();
-  if (!value) {
-    return "Workspace";
-  }
-  const parts = value.split(/[\\/]+/).filter(Boolean);
-  return parts.length > 0 ? parts[parts.length - 1] : value;
+  const value = compactPathLabel(path, { tailSegments: 2, showFullUpTo: 2 });
+  return value || "Workspace";
 }
 
 function createStyles(colors: typeof Colors) {

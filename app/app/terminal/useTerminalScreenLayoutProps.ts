@@ -13,6 +13,7 @@ import type {
   StoredCodexRenderMode,
 } from "../../services/storage";
 import type { PresentedAgent } from "../../services/agentPresentation";
+import { displayPathSubtitle } from "../../services/pathDisplay";
 import type { AgentDirectorySection } from "../../services/serverSelection";
 import type { useTerminalScreenChrome } from "./useTerminalScreenChrome";
 import type { useTerminalSessionActions } from "./useTerminalSessionActions";
@@ -141,7 +142,7 @@ export function useTerminalScreenLayoutProps({
 
   const topBarProps = useTerminalTopBarProps({
     title: displayName || presentedAgent.title || agent?.name || agentId || "Terminal",
-    subtitle: agent?.cwd?.trim() || agent?.command?.trim() || undefined,
+    subtitle: displayPathSubtitle(agent?.cwd?.trim() || agent?.command?.trim()) || undefined,
     kind: presentedAgent.kind,
     terminalFlavor: presentedAgent.terminalFlavor,
     terminalTheme,

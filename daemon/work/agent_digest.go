@@ -147,7 +147,7 @@ func (p *AgentCLIDigestProvider) selectProvider(command string) (string, bool) {
 		}
 	}
 	if p.execs != nil {
-		if name := strings.ToLower(strings.TrimSpace(p.execs.Default)); name == "claude" || name == "codex" {
+		if name := strings.ToLower(strings.TrimSpace(p.execs.DelegatedExecutor)); name == "claude" || name == "codex" {
 			preferred = append(preferred, name)
 		}
 	}

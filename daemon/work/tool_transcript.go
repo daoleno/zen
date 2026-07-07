@@ -70,6 +70,8 @@ func agentToolName(command, name string) string {
 	switch {
 	case strings.Contains(command, "codex") || strings.Contains(name, "codex"):
 		return "codex"
+	case strings.Contains(command, "cursor-agent") || strings.Contains(name, "cursor agent"):
+		return "cursor"
 	case strings.Contains(command, "grok") || strings.Contains(name, "grok"):
 		return "grok"
 	case command == "cc" || strings.Contains(command, "claude") || strings.Contains(name, "claude"):

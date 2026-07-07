@@ -12,7 +12,7 @@ type Request struct {
 	Type         string `json:"type"`
 	Name         string `json:"name,omitempty"`
 	Executor     string `json:"executor,omitempty"`
-	AdapterID    string `json:"adapter_id,omitempty"`
+	ExecutorID   string `json:"executor_id,omitempty"`
 	Command      string `json:"command,omitempty"`
 	Cwd          string `json:"cwd,omitempty"`
 	Prompt       string `json:"prompt,omitempty"`
@@ -34,16 +34,17 @@ type Request struct {
 }
 
 type Response struct {
-	OK           bool      `json:"ok"`
-	Error        *Error    `json:"error,omitempty"`
-	Agent        *Agent    `json:"agent,omitempty"`
-	Agents       []Agent   `json:"agents,omitempty"`
-	Adapter      *Adapter  `json:"adapter,omitempty"`
-	Adapters     []Adapter `json:"adapters,omitempty"`
-	Context      any       `json:"context,omitempty"`
-	Housekeeping any       `json:"housekeeping,omitempty"`
-	Text         string    `json:"text,omitempty"`
-	Workspace    string    `json:"workspace,omitempty"`
+	OK                bool       `json:"ok"`
+	Error             *Error     `json:"error,omitempty"`
+	Agent             *Agent     `json:"agent,omitempty"`
+	Agents            []Agent    `json:"agents,omitempty"`
+	Executor          *Executor  `json:"executor,omitempty"`
+	DelegatedExecutor *Executor  `json:"delegated_executor,omitempty"`
+	Executors         []Executor `json:"executors,omitempty"`
+	Context           any        `json:"context,omitempty"`
+	Housekeeping      any        `json:"housekeeping,omitempty"`
+	Text              string     `json:"text,omitempty"`
+	Workspace         string     `json:"workspace,omitempty"`
 }
 
 type Error struct {
@@ -72,19 +73,20 @@ type Agent struct {
 	Delegated           bool       `json:"delegated,omitempty"`
 }
 
-type AdapterCapabilities struct {
+type ExecutorCapabilities struct {
 	InteractiveTTY   bool `json:"interactive_tty"`
 	StructuredEvents bool `json:"structured_events"`
 }
 
-type Adapter struct {
-	ID           string              `json:"id"`
-	Name         string              `json:"name"`
-	Provider     string              `json:"provider"`
-	Command      string              `json:"command,omitempty"`
-	Runtime      string              `json:"runtime"`
-	Capabilities AdapterCapabilities `json:"capabilities"`
-	Preferred    bool                `json:"preferred,omitempty"`
+type Executor struct {
+	ID           string               `json:"id"`
+	Name         string               `json:"name"`
+	Provider     string               `json:"provider"`
+	Command      string               `json:"command,omitempty"`
+	Runtime      string               `json:"runtime"`
+	Capabilities ExecutorCapabilities `json:"capabilities"`
+	Host         bool                 `json:"host,omitempty"`
+	Delegated    bool                 `json:"delegated,omitempty"`
 }
 
 type Handler interface {

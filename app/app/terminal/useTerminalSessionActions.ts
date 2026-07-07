@@ -38,7 +38,7 @@ interface UseTerminalSessionActionsInput {
   setCreatingSession(value: boolean): void;
   setRenameVisible(value: boolean): void;
   setAgentAliases(value: StoredAgentAliases): void;
-  setCodexRenderModes(value: StoredCodexRenderModes): void;
+  setCodexRenderModes: Dispatch<SetStateAction<StoredCodexRenderModes>>;
   setRecentAgentOpens: Dispatch<SetStateAction<StoredRecentAgentOpens>>;
   setServer: Dispatch<SetStateAction<StoredServer | null>>;
 }
@@ -72,11 +72,21 @@ export function useTerminalSessionActions({
   }, [renameDraft, sessionKey, setAgentAliases, setRenameVisible]);
 
   const applyCodexRenderMode = useCallback(
-    async (mode: StoredCodexRenderMode) => {
+    (mode: StoredCodexRenderMode) => {
       if (!sessionKey) return;
-      const nextModes = await setCodexRenderMode(sessionKey, mode);
-      setCodexRenderModes(nextModes);
+      setCodexRenderModes((current) => {
+        if (current[sessionKey] === mode) {
+          return current;
+        }
+        return {
+          ...current,
+          [sessionKey]: mode,
+        };
+      });
       closeMenu();
+      void setCodexRenderMode(sessionKey, mode).catch((error) => {
+        console.log("Failed to persist Codex render mode:", error);
+      });
     },
     [closeMenu, sessionKey, setCodexRenderModes],
   );

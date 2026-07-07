@@ -162,7 +162,7 @@ func TestTopLevelHelpIncludesAgentAndBrainCommands(t *testing.T) {
 	rendered := output.String()
 	for _, want := range []string{
 		"agent      List, spawn, inspect, message, progress, and close agent sessions",
-		"brain      Inspect Brain workspace and host adapter configuration",
+		"brain      Inspect Brain workspace and host executor configuration",
 	} {
 		if !strings.Contains(rendered, want) {
 			t.Fatalf("top-level help missing %q:\n%s", want, rendered)
@@ -214,11 +214,11 @@ func TestAgentAndBrainHelpAreDiscoverable(t *testing.T) {
 	}
 	brainHelp := brainOutput.String()
 	for _, want := range []string{
-		"Usage: zen brain <workspace|context|gc|adapters|use> [flags]",
+		"Usage: zen brain <workspace|context|gc|executors|use> [flags]",
 		"zen brain workspace --json",
 		"zen brain context --json",
 		"zen brain gc --json",
-		"zen brain adapters --json",
+		"zen brain executors --json",
 	} {
 		if !strings.Contains(brainHelp, want) {
 			t.Fatalf("brain help missing %q:\n%s", want, brainHelp)

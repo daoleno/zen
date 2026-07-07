@@ -7,6 +7,7 @@ import {
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { Colors, useAppColors } from '../../constants/tokens';
+import { displayPathSubtitle } from '../../services/pathDisplay';
 import { AppButton, AppText, IconButton, StateView } from '../ui';
 
 export type DirectoryPickerEntry = { name: string; path: string };
@@ -43,8 +44,14 @@ export function DirectoryPickerContent({
 
       <View style={styles.pathRow}>
         <IconButton icon="arrow-up" size={32} onPress={onGoUp} />
-        <AppText variant="mono" tone="secondary" style={styles.pathText} numberOfLines={1}>
-          {currentPath}
+        <AppText
+          variant="mono"
+          tone="secondary"
+          style={styles.pathText}
+          numberOfLines={1}
+          ellipsizeMode="head"
+        >
+          {displayPathSubtitle(currentPath)}
         </AppText>
       </View>
 

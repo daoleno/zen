@@ -1,10 +1,11 @@
 import type { ConnectionState } from '../store/agents';
-import { isClaudeCommand, isCodexCommand, isGrokCommand } from './agentCommands';
+import { isClaudeCommand, isCodexCommand, isCursorAgentCommand, isGrokCommand } from './agentCommands';
 import type { AgentKind } from './agentPresentation';
 
 export function agentKindFromCommand(command?: string): AgentKind {
   if (isClaudeCommand(command)) return 'claude';
   if (isCodexCommand(command)) return 'codex';
+  if (isCursorAgentCommand(command)) return 'cursor';
   if (isGrokCommand(command)) return 'grok';
   return 'terminal';
 }
@@ -40,6 +41,8 @@ export function buildChatComposerPlaceholder({
       return 'Ask Codex';
     case 'grok':
       return 'Ask Grok';
+    case 'cursor':
+      return 'Ask Cursor';
     case 'claude':
       return 'Ask Claude';
     default:

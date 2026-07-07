@@ -15,13 +15,13 @@ import (
 )
 
 var (
-	ErrAdapterNotConfigured = errors.New("brain adapter is not configured")
-	ErrAdapterLockedByEnv   = errors.New("brain adapter is locked by ZEN_BRAIN_HOST_ADAPTER")
+	ErrExecutorNotConfigured = errors.New("brain host executor is not configured")
+	ErrExecutorLockedByEnv   = errors.New("brain host executor is locked by environment override")
 )
 
 const (
 	claudePermissionBypassFlag = "--permission-mode dontAsk"
-	codexFullAuthorizationFlag = "--dangerously-bypass-approvals-and-sandbox"
+	codexFullAuthorizationFlag = work.CodexFullAuthorizationFlag
 )
 
 type Watcher interface {
@@ -72,17 +72,26 @@ func (s *Service) Snapshot() (Snapshot, error) {
 	if err != nil {
 		return Snapshot{}, err
 	}
-	hostAdapter := s.hostAdapter()
-	host, err := s.ensureHostAgent(hostAdapter)
+	hostExecutor := s.hostExecutor()
+	host, err := s.ensureHostAgent(hostExecutor)
 	if err != nil {
 		return Snapshot{}, err
 	}
+	delegatedExecutor := s.brainDelegatedExecutor()
 	if host.ID != "" {
 		snapshot.HostAgent = &host
 	}
-	hostAdapter.Preferred = true
-	snapshot.HostAdapter = &hostAdapter
-	snapshot.Adapters = s.agentAdapters(hostAdapter.ID)
+	hostExecutor.Host = true
+	if hostExecutor.ID == delegatedExecutor.ID {
+		hostExecutor.Delegated = true
+	}
+	snapshot.HostExecutor = &hostExecutor
+	delegatedExecutor.Delegated = true
+	if delegatedExecutor.ID == hostExecutor.ID {
+		delegatedExecutor.Host = true
+	}
+	snapshot.DelegatedExecutor = &delegatedExecutor
+	snapshot.Executors = s.agentExecutors(hostExecutor.ID, delegatedExecutor.ID)
 	snapshot.ChatThreadID = chatThreadID
 	if chatThreadID != "" && host.ID != "" {
 		_ = s.store.TouchChatSession(chatThreadID, host.ID)
@@ -107,18 +116,19 @@ func (s *Service) Context(messageLimit int) (BrainContext, error) {
 		return BrainContext{}, err
 	}
 	return BrainContext{
-		ThreadID:       snapshot.ChatThreadID,
-		Workspace:      snapshot.Workspace,
-		Current:        snapshot.Current,
-		Memory:         snapshot.Memory,
-		Profile:        snapshot.Profile,
-		Personality:    snapshot.Personality,
-		HostAgent:      snapshot.HostAgent,
-		HostAdapter:    snapshot.HostAdapter,
-		Adapters:       snapshot.Adapters,
-		Agents:         snapshot.Agents,
-		RecentMessages: messages,
-		GeneratedAt:    s.nowUTC(),
+		ThreadID:          snapshot.ChatThreadID,
+		Workspace:         snapshot.Workspace,
+		Current:           snapshot.Current,
+		Memory:            snapshot.Memory,
+		Profile:           snapshot.Profile,
+		Personality:       snapshot.Personality,
+		HostAgent:         snapshot.HostAgent,
+		HostExecutor:      snapshot.HostExecutor,
+		DelegatedExecutor: snapshot.DelegatedExecutor,
+		Executors:         snapshot.Executors,
+		Agents:            snapshot.Agents,
+		RecentMessages:    messages,
+		GeneratedAt:       s.nowUTC(),
 	}, nil
 }
 
@@ -210,23 +220,23 @@ func (s *Service) ReadWorkspaceFile(path string) (WorkspaceFile, error) {
 	return s.store.ReadWorkspaceFile(path)
 }
 
-func (s *Service) SetHostAdapter(adapterID string) (Snapshot, error) {
+func (s *Service) SetHostExecutor(executorID string) (Snapshot, error) {
 	if s == nil || s.store == nil {
 		return Snapshot{}, fmt.Errorf("brain store is not configured")
 	}
-	adapterID = strings.TrimSpace(adapterID)
-	if adapterID == "" {
-		return Snapshot{}, fmt.Errorf("brain adapter id is required")
+	executorID = strings.TrimSpace(executorID)
+	if executorID == "" {
+		return Snapshot{}, fmt.Errorf("brain host executor is required")
 	}
-	if locked := strings.TrimSpace(os.Getenv("ZEN_BRAIN_HOST_ADAPTER")); locked != "" && locked != adapterID {
-		return Snapshot{}, ErrAdapterLockedByEnv
+	if locked := brainHostExecutorOverride(); locked != "" && locked != executorID {
+		return Snapshot{}, ErrExecutorLockedByEnv
 	}
 	if s.execs == nil {
-		return Snapshot{}, ErrAdapterNotConfigured
+		return Snapshot{}, ErrExecutorNotConfigured
 	}
-	adapter, ok := s.execs.AgentAdapter(adapterID)
+	executor, ok := s.execs.AgentExecutor(executorID)
 	if !ok {
-		return Snapshot{}, fmt.Errorf("%w: %s", ErrAdapterNotConfigured, adapterID)
+		return Snapshot{}, fmt.Errorf("%w: %s", ErrExecutorNotConfigured, executorID)
 	}
 	var previousHost HostSession
 	var previousMessages []ChatMessage
@@ -243,7 +253,7 @@ func (s *Service) SetHostAdapter(adapterID string) (Snapshot, error) {
 			previousMessages = messages
 		}
 	}
-	if err := s.store.SetHostAdapterID(adapter.ID); err != nil {
+	if err := s.store.SetHostExecutorID(executor.ID); err != nil {
 		return Snapshot{}, err
 	}
 	snapshot, err := s.Snapshot()
@@ -251,7 +261,7 @@ func (s *Service) SetHostAdapter(adapterID string) (Snapshot, error) {
 		return Snapshot{}, err
 	}
 	if snapshot.HostAgent != nil && strings.TrimSpace(previousHost.ID) != "" && strings.TrimSpace(snapshot.HostAgent.ID) != "" && snapshot.HostAgent.ID != strings.TrimSpace(previousHost.ID) {
-		_ = s.handoffHostSession(chatThreadID, previousHost.AdapterID, adapter.ID, snapshot.HostAgent.ID, currentContext, previousMessages, snapshot.Agents)
+		_ = s.handoffHostSession(chatThreadID, previousHost.ExecutorID, executor.ID, snapshot.HostAgent.ID, currentContext, previousMessages, snapshot.Agents)
 	}
 	return snapshot, nil
 }
@@ -313,7 +323,7 @@ func formatHeartbeatWake(event HeartbeatEvent) string {
 	return strings.Join(lines, "\n")
 }
 
-func (s *Service) ensureHostAgent(adapter work.AgentAdapter) (AgentRef, error) {
+func (s *Service) ensureHostAgent(executor work.AgentExecutor) (AgentRef, error) {
 	if s == nil || s.store == nil || s.watcher == nil {
 		return AgentRef{}, nil
 	}
@@ -321,12 +331,12 @@ func (s *Service) ensureHostAgent(adapter work.AgentAdapter) (AgentRef, error) {
 	if err != nil {
 		return AgentRef{}, err
 	}
-	command := s.hostCommand(adapter)
+	command := s.hostCommand(executor)
 	if id := strings.TrimSpace(hostSession.ID); id != "" && s.watcher.HasSession(id) {
 		if agent := s.watcher.GetAgent(id); agent != nil {
-			if s.hostAgentMatches(agent, adapter) {
-				if strings.TrimSpace(hostSession.AdapterID) != adapter.ID {
-					if err := s.store.SetHostSession(id, adapter.ID); err != nil {
+			if s.hostAgentMatches(agent, executor) {
+				if strings.TrimSpace(hostSession.ExecutorID) != executor.ID {
+					if err := s.store.SetHostSession(id, executor.ID); err != nil {
 						return AgentRef{}, err
 					}
 				}
@@ -334,8 +344,8 @@ func (s *Service) ensureHostAgent(adapter work.AgentAdapter) (AgentRef, error) {
 			}
 			_ = s.watcher.KillSession(id)
 		} else {
-			if strings.TrimSpace(hostSession.AdapterID) != adapter.ID {
-				if err := s.store.SetHostSession(id, adapter.ID); err != nil {
+			if strings.TrimSpace(hostSession.ExecutorID) != executor.ID {
+				if err := s.store.SetHostSession(id, executor.ID); err != nil {
 					return AgentRef{}, err
 				}
 			}
@@ -369,10 +379,10 @@ func (s *Service) ensureHostAgent(adapter work.AgentAdapter) (AgentRef, error) {
 	if err != nil {
 		return AgentRef{}, err
 	}
-	if err := s.store.SetHostSession(agentID, adapter.ID); err != nil {
+	if err := s.store.SetHostSession(agentID, executor.ID); err != nil {
 		return AgentRef{}, err
 	}
-	if prompt := s.hostBootstrapPrompt(adapter); prompt != "" {
+	if prompt := s.hostBootstrapPrompt(executor); prompt != "" {
 		_ = s.watcher.SendInputWhenReady(agentID, command, prompt+"\n")
 	}
 	if agent := s.watcher.GetAgent(agentID); agent != nil {
@@ -390,68 +400,97 @@ func (s *Service) ensureHostAgent(adapter work.AgentAdapter) (AgentRef, error) {
 	}, nil
 }
 
-func (s *Service) hostAdapter() work.AgentAdapter {
-	preferred := strings.TrimSpace(os.Getenv("ZEN_BRAIN_HOST_ADAPTER"))
+func (s *Service) hostExecutor() work.AgentExecutor {
+	preferred := brainHostExecutorOverride()
 	if preferred == "" && s != nil && s.store != nil {
 		if hostSession, err := s.store.HostSession(); err == nil {
-			preferred = strings.TrimSpace(hostSession.AdapterID)
+			preferred = strings.TrimSpace(hostSession.ExecutorID)
 		}
 	}
 	if s != nil && s.execs != nil {
 		if preferred != "" {
-			if adapter, ok := s.execs.AgentAdapter(preferred); ok {
-				return adapter
+			if executor, ok := s.execs.AgentExecutor(preferred); ok {
+				return executor
 			}
 		}
-		if adapter, ok := s.execs.DefaultAgentAdapter(); ok {
-			return adapter
+		if executor, ok := s.execs.AgentExecutor("codex"); ok {
+			return executor
 		}
 	}
-	return work.NewAgentAdapter("claude", work.Executor{Name: "claude", Command: "claude", Kind: "claude", Runtime: work.AgentRuntimeTmux})
+	return work.NewAgentExecutor("codex", work.Executor{Name: "codex", Command: "codex", Kind: "codex", Runtime: work.AgentRuntimeTmux})
 }
 
-func (s *Service) agentAdapters(hostAdapterID string) []work.AgentAdapter {
+func (s *Service) brainDelegatedExecutor() work.AgentExecutor {
+	preferred := delegatedExecutorOverride()
+	if s != nil && s.execs != nil {
+		if preferred != "" {
+			if executor, ok := s.execs.AgentExecutor(preferred); ok {
+				return executor
+			}
+		}
+		if executor, ok := s.execs.DelegatedAgentExecutor(); ok {
+			return executor
+		}
+	}
+	return s.hostExecutor()
+}
+
+func brainHostExecutorOverride() string {
+	return strings.TrimSpace(os.Getenv("ZEN_BRAIN_HOST_EXECUTOR"))
+}
+
+func delegatedExecutorOverride() string {
+	return strings.TrimSpace(os.Getenv("ZEN_DELEGATED_EXECUTOR"))
+}
+
+func (s *Service) agentExecutors(hostExecutorID, delegatedExecutorID string) []work.AgentExecutor {
 	if s == nil || s.execs == nil {
-		if hostAdapterID == "" {
-			hostAdapterID = "claude"
+		if hostExecutorID == "" {
+			hostExecutorID = "codex"
 		}
-		adapter := work.NewAgentAdapter(hostAdapterID, work.Executor{Name: hostAdapterID, Command: hostAdapterID})
-		adapter.Preferred = true
-		return []work.AgentAdapter{adapter}
+		executor := work.NewAgentExecutor(hostExecutorID, work.Executor{Name: hostExecutorID, Command: hostExecutorID})
+		executor.Host = true
+		executor.Delegated = delegatedExecutorID == "" || executor.ID == delegatedExecutorID
+		return []work.AgentExecutor{executor}
 	}
-	adapters := s.execs.AgentAdapters()
-	if len(adapters) == 0 {
-		if hostAdapterID == "" {
-			hostAdapterID = "claude"
+	executors := s.execs.AgentExecutors()
+	if len(executors) == 0 {
+		if hostExecutorID == "" {
+			hostExecutorID = "codex"
 		}
-		adapter := work.NewAgentAdapter(hostAdapterID, work.Executor{Name: hostAdapterID, Command: hostAdapterID})
-		adapter.Preferred = true
-		return []work.AgentAdapter{adapter}
+		executor := work.NewAgentExecutor(hostExecutorID, work.Executor{Name: hostExecutorID, Command: hostExecutorID})
+		executor.Host = true
+		executor.Delegated = delegatedExecutorID == "" || executor.ID == delegatedExecutorID
+		return []work.AgentExecutor{executor}
 	}
-	for i := range adapters {
-		adapters[i].Preferred = adapters[i].ID == hostAdapterID
+	for i := range executors {
+		executors[i].Host = executors[i].ID == hostExecutorID
+		executors[i].Delegated = executors[i].ID == delegatedExecutorID
 	}
-	sort.Slice(adapters, func(i, j int) bool {
-		if adapters[i].Preferred != adapters[j].Preferred {
-			return adapters[i].Preferred
+	sort.Slice(executors, func(i, j int) bool {
+		if executors[i].Host != executors[j].Host {
+			return executors[i].Host
 		}
-		return adapters[i].ID < adapters[j].ID
+		if executors[i].Delegated != executors[j].Delegated {
+			return executors[i].Delegated
+		}
+		return executors[i].ID < executors[j].ID
 	})
-	return adapters
+	return executors
 }
 
-func (s *Service) hostAgentMatches(agent *classifier.Agent, adapter work.AgentAdapter) bool {
+func (s *Service) hostAgentMatches(agent *classifier.Agent, executor work.AgentExecutor) bool {
 	if agent == nil || !agent.Hidden {
 		return false
 	}
-	expectedProvider := strings.TrimSpace(adapter.Provider)
+	expectedProvider := strings.TrimSpace(executor.Provider)
 	if expectedProvider != "" && expectedProvider != work.AgentProviderCustom {
 		if work.InferAgentProvider(agent.Command) != expectedProvider {
 			return false
 		}
 		return true
 	}
-	return commandBase(agent.Command) == commandBase(adapter.Command)
+	return commandBase(agent.Command) == commandBase(executor.Command)
 }
 
 func firstNonZeroTime(values ...time.Time) time.Time {
@@ -463,17 +502,17 @@ func firstNonZeroTime(values ...time.Time) time.Time {
 	return time.Time{}
 }
 
-func (s *Service) hostCommand(adapter work.AgentAdapter) string {
-	command := strings.TrimSpace(adapter.Command)
+func (s *Service) hostCommand(executor work.AgentExecutor) string {
+	command := strings.TrimSpace(executor.Command)
 	if command == "" {
-		command = strings.TrimSpace(adapter.ID)
+		command = strings.TrimSpace(executor.ID)
 	}
 	if command == "" {
 		command = "codex"
 	}
-	provider := strings.TrimSpace(adapter.Provider)
+	provider := strings.TrimSpace(executor.Provider)
 	if provider == "" || provider == work.AgentProviderCustom {
-		provider = work.InferAgentProvider(command, adapter.ID)
+		provider = work.InferAgentProvider(command, executor.ID)
 	}
 	workspace := s.brainWorkspace()
 	switch provider {
@@ -567,42 +606,50 @@ func commandBase(value string) string {
 	return base
 }
 
-func (s *Service) hostBootstrapPrompt(adapter work.AgentAdapter) string {
+func (s *Service) hostBootstrapPrompt(executor work.AgentExecutor) string {
 	snapshot, err := s.store.Snapshot()
 	if err != nil {
 		return ""
 	}
+	delegatedExecutor := s.brainDelegatedExecutor()
 	return strings.TrimSpace(fmt.Sprintf(`
 You are Brain inside zen, the user's private second brain and agent orchestrator.
 
 Work as a warm, direct, capable chat assistant. Reply in the user's language unless they ask otherwise.
 
 Brain workspace: %s
-Active adapter: %s (%s via %s)
-Adapter capabilities: %s
+Host executor: %s (%s via %s)
+Delegated executor: %s (%s via %s)
+Host executor capabilities: %s
 
 Durable state rules:
-- Keep long-term memory in memory.md.
-- Keep personality, preferences, and profile notes in profile.md.
+- Keep long-term memory in memory.md; read it only when durable memory is relevant to the user's current request.
+- Keep personality, preferences, and profile notes in profile.md; read it when preferences or user background matter.
 - Keep the current active objective, decisions, open threads, and next step in current.md.
 - Use policies/delegation.md, policies/engine.md, and policies/handoff.md for stable orchestration rules.
 - Use files in this workspace for plans, inbox notes, reminders, and follow-up state.
 - Do not use arbitrary project repositories as Brain's default workspace.
+- Treat this bootstrap as a map, not the full context. Prefer current.md and zen brain context --json for restoration; read memory.md/profile.md on demand instead of assuming they are in the prompt.
 
 Agent orchestration rules:
 - You are running in a real tmux agent session.
-- This Brain host is launched with the most permissive available non-interactive authorization mode for its adapter.
+- This Brain host is launched with the most permissive available non-interactive authorization mode for its executor.
 - The zen app sends user messages directly into this session.
-- Treat the adapter as replaceable; do not make Brain's plans depend on Codex-only or Claude-only behavior unless the user asks for that adapter specifically.
-- The active Brain adapter is also the default executor for delegated agents. Use a different executor only when the user explicitly mentions or asks for that engine, such as @codex, @grok, or @claude. Do not switch executors based on private task-type judgment.
+- Treat the executor as replaceable; do not make Brain's plans depend on Codex-only or Claude-only behavior unless the user asks for that executor specifically.
+- Host Executor runs Brain chat, planning, delegation, review, and final synthesis. Delegated Executor runs delegated agents and ordinary non-Brain sessions unless the user explicitly asks for a different executor for that session, such as @codex, @grok, or @claude. Do not switch executors based on private task-type judgment.
 - Brain is the user's scheduler: reduce decision load. For concrete work that needs repository/tool execution, independent progress, parallelism, or follow-up, proactively create or reuse a visible delegated agent session; stay in Brain for chat, memory, synthesis, reminders, and decisions that fit the current context.
+- Brain is the orchestrator, not the execution pool: keep decomposition, ordering, judgment, result review, and final synthesis in Brain. Use delegated agents for scoped execution.
+- Delegate a subtask only when it can be named clearly. A delegated-agent brief should contain one concern, the workspace, enough context to avoid re-exploring the whole repo, acceptance criteria, safety constraints, feasible verification, and a short expected report.
+- Run independent delegated subtasks in parallel when that reduces elapsed time. Do not parallelize work that shares fragile state, needs one coherent debugging thread, or depends on unresolved product judgment.
+- Delegated agents should not invent the overall plan. If a delegated result is incomplete or off-target, inspect it, rewrite the brief or send a focused follow-up, and only patch over it directly when the fix is trivial.
+- Review delegated results before integrating them: capture the session, compare the result with the acceptance criteria, run or inspect verification, and then decide whether to merge, follow up, or ask the user.
 - For a single larger task, prefer reusing the same delegated agent session across stages. Send follow-up instructions to that session until the task is genuinely complete. Open a separate delegated session only when the work is meaningfully independent, benefits from parallelism, needs a different repository/context, or the current session is blocked or unusable.
 - Use the zen binary to spawn, send to, and inspect delegated agents. When delegating, write a short note with workspace, objective, context, acceptance criteria, safety constraints, and expected report.
 - Zen CLI quick reference:
-  - %s brain context --json returns structured Brain context: current.md, recent visible messages, host adapter, and delegated agents.
+  - %s brain context --json returns structured Brain context: current.md, recent visible messages, host executor, and delegated agents.
   - %s brain gc --json backfills missing standard Brain workspace files and reports open delegated sessions without rewriting user content.
   - %s agent list --json lists visible sessions; only sessions with delegated=true are Brain-owned.
-  - %s agent spawn -name "<name>" -cwd <workspace> -prompt "<task>" creates a visible delegated agent with the current Brain adapter as executor.
+  - %s agent spawn -name "<name>" -cwd <workspace> -prompt "<task>" creates a visible delegated agent with Brain's delegated executor routing.
   - %s agent spawn -name "<name>" -executor <executor> -cwd <workspace> -prompt "<task>" creates a visible delegated agent with an explicit user-requested executor override.
   - %s agent capture -id <agent_id> --json inspects a delegated agent.
   - %s agent send -id <agent_id> -text "<message>" --submit=true continues a delegated agent.
@@ -616,15 +663,17 @@ Agent orchestration rules:
 Current personality:
 %s
 
-Current profile notes:
-%s
-
-Current memory:
-%s
-`, snapshot.Workspace, adapter.ID, adapter.Provider, adapter.Runtime, adapterCapabilitiesSummary(adapter.Capabilities), zenCLICommand(), zenCLICommand(), zenCLICommand(), zenCLICommand(), zenCLICommand(), zenCLICommand(), zenCLICommand(), zenCLICommand(), strings.TrimSpace(snapshot.Personality), strings.TrimSpace(snapshot.Profile), strings.TrimSpace(snapshot.Memory)))
+Reference files:
+- current.md: active objective, decisions, open threads, next step
+- memory.md: durable long-term memory
+- profile.md: user profile and preferences
+- policies/delegation.md
+- policies/engine.md
+- policies/handoff.md
+`, snapshot.Workspace, executor.ID, executor.Provider, executor.Runtime, delegatedExecutor.ID, delegatedExecutor.Provider, delegatedExecutor.Runtime, executorCapabilitiesSummary(executor.Capabilities), zenCLICommand(), zenCLICommand(), zenCLICommand(), zenCLICommand(), zenCLICommand(), zenCLICommand(), zenCLICommand(), zenCLICommand(), strings.TrimSpace(snapshot.Personality)))
 }
 
-func (s *Service) handoffHostSession(threadID, previousAdapterID, nextAdapterID, nextHostID, currentContext string, messages []ChatMessage, agents []AgentRef) error {
+func (s *Service) handoffHostSession(threadID, previousExecutorID, nextExecutorID, nextHostID, currentContext string, messages []ChatMessage, agents []AgentRef) error {
 	if s == nil || s.store == nil || s.watcher == nil {
 		return nil
 	}
@@ -633,9 +682,10 @@ func (s *Service) handoffHostSession(threadID, previousAdapterID, nextAdapterID,
 	if threadID == "" || nextHostID == "" {
 		return nil
 	}
-	prompt := formatHostHandoffPrompt(threadID, previousAdapterID, nextAdapterID, currentContext, messages, agents)
+	delegatedExecutor := s.brainDelegatedExecutor()
+	prompt := formatHostHandoffPrompt(threadID, previousExecutorID, nextExecutorID, delegatedExecutor.ID, currentContext, messages, agents)
 	if prompt != "" {
-		if err := s.watcher.SendInputWhenReady(nextHostID, s.hostCommand(s.hostAdapter()), prompt+"\n"); err != nil {
+		if err := s.watcher.SendInputWhenReady(nextHostID, s.hostCommand(s.hostExecutor()), prompt+"\n"); err != nil {
 			return err
 		}
 	}
@@ -650,22 +700,25 @@ func (s *Service) handoffHostSession(threadID, previousAdapterID, nextAdapterID,
 	return s.store.SetChatState(state)
 }
 
-func formatHostHandoffPrompt(threadID, previousAdapterID, nextAdapterID, currentContext string, messages []ChatMessage, agents []AgentRef) string {
+func formatHostHandoffPrompt(threadID, previousExecutorID, nextExecutorID, delegatedExecutorID, currentContext string, messages []ChatMessage, agents []AgentRef) string {
 	threadID = strings.TrimSpace(threadID)
 	if threadID == "" {
 		return ""
 	}
 	lines := []string{
-		"Brain engine handoff:",
-		"The user switched Brain engines. This is the same visible Brain chat, not a new conversation.",
+		"Brain host executor handoff:",
+		"The user switched Brain host executors. This is the same visible Brain chat, not a new conversation.",
 		"Continue naturally in the user's current language. Do not mention this handoff unless the user asks.",
 		"Current thread id: " + threadID,
 	}
-	if strings.TrimSpace(previousAdapterID) != "" {
-		lines = append(lines, "Previous engine: "+strings.TrimSpace(previousAdapterID))
+	if strings.TrimSpace(previousExecutorID) != "" {
+		lines = append(lines, "Previous host executor: "+strings.TrimSpace(previousExecutorID))
 	}
-	if strings.TrimSpace(nextAdapterID) != "" {
-		lines = append(lines, "Current engine: "+strings.TrimSpace(nextAdapterID))
+	if strings.TrimSpace(nextExecutorID) != "" {
+		lines = append(lines, "Current host executor: "+strings.TrimSpace(nextExecutorID))
+	}
+	if strings.TrimSpace(delegatedExecutorID) != "" {
+		lines = append(lines, "Delegated executor: "+strings.TrimSpace(delegatedExecutorID))
 	}
 	lines = append(lines,
 		"",
@@ -678,8 +731,15 @@ func formatHostHandoffPrompt(threadID, previousAdapterID, nextAdapterID, current
 	lines = append(lines,
 		"",
 		"Executor policy:",
-		"- Delegated agents default to the current Brain engine.",
+		"- Host Executor runs Brain chat, planning, delegation, review, and final synthesis.",
+		"- Delegated Executor runs delegated agents and ordinary non-Brain sessions unless the user explicitly asks for a different executor for that session.",
 		"- Use a different executor only when the user explicitly mentions or asks for it, such as @codex, @grok, or @claude.",
+		"",
+		"Orchestration policy:",
+		"- Brain keeps decomposition, ordering, judgment, result review, and final synthesis.",
+		"- Delegated agents are scoped execution sessions: give each one concern, enough context, acceptance criteria, verification, safety constraints, and a short expected report.",
+		"- Run independent subtasks in parallel when useful; keep coupled design decisions and gnarly single-thread debugging in Brain.",
+		"- Inspect delegated results before integrating them. If a result is off-target, rewrite the brief or send a focused follow-up instead of silently absorbing the mistake.",
 	)
 	if len(messages) > 0 {
 		lines = append(lines, "", "Recent visible Brain messages:")
@@ -740,7 +800,7 @@ func zenCLICommand() string {
 	return exe
 }
 
-func adapterCapabilitiesSummary(caps work.AgentCapabilities) string {
+func executorCapabilitiesSummary(caps work.AgentCapabilities) string {
 	parts := []string{}
 	if caps.InteractiveTTY {
 		parts = append(parts, "interactive_tty")

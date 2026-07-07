@@ -6,9 +6,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"hash/fnv"
 	"io"
 	"log"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -139,6 +141,7 @@ type clientMessage struct {
 	BaseMtime    string                 `json:"base_mtime"`
 	Prompt       string                 `json:"prompt"`
 	Executor     string                 `json:"executor"`
+	ExecutorID   string                 `json:"executor_id"`
 	AdapterID    string                 `json:"adapter_id"`
 	Personality  string                 `json:"personality"`
 	Done         bool                   `json:"done"`
@@ -159,7 +162,7 @@ func (s *Server) Run(ctx context.Context, addr string) error {
 		})
 	})
 
-	srv := &http.Server{Addr: addr, Handler: mux}
+	srv := &http.Server{Addr: addr, Handler: withCORS(mux)}
 
 	go s.broadcastEvents(ctx)
 	go s.heartbeat(ctx)
@@ -347,8 +350,8 @@ func (s *Server) handleClientMessage(conn *websocket.Conn, msg []byte) {
 	case "brain_gc":
 		s.handleBrainGC(conn, raw)
 
-	case "brain_set_adapter":
-		s.handleBrainSetAdapter(conn, raw)
+	case "brain_set_executor":
+		s.handleBrainSetExecutor(conn, raw)
 
 	case "brain_chat_snapshot", "brain_chat_send":
 		s.handleDeprecatedBrainChatProtocol(conn, raw)
@@ -932,7 +935,8 @@ func (s *Server) publishCodexConversationSubscription(
 		return
 	}
 
-	conversation, err := work.LoadCodexConversationForAgent(resolved.agent, time.Now())
+	now := time.Now()
+	conversation, err := work.LoadCodexConversationForAgent(resolved.agent, now)
 	if err != nil {
 		s.sendJSON(conn, map[string]any{
 			"type":       "error",
@@ -941,6 +945,15 @@ func (s *Server) publishCodexConversationSubscription(
 			"message":    err.Error(),
 		})
 		return
+	}
+	if work.ShouldUseTerminalSnapshotConversationFallback(resolved.agent, conversation) {
+		if s.watcher == nil {
+			conversation = work.TerminalSnapshotConversationUnavailableForAgent(resolved.agent, "terminal_snapshot_unavailable", now)
+		} else if text, err := s.watcher.CapturePaneContent(resolved.agent.ID); err != nil {
+			conversation = work.TerminalSnapshotConversationUnavailableForAgent(resolved.agent, "terminal_snapshot_unavailable", now)
+		} else {
+			conversation = work.TerminalSnapshotConversationForAgent(resolved.agent, text, now)
+		}
 	}
 	fingerprint := codexConversationSubscriptionFingerprint(conversation)
 	if (*previous) != nil && (*previous).fingerprint == fingerprint {
@@ -1005,16 +1018,15 @@ func firstNonEmptyString(values ...string) string {
 }
 
 func codexConversationSubscriptionFingerprint(conversation work.CodexConversation) string {
-	return fmt.Sprintf("%s:%t:%s:%s:%s:%s:%v:%s",
-		codexConversationIdentity(conversation),
-		conversation.Available,
-		conversation.Reason,
-		conversation.Source,
-		conversation.CWD,
-		codexConversationActiveValue(conversation.Active),
-		conversation.Updated,
-		codexConversationEventsFingerprint(conversation.Events),
-	)
+	hash := fnv.New64a()
+	writeFingerprintString(hash, codexConversationIdentity(conversation))
+	writeFingerprintBool(hash, conversation.Available)
+	writeFingerprintString(hash, conversation.Reason)
+	writeFingerprintString(hash, conversation.Source)
+	writeFingerprintString(hash, conversation.CWD)
+	writeFingerprintString(hash, codexConversationActiveValue(conversation.Active))
+	writeCodexConversationEventsFingerprint(hash, conversation.Events)
+	return fmt.Sprintf("%016x", hash.Sum64())
 }
 
 func codexConversationActiveValue(active *bool) string {
@@ -1028,11 +1040,9 @@ func codexConversationActiveValue(active *bool) string {
 }
 
 func codexConversationEventsFingerprint(events []work.CodexConversationEvent) string {
-	data, err := json.Marshal(events)
-	if err != nil {
-		return fmt.Sprintf("%d", len(events))
-	}
-	return string(data)
+	hash := fnv.New64a()
+	writeCodexConversationEventsFingerprint(hash, events)
+	return fmt.Sprintf("%016x", hash.Sum64())
 }
 
 func codexConversationEventsByID(events []work.CodexConversationEvent) map[string]work.CodexConversationEvent {
@@ -1073,11 +1083,74 @@ func codexConversationDelta(
 }
 
 func codexConversationEventFingerprint(event work.CodexConversationEvent) string {
-	data, err := json.Marshal(event)
-	if err != nil {
-		return event.ID
+	hash := fnv.New64a()
+	writeCodexConversationEventFingerprint(hash, event)
+	return fmt.Sprintf("%016x", hash.Sum64())
+}
+
+func writeCodexConversationEventsFingerprint(w io.Writer, events []work.CodexConversationEvent) {
+	writeFingerprintInt(w, len(events))
+	for _, event := range events {
+		writeCodexConversationEventFingerprint(w, event)
 	}
-	return string(data)
+}
+
+func writeCodexConversationEventFingerprint(w io.Writer, event work.CodexConversationEvent) {
+	writeFingerprintString(w, event.ID)
+	writeFingerprintInt(w, event.Seq)
+	writeFingerprintString(w, event.Timestamp)
+	writeFingerprintString(w, event.Kind)
+	writeFingerprintString(w, event.Role)
+	writeFingerprintString(w, event.Title)
+	writeFingerprintString(w, event.Body)
+	writeFingerprintString(w, event.Command)
+	writeFingerprintString(w, event.ToolName)
+	writeFingerprintString(w, event.Input)
+	writeFingerprintString(w, event.Output)
+	writeFingerprintString(w, event.CallID)
+	if event.ExitCode == nil {
+		writeFingerprintString(w, "")
+	} else {
+		writeFingerprintInt(w, *event.ExitCode)
+	}
+	writeFingerprintString(w, event.Status)
+	writeFingerprintStrings(w, event.Files)
+	writeFingerprintString(w, event.Explanation)
+	writeFingerprintPlan(w, event.Plan)
+	writeFingerprintString(w, event.Source)
+}
+
+func writeFingerprintString(w io.Writer, value string) {
+	_, _ = fmt.Fprintf(w, "%d:", len(value))
+	_, _ = io.WriteString(w, value)
+	_, _ = io.WriteString(w, "\x00")
+}
+
+func writeFingerprintBool(w io.Writer, value bool) {
+	if value {
+		writeFingerprintString(w, "true")
+		return
+	}
+	writeFingerprintString(w, "false")
+}
+
+func writeFingerprintInt(w io.Writer, value int) {
+	_, _ = fmt.Fprintf(w, "%d\x00", value)
+}
+
+func writeFingerprintStrings(w io.Writer, values []string) {
+	writeFingerprintInt(w, len(values))
+	for _, value := range values {
+		writeFingerprintString(w, value)
+	}
+}
+
+func writeFingerprintPlan(w io.Writer, steps []work.CodexPlanStep) {
+	writeFingerprintInt(w, len(steps))
+	for _, step := range steps {
+		writeFingerprintString(w, step.Step)
+		writeFingerprintString(w, step.Status)
+	}
 }
 
 func clientStartedAt(raw json.RawMessage) time.Time {
@@ -1287,24 +1360,28 @@ func (s *Server) sendBrainSnapshot(conn *websocket.Conn, requestID string) {
 	s.sendJSON(conn, map[string]any{
 		"type":       "brain_snapshot",
 		"request_id": requestID,
-		"brain":      snapshot,
+		"brain":      brainSnapshotWire(snapshot),
 	})
 }
 
-func (s *Server) handleBrainSetAdapter(conn *websocket.Conn, raw clientMessage) {
+func (s *Server) handleBrainSetExecutor(conn *websocket.Conn, raw clientMessage) {
 	if s.brain == nil {
 		s.sendErrorWithRequestID(conn, raw.RequestID, "brain_unavailable", "Brain is not configured")
 		return
 	}
-	snapshot, err := s.brain.SetHostAdapter(raw.AdapterID)
+	executorID := strings.TrimSpace(raw.ExecutorID)
+	if executorID == "" {
+		executorID = strings.TrimSpace(raw.AdapterID)
+	}
+	snapshot, err := s.brain.SetHostExecutor(executorID)
 	if err != nil {
-		s.sendErrorWithRequestID(conn, raw.RequestID, "brain_set_adapter_failed", err.Error())
+		s.sendErrorWithRequestID(conn, raw.RequestID, "brain_set_executor_failed", err.Error())
 		return
 	}
 	s.sendJSON(conn, map[string]any{
 		"type":       "brain_snapshot",
 		"request_id": raw.RequestID,
-		"brain":      snapshot,
+		"brain":      brainSnapshotWire(snapshot),
 	})
 }
 
@@ -1365,8 +1442,29 @@ func (s *Server) handleBrainChatNew(conn *websocket.Conn, raw clientMessage) {
 	s.sendJSON(conn, map[string]any{
 		"type":       "brain_snapshot",
 		"request_id": raw.RequestID,
-		"brain":      snapshot,
+		"brain":      brainSnapshotWire(snapshot),
 	})
+}
+
+func brainSnapshotWire(snapshot brain.Snapshot) any {
+	raw, err := json.Marshal(snapshot)
+	if err != nil {
+		return snapshot
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(raw, &payload); err != nil {
+		return snapshot
+	}
+	if _, ok := payload["host_adapter"]; !ok && snapshot.HostExecutor != nil {
+		payload["host_adapter"] = snapshot.HostExecutor
+	}
+	if _, ok := payload["delegated_adapter"]; !ok && snapshot.DelegatedExecutor != nil {
+		payload["delegated_adapter"] = snapshot.DelegatedExecutor
+	}
+	if _, ok := payload["adapters"]; !ok && snapshot.Executors != nil {
+		payload["adapters"] = snapshot.Executors
+	}
+	return payload
 }
 
 func visibleAgentSessions(agents []*classifier.Agent) []*classifier.Agent {
@@ -1985,12 +2083,59 @@ func (s *Server) handleUpload(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) authenticateRequest(w http.ResponseWriter, r *http.Request, purpose string) (*auth.TrustedDevice, bool) {
-	device, err := s.auth.VerifyAuthorization(r.Header.Get("Authorization"), purpose, 5*time.Minute)
+	device, err := s.auth.VerifyAuthorization(authorizationFromRequest(r), purpose, 5*time.Minute)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusUnauthorized)
 		return nil, false
 	}
 	return device, true
+}
+
+func authorizationFromRequest(r *http.Request) string {
+	if value := strings.TrimSpace(r.Header.Get("Authorization")); value != "" {
+		return value
+	}
+	encoded := strings.TrimSpace(r.URL.Query().Get("auth"))
+	if encoded == "" {
+		return ""
+	}
+	decoded, err := base64.RawURLEncoding.DecodeString(encoded)
+	if err != nil {
+		return ""
+	}
+	return string(decoded)
+}
+
+func withCORS(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		origin := strings.TrimSpace(r.Header.Get("Origin"))
+		if isAllowedCORSOrigin(origin) {
+			w.Header().Set("Access-Control-Allow-Origin", origin)
+			w.Header().Add("Vary", "Origin")
+			w.Header().Set("Access-Control-Allow-Headers", "Authorization, Content-Type")
+			w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+		}
+		if r.Method == http.MethodOptions {
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+func isAllowedCORSOrigin(origin string) bool {
+	if origin == "" {
+		return false
+	}
+	parsed, err := url.Parse(origin)
+	if err != nil {
+		return false
+	}
+	if parsed.Scheme != "http" && parsed.Scheme != "https" {
+		return false
+	}
+	host := parsed.Hostname()
+	return host == "localhost" || host == "127.0.0.1" || host == "::1"
 }
 
 func (s *Server) writeJSONWithAssertion(w http.ResponseWriter, status int, purpose string, payload map[string]any) {

@@ -2,6 +2,7 @@ import React from "react";
 import { StyleSheet, Text, View } from "react-native";
 import type { TerminalThemeChrome } from "../../constants/terminalThemes";
 import { Typography } from "../../constants/tokens";
+import { compactPathLabel } from "../../services/pathDisplay";
 import { ComposerLoadingDots } from "./ComposerLoadingDots";
 
 interface CodexSessionIdleViewProps {
@@ -15,7 +16,7 @@ export function CodexSessionIdleView({
   busy = false,
   cwd,
 }: CodexSessionIdleViewProps) {
-  const workspace = compactWorkspaceLabel(cwd);
+  const workspace = compactPathLabel(cwd, { tailSegments: 2, showFullUpTo: 2 });
 
   return (
     <View style={styles.root}>
@@ -35,27 +36,13 @@ export function CodexSessionIdleView({
         <Text
           style={[styles.workspace, { color: chrome.textSubtle }]}
           numberOfLines={1}
+          ellipsizeMode="head"
         >
           {workspace}
         </Text>
       ) : null}
     </View>
   );
-}
-
-function compactWorkspaceLabel(value?: string): string {
-  const trimmed = value?.trim().replace(/\/+$/, "") || "";
-  if (!trimmed || trimmed === "/") {
-    return "";
-  }
-  const parts = trimmed.split("/").filter(Boolean);
-  if (parts.length === 0) {
-    return trimmed;
-  }
-  if (parts.length <= 2) {
-    return parts.join("/");
-  }
-  return parts.slice(-2).join("/");
 }
 
 const styles = StyleSheet.create({

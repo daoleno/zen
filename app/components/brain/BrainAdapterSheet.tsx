@@ -49,9 +49,9 @@ export function BrainAdapterSheet({
       keyboardAvoiding
       maxHeight="72%"
     >
-      <Text style={styles.title}>Engine</Text>
+      <Text style={styles.title}>Host Executor</Text>
       <Text style={styles.lead}>
-        Choose which runtime powers Brain chat and delegated work.
+        Choose which executor runs Brain chat and orchestration.
       </Text>
 
       <View style={styles.list}>
@@ -99,7 +99,11 @@ export function BrainAdapterSheet({
                 <ActivityIndicator size="small" color={colors.accent} />
               ) : active ? (
                 <View style={[styles.activePill, { backgroundColor: colors.accentSoft }]}>
-                  <Text style={[styles.activePillText, { color: colors.accent }]}>Active</Text>
+                  <Text style={[styles.activePillText, { color: colors.accent }]}>Host</Text>
+                </View>
+              ) : adapter.delegated ? (
+                <View style={[styles.activePill, { backgroundColor: themed.subtle }]}>
+                  <Text style={[styles.activePillText, { color: colors.textSecondary }]}>Delegated</Text>
                 </View>
               ) : (
                 <Ionicons name="ellipse-outline" size={18} color={colors.textTertiary} />

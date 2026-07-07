@@ -20,10 +20,13 @@ import (
 const tmuxSendInputChunkBytes = 1024
 
 const initialInputReadyTimeout = 8 * time.Second
+const cursorInputReadyTimeout = 25 * time.Second
 
 var codexInputPromptRe = regexp.MustCompile(`(?m)^›\s`)
 var codexModelLoadingRe = regexp.MustCompile(`(?im)\bmodel:\s+loading\b`)
 var codexStartupContinueRe = regexp.MustCompile(`(?im)\bpress\s+enter\s+to\s+continue\b`)
+var cursorInputReadyRe = regexp.MustCompile(`(?im)\b(run\s+everything|composer\s+[0-9][^\n]*\n\s*~?[/\w.-].*)\b`)
+var cursorWorkspaceTrustRe = regexp.MustCompile(`(?im)\bworkspace\s+trust\s+required\b`)
 
 // SessionEvent represents a state change or output update for an agent.
 type SessionEvent struct {
@@ -548,17 +551,23 @@ func (w *Watcher) SendInput(sessionID, text string) error {
 }
 
 // SendInputWhenReady waits for a newly started agent UI to be ready, then sends
-// text. Unknown adapters are treated as ready immediately. Known Codex UIs must
+// text. Unknown executors are treated as ready immediately. Known Codex UIs must
 // reach the input prompt so Zen does not paste a task into a startup/approval card.
 func (w *Watcher) SendInputWhenReady(sessionID, command, text string) error {
-	if !WaitForInputReady(sessionID, command, initialInputReadyTimeout) && needsInputReadinessWait(command, "") {
+	if !WaitForInputReady(sessionID, command, inputReadyTimeout(command)) && needsInputReadinessWait(command, "") {
 		return fmt.Errorf("agent input not ready for %q", command)
 	}
-	return SendInput(sessionID, text)
+	return SendInputForCommand(sessionID, command, text)
 }
 
 // SendInput sends text to a tmux window and treats trailing newlines as submit.
 func SendInput(sessionID, text string) error {
+	return SendInputForCommand(sessionID, "", text)
+}
+
+// SendInputForCommand sends text to a tmux window and applies executor-specific
+// submit timing where terminal UIs need a short paste-settle delay.
+func SendInputForCommand(sessionID, command, text string) error {
 	body, submit := splitTmuxInput(text)
 	if body != "" {
 		if err := sendLiteralTmuxInput(sessionID, body); err != nil {
@@ -567,20 +576,20 @@ func SendInput(sessionID, text string) error {
 	}
 	if submit {
 		if body != "" {
-			time.Sleep(120 * time.Millisecond)
+			time.Sleep(tmuxSubmitDelay(command))
 		}
 		return exec.Command("tmux", "send-keys", "-t", sessionID, "Enter").Run()
 	}
 	return nil
 }
 
-// SendInputWhenReady is the package-level form used by adapter shims that do
+// SendInputWhenReady is the package-level form used by executor shims that do
 // not hold a Watcher instance.
 func SendInputWhenReady(sessionID, command, text string) error {
-	if !WaitForInputReady(sessionID, command, initialInputReadyTimeout) && needsInputReadinessWait(command, "") {
+	if !WaitForInputReady(sessionID, command, inputReadyTimeout(command)) && needsInputReadinessWait(command, "") {
 		return fmt.Errorf("agent input not ready for %q", command)
 	}
-	return SendInput(sessionID, text)
+	return SendInputForCommand(sessionID, command, text)
 }
 
 // WaitForInputReady reports whether a known agent UI reached an input prompt.
@@ -591,6 +600,7 @@ func WaitForInputReady(sessionID, command string, timeout time.Duration) bool {
 	}
 	deadline := time.Now().Add(timeout)
 	advancedStartupPrompt := false
+	advancedCursorTrustPrompt := false
 	for {
 		content, alive := capturePaneContent(sessionID)
 		if !alive {
@@ -600,6 +610,12 @@ func WaitForInputReady(sessionID, command string, timeout time.Duration) bool {
 			_ = exec.Command("tmux", "send-keys", "-t", sessionID, "Enter").Run()
 			advancedStartupPrompt = true
 			time.Sleep(250 * time.Millisecond)
+			continue
+		}
+		if !advancedCursorTrustPrompt && isCursorWorkspaceTrustPrompt(command, content) {
+			_ = exec.Command("tmux", "send-keys", "-t", sessionID, "a").Run()
+			advancedCursorTrustPrompt = true
+			time.Sleep(500 * time.Millisecond)
 			continue
 		}
 		if isAgentInputReady(command, content) {
@@ -622,6 +638,11 @@ func isAgentInputReady(command, content string) bool {
 			!codexModelLoadingRe.MatchString(current) &&
 			codexInputPromptRe.MatchString(current)
 	}
+	if isCursorAgentCommand(command) || strings.Contains(strings.ToLower(content), "cursor agent") {
+		current := latestCursorPaneContent(content)
+		return strings.Contains(strings.ToLower(current), "cursor agent") &&
+			cursorInputReadyRe.MatchString(current)
+	}
 	return strings.TrimSpace(content) != ""
 }
 
@@ -630,6 +651,16 @@ func isCodexStartupContinuePrompt(command, content string) bool {
 		return false
 	}
 	return codexStartupContinueRe.MatchString(latestCodexPaneContent(content))
+}
+
+func isCursorWorkspaceTrustPrompt(command, content string) bool {
+	if !isCursorAgentCommand(command) && !strings.Contains(strings.ToLower(content), "cursor agent") {
+		return false
+	}
+	normalized := strings.ReplaceAll(content, "\r\n", "\n")
+	lower := strings.ToLower(normalized)
+	return cursorWorkspaceTrustRe.MatchString(normalized) &&
+		strings.Contains(lower, "trust this workspace")
 }
 
 func latestCodexPaneContent(content string) string {
@@ -646,7 +677,11 @@ func latestCodexPaneContent(content string) string {
 }
 
 func needsInputReadinessWait(command, content string) bool {
-	return isCodexCommand(command) || strings.Contains(strings.ToLower(content), "openai codex")
+	lowerContent := strings.ToLower(content)
+	return isCodexCommand(command) ||
+		isCursorAgentCommand(command) ||
+		strings.Contains(lowerContent, "openai codex") ||
+		strings.Contains(lowerContent, "cursor agent")
 }
 
 func isCodexCommand(command string) bool {
@@ -656,6 +691,42 @@ func isCodexCommand(command string) bool {
 	}
 	base := filepath.Base(fields[0])
 	return base == "codex"
+}
+
+func isCursorAgentCommand(command string) bool {
+	fields := strings.Fields(strings.TrimSpace(command))
+	if len(fields) == 0 {
+		return false
+	}
+	base := filepath.Base(fields[0])
+	return base == "cursor-agent"
+}
+
+func latestCursorPaneContent(content string) string {
+	normalized := strings.ReplaceAll(content, "\r\n", "\n")
+	lower := strings.ToLower(normalized)
+	if idx := strings.LastIndex(lower, "cursor agent"); idx >= 0 {
+		return normalized[idx:]
+	}
+	lines := strings.Split(normalized, "\n")
+	if len(lines) > 60 {
+		return strings.Join(lines[len(lines)-60:], "\n")
+	}
+	return normalized
+}
+
+func tmuxSubmitDelay(command string) time.Duration {
+	if isCursorAgentCommand(command) {
+		return 400 * time.Millisecond
+	}
+	return 120 * time.Millisecond
+}
+
+func inputReadyTimeout(command string) time.Duration {
+	if isCursorAgentCommand(command) {
+		return cursorInputReadyTimeout
+	}
+	return initialInputReadyTimeout
 }
 
 func sendLiteralTmuxInput(sessionID, body string) error {
@@ -1019,7 +1090,29 @@ func buildWindowCommandForShellWithOptions(shellPath, command string, progressEn
 }
 
 func agentProgressEnvScript() string {
-	return `if [ -z "${ZEN_AGENT_ID:-}" ] && [ -n "${TMUX_PANE:-}" ]; then ZEN_AGENT_ID="$(tmux display-message -p -t "$TMUX_PANE" "#{session_name}:#{window_id}" 2>/dev/null || true)"; export ZEN_AGENT_ID; fi; if [ -z "${ZEN_AGENT_PROGRESS_CMD:-}" ]; then ZEN_AGENT_PROGRESS_CMD="zen agent progress"; export ZEN_AGENT_PROGRESS_CMD; fi`
+	return `if [ -z "${ZEN_AGENT_ID:-}" ] && [ -n "${TMUX_PANE:-}" ]; then ZEN_AGENT_ID="$(tmux display-message -p -t "$TMUX_PANE" "#{session_name}:#{window_id}" 2>/dev/null || true)"; export ZEN_AGENT_ID; fi; if [ -z "${ZEN_AGENT_PROGRESS_CMD:-}" ]; then ZEN_AGENT_PROGRESS_CMD=` + shellQuote(ZenExecutablePath()) + `; export ZEN_AGENT_PROGRESS_CMD; fi`
+}
+
+// ZenExecutablePath returns the absolute path of the currently running zen
+// daemon executable so delegated agents invoke the exact same binary (and
+// therefore the same control socket / state dir) without relying on shell
+// word splitting or PATH lookups. It trusts os.Executable() regardless of the
+// binary's base name, so dev daemons launched as "zen-dev" (which rebuilds
+// cmd/zen into tmp/zen-dev) resolve to that dev binary instead of a stale
+// "zen" found elsewhere on PATH. It only falls back to "zen" when the current
+// executable cannot be resolved or is empty (for example, in exotic test
+// runners); the protocol always invokes the value as a quoted single token
+// followed by the "agent progress" subcommand, which is safe under zsh/bash.
+func ZenExecutablePath() string {
+	exe, err := os.Executable()
+	if err != nil {
+		return "zen"
+	}
+	exe = strings.TrimSpace(exe)
+	if exe == "" {
+		return "zen"
+	}
+	return exe
 }
 
 func formatAgentName(windowName, target string) string {
@@ -1240,14 +1333,22 @@ func detectAgentProcess(baseCommand string, panePID int, processes map[int]proce
 		if proc, ok := processes[panePID]; ok {
 			scan = append([]processInfo{proc}, scan...)
 		}
-		resumeSeen := false
+		codexResumeSeen := false
+		grokResumeSeen := false
+		codexResumeCommand := ""
+		grokResumeCommand := ""
 		bestScore := -1
 		var bestCommand string
 		var bestProcess processInfo
 		for _, proc := range scan {
 			if detected := agentCommandFromProcess(proc); detected != "" {
 				if isCodexResumeCommandLine(detected) {
-					resumeSeen = true
+					codexResumeSeen = true
+					codexResumeCommand = detected
+				}
+				if isGrokResumeCommandLine(detected) {
+					grokResumeSeen = true
+					grokResumeCommand = detected
 				}
 				score := agentProcessScore(proc, detected)
 				if bestScore == -1 || score > bestScore {
@@ -1258,8 +1359,19 @@ func detectAgentProcess(baseCommand string, panePID int, processes map[int]proce
 			}
 		}
 		if bestCommand != "" {
-			if bestCommand == "codex" && resumeSeen {
-				bestCommand = "codex resume"
+			if bestCommand == "codex" && codexResumeSeen {
+				if codexResumeCommand != "" {
+					bestCommand = codexResumeCommand
+				} else {
+					bestCommand = "codex resume"
+				}
+			}
+			if bestCommand == "grok" && grokResumeSeen {
+				if grokResumeCommand != "" {
+					bestCommand = grokResumeCommand
+				} else {
+					bestCommand = "grok resume"
+				}
 			}
 			return bestCommand, firstNonZeroTime(bestProcess.startedAt, fallbackAt), bestProcess.pid
 		}
@@ -1282,19 +1394,44 @@ func agentCommandFromProcess(proc processInfo) string {
 		return "claude"
 	}
 	if lowerComm == "codex" || strings.Contains(lowerArgs, "/bin/codex") || strings.Contains(lowerArgs, " codex ") || strings.HasPrefix(lowerArgs, "codex ") {
-		if commandHasArg(lowerArgs, "resume") {
+		if resume, sessionID := commandResumeArg(lowerArgs); resume {
+			if sessionID != "" {
+				return "codex resume " + sessionID
+			}
 			return "codex resume"
 		}
 		return "codex"
+	}
+	if lowerComm == "cursor-agent" || strings.Contains(lowerArgs, "/bin/cursor-agent") || strings.Contains(lowerArgs, " cursor-agent ") || strings.HasPrefix(lowerArgs, "cursor-agent ") {
+		return "cursor-agent"
+	}
+	if lowerComm == "grok" || strings.Contains(lowerArgs, "/bin/grok") || strings.Contains(lowerArgs, " grok ") || strings.HasPrefix(lowerArgs, "grok ") {
+		if resume, sessionID := commandResumeArg(lowerArgs); resume {
+			if sessionID != "" {
+				return "grok --resume " + sessionID
+			}
+			return "grok resume"
+		}
+		return "grok"
 	}
 	return ""
 }
 
 func agentProcessScore(proc processInfo, detected string) int {
 	lowerComm := normalizeCommand(proc.comm)
+	detectedName := agentCommandName(detected)
 	switch {
-	case detected == "codex" || detected == "codex resume":
-		if lowerComm == "codex" {
+	case detectedName == "codex" || detectedName == "grok":
+		score := 50
+		if lowerComm == "codex" || lowerComm == "grok" {
+			score = 100
+		}
+		if resume, _ := commandResumeArg(detected); resume {
+			score += 10
+		}
+		return score
+	case detectedName == "cursor-agent":
+		if lowerComm == "cursor-agent" {
 			return 100
 		}
 		return 50
@@ -1309,11 +1446,26 @@ func agentProcessScore(proc processInfo, detected string) int {
 }
 
 func isCodexResumeCommandLine(command string) bool {
-	return strings.TrimSpace(strings.ToLower(command)) == "codex resume"
+	resume, _ := commandResumeArg(command)
+	return agentCommandName(command) == "codex" && resume
+}
+
+func isGrokResumeCommandLine(command string) bool {
+	resume, _ := commandResumeArg(command)
+	return agentCommandName(command) == "grok" && resume
 }
 
 func isAgentCommand(command string) bool {
-	return command == "claude" || command == "claude-code" || command == "codex" || command == "cc"
+	name := agentCommandName(command)
+	return name == "claude" || name == "claude-code" || name == "codex" || name == "cursor-agent" || name == "grok" || name == "cc"
+}
+
+func agentCommandName(command string) string {
+	fields := strings.Fields(strings.TrimSpace(command))
+	if len(fields) == 0 {
+		return normalizeCommand(command)
+	}
+	return normalizeCommand(fields[0])
 }
 
 func firstNonZeroTime(values ...time.Time) time.Time {
@@ -1363,6 +1515,26 @@ func commandHasArg(command string, arg string) bool {
 		}
 	}
 	return false
+}
+
+func commandResumeArg(command string) (bool, string) {
+	fields := strings.Fields(strings.ToLower(strings.TrimSpace(command)))
+	for index, field := range fields {
+		field = strings.Trim(field, `"'`)
+		switch {
+		case field == "resume" || field == "--resume":
+			if index+1 < len(fields) {
+				sessionID := strings.Trim(fields[index+1], `"'`)
+				if sessionID != "" && !strings.HasPrefix(sessionID, "-") {
+					return true, sessionID
+				}
+			}
+			return true, ""
+		case strings.HasPrefix(field, "--resume="):
+			return true, strings.Trim(strings.TrimPrefix(field, "--resume="), `"'`)
+		}
+	}
+	return false, ""
 }
 
 func projectNameFromPath(cwd string) string {

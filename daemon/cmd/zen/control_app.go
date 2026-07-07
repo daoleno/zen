@@ -48,14 +48,14 @@ func (a *controlApp) HandleControlRequest(req control.Request) control.Response 
 		return a.handleAgentProgress(req)
 	case "agent_close", "agent_kill":
 		return a.handleAgentClose(req)
-	case "brain_adapters":
-		return a.handleBrainAdapters()
+	case "brain_executors":
+		return a.handleBrainExecutors()
 	case "brain_context":
 		return a.handleBrainContext()
 	case "brain_gc":
 		return a.handleBrainGC()
-	case "brain_set_adapter":
-		return a.handleBrainSetAdapter(req)
+	case "brain_set_executor":
+		return a.handleBrainSetExecutor(req)
 	case "brain_workspace":
 		if a == nil || a.brainStore == nil {
 			return control.ErrorResponse("brain_unavailable", "Brain workspace is not configured.")
@@ -271,15 +271,16 @@ func (a *controlApp) handleAgentClose(req control.Request) control.Response {
 	return control.Response{OK: true, Agent: &out}
 }
 
-func (a *controlApp) handleBrainAdapters() control.Response {
-	adapter, adapters, resp := a.brainAdapterSnapshot()
+func (a *controlApp) handleBrainExecutors() control.Response {
+	executor, delegatedExecutor, executors, resp := a.brainExecutorSnapshot()
 	if !resp.OK || resp.Error != nil {
 		return resp
 	}
 	return control.Response{
-		OK:       true,
-		Adapter:  adapter,
-		Adapters: adapters,
+		OK:                true,
+		Executor:          executor,
+		DelegatedExecutor: delegatedExecutor,
+		Executors:         executors,
 	}
 }
 
@@ -313,94 +314,114 @@ func (a *controlApp) handleBrainGC() control.Response {
 	}
 }
 
-func (a *controlApp) handleBrainSetAdapter(req control.Request) control.Response {
+func (a *controlApp) handleBrainSetExecutor(req control.Request) control.Response {
 	if a == nil || a.brainStore == nil {
 		return control.ErrorResponse("brain_unavailable", "Brain workspace is not configured.")
 	}
-	adapterID := strings.TrimSpace(req.AdapterID)
-	if adapterID == "" {
-		return control.ErrorResponse("missing_adapter", "Brain adapter id is required.")
+	executorID := strings.TrimSpace(req.ExecutorID)
+	if executorID == "" {
+		return control.ErrorResponse("missing_executor", "Brain host executor is required.")
 	}
-	if locked := strings.TrimSpace(os.Getenv("ZEN_BRAIN_HOST_ADAPTER")); locked != "" && locked != adapterID {
-		return control.ErrorResponse("brain_adapter_locked_by_env", "ZEN_BRAIN_HOST_ADAPTER is set; unset it before changing Brain adapter through zen.")
+	if locked := brainHostExecutorOverride(); locked != "" && locked != executorID {
+		return control.ErrorResponse("brain_executor_locked_by_env", "A Brain host executor environment override is set; unset it before changing the host executor through zen.")
 	}
 	if a.execs == nil {
 		return control.ErrorResponse("executors_unavailable", "Executor config is not available.")
 	}
-	adapter, ok := a.execs.AgentAdapter(adapterID)
+	executor, ok := a.execs.AgentExecutor(executorID)
 	if !ok {
-		return control.ErrorResponse("invalid_adapter", fmt.Sprintf("Brain adapter %q is not configured.", adapterID))
+		return control.ErrorResponse("invalid_executor", fmt.Sprintf("Brain host executor %q is not configured.", executorID))
 	}
 	if a.watcher != nil {
 		service := brain.NewService(a.brainStore, a.watcher, a.execs)
-		if _, err := service.SetHostAdapter(adapter.ID); err != nil {
-			return control.ErrorResponse("set_adapter_failed", err.Error())
+		if _, err := service.SetHostExecutor(executor.ID); err != nil {
+			return control.ErrorResponse("set_executor_failed", err.Error())
 		}
 	} else {
-		if err := a.brainStore.SetHostAdapterID(adapter.ID); err != nil {
-			return control.ErrorResponse("set_adapter_failed", err.Error())
+		if err := a.brainStore.SetHostExecutorID(executor.ID); err != nil {
+			return control.ErrorResponse("set_executor_failed", err.Error())
 		}
 	}
-	return a.handleBrainAdapters()
+	return a.handleBrainExecutors()
 }
 
-func (a *controlApp) brainAdapterSnapshot() (*control.Adapter, []control.Adapter, control.Response) {
+func (a *controlApp) brainExecutorSnapshot() (*control.Executor, *control.Executor, []control.Executor, control.Response) {
 	if a == nil || a.brainStore == nil {
-		return nil, nil, control.ErrorResponse("brain_unavailable", "Brain workspace is not configured.")
+		return nil, nil, nil, control.ErrorResponse("brain_unavailable", "Brain workspace is not configured.")
 	}
 	if a.execs == nil {
-		return nil, nil, control.ErrorResponse("executors_unavailable", "Executor config is not available.")
+		return nil, nil, nil, control.ErrorResponse("executors_unavailable", "Executor config is not available.")
 	}
-	current, ok := a.currentBrainAdapter()
+	current, ok := a.currentBrainExecutor()
 	if !ok {
-		return nil, nil, control.ErrorResponse("adapter_unavailable", "No Brain adapters are configured.")
+		return nil, nil, nil, control.ErrorResponse("executor_unavailable", "No Brain host executors are configured.")
 	}
-	adapters := a.execs.AgentAdapters()
-	out := make([]control.Adapter, 0, len(adapters))
-	for _, adapter := range adapters {
-		adapter.Preferred = adapter.ID == current.ID
-		out = append(out, controlAdapter(adapter))
+	delegated, ok := a.brainDelegatedExecutor()
+	if !ok {
+		return nil, nil, nil, control.ErrorResponse("executor_unavailable", "No delegated executors are configured.")
+	}
+	executors := a.execs.AgentExecutors()
+	out := make([]control.Executor, 0, len(executors))
+	for _, executor := range executors {
+		executor.Host = executor.ID == current.ID
+		executor.Delegated = executor.ID == delegated.ID
+		out = append(out, controlExecutor(executor))
 	}
 	sort.Slice(out, func(i, j int) bool {
-		if out[i].Preferred != out[j].Preferred {
-			return out[i].Preferred
+		if out[i].Host != out[j].Host {
+			return out[i].Host
+		}
+		if out[i].Delegated != out[j].Delegated {
+			return out[i].Delegated
 		}
 		return out[i].ID < out[j].ID
 	})
-	current.Preferred = true
-	converted := controlAdapter(current)
-	return &converted, out, control.Response{OK: true}
+	current.Host = true
+	if current.ID == delegated.ID {
+		current.Delegated = true
+	}
+	delegated.Delegated = true
+	if delegated.ID == current.ID {
+		delegated.Host = true
+	}
+	converted := controlExecutor(current)
+	convertedDelegated := controlExecutor(delegated)
+	return &converted, &convertedDelegated, out, control.Response{OK: true}
 }
 
-func (a *controlApp) currentBrainAdapter() (work.AgentAdapter, bool) {
+func (a *controlApp) currentBrainExecutor() (work.AgentExecutor, bool) {
 	if a == nil || a.execs == nil {
-		return work.AgentAdapter{}, false
+		return work.AgentExecutor{}, false
 	}
-	if preferred := strings.TrimSpace(os.Getenv("ZEN_BRAIN_HOST_ADAPTER")); preferred != "" {
-		return a.execs.AgentAdapter(preferred)
+	if preferred := brainHostExecutorOverride(); preferred != "" {
+		return a.execs.AgentExecutor(preferred)
 	}
 	if a.brainStore != nil {
 		if hostSession, err := a.brainStore.HostSession(); err == nil {
-			if adapterID := strings.TrimSpace(hostSession.AdapterID); adapterID != "" {
-				return a.execs.AgentAdapter(adapterID)
+			if executorID := strings.TrimSpace(hostSession.ExecutorID); executorID != "" {
+				return a.execs.AgentExecutor(executorID)
 			}
 		}
 	}
-	return a.execs.DefaultAgentAdapter()
+	return a.execs.AgentExecutor("codex")
 }
 
 func (a *controlApp) resolveSpawnCommand(req control.Request) (string, error) {
 	if command := strings.TrimSpace(req.Command); command != "" {
+		// Explicit full-command overrides are user-authored; do not mutate
+		// their authorization/sandbox configuration.
 		return command, nil
 	}
 	executorName := strings.TrimSpace(req.Executor)
 	if executorName == "" {
-		if brainExecutor, ok := a.brainCallerExecutor(req.AgentID); ok {
-			executorName = brainExecutor
+		if delegatedExecutor, ok := a.brainCallerDelegatedExecutor(req.AgentID); ok {
+			executorName = delegatedExecutor
 		}
 	}
 	if executorName == "" && a != nil && a.execs != nil {
-		executorName = strings.TrimSpace(a.execs.Default)
+		if delegatedExecutor, ok := a.execs.DelegatedAgentExecutor(); ok {
+			executorName = delegatedExecutor.ID
+		}
 	}
 	if executorName == "" {
 		executorName = "codex"
@@ -410,15 +431,25 @@ func (a *controlApp) resolveSpawnCommand(req control.Request) (string, error) {
 		if !ok {
 			return "", fmt.Errorf("executor %q is not configured", executorName)
 		}
-		if command := strings.TrimSpace(executor.Command); command != "" {
-			return command, nil
+		command := strings.TrimSpace(executor.Command)
+		if command == "" {
+			command = executorName
 		}
-		return executorName, nil
+		if work.InferAgentProvider(executor.Kind, command, executorName, executor.Name) == work.AgentProviderCodex {
+			// Brain-delegated Codex sessions must run non-interactively with
+			// the most permissive available authorization mode so internal
+			// progress commands do not block on approval prompts.
+			command = work.HardenCodexDelegatedCommand(command)
+		}
+		return command, nil
+	}
+	if work.InferAgentProvider(executorName) == work.AgentProviderCodex {
+		return work.HardenCodexDelegatedCommand(executorName), nil
 	}
 	return executorName, nil
 }
 
-func (a *controlApp) brainCallerExecutor(agentID string) (string, bool) {
+func (a *controlApp) brainCallerDelegatedExecutor(agentID string) (string, bool) {
 	if a == nil || a.brainStore == nil || a.execs == nil {
 		return "", false
 	}
@@ -430,15 +461,28 @@ func (a *controlApp) brainCallerExecutor(agentID string) (string, bool) {
 	if err != nil || strings.TrimSpace(host.ID) == "" || strings.TrimSpace(host.ID) != agentID {
 		return "", false
 	}
-	if adapterID := strings.TrimSpace(host.AdapterID); adapterID != "" {
-		if _, ok := a.execs.ByName[adapterID]; ok {
-			return adapterID, true
-		}
-	}
-	if adapter, ok := a.currentBrainAdapter(); ok {
-		return adapter.ID, true
+	if delegatedExecutor, ok := a.brainDelegatedExecutor(); ok {
+		return delegatedExecutor.ID, true
 	}
 	return "", false
+}
+
+func (a *controlApp) brainDelegatedExecutor() (work.AgentExecutor, bool) {
+	if a == nil || a.execs == nil {
+		return work.AgentExecutor{}, false
+	}
+	if preferred := delegatedExecutorOverride(); preferred != "" {
+		return a.execs.AgentExecutor(preferred)
+	}
+	return a.execs.DelegatedAgentExecutor()
+}
+
+func brainHostExecutorOverride() string {
+	return strings.TrimSpace(os.Getenv("ZEN_BRAIN_HOST_EXECUTOR"))
+}
+
+func delegatedExecutorOverride() string {
+	return strings.TrimSpace(os.Getenv("ZEN_DELEGATED_EXECUTOR"))
 }
 
 func visibleControlAgents(agents []*classifier.Agent) []control.Agent {
@@ -478,18 +522,19 @@ func controlAgent(agent *classifier.Agent) control.Agent {
 	}
 }
 
-func controlAdapter(adapter work.AgentAdapter) control.Adapter {
-	return control.Adapter{
-		ID:       adapter.ID,
-		Name:     adapter.Name,
-		Provider: adapter.Provider,
-		Command:  adapter.Command,
-		Runtime:  adapter.Runtime,
-		Capabilities: control.AdapterCapabilities{
-			InteractiveTTY:   adapter.Capabilities.InteractiveTTY,
-			StructuredEvents: adapter.Capabilities.StructuredEvents,
+func controlExecutor(executor work.AgentExecutor) control.Executor {
+	return control.Executor{
+		ID:       executor.ID,
+		Name:     executor.Name,
+		Provider: executor.Provider,
+		Command:  executor.Command,
+		Runtime:  executor.Runtime,
+		Capabilities: control.ExecutorCapabilities{
+			InteractiveTTY:   executor.Capabilities.InteractiveTTY,
+			StructuredEvents: executor.Capabilities.StructuredEvents,
 		},
-		Preferred: adapter.Preferred,
+		Host:      executor.Host,
+		Delegated: executor.Delegated,
 	}
 }
 
@@ -518,7 +563,7 @@ func spawnPrompt(req control.Request) (string, error) {
 
 func progressEnvForStateDir(stateDir string) map[string]string {
 	env := map[string]string{
-		"ZEN_AGENT_PROGRESS_CMD": "zen agent progress",
+		"ZEN_AGENT_PROGRESS_CMD": watcher.ZenExecutablePath(),
 	}
 	if stateDir = strings.TrimSpace(stateDir); stateDir != "" {
 		env["ZEN_STATE_DIR"] = stateDir
@@ -546,11 +591,12 @@ func lifecycleProtocol(profile string) string {
 - Start lasting design or implementation work by identifying the core invariants. Prefer making invalid states unrepresentable over adding fallback paths.
 - Use task classes consistently: exploration for research/scanning, mechanical_change for bounded repeatable edits, lasting_design for product semantics, data models, architecture, and long-lived code.
 - Report progress through the Zen control plane only when your phase changes, when you take a meaningful long-running step, when you need attention, and when you finish.
-- ZEN_AGENT_ID is already set for this session. ZEN_AGENT_PROGRESS_CMD contains the base command.
+- ZEN_AGENT_ID is already set for this session. ZEN_AGENT_PROGRESS_CMD is the absolute path to the currently running zen daemon executable (a single token, no spaces; may be named zen, zen-dev, or similar).
+- Always invoke it as a quoted single token followed by the "agent progress" subcommand. Do not rely on shell word splitting of the variable.
 - Command shape:
-  $ZEN_AGENT_PROGRESS_CMD --status running --phase working --attention none --summary "Short current work" --lease 300
+  "$ZEN_AGENT_PROGRESS_CMD" agent progress --status running --phase working --attention none --summary "Short current work" --lease 300
 - Semantic event shape:
-  $ZEN_AGENT_PROGRESS_CMD --status running --phase planning --attention none --task-class lasting_design --event-kind invariant --summary "Defined durable state invariants" --details-json '{"invariants":["canonical source is X"]}' --lease 300
+  "$ZEN_AGENT_PROGRESS_CMD" agent progress --status running --phase planning --attention none --task-class lasting_design --event-kind invariant --summary "Defined durable state invariants" --details-json '{"invariants":["canonical source is X"]}' --lease 300
 - Valid status values: running, done, failed, blocked.
 - Valid phase values: starting, reading, planning, working, verifying, reporting.
 - Valid attention values: none, done, blocked, failed, user_input, stale.

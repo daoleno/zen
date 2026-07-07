@@ -6,6 +6,7 @@ func TestIsAgentCommandRecognizesNativeAgentCommands(t *testing.T) {
 	for _, command := range []string{
 		"codex",
 		"/usr/local/bin/codex exec",
+		"cursor-agent --force --sandbox disabled",
 		"grok",
 		"grok --no-alt-screen",
 		"claude",
@@ -23,15 +24,16 @@ func TestIsAgentWorkItemRequiresNativeSource(t *testing.T) {
 		{Frontmatter: Frontmatter{ID: "old", Kind: brainLogKind}},
 		{Frontmatter: Frontmatter{ID: "codex", Kind: brainLogKind, AgentSource: "codex"}},
 		{Frontmatter: Frontmatter{ID: "claude", Kind: brainLogKind, AgentSource: "claude"}},
+		{Frontmatter: Frontmatter{ID: "cursor", Kind: brainLogKind, AgentSource: "cursor"}},
 		{Frontmatter: Frontmatter{ID: "grok", Kind: brainLogKind, AgentSource: "grok"}},
 		{Frontmatter: Frontmatter{ID: "task", Kind: "task", AgentSource: "codex"}},
 	}
 
 	filtered := FilterAgentWorkItems(items)
-	if len(filtered) != 3 {
-		t.Fatalf("filtered len = %d, want 3", len(filtered))
+	if len(filtered) != 4 {
+		t.Fatalf("filtered len = %d, want 4", len(filtered))
 	}
-	if filtered[0].Frontmatter.ID != "codex" || filtered[1].Frontmatter.ID != "claude" || filtered[2].Frontmatter.ID != "grok" {
+	if filtered[0].Frontmatter.ID != "codex" || filtered[1].Frontmatter.ID != "claude" || filtered[2].Frontmatter.ID != "cursor" || filtered[3].Frontmatter.ID != "grok" {
 		t.Fatalf("filtered = %#v", filtered)
 	}
 }

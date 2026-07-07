@@ -1,4 +1,5 @@
 import type { SessionService, SessionServiceURL } from "./sessionServices";
+import { compactCommandLabel } from "./pathDisplay";
 
 export type DiscoveredSessionService = SessionService & {
   serverId: string;
@@ -123,10 +124,7 @@ export function shortAgentLabel(value?: string): string {
 
 export function shortProcessLabel(value: string): string {
   const trimmed = value.replace(/\s+/g, " ").trim();
-  if (!trimmed) {
-    return "process";
-  }
-  return trimmed.length > 72 ? `${trimmed.slice(0, 69)}...` : trimmed;
+  return trimmed || "process";
 }
 
 export function serviceAgentLabel(
@@ -138,7 +136,7 @@ export function serviceAgentLabel(
 export function serviceProcessLabel(
   service: Pick<DiscoveredSessionService, "process" | "command">,
 ): string {
-  return shortProcessLabel(service.process || service.command || "");
+  return compactCommandLabel(shortProcessLabel(service.process || service.command || ""));
 }
 
 export function serviceCommandDetail(
@@ -149,7 +147,7 @@ export function serviceCommandDetail(
   if (!command || command === process) {
     return "";
   }
-  return shortProcessLabel(command);
+  return compactCommandLabel(command);
 }
 
 export type PresentedSessionServiceURL = {

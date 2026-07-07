@@ -113,6 +113,42 @@ func TestFindGrokSession_DoesNotReturnStaleSessionForNewAgent(t *testing.T) {
 	}
 }
 
+func TestFindGrokSession_ResumeCommandMatchesExplicitSessionID(t *testing.T) {
+	homeRoot := t.TempDir()
+	home := filepath.Join(homeRoot, "home")
+	cwd := "/home/daoleno/workspace/pacagent"
+	sessionID := "019f2826-12b8-7cc3-a094-a57522b559e6"
+	sessionDir := filepath.Join(home, ".grok", "sessions", encodeGrokSessionCWD(cwd), sessionID)
+	if err := os.MkdirAll(sessionDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	now := time.Now().UTC()
+	writeGrokSummary(t, filepath.Join(sessionDir, grokSummaryFile), map[string]any{
+		"info": map[string]any{
+			"id":  sessionID,
+			"cwd": cwd,
+		},
+		"updated_at": now.Format(time.RFC3339Nano),
+		"created_at": now.Add(-24 * time.Hour).Format(time.RFC3339Nano),
+	})
+
+	t.Setenv("HOME", home)
+	got, ok, err := findGrokSession(classifier.Agent{
+		Command:   "grok --resume " + sessionID,
+		Cwd:       cwd,
+		StartedAt: now,
+	}, now)
+	if err != nil {
+		t.Fatalf("findGrokSession: %v", err)
+	}
+	if !ok {
+		t.Fatal("expected resume command to match explicit grok session id")
+	}
+	if got.ID != sessionID || got.Dir != sessionDir {
+		t.Fatalf("matched session = (%q, %q), want (%q, %q)", got.ID, got.Dir, sessionID, sessionDir)
+	}
+}
+
 func TestEncodeGrokSessionCWD(t *testing.T) {
 	got := encodeGrokSessionCWD("/home/daoleno/workspace/zen")
 	want := "%2Fhome%2Fdaoleno%2Fworkspace%2Fzen"
@@ -537,22 +573,22 @@ func TestIsGrokBootstrapUserMessage(t *testing.T) {
 	}
 }
 
-func TestAgentAdapterInfersGrokProviderAndCapabilities(t *testing.T) {
+func TestAgentExecutorInfersGrokProviderAndCapabilities(t *testing.T) {
 	cfg := &ExecutorConfig{
-		Default: "claude",
+		DelegatedExecutor: "claude",
 		ByName: map[string]Executor{
 			"grok": {Name: "grok", Command: "grok --no-alt-screen --permission-mode bypassPermissions"},
 		},
 	}
-	adapter, ok := cfg.AgentAdapter("grok")
+	executor, ok := cfg.AgentExecutor("grok")
 	if !ok {
-		t.Fatal("grok adapter missing")
+		t.Fatal("grok executor missing")
 	}
-	if adapter.Provider != AgentProviderGrok {
-		t.Fatalf("provider = %q", adapter.Provider)
+	if executor.Provider != AgentProviderGrok {
+		t.Fatalf("provider = %q", executor.Provider)
 	}
-	if !adapter.Capabilities.StructuredEvents || adapter.Capabilities.NativeThreads {
-		t.Fatalf("capabilities = %+v", adapter.Capabilities)
+	if !executor.Capabilities.StructuredEvents || executor.Capabilities.NativeThreads {
+		t.Fatalf("capabilities = %+v", executor.Capabilities)
 	}
 }
 
@@ -580,7 +616,7 @@ func TestLoadExecutorsIncludesGrokDefault(t *testing.T) {
 	if !strings.Contains(executor.Command, "--no-alt-screen") || !strings.Contains(executor.Command, "bypassPermissions") {
 		t.Fatalf("grok command = %q", executor.Command)
 	}
-	if cfg.Default != "claude" {
-		t.Fatalf("default executor changed to %q", cfg.Default)
+	if cfg.DelegatedExecutor != "codex" {
+		t.Fatalf("delegated executor changed to %q", cfg.DelegatedExecutor)
 	}
 }

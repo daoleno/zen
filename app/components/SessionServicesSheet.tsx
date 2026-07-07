@@ -160,7 +160,11 @@ function ServiceProjectCard({
           <Ionicons name="folder-open-outline" size={15} color={colors.promptYellow} />
         </View>
         <View style={styles.projectHeaderCopy}>
-          <Text style={styles.projectTitle} numberOfLines={1}>
+          <Text
+            style={styles.projectTitle}
+            numberOfLines={1}
+            ellipsizeMode="head"
+          >
             {group.project}
           </Text>
           <Text style={styles.projectMeta} numberOfLines={1}>
@@ -209,7 +213,11 @@ function ServicePortRow({
       </View>
       <View style={styles.portMain}>
         <View style={styles.portTopRow}>
-          <Text style={styles.portProcess} numberOfLines={1}>
+          <Text
+            style={styles.portProcess}
+            numberOfLines={1}
+            ellipsizeMode="head"
+          >
             {serviceProcessLabel(service)}
           </Text>
           <TouchableOpacity
@@ -227,7 +235,11 @@ function ServicePortRow({
         </View>
 
         {commandDetail ? (
-          <Text style={styles.commandDetail} numberOfLines={1}>
+          <Text
+            style={styles.commandDetail}
+            numberOfLines={1}
+            ellipsizeMode="head"
+          >
             {commandDetail}
           </Text>
         ) : null}

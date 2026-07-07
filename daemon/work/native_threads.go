@@ -14,7 +14,7 @@ import (
 
 const defaultCodexAppServerTimeout = 15 * time.Second
 
-// NativeThreadProvider is the adapter boundary for tool-owned thread APIs.
+// NativeThreadProvider is the executor boundary for tool-owned thread APIs.
 // Brain should consume these portable records instead of depending on a
 // provider-specific schema.
 type NativeThreadProvider interface {
@@ -135,33 +135,33 @@ type NativeThreadRuntimeLaunch struct {
 // NativeThreadRuntimeResumeLaunch returns the tmux launch command for
 // resuming a provider-owned native thread. This keeps provider-specific CLI
 // syntax out of Brain core.
-func NativeThreadRuntimeResumeLaunch(adapter AgentAdapter, thread NativeThread, opts NativeThreadResumeOptions, fallbackCwd string) (NativeThreadRuntimeLaunch, bool) {
-	provider := strings.TrimSpace(adapter.Provider)
+func NativeThreadRuntimeResumeLaunch(executor AgentExecutor, thread NativeThread, opts NativeThreadResumeOptions, fallbackCwd string) (NativeThreadRuntimeLaunch, bool) {
+	provider := strings.TrimSpace(executor.Provider)
 	if provider == "" || provider == AgentProviderCustom {
-		provider = InferAgentProvider(adapter.Command, adapter.ID)
+		provider = InferAgentProvider(executor.Command, executor.ID)
 	}
 	switch provider {
 	case AgentProviderCodex:
-		return codexNativeThreadRuntimeResumeLaunch(adapter, thread, opts, fallbackCwd), true
+		return codexNativeThreadRuntimeResumeLaunch(executor, thread, opts, fallbackCwd), true
 	default:
 		return NativeThreadRuntimeLaunch{}, false
 	}
 }
 
-// NewNativeThreadProvider returns the provider-specific native thread adapter
+// NewNativeThreadProvider returns the provider-specific native thread executor
 // for a configured executor. CLI-only tools still run through tmux and return
 // no native provider here.
-func NewNativeThreadProvider(adapter AgentAdapter) (NativeThreadProvider, bool) {
-	if strings.TrimSpace(adapter.Provider) != AgentProviderCodex || !adapter.Capabilities.NativeThreads {
+func NewNativeThreadProvider(executor AgentExecutor) (NativeThreadProvider, bool) {
+	if strings.TrimSpace(executor.Provider) != AgentProviderCodex || !executor.Capabilities.NativeThreads {
 		return nil, false
 	}
-	return NewCodexAppServerThreadProvider(adapter.Command), true
+	return NewCodexAppServerThreadProvider(executor.Command), true
 }
 
-func codexNativeThreadRuntimeResumeLaunch(adapter AgentAdapter, thread NativeThread, opts NativeThreadResumeOptions, fallbackCwd string) NativeThreadRuntimeLaunch {
-	command := strings.TrimSpace(adapter.Command)
+func codexNativeThreadRuntimeResumeLaunch(executor AgentExecutor, thread NativeThread, opts NativeThreadResumeOptions, fallbackCwd string) NativeThreadRuntimeLaunch {
+	command := strings.TrimSpace(executor.Command)
 	if command == "" {
-		command = strings.TrimSpace(adapter.ID)
+		command = strings.TrimSpace(executor.ID)
 	}
 	if command == "" {
 		command = "codex"

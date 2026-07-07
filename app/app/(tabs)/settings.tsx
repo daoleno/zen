@@ -36,7 +36,7 @@ import type { ResolvedZenTheme } from "../../theme";
 import { createThemedSurfaces } from "../../constants/themedSurfaces";
 import { importConnection } from "../../services/importConnection";
 import { wsClient } from "../../services/websocket";
-import { ConnectionState, useAgents } from "../../store/agents";
+import { ConnectionState, useAgentServerSummary } from "../../store/agents";
 import * as Storage from "../../services/storage";
 import { connectionIssueAccent } from "../../services/connectionIssue";
 import { AnimatedPressable } from "../../components/ui/AnimatedPressable";
@@ -46,7 +46,14 @@ import { TelegramSettingsRow } from "../../components/ui/TelegramSettingsRow";
 const QR_BARCODE_TYPES: BarcodeType[] = ["qr"];
 
 export default function SettingsScreen() {
-  const { state, dispatch } = useAgents();
+  const {
+    agentCountsByServer,
+    dispatch,
+    hydratedServers,
+    serverConnections,
+    serverConnectionIssues,
+    serverLatencyById,
+  } = useAgentServerSummary();
   const colors = useAppColors();
   const { theme } = useAppTheme();
   const styles = useMemo(() => createStyles(theme), [theme]);
@@ -75,22 +82,14 @@ export default function SettingsScreen() {
   const connectedCount = useMemo(
     () =>
       servers.filter(
-        (server) => state.serverConnections[server.id] === "connected",
+        (server) => serverConnections[server.id] === "connected",
       ).length,
-    [servers, state.serverConnections],
+    [servers, serverConnections],
   );
-  const agentCountByServer = useMemo(() => {
-    const counts: Record<string, number> = {};
-    for (const agent of state.agents) {
-      counts[agent.serverId] = (counts[agent.serverId] || 0) + 1;
-    }
-    return counts;
-  }, [state.agents]);
   const editingServer = useMemo(
     () => servers.find((server) => server.id === editingServerId) || null,
     [editingServerId, servers],
   );
-  const serverLatencyById = state.serverLatencyById;
 
   useFocusEffect(
     React.useCallback(() => {
@@ -192,7 +191,7 @@ export default function SettingsScreen() {
     }
 
     const previousConnectionState = editingServerId
-      ? state.serverConnections[editingServerId]
+      ? serverConnections[editingServerId]
       : "connected";
     const shouldReconnect =
       previousConnectionState === "connected" ||
@@ -383,13 +382,13 @@ export default function SettingsScreen() {
             ) : (
               servers.map((server) => {
                 const connectionState =
-                  state.serverConnections[server.id] || "offline";
+                  serverConnections[server.id] || "offline";
                 const latencySample = serverLatencyById[server.id];
                 const connectionIssue =
-                  state.serverConnectionIssues[server.id] || null;
+                  serverConnectionIssues[server.id] || null;
                 const expanded = expandedServer === server.id;
-                const agentCount = agentCountByServer[server.id] || 0;
-                const hydrated = Boolean(state.hydratedServers[server.id]);
+                const agentCount = agentCountsByServer[server.id] || 0;
+                const hydrated = Boolean(hydratedServers[server.id]);
                 const waitingForAgents =
                   connectionState === "connected" &&
                   (!hydrated || agentCount === 0);
@@ -401,53 +400,54 @@ export default function SettingsScreen() {
                       : "Connect";
 
                 return (
-                  <AnimatedPressable
-                    key={server.id}
-                    style={styles.serverCard}
-                    preset="card"
-                    scale={0.99}
-                    onPress={() => toggleServerExpand(server.id)}
-                  >
-                    <View style={styles.serverRow}>
-                      <View
-                        style={[
-                          styles.statusDot,
-                          { backgroundColor: connectionColor(connectionState, colors) },
-                        ]}
-                      />
-                      <View style={styles.serverInfo}>
-                        <Text style={styles.serverName}>{server.name}</Text>
-                        <Text style={styles.serverUrl} numberOfLines={1}>
-                          {server.url}
-                        </Text>
-                      </View>
-                      <View style={styles.serverStatus}>
-                        {connectionState === "connected" && latencySample ? (
+                  <View key={server.id} style={styles.serverCard}>
+                    <AnimatedPressable
+                      style={styles.serverHeaderButton}
+                      preset="card"
+                      scale={0.99}
+                      onPress={() => toggleServerExpand(server.id)}
+                    >
+                      <View style={styles.serverRow}>
+                        <View
+                          style={[
+                            styles.statusDot,
+                            { backgroundColor: connectionColor(connectionState, colors) },
+                          ]}
+                        />
+                        <View style={styles.serverInfo}>
+                          <Text style={styles.serverName}>{server.name}</Text>
+                          <Text style={styles.serverUrl} numberOfLines={1}>
+                            {server.url}
+                          </Text>
+                        </View>
+                        <View style={styles.serverStatus}>
+                          {connectionState === "connected" && latencySample ? (
+                            <Text
+                              style={[
+                                styles.latencyLabel,
+                                {
+                                  color: latencyColor(latencySample.latencyMs, colors),
+                                },
+                              ]}
+                            >
+                              {formatLatency(latencySample.latencyMs)}
+                            </Text>
+                          ) : null}
                           <Text
                             style={[
-                              styles.latencyLabel,
-                              {
-                                color: latencyColor(latencySample.latencyMs, colors),
-                              },
+                              styles.connectionLabel,
+                              connectionState === "connected" &&
+                                styles.connectionLabelActive,
                             ]}
                           >
-                            {formatLatency(latencySample.latencyMs)}
+                            {connectionLabel(connectionState)}
                           </Text>
-                        ) : null}
-                        <Text
-                          style={[
-                            styles.connectionLabel,
-                            connectionState === "connected" &&
-                              styles.connectionLabelActive,
-                          ]}
-                        >
-                          {connectionLabel(connectionState)}
-                        </Text>
+                        </View>
                       </View>
-                    </View>
+                    </AnimatedPressable>
 
                     {expanded && (
-                      <>
+                      <View style={styles.serverExpandedContent}>
                         {connectionIssue ? (
                           <ServerNoticeCard
                             icon="alert-circle-outline"
@@ -482,12 +482,12 @@ export default function SettingsScreen() {
                             preset="press"
                             scale={0.95}
                             onPress={() => {
-                              Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
                               void (
                                 connectionState === "connected"
                                   ? disconnectServer(server.id)
                                   : connectServer(server)
                               );
+                              void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
                             }}
                           >
                             <Text style={styles.actionBtnText}>
@@ -499,8 +499,8 @@ export default function SettingsScreen() {
                             preset="press"
                             scale={0.95}
                             onPress={() => {
-                              Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
                               openEditServer(server);
+                              void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
                             }}
                           >
                             <Text style={styles.actionBtnText}>Edit</Text>
@@ -510,8 +510,8 @@ export default function SettingsScreen() {
                             preset="press"
                             scale={0.95}
                             onPress={() => {
-                              Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
                               handleDeleteServer(server);
+                              void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
                             }}
                           >
                             <Text style={[styles.actionBtnText, styles.actionBtnDangerText]}>
@@ -519,9 +519,9 @@ export default function SettingsScreen() {
                             </Text>
                           </AnimatedPressable>
                         </View>
-                      </>
+                      </View>
                     )}
-                  </AnimatedPressable>
+                  </View>
                 );
               })
             )}
@@ -926,11 +926,18 @@ function createStyles(theme: ResolvedZenTheme) {
   },
   serverCard: {
     borderRadius: 0,
-    paddingHorizontal: 16,
-    paddingVertical: 14,
     backgroundColor: colors.bgSurface,
     borderBottomWidth: StyleSheet.hairlineWidth,
     borderBottomColor: colors.borderSubtle,
+  },
+  serverHeaderButton: {
+    paddingHorizontal: 16,
+    paddingVertical: 14,
+    backgroundColor: colors.bgSurface,
+  },
+  serverExpandedContent: {
+    paddingHorizontal: 16,
+    paddingBottom: 14,
   },
   serverRow: {
     flexDirection: "row",

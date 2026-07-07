@@ -1,4 +1,5 @@
 import type { StoredServer } from "./storage";
+import { Platform } from "react-native";
 import { buildAuthorizationHeader } from "./auth";
 import { diagnoseConnectionIssue } from "./connectionIssue";
 import type {
@@ -142,6 +143,7 @@ export interface BrainContextPayload {
   personality?: string;
   host_agent?: any;
   host_adapter?: any;
+  delegated_adapter?: any;
   adapters?: any[];
   agents?: any[];
   recent_messages?: any[];
@@ -334,8 +336,15 @@ class ServerSocket {
       }
 
       const wsOptions = { headers: { Authorization: authHeader } };
+      const serverUrl =
+        Platform.OS === "web"
+          ? appendAuthorizationQuery(this.meta.serverUrl, authHeader)
+          : this.meta.serverUrl;
       const WebSocketCtor = WebSocket as any;
-      const ws = new WebSocketCtor(this.meta.serverUrl, [], wsOptions);
+      const ws =
+        Platform.OS === "web"
+          ? new WebSocketCtor(serverUrl)
+          : new WebSocketCtor(serverUrl, [], wsOptions);
       this.ws = ws;
 
       ws.onopen = () => {
@@ -1559,7 +1568,7 @@ class MultiServerWebSocketClient {
     });
   }
 
-  setBrainAdapter(serverId: string, adapterId: string) {
+  setBrainExecutor(serverId: string, executorId: string) {
     const requestId = `${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
 
     return new Promise<any>((resolve, reject) => {
@@ -1582,20 +1591,21 @@ class MultiServerWebSocketClient {
           return;
         }
         cleanup();
-        reject(new Error(payload.message || "Failed to switch Brain adapter."));
+        reject(new Error(payload.message || "Failed to switch Brain executor."));
       };
 
       const timer = setTimeout(() => {
         cleanup();
-        reject(new Error("Timed out while switching Brain adapter."));
+        reject(new Error("Timed out while switching Brain executor."));
       }, 15000);
 
       this.on("brain_snapshot", handleSnapshot);
       this.on("error", handleError);
       this.send(serverId, {
-        type: "brain_set_adapter",
+        type: "brain_set_executor",
         request_id: requestId,
-        adapter_id: adapterId,
+        executor_id: executorId,
+        adapter_id: executorId,
       });
     });
   }
@@ -2142,6 +2152,29 @@ function normalizeCodexConversationSyncStatusPayload(
     state: typeof payload.state === "string" ? payload.state : "syncing",
     reason: typeof payload.reason === "string" ? payload.reason : undefined,
   };
+}
+
+function appendAuthorizationQuery(serverUrl: string, authHeader: string): string {
+  try {
+    const parsed = new URL(serverUrl);
+    parsed.searchParams.set("auth", base64URL(authHeader));
+    return parsed.toString();
+  } catch {
+    return serverUrl;
+  }
+}
+
+function base64URL(value: string): string {
+  const bytes = new TextEncoder().encode(value);
+  let binary = "";
+  for (const byte of bytes) {
+    binary += String.fromCharCode(byte);
+  }
+  return globalThis
+    .btoa(binary)
+    .replace(/\+/g, "-")
+    .replace(/\//g, "_")
+    .replace(/=+$/g, "");
 }
 
 export const wsClient = new MultiServerWebSocketClient();

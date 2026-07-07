@@ -19,42 +19,44 @@ type AgentRef struct {
 }
 
 type ChatMessage struct {
-	ID        string    `json:"id"`
-	ThreadID  string    `json:"thread_id,omitempty"`
-	SessionID string    `json:"session_id"`
-	AdapterID string    `json:"adapter_id,omitempty"`
-	Role      string    `json:"role"`
-	Body      string    `json:"body"`
-	CreatedAt time.Time `json:"created_at"`
+	ID         string    `json:"id"`
+	ThreadID   string    `json:"thread_id,omitempty"`
+	SessionID  string    `json:"session_id"`
+	ExecutorID string    `json:"executor_id,omitempty"`
+	Role       string    `json:"role"`
+	Body       string    `json:"body"`
+	CreatedAt  time.Time `json:"created_at"`
 }
 
 type Snapshot struct {
-	Memory       string              `json:"memory"`
-	Profile      string              `json:"profile"`
-	Current      string              `json:"current,omitempty"`
-	Personality  string              `json:"personality"`
-	Agents       []AgentRef          `json:"agents"`
-	HostAgent    *AgentRef           `json:"host_agent,omitempty"`
-	HostAdapter  *work.AgentAdapter  `json:"host_adapter,omitempty"`
-	Adapters     []work.AgentAdapter `json:"adapters"`
-	ChatThreadID string              `json:"chat_thread_id,omitempty"`
-	Workspace    string              `json:"workspace,omitempty"`
-	GeneratedAt  time.Time           `json:"generated_at"`
+	Memory            string               `json:"memory"`
+	Profile           string               `json:"profile"`
+	Current           string               `json:"current,omitempty"`
+	Personality       string               `json:"personality"`
+	Agents            []AgentRef           `json:"agents"`
+	HostAgent         *AgentRef            `json:"host_agent,omitempty"`
+	HostExecutor      *work.AgentExecutor  `json:"host_executor,omitempty"`
+	DelegatedExecutor *work.AgentExecutor  `json:"delegated_executor,omitempty"`
+	Executors         []work.AgentExecutor `json:"executors"`
+	ChatThreadID      string               `json:"chat_thread_id,omitempty"`
+	Workspace         string               `json:"workspace,omitempty"`
+	GeneratedAt       time.Time            `json:"generated_at"`
 }
 
 type BrainContext struct {
-	ThreadID       string              `json:"thread_id,omitempty"`
-	Workspace      string              `json:"workspace,omitempty"`
-	Current        string              `json:"current,omitempty"`
-	Memory         string              `json:"memory,omitempty"`
-	Profile        string              `json:"profile,omitempty"`
-	Personality    string              `json:"personality,omitempty"`
-	HostAgent      *AgentRef           `json:"host_agent,omitempty"`
-	HostAdapter    *work.AgentAdapter  `json:"host_adapter,omitempty"`
-	Adapters       []work.AgentAdapter `json:"adapters"`
-	Agents         []AgentRef          `json:"agents"`
-	RecentMessages []ChatMessage       `json:"recent_messages"`
-	GeneratedAt    time.Time           `json:"generated_at"`
+	ThreadID          string               `json:"thread_id,omitempty"`
+	Workspace         string               `json:"workspace,omitempty"`
+	Current           string               `json:"current,omitempty"`
+	Memory            string               `json:"memory,omitempty"`
+	Profile           string               `json:"profile,omitempty"`
+	Personality       string               `json:"personality,omitempty"`
+	HostAgent         *AgentRef            `json:"host_agent,omitempty"`
+	HostExecutor      *work.AgentExecutor  `json:"host_executor,omitempty"`
+	DelegatedExecutor *work.AgentExecutor  `json:"delegated_executor,omitempty"`
+	Executors         []work.AgentExecutor `json:"executors"`
+	Agents            []AgentRef           `json:"agents"`
+	RecentMessages    []ChatMessage        `json:"recent_messages"`
+	GeneratedAt       time.Time            `json:"generated_at"`
 }
 
 type HousekeepingReport struct {

@@ -254,16 +254,37 @@ function groupByProject(byKey: Record<string, WorkItem>) {
 export function workReducer(state: WorkState, action: Action): WorkState {
   switch (action.type) {
     case "WORK_ITEMS_SNAPSHOT": {
+      const previousServerItemCount = Object.values(state.byKey).filter(
+        (item) => item.serverId === action.serverId,
+      ).length;
+      let itemChanged = previousServerItemCount !== action.workItems.length;
       const nextByKey = Object.fromEntries(
         Object.entries(state.byKey).filter(([key]) => !key.startsWith(`${action.serverId}:`)),
       );
       for (const rawItem of action.workItems) {
         const normalized = normalizeWorkItem(rawItem, action.serverId, action.serverName, action.serverUrl);
-        nextByKey[normalized.key] = normalized;
+        const previous = state.byKey[normalized.key];
+        if (previous && workItemsEqual(previous, normalized)) {
+          nextByKey[normalized.key] = previous;
+        } else {
+          itemChanged = true;
+          nextByKey[normalized.key] = normalized;
+        }
+      }
+      const executorsChanged = !stringArraysEqual(
+        state.executorsByServer[action.serverId] ?? [],
+        action.executors,
+      );
+      const digestProviderChanged = Boolean(
+        action.digestProvider &&
+        state.digestProviderByServer[action.serverId] !== action.digestProvider,
+      );
+      if (!itemChanged && !executorsChanged && !digestProviderChanged) {
+        return state;
       }
       return {
-        byKey: nextByKey,
-        byProject: groupByProject(nextByKey),
+        byKey: itemChanged ? nextByKey : state.byKey,
+        byProject: itemChanged ? groupByProject(nextByKey) : state.byProject,
         executorsByServer: {
           ...state.executorsByServer,
           [action.serverId]: action.executors,
@@ -278,6 +299,10 @@ export function workReducer(state: WorkState, action: Action): WorkState {
     }
     case "WORK_ITEM_CHANGED": {
       const normalized = normalizeWorkItem(action.workItem, action.serverId, action.serverName, action.serverUrl);
+      const previous = state.byKey[normalized.key];
+      if (previous && workItemsEqual(previous, normalized)) {
+        return state;
+      }
       const nextByKey = {
         ...state.byKey,
         [normalized.key]: normalized,
@@ -290,14 +315,21 @@ export function workReducer(state: WorkState, action: Action): WorkState {
     }
     case "WORK_ITEM_DELETED": {
       const nextByKey = { ...state.byKey };
+      let deleted = false;
       if (action.id) {
-        delete nextByKey[makeWorkItemKey(action.serverId, action.id)];
+        const key = makeWorkItemKey(action.serverId, action.id);
+        deleted = key in nextByKey;
+        delete nextByKey[key];
       } else if (action.path) {
         for (const [key, value] of Object.entries(nextByKey)) {
           if (value.serverId === action.serverId && value.path === action.path) {
             delete nextByKey[key];
+            deleted = true;
           }
         }
+      }
+      if (!deleted) {
+        return state;
       }
       return {
         ...state,
@@ -306,6 +338,12 @@ export function workReducer(state: WorkState, action: Action): WorkState {
       };
     }
     case "EXECUTORS_LOADED":
+      if (
+        stringArraysEqual(state.executorsByServer[action.serverId] ?? [], action.executors) &&
+        (!action.digestProvider || state.digestProviderByServer[action.serverId] === action.digestProvider)
+      ) {
+        return state;
+      }
       return {
         ...state,
         executorsByServer: {
@@ -323,6 +361,9 @@ export function workReducer(state: WorkState, action: Action): WorkState {
       if (!action.provider) {
         return state;
       }
+      if (state.digestProviderByServer[action.serverId] === action.provider) {
+        return state;
+      }
       return {
         ...state,
         digestProviderByServer: {
@@ -331,6 +372,16 @@ export function workReducer(state: WorkState, action: Action): WorkState {
         },
       };
     case "REMOVE_SERVER": {
+      const hasServerItems = Object.values(state.byKey).some(
+        (value) => value.serverId === action.serverId,
+      );
+      if (
+        !hasServerItems &&
+        !(action.serverId in state.executorsByServer) &&
+        !(action.serverId in state.digestProviderByServer)
+      ) {
+        return state;
+      }
       const nextByKey = Object.fromEntries(
         Object.entries(state.byKey).filter(([, value]) => value.serverId !== action.serverId),
       );
@@ -350,6 +401,137 @@ export function workReducer(state: WorkState, action: Action): WorkState {
   }
 }
 
+function workItemsEqual(left: WorkItem, right: WorkItem): boolean {
+  return (
+    left === right ||
+    (
+      left.key === right.key &&
+      left.serverId === right.serverId &&
+      left.serverName === right.serverName &&
+      left.serverUrl === right.serverUrl &&
+      left.id === right.id &&
+      left.path === right.path &&
+      left.project === right.project &&
+      left.title === right.title &&
+      left.body === right.body &&
+      frontmatterEqual(left.frontmatter, right.frontmatter) &&
+      mentionsEqual(left.mentions, right.mentions) &&
+      left.mtime === right.mtime
+    )
+  );
+}
+
+function frontmatterEqual(left: Frontmatter, right: Frontmatter): boolean {
+  return (
+    left === right ||
+    (
+      left.id === right.id &&
+      left.kind === right.kind &&
+      left.created === right.created &&
+      left.done === right.done &&
+      left.started === right.started &&
+      left.status === right.status &&
+      left.title === right.title &&
+      left.outcome === right.outcome &&
+      left.summary === right.summary &&
+      stringArraysEqual(left.progress ?? [], right.progress ?? []) &&
+      left.friction === right.friction &&
+      left.cause === right.cause &&
+      left.insight === right.insight &&
+      left.next === right.next &&
+      left.agent_source === right.agent_source &&
+      left.agent_session === right.agent_session &&
+      left.cwd === right.cwd &&
+      left.command === right.command &&
+      left.ai_provider === right.ai_provider &&
+      left.ai_updated === right.ai_updated &&
+      left.ai_hash === right.ai_hash &&
+      left.ai_error === right.ai_error &&
+      left.extra === right.extra &&
+      extraFrontmatterFieldsEqual(left, right)
+    )
+  );
+}
+
+const knownFrontmatterKeys = new Set([
+  "id",
+  "kind",
+  "created",
+  "done",
+  "started",
+  "status",
+  "title",
+  "outcome",
+  "summary",
+  "progress",
+  "friction",
+  "cause",
+  "insight",
+  "next",
+  "agent_source",
+  "agent_session",
+  "cwd",
+  "command",
+  "ai_provider",
+  "ai_updated",
+  "ai_hash",
+  "ai_error",
+  "extra",
+]);
+
+function extraFrontmatterFieldsEqual(
+  left: Frontmatter,
+  right: Frontmatter,
+): boolean {
+  const leftKeys = Object.keys(left).filter(key => !knownFrontmatterKeys.has(key));
+  const rightKeys = Object.keys(right).filter(key => !knownFrontmatterKeys.has(key));
+  if (leftKeys.length !== rightKeys.length) {
+    return false;
+  }
+  for (const key of leftKeys) {
+    if (!Object.prototype.hasOwnProperty.call(right, key) || left[key] !== right[key]) {
+      return false;
+    }
+  }
+  return true;
+}
+
+function mentionsEqual(left: Mention[], right: Mention[]): boolean {
+  if (left === right) {
+    return true;
+  }
+  if (left.length !== right.length) {
+    return false;
+  }
+  for (let index = 0; index < left.length; index += 1) {
+    const leftMention = left[index];
+    const rightMention = right[index];
+    if (
+      leftMention?.role !== rightMention?.role ||
+      leftMention?.session !== rightMention?.session ||
+      leftMention?.index !== rightMention?.index
+    ) {
+      return false;
+    }
+  }
+  return true;
+}
+
+function stringArraysEqual(left: string[], right: string[]): boolean {
+  if (left === right) {
+    return true;
+  }
+  if (left.length !== right.length) {
+    return false;
+  }
+  for (let index = 0; index < left.length; index += 1) {
+    if (left[index] !== right[index]) {
+      return false;
+    }
+  }
+  return true;
+}
+
 const WorkContext = createContext<{
   state: WorkState;
   dispatch: React.Dispatch<Action>;
@@ -357,8 +539,9 @@ const WorkContext = createContext<{
 
 export function WorkProvider({ children }: { children: ReactNode }) {
   const [state, dispatch] = useReducer(workReducer, initialWorkState);
+  const value = React.useMemo(() => ({ state, dispatch }), [state]);
   return (
-    <WorkContext.Provider value={{ state, dispatch }}>
+    <WorkContext.Provider value={value}>
       {children}
     </WorkContext.Provider>
   );

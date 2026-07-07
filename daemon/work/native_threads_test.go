@@ -36,7 +36,7 @@ func TestCodexAppServerThreadProviderMapsListThreads(t *testing.T) {
 				ID:            "thread-1",
 				SessionID:     "session-1",
 				ForkedFromID:  &parent,
-				Preview:       "Review Brain adapter direction\nwith details",
+				Preview:       "Review Brain executor direction\nwith details",
 				Ephemeral:     true,
 				ModelProvider: "openai",
 				CreatedAt:     1780331643,
@@ -97,7 +97,7 @@ func TestCodexAppServerThreadProviderMapsListThreads(t *testing.T) {
 	if thread.ID != "codex:thread-1" || thread.NativeID != "thread-1" || thread.Provider != AgentProviderCodex {
 		t.Fatalf("thread ids = %+v", thread)
 	}
-	if thread.Title != "Architecture review" || thread.Preview != "Review Brain adapter direction\nwith details" {
+	if thread.Title != "Architecture review" || thread.Preview != "Review Brain executor direction\nwith details" {
 		t.Fatalf("thread text = %+v", thread)
 	}
 	if thread.SessionID != "session-1" || thread.ForkedFromID != "thread-parent" || thread.Status != "notLoaded" {
@@ -200,7 +200,7 @@ func TestCodexAppServerThreadProviderStartsThread(t *testing.T) {
 		Cwd:                   "/repo/zen",
 		Model:                 "gpt-5-codex",
 		ModelProvider:         "openai",
-		DeveloperInstructions: "Keep Brain adapter-neutral.",
+		DeveloperInstructions: "Keep Brain executor-neutral.",
 		Ephemeral:             true,
 	})
 	if err != nil {
@@ -214,7 +214,7 @@ func TestCodexAppServerThreadProviderStartsThread(t *testing.T) {
 		"cwd":                   "/repo/zen",
 		"model":                 "gpt-5-codex",
 		"modelProvider":         "openai",
-		"developerInstructions": "Keep Brain adapter-neutral.",
+		"developerInstructions": "Keep Brain executor-neutral.",
 		"ephemeral":             true,
 	} {
 		if got := params[key]; got != want {
@@ -269,7 +269,7 @@ func TestCodexAppServerThreadProviderResumesThread(t *testing.T) {
 }
 
 func TestNativeThreadRuntimeResumeLaunchBuildsCodexTmuxCommand(t *testing.T) {
-	adapter := NewAgentAdapter("codex", Executor{
+	executor := NewAgentExecutor("codex", Executor{
 		Name:    "codex",
 		Command: "/opt/bin/codex --dangerously-bypass-approvals-and-sandbox",
 	})
@@ -280,7 +280,7 @@ func TestNativeThreadRuntimeResumeLaunchBuildsCodexTmuxCommand(t *testing.T) {
 		Cwd:      "/repo/zen",
 	}
 
-	launch, ok := NativeThreadRuntimeResumeLaunch(adapter, thread, NativeThreadResumeOptions{
+	launch, ok := NativeThreadRuntimeResumeLaunch(executor, thread, NativeThreadResumeOptions{
 		Cwd: "/fallback/repo",
 	}, "/brain/workspace")
 	if !ok {
@@ -298,13 +298,13 @@ func TestNativeThreadRuntimeResumeLaunchBuildsCodexTmuxCommand(t *testing.T) {
 }
 
 func TestNativeThreadRuntimeResumeLaunchUsesOptionsCwdWhenThreadHasNone(t *testing.T) {
-	adapter := NewAgentAdapter("codex", Executor{Name: "codex", Command: "codex"})
+	executor := NewAgentExecutor("codex", Executor{Name: "codex", Command: "codex"})
 	thread := NativeThread{
 		ID:       "codex:thread-1",
 		Provider: AgentProviderCodex,
 	}
 
-	launch, ok := NativeThreadRuntimeResumeLaunch(adapter, thread, NativeThreadResumeOptions{
+	launch, ok := NativeThreadRuntimeResumeLaunch(executor, thread, NativeThreadResumeOptions{
 		Cwd: "/repo/from-options",
 	}, "/brain/workspace")
 	if !ok {
@@ -412,7 +412,7 @@ func TestCodexAppServerThreadProviderForksThread(t *testing.T) {
 		Cwd:                   "/repo/zen",
 		Model:                 "gpt-5-codex",
 		ModelProvider:         "openai",
-		DeveloperInstructions: "Keep Brain adapter-neutral.",
+		DeveloperInstructions: "Keep Brain executor-neutral.",
 		Ephemeral:             true,
 		ExcludeTurns:          true,
 	})
@@ -428,7 +428,7 @@ func TestCodexAppServerThreadProviderForksThread(t *testing.T) {
 		"cwd":                   "/repo/zen",
 		"model":                 "gpt-5-codex",
 		"modelProvider":         "openai",
-		"developerInstructions": "Keep Brain adapter-neutral.",
+		"developerInstructions": "Keep Brain executor-neutral.",
 		"ephemeral":             true,
 		"excludeTurns":          true,
 	} {
@@ -487,11 +487,11 @@ func TestCodexAppServerThreadProviderSetsAndClearsGoal(t *testing.T) {
 }
 
 func TestNativeThreadProviderFactoryOnlyEnablesCodex(t *testing.T) {
-	codex := NewAgentAdapter("codex", Executor{Name: "codex", Command: "codex"})
+	codex := NewAgentExecutor("codex", Executor{Name: "codex", Command: "codex"})
 	if provider, ok := NewNativeThreadProvider(codex); !ok || provider.ProviderID() != AgentProviderCodex {
 		t.Fatalf("codex provider = (%#v, %v)", provider, ok)
 	}
-	claude := NewAgentAdapter("claude", Executor{Name: "claude", Command: "claude"})
+	claude := NewAgentExecutor("claude", Executor{Name: "claude", Command: "claude"})
 	if provider, ok := NewNativeThreadProvider(claude); ok || provider != nil {
 		t.Fatalf("claude provider = (%#v, %v)", provider, ok)
 	}

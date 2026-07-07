@@ -68,6 +68,23 @@ function TerminalOutputPaneImpl({
   onRetryConnection,
   onAccessoryLayout,
 }: TerminalOutputPaneProps) {
+  const shouldAutoResumeTerminal =
+    shouldMountTerminalSurface &&
+    canRenderTerminal &&
+    Boolean(sessionKey && serverId && agentId);
+
+  React.useEffect(() => {
+    if (!shouldAutoResumeTerminal) {
+      return;
+    }
+    const frame = requestAnimationFrame(() => {
+      terminalRef.current?.resumeInput();
+    });
+    return () => {
+      cancelAnimationFrame(frame);
+    };
+  }, [agentId, serverId, sessionKey, shouldAutoResumeTerminal, terminalRef]);
+
   return (
     <>
       <View

@@ -130,7 +130,7 @@ func TestDelegatedLifecycleDoesNotCloseUnsafeStates(t *testing.T) {
 			State:     classifier.StateUnknown,
 			Delegated: true,
 			LastLines: []string{
-				`$ZEN_AGENT_PROGRESS_CMD --status running --phase working --attention none --summary "Still editing" --lease 300`,
+				`"$ZEN_AGENT_PROGRESS_CMD" agent progress --status running --phase working --attention none --summary "Still editing" --lease 300`,
 			},
 		},
 	}

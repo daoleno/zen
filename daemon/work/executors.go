@@ -11,8 +11,8 @@ import (
 
 // ExecutorConfig holds the parsed executors.toml content plus built-in defaults.
 type ExecutorConfig struct {
-	Default string
-	ByName  map[string]Executor
+	DelegatedExecutor string
+	ByName            map[string]Executor
 }
 
 // Roles returns executor names sorted alphabetically.
@@ -26,16 +26,17 @@ func (c *ExecutorConfig) Roles() []string {
 }
 
 type executorFile struct {
-	DefaultExecutor string     `toml:"default_executor"`
-	Executors       []Executor `toml:"executors"`
+	DelegatedExecutor string     `toml:"delegated_executor"`
+	Executors         []Executor `toml:"executors"`
 }
 
 // LoadExecutors reads the file at path. If the file does not exist, a built-in
-// default config (claude + codex, default claude) is returned.
+// default config is returned.
 func LoadExecutors(path string) (*ExecutorConfig, error) {
 	cfg := &ExecutorConfig{
-		Default: "claude",
+		DelegatedExecutor: "codex",
 		ByName: map[string]Executor{
+			"agent":  {Name: "agent", Command: "cursor-agent --force --sandbox disabled", Kind: "cursor"},
 			"claude": {Name: "claude", Command: "claude"},
 			"codex":  {Name: "codex", Command: "codex"},
 			"grok":   {Name: "grok", Command: "grok --no-alt-screen --permission-mode bypassPermissions"},
@@ -54,8 +55,8 @@ func LoadExecutors(path string) (*ExecutorConfig, error) {
 	if err := toml.Unmarshal(raw, &file); err != nil {
 		return nil, err
 	}
-	if trimmed := strings.TrimSpace(file.DefaultExecutor); trimmed != "" {
-		cfg.Default = trimmed
+	if trimmed := strings.TrimSpace(file.DelegatedExecutor); trimmed != "" {
+		cfg.DelegatedExecutor = trimmed
 	}
 	for _, executor := range file.Executors {
 		name := strings.TrimSpace(executor.Name)

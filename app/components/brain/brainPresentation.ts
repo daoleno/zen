@@ -1,10 +1,13 @@
 import type { BrainAdapterRef } from "../../store/brain";
+import { compactPathLabel } from "../../services/pathDisplay";
 
 export function brainProviderLabel(value?: string): string {
   const normalized = value?.trim().toLowerCase();
   switch (normalized) {
     case "codex":
       return "Codex";
+    case "cursor":
+      return "Cursor Agent";
     case "grok":
       return "Grok";
     case "claude":
@@ -32,25 +35,14 @@ export function brainAdapterLabel(adapter?: BrainAdapterRef | null): string {
 
 export function brainAdapterProviderKey(adapter?: BrainAdapterRef | null): string {
   const normalized = adapter?.provider?.trim().toLowerCase();
-  if (normalized === "codex" || normalized === "grok" || normalized === "claude" || normalized === "tmux") {
+  if (normalized === "codex" || normalized === "cursor" || normalized === "grok" || normalized === "claude" || normalized === "tmux") {
     return normalized;
   }
   return "custom";
 }
 
 export function compactWorkspaceLabel(value?: string): string {
-  const trimmed = value?.trim().replace(/\/+$/, "") || "";
-  if (!trimmed || trimmed === "/") {
-    return "";
-  }
-  const parts = trimmed.split("/").filter(Boolean);
-  if (parts.length === 0) {
-    return trimmed;
-  }
-  if (parts.length <= 2) {
-    return parts.join("/");
-  }
-  return parts.slice(-2).join("/");
+  return compactPathLabel(value, { tailSegments: 2, showFullUpTo: 2 });
 }
 
 export function brainStatusLine({

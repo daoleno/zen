@@ -42,6 +42,50 @@ func TestBuildWindowCommandForShellInjectsAgentProgressEnv(t *testing.T) {
 			t.Fatalf("progress shell command missing %q:\n%s", want, got)
 		}
 	}
+	// The injected assignment must not embed a space-separated command string
+	// (that breaks under zsh, which does not word-split unquoted variables).
+	if strings.Contains(got, `ZEN_AGENT_PROGRESS_CMD="zen agent progress"`) ||
+		strings.Contains(got, "ZEN_AGENT_PROGRESS_CMD=zen agent progress") {
+		t.Fatalf("ZEN_AGENT_PROGRESS_CMD must be a single executable token:\n%s", got)
+	}
+}
+
+func TestZenExecutablePathPrefersCurrentExecutable(t *testing.T) {
+	got := ZenExecutablePath()
+	if got == "" {
+		t.Fatal("ZenExecutablePath() returned empty string")
+	}
+	exe, err := os.Executable()
+	if err != nil {
+		t.Skipf("os.Executable() unavailable: %v", err)
+	}
+	exe = strings.TrimSpace(exe)
+	if exe == "" {
+		t.Skip("os.Executable() returned empty path")
+	}
+	if got != exe {
+		t.Fatalf("ZenExecutablePath() = %q, want current executable %q (must not fall back to a PATH lookup)", got, exe)
+	}
+}
+
+func TestAgentProgressEnvScriptAssignsSingleToken(t *testing.T) {
+	script := agentProgressEnvScript()
+	if !strings.Contains(script, "ZEN_AGENT_PROGRESS_CMD=") {
+		t.Fatalf("script missing ZEN_AGENT_PROGRESS_CMD assignment:\n%s", script)
+	}
+	// The assignment must not embed a space-separated command string.
+	if strings.Contains(script, "zen agent progress") {
+		t.Fatalf("script must not embed space-separated command:\n%s", script)
+	}
+	// The injected value must be the current executable's path (shell-quoted),
+	// not a stale "zen" resolved via PATH.
+	if exe, err := os.Executable(); err == nil {
+		if exe = strings.TrimSpace(exe); exe != "" {
+			if !strings.Contains(script, shellQuote(exe)) {
+				t.Fatalf("script does not assign the current executable path %q:\n%s", exe, script)
+			}
+		}
+	}
 }
 
 func TestTmuxWindowEnvironmentPreservesUsefulEnvAndSkipsTmuxManagedKeys(t *testing.T) {
@@ -93,6 +137,28 @@ func TestCreatedSessionNameFallsBackToCommandExecutable(t *testing.T) {
 	})
 	if got != "codex" {
 		t.Fatalf("createdSessionName() = %q, want codex", got)
+	}
+}
+
+func TestDetectAgentProcessRecognizesCursorAgent(t *testing.T) {
+	now := time.Date(2026, 7, 4, 12, 0, 0, 0, time.UTC)
+	gotCommand, gotStarted, gotPID := detectAgentProcess("zsh", 100, map[int]processInfo{
+		100: {
+			pid:       100,
+			comm:      "zsh",
+			args:      "zsh",
+			startedAt: now.Add(-2 * time.Minute),
+		},
+		101: {
+			pid:       101,
+			ppid:      100,
+			comm:      "cursor-agent",
+			args:      "cursor-agent --force --sandbox disabled",
+			startedAt: now.Add(-30 * time.Second),
+		},
+	}, now)
+	if gotCommand != "cursor-agent" || gotPID != 101 || !gotStarted.Equal(now.Add(-30*time.Second)) {
+		t.Fatalf("detectAgentProcess = %q %s %d", gotCommand, gotStarted, gotPID)
 	}
 }
 
@@ -445,6 +511,54 @@ func TestCodexInputReadyIgnoresStaleLoadingInScrollback(t *testing.T) {
 	}
 }
 
+func TestCursorAgentInputReadyRequiresComposerPrompt(t *testing.T) {
+	starting := "Cursor Agent\nv2026.07.01-41b2de7\nTip: Use /mcp to connect Cursor to your tools and data sources.\n"
+	if isAgentInputReady("cursor-agent --force --sandbox disabled", starting) {
+		t.Fatal("Cursor Agent startup screen should not be input-ready")
+	}
+
+	ready := starting + "\n\nComposer 2.5 Fast           Run Everything\n~/workspace/zen · main\n"
+	if !isAgentInputReady("cursor-agent --force --sandbox disabled", ready) {
+		t.Fatal("Cursor Agent composer prompt should be input-ready")
+	}
+}
+
+func TestCursorWorkspaceTrustPromptIsNotInputReady(t *testing.T) {
+	trust := "╭────╮\n⚠ Workspace Trust Required\n\nCursor Agent can execute code and access files in this directory.\nDo you trust the contents of this directory?\n\n▶ [a] Trust this workspace\n  [q] Quit\n╰────╯\n"
+	if !isCursorWorkspaceTrustPrompt("cursor-agent --force --sandbox disabled", trust) {
+		t.Fatal("Cursor Agent workspace trust prompt should be detected")
+	}
+	if isAgentInputReady("cursor-agent --force --sandbox disabled", trust) {
+		t.Fatal("Cursor Agent workspace trust prompt should not be treated as task input-ready")
+	}
+}
+
+func TestCursorAgentInputReadyIgnoresStaleStartupInScrollback(t *testing.T) {
+	content := "Cursor Agent\nv2026.07.01\nTip: loading\n\n" +
+		"Cursor Agent\nv2026.07.01\n\nComposer 2.5 Fast           Run Everything\n~/workspace/zen · main\n"
+	if !isAgentInputReady("cursor-agent --force --sandbox disabled", content) {
+		t.Fatal("current Cursor Agent prompt should be ready even when scrollback contains older startup text")
+	}
+}
+
+func TestCursorAgentCommandNeedsInputReadinessWait(t *testing.T) {
+	if !needsInputReadinessWait("cursor-agent --force --sandbox disabled", "") {
+		t.Fatal("Cursor Agent should wait for composer readiness")
+	}
+	if !isCursorAgentCommand("/home/me/bin/cursor-agent --force") {
+		t.Fatal("absolute Cursor Agent path should be detected")
+	}
+}
+
+func TestCursorAgentUsesLongerSubmitDelay(t *testing.T) {
+	if got := tmuxSubmitDelay("cursor-agent --force --sandbox disabled"); got < 350*time.Millisecond {
+		t.Fatalf("Cursor Agent submit delay = %s, want at least 350ms", got)
+	}
+	if got := tmuxSubmitDelay("codex"); got != 120*time.Millisecond {
+		t.Fatalf("Codex submit delay = %s", got)
+	}
+}
+
 func TestUnknownCommandDoesNotWaitForInputReady(t *testing.T) {
 	if !isAgentInputReady("zsh", "") {
 		t.Fatal("unknown commands should be treated as immediately ready")
@@ -514,6 +628,34 @@ func TestDetectAgentProcessPreservesCodexResumeIntent(t *testing.T) {
 	command, startedAt, pid := detectAgentProcess("node", 10, processes, codexStarted.Add(5*time.Second))
 	if command != "codex resume" || !startedAt.Equal(codexStarted) || pid != 20 {
 		t.Fatalf("detectAgentProcess() = (%q, %s, %d), want codex resume child start %s pid 20", command, startedAt, pid, codexStarted)
+	}
+}
+
+func TestDetectAgentProcessPreservesGrokResumeIntent(t *testing.T) {
+	shellStarted := time.Date(2026, 5, 21, 8, 0, 0, 0, time.UTC)
+	grokStarted := shellStarted.Add(30 * time.Minute)
+	processes := map[int]processInfo{
+		10: {pid: 10, ppid: 1, startedAt: shellStarted, comm: "zsh", args: "zsh"},
+		20: {pid: 20, ppid: 10, startedAt: grokStarted, comm: "grok", args: "grok --resume 019f2826-12b8-7cc3-a094-a57522b559e6"},
+	}
+
+	command, startedAt, pid := detectAgentProcess("grok", 10, processes, grokStarted.Add(5*time.Second))
+	if command != "grok --resume 019f2826-12b8-7cc3-a094-a57522b559e6" || !startedAt.Equal(grokStarted) || pid != 20 {
+		t.Fatalf("detectAgentProcess() = (%q, %s, %d), want grok resume session child start %s pid 20", command, startedAt, pid, grokStarted)
+	}
+}
+
+func TestDetectAgentProcessPrefersGrokChildStartTime(t *testing.T) {
+	shellStarted := time.Date(2026, 5, 21, 8, 0, 0, 0, time.UTC)
+	grokStarted := shellStarted.Add(30 * time.Minute)
+	processes := map[int]processInfo{
+		10: {pid: 10, ppid: 1, startedAt: shellStarted, comm: "zsh", args: "zsh"},
+		20: {pid: 20, ppid: 10, startedAt: grokStarted, comm: "grok", args: "grok --no-alt-screen"},
+	}
+
+	command, startedAt, pid := detectAgentProcess("grok", 10, processes, grokStarted.Add(5*time.Second))
+	if command != "grok" || !startedAt.Equal(grokStarted) || pid != 20 {
+		t.Fatalf("detectAgentProcess() = (%q, %s, %d), want grok child start %s pid 20", command, startedAt, pid, grokStarted)
 	}
 }
 

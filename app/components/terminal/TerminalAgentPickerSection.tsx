@@ -39,6 +39,7 @@ export function TerminalAgentPickerSection({
           <Text
             style={[styles.sectionSubtitle, { color: chrome.textMuted }]}
             numberOfLines={1}
+            ellipsizeMode="head"
           >
             {section.subtitle}
           </Text>
