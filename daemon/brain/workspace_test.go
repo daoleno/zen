@@ -51,6 +51,81 @@ func TestWorkspaceTreeListsDefaultMarkdownFiles(t *testing.T) {
 	}
 }
 
+func TestNewStoreEnsuresProfileNotesWithVoiceAndAntiSlop(t *testing.T) {
+	root := t.TempDir()
+	store, err := NewStore(root)
+	if err != nil {
+		t.Fatalf("NewStore() error = %v", err)
+	}
+
+	raw, err := os.ReadFile(store.profileNotesPath())
+	if err != nil {
+		t.Fatalf("read profile.md: %v", err)
+	}
+	content := string(raw)
+	for _, marker := range currentProfileNotesMarkers {
+		if !strings.Contains(content, marker) {
+			t.Fatalf("profile.md missing %q:\n%s", marker, content)
+		}
+	}
+}
+
+func TestNewStoreUpgradesExistingProfileNotesWithoutOverwriting(t *testing.T) {
+	root := t.TempDir()
+	workspace := filepath.Join(root, "workspace")
+	if err := os.MkdirAll(workspace, 0o700); err != nil {
+		t.Fatalf("create workspace: %v", err)
+	}
+	customProfile := "# Brain Profile\n\nKeep my custom note.\n"
+	if err := os.WriteFile(filepath.Join(workspace, "profile.md"), []byte(customProfile), 0o600); err != nil {
+		t.Fatalf("write profile.md: %v", err)
+	}
+
+	if _, err := NewStore(root); err != nil {
+		t.Fatalf("NewStore() error = %v", err)
+	}
+	raw, err := os.ReadFile(filepath.Join(workspace, "profile.md"))
+	if err != nil {
+		t.Fatalf("read profile.md: %v", err)
+	}
+	content := string(raw)
+	if !strings.Contains(content, "Keep my custom note.") {
+		t.Fatalf("profile.md lost custom content:\n%s", content)
+	}
+	for _, marker := range currentProfileNotesMarkers {
+		if !strings.Contains(content, marker) {
+			t.Fatalf("profile.md missing %q:\n%s", marker, content)
+		}
+	}
+}
+
+func TestNewStoreEnsuresWorkspaceCommunicationRules(t *testing.T) {
+	root := t.TempDir()
+	store, err := NewStore(root)
+	if err != nil {
+		t.Fatalf("NewStore() error = %v", err)
+	}
+
+	raw, err := os.ReadFile(store.workspaceInstructionsPath())
+	if err != nil {
+		t.Fatalf("read AGENTS.md: %v", err)
+	}
+	content := string(raw)
+	for _, marker := range []string{
+		"## Brain Communication Rules",
+		"Avoid AI slop",
+		"Answer first",
+		"Do not be sycophantic",
+		"## Brain Orchestration Rules",
+		"## Executor Rules",
+		"## Zen CLI",
+	} {
+		if !strings.Contains(content, marker) {
+			t.Fatalf("AGENTS.md missing %q:\n%s", marker, content)
+		}
+	}
+}
+
 func TestNewStoreEnsuresCurrentAndPolicyDocs(t *testing.T) {
 	root := t.TempDir()
 	store, err := NewStore(root)
@@ -78,7 +153,8 @@ func TestNewStoreEnsuresCurrentAndPolicyDocs(t *testing.T) {
 		path   string
 		marker string
 	}{
-		{store.policyPath("delegation.md"), "## Orchestrator / Delegation Model"},
+		{store.policyPath("delegation.md"), "Reduce user decision load"},
+		{store.policyPath("delegation.md"), "Final synthesis should be concise and judgmental"},
 		{store.policyPath("engine.md"), "Delegated agents use the configured Delegated Executor unless the user explicitly asks for a different executor for that session."},
 		{store.policyPath("handoff.md"), "Host executor switching preserves the visible Brain chat."},
 	} {
@@ -114,11 +190,13 @@ func TestNewStoreUpgradesExistingDelegationPolicyWithoutOverwriting(t *testing.T
 	content := string(readDelegation)
 	for _, want := range []string{
 		"Keep my local rule.",
+		"Reduce user decision load",
 		"## Orchestrator / Delegation Model",
 		"Brain owns decomposition, ordering, judgment, result review, and final synthesis",
 		"Delegated agents are scoped execution sessions",
 		"Do not ask a delegated agent to invent the plan",
 		"Review delegated output before integrating it",
+		"Final synthesis should be concise and judgmental",
 	} {
 		if !strings.Contains(content, want) {
 			t.Fatalf("delegation policy missing %q:\n%s", want, content)
