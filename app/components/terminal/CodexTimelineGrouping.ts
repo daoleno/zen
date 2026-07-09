@@ -44,22 +44,46 @@ function dedupeTimelineRenderItems(
   return output;
 }
 
+/**
+ * Insert date dividers for an inverted (newest-first) timeline.
+ * In an inverted FlatList, earlier array indices sit nearer the composer,
+ * so a day's divider must come *after* that day's items in the array —
+ * visually above them, matching Telegram.
+ */
 function injectDateDividers(items: ZenTimelineItem[]): TimelineRenderItem[] {
   const output: TimelineRenderItem[] = [];
   let previousDayKey: string | null = null;
+  let previousDayLabel: string | null = null;
 
   for (const item of items) {
     const dayKey = dayKeyFromTimestamp(item.timestamp);
     const dividerLabel = formatDateDividerLabel(item.timestamp);
-    if (dayKey && dividerLabel && dayKey !== previousDayKey) {
+    if (
+      previousDayKey &&
+      previousDayLabel &&
+      dayKey &&
+      dayKey !== previousDayKey
+    ) {
       output.push({
         type: "date-divider",
-        id: `date:${dayKey}`,
-        label: dividerLabel,
+        id: `date:${previousDayKey}`,
+        label: previousDayLabel,
       });
-      previousDayKey = dayKey;
     }
     output.push(item);
+    if (dayKey && dividerLabel) {
+      previousDayKey = dayKey;
+      previousDayLabel = dividerLabel;
+    }
+  }
+
+  // Oldest day still needs a header at the visual top of the thread.
+  if (previousDayKey && previousDayLabel) {
+    output.push({
+      type: "date-divider",
+      id: `date:${previousDayKey}`,
+      label: previousDayLabel,
+    });
   }
 
   return output;
