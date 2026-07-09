@@ -30,6 +30,8 @@ export interface TerminalScreenOverlaysProps {
   menuPosition: { left: number; top: number };
   newTerminalDisabled: boolean;
   showLinkedWork: boolean;
+  showToggleRenderMode?: boolean;
+  toggleRenderModeLabel?: string;
   newTerminalVisible: boolean;
   newTerminalInitialCwd: string;
   selectedServerId: string;
@@ -45,6 +47,7 @@ export interface TerminalScreenOverlaysProps {
   onCloseMenu(): void;
   onRename(): void;
   onOpenLinkedWork(): void;
+  onToggleRenderMode?(): void;
   onTerminate(): void;
   onCloseNewTerminal(): void;
   onSubmitNewTerminal(input: NewTerminalSubmitInput): void;
@@ -65,6 +68,8 @@ export function TerminalScreenOverlays({
   menuPosition,
   newTerminalDisabled,
   showLinkedWork,
+  showToggleRenderMode = false,
+  toggleRenderModeLabel,
   newTerminalVisible,
   newTerminalInitialCwd,
   selectedServerId,
@@ -80,6 +85,7 @@ export function TerminalScreenOverlays({
   onCloseMenu,
   onRename,
   onOpenLinkedWork,
+  onToggleRenderMode,
   onTerminate,
   onCloseNewTerminal,
   onSubmitNewTerminal,
@@ -111,12 +117,15 @@ export function TerminalScreenOverlays({
         newTerminalLabel={creatingSession ? "Starting Terminal…" : "New Terminal"}
         newTerminalDisabled={newTerminalDisabled}
         showLinkedWork={showLinkedWork}
+        showToggleRenderMode={showToggleRenderMode}
+        toggleRenderModeLabel={toggleRenderModeLabel}
         chrome={chrome}
         theme={theme}
         onClose={onCloseMenu}
         onNewTerminal={onNewTerminal}
         onRename={onRename}
         onOpenLinkedWork={onOpenLinkedWork}
+        onToggleRenderMode={onToggleRenderMode}
         onTerminate={onTerminate}
       />
 

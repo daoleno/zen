@@ -42,71 +42,47 @@ export function TerminalTopBar({
   terminalFlavor,
   chrome,
   menuAnchorRef,
-  codexRenderMode,
   gitDiffDisabled,
-  isStructuredChatAgent,
+  gitDiffPresentation,
   delegated,
   onBack,
   onOpenPicker,
   onOpenGitDiff,
   onOpenMenu,
-  onToggleCodexRenderMode,
 }: TerminalTopBarProps) {
-  const rightActions = useMemo(() => {
-    const actions: Array<{
-      key: string;
-      icon: React.ComponentProps<typeof import("@expo/vector-icons").Ionicons>["name"];
-      accessibilityLabel: string;
-      disabled?: boolean;
-      onPress: () => void;
-    }> = [];
-
-    if (isStructuredChatAgent) {
-      actions.push({
-        key: "render-mode",
-        icon: codexRenderMode === "chat" ? "terminal-outline" : "chatbubble-outline",
-        accessibilityLabel:
-          codexRenderMode === "chat"
-            ? "Open terminal renderer"
-            : "Open chat renderer",
-        onPress: onToggleCodexRenderMode,
-      });
-    }
-
-    actions.push({
-      key: "git-diff",
-      icon: "git-branch-outline",
-      accessibilityLabel: "Open Git diff",
-      disabled: gitDiffDisabled,
-      onPress: onOpenGitDiff,
-    });
-
-    actions.push({
-      key: "menu",
-      icon: "ellipsis-vertical",
-      accessibilityLabel: "Session actions",
-      onPress: onOpenMenu,
-    });
-
-    return actions;
-  }, [
-    codexRenderMode,
-    gitDiffDisabled,
-    isStructuredChatAgent,
-    onOpenGitDiff,
-    onOpenMenu,
-    onToggleCodexRenderMode,
-  ]);
-
-  const resolvedSubtitle =
-    subtitle ??
-    (delegated ? "Brain session" : undefined);
+  // Terminal/chat toggle lives in the overflow menu; header keeps Git + menu
+  // together in one circular chip for a cleaner Telegram-like chrome.
+  const rightActions = useMemo(
+    () => [
+      {
+        key: "git-diff",
+        icon: "git-branch-outline" as const,
+        accessibilityLabel: gitDiffPresentation.accessibilityLabel,
+        disabled: gitDiffDisabled,
+        iconColor: gitDiffPresentation.iconColor,
+        onPress: onOpenGitDiff,
+      },
+      {
+        key: "menu",
+        icon: "ellipsis-vertical" as const,
+        accessibilityLabel: "Session actions",
+        onPress: onOpenMenu,
+      },
+    ],
+    [
+      gitDiffDisabled,
+      gitDiffPresentation.accessibilityLabel,
+      gitDiffPresentation.iconColor,
+      onOpenGitDiff,
+      onOpenMenu,
+    ],
+  );
 
   return (
     <TelegramChatHeader
       chrome={chrome}
       title={title}
-      subtitle={resolvedSubtitle}
+      subtitle={subtitle ?? (delegated ? "Delegated" : undefined)}
       agentKind={kind}
       terminalFlavor={terminalFlavor}
       avatarLabel={title}

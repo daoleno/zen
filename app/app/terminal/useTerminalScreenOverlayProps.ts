@@ -25,6 +25,8 @@ interface UseTerminalScreenOverlayPropsInput {
   connectionConnected: boolean;
   gitDiff: ReturnType<typeof useTerminalGitDiff>;
   hasLinkedWork: boolean;
+  showToggleRenderMode?: boolean;
+  toggleRenderModeLabel?: string;
   newTerminalVisible: boolean;
   agentCwd?: string;
   serverId: string;
@@ -42,6 +44,7 @@ interface UseTerminalScreenOverlayPropsInput {
   closeMenu(): void;
   openNewTerminal(): void;
   openRenameModal(): void;
+  onToggleRenderMode?(): void;
 }
 
 export function useTerminalScreenOverlayProps({
@@ -57,6 +60,8 @@ export function useTerminalScreenOverlayProps({
   connectionConnected,
   gitDiff,
   hasLinkedWork,
+  showToggleRenderMode = false,
+  toggleRenderModeLabel,
   newTerminalVisible,
   agentCwd,
   serverId,
@@ -74,6 +79,7 @@ export function useTerminalScreenOverlayProps({
   closeMenu,
   openNewTerminal,
   openRenameModal,
+  onToggleRenderMode,
 }: UseTerminalScreenOverlayPropsInput): TerminalScreenOverlaysProps {
   const handleClosePicker = useCallback(() => {
     setPickerVisible(false);
@@ -111,6 +117,8 @@ export function useTerminalScreenOverlayProps({
       menuPosition,
       newTerminalDisabled: !connectionConnected,
       showLinkedWork: hasLinkedWork,
+      showToggleRenderMode,
+      toggleRenderModeLabel,
       newTerminalVisible,
       newTerminalInitialCwd: agentCwd || "",
       selectedServerId: serverId,
@@ -126,6 +134,7 @@ export function useTerminalScreenOverlayProps({
       onCloseMenu: closeMenu,
       onRename: openRenameModal,
       onOpenLinkedWork: sessionActions.openLinkedWork,
+      onToggleRenderMode,
       onTerminate: navigationActions.handleTerminateAgent,
       onCloseNewTerminal: handleCloseNewTerminal,
       onSubmitNewTerminal: handleSubmitNewTerminal,
@@ -149,8 +158,11 @@ export function useTerminalScreenOverlayProps({
       menuVisible,
       newTerminalVisible,
       closeMenu,
+      onToggleRenderMode,
       openNewTerminal,
       openRenameModal,
+      showToggleRenderMode,
+      toggleRenderModeLabel,
       pickerSections,
       pickerVisible,
       renameDraft,

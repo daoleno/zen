@@ -9,6 +9,9 @@ import type {
   TerminalThemePalette,
 } from "../../constants/terminalThemes";
 import { isAmbientChatChrome } from "../../constants/themedSurfaces";
+import {
+  CHAT_CHROME_HORIZONTAL_INSET,
+} from "./chatChromeMetrics";
 
 interface CodexChatComposerFrameProps {
   bottomPadding: number;
@@ -29,6 +32,7 @@ export function CodexChatComposerFrame({
 }: CodexChatComposerFrameProps) {
   const ambient = isAmbientChatChrome(chrome);
   const chatgptDock = !ambient && composerLayout === "chatgpt";
+  const telegramDock = composerLayout === "telegram";
 
   return (
     <View
@@ -37,14 +41,18 @@ export function CodexChatComposerFrame({
         styles.composer,
         ambient ? styles.composerAmbient : null,
         chatgptDock ? styles.composerChatGpt : null,
+        telegramDock ? styles.composerTelegram : null,
         {
-          paddingBottom: bottomPadding,
+          paddingBottom: Math.max(bottomPadding, telegramDock ? 8 : 0),
           borderTopWidth: 0,
-          backgroundColor: ambient
-            ? chrome.surfaceActive
+          // Never paint a dock plate under the pill — elevation on Android
+          // draws an opaque rectangle that shows as ugly white layers.
+          backgroundColor: ambient ? "transparent" : telegramDock
+            ? "transparent"
             : theme.background === "transparent"
               ? "transparent"
               : chrome.appBackground,
+          zIndex: 4,
         },
       ]}
     >
@@ -66,5 +74,9 @@ const styles = StyleSheet.create({
   composerChatGpt: {
     paddingHorizontal: 16,
     paddingTop: 10,
+  },
+  composerTelegram: {
+    paddingHorizontal: CHAT_CHROME_HORIZONTAL_INSET,
+    paddingTop: 6,
   },
 });

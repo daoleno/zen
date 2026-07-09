@@ -1,5 +1,6 @@
 import React from "react";
 import {
+  Image,
   StyleSheet,
   Text,
   View,
@@ -24,7 +25,7 @@ export function CodexTimelineAttachmentPreviewList({
     <View style={[styles.attachments, compact ? styles.attachmentsCompact : null]}>
       {attachments.map((attachment) => (
         <CodexTimelineAttachmentPreviewPill
-          key={`${attachment.name}:${attachment.path}`}
+          key={`${attachment.name}:${attachment.path}:${attachment.localUri ?? ""}`}
           attachment={attachment}
           chrome={chrome}
         />
@@ -40,6 +41,26 @@ function CodexTimelineAttachmentPreviewPill({
   attachment: DisplayAttachment;
   chrome: TerminalThemeChrome;
 }) {
+  const thumbnailUri = attachmentThumbnailUri(attachment);
+
+  if (thumbnailUri) {
+    return (
+      <View
+        style={[
+          styles.thumbPill,
+          { borderColor: chrome.border, backgroundColor: chrome.surfaceMuted },
+        ]}
+      >
+        <Image
+          source={{ uri: thumbnailUri }}
+          style={styles.thumb}
+          resizeMode="cover"
+          accessibilityLabel={attachment.name || basename(attachment.path)}
+        />
+      </View>
+    );
+  }
+
   return (
     <View style={[styles.attachmentPill, { borderColor: chrome.border }]}>
       <Ionicons
@@ -61,8 +82,25 @@ function CodexTimelineAttachmentPreviewPill({
   );
 }
 
+function attachmentThumbnailUri(attachment: DisplayAttachment) {
+  if (!attachment.localUri) {
+    return null;
+  }
+  if (attachment.mimeType?.startsWith("image/")) {
+    return attachment.localUri;
+  }
+  if (
+    looksLikeImagePath(attachment.name) ||
+    looksLikeImagePath(attachment.path) ||
+    looksLikeImagePath(attachment.localUri)
+  ) {
+    return attachment.localUri;
+  }
+  return null;
+}
+
 function looksLikeImagePath(value: string) {
-  return /\.(png|jpe?g|gif|webp|bmp)$/i.test(value.trim());
+  return /\.(png|jpe?g|gif|webp|bmp|heic|heif)$/i.test(value.trim());
 }
 
 function basename(value: string) {
@@ -73,6 +111,8 @@ function basename(value: string) {
 const styles = StyleSheet.create({
   attachments: {
     gap: 6,
+    flexDirection: "row",
+    flexWrap: "wrap",
   },
   attachmentsCompact: {
     marginTop: 8,
@@ -87,6 +127,17 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     alignItems: "center",
     gap: 6,
+  },
+  thumbPill: {
+    width: 72,
+    height: 72,
+    borderRadius: 10,
+    borderWidth: StyleSheet.hairlineWidth,
+    overflow: "hidden",
+  },
+  thumb: {
+    width: "100%",
+    height: "100%",
   },
   attachmentPillText: {
     flexShrink: 1,

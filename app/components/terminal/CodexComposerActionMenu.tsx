@@ -197,8 +197,7 @@ function groupCommands(commands: CodexSlashCommand[]): CommandGroup[] {
 
 const styles = StyleSheet.create({
   menu: {
-    marginBottom: 8,
-    borderRadius: 8,
+    borderRadius: 14,
     borderWidth: StyleSheet.hairlineWidth,
     overflow: "hidden",
   },

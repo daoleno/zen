@@ -1,5 +1,6 @@
 import React from "react";
 import {
+  Image,
   StyleSheet,
   Text,
   View,
@@ -13,6 +14,8 @@ export interface CodexComposerAttachment {
   id: string;
   name: string;
   path: string;
+  localUri?: string;
+  mimeType?: string;
 }
 
 interface CodexComposerAttachmentChipProps {
@@ -26,6 +29,32 @@ export function CodexComposerAttachmentChip({
   chrome,
   onRemove,
 }: CodexComposerAttachmentChipProps) {
+  const thumbnailUri = attachmentThumbnailUri(attachment);
+
+  if (thumbnailUri) {
+    return (
+      <View
+        style={[
+          styles.thumbChip,
+          { backgroundColor: chrome.surfaceMuted, borderColor: chrome.border },
+        ]}
+      >
+        <Image
+          source={{ uri: thumbnailUri }}
+          style={styles.thumb}
+          resizeMode="cover"
+          accessibilityLabel={attachment.name}
+        />
+        <CodexComposerAttachmentRemoveButton
+          attachmentName={attachment.name}
+          chrome={chrome}
+          onPress={() => onRemove(attachment.id)}
+          style={styles.thumbRemove}
+        />
+      </View>
+    );
+  }
+
   return (
     <View
       style={[
@@ -57,6 +86,24 @@ export function CodexComposerAttachmentChip({
   );
 }
 
+function attachmentThumbnailUri(attachment: CodexComposerAttachment) {
+  if (attachment.localUri && isImageAttachment(attachment)) {
+    return attachment.localUri;
+  }
+  return null;
+}
+
+function isImageAttachment(attachment: CodexComposerAttachment) {
+  if (attachment.mimeType?.startsWith("image/")) {
+    return true;
+  }
+  return looksLikeImagePath(attachment.name) || looksLikeImagePath(attachment.path);
+}
+
+function looksLikeImagePath(value: string) {
+  return /\.(png|jpe?g|gif|webp|bmp|heic|heif)$/i.test(value.trim());
+}
+
 function basename(value: string) {
   const parts = value.split(/[\\/]/).filter(Boolean);
   return parts[parts.length - 1] || value;
@@ -73,6 +120,22 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     alignItems: "center",
     gap: 7,
+  },
+  thumbChip: {
+    width: 56,
+    height: 56,
+    borderRadius: 12,
+    borderWidth: StyleSheet.hairlineWidth,
+    overflow: "hidden",
+  },
+  thumb: {
+    width: "100%",
+    height: "100%",
+  },
+  thumbRemove: {
+    position: "absolute",
+    top: 2,
+    right: 2,
   },
   textGroup: {
     flex: 1,

@@ -48,6 +48,7 @@ export function useCodexComposerPresentation({
   placeholder,
   keyboardVerticalOffset,
   composerBottomInset,
+  composerLayout,
 }: UseCodexComposerPresentationInput) {
   const agentKind = agentKindFromCommand(agentCommand);
   return useMemo(
@@ -71,12 +72,14 @@ export function useCodexComposerPresentation({
         placeholder,
         keyboardVerticalOffset,
         composerBottomInset,
+        composerLayout,
       }),
     [
       attachmentCount,
       canSend,
       elapsedLabel,
       actionMenuPinned,
+      composerLayout,
       connectionState,
       draft,
       interrupting,

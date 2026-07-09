@@ -11,6 +11,7 @@ import type {
   TerminalThemeChrome,
   TerminalThemePalette,
 } from "../../constants/terminalThemes";
+import { useAppTheme } from "../../constants/tokens";
 import type { ConnectionState } from "../../store/agents";
 import { agentKindFromCommand } from "../../services/chatComposerPresentation";
 import type { ConnectionIssue } from "../../services/connectionIssue";
@@ -118,6 +119,8 @@ export function useCodexChatSurfaceState({
 }: UseCodexChatSurfaceStateInput): CodexChatSurfaceState {
   const insets = useSafeAreaInsets();
   const tabScreenBottomInset = useTabScreenBottomInset();
+  const { theme: zenTheme } = useAppTheme();
+  const composerLayout = zenTheme.chat.layout;
   const active = visible && screenFocused;
   const chatAgentKind = agentKindFromCommand(agentInfo?.command);
   const slashCommands = useCodexSlashCommands({
@@ -392,6 +395,7 @@ export function useCodexChatSurfaceState({
     placeholder,
     keyboardVerticalOffset,
     composerBottomInset: tabScreenBottomInset ?? undefined,
+    composerLayout,
   });
   const terminalActionPrompt = useMemo(
     () =>

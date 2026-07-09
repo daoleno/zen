@@ -5,6 +5,7 @@ import {
 } from "react-native";
 import type { TerminalThemeChrome } from "../../constants/terminalThemes";
 import { isAmbientChatChrome } from "../../constants/themedSurfaces";
+import { CHAT_COMPOSER_DOCK_RADIUS } from "./chatChromeMetrics";
 
 interface CodexComposerPanelFrameProps {
   focused: boolean;
@@ -27,20 +28,26 @@ export function CodexComposerPanelFrame({
     <View
       collapsable={false}
       style={[
-        chatgpt ? styles.panelChatGpt : telegram ? styles.panelTelegram : styles.panel,
+        chatgpt
+          ? styles.panelChatGpt
+          : telegram
+            ? styles.panelTelegram
+            : styles.panel,
         ambient && !telegram && !chatgpt ? styles.panelAmbient : null,
-        telegram ? styles.panelTelegramAmbient : null,
         {
-          backgroundColor: chatgpt || telegram || !ambient
-            ? chrome.composerInput
-            : chrome.surfaceActive,
-          borderColor: chatgpt || telegram
+          backgroundColor:
+            chatgpt || telegram || !ambient
+              ? chrome.composerInput
+              : chrome.surfaceActive,
+          borderColor: chatgpt
             ? "transparent"
-            : ambient
-              ? "transparent"
-              : focused
-                ? chrome.borderStrong
-                : chrome.border,
+            : telegram
+              ? chrome.border
+              : ambient
+                ? "transparent"
+                : focused
+                  ? chrome.borderStrong
+                  : chrome.border,
         },
       ]}
     >
@@ -69,20 +76,15 @@ const styles = StyleSheet.create({
     paddingRight: 4,
   },
   panelTelegram: {
-    flex: 1,
-    minWidth: 0,
-    minHeight: 42,
-    borderRadius: 21,
-    borderWidth: 0,
+    minHeight: 48,
+    borderRadius: CHAT_COMPOSER_DOCK_RADIUS,
+    borderWidth: StyleSheet.hairlineWidth,
     paddingLeft: 4,
-    paddingRight: 2,
-    paddingVertical: 2,
+    paddingRight: 4,
+    paddingVertical: 4,
     flexDirection: "row",
     alignItems: "flex-end",
-    gap: 0,
-  },
-  panelTelegramAmbient: {
-    minHeight: 42,
+    gap: 2,
   },
   panelChatGpt: {
     flex: 1,

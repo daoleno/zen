@@ -4,6 +4,7 @@ import {
   chatAgentSupportsSlashCommands,
 } from "../../services/chatComposerPresentation";
 import type { AgentKind } from "../../services/agentPresentation";
+import type { ChatLayout } from "../../theme/types";
 import type { CodexSlashCommand } from "../../services/websocket";
 import { filterSlashCommands } from "./CodexSlashCommands";
 
@@ -29,7 +30,7 @@ export interface CodexComposerPresentation {
   bottomPadding: number;
   keyboardVerticalOffset: number;
   automaticKeyboardOffset: boolean;
-  composerLayout: "chatgpt" | "telegram" | "classic";
+  composerLayout: ChatLayout;
 }
 
 export interface CodexComposerPresentationInput {
@@ -51,6 +52,7 @@ export interface CodexComposerPresentationInput {
   placeholder?: string;
   keyboardVerticalOffset?: number;
   composerBottomInset?: number;
+  composerLayout?: ChatLayout;
 }
 
 export function buildCodexComposerPresentation({
@@ -72,6 +74,7 @@ export function buildCodexComposerPresentation({
   placeholder,
   keyboardVerticalOffset,
   composerBottomInset,
+  composerLayout = "telegram",
 }: CodexComposerPresentationInput): CodexComposerPresentation {
   const commandQuery = draft.trimStart();
   const slashCommandsEnabled = chatAgentSupportsSlashCommands(agentKind);
@@ -103,6 +106,7 @@ export function buildCodexComposerPresentation({
     draft.trim().length === 0 &&
     attachmentCount === 0;
   const showStopButton = showStopIndicator && !sending;
+  const chatgpt = composerLayout === "chatgpt";
 
   return {
     commandQuery,
@@ -117,7 +121,7 @@ export function buildCodexComposerPresentation({
     showStopButton,
     showStopIndicator,
     sendEnabled: canSend || showStopButton || startingNewChat,
-    sendIcon: showStopIndicator ? "square" : "arrow-up",
+    sendIcon: showStopIndicator ? "square" : chatgpt ? "arrow-up" : "arrow-up",
     sendLabel: startingNewChat
       ? "Starting new chat"
       : showStopButton
@@ -143,6 +147,6 @@ export function buildCodexComposerPresentation({
           ? safeAreaTop + TERMINAL_ROUTE_BAR_HEIGHT
           : 0,
     automaticKeyboardOffset: typeof keyboardVerticalOffset === "number",
-    composerLayout: "classic",
+    composerLayout,
   };
 }

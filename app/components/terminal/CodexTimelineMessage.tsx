@@ -37,6 +37,8 @@ import { CodexTimelineAttachmentPreviewList } from "./CodexTimelineAttachmentPre
 export type DisplayAttachment = {
   name: string;
   path: string;
+  localUri?: string;
+  mimeType?: string;
 };
 
 export interface ZenMessageTimelineItem {

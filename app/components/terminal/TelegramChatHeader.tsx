@@ -5,6 +5,7 @@ import * as Haptics from 'expo-haptics';
 import type { TerminalThemeChrome } from '../../constants/terminalThemes';
 import {
   Colors,
+  Radii,
   Typography,
   UiTextMetrics,
   uiLineHeight,
@@ -14,13 +15,21 @@ import { AnimatedPressable } from '../ui/AnimatedPressable';
 import type { AgentKind } from '../../services/agentPresentation';
 import type { TerminalFlavor } from '../../services/terminalFlavor';
 import { AgentKindIcon } from './AgentKindIcon';
+import {
+  CHAT_CHROME_HORIZONTAL_INSET,
+  CHAT_HEADER_HEIGHT,
+  CHAT_HEADER_OUTER_GAP,
+} from './chatChromeMetrics';
 import { SessionAvatar } from '../ui/SessionAvatar';
+import { relativeLuminance } from '../../theme/colorUtils';
 
 interface TelegramChatHeaderAction {
   key: string;
   icon: React.ComponentProps<typeof Ionicons>['name'];
   accessibilityLabel: string;
   disabled?: boolean;
+  /** Optional override; defaults to muted header icon color. */
+  iconColor?: string;
   onPress: () => void;
 }
 
@@ -63,174 +72,211 @@ export function TelegramChatHeader({
   const avatarKey = avatarSeed ?? title;
 
   return (
-    <View style={styles.root}>
-      {onBack ? (
-        <AnimatedPressable
-          accessibilityRole="button"
-          accessibilityLabel="Back"
-          style={styles.backButton}
-          preset="press"
-          scale={0.92}
-          onPress={onBack}
-        >
-          <Ionicons name="chevron-back" size={22} color={colors.textPrimary} />
-        </AnimatedPressable>
-      ) : (
-        <View style={styles.backSpacer} />
-      )}
-
-      <AnimatedPressable
-        accessibilityRole="button"
-        accessibilityLabel={onPressTitle ? `${title}, open session` : title}
-        disabled={!onPressTitle}
-        style={styles.identity}
-        preset="press"
-        scale={0.99}
-        onPress={() => {
-          if (!onPressTitle) {
-            return;
-          }
-          Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-          onPressTitle();
-        }}
-      >
-        {avatar ? (
-          avatar
-        ) : agentKind ? (
-          <AgentKindIcon
-            kind={agentKind}
-            flavor={terminalFlavor}
-            variant="avatar"
-          />
-        ) : (
-          <SessionAvatar label={avatarText} seed={avatarKey} size={40} />
-        )}
-        <View style={styles.copy}>
-          <Text style={styles.title} numberOfLines={1}>
-            {title}
-          </Text>
-          {subtitle ? (
-            <Text
-              style={styles.subtitle}
-              numberOfLines={1}
-              ellipsizeMode="head"
-            >
-              {subtitle}
-            </Text>
-          ) : null}
-        </View>
-      </AnimatedPressable>
-
-      <View style={styles.actions}>
-        {rightActions.map((action) => {
-          const button = (
+    <View style={styles.outer}>
+      <View style={styles.row}>
+        {onBack ? (
+          <View style={[styles.chip, styles.circleChip]}>
             <AnimatedPressable
               accessibilityRole="button"
-              accessibilityLabel={action.accessibilityLabel}
-              accessibilityState={{ disabled: action.disabled }}
-              disabled={action.disabled}
-              style={[styles.actionButton, action.disabled && styles.actionDisabled]}
+              accessibilityLabel="Back"
+              style={styles.iconButton}
               preset="press"
-              scale={0.9}
-              onPress={() => {
-                if (action.disabled) {
-                  return;
-                }
-                Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-                action.onPress();
-              }}
+              scale={0.92}
+              onPress={onBack}
             >
               <Ionicons
-                name={action.icon}
-                size={20}
-                color={action.disabled ? colors.disabledText : colors.textSecondary}
+                name="chevron-back"
+                size={22}
+                color={styles.iconColor.color}
               />
             </AnimatedPressable>
-          );
+          </View>
+        ) : null}
 
-          if (action.key === 'menu' && menuAnchorRef) {
-            return (
-              <View key={action.key} ref={menuAnchorRef} collapsable={false}>
-                {button}
-              </View>
-            );
-          }
+        <AnimatedPressable
+          accessibilityRole="button"
+          accessibilityLabel={onPressTitle ? `${title}, open session` : title}
+          disabled={!onPressTitle}
+          style={[styles.chip, styles.identityPill]}
+          preset="press"
+          scale={0.99}
+          onPress={() => {
+            if (!onPressTitle) {
+              return;
+            }
+            Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+            onPressTitle();
+          }}
+        >
+          {avatar ? (
+            avatar
+          ) : agentKind ? (
+            <AgentKindIcon
+              kind={agentKind}
+              flavor={terminalFlavor}
+              variant="avatar"
+            />
+          ) : (
+            <SessionAvatar label={avatarText} seed={avatarKey} size={30} />
+          )}
+          <View style={styles.copy}>
+            <Text style={styles.title} numberOfLines={1}>
+              {title}
+            </Text>
+            {subtitle ? (
+              <Text style={styles.subtitle} numberOfLines={1}>
+                {subtitle}
+              </Text>
+            ) : null}
+          </View>
+        </AnimatedPressable>
 
-          return <React.Fragment key={action.key}>{button}</React.Fragment>;
-        })}
+        {rightActions.length > 0 ? (
+          <View
+            ref={menuAnchorRef}
+            collapsable={false}
+            style={[styles.chip, styles.actionsChip]}
+          >
+            {rightActions.map((action) => (
+              <AnimatedPressable
+                key={action.key}
+                accessibilityRole="button"
+                accessibilityLabel={action.accessibilityLabel}
+                accessibilityState={{ disabled: action.disabled }}
+                disabled={action.disabled}
+                style={[
+                  styles.iconButton,
+                  action.disabled && styles.actionDisabled,
+                ]}
+                preset="press"
+                scale={0.9}
+                onPress={() => {
+                  if (action.disabled) {
+                    return;
+                  }
+                  Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+                  action.onPress();
+                }}
+              >
+                <Ionicons
+                  name={action.icon}
+                  size={20}
+                  color={
+                    action.disabled
+                      ? colors.disabledText
+                      : action.iconColor ?? styles.iconMuted.color
+                  }
+                />
+              </AnimatedPressable>
+            ))}
+          </View>
+        ) : null}
       </View>
     </View>
   );
 }
 
-function createStyles(
+function resolveChipSurface(
   colors: typeof Colors,
   chrome?: TerminalThemeChrome,
-) {
-  const onChatCanvas = Boolean(chrome);
+): string {
+  if (!chrome) {
+    return colors.bgSurface;
+  }
+  const canvas = chrome.appBackground;
+  const candidates = [chrome.composerInput, chrome.surface, colors.bgSurface];
+  for (const candidate of candidates) {
+    if (!candidate.startsWith('#') || !canvas.startsWith('#')) {
+      continue;
+    }
+    if (
+      Math.abs(relativeLuminance(candidate) - relativeLuminance(canvas)) >= 0.04
+    ) {
+      return candidate;
+    }
+  }
+  return colors.bgSurface;
+}
+
+function createStyles(colors: typeof Colors, chrome?: TerminalThemeChrome) {
+  const chipSurface = resolveChipSurface(colors, chrome);
+  const titleColor = chrome?.text ?? colors.textPrimary;
+  const subtitleColor = chrome?.textMuted ?? colors.textSecondary;
+  const iconColor = chrome?.text ?? colors.textPrimary;
+  const iconMuted = chrome?.textMuted ?? colors.textSecondary;
+  const borderColor = chrome?.border ?? colors.borderSubtle;
+
   return StyleSheet.create({
-    root: {
+    outer: {
+      paddingHorizontal: CHAT_CHROME_HORIZONTAL_INSET,
+      paddingTop: CHAT_HEADER_OUTER_GAP,
+      paddingBottom: CHAT_HEADER_OUTER_GAP,
+      backgroundColor: 'transparent',
+      zIndex: 3,
+    },
+    row: {
       flexDirection: 'row',
       alignItems: 'center',
-      paddingHorizontal: 8,
-      paddingTop: 4,
-      paddingBottom: 8,
-      gap: 2,
-      backgroundColor: chrome?.appBackground ?? colors.bgSurface,
-      borderBottomWidth: StyleSheet.hairlineWidth,
-      borderBottomColor: chrome?.border ?? colors.borderSubtle,
+      height: CHAT_HEADER_HEIGHT,
+      gap: 8,
     },
-    backButton: {
-      width: 40,
-      height: 40,
-      borderRadius: 20,
+    chip: {
+      height: CHAT_HEADER_HEIGHT,
+      flexDirection: 'row',
       alignItems: 'center',
+      backgroundColor: chipSurface,
+      borderRadius: Radii.pill,
+      borderWidth: StyleSheet.hairlineWidth,
+      borderColor,
+      overflow: 'hidden',
+    },
+    circleChip: {
+      width: CHAT_HEADER_HEIGHT,
       justifyContent: 'center',
-      backgroundColor: onChatCanvas ? 'transparent' : colors.surfaceSubtle,
     },
-    backSpacer: {
-      width: 8,
-    },
-    identity: {
+    identityPill: {
       flex: 1,
       minWidth: 0,
-      flexDirection: 'row',
+      gap: 8,
+      paddingLeft: 6,
+      paddingRight: 14,
+    },
+    actionsChip: {
+      flexShrink: 0,
+      paddingHorizontal: 2,
+    },
+    iconButton: {
+      width: 40,
+      height: 40,
+      borderRadius: Radii.pill,
       alignItems: 'center',
-      gap: 10,
-      paddingVertical: 2,
-      paddingRight: 4,
+      justifyContent: 'center',
+    },
+    iconColor: {
+      color: iconColor,
+    },
+    iconMuted: {
+      color: iconMuted,
     },
     copy: {
       flex: 1,
       minWidth: 0,
       justifyContent: 'center',
-      gap: 1,
+      gap: 0,
     },
     title: {
       ...UiTextMetrics,
-      color: colors.textPrimary,
+      color: titleColor,
       fontFamily: Typography.uiFontMedium,
-      fontSize: 16,
-      lineHeight: uiLineHeight(16),
+      fontSize: 15,
+      lineHeight: uiLineHeight(15),
     },
     subtitle: {
       ...UiTextMetrics,
-      color: colors.textSecondary,
+      color: subtitleColor,
       fontFamily: Typography.uiFont,
-      fontSize: 13,
-      lineHeight: uiLineHeight(13),
-    },
-    actions: {
-      flexDirection: 'row',
-      alignItems: 'center',
-      gap: 0,
-    },
-    actionButton: {
-      width: 40,
-      height: 40,
-      borderRadius: 20,
-      alignItems: 'center',
-      justifyContent: 'center',
+      fontSize: 11,
+      lineHeight: uiLineHeight(11),
     },
     actionDisabled: {
       opacity: 0.45,

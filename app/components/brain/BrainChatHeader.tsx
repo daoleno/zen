@@ -9,7 +9,6 @@ import type { BrainAdapterRef } from "../../store/brain";
 interface BrainChatHeaderProps {
   chrome: TerminalThemeChrome;
   adapter?: BrainAdapterRef | null;
-  workspace?: string;
   canSwitchAdapter: boolean;
   newChatLoading: boolean;
   canNewChat: boolean;
@@ -23,7 +22,6 @@ interface BrainChatHeaderProps {
 export function BrainChatHeader({
   chrome,
   adapter,
-  workspace,
   canSwitchAdapter,
   newChatLoading,
   canNewChat,
@@ -33,8 +31,10 @@ export function BrainChatHeader({
   onOpenMenu,
   onNewChat,
 }: BrainChatHeaderProps) {
-  const statusLine = brainStatusLine({ adapter, workspace });
+  const statusLine = brainStatusLine({ adapter });
 
+  // Keep new-chat + overflow in one circular actions chip so chrome matches
+  // the identity pill language (no bare icons next to a framed title).
   const rightActions = useMemo(
     () => [
       {
@@ -85,8 +85,8 @@ export function BrainChatHeader({
 
 const styles = StyleSheet.create({
   avatarSlot: {
-    width: 40,
-    height: 40,
+    width: 30,
+    height: 30,
     alignItems: "center",
     justifyContent: "center",
   },

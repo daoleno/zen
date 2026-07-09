@@ -42,5 +42,6 @@ const styles = StyleSheet.create({
   chatContent: {
     flex: 1,
     minHeight: 0,
+    overflow: "visible",
   },
 });

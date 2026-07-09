@@ -43,6 +43,5 @@ export function TerminalScreenLayout({
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: "#0D0C0C",
   },
 });

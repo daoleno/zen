@@ -6,6 +6,9 @@ import { getServerById } from "./storage";
 export type UploadedAttachment = {
   name: string;
   path: string;
+  /** Local file URI for composer/timeline thumbnails before/after upload. */
+  localUri?: string;
+  mimeType?: string;
 };
 
 export async function buildUploadHeaders(
@@ -104,5 +107,7 @@ export async function uploadDocumentForServer(
   return {
     name: payload.name || asset.name || "upload",
     path: payload.path,
+    localUri: asset.uri,
+    mimeType: asset.mimeType || undefined,
   };
 }

@@ -10,6 +10,7 @@ import { BrainOverflowMenu } from "../../components/brain/BrainOverflowMenu";
 import { BrainWorkspaceViewer } from "../../components/brain/BrainWorkspaceViewer";
 import { brainProviderLabel } from "../../components/brain/brainPresentation";
 import { ChatCanvas } from "../../components/terminal/ChatCanvas";
+import { CHAT_CHROME_HORIZONTAL_INSET } from "../../components/terminal/chatChromeMetrics";
 import { CodexChatSurface } from "../../components/terminal/CodexChatSurface";
 import type { TerminalThemeChrome } from "../../constants/terminalThemes";
 import { buildChatChrome } from "../../theme";
@@ -297,7 +298,6 @@ export default function BrainScreen() {
       <BrainChatHeader
         chrome={chrome}
         adapter={hostAdapter}
-        workspace={hostAgent?.cwd}
         canSwitchAdapter={canSwitchAdapter}
         newChatLoading={newChatLoading}
         canNewChat={Boolean(activeServer && activeBrain?.hydrated)}
@@ -555,11 +555,11 @@ function createStyles(colors: typeof Colors) {
       flex: 1,
     },
     bannerError: {
-      marginHorizontal: 12,
-      marginBottom: 6,
+      marginHorizontal: CHAT_CHROME_HORIZONTAL_INSET,
+      marginBottom: 4,
       paddingHorizontal: 14,
       paddingVertical: 8,
-      borderRadius: 12,
+      borderRadius: 14,
       backgroundColor: colors.dangerSoft,
       zIndex: 2,
     },

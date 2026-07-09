@@ -13,7 +13,6 @@ import type {
   StoredCodexRenderMode,
 } from "../../services/storage";
 import type { PresentedAgent } from "../../services/agentPresentation";
-import { displayPathSubtitle } from "../../services/pathDisplay";
 import type { AgentDirectorySection } from "../../services/serverSelection";
 import type { useTerminalScreenChrome } from "./useTerminalScreenChrome";
 import type { useTerminalSessionActions } from "./useTerminalSessionActions";
@@ -29,6 +28,8 @@ interface UseTerminalScreenLayoutPropsInput {
   agentId: string;
   accessoryBottomOffset: number;
   chrome: TerminalThemeChrome;
+  chatChrome: TerminalThemeChrome;
+  chatTheme: TerminalThemePalette;
   chromeLayout: ReturnType<typeof useTerminalScreenChrome>;
   codexRenderMode: StoredCodexRenderMode;
   connectionIssue?: ConnectionIssue | null;
@@ -82,6 +83,8 @@ export function useTerminalScreenLayoutProps({
   agentId,
   accessoryBottomOffset,
   chrome,
+  chatChrome,
+  chatTheme,
   chromeLayout,
   codexRenderMode,
   connectionIssue,
@@ -140,13 +143,16 @@ export function useTerminalScreenLayoutProps({
     void sessionActions.applyCodexRenderMode("chat");
   }, [codexRenderMode, sessionActions.applyCodexRenderMode, terminalRef]);
 
+  // Header chrome stays on chatChrome in both chat and terminal modes so Brain
+  // and Agent screens share one floating header language.
   const topBarProps = useTerminalTopBarProps({
     title: displayName || presentedAgent.title || agent?.name || agentId || "Terminal",
-    subtitle: displayPathSubtitle(agent?.cwd?.trim() || agent?.command?.trim()) || undefined,
+    // Keep header compact: paths belong in picker/workspace views, not the chrome.
+    subtitle: undefined,
     kind: presentedAgent.kind,
     terminalFlavor: presentedAgent.terminalFlavor,
     terminalTheme,
-    chrome,
+    chrome: chatChrome,
     chromeLayout,
     navigationActions,
     codexRenderMode,
@@ -166,8 +172,8 @@ export function useTerminalScreenLayoutProps({
     agent,
     connectionState,
     connectionIssue,
-    theme: terminalTheme,
-    chrome,
+    theme: showCodexChat ? chatTheme : terminalTheme,
+    chrome: showCodexChat ? chatChrome : chrome,
     screenFocused,
     terminalRef,
     ctrlArmed,
@@ -195,6 +201,9 @@ export function useTerminalScreenLayoutProps({
     connectionConnected: connectionState === "connected",
     gitDiff,
     hasLinkedWork,
+    showToggleRenderMode: isStructuredChatAgent,
+    toggleRenderModeLabel:
+      codexRenderMode === "chat" ? "Open terminal" : "Open chat",
     newTerminalVisible,
     agentCwd: agent?.cwd,
     serverId: selectedServerId,
@@ -212,6 +221,7 @@ export function useTerminalScreenLayoutProps({
     closeMenu: chromeLayout.closeMenu,
     openNewTerminal,
     openRenameModal,
+    onToggleRenderMode: handleToggleCodexRenderMode,
   });
 
   return {

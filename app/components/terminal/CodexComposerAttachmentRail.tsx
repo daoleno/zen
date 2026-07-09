@@ -54,12 +54,12 @@ export function CodexComposerAttachmentRail({
 
 const styles = StyleSheet.create({
   rail: {
-    marginBottom: 7,
+    marginBottom: 8,
   },
   list: {
-    minHeight: 38,
+    minHeight: 56,
     alignItems: "center",
-    gap: 7,
+    gap: 8,
     paddingHorizontal: 2,
   },
 });

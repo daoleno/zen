@@ -6,9 +6,12 @@ import {
   resolveTerminalTheme,
   resolveTerminalThemeName,
 } from "../../constants/terminalThemes";
+import { useAppTheme } from "../../constants/tokens";
+import { buildChatChrome } from "../../theme";
 
 export function useTerminalThemeChrome() {
   const colorScheme = useColorScheme();
+  const { theme: zenTheme } = useAppTheme();
   const themeName = useMemo(
     () => resolveTerminalThemeName(colorScheme),
     [colorScheme],
@@ -21,12 +24,15 @@ export function useTerminalThemeChrome() {
     () => buildTerminalChrome(terminalTheme),
     [terminalTheme],
   );
+  const chat = useMemo(() => buildChatChrome(zenTheme), [zenTheme]);
   const statusBarStyle: "dark" | "light" = isLightTerminalTheme(terminalTheme)
     ? "dark"
     : "light";
 
   return {
     chromeColors,
+    chatChrome: chat.chrome,
+    chatTheme: chat.theme,
     statusBarStyle,
     terminalTheme,
   };

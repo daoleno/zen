@@ -1,5 +1,4 @@
 import type { BrainAdapterRef } from "../../store/brain";
-import { compactPathLabel } from "../../services/pathDisplay";
 
 export function brainProviderLabel(value?: string): string {
   const normalized = value?.trim().toLowerCase();
@@ -41,21 +40,11 @@ export function brainAdapterProviderKey(adapter?: BrainAdapterRef | null): strin
   return "custom";
 }
 
-export function compactWorkspaceLabel(value?: string): string {
-  return compactPathLabel(value, { tailSegments: 2, showFullUpTo: 2 });
-}
-
 export function brainStatusLine({
   adapter,
-  workspace,
 }: {
   adapter?: BrainAdapterRef | null;
-  workspace?: string;
 }): string {
-  const engine = brainAdapterLabel(adapter);
-  const cwd = compactWorkspaceLabel(workspace);
-  if (engine && cwd) {
-    return `${engine} · ${cwd}`;
-  }
-  return engine || cwd || "Waiting for connection";
+  // Header stays compact — workspace paths live in the workspace viewer, not chrome.
+  return brainAdapterLabel(adapter) || "Waiting for connection";
 }

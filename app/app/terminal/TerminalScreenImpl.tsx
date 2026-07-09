@@ -82,7 +82,7 @@ export default function TerminalScreen() {
     serverConnectionIssues: state.serverConnectionIssues,
     codexRenderModes,
   });
-  const { chromeColors, statusBarStyle, terminalTheme } = theme;
+  const { chromeColors, chatChrome, chatTheme, statusBarStyle, terminalTheme } = theme;
   const {
     agent,
     codexRenderMode,
@@ -180,6 +180,8 @@ export default function TerminalScreen() {
     agentId,
     accessoryBottomOffset,
     chrome: chromeColors,
+    chatChrome,
+    chatTheme,
     chromeLayout,
     codexRenderMode,
     connectionIssue,
@@ -229,7 +231,7 @@ export default function TerminalScreen() {
 
   return (
     <TerminalScreenLayout
-      chrome={chromeColors}
+      chrome={chatChrome}
       statusBarStyle={statusBarStyle}
       topBarProps={topBarProps}
       viewportProps={viewportProps}

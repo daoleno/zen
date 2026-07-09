@@ -93,6 +93,8 @@ export function useCodexMessageTransport({
         attachments: previousAttachments.map((attachment) => ({
           name: attachment.name,
           path: attachment.path,
+          localUri: attachment.localUri,
+          mimeType: attachment.mimeType,
         })),
       });
       setSending(true);

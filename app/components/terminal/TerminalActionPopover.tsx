@@ -25,12 +25,15 @@ interface TerminalActionPopoverProps {
   newTerminalLabel: string;
   newTerminalDisabled: boolean;
   showLinkedWork: boolean;
+  showToggleRenderMode?: boolean;
+  toggleRenderModeLabel?: string;
   chrome: TerminalThemeChrome;
   theme: TerminalThemePalette;
   onClose(): void;
   onNewTerminal(): void;
   onRename(): void;
   onOpenLinkedWork(): void;
+  onToggleRenderMode?(): void;
   onTerminate(): void;
 }
 
@@ -42,15 +45,32 @@ export function TerminalActionPopover({
   newTerminalLabel,
   newTerminalDisabled,
   showLinkedWork,
+  showToggleRenderMode = false,
+  toggleRenderModeLabel = "Open terminal",
   chrome,
   theme,
   onClose,
   onNewTerminal,
   onRename,
   onOpenLinkedWork,
+  onToggleRenderMode,
   onTerminate,
 }: TerminalActionPopoverProps) {
-  const actions: TerminalActionMenuItem[] = [
+  const actions: TerminalActionMenuItem[] = [];
+
+  if (showToggleRenderMode && onToggleRenderMode) {
+    actions.push({
+      key: "toggle-render-mode",
+      icon:
+        toggleRenderModeLabel.toLowerCase().includes("chat")
+          ? "chatbubble-outline"
+          : "terminal-outline",
+      label: toggleRenderModeLabel,
+      onPress: onToggleRenderMode,
+    });
+  }
+
+  actions.push(
     {
       key: "new-terminal",
       icon: "add",
@@ -64,7 +84,7 @@ export function TerminalActionPopover({
       label: "Rename",
       onPress: onRename,
     },
-  ];
+  );
 
   if (showLinkedWork) {
     actions.push({
@@ -75,15 +95,13 @@ export function TerminalActionPopover({
     });
   }
 
-  actions.push(
-    {
-      key: "terminate",
-      icon: "stop-circle-outline",
-      label: "Terminate",
-      onPress: onTerminate,
-      destructive: true,
-    },
-  );
+  actions.push({
+    key: "terminate",
+    icon: "stop-circle-outline",
+    label: "Terminate",
+    onPress: onTerminate,
+    destructive: true,
+  });
 
   return (
     <Modal

@@ -1,6 +1,8 @@
-import React, { useState } from "react";
+import React from "react";
 import {
   type LayoutChangeEvent,
+  StyleSheet,
+  View,
   type TextInput as TextInputInstance,
 } from "react-native";
 import type {
@@ -15,7 +17,6 @@ import {
 import { CodexComposerActionMenu } from "./CodexComposerActionMenu";
 import { CodexChatComposerFrame } from "./CodexChatComposerFrame";
 import { CodexComposerPanel } from "./CodexComposerPanel";
-import { ComposerEmojiStrip } from "./ComposerEmojiStrip";
 
 interface CodexChatComposerProps {
   inputRef: React.RefObject<TextInputInstance | null>;
@@ -102,10 +103,6 @@ export function CodexChatComposer({
   onSubmit,
   onSendPress,
 }: CodexChatComposerProps) {
-  const [emojiStripOpen, setEmojiStripOpen] = useState(false);
-  const telegramComposer = composerLayout === "telegram";
-  const chatgptComposer = composerLayout === "chatgpt";
-
   return (
     <CodexChatComposerFrame
       onLayout={onLayout}
@@ -115,24 +112,26 @@ export function CodexChatComposer({
       composerLayout={composerLayout}
     >
       {showCommandMenu ? (
-        <CodexComposerActionMenu
-          visible={showCommandMenu}
-          showComposerActions={showComposerActions}
-          showCommandList={showCommandList}
-          canAttach={canAttach}
-          uploading={uploading}
-          commands={commands}
-          commandQuery={commandQuery}
-          chrome={chrome}
-          onUploadPress={() => {
-            onUploadPress();
-            onDismissActionMenu();
-          }}
-          onSelectCommand={(command) => {
-            onSelectCommand(command);
-            onDismissActionMenu();
-          }}
-        />
+        <View style={styles.menuSlot}>
+          <CodexComposerActionMenu
+            visible={showCommandMenu}
+            showComposerActions={showComposerActions}
+            showCommandList={showCommandList}
+            canAttach={canAttach}
+            uploading={uploading}
+            commands={commands}
+            commandQuery={commandQuery}
+            chrome={chrome}
+            onUploadPress={() => {
+              onUploadPress();
+              onDismissActionMenu();
+            }}
+            onSelectCommand={(command) => {
+              onSelectCommand(command);
+              onDismissActionMenu();
+            }}
+          />
+        </View>
       ) : null}
 
       {showAttachmentRail ? (
@@ -141,13 +140,6 @@ export function CodexChatComposer({
           uploading={uploading}
           chrome={chrome}
           onRemoveAttachment={onRemoveAttachment}
-        />
-      ) : null}
-
-      {telegramComposer && !chatgptComposer && emojiStripOpen ? (
-        <ComposerEmojiStrip
-          chrome={chrome}
-          onPick={(emoji) => onDraftChange(`${draft}${emoji}`)}
         />
       ) : null}
 
@@ -164,21 +156,15 @@ export function CodexChatComposer({
         sendLabel={sendLabel}
         sendElapsedLabel={sendElapsedLabel}
         running={running}
-        actionMenuExpanded={telegramComposer ? emojiStripOpen : showComposerActions}
+        actionMenuExpanded={showComposerActions}
         actionMenuButtonEnabled={composerActionButtonEnabled}
         showActionMenuButton={showActionMenuButton}
         actionMenuIcon={actionMenuIcon}
         composerLayout={composerLayout}
-        emojiStripOpen={emojiStripOpen}
         chrome={chrome}
         theme={theme}
         onDraftChange={onDraftChange}
         onActionMenuPress={onToggleActionMenu}
-        onAttachPress={() => {
-          onUploadPress();
-          onDismissActionMenu();
-        }}
-        onEmojiToggle={() => setEmojiStripOpen((open) => !open)}
         onInputPress={onInputPress}
         onInputFocus={onInputFocus}
         onInputBlur={onInputBlur}
@@ -189,3 +175,10 @@ export function CodexChatComposer({
     </CodexChatComposerFrame>
   );
 }
+
+const styles = StyleSheet.create({
+  menuSlot: {
+    marginBottom: 8,
+    zIndex: 6,
+  },
+});

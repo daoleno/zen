@@ -96,12 +96,16 @@ export function BrainExecutorMentionPicker({
 function createStyles(chrome: TerminalThemeChrome) {
   return StyleSheet.create({
     wrap: {
-      borderTopWidth: StyleSheet.hairlineWidth,
-      borderTopColor: chrome.border,
-      backgroundColor: chrome.surfaceMuted,
+      marginHorizontal: 10,
+      marginBottom: 6,
+      borderRadius: 16,
+      borderWidth: StyleSheet.hairlineWidth,
+      borderColor: chrome.border,
+      backgroundColor: chrome.composerInput,
+      overflow: "hidden",
     },
     content: {
-      paddingHorizontal: 12,
+      paddingHorizontal: 10,
       paddingVertical: 8,
     },
     separator: {

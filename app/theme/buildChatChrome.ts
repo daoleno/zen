@@ -16,7 +16,8 @@ export function buildChatChrome(theme: ResolvedZenTheme): {
     appBackground: chat.background,
     surface: chat.receivedBubble,
     surfaceMuted: chat.sentBubble,
-    surfaceActive: chat.composerDock,
+    surfaceActive:
+      chat.composerDock === 'transparent' ? chat.composerBackground : chat.composerDock,
     composerInput: chat.composerBackground,
     border: chat.composerBorder,
     borderStrong: colors.borderStrong,

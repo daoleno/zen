@@ -50,7 +50,9 @@ export type PendingUserMessage = {
   id: string;
   body: string;
   sentText: string;
-  attachments: Array<Pick<ComposerAttachment, "name" | "path">>;
+  attachments: Array<
+    Pick<ComposerAttachment, "name" | "path" | "localUri" | "mimeType">
+  >;
   createdAt: string;
   confirmedAt?: string;
   confirmedEventId?: string;
