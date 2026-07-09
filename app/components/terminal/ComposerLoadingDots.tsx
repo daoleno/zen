@@ -1,7 +1,4 @@
-import React, {
-  useEffect,
-  useRef,
-} from "react";
+import React, { useEffect, useRef } from "react";
 import {
   Animated,
   Easing,
@@ -11,47 +8,95 @@ import {
 
 interface ComposerLoadingDotsProps {
   color: string;
+  /** Core orb diameter. Halo extends beyond this. */
   size?: number;
+  /** Kept for call-site compatibility; unused for the orb. */
   gap?: number;
 }
 
-const DOT_PHASES = [
-  [0, 0.05, 0.22, 0.38, 1],
-  [0, 0.29, 0.46, 0.62, 1],
-  [0, 0.53, 0.7, 0.86, 1],
-];
-
+/**
+ * Perplexity-like thinking indicator: a soft breathing orb with an
+ * out-of-phase halo. Prefer this over ActivityIndicator / bounce dots
+ * for chat and composer waiting states.
+ */
 export function ComposerLoadingDots({
   color,
-  size = 4,
-  gap = 2.5,
+  size = 10,
 }: ComposerLoadingDotsProps) {
-  const progress = useRef(new Animated.Value(0)).current;
+  const core = useRef(new Animated.Value(0)).current;
+  const halo = useRef(new Animated.Value(0)).current;
+  const footprint = Math.max(size * 2.2, size + 8);
 
   useEffect(() => {
-    progress.setValue(0);
-    const animation = Animated.loop(
+    core.setValue(0);
+    halo.setValue(0);
+
+    const coreLoop = Animated.loop(
       Animated.sequence([
-        Animated.timing(progress, {
+        Animated.timing(core, {
           toValue: 1,
-          duration: 1080,
-          easing: Easing.out(Easing.cubic),
+          duration: 980,
+          easing: Easing.inOut(Easing.sin),
           useNativeDriver: true,
         }),
-        Animated.timing(progress, {
+        Animated.timing(core, {
           toValue: 0,
-          duration: 0,
+          duration: 980,
+          easing: Easing.inOut(Easing.sin),
           useNativeDriver: true,
         }),
       ]),
     );
-    animation.start();
+
+    const haloLoop = Animated.loop(
+      Animated.sequence([
+        Animated.timing(halo, {
+          toValue: 1,
+          duration: 1280,
+          easing: Easing.inOut(Easing.sin),
+          useNativeDriver: true,
+        }),
+        Animated.timing(halo, {
+          toValue: 0,
+          duration: 1280,
+          easing: Easing.inOut(Easing.sin),
+          useNativeDriver: true,
+        }),
+      ]),
+    );
+
+    coreLoop.start();
+    const haloDelay = setTimeout(() => {
+      haloLoop.start();
+    }, 180);
+
     return () => {
-      animation.stop();
-      progress.stopAnimation();
-      progress.setValue(0);
+      clearTimeout(haloDelay);
+      coreLoop.stop();
+      haloLoop.stop();
+      core.stopAnimation();
+      halo.stopAnimation();
+      core.setValue(0);
+      halo.setValue(0);
     };
-  }, [progress]);
+  }, [core, halo]);
+
+  const coreOpacity = core.interpolate({
+    inputRange: [0, 1],
+    outputRange: [0.42, 1],
+  });
+  const coreScale = core.interpolate({
+    inputRange: [0, 1],
+    outputRange: [0.86, 1],
+  });
+  const haloOpacity = halo.interpolate({
+    inputRange: [0, 1],
+    outputRange: [0.1, 0.28],
+  });
+  const haloScale = halo.interpolate({
+    inputRange: [0, 1],
+    outputRange: [1, 1.55],
+  });
 
   return (
     <View
@@ -61,39 +106,38 @@ export function ComposerLoadingDots({
       style={[
         styles.wrap,
         {
-          gap,
-          height: size + 5,
-          width: size * 3 + gap * 2,
+          height: footprint,
+          width: footprint,
         },
       ]}
     >
-      {DOT_PHASES.map((inputRange, index) => {
-        const opacity = progress.interpolate({
-          inputRange,
-          outputRange: [0.42, 0.42, 1, 0.42, 0.42],
-        });
-        const scale = progress.interpolate({
-          inputRange,
-          outputRange: [0.72, 0.72, 1, 0.72, 0.72],
-        });
-
-        return (
-          <Animated.View
-            key={index}
-            style={[
-              styles.dot,
-              {
-                borderRadius: size / 2,
-                backgroundColor: color,
-                height: size,
-                opacity,
-                transform: [{ scale }],
-                width: size,
-              },
-            ]}
-          />
-        );
-      })}
+      <Animated.View
+        style={[
+          styles.orb,
+          {
+            backgroundColor: color,
+            borderRadius: size,
+            height: size * 1.7,
+            opacity: haloOpacity,
+            transform: [{ scale: haloScale }],
+            width: size * 1.7,
+          },
+        ]}
+      />
+      <Animated.View
+        style={[
+          styles.orb,
+          styles.core,
+          {
+            backgroundColor: color,
+            borderRadius: size / 2,
+            height: size,
+            opacity: coreOpacity,
+            transform: [{ scale: coreScale }],
+            width: size,
+          },
+        ]}
+      />
     </View>
   );
 }
@@ -101,10 +145,13 @@ export function ComposerLoadingDots({
 const styles = StyleSheet.create({
   wrap: {
     alignItems: "center",
-    flexDirection: "row",
     justifyContent: "center",
   },
-  dot: {
-    flexShrink: 0,
+  orb: {
+    position: "absolute",
+  },
+  core: {
+    // Keep the solid core above the soft halo.
+    zIndex: 1,
   },
 });

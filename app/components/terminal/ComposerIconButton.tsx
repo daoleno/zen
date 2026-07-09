@@ -52,7 +52,7 @@ export function ComposerIconButton({
       disabled={disabled}
     >
       {loading ? (
-        <ComposerLoadingDots color={loadingColor ?? chrome.accent} />
+        <ComposerLoadingDots color={loadingColor ?? chrome.accent} size={8} />
       ) : (
         <Ionicons name={icon} size={iconSize} color={iconColor ?? chrome.text} />
       )}

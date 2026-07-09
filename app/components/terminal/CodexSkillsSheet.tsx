@@ -169,7 +169,7 @@ export function CodexSkillsSheet({
 
       {loading ? (
         <View style={styles.state}>
-          <ComposerLoadingDots color={chrome.accent} size={5} gap={4} />
+          <ComposerLoadingDots color={chrome.accent} size={10} />
           <Text style={[styles.stateText, { color: chrome.textSubtle }]}>
             Loading skills
           </Text>

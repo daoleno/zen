@@ -98,6 +98,7 @@ export function ZenUserMessage({
     presentation.compactTop,
     presentation.compactBottom,
     chatLayout,
+    "user",
   );
   const bubbleRadii = isChatGpt
     ? chatgptUserBubbleRadii()
@@ -319,6 +320,7 @@ export function ZenAssistantMessage({
     presentation.compactTop,
     presentation.compactBottom,
     chatLayout,
+    "assistant",
   );
   const assistantChrome = isChatGpt
     ? { ...chrome, text: zenTheme.chat.receivedText }
@@ -362,11 +364,11 @@ const styles = StyleSheet.create({
     justifyContent: "flex-end",
   },
   userBubble: {
-    maxWidth: "92%",
+    maxWidth: "86%",
     borderWidth: StyleSheet.hairlineWidth,
     paddingHorizontal: 13,
     paddingTop: 9,
-    paddingBottom: 6,
+    paddingBottom: 8,
   },
   userBubbleChatGpt: {
     maxWidth: "88%",
@@ -376,7 +378,8 @@ const styles = StyleSheet.create({
   },
   assistantRowFlat: {
     alignSelf: "stretch",
-    paddingRight: 2,
+    paddingRight: 4,
+    maxWidth: "100%",
   },
   assistantRowChatGpt: {
     alignSelf: "stretch",
@@ -384,21 +387,22 @@ const styles = StyleSheet.create({
   },
   assistantSender: {
     fontFamily: Typography.uiFontMedium,
-    fontSize: 12.5,
-    lineHeight: 16,
-    marginBottom: 4,
+    fontSize: 12,
+    lineHeight: 15,
+    marginBottom: 3,
+    opacity: 0.9,
   },
   eventRow: {
-    marginBottom: 17,
+    marginBottom: 12,
     paddingRight: 2,
   },
   heartbeatCard: {
     alignSelf: "stretch",
-    borderRadius: 8,
+    borderRadius: 14,
     borderWidth: StyleSheet.hairlineWidth,
-    paddingHorizontal: 11,
+    paddingHorizontal: 12,
     paddingVertical: 10,
-    gap: 9,
+    gap: 8,
   },
   heartbeatHeader: {
     flexDirection: "row",
@@ -407,9 +411,9 @@ const styles = StyleSheet.create({
     minWidth: 0,
   },
   heartbeatIcon: {
-    width: 28,
-    height: 28,
-    borderRadius: 8,
+    width: 26,
+    height: 26,
+    borderRadius: 13,
     borderWidth: StyleSheet.hairlineWidth,
     alignItems: "center",
     justifyContent: "center",
@@ -423,8 +427,8 @@ const styles = StyleSheet.create({
   },
   heartbeatTitle: {
     flexShrink: 0,
-    fontSize: 13,
-    lineHeight: 18,
+    fontSize: 12.5,
+    lineHeight: 17,
     fontFamily: Typography.uiFontMedium,
   },
   heartbeatReason: {
@@ -435,7 +439,7 @@ const styles = StyleSheet.create({
     fontFamily: Typography.uiFontMedium,
   },
   heartbeatFields: {
-    gap: 5,
+    gap: 4,
     minWidth: 0,
   },
   heartbeatFieldRow: {
@@ -450,7 +454,7 @@ const styles = StyleSheet.create({
     lineHeight: 13,
     fontFamily: Typography.uiFontMedium,
     textTransform: "uppercase",
-    opacity: 0.76,
+    opacity: 0.7,
   },
   heartbeatFieldValue: {
     flex: 1,
@@ -459,10 +463,10 @@ const styles = StyleSheet.create({
     lineHeight: 15,
   },
   heartbeatSummary: {
-    borderRadius: 8,
+    borderRadius: 12,
     borderWidth: StyleSheet.hairlineWidth,
-    paddingHorizontal: 9,
-    paddingVertical: 7,
+    paddingHorizontal: 10,
+    paddingVertical: 8,
     minWidth: 0,
   },
   heartbeatSummaryText: {

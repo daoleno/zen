@@ -30,8 +30,7 @@ import {
 } from "../../store/brain";
 
 const BRAIN_EMPTY_TITLE = "Ready when you are";
-const BRAIN_EMPTY_BODY =
-  "Message Brain to delegate work, plan a task, or inspect the workspace.";
+const BRAIN_EMPTY_BODY = "Ask Brain to plan, delegate, or inspect the workspace.";
 
 export default function BrainScreen() {
   const router = useRouter();

@@ -79,24 +79,24 @@ export function CodexTimelineActivityHeader({
 const styles = StyleSheet.create({
   row: {
     alignSelf: "stretch",
-    minHeight: 22,
+    minHeight: 20,
     width: "100%",
     flexDirection: "row",
     alignItems: "flex-start",
-    gap: 5,
-    opacity: 0.78,
+    gap: 6,
+    opacity: 0.72,
   },
   copy: {
     flex: 1,
     minWidth: 0,
-    paddingTop: 1.5,
+    paddingTop: 1,
     flexDirection: "row",
     alignItems: "center",
   },
   title: {
     flexShrink: 0,
     fontSize: 11,
-    lineHeight: 16,
+    lineHeight: 15,
     fontFamily: Typography.uiFontMedium,
   },
   detail: {
@@ -107,5 +107,6 @@ const styles = StyleSheet.create({
     fontSize: 11,
     lineHeight: 15,
     fontFamily: Typography.terminalFont,
+    opacity: 0.92,
   },
 });

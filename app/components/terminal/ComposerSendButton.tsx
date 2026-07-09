@@ -1,7 +1,6 @@
 import { Ionicons } from "@expo/vector-icons";
 import React from "react";
 import {
-  ActivityIndicator,
   StyleSheet,
   Text,
   TouchableOpacity,
@@ -12,6 +11,7 @@ import type {
   TerminalThemePalette,
 } from "../../constants/terminalThemes";
 import { Typography } from "../../constants/tokens";
+import { ComposerLoadingDots } from "./ComposerLoadingDots";
 
 type IoniconName = React.ComponentProps<typeof Ionicons>["name"];
 
@@ -75,7 +75,7 @@ export function ComposerSendButton({
       disabled={!enabled}
     >
       {loading ? (
-        <ActivityIndicator size="small" color={chrome.textSubtle} />
+        <ComposerLoadingDots color={chrome.textSubtle} size={7} />
       ) : running ? (
         <View style={styles.runningContent}>
           <Ionicons name="square" size={8} color={foreground} />

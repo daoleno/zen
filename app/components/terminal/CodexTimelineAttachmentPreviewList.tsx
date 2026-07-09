@@ -62,7 +62,15 @@ function CodexTimelineAttachmentPreviewPill({
   }
 
   return (
-    <View style={[styles.attachmentPill, { borderColor: chrome.border }]}>
+    <View
+      style={[
+        styles.attachmentPill,
+        {
+          borderColor: chrome.border,
+          backgroundColor: chrome.surfaceMuted,
+        },
+      ]}
+    >
       <Ionicons
         name={
           looksLikeImagePath(attachment.name)
@@ -110,7 +118,7 @@ function basename(value: string) {
 
 const styles = StyleSheet.create({
   attachments: {
-    gap: 6,
+    gap: 7,
     flexDirection: "row",
     flexWrap: "wrap",
   },
@@ -120,18 +128,18 @@ const styles = StyleSheet.create({
   attachmentPill: {
     alignSelf: "flex-start",
     maxWidth: "100%",
-    minHeight: 28,
-    borderRadius: 8,
+    minHeight: 30,
+    borderRadius: 12,
     borderWidth: StyleSheet.hairlineWidth,
-    paddingHorizontal: 8,
+    paddingHorizontal: 9,
     flexDirection: "row",
     alignItems: "center",
     gap: 6,
   },
   thumbPill: {
-    width: 72,
-    height: 72,
-    borderRadius: 10,
+    width: 84,
+    height: 84,
+    borderRadius: 14,
     borderWidth: StyleSheet.hairlineWidth,
     overflow: "hidden",
   },
@@ -141,7 +149,7 @@ const styles = StyleSheet.create({
   },
   attachmentPillText: {
     flexShrink: 1,
-    fontSize: 11,
+    fontSize: 11.5,
     lineHeight: 15,
     fontFamily: Typography.uiFontMedium,
   },

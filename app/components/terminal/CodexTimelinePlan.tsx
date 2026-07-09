@@ -41,10 +41,10 @@ export function ZenPlanUpdate({
 
 const styles = StyleSheet.create({
   wrap: {
-    marginBottom: 10,
+    marginBottom: 8,
     paddingLeft: 1,
   },
   planBlock: {
-    paddingVertical: 2,
+    paddingVertical: 1,
   },
 });

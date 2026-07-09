@@ -1,6 +1,5 @@
 import React from "react";
 import {
-  ActivityIndicator,
   StyleSheet,
   View,
 } from "react-native";
@@ -9,6 +8,7 @@ import type {
   TimelineActivityIconName,
   ZenActivityTimelineItem,
 } from "./CodexTimelineActivityTypes";
+import { ComposerLoadingDots } from "./ComposerLoadingDots";
 
 interface CodexTimelineActivityToneIconProps {
   tone: ZenActivityTimelineItem["tone"];
@@ -26,7 +26,7 @@ export function CodexTimelineActivityToneIcon({
   if (tone === "running") {
     return (
       <View style={styles.slot}>
-        <ActivityIndicator size="small" color={color} />
+        <ComposerLoadingDots color={color} size={7} />
       </View>
     );
   }

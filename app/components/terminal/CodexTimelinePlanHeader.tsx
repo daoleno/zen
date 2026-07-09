@@ -31,12 +31,12 @@ export function ZenPlanHeader({
 const styles = StyleSheet.create({
   row: {
     alignSelf: "flex-start",
-    minHeight: 24,
+    minHeight: 22,
     maxWidth: "100%",
     flexDirection: "row",
     alignItems: "center",
     gap: 6,
-    opacity: 0.78,
+    opacity: 0.7,
   },
   title: {
     fontSize: 11,

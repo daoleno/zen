@@ -28,11 +28,12 @@ export function CodexTimelineExpandedBlock({
 
 const styles = StyleSheet.create({
   expanded: {
-    marginTop: 6,
-    marginLeft: 19,
-    maxWidth: "92%",
+    marginTop: 5,
+    marginLeft: 18,
+    maxWidth: "94%",
     borderLeftWidth: StyleSheet.hairlineWidth,
     paddingLeft: 10,
-    paddingVertical: 4,
+    paddingVertical: 2,
+    opacity: 0.96,
   },
 });

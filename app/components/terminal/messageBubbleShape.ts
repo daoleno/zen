@@ -3,7 +3,7 @@ import type { ChatLayout } from "../../theme/types";
 import type { MessageGroupPosition } from "./CodexTimelineGrouping";
 
 const LARGE = 18;
-const SMALL = 4;
+const SMALL = 6;
 const CHATGPT_RADIUS = 20;
 
 export function userBubbleRadii(
@@ -15,7 +15,7 @@ export function userBubbleRadii(
         borderTopLeftRadius: LARGE,
         borderTopRightRadius: LARGE,
         borderBottomLeftRadius: LARGE,
-        borderBottomRightRadius: LARGE,
+        borderBottomRightRadius: SMALL,
       };
     case "middle":
       return {
@@ -29,7 +29,7 @@ export function userBubbleRadii(
         borderTopLeftRadius: LARGE,
         borderTopRightRadius: SMALL,
         borderBottomLeftRadius: LARGE,
-        borderBottomRightRadius: SMALL,
+        borderBottomRightRadius: LARGE,
       };
     default:
       return {
@@ -92,6 +92,7 @@ export function messageRowSpacing(
   compactTop: boolean,
   compactBottom: boolean,
   layout: ChatLayout = "telegram",
+  role: "user" | "assistant" = "user",
 ) {
   if (layout === "chatgpt") {
     return {
@@ -99,8 +100,17 @@ export function messageRowSpacing(
       marginBottom: compactBottom ? 6 : 18,
     };
   }
+
+  // Assistant stays document-flow: tighter within a turn, airier between turns.
+  if (role === "assistant") {
+    return {
+      marginTop: compactTop ? 1 : 0,
+      marginBottom: compactBottom ? 4 : 14,
+    };
+  }
+
   return {
     marginTop: compactTop ? 2 : 0,
-    marginBottom: compactBottom ? 2 : 10,
+    marginBottom: compactBottom ? 3 : 11,
   };
 }

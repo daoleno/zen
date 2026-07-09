@@ -50,7 +50,7 @@ export const classicDarkTheme: ZenThemeDefinition = {
     layout: 'telegram',
     showWallpaper: true,
     showTimestamps: false,
-    showDateDividers: false,
+    showDateDividers: true,
     background: '#0E0E10',
     sentBubble: '#2B5278',
     receivedBubble: '#1C2A38',

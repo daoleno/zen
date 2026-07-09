@@ -255,9 +255,9 @@ const styles = StyleSheet.create({
     minHeight: 0,
   },
   timelineContent: {
-    paddingHorizontal: 16,
+    paddingHorizontal: 14,
     paddingTop: TIMELINE_BOTTOM_PADDING,
-    paddingBottom: 10,
+    paddingBottom: 12,
     flexGrow: 1,
   },
   emptyOverlay: {
@@ -266,7 +266,7 @@ const styles = StyleSheet.create({
     right: 0,
     bottom: 0,
     left: 0,
-    paddingHorizontal: 16,
+    paddingHorizontal: 14,
     paddingTop: 14,
     paddingBottom: TIMELINE_BOTTOM_PADDING,
     justifyContent: "center",

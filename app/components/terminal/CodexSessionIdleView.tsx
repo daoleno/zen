@@ -21,17 +21,7 @@ export function CodexSessionIdleView({
   return (
     <View style={styles.root}>
       {busy ? (
-        <View
-          style={[
-            styles.busyFrame,
-            {
-              borderColor: chrome.border,
-              backgroundColor: chrome.surfaceMuted,
-            },
-          ]}
-        >
-          <ComposerLoadingDots color={chrome.accent} size={5} gap={4} />
-        </View>
+        <ComposerLoadingDots color={chrome.textMuted} size={11} />
       ) : workspace ? (
         <Text
           style={[styles.workspace, { color: chrome.textSubtle }]}
@@ -51,16 +41,6 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "center",
     paddingHorizontal: 24,
-  },
-  busyFrame: {
-    minWidth: 52,
-    minHeight: 36,
-    borderRadius: 10,
-    borderWidth: StyleSheet.hairlineWidth,
-    alignItems: "center",
-    justifyContent: "center",
-    paddingHorizontal: 12,
-    paddingVertical: 8,
   },
   workspace: {
     maxWidth: 280,

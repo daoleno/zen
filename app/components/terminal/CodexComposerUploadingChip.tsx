@@ -24,7 +24,7 @@ export function CodexComposerUploadingChip({
       ]}
     >
       <View style={styles.loader}>
-        <ComposerLoadingDots color={chrome.accent} />
+        <ComposerLoadingDots color={chrome.accent} size={8} />
       </View>
       <Text style={[styles.name, { color: chrome.textMuted }]}>Uploading</Text>
     </View>
