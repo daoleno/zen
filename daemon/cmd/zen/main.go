@@ -237,6 +237,8 @@ func runBrainCommand(args []string, stderr io.Writer) error {
 		return runBrainWorkspace(args[1:], stderr)
 	case "context":
 		return runBrainContext(args[1:], stderr)
+	case "playbooks":
+		return runBrainPlaybooks(args[1:], stderr)
 	case "gc":
 		return runBrainGC(args[1:], stderr)
 	case "executors":
@@ -276,11 +278,12 @@ func printAgentUsage(w io.Writer) {
 }
 
 func printBrainUsage(w io.Writer) {
-	fmt.Fprintln(w, "Usage: zen brain <workspace|context|gc|executors|use> [flags]")
+	fmt.Fprintln(w, "Usage: zen brain <workspace|context|playbooks|gc|executors|use> [flags]")
 	fmt.Fprintln(w, "")
 	fmt.Fprintln(w, "Subcommands:")
 	fmt.Fprintln(w, "  workspace  Print the Brain workspace path")
 	fmt.Fprintln(w, "  context    Print structured Brain context")
+	fmt.Fprintln(w, "  playbooks  Print the Brain playbook catalog")
 	fmt.Fprintln(w, "  gc         Backfill Brain workspace files and print housekeeping status")
 	fmt.Fprintln(w, "  executors  List configured Brain host executors")
 	fmt.Fprintln(w, "  use        Switch the Brain host executor")
@@ -288,6 +291,7 @@ func printBrainUsage(w io.Writer) {
 	fmt.Fprintln(w, "Examples:")
 	fmt.Fprintln(w, "  zen brain workspace --json")
 	fmt.Fprintln(w, "  zen brain context --json")
+	fmt.Fprintln(w, "  zen brain playbooks --json")
 	fmt.Fprintln(w, "  zen brain gc --json")
 	fmt.Fprintln(w, "  zen brain executors --json")
 	fmt.Fprintln(w, "  zen brain use codex")
@@ -532,6 +536,18 @@ func runBrainContext(args []string, stderr io.Writer) error {
 		return err
 	}
 	resp, err := callControl(cfg, control.Request{Type: "brain_context"})
+	if err != nil {
+		return err
+	}
+	return writeControlResponse(os.Stdout, resp, cfg.json)
+}
+
+func runBrainPlaybooks(args []string, stderr io.Writer) error {
+	cfg, err := parseCLIConfig("zen brain playbooks", args, stderr)
+	if err != nil {
+		return err
+	}
+	resp, err := callControl(cfg, control.Request{Type: "brain_playbooks"})
 	if err != nil {
 		return err
 	}

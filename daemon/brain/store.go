@@ -178,6 +178,9 @@ func (s *Store) ensureFiles() error {
 	if err := s.ensurePolicies(); err != nil {
 		return err
 	}
+	if err := s.ensurePlaybooks(); err != nil {
+		return err
+	}
 	if err := s.ensureWorklog(); err != nil {
 		return err
 	}
@@ -976,6 +979,7 @@ This directory is the private workspace for zen Brain.
 - Keep personality and preference notes in profile.md.
 - Keep the current active objective, decisions, open threads, and next step in current.md.
 - Use policies/ for stable Brain orchestration rules; read policies/delegation.md, policies/engine.md, and policies/handoff.md when delegating, switching host executors, or recovering context.
+- Use playbooks/ for provider-neutral operating playbooks; discover them with zen brain playbooks --json and read on demand (progressive disclosure — do not assume full playbook bodies are loaded).
 - Use local files here for plans, reminders, inbox notes, and follow-up state.
 - Keep task tracking and archival records in worklog/: create one Markdown file per problem, feature, fix, or workflow that needs durable context, progress, verification, results, or follow-up.
 - Do not use project repositories as Brain's default working directory.
@@ -1016,7 +1020,7 @@ This directory is the private workspace for zen Brain.
 
 ## Zen CLI
 
-- Use the zen binary to inspect Brain context, perform safe housekeeping, and delegate work. Common command shapes: zen brain context --json; zen brain gc --json; zen agent list --json; zen agent spawn -name "<name>" -cwd <workspace> -prompt "<task>"; zen agent spawn -name "<name>" -executor <executor> -cwd <workspace> -prompt "<task>"; zen agent capture -id <agent_id> --json; zen agent send -id <agent_id> -text "<message>" --submit=true; zen agent close -id <agent_id>.
+- Use the zen binary to inspect Brain context, perform safe housekeeping, and delegate work. Common command shapes: zen brain context --json; zen brain playbooks --json; zen brain gc --json; zen agent list --json; zen agent spawn -name "<name>" -cwd <workspace> -prompt "<task>"; zen agent spawn -name "<name>" -executor <executor> -cwd <workspace> -prompt "<task>"; zen agent capture -id <agent_id> --json; zen agent send -id <agent_id> -text "<message>" --submit=true; zen agent close -id <agent_id>.
 - Keep delegated agent lifecycle ownership from spawn through inspection, follow-up, result consolidation, and close. Do not close a delegated session merely because a small stage finished; close it when the larger task is complete or the remaining work has intentionally moved elsewhere.
 - Never close, kill, rename, repurpose, or otherwise manage sessions whose agent list entry does not have delegated=true. Those belong to the user or another tool.
 - Treat Heartbeat wake messages as compact actionable deltas; inspect only what is needed, then act, summarize, or sleep.
@@ -1159,6 +1163,8 @@ var currentHandoffPolicyMarkers = []string{
 var currentWorkspaceInstructionMarkers = []string{
 	"Keep the current active objective, decisions, open threads, and next step in current.md",
 	"Use policies/ for stable Brain orchestration rules",
+	"Use playbooks/ for provider-neutral operating playbooks",
+	"zen brain playbooks --json",
 	"## Brain Orchestration Rules",
 	"Brain is the user's scheduler",
 	"proactively create or reuse visible delegated agent sessions",
@@ -1174,6 +1180,7 @@ var currentWorkspaceInstructionMarkers = []string{
 	"Delegated agents use the configured Delegated Executor unless the user explicitly asks for a different executor for that session",
 	"## Zen CLI",
 	"zen brain context --json",
+	"zen brain playbooks --json",
 	"zen brain gc --json",
 	"zen agent list --json",
 	"zen agent spawn -name",
@@ -1279,6 +1286,7 @@ const currentWorkspaceInstructionAppend = `## Brain Orchestration Rules
 
 - Keep the current active objective, decisions, open threads, and next step in current.md.
 - Use policies/ for stable Brain orchestration rules; read policies/delegation.md, policies/engine.md, and policies/handoff.md when delegating, switching host executors, or recovering context.
+- Use playbooks/ for provider-neutral operating playbooks; discover them with zen brain playbooks --json and read on demand (progressive disclosure — do not assume full playbook bodies are loaded).
 - Brain's active host executor is the orchestrator. Delegated agents use the configured Delegated Executor unless the user explicitly asks for a different executor for that session.
 - Brain is the user's scheduler: reduce decision load. For concrete work needing repository/tool execution, independent progress, parallelism, or follow-up, proactively create or reuse visible delegated agent sessions; stay here for chat, memory, synthesis, reminders, and decisions that fit the current context.
 - Brain is the orchestrator, not the execution pool: keep decomposition, ordering, judgment, delegated result review, and final synthesis in Brain. Use delegated agents for scoped execution.
@@ -1308,7 +1316,7 @@ const currentWorkspaceInstructionAppend = `## Brain Orchestration Rules
 
 ## Zen CLI
 
-- Use the zen binary to inspect Brain context, perform safe housekeeping, and delegate work. Common command shapes: zen brain context --json; zen brain gc --json; zen agent list --json; zen agent spawn -name "<name>" -cwd <workspace> -prompt "<task>"; zen agent spawn -name "<name>" -executor <executor> -cwd <workspace> -prompt "<task>"; zen agent capture -id <agent_id> --json; zen agent send -id <agent_id> -text "<message>" --submit=true; zen agent close -id <agent_id>.
+- Use the zen binary to inspect Brain context, perform safe housekeeping, and delegate work. Common command shapes: zen brain context --json; zen brain playbooks --json; zen brain gc --json; zen agent list --json; zen agent spawn -name "<name>" -cwd <workspace> -prompt "<task>"; zen agent spawn -name "<name>" -executor <executor> -cwd <workspace> -prompt "<task>"; zen agent capture -id <agent_id> --json; zen agent send -id <agent_id> -text "<message>" --submit=true; zen agent close -id <agent_id>.
 - Keep delegated agent lifecycle ownership from spawn through inspection, follow-up, result consolidation, and close. Do not close a delegated session merely because a small stage finished; close it when the larger task is complete or you have intentionally moved the remaining work elsewhere.
 - Never close, kill, rename, repurpose, or otherwise manage sessions whose agent list entry does not have delegated=true. Those belong to the user or another tool.
 - Treat Heartbeat wake messages as compact actionable deltas; inspect only what is needed, then act, summarize, or sleep.

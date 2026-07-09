@@ -796,6 +796,39 @@ func TestControlAppBrainContextReturnsStructuredContext(t *testing.T) {
 	if len(context.RecentMessages) != 1 || context.RecentMessages[0].Body != "remember context" {
 		t.Fatalf("recent messages = %#v", context.RecentMessages)
 	}
+	if len(context.Playbooks) != 5 {
+		t.Fatalf("playbooks = %#v", context.Playbooks)
+	}
+}
+
+func TestControlAppBrainPlaybooksReturnsCatalog(t *testing.T) {
+	store, err := brain.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	app := &controlApp{brainStore: store}
+
+	resp := app.HandleControlRequest(control.Request{Type: "brain_playbooks"})
+
+	if !resp.OK || resp.Playbooks == nil {
+		t.Fatalf("response = %#v", resp)
+	}
+	catalog, ok := resp.Playbooks.(brain.PlaybookCatalog)
+	if !ok {
+		t.Fatalf("playbooks type = %T", resp.Playbooks)
+	}
+	if len(catalog.Playbooks) != 5 {
+		t.Fatalf("catalog = %#v", catalog)
+	}
+	foundAlign := false
+	for _, entry := range catalog.Playbooks {
+		if entry.Name == "align" && strings.Contains(entry.Description, "one question") {
+			foundAlign = true
+		}
+	}
+	if !foundAlign {
+		t.Fatalf("catalog missing align entry: %#v", catalog.Playbooks)
+	}
 }
 
 func TestControlAppBrainGCReturnsHousekeepingReport(t *testing.T) {

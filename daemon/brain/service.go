@@ -115,6 +115,10 @@ func (s *Service) Context(messageLimit int) (BrainContext, error) {
 	if err != nil {
 		return BrainContext{}, err
 	}
+	playbooks, err := s.store.PlaybookCatalog()
+	if err != nil {
+		return BrainContext{}, err
+	}
 	return BrainContext{
 		ThreadID:          snapshot.ChatThreadID,
 		Workspace:         snapshot.Workspace,
@@ -122,6 +126,7 @@ func (s *Service) Context(messageLimit int) (BrainContext, error) {
 		Memory:            snapshot.Memory,
 		Profile:           snapshot.Profile,
 		Personality:       snapshot.Personality,
+		Playbooks:         playbooks.Playbooks,
 		HostAgent:         snapshot.HostAgent,
 		HostExecutor:      snapshot.HostExecutor,
 		DelegatedExecutor: snapshot.DelegatedExecutor,
@@ -162,6 +167,7 @@ func (s *Service) Housekeeping() (HousekeepingReport, error) {
 		Workspace:            s.store.WorkspacePath(),
 		CurrentPath:          "current.md",
 		PolicyPaths:          []string{"policies/delegation.md", "policies/engine.md", "policies/handoff.md"},
+		PlaybookPaths:        seedPlaybookPaths(),
 		WorklogPath:          worklogDirName,
 		OpenDelegatedAgents:  delegated,
 		RecentMessageCount:   len(context.RecentMessages),
@@ -172,29 +178,39 @@ func (s *Service) Housekeeping() (HousekeepingReport, error) {
 }
 
 type workspaceHousekeepingSnapshot struct {
-	current bool
-	policy  map[string]bool
-	worklog bool
+	current   bool
+	policy    map[string]bool
+	playbooks map[string]bool
+	worklog   bool
 }
 
 func workspaceHousekeepingState(store *Store) workspaceHousekeepingSnapshot {
 	state := workspaceHousekeepingSnapshot{
-		current: brainFileExists(store.currentPath()),
-		policy:  map[string]bool{},
-		worklog: brainFileExists(store.worklogReadmePath()),
+		current:   brainFileExists(store.currentPath()),
+		policy:    map[string]bool{},
+		playbooks: map[string]bool{},
+		worklog:   brainFileExists(store.worklogReadmePath()),
 	}
 	for _, name := range []string{"delegation.md", "engine.md", "handoff.md"} {
 		state.policy[name] = brainFileExists(store.policyPath(name))
+	}
+	for _, name := range seedPlaybookFilenames() {
+		state.playbooks[name] = brainFileExists(store.playbookPath(name))
 	}
 	return state
 }
 
 func (s workspaceHousekeepingSnapshot) equal(other workspaceHousekeepingSnapshot) bool {
-	if s.current != other.current || s.worklog != other.worklog || len(s.policy) != len(other.policy) {
+	if s.current != other.current || s.worklog != other.worklog || len(s.policy) != len(other.policy) || len(s.playbooks) != len(other.playbooks) {
 		return false
 	}
 	for key, value := range s.policy {
 		if other.policy[key] != value {
+			return false
+		}
+	}
+	for key, value := range s.playbooks {
+		if other.playbooks[key] != value {
 			return false
 		}
 	}
@@ -211,6 +227,13 @@ func (s *Service) WorkspaceTree() (WorkspaceTree, error) {
 		return WorkspaceTree{}, fmt.Errorf("brain store is not configured")
 	}
 	return s.store.WorkspaceTree()
+}
+
+func (s *Service) PlaybookCatalog() (PlaybookCatalog, error) {
+	if s == nil || s.store == nil {
+		return PlaybookCatalog{}, fmt.Errorf("brain store is not configured")
+	}
+	return s.store.PlaybookCatalog()
 }
 
 func (s *Service) ReadWorkspaceFile(path string) (WorkspaceFile, error) {
@@ -627,6 +650,7 @@ Durable state rules:
 - Keep personality, preferences, and profile notes in profile.md; read it when preferences or user background matter.
 - Keep the current active objective, decisions, open threads, and next step in current.md.
 - Use policies/delegation.md, policies/engine.md, and policies/handoff.md for stable orchestration rules.
+- Use playbooks/ for provider-neutral operating playbooks. Discover them with zen brain playbooks --json; read playbook files on demand (progressive disclosure — do not assume full bodies are in bootstrap).
 - Use files in this workspace for plans, inbox notes, reminders, and follow-up state.
 - Do not use arbitrary project repositories as Brain's default workspace.
 - Treat this bootstrap as a map, not the full context. Prefer current.md and zen brain context --json for restoration; read memory.md/profile.md on demand instead of assuming they are in the prompt.
@@ -647,6 +671,7 @@ Agent orchestration rules:
 - Use the zen binary to spawn, send to, and inspect delegated agents. When delegating, write a short note with workspace, objective, context, acceptance criteria, safety constraints, and expected report.
 - Zen CLI quick reference:
   - %s brain context --json returns structured Brain context: current.md, recent visible messages, host executor, and delegated agents.
+  - %s brain playbooks --json returns the playbook catalog (name, description, path) without full playbook bodies.
   - %s brain gc --json backfills missing standard Brain workspace files and reports open delegated sessions without rewriting user content.
   - %s agent list --json lists visible sessions; only sessions with delegated=true are Brain-owned.
   - %s agent spawn -name "<name>" -cwd <workspace> -prompt "<task>" creates a visible delegated agent with Brain's delegated executor routing.
@@ -670,7 +695,8 @@ Reference files:
 - policies/delegation.md
 - policies/engine.md
 - policies/handoff.md
-`, snapshot.Workspace, executor.ID, executor.Provider, executor.Runtime, delegatedExecutor.ID, delegatedExecutor.Provider, delegatedExecutor.Runtime, executorCapabilitiesSummary(executor.Capabilities), zenCLICommand(), zenCLICommand(), zenCLICommand(), zenCLICommand(), zenCLICommand(), zenCLICommand(), zenCLICommand(), zenCLICommand(), strings.TrimSpace(snapshot.Personality)))
+- playbooks/ (catalog via zen brain playbooks --json)
+`, snapshot.Workspace, executor.ID, executor.Provider, executor.Runtime, delegatedExecutor.ID, delegatedExecutor.Provider, delegatedExecutor.Runtime, executorCapabilitiesSummary(executor.Capabilities), zenCLICommand(), zenCLICommand(), zenCLICommand(), zenCLICommand(), zenCLICommand(), zenCLICommand(), zenCLICommand(), zenCLICommand(), zenCLICommand(), strings.TrimSpace(snapshot.Personality)))
 }
 
 func (s *Service) handoffHostSession(threadID, previousExecutorID, nextExecutorID, nextHostID, currentContext string, messages []ChatMessage, agents []AgentRef) error {

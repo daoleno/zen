@@ -17,6 +17,8 @@ coverage/
 *.log
 *.tmp
 *.temp
+/tmp/
+app/assets/branding/generated/
 
 # IDE
 .idea/

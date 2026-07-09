@@ -277,6 +277,9 @@ func TestServiceContextIncludesCurrentAndRecentMessages(t *testing.T) {
 	if context.RecentMessages[0].Body != "first" || context.RecentMessages[1].Body != "reply one" {
 		t.Fatalf("recent messages = %#v", context.RecentMessages)
 	}
+	if len(context.Playbooks) != 5 {
+		t.Fatalf("playbooks = %#v", context.Playbooks)
+	}
 }
 
 func newChatTestService(store *Store) *Service {

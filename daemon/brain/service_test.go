@@ -338,6 +338,9 @@ func TestServiceBootstrapPromptReferencesMemoryWithoutEmbeddingIt(t *testing.T) 
 		"Treat this bootstrap as a map, not the full context",
 		"read memory.md/profile.md on demand",
 		"zen brain context --json",
+		"zen brain playbooks --json",
+		"progressive disclosure",
+		"playbooks/",
 		"current.md",
 		"memory.md",
 		"profile.md",
@@ -936,6 +939,11 @@ func TestStoreUsesStateAndWorkspaceDirectories(t *testing.T) {
 			t.Fatalf("missing workspace policy file %s", policy)
 		}
 	}
+	for _, playbook := range seedPlaybookFilenames() {
+		if !pathExists(filepath.Join(root, "workspace", "playbooks", playbook)) {
+			t.Fatalf("missing workspace playbook file %s", playbook)
+		}
+	}
 	instructions, err := os.ReadFile(filepath.Join(root, "workspace", "AGENTS.md"))
 	if err != nil {
 		t.Fatal(err)
@@ -945,6 +953,9 @@ func TestStoreUsesStateAndWorkspaceDirectories(t *testing.T) {
 	}
 	if !strings.Contains(string(instructions), "Use policies/ for stable Brain orchestration rules") {
 		t.Fatalf("workspace instructions do not describe policies:\n%s", instructions)
+	}
+	if !strings.Contains(string(instructions), "Use playbooks/ for provider-neutral operating playbooks") {
+		t.Fatalf("workspace instructions do not describe playbooks:\n%s", instructions)
 	}
 	if !strings.Contains(string(instructions), "Brain is the user's scheduler") {
 		t.Fatalf("workspace instructions do not describe scheduler behavior:\n%s", instructions)
@@ -967,7 +978,7 @@ func TestStoreUsesStateAndWorkspaceDirectories(t *testing.T) {
 	if !strings.Contains(string(instructions), "Treat Heartbeat wake messages as compact actionable deltas") {
 		t.Fatalf("workspace instructions do not describe heartbeat handling:\n%s", instructions)
 	}
-	for _, want := range []string{"zen brain context --json", "zen agent list --json", "zen agent spawn -name", "zen agent capture -id", "zen agent send -id", "zen agent close -id"} {
+	for _, want := range []string{"zen brain context --json", "zen brain playbooks --json", "zen agent list --json", "zen agent spawn -name", "zen agent capture -id", "zen agent send -id", "zen agent close -id"} {
 		if !strings.Contains(string(instructions), want) {
 			t.Fatalf("workspace instructions missing %q:\n%s", want, instructions)
 		}

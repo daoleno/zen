@@ -49,6 +49,12 @@ func TestWorkspaceTreeListsDefaultMarkdownFiles(t *testing.T) {
 	if !workspaceTreeHasFile(tree.Entries, "worklog/README.md") {
 		t.Fatal("WorkspaceTree() missing worklog/README.md")
 	}
+	if !workspaceTreeHasDirectory(tree.Entries, "playbooks") {
+		t.Fatal("WorkspaceTree() missing playbooks directory")
+	}
+	if !workspaceTreeHasFile(tree.Entries, "playbooks/brain-flows.md") {
+		t.Fatal("WorkspaceTree() missing playbooks/brain-flows.md")
+	}
 }
 
 func TestNewStoreEnsuresProfileNotesWithVoiceAndAntiSlop(t *testing.T) {

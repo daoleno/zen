@@ -50,6 +50,7 @@ type BrainContext struct {
 	Memory            string               `json:"memory,omitempty"`
 	Profile           string               `json:"profile,omitempty"`
 	Personality       string               `json:"personality,omitempty"`
+	Playbooks         []PlaybookEntry      `json:"playbooks,omitempty"`
 	HostAgent         *AgentRef            `json:"host_agent,omitempty"`
 	HostExecutor      *work.AgentExecutor  `json:"host_executor,omitempty"`
 	DelegatedExecutor *work.AgentExecutor  `json:"delegated_executor,omitempty"`
@@ -63,6 +64,7 @@ type HousekeepingReport struct {
 	Workspace            string     `json:"workspace,omitempty"`
 	CurrentPath          string     `json:"current_path"`
 	PolicyPaths          []string   `json:"policy_paths"`
+	PlaybookPaths        []string   `json:"playbook_paths"`
 	WorklogPath          string     `json:"worklog_path"`
 	OpenDelegatedAgents  []AgentRef `json:"open_delegated_agents"`
 	RecentMessageCount   int        `json:"recent_message_count"`

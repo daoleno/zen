@@ -52,6 +52,8 @@ func (a *controlApp) HandleControlRequest(req control.Request) control.Response 
 		return a.handleBrainExecutors()
 	case "brain_context":
 		return a.handleBrainContext()
+	case "brain_playbooks":
+		return a.handleBrainPlaybooks()
 	case "brain_gc":
 		return a.handleBrainGC()
 	case "brain_set_executor":
@@ -296,6 +298,21 @@ func (a *controlApp) handleBrainContext() control.Response {
 	return control.Response{
 		OK:      true,
 		Context: context,
+	}
+}
+
+func (a *controlApp) handleBrainPlaybooks() control.Response {
+	if a == nil || a.brainStore == nil {
+		return control.ErrorResponse("brain_unavailable", "Brain workspace is not configured.")
+	}
+	service := brain.NewService(a.brainStore, a.watcher, a.execs)
+	catalog, err := service.PlaybookCatalog()
+	if err != nil {
+		return control.ErrorResponse("brain_playbooks_failed", err.Error())
+	}
+	return control.Response{
+		OK:        true,
+		Playbooks: catalog,
 	}
 }
 

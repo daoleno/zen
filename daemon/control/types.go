@@ -43,6 +43,7 @@ type Response struct {
 	Executors         []Executor `json:"executors,omitempty"`
 	Context           any        `json:"context,omitempty"`
 	Housekeeping      any        `json:"housekeeping,omitempty"`
+	Playbooks         any        `json:"playbooks,omitempty"`
 	Text              string     `json:"text,omitempty"`
 	Workspace         string     `json:"workspace,omitempty"`
 }
