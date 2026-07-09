@@ -1,7 +1,7 @@
 import { useCallback } from "react";
 import type { CodexSlashCommand } from "../../services/websocket";
 import type { ComposerAttachment } from "./CodexChatSession";
-import { requiresSlashCommandArgs } from "./CodexSlashCommands";
+import { slashCommandAcceptsArgs } from "./CodexSlashCommands";
 
 interface UseCodexSlashCommandPickerInput {
   attachments: ComposerAttachment[];
@@ -73,12 +73,12 @@ export function useCodexSlashCommandPicker({
         startNewCodexChat(command.value);
         return;
       }
-      if (!requiresSlashCommandArgs(command)) {
-        sendSlashCommandToCodex(command.value, command);
+      if (slashCommandAcceptsArgs(command)) {
+        setDraft(`${command.value} `);
+        focusComposer();
         return;
       }
-      setDraft(`${command.value} `);
-      focusComposer();
+      sendSlashCommandToCodex(command.value, command);
     },
     [
       attachments,

@@ -159,7 +159,7 @@ var codexSlashCommandCapabilities = map[string]codexSlashCommandCapability{
 	"resume":                terminalCommand("navigation", pickerInput("conversation"), "management-screen", true),
 	"fork":                  terminalCommand("navigation", pickerInput("conversation"), "management-screen", true),
 	"init":                  terminalCommand("tools", inputNone(), "terminal", false),
-	"goal":                  terminalCommand("session", optionalFreeformInput("optional goal text"), "terminal", true),
+	"goal":                  chatTerminalCommand("session", optionalFreeformInput("optional goal text"), "terminal", false),
 	"side":                  terminalCommand("navigation", optionalFreeformInput("side conversation prompt"), "terminal", true),
 	"copy":                  chatTerminalCommand("tools", inputNone(), "terminal", false),
 	"raw":                   terminalCommand("tools", inputNone(), "terminal", true),

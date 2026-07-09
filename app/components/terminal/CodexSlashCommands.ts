@@ -43,6 +43,14 @@ const CHATUI_FALLBACK_SLASH_COMMAND_SPECS = [
     description: "review my current changes and find issues",
   }),
   fallbackSpec({
+    name: "goal",
+    category: "session",
+    execution: "terminal-required",
+    input: optionalFreeformInput("optional goal text"),
+    outputKind: "terminal",
+    description: "set or view the goal for a long-running task",
+  }),
+  fallbackSpec({
     name: "rename",
     category: "session",
     execution: "terminal-required",
@@ -128,7 +136,12 @@ const CHATUI_SLASH_COMMAND_OVERRIDES: Record<string, SlashCommandOverride> = {
     terminal_supported: true,
   },
   goal: {
-    chat_supported: false,
+    execution: "terminal-required",
+    input: optionalFreeformInput("optional goal text"),
+    output: { kind: "terminal" },
+    interactive: false,
+    chat_supported: true,
+    terminal_supported: true,
   },
   stop: {
     chat_supported: false,
