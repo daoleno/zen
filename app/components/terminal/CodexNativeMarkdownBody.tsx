@@ -131,6 +131,8 @@ export function CodexNativeMarkdownBody({
 
 const styles = StyleSheet.create({
   messageBody: {
+    alignSelf: "stretch",
+    width: "100%",
     minWidth: 0,
   },
 });

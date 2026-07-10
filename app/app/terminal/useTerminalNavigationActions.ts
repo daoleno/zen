@@ -57,14 +57,14 @@ export function useTerminalNavigationActions({
   const goToInbox = useCallback(() => {
     closePicker();
     closeMenu();
-    router.replace("/");
+    router.replace("/list");
   }, [closeMenu, closePicker, router]);
 
   const performTerminateAgent = useCallback(async () => {
     if (!sessionKey || !serverId || !agentId) return;
 
     wsClient.killAgent(serverId, agentId);
-    router.replace("/");
+    router.replace("/list");
   }, [agentId, router, serverId, sessionKey]);
 
   const handleTerminateAgent = useCallback(() => {

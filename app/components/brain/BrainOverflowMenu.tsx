@@ -56,8 +56,9 @@ export function BrainOverflowMenu({
               styles.row,
               {
                 borderColor: themed.border,
-                backgroundColor: themed.surface,
-                opacity: action.disabled ? 0.45 : 1,
+                backgroundColor: action.disabled
+                  ? colors.disabledSurface
+                  : themed.surface,
               },
             ]}
             onPress={() => {
@@ -70,10 +71,21 @@ export function BrainOverflowMenu({
             }}
           >
             <View style={[styles.iconWrap, { backgroundColor: colors.surfaceSubtle }]}>
-              <Ionicons name={action.icon} size={18} color={colors.textSecondary} />
+              <Ionicons
+                name={action.icon}
+                size={18}
+                color={action.disabled ? colors.disabledText : colors.textSecondary}
+              />
             </View>
             <View style={styles.rowMain}>
-              <Text style={styles.rowTitle}>{action.label}</Text>
+              <Text
+                style={[
+                  styles.rowTitle,
+                  action.disabled ? { color: colors.disabledText } : null,
+                ]}
+              >
+                {action.label}
+              </Text>
               {action.detail ? (
                 <Text style={styles.rowDetail} numberOfLines={1}>
                   {action.detail}

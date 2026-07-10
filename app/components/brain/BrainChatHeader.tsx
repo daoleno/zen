@@ -1,14 +1,17 @@
 import React, { useMemo } from "react";
 import { StyleSheet, View } from "react-native";
 import type { TerminalThemeChrome } from "../../constants/terminalThemes";
+import { compactPathLabel } from "../../services/pathDisplay";
 import { TelegramChatHeader } from "../terminal/TelegramChatHeader";
 import { BrainAdapterIcon } from "./BrainAdapterIcon";
-import { brainStatusLine } from "./brainPresentation";
+import { brainAdapterLabel } from "./brainPresentation";
 import type { BrainAdapterRef } from "../../store/brain";
 
 interface BrainChatHeaderProps {
   chrome: TerminalThemeChrome;
   adapter?: BrainAdapterRef | null;
+  sessionName?: string;
+  workspace?: string;
   canSwitchAdapter: boolean;
   newChatLoading: boolean;
   canNewChat: boolean;
@@ -22,6 +25,8 @@ interface BrainChatHeaderProps {
 export function BrainChatHeader({
   chrome,
   adapter,
+  sessionName,
+  workspace,
   canSwitchAdapter,
   newChatLoading,
   canNewChat,
@@ -31,10 +36,16 @@ export function BrainChatHeader({
   onOpenMenu,
   onNewChat,
 }: BrainChatHeaderProps) {
-  const statusLine = brainStatusLine({ adapter });
+  const title = sessionName?.trim() || "Brain";
+  const statusLine = [
+    brainAdapterLabel(adapter),
+    workspace
+      ? compactPathLabel(workspace, { tailSegments: 2, showFullUpTo: 2 })
+      : "",
+  ]
+    .filter(Boolean)
+    .join(" · ") || "Waiting for connection";
 
-  // Keep new-chat + overflow in one circular actions chip so chrome matches
-  // the identity pill language (no bare icons next to a framed title).
   const rightActions = useMemo(
     () => [
       {
@@ -74,11 +85,12 @@ export function BrainChatHeader({
   return (
     <TelegramChatHeader
       chrome={chrome}
-      title="Brain"
+      title={title}
       subtitle={statusLine}
       avatar={headerAvatar}
       onPressTitle={canSwitchAdapter ? onOpenAdapterSheet : undefined}
       rightActions={rightActions}
+      flat
     />
   );
 }

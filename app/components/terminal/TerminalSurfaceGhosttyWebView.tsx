@@ -104,6 +104,8 @@ export const TerminalSurfaceGhosttyWebView = forwardRef<
 
       {controller.scrolledUp && controller.ready && (
         <TouchableOpacity
+          accessibilityLabel="Scroll to bottom"
+          accessibilityRole="button"
           style={[
             styles.jumpButton,
             {
@@ -146,8 +148,8 @@ const styles = StyleSheet.create({
     bottom: 16,
     borderWidth: 1,
     borderRadius: 999,
-    width: 38,
-    height: 38,
+    width: 44,
+    height: 44,
     alignItems: 'center',
     justifyContent: 'center',
   },

@@ -272,9 +272,9 @@ const styles = StyleSheet.create({
     fontFamily: Typography.uiFont,
   },
   closeButton: {
-    width: 34,
-    height: 34,
-    borderRadius: 17,
+    width: 44,
+    height: 44,
+    borderRadius: 22,
     alignItems: "center",
     justifyContent: "center",
   },
@@ -353,7 +353,7 @@ const styles = StyleSheet.create({
     gap: 8,
   },
   actionButton: {
-    minHeight: 34,
+    minHeight: 44,
     borderRadius: 8,
     paddingHorizontal: 12,
     flexDirection: "row",

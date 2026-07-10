@@ -328,6 +328,8 @@ function syntaxColor(
 
 const styles = StyleSheet.create({
   frame: {
+    alignSelf: "stretch",
+    width: "100%",
     minWidth: 0,
     maxWidth: "100%",
     marginTop: 2,
@@ -346,8 +348,8 @@ const styles = StyleSheet.create({
     paddingBottom: 6,
   },
   language: {
-    fontSize: 10,
-    lineHeight: 13,
+    fontSize: 11,
+    lineHeight: 15,
     fontFamily: Typography.chatMonoFontBold,
   },
   scrollContent: {

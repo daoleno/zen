@@ -6,7 +6,7 @@ import {
   View,
 } from "react-native";
 import * as Haptics from "expo-haptics";
-import { Typography } from "../../constants/tokens";
+import { TypeScale, Typography } from "../../constants/tokens";
 import type { TerminalThemeChrome } from "../../constants/terminalThemes";
 import { presentAgent } from "../../services/agentPresentation";
 import type { Agent } from "../../store/agents";
@@ -37,10 +37,15 @@ export function TerminalAgentPickerRow({
 
   return (
     <AnimatedPressable
+      accessibilityRole="button"
+      accessibilityLabel={`Open ${presented.title}, ${meta}`}
+      accessibilityState={{ selected: active }}
       style={[
         styles.agentRow,
-        { borderBottomColor: chrome.border },
-        active && styles.agentRowActive,
+        {
+          borderBottomColor: chrome.border,
+          backgroundColor: active ? chrome.surfaceActive : "transparent",
+        },
       ]}
       preset="press"
       scale={0.99}
@@ -105,9 +110,6 @@ const styles = StyleSheet.create({
     paddingVertical: 12,
     borderBottomWidth: StyleSheet.hairlineWidth,
   },
-  agentRowActive: {
-    opacity: 1,
-  },
   agentRowBody: {
     flex: 1,
     minWidth: 0,
@@ -134,9 +136,9 @@ const styles = StyleSheet.create({
     transform: [{ scale: 0.55 }],
   },
   agentRowTitle: {
+    ...TypeScale.compact,
     flexShrink: 1,
     minWidth: 0,
-    fontSize: 14,
     fontFamily: Typography.uiFontMedium,
   },
   brainBadge: {
@@ -148,15 +150,11 @@ const styles = StyleSheet.create({
     justifyContent: "center",
   },
   brainBadgeText: {
-    fontSize: 9,
-    lineHeight: 11,
+    ...TypeScale.micro,
     fontFamily: Typography.uiFontMedium,
     includeFontPadding: false,
   },
   agentRowMeta: {
-    fontSize: 11,
-    lineHeight: 15,
-    fontFamily: Typography.uiFont,
-    opacity: 0.55,
+    ...TypeScale.caption,
   },
 });

@@ -6,7 +6,6 @@ import React, {
   useState,
 } from "react";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
-import { useTabScreenBottomInset } from "../navigation/TabScreenInsetContext";
 import type {
   TerminalThemeChrome,
   TerminalThemePalette,
@@ -118,7 +117,6 @@ export function useCodexChatSurfaceState({
   onSwitchToTerminal,
 }: UseCodexChatSurfaceStateInput): CodexChatSurfaceState {
   const insets = useSafeAreaInsets();
-  const tabScreenBottomInset = useTabScreenBottomInset();
   const { theme: zenTheme } = useAppTheme();
   const composerLayout = zenTheme.chat.layout;
   const active = visible && screenFocused;
@@ -390,11 +388,9 @@ export function useCodexChatSurfaceState({
     canSend: controller.canSend,
     elapsedLabel: turnElapsedLabel,
     actionMenuPinned,
-    safeAreaTop: insets.top,
     safeAreaBottom: insets.bottom,
     placeholder,
     keyboardVerticalOffset,
-    composerBottomInset: tabScreenBottomInset ?? undefined,
     composerLayout,
   });
   const terminalActionPrompt = useMemo(

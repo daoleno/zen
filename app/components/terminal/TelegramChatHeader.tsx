@@ -6,9 +6,9 @@ import type { TerminalThemeChrome } from '../../constants/terminalThemes';
 import {
   Colors,
   Radii,
+  TypeScale,
   Typography,
   UiTextMetrics,
-  uiLineHeight,
   useAppColors,
 } from '../../constants/tokens';
 import { AnimatedPressable } from '../ui/AnimatedPressable';
@@ -47,6 +47,7 @@ interface TelegramChatHeaderProps {
   onPressTitle?: () => void;
   rightActions?: TelegramChatHeaderAction[];
   menuAnchorRef?: React.RefObject<View | null>;
+  flat?: boolean;
 }
 
 export function TelegramChatHeader({
@@ -62,6 +63,7 @@ export function TelegramChatHeader({
   onPressTitle,
   rightActions = [],
   menuAnchorRef,
+  flat = false,
 }: TelegramChatHeaderProps) {
   const colors = useAppColors();
   const styles = useMemo(
@@ -72,14 +74,20 @@ export function TelegramChatHeader({
   const avatarKey = avatarSeed ?? title;
 
   return (
-    <View style={styles.outer}>
-      <View style={styles.row}>
+    <View style={[styles.outer, flat ? styles.outerFlat : null]}>
+      <View style={[styles.row, flat ? styles.rowFlat : null]}>
         {onBack ? (
-          <View style={[styles.chip, styles.circleChip]}>
+          <View
+            style={[
+              styles.chip,
+              styles.circleChip,
+              flat ? styles.flatChrome : null,
+            ]}
+          >
             <AnimatedPressable
               accessibilityRole="button"
               accessibilityLabel="Back"
-              style={styles.iconButton}
+              style={[styles.iconButton, flat ? styles.iconButtonFlat : null]}
               preset="press"
               scale={0.92}
               onPress={onBack}
@@ -97,7 +105,11 @@ export function TelegramChatHeader({
           accessibilityRole="button"
           accessibilityLabel={onPressTitle ? `${title}, open session` : title}
           disabled={!onPressTitle}
-          style={[styles.chip, styles.identityPill]}
+          style={[
+            styles.chip,
+            styles.identityPill,
+            flat ? styles.identityFlat : null,
+          ]}
           preset="press"
           scale={0.99}
           onPress={() => {
@@ -135,7 +147,11 @@ export function TelegramChatHeader({
           <View
             ref={menuAnchorRef}
             collapsable={false}
-            style={[styles.chip, styles.actionsChip]}
+            style={[
+              styles.chip,
+              styles.actionsChip,
+              flat ? styles.actionsFlat : null,
+            ]}
           >
             {rightActions.map((action) => (
               <AnimatedPressable
@@ -146,7 +162,7 @@ export function TelegramChatHeader({
                 disabled={action.disabled}
                 style={[
                   styles.iconButton,
-                  action.disabled && styles.actionDisabled,
+                  flat ? styles.iconButtonFlat : null,
                 ]}
                 preset="press"
                 scale={0.9}
@@ -214,11 +230,21 @@ function createStyles(colors: typeof Colors, chrome?: TerminalThemeChrome) {
       backgroundColor: 'transparent',
       zIndex: 3,
     },
+    outerFlat: {
+      paddingTop: 0,
+      paddingBottom: 0,
+      backgroundColor: chrome?.appBackground ?? colors.bgPrimary,
+      borderBottomWidth: StyleSheet.hairlineWidth,
+      borderBottomColor: borderColor,
+    },
     row: {
       flexDirection: 'row',
       alignItems: 'center',
       height: CHAT_HEADER_HEIGHT,
       gap: 8,
+    },
+    rowFlat: {
+      height: 52,
     },
     chip: {
       height: CHAT_HEADER_HEIGHT,
@@ -234,23 +260,50 @@ function createStyles(colors: typeof Colors, chrome?: TerminalThemeChrome) {
       width: CHAT_HEADER_HEIGHT,
       justifyContent: 'center',
     },
+    flatChrome: {
+      height: 52,
+      backgroundColor: 'transparent',
+      borderWidth: 0,
+      borderRadius: 0,
+    },
     identityPill: {
       flex: 1,
       minWidth: 0,
       gap: 8,
       paddingLeft: 6,
       paddingRight: 14,
+      opacity: 1,
+    },
+    identityFlat: {
+      height: 52,
+      paddingLeft: 2,
+      paddingRight: 8,
+      backgroundColor: 'transparent',
+      borderWidth: 0,
+      borderRadius: 0,
     },
     actionsChip: {
       flexShrink: 0,
       paddingHorizontal: 2,
     },
+    actionsFlat: {
+      height: 52,
+      paddingHorizontal: 0,
+      backgroundColor: 'transparent',
+      borderWidth: 0,
+      borderRadius: 0,
+    },
     iconButton: {
-      width: 40,
-      height: 40,
+      width: 44,
+      height: 44,
       borderRadius: Radii.pill,
       alignItems: 'center',
       justifyContent: 'center',
+      opacity: 1,
+    },
+    iconButtonFlat: {
+      width: 44,
+      height: 44,
     },
     iconColor: {
       color: iconColor,
@@ -266,20 +319,16 @@ function createStyles(colors: typeof Colors, chrome?: TerminalThemeChrome) {
     },
     title: {
       ...UiTextMetrics,
+      ...TypeScale.body,
       color: titleColor,
       fontFamily: Typography.uiFontMedium,
-      fontSize: 15,
-      lineHeight: uiLineHeight(15),
     },
     subtitle: {
       ...UiTextMetrics,
+      ...TypeScale.micro,
       color: subtitleColor,
       fontFamily: Typography.uiFont,
-      fontSize: 11,
-      lineHeight: uiLineHeight(11),
-    },
-    actionDisabled: {
-      opacity: 0.45,
+      fontWeight: '400',
     },
   });
 }

@@ -6,7 +6,7 @@ import {
   TouchableOpacity,
   View,
 } from "react-native";
-import { Colors, Typography } from "../../constants/tokens";
+import { TypeScale } from "../../constants/tokens";
 import type {
   TerminalThemeChrome,
   TerminalThemePalette,
@@ -32,7 +32,6 @@ export function TerminalOutputStateCard({
   hint,
   showRetry,
   chrome,
-  theme,
   onRetry,
 }: TerminalOutputStateCardProps) {
   return (
@@ -72,7 +71,7 @@ export function TerminalOutputStateCard({
             <Text
               style={[
                 styles.terminalStateActionText,
-                { color: theme.background },
+                { color: chrome.textOnAccent },
               ]}
             >
               Retry Connection
@@ -100,7 +99,6 @@ const styles = StyleSheet.create({
     paddingVertical: 20,
     borderRadius: 20,
     borderWidth: 1,
-    backgroundColor: "rgba(17,22,31,0.9)",
   },
   terminalStateDot: {
     width: 10,
@@ -108,40 +106,29 @@ const styles = StyleSheet.create({
     borderRadius: 5,
   },
   terminalStateTitle: {
+    ...TypeScale.heading,
     marginTop: 12,
-    color: Colors.textPrimary,
-    fontSize: 18,
-    fontFamily: Typography.uiFontMedium,
     textAlign: "center",
   },
   terminalStateDetail: {
+    ...TypeScale.compact,
     marginTop: 8,
-    color: "#D6DFEC",
-    fontSize: 13,
-    lineHeight: 19,
-    fontFamily: Typography.uiFont,
     textAlign: "center",
   },
   terminalStateHint: {
+    ...TypeScale.caption,
     marginTop: 8,
-    color: "#8E9DB2",
-    fontSize: 12,
-    lineHeight: 18,
-    fontFamily: Typography.uiFont,
     textAlign: "center",
   },
   terminalStateAction: {
     marginTop: 16,
-    minHeight: 38,
+    minHeight: 44,
     paddingHorizontal: 14,
     borderRadius: 12,
     alignItems: "center",
     justifyContent: "center",
-    backgroundColor: Colors.accent,
   },
   terminalStateActionText: {
-    color: Colors.bgPrimary,
-    fontSize: 13,
-    fontFamily: Typography.uiFontMedium,
+    ...TypeScale.label,
   },
 });

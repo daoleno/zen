@@ -35,8 +35,14 @@ export interface TerminalThemeChrome {
   text: string;
   textMuted: string;
   textSubtle: string;
+  textOnAccent: string;
   accent: string;
   accentSoft: string;
+  disabledSurface: string;
+  focus: string;
+  link: string;
+  danger: string;
+  dangerSoft: string;
   overlay: string;
 }
 
@@ -74,12 +80,12 @@ export type TerminalSystemColorScheme =
 
 export const TerminalThemes: Record<TerminalThemeName, TerminalThemePalette> = {
   dark: {
-    background: '#0F1117',
-    foreground: '#E6EAF0',
-    cursor: '#5B9DFF',
-    cursorAccent: '#0F1117',
-    selectionBackground: 'rgba(91, 157, 255, 0.24)',
-    selectionInactiveBackground: 'rgba(91, 157, 255, 0.12)',
+    background: '#0F0F14',
+    foreground: '#F2F3EF',
+    cursor: '#89A28D',
+    cursorAccent: '#0F0F14',
+    selectionBackground: 'rgba(137, 162, 141, 0.28)',
+    selectionInactiveBackground: 'rgba(137, 162, 141, 0.14)',
     black: '#1B1F2A',
     red: '#F87171',
     green: '#6EE7A8',
@@ -98,12 +104,12 @@ export const TerminalThemes: Record<TerminalThemeName, TerminalThemePalette> = {
     brightWhite: '#F8FAFC',
   },
   light: {
-    background: '#F8FAFC',
-    foreground: '#111827',
-    cursor: '#2563EB',
-    cursorAccent: '#F8FAFC',
-    selectionBackground: 'rgba(37, 99, 235, 0.20)',
-    selectionInactiveBackground: 'rgba(37, 99, 235, 0.10)',
+    background: '#F7F8F6',
+    foreground: '#171A18',
+    cursor: '#56705C',
+    cursorAccent: '#FFFFFF',
+    selectionBackground: 'rgba(86, 112, 92, 0.18)',
+    selectionInactiveBackground: 'rgba(86, 112, 92, 0.10)',
     black: '#1F2937',
     red: '#DC2626',
     green: '#15803D',
@@ -161,11 +167,13 @@ export function buildTerminalPalette(theme: TerminalThemePalette): string[] {
 }
 
 export function buildTerminalChrome(theme: TerminalThemePalette): TerminalThemeChrome {
+  const surface = mixHex(theme.background, theme.foreground, 0.06);
+  const surfaceMuted = mixHex(theme.background, theme.foreground, 0.035);
+
   return {
-    // Offset from the terminal background so toolbar controls sit above the surface.
-    appBackground: mixHex(theme.background, theme.foreground, 0.06),
-    surface: mixHex(theme.background, theme.foreground, 0.06),
-    surfaceMuted: mixHex(theme.background, theme.foreground, 0.035),
+    appBackground: surface,
+    surface,
+    surfaceMuted,
     surfaceActive: mixHex(theme.background, theme.cursor, 0.14),
     composerInput: mixHex(theme.background, theme.foreground, 0.08),
     border: withAlpha(theme.foreground, 0.08),
@@ -173,8 +181,14 @@ export function buildTerminalChrome(theme: TerminalThemePalette): TerminalThemeC
     text: theme.foreground,
     textMuted: mixHex(theme.foreground, theme.background, 0.38),
     textSubtle: mixHex(theme.foreground, theme.background, 0.60),
+    textOnAccent: theme.cursorAccent,
     accent: theme.cursor,
     accentSoft: withAlpha(theme.cursor, 0.14),
+    disabledSurface: surfaceMuted,
+    focus: theme.cursor,
+    link: theme.blue,
+    danger: theme.red,
+    dangerSoft: withAlpha(theme.red, 0.14),
     overlay: withAlpha(theme.background, 0.94),
   };
 }

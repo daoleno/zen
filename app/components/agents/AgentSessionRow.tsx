@@ -1,6 +1,12 @@
 import React, { useMemo } from 'react';
 import { ActivityIndicator, StyleSheet, Text, View } from 'react-native';
-import { Colors, Typography, useAppColors } from '../../constants/tokens';
+import {
+  Colors,
+  TypeScale,
+  UiTextMetrics,
+  type AgentStatus,
+  useAppColors,
+} from '../../constants/tokens';
 import type { AgentKind } from '../../services/agentPresentation';
 import type { TerminalFlavor } from '../../services/terminalFlavor';
 import type { SessionPreviewTone } from '../../services/sessionPreview';
@@ -15,10 +21,8 @@ interface AgentSessionRowProps {
   previewTone: SessionPreviewTone;
   previewPrefix?: string;
   timeLabel: string;
-  timeActive?: boolean;
-  running?: boolean;
+  status: AgentStatus;
   showBrainBadge?: boolean;
-  active?: boolean;
   onPress: () => void;
   onLongPress: () => void;
 }
@@ -31,27 +35,31 @@ export function AgentSessionRow({
   previewTone,
   previewPrefix,
   timeLabel,
-  timeActive = false,
-  running = false,
+  status,
   showBrainBadge = false,
-  active = false,
   onPress,
   onLongPress,
 }: AgentSessionRowProps) {
   const colors = useAppColors();
   const styles = useMemo(() => createStyles(colors), [colors]);
   const previewColor = previewToneColor(previewTone, colors);
+  const statusColor = agentStatusColor(status, colors);
+  const statusLabel = agentStatusLabel(status);
 
   return (
     <AnimatedPressable
-      style={[styles.row, active && styles.rowActive]}
+      style={[styles.row, status === 'running' && styles.rowActive]}
       preset="card"
       onPress={onPress}
       onLongPress={onLongPress}
       delayLongPress={400}
+      accessibilityRole="button"
+      accessibilityLabel={`${title}, ${statusLabel}, ${preview}${status === 'running' ? '' : `, ${timeLabel}`}`}
+      accessibilityHint="Opens the terminal session"
+      accessibilityState={{ busy: status === 'running' }}
     >
       <View style={styles.iconSlot}>
-        <AgentKindIcon kind={kind} flavor={terminalFlavor} size={40} />
+        <AgentKindIcon kind={kind} flavor={terminalFlavor} size={36} />
       </View>
       <View style={styles.body}>
         <View style={styles.titleRow}>
@@ -64,7 +72,7 @@ export function AgentSessionRow({
             </View>
           ) : null}
         </View>
-        <Text style={styles.preview} numberOfLines={1}>
+        <Text style={styles.preview} numberOfLines={1} ellipsizeMode="middle">
           {previewPrefix ? (
             <Text style={[styles.previewPrefix, { color: previewColor }]}>
               {previewPrefix}
@@ -76,15 +84,23 @@ export function AgentSessionRow({
         </Text>
       </View>
       <View style={styles.meta}>
-        <Text style={[styles.time, timeActive && styles.timeActive]}>
-          {timeLabel}
-        </Text>
-        {running ? (
-          <View style={styles.runningBadge}>
-            <ActivityIndicator size="small" color={colors.accent} style={styles.spinner} />
-          </View>
+        {status !== 'running' ? (
+          <Text style={styles.time} numberOfLines={1}>
+            {timeLabel}
+          </Text>
         ) : null}
+        <View style={styles.statusMeta}>
+          {status === 'running' ? (
+            <ActivityIndicator size="small" color={statusColor} style={styles.spinner} />
+          ) : (
+            <View style={[styles.statusDot, { backgroundColor: statusColor }]} />
+          )}
+          <Text style={[styles.statusText, { color: statusColor }]} numberOfLines={1}>
+            {statusLabel}
+          </Text>
+        </View>
       </View>
+      <View pointerEvents="none" style={styles.separator} />
     </AnimatedPressable>
   );
 }
@@ -96,7 +112,7 @@ function previewToneColor(tone: SessionPreviewTone, colors: typeof Colors): stri
     case 'danger':
       return colors.dangerText;
     case 'success':
-      return colors.statusRunning;
+      return colors.success;
     case 'muted':
       return colors.textTertiary;
     default:
@@ -104,27 +120,63 @@ function previewToneColor(tone: SessionPreviewTone, colors: typeof Colors): stri
   }
 }
 
+function agentStatusColor(status: AgentStatus, colors: typeof Colors): string {
+  switch (status) {
+    case 'failed':
+      return colors.statusFailed;
+    case 'blocked':
+      return colors.statusBlocked;
+    case 'running':
+      return colors.statusRunning;
+    case 'done':
+      return colors.statusDone;
+    default:
+      return colors.statusUnknown;
+  }
+}
+
+function agentStatusLabel(status: AgentStatus): string {
+  switch (status) {
+    case 'failed':
+      return 'Failed';
+    case 'blocked':
+      return 'Blocked';
+    case 'running':
+      return 'Running';
+    case 'done':
+      return 'Done';
+    default:
+      return 'Unknown';
+  }
+}
+
 function createStyles(colors: typeof Colors) {
   return StyleSheet.create({
     iconSlot: {
-      width: 48,
-      height: 48,
+      width: 44,
+      height: 44,
       alignItems: 'center',
       justifyContent: 'center',
     },
     row: {
       flexDirection: 'row',
       alignItems: 'center',
-      minHeight: 68,
-      gap: 12,
+      minHeight: 72,
+      gap: 10,
       paddingVertical: 9,
       paddingHorizontal: 16,
       backgroundColor: colors.bgPrimary,
-      borderBottomWidth: StyleSheet.hairlineWidth,
-      borderBottomColor: colors.borderSubtle,
     },
     rowActive: {
-      backgroundColor: 'rgba(42,171,238,0.08)',
+      backgroundColor: colors.accentSoft,
+    },
+    separator: {
+      position: 'absolute',
+      left: 70,
+      right: 16,
+      bottom: 0,
+      height: StyleSheet.hairlineWidth,
+      backgroundColor: colors.borderSubtle,
     },
     body: {
       flex: 1,
@@ -138,67 +190,69 @@ function createStyles(colors: typeof Colors) {
       minWidth: 0,
     },
     title: {
+      ...UiTextMetrics,
+      ...TypeScale.body,
       flexShrink: 1,
       minWidth: 0,
       color: colors.textPrimary,
-      fontSize: 15.5,
-      lineHeight: 22,
-      fontFamily: Typography.uiFontMedium,
     },
     preview: {
+      ...UiTextMetrics,
+      ...TypeScale.compact,
       marginTop: 1,
-      fontSize: 13,
-      lineHeight: 18,
-      fontFamily: Typography.uiFont,
     },
     previewPrefix: {
-      fontFamily: Typography.uiFont,
+      fontFamily: TypeScale.compact.fontFamily,
     },
     previewText: {
-      fontFamily: Typography.uiFont,
+      fontFamily: TypeScale.compact.fontFamily,
     },
     meta: {
-      minWidth: 44,
+      minWidth: 60,
+      maxWidth: 84,
       alignItems: 'flex-end',
-      gap: 6,
+      gap: 4,
     },
     time: {
+      ...UiTextMetrics,
+      ...TypeScale.caption,
       color: colors.textTertiary,
-      fontFamily: Typography.uiFont,
-      fontSize: 11,
-      lineHeight: 14,
     },
-    timeActive: {
-      color: colors.accent,
-      fontFamily: Typography.uiFontMedium,
-    },
-    runningBadge: {
-      width: 18,
-      height: 18,
-      borderRadius: 9,
+    statusMeta: {
+      flexDirection: 'row',
       alignItems: 'center',
-      justifyContent: 'center',
-      backgroundColor: colors.accentSoft,
+      justifyContent: 'flex-end',
+      gap: 4,
+      minHeight: 16,
+    },
+    statusDot: {
+      width: 6,
+      height: 6,
+      borderRadius: 3,
+    },
+    statusText: {
+      ...UiTextMetrics,
+      ...TypeScale.micro,
     },
     spinner: {
       transform: [{ scale: 0.45 }],
+      width: 12,
+      height: 12,
     },
     brainBadge: {
-      height: 18,
+      minHeight: 22,
       paddingHorizontal: 6,
       borderWidth: StyleSheet.hairlineWidth,
       borderColor: colors.borderStrong,
-      borderRadius: 6,
+      borderRadius: 5,
       alignItems: 'center',
       justifyContent: 'center',
       backgroundColor: colors.surfaceSubtle,
     },
     brainBadgeText: {
-      fontSize: 10,
-      lineHeight: 12,
-      fontFamily: Typography.uiFontMedium,
+      ...UiTextMetrics,
+      ...TypeScale.micro,
       color: colors.textSecondary,
-      includeFontPadding: false,
     },
   });
 }

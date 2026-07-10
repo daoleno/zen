@@ -28,12 +28,11 @@ export function TerminalSheetAction({
   disabled = false,
   destructive = false,
   chrome,
-  theme,
 }: TerminalSheetActionProps) {
   const color = disabled
     ? chrome.textSubtle
     : destructive
-      ? theme.red
+      ? chrome.danger
       : chrome.text;
 
   return (
@@ -41,7 +40,10 @@ export function TerminalSheetAction({
       accessibilityLabel={label}
       accessibilityRole="button"
       accessibilityState={{ disabled }}
-      style={[styles.action, disabled ? styles.disabled : null]}
+      style={[
+        styles.action,
+        disabled ? { backgroundColor: chrome.disabledSurface } : null,
+      ]}
       preset="press"
       scale={0.97}
       disabled={disabled}
@@ -66,15 +68,12 @@ export function TerminalSheetAction({
 
 const styles = StyleSheet.create({
   action: {
-    minHeight: 38,
+    minHeight: 44,
     flexDirection: "row",
     alignItems: "center",
     gap: 10,
     paddingHorizontal: 12,
     paddingVertical: 8,
-  },
-  disabled: {
-    opacity: 0.52,
   },
   label: {
     flex: 1,

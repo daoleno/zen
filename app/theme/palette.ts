@@ -25,16 +25,21 @@ export interface AppColors {
   surfacePressed: string;
   surfaceActive: string;
   inputBackground: string;
+  disabledSurface: string;
   modalBackdrop: string;
   modalSurface: string;
   modalSurfaceAlt: string;
   textOnAccent: string;
+  focusRing: string;
+  selectionBackground: string;
   promptGreen: string;
   promptYellow: string;
   warning: string;
   dangerText: string;
+  success: string;
   disabledText: string;
   dangerSoft: string;
   warningSoft: string;
+  successSoft: string;
   shadowColor: string;
 }

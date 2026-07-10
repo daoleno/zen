@@ -39,8 +39,8 @@ export function CodexComposerAttachmentRemoveButton({
 
 const styles = StyleSheet.create({
   remove: {
-    width: 24,
-    height: 28,
+    width: 44,
+    height: 44,
     alignItems: "center",
     justifyContent: "center",
   },
@@ -50,6 +50,5 @@ const styles = StyleSheet.create({
     borderRadius: 10,
     alignItems: "center",
     justifyContent: "center",
-    opacity: 0.92,
   },
 });

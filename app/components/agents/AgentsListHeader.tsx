@@ -1,4 +1,4 @@
-import React, { useMemo } from 'react';
+import React, { useMemo, useState } from 'react';
 import {
   ScrollView,
   StyleSheet,
@@ -10,9 +10,8 @@ import {
 import { Ionicons } from '@expo/vector-icons';
 import {
   Colors,
-  Typography,
+  TypeScale,
   UiTextMetrics,
-  uiLineHeight,
   useAppColors,
 } from '../../constants/tokens';
 import { IconButton } from '../ui/IconButton';
@@ -44,70 +43,80 @@ export function AgentsListHeader({
 }: AgentsListHeaderProps) {
   const colors = useAppColors();
   const styles = useMemo(() => createStyles(colors), [colors]);
+  const [searchFocused, setSearchFocused] = useState(false);
 
   return (
     <View style={styles.root}>
-      <View style={styles.titleRow}>
-        <Text style={styles.title}>Zen</Text>
-        <IconButton
-          icon="ellipsis-vertical"
-          tone="ghost"
-          size={40}
-          iconSize={20}
-          color={colors.textSecondary}
-          accessibilityLabel="Agents options"
-          onPress={onOpenMenu}
-        />
-      </View>
+      <View style={styles.inner}>
+        <View style={styles.searchRow}>
+          <View style={[styles.searchBar, searchFocused && styles.searchBarFocused]}>
+            <Ionicons name="search" size={18} color={colors.textTertiary} />
+            <TextInput
+              style={styles.searchInput}
+              value={searchQuery}
+              onChangeText={onSearchChange}
+              onFocus={() => setSearchFocused(true)}
+              onBlur={() => setSearchFocused(false)}
+              placeholder="Search sessions"
+              placeholderTextColor={colors.textTertiary}
+              autoCapitalize="none"
+              autoCorrect={false}
+              returnKeyType="search"
+              clearButtonMode="never"
+              accessibilityLabel="Search sessions"
+            />
+            {searchQuery ? (
+              <TouchableOpacity
+                style={styles.clearButton}
+                onPress={() => onSearchChange('')}
+                activeOpacity={0.72}
+                accessibilityRole="button"
+                accessibilityLabel="Clear search"
+              >
+                <Ionicons name="close-circle" size={18} color={colors.textTertiary} />
+              </TouchableOpacity>
+            ) : null}
+          </View>
+          <IconButton
+            icon="ellipsis-vertical"
+            tone="ghost"
+            size={44}
+            iconSize={20}
+            color={colors.textSecondary}
+            accessibilityLabel="List options"
+            onPress={onOpenMenu}
+          />
+        </View>
 
-      <View style={styles.searchBar}>
-        <Ionicons name="search" size={17} color={colors.textTertiary} />
-        <TextInput
-          style={styles.searchInput}
-          value={searchQuery}
-          onChangeText={onSearchChange}
-          placeholder="Search"
-          placeholderTextColor={colors.textTertiary}
-          autoCapitalize="none"
-          autoCorrect={false}
-          returnKeyType="search"
-          clearButtonMode="never"
-        />
-        {searchQuery ? (
-          <TouchableOpacity onPress={() => onSearchChange('')} activeOpacity={0.75}>
-            <Ionicons name="close-circle" size={17} color={colors.textTertiary} />
-          </TouchableOpacity>
-        ) : null}
+        <ScrollView
+          horizontal
+          showsHorizontalScrollIndicator={false}
+          contentContainerStyle={styles.filterScroll}
+          keyboardShouldPersistTaps="handled"
+        >
+          {filterOptions.map((option) => {
+            const selected = statusFilter === option.key;
+            return (
+              <TouchableOpacity
+                key={option.key}
+                style={[styles.filterControl, selected && styles.filterControlActive]}
+                onPress={() => onFilterChange(option.key)}
+                activeOpacity={0.72}
+                accessibilityRole="button"
+                accessibilityState={{ selected }}
+                accessibilityLabel={`${option.label}, ${option.count} sessions`}
+              >
+                <Text style={[styles.filterText, selected && styles.filterTextActive]}>
+                  {option.label}
+                </Text>
+                <Text style={[styles.filterCount, selected && styles.filterCountActive]}>
+                  {option.count > 99 ? '99+' : option.count}
+                </Text>
+              </TouchableOpacity>
+            );
+          })}
+        </ScrollView>
       </View>
-
-      <ScrollView
-        horizontal
-        showsHorizontalScrollIndicator={false}
-        contentContainerStyle={styles.filterScroll}
-      >
-        {filterOptions.map((option) => {
-          const selected = statusFilter === option.key;
-          return (
-            <TouchableOpacity
-              key={option.key}
-              style={[styles.filterPill, selected && styles.filterPillActive]}
-              onPress={() => onFilterChange(option.key)}
-              activeOpacity={0.82}
-            >
-              <Text style={[styles.filterPillText, selected && styles.filterPillTextActive]}>
-                {option.label}
-              </Text>
-              {option.count > 0 ? (
-                <View style={[styles.filterBadge, selected && styles.filterBadgeActive]}>
-                  <Text style={[styles.filterBadgeText, selected && styles.filterBadgeTextActive]}>
-                    {option.count > 99 ? '99+' : option.count}
-                  </Text>
-                </View>
-              ) : null}
-            </TouchableOpacity>
-          );
-        })}
-      </ScrollView>
     </View>
   );
 }
@@ -115,94 +124,88 @@ export function AgentsListHeader({
 function createStyles(colors: typeof Colors) {
   return StyleSheet.create({
     root: {
-      paddingTop: 4,
-      paddingBottom: 10,
-      gap: 10,
       backgroundColor: colors.bgPrimary,
       borderBottomWidth: StyleSheet.hairlineWidth,
       borderBottomColor: colors.borderSubtle,
     },
-    titleRow: {
+    inner: {
+      width: '100%',
+      maxWidth: 760,
+      alignSelf: 'center',
+      paddingTop: 8,
+      paddingBottom: 8,
+      gap: 4,
+    },
+    searchRow: {
       flexDirection: 'row',
       alignItems: 'center',
-      justifyContent: 'space-between',
+      gap: 4,
       paddingHorizontal: 16,
-      minHeight: 44,
-    },
-    title: {
-      ...UiTextMetrics,
-      color: colors.textPrimary,
-      fontSize: 28,
-      lineHeight: uiLineHeight(28),
-      fontFamily: Typography.uiFontMedium,
-      letterSpacing: -0.3,
     },
     searchBar: {
-      marginHorizontal: 16,
-      height: 36,
-      borderRadius: 18,
-      paddingHorizontal: 12,
+      flex: 1,
+      minWidth: 0,
+      minHeight: 44,
+      borderRadius: 8,
+      paddingLeft: 12,
       flexDirection: 'row',
       alignItems: 'center',
       gap: 8,
       backgroundColor: colors.inputBackground,
+      borderWidth: 1,
+      borderColor: colors.border,
+    },
+    searchBarFocused: {
+      borderColor: colors.focusRing,
     },
     searchInput: {
+      ...UiTextMetrics,
+      ...TypeScale.body,
       flex: 1,
       minWidth: 0,
       color: colors.textPrimary,
-      fontFamily: Typography.uiFont,
-      fontSize: 15,
       paddingVertical: 0,
+    },
+    clearButton: {
+      width: 44,
+      height: 44,
+      alignItems: 'center',
+      justifyContent: 'center',
+      marginRight: -1,
     },
     filterScroll: {
       paddingHorizontal: 16,
-      gap: 8,
+      gap: 4,
       alignItems: 'center',
     },
-    filterPill: {
-      minHeight: 30,
-      paddingHorizontal: 13,
-      borderRadius: 15,
+    filterControl: {
+      minHeight: 44,
+      paddingHorizontal: 12,
+      borderRadius: 8,
       flexDirection: 'row',
       alignItems: 'center',
       justifyContent: 'center',
       gap: 6,
-      backgroundColor: colors.surfaceSubtle,
+      backgroundColor: 'transparent',
     },
-    filterPillActive: {
-      backgroundColor: colors.accent,
+    filterControlActive: {
+      backgroundColor: colors.accentSoft,
     },
-    filterPillText: {
+    filterText: {
+      ...UiTextMetrics,
+      ...TypeScale.label,
       color: colors.textSecondary,
-      fontFamily: Typography.uiFontMedium,
-      fontSize: 13,
-      lineHeight: 17,
     },
-    filterPillTextActive: {
-      color: colors.textOnAccent,
+    filterTextActive: {
+      color: colors.accentStrong,
     },
-    filterBadge: {
-      minWidth: 18,
-      height: 18,
-      borderRadius: 9,
-      paddingHorizontal: 5,
-      alignItems: 'center',
-      justifyContent: 'center',
-      backgroundColor: colors.bgElevated,
-    },
-    filterBadgeActive: {
-      backgroundColor: 'rgba(255,255,255,0.22)',
-    },
-    filterBadgeText: {
+    filterCount: {
+      ...UiTextMetrics,
+      ...TypeScale.caption,
       color: colors.textSecondary,
-      fontFamily: Typography.uiFontMedium,
-      fontSize: 11,
-      lineHeight: 13,
-      includeFontPadding: false,
     },
-    filterBadgeTextActive: {
-      color: colors.textOnAccent,
+    filterCountActive: {
+      color: colors.accentStrong,
     },
   });
 }

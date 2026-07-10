@@ -1,4 +1,5 @@
 import React, { useMemo } from "react";
+import { StyleSheet, View } from "react-native";
 import type {
   TerminalThemeChrome,
   TerminalThemePalette,
@@ -24,5 +25,17 @@ export function CodexNativeMarkdownBody({
     [streaming, value],
   );
 
-  return renderFallback(markdown || value);
+  return (
+    <View style={styles.messageBody}>
+      {renderFallback(markdown || value)}
+    </View>
+  );
 }
+
+const styles = StyleSheet.create({
+  messageBody: {
+    alignSelf: "stretch",
+    width: "100%",
+    minWidth: 0,
+  },
+});

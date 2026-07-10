@@ -207,7 +207,7 @@ export function BrainWorkspaceViewer({
         </View>
         <IconButton
           icon="close-outline"
-          size={34}
+          size={44}
           iconSize={18}
           tone="ghost"
           accessibilityRole="button"
@@ -442,7 +442,7 @@ function createStyles(colors: typeof Colors) {
       paddingVertical: 6,
     },
     treeRow: {
-      minHeight: 34,
+      minHeight: 44,
       paddingRight: 10,
       flexDirection: "row",
       alignItems: "center",

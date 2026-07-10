@@ -49,7 +49,7 @@ export function codexMarkdownStyle(
     color: chrome.text,
     fontFamily: Typography.chatFont,
     fontSize: bodyFontSize,
-    lineHeight: bodyLineHeight + 1,
+    lineHeight: bodyLineHeight,
     letterSpacing: 0,
     marginTop: 0,
     marginBottom: blockMarginBottom + 1,
@@ -57,7 +57,7 @@ export function codexMarkdownStyle(
   const heading = {
     color: chrome.text,
     fontFamily: Typography.chatFontMedium,
-    lineHeight: bodyLineHeight + 1,
+    lineHeight: bodyLineHeight,
     letterSpacing: 0,
     marginTop: compact ? 0 : 1,
     marginBottom: compact ? 7 : 8,
@@ -86,9 +86,9 @@ export function codexMarkdownStyle(
       fontStyle: "italic",
     },
     link: {
-      color: chrome.accent,
+      color: chrome.link,
       fontFamily: Typography.chatFontMedium,
-      underline: false,
+      underline: true,
     },
     code: {
       color: theme.cyan,
@@ -136,7 +136,7 @@ export function codexMarkdownStyle(
       fontFamily: Typography.chatFont,
       fontSize: bodyFontSize,
       gapWidth: compact ? 7 : 8,
-      lineHeight: bodyLineHeight + 1,
+      lineHeight: bodyLineHeight,
       letterSpacing: 0,
       marginLeft: compact ? 18 : 22,
       marginTop: 0,

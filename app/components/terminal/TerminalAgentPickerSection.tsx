@@ -4,7 +4,7 @@ import {
   Text,
   View,
 } from "react-native";
-import { Typography } from "../../constants/tokens";
+import { TypeScale, Typography } from "../../constants/tokens";
 import type { TerminalThemeChrome } from "../../constants/terminalThemes";
 import type { AgentDirectorySection } from "../../services/serverSelection";
 import { TerminalAgentPickerRow } from "./TerminalAgentPickerRow";
@@ -87,26 +87,20 @@ const styles = StyleSheet.create({
     minWidth: 0,
   },
   sectionTitle: {
-    fontSize: 15,
-    lineHeight: 20,
+    ...TypeScale.body,
     fontFamily: Typography.uiFontMedium,
   },
   sectionSubtitle: {
+    ...TypeScale.caption,
     marginTop: 2,
-    fontSize: 11,
-    lineHeight: 15,
-    fontFamily: Typography.uiFont,
-    opacity: 0.55,
   },
   sectionCount: {
+    ...TypeScale.micro,
     minWidth: 24,
     paddingHorizontal: 8,
     paddingVertical: 4,
     borderRadius: 999,
     overflow: "hidden",
     textAlign: "center",
-    fontSize: 11,
-    lineHeight: 14,
-    fontFamily: Typography.uiFontMedium,
   },
 });

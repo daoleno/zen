@@ -48,10 +48,10 @@ const styles = StyleSheet.create({
   jumpButton: {
     position: "absolute",
     alignItems: "center",
-    borderRadius: 17,
+    borderRadius: 22,
     borderWidth: StyleSheet.hairlineWidth,
-    minHeight: 34,
-    paddingHorizontal: 10,
+    minHeight: 44,
+    paddingHorizontal: 12,
     justifyContent: "center",
     right: 16,
     zIndex: 4,

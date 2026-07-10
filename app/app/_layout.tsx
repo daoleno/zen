@@ -1,6 +1,13 @@
-import { useCallback, useEffect, useRef } from "react";
-import { Alert, AppState, AppStateStatus, Platform } from "react-native";
-import { Stack, useRouter, useSegments } from "expo-router";
+import { memo, useCallback, useEffect, useRef, useState } from "react";
+import {
+  Alert,
+  AppState,
+  AppStateStatus,
+  Platform,
+  Pressable,
+} from "react-native";
+import { Stack, useNavigation, useRouter, useSegments } from "expo-router";
+import { Ionicons } from "@expo/vector-icons";
 import { StatusBar } from "expo-status-bar";
 import { useFonts } from "expo-font";
 import * as Linking from "expo-linking";
@@ -10,9 +17,15 @@ import Constants from "expo-constants";
 import { GestureHandlerRootView } from "react-native-gesture-handler";
 import { KeyboardProvider } from "react-native-keyboard-controller";
 import { SafeAreaProvider } from "react-native-safe-area-context";
-import { Agent, AgentProvider, useAgents } from "../store/agents";
-import { BrainProvider, useBrain } from "../store/brain";
-import { WorkProvider, useWork } from "../store/work";
+import {
+  Agent,
+  AgentProvider,
+  useAgentDispatch,
+  useAgentList,
+  useAgentServerConnections,
+} from "../store/agents";
+import { BrainProvider, useBrainDispatch } from "../store/brain";
+import { WorkProvider, useWorkDispatch } from "../store/work";
 import { useAppTheme } from "../constants/tokens";
 import { ThemeProvider } from "../theme";
 import { wsClient } from "../services/websocket";
@@ -20,6 +33,7 @@ import {
   getDisabledServerIds,
   getServers,
   isOnboarded,
+  markOnboarded,
 } from "../services/storage";
 import { importConnection } from "../services/importConnection";
 import {
@@ -181,59 +195,83 @@ function localNotificationSignalKey(agent: Agent): string | null {
   return `${agent.key}:${agent.status}`;
 }
 
-function AppContent() {
+function AppRuntime() {
+  const [bootstrapResolved, setBootstrapResolved] = useState(false);
+  const handleBootstrapResolved = useCallback((resolved: boolean) => {
+    setBootstrapResolved(resolved);
+  }, []);
+
+  return (
+    <>
+      <NativeTerminalDiagnosticsObserver />
+      <ConnectionLifecycle onBootstrapResolved={handleBootstrapResolved} />
+      <LatencySampler />
+      <NotificationObserver />
+      <AppNavigator bootstrapResolved={bootstrapResolved} />
+    </>
+  );
+}
+
+const NativeTerminalDiagnosticsObserver = memo(
+  function NativeTerminalDiagnosticsObserver() {
+    useEffect(() => {
+      const breadcrumb = getNativeTerminalCrashBreadcrumb();
+      if (!breadcrumb || breadcrumb.stage !== "before") {
+        return;
+      }
+
+      clearNativeTerminalCrashBreadcrumb();
+
+      const detail = breadcrumb.detail ? `\n${breadcrumb.detail}` : "";
+      const device = [breadcrumb.brand, breadcrumb.model]
+        .filter(Boolean)
+        .join(" ")
+        .trim();
+      const environment = [device, breadcrumb.abi].filter(Boolean).join(" / ");
+      const footer =
+        environment || breadcrumb.sdkInt
+          ? `\n\n${[
+              environment,
+              breadcrumb.sdkInt ? `Android ${breadcrumb.sdkInt}` : "",
+            ]
+              .filter(Boolean)
+              .join(" / ")}`
+          : "";
+
+      Alert.alert(
+        "Native terminal crashed last run",
+        `Last unfinished step: ${breadcrumb.operation}${detail}${footer}`,
+      );
+    }, []);
+
+    return null;
+  },
+);
+
+interface ConnectionLifecycleProps {
+  onBootstrapResolved(resolved: boolean): void;
+}
+
+const ConnectionLifecycle = memo(function ConnectionLifecycle({
+  onBootstrapResolved,
+}: ConnectionLifecycleProps) {
   const router = useRouter();
   const segments = useSegments();
-  const { state, dispatch } = useAgents();
-  const { dispatch: brainDispatch } = useBrain();
-  const { dispatch: workDispatch } = useWork();
-  const { colors } = useAppTheme();
-  const notificationListener = useRef<Notifications.EventSubscription | null>(
-    null,
-  );
-  const responseListener = useRef<Notifications.EventSubscription | null>(null);
-  const appStateRef = useRef<AppStateStatus>(AppState.currentState);
-  const notificationsEnabledRef = useRef(false);
-  const previousAgentStatesRef = useRef(new Map<string, Agent["status"]>());
-  const localNotificationSignalsRef = useRef(new Set<string>());
+  const dispatch = useAgentDispatch();
+  const brainDispatch = useBrainDispatch();
+  const workDispatch = useWorkDispatch();
+  const routerRef = useRef(router);
   const handledConnectLinksRef = useRef(new Set<string>());
   const rootSegment = segments[0];
   const rootSegmentRef = useRef(rootSegment);
-  const isTerminalRouteActive = rootSegment === "terminal";
 
   useEffect(() => {
     rootSegmentRef.current = rootSegment;
   }, [rootSegment]);
 
   useEffect(() => {
-    const breadcrumb = getNativeTerminalCrashBreadcrumb();
-    if (!breadcrumb || breadcrumb.stage !== "before") {
-      return;
-    }
-
-    clearNativeTerminalCrashBreadcrumb();
-
-    const detail = breadcrumb.detail ? `\n${breadcrumb.detail}` : "";
-    const device = [breadcrumb.brand, breadcrumb.model]
-      .filter(Boolean)
-      .join(" ")
-      .trim();
-    const environment = [device, breadcrumb.abi].filter(Boolean).join(" / ");
-    const footer =
-      environment || breadcrumb.sdkInt
-        ? `\n\n${[
-            environment,
-            breadcrumb.sdkInt ? `Android ${breadcrumb.sdkInt}` : "",
-          ]
-            .filter(Boolean)
-            .join(" / ")}`
-        : "";
-
-    Alert.alert(
-      "Native terminal crashed last run",
-      `Last unfinished step: ${breadcrumb.operation}${detail}${footer}`,
-    );
-  }, []);
+    routerRef.current = router;
+  }, [router]);
 
   const importConnectLink = useCallback(async (
     rawValue: string | null | undefined,
@@ -248,7 +286,7 @@ function AppContent() {
     try {
       const savedServer = await importConnection(trimmed, {
         onImported: () => {
-          router.replace({
+          routerRef.current.replace({
             pathname: "/settings",
             params: { refresh: Date.now().toString() },
           });
@@ -264,10 +302,12 @@ function AppContent() {
       console.log("Failed to import connect link:", error);
       return false;
     }
-  }, [router]);
+  }, []);
 
   // Auto-connect on app start.
   useEffect(() => {
+    onBootstrapResolved(false);
+
     const onAgentSessionList = (data: any) =>
       dispatch({
         type: "UPSERT_SERVER_AGENTS",
@@ -415,16 +455,25 @@ function AppContent() {
           return;
         }
 
-        const onboarded = await isOnboarded();
-        if (!onboarded && rootSegmentRef.current !== "onboarding") {
-          router.replace("/onboarding");
-          return;
-        }
-
-        const [servers, disabledServerIds] = await Promise.all([
+        const [onboarded, servers, disabledServerIds] = await Promise.all([
+          isOnboarded(),
           getServers(),
           getDisabledServerIds(),
         ]);
+        if (!onboarded && servers.length === 0) {
+          routerRef.current.replace("/onboarding");
+          return;
+        }
+        if (!onboarded) {
+          await markOnboarded();
+        }
+        if (
+          servers.length > 0 &&
+          rootSegmentRef.current === "onboarding"
+        ) {
+          routerRef.current.replace("/");
+        }
+
         const disabledSet = new Set(disabledServerIds);
         servers.forEach((server) => {
           if (disabledSet.has(server.id)) {
@@ -436,6 +485,7 @@ function AppContent() {
         console.log("Failed to bootstrap app:", error);
       } finally {
         wsClient.clearActiveAgentsExcept(null);
+        onBootstrapResolved(true);
       }
     })();
 
@@ -460,7 +510,13 @@ function AppContent() {
       wsClient.off("brain_snapshot", onBrainSnapshot);
       wsClient.off("connected", onConnectedFetchWork);
     };
-  }, [brainDispatch, dispatch, importConnectLink, router, workDispatch]);
+  }, [
+    brainDispatch,
+    dispatch,
+    importConnectLink,
+    onBootstrapResolved,
+    workDispatch,
+  ]);
 
   useEffect(() => {
     const subscription = Linking.addEventListener("url", (event) => {
@@ -472,18 +528,12 @@ function AppContent() {
     };
   }, [importConnectLink]);
 
-  useEffect(() => {
-    const subscription = AppState.addEventListener("change", (nextState) => {
-      appStateRef.current = nextState;
-      if (nextState !== "active") {
-        wsClient.clearActiveAgentsExcept(null);
-      }
-    });
+  return null;
+});
 
-    return () => {
-      subscription.remove();
-    };
-  }, []);
+const LatencySampler = memo(function LatencySampler() {
+  const dispatch = useAgentDispatch();
+  const serverConnections = useAgentServerConnections();
 
   useEffect(() => {
     let cancelled = false;
@@ -495,7 +545,7 @@ function AppContent() {
       }
 
       const connectedServers = servers.filter(
-        (server) => state.serverConnections[server.id] === "connected",
+        (server) => serverConnections[server.id] === "connected",
       );
       if (connectedServers.length === 0) {
         return;
@@ -542,11 +592,46 @@ function AppContent() {
       cancelled = true;
       clearInterval(interval);
     };
-  }, [dispatch, state.serverConnections]);
+  }, [dispatch, serverConnections]);
+
+  return null;
+});
+
+const NotificationObserver = memo(function NotificationObserver() {
+  const router = useRouter();
+  const segments = useSegments();
+  const agents = useAgentList();
+  const routerRef = useRef(router);
+  const notificationListener = useRef<Notifications.EventSubscription | null>(
+    null,
+  );
+  const responseListener = useRef<Notifications.EventSubscription | null>(null);
+  const appStateRef = useRef<AppStateStatus>(AppState.currentState);
+  const notificationsEnabledRef = useRef(false);
+  const previousAgentStatesRef = useRef(new Map<string, Agent["status"]>());
+  const localNotificationSignalsRef = useRef(new Set<string>());
+  const isTerminalRouteActive = segments[0] === "terminal";
+
+  useEffect(() => {
+    routerRef.current = router;
+  }, [router]);
+
+  useEffect(() => {
+    const subscription = AppState.addEventListener("change", (nextState) => {
+      appStateRef.current = nextState;
+      if (nextState !== "active") {
+        wsClient.clearActiveAgentsExcept(null);
+      }
+    });
+
+    return () => {
+      subscription.remove();
+    };
+  }, []);
 
   useEffect(() => {
     const nextAgentStates = new Map(
-      state.agents.map((agent) => [agent.key, agent.status]),
+      agents.map((agent) => [agent.key, agent.status]),
     );
     const previousAgentStates = previousAgentStatesRef.current;
 
@@ -566,7 +651,7 @@ function AppContent() {
       return;
     }
 
-    for (const agent of state.agents) {
+    for (const agent of agents) {
       const previousState = previousAgentStates.get(agent.key);
       if (!shouldNotifyForAgentTransition(previousState, agent)) {
         continue;
@@ -590,7 +675,7 @@ function AppContent() {
     }
 
     previousAgentStatesRef.current = nextAgentStates;
-  }, [isTerminalRouteActive, state.agents]);
+  }, [agents, isTerminalRouteActive]);
 
   // Register permissions and push token.
   useEffect(() => {
@@ -647,14 +732,14 @@ function AppContent() {
           typeof data?.server_id === "string" ? data.server_id : null;
 
         if (agentId && serverId) {
-          router.push({
+          routerRef.current.push({
             pathname: "/terminal/[id]",
             params: { id: agentId, serverId },
           });
           return;
         }
         if (data?.screen === "inbox") {
-          router.push("/");
+          routerRef.current.push("/list");
         }
       });
 
@@ -666,7 +751,23 @@ function AppContent() {
       notificationListener.current?.remove();
       responseListener.current?.remove();
     };
-  }, [router]);
+  }, []);
+
+  return null;
+});
+
+interface AppNavigatorProps {
+  bootstrapResolved: boolean;
+}
+
+const AppNavigator = memo(function AppNavigator({
+  bootstrapResolved,
+}: AppNavigatorProps) {
+  const { colors } = useAppTheme();
+
+  if (!bootstrapResolved) {
+    return null;
+  }
 
   return (
     <Stack
@@ -677,7 +778,22 @@ function AppContent() {
         animation: "slide_from_right",
       }}
     >
-      <Stack.Screen name="(tabs)" options={{ headerShown: false }} />
+      <Stack.Screen name="(primary)" options={{ headerShown: false }} />
+      <Stack.Screen name="work" options={{ headerShown: false }} />
+      <Stack.Screen
+        name="stats"
+        options={{
+          title: "Stats",
+          headerLeft: () => <SecondaryBackButton />,
+        }}
+      />
+      <Stack.Screen
+        name="settings"
+        options={{
+          title: "Settings",
+          headerLeft: () => <SecondaryBackButton />,
+        }}
+      />
       <Stack.Screen
         name="terminal/[id]"
         options={{ headerShown: false, animation: "none" }}
@@ -688,6 +804,36 @@ function AppContent() {
         options={{ headerShown: false, presentation: "modal" }}
       />
     </Stack>
+  );
+});
+
+AppNavigator.displayName = "AppNavigator";
+
+function SecondaryBackButton() {
+  const router = useRouter();
+  const navigation = useNavigation();
+  const { colors } = useAppTheme();
+  return (
+    <Pressable
+      accessibilityRole="button"
+      accessibilityLabel="Back"
+      hitSlop={8}
+      onPress={() => {
+        if (navigation.canGoBack()) {
+          router.back();
+          return;
+        }
+        router.replace("/");
+      }}
+      style={{
+        width: 44,
+        minHeight: 44,
+        alignItems: "flex-start",
+        justifyContent: "center",
+      }}
+    >
+      <Ionicons name="chevron-back" size={23} color={colors.textPrimary} />
+    </Pressable>
   );
 }
 
@@ -727,7 +873,7 @@ export default function RootLayout() {
               <WorkProvider>
                 <SafeAreaProvider>
                   <ThemedStatusBar />
-                  <AppContent />
+                  <AppRuntime />
                 </SafeAreaProvider>
               </WorkProvider>
             </BrainProvider>

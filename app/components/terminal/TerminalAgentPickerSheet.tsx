@@ -15,7 +15,7 @@ import Animated, {
   withTiming,
   Easing,
 } from "react-native-reanimated";
-import { Colors, Typography } from "../../constants/tokens";
+import { TypeScale } from "../../constants/tokens";
 import { Spring } from "../../constants/motion";
 import type { TerminalThemeChrome } from "../../constants/terminalThemes";
 import type { AgentDirectorySection } from "../../services/serverSelection";
@@ -38,11 +38,6 @@ interface TerminalAgentPickerSheetProps {
   onNewTerminal(): void;
 }
 
-/**
- * Bottom sheet for picking a terminal session. Uses terminal chrome colors but
- * opens with the app-wide backdrop fade + spring rise so it feels like the
- * other sheets in zen.
- */
 export function TerminalAgentPickerSheet({
   visible,
   sections,
@@ -76,7 +71,11 @@ export function TerminalAgentPickerSheet({
     <Modal visible={visible} transparent animationType="none" onRequestClose={onClose}>
       <View style={styles.modalRoot}>
         <AnimatedPressableBackdrop
-          style={[styles.modalBackdrop, backdropStyle]}
+          style={[
+            styles.modalBackdrop,
+            { backgroundColor: chrome.overlay },
+            backdropStyle,
+          ]}
           onPress={onClose}
         />
 
@@ -108,11 +107,15 @@ export function TerminalAgentPickerSheet({
             style={[
               styles.sheetCreateButton,
               {
-                backgroundColor: chrome.surfaceMuted,
+                backgroundColor: creatingSession
+                  ? chrome.disabledSurface
+                  : chrome.surfaceMuted,
                 borderColor: chrome.border,
               },
-              creatingSession && styles.sheetCreateButtonDisabled,
             ]}
+            accessibilityRole="button"
+            accessibilityLabel="New terminal"
+            accessibilityState={{ disabled: creatingSession, busy: creatingSession }}
             preset="press"
             scale={0.97}
             disabled={creatingSession}
@@ -139,7 +142,6 @@ const styles = StyleSheet.create({
   },
   modalBackdrop: {
     ...StyleSheet.absoluteFill,
-    backgroundColor: "rgba(6, 8, 12, 0.58)",
   },
   sheetCard: {
     borderTopLeftRadius: 28,
@@ -147,9 +149,7 @@ const styles = StyleSheet.create({
     paddingHorizontal: 18,
     paddingTop: 12,
     paddingBottom: 28,
-    backgroundColor: "#121A25",
     borderTopWidth: 1,
-    borderColor: "rgba(255,255,255,0.06)",
     maxHeight: "82%",
   },
   sheetHandle: {
@@ -157,28 +157,20 @@ const styles = StyleSheet.create({
     width: 42,
     height: 4,
     borderRadius: 2,
-    backgroundColor: "#3A475B",
     marginBottom: 14,
   },
   sheetCreateButton: {
     marginTop: 12,
-    height: 42,
+    height: 44,
     borderRadius: 12,
-    backgroundColor: "rgba(255,255,255,0.04)",
     borderWidth: StyleSheet.hairlineWidth,
-    borderColor: "rgba(255,255,255,0.08)",
     borderStyle: "dashed" as const,
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "center",
     gap: 6,
   },
-  sheetCreateButtonDisabled: {
-    opacity: 0.5,
-  },
   sheetCreateButtonText: {
-    color: Colors.textSecondary,
-    fontSize: 13,
-    fontFamily: Typography.uiFont,
+    ...TypeScale.label,
   },
 });

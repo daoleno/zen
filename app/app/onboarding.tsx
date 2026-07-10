@@ -4,7 +4,6 @@ import * as Haptics from "expo-haptics";
 import { useRouter } from "expo-router";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { Colors, Radii, Spacing, Typography, useAppColors, shadow } from "../constants/tokens";
-import { markOnboarded } from "../services/storage";
 import { AnimatedPressable } from "../components/ui/AnimatedPressable";
 import { Enter } from "../components/ui/Enter";
 
@@ -89,12 +88,14 @@ export default function OnboardingScreen() {
             style={styles.doneBtn}
             preset="press"
             scale={0.97}
-            onPress={async () => {
+            onPress={() => {
               Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
-              await markOnboarded();
-              router.replace({
+              router.push({
                 pathname: "/settings",
-                params: { addServer: Date.now().toString() },
+                params: {
+                  addServer: Date.now().toString(),
+                  pairingRequired: "1",
+                },
               });
             }}
           >

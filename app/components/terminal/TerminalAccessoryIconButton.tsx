@@ -27,8 +27,8 @@ export function TerminalAccessoryIconButton({
     <TouchableOpacity
       accessibilityLabel={accessibilityLabel}
       accessibilityRole="button"
-      accessibilityState={accessibilityState}
-      style={[styles.button, disabled ? styles.disabled : null]}
+      accessibilityState={{ ...accessibilityState, disabled }}
+      style={styles.button}
       onPress={onPress}
       disabled={disabled}
       activeOpacity={0.75}
@@ -40,13 +40,10 @@ export function TerminalAccessoryIconButton({
 
 const styles = StyleSheet.create({
   button: {
-    width: 36,
-    height: 36,
+    width: 44,
+    height: 44,
     marginRight: 2,
     alignItems: "center",
     justifyContent: "center",
-  },
-  disabled: {
-    opacity: 0.35,
   },
 });

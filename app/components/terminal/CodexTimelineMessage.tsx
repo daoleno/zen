@@ -9,14 +9,8 @@ import type {
   TerminalThemeChrome,
   TerminalThemePalette,
 } from "../../constants/terminalThemes";
-import { Typography, useAppTheme } from "../../constants/tokens";
-import { isAmbientChatChrome } from "../../constants/themedSurfaces";
+import { TypeScale, Typography, useAppTheme } from "../../constants/tokens";
 import type { MessagePresentation } from "./CodexTimelineGrouping";
-import {
-  chromeForSentBubble,
-  resolveReceivedBubbleColor,
-  resolveSentBubbleColor,
-} from "./chatBubbleColors";
 import { MessageBubbleFooter } from "./MessageBubbleFooter";
 import {
   chatgptUserBubbleRadii,
@@ -85,15 +79,14 @@ export function ZenUserMessage({
   }
 
   const hasBody = item.body.trim().length > 0;
-  const sentBubbleColor = isChatGpt
-    ? zenTheme.chat.sentBubble
-    : resolveSentBubbleColor(chrome);
-  const sentChrome = chromeForSentBubble(
-    isChatGpt
-      ? { ...chrome, text: zenTheme.chat.sentText }
-      : chrome,
-    sentBubbleColor,
-  );
+  const sentBubbleColor = zenTheme.chat.sentBubble;
+  const sentChrome = {
+    ...chrome,
+    text: zenTheme.chat.sentText,
+    textMuted: zenTheme.chat.sentTimestamp,
+    textSubtle: zenTheme.chat.sentTimestamp,
+    link: zenTheme.chat.sentText,
+  };
   const spacing = messageRowSpacing(
     presentation.compactTop,
     presentation.compactBottom,
@@ -113,12 +106,11 @@ export function ZenUserMessage({
           {
             backgroundColor: sentBubbleColor,
             borderColor: item.pending ? chrome.borderStrong : "transparent",
-            opacity: item.pending ? 0.88 : 1,
           },
         ]}
       >
         {hasBody ? (
-          <MessageBody value={item.body} chrome={sentChrome} theme={theme} compact />
+          <MessageBody value={item.body} chrome={sentChrome} theme={theme} />
         ) : null}
         {item.attachments.length > 0 ? (
           <CodexTimelineAttachmentPreviewList
@@ -127,7 +119,7 @@ export function ZenUserMessage({
             compact={hasBody}
           />
         ) : null}
-        {zenTheme.chat.showTimestamps ? (
+        {item.pending || zenTheme.chat.showTimestamps ? (
           <MessageBubbleFooter
             timestamp={item.timestamp}
             tone="sent"
@@ -155,18 +147,15 @@ function HeartbeatWakeCard({
       event.newState &&
       event.status.trim().toLowerCase() !== event.newState.trim().toLowerCase(),
   );
-
-  // The card sits on the sent (or, in ambient chrome, received) bubble color.
-  // The base chrome text tokens are calibrated for the chat background, not the
-  // bubble, so on dark sent bubbles (e.g. #2B5278) textSubtle/textMuted and the
-  // accentSoft icon badge become near-invisible. Re-derive the bubble chrome the
-  // same way ZenUserMessage does so text/borders switch to white-based on dark
-  // bubbles while light mode is left untouched.
-  const ambient = isAmbientChatChrome(chrome);
-  const cardColor = ambient
-    ? resolveReceivedBubbleColor(chrome)
-    : resolveSentBubbleColor(chrome);
-  const cardChrome = chromeForSentBubble(chrome, cardColor);
+  const { theme: zenTheme } = useAppTheme();
+  const cardColor = zenTheme.chat.sentBubble;
+  const cardChrome = {
+    ...chrome,
+    text: zenTheme.chat.sentText,
+    textMuted: zenTheme.chat.sentTimestamp,
+    textSubtle: zenTheme.chat.sentTimestamp,
+    link: zenTheme.chat.sentText,
+  };
 
   return (
     <View style={styles.eventRow}>
@@ -315,16 +304,17 @@ export function ZenAssistantMessage({
 }) {
   const { theme: zenTheme } = useAppTheme();
   const chatLayout = zenTheme.chat.layout;
-  const isChatGpt = chatLayout === "chatgpt";
   const spacing = messageRowSpacing(
     presentation.compactTop,
     presentation.compactBottom,
     chatLayout,
     "assistant",
   );
-  const assistantChrome = isChatGpt
-    ? { ...chrome, text: zenTheme.chat.receivedText }
-    : chrome;
+  const assistantChrome = {
+    ...chrome,
+    text: zenTheme.chat.receivedText,
+    link: zenTheme.chat.link,
+  };
   const showSender =
     senderLabel &&
     presentation.groupPosition !== "middle" &&
@@ -333,7 +323,7 @@ export function ZenAssistantMessage({
   return (
     <View
       style={[
-        isChatGpt ? styles.assistantRowChatGpt : styles.assistantRowFlat,
+        styles.assistantRow,
         spacing,
       ]}
     >
@@ -342,24 +332,30 @@ export function ZenAssistantMessage({
           {senderLabel}
         </Text>
       ) : null}
-      <MessageBody
-        value={item.body}
-        chrome={assistantChrome}
-        theme={theme}
-        dense
-      />
-      {zenTheme.chat.showTimestamps ? (
-        <MessageBubbleFooter
-          timestamp={item.timestamp}
-          tone="received"
+      <View
+        style={styles.assistantContent}
+      >
+        <MessageBody
+          value={item.body}
+          chrome={assistantChrome}
+          theme={theme}
         />
-      ) : null}
+        {zenTheme.chat.showTimestamps ? (
+          <MessageBubbleFooter
+            timestamp={item.timestamp}
+            tone="received"
+          />
+        ) : null}
+      </View>
     </View>
   );
 }
 
 const styles = StyleSheet.create({
   userRow: {
+    alignSelf: "stretch",
+    width: "100%",
+    minWidth: 0,
     flexDirection: "row",
     justifyContent: "flex-end",
   },
@@ -376,21 +372,21 @@ const styles = StyleSheet.create({
     paddingHorizontal: 14,
     paddingVertical: 10,
   },
-  assistantRowFlat: {
+  assistantRow: {
     alignSelf: "stretch",
-    paddingRight: 4,
-    maxWidth: "100%",
-  },
-  assistantRowChatGpt: {
-    alignSelf: "stretch",
-    paddingRight: 4,
+    width: "100%",
+    minWidth: 0,
   },
   assistantSender: {
     fontFamily: Typography.uiFontMedium,
     fontSize: 12,
     lineHeight: 15,
     marginBottom: 3,
-    opacity: 0.9,
+  },
+  assistantContent: {
+    alignSelf: "stretch",
+    width: "100%",
+    minWidth: 0,
   },
   eventRow: {
     marginBottom: 12,
@@ -426,10 +422,8 @@ const styles = StyleSheet.create({
     gap: 8,
   },
   heartbeatTitle: {
+    ...TypeScale.label,
     flexShrink: 0,
-    fontSize: 12.5,
-    lineHeight: 17,
-    fontFamily: Typography.uiFontMedium,
   },
   heartbeatReason: {
     flex: 1,
@@ -449,18 +443,14 @@ const styles = StyleSheet.create({
     minWidth: 0,
   },
   heartbeatFieldLabel: {
+    ...TypeScale.micro,
     width: 68,
-    fontSize: 10,
-    lineHeight: 13,
-    fontFamily: Typography.uiFontMedium,
     textTransform: "uppercase",
-    opacity: 0.7,
   },
   heartbeatFieldValue: {
+    ...TypeScale.caption,
     flex: 1,
     minWidth: 0,
-    fontSize: 11,
-    lineHeight: 15,
   },
   heartbeatSummary: {
     borderRadius: 12,
@@ -470,8 +460,6 @@ const styles = StyleSheet.create({
     minWidth: 0,
   },
   heartbeatSummaryText: {
-    fontSize: 12,
-    lineHeight: 16,
-    fontFamily: Typography.uiFont,
+    ...TypeScale.caption,
   },
 });

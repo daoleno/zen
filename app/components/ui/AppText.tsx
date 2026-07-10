@@ -1,9 +1,8 @@
 import React from "react";
 import { Text, type StyleProp, StyleSheet, type TextProps, type TextStyle } from "react-native";
 import {
-  Typography,
+  TypeScale,
   UiTextMetrics,
-  uiLineHeight,
   useAppColors,
 } from "../../constants/tokens";
 
@@ -11,14 +10,28 @@ type AppTextVariant =
   | "display"
   | "sheetTitle"
   | "title"
+  | "heading"
   | "subtitle"
+  | "compact"
   | "label"
   | "body"
   | "caption"
+  | "micro"
   | "mono"
+  | "monoStrong"
   | "button";
 
-type AppTextTone = "primary" | "secondary" | "muted" | "danger" | "accent" | "onAccent";
+type AppTextTone =
+  | "primary"
+  | "secondary"
+  | "tertiary"
+  | "muted"
+  | "disabled"
+  | "danger"
+  | "warning"
+  | "success"
+  | "accent"
+  | "onAccent";
 
 interface AppTextProps extends TextProps {
   variant?: AppTextVariant;
@@ -52,7 +65,15 @@ function toneColor(tone: AppTextTone, colors: ReturnType<typeof useAppColors>) {
       return colors.accent;
     case "danger":
       return colors.dangerText;
+    case "warning":
+      return colors.warning;
+    case "success":
+      return colors.success;
     case "muted":
+    case "tertiary":
+      return colors.textTertiary;
+    case "disabled":
+      return colors.disabledText;
     case "secondary":
       return colors.textSecondary;
     case "onAccent":
@@ -67,49 +88,17 @@ const styles = StyleSheet.create({
 });
 
 const variantStyles = StyleSheet.create({
-  display: {
-    fontSize: 30,
-    lineHeight: uiLineHeight(30),
-    fontFamily: Typography.uiFontMedium,
-  },
-  sheetTitle: {
-    fontSize: 20,
-    lineHeight: uiLineHeight(20),
-    fontFamily: Typography.uiFontMedium,
-  },
-  title: {
-    fontSize: 16,
-    lineHeight: uiLineHeight(16),
-    fontFamily: Typography.uiFontMedium,
-  },
-  subtitle: {
-    fontSize: 14,
-    lineHeight: uiLineHeight(14),
-    fontFamily: Typography.uiFont,
-  },
-  label: {
-    fontSize: 12,
-    lineHeight: uiLineHeight(12),
-    fontFamily: Typography.uiFontMedium,
-  },
-  body: {
-    fontSize: 14,
-    lineHeight: uiLineHeight(14),
-    fontFamily: Typography.uiFont,
-  },
-  caption: {
-    fontSize: 12,
-    lineHeight: uiLineHeight(12),
-    fontFamily: Typography.uiFont,
-  },
-  mono: {
-    fontSize: 13,
-    lineHeight: uiLineHeight(13),
-    fontFamily: Typography.terminalFont,
-  },
-  button: {
-    fontSize: 14,
-    lineHeight: uiLineHeight(14),
-    fontFamily: Typography.uiFontMedium,
-  },
+  display: TypeScale.display,
+  sheetTitle: TypeScale.title,
+  title: TypeScale.heading,
+  heading: TypeScale.heading,
+  subtitle: TypeScale.compact,
+  compact: TypeScale.compact,
+  label: TypeScale.label,
+  body: TypeScale.body,
+  caption: TypeScale.caption,
+  micro: TypeScale.micro,
+  mono: TypeScale.mono,
+  monoStrong: TypeScale.monoStrong,
+  button: TypeScale.label,
 });

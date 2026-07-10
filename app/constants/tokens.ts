@@ -103,6 +103,87 @@ export const Typography = {
   metadataSize: 11,
 } as const;
 
+type TypeScaleStyle = Pick<
+  TextStyle,
+  'fontFamily' | 'fontSize' | 'fontWeight' | 'letterSpacing' | 'lineHeight'
+>;
+
+/** Authoritative product type roles with explicit mixed Latin/CJK metrics. */
+export const TypeScale = {
+  display: {
+    fontFamily: Typography.uiFontMedium,
+    fontSize: 30,
+    fontWeight: '500',
+    lineHeight: 38,
+    letterSpacing: 0,
+  },
+  title: {
+    fontFamily: Typography.uiFontMedium,
+    fontSize: 20,
+    fontWeight: '500',
+    lineHeight: 28,
+    letterSpacing: 0,
+  },
+  heading: {
+    fontFamily: Typography.uiFontMedium,
+    fontSize: 17,
+    fontWeight: '500',
+    lineHeight: 24,
+    letterSpacing: 0,
+  },
+  body: {
+    fontFamily: Typography.uiFont,
+    fontSize: 15,
+    fontWeight: '400',
+    lineHeight: 23,
+    letterSpacing: 0,
+  },
+  compact: {
+    fontFamily: Typography.uiFont,
+    fontSize: 14,
+    fontWeight: '400',
+    lineHeight: 21,
+    letterSpacing: 0,
+  },
+  label: {
+    fontFamily: Typography.uiFontMedium,
+    fontSize: 13,
+    fontWeight: '500',
+    lineHeight: 18,
+    letterSpacing: 0,
+  },
+  caption: {
+    fontFamily: Typography.uiFont,
+    fontSize: 12,
+    fontWeight: '400',
+    lineHeight: 17,
+    letterSpacing: 0,
+  },
+  micro: {
+    fontFamily: Typography.uiFontMedium,
+    fontSize: 11,
+    fontWeight: '500',
+    lineHeight: 15,
+    letterSpacing: 0,
+  },
+  mono: {
+    fontFamily: Typography.terminalFont,
+    fontSize: 13,
+    fontWeight: '400',
+    lineHeight: 20,
+    letterSpacing: 0,
+  },
+  monoStrong: {
+    fontFamily: Typography.terminalFontBold,
+    fontSize: 13,
+    fontWeight: '600',
+    lineHeight: 20,
+    letterSpacing: 0,
+  },
+} as const satisfies Record<string, TypeScaleStyle>;
+
+export type TypeScaleRole = keyof typeof TypeScale;
+
 export type AgentStatus = 'running' | 'blocked' | 'done' | 'failed' | 'unknown';
 export type RunStatus = 'queued' | 'running' | 'blocked' | 'done' | 'failed' | 'cancelled';
 

@@ -16,7 +16,7 @@ import type { TerminalThemeChrome } from "../../constants/terminalThemes";
 import { buildChatChrome } from "../../theme";
 import {
   Colors,
-  Typography,
+  TypeScale,
   useAppColors,
   useAppTheme,
 } from "../../constants/tokens";
@@ -292,11 +292,13 @@ export default function BrainScreen() {
   return (
     <SafeAreaView
       style={[styles.screen, { backgroundColor: chrome.appBackground }]}
-      edges={["top"]}
+      edges={[]}
     >
       <BrainChatHeader
         chrome={chrome}
         adapter={hostAdapter}
+        sessionName={hostAgent?.name}
+        workspace={activeBrain?.workspace}
         canSwitchAdapter={canSwitchAdapter}
         newChatLoading={newChatLoading}
         canNewChat={Boolean(activeServer && activeBrain?.hydrated)}
@@ -315,10 +317,7 @@ export default function BrainScreen() {
         </View>
       ) : null}
 
-      <ChatCanvas
-        chrome={chrome}
-        showWallpaper={!canUseStructuredBrainInterface}
-      >
+      <ChatCanvas chrome={chrome}>
         {canUseStructuredBrainInterface ? (
           <CodexChatSurface
             key={`brain-chat:${activeServer?.id}:${hostAgent?.id}:${brainChatScopeKey ?? ""}`}
@@ -506,20 +505,15 @@ function createStateCardStyles(chrome: TerminalThemeChrome) {
       marginBottom: 4,
     },
     title: {
+      ...TypeScale.heading,
       color: chrome.text,
-      fontFamily: Typography.uiFontMedium,
-      fontSize: 18,
-      lineHeight: 24,
       textAlign: "center",
     },
     detail: {
+      ...TypeScale.compact,
       color: chrome.textMuted,
-      fontFamily: Typography.uiFont,
-      fontSize: 14,
-      lineHeight: 20,
       textAlign: "center",
       maxWidth: 280,
-      opacity: 0.9,
     },
   });
 }
@@ -563,10 +557,8 @@ function createStyles(colors: typeof Colors) {
       zIndex: 2,
     },
     bannerErrorText: {
+      ...TypeScale.caption,
       color: colors.dangerText,
-      fontFamily: Typography.uiFont,
-      fontSize: 12.5,
-      lineHeight: 17,
     },
   });
 }

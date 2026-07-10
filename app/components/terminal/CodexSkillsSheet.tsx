@@ -158,7 +158,7 @@ export function CodexSkillsSheet({
           <TouchableOpacity
             accessibilityLabel="Clear skill search"
             accessibilityRole="button"
-            hitSlop={8}
+            style={styles.clearButton}
             onPress={() => setQuery("")}
             activeOpacity={0.72}
           >
@@ -300,20 +300,20 @@ const styles = StyleSheet.create({
     fontFamily: Typography.uiFontMedium,
   },
   closeButton: {
-    width: 34,
-    height: 34,
-    borderRadius: 17,
+    width: 44,
+    height: 44,
+    borderRadius: 22,
     alignItems: "center",
     justifyContent: "center",
   },
   search: {
-    height: 40,
+    minHeight: 44,
     borderRadius: 8,
     borderWidth: StyleSheet.hairlineWidth,
     flexDirection: "row",
     alignItems: "center",
     gap: 8,
-    paddingHorizontal: 10,
+    paddingLeft: 10,
     marginBottom: 8,
     zIndex: 2,
     elevation: 2,
@@ -321,7 +321,7 @@ const styles = StyleSheet.create({
   searchInput: {
     flex: 1,
     minWidth: 0,
-    height: 38,
+    height: 42,
     paddingTop: 0,
     paddingBottom: 0,
     paddingVertical: 0,
@@ -330,6 +330,12 @@ const styles = StyleSheet.create({
     fontFamily: Typography.uiFont,
     includeFontPadding: false,
     textAlignVertical: "center",
+  },
+  clearButton: {
+    width: 44,
+    height: 44,
+    alignItems: "center",
+    justifyContent: "center",
   },
   list: {
     flexShrink: 1,
@@ -377,8 +383,8 @@ const styles = StyleSheet.create({
     fontFamily: Typography.terminalFont,
   },
   scope: {
-    fontSize: 10,
-    lineHeight: 13,
+    fontSize: 11,
+    lineHeight: 15,
     fontFamily: Typography.uiFontMedium,
     textTransform: "uppercase",
   },

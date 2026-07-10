@@ -50,8 +50,6 @@ export function TerminalTopBar({
   onOpenGitDiff,
   onOpenMenu,
 }: TerminalTopBarProps) {
-  // Terminal/chat toggle lives in the overflow menu; header keeps Git + menu
-  // together in one circular chip for a cleaner Telegram-like chrome.
   const rightActions = useMemo(
     () => [
       {

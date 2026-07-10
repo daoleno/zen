@@ -7,6 +7,7 @@ import { AnimatedPressable } from "../ui/AnimatedPressable";
 import {
   Colors,
   Radii,
+  TypeScale,
   Typography,
   UiTextMetrics,
   uiLineHeight,
@@ -73,9 +74,12 @@ export function BrainAdapterSheet({
                 styles.row,
                 {
                   borderColor: active ? colors.accent : themed.border,
-                  backgroundColor: active ? colors.surfaceActive : themed.surface,
+                  backgroundColor: busy
+                    ? colors.disabledSurface
+                    : active
+                      ? colors.surfaceActive
+                      : themed.surface,
                 },
-                busy ? styles.rowBusy : null,
               ]}
               onPress={() => {
                 if (busy) {
@@ -123,18 +127,14 @@ function createStyles(theme: ResolvedZenTheme) {
   return StyleSheet.create({
     title: {
       ...UiTextMetrics,
+      ...TypeScale.title,
       color: colors.textPrimary,
-      fontFamily: Typography.uiFontMedium,
-      fontSize: 20,
-      lineHeight: uiLineHeight(20),
       marginBottom: 6,
     },
     lead: {
       ...UiTextMetrics,
+      ...TypeScale.compact,
       color: colors.textSecondary,
-      fontFamily: Typography.uiFont,
-      fontSize: 13.5,
-      lineHeight: uiLineHeight(13.5),
       marginBottom: 16,
     },
     list: {
@@ -149,9 +149,6 @@ function createStyles(theme: ResolvedZenTheme) {
       flexDirection: "row",
       alignItems: "center",
       gap: 12,
-    },
-    rowBusy: {
-      opacity: 0.6,
     },
     rowMain: {
       flex: 1,
@@ -183,11 +180,9 @@ function createStyles(theme: ResolvedZenTheme) {
       lineHeight: 14,
     },
     error: {
+      ...TypeScale.caption,
       marginTop: 12,
       color: colors.dangerText,
-      fontFamily: Typography.uiFont,
-      fontSize: 12.5,
-      lineHeight: 17,
     },
   });
 }

@@ -306,25 +306,33 @@ function adapterCapabilitiesEqual(
   );
 }
 
-const BrainContext = createContext<{
-  state: BrainState;
-  dispatch: React.Dispatch<Action>;
-} | null>(null);
+const BrainStateContext = createContext<BrainState | null>(null);
+const BrainDispatchContext = createContext<React.Dispatch<Action> | null>(null);
 
 export function BrainProvider({ children }: { children: ReactNode }) {
   const [state, dispatch] = useReducer(brainReducer, initialBrainState);
-  const value = React.useMemo(() => ({ state, dispatch }), [state]);
   return (
-    <BrainContext.Provider value={value}>
-      {children}
-    </BrainContext.Provider>
+    <BrainDispatchContext.Provider value={dispatch}>
+      <BrainStateContext.Provider value={state}>
+        {children}
+      </BrainStateContext.Provider>
+    </BrainDispatchContext.Provider>
   );
 }
 
 export function useBrain() {
-  const ctx = useContext(BrainContext);
-  if (!ctx) {
+  const state = useContext(BrainStateContext);
+  const dispatch = useContext(BrainDispatchContext);
+  if (!state || !dispatch) {
     throw new Error("useBrain must be used within BrainProvider");
   }
-  return ctx;
+  return { state, dispatch };
+}
+
+export function useBrainDispatch() {
+  const dispatch = useContext(BrainDispatchContext);
+  if (!dispatch) {
+    throw new Error("useBrainDispatch must be used within BrainProvider");
+  }
+  return dispatch;
 }

@@ -411,7 +411,12 @@ function normalizeTimestamp(value: RawAgent['updated_at']): number {
   return Date.now();
 }
 
-const AgentContext = createContext<{ state: State; dispatch: React.Dispatch<Action> } | null>(null);
+const AgentStateContext = createContext<State | null>(null);
+const AgentDispatchContext = createContext<React.Dispatch<Action> | null>(null);
+const AgentListContext = createContext<State['agents'] | null>(null);
+const AgentServerConnectionsContext = createContext<
+  State['serverConnections'] | null
+>(null);
 const AgentServerSummaryContext = createContext<{
   agentCountsByServer: State['agentCountsByServer'];
   serverConnections: State['serverConnections'];
@@ -423,7 +428,6 @@ const AgentServerSummaryContext = createContext<{
 
 export function AgentProvider({ children }: { children: ReactNode }) {
   const [state, dispatch] = useReducer(reducer, initialState);
-  const value = React.useMemo(() => ({ state, dispatch }), [state]);
   const serverSummaryValue = React.useMemo(
     () => ({
       agentCountsByServer: state.agentCountsByServer,
@@ -442,18 +446,55 @@ export function AgentProvider({ children }: { children: ReactNode }) {
     ],
   );
   return (
-    <AgentContext.Provider value={value}>
-      <AgentServerSummaryContext.Provider value={serverSummaryValue}>
-        {children}
-      </AgentServerSummaryContext.Provider>
-    </AgentContext.Provider>
+    <AgentDispatchContext.Provider value={dispatch}>
+      <AgentStateContext.Provider value={state}>
+        <AgentListContext.Provider value={state.agents}>
+          <AgentServerConnectionsContext.Provider
+            value={state.serverConnections}
+          >
+            <AgentServerSummaryContext.Provider value={serverSummaryValue}>
+              {children}
+            </AgentServerSummaryContext.Provider>
+          </AgentServerConnectionsContext.Provider>
+        </AgentListContext.Provider>
+      </AgentStateContext.Provider>
+    </AgentDispatchContext.Provider>
   );
 }
 
 export function useAgents() {
-  const ctx = useContext(AgentContext);
-  if (!ctx) throw new Error('useAgents must be used within AgentProvider');
-  return ctx;
+  const state = useContext(AgentStateContext);
+  const dispatch = useContext(AgentDispatchContext);
+  if (!state || !dispatch) {
+    throw new Error('useAgents must be used within AgentProvider');
+  }
+  return { state, dispatch };
+}
+
+export function useAgentDispatch() {
+  const dispatch = useContext(AgentDispatchContext);
+  if (!dispatch) {
+    throw new Error('useAgentDispatch must be used within AgentProvider');
+  }
+  return dispatch;
+}
+
+export function useAgentList() {
+  const agents = useContext(AgentListContext);
+  if (!agents) {
+    throw new Error('useAgentList must be used within AgentProvider');
+  }
+  return agents;
+}
+
+export function useAgentServerConnections() {
+  const serverConnections = useContext(AgentServerConnectionsContext);
+  if (!serverConnections) {
+    throw new Error(
+      'useAgentServerConnections must be used within AgentProvider',
+    );
+  }
+  return serverConnections;
 }
 
 export function useAgentServerSummary() {

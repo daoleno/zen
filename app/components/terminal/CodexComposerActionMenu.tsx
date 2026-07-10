@@ -71,7 +71,7 @@ export function CodexComposerActionMenu({
           accessibilityState={{ disabled: !canAttach, busy: uploading }}
           style={[
             styles.actionRow,
-            !canAttach ? { opacity: 0.54 } : null,
+            !canAttach ? { backgroundColor: chrome.disabledSurface } : null,
           ]}
           onPress={onUploadPress}
           disabled={!canAttach}
@@ -261,8 +261,8 @@ const styles = StyleSheet.create({
     paddingHorizontal: 11,
     paddingTop: 10,
     paddingBottom: 2,
-    fontSize: 10,
-    lineHeight: 13,
+    fontSize: 11,
+    lineHeight: 15,
     fontFamily: Typography.uiFontMedium,
   },
   commandGroupLabelFirst: {

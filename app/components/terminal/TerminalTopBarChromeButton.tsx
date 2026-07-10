@@ -36,7 +36,7 @@ export function TerminalTopBarChromeButton({
         }
       }}
       disabled={disabled}
-      style={[styles.button, disabled ? styles.disabled : null]}
+      style={styles.button}
       preset="press"
       scale={0.88}
     >
@@ -47,12 +47,10 @@ export function TerminalTopBarChromeButton({
 
 const styles = StyleSheet.create({
   button: {
-    width: 32,
-    height: 32,
+    width: 44,
+    height: 44,
     alignItems: "center",
     justifyContent: "center",
-  },
-  disabled: {
-    opacity: 0.48,
+    opacity: 1,
   },
 });

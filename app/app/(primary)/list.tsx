@@ -1,31 +1,40 @@
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+import React, { memo, useCallback, useEffect, useMemo, useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
-  FlatList,
-  LayoutAnimation,
-  NativeScrollEvent,
-  NativeSyntheticEvent,
-  PanResponder,
-  Platform,
-  SectionList,
   Linking,
-  ScrollView,
+  type ListRenderItem,
+  SectionList,
   StyleSheet,
   Text,
   TextInput,
-  TouchableOpacity,
+  useWindowDimensions,
   View,
 } from 'react-native';
 import { useFocusEffect, useRouter } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import * as Haptics from 'expo-haptics';
-import { SafeAreaView } from 'react-native-safe-area-context';
+import { Gesture, GestureDetector } from 'react-native-gesture-handler';
+import Animated, {
+  runOnJS,
+  useAnimatedScrollHandler,
+  useSharedValue,
+} from 'react-native-reanimated';
+import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Agent, useAgents } from '../../store/agents';
 import { useWork, type WorkItem } from '../../store/work';
-import { AgentStatus, Colors, Radii, Typography, useAppColors, useAppTheme, shadow } from '../../constants/tokens';
+import {
+  Colors,
+  Radii,
+  TypeScale,
+  UiTextMetrics,
+  type AgentStatus,
+  useAppColors,
+  useAppTheme,
+  shadow,
+} from '../../constants/tokens';
 import type { ResolvedZenTheme } from '../../theme';
-import { createThemedSurfaces, glassCardShadow } from '../../constants/themedSurfaces';
+import { createThemedSurfaces } from '../../constants/themedSurfaces';
 import { AgentsListHeader, type AgentsStatusFilter } from '../../components/agents/AgentsListHeader';
 import { AnimatedPressable } from '../../components/ui/AnimatedPressable';
 import { MeditationModal } from '../../components/meditation/MeditationModal';
@@ -34,9 +43,7 @@ import { RisingSheet } from '../../components/ui/RisingSheet';
 import { Enter } from '../../components/ui/Enter';
 import { TerminalPreview } from '../../components/terminal/TerminalPreview';
 import { AgentKindIcon } from '../../components/terminal/AgentKindIcon';
-import { AgentSessionRow } from '../../components/agents/AgentSessionRow';
-import { formatTelegramListTime } from '../../constants/telegramPresentation';
-import { formatAgentSessionPreview } from '../../services/sessionPreview';
+import { AgentListRowContainer } from '../../components/agents/AgentListRowContainer';
 import { NewTerminalSheet } from '../../components/terminal/NewTerminalSheet';
 import { SessionServicesSheet } from '../../components/SessionServicesSheet';
 import {
@@ -75,11 +82,96 @@ const STATUS_PRIORITY: Record<AgentStatus, number> = {
   done: 1,
 };
 const MEDITATION_PULL_THRESHOLD = 132;
+const MEDITATION_ACTIVATION_DISTANCE = 8;
+const MEDITATION_DRAWER_EDGE_EXCLUSION = 24;
+const MEDITATION_HORIZONTAL_FAIL_DISTANCE = 12;
+const MEDITATION_AXIS_DOMINANCE = 1.25;
+
+const AnimatedSectionList = Animated.createAnimatedComponent(
+  SectionList<Agent, AgentDirectorySection>,
+);
+const MemoizedAgentsListHeader = memo(AgentsListHeader);
+const agentKeyExtractor = (agent: Agent) => agent.key;
+
+interface AgentGridItemProps {
+  agent: Agent;
+  alias?: string;
+  linkedWorkTitle?: string;
+  colors: typeof Colors;
+  styles: ReturnType<typeof createStyles>;
+  onOpenAgent(agent: Agent): void;
+  onOpenContextMenu(agent: Agent): void;
+}
+
+const AgentGridItem = memo(function AgentGridItem({
+  agent,
+  alias,
+  linkedWorkTitle,
+  colors,
+  styles,
+  onOpenAgent,
+  onOpenContextMenu,
+}: AgentGridItemProps) {
+  const presented = useMemo(() => presentAgent(agent, alias), [agent, alias]);
+  const sessionTitle = useMemo(
+    () => resolveSessionTitle(agent, presented, linkedWorkTitle),
+    [agent, linkedWorkTitle, presented],
+  );
+  const statusLabel = agentStatusLabel(agent.status);
+  const handlePress = useCallback(() => {
+    onOpenAgent(agent);
+  }, [agent, onOpenAgent]);
+  const handleLongPress = useCallback(() => {
+    void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+    onOpenContextMenu(agent);
+  }, [agent, onOpenContextMenu]);
+
+  return (
+    <AnimatedPressable
+      style={styles.gridCard}
+      preset="card"
+      scale={0.97}
+      onPress={handlePress}
+      onLongPress={handleLongPress}
+      delayLongPress={400}
+      accessibilityRole="button"
+      accessibilityLabel={`${sessionTitle}, ${statusLabel}`}
+      accessibilityHint="Opens the terminal session"
+      accessibilityState={{ busy: agent.status === 'running' }}
+    >
+      <View style={styles.gridHeader}>
+        <View style={styles.gridHeaderMain}>
+          <AgentKindIcon
+            kind={presented.kind}
+            flavor={presented.terminalFlavor}
+            size={15}
+          />
+          <Text style={styles.gridTitle} numberOfLines={1}>
+            {sessionTitle}
+          </Text>
+          {agent.delegated ? (
+            <BrainSessionBadge colors={colors} styles={styles} compact />
+          ) : null}
+        </View>
+        <AgentStatusIndicator
+          status={agent.status}
+          colors={colors}
+          styles={styles}
+        />
+      </View>
+      <View style={styles.gridPreview}>
+        <TerminalPreview key={agent.key} lines={agent.last_output_lines} />
+      </View>
+    </AnimatedPressable>
+  );
+});
 
 export default function InboxScreen() {
   const { state } = useAgents();
   const { state: workState } = useWork();
   const router = useRouter();
+  const insets = useSafeAreaInsets();
+  const { width: viewportWidth } = useWindowDimensions();
   const colors = useAppColors();
   const { theme } = useAppTheme();
   const styles = useMemo(() => createStyles(theme), [theme]);
@@ -111,9 +203,11 @@ export default function InboxScreen() {
   const [servicesLoading, setServicesLoading] = useState(false);
   const [servicesError, setServicesError] = useState<string | null>(null);
   const [meditationVisible, setMeditationVisible] = useState(false);
-  const [meditationPullDistance, setMeditationPullDistance] = useState(0);
-  const meditationPullDistanceRef = useRef(0);
-  const scrollYRef = useRef(0);
+  const meditationPullDistance = useSharedValue(0);
+  const meditationScrollOffsetY = useSharedValue(0);
+  const meditationTouchStartX = useSharedValue(0);
+  const meditationTouchStartY = useSharedValue(0);
+  const meditationGestureActivated = useSharedValue(0);
   const agentsHydrated = useMemo(
     () => servers.some(server => state.hydratedServers[server.id]),
     [servers, state.hydratedServers],
@@ -190,21 +284,29 @@ export default function InboxScreen() {
     return groupAgentsByDirectory(agentsByPriority).flatMap(section => section.data);
   }, [displayAgents, recentAgentOpens]);
 
+  const runningAgentCount = useMemo(
+    () => sortedAgents.filter((agent) => agent.status === 'running').length,
+    [sortedAgents],
+  );
+  const brainAgentCount = useMemo(
+    () => sortedAgents.filter((agent) => agent.delegated).length,
+    [sortedAgents],
+  );
   const filterOptions = useMemo(
     () => [
       { key: 'all' as const, label: 'All', count: sortedAgents.length },
       {
         key: 'running' as const,
         label: 'Running',
-        count: sortedAgents.filter((agent) => agent.status === 'running').length,
+        count: runningAgentCount,
       },
       {
         key: 'brain' as const,
         label: 'Brain',
-        count: sortedAgents.filter((agent) => agent.delegated).length,
+        count: brainAgentCount,
       },
     ],
-    [sortedAgents],
+    [brainAgentCount, runningAgentCount, sortedAgents.length],
   );
 
   const visibleAgents = useMemo(() => {
@@ -233,26 +335,6 @@ export default function InboxScreen() {
     [visibleAgents],
   );
 
-  // Animate row insertions/removals/reorders with a gentle layout transition,
-  // so the list settles instead of snapping when sessions come and go.
-  const prevAgentKeysRef = useRef<string[]>([]);
-  useEffect(() => {
-    const nextKeys = sortedAgents.map(a => a.key);
-    const prevKeys = prevAgentKeysRef.current;
-    const changed =
-      nextKeys.length !== prevKeys.length ||
-      nextKeys.some((k, i) => prevKeys[i] !== k);
-    if (changed && prevKeys.length > 0 && nextKeys.length > 0) {
-      LayoutAnimation.configureNext(
-        LayoutAnimation.create(
-          260,
-          LayoutAnimation.Types.easeInEaseOut,
-          LayoutAnimation.Properties.opacity,
-        ),
-      );
-    }
-    prevAgentKeysRef.current = nextKeys;
-  }, [sortedAgents]);
   const hasConfiguredServers = configuredServerCount > 0;
   const hasConnection = Object.keys(state.serverConnections).length > 0;
   const anyConnected = Object.values(state.serverConnections).includes('connected');
@@ -305,7 +387,7 @@ export default function InboxScreen() {
     await setInboxViewMode(mode);
   };
 
-  const openAgent = (agent: Agent) => {
+  const openAgent = useCallback((agent: Agent) => {
     const openedAt = Date.now();
     setRecentAgentOpens(previous => ({
       ...previous,
@@ -316,11 +398,11 @@ export default function InboxScreen() {
       pathname: '/terminal/[id]',
       params: { id: agent.id, serverId: agent.serverId },
     });
-  };
+  }, [router]);
 
-  const openContextMenu = (agent: Agent) => {
+  const openContextMenu = useCallback((agent: Agent) => {
     setMenuAgent(agent);
-  };
+  }, []);
 
   const closeContextMenu = () => {
     setMenuAgent(null);
@@ -466,52 +548,110 @@ export default function InboxScreen() {
     void refreshSessionServices();
   };
 
-  const openMeditation = () => {
-    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-    meditationPullDistanceRef.current = 0;
-    setMeditationPullDistance(0);
+  const openMeditation = useCallback(() => {
+    void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
     setMeditationVisible(true);
-  };
+  }, []);
 
-  const updateMeditationPull = (distance: number) => {
-    const nextDistance = Math.max(0, distance);
-    meditationPullDistanceRef.current = nextDistance;
-    setMeditationPullDistance(nextDistance);
-  };
+  const handleContentScroll = useAnimatedScrollHandler({
+    onScroll: (event) => {
+      const nextOffset = Math.max(0, event.contentOffset.y);
+      meditationScrollOffsetY.value = nextOffset;
+      if (nextOffset > 0 && meditationPullDistance.value > 0) {
+        meditationPullDistance.value = 0;
+      }
+    },
+  });
 
-  const handleContentScroll = (event: NativeSyntheticEvent<NativeScrollEvent>) => {
-    scrollYRef.current = Math.max(0, event.nativeEvent.contentOffset.y);
-    if (scrollYRef.current > 0 && meditationPullDistanceRef.current > 0) {
-      updateMeditationPull(0);
-    }
-  };
+  const meditationPullGesture = useMemo(
+    () => Gesture.Pan()
+      .enabled(!meditationVisible)
+      .manualActivation(true)
+      .maxPointers(1)
+      .enableTrackpadTwoFingerGesture(false)
+      .shouldCancelWhenOutside(false)
+      .onTouchesDown((event, stateManager) => {
+        meditationPullDistance.value = 0;
+        meditationGestureActivated.value = 0;
+        const touch = event.allTouches[0];
+        if (
+          event.numberOfTouches !== 1 ||
+          !touch ||
+          touch.absoluteX <= MEDITATION_DRAWER_EDGE_EXCLUSION ||
+          meditationScrollOffsetY.value > 0
+        ) {
+          stateManager.fail();
+          return;
+        }
+        meditationTouchStartX.value = touch.absoluteX;
+        meditationTouchStartY.value = touch.absoluteY;
+      })
+      .onTouchesMove((event, stateManager) => {
+        if (meditationGestureActivated.value === 1) {
+          return;
+        }
+        const touch = event.allTouches[0];
+        if (!touch || meditationScrollOffsetY.value > 0) {
+          meditationPullDistance.value = 0;
+          stateManager.fail();
+          return;
+        }
 
-  const finishMeditationPull = () => {
-    if (meditationPullDistanceRef.current >= MEDITATION_PULL_THRESHOLD) {
-      openMeditation();
-      return;
-    }
-    updateMeditationPull(0);
-  };
+        const dx = touch.absoluteX - meditationTouchStartX.value;
+        const dy = touch.absoluteY - meditationTouchStartY.value;
+        const absoluteDx = Math.abs(dx);
+        const absoluteDy = Math.abs(dy);
 
-  const meditationPullResponder = useMemo(
-    () =>
-      PanResponder.create({
-        onMoveShouldSetPanResponderCapture: (_, gesture) =>
-          scrollYRef.current <= 0 &&
-          gesture.dy > 8 &&
-          Math.abs(gesture.dy) > Math.abs(gesture.dx) * 1.25,
-        onPanResponderMove: (_, gesture) => {
-          if (scrollYRef.current > 0) {
-            updateMeditationPull(0);
-            return;
-          }
-          updateMeditationPull(gesture.dy);
-        },
-        onPanResponderRelease: finishMeditationPull,
-        onPanResponderTerminate: finishMeditationPull,
+        if (dy <= -MEDITATION_ACTIVATION_DISTANCE) {
+          stateManager.fail();
+          return;
+        }
+        if (
+          absoluteDx >= MEDITATION_HORIZONTAL_FAIL_DISTANCE &&
+          absoluteDx >= MEDITATION_AXIS_DOMINANCE * absoluteDy
+        ) {
+          stateManager.fail();
+          return;
+        }
+        if (
+          dy > MEDITATION_ACTIVATION_DISTANCE &&
+          absoluteDy > MEDITATION_AXIS_DOMINANCE * absoluteDx
+        ) {
+          stateManager.activate();
+        }
+      })
+      .onStart((event) => {
+        meditationGestureActivated.value = 1;
+        meditationPullDistance.value = Math.max(0, event.translationY);
+      })
+      .onUpdate((event) => {
+        if (meditationScrollOffsetY.value > 0) {
+          meditationPullDistance.value = 0;
+          return;
+        }
+        meditationPullDistance.value = Math.max(0, event.translationY);
+      })
+      .onEnd(() => {
+        const shouldOpen =
+          meditationPullDistance.value >= MEDITATION_PULL_THRESHOLD;
+        meditationPullDistance.value = 0;
+        if (shouldOpen) {
+          runOnJS(openMeditation)();
+        }
+      })
+      .onFinalize(() => {
+        meditationPullDistance.value = 0;
+        meditationGestureActivated.value = 0;
       }),
-    [],
+    [
+      meditationGestureActivated,
+      meditationPullDistance,
+      meditationScrollOffsetY,
+      meditationTouchStartX,
+      meditationTouchStartY,
+      meditationVisible,
+      openMeditation,
+    ],
   );
 
   const openServiceTerminal = (service: DiscoveredSessionService) => {
@@ -607,119 +747,104 @@ export default function InboxScreen() {
       ? 'Start an agent on your daemon, or create a terminal.'
       : primaryIssue?.detail || (anyConnecting ? null : 'Check server connection in Settings.');
 
-  const renderListAgent = ({ item }: { item: Agent }) => {
-    const presented = presentAgent(item, agentAliases[item.key]);
-    const sessionTitle = resolveSessionTitle(item, presented, agentWorkMap);
-    const sessionPreview = formatAgentSessionPreview(item, {
-      showServerName: showServerNames,
-      serverName: item.serverName,
-    });
-    return (
-      <AgentSessionRow
-        title={sessionTitle}
-        kind={presented.kind}
-        terminalFlavor={presented.terminalFlavor}
-        preview={sessionPreview.text}
-        previewTone={sessionPreview.tone}
-        previewPrefix={sessionPreview.prefix}
-        timeLabel={item.status === 'running' ? 'live' : formatTelegramListTime(item.updated_at)}
-        timeActive={item.status === 'running'}
-        running={item.status === 'running'}
-        showBrainBadge={Boolean(item.delegated)}
-        active={item.status === 'running'}
-        onPress={() => openAgent(item)}
-        onLongPress={() => {
-          Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
-          openContextMenu(item);
-        }}
-      />
-    );
-  };
+  const renderListAgent = useCallback<ListRenderItem<Agent>>(({ item }) => (
+    <AgentListRowContainer
+      agent={item}
+      alias={agentAliases[item.key]}
+      linkedWorkTitle={agentWorkMap[`${item.serverId}:${item.id}`]?.title}
+      showServerName={showServerNames}
+      onOpenAgent={openAgent}
+      onOpenContextMenu={openContextMenu}
+    />
+  ), [
+    agentAliases,
+    agentWorkMap,
+    openAgent,
+    openContextMenu,
+    showServerNames,
+  ]);
 
-  const renderListSectionHeader = ({ section }: { section: AgentDirectorySection }) => {
+  const renderListSectionHeader = useCallback(({
+    section,
+  }: {
+    section: AgentDirectorySection;
+  }) => {
     if (!useSectionHeaders) {
       return null;
     }
     return (
       <View style={styles.sectionHeader}>
-        <Text style={styles.sectionTitle} numberOfLines={1}>
+        <Text style={styles.sectionTitle} numberOfLines={1} ellipsizeMode="middle">
           {section.title}
         </Text>
       </View>
     );
-  };
+  }, [styles, useSectionHeaders]);
 
-  const renderGridAgent = ({ item }: { item: Agent }) => {
-    const presented = presentAgent(item, agentAliases[item.key]);
-    const sessionTitle = resolveSessionTitle(item, presented, agentWorkMap);
-    return (
-      <AnimatedPressable
-        style={styles.gridCard}
-        preset="card"
-        scale={0.97}
-        onPress={() => openAgent(item)}
-        onLongPress={() => {
-          Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
-          openContextMenu(item);
-        }}
-        delayLongPress={400}
-      >
-        <View style={styles.gridHeader}>
-          <View style={styles.gridHeaderMain}>
-            <AgentKindIcon
-              kind={presented.kind}
-              flavor={presented.terminalFlavor}
-              size={15}
-            />
-            <Text style={styles.gridTitle} numberOfLines={1}>
-              {sessionTitle}
-            </Text>
-            {item.delegated ? (
-              <BrainSessionBadge colors={colors} styles={styles} compact />
-            ) : null}
-          </View>
-          <AgentRunningIndicator
-            running={item.status === 'running'}
-            colors={colors}
-            styles={styles}
-          />
-        </View>
-        <View style={styles.gridPreview}>
-          <TerminalPreview key={item.key} lines={item.last_output_lines} />
-        </View>
-      </AnimatedPressable>
-    );
-  };
+  const renderGridAgent = useCallback<ListRenderItem<Agent>>(({ item }) => (
+    <AgentGridItem
+      agent={item}
+      alias={agentAliases[item.key]}
+      linkedWorkTitle={agentWorkMap[`${item.serverId}:${item.id}`]?.title}
+      colors={colors}
+      styles={styles}
+      onOpenAgent={openAgent}
+      onOpenContextMenu={openContextMenu}
+    />
+  ), [agentAliases, agentWorkMap, colors, openAgent, openContextMenu, styles]);
+
+  const renderRowSeparator = useCallback(
+    () => <View style={styles.rowGap} />,
+    [styles],
+  );
+  const renderSectionSeparator = useCallback(
+    () => <View style={styles.sectionGap} />,
+    [styles],
+  );
+  const renderGridSeparator = useCallback(
+    () => <View style={styles.gridGap} />,
+    [styles],
+  );
+  const openHeaderMenu = useCallback(() => {
+    setHeaderMenuVisible(true);
+  }, []);
+  const listContentContainerStyle = useMemo(() => [
+    styles.promptContent,
+    { paddingBottom: Math.max(insets.bottom, 16) + 76 },
+  ], [insets.bottom, styles]);
+  const gridContentContainerStyle = useMemo(() => [
+    styles.gridContent,
+    { paddingBottom: Math.max(insets.bottom, 16) + 76 },
+  ], [insets.bottom, styles]);
 
   return (
-    <SafeAreaView
-      style={styles.container}
-      edges={['top']}
-      {...meditationPullResponder.panHandlers}
-    >
-      <MeditationPullPreview
-        pullDistance={meditationPullDistance}
-        progress={meditationPullDistance / MEDITATION_PULL_THRESHOLD}
-      />
+    <GestureDetector gesture={meditationPullGesture}>
+      <SafeAreaView style={styles.container} edges={[]}>
+        <MeditationPullPreview
+          pullDistance={meditationPullDistance}
+          threshold={MEDITATION_PULL_THRESHOLD}
+        />
 
       {hasConnection && !anyConnected && (
-        <View style={styles.banner}>
-          <View style={[styles.bannerDot, { backgroundColor: bannerAccent }]} />
-          <Text style={styles.bannerText}>{bannerText}</Text>
+        <View style={styles.bannerWrap}>
+          <View style={styles.banner}>
+            <View style={[styles.bannerDot, { backgroundColor: bannerAccent }]} />
+            <Text style={styles.bannerText}>{bannerText}</Text>
+          </View>
         </View>
       )}
 
-      <AgentsListHeader
+      <MemoizedAgentsListHeader
         searchQuery={searchQuery}
         statusFilter={statusFilter}
         filterOptions={filterOptions}
         onSearchChange={setSearchQuery}
         onFilterChange={setStatusFilter}
-        onOpenMenu={() => setHeaderMenuVisible(true)}
+        onOpenMenu={openHeaderMenu}
       />
 
       {shouldShowInitialLoading ? (
-        <ScrollView
+        <Animated.ScrollView
           style={styles.flex}
           contentContainerStyle={styles.loadingContainer}
           onScroll={handleContentScroll}
@@ -728,9 +853,9 @@ export default function InboxScreen() {
           showsVerticalScrollIndicator={false}
         >
           <ActivityIndicator color={colors.accent} />
-        </ScrollView>
+        </Animated.ScrollView>
       ) : visibleAgents.length === 0 ? (
-        <ScrollView
+        <Animated.ScrollView
           style={styles.flex}
           contentContainerStyle={styles.emptyScrollContent}
           onScroll={handleContentScroll}
@@ -787,36 +912,36 @@ export default function InboxScreen() {
               ) : null}
             </View>
           </Enter>
-        </ScrollView>
+        </Animated.ScrollView>
       ) : viewMode === 'list' ? (
-        <SectionList
+        <AnimatedSectionList
           sections={listSections}
           key="list"
-          keyExtractor={item => item.key}
+          keyExtractor={agentKeyExtractor}
           renderItem={renderListAgent}
           renderSectionHeader={renderListSectionHeader}
           stickySectionHeadersEnabled={false}
-          contentContainerStyle={styles.promptContent}
+          contentContainerStyle={listContentContainerStyle}
           onScroll={handleContentScroll}
           scrollEventThrottle={16}
           alwaysBounceVertical
           removeClippedSubviews={false}
           windowSize={15}
           showsVerticalScrollIndicator={false}
-          ItemSeparatorComponent={() => <View style={styles.rowGap} />}
-          SectionSeparatorComponent={() => <View style={styles.sectionGap} />}
+          ItemSeparatorComponent={renderRowSeparator}
+          SectionSeparatorComponent={renderSectionSeparator}
         />
       ) : (
-        <FlatList
+        <Animated.FlatList<Agent>
           data={visibleAgents}
           key="grid"
-          keyExtractor={item => item.key}
+          keyExtractor={agentKeyExtractor}
           renderItem={renderGridAgent}
-          contentContainerStyle={styles.gridContent}
+          contentContainerStyle={gridContentContainerStyle}
           onScroll={handleContentScroll}
           scrollEventThrottle={16}
           alwaysBounceVertical
-          ItemSeparatorComponent={() => <View style={styles.gridGap} />}
+          ItemSeparatorComponent={renderGridSeparator}
           removeClippedSubviews={false}
           windowSize={21}
         />
@@ -857,17 +982,26 @@ export default function InboxScreen() {
 
       {visibleAgents.length > 0 ? (
         <AnimatedPressable
-          style={[styles.listFab, (!anyConnected || !!creatingServerId) && styles.listFabDisabled]}
+          style={[
+            styles.listFab,
+            {
+              bottom: Math.max(insets.bottom, 16) + 8,
+              right: Math.max(16, (viewportWidth - 760) / 2 + 16),
+            },
+            (!anyConnected || !!creatingServerId) && styles.listFabDisabled,
+          ]}
           preset="press"
           scale={0.92}
           onPress={openCreateTerminal}
           disabled={!!creatingServerId || !anyConnected}
           accessibilityLabel="New terminal"
+          accessibilityRole="button"
+          accessibilityState={{ disabled: !!creatingServerId || !anyConnected }}
         >
           <Ionicons
             name={creatingServerId ? 'hourglass-outline' : 'add'}
             size={28}
-            color={colors.textOnAccent}
+            color={!anyConnected || !!creatingServerId ? colors.disabledText : colors.textOnAccent}
           />
         </AnimatedPressable>
       ) : null}
@@ -1030,7 +1164,8 @@ export default function InboxScreen() {
         </View>
       </RisingSheet>
 
-    </SafeAreaView>
+      </SafeAreaView>
+    </GestureDetector>
   );
 }
 
@@ -1058,50 +1193,74 @@ function BrainSessionBadge({
   );
 }
 
-function AgentRunningIndicator({
-  running,
-  compact = false,
+function AgentStatusIndicator({
+  status,
   colors,
   styles,
 }: {
-  running: boolean;
-  compact?: boolean;
+  status: AgentStatus;
   colors: typeof Colors;
   styles: ReturnType<typeof createStyles>;
 }) {
-  if (running) {
-    return (
-      <View style={compact ? styles.sessionStatusBadge : styles.statusIndicator}>
+  const color = agentStatusColor(status, colors);
+  return (
+    <View style={styles.gridStatus} accessibilityLabel={`Status: ${agentStatusLabel(status)}`}>
+      {status === 'running' ? (
         <ActivityIndicator
           size="small"
-          color={colors.statusRunning}
-          style={compact ? styles.compactSpinner : styles.statusSpinner}
+          color={color}
+          style={styles.statusSpinner}
         />
-      </View>
-    );
-  }
-
-  return (
-    <View
-      style={[
-        compact ? styles.sessionStatusBadge : styles.statusDot,
-        { backgroundColor: colors.disabledText },
-      ]}
-    />
+      ) : (
+        <View style={[styles.statusDot, { backgroundColor: color }]} />
+      )}
+      <Text style={[styles.gridStatusText, { color }]} numberOfLines={1}>
+        {agentStatusLabel(status)}
+      </Text>
+    </View>
   );
+}
+
+function agentStatusColor(status: AgentStatus, colors: typeof Colors): string {
+  switch (status) {
+    case 'failed':
+      return colors.statusFailed;
+    case 'blocked':
+      return colors.statusBlocked;
+    case 'running':
+      return colors.statusRunning;
+    case 'done':
+      return colors.statusDone;
+    default:
+      return colors.statusUnknown;
+  }
+}
+
+function agentStatusLabel(status: AgentStatus): string {
+  switch (status) {
+    case 'failed':
+      return 'Failed';
+    case 'blocked':
+      return 'Blocked';
+    case 'running':
+      return 'Running';
+    case 'done':
+      return 'Done';
+    default:
+      return 'Unknown';
+  }
 }
 
 function resolveSessionTitle(
   agent: Agent,
   presented: ReturnType<typeof presentAgent>,
-  workMap: Record<string, WorkItem>,
+  linkedWorkTitle?: string,
 ): string {
   if (presented.titleSource !== 'default') {
     return presented.title;
   }
 
-  const linkedWork = workMap[`${agent.serverId}:${agent.id}`];
-  const workTitle = linkedWork?.title?.trim();
+  const workTitle = linkedWorkTitle?.trim();
   if (workTitle) {
     return workTitle;
   }
@@ -1126,6 +1285,11 @@ function createStyles(theme: ResolvedZenTheme) {
     flex: 1,
   },
 
+  bannerWrap: {
+    width: '100%',
+    maxWidth: 760,
+    alignSelf: 'center',
+  },
   banner: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -1145,15 +1309,13 @@ function createStyles(theme: ResolvedZenTheme) {
     borderRadius: 3,
   },
   bannerText: {
+    ...UiTextMetrics,
+    ...TypeScale.label,
     color: colors.textSecondary,
-    fontFamily: Typography.uiFontMedium,
-    fontSize: 12.5,
   },
 
   listFab: {
     position: 'absolute',
-    right: 20,
-    bottom: 88,
     width: 56,
     height: 56,
     borderRadius: 28,
@@ -1164,26 +1326,25 @@ function createStyles(theme: ResolvedZenTheme) {
     zIndex: 4,
   },
   listFabDisabled: {
-    backgroundColor: colors.surfaceSubtle,
-    opacity: 0.72,
+    backgroundColor: colors.disabledSurface,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: colors.border,
   },
   promptContent: {
-    paddingHorizontal: 0,
+    width: '100%',
+    maxWidth: 760,
+    alignSelf: 'center',
     paddingTop: 6,
-    paddingBottom: 120,
   },
   sectionHeader: {
     paddingTop: 18,
-    paddingBottom: 12,
-    paddingHorizontal: 4,
+    paddingBottom: 8,
+    paddingHorizontal: 16,
   },
   sectionTitle: {
+    ...UiTextMetrics,
+    ...TypeScale.label,
     color: sectionLabel,
-    fontSize: 11,
-    lineHeight: 14,
-    fontFamily: Typography.uiFontMedium,
-    letterSpacing: 1,
-    textTransform: 'uppercase',
   },
   sectionGap: {
     height: 8,
@@ -1191,69 +1352,70 @@ function createStyles(theme: ResolvedZenTheme) {
   rowGap: {
     height: 0,
   },
-  sessionStatusBadge: {
-    width: 11,
-    height: 11,
-    borderRadius: 6,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
   brainBadge: {
-    height: 19,
+    minHeight: 22,
     paddingHorizontal: 7,
     borderWidth: StyleSheet.hairlineWidth,
-    borderRadius: 6,
+    borderRadius: 5,
     alignItems: 'center',
     justifyContent: 'center',
   },
   brainBadgeCompact: {
-    height: 18,
+    minHeight: 22,
     paddingHorizontal: 6,
   },
   brainBadgeText: {
-    fontSize: 10,
-    lineHeight: 12,
-    fontFamily: Typography.uiFontMedium,
-    includeFontPadding: false,
+    ...UiTextMetrics,
+    ...TypeScale.micro,
   },
   statusDot: {
-    width: 7,
-    height: 7,
-    borderRadius: 4,
+    width: 6,
+    height: 6,
+    borderRadius: 3,
   },
-  statusIndicator: {
-    width: 14,
-    height: 14,
+  gridStatus: {
+    flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
+    gap: 4,
+    minHeight: 22,
+    maxWidth: 76,
   },
-  compactSpinner: {
-    transform: [{ scale: 0.42 }],
+  gridStatusText: {
+    ...UiTextMetrics,
+    ...TypeScale.micro,
   },
   statusSpinner: {
-    transform: [{ scale: 0.55 }],
+    width: 12,
+    height: 12,
+    transform: [{ scale: 0.45 }],
   },
 
   loadingContainer: {
+    width: '100%',
+    maxWidth: 760,
+    alignSelf: 'center',
     flexGrow: 1,
     minHeight: 420,
     alignItems: 'center',
     justifyContent: 'center',
   },
   gridContent: {
+    width: '100%',
+    maxWidth: 760,
+    alignSelf: 'center',
     paddingHorizontal: 18,
-    paddingBottom: 40,
+    paddingTop: 12,
   },
   gridGap: {
     height: 14,
   },
   gridCard: {
-    borderRadius: Radii.lg,
+    borderRadius: 8,
     backgroundColor: themedSurface,
     borderWidth: StyleSheet.hairlineWidth,
     borderColor: themedBorder,
     overflow: 'hidden',
-    ...glassCardShadow(colors.shadowColor),
   },
   gridHeader: {
     flexDirection: 'row',
@@ -1271,12 +1433,11 @@ function createStyles(theme: ResolvedZenTheme) {
     gap: 10,
   },
   gridTitle: {
+    ...UiTextMetrics,
+    ...TypeScale.label,
     flex: 1,
     minWidth: 0,
     color: colors.textPrimary,
-    fontSize: 14.5,
-    lineHeight: 22,
-    fontFamily: Typography.uiFontMedium,
   },
   gridPreview: {
     height: 216,
@@ -1290,6 +1451,9 @@ function createStyles(theme: ResolvedZenTheme) {
     paddingHorizontal: 36,
   },
   emptyScrollContent: {
+    width: '100%',
+    maxWidth: 760,
+    alignSelf: 'center',
     flexGrow: 1,
     justifyContent: 'center',
     paddingVertical: 44,
@@ -1309,19 +1473,17 @@ function createStyles(theme: ResolvedZenTheme) {
     lineHeight: 48,
   },
   emptyText: {
+    ...UiTextMetrics,
+    ...TypeScale.heading,
     color: colors.textPrimary,
-    fontSize: 18,
-    fontFamily: Typography.uiFontMedium,
   },
   emptySubtext: {
+    ...UiTextMetrics,
+    ...TypeScale.compact,
     color: colors.textSecondary,
-    fontSize: 14,
-    fontFamily: Typography.uiFont,
     marginTop: 9,
     maxWidth: 280,
     textAlign: 'center',
-    lineHeight: 20,
-    opacity: 0.85,
   },
   emptyActions: {
     width: '100%',
@@ -1331,20 +1493,21 @@ function createStyles(theme: ResolvedZenTheme) {
     alignItems: 'center',
   },
   emptyActionLink: {
-    paddingVertical: 6,
+    minHeight: 44,
+    justifyContent: 'center',
     paddingHorizontal: 10,
   },
   emptyActionLinkText: {
+    ...UiTextMetrics,
+    ...TypeScale.label,
     color: colors.accent,
-    fontSize: 14,
-    fontFamily: Typography.uiFontMedium,
   },
   emptyActionBtn: {
     width: '100%',
     flexDirection: 'row',
-    minHeight: 50,
+    minHeight: 48,
     paddingHorizontal: 18,
-    borderRadius: Radii.sm,
+    borderRadius: 8,
     alignItems: 'center',
     justifyContent: 'center',
     borderWidth: StyleSheet.hairlineWidth,
@@ -1361,9 +1524,9 @@ function createStyles(theme: ResolvedZenTheme) {
     marginTop: 1,
   },
   emptyActionText: {
+    ...UiTextMetrics,
+    ...TypeScale.body,
     color: colors.textPrimary,
-    fontSize: 15,
-    fontFamily: Typography.uiFontMedium,
     textAlign: 'center',
   },
   emptyActionTextPrimary: {
@@ -1371,7 +1534,7 @@ function createStyles(theme: ResolvedZenTheme) {
   },
 
   menuCard: {
-    borderRadius: Radii.lg,
+    borderRadius: 8,
     backgroundColor: colors.modalSurfaceAlt,
     borderWidth: StyleSheet.hairlineWidth,
     borderColor: colors.border,
@@ -1379,53 +1542,53 @@ function createStyles(theme: ResolvedZenTheme) {
     ...shadow('float', colors.shadowColor),
   },
   menuTitle: {
-    color: colors.textSecondary,
-    fontSize: 12.5,
-    fontFamily: Typography.uiFontMedium,
+    ...UiTextMetrics,
+    ...TypeScale.label,
+    color: colors.textTertiary,
     paddingHorizontal: 18,
     paddingTop: 16,
     paddingBottom: 10,
-    opacity: 0.6,
   },
   menuItem: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: 12,
     paddingHorizontal: 18,
-    paddingVertical: 15,
+    minHeight: 48,
     borderTopWidth: StyleSheet.hairlineWidth,
     borderTopColor: colors.borderSubtle,
   },
   menuItemText: {
+    ...UiTextMetrics,
+    ...TypeScale.body,
     color: colors.textPrimary,
-    fontSize: 15.5,
-    fontFamily: Typography.uiFont,
   },
   menuItemTextDestructive: {
     color: colors.dangerText,
   },
 
   renameCard: {
-    borderRadius: Radii.lg,
+    borderRadius: 8,
     padding: 20,
     backgroundColor: colors.modalSurface,
     borderWidth: StyleSheet.hairlineWidth,
     borderColor: colors.border,
   },
   renameTitle: {
+    ...UiTextMetrics,
+    ...TypeScale.heading,
     color: colors.textPrimary,
-    fontSize: 17,
-    fontFamily: Typography.uiFontMedium,
     marginBottom: 16,
   },
   renameInput: {
+    ...UiTextMetrics,
+    ...TypeScale.mono,
     backgroundColor: colors.inputBackground,
-    borderRadius: Radii.sm,
+    borderRadius: 8,
+    minHeight: 44,
     paddingHorizontal: 14,
     paddingVertical: 12,
     color: colors.textPrimary,
-    fontSize: 14,
-    fontFamily: Typography.terminalFont,
     borderWidth: StyleSheet.hairlineWidth,
     borderColor: colors.border,
   },
@@ -1437,8 +1600,8 @@ function createStyles(theme: ResolvedZenTheme) {
   },
   renameBtn: {
     minWidth: 76,
-    height: 40,
-    borderRadius: Radii.sm,
+    minHeight: 44,
+    borderRadius: 8,
     alignItems: 'center',
     justifyContent: 'center',
     backgroundColor: colors.surfacePressed,
@@ -1447,9 +1610,9 @@ function createStyles(theme: ResolvedZenTheme) {
     backgroundColor: colors.accent,
   },
   renameBtnText: {
+    ...UiTextMetrics,
+    ...TypeScale.label,
     color: colors.textPrimary,
-    fontSize: 14,
-    fontFamily: Typography.uiFontMedium,
   },
   renameBtnPrimaryText: {
     color: colors.textOnAccent,

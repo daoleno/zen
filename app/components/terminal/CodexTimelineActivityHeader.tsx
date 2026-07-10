@@ -6,7 +6,7 @@ import {
   View,
 } from "react-native";
 import type { TerminalThemeChrome } from "../../constants/terminalThemes";
-import { Typography } from "../../constants/tokens";
+import { TypeScale, Typography } from "../../constants/tokens";
 import type { TimelineActivityIconName } from "./CodexTimelineActivityTypes";
 import type { ZenActivityTimelineItem } from "./CodexTimelineActivityTypes";
 import { CodexTimelineActivityExpandIcon } from "./CodexTimelineActivityExpandIcon";
@@ -55,7 +55,7 @@ export function CodexTimelineActivityHeader({
       />
       <View style={styles.copy}>
         <Text
-          style={[styles.title, { color: chrome.textSubtle }]}
+          style={[styles.title, { color: chrome.textMuted }]}
           numberOfLines={1}
         >
           {title}
@@ -79,12 +79,11 @@ export function CodexTimelineActivityHeader({
 const styles = StyleSheet.create({
   row: {
     alignSelf: "stretch",
-    minHeight: 20,
+    minHeight: 44,
     width: "100%",
     flexDirection: "row",
     alignItems: "flex-start",
     gap: 6,
-    opacity: 0.72,
   },
   copy: {
     flex: 1,
@@ -94,19 +93,16 @@ const styles = StyleSheet.create({
     alignItems: "center",
   },
   title: {
+    ...TypeScale.caption,
     flexShrink: 0,
-    fontSize: 11,
-    lineHeight: 15,
     fontFamily: Typography.uiFontMedium,
   },
   detail: {
+    ...TypeScale.caption,
     flex: 1,
     flexShrink: 1,
     minWidth: 0,
     marginLeft: 6,
-    fontSize: 11,
-    lineHeight: 15,
     fontFamily: Typography.terminalFont,
-    opacity: 0.92,
   },
 });

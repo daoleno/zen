@@ -33,11 +33,6 @@ interface TerminalRenameModalProps {
   onSave(): void;
 }
 
-/**
- * Rename dialog for a terminal session. Keeps the terminal-themed card, but
- * opens with the app-wide spring rise + backdrop fade so the motion matches
- * every other dialog in zen.
- */
 export function TerminalRenameModal({
   visible,
   draft,
@@ -70,7 +65,14 @@ export function TerminalRenameModal({
         style={styles.renameRoot}
         behavior={Platform.OS === "ios" ? "padding" : "height"}
       >
-        <AnimatedPressable style={[styles.modalBackdrop, backdropStyle]} onPress={onClose} />
+        <AnimatedPressable
+          style={[
+            styles.modalBackdrop,
+            { backgroundColor: chrome.overlay },
+            backdropStyle,
+          ]}
+          onPress={onClose}
+        />
 
         <Animated.View style={cardAnimStyle}>
           <TerminalRenameCard
@@ -96,6 +98,5 @@ const styles = StyleSheet.create({
   },
   modalBackdrop: {
     ...StyleSheet.absoluteFill,
-    backgroundColor: "rgba(6, 8, 12, 0.58)",
   },
 });

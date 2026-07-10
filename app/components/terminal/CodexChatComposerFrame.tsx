@@ -45,8 +45,6 @@ export function CodexChatComposerFrame({
         {
           paddingBottom: Math.max(bottomPadding, telegramDock ? 8 : 0),
           borderTopWidth: 0,
-          // Never paint a dock plate under the pill — elevation on Android
-          // draws an opaque rectangle that shows as ugly white layers.
           backgroundColor: ambient ? "transparent" : telegramDock
             ? "transparent"
             : theme.background === "transparent"

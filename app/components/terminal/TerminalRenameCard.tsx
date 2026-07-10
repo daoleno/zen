@@ -6,7 +6,7 @@ import {
   TouchableOpacity,
   View,
 } from "react-native";
-import { Colors, Typography } from "../../constants/tokens";
+import { TypeScale } from "../../constants/tokens";
 import type {
   TerminalThemeChrome,
   TerminalThemePalette,
@@ -26,7 +26,6 @@ export function TerminalRenameCard({
   draft,
   placeholder,
   chrome,
-  theme,
   onDraftChange,
   onClose,
   onSave,
@@ -85,10 +84,9 @@ export function TerminalRenameCard({
         <TouchableOpacity
           style={[
             styles.renameButton,
-            styles.renameButtonPrimary,
             {
               backgroundColor: chrome.accent,
-              borderColor: chrome.borderStrong,
+              borderColor: chrome.accent,
             },
           ]}
           onPress={onSave}
@@ -97,8 +95,7 @@ export function TerminalRenameCard({
           <Text
             style={[
               styles.renameButtonText,
-              styles.renameButtonTextPrimary,
-              { color: theme.background },
+              { color: chrome.textOnAccent },
             ]}
           >
             Save
@@ -113,32 +110,22 @@ const styles = StyleSheet.create({
   renameCard: {
     borderRadius: 18,
     padding: 16,
-    backgroundColor: "#161F2B",
     borderWidth: 1,
-    borderColor: "rgba(255,255,255,0.06)",
   },
   renameTitle: {
-    color: Colors.textPrimary,
-    fontSize: 17,
-    fontFamily: Typography.uiFontMedium,
+    ...TypeScale.heading,
   },
   renameHint: {
+    ...TypeScale.caption,
     marginTop: 4,
-    color: "#7D8CA0",
-    fontSize: 12,
-    fontFamily: Typography.uiFont,
   },
   renameInput: {
     marginTop: 14,
     borderRadius: 12,
     borderWidth: 1,
-    borderColor: "#263345",
-    backgroundColor: "#111923",
-    color: Colors.textPrimary,
     paddingHorizontal: 12,
     paddingVertical: 11,
-    fontSize: 14,
-    fontFamily: Typography.uiFont,
+    ...TypeScale.compact,
   },
   renameActions: {
     flexDirection: "row",
@@ -148,21 +135,12 @@ const styles = StyleSheet.create({
   },
   renameButton: {
     minWidth: 72,
-    height: 38,
+    height: 44,
     borderRadius: 10,
     alignItems: "center",
     justifyContent: "center",
-    backgroundColor: "#202A38",
-  },
-  renameButtonPrimary: {
-    backgroundColor: Colors.accent,
   },
   renameButtonText: {
-    color: Colors.textPrimary,
-    fontSize: 14,
-    fontFamily: Typography.uiFontMedium,
-  },
-  renameButtonTextPrimary: {
-    color: "#07111E",
+    ...TypeScale.label,
   },
 });

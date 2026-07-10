@@ -66,7 +66,7 @@ export function CodexInlineMessage({
         }
         if (part.kind === "link") {
           return (
-            <Text key={index} style={[styles.messageLink, { color: chrome.accent }]}>
+            <Text key={index} style={[styles.messageLink, { color: chrome.link }]}>
               {part.text}
             </Text>
           );
@@ -104,6 +104,7 @@ const styles = StyleSheet.create({
   },
   messageLink: {
     fontFamily: Typography.chatFontMedium,
+    textDecorationLine: "underline",
     letterSpacing: 0,
   },
 });

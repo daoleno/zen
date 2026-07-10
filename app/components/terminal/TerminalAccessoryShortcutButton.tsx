@@ -28,6 +28,8 @@ export function TerminalAccessoryShortcutButton({
 }: TerminalAccessoryShortcutButtonProps) {
   return (
     <TouchableOpacity
+      accessibilityLabel={label}
+      accessibilityRole="button"
       style={styles.shortcutBtn}
       onPress={onPress}
       onPressIn={onPressIn}
@@ -50,7 +52,7 @@ export function TerminalAccessoryShortcutButton({
 const styles = StyleSheet.create({
   shortcutBtn: {
     paddingHorizontal: 10,
-    height: 36,
+    minHeight: 44,
     marginRight: 2,
     alignItems: "center",
     justifyContent: "center",

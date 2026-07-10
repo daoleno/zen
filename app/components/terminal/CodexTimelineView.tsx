@@ -9,13 +9,11 @@ import {
   type NativeScrollEvent,
   type NativeSyntheticEvent,
 } from "react-native";
-import { ChatWallpaper } from "../ui/ChatWallpaper";
 import { useAppTheme } from "../../constants/tokens";
 import type {
   TerminalThemeChrome,
   TerminalThemePalette,
 } from "../../constants/terminalThemes";
-import { isAmbientChatChrome } from "../../constants/themedSurfaces";
 
 import { CodexTimelineEmptyContent } from "./CodexTimelineContent";
 import { CodexTimelineJumpButton } from "./CodexTimelineJumpButton";
@@ -196,9 +194,6 @@ export function CodexTimelineView({
   return (
     <TimelineTextSelectableContext.Provider value={textSelectionContext}>
       <View style={styles.timelineStage}>
-        {!isAmbientChatChrome(chrome) && zenTheme.chat.showWallpaper ? (
-          <ChatWallpaper />
-        ) : null}
         <FlatList<TimelineRenderItem>
           ref={scrollRef as React.RefObject<FlatList<TimelineRenderItem> | null>}
           data={renderItems}
@@ -255,6 +250,7 @@ const styles = StyleSheet.create({
     minHeight: 0,
   },
   timelineContent: {
+    alignItems: "stretch",
     paddingHorizontal: 14,
     paddingTop: TIMELINE_BOTTOM_PADDING,
     paddingBottom: 12,

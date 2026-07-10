@@ -12,7 +12,7 @@ import {
 import { Ionicons } from "@expo/vector-icons";
 import type { TerminalThemeChrome } from "../../constants/terminalThemes";
 import type { TerminalThemePalette } from "../../constants/terminalThemes";
-import { Typography } from "../../constants/tokens";
+import { TypeScale, Typography } from "../../constants/tokens";
 import type { TerminalActionPrompt } from "./TerminalActionPromptModel";
 
 interface TerminalActionPromptCardProps {
@@ -26,7 +26,6 @@ interface TerminalActionPromptCardProps {
 export function TerminalActionPromptCard({
   prompt,
   chrome,
-  theme,
   onSendKey,
   onSwitchToTerminal,
 }: TerminalActionPromptCardProps) {
@@ -141,9 +140,8 @@ export function TerminalActionPromptCard({
                 borderColor: option.primary ? chrome.accent : chrome.border,
               },
               option.id === sentOptionId ? { borderColor: chrome.accent } : null,
-              option.id === failedOptionId ? { borderColor: "#FCA5A5" } : null,
-              pressed ? styles.pressed : null,
-              sendingOptionId ? styles.optionButtonDisabled : null,
+              option.id === failedOptionId ? { borderColor: chrome.danger } : null,
+              pressed ? { borderColor: chrome.focus } : null,
             ]}
           >
             <View style={styles.optionCopy}>
@@ -151,7 +149,13 @@ export function TerminalActionPromptCard({
                 <Text
                   style={[
                     styles.optionText,
-                    { color: option.primary ? theme.background : option.destructive ? "#FCA5A5" : chrome.text },
+                    {
+                      color: option.primary
+                        ? chrome.textOnAccent
+                        : option.destructive
+                          ? chrome.danger
+                          : chrome.text,
+                    },
                   ]}
                   numberOfLines={2}
                 >
@@ -162,15 +166,15 @@ export function TerminalActionPromptCard({
                     style={[
                       styles.defaultPill,
                       {
-                        backgroundColor: option.primary ? "rgba(0,0,0,0.18)" : chrome.surface,
-                        borderColor: option.primary ? "rgba(0,0,0,0.16)" : chrome.border,
+                        backgroundColor: option.primary ? "transparent" : chrome.surface,
+                        borderColor: option.primary ? chrome.textOnAccent : chrome.border,
                       },
                     ]}
                   >
                     <Text
                       style={[
                         styles.defaultText,
-                        { color: option.primary ? theme.background : chrome.textMuted },
+                        { color: option.primary ? chrome.textOnAccent : chrome.textMuted },
                       ]}
                     >
                       Default
@@ -182,7 +186,7 @@ export function TerminalActionPromptCard({
                 <Text
                   style={[
                     styles.optionDescription,
-                    { color: option.primary ? theme.background : chrome.textMuted },
+                    { color: option.primary ? chrome.textOnAccent : chrome.textMuted },
                   ]}
                   numberOfLines={2}
                 >
@@ -193,16 +197,16 @@ export function TerminalActionPromptCard({
             {sendingOptionId === option.id ? (
               <ActivityIndicator
                 size="small"
-                color={option.primary ? theme.background : chrome.accent}
+                color={option.primary ? chrome.textOnAccent : chrome.accent}
               />
             ) : sentOptionId === option.id ? (
               <Ionicons
                 name="checkmark-circle"
                 size={17}
-                color={option.primary ? theme.background : chrome.accent}
+                color={option.primary ? chrome.textOnAccent : chrome.accent}
               />
             ) : failedOptionId === option.id ? (
-              <Ionicons name="alert-circle" size={17} color="#FCA5A5" />
+              <Ionicons name="alert-circle" size={17} color={chrome.danger} />
             ) : null}
           </Pressable>
         ))}
@@ -212,7 +216,7 @@ export function TerminalActionPromptCard({
         <Text
           style={[
             styles.statusText,
-            { color: statusTone === "failed" ? "#FCA5A5" : chrome.textMuted },
+            { color: statusTone === "failed" ? chrome.danger : chrome.textMuted },
           ]}
           numberOfLines={2}
         >
@@ -226,7 +230,10 @@ export function TerminalActionPromptCard({
             accessibilityRole="button"
             accessibilityLabel="Open raw terminal"
             onPress={onSwitchToTerminal}
-            style={({ pressed }) => [styles.secondaryButton, pressed ? styles.pressed : null]}
+            style={({ pressed }) => [
+              styles.secondaryButton,
+              pressed ? { backgroundColor: chrome.surfaceActive } : null,
+            ]}
           >
             <Text style={[styles.secondaryText, { color: chrome.accent }]}>Terminal</Text>
           </Pressable>
@@ -282,10 +289,7 @@ const styles = StyleSheet.create({
     gap: 3,
   },
   requestLabel: {
-    fontFamily: Typography.chatFontMedium,
-    fontSize: 10,
-    lineHeight: 13,
-    letterSpacing: 0,
+    ...TypeScale.micro,
     textTransform: "uppercase",
   },
   requestText: {
@@ -308,9 +312,6 @@ const styles = StyleSheet.create({
     paddingHorizontal: 10,
     paddingVertical: 8,
   },
-  optionButtonDisabled: {
-    opacity: 0.72,
-  },
   optionCopy: {
     flex: 1,
     minWidth: 0,
@@ -323,22 +324,16 @@ const styles = StyleSheet.create({
     minWidth: 0,
   },
   optionText: {
+    ...TypeScale.label,
     flexShrink: 1,
     minWidth: 0,
     fontFamily: Typography.chatFontMedium,
-    fontSize: 12,
-    lineHeight: 16,
-    letterSpacing: 0,
   },
   optionDescription: {
-    fontFamily: Typography.chatFont,
-    fontSize: 11,
-    lineHeight: 15,
-    letterSpacing: 0,
-    opacity: 0.78,
+    ...TypeScale.caption,
   },
   defaultPill: {
-    height: 17,
+    minHeight: 20,
     paddingHorizontal: 6,
     borderRadius: 4,
     borderWidth: StyleSheet.hairlineWidth,
@@ -346,16 +341,10 @@ const styles = StyleSheet.create({
     justifyContent: "center",
   },
   defaultText: {
-    fontFamily: Typography.chatFontMedium,
-    fontSize: 9,
-    lineHeight: 12,
-    letterSpacing: 0,
+    ...TypeScale.micro,
   },
   statusText: {
-    fontFamily: Typography.chatFont,
-    fontSize: 11,
-    lineHeight: 15,
-    letterSpacing: 0,
+    ...TypeScale.caption,
   },
   secondaryRow: {
     flexDirection: "row",
@@ -363,7 +352,8 @@ const styles = StyleSheet.create({
     gap: 8,
   },
   secondaryButton: {
-    minHeight: 28,
+    minHeight: 44,
+    borderRadius: 8,
     justifyContent: "center",
     paddingHorizontal: 8,
   },
@@ -372,8 +362,5 @@ const styles = StyleSheet.create({
     fontSize: 12,
     lineHeight: 16,
     letterSpacing: 0,
-  },
-  pressed: {
-    opacity: 0.72,
   },
 });

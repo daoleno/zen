@@ -35,6 +35,10 @@ export interface SurfacePalette {
   sectionLabel: string;
 }
 
+export interface DataVisualizationPalette {
+  activityRamp: readonly [string, string, string, string];
+}
+
 export interface ZenThemeDefinition {
   id: string;
   name: string;
@@ -42,6 +46,7 @@ export interface ZenThemeDefinition {
   colors: AppPalette;
   chat: ChatPalette;
   surfaces: SurfacePalette;
+  dataVisualization: DataVisualizationPalette;
   avatarColors: readonly string[];
 }
 

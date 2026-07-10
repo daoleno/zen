@@ -1,8 +1,7 @@
 import React, { useMemo } from 'react';
-import { StyleSheet, Text, View, useColorScheme } from 'react-native';
-import { Typography } from '../../constants/tokens';
+import { StyleSheet, Text, View } from 'react-native';
+import { TypeScale, useAppTheme } from '../../constants/tokens';
 import {
-  resolveTerminalThemeName,
   resolveTerminalTheme,
 } from '../../constants/terminalThemes';
 
@@ -25,11 +24,8 @@ function formatPreviewLines(lines: string[]): string {
 }
 
 export function TerminalPreview({ lines }: TerminalPreviewProps) {
-  const colorScheme = useColorScheme();
-  const themeName = useMemo(
-    () => resolveTerminalThemeName(colorScheme),
-    [colorScheme],
-  );
+  const { theme: zenTheme } = useAppTheme();
+  const themeName = zenTheme.isLight ? 'light' : 'dark';
   const theme = useMemo(() => resolveTerminalTheme(themeName), [themeName]);
   const previewText = useMemo(() => formatPreviewLines(lines), [lines]);
   const borderColor = useMemo(() => withAlpha(theme.foreground, 0.12), [theme.foreground]);
@@ -71,9 +67,8 @@ const styles = StyleSheet.create({
   },
   previewText: {
     flex: 1,
-    fontFamily: Typography.terminalFont,
-    fontSize: 9,
-    lineHeight: 13,
+    ...TypeScale.micro,
+    fontFamily: TypeScale.mono.fontFamily,
     includeFontPadding: false,
   },
 });

@@ -39,15 +39,7 @@ export function CodexComposerPanelFrame({
             chatgpt || telegram || !ambient
               ? chrome.composerInput
               : chrome.surfaceActive,
-          borderColor: chatgpt
-            ? "transparent"
-            : telegram
-              ? chrome.border
-              : ambient
-                ? "transparent"
-                : focused
-                  ? chrome.borderStrong
-                  : chrome.border,
+          borderColor: focused ? chrome.focus : chrome.border,
         },
       ]}
     >
@@ -58,9 +50,9 @@ export function CodexComposerPanelFrame({
 
 const styles = StyleSheet.create({
   panel: {
-    minHeight: 46,
-    borderRadius: 23,
-    borderWidth: StyleSheet.hairlineWidth,
+    minHeight: 48,
+    borderRadius: 24,
+    borderWidth: 1,
     paddingLeft: 5,
     paddingRight: 6,
     paddingVertical: 4,
@@ -69,16 +61,13 @@ const styles = StyleSheet.create({
     gap: 4,
   },
   panelAmbient: {
-    borderRadius: 22,
-    borderWidth: 0,
-    minHeight: 46,
     paddingLeft: 4,
     paddingRight: 4,
   },
   panelTelegram: {
     minHeight: 48,
     borderRadius: CHAT_COMPOSER_DOCK_RADIUS,
-    borderWidth: StyleSheet.hairlineWidth,
+    borderWidth: 1,
     paddingLeft: 4,
     paddingRight: 4,
     paddingVertical: 4,
@@ -89,9 +78,9 @@ const styles = StyleSheet.create({
   panelChatGpt: {
     flex: 1,
     minWidth: 0,
-    minHeight: 44,
+    minHeight: 48,
     borderRadius: 24,
-    borderWidth: 0,
+    borderWidth: 1,
     paddingLeft: 4,
     paddingRight: 4,
     paddingVertical: 4,

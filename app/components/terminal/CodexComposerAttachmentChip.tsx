@@ -112,7 +112,7 @@ function basename(value: string) {
 const styles = StyleSheet.create({
   chip: {
     maxWidth: 220,
-    minHeight: 36,
+    minHeight: 44,
     borderRadius: 8,
     borderWidth: StyleSheet.hairlineWidth,
     paddingLeft: 9,
@@ -134,8 +134,8 @@ const styles = StyleSheet.create({
   },
   thumbRemove: {
     position: "absolute",
-    top: 2,
-    right: 2,
+    top: 0,
+    right: 0,
   },
   textGroup: {
     flex: 1,
@@ -148,8 +148,8 @@ const styles = StyleSheet.create({
   },
   path: {
     marginTop: 1,
-    fontSize: 10,
-    lineHeight: 13,
+    fontSize: 11,
+    lineHeight: 15,
     fontFamily: Typography.terminalFont,
   },
 });

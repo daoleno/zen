@@ -532,25 +532,33 @@ function stringArraysEqual(left: string[], right: string[]): boolean {
   return true;
 }
 
-const WorkContext = createContext<{
-  state: WorkState;
-  dispatch: React.Dispatch<Action>;
-} | null>(null);
+const WorkStateContext = createContext<WorkState | null>(null);
+const WorkDispatchContext = createContext<React.Dispatch<Action> | null>(null);
 
 export function WorkProvider({ children }: { children: ReactNode }) {
   const [state, dispatch] = useReducer(workReducer, initialWorkState);
-  const value = React.useMemo(() => ({ state, dispatch }), [state]);
   return (
-    <WorkContext.Provider value={value}>
-      {children}
-    </WorkContext.Provider>
+    <WorkDispatchContext.Provider value={dispatch}>
+      <WorkStateContext.Provider value={state}>
+        {children}
+      </WorkStateContext.Provider>
+    </WorkDispatchContext.Provider>
   );
 }
 
 export function useWork() {
-  const ctx = useContext(WorkContext);
-  if (!ctx) {
+  const state = useContext(WorkStateContext);
+  const dispatch = useContext(WorkDispatchContext);
+  if (!state || !dispatch) {
     throw new Error("useWork must be used within WorkProvider");
   }
-  return ctx;
+  return { state, dispatch };
+}
+
+export function useWorkDispatch() {
+  const dispatch = useContext(WorkDispatchContext);
+  if (!dispatch) {
+    throw new Error("useWorkDispatch must be used within WorkProvider");
+  }
+  return dispatch;
 }

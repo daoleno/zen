@@ -4,7 +4,7 @@ import {
   StyleSheet,
   Text,
 } from "react-native";
-import { Typography } from "../../constants/tokens";
+import { TypeScale } from "../../constants/tokens";
 import type { TerminalThemeChrome } from "../../constants/terminalThemes";
 import type { AgentDirectorySection } from "../../services/serverSelection";
 import { TerminalAgentPickerSection } from "./TerminalAgentPickerSection";
@@ -63,9 +63,7 @@ const styles = StyleSheet.create({
     paddingBottom: 8,
   },
   sheetEmpty: {
-    color: "#7D8CA0",
-    fontSize: 13,
-    fontFamily: Typography.uiFont,
+    ...TypeScale.label,
     paddingVertical: 12,
   },
 });

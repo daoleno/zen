@@ -41,41 +41,6 @@ export function userBubbleRadii(
   }
 }
 
-export function assistantBubbleRadii(
-  position: MessageGroupPosition,
-): Pick<ViewStyle, "borderTopLeftRadius" | "borderTopRightRadius" | "borderBottomLeftRadius" | "borderBottomRightRadius"> {
-  switch (position) {
-    case "first":
-      return {
-        borderTopLeftRadius: LARGE,
-        borderTopRightRadius: LARGE,
-        borderBottomLeftRadius: LARGE,
-        borderBottomRightRadius: LARGE,
-      };
-    case "middle":
-      return {
-        borderTopLeftRadius: SMALL,
-        borderTopRightRadius: LARGE,
-        borderBottomLeftRadius: SMALL,
-        borderBottomRightRadius: LARGE,
-      };
-    case "last":
-      return {
-        borderTopLeftRadius: SMALL,
-        borderTopRightRadius: LARGE,
-        borderBottomLeftRadius: SMALL,
-        borderBottomRightRadius: LARGE,
-      };
-    default:
-      return {
-        borderTopLeftRadius: SMALL,
-        borderTopRightRadius: LARGE,
-        borderBottomLeftRadius: SMALL,
-        borderBottomRightRadius: LARGE,
-      };
-  }
-}
-
 export function chatgptUserBubbleRadii(): Pick<
   ViewStyle,
   "borderTopLeftRadius" | "borderTopRightRadius" | "borderBottomLeftRadius" | "borderBottomRightRadius"

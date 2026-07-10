@@ -3,9 +3,9 @@ import { FlatList, Pressable, StyleSheet, Text, View } from "react-native";
 import type { TerminalThemeChrome } from "../../constants/terminalThemes";
 import {
   Radii,
+  TypeScale,
   Typography,
   UiTextMetrics,
-  uiLineHeight,
 } from "../../constants/tokens";
 import type { BrainAdapterRef } from "../../store/brain";
 import { BrainAdapterIcon } from "./BrainAdapterIcon";
@@ -112,7 +112,7 @@ function createStyles(chrome: TerminalThemeChrome) {
       width: 8,
     },
     chip: {
-      height: 34,
+      minHeight: 44,
       maxWidth: 180,
       flexDirection: "row",
       alignItems: "center",
@@ -128,21 +128,19 @@ function createStyles(chrome: TerminalThemeChrome) {
       backgroundColor: chrome.surfaceActive,
     },
     chipPressed: {
-      opacity: 0.72,
+      backgroundColor: chrome.surfaceActive,
     },
     handle: {
       ...UiTextMetrics,
+      ...TypeScale.label,
       color: chrome.text,
-      fontFamily: Typography.uiFontMedium,
-      fontSize: 12.5,
-      lineHeight: uiLineHeight(12.5),
     },
     meta: {
       ...UiTextMetrics,
+      ...TypeScale.micro,
       color: chrome.textMuted,
       fontFamily: Typography.uiFont,
-      fontSize: 11,
-      lineHeight: uiLineHeight(11),
+      fontWeight: "400",
     },
   });
 }

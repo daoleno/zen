@@ -327,23 +327,28 @@ function tableCellTextAlign(alignment: MessageTableAlignment | undefined) {
 
 const styles = StyleSheet.create({
   messageText: {
+    alignSelf: "stretch",
+    minWidth: 0,
     marginBottom: 10,
     fontSize: 15,
-    lineHeight: 24,
+    lineHeight: 23,
     fontFamily: Typography.chatFont,
     letterSpacing: 0,
   },
   messageTextCompact: {
     marginBottom: 8,
     fontSize: 14,
-    lineHeight: 22,
+    lineHeight: 21,
   },
   messageTextDense: {
     marginBottom: 6,
     fontSize: 15,
-    lineHeight: 22,
+    lineHeight: 23,
   },
   messageHeadingWrap: {
+    alignSelf: "stretch",
+    width: "100%",
+    minWidth: 0,
     marginBottom: 8,
   },
   messageHeading: {
@@ -357,10 +362,14 @@ const styles = StyleSheet.create({
     lineHeight: 25,
   },
   messageList: {
+    alignSelf: "stretch",
+    width: "100%",
+    minWidth: 0,
     marginBottom: 10,
     gap: 6,
   },
   messageListItem: {
+    width: "100%",
     flexDirection: "row",
     alignItems: "flex-start",
     minWidth: 0,
@@ -381,7 +390,7 @@ const styles = StyleSheet.create({
   messageListMarker: {
     textAlign: "right",
     fontSize: 13,
-    lineHeight: 24,
+    lineHeight: 23,
     fontFamily: Typography.chatFontMedium,
     letterSpacing: 0,
   },
@@ -400,6 +409,9 @@ const styles = StyleSheet.create({
     borderRadius: 3,
   },
   messageTableBlock: {
+    alignSelf: "stretch",
+    width: "100%",
+    minWidth: 0,
     marginBottom: 10,
   },
   messageTableScrollContent: {
@@ -456,6 +468,9 @@ const styles = StyleSheet.create({
     lineHeight: 18,
   },
   messageQuote: {
+    alignSelf: "stretch",
+    width: "100%",
+    minWidth: 0,
     marginBottom: 10,
     borderLeftWidth: 2,
     paddingLeft: 10,

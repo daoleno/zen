@@ -3,12 +3,32 @@ export type {
   AppPalette,
   ChatLayout,
   ChatPalette,
+  DataVisualizationPalette,
   ResolvedZenTheme,
   SurfacePalette,
   ThemeColorScheme,
   ThemePreference,
   ZenThemeDefinition,
 } from './types';
+
+export {
+  ZEN_BRAND_COLORS,
+  ZEN_DARK_APP_COLORS,
+  ZEN_DARK_CHAT_PALETTE,
+  ZEN_DARK_DATA_VISUALIZATION,
+  ZEN_DARK_NEUTRALS,
+  ZEN_DARK_OVERLAYS,
+  ZEN_DARK_STATUS,
+  ZEN_DARK_SURFACE_PALETTE,
+  ZEN_LIGHT_APP_COLORS,
+  ZEN_LIGHT_CHAT_PALETTE,
+  ZEN_LIGHT_DATA_VISUALIZATION,
+  ZEN_LIGHT_NEUTRALS,
+  ZEN_LIGHT_OVERLAYS,
+  ZEN_LIGHT_STATUS,
+  ZEN_LIGHT_SURFACE_PALETTE,
+  ZEN_SAGE,
+} from './primitives';
 
 export { ThemeProvider, useZenTheme } from './provider';
 export { buildChatChrome } from './buildChatChrome';

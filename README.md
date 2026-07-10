@@ -100,8 +100,10 @@ zen/
 │
 └── app/                       Expo (React Native), runs on phone
     ├── app/                   Screens (expo-router)
-    │   ├── (tabs)/index.tsx   Inbox (dense interrupt list)
-    │   ├── (tabs)/settings.tsx Settings + connection
+    │   ├── (primary)/index.tsx Brain chat (default route)
+    │   ├── (primary)/list.tsx Agent session list
+    │   ├── settings.tsx       Settings + connection
+    │   ├── stats.tsx          Usage statistics
     │   ├── terminal/[id].tsx  Terminal (ANSI output + input)
     │   └── onboarding.tsx     First-run setup
     ├── constants/tokens.ts    Design tokens

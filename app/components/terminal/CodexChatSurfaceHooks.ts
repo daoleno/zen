@@ -3,7 +3,6 @@ import {
   type FlatList,
   Keyboard,
   type LayoutChangeEvent,
-  Platform,
   type NativeScrollEvent,
   type NativeSyntheticEvent,
   type TextInput,
@@ -25,7 +24,7 @@ const TEXT_SELECTION_ANCHOR_MAX_MS = 60000;
 
 type UseCodexComposerPresentationInput = Omit<
   CodexComposerPresentationInput,
-  "isAndroid" | "agentKind"
+  "agentKind"
 > & {
   agentCommand?: string;
 };
@@ -43,7 +42,6 @@ export function useCodexComposerPresentation({
   canSend,
   elapsedLabel,
   actionMenuPinned,
-  safeAreaTop,
   safeAreaBottom,
   placeholder,
   keyboardVerticalOffset,
@@ -66,9 +64,7 @@ export function useCodexComposerPresentation({
         canSend,
         elapsedLabel,
         actionMenuPinned,
-        safeAreaTop,
         safeAreaBottom,
-        isAndroid: Platform.OS === "android",
         placeholder,
         keyboardVerticalOffset,
         composerBottomInset,
@@ -85,7 +81,6 @@ export function useCodexComposerPresentation({
       interrupting,
       requestRunning,
       safeAreaBottom,
-      safeAreaTop,
       sending,
       startingNewChat,
       slashCommands,

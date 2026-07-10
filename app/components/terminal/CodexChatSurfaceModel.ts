@@ -8,8 +8,6 @@ import type { ChatLayout } from "../../theme/types";
 import type { CodexSlashCommand } from "../../services/websocket";
 import { filterSlashCommands } from "./CodexSlashCommands";
 
-const TERMINAL_ROUTE_BAR_HEIGHT = 38;
-
 export interface CodexComposerPresentation {
   commandQuery: string;
   visibleSlashCommands: CodexSlashCommand[];
@@ -46,9 +44,7 @@ export interface CodexComposerPresentationInput {
   canSend: boolean;
   elapsedLabel?: string;
   actionMenuPinned: boolean;
-  safeAreaTop: number;
   safeAreaBottom: number;
-  isAndroid: boolean;
   placeholder?: string;
   keyboardVerticalOffset?: number;
   composerBottomInset?: number;
@@ -68,9 +64,7 @@ export function buildCodexComposerPresentation({
   canSend,
   elapsedLabel,
   actionMenuPinned,
-  safeAreaTop,
   safeAreaBottom,
-  isAndroid,
   placeholder,
   keyboardVerticalOffset,
   composerBottomInset,
@@ -140,13 +134,8 @@ export function buildCodexComposerPresentation({
     }),
     bottomPadding:
       composerBottomInset ?? Math.max(safeAreaBottom, 8),
-    keyboardVerticalOffset:
-      typeof keyboardVerticalOffset === "number"
-        ? keyboardVerticalOffset
-        : isAndroid
-          ? safeAreaTop + TERMINAL_ROUTE_BAR_HEIGHT
-          : 0,
-    automaticKeyboardOffset: typeof keyboardVerticalOffset === "number",
+    keyboardVerticalOffset: keyboardVerticalOffset ?? 0,
+    automaticKeyboardOffset: true,
     composerLayout,
   };
 }

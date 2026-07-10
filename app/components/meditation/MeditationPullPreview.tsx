@@ -1,35 +1,76 @@
-import React from "react";
+import React, { memo } from "react";
 import {
   ImageBackground,
   StyleSheet,
-  Text,
   View,
 } from "react-native";
 import { LinearGradient } from "expo-linear-gradient";
+import Animated, {
+  useAnimatedStyle,
+  type SharedValue,
+} from "react-native-reanimated";
 import { Typography } from "../../constants/tokens";
 
 const MEDITATION_BACKGROUND = require("../../assets/theme/meditation-sky-garden.webp");
 
 type MeditationPullPreviewProps = {
-  progress: number;
-  pullDistance: number;
+  pullDistance: SharedValue<number>;
+  threshold: number;
 };
 
-export function MeditationPullPreview({
-  progress,
+function MeditationPullPreviewComponent({
   pullDistance,
+  threshold,
 }: MeditationPullPreviewProps) {
-  if (pullDistance <= 1) {
-    return null;
-  }
-
-  const clamped = Math.max(0, Math.min(progress, 1));
-  const height = Math.min(360, 86 + pullDistance * 1.18);
-  const orbScale = 0.74 + clamped * 0.42;
-  const opacity = Math.min(1, 0.18 + clamped * 0.88);
+  const rootStyle = useAnimatedStyle(() => {
+    if (pullDistance.value <= 1) {
+      return { height: 0, opacity: 0 };
+    }
+    const progress = Math.max(
+      0,
+      Math.min(pullDistance.value / threshold, 1),
+    );
+    return {
+      height: Math.min(360, 86 + pullDistance.value * 1.18),
+      opacity: Math.min(1, 0.18 + progress * 0.88),
+    };
+  });
+  const haloStyle = useAnimatedStyle(() => {
+    const progress = Math.max(
+      0,
+      Math.min(pullDistance.value / threshold, 1),
+    );
+    return {
+      opacity: 0.08 + progress * 0.18,
+      transform: [{ scale: 1 + progress * 0.42 }],
+    };
+  });
+  const orbStyle = useAnimatedStyle(() => {
+    const progress = Math.max(
+      0,
+      Math.min(pullDistance.value / threshold, 1),
+    );
+    return {
+      opacity: 0.72 + progress * 0.28,
+      transform: [{ scale: 0.74 + progress * 0.42 }],
+    };
+  });
+  const pullTitleStyle = useAnimatedStyle(() => ({
+    opacity: pullDistance.value < threshold ? 1 : 0,
+  }));
+  const releaseTitleStyle = useAnimatedStyle(() => ({
+    opacity: pullDistance.value >= threshold ? 1 : 0,
+  }));
+  const trackFillStyle = useAnimatedStyle(() => {
+    const progress = Math.max(
+      0,
+      Math.min(pullDistance.value / threshold, 1),
+    );
+    return { width: `${progress * 100}%` };
+  });
 
   return (
-    <View pointerEvents="none" style={[styles.root, { height, opacity }]}>
+    <Animated.View pointerEvents="none" style={[styles.root, rootStyle]}>
       <ImageBackground
         source={MEDITATION_BACKGROUND}
         resizeMode="cover"
@@ -46,24 +87,8 @@ export function MeditationPullPreview({
         />
         <View style={styles.content}>
           <View style={styles.orbWrap}>
-            <View
-              style={[
-                styles.orbHalo,
-                {
-                  opacity: 0.08 + clamped * 0.18,
-                  transform: [{ scale: 1 + clamped * 0.42 }],
-                },
-              ]}
-            />
-            <View
-              style={[
-                styles.orb,
-                {
-                  opacity: 0.72 + clamped * 0.28,
-                  transform: [{ scale: orbScale }],
-                },
-              ]}
-            >
+            <Animated.View style={[styles.orbHalo, haloStyle]} />
+            <Animated.View style={[styles.orb, orbStyle]}>
               <LinearGradient
                 colors={[
                   "rgba(255,255,255,0.92)",
@@ -72,19 +97,28 @@ export function MeditationPullPreview({
                 ]}
                 style={StyleSheet.absoluteFill}
               />
-            </View>
+            </Animated.View>
           </View>
-          <Text style={styles.title}>
-            {clamped >= 1 ? "Release into quiet" : "Pull into quiet"}
-          </Text>
+          <View style={styles.titleWrap}>
+            <Animated.Text style={[styles.title, pullTitleStyle]}>
+              Pull into quiet
+            </Animated.Text>
+            <Animated.Text
+              style={[styles.title, styles.releaseTitle, releaseTitleStyle]}
+            >
+              Release into quiet
+            </Animated.Text>
+          </View>
           <View style={styles.track}>
-            <View style={[styles.trackFill, { width: `${clamped * 100}%` }]} />
+            <Animated.View style={[styles.trackFill, trackFillStyle]} />
           </View>
         </View>
       </ImageBackground>
-    </View>
+    </Animated.View>
   );
 }
+
+export const MeditationPullPreview = memo(MeditationPullPreviewComponent);
 
 const styles = StyleSheet.create({
   root: {
@@ -126,11 +160,19 @@ const styles = StyleSheet.create({
     borderWidth: StyleSheet.hairlineWidth,
     borderColor: "rgba(255,255,255,0.62)",
   },
+  titleWrap: {
+    minHeight: 19,
+    minWidth: 140,
+    alignItems: "center",
+  },
   title: {
     color: "#F7FAFF",
     fontSize: 14,
     lineHeight: 19,
     fontFamily: Typography.uiFontMedium,
+  },
+  releaseTitle: {
+    position: "absolute",
   },
   track: {
     width: 120,

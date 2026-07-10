@@ -24,8 +24,14 @@ export function buildChatChrome(theme: ResolvedZenTheme): {
     text: chat.receivedText,
     textMuted: colors.textSecondary,
     textSubtle: colors.textTertiary,
+    textOnAccent: colors.textOnAccent,
     accent: colors.accent,
     accentSoft: colors.accentSoft,
+    disabledSurface: colors.disabledSurface,
+    focus: colors.focusRing,
+    link: chat.link,
+    danger: colors.dangerText,
+    dangerSoft: colors.dangerSoft,
     overlay: colors.modalBackdrop,
   };
 
@@ -35,6 +41,7 @@ export function buildChatChrome(theme: ResolvedZenTheme): {
     foreground: chat.receivedText,
     cursor: colors.accent,
     cursorAccent: theme.isLight ? colors.textOnAccent : chat.background,
+    selectionBackground: colors.selectionBackground,
   };
 
   return { chrome, theme: palette };

@@ -19,7 +19,6 @@ interface ComposerIconButtonProps {
   iconColor?: string;
   iconSize?: number;
   loadingColor?: string;
-  disabledOpacity?: number;
   style?: StyleProp<ViewStyle>;
   onPress(): void;
 }
@@ -33,7 +32,6 @@ export function ComposerIconButton({
   iconColor,
   iconSize = 20,
   loadingColor,
-  disabledOpacity = 0.54,
   style,
   onPress,
 }: ComposerIconButtonProps) {
@@ -45,7 +43,6 @@ export function ComposerIconButton({
       style={[
         styles.button,
         style,
-        disabled ? { opacity: disabledOpacity } : null,
       ]}
       onPress={onPress}
       activeOpacity={0.78}
@@ -62,9 +59,9 @@ export function ComposerIconButton({
 
 const styles = StyleSheet.create({
   button: {
-    width: 36,
-    height: 40,
-    borderRadius: 20,
+    width: 44,
+    height: 44,
+    borderRadius: 22,
     alignItems: "center",
     justifyContent: "center",
   },

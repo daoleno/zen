@@ -7,7 +7,7 @@ import {
 } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 import type { TerminalThemeChrome } from "../../constants/terminalThemes";
-import { Typography } from "../../constants/tokens";
+import { TypeScale } from "../../constants/tokens";
 import { ComposerLoadingDots } from "./ComposerLoadingDots";
 
 interface CodexTimelineEmptyStateProps {
@@ -85,25 +85,20 @@ const styles = StyleSheet.create({
     justifyContent: "center",
   },
   emptyTitle: {
+    ...TypeScale.heading,
     marginTop: 2,
-    fontSize: 17,
-    lineHeight: 22,
     textAlign: "center",
-    fontFamily: Typography.uiFontMedium,
   },
   emptyBody: {
+    ...TypeScale.compact,
     marginTop: 6,
-    fontSize: 13.5,
-    lineHeight: 19,
     textAlign: "center",
-    fontFamily: Typography.uiFont,
     maxWidth: 260,
-    opacity: 0.86,
   },
   emptyAction: {
     marginTop: 14,
-    minHeight: 36,
-    borderRadius: 18,
+    minHeight: 44,
+    borderRadius: 22,
     borderWidth: StyleSheet.hairlineWidth,
     paddingHorizontal: 14,
     flexDirection: "row",
@@ -112,8 +107,6 @@ const styles = StyleSheet.create({
     gap: 7,
   },
   emptyActionText: {
-    fontSize: 13,
-    lineHeight: 17,
-    fontFamily: Typography.uiFontMedium,
+    ...TypeScale.label,
   },
 });

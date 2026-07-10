@@ -7,7 +7,7 @@ import {
   View,
 } from 'react-native';
 import { useFocusEffect } from 'expo-router';
-import { SafeAreaView } from 'react-native-safe-area-context';
+import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import * as Haptics from 'expo-haptics';
 import Animated, {
   useSharedValue,
@@ -18,15 +18,14 @@ import Animated, {
 import {
   Colors,
   Radii,
-  Typography,
+  TypeScale,
   UiTextMetrics,
-  uiLineHeight,
-  useAppColors,
-} from '../../constants/tokens';
-import { useAgents } from '../../store/agents';
-import { wsClient } from '../../services/websocket';
-import { AnimatedPressable } from '../../components/ui/AnimatedPressable';
-import { RisingSheet } from '../../components/ui/RisingSheet';
+  useAppTheme,
+} from '../constants/tokens';
+import { useAgents } from '../store/agents';
+import { wsClient } from '../services/websocket';
+import { AnimatedPressable } from '../components/ui/AnimatedPressable';
+import { RisingSheet } from '../components/ui/RisingSheet';
 
 // ── Types (mirror daemon/stats/types.go) ───────────────────
 
@@ -265,6 +264,25 @@ function monthShort(dateStr: string): string {
   const date = parseDateOnly(dateStr);
   if (!date) return '';
   return ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'][date.getMonth()];
+}
+
+function accessibleDate(dateStr: string): string {
+  const date = parseDateOnly(dateStr);
+  if (!date) return dateStr;
+  const weekdays = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+  const months = [
+    'January', 'February', 'March', 'April', 'May', 'June',
+    'July', 'August', 'September', 'October', 'November', 'December',
+  ];
+  return `${weekdays[date.getDay()]}, ${months[date.getMonth()]} ${date.getDate()}, ${date.getFullYear()}`;
+}
+
+function dayAccessibilityValue(day: DayCell): string {
+  return [
+    `${fmtAvailableTokens(day.totalTokens, day.totalTokensKnown)} tokens`,
+    sessionSummary(day.sessions),
+    `${fmtAvailableCost(day.cost, day.costKnown)} estimated cost`,
+  ].join(', ');
 }
 
 function parseDateOnly(dateStr: string): Date | null {
@@ -516,27 +534,13 @@ function buildActivityCalendarColumns(days: ActivityDay[]): (ActivityDay | null)
   return columns;
 }
 
-function dailyActivityLayout(range: TimeRange, dayCount: number) {
-  if (range === 'day') return { height: 34, gap: 0 };
-  if (range === 'week') return { height: 30, gap: 5 };
-  if (dayCount <= 45) return { height: 20, gap: 3 };
-  return { height: 14, gap: 2 };
-}
-
 // ── Component ──────────────────────────────────────────────
 
 export default function StatsScreen() {
-  const colors = useAppColors();
+  const { colors, theme } = useAppTheme();
+  const insets = useSafeAreaInsets();
   const s = useMemo(() => createStyles(colors), [colors]);
-  const intensityColors = useMemo(
-    () => [
-      `${colors.accent}0D`,
-      `${colors.accent}33`,
-      `${colors.accent}73`,
-      `${colors.accent}CC`,
-    ],
-    [colors],
-  );
+  const intensityColors = theme.dataVisualization.activityRamp;
   const { state: agentsState } = useAgents();
   const [range, setRange] = useState<TimeRange>('week');
   const [statsData, setStatsData] = useState<StatsPayload | null>(null);
@@ -658,12 +662,8 @@ export default function StatsScreen() {
     [dayActivityUsesTokens, days],
   );
   const activityDays = useMemo(() => buildDailyActivitySeries(days, range), [days, range]);
-  const compactDailyActivity = range !== 'all' || activityDays.length <= 45;
-  const activityLayout = dailyActivityLayout(range, activityDays.length);
+  const compactDailyActivity = range === 'day' || range === 'week';
   const activityStartLabel = activityDays[0]?.date ? shortDate(activityDays[0].date) : '';
-  const activityMiddleLabel = activityDays.length > 12
-    ? shortDate(activityDays[Math.floor(activityDays.length / 2)].date)
-    : '';
   const activityEndLabel = activityDays[activityDays.length - 1]?.date
     ? shortDate(activityDays[activityDays.length - 1].date)
     : '';
@@ -690,9 +690,8 @@ export default function StatsScreen() {
       : 'Stats read Claude Code and Codex history from the daemon host.';
 
   return (
-    <SafeAreaView style={s.container} edges={['top']}>
+    <SafeAreaView style={s.container} edges={[]}>
       <View style={s.header}>
-        <Text style={s.title}>Stats</Text>
         <View style={s.rangeRow}>
           {RANGE_OPTIONS.map((opt) => {
             const active = range === opt.key;
@@ -701,6 +700,9 @@ export default function StatsScreen() {
                 key={opt.key}
                 style={[s.rangeTab, active && s.rangeTabActive]}
                 scale={1}
+                accessibilityRole="tab"
+                accessibilityState={{ selected: active }}
+                accessibilityLabel={`${opt.label} range`}
                 onPress={() => {
                   if (!active) {
                     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
@@ -730,7 +732,10 @@ export default function StatsScreen() {
       ) : (
         <ScrollView
           style={s.scrollView}
-          contentContainerStyle={s.scroll}
+          contentContainerStyle={[
+            s.scroll,
+            { paddingBottom: Math.max(insets.bottom, 20) + 12 },
+          ]}
           showsVerticalScrollIndicator={false}
         >
             {/* ── Summary ── */}
@@ -777,7 +782,7 @@ export default function StatsScreen() {
                   <View key={m.name} style={s.row}>
                     <View style={s.rowInfo}>
                       <Text style={s.rowName} numberOfLines={1}>{m.name}</Text>
-                      <Text style={s.rowMeta}>{rowActivitySummary(m)}</Text>
+                      <Text style={s.rowMeta} numberOfLines={1}>{rowActivitySummary(m)}</Text>
                     </View>
                     <Text
                       style={[
@@ -808,7 +813,7 @@ export default function StatsScreen() {
                   <View key={p.name} style={s.row}>
                     <View style={s.rowInfo}>
                       <Text style={s.rowName} numberOfLines={1}>{p.name}</Text>
-                      <Text style={s.rowMeta}>{rowActivitySummary(p)}</Text>
+                      <Text style={s.rowMeta} numberOfLines={1}>{rowActivitySummary(p)}</Text>
                     </View>
                     <Text
                       style={[
@@ -843,52 +848,67 @@ export default function StatsScreen() {
                         <Text style={s.activityMonthText}>{monthShort(activityDays[activityDays.length - 1]?.date ?? '')}</Text>
                       ) : null}
                     </View>
-                    <View style={[s.dailyHeatmapRow, { gap: activityLayout.gap }]}>
-                      {activityDays.map(({ date, day }) => {
-                        const intensity = day
-                          ? dayActivityIntensity(day, maxDayActivity, dayActivityUsesTokens)
-                          : 0;
-                        const backgroundColor = day ? intensityColors[intensity] : colors.borderSubtle;
-                        return (
-                          <AnimatedPressable
-                            key={date}
-                            disabled={!day}
-                            style={[
-                              s.dailyHeatCell,
-                              {
-                                height: activityLayout.height,
-                                backgroundColor,
-                                opacity: day ? 1 : 0.38,
-                              },
-                            ]}
-                            scale={day ? 0.94 : 1}
-                            onPress={() => {
-                              if (!day) return;
-                              Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-                              setSelectedDay(day);
-                            }}
-                          />
-                        );
-                      })}
-                    </View>
-                    {range === 'week' ? (
-                      <View style={s.activityWeekdayRow}>
-                        {activityDays.map(({ date }) => (
-                          <Text key={date} style={s.activityWeekdayText}>
-                            {weekdayShort(date).slice(0, 1)}
-                          </Text>
-                        ))}
+                    <ScrollView horizontal showsHorizontalScrollIndicator={false}>
+                      <View style={[s.dailyActivityContent, range === 'week' && s.dailyWeekContent]}>
+                        <View style={s.dailyHeatmapRow}>
+                          {activityDays.map(({ date, day }) => {
+                            const intensity = day
+                              ? dayActivityIntensity(day, maxDayActivity, dayActivityUsesTokens)
+                              : 0;
+                            const backgroundColor = day ? intensityColors[intensity] : colors.borderSubtle;
+                            const selected = selectedDay?.date === date;
+                            return (
+                              <AnimatedPressable
+                                key={date}
+                                disabled={!day}
+                                style={[
+                                  s.dailyHeatCell,
+                                  {
+                                    backgroundColor,
+                                    opacity: day ? 1 : 0.38,
+                                  },
+                                  selected && s.heatCellSelected,
+                                ]}
+                                scale={day ? 0.96 : 1}
+                                accessibilityRole="button"
+                                accessibilityLabel={accessibleDate(date)}
+                                accessibilityValue={{
+                                  text: day ? dayAccessibilityValue(day) : 'No recorded activity',
+                                }}
+                                accessibilityState={{ selected, disabled: !day }}
+                                accessibilityHint={day ? 'Shows daily activity details' : undefined}
+                                onPress={() => {
+                                  if (!day) return;
+                                  Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+                                  setSelectedDay(day);
+                                }}
+                              />
+                            );
+                          })}
+                        </View>
+                        {range === 'week' ? (
+                          <View style={s.activityWeekdayRow}>
+                            {activityDays.map(({ date }) => (
+                              <Text key={date} style={s.activityWeekdayText}>
+                                {weekdayShort(date).slice(0, 1)}
+                              </Text>
+                            ))}
+                          </View>
+                        ) : (
+                          <View style={s.activityAxisRow}>
+                            <Text style={s.activityAxisLabel}>{activityStartLabel}</Text>
+                            <Text style={s.activityAxisLabel}>{activityEndLabel}</Text>
+                          </View>
+                        )}
                       </View>
-                    ) : (
-                      <View style={s.activityAxisRow}>
-                        <Text style={s.activityAxisLabel}>{activityStartLabel}</Text>
-                        {activityMiddleLabel ? <Text style={s.activityAxisLabel}>{activityMiddleLabel}</Text> : <View />}
-                        <Text style={s.activityAxisLabel}>{activityEndLabel}</Text>
-                      </View>
-                    )}
+                    </ScrollView>
                   </>
                 ) : (
-                  <ScrollView horizontal showsHorizontalScrollIndicator={false}>
+                  <ScrollView
+                    horizontal
+                    showsHorizontalScrollIndicator={false}
+                    accessibilityLabel="Daily activity calendar"
+                  >
                     <View>
                       <View style={s.heatmapMonthRow}>
                         {heatmapColumns.map((col, colIndex) => {
@@ -909,20 +929,38 @@ export default function StatsScreen() {
                       </View>
                       <View style={s.heatmapWithAxis}>
                         <View style={s.heatmapWeekdayColumn}>
-                          <Text style={s.heatmapWeekdayLabel}>M</Text>
-                          <Text style={s.heatmapWeekdayLabel}>W</Text>
-                          <Text style={s.heatmapWeekdayLabel}>F</Text>
+                          {['M', 'T', 'W', 'T', 'F', 'S', 'S'].map((label, index) => (
+                            <Text key={`${label}-${index}`} style={s.heatmapWeekdayLabel}>
+                              {label}
+                            </Text>
+                          ))}
                         </View>
                         <View style={s.heatmapRow}>
                           {heatmapColumns.map((col, colIndex) => (
                             <View key={`col-${colIndex}`} style={s.heatmapColumn}>
                               {col.map((cell, rowIndex) => {
-                                if (!cell?.day) {
+                                if (!cell) {
                                   return (
                                     <View
                                       key={`empty-${colIndex}-${rowIndex}`}
-                                      style={s.heatCellEmpty}
+                                      style={s.heatCellTarget}
                                     />
+                                  );
+                                }
+                                if (!cell.day) {
+                                  return (
+                                    <AnimatedPressable
+                                      key={cell.date}
+                                      disabled
+                                      style={s.heatCellTarget}
+                                      scale={1}
+                                      accessibilityRole="button"
+                                      accessibilityLabel={accessibleDate(cell.date)}
+                                      accessibilityValue={{ text: 'No recorded activity' }}
+                                      accessibilityState={{ disabled: true, selected: false }}
+                                    >
+                                      <View style={[s.heatCell, s.heatCellNoActivity]} />
+                                    </AnimatedPressable>
                                   );
                                 }
                                 const day = cell.day;
@@ -931,19 +969,30 @@ export default function StatsScreen() {
                                   maxDayActivity,
                                   dayActivityUsesTokens,
                                 );
+                                const selected = selectedDay?.date === day.date;
                                 return (
                                   <AnimatedPressable
                                     key={day.date}
-                                    style={[
-                                      s.heatCell,
-                                      { backgroundColor: intensityColors[intensity] },
-                                    ]}
-                                    scale={0.92}
+                                    style={s.heatCellTarget}
+                                    scale={0.96}
+                                    accessibilityRole="button"
+                                    accessibilityLabel={accessibleDate(day.date)}
+                                    accessibilityValue={{ text: dayAccessibilityValue(day) }}
+                                    accessibilityState={{ selected }}
+                                    accessibilityHint="Shows daily activity details"
                                     onPress={() => {
                                       Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
                                       setSelectedDay(day);
                                     }}
-                                  />
+                                  >
+                                    <View
+                                      style={[
+                                        s.heatCell,
+                                        { backgroundColor: intensityColors[intensity] },
+                                        selected && s.heatCellSelected,
+                                      ]}
+                                    />
+                                  </AnimatedPressable>
                                 );
                               })}
                             </View>
@@ -955,7 +1004,7 @@ export default function StatsScreen() {
                 )}
                 <View style={s.heatmapLegend}>
                   <Text style={s.heatmapLegendLabel}>Less</Text>
-                  {intensityColors.slice(1).map((c, i) => (
+                  {intensityColors.map((c, i) => (
                     <View key={i} style={[s.heatCellLegend, { backgroundColor: c }]} />
                   ))}
                   <Text style={s.heatmapLegendLabel}>More</Text>
@@ -973,8 +1022,8 @@ export default function StatsScreen() {
                 {(expandedSections.has('skills') ? data.skills : visibleSkills).map((sk) => (
                   <View key={sk.name} style={s.row}>
                     <View style={s.rowInfo}>
-                      <Text style={s.skillCmd}>{sk.name}</Text>
-                      <Text style={s.rowMeta}>{sk.projects?.join(' · ')}</Text>
+                      <Text style={s.skillCmd} numberOfLines={1}>{sk.name}</Text>
+                      <Text style={s.rowMeta} numberOfLines={1}>{sk.projects?.join(' · ')}</Text>
                     </View>
                     <Text style={s.rowCount}>{sk.calls}</Text>
                     <Bar ratio={sk.calls / maxSkillCalls} color={colors.statusUnknown} trackColor={colors.borderSubtle} />
@@ -996,7 +1045,7 @@ export default function StatsScreen() {
                 {(expandedSections.has('tools') ? data.tools : visibleTools).map((t) => (
                   <View key={t.name} style={s.row}>
                     <View style={s.rowInfo}>
-                      <Text style={s.rowName}>{t.name}</Text>
+                      <Text style={s.rowName} numberOfLines={1}>{t.name}</Text>
                     </View>
                     <Text style={s.rowCount}>{t.calls}</Text>
                     <Bar ratio={t.calls / maxToolCalls} color={colors.statusRunning} trackColor={colors.borderSubtle} />
@@ -1020,7 +1069,13 @@ export default function StatsScreen() {
       >
         {selectedDay && (
           <>
-            <Text style={s.detailTitle}>{selectedDay.date}</Text>
+            <Text
+              style={s.detailTitle}
+              accessibilityRole="header"
+              accessibilityLabel={accessibleDate(selectedDay.date)}
+            >
+              {selectedDay.date}
+            </Text>
             <View style={s.detailGrid}>
               <DItem
                 label="Cost"
@@ -1084,7 +1139,12 @@ function DItem({
   styles: ReturnType<typeof createStyles>;
 }) {
   return (
-    <View style={styles.dItem}>
+    <View
+      style={styles.dItem}
+      accessible
+      accessibilityLabel={label}
+      accessibilityValue={{ text: value }}
+    >
       <Text style={styles.dLabel}>{label}</Text>
       <Text style={[styles.dValue, accent && { color: colors.accent }]}>{value}</Text>
     </View>
@@ -1129,11 +1189,19 @@ function ExpandToggle({
 }) {
   return (
     <AnimatedPressable
-      style={{ alignItems: 'center', paddingVertical: 10, marginTop: 6 }}
+      style={{
+        minHeight: 44,
+        alignItems: 'center',
+        justifyContent: 'center',
+        marginTop: 4,
+      }}
       scale={0.97}
+      accessibilityRole="button"
+      accessibilityState={{ expanded }}
+      accessibilityLabel={expanded ? 'Show fewer items' : `Show ${total - MAX_LIST_ITEMS} more items`}
       onPress={onPress}
     >
-      <Text style={{ color: colors.accent, fontSize: 11.5, fontFamily: Typography.uiFontMedium, opacity: 0.75 }}>
+      <Text style={[TypeScale.label, UiTextMetrics, { color: colors.accent }]}>
         {expanded ? 'less' : `${total - MAX_LIST_ITEMS} more`}
       </Text>
     </AnimatedPressable>
@@ -1144,318 +1212,344 @@ function ExpandToggle({
 
 function createStyles(colors: typeof Colors) {
   return StyleSheet.create({
-  container: { flex: 1, backgroundColor: colors.bgPrimary },
-  header: {
-    width: '100%',
-    maxWidth: STATS_CONTENT_MAX_WIDTH,
-    alignSelf: 'center',
-    paddingHorizontal: 18,
-    paddingTop: 16,
-    paddingBottom: 12,
-    gap: 14,
-    backgroundColor: 'transparent',
-    zIndex: 2,
-  },
-  title: {
-    ...UiTextMetrics,
-    color: colors.textPrimary,
-    fontSize: 30,
-    lineHeight: uiLineHeight(30),
-    fontFamily: Typography.uiFontMedium,
-    letterSpacing: 0,
-  },
-  rangeRow: {
-    flexDirection: 'row',
-    gap: 6,
-    padding: 4,
-    borderRadius: Radii.pill,
-    backgroundColor: colors.inputBackground,
-  },
-  rangeTab: {
-    alignItems: 'center',
-    justifyContent: 'center',
-    paddingVertical: 7,
-    paddingHorizontal: 12,
-    minWidth: 52,
-    borderRadius: Radii.pill,
-  },
-  rangeTabActive: {
-    backgroundColor: colors.accentSoft,
-  },
-  rangeTabText: {
-    color: colors.textTertiary,
-    fontSize: 14,
-    fontFamily: Typography.uiFont,
-  },
-  rangeTabTextActive: {
-    color: colors.textPrimary,
-    fontFamily: Typography.uiFontMedium,
-  },
-  scrollView: { flex: 1 },
-  scroll: {
-    width: '100%',
-    maxWidth: STATS_CONTENT_MAX_WIDTH,
-    alignSelf: 'center',
-    paddingHorizontal: 18,
-    gap: 12,
-    paddingTop: 6,
-    paddingBottom: 110,
-  },
+    container: { flex: 1, backgroundColor: colors.bgPrimary },
+    header: {
+      width: '100%',
+      maxWidth: STATS_CONTENT_MAX_WIDTH,
+      alignSelf: 'center',
+      paddingHorizontal: 18,
+      paddingTop: 12,
+      paddingBottom: 10,
+      backgroundColor: colors.bgPrimary,
+      zIndex: 2,
+    },
+    rangeRow: {
+      flexDirection: 'row',
+      gap: 4,
+      padding: 3,
+      borderRadius: Radii.md,
+      backgroundColor: colors.bgSurface,
+      borderWidth: StyleSheet.hairlineWidth,
+      borderColor: colors.borderSubtle,
+    },
+    rangeTab: {
+      flex: 1,
+      minWidth: 0,
+      minHeight: 44,
+      alignItems: 'center',
+      justifyContent: 'center',
+      paddingHorizontal: 4,
+      borderRadius: Radii.sm,
+    },
+    rangeTabActive: { backgroundColor: colors.surfaceActive },
+    rangeTabText: {
+      ...TypeScale.label,
+      ...UiTextMetrics,
+      color: colors.textTertiary,
+      textAlign: 'center',
+    },
+    rangeTabTextActive: { color: colors.textPrimary },
+    scrollView: { flex: 1 },
+    scroll: {
+      width: '100%',
+      maxWidth: STATS_CONTENT_MAX_WIDTH,
+      alignSelf: 'center',
+      paddingHorizontal: 18,
+      gap: 12,
+      paddingTop: 6,
+    },
 
-  // Empty
-  emptyContainer: { flex: 1, justifyContent: 'center', alignItems: 'center', paddingHorizontal: 36 },
-  emptyIcon: {
-    fontSize: 40,
-    color: colors.accent,
-    lineHeight: 46,
-    marginBottom: 20,
-  },
-  emptyText: { color: colors.textPrimary, fontSize: 17, fontFamily: Typography.uiFontMedium },
-  emptySubtext: {
-    color: colors.textSecondary,
-    fontSize: 13.5,
-    fontFamily: Typography.uiFont,
-    marginTop: 8,
-    maxWidth: 300,
-    textAlign: 'center',
-    lineHeight: 19,
-    opacity: 0.8,
-  },
+    // Empty
+    emptyContainer: {
+      flex: 1,
+      justifyContent: 'center',
+      alignItems: 'center',
+      paddingHorizontal: 36,
+    },
+    emptyIcon: {
+      fontSize: 40,
+      color: colors.accent,
+      lineHeight: 46,
+      marginBottom: 16,
+    },
+    emptyText: {
+      ...TypeScale.heading,
+      ...UiTextMetrics,
+      color: colors.textPrimary,
+      textAlign: 'center',
+    },
+    emptySubtext: {
+      ...TypeScale.compact,
+      ...UiTextMetrics,
+      color: colors.textSecondary,
+      marginTop: 8,
+      maxWidth: 320,
+      textAlign: 'center',
+    },
 
-  // Card
-  card: {
-    borderRadius: Radii.lg,
-    backgroundColor: colors.bgSurface,
-    borderWidth: StyleSheet.hairlineWidth,
-    borderColor: colors.borderSubtle,
-    paddingHorizontal: 16,
-    paddingVertical: 14,
-  },
-  label: {
-    color: colors.textTertiary,
-    fontSize: 11,
-    fontFamily: Typography.uiFontMedium,
-    letterSpacing: 1,
-    textTransform: 'uppercase',
-    marginBottom: 10,
-  },
-  labelRow: {
-    flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10,
-  },
-  labelCount: {
-    color: colors.textTertiary,
-    fontSize: 11,
-    fontFamily: Typography.terminalFont,
-  },
+    // Sections
+    card: {
+      borderTopWidth: StyleSheet.hairlineWidth,
+      borderTopColor: colors.borderSubtle,
+      paddingVertical: 18,
+    },
+    label: {
+      ...TypeScale.heading,
+      ...UiTextMetrics,
+      color: colors.textPrimary,
+      marginBottom: 12,
+    },
+    labelRow: {
+      flexDirection: 'row',
+      justifyContent: 'space-between',
+      alignItems: 'center',
+      gap: 12,
+      marginBottom: 12,
+    },
+    labelCount: {
+      ...TypeScale.caption,
+      ...UiTextMetrics,
+      color: colors.textTertiary,
+    },
 
-  // Summary
-  summaryCard: {
-    paddingVertical: 16,
-  },
-  summaryMetrics: {
-    flexDirection: 'row',
-    alignItems: 'stretch',
-  },
-  summaryMetric: {
-    flex: 1,
-    minWidth: 0,
-  },
-  summaryDivider: {
-    width: StyleSheet.hairlineWidth,
-    backgroundColor: colors.borderSubtle,
-    marginHorizontal: 16,
-  },
-  summaryLabel: {
-    color: colors.textTertiary,
-    fontSize: 11,
-    fontFamily: Typography.uiFontMedium,
-    marginBottom: 7,
-  },
-  summaryValue: {
-    color: colors.textPrimary,
-    fontSize: 25,
-    fontFamily: Typography.terminalFontBold,
-    lineHeight: 31,
-  },
-  summaryCost: {
-    color: colors.accent,
-  },
-  summaryUnavailable: {
-    color: colors.textTertiary,
-  },
-  summarySessions: {
-    color: colors.textSecondary,
-    fontSize: 12,
-    fontFamily: Typography.uiFontMedium,
-    marginTop: 14,
-  },
-  summaryNote: {
-    color: colors.textTertiary,
-    fontSize: 11.5,
-    fontFamily: Typography.uiFont,
-    lineHeight: 16,
-    marginTop: 5,
-  },
+    // Summary
+    summaryCard: {
+      paddingHorizontal: 16,
+      paddingVertical: 16,
+      borderWidth: StyleSheet.hairlineWidth,
+      borderColor: colors.borderSubtle,
+      borderRadius: Radii.md,
+      backgroundColor: colors.bgSurface,
+    },
+    summaryMetrics: {
+      flexDirection: 'row',
+      alignItems: 'stretch',
+    },
+    summaryMetric: { flex: 1, minWidth: 0 },
+    summaryDivider: {
+      width: StyleSheet.hairlineWidth,
+      backgroundColor: colors.borderSubtle,
+      marginHorizontal: 12,
+    },
+    summaryLabel: {
+      ...TypeScale.caption,
+      ...UiTextMetrics,
+      color: colors.textTertiary,
+      marginBottom: 6,
+    },
+    summaryValue: {
+      ...TypeScale.title,
+      ...UiTextMetrics,
+      color: colors.textPrimary,
+      flexShrink: 1,
+    },
+    summaryCost: { color: colors.accent },
+    summaryUnavailable: { color: colors.textTertiary },
+    summarySessions: {
+      ...TypeScale.label,
+      ...UiTextMetrics,
+      color: colors.textSecondary,
+      marginTop: 12,
+    },
+    summaryNote: {
+      ...TypeScale.caption,
+      ...UiTextMetrics,
+      color: colors.textTertiary,
+      marginTop: 4,
+    },
 
-  // Activity heatmap
-  activityMonthRow: {
-    minHeight: 16,
-    marginBottom: 6,
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-  },
-  activityMonthText: {
-    color: colors.textTertiary,
-    fontSize: 10,
-    fontFamily: Typography.uiFontMedium,
-  },
-  dailyHeatmapRow: {
-    flexDirection: 'row',
-    alignItems: 'stretch',
-  },
-  dailyHeatCell: {
-    flex: 1,
-    minWidth: 0,
-    borderRadius: 3,
-  },
-  activityAxisRow: {
-    minHeight: 16,
-    marginTop: 7,
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-  },
-  activityAxisLabel: {
-    color: colors.textTertiary,
-    fontSize: 10,
-    fontFamily: Typography.uiFont,
-  },
-  activityWeekdayRow: {
-    flexDirection: 'row',
-    gap: 5,
-    marginTop: 7,
-  },
-  activityWeekdayText: {
-    flex: 1,
-    minWidth: 0,
-    color: colors.textTertiary,
-    fontSize: 10,
-    fontFamily: Typography.uiFont,
-    textAlign: 'center',
-  },
-  heatmapWithAxis: {
-    flexDirection: 'row',
-    alignItems: 'flex-start',
-  },
-  heatmapWeekdayColumn: {
-    width: 14,
-    paddingTop: 1,
-    marginRight: 5,
-    gap: 16,
-  },
-  heatmapWeekdayLabel: {
-    color: colors.textTertiary,
-    fontSize: 9,
-    fontFamily: Typography.uiFont,
-    lineHeight: 10,
-  },
-  heatmapMonthRow: {
-    flexDirection: 'row',
-    paddingLeft: 19,
-    marginBottom: 5,
-    gap: 3,
-  },
-  heatmapMonthLabel: {
-    width: 12,
-    color: colors.textTertiary,
-    fontSize: 9,
-    fontFamily: Typography.uiFont,
-  },
-  heatmapRow: {
-    flexDirection: 'row',
-    gap: 3,
-    paddingVertical: 4,
-  },
-  heatmapColumn: {
-    gap: 3,
-  },
-  heatCell: {
-    width: 12,
-    height: 12,
-    borderRadius: 2,
-  },
-  heatCellEmpty: {
-    width: 12,
-    height: 12,
-  },
-  heatCellLegend: {
-    width: 10,
-    height: 10,
-    borderRadius: 2,
-  },
-  heatmapLegend: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'flex-end',
-    gap: 4,
-    marginTop: 10,
-  },
-  heatmapLegendLabel: {
-    color: colors.textTertiary,
-    fontSize: 10,
-    fontFamily: Typography.uiFont,
-    marginHorizontal: 2,
-  },
+    // Activity heatmap
+    activityMonthRow: {
+      minHeight: 20,
+      marginBottom: 6,
+      flexDirection: 'row',
+      justifyContent: 'space-between',
+    },
+    activityMonthText: {
+      ...TypeScale.micro,
+      ...UiTextMetrics,
+      color: colors.textTertiary,
+    },
+    dailyActivityContent: { minWidth: '100%' },
+    dailyWeekContent: { minWidth: 338 },
+    dailyHeatmapRow: {
+      flexDirection: 'row',
+      alignItems: 'stretch',
+      gap: 5,
+    },
+    dailyHeatCell: {
+      flex: 1,
+      minWidth: 44,
+      height: 44,
+      borderRadius: Radii.xs,
+    },
+    activityAxisRow: {
+      minHeight: 20,
+      marginTop: 6,
+      flexDirection: 'row',
+      justifyContent: 'space-between',
+      alignItems: 'center',
+    },
+    activityAxisLabel: {
+      ...TypeScale.micro,
+      ...UiTextMetrics,
+      color: colors.textTertiary,
+    },
+    activityWeekdayRow: {
+      flexDirection: 'row',
+      gap: 5,
+      marginTop: 6,
+    },
+    activityWeekdayText: {
+      ...TypeScale.micro,
+      ...UiTextMetrics,
+      flex: 1,
+      minWidth: 44,
+      color: colors.textTertiary,
+      textAlign: 'center',
+    },
+    heatmapWithAxis: {
+      flexDirection: 'row',
+      alignItems: 'flex-start',
+    },
+    heatmapWeekdayColumn: { width: 32 },
+    heatmapWeekdayLabel: {
+      ...TypeScale.micro,
+      ...UiTextMetrics,
+      height: 44,
+      color: colors.textTertiary,
+      textAlignVertical: 'center',
+    },
+    heatmapMonthRow: {
+      flexDirection: 'row',
+      paddingLeft: 32,
+      marginBottom: 2,
+    },
+    heatmapMonthLabel: {
+      ...TypeScale.micro,
+      ...UiTextMetrics,
+      width: 44,
+      color: colors.textTertiary,
+    },
+    heatmapRow: { flexDirection: 'row' },
+    heatmapColumn: {},
+    heatCellTarget: {
+      width: 44,
+      height: 44,
+      alignItems: 'center',
+      justifyContent: 'center',
+    },
+    heatCell: {
+      width: 16,
+      height: 16,
+      borderRadius: 3,
+    },
+    heatCellNoActivity: {
+      backgroundColor: colors.borderSubtle,
+      opacity: 0.55,
+    },
+    heatCellSelected: {
+      borderWidth: 2,
+      borderColor: colors.focusRing,
+    },
+    heatCellLegend: {
+      width: 12,
+      height: 12,
+      borderRadius: 3,
+    },
+    heatmapLegend: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      justifyContent: 'flex-end',
+      gap: 5,
+      marginTop: 8,
+    },
+    heatmapLegendLabel: {
+      ...TypeScale.micro,
+      ...UiTextMetrics,
+      color: colors.textTertiary,
+      marginHorizontal: 2,
+    },
 
-  // Rank rows
-  row: {
-    flexDirection: 'row', alignItems: 'center', gap: 10,
-    paddingVertical: 8,
-    borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: colors.borderSubtle,
-  },
-  rowInfo: { flex: 1, minWidth: 0 },
-  rowName: { color: colors.textPrimary, fontSize: 12.5, fontFamily: Typography.terminalFont },
-  rowMeta: { color: colors.textTertiary, fontSize: 10, fontFamily: Typography.uiFont, marginTop: 2 },
-  rowCost: {
-    color: colors.accent,
-    fontSize: 12.5,
-    fontFamily: Typography.terminalFontBold,
-    minWidth: 44,
-    textAlign: 'right',
-  },
-  rowValueUnavailable: {
-    color: colors.textTertiary,
-  },
-  rowCount: {
-    color: colors.textSecondary,
-    fontSize: 12.5,
-    fontFamily: Typography.terminalFontBold,
-    minWidth: 34,
-    textAlign: 'right',
-  },
+    // Rank rows
+    row: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      gap: 10,
+      paddingVertical: 10,
+      borderBottomWidth: StyleSheet.hairlineWidth,
+      borderBottomColor: colors.borderSubtle,
+    },
+    rowInfo: { flex: 1, minWidth: 0 },
+    rowName: {
+      ...TypeScale.mono,
+      ...UiTextMetrics,
+      color: colors.textPrimary,
+    },
+    rowMeta: {
+      ...TypeScale.caption,
+      ...UiTextMetrics,
+      color: colors.textTertiary,
+      marginTop: 2,
+    },
+    rowCost: {
+      ...TypeScale.monoStrong,
+      ...UiTextMetrics,
+      color: colors.accent,
+      minWidth: 44,
+      textAlign: 'right',
+    },
+    rowValueUnavailable: { color: colors.textTertiary },
+    rowCount: {
+      ...TypeScale.monoStrong,
+      ...UiTextMetrics,
+      color: colors.textSecondary,
+      minWidth: 34,
+      textAlign: 'right',
+    },
+    skillCmd: {
+      ...TypeScale.monoStrong,
+      ...UiTextMetrics,
+      color: colors.textSecondary,
+    },
 
-  // Skill
-  skillCmd: { color: colors.statusUnknown, fontSize: 12.5, fontFamily: Typography.terminalFontBold },
-
-  // Modal / day detail
-  detailCard: {
-    width: 260,
-    borderRadius: Radii.lg,
-    padding: 20,
-    backgroundColor: colors.modalSurface,
-    borderWidth: StyleSheet.hairlineWidth,
-    borderColor: colors.border,
-  },
-  detailTitle: {
-    color: colors.textPrimary,
-    fontSize: 16,
-    fontFamily: Typography.uiFontMedium,
-    marginBottom: 16,
-    textAlign: 'center',
-  },
-  detailGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: 12 },
-  dItem: { width: '46%', alignItems: 'center' },
-  dLabel: { color: colors.textTertiary, fontSize: 10, fontFamily: Typography.uiFont, marginBottom: 4, letterSpacing: 0.4 },
-  dValue: { color: colors.textPrimary, fontSize: 17, fontFamily: Typography.terminalFontBold },
+    // Modal / day detail
+    detailCard: {
+      width: '100%',
+      maxWidth: 320,
+      alignSelf: 'center',
+      borderRadius: Radii.lg,
+      padding: 20,
+      backgroundColor: colors.modalSurface,
+      borderWidth: StyleSheet.hairlineWidth,
+      borderColor: colors.border,
+    },
+    detailTitle: {
+      ...TypeScale.heading,
+      ...UiTextMetrics,
+      color: colors.textPrimary,
+      marginBottom: 16,
+      textAlign: 'center',
+    },
+    detailGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: 12 },
+    dItem: {
+      width: '46%',
+      minHeight: 64,
+      alignItems: 'center',
+      justifyContent: 'center',
+    },
+    dLabel: {
+      ...TypeScale.caption,
+      ...UiTextMetrics,
+      color: colors.textTertiary,
+      marginBottom: 4,
+      textAlign: 'center',
+    },
+    dValue: {
+      ...TypeScale.monoStrong,
+      ...UiTextMetrics,
+      color: colors.textPrimary,
+      textAlign: 'center',
+    },
   });
 }

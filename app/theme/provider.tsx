@@ -23,13 +23,17 @@ const ThemeContext = createContext<ThemeContextValue | null>(null);
 export function ThemeProvider({ children }: { children: ReactNode }) {
   const systemScheme = useColorScheme();
   const [preference, setPreferenceState] = useState<ThemePreference>('system');
+  const [hydrated, setHydrated] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
     void (async () => {
-      const stored = await getThemePreference();
-      if (cancelled || !stored) return;
-      setPreferenceState(stored);
+      const stored = await getThemePreference().catch(() => null);
+      if (cancelled) return;
+      if (stored) {
+        setPreferenceState(stored);
+      }
+      setHydrated(true);
     })();
     return () => {
       cancelled = true;
@@ -61,6 +65,10 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
     }),
     [preference, setPreference, theme],
   );
+
+  if (!hydrated) {
+    return null;
+  }
 
   return (
     <ThemeContext.Provider value={value}>{children}</ThemeContext.Provider>

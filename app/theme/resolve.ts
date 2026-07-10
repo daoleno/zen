@@ -8,16 +8,12 @@ export function resolveTheme({
   colorScheme: ThemeColorScheme;
   themeId?: string | null;
 }): ResolvedZenTheme {
-  const isLight = colorScheme === 'light';
   const fallbackId = DEFAULT_THEME_IDS[colorScheme];
   const requested = themeId ? getThemeById(themeId) : undefined;
-  const definition =
-    requested && requested.colorScheme === colorScheme
-      ? requested
-      : getThemeById(fallbackId)!;
+  const definition = requested ?? getThemeById(fallbackId)!;
 
   return {
     ...definition,
-    isLight,
+    isLight: definition.colorScheme === 'light',
   };
 }

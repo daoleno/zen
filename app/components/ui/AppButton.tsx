@@ -29,14 +29,28 @@ export function AppButton({
   ...props
 }: AppButtonProps) {
   const colors = useAppColors();
-  const buttonStyle =
-    variant === "primary"
+  const restingStyle = disabled
+    ? { backgroundColor: colors.disabledSurface, borderColor: colors.border }
+    : variant === "primary"
       ? { backgroundColor: colors.accent, borderColor: colors.accent }
       : variant === "secondary"
         ? { backgroundColor: colors.surfaceSubtle, borderColor: colors.borderSubtle }
         : { backgroundColor: "transparent", borderColor: "transparent" };
-  const textTone = variant === "primary" ? "onAccent" : "secondary";
-  const iconColor = variant === "primary" ? colors.textOnAccent : colors.textSecondary;
+  const pressedStyle = variant === "primary"
+    ? { backgroundColor: colors.accentStrong, borderColor: colors.accentStrong }
+    : variant === "secondary"
+      ? { backgroundColor: colors.surfacePressed, borderColor: colors.border }
+      : { backgroundColor: colors.surfacePressed, borderColor: colors.borderSubtle };
+  const textTone = disabled
+    ? "disabled"
+    : variant === "primary"
+      ? "onAccent"
+      : "secondary";
+  const iconColor = disabled
+    ? colors.disabledText
+    : variant === "primary"
+      ? colors.textOnAccent
+      : colors.textSecondary;
 
   return (
     <Pressable
@@ -44,9 +58,7 @@ export function AppButton({
       disabled={disabled}
       style={({ pressed }) => [
         styles.button,
-        buttonStyle,
-        pressed && !disabled ? styles.pressed : null,
-        disabled ? styles.disabled : null,
+        pressed && !disabled ? pressedStyle : restingStyle,
         style,
       ]}
     >
@@ -60,7 +72,7 @@ export function AppButton({
 
 const styles = StyleSheet.create({
   button: {
-    minHeight: 40,
+    minHeight: 44,
     borderRadius: 12,
     borderWidth: StyleSheet.hairlineWidth,
     paddingHorizontal: 12,
@@ -68,11 +80,5 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "center",
     gap: 8,
-  },
-  pressed: {
-    opacity: 0.72,
-  },
-  disabled: {
-    opacity: 0.5,
   },
 });

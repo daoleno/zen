@@ -46,6 +46,7 @@ export function TerminalActionMenu({
           top,
           width: TERMINAL_ACTION_MENU_WIDTH,
           borderColor: chrome.border,
+          shadowColor: chrome.overlay,
         },
       ]}
     >
@@ -70,10 +71,7 @@ const styles = StyleSheet.create({
     position: "absolute",
     borderRadius: 14,
     paddingVertical: 4,
-    backgroundColor: "#161F2B",
     borderWidth: 1,
-    borderColor: "rgba(255,255,255,0.06)",
-    shadowColor: "#000",
     shadowOpacity: 0.2,
     shadowRadius: 8,
     elevation: 8,
