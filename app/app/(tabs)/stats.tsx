@@ -35,36 +35,45 @@ type TimeRange = 'day' | 'week' | 'month' | 'all';
 interface DayCell {
   date: string;
   totalTokens: number;
+  totalTokensKnown?: boolean;
   inputTokens: number;
   outputTokens: number;
   reasoningTokens: number;
   cacheRead: number;
   cacheCreate: number;
+  tokenBreakdownKnown?: boolean;
   cost: number;
+  costKnown?: boolean;
   sessions: number;
 }
 
 interface ModelStat {
   name: string;
   totalTokens: number;
+  totalTokensKnown?: boolean;
   inputTokens: number;
   outputTokens: number;
   reasoningTokens: number;
   cacheRead: number;
   cacheCreate: number;
+  tokenBreakdownKnown?: boolean;
   cost: number;
+  costKnown?: boolean;
   sessions: number;
 }
 
 interface ProjectStat {
   name: string;
   totalTokens: number;
+  totalTokensKnown?: boolean;
   inputTokens: number;
   outputTokens: number;
   reasoningTokens: number;
   cacheRead: number;
   cacheCreate: number;
+  tokenBreakdownKnown?: boolean;
   cost: number;
+  costKnown?: boolean;
   sessions: number;
 }
 
@@ -81,12 +90,15 @@ interface ToolStat {
 
 interface RangeData {
   cost: number;
+  costKnown?: boolean;
   totalTokens: number;
+  totalTokensKnown?: boolean;
   inputTokens: number;
   outputTokens: number;
   reasoningTokens: number;
   cacheRead: number;
   cacheCreate: number;
+  tokenBreakdownKnown?: boolean;
   sessions: number;
   models: ModelStat[];
   projects: ProjectStat[];
@@ -106,7 +118,8 @@ interface StatsPayload {
 // ── Constants ──────────────────────────────────────────────
 
 const EMPTY_RANGE: RangeData = {
-  cost: 0, totalTokens: 0, inputTokens: 0, outputTokens: 0, reasoningTokens: 0, cacheRead: 0, cacheCreate: 0,
+  cost: 0, costKnown: true, totalTokens: 0, totalTokensKnown: true, inputTokens: 0, outputTokens: 0,
+  reasoningTokens: 0, cacheRead: 0, cacheCreate: 0, tokenBreakdownKnown: true,
   sessions: 0, models: [], projects: [], skills: [], tools: [], days: [],
 };
 
@@ -120,43 +133,119 @@ const RANGE_OPTIONS: { key: TimeRange; label: string }[] = [
 const MAX_LIST_ITEMS = 5;
 const EMPTY_STATS_RETRY_MS = 700;
 const EMPTY_STATS_MAX_RETRIES = 3;
+const STATS_CONTENT_MAX_WIDTH = 760;
 
 // ── Helpers ────────────────────────────────────────────────
 
-function barIntensity(cost: number, maxCost: number): number {
-  if (cost <= 0) return 0;
-  const ratio = cost / maxCost;
+function barIntensity(value: number, maxValue: number): number {
+  if (value <= 0) return 0;
+  const ratio = value / maxValue;
   if (ratio < 0.15) return 1;
   if (ratio < 0.5) return 2;
   return 3;
 }
 
-function fmt(n: number): string {
-  if (n >= 1_000_000) return (n / 1_000_000).toFixed(1) + 'M';
-  if (n >= 1_000) return (n / 1_000).toFixed(0) + 'K';
+function fmtCompact(n: number, units: readonly [number, string][]): string {
+  const absolute = Math.abs(n);
+  for (const [threshold, suffix] of units) {
+    if (absolute >= threshold) {
+      return `${(n / threshold).toFixed(1).replace(/\.0$/, '')}${suffix}`;
+    }
+  }
   return n.toString();
 }
 
+function fmt(n: number): string {
+  return fmtCompact(n, [
+    [1_000_000_000_000, 'T'],
+    [1_000_000_000, 'B'],
+    [1_000_000, 'M'],
+    [1_000, 'K'],
+  ]);
+}
+
 function fmtCost(n: number): string {
+  if (Math.abs(n) >= 1_000) {
+    return '$' + fmtCompact(n, [
+      [1_000_000_000_000, 'T'],
+      [1_000_000_000, 'B'],
+      [1_000_000, 'M'],
+      [1_000, 'K'],
+    ]);
+  }
   if (n >= 100) return '$' + n.toFixed(0);
   return '$' + n.toFixed(2);
 }
 
-function tokenSummary(item: {
+function isCostKnown(item: { costKnown?: boolean }): boolean {
+  return item.costKnown !== false;
+}
+
+function isTotalTokensKnown(item: { totalTokensKnown?: boolean }): boolean {
+  return item.totalTokensKnown !== false;
+}
+
+function isTokenBreakdownKnown(item: { tokenBreakdownKnown?: boolean }): boolean {
+  return item.tokenBreakdownKnown !== false;
+}
+
+function fmtAvailable(value: number, available: boolean | undefined, formatter: (n: number) => string): string {
+  if (available === false) return value > 0 ? `${formatter(value)}+` : '—';
+  return formatter(value);
+}
+
+function fmtAvailableCost(cost: number, costKnown?: boolean): string {
+  return fmtAvailable(cost, costKnown, fmtCost);
+}
+
+function fmtAvailableTokens(tokens: number, totalTokensKnown?: boolean): string {
+  return fmtAvailable(tokens, totalTokensKnown, fmt);
+}
+
+function sessionSummary(sessions: number): string {
+  return `${sessions} ${sessions === 1 ? 'session' : 'sessions'}`;
+}
+
+function rowActivitySummary(item: {
   totalTokens: number;
-  inputTokens: number;
-  outputTokens: number;
-  cacheRead: number;
-  reasoningTokens: number;
+  totalTokensKnown?: boolean;
+  sessions: number;
 }): string {
-  const parts = [
-    `${fmt(item.totalTokens)} total`,
-    `${fmt(item.inputTokens)} in`,
-  ];
-  if (item.cacheRead > 0) parts.push(`${fmt(item.cacheRead)} cache`);
-  parts.push(`${fmt(item.outputTokens)} out`);
-  if (item.reasoningTokens > 0) parts.push(`${fmt(item.reasoningTokens)} reason`);
-  return parts.join(' · ');
+  if (!isTotalTokensKnown(item) && item.totalTokens === 0) return sessionSummary(item.sessions);
+  return `${fmtAvailableTokens(item.totalTokens, item.totalTokensKnown)} tokens · ${sessionSummary(item.sessions)}`;
+}
+
+type ActivityStat = {
+  name: string;
+  totalTokens: number;
+  totalTokensKnown?: boolean;
+  sessions: number;
+};
+
+function activityUsesTokens(items: { totalTokens: number; totalTokensKnown?: boolean }[]): boolean {
+  return items.every(item => isTotalTokensKnown(item) || item.totalTokens > 0);
+}
+
+function activityValue(
+  item: { totalTokens: number; sessions: number },
+  usesTokens: boolean,
+): number {
+  return usesTokens ? item.totalTokens : item.sessions;
+}
+
+function sortByActivity<T extends ActivityStat>(items: T[]): T[] {
+  const usesTokens = activityUsesTokens(items);
+  return [...items].sort((a, b) =>
+    activityValue(b, usesTokens) - activityValue(a, usesTokens) || a.name.localeCompare(b.name),
+  );
+}
+
+function dayActivityIntensity(
+  day: DayCell,
+  maxActivity: number,
+  usesTokens: boolean,
+): number {
+  return barIntensity(activityValue(day, usesTokens), maxActivity);
 }
 
 function shortDate(dateStr: string): string {
@@ -211,7 +300,8 @@ function mergeModelStats(items: ModelStat[]): ModelStat[] {
   for (const item of items) {
     const current = merged.get(item.name) ?? {
       name: item.name, totalTokens: 0, inputTokens: 0, outputTokens: 0,
-      reasoningTokens: 0, cacheRead: 0, cacheCreate: 0, cost: 0, sessions: 0,
+      reasoningTokens: 0, cacheRead: 0, cacheCreate: 0, cost: 0, costKnown: true,
+      totalTokensKnown: true, tokenBreakdownKnown: true, sessions: 0,
     };
     current.totalTokens += item.totalTokens;
     current.inputTokens += item.inputTokens;
@@ -220,10 +310,13 @@ function mergeModelStats(items: ModelStat[]): ModelStat[] {
     current.cacheRead += item.cacheRead;
     current.cacheCreate += item.cacheCreate;
     current.cost += item.cost;
+    current.costKnown = isCostKnown(current) && isCostKnown(item);
+    current.totalTokensKnown = isTotalTokensKnown(current) && isTotalTokensKnown(item);
+    current.tokenBreakdownKnown = isTokenBreakdownKnown(current) && isTokenBreakdownKnown(item);
     current.sessions += item.sessions;
     merged.set(item.name, current);
   }
-  return [...merged.values()].sort((a, b) => b.cost - a.cost || b.sessions - a.sessions);
+  return [...merged.values()];
 }
 
 function mergeProjectStats(items: ProjectStat[]): ProjectStat[] {
@@ -231,7 +324,8 @@ function mergeProjectStats(items: ProjectStat[]): ProjectStat[] {
   for (const item of items) {
     const current = merged.get(item.name) ?? {
       name: item.name, totalTokens: 0, inputTokens: 0, outputTokens: 0,
-      reasoningTokens: 0, cacheRead: 0, cacheCreate: 0, cost: 0, sessions: 0,
+      reasoningTokens: 0, cacheRead: 0, cacheCreate: 0, cost: 0, costKnown: true,
+      totalTokensKnown: true, tokenBreakdownKnown: true, sessions: 0,
     };
     current.totalTokens += item.totalTokens;
     current.inputTokens += item.inputTokens;
@@ -240,10 +334,13 @@ function mergeProjectStats(items: ProjectStat[]): ProjectStat[] {
     current.cacheRead += item.cacheRead;
     current.cacheCreate += item.cacheCreate;
     current.cost += item.cost;
+    current.costKnown = isCostKnown(current) && isCostKnown(item);
+    current.totalTokensKnown = isTotalTokensKnown(current) && isTotalTokensKnown(item);
+    current.tokenBreakdownKnown = isTokenBreakdownKnown(current) && isTokenBreakdownKnown(item);
     current.sessions += item.sessions;
     merged.set(item.name, current);
   }
-  return [...merged.values()].sort((a, b) => b.cost - a.cost || b.sessions - a.sessions);
+  return [...merged.values()];
 }
 
 function mergeSkillStats(items: SkillStat[]): SkillStat[] {
@@ -273,7 +370,8 @@ function mergeDays(arrays: DayCell[][]): DayCell[] {
     for (const d of arr ?? []) {
       const c = merged.get(d.date) ?? {
         date: d.date, totalTokens: 0, inputTokens: 0, outputTokens: 0,
-        reasoningTokens: 0, cacheRead: 0, cacheCreate: 0, cost: 0, sessions: 0,
+        reasoningTokens: 0, cacheRead: 0, cacheCreate: 0, cost: 0, costKnown: true,
+        totalTokensKnown: true, tokenBreakdownKnown: true, sessions: 0,
       };
       c.totalTokens += d.totalTokens;
       c.inputTokens += d.inputTokens;
@@ -282,6 +380,9 @@ function mergeDays(arrays: DayCell[][]): DayCell[] {
       c.cacheRead += d.cacheRead;
       c.cacheCreate += d.cacheCreate;
       c.cost += d.cost;
+      c.costKnown = isCostKnown(c) && isCostKnown(d);
+      c.totalTokensKnown = isTotalTokensKnown(c) && isTotalTokensKnown(d);
+      c.tokenBreakdownKnown = isTokenBreakdownKnown(c) && isTokenBreakdownKnown(d);
       c.sessions += d.sessions;
       merged.set(d.date, c);
     }
@@ -293,12 +394,15 @@ function mergeRangeData(items: RangeData[]): RangeData {
   if (items.length === 0) return EMPTY_RANGE;
   return {
     cost: items.reduce((s, i) => s + i.cost, 0),
+    costKnown: items.every(isCostKnown),
     totalTokens: items.reduce((s, i) => s + i.totalTokens, 0),
+    totalTokensKnown: items.every(isTotalTokensKnown),
     inputTokens: items.reduce((s, i) => s + i.inputTokens, 0),
     outputTokens: items.reduce((s, i) => s + i.outputTokens, 0),
     reasoningTokens: items.reduce((s, i) => s + i.reasoningTokens, 0),
     cacheRead: items.reduce((s, i) => s + i.cacheRead, 0),
     cacheCreate: items.reduce((s, i) => s + i.cacheCreate, 0),
+    tokenBreakdownKnown: items.every(isTokenBreakdownKnown),
     sessions: items.reduce((s, i) => s + i.sessions, 0),
     models: mergeModelStats(items.flatMap(i => i.models ?? [])),
     projects: mergeProjectStats(items.flatMap(i => i.projects ?? [])),
@@ -527,19 +631,32 @@ export default function StatsScreen() {
   const allData = statsData?.ranges?.all ?? EMPTY_RANGE;
   const days = data.days ?? [];
 
-  const maxModelCost = useMemo(() => Math.max(...(data.models?.map(m => m.cost) ?? [0]), 0.01), [data.models]);
-  const maxProjectCost = useMemo(() => Math.max(...(data.projects?.map(p => p.cost) ?? [0]), 0.01), [data.projects]);
-  const maxProjectTokens = useMemo(() => Math.max(...(data.projects?.map(p => p.totalTokens) ?? [0]), 1), [data.projects]);
+  const rankedModels = useMemo(() => sortByActivity(data.models ?? []), [data.models]);
+  const modelActivityUsesTokens = useMemo(() => activityUsesTokens(rankedModels), [rankedModels]);
+  const maxModelActivity = useMemo(
+    () => Math.max(...rankedModels.map(model => activityValue(model, modelActivityUsesTokens)), 1),
+    [modelActivityUsesTokens, rankedModels],
+  );
+  const rankedProjects = useMemo(() => sortByActivity(data.projects ?? []), [data.projects]);
+  const projectActivityUsesTokens = useMemo(() => activityUsesTokens(rankedProjects), [rankedProjects]);
+  const maxProjectActivity = useMemo(
+    () => Math.max(...rankedProjects.map(project => activityValue(project, projectActivityUsesTokens)), 1),
+    [projectActivityUsesTokens, rankedProjects],
+  );
   const maxSkillCalls = useMemo(() => Math.max(...(data.skills?.map(s => s.calls) ?? [0]), 1), [data.skills]);
   const maxToolCalls = useMemo(() => Math.max(...(data.tools?.map(t => t.calls) ?? [0]), 1), [data.tools]);
   const totalSkills = data.skills?.length ?? 0;
   const totalSkillCalls = useMemo(() => (data.skills ?? []).reduce((s, v) => s + v.calls, 0), [data.skills]);
   const totalToolCalls = useMemo(() => (data.tools ?? []).reduce((s, v) => s + v.calls, 0), [data.tools]);
-  const visibleModels = useMemo(() => topItems(data.models ?? []), [data.models]);
-  const visibleProjects = useMemo(() => topItems(data.projects ?? []), [data.projects]);
+  const visibleModels = useMemo(() => topItems(rankedModels), [rankedModels]);
+  const visibleProjects = useMemo(() => topItems(rankedProjects), [rankedProjects]);
   const visibleSkills = useMemo(() => topItems(data.skills ?? []), [data.skills]);
   const visibleTools = useMemo(() => topItems(data.tools ?? []), [data.tools]);
-  const maxDayCost = useMemo(() => Math.max(...days.map(d => d.cost), 0.01), [days]);
+  const dayActivityUsesTokens = useMemo(() => activityUsesTokens(days), [days]);
+  const maxDayActivity = useMemo(
+    () => Math.max(...days.map(day => activityValue(day, dayActivityUsesTokens)), 1),
+    [dayActivityUsesTokens, days],
+  );
   const activityDays = useMemo(() => buildDailyActivitySeries(days, range), [days, range]);
   const compactDailyActivity = range !== 'all' || activityDays.length <= 45;
   const activityLayout = dailyActivityLayout(range, activityDays.length);
@@ -551,6 +668,9 @@ export default function StatsScreen() {
     ? shortDate(activityDays[activityDays.length - 1].date)
     : '';
   const heatmapColumns = useMemo(() => buildActivityCalendarColumns(activityDays), [activityDays]);
+  const hasAvailabilityGaps = !isCostKnown(data) ||
+    !isTotalTokensKnown(data) ||
+    !isTokenBreakdownKnown(data);
 
   const hasData = hasRangeStats(data);
   const hasAnyStats = useMemo(
@@ -613,13 +733,103 @@ export default function StatsScreen() {
           contentContainerStyle={s.scroll}
           showsVerticalScrollIndicator={false}
         >
-            {/* ── Cost ── */}
-            <View style={s.card}>
-              <Text style={s.costBig}>{fmtCost(data.cost)}</Text>
-              <Text style={s.costMeta}>
-                {fmt(data.totalTokens)} tokens · {data.sessions} sessions
-              </Text>
+            {/* ── Summary ── */}
+            <View style={[s.card, s.summaryCard]}>
+              <View style={s.summaryMetrics}>
+                <View style={s.summaryMetric}>
+                  <Text style={s.summaryLabel}>Estimated cost</Text>
+                  <Text
+                    style={[
+                      s.summaryValue,
+                      s.summaryCost,
+                      !isCostKnown(data) && data.cost === 0 && s.summaryUnavailable,
+                    ]}
+                  >
+                    {fmtAvailableCost(data.cost, data.costKnown)}
+                  </Text>
+                </View>
+                <View style={s.summaryDivider} />
+                <View style={s.summaryMetric}>
+                  <Text style={s.summaryLabel}>Tokens</Text>
+                  <Text
+                    style={[
+                      s.summaryValue,
+                      !isTotalTokensKnown(data) && data.totalTokens === 0 && s.summaryUnavailable,
+                    ]}
+                  >
+                    {fmtAvailableTokens(data.totalTokens, data.totalTokensKnown)}
+                  </Text>
+                </View>
+              </View>
+              <Text style={s.summarySessions}>{sessionSummary(data.sessions)}</Text>
+              {hasAvailabilityGaps && (
+                <Text style={s.summaryNote}>
+                  Some agents don’t report token or billing details.
+                </Text>
+              )}
             </View>
+
+            {/* ── Models ── */}
+            {(data.models?.length ?? 0) > 0 && (
+              <View style={s.card}>
+                <Text style={s.label}>Models</Text>
+                {(expandedSections.has('models') ? rankedModels : visibleModels).map((m) => (
+                  <View key={m.name} style={s.row}>
+                    <View style={s.rowInfo}>
+                      <Text style={s.rowName} numberOfLines={1}>{m.name}</Text>
+                      <Text style={s.rowMeta}>{rowActivitySummary(m)}</Text>
+                    </View>
+                    <Text
+                      style={[
+                        s.rowCost,
+                        !isCostKnown(m) && m.cost === 0 && s.rowValueUnavailable,
+                      ]}
+                    >
+                      {fmtAvailableCost(m.cost, m.costKnown)}
+                    </Text>
+                    <Bar
+                      ratio={activityValue(m, modelActivityUsesTokens) / maxModelActivity}
+                      color={colors.accent}
+                      trackColor={colors.borderSubtle}
+                    />
+                  </View>
+                ))}
+                {data.models.length > MAX_LIST_ITEMS && (
+                  <ExpandToggle expanded={expandedSections.has('models')} total={data.models.length} onPress={() => toggleSection('models')} colors={colors} />
+                )}
+              </View>
+            )}
+
+            {/* ── Projects ── */}
+            {(data.projects?.length ?? 0) > 0 && (
+              <View style={s.card}>
+                <Text style={s.label}>Projects</Text>
+                {(expandedSections.has('projects') ? rankedProjects : visibleProjects).map((p) => (
+                  <View key={p.name} style={s.row}>
+                    <View style={s.rowInfo}>
+                      <Text style={s.rowName} numberOfLines={1}>{p.name}</Text>
+                      <Text style={s.rowMeta}>{rowActivitySummary(p)}</Text>
+                    </View>
+                    <Text
+                      style={[
+                        s.rowCost,
+                        !isCostKnown(p) && p.cost === 0 && s.rowValueUnavailable,
+                      ]}
+                    >
+                      {fmtAvailableCost(p.cost, p.costKnown)}
+                    </Text>
+                    <Bar
+                      ratio={activityValue(p, projectActivityUsesTokens) / maxProjectActivity}
+                      color={colors.accent}
+                      trackColor={colors.borderSubtle}
+                    />
+                  </View>
+                ))}
+                {data.projects.length > MAX_LIST_ITEMS && (
+                  <ExpandToggle expanded={expandedSections.has('projects')} total={data.projects.length} onPress={() => toggleSection('projects')} colors={colors} />
+                )}
+              </View>
+            )}
 
             {/* ── Activity heatmap ── */}
             {days.length > 0 && (
@@ -635,7 +845,9 @@ export default function StatsScreen() {
                     </View>
                     <View style={[s.dailyHeatmapRow, { gap: activityLayout.gap }]}>
                       {activityDays.map(({ date, day }) => {
-                        const intensity = day ? barIntensity(day.cost, maxDayCost) : 0;
+                        const intensity = day
+                          ? dayActivityIntensity(day, maxDayActivity, dayActivityUsesTokens)
+                          : 0;
                         const backgroundColor = day ? intensityColors[intensity] : colors.borderSubtle;
                         return (
                           <AnimatedPressable
@@ -714,7 +926,11 @@ export default function StatsScreen() {
                                   );
                                 }
                                 const day = cell.day;
-                                const intensity = barIntensity(day.cost, maxDayCost);
+                                const intensity = dayActivityIntensity(
+                                  day,
+                                  maxDayActivity,
+                                  dayActivityUsesTokens,
+                                );
                                 return (
                                   <AnimatedPressable
                                     key={day.date}
@@ -744,46 +960,6 @@ export default function StatsScreen() {
                   ))}
                   <Text style={s.heatmapLegendLabel}>More</Text>
                 </View>
-              </View>
-            )}
-
-            {/* ── Models ── */}
-            {(data.models?.length ?? 0) > 0 && (
-              <View style={s.card}>
-                <Text style={s.label}>Models</Text>
-                {(expandedSections.has('models') ? data.models : visibleModels).map((m) => (
-                  <View key={m.name} style={s.row}>
-                    <View style={s.rowInfo}>
-                      <Text style={s.rowName} numberOfLines={1}>{m.name}</Text>
-                      <Text style={s.rowMeta}>{fmt(m.totalTokens)} tokens · {m.sessions} sessions</Text>
-                    </View>
-                    <Text style={s.rowCost}>{fmtCost(m.cost)}</Text>
-                    <Bar ratio={m.cost / maxModelCost} color={colors.accent} trackColor={colors.borderSubtle} />
-                  </View>
-                ))}
-                {data.models.length > MAX_LIST_ITEMS && (
-                  <ExpandToggle expanded={expandedSections.has('models')} total={data.models.length} onPress={() => toggleSection('models')} colors={colors} />
-                )}
-              </View>
-            )}
-
-            {/* ── Projects ── */}
-            {(data.projects?.length ?? 0) > 0 && (
-              <View style={s.card}>
-                <Text style={s.label}>Projects</Text>
-                {(expandedSections.has('projects') ? data.projects : visibleProjects).map((p) => (
-                  <View key={p.name} style={s.row}>
-                    <View style={s.rowInfo}>
-                      <Text style={s.rowName} numberOfLines={1}>{p.name}</Text>
-                      <Text style={s.rowMeta}>{p.sessions} sessions</Text>
-                    </View>
-                    <Text style={s.rowCost}>{p.cost > 0 ? fmtCost(p.cost) : fmt(p.totalTokens)}</Text>
-                    <Bar ratio={p.cost > 0 ? p.cost / maxProjectCost : p.totalTokens / maxProjectTokens} color={colors.accent} trackColor={colors.borderSubtle} />
-                  </View>
-                ))}
-                {data.projects.length > MAX_LIST_ITEMS && (
-                  <ExpandToggle expanded={expandedSections.has('projects')} total={data.projects.length} onPress={() => toggleSection('projects')} colors={colors} />
-                )}
               </View>
             )}
 
@@ -846,13 +1022,44 @@ export default function StatsScreen() {
           <>
             <Text style={s.detailTitle}>{selectedDay.date}</Text>
             <View style={s.detailGrid}>
-              <DItem label="Cost" value={fmtCost(selectedDay.cost)} accent colors={colors} styles={s} />
+              <DItem
+                label="Cost"
+                value={fmtAvailableCost(selectedDay.cost, selectedDay.costKnown)}
+                accent={isCostKnown(selectedDay) || selectedDay.cost > 0}
+                colors={colors}
+                styles={s}
+              />
               <DItem label="Sessions" value={`${selectedDay.sessions}`} colors={colors} styles={s} />
-              <DItem label="Total" value={fmt(selectedDay.totalTokens)} colors={colors} styles={s} />
-              <DItem label="Input" value={fmt(selectedDay.inputTokens)} colors={colors} styles={s} />
-              <DItem label="Cache" value={fmt(selectedDay.cacheRead)} colors={colors} styles={s} />
-              <DItem label="Output" value={fmt(selectedDay.outputTokens)} colors={colors} styles={s} />
-              <DItem label="Reason" value={fmt(selectedDay.reasoningTokens)} colors={colors} styles={s} />
+              <DItem
+                label="Total"
+                value={fmtAvailableTokens(selectedDay.totalTokens, selectedDay.totalTokensKnown)}
+                colors={colors}
+                styles={s}
+              />
+              <DItem
+                label="Input"
+                value={fmtAvailableTokens(selectedDay.inputTokens, selectedDay.tokenBreakdownKnown)}
+                colors={colors}
+                styles={s}
+              />
+              <DItem
+                label="Cache"
+                value={fmtAvailableTokens(selectedDay.cacheRead, selectedDay.tokenBreakdownKnown)}
+                colors={colors}
+                styles={s}
+              />
+              <DItem
+                label="Output"
+                value={fmtAvailableTokens(selectedDay.outputTokens, selectedDay.tokenBreakdownKnown)}
+                colors={colors}
+                styles={s}
+              />
+              <DItem
+                label="Reason"
+                value={fmtAvailableTokens(selectedDay.reasoningTokens, selectedDay.tokenBreakdownKnown)}
+                colors={colors}
+                styles={s}
+              />
             </View>
           </>
         )}
@@ -939,6 +1146,9 @@ function createStyles(colors: typeof Colors) {
   return StyleSheet.create({
   container: { flex: 1, backgroundColor: colors.bgPrimary },
   header: {
+    width: '100%',
+    maxWidth: STATS_CONTENT_MAX_WIDTH,
+    alignSelf: 'center',
     paddingHorizontal: 18,
     paddingTop: 16,
     paddingBottom: 12,
@@ -982,7 +1192,15 @@ function createStyles(colors: typeof Colors) {
     fontFamily: Typography.uiFontMedium,
   },
   scrollView: { flex: 1 },
-  scroll: { paddingHorizontal: 18, gap: 12, paddingTop: 6, paddingBottom: 110 },
+  scroll: {
+    width: '100%',
+    maxWidth: STATS_CONTENT_MAX_WIDTH,
+    alignSelf: 'center',
+    paddingHorizontal: 18,
+    gap: 12,
+    paddingTop: 6,
+    paddingBottom: 110,
+  },
 
   // Empty
   emptyContainer: { flex: 1, justifyContent: 'center', alignItems: 'center', paddingHorizontal: 36 },
@@ -1030,19 +1248,53 @@ function createStyles(colors: typeof Colors) {
     fontFamily: Typography.terminalFont,
   },
 
-  // Cost hero
-  costBig: {
-    color: colors.accent,
-    fontSize: 32,
-    fontFamily: Typography.terminalFontBold,
-    lineHeight: 38,
-    marginBottom: 6,
+  // Summary
+  summaryCard: {
+    paddingVertical: 16,
   },
-  costMeta: {
+  summaryMetrics: {
+    flexDirection: 'row',
+    alignItems: 'stretch',
+  },
+  summaryMetric: {
+    flex: 1,
+    minWidth: 0,
+  },
+  summaryDivider: {
+    width: StyleSheet.hairlineWidth,
+    backgroundColor: colors.borderSubtle,
+    marginHorizontal: 16,
+  },
+  summaryLabel: {
+    color: colors.textTertiary,
+    fontSize: 11,
+    fontFamily: Typography.uiFontMedium,
+    marginBottom: 7,
+  },
+  summaryValue: {
+    color: colors.textPrimary,
+    fontSize: 25,
+    fontFamily: Typography.terminalFontBold,
+    lineHeight: 31,
+  },
+  summaryCost: {
+    color: colors.accent,
+  },
+  summaryUnavailable: {
+    color: colors.textTertiary,
+  },
+  summarySessions: {
     color: colors.textSecondary,
-    fontSize: 13,
-    fontFamily: Typography.terminalFont,
-    lineHeight: 18,
+    fontSize: 12,
+    fontFamily: Typography.uiFontMedium,
+    marginTop: 14,
+  },
+  summaryNote: {
+    color: colors.textTertiary,
+    fontSize: 11.5,
+    fontFamily: Typography.uiFont,
+    lineHeight: 16,
+    marginTop: 5,
   },
 
   // Activity heatmap
@@ -1170,6 +1422,9 @@ function createStyles(colors: typeof Colors) {
     fontFamily: Typography.terminalFontBold,
     minWidth: 44,
     textAlign: 'right',
+  },
+  rowValueUnavailable: {
+    color: colors.textTertiary,
   },
   rowCount: {
     color: colors.textSecondary,

@@ -13,13 +13,13 @@ import (
 const (
 	pricingCacheRelPath = ".zen/pricing-cache.json"
 	pricingSyncEvery    = 7 * 24 * time.Hour
-	pricingCacheVersion = 2
+	pricingCacheVersion = 3
 )
 
 var (
 	pricingSyncURL    = "https://models.dev/api.json"
 	pricingHTTPClient = http.DefaultClient
-	pricingProviders  = map[string]bool{"anthropic": true, "openai": true}
+	pricingProviders  = map[string]bool{"anthropic": true, "openai": true, "xai": true}
 )
 
 type pricingCacheFile struct {
@@ -35,6 +35,18 @@ type pricingCacheEntry struct {
 	Output      float64 `json:"output"`
 	CacheRead   float64 `json:"cacheRead"`
 	CacheCreate float64 `json:"cacheCreate"`
+}
+
+type modelsDevCost struct {
+	Input        *float64 `json:"input"`
+	Output       *float64 `json:"output"`
+	CacheRead    *float64 `json:"cache_read"`
+	CacheWrite   *float64 `json:"cache_write"`
+	CacheWrite5m *float64 `json:"cache_write_5m"`
+}
+
+func (c modelsDevCost) hasRates() bool {
+	return c.Input != nil || c.Output != nil || c.CacheRead != nil || c.CacheWrite != nil || c.CacheWrite5m != nil
 }
 
 type pricingRegistry struct {
@@ -64,8 +76,15 @@ func pricingCachePath(home string) string {
 func currentPricing(modelID string) (modelPricing, bool) {
 	prices.mu.RLock()
 	defer prices.mu.RUnlock()
-	p, ok := prices.models[modelID]
+	p, ok := prices.models[pricingModelID(modelID)]
 	return p, ok
+}
+
+func pricingModelID(modelID string) string {
+	if modelID == "grok-build" {
+		return "grok-build-0.1"
+	}
+	return modelID
 }
 
 func loadPricingCache(home string) {
@@ -137,8 +156,8 @@ func syncPricing(ctx context.Context, home string) error {
 
 	var payload map[string]struct {
 		Models map[string]struct {
-			Name string             `json:"name"`
-			Cost map[string]float64 `json:"cost"`
+			Name string        `json:"name"`
+			Cost modelsDevCost `json:"cost"`
 		} `json:"models"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
@@ -152,7 +171,7 @@ func syncPricing(ctx context.Context, home string) error {
 		}
 		for modelID, modelData := range providerData.Models {
 			cost := modelData.Cost
-			if len(cost) == 0 {
+			if !cost.hasRates() {
 				continue
 			}
 			localID := modelID
@@ -166,20 +185,19 @@ func syncPricing(ctx context.Context, home string) error {
 			} else if modelData.Name != "" {
 				current.displayName = modelData.Name
 			}
-			if v, ok := cost["input"]; ok {
-				current.input = v
+			if cost.Input != nil {
+				current.input = *cost.Input
 			}
-			if v, ok := cost["output"]; ok {
-				current.output = v
+			if cost.Output != nil {
+				current.output = *cost.Output
 			}
-			if v, ok := cost["cache_read"]; ok {
-				current.cacheRead = v
+			if cost.CacheRead != nil {
+				current.cacheRead = *cost.CacheRead
 			}
-			switch {
-			case cost["cache_write"] > 0:
-				current.cacheCreate = cost["cache_write"]
-			case cost["cache_write_5m"] > 0:
-				current.cacheCreate = cost["cache_write_5m"]
+			if cost.CacheWrite != nil && *cost.CacheWrite > 0 {
+				current.cacheCreate = *cost.CacheWrite
+			} else if cost.CacheWrite5m != nil && *cost.CacheWrite5m > 0 {
+				current.cacheCreate = *cost.CacheWrite5m
 			}
 			updated[localID] = current
 		}

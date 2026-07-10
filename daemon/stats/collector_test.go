@@ -1,6 +1,7 @@
 package stats
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
@@ -408,9 +409,302 @@ func TestCollectClaudeSessionStatsIncludesSubagents(t *testing.T) {
 	}
 }
 
-func TestComputeCostUsesReasoningAndUpdatedPricing(t *testing.T) {
+func TestCollectGrokStatsFromUpdates(t *testing.T) {
+	setTestLocalLocation(t, time.UTC)
+
+	home := t.TempDir()
+	sessionDir := filepath.Join(home, ".grok", "sessions", "%2Ftmp%2Fzen", "session-1")
+	if err := os.MkdirAll(sessionDir, 0o755); err != nil {
+		t.Fatalf("mkdir grok session: %v", err)
+	}
+	summary := `{"info":{"id":"session-1","cwd":"/tmp/zen"},"current_model_id":"grok-4.5","created_at":"2026-04-04T09:00:00Z","updated_at":"2026-04-05T10:00:00Z"}`
+	if err := os.WriteFile(filepath.Join(sessionDir, "summary.json"), []byte(summary), 0o644); err != nil {
+		t.Fatalf("write summary: %v", err)
+	}
+	day1 := time.Date(2026, time.April, 4, 9, 0, 0, 0, time.UTC).Unix()
+	day1Later := time.Date(2026, time.April, 4, 9, 1, 0, 0, time.UTC).Unix()
+	day2 := time.Date(2026, time.April, 5, 10, 0, 0, 0, time.UTC).Unix()
+	updates := fmt.Sprintf(`{"timestamp":%d,"params":{"_meta":{"totalTokens":100,"modelId":"grok-4.5"}}}
+{"timestamp":%d,"params":{"_meta":{"totalTokens":160}}}
+{"timestamp":%d,"params":{"_meta":{"totalTokens":200}}}
+`, day1, day1Later, day2)
+	if err := os.WriteFile(filepath.Join(sessionDir, "updates.jsonl"), []byte(updates), 0o644); err != nil {
+		t.Fatalf("write updates: %v", err)
+	}
+
+	c := &Collector{}
+	byDate := c.collectGrokStats(home)
+	first := byDate["2026-04-04"]
+	if first == nil {
+		t.Fatal("missing first day")
+	}
+	second := byDate["2026-04-05"]
+	if second == nil {
+		t.Fatal("missing second day")
+	}
+
+	if got := first.models["grok-4.5"].totalTokens; got != 160 {
+		t.Fatalf("first day grok total = %d, want 160", got)
+	}
+	if got := first.models["grok-4.5"].sessions; got != 1 {
+		t.Fatalf("first day grok sessions = %d, want 1", got)
+	}
+	if got := first.projects["zen"].totalTokens; got != 160 {
+		t.Fatalf("first day project total = %d, want 160", got)
+	}
+	if got := first.projects["zen"].sessions; got != 1 {
+		t.Fatalf("first day project sessions = %d, want 1", got)
+	}
+	if got := first.slots[1].totalTokens; got != 160 {
+		t.Fatalf("first day morning slot total = %d, want 160", got)
+	}
+	if got := first.slots[1].sessions; got != 1 {
+		t.Fatalf("first day morning slot sessions = %d, want 1", got)
+	}
+	if got := second.models["grok-4.5"].totalTokens; got != 40 {
+		t.Fatalf("second day grok total = %d, want 40", got)
+	}
+	if got := second.models["grok-4.5"].inputTokens; got != 0 {
+		t.Fatalf("grok input token subtotal = %d, want 0 when breakdown is unavailable", got)
+	}
+	if second.models["grok-4.5"].totalTokensUnknown || !second.models["grok-4.5"].tokenBreakdownUnknown {
+		t.Fatalf("grok availability = %+v, want known total and unavailable breakdown", second.models["grok-4.5"])
+	}
+
+	modelStats := buildModelStats(aggregateModelsByDate(byDate, "0000-00-00", "9999-99-99"))
+	if len(modelStats) != 1 {
+		t.Fatalf("model stats = %+v, want one grok model", modelStats)
+	}
+	if modelStats[0].CostKnown {
+		t.Fatalf("grok cost should be unknown when only totalTokens is available: %+v", modelStats[0])
+	}
+	if modelStats[0].Cost != 0 {
+		t.Fatalf("grok cost should not be estimated from totalTokens, got %v", modelStats[0].Cost)
+	}
+	if !modelStats[0].TotalTokensKnown || modelStats[0].TokenBreakdownKnown {
+		t.Fatalf("grok model availability = %+v, want known total and unavailable breakdown", modelStats[0])
+	}
+
+	projects := buildProjectStats(aggregateProjectsByDate(byDate, "0000-00-00", "9999-99-99"))
+	if len(projects) != 1 || projects[0].CostKnown || !projects[0].TotalTokensKnown || projects[0].TokenBreakdownKnown {
+		t.Fatalf("grok project cost should be unknown, got %+v", projects)
+	}
+
+	cells := buildDayCells(byDate, nil, "2026-04-04", "2026-04-05")
+	if len(cells) != 2 || cells[0].CostKnown || cells[1].CostKnown {
+		t.Fatalf("grok day cells should have unknown cost, got %+v", cells)
+	}
+	if !cells[0].TotalTokensKnown || cells[0].TokenBreakdownKnown {
+		t.Fatalf("grok day availability = %+v, want known total and unavailable breakdown", cells[0])
+	}
+}
+
+func TestCollectGrokStatsDoesNotAddUnprovenChildTokens(t *testing.T) {
+	setTestLocalLocation(t, time.UTC)
+
+	home := t.TempDir()
+	sessionDir := filepath.Join(home, ".grok", "sessions", "%2Ftmp%2Fzen", "session-1")
+	if err := os.MkdirAll(sessionDir, 0o755); err != nil {
+		t.Fatalf("mkdir grok session: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(sessionDir, "summary.json"), []byte(`{"info":{"cwd":"/tmp/zen"},"current_model_id":"grok-4.5"}`), 0o644); err != nil {
+		t.Fatalf("write summary: %v", err)
+	}
+	timestamp := time.Date(2026, time.April, 4, 9, 0, 0, 0, time.UTC).Unix()
+	updates := fmt.Sprintf(`{"timestamp":%d,"params":{"_meta":{"totalTokens":100,"modelId":"grok-4.5"}}}
+{"timestamp":%d,"params":{"update":{"sessionUpdate":"subagent_spawned","subagent_id":"child-1","model":"grok-build"}}}
+{"timestamp":%d,"params":{"update":{"sessionUpdate":"subagent_finished","subagent_id":"child-1","tokens_used":500}}}
+{"timestamp":%d,"params":{"_meta":{"totalTokens":120}}}
+`, timestamp, timestamp+1, timestamp+2, timestamp+3)
+	if err := os.WriteFile(filepath.Join(sessionDir, "updates.jsonl"), []byte(updates), 0o644); err != nil {
+		t.Fatalf("write updates: %v", err)
+	}
+
+	byDate := (&Collector{}).collectGrokStats(home)
+	day := byDate["2026-04-04"]
+	if day == nil {
+		t.Fatal("missing grok day")
+	}
+	if got := day.models["grok-4.5"].totalTokens; got != 120 {
+		t.Fatalf("parent total = %d, want 120 without unproven child tokens", got)
+	}
+	if _, ok := day.models["grok-build"]; ok {
+		t.Fatalf("unproven child usage should not create a model row: %+v", day.models)
+	}
+}
+
+func TestCollectGrokFallbackUsesSourceLabelWhenModelAndTokensAreUnreported(t *testing.T) {
+	setTestLocalLocation(t, time.UTC)
+
+	home := t.TempDir()
+	sessionDir := filepath.Join(home, ".grok", "sessions", "%2Ftmp%2Fzen", "session-1")
+	if err := os.MkdirAll(sessionDir, 0o755); err != nil {
+		t.Fatalf("mkdir grok session: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(sessionDir, "summary.json"), []byte(`{"info":{"cwd":"/tmp/zen"},"created_at":"2026-04-04T09:00:00Z"}`), 0o644); err != nil {
+		t.Fatalf("write summary: %v", err)
+	}
+
+	byDate := (&Collector{}).collectGrokStats(home)
+	day := byDate["2026-04-04"]
+	if day == nil {
+		t.Fatal("missing fallback grok day")
+	}
+	model, ok := day.models[grokAgentUnreportedModelID]
+	if !ok || model.sessions != 1 || !model.totalTokensUnknown || !model.tokenBreakdownUnknown || !model.costUnknown {
+		t.Fatalf("fallback grok model = %+v, want source label with unavailable usage", model)
+	}
+	models := buildModelStats(day.models)
+	if len(models) != 1 || models[0].Name != "Grok Agent" || models[0].TotalTokensKnown || models[0].TokenBreakdownKnown || models[0].CostKnown {
+		t.Fatalf("fallback grok stats = %+v", models)
+	}
+}
+
+func TestCollectCursorAgentStatsSessionsOnly(t *testing.T) {
+	setTestLocalLocation(t, time.UTC)
+
+	home := t.TempDir()
+	transcriptDir := filepath.Join(home, ".cursor", "projects", "home-daoleno-workspace-zen", "agent-transcripts", "session-1")
+	if err := os.MkdirAll(transcriptDir, 0o755); err != nil {
+		t.Fatalf("mkdir cursor transcript: %v", err)
+	}
+	transcriptPath := filepath.Join(transcriptDir, "session-1.jsonl")
+	content := `{"role":"user","message":{"content":[{"type":"text","text":"hello"}]}}
+{"role":"assistant","message":{"content":[{"type":"text","text":"done"}]}}
+`
+	if err := os.WriteFile(transcriptPath, []byte(content), 0o644); err != nil {
+		t.Fatalf("write cursor transcript: %v", err)
+	}
+	mtime := time.Date(2026, time.April, 4, 15, 0, 0, 0, time.UTC)
+	if err := os.Chtimes(transcriptPath, mtime, mtime); err != nil {
+		t.Fatalf("chtimes cursor transcript: %v", err)
+	}
+
+	c := &Collector{}
+	byDate := c.collectCursorAgentStats(home)
+	day := byDate["2026-04-04"]
+	if day == nil {
+		t.Fatal("missing cursor day")
+	}
+	if len(day.models) != 1 {
+		t.Fatalf("cursor source label should preserve session activity, got %+v", day.models)
+	}
+	cursorModel, ok := day.models[cursorAgentUnreportedModelID]
+	if !ok || cursorModel.sessions != 1 || !cursorModel.totalTokensUnknown || !cursorModel.tokenBreakdownUnknown || !cursorModel.costUnknown {
+		t.Fatalf("cursor model availability = %+v, want one session with source-unavailable usage", cursorModel)
+	}
+	if got := day.projects["zen"].sessions; got != 1 {
+		t.Fatalf("cursor project sessions = %d, want 1", got)
+	}
+	if got := day.projects["zen"].totalTokens; got != 0 {
+		t.Fatalf("cursor project tokens should remain zero, got %d", got)
+	}
+	if !day.projects["zen"].costUnknown {
+		t.Fatal("cursor project cost should be marked unknown")
+	}
+	if !day.projects["zen"].totalTokensUnknown || !day.projects["zen"].tokenBreakdownUnknown {
+		t.Fatalf("cursor project tokens should be unavailable: %+v", day.projects["zen"])
+	}
+
+	models := buildModelStats(aggregateModelsByDate(byDate, "0000-00-00", "9999-99-99"))
+	if len(models) != 1 || models[0].Name != "Cursor Agent" || models[0].TotalTokensKnown || models[0].TokenBreakdownKnown || models[0].CostKnown {
+		t.Fatalf("cursor model stats = %+v, want source-specific label and unavailable usage", models)
+	}
+
+	cells := buildDayCells(byDate, nil, "2026-04-04", "2026-04-04")
+	if len(cells) != 1 {
+		t.Fatalf("day cells = %+v, want one cursor-only cell", cells)
+	}
+	if cells[0].Sessions != 1 || cells[0].TotalTokens != 0 || cells[0].TotalTokensKnown || cells[0].TokenBreakdownKnown || cells[0].CostKnown {
+		t.Fatalf("cursor-only day cell = %+v, want session activity with source-unavailable tokens and cost", cells[0])
+	}
+}
+
+func TestRangeTotalsKeepKnownSubtotalWhenAnotherSourceDoesNotReportTokens(t *testing.T) {
+	rangeData := &RangeData{
+		Models: []ModelStat{{
+			Name:                "GPT-5.6 Sol",
+			TotalTokens:         100,
+			TotalTokensKnown:    true,
+			InputTokens:         70,
+			OutputTokens:        30,
+			TokenBreakdownKnown: true,
+			Cost:                1,
+			CostKnown:           true,
+			Sessions:            1,
+		}},
+		Projects: []ProjectStat{{
+			Name:                "cursor-project",
+			TotalTokensKnown:    false,
+			TokenBreakdownKnown: false,
+			CostKnown:           false,
+			Sessions:            1,
+		}},
+	}
+
+	attachRangeTotals(rangeData)
+	if rangeData.TotalTokens != 100 || rangeData.TotalTokensKnown || rangeData.TokenBreakdownKnown {
+		t.Fatalf("range total = %+v, want visible known subtotal marked incomplete", rangeData)
+	}
+	if rangeData.Cost != 1 || rangeData.CostKnown {
+		t.Fatalf("range cost = %+v, want visible known subtotal marked incomplete", rangeData)
+	}
+}
+
+func TestRangeTotalsKeepCompleteGrokTotalAndIncompleteBreakdown(t *testing.T) {
+	rangeData := &RangeData{
+		Models: []ModelStat{
+			{TotalTokens: 100, TotalTokensKnown: true, TokenBreakdownKnown: true, CostKnown: true},
+			{TotalTokens: 50, TotalTokensKnown: true, TokenBreakdownKnown: false, CostKnown: false},
+		},
+	}
+
+	attachRangeTotals(rangeData)
+	if rangeData.TotalTokens != 150 || !rangeData.TotalTokensKnown || rangeData.TokenBreakdownKnown {
+		t.Fatalf("range total = %+v, want complete total and unavailable breakdown", rangeData)
+	}
+}
+
+func TestTokenAvailabilitySerializesKnownZeroSeparatelyFromUnreportedZero(t *testing.T) {
+	known, err := json.Marshal(ModelStat{TotalTokensKnown: true, TokenBreakdownKnown: true})
+	if err != nil {
+		t.Fatalf("marshal known zero: %v", err)
+	}
+	unreported, err := json.Marshal(ModelStat{TotalTokensKnown: false, TokenBreakdownKnown: false})
+	if err != nil {
+		t.Fatalf("marshal unreported zero: %v", err)
+	}
+	if string(known) == string(unreported) || !strings.Contains(string(unreported), `"totalTokensKnown":false`) || !strings.Contains(string(unreported), `"tokenBreakdownKnown":false`) {
+		t.Fatalf("availability JSON must distinguish known and unreported zero: known=%s unreported=%s", known, unreported)
+	}
+}
+
+func TestModelDisplayNamesDoNotRequirePricing(t *testing.T) {
+	tests := map[string]string{
+		"grok-composer-2.5-fast":     "Grok Composer 2.5",
+		"grok-build":                 "Grok Build 0.1",
+		grokAgentUnreportedModelID:   "Grok Agent",
+		cursorAgentUnreportedModelID: "Cursor Agent",
+		codexUnreportedModelID:       "Codex",
+		"grok-future-coder":          "Grok Future Coder",
+	}
+	for modelID, want := range tests {
+		if got := displayName(modelID); got != want {
+			t.Errorf("displayName(%q) = %q, want %q", modelID, got, want)
+		}
+	}
+}
+
+func TestStaticPricingIncludesGPT56SolFallback(t *testing.T) {
+	got, ok := staticPricing["gpt-5.6-sol"]
+	if !ok || got.input != 5 || got.output != 30 || got.cacheRead != 0.5 || got.cacheCreate != 6.25 || got.displayName != "GPT-5.6 Sol" {
+		t.Fatalf("unexpected gpt-5.6-sol fallback: %+v ok=%v", got, ok)
+	}
+}
+
+func TestComputeCostDoesNotDoubleCountReasoning(t *testing.T) {
 	got := computeCost("gpt-5.4-mini", 1_000_000, 1_000_000, 1_000_000, 1_000_000, 0)
-	want := 0.75 + 9.0 + 0.075
+	want := 0.75 + 4.5 + 0.075
 	if got != want {
 		t.Fatalf("cost = %v, want %v", got, want)
 	}
