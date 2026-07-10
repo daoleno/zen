@@ -16,7 +16,7 @@ const (
 	maxWorkspaceFileBytes = 2 << 20
 )
 
-func (s *Store) WorkspaceTree() (WorkspaceTree, error) {
+func (s *Store) WorkspaceTree(paths ...string) (WorkspaceTree, error) {
 	if s == nil {
 		return WorkspaceTree{}, fmt.Errorf("brain store is not configured")
 	}
@@ -27,13 +27,28 @@ func (s *Store) WorkspaceTree() (WorkspaceTree, error) {
 	if err := os.MkdirAll(root, 0o700); err != nil {
 		return WorkspaceTree{}, err
 	}
-	count := 0
-	entries, err := s.workspaceEntriesLocked(root, "", &count)
+	path := ""
+	if len(paths) > 0 {
+		path = paths[0]
+	}
+	relativePath, absolutePath, err := s.resolveWorkspacePathLocked(path)
+	if err != nil {
+		return WorkspaceTree{}, err
+	}
+	info, err := os.Stat(absolutePath)
+	if err != nil {
+		return WorkspaceTree{}, fmt.Errorf("open brain workspace directory: %w", err)
+	}
+	if !info.IsDir() {
+		return WorkspaceTree{}, fmt.Errorf("brain workspace path is not a directory: %s", relativePath)
+	}
+	entries, err := s.workspaceEntriesLocked(absolutePath, relativePath)
 	if err != nil {
 		return WorkspaceTree{}, err
 	}
 	return WorkspaceTree{
 		Workspace:   root,
+		Path:        relativePath,
 		Entries:     entries,
 		GeneratedAt: time.Now().UTC(),
 	}, nil
@@ -87,12 +102,7 @@ func (s *Store) ReadWorkspaceFile(path string) (WorkspaceFile, error) {
 	}, nil
 }
 
-func (s *Store) workspaceEntriesLocked(root, relativePath string, count *int) ([]WorkspaceEntry, error) {
-	absolutePath := root
-	if relativePath != "" {
-		absolutePath = filepath.Join(root, filepath.FromSlash(relativePath))
-	}
-
+func (s *Store) workspaceEntriesLocked(absolutePath, relativePath string) ([]WorkspaceEntry, error) {
 	rawEntries, err := os.ReadDir(absolutePath)
 	if err != nil {
 		return nil, fmt.Errorf("list brain workspace path: %w", err)
@@ -100,7 +110,7 @@ func (s *Store) workspaceEntriesLocked(root, relativePath string, count *int) ([
 
 	entries := make([]WorkspaceEntry, 0, len(rawEntries))
 	for _, entry := range rawEntries {
-		if *count >= maxWorkspaceEntries {
+		if len(entries) >= maxWorkspaceEntries {
 			return nil, fmt.Errorf("brain workspace contains too many entries to display")
 		}
 		if entry.Type()&os.ModeSymlink != 0 {
@@ -126,16 +136,9 @@ func (s *Store) workspaceEntriesLocked(root, relativePath string, count *int) ([
 			Size:       info.Size(),
 			ModifiedAt: info.ModTime().UTC(),
 		}
-		*count += 1
-
 		if entry.IsDir() {
 			item.Kind = "directory"
 			item.Size = 0
-			children, err := s.workspaceEntriesLocked(root, entryPath, count)
-			if err != nil {
-				return nil, err
-			}
-			item.Children = children
 		}
 		entries = append(entries, item)
 	}

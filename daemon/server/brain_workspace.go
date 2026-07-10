@@ -7,7 +7,7 @@ func (s *Server) handleBrainWorkspaceTree(conn *websocket.Conn, raw clientMessag
 		s.sendErrorWithRequestID(conn, raw.RequestID, "brain_unavailable", "Brain is not configured")
 		return
 	}
-	tree, err := s.brain.WorkspaceTree()
+	tree, err := s.brain.WorkspaceTree(raw.Path)
 	if err != nil {
 		s.sendErrorWithRequestID(conn, raw.RequestID, "brain_workspace_tree_failed", err.Error())
 		return

@@ -781,23 +781,6 @@ function explorationEntryLine(entry: ExplorationEntry) {
   return `${action}${suffix}`;
 }
 
-function summarizeExploration(entries: ExplorationEntry[]) {
-  if (entries.length === 0) {
-    return undefined;
-  }
-  const visibleTargets = uniqueStrings(
-    entries
-      .map((entry) => entry.presentation.target || entry.presentation.query)
-      .filter((value): value is string => Boolean(value)),
-  );
-  if (visibleTargets.length > 0) {
-    const summary = visibleTargets.slice(0, 2).map(shortPath).join(", ");
-    const hidden = visibleTargets.length - 2;
-    return hidden > 0 ? `${summary} +${hidden}` : summary;
-  }
-  return `${entries.length} lookup${entries.length === 1 ? "" : "s"}`;
-}
-
 function extractDisplayMessage(value: string): {
   body: string;
   attachments: DisplayAttachment[];
@@ -1037,141 +1020,6 @@ export function isEventRunning(event: CodexConversationEvent) {
   return event.status === "running";
 }
 
-function toolActivityHeading(event: CodexConversationEvent, running: boolean) {
-  const name = (event.tool_name || event.title || "tool").trim().replace(/^functions\./, "");
-  if (name === "view_image") {
-    return {
-      title: running ? "Calling" : "Viewed Image",
-      detail: compactToolDetail(event),
-    };
-  }
-  if (name === "write_stdin") {
-    const interaction = terminalInteractionHeading(event);
-    if (interaction) {
-      return interaction;
-    }
-  }
-  return {
-    title: running ? "Calling" : "Called",
-    detail: toolInvocationLabel(event),
-  };
-}
-
-function terminalInteractionHeading(event: CodexConversationEvent) {
-  const input = parseToolPayload(event.input);
-  const inputObject = isRecord(input) ? input : {};
-  const chars = stringField(inputObject, "chars");
-  const command = event.command || "command";
-  if (!chars) {
-    return {
-      title: "Waited for",
-      detail: commandSummary(command),
-    };
-  }
-  const preview = truncateRunes(displayControlText(chars), 80);
-  return {
-    title: "Interacted with",
-    detail: [commandSummary(command), preview ? `sent ${preview}` : ""].filter(Boolean).join(", "),
-  };
-}
-
-function toolInvocationLabel(event: CodexConversationEvent) {
-  const rawName = (event.tool_name || event.title || "tool").trim().replace(/^functions\./, "");
-  const name = formatToolInvocationName(rawName);
-  if (rawName === "apply_patch" && event.files?.length) {
-    return `${name}: ${event.files.slice(0, 4).join(", ")}${event.files.length > 4 ? ` +${event.files.length - 4}` : ""}`;
-  }
-  const input = parseToolPayload(event.input);
-  if (!isRecord(input)) {
-    return name;
-  }
-  const focused = focusedToolInvocationDetail(rawName, input);
-  if (focused) {
-    return `${name}: ${truncateRunes(focused, 220)}`;
-  }
-  const args = compactToolInvocationArgs(input);
-  return args ? `${name}: ${args}` : name;
-}
-
-function formatToolInvocationName(name: string) {
-  const mcpMatch = /^mcp__([^_]+(?:_[^_]+)*)__+(.+)$/.exec(name);
-  if (mcpMatch) {
-    return `${mcpMatch[1]}.${mcpMatch[2]}`;
-  }
-  return name || "tool";
-}
-
-function compactToolInvocationArgs(record: Record<string, unknown>) {
-  const hidden = new Set(["max_output_tokens", "yield_time_ms", "timeout_ms", "response_length"]);
-  const compact: Record<string, unknown> = {};
-  for (const [key, value] of Object.entries(record)) {
-    if (hidden.has(key)) {
-      continue;
-    }
-    compact[key] = value;
-    if (Object.keys(compact).length >= 3) {
-      break;
-    }
-  }
-  const text = Object.keys(compact).length > 0 ? JSON.stringify(compact) : "";
-  return truncateRunes(text, 180);
-}
-
-function focusedToolInvocationDetail(
-  rawName: string,
-  input: Record<string, unknown>,
-) {
-  if (rawName === "exec_command") {
-    return stringField(input, "cmd");
-  }
-  if (rawName === "view_image") {
-    return stringField(input, "path") || stringField(input, "image_url");
-  }
-  if (rawName.startsWith("browser_")) {
-    return stringField(input, "url")
-      || stringField(input, "element")
-      || stringField(input, "target")
-      || stringField(input, "filename")
-      || firstString(input.paths);
-  }
-  if (rawName.includes("query_docs")) {
-    return stringField(input, "libraryId") || stringField(input, "query");
-  }
-  if (rawName.includes("resolve_library_id")) {
-    return stringField(input, "libraryName") || stringField(input, "query");
-  }
-  if (rawName.includes("multi_tool_use.parallel")) {
-    const toolUses = Array.isArray(input.tool_uses) ? input.tool_uses : [];
-    const names = toolUses
-      .map((toolUse) =>
-        isRecord(toolUse) && typeof toolUse.recipient_name === "string"
-          ? humanizeToolName(toolUse.recipient_name)
-          : "",
-      )
-      .filter(Boolean);
-    return names.join(", ");
-  }
-  return stringField(input, "path")
-    || stringField(input, "url")
-    || stringField(input, "target")
-    || stringField(input, "query")
-    || firstString(input.paths);
-}
-
-function compactToolDetail(event: CodexConversationEvent) {
-  const parsed = parseToolPayload(event.input);
-  if (!isRecord(parsed)) {
-    return (event.tool_name || "").trim().replace(/^functions\./, "");
-  }
-  return (
-    stringField(parsed, "path") ||
-    stringField(parsed, "url") ||
-    stringField(parsed, "target") ||
-    stringField(parsed, "query") ||
-    (event.tool_name || "").trim().replace(/^functions\./, "")
-  );
-}
-
 function imagePathFromTool(event: CodexConversationEvent) {
   const nested = parseExecWrapperCalls(event.input);
   if (nested.length === 1 && nested[0].name === "view_image") {
@@ -1308,25 +1156,6 @@ function commandPresentation(command: string): CommandPresentation {
     failedTitle: "Ran",
     groupable: false,
   };
-}
-
-function commandActivityTitle(
-  command: string,
-  running: boolean,
-  failed: boolean,
-  presentation: CommandPresentation = commandPresentation(command),
-) {
-  void command;
-  void failed;
-  void presentation;
-  return running ? "Running" : "Ran";
-}
-
-function commandActivityDetail(
-  command: string,
-  presentation: CommandPresentation,
-) {
-  return presentation.detail || commandSummary(command);
 }
 
 function commandOutputBodyKind(
@@ -1861,29 +1690,8 @@ function stringField(record: Record<string, unknown>, key: string): string {
   return typeof value === "string" ? value.trim() : "";
 }
 
-function valueField(record: Record<string, unknown>, key: string): string {
-  const value = record[key];
-  if (typeof value === "string") {
-    return value.trim();
-  }
-  if (typeof value === "number" || typeof value === "boolean") {
-    return String(value);
-  }
-  return "";
-}
-
 function firstString(value: unknown): string {
   return Array.isArray(value) && typeof value[0] === "string" ? value[0] : "";
-}
-
-function displayControlText(value: string): string {
-  if (!value) {
-    return "";
-  }
-  return value
-    .replace(/\u0003/g, "Ctrl-C")
-    .replace(/\n/g, "\\n")
-    .replace(/\t/g, "\\t");
 }
 
 function humanizeToolName(value: string): string {
@@ -1933,18 +1741,6 @@ function looksLikeImagePath(value: string) {
 function basename(value: string) {
   const parts = value.split(/[\\/]/).filter(Boolean);
   return parts[parts.length - 1] || value;
-}
-
-function shortPath(value: string) {
-  const trimmed = value.trim();
-  if (!trimmed) {
-    return "";
-  }
-  const parts = trimmed.split(/[\\/]/).filter(Boolean);
-  if (parts.length <= 2) {
-    return trimmed;
-  }
-  return `${parts[parts.length - 2]}/${parts[parts.length - 1]}`;
 }
 
 function uniqueStrings(values: string[]) {

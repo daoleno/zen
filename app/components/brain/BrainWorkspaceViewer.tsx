@@ -31,14 +31,9 @@ interface BrainWorkspaceViewerProps {
   onClose(): void;
 }
 
-type BrainWorkspaceRow = {
-  entry: BrainWorkspaceEntry;
-  depth: number;
-};
-
 type BrainWorkspaceCache = {
   cacheKey: string;
-  tree: BrainWorkspaceTree | null;
+  directories: Map<string, BrainWorkspaceTree>;
   files: Map<string, BrainWorkspaceFile>;
 };
 
@@ -60,6 +55,7 @@ export function BrainWorkspaceViewer({
   const [treeCacheKey, setTreeCacheKey] = useState("");
   const [treeLoading, setTreeLoading] = useState(false);
   const [treeError, setTreeError] = useState<string | null>(null);
+  const [directoryStack, setDirectoryStack] = useState<BrainWorkspaceEntry[]>([]);
   const [selectedPath, setSelectedPath] = useState<string | null>(null);
   const [selectedFile, setSelectedFile] = useState<BrainWorkspaceFile | null>(null);
   const [selectedFileCacheKey, setSelectedFileCacheKey] = useState("");
@@ -67,9 +63,10 @@ export function BrainWorkspaceViewer({
   const [fileError, setFileError] = useState<string | null>(null);
   const cacheRef = useRef<BrainWorkspaceCache>({
     cacheKey: "",
-    tree: null,
+    directories: new Map(),
     files: new Map(),
   });
+  const treeRequestRef = useRef(0);
   const fileRequestRef = useRef(0);
   const currentTree = treeCacheKey === workspaceCacheKey ? tree : null;
   const currentSelectedFile =
@@ -82,20 +79,24 @@ export function BrainWorkspaceViewer({
     if (cacheRef.current.cacheKey !== workspaceCacheKey) {
       cacheRef.current = {
         cacheKey: workspaceCacheKey,
-        tree: null,
+        directories: new Map(),
         files: new Map(),
       };
-      fileRequestRef.current += 1;
-      setSelectedPath(null);
-      setSelectedFile(null);
-      setSelectedFileCacheKey("");
-      setFileLoading(false);
-      setFileError(null);
     }
 
+    treeRequestRef.current += 1;
+    fileRequestRef.current += 1;
+    setDirectoryStack([]);
+    setSelectedPath(null);
+    setSelectedFile(null);
+    setSelectedFileCacheKey("");
+    setFileLoading(false);
+    setFileError(null);
+
     const cache = cacheRef.current;
-    if (cache.tree) {
-      setTree(cache.tree);
+    const cachedRoot = cache.directories.get("");
+    if (cachedRoot) {
+      setTree(cachedRoot);
       setTreeCacheKey(workspaceCacheKey);
       setTreeLoading(false);
       setTreeError(null);
@@ -107,19 +108,11 @@ export function BrainWorkspaceViewer({
     setTreeError(null);
     setTree(null);
     setTreeCacheKey(workspaceCacheKey);
-    setSelectedPath(null);
-    setSelectedFile(null);
-    setSelectedFileCacheKey("");
-    setFileError(null);
     void wsClient
-      .getBrainWorkspaceTree(serverId)
+      .getBrainWorkspaceTree(serverId, "")
       .then((nextTree) => {
         if (!cancelled) {
-          cacheRef.current = {
-            ...cacheRef.current,
-            cacheKey: workspaceCacheKey,
-            tree: nextTree,
-          };
+          cacheRef.current.directories.set("", nextTree);
           setTree(nextTree);
           setTreeCacheKey(workspaceCacheKey);
         }
@@ -139,8 +132,16 @@ export function BrainWorkspaceViewer({
     };
   }, [serverId, visible, workspaceCacheKey]);
 
-  const rows = useMemo(
-    () => flattenWorkspaceEntries(currentTree?.entries ?? []),
+  const currentDirectory = directoryStack.at(-1) ?? null;
+  const currentEntries = useMemo(
+    () => [...(currentTree?.entries ?? [])].sort(
+      (left, right) => {
+        if (left.kind !== right.kind) {
+          return left.kind === "directory" ? -1 : 1;
+        }
+        return left.name.localeCompare(right.name);
+      },
+    ),
     [currentTree?.entries],
   );
 
@@ -188,6 +189,92 @@ export function BrainWorkspaceViewer({
     [serverId, workspaceCacheKey],
   );
 
+  const loadDirectory = useCallback(
+    async (entry: BrainWorkspaceEntry) => {
+      if (!serverId || entry.kind !== "directory") {
+        return;
+      }
+      const cachedTree = cacheRef.current.cacheKey === workspaceCacheKey
+        ? cacheRef.current.directories.get(entry.path)
+        : null;
+      setDirectoryStack((previous) => [...previous, entry]);
+      setSelectedPath(null);
+      setSelectedFile(null);
+      setFileError(null);
+      setTreeError(null);
+      if (cachedTree) {
+        setTree(cachedTree);
+        setTreeCacheKey(workspaceCacheKey);
+        setTreeLoading(false);
+        return;
+      }
+
+      const request = treeRequestRef.current + 1;
+      treeRequestRef.current = request;
+      setTree(null);
+      setTreeCacheKey(workspaceCacheKey);
+      setTreeLoading(true);
+      try {
+        const nextTree = await wsClient.getBrainWorkspaceTree(serverId, entry.path);
+        if (treeRequestRef.current === request) {
+          if (cacheRef.current.cacheKey === workspaceCacheKey) {
+            cacheRef.current.directories.set(entry.path, nextTree);
+          }
+          setTree(nextTree);
+          setTreeCacheKey(workspaceCacheKey);
+        }
+      } catch (error: any) {
+        if (treeRequestRef.current === request) {
+          setTreeError(error?.message || "Failed to load Brain workspace folder.");
+        }
+      } finally {
+        if (treeRequestRef.current === request) {
+          setTreeLoading(false);
+        }
+      }
+    },
+    [serverId, workspaceCacheKey],
+  );
+
+  const openEntry = useCallback(
+    (entry: BrainWorkspaceEntry) => {
+      if (entry.kind === "directory") {
+        void loadDirectory(entry);
+        return;
+      }
+      void loadFile(entry);
+    },
+    [loadDirectory, loadFile],
+  );
+
+  const goBack = useCallback(() => {
+    if (currentSelectedFile || fileLoading || fileError) {
+      fileRequestRef.current += 1;
+      setSelectedPath(null);
+      setSelectedFile(null);
+      setFileLoading(false);
+      setFileError(null);
+      return;
+    }
+    treeRequestRef.current += 1;
+    const parentStack = directoryStack.slice(0, -1);
+    const parentPath = parentStack.at(-1)?.path ?? "";
+    const parentTree = cacheRef.current.cacheKey === workspaceCacheKey
+      ? cacheRef.current.directories.get(parentPath) ?? null
+      : null;
+    setDirectoryStack(parentStack);
+    setTree(parentTree);
+    setTreeCacheKey(workspaceCacheKey);
+    setTreeLoading(false);
+    setTreeError(null);
+  }, [currentSelectedFile, directoryStack, fileError, fileLoading, workspaceCacheKey]);
+  const showingFile = Boolean(selectedPath || currentSelectedFile || fileLoading || fileError);
+  const canGoBack = showingFile || directoryStack.length > 0;
+  const locationLabel = selectedPath
+    || currentDirectory?.path
+    || currentTree?.workspace
+    || workspace;
+
   return (
     <BottomSheetFrame
       visible={visible}
@@ -197,12 +284,28 @@ export function BrainWorkspaceViewer({
       contentStyle={styles.sheetContent}
     >
       <View style={styles.header}>
+        {canGoBack ? (
+          <IconButton
+            icon="arrow-back-outline"
+            size={44}
+            iconSize={19}
+            tone="ghost"
+            accessibilityRole="button"
+            accessibilityLabel={showingFile ? "Back to folder" : "Back to parent folder"}
+            onPress={goBack}
+          />
+        ) : null}
         <View style={styles.headerText}>
           <AppText variant="title" tone="primary" numberOfLines={1}>
-            Brain workspace
+            Workspace
           </AppText>
-          <AppText variant="caption" tone="secondary" numberOfLines={1}>
-            {compactWorkspaceLabel(currentTree?.workspace || workspace)}
+          <AppText
+            variant="caption"
+            tone="secondary"
+            numberOfLines={1}
+            ellipsizeMode="head"
+          >
+            {compactWorkspaceLabel(locationLabel)}
           </AppText>
         </View>
         <IconButton
@@ -217,104 +320,91 @@ export function BrainWorkspaceViewer({
       </View>
 
       <View style={styles.body}>
-        <View style={styles.treePanel}>
-          {treeLoading ? (
-            <View style={styles.stateRow}>
-              <ActivityIndicator size="small" color={colors.accent} />
-              <AppText variant="caption" tone="secondary">
-                Loading workspace
-              </AppText>
-            </View>
-          ) : treeError ? (
-            <View style={styles.stateRow}>
-              <Ionicons name="warning-outline" size={15} color={colors.dangerText} />
-              <AppText variant="caption" tone="danger" style={styles.stateText}>
-                {treeError}
-              </AppText>
-            </View>
-          ) : rows.length === 0 ? (
-            <View style={styles.stateRow}>
-              <Ionicons name="folder-open-outline" size={15} color={colors.textSecondary} />
-              <AppText variant="caption" tone="secondary">
-                Workspace is empty.
-              </AppText>
-            </View>
-          ) : (
-            <ScrollView
-              style={styles.treeScroll}
-              contentContainerStyle={styles.treeScrollContent}
-              nestedScrollEnabled
-              showsVerticalScrollIndicator={false}
-            >
-              {rows.map(({ entry, depth }) => {
-                const directory = entry.kind === "directory";
-                const selected = !directory && entry.path === selectedPath;
-                return (
-                  <Pressable
-                    key={entry.path}
-                    accessibilityRole={directory ? undefined : "button"}
-                    accessibilityLabel={directory ? entry.name : `Open ${entry.name}`}
-                    disabled={directory || fileLoading}
-                    onPress={() => void loadFile(entry)}
-                    style={({ pressed }) => [
-                      styles.treeRow,
-                      { paddingLeft: 8 + depth * 16 },
-                      selected ? styles.treeRowSelected : null,
-                      pressed && !directory ? styles.treeRowPressed : null,
-                    ]}
-                  >
+        {treeLoading ? (
+          <View style={styles.previewState}>
+            <ActivityIndicator size="small" color={colors.accent} />
+            <AppText variant="caption" tone="secondary">
+              Loading workspace
+            </AppText>
+          </View>
+        ) : treeError ? (
+          <View style={styles.previewState}>
+            <Ionicons name="warning-outline" size={18} color={colors.dangerText} />
+            <AppText variant="caption" tone="danger" style={styles.previewStateText}>
+              {treeError}
+            </AppText>
+          </View>
+        ) : fileLoading ? (
+          <View style={styles.previewState}>
+            <ActivityIndicator size="small" color={colors.accent} />
+            <AppText variant="caption" tone="secondary">
+              Loading file
+            </AppText>
+          </View>
+        ) : fileError ? (
+          <View style={styles.previewState}>
+            <Ionicons name="warning-outline" size={18} color={colors.dangerText} />
+            <AppText variant="caption" tone="danger" style={styles.previewStateText}>
+              {fileError}
+            </AppText>
+          </View>
+        ) : currentSelectedFile ? (
+          <BrainWorkspaceFilePreview
+            file={currentSelectedFile}
+            chrome={chrome}
+            theme={theme}
+            styles={styles}
+          />
+        ) : currentEntries.length === 0 ? (
+          <View style={styles.previewState}>
+            <Ionicons name="folder-open-outline" size={20} color={colors.textSecondary} />
+            <AppText variant="caption" tone="secondary">
+              This folder is empty.
+            </AppText>
+          </View>
+        ) : (
+          <ScrollView
+            style={styles.browserScroll}
+            contentContainerStyle={styles.browserContent}
+            nestedScrollEnabled
+            showsVerticalScrollIndicator
+          >
+            {currentEntries.map((entry) => {
+              const directory = entry.kind === "directory";
+              return (
+                <Pressable
+                  key={entry.path}
+                  accessibilityRole="button"
+                  accessibilityLabel={`${directory ? "Open folder" : "Open file"} ${entry.name}`}
+                  onPress={() => openEntry(entry)}
+                  style={({ pressed }) => [
+                    styles.browserRow,
+                    pressed ? styles.browserRowPressed : null,
+                  ]}
+                >
+                  <View style={styles.browserIcon}>
                     <Ionicons
                       name={directory ? "folder-outline" : markdownFile(entry.path) ? "document-text-outline" : "document-outline"}
-                      size={15}
-                      color={selected ? colors.accent : colors.textSecondary}
+                      size={20}
+                      color={directory ? colors.accent : colors.textSecondary}
                     />
-                    <Text
-                      style={[
-                        styles.treeRowText,
-                        {
-                          color: selected ? colors.textPrimary : colors.textSecondary,
-                        },
-                      ]}
-                      numberOfLines={1}
-                      ellipsizeMode="head"
-                    >
+                  </View>
+                  <View style={styles.browserCopy}>
+                    <Text style={styles.browserName} numberOfLines={1} ellipsizeMode="middle">
                       {entry.name}
                     </Text>
-                  </Pressable>
-                );
-              })}
-            </ScrollView>
-          )}
-        </View>
-
-        <View style={styles.previewPanel}>
-          {fileLoading ? (
-            <View style={styles.previewState}>
-              <ActivityIndicator size="small" color={colors.accent} />
-            </View>
-          ) : fileError ? (
-            <View style={styles.previewState}>
-              <Ionicons name="warning-outline" size={18} color={colors.dangerText} />
-              <AppText variant="caption" tone="danger" style={styles.previewStateText}>
-                {fileError}
-              </AppText>
-            </View>
-          ) : currentSelectedFile ? (
-            <BrainWorkspaceFilePreview
-              file={currentSelectedFile}
-              chrome={chrome}
-              theme={theme}
-              styles={styles}
-            />
-          ) : (
-            <View style={styles.previewState}>
-              <Ionicons name="document-text-outline" size={18} color={colors.textSecondary} />
-              <AppText variant="caption" tone="secondary">
-                No file selected.
-              </AppText>
-            </View>
-          )}
-        </View>
+                    <Text style={styles.browserKind} numberOfLines={1}>
+                      {directory
+                        ? "Folder"
+                        : markdownFile(entry.path) ? "Markdown" : "Text file"}
+                    </Text>
+                  </View>
+                  <Ionicons name="chevron-forward" size={17} color={colors.textTertiary} />
+                </Pressable>
+              );
+            })}
+          </ScrollView>
+        )}
       </View>
     </BottomSheetFrame>
   );
@@ -378,20 +468,6 @@ function BrainWorkspaceFilePreview({
   );
 }
 
-function flattenWorkspaceEntries(entries: BrainWorkspaceEntry[]) {
-  const rows: BrainWorkspaceRow[] = [];
-  const visit = (items: BrainWorkspaceEntry[], depth: number) => {
-    for (const entry of items) {
-      rows.push({ entry, depth });
-      if (entry.kind === "directory" && entry.children.length > 0) {
-        visit(entry.children, depth + 1);
-      }
-    }
-  };
-  visit(entries, 0);
-  return rows;
-}
-
 function markdownFile(path: string) {
   return /\.(md|markdown)$/i.test(path);
 }
@@ -425,63 +501,57 @@ function createStyles(colors: typeof Colors) {
     body: {
       flex: 1,
       minHeight: 0,
-    },
-    treePanel: {
-      maxHeight: 176,
-      minHeight: 56,
       borderWidth: StyleSheet.hairlineWidth,
       borderColor: colors.borderSubtle,
-      borderRadius: 8,
-      backgroundColor: colors.surfaceSubtle,
+      borderRadius: 12,
+      backgroundColor: colors.bgPrimary,
       overflow: "hidden",
     },
-    treeScroll: {
-      maxHeight: 176,
-    },
-    treeScrollContent: {
-      paddingVertical: 6,
-    },
-    treeRow: {
-      minHeight: 44,
-      paddingRight: 10,
-      flexDirection: "row",
-      alignItems: "center",
-      gap: 8,
-    },
-    treeRowSelected: {
-      backgroundColor: colors.surfaceActive,
-    },
-    treeRowPressed: {
-      opacity: 0.72,
-    },
-    treeRowText: {
+    browserScroll: {
       flex: 1,
-      minWidth: 0,
-      fontFamily: Typography.uiFont,
-      fontSize: 13,
-      lineHeight: 18,
-      letterSpacing: 0,
+      minHeight: 0,
     },
-    stateRow: {
-      minHeight: 54,
+    browserContent: {
+      paddingVertical: 4,
+    },
+    browserRow: {
+      minHeight: 62,
       paddingHorizontal: 12,
       flexDirection: "row",
       alignItems: "center",
-      gap: 8,
+      gap: 11,
+      borderBottomWidth: StyleSheet.hairlineWidth,
+      borderBottomColor: colors.borderSubtle,
     },
-    stateText: {
+    browserRowPressed: {
+      backgroundColor: colors.surfacePressed,
+    },
+    browserIcon: {
+      width: 34,
+      height: 34,
+      borderRadius: 9,
+      alignItems: "center",
+      justifyContent: "center",
+      backgroundColor: colors.surfaceSubtle,
+    },
+    browserCopy: {
       flex: 1,
       minWidth: 0,
+      gap: 2,
     },
-    previewPanel: {
-      flex: 1,
-      minHeight: 0,
-      marginTop: 12,
-      borderWidth: StyleSheet.hairlineWidth,
-      borderColor: colors.borderSubtle,
-      borderRadius: 8,
-      backgroundColor: colors.bgPrimary,
-      overflow: "hidden",
+    browserName: {
+      fontFamily: Typography.uiFont,
+      fontSize: 15,
+      lineHeight: 20,
+      color: colors.textPrimary,
+      letterSpacing: 0,
+    },
+    browserKind: {
+      fontFamily: Typography.uiFont,
+      fontSize: 12,
+      lineHeight: 16,
+      color: colors.textTertiary,
+      letterSpacing: 0,
     },
     previewContent: {
       flex: 1,

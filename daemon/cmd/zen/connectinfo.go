@@ -14,8 +14,6 @@ import (
 )
 
 const (
-	startupModeLocalOnly  = "LOCAL-ONLY"
-	startupModePairable   = "PAIRABLE"
 	connectParamPayload   = "p"
 	connectPayloadVersion = 1
 	connectPublicKeyBytes = 32
@@ -28,54 +26,46 @@ type connectionOffer struct {
 	ConnectLink string
 }
 
-func buildConnectionOffers(advertiseURL string, authManager *auth.Manager, pairing auth.PairingToken) ([]connectionOffer, error) {
-	if strings.TrimSpace(advertiseURL) == "" {
+func buildConnectionOffers(endpoint string, authManager *auth.Manager, pairing auth.PairingToken) ([]connectionOffer, error) {
+	if strings.TrimSpace(endpoint) == "" {
 		return nil, nil
 	}
 
-	normalizedURL, err := normalizeAdvertiseURL(advertiseURL)
+	normalizedURL, err := normalizeEndpoint(endpoint)
 	if err != nil {
 		return nil, err
 	}
 
 	offer := connectionOffer{
-		Label: "Advertised endpoint",
+		Label: "Server endpoint",
 		URL:   normalizedURL,
 	}
 	offer.ConnectLink = buildConnectLink(offer.URL, authManager, pairing)
 	return []connectionOffer{offer}, nil
 }
 
-func printStartupBanner(w io.Writer, listenAddr, daemonID, mode string) {
+func printStartupBanner(w io.Writer, listenAddr, daemonID string) {
 	fmt.Fprintln(w, "╔══════════════════════════════════════╗")
 	fmt.Fprintln(w, "║         zen v0.1.0            ║")
 	fmt.Fprintln(w, "╠══════════════════════════════════════╣")
 	fmt.Fprintf(w, "║  Listening on %-22s ║\n", listenAddr)
 	fmt.Fprintf(w, "║  Auth: %-28s ║\n", "device identity")
-	fmt.Fprintf(w, "║  Mode: %-28s ║\n", mode)
 	fmt.Fprintln(w, "╠══════════════════════════════════════╣")
 	fmt.Fprintf(w, "║  Daemon ID: %-23s ║\n", daemonID[:23])
 	fmt.Fprintln(w, "╚══════════════════════════════════════╝")
 }
 
-func printLocalOnlyInfo(w io.Writer, stateDir string) {
+func printPairingHint(w io.Writer, stateDir string) {
 	fmt.Fprintln(w, "")
-	fmt.Fprintln(w, "State: LOCAL-ONLY")
-	fmt.Fprintln(w, "The daemon is running and has a stable identity, but it is not pairable from mobile yet.")
-	fmt.Fprintln(w, "Next step:")
-	fmt.Fprintln(w, "  1. Expose this daemon through your tunnel or private network.")
-	fmt.Fprintln(w, "  2. Generate a pairing link without restarting:")
-	fmt.Fprintf(w, "     %s\n", pairCommandExample(stateDir))
+	fmt.Fprintln(w, "To pair a phone, expose the daemon through your network and run:")
+	fmt.Fprintf(w, "  %s\n", pairCommandExample(stateDir))
 }
 
 func printPairingInfo(w io.Writer, offers []connectionOffer) {
 	if len(offers) == 0 {
-		printLocalOnlyInfo(w, "")
 		return
 	}
 
-	fmt.Fprintln(w, "")
-	fmt.Fprintln(w, "State: PAIRABLE")
 	for _, offer := range offers {
 		fmt.Fprintf(w, "  - %s\n", offer.Label)
 		fmt.Fprintf(w, "    URL:  %s\n", offer.URL)
@@ -98,25 +88,26 @@ func printPairCommandInfo(w io.Writer, daemonID string, offers []connectionOffer
 }
 
 func pairCommandExample(stateDir string) string {
-	parts := []string{"zen", "pair", "-advertise-url", "https://your-host/ws"}
+	parts := []string{"zen", "pair"}
 	if strings.TrimSpace(stateDir) != "" {
 		parts = append(parts, "-state-dir", stateDir)
 	}
+	parts = append(parts, "https://your-host/ws")
 	return strings.Join(parts, " ")
 }
 
-func normalizeAdvertiseURL(rawValue string) (string, error) {
+func normalizeEndpoint(rawValue string) (string, error) {
 	trimmed := strings.TrimSpace(rawValue)
 	if trimmed == "" {
-		return "", fmt.Errorf("advertise URL is empty")
+		return "", fmt.Errorf("endpoint is empty")
 	}
 
 	parsed, err := url.Parse(trimmed)
 	if err != nil {
-		return "", fmt.Errorf("parse advertise URL: %w", err)
+		return "", fmt.Errorf("parse endpoint: %w", err)
 	}
 	if parsed.Scheme == "" || parsed.Host == "" {
-		return "", fmt.Errorf("advertise URL must include scheme and host")
+		return "", fmt.Errorf("endpoint must include scheme and host")
 	}
 
 	switch parsed.Scheme {
@@ -126,7 +117,7 @@ func normalizeAdvertiseURL(rawValue string) (string, error) {
 		parsed.Scheme = "wss"
 	case "ws", "wss":
 	default:
-		return "", fmt.Errorf("unsupported advertise URL scheme %q", parsed.Scheme)
+		return "", fmt.Errorf("unsupported endpoint scheme %q", parsed.Scheme)
 	}
 
 	if parsed.Path == "" || parsed.Path == "/" {

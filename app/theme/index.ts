@@ -42,12 +42,3 @@ export {
 export { classicDarkTheme } from './definitions/classicDark';
 export { classicLightTheme } from './definitions/classicLight';
 export { mixHex, relativeLuminance } from './colorUtils';
-
-import { classicDarkTheme } from './definitions/classicDark';
-import { classicLightTheme } from './definitions/classicLight';
-
-/** @deprecated Use THEME_REGISTRY or useAppColors() instead. */
-export const LegacyDarkColors = classicDarkTheme.colors;
-
-/** @deprecated Use THEME_REGISTRY or useAppColors() instead. */
-export const LegacyLightColors = classicLightTheme.colors;

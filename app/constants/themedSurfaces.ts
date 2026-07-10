@@ -21,13 +21,6 @@ export function surfacesFromTheme(theme: Pick<ResolvedZenTheme, 'surfaces'>): Th
   };
 }
 
-/** @deprecated Pass ResolvedZenTheme via surfacesFromTheme(theme). */
-export function createThemedSurfaces(
-  theme: Pick<ResolvedZenTheme, 'surfaces'>,
-): ThemedSurfaces {
-  return surfacesFromTheme(theme);
-}
-
 export function isAmbientChatChrome(chrome: TerminalThemeChrome): boolean {
   return chrome.appBackground === 'transparent';
 }

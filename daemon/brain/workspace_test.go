@@ -1,6 +1,7 @@
 package brain
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -34,26 +35,67 @@ func TestWorkspaceTreeListsDefaultMarkdownFiles(t *testing.T) {
 	if !workspaceTreeHasDirectory(tree.Entries, "policies") {
 		t.Fatal("WorkspaceTree() missing policies directory")
 	}
-	if !workspaceTreeHasFile(tree.Entries, "policies/delegation.md") {
+	policies, err := store.WorkspaceTree("policies")
+	if err != nil {
+		t.Fatalf("WorkspaceTree(policies) error = %v", err)
+	}
+	if policies.Path != "policies" {
+		t.Fatalf("WorkspaceTree(policies).Path = %q, want policies", policies.Path)
+	}
+	if !workspaceTreeHasFile(policies.Entries, "policies/delegation.md") {
 		t.Fatal("WorkspaceTree() missing policies/delegation.md")
 	}
-	if !workspaceTreeHasFile(tree.Entries, "policies/engine.md") {
+	if !workspaceTreeHasFile(policies.Entries, "policies/engine.md") {
 		t.Fatal("WorkspaceTree() missing policies/engine.md")
 	}
-	if !workspaceTreeHasFile(tree.Entries, "policies/handoff.md") {
+	if !workspaceTreeHasFile(policies.Entries, "policies/handoff.md") {
 		t.Fatal("WorkspaceTree() missing policies/handoff.md")
 	}
 	if !workspaceTreeHasDirectory(tree.Entries, "worklog") {
 		t.Fatal("WorkspaceTree() missing worklog directory")
 	}
-	if !workspaceTreeHasFile(tree.Entries, "worklog/README.md") {
+	worklog, err := store.WorkspaceTree("worklog")
+	if err != nil {
+		t.Fatalf("WorkspaceTree(worklog) error = %v", err)
+	}
+	if !workspaceTreeHasFile(worklog.Entries, "worklog/README.md") {
 		t.Fatal("WorkspaceTree() missing worklog/README.md")
 	}
 	if !workspaceTreeHasDirectory(tree.Entries, "playbooks") {
 		t.Fatal("WorkspaceTree() missing playbooks directory")
 	}
-	if !workspaceTreeHasFile(tree.Entries, "playbooks/brain-flows.md") {
+	playbooks, err := store.WorkspaceTree("playbooks")
+	if err != nil {
+		t.Fatalf("WorkspaceTree(playbooks) error = %v", err)
+	}
+	if !workspaceTreeHasFile(playbooks.Entries, "playbooks/brain-flows.md") {
 		t.Fatal("WorkspaceTree() missing playbooks/brain-flows.md")
+	}
+}
+
+func TestWorkspaceTreeDoesNotRecursivelyLoadLargeFolders(t *testing.T) {
+	store, err := NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore() error = %v", err)
+	}
+
+	crowded := filepath.Join(store.WorkspacePath(), "crowded")
+	if err := os.MkdirAll(crowded, 0o700); err != nil {
+		t.Fatalf("create crowded directory: %v", err)
+	}
+	for index := 0; index <= maxWorkspaceEntries; index++ {
+		name := filepath.Join(crowded, fmt.Sprintf("file-%04d.md", index))
+		if err := os.WriteFile(name, nil, 0o600); err != nil {
+			t.Fatalf("write crowded file %d: %v", index, err)
+		}
+	}
+
+	tree, err := store.WorkspaceTree()
+	if err != nil {
+		t.Fatalf("WorkspaceTree() recursively traversed crowded folder: %v", err)
+	}
+	if !workspaceTreeHasDirectory(tree.Entries, "crowded") {
+		t.Fatal("WorkspaceTree() missing crowded directory")
 	}
 }
 

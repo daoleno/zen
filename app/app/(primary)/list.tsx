@@ -1,4 +1,4 @@
-import React, { memo, useCallback, useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
@@ -24,7 +24,6 @@ import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context'
 import { Agent, useAgents } from '../../store/agents';
 import { useWork, type WorkItem } from '../../store/work';
 import {
-  Colors,
   Radii,
   TypeScale,
   UiTextMetrics,
@@ -34,28 +33,23 @@ import {
   shadow,
 } from '../../constants/tokens';
 import type { ResolvedZenTheme } from '../../theme';
-import { createThemedSurfaces } from '../../constants/themedSurfaces';
+import { surfacesFromTheme } from '../../constants/themedSurfaces';
 import { usePrimaryPageAction } from '../../components/navigation/PrimaryPageAction';
 import { AnimatedPressable } from '../../components/ui/AnimatedPressable';
 import { MeditationModal } from '../../components/meditation/MeditationModal';
 import { MeditationPullPreview } from '../../components/meditation/MeditationPullPreview';
 import { RisingSheet } from '../../components/ui/RisingSheet';
 import { Enter } from '../../components/ui/Enter';
-import { TerminalPreview } from '../../components/terminal/TerminalPreview';
-import { AgentKindIcon } from '../../components/terminal/AgentKindIcon';
 import { AgentListRowContainer } from '../../components/agents/AgentListRowContainer';
 import { NewTerminalSheet } from '../../components/terminal/NewTerminalSheet';
 import { SessionServicesSheet } from '../../components/SessionServicesSheet';
 import {
-  getInboxViewMode,
   getAgentAliases,
   getRecentAgentOpens,
   getServers,
   markAgentOpened,
   setAgentAlias,
-  setInboxViewMode,
   StoredAgentAliases,
-  StoredInboxViewMode,
   StoredRecentAgentOpens,
   StoredServer,
 } from '../../services/storage';
@@ -70,7 +64,6 @@ import {
 } from '../../services/serverSelection';
 import {
   serviceProjectLabel,
-  shortAgentLabel,
   type DiscoveredSessionService,
 } from '../../services/sessionServicesPresentation';
 
@@ -92,79 +85,6 @@ const AnimatedSectionList = Animated.createAnimatedComponent(
 );
 const agentKeyExtractor = (agent: Agent) => agent.key;
 
-interface AgentGridItemProps {
-  agent: Agent;
-  alias?: string;
-  linkedWorkTitle?: string;
-  colors: typeof Colors;
-  styles: ReturnType<typeof createStyles>;
-  onOpenAgent(agent: Agent): void;
-  onOpenContextMenu(agent: Agent): void;
-}
-
-const AgentGridItem = memo(function AgentGridItem({
-  agent,
-  alias,
-  linkedWorkTitle,
-  colors,
-  styles,
-  onOpenAgent,
-  onOpenContextMenu,
-}: AgentGridItemProps) {
-  const presented = useMemo(() => presentAgent(agent, alias), [agent, alias]);
-  const sessionTitle = useMemo(
-    () => resolveSessionTitle(agent, presented, linkedWorkTitle),
-    [agent, linkedWorkTitle, presented],
-  );
-  const statusLabel = agentStatusLabel(agent.status);
-  const handlePress = useCallback(() => {
-    onOpenAgent(agent);
-  }, [agent, onOpenAgent]);
-  const handleLongPress = useCallback(() => {
-    void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
-    onOpenContextMenu(agent);
-  }, [agent, onOpenContextMenu]);
-
-  return (
-    <AnimatedPressable
-      style={styles.gridCard}
-      preset="card"
-      scale={0.97}
-      onPress={handlePress}
-      onLongPress={handleLongPress}
-      delayLongPress={400}
-      accessibilityRole="button"
-      accessibilityLabel={`${sessionTitle}, ${statusLabel}`}
-      accessibilityHint="Opens the terminal session"
-      accessibilityState={{ busy: agent.status === 'running' }}
-    >
-      <View style={styles.gridHeader}>
-        <View style={styles.gridHeaderMain}>
-          <AgentKindIcon
-            kind={presented.kind}
-            flavor={presented.terminalFlavor}
-            size={15}
-          />
-          <Text style={styles.gridTitle} numberOfLines={1}>
-            {sessionTitle}
-          </Text>
-          {agent.delegated ? (
-            <BrainSessionBadge colors={colors} styles={styles} compact />
-          ) : null}
-        </View>
-        <AgentStatusIndicator
-          status={agent.status}
-          colors={colors}
-          styles={styles}
-        />
-      </View>
-      <View style={styles.gridPreview}>
-        <TerminalPreview key={agent.key} lines={agent.last_output_lines} />
-      </View>
-    </AnimatedPressable>
-  );
-});
-
 export default function InboxScreen() {
   const { state } = useAgents();
   const { state: workState } = useWork();
@@ -185,7 +105,6 @@ export default function InboxScreen() {
     }
     return map;
   }, [workState.byKey]);
-  const [viewMode, setViewModeState] = useState<StoredInboxViewMode>('list');
   const [headerMenuVisible, setHeaderMenuVisible] = useState(false);
   const [agentAliases, setAgentAliases] = useState<StoredAgentAliases>({});
   const [recentAgentOpens, setRecentAgentOpens] = useState<StoredRecentAgentOpens>({});
@@ -218,14 +137,12 @@ export default function InboxScreen() {
   useEffect(() => {
     let cancelled = false;
     (async () => {
-      const [storedViewMode, storedRecentOpens, storedAliases, storedServers] = await Promise.all([
-        getInboxViewMode(),
+      const [storedRecentOpens, storedAliases, storedServers] = await Promise.all([
         getRecentAgentOpens(),
         getAgentAliases(),
         getServers(),
       ]);
       if (!cancelled) {
-        setViewModeState(storedViewMode);
         setRecentAgentOpens(storedRecentOpens);
         setAgentAliases(storedAliases);
         setConfiguredServerCount(storedServers.length);
@@ -332,11 +249,6 @@ export default function InboxScreen() {
     () => connectedServers.map(server => ({ id: server.id, name: server.name })),
     [connectedServers],
   );
-
-  const setViewMode = async (mode: StoredInboxViewMode) => {
-    setViewModeState(mode);
-    await setInboxViewMode(mode);
-  };
 
   const openAgent = useCallback((agent: Agent) => {
     const openedAt = Date.now();
@@ -732,28 +644,12 @@ export default function InboxScreen() {
     );
   }, [styles, useSectionHeaders]);
 
-  const renderGridAgent = useCallback<ListRenderItem<Agent>>(({ item }) => (
-    <AgentGridItem
-      agent={item}
-      alias={agentAliases[item.key]}
-      linkedWorkTitle={agentWorkMap[`${item.serverId}:${item.id}`]?.title}
-      colors={colors}
-      styles={styles}
-      onOpenAgent={openAgent}
-      onOpenContextMenu={openContextMenu}
-    />
-  ), [agentAliases, agentWorkMap, colors, openAgent, openContextMenu, styles]);
-
   const renderRowSeparator = useCallback(
     () => <View style={styles.rowGap} />,
     [styles],
   );
   const renderSectionSeparator = useCallback(
     () => <View style={styles.sectionGap} />,
-    [styles],
-  );
-  const renderGridSeparator = useCallback(
-    () => <View style={styles.gridGap} />,
     [styles],
   );
   const openHeaderMenu = useCallback(() => {
@@ -771,11 +667,6 @@ export default function InboxScreen() {
     styles.promptContent,
     { paddingBottom: Math.max(insets.bottom, 16) + 76 },
   ], [insets.bottom, styles]);
-  const gridContentContainerStyle = useMemo(() => [
-    styles.gridContent,
-    { paddingBottom: Math.max(insets.bottom, 16) + 76 },
-  ], [insets.bottom, styles]);
-
   return (
     <GestureDetector gesture={meditationPullGesture}>
       <SafeAreaView style={styles.container} edges={[]}>
@@ -863,7 +754,7 @@ export default function InboxScreen() {
             </View>
           </Enter>
         </Animated.ScrollView>
-      ) : viewMode === 'list' ? (
+      ) : (
         <AnimatedSectionList
           sections={listSections}
           key="list"
@@ -880,20 +771,6 @@ export default function InboxScreen() {
           showsVerticalScrollIndicator={false}
           ItemSeparatorComponent={renderRowSeparator}
           SectionSeparatorComponent={renderSectionSeparator}
-        />
-      ) : (
-        <Animated.FlatList<Agent>
-          data={sortedAgents}
-          key="grid"
-          keyExtractor={agentKeyExtractor}
-          renderItem={renderGridAgent}
-          contentContainerStyle={gridContentContainerStyle}
-          onScroll={handleContentScroll}
-          scrollEventThrottle={16}
-          alwaysBounceVertical
-          ItemSeparatorComponent={renderGridSeparator}
-          removeClippedSubviews={false}
-          windowSize={21}
         />
       )}
 
@@ -970,41 +847,7 @@ export default function InboxScreen() {
         cardStyle={styles.menuCard}
         align="bottom"
       >
-        <Text style={styles.menuTitle}>Agents</Text>
-
-        <AnimatedPressable
-          style={styles.menuItem}
-          preset="press"
-          scale={0.98}
-          onPress={() => {
-            setHeaderMenuVisible(false);
-            void setViewMode('list');
-          }}
-        >
-          <Ionicons
-            name="reorder-three-outline"
-            size={16}
-            color={viewMode === 'list' ? colors.accent : colors.textPrimary}
-          />
-          <Text style={styles.menuItemText}>List view</Text>
-        </AnimatedPressable>
-
-        <AnimatedPressable
-          style={styles.menuItem}
-          preset="press"
-          scale={0.98}
-          onPress={() => {
-            setHeaderMenuVisible(false);
-            void setViewMode('grid');
-          }}
-        >
-          <Ionicons
-            name="grid-outline"
-            size={16}
-            color={viewMode === 'grid' ? colors.accent : colors.textPrimary}
-          />
-          <Text style={styles.menuItemText}>Grid view</Text>
-        </AnimatedPressable>
+        <Text style={styles.menuTitle}>Sessions</Text>
 
         <AnimatedPressable
           style={styles.menuItem}
@@ -1026,18 +869,6 @@ export default function InboxScreen() {
           </Text>
         </AnimatedPressable>
 
-        <AnimatedPressable
-          style={styles.menuItem}
-          preset="press"
-          scale={0.98}
-          onPress={() => {
-            setHeaderMenuVisible(false);
-            openServerSettings(false);
-          }}
-        >
-          <Ionicons name="settings-outline" size={16} color={colors.textPrimary} />
-          <Text style={styles.menuItemText}>Settings</Text>
-        </AnimatedPressable>
       </RisingSheet>
 
       <RisingSheet
@@ -1119,112 +950,13 @@ export default function InboxScreen() {
   );
 }
 
-function BrainSessionBadge({
-  colors,
-  styles,
-  compact = false,
-}: {
-  colors: typeof Colors;
-  styles: ReturnType<typeof createStyles>;
-  compact?: boolean;
-}) {
-  return (
-    <View
-      style={[
-        styles.brainBadge,
-        compact && styles.brainBadgeCompact,
-        { borderColor: colors.borderStrong, backgroundColor: colors.surfaceSubtle },
-      ]}
-    >
-      <Text style={[styles.brainBadgeText, { color: colors.textSecondary }]}>
-        Brain
-      </Text>
-    </View>
-  );
-}
-
-function AgentStatusIndicator({
-  status,
-  colors,
-  styles,
-}: {
-  status: AgentStatus;
-  colors: typeof Colors;
-  styles: ReturnType<typeof createStyles>;
-}) {
-  const color = agentStatusColor(status, colors);
-  return (
-    <View style={styles.gridStatus} accessibilityLabel={`Status: ${agentStatusLabel(status)}`}>
-      {status === 'running' ? (
-        <ActivityIndicator
-          size="small"
-          color={color}
-          style={styles.statusSpinner}
-        />
-      ) : (
-        <View style={[styles.statusDot, { backgroundColor: color }]} />
-      )}
-      <Text style={[styles.gridStatusText, { color }]} numberOfLines={1}>
-        {agentStatusLabel(status)}
-      </Text>
-    </View>
-  );
-}
-
-function agentStatusColor(status: AgentStatus, colors: typeof Colors): string {
-  switch (status) {
-    case 'failed':
-      return colors.statusFailed;
-    case 'blocked':
-      return colors.statusBlocked;
-    case 'running':
-      return colors.statusRunning;
-    case 'done':
-      return colors.statusDone;
-    default:
-      return colors.statusUnknown;
-  }
-}
-
-function agentStatusLabel(status: AgentStatus): string {
-  switch (status) {
-    case 'failed':
-      return 'Failed';
-    case 'blocked':
-      return 'Blocked';
-    case 'running':
-      return 'Running';
-    case 'done':
-      return 'Done';
-    default:
-      return 'Unknown';
-  }
-}
-
-function resolveSessionTitle(
-  agent: Agent,
-  presented: ReturnType<typeof presentAgent>,
-  linkedWorkTitle?: string,
-): string {
-  if (presented.titleSource !== 'default') {
-    return presented.title;
-  }
-
-  const workTitle = linkedWorkTitle?.trim();
-  if (workTitle) {
-    return workTitle;
-  }
-
-  return presented.shortTitle || shortAgentLabel(agent.name) || presented.title;
-}
-
 function createStyles(theme: ResolvedZenTheme) {
   const colors = theme.colors;
   const {
     surface: themedSurface,
     border: themedBorder,
     sectionLabel,
-  } = createThemedSurfaces(theme);
+  } = surfacesFromTheme(theme);
 
   return StyleSheet.create({
   container: {
@@ -1302,45 +1034,6 @@ function createStyles(theme: ResolvedZenTheme) {
   rowGap: {
     height: 0,
   },
-  brainBadge: {
-    minHeight: 22,
-    paddingHorizontal: 7,
-    borderWidth: StyleSheet.hairlineWidth,
-    borderRadius: 5,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  brainBadgeCompact: {
-    minHeight: 22,
-    paddingHorizontal: 6,
-  },
-  brainBadgeText: {
-    ...UiTextMetrics,
-    ...TypeScale.micro,
-  },
-  statusDot: {
-    width: 6,
-    height: 6,
-    borderRadius: 3,
-  },
-  gridStatus: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: 4,
-    minHeight: 22,
-    maxWidth: 76,
-  },
-  gridStatusText: {
-    ...UiTextMetrics,
-    ...TypeScale.micro,
-  },
-  statusSpinner: {
-    width: 12,
-    height: 12,
-    transform: [{ scale: 0.45 }],
-  },
-
   loadingContainer: {
     width: '100%',
     maxWidth: 760,
@@ -1350,51 +1043,6 @@ function createStyles(theme: ResolvedZenTheme) {
     alignItems: 'center',
     justifyContent: 'center',
   },
-  gridContent: {
-    width: '100%',
-    maxWidth: 760,
-    alignSelf: 'center',
-    paddingHorizontal: 18,
-    paddingTop: 4,
-  },
-  gridGap: {
-    height: 14,
-  },
-  gridCard: {
-    borderRadius: 8,
-    backgroundColor: themedSurface,
-    borderWidth: StyleSheet.hairlineWidth,
-    borderColor: themedBorder,
-    overflow: 'hidden',
-  },
-  gridHeader: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 11,
-    paddingHorizontal: 15,
-    paddingVertical: 13,
-    minHeight: 52,
-  },
-  gridHeaderMain: {
-    flex: 1,
-    minWidth: 0,
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 10,
-  },
-  gridTitle: {
-    ...UiTextMetrics,
-    ...TypeScale.label,
-    flex: 1,
-    minWidth: 0,
-    color: colors.textPrimary,
-  },
-  gridPreview: {
-    height: 216,
-    borderTopWidth: StyleSheet.hairlineWidth,
-    borderTopColor: colors.borderSubtle,
-  },
-
   emptyContainer: {
     justifyContent: 'center',
     alignItems: 'center',

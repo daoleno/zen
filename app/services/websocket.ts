@@ -120,6 +120,7 @@ export interface BrainWorkspaceEntry {
 
 export interface BrainWorkspaceTree {
   workspace?: string;
+  path?: string;
   generated_at?: string;
   entries: BrainWorkspaceEntry[];
 }
@@ -1610,7 +1611,7 @@ class MultiServerWebSocketClient {
     });
   }
 
-  getBrainWorkspaceTree(serverId: string): Promise<BrainWorkspaceTree> {
+  getBrainWorkspaceTree(serverId: string, path = ""): Promise<BrainWorkspaceTree> {
     const requestId = `${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
 
     return new Promise((resolve, reject) => {
@@ -1646,6 +1647,7 @@ class MultiServerWebSocketClient {
       this.send(serverId, {
         type: "brain_workspace_tree",
         request_id: requestId,
+        path,
       });
     });
   }
@@ -2022,6 +2024,7 @@ function normalizeBrainWorkspaceTree(raw: any): BrainWorkspaceTree {
   return {
     workspace:
       typeof source.workspace === "string" ? source.workspace : undefined,
+    path: typeof source.path === "string" ? source.path : undefined,
     generated_at:
       typeof source.generated_at === "string" ? source.generated_at : undefined,
     entries: Array.isArray(source.entries)

@@ -6,7 +6,6 @@ const KEYS = {
   servers: "zen:v3:servers",
   disabledServers: "zen:v1:disabled_servers",
   onboarded: "zen:onboarded",
-  inboxViewMode: "zen:inbox_view_mode",
   recentAgentOpens: "zen:recent_agent_opens",
   agentAliases: "zen:agent_aliases",
   codexRenderModes: "zen:codex_render_modes",
@@ -15,7 +14,6 @@ const KEYS = {
 
 export type StoredThemePreference = "system" | string;
 
-export type StoredInboxViewMode = "list" | "grid";
 export type StoredRecentAgentOpens = Record<string, number>;
 export type StoredAgentAliases = Record<string, string>;
 export type StoredCodexRenderMode = "chat" | "terminal";
@@ -170,17 +168,6 @@ export async function setServerAutoConnect(
   }
 
   await AsyncStorage.setItem(KEYS.disabledServers, JSON.stringify(next));
-}
-
-export async function getInboxViewMode(): Promise<StoredInboxViewMode> {
-  const value = await AsyncStorage.getItem(KEYS.inboxViewMode);
-  return value === "grid" ? "grid" : "list";
-}
-
-export async function setInboxViewMode(
-  mode: StoredInboxViewMode,
-): Promise<void> {
-  await AsyncStorage.setItem(KEYS.inboxViewMode, mode);
 }
 
 export async function getRecentAgentOpens(): Promise<StoredRecentAgentOpens> {

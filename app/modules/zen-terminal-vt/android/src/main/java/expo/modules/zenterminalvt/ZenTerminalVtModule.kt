@@ -213,10 +213,6 @@ class ZenTerminalVtModule : Module() {
             readRenderSnapshot(handleId)
         }
 
-        Function("getRenderState") { handleId: Int ->
-            readRenderSnapshot(handleId)
-        }
-
         Function("getVisibleText") { handleId: Int ->
             ensureLoaded()
             nativeGetVisibleText(getNativeHandle(handleId))

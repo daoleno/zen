@@ -18,7 +18,6 @@ interface RouteDraftSubmissionInput {
 }
 
 interface UseCodexSlashCommandRouterInput {
-  draft: string;
   attachments: ComposerAttachment[];
   slashCommands: CodexSlashCommand[];
   setDraft(value: string): void;
@@ -37,7 +36,6 @@ interface UseCodexSlashCommandRouterInput {
 }
 
 export function useCodexSlashCommandRouter({
-  draft,
   attachments,
   slashCommands,
   setDraft,

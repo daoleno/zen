@@ -1,4 +1,3 @@
-import React, { useMemo } from 'react';
 import { StyleSheet, Text, View } from 'react-native';
 import { Typography, useAppColors, useAppTheme } from '../../constants/tokens';
 import {
@@ -19,7 +18,6 @@ export function SessionAvatar({
 }: SessionAvatarProps) {
   const colors = useAppColors();
   const { theme } = useAppTheme();
-  const styles = useMemo(() => createStyles(size), [size]);
   const backgroundColor = avatarColorForSeed(seed ?? label, theme.avatarColors);
   const initials = initialsFromLabel(label);
 
@@ -52,17 +50,15 @@ export function SessionAvatar({
   );
 }
 
-function createStyles(size: number) {
-  return StyleSheet.create({
-    root: {
-      alignItems: 'center',
-      justifyContent: 'center',
-      overflow: 'hidden',
-    },
-    initials: {
-      fontFamily: Typography.uiFontMedium,
-      letterSpacing: 0.2,
-      includeFontPadding: false,
-    },
-  });
-}
+const styles = StyleSheet.create({
+  root: {
+    alignItems: 'center',
+    justifyContent: 'center',
+    overflow: 'hidden',
+  },
+  initials: {
+    fontFamily: Typography.uiFontMedium,
+    letterSpacing: 0.2,
+    includeFontPadding: false,
+  },
+});

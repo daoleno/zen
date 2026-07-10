@@ -222,11 +222,11 @@ func brainFileExists(path string) bool {
 	return err == nil
 }
 
-func (s *Service) WorkspaceTree() (WorkspaceTree, error) {
+func (s *Service) WorkspaceTree(paths ...string) (WorkspaceTree, error) {
 	if s == nil || s.store == nil {
 		return WorkspaceTree{}, fmt.Errorf("brain store is not configured")
 	}
-	return s.store.WorkspaceTree()
+	return s.store.WorkspaceTree(paths...)
 }
 
 func (s *Service) PlaybookCatalog() (PlaybookCatalog, error) {

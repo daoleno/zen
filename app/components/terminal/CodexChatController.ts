@@ -164,7 +164,6 @@ export function useCodexChatController({
     pickSlashCommand,
     routeDraftSubmission,
   } = useCodexSlashCommandRouter({
-    draft,
     attachments,
     slashCommands,
     setDraft,

@@ -23,26 +23,29 @@ Mobile-native agent control plane. Manage your AI coding agents from your phone.
 ```bash
 cd daemon
 go build -o bin/zen ./cmd/zen/
-./bin/zen -advertise-url https://your-host.example/ws
+./bin/zen
 ```
 
-The daemon listens on `127.0.0.1:9876` by default. On startup it now prints:
+The daemon listens on `127.0.0.1:9876` by default. Starting the daemon and pairing a phone are separate operations. On startup it prints:
 
 - its persistent daemon identity
-- `Mode: LOCAL-ONLY` when it has no advertised URL yet
-- or `Mode: PAIRABLE`, plus a one-time compact `zen://settings?p=...` pairing link and QR code, when `-advertise-url` is set
+- its listening address
+- the `zen pair` command to run when the externally reachable endpoint is ready
 
-If you do not pass `-advertise-url`, the daemon still starts in `LOCAL-ONLY` mode, but it cannot pair a phone yet. Expose `http://127.0.0.1:9876` through your network layer first, then either restart with `-advertise-url` or generate a fresh link later with:
+Expose `http://127.0.0.1:9876` through your network layer, then generate a one-time pairing link without restarting the daemon:
 
 ```bash
-./bin/zen pair -advertise-url https://zen.example.com/ws
+./bin/zen pair https://zen.example.com
 ```
 
 ```bash
 ./bin/zen \
   -addr 127.0.0.1:9876 \
-  -advertise-url https://zen.example.com/ws \
   -state-dir ~/.config/zen
+
+./bin/zen pair \
+  -state-dir ~/.config/zen \
+  https://zen.example.com
 ```
 
 ### 2. Expose it however you want
@@ -118,7 +121,7 @@ zen/
 cd daemon
 go test ./...           # Run tests
 go build -o bin/zen ./cmd/zen/  # Build
-go run ./cmd/zen-dev -advertise-url https://your-host.example/ws  # Watch, rebuild, restart
+go run ./cmd/zen-dev  # Watch, rebuild, restart
 ```
 
 `zen-dev` is a development watcher for the Go daemon. It uses `fsnotify` to watch `*.go`, `go.mod`, and `go.sum`, rebuilds `zen`, and restarts it automatically after each save. This is reload, not in-process hot patching, so the process restarts, but daemon identity and persisted state stay stable as long as you keep the same `-state-dir`.

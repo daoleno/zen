@@ -1,19 +1,12 @@
 import { Platform, useColorScheme, type TextStyle, type ViewStyle } from "react-native";
 import { classicDarkTheme } from "../theme/definitions/classicDark";
-import { classicLightTheme } from "../theme/definitions/classicLight";
 import type { AppColors } from "../theme/palette";
 import { useZenTheme } from "../theme/provider";
 import { resolveTheme } from "../theme/resolve";
 
 export type { AppColors } from "../theme/palette";
 
-/** @deprecated Use useAppColors() or classicDarkTheme.colors. */
-export const DarkColors: AppColors = classicDarkTheme.colors;
-
-/** @deprecated Use useAppColors() or classicLightTheme.colors. */
-export const LightColors: AppColors = classicLightTheme.colors;
-
-export const Colors = DarkColors;
+export const Colors: AppColors = classicDarkTheme.colors;
 
 export type AppColorScheme = 'light' | 'dark';
 

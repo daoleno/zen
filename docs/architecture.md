@@ -108,31 +108,13 @@ The app needs more than just the WebSocket endpoint. The externally reachable or
 
 This is why `zen` treats the external URL as a full daemon origin, not just a single WebSocket path.
 
-## Startup Modes
+## Daemon and Pairing Lifecycle
 
-`zen` has two user-facing startup modes.
+Starting the daemon and pairing a phone are separate operations.
 
-### `LOCAL-ONLY`
+`zen` starts the daemon with a stable identity and a listening address. It does not need to know the externally reachable endpoint and does not issue a pairing token during startup.
 
-The daemon is running and has a stable identity, but no externally advertised URL was provided.
-
-In this mode:
-
-- agent watching works locally
-- no phone can pair yet
-- the daemon prints the next step and the `pair` command to run later
-
-### `PAIRABLE`
-
-The daemon was started with an advertised public URL.
-
-In this mode:
-
-- the daemon issues a fresh one-time pairing token
-- the daemon prints a pairing link
-- the daemon prints a QR code for that link
-
-The `pair` subcommand exists so a fresh link can be generated later without restarting the daemon.
+After exposing the daemon through the user's chosen network path, `zen pair <endpoint>` issues a fresh one-time pairing token and prints the pairing link and QR code. The endpoint is supplied at pairing time because it cannot be inferred reliably through NAT, private networks, tunnels, or reverse proxies.
 
 ## Pairing Model
 

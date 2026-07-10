@@ -8,6 +8,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"flag"
+	"io"
 	"net/url"
 	"os"
 	"strings"
@@ -18,18 +19,18 @@ import (
 	"github.com/daoleno/zen/daemon/control"
 )
 
-func TestNormalizeAdvertiseURL(t *testing.T) {
-	value, err := normalizeAdvertiseURL("https://zen.example.com")
+func TestNormalizeEndpoint(t *testing.T) {
+	value, err := normalizeEndpoint("https://zen.example.com")
 	if err != nil {
-		t.Fatalf("normalizeAdvertiseURL returned error: %v", err)
+		t.Fatalf("normalizeEndpoint returned error: %v", err)
 	}
 	if value != "wss://zen.example.com/ws" {
 		t.Fatalf("unexpected normalized URL: %s", value)
 	}
 }
 
-func TestNormalizeAdvertiseURLRejectsMissingScheme(t *testing.T) {
-	if _, err := normalizeAdvertiseURL("zen.example.com"); err == nil {
+func TestNormalizeEndpointRejectsMissingScheme(t *testing.T) {
+	if _, err := normalizeEndpoint("zen.example.com"); err == nil {
 		t.Fatal("expected error for missing scheme")
 	}
 }
@@ -89,7 +90,7 @@ func TestBuildConnectLinkIncludesDaemonIdentity(t *testing.T) {
 	}
 }
 
-func TestBuildConnectionOffersUsesAdvertiseURL(t *testing.T) {
+func TestBuildConnectionOffersUsesEndpoint(t *testing.T) {
 	manager, err := auth.NewManager(t.TempDir())
 	if err != nil {
 		t.Fatalf("NewManager returned error: %v", err)
@@ -120,36 +121,58 @@ func TestBuildConnectionOffersUsesAdvertiseURL(t *testing.T) {
 	}
 }
 
-func TestPrintLocalOnlyInfo(t *testing.T) {
+func TestPrintPairingHint(t *testing.T) {
 	var output bytes.Buffer
-	printLocalOnlyInfo(&output, "/tmp/zen-state")
+	printPairingHint(&output, "/tmp/zen-state")
 
 	rendered := output.String()
-	if !strings.Contains(rendered, "State: LOCAL-ONLY") {
-		t.Fatalf("expected LOCAL-ONLY output, got %q", rendered)
-	}
-	if !strings.Contains(rendered, "zen pair -advertise-url https://your-host/ws -state-dir /tmp/zen-state") {
+	if !strings.Contains(rendered, "zen pair -state-dir /tmp/zen-state https://your-host/ws") {
 		t.Fatalf("expected pair command example, got %q", rendered)
+	}
+	if strings.Contains(rendered, "LOCAL-ONLY") || strings.Contains(rendered, "PAIRABLE") {
+		t.Fatalf("pairing hint should not expose startup modes: %q", rendered)
 	}
 }
 
 func TestPrintPairingInfo(t *testing.T) {
 	var output bytes.Buffer
 	printPairingInfo(&output, []connectionOffer{{
-		Label:       "Advertised endpoint",
+		Label:       "Server endpoint",
 		URL:         "wss://zen.example.com/ws",
 		ConnectLink: "zen://settings?p=compact-payload",
 	}})
 
 	rendered := output.String()
-	if !strings.Contains(rendered, "State: PAIRABLE") {
-		t.Fatalf("expected PAIRABLE output, got %q", rendered)
-	}
 	if !strings.Contains(rendered, "Paste this link into Settings -> Pair Server:") {
 		t.Fatalf("expected pair instruction, got %q", rendered)
 	}
 	if !strings.Contains(rendered, "zen://settings?p=compact-payload") {
 		t.Fatalf("expected connect link, got %q", rendered)
+	}
+}
+
+func TestPairConfigUsesOnePositionalEndpoint(t *testing.T) {
+	cfg, err := parsePairConfig([]string{
+		"-state-dir", "/tmp/zen-state",
+		"https://zen.example.com",
+	}, io.Discard)
+	if err != nil {
+		t.Fatalf("parsePairConfig returned error: %v", err)
+	}
+	if cfg.endpoint != "https://zen.example.com" {
+		t.Fatalf("endpoint = %q", cfg.endpoint)
+	}
+	if cfg.stateDir != "/tmp/zen-state" {
+		t.Fatalf("stateDir = %q", cfg.stateDir)
+	}
+}
+
+func TestRemovedAdvertiseURLFlagsAreRejected(t *testing.T) {
+	if _, err := parseDaemonConfig([]string{"-advertise-url", "https://zen.example.com"}, io.Discard); err == nil {
+		t.Fatal("daemon accepted removed -advertise-url flag")
+	}
+	if _, err := parsePairConfig([]string{"-url", "https://zen.example.com"}, io.Discard); err == nil {
+		t.Fatal("pair accepted removed -url flag")
 	}
 }
 

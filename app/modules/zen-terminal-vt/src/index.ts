@@ -46,7 +46,6 @@ interface NativeTerminalVtModule {
     anyButtonPressed: boolean,
   ): string;
   getRenderSnapshot?: (handle: number) => NativeRenderSnapshot;
-  getRenderState?: (handle: number) => NativeRenderSnapshot;
   getVisibleText(handle: number): string;
   getVisibleHtml(handle: number): string;
   getCrashBreadcrumb(): NativeCrashBreadcrumb | null;
@@ -101,10 +100,6 @@ export interface NativeCrashBreadcrumb {
 function readNativeSnapshot(handle: number): NativeRenderSnapshot | null {
   if (typeof ZenTerminalVt.getRenderSnapshot === 'function') {
     return ZenTerminalVt.getRenderSnapshot(handle);
-  }
-
-  if (typeof ZenTerminalVt.getRenderState === 'function') {
-    return ZenTerminalVt.getRenderState(handle);
   }
 
   return null;
@@ -247,11 +242,6 @@ export function getRenderSnapshot(handle: number): RenderSnapshot {
       : ZenTerminalVt.getVisibleHtml(handle),
   };
 }
-
-/**
- * Backward-compatible alias for older call sites and stale Metro caches.
- */
-export const getRenderState = getRenderSnapshot;
 
 /**
  * Get the full visible text as a string (for text selection / copy).

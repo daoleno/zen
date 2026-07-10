@@ -353,9 +353,6 @@ func (s *Server) handleClientMessage(conn *websocket.Conn, msg []byte) {
 	case "brain_set_executor":
 		s.handleBrainSetExecutor(conn, raw)
 
-	case "brain_chat_snapshot", "brain_chat_send":
-		s.handleDeprecatedBrainChatProtocol(conn, raw)
-
 	case "brain_chat_new":
 		s.handleBrainChatNew(conn, raw)
 
@@ -1417,16 +1414,6 @@ func (s *Server) handleBrainGC(conn *websocket.Conn, raw clientMessage) {
 		"request_id":   raw.RequestID,
 		"housekeeping": report,
 	})
-}
-
-func (s *Server) handleDeprecatedBrainChatProtocol(conn *websocket.Conn, raw clientMessage) {
-	log.Printf("deprecated brain chat protocol message type: %s", raw.Type)
-	message := "Brain no longer supports terminal transcript chat. Reload the app bundle and use a structured Brain provider interface."
-	if raw.RequestID != "" {
-		s.sendErrorWithRequestID(conn, raw.RequestID, "brain_chat_protocol_removed", message)
-		return
-	}
-	s.sendError(conn, "brain_chat_protocol_removed", message)
 }
 
 func (s *Server) handleBrainChatNew(conn *websocket.Conn, raw clientMessage) {

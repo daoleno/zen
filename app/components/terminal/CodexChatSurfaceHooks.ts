@@ -7,9 +7,7 @@ import {
   type NativeSyntheticEvent,
   type TextInput,
 } from "react-native";
-import type { ConnectionState } from "../../store/agents";
 import { agentKindFromCommand } from "../../services/chatComposerPresentation";
-import type { CodexSlashCommand } from "../../services/websocket";
 import {
   buildCodexComposerPresentation,
   type CodexComposerPresentationInput,

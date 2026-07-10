@@ -64,6 +64,7 @@ export function NewTerminalLaunchPresetList({
             key={preset.key}
             style={[
               styles.presetCard,
+              preset.key === "shell" && styles.presetCardWide,
               active && styles.presetCardActive,
               submitting && styles.presetCardDisabled,
             ]}
@@ -92,17 +93,19 @@ function createStyles(colors: typeof Colors) {
   return StyleSheet.create({
     presetGrid: {
       flexDirection: "row",
+      flexWrap: "wrap",
       gap: 10,
     },
     presetCard: {
-      flex: 1,
-      minHeight: 88,
+      width: "48%",
+      minHeight: 64,
+      flexDirection: "row",
       alignItems: "center",
-      justifyContent: "center",
-      gap: 10,
-      paddingHorizontal: 8,
-      paddingVertical: 12,
-      borderRadius: 14,
+      justifyContent: "flex-start",
+      gap: 12,
+      paddingHorizontal: 14,
+      paddingVertical: 10,
+      borderRadius: 12,
       backgroundColor: colors.surfaceSubtle,
       borderWidth: StyleSheet.hairlineWidth,
       borderColor: colors.borderSubtle,
@@ -111,15 +114,20 @@ function createStyles(colors: typeof Colors) {
       backgroundColor: colors.surfaceActive,
       borderColor: colors.accent,
     },
+    presetCardWide: {
+      width: "100%",
+    },
     presetCardDisabled: {
       opacity: 0.5,
     },
     presetIcon: {
+      width: 28,
       alignItems: "center",
       justifyContent: "center",
     },
     presetLabel: {
-      textAlign: "center",
+      flex: 1,
+      minWidth: 0,
     },
   });
 }

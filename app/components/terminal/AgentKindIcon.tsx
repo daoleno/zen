@@ -1,4 +1,4 @@
-import React, { useMemo } from 'react';
+import { useMemo } from 'react';
 import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
 import FontAwesome5 from '@expo/vector-icons/FontAwesome5';
 import FontAwesome6 from '@expo/vector-icons/FontAwesome6';
@@ -7,13 +7,12 @@ import { StyleSheet, View } from 'react-native';
 import { Claude, Codex, Grok } from '@lobehub/icons-rn';
 import { useAppTheme } from '../../constants/tokens';
 import type { ResolvedZenTheme } from '../../theme';
-import { createThemedSurfaces } from '../../constants/themedSurfaces';
+import { surfacesFromTheme } from '../../constants/themedSurfaces';
 import type { AgentKind } from '../../services/agentPresentation';
 import type { TerminalFlavor } from '../../services/terminalFlavor';
 import { FlavorLetterBadge } from './FlavorLetterBadge';
 import { CursorMark } from '../icons/CursorMark';
 
-type IoniconName = ComponentProps<typeof Ionicons>['name'];
 type MaterialIconName = ComponentProps<typeof MaterialCommunityIcons>['name'];
 type FontAwesome5Name = ComponentProps<typeof FontAwesome5>['name'];
 type FontAwesome6Name = ComponentProps<typeof FontAwesome6>['name'];
@@ -269,7 +268,7 @@ function withAlpha(hex: string, alpha: number): string {
 }
 
 function createStyles(theme: ResolvedZenTheme) {
-  const { subtle: themedSubtle, border: themedBorder } = createThemedSurfaces(theme);
+  const { subtle: themedSubtle, border: themedBorder } = surfacesFromTheme(theme);
 
   return StyleSheet.create({
     avatarSlot: {

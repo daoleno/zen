@@ -117,7 +117,7 @@ func TestStore_WatchNotifiesOnChange(t *testing.T) {
 	}
 	_, ch := store.Subscribe()
 
-	go writeWorkItem(t, filepath.Join(root, "zen", "live.md"), "LIVE")
+	writeWorkItem(t, filepath.Join(root, "zen", "live.md"), "LIVE")
 
 	select {
 	case ev := <-ch:

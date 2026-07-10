@@ -1,11 +1,10 @@
-import React, { useMemo } from "react";
+import { useMemo } from "react";
 import { ActivityIndicator, StyleSheet, Text, View } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 import * as Haptics from "expo-haptics";
 import { BottomSheetFrame } from "../ui/BottomSheetFrame";
 import { AnimatedPressable } from "../ui/AnimatedPressable";
 import {
-  Colors,
   Radii,
   TypeScale,
   Typography,
@@ -14,7 +13,7 @@ import {
   useAppTheme,
 } from "../../constants/tokens";
 import type { ResolvedZenTheme } from "../../theme";
-import { createThemedSurfaces } from "../../constants/themedSurfaces";
+import { surfacesFromTheme } from "../../constants/themedSurfaces";
 import type { BrainAdapterRef } from "../../store/brain";
 import { BrainAdapterIcon } from "./BrainAdapterIcon";
 import { brainAdapterLabel, brainProviderLabel } from "./brainPresentation";
@@ -40,7 +39,7 @@ export function BrainAdapterSheet({
 }: BrainAdapterSheetProps) {
   const { theme } = useAppTheme();
   const colors = theme.colors;
-  const themed = useMemo(() => createThemedSurfaces(theme), [theme]);
+  const themed = useMemo(() => surfacesFromTheme(theme), [theme]);
   const styles = useMemo(() => createStyles(theme), [theme]);
 
   return (

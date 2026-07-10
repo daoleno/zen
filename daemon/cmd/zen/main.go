@@ -27,10 +27,13 @@ import (
 )
 
 type daemonConfig struct {
-	addr         string
-	advertiseURL string
-	stateDir     string
-	pairingTTL   time.Duration
+	addr     string
+	stateDir string
+}
+
+type pairConfig struct {
+	endpoint string
+	stateDir string
 }
 
 type cliConfig struct {
@@ -52,7 +55,7 @@ func run(args []string, stderr io.Writer) error {
 		switch args[0] {
 		case "serve":
 			return runDaemon(args[1:], stderr)
-		case "pair", "print-link":
+		case "pair":
 			return runPairCommand(args[1:], stderr)
 		case "agent":
 			return runAgentCommand(args[1:], stderr)
@@ -74,25 +77,8 @@ func runDaemon(args []string, stderr io.Writer) error {
 		return fmt.Errorf("initialize auth manager: %w", err)
 	}
 
-	mode := startupModeLocalOnly
-	if strings.TrimSpace(cfg.advertiseURL) != "" {
-		mode = startupModePairable
-	}
-	printStartupBanner(stderr, cfg.addr, authManager.DaemonID(), mode)
-
-	if mode == startupModePairable {
-		pairing, err := authManager.IssuePairingToken(cfg.pairingTTL)
-		if err != nil {
-			return fmt.Errorf("issue pairing token: %w", err)
-		}
-		offers, err := buildConnectionOffers(cfg.advertiseURL, authManager, pairing)
-		if err != nil {
-			return fmt.Errorf("build connection info: %w", err)
-		}
-		printPairingInfo(stderr, offers)
-	} else {
-		printLocalOnlyInfo(stderr, cfg.stateDir)
-	}
+	printStartupBanner(stderr, cfg.addr, authManager.DaemonID())
+	printPairingHint(stderr, cfg.stateDir)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -709,19 +695,15 @@ func runPairCommand(args []string, stderr io.Writer) error {
 	if err != nil {
 		return err
 	}
-	if strings.TrimSpace(cfg.advertiseURL) == "" {
-		return fmt.Errorf("pair requires -advertise-url or -url")
-	}
-
 	authManager, err := auth.NewManager(cfg.stateDir)
 	if err != nil {
 		return fmt.Errorf("initialize auth manager: %w", err)
 	}
-	pairing, err := authManager.IssuePairingToken(cfg.pairingTTL)
+	pairing, err := authManager.IssuePairingToken(auth.DefaultPairingTTL)
 	if err != nil {
 		return fmt.Errorf("issue pairing token: %w", err)
 	}
-	offers, err := buildConnectionOffers(cfg.advertiseURL, authManager, pairing)
+	offers, err := buildConnectionOffers(cfg.endpoint, authManager, pairing)
 	if err != nil {
 		return fmt.Errorf("build connection info: %w", err)
 	}
@@ -735,9 +717,7 @@ func parseDaemonConfig(args []string, stderr io.Writer) (daemonConfig, error) {
 
 	cfg := daemonConfig{}
 	fs.StringVar(&cfg.addr, "addr", "127.0.0.1:9876", "listen address")
-	fs.StringVar(&cfg.advertiseURL, "advertise-url", "", "public https/wss URL exposed by your tunnel or reverse proxy")
 	fs.StringVar(&cfg.stateDir, "state-dir", "", "state directory for daemon identity and trusted devices")
-	fs.DurationVar(&cfg.pairingTTL, "pairing-ttl", auth.DefaultPairingTTL, "lifetime for the printed one-time pairing token")
 	fs.Usage = func() {
 		fmt.Fprintln(stderr, "Usage: zen [flags]")
 		fmt.Fprintln(stderr, "")
@@ -745,8 +725,7 @@ func parseDaemonConfig(args []string, stderr io.Writer) (daemonConfig, error) {
 		fmt.Fprintln(stderr, "")
 		fmt.Fprintln(stderr, "Subcommands:")
 		fmt.Fprintln(stderr, "  serve      Start the daemon")
-		fmt.Fprintln(stderr, "  pair       Generate a fresh pairing link without restarting the daemon")
-		fmt.Fprintln(stderr, "  print-link Alias for pair")
+		fmt.Fprintln(stderr, "  pair       Generate a fresh pairing link")
 		fmt.Fprintln(stderr, "  agent      List, spawn, inspect, message, progress, and close agent sessions")
 		fmt.Fprintln(stderr, "  brain      Inspect Brain workspace and host executor configuration")
 	}
@@ -760,17 +739,14 @@ func parseDaemonConfig(args []string, stderr io.Writer) (daemonConfig, error) {
 	return cfg, nil
 }
 
-func parsePairConfig(args []string, stderr io.Writer) (daemonConfig, error) {
+func parsePairConfig(args []string, stderr io.Writer) (pairConfig, error) {
 	fs := flag.NewFlagSet("zen pair", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 
-	cfg := daemonConfig{}
-	fs.StringVar(&cfg.advertiseURL, "advertise-url", "", "public https/wss URL exposed by your tunnel or reverse proxy")
-	fs.StringVar(&cfg.advertiseURL, "url", "", "alias for -advertise-url")
+	cfg := pairConfig{}
 	fs.StringVar(&cfg.stateDir, "state-dir", "", "state directory for daemon identity and trusted devices")
-	fs.DurationVar(&cfg.pairingTTL, "pairing-ttl", auth.DefaultPairingTTL, "lifetime for the printed one-time pairing token")
 	fs.Usage = func() {
-		fmt.Fprintln(stderr, "Usage: zen pair -advertise-url https://your-host/ws [flags]")
+		fmt.Fprintln(stderr, "Usage: zen pair [flags] <endpoint>")
 		fmt.Fprintln(stderr, "")
 		fs.PrintDefaults()
 	}
@@ -778,8 +754,9 @@ func parsePairConfig(args []string, stderr io.Writer) (daemonConfig, error) {
 	if err := fs.Parse(args); err != nil {
 		return cfg, err
 	}
-	if fs.NArg() > 0 {
-		return cfg, fmt.Errorf("unexpected arguments: %s", strings.Join(fs.Args(), " "))
+	if fs.NArg() != 1 {
+		return cfg, fmt.Errorf("pair requires exactly one endpoint")
 	}
+	cfg.endpoint = fs.Arg(0)
 	return cfg, nil
 }

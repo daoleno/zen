@@ -75,6 +75,7 @@ type HousekeepingReport struct {
 
 type WorkspaceTree struct {
 	Workspace   string           `json:"workspace,omitempty"`
+	Path        string           `json:"path,omitempty"`
 	Entries     []WorkspaceEntry `json:"entries"`
 	GeneratedAt time.Time        `json:"generated_at"`
 }
