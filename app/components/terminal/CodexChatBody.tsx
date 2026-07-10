@@ -80,11 +80,8 @@ export interface CodexChatBodyProps {
   onRemoveAttachment(id: string): void;
   onDraftChange(value: string): void;
   onUploadPress(): void;
-  onInputPress(): void;
   onInputFocus(): void;
   onInputBlur(): void;
-  onInputStart(): boolean;
-  onSubmit(): void;
   onSendPress(): void;
   onTerminalActionKey(key: string): Promise<void> | void;
   composerAccessory?: React.ReactNode;
@@ -139,11 +136,8 @@ export function CodexChatBody({
   onRemoveAttachment,
   onDraftChange,
   onUploadPress,
-  onInputPress,
   onInputFocus,
   onInputBlur,
-  onInputStart,
-  onSubmit,
   onSendPress,
   onTerminalActionKey,
   composerAccessory,
@@ -222,11 +216,8 @@ export function CodexChatBody({
         onRemoveAttachment={onRemoveAttachment}
         onDraftChange={onDraftChange}
         onUploadPress={onUploadPress}
-        onInputPress={onInputPress}
         onInputFocus={onInputFocus}
         onInputBlur={onInputBlur}
-        onInputStart={onInputStart}
-        onSubmit={onSubmit}
         onSendPress={onSendPress}
       />
       {skillsSheet}

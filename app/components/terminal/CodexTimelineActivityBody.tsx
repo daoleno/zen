@@ -1,17 +1,11 @@
 import React from "react";
-import {
-  StyleSheet,
-  Text,
-} from "react-native";
 import type {
   TerminalThemeChrome,
   TerminalThemePalette,
 } from "../../constants/terminalThemes";
-import { Typography } from "../../constants/tokens";
 import { MessageBody } from "./CodexMessageBody";
 import { CodexTimelineActivityOutput } from "./CodexTimelineActivityOutput";
 import type { ZenActivityTimelineItem } from "./CodexTimelineActivityTypes";
-import { useTimelineSelectableTextProps } from "./TimelineTextSelectableContext";
 
 interface CodexTimelineActivityBodyProps {
   body: string;
@@ -19,6 +13,7 @@ interface CodexTimelineActivityBodyProps {
   theme: TerminalThemePalette;
   activityKind?: ZenActivityTimelineItem["activityKind"];
   bodyKind?: ZenActivityTimelineItem["bodyKind"];
+  tone?: ZenActivityTimelineItem["tone"];
   truncateBody(value: string, limit: number): string;
 }
 
@@ -28,10 +23,12 @@ export function CodexTimelineActivityBody({
   theme,
   activityKind,
   bodyKind,
+  tone,
   truncateBody,
 }: CodexTimelineActivityBodyProps) {
-  const selectableTextProps = useTimelineSelectableTextProps();
   const displayBody = truncateBody(body, 1800);
+  const emphasizeError = tone === "failed";
+
   if (activityKind === "reasoning") {
     return (
       <MessageBody
@@ -43,32 +40,30 @@ export function CodexTimelineActivityBody({
     );
   }
 
-  if (bodyKind) {
-    return (
-      <CodexTimelineActivityOutput
-        body={displayBody}
-        bodyKind={bodyKind}
-        chrome={chrome}
-        theme={theme}
-      />
-    );
-  }
-
   return (
-    <Text
-      {...selectableTextProps}
-      style={[styles.body, { color: chrome.textSubtle }]}
-    >
-      {displayBody}
-    </Text>
+    <CodexTimelineActivityOutput
+      body={displayBody}
+      bodyKind={bodyKind}
+      chrome={chrome}
+      theme={theme}
+      emphasizeError={emphasizeError}
+    />
   );
 }
 
-const styles = StyleSheet.create({
-  body: {
-    marginTop: 6,
-    fontSize: 12,
-    lineHeight: 18,
-    fontFamily: Typography.chatMonoFont,
-  },
-});
+export function isMeaningfulActivityBody(
+  body: string | undefined,
+  tone: ZenActivityTimelineItem["tone"],
+): body is string {
+  if (!body || !body.trim()) {
+    return false;
+  }
+  const normalized = body.trim().toLowerCase();
+  if (
+    (tone === "success" || tone === "neutral") &&
+    (normalized === "(no output)" || normalized === "no output")
+  ) {
+    return false;
+  }
+  return true;
+}

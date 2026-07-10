@@ -18,13 +18,17 @@ interface CodexTimelineActivityOutputProps {
   bodyKind?: ZenActivityTimelineItem["bodyKind"];
   chrome: TerminalThemeChrome;
   theme: TerminalThemePalette;
+  emphasizeError?: boolean;
 }
+
+const OUTPUT_MAX_HEIGHT = 220;
 
 export function CodexTimelineActivityOutput({
   body,
   bodyKind,
   chrome,
   theme,
+  emphasizeError = false,
 }: CodexTimelineActivityOutputProps) {
   const selectableTextProps = useTimelineSelectableTextProps();
   const lines = splitOutputLines(body);
@@ -32,32 +36,63 @@ export function CodexTimelineActivityOutput({
     return null;
   }
 
+  const lineColor = emphasizeError ? chrome.danger : chrome.textMuted;
+  const content = (
+    <View style={styles.output}>
+      {lines.map((line, index) => (
+        <Text
+          key={index}
+          {...selectableTextProps}
+          style={[styles.line, { color: lineColor }]}
+        >
+          {bodyKind === "diff-stat"
+            ? renderDiffStatLine(line, chrome, theme)
+            : line || " "}
+        </Text>
+      ))}
+    </View>
+  );
+
   return (
-    <ScrollView
-      horizontal
-      nestedScrollEnabled
-      showsHorizontalScrollIndicator={false}
-      contentContainerStyle={styles.scrollContent}
+    <View
+      style={[
+        styles.frame,
+        {
+          backgroundColor: emphasizeError
+            ? chrome.dangerSoft
+            : chrome.composerInput,
+          borderColor: chrome.border,
+        },
+      ]}
     >
-      <View style={styles.output}>
-        {lines.map((line, index) => (
-          <Text
-            key={index}
-            {...selectableTextProps}
-            style={[styles.line, { color: chrome.textSubtle }]}
-          >
-            {bodyKind === "diff-stat"
-              ? renderDiffStatLine(line, chrome, theme)
-              : line || " "}
-          </Text>
-        ))}
-      </View>
-    </ScrollView>
+      {bodyKind === "diff-stat" ? (
+        <ScrollView
+          horizontal
+          nestedScrollEnabled
+          showsHorizontalScrollIndicator={false}
+          style={styles.verticalBound}
+          contentContainerStyle={styles.scrollContent}
+        >
+          {content}
+        </ScrollView>
+      ) : (
+        <ScrollView
+          nestedScrollEnabled
+          showsVerticalScrollIndicator={lines.length > 10}
+          style={styles.verticalBound}
+        >
+          {content}
+        </ScrollView>
+      )}
+    </View>
   );
 }
 
 function splitOutputLines(body: string) {
   const lines = body.replace(/\r\n/g, "\n").split("\n");
+  if (lines.length > 1 && lines[lines.length - 1] === "") {
+    return lines.slice(0, -1);
+  }
   return lines.length > 0 ? lines : [];
 }
 
@@ -100,16 +135,25 @@ function renderDiffStatLine(
 }
 
 const styles = StyleSheet.create({
+  frame: {
+    borderRadius: 10,
+    borderWidth: StyleSheet.hairlineWidth,
+    paddingHorizontal: 10,
+    paddingVertical: 8,
+    overflow: "hidden",
+  },
   scrollContent: {
     minWidth: "100%",
   },
+  verticalBound: {
+    maxHeight: OUTPUT_MAX_HEIGHT,
+  },
   output: {
     minWidth: "100%",
-    paddingTop: 2,
   },
   line: {
-    fontSize: 12,
-    lineHeight: 19,
+    fontSize: 12.5,
+    lineHeight: 18,
     fontFamily: Typography.chatMonoFont,
     letterSpacing: 0,
   },

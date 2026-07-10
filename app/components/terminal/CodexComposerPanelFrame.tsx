@@ -5,6 +5,7 @@ import {
 } from "react-native";
 import type { TerminalThemeChrome } from "../../constants/terminalThemes";
 import { isAmbientChatChrome } from "../../constants/themedSurfaces";
+import { shadow } from "../../constants/tokens";
 import { CHAT_COMPOSER_DOCK_RADIUS } from "./chatChromeMetrics";
 
 interface CodexComposerPanelFrameProps {
@@ -15,7 +16,7 @@ interface CodexComposerPanelFrameProps {
 }
 
 export function CodexComposerPanelFrame({
-  focused,
+  focused: _focused,
   chrome,
   layout = "classic",
   children,
@@ -23,6 +24,7 @@ export function CodexComposerPanelFrame({
   const ambient = isAmbientChatChrome(chrome);
   const telegram = layout === "telegram";
   const chatgpt = layout === "chatgpt";
+  const floating = telegram || chatgpt;
 
   return (
     <View
@@ -39,7 +41,8 @@ export function CodexComposerPanelFrame({
             chatgpt || telegram || !ambient
               ? chrome.composerInput
               : chrome.surfaceActive,
-          borderColor: focused ? chrome.focus : chrome.border,
+          borderColor: chrome.border,
+          ...(floating ? shadow("card", chrome.shadowColor) : null),
         },
       ]}
     >
@@ -52,7 +55,7 @@ const styles = StyleSheet.create({
   panel: {
     minHeight: 48,
     borderRadius: 24,
-    borderWidth: 1,
+    borderWidth: StyleSheet.hairlineWidth,
     paddingLeft: 5,
     paddingRight: 6,
     paddingVertical: 4,
@@ -67,10 +70,10 @@ const styles = StyleSheet.create({
   panelTelegram: {
     minHeight: 48,
     borderRadius: CHAT_COMPOSER_DOCK_RADIUS,
-    borderWidth: 1,
-    paddingLeft: 4,
-    paddingRight: 4,
-    paddingVertical: 4,
+    borderWidth: StyleSheet.hairlineWidth,
+    paddingLeft: 6,
+    paddingRight: 6,
+    paddingVertical: 5,
     flexDirection: "row",
     alignItems: "flex-end",
     gap: 2,
@@ -80,10 +83,10 @@ const styles = StyleSheet.create({
     minWidth: 0,
     minHeight: 48,
     borderRadius: 24,
-    borderWidth: 1,
-    paddingLeft: 4,
-    paddingRight: 4,
-    paddingVertical: 4,
+    borderWidth: StyleSheet.hairlineWidth,
+    paddingLeft: 6,
+    paddingRight: 6,
+    paddingVertical: 5,
     flexDirection: "row",
     alignItems: "center",
     gap: 2,

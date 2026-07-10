@@ -29,9 +29,9 @@ export function ActivityPreview({
   return (
     <View style={[styles.imagePlaceholder, { borderColor: chrome.border }]}>
       {failed ? (
-        <Ionicons name="image-outline" size={16} color={chrome.textSubtle} />
+        <Ionicons name="image-outline" size={16} color={chrome.textMuted} />
       ) : (
-        <ActivityIndicator size="small" color={chrome.textSubtle} />
+        <ActivityIndicator size="small" color={chrome.textMuted} />
       )}
     </View>
   );

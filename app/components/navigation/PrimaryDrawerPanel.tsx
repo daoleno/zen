@@ -12,12 +12,17 @@ import {
   View,
   type View as ViewInstance,
 } from "react-native";
-import { Ionicons } from "@expo/vector-icons";
 import { useFocusEffect, useRouter } from "expo-router";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { Typography, useAppColors } from "../../constants/tokens";
 import { getServers, type StoredServer } from "../../services/storage";
 import { useAgentServerSummary } from "../../store/agents";
+import {
+  NavChevronIcon,
+  NavCloseIcon,
+  NavSettingsIcon,
+  NavStatsIcon,
+} from "./PrimaryNavIcons";
 
 interface PrimaryDrawerPanelProps {
   closeButtonRef: RefObject<ViewInstance | null>;
@@ -27,12 +32,27 @@ interface PrimaryDrawerPanelProps {
   onNavigateAway(): void;
 }
 
+type DrawerRowIcon = "settings" | "stats";
+
 interface DrawerRowProps {
   detail?: string;
   drawerVisible: boolean;
-  icon: React.ComponentProps<typeof Ionicons>["name"];
+  icon: DrawerRowIcon;
   label: string;
   onPress(): void;
+}
+
+function DrawerRowIconView({
+  color,
+  icon,
+}: {
+  color: string;
+  icon: DrawerRowIcon;
+}) {
+  if (icon === "stats") {
+    return <NavStatsIcon color={color} size={19} />;
+  }
+  return <NavSettingsIcon color={color} size={19} />;
 }
 
 function DrawerRow({
@@ -62,7 +82,7 @@ function DrawerRow({
           { backgroundColor: colors.surfaceSubtle },
         ]}
       >
-        <Ionicons name={icon} size={19} color={colors.textSecondary} />
+        <DrawerRowIconView color={colors.textSecondary} icon={icon} />
       </View>
       <View style={styles.drawerRowCopy}>
         <Text
@@ -87,7 +107,7 @@ function DrawerRow({
           </Text>
         ) : null}
       </View>
-      <Ionicons name="chevron-forward" size={17} color={colors.textTertiary} />
+      <NavChevronIcon color={colors.textTertiary} size={17} />
     </Pressable>
   );
 }
@@ -151,7 +171,7 @@ export function PrimaryDrawerPanel({
     <SafeAreaView style={styles.drawerContent} edges={["top", "bottom"]}>
       <View style={styles.drawerIdentity}>
         <Image
-          source={require("../../assets/branding/zen-logo-transparent.png")}
+          source={require("../../assets/branding/zen-logo-mark-transparent.png")}
           style={styles.drawerLogo}
           resizeMode="contain"
           accessible={false}
@@ -194,7 +214,7 @@ export function PrimaryDrawerPanel({
             },
           ]}
         >
-          <Ionicons name="close" size={21} color={colors.textPrimary} />
+          <NavCloseIcon color={colors.textPrimary} size={20} />
         </Pressable>
       </View>
 
@@ -245,14 +265,14 @@ export function PrimaryDrawerPanel({
 
       <DrawerRow
         drawerVisible={drawerVisible}
-        icon="bar-chart-outline"
+        icon="stats"
         label="Stats"
         onPress={() => openRoute("/stats")}
       />
       <DrawerRow
         detail="Servers and connection"
         drawerVisible={drawerVisible}
-        icon="settings-outline"
+        icon="settings"
         label="Settings"
         onPress={() => openRoute("/settings")}
       />

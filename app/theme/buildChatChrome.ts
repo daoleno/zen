@@ -33,6 +33,7 @@ export function buildChatChrome(theme: ResolvedZenTheme): {
     danger: colors.dangerText,
     dangerSoft: colors.dangerSoft,
     overlay: colors.modalBackdrop,
+    shadowColor: colors.shadowColor,
   };
 
   const palette: TerminalThemePalette = {

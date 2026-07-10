@@ -1,14 +1,15 @@
 import React, { useCallback, useMemo, useState } from "react";
-import { ActivityIndicator, StyleSheet, Text, View } from "react-native";
+import { StyleSheet, Text, View } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
-import { useFocusEffect, useRouter } from "expo-router";
+import { useFocusEffect, useIsFocused, useRouter } from "expo-router";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { BrainAdapterSheet } from "../../components/brain/BrainAdapterSheet";
-import { BrainChatHeader } from "../../components/brain/BrainChatHeader";
 import { BrainExecutorMentionPicker } from "../../components/brain/BrainExecutorMentionPicker";
 import { BrainOverflowMenu } from "../../components/brain/BrainOverflowMenu";
 import { BrainWorkspaceViewer } from "../../components/brain/BrainWorkspaceViewer";
 import { brainProviderLabel } from "../../components/brain/brainPresentation";
+import { usePrimaryPageAction } from "../../components/navigation/PrimaryPageAction";
+import { ZenLoopSpinner } from "../../components/ui/ZenLoopSpinner";
 import { ChatCanvas } from "../../components/terminal/ChatCanvas";
 import { CHAT_CHROME_HORIZONTAL_INSET } from "../../components/terminal/chatChromeMetrics";
 import { CodexChatSurface } from "../../components/terminal/CodexChatSurface";
@@ -43,7 +44,7 @@ export default function BrainScreen() {
   );
   const { state: agentState } = useAgents();
   const { state: brainState } = useBrain();
-  const [screenFocused, setScreenFocused] = useState(false);
+  const screenFocused = useIsFocused();
   const [servers, setServers] = useState<StoredServer[]>([]);
   const [adapterSheetVisible, setAdapterSheetVisible] = useState(false);
   const [menuVisible, setMenuVisible] = useState(false);
@@ -115,24 +116,6 @@ export default function BrainScreen() {
   );
   const availableAdapters = activeBrain?.adapters ?? [];
   const canSwitchAdapter = availableAdapters.length > 1;
-  useFocusEffect(
-    useCallback(() => {
-      setScreenFocused(true);
-      return () => {
-        setScreenFocused(false);
-      };
-    }, []),
-  );
-
-  useFocusEffect(
-    useCallback(() => {
-      if (!activeServer || connectionState !== "connected") {
-        return;
-      }
-      wsClient.requestBrainSnapshot(activeServer.id);
-    }, [activeServer?.id, connectionState]),
-  );
-
   const openAdapterSheet = useCallback(() => {
     if (!canSwitchAdapter || !activeServer) {
       return;
@@ -219,8 +202,38 @@ export default function BrainScreen() {
     [activeServer, closeAdapterSheet, hostAdapter?.id, switchingAdapterId],
   );
 
+  const canNewChat = Boolean(activeServer && activeBrain?.hydrated);
+  const canOpenTerminal = Boolean(activeServer && hostAgent?.id);
+  const canOpenWorkspace = Boolean(
+    activeServer && connectionState === "connected",
+  );
+  const overflowDisabled =
+    !canNewChat && !canOpenTerminal && !canOpenWorkspace && !canSwitchAdapter;
+
+  const brainPageAction = useMemo(
+    () => ({
+      accessibilityLabel: "Brain actions",
+      disabled: overflowDisabled,
+      onPress: openMenu,
+    }),
+    [openMenu, overflowDisabled],
+  );
+  usePrimaryPageAction(brainPageAction);
+
   const menuActions = useMemo(
     () => [
+      {
+        key: "new-chat",
+        label: "New chat",
+        detail: "Start a fresh Brain thread",
+        icon: newChatLoading
+          ? ("hourglass-outline" as const)
+          : ("create-outline" as const),
+        disabled: !canNewChat || newChatLoading,
+        onPress: () => {
+          void startNewBrainChat();
+        },
+      },
       ...(canSwitchAdapter
         ? [
             {
@@ -237,26 +250,28 @@ export default function BrainScreen() {
         label: "Open terminal",
         detail: "Raw session view",
         icon: "terminal-outline" as const,
-        disabled: !activeServer || !hostAgent?.id,
+        disabled: !canOpenTerminal,
         onPress: openBrainTerminal,
       },
       {
         key: "workspace",
         label: "Browse workspace",
         icon: "folder-open-outline" as const,
-        disabled: !activeServer || connectionState !== "connected",
+        disabled: !canOpenWorkspace,
         onPress: openWorkspaceViewer,
       },
     ],
     [
-      activeServer,
+      canNewChat,
+      canOpenTerminal,
+      canOpenWorkspace,
       canSwitchAdapter,
-      connectionState,
       hostAdapter?.provider,
-      hostAgent?.id,
+      newChatLoading,
       openAdapterSheet,
       openBrainTerminal,
       openWorkspaceViewer,
+      startNewBrainChat,
     ],
   );
 
@@ -294,64 +309,49 @@ export default function BrainScreen() {
       style={[styles.screen, { backgroundColor: chrome.appBackground }]}
       edges={[]}
     >
-      <BrainChatHeader
-        chrome={chrome}
-        adapter={hostAdapter}
-        sessionName={hostAgent?.name}
-        workspace={activeBrain?.workspace}
-        canSwitchAdapter={canSwitchAdapter}
-        newChatLoading={newChatLoading}
-        canNewChat={Boolean(activeServer && activeBrain?.hydrated)}
-        canOpenTerminal={Boolean(activeServer && hostAgent?.id)}
-        canOpenWorkspace={Boolean(
-          activeServer && connectionState === "connected",
-        )}
-        onOpenAdapterSheet={openAdapterSheet}
-        onOpenMenu={openMenu}
-        onNewChat={() => void startNewBrainChat()}
-      />
-
       {brainActionError ? (
         <View style={styles.bannerError}>
           <Text style={styles.bannerErrorText}>{brainActionError}</Text>
         </View>
       ) : null}
 
-      <ChatCanvas chrome={chrome}>
-        {canUseStructuredBrainInterface ? (
-          <CodexChatSurface
-            key={`brain-chat:${activeServer?.id}:${hostAgent?.id}:${brainChatScopeKey ?? ""}`}
-            visible
-            serverId={activeServer?.id ?? ""}
-            agentId={hostAgent?.id ?? ""}
-            conversationScopeKey={brainChatScopeKey}
-            agentInfo={{
-              cwd: hostAgent?.cwd,
-              command: hostAgent?.command,
-              name: hostAgent?.name,
-            }}
-            connectionState={connectionState}
-            connectionIssue={connectionIssue}
-            theme={theme}
-            chrome={chrome}
-            screenFocused={screenFocused}
-            onSwitchToTerminal={openBrainTerminal}
-            emptyTitle={BRAIN_EMPTY_TITLE}
-            emptyBody={BRAIN_EMPTY_BODY}
-            renderComposerAccessory={renderBrainComposerAccessory}
-          />
-        ) : ready ? (
-          <BrainInterfaceUnavailableState
-            chrome={chrome}
-            provider={hostAdapter?.provider}
-          />
-        ) : (
-          <BrainLoadingState
-            chrome={chrome}
-            connected={connectionState === "connected"}
-          />
-        )}
-      </ChatCanvas>
+      <View style={styles.surface}>
+        <ChatCanvas chrome={chrome}>
+          {canUseStructuredBrainInterface ? (
+            <CodexChatSurface
+              key={`brain-chat:${activeServer?.id}:${hostAgent?.id}:${brainChatScopeKey ?? ""}`}
+              visible
+              serverId={activeServer?.id ?? ""}
+              agentId={hostAgent?.id ?? ""}
+              conversationScopeKey={brainChatScopeKey}
+              agentInfo={{
+                cwd: hostAgent?.cwd,
+                command: hostAgent?.command,
+                name: hostAgent?.name,
+              }}
+              connectionState={connectionState}
+              connectionIssue={connectionIssue}
+              theme={theme}
+              chrome={chrome}
+              screenFocused={screenFocused}
+              onSwitchToTerminal={openBrainTerminal}
+              emptyTitle={BRAIN_EMPTY_TITLE}
+              emptyBody={BRAIN_EMPTY_BODY}
+              renderComposerAccessory={renderBrainComposerAccessory}
+            />
+          ) : ready ? (
+            <BrainInterfaceUnavailableState
+              chrome={chrome}
+              provider={hostAdapter?.provider}
+            />
+          ) : (
+            <BrainLoadingState
+              chrome={chrome}
+              connected={connectionState === "connected"}
+            />
+          )}
+        </ChatCanvas>
+      </View>
 
       <BrainAdapterSheet
         visible={adapterSheetVisible}
@@ -415,7 +415,7 @@ function BrainLoadingState({
       chrome={chrome}
       glyph={
         connected ? (
-          <ActivityIndicator size="small" color={chrome.accent} />
+          <ZenLoopSpinner size={36} />
         ) : (
           <Ionicons
             name="cloud-offline-outline"
@@ -545,6 +545,9 @@ function activeExecutorMentionAtEnd(
 function createStyles(colors: typeof Colors) {
   return StyleSheet.create({
     screen: {
+      flex: 1,
+    },
+    surface: {
       flex: 1,
     },
     bannerError: {

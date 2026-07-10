@@ -1,12 +1,27 @@
 import type { CodexConversationEvent } from "../../services/codexConversation";
+import {
+  collapsedToolLabel,
+  isExecWrapperToolName,
+  isUnsafeCollapsedDetail,
+  parseExecWrapperCalls,
+  primarySemanticAction,
+  type SemanticAction,
+  type SemanticActionKind,
+} from "../../services/toolCallSemantics";
 import { parseHeartbeatWakeMessage } from "./CodexHeartbeatWake";
 import type {
   PendingSlashCommand,
   PendingUserMessage,
 } from "./CodexChatSession";
 import {
+  comparableUserMessageText,
+  presentPendingUserMessageLifecycle,
+  queuedOrdinalByPendingId,
+} from "./pendingUserMessageLifecycle";
+import {
   type PatchFileSummary,
   type PatchOperation,
+  type ZenActivityChild,
   type ZenActivityTimelineItem,
 } from "./CodexTimelineActivityTypes";
 import type { DisplayAttachment } from "./CodexTimelineMessage";
@@ -174,6 +189,7 @@ export function mergePendingUserMessagesIntoTimeline(
   }
   const merged = [...timelineItems];
   const claimedTimelineIds = new Set<string>();
+  const queuedOrdinals = queuedOrdinalByPendingId(pendingUserMessages);
   for (const message of pendingUserMessages) {
     if (message.confirmedEventId) {
       const confirmedIndex = merged.findIndex(
@@ -202,12 +218,15 @@ export function mergePendingUserMessagesIntoTimeline(
         merged[matchedIndex] = {
           ...matched,
           id: message.id,
-          pending: true,
         };
         claimedTimelineIds.add(matched.id);
       }
       continue;
     }
+    const presentation = presentPendingUserMessageLifecycle(
+      message,
+      queuedOrdinals,
+    );
     const item = {
       type: "message" as const,
       id: message.id,
@@ -216,6 +235,9 @@ export function mergePendingUserMessagesIntoTimeline(
       body: message.body,
       attachments: message.attachments,
       pending: true,
+      pendingLifecycle: presentation.lifecycle,
+      pendingLifecycleLabel: presentation.label,
+      pendingLifecycleAccessibilityLabel: presentation.accessibilityLabel,
     };
     insertTimelineItemByTimestamp(merged, item);
   }
@@ -326,13 +348,6 @@ function findPendingUserMessageMatch(
     }
   }
   return -1;
-}
-
-function comparableUserMessageText(value: string) {
-  return value
-    .replace(ATTACHMENT_TAG_RE, "")
-    .replace(/\s+/g, " ")
-    .trim();
 }
 
 export function mergePendingSlashCommandsIntoTimeline(
@@ -518,32 +533,51 @@ function activityFromEvent(event: CodexConversationEvent): ZenTimelineItem | nul
         maxLines: COMMAND_OUTPUT_PREVIEW_LINES,
         maxChars: COMMAND_OUTPUT_PREVIEW_CHARS,
       });
+      const semantic = collapsedToolLabel({
+        kind: "command",
+        command,
+        toolName: "exec_command",
+        status: running ? "running" : failed ? "failed" : event.status || "done",
+        exitCode: event.exit_code,
+      });
       return {
         type: "activity",
         id: event.id || `command:${event.seq}`,
         timestamp: event.timestamp,
         statusKey: event.status || "done",
-        title: commandActivityTitle(command, running, failed, presentation),
+        title: semantic.title,
         tone: running ? "running" : failed ? "failed" : "success",
         icon: running ? "time-outline" : failed ? "alert-circle-outline" : presentation.icon,
-        detail: commandActivityDetail(command, presentation),
+        detail: safeCollapsedDetail(semantic.detail),
         body: output.text || (!running && !failed ? "(no output)" : undefined),
         bodyKind: commandOutputBodyKind(command, output.text),
-        defaultExpanded: false,
+        defaultExpanded: failed,
+        accessibilityLabel: semantic.accessibilityLabel,
+        providerToolId: semantic.providerToolId,
       };
     }
     case "patch": {
       const summary = patchSummaryFromEvent(event);
+      const semantic = collapsedToolLabel({
+        kind: "patch",
+        toolName: "apply_patch",
+        files: summary.files.map((file) => file.path),
+        status: "done",
+      });
       return {
         type: "activity",
         id: event.id || `patch:${event.seq}`,
         timestamp: event.timestamp,
-        title: summary.title,
+        title: semantic.title,
         tone: "success",
         icon: "git-compare-outline",
+        detail: safeCollapsedDetail(semantic.detail),
         fileSummaries: summary.files,
         files: summary.files.map((file) => file.path),
         body: summary.files.length > 0 ? undefined : event.body,
+        defaultExpanded: false,
+        accessibilityLabel: semantic.accessibilityLabel,
+        providerToolId: semantic.providerToolId,
       };
     }
     case "tool": {
@@ -551,7 +585,7 @@ function activityFromEvent(event: CodexConversationEvent): ZenTimelineItem | nul
       if (isLowSignalToolEvent(name, event.input || "")) {
         return null;
       }
-      const failed = event.status === "failed" || (event.exit_code ?? 0) !== 0;
+      const failed = isFailureLikeStatus(event.status) || (event.exit_code ?? 0) !== 0;
       const running = event.status === "running";
       const presentation = toolPresentation(event);
       const previewPath = presentation.localImagePath || imagePathFromTool(event);
@@ -559,24 +593,36 @@ function activityFromEvent(event: CodexConversationEvent): ZenTimelineItem | nul
         maxLines: TOOL_PAYLOAD_PREVIEW_LINES,
         maxChars: TOOL_PAYLOAD_PREVIEW_CHARS,
       });
-      const heading = toolActivityHeading(event, running);
+      const semantic = collapsedToolLabel({
+        kind: "tool",
+        toolName: name,
+        title: event.title,
+        input: event.input,
+        command: event.command,
+        status: running ? "running" : failed ? "failed" : event.status || "done",
+        exitCode: event.exit_code,
+        files: event.files,
+      });
       return {
         type: "activity",
         id: event.id || `tool:${event.seq}`,
         timestamp: event.timestamp,
         statusKey: event.status || "done",
-        title: heading.title,
+        title: semantic.title,
         tone: running ? "running" : failed ? "failed" : "success",
-        icon: presentation.icon,
-        detail: heading.detail || presentation.subtitle || compactToolDetail(event),
+        icon: semanticActivityIcon(semantic.title, presentation.icon, running, failed),
+        detail: safeCollapsedDetail(semantic.detail),
         body: result.text || undefined,
         bodyKind: toolOutputBodyKind(event, result.text),
         previewPath,
-        defaultExpanded: false,
+        defaultExpanded: failed,
+        accessibilityLabel: semantic.accessibilityLabel,
+        providerToolId: semantic.providerToolId,
+        children: semanticChildren(event.id || `tool:${event.seq}`, semantic.children),
       };
     }
     case "web_search": {
-      const failed = event.status === "failed" || (event.exit_code ?? 0) !== 0;
+      const failed = isFailureLikeStatus(event.status) || (event.exit_code ?? 0) !== 0;
       const running = event.status === "running";
       const action = parseToolPayload(event.input);
       const body = webSearchActivityBody(event);
@@ -591,7 +637,7 @@ function activityFromEvent(event: CodexConversationEvent): ZenTimelineItem | nul
         detail: webSearchEventDetail(event),
         body,
         bodyKind: body ? "terminal" : undefined,
-        defaultExpanded: running || failed,
+        defaultExpanded: failed,
       };
     }
     case "commentary": {
@@ -629,7 +675,7 @@ function activityFromEvent(event: CodexConversationEvent): ZenTimelineItem | nul
         detail,
         body: body || undefined,
         bodyKind: statusActivityBodyKind(event, body),
-        defaultExpanded: event.status === "failed" || event.status === "running",
+        defaultExpanded: event.status === "failed" || event.status === "blocked",
       };
     }
     default:
@@ -673,34 +719,66 @@ function explorationActivityFromEntries(
     .filter((entry) => entry.failed && entry.output.text)
     .flatMap((entry) => [
       "",
-      `${entry.presentation.detail || commandSummary(entry.event.command || "") || "Command"} output:`,
+      `${entry.presentation.explorationLabel || "Lookup"} output:`,
       entry.output.text,
     ]);
   const body = failedOutputs.length > 0
     ? cleanDisplayText([...commandLines, ...failedOutputs].join("\n"))
     : "";
-  const detail = summarizeExploration(entries);
+  const semantic = collapsedToolLabel({
+    kind: "command",
+    command: first?.event.command,
+    toolName: "exec_command",
+    status: running ? "running" : failed ? "failed" : "done",
+  });
+  const title = entries.length > 1
+    ? (running ? "Exploring" : "Explored")
+    : semantic.title;
+  const quietDetail = entries.length > 1
+    ? `${entries.length} lookups`
+    : undefined;
 
   return {
     type: "activity",
     id: `explore:${first?.event.id || first?.event.seq}`,
     timestamp: last?.event.timestamp || first?.event.timestamp,
     statusKey: running ? "running" : failed ? "failed" : "done",
-    title: running ? "Exploring" : "Explored",
+    title,
     tone: running ? "running" : failed ? "failed" : "success",
     icon: failed ? "alert-circle-outline" : running ? "time-outline" : "folder-open-outline",
-    detail,
+    detail: quietDetail,
     body: body || undefined,
     files,
     defaultExpanded: false,
+    accessibilityLabel: entries.length > 1
+      ? `${title}, ${entries.length} lookups`
+      : semantic.accessibilityLabel,
+    providerToolId: "exec_command",
+    children: entries.length > 1
+      ? entries.map((entry, index) => ({
+        id: `${first?.event.id || "explore"}:child:${index}`,
+        title: collapsedToolLabel({
+          kind: "command",
+          command: entry.event.command,
+          toolName: "exec_command",
+          status: entry.running ? "running" : entry.failed ? "failed" : "done",
+        }).title,
+        tone: entry.running ? "running" : entry.failed ? "failed" : "success",
+        providerToolId: "exec_command",
+      }))
+      : undefined,
   };
 }
 
 function explorationEntryLine(entry: ExplorationEntry) {
-  const action = entry.presentation.explorationLabel || entry.presentation.doneTitle;
-  const target = entry.presentation.detail || commandSummary(entry.event.command || "") || "project";
+  const action = collapsedToolLabel({
+    kind: "command",
+    command: entry.event.command,
+    toolName: "exec_command",
+    status: entry.running ? "running" : entry.failed ? "failed" : "done",
+  }).title;
   const suffix = entry.running ? " (running)" : entry.failed ? " (failed)" : "";
-  return `${action} ${target}${suffix}`;
+  return `${action}${suffix}`;
 }
 
 function summarizeExploration(entries: ExplorationEntry[]) {
@@ -1095,6 +1173,17 @@ function compactToolDetail(event: CodexConversationEvent) {
 }
 
 function imagePathFromTool(event: CodexConversationEvent) {
+  const nested = parseExecWrapperCalls(event.input);
+  if (nested.length === 1 && nested[0].name === "view_image") {
+    const path = typeof nested[0].object?.path === "string"
+      ? nested[0].object.path
+      : typeof nested[0].object?.image_url === "string"
+        ? nested[0].object.image_url
+        : "";
+    if (path && !previewableImageUri(path) && looksLikeImagePath(path)) {
+      return path;
+    }
+  }
   const parsed = parseToolPayload(event.input);
   if (!isRecord(parsed)) {
     return undefined;
@@ -1541,8 +1630,22 @@ function searchTarget(tokens: string[], executable: string) {
   return positionals.slice(1).join(", ");
 }
 
+function isFailureLikeStatus(status?: string): boolean {
+  switch ((status || "").trim().toLowerCase()) {
+    case "failed":
+    case "blocked":
+    case "error":
+      return true;
+    default:
+      return false;
+  }
+}
+
 function isCommandFailed(event: CodexConversationEvent, presentation: CommandPresentation) {
-  if (event.status === "failed" || (event.exit_code ?? 0) !== 0) {
+  if (isFailureLikeStatus(event.status)) {
+    return true;
+  }
+  if ((event.exit_code ?? 0) !== 0) {
     if (presentation.kind === "search" && event.exit_code === 1 && !cleanToolOutput(event.body || "")) {
       return false;
     }
@@ -1647,16 +1750,33 @@ function isToolMetadataLine(line: string) {
 }
 
 function toolPresentation(event: CodexConversationEvent): ToolPresentation {
-  const name = (event.tool_name || event.title || "tool").trim() || "tool";
-  const input = parseToolPayload(event.input);
-  const inputObject = isRecord(input) ? input : {};
+  let name = (event.tool_name || event.title || "tool").trim() || "tool";
+  name = name.replace(/^functions\./, "");
+  let input = parseToolPayload(event.input);
+  let inputObject = isRecord(input) ? input : {};
+
+  if (isExecWrapperToolName(name) || name.startsWith("multi:")) {
+    const nested = parseExecWrapperCalls(event.input);
+    if (nested.length === 1) {
+      name = nested[0].name;
+      if (nested[0].object) {
+        inputObject = nested[0].object;
+      } else if (nested[0].text) {
+        inputObject = { path: nested[0].text };
+      }
+    } else if (nested.length > 1) {
+      return {
+        icon: "git-network-outline",
+      };
+    }
+  }
+
   const browserAction = /^browser_/.test(name) ? humanizeToolName(name.replace(/^browser_/, "")) : "";
 
   if (name === "view_image") {
     const path = stringField(inputObject, "path") || stringField(inputObject, "image_url");
     const previewUri = previewableImageUri(path);
     return {
-      subtitle: path ? basename(path) : undefined,
       icon: "image-outline",
       localImagePath: path && !previewUri ? path : undefined,
     };
@@ -1664,9 +1784,7 @@ function toolPresentation(event: CodexConversationEvent): ToolPresentation {
 
   if (name === "write_stdin") {
     const chars = stringField(inputObject, "chars");
-    const sessionId = valueField(inputObject, "session_id");
     return {
-      subtitle: sessionId ? `session ${sessionId}` : undefined,
       icon: chars === ""
         ? "sync-outline"
         : chars === "\u0003"
@@ -1681,7 +1799,6 @@ function toolPresentation(event: CodexConversationEvent): ToolPresentation {
       ? previewableImageUri(browserFile)
       : undefined;
     return {
-      subtitle: stringField(inputObject, "element") || stringField(inputObject, "url") || undefined,
       icon: browserToolIcon(name),
       localImagePath: browserFile && !browserPreviewUri && looksLikeImagePath(browserFile)
         ? browserFile
@@ -1691,7 +1808,6 @@ function toolPresentation(event: CodexConversationEvent): ToolPresentation {
 
   if (name.includes("query_docs") || name.includes("resolve_library_id")) {
     return {
-      subtitle: stringField(inputObject, "libraryId") || stringField(inputObject, "libraryName") || undefined,
       icon: "library-outline",
     };
   }
@@ -1702,30 +1818,26 @@ function toolPresentation(event: CodexConversationEvent): ToolPresentation {
     };
   }
 
-  if (name.includes("multi_tool_use.parallel")) {
-    const toolUses = Array.isArray(inputObject.tool_uses) ? inputObject.tool_uses : [];
-    const names = toolUses
-      .map((toolUse) =>
-        isRecord(toolUse) && typeof toolUse.recipient_name === "string"
-          ? humanizeToolName(toolUse.recipient_name)
-          : "",
-      )
-      .filter(Boolean);
+  if (name.includes("multi_tool_use.parallel") || name.startsWith("multi:")) {
     return {
-      subtitle: names.length ? names.slice(0, 2).join(", ") : undefined,
       icon: "git-network-outline",
     };
   }
 
   if (name.includes("spawn_agent") || name.includes("send_input") || name.includes("wait_agent")) {
     return {
-      subtitle: stringField(inputObject, "target") || firstString(inputObject.targets),
       icon: "git-network-outline",
     };
   }
 
+  const semantic = primarySemanticAction({
+    toolName: name,
+    input: event.input,
+    command: event.command,
+    status: event.status,
+  });
   return {
-    icon: "cube-outline",
+    icon: semanticKindIcon(semantic.kind),
   };
 }
 
@@ -1847,4 +1959,88 @@ function uniqueStrings(values: string[]) {
     result.push(normalized);
   }
   return result;
+}
+
+function safeCollapsedDetail(value?: string): string | undefined {
+  if (!value || isUnsafeCollapsedDetail(value)) {
+    return undefined;
+  }
+  return value;
+}
+
+function semanticChildren(
+  parentId: string,
+  children?: SemanticAction[],
+): ZenActivityChild[] | undefined {
+  if (!children?.length) {
+    return undefined;
+  }
+  return children.map((child, index) => ({
+    id: `${parentId}:action:${index}`,
+    title: child.label,
+    tone: child.status === "running"
+      ? "running"
+      : child.status === "failed" || child.status === "blocked"
+        ? "failed"
+        : "success",
+    providerToolId: child.providerToolId,
+  }));
+}
+
+function semanticActivityIcon(
+  title: string,
+  fallback: TimelineIconName,
+  running: boolean,
+  failed: boolean,
+): TimelineIconName {
+  if (running) {
+    return "time-outline";
+  }
+  if (failed) {
+    return "alert-circle-outline";
+  }
+  const lower = title.toLowerCase();
+  if (lower.includes("search")) {
+    return "search-outline";
+  }
+  if (lower.includes("read")) {
+    return "document-text-outline";
+  }
+  if (lower.includes("updated files") || lower.includes("updating files")) {
+    return "git-compare-outline";
+  }
+  if (lower.includes("plan")) {
+    return "map-outline";
+  }
+  if (lower.includes("image")) {
+    return "image-outline";
+  }
+  if (lower.includes("test")) {
+    return "checkmark-done-outline";
+  }
+  if (lower.includes("command")) {
+    return "terminal-outline";
+  }
+  return fallback;
+}
+
+function semanticKindIcon(kind: SemanticActionKind): TimelineIconName {
+  switch (kind) {
+    case "read_files":
+      return "document-text-outline";
+    case "search_code":
+      return "search-outline";
+    case "run_command":
+      return "terminal-outline";
+    case "update_files":
+      return "git-compare-outline";
+    case "update_plan":
+      return "map-outline";
+    case "view_image":
+      return "image-outline";
+    case "test_app":
+      return "checkmark-done-outline";
+    default:
+      return "cube-outline";
+  }
 }

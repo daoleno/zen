@@ -36,10 +36,10 @@ import { useCodexChatBodyProps } from "./useCodexChatBodyProps";
 import {
   useCodexComposerInput,
   useCodexComposerPresentation,
-  useElapsedDurationLabel,
   usePinnedTimeline,
   useRelativeTimeLabel,
 } from "./CodexChatSurfaceHooks";
+import { resolveWorkingTurnStartedAt } from "./workingTurnElapsed";
 
 interface UseCodexChatSurfaceStateInput {
   visible: boolean;
@@ -331,6 +331,12 @@ export function useCodexChatSurfaceState({
     events.length + pendingUserMessages.length + pendingSlashCommands.length,
     conversationCacheKey,
   );
+  const requestRunning =
+    isCodexRequestRunning({
+      conversation,
+      events,
+      agentStatus: agentInfo?.status,
+    }) && localChatState === "idle";
   const controller = useCodexChatController({
     serverId,
     agentId,
@@ -339,6 +345,7 @@ export function useCodexChatSurfaceState({
     connectionIssue,
     conversation,
     events,
+    turnBusy: requestRunning,
     draft,
     setDraft: setObservedDraft,
     attachments,
@@ -361,19 +368,13 @@ export function useCodexChatSurfaceState({
     onSwitchToTerminal,
   });
 
-  const requestRunning =
-    isCodexRequestRunning({
-      conversation,
-      events,
-      agentStatus: agentInfo?.status,
-    }) && localChatState === "idle";
   const turnStartedAt = useMemo(
-    () => currentTurnStartedAt(conversation, events, pendingUserMessages),
-    [conversation, events, pendingUserMessages],
-  );
-  const turnElapsedLabel = useElapsedDurationLabel(
-    turnStartedAt,
-    requestRunning && localChatState === "idle",
+    () =>
+      resolveWorkingTurnStartedAt({
+        events,
+        pendingUserMessages,
+      }),
+    [events, pendingUserMessages],
   );
   const composerPresentation = useCodexComposerPresentation({
     draft,
@@ -386,7 +387,7 @@ export function useCodexChatSurfaceState({
     startingNewChat: controller.startingNewChat,
     interrupting: controller.interrupting,
     canSend: controller.canSend,
-    elapsedLabel: turnElapsedLabel,
+    elapsedStartedAt: turnStartedAt,
     actionMenuPinned,
     safeAreaBottom: insets.bottom,
     placeholder,
@@ -653,61 +654,4 @@ function isEventAfterStatusRequest(
     Number.isFinite(requestTimestamp) &&
     eventTimestamp >= requestTimestamp
   );
-}
-
-function currentTurnStartedAt(
-  conversation: CodexConversation | null,
-  events: CodexConversationEvent[],
-  pendingUserMessages: PendingUserMessage[],
-) {
-  const activeUserTimestamp = latestUserMessageTimestamp(conversation, events);
-  const pendingTimestamp =
-    latestPendingUserMessageTimestamp(pendingUserMessages);
-
-  if (!activeUserTimestamp) {
-    return pendingTimestamp;
-  }
-  if (!pendingTimestamp) {
-    return activeUserTimestamp;
-  }
-
-  const activeMs = new Date(activeUserTimestamp).getTime();
-  const pendingMs = new Date(pendingTimestamp).getTime();
-  if (!Number.isFinite(activeMs)) {
-    return pendingTimestamp;
-  }
-  if (!Number.isFinite(pendingMs)) {
-    return activeUserTimestamp;
-  }
-  return pendingMs > activeMs ? pendingTimestamp : activeUserTimestamp;
-}
-
-function latestUserMessageTimestamp(
-  conversation: CodexConversation | null,
-  events: CodexConversationEvent[],
-) {
-  for (let index = events.length - 1; index >= 0; index -= 1) {
-    const event = events[index];
-    if (event.kind !== "user_message" || !event.timestamp) {
-      continue;
-    }
-    const timestamp = new Date(event.timestamp).getTime();
-    if (Number.isFinite(timestamp)) {
-      return event.timestamp;
-    }
-  }
-  return conversation?.updated_at;
-}
-
-function latestPendingUserMessageTimestamp(
-  pendingUserMessages: PendingUserMessage[],
-) {
-  let latest = 0;
-  pendingUserMessages.forEach((message) => {
-    const timestamp = new Date(message.createdAt).getTime();
-    if (Number.isFinite(timestamp) && timestamp > latest) {
-      latest = timestamp;
-    }
-  });
-  return latest > 0 ? new Date(latest).toISOString() : undefined;
 }

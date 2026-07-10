@@ -932,6 +932,52 @@ func (b *transcriptBuilder) consumeCodexResponseItem(raw json.RawMessage) {
 			} else {
 				b.addEvent("Tool: apply_patch")
 			}
+		} else if isCodexExecWrapperTool(payload.Name) {
+			b.consumeExecWrapperTranscript(payload.Input)
+		}
+	}
+}
+
+func (b *transcriptBuilder) consumeExecWrapperTranscript(input string) {
+	calls := parseCodexExecWrapper(input)
+	if len(calls) == 0 {
+		return
+	}
+	for _, call := range calls {
+		switch call.Name {
+		case "exec_command", "shell_command":
+			command := nestedCallCommand(call)
+			if command == "" {
+				b.toolCalls++
+				b.addEvent("Tool: " + call.Name)
+				continue
+			}
+			b.toolCalls++
+			b.classifyCommand(command)
+			b.addEvent("Tool: " + call.Name)
+		case "apply_patch":
+			b.toolCalls++
+			b.edits++
+			patch := nestedCallPatchText(call)
+			surfaces := patchSurfaces(patch)
+			for _, surface := range surfaces {
+				b.addSurface(surface)
+			}
+			if len(surfaces) > 0 {
+				b.addEvent("Tool: apply_patch " + strings.Join(surfaces, ", "))
+			} else {
+				b.addEvent("Tool: apply_patch")
+			}
+		case "update_plan":
+			b.toolCalls++
+			b.planUpdates++
+			b.addEvent("Tool: update_plan")
+		case "view_image":
+			b.toolCalls++
+			b.addEvent("Tool: view_image")
+		default:
+			b.toolCalls++
+			b.addEvent("Tool: " + call.Name)
 		}
 	}
 }

@@ -30,7 +30,7 @@ interface CodexChatComposerProps {
   sending: boolean;
   sendIcon: React.ComponentProps<typeof CodexComposerPanel>["sendIcon"];
   sendLabel: string;
-  sendElapsedLabel?: string;
+  sendElapsedStartedAt?: string;
   running: boolean;
   bottomPadding: number;
   showActionMenuButton: boolean;
@@ -53,11 +53,8 @@ interface CodexChatComposerProps {
   onRemoveAttachment(id: string): void;
   onDraftChange(value: string): void;
   onUploadPress(): void;
-  onInputPress(): void;
   onInputFocus(): void;
   onInputBlur(): void;
-  onInputStart(): boolean;
-  onSubmit(): void;
   onSendPress(): void;
 }
 
@@ -73,7 +70,7 @@ export function CodexChatComposer({
   sending,
   sendIcon,
   sendLabel,
-  sendElapsedLabel,
+  sendElapsedStartedAt,
   running,
   bottomPadding,
   showActionMenuButton,
@@ -96,11 +93,8 @@ export function CodexChatComposer({
   onRemoveAttachment,
   onDraftChange,
   onUploadPress,
-  onInputPress,
   onInputFocus,
   onInputBlur,
-  onInputStart,
-  onSubmit,
   onSendPress,
 }: CodexChatComposerProps) {
   return (
@@ -154,7 +148,7 @@ export function CodexChatComposer({
         sending={sending}
         sendIcon={sendIcon}
         sendLabel={sendLabel}
-        sendElapsedLabel={sendElapsedLabel}
+        sendElapsedStartedAt={sendElapsedStartedAt}
         running={running}
         actionMenuExpanded={showComposerActions}
         actionMenuButtonEnabled={composerActionButtonEnabled}
@@ -165,11 +159,8 @@ export function CodexChatComposer({
         theme={theme}
         onDraftChange={onDraftChange}
         onActionMenuPress={onToggleActionMenu}
-        onInputPress={onInputPress}
         onInputFocus={onInputFocus}
         onInputBlur={onInputBlur}
-        onInputStart={onInputStart}
-        onSubmit={onSubmit}
         onSendPress={onSendPress}
       />
     </CodexChatComposerFrame>

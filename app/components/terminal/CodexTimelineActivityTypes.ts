@@ -30,4 +30,14 @@ export interface ZenActivityTimelineItem {
   fileSummaries?: PatchFileSummary[];
   previewPath?: string;
   defaultExpanded?: boolean;
+  accessibilityLabel?: string;
+  providerToolId?: string;
+  children?: ZenActivityChild[];
 }
+
+export type ZenActivityChild = {
+  id: string;
+  title: string;
+  tone?: "neutral" | "running" | "success" | "failed";
+  providerToolId?: string;
+};

@@ -35,7 +35,7 @@ import {
 } from '../../constants/tokens';
 import type { ResolvedZenTheme } from '../../theme';
 import { createThemedSurfaces } from '../../constants/themedSurfaces';
-import { AgentsListHeader, type AgentsStatusFilter } from '../../components/agents/AgentsListHeader';
+import { usePrimaryPageAction } from '../../components/navigation/PrimaryPageAction';
 import { AnimatedPressable } from '../../components/ui/AnimatedPressable';
 import { MeditationModal } from '../../components/meditation/MeditationModal';
 import { MeditationPullPreview } from '../../components/meditation/MeditationPullPreview';
@@ -90,7 +90,6 @@ const MEDITATION_AXIS_DOMINANCE = 1.25;
 const AnimatedSectionList = Animated.createAnimatedComponent(
   SectionList<Agent, AgentDirectorySection>,
 );
-const MemoizedAgentsListHeader = memo(AgentsListHeader);
 const agentKeyExtractor = (agent: Agent) => agent.key;
 
 interface AgentGridItemProps {
@@ -187,8 +186,6 @@ export default function InboxScreen() {
     return map;
   }, [workState.byKey]);
   const [viewMode, setViewModeState] = useState<StoredInboxViewMode>('list');
-  const [searchQuery, setSearchQuery] = useState('');
-  const [statusFilter, setStatusFilter] = useState<AgentsStatusFilter>('all');
   const [headerMenuVisible, setHeaderMenuVisible] = useState(false);
   const [agentAliases, setAgentAliases] = useState<StoredAgentAliases>({});
   const [recentAgentOpens, setRecentAgentOpens] = useState<StoredRecentAgentOpens>({});
@@ -284,55 +281,9 @@ export default function InboxScreen() {
     return groupAgentsByDirectory(agentsByPriority).flatMap(section => section.data);
   }, [displayAgents, recentAgentOpens]);
 
-  const runningAgentCount = useMemo(
-    () => sortedAgents.filter((agent) => agent.status === 'running').length,
-    [sortedAgents],
-  );
-  const brainAgentCount = useMemo(
-    () => sortedAgents.filter((agent) => agent.delegated).length,
-    [sortedAgents],
-  );
-  const filterOptions = useMemo(
-    () => [
-      { key: 'all' as const, label: 'All', count: sortedAgents.length },
-      {
-        key: 'running' as const,
-        label: 'Running',
-        count: runningAgentCount,
-      },
-      {
-        key: 'brain' as const,
-        label: 'Brain',
-        count: brainAgentCount,
-      },
-    ],
-    [brainAgentCount, runningAgentCount, sortedAgents.length],
-  );
-
-  const visibleAgents = useMemo(() => {
-    const query = searchQuery.trim().toLowerCase();
-    return sortedAgents.filter((agent) => {
-      if (statusFilter === 'running' && agent.status !== 'running') return false;
-      if (statusFilter === 'brain' && !agent.delegated) return false;
-      if (!query) return true;
-
-      const presented = presentAgent(agent, agentAliases[agent.key]);
-      const linkedWork = agentWorkMap[`${agent.serverId}:${agent.id}`];
-      return [
-        presented.title,
-        presented.shortTitle,
-        agent.name,
-        agent.cwd,
-        agent.command,
-        agent.serverName,
-        linkedWork?.title,
-      ].some(value => (value || '').toLowerCase().includes(query));
-    });
-  }, [agentAliases, agentWorkMap, searchQuery, sortedAgents, statusFilter]);
-
   const showServerNames = useMemo(
-    () => new Set(visibleAgents.map((agent) => agent.serverId)).size > 1,
-    [visibleAgents],
+    () => new Set(sortedAgents.map((agent) => agent.serverId)).size > 1,
+    [sortedAgents],
   );
 
   const hasConfiguredServers = configuredServerCount > 0;
@@ -356,8 +307,8 @@ export default function InboxScreen() {
       (anyConnecting || waitingForInitialAgentSnapshot)
     );
   const listSections = useMemo(
-    () => groupAgentsByDirectory(visibleAgents, { showServerName: showServerNames }),
-    [showServerNames, visibleAgents],
+    () => groupAgentsByDirectory(sortedAgents, { showServerName: showServerNames }),
+    [showServerNames, sortedAgents],
   );
   const useSectionHeaders = listSections.length > 1;
   const primaryIssue = useMemo(() => {
@@ -808,6 +759,14 @@ export default function InboxScreen() {
   const openHeaderMenu = useCallback(() => {
     setHeaderMenuVisible(true);
   }, []);
+  const listPageAction = useMemo(
+    () => ({
+      accessibilityLabel: 'Session options',
+      onPress: openHeaderMenu,
+    }),
+    [openHeaderMenu],
+  );
+  usePrimaryPageAction(listPageAction);
   const listContentContainerStyle = useMemo(() => [
     styles.promptContent,
     { paddingBottom: Math.max(insets.bottom, 16) + 76 },
@@ -834,15 +793,6 @@ export default function InboxScreen() {
         </View>
       )}
 
-      <MemoizedAgentsListHeader
-        searchQuery={searchQuery}
-        statusFilter={statusFilter}
-        filterOptions={filterOptions}
-        onSearchChange={setSearchQuery}
-        onFilterChange={setStatusFilter}
-        onOpenMenu={openHeaderMenu}
-      />
-
       {shouldShowInitialLoading ? (
         <Animated.ScrollView
           style={styles.flex}
@@ -854,7 +804,7 @@ export default function InboxScreen() {
         >
           <ActivityIndicator color={colors.accent} />
         </Animated.ScrollView>
-      ) : visibleAgents.length === 0 ? (
+      ) : sortedAgents.length === 0 ? (
         <Animated.ScrollView
           style={styles.flex}
           contentContainerStyle={styles.emptyScrollContent}
@@ -933,7 +883,7 @@ export default function InboxScreen() {
         />
       ) : (
         <Animated.FlatList<Agent>
-          data={visibleAgents}
+          data={sortedAgents}
           key="grid"
           keyExtractor={agentKeyExtractor}
           renderItem={renderGridAgent}
@@ -980,7 +930,7 @@ export default function InboxScreen() {
         }}
       />
 
-      {visibleAgents.length > 0 ? (
+      {sortedAgents.length > 0 ? (
         <AnimatedPressable
           style={[
             styles.listFab,
@@ -1334,7 +1284,7 @@ function createStyles(theme: ResolvedZenTheme) {
     width: '100%',
     maxWidth: 760,
     alignSelf: 'center',
-    paddingTop: 6,
+    paddingTop: 4,
   },
   sectionHeader: {
     paddingTop: 18,
@@ -1405,7 +1355,7 @@ function createStyles(theme: ResolvedZenTheme) {
     maxWidth: 760,
     alignSelf: 'center',
     paddingHorizontal: 18,
-    paddingTop: 12,
+    paddingTop: 4,
   },
   gridGap: {
     height: 14,

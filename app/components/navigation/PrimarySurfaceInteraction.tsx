@@ -1,5 +1,6 @@
 import React, { createContext, useContext, useMemo, type ReactNode } from "react";
-import type { DrawerPhase } from "./primaryDrawerState";
+
+type DrawerPhase = "closed" | "open";
 
 interface PrimarySurfaceState {
   drawerPhase: DrawerPhase;

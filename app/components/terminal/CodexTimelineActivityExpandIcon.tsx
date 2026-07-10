@@ -15,7 +15,7 @@ export function CodexTimelineActivityExpandIcon({
     <Ionicons
       name={expanded ? "chevron-up" : "chevron-down"}
       size={12}
-      color={chrome.textSubtle}
+      color={chrome.textMuted}
     />
   );
 }

@@ -5,15 +5,12 @@ import * as Haptics from "expo-haptics";
 import { BottomSheetFrame } from "../ui/BottomSheetFrame";
 import { AnimatedPressable } from "../ui/AnimatedPressable";
 import {
-  Colors,
-  Radii,
   Typography,
   UiTextMetrics,
   uiLineHeight,
   useAppTheme,
 } from "../../constants/tokens";
 import type { ResolvedZenTheme } from "../../theme";
-import { createThemedSurfaces } from "../../constants/themedSurfaces";
 
 type BrainMenuAction = {
   key: string;
@@ -37,63 +34,65 @@ export function BrainOverflowMenu({
 }: BrainOverflowMenuProps) {
   const { theme } = useAppTheme();
   const colors = theme.colors;
-  const themed = useMemo(() => createThemedSurfaces(theme), [theme]);
   const styles = useMemo(() => createStyles(theme), [theme]);
 
   return (
     <BottomSheetFrame visible={visible} onClose={onClose} maxHeight="52%">
       <Text style={styles.title}>Actions</Text>
       <View style={styles.list}>
-        {actions.map((action) => (
-          <AnimatedPressable
-            key={action.key}
-            accessibilityRole="button"
-            accessibilityLabel={action.label}
-            disabled={action.disabled}
-            preset="press"
-            scale={0.98}
-            style={[
-              styles.row,
-              {
-                borderColor: themed.border,
-                backgroundColor: action.disabled
-                  ? colors.disabledSurface
-                  : themed.surface,
-              },
-            ]}
-            onPress={() => {
-              if (action.disabled) {
-                return;
-              }
-              Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-              onClose();
-              action.onPress();
-            }}
-          >
-            <View style={[styles.iconWrap, { backgroundColor: colors.surfaceSubtle }]}>
+        {actions.map((action, index) => (
+          <View key={action.key}>
+            {index > 0 ? (
+              <View
+                style={[styles.separator, { backgroundColor: colors.borderSubtle }]}
+              />
+            ) : null}
+            <AnimatedPressable
+              accessibilityRole="button"
+              accessibilityLabel={action.label}
+              disabled={action.disabled}
+              preset="press"
+              scale={0.99}
+              style={styles.row}
+              onPress={() => {
+                if (action.disabled) {
+                  return;
+                }
+                Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+                onClose();
+                action.onPress();
+              }}
+            >
               <Ionicons
                 name={action.icon}
-                size={18}
-                color={action.disabled ? colors.disabledText : colors.textSecondary}
+                size={20}
+                color={
+                  action.disabled ? colors.disabledText : colors.textSecondary
+                }
               />
-            </View>
-            <View style={styles.rowMain}>
-              <Text
-                style={[
-                  styles.rowTitle,
-                  action.disabled ? { color: colors.disabledText } : null,
-                ]}
-              >
-                {action.label}
-              </Text>
-              {action.detail ? (
-                <Text style={styles.rowDetail} numberOfLines={1}>
-                  {action.detail}
+              <View style={styles.rowMain}>
+                <Text
+                  style={[
+                    styles.rowTitle,
+                    action.disabled ? { color: colors.disabledText } : null,
+                  ]}
+                >
+                  {action.label}
                 </Text>
-              ) : null}
-            </View>
-            <Ionicons name="chevron-forward" size={16} color={colors.textTertiary} />
-          </AnimatedPressable>
+                {action.detail ? (
+                  <Text
+                    style={[
+                      styles.rowDetail,
+                      action.disabled ? { color: colors.disabledText } : null,
+                    ]}
+                    numberOfLines={1}
+                  >
+                    {action.detail}
+                  </Text>
+                ) : null}
+              </View>
+            </AnimatedPressable>
+          </View>
         ))}
       </View>
     </BottomSheetFrame>
@@ -109,27 +108,22 @@ function createStyles(theme: ResolvedZenTheme) {
       fontFamily: Typography.uiFontMedium,
       fontSize: 20,
       lineHeight: uiLineHeight(20),
-      marginBottom: 14,
+      marginBottom: 8,
     },
     list: {
-      gap: 8,
+      marginHorizontal: -4,
+    },
+    separator: {
+      height: StyleSheet.hairlineWidth,
+      marginLeft: 44,
     },
     row: {
-      minHeight: 56,
-      borderRadius: Radii.md,
-      borderWidth: StyleSheet.hairlineWidth,
-      paddingHorizontal: 14,
+      minHeight: 54,
+      paddingHorizontal: 4,
       paddingVertical: 10,
       flexDirection: "row",
       alignItems: "center",
-      gap: 12,
-    },
-    iconWrap: {
-      width: 34,
-      height: 34,
-      borderRadius: 10,
-      alignItems: "center",
-      justifyContent: "center",
+      gap: 14,
     },
     rowMain: {
       flex: 1,
@@ -140,15 +134,15 @@ function createStyles(theme: ResolvedZenTheme) {
       ...UiTextMetrics,
       color: colors.textPrimary,
       fontFamily: Typography.uiFontMedium,
-      fontSize: 15,
-      lineHeight: uiLineHeight(15),
+      fontSize: 16,
+      lineHeight: uiLineHeight(16),
     },
     rowDetail: {
       ...UiTextMetrics,
       color: colors.textTertiary,
       fontFamily: Typography.uiFont,
-      fontSize: 12,
-      lineHeight: uiLineHeight(12),
+      fontSize: 13,
+      lineHeight: uiLineHeight(13),
     },
   });
 }

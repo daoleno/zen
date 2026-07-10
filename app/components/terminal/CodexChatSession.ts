@@ -16,12 +16,17 @@ import {
   type CodexConversationSyncStatusPayload,
 } from "../../services/websocket";
 import type { AgentStatus } from "../../constants/tokens";
+import {
+  comparableUserMessageText,
+  pendingUserMessageMaxAgeMs,
+  reconcilePendingUserMessagesAgainstEvents,
+  shouldPrunePendingUserMessageByLifecycle,
+  type PendingUserMessageLifecycle,
+} from "./pendingUserMessageLifecycle";
 
 const PENDING_SLASH_COMMAND_MAX_AGE_MS = 120_000;
 const PENDING_SLASH_COMMAND_SETTLED_MAX_AGE_MS = 45_000;
-const PENDING_USER_MESSAGE_MAX_AGE_MS = 45_000;
 const DRAFT_REPLAY_SUPPRESSION_MS = 1_800;
-const ATTACHMENT_TAG_RE = /<zen_attachments>\s*([\s\S]*?)\s*<\/zen_attachments>/i;
 
 type KeyedState<T> = {
   cacheKey: string;
@@ -46,6 +51,8 @@ export type ComposerAttachment = UploadedAttachment & {
   id: string;
 };
 
+export type { PendingUserMessageLifecycle };
+
 export type PendingUserMessage = {
   id: string;
   body: string;
@@ -54,6 +61,7 @@ export type PendingUserMessage = {
     Pick<ComposerAttachment, "name" | "path" | "localUri" | "mimeType">
   >;
   createdAt: string;
+  lifecycle: PendingUserMessageLifecycle;
   confirmedAt?: string;
   confirmedEventId?: string;
   createdAfterMaxSeq?: number;
@@ -541,54 +549,10 @@ function reconcilePendingUserMessages(
   pendingUserMessages: PendingUserMessage[],
   conversation: CodexConversation,
 ): PendingUserMessage[] {
-  if (pendingUserMessages.length === 0 || conversation.events.length === 0) {
-    return pendingUserMessages;
-  }
-  const userEvents = conversation.events.filter(
-    (event) => event.kind === "user_message",
+  return reconcilePendingUserMessagesAgainstEvents(
+    pendingUserMessages,
+    conversation.events,
   );
-  if (userEvents.length === 0) {
-    return pendingUserMessages;
-  }
-  const usedEventIds = new Set(
-    pendingUserMessages
-      .map((message) => message.confirmedEventId)
-      .filter((id): id is string => Boolean(id)),
-  );
-  const reconciled: PendingUserMessage[] = [];
-  for (const message of pendingUserMessages) {
-    if (message.confirmedEventId) {
-      continue;
-    }
-    const previousEventIds = new Set(message.createdAfterEventIds ?? []);
-    const sentText = comparableUserMessageText(message.sentText);
-    const body = comparableUserMessageText(message.body);
-    const confirmedEvent = userEvents.find((event) => {
-      if (!event.id || usedEventIds.has(event.id) || previousEventIds.has(event.id)) {
-        return false;
-      }
-      if (
-        typeof message.createdAfterMaxSeq === "number" &&
-        Number.isFinite(message.createdAfterMaxSeq) &&
-        typeof event.seq === "number" &&
-        event.seq <= message.createdAfterMaxSeq
-      ) {
-        return false;
-      }
-      const eventText = comparableUserMessageText(event.body || "");
-      return Boolean(
-        eventText &&
-        ((sentText && eventText === sentText) ||
-          (body && eventText === body)),
-      );
-    });
-    if (!confirmedEvent) {
-      reconciled.push(message);
-      continue;
-    }
-    usedEventIds.add(confirmedEvent.id);
-  }
-  return reconciled;
 }
 
 function codexEventsEqual(
@@ -1006,9 +970,10 @@ export function useCodexChatSession({
     const now = Date.now();
     const nextPruneAt = pendingUserMessages.reduce((soonest, message) => {
       const createdAt = new Date(message.createdAt).getTime();
+      const maxAgeMs = pendingUserMessageMaxAgeMs(message.lifecycle);
       const maxAgeAt = Number.isFinite(createdAt)
-        ? createdAt + PENDING_USER_MESSAGE_MAX_AGE_MS
-        : now + PENDING_USER_MESSAGE_MAX_AGE_MS;
+        ? createdAt + maxAgeMs
+        : now + maxAgeMs;
       return Math.min(soonest, maxAgeAt);
     }, Number.POSITIVE_INFINITY);
 
@@ -1082,13 +1047,6 @@ export function useCodexChatSession({
     markNewChatReady,
     markNewChatMessageStarted,
   };
-}
-
-function comparableUserMessageText(value: string) {
-  return value
-    .replace(ATTACHMENT_TAG_RE, "")
-    .replace(/\s+/g, " ")
-    .trim();
 }
 
 function normalizeDraftAfterRecentClear(
@@ -1166,11 +1124,7 @@ function shouldPrunePendingUserMessage(
   message: PendingUserMessage,
   now: number,
 ) {
-  const createdAt = new Date(message.createdAt).getTime();
-  return (
-    Number.isFinite(createdAt) &&
-    now - createdAt > PENDING_USER_MESSAGE_MAX_AGE_MS
-  );
+  return shouldPrunePendingUserMessageByLifecycle(message, now);
 }
 
 function isPendingMessageBeforeNewChatBoundary(

@@ -44,6 +44,7 @@ export interface TerminalThemeChrome {
   danger: string;
   dangerSoft: string;
   overlay: string;
+  shadowColor: string;
 }
 
 const ANSI_COLOR_KEYS = [
@@ -190,6 +191,7 @@ export function buildTerminalChrome(theme: TerminalThemePalette): TerminalThemeC
     danger: theme.red,
     dangerSoft: withAlpha(theme.red, 0.14),
     overlay: withAlpha(theme.background, 0.94),
+    shadowColor: isLightTerminalTheme(theme) ? theme.foreground : '#000000',
   };
 }
 

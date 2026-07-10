@@ -3,14 +3,15 @@ import React from "react";
 import {
   StyleSheet,
   Text,
-  TouchableOpacity,
   View,
 } from "react-native";
+import { TouchableOpacity } from "react-native-gesture-handler";
 import type {
   TerminalThemeChrome,
   TerminalThemePalette,
 } from "../../constants/terminalThemes";
 import { Typography } from "../../constants/tokens";
+import { useElapsedDurationLabel } from "./useElapsedDurationLabel";
 import { ComposerLoadingDots } from "./ComposerLoadingDots";
 
 type IoniconName = React.ComponentProps<typeof Ionicons>["name"];
@@ -23,7 +24,7 @@ interface ComposerSendButtonProps {
   enabled: boolean;
   loading: boolean;
   running: boolean;
-  elapsedLabel?: string;
+  elapsedStartedAt?: string;
   variant?: "default" | "chatgpt";
   onPress(): void;
 }
@@ -35,10 +36,14 @@ export function ComposerSendButton({
   enabled,
   loading,
   running,
-  elapsedLabel,
+  elapsedStartedAt,
   variant = "default",
   onPress,
 }: ComposerSendButtonProps) {
+  const elapsedLabel = useElapsedDurationLabel(
+    elapsedStartedAt,
+    running && Boolean(elapsedStartedAt),
+  );
   const standalone = variant === "chatgpt";
   const animated = loading || running;
   const foreground = running
@@ -84,7 +89,7 @@ export function ComposerSendButton({
         <View style={styles.runningContent}>
           <Ionicons name="square" size={8} color={foreground} />
           {elapsedLabel ? (
-            <Text style={[styles.elapsedLabel, { color: chrome.textSubtle }]}>
+            <Text style={[styles.elapsedLabel, { color: chrome.textMuted }]}>
               {elapsedLabel}
             </Text>
           ) : null}

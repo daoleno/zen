@@ -2,22 +2,29 @@ import React from 'react';
 import { StyleSheet, Text, View } from 'react-native';
 import { formatChatBubbleTime } from '../../constants/telegramPresentation';
 import { Typography, useAppTheme } from '../../constants/tokens';
+import { PendingMessageLifecycleLabel } from './PendingMessageLifecycleLabel';
 
 interface MessageBubbleFooterProps {
   timestamp?: string;
   tone?: 'sent' | 'received';
   pending?: boolean;
+  lifecycleLabel?: string;
+  lifecycleAccessibilityLabel?: string;
 }
 
 export function MessageBubbleFooter({
   timestamp,
   tone = 'received',
   pending = false,
+  lifecycleLabel,
+  lifecycleAccessibilityLabel,
 }: MessageBubbleFooterProps) {
   const { theme } = useAppTheme();
-  const label = pending
-    ? 'sending'
-    : formatChatBubbleTime(timestamp);
+  const label = lifecycleLabel
+    ? lifecycleLabel
+    : pending
+      ? 'Sending'
+      : formatChatBubbleTime(timestamp);
   if (!label) {
     return null;
   }
@@ -26,12 +33,21 @@ export function MessageBubbleFooter({
     tone === 'sent'
       ? theme.chat.sentTimestamp
       : theme.chat.receivedTimestamp;
+  const showLifecycle = Boolean(lifecycleLabel || pending);
 
   return (
     <View style={styles.row}>
-      <Text style={[styles.time, { color: timeColor }]}>
-        {label}
-      </Text>
+      {showLifecycle ? (
+        <PendingMessageLifecycleLabel
+          label={label}
+          accessibilityLabel={lifecycleAccessibilityLabel || label}
+          color={timeColor}
+        />
+      ) : (
+        <Text style={[styles.time, { color: timeColor }]}>
+          {label}
+        </Text>
+      )}
     </View>
   );
 }

@@ -24,23 +24,17 @@ export function shouldAutoExpandActivity(item: ZenActivityTimelineItem) {
   if (typeof item.defaultExpanded === "boolean") {
     return item.defaultExpanded;
   }
-  if (
-    item.tone === "running" ||
-    item.tone === "failed" ||
-    item.fileSummaries?.length ||
-    item.files?.length
-  ) {
-    return true;
-  }
-  if (!item.body) {
-    return false;
-  }
-  return item.body.length <= 700 && item.body.split("\n").length <= 10;
+  return item.tone === "failed";
 }
 
 function canExpandActivity(item: ZenActivityTimelineItem) {
   return Boolean(
-    item.body || item.fileSummaries?.length || item.files?.length || item.previewPath,
+    item.body
+      || item.fileSummaries?.length
+      || item.files?.length
+      || item.previewPath
+      || item.children?.length
+      || item.providerToolId,
   );
 }
 
@@ -56,10 +50,10 @@ function activityToneColor(
     return theme.red;
   }
   if (item.tone === "running") {
-    return theme.yellow;
+    return chrome.textMuted;
   }
   if (item.tone === "success") {
-    return theme.green;
+    return chrome.textSubtle;
   }
   return chrome.textSubtle;
 }

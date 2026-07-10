@@ -1,5 +1,14 @@
-import React, { useMemo, useRef, type ReactNode, type RefObject } from "react";
+import React, {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type ReactNode,
+  type RefObject,
+} from "react";
 import {
+  Keyboard,
   Platform,
   Pressable,
   StyleSheet,
@@ -7,38 +16,48 @@ import {
   useWindowDimensions,
   type View as ViewInstance,
 } from "react-native";
-import { Ionicons } from "@expo/vector-icons";
-import { useIsFocused, useRootNavigationState } from "expo-router";
-import { GestureDetector } from "react-native-gesture-handler";
-import Animated from "react-native-reanimated";
+import { useIsFocused } from "expo-router";
+import { Drawer } from "react-native-drawer-layout";
+import type { PanGesture } from "react-native-gesture-handler";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useAppColors } from "../../constants/tokens";
+import type { PrimaryRouteName } from "../../services/interactionTrace";
+import { NavMenuIcon } from "./PrimaryNavIcons";
+import {
+  PrimaryAppBarPageAction,
+  PrimaryPageActionProvider,
+} from "./PrimaryPageAction";
 import { PrimaryDrawerPanel } from "./PrimaryDrawerPanel";
 import {
   PrimarySurfaceInteractionProvider,
 } from "./PrimarySurfaceInteraction";
 import { PrimaryTopSwitch } from "./PrimaryTopSwitch";
 import { useDrawerFocusContainment } from "./useDrawerFocusContainment";
-import { usePrimaryDrawerController } from "./usePrimaryDrawerController";
-import { useWebOverlayTap } from "./useWebOverlayTap";
+import { usePrimaryDrawerBack } from "./usePrimaryDrawerBack";
 
 interface PrimaryDrawerShellProps {
+  activePrimaryRoute: PrimaryRouteName;
   children: ReactNode;
+  onSelectPrimaryRoute(route: PrimaryRouteName): void;
 }
 
 interface PrimaryAppBarProps {
+  activePrimaryRoute: PrimaryRouteName;
   drawerVisible: boolean;
   menuButtonRef: RefObject<ViewInstance | null>;
   onOpenDrawer(): void;
   onOpenPressIn(): void;
+  onSelectPrimaryRoute(route: PrimaryRouteName): void;
   topInset: number;
 }
 
 function PrimaryAppBar({
+  activePrimaryRoute,
   drawerVisible,
   menuButtonRef,
   onOpenDrawer,
   onOpenPressIn,
+  onSelectPrimaryRoute,
   topInset,
 }: PrimaryAppBarProps) {
   const colors = useAppColors();
@@ -62,149 +81,215 @@ function PrimaryAppBar({
         accessibilityLabel="Open navigation drawer"
         tabIndex={drawerVisible ? -1 : 0}
         hitSlop={6}
-        style={styles.menuButton}
+        style={({ pressed }) => [
+          styles.menuButton,
+          pressed ? styles.pressedIcon : null,
+        ]}
       >
-        <Ionicons name="menu-outline" size={23} color={colors.textPrimary} />
+        <NavMenuIcon color={colors.textPrimary} size={22} />
       </Pressable>
-      <PrimaryTopSwitch />
-      <View style={styles.appBarSpacer} />
+      <PrimaryTopSwitch
+        activeRoute={activePrimaryRoute}
+        onSelectRoute={onSelectPrimaryRoute}
+      />
+      <PrimaryAppBarPageAction drawerVisible={drawerVisible} />
     </View>
   );
 }
 
-export function PrimaryDrawerShell({ children }: PrimaryDrawerShellProps) {
+export function PrimaryDrawerShell({
+  activePrimaryRoute,
+  children,
+  onSelectPrimaryRoute,
+}: PrimaryDrawerShellProps) {
   const colors = useAppColors();
   const { width: windowWidth } = useWindowDimensions();
   const insets = useSafeAreaInsets();
   const routeFocused = useIsFocused();
-  const rootNavigationState = useRootNavigationState();
   const drawerWidth = Math.min(320, Math.max(240, windowWidth - 52));
-  const gestureEnabled =
-    routeFocused &&
-    (Platform.OS !== "ios" || rootNavigationState.index === 0);
-  const controller = usePrimaryDrawerController({
-    drawerWidth,
-    gestureEnabled,
-    routeFocused,
-  });
+  const [drawerOpen, setDrawerOpen] = useState(false);
+  const [restoreMenuFocus, setRestoreMenuFocus] = useState(false);
+  const drawerWasOpenRef = useRef(false);
   const primaryRef = useRef<ViewInstance>(null);
   const drawerRef = useRef<ViewInstance>(null);
-  const overlayRef = useRef<ViewInstance>(null);
   const menuButtonRef = useRef<ViewInstance>(null);
   const closeButtonRef = useRef<ViewInstance>(null);
-  const restoreMenuFocus =
-    controller.state.phase === "closed" &&
-    controller.state.focusReturn === "menu";
-  useWebOverlayTap({
-    enabled: controller.state.phase === "open",
-    onActivate: controller.closeDrawerFromWebOverlay,
-    onBegin: controller.beginWebOverlayInteraction,
-    onCancel: controller.cancelWebOverlayInteraction,
-    overlayRef,
-  });
+
+  const beginOpenInteraction = useCallback(() => {
+    setRestoreMenuFocus(false);
+  }, []);
+  const openDrawer = useCallback(() => {
+    drawerWasOpenRef.current = true;
+    setRestoreMenuFocus(false);
+    Keyboard.dismiss();
+    setDrawerOpen(true);
+  }, []);
+  const closeDrawer = useCallback(() => {
+    if (drawerWasOpenRef.current) {
+      setRestoreMenuFocus(true);
+    }
+    drawerWasOpenRef.current = false;
+    setDrawerOpen(false);
+  }, []);
+  const dismissDrawerForNavigation = useCallback(() => {
+    drawerWasOpenRef.current = false;
+    setRestoreMenuFocus(false);
+    setDrawerOpen(false);
+  }, []);
+  const consumeMenuFocusReturn = useCallback(() => {
+    setRestoreMenuFocus(false);
+  }, []);
+  const configureDrawerGesture = useCallback(
+    (gesture: PanGesture) => {
+      if (drawerOpen) {
+        return gesture
+          .activeOffsetX([-12, windowWidth])
+          .failOffsetX(12);
+      }
+      return gesture
+        .activeOffsetX([-windowWidth, 12])
+        .failOffsetX(-12);
+    },
+    [drawerOpen, windowWidth],
+  );
+
+  useEffect(() => {
+    if (!routeFocused && drawerOpen) {
+      dismissDrawerForNavigation();
+    }
+  }, [dismissDrawerForNavigation, drawerOpen, routeFocused]);
+
+  useEffect(() => {
+    if (Platform.OS !== "web" || !drawerOpen) {
+      return;
+    }
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== "Escape") {
+        return;
+      }
+      event.preventDefault();
+      event.stopPropagation();
+      closeDrawer();
+    };
+    document.addEventListener("keydown", handleKeyDown, true);
+    return () => document.removeEventListener("keydown", handleKeyDown, true);
+  }, [closeDrawer, drawerOpen]);
 
   useDrawerFocusContainment({
     closeButtonRef,
     drawerRef,
-    drawerVisible: controller.drawerVisible,
+    drawerVisible: drawerOpen,
     menuButtonRef,
-    onMenuFocusRestored: controller.consumeMenuFocusReturn,
+    onMenuFocusRestored: consumeMenuFocusReturn,
     primaryRef,
     restoreMenuFocus,
     routeFocused,
   });
+  usePrimaryDrawerBack({
+    enabled: routeFocused && drawerOpen,
+    onBack: closeDrawer,
+  });
 
   const primaryWebProps = useMemo(
-    () => (Platform.OS === "web" ? { inert: controller.drawerVisible } : {}),
-    [controller.drawerVisible],
+    () => (Platform.OS === "web" ? { inert: drawerOpen } : {}),
+    [drawerOpen],
   );
   const drawerWebProps = useMemo(
     () =>
       Platform.OS === "web"
         ? {
-            inert: !controller.drawerVisible,
+            inert: !drawerOpen,
             role: "dialog" as const,
-            "aria-modal": controller.drawerVisible,
+            "aria-modal": drawerOpen,
           }
         : {},
-    [controller.drawerVisible],
+    [drawerOpen],
+  );
+
+  const renderDrawerContent = useCallback(
+    () => (
+      <View
+        {...drawerWebProps}
+        ref={drawerRef}
+        accessibilityElementsHidden={!drawerOpen}
+        aria-hidden={!drawerOpen}
+        importantForAccessibility={
+          drawerOpen ? "yes" : "no-hide-descendants"
+        }
+        accessibilityViewIsModal={drawerOpen}
+        accessibilityLabel="Navigation drawer"
+        style={styles.drawerContent}
+      >
+        <PrimaryDrawerPanel
+          closeButtonRef={closeButtonRef}
+          drawerVisible={drawerOpen}
+          onClose={closeDrawer}
+          onClosePressIn={() => undefined}
+          onNavigateAway={dismissDrawerForNavigation}
+        />
+      </View>
+    ),
+    [
+      closeDrawer,
+      dismissDrawerForNavigation,
+      drawerOpen,
+      drawerWebProps,
+    ],
   );
 
   return (
-    <PrimarySurfaceInteractionProvider
-      drawerPhase={controller.state.phase}
-      routeFocused={routeFocused}
-    >
-      <GestureDetector gesture={controller.gesture}>
-        <View style={[styles.root, { backgroundColor: colors.bgPrimary }]}>
-          <Animated.View
+    <PrimaryPageActionProvider>
+      <PrimarySurfaceInteractionProvider
+        drawerPhase={drawerOpen ? "open" : "closed"}
+        routeFocused={routeFocused}
+      >
+        <Drawer
+          configureGestureHandler={configureDrawerGesture}
+          drawerPosition="left"
+          drawerStyle={{
+            width: drawerWidth,
+            backgroundColor: colors.bgSurface,
+            borderRightColor: colors.borderSubtle,
+            borderRightWidth: StyleSheet.hairlineWidth,
+          }}
+          drawerType="front"
+          keyboardDismissMode="on-drag"
+          onClose={closeDrawer}
+          onGestureStart={beginOpenInteraction}
+          onOpen={openDrawer}
+          open={drawerOpen}
+          overlayAccessibilityLabel="Close navigation drawer"
+          overlayStyle={{ backgroundColor: colors.modalBackdrop }}
+          renderDrawerContent={renderDrawerContent}
+          style={[styles.root, { backgroundColor: colors.bgPrimary }]}
+          swipeEdgeWidth={windowWidth}
+          swipeEnabled={routeFocused && activePrimaryRoute === "brain"}
+        >
+          <View
             {...primaryWebProps}
             ref={primaryRef}
             style={styles.primary}
-            pointerEvents={controller.drawerVisible ? "none" : "auto"}
-            accessibilityElementsHidden={controller.drawerVisible}
-            aria-hidden={controller.drawerVisible}
+            pointerEvents={drawerOpen ? "none" : "auto"}
+            accessibilityElementsHidden={drawerOpen}
+            aria-hidden={drawerOpen}
             importantForAccessibility={
-              controller.drawerVisible ? "no-hide-descendants" : "auto"
+              drawerOpen ? "no-hide-descendants" : "auto"
             }
           >
             <PrimaryAppBar
-              drawerVisible={controller.drawerVisible}
+              activePrimaryRoute={activePrimaryRoute}
+              drawerVisible={drawerOpen}
               menuButtonRef={menuButtonRef}
-              onOpenDrawer={controller.openDrawer}
-              onOpenPressIn={controller.beginOpenInteraction}
+              onOpenDrawer={openDrawer}
+              onOpenPressIn={beginOpenInteraction}
+              onSelectPrimaryRoute={onSelectPrimaryRoute}
               topInset={insets.top}
             />
             <View style={styles.content}>{children}</View>
-          </Animated.View>
-
-          <Animated.View
-            ref={overlayRef}
-            pointerEvents={controller.drawerVisible ? "auto" : "none"}
-            accessible={false}
-            accessibilityElementsHidden
-            aria-hidden
-            importantForAccessibility="no-hide-descendants"
-            style={[
-              styles.overlay,
-              { backgroundColor: colors.modalBackdrop },
-              controller.overlayStyle,
-            ]}
-          />
-
-          <Animated.View
-            {...drawerWebProps}
-            ref={drawerRef}
-            onLayout={controller.onDrawerLayout}
-            pointerEvents={controller.drawerVisible ? "auto" : "none"}
-            accessibilityElementsHidden={!controller.drawerVisible}
-            aria-hidden={!controller.drawerVisible}
-            importantForAccessibility={
-              controller.drawerVisible ? "yes" : "no-hide-descendants"
-            }
-            accessibilityViewIsModal={controller.drawerVisible}
-            accessibilityLabel="Navigation drawer"
-            style={[
-              styles.drawer,
-              {
-                width: drawerWidth,
-                backgroundColor: colors.bgSurface,
-                borderRightColor: colors.borderSubtle,
-              },
-              controller.drawerStyle,
-            ]}
-          >
-            <PrimaryDrawerPanel
-              closeButtonRef={closeButtonRef}
-              drawerVisible={controller.drawerVisible}
-              onClose={controller.closeDrawer}
-              onClosePressIn={controller.beginCloseInteraction}
-              onNavigateAway={controller.dismissForNavigation}
-            />
-          </Animated.View>
-        </View>
-      </GestureDetector>
-    </PrimarySurfaceInteractionProvider>
+          </View>
+        </Drawer>
+      </PrimarySurfaceInteractionProvider>
+    </PrimaryPageActionProvider>
   );
 }
 
@@ -229,24 +314,16 @@ const styles = StyleSheet.create({
   },
   menuButton: {
     width: 52,
+    minWidth: 44,
     minHeight: 52,
+    borderRadius: 10,
     alignItems: "center",
     justifyContent: "center",
   },
-  appBarSpacer: {
-    width: 52,
-    minHeight: 52,
+  pressedIcon: {
+    opacity: 0.55,
   },
-  overlay: {
-    ...StyleSheet.absoluteFill,
-    zIndex: 3,
-  },
-  drawer: {
-    position: "absolute",
-    left: 0,
-    top: 0,
-    bottom: 0,
-    zIndex: 4,
-    borderRightWidth: StyleSheet.hairlineWidth,
+  drawerContent: {
+    flex: 1,
   },
 });

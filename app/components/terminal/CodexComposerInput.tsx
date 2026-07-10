@@ -9,6 +9,10 @@ import {
 } from "react-native";
 import type { TerminalThemeChrome } from "../../constants/terminalThemes";
 import { Typography } from "../../constants/tokens";
+import {
+  COMPOSER_SUBMIT_BEHAVIOR,
+  composerReturnKeyType,
+} from "./composerInputBehavior";
 
 interface CodexComposerInputProps {
   inputRef: React.RefObject<TextInputInstance | null>;
@@ -17,11 +21,8 @@ interface CodexComposerInputProps {
   editable: boolean;
   chrome: TerminalThemeChrome;
   onDraftChange(value: string): void;
-  onInputPress(): void;
   onInputFocus(): void;
   onInputBlur(): void;
-  onInputStart(): boolean;
-  onSubmit(): void;
 }
 
 export function CodexComposerInput({
@@ -31,22 +32,15 @@ export function CodexComposerInput({
   editable,
   chrome,
   onDraftChange,
-  onInputPress,
   onInputFocus,
   onInputBlur,
-  onInputStart,
-  onSubmit,
 }: CodexComposerInputProps) {
   const draftEmpty = draft.length === 0;
   const multilineDraft = draft.includes("\n");
   const centerInputText = draftEmpty || !multilineDraft;
 
   return (
-    <View
-      collapsable={false}
-      onStartShouldSetResponderCapture={onInputStart}
-      style={styles.inputWrap}
-    >
+    <View collapsable={false} style={styles.inputWrap}>
       <TextInput
         ref={inputRef}
         style={[
@@ -66,18 +60,16 @@ export function CodexComposerInput({
         autoCapitalize="none"
         autoComplete="off"
         spellCheck={false}
-        keyboardType={Platform.OS === "android" ? "visible-password" : "default"}
+        keyboardType="default"
         disableFullscreenUI
         importantForAutofill="no"
         selectTextOnFocus={false}
         underlineColorAndroid="transparent"
         showSoftInputOnFocus
-        returnKeyType="send"
-        enterKeyHint="send"
-        submitBehavior="submit"
+        returnKeyType={composerReturnKeyType(Platform.OS)}
+        enterKeyHint="enter"
+        submitBehavior={COMPOSER_SUBMIT_BEHAVIOR}
         blurOnSubmit={false}
-        onPressIn={onInputPress}
-        onSubmitEditing={onSubmit}
         onFocus={onInputFocus}
         onBlur={onInputBlur}
       />
@@ -85,7 +77,7 @@ export function CodexComposerInput({
         <View pointerEvents="none" style={styles.placeholderOverlay}>
           <Text
             numberOfLines={1}
-            style={[styles.placeholderText, { color: chrome.textSubtle }]}
+            style={[styles.placeholderText, { color: chrome.textMuted }]}
           >
             {placeholder}
           </Text>
@@ -100,7 +92,7 @@ const styles = StyleSheet.create({
     flex: 1,
     minWidth: 0,
     minHeight: 42,
-    maxHeight: 120,
+    maxHeight: 124,
     justifyContent: "center",
     position: "relative",
   },

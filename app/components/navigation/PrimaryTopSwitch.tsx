@@ -12,7 +12,6 @@ import {
   View,
   type PressableProps,
 } from "react-native";
-import { useTabTrigger } from "expo-router/ui";
 import Animated, {
   Easing,
   ReduceMotion,
@@ -28,8 +27,8 @@ import {
   type ZenInteractionToken,
 } from "../../services/interactionTrace";
 
-const SWITCH_OPTION_WIDTH = 72;
-const SWITCH_INDICATOR_INSET = 18;
+const SWITCH_OPTION_WIDTH = 88;
+const SWITCH_INDICATOR_INSET = 24;
 
 interface PendingSwitchTrace {
   activated: boolean;
@@ -69,6 +68,8 @@ function PrimarySwitchOption({
       style={styles.switchButton}
     >
       <Text
+        numberOfLines={1}
+        maxFontSizeMultiplier={1.15}
         style={[
           styles.switchLabel,
           {
@@ -85,13 +86,16 @@ function PrimarySwitchOption({
   );
 }
 
-export function PrimaryTopSwitch() {
+export function PrimaryTopSwitch({
+  activeRoute,
+  onSelectRoute,
+}: {
+  activeRoute: PrimaryRouteName;
+  onSelectRoute(route: PrimaryRouteName): void;
+}) {
   const colors = useAppColors();
   const reducedMotion = useReducedMotion();
-  const brain = useTabTrigger({ name: "brain" });
-  const list = useTabTrigger({ name: "list" });
-  const brainFocused = Boolean(brain.trigger?.isFocused);
-  const activeRoute: PrimaryRouteName = brainFocused ? "brain" : "list";
+  const brainFocused = activeRoute === "brain";
   const indicatorPosition = useSharedValue(brainFocused ? 0 : 1);
   const pendingTraceRef = useRef<PendingSwitchTrace | null>(null);
   const outerFrameRef = useRef<number | null>(null);
@@ -146,6 +150,17 @@ export function PrimaryTopSwitch() {
     [activeRoute, beginSwitch],
   );
 
+  const selectRoute = useCallback(
+    (target: PrimaryRouteName) => {
+      if (target === activeRoute) {
+        return;
+      }
+      activateSwitch(target);
+      onSelectRoute(target);
+    },
+    [activateSwitch, activeRoute, onSelectRoute],
+  );
+
   useEffect(() => {
     if (reducedMotion) {
       indicatorPosition.value = brainFocused ? 0 : 1;
@@ -187,6 +202,7 @@ export function PrimaryTopSwitch() {
     [cancelAfterPaintFrames],
   );
 
+  // Keep tab-selection animation off the JS render path.
   const indicatorStyle = useAnimatedStyle(() => ({
     transform: [
       { translateX: indicatorPosition.value * SWITCH_OPTION_WIDTH },
@@ -204,31 +220,29 @@ export function PrimaryTopSwitch() {
         ]}
       />
       <PrimarySwitchOption
-        href={brain.trigger?.resolvedHref}
+        href="/"
         isFocused={brainFocused}
         label="Brain"
         onPressIn={() => beginSwitch("brain")}
         onPress={(event) => {
-          activateSwitch("brain");
-          brain.triggerProps.onPress?.(event);
+          event.preventDefault?.();
+          selectRoute("brain");
         }}
-        onLongPress={(event) => {
-          activateSwitch("brain");
-          brain.triggerProps.onLongPress?.(event);
+        onLongPress={() => {
+          selectRoute("brain");
         }}
       />
       <PrimarySwitchOption
-        href={list.trigger?.resolvedHref}
-        isFocused={Boolean(list.trigger?.isFocused)}
-        label="List"
+        href="/list"
+        isFocused={activeRoute === "list"}
+        label="Sessions"
         onPressIn={() => beginSwitch("list")}
         onPress={(event) => {
-          activateSwitch("list");
-          list.triggerProps.onPress?.(event);
+          event.preventDefault?.();
+          selectRoute("list");
         }}
-        onLongPress={(event) => {
-          activateSwitch("list");
-          list.triggerProps.onLongPress?.(event);
+        onLongPress={() => {
+          selectRoute("list");
         }}
       />
     </View>

@@ -26,11 +26,9 @@ export function PatchFileSummaryList({
     <View style={styles.diffFiles}>
       {files.slice(0, 6).map((file) => (
         <View key={`${file.operation}:${file.path}`} style={styles.diffFileRow}>
-          <Text style={[styles.diffPrefix, { color: chrome.textSubtle }]}>
-            {"\u2514"}
-          </Text>
           <Text
             style={[styles.diffPath, { color: chrome.textMuted }]}
+            numberOfLines={2}
           >
             {formatPatchPath(file)}
           </Text>
@@ -48,37 +46,31 @@ export function PatchFileSummaryList({
 
 const styles = StyleSheet.create({
   diffFiles: {
-    gap: 5,
+    gap: 4,
   },
   diffFileRow: {
     minWidth: 0,
     flexDirection: "row",
     alignItems: "flex-start",
-    gap: 5,
-  },
-  diffPrefix: {
-    width: 10,
-    fontSize: 11,
-    lineHeight: 15,
-    fontFamily: Typography.terminalFont,
+    gap: 8,
   },
   diffPath: {
     flex: 1,
     minWidth: 0,
-    fontSize: 11,
-    lineHeight: 15,
+    fontSize: 12,
+    lineHeight: 17,
     fontFamily: Typography.terminalFont,
   },
   diffAdded: {
     paddingTop: 1,
-    fontSize: 11,
-    lineHeight: 15,
+    fontSize: 12,
+    lineHeight: 17,
     fontFamily: Typography.terminalFont,
   },
   diffRemoved: {
     paddingTop: 1,
-    fontSize: 11,
-    lineHeight: 15,
+    fontSize: 12,
+    lineHeight: 17,
     fontFamily: Typography.terminalFont,
   },
 });

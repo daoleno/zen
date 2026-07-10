@@ -40,6 +40,7 @@ export function useTerminalThemeChrome() {
       danger: zenTheme.colors.dangerText,
       dangerSoft: zenTheme.colors.dangerSoft,
       overlay: zenTheme.colors.modalBackdrop,
+      shadowColor: zenTheme.colors.shadowColor,
     }),
     [terminalTheme, zenTheme.colors],
   );

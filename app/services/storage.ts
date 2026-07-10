@@ -20,7 +20,7 @@ export type StoredRecentAgentOpens = Record<string, number>;
 export type StoredAgentAliases = Record<string, string>;
 export type StoredCodexRenderMode = "chat" | "terminal";
 export type StoredCodexRenderModes = Record<string, StoredCodexRenderMode>;
-export const DefaultCodexRenderMode: StoredCodexRenderMode = "chat";
+export const DefaultCodexRenderMode: StoredCodexRenderMode = "terminal";
 export interface StoredServer {
   id: string;
   name: string;

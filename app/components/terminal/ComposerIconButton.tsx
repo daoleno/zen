@@ -1,10 +1,8 @@
 import React from "react";
-import {
-  StyleSheet,
-  TouchableOpacity,
-} from "react-native";
+import { StyleSheet } from "react-native";
 import type { StyleProp, ViewStyle } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
+import { TouchableOpacity } from "react-native-gesture-handler";
 import type { TerminalThemeChrome } from "../../constants/terminalThemes";
 import { ComposerLoadingDots } from "./ComposerLoadingDots";
 

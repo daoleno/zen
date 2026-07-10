@@ -18,6 +18,7 @@ import {
   type PendingSlashCommandInput,
   type PendingUserMessageInput,
 } from "./CodexChatSession";
+import { isCodexRequestRunning } from "./CodexChatControllerModel";
 import { useCodexComposerAttachments } from "./useCodexComposerAttachments";
 import { useCodexControllerPresentation } from "./useCodexControllerPresentation";
 import { useCodexDraftSubmission } from "./useCodexDraftSubmission";
@@ -32,6 +33,7 @@ interface UseCodexChatControllerInput {
   connectionIssue?: ConnectionIssue | null;
   conversation: CodexConversation | null;
   events: CodexConversationEvent[];
+  turnBusy?: boolean;
   draft: string;
   setDraft(value: string): void;
   attachments: ComposerAttachment[];
@@ -62,6 +64,7 @@ export function useCodexChatController({
   connectionIssue,
   conversation,
   events,
+  turnBusy,
   draft,
   setDraft,
   attachments,
@@ -103,6 +106,13 @@ export function useCodexChatController({
     setAttachments,
     focusComposer,
   });
+  const requestTurnBusy =
+    turnBusy ??
+    isCodexRequestRunning({
+      conversation,
+      events,
+      agentStatus,
+    });
   const {
     interruptCodex,
     interrupting,
@@ -115,6 +125,7 @@ export function useCodexChatController({
     serverId,
     agentId,
     connectionState,
+    turnBusy: requestTurnBusy,
     setDraft,
     setAttachments,
     clearComposerNativeText,

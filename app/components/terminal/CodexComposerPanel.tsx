@@ -24,7 +24,7 @@ interface CodexComposerPanelProps {
   sending: boolean;
   sendIcon: React.ComponentProps<typeof ComposerSendButton>["icon"];
   sendLabel: string;
-  sendElapsedLabel?: string;
+  sendElapsedStartedAt?: string;
   running: boolean;
   actionMenuExpanded: boolean;
   actionMenuButtonEnabled: boolean;
@@ -35,11 +35,8 @@ interface CodexComposerPanelProps {
   theme: TerminalThemePalette;
   onDraftChange(value: string): void;
   onActionMenuPress(): void;
-  onInputPress(): void;
   onInputFocus(): void;
   onInputBlur(): void;
-  onInputStart(): boolean;
-  onSubmit(): void;
   onSendPress(): void;
 }
 
@@ -54,7 +51,7 @@ export function CodexComposerPanel({
   sending,
   sendIcon,
   sendLabel,
-  sendElapsedLabel,
+  sendElapsedStartedAt,
   running,
   actionMenuExpanded,
   actionMenuButtonEnabled,
@@ -65,11 +62,8 @@ export function CodexComposerPanel({
   theme,
   onDraftChange,
   onActionMenuPress,
-  onInputPress,
   onInputFocus,
   onInputBlur,
-  onInputStart,
-  onSubmit,
   onSendPress,
 }: CodexComposerPanelProps) {
   if (composerLayout === "chatgpt") {
@@ -103,11 +97,8 @@ export function CodexComposerPanel({
             editable={editable}
             chrome={chrome}
             onDraftChange={onDraftChange}
-            onInputPress={onInputPress}
             onInputFocus={onInputFocus}
             onInputBlur={onInputBlur}
-            onInputStart={onInputStart}
-            onSubmit={onSubmit}
           />
         </CodexComposerPanelFrame>
 
@@ -119,7 +110,7 @@ export function CodexComposerPanel({
           enabled={sendEnabled}
           loading={sending}
           running={running}
-          elapsedLabel={sendElapsedLabel}
+          elapsedStartedAt={sendElapsedStartedAt}
           onPress={onSendPress}
           variant="chatgpt"
         />
@@ -149,7 +140,7 @@ export function CodexComposerPanel({
             actionMenuExpanded
               ? chrome.accent
               : actionMenuButtonEnabled
-                ? chrome.text
+                ? chrome.textMuted
                 : chrome.textSubtle
           }
           onPress={onActionMenuPress}
@@ -163,11 +154,8 @@ export function CodexComposerPanel({
         editable={editable}
         chrome={chrome}
         onDraftChange={onDraftChange}
-        onInputPress={onInputPress}
         onInputFocus={onInputFocus}
         onInputBlur={onInputBlur}
-        onInputStart={onInputStart}
-        onSubmit={onSubmit}
       />
 
       <ComposerSendButton
@@ -178,7 +166,7 @@ export function CodexComposerPanel({
         enabled={sendEnabled}
         loading={sending}
         running={running}
-        elapsedLabel={sendElapsedLabel}
+        elapsedStartedAt={sendElapsedStartedAt}
         onPress={onSendPress}
       />
     </CodexComposerPanelFrame>

@@ -87,6 +87,8 @@ function timelineItemsEqual(left: ZenTimelineItem, right: ZenTimelineItem) {
       left.role === right.role &&
       left.body === right.body &&
       left.pending === right.pending &&
+      left.pendingLifecycle === right.pendingLifecycle &&
+      left.pendingLifecycleLabel === right.pendingLifecycleLabel &&
       attachmentsEqual(left.attachments, right.attachments) &&
       left.heartbeatWake === right.heartbeatWake
     );

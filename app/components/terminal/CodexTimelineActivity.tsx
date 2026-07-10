@@ -88,6 +88,7 @@ export function ZenActivityEvent({
         expanded={expanded}
         toneColor={activityPresentation.toneColor}
         chrome={chrome}
+        accessibilityLabel={item.accessibilityLabel}
         onPress={() => {
           if (activityPresentation.canExpand) {
             setExpanded((value) => !value);
@@ -112,7 +113,7 @@ export function ZenActivityEvent({
 
 const styles = StyleSheet.create({
   wrap: {
-    marginBottom: 6,
+    marginBottom: 2,
     paddingLeft: 1,
   },
 });

@@ -14,11 +14,13 @@ import type {
   PendingSlashCommandInput,
   PendingUserMessageInput,
 } from "./CodexChatSession";
+import { classifyPendingUserMessageLifecycle } from "./pendingUserMessageLifecycle";
 
 interface UseCodexMessageTransportInput {
   serverId: string;
   agentId: string;
   connectionState: ConnectionState;
+  turnBusy: boolean;
   setDraft(value: string): void;
   setAttachments(value: SetStateAction<ComposerAttachment[]>): void;
   clearComposerNativeText(): void;
@@ -37,6 +39,7 @@ export function useCodexMessageTransport({
   serverId,
   agentId,
   connectionState,
+  turnBusy,
   setDraft,
   setAttachments,
   clearComposerNativeText,
@@ -96,6 +99,7 @@ export function useCodexMessageTransport({
           localUri: attachment.localUri,
           mimeType: attachment.mimeType,
         })),
+        lifecycle: classifyPendingUserMessageLifecycle(turnBusy),
       });
       setSending(true);
       setDraft("");
@@ -130,6 +134,7 @@ export function useCodexMessageTransport({
       serverId,
       setAttachments,
       setDraft,
+      turnBusy,
       unlockSend,
     ],
   );

@@ -15,7 +15,6 @@ import {
   type CodexComposerPresentationInput,
 } from "./CodexChatSurfaceModel";
 import type { ZenTimelineItem } from "./CodexTimelineItemView";
-
 const SCROLL_BOTTOM_THRESHOLD = 96;
 const COMPOSER_FOCUS_LOCK_MS = 1000;
 const COMPOSER_REFOCUS_DELAYS_MS = [0, 60, 140, 280, 520, 820] as const;
@@ -40,7 +39,7 @@ export function useCodexComposerPresentation({
   startingNewChat,
   interrupting,
   canSend,
-  elapsedLabel,
+  elapsedStartedAt,
   actionMenuPinned,
   safeAreaBottom,
   placeholder,
@@ -62,7 +61,7 @@ export function useCodexComposerPresentation({
         startingNewChat,
         interrupting,
         canSend,
-        elapsedLabel,
+        elapsedStartedAt,
         actionMenuPinned,
         safeAreaBottom,
         placeholder,
@@ -73,7 +72,7 @@ export function useCodexComposerPresentation({
     [
       attachmentCount,
       canSend,
-      elapsedLabel,
+      elapsedStartedAt,
       actionMenuPinned,
       composerLayout,
       connectionState,
@@ -425,52 +424,6 @@ export function useRelativeTimeLabel(targetTimestamp?: string) {
   }, [now, targetTimestamp]);
 }
 
-export function useElapsedDurationLabel(
-  startTimestamp?: string,
-  active: boolean = false,
-) {
-  const [now, setNow] = useState(() => Date.now());
-
-  useEffect(() => {
-    if (!startTimestamp || !active) {
-      return;
-    }
-    setNow(Date.now());
-    const timer = setInterval(() => {
-      setNow(Date.now());
-    }, 1000);
-    return () => clearInterval(timer);
-  }, [active, startTimestamp]);
-
-  return useMemo(() => {
-    if (!startTimestamp || !active) {
-      return "";
-    }
-    const timestamp = new Date(startTimestamp).getTime();
-    if (!Number.isFinite(timestamp)) {
-      return "";
-    }
-    const elapsed = Math.max(0, Math.floor((now - timestamp) / 1000));
-    return formatElapsedDuration(elapsed);
-  }, [active, now, startTimestamp]);
-}
-
-function formatElapsedDuration(totalSeconds: number) {
-  const seconds = Math.max(0, totalSeconds);
-  const hours = Math.floor(seconds / 3600);
-  const minutes = Math.floor((seconds % 3600) / 60);
-  const remainder = seconds % 60;
-  const paddedSeconds = remainder.toString().padStart(2, "0");
-
-  if (hours > 0) {
-    return `${hours}h ${minutes.toString().padStart(2, "0")}m ${paddedSeconds}s`;
-  }
-  if (minutes > 0) {
-    return `${minutes}m ${paddedSeconds}s`;
-  }
-  return `${remainder}s`;
-}
-
 export function useCodexComposerInput({
   enabled,
 }: {
@@ -571,11 +524,6 @@ export function useCodexComposerInput({
     }, 120);
   }, [clearBlurReleaseTimer, enabled, restoreFocusIfLocked]);
 
-  const handleInputStart = useCallback(() => {
-    focus();
-    return false;
-  }, [focus]);
-
   useEffect(() => {
     const hideSubscription = Keyboard.addListener("keyboardDidHide", () => {
       releaseFocusLock();
@@ -606,6 +554,5 @@ export function useCodexComposerInput({
     clearNativeText,
     handleFocus,
     handleBlur,
-    handleInputStart,
   };
 }

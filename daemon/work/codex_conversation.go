@@ -522,6 +522,8 @@ func (b *codexConversationBuilder) consumeResponseItem(lineNumber int, timestamp
 		if isCodexPlanTool(payload.Name) {
 			explanation, plan := codexPlanToolArguments(payload.Arguments)
 			b.addPlanUpdate(lineNumber, timestamp, payload.CallID, explanation, plan)
+		} else if isCodexExecWrapperTool(payload.Name) {
+			b.addExecWrapperCall(lineNumber, timestamp, payload.CallID, payload.Arguments, "running")
 		} else if isCodexCommandTool(payload.Name) {
 			command := codexExecCommand(payload.Arguments)
 			if command != "" {
@@ -547,26 +549,9 @@ func (b *codexConversationBuilder) consumeResponseItem(lineNumber int, timestamp
 		b.updateCallOutput(lineNumber, timestamp, payload.CallID, output)
 	case "custom_tool_call":
 		if payload.Name == "apply_patch" {
-			callID := strings.TrimSpace(payload.CallID)
-			files := patchSurfaces(payload.Input)
-			title := "Patch"
-			if len(files) > 0 {
-				title = fmt.Sprintf("Patch %d file", len(files))
-				if len(files) > 1 {
-					title += "s"
-				}
-			}
-			b.addEvent(CodexConversationEvent{
-				ID:        b.eventID(lineNumber),
-				Timestamp: timestamp,
-				Kind:      "patch",
-				Title:     title,
-				Body:      truncateConversationBody(payload.Input),
-				Files:     files,
-				CallID:    callID,
-				Source:    "codex_rollout",
-			})
-			b.patchEventSeen = true
+			b.addPatchEvent(lineNumber, timestamp, payload.CallID, payload.Input)
+		} else if isCodexExecWrapperTool(payload.Name) {
+			b.addExecWrapperCall(lineNumber, timestamp, payload.CallID, payload.Input, "done")
 		} else {
 			b.addToolStart(lineNumber, timestamp, payload.CallID, payload.Name, payload.Input, "done", "")
 		}
@@ -929,6 +914,107 @@ func (b *codexConversationBuilder) isDuplicateRecentWebSearch(timestamp, body, i
 		delta = -delta
 	}
 	return delta <= 2*time.Second
+}
+
+func (b *codexConversationBuilder) addPatchEvent(lineNumber int, timestamp, callID, input string) {
+	callID = strings.TrimSpace(callID)
+	files := patchSurfaces(input)
+	title := "Patch"
+	if len(files) > 0 {
+		title = fmt.Sprintf("Patch %d file", len(files))
+		if len(files) > 1 {
+			title += "s"
+		}
+	}
+	event := CodexConversationEvent{
+		ID:        b.eventID(lineNumber),
+		Timestamp: timestamp,
+		Kind:      "patch",
+		Title:     title,
+		Body:      truncateConversationBody(input),
+		Files:     files,
+		CallID:    callID,
+		Source:    "codex_rollout",
+	}
+	if callID != "" {
+		if index, exists := b.eventByCall[callID]; exists && index >= 0 && index < len(b.events) {
+			existingID := b.events[index].ID
+			b.events[index] = event
+			b.events[index].ID = existingID
+			b.patchEventSeen = true
+			return
+		}
+	}
+	if b.addEvent(event) && callID != "" {
+		b.eventByCall[callID] = len(b.events) - 1
+	}
+	b.patchEventSeen = true
+}
+
+func (b *codexConversationBuilder) addExecWrapperCall(lineNumber int, timestamp, callID, input, status string) {
+	calls := parseCodexExecWrapper(input)
+	if len(calls) == 0 {
+		b.addToolStart(lineNumber, timestamp, callID, "tool", input, status, "")
+		return
+	}
+	if len(calls) == 1 {
+		b.addNestedCodexToolCall(lineNumber, timestamp, callID, calls[0], input, status)
+		return
+	}
+	names := make([]string, 0, len(calls))
+	for _, call := range calls {
+		names = append(names, call.Name)
+	}
+	b.addToolStart(lineNumber, timestamp, callID, "multi:"+strings.Join(names, ","), input, status, "")
+}
+
+func (b *codexConversationBuilder) addNestedCodexToolCall(
+	lineNumber int,
+	timestamp, callID string,
+	call nestedCodexToolCall,
+	rawInput, status string,
+) {
+	switch call.Name {
+	case "exec_command", "shell_command":
+		command := nestedCallCommand(call)
+		if command == "" {
+			b.addToolStart(lineNumber, timestamp, callID, call.Name, rawInput, status, "")
+			return
+		}
+		b.commandByCall[strings.TrimSpace(callID)] = command
+		b.addCommandStart(lineNumber, timestamp, callID, command)
+		if status != "" && status != "running" {
+			if index, exists := b.eventByCall[strings.TrimSpace(callID)]; exists && index >= 0 && index < len(b.events) {
+				b.events[index].Status = status
+			}
+		}
+	case "apply_patch":
+		patch := nestedCallPatchText(call)
+		if patch == "" {
+			b.addToolStart(lineNumber, timestamp, callID, call.Name, rawInput, status, "")
+			return
+		}
+		b.addPatchEvent(lineNumber, timestamp, callID, patch)
+	case "update_plan":
+		explanation, plan := nestedCallPlan(call)
+		if len(plan) == 0 && explanation == "" {
+			b.addToolStart(lineNumber, timestamp, callID, call.Name, rawInput, status, "")
+			return
+		}
+		b.addPlanUpdate(lineNumber, timestamp, callID, explanation, plan)
+	case "view_image":
+		path := nestedCallViewPath(call)
+		input := rawInput
+		if path != "" {
+			encoded, err := json.Marshal(map[string]string{"path": path})
+			if err == nil {
+				input = string(encoded)
+			}
+		}
+		b.addToolStart(lineNumber, timestamp, callID, call.Name, input, status, "")
+	default:
+		b.addToolStart(lineNumber, timestamp, callID, call.Name, rawInput, status, "")
+	}
 }
 
 func (b *codexConversationBuilder) addToolStart(lineNumber int, timestamp, callID, name, input, status, command string) {

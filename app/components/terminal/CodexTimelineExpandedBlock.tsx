@@ -7,20 +7,30 @@ import type {
   StyleProp,
   ViewStyle,
 } from "react-native";
+import type { TerminalThemeChrome } from "../../constants/terminalThemes";
 
 interface CodexTimelineExpandedBlockProps {
-  borderColor: string;
+  chrome: TerminalThemeChrome;
   children: React.ReactNode;
   style?: StyleProp<ViewStyle>;
+  borderColor?: string;
 }
-
 export function CodexTimelineExpandedBlock({
+  chrome,
   borderColor,
   children,
   style,
 }: CodexTimelineExpandedBlockProps) {
   return (
-    <View style={[styles.expanded, style, { borderColor }]}>
+    <View
+      style={[
+        styles.expanded,
+        style,
+        {
+          borderColor: borderColor ?? chrome.border,
+        },
+      ]}
+    >
       {children}
     </View>
   );
@@ -28,12 +38,14 @@ export function CodexTimelineExpandedBlock({
 
 const styles = StyleSheet.create({
   expanded: {
-    marginTop: 5,
+    marginTop: 2,
     marginLeft: 18,
     maxWidth: "94%",
-    borderLeftWidth: StyleSheet.hairlineWidth,
+    borderLeftWidth: 2,
     paddingLeft: 10,
-    paddingVertical: 2,
-    opacity: 0.96,
+    paddingRight: 4,
+    paddingTop: 4,
+    paddingBottom: 4,
+    gap: 8,
   },
 });

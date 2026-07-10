@@ -43,6 +43,9 @@ export interface ZenMessageTimelineItem {
   body: string;
   attachments: DisplayAttachment[];
   pending?: boolean;
+  pendingLifecycle?: "sending" | "queued";
+  pendingLifecycleLabel?: string;
+  pendingLifecycleAccessibilityLabel?: string;
   heartbeatWake?: HeartbeatWakeEvent;
 }
 
@@ -124,6 +127,10 @@ export function ZenUserMessage({
             timestamp={item.timestamp}
             tone="sent"
             pending={item.pending}
+            lifecycleLabel={item.pendingLifecycleLabel}
+            lifecycleAccessibilityLabel={
+              item.pendingLifecycleAccessibilityLabel
+            }
           />
         ) : null}
       </View>

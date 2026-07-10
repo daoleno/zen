@@ -25,10 +25,7 @@ export function ZenPlanUpdate({
   return (
     <View style={styles.wrap}>
       <ZenPlanHeader accentColor={theme.cyan} chrome={chrome} />
-      <CodexTimelineExpandedBlock
-        borderColor={chrome.border}
-        style={styles.planBlock}
-      >
+      <CodexTimelineExpandedBlock chrome={chrome} style={styles.planBlock}>
         <CodexTimelinePlanExplanation
           chrome={chrome}
           explanation={item.explanation}

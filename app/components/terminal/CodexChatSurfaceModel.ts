@@ -7,6 +7,7 @@ import type { AgentKind } from "../../services/agentPresentation";
 import type { ChatLayout } from "../../theme/types";
 import type { CodexSlashCommand } from "../../services/websocket";
 import { filterSlashCommands } from "./CodexSlashCommands";
+import { resolveComposerSendAction } from "./composerSendAction";
 
 export interface CodexComposerPresentation {
   commandQuery: string;
@@ -23,7 +24,7 @@ export interface CodexComposerPresentation {
   sendEnabled: boolean;
   sendIcon: "square" | "arrow-up" | "send";
   sendLabel: string;
-  sendElapsedLabel?: string;
+  sendElapsedStartedAt?: string;
   placeholder: string;
   bottomPadding: number;
   keyboardVerticalOffset: number;
@@ -42,7 +43,7 @@ export interface CodexComposerPresentationInput {
   startingNewChat: boolean;
   interrupting: boolean;
   canSend: boolean;
-  elapsedLabel?: string;
+  elapsedStartedAt?: string;
   actionMenuPinned: boolean;
   safeAreaBottom: number;
   placeholder?: string;
@@ -62,7 +63,7 @@ export function buildCodexComposerPresentation({
   startingNewChat,
   interrupting,
   canSend,
-  elapsedLabel,
+  elapsedStartedAt,
   actionMenuPinned,
   safeAreaBottom,
   placeholder,
@@ -94,12 +95,17 @@ export function buildCodexComposerPresentation({
     (slashQueryActive || visibleSlashCommands.length > 0);
   const showCommandMenu = showComposerActions || showCommandList;
   const composerActionButtonEnabled = connectionState === "connected";
-  const showStopIndicator =
-    connectionState === "connected" &&
-    requestRunning &&
-    draft.trim().length === 0 &&
-    attachmentCount === 0;
-  const showStopButton = showStopIndicator && !sending;
+  const sendAction = resolveComposerSendAction({
+    canSend,
+    connected: connectionState === "connected",
+    hasComposerContent:
+      draft.trim().length > 0 || attachmentCount > 0,
+    interrupting,
+    requestRunning,
+    sending,
+    startingNewChat,
+  });
+  const { showStopButton, showStopIndicator } = sendAction;
   const chatgpt = composerLayout === "chatgpt";
 
   return {
@@ -114,18 +120,10 @@ export function buildCodexComposerPresentation({
     composerActionButtonEnabled,
     showStopButton,
     showStopIndicator,
-    sendEnabled: canSend || showStopButton || startingNewChat,
+    sendEnabled: sendAction.sendEnabled,
     sendIcon: showStopIndicator ? "square" : chatgpt ? "arrow-up" : "arrow-up",
-    sendLabel: startingNewChat
-      ? "Starting new chat"
-      : showStopButton
-        ? "Stop response"
-        : showStopIndicator && interrupting
-          ? "Stopping"
-          : showStopIndicator
-            ? "Working"
-            : "Send message",
-    sendElapsedLabel: showStopIndicator ? elapsedLabel : undefined,
+    sendLabel: sendAction.sendLabel,
+    sendElapsedStartedAt: showStopIndicator ? elapsedStartedAt : undefined,
     placeholder: buildChatComposerPlaceholder({
       agentKind,
       connectionState,
