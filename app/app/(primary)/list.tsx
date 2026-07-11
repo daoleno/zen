@@ -5,6 +5,7 @@ import {
   Linking,
   type ListRenderItem,
   SectionList,
+  StatusBar,
   StyleSheet,
   Text,
   TextInput,
@@ -413,8 +414,14 @@ export default function InboxScreen() {
 
   const openMeditation = useCallback(() => {
     void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+    StatusBar.setBarStyle('light-content', true);
     setMeditationVisible(true);
   }, []);
+
+  const closeMeditation = useCallback(() => {
+    setMeditationVisible(false);
+    StatusBar.setBarStyle(theme.isLight ? 'dark-content' : 'light-content', true);
+  }, [theme.isLight]);
 
   const handleContentScroll = useAnimatedScrollHandler({
     onScroll: (event) => {
@@ -837,7 +844,7 @@ export default function InboxScreen() {
         <MeditationModal
           visible={meditationVisible}
           colors={colors}
-          onClose={() => setMeditationVisible(false)}
+          onClose={closeMeditation}
         />
       ) : null}
 

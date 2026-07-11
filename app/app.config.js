@@ -17,6 +17,7 @@ module.exports = () => {
 
   return {
     ...baseConfig,
+    plugins: [...(baseConfig.plugins || []), 'expo-video'],
     extra,
   };
 };

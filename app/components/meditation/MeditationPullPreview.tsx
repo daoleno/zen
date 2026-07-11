@@ -1,6 +1,5 @@
 import React, { memo } from "react";
 import {
-  ImageBackground,
   StyleSheet,
   View,
 } from "react-native";
@@ -10,8 +9,6 @@ import Animated, {
   type SharedValue,
 } from "react-native-reanimated";
 import { Typography } from "../../constants/tokens";
-
-const MEDITATION_BACKGROUND = require("../../assets/theme/meditation-sky-garden.webp");
 
 type MeditationPullPreviewProps = {
   pullDistance: SharedValue<number>;
@@ -35,24 +32,14 @@ function MeditationPullPreviewComponent({
       opacity: Math.min(1, 0.18 + progress * 0.88),
     };
   });
-  const haloStyle = useAnimatedStyle(() => {
+  const marksStyle = useAnimatedStyle(() => {
     const progress = Math.max(
       0,
       Math.min(pullDistance.value / threshold, 1),
     );
     return {
-      opacity: 0.08 + progress * 0.18,
-      transform: [{ scale: 1 + progress * 0.42 }],
-    };
-  });
-  const orbStyle = useAnimatedStyle(() => {
-    const progress = Math.max(
-      0,
-      Math.min(pullDistance.value / threshold, 1),
-    );
-    return {
-      opacity: 0.72 + progress * 0.28,
-      transform: [{ scale: 0.74 + progress * 0.42 }],
+      opacity: 0.55 + progress * 0.45,
+      transform: [{ translateY: (1 - progress) * 8 }],
     };
   });
   const pullTitleStyle = useAnimatedStyle(() => ({
@@ -71,49 +58,44 @@ function MeditationPullPreviewComponent({
 
   return (
     <Animated.View pointerEvents="none" style={[styles.root, rootStyle]}>
-      <ImageBackground
-        source={MEDITATION_BACKGROUND}
-        resizeMode="cover"
+      <LinearGradient
+        colors={[
+          "rgba(6,10,9,0.42)",
+          "rgba(5,9,8,0.72)",
+          "rgba(4,7,7,0.94)",
+        ]}
+        locations={[0, 0.48, 1]}
         style={styles.image}
       >
-        <LinearGradient
-          colors={[
-            "rgba(5,10,22,0.10)",
-            "rgba(5,10,22,0.34)",
-            "rgba(5,10,22,0.82)",
-          ]}
-          locations={[0, 0.52, 1]}
-          style={StyleSheet.absoluteFill}
-        />
         <View style={styles.content}>
-          <View style={styles.orbWrap}>
-            <Animated.View style={[styles.orbHalo, haloStyle]} />
-            <Animated.View style={[styles.orb, orbStyle]}>
-              <LinearGradient
-                colors={[
-                  "rgba(255,255,255,0.92)",
-                  "rgba(107,176,255,0.44)",
-                  "rgba(44,95,204,0.18)",
-                ]}
-                style={StyleSheet.absoluteFill}
-              />
-            </Animated.View>
-          </View>
+          <Animated.View style={[styles.marks, marksStyle]}>
+            <View style={styles.markBreath}>
+              <View style={styles.markBreathOuter} />
+              <View style={styles.markBreathInner} />
+            </View>
+            <View style={styles.markWood} />
+            <View style={styles.markWindow}>
+              <View style={styles.markWindowScene} />
+            </View>
+          </Animated.View>
           <View style={styles.titleWrap}>
             <Animated.Text style={[styles.title, pullTitleStyle]}>
-              Pull into quiet
+              Quiet Mode
             </Animated.Text>
             <Animated.Text
               style={[styles.title, styles.releaseTitle, releaseTitleStyle]}
             >
-              Release into quiet
+              Release into Quiet Mode
             </Animated.Text>
           </View>
+          <Animated.Text style={[styles.hint, marksStyle]}>
+            冥想 · 木鱼 · 世界之窗
+          </Animated.Text>
           <View style={styles.track}>
             <Animated.View style={[styles.trackFill, trackFillStyle]} />
           </View>
         </View>
-      </ImageBackground>
+      </LinearGradient>
     </Animated.View>
   );
 }
@@ -138,41 +120,76 @@ const styles = StyleSheet.create({
     paddingHorizontal: 24,
     paddingBottom: 24,
   },
-  orbWrap: {
-    width: 92,
-    height: 92,
+  marks: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 20,
+    marginBottom: 12,
+    minHeight: 28,
+  },
+  markBreath: {
+    width: 26,
+    height: 20,
     alignItems: "center",
     justifyContent: "center",
-    marginBottom: 8,
   },
-  orbHalo: {
+  markBreathOuter: {
     position: "absolute",
-    width: 78,
-    height: 78,
-    borderRadius: 39,
-    backgroundColor: "rgba(128,190,255,0.72)",
+    width: 26,
+    height: 18,
+    borderRadius: 13,
+    borderWidth: 1,
+    borderColor: "rgba(214,224,208,0.55)",
   },
-  orb: {
-    width: 62,
-    height: 62,
-    borderRadius: 31,
-    overflow: "hidden",
+  markBreathInner: {
+    width: 10,
+    height: 7,
+    borderRadius: 5,
+    backgroundColor: "rgba(236,236,228,0.42)",
+  },
+  markWood: {
+    width: 28,
+    height: 18,
+    borderRadius: 10,
+    backgroundColor: "rgba(74,40,20,0.88)",
     borderWidth: StyleSheet.hairlineWidth,
-    borderColor: "rgba(255,255,255,0.62)",
+    borderColor: "rgba(212,165,116,0.45)",
+  },
+  markWindow: {
+    width: 28,
+    height: 20,
+    borderRadius: 2,
+    padding: 2.5,
+    backgroundColor: "rgba(20,24,28,0.92)",
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: "rgba(180,190,200,0.35)",
+  },
+  markWindowScene: {
+    flex: 1,
+    borderRadius: 1,
+    backgroundColor: "rgba(96,128,118,0.72)",
   },
   titleWrap: {
     minHeight: 19,
-    minWidth: 140,
+    minWidth: 180,
     alignItems: "center",
   },
   title: {
-    color: "#F7FAFF",
+    color: "#F4F1E8",
     fontSize: 14,
     lineHeight: 19,
     fontFamily: Typography.uiFontMedium,
   },
   releaseTitle: {
     position: "absolute",
+  },
+  hint: {
+    marginTop: 6,
+    color: "rgba(244,241,232,0.58)",
+    fontSize: 11,
+    lineHeight: 15,
+    fontFamily: Typography.uiFontMedium,
+    letterSpacing: 0.8,
   },
   track: {
     width: 120,
