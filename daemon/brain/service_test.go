@@ -180,6 +180,285 @@ func TestServiceSnapshotReusesMatchingHostSession(t *testing.T) {
 	}
 }
 
+// Grok always-approve chrome previously false-positive blocked sessions. Blocked
+// status must not by itself replace the Brain host on Snapshot/foreground re-entry.
+func TestServiceSnapshotReusesGrokHostEvenWhenClassifiedBlocked(t *testing.T) {
+	store, err := NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	hostID := "brain-agent-brain-reuse:@29"
+	if err := store.SetHostSession(hostID, "grok"); err != nil {
+		t.Fatal(err)
+	}
+	fw := &fakeWatcher{
+		sessions: map[string]*classifier.Agent{
+			hostID: {
+				ID:      hostID,
+				Name:    "Brain (" + hostID + ")",
+				Cwd:     store.WorkspacePath(),
+				Command: "grok",
+				State:   classifier.StateBlocked,
+				Summary: "╰───── Grok 4.5 (high) · always-approve ─╯",
+				Hidden:  true,
+			},
+		},
+	}
+	fw.agents = append(fw.agents, fw.sessions[hostID])
+	service := NewService(store, fw, &work.ExecutorConfig{
+		ByName: map[string]work.Executor{
+			"grok":  {Name: "grok", Command: "grok", Kind: "grok"},
+			"codex": {Name: "codex", Command: "codex"},
+		},
+	})
+	// Prefer the recorded grok host executor for this Snapshot path.
+	t.Setenv("ZEN_BRAIN_HOST_EXECUTOR", "grok")
+
+	first, err := service.Snapshot()
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := service.Snapshot()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(fw.created) != 0 {
+		t.Fatalf("blocked chrome must not replace host, created %#v", fw.created)
+	}
+	if len(fw.killed) != 0 {
+		t.Fatalf("blocked chrome must not kill host, killed %#v", fw.killed)
+	}
+	if first.HostAgent == nil || first.HostAgent.ID != hostID {
+		t.Fatalf("first host = %#v", first.HostAgent)
+	}
+	if second.HostAgent == nil || second.HostAgent.ID != hostID {
+		t.Fatalf("second host = %#v", second.HostAgent)
+	}
+	hostSession, err := store.HostSession()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if hostSession.ID != hostID || hostSession.ExecutorID != "grok" {
+		t.Fatalf("host session = %+v", hostSession)
+	}
+}
+
+// Host replacement on re-entry is driven by a missing tmux target, not by status.
+func TestServiceSnapshotReplacesHostWhenTmuxSessionMissing(t *testing.T) {
+	store, err := NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	oldID := "brain-agent-brain-missing:@1"
+	if err := store.SetHostSession(oldID, "grok"); err != nil {
+		t.Fatal(err)
+	}
+	// HasSession false: no sessions map entry and no agent list entry.
+	fw := &fakeWatcher{}
+	service := NewService(store, fw, &work.ExecutorConfig{
+		ByName: map[string]work.Executor{
+			"grok": {Name: "grok", Command: "grok", Kind: "grok"},
+		},
+	})
+	t.Setenv("ZEN_BRAIN_HOST_EXECUTOR", "grok")
+
+	snapshot, err := service.Snapshot()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(fw.created) != 1 {
+		t.Fatalf("expected replacement host when tmux target missing, got %#v", fw.created)
+	}
+	if snapshot.HostAgent == nil || snapshot.HostAgent.ID == oldID {
+		t.Fatalf("host agent = %#v", snapshot.HostAgent)
+	}
+	hostSession, err := store.HostSession()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if hostSession.ID == oldID {
+		t.Fatalf("host session id should be replaced, still %q", hostSession.ID)
+	}
+	audit, err := os.ReadFile(store.HostReplacementsPath())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(audit), hostReplaceReasonMissingTmux) {
+		t.Fatalf("expected missing_tmux audit, got %s", audit)
+	}
+	if !strings.Contains(string(audit), oldID) {
+		t.Fatalf("audit should name previous host, got %s", audit)
+	}
+}
+
+// Empty executor_id must not default to codex and kill a live grok Brain host on
+// Snapshot (foreground reconnect / brain_snapshot). This is a documented
+// replacement footgun independent of Grok blocked-chrome classification.
+func TestServiceSnapshotAdoptsLiveHostProviderWhenExecutorIDEmpty(t *testing.T) {
+	store, err := NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	hostID := "brain-agent-brain-live-grok:@42"
+	// Record id only — empty executor_id (legacy / partial write).
+	if err := store.SetHostSessionID(hostID); err != nil {
+		t.Fatal(err)
+	}
+	fw := &fakeWatcher{
+		sessions: map[string]*classifier.Agent{
+			hostID: {
+				ID:      hostID,
+				Name:    "Brain (" + hostID + ")",
+				Cwd:     store.WorkspacePath(),
+				Command: "grok",
+				State:   classifier.StateRunning,
+				Hidden:  true,
+			},
+		},
+	}
+	fw.agents = append(fw.agents, fw.sessions[hostID])
+	service := NewService(store, fw, &work.ExecutorConfig{
+		ByName: map[string]work.Executor{
+			"grok":  {Name: "grok", Command: "grok", Kind: "grok"},
+			"codex": {Name: "codex", Command: "codex", Kind: "codex"},
+		},
+	})
+
+	snapshot, err := service.Snapshot()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(fw.killed) != 0 {
+		t.Fatalf("must not kill live grok host when executor_id empty, killed %#v", fw.killed)
+	}
+	if len(fw.created) != 0 {
+		t.Fatalf("must not create replacement, created %#v", fw.created)
+	}
+	if snapshot.HostAgent == nil || snapshot.HostAgent.ID != hostID {
+		t.Fatalf("host agent = %#v", snapshot.HostAgent)
+	}
+	if snapshot.HostExecutor == nil || snapshot.HostExecutor.ID != "grok" {
+		t.Fatalf("host executor = %#v, want grok adopted from live host", snapshot.HostExecutor)
+	}
+	hostSession, err := store.HostSession()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if hostSession.ID != hostID || hostSession.ExecutorID != "grok" {
+		t.Fatalf("host session should persist adopted executor, got %+v", hostSession)
+	}
+}
+
+// When the recorded host is gone but another matching Brain host is still alive,
+// rebind instead of spawning a blank session (preserves continuity when ids drift).
+func TestServiceSnapshotRebindsAliveHostWhenRecordedTargetMissing(t *testing.T) {
+	store, err := NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	deadID := "brain-agent-brain-dead:@292"
+	aliveID := "brain-agent-brain-alive:@300"
+	if err := store.SetHostSession(deadID, "codex"); err != nil {
+		t.Fatal(err)
+	}
+	fw := &fakeWatcher{
+		sessions: map[string]*classifier.Agent{
+			aliveID: {
+				ID:      aliveID,
+				Name:    "Brain (" + aliveID + ")",
+				Cwd:     store.WorkspacePath(),
+				Command: "codex --dangerously-bypass-approvals-and-sandbox",
+				State:   classifier.StateRunning,
+				Hidden:  true,
+			},
+		},
+	}
+	fw.agents = append(fw.agents, fw.sessions[aliveID])
+	service := NewService(store, fw, &work.ExecutorConfig{
+		ByName: map[string]work.Executor{
+			"codex": {Name: "codex", Command: "codex", Kind: "codex"},
+		},
+	})
+
+	snapshot, err := service.Snapshot()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(fw.created) != 0 {
+		t.Fatalf("should rebind alive host, not create: %#v", fw.created)
+	}
+	if snapshot.HostAgent == nil || snapshot.HostAgent.ID != aliveID {
+		t.Fatalf("host agent = %#v, want rebound %s", snapshot.HostAgent, aliveID)
+	}
+	hostSession, err := store.HostSession()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if hostSession.ID != aliveID {
+		t.Fatalf("host session = %+v, want rebound alive id", hostSession)
+	}
+	audit, err := os.ReadFile(store.HostReplacementsPath())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(audit), hostReplaceReasonRecoveredAlive) {
+		t.Fatalf("expected recovered_alive_host audit, got %s", audit)
+	}
+}
+
+func TestServiceSnapshotAuditsProviderMismatchReplacement(t *testing.T) {
+	store, err := NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	oldID := "brain-agent-brain-old-grok:@1"
+	if err := store.SetHostSession(oldID, "grok"); err != nil {
+		t.Fatal(err)
+	}
+	fw := &fakeWatcher{
+		sessions: map[string]*classifier.Agent{
+			oldID: {
+				ID:      oldID,
+				Name:    "Brain",
+				Cwd:     store.WorkspacePath(),
+				Command: "grok",
+				State:   classifier.StateRunning,
+				Hidden:  true,
+			},
+		},
+	}
+	fw.agents = append(fw.agents, fw.sessions[oldID])
+	service := NewService(store, fw, &work.ExecutorConfig{
+		ByName: map[string]work.Executor{
+			"grok":  {Name: "grok", Command: "grok", Kind: "grok"},
+			"codex": {Name: "codex", Command: "codex", Kind: "codex"},
+		},
+	})
+	// Explicit env switch to codex while a grok host is still alive.
+	t.Setenv("ZEN_BRAIN_HOST_EXECUTOR", "codex")
+
+	snapshot, err := service.Snapshot()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(fw.killed) != 1 || fw.killed[0] != oldID {
+		t.Fatalf("expected provider mismatch kill, killed %#v", fw.killed)
+	}
+	if len(fw.created) != 1 {
+		t.Fatalf("expected codex replacement host, created %#v", fw.created)
+	}
+	if snapshot.HostAgent == nil || snapshot.HostAgent.ID == oldID {
+		t.Fatalf("host agent = %#v", snapshot.HostAgent)
+	}
+	audit, err := os.ReadFile(store.HostReplacementsPath())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(audit), hostReplaceReasonProviderMismatch) {
+		t.Fatalf("expected provider_mismatch audit, got %s", audit)
+	}
+}
+
 func TestServiceSnapshotFallsBackToCodexNotDelegatedExecutor(t *testing.T) {
 	store, err := NewStore(t.TempDir())
 	if err != nil {

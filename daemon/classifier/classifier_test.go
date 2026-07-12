@@ -39,6 +39,28 @@ func TestClassify(t *testing.T) {
 			wantState: StateBlocked,
 		},
 		{
+			name:      "please approve prompt",
+			paneAlive: true,
+			lines:     []string{"Please approve this shell command"},
+			wantState: StateBlocked,
+		},
+		{
+			name:      "grok always-approve chrome is not blocked",
+			paneAlive: true,
+			lines: []string{
+				"│ ❯                                                                        │",
+				"╰─────────────────────────────────────── Grok 4.5 (high) · always-approve ─╯",
+				"Shift+Tab:mode  │  Ctrl+c:cancel  │  Ctrl+g:send to bg  │  Ctrl+x:shortcuts",
+			},
+			wantState: StateUnknown,
+		},
+		{
+			name:      "grok always-approve footer alone is not blocked",
+			paneAlive: true,
+			lines:     []string{"╰───── Grok 4.5 (high) · always-approve ─╯"},
+			wantState: StateUnknown,
+		},
+		{
 			name:      "would you like prompt",
 			paneAlive: true,
 			lines:     []string{"Would you like me to proceed with the refactor?"},

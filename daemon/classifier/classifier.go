@@ -49,13 +49,21 @@ type Agent struct {
 }
 
 // blockedPatterns match output that indicates the agent is waiting for user input.
+//
+// Approval/rejection patterns intentionally require interactive phrasing.
+// Static agent mode chrome such as Grok's "always-approve" footer must not match:
+// bare "approve|reject" previously false-positive blocked every Grok session in
+// YOLO/always-approve mode.
 var blockedPatterns = []*regexp.Regexp{
 	regexp.MustCompile(`(?i)\(Y/n\)\s*$`),
 	regexp.MustCompile(`(?i)\(y/N\)\s*$`),
 	regexp.MustCompile(`(?i)\?\s*$`),
 	regexp.MustCompile(`(?i)Do you want to proceed`),
 	regexp.MustCompile(`(?i)Should I continue`),
-	regexp.MustCompile(`(?i)approve|reject`),
+	// Interactive approval gates only (not "always-approve" mode chrome).
+	regexp.MustCompile(`(?i)please\s+approve`),
+	regexp.MustCompile(`(?i)approve\s+or\s+reject`),
+	regexp.MustCompile(`(?i)\breject\s+(this|the|and)\b`),
 	regexp.MustCompile(`(?i)Press enter to continue`),
 	regexp.MustCompile(`(?i)Press enter to confirm or esc to cancel`),
 	regexp.MustCompile(`(?i)Action Required`),

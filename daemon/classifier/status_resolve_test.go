@@ -295,6 +295,40 @@ func TestMergeProgressAndClassification_ClassifyBlockedOverridesDone(t *testing.
 	}
 }
 
+// Grok always-approve chrome must classify as Unknown so an active progress
+// lease can keep the session Running instead of being wiped as blocked.
+func TestResolveSessionStatus_GrokAlwaysApproveChromeKeepsRunningLease(t *testing.T) {
+	now := time.Date(2026, 7, 12, 12, 0, 0, 0, time.UTC)
+	progressAt := now.Add(-30 * time.Second)
+	leaseUntil := now.Add(270 * time.Second)
+	agent := &Agent{
+		PaneAlive:           true,
+		State:               StateRunning,
+		Summary:             "Reading delegated lifecycle",
+		Command:             "grok",
+		LastProgressAt:      &progressAt,
+		ExpectedNextCheckAt: &leaseUntil,
+		LeaseSeconds:        300,
+		Delegated:           true,
+	}
+	lines := []string{
+		"│ ❯                                                                        │",
+		"╰─────────────────────────────────────── Grok 4.5 (high) · always-approve ─╯",
+		"Shift+Tab:mode  │  Ctrl+c:cancel  │  Ctrl+x:shortcuts",
+	}
+	classified, classifiedSummary := Classify(true, lines, 0)
+	if classified != StateUnknown {
+		t.Fatalf("classified = %q (%q), want unknown for always-approve chrome", classified, classifiedSummary)
+	}
+	got, summary := ResolveSessionStatus(agent, classified, classifiedSummary, now, ActivitySignal{})
+	if got != StateRunning {
+		t.Fatalf("resolved = %q, want running under lease", got)
+	}
+	if summary != "Reading delegated lifecycle" {
+		t.Fatalf("summary = %q", summary)
+	}
+}
+
 func TestProgressLeaseActive(t *testing.T) {
 	now := time.Date(2026, 7, 12, 12, 0, 0, 0, time.UTC)
 	progressAt := now

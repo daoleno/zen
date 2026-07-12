@@ -3,6 +3,7 @@ package brain
 import (
 	"errors"
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 	"sort"
@@ -346,6 +347,15 @@ func formatHeartbeatWake(event HeartbeatEvent) string {
 	return strings.Join(lines, "\n")
 }
 
+// Host replacement reasons are durable audit tags written to host_replacements.jsonl.
+// They answer: why did ensureHostAgent create a new Brain host instead of reusing one?
+const (
+	hostReplaceReasonMissingTmux      = "missing_tmux"
+	hostReplaceReasonProviderMismatch = "provider_mismatch"
+	hostReplaceReasonNoRecordedHost   = "no_recorded_host"
+	hostReplaceReasonRecoveredAlive   = "recovered_alive_host"
+)
+
 func (s *Service) ensureHostAgent(executor work.AgentExecutor) (AgentRef, error) {
 	if s == nil || s.store == nil || s.watcher == nil {
 		return AgentRef{}, nil
@@ -355,7 +365,11 @@ func (s *Service) ensureHostAgent(executor work.AgentExecutor) (AgentRef, error)
 		return AgentRef{}, err
 	}
 	command := s.hostCommand(executor)
-	if id := strings.TrimSpace(hostSession.ID); id != "" && s.watcher.HasSession(id) {
+	id := strings.TrimSpace(hostSession.ID)
+	replaceReason := ""
+	replaceDetail := ""
+
+	if id != "" && s.watcher.HasSession(id) {
 		if agent := s.watcher.GetAgent(id); agent != nil {
 			if s.hostAgentMatches(agent, executor) {
 				if strings.TrimSpace(hostSession.ExecutorID) != executor.ID {
@@ -365,8 +379,27 @@ func (s *Service) ensureHostAgent(executor work.AgentExecutor) (AgentRef, error)
 				}
 				return agentRefFromClassifier(agent), nil
 			}
+			// Explicit provider/executor mismatch (e.g. user switched host executor).
+			replaceReason = hostReplaceReasonProviderMismatch
+			replaceDetail = fmt.Sprintf(
+				"recorded_executor=%q resolved_executor=%q agent_command=%q agent_provider=%q",
+				hostSession.ExecutorID,
+				executor.ID,
+				strings.TrimSpace(agent.Command),
+				work.InferAgentProvider(agent.Command),
+			)
+			s.recordHostReplacement(HostReplacementEvent{
+				Reason:           replaceReason,
+				FromID:           id,
+				FromExecutorID:   hostSession.ExecutorID,
+				FromCommand:      agent.Command,
+				ResolvedExecutor: executor.ID,
+				Detail:           replaceDetail,
+			})
 			_ = s.watcher.KillSession(id)
 		} else {
+			// Tmux target still exists but watcher has not observed it yet (common right
+			// after daemon restart). Do not replace; return a bootstrap stub.
 			if strings.TrimSpace(hostSession.ExecutorID) != executor.ID {
 				if err := s.store.SetHostSession(id, executor.ID); err != nil {
 					return AgentRef{}, err
@@ -383,12 +416,35 @@ func (s *Service) ensureHostAgent(executor work.AgentExecutor) (AgentRef, error)
 				Hidden:  true,
 			}, nil
 		}
-	}
-	if id := strings.TrimSpace(hostSession.ID); id != "" {
-		// Host record exists but tmux session is gone. Create a replacement.
-		// Continue below.
+	} else if id != "" {
+		// Recorded host id is gone from tmux. Prefer re-binding an already-running
+		// hidden Brain host for this executor over spawning a blank session.
+		if recovered := s.recoverMatchingHost(executor); recovered != nil {
+			if err := s.store.SetHostSession(recovered.ID, executor.ID); err != nil {
+				return AgentRef{}, err
+			}
+			s.recordHostReplacement(HostReplacementEvent{
+				Reason:           hostReplaceReasonRecoveredAlive,
+				FromID:           id,
+				ToID:             recovered.ID,
+				FromExecutorID:   hostSession.ExecutorID,
+				FromCommand:      recovered.Command,
+				ResolvedExecutor: executor.ID,
+				Detail:           "recorded host missing; rebound matching live Brain host",
+			})
+			return agentRefFromClassifier(recovered), nil
+		}
+		replaceReason = hostReplaceReasonMissingTmux
+		replaceDetail = fmt.Sprintf("has_session=false id=%q", id)
+		s.recordHostReplacement(HostReplacementEvent{
+			Reason:           replaceReason,
+			FromID:           id,
+			FromExecutorID:   hostSession.ExecutorID,
+			ResolvedExecutor: executor.ID,
+			Detail:           replaceDetail,
+		})
 	} else {
-		// No recorded host yet.
+		replaceReason = hostReplaceReasonNoRecordedHost
 	}
 
 	agentID, err := s.watcher.CreateSession("", watcher.CreateSessionOptions{
@@ -404,6 +460,17 @@ func (s *Service) ensureHostAgent(executor work.AgentExecutor) (AgentRef, error)
 	}
 	if err := s.store.SetHostSession(agentID, executor.ID); err != nil {
 		return AgentRef{}, err
+	}
+	if replaceReason == hostReplaceReasonMissingTmux || replaceReason == hostReplaceReasonProviderMismatch {
+		// Record the newly created target as the replacement destination.
+		s.recordHostReplacement(HostReplacementEvent{
+			Reason:           replaceReason + "_created",
+			FromID:           id,
+			ToID:             agentID,
+			FromExecutorID:   hostSession.ExecutorID,
+			ResolvedExecutor: executor.ID,
+			Detail:           replaceDetail,
+		})
 	}
 	if prompt := s.hostBootstrapPrompt(executor); prompt != "" {
 		_ = s.watcher.SendInputWhenReady(agentID, command, prompt+"\n")
@@ -423,11 +490,75 @@ func (s *Service) ensureHostAgent(executor work.AgentExecutor) (AgentRef, error)
 	}, nil
 }
 
+// recoverMatchingHost finds a live hidden Brain host that matches the resolved
+// executor. Used when host_session.json points at a dead tmux target so Snapshot
+// can rebind instead of always spawning a fresh host.
+func (s *Service) recoverMatchingHost(executor work.AgentExecutor) *classifier.Agent {
+	if s == nil || s.watcher == nil {
+		return nil
+	}
+	for _, agent := range s.watcher.Agents() {
+		if agent == nil || !agent.Hidden {
+			continue
+		}
+		if !s.hostAgentMatches(agent, executor) {
+			continue
+		}
+		if !s.watcher.HasSession(agent.ID) {
+			continue
+		}
+		cp := *agent
+		return &cp
+	}
+	return nil
+}
+
+func (s *Service) recordHostReplacement(event HostReplacementEvent) {
+	if strings.TrimSpace(event.Reason) == "" {
+		return
+	}
+	if event.At.IsZero() {
+		if s != nil && s.now != nil {
+			event.At = s.now().UTC()
+		} else {
+			event.At = time.Now().UTC()
+		}
+	}
+	log.Printf(
+		"brain host replace reason=%s from=%q to=%q executor=%q detail=%s",
+		event.Reason,
+		strings.TrimSpace(event.FromID),
+		strings.TrimSpace(event.ToID),
+		strings.TrimSpace(event.ResolvedExecutor),
+		strings.TrimSpace(event.Detail),
+	)
+	if s != nil && s.store != nil {
+		if err := s.store.AppendHostReplacement(event); err != nil {
+			log.Printf("brain host replace audit write failed: %v", err)
+		}
+	}
+}
+
 func (s *Service) hostExecutor() work.AgentExecutor {
 	preferred := brainHostExecutorOverride()
+	var hostSession HostSession
 	if preferred == "" && s != nil && s.store != nil {
-		if hostSession, err := s.store.HostSession(); err == nil {
-			preferred = strings.TrimSpace(hostSession.ExecutorID)
+		if session, err := s.store.HostSession(); err == nil {
+			hostSession = session
+			preferred = strings.TrimSpace(session.ExecutorID)
+		}
+	}
+	// When host_session.executor_id is empty, prefer the live host's provider over
+	// the codex default. Defaulting to codex while a grok/claude Brain host is still
+	// alive causes provider_mismatch kill+replace on every Snapshot/reconnect.
+	// ensureHostAgent persists executor_id once the live host is matched.
+	if preferred == "" && s != nil && s.watcher != nil {
+		if id := strings.TrimSpace(hostSession.ID); id != "" {
+			if agent := s.watcher.GetAgent(id); agent != nil && agent.Hidden {
+				if provider := work.InferAgentProvider(agent.Command); provider != "" {
+					preferred = provider
+				}
+			}
 		}
 	}
 	if s != nil && s.execs != nil {

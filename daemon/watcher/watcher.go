@@ -21,12 +21,17 @@ const tmuxSendInputChunkBytes = 1024
 
 const initialInputReadyTimeout = 8 * time.Second
 const cursorInputReadyTimeout = 25 * time.Second
+const grokInputReadyTimeout = 15 * time.Second
 
 var codexInputPromptRe = regexp.MustCompile(`(?m)^›\s`)
 var codexModelLoadingRe = regexp.MustCompile(`(?im)\bmodel:\s+loading\b`)
 var codexStartupContinueRe = regexp.MustCompile(`(?im)\bpress\s+enter\s+to\s+continue\b`)
 var cursorInputReadyRe = regexp.MustCompile(`(?im)\b(run\s+everything|composer\s+[0-9][^\n]*\n\s*~?[/\w.-].*)\b`)
 var cursorWorkspaceTrustRe = regexp.MustCompile(`(?im)\bworkspace\s+trust\s+required\b`)
+
+// Grok TUI ready: model/footer chrome plus the empty/ready composer prompt glyph.
+var grokChromeReadyRe = regexp.MustCompile(`(?im)(\bgrok\s+[0-9]|always-approve|enter\s*:\s*send|shift\+tab:mode)`)
+var grokPromptReadyRe = regexp.MustCompile(`(?m)[│┃]\s*❯|^\s*❯`)
 
 // SessionEvent represents a state change or output update for an agent.
 type SessionEvent struct {
@@ -661,8 +666,9 @@ func (w *Watcher) SendInput(sessionID, text string) error {
 }
 
 // SendInputWhenReady waits for a newly started agent UI to be ready, then sends
-// text. Unknown executors are treated as ready immediately. Known Codex UIs must
-// reach the input prompt so Zen does not paste a task into a startup/approval card.
+// text. Unknown executors are treated as ready immediately. Known Codex, Cursor,
+// and Grok UIs must reach an input prompt so Zen does not paste a task into a
+// startup screen before the composer can accept Enter-to-send.
 func (w *Watcher) SendInputWhenReady(sessionID, command, text string) error {
 	if !WaitForInputReady(sessionID, command, inputReadyTimeout(command)) && needsInputReadinessWait(command, "") {
 		return fmt.Errorf("agent input not ready for %q", command)
@@ -753,7 +759,47 @@ func isAgentInputReady(command, content string) bool {
 		return strings.Contains(strings.ToLower(current), "cursor agent") &&
 			cursorInputReadyRe.MatchString(current)
 	}
+	if isGrokCommand(command) || looksLikeGrokPane(content) {
+		return isGrokInputReady(content)
+	}
 	return strings.TrimSpace(content) != ""
+}
+
+func isGrokInputReady(content string) bool {
+	current := latestGrokPaneContent(content)
+	if strings.TrimSpace(current) == "" {
+		return false
+	}
+	return grokChromeReadyRe.MatchString(current) && grokPromptReadyRe.MatchString(current)
+}
+
+func looksLikeGrokPane(content string) bool {
+	lower := strings.ToLower(content)
+	return strings.Contains(lower, "grok") &&
+		(strings.Contains(lower, "always-approve") ||
+			strings.Contains(lower, "xai") ||
+			strings.Contains(lower, "enter:send") ||
+			strings.Contains(lower, "shift+tab:mode") ||
+			grokChromeReadyRe.MatchString(content))
+}
+
+func latestGrokPaneContent(content string) string {
+	normalized := strings.ReplaceAll(content, "\r\n", "\n")
+	lower := strings.ToLower(normalized)
+	if idx := strings.LastIndex(lower, "grok"); idx >= 0 {
+		// Prefer the latest chrome block; keep preceding context so the composer
+		// prompt above the Grok footer is still visible for readiness checks.
+		start := idx - 400
+		if start < 0 {
+			start = 0
+		}
+		return normalized[start:]
+	}
+	lines := strings.Split(normalized, "\n")
+	if len(lines) > 60 {
+		return strings.Join(lines[len(lines)-60:], "\n")
+	}
+	return normalized
 }
 
 func isCodexStartupContinuePrompt(command, content string) bool {
@@ -790,8 +836,10 @@ func needsInputReadinessWait(command, content string) bool {
 	lowerContent := strings.ToLower(content)
 	return isCodexCommand(command) ||
 		isCursorAgentCommand(command) ||
+		isGrokCommand(command) ||
 		strings.Contains(lowerContent, "openai codex") ||
-		strings.Contains(lowerContent, "cursor agent")
+		strings.Contains(lowerContent, "cursor agent") ||
+		looksLikeGrokPane(content)
 }
 
 func isCodexCommand(command string) bool {
@@ -810,6 +858,15 @@ func isCursorAgentCommand(command string) bool {
 	}
 	base := filepath.Base(fields[0])
 	return base == "cursor-agent"
+}
+
+func isGrokCommand(command string) bool {
+	fields := strings.Fields(strings.TrimSpace(command))
+	if len(fields) == 0 {
+		return false
+	}
+	base := filepath.Base(fields[0])
+	return base == "grok" || strings.HasPrefix(base, "grok-")
 }
 
 func (w *Watcher) activitySignal(agent classifier.Agent, paneContent string, panePID int, processes map[int]processInfo) classifier.ActivitySignal {
@@ -916,12 +973,19 @@ func tmuxSubmitDelay(command string) time.Duration {
 	if isCursorAgentCommand(command) {
 		return 400 * time.Millisecond
 	}
+	if isGrokCommand(command) {
+		// Large spawn briefs need a settle window before Enter or Grok keeps the draft unsent.
+		return 300 * time.Millisecond
+	}
 	return 120 * time.Millisecond
 }
 
 func inputReadyTimeout(command string) time.Duration {
 	if isCursorAgentCommand(command) {
 		return cursorInputReadyTimeout
+	}
+	if isGrokCommand(command) {
+		return grokInputReadyTimeout
 	}
 	return initialInputReadyTimeout
 }

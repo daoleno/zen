@@ -550,12 +550,55 @@ func TestCursorAgentCommandNeedsInputReadinessWait(t *testing.T) {
 	}
 }
 
+func TestGrokInputReadyRequiresComposerAndChrome(t *testing.T) {
+	starting := "Starting Grok...\nLoading model\n"
+	if isAgentInputReady("grok", starting) {
+		t.Fatal("Grok startup without composer should not be input-ready")
+	}
+
+	chromeOnly := "Grok 4.5 (high) · always-approve\nShift+Tab:mode  │  Ctrl+c:cancel\n"
+	if isAgentInputReady("grok", chromeOnly) {
+		t.Fatal("Grok chrome without composer prompt should not be input-ready")
+	}
+
+	ready := "" +
+		"  ╭──────────────────────────────────────────────────────────────────────────╮\n" +
+		"  │ ❯                                                                        │\n" +
+		"  ╰─────────────────────────────────────── Grok 4.5 (high) · always-approve ─╯\n" +
+		"\n" +
+		"  Shift+Tab:mode  │  Ctrl+c:cancel  │  Ctrl+g:send to bg  │  Ctrl+x:shortcuts\n"
+	if !isAgentInputReady("grok", ready) {
+		t.Fatal("Grok composer + chrome should be input-ready")
+	}
+
+	// Legacy keybinding chrome used in older captures.
+	legacyReady := "│ ❯\nEnter:send\nGrok 4.5\n"
+	if !isAgentInputReady("grok", legacyReady) {
+		t.Fatal("Grok Enter:send chrome with composer should be input-ready")
+	}
+}
+
+func TestGrokCommandNeedsInputReadinessWait(t *testing.T) {
+	if !needsInputReadinessWait("grok", "") {
+		t.Fatal("Grok should wait for composer readiness")
+	}
+	if !isGrokCommand("/home/me/bin/grok --yolo") {
+		t.Fatal("absolute Grok path should be detected")
+	}
+	if !needsInputReadinessWait("", "╰───── Grok 4.5 (high) · always-approve ─╯\n│ ❯") {
+		t.Fatal("Grok pane content should trigger readiness wait even without command")
+	}
+}
+
 func TestCursorAgentUsesLongerSubmitDelay(t *testing.T) {
 	if got := tmuxSubmitDelay("cursor-agent --force --sandbox disabled"); got < 350*time.Millisecond {
 		t.Fatalf("Cursor Agent submit delay = %s, want at least 350ms", got)
 	}
 	if got := tmuxSubmitDelay("codex"); got != 120*time.Millisecond {
 		t.Fatalf("Codex submit delay = %s", got)
+	}
+	if got := tmuxSubmitDelay("grok"); got < 250*time.Millisecond {
+		t.Fatalf("Grok submit delay = %s, want at least 250ms", got)
 	}
 }
 
@@ -696,7 +739,6 @@ func TestCursorToolChildActive_IgnoresCodeModeHost(t *testing.T) {
 		t.Fatal("code-mode-host must not count as tool activity")
 	}
 }
-
 
 func TestCursorToolChildActive_DetectsShellWorker(t *testing.T) {
 	processes := map[int]processInfo{

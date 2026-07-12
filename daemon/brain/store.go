@@ -55,8 +55,58 @@ func (s *Store) HostSessionPath() string {
 	return filepath.Join(s.statePath(), "host_session.json")
 }
 
+// HostReplacementsPath is an append-only audit log for Brain host replacements.
+// One JSON object per line; safe to tail for diagnosing @N → @M session loss.
+func (s *Store) HostReplacementsPath() string {
+	return filepath.Join(s.statePath(), "host_replacements.jsonl")
+}
+
 func (s *Store) ChatStatePath() string {
 	return filepath.Join(s.statePath(), "chat_state.json")
+}
+
+// HostReplacementEvent is a durable audit record for ensureHostAgent replacements.
+type HostReplacementEvent struct {
+	At               time.Time `json:"at"`
+	Reason           string    `json:"reason"`
+	FromID           string    `json:"from_id,omitempty"`
+	ToID             string    `json:"to_id,omitempty"`
+	FromExecutorID   string    `json:"from_executor_id,omitempty"`
+	FromCommand      string    `json:"from_command,omitempty"`
+	ResolvedExecutor string    `json:"resolved_executor,omitempty"`
+	Detail           string    `json:"detail,omitempty"`
+}
+
+// AppendHostReplacement writes one audit line. Failures are non-fatal for callers.
+func (s *Store) AppendHostReplacement(event HostReplacementEvent) error {
+	if s == nil {
+		return fmt.Errorf("brain store is not configured")
+	}
+	if event.At.IsZero() {
+		event.At = time.Now().UTC()
+	}
+	event.Reason = strings.TrimSpace(event.Reason)
+	if event.Reason == "" {
+		return fmt.Errorf("host replacement reason required")
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if err := os.MkdirAll(s.statePath(), 0o700); err != nil {
+		return err
+	}
+	raw, err := json.Marshal(event)
+	if err != nil {
+		return err
+	}
+	f, err := os.OpenFile(s.HostReplacementsPath(), os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	if _, err := f.Write(append(raw, '\n')); err != nil {
+		return err
+	}
+	return nil
 }
 
 func (s *Store) Snapshot() (Snapshot, error) {
