@@ -1,6 +1,17 @@
-# Zen
+<p align="center">
+  <img src="app/assets/branding/zen-logo-mark-transparent.png" width="128" alt="Zen logo">
+</p>
 
-Use your AI coding agents from your phone.
+<h1 align="center">Zen</h1>
+
+<p align="center">Use your AI coding agents from your phone.</p>
+
+<p align="center">
+  <a href="https://github.com/daoleno/zen/releases"><img alt="GitHub release" src="https://img.shields.io/github/v/release/daoleno/zen?include_prereleases&sort=semver"></a>
+  <a href="https://github.com/daoleno/zen/actions/workflows/release-artifacts.yml"><img alt="Release build" src="https://github.com/daoleno/zen/actions/workflows/release-artifacts.yml/badge.svg"></a>
+  <a href="LICENSE"><img alt="License: Apache-2.0" src="https://img.shields.io/badge/license-Apache--2.0-blue.svg"></a>
+  <img alt="Platforms: Linux and Android" src="https://img.shields.io/badge/platforms-Linux%20%7C%20Android-6f8f79">
+</p>
 
 Zen connects an Android app to coding agents running on your own Linux machine. It gives you mobile chat, terminal access, session management, and a persistent Brain workspace without moving your repositories or provider credentials into a hosted service.
 
