@@ -285,11 +285,14 @@ jobs:
       - name: Upload/replace assets on existing prerelease
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # No checkout in this job; gh needs explicit repo (owner/name).
+          GH_REPO: ${{ github.repository }}
           TAG: ${{ needs.build.outputs.tag }}
           VERSION: ${{ needs.build.outputs.version }}
         run: |
           set -euo pipefail
           # Require an existing prerelease; never create tags/releases here.
+          test -n "${GH_REPO:-}"
           meta="$(gh release view "$TAG" --json isPrerelease,isDraft,url)"
           echo "Release meta (no secrets): ${meta}"
           is_pre="$(echo "$meta" | python3 -c 'import json,sys; print(json.load(sys.stdin)["isPrerelease"])')"

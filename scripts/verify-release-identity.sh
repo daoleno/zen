@@ -167,6 +167,12 @@ if "gh release upload" not in wf:
     errors.append("release-artifacts.yml must upload assets via gh release upload")
 if "materialize-android-keystore" not in wf:
     errors.append("release-artifacts.yml must materialize keystore via helper script")
+# Publish job has no checkout; gh requires GH_REPO (or a git remote).
+if "GH_REPO" not in wf or "github.repository" not in wf:
+    errors.append(
+        "release-artifacts.yml publish path must set GH_REPO from github.repository "
+        "(publish job has no checkout)"
+    )
 
 notes_path = root / f"docs/releases/v{exp_version}.md"
 if not notes_path.is_file():
