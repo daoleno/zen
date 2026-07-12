@@ -118,3 +118,4 @@ Under `dist-download/v<version>/` (and the workflow artifact):
 - CI does not read developer home directories (including `~/.zen/release-keys`).
 - `publish=true` refuses non-prerelease and draft releases; uses `gh release upload --clobber` only.
 - Tag pushes do not set `publish`; no unexpected double-publication path from push alone.
+- Pinned Zig is downloaded with SHA-256 verification and extracted under `$RUNNER_TEMP/zig-install` (not `/usr/local`); its directory is appended to `$GITHUB_PATH` for later steps. No `sudo` or unverified installers.

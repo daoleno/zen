@@ -116,8 +116,9 @@ jobs:
       - name: Install Zig (checksum-pinned from native.lock.json)
         run: |
           set -euo pipefail
+          # Extract under RUNNER_TEMP (writable); never sudo or /usr/local.
           python3 <<'PY'
-          import hashlib, json, os, platform, urllib.request, tarfile, pathlib, sys
+          import hashlib, json, os, platform, subprocess, tarfile, pathlib, sys, urllib.request
           lock = json.load(open("app/modules/zen-terminal-vt/native.lock.json"))
           ver = lock["zig"]["version"]
           machine = platform.machine()
@@ -130,8 +131,11 @@ jobs:
           d = lock["zig"]["downloads"][key]
           url = d["tarball"]
           expect = d["sha256"]
-          root = d["archive_root"]
-          dest = pathlib.Path("/tmp/zig.tar.xz")
+          archive_root = d["archive_root"]
+          runner_temp = pathlib.Path(os.environ.get("RUNNER_TEMP") or os.environ.get("TMPDIR") or "/tmp")
+          install_root = runner_temp / "zig-install"
+          install_root.mkdir(parents=True, exist_ok=True)
+          dest = install_root / "zig.tar.xz"
           print(f"Downloading {url}")
           urllib.request.urlretrieve(url, dest)
           h = hashlib.sha256(dest.read_bytes()).hexdigest()
@@ -139,23 +143,38 @@ jobs:
               sys.exit(f"zig sha256 mismatch: got {h} want {expect}")
           print(f"ok: zig sha256 {h[:16]}…")
           with tarfile.open(dest, "r:xz") as tar:
-              tar.extractall("/usr/local")
-          zig = pathlib.Path("/usr/local") / root / "zig"
-          link = pathlib.Path("/usr/local/bin/zig")
-          if link.exists() or link.is_symlink():
-              link.unlink()
-          link.symlink_to(zig)
-          got = os.popen("zig version").read().strip()
-          print(got)
+              tar.extractall(install_root)
+          zig_dir = install_root / archive_root
+          zig = zig_dir / "zig"
+          if not zig.is_file():
+              sys.exit(f"zig binary missing after extract: {zig}")
+          # Expose directory containing zig for subsequent steps.
+          github_path = os.environ.get("GITHUB_PATH")
+          if github_path:
+              with open(github_path, "a", encoding="utf-8") as fh:
+                  fh.write(str(zig_dir.resolve()) + "\n")
+          else:
+              # Local dry-run fallback
+              os.environ["PATH"] = str(zig_dir.resolve()) + os.pathsep + os.environ.get("PATH", "")
+          got = subprocess.check_output([str(zig), "version"], text=True).strip()
+          print(f"zig version: {got}")
+          print(f"zig path: {zig.resolve()}")
           if not got.startswith(ver):
-              sys.exit("zig version mismatch after install")
+              sys.exit(f"zig version mismatch after install: got {got!r} want prefix {ver!r}")
           PY
+
+      - name: Confirm Zig on PATH
+        run: |
+          set -euo pipefail
+          command -v zig
+          zig version
 
       - name: Build release-grade libghostty (arm64-v8a)
         env:
           ZEN_GHOSTTY_CACHE: ${{ runner.temp }}/ghostty
         run: |
           set -euo pipefail
+          command -v zig
           ./scripts/build-libghostty.sh --abis arm64-v8a
           ./scripts/verify-libghostty.sh --release
           ./scripts/verify-libghostty.sh
