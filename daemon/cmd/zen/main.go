@@ -18,9 +18,12 @@ import (
 
 	"github.com/daoleno/zen/daemon/auth"
 	"github.com/daoleno/zen/daemon/brain"
+	"github.com/daoleno/zen/daemon/classifier"
 	"github.com/daoleno/zen/daemon/control"
+	"github.com/daoleno/zen/daemon/doctor"
 	"github.com/daoleno/zen/daemon/push"
 	"github.com/daoleno/zen/daemon/server"
+	"github.com/daoleno/zen/daemon/setup"
 	"github.com/daoleno/zen/daemon/stats"
 	"github.com/daoleno/zen/daemon/watcher"
 	"github.com/daoleno/zen/daemon/work"
@@ -46,6 +49,12 @@ func main() {
 		if errors.Is(err, flag.ErrHelp) {
 			return
 		}
+		if errors.Is(err, doctor.ErrNotReady) {
+			os.Exit(1)
+		}
+		if isSetupUserError(err) {
+			os.Exit(1)
+		}
 		log.Fatalf("%v", err)
 	}
 }
@@ -57,6 +66,10 @@ func run(args []string, stderr io.Writer) error {
 			return runDaemon(args[1:], stderr)
 		case "pair":
 			return runPairCommand(args[1:], stderr)
+		case "doctor":
+			return runDoctorCommand(args[1:], stderr)
+		case "setup":
+			return runSetupCommand(args[1:], stderr)
 		case "agent":
 			return runAgentCommand(args[1:], stderr)
 		case "brain":
@@ -64,6 +77,14 @@ func run(args []string, stderr io.Writer) error {
 		}
 	}
 	return runDaemon(args, stderr)
+}
+
+func isSetupUserError(err error) bool {
+	return errors.Is(err, setup.ErrBlocked) ||
+		errors.Is(err, setup.ErrNoExecutor) ||
+		errors.Is(err, setup.ErrConsentRequired) ||
+		errors.Is(err, setup.ErrInvalidArgs) ||
+		errors.Is(err, setup.ErrIncomplete)
 }
 
 func runDaemon(args []string, stderr io.Writer) error {
@@ -97,6 +118,7 @@ func runDaemon(args []string, stderr io.Writer) error {
 	}
 
 	w := watcher.New(500 * time.Millisecond)
+	w.SetActivityProbe(classifier.DefaultActivityProbe())
 	go func() {
 		if err := w.Run(ctx); err != nil && ctx.Err() == nil {
 			log.Printf("watcher error: %v", err)
@@ -726,6 +748,8 @@ func parseDaemonConfig(args []string, stderr io.Writer) (daemonConfig, error) {
 		fmt.Fprintln(stderr, "Subcommands:")
 		fmt.Fprintln(stderr, "  serve      Start the daemon")
 		fmt.Fprintln(stderr, "  pair       Generate a fresh pairing link")
+		fmt.Fprintln(stderr, "  doctor     Diagnose machine readiness for Zen")
+		fmt.Fprintln(stderr, "  setup      Guided first-run setup (uses doctor)")
 		fmt.Fprintln(stderr, "  agent      List, spawn, inspect, message, progress, and close agent sessions")
 		fmt.Fprintln(stderr, "  brain      Inspect Brain workspace and host executor configuration")
 	}

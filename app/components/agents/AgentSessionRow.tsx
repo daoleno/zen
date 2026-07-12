@@ -10,6 +10,10 @@ import {
 import type { AgentKind } from '../../services/agentPresentation';
 import type { TerminalFlavor } from '../../services/terminalFlavor';
 import type { SessionPreviewTone } from '../../services/sessionPreview';
+import {
+  agentStatusLabel,
+  isAgentActivelyRunning,
+} from '../../services/agentStatusPresentation';
 import { AnimatedPressable } from '../ui/AnimatedPressable';
 import { AgentKindIcon } from '../terminal/AgentKindIcon';
 
@@ -45,18 +49,19 @@ export function AgentSessionRow({
   const previewColor = previewToneColor(previewTone, colors);
   const statusColor = agentStatusColor(status, colors);
   const statusLabel = agentStatusLabel(status);
+  const activelyRunning = isAgentActivelyRunning(status);
 
   return (
     <AnimatedPressable
-      style={[styles.row, status === 'running' && styles.rowActive]}
+      style={[styles.row, activelyRunning && styles.rowActive]}
       preset="card"
       onPress={onPress}
       onLongPress={onLongPress}
       delayLongPress={400}
       accessibilityRole="button"
-      accessibilityLabel={`${title}, ${statusLabel}, ${preview}${status === 'running' ? '' : `, ${timeLabel}`}`}
+      accessibilityLabel={`${title}, ${statusLabel}, ${preview}${activelyRunning ? '' : `, ${timeLabel}`}`}
       accessibilityHint="Opens the terminal session"
-      accessibilityState={{ busy: status === 'running' }}
+      accessibilityState={{ busy: activelyRunning }}
     >
       <View style={styles.iconSlot}>
         <AgentKindIcon kind={kind} flavor={terminalFlavor} size={36} />
@@ -84,13 +89,13 @@ export function AgentSessionRow({
         </Text>
       </View>
       <View style={styles.meta}>
-        {status !== 'running' ? (
+        {!activelyRunning ? (
           <Text style={styles.time} numberOfLines={1}>
             {timeLabel}
           </Text>
         ) : null}
         <View style={styles.statusMeta}>
-          {status === 'running' ? (
+          {activelyRunning ? (
             <ActivityIndicator size="small" color={statusColor} style={styles.spinner} />
           ) : (
             <View style={[styles.statusDot, { backgroundColor: statusColor }]} />
@@ -132,21 +137,6 @@ function agentStatusColor(status: AgentStatus, colors: typeof Colors): string {
       return colors.statusDone;
     default:
       return colors.statusUnknown;
-  }
-}
-
-function agentStatusLabel(status: AgentStatus): string {
-  switch (status) {
-    case 'failed':
-      return 'Failed';
-    case 'blocked':
-      return 'Blocked';
-    case 'running':
-      return 'Running';
-    case 'done':
-      return 'Done';
-    default:
-      return 'Unknown';
   }
 }
 

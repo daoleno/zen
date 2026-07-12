@@ -37,12 +37,17 @@ export default function OnboardingScreen() {
                 <Text style={styles.stepNum}>1</Text>
               </View>
               <View style={styles.stepContent}>
-                <Text style={styles.stepTitle}>Install zen on your server</Text>
+                <Text style={styles.stepTitle}>Install and start zen</Text>
                 <View style={styles.codeBlock}>
                   <Text style={styles.code}>
-                    go install github.com/daoleno/zen/daemon/cmd/zen@latest
+                    {`go install github.com/daoleno/zen/daemon/cmd/zen@latest
+zen`}
                   </Text>
                 </View>
+                <Text style={styles.stepHint}>
+                  zen listens on 127.0.0.1:9876 by default. State lives in
+                  ~/.zen (legacy ~/.config/zen is migrated automatically).
+                </Text>
               </View>
             </View>
           </Enter>
@@ -53,16 +58,16 @@ export default function OnboardingScreen() {
                 <Text style={styles.stepNum}>2</Text>
               </View>
               <View style={styles.stepContent}>
-                <Text style={styles.stepTitle}>Run zen</Text>
+                <Text style={styles.stepTitle}>Expose, then pair</Text>
                 <View style={styles.codeBlock}>
                   <Text style={styles.code}>
-                    zen -advertise-url https://your-host.example/ws
+                    zen pair https://your-host.example
                   </Text>
                 </View>
                 <Text style={styles.stepHint}>
-                  zen listens on 127.0.0.1:9876 by default. Expose that local
-                  port through Cloudflare Tunnel, Tailscale, or your own reverse
-                  proxy, then pass the public /ws URL with -advertise-url.
+                  Forward the full daemon origin through Cloudflare Tunnel,
+                  Tailscale, or your reverse proxy (not only /ws). Then run
+                  zen pair with that origin to print a one-time link and QR.
                 </Text>
               </View>
             </View>

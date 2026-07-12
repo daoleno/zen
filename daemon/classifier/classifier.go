@@ -95,7 +95,11 @@ var nonFatalDiagnosticStartPatterns = []*regexp.Regexp{
 
 var timestampedLogLineRe = regexp.MustCompile(`^\d{4}/\d{2}/\d{2} \d{2}:\d{2}:\d{2}\b`)
 
-// Classify determines the state of an agent based on its tmux pane output and liveness.
+// Classify determines pane-derived state from tmux output and liveness.
+//
+// It never returns Running. Pane liveness and recent output churn only prove the
+// session is alive; active-turn Running comes from lifecycle progress leases or
+// provider activity adapters via ResolveSessionStatus.
 //
 //	tmux pane alive? ──no──→ check last lines ──failed patterns?──→ FAILED
 //	                                           └──otherwise──→ DONE
@@ -107,14 +111,10 @@ var timestampedLogLineRe = regexp.MustCompile(`^\d{4}/\d{2}/\d{2} \d{2}:\d{2}:\d
 //	last N lines match failed pattern? ──yes──→ FAILED
 //	        │no
 //	        ▼
-//	output changed recently? ──yes──→ RUNNING
-//	        │no (stale > 30 polls = ~15s at 500ms)
-//	        ▼
-//	check last lines for blocked ──yes──→ BLOCKED
-//	        │no
-//	        ▼
-//	UNKNOWN
+//	UNKNOWN (idle / no durable activity signal)
 func Classify(paneAlive bool, lines []string, staleCount int) (AgentState, string) {
+	_ = staleCount // retained for API compatibility with the watcher poll loop
+
 	if len(lines) == 0 {
 		if !paneAlive {
 			return StateDone, "Session ended (no output)"
@@ -153,12 +153,7 @@ func Classify(paneAlive bool, lines []string, staleCount int) (AgentState, strin
 		return StateFailed, truncate(line, 100)
 	}
 
-	// If output is actively changing, the agent is running.
-	if staleCount < 30 { // ~15 seconds at 500ms polling
-		return StateRunning, summarize(tail)
-	}
-
-	// Output hasn't changed for a while. Re-check blocked patterns more broadly.
+	// Broader blocked scan (prompt may not be the final line).
 	for _, p := range blockedPatterns {
 		for _, line := range tail {
 			if p.MatchString(strings.TrimSpace(line)) {
@@ -167,7 +162,10 @@ func Classify(paneAlive bool, lines []string, staleCount int) (AgentState, strin
 		}
 	}
 
-	return StateUnknown, "No new output for " + time.Duration(time.Duration(staleCount)*500*time.Millisecond).String()
+	if summarize(tail) != "" {
+		return StateUnknown, summarize(tail)
+	}
+	return StateUnknown, "Session idle"
 }
 
 func matchingImmediateBlockedLine(lines []string) string {

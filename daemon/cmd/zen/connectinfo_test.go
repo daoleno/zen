@@ -126,7 +126,7 @@ func TestPrintPairingHint(t *testing.T) {
 	printPairingHint(&output, "/tmp/zen-state")
 
 	rendered := output.String()
-	if !strings.Contains(rendered, "zen pair -state-dir /tmp/zen-state https://your-host/ws") {
+	if !strings.Contains(rendered, "zen pair -state-dir /tmp/zen-state https://your-host.example") {
 		t.Fatalf("expected pair command example, got %q", rendered)
 	}
 	if strings.Contains(rendered, "LOCAL-ONLY") || strings.Contains(rendered, "PAIRABLE") {

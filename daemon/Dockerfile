@@ -1,4 +1,6 @@
-FROM golang:1.24-alpine AS builder
+# Advanced path only: prefer the host binary so tmux and local AI CLIs share
+# the same environment. See docs/install-daemon.md.
+FROM golang:1.25-alpine AS builder
 WORKDIR /build
 COPY go.mod go.sum ./
 RUN go mod download

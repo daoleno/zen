@@ -1,5 +1,10 @@
 import type { CodexConversationEvent } from "../../services/codexConversation";
 import {
+  buildExpandedToolDetails,
+  isWaitLikeToolName,
+  isWaitSessionPoll,
+} from "../../services/toolCallDetails";
+import {
   collapsedToolLabel,
   isExecWrapperToolName,
   isUnsafeCollapsedDetail,
@@ -171,6 +176,10 @@ export function buildZenTimeline(events: CodexConversationEvent[]): ZenTimelineI
       flushExploration();
     }
 
+    if (event.kind === "tool" && isWaitSessionPoll(event.tool_name || event.title || "", event.input || "")) {
+      attachWaitStatusToLastCommand(items, explorationEntries, event);
+      continue;
+    }
     const activity = activityFromEvent(event);
     if (activity) {
       items.push(activity);
@@ -178,6 +187,50 @@ export function buildZenTimeline(events: CodexConversationEvent[]): ZenTimelineI
   }
   flushExploration();
   return items;
+}
+
+function attachWaitStatusToLastCommand(
+  items: ZenTimelineItem[],
+  explorationEntries: ExplorationEntry[],
+  event: CodexConversationEvent,
+) {
+  const details = buildExpandedToolDetails({
+    toolName: event.tool_name || event.title,
+    input: event.input,
+    output: event.output || event.body,
+    command: event.command,
+    status: event.status,
+    exitCode: event.exit_code,
+    semanticKind: "wait",
+  });
+  const statusLine = details.statusLine;
+  if (!statusLine) {
+    return;
+  }
+  // Prefer linked in-progress exploration / last command activity.
+  for (let index = items.length - 1; index >= 0; index -= 1) {
+    const item = items[index];
+    if (item.type !== "activity") {
+      continue;
+    }
+    if (item.tone === "running" || item.statusKey === "running" || item.statusKey === "done") {
+      items[index] = {
+        ...item,
+        statusLine: item.statusLine || statusLine,
+        detail: item.detail || statusLine,
+      };
+      return;
+    }
+  }
+  if (explorationEntries.length > 0) {
+    const last = explorationEntries[explorationEntries.length - 1];
+    if (last) {
+      last.event = {
+        ...last.event,
+        body: last.event.body,
+      };
+    }
+  }
 }
 
 export function mergePendingUserMessagesIntoTimeline(
@@ -529,16 +582,34 @@ function activityFromEvent(event: CodexConversationEvent): ZenTimelineItem | nul
       const failed = isCommandFailed(event, presentation);
       const running = event.status === "running";
       const command = event.command || "";
-      const output = formatOutputPreview(event.body || "", {
-        maxLines: COMMAND_OUTPUT_PREVIEW_LINES,
-        maxChars: COMMAND_OUTPUT_PREVIEW_CHARS,
-      });
+      const status = running ? "running" : failed ? "failed" : event.status || "done";
       const semantic = collapsedToolLabel({
         kind: "command",
         command,
         toolName: "exec_command",
-        status: running ? "running" : failed ? "failed" : event.status || "done",
+        status,
         exitCode: event.exit_code,
+      });
+      const action = primarySemanticAction({
+        kind: "command",
+        command,
+        toolName: "exec_command",
+        status,
+        exitCode: event.exit_code,
+      });
+      const details = buildExpandedToolDetails({
+        kind: "command",
+        toolName: "exec_command",
+        command,
+        output: event.body,
+        status,
+        exitCode: event.exit_code,
+        semanticKind: action.kind,
+        files: presentation.target ? [presentation.target] : event.files,
+      });
+      const output = formatOutputPreview(details.result || event.body || "", {
+        maxLines: COMMAND_OUTPUT_PREVIEW_LINES,
+        maxChars: COMMAND_OUTPUT_PREVIEW_CHARS,
       });
       return {
         type: "activity",
@@ -548,12 +619,21 @@ function activityFromEvent(event: CodexConversationEvent): ZenTimelineItem | nul
         title: semantic.title,
         tone: running ? "running" : failed ? "failed" : "success",
         icon: running ? "time-outline" : failed ? "alert-circle-outline" : presentation.icon,
-        detail: safeCollapsedDetail(semantic.detail),
-        body: output.text || (!running && !failed ? "(no output)" : undefined),
-        bodyKind: commandOutputBodyKind(command, output.text),
+        detail: safeCollapsedDetail(details.quietDetail || semantic.detail),
+        body: output.text || undefined,
+        bodyKind: output.text ? commandOutputBodyKind(command, output.text) : undefined,
+        commandText: details.command,
+        queryText: details.query,
+        statusLine: details.statusLine,
+        files: details.files,
         defaultExpanded: failed,
         accessibilityLabel: semantic.accessibilityLabel,
-        providerToolId: semantic.providerToolId,
+        providerToolId: (action.kind === "read_files" || action.kind === "search_code")
+          ? undefined
+          : details.developer?.providerToolId,
+        developerDetails: (action.kind === "read_files" || action.kind === "search_code")
+          ? undefined
+          : details.developer,
       };
     }
     case "patch": {
@@ -578,6 +658,9 @@ function activityFromEvent(event: CodexConversationEvent): ZenTimelineItem | nul
         defaultExpanded: false,
         accessibilityLabel: semantic.accessibilityLabel,
         providerToolId: semantic.providerToolId,
+        developerDetails: semantic.providerToolId
+          ? { providerToolId: semantic.providerToolId }
+          : undefined,
       };
     }
     case "tool": {
@@ -587,37 +670,87 @@ function activityFromEvent(event: CodexConversationEvent): ZenTimelineItem | nul
       }
       const failed = isFailureLikeStatus(event.status) || (event.exit_code ?? 0) !== 0;
       const running = event.status === "running";
+      const status = running ? "running" : failed ? "failed" : event.status || "done";
       const presentation = toolPresentation(event);
       const previewPath = presentation.localImagePath || imagePathFromTool(event);
-      const result = formatOutputPreview(event.output || event.body || "", {
-        maxLines: TOOL_PAYLOAD_PREVIEW_LINES,
-        maxChars: TOOL_PAYLOAD_PREVIEW_CHARS,
-      });
       const semantic = collapsedToolLabel({
         kind: "tool",
         toolName: name,
         title: event.title,
         input: event.input,
         command: event.command,
-        status: running ? "running" : failed ? "failed" : event.status || "done",
+        status,
         exitCode: event.exit_code,
         files: event.files,
       });
+      const action = primarySemanticAction({
+        kind: "tool",
+        toolName: name,
+        title: event.title,
+        input: event.input,
+        command: event.command,
+        status,
+        exitCode: event.exit_code,
+        files: event.files,
+      });
+      const details = buildExpandedToolDetails({
+        kind: "tool",
+        toolName: name,
+        title: event.title,
+        input: event.input,
+        output: event.output || event.body,
+        command: event.command,
+        status,
+        exitCode: event.exit_code,
+        files: event.files,
+        semanticKind: action.kind,
+      });
+      if (details.hideCard || details.mergeIntoCommand) {
+        return null;
+      }
+      const result = formatOutputPreview(details.result || "", {
+        maxLines: TOOL_PAYLOAD_PREVIEW_LINES,
+        maxChars: TOOL_PAYLOAD_PREVIEW_CHARS,
+      });
+      const isWait = action.kind === "wait";
+      const developerDetails = isWait || action.kind === "read_files" || action.kind === "search_code"
+        ? details.developer
+        : (details.developer
+          ? {
+            ...details.developer,
+            providerToolId: semantic.providerToolId || details.developer.providerToolId,
+          }
+          : semantic.providerToolId
+            ? { providerToolId: semantic.providerToolId }
+            : undefined);
       return {
         type: "activity",
         id: event.id || `tool:${event.seq}`,
         timestamp: event.timestamp,
         statusKey: event.status || "done",
-        title: semantic.title,
+        title: isWait
+          ? (running ? "Waiting" : "Finished")
+          : semantic.title,
         tone: running ? "running" : failed ? "failed" : "success",
         icon: semanticActivityIcon(semantic.title, presentation.icon, running, failed),
-        detail: safeCollapsedDetail(semantic.detail),
-        body: result.text || undefined,
-        bodyKind: toolOutputBodyKind(event, result.text),
+        detail: safeCollapsedDetail(
+          isWait ? details.statusLine || details.quietDetail : (details.quietDetail || semantic.detail),
+        ),
+        body: isWait ? undefined : (result.text || undefined),
+        bodyKind: !isWait && result.text ? toolOutputBodyKind(event, result.text) : undefined,
+        commandText: isWait ? undefined : details.command,
+        queryText: details.query,
+        statusLine: details.statusLine,
+        files: details.files,
         previewPath,
         defaultExpanded: failed,
-        accessibilityLabel: semantic.accessibilityLabel,
-        providerToolId: semantic.providerToolId,
+        accessibilityLabel: isWait
+          ? (details.statusLine || (running ? "Waiting" : "Finished"))
+          : semantic.accessibilityLabel,
+        providerToolId: (action.kind === "read_files" || action.kind === "search_code" || isWait)
+          ? undefined
+          : developerDetails?.providerToolId,
+        developerDetails,
         children: semanticChildren(event.id || `tool:${event.seq}`, semantic.children),
       };
     }
@@ -736,7 +869,11 @@ function explorationActivityFromEntries(
     : semantic.title;
   const quietDetail = entries.length > 1
     ? `${entries.length} lookups`
-    : undefined;
+    : files.length === 1
+      ? basename(files[0])
+      : files.length > 1
+        ? `${files.length} files`
+        : undefined;
 
   return {
     type: "activity",
@@ -753,7 +890,8 @@ function explorationActivityFromEntries(
     accessibilityLabel: entries.length > 1
       ? `${title}, ${entries.length} lookups`
       : semantic.accessibilityLabel,
-    providerToolId: "exec_command",
+    providerToolId: undefined,
+    developerDetails: undefined,
     children: entries.length > 1
       ? entries.map((entry, index) => ({
         id: `${first?.event.id || "explore"}:child:${index}`,
@@ -1005,15 +1143,10 @@ function isLowSignalStatus(value: string) {
 
 function isLowSignalToolEvent(name: string, input: string) {
   const normalized = name.trim();
-  if (normalized === "write_stdin" || normalized.endsWith(".write_stdin")) {
-    try {
-      const parsed = JSON.parse(input);
-      return parsed?.chars === "";
-    } catch {
-      return false;
-    }
+  if (normalized.endsWith(".write_stdin")) {
+    return isWaitSessionPoll("write_stdin", input);
   }
-  return false;
+  return isWaitSessionPoll(normalized, input);
 }
 
 export function isEventRunning(event: CodexConversationEvent) {
@@ -1814,6 +1947,9 @@ function semanticActivityIcon(
   if (lower.includes("test")) {
     return "checkmark-done-outline";
   }
+  if (lower.includes("wait")) {
+    return "time-outline";
+  }
   if (lower.includes("command")) {
     return "terminal-outline";
   }
@@ -1836,6 +1972,8 @@ function semanticKindIcon(kind: SemanticActionKind): TimelineIconName {
       return "image-outline";
     case "test_app":
       return "checkmark-done-outline";
+    case "wait":
+      return "time-outline";
     default:
       return "cube-outline";
   }

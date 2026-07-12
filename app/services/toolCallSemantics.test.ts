@@ -249,10 +249,12 @@ describe("timeline presentation", () => {
       "Opened an image",
       "Opening an image",
     ]);
-    expect(activities[0]?.detail).toBeUndefined();
+    expect(activities[0]?.detail).toBe("SemanticAction");
+    expect(activities[0]?.providerToolId).toBeUndefined();
     expect(activities[1]?.detail).toBeUndefined();
     expect(activities[1]?.children?.length).toBe(2);
     expect(activities[1]?.providerToolId).toBe("exec_command");
+    expect(activities[1]?.developerDetails?.providerToolId).toBe("exec_command");
     expect(activities[4]?.tone).toBe("failed");
     expect(activities[5]?.tone).toBe("running");
     expect(shouldAutoExpandActivity(activities[0]!)).toBe(false);

@@ -77,9 +77,30 @@ func loadCursorConversationForAgent(agent classifier.Agent, now time.Time) (Code
 	if conversation.Events == nil {
 		conversation.Events = []CodexConversationEvent{}
 	}
-	active := conversationHasActiveTurn(conversation.Events)
+	active := cursorConversationHasActiveTurn(conversation.Events)
 	conversation.Active = &active
 	return conversation, nil
+}
+
+// cursorConversationHasActiveTurn uses Cursor's structured turn_ended events.
+// Assistant/tool rows appear mid-turn, so Codex-style "user then assistant =
+// inactive" is wrong for Cursor transcripts.
+func cursorConversationHasActiveTurn(events []CodexConversationEvent) bool {
+	lastUser := -1
+	lastEnded := -1
+	for index, event := range events {
+		switch event.Kind {
+		case "user_message":
+			lastUser = index
+		case "message":
+			if event.Role == "user" {
+				lastUser = index
+			}
+		case "turn_ended":
+			lastEnded = index
+		}
+	}
+	return classifier.TranscriptTurnActive(lastUser, lastEnded)
 }
 
 func loadCachedCursorConversation(path string) (CodexConversation, error) {
@@ -223,6 +244,21 @@ func newCursorConversationBuilder(sourceID string) *cursorConversationBuilder {
 }
 
 func (b *cursorConversationBuilder) consumeLine(lineNumber int, line []byte) {
+	var typed struct {
+		Type   string `json:"type"`
+		Status string `json:"status"`
+	}
+	if json.Unmarshal(line, &typed) == nil && strings.EqualFold(strings.TrimSpace(typed.Type), "turn_ended") {
+		b.addEvent(CodexConversationEvent{
+			ID:     b.eventID(lineNumber, "turn_ended", 0),
+			Seq:    cursorEventSeq(lineNumber, 0),
+			Kind:   "turn_ended",
+			Status: strings.TrimSpace(typed.Status),
+			Source: cursorConversationSource,
+		})
+		return
+	}
+
 	var record struct {
 		Role    string `json:"role"`
 		Message struct {
@@ -308,6 +344,13 @@ func (b *cursorConversationBuilder) addEvent(event CodexConversationEvent) bool 
 	event.ToolName = truncateRunes(cleanToolName(event.ToolName), 120)
 	event.Input = truncateConversationBody(event.Input)
 	event.Output = truncateConversationBody(event.Output)
+	if event.Kind == "turn_ended" {
+		if event.ID == "" {
+			event.ID = b.eventID(len(b.events)+1, "turn_ended", 0)
+		}
+		b.events = append(b.events, event)
+		return true
+	}
 	if event.Kind == "" || (event.Body == "" && event.Title == "" && event.Command == "" && event.ToolName == "" && event.Input == "" && event.Output == "") {
 		return false
 	}

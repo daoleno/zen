@@ -81,24 +81,27 @@ func TestMatchGrokSessionToActiveSession_UsesSessionUpdatedAfterStart(t *testing
 }
 
 func TestFindGrokSession_DoesNotReturnStaleSessionForNewAgent(t *testing.T) {
-	fixtureHome, cwd := installGrokSessionFixture(t, findLocalGrokSessionDir(t))
-	oldSessionDir := filepath.Join(
-		fixtureHome,
-		".grok",
-		"sessions",
-		encodeGrokSessionCWD(cwd),
-		filepath.Base(findLocalGrokSessionDir(t)),
-	)
-	writeGrokSummary(t, filepath.Join(oldSessionDir, grokSummaryFile), map[string]any{
+	homeRoot := t.TempDir()
+	home := filepath.Join(homeRoot, "home")
+	cwd := "/tmp/zen-grok-fixture"
+	sessionID := "stale-grok-session"
+	sessionDir := filepath.Join(home, ".grok", "sessions", encodeGrokSessionCWD(cwd), sessionID)
+	if err := os.MkdirAll(sessionDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	writeGrokSummary(t, filepath.Join(sessionDir, grokSummaryFile), map[string]any{
 		"info": map[string]any{
-			"id":  "old-grok-session",
+			"id":  sessionID,
 			"cwd": cwd,
 		},
 		"updated_at": time.Now().UTC().Format(time.RFC3339Nano),
 		"created_at": time.Now().UTC().Add(-2 * time.Hour).Format(time.RFC3339Nano),
 	})
+	writeJSONL(t, filepath.Join(sessionDir, grokChatHistoryFile),
+		map[string]any{"type": "user", "content": "old"},
+	)
 
-	t.Setenv("HOME", fixtureHome)
+	t.Setenv("HOME", home)
 	agentStart := time.Now().UTC()
 	got, ok, err := findGrokSession(classifier.Agent{
 		Command:   "grok --no-alt-screen --permission-mode bypassPermissions",
@@ -329,6 +332,7 @@ func TestLoadCodexConversationForAgent_GrokUnavailableWithoutSession(t *testing.
 }
 
 func TestGrokGoalSessionPreservesLatestUserMessages(t *testing.T) {
+	requireGrokRealSessionOptIn(t)
 	sessionDir := filepath.Join(
 		os.Getenv("HOME"),
 		".grok",
@@ -382,6 +386,7 @@ func TestGrokGoalSessionPreservesLatestUserMessages(t *testing.T) {
 }
 
 func TestGrokGoalSessionEventMix(t *testing.T) {
+	requireGrokRealSessionOptIn(t)
 	sessionDir := filepath.Join(
 		os.Getenv("HOME"),
 		".grok",
@@ -415,6 +420,7 @@ func TestGrokGoalSessionEventMix(t *testing.T) {
 }
 
 func TestLoadCodexConversationForAgent_GrokGoalSessionHasUniqueEventIDs(t *testing.T) {
+	requireGrokRealSessionOptIn(t)
 	sessionDir := filepath.Join(
 		os.Getenv("HOME"),
 		".grok",
@@ -481,8 +487,18 @@ func TestLoadCodexConversationForAgent_GrokRealSessionFixture(t *testing.T) {
 	t.Logf("parsed %d grok events from fixture", len(got.Events))
 }
 
+// requireGrokRealSessionOptIn gates tests that read maintainer ~/.grok data.
+// Default `go test ./...` must not inspect local agent session stores.
+func requireGrokRealSessionOptIn(t *testing.T) {
+	t.Helper()
+	if os.Getenv("ZEN_GROK_REAL_SESSION") != "1" {
+		t.Skip("set ZEN_GROK_REAL_SESSION=1 to run opt-in ~/.grok integration tests")
+	}
+}
+
 func findLocalGrokSessionDir(t *testing.T) string {
 	t.Helper()
+	requireGrokRealSessionOptIn(t)
 	source := filepath.Join(os.Getenv("HOME"), ".grok", "sessions", "%2Fhome%2Fdaoleno%2Fworkspace%2Fzen")
 	entries, err := os.ReadDir(source)
 	if err != nil {

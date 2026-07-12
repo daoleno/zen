@@ -13,7 +13,7 @@ This repository is a monorepo for `zen`, a mobile-native agent control plane. Th
 - `bun run app:doctor`: run Expo project diagnostics.
 - `bun run daemon:build`: build `bin/zen`.
 - `bun run daemon:test`: run all Go daemon tests.
-- `cd daemon && go run ./cmd/zen-dev -advertise-url https://your-host.example/ws`: rebuild and restart the daemon during development.
+- `cd daemon && go run ./cmd/zen-dev`: rebuild and restart the daemon during development (then `zen pair https://your-host.example` when the origin is reachable).
 
 ## Coding Style & Naming Conventions
 

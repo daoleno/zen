@@ -14,9 +14,11 @@ export function ActivityFileList({
   files: string[];
   chrome: TerminalThemeChrome;
 }) {
+  const visible = files.slice(0, 6);
+  const remaining = files.length - visible.length;
   return (
     <View style={styles.files}>
-      {files.slice(0, 4).map((file) => (
+      {visible.map((file) => (
         <Text
           key={file}
           style={[styles.fileText, { color: chrome.textMuted }]}
@@ -25,6 +27,11 @@ export function ActivityFileList({
           {file}
         </Text>
       ))}
+      {remaining > 0 ? (
+        <Text style={[styles.fileText, { color: chrome.textSubtle }]}>
+          +{remaining} more
+        </Text>
+      ) : null}
     </View>
   );
 }

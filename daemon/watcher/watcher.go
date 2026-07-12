@@ -41,13 +41,16 @@ type SessionEvent struct {
 
 // Watcher monitors tmux windows and classifies agent states.
 type Watcher struct {
-	pollInterval time.Duration
-	agents       map[string]*classifier.Agent
-	prevContent  map[string]string
-	hidden       map[string]bool
-	delegated    map[string]bool
-	mu           sync.RWMutex
-	events       chan SessionEvent
+	pollInterval   time.Duration
+	agents         map[string]*classifier.Agent
+	prevContent    map[string]string
+	hidden         map[string]bool
+	delegated      map[string]bool
+	activityProbe  classifier.ActivityProbe
+	pollGeneration int64
+	agentEpoch     map[string]int64 // per-agent generation for lock-free probe apply
+	mu             sync.RWMutex
+	events         chan SessionEvent
 }
 
 // New creates a Watcher that polls tmux windows at the given interval.
@@ -58,8 +61,21 @@ func New(pollInterval time.Duration) *Watcher {
 		prevContent:  make(map[string]string),
 		hidden:       make(map[string]bool),
 		delegated:    make(map[string]bool),
+		agentEpoch:   make(map[string]int64),
 		events:       make(chan SessionEvent, 100),
 	}
+}
+
+// SetActivityProbe injects the provider-neutral activity probe used after
+// progress/classification merge. Wire classifier.DefaultActivityProbe() (or a
+// custom MultiActivityProbe) from daemon main — no package init registration.
+func (w *Watcher) SetActivityProbe(probe classifier.ActivityProbe) {
+	if w == nil {
+		return
+	}
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.activityProbe = probe
 }
 
 // Events returns the channel on which state changes and output updates are sent.
@@ -171,20 +187,56 @@ func (w *Watcher) poll() {
 	processes := snapshotProcesses()
 	processSnapshotAt := time.Now()
 
-	w.mu.Lock()
-	defer w.mu.Unlock()
-
-	seen := make(map[string]bool)
-
+	type paneObs struct {
+		win     tmuxWindow
+		content string
+		alive   bool
+		lines   []string
+	}
+	observations := make([]paneObs, 0, len(windows))
 	for _, win := range windows {
+		content, alive := capturePaneContent(win.target)
+		observations = append(observations, paneObs{
+			win:     win,
+			content: content,
+			alive:   alive,
+			lines:   strings.Split(content, "\n"),
+		})
+	}
+
+	type preparedAgent struct {
+		id                string
+		epoch             int64
+		agentSnap         classifier.Agent
+		content           string
+		lines             []string
+		alive             bool
+		panePID           int
+		classified        classifier.AgentState
+		classifiedSummary string
+		oldState          classifier.AgentState
+		contentChanged    bool
+		existed           bool
+		exists            bool
+		prev              string
+		previousMetadata  agentMetadataSnapshot
+		now               time.Time
+	}
+
+	w.mu.Lock()
+	w.pollGeneration++
+	generation := w.pollGeneration
+	probe := w.activityProbe
+	prepared := make([]preparedAgent, 0, len(observations))
+	seen := make(map[string]bool, len(observations))
+
+	for _, obs := range observations {
+		win := obs.win
 		seen[win.target] = true
 
-		content, alive := capturePaneContent(win.target)
-		lines := strings.Split(content, "\n")
-
 		prev, existed := w.prevContent[win.target]
-		contentChanged := content != prev
-		w.prevContent[win.target] = content
+		contentChanged := obs.content != prev
+		w.prevContent[win.target] = obs.content
 
 		agent, exists := w.agents[win.target]
 		if !exists {
@@ -219,66 +271,130 @@ func (w *Watcher) poll() {
 			agent.StaleCount++
 		}
 
-		agent.PaneAlive = alive
-		agent.LastLines = lastN(lines, 120)
+		agent.PaneAlive = obs.alive
+		agent.LastLines = lastN(obs.lines, 120)
 		now := time.Now()
 		agent.UpdatedAt = now
 
 		oldState := agent.State
-		newState, summary := classifier.Classify(alive, lines, agent.StaleCount)
-		if terminalStateInvalidatesProgress(newState) {
+		classified, classifiedSummary := classifier.Classify(obs.alive, obs.lines, agent.StaleCount)
+		if terminalStateInvalidatesProgress(classified) {
 			agent.LastProgressAt = nil
 			agent.ExpectedNextCheckAt = nil
 			agent.LeaseSeconds = 0
 		}
-		if shouldKeepProgressState(agent, alive, newState) {
-			newState = agent.State
-			summary = agent.Summary
+
+		w.agentEpoch[win.target] = generation
+		prepared = append(prepared, preparedAgent{
+			id:                win.target,
+			epoch:             generation,
+			agentSnap:         *agent,
+			content:           obs.content,
+			lines:             obs.lines,
+			alive:             obs.alive,
+			panePID:           win.panePID,
+			classified:        classified,
+			classifiedSummary: classifiedSummary,
+			oldState:          oldState,
+			contentChanged:    contentChanged,
+			existed:           existed,
+			exists:            exists,
+			prev:              prev,
+			previousMetadata:  previousMetadata,
+			now:               now,
+		})
+	}
+	w.mu.Unlock()
+
+	type probedAgent struct {
+		preparedAgent
+		activity classifier.ActivitySignal
+	}
+	results := make([]probedAgent, 0, len(prepared))
+	for _, item := range prepared {
+		activity := classifier.ActivitySignal{}
+		if probe != nil {
+			toolChild := false
+			if isCursorAgentCommand(item.agentSnap.Command) {
+				toolChild = cursorToolChildActive(item.panePID, processes)
+			}
+			activity = probe.Infer(classifier.ActivityInput{
+				Agent:           item.agentSnap,
+				PaneContent:     item.content,
+				ToolChildActive: toolChild,
+			})
+		}
+		results = append(results, probedAgent{preparedAgent: item, activity: activity})
+	}
+
+	w.mu.Lock()
+	defer w.mu.Unlock()
+
+	for _, r := range results {
+		agent := w.agents[r.id]
+		if agent == nil {
+			continue
+		}
+		if w.agentEpoch[r.id] != r.epoch {
+			continue
+		}
+		activity := r.activity
+		if agent.Cwd != r.agentSnap.Cwd || agent.Command != r.agentSnap.Command {
+			// Identity drifted while unlocked; drop provider signal rather than
+			// applying a mismatched transcript observation.
+			activity = classifier.ActivitySignal{}
+		}
+
+		newState, summary := classifier.ResolveSessionStatus(agent, r.classified, r.classifiedSummary, r.now, activity)
+		if r.oldState == classifier.StateRunning && newState == classifier.StateUnknown && agent.LastProgressAt != nil {
+			if agent.Attention == "" || agent.Attention == "none" {
+				agent.Attention = "stale"
+			}
+			agent.NeedsAttention = true
 		}
 		agent.State = newState
 		agent.Summary = summary
 
-		if oldState != newState {
+		if r.oldState != newState {
 			agent.StateVersion++
 		}
 
-		if !exists {
+		if !r.exists {
 			w.events <- SessionEvent{
 				Type:    "agent_discovered",
-				AgentID: win.target,
+				AgentID: r.id,
 				Agent:   cloneAgent(agent),
 			}
 		}
 
-		if contentChanged && existed {
+		if r.contentChanged && r.existed {
 			w.events <- SessionEvent{
 				Type:    "agent_output",
-				AgentID: win.target,
+				AgentID: r.id,
 				Agent:   cloneAgent(agent),
-				Lines:   changedPaneLines(prev, content),
+				Lines:   changedPaneLines(r.prev, r.content),
 			}
 		}
 
-		if oldState != newState && existed {
+		if r.oldState != newState && r.existed {
 			w.events <- SessionEvent{
 				Type:     "agent_state_change",
-				AgentID:  win.target,
+				AgentID:  r.id,
 				Agent:    cloneAgent(agent),
-				OldState: string(oldState),
+				OldState: string(r.oldState),
 				NewState: string(newState),
 			}
 		}
 
-		if exists && oldState == newState && agentMetadataChanged(previousMetadata, agent) {
+		if r.exists && r.oldState == newState && agentMetadataChanged(r.previousMetadata, agent) {
 			w.events <- SessionEvent{
 				Type:    "agent_metadata_change",
-				AgentID: win.target,
+				AgentID: r.id,
 				Agent:   cloneAgent(agent),
 			}
 		}
 	}
 
-	// Check for removed windows.
 	for id := range w.agents {
 		if !seen[id] {
 			old := w.agents[id]
@@ -286,6 +402,7 @@ func (w *Watcher) poll() {
 			delete(w.prevContent, id)
 			delete(w.hidden, id)
 			delete(w.delegated, id)
+			delete(w.agentEpoch, id)
 			archived := cloneAgent(old)
 			if archived != nil {
 				archived.State = classifier.StateRemoved
@@ -386,13 +503,6 @@ func unixNanoOrZero(value *time.Time) int64 {
 		return 0
 	}
 	return value.UnixNano()
-}
-
-func shouldKeepProgressState(agent *classifier.Agent, alive bool, terminalState classifier.AgentState) bool {
-	if agent == nil || agent.LastProgressAt == nil || !alive {
-		return false
-	}
-	return !terminalStateInvalidatesProgress(terminalState)
 }
 
 func terminalStateInvalidatesProgress(state classifier.AgentState) bool {
@@ -702,6 +812,93 @@ func isCursorAgentCommand(command string) bool {
 	return base == "cursor-agent"
 }
 
+func (w *Watcher) activitySignal(agent classifier.Agent, paneContent string, panePID int, processes map[int]processInfo) classifier.ActivitySignal {
+	w.mu.RLock()
+	probe := w.activityProbe
+	w.mu.RUnlock()
+	if probe == nil {
+		return classifier.ActivitySignal{}
+	}
+	toolChild := false
+	if isCursorAgentCommand(agent.Command) {
+		// Cursor-specific process hint until a shared process observer exists.
+		toolChild = cursorToolChildActive(panePID, processes)
+	}
+	return probe.Infer(classifier.ActivityInput{
+		Agent:           agent,
+		PaneContent:     paneContent,
+		ToolChildActive: toolChild,
+	})
+}
+
+// cursorToolChildActive reports a non-MCP worker under the Cursor agent process.
+// Long-lived MCP servers (playwright/context7/etc.) stay attached while idle, so
+// they must not count as turn activity.
+func cursorToolChildActive(panePID int, processes map[int]processInfo) bool {
+	if panePID <= 0 || len(processes) == 0 {
+		return false
+	}
+	scan := descendantProcesses(panePID, processes)
+	if proc, ok := processes[panePID]; ok {
+		scan = append([]processInfo{proc}, scan...)
+	}
+	cursorPID := 0
+	for _, proc := range scan {
+		if isCursorAgentProcess(proc) {
+			cursorPID = proc.pid
+			break
+		}
+	}
+	if cursorPID == 0 {
+		return false
+	}
+	for _, proc := range descendantProcesses(cursorPID, processes) {
+		if isCursorMCPProcess(proc) {
+			continue
+		}
+		if isCursorToolWorkerProcess(proc) {
+			return true
+		}
+	}
+	return false
+}
+
+func isCursorAgentProcess(proc processInfo) bool {
+	lowerComm := strings.ToLower(normalizeCommand(proc.comm))
+	lowerArgs := strings.ToLower(proc.args)
+	if lowerComm == "cursor-agent" || strings.Contains(lowerArgs, "cursor-agent") {
+		return true
+	}
+	return strings.Contains(lowerArgs, ".local/share/cursor-agent") && strings.Contains(lowerArgs, "index.js")
+}
+
+func isCursorMCPProcess(proc processInfo) bool {
+	lower := strings.ToLower(proc.comm + " " + proc.args)
+	if strings.Contains(lower, "mcp") {
+		return true
+	}
+	if strings.Contains(lower, "code-mode-host") {
+		return true
+	}
+	if strings.Contains(lower, "playwright") && strings.Contains(lower, "npx") {
+		return true
+	}
+	return false
+}
+
+func isCursorToolWorkerProcess(proc processInfo) bool {
+	comm := strings.ToLower(normalizeCommand(proc.comm))
+	switch comm {
+	case "zsh", "bash", "sh", "dash", "fish", "python", "python3", "node", "go", "ruby", "perl", "deno", "bun":
+		return true
+	}
+	lowerArgs := strings.ToLower(proc.args)
+	if strings.Contains(lowerArgs, "cursor sandbox") || strings.Contains(lowerArgs, "__cursor_sandbox") {
+		return true
+	}
+	return false
+}
+
 func latestCursorPaneContent(content string) string {
 	normalized := strings.ReplaceAll(content, "\r\n", "\n")
 	lower := strings.ToLower(normalized)
@@ -996,7 +1193,7 @@ func (w *Watcher) registerCreatedSession(target, cwd string, opts CreateSessionO
 		Project:   projectNameFromPath(cwd),
 		Cwd:       strings.TrimSpace(cwd),
 		Command:   strings.TrimSpace(opts.Command),
-		State:     classifier.StateRunning,
+		State:     classifier.StateUnknown,
 		Summary:   "Session starting",
 		LastLines: []string{},
 		StartedAt: createdAt,
@@ -1016,6 +1213,7 @@ func (w *Watcher) registerCreatedSession(target, cwd string, opts CreateSessionO
 		delete(w.delegated, target)
 	}
 	w.agents[target] = agent
+	w.agentEpoch[target] = 0 // invalidate any in-flight poll apply for this id
 	if _, exists := w.prevContent[target]; !exists {
 		w.prevContent[target] = ""
 	}

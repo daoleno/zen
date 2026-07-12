@@ -92,7 +92,7 @@ func pairCommandExample(stateDir string) string {
 	if strings.TrimSpace(stateDir) != "" {
 		parts = append(parts, "-state-dir", stateDir)
 	}
-	parts = append(parts, "https://your-host/ws")
+	parts = append(parts, "https://your-host.example")
 	return strings.Join(parts, " ")
 }
 

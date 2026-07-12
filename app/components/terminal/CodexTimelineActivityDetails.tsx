@@ -1,5 +1,6 @@
-import React from "react";
+import React, { useState } from "react";
 import { StyleSheet, Text, View } from "react-native";
+import { TouchableOpacity } from "react-native-gesture-handler";
 import type {
   TerminalThemeChrome,
   TerminalThemePalette,
@@ -40,17 +41,54 @@ export function CodexTimelineActivityDetails({
   formatPatchPath,
   truncateBody,
 }: CodexTimelineActivityDetailsProps) {
+  const showStatus = Boolean(item.statusLine?.trim());
+  const showQuery = Boolean(item.queryText?.trim());
+  const showCommand = Boolean(item.commandText?.trim());
   const showBody = isMeaningfulActivityBody(item.body, item.tone);
   const showPreview = Boolean(item.previewPath);
   const showSteps = Boolean(item.children?.length);
   const showFiles = Boolean(
     item.fileSummaries?.length || item.files?.length,
   );
-  const showTechnical = Boolean(item.providerToolId?.trim());
+  const developer = item.developerDetails;
+  const showDeveloper = Boolean(
+    developer?.providerToolId?.trim()
+      || developer?.rawInput?.trim()
+      || (developer?.transport && Object.keys(developer.transport).length > 0),
+  );
 
   return (
     <CodexTimelineExpandedBlock chrome={chrome}>
-      {/* 1. Useful result / error first */}
+      {showStatus ? (
+        <Text style={[styles.statusLine, { color: chrome.text }]} numberOfLines={2}>
+          {item.statusLine}
+        </Text>
+      ) : null}
+
+      {showQuery ? (
+        <DetailBlock label="Query" chrome={chrome}>
+          <Text
+            style={[styles.mono, { color: chrome.textMuted }]}
+            numberOfLines={3}
+            selectable
+          >
+            {item.queryText}
+          </Text>
+        </DetailBlock>
+      ) : null}
+
+      {showCommand ? (
+        <DetailBlock label="Command" chrome={chrome}>
+          <Text
+            style={[styles.mono, { color: chrome.textMuted }]}
+            numberOfLines={4}
+            selectable
+          >
+            {item.commandText}
+          </Text>
+        </DetailBlock>
+      ) : null}
+
       {showBody ? (
         <CodexTimelineActivityBody
           body={item.body!}
@@ -71,22 +109,21 @@ export function CodexTimelineActivityDetails({
         />
       ) : null}
 
-      {/* 2. Multi-call children as Steps */}
       {showSteps ? (
-        <View style={styles.section}>
-          <SectionLabel chrome={chrome}>Steps</SectionLabel>
+        <DetailBlock label="Steps" chrome={chrome}>
           <View style={styles.steps}>
             {item.children!.map((child) => (
               <StepRow key={child.id} child={child} chrome={chrome} theme={theme} />
             ))}
           </View>
-        </View>
+        </DetailBlock>
       ) : null}
 
-      {/* 3. Files / patch summaries */}
       {showFiles ? (
-        <View style={styles.section}>
-          <SectionLabel chrome={chrome}>Files</SectionLabel>
+        <DetailBlock
+          label={item.files && item.files.length > 1 ? `Files · ${item.files.length}` : "Files"}
+          chrome={chrome}
+        >
           {item.fileSummaries?.length ? (
             <PatchFileSummaryList
               files={item.fileSummaries}
@@ -97,37 +134,88 @@ export function CodexTimelineActivityDetails({
           ) : (
             <ActivityFileList files={item.files!} chrome={chrome} />
           )}
-        </View>
+        </DetailBlock>
       ) : null}
 
-      {/* 4. Raw provider tool id last */}
-      {showTechnical ? (
-        <View style={styles.technical}>
-          <SectionLabel chrome={chrome}>Technical</SectionLabel>
-          <Text
-            style={[styles.providerId, { color: chrome.textMuted }]}
-            numberOfLines={2}
-            selectable
-          >
-            {item.providerToolId}
-          </Text>
-        </View>
+      {showDeveloper ? (
+        <DeveloperDetails details={developer!} chrome={chrome} />
       ) : null}
     </CodexTimelineExpandedBlock>
   );
 }
 
-function SectionLabel({
+function DetailBlock({
+  label,
   chrome,
   children,
 }: {
+  label: string;
   chrome: TerminalThemeChrome;
-  children: string;
+  children: React.ReactNode;
 }) {
   return (
-    <Text style={[styles.sectionLabel, { color: chrome.textMuted }]}>
+    <View style={styles.section}>
+      <Text style={[styles.sectionLabel, { color: chrome.textSubtle }]}>
+        {label}
+      </Text>
       {children}
-    </Text>
+    </View>
+  );
+}
+
+function DeveloperDetails({
+  details,
+  chrome,
+}: {
+  details: NonNullable<ZenActivityTimelineItem["developerDetails"]>;
+  chrome: TerminalThemeChrome;
+}) {
+  const [open, setOpen] = useState(false);
+  const transportEntries = Object.entries(details.transport || {});
+
+  return (
+    <View style={styles.developer}>
+      <TouchableOpacity
+        accessibilityRole="button"
+        accessibilityState={{ expanded: open }}
+        accessibilityLabel={open ? "Hide developer details" : "Show developer details"}
+        onPress={() => setOpen((value) => !value)}
+        activeOpacity={0.75}
+        hitSlop={{ top: 6, bottom: 6, left: 4, right: 4 }}
+        style={styles.developerToggle}
+      >
+        <Text style={[styles.developerToggleText, { color: chrome.textSubtle }]}>
+          {open ? "Hide developer details" : "Developer details"}
+        </Text>
+      </TouchableOpacity>
+      {open ? (
+        <View style={styles.developerBody}>
+          {details.providerToolId ? (
+            <Text style={[styles.mono, { color: chrome.textMuted }]} selectable>
+              {details.providerToolId}
+            </Text>
+          ) : null}
+          {transportEntries.map(([key, value]) => (
+            <Text
+              key={key}
+              style={[styles.mono, { color: chrome.textMuted }]}
+              selectable
+            >
+              {key}: {value}
+            </Text>
+          ))}
+          {details.rawInput ? (
+            <Text
+              style={[styles.mono, { color: chrome.textMuted }]}
+              numberOfLines={8}
+              selectable
+            >
+              {details.rawInput}
+            </Text>
+          ) : null}
+        </View>
+      ) : null}
+    </View>
   );
 }
 
@@ -175,6 +263,16 @@ const styles = StyleSheet.create({
     textTransform: "uppercase",
     letterSpacing: 0.4,
   },
+  statusLine: {
+    ...TypeScale.caption,
+    fontFamily: Typography.uiFontMedium,
+    lineHeight: 18,
+  },
+  mono: {
+    fontSize: 12,
+    lineHeight: 17,
+    fontFamily: Typography.terminalFont,
+  },
   steps: {
     gap: 5,
   },
@@ -197,13 +295,20 @@ const styles = StyleSheet.create({
     fontFamily: Typography.uiFontMedium,
     lineHeight: 18,
   },
-  technical: {
-    gap: 3,
+  developer: {
+    gap: 4,
     paddingTop: 2,
   },
-  providerId: {
-    fontSize: 12,
-    lineHeight: 17,
-    fontFamily: Typography.terminalFont,
+  developerToggle: {
+    alignSelf: "flex-start",
+    minHeight: 22,
+    justifyContent: "center",
+  },
+  developerToggleText: {
+    ...TypeScale.micro,
+    letterSpacing: 0.2,
+  },
+  developerBody: {
+    gap: 4,
   },
 });

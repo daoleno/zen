@@ -209,7 +209,7 @@ func TestRegisterCreatedSessionSeedsAgentSnapshotAndEvent(t *testing.T) {
 	if agent.Cwd != "/repo/zen" || agent.Project != "zen" || agent.Command != "codex" {
 		t.Fatalf("agent metadata = cwd %q project %q command %q", agent.Cwd, agent.Project, agent.Command)
 	}
-	if agent.State != classifier.StateRunning || !agent.StartedAt.Equal(startedAt) {
+	if agent.State != classifier.StateUnknown || !agent.StartedAt.Equal(startedAt) {
 		t.Fatalf("agent state/start = %q %s", agent.State, agent.StartedAt)
 	}
 	if _, ok := w.prevContent["main:@42"]; !ok {
@@ -388,7 +388,7 @@ func TestUpdateAgentProgressUpdatesAgentAndEmitsStateEvent(t *testing.T) {
 
 	select {
 	case ev := <-w.Events():
-		if ev.Type != "agent_state_change" || ev.OldState != "running" || ev.NewState != "done" {
+		if ev.Type != "agent_state_change" || ev.OldState != "unknown" || ev.NewState != "done" {
 			t.Fatalf("event = %#v", ev)
 		}
 		if ev.Agent == nil || ev.Agent.Summary != "Finished verification" || ev.Agent.EventKind != "verification" {
@@ -685,4 +685,81 @@ func TestDetectAgentProcessUsesFallbackForCodexWithoutProcessMatch(t *testing.T)
 	if command != "codex" || !startedAt.Equal(fallbackAt) || pid != 10 {
 		t.Fatalf("detectAgentProcess() = (%q, %s, %d), want codex fallback %s pid 10", command, startedAt, pid, fallbackAt)
 	}
+}
+
+func TestCursorToolChildActive_IgnoresCodeModeHost(t *testing.T) {
+	processes := map[int]processInfo{
+		10: {pid: 10, ppid: 1, comm: "cursor-agent", args: "node .../cursor-agent/versions/x/index.js"},
+		20: {pid: 20, ppid: 10, comm: "node", args: "node .../code-mode-host"},
+	}
+	if cursorToolChildActive(10, processes) {
+		t.Fatal("code-mode-host must not count as tool activity")
+	}
+}
+
+
+func TestCursorToolChildActive_DetectsShellWorker(t *testing.T) {
+	processes := map[int]processInfo{
+		10: {pid: 10, ppid: 1, comm: "cursor-agent", args: "node .../cursor-agent/versions/x/index.js"},
+		20: {pid: 20, ppid: 10, comm: "npm", args: "npm exec @playwright/mcp@latest"},
+		40: {pid: 40, ppid: 10, comm: "zsh", args: "zsh -c sandbox tool"},
+	}
+	if !cursorToolChildActive(10, processes) {
+		t.Fatal("shell worker under cursor-agent should count as tool activity")
+	}
+}
+
+func TestCursorActivitySignal_StopMarker(t *testing.T) {
+	w := New(time.Second)
+	w.SetActivityProbe(classifier.NewActivityProbe(classifier.NewCursorActivityAdapter()))
+	agent := classifier.Agent{Command: "cursor-agent", Cwd: "/tmp"}
+	got := w.activitySignal(agent, "Cursor Agent\n→ Add a follow-up\nctrl+c to stop\n", 0, nil)
+	if got.State != classifier.StateRunning {
+		t.Fatalf("got %#v", got)
+	}
+}
+
+func TestActivityProbe_SkipTranscriptWhenPaneDecides(t *testing.T) {
+	probe := &countingTranscriptProbe{}
+	adapter := classifier.NewCursorActivityAdapterWithTranscript(probe)
+	w := New(time.Second)
+	w.SetActivityProbe(classifier.NewActivityProbe(adapter))
+	agent := classifier.Agent{ID: "a:@1", Command: "cursor-agent", Cwd: "/tmp"}
+	got := w.activitySignal(agent, "Cursor Agent\nctrl+c to stop\n", 0, nil)
+	if got.State != classifier.StateRunning {
+		t.Fatalf("got %#v", got)
+	}
+	if probe.calls != 0 {
+		t.Fatalf("transcript probe calls = %d, want 0 when pane stop marker decides", probe.calls)
+	}
+}
+
+func TestActivityProbe_UsesInjectedCursorTranscript(t *testing.T) {
+	active := true
+	probe := &countingTranscriptProbe{active: &active, ok: true}
+	adapter := classifier.NewCursorActivityAdapterWithTranscript(probe)
+	w := New(time.Second)
+	w.SetActivityProbe(classifier.NewActivityProbe(adapter))
+	agent := classifier.Agent{ID: "a:@1", Command: "cursor-agent", Cwd: "/tmp"}
+	got := w.activitySignal(agent, "Cursor Agent\n→ Add a follow-up\n", 0, nil)
+	if got.State != classifier.StateRunning || got.Source != "cursor_transcript_active" {
+		t.Fatalf("got %#v", got)
+	}
+	if probe.calls != 1 {
+		t.Fatalf("transcript probe calls = %d, want 1", probe.calls)
+	}
+}
+
+type countingTranscriptProbe struct {
+	calls  int
+	active *bool
+	ok     bool
+}
+
+func (p *countingTranscriptProbe) Active(agent classifier.Agent) (bool, bool) {
+	p.calls++
+	if p.active == nil {
+		return false, p.ok
+	}
+	return *p.active, p.ok
 }

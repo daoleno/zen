@@ -3,6 +3,7 @@ import * as Haptics from 'expo-haptics';
 import type { Agent } from '../../store/agents';
 import { presentAgent } from '../../services/agentPresentation';
 import { formatAgentSessionPreview } from '../../services/sessionPreview';
+import { isAgentActivelyRunning } from '../../services/agentStatusPresentation';
 import { formatTelegramListTime } from '../../constants/telegramPresentation';
 import { shortAgentLabel } from '../../services/sessionServicesPresentation';
 import { AgentSessionRow } from './AgentSessionRow';
@@ -58,7 +59,7 @@ function AgentListRowContainerComponent({
       previewTone={rowModel.preview.tone}
       previewPrefix={rowModel.preview.prefix}
       timeLabel={
-        agent.status === 'running'
+        isAgentActivelyRunning(agent.status)
           ? 'live'
           : formatTelegramListTime(agent.updated_at)
       }

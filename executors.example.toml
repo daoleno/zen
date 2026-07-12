@@ -1,0 +1,57 @@
+# Example executor profiles for ~/.zen/executors.toml
+#
+# Copy:
+#   cp executors.example.toml ~/.zen/executors.toml
+#
+# Then edit and restart zen. If this file is absent, zen keeps its built-in
+# defaults from daemon/work/executors.go — shipping this example does NOT
+# change those runtime defaults.
+#
+# One authenticated executor is enough. Delete [[executors]] blocks you do not use.
+#
+# WARNING: Autonomous / bypass profiles can run shell and tools with little or
+# no interactive approval. Prefer the safe profile on machines with secrets.
+
+delegated_executor = "codex"
+
+# ---------------------------------------------------------------------------
+# Safe / manual profile (recommended starting point)
+# ---------------------------------------------------------------------------
+# Launch CLIs without sandbox/permission bypass flags. Expect approval prompts
+# in the agent TTY when the tool asks; mobile unattended control will be slower.
+
+[[executors]]
+name = "codex"
+command = "codex"
+
+[[executors]]
+name = "claude"
+command = "claude"
+
+[[executors]]
+name = "agent"
+command = "cursor-agent"
+kind = "cursor"
+
+[[executors]]
+name = "grok"
+command = "grok --no-alt-screen"
+
+# ---------------------------------------------------------------------------
+# Autonomous profile (high risk) — UNCOMMENT ONLY IF YOU ACCEPT THE RISK
+# ---------------------------------------------------------------------------
+# These match the spirit of current built-in defaults for Cursor/Grok and the
+# Brain-delegated Codex hardener (see docs/executors.md):
+#
+# [[executors]]
+# name = "agent"
+# command = "cursor-agent --force --sandbox disabled"
+# kind = "cursor"
+#
+# [[executors]]
+# name = "grok"
+# command = "grok --no-alt-screen --permission-mode bypassPermissions"
+#
+# Brain-delegated Codex sessions may still append
+# --dangerously-bypass-approvals-and-sandbox in current daemon code even when
+# the base command is plain "codex". Treat Brain delegation as elevated trust.

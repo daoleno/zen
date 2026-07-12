@@ -106,6 +106,10 @@ func TestLoadCursorConversationForAgent_FindsProjectTranscript(t *testing.T) {
 				},
 			},
 		},
+		map[string]any{
+			"type":   "turn_ended",
+			"status": "success",
+		},
 	)
 	now := time.Now().UTC()
 	if err := os.Chtimes(transcriptPath, now, now); err != nil {
@@ -130,10 +134,65 @@ func TestLoadCursorConversationForAgent_FindsProjectTranscript(t *testing.T) {
 		t.Fatalf("metadata = %#v", got)
 	}
 	if got.Active == nil || *got.Active {
-		t.Fatalf("active = %#v, want false after completed user/assistant turn", got.Active)
+		t.Fatalf("active = %#v, want false after turn_ended", got.Active)
 	}
-	if len(got.Events) != 2 {
-		t.Fatalf("events len = %d, want 2: %#v", len(got.Events), got.Events)
+	if len(got.Events) != 3 {
+		t.Fatalf("events len = %d, want 3 (user/assistant/turn_ended): %#v", len(got.Events), got.Events)
+	}
+	if got.Events[2].Kind != "turn_ended" || got.Events[2].Status != "success" {
+		t.Fatalf("turn_ended event = %#v", got.Events[2])
+	}
+}
+
+func TestCursorConversationHasActiveTurn_IgnoresMidTurnAssistant(t *testing.T) {
+	activePath := filepath.Join(t.TempDir(), "active.jsonl")
+	writeJSONL(t, activePath,
+		map[string]any{
+			"role": "user",
+			"message": map[string]any{
+				"content": []map[string]any{{"type": "text", "text": "keep going"}},
+			},
+		},
+		map[string]any{
+			"role": "assistant",
+			"message": map[string]any{
+				"content": []map[string]any{
+					{"type": "text", "text": "Working"},
+					{"type": "tool_use", "name": "Shell", "input": map[string]any{"command": "ls"}},
+				},
+			},
+		},
+	)
+	got, err := parseCursorConversation(activePath)
+	if err != nil {
+		t.Fatalf("parseCursorConversation: %v", err)
+	}
+	if !cursorConversationHasActiveTurn(got.Events) {
+		t.Fatalf("expected active turn while tools run without turn_ended: %#v", got.Events)
+	}
+
+	endedPath := filepath.Join(t.TempDir(), "ended.jsonl")
+	writeJSONL(t, endedPath,
+		map[string]any{
+			"role": "user",
+			"message": map[string]any{
+				"content": []map[string]any{{"type": "text", "text": "done?"}},
+			},
+		},
+		map[string]any{
+			"role": "assistant",
+			"message": map[string]any{
+				"content": []map[string]any{{"type": "text", "text": "Yes"}},
+			},
+		},
+		map[string]any{"type": "turn_ended", "status": "success"},
+	)
+	got, err = parseCursorConversation(endedPath)
+	if err != nil {
+		t.Fatalf("parseCursorConversation: %v", err)
+	}
+	if cursorConversationHasActiveTurn(got.Events) {
+		t.Fatalf("expected inactive after turn_ended: %#v", got.Events)
 	}
 }
 

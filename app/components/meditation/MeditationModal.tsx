@@ -18,7 +18,9 @@ import { useVideoPlayer, VideoView } from "expo-video";
 import Animated, {
   Easing,
   interpolate,
+  ReduceMotion,
   useAnimatedStyle,
+  useReducedMotion,
   useSharedValue,
   withDelay,
   withRepeat,
@@ -37,6 +39,11 @@ import Svg, {
   Stop,
 } from "react-native-svg";
 import { AnimatedPressable } from "../ui/AnimatedPressable";
+import {
+  MOKUGYO_STRIKE_KEYFRAMES,
+  MOKUGYO_STRIKE_PROGRESS,
+  malletWrapPlacement,
+} from "./mokugyoMalletGeometry";
 import {
   QUIET_MODES,
   resolveWindowClipEndMs,
@@ -60,7 +67,9 @@ type MeditationModalProps = {
 
 export function MeditationModal({ visible, onClose }: MeditationModalProps) {
   const styles = useMemo(() => createStyles(), []);
+  const malletPlacement = useMemo(() => malletWrapPlacement(), []);
   const { width, height } = useWindowDimensions();
+  const reducedMotion = useReducedMotion();
   const pagerRef = useRef<ScrollView>(null);
   const switchingWindowRef = useRef(false);
   const windowQueueRef = useRef<WindowScene[]>([]);
@@ -400,13 +409,65 @@ export function MeditationModal({ visible, onClose }: MeditationModalProps) {
     };
   });
 
-  // Cloth head pivots onto the ridge beside the slit; shaft stays clear.
+  // Handheld wrist strike: whole mallet translates + rotates (grip travels too).
   const malletStyle = useAnimatedStyle(() => {
-    const rotate = interpolate(strike.value, [0, 1], [-34, 4]);
-    const translateX = interpolate(strike.value, [0, 1], [42, -2]);
-    const translateY = interpolate(strike.value, [0, 1], [-88, 8]);
+    const translateX = interpolate(
+      strike.value,
+      [
+        MOKUGYO_STRIKE_PROGRESS.rest,
+        MOKUGYO_STRIKE_PROGRESS.downstroke,
+        MOKUGYO_STRIKE_PROGRESS.contact,
+        MOKUGYO_STRIKE_PROGRESS.contactHold,
+        MOKUGYO_STRIKE_PROGRESS.impact,
+      ],
+      [
+        MOKUGYO_STRIKE_KEYFRAMES.rest.translateX,
+        MOKUGYO_STRIKE_KEYFRAMES.downstroke.translateX,
+        MOKUGYO_STRIKE_KEYFRAMES.contact.translateX,
+        MOKUGYO_STRIKE_KEYFRAMES.contact.translateX,
+        MOKUGYO_STRIKE_KEYFRAMES.impact.translateX,
+      ],
+    );
+    const translateY = interpolate(
+      strike.value,
+      [
+        MOKUGYO_STRIKE_PROGRESS.rest,
+        MOKUGYO_STRIKE_PROGRESS.downstroke,
+        MOKUGYO_STRIKE_PROGRESS.contact,
+        MOKUGYO_STRIKE_PROGRESS.contactHold,
+        MOKUGYO_STRIKE_PROGRESS.impact,
+      ],
+      [
+        MOKUGYO_STRIKE_KEYFRAMES.rest.translateY,
+        MOKUGYO_STRIKE_KEYFRAMES.downstroke.translateY,
+        MOKUGYO_STRIKE_KEYFRAMES.contact.translateY,
+        MOKUGYO_STRIKE_KEYFRAMES.contact.translateY,
+        MOKUGYO_STRIKE_KEYFRAMES.impact.translateY,
+      ],
+    );
+    const rotateDeg = interpolate(
+      strike.value,
+      [
+        MOKUGYO_STRIKE_PROGRESS.rest,
+        MOKUGYO_STRIKE_PROGRESS.downstroke,
+        MOKUGYO_STRIKE_PROGRESS.contact,
+        MOKUGYO_STRIKE_PROGRESS.contactHold,
+        MOKUGYO_STRIKE_PROGRESS.impact,
+      ],
+      [
+        MOKUGYO_STRIKE_KEYFRAMES.rest.rotateDeg,
+        MOKUGYO_STRIKE_KEYFRAMES.downstroke.rotateDeg,
+        MOKUGYO_STRIKE_KEYFRAMES.contact.rotateDeg,
+        MOKUGYO_STRIKE_KEYFRAMES.contact.rotateDeg,
+        MOKUGYO_STRIKE_KEYFRAMES.impact.rotateDeg,
+      ],
+    );
     return {
-      transform: [{ translateX }, { translateY }, { rotate: `${rotate}deg` }],
+      transform: [
+        { translateX },
+        { translateY },
+        { rotate: `${rotateDeg}deg` },
+      ],
     };
   });
 
@@ -428,14 +489,42 @@ export function MeditationModal({ visible, onClose }: MeditationModalProps) {
     mokugyoPlayer.seekTo(0).finally(() => {
       mokugyoPlayer.play();
     });
-    strike.value = withSequence(
-      withTiming(1, { duration: 52, easing: Easing.out(Easing.quad) }),
-      withSpring(0, { damping: 14, stiffness: 240, mass: 0.45 }),
-    );
+    if (reducedMotion) {
+      strike.value = withSequence(
+        withTiming(1, { duration: 1, reduceMotion: ReduceMotion.System }),
+        withTiming(0, { duration: 1, reduceMotion: ReduceMotion.System }),
+      );
+    } else {
+      // Single drive to impact so rapid taps retarget continuously (no rewind).
+      // Contact dwell + compression live in pose keyframes along 0→1.
+      strike.value = withSequence(
+        withTiming(1, {
+          duration: 118,
+          easing: Easing.in(Easing.cubic),
+          reduceMotion: ReduceMotion.System,
+        }),
+        withSpring(0, {
+          damping: 12,
+          stiffness: 190,
+          mass: 0.55,
+          reduceMotion: ReduceMotion.System,
+        }),
+      );
+    }
     strikePop.value = 0;
     strikePop.value = withSequence(
-      withTiming(0.2, { duration: 70 }),
-      withDelay(260, withTiming(1, { duration: 420, easing: Easing.out(Easing.quad) })),
+      withTiming(0.2, {
+        duration: reducedMotion ? 1 : 70,
+        reduceMotion: ReduceMotion.System,
+      }),
+      withDelay(
+        reducedMotion ? 80 : 260,
+        withTiming(1, {
+          duration: reducedMotion ? 1 : 420,
+          easing: Easing.out(Easing.quad),
+          reduceMotion: ReduceMotion.System,
+        }),
+      ),
     );
   };
 
@@ -555,7 +644,16 @@ export function MeditationModal({ visible, onClose }: MeditationModalProps) {
                   accessibilityRole="button"
                 >
                   <View style={styles.mokugyoStage} pointerEvents="none">
-                    <Animated.View style={[styles.malletWrap, malletStyle]}>
+                    <Animated.View
+                      style={[
+                        styles.malletWrap,
+                        {
+                          top: malletPlacement.top,
+                          left: malletPlacement.left,
+                        },
+                        malletStyle,
+                      ]}
+                    >
                       <MokugyoMallet />
                     </Animated.View>
                     <MokugyoInstrument />
@@ -886,10 +984,7 @@ function createStyles() {
     },
     malletWrap: {
       position: "absolute",
-      top: 34,
-      right: -4,
       zIndex: 2,
-      transformOrigin: "156px 35px",
     },
     strikePop: {
       position: "absolute",

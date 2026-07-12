@@ -1,0 +1,81 @@
+{
+  "schema_version": 1,
+  "updated": "2026-07-12",
+  "blockers": [
+    {
+      "id": "license-pending",
+      "severity": "blocker",
+      "summary": "Root LICENSE not chosen/committed yet",
+      "paths": [],
+      "acceptance": "Add SPDX LICENSE and link from README"
+    },
+    {
+      "id": "audio-provenance-unknown",
+      "severity": "blocker",
+      "summary": "Bundled audio lacks verifiable upstream license evidence",
+      "paths": [
+        {
+          "path": "app/assets/audio/meditation-ambient.m4a",
+          "referenced_by_app": true
+        },
+        {
+          "path": "app/assets/audio/meditation-focus.m4a",
+          "referenced_by_app": false
+        },
+        {
+          "path": "app/assets/audio/meditation-unwind.m4a",
+          "referenced_by_app": false
+        },
+        {
+          "path": "app/assets/audio/mokugyo-hit.m4a",
+          "referenced_by_app": false
+        }
+      ],
+      "acceptance": "Attribute, replace, or remove each path"
+    },
+    {
+      "id": "theme-image-provenance-unknown",
+      "severity": "blocker",
+      "summary": "Theme webp images lack verifiable provenance",
+      "paths": [
+        {
+          "path": "app/assets/theme/sky-meadow-ambient.webp",
+          "referenced_by_app": true
+        },
+        {
+          "path": "app/assets/theme/moonlit-meadow-ambient.webp",
+          "referenced_by_app": true
+        },
+        {
+          "path": "app/assets/theme/meditation-focus-dawn.webp",
+          "referenced_by_app": false
+        },
+        {
+          "path": "app/assets/theme/meditation-mokugyo-room.webp",
+          "referenced_by_app": false
+        },
+        {
+          "path": "app/assets/theme/meditation-sky-garden.webp",
+          "referenced_by_app": false
+        },
+        {
+          "path": "app/assets/theme/meditation-unwind-aurora.webp",
+          "referenced_by_app": false
+        }
+      ],
+      "acceptance": "Attribute, replace, or remove each path"
+    },
+    {
+      "id": "android-native-terminal-artifacts",
+      "severity": "blocker",
+      "summary": "libghostty_vt.so gitignored; terminal not stranger-buildable from clone alone",
+      "paths": [
+        {
+          "path": "app/modules/zen-terminal-vt/libs/android/*/libghostty_vt.so",
+          "referenced_by_app": true
+        }
+      ],
+      "acceptance": "Ship reproducible libs/APK with MIT notice or documented binary distribution"
+    }
+  ]
+}

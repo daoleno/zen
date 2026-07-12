@@ -135,20 +135,20 @@ func TestClassify(t *testing.T) {
 			wantState: StateDone,
 		},
 
-		// === RUNNING states ===
+		// === IDLE / UNKNOWN (alive pane without durable activity signal) ===
 		{
-			name:       "active output",
+			name:       "active output without progress is idle unknown",
 			paneAlive:  true,
 			lines:      []string{"Reading file src/main.go...", "Analyzing dependencies..."},
 			staleCount: 0,
-			wantState:  StateRunning,
+			wantState:  StateUnknown,
 		},
 		{
-			name:       "recently active",
+			name:       "recent output churn without progress is idle unknown",
 			paneAlive:  true,
 			lines:      []string{"Writing test file..."},
 			staleCount: 10,
-			wantState:  StateRunning,
+			wantState:  StateUnknown,
 		},
 		{
 			name:      "heartbeat log with failed in agent name is not failure",
@@ -156,7 +156,7 @@ func TestClassify(t *testing.T) {
 			lines: []string{
 				"2026/06/08 00:20:19 brain heartbeat wake sent for brain-agent-zen-classifier-false-failed-1780",
 			},
-			wantState: StateRunning,
+			wantState: StateUnknown,
 		},
 		{
 			name:      "lifecycle valid values mention failed without failure",
@@ -167,7 +167,7 @@ func TestClassify(t *testing.T) {
 				`- Valid phase values: starting, reading, planning, working, verifying, reporting.`,
 				`- Valid attention values: none, done, blocked, failed, user_input, stale.`,
 			},
-			wantState: StateRunning,
+			wantState: StateUnknown,
 		},
 
 		// === UNKNOWN states ===
@@ -176,6 +176,13 @@ func TestClassify(t *testing.T) {
 			paneAlive:  true,
 			lines:      []string{"some random output that doesn't match anything"},
 			staleCount: 50,
+			wantState:  StateUnknown,
+		},
+		{
+			name:       "ordinary shell prompt stays unknown not running",
+			paneAlive:  true,
+			lines:      []string{"user@host:~$ ls", "README.md", "user@host:~$"},
+			staleCount: 0,
 			wantState:  StateUnknown,
 		},
 		{

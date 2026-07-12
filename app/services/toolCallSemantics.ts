@@ -16,6 +16,7 @@ export type SemanticActionKind =
   | "update_plan"
   | "view_image"
   | "test_app"
+  | "wait"
   | "use_tool";
 
 export type SemanticActionStatus = "running" | "done" | "failed" | "blocked";
@@ -418,6 +419,15 @@ function semanticFromToolName(
   if (lower === "view_image") {
     return action("view_image", status, name);
   }
+  if (
+    lower === "wait"
+    || lower === "write_stdin"
+    || lower === "await"
+    || lower === "awaitshell"
+    || lower === "await_shell"
+  ) {
+    return action("wait", status, name);
+  }
   if (lower === "apply_patch" || lower === "edit" || lower === "write" || lower === "multiedit") {
     return action("update_files", status, name);
   }
@@ -427,7 +437,7 @@ function semanticFromToolName(
   if (lower === "grep" || lower === "rg" || lower.includes("search")) {
     return action("search_code", status, name);
   }
-  if (lower === "read" || lower === "read_file" || lower === "glob" || lower === "list_files") {
+  if (lower === "read" || lower === "read_file" || lower === "glob" || lower === "list_files" || lower === "ls") {
     return action("read_files", status, name);
   }
   if (lower === "shell" || lower === "bash" || lower === "exec_command") {
@@ -529,6 +539,8 @@ function defaultLabel(kind: SemanticActionKind, status: SemanticActionStatus): s
       return running ? "Opening an image" : "Opened an image";
     case "test_app":
       return running ? "Testing the app" : "Tested the app";
+    case "wait":
+      return running ? "Waiting" : "Waited";
     default:
       return running ? "Using a tool" : "Used a tool";
   }
