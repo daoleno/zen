@@ -76,12 +76,14 @@ else
 fi
 
 if [[ $SKIP_PREBUILD -eq 0 ]]; then
-  echo "Running expo prebuild (android) to apply withZenAndroidRelease..."
-  (cd "$ROOT/app" && bunx expo prebuild --platform android --no-install)
+  echo "Running clean expo prebuild (android) to apply identity and release plugins..."
+  (cd "$ROOT/app" && bunx expo prebuild --clean --platform android --no-install)
+else
+  echo "note: --skip-prebuild set; ensure app/android matches current app.base.json identity."
 fi
 
 if [[ ! -x "$ROOT/app/android/gradlew" ]]; then
-  echo "error: app/android missing; run: cd app && bunx expo prebuild --platform android" >&2
+  echo "error: app/android missing; run: cd app && bunx expo prebuild --clean --platform android" >&2
   exit 1
 fi
 
@@ -96,6 +98,37 @@ if [[ ! -f "$pass_notice_asset" ]]; then
   echo "error: prebuild did not copy Ghostty MIT into android assets ($pass_notice_asset)" >&2
   exit 1
 fi
+
+# Refuse stale applicationId / versionName / versionCode from a previous prebuild.
+EXPECTED_PACKAGE="$(python3 -c "import json;print(json.load(open('app/app.base.json'))['expo']['android']['package'])")"
+EXPECTED_VERSION="$(python3 -c "import json;print(json.load(open('app/app.base.json'))['expo']['version'])")"
+EXPECTED_VERSION_CODE="$(python3 -c "import json;print(json.load(open('app/app.base.json'))['expo']['android']['versionCode'])")"
+python3 - "$GRADLE_APP" "$EXPECTED_PACKAGE" "$EXPECTED_VERSION" "$EXPECTED_VERSION_CODE" <<'PY'
+import re, sys
+from pathlib import Path
+gradle, exp_pkg, exp_ver, exp_vc = sys.argv[1:5]
+text = Path(gradle).read_text(encoding="utf-8")
+# namespace "com.daoleno.zen" or applicationId '…'
+ns = re.search(r'''namespace\s+['"]([^'"]+)['"]''', text)
+aid = re.search(r'''applicationId\s+['"]([^'"]+)['"]''', text)
+vn = re.search(r'''versionName\s+['"]([^'"]+)['"]''', text)
+vc = re.search(r'''versionCode\s+(\d+)''', text)
+errs = []
+pkg = (aid or ns)
+if not pkg or pkg.group(1) != exp_pkg:
+    errs.append(f"package/applicationId: got {(pkg.group(1) if pkg else None)!r} want {exp_pkg!r}")
+if not vn or vn.group(1) != exp_ver:
+    errs.append(f"versionName: got {(vn.group(1) if vn else None)!r} want {exp_ver!r}")
+if not vc or vc.group(1) != exp_vc:
+    errs.append(f"versionCode: got {(vc.group(1) if vc else None)!r} want {exp_vc!r}")
+if errs:
+    print("error: generated android app/build.gradle identity mismatch:", file=sys.stderr)
+    for e in errs:
+        print(f"  - {e}", file=sys.stderr)
+    print("  re-run without --skip-prebuild (uses expo prebuild --clean)", file=sys.stderr)
+    raise SystemExit(1)
+print(f"ok: generated identity package={exp_pkg} versionName={exp_ver} versionCode={exp_vc}")
+PY
 
 (
   cd "$ROOT/app"

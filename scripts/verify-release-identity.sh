@@ -77,6 +77,21 @@ cfg = (root / "app/app.config.js").read_text(encoding="utf-8")
 if "app.base.json" not in cfg:
     errors.append("app.config.js must load app.base.json as identity source")
 
+apk_script = (root / "scripts/android-release-apk.sh").read_text(encoding="utf-8")
+if "expo prebuild --clean" not in apk_script and "prebuild --clean" not in apk_script:
+    errors.append("android-release-apk.sh must use expo prebuild --clean for package identity")
+if "versionName" not in apk_script or "versionCode" not in apk_script:
+    errors.append("android-release-apk.sh must assert generated versionName/versionCode identity")
+
+for rel in (
+    "scripts/stage-release.sh",
+    "scripts/build-daemon-linux.sh",
+    "scripts/verify-release-identity.sh",
+    ".github/workflows/release-artifacts.yml",
+):
+    if not (root / rel).is_file():
+        errors.append(f"missing required release file: {rel}")
+
 notes_path = root / f"docs/releases/v{exp_version}.md"
 if not notes_path.is_file():
     errors.append(f"missing tracked release notes: {notes_path.relative_to(root)}")

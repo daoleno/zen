@@ -133,6 +133,11 @@ There is **no** committed binary. Honest redistributable terminal support requir
 ./scripts/android-release-apk.sh
 ```
 
+The release script runs `expo prebuild --clean` so package identity and
+autolinking cannot retain a previous application ID, then asserts generated
+`applicationId` / `versionName` / `versionCode` match `app/app.base.json`.
+Use `--skip-prebuild` only after a clean prebuild for the current tracked config.
+
 Or via package script after libs exist and `app/android` is prebuilt:
 
 ```bash
