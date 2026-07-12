@@ -1,5 +1,5 @@
 /**
- * Provider-neutral tool-call semantics for Codex / Grok / Cursor timelines.
+ * Provider-neutral tool-call semantics for Codex / Grok / Cursor / Claude timelines.
  *
  * Safety invariants:
  * - Never evaluate JavaScript from provider payloads.

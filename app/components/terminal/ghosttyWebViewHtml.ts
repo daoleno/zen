@@ -601,10 +601,27 @@ export function buildGhosttyTerminalHtml(theme: TerminalThemePalette, fontUri: s
           clearSelection();
         };
 
+        // Called after route focus / Chat->Terminal restore. Touchstart also
+        // scheduleDraw()'s; without an explicit wake, Android WebView can leave
+        // an already-updated DOM unpainted until the user taps.
+        window.__zenWakeRenderer = () => {
+          syncViewport(false);
+          scheduleDraw();
+          const rootEl = document.documentElement;
+          const previousTransform = rootEl.style.transform;
+          rootEl.style.transform = 'translateZ(0)';
+          void rootEl.offsetHeight;
+          rootEl.style.transform = previousTransform || '';
+        };
+
         window.__zenResumeInput = () => {
           clearSelection();
           viewportMode = 'live';
           scrollAccum = 0;
+          if (typeof window.__zenWakeRenderer === 'function') {
+            window.__zenWakeRenderer();
+            return;
+          }
           scheduleDraw();
         };
 
@@ -612,6 +629,10 @@ export function buildGhosttyTerminalHtml(theme: TerminalThemePalette, fontUri: s
           clearSelection();
           viewportMode = 'live';
           scrollAccum = 0;
+          if (typeof window.__zenWakeRenderer === 'function') {
+            window.__zenWakeRenderer();
+            return;
+          }
           scheduleDraw();
         };
 

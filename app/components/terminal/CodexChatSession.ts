@@ -1174,6 +1174,10 @@ function shouldDropGrokChatNoiseEvent(
 function cleanCodexConversationEventForChat(
   event: CodexConversation["events"][number],
 ): CodexConversation["events"][number] | null {
+  // Terminal pane text is Terminal-view only. Structured Chat never renders it.
+  if (event.source === "terminal_snapshot") {
+    return null;
+  }
   if (isSlashCommandInvocationEvent(event)) {
     return null;
   }

@@ -21,6 +21,11 @@ import { compactPathLabel } from "../../services/pathDisplay";
 import { wsClient, type BrainWorkspaceEntry, type BrainWorkspaceFile, type BrainWorkspaceTree } from "../../services/websocket";
 import { AppText, BottomSheetFrame, IconButton } from "../ui";
 import { CodexNativeMarkdownBody } from "../terminal/CodexNativeMarkdownBody";
+import {
+  brainWorkspaceEntryAccessibilityLabel,
+  brainWorkspaceEntryIconName,
+  brainWorkspaceMarkdownPath,
+} from "./brainPresentation";
 
 interface BrainWorkspaceViewerProps {
   visible: boolean;
@@ -375,31 +380,24 @@ export function BrainWorkspaceViewer({
                 <Pressable
                   key={entry.path}
                   accessibilityRole="button"
-                  accessibilityLabel={`${directory ? "Open folder" : "Open file"} ${entry.name}`}
+                  accessibilityLabel={brainWorkspaceEntryAccessibilityLabel(
+                    entry.kind,
+                    entry.name,
+                  )}
                   onPress={() => openEntry(entry)}
                   style={({ pressed }) => [
                     styles.browserRow,
                     pressed ? styles.browserRowPressed : null,
                   ]}
                 >
-                  <View style={styles.browserIcon}>
-                    <Ionicons
-                      name={directory ? "folder-outline" : markdownFile(entry.path) ? "document-text-outline" : "document-outline"}
-                      size={20}
-                      color={directory ? colors.accent : colors.textSecondary}
-                    />
-                  </View>
-                  <View style={styles.browserCopy}>
-                    <Text style={styles.browserName} numberOfLines={1} ellipsizeMode="middle">
-                      {entry.name}
-                    </Text>
-                    <Text style={styles.browserKind} numberOfLines={1}>
-                      {directory
-                        ? "Folder"
-                        : markdownFile(entry.path) ? "Markdown" : "Text file"}
-                    </Text>
-                  </View>
-                  <Ionicons name="chevron-forward" size={17} color={colors.textTertiary} />
+                  <Ionicons
+                    name={brainWorkspaceEntryIconName(entry.kind, entry.path)}
+                    size={18}
+                    color={directory ? colors.accent : colors.textSecondary}
+                  />
+                  <Text style={styles.browserName} numberOfLines={1} ellipsizeMode="middle">
+                    {entry.name}
+                  </Text>
                 </Pressable>
               );
             })}
@@ -421,20 +419,14 @@ function BrainWorkspaceFilePreview({
   theme: TerminalThemePalette;
   styles: ReturnType<typeof createStyles>;
 }) {
-  const markdown = file.language === "markdown" || markdownFile(file.path);
+  const markdown =
+    file.language === "markdown" || brainWorkspaceMarkdownPath(file.path);
   const content = file.content;
   return (
-    <View style={styles.previewContent}>
-      <View style={styles.previewHeader}>
-        <View style={styles.previewTitleBlock}>
-          <AppText variant="label" tone="primary" numberOfLines={1} ellipsizeMode="head">
-            {file.path}
-          </AppText>
-          <AppText variant="caption" tone="secondary" numberOfLines={1}>
-            {markdown ? "Markdown" : "Text"}
-          </AppText>
-        </View>
-      </View>
+    <View
+      style={styles.previewContent}
+      accessibilityLabel={`File ${file.name || file.path}`}
+    >
       <ScrollView
         style={styles.fileScroll}
         contentContainerStyle={styles.fileScrollContent}
@@ -466,10 +458,6 @@ function BrainWorkspaceFilePreview({
       </ScrollView>
     </View>
   );
-}
-
-function markdownFile(path: string) {
-  return /\.(md|markdown)$/i.test(path);
 }
 
 function compactWorkspaceLabel(path?: string) {
@@ -512,61 +500,33 @@ function createStyles(colors: typeof Colors) {
       minHeight: 0,
     },
     browserContent: {
-      paddingVertical: 4,
+      paddingVertical: 2,
     },
     browserRow: {
-      minHeight: 62,
+      minHeight: 44,
       paddingHorizontal: 12,
+      paddingVertical: 10,
       flexDirection: "row",
       alignItems: "center",
-      gap: 11,
+      gap: 10,
       borderBottomWidth: StyleSheet.hairlineWidth,
       borderBottomColor: colors.borderSubtle,
     },
     browserRowPressed: {
       backgroundColor: colors.surfacePressed,
     },
-    browserIcon: {
-      width: 34,
-      height: 34,
-      borderRadius: 9,
-      alignItems: "center",
-      justifyContent: "center",
-      backgroundColor: colors.surfaceSubtle,
-    },
-    browserCopy: {
+    browserName: {
       flex: 1,
       minWidth: 0,
-      gap: 2,
-    },
-    browserName: {
       fontFamily: Typography.uiFont,
       fontSize: 15,
       lineHeight: 20,
       color: colors.textPrimary,
       letterSpacing: 0,
     },
-    browserKind: {
-      fontFamily: Typography.uiFont,
-      fontSize: 12,
-      lineHeight: 16,
-      color: colors.textTertiary,
-      letterSpacing: 0,
-    },
     previewContent: {
       flex: 1,
       minHeight: 0,
-    },
-    previewHeader: {
-      minHeight: 48,
-      paddingHorizontal: 12,
-      paddingVertical: 8,
-      borderBottomWidth: StyleSheet.hairlineWidth,
-      borderBottomColor: colors.borderSubtle,
-      justifyContent: "center",
-    },
-    previewTitleBlock: {
-      minWidth: 0,
     },
     fileScroll: {
       flex: 1,

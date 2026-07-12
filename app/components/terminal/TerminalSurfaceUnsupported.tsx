@@ -14,6 +14,7 @@ export const TerminalSurfaceUnsupported = forwardRef<TerminalSurfaceHandle, Term
     sendInput() {},
     focus() {},
     blur() {},
+    wakeRenderer() {},
     resumeInput() {},
     scrollToBottom() {},
   }), []);

@@ -81,6 +81,8 @@ func LoadCodexConversationForAgent(agent classifier.Agent, now time.Time) (Codex
 		return loadCursorConversationForAgent(agent, now)
 	case "grok":
 		return loadGrokConversationForAgent(agent, now)
+	case "claude":
+		return loadClaudeConversationForAgent(agent, now)
 	case "codex":
 		// continue below
 	default:
@@ -126,19 +128,26 @@ func LoadCodexConversationForAgent(agent classifier.Agent, now time.Time) (Codex
 	return conversation, nil
 }
 
-// ShouldUseTerminalSnapshotConversationFallback reports whether a session can
-// use tmux pane content when no native structured transcript is available.
+// ShouldUseTerminalSnapshotConversationFallback reports whether Chat may adapt
+// tmux pane text into conversation events.
+//
+// Always false: structured chat providers (Claude/Cursor/Codex/Grok) must keep
+// process liveness, transcript availability, turn state, and view mode
+// independent. Missing transcripts stay empty-ready / syncing / unavailable in
+// Chat; raw pane contents remain Terminal-only via Open terminal.
 func ShouldUseTerminalSnapshotConversationFallback(agent classifier.Agent, conversation CodexConversation) bool {
-	if conversation.Available || conversation.Reason != "not_structured_agent" {
-		return false
-	}
-	return agentToolName(agent.Command, agent.Name) == "cursor"
+	_ = agent
+	_ = conversation
+	return false
 }
 
 // TerminalSnapshotConversationForAgent adapts visible terminal output into the
-// same conversation shape used by native agent chat surfaces.
+// conversation shape used by Chat. Structured providers must not call this for
+// Chat subscription; it remains for explicit non-chat capture helpers/tests.
+//
+// Active is always false here: pane text is not a turn-state signal.
 func TerminalSnapshotConversationForAgent(agent classifier.Agent, snapshot string, now time.Time) CodexConversation {
-	active := agent.State == classifier.StateRunning
+	active := false
 	conversation := CodexConversation{
 		Available: false,
 		Reason:    "terminal_snapshot_empty",
@@ -177,7 +186,7 @@ func TerminalSnapshotConversationUnavailableForAgent(agent classifier.Agent, rea
 	if reason == "" {
 		reason = "terminal_snapshot_unavailable"
 	}
-	active := agent.State == classifier.StateRunning
+	active := false
 	return CodexConversation{
 		Available: false,
 		Reason:    reason,
@@ -188,6 +197,30 @@ func TerminalSnapshotConversationUnavailableForAgent(agent classifier.Agent, rea
 		Active:    &active,
 		Events:    []CodexConversationEvent{},
 	}
+}
+
+// conversationHasActiveTurn reports whether structured events show an in-flight
+// chat turn. Process liveness alone is not a turn signal.
+func conversationHasActiveTurn(events []CodexConversationEvent) bool {
+	latestUser := -1
+	for index, event := range events {
+		if strings.EqualFold(strings.TrimSpace(event.Status), "running") {
+			return true
+		}
+		if event.Kind == "user_message" || (event.Kind == "message" && event.Role == "user") {
+			latestUser = index
+		}
+	}
+	if latestUser < 0 {
+		return false
+	}
+	for index := latestUser + 1; index < len(events); index++ {
+		event := events[index]
+		if event.Kind == "assistant_message" || (event.Kind == "message" && event.Role == "assistant") {
+			return false
+		}
+	}
+	return true
 }
 
 func loadCachedCodexConversation(path string) (CodexConversation, error) {

@@ -491,9 +491,14 @@ func TestNativeThreadProviderFactoryOnlyEnablesCodex(t *testing.T) {
 	if provider, ok := NewNativeThreadProvider(codex); !ok || provider.ProviderID() != AgentProviderCodex {
 		t.Fatalf("codex provider = (%#v, %v)", provider, ok)
 	}
+	// Claude has structured transcript conversation support, but not Codex
+	// app-server native thread APIs.
 	claude := NewAgentExecutor("claude", Executor{Name: "claude", Command: "claude"})
 	if provider, ok := NewNativeThreadProvider(claude); ok || provider != nil {
-		t.Fatalf("claude provider = (%#v, %v)", provider, ok)
+		t.Fatalf("claude should not expose Codex-style native thread provider = (%#v, %v)", provider, ok)
+	}
+	if !claude.Capabilities.StructuredEvents {
+		t.Fatalf("claude should expose structured events: %+v", claude.Capabilities)
 	}
 }
 

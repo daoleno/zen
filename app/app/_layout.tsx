@@ -29,6 +29,7 @@ import { WorkProvider, useWorkDispatch } from "../store/work";
 import { useAppTheme } from "../constants/tokens";
 import { ThemeProvider } from "../theme";
 import { wsClient } from "../services/websocket";
+import { decideDisconnectLifecycle } from "../services/connectionLifecycle";
 import {
   getDisabledServerIds,
   getServers,
@@ -342,22 +343,27 @@ const ConnectionLifecycle = memo(function ConnectionLifecycle({
         serverId: data.serverId,
         connectionState: "connected",
       });
-    const onDisconnected = (data: any) =>
-      {
-        dispatch({
-          type: "SET_SERVER_CONNECTION_STATE",
-          serverId: data.serverId,
-          connectionState: "offline",
-        });
-        workDispatch({
-          type: "REMOVE_SERVER",
-          serverId: data.serverId,
-        });
-        brainDispatch({
-          type: "REMOVE_SERVER",
-          serverId: data.serverId,
-        });
-      };
+    const onDisconnected = (data: any) => {
+      const decision = decideDisconnectLifecycle(data?.reason);
+      dispatch({
+        type: "SET_SERVER_CONNECTION_STATE",
+        serverId: data.serverId,
+        connectionState: decision.connectionState,
+      });
+      // Transient transport close (background suspension) must retain Brain/Work
+      // caches so foreground resume does not flash offline empty states.
+      if (!decision.clearServerCaches) {
+        return;
+      }
+      workDispatch({
+        type: "REMOVE_SERVER",
+        serverId: data.serverId,
+      });
+      brainDispatch({
+        type: "REMOVE_SERVER",
+        serverId: data.serverId,
+      });
+    };
     const onConnectionIssue = (data: any) =>
       dispatch({
         type: "SET_SERVER_CONNECTION_ISSUE",
@@ -618,9 +624,15 @@ const NotificationObserver = memo(function NotificationObserver() {
 
   useEffect(() => {
     const subscription = AppState.addEventListener("change", (nextState) => {
+      const previous = appStateRef.current;
       appStateRef.current = nextState;
       if (nextState !== "active") {
         wsClient.clearActiveAgentsExcept(null);
+        return;
+      }
+      // Foreground resume: skip reconnect backoff and silently restore transport.
+      if (previous !== "active") {
+        wsClient.resumeReconnects();
       }
     });
 

@@ -637,61 +637,21 @@ func loadClaudeTranscript(cwd string, now time.Time) (ToolTranscript, error) {
 	if cwd == "" {
 		return ToolTranscript{}, nil
 	}
-	home, err := os.UserHomeDir()
-	if err != nil {
+	candidate, ok, err := findClaudeTranscript(classifier.Agent{Cwd: cwd}, now)
+	if err != nil || !ok {
 		return ToolTranscript{}, err
 	}
-	for _, candidateCWD := range transcriptCWDCandidates(cwd) {
-		projectDir := filepath.Join(home, ".claude", "projects", encodeClaudeProjectDir(candidateCWD))
-		entries, err := os.ReadDir(projectDir)
-		if err != nil {
-			continue
-		}
-
-		type candidate struct {
-			path string
-			info os.FileInfo
-		}
-		var candidates []candidate
-		for _, entry := range entries {
-			if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".jsonl") {
-				continue
-			}
-			info, err := entry.Info()
-			if err != nil || !isTranscriptFresh(info.ModTime(), now) {
-				continue
-			}
-			candidates = append(candidates, candidate{
-				path: filepath.Join(projectDir, entry.Name()),
-				info: info,
-			})
-		}
-		sort.SliceStable(candidates, func(i, j int) bool {
-			return candidates[i].info.ModTime().After(candidates[j].info.ModTime())
-		})
-
-		for _, candidate := range candidates {
-			meta, err := readClaudeMeta(candidate.path)
-			if err != nil {
-				continue
-			}
-			if meta.CWD != "" && meta.CWD != candidateCWD {
-				continue
-			}
-			excerpt, err := summarizeClaudeTranscript(candidate.path)
-			if err != nil || strings.TrimSpace(excerpt) == "" {
-				continue
-			}
-			return ToolTranscript{
-				Source:    "claude",
-				Path:      candidate.path,
-				SessionID: meta.SessionID,
-				Updated:   candidate.info.ModTime(),
-				Excerpt:   excerpt,
-			}, nil
-		}
+	excerpt, err := summarizeClaudeTranscript(candidate.Path)
+	if err != nil || strings.TrimSpace(excerpt) == "" {
+		return ToolTranscript{}, err
 	}
-	return ToolTranscript{}, nil
+	return ToolTranscript{
+		Source:    "claude",
+		Path:      candidate.Path,
+		SessionID: candidate.ID,
+		Updated:   candidate.Updated,
+		Excerpt:   excerpt,
+	}, nil
 }
 
 type claudeMeta struct {

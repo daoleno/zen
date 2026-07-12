@@ -23,11 +23,14 @@ import {
 } from "../../constants/tokens";
 import { getServers, type StoredServer } from "../../services/storage";
 import { wsClient } from "../../services/websocket";
+import {
+  resolveBrainActiveServerId,
+  shouldShowBrainLoadingState,
+} from "../../services/connectionLifecycle";
 import { useAgents, type ConnectionState } from "../../store/agents";
 import {
   useBrain,
   type BrainAdapterRef,
-  type BrainServerState,
 } from "../../store/brain";
 
 const BRAIN_EMPTY_TITLE = "Ready when you are";
@@ -80,21 +83,32 @@ export default function BrainScreen() {
     [agentState.serverConnections, servers],
   );
 
-  const activeServer = useMemo(
-    () =>
-      resolveActiveServer({
-        connectedServers,
-        servers,
-        brainByServer: brainState.byServer,
-        connectionStates: agentState.serverConnections,
-      }),
-    [
-      agentState.serverConnections,
-      brainState.byServer,
-      connectedServers,
+  const activeServer = useMemo(() => {
+    const activeId = resolveBrainActiveServerId({
       servers,
-    ],
-  );
+      connectedServerIds: connectedServers.map((server) => server.id),
+      brainHydratedByServer: Object.fromEntries(
+        Object.entries(brainState.byServer).map(([serverId, brain]) => [
+          serverId,
+          Boolean(brain?.hydrated),
+        ]),
+      ),
+      connectionStates: agentState.serverConnections,
+    });
+    if (!activeId) {
+      return null;
+    }
+    return (
+      servers.find((server) => server.id === activeId) ||
+      connectedServers.find((server) => server.id === activeId) ||
+      null
+    );
+  }, [
+    agentState.serverConnections,
+    brainState.byServer,
+    connectedServers,
+    servers,
+  ]);
 
   const activeBrain = activeServer
     ? brainState.byServer[activeServer.id]
@@ -111,6 +125,10 @@ export default function BrainScreen() {
     ? `brain-thread:${activeBrain.chat_thread_id}`
     : undefined;
   const ready = Boolean(activeServer && activeBrain?.hydrated && hostAgent?.id);
+  const showBrainLoading = shouldShowBrainLoadingState({
+    hydrated: Boolean(activeBrain?.hydrated),
+    hasHostAgent: Boolean(hostAgent?.id),
+  });
   const canUseStructuredBrainInterface = Boolean(
     ready && hostAdapter?.capabilities?.structured_events,
   );
@@ -339,15 +357,18 @@ export default function BrainScreen() {
               emptyBody={BRAIN_EMPTY_BODY}
               renderComposerAccessory={renderBrainComposerAccessory}
             />
-          ) : ready ? (
+          ) : showBrainLoading ? (
+            <BrainLoadingState
+              chrome={chrome}
+              connected={
+                connectionState === "connected" ||
+                connectionState === "connecting"
+              }
+            />
+          ) : (
             <BrainInterfaceUnavailableState
               chrome={chrome}
               provider={hostAdapter?.provider}
-            />
-          ) : (
-            <BrainLoadingState
-              chrome={chrome}
-              connected={connectionState === "connected"}
             />
           )}
         </ChatCanvas>
@@ -456,32 +477,6 @@ function BrainInterfaceUnavailableState({
       }
     />
   );
-}
-
-function resolveActiveServer({
-  connectedServers,
-  servers,
-  brainByServer,
-  connectionStates,
-}: {
-  connectedServers: StoredServer[];
-  servers: StoredServer[];
-  brainByServer: Record<string, BrainServerState>;
-  connectionStates: Record<string, ConnectionState>;
-}): StoredServer | null {
-  const hydratedConnected = connectedServers.find(
-    (server) => brainByServer[server.id]?.hydrated,
-  );
-  if (hydratedConnected) {
-    return hydratedConnected;
-  }
-  if (connectedServers[0]) {
-    return connectedServers[0];
-  }
-  const connectedByState = servers.find(
-    (server) => connectionStates[server.id] === "connected",
-  );
-  return connectedByState || servers[0] || null;
 }
 
 function createStateCardStyles(chrome: TerminalThemeChrome) {

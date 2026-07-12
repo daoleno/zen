@@ -18,6 +18,34 @@ interface UseTerminalViewportModelInput {
   chromeColors: TerminalThemeChrome;
 }
 
+/**
+ * Mount vs interact policy for the Ghostty WebView surface.
+ *
+ * Chat must not unmount the surface: tearing it down closes the WS terminal
+ * session and remounts a WebView that Android often leaves unpainted until the
+ * next touch. Keep the surface mounted under the chat overlay and only gate
+ * interaction / accessory chrome.
+ */
+export function resolveTerminalSurfaceMountPolicy(input: {
+  canRenderTerminal: boolean;
+  screenFocused: boolean;
+  showCodexChat: boolean;
+}): {
+  shouldMountTerminalSurface: boolean;
+  terminalSurfaceActive: boolean;
+  accessoryVisible: boolean;
+} {
+  const shouldMountTerminalSurface =
+    input.canRenderTerminal && input.screenFocused;
+  const terminalSurfaceActive =
+    shouldMountTerminalSurface && !input.showCodexChat;
+  return {
+    shouldMountTerminalSurface,
+    terminalSurfaceActive,
+    accessoryVisible: terminalSurfaceActive,
+  };
+}
+
 export function useTerminalViewportModel({
   hasTerminalRoute,
   showCodexChat,
@@ -33,8 +61,11 @@ export function useTerminalViewportModel({
     connectionIssue,
   });
   const canRenderTerminal = hasTerminalRoute && !showTerminalFallback;
-  const shouldMountTerminalSurface =
-    canRenderTerminal && screenFocused && !showCodexChat;
+  const mountPolicy = resolveTerminalSurfaceMountPolicy({
+    canRenderTerminal,
+    screenFocused,
+    showCodexChat,
+  });
   const terminalState = useMemo(
     () =>
       buildTerminalFallbackPresentation({
@@ -54,9 +85,10 @@ export function useTerminalViewportModel({
   );
 
   return {
-    accessoryVisible: canRenderTerminal && !showCodexChat && screenFocused,
+    accessoryVisible: mountPolicy.accessoryVisible,
     canRenderTerminal,
-    shouldMountTerminalSurface,
+    shouldMountTerminalSurface: mountPolicy.shouldMountTerminalSurface,
+    terminalSurfaceActive: mountPolicy.terminalSurfaceActive,
     terminalState,
   };
 }

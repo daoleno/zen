@@ -4,6 +4,8 @@ export interface TerminalSurfaceHandle {
   sendInput(data: string, options?: { focus?: boolean }): void;
   focus(): void;
   blur(): void;
+  /** Force viewport sync + draw after focus/visibility restore (no input focus). */
+  wakeRenderer(): void;
   resumeInput(): void;
   scrollToBottom(): void;
 }

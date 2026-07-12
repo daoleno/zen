@@ -26,6 +26,7 @@ interface TerminalOutputPaneProps {
   onCtrlArmedChange(next: boolean): void;
   canRenderTerminal: boolean;
   shouldMountTerminalSurface: boolean;
+  terminalSurfaceActive: boolean;
   terminalStateAccent: string;
   terminalStateBusy: boolean;
   terminalStateTitle: string;
@@ -53,6 +54,7 @@ function TerminalOutputPaneImpl({
   onCtrlArmedChange,
   canRenderTerminal,
   shouldMountTerminalSurface,
+  terminalSurfaceActive,
   terminalStateAccent,
   terminalStateBusy,
   terminalStateTitle,
@@ -68,26 +70,43 @@ function TerminalOutputPaneImpl({
   onRetryConnection,
   onAccessoryLayout,
 }: TerminalOutputPaneProps) {
+  const hasTerminalTarget = Boolean(sessionKey && serverId && agentId);
   const shouldAutoResumeTerminal =
-    shouldMountTerminalSurface &&
-    canRenderTerminal &&
-    Boolean(sessionKey && serverId && agentId);
+    terminalSurfaceActive && canRenderTerminal && hasTerminalTarget;
 
   React.useEffect(() => {
-    if (!shouldAutoResumeTerminal) {
+    if (!shouldMountTerminalSurface || !hasTerminalTarget) {
       return;
     }
+
+    if (!terminalSurfaceActive) {
+      terminalRef.current?.blur();
+      return;
+    }
+
     const frame = requestAnimationFrame(() => {
+      // resumeInput wakes the WebView compositor then restores live input.
       terminalRef.current?.resumeInput();
     });
     return () => {
       cancelAnimationFrame(frame);
     };
-  }, [agentId, serverId, sessionKey, shouldAutoResumeTerminal, terminalRef]);
+  }, [
+    agentId,
+    hasTerminalTarget,
+    serverId,
+    sessionKey,
+    shouldAutoResumeTerminal,
+    shouldMountTerminalSurface,
+    terminalRef,
+    terminalSurfaceActive,
+  ]);
 
   return (
     <>
       <View
+        collapsable={false}
+        pointerEvents={terminalSurfaceActive ? "auto" : "none"}
         style={[
           styles.output,
           { backgroundColor: theme.background },

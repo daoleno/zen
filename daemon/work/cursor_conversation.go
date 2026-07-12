@@ -59,7 +59,7 @@ func loadCursorConversationForAgent(agent classifier.Agent, now time.Time) (Code
 	if !ok {
 		return CodexConversation{
 			Available: false,
-			Reason:    "not_structured_agent",
+			Reason:    "transcript_not_found",
 			Events:    []CodexConversationEvent{},
 		}, nil
 	}
@@ -74,11 +74,11 @@ func loadCursorConversationForAgent(agent classifier.Agent, now time.Time) (Code
 	conversation.SessionID = firstNonEmpty(conversation.SessionID, candidate.ID)
 	conversation.CWD = firstNonEmpty(conversation.CWD, candidate.CWD)
 	conversation.Updated = &candidate.Updated
-	active := agent.State == classifier.StateRunning
-	conversation.Active = &active
 	if conversation.Events == nil {
 		conversation.Events = []CodexConversationEvent{}
 	}
+	active := conversationHasActiveTurn(conversation.Events)
+	conversation.Active = &active
 	return conversation, nil
 }
 

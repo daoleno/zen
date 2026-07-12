@@ -90,7 +90,7 @@ func TestAgentExecutorInfersProviderRuntimeAndCapabilities(t *testing.T) {
 	if !ok {
 		t.Fatal("claude executor missing")
 	}
-	if claude.Provider != "claude" || !claude.Capabilities.InteractiveTTY {
+	if claude.Provider != "claude" || !claude.Capabilities.InteractiveTTY || !claude.Capabilities.StructuredEvents {
 		t.Fatalf("claude executor = %+v", claude)
 	}
 	if claude.Capabilities.NativeThreads || claude.Capabilities.NativeSearch || claude.Capabilities.NativeResume || claude.Capabilities.NativeGoals {

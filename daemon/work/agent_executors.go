@@ -214,9 +214,9 @@ func agentCapabilities(provider, runtime string) AgentCapabilities {
 	case AgentProviderGrok:
 		caps.StructuredEvents = true
 	case AgentProviderClaude:
-		// Claude Code is currently treated as a portable TTY executor here.
-		// Brain can still manage it via tmux, transcript capture, and worktree
-		// isolation without assuming Claude-native thread semantics.
+		// Claude Code exposes structured chat via local JSONL transcripts under
+		// ~/.claude/projects. It does not offer Codex-style native thread APIs.
+		caps.StructuredEvents = true
 	}
 	return caps
 }

@@ -34,7 +34,7 @@ type BridgeMessage =
     };
 
 type TerminalViewportMode = 'live' | 'scrolled';
-type RendererCommand = 'blur' | 'resumeInput' | 'scrollToBottom';
+type RendererCommand = 'blur' | 'wakeRenderer' | 'resumeInput' | 'scrollToBottom';
 
 type RendererStateMessage =
   | { type: 'renderSnapshot'; snapshot: RenderSnapshot }
@@ -129,6 +129,8 @@ export function useGhosttyTerminalController({
     let script = '';
     if (command === 'blur') {
       script = 'window.__zenBlur && window.__zenBlur(); true;';
+    } else if (command === 'wakeRenderer') {
+      script = 'window.__zenWakeRenderer && window.__zenWakeRenderer(); true;';
     } else if (command === 'resumeInput') {
       script = 'window.__zenResumeInput && window.__zenResumeInput(); true;';
     } else if (command === 'scrollToBottom') {
@@ -339,13 +341,22 @@ export function useGhosttyTerminalController({
     runRendererCommand('blur');
   }, [runRendererCommand]);
 
+  const wakeRenderer = useCallback(() => {
+    // Re-sync layout and force a draw after focus/overlay changes. Android
+    // WebView often keeps an uncomposited buffer until the next touch otherwise.
+    runRendererCommand('wakeRenderer');
+    scheduleRenderState();
+  }, [runRendererCommand, scheduleRenderState]);
+
   const resumeInput = useCallback(() => {
+    wakeRenderer();
     enterLiveMode('resumeInput');
-  }, [enterLiveMode]);
+  }, [enterLiveMode, wakeRenderer]);
 
   const scrollToBottom = useCallback(() => {
+    wakeRenderer();
     enterLiveMode('scrollToBottom');
-  }, [enterLiveMode]);
+  }, [enterLiveMode, wakeRenderer]);
 
   const onInput = useCallback((data: string) => {
     flushRemoteScroll();
@@ -389,6 +400,9 @@ export function useGhosttyTerminalController({
           injectRendererCommand(pendingCommand);
         }
         scheduleRenderState();
+        // Fresh WebView attach: ensure the first snapshot is composited without
+        // waiting for a user touch to scheduleDraw.
+        injectRendererCommand('wakeRenderer');
         return;
       }
 
@@ -537,6 +551,7 @@ export function useGhosttyTerminalController({
     },
     focus,
     blur,
+    wakeRenderer,
     resumeInput,
     scrollToBottom,
   };

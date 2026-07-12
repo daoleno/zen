@@ -48,3 +48,26 @@ export function brainStatusLine({
   // Header stays compact — workspace paths live in the workspace viewer, not chrome.
   return brainAdapterLabel(adapter) || "Waiting for connection";
 }
+
+export function brainWorkspaceMarkdownPath(path: string): boolean {
+  return /\.(md|markdown)$/i.test(path);
+}
+
+export function brainWorkspaceEntryAccessibilityLabel(
+  kind: string,
+  name: string,
+): string {
+  return `${kind === "directory" ? "Open folder" : "Open file"} ${name}`;
+}
+
+export function brainWorkspaceEntryIconName(
+  kind: string,
+  path: string,
+): "folder-outline" | "document-text-outline" | "document-outline" {
+  if (kind === "directory") {
+    return "folder-outline";
+  }
+  return brainWorkspaceMarkdownPath(path)
+    ? "document-text-outline"
+    : "document-outline";
+}

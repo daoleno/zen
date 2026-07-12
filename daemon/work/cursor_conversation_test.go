@@ -129,8 +129,8 @@ func TestLoadCursorConversationForAgent_FindsProjectTranscript(t *testing.T) {
 	if got.Path != transcriptPath || got.SessionID != sessionID || got.CWD != cwd {
 		t.Fatalf("metadata = %#v", got)
 	}
-	if got.Active == nil || !*got.Active {
-		t.Fatalf("active = %#v, want true", got.Active)
+	if got.Active == nil || *got.Active {
+		t.Fatalf("active = %#v, want false after completed user/assistant turn", got.Active)
 	}
 	if len(got.Events) != 2 {
 		t.Fatalf("events len = %d, want 2: %#v", len(got.Events), got.Events)
@@ -155,8 +155,8 @@ func TestTerminalSnapshotConversationForAgent_BuildsTerminalStatusFallback(t *te
 	if got.Updated == nil || !got.Updated.Equal(now) {
 		t.Fatalf("updated = %#v, want %s", got.Updated, now)
 	}
-	if got.Active == nil || !*got.Active {
-		t.Fatalf("active = %#v, want true", got.Active)
+	if got.Active == nil || *got.Active {
+		t.Fatalf("active = %#v, want false for completed terminal snapshot content", got.Active)
 	}
 	if len(got.Events) != 1 {
 		t.Fatalf("events len = %d, want 1: %#v", len(got.Events), got.Events)
@@ -187,25 +187,56 @@ func TestTerminalSnapshotConversationForAgent_EmptySnapshotUnavailable(t *testin
 	}
 }
 
-func TestShouldUseTerminalSnapshotConversationFallback_OnlyCursorNotStructured(t *testing.T) {
-	notStructured := CodexConversation{
+func TestShouldUseTerminalSnapshotConversationFallback_StructuredProvidersNever(t *testing.T) {
+	reasons := []string{
+		"not_structured_agent",
+		"transcript_not_found",
+		"transcript_malformed",
+		"missing_cwd",
+	}
+	providers := []string{
+		"cursor-agent --force",
+		"claude",
+		"codex",
+		"grok",
+	}
+	for _, command := range providers {
+		for _, reason := range reasons {
+			if ShouldUseTerminalSnapshotConversationFallback(
+				classifier.Agent{Command: command},
+				CodexConversation{Available: false, Reason: reason, Events: []CodexConversationEvent{}},
+			) {
+				t.Fatalf("%s + %s must not adapt terminal snapshots into Chat", command, reason)
+			}
+		}
+	}
+}
+
+func TestStructuredProviderMissingTranscriptStaysEmptyReadyWithoutPaneDump(t *testing.T) {
+	now := time.Date(2026, 7, 12, 3, 0, 0, 0, time.UTC)
+	agent := classifier.Agent{
+		ID:      "claude-session:@1",
+		Name:    "claude",
+		Command: "claude",
+		Cwd:     "/repo/zen",
+		State:   classifier.StateRunning,
+	}
+	conversation := CodexConversation{
 		Available: false,
-		Reason:    "not_structured_agent",
+		Reason:    "transcript_not_found",
 		Events:    []CodexConversationEvent{},
 	}
-	if !ShouldUseTerminalSnapshotConversationFallback(classifier.Agent{
-		Command: "cursor-agent --force",
-	}, notStructured) {
-		t.Fatal("cursor not_structured_agent should use terminal snapshot fallback")
+	if ShouldUseTerminalSnapshotConversationFallback(agent, conversation) {
+		t.Fatal("structured provider must not fall back to terminal snapshot chat events")
 	}
-	if ShouldUseTerminalSnapshotConversationFallback(classifier.Agent{
-		Command: "codex",
-	}, notStructured) {
-		t.Fatal("codex not_structured_agent should not use cursor terminal fallback")
+
+	// Even if a helper still builds a snapshot from arbitrary pane text, Chat
+	// subscription must not select that path for structured providers.
+	snapshot := TerminalSnapshotConversationForAgent(agent, "████ arbitrary startup banner ████\nClaude Code\nThinking\nDone\n", now)
+	if len(snapshot.Events) == 0 {
+		t.Fatal("helper may still capture pane text for non-Chat uses")
 	}
-	if ShouldUseTerminalSnapshotConversationFallback(classifier.Agent{
-		Command: "cursor-agent --force",
-	}, CodexConversation{Available: false, Reason: "transcript_not_found"}) {
-		t.Fatal("cursor transcript_not_found should keep native sync semantics")
+	if ShouldUseTerminalSnapshotConversationFallback(agent, conversation) {
+		t.Fatal("Chat must not surface that capture as conversation events")
 	}
 }

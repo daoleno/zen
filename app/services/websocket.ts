@@ -304,6 +304,19 @@ class ServerSocket {
     );
   }
 
+  /** Skip backoff and reconnect now (e.g. app returned to foreground). */
+  resumeReconnect() {
+    if (!this.shouldReconnect || this.isConnected) {
+      return;
+    }
+    if (this.reconnectTimer) {
+      clearTimeout(this.reconnectTimer);
+      this.reconnectTimer = null;
+    }
+    this.reconnectDelay = 1000;
+    this.startConnectAttempt();
+  }
+
   private async reportConnectionIssue(attemptId: number) {
     const issue = await diagnoseConnectionIssue({
       serverUrl: this.meta.serverUrl,
@@ -390,7 +403,12 @@ class ServerSocket {
           return;
         }
 
-        this.emit("disconnected", {});
+        // Transient close (background suspension, network blip). Keep
+        // reconnecting; UI should retain caches and show "connecting".
+        this.emit("disconnected", { reason: "transport_closed" });
+        if (this.shouldReconnect) {
+          this.emit("connecting", {});
+        }
         if (!opened) {
           void this.reportConnectionIssue(attemptId);
         }
@@ -410,7 +428,10 @@ class ServerSocket {
       }
 
       this.ws = null;
-      this.emit("disconnected", {});
+      this.emit("disconnected", { reason: "transport_closed" });
+      if (this.shouldReconnect) {
+        this.emit("connecting", {});
+      }
       void this.reportConnectionIssue(attemptId);
       this.scheduleReconnect();
     }
@@ -443,13 +464,20 @@ class MultiServerWebSocketClient {
     this.connections.get(serverId)?.disconnect();
     this.connections.delete(serverId);
     this.serverMeta.delete(serverId);
-    this.emit("disconnected", serverId, {});
+    this.emit("disconnected", serverId, { reason: "intentional" });
     this.emit("connection_issue", serverId, { issue: null });
   }
 
   disconnectAll() {
     for (const serverId of this.connections.keys()) {
       this.disconnectServer(serverId);
+    }
+  }
+
+  /** On foreground, immediately resume any suspended reconnect backoffs. */
+  resumeReconnects() {
+    for (const socket of this.connections.values()) {
+      socket.resumeReconnect();
     }
   }
 

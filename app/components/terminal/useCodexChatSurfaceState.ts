@@ -335,7 +335,7 @@ export function useCodexChatSurfaceState({
     isCodexRequestRunning({
       conversation,
       events,
-      agentStatus: agentInfo?.status,
+      hasPendingUserTurn: pendingUserMessages.length > 0,
     }) && localChatState === "idle";
   const controller = useCodexChatController({
     serverId,

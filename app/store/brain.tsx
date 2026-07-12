@@ -152,7 +152,7 @@ function normalizeAdapterCapabilities(raw: any): BrainAdapterCapabilities {
   };
 }
 
-function brainReducer(state: BrainState, action: Action): BrainState {
+export function brainReducer(state: BrainState, action: Action): BrainState {
   switch (action.type) {
     case "BRAIN_SNAPSHOT": {
       const next = normalizeSnapshot(

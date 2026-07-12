@@ -31,6 +31,7 @@ export interface TerminalViewportProps {
   onCtrlArmedChange(next: boolean): void;
   canRenderTerminal: boolean;
   shouldMountTerminalSurface: boolean;
+  terminalSurfaceActive: boolean;
   terminalStateAccent: string;
   terminalStateBusy: boolean;
   terminalStateTitle: string;
@@ -64,6 +65,7 @@ function TerminalViewportImpl({
   onCtrlArmedChange,
   canRenderTerminal,
   shouldMountTerminalSurface,
+  terminalSurfaceActive,
   terminalStateAccent,
   terminalStateBusy,
   terminalStateTitle,
@@ -133,6 +135,7 @@ function TerminalViewportImpl({
             onCtrlArmedChange={onCtrlArmedChange}
             canRenderTerminal={canRenderTerminal}
             shouldMountTerminalSurface={shouldMountTerminalSurface}
+            terminalSurfaceActive={terminalSurfaceActive}
             terminalStateAccent={terminalStateAccent}
             terminalStateBusy={terminalStateBusy}
             terminalStateTitle={terminalStateTitle}

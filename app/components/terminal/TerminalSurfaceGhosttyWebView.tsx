@@ -72,12 +72,16 @@ export const TerminalSurfaceGhosttyWebView = forwardRef<
     sendInput: controller.sendInput,
     focus: controller.focus,
     blur: controller.blur,
+    wakeRenderer: controller.wakeRenderer,
     resumeInput: controller.resumeInput,
     scrollToBottom: controller.scrollToBottom,
   }), [controller]);
 
   return (
-    <View style={[styles.container, { backgroundColor: theme.background }]}>
+    <View
+      collapsable={false}
+      style={[styles.container, { backgroundColor: theme.background }]}
+    >
       {fontUri ? (
         <WebView
           ref={controller.webviewRef}
@@ -92,6 +96,9 @@ export const TerminalSurfaceGhosttyWebView = forwardRef<
           scrollEnabled={false}
           bounces={false}
           overScrollMode="never"
+          // Keep a dedicated compositor layer so overlay/focus transitions do
+          // not leave a stale blank buffer until the next touch.
+          androidLayerType="hardware"
           style={[styles.webview, { backgroundColor: theme.background }]}
         />
       ) : null}

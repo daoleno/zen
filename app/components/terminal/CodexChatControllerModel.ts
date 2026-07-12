@@ -48,23 +48,29 @@ export function buildCodexStatusMeta({
   return "Live";
 }
 
+/**
+ * Turn-in-progress for Chat Working/stop controls.
+ *
+ * Process status is not a turn signal. Only pending/queued user sends,
+ * conversation.active, and running tool/command events count.
+ */
 export function isCodexRequestRunning({
   conversation,
   events,
-  agentStatus,
+  hasPendingUserTurn = false,
 }: {
   conversation: CodexConversation | null;
   events: CodexConversationEvent[];
   agentStatus?: AgentStatus;
+  hasPendingUserTurn?: boolean;
 }) {
-  const agentSessionRunning = agentStatus === "running";
-  if (typeof conversation?.active === "boolean") {
-    return conversation.active || agentSessionRunning;
+  if (hasPendingUserTurn) {
+    return true;
   }
-  if (conversation) {
-    return agentSessionRunning || events.some(isEventRunning);
+  if (conversation?.active === true) {
+    return true;
   }
-  return agentSessionRunning || events.some(isEventRunning);
+  return events.some(isEventRunning);
 }
 
 export function buildCodexComposerMessage(
@@ -94,6 +100,8 @@ export function conversationUnavailableReason(reason?: string) {
       return "This chat is still getting its workspace ready.";
     case "transcript_not_found":
       return "Messages are still syncing for this session.";
+    case "transcript_malformed":
+      return "Chat could not read this session transcript. Open the terminal view.";
     case "agent_not_found":
       return "This agent session is no longer available.";
     case "session_not_ready":

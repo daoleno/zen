@@ -1,14 +1,16 @@
 import { useMemo } from "react";
+import {
+  type AgentKind,
+  presentAgent,
+} from "../../services/agentPresentation";
 import type { ConnectionIssue } from "../../services/connectionIssue";
+import type {
+  StoredAgentAliases,
+  StoredCodexRenderMode,
+  StoredCodexRenderModes,
+} from "../../services/storage";
 import type { Agent, ConnectionState } from "../../store/agents";
 import type { WorkItem } from "../../store/work";
-import { presentAgent } from "../../services/agentPresentation";
-import {
-  DefaultCodexRenderMode,
-  type StoredAgentAliases,
-  type StoredCodexRenderMode,
-  type StoredCodexRenderModes,
-} from "../../services/storage";
 import { findLinkedWork } from "./TerminalScreenModel";
 import type { TerminalRouteSessionHint } from "./useTerminalScreenLocalState";
 
@@ -77,9 +79,11 @@ export function useTerminalRouteModel({
   const isCodexAgent = presentedAgent.kind === "codex";
   const isGrokAgent = presentedAgent.kind === "grok";
   const isStructuredChatAgent = supportsChatInterface(presentedAgent.kind);
-  const codexRenderMode: StoredCodexRenderMode = sessionKey
-    ? codexRenderModes[sessionKey] ?? DefaultCodexRenderMode
-    : DefaultCodexRenderMode;
+  const codexRenderMode = resolveCodexRenderMode({
+    kind: presentedAgent.kind,
+    sessionKey,
+    storedModes: codexRenderModes,
+  });
   const showCodexChat =
     hasTerminalRoute && isStructuredChatAgent && codexRenderMode === "chat";
 
@@ -100,8 +104,42 @@ export function useTerminalRouteModel({
   };
 }
 
-function supportsChatInterface(kind: string): boolean {
-  return kind === "codex" || kind === "cursor" || kind === "grok";
+/** Agents with a structured chat surface (Codex-compatible conversation UI). */
+export function supportsChatInterface(kind: AgentKind | string): boolean {
+  return (
+    kind === "claude" ||
+    kind === "codex" ||
+    kind === "cursor" ||
+    kind === "grok"
+  );
+}
+
+/**
+ * Resolve render mode from a persisted per-session preference when present;
+ * otherwise derive from chat-interface capability (structured → chat, else terminal).
+ */
+export function resolveCodexRenderMode({
+  kind,
+  sessionKey,
+  storedModes,
+}: {
+  kind: AgentKind | string;
+  sessionKey: string | null;
+  storedModes: StoredCodexRenderModes;
+}): StoredCodexRenderMode {
+  if (sessionKey) {
+    const persisted = storedModes[sessionKey];
+    if (persisted === "chat" || persisted === "terminal") {
+      return persisted;
+    }
+  }
+  return defaultCodexRenderModeForKind(kind);
+}
+
+export function defaultCodexRenderModeForKind(
+  kind: AgentKind | string,
+): StoredCodexRenderMode {
+  return supportsChatInterface(kind) ? "chat" : "terminal";
 }
 
 function resolveRouteAgent({
