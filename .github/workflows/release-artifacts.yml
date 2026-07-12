@@ -1,6 +1,6 @@
 name: Release artifacts
 
-# Secure release pipeline: Linux amd64/arm64 + signed Android arm64 APK.
+# Secure release pipeline: Linux amd64/arm64, macOS arm64, signed Android arm64 APK.
 #
 # Triggers:
 #   - workflow_dispatch: build selected ref; optional publish to existing prerelease
@@ -48,7 +48,7 @@ env:
 
 jobs:
   build:
-    name: Build and stage (Linux + signed Android)
+    name: Build and stage (Linux + macOS + signed Android)
     runs-on: ubuntu-latest
     timeout-minutes: 180
     permissions:
@@ -229,7 +229,7 @@ jobs:
           set -euo pipefail
           ./scripts/verify-apk-release.sh "${APK_PATH}"
 
-      - name: Stage release tree (Linux + APK + legal)
+      - name: Stage release tree (Linux + macOS + APK)
         run: |
           set -euo pipefail
           ./scripts/stage-release.sh --apk "${APK_PATH}"
@@ -254,16 +254,12 @@ jobs:
         with:
           name: zen-release-stage-v${{ steps.meta.outputs.version }}
           path: |
-            dist-download/v${{ steps.meta.outputs.version }}/zen-linux-amd64
-            dist-download/v${{ steps.meta.outputs.version }}/zen-linux-arm64
+            dist-download/v${{ steps.meta.outputs.version }}/zen-linux-amd64.tar.gz
+            dist-download/v${{ steps.meta.outputs.version }}/zen-linux-arm64.tar.gz
+            dist-download/v${{ steps.meta.outputs.version }}/zen-darwin-arm64.tar.gz
             dist-download/v${{ steps.meta.outputs.version }}/zen-android-arm64-v${{ steps.meta.outputs.version }}.apk
-            dist-download/v${{ steps.meta.outputs.version }}/LICENSE
-            dist-download/v${{ steps.meta.outputs.version }}/NOTICE
-            dist-download/v${{ steps.meta.outputs.version }}/TRADEMARKS.md
-            dist-download/v${{ steps.meta.outputs.version }}/GHOSTTY-MIT.txt
-            dist-download/v${{ steps.meta.outputs.version }}/RELEASE_NOTES.md
             dist-download/v${{ steps.meta.outputs.version }}/SHA256SUMS
-            dist-download/v${{ steps.meta.outputs.version }}/identity.json
+            dist-download/v${{ steps.meta.outputs.version }}/release-manifest.json
           if-no-files-found: error
 
   publish:
@@ -308,16 +304,12 @@ jobs:
           cd stage
           ls -la
           assets=(
-            zen-linux-amd64
-            zen-linux-arm64
+            zen-linux-amd64.tar.gz
+            zen-linux-arm64.tar.gz
+            zen-darwin-arm64.tar.gz
             "zen-android-arm64-v${VERSION}.apk"
-            LICENSE
-            NOTICE
-            TRADEMARKS.md
-            GHOSTTY-MIT.txt
-            RELEASE_NOTES.md
             SHA256SUMS
-            identity.json
+            release-manifest.json
           )
           for f in "${assets[@]}"; do
             if [[ ! -f "$f" ]]; then

@@ -10,10 +10,10 @@
   <a href="https://github.com/daoleno/zen/releases"><img alt="GitHub release" src="https://img.shields.io/github/v/release/daoleno/zen?include_prereleases&sort=semver"></a>
   <a href="https://github.com/daoleno/zen/actions/workflows/release-artifacts.yml"><img alt="Release build" src="https://github.com/daoleno/zen/actions/workflows/release-artifacts.yml/badge.svg"></a>
   <a href="LICENSE"><img alt="License: Apache-2.0" src="https://img.shields.io/badge/license-Apache--2.0-blue.svg"></a>
-  <img alt="Platforms: Linux and Android" src="https://img.shields.io/badge/platforms-Linux%20%7C%20Android-6f8f79">
+  <img alt="Platforms: Linux, macOS, and Android" src="https://img.shields.io/badge/platforms-Linux%20%7C%20macOS%20%7C%20Android-6f8f79">
 </p>
 
-Zen connects an Android app to coding agents running on your own Linux machine. It gives you mobile chat, terminal access, session management, and a persistent Brain workspace without moving your repositories or provider credentials into a hosted service.
+Zen connects an Android app to coding agents running on your own Linux or Apple Silicon Mac. It gives you mobile chat, terminal access, session management, and a persistent Brain workspace without moving your repositories or provider credentials into a hosted service.
 
 ## What it supports
 
@@ -22,16 +22,16 @@ Zen connects an Android app to coding agents running on your own Linux machine. 
 - Full terminal access when chat is not enough
 - Brain for persistent context and delegated work
 - One-time QR/link pairing with signed requests afterward
-- Linux `amd64` and `arm64` hosts
+- Linux `amd64`/`arm64` and macOS Apple Silicon hosts
 - Android `arm64-v8a` sideload builds
 
 Zen does not currently provide an iOS app, Play Store distribution, a hosted relay, or automatic NAT traversal.
 
 ## Quick start
 
-You need a Linux machine with `tmux`, one supported AI CLI already signed in, an Android arm64 phone, and a network path between them.
+You need a supported Linux machine or Apple Silicon Mac with `tmux`, one supported AI CLI already signed in, an Android arm64 phone, and a network path between them.
 
-1. Open [GitHub Releases](https://github.com/daoleno/zen/releases) and download the daemon for your Linux architecture, the Android APK, and `SHA256SUMS`.
+1. Open [GitHub Releases](https://github.com/daoleno/zen/releases) and download the daemon archive for your host, the Android APK, and `SHA256SUMS`.
 2. Verify the downloads, install the daemon as `zen`, then run:
 
    ```bash
@@ -56,7 +56,7 @@ Detailed instructions:
 
 ## If agents do not appear
 
-The same Linux user running `zen` must be able to run `tmux` and at least one authenticated AI CLI. Run `zen doctor`, then use `zen setup` if you need to create an executor configuration.
+The same host user running `zen` must be able to run `tmux` and at least one authenticated AI CLI. Run `zen doctor`, then use `zen setup` if you need to create an executor configuration.
 
 Some built-in executor profiles disable approval prompts or sandboxes. Read [Executors and permissions](docs/executors.md) before using autonomous profiles on a machine with sensitive data.
 
@@ -68,7 +68,7 @@ Android app
     ▼
 your Tailnet or HTTPS endpoint
     ▼
-Zen daemon on your Linux machine
+Zen daemon on your Linux machine or Apple Silicon Mac
     │ local tmux sessions and provider transcripts
     ▼
 Codex / Claude Code / Cursor Agent / Grok

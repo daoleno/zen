@@ -1,10 +1,10 @@
 # Install the daemon
 
-This guide installs the Linux daemon that owns Zen's state, pairing identity, tmux sessions, and executor processes. The Android app connects to this daemon; installing the APK alone is not enough.
+This guide installs the daemon that owns Zen's state, pairing identity, tmux sessions, and executor processes. The Android app connects to this daemon; installing the APK alone is not enough.
 
 ## What you need
 
-- Linux `amd64` or `arm64` host
+- Linux `amd64`/`arm64` or an Apple Silicon Mac
 - `tmux` on `PATH`
 - At least one AI CLI on `PATH` and already authenticated (`codex`, `claude`, `cursor-agent`, or `grok`)
 
@@ -14,17 +14,25 @@ You do not need every executor. One is enough.
 
 Open [GitHub Releases](https://github.com/daoleno/zen/releases) and download:
 
-- `zen-linux-amd64` for most Intel/AMD Linux machines
-- `zen-linux-arm64` for 64-bit ARM Linux machines
+- `zen-linux-amd64.tar.gz` for most Intel/AMD Linux machines
+- `zen-linux-arm64.tar.gz` for 64-bit ARM Linux machines
+- `zen-darwin-arm64.tar.gz` for Apple Silicon Macs
 - `SHA256SUMS` to verify the download
 
 ```bash
+# Linux
 sha256sum -c SHA256SUMS --ignore-missing
-chmod +x zen-linux-*
-install -m 755 zen-linux-* ~/.local/bin/zen
+
+# macOS
+grep 'zen-darwin-arm64.tar.gz$' SHA256SUMS | shasum -a 256 -c -
+
+tar -xzf zen-<platform>-<architecture>.tar.gz
+install -m 755 zen ~/.local/bin/zen
 zen doctor
 zen
 ```
+
+On macOS, install `tmux` with `brew install tmux`. If macOS blocks the downloaded binary, confirm that it came from the official Zen release before removing the quarantine attribute with `xattr -d com.apple.quarantine ~/.local/bin/zen`.
 
 If `~/.local/bin` is not on your `PATH`, install into another user-owned directory that is, or add it to your shell configuration.
 
@@ -41,7 +49,7 @@ go build -o bin/zen ./cmd/zen/
 
 Product version for banners and release staging comes from `app/app.base.json` (`expo.version`). The daemon default is `daemon/cmd/zen/version.go` and can be overridden at link time (`-X main.Version=…`).
 
-## Linux release binaries (amd64 / arm64)
+## Release binaries (Linux and Apple Silicon macOS)
 
 Cross-build without CGO (deterministic flags: `-trimpath`, `-buildvcs=false`, stripped ldflags):
 
@@ -49,6 +57,7 @@ Cross-build without CGO (deterministic flags: `-trimpath`, `-buildvcs=false`, st
 ./scripts/build-daemon-linux.sh
 # → dist-download/staging/bin/zen-linux-amd64
 # → dist-download/staging/bin/zen-linux-arm64
+# → dist-download/staging/bin/zen-darwin-arm64
 ```
 
 Full local stage (clean directory each run; **no** GitHub Release):
@@ -56,14 +65,13 @@ Full local stage (clean directory each run; **no** GitHub Release):
 ```bash
 ./scripts/stage-release.sh
 # → dist-download/vVERSION/
-#    zen-linux-amd64
-#    zen-linux-arm64
-#    LICENSE  NOTICE  TRADEMARKS.md  GHOSTTY-MIT.txt
-#    RELEASE_NOTES.md  (from docs/releases/vVERSION.md)
-#    SHA256SUMS  identity.json
+#    zen-linux-amd64.tar.gz
+#    zen-linux-arm64.tar.gz
+#    zen-darwin-arm64.tar.gz
+#    SHA256SUMS  release-manifest.json
 ```
 
-Binaries are **top-level** (GitHub Release-facing names), not under `bin/`. The command prints the exact stage path; tracked notes live under `docs/releases/`.
+Each archive contains the `zen` binary plus `LICENSE`, `NOTICE`, and `TRADEMARKS.md`. The command prints the exact stage path; tracked release notes remain on the GitHub Release page instead of becoming duplicate download assets.
 
 Verify identity sources and stage checksums:
 
@@ -85,7 +93,7 @@ This path depends on the published module and Go proxy state. If `@latest` fails
 
 ## Run as a background service
 
-The beta does not yet install a system service automatically. Start `zen` in a persistent shell, tmux session, or a user service you manage. The same Linux user must be able to access `tmux`, your repositories, and the authenticated AI CLI.
+The beta does not yet install a system service automatically. Start `zen` in a persistent shell, tmux session, or a user service you manage. The same host user must be able to access `tmux`, your repositories, and the authenticated AI CLI.
 
 Do not run the daemon as root merely to keep it alive.
 

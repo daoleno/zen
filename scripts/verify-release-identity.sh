@@ -167,6 +167,14 @@ if "gh release upload" not in wf:
     errors.append("release-artifacts.yml must upload assets via gh release upload")
 if "materialize-android-keystore" not in wf:
     errors.append("release-artifacts.yml must materialize keystore via helper script")
+for asset in (
+    "zen-linux-amd64.tar.gz",
+    "zen-linux-arm64.tar.gz",
+    "zen-darwin-arm64.tar.gz",
+    "release-manifest.json",
+):
+    if asset not in wf:
+        errors.append(f"release-artifacts.yml missing release asset: {asset}")
 # Publish job has no checkout; gh requires GH_REPO (or a git remote).
 if "GH_REPO" not in wf or "github.repository" not in wf:
     errors.append(
@@ -211,35 +219,23 @@ if stage:
         errors.append(f"stage dir missing: {stage}")
     else:
         required = [
-            "zen-linux-amd64",
-            "zen-linux-arm64",
-            "LICENSE",
-            "NOTICE",
-            "TRADEMARKS.md",
-            "GHOSTTY-MIT.txt",
-            "RELEASE_NOTES.md",
+            "zen-linux-amd64.tar.gz",
+            "zen-linux-arm64.tar.gz",
+            "zen-darwin-arm64.tar.gz",
             "SHA256SUMS",
-            "identity.json",
+            "release-manifest.json",
         ]
         for rel in required:
             if not (stage_p / rel).is_file():
                 errors.append(f"stage missing {rel}")
 
-        # Nested bin/ layout is not the release contract.
-        if (stage_p / "bin" / "zen-linux-amd64").is_file() and not (stage_p / "zen-linux-amd64").is_file():
-            errors.append("stage has nested bin/ binaries but missing top-level zen-linux-amd64")
-
         sums_path = stage_p / "SHA256SUMS"
         if sums_path.is_file():
             sums_text = sums_path.read_text(encoding="utf-8")
             for name in (
-                "zen-linux-amd64",
-                "zen-linux-arm64",
-                "LICENSE",
-                "NOTICE",
-                "TRADEMARKS.md",
-                "GHOSTTY-MIT.txt",
-                "RELEASE_NOTES.md",
+                "zen-linux-amd64.tar.gz",
+                "zen-linux-arm64.tar.gz",
+                "zen-darwin-arm64.tar.gz",
             ):
                 if name not in sums_text:
                     errors.append(f"SHA256SUMS missing {name}")
@@ -261,7 +257,7 @@ if stage:
                 if got != digest:
                     errors.append(f"SHA256 mismatch for {rel}: sums={digest[:12]}… file={got[:12]}…")
 
-        ident_path = stage_p / "identity.json"
+        ident_path = stage_p / "release-manifest.json"
         if ident_path.is_file():
             ident = json.loads(ident_path.read_text(encoding="utf-8"))
             if ident.get("version") != exp_version:
@@ -275,36 +271,31 @@ if stage:
                 errors.append("stage identity missing/wrong certificate fingerprint")
             roles = {a.get("path"): a.get("role") for a in ident.get("artifacts") or []}
             expected_roles = {
-                "zen-linux-amd64": "daemon",
-                "zen-linux-arm64": "daemon",
-                "LICENSE": "license",
-                "NOTICE": "notice",
-                "TRADEMARKS.md": "trademarks",
-                "GHOSTTY-MIT.txt": "third_party_notice",
-                "RELEASE_NOTES.md": "release_notes",
+                "zen-linux-amd64.tar.gz": "daemon_archive",
+                "zen-linux-arm64.tar.gz": "daemon_archive",
+                "zen-darwin-arm64.tar.gz": "daemon_archive",
             }
             for path, role in expected_roles.items():
                 if roles.get(path) != role:
-                    errors.append(f"identity.json role for {path}: got {roles.get(path)!r} want {role!r}")
+                    errors.append(f"release-manifest.json role for {path}: got {roles.get(path)!r} want {role!r}")
+            daemon = ident.get("daemon") or {}
+            if daemon.get("targets") != ["linux/amd64", "linux/arm64", "darwin/arm64"]:
+                errors.append(f"release manifest daemon targets: got {daemon.get('targets')!r}")
 
-        # RELEASE_NOTES must come from tracked template (fingerprint present).
-        rn = stage_p / "RELEASE_NOTES.md"
-        if rn.is_file() and exp_cert not in rn.read_text(encoding="utf-8"):
-            errors.append("staged RELEASE_NOTES.md missing certificate fingerprint")
-
-        # Legal files must match repo sources byte-for-byte.
-        pairs = [
-            ("LICENSE", root / "LICENSE"),
-            ("NOTICE", root / "NOTICE"),
-            ("TRADEMARKS.md", root / "TRADEMARKS.md"),
-            ("GHOSTTY-MIT.txt", root / "app/assets/notices/GHOSTTY-MIT.txt"),
-            ("RELEASE_NOTES.md", notes_path if notes_path.is_file() else None),
-        ]
-        for rel, src in pairs:
-            dst = stage_p / rel
-            if src is not None and dst.is_file() and src.is_file():
-                if dst.read_bytes() != src.read_bytes():
-                    errors.append(f"stage {rel} differs from tracked source {src.relative_to(root)}")
+        import tarfile
+        for archive in (
+            "zen-linux-amd64.tar.gz",
+            "zen-linux-arm64.tar.gz",
+            "zen-darwin-arm64.tar.gz",
+        ):
+            archive_path = stage_p / archive
+            if not archive_path.is_file():
+                continue
+            with tarfile.open(archive_path, "r:gz") as tf:
+                names = sorted(member.name.lstrip("./") for member in tf.getmembers() if member.isfile())
+                expected = ["LICENSE", "NOTICE", "TRADEMARKS.md", "zen"]
+                if names != expected:
+                    errors.append(f"{archive} contents: got {names!r} want {expected!r}")
 
 if errors:
     print("FAIL: release identity checks", file=sys.stderr)

@@ -2,10 +2,8 @@
 # Deterministic local staging for a beta release candidate.
 #
 # Stages under dist-download/v<version>/ (gitignored), always from a clean dir:
-#   - zen-linux-amd64, zen-linux-arm64 (top-level, GitHub Release-ready)
-#   - LICENSE, NOTICE, TRADEMARKS.md, GHOSTTY-MIT.txt
-#   - SHA256SUMS, identity.json
-#   - RELEASE_NOTES.md (from tracked docs/releases/v<version>.md)
+#   - Linux amd64/arm64 and macOS arm64 daemon archives
+#   - SHA256SUMS and release-manifest.json
 #   - optional Android APK
 #
 # Does not read release keystores, commit, push, tag, or create a GitHub Release.
@@ -89,7 +87,7 @@ if [[ $SKIP_BUILD -eq 0 ]]; then
   "$ROOT/scripts/build-daemon-linux.sh" --out-dir "$BUILD_TMP"
 else
   # Prefer existing stage binaries if present; else staging default from build script.
-  for f in zen-linux-amd64 zen-linux-arm64; do
+  for f in zen-linux-amd64 zen-linux-arm64 zen-darwin-arm64; do
     if [[ -f "$EXPECTED_STAGE/$f" ]]; then
       cp -f "$EXPECTED_STAGE/$f" "$BUILD_TMP/$f"
     elif [[ -f "$EXPECTED_STAGE/bin/$f" ]]; then
@@ -103,7 +101,7 @@ else
   done
 fi
 
-for f in zen-linux-amd64 zen-linux-arm64; do
+for f in zen-linux-amd64 zen-linux-arm64 zen-darwin-arm64; do
   if [[ ! -f "$BUILD_TMP/$f" ]]; then
     echo "error: build output missing $f" >&2
     exit 1
@@ -133,17 +131,27 @@ fi
 mkdir -p "$EXPECTED_STAGE"
 STAGE_DIR="$EXPECTED_STAGE"
 
-# Top-level daemon binaries (GitHub Release-facing names).
-cp -f "$BUILD_TMP/zen-linux-amd64" "$STAGE_DIR/zen-linux-amd64"
-cp -f "$BUILD_TMP/zen-linux-arm64" "$STAGE_DIR/zen-linux-arm64"
-chmod +x "$STAGE_DIR/zen-linux-amd64" "$STAGE_DIR/zen-linux-arm64"
+# Package each daemon with the legal files that apply to the daemon distribution.
+# gzip -n and normalized tar metadata keep archives stable across CI runs.
+ARCHIVE_EPOCH="${SOURCE_DATE_EPOCH:-0}"
+package_daemon() {
+  local binary_name="$1"
+  local archive_name="$2"
+  local package_dir="$BUILD_TMP/package"
+  rm -rf "$package_dir"
+  mkdir -p "$package_dir"
+  cp -f "$BUILD_TMP/$binary_name" "$package_dir/zen"
+  chmod +x "$package_dir/zen"
+  cp -f "$ROOT/LICENSE" "$package_dir/LICENSE"
+  cp -f "$ROOT/NOTICE" "$package_dir/NOTICE"
+  cp -f "$ROOT/TRADEMARKS.md" "$package_dir/TRADEMARKS.md"
+  tar --sort=name --mtime="@${ARCHIVE_EPOCH}" --owner=0 --group=0 --numeric-owner \
+    -C "$package_dir" -cf - LICENSE NOTICE TRADEMARKS.md zen | gzip -n > "$STAGE_DIR/$archive_name"
+}
 
-# Legal / notice files (stable user-facing names; always, even daemon-only).
-cp -f "$ROOT/LICENSE" "$STAGE_DIR/LICENSE"
-cp -f "$ROOT/NOTICE" "$STAGE_DIR/NOTICE"
-cp -f "$ROOT/TRADEMARKS.md" "$STAGE_DIR/TRADEMARKS.md"
-cp -f "$ROOT/app/assets/notices/GHOSTTY-MIT.txt" "$STAGE_DIR/GHOSTTY-MIT.txt"
-cp -f "$NOTES_SRC" "$STAGE_DIR/RELEASE_NOTES.md"
+package_daemon zen-linux-amd64 zen-linux-amd64.tar.gz
+package_daemon zen-linux-arm64 zen-linux-arm64.tar.gz
+package_daemon zen-darwin-arm64 zen-darwin-arm64.tar.gz
 
 STAGED_APK=""
 if [[ $WITH_APK -eq 1 ]]; then
@@ -174,13 +182,9 @@ SUMS="$STAGE_DIR/SHA256SUMS"
 (
   cd "$STAGE_DIR"
   files=(
-    zen-linux-amd64
-    zen-linux-arm64
-    LICENSE
-    NOTICE
-    TRADEMARKS.md
-    GHOSTTY-MIT.txt
-    RELEASE_NOTES.md
+    zen-linux-amd64.tar.gz
+    zen-linux-arm64.tar.gz
+    zen-darwin-arm64.tar.gz
   )
   if [[ -n "$STAGED_APK" && -f "$(basename "$STAGED_APK")" ]]; then
     files+=("$(basename "$STAGED_APK")")
@@ -218,13 +222,9 @@ def artifact(rel: str, role: str, **extra):
     return entry
 
 artifacts = [
-    artifact("zen-linux-amd64", "daemon", goos="linux", goarch="amd64"),
-    artifact("zen-linux-arm64", "daemon", goos="linux", goarch="arm64"),
-    artifact("LICENSE", "license"),
-    artifact("NOTICE", "notice"),
-    artifact("TRADEMARKS.md", "trademarks"),
-    artifact("GHOSTTY-MIT.txt", "third_party_notice"),
-    artifact("RELEASE_NOTES.md", "release_notes"),
+    artifact("zen-linux-amd64.tar.gz", "daemon_archive", goos="linux", goarch="amd64"),
+    artifact("zen-linux-arm64.tar.gz", "daemon_archive", goos="linux", goarch="arm64"),
+    artifact("zen-darwin-arm64.tar.gz", "daemon_archive", goos="darwin", goarch="arm64"),
 ]
 
 if staged_apk:
@@ -255,9 +255,9 @@ identity = {
     },
     "daemon": {
         "module": "github.com/daoleno/zen/daemon",
-        "targets": ["linux/amd64", "linux/arm64"],
+        "targets": ["linux/amd64", "linux/arm64", "darwin/arm64"],
         "cgo": False,
-        "artifact_layout": "top_level",
+        "artifact_layout": "platform_archives",
     },
     "artifacts": artifacts,
     "notes": {
@@ -267,8 +267,8 @@ identity = {
         "signed_apk": "requires_maintainer_keystore_via_env_not_in_repo",
     },
 }
-(stage_p / "identity.json").write_text(json.dumps(identity, indent=2) + "\n", encoding="utf-8")
-print(f"wrote {stage_p / 'identity.json'}")
+(stage_p / "release-manifest.json").write_text(json.dumps(identity, indent=2) + "\n", encoding="utf-8")
+print(f"wrote {stage_p / 'release-manifest.json'}")
 PY
 
 echo ""

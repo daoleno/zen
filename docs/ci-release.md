@@ -1,4 +1,4 @@
-# CI release pipeline (signed Android + Linux)
+# CI release pipeline (signed Android + Linux + macOS)
 
 Automated build lives in [`.github/workflows/release-artifacts.yml`](../.github/workflows/release-artifacts.yml).
 
@@ -8,11 +8,11 @@ Automated build lives in [`.github/workflows/release-artifacts.yml`](../.github/
 | --- | --- | --- |
 | Checkout selected ref | yes | — |
 | `verify-release-identity.sh` | yes | — |
-| Linux `zen-linux-amd64` / `zen-linux-arm64` | yes | — |
+| Linux amd64/arm64 + macOS arm64 daemon archives | yes | — |
 | Build release-grade `libghostty` arm64 | yes | — |
 | Clean Expo prebuild + signed arm64 APK | yes | — |
 | Verify package / version / ABI / Ghostty notice / cert fingerprint | yes | — |
-| Stage tree + `SHA256SUMS` + `identity.json` | yes | — |
+| Stage tree + `SHA256SUMS` + `release-manifest.json` | yes | — |
 | Upload workflow artifact | yes | — |
 | Upload/replace assets on **existing** GitHub prerelease | **no** | yes |
 
@@ -59,12 +59,12 @@ C2:FC:5B:09:B3:86:92:EE:70:59:71:1F:E7:ED:B8:79:4C:E3:65:FE:1C:7A:06:AB:95:4E:5D
 
 Permissions: build job `contents: read`; publish job `contents: write` (only when `publish` is true).
 
-## Example: build + publish assets for v0.1.0-beta.1
+## Example: build and publish an existing prerelease
 
 Prerequisites:
 
-1. Tag `v0.1.0-beta.1` already exists and points at the intended commit.
-2. A **published prerelease** (not draft) named `v0.1.0-beta.1` already exists on GitHub (Brain creates this separately).
+1. The release tag already exists and points at the intended commit.
+2. A matching **published prerelease** (not draft) already exists on GitHub.
 3. The four `ZEN_ANDROID_*` secrets above are configured on the repository.
 
 Build only (artifact upload; no release mutation):
@@ -72,7 +72,7 @@ Build only (artifact upload; no release mutation):
 ```bash
 gh workflow run release-artifacts.yml \
   --ref main \
-  -f ref=v0.1.0-beta.1 \
+  -f ref=vX.Y.Z \
   -f publish=false
 ```
 
@@ -81,7 +81,7 @@ Build and replace assets on the existing prerelease:
 ```bash
 gh workflow run release-artifacts.yml \
   --ref main \
-  -f ref=v0.1.0-beta.1 \
+  -f ref=vX.Y.Z \
   -f publish=true
 ```
 
@@ -96,11 +96,14 @@ gh run watch
 
 Under `dist-download/v<version>/` (and the workflow artifact):
 
-- `zen-linux-amd64`
-- `zen-linux-arm64`
+- `zen-linux-amd64.tar.gz`
+- `zen-linux-arm64.tar.gz`
+- `zen-darwin-arm64.tar.gz`
 - `zen-android-arm64-v<version>.apk`
-- `LICENSE`, `NOTICE`, `TRADEMARKS.md`, `GHOSTTY-MIT.txt`
-- `RELEASE_NOTES.md`, `SHA256SUMS`, `identity.json`
+- `SHA256SUMS`
+- `release-manifest.json`
+
+Daemon archives contain `zen`, `LICENSE`, `NOTICE`, and `TRADEMARKS.md`. Release notes stay in the GitHub Release body; Android third-party notices remain embedded in the APK. This keeps the download list focused without dropping required attribution.
 
 ## Local helper scripts
 

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Cross-compile the zen daemon for Linux amd64 and arm64 (CGO off, reproducible flags).
+# Cross-compile the zen daemon for Linux amd64/arm64 and macOS arm64.
 #
 # Reads product version from app/app.base.json (expo.version) unless ZEN_VERSION is set.
 # Does not publish, tag, sign Android APKs, or read release keystores.
@@ -53,22 +53,24 @@ fi
 LDFLAGS="-s -w -buildid= -X main.Version=${VERSION}"
 
 build_one() {
-  local goarch="$1"
-  local out_name="$2"
+  local goos="$1"
+  local goarch="$2"
+  local out_name="$3"
   local out_path="$OUT_DIR/$out_name"
-  echo "Building linux/${goarch} → ${out_path} (version=${VERSION})"
+  echo "Building ${goos}/${goarch} → ${out_path} (version=${VERSION})"
   (
     cd "$ROOT/daemon"
-    GOOS=linux GOARCH="$goarch" go build -buildvcs=false -ldflags="$LDFLAGS" -o "$out_path" ./cmd/zen/
+    GOOS="$goos" GOARCH="$goarch" go build -buildvcs=false -ldflags="$LDFLAGS" -o "$out_path" ./cmd/zen/
   )
   chmod +x "$out_path"
 }
 
-build_one amd64 "zen-linux-amd64"
-build_one arm64 "zen-linux-arm64"
+build_one linux amd64 "zen-linux-amd64"
+build_one linux arm64 "zen-linux-arm64"
+build_one darwin arm64 "zen-darwin-arm64"
 
 echo ""
 echo "VERSION=$VERSION"
 echo "OUT_DIR=$OUT_DIR"
-ls -la "$OUT_DIR"/zen-linux-amd64 "$OUT_DIR"/zen-linux-arm64
+ls -la "$OUT_DIR"/zen-linux-amd64 "$OUT_DIR"/zen-linux-arm64 "$OUT_DIR"/zen-darwin-arm64
 echo "Done (no publish)."
