@@ -1,0 +1,81 @@
+name: Native libs (libghostty-vt)
+
+# Optional / release path: builds pinned Ghostty VT Android libraries.
+# Not part of default PR CI (Zig + Ghostty compile is heavy).
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - "v*"
+
+concurrency:
+  group: native-libs-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-libghostty:
+    name: Build Android libghostty-vt
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Contract check
+        run: ./scripts/verify-libghostty.sh --contract
+
+      - name: Install Zig (checksum-pinned)
+        run: |
+          set -euo pipefail
+          python3 <<'PY'
+          import hashlib, json, os, platform, urllib.request, tarfile, pathlib, sys
+          lock = json.load(open("app/modules/zen-terminal-vt/native.lock.json"))
+          ver = lock["zig"]["version"]
+          machine = platform.machine()
+          if machine in ("x86_64", "amd64"):
+              key = "x86_64-linux"
+          elif machine in ("aarch64", "arm64"):
+              key = "aarch64-linux"
+          else:
+              sys.exit(f"unsupported arch {machine}")
+          d = lock["zig"]["downloads"][key]
+          url = d["tarball"]
+          expect = d["sha256"]
+          root = d["archive_root"]
+          dest = pathlib.Path("/tmp/zig.tar.xz")
+          print(f"Downloading {url}")
+          urllib.request.urlretrieve(url, dest)
+          h = hashlib.sha256(dest.read_bytes()).hexdigest()
+          if h != expect:
+              sys.exit(f"zig sha256 mismatch: got {h} want {expect}")
+          print(f"ok: zig sha256 {h[:16]}…")
+          with tarfile.open(dest, "r:xz") as tar:
+              tar.extractall("/usr/local")
+          zig = pathlib.Path("/usr/local") / root / "zig"
+          link = pathlib.Path("/usr/local/bin/zig")
+          if link.exists() or link.is_symlink():
+              link.unlink()
+          link.symlink_to(zig)
+          print(os.popen("zig version").read().strip())
+          if not os.popen("zig version").read().strip().startswith(ver):
+              sys.exit("zig version mismatch after install")
+          PY
+
+      - name: Build libraries
+        env:
+          ZEN_GHOSTTY_CACHE: ${{ runner.temp }}/ghostty
+        run: ./scripts/build-libghostty.sh
+
+      - name: Verify libraries (release grade)
+        run: ./scripts/verify-libghostty.sh --release && ./scripts/verify-libghostty.sh
+
+      - name: Upload libghostty artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: libghostty-vt-android
+          path: |
+            app/modules/zen-terminal-vt/libs/android/**/libghostty_vt.so
+            app/modules/zen-terminal-vt/libs/android/SHA256SUMS
+            app/modules/zen-terminal-vt/libs/android/build-manifest.json
+            app/modules/zen-terminal-vt/libs/android/GHOSTTY-MIT.txt
+            app/assets/notices/GHOSTTY-MIT.txt
+          if-no-files-found: error

@@ -24,7 +24,9 @@
 ## Chat missing / terminal unsupported
 
 - Structured Chat needs agent transcript files for that tool; a brand-new empty session may show little until the CLI writes history.
-- Native terminal requires Android + built `libghostty_vt.so` ([android.md](android.md)). Other platforms show an unsupported surface by design in this beta.
+- Native terminal requires Android + built `libghostty_vt.so` for `arm64-v8a` (devices) or `x86_64` (emulator). See [android.md](android.md). Other platforms show an unsupported surface by design in this beta.
+- If terminal is missing after clone: run `./scripts/build-libghostty.sh` (Zig + Ghostty pin) then `./scripts/verify-libghostty.sh`, or install a maintainer APK that already embeds the arm64 library.
+- ABI/ELF mismatches: do not drop `.so` files for `armeabi-v7a` / `x86`; only lockfile ABIs are valid.
 
 ## Quiet Mode / World Window
 

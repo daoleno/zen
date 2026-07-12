@@ -12,6 +12,12 @@
     "app:android": "cd app && env JAVA_HOME=/usr/lib/jvm/java-17-openjdk PATH=/usr/lib/jvm/java-17-openjdk/bin:$PATH bun run android",
     "app:doctor": "cd app && bunx expo-doctor",
     "daemon:build": "mkdir -p bin && cd daemon && go build -o ../bin/zen ./cmd/zen",
-    "daemon:test": "cd daemon && go test ./..."
+    "daemon:test": "cd daemon && go test ./...",
+    "native:contract": "./scripts/verify-libghostty.sh --contract",
+    "native:verify": "./scripts/verify-libghostty.sh",
+    "native:verify:release": "./scripts/verify-libghostty.sh --release",
+    "native:build": "./scripts/build-libghostty.sh",
+    "android:release-apk": "./scripts/android-release-apk.sh",
+    "android:verify-apk-notice": "./scripts/verify-apk-notice.sh"
   }
 }

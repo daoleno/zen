@@ -17,7 +17,12 @@ module.exports = () => {
 
   return {
     ...baseConfig,
-    plugins: [...(baseConfig.plugins || []), 'expo-video'],
+    plugins: [
+      ...(baseConfig.plugins || []),
+      'expo-video',
+      // Package Ghostty MIT notice into Android assets + env-based release signing.
+      './plugins/withZenAndroidRelease',
+    ],
     extra,
   };
 };

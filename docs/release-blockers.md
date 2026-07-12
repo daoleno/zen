@@ -8,9 +8,10 @@ These items block calling the tree an honest redistributable public beta until r
 
 ### `android-native-terminal-artifacts`
 
-- **Summary:** `libghostty_vt.so` is required for the Android terminal and is gitignored; strangers cannot build terminal support from clone alone without Ghostty + Zig.
+- **Summary:** `libghostty_vt.so` is required for the Android terminal and is gitignored; a bare clone still has no terminal binaries until build or release artifacts exist.
 - **Acceptance:** Documented prebuilt APK/libs with MIT notice, or a reproducible CI artifact pipeline.
-- **Out of scope for media provenance cleanup:** no Android release pipeline work in that pass.
+- **Pipeline status (partial):** pin + ABI + Zig download SHA-256 pins in `native.lock.json`; proven-git release-grade builds; Expo plugin packages MIT into APK assets; env-based signing hook; CI contract job + optional `native-libs` workflow (checksum-verified Zig). **Still blocking** until a maintainer publishes checksummed arm64 libs/APK (or green `native-libs` artifacts on a release) so strangers are not forced to install Zig + Ghostty.
+- **User/CI commands:** `./scripts/verify-libghostty.sh --contract`; `./scripts/build-libghostty.sh` then `./scripts/verify-libghostty.sh --release`; APK `./scripts/android-release-apk.sh` + `./scripts/verify-apk-notice.sh <apk>`.
 
 ## Resolved (media provenance)
 

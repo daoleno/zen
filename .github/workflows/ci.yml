@@ -46,3 +46,11 @@ jobs:
       - name: Android export
         run: bunx expo export --platform android
         working-directory: app
+
+  native-contract:
+    name: Native terminal contract
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify lock/notice/scripts (no .so required)
+        run: ./scripts/verify-libghostty.sh --contract

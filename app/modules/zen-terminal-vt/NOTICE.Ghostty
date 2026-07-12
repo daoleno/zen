@@ -1,0 +1,7 @@
+Ghostty VT is MIT-licensed third-party software used by zen-terminal-vt.
+
+Full redistribution notice (also bundled in the Android app):
+  app/assets/notices/GHOSTTY-MIT.txt
+
+Upstream: https://github.com/ghostty-org/ghostty
+Pin + ABI contract: native.lock.json

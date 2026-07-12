@@ -100,7 +100,7 @@ Built-in defaults assume common CLI names on `PATH`. One executor is enough. Cop
 - [Install the daemon](docs/install-daemon.md)
 - [Connect and pair](docs/connect-and-pair.md)
 - [Executors](docs/executors.md)
-- [Android app](docs/android.md)
+- [Android app](docs/android.md) (ABI contract, Ghostty native build, sideload APK)
 - [Security and privacy](docs/security-and-privacy.md)
 - [Troubleshooting](docs/troubleshooting.md)
 - [Architecture](docs/architecture.md)

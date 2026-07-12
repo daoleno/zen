@@ -5,14 +5,40 @@
     {
       "id": "android-native-terminal-artifacts",
       "severity": "blocker",
-      "summary": "libghostty_vt.so gitignored; terminal not stranger-buildable from clone alone",
+      "summary": "libghostty_vt.so gitignored; pipeline/docs exist but no published checksummed arm64 artifacts yet",
       "paths": [
         {
           "path": "app/modules/zen-terminal-vt/libs/android/*/libghostty_vt.so",
           "referenced_by_app": true
+        },
+        {
+          "path": "app/modules/zen-terminal-vt/native.lock.json",
+          "referenced_by_app": false
+        },
+        {
+          "path": "app/assets/notices/GHOSTTY-MIT.txt",
+          "referenced_by_app": true
+        },
+        {
+          "path": "scripts/build-libghostty.sh",
+          "referenced_by_app": false
+        },
+        {
+          "path": "scripts/verify-libghostty.sh",
+          "referenced_by_app": false
+        },
+        {
+          "path": "scripts/android-release-apk.sh",
+          "referenced_by_app": false
+        },
+        {
+          "path": ".github/workflows/native-libs.yml",
+          "referenced_by_app": false
         }
       ],
-      "acceptance": "Ship reproducible libs/APK with MIT notice or documented binary distribution"
+      "acceptance": "Ship reproducible libs/APK with MIT notice or documented binary distribution",
+      "pipeline_status": "partial",
+      "remaining": "Publish checksummed arm64 libs/APK (or green native-libs workflow artifacts on a release tag); no stranger-consumable published artifact exists yet"
     }
   ],
   "resolved": [
