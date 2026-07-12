@@ -1,18 +1,13 @@
 import React from "react";
 import {
-  ImageBackground,
   StyleSheet,
   View,
   type ColorValue,
-  type ImageSourcePropType,
   type StyleProp,
   type ViewStyle,
 } from "react-native";
 import { LinearGradient } from "expo-linear-gradient";
 import { useAppTheme } from "../../constants/tokens";
-
-const SKY_MEADOW: ImageSourcePropType = require("../../assets/theme/sky-meadow-ambient.webp");
-const MOONLIT_MEADOW: ImageSourcePropType = require("../../assets/theme/moonlit-meadow-ambient.webp");
 
 type SkyNatureBackdropProps = {
   height?: number;
@@ -26,10 +21,12 @@ export function SkyNatureBackdrop({
   style,
 }: SkyNatureBackdropProps) {
   const { colors, isLight } = useAppTheme();
-  const overlay: readonly [ColorValue, ColorValue, ColorValue] = isLight
+  const sky: readonly [ColorValue, ColorValue, ColorValue, ColorValue] = isLight
+    ? ["#489FFC", "#50AEFE", "#82CCFC", "#6A8E38"]
+    : ["#000212", "#021332", "#08234C", "#02040A"];
+  const veil: readonly [ColorValue, ColorValue, ColorValue] = isLight
     ? ["rgba(246,248,251,0.00)", "rgba(246,248,251,0.12)", colors.bgPrimary]
     : ["rgba(14,17,22,0.00)", "rgba(14,17,22,0.18)", colors.bgPrimary];
-  const source = isLight ? SKY_MEADOW : MOONLIT_MEADOW;
 
   return (
     <View
@@ -42,11 +39,10 @@ export function SkyNatureBackdrop({
         style,
       ]}
     >
-      <ImageBackground
-        source={source}
-        resizeMode="cover"
+      <LinearGradient
+        colors={sky}
+        locations={[0, 0.34, 0.66, 1]}
         style={styles.image}
-        imageStyle={[styles.imageInner, { opacity: isLight ? 0.98 : 0.92 }]}
       >
         <View
           style={[
@@ -60,11 +56,11 @@ export function SkyNatureBackdrop({
         />
         <LinearGradient
           pointerEvents="none"
-          colors={overlay}
+          colors={veil}
           locations={[0, 0.74, 1]}
           style={StyleSheet.absoluteFill}
         />
-      </ImageBackground>
+      </LinearGradient>
     </View>
   );
 }
@@ -79,8 +75,5 @@ const styles = StyleSheet.create({
   },
   image: {
     flex: 1,
-  },
-  imageInner: {
-    opacity: 1,
   },
 });

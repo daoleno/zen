@@ -3,69 +3,6 @@
   "updated": "2026-07-12",
   "blockers": [
     {
-      "id": "license-pending",
-      "severity": "blocker",
-      "summary": "Root LICENSE not chosen/committed yet",
-      "paths": [],
-      "acceptance": "Add SPDX LICENSE and link from README"
-    },
-    {
-      "id": "audio-provenance-unknown",
-      "severity": "blocker",
-      "summary": "Bundled audio lacks verifiable upstream license evidence",
-      "paths": [
-        {
-          "path": "app/assets/audio/meditation-ambient.m4a",
-          "referenced_by_app": true
-        },
-        {
-          "path": "app/assets/audio/meditation-focus.m4a",
-          "referenced_by_app": false
-        },
-        {
-          "path": "app/assets/audio/meditation-unwind.m4a",
-          "referenced_by_app": false
-        },
-        {
-          "path": "app/assets/audio/mokugyo-hit.m4a",
-          "referenced_by_app": false
-        }
-      ],
-      "acceptance": "Attribute, replace, or remove each path"
-    },
-    {
-      "id": "theme-image-provenance-unknown",
-      "severity": "blocker",
-      "summary": "Theme webp images lack verifiable provenance",
-      "paths": [
-        {
-          "path": "app/assets/theme/sky-meadow-ambient.webp",
-          "referenced_by_app": true
-        },
-        {
-          "path": "app/assets/theme/moonlit-meadow-ambient.webp",
-          "referenced_by_app": true
-        },
-        {
-          "path": "app/assets/theme/meditation-focus-dawn.webp",
-          "referenced_by_app": false
-        },
-        {
-          "path": "app/assets/theme/meditation-mokugyo-room.webp",
-          "referenced_by_app": false
-        },
-        {
-          "path": "app/assets/theme/meditation-sky-garden.webp",
-          "referenced_by_app": false
-        },
-        {
-          "path": "app/assets/theme/meditation-unwind-aurora.webp",
-          "referenced_by_app": false
-        }
-      ],
-      "acceptance": "Attribute, replace, or remove each path"
-    },
-    {
       "id": "android-native-terminal-artifacts",
       "severity": "blocker",
       "summary": "libghostty_vt.so gitignored; terminal not stranger-buildable from clone alone",
@@ -76,6 +13,72 @@
         }
       ],
       "acceptance": "Ship reproducible libs/APK with MIT notice or documented binary distribution"
+    }
+  ],
+  "resolved": [
+    {
+      "id": "audio-provenance-unknown",
+      "severity": "resolved",
+      "summary": "Unknown audio removed or replaced with first-party/CC0 evidence",
+      "disposition": [
+        {
+          "path": "app/assets/audio/meditation-ambient.m4a",
+          "action": "replaced",
+          "license": "first-party procedural (product license)"
+        },
+        {
+          "path": "app/assets/audio/meditation-focus.m4a",
+          "action": "deleted"
+        },
+        {
+          "path": "app/assets/audio/meditation-unwind.m4a",
+          "action": "deleted"
+        },
+        {
+          "path": "app/assets/audio/mokugyo-hit.m4a",
+          "action": "deleted"
+        },
+        {
+          "path": "app/assets/audio/mokugyo-hit-jono.m4a",
+          "action": "kept",
+          "license": "CC0 1.0 (Freesound 607215)"
+        }
+      ]
+    },
+    {
+      "id": "theme-image-provenance-unknown",
+      "severity": "resolved",
+      "summary": "Unknown theme rasters deleted; backdrop is first-party gradients",
+      "disposition": [
+        {
+          "path": "app/assets/theme/sky-meadow-ambient.webp",
+          "action": "deleted"
+        },
+        {
+          "path": "app/assets/theme/moonlit-meadow-ambient.webp",
+          "action": "deleted"
+        },
+        {
+          "path": "app/assets/theme/meditation-focus-dawn.webp",
+          "action": "deleted"
+        },
+        {
+          "path": "app/assets/theme/meditation-mokugyo-room.webp",
+          "action": "deleted"
+        },
+        {
+          "path": "app/assets/theme/meditation-sky-garden.webp",
+          "action": "deleted"
+        },
+        {
+          "path": "app/assets/theme/meditation-unwind-aurora.webp",
+          "action": "deleted"
+        },
+        {
+          "path": "app/components/ui/SkyNatureBackdrop.tsx",
+          "action": "replaced_with_first_party_gradients"
+        }
+      ]
     }
   ]
 }
