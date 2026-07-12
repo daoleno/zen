@@ -107,6 +107,30 @@ else:
         if s and ("/usr/lib/jvm/" in s or re.search(r"JAVA_HOME=", s)):
             errors.append(f"app/package.json {sibling} must not hardcode JAVA_HOME")
 
+vt_gradle = root / "app/modules/zen-terminal-vt/android/build.gradle"
+if not vt_gradle.is_file():
+    errors.append("missing zen-terminal-vt android/build.gradle")
+else:
+    gtxt = vt_gradle.read_text(encoding="utf-8")
+    # Hardcoded dual abiFilters override -PreactNativeArchitectures and break arm64-only release.
+    if re.search(r"abiFilters\s+'arm64-v8a'\s*,\s*'x86_64'", gtxt) or re.search(
+        r'abiFilters\s+"arm64-v8a"\s*,\s*"x86_64"', gtxt
+    ):
+        errors.append(
+            "zen-terminal-vt build.gradle must not hardcode abiFilters arm64-v8a,x86_64; "
+            "derive ABIs from reactNativeArchitectures"
+        )
+    if "reactNativeArchitectures" not in gtxt:
+        errors.append(
+            "zen-terminal-vt build.gradle must honor project property reactNativeArchitectures"
+        )
+    if "zenTerminalAbis" not in gtxt and "reactNativeArchitectures" in gtxt:
+        pass  # function name may vary; property is required
+    if "libghostty_vt.so" not in gtxt:
+        errors.append(
+            "zen-terminal-vt build.gradle should fail configuration when libghostty_vt.so is missing for a selected ABI"
+        )
+
 for rel in (
     "scripts/stage-release.sh",
     "scripts/build-daemon-linux.sh",

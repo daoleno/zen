@@ -4,6 +4,53 @@ apply plugin: 'org.jetbrains.kotlin.android'
 group = 'expo.modules.zenterminalvt'
 version = '0.1.0'
 
+// ABIs supported by zen-terminal-vt / native.lock.json.
+// Must stay aligned with app/modules/zen-terminal-vt/native.lock.json "abis".
+def ZEN_TERMINAL_SUPPORTED_ABIS = ['arm64-v8a', 'x86_64']
+
+/**
+ * Resolve NDK ABIs from the React Native / Expo architectures property.
+ *
+ * - When -PreactNativeArchitectures=arm64-v8a (release APK): only arm64-v8a.
+ * - When unset (typical local/emulator multi-ABI host builds): all supported ABIs.
+ * - When set to a list: intersection with supported ABIs only; empty intersection fails.
+ *
+ * No silent substitution of missing architectures. Missing prebuilt .so for a
+ * selected ABI fails the configuration phase with an explicit path.
+ */
+def zenTerminalAbis() {
+  def raw = project.findProperty('reactNativeArchitectures')
+  List<String> selected
+  if (raw == null || raw.toString().trim().isEmpty()) {
+    selected = new ArrayList<>(ZEN_TERMINAL_SUPPORTED_ABIS)
+  } else {
+    def requested = raw.toString().split(',').collect { it.trim() }.findAll { it }
+    selected = requested.findAll { ZEN_TERMINAL_SUPPORTED_ABIS.contains(it) }
+    if (selected.isEmpty()) {
+      throw new GradleException(
+        "zen-terminal-vt: reactNativeArchitectures=${raw} selects no supported ABIs. " +
+          "Supported: ${ZEN_TERMINAL_SUPPORTED_ABIS}. " +
+          "Release builds must pass -PreactNativeArchitectures=arm64-v8a."
+      )
+    }
+  }
+  // Fail fast if prebuilt lib missing for a selected ABI (no empty CMake import).
+  selected.each { abi ->
+    def so = file("${project.projectDir}/../libs/android/${abi}/libghostty_vt.so")
+    if (!so.isFile()) {
+      throw new GradleException(
+        "zen-terminal-vt: missing ${so}. " +
+          "Build it with: ./scripts/build-libghostty.sh --abis ${abi} " +
+          "or exclude this ABI via -PreactNativeArchitectures (release: arm64-v8a only)."
+      )
+    }
+  }
+  return selected
+}
+
+def resolvedAbis = zenTerminalAbis()
+logger.lifecycle("zen-terminal-vt: ndk abiFilters=${resolvedAbis} (reactNativeArchitectures=${project.findProperty('reactNativeArchitectures')})")
+
 android {
   namespace "expo.modules.zenterminalvt"
   compileSdk safeExtGet("compileSdkVersion", 35)
@@ -20,7 +67,7 @@ android {
     }
 
     ndk {
-      abiFilters 'arm64-v8a', 'x86_64'
+      abiFilters(*resolvedAbis)
     }
   }
 
