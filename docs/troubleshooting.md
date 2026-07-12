@@ -45,7 +45,7 @@ ZEN_GROK_REAL_SESSION=1 go test ./work -run 'Grok(Goal|Real)'
 ## Stale docs / removed flags
 
 - There is **no** `-advertise-url`. Use `zen` then `zen pair <origin>`.
-- Default state is `~/.zen`, not `~/.config/zen` (legacy is migrated).
+- Default state is `~/.zen`.
 
 ## Diagnostics
 

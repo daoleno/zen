@@ -33,7 +33,6 @@ Details: [architecture.md](architecture.md).
 
 Treat `~/.zen` like SSH keys: mode `0700` directory, do not commit it, do not share pairing links publicly.
 
-Legacy `~/.config/zen` may still contain copies after migration.
 
 ## Mobile app data
 

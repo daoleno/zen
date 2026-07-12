@@ -107,10 +107,6 @@ Do not run the daemon as root merely to keep it alive.
 | Executors file | `~/.zen/executors.toml` (optional; built-in defaults apply if missing) |
 | Brain data | `~/.zen/brain` |
 
-### Legacy state directory
-
-Older installs used `~/.config/zen`. On first start with the default state dir, zen **copies** `identity.json`, `trusted-devices.json`, and `pairing-tokens.json` into `~/.zen` if the new files are missing. It does not delete the legacy directory.
-
 To keep a custom location:
 
 ```bash

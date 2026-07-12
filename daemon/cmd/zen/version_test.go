@@ -41,7 +41,7 @@ func TestDefaultVersionMatchesAppBase(t *testing.T) {
 	if doc.Expo.Android.Package != "com.daoleno.zen" {
 		t.Fatalf("unexpected package %q", doc.Expo.Android.Package)
 	}
-	if doc.Expo.Android.VersionCode != 1 {
+	if doc.Expo.Android.VersionCode != 2 {
 		t.Fatalf("unexpected versionCode %d", doc.Expo.Android.VersionCode)
 	}
 }

@@ -84,39 +84,6 @@ func DefaultStorageDir() (string, error) {
 	return filepath.Join(home, ".zen"), nil
 }
 
-// legacyStorageDir returns the old ~/.config/zen/ path used before the migration.
-func legacyStorageDir() string {
-	base, err := os.UserConfigDir()
-	if err != nil {
-		return ""
-	}
-	return filepath.Join(base, "zen")
-}
-
-// migrateFromLegacyDir copies identity, trusted-devices, and pairing-tokens
-// from ~/.config/zen/ to the new directory if needed. Copy-not-move, idempotent.
-func migrateFromLegacyDir(newDir string) {
-	legacyDir := legacyStorageDir()
-	if legacyDir == "" || legacyDir == newDir {
-		return
-	}
-
-	files := []string{"identity.json", "trusted-devices.json", "pairing-tokens.json"}
-	for _, name := range files {
-		src := filepath.Join(legacyDir, name)
-		dst := filepath.Join(newDir, name)
-
-		if _, err := os.Stat(dst); err == nil {
-			continue // already exists in new location
-		}
-		data, err := os.ReadFile(src)
-		if err != nil {
-			continue // doesn't exist in legacy location
-		}
-		_ = os.WriteFile(dst, data, 0o600)
-	}
-}
-
 func NewManager(storageDir string) (*Manager, error) {
 	dir := strings.TrimSpace(storageDir)
 	if dir == "" {
@@ -129,8 +96,6 @@ func NewManager(storageDir string) (*Manager, error) {
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return nil, fmt.Errorf("create auth storage dir: %w", err)
 	}
-	migrateFromLegacyDir(dir)
-
 	m := &Manager{
 		storageDir:   dir,
 		devices:      make(map[string]*TrustedDevice),

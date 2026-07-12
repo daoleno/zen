@@ -42,7 +42,7 @@ Local maintainer builds continue to use a filesystem path via `ZEN_ANDROID_KEYST
 
 ## Public certificate identity
 
-Release APKs must match the fingerprint published in [`docs/releases/v0.1.0-beta.1.md`](releases/v0.1.0-beta.1.md) (public metadata, not a secret):
+Release APKs must match the fingerprint published in the current version's tracked release notes (public metadata, not a secret):
 
 ```
 C2:FC:5B:09:B3:86:92:EE:70:59:71:1F:E7:ED:B8:79:4C:E3:65:FE:1C:7A:06:AB:95:4E:5D:D1:BD:CD:A4:FD

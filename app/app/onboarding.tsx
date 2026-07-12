@@ -1,5 +1,5 @@
 import React, { useMemo } from "react";
-import { Image, View, Text, StyleSheet } from "react-native";
+import { Image, ScrollView, View, Text, StyleSheet } from "react-native";
 import * as Haptics from "expo-haptics";
 import { useRouter } from "expo-router";
 import { SafeAreaView } from "react-native-safe-area-context";
@@ -14,20 +14,22 @@ export default function OnboardingScreen() {
 
   return (
     <SafeAreaView style={styles.container} edges={["top", "bottom"]}>
-      <View style={styles.content}>
+      <ScrollView
+        contentContainerStyle={styles.content}
+        showsVerticalScrollIndicator={false}
+        bounces={false}
+      >
         <Enter preset="pop">
           <Image
-            source={require("../assets/branding/zen-logo-transparent.png")}
+            source={require("../assets/branding/zen-logo-mark-transparent.png")}
             style={styles.logo}
             resizeMode="contain"
           />
         </Enter>
 
         <Enter preset="rise" delay={80}>
-          <Text style={styles.title}>Welcome to Zen</Text>
-          <Text style={styles.subtitle}>
-            Pair your phone with a trusted daemon identity
-          </Text>
+          <Text style={styles.title}>Connect to Zen</Text>
+          <Text style={styles.subtitle}>Pair this phone with your daemon.</Text>
         </Enter>
 
         <View style={styles.steps}>
@@ -37,16 +39,12 @@ export default function OnboardingScreen() {
                 <Text style={styles.stepNum}>1</Text>
               </View>
               <View style={styles.stepContent}>
-                <Text style={styles.stepTitle}>Install and start zen</Text>
+                <Text style={styles.stepTitle}>Start Zen on your computer</Text>
                 <View style={styles.codeBlock}>
-                  <Text style={styles.code}>
-                    {`go install github.com/daoleno/zen/daemon/cmd/zen@latest
-zen`}
-                  </Text>
+                  <Text style={styles.code}>zen</Text>
                 </View>
                 <Text style={styles.stepHint}>
-                  zen listens on 127.0.0.1:9876 by default. State lives in
-                  ~/.zen (legacy ~/.config/zen is migrated automatically).
+                  Download the daemon from GitHub Releases if it is not installed yet.
                 </Text>
               </View>
             </View>
@@ -58,37 +56,22 @@ zen`}
                 <Text style={styles.stepNum}>2</Text>
               </View>
               <View style={styles.stepContent}>
-                <Text style={styles.stepTitle}>Expose, then pair</Text>
+                <Text style={styles.stepTitle}>Create a pairing link</Text>
                 <View style={styles.codeBlock}>
                   <Text style={styles.code}>
                     zen pair https://your-host.example
                   </Text>
                 </View>
                 <Text style={styles.stepHint}>
-                  Forward the full daemon origin through Cloudflare Tunnel,
-                  Tailscale, or your reverse proxy (not only /ws). Then run
-                  zen pair with that origin to print a one-time link and QR.
+                  Use an HTTPS address this phone can reach. Zen prints a one-time link and QR code.
                 </Text>
               </View>
             </View>
           </Enter>
 
-          <Enter preset="rise" delay={280}>
-            <View style={styles.step}>
-              <View style={styles.stepBadge}>
-                <Text style={styles.stepNum}>3</Text>
-              </View>
-              <View style={styles.stepContent}>
-                <Text style={styles.stepTitle}>Import the pairing link</Text>
-                <Text style={styles.stepHint}>
-                  Scan the QR or paste the pairing link printed by zen.
-                </Text>
-              </View>
-            </View>
-          </Enter>
         </View>
 
-        <Enter preset="rise" delay={340}>
+        <Enter preset="rise" delay={280}>
           <AnimatedPressable
             style={styles.doneBtn}
             preset="press"
@@ -104,10 +87,10 @@ zen`}
               });
             }}
           >
-            <Text style={styles.doneBtnText}>Get Started</Text>
+            <Text style={styles.doneBtnText}>Pair a daemon</Text>
           </AnimatedPressable>
         </Enter>
-      </View>
+      </ScrollView>
     </SafeAreaView>
   );
 }
@@ -116,16 +99,16 @@ function createStyles(colors: typeof Colors) {
   return StyleSheet.create({
   container: { flex: 1, backgroundColor: colors.bgPrimary },
   content: {
-    flex: 1,
-    paddingHorizontal: Spacing.screenMargin * 2,
-    justifyContent: "center",
-    paddingVertical: 28,
+    flexGrow: 1,
+    paddingHorizontal: Spacing.screenMargin,
+    paddingTop: 20,
+    paddingBottom: 24,
   },
   logo: {
-    width: 104,
-    height: 104,
+    width: 72,
+    height: 72,
     alignSelf: "center",
-    marginBottom: 18,
+    marginBottom: 12,
   },
   title: {
     color: colors.textPrimary,
@@ -141,13 +124,13 @@ function createStyles(colors: typeof Colors) {
     lineHeight: 22,
     fontFamily: Typography.uiFont,
     textAlign: "center",
-    marginTop: 10,
-    marginBottom: 40,
+    marginTop: 6,
+    marginBottom: 28,
     paddingHorizontal: 8,
   },
   steps: {
-    gap: 18,
-    marginBottom: 36,
+    gap: 22,
+    marginBottom: 28,
   },
   step: {
     flexDirection: "row",
@@ -195,6 +178,7 @@ function createStyles(colors: typeof Colors) {
     fontSize: 12,
   },
   doneBtn: {
+    marginTop: "auto",
     backgroundColor: colors.accent,
     borderRadius: Radii.md,
     paddingVertical: 17,
