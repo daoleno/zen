@@ -1,65 +1,308 @@
-name: Release artifacts (staging)
+name: Release artifacts
 
-# Builds Linux daemon binaries and uploads a full stage tree.
-# May run on tags or workflow_dispatch.
-# Does NOT create a GitHub Release, push tags, or sign Android APKs.
+# Secure release pipeline: Linux amd64/arm64 + signed Android arm64 APK.
+#
+# Triggers:
+#   - workflow_dispatch: build selected ref; optional publish to existing prerelease
+#   - push tags v*: build + verify only (never auto-publish)
+#
+# Publication requires explicit workflow_dispatch input publish=true and an
+# existing GitHub prerelease for tag v<app.base.json version>. Does not create
+# tags or convert release types.
+#
+# Secrets (GitHub Actions repository secrets only; never commit values):
+#   ZEN_ANDROID_KEYSTORE_BASE64
+#   ZEN_ANDROID_KEYSTORE_PASSWORD
+#   ZEN_ANDROID_KEY_ALIAS
+#   ZEN_ANDROID_KEY_PASSWORD
+#
+# Docs: docs/ci-release.md
+
 on:
   workflow_dispatch:
+    inputs:
+      ref:
+        description: "Git ref to build (tag, branch, or SHA). Empty uses the workflow ref."
+        required: false
+        type: string
+        default: ""
+      publish:
+        description: "If true, upload/replace assets on the existing GitHub prerelease for v<version>."
+        required: false
+        type: boolean
+        default: false
   push:
     tags:
       - "v*"
 
 concurrency:
-  group: release-artifacts-${{ github.workflow }}-${{ github.ref }}
+  group: release-artifacts-${{ github.workflow }}-${{ github.event.inputs.ref || github.ref }}
   cancel-in-progress: true
 
-jobs:
-  linux-daemon:
-    name: Stage Linux daemon (amd64/arm64)
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
+permissions:
+  contents: read
 
-      - uses: actions/setup-go@v5
+env:
+  # Stable non-secret product constants used in logs
+  ZEN_JAVA_VERSION: "17"
+
+jobs:
+  build:
+    name: Build and stage (Linux + signed Android)
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    permissions:
+      contents: read
+    outputs:
+      version: ${{ steps.meta.outputs.version }}
+      tag: ${{ steps.meta.outputs.tag }}
+      stage_dir: ${{ steps.meta.outputs.stage_dir }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          # Dispatch may pass tag/SHA via inputs.ref; tag pushes use github.ref.
+          ref: ${{ github.event.inputs.ref || github.ref }}
+          fetch-depth: 0
+
+      - name: Product meta
+        id: meta
+        run: |
+          set -euo pipefail
+          VERSION="$(python3 -c "import json;print(json.load(open('app/app.base.json'))['expo']['version'])")"
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+          echo "tag=v${VERSION}" >> "$GITHUB_OUTPUT"
+          echo "stage_dir=dist-download/v${VERSION}" >> "$GITHUB_OUTPUT"
+          echo "Building product version ${VERSION} (tag v${VERSION})"
+
+      - name: Verify release identity (tracked)
+        run: ./scripts/verify-release-identity.sh
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
         with:
           go-version-file: daemon/go.mod
           cache-dependency-path: daemon/go.sum
 
-      - name: Verify release identity
-        run: ./scripts/verify-release-identity.sh
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: "1.3.5"
 
-      - name: Stage release (daemon only)
-        run: ./scripts/stage-release.sh
+      - name: Setup Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
 
-      - name: Verify stage layout and checksums
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install Android packages
         run: |
           set -euo pipefail
-          VERSION="$(python3 -c "import json;print(json.load(open('app/app.base.json'))['expo']['version'])")"
-          STAGE="dist-download/v${VERSION}"
+          sdkmanager --install \
+            "platform-tools" \
+            "platforms;android-35" \
+            "build-tools;35.0.0" \
+            "ndk;27.1.12297006" \
+            "cmake;3.22.1"
+          # sdkmanager may leave licenses pending
+          yes | sdkmanager --licenses >/dev/null || true
+
+      - name: Install workspace dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Install Zig (checksum-pinned from native.lock.json)
+        run: |
+          set -euo pipefail
+          python3 <<'PY'
+          import hashlib, json, os, platform, urllib.request, tarfile, pathlib, sys
+          lock = json.load(open("app/modules/zen-terminal-vt/native.lock.json"))
+          ver = lock["zig"]["version"]
+          machine = platform.machine()
+          if machine in ("x86_64", "amd64"):
+              key = "x86_64-linux"
+          elif machine in ("aarch64", "arm64"):
+              key = "aarch64-linux"
+          else:
+              sys.exit(f"unsupported arch {machine}")
+          d = lock["zig"]["downloads"][key]
+          url = d["tarball"]
+          expect = d["sha256"]
+          root = d["archive_root"]
+          dest = pathlib.Path("/tmp/zig.tar.xz")
+          print(f"Downloading {url}")
+          urllib.request.urlretrieve(url, dest)
+          h = hashlib.sha256(dest.read_bytes()).hexdigest()
+          if h != expect:
+              sys.exit(f"zig sha256 mismatch: got {h} want {expect}")
+          print(f"ok: zig sha256 {h[:16]}…")
+          with tarfile.open(dest, "r:xz") as tar:
+              tar.extractall("/usr/local")
+          zig = pathlib.Path("/usr/local") / root / "zig"
+          link = pathlib.Path("/usr/local/bin/zig")
+          if link.exists() or link.is_symlink():
+              link.unlink()
+          link.symlink_to(zig)
+          got = os.popen("zig version").read().strip()
+          print(got)
+          if not got.startswith(ver):
+              sys.exit("zig version mismatch after install")
+          PY
+
+      - name: Build release-grade libghostty (arm64-v8a)
+        env:
+          ZEN_GHOSTTY_CACHE: ${{ runner.temp }}/ghostty
+        run: |
+          set -euo pipefail
+          ./scripts/build-libghostty.sh --abis arm64-v8a
+          ./scripts/verify-libghostty.sh --release
+          ./scripts/verify-libghostty.sh
+
+      - name: Materialize signing keystore (temp, mode 0600)
+        id: keystore
+        env:
+          ZEN_ANDROID_KEYSTORE_BASE64: ${{ secrets.ZEN_ANDROID_KEYSTORE_BASE64 }}
+        run: |
+          set -euo pipefail
+          if [[ -z "${ZEN_ANDROID_KEYSTORE_BASE64:-}" ]]; then
+            echo "error: repository secret ZEN_ANDROID_KEYSTORE_BASE64 is not set" >&2
+            exit 1
+          fi
+          KS_PATH="${{ runner.temp }}/zen-release.p12"
+          export ZEN_ANDROID_KEYSTORE="$KS_PATH"
+          # Script prints only the path; never logs secret material
+          OUT="$(./scripts/materialize-android-keystore.sh)"
+          # Do not echo path if it could be sensitive; it is a runner temp path (ok).
+          echo "keystore_path=${OUT}" >> "$GITHUB_OUTPUT"
+          # sanity: file exists and is non-empty without printing contents
+          test -s "$OUT"
+          stat -c '%a %n' "$OUT"
+
+      - name: Build signed Android arm64 release APK
+        env:
+          ZEN_ANDROID_KEYSTORE: ${{ steps.keystore.outputs.keystore_path }}
+          ZEN_ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ZEN_ANDROID_KEYSTORE_PASSWORD }}
+          ZEN_ANDROID_KEY_ALIAS: ${{ secrets.ZEN_ANDROID_KEY_ALIAS }}
+          ZEN_ANDROID_KEY_PASSWORD: ${{ secrets.ZEN_ANDROID_KEY_PASSWORD }}
+          ANDROID_HOME: ${{ env.ANDROID_HOME }}
+          ANDROID_SDK_ROOT: ${{ env.ANDROID_SDK_ROOT }}
+          JAVA_HOME: ${{ env.JAVA_HOME }}
+        run: |
+          set -euo pipefail
+          for v in ZEN_ANDROID_KEYSTORE_PASSWORD ZEN_ANDROID_KEY_ALIAS ZEN_ANDROID_KEY_PASSWORD; do
+            if [[ -z "${!v:-}" ]]; then
+              echo "error: repository secret $v is not set" >&2
+              exit 1
+            fi
+          done
+          test -f "${ZEN_ANDROID_KEYSTORE}"
+          ./scripts/android-release-apk.sh
+          # Locate APK produced under dist-download/android-native
+          APK="$(ls -t dist-download/android-native/zen-android-arm64-*.apk | head -1)"
+          test -f "$APK"
+          echo "APK_PATH=${APK}" >> "$GITHUB_ENV"
+
+      - name: Verify signed APK (package, ABI, notice, certificate)
+        run: |
+          set -euo pipefail
+          ./scripts/verify-apk-release.sh "${APK_PATH}"
+
+      - name: Stage release tree (Linux + APK + legal)
+        run: |
+          set -euo pipefail
+          ./scripts/stage-release.sh --apk "${APK_PATH}"
+          STAGE="${{ steps.meta.outputs.stage_dir }}"
           ./scripts/verify-release-identity.sh --stage "$STAGE"
           (cd "$STAGE" && sha256sum -c SHA256SUMS)
           ls -la "$STAGE"
 
-      - name: Upload full stage tree
+      - name: Shred temporary keystore
+        if: always()
+        run: |
+          set -euo pipefail
+          KS="${{ steps.keystore.outputs.keystore_path }}"
+          if [[ -n "${KS}" && -f "${KS}" ]]; then
+            shred -u "${KS}" 2>/dev/null || rm -f "${KS}"
+          fi
+          # Ensure env materialization helpers leave no base64 on disk from this step
+          rm -f "${{ runner.temp }}/zen-release.p12" || true
+
+      - name: Upload stage artifact
         uses: actions/upload-artifact@v4
         with:
-          name: zen-stage
+          name: zen-release-stage-v${{ steps.meta.outputs.version }}
           path: |
-            dist-download/v*/zen-linux-amd64
-            dist-download/v*/zen-linux-arm64
-            dist-download/v*/LICENSE
-            dist-download/v*/NOTICE
-            dist-download/v*/TRADEMARKS.md
-            dist-download/v*/GHOSTTY-MIT.txt
-            dist-download/v*/RELEASE_NOTES.md
-            dist-download/v*/SHA256SUMS
-            dist-download/v*/identity.json
+            dist-download/v${{ steps.meta.outputs.version }}/zen-linux-amd64
+            dist-download/v${{ steps.meta.outputs.version }}/zen-linux-arm64
+            dist-download/v${{ steps.meta.outputs.version }}/zen-android-arm64-v${{ steps.meta.outputs.version }}.apk
+            dist-download/v${{ steps.meta.outputs.version }}/LICENSE
+            dist-download/v${{ steps.meta.outputs.version }}/NOTICE
+            dist-download/v${{ steps.meta.outputs.version }}/TRADEMARKS.md
+            dist-download/v${{ steps.meta.outputs.version }}/GHOSTTY-MIT.txt
+            dist-download/v${{ steps.meta.outputs.version }}/RELEASE_NOTES.md
+            dist-download/v${{ steps.meta.outputs.version }}/SHA256SUMS
+            dist-download/v${{ steps.meta.outputs.version }}/identity.json
           if-no-files-found: error
 
-  native-contract:
-    name: Native terminal contract
+  publish:
+    name: Publish assets to existing prerelease
+    needs: build
+    # Boolean inputs may arrive as boolean true or string "true".
+    if: ${{ github.event_name == 'workflow_dispatch' && (inputs.publish == true || inputs.publish == 'true') }}
     runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: write
     steps:
-      - uses: actions/checkout@v4
-      - name: Verify lock/notice/scripts (no .so required)
-        run: ./scripts/verify-libghostty.sh --contract
+      - name: Download stage artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: zen-release-stage-v${{ needs.build.outputs.version }}
+          path: stage
+
+      - name: Upload/replace assets on existing prerelease
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ needs.build.outputs.tag }}
+          VERSION: ${{ needs.build.outputs.version }}
+        run: |
+          set -euo pipefail
+          # Require an existing prerelease; never create tags/releases here.
+          meta="$(gh release view "$TAG" --json isPrerelease,isDraft,url)"
+          echo "Release meta (no secrets): ${meta}"
+          is_pre="$(echo "$meta" | python3 -c 'import json,sys; print(json.load(sys.stdin)["isPrerelease"])')"
+          is_draft="$(echo "$meta" | python3 -c 'import json,sys; print(json.load(sys.stdin)["isDraft"])')"
+          if [[ "$is_pre" != "True" && "$is_pre" != "true" ]]; then
+            echo "error: $TAG is not a prerelease; refusing publish (isPrerelease=$is_pre)" >&2
+            exit 1
+          fi
+          if [[ "$is_draft" == "True" || "$is_draft" == "true" ]]; then
+            echo "error: $TAG is still a draft; convert to published prerelease before CI upload" >&2
+            exit 1
+          fi
+          cd stage
+          ls -la
+          assets=(
+            zen-linux-amd64
+            zen-linux-arm64
+            "zen-android-arm64-v${VERSION}.apk"
+            LICENSE
+            NOTICE
+            TRADEMARKS.md
+            GHOSTTY-MIT.txt
+            RELEASE_NOTES.md
+            SHA256SUMS
+            identity.json
+          )
+          for f in "${assets[@]}"; do
+            if [[ ! -f "$f" ]]; then
+              echo "error: missing staged asset $f" >&2
+              exit 1
+            fi
+          done
+          # --clobber replaces same-named assets without deleting the release.
+          gh release upload "$TAG" "${assets[@]}" --clobber
+          echo "Published/replaced assets on prerelease $TAG"
+          gh release view "$TAG"

@@ -87,10 +87,25 @@ for rel in (
     "scripts/stage-release.sh",
     "scripts/build-daemon-linux.sh",
     "scripts/verify-release-identity.sh",
+    "scripts/verify-apk-release.sh",
+    "scripts/materialize-android-keystore.sh",
+    "docs/ci-release.md",
     ".github/workflows/release-artifacts.yml",
 ):
     if not (root / rel).is_file():
         errors.append(f"missing required release file: {rel}")
+
+wf = (root / ".github/workflows/release-artifacts.yml").read_text(encoding="utf-8")
+if "ZEN_ANDROID_KEYSTORE_BASE64" not in wf:
+    errors.append("release-artifacts.yml must reference ZEN_ANDROID_KEYSTORE_BASE64")
+if "workflow_dispatch" not in wf:
+    errors.append("release-artifacts.yml must support workflow_dispatch")
+if "inputs.publish" not in wf and "github.event.inputs.publish" not in wf:
+    errors.append("release-artifacts.yml must gate publish on dispatch input")
+if "gh release upload" not in wf:
+    errors.append("release-artifacts.yml must upload assets via gh release upload")
+if "materialize-android-keystore" not in wf:
+    errors.append("release-artifacts.yml must materialize keystore via helper script")
 
 notes_path = root / f"docs/releases/v{exp_version}.md"
 if not notes_path.is_file():

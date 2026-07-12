@@ -53,6 +53,7 @@ Linux amd64/arm64 cross-builds and local staging (top-level binaries, legal noti
 ```
 
 Beta notes template: [docs/releases/v0.1.0-beta.1.md](docs/releases/v0.1.0-beta.1.md).
+CI signed release pipeline (secrets + dispatch): [docs/ci-release.md](docs/ci-release.md).
 
 Default listen address: `127.0.0.1:9876`.
 Default state directory: `~/.zen` (identity, trusted devices, pairing tokens).

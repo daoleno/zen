@@ -196,8 +196,13 @@ Release notes template: [`docs/releases/v0.1.0-beta.1.md`](releases/v0.1.0-beta.
 
 `stage-release.sh` never creates tags or GitHub Releases. Publishing is a separate Brain/maintainer step.
 
+### CI (GitHub Actions)
+
+Signed arm64 APK + Linux binaries are built by [`.github/workflows/release-artifacts.yml`](../.github/workflows/release-artifacts.yml). Tag pushes build/verify only; asset upload to an **existing** prerelease requires explicit `workflow_dispatch` with `publish=true`. Required secret **names** and dispatch examples: [ci-release.md](ci-release.md).
+
 ## Related docs
 
+- [CI release pipeline](ci-release.md)
 - [Connect and pair](connect-and-pair.md)
 - [Third-party assets (Ghostty MIT)](third-party-assets.md)
 - [Release blockers](release-blockers.md)
