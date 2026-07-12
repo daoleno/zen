@@ -451,8 +451,8 @@ function semanticFromToolName(
   const human = humanizeToolName(name);
   return {
     kind: "use_tool",
-    label: status === "running" ? `Using ${human}` : `Used ${human}`,
-    accessibilityLabel: status === "running" ? `Using ${human}` : `Used ${human}`,
+    label: `Use ${human}`,
+    accessibilityLabel: `Use ${human}`,
     providerToolId: name,
     status,
   };
@@ -466,17 +466,13 @@ function summarizeActions(
   const allCommandLike = children.every((child) =>
     child.kind === "run_command" || child.kind === "test_app" || child.providerToolId === "exec_command" || child.providerToolId === "shell_command",
   );
-  let label = status === "running" ? "Using tools" : "Used tools";
+  let label = "Use";
   if (allCommandLike && children.length > 1) {
-    label = status === "running"
-      ? `Running ${children.length} commands`
-      : `Ran ${children.length} commands`;
+    label = "Run";
   } else if (uniqueKinds.length === 1) {
     label = pluralLabel(uniqueKinds[0], children.length, status);
   } else if (children.length > 1) {
-    label = status === "running"
-      ? `Running ${children.length} actions`
-      : `${children.length} actions`;
+    label = "Use";
   }
   return {
     kind: allCommandLike
@@ -523,26 +519,25 @@ function action(
 }
 
 function defaultLabel(kind: SemanticActionKind, status: SemanticActionStatus): string {
-  const running = status === "running";
   switch (kind) {
     case "read_files":
-      return running ? "Reading files" : "Read files";
+      return "Read";
     case "search_code":
-      return running ? "Searching code" : "Searched code";
+      return "Search";
     case "run_command":
-      return running ? "Running a command" : "Ran a command";
+      return "Run";
     case "update_files":
-      return running ? "Updating files" : "Updated files";
+      return "Edit";
     case "update_plan":
-      return running ? "Updating the plan" : "Updated the plan";
+      return "Plan";
     case "view_image":
-      return running ? "Opening an image" : "Opened an image";
+      return "Open";
     case "test_app":
-      return running ? "Testing the app" : "Tested the app";
+      return "Test";
     case "wait":
-      return running ? "Waiting" : "Waited";
+      return "Wait";
     default:
-      return running ? "Using a tool" : "Used a tool";
+      return "Use";
   }
 }
 
@@ -556,17 +551,17 @@ function pluralLabel(
   }
   switch (kind) {
     case "run_command":
-      return status === "running" ? `Running ${count} commands` : `Ran ${count} commands`;
+      return "Run";
     case "read_files":
-      return status === "running" ? "Reading files" : "Read files";
+      return "Read";
     case "search_code":
-      return status === "running" ? "Searching code" : "Searched code";
+      return "Search";
     case "update_files":
-      return status === "running" ? "Updating files" : "Updated files";
+      return "Edit";
     case "test_app":
-      return status === "running" ? "Testing the app" : "Tested the app";
+      return "Test";
     default:
-      return status === "running" ? `Using ${count} tools` : `Used ${count} tools`;
+      return "Use";
   }
 }
 

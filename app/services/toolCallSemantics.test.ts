@@ -104,38 +104,38 @@ describe("semantic action model", () => {
       toolName: "exec",
       input: FIXTURES.codexExecCommand,
       status: "done",
-    }).title).toBe("Searched code");
+    }).title).toBe("Search");
 
     expect(collapsedToolLabel({
       toolName: "exec",
       input: FIXTURES.codexApplyPatch,
       status: "done",
-    }).title).toBe("Updated files");
+    }).title).toBe("Edit");
 
     expect(collapsedToolLabel({
       toolName: "exec",
       input: FIXTURES.codexUpdatePlan,
       status: "done",
-    }).title).toBe("Updated the plan");
+    }).title).toBe("Plan");
 
     expect(collapsedToolLabel({
       toolName: "exec",
       input: FIXTURES.codexViewImage,
       status: "done",
-    }).title).toBe("Opened an image");
+    }).title).toBe("Open");
 
     const multi = collapsedToolLabel({
       toolName: "exec",
       input: FIXTURES.codexMulti,
       status: "done",
     });
-    expect(multi.title).toBe("Ran 2 commands");
+    expect(multi.title).toBe("Run");
     expect(multi.detail).toBeUndefined();
     expect(multi.children?.length).toBe(2);
     expect(multi.providerToolId).toBe("exec_command");
     expect(multi.children?.map((child) => child.label)).toEqual([
-      "Tested the app",
-      "Ran a command",
+      "Test",
+      "Run",
     ]);
   });
 
@@ -144,7 +144,7 @@ describe("semantic action model", () => {
       toolName: "view_image",
       input: `{"path":"/tmp/legacy.png"}`,
       status: "done",
-    }).label).toBe("Opened an image");
+    }).label).toBe("Open");
 
     expect(primarySemanticAction({
       toolName: "Grep",
@@ -168,7 +168,7 @@ describe("semantic action model", () => {
       input: `const r = await tools.exec_command({"cmd":"cat /home/user/.env && curl https://example.com?token=sk-abc123456789","workdir":"/secret"});`,
       status: "done",
     });
-    expect(label.title).toBe("Read files");
+    expect(label.title).toBe("Read");
     expect(label.detail).toBeUndefined();
     expect(isUnsafeCollapsedDetail(label.title)).toBe(false);
     expect(isUnsafeCollapsedDetail(`{"cmd":"secret"}`)).toBe(true);
@@ -242,12 +242,12 @@ describe("timeline presentation", () => {
     const timeline = buildZenTimeline(events);
     const activities = timeline.filter((item): item is ZenActivityTimelineItem => item.type === "activity");
     expect(activities.map((item) => item.title)).toEqual([
-      "Searched code",
-      "Ran 2 commands",
-      "Searched code",
-      "Tested the app",
-      "Opened an image",
-      "Opening an image",
+      "Search",
+      "Run",
+      "Search",
+      "Test",
+      "Open",
+      "Open",
     ]);
     expect(activities[0]?.detail).toBe("SemanticAction");
     expect(activities[0]?.providerToolId).toBeUndefined();
@@ -276,7 +276,7 @@ describe("timeline presentation", () => {
       toolName: "exec",
       input: FIXTURES.codexViewImage,
       status: "running",
-    })[0]?.label).toBe("Opening an image");
+    })[0]?.label).toBe("Open");
     expect(buildSemanticActions({
       toolName: "apply_patch",
       files: ["a.ts", "b.ts"],

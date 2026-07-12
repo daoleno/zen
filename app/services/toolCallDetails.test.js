@@ -151,10 +151,10 @@ describe("timeline wait/read presentation", () => {
 
     const activities = buildZenTimeline(events).filter((item) => item.type === "activity");
     expect(activities.map((item) => item.title)).toEqual([
-      "Read files",
-      "Running a command",
+      "Read",
+      "Run",
       "Finished",
-      "Read files",
+      "Read",
     ]);
 
     expect(activities[0].files).toEqual(["app/foo.ts"]);
