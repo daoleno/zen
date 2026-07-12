@@ -4,12 +4,10 @@ apply plugin: 'org.jetbrains.kotlin.android'
 group = 'expo.modules.zenterminalvt'
 version = '0.1.0'
 
-// ABIs supported by zen-terminal-vt / native.lock.json.
-// Must stay aligned with app/modules/zen-terminal-vt/native.lock.json "abis".
-def ZEN_TERMINAL_SUPPORTED_ABIS = ['arm64-v8a', 'x86_64']
-
 /**
  * Resolve NDK ABIs from the React Native / Expo architectures property.
+ *
+ * Supported ABIs stay aligned with native.lock.json: arm64-v8a, x86_64.
  *
  * - When -PreactNativeArchitectures=arm64-v8a (release APK): only arm64-v8a.
  * - When unset (typical local/emulator multi-ABI host builds): all supported ABIs.
@@ -17,19 +15,24 @@ def ZEN_TERMINAL_SUPPORTED_ABIS = ['arm64-v8a', 'x86_64']
  *
  * No silent substitution of missing architectures. Missing prebuilt .so for a
  * selected ABI fails the configuration phase with an explicit path.
+ *
+ * Note: supported ABIs are local to this method (not script-level def). Gradle
+ * Script methods cannot capture script-local def bindings (CI failure mode).
  */
-def zenTerminalAbis() {
+List<String> zenTerminalAbis() {
+  // Keep list local — do not use script-level def for method capture.
+  final List<String> supported = ['arm64-v8a', 'x86_64'].asImmutable()
   def raw = project.findProperty('reactNativeArchitectures')
   List<String> selected
   if (raw == null || raw.toString().trim().isEmpty()) {
-    selected = new ArrayList<>(ZEN_TERMINAL_SUPPORTED_ABIS)
+    selected = new ArrayList<>(supported)
   } else {
     def requested = raw.toString().split(',').collect { it.trim() }.findAll { it }
-    selected = requested.findAll { ZEN_TERMINAL_SUPPORTED_ABIS.contains(it) }
+    selected = requested.findAll { supported.contains(it) }
     if (selected.isEmpty()) {
       throw new GradleException(
         "zen-terminal-vt: reactNativeArchitectures=${raw} selects no supported ABIs. " +
-          "Supported: ${ZEN_TERMINAL_SUPPORTED_ABIS}. " +
+          "Supported: ${supported}. " +
           "Release builds must pass -PreactNativeArchitectures=arm64-v8a."
       )
     }

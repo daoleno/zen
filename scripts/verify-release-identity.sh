@@ -27,6 +27,7 @@ EXPECTED_CERT_FP="C2:FC:5B:09:B3:86:92:EE:70:59:71:1F:E7:ED:B8:79:4C:E3:65:FE:1C
 python3 - "$ROOT" "$EXPECTED_VERSION" "$EXPECTED_PACKAGE" "$EXPECTED_VERSION_CODE" "$EXPECTED_CERT_FP" "$STAGE" <<'PY'
 import hashlib
 import json
+import os
 import re
 import sys
 from pathlib import Path
@@ -124,12 +125,24 @@ else:
         errors.append(
             "zen-terminal-vt build.gradle must honor project property reactNativeArchitectures"
         )
-    if "zenTerminalAbis" not in gtxt and "reactNativeArchitectures" in gtxt:
-        pass  # function name may vary; property is required
+    if "zenTerminalAbis" not in gtxt:
+        errors.append("zen-terminal-vt build.gradle must define zenTerminalAbis()")
     if "libghostty_vt.so" not in gtxt:
         errors.append(
             "zen-terminal-vt build.gradle should fail configuration when libghostty_vt.so is missing for a selected ABI"
         )
+    # Script-level `def ZEN_TERMINAL_*` is invisible inside methods (Gradle Script capture).
+    if re.search(r"(?m)^def\s+ZEN_TERMINAL_SUPPORTED_ABIS\b", gtxt):
+        errors.append(
+            "zen-terminal-vt build.gradle must not use script-level def ZEN_TERMINAL_SUPPORTED_ABIS "
+            "(methods cannot capture it; keep supported ABIs local to zenTerminalAbis())"
+        )
+
+abi_gradle_check = root / "scripts/verify-zen-terminal-abi-gradle.sh"
+if not abi_gradle_check.is_file():
+    errors.append("missing scripts/verify-zen-terminal-abi-gradle.sh")
+elif not os.access(abi_gradle_check, os.X_OK):
+    errors.append("scripts/verify-zen-terminal-abi-gradle.sh must be executable")
 
 for rel in (
     "scripts/stage-release.sh",
