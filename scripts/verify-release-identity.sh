@@ -82,6 +82,30 @@ if "expo prebuild --clean" not in apk_script and "prebuild --clean" not in apk_s
     errors.append("android-release-apk.sh must use expo prebuild --clean for package identity")
 if "versionName" not in apk_script or "versionCode" not in apk_script:
     errors.append("android-release-apk.sh must assert generated versionName/versionCode identity")
+# Local default only; must not force a host path that overrides CI Temurin JAVA_HOME.
+if 'JAVA_HOME="${JAVA_HOME:-' not in apk_script and "JAVA_HOME=\"${JAVA_HOME:-" not in apk_script:
+    errors.append("android-release-apk.sh must default JAVA_HOME only when unset")
+
+app_pkg = json.loads((root / "app/package.json").read_text(encoding="utf-8"))
+build_apk = (app_pkg.get("scripts") or {}).get("build:apk") or ""
+if not build_apk:
+    errors.append("app/package.json missing scripts.build:apk")
+else:
+    if "/usr/lib/jvm/" in build_apk or "JAVA_HOME=" in build_apk:
+        errors.append(
+            "app/package.json build:apk must inherit caller JAVA_HOME "
+            "(no hardcoded JAVA_HOME or /usr/lib/jvm path)"
+        )
+    if "NODE_ENV=production" not in build_apk:
+        errors.append("app/package.json build:apk must set NODE_ENV=production")
+    if "-PreactNativeArchitectures=arm64-v8a" not in build_apk:
+        errors.append("app/package.json build:apk must pin arm64-v8a architectures")
+    if "app-release-arm64.apk" not in build_apk:
+        errors.append("app/package.json build:apk must produce app-release-arm64.apk")
+    for sibling in ("build:apk:universal", "build:apk:debug"):
+        s = (app_pkg.get("scripts") or {}).get(sibling) or ""
+        if s and ("/usr/lib/jvm/" in s or re.search(r"JAVA_HOME=", s)):
+            errors.append(f"app/package.json {sibling} must not hardcode JAVA_HOME")
 
 for rel in (
     "scripts/stage-release.sh",
