@@ -24,7 +24,7 @@ If something does not work, run `zen doctor` on the host and continue with [Trou
 - [Android native terminal and ABI contract](android.md#architecture--abi-contract)
 - [Agent-native task model](agent-native-task-model.md)
 - [CI release pipeline](ci-release.md)
-- [Current beta release notes](releases/v0.1.0-beta.1.md)
+- [Versioned release notes](releases/)
 - [Third-party assets and licenses](third-party-assets.md)
 - [Known release blockers](release-blockers.md)
 

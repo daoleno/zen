@@ -12,7 +12,7 @@ You do not need every executor. One is enough.
 
 ## Install the release binary
 
-Download the files for `v0.1.0-beta.1` from the [GitHub release](https://github.com/daoleno/zen/releases/tag/v0.1.0-beta.1):
+Open [GitHub Releases](https://github.com/daoleno/zen/releases) and download:
 
 - `zen-linux-amd64` for most Intel/AMD Linux machines
 - `zen-linux-arm64` for 64-bit ARM Linux machines
@@ -39,7 +39,7 @@ go build -o bin/zen ./cmd/zen/
 ./bin/zen
 ```
 
-Product version for banners and release staging matches `app/app.base.json` (`expo.version`, currently `0.1.0-beta.1`). The daemon default is `daemon/cmd/zen/version.go` and can be overridden at link time (`-X main.Version=…`).
+Product version for banners and release staging comes from `app/app.base.json` (`expo.version`). The daemon default is `daemon/cmd/zen/version.go` and can be overridden at link time (`-X main.Version=…`).
 
 ## Linux release binaries (amd64 / arm64)
 
@@ -55,22 +55,23 @@ Full local stage (clean directory each run; **no** GitHub Release):
 
 ```bash
 ./scripts/stage-release.sh
-# → dist-download/v0.1.0-beta.1/
+# → dist-download/vVERSION/
 #    zen-linux-amd64
 #    zen-linux-arm64
 #    LICENSE  NOTICE  TRADEMARKS.md  GHOSTTY-MIT.txt
-#    RELEASE_NOTES.md  (from docs/releases/v0.1.0-beta.1.md)
+#    RELEASE_NOTES.md  (from docs/releases/vVERSION.md)
 #    SHA256SUMS  identity.json
 ```
 
-Binaries are **top-level** (GitHub Release-facing names), not under `bin/`. Tracked notes live in `docs/releases/v0.1.0-beta.1.md`.
+Binaries are **top-level** (GitHub Release-facing names), not under `bin/`. The command prints the exact stage path; tracked notes live under `docs/releases/`.
 
 Verify identity sources and stage checksums:
 
 ```bash
 ./scripts/verify-release-identity.sh
-./scripts/verify-release-identity.sh --stage dist-download/v0.1.0-beta.1
-(cd dist-download/v0.1.0-beta.1 && sha256sum -c SHA256SUMS)
+VERSION="$(python3 -c "import json; print(json.load(open('app/app.base.json'))['expo']['version'])")"
+./scripts/verify-release-identity.sh --stage "dist-download/v$VERSION"
+(cd "dist-download/v$VERSION" && sha256sum -c SHA256SUMS)
 ```
 
 ## Install via Go modules (optional)

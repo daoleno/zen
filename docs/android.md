@@ -2,7 +2,7 @@
 
 ## Install the beta APK
 
-Download [`zen-android-arm64-v0.1.0-beta.1.apk`](https://github.com/daoleno/zen/releases/download/v0.1.0-beta.1/zen-android-arm64-v0.1.0-beta.1.apk) from the [`v0.1.0-beta.1` release](https://github.com/daoleno/zen/releases/tag/v0.1.0-beta.1).
+Open [GitHub Releases](https://github.com/daoleno/zen/releases) and download the newest `zen-android-arm64-v*.apk` together with `SHA256SUMS`.
 
 The APK supports 64-bit ARM Android devices (`arm64-v8a`). It does not support x86 phones, 32-bit ARM devices, or iOS.
 
@@ -191,7 +191,7 @@ Canonical tracked identity is [`app/app.base.json`](../app/app.base.json) (loade
 
 | Field | Value |
 | --- | --- |
-| `expo.version` | `0.1.0-beta.1` |
+| `expo.version` | Release version |
 | `android.package` | `com.daoleno.zen` |
 | `android.versionCode` | `1` |
 
@@ -199,14 +199,14 @@ Verify with `./scripts/verify-release-identity.sh` (also `bun run release:identi
 
 **Sideload note:** changing `android.package` from the old `com.anonymous.zen` means Android treats this as a different app. Uninstall the previous package before installing a `com.daoleno.zen` APK if both were installed on the same device.
 
-Sideload APKs remain **maintainer/beta artifacts** until a maintainer publishes a signed build. Agents and CI must not read `~/.zen/release-keys` or commit `ZEN_ANDROID_*` secrets. Local/default release builds without signing env use the debug keystore (personal sideload only).
+Official release APKs are signed by the release pipeline. Local builds without signing env use the debug keystore and are only suitable for personal testing. Never commit `ZEN_ANDROID_*` secrets or local signing files.
 
 ### Staging (local, not a GitHub Release)
 
 ```bash
 # Clean stage each run: top-level Linux binaries + legal notices + notes (no APK):
 ./scripts/stage-release.sh
-# → dist-download/v0.1.0-beta.1/
+# → dist-download/vVERSION/
 #    zen-linux-amd64  zen-linux-arm64
 #    LICENSE  NOTICE  TRADEMARKS.md  GHOSTTY-MIT.txt
 #    RELEASE_NOTES.md  SHA256SUMS  identity.json
@@ -215,7 +215,7 @@ Sideload APKs remain **maintainer/beta artifacts** until a maintainer publishes 
 ./scripts/stage-release.sh --apk path/to/app-release.apk
 ```
 
-Release notes template: [`docs/releases/v0.1.0-beta.1.md`](releases/v0.1.0-beta.1.md) (includes official APK certificate fingerprint and sideload warnings).
+Each release has versioned notes under `docs/releases/`; the release page includes the matching notes, certificate fingerprint, and sideload warnings.
 
 `stage-release.sh` never creates tags or GitHub Releases. Publishing is a separate Brain/maintainer step.
 
