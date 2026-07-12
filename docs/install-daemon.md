@@ -24,6 +24,50 @@ bun run daemon:build
 ./bin/zen
 ```
 
+Product version for banners and release staging matches `app/app.base.json` (`expo.version`, currently `0.1.0-beta.1`). The daemon default is `daemon/cmd/zen/version.go` and can be overridden at link time (`-X main.Version=…`).
+
+## Linux release binaries (amd64 / arm64)
+
+Cross-build without CGO (deterministic flags: `-trimpath`, `-buildvcs=false`, stripped ldflags):
+
+```bash
+./scripts/build-daemon-linux.sh
+# → dist-download/staging/bin/zen-linux-amd64
+# → dist-download/staging/bin/zen-linux-arm64
+```
+
+Full local stage (clean directory each run; **no** GitHub Release):
+
+```bash
+./scripts/stage-release.sh
+# → dist-download/v0.1.0-beta.1/
+#    zen-linux-amd64
+#    zen-linux-arm64
+#    LICENSE  NOTICE  TRADEMARKS.md  GHOSTTY-MIT.txt
+#    RELEASE_NOTES.md  (from docs/releases/v0.1.0-beta.1.md)
+#    SHA256SUMS  identity.json
+```
+
+Binaries are **top-level** (GitHub Release-facing names), not under `bin/`. Tracked notes live in `docs/releases/v0.1.0-beta.1.md`.
+
+Verify identity sources and stage checksums:
+
+```bash
+./scripts/verify-release-identity.sh
+./scripts/verify-release-identity.sh --stage dist-download/v0.1.0-beta.1
+(cd dist-download/v0.1.0-beta.1 && sha256sum -c SHA256SUMS)
+```
+
+When a maintainer publishes assets on a GitHub Release, install the matching arch:
+
+```bash
+sha256sum -c SHA256SUMS --ignore-missing
+install -m 755 zen-linux-amd64 ~/.local/bin/zen   # or zen-linux-arm64
+zen doctor
+```
+
+Until those assets exist, prefer building from this repository.
+
 ## Install via Go modules (optional)
 
 ```bash

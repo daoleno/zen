@@ -115,10 +115,11 @@ fi
 
 OUT_DIR="$ROOT/dist-download/android-native"
 mkdir -p "$OUT_DIR"
-# Stable-ish name from git describe when available; else pin short + apk sha prefix
+# Name from canonical app identity + pin short + content hash (not a formal release).
+APP_VERSION="$(python3 -c "import json;print(json.load(open('app/app.base.json'))['expo']['version'])")"
 PIN_SHORT="$(python3 -c "import json;print(json.load(open('app/modules/zen-terminal-vt/native.lock.json'))['ghostty']['commit'][:12])")"
 APK_SHA="$(sha256sum "$APK" | awk '{print $1}')"
-COPY="$OUT_DIR/zen-android-arm64-${PIN_SHORT}-${APK_SHA:0:12}.apk"
+COPY="$OUT_DIR/zen-android-arm64-v${APP_VERSION}-${PIN_SHORT}-${APK_SHA:0:12}.apk"
 cp -f "$APK" "$COPY"
 echo "$APK_SHA  $(basename "$COPY")" | tee "$COPY.sha256"
 # Adjacent copy for humans who unpack the directory (APK itself already verified)

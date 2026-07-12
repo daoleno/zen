@@ -2,7 +2,7 @@
 
 set -euo pipefail
 
-PACKAGE_NAME="${1:-com.anonymous.zen}"
+PACKAGE_NAME="${1:-com.daoleno.zen}"
 OUT_ROOT="${2:-artifacts/android-crash}"
 TIMESTAMP="$(date +%Y%m%d-%H%M%S)"
 OUT_DIR="${OUT_ROOT}/${TIMESTAMP}"

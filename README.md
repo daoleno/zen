@@ -45,6 +45,15 @@ go build -o bin/zen ./cmd/zen/
 ./bin/zen
 ```
 
+Linux amd64/arm64 cross-builds and local staging (top-level binaries, legal notices, checksums; not a GitHub Release):
+
+```bash
+./scripts/stage-release.sh
+# → dist-download/v0.1.0-beta.1/{zen-linux-amd64,zen-linux-arm64,LICENSE,SHA256SUMS,…}
+```
+
+Beta notes template: [docs/releases/v0.1.0-beta.1.md](docs/releases/v0.1.0-beta.1.md).
+
 Default listen address: `127.0.0.1:9876`.
 Default state directory: `~/.zen` (identity, trusted devices, pairing tokens).
 If you previously used `~/.config/zen`, zen copies those files into `~/.zen` on first start (copy, not move).

@@ -1,0 +1,65 @@
+name: Release artifacts (staging)
+
+# Builds Linux daemon binaries and uploads a full stage tree.
+# May run on tags or workflow_dispatch.
+# Does NOT create a GitHub Release, push tags, or sign Android APKs.
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - "v*"
+
+concurrency:
+  group: release-artifacts-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  linux-daemon:
+    name: Stage Linux daemon (amd64/arm64)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: daemon/go.mod
+          cache-dependency-path: daemon/go.sum
+
+      - name: Verify release identity
+        run: ./scripts/verify-release-identity.sh
+
+      - name: Stage release (daemon only)
+        run: ./scripts/stage-release.sh
+
+      - name: Verify stage layout and checksums
+        run: |
+          set -euo pipefail
+          VERSION="$(python3 -c "import json;print(json.load(open('app/app.base.json'))['expo']['version'])")"
+          STAGE="dist-download/v${VERSION}"
+          ./scripts/verify-release-identity.sh --stage "$STAGE"
+          (cd "$STAGE" && sha256sum -c SHA256SUMS)
+          ls -la "$STAGE"
+
+      - name: Upload full stage tree
+        uses: actions/upload-artifact@v4
+        with:
+          name: zen-stage
+          path: |
+            dist-download/v*/zen-linux-amd64
+            dist-download/v*/zen-linux-arm64
+            dist-download/v*/LICENSE
+            dist-download/v*/NOTICE
+            dist-download/v*/TRADEMARKS.md
+            dist-download/v*/GHOSTTY-MIT.txt
+            dist-download/v*/RELEASE_NOTES.md
+            dist-download/v*/SHA256SUMS
+            dist-download/v*/identity.json
+          if-no-files-found: error
+
+  native-contract:
+    name: Native terminal contract
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify lock/notice/scripts (no .so required)
+        run: ./scripts/verify-libghostty.sh --contract

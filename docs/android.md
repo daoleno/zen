@@ -159,7 +159,37 @@ export ZEN_ANDROID_KEY_PASSWORD='…'
 
 ## Package identity
 
-Current Expo config still uses development-oriented identifiers (`com.anonymous.zen` in `app.base.json`). Treat sideload APKs as maintainer/beta artifacts until application id and signing are productized.
+Canonical tracked identity is [`app/app.base.json`](../app/app.base.json) (loaded by [`app/app.config.js`](../app/app.config.js)):
+
+| Field | Value |
+| --- | --- |
+| `expo.version` | `0.1.0-beta.1` |
+| `android.package` | `com.daoleno.zen` |
+| `android.versionCode` | `1` |
+
+Verify with `./scripts/verify-release-identity.sh` (also `bun run release:identity`).
+
+**Sideload note:** changing `android.package` from the old `com.anonymous.zen` means Android treats this as a different app. Uninstall the previous package before installing a `com.daoleno.zen` APK if both were installed on the same device.
+
+Sideload APKs remain **maintainer/beta artifacts** until a maintainer publishes a signed build. Agents and CI must not read `~/.zen/release-keys` or commit `ZEN_ANDROID_*` secrets. Local/default release builds without signing env use the debug keystore (personal sideload only).
+
+### Staging (local, not a GitHub Release)
+
+```bash
+# Clean stage each run: top-level Linux binaries + legal notices + notes (no APK):
+./scripts/stage-release.sh
+# → dist-download/v0.1.0-beta.1/
+#    zen-linux-amd64  zen-linux-arm64
+#    LICENSE  NOTICE  TRADEMARKS.md  GHOSTTY-MIT.txt
+#    RELEASE_NOTES.md  SHA256SUMS  identity.json
+
+# Optional: include a prebuilt/signed APK path
+./scripts/stage-release.sh --apk path/to/app-release.apk
+```
+
+Release notes template: [`docs/releases/v0.1.0-beta.1.md`](releases/v0.1.0-beta.1.md) (includes official APK certificate fingerprint and sideload warnings).
+
+`stage-release.sh` never creates tags or GitHub Releases. Publishing is a separate Brain/maintainer step.
 
 ## Related docs
 

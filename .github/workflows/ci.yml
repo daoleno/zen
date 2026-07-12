@@ -54,3 +54,11 @@ jobs:
       - uses: actions/checkout@v4
       - name: Verify lock/notice/scripts (no .so required)
         run: ./scripts/verify-libghostty.sh --contract
+
+  release-identity:
+    name: Release identity
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify package / version / versionCode sources
+        run: ./scripts/verify-release-identity.sh

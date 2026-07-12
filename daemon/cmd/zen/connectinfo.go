@@ -45,8 +45,15 @@ func buildConnectionOffers(endpoint string, authManager *auth.Manager, pairing a
 }
 
 func printStartupBanner(w io.Writer, listenAddr, daemonID string) {
+	// Fixed-width box: title line is 38 cells between the double-line borders.
+	title := fmt.Sprintf("zen v%s", Version)
+	if len(title) > 36 {
+		title = title[:36]
+	}
+	pad := (36 - len(title)) / 2
+	right := 36 - len(title) - pad
 	fmt.Fprintln(w, "╔══════════════════════════════════════╗")
-	fmt.Fprintln(w, "║         zen v0.1.0            ║")
+	fmt.Fprintf(w, "║%s%s%s║\n", strings.Repeat(" ", pad+1), title, strings.Repeat(" ", right+1))
 	fmt.Fprintln(w, "╠══════════════════════════════════════╣")
 	fmt.Fprintf(w, "║  Listening on %-22s ║\n", listenAddr)
 	fmt.Fprintf(w, "║  Auth: %-28s ║\n", "device identity")
