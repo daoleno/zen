@@ -1,0 +1,9 @@
+Zen
+Copyright 2026 daoleno and contributors
+
+This product is licensed under the Apache License, Version 2.0.
+See the LICENSE file for the full license text.
+
+Third-party components and bundled assets remain under their own licenses.
+See docs/third-party-assets.md and the notice files under app/assets/notices/
+and app/modules/zen-terminal-vt/ for attribution and redistribution details.

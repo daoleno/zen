@@ -30,6 +30,6 @@ These items block calling the tree an honest redistributable public beta until r
 
 - Fonts (Source Han Sans SC, Maple Mono CN, Sarasa Gothic/Term SC): upstream OFL evidence recorded in `third-party-assets.md`.
 - `mokugyo-hit-jono.m4a`: CC0 Freesound 607215.
-- `meditation-ambient.m4a`: first-party procedural pad under the product license.
+- `meditation-ambient.m4a`: first-party procedural pad under Apache-2.0 (same as Zen source).
 - Mixkit World Window: streamed, not bundled; Mixkit Free License.
 - Ghostty: MIT; only redistribution of built `.so`/APK needs notice packaging.

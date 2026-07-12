@@ -10,7 +10,9 @@ Honest support is **Linux daemon + Android app**, with **one** AI CLI enough to 
 
 - Read `README.md` and `docs/architecture.md` for pairing/auth invariants.
 - Do not commit pairing links, `~/.zen` state, `.env.local`, tunnel URLs, or APK signing keys.
-- License choice for the repository is **pending**; do not assume a specific open-source license until a root `LICENSE` is added.
+- Zen is licensed under the [Apache License 2.0](LICENSE). By contributing, you agree that your contributions are licensed under the same terms.
+- Zen product names and logos are trademarks; see [TRADEMARKS.md](TRADEMARKS.md). Contributions do not transfer trademark rights.
+- Prefer small, reviewable changes. Bug reports, design feedback, documentation corrections, and focused patches are welcome.
 
 ## Development
 

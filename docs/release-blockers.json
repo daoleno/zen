@@ -50,7 +50,7 @@
         {
           "path": "app/assets/audio/meditation-ambient.m4a",
           "action": "replaced",
-          "license": "first-party procedural (product license)"
+          "license": "first-party procedural (Apache-2.0)"
         },
         {
           "path": "app/assets/audio/meditation-focus.m4a",

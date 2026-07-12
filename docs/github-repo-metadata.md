@@ -28,6 +28,6 @@ Leave empty, or point at the README once a docs site exists.
 
 ## Visibility / license / branch protection
 
-- License: pending user decision (see `docs/release-blockers.md`).
+- License: Apache License 2.0 (`Apache-2.0`). GitHub license picker: Apache-2.0. Brand/name use is governed by `TRADEMARKS.md`, not the copyright license.
 - Do not enable misleading “production-ready” language in the description.
 - Branch protection and releases are out of scope for the release-foundation docs slice.

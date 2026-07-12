@@ -13,7 +13,7 @@ Mobile-native agent control plane. Manage your AI coding agents from your phone.
 
 You do **not** need every executor installed. One authenticated AI CLI is enough for a useful first session.
 
-License choice for the repository is still pending; see [CONTRIBUTING.md](CONTRIBUTING.md) and [docs/release-blockers.md](docs/release-blockers.md).
+Zen is licensed under the [Apache License 2.0](LICENSE). Copyright and patent grants are in that license; product names and logos are trademarks governed by [TRADEMARKS.md](TRADEMARKS.md). Attribution for redistributions lives in [NOTICE](NOTICE).
 
 ## Architecture
 
@@ -103,6 +103,9 @@ Built-in defaults assume common CLI names on `PATH`. One executor is enough. Cop
 - [Android app](docs/android.md) (ABI contract, Ghostty native build, sideload APK)
 - [Security and privacy](docs/security-and-privacy.md)
 - [Troubleshooting](docs/troubleshooting.md)
+- [License](LICENSE) (Apache-2.0)
+- [NOTICE](NOTICE)
+- [Trademarks](TRADEMARKS.md)
 - [Architecture](docs/architecture.md)
 - [Third-party assets](docs/third-party-assets.md)
 - [Release blockers](docs/release-blockers.md)
