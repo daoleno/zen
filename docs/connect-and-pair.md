@@ -10,7 +10,34 @@ Pairing connects one Android installation to one daemon. You need a reachable da
 
 There is no long-lived shared secret for normal traffic.
 
-## Expose the full origin
+## Same Wi-Fi: pair directly over the LAN
+
+If the phone and computer are on the same trusted Wi-Fi, you do not need a tunnel.
+
+1. Start Zen on all network interfaces:
+
+   ```bash
+   zen -addr 0.0.0.0:9876
+   ```
+
+2. Find the computer's LAN address:
+
+   ```bash
+   hostname -I                 # Linux
+   ipconfig getifaddr en0      # macOS Wi-Fi
+   ```
+
+3. Generate the pairing link with that address, not `0.0.0.0`:
+
+   ```bash
+   zen pair http://192.168.1.42:9876
+   ```
+
+4. Scan the QR code or import the printed link in the app.
+
+The phone must be able to reach that IP and port. If it cannot, check the host firewall and whether the router enables client/AP isolation. Plain LAN HTTP does not encrypt traffic, so use this only on a network you trust. Use a Tailnet or HTTPS endpoint on shared or untrusted networks.
+
+## Tailnet, tunnel, or reverse proxy
 
 Forward the whole daemon origin to `http://127.0.0.1:9876` (or your chosen `-addr`), including:
 
@@ -31,10 +58,12 @@ cloudflared tunnel --url http://127.0.0.1:9876
 
 ## Generate a pairing link
 
-With the daemon already running:
+With the daemon already running, pass the origin the phone can actually reach:
 
 ```bash
 zen pair https://zen.example.com
+# or, on the same trusted LAN:
+zen pair http://192.168.1.42:9876
 ```
 
 Use the publicly reachable origin (scheme + host, optional path). `zen pair` normalizes HTTP(S) to `ws`/`wss` and ensures a `/ws` WebSocket path for the compact `zen://` payload. You still must expose the non-WebSocket HTTP routes on that same origin.
@@ -68,6 +97,6 @@ There is currently no first-class “forget device” UI/CLI. Trusted devices li
 
 ## App onboarding vs README
 
-The in-app first-run steps match this flow: start `zen`, expose the origin, run `zen pair <origin>`, then import the link.
+The in-app first-run steps show the short version of this flow. Use direct LAN pairing on a trusted Wi-Fi, or expose the full origin through a Tailnet/HTTPS endpoint for remote access.
 
 Optional before pairing: `zen doctor` to confirm tmux/state/port/executors on the host.

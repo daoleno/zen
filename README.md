@@ -36,14 +36,14 @@ You need a supported Linux machine or Apple Silicon Mac with `tmux`, one support
 
    ```bash
    zen doctor
-   zen
    ```
 
-3. Make the full daemon origin reachable from your phone. A private Tailnet is the recommended starting point.
+3. Start the daemon where the phone can reach it. On the same trusted Wi-Fi, run `zen -addr 0.0.0.0:9876` and use the computer's LAN IP. For remote access, run `zen` on its default loopback address and expose it through a private Tailnet or HTTPS endpoint.
 4. Generate a short-lived pairing QR/link:
 
    ```bash
    zen pair https://your-zen-origin.example
+   # Trusted LAN example: zen pair http://192.168.1.42:9876
    ```
 
 5. Install the APK, open Zen, and import the pairing QR/link in Settings.

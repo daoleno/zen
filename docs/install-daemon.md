@@ -119,7 +119,7 @@ Use the same `-state-dir` for the daemon and for `zen pair`.
 ## Starting and pairing are separate
 
 1. Start `zen` so it has a stable identity and listening address.
-2. Expose `http://127.0.0.1:9876` through your network layer.
+2. Make it reachable: use `zen -addr 0.0.0.0:9876` for a trusted LAN, or expose `http://127.0.0.1:9876` through your network layer.
 3. Run `zen pair <full-origin>` to print a one-time link/QR without restarting.
 
 There is no `-advertise-url` flag. The externally reachable origin is supplied at pair time.
