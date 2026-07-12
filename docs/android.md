@@ -1,6 +1,29 @@
 # Android app
 
-## Honest scope
+## Install the beta APK
+
+Download [`zen-android-arm64-v0.1.0-beta.1.apk`](https://github.com/daoleno/zen/releases/download/v0.1.0-beta.1/zen-android-arm64-v0.1.0-beta.1.apk) from the [`v0.1.0-beta.1` release](https://github.com/daoleno/zen/releases/tag/v0.1.0-beta.1).
+
+The APK supports 64-bit ARM Android devices (`arm64-v8a`). It does not support x86 phones, 32-bit ARM devices, or iOS.
+
+Before installing, download `SHA256SUMS` from the same release and verify the APK:
+
+```bash
+sha256sum -c SHA256SUMS --ignore-missing
+```
+
+The official beta certificate SHA-256 fingerprint is:
+
+```text
+C2:FC:5B:09:B3:86:92:EE:70:59:71:1F:E7:ED:B8:79:
+4C:E3:65:FE:1C:7A:06:AB:95:4E:5D:D1:BD:CD:A4:FD
+```
+
+Android will ask you to allow installation from the browser or file manager you used. A Play Protect warning is possible because this beta is distributed outside Play Store.
+
+After installation, start the daemon, run `zen pair <your-origin>`, then import the QR code or link in the app's Settings screen.
+
+## Current scope
 
 | Claim | Status |
 | --- | --- |
@@ -34,7 +57,7 @@ Invariants:
 
 Module wiring (source of truth for packaging):
 
-- `app/modules/zen-terminal-vt/android/build.gradle` — `abiFilters 'arm64-v8a', 'x86_64'`
+- `app/modules/zen-terminal-vt/android/build.gradle` — `abiFilters` from `-PreactNativeArchitectures` (release: `arm64-v8a` only; unset: both supported ABIs); fails if the matching `libghostty_vt.so` is missing
 - `app/modules/zen-terminal-vt/android/CMakeLists.txt` — imports `libs/android/${ANDROID_ABI}/libghostty_vt.so`
 - `app/plugins/withZenAndroidRelease.js` — copies MIT notice into `android/app/src/main/assets/notices/` and wires optional env-based release signing
 

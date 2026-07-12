@@ -1,26 +1,41 @@
 # Install the daemon
 
+This guide installs the Linux daemon that owns Zen's state, pairing identity, tmux sessions, and executor processes. The Android app connects to this daemon; installing the APK alone is not enough.
+
 ## What you need
 
-- Linux host (honest beta target)
-- Go toolchain matching `daemon/go.mod`
+- Linux `amd64` or `arm64` host
 - `tmux` on `PATH`
 - At least one AI CLI on `PATH` and already authenticated (`codex`, `claude`, `cursor-agent`, or `grok`)
 
 You do not need every executor. One is enough.
 
-## Build from this repository
+## Install the release binary
+
+Download the files for `v0.1.0-beta.1` from the [GitHub release](https://github.com/daoleno/zen/releases/tag/v0.1.0-beta.1):
+
+- `zen-linux-amd64` for most Intel/AMD Linux machines
+- `zen-linux-arm64` for 64-bit ARM Linux machines
+- `SHA256SUMS` to verify the download
 
 ```bash
-cd daemon
-go build -o bin/zen ./cmd/zen/
-./bin/zen
+sha256sum -c SHA256SUMS --ignore-missing
+chmod +x zen-linux-*
+install -m 755 zen-linux-* ~/.local/bin/zen
+zen doctor
+zen
 ```
 
-Or from the monorepo root:
+If `~/.local/bin` is not on your `PATH`, install into another user-owned directory that is, or add it to your shell configuration.
+
+## Build from source
+
+Source builds require the Go toolchain declared in `daemon/go.mod`:
 
 ```bash
-bun run daemon:build
+git clone https://github.com/daoleno/zen.git
+cd zen/daemon
+go build -o bin/zen ./cmd/zen/
 ./bin/zen
 ```
 
@@ -58,16 +73,6 @@ Verify identity sources and stage checksums:
 (cd dist-download/v0.1.0-beta.1 && sha256sum -c SHA256SUMS)
 ```
 
-When a maintainer publishes assets on a GitHub Release, install the matching arch:
-
-```bash
-sha256sum -c SHA256SUMS --ignore-missing
-install -m 755 zen-linux-amd64 ~/.local/bin/zen   # or zen-linux-arm64
-zen doctor
-```
-
-Until those assets exist, prefer building from this repository.
-
 ## Install via Go modules (optional)
 
 ```bash
@@ -76,6 +81,12 @@ zen
 ```
 
 This path depends on the published module and Go proxy state. If `@latest` fails, build from a clone as above.
+
+## Run as a background service
+
+The beta does not yet install a system service automatically. Start `zen` in a persistent shell, tmux session, or a user service you manage. The same Linux user must be able to access `tmux`, your repositories, and the authenticated AI CLI.
+
+Do not run the daemon as root merely to keep it alive.
 
 ## Defaults
 

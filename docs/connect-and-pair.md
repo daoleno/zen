@@ -1,5 +1,7 @@
 # Connect and pair
 
+Pairing connects one Android installation to one daemon. You need a reachable daemon origin first; the pairing QR does not create a network tunnel.
+
 ## Model
 
 1. **Reachability** — your tunnel, Tailnet, or reverse proxy reaches the daemon.
@@ -54,7 +56,7 @@ In the Android app Settings:
 - import a screenshot/photo of the QR
 - or use clipboard import
 
-Expo Go can paste/scan. Custom `zen://` deep links require a development build or shipped APK.
+The release APK can paste links, scan a QR code, import a QR image, and open `zen://` links. Expo Go is a development-only path and is not required for normal installation.
 
 ## Reconnect
 

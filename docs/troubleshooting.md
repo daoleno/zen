@@ -2,7 +2,8 @@
 
 ## Daemon will not start
 
-- Confirm Go build succeeded: `cd daemon && go build -o bin/zen ./cmd/zen/`.
+- If you installed a release binary, confirm it is executable and on `PATH`: `command -v zen && zen doctor`.
+- If you built from source, confirm the build succeeds: `cd daemon && go build -o bin/zen ./cmd/zen/`.
 - Ensure nothing else is bound to `127.0.0.1:9876`, or pass `-addr`.
 - Check state dir permissions on `~/.zen` (or your `-state-dir`).
 
