@@ -1,6 +1,6 @@
 # Connect and pair
 
-Pairing connects one Android installation to one daemon. You need a reachable daemon origin first; the pairing QR does not create a network tunnel.
+Pairing connects one Android or iOS installation to one daemon. You need a reachable daemon origin first; the pairing QR does not create a network tunnel.
 
 ## Model
 
@@ -78,14 +78,14 @@ Pairing tokens expire (default TTL is 15 minutes). Generate a fresh link for eac
 
 ## Import on the phone
 
-In the Android app Settings:
+In the Android or iOS app Settings:
 
 - paste the printed `zen://...` link
 - scan the QR
 - import a screenshot/photo of the QR
 - or use clipboard import
 
-The release APK can paste links, scan a QR code, import a QR image, and open `zen://` links. Expo Go is a development-only path and is not required for normal installation.
+The native app can paste links, scan a QR code, import a QR image, and open `zen://` links. Expo Go is a development-only path and cannot exercise the custom Ghostty native module; use an APK or iOS development build for complete validation.
 
 ## Reconnect
 

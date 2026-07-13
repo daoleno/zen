@@ -19,7 +19,21 @@ module.exports = () => {
     ...baseConfig,
     plugins: [
       ...(baseConfig.plugins || []),
+      [
+        'expo-audio',
+        {
+          // Zen only plays meditation audio; it never records from the mic.
+          microphonePermission: false,
+          recordAudioAndroid: false,
+          enableBackgroundPlayback: true,
+        },
+      ],
+      'expo-font',
+      'expo-status-bar',
       'expo-video',
+      // Keep Expo Swift modules on one source-built ABI so patch upgrades
+      // cannot mix precompiled ExpoVideo and ExpoModulesCore binaries.
+      './plugins/withZenIOSBuild',
       // Package Ghostty MIT notice into Android assets + env-based release signing.
       './plugins/withZenAndroidRelease',
     ],

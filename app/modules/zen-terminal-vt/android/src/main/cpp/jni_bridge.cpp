@@ -1,20 +1,26 @@
+#if defined(__ANDROID__)
 #include <jni.h>
 #include <android/log.h>
+#endif
 #include <array>
 #include <cmath>
+#include <cstdint>
 #include <cstdlib>
 #include <cstring>
 #include <string>
 #include <vector>
 #include <ghostty/vt.h>
 
+#if defined(__ANDROID__)
 #define TAG "ZenTerminalVt"
 #define LOGI(...) __android_log_print(ANDROID_LOG_INFO, TAG, __VA_ARGS__)
 #define LOGE(...) __android_log_print(ANDROID_LOG_ERROR, TAG, __VA_ARGS__)
+#endif
 
 static constexpr size_t kDefaultScrollbackRows = 10000;
 static constexpr size_t kMouseStackBufferSize = 128;
 
+#if defined(__ANDROID__)
 static jstring newStringFromUtf8Bytes(JNIEnv* env, const uint8_t* bytes, size_t len) {
     jclass stringClass = env->FindClass("java/lang/String");
     if (!stringClass) {
@@ -57,6 +63,7 @@ static jstring newStringFromUtf8Bytes(JNIEnv* env, const uint8_t* bytes, size_t 
 
     return result;
 }
+#endif
 
 /**
  * Per-terminal state: owns the terminal, render state, and formatters.
@@ -90,17 +97,16 @@ static GhosttyResult createTerminalFormatter(
     return ghostty_formatter_terminal_new(nullptr, out, h->terminal, opts);
 }
 
-static jstring formatTerminalScreen(
-    JNIEnv* env,
+static std::string formatTerminalScreen(
     TerminalHandle* h,
     GhosttyFormatterFormat format)
 {
-    if (!h) return env->NewStringUTF("");
+    if (!h) return {};
 
     GhosttyFormatter formatter =
         format == GHOSTTY_FORMATTER_FORMAT_HTML ? h->html_formatter : h->plain_formatter;
     if (!formatter) {
-        return env->NewStringUTF("");
+        return {};
     }
 
     uint8_t* outPtr = nullptr;
@@ -108,15 +114,15 @@ static jstring formatTerminalScreen(
     GhosttyResult res = ghostty_formatter_format_alloc(formatter, nullptr, &outPtr, &outLen);
 
     if (res != GHOSTTY_SUCCESS || !outPtr) {
-        return env->NewStringUTF("");
+        return {};
     }
 
-    jstring result = newStringFromUtf8Bytes(env, outPtr, outLen);
+    std::string result(reinterpret_cast<const char*>(outPtr), outLen);
     ghostty_free(nullptr, outPtr, outLen);
     return result;
 }
 
-static TerminalHandle* getHandle(jlong h) {
+static TerminalHandle* getHandle(uintptr_t h) {
     return reinterpret_cast<TerminalHandle*>(h);
 }
 
@@ -157,6 +163,7 @@ static GhosttyResult populateRowCells(
     );
 }
 
+#if defined(__ANDROID__)
 static jstring newStringFromStdString(JNIEnv* env, const std::string& value) {
     return newStringFromUtf8Bytes(
         env,
@@ -164,6 +171,7 @@ static jstring newStringFromStdString(JNIEnv* env, const std::string& value) {
         value.size()
     );
 }
+#endif
 
 static bool colorsEqual(const GhosttyColorRgb& left, const GhosttyColorRgb& right) {
     return left.r == right.r && left.g == right.g && left.b == right.b;
@@ -839,7 +847,7 @@ static void clearRenderStateDirty(GhosttyRenderState renderState) {
     ghostty_render_state_row_iterator_free(rowIterator);
 }
 
-static uint32_t roundPositivePixels(jfloat value) {
+static uint32_t roundPositivePixels(float value) {
     if (!std::isfinite(value) || value <= 0) {
         return 1;
     }
@@ -875,6 +883,7 @@ static bool parseHexColor(const char* value, GhosttyColorRgb* out) {
     return true;
 }
 
+#if defined(__ANDROID__)
 static bool parseHexColorString(JNIEnv* env, jstring value, GhosttyColorRgb* out) {
     if (!env || !value || !out) {
         return false;
@@ -889,6 +898,7 @@ static bool parseHexColorString(JNIEnv* env, jstring value, GhosttyColorRgb* out
     env->ReleaseStringUTFChars(value, utf8);
     return ok;
 }
+#endif
 
 static bool setTerminalOption(
     TerminalHandle* h,
@@ -909,7 +919,7 @@ static bool setTerminalOption(
     return true;
 }
 
-static bool decodeMouseAction(jint action, GhosttyMouseAction* out) {
+static bool decodeMouseAction(int action, GhosttyMouseAction* out) {
     if (!out) {
         return false;
     }
@@ -929,7 +939,7 @@ static bool decodeMouseAction(jint action, GhosttyMouseAction* out) {
     }
 }
 
-static bool decodeMouseButton(jint button, GhosttyMouseButton* out, bool* hasButton) {
+static bool decodeMouseButton(int button, GhosttyMouseButton* out, bool* hasButton) {
     if (!out || !hasButton) {
         return false;
     }
@@ -964,19 +974,18 @@ static bool decodeMouseButton(jint button, GhosttyMouseButton* out, bool* hasBut
     }
 }
 
-static jstring encodeMouseSequence(
-    JNIEnv* env,
+static std::string encodeMouseSequence(
     TerminalHandle* h,
     GhosttyMouseAction action,
     GhosttyMouseButton button,
     bool hasButton,
-    jfloat x,
-    jfloat y,
+    float x,
+    float y,
     GhosttyMods mods,
     bool anyButtonPressed)
 {
     if (!h || !h->mouse_encoder) {
-        return env->NewStringUTF("");
+        return {};
     }
 
     GhosttyMouseEncoderSize size = GHOSTTY_INIT_SIZED(GhosttyMouseEncoderSize);
@@ -1001,7 +1010,7 @@ static jstring encodeMouseSequence(
     GhosttyResult res = ghostty_mouse_event_new(nullptr, &event);
     if (res != GHOSTTY_SUCCESS || !event) {
         LOGE("ghostty_mouse_event_new failed: %d", res);
-        return env->NewStringUTF("");
+        return {};
     }
 
     ghostty_mouse_event_set_action(event, action);
@@ -1034,23 +1043,21 @@ static jstring encodeMouseSequence(
         );
         ghostty_mouse_event_free(event);
         if (res != GHOSTTY_SUCCESS || outLen == 0) {
-            return env->NewStringUTF("");
+            return {};
         }
-        return newStringFromUtf8Bytes(
-            env,
-            reinterpret_cast<const uint8_t*>(dynamicBuffer.data()),
-            outLen
-        );
+        dynamicBuffer.resize(outLen);
+        return dynamicBuffer;
     }
 
     ghostty_mouse_event_free(event);
     if (res != GHOSTTY_SUCCESS || outLen == 0) {
-        return env->NewStringUTF("");
+        return {};
     }
 
-    return newStringFromUtf8Bytes(env, reinterpret_cast<const uint8_t*>(stackBuffer), outLen);
+    return std::string(stackBuffer, outLen);
 }
 
+#if defined(__ANDROID__)
 extern "C" {
 
 JNIEXPORT jlong JNICALL
@@ -1276,8 +1283,7 @@ Java_expo_modules_zenterminalvt_ZenTerminalVtModule_nativeEncodeMouseEvent(
         return env->NewStringUTF("");
     }
 
-    return encodeMouseSequence(
-        env,
+    const std::string encoded = encodeMouseSequence(
         h,
         decodedAction,
         decodedButton,
@@ -1287,6 +1293,7 @@ Java_expo_modules_zenterminalvt_ZenTerminalVtModule_nativeEncodeMouseEvent(
         static_cast<GhosttyMods>(mods),
         anyButtonPressed == JNI_TRUE
     );
+    return newStringFromStdString(env, encoded);
 }
 
 JNIEXPORT jobject JNICALL
@@ -1383,7 +1390,10 @@ Java_expo_modules_zenterminalvt_ZenTerminalVtModule_nativeGetRenderSnapshot(
     if (buildVisibleHtml(h->render_state, renderRows, &visibleHtml)) {
         putJString("html", newStringFromStdString(env, visibleHtml));
     } else {
-        putJString("html", formatTerminalScreen(env, h, GHOSTTY_FORMATTER_FORMAT_HTML));
+        putJString(
+            "html",
+            newStringFromStdString(env, formatTerminalScreen(h, GHOSTTY_FORMATTER_FORMAT_HTML))
+        );
     }
 
     h->force_full_snapshot = false;
@@ -1397,7 +1407,7 @@ Java_expo_modules_zenterminalvt_ZenTerminalVtModule_nativeGetVisibleText(
     JNIEnv* env, jobject, jlong handle)
 {
     auto* h = getHandle(handle);
-    return formatTerminalScreen(env, h, GHOSTTY_FORMATTER_FORMAT_PLAIN);
+    return newStringFromStdString(env, formatTerminalScreen(h, GHOSTTY_FORMATTER_FORMAT_PLAIN));
 }
 
 JNIEXPORT jstring JNICALL
@@ -1410,7 +1420,7 @@ Java_expo_modules_zenterminalvt_ZenTerminalVtModule_nativeGetVisibleHtml(
     }
 
     if (ghostty_render_state_update(h->render_state, h->terminal) != GHOSTTY_SUCCESS) {
-        return formatTerminalScreen(env, h, GHOSTTY_FORMATTER_FORMAT_HTML);
+        return newStringFromStdString(env, formatTerminalScreen(h, GHOSTTY_FORMATTER_FORMAT_HTML));
     }
 
     uint16_t renderRows = h->rows;
@@ -1421,7 +1431,8 @@ Java_expo_modules_zenterminalvt_ZenTerminalVtModule_nativeGetVisibleHtml(
         return newStringFromStdString(env, visibleHtml);
     }
 
-    return formatTerminalScreen(env, h, GHOSTTY_FORMATTER_FORMAT_HTML);
+    return newStringFromStdString(env, formatTerminalScreen(h, GHOSTTY_FORMATTER_FORMAT_HTML));
 }
 
 } // extern "C"
+#endif // defined(__ANDROID__)

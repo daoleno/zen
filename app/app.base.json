@@ -12,6 +12,13 @@
       "resizeMode": "contain",
       "backgroundColor": "#0F0F14"
     },
+    "ios": {
+      "bundleIdentifier": "com.daoleno.zen",
+      "buildNumber": "2",
+      "infoPlist": {
+        "NSLocalNetworkUsageDescription": "Allow Zen to connect to your self-hosted daemon on the local network."
+      }
+    },
     "android": {
       "softwareKeyboardLayoutMode": "resize",
       "adaptiveIcon": {
@@ -35,7 +42,9 @@
       [
         "expo-camera",
         {
-          "cameraPermission": "Allow $(PRODUCT_NAME) to access your camera to scan Zen pairing QR codes."
+          "cameraPermission": "Allow $(PRODUCT_NAME) to access your camera to scan Zen pairing QR codes.",
+          "microphonePermission": false,
+          "recordAudioAndroid": false
         }
       ]
     ],

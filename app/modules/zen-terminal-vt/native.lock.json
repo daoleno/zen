@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "description": "Canonical ABI and toolchain contract for zen Android libghostty-vt. Invalid combinations are not supported.",
+  "description": "Canonical ABI and toolchain contract for zen Android and iOS libghostty-vt builds. Invalid combinations are not supported.",
   "ghostty": {
     "repository": "https://github.com/ghostty-org/ghostty.git",
     "commit": "28972454c0c9493b96b42de5d88f88c0bdc277a4",
@@ -22,6 +22,11 @@
         "tarball": "https://ziglang.org/download/0.15.2/zig-aarch64-linux-0.15.2.tar.xz",
         "sha256": "958ed7d1e00d0ea76590d27666efbf7a932281b3d7ba0c6b01b0ff26498f667f",
         "archive_root": "zig-aarch64-linux-0.15.2"
+      },
+      "aarch64-macos": {
+        "tarball": "https://ziglang.org/download/0.15.2/zig-aarch64-macos-0.15.2.tar.xz",
+        "sha256": "3cc2bab367e185cdfb27501c4b30b1b0653c28d9f73df8dc91488e66ece5fa6b",
+        "archive_root": "zig-aarch64-macos-0.15.2"
       }
     }
   },
@@ -52,6 +57,13 @@
     "x86",
     "arm64-v8a-hwasan"
   ],
+  "ios": {
+    "deployment_target": "16.4",
+    "device_architecture": "arm64",
+    "simulator_architecture": "arm64",
+    "xcframework_name": "GhosttyVt.xcframework",
+    "upstream_xcframework_name": "ghostty-vt.xcframework"
+  },
   "outputs": {
     "lib_dir": "app/modules/zen-terminal-vt/libs/android",
     "library_filename": "libghostty_vt.so",

@@ -12,14 +12,27 @@ It focuses on the transport, pairing, trust, and runtime boundaries between:
 ## System Shape
 
 ```
-[Phone: Expo App]
+[Phone: Expo App (Android / iOS)]
     ↕ signed HTTP / WebSocket
 [Your Tunnel / Tailnet / Reverse Proxy]
     ↕
 [zen]
     ↕ local tmux / watcher integration
-[Claude Code] [Codex] [Other CLI Agents]
+[Claude Code] [Codex] [Cursor Agent] [Grok] [Other CLI Agents]
 ```
+
+## Mobile interface boundary
+
+The Android and iOS clients share the same Expo Router, React Native screens, stores, WebSocket protocol, and structured conversation UI. Agent classification is command/provider based rather than platform based:
+
+- Codex
+- Claude Code
+- Cursor Agent
+- Grok
+
+These four kinds default to the structured Chat interface and can be switched per session to the live Terminal interface. The per-session choice is persisted by the app. Provider transcripts, plans, tool calls, prompts, attachments, and Git diff presentation are shared across Android and iOS; Codex-specific slash-command discovery remains a provider capability.
+
+The platform boundary starts below those interfaces. Android connects the terminal controller to Ghostty through JNI and `libghostty_vt.so`; iOS uses an Expo module/Objective-C++ bridge and `GhosttyVt.xcframework`. Both feed the same TypeScript terminal controller and WebView renderer, so agent behavior and daemon protocol do not fork by mobile OS.
 
 `zen` does not provide a hosted relay in OSS core.
 Reachability is delegated to infrastructure the user already trusts, such as:

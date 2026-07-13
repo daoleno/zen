@@ -7,7 +7,9 @@ This documentation is organized by what you are trying to accomplish. If you onl
 1. [Install or upgrade the daemon](install-daemon.md)
 2. [Connect the daemon and pair your phone](connect-and-pair.md)
 3. [Configure an AI executor](executors.md)
-4. [Install or build the Android app](android.md)
+4. Install or build a mobile client:
+   - [Android app](android.md)
+   - [iOS app](ios.md)
 
 If something does not work, run `zen doctor` on the host and continue with [Troubleshooting](troubleshooting.md).
 
@@ -22,6 +24,7 @@ If something does not work, run `zen doctor` on the host and continue with [Trou
 
 - [Contributing](../CONTRIBUTING.md)
 - [Android native terminal and ABI contract](android.md#architecture--abi-contract)
+- [iOS source build and Ghostty XCFramework contract](ios.md#native-terminal--xcframework-contract)
 - [Agent-native task model](agent-native-task-model.md)
 - [CI release pipeline](ci-release.md)
 - [Versioned release notes](releases/)

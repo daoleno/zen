@@ -10,6 +10,7 @@
   "scripts": {
     "app:install": "cd app && bun install",
     "app:start": "cd app && bun run start",
+    "app:ios": "cd app && bun run ios",
     "app:android": "cd app && env JAVA_HOME=/usr/lib/jvm/java-17-openjdk PATH=/usr/lib/jvm/java-17-openjdk/bin:$PATH bun run android",
     "app:doctor": "cd app && bunx expo-doctor",
     "daemon:build": "mkdir -p bin && cd daemon && go build -o ../bin/zen ./cmd/zen",
@@ -21,6 +22,8 @@
     "native:verify": "./scripts/verify-libghostty.sh",
     "native:verify:release": "./scripts/verify-libghostty.sh --release",
     "native:build": "./scripts/build-libghostty.sh",
+    "native:build:ios": "./scripts/build-libghostty-ios.sh",
+    "native:verify:ios": "./scripts/verify-libghostty-ios.sh",
     "android:release-apk": "./scripts/android-release-apk.sh",
     "android:verify-apk-notice": "./scripts/verify-apk-notice.sh",
     "android:verify-apk-release": "./scripts/verify-apk-release.sh"

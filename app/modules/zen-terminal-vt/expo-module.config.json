@@ -1,5 +1,9 @@
 {
-  "platforms": ["android", "ios"],
+  "platforms": ["android", "apple"],
+  "apple": {
+    "modules": ["ZenTerminalVtModule"],
+    "podspecPath": ["ZenTerminalVt.podspec"]
+  },
   "android": {
     "modules": ["expo.modules.zenterminalvt.ZenTerminalVtModule"]
   }

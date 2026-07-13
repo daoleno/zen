@@ -1,0 +1,11 @@
+#!/bin/sh
+
+# Zig discovers the host macOS SDK by invoking xcrun. Allow the iOS native
+# dependency build to supply its non-destructive Xcode 26 compatibility clone.
+if [ "$1" = "--sdk" ] && [ "$2" = "macosx" ] && [ "$3" = "--show-sdk-path" ] \
+  && [ -n "${ZEN_MACOS_SDKROOT:-}" ]; then
+  echo "$ZEN_MACOS_SDKROOT"
+  exit 0
+fi
+
+exec /usr/bin/xcrun "$@"

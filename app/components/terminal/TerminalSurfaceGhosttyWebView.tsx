@@ -1,5 +1,5 @@
 import React, { forwardRef, useEffect, useImperativeHandle, useMemo, useRef, useState } from 'react';
-import { ActivityIndicator, StyleSheet, TouchableOpacity, View } from 'react-native';
+import { ActivityIndicator, Platform, StyleSheet, TouchableOpacity, View } from 'react-native';
 import { Asset } from 'expo-asset';
 import { Ionicons } from '@expo/vector-icons';
 import { WebView } from 'react-native-webview';
@@ -9,6 +9,7 @@ import {
 import { buildGhosttyTerminalHtml } from './ghosttyWebViewHtml';
 import { TerminalInputHandler } from './TerminalInputHandler';
 import type { TerminalSurfaceHandle, TerminalSurfaceProps } from './TerminalSurface.types';
+import { terminalWebViewBaseUrl } from './terminalWebViewSource';
 import { useGhosttyTerminalController } from './useGhosttyTerminalController';
 
 let cachedTerminalFontUri: string | null = null;
@@ -41,6 +42,10 @@ export const TerminalSurfaceGhosttyWebView = forwardRef<
 
   const html = useMemo(
     () => (fontUri ? buildGhosttyTerminalHtml(initialThemeRef.current, fontUri) : ''),
+    [fontUri],
+  );
+  const baseUrl = useMemo(
+    () => (fontUri ? terminalWebViewBaseUrl(fontUri, Platform.OS) : 'https://zen.local/'),
     [fontUri],
   );
 
@@ -86,7 +91,7 @@ export const TerminalSurfaceGhosttyWebView = forwardRef<
         <WebView
           ref={controller.webviewRef}
           originWhitelist={['*']}
-          source={{ html, baseUrl: 'https://zen.local/' }}
+          source={{ html, baseUrl }}
           onLoadStart={controller.onRendererLoadStart}
           onMessage={controller.onRendererMessage}
           javaScriptEnabled
@@ -95,6 +100,9 @@ export const TerminalSurfaceGhosttyWebView = forwardRef<
           textInteractionEnabled
           scrollEnabled={false}
           bounces={false}
+          automaticallyAdjustContentInsets={false}
+          contentInsetAdjustmentBehavior="never"
+          allowsLinkPreview={false}
           overScrollMode="never"
           // Keep a dedicated compositor layer so overlay/focus transitions do
           // not leave a stale blank buffer until the next touch.
