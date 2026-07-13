@@ -15,6 +15,13 @@ These items block calling the tree an honest redistributable public beta until r
 - **Pipeline status (partial):** pin + ABI + Zig download SHA-256 pins in `native.lock.json`; proven-git release-grade builds; Expo plugin packages MIT into APK assets; env-based signing hook; CI contract job + optional `native-libs` workflow (checksum-verified Zig). **Still blocking** until a maintainer publishes checksummed arm64 libs/APK (or green `native-libs` artifacts on a release) so strangers are not forced to install Zig + Ghostty.
 - **User/CI commands:** `./scripts/verify-libghostty.sh --contract`; `./scripts/build-libghostty.sh` then `./scripts/verify-libghostty.sh --release`; APK `./scripts/android-release-apk.sh` + `./scripts/verify-apk-notice.sh <apk>`.
 
+### `ios-distribution-artifacts`
+
+- **Summary:** The iOS source build and Simulator runtime path work, but `GhosttyVt.xcframework` is generated/gitignored and no signed IPA, TestFlight, or App Store build is published.
+- **Acceptance:** Reproducible CI produces and verifies the pinned XCFramework, packages the Ghostty MIT notice, archives/signs the app, and publishes an installation path with checksummed artifacts where applicable.
+- **Pipeline status (partial):** arm64 device + Apple Silicon Simulator build script, Zig/Ghostty pins, checksums, build manifest, CocoaPods bridge, Expo config, and local verification exist. **Still blocking** for general end-user distribution until signing/archive automation and a published delivery channel exist.
+- **User/CI commands:** `bun run native:build:ios`; `bun run native:verify:ios`; Expo prebuild/Pods; Xcode archive or Simulator build-and-run.
+
 ## Resolved (media provenance)
 
 ### `audio-provenance-unknown` (resolved)

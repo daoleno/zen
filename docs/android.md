@@ -4,7 +4,7 @@
 
 Open [GitHub Releases](https://github.com/daoleno/zen/releases) and download the newest `zen-android-arm64-v*.apk` together with `SHA256SUMS`.
 
-The APK supports 64-bit ARM Android devices (`arm64-v8a`). It does not support x86 phones, 32-bit ARM devices, or iOS.
+The APK supports 64-bit ARM Android devices (`arm64-v8a`). It does not support x86 phones or 32-bit ARM devices. iOS uses a separate source build; see [iOS app](ios.md).
 
 Before installing, download `SHA256SUMS` from the same release and verify the APK:
 
@@ -28,8 +28,9 @@ After installation, start the daemon, run `zen pair <your-origin>`, then import 
 | Claim | Status |
 | --- | --- |
 | Pair, reconnect, session list, structured Chat | Intended beta surface |
-| Native terminal (Ghostty VT) | Android only; requires built `libghostty_vt.so` for **arm64-v8a** (devices) and optionally **x86_64** (emulator) |
-| iOS | Not a supported distribution target in this beta |
+| Native terminal (Ghostty VT) | Requires built `libghostty_vt.so` for **arm64-v8a** (devices) and optionally **x86_64** (emulator) |
+| Structured agent interfaces | Codex, Claude Code, Cursor Agent, and Grok share the same React Native Chat/Terminal UI used on iOS |
+| iOS | Separate source-build target; see [ios.md](ios.md) |
 | Expo Go | Can paste/scan pairing links; custom `zen://` deep links need a dev build/APK |
 | Play Store | Not part of this release foundation |
 

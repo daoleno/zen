@@ -1,10 +1,11 @@
 /**
- * TerminalSurface selects the Android libghostty-backed terminal surface
- * lazily so iOS/web never evaluate the Android-only native module.
+ * TerminalSurface selects the native libghostty-backed terminal surface
+ * lazily so web never evaluates the mobile-only native module.
  */
 import React from 'react';
 import { Platform } from 'react-native';
 import type { TerminalSurfaceHandle, TerminalSurfaceProps } from './TerminalSurface.types';
+import { supportsNativeTerminalPlatform } from './terminalPlatform';
 
 export type { TerminalSurfaceHandle, TerminalSurfaceProps } from './TerminalSurface.types';
 
@@ -16,7 +17,7 @@ let _resolved: TerminalSurfaceComponent | null = null;
 
 function getImpl() {
   if (!_resolved) {
-    if (Platform.OS === 'android') {
+    if (supportsNativeTerminalPlatform(Platform.OS)) {
       _resolved = require('./TerminalSurfaceGhosttyWebView').TerminalSurfaceGhosttyWebView as TerminalSurfaceComponent;
     } else {
       _resolved = require('./TerminalSurfaceUnsupported').TerminalSurfaceUnsupported as TerminalSurfaceComponent;

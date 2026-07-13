@@ -1,111 +1,247 @@
 import ExpoModulesCore
+import Foundation
+import UIKit
 
-/// Expo surface for the mandatory pinned Ghostty XCFramework and ObjC++ owner.
-/// All operations are synchronous to preserve terminal mutation/snapshot ordering.
+private final class UnknownTerminalHandleException: GenericException<Int>, @unchecked Sendable {
+  override var reason: String {
+    "Unknown terminal handle id: \(param)"
+  }
+}
+
+private final class TerminalCreationException: Exception, @unchecked Sendable {
+  override var reason: String {
+    "libghostty-vt failed to create a terminal"
+  }
+}
+
 public final class ZenTerminalVtModule: Module {
-  private let bridge = ZenTerminalVtBridge()
-
-  private func value<T>(_ result: [String: Any], as type: T.Type = T.self) throws -> T {
-    guard result["ok"] as? Bool == true else {
-      throw GenericException(result["error"] as? String ?? "Unknown iOS terminal bridge error")
-    }
-    guard let value = result["value"] as? T else {
-      throw GenericException("iOS terminal bridge returned an invalid result")
-    }
-    return value
-  }
-
-  private func success(_ result: [String: Any]) throws {
-    guard result["ok"] as? Bool == true else {
-      throw GenericException(result["error"] as? String ?? "Unknown iOS terminal bridge error")
-    }
-  }
+  private let lock = NSLock()
+  private var terminalHandles: [Int: UInt64] = [:]
+  private var nextHandleID = 1
 
   public func definition() -> ModuleDefinition {
     Name("ZenTerminalVt")
 
-    Function("getCapabilities") {
-      return [
-        "nativeBridge": true,
-        "vtCore": false,
-        "renderer": "none",
-        "reason": "The iOS Ghostty bridge is implemented and mandatory-linked, but this source revision has not passed the required macOS compile/link and device acceptance.",
-      ] as [String: Any]
-    }
-
     Function("createTerminal") { (cols: Int, rows: Int) throws -> Int in
-      let handle: NSNumber = try self.value(
-        self.bridge.createTerminal(columns: cols, rows: rows)
-      )
-      return handle.intValue
+      try self.withPersistentBreadcrumb(
+        operation: "createTerminal",
+        detail: "cols=\(cols) rows=\(rows)"
+      ) {
+        let nativeHandle = ZenTerminalVtBridge.createTerminal(withCols: cols, rows: rows)
+        guard nativeHandle != 0 else {
+          throw TerminalCreationException()
+        }
+        return self.store(nativeHandle: nativeHandle)
+      }
     }
 
-    Function("destroyTerminal") { (handle: Int) in
-      // Explicitly idempotent: the owner removes before freeing and ignores repeats.
-      self.bridge.destroyTerminal(handle: handle)
+    Function("destroyTerminal") { (handleID: Int) throws in
+      try self.withPersistentBreadcrumb(
+        operation: "destroyTerminal",
+        detail: "handleId=\(handleID)"
+      ) {
+        guard let nativeHandle = self.remove(handleID: handleID) else {
+          return
+        }
+        ZenTerminalVtBridge.destroyTerminal(nativeHandle)
+      }
     }
 
-    Function("writeData") { (handle: Int, data: String) throws in
-      try self.success(self.bridge.writeData(data, handle: handle))
+    Function("writeData") { (handleID: Int, data: String) throws in
+      try self.withNativeHandle(handleID) { nativeHandle in
+        ZenTerminalVtBridge.writeData(data, toTerminal: nativeHandle)
+      }
     }
 
-    Function("scrollViewport") { (handle: Int, delta: Int) throws in
-      try self.success(self.bridge.scrollViewport(delta, handle: handle))
+    Function("scrollViewport") { (handleID: Int, delta: Int) throws in
+      try self.withNativeHandle(handleID) { nativeHandle in
+        ZenTerminalVtBridge.scrollTerminal(nativeHandle, byLines: delta)
+      }
     }
 
-    Function("scrollViewportToBottom") { (handle: Int) throws in
-      try self.success(self.bridge.scrollViewportToBottom(handle: handle))
+    Function("scrollViewportToBottom") { (handleID: Int) throws in
+      try self.withNativeHandle(handleID) { nativeHandle in
+        ZenTerminalVtBridge.scrollTerminal(toBottom: nativeHandle)
+      }
     }
 
-    Function("resize") { (handle: Int, cols: Int, rows: Int, cellWidth: Double, cellHeight: Double) throws in
-      try self.success(self.bridge.resize(
-        handle: handle,
-        columns: cols,
-        rows: rows,
-        cellWidth: cellWidth,
-        cellHeight: cellHeight
-      ))
+    Function("resize") {
+      (handleID: Int, cols: Int, rows: Int, cellWidth: Double, cellHeight: Double) throws in
+      try self.withPersistentBreadcrumb(
+        operation: "resize",
+        detail: "handleId=\(handleID) cols=\(cols) rows=\(rows) cellWidth=\(cellWidth) cellHeight=\(cellHeight)"
+      ) {
+        try self.withNativeHandle(handleID) { nativeHandle in
+          ZenTerminalVtBridge.resizeTerminal(
+            nativeHandle,
+            cols: cols,
+            rows: rows,
+            cellWidth: cellWidth,
+            cellHeight: cellHeight
+          )
+        }
+      }
     }
 
-    Function("setTheme") { (handle: Int, foreground: String, background: String, cursor: String, palette: [String]) throws in
-      try self.success(self.bridge.setTheme(
-        handle: handle,
-        foreground: foreground,
-        background: background,
-        cursor: cursor,
-        palette: palette
-      ))
+    Function("setTheme") {
+      (handleID: Int, foreground: String, background: String, cursor: String, palette: [String]) throws in
+      try self.withPersistentBreadcrumb(
+        operation: "setTheme",
+        detail: "handleId=\(handleID) paletteSize=\(palette.count)"
+      ) {
+        try self.withNativeHandle(handleID) { nativeHandle in
+          _ = ZenTerminalVtBridge.setThemeForTerminal(
+            nativeHandle,
+            foreground: foreground,
+            background: background,
+            cursor: cursor,
+            palette: palette
+          )
+        }
+      }
     }
 
-    Function("encodeMouseEvent") { (handle: Int, action: Int, button: Int, x: Double, y: Double, mods: Int, anyButtonPressed: Bool) throws -> String in
-      return try self.value(self.bridge.encodeMouseEvent(
-        handle: handle,
-        action: action,
-        button: button,
-        x: x,
-        y: y,
-        mods: mods,
-        anyButtonPressed: anyButtonPressed
-      ))
+    Function("encodeMouseEvent") {
+      (handleID: Int, action: Int, button: Int, x: Double, y: Double, mods: Int, anyButtonPressed: Bool) throws -> String in
+      try self.withNativeHandle(handleID) { nativeHandle in
+        ZenTerminalVtBridge.encodeMouse(
+          forTerminal: nativeHandle,
+          action: action,
+          button: button,
+          x: x,
+          y: y,
+          mods: mods,
+          anyButtonPressed: anyButtonPressed
+        )
+      }
     }
 
-    Function("getRenderSnapshot") { (handle: Int) throws -> [String: Any] in
-      return try self.value(self.bridge.renderSnapshot(handle: handle))
+    Function("getRenderSnapshot") { (handleID: Int) throws -> [String: Any] in
+      try self.withNativeHandle(handleID) { nativeHandle in
+        ZenTerminalVtBridge.renderSnapshot(forTerminal: nativeHandle) as [String: Any]
+      }
     }
 
-    Function("getVisibleText") { (handle: Int) throws -> String in
-      return try self.value(self.bridge.visibleText(handle: handle))
+    Function("getVisibleText") { (handleID: Int) throws -> String in
+      try self.withNativeHandle(handleID) { nativeHandle in
+        ZenTerminalVtBridge.visibleText(forTerminal: nativeHandle)
+      }
     }
 
-    Function("getVisibleHtml") { (handle: Int) throws -> String in
-      return try self.value(self.bridge.visibleHTML(handle: handle))
+    Function("getVisibleHtml") { (handleID: Int) throws -> String in
+      try self.withNativeHandle(handleID) { nativeHandle in
+        ZenTerminalVtBridge.visibleHTML(forTerminal: nativeHandle)
+      }
     }
 
-    // Android-only persistent crash diagnostics remain callable with neutral values.
-    Function("getCrashBreadcrumb") {
-      return nil as [String: Any]?
+    Function("getCrashBreadcrumb") { () -> [String: Any]? in
+      self.getBreadcrumb()
     }
 
-    Function("clearCrashBreadcrumb") {}
+    Function("clearCrashBreadcrumb") {
+      self.clearBreadcrumb()
+    }
+
+    OnDestroy {
+      self.destroyAllTerminals()
+    }
+  }
+
+  private func store(nativeHandle: UInt64) -> Int {
+    lock.lock()
+    defer { lock.unlock() }
+
+    while terminalHandles[nextHandleID] != nil || nextHandleID == 0 {
+      nextHandleID = nextHandleID == Int.max ? 1 : nextHandleID + 1
+    }
+
+    let handleID = nextHandleID
+    terminalHandles[handleID] = nativeHandle
+    nextHandleID = nextHandleID == Int.max ? 1 : nextHandleID + 1
+    return handleID
+  }
+
+  private func remove(handleID: Int) -> UInt64? {
+    lock.lock()
+    defer { lock.unlock() }
+    return terminalHandles.removeValue(forKey: handleID)
+  }
+
+  private func withNativeHandle<T>(_ handleID: Int, body: (UInt64) throws -> T) throws -> T {
+    lock.lock()
+    defer { lock.unlock() }
+
+    guard let nativeHandle = terminalHandles[handleID] else {
+      throw UnknownTerminalHandleException(handleID)
+    }
+    return try body(nativeHandle)
+  }
+
+  private func destroyAllTerminals() {
+    lock.lock()
+    let nativeHandles = Array(terminalHandles.values)
+    terminalHandles.removeAll()
+    lock.unlock()
+
+    for nativeHandle in nativeHandles {
+      ZenTerminalVtBridge.destroyTerminal(nativeHandle)
+    }
+  }
+
+  private func withPersistentBreadcrumb<T>(
+    operation: String,
+    detail: String,
+    body: () throws -> T
+  ) throws -> T {
+    setBreadcrumb(stage: "before", operation: operation, detail: detail)
+    let result = try body()
+    setBreadcrumb(stage: "after", operation: operation, detail: detail)
+    return result
+  }
+
+  private func setBreadcrumb(stage: String, operation: String, detail: String) {
+    let defaults = UserDefaults.standard
+    defaults.set(stage, forKey: "zen_terminal_vt.stage")
+    defaults.set(operation, forKey: "zen_terminal_vt.operation")
+    defaults.set(detail, forKey: "zen_terminal_vt.detail")
+    defaults.set(Date().timeIntervalSince1970 * 1_000, forKey: "zen_terminal_vt.timestamp_ms")
+    defaults.synchronize()
+  }
+
+  private func getBreadcrumb() -> [String: Any]? {
+    let defaults = UserDefaults.standard
+    guard let stage = defaults.string(forKey: "zen_terminal_vt.stage") else {
+      return nil
+    }
+
+    let version = ProcessInfo.processInfo.operatingSystemVersion
+    return [
+      "stage": stage,
+      "operation": defaults.string(forKey: "zen_terminal_vt.operation") ?? "",
+      "detail": defaults.string(forKey: "zen_terminal_vt.detail") ?? "",
+      "timestampMs": defaults.double(forKey: "zen_terminal_vt.timestamp_ms"),
+      "abi": Self.architecture,
+      "model": UIDevice.current.model,
+      "brand": "Apple",
+      "sdkInt": version.majorVersion,
+    ]
+  }
+
+  private func clearBreadcrumb() {
+    let defaults = UserDefaults.standard
+    for key in ["stage", "operation", "detail", "timestamp_ms"] {
+      defaults.removeObject(forKey: "zen_terminal_vt.\(key)")
+    }
+    defaults.synchronize()
+  }
+
+  private static var architecture: String {
+    #if arch(arm64)
+    return "arm64"
+    #elseif arch(x86_64)
+    return "x86_64"
+    #else
+    return "unknown"
+    #endif
   }
 }

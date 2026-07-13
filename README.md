@@ -10,10 +10,10 @@
   <a href="https://github.com/daoleno/zen/releases"><img alt="GitHub release" src="https://img.shields.io/github/v/release/daoleno/zen?include_prereleases&sort=semver"></a>
   <a href="https://github.com/daoleno/zen/actions/workflows/release-artifacts.yml"><img alt="Release build" src="https://github.com/daoleno/zen/actions/workflows/release-artifacts.yml/badge.svg"></a>
   <a href="LICENSE"><img alt="License: Apache-2.0" src="https://img.shields.io/badge/license-Apache--2.0-blue.svg"></a>
-  <img alt="Platforms: Linux, macOS, and Android" src="https://img.shields.io/badge/platforms-Linux%20%7C%20macOS%20%7C%20Android-6f8f79">
+  <img alt="Platforms: Linux, macOS, Android, and iOS" src="https://img.shields.io/badge/platforms-Linux%20%7C%20macOS%20%7C%20Android%20%7C%20iOS-6f8f79">
 </p>
 
-Zen connects an Android app to coding agents running on your own Linux or Apple Silicon Mac. It gives you mobile chat, terminal access, session management, and a persistent Brain workspace without moving your repositories or provider credentials into a hosted service.
+Zen connects an Android or iOS app to coding agents running on your own Linux or Apple Silicon Mac. It gives you mobile chat, terminal access, session management, and a persistent Brain workspace without moving your repositories or provider credentials into a hosted service.
 
 ## What it supports
 
@@ -24,14 +24,15 @@ Zen connects an Android app to coding agents running on your own Linux or Apple 
 - One-time QR/link pairing with signed requests afterward
 - Linux `amd64`/`arm64` and macOS Apple Silicon hosts
 - Android `arm64-v8a` sideload builds
+- iOS source builds for arm64 devices and Apple Silicon Simulator
 
-Zen does not currently provide an iOS app, Play Store distribution, a hosted relay, or automatic NAT traversal.
+Zen does not currently provide a signed iOS download, App Store or Play Store distribution, a hosted relay, or automatic NAT traversal. The iOS client is buildable from source and has been validated on Simulator; installing it on a physical device requires your own Apple development signing.
 
 ## Quick start
 
-You need a supported Linux machine or Apple Silicon Mac with `tmux`, one supported AI CLI already signed in, an Android arm64 phone, and a network path between them.
+You need a supported Linux machine or Apple Silicon Mac with `tmux`, one supported AI CLI already signed in, a supported Android or iOS client, and a network path between them.
 
-1. Open [GitHub Releases](https://github.com/daoleno/zen/releases) and download the daemon archive for your host, the Android APK, and `SHA256SUMS`.
+1. Open [GitHub Releases](https://github.com/daoleno/zen/releases) and download the daemon archive for your host, `SHA256SUMS`, and the Android APK when using Android. For iOS, follow the source-build guide below.
 2. Verify the downloads, install the daemon as `zen`, then run:
 
    ```bash
@@ -46,13 +47,14 @@ You need a supported Linux machine or Apple Silicon Mac with `tmux`, one support
    # Trusted LAN example: zen pair http://192.168.1.42:9876
    ```
 
-5. Install the APK, open Zen, and import the pairing QR/link in Settings.
+5. Install the Android APK or an iOS development build, open Zen, and import the pairing QR/link in Settings.
 
 Detailed instructions:
 
 - [Install or upgrade the daemon](docs/install-daemon.md)
 - [Connect and pair a phone](docs/connect-and-pair.md)
 - [Install the Android app](docs/android.md)
+- [Build and run the iOS app](docs/ios.md)
 
 ## If agents do not appear
 
@@ -63,7 +65,7 @@ Some built-in executor profiles disable approval prompts or sandboxes. Read [Exe
 ## How it works
 
 ```text
-Android app
+Android or iOS app
     │ signed HTTP and WebSocket requests
     ▼
 your Tailnet or HTTPS endpoint

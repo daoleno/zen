@@ -1,6 +1,6 @@
 # Install the daemon
 
-This guide installs the daemon that owns Zen's state, pairing identity, tmux sessions, and executor processes. The Android app connects to this daemon; installing the APK alone is not enough.
+This guide installs the daemon that owns Zen's state, pairing identity, tmux sessions, and executor processes. The Android or iOS app connects to this daemon; installing a mobile client alone is not enough.
 
 ## What you need
 

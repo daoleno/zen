@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "updated": "2026-07-12",
+  "updated": "2026-07-13",
   "blockers": [
     {
       "id": "android-native-terminal-artifacts",
@@ -39,6 +39,36 @@
       "acceptance": "Ship reproducible libs/APK with MIT notice or documented binary distribution",
       "pipeline_status": "partial",
       "remaining": "Publish checksummed arm64 libs/APK (or green native-libs workflow artifacts on a release tag); no stranger-consumable published artifact exists yet"
+    },
+    {
+      "id": "ios-distribution-artifacts",
+      "severity": "blocker",
+      "summary": "iOS source and Simulator builds work, but the Ghostty XCFramework is gitignored and no signed iOS distribution is published",
+      "paths": [
+        {
+          "path": "app/modules/zen-terminal-vt/libs/ios/GhosttyVt.xcframework",
+          "referenced_by_app": true
+        },
+        {
+          "path": "app/modules/zen-terminal-vt/ZenTerminalVt.podspec",
+          "referenced_by_app": true
+        },
+        {
+          "path": "scripts/build-libghostty-ios.sh",
+          "referenced_by_app": false
+        },
+        {
+          "path": "scripts/verify-libghostty-ios.sh",
+          "referenced_by_app": false
+        },
+        {
+          "path": "docs/ios.md",
+          "referenced_by_app": false
+        }
+      ],
+      "acceptance": "Reproducible CI verifies the XCFramework and Ghostty notice, signs/archives Zen, and publishes an IPA, TestFlight, or App Store installation path",
+      "pipeline_status": "partial",
+      "remaining": "Add signing/archive automation and publish a supported iOS delivery channel; no stranger-installable signed artifact exists yet"
     }
   ],
   "resolved": [

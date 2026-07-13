@@ -17,7 +17,7 @@ type NativeTerminalModule = {
 };
 
 function getNativeModule(): NativeTerminalModule | null {
-  if (Platform.OS !== 'android') {
+  if (Platform.OS !== 'android' && Platform.OS !== 'ios') {
     return null;
   }
 

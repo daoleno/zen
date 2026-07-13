@@ -25,8 +25,10 @@
 ## Chat missing / terminal unsupported
 
 - Structured Chat needs agent transcript files for that tool; a brand-new empty session may show little until the CLI writes history.
-- Native terminal requires Android + built `libghostty_vt.so` for `arm64-v8a` (devices) or `x86_64` (emulator). See [android.md](android.md). Other platforms show an unsupported surface by design in this beta.
-- If terminal is missing after clone: run `./scripts/build-libghostty.sh` (Zig + Ghostty pin) then `./scripts/verify-libghostty.sh`, or install a maintainer APK that already embeds the arm64 library.
+- Native terminal requires a platform-specific Ghostty binary: Android uses `libghostty_vt.so`; iOS uses `GhosttyVt.xcframework`. See [android.md](android.md) and [ios.md](ios.md).
+- If the Android terminal is missing after clone: run `./scripts/build-libghostty.sh` then `./scripts/verify-libghostty.sh`, or install a maintainer APK that embeds the arm64 library.
+- If the iOS Pod install reports a missing `GhosttyVt.xcframework`: run `bun run native:build:ios` and `bun run native:verify:ios` from the repository root, then regenerate/install the native project.
+- If iOS launches with a dyld/Swift symbol error in an Expo module, keep `EXPO_USE_PRECOMPILED_MODULES=false` through `withZenIOSBuild` and reinstall Pods. Do not mix precompiled Expo frameworks with locally resolved ExpoModulesCore sources.
 - ABI/ELF mismatches: do not drop `.so` files for `armeabi-v7a` / `x86`; only lockfile ABIs are valid.
 
 ## Quiet Mode / World Window
