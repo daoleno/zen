@@ -48,6 +48,7 @@ interface UseCodexChatControllerInput {
   markNewChatReady(): void;
   markNewChatMessageStarted(): void;
   scrollToLatest(animated?: boolean, delay?: number): void;
+  pinToBottomIfNeeded(animated?: boolean, delay?: number): void;
   focusComposer(): void;
   clearComposerNativeText(): void;
   dismissActionMenu(): void;
@@ -79,6 +80,7 @@ export function useCodexChatController({
   markNewChatReady,
   markNewChatMessageStarted,
   scrollToLatest,
+  pinToBottomIfNeeded,
   focusComposer,
   clearComposerNativeText,
   dismissActionMenu,
@@ -138,6 +140,7 @@ export function useCodexChatController({
     markNewChatReady,
     markNewChatMessageStarted,
     scrollToLatest,
+    pinToBottomIfNeeded,
   });
 
   const {

@@ -89,8 +89,8 @@ jobs:
             app/assets/notices/GHOSTTY-MIT.txt
           if-no-files-found: error
 
-  build-libghostty-apple:
-    name: Build Apple libghostty-vt XCFramework
+  build-libghostty-ios:
+    name: Build iOS libghostty-vt XCFramework
     runs-on: macos-15
     timeout-minutes: 120
     steps:
@@ -106,7 +106,9 @@ jobs:
           import hashlib, json, os, platform, tarfile, pathlib, sys, urllib.request
           lock = json.load(open("app/modules/zen-terminal-vt/native.lock.json"))
           machine = platform.machine().lower()
-          key = "aarch64-macos" if machine in ("arm64", "aarch64") else "x86_64-macos"
+          if machine not in ("arm64", "aarch64"):
+              sys.exit(f"iOS XCFramework build requires an Apple Silicon runner, got {machine}")
+          key = "aarch64-macos"
           item = lock["zig"]["downloads"][key]
           root = pathlib.Path(os.environ["RUNNER_TEMP"]) / "zig-install"
           root.mkdir(parents=True, exist_ok=True)
@@ -124,7 +126,8 @@ jobs:
       - name: Build and verify XCFramework
         env:
           ZEN_GHOSTTY_CACHE: ${{ runner.temp }}/ghostty
-        run: ./scripts/build-libghostty-apple.sh
+          ZEN_TOOL_CACHE: ${{ runner.temp }}/zen-tools
+        run: ./scripts/build-libghostty-ios.sh
 
       - uses: oven-sh/setup-bun@v2
         with:
@@ -168,13 +171,13 @@ jobs:
             ONLY_ACTIVE_ARCH=YES \
             build
 
-      - name: Upload Apple libghostty artifact
+      - name: Upload iOS libghostty artifact
         uses: actions/upload-artifact@v4
         with:
-          name: libghostty-vt-apple
+          name: libghostty-vt-ios
           path: |
-            app/modules/zen-terminal-vt/libs/apple/ghostty-vt.xcframework/**
-            app/modules/zen-terminal-vt/libs/apple/GHOSTTY-MIT.txt
-            app/modules/zen-terminal-vt/libs/apple/SHA256SUMS
-            app/modules/zen-terminal-vt/libs/apple/build-manifest.json
+            app/modules/zen-terminal-vt/libs/ios/GhosttyVt.xcframework/**
+            app/modules/zen-terminal-vt/libs/ios/GHOSTTY-MIT.txt
+            app/modules/zen-terminal-vt/libs/ios/SHA256SUMS
+            app/modules/zen-terminal-vt/libs/ios/build-manifest.json
           if-no-files-found: error

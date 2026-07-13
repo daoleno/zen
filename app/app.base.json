@@ -15,6 +15,7 @@
     "ios": {
       "bundleIdentifier": "com.daoleno.zen",
       "buildNumber": "2",
+      "supportsTablet": false,
       "infoPlist": {
         "NSLocalNetworkUsageDescription": "Allow Zen to connect to your self-hosted daemon on the local network."
       }
@@ -35,11 +36,6 @@
       "permissions": [
         "android.permission.CAMERA"
       ]
-    },
-    "ios": {
-      "bundleIdentifier": "com.daoleno.zen",
-      "buildNumber": "2",
-      "supportsTablet": false
     },
     "plugins": [
       "expo-router",

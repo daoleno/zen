@@ -1,8 +1,8 @@
-# CI release pipeline (signed Android + Linux + macOS)
+# CI release pipeline (signed Android + daemons)
 
 Automated build lives in [`.github/workflows/release-artifacts.yml`](../.github/workflows/release-artifacts.yml).
 
-The separate [`native-libs.yml`](../.github/workflows/native-libs.yml) workflow builds the same pinned `libghostty-vt` C ABI for Android on Linux and as an iOS device/simulator XCFramework on macOS. It then generates the Expo iOS project, installs the mandatory local pod, and compiles/links an unsigned Apple Silicon simulator build. Physical-device acceptance and signed distribution remain separate release gates.
+The separate [`native-libs.yml`](../.github/workflows/native-libs.yml) workflow builds the same pinned `libghostty-vt` C ABI for Android on Linux and as an iOS device/simulator XCFramework on macOS. Normal CI compiles and links an unsigned iOS Simulator app on macOS. Signed iOS archive/export and optional TestFlight upload are isolated in the manual-only [`ios-release.yml`](../.github/workflows/ios-release.yml) workflow; see [iOS CI and release automation](ios-ci-release.md).
 
 ## What it does
 

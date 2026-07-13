@@ -25,6 +25,7 @@ If something does not work, run `zen doctor` on the host and continue with [Trou
 - [Contributing](../CONTRIBUTING.md)
 - [Android native terminal and ABI contract](android.md#architecture--abi-contract)
 - [iOS source build and Ghostty XCFramework contract](ios.md#native-terminal--xcframework-contract)
+- [iOS CI, signing, and TestFlight automation](ios-ci-release.md)
 - [Agent-native task model](agent-native-task-model.md)
 - [CI release pipeline](ci-release.md)
 - [Versioned release notes](releases/)

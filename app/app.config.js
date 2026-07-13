@@ -10,6 +10,10 @@ const projectId = typeof process.env.ZEN_EXPO_PROJECT_ID === 'string'
 
 module.exports = () => {
   const extra = { ...(baseConfig.extra || {}) };
+  const iosBuildNumber = resolveIOSBuildNumber(
+    process.env.ZEN_IOS_BUILD_NUMBER,
+    baseConfig.ios && baseConfig.ios.buildNumber,
+  );
 
   if (projectId) {
     extra.eas = { projectId };
@@ -17,6 +21,10 @@ module.exports = () => {
 
   return {
     ...baseConfig,
+    ios: {
+      ...(baseConfig.ios || {}),
+      buildNumber: iosBuildNumber,
+    },
     plugins: [
       ...(baseConfig.plugins || []),
       [
@@ -36,12 +44,20 @@ module.exports = () => {
       './plugins/withZenIOSBuild',
       // Package Ghostty MIT notice into Android assets + env-based release signing.
       './plugins/withZenAndroidRelease',
-      // Pinned Ghostty Apple slices require iOS 17; keep generated app/pod targets aligned.
-      './plugins/withZenIOSDeploymentTarget',
     ],
     extra,
   };
 };
+
+function resolveIOSBuildNumber(value, fallback) {
+  const candidate = typeof value === 'string' && value.trim() ? value.trim() : fallback;
+  if (typeof candidate !== 'string' || !/^[1-9][0-9]*$/.test(candidate)) {
+    throw new Error('ZEN_IOS_BUILD_NUMBER must be a positive integer');
+  }
+  return candidate;
+}
+
+module.exports.resolveIOSBuildNumber = resolveIOSBuildNumber;
 
 function loadEnvFile(filePath) {
   if (!fs.existsSync(filePath)) {

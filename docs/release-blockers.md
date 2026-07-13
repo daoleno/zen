@@ -1,6 +1,6 @@
 # Release blockers
 
-For the iOS-specific Terminal/libghostty matrix, minimum honest scope, and Apple signing/device gates, see [iOS release readiness](ios-release-readiness.md).
+For the iOS build, signing, artifact, and Apple distribution gates, see [iOS CI and release automation](ios-ci-release.md).
 
 Machine-readable companion: [`release-blockers.json`](release-blockers.json).
 
@@ -19,8 +19,8 @@ These items block calling the tree an honest redistributable public beta until r
 
 - **Summary:** The iOS source build and Simulator runtime path work, but `GhosttyVt.xcframework` is generated/gitignored and no signed IPA, TestFlight, or App Store build is published.
 - **Acceptance:** Reproducible CI produces and verifies the pinned XCFramework, packages the Ghostty MIT notice, archives/signs the app, and publishes an installation path with checksummed artifacts where applicable.
-- **Pipeline status (partial):** arm64 device + Apple Silicon Simulator build script, Zig/Ghostty pins, checksums, build manifest, CocoaPods bridge, Expo config, and local verification exist. **Still blocking** for general end-user distribution until signing/archive automation and a published delivery channel exist.
-- **User/CI commands:** `bun run native:build:ios`; `bun run native:verify:ios`; Expo prebuild/Pods; Xcode archive or Simulator build-and-run.
+- **Pipeline status (partial):** arm64 device + Apple Silicon Simulator build script, Zig/Ghostty pins, checksums, build manifest, CocoaPods bridge, Expo config, macOS unsigned CI, and manual credential-gated archive/IPA/TestFlight automation exist. **Still blocking** for general end-user distribution until those Apple workflows pass with real credentials, physical-device acceptance is recorded, and a supported TestFlight/App Store channel is published.
+- **User/CI commands:** `bun run native:build:ios`; `bun run native:verify:ios`; Expo prebuild/Pods; the `CI` macOS job; or a protected manual `iOS signed release` dispatch.
 
 ## Resolved (media provenance)
 

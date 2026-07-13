@@ -13,6 +13,7 @@ import type { UploadedAttachment } from "../../services/uploads";
 import {
   wsClient,
   type CodexConversationDeltaPayload,
+  type CodexConversationSnapshotPayload,
   type CodexConversationSyncStatusPayload,
 } from "../../services/websocket";
 import type { AgentStatus } from "../../constants/tokens";
@@ -23,6 +24,14 @@ import {
   shouldPrunePendingUserMessageByLifecycle,
   type PendingUserMessageLifecycle,
 } from "./pendingUserMessageLifecycle";
+import {
+  EMPTY_CONVERSATION_STREAM_CURSOR,
+  acceptConversationEnvelope,
+  conversationIdentity,
+  reconcileConversationDeltaEvents,
+  reconcileConversationSnapshot,
+  type ConversationStreamCursor,
+} from "./codexConversationReconciliation";
 
 const PENDING_SLASH_COMMAND_MAX_AGE_MS = 120_000;
 const PENDING_SLASH_COMMAND_SETTLED_MAX_AGE_MS = 45_000;
@@ -128,12 +137,13 @@ type CodexChatThreadState = {
   error: string | null;
   pendingUserMessages: PendingUserMessage[];
   pendingSlashCommands: PendingSlashCommand[];
+  streamCursor: ConversationStreamCursor;
 };
 
 type CodexChatThreadAction =
   | { type: "cache_key_changed"; cacheKey: string }
   | { type: "stream_start" }
-  | { type: "snapshot"; conversation: CodexConversation }
+  | { type: "snapshot"; payload: CodexConversationSnapshotPayload }
   | { type: "delta"; delta: CodexConversationDeltaPayload }
   | { type: "sync_status"; status: CodexConversationSyncStatusPayload }
   | { type: "stream_error"; error: string }
@@ -149,14 +159,21 @@ type CodexChatThreadAction =
   | { type: "prune_pending_slash_commands"; now: number };
 
 function initialCodexChatThreadState(cacheKey: string): CodexChatThreadState {
+  const cachedConversation = conversationCache.get(cacheKey) ?? null;
   return {
     cacheKey,
-    conversation: conversationCache.get(cacheKey) ?? null,
+    conversation: cachedConversation,
     localChatState: localChatStateCache.get(cacheKey) ?? "idle",
     loading: !conversationCache.has(cacheKey),
     error: null,
     pendingUserMessages: cachedPendingUserMessages(cacheKey),
     pendingSlashCommands: [],
+    streamCursor: cachedConversation
+      ? {
+          ...EMPTY_CONVERSATION_STREAM_CURSOR,
+          conversationId: conversationIdentity(cachedConversation),
+        }
+      : EMPTY_CONVERSATION_STREAM_CURSOR,
   };
 }
 
@@ -180,7 +197,7 @@ function codexChatThreadReducer(
         error: null,
       };
     case "snapshot":
-      return applyIncomingConversation(state, action.conversation);
+      return applyCodexConversationSnapshot(state, action.payload);
     case "delta":
       return applyCodexConversationDelta(state, action.delta);
     case "sync_status":
@@ -318,9 +335,34 @@ function codexChatThreadReducer(
   }
 }
 
+function applyCodexConversationSnapshot(
+  state: CodexChatThreadState,
+  payload: CodexConversationSnapshotPayload,
+): CodexChatThreadState {
+  const accepted = acceptConversationEnvelope(
+    state.streamCursor,
+    {
+      requestId: payload.request_id,
+      conversationId: payload.conversation_id,
+      revision: payload.revision,
+    },
+    conversationIdentity(payload.conversation),
+  );
+  if (!accepted.accepted) {
+    return state;
+  }
+  const conversation = reconcileConversationSnapshot(
+    state.conversation,
+    payload.conversation,
+    accepted.sameConversation,
+  );
+  return applyIncomingConversation(state, conversation, accepted.cursor);
+}
+
 function applyIncomingConversation(
   state: CodexChatThreadState,
   conversation: CodexConversation,
+  streamCursor: ConversationStreamCursor = state.streamCursor,
 ): CodexChatThreadState {
   const boundary = newChatBoundaryCache.get(state.cacheKey);
   let filteredConversation = conversationForNewChatBoundary(
@@ -346,6 +388,7 @@ function applyIncomingConversation(
       ...state,
       loading: false,
       error: null,
+      streamCursor,
     };
   }
   if (
@@ -357,6 +400,7 @@ function applyIncomingConversation(
       ...state,
       loading: false,
       error: null,
+      streamCursor,
     };
   }
   const nextConversation = reuseStableConversationEvents(
@@ -386,7 +430,8 @@ function applyIncomingConversation(
     state.pendingUserMessages === pendingUserMessages &&
     state.localChatState === localChatState &&
     state.loading === false &&
-    state.error === null
+    state.error === null &&
+    state.streamCursor === streamCursor
   ) {
     return state;
   }
@@ -397,6 +442,7 @@ function applyIncomingConversation(
     localChatState,
     loading: false,
     error: null,
+    streamCursor,
   };
 }
 
@@ -404,6 +450,18 @@ function applyCodexConversationDelta(
   state: CodexChatThreadState,
   delta: CodexConversationDeltaPayload,
 ): CodexChatThreadState {
+  const accepted = acceptConversationEnvelope(
+    state.streamCursor,
+    {
+      requestId: delta.request_id,
+      conversationId: delta.conversation_id,
+      revision: delta.revision,
+    },
+    conversationIdentity(state.conversation),
+  );
+  if (!accepted.accepted || !accepted.sameConversation) {
+    return state;
+  }
   const baseConversation = state.conversation ?? conversationCache.get(state.cacheKey) ?? {
     available: delta.available ?? false,
     reason: delta.reason,
@@ -420,29 +478,24 @@ function applyCodexConversationDelta(
     delta.deletes.length === 0 &&
     !codexDeltaMetadataChanged(baseConversation, delta)
   ) {
-    if (state.loading || state.error !== null) {
+    if (
+      state.loading ||
+      state.error !== null ||
+      state.streamCursor !== accepted.cursor
+    ) {
       return {
         ...state,
         loading: false,
         error: null,
+        streamCursor: accepted.cursor,
       };
     }
     return state;
   }
-  const deleted = new Set(delta.deletes);
-  const byId = new Map(baseConversation.events.map((event) => [event.id, event]));
-  delta.upserts.forEach((event) => {
-    byId.set(event.id, event);
-    deleted.delete(event.id);
-  });
-  const nextEvents = baseConversation.events
-    .filter((event) => !deleted.has(event.id))
-    .map((event) => byId.get(event.id) ?? event);
-  delta.upserts.forEach((event) => {
-    if (!nextEvents.some((candidate) => candidate.id === event.id)) {
-      nextEvents.push(event);
-    }
-  });
+  const nextEvents = reconcileConversationDeltaEvents(
+    baseConversation.events,
+    delta.upserts,
+  );
   const nextConversation = {
     ...baseConversation,
     available: delta.available ?? baseConversation.available,
@@ -453,9 +506,9 @@ function applyCodexConversationDelta(
     cwd: delta.cwd ?? baseConversation.cwd,
     updated_at: delta.updated_at ?? baseConversation.updated_at,
     active: delta.active ?? baseConversation.active,
-    events: nextEvents.sort((left, right) => left.seq - right.seq),
+    events: nextEvents,
   };
-  return applyIncomingConversation(state, nextConversation);
+  return applyIncomingConversation(state, nextConversation, accepted.cursor);
 }
 
 function codexDeltaMetadataChanged(
@@ -478,11 +531,20 @@ function applyCodexConversationSyncStatus(
   state: CodexChatThreadState,
   status: CodexConversationSyncStatusPayload,
 ): CodexChatThreadState {
+  const accepted = acceptConversationEnvelope(state.streamCursor, {
+    requestId: status.request_id,
+    conversationId: status.conversation_id,
+    revision: status.revision,
+  });
+  if (!accepted.accepted) {
+    return state;
+  }
   if (state.conversation?.events.length) {
     return {
       ...state,
       loading: false,
       error: null,
+      streamCursor: accepted.cursor,
     };
   }
   const conversation: CodexConversation = {
@@ -495,6 +557,7 @@ function applyCodexConversationSyncStatus(
     conversation,
     loading: status.state === "syncing",
     error: null,
+    streamCursor: accepted.cursor,
   };
 }
 
@@ -916,7 +979,7 @@ export function useCodexChatSession({
         onSnapshot: (payload) => {
           dispatchThread({
             type: "snapshot",
-            conversation: payload.conversation,
+            payload,
           });
         },
         onDelta: (payload) => {

@@ -360,6 +360,7 @@ export function useCodexChatSurfaceState({
     markNewChatReady,
     markNewChatMessageStarted,
     scrollToLatest: timeline.scrollToLatest,
+    pinToBottomIfNeeded: timeline.pinToBottomIfNeeded,
     focusComposer: composerInput.focus,
     clearComposerNativeText: composerInput.clearNativeText,
     dismissActionMenu,

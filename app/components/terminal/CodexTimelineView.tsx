@@ -1,7 +1,6 @@
 import React from "react";
 import {
   FlatList,
-  Platform,
   StyleSheet,
   View,
   type LayoutChangeEvent,
@@ -34,6 +33,7 @@ import {
 import type {
   PatchFileSummary,
 } from "./CodexTimelineActivityTypes";
+import { TIMELINE_LIST_STABILITY_PROPS } from "./timelineScrollPolicy";
 
 interface CodexTimelineViewProps {
   scrollRef: React.RefObject<FlatList<ZenTimelineItem> | null>;
@@ -202,6 +202,7 @@ export function CodexTimelineView({
           style={styles.timeline}
           contentContainerStyle={styles.timelineContent}
           inverted
+          {...TIMELINE_LIST_STABILITY_PROPS}
           scrollIndicatorInsets={{ bottom: TIMELINE_BOTTOM_PADDING }}
           keyboardShouldPersistTaps="handled"
           showsVerticalScrollIndicator={false}
@@ -217,7 +218,6 @@ export function CodexTimelineView({
           maxToRenderPerBatch={6}
           updateCellsBatchingPeriod={48}
           windowSize={5}
-          removeClippedSubviews={Platform.OS === "android"}
         />
 
         {items.length === 0 ? (

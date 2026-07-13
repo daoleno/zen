@@ -13,7 +13,10 @@ import {
   type CodexComposerPresentationInput,
 } from "./CodexChatSurfaceModel";
 import type { ZenTimelineItem } from "./CodexTimelineItemView";
-const SCROLL_BOTTOM_THRESHOLD = 96;
+import {
+  reduceTimelineScrollPosition,
+  timelineMutationDecision,
+} from "./timelineScrollPolicy";
 const COMPOSER_FOCUS_LOCK_MS = 1000;
 const COMPOSER_REFOCUS_DELAYS_MS = [0, 60, 140, 280, 520, 820] as const;
 const TEXT_SELECTION_ANCHOR_SETTLE_MS = 30000;
@@ -231,11 +234,19 @@ export function usePinnedTimeline(itemCount: number, resetKey: string) {
       updateJumpButton();
       return;
     }
-    if (distanceFromLatest <= SCROLL_BOTTOM_THRESHOLD) {
+    const nextScrollState = reduceTimelineScrollPosition(
+      {
+        attachedToBottom: followLatestRef.current,
+        showNewMessages: !followLatestRef.current,
+      },
+      distanceFromLatest,
+      userDriven,
+    );
+    if (nextScrollState.attachedToBottom) {
       followLatest();
       return;
     }
-    if (userDriven) {
+    if (!nextScrollState.attachedToBottom && userDriven) {
       detachFromLatest();
       return;
     }
@@ -289,7 +300,13 @@ export function usePinnedTimeline(itemCount: number, resetKey: string) {
       updateJumpButton();
       return;
     }
-    if (followLatestRef.current && distanceFromLatestRef.current > 1) {
+    if (
+      timelineMutationDecision({
+        attachedToBottom: followLatestRef.current,
+        showNewMessages: !followLatestRef.current,
+      }) === "follow-bottom" &&
+      distanceFromLatestRef.current > 1
+    ) {
       scrollToLatest(false, 0);
       return;
     }

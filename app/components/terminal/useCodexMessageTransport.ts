@@ -33,6 +33,7 @@ interface UseCodexMessageTransportInput {
   markNewChatReady(): void;
   markNewChatMessageStarted(): void;
   scrollToLatest(animated?: boolean, delay?: number): void;
+  pinToBottomIfNeeded(animated?: boolean, delay?: number): void;
 }
 
 export function useCodexMessageTransport({
@@ -52,6 +53,7 @@ export function useCodexMessageTransport({
   markNewChatReady,
   markNewChatMessageStarted,
   scrollToLatest,
+  pinToBottomIfNeeded,
 }: UseCodexMessageTransportInput) {
   const [sending, setSending] = useState(false);
   const [startingNewChat, setStartingNewChat] = useState(false);
@@ -105,7 +107,7 @@ export function useCodexMessageTransport({
       setDraft("");
       clearComposerNativeText();
       setAttachments([]);
-      scrollToLatest(false, 0);
+      pinToBottomIfNeeded(false, 0);
       try {
         clearTransportTimers();
         wsClient.sendInput(serverId, agentId, `${text}\n`);
@@ -130,7 +132,7 @@ export function useCodexMessageTransport({
       clearTransportTimers,
       markNewChatMessageStarted,
       removePendingUserMessage,
-      scrollToLatest,
+      pinToBottomIfNeeded,
       serverId,
       setAttachments,
       setDraft,
@@ -200,7 +202,7 @@ export function useCodexMessageTransport({
         title: command?.title,
         description: command?.description,
       });
-      scrollToLatest(false, 0);
+      pinToBottomIfNeeded(false, 0);
 
       try {
         clearTransportTimers();
@@ -223,7 +225,7 @@ export function useCodexMessageTransport({
       clearComposerNativeText,
       clearTransportTimers,
       removePendingSlashCommand,
-      scrollToLatest,
+      pinToBottomIfNeeded,
       serverId,
       settlePendingSlashCommand,
       setAttachments,

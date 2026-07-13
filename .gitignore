@@ -70,7 +70,6 @@ app/modules/zen-terminal-vt/libs/android/SHA256SUMS
 app/modules/zen-terminal-vt/libs/android/build-manifest.json
 app/modules/zen-terminal-vt/libs/android/GHOSTTY-MIT.txt
 app/modules/zen-terminal-vt/android/src/main/cpp/ghostty/
-app/modules/zen-terminal-vt/libs/apple/
 app/modules/zen-terminal-vt/libs/ios/GhosttyVt.xcframework/
 app/modules/zen-terminal-vt/libs/ios/SHA256SUMS
 app/modules/zen-terminal-vt/libs/ios/build-manifest.json

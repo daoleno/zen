@@ -62,13 +62,21 @@
           "referenced_by_app": false
         },
         {
+          "path": ".github/workflows/ci.yml",
+          "referenced_by_app": false
+        },
+        {
+          "path": ".github/workflows/ios-release.yml",
+          "referenced_by_app": false
+        },
+        {
           "path": "docs/ios.md",
           "referenced_by_app": false
         }
       ],
       "acceptance": "Reproducible CI verifies the XCFramework and Ghostty notice, signs/archives Zen, and publishes an IPA, TestFlight, or App Store installation path",
       "pipeline_status": "partial",
-      "remaining": "Add signing/archive automation and publish a supported iOS delivery channel; no stranger-installable signed artifact exists yet"
+      "remaining": "Run the macOS and signed workflows with real Apple credentials, validate a physical device, complete App Store Connect metadata/review gates, and publish a supported TestFlight/App Store delivery channel"
     }
   ],
   "resolved": [

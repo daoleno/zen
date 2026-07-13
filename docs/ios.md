@@ -2,7 +2,7 @@
 
 The iOS client is available as a source build. It has been validated on an Apple Silicon Mac with Xcode 26.6 and an iPhone 17 Pro / iOS 26.5 Simulator, including pairing, daemon reconnect, session discovery, tmux attachment, Ghostty rendering, and terminal input/output.
 
-Zen does not currently publish a signed IPA or App Store build. A physical-device install requires your own Apple development team and signing configuration.
+Zen does not currently claim a generally available App Store build. The repository includes macOS CI for an unsigned Simulator app and a manual, credential-gated signed IPA/TestFlight workflow, but the first real signing and App Store Connect runs remain release gates. A physical-device install requires an Apple development team and signing configuration.
 
 ## Supported mobile interfaces
 
@@ -124,4 +124,4 @@ Then perform a real Xcode build-and-run. Static checks do not replace launching 
 
 ## Current distribution limitation
 
-The source-build path is working, but a bare clone does not contain the ignored Ghostty XCFramework and the project does not publish a signed iOS artifact. Before calling iOS a general end-user distribution target, release automation must build/checksum the XCFramework, package the Ghostty notice, sign/archive the app, and publish installation instructions or an App Store/TestFlight path.
+The source-build path is working, but a bare clone does not contain the ignored Ghostty XCFramework. CI now rebuilds/checksums it and compiles an unsigned Simulator app; the manual release workflow can sign/export an IPA and explicitly upload it to TestFlight when protected Apple credentials are configured. A successful real workflow run, physical-device acceptance, App Store metadata, and TestFlight/App Review operations are still required before calling iOS a general end-user distribution target. See [iOS CI and release automation](ios-ci-release.md).

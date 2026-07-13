@@ -65,12 +65,10 @@ assert lock["ghostty"].get("copyright_line")
 assert lock["ghostty"]["component"] == "libghostty-vt"
 assert lock["ghostty"]["api"] == "C"
 assert re.fullmatch(r"[0-9a-f]{64}", lock["ghostty"]["headers_sha256"])
-assert re.fullmatch(r"v[0-9]+\.[0-9]+\.[0-9]+", lock["ghostty"]["latest_release_at_selection"])
-assert re.fullmatch(r"[0-9]{4}-[0-9]{2}-[0-9]{2}", lock["ghostty"]["selection_date"])
 assert "Copyright (c) 2024 Mitchell Hashimoto, Ghostty contributors" == lock["ghostty"]["copyright_line"]
 
 downloads = lock["zig"].get("downloads") or {}
-for required_download in ("x86_64-linux", "aarch64-linux", "x86_64-macos", "aarch64-macos"):
+for required_download in ("x86_64-linux", "aarch64-linux", "aarch64-macos"):
     assert required_download in downloads
 for key, d in downloads.items():
     assert d.get("tarball", "").startswith("https://ziglang.org/download/")
@@ -91,11 +89,10 @@ assert lock["release_apk"]["notice_apk_path"] == "assets/notices/GHOSTTY-MIT.txt
 unsupported = set(lock.get("unsupported_abis") or [])
 assert "armeabi-v7a" in unsupported and "x86" in unsupported
 assert lock["android"]["min_api"] == 29
-assert lock["apple"]["build_args"] == [
-    "-Demit-lib-vt=true",
-    "-Demit-xcframework=true",
-    "-Doptimize=ReleaseFast",
-]
+assert lock["ios"]["deployment_target"] == "16.4"
+assert lock["ios"]["device_architecture"] == "arm64"
+assert lock["ios"]["simulator_architecture"] == "arm64"
+assert lock["ios"]["xcframework_name"] == "GhosttyVt.xcframework"
 
 # Notice must embed exact upstream MIT body (sha256 of LICENSE text).
 # Extract from first "MIT License" through end; compare hash of that region

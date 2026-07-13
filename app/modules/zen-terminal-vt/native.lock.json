@@ -2,8 +2,11 @@
   "schema_version": 1,
   "description": "Canonical ABI and toolchain contract for zen Android and iOS libghostty-vt builds. Invalid combinations are not supported.",
   "ghostty": {
+    "component": "libghostty-vt",
+    "api": "C",
     "repository": "https://github.com/ghostty-org/ghostty.git",
     "commit": "28972454c0c9493b96b42de5d88f88c0bdc277a4",
+    "headers_sha256": "79b9f3c461562b469afb54c221066603c1bf52d646f6fe1bf4f5022bb29a8dd4",
     "license": "MIT",
     "license_url": "https://github.com/ghostty-org/ghostty/blob/28972454c0c9493b96b42de5d88f88c0bdc277a4/LICENSE",
     "license_sha256": "386211873e5b7a02f663ae4d7adf96285999f91608f8f9f31fecfd0f4095e6f1",

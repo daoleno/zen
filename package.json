@@ -24,6 +24,7 @@
     "native:build": "./scripts/build-libghostty.sh",
     "native:build:ios": "./scripts/build-libghostty-ios.sh",
     "native:verify:ios": "./scripts/verify-libghostty-ios.sh",
+    "ios:verify-artifact": "./scripts/verify-ios-artifact.sh",
     "android:release-apk": "./scripts/android-release-apk.sh",
     "android:verify-apk-notice": "./scripts/verify-apk-notice.sh",
     "android:verify-apk-release": "./scripts/verify-apk-release.sh"
