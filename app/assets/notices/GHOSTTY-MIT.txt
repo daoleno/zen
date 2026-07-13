@@ -1,9 +1,9 @@
-Ghostty VT (libghostty_vt.so) — third-party notice
-=================================================
+Ghostty VT (libghostty-vt) — third-party notice
+================================================
 
-Zen's Android terminal surface links against libghostty-vt, built from
+Zen's native terminal support uses libghostty-vt, built from
 upstream Ghostty. The following MIT license text applies to that library
-and must be preserved when redistributing APKs or prebuilt .so files.
+and must be preserved when redistributing apps or prebuilt native artifacts.
 
 Source: https://github.com/ghostty-org/ghostty
 Pinned commit: see app/modules/zen-terminal-vt/native.lock.json

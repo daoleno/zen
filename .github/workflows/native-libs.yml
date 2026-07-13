@@ -88,3 +88,93 @@ jobs:
             app/modules/zen-terminal-vt/libs/android/GHOSTTY-MIT.txt
             app/assets/notices/GHOSTTY-MIT.txt
           if-no-files-found: error
+
+  build-libghostty-apple:
+    name: Build Apple libghostty-vt XCFramework
+    runs-on: macos-15
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Contract check
+        run: ./scripts/verify-libghostty.sh --contract
+
+      - name: Install pinned Zig
+        run: |
+          set -euo pipefail
+          python3 <<'PY'
+          import hashlib, json, os, platform, tarfile, pathlib, sys, urllib.request
+          lock = json.load(open("app/modules/zen-terminal-vt/native.lock.json"))
+          machine = platform.machine().lower()
+          key = "aarch64-macos" if machine in ("arm64", "aarch64") else "x86_64-macos"
+          item = lock["zig"]["downloads"][key]
+          root = pathlib.Path(os.environ["RUNNER_TEMP"]) / "zig-install"
+          root.mkdir(parents=True, exist_ok=True)
+          archive = root / "zig.tar.xz"
+          urllib.request.urlretrieve(item["tarball"], archive)
+          actual = hashlib.sha256(archive.read_bytes()).hexdigest()
+          if actual != item["sha256"]:
+              sys.exit(f"zig sha256 mismatch: {actual} != {item['sha256']}")
+          with tarfile.open(archive, "r:xz") as tf:
+              tf.extractall(root)
+          with open(os.environ["GITHUB_PATH"], "a", encoding="utf-8") as fh:
+              fh.write(str((root / item["archive_root"]).resolve()) + "\n")
+          PY
+
+      - name: Build and verify XCFramework
+        env:
+          ZEN_GHOSTTY_CACHE: ${{ runner.temp }}/ghostty
+        run: ./scripts/build-libghostty-apple.sh
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: "1.3.5"
+
+      - name: Install app dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Generate iOS project and install pods
+        run: |
+          cd app
+          bunx expo prebuild --platform ios --clean --no-install
+          cd ios
+          pod install
+
+      - name: Compile and link iOS bridge for Apple Silicon simulator
+        run: |
+          cd app/ios
+          set -o pipefail
+          xcodebuild \
+            -workspace Zen.xcworkspace \
+            -scheme Zen \
+            -configuration Debug \
+            -sdk iphonesimulator \
+            -destination 'generic/platform=iOS Simulator' \
+            CODE_SIGNING_ALLOWED=NO \
+            ONLY_ACTIVE_ARCH=YES \
+            build
+
+      - name: Compile and link iOS bridge for arm64 device SDK
+        run: |
+          cd app/ios
+          set -o pipefail
+          xcodebuild \
+            -workspace Zen.xcworkspace \
+            -scheme Zen \
+            -configuration Release \
+            -sdk iphoneos \
+            -destination 'generic/platform=iOS' \
+            CODE_SIGNING_ALLOWED=NO \
+            ONLY_ACTIVE_ARCH=YES \
+            build
+
+      - name: Upload Apple libghostty artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: libghostty-vt-apple
+          path: |
+            app/modules/zen-terminal-vt/libs/apple/ghostty-vt.xcframework/**
+            app/modules/zen-terminal-vt/libs/apple/GHOSTTY-MIT.txt
+            app/modules/zen-terminal-vt/libs/apple/SHA256SUMS
+            app/modules/zen-terminal-vt/libs/apple/build-manifest.json
+          if-no-files-found: error

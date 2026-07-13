@@ -2,6 +2,8 @@
 
 Automated build lives in [`.github/workflows/release-artifacts.yml`](../.github/workflows/release-artifacts.yml).
 
+The separate [`native-libs.yml`](../.github/workflows/native-libs.yml) workflow builds the same pinned `libghostty-vt` C ABI for Android on Linux and as an iOS device/simulator XCFramework on macOS. It then generates the Expo iOS project, installs the mandatory local pod, and compiles/links an unsigned Apple Silicon simulator build. Physical-device acceptance and signed distribution remain separate release gates.
+
 ## What it does
 
 | Step | Always (tag push or dispatch) | Only when `publish=true` |

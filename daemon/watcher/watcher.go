@@ -48,6 +48,7 @@ type SessionEvent struct {
 type Watcher struct {
 	pollInterval   time.Duration
 	agents         map[string]*classifier.Agent
+	agentOrder     []string
 	prevContent    map[string]string
 	hidden         map[string]bool
 	delegated      map[string]bool
@@ -93,8 +94,28 @@ func (w *Watcher) Agents() []*classifier.Agent {
 	w.mu.RLock()
 	defer w.mu.RUnlock()
 	result := make([]*classifier.Agent, 0, len(w.agents))
-	for _, a := range w.agents {
+	seen := make(map[string]struct{}, len(w.agentOrder))
+	for _, id := range w.agentOrder {
+		a, ok := w.agents[id]
+		if !ok {
+			continue
+		}
+		seen[id] = struct{}{}
 		copy := *a
+		result = append(result, &copy)
+	}
+	// Keep snapshots complete for legacy/directly seeded watcher state. Normal
+	// discovery always records agentOrder; sorting this exceptional remainder
+	// avoids reintroducing map-order nondeterminism.
+	unordered := make([]string, 0, len(w.agents)-len(seen))
+	for id := range w.agents {
+		if _, ok := seen[id]; !ok {
+			unordered = append(unordered, id)
+		}
+	}
+	sort.Strings(unordered)
+	for _, id := range unordered {
+		copy := *w.agents[id]
 		result = append(result, &copy)
 	}
 	return result
@@ -250,6 +271,7 @@ func (w *Watcher) poll() {
 				Name: formatAgentName(win.name, win.target),
 			}
 			w.agents[win.target] = agent
+			w.agentOrder = append(w.agentOrder, win.target)
 		}
 		previousMetadata := agentMetadataSnapshotFor(agent)
 		if nextName := formatAgentName(win.name, win.target); nextName != "" {
@@ -422,6 +444,17 @@ func (w *Watcher) poll() {
 			}
 		}
 	}
+	w.compactAgentOrderLocked()
+}
+
+func (w *Watcher) compactAgentOrderLocked() {
+	next := w.agentOrder[:0]
+	for _, id := range w.agentOrder {
+		if _, ok := w.agents[id]; ok {
+			next = append(next, id)
+		}
+	}
+	w.agentOrder = next
 }
 
 func changedPaneLines(previous, next string) []string {
@@ -1275,6 +1308,9 @@ func (w *Watcher) registerCreatedSession(target, cwd string, opts CreateSessionO
 		w.delegated[target] = true
 	} else {
 		delete(w.delegated, target)
+	}
+	if _, exists := w.agents[target]; !exists {
+		w.agentOrder = append(w.agentOrder, target)
 	}
 	w.agents[target] = agent
 	w.agentEpoch[target] = 0 // invalidate any in-flight poll apply for this id

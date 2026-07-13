@@ -36,6 +36,7 @@ import json, sys
 lock = json.load(open(sys.argv[1]))
 print(f"LOCK_GHOSTTY_REPO={lock['ghostty']['repository']}")
 print(f"LOCK_GHOSTTY_COMMIT={lock['ghostty']['commit']}")
+print(f"LOCK_HEADERS_SHA256={lock['ghostty']['headers_sha256']}")
 print(f"LOCK_ZIG_VERSION={lock['zig']['version']}")
 print(f"LOCK_LIB_DIR={lock['outputs']['lib_dir']}")
 print(f"LOCK_LIB_NAME={lock['outputs']['library_filename']}")
@@ -331,6 +332,11 @@ HEADER_PARENT="$(dirname "$HEADER_DST")"
 mkdir -p "$HEADER_PARENT"
 rm -rf "$HEADER_DST"
 cp -a "$GHOSTTY_SRC/include/ghostty" "$HEADER_DST"
+ACTUAL_HEADERS_SHA256="$(sha256sum "$HEADER_DST/vt.h" | awk '{print $1}')"
+if [[ "$ACTUAL_HEADERS_SHA256" != "$LOCK_HEADERS_SHA256" ]]; then
+  echo "error: copied vt.h sha256 $ACTUAL_HEADERS_SHA256 != lock $LOCK_HEADERS_SHA256" >&2
+  exit 1
+fi
 
 cp -f "$NOTICE_SRC" "$OUT_DIR/GHOSTTY-MIT.txt"
 

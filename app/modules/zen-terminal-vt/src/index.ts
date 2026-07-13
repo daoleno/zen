@@ -29,6 +29,7 @@ export interface NativeTerminalTheme {
 }
 
 interface NativeTerminalVtModule {
+  getCapabilities?(): NativeTerminalCapabilities;
   createTerminal(cols: number, rows: number): number;
   destroyTerminal(handle: number): void;
   writeData(handle: number, data: string): void;
@@ -52,7 +53,22 @@ interface NativeTerminalVtModule {
   clearCrashBreadcrumb(): void;
 }
 
+export interface NativeTerminalCapabilities {
+  nativeBridge: boolean;
+  vtCore: boolean;
+  renderer: 'webview' | 'none';
+  reason?: string;
+}
+
 const ZenTerminalVt = requireNativeModule<NativeTerminalVtModule>('ZenTerminalVt');
+
+export function getCapabilities(): NativeTerminalCapabilities {
+  return ZenTerminalVt.getCapabilities?.() ?? {
+    nativeBridge: true,
+    vtCore: true,
+    renderer: 'webview',
+  };
+}
 
 const MOUSE_ACTION_CODES: Record<MouseAction, number> = {
   press: 0,

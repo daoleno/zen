@@ -798,6 +798,31 @@ type countingTranscriptProbe struct {
 	ok     bool
 }
 
+func TestAgentsPreserveFirstSeenOrderAcrossMutableUpdates(t *testing.T) {
+	w := New(time.Second)
+	w.agents["a"] = &classifier.Agent{ID: "a", Summary: "first"}
+	w.agents["b"] = &classifier.Agent{ID: "b", Summary: "second"}
+	w.agentOrder = []string{"a", "b"}
+
+	w.agents["a"].UpdatedAt = time.Now().Add(time.Hour)
+	w.agents["a"].Summary = "new activity"
+	w.agents["b"].State = classifier.StateRunning
+
+	got := w.Agents()
+	if len(got) != 2 || got[0].ID != "a" || got[1].ID != "b" {
+		t.Fatalf("Agents() order = %#v, want [a b]", got)
+	}
+
+	delete(w.agents, "a")
+	w.compactAgentOrderLocked()
+	w.agents["c"] = &classifier.Agent{ID: "c"}
+	w.agentOrder = append(w.agentOrder, "c")
+	got = w.Agents()
+	if len(got) != 2 || got[0].ID != "b" || got[1].ID != "c" {
+		t.Fatalf("Agents() after remove/add = %#v, want [b c]", got)
+	}
+}
+
 func (p *countingTranscriptProbe) Active(agent classifier.Agent) (bool, bool) {
 	p.calls++
 	if p.active == nil {

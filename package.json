@@ -21,6 +21,9 @@
     "native:verify": "./scripts/verify-libghostty.sh",
     "native:verify:release": "./scripts/verify-libghostty.sh --release",
     "native:build": "./scripts/build-libghostty.sh",
+    "native:build:apple": "./scripts/build-libghostty-apple.sh",
+    "native:verify:apple": "./scripts/verify-libghostty-apple.sh",
+    "native:contract:ios-bridge": "python3 ./scripts/verify-ios-terminal-bridge.py",
     "android:release-apk": "./scripts/android-release-apk.sh",
     "android:verify-apk-notice": "./scripts/verify-apk-notice.sh",
     "android:verify-apk-release": "./scripts/verify-apk-release.sh"

@@ -696,11 +696,15 @@ func (s *Server) handleClientMessage(conn *websocket.Conn, msg []byte) {
 
 	case "get_stats":
 		if resp := s.stats.Stats(); resp != nil {
-			s.sendJSON(conn, map[string]any{
+			payload := map[string]any{
 				"type":       "stats_data",
 				"request_id": raw.RequestID,
 				"ranges":     resp.Ranges,
-			})
+			}
+			if resp.CodexSubscription != nil && resp.CodexSubscription.AuthKind == "official" {
+				payload["codexSubscription"] = resp.CodexSubscription
+			}
+			s.sendJSON(conn, payload)
 		} else {
 			s.sendJSON(conn, map[string]any{
 				"type":       "stats_data",

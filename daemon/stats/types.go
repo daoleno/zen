@@ -2,8 +2,29 @@ package stats
 
 // StatsResponse is sent to the app in response to a "get_stats" request.
 type StatsResponse struct {
-	Type   string                `json:"type"`
-	Ranges map[string]*RangeData `json:"ranges"`
+	Type              string                  `json:"type"`
+	Ranges            map[string]*RangeData   `json:"ranges"`
+	CodexSubscription *CodexSubscriptionUsage `json:"codexSubscription,omitempty"`
+}
+
+// CodexSubscriptionUsage describes official ChatGPT-backed Codex quota. It
+// intentionally contains no credential or account identifiers.
+type CodexSubscriptionUsage struct {
+	AuthKind  string             `json:"authKind"`
+	State     string             `json:"state"`
+	Plan      string             `json:"plan,omitempty"`
+	Windows   []CodexUsageWindow `json:"windows,omitempty"`
+	FetchedAt string             `json:"fetchedAt,omitempty"`
+	Stale     bool               `json:"stale,omitempty"`
+}
+
+// CodexUsageWindow is one rolling quota window. UsedPercent uses the Codex
+// backend's consumed-percentage semantics (0 means unused, 100 exhausted).
+type CodexUsageWindow struct {
+	Name          string  `json:"name"`
+	UsedPercent   float64 `json:"usedPercent"`
+	WindowMinutes int64   `json:"windowMinutes,omitempty"`
+	ResetsAt      string  `json:"resetsAt,omitempty"`
 }
 
 // RangeData holds aggregated stats for a single time range.

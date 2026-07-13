@@ -1,14 +1,16 @@
 import React, { forwardRef, useImperativeHandle, useMemo } from 'react';
-import { StyleSheet, View } from 'react-native';
+import { Platform, StyleSheet, View } from 'react-native';
 import { Colors, useAppColors } from '../../constants/tokens';
 import type { TerminalSurfaceHandle, TerminalSurfaceProps } from './TerminalSurface.types';
 import { AppText } from '../ui';
+import { getTerminalCapabilityPresentation } from '../../services/terminalCapabilities';
 
 export const TerminalSurfaceUnsupported = forwardRef<TerminalSurfaceHandle, TerminalSurfaceProps>(({
   theme,
 }, ref) => {
   const colors = useAppColors();
   const styles = useMemo(() => createStyles(colors), [colors]);
+  const presentation = getTerminalCapabilityPresentation(Platform.OS);
 
   useImperativeHandle(ref, () => ({
     sendInput() {},
@@ -23,13 +25,13 @@ export const TerminalSurfaceUnsupported = forwardRef<TerminalSurfaceHandle, Term
     <View style={[styles.container, { backgroundColor: theme.background }]}>
       <View style={[styles.card, { borderColor: colors.borderStrong }]}>
         <AppText variant="title" style={{ color: theme.foreground }}>
-          Terminal unavailable on this platform
+          {presentation.title}
         </AppText>
         <AppText variant="caption" style={[styles.body, { color: theme.foreground }]}>
-          This build only ships the libghostty-backed terminal on Android.
+          {presentation.detail}
         </AppText>
         <AppText variant="caption" tone="secondary" style={styles.caption}>
-          Web and iOS stay disabled until a libghostty-backed surface exists there.
+          {presentation.hint}
         </AppText>
       </View>
     </View>

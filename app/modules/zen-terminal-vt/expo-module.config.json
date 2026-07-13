@@ -2,5 +2,8 @@
   "platforms": ["android", "ios"],
   "android": {
     "modules": ["expo.modules.zenterminalvt.ZenTerminalVtModule"]
+  },
+  "ios": {
+    "modules": ["ZenTerminalVtModule"]
   }
 }

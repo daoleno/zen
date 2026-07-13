@@ -29,6 +29,11 @@
         "android.permission.CAMERA"
       ]
     },
+    "ios": {
+      "bundleIdentifier": "com.daoleno.zen",
+      "buildNumber": "2",
+      "supportsTablet": false
+    },
     "plugins": [
       "expo-router",
       "expo-secure-store",

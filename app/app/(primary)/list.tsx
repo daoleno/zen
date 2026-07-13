@@ -28,7 +28,6 @@ import {
   Radii,
   TypeScale,
   UiTextMetrics,
-  type AgentStatus,
   useAppColors,
   useAppTheme,
   shadow,
@@ -68,13 +67,6 @@ import {
   type DiscoveredSessionService,
 } from '../../services/sessionServicesPresentation';
 
-const STATUS_PRIORITY: Record<AgentStatus, number> = {
-  running: 0,
-  blocked: 1,
-  failed: 1,
-  unknown: 1,
-  done: 1,
-};
 const MEDITATION_PULL_THRESHOLD = 132;
 const MEDITATION_ACTIVATION_DISTANCE = 8;
 const MEDITATION_DRAWER_EDGE_EXCLUSION = 24;
@@ -185,19 +177,10 @@ export default function InboxScreen() {
     [servers, state.agents, state.serverConnections, state.serverLatencyById],
   );
 
-  const sortedAgents = useMemo(() => {
-    const agentsByPriority = [...displayAgents].sort((left, right) => {
-      const leftOpenedAt = recentAgentOpens[left.key] ?? 0;
-      const rightOpenedAt = recentAgentOpens[right.key] ?? 0;
-      if (leftOpenedAt !== rightOpenedAt) return rightOpenedAt - leftOpenedAt;
-
-      const leftPriority = STATUS_PRIORITY[left.status] ?? 5;
-      const rightPriority = STATUS_PRIORITY[right.status] ?? 5;
-      if (leftPriority !== rightPriority) return leftPriority - rightPriority;
-      return (right.updated_at || 0) - (left.updated_at || 0);
-    });
-    return groupAgentsByDirectory(agentsByPriority).flatMap(section => section.data);
-  }, [displayAgents, recentAgentOpens]);
+  const sortedAgents = useMemo(
+    () => groupAgentsByDirectory(displayAgents).flatMap(section => section.data),
+    [displayAgents],
+  );
 
   const showServerNames = useMemo(
     () => new Set(sortedAgents.map((agent) => agent.serverId)).size > 1,

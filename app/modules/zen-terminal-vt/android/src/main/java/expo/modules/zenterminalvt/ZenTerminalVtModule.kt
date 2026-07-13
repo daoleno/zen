@@ -141,6 +141,14 @@ class ZenTerminalVtModule : Module() {
     override fun definition() = ModuleDefinition {
         Name("ZenTerminalVt")
 
+        Function("getCapabilities") {
+            mapOf(
+                "nativeBridge" to true,
+                "vtCore" to true,
+                "renderer" to "webview",
+            )
+        }
+
         Function("createTerminal") { cols: Int, rows: Int ->
             runWithPersistentBreadcrumb("createTerminal", "cols=$cols rows=$rows") {
                 ensureLoaded()

@@ -22,6 +22,8 @@ module.exports = () => {
       'expo-video',
       // Package Ghostty MIT notice into Android assets + env-based release signing.
       './plugins/withZenAndroidRelease',
+      // Pinned Ghostty Apple slices require iOS 17; keep generated app/pod targets aligned.
+      './plugins/withZenIOSDeploymentTarget',
     ],
     extra,
   };

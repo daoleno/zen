@@ -22,6 +22,7 @@ If something does not work, run `zen doctor` on the host and continue with [Trou
 
 - [Contributing](../CONTRIBUTING.md)
 - [Android native terminal and ABI contract](android.md#architecture--abi-contract)
+- [iOS release readiness and Terminal blocker matrix](ios-release-readiness.md)
 - [Agent-native task model](agent-native-task-model.md)
 - [CI release pipeline](ci-release.md)
 - [Versioned release notes](releases/)

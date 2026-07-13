@@ -1,5 +1,7 @@
 # Release blockers
 
+For the iOS-specific Terminal/libghostty matrix, minimum honest scope, and Apple signing/device gates, see [iOS release readiness](ios-release-readiness.md).
+
 Machine-readable companion: [`release-blockers.json`](release-blockers.json).
 
 These items block calling the tree an honest redistributable public beta until resolved or explicitly accepted by the maintainer. They are **not** invented attributions.

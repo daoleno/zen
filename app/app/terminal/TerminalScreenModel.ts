@@ -2,19 +2,10 @@ import type {
   TerminalThemeChrome,
   TerminalThemePalette,
 } from "../../constants/terminalThemes";
-import type { AgentStatus } from "../../constants/tokens";
 import type { ConnectionIssue } from "../../services/connectionIssue";
 import type { Agent, ConnectionState } from "../../store/agents";
 import type { WorkItem } from "../../store/work";
 import type { StoredRecentAgentOpens } from "../../services/storage";
-
-const STATUS_PRIORITY: Record<AgentStatus, number> = {
-  failed: 0,
-  blocked: 1,
-  unknown: 2,
-  running: 3,
-  done: 4,
-};
 
 export interface MenuAnchorLayout {
   x: number;
@@ -89,22 +80,12 @@ export function buildTerminalFallbackPresentation({
 
 export function sortTerminalAgents({
   agents,
-  recentAgentOpens,
+  recentAgentOpens: _recentAgentOpens,
 }: {
   agents: Agent[];
   recentAgentOpens: StoredRecentAgentOpens;
 }) {
-  return [...agents].sort((left, right) => {
-    const leftOpenedAt = recentAgentOpens[left.key] ?? 0;
-    const rightOpenedAt = recentAgentOpens[right.key] ?? 0;
-    if (leftOpenedAt !== rightOpenedAt) return rightOpenedAt - leftOpenedAt;
-
-    const leftPriority = STATUS_PRIORITY[left.status] ?? 5;
-    const rightPriority = STATUS_PRIORITY[right.status] ?? 5;
-    if (leftPriority !== rightPriority) return leftPriority - rightPriority;
-
-    return (right.updated_at || 0) - (left.updated_at || 0);
-  });
+  return [...agents];
 }
 
 export function shouldShowPickerServerNames(agents: Agent[]) {

@@ -97,23 +97,24 @@ function reducer(state: State, action: Action): State {
       const previousServerAgents = state.agents.filter(agent => agent.serverId === action.serverId);
       const previousByKey = new Map(previousServerAgents.map(agent => [agent.key, agent]));
       let agentsChanged = previousServerAgents.length !== action.agents.length;
-      const nextAgents = action.agents.map((agent, index) => {
+      const incomingAgents = action.agents.map((agent) => {
         const normalized = normalizeAgent(agent, action.serverId, action.serverName, action.serverUrl);
         const previous = previousByKey.get(normalized.key);
-        if (previousServerAgents[index]?.key !== normalized.key) {
-          agentsChanged = true;
-        }
         if (previous && agentsEqual(previous, normalized)) {
           return previous;
         }
         agentsChanged = true;
         return normalized;
       });
+      const nextAgents = reconcileServerAgents(state.agents, action.serverId, incomingAgents);
+      if (!agentsChanged && nextAgents.some((agent, index) => agent !== state.agents[index])) {
+        agentsChanged = true;
+      }
       const hydratedServers = markServerHydrated(state.hydratedServers, action.serverId);
       const agentCountsByServer = setServerAgentCount(
         state.agentCountsByServer,
         action.serverId,
-        nextAgents.length,
+        incomingAgents.length,
       );
 
       if (
@@ -126,10 +127,7 @@ function reducer(state: State, action: Action): State {
 
       return {
         ...state,
-        agents: [
-          ...state.agents.filter(agent => agent.serverId !== action.serverId),
-          ...nextAgents,
-        ],
+        agents: nextAgents,
         agentCountsByServer,
         hydratedServers,
       };
@@ -244,6 +242,29 @@ function reducer(state: State, action: Action): State {
     default:
       return state;
   }
+}
+
+export function reconcileServerAgents(
+  currentAgents: Agent[],
+  serverId: string,
+  incomingAgents: Agent[],
+): Agent[] {
+  const incomingByKey = new Map(incomingAgents.map(agent => [agent.key, agent]));
+  const knownKeys = new Set(
+    currentAgents
+      .filter(agent => agent.serverId === serverId)
+      .map(agent => agent.key),
+  );
+  const next = currentAgents.flatMap(agent => {
+    if (agent.serverId !== serverId) return [agent];
+    const replacement = incomingByKey.get(agent.key);
+    return replacement ? [replacement] : [];
+  });
+
+  for (const agent of incomingAgents) {
+    if (!knownKeys.has(agent.key)) next.push(agent);
+  }
+  return next;
 }
 
 function setServerAgentCount(

@@ -72,7 +72,7 @@ World Window streams Mixkit 720p MP4s from `assets.mixkit.co` using the curated 
 
 | Artifact | Upstream | License | Notes |
 | --- | --- | --- | --- |
-| `libghostty_vt.so` (Android) | [ghostty-org/ghostty](https://github.com/ghostty-org/ghostty) | [MIT](https://github.com/ghostty-org/ghostty/blob/main/LICENSE) | Built via `scripts/build-libghostty.sh` from the pin in `app/modules/zen-terminal-vt/native.lock.json`. Binaries are gitignored. |
+| `libghostty_vt.so` (Android) / `ghostty-vt.xcframework` (Apple input) | [ghostty-org/ghostty](https://github.com/ghostty-org/ghostty) | [MIT](https://github.com/ghostty-org/ghostty/blob/main/LICENSE) | The exact `libghostty-vt` C ABI component is built via the platform scripts from the immutable pin in `app/modules/zen-terminal-vt/native.lock.json`. Binaries are gitignored; the Apple artifact is not linked until the iOS bridge is complete. |
 | Notice source | same | MIT | `app/assets/notices/GHOSTTY-MIT.txt` embeds the pinned Ghostty `LICENSE` body (`license_sha256` in `native.lock.json`). Module pointer: `NOTICE.Ghostty`. |
 | Notice in APK | same | MIT | Expo plugin `withZenAndroidRelease` copies the notice to `android/app/src/main/assets/notices/GHOSTTY-MIT.txt` → APK path `assets/notices/GHOSTTY-MIT.txt`. Verify: `./scripts/verify-apk-notice.sh <apk>`. |
 

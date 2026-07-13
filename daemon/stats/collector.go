@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"net/http"
 	"net/url"
 	"os"
 	"os/exec"
@@ -21,14 +22,25 @@ import (
 // Collector scans local Claude Code, Codex CLI, Grok, and Cursor Agent data files and builds
 // aggregated stats. All reads are read-only — it never modifies source files.
 type Collector struct {
-	mu     sync.RWMutex
-	cached *StatsResponse
+	mu                       sync.RWMutex
+	cached                   *StatsResponse
+	codexUsageClient         codexUsageHTTPClient
+	codexUsageEndpoint       string
+	codexUsageTimeout        time.Duration
+	now                      func() time.Time
+	lastCodexSubscription    *CodexSubscriptionUsage
+	lastCodexAuthFingerprint string
 }
 
 // NewCollector creates a stats collector.
 func NewCollector() *Collector {
 	loadPricingCache(homeDir())
-	return &Collector{}
+	return &Collector{
+		codexUsageClient:   &http.Client{Timeout: 8 * time.Second},
+		codexUsageEndpoint: codexUsageEndpoint,
+		codexUsageTimeout:  8 * time.Second,
+		now:                time.Now,
+	}
 }
 
 // Start begins periodic background scanning. The first scan runs immediately.
@@ -302,13 +314,19 @@ func (c *Collector) refresh() {
 		rd.Days = buildDayCells(agentByDate, codexModelsByDate, fromDate, "9999-99-99")
 	}
 
-	resp := &StatsResponse{
-		Type:   "stats_data",
-		Ranges: ranges,
-	}
-
+	// Publish local history before the bounded network lookup so an unavailable
+	// Codex endpoint never delays or removes the existing Stats experience.
 	c.mu.Lock()
-	c.cached = resp
+	c.cached = &StatsResponse{Type: "stats_data", Ranges: ranges}
+	c.mu.Unlock()
+
+	subscription := c.collectCodexSubscription(home)
+	c.mu.Lock()
+	c.cached = &StatsResponse{
+		Type:              "stats_data",
+		Ranges:            ranges,
+		CodexSubscription: subscription,
+	}
 	c.mu.Unlock()
 
 	log.Printf("[stats] refresh complete: %d days of data", len(dailyMap))

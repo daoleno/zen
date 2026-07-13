@@ -62,10 +62,16 @@ assert lock["zig"]["version"]
 assert re.fullmatch(r"[0-9a-f]{40}", lock["ghostty"]["commit"]), "ghostty commit must be full sha"
 assert re.fullmatch(r"[0-9a-f]{64}", lock["ghostty"]["license_sha256"]), "license_sha256 required"
 assert lock["ghostty"].get("copyright_line")
+assert lock["ghostty"]["component"] == "libghostty-vt"
+assert lock["ghostty"]["api"] == "C"
+assert re.fullmatch(r"[0-9a-f]{64}", lock["ghostty"]["headers_sha256"])
+assert re.fullmatch(r"v[0-9]+\.[0-9]+\.[0-9]+", lock["ghostty"]["latest_release_at_selection"])
+assert re.fullmatch(r"[0-9]{4}-[0-9]{2}-[0-9]{2}", lock["ghostty"]["selection_date"])
 assert "Copyright (c) 2024 Mitchell Hashimoto, Ghostty contributors" == lock["ghostty"]["copyright_line"]
 
 downloads = lock["zig"].get("downloads") or {}
-assert "x86_64-linux" in downloads and "aarch64-linux" in downloads
+for required_download in ("x86_64-linux", "aarch64-linux", "x86_64-macos", "aarch64-macos"):
+    assert required_download in downloads
 for key, d in downloads.items():
     assert d.get("tarball", "").startswith("https://ziglang.org/download/")
     assert re.fullmatch(r"[0-9a-f]{64}", d.get("sha256", "")), f"zig sha256 missing for {key}"
@@ -85,6 +91,11 @@ assert lock["release_apk"]["notice_apk_path"] == "assets/notices/GHOSTTY-MIT.txt
 unsupported = set(lock.get("unsupported_abis") or [])
 assert "armeabi-v7a" in unsupported and "x86" in unsupported
 assert lock["android"]["min_api"] == 29
+assert lock["apple"]["build_args"] == [
+    "-Demit-lib-vt=true",
+    "-Demit-xcframework=true",
+    "-Doptimize=ReleaseFast",
+]
 
 # Notice must embed exact upstream MIT body (sha256 of LICENSE text).
 # Extract from first "MIT License" through end; compare hash of that region
@@ -138,6 +149,17 @@ if [[ "$MODE" == "contract" ]]; then
   fi
   echo "contract verification passed (no native libraries required)"
   exit 0
+fi
+
+HEADERS_DIR="$ROOT/$(python3 -c "import json;print(json.load(open('$LOCK'))['outputs']['headers_dir'])")"
+HEADERS_SHA="$(python3 -c "import json;print(json.load(open('$LOCK'))['ghostty']['headers_sha256'])")"
+if [[ -f "$HEADERS_DIR/vt.h" ]]; then
+  actual_headers_sha="$(sha256sum "$HEADERS_DIR/vt.h" | awk '{print $1}')"
+  if [[ "$actual_headers_sha" == "$HEADERS_SHA" ]]; then
+    pass "vt.h matches pinned header sha256"
+  else
+    bad "vt.h sha256 $actual_headers_sha != lock $HEADERS_SHA"
+  fi
 fi
 
 # Validate requested ABIs against lock

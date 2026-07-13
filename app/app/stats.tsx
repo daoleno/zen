@@ -26,6 +26,14 @@ import { useAgents } from '../store/agents';
 import { wsClient } from '../services/websocket';
 import { AnimatedPressable } from '../components/ui/AnimatedPressable';
 import { RisingSheet } from '../components/ui/RisingSheet';
+import {
+  codexAuthSummary,
+  codexRemainingPercent,
+  codexPlanLabel,
+  codexWindowLabel,
+  normalizeCodexUsedPercent,
+  isOfficialCodexSubscription,
+} from '../services/codexSubscriptionStats';
 
 // ── Types (mirror daemon/stats/types.go) ───────────────────
 
@@ -108,10 +116,29 @@ interface RangeData {
 
 interface StatsPayload {
   ranges: Record<string, RangeData>;
+  codexSubscription?: CodexSubscriptionUsage;
+  codexSubscriptions?: CodexSubscriptionUsage[];
   serverId?: string;
   serverUrl?: string;
   daemonId?: string;
   daemonPublicKey?: string;
+}
+
+interface CodexUsageWindow {
+  name: 'primary' | 'secondary' | string;
+  usedPercent: number;
+  windowMinutes?: number;
+  resetsAt?: string;
+}
+
+interface CodexSubscriptionUsage {
+  authKind: 'official' | 'api_key' | 'absent' | 'unknown';
+  state: 'available' | 'unavailable';
+  plan?: string;
+  windows?: CodexUsageWindow[];
+  fetchedAt?: string;
+  stale?: boolean;
+  serverLabel?: string;
 }
 
 // ── Constants ──────────────────────────────────────────────
@@ -439,7 +466,21 @@ function mergeStatsPayloads(payloads: StatsPayload[]): StatsPayload | null {
   for (const k of rangeKeys) {
     ranges[k] = mergeRangeData(uniquePayloads.map(p => p.ranges?.[k] ?? EMPTY_RANGE));
   }
-  return { ranges };
+  const codexSubscriptions = uniquePayloads
+    .filter(p => isOfficialCodexSubscription(p.codexSubscription))
+    .map(p => ({
+      ...p.codexSubscription!,
+      windows: p.codexSubscription!.windows?.map(window => ({ ...window })),
+      serverLabel: p.serverId ?? p.serverUrl,
+    }));
+  return { ranges, codexSubscriptions };
+}
+
+function fmtReset(value?: string): string {
+  if (!value) return 'Reset time unavailable';
+  const date = new Date(value);
+  if (!Number.isFinite(date.getTime())) return 'Reset time unavailable';
+  return `Resets ${date.toLocaleString(undefined, { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })}`;
 }
 
 function uniqueStatsPayloads(payloads: StatsPayload[]): StatsPayload[] {
@@ -673,6 +714,9 @@ export default function StatsScreen() {
     !isTokenBreakdownKnown(data);
 
   const hasData = hasRangeStats(data);
+  const codexSubscriptions = (statsData?.codexSubscriptions ?? [])
+    .filter(isOfficialCodexSubscription);
+  const showStatsContent = hasData || codexSubscriptions.length > 0;
   const hasAnyStats = useMemo(
     () => Object.values(statsData?.ranges ?? {}).some(item => hasRangeStats(item)),
     [statsData],
@@ -723,7 +767,7 @@ export default function StatsScreen() {
         <View style={s.emptyContainer}>
           <ActivityIndicator color={colors.textSecondary} />
         </View>
-      ) : !hasData ? (
+      ) : !showStatsContent ? (
         <View style={s.emptyContainer}>
           <Text style={s.emptyIcon}>{'∷'}</Text>
           <Text style={s.emptyText}>{emptyTitle}</Text>
@@ -738,8 +782,57 @@ export default function StatsScreen() {
           ]}
           showsVerticalScrollIndicator={false}
         >
+            {codexSubscriptions.map((subscription, index) => (
+              <View key={`${subscription.serverLabel ?? 'server'}:${index}`} style={[s.card, s.codexCard]}>
+                <View style={s.codexTitleRow}>
+                  <View style={s.codexTitleBlock}>
+                    <Text style={s.label}>Codex subscription</Text>
+                    <Text style={s.codexPlan}>
+                      {subscription.authKind === 'official'
+                        ? codexPlanLabel(subscription.plan)
+                        : codexAuthSummary(subscription.authKind)}
+                    </Text>
+                  </View>
+                  {subscription.stale && <Text style={s.staleBadge}>STALE</Text>}
+                </View>
+                {subscription.authKind === 'official' && subscription.state === 'available' ? (
+                  <View style={s.codexWindows}>
+                    {(subscription.windows ?? []).map(window => {
+                      const used = normalizeCodexUsedPercent(window.usedPercent);
+                      const remaining = codexRemainingPercent(window.usedPercent);
+                      return (
+                        <View key={window.name} style={s.codexWindow} accessible accessibilityLabel={`${codexWindowLabel(window.windowMinutes)}, ${remaining.toFixed(0)} percent remaining, ${fmtReset(window.resetsAt)}`}>
+                          <View style={s.codexWindowHeader}>
+                            <Text style={s.codexWindowLabel}>{codexWindowLabel(window.windowMinutes)}</Text>
+                            <Text style={s.codexRemaining}>{remaining.toFixed(0)}% left</Text>
+                          </View>
+                          <View style={s.codexTrack}>
+                            <View style={[s.codexFill, { width: `${used}%` }]} />
+                          </View>
+                          <Text style={s.codexReset}>{fmtReset(window.resetsAt)}</Text>
+                        </View>
+                      );
+                    })}
+                    {subscription.stale && (
+                      <Text style={s.codexNotice}>Live usage is temporarily unavailable. Showing the last successful update.</Text>
+                    )}
+                  </View>
+                ) : (
+                  <Text style={s.codexNotice}>
+                    {subscription.authKind === 'api_key'
+                      ? 'Subscription limits are only available when Codex is signed in with ChatGPT.'
+                      : subscription.authKind === 'official'
+                        ? 'Codex usage is temporarily unavailable. Existing activity stats are unaffected.'
+                        : subscription.authKind === 'absent'
+                          ? 'Sign in to the Codex CLI with ChatGPT to see subscription limits.'
+                          : 'Zen could not confidently identify official Codex subscription authentication.'}
+                  </Text>
+                )}
+              </View>
+            ))}
+
             {/* ── Summary ── */}
-            <View style={[s.card, s.summaryCard]}>
+            {hasData && <View style={[s.card, s.summaryCard]}>
               <View style={s.summaryMetrics}>
                 <View style={s.summaryMetric}>
                   <Text style={s.summaryLabel}>Estimated cost</Text>
@@ -769,10 +862,10 @@ export default function StatsScreen() {
               <Text style={s.summarySessions}>{sessionSummary(data.sessions)}</Text>
               {hasAvailabilityGaps && (
                 <Text style={s.summaryNote}>
-                  Some agents don’t report token or billing details.
+                  Some agents do not report token or billing details.
                 </Text>
               )}
-            </View>
+            </View>}
 
             {/* ── Models ── */}
             {(data.models?.length ?? 0) > 0 && (
@@ -1357,6 +1450,27 @@ function createStyles(colors: typeof Colors) {
       color: colors.textTertiary,
       marginTop: 4,
     },
+
+    codexCard: {
+      paddingHorizontal: 16,
+      borderWidth: StyleSheet.hairlineWidth,
+      borderColor: colors.borderSubtle,
+      borderRadius: Radii.md,
+      backgroundColor: colors.bgSurface,
+    },
+    codexTitleRow: { flexDirection: 'row', alignItems: 'flex-start', gap: 12 },
+    codexTitleBlock: { flex: 1, minWidth: 0 },
+    codexPlan: { ...TypeScale.caption, ...UiTextMetrics, color: colors.textSecondary, marginTop: -8 },
+    staleBadge: { ...TypeScale.micro, ...UiTextMetrics, color: colors.textTertiary, marginTop: 3 },
+    codexWindows: { gap: 16, marginTop: 18 },
+    codexWindow: { gap: 7 },
+    codexWindowHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'baseline', gap: 12 },
+    codexWindowLabel: { ...TypeScale.label, ...UiTextMetrics, color: colors.textPrimary },
+    codexRemaining: { ...TypeScale.monoStrong, ...UiTextMetrics, color: colors.accent },
+    codexTrack: { height: 7, borderRadius: 4, backgroundColor: colors.borderSubtle, overflow: 'hidden' },
+    codexFill: { height: '100%', borderRadius: 4, backgroundColor: colors.accent, opacity: 0.78 },
+    codexReset: { ...TypeScale.caption, ...UiTextMetrics, color: colors.textTertiary },
+    codexNotice: { ...TypeScale.compact, ...UiTextMetrics, color: colors.textSecondary, marginTop: 14 },
 
     // Activity heatmap
     activityMonthRow: {
