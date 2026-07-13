@@ -5,7 +5,6 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
-	"strings"
 	"testing"
 )
 
@@ -43,19 +42,5 @@ func TestDefaultVersionMatchesAppBase(t *testing.T) {
 	}
 	if doc.Expo.Android.VersionCode != 2 {
 		t.Fatalf("unexpected versionCode %d", doc.Expo.Android.VersionCode)
-	}
-}
-
-func TestStartupBannerIncludesVersion(t *testing.T) {
-	t.Parallel()
-
-	var b strings.Builder
-	printStartupBanner(&b, "127.0.0.1:9876", "0123456789abcdefghijklmnop")
-	out := b.String()
-	if !strings.Contains(out, "zen v"+Version) {
-		t.Fatalf("banner missing version: %q", out)
-	}
-	if !strings.Contains(out, "127.0.0.1:9876") {
-		t.Fatalf("banner missing listen addr: %q", out)
 	}
 }

@@ -9,6 +9,7 @@ const fs = require('fs');
 const path = require('path');
 const {
   createRunOncePlugin,
+  withAndroidManifest,
   withAppBuildGradle,
   withDangerousMod,
 } = require('@expo/config-plugins');
@@ -129,9 +130,27 @@ function withZenReleaseSigning(config) {
   });
 }
 
+function enablePrivateNetworkHTTP(androidManifest) {
+  const application = androidManifest?.manifest?.application?.[0];
+  if (!application) {
+    throw new Error('withZenAndroidRelease: Android application manifest entry not found');
+  }
+  application.$ = application.$ || {};
+  application.$['android:usesCleartextTraffic'] = 'true';
+  return androidManifest;
+}
+
+function withZenPrivateNetworkHTTP(config) {
+  return withAndroidManifest(config, (cfg) => {
+    cfg.modResults = enablePrivateNetworkHTTP(cfg.modResults);
+    return cfg;
+  });
+}
+
 function withZenAndroidRelease(config) {
   config = withZenNoticeAssets(config);
   config = withZenReleaseSigning(config);
+  config = withZenPrivateNetworkHTTP(config);
   return config;
 }
 
@@ -143,5 +162,6 @@ module.exports = createRunOncePlugin(
   pkg.version
 );
 module.exports.injectReleaseSigningGradle = injectReleaseSigningGradle;
+module.exports.enablePrivateNetworkHTTP = enablePrivateNetworkHTTP;
 module.exports.NOTICE_APK_REL = NOTICE_APK_REL;
 module.exports.NOTICE_SRC_REL = NOTICE_SRC_REL;

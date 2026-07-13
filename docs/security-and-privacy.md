@@ -15,7 +15,7 @@ Details: [architecture.md](architecture.md).
 ## What to expose
 
 - Default bind is `127.0.0.1:9876`. Prefer exposing via Tailscale/private mesh when possible.
-- Direct LAN mode (`-addr 0.0.0.0:9876` with an `http://` pairing origin) does not encrypt traffic. Use it only on a trusted private network and restrict port `9876` with the host firewall.
+- Direct private-network mode (`zen --lan` with an `http://` pairing origin) does not encrypt plain LAN traffic. Use it only on a trusted private network and restrict port `9876` with the host firewall. Direct Tailscale IP traffic remains inside the encrypted Tailnet and is subject to its membership and ACLs.
 - If you publish a public HTTPS origin (Funnel, Cloudflare Tunnel, reverse proxy), anyone who can reach it can hit unauthenticated `/health` (daemon id / public key material used for pairing UX). Pairing and authenticated routes still require a valid token or device signature.
 - Always forward the **full origin**, not only `/ws`.
 

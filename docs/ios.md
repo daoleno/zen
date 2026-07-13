@@ -75,11 +75,11 @@ The app uses bundle identifier `com.daoleno.zen`, targets iOS 16.4 or newer, and
 Start a reachable daemon, create a fresh pairing link, and import it in the iOS app:
 
 ```bash
-zen -addr 0.0.0.0:9876
-zen pair http://<mac-lan-address>:9876
+zen --lan
+# In another terminal, run the LAN or Tailscale pair command Zen prints.
 ```
 
-For Simulator testing on the same Mac, a locally reachable address can be used. For a physical iPhone, use the Mac's LAN address on trusted Wi-Fi, a Tailnet address, or an HTTPS origin that forwards every required route. See [Connect and pair](connect-and-pair.md).
+For Simulator testing on the same Mac, a locally reachable address can be used. For a physical iPhone, use `zen --lan` with the Mac's printed LAN/Tailscale address on a trusted private network, or use an HTTPS origin that forwards every required route to bare `zen`. See [Connect and pair](connect-and-pair.md).
 
 An end-to-end terminal check should cover:
 

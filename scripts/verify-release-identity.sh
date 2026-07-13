@@ -24,6 +24,53 @@ EXPECTED_PACKAGE="com.daoleno.zen"
 EXPECTED_VERSION_CODE="2"
 EXPECTED_CERT_FP="C2:FC:5B:09:B3:86:92:EE:70:59:71:1F:E7:ED:B8:79:4C:E3:65:FE:1C:7A:06:AB:95:4E:5D:D1:BD:CD:A4:FD"
 
+verify_ios_identity() {
+  local variant="$1"
+  local expected_name="$2"
+  local expected_bundle="$3"
+  ZEN_IOS_APP_VARIANT="$variant" ZEN_IOS_BUILD_NUMBER="$EXPECTED_VERSION_CODE" \
+    node - "$expected_name" "$expected_bundle" "$EXPECTED_PACKAGE" <<'JS'
+const createConfig = require('./app/app.config.js');
+const expectedDisplayName = process.argv[2];
+const expectedBundle = process.argv[3];
+const expectedAndroidPackage = process.argv[4];
+const config = createConfig();
+
+if (config.name !== 'Zen') {
+  throw new Error(`top-level Expo name must remain Zen; got ${config.name}`);
+}
+if (config.version !== '0.1.0-beta.2') {
+  throw new Error(`general/Android version must remain 0.1.0-beta.2; got ${config.version}`);
+}
+if (config.ios.bundleIdentifier !== expectedBundle) {
+  throw new Error(`iOS bundle identifier is ${config.ios.bundleIdentifier}; expected ${expectedBundle}`);
+}
+if (config.ios.infoPlist.CFBundleDisplayName !== expectedDisplayName) {
+  throw new Error(
+    `iOS display name is ${config.ios.infoPlist.CFBundleDisplayName}; expected ${expectedDisplayName}`,
+  );
+}
+if (config.ios.infoPlist.CFBundleShortVersionString !== '0.1.0') {
+  throw new Error(
+    `iOS marketing version must resolve to 0.1.0; got ${config.ios.infoPlist.CFBundleShortVersionString}`,
+  );
+}
+if (config.ios.infoPlist.CFBundleVersion !== '2') {
+  throw new Error(`iOS build number must resolve to 2; got ${config.ios.infoPlist.CFBundleVersion}`);
+}
+if (config.android.package !== expectedAndroidPackage) {
+  throw new Error(
+    `Android package changed under iOS variant: ${config.android.package}; expected ${expectedAndroidPackage}`,
+  );
+}
+JS
+}
+
+# Validate both closed iOS branches regardless of the caller's active variant.
+# This keeps the canonical release verifier meaningful inside Preview CI.
+verify_ios_identity production "Zen" "com.daoleno.zen"
+verify_ios_identity preview "Zen" "com.daoleno.zen.preview"
+
 python3 - "$ROOT" "$EXPECTED_VERSION" "$EXPECTED_PACKAGE" "$EXPECTED_VERSION_CODE" "$EXPECTED_CERT_FP" "$STAGE" <<'PY'
 import hashlib
 import json

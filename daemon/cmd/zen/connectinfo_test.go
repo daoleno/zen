@@ -9,6 +9,7 @@ import (
 	"errors"
 	"flag"
 	"io"
+	"net"
 	"net/url"
 	"os"
 	"strings"
@@ -121,16 +122,56 @@ func TestBuildConnectionOffersUsesEndpoint(t *testing.T) {
 	}
 }
 
-func TestPrintPairingHint(t *testing.T) {
+func TestPrintStartupInfoForLoopback(t *testing.T) {
 	var output bytes.Buffer
-	printPairingHint(&output, "/tmp/zen-state")
+	printStartupInfo(&output, "127.0.0.1:9876", "/tmp/zen-state", nil)
 
 	rendered := output.String()
-	if !strings.Contains(rendered, "zen pair -state-dir /tmp/zen-state https://your-host.example") {
-		t.Fatalf("expected pair command example, got %q", rendered)
+	for _, want := range []string{
+		"local-only mode",
+		"restart with zen --lan",
+		"expose http://127.0.0.1:9876",
+		"zen pair -state-dir /tmp/zen-state https://your-zen-host.example",
+	} {
+		if !strings.Contains(rendered, want) {
+			t.Fatalf("startup info missing %q: %q", want, rendered)
+		}
 	}
-	if strings.Contains(rendered, "LOCAL-ONLY") || strings.Contains(rendered, "PAIRABLE") {
-		t.Fatalf("pairing hint should not expose startup modes: %q", rendered)
+	if strings.Contains(rendered, "Daemon ID") || strings.Contains(rendered, "Auth:") {
+		t.Fatalf("startup info contains novice noise: %q", rendered)
+	}
+}
+
+func TestPrintStartupInfoForLANUsesDetectedAddresses(t *testing.T) {
+	var output bytes.Buffer
+	printStartupInfo(&output, "0.0.0.0:9876", "", []privateNetworkAddress{
+		{label: "Same Wi-Fi/LAN", ip: net.ParseIP("192.168.1.42")},
+		{label: "Tailscale", ip: net.ParseIP("100.101.102.103")},
+	})
+
+	rendered := output.String()
+	for _, want := range []string{
+		"ready for trusted private-network access",
+		"another terminal",
+		"zen pair http://192.168.1.42:9876",
+		"zen pair http://100.101.102.103:9876",
+	} {
+		if !strings.Contains(rendered, want) {
+			t.Fatalf("startup info missing %q: %q", want, rendered)
+		}
+	}
+	if strings.Contains(rendered, "zen pair http://0.0.0.0") {
+		t.Fatalf("startup info offered wildcard pairing address: %q", rendered)
+	}
+}
+
+func TestPrintStartupInfoForSpecificPrivateBind(t *testing.T) {
+	var output bytes.Buffer
+	printStartupInfo(&output, "192.168.1.42:9988", "", nil)
+
+	rendered := output.String()
+	if !strings.Contains(rendered, "zen pair http://192.168.1.42:9988") {
+		t.Fatalf("specific private bind missing pairing command: %q", rendered)
 	}
 }
 
@@ -173,6 +214,55 @@ func TestRemovedAdvertiseURLFlagsAreRejected(t *testing.T) {
 	}
 	if _, err := parsePairConfig([]string{"-url", "https://zen.example.com"}, io.Discard); err == nil {
 		t.Fatal("pair accepted removed -url flag")
+	}
+}
+
+func TestDaemonConfigLANModeAndAddrConflict(t *testing.T) {
+	cfg, err := parseDaemonConfig([]string{"--lan"}, io.Discard)
+	if err != nil {
+		t.Fatalf("parseDaemonConfig(--lan): %v", err)
+	}
+	if cfg.addr != "0.0.0.0:9876" || !cfg.lan {
+		t.Fatalf("LAN config = %#v", cfg)
+	}
+
+	defaultCfg, err := parseDaemonConfig(nil, io.Discard)
+	if err != nil {
+		t.Fatalf("parseDaemonConfig(default): %v", err)
+	}
+	if defaultCfg.addr != "127.0.0.1:9876" || defaultCfg.lan {
+		t.Fatalf("default config = %#v", defaultCfg)
+	}
+
+	if _, err := parseDaemonConfig([]string{"--lan", "-addr", "192.168.1.42:9876"}, io.Discard); err == nil || !strings.Contains(err.Error(), "cannot be used together") {
+		t.Fatalf("expected explicit --lan/-addr conflict, got %v", err)
+	}
+	if _, err := parseDaemonConfig([]string{"-addr", "192.168.1.42:9876", "--lan"}, io.Discard); err == nil || !strings.Contains(err.Error(), "cannot be used together") {
+		t.Fatalf("expected order-independent --lan/-addr conflict, got %v", err)
+	}
+}
+
+func TestStartupPairingAddressesNeverReturnsWildcard(t *testing.T) {
+	detected := []privateNetworkAddress{{label: "Same Wi-Fi/LAN", ip: net.ParseIP("10.0.0.7")}}
+	got := startupPairingAddresses("0.0.0.0", detected)
+	if len(got) != 1 || !got[0].ip.Equal(net.ParseIP("10.0.0.7")) {
+		t.Fatalf("startupPairingAddresses = %#v", got)
+	}
+	if got := startupPairingAddresses("192.168.2.9", nil); len(got) != 1 || got[0].ip.String() != "192.168.2.9" {
+		t.Fatalf("specific private address = %#v", got)
+	}
+}
+
+func TestPrivateNetworkAddressDetectionSkipsContainerInterfaces(t *testing.T) {
+	for _, name := range []string{"docker0", "br-deadbeef", "veth123", "virbr0", "cni0", "podman0", "kube-bridge"} {
+		if !shouldSkipPrivateNetworkInterface(name) {
+			t.Fatalf("expected %q to be skipped", name)
+		}
+	}
+	for _, name := range []string{"en0", "eth0", "wlan0", "tailscale0"} {
+		if shouldSkipPrivateNetworkInterface(name) {
+			t.Fatalf("expected %q to remain eligible", name)
+		}
 	}
 }
 

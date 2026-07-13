@@ -1,10 +1,11 @@
-import React from "react";
-import { StyleSheet, Text } from "react-native";
+import React, { useCallback } from "react";
+import { Linking, StyleSheet, Text } from "react-native";
 import { Typography } from "../../constants/tokens";
 import type {
   TerminalThemeChrome,
   TerminalThemePalette,
 } from "../../constants/terminalThemes";
+import { openSafeMarkdownUrl } from "../markdown/markdownLinks";
 import { tokenizeInlineMessage } from "./CodexMessageBodyModel";
 
 interface CodexInlineMessageProps {
@@ -20,6 +21,10 @@ export function CodexInlineMessage({
   theme,
   compact = false,
 }: CodexInlineMessageProps) {
+  const handleLinkPress = useCallback((url: string) => {
+    void openSafeMarkdownUrl(url, (safeUrl) => Linking.openURL(safeUrl));
+  }, []);
+
   return (
     <>
       {tokenizeInlineMessage(text).map((part, index) => {
@@ -65,8 +70,14 @@ export function CodexInlineMessage({
           );
         }
         if (part.kind === "link") {
+          const url = part.url;
           return (
-            <Text key={index} style={[styles.messageLink, { color: chrome.link }]}>
+            <Text
+              accessibilityRole="link"
+              key={index}
+              onPress={url ? () => handleLinkPress(url) : undefined}
+              style={[styles.messageLink, { color: chrome.link }]}
+            >
               {part.text}
             </Text>
           );

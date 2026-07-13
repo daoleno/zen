@@ -1,3 +1,5 @@
+import { parseMarkdownLinkToken } from "../markdown/markdownLinks";
+
 export type MessageBlock =
   | { type: "heading"; level: number; text: string }
   | { type: "paragraph"; text: string }
@@ -17,6 +19,7 @@ export type MessageListItem = {
 export type InlineMessagePart = {
   text: string;
   kind?: "bold" | "code" | "italic" | "link" | "strike";
+  url?: string;
 };
 
 export type MessageTableAlignment = "left" | "center" | "right";
@@ -500,8 +503,12 @@ export function tokenizeInlineMessage(text: string): InlineMessagePart[] {
     } else if (token.startsWith("*")) {
       parts.push({ kind: "italic", text: token.slice(1, -1) });
     } else {
-      const label = /^\[([^\]]+)\]/.exec(token)?.[1] || token;
-      parts.push({ kind: "link", text: label });
+      const link = parseMarkdownLinkToken(token);
+      parts.push({
+        kind: "link",
+        text: link?.text || token,
+        url: link?.url,
+      });
     }
     lastIndex = match.index + token.length;
   }

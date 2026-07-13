@@ -1,6 +1,7 @@
 const fs = require('fs');
 const path = require('path');
 const { expo: baseConfig } = require('./app.base.json');
+const { resolveIOSIdentity } = require('./iosIdentity');
 
 loadEnvFile(path.join(__dirname, '.env.local'));
 
@@ -10,6 +11,8 @@ const projectId = typeof process.env.ZEN_EXPO_PROJECT_ID === 'string'
 
 module.exports = () => {
   const extra = { ...(baseConfig.extra || {}) };
+  const iosIdentity = resolveIOSIdentity(process.env.ZEN_IOS_APP_VARIANT);
+  const iosMarketingVersion = resolveIOSMarketingVersion(baseConfig.version);
   const iosBuildNumber = resolveIOSBuildNumber(
     process.env.ZEN_IOS_BUILD_NUMBER,
     baseConfig.ios && baseConfig.ios.buildNumber,
@@ -23,7 +26,14 @@ module.exports = () => {
     ...baseConfig,
     ios: {
       ...(baseConfig.ios || {}),
+      bundleIdentifier: iosIdentity.bundleIdentifier,
       buildNumber: iosBuildNumber,
+      infoPlist: {
+        ...((baseConfig.ios && baseConfig.ios.infoPlist) || {}),
+        CFBundleDisplayName: iosIdentity.displayName,
+        CFBundleShortVersionString: iosMarketingVersion,
+        CFBundleVersion: iosBuildNumber,
+      },
     },
     plugins: [
       ...(baseConfig.plugins || []),
@@ -41,7 +51,13 @@ module.exports = () => {
       'expo-video',
       // Keep Expo Swift modules on one source-built ABI so patch upgrades
       // cannot mix precompiled ExpoVideo and ExpoModulesCore binaries.
-      './plugins/withZenIOSBuild',
+      [
+        './plugins/withZenIOSBuild',
+        {
+          marketingVersion: iosMarketingVersion,
+          buildNumber: iosBuildNumber,
+        },
+      ],
       // Package Ghostty MIT notice into Android assets + env-based release signing.
       './plugins/withZenAndroidRelease',
     ],
@@ -57,7 +73,17 @@ function resolveIOSBuildNumber(value, fallback) {
   return candidate;
 }
 
+function resolveIOSMarketingVersion(value) {
+  const candidate = typeof value === 'string' ? value.split('-', 1)[0] : '';
+  if (!/^(0|[1-9][0-9]{0,3})\.(0|[1-9][0-9]?)\.(0|[1-9][0-9]?)$/.test(candidate)) {
+    throw new Error('iOS marketing version must be three numeric components (for example 0.1.0)');
+  }
+  return candidate;
+}
+
 module.exports.resolveIOSBuildNumber = resolveIOSBuildNumber;
+module.exports.resolveIOSMarketingVersion = resolveIOSMarketingVersion;
+module.exports.resolveIOSIdentity = resolveIOSIdentity;
 
 function loadEnvFile(filePath) {
   if (!fs.existsSync(filePath)) {

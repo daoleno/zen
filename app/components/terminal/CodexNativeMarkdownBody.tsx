@@ -14,10 +14,10 @@ import type {
   TerminalThemeChrome,
   TerminalThemePalette,
 } from "../../constants/terminalThemes";
+import { openSafeMarkdownUrl } from "../markdown/markdownLinks";
 import { CodexMarkdownErrorBoundary } from "./CodexMarkdownErrorBoundary";
 import {
   codexMarkdownStyle,
-  isSafeMarkdownUrl,
   prepareCodexMarkdown,
 } from "./CodexNativeMarkdownBodyModel";
 import { TimelineTextSelectableContext } from "./TimelineTextSelectableContext";
@@ -55,11 +55,7 @@ export function CodexNativeMarkdownBody({
   );
   const fallback = renderFallback(markdown || value);
   const handleLinkPress = useCallback((event: LinkPressEvent) => {
-    const url = event.url.trim();
-    if (!isSafeMarkdownUrl(url)) {
-      return;
-    }
-    void Linking.openURL(url).catch(() => undefined);
+    void openSafeMarkdownUrl(event.url, (url) => Linking.openURL(url));
   }, []);
   const clearSelectionStartTimer = useCallback(() => {
     if (!selectionStartTimerRef.current) {

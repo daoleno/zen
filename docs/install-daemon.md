@@ -29,7 +29,6 @@ grep 'zen-darwin-arm64.tar.gz$' SHA256SUMS | shasum -a 256 -c -
 tar -xzf zen-<platform>-<architecture>.tar.gz
 install -m 755 zen ~/.local/bin/zen
 zen doctor
-zen
 ```
 
 On macOS, install `tmux` with `brew install tmux`. If macOS blocks the downloaded binary, confirm that it came from the official Zen release before removing the quarantine attribute with `xattr -d com.apple.quarantine ~/.local/bin/zen`.
@@ -44,7 +43,7 @@ Source builds require the Go toolchain declared in `daemon/go.mod`:
 git clone https://github.com/daoleno/zen.git
 cd zen/daemon
 go build -o bin/zen ./cmd/zen/
-./bin/zen
+./bin/zen --help
 ```
 
 Product version for banners and release staging comes from `app/app.base.json` (`expo.version`). The daemon default is `daemon/cmd/zen/version.go` and can be overridden at link time (`-X main.Version=…`).
@@ -118,9 +117,12 @@ Use the same `-state-dir` for the daemon and for `zen pair`.
 
 ## Starting and pairing are separate
 
-1. Start `zen` so it has a stable identity and listening address.
-2. Make it reachable: use `zen -addr 0.0.0.0:9876` for a trusted LAN, or expose `http://127.0.0.1:9876` through your network layer.
-3. Run `zen pair <full-origin>` to print a one-time link/QR without restarting.
+Choose one connectivity route:
+
+1. **Direct private network:** run `zen --lan` on the computer while the phone is on the same trusted Wi-Fi or Tailnet. Zen listens on `0.0.0.0:9876` and prints usable pair commands for detected private addresses. Run one of those commands in another terminal; never pair with `0.0.0.0`.
+2. **HTTPS endpoint:** run bare `zen` on its secure loopback default, forward the full `http://127.0.0.1:9876` origin through an HTTPS ingress, then run `zen pair https://your-zen-host.example` in another terminal.
+
+`-addr` remains available for an advanced explicit bind. It cannot be combined with `--lan`.
 
 There is no `-advertise-url` flag. The externally reachable origin is supplied at pair time.
 

@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"net/http"
 	"os"
 	"os/exec"
 	"os/signal"
@@ -32,6 +33,7 @@ import (
 type daemonConfig struct {
 	addr     string
 	stateDir string
+	lan      bool
 }
 
 type pairConfig struct {
@@ -97,9 +99,6 @@ func runDaemon(args []string, stderr io.Writer) error {
 	if err != nil {
 		return fmt.Errorf("initialize auth manager: %w", err)
 	}
-
-	printStartupBanner(stderr, cfg.addr, authManager.DaemonID())
-	printPairingHint(stderr, cfg.stateDir)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -187,14 +186,16 @@ func runDaemon(args []string, stderr io.Writer) error {
 	}()
 	serverErr := make(chan error, 1)
 	go func() {
-		serverErr <- srv.Run(ctx, cfg.addr)
+		serverErr <- srv.RunWithReady(ctx, cfg.addr, func() {
+			printStartupInfo(stderr, cfg.addr, cfg.stateDir, detectPrivateNetworkAddresses())
+		})
 	}()
 
 	select {
 	case err := <-controlErr:
 		return fmt.Errorf("control server error: %w", err)
 	case err := <-serverErr:
-		if err != nil && err.Error() != "http: Server closed" {
+		if err != nil && !errors.Is(err, http.ErrServerClosed) {
 			return fmt.Errorf("server error: %w", err)
 		}
 	}
@@ -739,6 +740,7 @@ func parseDaemonConfig(args []string, stderr io.Writer) (daemonConfig, error) {
 
 	cfg := daemonConfig{}
 	fs.StringVar(&cfg.addr, "addr", "127.0.0.1:9876", "listen address")
+	fs.BoolVar(&cfg.lan, "lan", false, "listen on all IPv4 interfaces for trusted private-network access")
 	fs.StringVar(&cfg.stateDir, "state-dir", "", "state directory for daemon identity and trusted devices")
 	fs.Usage = func() {
 		fmt.Fprintln(stderr, "Usage: zen [flags]")
@@ -756,6 +758,18 @@ func parseDaemonConfig(args []string, stderr io.Writer) (daemonConfig, error) {
 
 	if err := fs.Parse(args); err != nil {
 		return cfg, err
+	}
+	addrExplicit := false
+	fs.Visit(func(value *flag.Flag) {
+		if value.Name == "addr" {
+			addrExplicit = true
+		}
+	})
+	if cfg.lan && addrExplicit {
+		return cfg, fmt.Errorf("--lan and -addr cannot be used together")
+	}
+	if cfg.lan {
+		cfg.addr = "0.0.0.0:9876"
 	}
 	if fs.NArg() > 0 {
 		return cfg, fmt.Errorf("unexpected arguments: %s", strings.Join(fs.Args(), " "))

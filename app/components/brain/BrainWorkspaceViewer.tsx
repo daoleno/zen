@@ -21,6 +21,7 @@ import { compactPathLabel } from "../../services/pathDisplay";
 import { wsClient, type BrainWorkspaceEntry, type BrainWorkspaceFile, type BrainWorkspaceTree } from "../../services/websocket";
 import { AppText, BottomSheetFrame, IconButton } from "../ui";
 import { CodexNativeMarkdownBody } from "../terminal/CodexNativeMarkdownBody";
+import { MarkdownFallbackText } from "../markdown/MarkdownFallbackText";
 import {
   brainWorkspaceEntryAccessibilityLabel,
   brainWorkspaceEntryIconName,
@@ -440,9 +441,14 @@ function BrainWorkspaceFilePreview({
               chrome={chrome}
               theme={theme}
               renderFallback={(value) => (
-                <Text selectable style={[styles.plainText, { color: chrome.text }]}>
-                  {value}
-                </Text>
+                <MarkdownFallbackText
+                  value={value}
+                  style={[styles.plainText, { color: chrome.text }]}
+                  linkStyle={{
+                    color: chrome.link,
+                    textDecorationLine: "underline",
+                  }}
+                />
               )}
             />
           ) : (

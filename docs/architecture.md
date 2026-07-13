@@ -110,7 +110,7 @@ The daemon listens locally by default:
 
 - `127.0.0.1:9876`
 
-The user is expected to expose that origin through their preferred network path.
+For a direct trusted Wi-Fi or Tailnet connection, `zen --lan` binds `0.0.0.0:9876` and startup output offers pairing commands for detected private addresses. Otherwise, the user exposes the default loopback origin through an HTTPS ingress.
 The app needs more than just the WebSocket endpoint. The externally reachable origin must forward:
 
 - `/ws`

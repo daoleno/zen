@@ -4,7 +4,7 @@
 
 - If you installed a release binary, confirm it is executable and on `PATH`: `command -v zen && zen doctor`.
 - If you built from source, confirm the build succeeds: `cd daemon && go build -o bin/zen ./cmd/zen/`.
-- Ensure nothing else is bound to `127.0.0.1:9876`, or pass `-addr`.
+- Ensure nothing else is bound to `127.0.0.1:9876`; use `--lan` for direct trusted-network access or `-addr` for an advanced explicit bind.
 - Check state dir permissions on `~/.zen` (or your `-state-dir`).
 
 ## Phone cannot connect

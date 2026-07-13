@@ -1,6 +1,7 @@
 import { describe, expect, test } from 'bun:test';
 import {
   injectReleaseSigningGradle,
+  enablePrivateNetworkHTTP,
   NOTICE_APK_REL,
   NOTICE_SRC_REL,
 } from './withZenAndroidRelease.js';
@@ -46,5 +47,25 @@ describe('withZenAndroidRelease signing injection', () => {
   test('exports APK notice path contract', () => {
     expect(NOTICE_SRC_REL).toBe('assets/notices/GHOSTTY-MIT.txt');
     expect(NOTICE_APK_REL).toBe('assets/notices/GHOSTTY-MIT.txt');
+  });
+});
+
+describe('withZenAndroidRelease private-network HTTP config', () => {
+  test('enables cleartext HTTP on the production application manifest', () => {
+    const manifest = {
+      manifest: {
+        application: [{ $: { 'android:name': '.MainApplication' } }],
+      },
+    };
+
+    const configured = enablePrivateNetworkHTTP(manifest);
+    expect(configured.manifest.application[0].$['android:usesCleartextTraffic']).toBe('true');
+    expect(configured.manifest.application[0].$['android:name']).toBe('.MainApplication');
+  });
+
+  test('fails clearly when the application manifest entry is absent', () => {
+    expect(() => enablePrivateNetworkHTTP({ manifest: {} })).toThrow(
+      'Android application manifest entry not found',
+    );
   });
 });

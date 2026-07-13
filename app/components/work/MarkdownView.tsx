@@ -1,6 +1,8 @@
-import React, { useMemo } from "react";
-import { StyleSheet, Text, View } from "react-native";
+import React, { useCallback, useMemo } from "react";
+import { Linking, StyleSheet, Text, View } from "react-native";
 import { Colors, Spacing, Typography, useAppColors } from "../../constants/tokens";
+import { openSafeMarkdownUrl } from "../markdown/markdownLinks";
+import { tokenizeMarkdownInline } from "./MarkdownViewModel";
 
 type Block =
   | { type: "heading"; level: number; text: string }
@@ -10,15 +12,13 @@ type Block =
   | { type: "quote"; text: string }
   | { type: "rule" };
 
-type InlinePart = {
-  text: string;
-  kind?: "bold" | "code" | "link";
-};
-
 export function MarkdownView({ value }: { value: string }) {
   const colors = useAppColors();
   const styles = useMemo(() => createStyles(colors), [colors]);
   const blocks = useMemo(() => parseMarkdown(value), [value]);
+  const handleLinkPress = useCallback((url: string) => {
+    void openSafeMarkdownUrl(url, (safeUrl) => Linking.openURL(safeUrl));
+  }, []);
 
   return (
     <View style={styles.root}>
@@ -40,7 +40,7 @@ export function MarkdownView({ value }: { value: string }) {
                         : styles.headingFour,
                 ]}
               >
-                {renderInline(block.text, styles)}
+                {renderInline(block.text, styles, handleLinkPress)}
               </Text>
             );
           case "list":
@@ -52,7 +52,7 @@ export function MarkdownView({ value }: { value: string }) {
                       •
                     </Text>
                     <Text selectable style={styles.listBody}>
-                      {renderInline(item, styles)}
+                      {renderInline(item, styles, handleLinkPress)}
                     </Text>
                   </View>
                 ))}
@@ -68,7 +68,7 @@ export function MarkdownView({ value }: { value: string }) {
             return (
               <View key={index} style={styles.quote}>
                 <Text selectable style={styles.quoteText}>
-                  {renderInline(block.text, styles)}
+                  {renderInline(block.text, styles, handleLinkPress)}
                 </Text>
               </View>
             );
@@ -78,7 +78,7 @@ export function MarkdownView({ value }: { value: string }) {
           default:
             return (
               <Text key={index} selectable style={styles.body}>
-                {renderInline(block.text, styles)}
+                {renderInline(block.text, styles, handleLinkPress)}
               </Text>
             );
         }
@@ -192,8 +192,12 @@ function parseMarkdown(value: string): Block[] {
   return blocks;
 }
 
-function renderInline(text: string, styles: ReturnType<typeof createStyles>) {
-  return tokenizeInline(text).map((part, index) => {
+function renderInline(
+  text: string,
+  styles: ReturnType<typeof createStyles>,
+  onLinkPress: (url: string) => void,
+) {
+  return tokenizeMarkdownInline(text).map((part, index) => {
     if (part.kind === "bold") {
       return (
         <Text key={index} style={styles.bold}>
@@ -209,42 +213,20 @@ function renderInline(text: string, styles: ReturnType<typeof createStyles>) {
       );
     }
     if (part.kind === "link") {
+      const url = part.url;
       return (
-        <Text key={index} style={styles.link}>
+        <Text
+          accessibilityRole="link"
+          key={index}
+          onPress={url ? () => onLinkPress(url) : undefined}
+          style={styles.link}
+        >
           {part.text}
         </Text>
       );
     }
     return part.text;
   });
-}
-
-function tokenizeInline(text: string): InlinePart[] {
-  const pattern = /(`[^`]+`|\*\*[^*]+\*\*|\[[^\]]+\]\([^)]+\))/g;
-  const parts: InlinePart[] = [];
-  let lastIndex = 0;
-  let match: RegExpExecArray | null;
-
-  while ((match = pattern.exec(text)) !== null) {
-    if (match.index > lastIndex) {
-      parts.push({ text: text.slice(lastIndex, match.index) });
-    }
-    const token = match[0];
-    if (token.startsWith("`")) {
-      parts.push({ kind: "code", text: token.slice(1, -1) });
-    } else if (token.startsWith("**")) {
-      parts.push({ kind: "bold", text: token.slice(2, -2) });
-    } else {
-      const label = /^\[([^\]]+)\]/.exec(token)?.[1] || token;
-      parts.push({ kind: "link", text: label });
-    }
-    lastIndex = match.index + token.length;
-  }
-
-  if (lastIndex < text.length) {
-    parts.push({ text: text.slice(lastIndex) });
-  }
-  return parts;
 }
 
 function createStyles(colors: typeof Colors) {
@@ -308,6 +290,7 @@ function createStyles(colors: typeof Colors) {
     link: {
       color: colors.accent,
       fontFamily: Typography.uiFontMedium,
+      textDecorationLine: "underline",
     },
     list: {
       marginBottom: 10,

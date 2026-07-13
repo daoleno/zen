@@ -1,9 +1,12 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
+  Animated as NativeAnimated,
+  type LayoutChangeEvent,
   ScrollView,
   StyleSheet,
   Text,
+  useWindowDimensions,
   View,
 } from 'react-native';
 import { useFocusEffect } from 'expo-router';
@@ -12,9 +15,11 @@ import * as Haptics from 'expo-haptics';
 import Animated, {
   useSharedValue,
   useAnimatedStyle,
+  useReducedMotion,
   withTiming,
   interpolate,
 } from 'react-native-reanimated';
+import { TabView } from 'react-native-tab-view';
 import {
   Colors,
   Radii,
@@ -34,10 +39,17 @@ import {
   normalizeCodexUsedPercent,
   isOfficialCodexSubscription,
 } from '../services/codexSubscriptionStats';
+import {
+  INITIAL_STATS_RANGE,
+  STATS_RANGE_TABS,
+  statsRangeAt,
+  statsRangeIndex,
+  type StatsRange,
+} from '../services/statsTabs';
 
 // ── Types (mirror daemon/stats/types.go) ───────────────────
 
-type TimeRange = 'day' | 'week' | 'month' | 'all';
+type TimeRange = StatsRange;
 
 interface DayCell {
   date: string;
@@ -149,17 +161,17 @@ const EMPTY_RANGE: RangeData = {
   sessions: 0, models: [], projects: [], skills: [], tools: [], days: [],
 };
 
-const RANGE_OPTIONS: { key: TimeRange; label: string }[] = [
-  { key: 'day', label: 'Day' },
-  { key: 'week', label: 'Week' },
-  { key: 'month', label: 'Month' },
-  { key: 'all', label: 'All' },
+const RANGE_OPTIONS = STATS_RANGE_TABS;
+const STATS_TAB_ROUTES: Array<{ key: TimeRange; label: string }> = [
+  ...STATS_RANGE_TABS,
 ];
 
 const MAX_LIST_ITEMS = 5;
 const EMPTY_STATS_RETRY_MS = 700;
 const EMPTY_STATS_MAX_RETRIES = 3;
 const STATS_CONTENT_MAX_WIDTH = 760;
+const STATS_TAB_BAR_GAP = 4;
+const STATS_TAB_BAR_PADDING = 3;
 
 // ── Helpers ────────────────────────────────────────────────
 
@@ -578,30 +590,32 @@ function buildActivityCalendarColumns(days: ActivityDay[]): (ActivityDay | null)
 // ── Component ──────────────────────────────────────────────
 
 export default function StatsScreen() {
-  const { colors, theme } = useAppTheme();
-  const insets = useSafeAreaInsets();
+  const { colors } = useAppTheme();
   const s = useMemo(() => createStyles(colors), [colors]);
-  const intensityColors = theme.dataVisualization.activityRamp;
+  const { width } = useWindowDimensions();
+  const reducedMotion = useReducedMotion();
   const { state: agentsState } = useAgents();
-  const [range, setRange] = useState<TimeRange>('week');
+  const [range, setRange] = useState<TimeRange>(INITIAL_STATS_RANGE);
   const [statsData, setStatsData] = useState<StatsPayload | null>(null);
   const [loading, setLoading] = useState(true);
   const [expandedSections, setExpandedSections] = useState<Set<string>>(new Set());
   const [selectedDay, setSelectedDay] = useState<DayCell | null>(null);
+  const [nestedHorizontalScrollActive, setNestedHorizontalScrollActive] = useState(false);
+  const [rangeTabBarWidth, setRangeTabBarWidth] = useState(0);
   const statsDataRef = useRef<StatsPayload | null>(null);
 
   useEffect(() => {
     statsDataRef.current = statsData;
   }, [statsData]);
 
-  const toggleSection = (section: string) => {
+  const toggleSection = useCallback((section: string) => {
     setExpandedSections(prev => {
       const next = new Set(prev);
       if (next.has(section)) next.delete(section);
       else next.add(section);
       return next;
     });
-  };
+  }, []);
 
   const connectedServerIds = useMemo(
     () =>
@@ -672,6 +686,165 @@ export default function StatsScreen() {
     }, [connectedServerIdsKey, hasConnectingServer]),
   );
 
+  const selectRangeIndex = useCallback((index: number) => {
+    const nextRange = statsRangeAt(index);
+    if (nextRange === range) return;
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+    setRange(nextRange);
+  }, [range]);
+  const beginNestedHorizontalGesture = useCallback(() => {
+    setNestedHorizontalScrollActive(true);
+  }, []);
+  const endNestedHorizontalGesture = useCallback(() => {
+    setNestedHorizontalScrollActive(false);
+  }, []);
+  const handleRangeTabBarLayout = useCallback((event: LayoutChangeEvent) => {
+    setRangeTabBarWidth(event.nativeEvent.layout.width);
+  }, []);
+
+  return (
+    <SafeAreaView style={s.container} edges={[]}>
+      <TabView<{ key: TimeRange; label: string }>
+        navigationState={{ index: statsRangeIndex(range), routes: STATS_TAB_ROUTES }}
+        initialLayout={{ width }}
+        animationEnabled={!reducedMotion}
+        lazy={false}
+        overScrollMode="never"
+        swipeEnabled={!nestedHorizontalScrollActive}
+        renderTabBar={({ position, jumpTo }) => (
+          <StatsRangeTabBar
+            position={position}
+            range={range}
+            width={rangeTabBarWidth}
+            onLayout={handleRangeTabBarLayout}
+            jumpTo={jumpTo}
+            styles={s}
+          />
+        )}
+        onIndexChange={selectRangeIndex}
+        renderScene={({ route }) => (
+          <StatsRangeScene
+            range={route.key}
+            active={route.key === range}
+            statsData={statsData}
+            loading={loading}
+            expandedSections={expandedSections}
+            toggleSection={toggleSection}
+            selectedDay={selectedDay}
+            setSelectedDay={setSelectedDay}
+            onNestedHorizontalGestureStart={beginNestedHorizontalGesture}
+            onNestedHorizontalGestureEnd={endNestedHorizontalGesture}
+          />
+        )}
+        style={s.pager}
+      />
+
+      <DayDetailSheet selectedDay={selectedDay} onClose={() => setSelectedDay(null)} />
+    </SafeAreaView>
+  );
+}
+
+function StatsRangeTabBar({
+  position,
+  range,
+  width,
+  onLayout,
+  jumpTo,
+  styles,
+}: {
+  position: NativeAnimated.AnimatedInterpolation<number>;
+  range: TimeRange;
+  width: number;
+  onLayout(event: LayoutChangeEvent): void;
+  jumpTo(key: string): void;
+  styles: ReturnType<typeof createStyles>;
+}) {
+  const tabWidth = Math.max(
+    0,
+    (width - STATS_TAB_BAR_PADDING * 2 - STATS_TAB_BAR_GAP * (RANGE_OPTIONS.length - 1)) /
+      RANGE_OPTIONS.length,
+  );
+  const translateX = position.interpolate({
+    inputRange: RANGE_OPTIONS.map((_, index) => index),
+    outputRange: RANGE_OPTIONS.map((_, index) => index * (tabWidth + STATS_TAB_BAR_GAP)),
+    extrapolate: 'clamp',
+  });
+
+  return (
+    <View style={styles.header}>
+      <View style={styles.rangeRow} onLayout={onLayout}>
+        {tabWidth > 0 && (
+          <NativeAnimated.View
+            pointerEvents="none"
+            style={[
+              styles.rangeTabIndicator,
+              { width: tabWidth, transform: [{ translateX }] },
+            ]}
+          />
+        )}
+        {RANGE_OPTIONS.map((opt, index) => {
+          const active = range === opt.key;
+          const activeTextOpacity = position.interpolate({
+            inputRange: [index - 1, index, index + 1],
+            outputRange: [0, 1, 0],
+            extrapolate: 'clamp',
+          });
+          return (
+            <AnimatedPressable
+              key={opt.key}
+              style={styles.rangeTab}
+              scale={1}
+              accessibilityRole="tab"
+              accessibilityState={{ selected: active }}
+              accessibilityLabel={`${opt.label} range`}
+              onPress={() => jumpTo(opt.key)}
+            >
+              <Text style={styles.rangeTabText}>{opt.label}</Text>
+              <NativeAnimated.Text
+                accessible={false}
+                aria-hidden
+                style={[styles.rangeTabText, styles.rangeTabTextActive, { opacity: activeTextOpacity }]}
+              >
+                {opt.label}
+              </NativeAnimated.Text>
+            </AnimatedPressable>
+          );
+        })}
+      </View>
+    </View>
+  );
+}
+
+interface StatsRangeSceneProps {
+  range: TimeRange;
+  active: boolean;
+  statsData: StatsPayload | null;
+  loading: boolean;
+  expandedSections: Set<string>;
+  toggleSection(section: string): void;
+  selectedDay: DayCell | null;
+  setSelectedDay(day: DayCell | null): void;
+  onNestedHorizontalGestureStart(): void;
+  onNestedHorizontalGestureEnd(): void;
+}
+
+function StatsRangeScene({
+  range,
+  active,
+  statsData,
+  loading,
+  expandedSections,
+  toggleSection,
+  selectedDay,
+  setSelectedDay,
+  onNestedHorizontalGestureStart,
+  onNestedHorizontalGestureEnd,
+}: StatsRangeSceneProps) {
+  const { colors, theme } = useAppTheme();
+  const insets = useSafeAreaInsets();
+  const s = useMemo(() => createStyles(colors), [colors]);
+  const intensityColors = theme.dataVisualization.activityRamp;
+
   const data = statsData?.ranges?.[range] ?? EMPTY_RANGE;
   const allData = statsData?.ranges?.all ?? EMPTY_RANGE;
   const days = data.days ?? [];
@@ -734,35 +907,12 @@ export default function StatsScreen() {
       : 'Stats read Claude Code and Codex history from the daemon host.';
 
   return (
-    <SafeAreaView style={s.container} edges={[]}>
-      <View style={s.header}>
-        <View style={s.rangeRow}>
-          {RANGE_OPTIONS.map((opt) => {
-            const active = range === opt.key;
-            return (
-              <AnimatedPressable
-                key={opt.key}
-                style={[s.rangeTab, active && s.rangeTabActive]}
-                scale={1}
-                accessibilityRole="tab"
-                accessibilityState={{ selected: active }}
-                accessibilityLabel={`${opt.label} range`}
-                onPress={() => {
-                  if (!active) {
-                    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-                    setRange(opt.key);
-                  }
-                }}
-              >
-                <Text style={[s.rangeTabText, active && s.rangeTabTextActive]}>
-                  {opt.label}
-                </Text>
-              </AnimatedPressable>
-            );
-          })}
-        </View>
-      </View>
-
+    <View
+      style={s.scene}
+      accessibilityElementsHidden={!active}
+      importantForAccessibility={active ? 'auto' : 'no-hide-descendants'}
+      aria-hidden={!active}
+    >
       {loading && !statsData ? (
         <View style={s.emptyContainer}>
           <ActivityIndicator color={colors.textSecondary} />
@@ -941,7 +1091,13 @@ export default function StatsScreen() {
                         <Text style={s.activityMonthText}>{monthShort(activityDays[activityDays.length - 1]?.date ?? '')}</Text>
                       ) : null}
                     </View>
-                    <ScrollView horizontal showsHorizontalScrollIndicator={false}>
+                    <ScrollView
+                      horizontal
+                      showsHorizontalScrollIndicator={false}
+                      onTouchStart={onNestedHorizontalGestureStart}
+                      onTouchEnd={onNestedHorizontalGestureEnd}
+                      onTouchCancel={onNestedHorizontalGestureEnd}
+                    >
                       <View style={[s.dailyActivityContent, range === 'week' && s.dailyWeekContent]}>
                         <View style={s.dailyHeatmapRow}>
                           {activityDays.map(({ date, day }) => {
@@ -1001,6 +1157,9 @@ export default function StatsScreen() {
                     horizontal
                     showsHorizontalScrollIndicator={false}
                     accessibilityLabel="Daily activity calendar"
+                    onTouchStart={onNestedHorizontalGestureStart}
+                    onTouchEnd={onNestedHorizontalGestureEnd}
+                    onTouchCancel={onNestedHorizontalGestureEnd}
                   >
                     <View>
                       <View style={s.heatmapMonthRow}>
@@ -1154,69 +1313,82 @@ export default function StatsScreen() {
         </ScrollView>
       )}
 
-      {/* ── Day detail modal ── */}
-      <RisingSheet
-        visible={selectedDay !== null}
-        onClose={() => setSelectedDay(null)}
-        cardStyle={s.detailCard}
-      >
-        {selectedDay && (
-          <>
-            <Text
-              style={s.detailTitle}
-              accessibilityRole="header"
-              accessibilityLabel={accessibleDate(selectedDay.date)}
-            >
-              {selectedDay.date}
-            </Text>
-            <View style={s.detailGrid}>
-              <DItem
-                label="Cost"
-                value={fmtAvailableCost(selectedDay.cost, selectedDay.costKnown)}
-                accent={isCostKnown(selectedDay) || selectedDay.cost > 0}
-                colors={colors}
-                styles={s}
-              />
-              <DItem label="Sessions" value={`${selectedDay.sessions}`} colors={colors} styles={s} />
-              <DItem
-                label="Total"
-                value={fmtAvailableTokens(selectedDay.totalTokens, selectedDay.totalTokensKnown)}
-                colors={colors}
-                styles={s}
-              />
-              <DItem
-                label="Input"
-                value={fmtAvailableTokens(selectedDay.inputTokens, selectedDay.tokenBreakdownKnown)}
-                colors={colors}
-                styles={s}
-              />
-              <DItem
-                label="Cache"
-                value={fmtAvailableTokens(selectedDay.cacheRead, selectedDay.tokenBreakdownKnown)}
-                colors={colors}
-                styles={s}
-              />
-              <DItem
-                label="Output"
-                value={fmtAvailableTokens(selectedDay.outputTokens, selectedDay.tokenBreakdownKnown)}
-                colors={colors}
-                styles={s}
-              />
-              <DItem
-                label="Reason"
-                value={fmtAvailableTokens(selectedDay.reasoningTokens, selectedDay.tokenBreakdownKnown)}
-                colors={colors}
-                styles={s}
-              />
-            </View>
-          </>
-        )}
-      </RisingSheet>
-    </SafeAreaView>
+    </View>
   );
 }
 
 // ── Small components ───────────────────────────────────────
+
+function DayDetailSheet({
+  selectedDay,
+  onClose,
+}: {
+  selectedDay: DayCell | null;
+  onClose(): void;
+}) {
+  const { colors } = useAppTheme();
+  const s = useMemo(() => createStyles(colors), [colors]);
+
+  return (
+    <RisingSheet
+      visible={selectedDay !== null}
+      onClose={onClose}
+      cardStyle={s.detailCard}
+    >
+      {selectedDay && (
+        <>
+          <Text
+            style={s.detailTitle}
+            accessibilityRole="header"
+            accessibilityLabel={accessibleDate(selectedDay.date)}
+          >
+            {selectedDay.date}
+          </Text>
+          <View style={s.detailGrid}>
+            <DItem
+              label="Cost"
+              value={fmtAvailableCost(selectedDay.cost, selectedDay.costKnown)}
+              accent={isCostKnown(selectedDay) || selectedDay.cost > 0}
+              colors={colors}
+              styles={s}
+            />
+            <DItem label="Sessions" value={`${selectedDay.sessions}`} colors={colors} styles={s} />
+            <DItem
+              label="Total"
+              value={fmtAvailableTokens(selectedDay.totalTokens, selectedDay.totalTokensKnown)}
+              colors={colors}
+              styles={s}
+            />
+            <DItem
+              label="Input"
+              value={fmtAvailableTokens(selectedDay.inputTokens, selectedDay.tokenBreakdownKnown)}
+              colors={colors}
+              styles={s}
+            />
+            <DItem
+              label="Cache"
+              value={fmtAvailableTokens(selectedDay.cacheRead, selectedDay.tokenBreakdownKnown)}
+              colors={colors}
+              styles={s}
+            />
+            <DItem
+              label="Output"
+              value={fmtAvailableTokens(selectedDay.outputTokens, selectedDay.tokenBreakdownKnown)}
+              colors={colors}
+              styles={s}
+            />
+            <DItem
+              label="Reason"
+              value={fmtAvailableTokens(selectedDay.reasoningTokens, selectedDay.tokenBreakdownKnown)}
+              colors={colors}
+              styles={s}
+            />
+          </View>
+        </>
+      )}
+    </RisingSheet>
+  );
+}
 
 function DItem({
   label,
@@ -1306,6 +1478,8 @@ function ExpandToggle({
 function createStyles(colors: typeof Colors) {
   return StyleSheet.create({
     container: { flex: 1, backgroundColor: colors.bgPrimary },
+    pager: { flex: 1 },
+    scene: { flex: 1, backgroundColor: colors.bgPrimary },
     header: {
       width: '100%',
       maxWidth: STATS_CONTENT_MAX_WIDTH,
@@ -1318,12 +1492,20 @@ function createStyles(colors: typeof Colors) {
     },
     rangeRow: {
       flexDirection: 'row',
-      gap: 4,
-      padding: 3,
+      gap: STATS_TAB_BAR_GAP,
+      padding: STATS_TAB_BAR_PADDING,
       borderRadius: Radii.md,
       backgroundColor: colors.bgSurface,
       borderWidth: StyleSheet.hairlineWidth,
       borderColor: colors.borderSubtle,
+    },
+    rangeTabIndicator: {
+      position: 'absolute',
+      left: STATS_TAB_BAR_PADDING,
+      top: STATS_TAB_BAR_PADDING,
+      bottom: STATS_TAB_BAR_PADDING,
+      borderRadius: Radii.sm,
+      backgroundColor: colors.surfaceActive,
     },
     rangeTab: {
       flex: 1,
@@ -1333,15 +1515,15 @@ function createStyles(colors: typeof Colors) {
       justifyContent: 'center',
       paddingHorizontal: 4,
       borderRadius: Radii.sm,
+      zIndex: 1,
     },
-    rangeTabActive: { backgroundColor: colors.surfaceActive },
     rangeTabText: {
       ...TypeScale.label,
       ...UiTextMetrics,
       color: colors.textTertiary,
       textAlign: 'center',
     },
-    rangeTabTextActive: { color: colors.textPrimary },
+    rangeTabTextActive: { position: 'absolute', color: colors.textPrimary },
     scrollView: { flex: 1 },
     scroll: {
       width: '100%',

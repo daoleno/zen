@@ -9,6 +9,7 @@ import (
 	"hash/fnv"
 	"io"
 	"log"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -149,6 +150,12 @@ type clientMessage struct {
 
 // Run starts the HTTP server and event broadcaster.
 func (s *Server) Run(ctx context.Context, addr string) error {
+	return s.RunWithReady(ctx, addr, nil)
+}
+
+// RunWithReady starts the HTTP server and calls onReady only after the TCP
+// listener has been acquired successfully.
+func (s *Server) RunWithReady(ctx context.Context, addr string, onReady func()) error {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/ws", s.handleWS)
 	mux.HandleFunc("/pair", s.handlePair)
@@ -162,7 +169,11 @@ func (s *Server) Run(ctx context.Context, addr string) error {
 		})
 	})
 
-	srv := &http.Server{Addr: addr, Handler: withCORS(mux)}
+	listener, err := net.Listen("tcp", addr)
+	if err != nil {
+		return err
+	}
+	srv := &http.Server{Handler: withCORS(mux)}
 
 	go s.broadcastEvents(ctx)
 	go s.heartbeat(ctx)
@@ -172,8 +183,11 @@ func (s *Server) Run(ctx context.Context, addr string) error {
 		srv.Shutdown(context.Background())
 	}()
 
-	log.Printf("zen listening on %s", addr)
-	return srv.ListenAndServe()
+	log.Printf("zen listening on %s", listener.Addr())
+	if onReady != nil {
+		onReady()
+	}
+	return srv.Serve(listener)
 }
 
 func (s *Server) handleWS(w http.ResponseWriter, r *http.Request) {

@@ -21,7 +21,7 @@ C2:FC:5B:09:B3:86:92:EE:70:59:71:1F:E7:ED:B8:79:
 
 Android will ask you to allow installation from the browser or file manager you used. A Play Protect warning is possible because this beta is distributed outside Play Store.
 
-After installation, start the daemon, run `zen pair <your-origin>`, then import the QR code or link in the app's Settings screen.
+After installation, follow [Connect and pair](connect-and-pair.md): use `zen --lan` on a trusted private network or keep bare `zen` behind an HTTPS endpoint, then scan or import the generated pairing code in Settings.
 
 ## Current scope
 
@@ -96,9 +96,12 @@ npx expo export --platform android
 
 ## Pairing on device
 
-1. Run `zen pair https://your-origin` on the host.
-2. Open Settings in the app.
-3. Paste the `zen://...` link, scan the QR, or import a QR photo.
+1. Start `zen --lan` for trusted private-network access, or start bare `zen` behind an HTTPS endpoint.
+2. In another terminal, run the complete `zen pair` command Zen or your HTTPS setup provides.
+3. Open Settings in the app.
+4. Paste the `zen://...` link, scan the QR, or import a QR photo.
+
+Release builds explicitly allow cleartext HTTP so dynamic LAN and Tailscale IPs work. Use HTTP only on a trusted private network; use an HTTPS endpoint on shared or untrusted networks.
 
 Remote Expo push is optional. To test it with your own EAS project, set `ZEN_EXPO_PROJECT_ID` (see `app/.env.example`). OSS builds work without push.
 

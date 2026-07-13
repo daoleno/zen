@@ -28,8 +28,10 @@ export default function OnboardingScreen() {
         </Enter>
 
         <Enter preset="rise" delay={80}>
-          <Text style={styles.title}>Connect to Zen</Text>
-          <Text style={styles.subtitle}>Pair this phone with your daemon.</Text>
+          <Text style={styles.title}>Connect your phone</Text>
+          <Text style={styles.subtitle}>
+            Zen runs agents on your computer. This app connects your phone to it.
+          </Text>
         </Enter>
 
         <View style={styles.steps}>
@@ -41,10 +43,10 @@ export default function OnboardingScreen() {
               <View style={styles.stepContent}>
                 <Text style={styles.stepTitle}>Start Zen on your computer</Text>
                 <View style={styles.codeBlock}>
-                  <Text style={styles.code}>zen</Text>
+                  <Text style={styles.code}>zen --lan</Text>
                 </View>
                 <Text style={styles.stepHint}>
-                  Download the daemon from GitHub Releases if it is not installed yet.
+                  Keep this phone and computer on the same trusted Wi-Fi.
                 </Text>
               </View>
             </View>
@@ -56,20 +58,24 @@ export default function OnboardingScreen() {
                 <Text style={styles.stepNum}>2</Text>
               </View>
               <View style={styles.stepContent}>
-                <Text style={styles.stepTitle}>Create a pairing link</Text>
+                <Text style={styles.stepTitle}>Run the printed pair command</Text>
                 <View style={styles.codeBlock}>
                   <Text style={styles.code}>
-                    zen pair https://your-host.example
+                    zen pair http://192.168.1.42:9876
                   </Text>
                 </View>
                 <Text style={styles.stepHint}>
-                  Use an HTTPS address this phone can reach. Zen prints a one-time link and QR code.
+                  Use the LAN address Zen prints, then scan or import its one-time code.
                 </Text>
               </View>
             </View>
           </Enter>
 
         </View>
+
+        <Text style={styles.remoteNote}>
+          Using Tailscale or HTTPS? Use the reachable address Zen prints or your HTTPS URL.
+        </Text>
 
         <Enter preset="rise" delay={280}>
           <AnimatedPressable
@@ -87,7 +93,7 @@ export default function OnboardingScreen() {
               });
             }}
           >
-            <Text style={styles.doneBtnText}>Pair a daemon</Text>
+            <Text style={styles.doneBtnText}>Scan or import pairing code</Text>
           </AnimatedPressable>
         </Enter>
       </ScrollView>
@@ -130,7 +136,7 @@ function createStyles(colors: typeof Colors) {
   },
   steps: {
     gap: 22,
-    marginBottom: 28,
+    marginBottom: 18,
   },
   step: {
     flexDirection: "row",
@@ -176,6 +182,15 @@ function createStyles(colors: typeof Colors) {
     color: colors.accent,
     fontFamily: Typography.terminalFont,
     fontSize: 12,
+  },
+  remoteNote: {
+    color: colors.textTertiary,
+    fontSize: 13,
+    lineHeight: 19,
+    fontFamily: Typography.uiFont,
+    textAlign: "center",
+    marginBottom: 24,
+    paddingHorizontal: 8,
   },
   doneBtn: {
     marginTop: "auto",

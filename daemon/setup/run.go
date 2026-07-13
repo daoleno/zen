@@ -431,14 +431,13 @@ func writeLines(w io.Writer, lines ...string) {
 }
 
 func nextSteps(stateDir string) []string {
-	pairHint := "zen pair https://your-origin.example"
+	pairHint := "zen pair https://your-zen-host.example"
 	if strings.TrimSpace(stateDir) != "" {
-		pairHint = "zen pair -state-dir " + stateDir + " https://your-origin.example"
+		pairHint = "zen pair -state-dir " + stateDir + " https://your-zen-host.example"
 	}
 	return []string{
-		"Restart or start the daemon so it reloads executors.toml: zen",
-		"Expose the full origin (LAN/tailnet/reverse-proxy/tunnel) that reaches this host",
-		"Generate a pairing link: " + pairHint,
+		"Same trusted Wi-Fi or direct Tailnet: start Zen with zen --lan, then run a pair command it prints",
+		"HTTPS endpoint: start Zen with zen, expose the full loopback origin, then run " + pairHint,
 		"Optional: re-check with zen doctor",
 	}
 }

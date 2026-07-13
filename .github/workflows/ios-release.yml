@@ -13,6 +13,14 @@ on:
         description: "Positive, monotonically increasing CFBundleVersion"
         required: true
         type: string
+      app_identity:
+        description: "Closed iOS identity: canonical production or temporary Preview"
+        required: true
+        type: choice
+        default: production
+        options:
+          - production
+          - preview
       destination:
         description: "Export only, or explicitly upload the verified IPA to TestFlight"
         required: true
@@ -23,7 +31,7 @@ on:
           - testflight
 
 concurrency:
-  group: ios-release-${{ inputs.ref }}
+  group: ios-release-${{ inputs.app_identity }}-${{ inputs.ref }}
   cancel-in-progress: false
 
 permissions:
@@ -34,8 +42,9 @@ jobs:
     name: Signed archive and IPA
     runs-on: macos-15
     timeout-minutes: 180
-    environment: app-store-connect
+    environment: ${{ inputs.app_identity == 'preview' && 'app-store-connect-preview' || 'app-store-connect' }}
     env:
+      ZEN_IOS_APP_VARIANT: ${{ inputs.app_identity }}
       ZEN_IOS_BUILD_NUMBER: ${{ inputs.build_number }}
       ZEN_APPLE_CERTIFICATE_BASE64: ${{ secrets.ZEN_APPLE_CERTIFICATE_BASE64 }}
       ZEN_APPLE_CERTIFICATE_PASSWORD: ${{ secrets.ZEN_APPLE_CERTIFICATE_PASSWORD }}
@@ -92,6 +101,39 @@ jobs:
 
       - name: Install workspace dependencies
         run: bun install --frozen-lockfile
+
+      - name: Resolve closed iOS identity contract
+        run: |
+          set -euo pipefail
+          node <<'JS'
+          const fs = require('fs');
+          const createConfig = require('./app/app.config.js');
+          const { resolveIOSIdentity } = require('./app/iosIdentity');
+
+          const identity = resolveIOSIdentity(process.env.ZEN_IOS_APP_VARIANT);
+          const config = createConfig();
+          if (
+            config.name !== identity.nativeProjectName ||
+            config.ios.bundleIdentifier !== identity.bundleIdentifier ||
+            config.ios.infoPlist.CFBundleDisplayName !== identity.displayName ||
+            config.ios.infoPlist.CFBundleVersion !== config.ios.buildNumber
+          ) {
+            throw new Error('resolved Expo config mixes iOS identity values');
+          }
+
+          const values = {
+            ZEN_IOS_DISPLAY_NAME: identity.displayName,
+            ZEN_IOS_BUNDLE_ID: identity.bundleIdentifier,
+            ZEN_IOS_NATIVE_PROJECT_NAME: identity.nativeProjectName,
+            ZEN_IOS_ARTIFACT_NAME: identity.artifactName,
+            ZEN_IOS_VERSION: config.ios.infoPlist.CFBundleShortVersionString,
+          };
+          const lines = Object.entries(values).map(([key, value]) => {
+            if (!value || /[\r\n]/.test(value)) throw new Error(`unsafe or empty ${key}`);
+            return `${key}=${value}`;
+          });
+          fs.appendFileSync(process.env.GITHUB_ENV, `${lines.join('\n')}\n`);
+          JS
 
       - name: Verify tracked release identity
         run: ./scripts/verify-release-identity.sh
@@ -164,7 +206,7 @@ jobs:
           import datetime, os, plistlib, sys
           profile = plistlib.load(open(sys.argv[1], "rb"))
           expected_team = os.environ["ZEN_APPLE_TEAM_ID"]
-          expected_bundle = "com.daoleno.zen"
+          expected_bundle = os.environ["ZEN_IOS_BUNDLE_ID"]
           teams = profile.get("TeamIdentifier") or []
           if teams != [expected_team]:
               raise SystemExit(f"error: provisioning profile team does not match ZEN_APPLE_TEAM_ID")
@@ -203,14 +245,14 @@ jobs:
           set -euo pipefail
           set -o pipefail
           python3 - "$EXPORT_OPTIONS" "$ZEN_APPLE_TEAM_ID" "$PROFILE_NAME" <<'PY'
-          import plistlib, sys
+          import os, plistlib, sys
           options = {
               "method": "app-store-connect",
               "destination": "export",
               "signingStyle": "manual",
               "signingCertificate": "Apple Distribution",
               "teamID": sys.argv[2],
-              "provisioningProfiles": {"com.daoleno.zen": sys.argv[3]},
+              "provisioningProfiles": {os.environ["ZEN_IOS_BUNDLE_ID"]: sys.argv[3]},
               "manageAppVersionAndBuildNumber": False,
               "stripSwiftSymbols": True,
               "uploadSymbols": True,
@@ -219,8 +261,8 @@ jobs:
               plistlib.dump(options, output)
           PY
           xcodebuild \
-            -workspace app/ios/Zen.xcworkspace \
-            -scheme Zen \
+            -workspace "app/ios/${ZEN_IOS_NATIVE_PROJECT_NAME}.xcworkspace" \
+            -scheme "$ZEN_IOS_NATIVE_PROJECT_NAME" \
             -configuration Release \
             -destination 'generic/platform=iOS' \
             -archivePath "$ARCHIVE_PATH" \
@@ -250,19 +292,19 @@ jobs:
           ./scripts/verify-ios-artifact.sh ipa "${IPAS[0]}"
           ARTIFACT_DIR="${{ runner.temp }}/zen-ios-release-artifact"
           mkdir -p "$ARTIFACT_DIR"
-          VERSION="$(python3 -c "import json; print(json.load(open('app/app.base.json'))['expo']['version'])")"
-          IPA="$ARTIFACT_DIR/zen-ios-v${VERSION}-build${ZEN_IOS_BUILD_NUMBER}.ipa"
+          IPA="$ARTIFACT_DIR/${ZEN_IOS_ARTIFACT_NAME}-v${ZEN_IOS_VERSION}-build${ZEN_IOS_BUILD_NUMBER}.ipa"
           cp "${IPAS[0]}" "$IPA"
           python3 - "$IPA" "$ARTIFACT_DIR/release-manifest.json" <<'PY'
           import hashlib, json, os, pathlib, subprocess, sys
           ipa = pathlib.Path(sys.argv[1])
-          base = json.load(open("app/app.base.json"))["expo"]
           manifest = {
               "schema_version": 1,
               "platform": "ios",
               "distribution": "app-store-connect",
-              "bundle_identifier": base["ios"]["bundleIdentifier"],
-              "marketing_version": base["version"],
+              "app_identity": os.environ["ZEN_IOS_APP_VARIANT"],
+              "display_name": os.environ["ZEN_IOS_DISPLAY_NAME"],
+              "bundle_identifier": os.environ["ZEN_IOS_BUNDLE_ID"],
+              "marketing_version": os.environ["ZEN_IOS_VERSION"],
               "build_number": os.environ["ZEN_IOS_BUILD_NUMBER"],
               "git_commit": subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip(),
               "ipa": ipa.name,
@@ -278,7 +320,7 @@ jobs:
       - name: Upload verified signed IPA as workflow artifact
         uses: actions/upload-artifact@v4
         with:
-          name: zen-ios-signed-${{ inputs.build_number }}
+          name: ${{ env.ZEN_IOS_ARTIFACT_NAME }}-signed-${{ inputs.build_number }}
           path: ${{ env.IOS_ARTIFACT_DIR }}
           if-no-files-found: error
           retention-days: 14

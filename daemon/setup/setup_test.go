@@ -334,6 +334,23 @@ func TestSetupDoesNotEmitSecrets(t *testing.T) {
 	}
 }
 
+func TestNextStepsKeepPrivateAndHTTPSRoutesDistinct(t *testing.T) {
+	steps := strings.Join(nextSteps("/tmp/zen-state"), "\n")
+	for _, want := range []string{
+		"zen --lan",
+		"direct Tailnet",
+		"start Zen with zen, expose the full loopback origin",
+		"zen pair -state-dir /tmp/zen-state https://your-zen-host.example",
+	} {
+		if !strings.Contains(steps, want) {
+			t.Fatalf("next steps missing %q:\n%s", want, steps)
+		}
+	}
+	if strings.Contains(steps, "zen pair http://0.0.0.0") {
+		t.Fatalf("next steps contain wildcard pair command:\n%s", steps)
+	}
+}
+
 func TestCommandForProfileNeverInjectsBypassIntoCustom(t *testing.T) {
 	cmd, _ := commandForProfile("custom", "mycli", "mycli --fancy", ProfileAutonomous)
 	if cmd != "mycli --fancy" {

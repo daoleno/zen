@@ -13,7 +13,7 @@
   <img alt="Platforms: Linux, macOS, Android, and iOS" src="https://img.shields.io/badge/platforms-Linux%20%7C%20macOS%20%7C%20Android%20%7C%20iOS-6f8f79">
 </p>
 
-Zen connects an Android or iOS app to coding agents running on your own Linux or Apple Silicon Mac. It gives you mobile chat, terminal access, session management, and a persistent Brain workspace without moving your repositories or provider credentials into a hosted service.
+Zen runs coding agents on your own Linux computer or Apple Silicon Mac; the Android or iOS app connects your phone to that computer. It gives you mobile chat, terminal access, session management, and a persistent Brain workspace without moving your repositories or provider credentials into a hosted service.
 
 ## What it supports
 
@@ -39,15 +39,22 @@ You need a supported Linux machine or Apple Silicon Mac with `tmux`, one support
    zen doctor
    ```
 
-3. Start the daemon where the phone can reach it. On the same trusted Wi-Fi, run `zen -addr 0.0.0.0:9876` and use the computer's LAN IP. For remote access, run `zen` on its default loopback address and expose it through a private Tailnet or HTTPS endpoint.
-4. Generate a short-lived pairing QR/link:
+3. Put the phone and computer on the same trusted Wi-Fi, then start Zen in private-network mode:
 
    ```bash
-   zen pair https://your-zen-origin.example
-   # Trusted LAN example: zen pair http://192.168.1.42:9876
+   zen --lan
    ```
 
-5. Install the Android APK or an iOS development build, open Zen, and import the pairing QR/link in Settings.
+4. Zen prints complete `zen pair` commands for the computer's detected LAN and Tailscale addresses. In another terminal, run the command for the network your phone uses. For example:
+
+   ```bash
+   zen pair http://192.168.1.42:9876
+   ```
+
+   Use the computer's actual LAN IP printed by Zen—never `0.0.0.0`.
+5. Install the Android APK or an iOS development build, open Zen, then scan or import the generated pairing code.
+
+For remote access through an HTTPS endpoint, keep Zen on its default loopback address, forward the full daemon origin with Cloudflare Tunnel, Tailscale Serve/Funnel, or a reverse proxy, then pair with that HTTPS URL. See [Connect and pair a phone](docs/connect-and-pair.md).
 
 Detailed instructions:
 
@@ -68,7 +75,7 @@ Some built-in executor profiles disable approval prompts or sandboxes. Read [Exe
 Android or iOS app
     │ signed HTTP and WebSocket requests
     ▼
-your Tailnet or HTTPS endpoint
+trusted private network or HTTPS endpoint
     ▼
 Zen daemon on your Linux machine or Apple Silicon Mac
     │ local tmux sessions and provider transcripts

@@ -1,6 +1,6 @@
 # Connect and pair
 
-Pairing connects one Android or iOS installation to one daemon. You need a reachable daemon origin first; the pairing QR does not create a network tunnel.
+Zen runs agents on your computer; pairing connects the phone app to that computer. The phone needs a reachable daemon origin first—the pairing QR does not create a network path.
 
 ## Model
 
@@ -10,36 +10,43 @@ Pairing connects one Android or iOS installation to one daemon. You need a reach
 
 There is no long-lived shared secret for normal traffic.
 
-## Same Wi-Fi: pair directly over the LAN
+## Route A: direct private network
 
-If the phone and computer are on the same trusted Wi-Fi, you do not need a tunnel.
+Use this route when the phone and computer are on the same trusted Wi-Fi or connected directly through the same Tailscale Tailnet.
 
-1. Start Zen on all network interfaces:
-
-   ```bash
-   zen -addr 0.0.0.0:9876
-   ```
-
-2. Find the computer's LAN address:
+1. Start Zen in private-network mode:
 
    ```bash
-   hostname -I                 # Linux
-   ipconfig getifaddr en0      # macOS Wi-Fi
+   zen --lan
    ```
 
-3. Generate the pairing link with that address, not `0.0.0.0`:
+2. Zen prints complete pair commands for detected LAN and Tailscale addresses. In another terminal, run the one for the network your phone uses. Example LAN output:
 
    ```bash
    zen pair http://192.168.1.42:9876
    ```
 
-4. Scan the QR code or import the printed link in the app.
+   A direct Tailnet address looks like:
 
-The phone must be able to reach that IP and port. If it cannot, check the host firewall and whether the router enables client/AP isolation. Plain LAN HTTP does not encrypt traffic, so use this only on a network you trust. Use a Tailnet or HTTPS endpoint on shared or untrusted networks.
+   ```bash
+   zen pair http://100.101.102.103:9876
+   ```
 
-## Tailnet, tunnel, or reverse proxy
+3. Scan the QR code or import the printed link in the app.
 
-Forward the whole daemon origin to `http://127.0.0.1:9876` (or your chosen `-addr`), including:
+The pair command must use the computer's actual LAN or Tailscale IP, never `0.0.0.0`. If Zen cannot detect an address, use `hostname -I` on Linux or `ipconfig getifaddr en0` on macOS to find the LAN IP. The phone must be able to reach that IP and port; host firewalls and Wi-Fi client/AP isolation can block it.
+
+Plain LAN HTTP is not encrypted, so use it only on a trusted private network. A direct Tailscale IP is carried inside the encrypted Tailnet, but access still follows your Tailnet membership and ACLs.
+
+## Route B: HTTPS endpoint
+
+Keep Zen in its default local-only mode:
+
+```bash
+zen
+```
+
+Then forward the whole `http://127.0.0.1:9876` origin through Cloudflare Tunnel, Tailscale Serve/Funnel, or another HTTPS reverse proxy, including:
 
 - `/ws`
 - `/health`
@@ -49,12 +56,21 @@ Forward the whole daemon origin to `http://127.0.0.1:9876` (or your chosen `-add
 
 Do not publish only `/ws`.
 
-Examples:
+Examples using current [Tailscale Serve](https://tailscale.com/docs/reference/tailscale-cli/serve), [Tailscale Funnel](https://tailscale.com/docs/reference/tailscale-cli/funnel), and [Cloudflare Tunnel](https://developers.cloudflare.com/tunnel/setup/) CLIs:
 
 ```bash
-tailscale funnel --https=443 http://127.0.0.1:9876
-cloudflared tunnel --url http://127.0.0.1:9876
+tailscale serve 9876       # private HTTPS URL inside your Tailnet
+tailscale funnel 9876      # public HTTPS URL
+cloudflared tunnel --url http://127.0.0.1:9876  # temporary public HTTPS URL
 ```
+
+Use the HTTPS URL printed by the chosen tool:
+
+```bash
+zen pair https://your-zen-host.example
+```
+
+Tailscale Serve is limited to your Tailnet; Funnel and Cloudflare public hostnames are internet-reachable. For a stable Cloudflare hostname, configure a named tunnel rather than relying on a temporary Quick Tunnel.
 
 ## Generate a pairing link
 
@@ -66,7 +82,7 @@ zen pair https://zen.example.com
 zen pair http://192.168.1.42:9876
 ```
 
-Use the publicly reachable origin (scheme + host, optional path). `zen pair` normalizes HTTP(S) to `ws`/`wss` and ensures a `/ws` WebSocket path for the compact `zen://` payload. You still must expose the non-WebSocket HTTP routes on that same origin.
+Use the reachable origin (scheme + host). `zen pair` normalizes HTTP(S) to `ws`/`wss` and uses `/ws` for the compact `zen://` payload. The app derives the HTTP routes at the origin root, so path-prefixed proxy origins are not supported; forward every listed route on the same host.
 
 If you use a custom state directory:
 
@@ -94,9 +110,5 @@ After pairing, reconnect uses the stored server URL and device identity. You do 
 ## Revoking a device
 
 There is currently no first-class “forget device” UI/CLI. Trusted devices live in `~/.zen/trusted-devices.json`. Treat a lost phone as: stop exposing the origin, remove or edit that file carefully, and re-pair remaining devices with a fresh `zen pair` link. A proper revoke command is planned but not shipped.
-
-## App onboarding vs README
-
-The in-app first-run steps show the short version of this flow. Use direct LAN pairing on a trusted Wi-Fi, or expose the full origin through a Tailnet/HTTPS endpoint for remote access.
 
 Optional before pairing: `zen doctor` to confirm tmux/state/port/executors on the host.

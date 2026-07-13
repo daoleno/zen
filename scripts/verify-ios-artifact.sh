@@ -6,6 +6,9 @@ set -euo pipefail
 MODE="${1:-}"
 ARTIFACT="${2:-}"
 EXPECTED_BUNDLE_ID="${ZEN_IOS_BUNDLE_ID:-com.daoleno.zen}"
+EXPECTED_DISPLAY_NAME="${ZEN_IOS_DISPLAY_NAME:-Zen}"
+EXPECTED_BUILD_NUMBER="${ZEN_IOS_BUILD_NUMBER:-}"
+EXPECTED_VERSION="${ZEN_IOS_VERSION:-}"
 
 usage() {
   echo "usage: $0 simulator path/to/Zen.app | ipa path/to/Zen.ipa" >&2
@@ -22,13 +25,28 @@ verify_app() {
   [[ -d "$app" ]] || { echo "error: app bundle is missing: $app" >&2; exit 1; }
   [[ -f "$plist" ]] || { echo "error: Info.plist is missing: $plist" >&2; exit 1; }
 
-  local bundle_id executable
+  local bundle_id display_name executable build_number version
   bundle_id="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$plist")"
+  display_name="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleDisplayName' "$plist")"
   executable="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$plist")"
+  build_number="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$plist")"
+  version="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$plist")"
   [[ "$bundle_id" == "$EXPECTED_BUNDLE_ID" ]] || {
     echo "error: bundle identifier is $bundle_id; expected $EXPECTED_BUNDLE_ID" >&2
     exit 1
   }
+  [[ "$display_name" == "$EXPECTED_DISPLAY_NAME" ]] || {
+    echo "error: display name is $display_name; expected $EXPECTED_DISPLAY_NAME" >&2
+    exit 1
+  }
+  if [[ -n "$EXPECTED_BUILD_NUMBER" && "$build_number" != "$EXPECTED_BUILD_NUMBER" ]]; then
+    echo "error: build number is $build_number; expected $EXPECTED_BUILD_NUMBER" >&2
+    exit 1
+  fi
+  if [[ -n "$EXPECTED_VERSION" && "$version" != "$EXPECTED_VERSION" ]]; then
+    echo "error: marketing version is $version; expected $EXPECTED_VERSION" >&2
+    exit 1
+  fi
   [[ -x "$app/$executable" ]] || {
     echo "error: app executable is missing or not executable: $app/$executable" >&2
     exit 1
@@ -46,7 +64,7 @@ verify_app() {
     codesign --verify --deep --strict "$app"
   fi
 
-  echo "ok: $bundle_id app bundle contains a Mach-O executable"
+  echo "ok: $display_name ($bundle_id) app bundle contains a Mach-O executable"
 }
 
 if [[ "$MODE" == "simulator" ]]; then

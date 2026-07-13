@@ -6,7 +6,9 @@ import (
 	"encoding/hex"
 	"fmt"
 	"io"
+	"net"
 	"net/url"
+	"sort"
 	"strings"
 
 	"github.com/daoleno/zen/daemon/auth"
@@ -24,6 +26,11 @@ type connectionOffer struct {
 	Label       string
 	URL         string
 	ConnectLink string
+}
+
+type privateNetworkAddress struct {
+	label string
+	ip    net.IP
 }
 
 func buildConnectionOffers(endpoint string, authManager *auth.Manager, pairing auth.PairingToken) ([]connectionOffer, error) {
@@ -44,28 +51,41 @@ func buildConnectionOffers(endpoint string, authManager *auth.Manager, pairing a
 	return []connectionOffer{offer}, nil
 }
 
-func printStartupBanner(w io.Writer, listenAddr, daemonID string) {
-	// Fixed-width box: title line is 38 cells between the double-line borders.
-	title := fmt.Sprintf("zen v%s", Version)
-	if len(title) > 36 {
-		title = title[:36]
+func printStartupInfo(w io.Writer, listenAddr, stateDir string, addresses []privateNetworkAddress) {
+	host, port, err := net.SplitHostPort(listenAddr)
+	if err != nil {
+		fmt.Fprintf(w, "Zen is listening on %s.\n", listenAddr)
+		fmt.Fprintln(w, "Run zen pair with an HTTPS endpoint that forwards the full daemon origin.")
+		return
 	}
-	pad := (36 - len(title)) / 2
-	right := 36 - len(title) - pad
-	fmt.Fprintln(w, "╔══════════════════════════════════════╗")
-	fmt.Fprintf(w, "║%s%s%s║\n", strings.Repeat(" ", pad+1), title, strings.Repeat(" ", right+1))
-	fmt.Fprintln(w, "╠══════════════════════════════════════╣")
-	fmt.Fprintf(w, "║  Listening on %-22s ║\n", listenAddr)
-	fmt.Fprintf(w, "║  Auth: %-28s ║\n", "device identity")
-	fmt.Fprintln(w, "╠══════════════════════════════════════╣")
-	fmt.Fprintf(w, "║  Daemon ID: %-23s ║\n", daemonID[:23])
-	fmt.Fprintln(w, "╚══════════════════════════════════════╝")
-}
 
-func printPairingHint(w io.Writer, stateDir string) {
-	fmt.Fprintln(w, "")
-	fmt.Fprintln(w, "To pair a phone, expose the daemon through your network and run:")
-	fmt.Fprintf(w, "  %s\n", pairCommandExample(stateDir))
+	if isLoopbackHost(host) {
+		fmt.Fprintf(w, "Zen is ready in local-only mode on http://%s.\n", listenAddr)
+		fmt.Fprintln(w, "To connect your phone:")
+		fmt.Fprintln(w, "  - Same trusted Wi-Fi or Tailnet: restart with zen --lan")
+		fmt.Fprintf(w, "  - HTTPS endpoint: expose http://%s, then in another terminal run:\n", listenAddr)
+		fmt.Fprintf(w, "      %s\n", pairCommand(stateDir, "https://your-zen-host.example"))
+		return
+	}
+
+	usable := startupPairingAddresses(host, addresses)
+	if isWildcardHost(host) || len(usable) > 0 {
+		fmt.Fprintln(w, "Zen is ready for trusted private-network access.")
+		if len(usable) == 0 {
+			fmt.Fprintln(w, "No LAN or Tailscale address was detected. Check your network, then restart Zen.")
+			return
+		}
+		fmt.Fprintln(w, "In another terminal, run a pairing command for the network your phone uses:")
+		for _, address := range usable {
+			endpoint := "http://" + net.JoinHostPort(address.ip.String(), port)
+			fmt.Fprintf(w, "  - %s: %s\n", address.label, pairCommand(stateDir, endpoint))
+		}
+		fmt.Fprintln(w, "Use HTTP only on a trusted private network.")
+		return
+	}
+
+	fmt.Fprintf(w, "Zen is listening on %s.\n", listenAddr)
+	fmt.Fprintln(w, "In another terminal, run zen pair with the private or HTTPS address your phone can reach.")
 }
 
 func printPairingInfo(w io.Writer, offers []connectionOffer) {
@@ -94,13 +114,119 @@ func printPairCommandInfo(w io.Writer, daemonID string, offers []connectionOffer
 	printPairingInfo(w, offers)
 }
 
-func pairCommandExample(stateDir string) string {
+func pairCommand(stateDir, endpoint string) string {
 	parts := []string{"zen", "pair"}
 	if strings.TrimSpace(stateDir) != "" {
 		parts = append(parts, "-state-dir", stateDir)
 	}
-	parts = append(parts, "https://your-host.example")
+	parts = append(parts, endpoint)
 	return strings.Join(parts, " ")
+}
+
+func detectPrivateNetworkAddresses() []privateNetworkAddress {
+	interfaces, err := net.Interfaces()
+	if err != nil {
+		return nil
+	}
+	var detected []privateNetworkAddress
+	seen := make(map[string]bool)
+	for _, iface := range interfaces {
+		if iface.Flags&net.FlagUp == 0 || iface.Flags&net.FlagLoopback != 0 {
+			continue
+		}
+		if shouldSkipPrivateNetworkInterface(iface.Name) {
+			continue
+		}
+		addrs, err := iface.Addrs()
+		if err != nil {
+			continue
+		}
+		for _, addr := range addrs {
+			ip, _, err := net.ParseCIDR(addr.String())
+			if err != nil || ip.To4() == nil {
+				continue
+			}
+			ip = ip.To4()
+			label := ""
+			switch {
+			case isTailscaleAddress(iface.Name, ip):
+				label = "Tailscale"
+			case ip.IsPrivate():
+				label = "Same Wi-Fi/LAN"
+			}
+			key := ip.String()
+			if label != "" && !seen[key] {
+				seen[key] = true
+				detected = append(detected, privateNetworkAddress{label: label, ip: ip})
+			}
+		}
+	}
+	sort.Slice(detected, func(i, j int) bool {
+		if detected[i].label != detected[j].label {
+			return detected[i].label < detected[j].label
+		}
+		return bytesCompare(detected[i].ip, detected[j].ip) < 0
+	})
+	return detected
+}
+
+func shouldSkipPrivateNetworkInterface(name string) bool {
+	lower := strings.ToLower(name)
+	for _, prefix := range []string{"docker", "br-", "veth", "virbr", "cni", "podman", "kube"} {
+		if strings.HasPrefix(lower, prefix) {
+			return true
+		}
+	}
+	return false
+}
+
+func startupPairingAddresses(host string, detected []privateNetworkAddress) []privateNetworkAddress {
+	if isWildcardHost(host) {
+		return detected
+	}
+	ip := net.ParseIP(strings.Trim(host, "[]"))
+	if ip == nil || ip.IsLoopback() {
+		return nil
+	}
+	for _, address := range detected {
+		if address.ip.Equal(ip) {
+			return []privateNetworkAddress{address}
+		}
+	}
+	if ip.To4() != nil && ip.IsPrivate() {
+		return []privateNetworkAddress{{label: "Private network", ip: ip.To4()}}
+	}
+	return nil
+}
+
+func isLoopbackHost(host string) bool {
+	host = strings.Trim(host, "[]")
+	return strings.EqualFold(host, "localhost") || net.ParseIP(host).IsLoopback()
+}
+
+func isWildcardHost(host string) bool {
+	host = strings.Trim(host, "[]")
+	return host == "" || host == "0.0.0.0" || host == "::"
+}
+
+func isTailscaleAddress(interfaceName string, ip net.IP) bool {
+	if strings.HasPrefix(strings.ToLower(interfaceName), "tailscale") {
+		return true
+	}
+	ip4 := ip.To4()
+	return ip4 != nil && ip4[0] == 100 && ip4[1]&0xc0 == 0x40
+}
+
+func bytesCompare(left, right net.IP) int {
+	for index := 0; index < len(left) && index < len(right); index++ {
+		if left[index] < right[index] {
+			return -1
+		}
+		if left[index] > right[index] {
+			return 1
+		}
+	}
+	return len(left) - len(right)
 }
 
 func normalizeEndpoint(rawValue string) (string, error) {
