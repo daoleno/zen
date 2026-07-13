@@ -42,6 +42,10 @@ import {
   getNativeTerminalCrashBreadcrumb,
 } from "../services/nativeTerminalDiagnostics";
 import { measureServerLatency } from "../services/serverLatency";
+import {
+  resolveScreenshotDemoState,
+  screenshotDemoEnabled,
+} from "../services/screenshotDemo";
 
 Notifications.setNotificationHandler({
   handleNotification: async () => ({
@@ -197,6 +201,14 @@ function localNotificationSignalKey(agent: Agent): string | null {
 }
 
 function AppRuntime() {
+  if (screenshotDemoEnabled()) {
+    return <ScreenshotDemoRuntime />;
+  }
+
+  return <LiveAppRuntime />;
+}
+
+function LiveAppRuntime() {
   const [bootstrapResolved, setBootstrapResolved] = useState(false);
   const handleBootstrapResolved = useCallback((resolved: boolean) => {
     setBootstrapResolved(resolved);
@@ -211,6 +223,25 @@ function AppRuntime() {
       <AppNavigator bootstrapResolved={bootstrapResolved} />
     </>
   );
+}
+
+function ScreenshotDemoRuntime() {
+  const router = useRouter();
+  const segments = useSegments();
+  const requestedState = resolveScreenshotDemoState(
+    process.env.EXPO_PUBLIC_ZEN_SCREENSHOT_DEMO_STATE,
+  );
+
+  useEffect(() => {
+    if (segments[0] !== "screenshot-demo") {
+      router.replace({
+        pathname: "/screenshot-demo",
+        params: { state: requestedState },
+      });
+    }
+  }, [requestedState, router, segments]);
+
+  return <AppNavigator bootstrapResolved />;
 }
 
 const NativeTerminalDiagnosticsObserver = memo(
@@ -815,6 +846,7 @@ const AppNavigator = memo(function AppNavigator({
         name="onboarding"
         options={{ headerShown: false, presentation: "modal" }}
       />
+      <Stack.Screen name="screenshot-demo" options={{ headerShown: false }} />
     </Stack>
   );
 });

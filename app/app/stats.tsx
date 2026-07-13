@@ -126,7 +126,7 @@ interface RangeData {
   days: DayCell[];
 }
 
-interface StatsPayload {
+export interface StatsPayload {
   ranges: Record<string, RangeData>;
   codexSubscription?: CodexSubscriptionUsage;
   codexSubscriptions?: CodexSubscriptionUsage[];
@@ -741,6 +741,46 @@ export default function StatsScreen() {
 
       <DayDetailSheet selectedDay={selectedDay} onClose={() => setSelectedDay(null)} />
     </SafeAreaView>
+  );
+}
+
+export function StatsScreenshotDemo({
+  statsData,
+}: {
+  statsData: StatsPayload;
+}) {
+  const [expandedSections, setExpandedSections] = useState<Set<string>>(
+    new Set(),
+  );
+  const [selectedDay, setSelectedDay] = useState<DayCell | null>(null);
+  const toggleSection = useCallback((section: string) => {
+    setExpandedSections((previous) => {
+      const next = new Set(previous);
+      if (next.has(section)) next.delete(section);
+      else next.add(section);
+      return next;
+    });
+  }, []);
+
+  return (
+    <View style={{ flex: 1 }}>
+      <StatsRangeScene
+        range="all"
+        active
+        statsData={statsData}
+        loading={false}
+        expandedSections={expandedSections}
+        toggleSection={toggleSection}
+        selectedDay={selectedDay}
+        setSelectedDay={setSelectedDay}
+        onNestedHorizontalGestureStart={() => undefined}
+        onNestedHorizontalGestureEnd={() => undefined}
+      />
+      <DayDetailSheet
+        selectedDay={selectedDay}
+        onClose={() => setSelectedDay(null)}
+      />
+    </View>
   );
 }
 
