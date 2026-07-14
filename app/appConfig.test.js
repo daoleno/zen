@@ -54,6 +54,7 @@ describe('native platform config', () => {
   });
 
   it('explains local-network access used by self-hosted daemons on iOS', () => {
+    expect(config.ios.infoPlist.ITSAppUsesNonExemptEncryption).toBe(false);
     expect(config.ios.infoPlist.NSLocalNetworkUsageDescription).toContain('self-hosted daemon');
   });
 

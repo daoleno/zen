@@ -17,6 +17,7 @@
       "buildNumber": "4",
       "supportsTablet": false,
       "infoPlist": {
+        "ITSAppUsesNonExemptEncryption": false,
         "NSLocalNetworkUsageDescription": "Allow Zen to connect to your self-hosted daemon on the local network."
       }
     },
