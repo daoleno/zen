@@ -3,6 +3,7 @@
 #
 # Usage:
 #   ./scripts/verify-release-identity.sh
+#   ./scripts/verify-release-identity.sh --tag v0.1.0-beta.5
 #   ./scripts/verify-release-identity.sh --stage dist-download/v0.1.0-beta.5
 
 set -euo pipefail
@@ -11,9 +12,11 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
 
 STAGE=""
+RELEASE_TAG=""
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --stage) STAGE="${2:?}"; shift 2 ;;
+    --tag) RELEASE_TAG="${2:?}"; shift 2 ;;
     -h|--help) sed -n '2,10p' "$0"; exit 0 ;;
     *) echo "error: unknown arg $1" >&2; exit 2 ;;
   esac
@@ -24,6 +27,36 @@ EXPECTED_PACKAGE="com.daoleno.zen"
 EXPECTED_VERSION_CODE="5"
 EXPECTED_IOS_BUILD_NUMBER="6"
 EXPECTED_CERT_FP="C2:FC:5B:09:B3:86:92:EE:70:59:71:1F:E7:ED:B8:79:4C:E3:65:FE:1C:7A:06:AB:95:4E:5D:D1:BD:CD:A4:FD"
+
+if [[ -n "$RELEASE_TAG" ]]; then
+  [[ "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+-beta\.[0-9]+$ ]] || {
+    echo "error: release tag must exactly match vX.Y.Z-beta.N" >&2
+    exit 1
+  }
+  [[ "$RELEASE_TAG" == "v${EXPECTED_VERSION}" ]] || {
+    echo "error: release tag $RELEASE_TAG does not match tracked version v${EXPECTED_VERSION}" >&2
+    exit 1
+  }
+  [[ "$(git cat-file -t "refs/tags/$RELEASE_TAG" 2>/dev/null || true)" == "tag" ]] || {
+    echo "error: $RELEASE_TAG must be an annotated tag" >&2
+    exit 1
+  }
+  TAG_COMMIT="$(git rev-parse "refs/tags/${RELEASE_TAG}^{commit}")"
+  HEAD_COMMIT="$(git rev-parse HEAD)"
+  [[ "$TAG_COMMIT" == "$HEAD_COMMIT" ]] || {
+    echo "error: checked-out release tag does not resolve to HEAD" >&2
+    exit 1
+  }
+  git show-ref --verify --quiet refs/remotes/origin/main || {
+    echo "error: origin/main must be fetched before release tag validation" >&2
+    exit 1
+  }
+  git merge-base --is-ancestor "$HEAD_COMMIT" refs/remotes/origin/main || {
+    echo "error: release tag commit is not on origin/main" >&2
+    exit 1
+  }
+  echo "ok: annotated release tag $RELEASE_TAG resolves to HEAD on origin/main"
+fi
 
 verify_ios_identity() {
   local variant="$1"
@@ -224,12 +257,14 @@ if "ZEN_ANDROID_KEYSTORE_BASE64" not in wf:
     errors.append("release-artifacts.yml must reference ZEN_ANDROID_KEYSTORE_BASE64")
 if "workflow_dispatch" not in wf:
     errors.append("release-artifacts.yml must support workflow_dispatch")
-if "types: [published]" not in wf or "github.event.release.prerelease" not in wf:
-    errors.append("release-artifacts.yml must publish only from an explicit published prerelease")
-if "inputs.publish" in wf or "github.event.inputs.publish" in wf:
-    errors.append("manual dispatch must remain artifact-only and must not publish release assets")
-if re.search(r"(?m)^\s+push:\s*$", wf):
-    errors.append("release-artifacts.yml must not rebuild release assets on tag push")
+if 'tags:' not in wf or '"v*.*.*-beta.*"' not in wf:
+    errors.append("release-artifacts.yml must trigger from beta tag pushes")
+if "types: [published]" in wf or "github.event.release" in wf:
+    errors.append("release-artifacts.yml must not depend on a release-published event")
+if "type: boolean" not in wf or "needs.validate.outputs.publish == 'true'" not in wf:
+    errors.append("manual release recovery must require the reviewed publish boolean")
+if "--tag" not in wf or "git fetch --no-tags origin main" not in wf:
+    errors.append("release-artifacts.yml must validate tag identity and origin/main ancestry")
 if "gh release upload" not in wf:
     errors.append("release-artifacts.yml must upload assets via gh release upload")
 if "materialize-android-keystore" not in wf:
@@ -245,12 +280,15 @@ for asset in (
 ):
     if asset not in wf:
         errors.append(f"release-artifacts.yml missing release asset: {asset}")
-# Publish job has no checkout; gh requires GH_REPO (or a git remote).
 if "GH_REPO" not in wf or "github.repository" not in wf:
-    errors.append(
-        "release-artifacts.yml publish path must set GH_REPO from github.repository "
-        "(publish job has no checkout)"
-    )
+    errors.append("release-artifacts.yml publish path must set GH_REPO from github.repository")
+for required in (
+    'needs: [validate, daemon, android]',
+    'gh release create "$TAG" --verify-tag --draft --prerelease',
+    'gh release edit "$TAG" --draft=false --prerelease',
+):
+    if required not in wf:
+        errors.append(f"release-artifacts.yml missing gated release contract: {required}")
 
 notes_path = root / f"docs/releases/v{exp_version}.md"
 if not notes_path.is_file():

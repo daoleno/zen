@@ -16,14 +16,14 @@ const nativeLibsWorkflow = fs.readFileSync(
 );
 
 describe('iOS signed release identity contract', () => {
-  it('automatically publishes only immutable reviewed beta prereleases as Preview', () => {
-    expect(workflow).toMatch(/release:\s*\n\s*types: \[published\]/);
-    expect(workflow).toContain("github.event.release.prerelease == true");
-    expect(workflow).toContain("contains(github.event.release.tag_name, '-beta.')");
-    expect(workflow).toContain("github.event_name == 'release' && 'preview'");
-    expect(workflow).toContain("github.event_name == 'release' && 'testflight'");
+  it('automatically publishes only immutable reviewed beta tag pushes as Preview', () => {
+    expect(workflow).toMatch(/push:\s*\n\s*tags:\s*\n\s*- "v\*\.\*\.\*-beta\.\*"/);
+    expect(workflow).not.toMatch(/release:\s*\n\s*types:/);
+    expect(workflow).toContain("github.event_name == 'push' && 'preview'");
+    expect(workflow).toContain("github.event_name == 'push' && 'testflight'");
     expect(workflow).toContain("ref: ${{ env.ZEN_IOS_REF }}");
     expect(workflow).toContain("ref: ${{ github.workflow_sha }}");
+    expect(workflow).toContain('./scripts/verify-release-identity.sh --tag "$ZEN_RELEASE_TAG"');
     expect(workflow).toContain('release tag version');
     expect(workflow).toContain('ios_release = json.load(open("app/ios-build.json"');
     expect(workflow).toContain('tracked iOS buildNumber must be a positive integer');
@@ -39,10 +39,10 @@ describe('iOS signed release identity contract', () => {
   });
 
   it('isolates Preview signing material in a separate protected environment', () => {
-    expect(workflow).toContain("github.event_name == 'release' || inputs.app_identity == 'preview'");
+    expect(workflow).toContain("github.event_name == 'push' || inputs.app_identity == 'preview'");
     expect(workflow).toContain("'app-store-connect-preview'");
     expect(workflow).toContain("'app-store-connect'");
-    expect(workflow).toContain("ZEN_IOS_APP_VARIANT: ${{ github.event_name == 'release' && 'preview' || inputs.app_identity }}");
+    expect(workflow).toContain("ZEN_IOS_APP_VARIANT: ${{ github.event_name == 'push' && 'preview' || inputs.app_identity }}");
   });
 
   it('derives signing, native project, artifact, and verification values from the closed identity', () => {
@@ -61,7 +61,7 @@ describe('iOS signed release identity contract', () => {
   });
 
   it('uploads Preview with an Individual API key and no altool issuer dependency', () => {
-    expect(workflow).toContain("github.event_name == 'release' || inputs.app_identity == 'preview'");
+    expect(workflow).toContain("github.event_name == 'push' || inputs.app_identity == 'preview'");
     expect(workflow).toContain('HD84J3DJ2B');
     expect(workflow).toContain('./.zen-release-automation/scripts/app-store-connect-upload.py');
     expect(workflow).toContain('--app-id "$ZEN_ASC_APP_ID"');
@@ -107,5 +107,10 @@ describe('iOS unsigned Simulator contract', () => {
     expect(nativeLibsWorkflow).toContain('runs-on: macos-26');
     expect(nativeLibsWorkflow).toContain("-destination 'generic/platform=iOS Simulator'");
     expect(nativeLibsWorkflow).toContain('ARCHS=arm64');
+  });
+
+  it('keeps the heavyweight native-libs workflow manual-only', () => {
+    expect(nativeLibsWorkflow).toContain('workflow_dispatch:');
+    expect(nativeLibsWorkflow).not.toMatch(/push:\s*\n\s*tags:/);
   });
 });

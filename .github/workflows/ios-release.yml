@@ -1,11 +1,12 @@
 name: iOS signed release
 
-# Published Zen beta prereleases automatically ship the closed Preview identity
-# to TestFlight from their immutable tag. Manual dispatch remains available for
-# Preview and Production; Production is never selected by a release event.
+# Annotated Zen beta tag pushes automatically ship the closed Preview identity
+# to TestFlight. Manual dispatch remains available for Preview and Production;
+# Production is never selected by an automatic event.
 on:
-  release:
-    types: [published]
+  push:
+    tags:
+      - "v*.*.*-beta.*"
   workflow_dispatch:
     inputs:
       ref:
@@ -34,7 +35,7 @@ on:
           - testflight
 
 concurrency:
-  group: ios-release-${{ github.event_name == 'release' && 'preview' || inputs.app_identity }}-${{ github.event_name == 'release' && github.event.release.tag_name || inputs.ref }}
+  group: ios-release-${{ github.event_name == 'push' && 'preview' || inputs.app_identity }}-${{ github.event_name == 'push' && github.ref_name || inputs.ref }}
   cancel-in-progress: false
 
 permissions:
@@ -42,19 +43,18 @@ permissions:
 
 jobs:
   archive:
-    if: ${{ github.event_name == 'workflow_dispatch' || (github.event.release.prerelease == true && startsWith(github.event.release.tag_name, 'v') && contains(github.event.release.tag_name, '-beta.')) }}
     name: Signed archive and IPA
     runs-on: macos-26
     timeout-minutes: 180
-    environment: ${{ (github.event_name == 'release' || inputs.app_identity == 'preview') && 'app-store-connect-preview' || 'app-store-connect' }}
+    environment: ${{ (github.event_name == 'push' || inputs.app_identity == 'preview') && 'app-store-connect-preview' || 'app-store-connect' }}
     env:
-      ZEN_IOS_APP_VARIANT: ${{ github.event_name == 'release' && 'preview' || inputs.app_identity }}
+      ZEN_IOS_APP_VARIANT: ${{ github.event_name == 'push' && 'preview' || inputs.app_identity }}
       ZEN_IOS_BUILD_NUMBER: ${{ github.event_name == 'workflow_dispatch' && inputs.build_number || '' }}
-      ZEN_IOS_DESTINATION: ${{ github.event_name == 'release' && 'testflight' || inputs.destination }}
-      ZEN_IOS_REF: ${{ github.event_name == 'release' && github.event.release.tag_name || inputs.ref }}
+      ZEN_IOS_DESTINATION: ${{ github.event_name == 'push' && 'testflight' || inputs.destination }}
+      ZEN_IOS_REF: ${{ github.event_name == 'push' && github.ref_name || inputs.ref }}
       # App IDs are public identifiers. Preview is fixed; production is an
       # environment variable because its App Store Connect record is external.
-      ZEN_ASC_APP_ID: ${{ (github.event_name == 'release' || inputs.app_identity == 'preview') && '6790486708' || vars.ZEN_ASC_APP_ID }}
+      ZEN_ASC_APP_ID: ${{ (github.event_name == 'push' || inputs.app_identity == 'preview') && '6790486708' || vars.ZEN_ASC_APP_ID }}
     steps:
       - name: Checkout explicit ref
         uses: actions/checkout@v4
@@ -73,25 +73,12 @@ jobs:
       - name: Resolve and validate release invocation
         id: invocation
         env:
-          ZEN_RELEASE_TAG: ${{ github.event.release.tag_name }}
-          ZEN_RELEASE_PRERELEASE: ${{ github.event.release.prerelease }}
-          ZEN_RELEASE_DRAFT: ${{ github.event.release.draft }}
+          ZEN_RELEASE_TAG: ${{ github.ref_name }}
         run: |
           set -euo pipefail
-          if [[ "${{ github.event_name }}" == "release" ]]; then
-            [[ "$ZEN_RELEASE_PRERELEASE" == "true" && "$ZEN_RELEASE_DRAFT" != "true" ]] || {
-              echo "error: automatic iOS publication requires a published prerelease" >&2
-              exit 1
-            }
-            [[ "$ZEN_RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+-beta\.[0-9]+$ ]] || {
-              echo "error: automatic iOS publication requires a reviewed vX.Y.Z-beta.N tag" >&2
-              exit 1
-            }
-            TAG_COMMIT="$(git rev-parse "refs/tags/${ZEN_RELEASE_TAG}^{}")"
-            [[ "$TAG_COMMIT" == "$(git rev-parse HEAD)" ]] || {
-              echo "error: checked-out release tag does not resolve to HEAD" >&2
-              exit 1
-            }
+          if [[ "${{ github.event_name }}" == "push" ]]; then
+            git fetch --no-tags origin main
+            ./scripts/verify-release-identity.sh --tag "$ZEN_RELEASE_TAG"
             ZEN_IOS_BUILD_NUMBER="$(python3 - "$ZEN_RELEASE_TAG" <<'PY'
           import json, sys
           base = json.load(open("app/app.base.json", encoding="utf-8"))["expo"]
@@ -247,7 +234,7 @@ jobs:
           path: |
             ~/Library/Caches/CocoaPods
             ~/.cocoapods/repos
-          key: zen-cocoapods-${{ runner.os }}-${{ runner.arch }}-${{ steps.toolchain.outputs.cache_key }}-${{ hashFiles('bun.lock', 'app/package.json', 'app/app.config.js', 'app/ios-build.json', 'app/plugins/withZenIOSBuild.js', 'app/modules/zen-terminal-vt/ZenTerminalVt.podspec') }}
+          key: zen-cocoapods-${{ runner.os }}-${{ runner.arch }}-${{ steps.toolchain.outputs.cache_key }}-${{ hashFiles('bun.lock', 'app/package.json', 'app/modules/zen-terminal-vt/native.lock.json', 'app/modules/zen-terminal-vt/ZenTerminalVt.podspec') }}
 
       - name: Generate release project and install pods
         run: |

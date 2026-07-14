@@ -4,9 +4,9 @@ name: Native libs (libghostty-vt)
 # Not part of default PR CI (Zig + Ghostty compile is heavy).
 on:
   workflow_dispatch:
-  push:
-    tags:
-      - "v*"
+
+permissions:
+  contents: read
 
 concurrency:
   group: native-libs-${{ github.workflow }}-${{ github.ref }}

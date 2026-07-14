@@ -2,12 +2,8 @@ name: Release artifacts
 
 # Secure release pipeline: Linux amd64/arm64, macOS arm64, signed Android arm64 APK.
 #
-# Triggers:
-#   - release published: build the immutable tag and publish to that prerelease
-#   - workflow_dispatch: build selected ref as a workflow artifact only
-#
-# Publication requires the explicit GitHub "publish prerelease" operation. This
-# workflow does not create tags/releases or convert release types.
+# An annotated vX.Y.Z-beta.N tag push is the sole normal release action. Manual
+# dispatch can rebuild, and can recover publication only with explicit review.
 #
 # Secrets (GitHub Actions repository secrets only; never commit values):
 #   ZEN_ANDROID_KEYSTORE_BASE64
@@ -19,18 +15,23 @@ name: Release artifacts
 # Docs: docs/ci-release.md
 
 on:
-  release:
-    types: [published]
+  push:
+    tags:
+      - "v*.*.*-beta.*"
   workflow_dispatch:
     inputs:
       ref:
-        description: "Git ref to build (tag, branch, or SHA). Empty uses the workflow ref."
-        required: false
+        description: "Exact annotated vX.Y.Z-beta.N tag to rebuild/recover"
+        required: true
         type: string
-        default: ""
+      publish:
+        description: "Reviewed recovery: publish/reconcile the matching prerelease"
+        required: true
+        type: boolean
+        default: false
 
 concurrency:
-  group: release-artifacts-${{ github.event_name == 'release' && github.event.release.tag_name || inputs.ref || github.ref }}
+  group: release-artifacts-${{ github.event_name == 'push' && github.ref_name || inputs.ref }}
   cancel-in-progress: false
 
 permissions:
@@ -41,57 +42,92 @@ env:
   ZEN_JAVA_VERSION: "17"
 
 jobs:
-  build:
-    if: ${{ github.event_name == 'workflow_dispatch' || (github.event.release.prerelease == true && github.event.release.draft == false && startsWith(github.event.release.tag_name, 'v')) }}
-    name: Build and stage (Linux + macOS + signed Android)
+  validate:
+    name: Validate immutable reviewed tag
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    outputs:
+      version: ${{ steps.meta.outputs.version }}
+      tag: ${{ steps.meta.outputs.tag }}
+      sha: ${{ steps.meta.outputs.sha }}
+      publish: ${{ steps.meta.outputs.publish }}
+    steps:
+      - name: Checkout exact tag
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'push' && github.ref_name || inputs.ref }}
+          fetch-depth: 0
+
+      - name: Fetch and validate reviewed release identity
+        id: meta
+        env:
+          RELEASE_TAG: ${{ github.event_name == 'push' && github.ref_name || inputs.ref }}
+          PUBLISH: ${{ github.event_name == 'push' && 'true' || inputs.publish }}
+        run: |
+          set -euo pipefail
+          git fetch --no-tags origin main
+          ./scripts/verify-release-identity.sh --tag "$RELEASE_TAG"
+          VERSION="${RELEASE_TAG#v}"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "tag=$RELEASE_TAG" >> "$GITHUB_OUTPUT"
+          echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+          echo "publish=$PUBLISH" >> "$GITHUB_OUTPUT"
+
+  daemon:
+    name: Build daemon archives
+    needs: validate
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout exact tag
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.validate.outputs.tag }}
+          fetch-depth: 0
+      - name: Revalidate tag at build boundary
+        run: |
+          git fetch --no-tags origin main
+          ./scripts/verify-release-identity.sh --tag "${{ needs.validate.outputs.tag }}"
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: daemon/go.mod
+          cache-dependency-path: daemon/go.sum
+      - name: Build daemon binaries once
+        env:
+          ZEN_VERSION: ${{ needs.validate.outputs.version }}
+        run: ./scripts/build-daemon-linux.sh --out-dir dist-download/staging/bin
+      - name: Verify daemon formats and architectures
+        run: |
+          set -euo pipefail
+          file dist-download/staging/bin/zen-linux-amd64 | grep -Eq 'ELF 64-bit.*(x86-64|x86_64)'
+          file dist-download/staging/bin/zen-linux-arm64 | grep -Eq 'ELF 64-bit.*(ARM aarch64|ARM64)'
+          file dist-download/staging/bin/zen-darwin-arm64 | grep -Eq 'Mach-O 64-bit.*arm64'
+      - name: Upload verified daemon inputs
+        uses: actions/upload-artifact@v4
+        with:
+          name: zen-daemon-binaries-${{ needs.validate.outputs.tag }}
+          path: dist-download/staging/bin/zen-*
+          if-no-files-found: error
+
+  android:
+    needs: validate
+    name: Build and verify signed Android
     runs-on: ubuntu-latest
     timeout-minutes: 180
     permissions:
       contents: read
-    outputs:
-      version: ${{ steps.meta.outputs.version }}
-      tag: ${{ steps.meta.outputs.tag }}
-      stage_dir: ${{ steps.meta.outputs.stage_dir }}
     steps:
-      - name: Checkout
+      - name: Checkout exact tag
         uses: actions/checkout@v4
         with:
-          ref: ${{ github.event_name == 'release' && github.event.release.tag_name || inputs.ref || github.ref }}
+          ref: ${{ needs.validate.outputs.tag }}
           fetch-depth: 0
 
-      - name: Product meta
-        id: meta
+      - name: Revalidate tag at build boundary
         run: |
           set -euo pipefail
-          VERSION="$(python3 -c "import json;print(json.load(open('app/app.base.json'))['expo']['version'])")"
-          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
-          echo "tag=v${VERSION}" >> "$GITHUB_OUTPUT"
-          echo "stage_dir=dist-download/v${VERSION}" >> "$GITHUB_OUTPUT"
-          echo "Building product version ${VERSION} (tag v${VERSION})"
-          if [[ "${{ github.event_name }}" == "release" ]]; then
-            RELEASE_TAG='${{ github.event.release.tag_name }}'
-            [[ '${{ github.event.release.prerelease }}' == 'true' && '${{ github.event.release.draft }}' != 'true' ]] || {
-              echo "error: automatic asset publication requires a published prerelease" >&2
-              exit 1
-            }
-            [[ "$RELEASE_TAG" == "v${VERSION}" ]] || {
-              echo "error: release tag $RELEASE_TAG does not match tracked version v${VERSION}" >&2
-              exit 1
-            }
-            [[ "$(git rev-parse "refs/tags/${RELEASE_TAG}^{}")" == "$(git rev-parse HEAD)" ]] || {
-              echo "error: checked-out release tag does not resolve to HEAD" >&2
-              exit 1
-            }
-          fi
-
-      - name: Verify release identity (tracked)
-        run: ./scripts/verify-release-identity.sh
-
-      - name: Setup Go
-        uses: actions/setup-go@v5
-        with:
-          go-version-file: daemon/go.mod
-          cache-dependency-path: daemon/go.sum
+          git fetch --no-tags origin main
+          ./scripts/verify-release-identity.sh --tag "${{ needs.validate.outputs.tag }}"
 
       - name: Setup Bun
         uses: oven-sh/setup-bun@v2
@@ -108,6 +144,7 @@ jobs:
             bun.lock
             app/package.json
             app/app.base.json
+            app/plugins/withZenAndroidRelease.js
             app/modules/zen-terminal-vt/android/build.gradle
 
       - name: Setup Android SDK
@@ -265,17 +302,6 @@ jobs:
           set -euo pipefail
           ./scripts/verify-apk-release.sh "${APK_PATH}"
 
-      - name: Stage release tree (Linux + macOS + APK)
-        env:
-          ZEN_UPDATE_SIGNING_KEY_BASE64: ${{ secrets.ZEN_UPDATE_SIGNING_KEY_BASE64 }}
-        run: |
-          set -euo pipefail
-          ./scripts/stage-release.sh --apk "${APK_PATH}"
-          STAGE="${{ steps.meta.outputs.stage_dir }}"
-          ./scripts/verify-release-identity.sh --stage "$STAGE"
-          (cd "$STAGE" && sha256sum -c SHA256SUMS)
-          ls -la "$STAGE"
-
       - name: Shred temporary keystore
         if: always()
         run: |
@@ -287,60 +313,104 @@ jobs:
           # Ensure env materialization helpers leave no base64 on disk from this step
           rm -f "${{ runner.temp }}/zen-release.p12" || true
 
-      - name: Upload stage artifact
+      - name: Upload verified signed APK
         uses: actions/upload-artifact@v4
         with:
-          name: zen-release-stage-v${{ steps.meta.outputs.version }}
-          path: |
-            dist-download/v${{ steps.meta.outputs.version }}/zen-linux-amd64.tar.gz
-            dist-download/v${{ steps.meta.outputs.version }}/zen-linux-arm64.tar.gz
-            dist-download/v${{ steps.meta.outputs.version }}/zen-darwin-arm64.tar.gz
-            dist-download/v${{ steps.meta.outputs.version }}/zen-android-arm64-v${{ steps.meta.outputs.version }}.apk
-            dist-download/v${{ steps.meta.outputs.version }}/SHA256SUMS
-            dist-download/v${{ steps.meta.outputs.version }}/release-manifest.json
-            dist-download/v${{ steps.meta.outputs.version }}/release-manifest.json.sig
+          name: zen-android-apk-${{ needs.validate.outputs.tag }}
+          path: ${{ env.APK_PATH }}
+          if-no-files-found: error
+
+  aggregate:
+    name: Aggregate, sign, and verify complete asset set
+    needs: [validate, daemon, android]
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout exact tag
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.validate.outputs.tag }}
+          fetch-depth: 0
+      - name: Revalidate tag before signing
+        run: |
+          git fetch --no-tags origin main
+          ./scripts/verify-release-identity.sh --tag "${{ needs.validate.outputs.tag }}"
+      - name: Download daemon binaries
+        uses: actions/download-artifact@v4
+        with:
+          name: zen-daemon-binaries-${{ needs.validate.outputs.tag }}
+          path: dist-download/staging/bin
+      - name: Download signed Android APK
+        uses: actions/download-artifact@v4
+        with:
+          name: zen-android-apk-${{ needs.validate.outputs.tag }}
+          path: inputs/android
+      - name: Deterministically stage, sign, and verify
+        env:
+          ZEN_UPDATE_SIGNING_KEY_BASE64: ${{ secrets.ZEN_UPDATE_SIGNING_KEY_BASE64 }}
+        run: |
+          set -euo pipefail
+          APK="$(find inputs/android -maxdepth 1 -type f -name '*.apk' -print -quit)"
+          test -n "$APK"
+          ./scripts/verify-apk-release.sh "$APK"
+          export SOURCE_DATE_EPOCH="$(git show -s --format=%ct HEAD)"
+          ./scripts/stage-release.sh --skip-build --apk "$APK"
+          STAGE="dist-download/${{ needs.validate.outputs.tag }}"
+          ./scripts/verify-release-identity.sh --tag "${{ needs.validate.outputs.tag }}" --stage "$STAGE"
+          (cd "$STAGE" && sha256sum -c SHA256SUMS)
+      - name: Upload complete verified stage
+        uses: actions/upload-artifact@v4
+        with:
+          name: zen-release-stage-${{ needs.validate.outputs.tag }}
+          path: dist-download/${{ needs.validate.outputs.tag }}
           if-no-files-found: error
 
   publish:
-    name: Publish assets to existing prerelease
-    needs: build
-    if: ${{ github.event_name == 'release' }}
+    name: Reconcile draft and publish prerelease
+    needs: [validate, aggregate]
+    if: ${{ needs.validate.outputs.publish == 'true' }}
     runs-on: ubuntu-latest
     timeout-minutes: 30
     permissions:
       contents: write
     steps:
+      - name: Checkout exact tag and tracked notes
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.validate.outputs.tag }}
+          fetch-depth: 0
+      - name: Revalidate immutable tag before external publication
+        run: |
+          git fetch --no-tags origin main
+          ./scripts/verify-release-identity.sh --tag "${{ needs.validate.outputs.tag }}"
       - name: Download stage artifact
         uses: actions/download-artifact@v4
         with:
-          name: zen-release-stage-v${{ needs.build.outputs.version }}
+          name: zen-release-stage-${{ needs.validate.outputs.tag }}
           path: stage
 
-      - name: Upload/replace assets on existing prerelease
+      - name: Create/reuse safe draft, upload, verify, and publish
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          # No checkout in this job; gh needs explicit repo (owner/name).
           GH_REPO: ${{ github.repository }}
-          TAG: ${{ needs.build.outputs.tag }}
-          VERSION: ${{ needs.build.outputs.version }}
+          TAG: ${{ needs.validate.outputs.tag }}
+          VERSION: ${{ needs.validate.outputs.version }}
         run: |
           set -euo pipefail
-          # Require an existing prerelease; never create tags/releases here.
           test -n "${GH_REPO:-}"
-          meta="$(gh release view "$TAG" --json isPrerelease,isDraft,url)"
-          echo "Release meta (no secrets): ${meta}"
+          notes="docs/releases/${TAG}.md"
+          test -s "$notes"
+          if ! meta="$(gh release view "$TAG" --json isPrerelease,isDraft,url 2>/dev/null)"; then
+            gh release create "$TAG" --verify-tag --draft --prerelease --title "Zen $TAG" --notes-file "$notes"
+            meta="$(gh release view "$TAG" --json isPrerelease,isDraft,url)"
+          fi
           is_pre="$(echo "$meta" | python3 -c 'import json,sys; print(json.load(sys.stdin)["isPrerelease"])')"
           is_draft="$(echo "$meta" | python3 -c 'import json,sys; print(json.load(sys.stdin)["isDraft"])')"
           if [[ "$is_pre" != "True" && "$is_pre" != "true" ]]; then
-            echo "error: $TAG is not a prerelease; refusing publish (isPrerelease=$is_pre)" >&2
-            exit 1
-          fi
-          if [[ "$is_draft" == "True" || "$is_draft" == "true" ]]; then
-            echo "error: $TAG is still a draft; convert to published prerelease before CI upload" >&2
+            echo "error: existing $TAG release is not a prerelease" >&2
             exit 1
           fi
           cd stage
-          ls -la
           assets=(
             zen-linux-amd64.tar.gz
             zen-linux-arm64.tar.gz
@@ -351,12 +421,19 @@ jobs:
             release-manifest.json.sig
           )
           for f in "${assets[@]}"; do
-            if [[ ! -f "$f" ]]; then
-              echo "error: missing staged asset $f" >&2
-              exit 1
-            fi
+            test -s "$f" || { echo "error: missing/empty staged asset $f" >&2; exit 1; }
           done
-          # --clobber replaces same-named assets without deleting the release.
           gh release upload "$TAG" "${assets[@]}" --clobber
-          echo "Published/replaced assets on prerelease $TAG"
-          gh release view "$TAG"
+          expected="$(printf '%s\n' "${assets[@]}" | LC_ALL=C sort)"
+          actual="$(gh release view "$TAG" --json assets --jq '.assets[] | select(.size > 0) | .name' | LC_ALL=C sort)"
+          [[ "$actual" == "$expected" ]] || {
+            echo "error: uploaded non-empty asset set does not exactly match expected set" >&2
+            diff -u <(printf '%s\n' "$expected") <(printf '%s\n' "$actual") || true
+            exit 1
+          }
+          if [[ "$is_draft" == "True" || "$is_draft" == "true" ]]; then
+            gh release edit "$TAG" --draft=false --prerelease --notes-file "../$notes"
+          else
+            gh release edit "$TAG" --prerelease --notes-file "../$notes"
+          fi
+          gh release view "$TAG" --json isDraft,isPrerelease,url,assets

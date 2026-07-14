@@ -6,7 +6,7 @@ The separate [`native-libs.yml`](../.github/workflows/native-libs.yml) workflow 
 
 ## What it does
 
-| Step | Published prerelease or manual build dispatch | Published prerelease only |
+| Step | Beta tag push or manual rebuild | Publishing tag push / reviewed recovery only |
 | --- | --- | --- |
 | Checkout selected ref | yes | — |
 | `verify-release-identity.sh` | yes | — |
@@ -18,7 +18,7 @@ The separate [`native-libs.yml`](../.github/workflows/native-libs.yml) workflow 
 | Upload workflow artifact | yes | — |
 | Upload/replace assets on **existing** GitHub prerelease | **no** | yes |
 
-Publishing a GitHub prerelease is the one canonical build-and-publish event. It checks out the immutable tag, proves the tag version and SHA, builds once, and attaches the verified assets. A tag push alone does nothing, eliminating the former duplicate tag-push build plus manual publish rebuild. Manual dispatch is deliberately artifact-only. The workflow never creates tags/releases, converts drafts, or publishes from an ordinary branch push.
+Pushing one reviewed annotated `vX.Y.Z-beta.N` tag is the canonical build-and-publish event. The workflow checks out that immutable tag, proves strict syntax, version equality, annotated-tag identity, exact HEAD resolution, and ancestry on `origin/main`, then runs the tracked release-identity verifier. Daemon builds and Android/native work run in parallel. A final job combines those verified outputs, creates deterministic archives and checksums, signs and verifies the updater manifest, and uploads one complete workflow artifact. Only then does the write-scoped job create or reuse the matching draft prerelease, upload and verify the exact non-empty asset set, and publish it. A failed build cannot create a public release; a failed first upload can leave only a draft.
 
 ## Repository secrets (names only)
 
@@ -57,16 +57,17 @@ C2:FC:5B:09:B3:86:92:EE:70:59:71:1F:E7:ED:B8:79:4C:E3:65:FE:1C:7A:06:AB:95:4E:5D
 
 | Input | Type | Default | Meaning |
 | --- | --- | --- | --- |
-| `ref` | string | empty | Git tag/branch/SHA to build; empty = the branch/tag selected in the Actions UI |
+| `ref` | string | — | Exact annotated `vX.Y.Z-beta.N` tag to rebuild |
+| `publish` | boolean | `false` | Reviewed recovery authorization to reconcile and publish the matching draft/existing prerelease |
 
-Permissions: build job `contents: read`; publish job `contents: write` only for the published-prerelease event.
+Permissions: validation, build, and aggregation jobs have `contents: read`; only the final gated publish job has `contents: write`.
 
 ## Build and publish paths
 
 Prerequisites:
 
-1. The release tag already exists and points at the reviewed commit.
-2. The matching draft is explicitly published as a **prerelease** on GitHub; that publication event is the canonical build/publish request.
+1. The prepared commit already contains the reviewed `app/app.base.json` version and Android `versionCode`, the independent positive unused `app/ios-build.json` build number, and `docs/releases/vX.Y.Z-beta.N.md` release notes.
+2. That exact commit is already pushed to `origin/main`.
 3. The four `ZEN_ANDROID_*` secrets above are configured on the repository.
 4. `ZEN_UPDATE_SIGNING_KEY_BASE64` is configured with the updater manifest key.
 
@@ -75,10 +76,24 @@ Optional build-only validation (workflow artifact; never mutates the release):
 ```bash
 gh workflow run release-artifacts.yml \
   --ref main \
-  -f ref=vX.Y.Z
+  -f ref=vX.Y.Z-beta.N \
+  -f publish=false
 ```
 
-To publish, use GitHub's explicit draft-to-prerelease publication operation. Do not dispatch a second build for the same tag. The workflow refuses a final release, draft, version mismatch, or tag/SHA mismatch before building and uses `gh release upload --clobber` only on the already-published prerelease.
+The normal maintainer action is exactly:
+
+```bash
+git tag -a vX.Y.Z-beta.N -m "Zen vX.Y.Z-beta.N"
+git push origin vX.Y.Z-beta.N
+```
+
+Do not create a GitHub release by hand. For recovery after a failed run, dispatch the exact existing tag with `publish=true` only after reviewing the tag and intended release. Recovery repeats every identity, SHA, main-ancestry, asset, checksum, and signature gate; it can safely resume a matching draft or reconcile an existing prerelease with `--clobber`. It never creates or rewrites a tag and never force-pushes.
+
+## Build-time baseline and optimization
+
+Recent pre-change GitHub runs on July 14, 2026 put the combined release-assets job at about 20–27 minutes warm/cold. Android dominated: clean prebuild plus Gradle took roughly 14–22 minutes, native Ghostty took 2–3 minutes, and all three daemon binaries took about 40 seconds at the end. The old redundant tag-triggered `native-libs` workflow also consumed about 25–35 minutes, including duplicate iOS/Android native builds.
+
+The new graph moves the daemon work beside Android, so the expected assets critical path is Android plus roughly one minute for aggregation/publication: about 16–24 minutes cold and 14–20 minutes warm based on those observed Android ranges. `--build-cache` now explicitly enables Gradle task reuse across clean Expo prebuilds. The Gradle cache key still includes the generated release identity so a new version can save its own task outputs while setup-java restores compatible dependency state from its prefix; an exact-tag recovery can then hit that version's cache. Pinned native source/output caches remain content-addressed and verified after restore. CocoaPods downloads no longer miss only because the independent iOS build number changed. Xcode DerivedData remains uncached because signed, identity-sensitive intermediates are large and the observed evidence does not justify that risk and complexity.
 
 Watch:
 
@@ -118,7 +133,7 @@ Daemon archives contain `zen`, `LICENSE`, `NOTICE`, and `TRADEMARKS.md`. Release
 - The updater accepts one public release stream, including prereleases by semantic-version precedence; it has no channel setting.
 - The detached Ed25519 signature authenticates manifest version, platform mapping, archive size, and SHA-256 before download installation.
 - CI does not read developer home directories (including `~/.zen/release-keys`).
-- Manual dispatch cannot publish, while a published-prerelease event refuses final releases, drafts, version mismatches, and tag/SHA mismatches.
+- Manual dispatch publishes only with the reviewed boolean; automatic publication is only a strict annotated beta tag push whose commit is already on `origin/main`.
 - Gradle caches only dependency/build state under the runner's Gradle home. Zig/Ghostty source and unsigned native-output keys include the native lock and build/verification inputs; every cache hit still runs release-grade manifest, checksum, ABI, and notice verification.
 - No cache path includes a keystore, updater signing key, signed APK, or staged release output.
 - Pinned Zig archives are SHA-256 verified on both cache misses and hits and extracted under `$RUNNER_TEMP/zen-tools` (not `/usr/local`). No `sudo` or unverified installers.

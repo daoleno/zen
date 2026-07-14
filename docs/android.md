@@ -225,7 +225,7 @@ Each release has versioned notes under `docs/releases/`; the release page includ
 
 ### CI (GitHub Actions)
 
-Signed arm64 APK + Linux binaries are built once when an immutable GitHub prerelease is explicitly published by [`.github/workflows/release-artifacts.yml`](../.github/workflows/release-artifacts.yml). Tag pushes do not build, and manual dispatch is artifact-only. Required secret **names** and release preparation details: [ci-release.md](ci-release.md).
+Signed arm64 APK and daemon binaries are built in parallel when a reviewed annotated beta tag is pushed by [`.github/workflows/release-artifacts.yml`](../.github/workflows/release-artifacts.yml). After gated aggregation and verification, the workflow publishes the matching GitHub prerelease. Manual dispatch is build-only by default and requires an explicit reviewed boolean for publication recovery. Required secret **names** and release preparation details: [ci-release.md](ci-release.md).
 
 ## Related docs
 
