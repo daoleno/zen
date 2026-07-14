@@ -113,7 +113,7 @@ class BuildUploadTests(unittest.TestCase):
         )
         self.assertEqual(verified.returncode, 0, verified.stderr)
 
-    def test_official_build_upload_requests_and_streamed_sha256_commit(self):
+    def test_official_build_upload_requests_and_streamed_md5_commit(self):
         client = asc_upload.AppStoreConnectClient("SYNTHETIC", self.key, opener=self.open)
         with mock.patch.object(pathlib.Path, "read_bytes", side_effect=AssertionError("not streaming")):
             upload_id = asc_upload.upload_build(
@@ -139,8 +139,8 @@ class BuildUploadTests(unittest.TestCase):
         self.assertEqual(create_file["assetType"], "ASSET")
         self.assertEqual(create_file["uti"], "com.apple.ipa")
         commit = json.loads(api_requests[2].data)["data"]["attributes"]["sourceFileChecksums"]["file"]
-        self.assertEqual(commit["algorithm"], "SHA_256")
-        self.assertEqual(commit["hash"], hashlib.sha256(self.ipa_bytes).hexdigest())
+        self.assertEqual(commit["algorithm"], "MD5")
+        self.assertEqual(commit["hash"], hashlib.md5(self.ipa_bytes, usedforsecurity=False).hexdigest())
 
     def test_rejects_incomplete_byte_ranges(self):
         with self.assertRaisesRegex(RuntimeError, "complete IPA"):

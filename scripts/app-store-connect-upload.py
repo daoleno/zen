@@ -23,8 +23,8 @@ def base64url(data: bytes) -> str:
     return base64.urlsafe_b64encode(data).rstrip(b"=").decode("ascii")
 
 
-def sha256_file(path: pathlib.Path) -> str:
-    digest = hashlib.sha256()
+def md5_file(path: pathlib.Path) -> str:
+    digest = hashlib.md5(usedforsecurity=False)
     with path.open("rb") as source:
         for chunk in iter(lambda: source.read(1024 * 1024), b""):
             digest.update(chunk)
@@ -233,7 +233,7 @@ def upload_build(
                 "attributes": {
                     "uploaded": True,
                     "sourceFileChecksums": {
-                        "file": {"algorithm": "SHA_256", "hash": sha256_file(ipa_path)}
+                        "file": {"algorithm": "MD5", "hash": md5_file(ipa_path)}
                     },
                 },
             }
