@@ -100,6 +100,7 @@ jobs:
             -destination 'generic/platform=iOS Simulator' \
             -derivedDataPath "$DERIVED_DATA" \
             CODE_SIGNING_ALLOWED=NO \
+            ARCHS=arm64 \
             ONLY_ACTIVE_ARCH=YES \
             build
           APP="$DERIVED_DATA/Build/Products/Debug-iphonesimulator/Zen.app"

@@ -6,6 +6,10 @@ const workflow = fs.readFileSync(
   path.join(__dirname, '..', '.github', 'workflows', 'ios-release.yml'),
   'utf8',
 );
+const ciWorkflow = fs.readFileSync(
+  path.join(__dirname, '..', '.github', 'workflows', 'ci.yml'),
+  'utf8',
+);
 
 describe('iOS signed release identity contract', () => {
   it('offers only production and Preview identities and defaults to production', () => {
@@ -55,5 +59,13 @@ describe('iOS signed release identity contract', () => {
     expect(workflow).toContain('ZEN_ASC_API_KEY_BASE64: ${{ secrets.ZEN_ASC_API_KEY_BASE64 }}');
     expect(workflow).toContain('if: always()');
     expect(workflow).toContain('${{ runner.temp }}/zen-asc-individual-key.p8');
+  });
+});
+
+describe('iOS unsigned Simulator contract', () => {
+  it('builds only the Apple Silicon architecture shipped by the native XCFramework', () => {
+    expect(ciWorkflow).toContain('runs-on: macos-26');
+    expect(ciWorkflow).toContain("-destination 'generic/platform=iOS Simulator'");
+    expect(ciWorkflow).toContain('ARCHS=arm64');
   });
 });
