@@ -183,18 +183,20 @@ func (s *Service) Housekeeping() (HousekeepingReport, error) {
 }
 
 type workspaceHousekeepingSnapshot struct {
-	current   bool
-	policy    map[string]bool
-	playbooks map[string]bool
-	worklog   bool
+	current      bool
+	instructions bool
+	policy       map[string]bool
+	playbooks    map[string]bool
+	worklog      bool
 }
 
 func workspaceHousekeepingState(store *Store) workspaceHousekeepingSnapshot {
 	state := workspaceHousekeepingSnapshot{
-		current:   brainFileExists(store.currentPath()),
-		policy:    map[string]bool{},
-		playbooks: map[string]bool{},
-		worklog:   brainFileExists(store.worklogReadmePath()),
+		current:      brainFileExists(store.currentPath()),
+		instructions: brainWorkspaceInstructionsCurrent(store.workspaceInstructionsPath()),
+		policy:       map[string]bool{},
+		playbooks:    map[string]bool{},
+		worklog:      brainFileExists(store.worklogReadmePath()),
 	}
 	for _, name := range []string{"delegation.md", "engine.md", "handoff.md"} {
 		state.policy[name] = brainFileExists(store.policyPath(name))
@@ -206,7 +208,7 @@ func workspaceHousekeepingState(store *Store) workspaceHousekeepingSnapshot {
 }
 
 func (s workspaceHousekeepingSnapshot) equal(other workspaceHousekeepingSnapshot) bool {
-	if s.current != other.current || s.worklog != other.worklog || len(s.policy) != len(other.policy) || len(s.playbooks) != len(other.playbooks) {
+	if s.current != other.current || s.instructions != other.instructions || s.worklog != other.worklog || len(s.policy) != len(other.policy) || len(s.playbooks) != len(other.playbooks) {
 		return false
 	}
 	for key, value := range s.policy {
@@ -220,6 +222,11 @@ func (s workspaceHousekeepingSnapshot) equal(other workspaceHousekeepingSnapshot
 		}
 	}
 	return true
+}
+
+func brainWorkspaceInstructionsCurrent(path string) bool {
+	raw, err := os.ReadFile(path)
+	return err == nil && workspaceInstructionsCurrent(string(raw))
 }
 
 func brainFileExists(path string) bool {
@@ -814,7 +821,9 @@ Agent orchestration rules:
   - %s agent capture -id <agent_id> --json inspects a delegated agent.
   - %s agent send -id <agent_id> -text "<message>" --submit=true continues a delegated agent.
   - %s agent close -id <agent_id> closes a delegated agent after the larger task is complete and its result is recorded or reported.
-  - %s calendar list --json and calendar get -id <item_id> --json inspect commitments; calendar create uses -date YYYY-MM-DD, -time HH:MM, and an IANA -timezone. If the local time occurs twice at DST fall-back, ask the user to choose -occurrence first or second; never guess. Calendar update/cancel/run provide deterministic control. Always repeat the resolved local date, time, timezone, and what Zen will do from the command confirmation before telling the user it is scheduled. Do not infer calendar items from unrelated messages.
+  - Use %s calendar list/get/create/update/cancel/run for explicit time intent. event, reminder, and deadline are passive Calendar records; scheduled_action launches delegated execution.
+  - Before creating a scheduled_action, obtain the current Brain thread_id from %s brain context --json and pass that exact value as -source-thread (source_thread_id). Never invent, omit, or silently retarget this thread. The canonical full result, or a concise failure, returns idempotently to that captured Brain thread; unread state and notifications are projections. A recurring series continues after a failed occurrence.
+  - Calendar create uses a local YYYY-MM-DD date, HH:MM wall time, and IANA timezone. If the local time occurs twice at DST fall-back, ask the user to choose -occurrence first or second; never guess. After create, update, or run, repeat the resolved local date, time, timezone, recurrence/effect, and result destination from the command confirmation. Do not infer Calendar items from unrelated messages.
 - Delegated agent lifecycle: keep ownership from spawn through inspection, follow-up, result consolidation, and close. Do not close a delegated session merely because a small stage finished; close it when the larger task is complete or you have intentionally moved the remaining work elsewhere.
 - Never close, kill, rename, repurpose, or otherwise manage sessions whose agent list entry does not have delegated=true. Those belong to the user or another tool.
 - Keep orchestration principles in Markdown, prompts, and agent instructions. Product code should provide tools, context, persistence, visibility, and safety boundaries rather than rigid workflow gates.
@@ -832,7 +841,7 @@ Reference files:
 - policies/engine.md
 - policies/handoff.md
 - playbooks/ (catalog via zen brain playbooks --json)
-`, snapshot.Workspace, executor.ID, executor.Provider, executor.Runtime, delegatedExecutor.ID, delegatedExecutor.Provider, delegatedExecutor.Runtime, executorCapabilitiesSummary(executor.Capabilities), zenCLICommand(), zenCLICommand(), zenCLICommand(), zenCLICommand(), zenCLICommand(), zenCLICommand(), zenCLICommand(), zenCLICommand(), zenCLICommand(), zenCLICommand(), strings.TrimSpace(snapshot.Personality)))
+`, snapshot.Workspace, executor.ID, executor.Provider, executor.Runtime, delegatedExecutor.ID, delegatedExecutor.Provider, delegatedExecutor.Runtime, executorCapabilitiesSummary(executor.Capabilities), zenCLICommand(), zenCLICommand(), zenCLICommand(), zenCLICommand(), zenCLICommand(), zenCLICommand(), zenCLICommand(), zenCLICommand(), zenCLICommand(), zenCLICommand(), zenCLICommand(), strings.TrimSpace(snapshot.Personality)))
 }
 
 func (s *Service) handoffHostSession(threadID, previousExecutorID, nextExecutorID, nextHostID, currentContext string, messages []ChatMessage, agents []AgentRef) error {

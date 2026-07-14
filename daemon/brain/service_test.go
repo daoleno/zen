@@ -546,6 +546,7 @@ func TestServiceBootstrapPromptDefaultsToAutonomousScheduling(t *testing.T) {
 		t.Fatalf("bootstrap sends = %#v", fw.sentCalls)
 	}
 	prompt := fw.sentCalls[0].text
+	assertCalendarPromptContract(t, prompt, "Do not infer Calendar items from unrelated messages")
 	for _, want := range []string{
 		"Delegated executor: codex",
 		"Host Executor runs Brain chat, planning, delegation, review, and final synthesis.",
@@ -563,9 +564,6 @@ func TestServiceBootstrapPromptDefaultsToAutonomousScheduling(t *testing.T) {
 		"agent capture -id",
 		"agent send -id",
 		"agent close -id",
-		"calendar list --json",
-		"resolved local date, time, timezone",
-		"Do not infer calendar items",
 		"Delegated agent lifecycle",
 		"Never close, kill, rename, repurpose, or otherwise manage sessions whose agent list entry does not have delegated=true",
 		"Keep orchestration principles in Markdown, prompts, and agent instructions",
@@ -1230,6 +1228,7 @@ func TestStoreUsesStateAndWorkspaceDirectories(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	assertCalendarPromptContract(t, string(instructions), "Do not extract Calendar items automatically from unrelated chat")
 	if !strings.Contains(string(instructions), "Keep the current active objective, decisions, open threads, and next step in current.md") {
 		t.Fatalf("workspace instructions do not describe current.md:\n%s", instructions)
 	}
@@ -1260,7 +1259,7 @@ func TestStoreUsesStateAndWorkspaceDirectories(t *testing.T) {
 	if !strings.Contains(string(instructions), "Treat Heartbeat wake messages as compact actionable deltas") {
 		t.Fatalf("workspace instructions do not describe heartbeat handling:\n%s", instructions)
 	}
-	for _, want := range []string{"zen brain context --json", "zen brain playbooks --json", "zen agent list --json", "zen agent spawn -name", "zen agent capture -id", "zen agent send -id", "zen agent close -id", "zen calendar list/get/create/update/cancel/run", "resolved local date/time/timezone", "Do not extract calendar items"} {
+	for _, want := range []string{"zen brain context --json", "zen brain playbooks --json", "zen agent list --json", "zen agent spawn -name", "zen agent capture -id", "zen agent send -id", "zen agent close -id"} {
 		if !strings.Contains(string(instructions), want) {
 			t.Fatalf("workspace instructions missing %q:\n%s", want, instructions)
 		}
@@ -1309,6 +1308,69 @@ Custom local note.
 	for _, want := range currentWorkspaceInstructionMarkers {
 		if !strings.Contains(instructions, want) {
 			t.Fatalf("workspace instructions missing %q:\n%s", want, instructions)
+		}
+	}
+}
+
+func TestServiceHousekeepingBackfillsCalendarContractWithoutOverwritingUserContent(t *testing.T) {
+	store, err := NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	customInstructions := "# My Brain Rules\n\nKeep this user-authored rule.\n"
+	if err := os.WriteFile(store.workspaceInstructionsPath(), []byte(customInstructions), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	service := NewService(store, &fakeWatcher{}, &work.ExecutorConfig{
+		DelegatedExecutor: "codex",
+		ByName: map[string]work.Executor{
+			"codex": {Name: "codex", Command: "codex"},
+		},
+	})
+
+	report, err := service.Housekeeping()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !report.BackfilledWorkspace {
+		t.Fatalf("calendar instruction backfill was not reported: %+v", report)
+	}
+	raw, err := os.ReadFile(store.workspaceInstructionsPath())
+	if err != nil {
+		t.Fatal(err)
+	}
+	instructions := string(raw)
+	if !strings.Contains(instructions, "Keep this user-authored rule.") {
+		t.Fatalf("housekeeping overwrote user content:\n%s", instructions)
+	}
+	assertCalendarPromptContract(t, instructions, "Do not extract Calendar items automatically from unrelated chat")
+}
+
+func assertCalendarPromptContract(t *testing.T, value, noAutoExtractionMarker string) {
+	t.Helper()
+	for _, want := range []string{
+		"calendar list/get/create/update/cancel/run",
+		"explicit time intent",
+		"event, reminder, and deadline are passive Calendar records",
+		"scheduled_action launches delegated execution",
+		"current Brain thread_id from ",
+		"brain context --json and pass that exact value",
+		"pass that exact value as -source-thread (source_thread_id)",
+		"Never invent, omit, or silently retarget this thread",
+		"canonical full result, or a concise failure, returns idempotently to that captured Brain thread",
+		"unread state and notifications are projections",
+		"A recurring series continues after a failed occurrence",
+		"local YYYY-MM-DD date, HH:MM wall time, and IANA timezone",
+		"DST fall-back",
+		"first or second; never guess",
+		"After create, update, or run",
+		"resolved local date",
+		"recurrence/effect",
+		"result destination from the command confirmation",
+		noAutoExtractionMarker,
+	} {
+		if !strings.Contains(value, want) {
+			t.Fatalf("Calendar prompt contract missing %q:\n%s", want, value)
 		}
 	}
 }
