@@ -14,7 +14,7 @@ import {
   View,
 } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
-import { useLocalSearchParams, useRouter } from "expo-router";
+import { useLocalSearchParams, useNavigation, useRouter } from "expo-router";
 import { SafeAreaView } from "react-native-safe-area-context";
 import {
   Radii,
@@ -85,10 +85,12 @@ export default function CalendarScreen(props: CalendarScreenProps = {}) {
   const colors = useAppColors();
   const styles = useMemo(() => createStyles(colors), [colors]);
   const router = useRouter();
+  const navigation = useNavigation();
   const params = useLocalSearchParams<{ id?: string; serverId?: string }>();
   const state = useCalendar();
   const [mode, setMode] = useState<Mode>(props.initialMode ?? "agenda");
   const viewerZone = useMemo(() => viewerTimezone(), []);
+  const now = new Date();
   const [month, setMonth] = useState(() => new Date());
   const [selectedDay, setSelectedDay] = useState(() =>
     calendarDateKey(new Date(), viewerZone),
@@ -151,7 +153,7 @@ export default function CalendarScreen(props: CalendarScreenProps = {}) {
   const visible = items.filter(
     (item) => item.status !== "cancelled" || mode !== "agenda",
   );
-  const sections = groupAgenda(visible, new Date(), viewerZone);
+  const sections = groupAgenda(visible, now, viewerZone);
   const dayItems = visible.filter(
     (item) => calendarDateKey(itemInstant(item), viewerZone) === selectedDay,
   );
@@ -207,8 +209,42 @@ export default function CalendarScreen(props: CalendarScreenProps = {}) {
     }
   };
   return (
-    <SafeAreaView edges={["bottom"]} style={styles.screen}>
-      <View style={styles.toolbar}>
+    <SafeAreaView edges={["top", "bottom"]} style={styles.screen}>
+      <View style={styles.appBar}>
+        <Pressable
+          accessibilityRole="button"
+          accessibilityLabel="Back"
+          hitSlop={4}
+          onPress={() => {
+            if (navigation.canGoBack()) {
+              router.back();
+              return;
+            }
+            router.replace("/");
+          }}
+          style={styles.appBarAction}
+        >
+          <Ionicons name="chevron-back" size={23} color={colors.textPrimary} />
+        </Pressable>
+        <Text numberOfLines={1} style={styles.appBarTitle}>
+          Calendar
+        </Text>
+        <Pressable
+          accessibilityRole="button"
+          accessibilityLabel="Add calendar item"
+          accessibilityState={{ disabled: !activeServer }}
+          disabled={!activeServer}
+          onPress={() => setEditing("new")}
+          style={styles.appBarAction}
+        >
+          <Ionicons
+            name="add"
+            size={24}
+            color={activeServer ? colors.textPrimary : colors.disabledText}
+          />
+        </Pressable>
+      </View>
+      <View style={styles.modeBar}>
         <View style={styles.segment}>
           {(["agenda", "month", "day"] as Mode[]).map((value) => (
             <Pressable
@@ -222,6 +258,9 @@ export default function CalendarScreen(props: CalendarScreenProps = {}) {
               ]}
             >
               <Text
+                adjustsFontSizeToFit
+                minimumFontScale={0.75}
+                numberOfLines={1}
                 style={[
                   styles.segmentText,
                   mode === value && styles.segmentTextActive,
@@ -232,19 +271,6 @@ export default function CalendarScreen(props: CalendarScreenProps = {}) {
             </Pressable>
           ))}
         </View>
-        <Pressable
-          accessibilityRole="button"
-          accessibilityLabel="Create calendar item"
-          disabled={!activeServer}
-          onPress={() => setEditing("new")}
-          style={styles.addButton}
-        >
-          <Ionicons
-            name="add"
-            size={25}
-            color={activeServer ? colors.textPrimary : colors.disabledText}
-          />
-        </Pressable>
       </View>
       {notificationState !== "granted" ? (
         <View style={styles.permission}>
@@ -282,19 +308,22 @@ export default function CalendarScreen(props: CalendarScreenProps = {}) {
       ) : null}
       {mode === "agenda" ? (
         <ScrollView contentContainerStyle={styles.content}>
+          <AgendaHeading now={now} timeZone={viewerZone} />
           {props.loading ? (
             <View
               accessibilityRole="progressbar"
-              accessibilityLabel="Loading calendar commitments"
-              style={styles.empty}
+              accessibilityLabel="Loading calendar"
+              style={styles.agendaStatus}
             >
-              <Ionicons name="sync-outline" size={34} color={colors.accent} />
-              <Text style={styles.emptyTitle}>Loading commitments…</Text>
+              <Ionicons name="sync-outline" size={20} color={colors.accent} />
+              <Text style={styles.emptyTitle}>Loading calendar…</Text>
             </View>
           ) : sections.length ? (
             sections.map((section) => (
               <View key={section.title} style={styles.section}>
-                <Text style={styles.sectionTitle}>{section.title}</Text>
+                {section.title === "Today" ? null : (
+                  <Text style={styles.sectionTitle}>{section.title}</Text>
+                )}
                 {section.data.map((raw) => (
                   <CalendarRow
                     key={`${(raw as ServerItem).serverId}:${raw.id}`}
@@ -376,9 +405,7 @@ export default function CalendarScreen(props: CalendarScreenProps = {}) {
               />
             ))
           ) : (
-            <Text style={styles.emptyBody}>
-              Nothing committed for this day.
-            </Text>
+            <Text style={styles.dayEmpty}>Nothing planned for this day.</Text>
           )}
         </ScrollView>
       ) : null}
@@ -414,6 +441,35 @@ export default function CalendarScreen(props: CalendarScreenProps = {}) {
         onError={actionError}
       />
     </SafeAreaView>
+  );
+}
+
+function AgendaHeading({ now, timeZone }: { now: Date; timeZone: string }) {
+  const colors = useAppColors();
+  const styles = useMemo(() => createStyles(colors), [colors]);
+  const date = new Intl.DateTimeFormat(undefined, {
+    weekday: "long",
+    month: "long",
+    day: "numeric",
+    timeZone,
+  }).format(now);
+  const time = new Intl.DateTimeFormat(undefined, {
+    hour: "numeric",
+    minute: "2-digit",
+    timeZone,
+    timeZoneName: "short",
+  }).format(now);
+  return (
+    <View
+      accessibilityRole="header"
+      accessibilityLabel={`Today, ${date}, ${time}`}
+      style={styles.agendaHeading}
+    >
+      <Text style={styles.agendaTitle}>Today</Text>
+      <Text style={styles.agendaAnchor}>
+        {date} · {time}
+      </Text>
+    </View>
   );
 }
 
@@ -490,6 +546,7 @@ function MonthHeader({
   return (
     <View style={styles.monthHeader}>
       <Pressable
+        accessibilityRole="button"
         accessibilityLabel="Previous month"
         onPress={() =>
           onChange(new Date(month.getFullYear(), month.getMonth() - 1, 1))
@@ -505,6 +562,7 @@ function MonthHeader({
         })}
       </Text>
       <Pressable
+        accessibilityRole="button"
         accessibilityLabel="Next month"
         onPress={() =>
           onChange(new Date(month.getFullYear(), month.getMonth() + 1, 1))
@@ -529,20 +587,25 @@ function EmptyState({
     <View style={styles.empty}>
       <Ionicons
         name="calendar-clear-outline"
-        size={38}
+        size={22}
         color={colors.textTertiary}
       />
       <Text style={styles.emptyTitle}>
-        {connected ? "Your time is clear" : "Calendar is offline"}
-      </Text>
-      <Text style={styles.emptyBody}>
-        {connected
-          ? "Commitments created by you or Brain will appear here."
-          : "Pair or reconnect a Zen daemon to sync commitments."}
+        {connected ? "Nothing planned" : "Calendar offline"}
       </Text>
       {connected ? (
-        <Pressable onPress={onCreate} style={styles.primaryButton}>
-          <Text style={styles.primaryButtonText}>Create item</Text>
+        <Pressable
+          accessibilityRole="button"
+          accessibilityLabel="Add calendar item"
+          onPress={onCreate}
+          style={styles.primaryButton}
+        >
+          <Ionicons
+            name="add"
+            size={18}
+            color={colors.textOnAccent}
+          />
+          <Text style={styles.primaryButtonText}>Add item</Text>
         </Pressable>
       ) : null}
     </View>
@@ -1119,12 +1182,27 @@ function monthGrid(month: Date) {
 function createStyles(colors: any) {
   return StyleSheet.create({
     screen: { flex: 1, backgroundColor: colors.bgPrimary },
-    toolbar: {
-      height: 58,
-      paddingHorizontal: Spacing.lg,
+    appBar: {
+      height: 52,
+      paddingHorizontal: Spacing.sm,
       flexDirection: "row",
       alignItems: "center",
-      gap: 12,
+    },
+    appBarAction: {
+      width: 44,
+      height: 44,
+      alignItems: "center",
+      justifyContent: "center",
+    },
+    appBarTitle: {
+      ...TypeScale.title,
+      flex: 1,
+      color: colors.textPrimary,
+    },
+    modeBar: {
+      paddingHorizontal: Spacing.lg,
+      paddingTop: Spacing.xs,
+      paddingBottom: Spacing.sm,
       borderBottomWidth: StyleSheet.hairlineWidth,
       borderBottomColor: colors.borderSubtle,
     },
@@ -1145,20 +1223,15 @@ function createStyles(colors: any) {
     segmentActive: { backgroundColor: colors.bgSurface },
     segmentText: { ...TypeScale.label, color: colors.textTertiary },
     segmentTextActive: { color: colors.textPrimary },
-    addButton: {
-      width: 44,
-      height: 44,
-      alignItems: "center",
-      justifyContent: "center",
-    },
     permission: {
-      margin: 12,
+      marginHorizontal: Spacing.lg,
+      marginTop: Spacing.sm,
       marginBottom: 0,
       padding: 12,
       borderRadius: Radii.sm,
       backgroundColor: colors.surfaceSubtle,
       flexDirection: "row",
-      alignItems: "center",
+      alignItems: "flex-start",
       gap: 10,
     },
     permissionTitle: { ...TypeScale.label, color: colors.textPrimary },
@@ -1172,13 +1245,32 @@ function createStyles(colors: any) {
     },
     permissionActionText: { ...TypeScale.label, color: colors.accent },
     errorBanner: {
-      margin: 12,
+      marginHorizontal: Spacing.lg,
+      marginTop: Spacing.sm,
+      marginBottom: 0,
       padding: 10,
       borderRadius: Radii.xs,
       backgroundColor: colors.surfaceSubtle,
     },
     errorText: { ...TypeScale.compact, color: colors.statusFailed },
-    content: { padding: Spacing.lg, paddingBottom: 40, gap: 20 },
+    content: {
+      paddingHorizontal: Spacing.lg,
+      paddingTop: Spacing.lg,
+      paddingBottom: 40,
+      gap: Spacing.xl,
+    },
+    agendaHeading: { gap: 2 },
+    agendaTitle: { ...TypeScale.title, color: colors.textPrimary },
+    agendaAnchor: { ...TypeScale.compact, color: colors.textSecondary },
+    agendaStatus: {
+      minHeight: 64,
+      paddingVertical: Spacing.md,
+      flexDirection: "row",
+      alignItems: "center",
+      gap: Spacing.sm,
+      borderTopWidth: StyleSheet.hairlineWidth,
+      borderTopColor: colors.borderSubtle,
+    },
     section: { gap: 4 },
     sectionTitle: {
       ...TypeScale.heading,
@@ -1217,10 +1309,14 @@ function createStyles(colors: any) {
     metaDot: { color: colors.textTertiary },
     executeText: { ...TypeScale.caption, color: colors.accent },
     empty: {
+      minHeight: 112,
+      paddingVertical: Spacing.md,
+      flexDirection: "row",
       alignItems: "center",
-      paddingVertical: 70,
-      paddingHorizontal: 30,
-      gap: 10,
+      flexWrap: "wrap",
+      gap: Spacing.sm,
+      borderTopWidth: StyleSheet.hairlineWidth,
+      borderTopColor: colors.borderSubtle,
     },
     emptyTitle: { ...TypeScale.heading, color: colors.textPrimary },
     emptyBody: {
@@ -1229,17 +1325,19 @@ function createStyles(colors: any) {
       textAlign: "center",
     },
     primaryButton: {
-      marginTop: 10,
-      minHeight: 46,
-      paddingHorizontal: 20,
+      width: "100%",
+      minHeight: 44,
+      paddingHorizontal: Spacing.lg,
       borderRadius: Radii.sm,
       backgroundColor: colors.accent,
+      flexDirection: "row",
       alignItems: "center",
       justifyContent: "center",
+      gap: Spacing.xs,
     },
     primaryButtonText: {
       ...TypeScale.label,
-      color: colors.onAccent ?? colors.bgPrimary,
+      color: colors.textOnAccent,
     },
     monthHeader: {
       height: 48,
@@ -1284,6 +1382,7 @@ function createStyles(colors: any) {
       color: colors.textPrimary,
       marginBottom: 8,
     },
+    dayEmpty: { ...TypeScale.body, color: colors.textTertiary },
     modalBackdrop: {
       flex: 1,
       justifyContent: "flex-end",

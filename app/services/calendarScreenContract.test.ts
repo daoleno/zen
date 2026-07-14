@@ -11,6 +11,28 @@ describe("Calendar screen contract", () => {
     expect(source).toContain('["agenda", "month", "day"]');
     expect(source).toContain("groupAgenda");
   });
+  test("keeps a compact, separate Calendar hierarchy", () => {
+    expect(source).toContain('accessibilityLabel="Back"');
+    expect(source).toContain('accessibilityLabel="Add calendar item"');
+    expect(source).toContain("styles.appBar");
+    expect(source).toContain("styles.modeBar");
+    expect(source).toContain("<AgendaHeading now={now} timeZone={viewerZone} />");
+    expect(source).toMatch(/appBar:\s*\{[^}]*height: 52/s);
+    expect(source).toMatch(/appBarAction:\s*\{[^}]*width: 44,[^}]*height: 44/s);
+    expect(source).toMatch(/modeBar:\s*\{[^}]*paddingHorizontal: Spacing\.lg/s);
+    expect(source).toMatch(/segmentButton:\s*\{[^}]*minHeight: 36/s);
+  });
+  test("anchors concise Agenda states below a localized Today time anchor", () => {
+    expect(source).toContain("timeZoneName: \"short\"");
+    expect(source).toContain("Nothing planned");
+    expect(source).toContain("Add item");
+    expect(source).toContain("Loading calendar…");
+    expect(source).toContain("Nothing planned for this day.");
+    expect(source).not.toContain("Your time is clear");
+    expect(source).not.toContain("Commitments created by you or Brain");
+    expect(source).not.toContain("Create item");
+    expect(source).toMatch(/empty:\s*\{[^}]*minHeight: 112/s);
+  });
   test("exposes all kinds, lifecycle, execution and editing", () => {
     for (const value of [
       "event",
