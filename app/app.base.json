@@ -2,7 +2,7 @@
   "expo": {
     "name": "Zen",
     "slug": "zen",
-    "version": "0.1.0-beta.4",
+    "version": "0.1.0-beta.5",
     "orientation": "portrait",
     "icon": "./assets/icon.png",
     "userInterfaceStyle": "automatic",
@@ -14,7 +14,7 @@
     },
     "ios": {
       "bundleIdentifier": "com.daoleno.zen",
-      "buildNumber": "4",
+      "buildNumber": "5",
       "supportsTablet": false,
       "infoPlist": {
         "ITSAppUsesNonExemptEncryption": false,
@@ -30,7 +30,7 @@
         "monochromeImage": "./assets/android-icon-monochrome.png"
       },
       "package": "com.daoleno.zen",
-      "versionCode": 4,
+      "versionCode": 5,
       "blockedPermissions": [
         "android.permission.RECORD_AUDIO"
       ],
