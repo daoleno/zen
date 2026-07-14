@@ -1,6 +1,7 @@
 const fs = require('fs');
 const path = require('path');
 const { expo: baseConfig } = require('./app.base.json');
+const { buildNumber: trackedIOSBuildNumber } = require('./ios-build.json');
 const { resolveIOSIdentity } = require('./iosIdentity');
 
 loadEnvFile(path.join(__dirname, '.env.local'));
@@ -15,7 +16,7 @@ module.exports = () => {
   const iosMarketingVersion = resolveIOSMarketingVersion(baseConfig.version);
   const iosBuildNumber = resolveIOSBuildNumber(
     process.env.ZEN_IOS_BUILD_NUMBER,
-    baseConfig.ios && baseConfig.ios.buildNumber,
+    trackedIOSBuildNumber,
   );
 
   if (projectId) {
@@ -66,8 +67,8 @@ module.exports = () => {
 };
 
 function resolveIOSBuildNumber(value, fallback) {
-  const candidate = typeof value === 'string' && value.trim() ? value.trim() : fallback;
-  if (typeof candidate !== 'string' || !/^[1-9][0-9]*$/.test(candidate)) {
+  const candidate = typeof value === 'string' && value.trim() ? value.trim() : String(fallback);
+  if (!/^[1-9][0-9]*$/.test(candidate)) {
     throw new Error('ZEN_IOS_BUILD_NUMBER must be a positive integer');
   }
   return candidate;

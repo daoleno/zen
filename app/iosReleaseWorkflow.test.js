@@ -25,7 +25,10 @@ describe('iOS signed release identity contract', () => {
     expect(workflow).toContain("ref: ${{ env.ZEN_IOS_REF }}");
     expect(workflow).toContain("ref: ${{ github.workflow_sha }}");
     expect(workflow).toContain('release tag version');
-    expect(workflow).toContain('version_code = base.get("android", {}).get("versionCode")');
+    expect(workflow).toContain('ios_release = json.load(open("app/ios-build.json"');
+    expect(workflow).toContain('tracked iOS buildNumber must be a positive integer');
+    expect(workflow).not.toContain('tracked iOS buildNumber must equal Android versionCode');
+    expect(workflow).not.toContain('version_code = base.get("android", {}).get("versionCode")');
     expect(workflow).toContain('ZEN_IOS_BUILD_NUMBER="$(python3 - "$ZEN_RELEASE_TAG"');
     expect(workflow).not.toContain('github.run_number');
   });
@@ -79,6 +82,20 @@ describe('iOS signed release identity contract', () => {
     expect(workflow).toContain('ZEN_ASC_API_KEY_BASE64: ${{ secrets.ZEN_ASC_API_KEY_BASE64 }}');
     expect(workflow).toContain('if: always()');
     expect(workflow).toContain('${{ runner.temp }}/zen-asc-individual-key.p8');
+  });
+
+  it('caches only unsigned native inputs, verified native output, and CocoaPods downloads', () => {
+    expect(workflow).toContain('zen-ios-native-inputs-');
+    expect(workflow).toContain('zen-ios-ghostty-output-');
+    expect(workflow).toContain('zen-cocoapods-');
+    expect(workflow).toContain("steps.ghostty-output-cache.outputs.cache-hit != 'true'");
+    expect(workflow).toContain('run: ./scripts/verify-libghostty-ios.sh');
+    for (const forbidden of ['.p12', '.mobileprovision', '.keychain', '.xcarchive', '.ipa']) {
+      const cacheBlocks = [...workflow.matchAll(/uses: actions\/cache@v4[\s\S]*?(?=\n\s{6}- name:|$)/g)]
+        .map((match) => match[0])
+        .join('\n');
+      expect(cacheBlocks).not.toContain(forbidden);
+    }
   });
 });
 

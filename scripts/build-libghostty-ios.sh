@@ -49,15 +49,17 @@ resolve_zig() {
   local install_dir="$TOOL_CACHE/$ZIG_ARCHIVE_ROOT"
   local archive="$TOOL_CACHE/${ZIG_URL##*/}"
   mkdir -p "$TOOL_CACHE"
-  if [[ ! -x "$install_dir/zig" ]]; then
+  if [[ ! -f "$archive" ]]; then
     echo "Downloading pinned Zig $ZIG_VERSION..." >&2
     curl -fL "$ZIG_URL" -o "$archive"
-    local actual
-    actual="$(shasum -a 256 "$archive" | awk '{print $1}')"
-    if [[ "$actual" != "$ZIG_SHA256" ]]; then
-      echo "error: Zig archive checksum mismatch" >&2
-      exit 1
-    fi
+  fi
+  local actual
+  actual="$(shasum -a 256 "$archive" | awk '{print $1}')"
+  if [[ "$actual" != "$ZIG_SHA256" ]]; then
+    echo "error: Zig archive checksum mismatch" >&2
+    exit 1
+  fi
+  if [[ ! -x "$install_dir/zig" ]]; then
     tar -xf "$archive" -C "$TOOL_CACHE"
   fi
   echo "$install_dir/zig"

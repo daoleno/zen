@@ -1,11 +1,13 @@
 import base64
 import hashlib
 import importlib.util
+import io
 import json
 import pathlib
 import subprocess
 import tempfile
 import unittest
+import urllib.error
 from unittest import mock
 
 
@@ -156,7 +158,7 @@ class BuildUploadTests(unittest.TestCase):
             url = request.full_url
             if "/betaGroups/group-preview/builds?" in url:
                 return Response(b'{"data":[]}')
-            if "/builds?" in url:
+            if url.startswith(f"{asc_upload.API_ROOT}/builds?"):
                 return Response(
                     b'{"data":[{"type":"builds","id":"build-5","attributes":{"processingState":"VALID","usesNonExemptEncryption":false}}]}'
                 )
@@ -213,7 +215,7 @@ class BuildUploadTests(unittest.TestCase):
         def open_existing(request, timeout):
             requests.append(request)
             url = request.full_url
-            if "/builds?" in url:
+            if url.startswith(f"{asc_upload.API_ROOT}/builds?"):
                 return Response(
                     b'{"data":[{"type":"builds","id":"build-5","attributes":{"processingState":"VALID","usesNonExemptEncryption":false}}]}'
                 )
@@ -246,6 +248,73 @@ class BuildUploadTests(unittest.TestCase):
                 for request in requests
             )
         )
+
+    def test_accepts_only_verified_already_set_export_compliance_conflict(self):
+        requests = []
+        build_queries = 0
+
+        def open_conflict(request, timeout):
+            nonlocal build_queries
+            requests.append(request)
+            url = request.full_url
+            if url.startswith(f"{asc_upload.API_ROOT}/builds?"):
+                build_queries += 1
+                compliance = "null" if build_queries == 1 else "false"
+                return Response(
+                    (
+                        '{"data":[{"type":"builds","id":"build-6","attributes":'
+                        '{"processingState":"VALID","usesNonExemptEncryption":'
+                        f'{compliance}}}}}]}}'
+                    ).encode()
+                )
+            if url.endswith("/builds/build-6"):
+                raise urllib.error.HTTPError(url, 409, "conflict", {}, io.BytesIO(b'already set'))
+            if "/apps/6790486708/betaGroups?" in url:
+                return Response(
+                    b'{"data":[{"id":"group-preview","attributes":{"name":"Zen Preview","publicLinkEnabled":true}}]}'
+                )
+            if "/betaGroups/group-preview/builds?" in url:
+                return Response(b'{"data":[{"id":"build-6"}]}')
+            raise AssertionError(url)
+
+        result = asc_upload.prepare_testflight_build(
+            asc_upload.AppStoreConnectClient("SYNTHETIC", self.key, opener=open_conflict),
+            "6790486708",
+            "0.1.0",
+            "6",
+            "Zen Preview",
+            poll_seconds=0,
+            max_wait_seconds=1,
+        )
+        self.assertEqual(result["build_id"], "build-6")
+        self.assertEqual(build_queries, 2)
+
+    def test_rejects_unverified_export_compliance_conflict(self):
+        build_queries = 0
+
+        def open_conflict(request, timeout):
+            nonlocal build_queries
+            url = request.full_url
+            if url.startswith(f"{asc_upload.API_ROOT}/builds?"):
+                build_queries += 1
+                return Response(
+                    b'{"data":[{"id":"build-6","attributes":{"processingState":"VALID","usesNonExemptEncryption":null}}]}'
+                )
+            if url.endswith("/builds/build-6"):
+                raise urllib.error.HTTPError(url, 409, "conflict", {}, io.BytesIO(b'unrelated'))
+            raise AssertionError(url)
+
+        with self.assertRaisesRegex(asc_upload.AppStoreConnectHTTPError, "HTTP 409"):
+            asc_upload.prepare_testflight_build(
+                asc_upload.AppStoreConnectClient("SYNTHETIC", self.key, opener=open_conflict),
+                "6790486708",
+                "0.1.0",
+                "6",
+                "Zen Preview",
+                poll_seconds=0,
+                max_wait_seconds=1,
+            )
+        self.assertEqual(build_queries, 2)
 
     def test_stops_on_rejected_existing_review_submission(self):
         def open_rejected(request, timeout):

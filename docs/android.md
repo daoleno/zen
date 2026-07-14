@@ -225,7 +225,7 @@ Each release has versioned notes under `docs/releases/`; the release page includ
 
 ### CI (GitHub Actions)
 
-Signed arm64 APK + Linux binaries are built by [`.github/workflows/release-artifacts.yml`](../.github/workflows/release-artifacts.yml). Tag pushes build/verify only; asset upload to an **existing** prerelease requires explicit `workflow_dispatch` with `publish=true`. Required secret **names** and dispatch examples: [ci-release.md](ci-release.md).
+Signed arm64 APK + Linux binaries are built once when an immutable GitHub prerelease is explicitly published by [`.github/workflows/release-artifacts.yml`](../.github/workflows/release-artifacts.yml). Tag pushes do not build, and manual dispatch is artifact-only. Required secret **names** and release preparation details: [ci-release.md](ci-release.md).
 
 ## Related docs
 

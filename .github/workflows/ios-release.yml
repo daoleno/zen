@@ -95,19 +95,19 @@ jobs:
             ZEN_IOS_BUILD_NUMBER="$(python3 - "$ZEN_RELEASE_TAG" <<'PY'
           import json, sys
           base = json.load(open("app/app.base.json", encoding="utf-8"))["expo"]
+          ios_release = json.load(open("app/ios-build.json", encoding="utf-8"))
           tag_version = sys.argv[1][1:]
           version = base.get("version")
-          version_code = base.get("android", {}).get("versionCode")
-          ios_build = base.get("ios", {}).get("buildNumber")
+          ios_build = ios_release.get("buildNumber")
           if version != tag_version:
               raise SystemExit(
                   f"error: release tag version {tag_version!r} does not match tracked version {version!r}"
               )
-          if not isinstance(version_code, int) or version_code < 1:
-              raise SystemExit("error: tracked Android versionCode must be a positive integer")
-          if ios_build != str(version_code):
-              raise SystemExit("error: tracked iOS buildNumber must equal Android versionCode")
-          print(version_code)
+          if not isinstance(ios_build, int) or isinstance(ios_build, bool) or ios_build < 1:
+              raise SystemExit("error: tracked iOS buildNumber must be a positive integer")
+          if "buildNumber" in base.get("ios", {}):
+              raise SystemExit("error: app.base.json must not duplicate the reviewed iOS build number")
+          print(ios_build)
           PY
             )"
             [[ "$ZEN_IOS_BUILD_NUMBER" =~ ^[1-9][0-9]*$ ]] || {
@@ -162,13 +162,17 @@ jobs:
           bun-version: "1.3.5"
 
       - name: Require Apple build tools
+        id: toolchain
         run: |
           set -euo pipefail
           xcodebuild -version
+          xcrun --sdk iphoneos --show-sdk-path
           command -v pod >/dev/null || {
             echo "error: CocoaPods is required on the macOS runner" >&2
             exit 1
           }
+          TOOLCHAIN_KEY="$( { xcodebuild -version; xcrun --sdk iphoneos --show-sdk-version; pod --version; } | shasum -a 256 | cut -c1-20)"
+          echo "cache_key=$TOOLCHAIN_KEY" >> "$GITHUB_OUTPUT"
 
       - name: Install workspace dependencies
         run: bun install --frozen-lockfile
@@ -212,11 +216,38 @@ jobs:
       - name: Verify shared native contract
         run: ./scripts/verify-libghostty.sh --contract
 
+      - name: Restore pinned Zig and Ghostty source caches
+        uses: actions/cache@v4
+        with:
+          path: |
+            ${{ runner.temp }}/zen-tools
+            ${{ runner.temp }}/ghostty
+          key: zen-ios-native-inputs-${{ runner.os }}-${{ runner.arch }}-${{ steps.toolchain.outputs.cache_key }}-${{ hashFiles('app/modules/zen-terminal-vt/native.lock.json', 'scripts/build-libghostty-ios.sh', 'scripts/zig-xcode-compat/**') }}
+
+      - name: Restore verified iOS Ghostty output
+        id: ghostty-output-cache
+        uses: actions/cache@v4
+        with:
+          path: app/modules/zen-terminal-vt/libs/ios
+          key: zen-ios-ghostty-output-${{ runner.os }}-${{ runner.arch }}-${{ steps.toolchain.outputs.cache_key }}-${{ hashFiles('app/modules/zen-terminal-vt/native.lock.json', 'scripts/build-libghostty-ios.sh', 'scripts/verify-libghostty-ios.sh', 'app/assets/notices/GHOSTTY-MIT.txt') }}
+
       - name: Build and verify iOS Ghostty XCFramework
+        if: ${{ steps.ghostty-output-cache.outputs.cache-hit != 'true' }}
         env:
           ZEN_GHOSTTY_CACHE: ${{ runner.temp }}/ghostty
           ZEN_TOOL_CACHE: ${{ runner.temp }}/zen-tools
         run: ./scripts/build-libghostty-ios.sh
+
+      - name: Verify iOS Ghostty XCFramework
+        run: ./scripts/verify-libghostty-ios.sh
+
+      - name: Restore CocoaPods download cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/Library/Caches/CocoaPods
+            ~/.cocoapods/repos
+          key: zen-cocoapods-${{ runner.os }}-${{ runner.arch }}-${{ steps.toolchain.outputs.cache_key }}-${{ hashFiles('bun.lock', 'app/package.json', 'app/app.config.js', 'app/ios-build.json', 'app/plugins/withZenIOSBuild.js', 'app/modules/zen-terminal-vt/ZenTerminalVt.podspec') }}
 
       - name: Generate release project and install pods
         run: |

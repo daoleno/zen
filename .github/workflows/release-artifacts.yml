@@ -3,12 +3,11 @@ name: Release artifacts
 # Secure release pipeline: Linux amd64/arm64, macOS arm64, signed Android arm64 APK.
 #
 # Triggers:
-#   - workflow_dispatch: build selected ref; optional publish to existing prerelease
-#   - push tags v*: build + verify only (never auto-publish)
+#   - release published: build the immutable tag and publish to that prerelease
+#   - workflow_dispatch: build selected ref as a workflow artifact only
 #
-# Publication requires explicit workflow_dispatch input publish=true and an
-# existing GitHub prerelease for tag v<app.base.json version>. Does not create
-# tags or convert release types.
+# Publication requires the explicit GitHub "publish prerelease" operation. This
+# workflow does not create tags/releases or convert release types.
 #
 # Secrets (GitHub Actions repository secrets only; never commit values):
 #   ZEN_ANDROID_KEYSTORE_BASE64
@@ -20,6 +19,8 @@ name: Release artifacts
 # Docs: docs/ci-release.md
 
 on:
+  release:
+    types: [published]
   workflow_dispatch:
     inputs:
       ref:
@@ -27,18 +28,10 @@ on:
         required: false
         type: string
         default: ""
-      publish:
-        description: "If true, upload/replace assets on the existing GitHub prerelease for v<version>."
-        required: false
-        type: boolean
-        default: false
-  push:
-    tags:
-      - "v*"
 
 concurrency:
-  group: release-artifacts-${{ github.workflow }}-${{ github.event.inputs.ref || github.ref }}
-  cancel-in-progress: true
+  group: release-artifacts-${{ github.event_name == 'release' && github.event.release.tag_name || inputs.ref || github.ref }}
+  cancel-in-progress: false
 
 permissions:
   contents: read
@@ -49,6 +42,7 @@ env:
 
 jobs:
   build:
+    if: ${{ github.event_name == 'workflow_dispatch' || (github.event.release.prerelease == true && github.event.release.draft == false && startsWith(github.event.release.tag_name, 'v')) }}
     name: Build and stage (Linux + macOS + signed Android)
     runs-on: ubuntu-latest
     timeout-minutes: 180
@@ -62,8 +56,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
         with:
-          # Dispatch may pass tag/SHA via inputs.ref; tag pushes use github.ref.
-          ref: ${{ github.event.inputs.ref || github.ref }}
+          ref: ${{ github.event_name == 'release' && github.event.release.tag_name || inputs.ref || github.ref }}
           fetch-depth: 0
 
       - name: Product meta
@@ -75,6 +68,21 @@ jobs:
           echo "tag=v${VERSION}" >> "$GITHUB_OUTPUT"
           echo "stage_dir=dist-download/v${VERSION}" >> "$GITHUB_OUTPUT"
           echo "Building product version ${VERSION} (tag v${VERSION})"
+          if [[ "${{ github.event_name }}" == "release" ]]; then
+            RELEASE_TAG='${{ github.event.release.tag_name }}'
+            [[ '${{ github.event.release.prerelease }}' == 'true' && '${{ github.event.release.draft }}' != 'true' ]] || {
+              echo "error: automatic asset publication requires a published prerelease" >&2
+              exit 1
+            }
+            [[ "$RELEASE_TAG" == "v${VERSION}" ]] || {
+              echo "error: release tag $RELEASE_TAG does not match tracked version v${VERSION}" >&2
+              exit 1
+            }
+            [[ "$(git rev-parse "refs/tags/${RELEASE_TAG}^{}")" == "$(git rev-parse HEAD)" ]] || {
+              echo "error: checked-out release tag does not resolve to HEAD" >&2
+              exit 1
+            }
+          fi
 
       - name: Verify release identity (tracked)
         run: ./scripts/verify-release-identity.sh
@@ -95,6 +103,12 @@ jobs:
         with:
           distribution: temurin
           java-version: "17"
+          cache: gradle
+          cache-dependency-path: |
+            bun.lock
+            app/package.json
+            app/app.base.json
+            app/modules/zen-terminal-vt/android/build.gradle
 
       - name: Setup Android SDK
         uses: android-actions/setup-android@v3
@@ -113,6 +127,21 @@ jobs:
 
       - name: Install workspace dependencies
         run: bun install --frozen-lockfile
+
+      - name: Restore pinned Zig and Ghostty source caches
+        uses: actions/cache@v4
+        with:
+          path: |
+            ${{ runner.temp }}/zen-tools
+            ${{ runner.temp }}/ghostty
+          key: zen-android-native-inputs-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('app/modules/zen-terminal-vt/native.lock.json', 'scripts/build-libghostty.sh') }}
+
+      - name: Restore verified Android Ghostty output
+        id: ghostty-output-cache
+        uses: actions/cache@v4
+        with:
+          path: app/modules/zen-terminal-vt/libs/android
+          key: zen-android-ghostty-output-arm64-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('app/modules/zen-terminal-vt/native.lock.json', 'scripts/build-libghostty.sh', 'scripts/verify-libghostty.sh', 'app/assets/notices/GHOSTTY-MIT.txt') }}
 
       - name: Install Zig (checksum-pinned from native.lock.json)
         run: |
@@ -134,19 +163,21 @@ jobs:
           expect = d["sha256"]
           archive_root = d["archive_root"]
           runner_temp = pathlib.Path(os.environ.get("RUNNER_TEMP") or os.environ.get("TMPDIR") or "/tmp")
-          install_root = runner_temp / "zig-install"
+          install_root = runner_temp / "zen-tools"
           install_root.mkdir(parents=True, exist_ok=True)
           dest = install_root / "zig.tar.xz"
-          print(f"Downloading {url}")
-          urllib.request.urlretrieve(url, dest)
+          if not dest.is_file():
+              print(f"Downloading {url}")
+              urllib.request.urlretrieve(url, dest)
           h = hashlib.sha256(dest.read_bytes()).hexdigest()
           if h != expect:
               sys.exit(f"zig sha256 mismatch: got {h} want {expect}")
           print(f"ok: zig sha256 {h[:16]}…")
-          with tarfile.open(dest, "r:xz") as tar:
-              tar.extractall(install_root)
           zig_dir = install_root / archive_root
           zig = zig_dir / "zig"
+          if not zig.is_file():
+              with tarfile.open(dest, "r:xz") as tar:
+                  tar.extractall(install_root)
           if not zig.is_file():
               sys.exit(f"zig binary missing after extract: {zig}")
           # Expose directory containing zig for subsequent steps.
@@ -171,6 +202,7 @@ jobs:
           zig version
 
       - name: Build release-grade libghostty (arm64-v8a)
+        if: ${{ steps.ghostty-output-cache.outputs.cache-hit != 'true' }}
         env:
           ZEN_GHOSTTY_CACHE: ${{ runner.temp }}/ghostty
         run: |
@@ -180,6 +212,9 @@ jobs:
           # Do not run bare verify-libghostty.sh here (that requires dual-ABI lock ABIs).
           ./scripts/build-libghostty.sh --abis arm64-v8a
           ./scripts/verify-libghostty.sh --release
+
+      - name: Verify release-grade libghostty (arm64-v8a)
+        run: ./scripts/verify-libghostty.sh --release
 
       - name: Materialize signing keystore (temp, mode 0600)
         id: keystore
@@ -269,8 +304,7 @@ jobs:
   publish:
     name: Publish assets to existing prerelease
     needs: build
-    # Boolean inputs may arrive as boolean true or string "true".
-    if: ${{ github.event_name == 'workflow_dispatch' && (inputs.publish == true || inputs.publish == 'true') }}
+    if: ${{ github.event_name == 'release' }}
     runs-on: ubuntu-latest
     timeout-minutes: 30
     permissions:

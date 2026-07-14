@@ -22,18 +22,20 @@ done
 EXPECTED_VERSION="0.1.0-beta.5"
 EXPECTED_PACKAGE="com.daoleno.zen"
 EXPECTED_VERSION_CODE="5"
+EXPECTED_IOS_BUILD_NUMBER="6"
 EXPECTED_CERT_FP="C2:FC:5B:09:B3:86:92:EE:70:59:71:1F:E7:ED:B8:79:4C:E3:65:FE:1C:7A:06:AB:95:4E:5D:D1:BD:CD:A4:FD"
 
 verify_ios_identity() {
   local variant="$1"
   local expected_name="$2"
   local expected_bundle="$3"
-  ZEN_IOS_APP_VARIANT="$variant" ZEN_IOS_BUILD_NUMBER="$EXPECTED_VERSION_CODE" \
-    node - "$expected_name" "$expected_bundle" "$EXPECTED_PACKAGE" <<'JS'
+  ZEN_IOS_APP_VARIANT="$variant" \
+    node - "$expected_name" "$expected_bundle" "$EXPECTED_PACKAGE" "$EXPECTED_IOS_BUILD_NUMBER" <<'JS'
 const createConfig = require('./app/app.config.js');
 const expectedDisplayName = process.argv[2];
 const expectedBundle = process.argv[3];
 const expectedAndroidPackage = process.argv[4];
+const expectedIOSBuildNumber = process.argv[5];
 const config = createConfig();
 
 if (config.name !== 'Zen') {
@@ -55,8 +57,10 @@ if (config.ios.infoPlist.CFBundleShortVersionString !== '0.1.0') {
     `iOS marketing version must resolve to 0.1.0; got ${config.ios.infoPlist.CFBundleShortVersionString}`,
   );
 }
-if (config.ios.infoPlist.CFBundleVersion !== '5') {
-  throw new Error(`iOS build number must resolve to 5; got ${config.ios.infoPlist.CFBundleVersion}`);
+if (config.ios.infoPlist.CFBundleVersion !== expectedIOSBuildNumber) {
+  throw new Error(
+    `iOS build number must resolve to ${expectedIOSBuildNumber}; got ${config.ios.infoPlist.CFBundleVersion}`,
+  );
 }
 if (config.android.package !== expectedAndroidPackage) {
   throw new Error(
@@ -71,7 +75,7 @@ JS
 verify_ios_identity production "Zen" "com.daoleno.zen"
 verify_ios_identity preview "Zen" "com.daoleno.zen.preview"
 
-python3 - "$ROOT" "$EXPECTED_VERSION" "$EXPECTED_PACKAGE" "$EXPECTED_VERSION_CODE" "$EXPECTED_CERT_FP" "$STAGE" <<'PY'
+python3 - "$ROOT" "$EXPECTED_VERSION" "$EXPECTED_PACKAGE" "$EXPECTED_VERSION_CODE" "$EXPECTED_IOS_BUILD_NUMBER" "$EXPECTED_CERT_FP" "$STAGE" <<'PY'
 import hashlib
 import json
 import os
@@ -83,8 +87,9 @@ root = Path(sys.argv[1])
 exp_version = sys.argv[2]
 exp_package = sys.argv[3]
 exp_vc = int(sys.argv[4])
-exp_cert = sys.argv[5]
-stage = sys.argv[6] if len(sys.argv) > 6 else ""
+exp_ios_build = int(sys.argv[5])
+exp_cert = sys.argv[6]
+stage = sys.argv[7] if len(sys.argv) > 7 else ""
 
 errors = []
 
@@ -105,6 +110,15 @@ if android.get("package") != exp_package:
     errors.append(f"app.base.json package: got {android.get('package')!r} want {exp_package!r}")
 if int(android.get("versionCode", -1)) != exp_vc:
     errors.append(f"app.base.json versionCode: got {android.get('versionCode')!r} want {exp_vc!r}")
+if "buildNumber" in (expo.get("ios") or {}):
+    errors.append("app.base.json must not duplicate the reviewed iOS build-number source")
+ios_build_path = root / "app/ios-build.json"
+if not ios_build_path.is_file():
+    errors.append("missing reviewed iOS build-number source: app/ios-build.json")
+else:
+    ios_build = json.loads(ios_build_path.read_text(encoding="utf-8")).get("buildNumber")
+    if not isinstance(ios_build, int) or isinstance(ios_build, bool) or ios_build != exp_ios_build:
+        errors.append(f"ios-build.json buildNumber: got {ios_build!r} want {exp_ios_build}")
 
 version_go = (root / "daemon/cmd/zen/version.go").read_text(encoding="utf-8")
 m = re.search(r'var Version = "([^"]+)"', version_go)
@@ -210,8 +224,12 @@ if "ZEN_ANDROID_KEYSTORE_BASE64" not in wf:
     errors.append("release-artifacts.yml must reference ZEN_ANDROID_KEYSTORE_BASE64")
 if "workflow_dispatch" not in wf:
     errors.append("release-artifacts.yml must support workflow_dispatch")
-if "inputs.publish" not in wf and "github.event.inputs.publish" not in wf:
-    errors.append("release-artifacts.yml must gate publish on dispatch input")
+if "types: [published]" not in wf or "github.event.release.prerelease" not in wf:
+    errors.append("release-artifacts.yml must publish only from an explicit published prerelease")
+if "inputs.publish" in wf or "github.event.inputs.publish" in wf:
+    errors.append("manual dispatch must remain artifact-only and must not publish release assets")
+if re.search(r"(?m)^\s+push:\s*$", wf):
+    errors.append("release-artifacts.yml must not rebuild release assets on tag push")
 if "gh release upload" not in wf:
     errors.append("release-artifacts.yml must upload assets via gh release upload")
 if "materialize-android-keystore" not in wf:

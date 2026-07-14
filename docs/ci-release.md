@@ -2,11 +2,11 @@
 
 Automated build lives in [`.github/workflows/release-artifacts.yml`](../.github/workflows/release-artifacts.yml).
 
-The separate [`native-libs.yml`](../.github/workflows/native-libs.yml) workflow builds the same pinned `libghostty-vt` C ABI for Android on Linux and as an iOS device/simulator XCFramework on macOS. Normal CI compiles and links an unsigned iOS Simulator app on macOS. Signed iOS archive/export and optional TestFlight upload are isolated in the manual-only [`ios-release.yml`](../.github/workflows/ios-release.yml) workflow; see [iOS CI and release automation](ios-ci-release.md).
+The separate [`native-libs.yml`](../.github/workflows/native-libs.yml) workflow builds the same pinned `libghostty-vt` C ABI for Android on Linux and as an iOS device/simulator XCFramework on macOS. Normal CI compiles and links an unsigned iOS Simulator app on macOS. Signed iOS archive/export and optional TestFlight upload are isolated in [`ios-release.yml`](../.github/workflows/ios-release.yml); see [iOS CI and release automation](ios-ci-release.md).
 
 ## What it does
 
-| Step | Always (tag push or dispatch) | Only when `publish=true` |
+| Step | Published prerelease or manual build dispatch | Published prerelease only |
 | --- | --- | --- |
 | Checkout selected ref | yes | — |
 | `verify-release-identity.sh` | yes | — |
@@ -18,7 +18,7 @@ The separate [`native-libs.yml`](../.github/workflows/native-libs.yml) workflow 
 | Upload workflow artifact | yes | — |
 | Upload/replace assets on **existing** GitHub prerelease | **no** | yes |
 
-**Never automatic:** creating tags, converting draft→prerelease, or publishing on ordinary branch pushes. Tag `v*` pushes **build and verify only** (no asset publish).
+Publishing a GitHub prerelease is the one canonical build-and-publish event. It checks out the immutable tag, proves the tag version and SHA, builds once, and attaches the verified assets. A tag push alone does nothing, eliminating the former duplicate tag-push build plus manual publish rebuild. Manual dispatch is deliberately artifact-only. The workflow never creates tags/releases, converts drafts, or publishes from an ordinary branch push.
 
 ## Repository secrets (names only)
 
@@ -58,36 +58,27 @@ C2:FC:5B:09:B3:86:92:EE:70:59:71:1F:E7:ED:B8:79:4C:E3:65:FE:1C:7A:06:AB:95:4E:5D
 | Input | Type | Default | Meaning |
 | --- | --- | --- | --- |
 | `ref` | string | empty | Git tag/branch/SHA to build; empty = the branch/tag selected in the Actions UI |
-| `publish` | boolean | `false` | If `true`, upload/replace assets on existing prerelease `v<expo.version>` |
 
-Permissions: build job `contents: read`; publish job `contents: write` (only when `publish` is true).
+Permissions: build job `contents: read`; publish job `contents: write` only for the published-prerelease event.
 
-## Example: build and publish an existing prerelease
+## Build and publish paths
 
 Prerequisites:
 
-1. The release tag already exists and points at the intended commit.
-2. A matching **published prerelease** (not draft) already exists on GitHub.
+1. The release tag already exists and points at the reviewed commit.
+2. The matching draft is explicitly published as a **prerelease** on GitHub; that publication event is the canonical build/publish request.
 3. The four `ZEN_ANDROID_*` secrets above are configured on the repository.
 4. `ZEN_UPDATE_SIGNING_KEY_BASE64` is configured with the updater manifest key.
 
-Build only (artifact upload; no release mutation):
+Optional build-only validation (workflow artifact; never mutates the release):
 
 ```bash
 gh workflow run release-artifacts.yml \
   --ref main \
-  -f ref=vX.Y.Z \
-  -f publish=false
+  -f ref=vX.Y.Z
 ```
 
-Build and replace assets on the existing prerelease:
-
-```bash
-gh workflow run release-artifacts.yml \
-  --ref main \
-  -f ref=vX.Y.Z \
-  -f publish=true
-```
+To publish, use GitHub's explicit draft-to-prerelease publication operation. Do not dispatch a second build for the same tag. The workflow refuses a final release, draft, version mismatch, or tag/SHA mismatch before building and uses `gh release upload --clobber` only on the already-published prerelease.
 
 Watch:
 
@@ -127,6 +118,7 @@ Daemon archives contain `zen`, `LICENSE`, `NOTICE`, and `TRADEMARKS.md`. Release
 - The updater accepts one public release stream, including prereleases by semantic-version precedence; it has no channel setting.
 - The detached Ed25519 signature authenticates manifest version, platform mapping, archive size, and SHA-256 before download installation.
 - CI does not read developer home directories (including `~/.zen/release-keys`).
-- `publish=true` refuses non-prerelease and draft releases; uses `gh release upload --clobber` only.
-- Tag pushes do not set `publish`; no unexpected double-publication path from push alone.
-- Pinned Zig is downloaded with SHA-256 verification and extracted under `$RUNNER_TEMP/zig-install` (not `/usr/local`); its directory is appended to `$GITHUB_PATH` for later steps. No `sudo` or unverified installers.
+- Manual dispatch cannot publish, while a published-prerelease event refuses final releases, drafts, version mismatches, and tag/SHA mismatches.
+- Gradle caches only dependency/build state under the runner's Gradle home. Zig/Ghostty source and unsigned native-output keys include the native lock and build/verification inputs; every cache hit still runs release-grade manifest, checksum, ABI, and notice verification.
+- No cache path includes a keystore, updater signing key, signed APK, or staged release output.
+- Pinned Zig archives are SHA-256 verified on both cache misses and hits and extracted under `$RUNNER_TEMP/zen-tools` (not `/usr/local`). No `sudo` or unverified installers.

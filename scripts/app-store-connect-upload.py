@@ -20,6 +20,13 @@ from typing import Any, Callable
 API_ROOT = "https://api.appstoreconnect.apple.com/v1"
 
 
+class AppStoreConnectHTTPError(RuntimeError):
+    def __init__(self, status: int, detail: str) -> None:
+        self.status = status
+        self.detail = detail
+        super().__init__(f"App Store Connect returned HTTP {status}: {detail}")
+
+
 def base64url(data: bytes) -> str:
     return base64.urlsafe_b64encode(data).rstrip(b"=").decode("ascii")
 
@@ -123,7 +130,8 @@ class AppStoreConnectClient:
                 response_data = response.read()
         except urllib.error.HTTPError as exc:
             detail = exc.read().decode(errors="replace")
-            raise RuntimeError(f"App Store Connect returned HTTP {exc.code}: {detail}") from exc
+            exc.close()
+            raise AppStoreConnectHTTPError(exc.code, detail) from exc
         except urllib.error.URLError as exc:
             raise RuntimeError(f"App Store Connect request failed: {exc.reason}") from exc
         if not response_data:
@@ -337,17 +345,32 @@ def prepare_testflight_build(
 
     build_id = build["id"]
     if build.get("attributes", {}).get("usesNonExemptEncryption") is not False:
-        client.api_request(
-            "PATCH",
-            f"/builds/{build_id}",
-            {
-                "data": {
-                    "type": "builds",
-                    "id": build_id,
-                    "attributes": {"usesNonExemptEncryption": False},
-                }
-            },
-        )
+        try:
+            client.api_request(
+                "PATCH",
+                f"/builds/{build_id}",
+                {
+                    "data": {
+                        "type": "builds",
+                        "id": build_id,
+                        "attributes": {"usesNonExemptEncryption": False},
+                    }
+                },
+            )
+        except AppStoreConnectHTTPError as exc:
+            if exc.status != 409:
+                raise
+            verified = exact_build(client, app_id, version, build_number)
+            if (
+                verified is None
+                or verified.get("id") != build_id
+                or verified.get("attributes", {}).get("usesNonExemptEncryption") is not False
+            ):
+                raise
+            print(
+                "App Store Connect returned HTTP 409 after export compliance was "
+                "already set to the required false value; continuing"
+            )
 
     group_query = urllib.parse.urlencode(
         {

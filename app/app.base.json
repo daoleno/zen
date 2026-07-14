@@ -14,7 +14,6 @@
     },
     "ios": {
       "bundleIdentifier": "com.daoleno.zen",
-      "buildNumber": "5",
       "supportsTablet": false,
       "infoPlist": {
         "ITSAppUsesNonExemptEncryption": false,
