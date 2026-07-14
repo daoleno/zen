@@ -56,7 +56,15 @@ When action is needed, Brain uses tools or hands focused work to an agent sessio
 
 ## Quick start
 
-Install the daemon from [GitHub Releases](https://github.com/daoleno/zen/releases), then on the computer that has `tmux` and an authenticated coding-agent CLI:
+Install the daemon on Linux (`amd64`/`arm64`), WSL, or an Apple Silicon Mac:
+
+```sh
+curl --proto '=https' --proto-redir '=https' -fsSL https://raw.githubusercontent.com/daoleno/zen/main/install.sh | sh
+```
+
+The bootstrap downloads only official [`daoleno/zen` release](https://github.com/daoleno/zen/releases) assets, verifies the selected archive against `SHA256SUMS`, and installs without `sudo`. If Zen is already installed at a safe user-owned path, the script delegates to Zen's signed built-in updater. See [Install the daemon](docs/install-daemon.md) for version pinning, custom install locations, the bootstrap trust boundary, manual checksum verification, and source builds.
+
+Then, on the computer that has `tmux` and an authenticated coding-agent CLI:
 
 ```bash
 zen doctor
@@ -67,7 +75,7 @@ Zen prints a `zen pair` command for each detected private address. Keep the daem
 
 Open the mobile app and **scan or import the pairing code**. For access across networks, use private [Tailscale](https://tailscale.com/docs/install) connectivity or a stable [Cloudflare Tunnel](https://developers.cloudflare.com/cloudflare-one/networks/connectors/cloudflare-tunnel/get-started/create-remote-tunnel/) hostname.
 
-For installation details, iOS source builds, and the shortest setup for each connection route, see [Install the daemon](docs/install-daemon.md) and [Connect and pair](docs/connect-and-pair.md).
+For iOS source builds and the shortest setup for each connection route, see [Install the daemon](docs/install-daemon.md) and [Connect and pair](docs/connect-and-pair.md).
 
 ## How it works
 

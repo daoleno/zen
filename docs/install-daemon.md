@@ -5,12 +5,66 @@ This guide installs the daemon that owns Zen's state, pairing identity, tmux ses
 ## What you need
 
 - Linux `amd64`/`arm64` or an Apple Silicon Mac
+- `curl`, `tar`, and either `sha256sum` (Linux) or `shasum` (macOS)
 - `tmux` on `PATH`
 - At least one AI CLI on `PATH` and already authenticated (`codex`, `claude`, `cursor-agent`, or `grok`)
 
 You do not need every executor. One is enough.
 
-## Install the release binary
+## Install with one command
+
+```sh
+curl --proto '=https' --proto-redir '=https' -fsSL https://raw.githubusercontent.com/daoleno/zen/main/install.sh | sh
+```
+
+The installer detects the supported platform, finds the newest public Zen prerelease, downloads its exact archive and `SHA256SUMS` from the official [`daoleno/zen`](https://github.com/daoleno/zen) release, verifies SHA-256, rejects unexpected archive entries and links, and atomically installs a mode-`0755` executable. It never invokes `sudo`, installs packages, installs AI CLIs, logs in, or sends telemetry.
+
+If a usable Zen executable already exists at a safe user-owned location, the default command runs its built-in `zen update` instead. That updater verifies the signed schema-v2 release manifest and authenticated archive checksum before replacing the executable. Setting `ZEN_VERSION` or `ZEN_INSTALL_DIR` requests a fresh bootstrap install instead:
+
+```sh
+# Exact supported tag; no other tag syntax is accepted.
+curl --proto '=https' --proto-redir '=https' -fsSL https://raw.githubusercontent.com/daoleno/zen/main/install.sh | \
+  ZEN_VERSION=v0.1.0-beta.5 sh
+
+# Explicit user-owned destination.
+curl --proto '=https' --proto-redir '=https' -fsSL https://raw.githubusercontent.com/daoleno/zen/main/install.sh | \
+  ZEN_INSTALL_DIR="$HOME/bin" sh
+
+# Do not edit a shell profile (useful for managed hosts and CI).
+curl --proto '=https' --proto-redir '=https' -fsSL https://raw.githubusercontent.com/daoleno/zen/main/install.sh | \
+  ZEN_NO_PATH_UPDATE=1 sh
+```
+
+`ZEN_DRY_RUN=1` prints the selected platform, requested version, and destination without downloading or changing files. The installer is noninteractive and uses nonzero exits with specific errors, so version pins and custom destinations work in CI as well.
+
+### Install location and PATH
+
+With no `ZEN_INSTALL_DIR`, the installer preserves a safe existing user-owned Zen location. Otherwise, it selects an existing writable user-owned `bin` directory on `PATH` only when there is exactly one unambiguous choice; the fallback is `~/.local/bin`. It refuses root/system directories and refuses to run as root.
+
+When the fallback is not already on `PATH`, the installer can append one marked, idempotent entry to `.zshrc`, `.bashrc`, or `.config/fish/config.fish`, according to `SHELL`. It will not edit a symlinked or foreign-owned profile. A piped installer cannot modify its parent shell, so the final output prints the exact `export PATH=...` or `fish_add_path ...` command to run immediately and the full installed path to use in the meantime. Set `ZEN_NO_PATH_UPDATE=1` to suppress all profile changes; the immediate command is still printed.
+
+After installation, the script runs a safe `--help` execution check followed by `zen doctor` using the full installed path. Missing `tmux`, an agent CLI, or authentication is reported as host setup guidance rather than a corrupt installation; the installer never tries to remedy those dependencies itself.
+
+### Bootstrap trust boundary
+
+The first `install.sh`, release archive, and `SHA256SUMS` arrive over GitHub HTTPS. The checksum detects a damaged or mismatched archive, but because the checksum is delivered through the same HTTPS trust boundary, the bootstrap does **not** claim Ed25519 authentication. Review the repository-root [`install.sh`](../install.sh), pin its commit in the raw URL if your policy requires reviewed immutable bootstrap code, or use the manual path below.
+
+After the first install, `zen update` has a stronger trust path: the installed binary contains Zen's Ed25519 public key and requires the signed schema-v2 manifest before accepting an archive. The bootstrap never downloads remote shell code and pipes it into a second shell.
+
+## Supported platforms
+
+| Host | Archive | Status |
+| --- | --- | --- |
+| Linux `amd64` / `x86_64` | `zen-linux-amd64.tar.gz` | Supported |
+| Linux `arm64` / `aarch64` | `zen-linux-arm64.tar.gz` | Supported |
+| WSL2 on either supported Linux architecture | matching Linux archive | Supported |
+| Apple Silicon macOS | `zen-darwin-arm64.tar.gz` | Supported |
+| Intel macOS | — | Unsupported; build from source if you are evaluating an untested host |
+| Native Windows | — | Unsupported; use WSL2 or build from source for development |
+
+The installer fails on unsupported platforms before downloading an archive. It does not present native Windows or Intel macOS as release-supported hosts.
+
+## Manual release download and checksum verification
 
 Open [GitHub Releases](https://github.com/daoleno/zen/releases) and download:
 
@@ -21,15 +75,19 @@ Open [GitHub Releases](https://github.com/daoleno/zen/releases) and download:
 
 ```bash
 # Linux
-sha256sum -c SHA256SUMS --ignore-missing
+grep 'zen-linux-amd64.tar.gz$' SHA256SUMS | sha256sum -c -
 
 # macOS
 grep 'zen-darwin-arm64.tar.gz$' SHA256SUMS | shasum -a 256 -c -
 
 tar -xzf zen-<platform>-<architecture>.tar.gz
+mkdir -p ~/.local/bin
 install -m 755 zen ~/.local/bin/zen
-zen doctor
+~/.local/bin/zen --help
+~/.local/bin/zen doctor
 ```
+
+Replace the Linux archive name with `zen-linux-arm64.tar.gz` on ARM64. Before accepting the checksum line, inspect it and confirm there is exactly one entry for the archive you downloaded. Manual installation has the same initial GitHub HTTPS trust boundary described above.
 
 After the first install, Zen can update itself in place:
 
@@ -42,7 +100,7 @@ zen update
 
 An interactive daemon startup may print one cached `zen update` hint. The check runs asynchronously, never delays startup, and stays silent in noninteractive output and on network failure.
 
-On macOS, install `tmux` with `brew install tmux`. If macOS blocks the downloaded binary, confirm that it came from the official Zen release before removing the quarantine attribute with `xattr -d com.apple.quarantine ~/.local/bin/zen`.
+On macOS, install `tmux` separately if needed. If macOS blocks the downloaded binary, confirm that it came from the official Zen release before removing the quarantine attribute with `xattr -d com.apple.quarantine ~/.local/bin/zen`.
 
 If `~/.local/bin` is not on your `PATH`, install into another user-owned directory that is, or add it to your shell configuration.
 
