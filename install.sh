@@ -186,13 +186,55 @@ latest_prerelease() {
     }
   ' > "$candidates_file"
 
-  found=
-  while IFS= read -r candidate; do
-    if valid_version "$candidate"; then
-      found=$candidate
-      break
-    fi
-  done < "$candidates_file"
+  found=$(
+    while IFS= read -r candidate; do
+      if valid_version "$candidate"; then
+        printf '%s\n' "$candidate"
+      fi
+    done < "$candidates_file" | awk '
+      function number_compare(left, right, i, left_digit, right_digit) {
+        if (length(left) != length(right)) {
+          return length(left) > length(right) ? 1 : -1
+        }
+        for (i = 1; i <= length(left); i++) {
+          left_digit = substr(left, i, 1) + 0
+          right_digit = substr(right, i, 1) + 0
+          if (left_digit != right_digit) {
+            return left_digit > right_digit ? 1 : -1
+          }
+        }
+        return 0
+      }
+      {
+        version = substr($0, 2)
+        beta = ""
+        beta_pos = index(version, "-beta.")
+        if (beta_pos) {
+          beta = substr(version, beta_pos + 6)
+          version = substr(version, 1, beta_pos - 1)
+        }
+        split(version, core, ".")
+
+        core_order = number_compare(core[1], best_major)
+        if (core_order == 0) core_order = number_compare(core[2], best_minor)
+        if (core_order == 0) core_order = number_compare(core[3], best_patch)
+
+        better = best == "" || core_order > 0
+        if (best != "" && core_order == 0) {
+          better = (beta == "" && best_beta != "") ||
+                   (beta != "" && best_beta != "" && number_compare(beta, best_beta) > 0)
+        }
+        if (better) {
+          best = $0
+          best_major = core[1]
+          best_minor = core[2]
+          best_patch = core[3]
+          best_beta = beta
+        }
+      }
+      END { if (best != "") print best }
+    '
+  )
   [ -n "$found" ] || die "GitHub returned no public Zen prerelease with a supported vX.Y.Z or vX.Y.Z-beta.N tag"
   VERSION=$found
 }

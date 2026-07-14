@@ -195,18 +195,35 @@ test_latest_prerelease_and_urls() {
 [
  {"tag_name":"not-a-version","draft":false,"prerelease":true},
  {"tag_name":"v9.0.0","draft":false,"prerelease":false},
- {"tag_name":"v2.0.0-beta.3","draft":true,"prerelease":true},
- {"tag_name":"v1.2.3-beta.4","draft":false,"prerelease":true},
- {"tag_name":"v1.2.3-beta.3","draft":false,"prerelease":true}
+ {"tag_name":"v8.0.0-beta.1","draft":true,"prerelease":true},
+ {"tag_name":"v2.0.0-beta.9","draft":false,"prerelease":true},
+ {"tag_name":"v1.99.99-beta.999","draft":false,"prerelease":true},
+ {"tag_name":"v2.0.0-beta.10","draft":false,"prerelease":true}
 ]
 EOF
   run_installer ZEN_INSTALL_DIR="$HOME_DIR/install"
   [[ -x "$HOME_DIR/install/zen" ]] || fail "latest prerelease was not installed"
-  assert_contains "$CASE_DIR/output" "Installed Zen v1.2.3-beta.4"
+  assert_contains "$CASE_DIR/output" "Installed Zen v2.0.0-beta.10"
   assert_contains "$CASE_DIR/curl.log" "https://api.github.com/repos/daoleno/zen/releases?per_page=100"
-  assert_contains "$CASE_DIR/curl.log" "https://github.com/daoleno/zen/releases/download/v1.2.3-beta.4/zen-linux-amd64.tar.gz"
-  assert_contains "$CASE_DIR/curl.log" "https://github.com/daoleno/zen/releases/download/v1.2.3-beta.4/SHA256SUMS"
-  pass "parses the newest public prerelease and constructs only fixed official URLs"
+  assert_contains "$CASE_DIR/curl.log" "https://github.com/daoleno/zen/releases/download/v2.0.0-beta.10/zen-linux-amd64.tar.gz"
+  assert_contains "$CASE_DIR/curl.log" "https://github.com/daoleno/zen/releases/download/v2.0.0-beta.10/SHA256SUMS"
+  pass "selects the highest public prerelease independent of API order"
+}
+
+test_stable_tag_prerelease_precedence() {
+  new_case stable-tag-prerelease
+  make_archive
+  cat > "$RELEASES_JSON" <<'EOF'
+[
+ {"tag_name":"v3.4.5-beta.10","draft":false,"prerelease":true},
+ {"tag_name":"v3.4.5","draft":false,"prerelease":true}
+]
+EOF
+  run_installer ZEN_INSTALL_DIR="$HOME_DIR/install"
+  assert_contains "$CASE_DIR/output" "Installed Zen v3.4.5"
+  assert_contains "$CASE_DIR/curl.log" "https://github.com/daoleno/zen/releases/download/v3.4.5/zen-linux-amd64.tar.gz"
+  assert_contains "$CASE_DIR/curl.log" "https://github.com/daoleno/zen/releases/download/v3.4.5/SHA256SUMS"
+  pass "ranks a stable tag marked prerelease above beta for the same core"
 }
 
 test_fixed_version_and_atomic_replacement() {
@@ -366,6 +383,7 @@ printf 'TAP version 13\n'
 test_platform_mapping
 test_unsupported_platforms
 test_latest_prerelease_and_urls
+test_stable_tag_prerelease_precedence
 test_fixed_version_and_atomic_replacement
 test_checksum_failures
 test_unsafe_archives
