@@ -75,15 +75,7 @@ The Zen daemon runs beside your repositories, authenticated agent CLIs, and tmux
 
 Read [Security and privacy](docs/security-and-privacy.md) for the trust model and [Architecture](docs/architecture.md) for protocol details.
 
-## Platform availability
-
-| Component | Availability |
-| --- | --- |
-| Daemon | Release binaries for Linux `amd64`/`arm64` and Apple Silicon macOS |
-| Android | `arm64-v8a` APK from GitHub Releases |
-| iOS | [TestFlight Preview](https://testflight.apple.com/join/rTKCDzMt) public invitation configured; Beta App Review pending. Source builds remain available for arm64 devices and Apple Silicon Simulator |
-
-The TestFlight Preview uses a public invitation link, but Apple must approve the beta before new testers can install it. See the [Android](docs/android.md) and [iOS](docs/ios.md#testflight-preview-access) guides for current installation, access, and validation details.
+Get the apps from the [Android guide](docs/android.md) or [public TestFlight](https://testflight.apple.com/join/rTKCDzMt); the [iOS guide](docs/ios.md) also covers source builds.
 
 ## Learn more
 
