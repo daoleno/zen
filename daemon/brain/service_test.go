@@ -563,6 +563,9 @@ func TestServiceBootstrapPromptDefaultsToAutonomousScheduling(t *testing.T) {
 		"agent capture -id",
 		"agent send -id",
 		"agent close -id",
+		"calendar list --json",
+		"resolved local date, time, timezone",
+		"Do not infer calendar items",
 		"Delegated agent lifecycle",
 		"Never close, kill, rename, repurpose, or otherwise manage sessions whose agent list entry does not have delegated=true",
 		"Keep orchestration principles in Markdown, prompts, and agent instructions",
@@ -1257,7 +1260,7 @@ func TestStoreUsesStateAndWorkspaceDirectories(t *testing.T) {
 	if !strings.Contains(string(instructions), "Treat Heartbeat wake messages as compact actionable deltas") {
 		t.Fatalf("workspace instructions do not describe heartbeat handling:\n%s", instructions)
 	}
-	for _, want := range []string{"zen brain context --json", "zen brain playbooks --json", "zen agent list --json", "zen agent spawn -name", "zen agent capture -id", "zen agent send -id", "zen agent close -id"} {
+	for _, want := range []string{"zen brain context --json", "zen brain playbooks --json", "zen agent list --json", "zen agent spawn -name", "zen agent capture -id", "zen agent send -id", "zen agent close -id", "zen calendar list/get/create/update/cancel/run", "resolved local date/time/timezone", "Do not extract calendar items"} {
 		if !strings.Contains(string(instructions), want) {
 			t.Fatalf("workspace instructions missing %q:\n%s", want, instructions)
 		}

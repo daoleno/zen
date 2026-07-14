@@ -3,6 +3,7 @@ export const SCREENSHOT_DEMO_STATES = [
   "sessions",
   "brain",
   "stats",
+  "calendar",
 ] as const;
 
 export type ScreenshotDemoState = (typeof SCREENSHOT_DEMO_STATES)[number];

@@ -19,6 +19,7 @@ import (
 
 	"github.com/daoleno/zen/daemon/auth"
 	"github.com/daoleno/zen/daemon/brain"
+	"github.com/daoleno/zen/daemon/calendar"
 	"github.com/daoleno/zen/daemon/classifier"
 	"github.com/daoleno/zen/daemon/control"
 	"github.com/daoleno/zen/daemon/doctor"
@@ -80,6 +81,8 @@ func run(args []string, stderr io.Writer) error {
 			return runAgentCommand(args[1:], stderr)
 		case "brain":
 			return runBrainCommand(args[1:], stderr)
+		case "calendar":
+			return runCalendarCommand(args[1:], stderr)
 		}
 	}
 	return runDaemon(args, stderr)
@@ -164,20 +167,33 @@ func runDaemon(args []string, stderr io.Writer) error {
 		return fmt.Errorf("initialize brain store: %w", err)
 	}
 	brainService := brain.NewService(brainStore, w, execs)
+	calendarRoot, err := calendar.DefaultRoot()
+	if err != nil {
+		return fmt.Errorf("resolve calendar root: %w", err)
+	}
+	calendarStore, err := calendar.NewStore(calendarRoot)
+	if err != nil {
+		return fmt.Errorf("initialize calendar store: %w", err)
+	}
 	controlPath, err := control.DefaultSocketPath(authManager.StorageDir())
 	if err != nil {
 		return fmt.Errorf("resolve control socket path: %w", err)
 	}
 	controlHandler := &controlApp{
-		watcher:    w,
-		execs:      execs,
-		brainStore: brainStore,
-		stateDir:   authManager.StorageDir(),
+		watcher:       w,
+		execs:         execs,
+		brainStore:    brainStore,
+		calendarStore: calendarStore,
+		stateDir:      authManager.StorageDir(),
 	}
 
 	pusher := push.New()
 	launcher := work.NewLauncher(&work.WatcherRegistry{W: w}, work.TmuxRunner{}, execs)
 	srv := server.New(authManager, w, pusher, sc, workStore, launcher, execs, brainService)
+	calendarScheduler := calendar.NewScheduler(calendarStore, &calendar.WorkRunner{Store: workStore, Launcher: launcher, Watcher: w})
+	controlHandler.calendarScheduler = calendarScheduler
+	srv.SetCalendar(calendarStore, calendarScheduler)
+	go calendarScheduler.Run(ctx)
 	controlErr := make(chan error, 1)
 	go func() {
 		controlServer := &control.Server{
@@ -352,6 +368,134 @@ func runBrainCommand(args []string, stderr io.Writer) error {
 	default:
 		return fmt.Errorf("unknown brain command: %s", args[0])
 	}
+}
+
+func runCalendarCommand(args []string, stderr io.Writer) error {
+	if len(args) == 0 || isHelpArg(args[0]) {
+		fmt.Fprintln(stderr, "Usage: zen calendar <list|get|create|update|cancel|run> [flags]")
+		return flag.ErrHelp
+	}
+	switch args[0] {
+	case "list":
+		return runCalendarSimple("calendar_list", args[1:], stderr)
+	case "get":
+		return runCalendarID("calendar_get", args[1:], stderr, false)
+	case "cancel":
+		return runCalendarID("calendar_cancel", args[1:], stderr, true)
+	case "run":
+		return runCalendarID("calendar_run", args[1:], stderr, false)
+	case "create":
+		return runCalendarWrite(false, args[1:], stderr)
+	case "update":
+		return runCalendarWrite(true, args[1:], stderr)
+	default:
+		return fmt.Errorf("unknown calendar command: %s", args[0])
+	}
+}
+
+func runCalendarSimple(requestType string, args []string, stderr io.Writer) error {
+	cfg, err := parseCLIConfig("zen calendar list", args, stderr)
+	if err != nil {
+		return err
+	}
+	resp, err := callControl(cfg, control.Request{Type: requestType})
+	if err != nil {
+		return err
+	}
+	return writeControlResponse(os.Stdout, resp, cfg.json)
+}
+
+func runCalendarID(requestType string, args []string, stderr io.Writer, withRevision bool) error {
+	fs := flag.NewFlagSet("zen calendar", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	cfg := cliConfig{json: true}
+	req := control.Request{Type: requestType}
+	fs.StringVar(&cfg.stateDir, "state-dir", "", "state directory for daemon control socket")
+	fs.BoolVar(&cfg.json, "json", true, "print JSON output")
+	fs.StringVar(&req.ID, "id", "", "calendar item id")
+	if withRevision {
+		fs.Int64Var(&req.Revision, "revision", 0, "expected revision (0 disables conflict check)")
+	}
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if fs.NArg() != 0 || strings.TrimSpace(req.ID) == "" {
+		return fmt.Errorf("calendar item -id is required")
+	}
+	resp, err := callControl(cfg, req)
+	if err != nil {
+		return err
+	}
+	return writeControlResponse(os.Stdout, resp, cfg.json)
+}
+
+func runCalendarWrite(update bool, args []string, stderr io.Writer) error {
+	fs := flag.NewFlagSet("zen calendar create", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	cfg := cliConfig{json: true}
+	var itemJSON, title, kind, date, clock, endDate, endClock, timezone, occurrence, endOccurrence, recurrence, notes, instruction, cwd, sourceThread string
+	var revision int64
+	fs.StringVar(&cfg.stateDir, "state-dir", "", "state directory for daemon control socket")
+	fs.BoolVar(&cfg.json, "json", true, "print JSON output")
+	fs.StringVar(&itemJSON, "item-json", "", "complete calendar item JSON (required for update)")
+	fs.StringVar(&title, "title", "", "title")
+	fs.StringVar(&kind, "kind", "", "event, reminder, deadline, or scheduled_action")
+	fs.StringVar(&date, "date", "", "local date in YYYY-MM-DD")
+	fs.StringVar(&clock, "time", "", "local wall time in HH:MM")
+	fs.StringVar(&endDate, "end-date", "", "event end local date in YYYY-MM-DD")
+	fs.StringVar(&endClock, "end-time", "", "event end local wall time in HH:MM")
+	fs.StringVar(&timezone, "timezone", "", "IANA timezone, for example Asia/Shanghai")
+	fs.StringVar(&occurrence, "occurrence", "", "first or second when the local time occurs twice at DST fall-back")
+	fs.StringVar(&endOccurrence, "end-occurrence", "", "first or second when the event end occurs twice at DST fall-back")
+	fs.StringVar(&recurrence, "recurrence", "none", "none, daily, weekly, or weekdays")
+	fs.StringVar(&notes, "notes", "", "notes")
+	fs.StringVar(&instruction, "instruction", "", "scheduled action instruction")
+	fs.StringVar(&cwd, "cwd", "", "scheduled action working directory")
+	fs.StringVar(&sourceThread, "source-thread", "", "source Brain conversation id")
+	fs.Int64Var(&revision, "revision", 0, "expected revision")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if fs.NArg() != 0 {
+		return fmt.Errorf("unexpected arguments: %s", strings.Join(fs.Args(), " "))
+	}
+	var item calendar.Item
+	if strings.TrimSpace(itemJSON) != "" {
+		if err := json.Unmarshal([]byte(itemJSON), &item); err != nil {
+			return fmt.Errorf("decode item-json: %w", err)
+		}
+	} else {
+		if update {
+			return fmt.Errorf("calendar update requires -item-json from calendar get and -revision")
+		}
+		at, err := calendar.ResolveLocalDateTime(date, clock, timezone, occurrence)
+		if err != nil {
+			return fmt.Errorf("resolve calendar time: %w", err)
+		}
+		item = calendar.Item{Title: title, Kind: calendar.Kind(kind), Timezone: timezone, Recurrence: calendar.Recurrence(recurrence), Notes: notes, ActionInstruction: instruction, ActionCwd: cwd, SourceThreadID: sourceThread}
+		switch item.Kind {
+		case calendar.KindEvent:
+			item.StartAt = &at
+			end, err := calendar.ResolveLocalDateTime(endDate, endClock, timezone, endOccurrence)
+			if err != nil {
+				return fmt.Errorf("resolve event end: %w", err)
+			}
+			item.EndAt = &end
+		case calendar.KindReminder:
+			item.NotifyAt = &at
+		default:
+			item.DueAt = &at
+		}
+	}
+	typeName := "calendar_create"
+	if update {
+		typeName = "calendar_update"
+	}
+	resp, err := callControl(cfg, control.Request{Type: typeName, CalendarItem: &item, Revision: revision})
+	if err != nil {
+		return err
+	}
+	return writeControlResponse(os.Stdout, resp, cfg.json)
 }
 
 func isHelpArg(value string) bool {

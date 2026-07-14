@@ -22,6 +22,7 @@ import (
 
 	"github.com/daoleno/zen/daemon/auth"
 	"github.com/daoleno/zen/daemon/brain"
+	"github.com/daoleno/zen/daemon/calendar"
 	"github.com/daoleno/zen/daemon/classifier"
 	"github.com/daoleno/zen/daemon/push"
 	"github.com/daoleno/zen/daemon/stats"
@@ -41,20 +42,24 @@ var upgrader = websocket.Upgrader{
 
 // Server handles WebSocket connections from the zen mobile app.
 type Server struct {
-	auth      *auth.Manager
-	watcher   *watcher.Watcher
-	terminal  *terminal.Manager
-	pusher    *push.Client
-	stats     *stats.Collector
-	work      *work.Store
-	launcher  *work.Launcher
-	workLog   *work.SessionLogger
-	execs     *work.ExecutorConfig
-	brain     *brain.Service
-	lifecycle *delegatedLifecycleManager
+	auth              *auth.Manager
+	watcher           *watcher.Watcher
+	terminal          *terminal.Manager
+	pusher            *push.Client
+	stats             *stats.Collector
+	work              *work.Store
+	launcher          *work.Launcher
+	workLog           *work.SessionLogger
+	execs             *work.ExecutorConfig
+	brain             *brain.Service
+	calendar          *calendar.Store
+	calendarScheduler *calendar.Scheduler
+	lifecycle         *delegatedLifecycleManager
 
-	workSubID int
-	workSub   <-chan work.Event
+	workSubID     int
+	workSub       <-chan work.Event
+	calendarSubID int
+	calendarSub   <-chan calendar.Event
 
 	clients   map[*websocket.Conn]bool
 	active    map[*websocket.Conn]string
@@ -63,6 +68,13 @@ type Server struct {
 	notified  map[string]struct{}
 	brainSent map[string]struct{}
 	mu        sync.Mutex
+}
+
+func (s *Server) SetCalendar(store *calendar.Store, scheduler *calendar.Scheduler) {
+	s.calendar, s.calendarScheduler = store, scheduler
+	if store != nil {
+		s.calendarSubID, s.calendarSub = store.Subscribe()
+	}
 }
 
 type codexConversationSubscription struct {
@@ -146,6 +158,8 @@ type clientMessage struct {
 	AdapterID    string                 `json:"adapter_id"`
 	Personality  string                 `json:"personality"`
 	Done         bool                   `json:"done"`
+	CalendarItem *calendar.Item         `json:"calendar_item"`
+	Revision     int64                  `json:"revision"`
 }
 
 // Run starts the HTTP server and event broadcaster.
@@ -231,6 +245,9 @@ func (s *Server) handleWS(w http.ResponseWriter, r *http.Request) {
 			"executors":            s.executorRoles(),
 			"work_digest_provider": s.workDigestProvider(),
 		})
+	}
+	if s.calendar != nil {
+		s.sendCalendarSnapshot(conn, "")
 	}
 	s.sendBrainSnapshot(conn, "")
 
@@ -348,6 +365,19 @@ func (s *Server) handleClientMessage(conn *websocket.Conn, msg []byte) {
 
 	case "delete_work_item":
 		s.handleDeleteWorkItem(conn, raw)
+
+	case "list_calendar_items":
+		s.sendCalendarSnapshot(conn, raw.RequestID)
+	case "get_calendar_item":
+		s.handleGetCalendarItem(conn, raw)
+	case "create_calendar_item":
+		s.handleCreateCalendarItem(conn, raw)
+	case "update_calendar_item":
+		s.handleUpdateCalendarItem(conn, raw)
+	case "cancel_calendar_item":
+		s.handleCancelCalendarItem(conn, raw)
+	case "run_calendar_item":
+		s.handleRunCalendarItem(conn, raw)
 
 	case "list_executors":
 		s.handleListExecutors(conn, raw)
@@ -1719,6 +1749,10 @@ func (s *Server) sendErrorWithRequestID(conn *websocket.Conn, requestID, code, m
 }
 
 func (s *Server) broadcastEvents(ctx context.Context) {
+	calendarSub := s.calendarSub
+	if s.calendar != nil && calendarSub != nil {
+		defer s.calendar.Unsubscribe(s.calendarSubID)
+	}
 	for {
 		select {
 		case <-ctx.Done():
@@ -1731,6 +1765,12 @@ func (s *Server) broadcastEvents(ctx context.Context) {
 				continue
 			}
 			s.handleWorkEvent(ie)
+		case event, ok := <-calendarSub:
+			if !ok {
+				calendarSub = nil
+				continue
+			}
+			s.broadcastJSON(map[string]any{"type": "calendar_item_changed", "calendar_item": event.Item})
 		}
 	}
 }

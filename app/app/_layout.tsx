@@ -26,6 +26,8 @@ import {
 } from "../store/agents";
 import { BrainProvider, useBrainDispatch } from "../store/brain";
 import { WorkProvider, useWorkDispatch } from "../store/work";
+import { CalendarProvider, useCalendarDispatch } from "../store/calendar";
+import { syncCalendarNotifications } from "../services/calendarNotifications";
 import { useAppTheme } from "../constants/tokens";
 import { ThemeProvider } from "../theme";
 import { wsClient } from "../services/websocket";
@@ -292,6 +294,7 @@ const ConnectionLifecycle = memo(function ConnectionLifecycle({
   const dispatch = useAgentDispatch();
   const brainDispatch = useBrainDispatch();
   const workDispatch = useWorkDispatch();
+  const calendarDispatch = useCalendarDispatch();
   const routerRef = useRef(router);
   const handledConnectLinksRef = useRef(new Set<string>());
   const rootSegment = segments[0];
@@ -394,6 +397,7 @@ const ConnectionLifecycle = memo(function ConnectionLifecycle({
         type: "REMOVE_SERVER",
         serverId: data.serverId,
       });
+      calendarDispatch({ type: "REMOVE_SERVER", serverId: data.serverId });
     };
     const onConnectionIssue = (data: any) =>
       dispatch({
@@ -461,11 +465,36 @@ const ConnectionLifecycle = memo(function ConnectionLifecycle({
         serverUrl: data.serverUrl,
         brain: data.brain || {},
       });
+    const onCalendarSnapshot = (data: any) => {
+      const items = data.calendar_items || [];
+      calendarDispatch({
+        type: "CALENDAR_SNAPSHOT",
+        serverId: data.serverId,
+        serverName: data.serverName,
+        serverUrl: data.serverUrl,
+        items,
+      });
+      void syncCalendarNotifications(data.serverId, items).catch((error) => {
+        console.log("Failed to sync Calendar notifications:", error);
+      });
+    };
+    const onCalendarChanged = (data: any) => {
+      if (!data.calendar_item) return;
+      calendarDispatch({
+        type: "CALENDAR_CHANGED",
+        serverId: data.serverId,
+        serverName: data.serverName,
+        serverUrl: data.serverUrl,
+        item: data.calendar_item,
+      });
+      wsClient.listCalendarItems(data.serverId);
+    };
     const onConnectedFetchWork = (data: any) => {
       wsClient.listWorkItems(data.serverId);
       wsClient.listExecutors(data.serverId);
       wsClient.listAgentSessions(data.serverId);
       wsClient.requestBrainSnapshot(data.serverId);
+      wsClient.listCalendarItems(data.serverId);
     };
 
     wsClient.on("agent_session_list", onAgentSessionList);
@@ -482,6 +511,8 @@ const ConnectionLifecycle = memo(function ConnectionLifecycle({
     wsClient.on("executor_list", onExecutors);
     wsClient.on("work_digest_provider", onWorkDigestProvider);
     wsClient.on("brain_snapshot", onBrainSnapshot);
+    wsClient.on("calendar_items_snapshot", onCalendarSnapshot);
+    wsClient.on("calendar_item_changed", onCalendarChanged);
     wsClient.on("connected", onConnectedFetchWork);
 
     (async () => {
@@ -545,10 +576,13 @@ const ConnectionLifecycle = memo(function ConnectionLifecycle({
       wsClient.off("executor_list", onExecutors);
       wsClient.off("work_digest_provider", onWorkDigestProvider);
       wsClient.off("brain_snapshot", onBrainSnapshot);
+      wsClient.off("calendar_items_snapshot", onCalendarSnapshot);
+      wsClient.off("calendar_item_changed", onCalendarChanged);
       wsClient.off("connected", onConnectedFetchWork);
     };
   }, [
     brainDispatch,
+    calendarDispatch,
     dispatch,
     importConnectLink,
     onBootstrapResolved,
@@ -783,6 +817,16 @@ const NotificationObserver = memo(function NotificationObserver() {
         }
         if (data?.screen === "inbox") {
           routerRef.current.push("/list");
+          return;
+        }
+        if (data?.screen === "calendar") {
+          routerRef.current.push({
+            pathname: "/calendar",
+            params: {
+              id: typeof data.calendar_id === "string" ? data.calendar_id : undefined,
+              serverId: typeof data.server_id === "string" ? data.server_id : undefined,
+            },
+          });
         }
       });
 
@@ -823,6 +867,13 @@ const AppNavigator = memo(function AppNavigator({
     >
       <Stack.Screen name="(primary)" options={{ headerShown: false }} />
       <Stack.Screen name="work" options={{ headerShown: false }} />
+      <Stack.Screen
+        name="calendar"
+        options={{
+          title: "Calendar",
+          headerLeft: () => <SecondaryBackButton />,
+        }}
+      />
       <Stack.Screen
         name="stats"
         options={{
@@ -915,10 +966,12 @@ export default function RootLayout() {
           <AgentProvider>
             <BrainProvider>
               <WorkProvider>
-                <SafeAreaProvider>
-                  <ThemedStatusBar />
-                  <AppRuntime />
-                </SafeAreaProvider>
+                <CalendarProvider>
+                  <SafeAreaProvider>
+                    <ThemedStatusBar />
+                    <AppRuntime />
+                  </SafeAreaProvider>
+                </CalendarProvider>
               </WorkProvider>
             </BrainProvider>
           </AgentProvider>

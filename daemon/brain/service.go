@@ -810,6 +810,7 @@ Agent orchestration rules:
   - %s agent capture -id <agent_id> --json inspects a delegated agent.
   - %s agent send -id <agent_id> -text "<message>" --submit=true continues a delegated agent.
   - %s agent close -id <agent_id> closes a delegated agent after the larger task is complete and its result is recorded or reported.
+  - %s calendar list --json and calendar get -id <item_id> --json inspect commitments; calendar create uses -date YYYY-MM-DD, -time HH:MM, and an IANA -timezone. If the local time occurs twice at DST fall-back, ask the user to choose -occurrence first or second; never guess. Calendar update/cancel/run provide deterministic control. Always repeat the resolved local date, time, timezone, and what Zen will do from the command confirmation before telling the user it is scheduled. Do not infer calendar items from unrelated messages.
 - Delegated agent lifecycle: keep ownership from spawn through inspection, follow-up, result consolidation, and close. Do not close a delegated session merely because a small stage finished; close it when the larger task is complete or you have intentionally moved the remaining work elsewhere.
 - Never close, kill, rename, repurpose, or otherwise manage sessions whose agent list entry does not have delegated=true. Those belong to the user or another tool.
 - Keep orchestration principles in Markdown, prompts, and agent instructions. Product code should provide tools, context, persistence, visibility, and safety boundaries rather than rigid workflow gates.
@@ -827,7 +828,7 @@ Reference files:
 - policies/engine.md
 - policies/handoff.md
 - playbooks/ (catalog via zen brain playbooks --json)
-`, snapshot.Workspace, executor.ID, executor.Provider, executor.Runtime, delegatedExecutor.ID, delegatedExecutor.Provider, delegatedExecutor.Runtime, executorCapabilitiesSummary(executor.Capabilities), zenCLICommand(), zenCLICommand(), zenCLICommand(), zenCLICommand(), zenCLICommand(), zenCLICommand(), zenCLICommand(), zenCLICommand(), zenCLICommand(), strings.TrimSpace(snapshot.Personality)))
+`, snapshot.Workspace, executor.ID, executor.Provider, executor.Runtime, delegatedExecutor.ID, delegatedExecutor.Provider, delegatedExecutor.Runtime, executorCapabilitiesSummary(executor.Capabilities), zenCLICommand(), zenCLICommand(), zenCLICommand(), zenCLICommand(), zenCLICommand(), zenCLICommand(), zenCLICommand(), zenCLICommand(), zenCLICommand(), zenCLICommand(), strings.TrimSpace(snapshot.Personality)))
 }
 
 func (s *Service) handoffHostSession(threadID, previousExecutorID, nextExecutorID, nextHostID, currentContext string, messages []ChatMessage, agents []AgentRef) error {

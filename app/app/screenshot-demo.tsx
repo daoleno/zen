@@ -42,6 +42,8 @@ import {
   StatsScreenshotDemo,
   type StatsPayload,
 } from "./stats";
+import CalendarScreen from "./calendar";
+import { useCalendarDispatch, type CalendarItem } from "../store/calendar";
 
 const NOOP = () => undefined;
 const loadNoDemoAsset = async () => null;
@@ -65,10 +67,124 @@ export default function ScreenshotDemoRoute() {
       return <BrainDemo />;
     case "stats":
       return <StatsDemo />;
+    case "calendar":
+      return <CalendarDemo />;
     case "chat":
     default:
       return <ChatDemo />;
   }
+}
+
+function CalendarDemo() {
+  const dispatch = useCalendarDispatch();
+  const params = useLocalSearchParams<{
+    view?: string | string[];
+    fixture?: string | string[];
+    notification?: string | string[];
+  }>();
+  const view = Array.isArray(params.view) ? params.view[0] : params.view;
+  const fixture = Array.isArray(params.fixture)
+    ? params.fixture[0]
+    : params.fixture;
+  const mode = view === "month" || view === "day" ? view : "agenda";
+  const notification = Array.isArray(params.notification)
+    ? params.notification[0]
+    : params.notification;
+  const notificationState =
+    notification === "granted" ||
+    notification === "undetermined" ||
+    notification === "unavailable"
+      ? notification
+      : "denied";
+
+  useEffect(() => {
+    dispatch({
+      type: "CALENDAR_SNAPSHOT",
+      serverId: "screenshot-calendar",
+      serverName: "Studio Mac",
+      serverUrl: "https://calendar.example.invalid",
+      items:
+        fixture === "empty" || fixture === "loading" ? [] : calendarFixtures(),
+    });
+  }, [dispatch, fixture]);
+
+  return (
+    <CalendarScreen
+      initialMode={mode}
+      notificationStateOverride={notificationState}
+      initialError={
+        fixture === "error"
+          ? "Calendar sync failed. Check the daemon connection and retry."
+          : ""
+      }
+      loading={fixture === "loading"}
+    />
+  );
+}
+
+function calendarFixtures(): CalendarItem[] {
+  const timezone = Intl.DateTimeFormat().resolvedOptions().timeZone;
+  const now = new Date();
+  const at = (dayOffset: number, hour: number, minute = 0) => {
+    const value = new Date(now);
+    value.setDate(value.getDate() + dayOffset);
+    value.setHours(hour, minute, 0, 0);
+    return value.toISOString();
+  };
+  const base = {
+    timezone,
+    recurrence: "none" as const,
+    created_at: at(-2, 9),
+    updated_at: at(-1, 9),
+    revision: 1,
+  };
+  return [
+    {
+      ...base,
+      id: "demo-reminder",
+      title: "Review the launch checklist before the customer call",
+      kind: "reminder",
+      status: "scheduled",
+      notify_at: at(0, 10, 30),
+      next_at: at(0, 10, 30),
+      notes: "Bring the accessibility notes.",
+    },
+    {
+      ...base,
+      id: "demo-action",
+      title: "整理发布说明并运行移动端回归检查",
+      kind: "scheduled_action",
+      status: "running",
+      due_at: at(0, 14),
+      next_at: at(0, 14),
+      recurrence: "weekdays",
+      action_instruction:
+        "Update the visible Work item and run the mobile checks.",
+      linked_work_id: "calendar-demo-work",
+    },
+    {
+      ...base,
+      id: "demo-event",
+      title: "Design review: Calendar and Work lifecycle",
+      kind: "event",
+      status: "scheduled",
+      start_at: at(1, 9),
+      end_at: at(1, 10),
+      next_at: at(1, 9),
+      source_thread_id: "brain-calendar-review",
+    },
+    {
+      ...base,
+      id: "demo-deadline",
+      title:
+        "Submit the deliberately very long localization and release-readiness report",
+      kind: "deadline",
+      status: "failed",
+      due_at: at(3, 17),
+      next_at: at(3, 17),
+      failure_reason: "The linked agent stopped before the report was written.",
+    },
+  ];
 }
 
 function ChatDemo() {

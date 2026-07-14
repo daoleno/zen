@@ -1,12 +1,16 @@
 package main
 
 import (
+	"context"
+	"errors"
 	"fmt"
 	"os"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/daoleno/zen/daemon/brain"
+	"github.com/daoleno/zen/daemon/calendar"
 	"github.com/daoleno/zen/daemon/classifier"
 	"github.com/daoleno/zen/daemon/control"
 	"github.com/daoleno/zen/daemon/watcher"
@@ -26,10 +30,12 @@ type controlWatcher interface {
 }
 
 type controlApp struct {
-	watcher    controlWatcher
-	execs      *work.ExecutorConfig
-	brainStore *brain.Store
-	stateDir   string
+	watcher           controlWatcher
+	execs             *work.ExecutorConfig
+	brainStore        *brain.Store
+	calendarStore     *calendar.Store
+	calendarScheduler *calendar.Scheduler
+	stateDir          string
 }
 
 func (a *controlApp) HandleControlRequest(req control.Request) control.Response {
@@ -63,9 +69,121 @@ func (a *controlApp) HandleControlRequest(req control.Request) control.Response 
 			return control.ErrorResponse("brain_unavailable", "Brain workspace is not configured.")
 		}
 		return control.Response{OK: true, Workspace: a.brainStore.WorkspacePath()}
+	case "calendar_list":
+		if a == nil || a.calendarStore == nil {
+			return control.ErrorResponse("calendar_unavailable", "Calendar is not configured.")
+		}
+		return control.Response{OK: true, CalendarItems: a.calendarStore.List()}
+	case "calendar_get":
+		return a.handleCalendarGet(req)
+	case "calendar_create":
+		return a.handleCalendarCreate(req)
+	case "calendar_update":
+		return a.handleCalendarUpdate(req)
+	case "calendar_cancel":
+		return a.handleCalendarCancel(req)
+	case "calendar_run":
+		return a.handleCalendarRun(req)
 	default:
 		return control.ErrorResponse("unknown_request", fmt.Sprintf("Unknown control request: %s", req.Type))
 	}
+}
+
+func (a *controlApp) handleCalendarGet(req control.Request) control.Response {
+	if a == nil || a.calendarStore == nil {
+		return control.ErrorResponse("calendar_unavailable", "Calendar is not configured.")
+	}
+	item, err := a.calendarStore.Get(strings.TrimSpace(req.ID))
+	if err != nil {
+		return calendarControlError(err)
+	}
+	return calendarControlResponse(item, "Found")
+}
+func (a *controlApp) handleCalendarCreate(req control.Request) control.Response {
+	if a == nil || a.calendarStore == nil || req.CalendarItem == nil {
+		return control.ErrorResponse("invalid_calendar_item", "A calendar item is required.")
+	}
+	item, err := a.calendarStore.Create(*req.CalendarItem)
+	if err != nil {
+		return calendarControlError(err)
+	}
+	return calendarControlResponse(item, "Created")
+}
+func (a *controlApp) handleCalendarUpdate(req control.Request) control.Response {
+	if a == nil || a.calendarStore == nil || req.CalendarItem == nil {
+		return control.ErrorResponse("invalid_calendar_item", "A calendar item is required.")
+	}
+	item, err := a.calendarStore.Update(*req.CalendarItem, req.Revision)
+	if err != nil {
+		return calendarControlError(err)
+	}
+	return calendarControlResponse(item, "Updated")
+}
+func (a *controlApp) handleCalendarCancel(req control.Request) control.Response {
+	if a == nil || a.calendarStore == nil {
+		return control.ErrorResponse("calendar_unavailable", "Calendar is not configured.")
+	}
+	item, err := a.calendarStore.Cancel(strings.TrimSpace(req.ID), req.Revision)
+	if err != nil {
+		return calendarControlError(err)
+	}
+	return calendarControlResponse(item, "Cancelled")
+}
+func (a *controlApp) handleCalendarRun(req control.Request) control.Response {
+	if a == nil || a.calendarScheduler == nil {
+		return control.ErrorResponse("calendar_unavailable", "Calendar scheduler is not configured.")
+	}
+	item, err := a.calendarScheduler.RunNow(context.Background(), strings.TrimSpace(req.ID))
+	if err != nil {
+		return calendarControlError(err)
+	}
+	return calendarRunControlResponse(item)
+}
+func calendarControlResponse(item calendar.Item, verb string) control.Response {
+	loc, _ := time.LoadLocation(item.Timezone)
+	local := item.TriggerAt().In(loc).Format("2006-01-02 15:04:05 MST")
+	action := "Zen will show it in Calendar"
+	if verb == "Cancelled" {
+		action = "Zen will keep it visible as cancelled and will not act on it"
+	} else {
+		switch item.Kind {
+		case calendar.KindReminder:
+			action = "Zen will notify you"
+		case calendar.KindDeadline:
+			action = "Zen will keep the deadline visible"
+		case calendar.KindScheduledAction:
+			action = "Zen will launch visible Work when the daemon is online"
+		case calendar.KindEvent:
+			action = "Zen will reserve the start/end time"
+		}
+	}
+	confirmation := fmt.Sprintf("%s %s for %s (%s). %s.", verb, item.Kind, local, item.Timezone, action)
+	return control.Response{OK: true, CalendarItem: &item, Confirmation: confirmation}
+}
+func calendarRunControlResponse(item calendar.Item) control.Response {
+	startedAt := time.Now()
+	if len(item.Runs) > 0 {
+		startedAt = item.Runs[len(item.Runs)-1].StartedAt
+	}
+	loc, _ := time.LoadLocation(item.Timezone)
+	local := startedAt.In(loc).Format("2006-01-02 15:04:05 MST")
+	confirmation := fmt.Sprintf("Started scheduled_action at %s (%s). Zen launched visible Work and will reconcile it to completed or failed.", local, item.Timezone)
+	if item.Status == calendar.StatusFailed {
+		confirmation = fmt.Sprintf("Could not start scheduled_action at %s (%s). No execution is running: %s", local, item.Timezone, item.FailureReason)
+	}
+	return control.Response{OK: true, CalendarItem: &item, Confirmation: confirmation}
+}
+func calendarControlError(err error) control.Response {
+	code := "calendar_request_failed"
+	switch {
+	case errors.Is(err, calendar.ErrNotFound):
+		code = "calendar_not_found"
+	case errors.Is(err, calendar.ErrConflict):
+		code = "conflict"
+	case errors.Is(err, calendar.ErrClaimed):
+		code = "already_running"
+	}
+	return control.ErrorResponse(code, err.Error())
 }
 
 func (a *controlApp) handleAgentList() control.Response {

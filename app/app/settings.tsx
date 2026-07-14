@@ -44,6 +44,7 @@ import * as Storage from "../services/storage";
 import { connectionIssueAccent } from "../services/connectionIssue";
 import { AnimatedPressable } from "../components/ui/AnimatedPressable";
 import { RisingSheet } from "../components/ui/RisingSheet";
+import { cancelCalendarNotifications } from "../services/calendarNotifications";
 
 const QR_BARCODE_TYPES: BarcodeType[] = ["qr"];
 const SCANNER_COLORS = ZEN_DARK_APP_COLORS;
@@ -285,6 +286,7 @@ export default function SettingsScreen() {
           wsClient.disconnectServer(server.id);
           dispatch({ type: "REMOVE_SERVER", serverId: server.id });
           await Storage.removeServer(server.id);
+          await cancelCalendarNotifications(server.id);
           await refreshServers();
         },
       },

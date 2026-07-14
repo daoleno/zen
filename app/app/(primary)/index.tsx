@@ -180,6 +180,10 @@ export default function BrainScreen() {
     });
   }, [activeServer, hostAgent?.id, router]);
 
+  const openCalendar = useCallback(() => {
+    router.push("/calendar");
+  }, [router]);
+
   const startNewBrainChat = useCallback(async () => {
     if (!activeServer || !activeBrain?.hydrated || newChatLoading) {
       return;
@@ -241,6 +245,13 @@ export default function BrainScreen() {
   const menuActions = useMemo(
     () => [
       {
+        key: "calendar",
+        label: "Calendar",
+        detail: "Commitments and scheduled Zen actions",
+        icon: "calendar-outline" as const,
+        onPress: openCalendar,
+      },
+      {
         key: "new-chat",
         label: "New chat",
         detail: "Start a fresh Brain thread",
@@ -287,6 +298,7 @@ export default function BrainScreen() {
       hostAdapter?.provider,
       newChatLoading,
       openAdapterSheet,
+      openCalendar,
       openBrainTerminal,
       openWorkspaceViewer,
       startNewBrainChat,

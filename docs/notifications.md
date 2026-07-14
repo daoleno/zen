@@ -2,6 +2,8 @@
 
 This document defines the OSS-core notification policy for zen.
 
+Calendar reminder notifications are covered separately in [calendar.md](calendar.md). They are explicit user commitments, so they are scheduled locally after sync and are not subject to the agent-state suppression rules below.
+
 ## Goal
 
 zen notifications are not a progress feed.

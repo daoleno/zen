@@ -29,6 +29,9 @@ func IsAgentWorkItem(item *Item) bool {
 	if item == nil {
 		return false
 	}
+	if strings.TrimSpace(item.Frontmatter.Kind) == "calendar_action" {
+		return true
+	}
 	if strings.TrimSpace(item.Frontmatter.Kind) != brainLogKind {
 		return false
 	}

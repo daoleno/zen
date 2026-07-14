@@ -14,6 +14,7 @@ import {
   normalizeCodexConversation,
   type CodexConversation,
 } from "./codexConversation";
+import type { CalendarItem } from "../store/calendar";
 
 type MessageHandler = (data: any) => void;
 
@@ -1773,6 +1774,68 @@ class MultiServerWebSocketClient {
         type: "list_session_services",
         request_id: requestId,
       });
+    });
+  }
+
+  // ── Calendar ─────────────────────────────────────────────────────────────
+
+  listCalendarItems(serverId: string) {
+    this.send(serverId, { type: "list_calendar_items" });
+  }
+
+  getCalendarItem(serverId: string, id: string) {
+    return this.calendarAction(serverId, "get_calendar_item", "calendar_item", { id }, "Failed to load calendar item.");
+  }
+
+  createCalendarItem(serverId: string, item: Partial<CalendarItem>) {
+    return this.calendarAction(serverId, "create_calendar_item", "calendar_item_created", { calendar_item: item }, "Failed to create calendar item.");
+  }
+
+  updateCalendarItem(serverId: string, item: CalendarItem) {
+    return this.calendarAction(serverId, "update_calendar_item", "calendar_item_updated", { calendar_item: item, revision: item.revision }, "Failed to update calendar item.");
+  }
+
+  cancelCalendarItem(serverId: string, id: string, revision: number) {
+    return this.calendarAction(serverId, "cancel_calendar_item", "calendar_item_cancelled", { id, revision }, "Failed to cancel calendar item.");
+  }
+
+  runCalendarItem(serverId: string, id: string) {
+    return this.calendarAction(serverId, "run_calendar_item", "calendar_item_running", { id }, "Failed to run calendar action.");
+  }
+
+  private calendarAction(
+    serverId: string,
+    type: string,
+    responseType: string,
+    payload: Record<string, unknown>,
+    fallback: string,
+  ): Promise<CalendarItem> {
+    const requestId = `${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
+    return new Promise((resolve, reject) => {
+      const cleanup = () => {
+        clearTimeout(timer);
+        this.off(responseType, onResponse);
+        this.off("error", onError);
+      };
+      const onResponse = (data: any) => {
+        if (data.serverId !== serverId || data.request_id !== requestId) return;
+        cleanup();
+        resolve(data.calendar_item as CalendarItem);
+      };
+      const onError = (data: any) => {
+        if (data.serverId !== serverId || data.request_id !== requestId) return;
+        cleanup();
+        const error = new Error(data.message || fallback);
+        (error as Error & { code?: string }).code = data.code;
+        reject(error);
+      };
+      const timer = setTimeout(() => {
+        cleanup();
+        reject(new Error("Calendar request timed out."));
+      }, 15000);
+      this.on(responseType, onResponse);
+      this.on("error", onError);
+      this.send(serverId, { type, request_id: requestId, ...payload });
     });
   }
 

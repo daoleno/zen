@@ -27,13 +27,17 @@ func TestIsAgentWorkItemRequiresNativeSource(t *testing.T) {
 		{Frontmatter: Frontmatter{ID: "cursor", Kind: brainLogKind, AgentSource: "cursor"}},
 		{Frontmatter: Frontmatter{ID: "grok", Kind: brainLogKind, AgentSource: "grok"}},
 		{Frontmatter: Frontmatter{ID: "task", Kind: "task", AgentSource: "codex"}},
+		{Frontmatter: Frontmatter{ID: "calendar", Kind: "calendar_action"}},
 	}
 
 	filtered := FilterAgentWorkItems(items)
-	if len(filtered) != 4 {
-		t.Fatalf("filtered len = %d, want 4", len(filtered))
+	if len(filtered) != 5 {
+		t.Fatalf("filtered len = %d, want 5", len(filtered))
 	}
 	if filtered[0].Frontmatter.ID != "codex" || filtered[1].Frontmatter.ID != "claude" || filtered[2].Frontmatter.ID != "cursor" || filtered[3].Frontmatter.ID != "grok" {
 		t.Fatalf("filtered = %#v", filtered)
+	}
+	if filtered[4].Frontmatter.ID != "calendar" {
+		t.Fatalf("calendar action not visible: %#v", filtered)
 	}
 }

@@ -1071,6 +1071,7 @@ This directory is the private workspace for zen Brain.
 ## Zen CLI
 
 - Use the zen binary to inspect Brain context, perform safe housekeeping, and delegate work. Common command shapes: zen brain context --json; zen brain playbooks --json; zen brain gc --json; zen agent list --json; zen agent spawn -name "<name>" -cwd <workspace> -prompt "<task>"; zen agent spawn -name "<name>" -executor <executor> -cwd <workspace> -prompt "<task>"; zen agent capture -id <agent_id> --json; zen agent send -id <agent_id> -text "<message>" --submit=true; zen agent close -id <agent_id>.
+- Use zen calendar list/get/create/update/cancel/run for explicit time commitments. Calendar creation takes a local YYYY-MM-DD date, HH:MM wall time, and IANA timezone. If the time occurs twice at DST fall-back, ask for first or second; never guess. Repeat the command's resolved local date/time/timezone and effect to the user. Do not extract calendar items automatically from unrelated chat.
 - Keep delegated agent lifecycle ownership from spawn through inspection, follow-up, result consolidation, and close. Do not close a delegated session merely because a small stage finished; close it when the larger task is complete or the remaining work has intentionally moved elsewhere.
 - Never close, kill, rename, repurpose, or otherwise manage sessions whose agent list entry does not have delegated=true. Those belong to the user or another tool.
 - Treat Heartbeat wake messages as compact actionable deltas; inspect only what is needed, then act, summarize, or sleep.
@@ -1237,6 +1238,7 @@ var currentWorkspaceInstructionMarkers = []string{
 	"zen agent capture -id",
 	"zen agent send -id",
 	"zen agent close -id",
+	"zen calendar list/get/create/update/cancel/run",
 	"Keep delegated agent lifecycle ownership",
 	"Never close, kill, rename, repurpose, or otherwise manage sessions whose agent list entry does not have delegated=true",
 	"Keep orchestration principles in Markdown, prompts, and agent instructions",
@@ -1367,6 +1369,7 @@ const currentWorkspaceInstructionAppend = `## Brain Orchestration Rules
 ## Zen CLI
 
 - Use the zen binary to inspect Brain context, perform safe housekeeping, and delegate work. Common command shapes: zen brain context --json; zen brain playbooks --json; zen brain gc --json; zen agent list --json; zen agent spawn -name "<name>" -cwd <workspace> -prompt "<task>"; zen agent spawn -name "<name>" -executor <executor> -cwd <workspace> -prompt "<task>"; zen agent capture -id <agent_id> --json; zen agent send -id <agent_id> -text "<message>" --submit=true; zen agent close -id <agent_id>.
+- Use zen calendar list/get/create/update/cancel/run for explicit time commitments. Calendar creation takes a local YYYY-MM-DD date, HH:MM wall time, and IANA timezone. If the time occurs twice at DST fall-back, ask for first or second; never guess. Repeat the command's resolved local date/time/timezone and effect to the user. Do not extract calendar items automatically from unrelated chat.
 - Keep delegated agent lifecycle ownership from spawn through inspection, follow-up, result consolidation, and close. Do not close a delegated session merely because a small stage finished; close it when the larger task is complete or you have intentionally moved the remaining work elsewhere.
 - Never close, kill, rename, repurpose, or otherwise manage sessions whose agent list entry does not have delegated=true. Those belong to the user or another tool.
 - Treat Heartbeat wake messages as compact actionable deltas; inspect only what is needed, then act, summarize, or sleep.

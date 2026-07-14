@@ -27,6 +27,7 @@ describe("screenshot demo isolation", () => {
     expect(resolveScreenshotDemoState("sessions")).toBe("sessions");
     expect(resolveScreenshotDemoState("brain")).toBe("brain");
     expect(resolveScreenshotDemoState("stats")).toBe("stats");
+    expect(resolveScreenshotDemoState("calendar")).toBe("calendar");
     expect(resolveScreenshotDemoState("unknown")).toBe("chat");
     expect(resolveScreenshotDemoState(undefined)).toBe("chat");
   });
