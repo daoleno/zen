@@ -3,7 +3,7 @@
 #
 # Usage:
 #   ./scripts/verify-release-identity.sh
-#   ./scripts/verify-release-identity.sh --stage dist-download/v0.1.0-beta.2
+#   ./scripts/verify-release-identity.sh --stage dist-download/v0.1.0-beta.3
 
 set -euo pipefail
 
@@ -19,9 +19,9 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-EXPECTED_VERSION="0.1.0-beta.2"
+EXPECTED_VERSION="0.1.0-beta.3"
 EXPECTED_PACKAGE="com.daoleno.zen"
-EXPECTED_VERSION_CODE="2"
+EXPECTED_VERSION_CODE="3"
 EXPECTED_CERT_FP="C2:FC:5B:09:B3:86:92:EE:70:59:71:1F:E7:ED:B8:79:4C:E3:65:FE:1C:7A:06:AB:95:4E:5D:D1:BD:CD:A4:FD"
 
 verify_ios_identity() {
@@ -39,8 +39,8 @@ const config = createConfig();
 if (config.name !== 'Zen') {
   throw new Error(`top-level Expo name must remain Zen; got ${config.name}`);
 }
-if (config.version !== '0.1.0-beta.2') {
-  throw new Error(`general/Android version must remain 0.1.0-beta.2; got ${config.version}`);
+if (config.version !== '0.1.0-beta.3') {
+  throw new Error(`general/Android version must remain 0.1.0-beta.3; got ${config.version}`);
 }
 if (config.ios.bundleIdentifier !== expectedBundle) {
   throw new Error(`iOS bundle identifier is ${config.ios.bundleIdentifier}; expected ${expectedBundle}`);
@@ -55,8 +55,8 @@ if (config.ios.infoPlist.CFBundleShortVersionString !== '0.1.0') {
     `iOS marketing version must resolve to 0.1.0; got ${config.ios.infoPlist.CFBundleShortVersionString}`,
   );
 }
-if (config.ios.infoPlist.CFBundleVersion !== '2') {
-  throw new Error(`iOS build number must resolve to 2; got ${config.ios.infoPlist.CFBundleVersion}`);
+if (config.ios.infoPlist.CFBundleVersion !== '3') {
+  throw new Error(`iOS build number must resolve to 3; got ${config.ios.infoPlist.CFBundleVersion}`);
 }
 if (config.android.package !== expectedAndroidPackage) {
   throw new Error(

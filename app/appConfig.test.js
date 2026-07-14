@@ -14,8 +14,8 @@ describe('native platform config', () => {
     expect(config.ios.bundleIdentifier).toBe('com.daoleno.zen');
     expect(config.ios.infoPlist.CFBundleDisplayName).toBe('Zen');
     expect(config.ios.infoPlist.CFBundleShortVersionString).toBe('0.1.0');
-    expect(config.ios.infoPlist.CFBundleVersion).toBe('2');
-    expect(config.ios.buildNumber).toBe('2');
+    expect(config.ios.infoPlist.CFBundleVersion).toBe('3');
+    expect(config.ios.buildNumber).toBe('3');
   });
 
   it('selects the Preview bundle identity while keeping the installed name Zen', () => {

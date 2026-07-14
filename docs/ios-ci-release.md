@@ -15,7 +15,7 @@ An iPhone build must be signed and provisioned. App Store distribution IPAs are 
 
 ## Unsigned macOS CI
 
-The `ios-native` job in [`.github/workflows/ci.yml`](../.github/workflows/ci.yml) runs on the Apple Silicon `macos-15` image and:
+The `ios-native` job in [`.github/workflows/ci.yml`](../.github/workflows/ci.yml) runs on the Apple Silicon `macos-26` image and:
 
 1. installs the locked Bun workspace;
 2. validates the shared Android/iOS native contract;
@@ -44,11 +44,11 @@ Required dispatch inputs:
 
 The identity mapping is defined in `app/iosIdentity.js`; the workflow does not accept a free-form display name or bundle ID. Unset local configuration and the workflow default both resolve to canonical production. Production and Preview both install with `CFBundleDisplayName` set to `Zen`, while Preview keeps the distinct bundle ID `com.daoleno.zen.preview`. Expo's top-level name deliberately remains `Zen`, so Android's normal name/package and the generated `Zen.xcworkspace`/`Zen` scheme cannot change when selecting the iOS Preview identity.
 
-The tracked general/Android prerelease remains `0.1.0-beta.2`. iOS derives the App Store-valid numeric marketing version `0.1.0` from that value and writes it to both `CFBundleShortVersionString` and every generated Xcode `MARKETING_VERSION`. The required positive dispatch `build_number` is written to both `CFBundleVersion` and every generated `CURRENT_PROJECT_VERSION`. The workflow does not expose a separate free-form marketing-version input; changing the tracked numeric core is a reviewed source change. IPA verification and the release manifest use the resolved packaged iOS value, never the general prerelease string.
+The tracked general/Android prerelease is `0.1.0-beta.3`. iOS derives the App Store-valid numeric marketing version `0.1.0` from that value and writes it to both `CFBundleShortVersionString` and every generated Xcode `MARKETING_VERSION`. The required positive dispatch `build_number` is written to both `CFBundleVersion` and every generated `CURRENT_PROJECT_VERSION`. The workflow does not expose a separate free-form marketing-version input; changing the tracked numeric core is a reviewed source change. IPA verification and the release manifest use the resolved packaged iOS value, never the general prerelease string.
 
 The workflow fails before building if an input or required signing secret is absent. It also cross-checks that the resolved Expo name, display name, and bundle ID are from the same identity. After building the XCFramework and generated project, it imports signing material into a temporary keychain, validates the provisioning profile's team, selected bundle identifier, expiration, distribution entitlements, and TestFlight eligibility, archives the app, exports exactly one IPA, verifies its display name, bundle ID, marketing version, build number, and code signature, and uploads it with a SHA-256 file and source/build manifest as a 14-day workflow artifact.
 
-When `destination=testflight`, the workflow uploads that same IPA through Apple's official App Store Connect Build Upload API. It creates a build-upload reservation, uploads every Apple-specified byte range to its temporary URL with the returned headers, commits the IPA's SHA-256 checksum, and waits for the build upload to become `COMPLETE` or `FAILED`. This processing performs Apple's upload validation. Uploading a build does not select tester groups, complete export-compliance questions, submit Beta App Review, or submit the app for App Review; those remain App Store Connect operations.
+When `destination=testflight`, the workflow uploads that same IPA through Apple's official App Store Connect Build Upload API. It creates a build-upload reservation, uploads every Apple-specified byte range to its temporary URL with the returned headers, commits the IPA's streamed MD5 file checksum, and waits for the build upload to become `COMPLETE` or `FAILED`. This processing performs Apple's upload validation. Uploading a build does not select tester groups, complete export-compliance questions, submit Beta App Review, or submit the app for App Review; those remain App Store Connect operations.
 
 Authentication is intentionally limited to an **Individual API Key**. The workflow creates short-lived ES256 JWTs with `sub=user`, `aud=appstoreconnect-v1`, and no `iss` claim, as Apple requires for individual keys. It does not invoke `altool` and does not accept or pass an issuer ID. The presigned binary-upload URLs do not receive the JWT.
 
@@ -105,7 +105,7 @@ An invitation alone is not sufficient for CI: the exact role and Certificates, I
 
 Linux can validate configuration, YAML structure, JavaScript/TypeScript tests, shell syntax, native lock consistency, and Android/daemon compatibility. It cannot run Xcode, CocoaPods integration, `security`, `codesign`, archive export, or App Store Connect upload.
 
-The uploader's offline unit tests generate a disposable P-256 key and use only mocked HTTP responses. They verify `sub=user`, absence of `iss`, a 64-byte raw ES256 `R || S` signature that OpenSSL accepts, Build Upload API request bodies, Apple-reserved upload headers, full byte-range coverage, and the SHA-256 commit. The test makes `Path.read_bytes()` fail during the upload flow to enforce streamed checksum calculation. Tests never contact App Store Connect:
+The uploader's offline unit tests generate a disposable P-256 key and use only mocked HTTP responses. They verify `sub=user`, absence of `iss`, a 64-byte raw ES256 `R || S` signature that OpenSSL accepts, Build Upload API request bodies, Apple-reserved upload headers, full byte-range coverage, and the MD5 file-checksum commit. The test makes `Path.read_bytes()` fail during the upload flow to enforce streamed checksum calculation. Tests never contact App Store Connect:
 
 ```bash
 python3 -m unittest discover -s scripts/tests -p 'test_*.py'

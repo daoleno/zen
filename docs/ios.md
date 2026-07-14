@@ -2,7 +2,11 @@
 
 The iOS client is available as a source build. It has been validated on an Apple Silicon Mac with Xcode 26.6 and an iPhone 17 Pro / iOS 26.5 Simulator, including pairing, daemon reconnect, session discovery, tmux attachment, Ghostty rendering, and terminal input/output.
 
-Zen does not currently claim a generally available App Store build. The repository includes macOS CI for an unsigned Simulator app and a manual, credential-gated signed IPA/TestFlight workflow, but the first real signing and App Store Connect runs remain release gates. A physical-device install requires an Apple development team and signing configuration.
+Zen does not currently claim a generally available App Store build. The repository includes macOS CI for an unsigned Simulator app and a manual, credential-gated signed IPA/TestFlight workflow. A physical-device source install requires an Apple development team and signing configuration.
+
+## TestFlight Preview access
+
+The [TestFlight Preview public invitation](https://testflight.apple.com/join/rTKCDzMt) is configured. The first external build is awaiting Apple Beta App Review, so the link does not yet guarantee that a new tester can install the Preview. Source builds remain available independently of TestFlight.
 
 ## Supported mobile interfaces
 
@@ -122,6 +126,6 @@ git diff --check
 
 Then perform a real Xcode build-and-run. Static checks do not replace launching the app because Swift ABI, CocoaPods, signing, dyld, local-network permission, and native-module registration failures only appear in the Apple runtime path.
 
-## Current distribution limitation
+## Current distribution status
 
-The source-build path is working, but a bare clone does not contain the ignored Ghostty XCFramework. CI now rebuilds/checksums it and compiles an unsigned Simulator app; the manual release workflow can sign/export an IPA and explicitly upload it to TestFlight when protected Apple credentials are configured. A successful real workflow run, physical-device acceptance, App Store metadata, and TestFlight/App Review operations are still required before calling iOS a general end-user distribution target. See [iOS CI and release automation](ios-ci-release.md).
+The source-build path is working, but a bare clone does not contain the ignored Ghostty XCFramework. CI rebuilds/checksums it and compiles an unsigned Simulator app. The protected Preview workflow has signed, exported, verified, and uploaded an IPA to App Store Connect; Apple Beta App Review remains the gate before public-link testers can install it. Zen does not claim a generally available App Store build. See [iOS CI and release automation](ios-ci-release.md).
