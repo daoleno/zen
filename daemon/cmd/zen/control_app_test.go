@@ -21,6 +21,8 @@ type fakeControlWatcher struct {
 	killed   []string
 	captures map[string]string
 	progress []fakeControlProgress
+	sendErr  error
+	ready    []fakeControlSend
 }
 
 type fakeControlSend struct {
@@ -93,10 +95,11 @@ func (w *fakeControlWatcher) UpdateAgentProgress(id string, progress classifier.
 
 func (w *fakeControlWatcher) SendInput(sessionID, text string) error {
 	w.sent = append(w.sent, fakeControlSend{id: sessionID, text: text})
-	return nil
+	return w.sendErr
 }
 
 func (w *fakeControlWatcher) SendInputWhenReady(sessionID, _ string, text string) error {
+	w.ready = append(w.ready, fakeControlSend{id: sessionID, text: text})
 	return w.SendInput(sessionID, text)
 }
 
@@ -468,6 +471,7 @@ func TestControlAppAgentSendAndCapture(t *testing.T) {
 		ID:        "brain-agent-worker:@1",
 		Name:      "Franklin",
 		State:     classifier.StateRunning,
+		Command:   "codex --no-alt-screen",
 		Delegated: true,
 	}
 	fw.captures["brain-agent-worker:@1"] = "current pane"
@@ -484,6 +488,9 @@ func TestControlAppAgentSendAndCapture(t *testing.T) {
 	}
 	if len(fw.sent) != 1 || fw.sent[0].text != "continue\n" {
 		t.Fatalf("sent calls = %#v", fw.sent)
+	}
+	if len(fw.ready) != 1 || fw.ready[0].text != "continue\n" {
+		t.Fatalf("ready sends = %#v", fw.ready)
 	}
 
 	captureResp := app.HandleControlRequest(control.Request{Type: "agent_capture", AgentID: "brain-agent-worker:@1"})
@@ -513,6 +520,93 @@ func TestControlAppAgentSendAllowsSubmitOnlyEnter(t *testing.T) {
 	}
 	if len(fw.sent) != 1 || fw.sent[0].text != "\n" {
 		t.Fatalf("sent calls = %#v", fw.sent)
+	}
+}
+
+func TestControlAppAgentSendPreservesNonCodexSubmitPath(t *testing.T) {
+	for _, command := range []string{"cursor-agent --force", "claude", "grok", "custom-agent --interactive"} {
+		t.Run(command, func(t *testing.T) {
+			fw := newFakeControlWatcher()
+			fw.agents["brain-agent-worker:@1"] = &classifier.Agent{
+				ID:        "brain-agent-worker:@1",
+				State:     classifier.StateRunning,
+				Command:   command,
+				Delegated: true,
+			}
+			app := &controlApp{watcher: fw}
+			resp := app.HandleControlRequest(control.Request{
+				Type:    "agent_send",
+				AgentID: "brain-agent-worker:@1",
+				Text:    "provider follow-up",
+				Submit:  true,
+			})
+			if !resp.OK {
+				t.Fatalf("response = %#v", resp)
+			}
+			if len(fw.sent) != 1 || len(fw.ready) != 0 {
+				t.Fatalf("sent=%#v ready=%#v; non-Codex path changed", fw.sent, fw.ready)
+			}
+		})
+	}
+}
+
+func TestControlAppAgentSendFailureMarksAgentFailedAttention(t *testing.T) {
+	fw := newFakeControlWatcher()
+	fw.sendErr = os.ErrDeadlineExceeded
+	fw.agents["brain-agent-worker:@1"] = &classifier.Agent{
+		ID:        "brain-agent-worker:@1",
+		Name:      "Franklin",
+		State:     classifier.StateRunning,
+		Command:   "codex --no-alt-screen",
+		Delegated: true,
+	}
+	app := &controlApp{watcher: fw}
+
+	resp := app.HandleControlRequest(control.Request{
+		Type:    "agent_send",
+		AgentID: "brain-agent-worker:@1",
+		Text:    "continue safely",
+		Submit:  true,
+	})
+
+	if resp.OK || resp.Error == nil || resp.Error.Code != "send_failed" {
+		t.Fatalf("response = %#v", resp)
+	}
+	agent := fw.agents["brain-agent-worker:@1"]
+	if agent.State != classifier.StateFailed || agent.Attention != "failed" || !agent.NeedsAttention {
+		t.Fatalf("agent after failed submission = %#v", agent)
+	}
+	if len(fw.ready) != 1 {
+		t.Fatalf("ready sends = %#v", fw.ready)
+	}
+}
+
+func TestControlAppAgentSpawnSubmissionFailureReturnsErrorAndAttention(t *testing.T) {
+	fw := newFakeControlWatcher()
+	fw.sendErr = os.ErrDeadlineExceeded
+	app := &controlApp{
+		watcher: fw,
+		execs: &work.ExecutorConfig{
+			DelegatedExecutor: "codex",
+			ByName: map[string]work.Executor{
+				"codex": {Name: "codex", Command: "codex"},
+			},
+		},
+	}
+
+	resp := app.HandleControlRequest(control.Request{
+		Type:   "agent_spawn",
+		Name:   "Unsubmitted",
+		Cwd:    "/repo/zen",
+		Prompt: "must execute",
+	})
+
+	if resp.OK || resp.Error == nil || resp.Error.Code != "send_prompt_failed" {
+		t.Fatalf("response = %#v", resp)
+	}
+	agent := fw.agents["brain-agent-unsubmitted:@1"]
+	if agent == nil || agent.State != classifier.StateFailed || agent.Attention != "failed" || !agent.NeedsAttention {
+		t.Fatalf("agent after failed initial prompt = %#v", agent)
 	}
 }
 

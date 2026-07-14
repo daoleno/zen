@@ -511,6 +511,14 @@ func TestCodexInputReadyIgnoresStaleLoadingInScrollback(t *testing.T) {
 	}
 }
 
+func TestCodexInputReadyRejectsMCPStartupEvenWithComposer(t *testing.T) {
+	content := "╭────╮\n│ >_ OpenAI Codex (v0.144.3) │\n│ model: gpt-5.6 medium │\n╰────╯\n" +
+		"• Starting MCP servers (0/3): context7, playwright\n\n› Find and fix a bug in @filename\n"
+	if isAgentInputReady("codex", content) {
+		t.Fatal("Codex composer must not be ready while MCP startup is visibly active")
+	}
+}
+
 func TestCursorAgentInputReadyRequiresComposerPrompt(t *testing.T) {
 	starting := "Cursor Agent\nv2026.07.01-41b2de7\nTip: Use /mcp to connect Cursor to your tools and data sources.\n"
 	if isAgentInputReady("cursor-agent --force --sandbox disabled", starting) {

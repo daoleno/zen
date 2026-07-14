@@ -20,11 +20,13 @@ import (
 const tmuxSendInputChunkBytes = 1024
 
 const initialInputReadyTimeout = 8 * time.Second
+const codexInputReadyTimeout = 30 * time.Second
 const cursorInputReadyTimeout = 25 * time.Second
 const grokInputReadyTimeout = 15 * time.Second
 
 var codexInputPromptRe = regexp.MustCompile(`(?m)^›\s`)
 var codexModelLoadingRe = regexp.MustCompile(`(?im)\bmodel:\s+loading\b`)
+var codexMCPStartingRe = regexp.MustCompile(`(?im)\bstarting\s+mcp\s+servers\b`)
 var codexStartupContinueRe = regexp.MustCompile(`(?im)\bpress\s+enter\s+to\s+continue\b`)
 var cursorInputReadyRe = regexp.MustCompile(`(?im)\b(run\s+everything|composer\s+[0-9][^\n]*\n\s*~?[/\w.-].*)\b`)
 var cursorWorkspaceTrustRe = regexp.MustCompile(`(?im)\bworkspace\s+trust\s+required\b`)
@@ -703,6 +705,12 @@ func (w *Watcher) SendInput(sessionID, text string) error {
 // and Grok UIs must reach an input prompt so Zen does not paste a task into a
 // startup screen before the composer can accept Enter-to-send.
 func (w *Watcher) SendInputWhenReady(sessionID, command, text string) error {
+	if isCodexCommand(command) {
+		body, submit := splitTmuxInput(text)
+		if submit && body != "" {
+			return submitCodexInput(realCodexInputIO{}, sessionID, body, defaultCodexSubmitConfig())
+		}
+	}
 	if !WaitForInputReady(sessionID, command, inputReadyTimeout(command)) && needsInputReadinessWait(command, "") {
 		return fmt.Errorf("agent input not ready for %q", command)
 	}
@@ -717,6 +725,12 @@ func SendInput(sessionID, text string) error {
 // SendInputForCommand sends text to a tmux window and applies executor-specific
 // submit timing where terminal UIs need a short paste-settle delay.
 func SendInputForCommand(sessionID, command, text string) error {
+	if isCodexCommand(command) {
+		body, submit := splitTmuxInput(text)
+		if submit && body != "" {
+			return submitCodexInput(realCodexInputIO{}, sessionID, body, defaultCodexSubmitConfig())
+		}
+	}
 	body, submit := splitTmuxInput(text)
 	if body != "" {
 		if err := sendLiteralTmuxInput(sessionID, body); err != nil {
@@ -735,6 +749,12 @@ func SendInputForCommand(sessionID, command, text string) error {
 // SendInputWhenReady is the package-level form used by executor shims that do
 // not hold a Watcher instance.
 func SendInputWhenReady(sessionID, command, text string) error {
+	if isCodexCommand(command) {
+		body, submit := splitTmuxInput(text)
+		if submit && body != "" {
+			return submitCodexInput(realCodexInputIO{}, sessionID, body, defaultCodexSubmitConfig())
+		}
+	}
 	if !WaitForInputReady(sessionID, command, inputReadyTimeout(command)) && needsInputReadinessWait(command, "") {
 		return fmt.Errorf("agent input not ready for %q", command)
 	}
@@ -785,6 +805,7 @@ func isAgentInputReady(command, content string) bool {
 		current := latestCodexPaneContent(content)
 		return strings.Contains(current, "OpenAI Codex") &&
 			!codexModelLoadingRe.MatchString(current) &&
+			!codexMCPStartingRe.MatchString(current) &&
 			codexInputPromptRe.MatchString(current)
 	}
 	if isCursorAgentCommand(command) || strings.Contains(strings.ToLower(content), "cursor agent") {
@@ -882,6 +903,13 @@ func isCodexCommand(command string) bool {
 	}
 	base := filepath.Base(fields[0])
 	return base == "codex"
+}
+
+// IsCodexCommand reports whether command launches the interactive Codex TUI.
+// Control-plane callers use this to opt only Codex follow-ups into the
+// confirmed submission transaction without changing other providers.
+func IsCodexCommand(command string) bool {
+	return isCodexCommand(command)
 }
 
 func isCursorAgentCommand(command string) bool {
@@ -1014,6 +1042,9 @@ func tmuxSubmitDelay(command string) time.Duration {
 }
 
 func inputReadyTimeout(command string) time.Duration {
+	if isCodexCommand(command) {
+		return codexInputReadyTimeout
+	}
 	if isCursorAgentCommand(command) {
 		return cursorInputReadyTimeout
 	}

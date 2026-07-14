@@ -120,6 +120,7 @@ func (a *controlApp) handleAgentSpawn(req control.Request) control.Response {
 
 	if prompt != "" {
 		if err := a.watcher.SendInputWhenReady(agentID, command, ensureTrailingNewline(prompt)); err != nil {
+			a.recordSubmissionFailure(agentID, "Initial delegated prompt was not submitted: "+err.Error())
 			return control.ErrorResponse("send_prompt_failed", err.Error())
 		}
 	}
@@ -165,8 +166,15 @@ func (a *controlApp) handleAgentSend(req control.Request) control.Response {
 	if agent != nil && !a.watcher.HasSession(agentID) {
 		return control.ErrorResponse("agent_session_unavailable", "Agent is listed but the tmux target is no longer available. Refresh the agent list and spawn a new session if needed.")
 	}
-	if err := a.watcher.SendInput(agentID, text); err != nil {
-		return control.ErrorResponse("send_failed", err.Error())
+	var sendErr error
+	if req.Submit && agent != nil && watcher.IsCodexCommand(agent.Command) {
+		sendErr = a.watcher.SendInputWhenReady(agentID, agent.Command, text)
+	} else {
+		sendErr = a.watcher.SendInput(agentID, text)
+	}
+	if sendErr != nil {
+		a.recordSubmissionFailure(agentID, "Delegated follow-up was not submitted: "+sendErr.Error())
+		return control.ErrorResponse("send_failed", sendErr.Error())
 	}
 	agent = a.watcher.GetAgent(agentID)
 	if agent == nil {
@@ -174,6 +182,20 @@ func (a *controlApp) handleAgentSend(req control.Request) control.Response {
 	}
 	out := controlAgent(agent)
 	return control.Response{OK: true, Agent: &out}
+}
+
+func (a *controlApp) recordSubmissionFailure(agentID, summary string) {
+	if a == nil || a.watcher == nil {
+		return
+	}
+	_, _ = a.watcher.UpdateAgentProgress(agentID, classifier.AgentProgress{
+		Status:    "failed",
+		Phase:     "starting",
+		Attention: "failed",
+		Summary:   summary,
+		TaskClass: "lasting_design",
+		EventKind: "risk",
+	})
 }
 
 func (a *controlApp) handleAgentCapture(req control.Request) control.Response {
