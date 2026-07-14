@@ -5,15 +5,13 @@ export const TIMELINE_LIST_STABILITY_PROPS = {
 } as const;
 
 export interface TimelineScrollState {
-  attachedToBottom: boolean;
-  showNewMessages: boolean;
+  mode: "attached" | "detached";
 }
 
 export type TimelineMutationDecision = "follow-bottom" | "preserve-visible-anchor";
 
 export const INITIAL_TIMELINE_SCROLL_STATE: TimelineScrollState = {
-  attachedToBottom: true,
-  showNewMessages: false,
+  mode: "attached",
 };
 
 export function reduceTimelineScrollPosition(
@@ -21,22 +19,22 @@ export function reduceTimelineScrollPosition(
   distanceFromBottom: number,
   userDriven: boolean,
 ): TimelineScrollState {
-  if (Math.max(0, distanceFromBottom) <= TIMELINE_BOTTOM_THRESHOLD) {
-    return INITIAL_TIMELINE_SCROLL_STATE;
-  }
+  // FlatList also reports offsets caused by layout and content mutations. Those
+  // events describe geometry, not a change in the reader's follow intent.
   if (!userDriven) {
     return state;
   }
-  return {
-    attachedToBottom: false,
-    showNewMessages: true,
-  };
+  return Math.max(0, distanceFromBottom) <= TIMELINE_BOTTOM_THRESHOLD
+    ? INITIAL_TIMELINE_SCROLL_STATE
+    : { mode: "detached" };
 }
 
 export function timelineMutationDecision(
   state: TimelineScrollState,
 ): TimelineMutationDecision {
-  return state.attachedToBottom ? "follow-bottom" : "preserve-visible-anchor";
+  return state.mode === "attached"
+    ? "follow-bottom"
+    : "preserve-visible-anchor";
 }
 
 export function returnTimelineToBottom(): TimelineScrollState {

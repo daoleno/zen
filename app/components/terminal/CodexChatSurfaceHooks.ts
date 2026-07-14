@@ -14,8 +14,11 @@ import {
 } from "./CodexChatSurfaceModel";
 import type { ZenTimelineItem } from "./CodexTimelineItemView";
 import {
+  INITIAL_TIMELINE_SCROLL_STATE,
   reduceTimelineScrollPosition,
+  returnTimelineToBottom,
   timelineMutationDecision,
+  type TimelineScrollState,
 } from "./timelineScrollPolicy";
 const COMPOSER_FOCUS_LOCK_MS = 1000;
 const COMPOSER_REFOCUS_DELAYS_MS = [0, 60, 140, 280, 520, 820] as const;
@@ -95,7 +98,9 @@ export function useCodexComposerPresentation({
 export function usePinnedTimeline(itemCount: number, resetKey: string) {
   const scrollRef = useRef<FlatList<ZenTimelineItem>>(null);
   const resetKeyRef = useRef(resetKey);
-  const followLatestRef = useRef(true);
+  const scrollStateRef = useRef<TimelineScrollState>(
+    INITIAL_TIMELINE_SCROLL_STATE,
+  );
   const userDraggingRef = useRef(false);
   const userMomentumRef = useRef(false);
   const scrollRequestSeqRef = useRef(0);
@@ -108,7 +113,9 @@ export function usePinnedTimeline(itemCount: number, resetKey: string) {
   const [textSelectable, setTextSelectable] = useState(false);
 
   const updateJumpButton = useCallback(() => {
-    setShowJumpToLatest(!followLatestRef.current && itemCount > 0);
+    setShowJumpToLatest(
+      scrollStateRef.current.mode === "detached" && itemCount > 0,
+    );
   }, [itemCount]);
 
   const clearTextSelectionTimer = useCallback(() => {
@@ -146,14 +153,13 @@ export function usePinnedTimeline(itemCount: number, resetKey: string) {
     userMomentumRef.current
   ), []);
 
-  const followLatest = useCallback(() => {
-    followLatestRef.current = true;
-    distanceFromLatestRef.current = 0;
+  const attachToLatest = useCallback(() => {
+    scrollStateRef.current = returnTimelineToBottom();
     setShowJumpToLatest(false);
   }, []);
 
   const detachFromLatest = useCallback(() => {
-    followLatestRef.current = false;
+    scrollStateRef.current = { mode: "detached" };
     updateJumpButton();
   }, [updateJumpButton]);
 
@@ -162,7 +168,7 @@ export function usePinnedTimeline(itemCount: number, resetKey: string) {
       const requestSeq = scrollRequestSeqRef.current + 1;
       scrollRequestSeqRef.current = requestSeq;
       resumeImplicitAnchorAfterTextSelection();
-      followLatest();
+      attachToLatest();
       const scroll = (nextAnimated: boolean) => {
         if (scrollRequestSeqRef.current !== requestSeq) {
           return;
@@ -174,6 +180,7 @@ export function usePinnedTimeline(itemCount: number, resetKey: string) {
           offset: 0,
           animated: nextAnimated,
         });
+        distanceFromLatestRef.current = 0;
       };
       if (delay <= 0) {
         scroll(animated);
@@ -181,7 +188,7 @@ export function usePinnedTimeline(itemCount: number, resetKey: string) {
       }
       setTimeout(() => scroll(animated), delay);
     },
-    [followLatest, resumeImplicitAnchorAfterTextSelection],
+    [attachToLatest, resumeImplicitAnchorAfterTextSelection],
   );
 
   const pinToBottomIfNeeded = useCallback(
@@ -189,7 +196,7 @@ export function usePinnedTimeline(itemCount: number, resetKey: string) {
       if (implicitAnchorSuspended()) {
         return;
       }
-      if (followLatestRef.current) {
+      if (scrollStateRef.current.mode === "attached") {
         scrollToLatest(animated, delay);
       }
     },
@@ -198,7 +205,7 @@ export function usePinnedTimeline(itemCount: number, resetKey: string) {
 
   const resetForConversation = useCallback(() => {
     resumeImplicitAnchorAfterTextSelection();
-    followLatestRef.current = true;
+    scrollStateRef.current = returnTimelineToBottom();
     userDraggingRef.current = false;
     userMomentumRef.current = false;
     scrollRequestSeqRef.current += 1;
@@ -235,23 +242,20 @@ export function usePinnedTimeline(itemCount: number, resetKey: string) {
       return;
     }
     const nextScrollState = reduceTimelineScrollPosition(
-      {
-        attachedToBottom: followLatestRef.current,
-        showNewMessages: !followLatestRef.current,
-      },
+      scrollStateRef.current,
       distanceFromLatest,
       userDriven,
     );
-    if (nextScrollState.attachedToBottom) {
-      followLatest();
+    if (nextScrollState.mode === "attached") {
+      attachToLatest();
       return;
     }
-    if (!nextScrollState.attachedToBottom && userDriven) {
+    if (nextScrollState.mode === "detached" && userDriven) {
       detachFromLatest();
       return;
     }
     updateJumpButton();
-  }, [detachFromLatest, followLatest, updateJumpButton]);
+  }, [attachToLatest, detachFromLatest, updateJumpButton]);
 
   const handleScroll = useCallback(
     (event: NativeSyntheticEvent<NativeScrollEvent>) => {
@@ -293,7 +297,7 @@ export function usePinnedTimeline(itemCount: number, resetKey: string) {
 
   const handleContentSizeChange = useCallback((_: number, height: number) => {
     if (itemCount === 0 || height <= 0) {
-      followLatest();
+      attachToLatest();
       return;
     }
     if (implicitAnchorSuspended()) {
@@ -301,20 +305,17 @@ export function usePinnedTimeline(itemCount: number, resetKey: string) {
       return;
     }
     if (
-      timelineMutationDecision({
-        attachedToBottom: followLatestRef.current,
-        showNewMessages: !followLatestRef.current,
-      }) === "follow-bottom" &&
+      timelineMutationDecision(scrollStateRef.current) === "follow-bottom" &&
       distanceFromLatestRef.current > 1
     ) {
       scrollToLatest(false, 0);
       return;
     }
-    if (!followLatestRef.current) {
+    if (scrollStateRef.current.mode === "detached") {
       setShowJumpToLatest(true);
     }
   }, [
-    followLatest,
+    attachToLatest,
     implicitAnchorSuspended,
     itemCount,
     scrollToLatest,
@@ -323,20 +324,23 @@ export function usePinnedTimeline(itemCount: number, resetKey: string) {
 
   const handleLayout = useCallback((_event: LayoutChangeEvent) => {
     if (itemCount === 0) {
-      followLatest();
+      attachToLatest();
       return;
     }
     if (implicitAnchorSuspended()) {
       updateJumpButton();
       return;
     }
-    if (followLatestRef.current && distanceFromLatestRef.current > 1) {
+    if (
+      scrollStateRef.current.mode === "attached" &&
+      distanceFromLatestRef.current > 1
+    ) {
       scrollToLatest(false, 0);
       return;
     }
     updateJumpButton();
   }, [
-    followLatest,
+    attachToLatest,
     implicitAnchorSuspended,
     itemCount,
     scrollToLatest,
@@ -360,20 +364,23 @@ export function usePinnedTimeline(itemCount: number, resetKey: string) {
 
   useEffect(() => {
     if (itemCount === 0) {
-      followLatest();
+      attachToLatest();
       return;
     }
     if (implicitAnchorSuspended()) {
       updateJumpButton();
       return;
     }
-    if (followLatestRef.current && distanceFromLatestRef.current > 1) {
+    if (
+      scrollStateRef.current.mode === "attached" &&
+      distanceFromLatestRef.current > 1
+    ) {
       scrollToLatest(false, 0);
       return;
     }
     updateJumpButton();
   }, [
-    followLatest,
+    attachToLatest,
     implicitAnchorSuspended,
     itemCount,
     resetKey,

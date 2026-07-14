@@ -17,13 +17,12 @@ describe("timeline scroll policy", () => {
     );
 
     expect(timelineMutationDecision(detached)).toBe("preserve-visible-anchor");
-    expect(detached.showNewMessages).toBe(true);
+    expect(detached.mode).toBe("detached");
   });
 
   test("an in-place streaming height update while detached preserves the anchor", () => {
     const detached = {
-      attachedToBottom: false,
-      showNewMessages: true,
+      mode: "detached" as const,
     };
 
     expect(timelineMutationDecision(detached)).toBe("preserve-visible-anchor");
@@ -42,6 +41,32 @@ describe("timeline scroll policy", () => {
     expect(
       reduceTimelineScrollPosition(INITIAL_TIMELINE_SCROLL_STATE, 48, true),
     ).toEqual(INITIAL_TIMELINE_SCROLL_STATE);
+  });
+
+  test("layout movement cannot override detached user intent near the latest content", () => {
+    const detached = { mode: "detached" as const };
+
+    expect(reduceTimelineScrollPosition(detached, 24, false)).toBe(detached);
+    expect(timelineMutationDecision(detached)).toBe("preserve-visible-anchor");
+  });
+
+  test("layout movement cannot detach an attached streaming viewport", () => {
+    expect(
+      reduceTimelineScrollPosition(
+        INITIAL_TIMELINE_SCROLL_STATE,
+        320,
+        false,
+      ),
+    ).toEqual(INITIAL_TIMELINE_SCROLL_STATE);
+  });
+
+  test("user movement reattaches only after returning within the latest threshold", () => {
+    const detached = { mode: "detached" as const };
+
+    expect(reduceTimelineScrollPosition(detached, 97, true)).toEqual(detached);
+    expect(reduceTimelineScrollPosition(detached, 96, true)).toEqual(
+      INITIAL_TIMELINE_SCROLL_STATE,
+    );
   });
 
   test("user-initiated return reattaches and clears the affordance", () => {
