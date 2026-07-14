@@ -40,7 +40,7 @@ permissions:
 jobs:
   archive:
     name: Signed archive and IPA
-    runs-on: macos-15
+    runs-on: macos-26
     timeout-minutes: 180
     environment: ${{ inputs.app_identity == 'preview' && 'app-store-connect-preview' || 'app-store-connect' }}
     env:

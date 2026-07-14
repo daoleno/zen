@@ -52,7 +52,7 @@ jobs:
 
   ios-native:
     name: iOS native (unsigned Simulator)
-    runs-on: macos-15
+    runs-on: macos-26
     timeout-minutes: 120
     permissions:
       contents: read
