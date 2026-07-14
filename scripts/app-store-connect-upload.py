@@ -330,10 +330,9 @@ def prepare_testflight_build(
         raise RuntimeError(f"beta group {beta_group_name!r} does not have a public link enabled")
     group_id = group["id"]
 
-    membership_query = urllib.parse.urlencode({"filter[id]": build_id, "limit": "1"})
-    members = client.api_request(
-        "GET", f"/betaGroups/{group_id}/builds?{membership_query}"
-    ).get("data", [])
+    members = client.api_request("GET", f"/betaGroups/{group_id}/builds?limit=200").get(
+        "data", []
+    )
     if not any(item.get("id") == build_id for item in members):
         client.api_request(
             "POST",
