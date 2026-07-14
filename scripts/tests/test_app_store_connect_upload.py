@@ -160,6 +160,8 @@ class BuildUploadTests(unittest.TestCase):
                 return Response(
                     b'{"data":[{"type":"builds","id":"build-5","attributes":{"processingState":"VALID","usesNonExemptEncryption":false}}]}'
                 )
+            if "/betaAppReviewSubmissions?" in url:
+                return Response(b'{"data":[]}')
             if url.endswith("/builds/build-5"):
                 return Response(b'{"data":{"type":"builds","id":"build-5"}}')
             if "/apps/6790486708/betaGroups?" in url:
@@ -204,6 +206,119 @@ class BuildUploadTests(unittest.TestCase):
             json.loads(review.data)["data"]["relationships"]["build"]["data"]["id"],
             "build-5",
         )
+
+    def test_reuses_existing_review_submission(self):
+        requests = []
+
+        def open_existing(request, timeout):
+            requests.append(request)
+            url = request.full_url
+            if "/builds?" in url:
+                return Response(
+                    b'{"data":[{"type":"builds","id":"build-5","attributes":{"processingState":"VALID","usesNonExemptEncryption":false}}]}'
+                )
+            if "/apps/6790486708/betaGroups?" in url:
+                return Response(
+                    b'{"data":[{"type":"betaGroups","id":"group-preview","attributes":{"name":"Zen Preview","publicLinkEnabled":true}}]}'
+                )
+            if "/betaGroups/group-preview/builds?" in url:
+                return Response(b'{"data":[{"type":"builds","id":"build-5"}]}')
+            if "/betaAppReviewSubmissions?" in url:
+                return Response(
+                    b'{"data":[{"type":"betaAppReviewSubmissions","id":"review-existing","attributes":{"betaReviewState":"IN_REVIEW"}}]}'
+                )
+            raise AssertionError(url)
+
+        result = asc_upload.prepare_testflight_build(
+            asc_upload.AppStoreConnectClient("SYNTHETIC", self.key, opener=open_existing),
+            "6790486708",
+            "0.1.0",
+            "5",
+            "Zen Preview",
+            submit_beta_review=True,
+            poll_seconds=0,
+            max_wait_seconds=1,
+        )
+        self.assertEqual(result["review"], "review-existing")
+        self.assertFalse(
+            any(
+                request.method == "POST" and request.full_url.endswith("/betaAppReviewSubmissions")
+                for request in requests
+            )
+        )
+
+    def test_stops_on_rejected_existing_review_submission(self):
+        def open_rejected(request, timeout):
+            url = request.full_url
+            if "/builds?" in url:
+                return Response(
+                    b'{"data":[{"type":"builds","id":"build-5","attributes":{"processingState":"VALID","usesNonExemptEncryption":false}}]}'
+                )
+            if "/apps/6790486708/betaGroups?" in url:
+                return Response(
+                    b'{"data":[{"type":"betaGroups","id":"group-preview","attributes":{"name":"Zen Preview","publicLinkEnabled":true}}]}'
+                )
+            if "/betaGroups/group-preview/builds?" in url:
+                return Response(b'{"data":[{"type":"builds","id":"build-5"}]}')
+            if "/betaAppReviewSubmissions?" in url:
+                return Response(
+                    b'{"data":[{"id":"review-rejected","attributes":{"betaReviewState":"REJECTED"}}]}'
+                )
+            raise AssertionError(url)
+
+        with self.assertRaisesRegex(RuntimeError, "REJECTED"):
+            asc_upload.prepare_testflight_build(
+                asc_upload.AppStoreConnectClient("SYNTHETIC", self.key, opener=open_rejected),
+                "6790486708",
+                "0.1.0",
+                "5",
+                "Zen Preview",
+                submit_beta_review=True,
+                poll_seconds=0,
+                max_wait_seconds=1,
+            )
+
+    def test_finds_one_exact_build_and_rejects_ambiguous_identity(self):
+        def opener(body):
+            return lambda _request, timeout: Response(body)
+
+        client = asc_upload.AppStoreConnectClient(
+            "SYNTHETIC",
+            self.key,
+            opener=opener(b'{"data":[{"id":"build-5"}]}'),
+        )
+        self.assertEqual(
+            asc_upload.exact_build(client, "6790486708", "0.1.0", "5")["id"],
+            "build-5",
+        )
+        ambiguous = asc_upload.AppStoreConnectClient(
+            "SYNTHETIC",
+            self.key,
+            opener=opener(b'{"data":[{"id":"one"},{"id":"two"}]}'),
+        )
+        with self.assertRaisesRegex(RuntimeError, "multiple builds"):
+            asc_upload.exact_build(ambiguous, "6790486708", "0.1.0", "5")
+
+    def test_finds_exact_completed_build_upload(self):
+        requests = []
+
+        def open_upload(request, timeout):
+            requests.append(request)
+            return Response(
+                b'{"data":[{"id":"upload-5","attributes":{"state":{"state":"COMPLETE"}}}]}'
+            )
+
+        upload = asc_upload.exact_build_upload(
+            asc_upload.AppStoreConnectClient("SYNTHETIC", self.key, opener=open_upload),
+            "6790486708",
+            "0.1.0",
+            "5",
+        )
+        self.assertEqual(upload["id"], "upload-5")
+        url = requests[0].full_url
+        self.assertIn("/apps/6790486708/buildUploads?", url)
+        self.assertIn("filter%5BcfBundleShortVersionString%5D=0.1.0", url)
+        self.assertIn("filter%5BcfBundleVersion%5D=5", url)
 
 
 if __name__ == "__main__":

@@ -16,16 +16,30 @@ const nativeLibsWorkflow = fs.readFileSync(
 );
 
 describe('iOS signed release identity contract', () => {
+  it('automatically publishes only immutable reviewed beta prereleases as Preview', () => {
+    expect(workflow).toMatch(/release:\s*\n\s*types: \[published\]/);
+    expect(workflow).toContain("github.event.release.prerelease == true");
+    expect(workflow).toContain("contains(github.event.release.tag_name, '-beta.')");
+    expect(workflow).toContain("github.event_name == 'release' && 'preview'");
+    expect(workflow).toContain("github.event_name == 'release' && 'testflight'");
+    expect(workflow).toContain("ref: ${{ env.ZEN_IOS_REF }}");
+    expect(workflow).toContain("ref: ${{ github.workflow_sha }}");
+    expect(workflow).toContain('release tag version');
+    expect(workflow).toContain('version_code = base.get("android", {}).get("versionCode")');
+    expect(workflow).toContain('ZEN_IOS_BUILD_NUMBER="$(python3 - "$ZEN_RELEASE_TAG"');
+    expect(workflow).not.toContain('github.run_number');
+  });
+
   it('offers only production and Preview identities and defaults to production', () => {
     expect(workflow).toContain('app_identity:');
     expect(workflow).toMatch(/app_identity:[\s\S]*?default: production[\s\S]*?options:\s*\n\s*- production\s*\n\s*- preview/);
   });
 
   it('isolates Preview signing material in a separate protected environment', () => {
-    expect(workflow).toContain("inputs.app_identity == 'preview'");
+    expect(workflow).toContain("github.event_name == 'release' || inputs.app_identity == 'preview'");
     expect(workflow).toContain("'app-store-connect-preview'");
     expect(workflow).toContain("'app-store-connect'");
-    expect(workflow).toContain('ZEN_IOS_APP_VARIANT: ${{ inputs.app_identity }}');
+    expect(workflow).toContain("ZEN_IOS_APP_VARIANT: ${{ github.event_name == 'release' && 'preview' || inputs.app_identity }}");
   });
 
   it('derives signing, native project, artifact, and verification values from the closed identity', () => {
@@ -44,11 +58,11 @@ describe('iOS signed release identity contract', () => {
   });
 
   it('uploads Preview with an Individual API key and no altool issuer dependency', () => {
-    expect(workflow).toContain("inputs.app_identity == 'preview' && '6790486708'");
+    expect(workflow).toContain("github.event_name == 'release' || inputs.app_identity == 'preview'");
     expect(workflow).toContain('HD84J3DJ2B');
-    expect(workflow).toContain('./scripts/app-store-connect-upload.py');
+    expect(workflow).toContain('./.zen-release-automation/scripts/app-store-connect-upload.py');
     expect(workflow).toContain('--app-id "$ZEN_ASC_APP_ID"');
-    expect(workflow).toContain('EXTRA_ARGS=(--beta-group-name "Zen Preview" --submit-beta-review)');
+    expect(workflow).toContain('EXTRA_ARGS=(--reuse-existing-build --beta-group-name "Zen Preview" --submit-beta-review)');
     expect(workflow).toContain('"${EXTRA_ARGS[@]}"');
     expect(workflow).toContain('zen-asc-individual-key.p8');
     expect(workflow).not.toContain('ZEN_ASC_ISSUER_ID');

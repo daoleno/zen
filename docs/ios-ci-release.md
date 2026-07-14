@@ -5,8 +5,8 @@ Zen deliberately uses two different Apple artifacts because CI validation and en
 | Path | Trigger | Signing | Artifact | Intended use |
 | --- | --- | --- | --- | --- |
 | iOS native CI | push to `main` or pull request | none | `Zen.app` for Apple Silicon iOS Simulator | Compile/link validation on macOS; not installable on an iPhone |
-| iOS signed production | manual `workflow_dispatch` with `app_identity=production` (default) | `app-store-connect` environment | `Zen` / `com.daoleno.zen` App Store Connect IPA | Canonical formal release path |
-| iOS signed Preview | manual `workflow_dispatch` with `app_identity=preview` | `app-store-connect-preview` environment | `Zen` / `com.daoleno.zen.preview` App Store Connect IPA | Temporary friend-account TestFlight path without changing production identity |
+| iOS signed production | manual `workflow_dispatch` with `app_identity=production` (default) | `app-store-connect` environment | `Zen` / `com.daoleno.zen` App Store Connect IPA | Canonical formal release path; never automatic |
+| iOS signed Preview | published `vX.Y.Z-beta.N` GitHub prerelease, or manual `workflow_dispatch` with `app_identity=preview` | `app-store-connect-preview` environment | `Zen` / `com.daoleno.zen.preview` App Store Connect IPA | Automatic beta TestFlight path plus explicit manual recovery/testing |
 | Android release | tag/dispatch build, with separate explicit GitHub publish gate | Android release keystore | arm64 signed APK | Direct sideload and optional attachment to an existing GitHub prerelease |
 
 An unsigned Simulator `.app` is the correct CI product: it proves Expo prebuild, CocoaPods, Swift/Objective-C++, the Ghostty XCFramework, and the final app link without granting CI access to Apple signing credentials. It only runs in a compatible Simulator.
@@ -31,14 +31,16 @@ The optional [`native-libs.yml`](../.github/workflows/native-libs.yml) workflow 
 
 ## Signed release and TestFlight
 
-The [`.github/workflows/ios-release.yml`](../.github/workflows/ios-release.yml) workflow is manual-only. It has `contents: read`, creates no tag or release, and selects either the existing `app-store-connect` production GitHub Environment or the isolated `app-store-connect-preview` Environment so repository maintainers can add required reviewers or deployment restrictions.
+The [`.github/workflows/ios-release.yml`](../.github/workflows/ios-release.yml) workflow automatically handles a published GitHub prerelease only when its tag has the reviewed `vX.Y.Z-beta.N` form. That path always checks out the immutable release tag for the app source, requires the tag version to equal the tracked Expo version, derives `CFBundleVersion` from the tracked Android `versionCode`, selects the Preview identity and protected `app-store-connect-preview` Environment, and targets TestFlight. The small uploader helper is checked out separately at the immutable workflow revision so manual recovery of an older app tag still receives the reviewed idempotency behavior. A release event can never select Production. The workflow has `contents: read` and creates no tag or release.
+
+Manual dispatch remains available for both Preview and Production and for both `artifact-only` and `testflight` destinations. It selects either the existing `app-store-connect` production GitHub Environment or the isolated `app-store-connect-preview` Environment so repository maintainers can add required reviewers or deployment restrictions.
 
 Required dispatch inputs:
 
 | Input | Meaning |
 | --- | --- |
 | `ref` | Explicit branch, tag, or full commit SHA to check out |
-| `build_number` | Positive `CFBundleVersion`, greater than the builds already uploaded for the selected app identity and marketing version; exposed to Expo as `ZEN_IOS_BUILD_NUMBER` without editing tracked version files |
+| `build_number` | Manual-only positive `CFBundleVersion`, greater than the builds already uploaded for the selected app identity and marketing version; automatic Preview beta runs instead use the reviewed Android `versionCode` and do not accept a free-form value |
 | `app_identity` | Closed choice: `production` (default) or `preview`; it atomically selects the iOS identity contract, including the bundle ID, artifact name, manifest identity, and protected GitHub Environment |
 | `destination` | `artifact-only` (default) or `testflight` |
 
@@ -48,7 +50,7 @@ The tracked general/Android prerelease is `0.1.0-beta.5`. iOS derives the App St
 
 The workflow fails before building if an input or required signing secret is absent. It also cross-checks that the resolved Expo name, display name, and bundle ID are from the same identity. After building the XCFramework and generated project, it imports signing material into a temporary keychain, validates the provisioning profile's team, selected bundle identifier, expiration, distribution entitlements, and TestFlight eligibility, archives the app, exports exactly one IPA, verifies its display name, bundle ID, marketing version, build number, and code signature, and uploads it with a SHA-256 file and source/build manifest as a 14-day workflow artifact.
 
-When `destination=testflight`, the workflow uploads that same IPA through Apple's official App Store Connect Build Upload API. It creates a build-upload reservation, uploads every Apple-specified byte range to its temporary URL with the returned headers, commits the IPA's streamed MD5 file checksum, and waits for the build upload to become `COMPLETE` or `FAILED`. For Preview, it then waits for the build resource to become `VALID`, records that Zen uses no non-exempt encryption, requires and attaches the exact public `Zen Preview` beta group, and creates the Beta App Review submission with the Individual API key. Apple still controls review and tester availability; the workflow does not submit the app for App Review.
+When `destination=testflight`, the workflow uploads that same IPA through Apple's official App Store Connect Build Upload API. It creates a build-upload reservation, uploads every Apple-specified byte range to its temporary URL with the returned headers, commits the IPA's streamed MD5 file checksum, and waits for the build upload to become `COMPLETE` or `FAILED`. Preview first looks up both the exact processed build and its marketing-version/build-number upload reservation; if either has completed, a rerun resumes post-processing instead of creating a duplicate upload. An ambiguous identity or an existing incomplete/failed reservation stops for recovery rather than risking another upload. It then waits for the build resource to become `VALID`, records that Zen uses no non-exempt encryption, requires and attaches the exact public `Zen Preview` beta group, and creates the Beta App Review submission only when the build does not already have one. Apple still controls review and tester availability; the workflow does not submit the app for App Review.
 
 If upload succeeds but a later App Store operation fails, the manual `iOS TestFlight post-process` workflow resumes the existing Preview build by marketing/build number without rebuilding or uploading a duplicate IPA.
 
@@ -97,7 +99,7 @@ The Preview App ID and app record belong to the friend's Apple team; they do not
 4. Create or supply an Apple Distribution certificate (including its private key in a password-protected `.p12`) and create an App Store distribution provisioning profile for `com.daoleno.zen.preview`. Apple limits distribution-certificate creation to the Account Holder or Admin; another authorized team member may be given the resulting signing material through an approved secure channel.
 5. For `destination=testflight`, create an Individual App Store Connect API key for a user on the same account who can upload this app. Store its key ID and the one-time `.p8` download; an Individual key has no issuer ID. For `artifact-only`, no API-key secrets are needed.
 6. Create the protected GitHub Environment `app-store-connect-preview`, add the generic secrets from the table above using only friend-team values, and restrict deployment to trusted branches/reviewers as appropriate. Do not modify `app-store-connect`.
-7. Dispatch `iOS signed release` with `app_identity=preview`, an explicit `ref`, an unused positive `build_number` for the Preview app/version, and initially `destination=artifact-only`. After archive verification succeeds, use a later unused build number with `destination=testflight` when upload is intended.
+7. For manual testing or recovery, dispatch `iOS signed release` with `app_identity=preview`, an explicit `ref`, an unused positive `build_number` for the Preview app/version, and the intended destination. Normal reviewed beta publication is automatic from the published prerelease tag and tracked `versionCode`.
 
 Apple's current references are [Generating tokens for API requests](https://developer.apple.com/documentation/appstoreconnectapi/generating-tokens-for-api-requests), [Build uploads](https://developer.apple.com/documentation/appstoreconnectapi/build-uploads), [Add a new app](https://developer.apple.com/help/app-store-connect/create-an-app-record/add-a-new-app/), [Upload builds](https://developer.apple.com/help/app-store-connect/manage-builds/upload-builds/), [Roles and access](https://developer.apple.com/help/account/access/roles), and [Certificates overview](https://developer.apple.com/help/account/certificates/certificates-overview).
 

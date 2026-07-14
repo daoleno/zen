@@ -1,8 +1,11 @@
 name: iOS signed release
 
-# Manual-only signed distribution. This workflow never creates a tag or
-# GitHub Release. The preferred destination is App Store Connect/TestFlight.
+# Published Zen beta prereleases automatically ship the closed Preview identity
+# to TestFlight from their immutable tag. Manual dispatch remains available for
+# Preview and Production; Production is never selected by a release event.
 on:
+  release:
+    types: [published]
   workflow_dispatch:
     inputs:
       ref:
@@ -31,7 +34,7 @@ on:
           - testflight
 
 concurrency:
-  group: ios-release-${{ inputs.app_identity }}-${{ inputs.ref }}
+  group: ios-release-${{ github.event_name == 'release' && 'preview' || inputs.app_identity }}-${{ github.event_name == 'release' && github.event.release.tag_name || inputs.ref }}
   cancel-in-progress: false
 
 permissions:
@@ -39,22 +42,87 @@ permissions:
 
 jobs:
   archive:
+    if: ${{ github.event_name == 'workflow_dispatch' || (github.event.release.prerelease == true && startsWith(github.event.release.tag_name, 'v') && contains(github.event.release.tag_name, '-beta.')) }}
     name: Signed archive and IPA
     runs-on: macos-26
     timeout-minutes: 180
-    environment: ${{ inputs.app_identity == 'preview' && 'app-store-connect-preview' || 'app-store-connect' }}
+    environment: ${{ (github.event_name == 'release' || inputs.app_identity == 'preview') && 'app-store-connect-preview' || 'app-store-connect' }}
     env:
-      ZEN_IOS_APP_VARIANT: ${{ inputs.app_identity }}
-      ZEN_IOS_BUILD_NUMBER: ${{ inputs.build_number }}
+      ZEN_IOS_APP_VARIANT: ${{ github.event_name == 'release' && 'preview' || inputs.app_identity }}
+      ZEN_IOS_BUILD_NUMBER: ${{ github.event_name == 'workflow_dispatch' && inputs.build_number || '' }}
+      ZEN_IOS_DESTINATION: ${{ github.event_name == 'release' && 'testflight' || inputs.destination }}
+      ZEN_IOS_REF: ${{ github.event_name == 'release' && github.event.release.tag_name || inputs.ref }}
       # App IDs are public identifiers. Preview is fixed; production is an
       # environment variable because its App Store Connect record is external.
-      ZEN_ASC_APP_ID: ${{ inputs.app_identity == 'preview' && '6790486708' || vars.ZEN_ASC_APP_ID }}
+      ZEN_ASC_APP_ID: ${{ (github.event_name == 'release' || inputs.app_identity == 'preview') && '6790486708' || vars.ZEN_ASC_APP_ID }}
     steps:
       - name: Checkout explicit ref
         uses: actions/checkout@v4
         with:
-          ref: ${{ inputs.ref }}
+          ref: ${{ env.ZEN_IOS_REF }}
           fetch-depth: 0
+
+      - name: Checkout reviewed release automation
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.workflow_sha }}
+          path: .zen-release-automation
+          sparse-checkout: scripts/app-store-connect-upload.py
+          sparse-checkout-cone-mode: false
+
+      - name: Resolve and validate release invocation
+        id: invocation
+        env:
+          ZEN_RELEASE_TAG: ${{ github.event.release.tag_name }}
+          ZEN_RELEASE_PRERELEASE: ${{ github.event.release.prerelease }}
+          ZEN_RELEASE_DRAFT: ${{ github.event.release.draft }}
+        run: |
+          set -euo pipefail
+          if [[ "${{ github.event_name }}" == "release" ]]; then
+            [[ "$ZEN_RELEASE_PRERELEASE" == "true" && "$ZEN_RELEASE_DRAFT" != "true" ]] || {
+              echo "error: automatic iOS publication requires a published prerelease" >&2
+              exit 1
+            }
+            [[ "$ZEN_RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+-beta\.[0-9]+$ ]] || {
+              echo "error: automatic iOS publication requires a reviewed vX.Y.Z-beta.N tag" >&2
+              exit 1
+            }
+            TAG_COMMIT="$(git rev-parse "refs/tags/${ZEN_RELEASE_TAG}^{}")"
+            [[ "$TAG_COMMIT" == "$(git rev-parse HEAD)" ]] || {
+              echo "error: checked-out release tag does not resolve to HEAD" >&2
+              exit 1
+            }
+            ZEN_IOS_BUILD_NUMBER="$(python3 - "$ZEN_RELEASE_TAG" <<'PY'
+          import json, sys
+          base = json.load(open("app/app.base.json", encoding="utf-8"))["expo"]
+          tag_version = sys.argv[1][1:]
+          version = base.get("version")
+          version_code = base.get("android", {}).get("versionCode")
+          ios_build = base.get("ios", {}).get("buildNumber")
+          if version != tag_version:
+              raise SystemExit(
+                  f"error: release tag version {tag_version!r} does not match tracked version {version!r}"
+              )
+          if not isinstance(version_code, int) or version_code < 1:
+              raise SystemExit("error: tracked Android versionCode must be a positive integer")
+          if ios_build != str(version_code):
+              raise SystemExit("error: tracked iOS buildNumber must equal Android versionCode")
+          print(version_code)
+          PY
+            )"
+            [[ "$ZEN_IOS_BUILD_NUMBER" =~ ^[1-9][0-9]*$ ]] || {
+              echo "error: could not derive the closed automatic build identity" >&2
+              exit 1
+            }
+            echo "Automatic Preview TestFlight publication for $ZEN_RELEASE_TAG build $ZEN_IOS_BUILD_NUMBER"
+          else
+            [[ "$ZEN_IOS_BUILD_NUMBER" =~ ^[1-9][0-9]*$ ]] || {
+              echo "error: build_number must be a positive integer" >&2
+              exit 1
+            }
+          fi
+          echo "ZEN_IOS_BUILD_NUMBER=$ZEN_IOS_BUILD_NUMBER" >> "$GITHUB_ENV"
+          echo "build_number=$ZEN_IOS_BUILD_NUMBER" >> "$GITHUB_OUTPUT"
 
       - name: Validate explicit inputs and required signing secrets
         env:
@@ -66,10 +134,6 @@ jobs:
           ZEN_ASC_API_KEY_BASE64: ${{ secrets.ZEN_ASC_API_KEY_BASE64 }}
         run: |
           set -euo pipefail
-          [[ "$ZEN_IOS_BUILD_NUMBER" =~ ^[1-9][0-9]*$ ]] || {
-            echo "error: build_number must be a positive integer" >&2
-            exit 1
-          }
           for name in \
             ZEN_APPLE_CERTIFICATE_BASE64 \
             ZEN_APPLE_CERTIFICATE_PASSWORD \
@@ -80,7 +144,7 @@ jobs:
               exit 1
             fi
           done
-          if [[ "${{ inputs.destination }}" == "testflight" ]]; then
+          if [[ "$ZEN_IOS_DESTINATION" == "testflight" ]]; then
             for name in ZEN_ASC_KEY_ID ZEN_ASC_API_KEY_BASE64 ZEN_ASC_APP_ID; do
               if [[ -z "${!name:-}" ]]; then
                 echo "error: destination=testflight requires environment configuration $name" >&2
@@ -336,13 +400,13 @@ jobs:
       - name: Upload verified signed IPA as workflow artifact
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ env.ZEN_IOS_ARTIFACT_NAME }}-signed-${{ inputs.build_number }}
+          name: ${{ env.ZEN_IOS_ARTIFACT_NAME }}-signed-${{ steps.invocation.outputs.build_number }}
           path: ${{ env.IOS_ARTIFACT_DIR }}
           if-no-files-found: error
           retention-days: 14
 
       - name: Upload verified IPA to TestFlight
-        if: ${{ inputs.destination == 'testflight' }}
+        if: ${{ env.ZEN_IOS_DESTINATION == 'testflight' }}
         env:
           ASC_KEY_PATH: ${{ runner.temp }}/zen-asc-individual-key.p8
           ZEN_ASC_KEY_ID: ${{ secrets.ZEN_ASC_KEY_ID }}
@@ -363,9 +427,9 @@ jobs:
           PY
           EXTRA_ARGS=()
           if [[ "$ZEN_IOS_APP_VARIANT" == "preview" ]]; then
-            EXTRA_ARGS=(--beta-group-name "Zen Preview" --submit-beta-review)
+            EXTRA_ARGS=(--reuse-existing-build --beta-group-name "Zen Preview" --submit-beta-review)
           fi
-          ./scripts/app-store-connect-upload.py \
+          ./.zen-release-automation/scripts/app-store-connect-upload.py \
             --ipa "$IOS_IPA" \
             --app-id "$ZEN_ASC_APP_ID" \
             --version "$ZEN_IOS_VERSION" \

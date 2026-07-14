@@ -256,6 +256,57 @@ def upload_build(
         time.sleep(poll_seconds)
 
 
+def exact_build(
+    client: AppStoreConnectClient,
+    app_id: str,
+    version: str,
+    build_number: str,
+) -> dict[str, Any] | None:
+    """Return the one exact iOS build, or None before Apple creates it."""
+
+    query = urllib.parse.urlencode(
+        [
+            ("filter[app]", app_id),
+            ("filter[version]", build_number),
+            ("filter[preReleaseVersion.version]", version),
+            ("filter[preReleaseVersion.platform]", "IOS"),
+            ("limit", "10"),
+        ]
+    )
+    builds = client.api_request("GET", f"/builds?{query}").get("data", [])
+    if len(builds) > 1:
+        raise RuntimeError(
+            f"App Store Connect returned multiple builds for {version} ({build_number})"
+        )
+    return builds[0] if builds else None
+
+
+def exact_build_upload(
+    client: AppStoreConnectClient,
+    app_id: str,
+    version: str,
+    build_number: str,
+) -> dict[str, Any] | None:
+    """Return the one upload reservation for an exact iOS build identity."""
+
+    query = urllib.parse.urlencode(
+        [
+            ("filter[cfBundleShortVersionString]", version),
+            ("filter[cfBundleVersion]", build_number),
+            ("filter[platform]", "IOS"),
+            ("limit", "2"),
+        ]
+    )
+    uploads = client.api_request(
+        "GET", f"/apps/{app_id}/buildUploads?{query}"
+    ).get("data", [])
+    if len(uploads) > 1:
+        raise RuntimeError(
+            f"App Store Connect returned multiple build uploads for {version} ({build_number})"
+        )
+    return uploads[0] if uploads else None
+
+
 def prepare_testflight_build(
     client: AppStoreConnectClient,
     app_id: str,
@@ -268,29 +319,14 @@ def prepare_testflight_build(
 ) -> dict[str, str]:
     """Wait for App Store processing, handle compliance, and distribute a build."""
 
-    query = urllib.parse.urlencode(
-        [
-            ("filter[app]", app_id),
-            ("filter[version]", build_number),
-            ("filter[preReleaseVersion.version]", version),
-            ("filter[preReleaseVersion.platform]", "IOS"),
-            ("limit", "10"),
-        ]
-    )
     deadline = time.monotonic() + max_wait_seconds
     build: dict[str, Any] | None = None
     while True:
-        response = client.api_request("GET", f"/builds?{query}")
-        builds = response.get("data", [])
-        if len(builds) > 1:
-            raise RuntimeError(
-                f"App Store Connect returned multiple builds for {version} ({build_number})"
-            )
-        if builds:
-            candidate = builds[0]
+        candidate = exact_build(client, app_id, version, build_number)
+        if candidate:
+            build = candidate
             state = candidate.get("attributes", {}).get("processingState")
             if state == "VALID":
-                build = candidate
                 break
             if state in ("FAILED", "INVALID"):
                 raise RuntimeError(f"App Store Connect build processing ended in {state}")
@@ -342,19 +378,37 @@ def prepare_testflight_build(
 
     result = {"build_id": build_id, "beta_group_id": group_id, "review": "not_requested"}
     if submit_beta_review:
-        review = client.api_request(
-            "POST",
-            "/betaAppReviewSubmissions",
-            {
-                "data": {
-                    "type": "betaAppReviewSubmissions",
-                    "relationships": {
-                        "build": {"data": {"type": "builds", "id": build_id}}
-                    },
-                }
-            },
+        review_query = urllib.parse.urlencode(
+            [("filter[build]", build_id), ("limit", "2")]
         )
-        result["review"] = review["data"]["id"]
+        reviews = client.api_request(
+            "GET", f"/betaAppReviewSubmissions?{review_query}"
+        ).get("data", [])
+        if len(reviews) > 1:
+            raise RuntimeError(
+                f"App Store Connect returned multiple beta review submissions for build {build_id}"
+            )
+        if reviews:
+            review_state = reviews[0].get("attributes", {}).get("betaReviewState")
+            if review_state == "REJECTED":
+                raise RuntimeError(
+                    f"existing Beta App Review submission for build {build_id} is REJECTED"
+                )
+            result["review"] = reviews[0]["id"]
+        else:
+            review = client.api_request(
+                "POST",
+                "/betaAppReviewSubmissions",
+                {
+                    "data": {
+                        "type": "betaAppReviewSubmissions",
+                        "relationships": {
+                            "build": {"data": {"type": "builds", "id": build_id}}
+                        },
+                    }
+                },
+            )
+            result["review"] = review["data"]["id"]
     return result
 
 
@@ -370,21 +424,56 @@ def main() -> int:
     parser.add_argument("--beta-group-name")
     parser.add_argument("--submit-beta-review", action="store_true")
     parser.add_argument("--postprocess-only", action="store_true")
+    parser.add_argument("--reuse-existing-build", action="store_true")
     args = parser.parse_args()
     if not args.key_path.is_file():
         raise SystemExit("error: --key-path must be a file")
     if not args.postprocess_only:
         if args.ipa is None or not args.ipa.is_file():
             raise SystemExit("error: --ipa must be a file unless --postprocess-only is used")
-        upload_id = upload_build(
-            AppStoreConnectClient(args.key_id, args.key_path),
-            args.ipa,
-            args.app_id,
-            args.version,
-            args.build_number,
-            max_wait_seconds=args.max_wait_seconds,
+        client = AppStoreConnectClient(args.key_id, args.key_path)
+        existing = (
+            exact_build(client, args.app_id, args.version, args.build_number)
+            if args.reuse_existing_build
+            else None
         )
-        print(f"App Store Connect accepted build upload {upload_id}")
+        if existing:
+            print(
+                "App Store Connect already has exact build "
+                f"{args.version} ({args.build_number}); resuming post-processing"
+            )
+        else:
+            existing_upload = (
+                exact_build_upload(client, args.app_id, args.version, args.build_number)
+                if args.reuse_existing_build
+                else None
+            )
+            if existing_upload:
+                state_value = existing_upload.get("attributes", {}).get("state", {})
+                state = (
+                    state_value.get("state")
+                    if isinstance(state_value, dict)
+                    else state_value
+                )
+                if state != "COMPLETE":
+                    raise RuntimeError(
+                        "exact App Store Connect build upload already exists in state "
+                        f"{state or 'UNKNOWN'}; refusing a duplicate upload"
+                    )
+                print(
+                    "App Store Connect already completed the exact build upload "
+                    f"{args.version} ({args.build_number}); resuming post-processing"
+                )
+            else:
+                upload_id = upload_build(
+                    client,
+                    args.ipa,
+                    args.app_id,
+                    args.version,
+                    args.build_number,
+                    max_wait_seconds=args.max_wait_seconds,
+                )
+                print(f"App Store Connect accepted build upload {upload_id}")
     elif not args.beta_group_name:
         raise SystemExit("error: --postprocess-only requires --beta-group-name")
     if args.beta_group_name:
