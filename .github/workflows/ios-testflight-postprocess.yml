@@ -1,0 +1,65 @@
+name: iOS TestFlight post-process
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Numeric iOS marketing version"
+        required: true
+        type: string
+      build_number:
+        description: "Existing Preview CFBundleVersion"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  postprocess:
+    name: Process and distribute existing Preview build
+    runs-on: macos-26
+    environment: app-store-connect-preview
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Validate input and Individual API key secrets
+        env:
+          ZEN_ASC_KEY_ID: ${{ secrets.ZEN_ASC_KEY_ID }}
+          ZEN_ASC_API_KEY_BASE64: ${{ secrets.ZEN_ASC_API_KEY_BASE64 }}
+        run: |
+          set -euo pipefail
+          [[ "${{ inputs.version }}" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          [[ "${{ inputs.build_number }}" =~ ^[1-9][0-9]*$ ]]
+          test -n "$ZEN_ASC_KEY_ID"
+          test -n "$ZEN_ASC_API_KEY_BASE64"
+
+      - name: Process, attach public group, and submit Beta App Review
+        env:
+          ASC_KEY_PATH: ${{ runner.temp }}/zen-asc-individual-key.p8
+          ZEN_ASC_KEY_ID: ${{ secrets.ZEN_ASC_KEY_ID }}
+          ZEN_ASC_API_KEY_BASE64: ${{ secrets.ZEN_ASC_API_KEY_BASE64 }}
+        run: |
+          set -euo pipefail
+          python3 - "$ASC_KEY_PATH" <<'PY'
+          import base64, os, pathlib, sys
+          data = base64.b64decode(os.environ["ZEN_ASC_API_KEY_BASE64"], validate=True)
+          if not data:
+              raise SystemExit("error: Individual API key decoded to an empty file")
+          path = pathlib.Path(sys.argv[1])
+          path.write_bytes(data)
+          path.chmod(0o600)
+          PY
+          ./scripts/app-store-connect-upload.py \
+            --postprocess-only \
+            --app-id 6790486708 \
+            --version "${{ inputs.version }}" \
+            --build-number "${{ inputs.build_number }}" \
+            --key-id "$ZEN_ASC_KEY_ID" \
+            --key-path "$ASC_KEY_PATH" \
+            --beta-group-name "Zen Preview" \
+            --submit-beta-review
+
+      - name: Remove temporary Individual API key
+        if: always()
+        run: rm -f "${{ runner.temp }}/zen-asc-individual-key.p8"

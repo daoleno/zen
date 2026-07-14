@@ -300,17 +300,18 @@ def prepare_testflight_build(
         time.sleep(poll_seconds)
 
     build_id = build["id"]
-    client.api_request(
-        "PATCH",
-        f"/builds/{build_id}",
-        {
-            "data": {
-                "type": "builds",
-                "id": build_id,
-                "attributes": {"usesNonExemptEncryption": False},
-            }
-        },
-    )
+    if build.get("attributes", {}).get("usesNonExemptEncryption") is not False:
+        client.api_request(
+            "PATCH",
+            f"/builds/{build_id}",
+            {
+                "data": {
+                    "type": "builds",
+                    "id": build_id,
+                    "attributes": {"usesNonExemptEncryption": False},
+                }
+            },
+        )
 
     group_query = urllib.parse.urlencode(
         {
@@ -360,7 +361,7 @@ def prepare_testflight_build(
 
 def main() -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--ipa", required=True, type=pathlib.Path)
+    parser.add_argument("--ipa", type=pathlib.Path)
     parser.add_argument("--app-id", required=True)
     parser.add_argument("--version", required=True)
     parser.add_argument("--build-number", required=True)
@@ -369,18 +370,24 @@ def main() -> int:
     parser.add_argument("--max-wait-seconds", type=int, default=3600)
     parser.add_argument("--beta-group-name")
     parser.add_argument("--submit-beta-review", action="store_true")
+    parser.add_argument("--postprocess-only", action="store_true")
     args = parser.parse_args()
-    if not args.ipa.is_file() or not args.key_path.is_file():
-        raise SystemExit("error: --ipa and --key-path must be files")
-    upload_id = upload_build(
-        AppStoreConnectClient(args.key_id, args.key_path),
-        args.ipa,
-        args.app_id,
-        args.version,
-        args.build_number,
-        max_wait_seconds=args.max_wait_seconds,
-    )
-    print(f"App Store Connect accepted build upload {upload_id}")
+    if not args.key_path.is_file():
+        raise SystemExit("error: --key-path must be a file")
+    if not args.postprocess_only:
+        if args.ipa is None or not args.ipa.is_file():
+            raise SystemExit("error: --ipa must be a file unless --postprocess-only is used")
+        upload_id = upload_build(
+            AppStoreConnectClient(args.key_id, args.key_path),
+            args.ipa,
+            args.app_id,
+            args.version,
+            args.build_number,
+            max_wait_seconds=args.max_wait_seconds,
+        )
+        print(f"App Store Connect accepted build upload {upload_id}")
+    elif not args.beta_group_name:
+        raise SystemExit("error: --postprocess-only requires --beta-group-name")
     if args.beta_group_name:
         prepared = prepare_testflight_build(
             AppStoreConnectClient(args.key_id, args.key_path),

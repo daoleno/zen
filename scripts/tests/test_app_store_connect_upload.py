@@ -187,8 +187,10 @@ class BuildUploadTests(unittest.TestCase):
             result,
             {"build_id": "build-5", "beta_group_id": "group-preview", "review": "review-5"},
         )
-        patch = next(request for request in requests if request.full_url.endswith("/builds/build-5"))
-        self.assertFalse(json.loads(patch.data)["data"]["attributes"]["usesNonExemptEncryption"])
+        self.assertFalse(
+            any(request.full_url.endswith("/builds/build-5") for request in requests),
+            "an already-set export compliance value must not be patched again",
+        )
         attach = next(
             request
             for request in requests
