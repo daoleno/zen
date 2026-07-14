@@ -6,32 +6,42 @@ const source = readFileSync(
   "utf8",
 );
 describe("Calendar screen contract", () => {
-  test("is agenda-first with month and day modes", () => {
-    expect(source).toContain('props.initialMode ?? "agenda"');
-    expect(source).toContain('["agenda", "month", "day"]');
+  test("uses one canonical Agenda stream with an inline month navigator", () => {
     expect(source).toContain("groupAgenda");
+    expect(source).toContain("monthExpanded");
+    expect(source).toContain("selectedDate");
+    expect(source).toContain("<MonthNavigator");
+    expect(source).not.toContain("type Mode");
+    expect(source).not.toContain("initialMode");
+    expect(source).not.toContain("setMode");
+    expect(source).not.toContain('"day"');
   });
   test("keeps a compact, separate Calendar hierarchy", () => {
     expect(source).toContain('accessibilityLabel="Back"');
     expect(source).toContain('accessibilityLabel="Add calendar item"');
-    expect(source).toContain("styles.appBar");
-    expect(source).toContain("styles.modeBar");
-    expect(source).toContain("<AgendaHeading now={now} timeZone={viewerZone} />");
-    expect(source).toMatch(/appBar:\s*\{[^}]*height: 52/s);
-    expect(source).toMatch(/appBarAction:\s*\{[^}]*width: 44,[^}]*height: 44/s);
-    expect(source).toMatch(/modeBar:\s*\{[^}]*paddingHorizontal: Spacing\.lg/s);
-    expect(source).toMatch(/segmentButton:\s*\{[^}]*minHeight: 36/s);
+    expect(source).toContain("headerShown: true");
+    expect(source).toContain('edges={["bottom"]}');
+    expect(source).not.toContain("styles.appBar");
+    expect(source).not.toContain("styles.modeBar");
+    expect(source).toContain('accessibilityLabel="Month date navigator"');
+    expect(source).toContain('accessibilityLabel="Return to today"');
+    expect(source).toMatch(/calendarHeaderAction:\s*\{[^}]*width: 44,[^}]*height: 44/s);
+    expect(source).toContain('"Expand month calendar"');
+    expect(source).toContain('"Collapse month calendar"');
+    expect(source).not.toContain("segmentButton");
+    expect(source).toContain("maxFontSizeMultiplier={1.15}");
   });
   test("anchors concise Agenda states below a localized Today time anchor", () => {
     expect(source).toContain("timeZoneName: \"short\"");
     expect(source).toContain("Nothing planned");
-    expect(source).toContain("Add item");
+    expect(source).toContain("Add calendar item");
     expect(source).toContain("Loading calendar…");
-    expect(source).toContain("Nothing planned for this day.");
+    expect(source).toContain("Nothing planned for this date");
     expect(source).not.toContain("Your time is clear");
     expect(source).not.toContain("Commitments created by you or Brain");
     expect(source).not.toContain("Create item");
-    expect(source).toMatch(/empty:\s*\{[^}]*minHeight: 112/s);
+    expect(source).toMatch(/empty:\s*\{[^}]*minHeight: 52/s);
+    expect(source).not.toContain("style={styles.primaryButton}");
   });
   test("exposes all kinds, lifecycle, execution and editing", () => {
     for (const value of [

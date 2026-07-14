@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useLayoutEffect, useMemo, useState } from "react";
 import {
   Alert,
   AppState,
@@ -53,8 +53,8 @@ import {
 } from "../store/calendar";
 import { useBrain } from "../store/brain";
 
-type Mode = "agenda" | "month" | "day";
 type ServerItem = CalendarItem & { serverId: string; serverName: string };
+const CALENDAR_FONT_SCALE_MAX = 1.25;
 const statuses: Record<CalendarItem["status"], string> = {
   scheduled: "Scheduled",
   waiting: "Waiting",
@@ -76,7 +76,6 @@ const statusIcons: Record<
 };
 
 type CalendarScreenProps = {
-  initialMode?: Mode;
   notificationStateOverride?: CalendarNotificationState;
   initialError?: string;
   loading?: boolean;
@@ -89,13 +88,12 @@ export default function CalendarScreen(props: CalendarScreenProps = {}) {
   const navigation = useNavigation();
   const params = useLocalSearchParams<{ id?: string; serverId?: string }>();
   const state = useCalendar();
-  const [mode, setMode] = useState<Mode>(props.initialMode ?? "agenda");
   const viewerZone = useMemo(() => viewerTimezone(), []);
   const now = new Date();
+  const todayKey = calendarDateKey(now, viewerZone);
+  const [monthExpanded, setMonthExpanded] = useState(false);
   const [month, setMonth] = useState(() => new Date());
-  const [selectedDay, setSelectedDay] = useState(() =>
-    calendarDateKey(new Date(), viewerZone),
-  );
+  const [selectedDate, setSelectedDate] = useState<string | null>(null);
   const [selected, setSelected] = useState<ServerItem | null>(null);
   const [editing, setEditing] = useState<ServerItem | "new" | null>(null);
   const [error, setError] = useState(props.initialError ?? "");
@@ -118,6 +116,77 @@ export default function CalendarScreen(props: CalendarScreenProps = {}) {
   );
   const activeServer =
     Object.values(state.byServer).find((server) => server.hydrated) ?? null;
+  useLayoutEffect(() => {
+    navigation.setOptions({
+      headerShown: true,
+      headerTitle: () => (
+        <Text
+          maxFontSizeMultiplier={1.15}
+          numberOfLines={1}
+          style={styles.headerTitle}
+        >
+          Calendar
+        </Text>
+      ),
+      headerLeft: () => (
+        <Pressable
+          accessibilityRole="button"
+          accessibilityLabel="Back"
+          hitSlop={8}
+          onPress={() => {
+            if (navigation.canGoBack()) {
+              router.back();
+              return;
+            }
+            router.replace("/");
+          }}
+          style={styles.calendarHeaderAction}
+        >
+          <Ionicons name="chevron-back" size={23} color={colors.textPrimary} />
+        </Pressable>
+      ),
+      headerRight: () => (
+        <View style={styles.calendarHeaderActions}>
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel={
+              monthExpanded ? "Collapse month calendar" : "Expand month calendar"
+            }
+            accessibilityState={{ expanded: monthExpanded }}
+            hitSlop={8}
+            onPress={() => {
+              setMonthExpanded((expanded) => {
+                if (expanded) setSelectedDate(null);
+                return !expanded;
+              });
+            }}
+            style={styles.calendarHeaderAction}
+          >
+            <Ionicons
+              name={monthExpanded ? "calendar" : "calendar-outline"}
+              size={21}
+              color={colors.textPrimary}
+            />
+          </Pressable>
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel="Add calendar item"
+            accessibilityState={{ disabled: !activeServer }}
+            disabled={!activeServer}
+            hitSlop={8}
+            onPress={() => setEditing("new")}
+            style={styles.calendarHeaderAction}
+          >
+            <Ionicons
+              name="add"
+              size={24}
+              color={activeServer ? colors.textPrimary : colors.disabledText}
+            />
+          </Pressable>
+        </View>
+      ),
+    });
+  }, [activeServer, colors, monthExpanded, navigation, router, styles]);
   useEffect(() => {
     if (props.notificationStateOverride) return;
     let active = true;
@@ -151,14 +220,16 @@ export default function CalendarScreen(props: CalendarScreenProps = {}) {
     );
     if (found) setSelected(found);
   }, [items, params.id, params.serverId]);
-  const visible = items.filter(
-    (item) => item.status !== "cancelled" || mode !== "agenda",
-  );
-  const sections = groupAgenda(visible, now, viewerZone);
-  const dayItems = visible.filter(
-    (item) => calendarDateKey(itemInstant(item), viewerZone) === selectedDay,
-  );
-  const monthDays = monthGrid(month);
+  const visible = items.filter((item) => item.status !== "cancelled");
+  const agendaItems = selectedDate
+    ? visible.filter(
+        (item) =>
+          calendarDateKey(itemInstant(item), viewerZone) === selectedDate,
+      )
+    : visible;
+  const sections = selectedDate
+    ? [{ title: selectedDate, data: agendaItems }]
+    : groupAgenda(agendaItems, now, viewerZone);
   const openItem = (item: ServerItem) => {
     setError("");
     setSelected(item);
@@ -210,69 +281,7 @@ export default function CalendarScreen(props: CalendarScreenProps = {}) {
     }
   };
   return (
-    <SafeAreaView edges={["top", "bottom"]} style={styles.screen}>
-      <View style={styles.appBar}>
-        <Pressable
-          accessibilityRole="button"
-          accessibilityLabel="Back"
-          hitSlop={4}
-          onPress={() => {
-            if (navigation.canGoBack()) {
-              router.back();
-              return;
-            }
-            router.replace("/");
-          }}
-          style={styles.appBarAction}
-        >
-          <Ionicons name="chevron-back" size={23} color={colors.textPrimary} />
-        </Pressable>
-        <Text numberOfLines={1} style={styles.appBarTitle}>
-          Calendar
-        </Text>
-        <Pressable
-          accessibilityRole="button"
-          accessibilityLabel="Add calendar item"
-          accessibilityState={{ disabled: !activeServer }}
-          disabled={!activeServer}
-          onPress={() => setEditing("new")}
-          style={styles.appBarAction}
-        >
-          <Ionicons
-            name="add"
-            size={24}
-            color={activeServer ? colors.textPrimary : colors.disabledText}
-          />
-        </Pressable>
-      </View>
-      <View style={styles.modeBar}>
-        <View style={styles.segment}>
-          {(["agenda", "month", "day"] as Mode[]).map((value) => (
-            <Pressable
-              key={value}
-              accessibilityRole="button"
-              accessibilityState={{ selected: mode === value }}
-              onPress={() => setMode(value)}
-              style={[
-                styles.segmentButton,
-                mode === value && styles.segmentActive,
-              ]}
-            >
-              <Text
-                adjustsFontSizeToFit
-                minimumFontScale={0.75}
-                numberOfLines={1}
-                style={[
-                  styles.segmentText,
-                  mode === value && styles.segmentTextActive,
-                ]}
-              >
-                {value[0].toUpperCase() + value.slice(1)}
-              </Text>
-            </Pressable>
-          ))}
-        </View>
-      </View>
+    <SafeAreaView edges={["bottom"]} style={styles.screen}>
       {notificationState !== "granted" ? (
         <View style={styles.permission}>
           <Ionicons
@@ -307,109 +316,66 @@ export default function CalendarScreen(props: CalendarScreenProps = {}) {
           <Text style={styles.errorText}>{error}</Text>
         </View>
       ) : null}
-      {mode === "agenda" ? (
-        <ScrollView contentContainerStyle={styles.content}>
-          <AgendaHeading now={now} timeZone={viewerZone} />
-          {props.loading ? (
-            <View
-              accessibilityRole="progressbar"
-              accessibilityLabel="Loading calendar"
-              style={styles.agendaStatus}
-            >
-              <Ionicons name="sync-outline" size={20} color={colors.accent} />
-              <Text style={styles.emptyTitle}>Loading calendar…</Text>
-            </View>
-          ) : sections.length ? (
-            sections.map((section) => (
-              <View key={section.title} style={styles.section}>
-                {section.title === "Today" ? null : (
-                  <Text style={styles.sectionTitle}>{section.title}</Text>
-                )}
-                {section.data.map((raw) => (
-                  <CalendarRow
-                    key={`${(raw as ServerItem).serverId}:${raw.id}`}
-                    item={raw as ServerItem}
-                    onPress={() => openItem(raw as ServerItem)}
-                  />
-                ))}
-              </View>
-            ))
-          ) : (
-            <EmptyState
-              connected={Boolean(activeServer)}
-              onCreate={() => setEditing("new")}
-            />
-          )}
-        </ScrollView>
-      ) : null}
-      {mode === "month" ? (
-        <ScrollView contentContainerStyle={styles.content}>
-          <MonthHeader month={month} onChange={setMonth} />
-          <View style={styles.weekdays}>
-            {["S", "M", "T", "W", "T", "F", "S"].map((label, index) => (
-              <Text key={`${label}${index}`} style={styles.weekday}>
-                {label}
-              </Text>
-            ))}
-          </View>
-          <View style={styles.monthGrid}>
-            {monthDays.map((date) => {
-              const key = dayKey(date);
-              const inMonth = date.getMonth() === month.getMonth();
-              const count = visible.filter(
-                (item) =>
-                  calendarDateKey(itemInstant(item), viewerZone) === key,
-              ).length;
-              return (
-                <Pressable
-                  key={key}
-                  accessibilityRole="button"
-                  accessibilityLabel={`${date.toDateString()}, ${count} items`}
-                  onPress={() => {
-                    setSelectedDay(key);
-                    setMode("day");
-                  }}
-                  style={[
-                    styles.dayCell,
-                    key === selectedDay && styles.daySelected,
-                  ]}
-                >
-                  <Text style={[styles.dayNumber, !inMonth && styles.dayMuted]}>
-                    {date.getDate()}
-                  </Text>
-                  {count ? <View style={styles.dayDot} /> : null}
-                </Pressable>
-              );
-            })}
-          </View>
-        </ScrollView>
-      ) : null}
-      {mode === "day" ? (
-        <ScrollView contentContainerStyle={styles.content}>
-          <MonthHeader
-            month={new Date(`${selectedDay}T12:00:00`)}
-            onChange={(date) => setSelectedDay(dayKey(date))}
+      <ScrollView contentContainerStyle={styles.content}>
+        {monthExpanded ? (
+          <MonthNavigator
+            items={visible}
+            month={month}
+            selectedDate={selectedDate}
+            timeZone={viewerZone}
+            todayKey={todayKey}
+            onChangeMonth={setMonth}
+            onSelectDate={(date, key) => {
+              setSelectedDate(key);
+              if (
+                date.getMonth() !== month.getMonth() ||
+                date.getFullYear() !== month.getFullYear()
+              ) {
+                setMonth(new Date(date.getFullYear(), date.getMonth(), 1));
+              }
+            }}
           />
-          <Text style={styles.dayHeading}>
-            {new Date(`${selectedDay}T12:00:00`).toLocaleDateString(undefined, {
-              weekday: "long",
-              month: "long",
-              day: "numeric",
-            })}
-          </Text>
-          {dayItems.length ? (
-            dayItems.map((item) => (
-              <CalendarRow
-                key={`${item.serverId}:${item.id}`}
-                item={item}
-                onPress={() => openItem(item)}
-              />
-            ))
-          ) : (
-            <Text style={styles.dayEmpty}>Nothing planned for this day.</Text>
-          )}
-        </ScrollView>
-      ) : null}
+        ) : null}
+        <AgendaHeading
+          now={now}
+          selectedDate={selectedDate}
+          timeZone={viewerZone}
+          onToday={() => {
+            setSelectedDate(null);
+            setMonth(new Date());
+          }}
+        />
+        {props.loading ? (
+          <View
+            accessibilityRole="progressbar"
+            accessibilityLabel="Loading calendar"
+            style={styles.agendaStatus}
+          >
+            <Ionicons name="sync-outline" size={20} color={colors.accent} />
+            <Text style={styles.emptyTitle}>Loading calendar…</Text>
+          </View>
+        ) : sections.length ? (
+          sections.map((section) => (
+            <View key={section.title} style={styles.section}>
+              {selectedDate || section.title === "Today" ? null : (
+                <Text style={styles.sectionTitle}>{section.title}</Text>
+              )}
+              {section.data.map((raw) => (
+                <CalendarRow
+                  key={`${(raw as ServerItem).serverId}:${raw.id}`}
+                  item={raw as ServerItem}
+                  onPress={() => openItem(raw as ServerItem)}
+                />
+              ))}
+            </View>
+          ))
+        ) : (
+          <EmptyState
+            connected={Boolean(activeServer)}
+            dateFiltered={selectedDate !== null}
+          />
+        )}
+      </ScrollView>
       <DetailModal
         item={selected}
         error={error}
@@ -445,31 +411,70 @@ export default function CalendarScreen(props: CalendarScreenProps = {}) {
   );
 }
 
-function AgendaHeading({ now, timeZone }: { now: Date; timeZone: string }) {
+function AgendaHeading({
+  now,
+  selectedDate,
+  timeZone,
+  onToday,
+}: {
+  now: Date;
+  selectedDate: string | null;
+  timeZone: string;
+  onToday(): void;
+}) {
   const colors = useAppColors();
   const styles = useMemo(() => createStyles(colors), [colors]);
-  const date = new Intl.DateTimeFormat(undefined, {
+  const dateFormatter = new Intl.DateTimeFormat(undefined, {
     weekday: "long",
     month: "long",
     day: "numeric",
     timeZone,
-  }).format(now);
+  });
+  const date = dateFormatter.format(
+    selectedDate ? dateFromKey(selectedDate) : now,
+  );
   const time = new Intl.DateTimeFormat(undefined, {
     hour: "numeric",
     minute: "2-digit",
     timeZone,
     timeZoneName: "short",
   }).format(now);
+  const isToday =
+    selectedDate === null || selectedDate === calendarDateKey(now, timeZone);
   return (
     <View
       accessibilityRole="header"
-      accessibilityLabel={`Today, ${date}, ${time}`}
+      accessibilityLabel={isToday ? `Today, ${date}, ${time}` : date}
       style={styles.agendaHeading}
     >
-      <Text style={styles.agendaTitle}>Today</Text>
-      <Text style={styles.agendaAnchor}>
-        {date} · {time}
-      </Text>
+      <View style={styles.agendaTitleRow}>
+        <Text
+          maxFontSizeMultiplier={CALENDAR_FONT_SCALE_MAX}
+          numberOfLines={2}
+          style={styles.agendaTitle}
+        >
+          {isToday ? "Today" : date}
+        </Text>
+        {!isToday ? (
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel="Return to today"
+            onPress={onToday}
+            style={styles.todayButton}
+          >
+            <Text style={styles.todayButtonText}>Today</Text>
+          </Pressable>
+        ) : null}
+      </View>
+      {isToday ? (
+        <Text
+          maxFontSizeMultiplier={CALENDAR_FONT_SCALE_MAX}
+          numberOfLines={2}
+          style={styles.agendaAnchor}
+        >
+          {date} · {time}
+        </Text>
+      ) : null}
     </View>
   );
 }
@@ -535,6 +540,84 @@ function CalendarRow({ item, onPress }: { item: ServerItem; onPress(): void }) {
     </Pressable>
   );
 }
+function MonthNavigator({
+  items,
+  month,
+  selectedDate,
+  timeZone,
+  todayKey,
+  onChangeMonth,
+  onSelectDate,
+}: {
+  items: ServerItem[];
+  month: Date;
+  selectedDate: string | null;
+  timeZone: string;
+  todayKey: string;
+  onChangeMonth(date: Date): void;
+  onSelectDate(date: Date, key: string): void;
+}) {
+  const colors = useAppColors();
+  const styles = useMemo(() => createStyles(colors), [colors]);
+  const counts = useMemo(() => {
+    const next = new Map<string, number>();
+    for (const item of items) {
+      const key = calendarDateKey(itemInstant(item), timeZone);
+      next.set(key, (next.get(key) ?? 0) + 1);
+    }
+    return next;
+  }, [items, timeZone]);
+  return (
+    <View
+      accessibilityLabel="Month date navigator"
+      style={styles.monthNavigator}
+    >
+      <MonthHeader month={month} onChange={onChangeMonth} />
+      <View style={styles.weekdays}>
+        {["S", "M", "T", "W", "T", "F", "S"].map((label, index) => (
+          <Text key={`${label}${index}`} style={styles.weekday}>
+            {label}
+          </Text>
+        ))}
+      </View>
+      <View style={styles.monthGrid}>
+        {monthGrid(month).map((date) => {
+          const key = dayKey(date);
+          const count = counts.get(key) ?? 0;
+          const inMonth = date.getMonth() === month.getMonth();
+          const selected = key === selectedDate;
+          const today = key === todayKey;
+          return (
+            <Pressable
+              key={key}
+              accessibilityRole="button"
+              accessibilityLabel={`${date.toLocaleDateString()}, ${count} items`}
+              accessibilityState={{ selected }}
+              onPress={() => onSelectDate(date, key)}
+              style={[
+                styles.dayCell,
+                today && styles.dayToday,
+                selected && styles.daySelected,
+              ]}
+            >
+              <Text
+                maxFontSizeMultiplier={CALENDAR_FONT_SCALE_MAX}
+                style={[
+                  styles.dayNumber,
+                  !inMonth && styles.dayMuted,
+                  selected && styles.dayNumberSelected,
+                ]}
+              >
+                {date.getDate()}
+              </Text>
+              {count ? <View style={styles.dayDot} /> : null}
+            </Pressable>
+          );
+        })}
+      </View>
+    </View>
+  );
+}
 function MonthHeader({
   month,
   onChange,
@@ -577,10 +660,10 @@ function MonthHeader({
 }
 function EmptyState({
   connected,
-  onCreate,
+  dateFiltered,
 }: {
   connected: boolean;
-  onCreate(): void;
+  dateFiltered: boolean;
 }) {
   const colors = useAppColors();
   const styles = useMemo(() => createStyles(colors), [colors]);
@@ -588,27 +671,19 @@ function EmptyState({
     <View style={styles.empty}>
       <Ionicons
         name="calendar-clear-outline"
-        size={22}
+        size={19}
         color={colors.textTertiary}
       />
-      <Text style={styles.emptyTitle}>
-        {connected ? "Nothing planned" : "Calendar offline"}
+      <Text
+        maxFontSizeMultiplier={CALENDAR_FONT_SCALE_MAX}
+        style={styles.emptyTitle}
+      >
+        {connected
+          ? dateFiltered
+            ? "Nothing planned for this date"
+            : "Nothing planned"
+          : "Calendar offline"}
       </Text>
-      {connected ? (
-        <Pressable
-          accessibilityRole="button"
-          accessibilityLabel="Add calendar item"
-          onPress={onCreate}
-          style={styles.primaryButton}
-        >
-          <Ionicons
-            name="add"
-            size={18}
-            color={colors.textOnAccent}
-          />
-          <Text style={styles.primaryButtonText}>Add item</Text>
-        </Pressable>
-      ) : null}
     </View>
   );
 }
@@ -1177,6 +1252,9 @@ function resolutionMessage(resolution: LocalDateTimeResolution) {
 function dayKey(date: Date) {
   return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`;
 }
+function dateFromKey(key: string) {
+  return new Date(`${key}T12:00:00`);
+}
 function monthGrid(month: Date) {
   const first = new Date(month.getFullYear(), month.getMonth(), 1);
   const start = new Date(first);
@@ -1191,47 +1269,17 @@ function monthGrid(month: Date) {
 function createStyles(colors: any) {
   return StyleSheet.create({
     screen: { flex: 1, backgroundColor: colors.bgPrimary },
-    appBar: {
-      height: 52,
-      paddingHorizontal: Spacing.sm,
-      flexDirection: "row",
-      alignItems: "center",
-    },
-    appBarAction: {
+    calendarHeaderAction: {
       width: 44,
       height: 44,
       alignItems: "center",
       justifyContent: "center",
     },
-    appBarTitle: {
+    calendarHeaderActions: { flexDirection: "row", alignItems: "center" },
+    headerTitle: {
       ...TypeScale.title,
-      flex: 1,
       color: colors.textPrimary,
     },
-    modeBar: {
-      paddingHorizontal: Spacing.lg,
-      paddingTop: Spacing.xs,
-      paddingBottom: Spacing.sm,
-      borderBottomWidth: StyleSheet.hairlineWidth,
-      borderBottomColor: colors.borderSubtle,
-    },
-    segment: {
-      flex: 1,
-      flexDirection: "row",
-      padding: 3,
-      borderRadius: Radii.sm,
-      backgroundColor: colors.surfaceSubtle,
-    },
-    segmentButton: {
-      flex: 1,
-      minHeight: 36,
-      alignItems: "center",
-      justifyContent: "center",
-      borderRadius: Radii.xs,
-    },
-    segmentActive: { backgroundColor: colors.bgSurface },
-    segmentText: { ...TypeScale.label, color: colors.textTertiary },
-    segmentTextActive: { color: colors.textPrimary },
     permission: {
       marginHorizontal: Spacing.lg,
       marginTop: Spacing.sm,
@@ -1264,13 +1312,29 @@ function createStyles(colors: any) {
     errorText: { ...TypeScale.compact, color: colors.statusFailed },
     content: {
       paddingHorizontal: Spacing.lg,
-      paddingTop: Spacing.lg,
+      paddingTop: Spacing.md,
       paddingBottom: 40,
-      gap: Spacing.xl,
+      gap: Spacing.md,
     },
     agendaHeading: { gap: 2 },
-    agendaTitle: { ...TypeScale.title, color: colors.textPrimary },
-    agendaAnchor: { ...TypeScale.compact, color: colors.textSecondary },
+    agendaTitleRow: {
+      minHeight: 44,
+      flexDirection: "row",
+      alignItems: "center",
+      gap: Spacing.sm,
+    },
+    agendaTitle: { ...TypeScale.heading, flex: 1, color: colors.textPrimary },
+    agendaAnchor: { ...TypeScale.caption, color: colors.textSecondary },
+    todayButton: {
+      minWidth: 56,
+      minHeight: 44,
+      paddingHorizontal: Spacing.sm,
+      alignItems: "center",
+      justifyContent: "center",
+      borderRadius: Radii.sm,
+      backgroundColor: colors.surfaceSubtle,
+    },
+    todayButtonText: { ...TypeScale.label, color: colors.accent },
     agendaStatus: {
       minHeight: 64,
       paddingVertical: Spacing.md,
@@ -1318,31 +1382,19 @@ function createStyles(colors: any) {
     metaDot: { color: colors.textTertiary },
     executeText: { ...TypeScale.caption, color: colors.accent },
     empty: {
-      minHeight: 112,
-      paddingVertical: Spacing.md,
+      minHeight: 52,
+      paddingVertical: Spacing.sm,
       flexDirection: "row",
       alignItems: "center",
-      flexWrap: "wrap",
       gap: Spacing.sm,
       borderTopWidth: StyleSheet.hairlineWidth,
       borderTopColor: colors.borderSubtle,
     },
-    emptyTitle: { ...TypeScale.heading, color: colors.textPrimary },
+    emptyTitle: { ...TypeScale.compact, color: colors.textSecondary },
     emptyBody: {
       ...TypeScale.body,
       color: colors.textTertiary,
       textAlign: "center",
-    },
-    primaryButton: {
-      width: "100%",
-      minHeight: 44,
-      paddingHorizontal: Spacing.lg,
-      borderRadius: Radii.sm,
-      backgroundColor: colors.accent,
-      flexDirection: "row",
-      alignItems: "center",
-      justifyContent: "center",
-      gap: Spacing.xs,
     },
     primaryButtonText: {
       ...TypeScale.label,
@@ -1353,6 +1405,11 @@ function createStyles(colors: any) {
       flexDirection: "row",
       alignItems: "center",
       justifyContent: "space-between",
+    },
+    monthNavigator: {
+      paddingBottom: Spacing.sm,
+      borderBottomWidth: StyleSheet.hairlineWidth,
+      borderBottomColor: colors.borderSubtle,
     },
     monthTitle: { ...TypeScale.heading, color: colors.textPrimary },
     iconButton: {
@@ -1378,7 +1435,12 @@ function createStyles(colors: any) {
       gap: 3,
     },
     daySelected: { backgroundColor: colors.surfaceSubtle },
+    dayToday: {
+      borderWidth: StyleSheet.hairlineWidth,
+      borderColor: colors.accent,
+    },
     dayNumber: { ...TypeScale.compact, color: colors.textPrimary },
+    dayNumberSelected: { color: colors.accent },
     dayMuted: { color: colors.textTertiary },
     dayDot: {
       width: 4,
@@ -1386,12 +1448,6 @@ function createStyles(colors: any) {
       borderRadius: 2,
       backgroundColor: colors.accent,
     },
-    dayHeading: {
-      ...TypeScale.title,
-      color: colors.textPrimary,
-      marginBottom: 8,
-    },
-    dayEmpty: { ...TypeScale.body, color: colors.textTertiary },
     modalBackdrop: {
       flex: 1,
       justifyContent: "flex-end",

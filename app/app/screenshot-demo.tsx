@@ -82,11 +82,9 @@ function CalendarDemo() {
     fixture?: string | string[];
     notification?: string | string[];
   }>();
-  const view = Array.isArray(params.view) ? params.view[0] : params.view;
   const fixture = Array.isArray(params.fixture)
     ? params.fixture[0]
     : params.fixture;
-  const mode = view === "month" || view === "day" ? view : "agenda";
   const notification = Array.isArray(params.notification)
     ? params.notification[0]
     : params.notification;
@@ -110,7 +108,6 @@ function CalendarDemo() {
 
   return (
     <CalendarScreen
-      initialMode={mode}
       notificationStateOverride={notificationState}
       initialError={
         fixture === "error"

@@ -937,7 +937,10 @@ const AppNavigator = memo(function AppNavigator({
       <Stack.Screen name="work" options={{ headerShown: false }} />
       <Stack.Screen
         name="calendar"
-        options={{ headerShown: false }}
+        options={{
+          title: "Calendar",
+          headerLeft: () => <SecondaryBackButton />,
+        }}
       />
       <Stack.Screen
         name="stats"
