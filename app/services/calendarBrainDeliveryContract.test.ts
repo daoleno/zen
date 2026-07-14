@@ -16,8 +16,15 @@ describe("Calendar Brain delivery app contract", () => {
 
   test("result notifications deep-link to the canonical Brain thread", () => {
     const layout = readFileSync(join(import.meta.dir, "../app/_layout.tsx"), "utf8");
+    const brain = readFileSync(join(import.meta.dir, "../app/(primary)/index.tsx"), "utf8");
+    const chatBody = readFileSync(join(import.meta.dir, "../components/terminal/CodexChatBody.tsx"), "utf8");
     expect(layout).toContain('screen: "brain"');
     expect(layout).toContain("brain_thread_id: result.thread_id");
     expect(layout).toContain("brainMessageId:");
+    expect(brain).toContain("isTargetedBrainThreadReadOnly(");
+    expect(brain).toContain("readOnly={targetedThreadReadOnly}");
+    expect(brain).toContain("Historical Brain thread · read-only");
+    expect(chatBody).toContain("!readOnly ? (");
+    expect(chatBody).toContain("<CodexChatComposerSection");
   });
 });

@@ -439,7 +439,7 @@ func runCalendarWrite(update bool, args []string, stderr io.Writer) error {
 	fs.BoolVar(&cfg.json, "json", true, "print JSON output")
 	fs.StringVar(&itemJSON, "item-json", "", "complete calendar item JSON (required for update)")
 	fs.StringVar(&title, "title", "", "title")
-	fs.StringVar(&kind, "kind", "", "event, reminder, deadline, or scheduled_action")
+	fs.StringVar(&kind, "kind", "", "event, reminder, deadline, or scheduled_action (requires -source-thread)")
 	fs.StringVar(&date, "date", "", "local date in YYYY-MM-DD")
 	fs.StringVar(&clock, "time", "", "local wall time in HH:MM")
 	fs.StringVar(&endDate, "end-date", "", "event end local date in YYYY-MM-DD")
@@ -451,7 +451,7 @@ func runCalendarWrite(update bool, args []string, stderr io.Writer) error {
 	fs.StringVar(&notes, "notes", "", "notes")
 	fs.StringVar(&instruction, "instruction", "", "scheduled action instruction")
 	fs.StringVar(&cwd, "cwd", "", "scheduled action working directory")
-	fs.StringVar(&sourceThread, "source-thread", "", "source Brain conversation id")
+	fs.StringVar(&sourceThread, "source-thread", "", "required for scheduled_action: source_thread_id for canonical Brain result delivery")
 	fs.Int64Var(&revision, "revision", 0, "expected revision")
 	if err := fs.Parse(args); err != nil {
 		return err
@@ -486,6 +486,9 @@ func runCalendarWrite(update bool, args []string, stderr io.Writer) error {
 		default:
 			item.DueAt = &at
 		}
+	}
+	if item.Kind == calendar.KindScheduledAction && strings.TrimSpace(item.SourceThreadID) == "" {
+		return fmt.Errorf("scheduled_action requires -source-thread (source_thread_id)")
 	}
 	typeName := "calendar_create"
 	if update {

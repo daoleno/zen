@@ -32,6 +32,7 @@ import {
   resolveBrainActiveServerId,
   shouldShowBrainLoadingState,
 } from "../../services/connectionLifecycle";
+import { isTargetedBrainThreadReadOnly } from "../../services/brainThreadRouting";
 import { useAgents, type ConnectionState } from "../../store/agents";
 import {
   useBrain,
@@ -137,6 +138,10 @@ export default function BrainScreen() {
   const hostAgent = activeBrain?.host_agent ?? null;
   const hostAdapter = activeBrain?.host_adapter ?? null;
   const displayedThreadId = params.brainThreadId || activeBrain?.chat_thread_id;
+  const targetedThreadReadOnly = isTargetedBrainThreadReadOnly(
+    params.brainThreadId,
+    activeBrain?.chat_thread_id,
+  );
   const brainChatScopeKey = displayedThreadId
     ? `brain-thread:${displayedThreadId}`
     : undefined;
@@ -378,6 +383,19 @@ export default function BrainScreen() {
         </View>
       ) : null}
 
+      {targetedThreadReadOnly ? (
+        <View style={styles.bannerReadOnly}>
+          <Ionicons
+            name="lock-closed-outline"
+            size={14}
+            color={colors.textSecondary}
+          />
+          <Text style={styles.bannerReadOnlyText}>
+            Historical Brain thread · read-only
+          </Text>
+        </View>
+      ) : null}
+
       <View style={styles.surface}>
         <ChatCanvas chrome={chrome}>
           {canUseStructuredBrainInterface ? (
@@ -397,6 +415,7 @@ export default function BrainScreen() {
               theme={theme}
               chrome={chrome}
               screenFocused={screenFocused}
+              readOnly={targetedThreadReadOnly}
               onSwitchToTerminal={openBrainTerminal}
               emptyTitle={BRAIN_EMPTY_TITLE}
               emptyBody={BRAIN_EMPTY_BODY}
@@ -602,6 +621,23 @@ function createStyles(colors: typeof Colors) {
     bannerErrorText: {
       ...TypeScale.caption,
       color: colors.dangerText,
+    },
+    bannerReadOnly: {
+      flexDirection: "row",
+      alignItems: "center",
+      gap: 6,
+      marginHorizontal: CHAT_CHROME_HORIZONTAL_INSET,
+      marginBottom: 4,
+      paddingHorizontal: 12,
+      paddingVertical: 7,
+      borderRadius: 12,
+      backgroundColor: colors.bgElevated,
+      borderWidth: StyleSheet.hairlineWidth,
+      borderColor: colors.border,
+    },
+    bannerReadOnlyText: {
+      ...TypeScale.caption,
+      color: colors.textSecondary,
     },
   });
 }

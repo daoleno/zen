@@ -32,6 +32,7 @@ import { useCodexComposerLayout } from "./useCodexComposerLayout";
 
 export interface CodexChatBodyProps {
   screenFocused: boolean;
+  readOnly?: boolean;
   serverId: string;
   agentCwd?: string;
   conversation: CodexConversation | null;
@@ -90,6 +91,7 @@ export interface CodexChatBodyProps {
 
 export function CodexChatBody({
   screenFocused,
+  readOnly = false,
   serverId,
   agentCwd,
   conversation,
@@ -186,7 +188,7 @@ export function CodexChatBody({
         emptyBody={emptyBody}
       />
 
-      {terminalActionPrompt ? (
+      {!readOnly && terminalActionPrompt ? (
         <TerminalActionPromptCard
           prompt={terminalActionPrompt}
           chrome={chrome}
@@ -196,31 +198,35 @@ export function CodexChatBody({
         />
       ) : null}
 
-      {composerAccessory}
-      <CodexChatComposerSection
-        inputRef={inputRef}
-        draft={draft}
-        editable={editable}
-        focused={composerFocused}
-        canAttach={canAttach}
-        uploading={uploading}
-        sending={sending}
-        attachments={attachments}
-        presentation={composerPresentation}
-        chrome={chrome}
-        theme={theme}
-        onLayout={handleComposerLayout}
-        onSelectCommand={onSelectCommand}
-        onToggleActionMenu={onToggleActionMenu}
-        onDismissActionMenu={onDismissActionMenu}
-        onRemoveAttachment={onRemoveAttachment}
-        onDraftChange={onDraftChange}
-        onUploadPress={onUploadPress}
-        onInputFocus={onInputFocus}
-        onInputBlur={onInputBlur}
-        onSendPress={onSendPress}
-      />
-      {skillsSheet}
+      {!readOnly ? (
+        <>
+          {composerAccessory}
+          <CodexChatComposerSection
+            inputRef={inputRef}
+            draft={draft}
+            editable={editable}
+            focused={composerFocused}
+            canAttach={canAttach}
+            uploading={uploading}
+            sending={sending}
+            attachments={attachments}
+            presentation={composerPresentation}
+            chrome={chrome}
+            theme={theme}
+            onLayout={handleComposerLayout}
+            onSelectCommand={onSelectCommand}
+            onToggleActionMenu={onToggleActionMenu}
+            onDismissActionMenu={onDismissActionMenu}
+            onRemoveAttachment={onRemoveAttachment}
+            onDraftChange={onDraftChange}
+            onUploadPress={onUploadPress}
+            onInputFocus={onInputFocus}
+            onInputBlur={onInputBlur}
+            onSendPress={onSendPress}
+          />
+          {skillsSheet}
+        </>
+      ) : null}
     </CodexChatKeyboardFrame>
   );
 }

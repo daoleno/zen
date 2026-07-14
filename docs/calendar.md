@@ -9,7 +9,7 @@ The daemon is the source of truth. It stores a versioned, private document at `~
 - `event`: `start_at` and `end_at`
 - `reminder`: `notify_at`
 - `deadline`: `due_at`
-- `scheduled_action`: `due_at` and `action_instruction`
+- `scheduled_action`: `due_at`, `action_instruction`, and the originating Brain conversation in `source_thread_id`
 
 The user-facing app and CLI accept a local date, local wall time, and IANA timezone; RFC 3339 instants are only the internal wire/storage representation. DST gaps are rejected explicitly. When a wall time occurs twice during fall-back, the user must choose the first or second occurrence. Recurrence (`none`, `daily`, `weekly`, or `weekdays`) advances in that timezone using calendar dates, preserving the intended local wall clock through daylight-saving changes.
 
@@ -18,6 +18,12 @@ States are `scheduled`, `waiting`, `running`, `completed`, `failed`, and `cancel
 ## Scheduled actions
 
 A scheduled action creates a visible `calendar_action` Work item and launches it through the configured delegated executor. Launching Work only makes the Calendar item `running`; it is not completion. The scheduler reconciles the linked Work frontmatter and agent lifecycle and records completion or failure only after a terminal signal.
+
+The generated Work file has a deterministic `User-facing deliverable` section delimited by `zen:scheduled-deliverable` markers. The executor must replace the placeholder inside those markers with the complete result intended for the user, preserving useful paragraphs, lists, links, and citations while excluding instructions, progress notes, and Calendar metadata. Zen extracts that section up to a 256 KiB safety bound. Legacy Work without the section falls back to its short `outcome` or executor summary, but those digest fields are not the canonical result for newly generated scheduled Work.
+
+Every `scheduled_action` requires `source_thread_id`. That captured Brain thread is the canonical delivery destination even if the live Host later starts a newer thread. Zen appends one deterministic message id per Calendar item and run, so reconciliation and crash retries are idempotent rather than producing duplicate results. A successful run delivers the extracted result. A failed run delivers a visible failure message to the same thread. Delivery is part of finalization: retryable delivery errors leave the run reconcilable, while a permanently invalid captured thread is recorded as a visible failure.
+
+Recurring actions advance to their next wall-clock occurrence after either success or failure; the failed run remains in history and does not disable the series. Delivered messages count toward per-thread Brain unread state until that thread is viewed. The mobile app may post a local notification that deep-links to the captured thread, but notification permission or scheduling failure is best-effort and never changes durable execution or Brain delivery. If the captured thread is no longer the live Host thread, the app displays it explicitly read-only so its composer cannot send to a different conversation.
 
 The durable claim is the idempotency boundary. After restart, Zen reconciles a running claim and never launches the same occurrence again. If its linked Work and agent are no longer observable, the item fails with an uncertain-outcome explanation so the user can inspect and explicitly choose Run now.
 
@@ -32,12 +38,16 @@ zen calendar list --json
 zen calendar get -id <item-id> --json
 zen calendar create -title "Review plan" -kind reminder \
   -date 2026-07-15 -time 09:30 -timezone Asia/Shanghai --json
+zen calendar create -title "Summarize AI papers" -kind scheduled_action \
+  -date 2026-07-15 -time 09:30 -timezone Asia/Shanghai \
+  -instruction "Summarize the three linked papers" \
+  -source-thread <brain-thread-id> --json
 zen calendar update -item-json '<complete item JSON>' -revision <revision> --json
 zen calendar cancel -id <item-id> -revision <revision> --json
 zen calendar run -id <item-id> --json
 ```
 
-Create, update, cancel, get, and run responses include a plain confirmation with the resolved local date, time, timezone, and effect. Brain is instructed to use these tools only for explicit calendar intent, not to extract commitments from every message.
+Create, update, cancel, get, and run responses include a plain confirmation with the resolved local date, time, timezone, and effect. In the CLI, `-source-thread` supplies `source_thread_id` and is mandatory for `scheduled_action`; callers updating with `-item-json` must preserve the same field. Brain is instructed to use these tools only for explicit calendar intent, not to extract commitments from every message.
 
 ## Device reminders
 

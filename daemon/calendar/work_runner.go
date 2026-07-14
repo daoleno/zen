@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/daoleno/zen/daemon/brain"
 	"github.com/daoleno/zen/daemon/classifier"
@@ -23,6 +24,13 @@ type WorkRunner struct {
 	Brain *brain.Service
 }
 
+const (
+	scheduledDeliverableStart       = "<!-- zen:scheduled-deliverable:start -->"
+	scheduledDeliverableEnd         = "<!-- zen:scheduled-deliverable:end -->"
+	scheduledDeliverablePlaceholder = "Replace this line with the complete user-facing deliverable."
+	maxScheduledDeliverableBytes    = 256 * 1024
+)
+
 func (r *WorkRunner) InspectScheduledAction(_ context.Context, _ Item, run Run) (Status, string, string, bool) {
 	if r == nil || r.Store == nil || strings.TrimSpace(run.WorkID) == "" {
 		return StatusRunning, "", "", false
@@ -33,14 +41,14 @@ func (r *WorkRunner) InspectScheduledAction(_ context.Context, _ Item, run Run) 
 	}
 	status := strings.ToLower(strings.TrimSpace(linked.Frontmatter.Status))
 	if linked.Frontmatter.Done != nil || status == "done" {
-		return StatusCompleted, strings.TrimSpace(linked.Frontmatter.Outcome), "", true
+		return StatusCompleted, scheduledActionResult(linked, ""), "", true
 	}
 	if status == "failed" {
 		failure := strings.TrimSpace(linked.Frontmatter.Friction)
 		if failure == "" {
 			failure = strings.TrimSpace(linked.Frontmatter.AIError)
 		}
-		return StatusFailed, strings.TrimSpace(linked.Frontmatter.Outcome), failure, true
+		return StatusFailed, scheduledActionResult(linked, ""), failure, true
 	}
 	if r.Watcher == nil || strings.TrimSpace(run.AgentSession) == "" {
 		return StatusRunning, "", "", true
@@ -51,7 +59,7 @@ func (r *WorkRunner) InspectScheduledAction(_ context.Context, _ Item, run Run) 
 	}
 	switch agent.State {
 	case classifier.StateDone:
-		return StatusCompleted, strings.TrimSpace(agent.Summary), "", true
+		return StatusCompleted, scheduledActionResult(linked, agent.Summary), "", true
 	case classifier.StateFailed, classifier.StateRemoved:
 		return StatusFailed, "", strings.TrimSpace(agent.Summary), true
 	default:
@@ -82,7 +90,7 @@ func (r *WorkRunner) RunScheduledAction(_ context.Context, item Item, run Run) (
 		}
 	}
 	path := filepath.Join(r.Store.Root, "calendar", item.ID+"-"+run.ID+".md")
-	body := fmt.Sprintf("# %s\n\n%s\n\nCalendar item: `%s`\nScheduled for: %s (%s)\n", item.Title, strings.TrimSpace(item.ActionInstruction), item.ID, run.ScheduledFor.In(mustLocation(item.Timezone)).Format("2006-01-02 15:04:05 MST"), item.Timezone)
+	body := scheduledWorkBody(item, run)
 	created, err := r.Store.Write(&work.Item{Path: path, Project: "calendar", Body: body, Frontmatter: work.Frontmatter{ID: run.ID, Kind: "calendar_action", Created: time.Now().UTC(), Title: item.Title, Extra: map[string]interface{}{"calendar_item_id": item.ID, "calendar_run_id": run.ID}}}, time.Time{})
 	if err != nil {
 		return ActionResult{}, fmt.Errorf("create visible Work item: %w", err)
@@ -96,6 +104,74 @@ func (r *WorkRunner) RunScheduledAction(_ context.Context, item Item, run Run) (
 		return ActionResult{WorkID: created.ID, AgentSession: started.Frontmatter.AgentSession, Launched: true}, fmt.Errorf("persist started Work item: %w", err)
 	}
 	return ActionResult{WorkID: written.ID, AgentSession: written.Frontmatter.AgentSession, Result: "Visible Work action started.", Launched: true}, nil
+}
+
+func scheduledWorkBody(item Item, run Run) string {
+	return fmt.Sprintf(`# %s
+
+## Instructions
+
+%s
+
+## User-facing deliverable
+
+Write the complete result for the user between the markers below. Replace the
+placeholder entirely. Preserve useful paragraphs, lists, links, and citations;
+do not put execution notes or Calendar metadata in this section. Keep the
+deliverable at or below 256 KiB.
+
+%s
+%s
+%s
+
+## Calendar metadata
+
+Calendar item: `+"`%s`"+`
+Scheduled for: %s (%s)
+`, item.Title, strings.TrimSpace(item.ActionInstruction), scheduledDeliverableStart, scheduledDeliverablePlaceholder, scheduledDeliverableEnd, item.ID, run.ScheduledFor.In(mustLocation(item.Timezone)).Format("2006-01-02 15:04:05 MST"), item.Timezone)
+}
+
+func scheduledActionResult(item *work.Item, legacySummary string) string {
+	if item != nil {
+		if deliverable, ok := extractScheduledDeliverable(item.Body); ok {
+			return deliverable
+		}
+		if outcome := strings.TrimSpace(item.Frontmatter.Outcome); outcome != "" {
+			return outcome
+		}
+	}
+	return strings.TrimSpace(legacySummary)
+}
+
+func extractScheduledDeliverable(body string) (string, bool) {
+	start := strings.Index(body, scheduledDeliverableStart)
+	if start < 0 {
+		return "", false
+	}
+	start += len(scheduledDeliverableStart)
+	endOffset := strings.Index(body[start:], scheduledDeliverableEnd)
+	if endOffset < 0 {
+		return "", false
+	}
+	deliverable := strings.TrimSpace(body[start : start+endOffset])
+	if deliverable == "" || deliverable == scheduledDeliverablePlaceholder {
+		return "", false
+	}
+	return limitUTF8Bytes(deliverable, maxScheduledDeliverableBytes), true
+}
+
+func limitUTF8Bytes(value string, limit int) string {
+	if limit <= 0 {
+		return ""
+	}
+	if len(value) <= limit {
+		return value
+	}
+	value = value[:limit]
+	for !utf8.ValidString(value) {
+		value = value[:len(value)-1]
+	}
+	return value
 }
 
 func (r *WorkRunner) DeliverScheduledAction(_ context.Context, item Item, run Run, status Status, result, failure string) error {

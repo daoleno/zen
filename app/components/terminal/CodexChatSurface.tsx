@@ -22,6 +22,7 @@ interface CodexChatSurfaceProps {
   theme: TerminalThemePalette;
   chrome: TerminalThemeChrome;
   screenFocused: boolean;
+  readOnly?: boolean;
   placeholder?: string;
   keyboardVerticalOffset?: number;
   showUnavailableAction?: boolean;
@@ -47,6 +48,7 @@ function CodexChatSurfaceImpl({
   theme,
   chrome,
   screenFocused,
+  readOnly = false,
   placeholder,
   keyboardVerticalOffset,
   showUnavailableAction,
@@ -85,7 +87,7 @@ function CodexChatSurfaceImpl({
 
   return (
     <View style={[styles.root, { backgroundColor: canvasBackground }]}>
-      <CodexChatBody {...bodyProps} />
+      <CodexChatBody {...bodyProps} readOnly={readOnly} />
     </View>
   );
 }
