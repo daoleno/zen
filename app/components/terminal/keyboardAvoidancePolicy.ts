@@ -4,3 +4,9 @@ export function shouldAvoidKeyboard(
 ) {
   return surfaceEnabled && keyboardVisible;
 }
+
+export function keyboardAvoidanceResetStyle(platform: string) {
+  return platform === "android"
+    ? { height: "auto" as const, flex: 1 }
+    : { paddingBottom: 0 };
+}
