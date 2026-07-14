@@ -1,6 +1,8 @@
 # Connect and pair
 
-Zen runs agents on your computer; pairing connects the phone app to that computer. The phone needs a reachable daemon origin first—the pairing QR does not create a network path.
+Zen runs agents on your computer; pairing connects the phone app to that computer. Choose one route below and make the daemon origin reachable from the phone before pairing.
+
+`zen pair <origin>` records that phone-reachable daemon origin in the pairing payload and issues short-lived pairing credentials. It does not create or verify a LAN, tailnet, tunnel, DNS record, or domain. Test reachability through the chosen route separately.
 
 ## Model
 
@@ -10,9 +12,9 @@ Zen runs agents on your computer; pairing connects the phone app to that compute
 
 There is no long-lived shared secret for normal traffic.
 
-## Route A: direct private network
+## 1. Same trusted Wi-Fi
 
-Use this route when the phone and computer are on the same trusted Wi-Fi or connected directly through the same Tailscale Tailnet.
+This is the shortest route when the phone and computer are on the same trusted Wi-Fi.
 
 1. Start Zen in private-network mode:
 
@@ -20,57 +22,55 @@ Use this route when the phone and computer are on the same trusted Wi-Fi or conn
    zen --lan
    ```
 
-2. Zen prints complete pair commands for detected LAN and Tailscale addresses. In another terminal, run the one for the network your phone uses. Example LAN output:
-
-   ```bash
-   zen pair http://192.168.1.42:9876
-   ```
-
-   A direct Tailnet address looks like:
-
-   ```bash
-   zen pair http://100.101.102.103:9876
-   ```
+2. Zen prints complete commands for the addresses it detects. In another terminal, run the exact **Same Wi-Fi/LAN** `zen pair` command it printed. Never substitute `0.0.0.0`.
 
 3. Scan the QR code or import the printed link in the app.
 
-The pair command must use the computer's actual LAN or Tailscale IP, never `0.0.0.0`. If Zen cannot detect an address, use `hostname -I` on Linux or `ipconfig getifaddr en0` on macOS to find the LAN IP. The phone must be able to reach that IP and port; host firewalls and Wi-Fi client/AP isolation can block it.
+The phone must be able to reach the host address and port `9876`; host firewalls and Wi-Fi client/AP isolation can block it. Plain LAN HTTP is not encrypted, so use this route only on a private network you trust. `zen --lan` listens on every IPv4 interface, not only Wi-Fi.
 
-Plain LAN HTTP is not encrypted, so use it only on a trusted private network. A direct Tailscale IP is carried inside the encrypted Tailnet, but access still follows your Tailnet membership and ACLs.
+## 2. Tailscale across networks
 
-## Route B: HTTPS endpoint
+Use Tailscale when the phone should connect privately from cellular, another Wi-Fi network, or another location.
 
-Keep Zen in its default local-only mode:
+1. [Install Tailscale](https://tailscale.com/docs/install) on the daemon host and phone, sign both into the same tailnet, and make sure your tailnet grants allow the phone to reach the host.
+
+2. Bind Zen only to the host's Tailscale IPv4 address:
+
+```bash
+zen -addr "$(tailscale ip -4):9876"
+```
+
+The [`tailscale ip -4`](https://tailscale.com/docs/reference/tailscale-cli#ip) command returns the host's address. Before pairing, confirm the phone can load `/health` at the origin Zen printed. Then run the corresponding `zen pair` command in another terminal and scan or import the result on the phone.
+
+Direct Tailscale HTTP stays inside Tailscale's encrypted network and is not public internet traffic. Tailnet membership and grants remain the access boundary. Binding the Tailscale address specifically avoids also exposing port `9876` on the local LAN.
+
+## 3. Stable HTTPS with Cloudflare Tunnel
+
+Use this route when the phone needs a stable HTTPS domain and installing Tailscale on the phone is not desired. The domain must be active on Cloudflare.
+
+1. Keep Zen on its default loopback-only origin:
 
 ```bash
 zen
 ```
 
-Then forward the whole `http://127.0.0.1:9876` origin through Cloudflare Tunnel, Tailscale Serve/Funnel, or another HTTPS reverse proxy, including:
+2. Follow Cloudflare's current [Create a tunnel (dashboard)](https://developers.cloudflare.com/cloudflare-one/networks/connectors/cloudflare-tunnel/get-started/create-remote-tunnel/) steps: create a named tunnel, run the displayed `cloudflared` connector command on the Zen host, and add a **Published application** route.
 
-- `/ws`
-- `/health`
-- `/auth-check`
-- `/pair`
-- `/upload`
-
-Do not publish only `/ws`.
-
-Examples using current [Tailscale Serve](https://tailscale.com/docs/reference/tailscale-cli/serve), [Tailscale Funnel](https://tailscale.com/docs/reference/tailscale-cli/funnel), and [Cloudflare Tunnel](https://developers.cloudflare.com/tunnel/setup/) CLIs:
+3. Set the route's public hostname to the stable name you chose and its Service URL to:
 
 ```bash
-tailscale serve 9876       # private HTTPS URL inside your Tailnet
-tailscale funnel 9876      # public HTTPS URL
-cloudflared tunnel --url http://127.0.0.1:9876  # temporary public HTTPS URL
+http://127.0.0.1:9876
 ```
 
-Use the HTTPS URL printed by the chosen tool:
+Do not add a path restriction: Zen needs the full origin, including `/ws`, `/health`, `/auth-check`, `/pair`, and `/upload`.
+
+4. The phone-reachable Zen origin is the exact published hostname with `https`. If the published hostname is `zen.example.com`, the final origin Zen needs is `https://zen.example.com`. Confirm the phone can load `https://zen.example.com/health`, substituting your real hostname, then run:
 
 ```bash
-zen pair https://your-zen-host.example
+zen pair https://zen.example.com
 ```
 
-Tailscale Serve is limited to your Tailnet; Funnel and Cloudflare public hostnames are internet-reachable. For a stable Cloudflare hostname, configure a named tunnel rather than relying on a temporary Quick Tunnel.
+Cloudflare Tunnel uses outbound connector traffic, so the host does not need a public inbound port. The published hostname is nevertheless internet-reachable unless you add a compatible access layer. Zen exposes unauthenticated `/health` metadata; pairing and normal control routes require short-lived pairing credentials or enrolled-device signatures. Keep pairing links private. A Cloudflare login page is not supported by the Zen mobile client.
 
 ## Generate a pairing link
 
@@ -78,8 +78,7 @@ With the daemon already running, pass the origin the phone can actually reach:
 
 ```bash
 zen pair https://zen.example.com
-# or, on the same trusted LAN:
-zen pair http://192.168.1.42:9876
+# Or run the exact private-network command printed by Zen.
 ```
 
 Use the reachable origin (scheme + host). `zen pair` normalizes HTTP(S) to `ws`/`wss` and uses `/ws` for the compact `zen://` payload. The app derives the HTTP routes at the origin root, so path-prefixed proxy origins are not supported; forward every listed route on the same host.

@@ -63,15 +63,11 @@ zen doctor
 zen --lan
 ```
 
-Zen prints a `zen pair` command for each detected private address. Keep the daemon running, open another terminal, and run the command for the same trusted network as your phone:
+Zen prints a `zen pair` command for each detected private address. Keep the daemon running, open another terminal, and run the exact **Same Wi-Fi/LAN** command Zen printed.
 
-```bash
-zen pair http://192.168.1.42:9876
-```
+Open the mobile app and **scan or import the pairing code**. For access across networks, use private [Tailscale](https://tailscale.com/docs/install) connectivity or a stable [Cloudflare Tunnel](https://developers.cloudflare.com/cloudflare-one/networks/connectors/cloudflare-tunnel/get-started/create-remote-tunnel/) hostname.
 
-Use the address Zen prints—not the example above. Open the mobile app and **scan or import the pairing code**.
-
-For installation details, iOS source builds, or remote HTTPS access, see [Install the daemon](docs/install-daemon.md) and [Connect and pair](docs/connect-and-pair.md).
+For installation details, iOS source builds, and the shortest setup for each connection route, see [Install the daemon](docs/install-daemon.md) and [Connect and pair](docs/connect-and-pair.md).
 
 ## How it works
 
