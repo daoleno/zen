@@ -4,7 +4,11 @@ import {
   StyleSheet,
   View,
 } from "react-native";
-import { KeyboardAvoidingView } from "react-native-keyboard-controller";
+import {
+  KeyboardAvoidingView,
+  useKeyboardState,
+} from "react-native-keyboard-controller";
+import { shouldAvoidKeyboard } from "./keyboardAvoidancePolicy";
 
 interface CodexChatKeyboardFrameProps {
   enabled: boolean;
@@ -19,11 +23,14 @@ export function CodexChatKeyboardFrame({
   automaticOffset,
   children,
 }: CodexChatKeyboardFrameProps) {
+  const keyboardVisible = useKeyboardState((state) => state.isVisible);
+  const avoidanceEnabled = shouldAvoidKeyboard(enabled, keyboardVisible);
+
   return (
     <KeyboardAvoidingView
       behavior={Platform.OS === "android" ? "height" : "padding"}
       collapsable={false}
-      enabled={enabled}
+      enabled={avoidanceEnabled}
       keyboardVerticalOffset={keyboardVerticalOffset}
       automaticOffset={automaticOffset}
       style={styles.chatBody}
