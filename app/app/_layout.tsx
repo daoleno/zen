@@ -24,7 +24,7 @@ import {
   useAgentList,
   useAgentServerConnections,
 } from "../store/agents";
-import { BrainProvider, useBrainDispatch } from "../store/brain";
+import { BrainProvider, useBrain, useBrainDispatch } from "../store/brain";
 import { WorkProvider, useWorkDispatch } from "../store/work";
 import { CalendarProvider, useCalendarDispatch } from "../store/calendar";
 import { syncCalendarNotifications } from "../services/calendarNotifications";
@@ -488,6 +488,7 @@ const ConnectionLifecycle = memo(function ConnectionLifecycle({
         item: data.calendar_item,
       });
       wsClient.listCalendarItems(data.serverId);
+      wsClient.requestBrainSnapshot(data.serverId);
     };
     const onConnectedFetchWork = (data: any) => {
       wsClient.listWorkItems(data.serverId);
@@ -672,6 +673,7 @@ const NotificationObserver = memo(function NotificationObserver() {
   const router = useRouter();
   const segments = useSegments();
   const agents = useAgentList();
+  const { state: brainState } = useBrain();
   const routerRef = useRef(router);
   const notificationListener = useRef<Notifications.EventSubscription | null>(
     null,
@@ -681,6 +683,7 @@ const NotificationObserver = memo(function NotificationObserver() {
   const notificationsEnabledRef = useRef(false);
   const previousAgentStatesRef = useRef(new Map<string, Agent["status"]>());
   const localNotificationSignalsRef = useRef(new Set<string>());
+  const initializedBrainResultServersRef = useRef(new Set<string>());
   const isTerminalRouteActive = segments[0] === "terminal";
 
   useEffect(() => {
@@ -754,6 +757,45 @@ const NotificationObserver = memo(function NotificationObserver() {
     previousAgentStatesRef.current = nextAgentStates;
   }, [agents, isTerminalRouteActive]);
 
+  useEffect(() => {
+    for (const [serverId, server] of Object.entries(brainState.byServer)) {
+      const results = server.scheduled_results ?? [];
+      if (!initializedBrainResultServersRef.current.has(serverId)) {
+        initializedBrainResultServersRef.current.add(serverId);
+        for (const result of results) {
+          localNotificationSignalsRef.current.add(
+            `brain:${serverId}:${result.id}`,
+          );
+        }
+        continue;
+      }
+      for (const result of results) {
+        const signal = `brain:${serverId}:${result.id}`;
+        if (localNotificationSignalsRef.current.has(signal)) continue;
+        localNotificationSignalsRef.current.add(signal);
+        if (!notificationsEnabledRef.current) continue;
+        const failed = result.status === "failed";
+        void Notifications.scheduleNotificationAsync({
+          content: {
+            title: failed
+              ? `${result.title || "Scheduled Work"} failed`
+              : `${result.title || "Scheduled Work"} is ready`,
+            body: failed
+              ? "Open Brain for the failure outcome."
+              : "Open Brain for the scheduled result.",
+            data: {
+              screen: "brain",
+              server_id: serverId,
+              brain_thread_id: result.thread_id,
+              brain_message_id: result.id,
+            },
+          },
+          trigger: null,
+        }).catch(() => {});
+      }
+    }
+  }, [brainState.byServer]);
+
   // Register permissions and push token.
   useEffect(() => {
     let cancelled = false;
@@ -823,8 +865,34 @@ const NotificationObserver = memo(function NotificationObserver() {
           routerRef.current.push({
             pathname: "/calendar",
             params: {
-              id: typeof data.calendar_id === "string" ? data.calendar_id : undefined,
-              serverId: typeof data.server_id === "string" ? data.server_id : undefined,
+              id:
+                typeof data.calendar_id === "string"
+                  ? data.calendar_id
+                  : undefined,
+              serverId:
+                typeof data.server_id === "string"
+                  ? data.server_id
+                  : undefined,
+            },
+          });
+          return;
+        }
+        if (data?.screen === "brain") {
+          routerRef.current.push({
+            pathname: "/",
+            params: {
+              brainThreadId:
+                typeof data.brain_thread_id === "string"
+                  ? data.brain_thread_id
+                  : undefined,
+              brainMessageId:
+                typeof data.brain_message_id === "string"
+                  ? data.brain_message_id
+                  : undefined,
+              serverId:
+                typeof data.server_id === "string"
+                  ? data.server_id
+                  : undefined,
             },
           });
         }

@@ -136,6 +136,9 @@ func TestValidationRequiresKindSpecificTimeAndMatchingTimezoneOffset(t *testing.
 	if _, err := store.Create(Item{Title: "Empty action", Kind: KindScheduledAction, DueAt: &wrong, Timezone: "UTC", Recurrence: RecurrenceNone}); err == nil {
 		t.Fatal("expected action instruction validation error")
 	}
+	if _, err := store.Create(Item{Title: "Untargeted action", Kind: KindScheduledAction, DueAt: &wrong, Timezone: "UTC", Recurrence: RecurrenceNone, ActionInstruction: "Run it"}); err == nil || !strings.Contains(err.Error(), "source_thread_id") {
+		t.Fatalf("target validation error = %v", err)
+	}
 }
 
 func TestNextOccurrencePreservesWallClockAcrossDSTAndWeekdays(t *testing.T) {
@@ -235,6 +238,26 @@ type fakeRunner struct {
 	err           error
 }
 
+type retryingDeliveryRunner struct {
+	deliveries int
+}
+
+func (r *retryingDeliveryRunner) RunScheduledAction(context.Context, Item, Run) (ActionResult, error) {
+	return ActionResult{WorkID: "work-1", AgentSession: "agent-1", Launched: true}, nil
+}
+
+func (r *retryingDeliveryRunner) InspectScheduledAction(context.Context, Item, Run) (Status, string, string, bool) {
+	return StatusCompleted, "durable result", "", true
+}
+
+func (r *retryingDeliveryRunner) DeliverScheduledAction(context.Context, Item, Run, Status, string, string) error {
+	r.deliveries++
+	if r.deliveries == 1 {
+		return errors.New("temporary Brain write failure")
+	}
+	return nil
+}
+
 func (r *fakeRunner) RunScheduledAction(_ context.Context, _ Item, _ Run) (ActionResult, error) {
 	r.mu.Lock()
 	r.calls++
@@ -262,7 +285,7 @@ func TestPersistenceFailureRollsBackEveryStateTransition(t *testing.T) {
 		t.Fatal(err)
 	}
 	actionAt := now.Add(2 * time.Hour)
-	action, err := store.Create(Item{Title: "Atomic action", Kind: KindScheduledAction, DueAt: &actionAt, Timezone: "America/New_York", Recurrence: RecurrenceNone, ActionInstruction: "Run it"})
+	action, err := store.Create(Item{Title: "Atomic action", Kind: KindScheduledAction, DueAt: &actionAt, Timezone: "America/New_York", Recurrence: RecurrenceNone, ActionInstruction: "Run it", SourceThreadID: "thread-1"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -319,7 +342,7 @@ func TestPartialLaunchPersistenceFailureStaysRunningForReconciliation(t *testing
 	now := localTime(t, "America/New_York", 2026, time.July, 14, 10, 0)
 	store.now = func() time.Time { return now }
 	due := now.Add(time.Hour)
-	item, _ := store.Create(Item{Title: "Launch", Kind: KindScheduledAction, DueAt: &due, Timezone: "America/New_York", Recurrence: RecurrenceNone, ActionInstruction: "Launch work"})
+	item, _ := store.Create(Item{Title: "Launch", Kind: KindScheduledAction, DueAt: &due, Timezone: "America/New_York", Recurrence: RecurrenceNone, ActionInstruction: "Launch work", SourceThreadID: "thread-1"})
 	runner := &fakeRunner{
 		result: ActionResult{WorkID: "work-1", AgentSession: "agent-1", Result: "agent launched", Launched: true},
 		err:    errors.New("write started Work frontmatter"),
@@ -349,7 +372,7 @@ func TestSchedulerClaimsOnceAndBoundedCatchUp(t *testing.T) {
 	now := localTime(t, "America/New_York", 2026, time.July, 14, 9, 30)
 	store.now = func() time.Time { return now }
 	due := now.Add(-5 * time.Minute)
-	action, err := store.Create(Item{Title: "Run report", Kind: KindScheduledAction, DueAt: &due, Timezone: "America/New_York", Recurrence: RecurrenceNone, ActionInstruction: "Generate report"})
+	action, err := store.Create(Item{Title: "Run report", Kind: KindScheduledAction, DueAt: &due, Timezone: "America/New_York", Recurrence: RecurrenceNone, ActionInstruction: "Generate report", SourceThreadID: "thread-1"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -393,7 +416,7 @@ func TestSchedulerClaimsOnceAndBoundedCatchUp(t *testing.T) {
 	}
 
 	missedDue := now.Add(-DefaultMissedActionWindow - time.Second)
-	missed, err := store.Create(Item{Title: "Old action", Kind: KindScheduledAction, DueAt: &missedDue, Timezone: "America/New_York", Recurrence: RecurrenceNone, ActionInstruction: "Do old work"})
+	missed, err := store.Create(Item{Title: "Old action", Kind: KindScheduledAction, DueAt: &missedDue, Timezone: "America/New_York", Recurrence: RecurrenceNone, ActionInstruction: "Do old work", SourceThreadID: "thread-1"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -409,7 +432,7 @@ func TestRestartReconciliationNeverRelaunchesUnknownWork(t *testing.T) {
 	now := localTime(t, "America/New_York", 2026, time.July, 14, 10, 0)
 	store.now = func() time.Time { return now }
 	due := now.Add(-time.Minute)
-	item, _ := store.Create(Item{Title: "Deploy", Kind: KindScheduledAction, DueAt: &due, Timezone: "America/New_York", Recurrence: RecurrenceNone, ActionInstruction: "Deploy"})
+	item, _ := store.Create(Item{Title: "Deploy", Kind: KindScheduledAction, DueAt: &due, Timezone: "America/New_York", Recurrence: RecurrenceNone, ActionInstruction: "Deploy", SourceThreadID: "thread-1"})
 	_, run, err := store.Claim(item.ID, false)
 	if err != nil {
 		t.Fatal(err)
@@ -430,12 +453,38 @@ func TestRestartReconciliationNeverRelaunchesUnknownWork(t *testing.T) {
 	}
 }
 
+func TestSchedulerRetriesDeliveryWithoutRelaunchingOccurrence(t *testing.T) {
+	store, _ := NewStore(t.TempDir())
+	now := localTime(t, "America/New_York", 2026, time.July, 14, 10, 0)
+	store.now = func() time.Time { return now }
+	due := now.Add(-time.Minute)
+	item, err := store.Create(Item{Title: "Deliver", Kind: KindScheduledAction, DueAt: &due, Timezone: "America/New_York", Recurrence: RecurrenceNone, ActionInstruction: "Deliver", SourceThreadID: "thread-1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	runner := &retryingDeliveryRunner{}
+	scheduler := NewScheduler(store, runner)
+	if _, err := scheduler.RunNow(context.Background(), item.ID); err != nil {
+		t.Fatal(err)
+	}
+	scheduler.Tick(context.Background())
+	first, _ := store.Get(item.ID)
+	if first.Status != StatusRunning || runner.deliveries != 1 {
+		t.Fatalf("first = %#v, deliveries = %d", first, runner.deliveries)
+	}
+	scheduler.Tick(context.Background())
+	finished, _ := store.Get(item.ID)
+	if finished.Status != StatusCompleted || runner.deliveries != 2 || len(finished.Runs) != 1 {
+		t.Fatalf("finished = %#v, deliveries = %d", finished, runner.deliveries)
+	}
+}
+
 func TestRunNowDoesNotConsumeAStillFutureScheduledOccurrence(t *testing.T) {
 	store, _ := NewStore(t.TempDir())
 	now := localTime(t, "America/New_York", 2026, time.July, 14, 10, 0)
 	store.now = func() time.Time { return now }
 	due := now.Add(time.Hour)
-	item, err := store.Create(Item{Title: "Future deploy", Kind: KindScheduledAction, DueAt: &due, Timezone: "America/New_York", Recurrence: RecurrenceNone, ActionInstruction: "Deploy"})
+	item, err := store.Create(Item{Title: "Future deploy", Kind: KindScheduledAction, DueAt: &due, Timezone: "America/New_York", Recurrence: RecurrenceNone, ActionInstruction: "Deploy", SourceThreadID: "thread-1"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -457,7 +506,7 @@ func TestFailedRunNowDoesNotConsumeAStillFutureScheduledOccurrence(t *testing.T)
 	now := localTime(t, "America/New_York", 2026, time.July, 14, 10, 0)
 	store.now = func() time.Time { return now }
 	due := now.Add(time.Hour)
-	item, err := store.Create(Item{Title: "Future deploy", Kind: KindScheduledAction, DueAt: &due, Timezone: "America/New_York", Recurrence: RecurrenceWeekly, ActionInstruction: "Deploy"})
+	item, err := store.Create(Item{Title: "Future deploy", Kind: KindScheduledAction, DueAt: &due, Timezone: "America/New_York", Recurrence: RecurrenceWeekly, ActionInstruction: "Deploy", SourceThreadID: "thread-1"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -470,6 +519,28 @@ func TestFailedRunNowDoesNotConsumeAStillFutureScheduledOccurrence(t *testing.T)
 	}
 	got, _ := store.Get(item.ID)
 	if got.Status != StatusScheduled || !got.NextAt.Equal(due) || got.Runs[0].Status != StatusFailed {
+		t.Fatalf("got = %#v", got)
+	}
+}
+
+func TestFailedRecurringOccurrenceAdvancesAndRemainsRecorded(t *testing.T) {
+	store, _ := NewStore(t.TempDir())
+	now := localTime(t, "America/New_York", 2026, time.July, 14, 10, 0)
+	store.now = func() time.Time { return now }
+	due := now.Add(-time.Minute)
+	item, err := store.Create(Item{Title: "Daily report", Kind: KindScheduledAction, DueAt: &due, Timezone: "America/New_York", Recurrence: RecurrenceDaily, ActionInstruction: "Report", SourceThreadID: "thread-1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, run, err := store.Claim(item.ID, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := store.FinishRun(item.ID, run.ID, "", "executor failed")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Status != StatusScheduled || !got.NextAt.After(now) || got.Runs[0].Status != StatusFailed || got.FailureReason != "executor failed" {
 		t.Fatalf("got = %#v", got)
 	}
 }

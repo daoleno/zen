@@ -64,7 +64,7 @@ func TestCalendarRunControlConfirmationDescribesLaunchNotCompletion(t *testing.T
 	store, _ := calendar.NewStore(t.TempDir())
 	loc, _ := time.LoadLocation("Asia/Shanghai")
 	due := time.Now().In(loc).Add(time.Hour)
-	item, err := store.Create(calendar.Item{Title: "Prepare report", Kind: calendar.KindScheduledAction, DueAt: &due, Timezone: "Asia/Shanghai", Recurrence: calendar.RecurrenceNone, ActionInstruction: "Write the report"})
+	item, err := store.Create(calendar.Item{Title: "Prepare report", Kind: calendar.KindScheduledAction, DueAt: &due, Timezone: "Asia/Shanghai", Recurrence: calendar.RecurrenceNone, ActionInstruction: "Write the report", SourceThreadID: "thread-1"})
 	if err != nil {
 		t.Fatal(err)
 	}

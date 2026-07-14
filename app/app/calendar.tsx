@@ -51,6 +51,7 @@ import {
   type CalendarKind,
   type CalendarRecurrence,
 } from "../store/calendar";
+import { useBrain } from "../store/brain";
 
 type Mode = "agenda" | "month" | "day";
 type ServerItem = CalendarItem & { serverId: string; serverName: string };
@@ -774,6 +775,7 @@ function EditorModal({
   onError(error: unknown): void;
 }) {
   const colors = useAppColors();
+  const { state: brainState } = useBrain();
   const styles = useMemo(() => createStyles(colors), [colors]);
   const existing = value && value !== "new" ? value : null;
   const [title, setTitle] = useState("");
@@ -859,6 +861,11 @@ function EditorModal({
         throw new Error(resolutionMessage(endResolution));
       if (kind === "event" && endInstant! <= atInstant)
         throw new Error("Event end must be after its start.");
+      const sourceThreadId = existing?.source_thread_id ??
+        (serverId ? brainState.byServer[serverId]?.chat_thread_id : undefined);
+      if (kind === "scheduled_action" && !sourceThreadId) {
+        throw new Error("Scheduled Work requires an active Brain conversation on this server.");
+      }
       const payload: any = {
         ...(existing ?? {}),
         title: title.trim(),
@@ -868,6 +875,8 @@ function EditorModal({
         notes: notes.trim(),
         action_instruction:
           kind === "scheduled_action" ? instruction.trim() : undefined,
+        source_thread_id:
+          kind === "scheduled_action" ? sourceThreadId : undefined,
       };
       delete payload.start_at;
       delete payload.end_at;

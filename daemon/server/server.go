@@ -123,43 +123,44 @@ func New(authManager *auth.Manager, w *watcher.Watcher, pusher *push.Client, sc 
 }
 
 type clientMessage struct {
-	Type         string                 `json:"type"`
-	RequestID    string                 `json:"request_id"`
-	AgentID      string                 `json:"agent_id"`
-	TargetID     string                 `json:"target_id"`
-	Cwd          string                 `json:"cwd"`
-	Command      string                 `json:"command"`
-	Name         string                 `json:"name"`
-	StartedAt    json.RawMessage        `json:"started_at"`
-	Backend      string                 `json:"backend"`
-	SessionID    string                 `json:"session_id"`
-	Text         string                 `json:"text"`
-	Key          string                 `json:"key"`
-	Data         string                 `json:"data"`
-	Body         string                 `json:"body"`
-	Action       string                 `json:"action"`
-	StateVersion int64                  `json:"state_version"`
-	PushToken    string                 `json:"push_token"`
-	ServerRef    string                 `json:"server_ref"`
-	Cols         int                    `json:"cols"`
-	Rows         int                    `json:"rows"`
-	Col          int                    `json:"col"`
-	Row          int                    `json:"row"`
-	Lines        int                    `json:"lines"`
-	ProcessID    int                    `json:"process_id"`
-	Path         string                 `json:"path"`
-	ID           string                 `json:"id"`
-	Project      string                 `json:"project"`
-	Frontmatter  map[string]interface{} `json:"frontmatter"`
-	BaseMtime    string                 `json:"base_mtime"`
-	Prompt       string                 `json:"prompt"`
-	Executor     string                 `json:"executor"`
-	ExecutorID   string                 `json:"executor_id"`
-	AdapterID    string                 `json:"adapter_id"`
-	Personality  string                 `json:"personality"`
-	Done         bool                   `json:"done"`
-	CalendarItem *calendar.Item         `json:"calendar_item"`
-	Revision     int64                  `json:"revision"`
+	Type                 string                 `json:"type"`
+	RequestID            string                 `json:"request_id"`
+	AgentID              string                 `json:"agent_id"`
+	TargetID             string                 `json:"target_id"`
+	Cwd                  string                 `json:"cwd"`
+	Command              string                 `json:"command"`
+	Name                 string                 `json:"name"`
+	StartedAt            json.RawMessage        `json:"started_at"`
+	Backend              string                 `json:"backend"`
+	SessionID            string                 `json:"session_id"`
+	Text                 string                 `json:"text"`
+	Key                  string                 `json:"key"`
+	Data                 string                 `json:"data"`
+	Body                 string                 `json:"body"`
+	Action               string                 `json:"action"`
+	StateVersion         int64                  `json:"state_version"`
+	PushToken            string                 `json:"push_token"`
+	ServerRef            string                 `json:"server_ref"`
+	Cols                 int                    `json:"cols"`
+	Rows                 int                    `json:"rows"`
+	Col                  int                    `json:"col"`
+	Row                  int                    `json:"row"`
+	Lines                int                    `json:"lines"`
+	ProcessID            int                    `json:"process_id"`
+	Path                 string                 `json:"path"`
+	ID                   string                 `json:"id"`
+	Project              string                 `json:"project"`
+	Frontmatter          map[string]interface{} `json:"frontmatter"`
+	BaseMtime            string                 `json:"base_mtime"`
+	Prompt               string                 `json:"prompt"`
+	Executor             string                 `json:"executor"`
+	ExecutorID           string                 `json:"executor_id"`
+	AdapterID            string                 `json:"adapter_id"`
+	Personality          string                 `json:"personality"`
+	Done                 bool                   `json:"done"`
+	CalendarItem         *calendar.Item         `json:"calendar_item"`
+	Revision             int64                  `json:"revision"`
+	ConversationScopeKey string                 `json:"conversation_scope_key"`
 }
 
 // Run starts the HTTP server and event broadcaster.
@@ -1000,6 +1001,7 @@ func (s *Server) publishCodexConversationSubscription(
 			conversation = work.TerminalSnapshotConversationForAgent(resolved.agent, text, now)
 		}
 	}
+	conversation = s.brainScopedConversation(raw.ConversationScopeKey, conversation, now)
 	fingerprint := codexConversationSubscriptionFingerprint(conversation)
 	if (*previous) != nil && (*previous).fingerprint == fingerprint {
 		return
@@ -1047,6 +1049,58 @@ func (s *Server) publishCodexConversationSubscription(
 		"deletes":         deletes,
 	})
 	*previous = &next
+}
+
+func (s *Server) brainScopedConversation(scopeKey string, conversation work.CodexConversation, now time.Time) work.CodexConversation {
+	const prefix = "brain-thread:"
+	if s.brain == nil || !strings.HasPrefix(strings.TrimSpace(scopeKey), prefix) {
+		return conversation
+	}
+	threadID := strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(scopeKey), prefix))
+	if threadID == "" {
+		return conversation
+	}
+	currentThreadID, _ := s.brain.ChatThreadID()
+	messages, err := s.brain.ChatMessages(threadID)
+	if err != nil {
+		conversation.Available = false
+		conversation.Reason = "brain_messages_unavailable"
+		return conversation
+	}
+	if threadID != strings.TrimSpace(currentThreadID) {
+		conversation.Events = []work.CodexConversationEvent{}
+		active := false
+		conversation.Active = &active
+	}
+	maxSeq := 0
+	for _, event := range conversation.Events {
+		if event.Seq > maxSeq {
+			maxSeq = event.Seq
+		}
+	}
+	for _, message := range messages {
+		if message.Kind != "calendar_result" {
+			continue
+		}
+		maxSeq++
+		conversation.Events = append(conversation.Events, work.CodexConversationEvent{
+			ID:        message.ID,
+			Seq:       maxSeq,
+			Timestamp: message.CreatedAt.Format(time.RFC3339Nano),
+			Kind:      "assistant_message",
+			Role:      "assistant",
+			Title:     message.Title,
+			Body:      message.Body,
+			Status:    message.Status,
+			Source:    "calendar_result",
+		})
+	}
+	conversation.Available = true
+	conversation.Reason = ""
+	conversation.Source = "brain_chat"
+	conversation.SessionID = prefix + threadID
+	conversation.Updated = &now
+	return conversation
 }
 
 func codexConversationIdentity(conversation work.CodexConversation) string {

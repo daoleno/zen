@@ -2,12 +2,14 @@ package calendar
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"time"
 
+	"github.com/daoleno/zen/daemon/brain"
 	"github.com/daoleno/zen/daemon/classifier"
 	"github.com/daoleno/zen/daemon/work"
 )
@@ -18,6 +20,7 @@ type WorkRunner struct {
 	Watcher  interface {
 		GetAgent(string) *classifier.Agent
 	}
+	Brain *brain.Service
 }
 
 func (r *WorkRunner) InspectScheduledAction(_ context.Context, _ Item, run Run) (Status, string, string, bool) {
@@ -60,6 +63,16 @@ func (r *WorkRunner) RunScheduledAction(_ context.Context, item Item, run Run) (
 	if r == nil || r.Store == nil || r.Launcher == nil {
 		return ActionResult{}, fmt.Errorf("work execution is not configured")
 	}
+	if r.Brain == nil {
+		return ActionResult{}, fmt.Errorf("Brain result delivery is not configured")
+	}
+	known, err := r.Brain.HasChatThread(item.SourceThreadID)
+	if err != nil {
+		return ActionResult{}, fmt.Errorf("validate Brain result thread: %w", err)
+	}
+	if !known {
+		return ActionResult{}, fmt.Errorf("%w: %s", ErrInvalidDeliveryTarget, strings.TrimSpace(item.SourceThreadID))
+	}
 	cwd := strings.TrimSpace(item.ActionCwd)
 	if cwd == "" {
 		var err error
@@ -74,7 +87,7 @@ func (r *WorkRunner) RunScheduledAction(_ context.Context, item Item, run Run) (
 	if err != nil {
 		return ActionResult{}, fmt.Errorf("create visible Work item: %w", err)
 	}
-	started, err := r.Launcher.Start(created, work.Project{Name: "calendar", Cwd: cwd})
+	started, err := r.Launcher.StartDedicated(created, work.Project{Name: "calendar", Cwd: cwd})
 	if err != nil {
 		return ActionResult{WorkID: created.ID}, fmt.Errorf("start visible Work item: %w", err)
 	}
@@ -83,6 +96,49 @@ func (r *WorkRunner) RunScheduledAction(_ context.Context, item Item, run Run) (
 		return ActionResult{WorkID: created.ID, AgentSession: started.Frontmatter.AgentSession, Launched: true}, fmt.Errorf("persist started Work item: %w", err)
 	}
 	return ActionResult{WorkID: written.ID, AgentSession: written.Frontmatter.AgentSession, Result: "Visible Work action started.", Launched: true}, nil
+}
+
+func (r *WorkRunner) DeliverScheduledAction(_ context.Context, item Item, run Run, status Status, result, failure string) error {
+	if r == nil || r.Brain == nil {
+		return fmt.Errorf("Brain result delivery is not configured")
+	}
+	body := strings.TrimSpace(result)
+	if status == StatusFailed {
+		reason := compactFailure(failure)
+		if reason == "" {
+			reason = "Scheduled Work failed."
+		}
+		body = fmt.Sprintf("**%s failed**\n\n%s", strings.TrimSpace(item.Title), reason)
+	} else {
+		if body == "" {
+			body = "Scheduled Work completed."
+		}
+		body = fmt.Sprintf("**%s completed**\n\n%s", strings.TrimSpace(item.Title), body)
+	}
+	_, err := r.Brain.DeliverCalendarResult(brain.CalendarResult{
+		ID:             "calendar_result:" + item.ID + ":" + run.ID,
+		ThreadID:       item.SourceThreadID,
+		CalendarItemID: item.ID,
+		CalendarRunID:  run.ID,
+		Title:          item.Title,
+		Status:         string(status),
+		Body:           body,
+		ScheduledFor:   run.ScheduledFor,
+		CreatedAt:      time.Now().UTC(),
+	})
+	if errors.Is(err, brain.ErrChatThreadNotFound) {
+		return fmt.Errorf("%w: %v", ErrInvalidDeliveryTarget, err)
+	}
+	return err
+}
+
+func compactFailure(value string) string {
+	value = strings.Join(strings.Fields(strings.TrimSpace(value)), " ")
+	runes := []rune(value)
+	if len(runes) > 240 {
+		return string(runes[:237]) + "..."
+	}
+	return value
 }
 
 func mustLocation(name string) *time.Location {

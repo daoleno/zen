@@ -19,13 +19,19 @@ type AgentRef struct {
 }
 
 type ChatMessage struct {
-	ID         string    `json:"id"`
-	ThreadID   string    `json:"thread_id,omitempty"`
-	SessionID  string    `json:"session_id"`
-	ExecutorID string    `json:"executor_id,omitempty"`
-	Role       string    `json:"role"`
-	Body       string    `json:"body"`
-	CreatedAt  time.Time `json:"created_at"`
+	ID             string     `json:"id"`
+	ThreadID       string     `json:"thread_id,omitempty"`
+	SessionID      string     `json:"session_id"`
+	ExecutorID     string     `json:"executor_id,omitempty"`
+	Role           string     `json:"role"`
+	Body           string     `json:"body"`
+	CreatedAt      time.Time  `json:"created_at"`
+	Kind           string     `json:"kind,omitempty"`
+	Status         string     `json:"status,omitempty"`
+	Title          string     `json:"title,omitempty"`
+	CalendarItemID string     `json:"calendar_item_id,omitempty"`
+	CalendarRunID  string     `json:"calendar_run_id,omitempty"`
+	ScheduledFor   *time.Time `json:"scheduled_for,omitempty"`
 }
 
 type Snapshot struct {
@@ -39,6 +45,7 @@ type Snapshot struct {
 	DelegatedExecutor *work.AgentExecutor  `json:"delegated_executor,omitempty"`
 	Executors         []work.AgentExecutor `json:"executors"`
 	ChatThreadID      string               `json:"chat_thread_id,omitempty"`
+	ScheduledResults  []ChatMessage        `json:"scheduled_results"`
 	Workspace         string               `json:"workspace,omitempty"`
 	GeneratedAt       time.Time            `json:"generated_at"`
 }

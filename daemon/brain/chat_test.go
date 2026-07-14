@@ -2,6 +2,7 @@ package brain
 
 import (
 	"encoding/json"
+	"errors"
 	"os"
 	"strings"
 	"testing"
@@ -34,6 +35,73 @@ func TestStoreChatMessagesFiltersByThreadAndLimit(t *testing.T) {
 	}
 	if len(got) != 2 || got[0].ID != "a2" || got[1].ID != "a3" {
 		t.Fatalf("messages = %#v", got)
+	}
+}
+
+func TestDeliverCalendarResultIsIdempotentAndKeepsOldThreadKnown(t *testing.T) {
+	root := t.TempDir()
+	store, err := NewStore(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SetChatState(ChatState{ThreadID: "thread-original", UpdatedAt: time.Now()}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SetChatState(ChatState{ThreadID: "thread-current", UpdatedAt: time.Now()}); err != nil {
+		t.Fatal(err)
+	}
+	store, err = NewStore(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	service := NewService(store, nil, nil)
+	result := CalendarResult{
+		ID: "calendar_result:item-1:run-1", ThreadID: "thread-original",
+		CalendarItemID: "item-1", CalendarRunID: "run-1", Title: "Daily papers",
+		Status: "completed", Body: "**Daily papers completed**\n\nThree papers.",
+		ScheduledFor: time.Date(2026, 7, 14, 1, 0, 0, 0, time.UTC),
+		CreatedAt:    time.Date(2026, 7, 14, 1, 2, 0, 0, time.UTC),
+	}
+	if _, err := service.DeliverCalendarResult(result); err != nil {
+		t.Fatal(err)
+	}
+	store, err = NewStore(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	service = NewService(store, nil, nil)
+	if _, err := service.DeliverCalendarResult(result); err != nil {
+		t.Fatal(err)
+	}
+	messages, err := store.ChatMessages("thread-original", 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(messages) != 1 || messages[0].Kind != "calendar_result" || messages[0].CalendarRunID != "run-1" {
+		t.Fatalf("messages = %#v", messages)
+	}
+	results, err := store.ScheduledResults(10)
+	if err != nil || len(results) != 1 {
+		t.Fatalf("results = %#v, err = %v", results, err)
+	}
+}
+
+func TestDeliverCalendarResultRejectsUnknownThreadWithoutAppending(t *testing.T) {
+	store, err := NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	service := NewService(store, nil, nil)
+	_, err = service.DeliverCalendarResult(CalendarResult{
+		ID: "calendar_result:item:run", ThreadID: "missing", Body: "nope",
+		ScheduledFor: time.Now(), CreatedAt: time.Now(),
+	})
+	if !errors.Is(err, ErrChatThreadNotFound) {
+		t.Fatalf("err = %v", err)
+	}
+	results, readErr := store.ScheduledResults(10)
+	if readErr != nil || len(results) != 0 {
+		t.Fatalf("results = %#v, err = %v", results, readErr)
 	}
 }
 

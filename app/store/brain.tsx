@@ -1,4 +1,27 @@
-import React, { createContext, useContext, useReducer, type ReactNode } from "react";
+import AsyncStorage from "@react-native-async-storage/async-storage";
+import React, {
+  createContext,
+  useContext,
+  useEffect,
+  useReducer,
+  type ReactNode,
+} from "react";
+
+const brainReadCursorStorageKey = "zen.brain.result_read_cursors.v1";
+
+export type BrainChatMessage = {
+  id: string;
+  thread_id: string;
+  role: string;
+  body: string;
+  created_at: string;
+  kind?: string;
+  status?: string;
+  title?: string;
+  calendar_item_id?: string;
+  calendar_run_id?: string;
+  scheduled_for?: string;
+};
 
 export type BrainAgentRef = {
   id: string;
@@ -34,6 +57,7 @@ export type BrainSnapshot = {
   delegated_adapter?: BrainAdapterRef | null;
   adapters?: BrainAdapterRef[];
   chat_thread_id?: string;
+  scheduled_results?: BrainChatMessage[];
   workspace?: string;
   generated_at?: string;
 };
@@ -47,10 +71,16 @@ export type BrainServerState = BrainSnapshot & {
 
 export type BrainState = {
   byServer: Record<string, BrainServerState>;
+  readCursors: Record<string, string>;
+  unreadByThread: Record<string, number>;
+  cursorsHydrated: boolean;
 };
 
 export const initialBrainState: BrainState = {
   byServer: {},
+  readCursors: {},
+  unreadByThread: {},
+  cursorsHydrated: false,
 };
 
 type RawBrainSnapshot = Partial<BrainSnapshot> & {
@@ -67,7 +97,9 @@ type Action =
       serverUrl: string;
       brain: RawBrainSnapshot;
     }
-  | { type: "REMOVE_SERVER"; serverId: string };
+  | { type: "REMOVE_SERVER"; serverId: string }
+  | { type: "BRAIN_READ_CURSORS_HYDRATED"; cursors: Record<string, string> }
+  | { type: "BRAIN_THREAD_READ"; serverId: string; threadId: string };
 
 function normalizeSnapshot(
   raw: RawBrainSnapshot | undefined,
@@ -107,9 +139,37 @@ function normalizeSnapshot(
       typeof raw?.chat_thread_id === "string"
         ? raw.chat_thread_id
         : undefined,
+    scheduled_results: Array.isArray(raw?.scheduled_results)
+      ? raw.scheduled_results
+          .map(normalizeChatMessage)
+          .filter((message) => message.id && message.thread_id)
+      : [],
     workspace: typeof raw?.workspace === "string" ? raw.workspace : undefined,
     generated_at:
       typeof raw?.generated_at === "string" ? raw.generated_at : undefined,
+  };
+}
+
+function normalizeChatMessage(raw: any): BrainChatMessage {
+  return {
+    id: typeof raw?.id === "string" ? raw.id : "",
+    thread_id: typeof raw?.thread_id === "string" ? raw.thread_id : "",
+    role: typeof raw?.role === "string" ? raw.role : "assistant",
+    body: typeof raw?.body === "string" ? raw.body : "",
+    created_at: typeof raw?.created_at === "string" ? raw.created_at : "",
+    kind: typeof raw?.kind === "string" ? raw.kind : undefined,
+    status: typeof raw?.status === "string" ? raw.status : undefined,
+    title: typeof raw?.title === "string" ? raw.title : undefined,
+    calendar_item_id:
+      typeof raw?.calendar_item_id === "string"
+        ? raw.calendar_item_id
+        : undefined,
+    calendar_run_id:
+      typeof raw?.calendar_run_id === "string"
+        ? raw.calendar_run_id
+        : undefined,
+    scheduled_for:
+      typeof raw?.scheduled_for === "string" ? raw.scheduled_for : undefined,
   };
 }
 
@@ -161,15 +221,20 @@ export function brainReducer(state: BrainState, action: Action): BrainState {
         action.serverName,
         action.serverUrl,
       );
-      if (brainServerStatesEqual(state.byServer[action.serverId], next)) {
+      const byServer = brainServerStatesEqual(state.byServer[action.serverId], next)
+        ? state.byServer
+        : { ...state.byServer, [action.serverId]: next };
+      const unreadByThread = calculateUnread(byServer, state.readCursors);
+      if (
+        byServer === state.byServer &&
+        shallowRecordEqual(unreadByThread, state.unreadByThread)
+      ) {
         return state;
       }
       return {
         ...state,
-        byServer: {
-          ...state.byServer,
-          [action.serverId]: next,
-        },
+        byServer,
+        unreadByThread,
       };
     }
     case "REMOVE_SERVER": {
@@ -178,11 +243,117 @@ export function brainReducer(state: BrainState, action: Action): BrainState {
       }
       const byServer = { ...state.byServer };
       delete byServer[action.serverId];
-      return { byServer };
+      return {
+        ...state,
+        byServer,
+        unreadByThread: calculateUnread(byServer, state.readCursors),
+      };
+    }
+    case "BRAIN_READ_CURSORS_HYDRATED": {
+      const readCursors = normalizeCursors(action.cursors);
+      return {
+        ...state,
+        readCursors,
+        unreadByThread: calculateUnread(state.byServer, readCursors),
+        cursorsHydrated: true,
+      };
+    }
+    case "BRAIN_THREAD_READ": {
+      const key = brainThreadKey(action.serverId, action.threadId);
+      const results = state.byServer[action.serverId]?.scheduled_results ?? [];
+      const latest = [...results]
+        .reverse()
+        .find((message) => message.thread_id === action.threadId);
+      if (!latest) return state;
+      const cursor = messageCursor(latest);
+      if (
+        state.readCursors[key] === cursor &&
+        state.unreadByThread[key] === 0
+      ) {
+        return state;
+      }
+      const readCursors = { ...state.readCursors, [key]: cursor };
+      return {
+        ...state,
+        readCursors,
+        unreadByThread: calculateUnread(state.byServer, readCursors),
+      };
     }
     default:
       return state;
   }
+}
+
+export function brainThreadKey(serverId: string, threadId: string) {
+  return `${serverId}:${threadId}`;
+}
+
+export function totalBrainUnread(state: BrainState): number {
+  return Object.values(state.unreadByThread).reduce(
+    (total, count) => total + count,
+    0,
+  );
+}
+
+function messageCursor(message: BrainChatMessage) {
+  return `${message.created_at}\u0000${message.id}`;
+}
+
+function normalizeCursors(raw: Record<string, string>) {
+  return Object.fromEntries(
+    Object.entries(raw || {}).filter(
+      ([key, value]) => key && typeof value === "string",
+    ),
+  );
+}
+
+function calculateUnread(
+  byServer: BrainState["byServer"],
+  cursors: Record<string, string>,
+) {
+  const unread: Record<string, number> = {};
+  for (const [serverId, server] of Object.entries(byServer)) {
+    const byThread = new Map<string, BrainChatMessage[]>();
+    for (const message of server.scheduled_results ?? []) {
+      const messages = byThread.get(message.thread_id) ?? [];
+      messages.push(message);
+      byThread.set(message.thread_id, messages);
+    }
+    for (const [threadId, messages] of byThread) {
+      const key = brainThreadKey(serverId, threadId);
+      const cursor = cursors[key];
+      if (!cursor) {
+        unread[key] = messages.length;
+        continue;
+      }
+      const separator = cursor.indexOf("\u0000");
+      const cursorTime = separator >= 0 ? cursor.slice(0, separator) : "";
+      const cursorId = separator >= 0 ? cursor.slice(separator + 1) : "";
+      const cursorIndex = messages.findIndex(
+        (message) => message.id === cursorId,
+      );
+      const count =
+        cursorIndex >= 0
+          ? messages.length - cursorIndex - 1
+          : messages.filter(
+              (message) =>
+                Date.parse(message.created_at) > Date.parse(cursorTime),
+            ).length;
+      if (count > 0) unread[key] = count;
+    }
+  }
+  return unread;
+}
+
+function shallowRecordEqual(
+  left: Record<string, number>,
+  right: Record<string, number>,
+) {
+  const keys = Object.keys(left);
+  return (
+    keys.length === Object.keys(right).length &&
+    keys.every((key) => left[key] === right[key])
+  );
 }
 
 function brainServerStatesEqual(
@@ -206,7 +377,24 @@ function brainServerStatesEqual(
     adapterRefsEqual(left.host_adapter, right.host_adapter) &&
     adapterRefsEqual(left.delegated_adapter, right.delegated_adapter) &&
     agentRefArraysEqual(left.agents ?? [], right.agents ?? []) &&
-    adapterRefArraysEqual(left.adapters ?? [], right.adapters ?? [])
+    adapterRefArraysEqual(left.adapters ?? [], right.adapters ?? []) &&
+    chatMessageArraysEqual(
+      left.scheduled_results ?? [],
+      right.scheduled_results ?? [],
+    )
+  );
+}
+
+function chatMessageArraysEqual(
+  left: BrainChatMessage[],
+  right: BrainChatMessage[],
+) {
+  return (
+    left.length === right.length &&
+    left.every(
+      (message, index) =>
+        JSON.stringify(message) === JSON.stringify(right[index]),
+    )
   );
 }
 
@@ -311,6 +499,27 @@ const BrainDispatchContext = createContext<React.Dispatch<Action> | null>(null);
 
 export function BrainProvider({ children }: { children: ReactNode }) {
   const [state, dispatch] = useReducer(brainReducer, initialBrainState);
+  useEffect(() => {
+    let cancelled = false;
+    void AsyncStorage.getItem(brainReadCursorStorageKey).then((value) => {
+      if (cancelled) return;
+      try {
+        dispatch({
+          type: "BRAIN_READ_CURSORS_HYDRATED",
+          cursors: JSON.parse(value || "{}"),
+        });
+      } catch {
+        dispatch({ type: "BRAIN_READ_CURSORS_HYDRATED", cursors: {} });
+      }
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+  useEffect(() => {
+    if (!state.cursorsHydrated) return;
+    void AsyncStorage.setItem(brainReadCursorStorageKey, JSON.stringify(state.readCursors));
+  }, [state.cursorsHydrated, state.readCursors]);
   return (
     <BrainDispatchContext.Provider value={dispatch}>
       <BrainStateContext.Provider value={state}>

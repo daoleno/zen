@@ -95,6 +95,27 @@ func TestLauncher_StartUsesIdleSession(t *testing.T) {
 	}
 }
 
+func TestLauncher_StartDedicatedNeverReusesIdleOrMentionedSession(t *testing.T) {
+	reg := &fakeRegistry{sessions: []fakeSession{{id: "claude-idle", cwd: "/p", role: "claude", state: "idle"}}}
+	run := &fakeRunner{newID: "claude-scheduled"}
+	execs := &ExecutorConfig{DelegatedExecutor: "claude", ByName: map[string]Executor{"claude": {Name: "claude", Command: "claude"}}}
+	item := &Item{
+		Path:        "/tmp/scheduled.md",
+		Mentions:    []Mention{{Role: "claude", Session: "interactive-session"}},
+		Frontmatter: Frontmatter{ID: "scheduled", Created: time.Now()},
+	}
+	started, err := NewLauncher(reg, run, execs).StartDedicated(item, Project{Name: "calendar", Cwd: "/p"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if run.spawnCalls != 1 || started.Frontmatter.AgentSession != "claude-scheduled" {
+		t.Fatalf("spawn calls = %d, session = %q", run.spawnCalls, started.Frontmatter.AgentSession)
+	}
+	if len(run.sendReadyCalls) != 1 {
+		t.Fatalf("ready sends = %#v", run.sendReadyCalls)
+	}
+}
+
 func TestLauncher_StartSpawnsWhenNoIdle(t *testing.T) {
 	reg := &fakeRegistry{}
 	run := &fakeRunner{newID: "claude-new"}

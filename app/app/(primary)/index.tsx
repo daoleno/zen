@@ -1,7 +1,12 @@
 import React, { useCallback, useMemo, useState } from "react";
 import { StyleSheet, Text, View } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
-import { useFocusEffect, useIsFocused, useRouter } from "expo-router";
+import {
+  useFocusEffect,
+  useIsFocused,
+  useLocalSearchParams,
+  useRouter,
+} from "expo-router";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { BrainAdapterSheet } from "../../components/brain/BrainAdapterSheet";
 import { BrainExecutorMentionPicker } from "../../components/brain/BrainExecutorMentionPicker";
@@ -38,6 +43,11 @@ const BRAIN_EMPTY_BODY = "Ask Brain to plan, delegate, or inspect the workspace.
 
 export default function BrainScreen() {
   const router = useRouter();
+  const params = useLocalSearchParams<{
+    brainThreadId?: string;
+    brainMessageId?: string;
+    serverId?: string;
+  }>();
   const colors = useAppColors();
   const { theme: zenTheme } = useAppTheme();
   const styles = useMemo(() => createStyles(colors), [colors]);
@@ -46,7 +56,7 @@ export default function BrainScreen() {
     [zenTheme],
   );
   const { state: agentState } = useAgents();
-  const { state: brainState } = useBrain();
+  const { state: brainState, dispatch: brainDispatch } = useBrain();
   const screenFocused = useIsFocused();
   const [servers, setServers] = useState<StoredServer[]>([]);
   const [adapterSheetVisible, setAdapterSheetVisible] = useState(false);
@@ -84,17 +94,21 @@ export default function BrainScreen() {
   );
 
   const activeServer = useMemo(() => {
-    const activeId = resolveBrainActiveServerId({
-      servers,
-      connectedServerIds: connectedServers.map((server) => server.id),
-      brainHydratedByServer: Object.fromEntries(
-        Object.entries(brainState.byServer).map(([serverId, brain]) => [
-          serverId,
-          Boolean(brain?.hydrated),
-        ]),
-      ),
-      connectionStates: agentState.serverConnections,
-    });
+    const activeId =
+      params.serverId &&
+      servers.some((server) => server.id === params.serverId)
+        ? params.serverId
+        : resolveBrainActiveServerId({
+            servers,
+            connectedServerIds: connectedServers.map((server) => server.id),
+            brainHydratedByServer: Object.fromEntries(
+              Object.entries(brainState.byServer).map(([serverId, brain]) => [
+                serverId,
+                Boolean(brain?.hydrated),
+              ]),
+            ),
+            connectionStates: agentState.serverConnections,
+          });
     if (!activeId) {
       return null;
     }
@@ -108,6 +122,7 @@ export default function BrainScreen() {
     brainState.byServer,
     connectedServers,
     servers,
+    params.serverId,
   ]);
 
   const activeBrain = activeServer
@@ -121,9 +136,27 @@ export default function BrainScreen() {
     : null;
   const hostAgent = activeBrain?.host_agent ?? null;
   const hostAdapter = activeBrain?.host_adapter ?? null;
-  const brainChatScopeKey = activeBrain?.chat_thread_id
-    ? `brain-thread:${activeBrain.chat_thread_id}`
+  const displayedThreadId = params.brainThreadId || activeBrain?.chat_thread_id;
+  const brainChatScopeKey = displayedThreadId
+    ? `brain-thread:${displayedThreadId}`
     : undefined;
+
+  useFocusEffect(
+    useCallback(() => {
+      if (activeServer?.id && displayedThreadId) {
+        brainDispatch({
+          type: "BRAIN_THREAD_READ",
+          serverId: activeServer.id,
+          threadId: displayedThreadId,
+        });
+      }
+    }, [
+      activeBrain?.scheduled_results,
+      activeServer?.id,
+      brainDispatch,
+      displayedThreadId,
+    ]),
+  );
   const ready = Boolean(activeServer && activeBrain?.hydrated && hostAgent?.id);
   const showBrainLoading = shouldShowBrainLoadingState({
     hydrated: Boolean(activeBrain?.hydrated),

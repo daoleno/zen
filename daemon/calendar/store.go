@@ -367,14 +367,19 @@ func (s *Store) FinishRun(id, runID, result, failure string) (Item, error) {
 	if item.Runs[idx].Manual && item.Runs[idx].PreviousStatus == StatusScheduled && item.NextAt.After(now) {
 		item.Status = StatusScheduled
 		item.FailureReason = ""
-	} else if status == StatusCompleted && item.Runs[idx].Manual && item.Recurrence != RecurrenceNone && advanceItem(&item) {
+	} else if item.Runs[idx].Manual && item.Recurrence != RecurrenceNone && advanceItem(&item) {
 		for attempts := 0; attempts < 400 && !item.NextAt.After(s.now()); attempts++ {
 			advanceItem(&item)
 		}
-	} else if status == StatusCompleted && !item.Runs[idx].Manual && advanceItem(&item) {
+	} else if !item.Runs[idx].Manual && advanceItem(&item) {
 		for attempts := 0; attempts < 400 && !item.NextAt.After(s.now()); attempts++ {
 			advanceItem(&item)
 		}
+	}
+	if status == StatusFailed && item.Status == StatusScheduled {
+		// The series remains schedulable, while Calendar still explains the
+		// most recent failed occurrence until the next run is claimed.
+		item.FailureReason = failure
 	}
 	s.items[id] = item
 	if err := s.persistLocked(); err != nil {

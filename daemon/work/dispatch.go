@@ -62,7 +62,19 @@ func (l *Launcher) Start(item *Item, proj Project) (*Item, error) {
 	if item.Frontmatter.Started != nil {
 		return nil, ErrAlreadyStarted
 	}
-	return l.startInternal(item, proj)
+	return l.startInternal(item, proj, false)
+}
+
+// StartDedicated always spawns a fresh executor session. Scheduled/background
+// work must not consume or inject prompts into arbitrary interactive sessions.
+func (l *Launcher) StartDedicated(item *Item, proj Project) (*Item, error) {
+	if item == nil {
+		return nil, fmt.Errorf("work item required")
+	}
+	if item.Frontmatter.Started != nil {
+		return nil, ErrAlreadyStarted
+	}
+	return l.startInternal(item, proj, true)
 }
 
 // Rerun clears the started metadata and sends the work item again.
@@ -73,10 +85,10 @@ func (l *Launcher) Rerun(item *Item, proj Project) (*Item, error) {
 	next := cloneItem(item)
 	next.Frontmatter.Started = nil
 	next.Frontmatter.AgentSession = ""
-	return l.startInternal(next, proj)
+	return l.startInternal(next, proj, false)
 }
 
-func (l *Launcher) startInternal(item *Item, proj Project) (*Item, error) {
+func (l *Launcher) startInternal(item *Item, proj Project, dedicated bool) (*Item, error) {
 	if l.execs == nil {
 		return nil, fmt.Errorf("executor config required")
 	}
@@ -96,12 +108,18 @@ func (l *Launcher) startInternal(item *Item, proj Project) (*Item, error) {
 
 	sessionID := strings.TrimSpace(targetSession)
 	spawnedCommand := ""
+	if dedicated {
+		sessionID = ""
+	}
 	if sessionID == "" {
 		cwd := strings.TrimSpace(proj.Cwd)
 		if cwd == "" {
 			return nil, fmt.Errorf("project %q has no cwd set", proj.Name)
 		}
-		candidates := l.reg.IdleSessions(role, cwd)
+		candidates := []SessionInfo(nil)
+		if !dedicated && l.reg != nil {
+			candidates = l.reg.IdleSessions(role, cwd)
+		}
 		if len(candidates) > 0 {
 			sessionID = candidates[0].ID
 		} else {

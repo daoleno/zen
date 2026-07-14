@@ -284,6 +284,11 @@ func (s *Store) AppendChatMessage(message ChatMessage) (ChatMessage, error) {
 	if message.Body == "" {
 		return ChatMessage{}, fmt.Errorf("message body required")
 	}
+	if existing, ok, err := s.chatMessageByIDLocked(message.ID); err != nil {
+		return ChatMessage{}, err
+	} else if ok {
+		return existing, nil
+	}
 	if err := s.touchChatSessionLocked(message.ThreadID, message.SessionID); err != nil {
 		return ChatMessage{}, err
 	}
@@ -302,7 +307,30 @@ func (s *Store) AppendChatMessage(message ChatMessage) (ChatMessage, error) {
 	if _, err := file.Write(append(raw, '\n')); err != nil {
 		return ChatMessage{}, err
 	}
+	if err := file.Sync(); err != nil {
+		return ChatMessage{}, err
+	}
 	return message, nil
+}
+
+func (s *Store) chatMessageByIDLocked(id string) (ChatMessage, bool, error) {
+	file, err := os.Open(s.messagesPath())
+	if errors.Is(err, os.ErrNotExist) {
+		return ChatMessage{}, false, nil
+	}
+	if err != nil {
+		return ChatMessage{}, false, err
+	}
+	defer file.Close()
+	scanner := bufio.NewScanner(file)
+	scanner.Buffer(make([]byte, 0, 64*1024), 4*1024*1024)
+	for scanner.Scan() {
+		var message ChatMessage
+		if json.Unmarshal(scanner.Bytes(), &message) == nil && message.ID == id {
+			return message, true, nil
+		}
+	}
+	return ChatMessage{}, false, scanner.Err()
 }
 
 func (s *Store) ChatThreadID() (string, error) {
@@ -325,6 +353,10 @@ func (s *Store) chatMessagesLocked(threadID string, limit int) ([]ChatMessage, e
 	state, err := s.readChatStateLocked(threadID)
 	if err != nil {
 		return nil, err
+	}
+	targetThreadID := strings.TrimSpace(threadID)
+	if targetThreadID == "" {
+		targetThreadID = state.ThreadID
 	}
 	sessionIDs := make(map[string]struct{}, len(state.SessionIDs))
 	for _, sessionID := range state.SessionIDs {
@@ -358,11 +390,11 @@ func (s *Store) chatMessagesLocked(threadID string, limit int) ([]ChatMessage, e
 		}
 		message.ThreadID = strings.TrimSpace(message.ThreadID)
 		message.SessionID = strings.TrimSpace(message.SessionID)
-		if message.ThreadID == state.ThreadID {
+		if message.ThreadID == targetThreadID {
 			out = append(out, message)
 			continue
 		}
-		if message.ThreadID == "" {
+		if message.ThreadID == "" && targetThreadID == state.ThreadID {
 			if _, ok := sessionIDs[message.SessionID]; ok {
 				out = append(out, message)
 			}
@@ -377,8 +409,57 @@ func (s *Store) chatMessagesLocked(threadID string, limit int) ([]ChatMessage, e
 	return out, nil
 }
 
+func (s *Store) HasChatThread(threadID string) (bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	threadID = strings.TrimSpace(threadID)
+	if threadID == "" {
+		return false, nil
+	}
+	state, err := s.loadChatStateLocked("")
+	if err != nil {
+		return false, err
+	}
+	for _, known := range state.ThreadIDs {
+		if known == threadID {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+func (s *Store) ScheduledResults(limit int) ([]ChatMessage, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	file, err := os.Open(s.messagesPath())
+	if errors.Is(err, os.ErrNotExist) {
+		return []ChatMessage{}, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	defer file.Close()
+	out := []ChatMessage{}
+	scanner := bufio.NewScanner(file)
+	scanner.Buffer(make([]byte, 0, 64*1024), 4*1024*1024)
+	for scanner.Scan() {
+		var message ChatMessage
+		if json.Unmarshal(scanner.Bytes(), &message) == nil && message.Kind == "calendar_result" {
+			out = append(out, message)
+		}
+	}
+	if err := scanner.Err(); err != nil {
+		return nil, err
+	}
+	if limit > 0 && len(out) > limit {
+		out = out[len(out)-limit:]
+	}
+	return out, nil
+}
+
 type ChatState struct {
 	ThreadID       string
+	ThreadIDs      []string
 	SessionIDs     []string
 	LastTranscript string
 	UpdatedAt      time.Time
@@ -421,6 +502,7 @@ func (s *Store) loadChatStateLocked(threadID string) (ChatState, error) {
 		changed = true
 	}
 	state.SessionIDs = normalizeUniqueStrings(state.SessionIDs)
+	state.ThreadIDs = normalizeUniqueStrings(append(state.ThreadIDs, state.ThreadID))
 	if len(state.SessionIDs) == 0 {
 		state.SessionIDs = s.collectChatSessionIDsLocked()
 		changed = true
@@ -448,6 +530,12 @@ func (s *Store) loadChatStateLocked(threadID string) (ChatState, error) {
 }
 
 func (s *Store) setChatStateLocked(state ChatState) error {
+	if previous, err := s.readChatStateFileLocked(); err == nil {
+		state.ThreadIDs = append(state.ThreadIDs, previous.ThreadIDs...)
+		if strings.TrimSpace(previous.ThreadID) != "" {
+			state.ThreadIDs = append(state.ThreadIDs, previous.ThreadID)
+		}
+	}
 	if strings.TrimSpace(state.ThreadID) == "" {
 		loaded, err := s.loadChatStateLocked("")
 		if err != nil {
@@ -456,6 +544,7 @@ func (s *Store) setChatStateLocked(state ChatState) error {
 		state.ThreadID = loaded.ThreadID
 	}
 	state.ThreadID = strings.TrimSpace(state.ThreadID)
+	state.ThreadIDs = normalizeUniqueStrings(append(state.ThreadIDs, state.ThreadID))
 	state.SessionIDs = normalizeUniqueStrings(state.SessionIDs)
 	if len(state.SessionIDs) == 0 {
 		state.SessionIDs = s.collectChatSessionIDsLocked()
@@ -576,6 +665,7 @@ type chatStatesFile struct {
 
 type chatStateFile struct {
 	ThreadID       string    `json:"thread_id,omitempty"`
+	ThreadIDs      []string  `json:"thread_ids,omitempty"`
 	SessionIDs     []string  `json:"session_ids,omitempty"`
 	LastTranscript string    `json:"last_transcript,omitempty"`
 	UpdatedAt      time.Time `json:"updated_at,omitempty"`
@@ -627,6 +717,7 @@ func (s *Store) readChatStateFileLocked() (ChatState, error) {
 		} else {
 			return ChatState{
 				ThreadID:       strings.TrimSpace(file.ThreadID),
+				ThreadIDs:      normalizeUniqueStrings(file.ThreadIDs),
 				SessionIDs:     normalizeUniqueStrings(file.SessionIDs),
 				LastTranscript: file.LastTranscript,
 				UpdatedAt:      file.UpdatedAt,
@@ -683,6 +774,7 @@ func (s *Store) readProfileLocked() (profileFile, error) {
 
 func (s *Store) writeChatStateLocked(state ChatState) error {
 	state.ThreadID = strings.TrimSpace(state.ThreadID)
+	state.ThreadIDs = normalizeUniqueStrings(append(state.ThreadIDs, state.ThreadID))
 	state.SessionIDs = normalizeUniqueStrings(state.SessionIDs)
 	if state.ThreadID == "" {
 		state.ThreadID = newChatThreadID()
@@ -692,6 +784,7 @@ func (s *Store) writeChatStateLocked(state ChatState) error {
 	}
 	return writeJSONFile(s.ChatStatePath(), chatStateFile{
 		ThreadID:       state.ThreadID,
+		ThreadIDs:      state.ThreadIDs,
 		SessionIDs:     state.SessionIDs,
 		LastTranscript: state.LastTranscript,
 		UpdatedAt:      state.UpdatedAt,

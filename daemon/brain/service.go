@@ -94,6 +94,10 @@ func (s *Service) Snapshot() (Snapshot, error) {
 	snapshot.DelegatedExecutor = &delegatedExecutor
 	snapshot.Executors = s.agentExecutors(hostExecutor.ID, delegatedExecutor.ID)
 	snapshot.ChatThreadID = chatThreadID
+	snapshot.ScheduledResults, err = s.store.ScheduledResults(defaultChatMessageLimit)
+	if err != nil {
+		return Snapshot{}, err
+	}
 	if chatThreadID != "" && host.ID != "" {
 		_ = s.store.TouchChatSession(chatThreadID, host.ID)
 	}

@@ -2,6 +2,7 @@ package calendar
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -22,6 +23,12 @@ type ActionRunner interface {
 // longer be observed and must never be relaunched implicitly.
 type ActionInspector interface {
 	InspectScheduledAction(context.Context, Item, Run) (status Status, result, failure string, known bool)
+}
+
+// ActionDeliverer publishes the canonical terminal outcome for one durable
+// occurrence. Implementations must be idempotent for the supplied run.
+type ActionDeliverer interface {
+	DeliverScheduledAction(context.Context, Item, Run, Status, string, string) error
 }
 
 type Scheduler struct {
@@ -84,7 +91,7 @@ func (s *Scheduler) Tick(ctx context.Context) {
 			}
 			if now.Sub(item.NextAt) > s.missedWindow {
 				reason := fmt.Sprintf("Missed while daemon was offline (more than %s late); use Run now to start it explicitly.", s.missedWindow)
-				_, _ = s.store.SetStatus(item.ID, StatusFailed, reason)
+				s.failOccurrence(ctx, item.ID, reason)
 				continue
 			}
 			go s.run(ctx, item.ID, false)
@@ -114,11 +121,47 @@ func (s *Scheduler) run(ctx context.Context, id string, manual bool) (Item, erro
 			message += "Launch succeeded, but persisting the linked Work state failed: " + strings.TrimSpace(runErr.Error())
 			return s.store.RecordLaunch(id, run.ID, result.WorkID, result.AgentSession, message)
 		}
-		return s.store.FinishRun(id, run.ID, "", strings.TrimSpace(runErr.Error()))
+		return s.complete(ctx, item, run, "", strings.TrimSpace(runErr.Error()))
 	}
 	// Launching visible Work is not task completion. Persist the link and leave
 	// both the item and run running until reconciliation observes a terminal Work state.
 	return s.store.RecordLaunch(id, run.ID, result.WorkID, result.AgentSession, result.Result)
+}
+
+func (s *Scheduler) failOccurrence(ctx context.Context, id, failure string) {
+	item, run, err := s.store.Claim(id, false)
+	if err != nil {
+		return
+	}
+	_, _ = s.complete(ctx, item, run, "", failure)
+}
+
+func (s *Scheduler) complete(ctx context.Context, item Item, run Run, result, failure string) (Item, error) {
+	status := StatusCompleted
+	if strings.TrimSpace(failure) != "" {
+		status = StatusFailed
+	}
+	if deliverer, ok := s.runner.(ActionDeliverer); ok {
+		if err := deliverer.DeliverScheduledAction(ctx, item, run, status, result, failure); err != nil {
+			if !errors.Is(err, ErrInvalidDeliveryTarget) {
+				// Keep the durable run running. Reconciliation will retry delivery,
+				// and the Brain append itself is idempotent across a crash here.
+				return item, err
+			}
+			failure = conciseFailure(strings.TrimSpace(failure), err.Error())
+		}
+	}
+	return s.store.FinishRun(item.ID, run.ID, result, failure)
+}
+
+func conciseFailure(current, delivery string) string {
+	if current == "" {
+		return strings.TrimSpace(delivery)
+	}
+	if strings.TrimSpace(delivery) == "" {
+		return current
+	}
+	return current + " Brain delivery: " + strings.TrimSpace(delivery)
 }
 
 func (s *Scheduler) reconcile(ctx context.Context, item Item) {
@@ -139,16 +182,16 @@ func (s *Scheduler) reconcile(ctx context.Context, item Item) {
 	} // Explicitly remain running when this architecture cannot prove a terminal state.
 	status, result, failure, known := inspector.InspectScheduledAction(ctx, item, *active)
 	if !known {
-		_, _ = s.store.FinishRun(item.ID, active.ID, "", "Linked Work/agent is no longer observable after restart; Zen did not relaunch it to avoid duplicate execution.")
+		_, _ = s.complete(ctx, item, *active, "", "Linked Work/agent is no longer observable after restart; Zen did not relaunch it to avoid duplicate execution.")
 		return
 	}
 	switch status {
 	case StatusCompleted:
-		_, _ = s.store.FinishRun(item.ID, active.ID, result, "")
+		_, _ = s.complete(ctx, item, *active, result, "")
 	case StatusFailed:
 		if strings.TrimSpace(failure) == "" {
 			failure = "Linked Work/agent failed."
 		}
-		_, _ = s.store.FinishRun(item.ID, active.ID, result, failure)
+		_, _ = s.complete(ctx, item, *active, result, failure)
 	}
 }

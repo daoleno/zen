@@ -6,8 +6,36 @@ import (
 	"testing"
 	"time"
 
+	"github.com/daoleno/zen/daemon/brain"
 	"github.com/daoleno/zen/daemon/work"
 )
+
+func TestBrainScopedConversationIncludesCanonicalCalendarResult(t *testing.T) {
+	store, err := brain.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SetChatState(brain.ChatState{ThreadID: "thread-1", UpdatedAt: time.Now()}); err != nil {
+		t.Fatal(err)
+	}
+	service := brain.NewService(store, nil, nil)
+	if _, err := service.DeliverCalendarResult(brain.CalendarResult{
+		ID: "calendar_result:item:run", ThreadID: "thread-1", CalendarItemID: "item",
+		CalendarRunID: "run", Title: "Daily papers", Status: "completed", Body: "Three papers.",
+		ScheduledFor: time.Now(), CreatedAt: time.Now(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	srv := &Server{brain: service}
+	base := work.CodexConversation{Available: true, SessionID: "agent-session", Events: []work.CodexConversationEvent{{ID: "agent:1", Seq: 1, Kind: "assistant_message", Body: "Earlier"}}}
+	got := srv.brainScopedConversation("brain-thread:thread-1", base, time.Now())
+	if got.SessionID != "brain-thread:thread-1" || len(got.Events) != 2 {
+		t.Fatalf("conversation = %#v", got)
+	}
+	if result := got.Events[1]; result.ID != "calendar_result:item:run" || result.Source != "calendar_result" || result.Status != "completed" {
+		t.Fatalf("result = %#v", result)
+	}
+}
 
 func TestCodexConversationSubscriptionFingerprintIgnoresUpdatedAt(t *testing.T) {
 	firstUpdated := time.Unix(100, 0).UTC()

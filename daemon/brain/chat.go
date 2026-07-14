@@ -1,6 +1,7 @@
 package brain
 
 import (
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -8,11 +9,60 @@ import (
 
 const defaultChatMessageLimit = 120
 
+var ErrChatThreadNotFound = errors.New("Brain chat thread not found")
+
+type CalendarResult struct {
+	ID             string
+	ThreadID       string
+	CalendarItemID string
+	CalendarRunID  string
+	Title          string
+	Status         string
+	Body           string
+	ScheduledFor   time.Time
+	CreatedAt      time.Time
+}
+
+func (s *Service) DeliverCalendarResult(result CalendarResult) (ChatMessage, error) {
+	if s == nil || s.store == nil {
+		return ChatMessage{}, fmt.Errorf("brain store is not configured")
+	}
+	known, err := s.store.HasChatThread(result.ThreadID)
+	if err != nil {
+		return ChatMessage{}, err
+	}
+	if !known {
+		return ChatMessage{}, fmt.Errorf("%w: %s", ErrChatThreadNotFound, strings.TrimSpace(result.ThreadID))
+	}
+	scheduledFor := result.ScheduledFor.UTC()
+	return s.store.AppendChatMessage(ChatMessage{
+		ID:             strings.TrimSpace(result.ID),
+		ThreadID:       strings.TrimSpace(result.ThreadID),
+		SessionID:      "calendar",
+		Role:           "assistant",
+		Body:           strings.TrimSpace(result.Body),
+		CreatedAt:      result.CreatedAt.UTC(),
+		Kind:           "calendar_result",
+		Status:         strings.TrimSpace(result.Status),
+		Title:          strings.TrimSpace(result.Title),
+		CalendarItemID: strings.TrimSpace(result.CalendarItemID),
+		CalendarRunID:  strings.TrimSpace(result.CalendarRunID),
+		ScheduledFor:   &scheduledFor,
+	})
+}
+
 func (s *Service) ChatThreadID() (string, error) {
 	if s == nil || s.store == nil {
 		return "", nil
 	}
 	return s.store.ChatThreadID()
+}
+
+func (s *Service) HasChatThread(threadID string) (bool, error) {
+	if s == nil || s.store == nil {
+		return false, nil
+	}
+	return s.store.HasChatThread(threadID)
 }
 
 func (s *Service) ChatMessages(threadID string) ([]ChatMessage, error) {
@@ -92,13 +142,13 @@ func (s *Service) RecordUserMessage(threadID, hostSessionID, body, transcriptBef
 		return []ChatMessage{}, err
 	}
 	if _, err := s.store.AppendChatMessage(ChatMessage{
-		ID:        chatMessageID("user", now),
-		ThreadID:  state.ThreadID,
-		SessionID: hostSessionID,
+		ID:         chatMessageID("user", now),
+		ThreadID:   state.ThreadID,
+		SessionID:  hostSessionID,
 		ExecutorID: s.hostExecutor().ID,
-		Role:      "user",
-		Body:      body,
-		CreatedAt: now,
+		Role:       "user",
+		Body:       body,
+		CreatedAt:  now,
 	}); err != nil {
 		return []ChatMessage{}, err
 	}
@@ -142,13 +192,13 @@ func (s *Service) SyncTerminalTranscript(threadID, hostSessionID, transcript str
 	if delta != "" {
 		now := s.nowUTC()
 		if _, err := s.store.AppendChatMessage(ChatMessage{
-			ID:        chatMessageID("assistant", now),
-			ThreadID:  state.ThreadID,
-			SessionID: hostSessionID,
+			ID:         chatMessageID("assistant", now),
+			ThreadID:   state.ThreadID,
+			SessionID:  hostSessionID,
 			ExecutorID: s.hostExecutor().ID,
-			Role:      "assistant",
-			Body:      delta,
-			CreatedAt: now,
+			Role:       "assistant",
+			Body:       delta,
+			CreatedAt:  now,
 		}); err != nil {
 			return nil, err
 		}

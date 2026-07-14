@@ -974,6 +974,7 @@ export function useCodexChatSession({
         name: agentInfo?.name,
         startedAt: agentInfo?.startedAt,
         processId: agentInfo?.processId,
+        conversationScopeKey,
       },
       {
         onSnapshot: (payload) => {

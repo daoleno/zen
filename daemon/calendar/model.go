@@ -40,6 +40,9 @@ var (
 	ErrNotFound = errors.New("calendar item not found")
 	ErrConflict = errors.New("calendar item revision conflict")
 	ErrClaimed  = errors.New("calendar occurrence already claimed")
+	// ErrInvalidDeliveryTarget marks a permanent Brain delivery failure. The
+	// occurrence must be finalized visibly instead of retrying forever.
+	ErrInvalidDeliveryTarget = errors.New("invalid Brain delivery target")
 )
 
 // Item is the canonical durable calendar series. Times are absolute instants;
@@ -111,6 +114,9 @@ func (i Item) Validate() error {
 		}
 		if strings.TrimSpace(i.ActionInstruction) == "" {
 			return fmt.Errorf("scheduled_action requires action_instruction")
+		}
+		if strings.TrimSpace(i.SourceThreadID) == "" {
+			return fmt.Errorf("scheduled_action requires source_thread_id")
 		}
 	default:
 		return fmt.Errorf("invalid kind %q", i.Kind)

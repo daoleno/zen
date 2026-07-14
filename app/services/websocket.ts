@@ -206,6 +206,7 @@ export interface CodexConversationSubscriptionOptions {
   name?: string;
   startedAt?: number;
   processId?: number;
+  conversationScopeKey?: string;
 }
 
 export interface CodexConversationSubscriptionHandlers {
@@ -922,6 +923,7 @@ class MultiServerWebSocketClient {
       name: options.name,
       started_at: options.startedAt,
       process_id: options.processId,
+      conversation_scope_key: options.conversationScopeKey,
     });
 
     return () => {

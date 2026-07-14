@@ -190,7 +190,7 @@ func runDaemon(args []string, stderr io.Writer) error {
 	pusher := push.New()
 	launcher := work.NewLauncher(&work.WatcherRegistry{W: w}, work.TmuxRunner{}, execs)
 	srv := server.New(authManager, w, pusher, sc, workStore, launcher, execs, brainService)
-	calendarScheduler := calendar.NewScheduler(calendarStore, &calendar.WorkRunner{Store: workStore, Launcher: launcher, Watcher: w})
+	calendarScheduler := calendar.NewScheduler(calendarStore, &calendar.WorkRunner{Store: workStore, Launcher: launcher, Watcher: w, Brain: brainService})
 	controlHandler.calendarScheduler = calendarScheduler
 	srv.SetCalendar(calendarStore, calendarScheduler)
 	go calendarScheduler.Run(ctx)
