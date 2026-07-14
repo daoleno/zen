@@ -23,11 +23,13 @@ import (
 	"github.com/daoleno/zen/daemon/control"
 	"github.com/daoleno/zen/daemon/doctor"
 	"github.com/daoleno/zen/daemon/push"
+	"github.com/daoleno/zen/daemon/selfupdate"
 	"github.com/daoleno/zen/daemon/server"
 	"github.com/daoleno/zen/daemon/setup"
 	"github.com/daoleno/zen/daemon/stats"
 	"github.com/daoleno/zen/daemon/watcher"
 	"github.com/daoleno/zen/daemon/work"
+	"golang.org/x/term"
 )
 
 type daemonConfig struct {
@@ -72,6 +74,8 @@ func run(args []string, stderr io.Writer) error {
 			return runDoctorCommand(args[1:], stderr)
 		case "setup":
 			return runSetupCommand(args[1:], stderr)
+		case "update":
+			return runUpdateCommand(args[1:], stderr)
 		case "agent":
 			return runAgentCommand(args[1:], stderr)
 		case "brain":
@@ -112,6 +116,7 @@ func runDaemon(args []string, stderr io.Writer) error {
 	}()
 
 	stateDir := authManager.StorageDir()
+	startUpdateNotice(stderr, stateDir)
 	for _, name := range []string{"tasks.json", "runs.json", "meta.json"} {
 		_ = os.Remove(filepath.Join(stateDir, name))
 	}
@@ -209,6 +214,96 @@ func runDaemon(args []string, stderr io.Writer) error {
 		return err
 	}
 	return nil
+}
+
+func runUpdateCommand(args []string, stderr io.Writer) error {
+	fs := flag.NewFlagSet("zen update", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	checkOnly := false
+	fs.BoolVar(&checkOnly, "check", false, "check for an update without installing it")
+	fs.Usage = func() {
+		fmt.Fprintln(stderr, "Usage: zen update [--check]")
+		fmt.Fprintln(stderr, "")
+		fs.PrintDefaults()
+	}
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if fs.NArg() != 0 {
+		return fmt.Errorf("unexpected arguments: %s", strings.Join(fs.Args(), " "))
+	}
+	client, err := selfupdate.NewClient()
+	if err != nil {
+		return err
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer cancel()
+	candidate, err := client.Latest(ctx, Version)
+	if err != nil {
+		return fmt.Errorf("check for update: %w", err)
+	}
+	if candidate == nil {
+		fmt.Fprintf(os.Stdout, "Zen %s is up to date.\n", Version)
+		return nil
+	}
+	if checkOnly {
+		fmt.Fprintf(os.Stdout, "Zen %s is available; run: zen update\n", candidate.Version)
+		return nil
+	}
+	binary, err := client.DownloadBinary(ctx, *candidate)
+	if err != nil {
+		return fmt.Errorf("download update: %w", err)
+	}
+	executable, err := os.Executable()
+	if err != nil {
+		return fmt.Errorf("locate zen executable: %w", err)
+	}
+	if err := selfupdate.ReplaceExecutable(executable, binary); err != nil {
+		return err
+	}
+	fmt.Fprintf(os.Stdout, "Updated Zen %s → %s. Stop and start zen to use it.\n", Version, candidate.Version)
+	return nil
+}
+
+func startUpdateNotice(stderr io.Writer, stateDir string) {
+	file, ok := stderr.(*os.File)
+	if !ok || !startupNoticeAllowed(term.IsTerminal(int(file.Fd())), os.Getenv("TERM"), os.Getenv("CI"), false) {
+		return
+	}
+	cachePath := filepath.Join(stateDir, "update-check.json")
+	go func() {
+		now := time.Now()
+		if cache, fresh := selfupdate.ReadCache(cachePath, now); fresh {
+			if line := selfupdate.NoticeLine(Version, cache.LatestVersion); line != "" {
+				fmt.Fprintln(stderr, line)
+			}
+			return
+		}
+		client, err := selfupdate.NewClient()
+		if err != nil {
+			return
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		candidate, err := client.Latest(ctx, Version)
+		if err != nil {
+			return
+		}
+		latest := ""
+		if candidate != nil {
+			latest = candidate.Version
+		}
+		if selfupdate.WriteCache(cachePath, selfupdate.Cache{CheckedAt: now, LatestVersion: latest}) != nil {
+			return
+		}
+		if line := selfupdate.NoticeLine(Version, latest); line != "" {
+			fmt.Fprintln(stderr, line)
+		}
+	}()
+}
+
+func startupNoticeAllowed(interactive bool, termValue, ciValue string, jsonContext bool) bool {
+	return interactive && !jsonContext && !strings.EqualFold(strings.TrimSpace(termValue), "dumb") && strings.TrimSpace(ciValue) == ""
 }
 
 func runAgentCommand(args []string, stderr io.Writer) error {
@@ -752,6 +847,7 @@ func parseDaemonConfig(args []string, stderr io.Writer) (daemonConfig, error) {
 		fmt.Fprintln(stderr, "  pair       Generate a fresh pairing link")
 		fmt.Fprintln(stderr, "  doctor     Diagnose machine readiness for Zen")
 		fmt.Fprintln(stderr, "  setup      Guided first-run setup (uses doctor)")
+		fmt.Fprintln(stderr, "  update     Verify and install the latest Zen release")
 		fmt.Fprintln(stderr, "  agent      List, spawn, inspect, message, progress, and close agent sessions")
 		fmt.Fprintln(stderr, "  brain      Inspect Brain workspace and host executor configuration")
 	}

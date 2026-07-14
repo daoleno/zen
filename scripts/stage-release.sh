@@ -3,7 +3,7 @@
 #
 # Stages under dist-download/v<version>/ (gitignored), always from a clean dir:
 #   - Linux amd64/arm64 and macOS arm64 daemon archives
-#   - SHA256SUMS and release-manifest.json
+#   - SHA256SUMS, release-manifest.json, and its detached Ed25519 signature
 #   - optional Android APK
 #
 # Does not read release keystores, commit, push, tag, or create a GitHub Release.
@@ -240,7 +240,7 @@ if staged_apk:
         )
 
 identity = {
-    "schema_version": 1,
+    "schema_version": 2,
     "product": "zen",
     "version": version,
     "android": {
@@ -261,8 +261,8 @@ identity = {
     },
     "artifacts": artifacts,
     "notes": {
-        "release_status": "local_stage_only",
-        "github_release": "not_created_by_this_script",
+        "release_status": "staged",
+        "github_release": "publication_is_separate",
         "release_notes_source": f"docs/releases/v{version}.md",
         "signed_apk": "requires_maintainer_keystore_via_env_not_in_repo",
     },
@@ -270,6 +270,8 @@ identity = {
 (stage_p / "release-manifest.json").write_text(json.dumps(identity, indent=2) + "\n", encoding="utf-8")
 print(f"wrote {stage_p / 'release-manifest.json'}")
 PY
+
+"$ROOT/scripts/sign-release-manifest.sh" "$STAGE_DIR/release-manifest.json"
 
 echo ""
 echo "Staged:   $STAGE_DIR"

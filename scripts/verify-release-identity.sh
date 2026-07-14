@@ -197,6 +197,8 @@ for rel in (
     "scripts/verify-release-identity.sh",
     "scripts/verify-apk-release.sh",
     "scripts/materialize-android-keystore.sh",
+    "scripts/sign-release-manifest.sh",
+    "release/zen-update-public-key.pem",
     "docs/ci-release.md",
     ".github/workflows/release-artifacts.yml",
 ):
@@ -214,11 +216,14 @@ if "gh release upload" not in wf:
     errors.append("release-artifacts.yml must upload assets via gh release upload")
 if "materialize-android-keystore" not in wf:
     errors.append("release-artifacts.yml must materialize keystore via helper script")
+if "ZEN_UPDATE_SIGNING_KEY_BASE64" not in wf:
+    errors.append("release-artifacts.yml must use the updater manifest signing secret")
 for asset in (
     "zen-linux-amd64.tar.gz",
     "zen-linux-arm64.tar.gz",
     "zen-darwin-arm64.tar.gz",
     "release-manifest.json",
+    "release-manifest.json.sig",
 ):
     if asset not in wf:
         errors.append(f"release-artifacts.yml missing release asset: {asset}")
@@ -257,6 +262,17 @@ for rel in ("LICENSE", "NOTICE", "TRADEMARKS.md", "app/assets/notices/GHOSTTY-MI
     if not (root / rel).is_file():
         errors.append(f"missing repo legal/notice file: {rel}")
 
+public_key_pem = root / "release/zen-update-public-key.pem"
+updater_go = root / "daemon/selfupdate/selfupdate.go"
+if public_key_pem.is_file() and updater_go.is_file():
+    public_der_b64 = "".join(
+        line.strip()
+        for line in public_key_pem.read_text(encoding="utf-8").splitlines()
+        if not line.startswith("-----")
+    )
+    if public_der_b64 not in updater_go.read_text(encoding="utf-8"):
+        errors.append("daemon embedded update key does not match release public key")
+
 # --- optional stage ---
 if stage:
     stage_p = Path(stage)
@@ -271,6 +287,7 @@ if stage:
             "zen-darwin-arm64.tar.gz",
             "SHA256SUMS",
             "release-manifest.json",
+            "release-manifest.json.sig",
         ]
         for rel in required:
             if not (stage_p / rel).is_file():
@@ -307,6 +324,8 @@ if stage:
         ident_path = stage_p / "release-manifest.json"
         if ident_path.is_file():
             ident = json.loads(ident_path.read_text(encoding="utf-8"))
+            if ident.get("schema_version") != 2:
+                errors.append(f"stage identity schema_version: got {ident.get('schema_version')!r}")
             if ident.get("version") != exp_version:
                 errors.append(f"stage identity version: got {ident.get('version')!r}")
             and_id = ident.get("android") or {}
@@ -328,6 +347,22 @@ if stage:
             daemon = ident.get("daemon") or {}
             if daemon.get("targets") != ["linux/amd64", "linux/arm64", "darwin/arm64"]:
                 errors.append(f"release manifest daemon targets: got {daemon.get('targets')!r}")
+
+            signature_path = stage_p / "release-manifest.json.sig"
+            public_key = root / "release/zen-update-public-key.pem"
+            if signature_path.is_file() and public_key.is_file():
+                import subprocess
+                verified = subprocess.run(
+                    [
+                        "openssl", "pkeyutl", "-verify", "-rawin", "-pubin",
+                        "-inkey", str(public_key), "-in", str(ident_path),
+                        "-sigfile", str(signature_path),
+                    ],
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                )
+                if verified.returncode != 0:
+                    errors.append("release manifest Ed25519 signature verification failed")
 
         import tarfile
         for archive in (

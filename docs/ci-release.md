@@ -14,7 +14,7 @@ The separate [`native-libs.yml`](../.github/workflows/native-libs.yml) workflow 
 | Build release-grade `libghostty` arm64 | yes | — |
 | Clean Expo prebuild + signed arm64 APK | yes | — |
 | Verify package / version / ABI / Ghostty notice / cert fingerprint | yes | — |
-| Stage tree + `SHA256SUMS` + `release-manifest.json` | yes | — |
+| Stage tree + checksums + signed updater manifest | yes | — |
 | Upload workflow artifact | yes | — |
 | Upload/replace assets on **existing** GitHub prerelease | **no** | yes |
 
@@ -30,6 +30,7 @@ Configure under GitHub → Settings → Secrets and variables → Actions. Value
 | `ZEN_ANDROID_KEYSTORE_PASSWORD` | Keystore password |
 | `ZEN_ANDROID_KEY_ALIAS` | Key alias inside the keystore |
 | `ZEN_ANDROID_KEY_PASSWORD` | Key password |
+| `ZEN_UPDATE_SIGNING_KEY_BASE64` | Base64 encoding of the Ed25519 private PEM matching `release/zen-update-public-key.pem` |
 
 Runtime mapping (CI materializes the file, mode `0600`, then shreds it):
 
@@ -68,6 +69,7 @@ Prerequisites:
 1. The release tag already exists and points at the intended commit.
 2. A matching **published prerelease** (not draft) already exists on GitHub.
 3. The four `ZEN_ANDROID_*` secrets above are configured on the repository.
+4. `ZEN_UPDATE_SIGNING_KEY_BASE64` is configured with the updater manifest key.
 
 Build only (artifact upload; no release mutation):
 
@@ -104,6 +106,7 @@ Under `dist-download/v<version>/` (and the workflow artifact):
 - `zen-android-arm64-v<version>.apk`
 - `SHA256SUMS`
 - `release-manifest.json`
+- `release-manifest.json.sig`
 
 Daemon archives contain `zen`, `LICENSE`, `NOTICE`, and `TRADEMARKS.md`. Release notes stay in the GitHub Release body; Android third-party notices remain embedded in the APK. This keeps the download list focused without dropping required attribution.
 
@@ -115,11 +118,14 @@ Daemon archives contain `zen`, `LICENSE`, `NOTICE`, and `TRADEMARKS.md`. Release
 | `scripts/verify-apk-release.sh` | Package/version/ABI/notice/certificate checks |
 | `scripts/android-release-apk.sh` | Clean prebuild + signed assembleRelease |
 | `scripts/stage-release.sh` | Deterministic stage tree |
+| `scripts/sign-release-manifest.sh` | Validate the updater key and sign the exact manifest bytes |
 | `scripts/verify-release-identity.sh` | Tracked identity + stage layout |
 
 ## Safety
 
 - Secrets never appear in docs, commits, or intentional log lines.
+- The updater accepts one public release stream, including prereleases by semantic-version precedence; it has no channel setting.
+- The detached Ed25519 signature authenticates manifest version, platform mapping, archive size, and SHA-256 before download installation.
 - CI does not read developer home directories (including `~/.zen/release-keys`).
 - `publish=true` refuses non-prerelease and draft releases; uses `gh release upload --clobber` only.
 - Tag pushes do not set `publish`; no unexpected double-publication path from push alone.

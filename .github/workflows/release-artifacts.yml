@@ -15,6 +15,7 @@ name: Release artifacts
 #   ZEN_ANDROID_KEYSTORE_PASSWORD
 #   ZEN_ANDROID_KEY_ALIAS
 #   ZEN_ANDROID_KEY_PASSWORD
+#   ZEN_UPDATE_SIGNING_KEY_BASE64
 #
 # Docs: docs/ci-release.md
 
@@ -230,6 +231,8 @@ jobs:
           ./scripts/verify-apk-release.sh "${APK_PATH}"
 
       - name: Stage release tree (Linux + macOS + APK)
+        env:
+          ZEN_UPDATE_SIGNING_KEY_BASE64: ${{ secrets.ZEN_UPDATE_SIGNING_KEY_BASE64 }}
         run: |
           set -euo pipefail
           ./scripts/stage-release.sh --apk "${APK_PATH}"
@@ -260,6 +263,7 @@ jobs:
             dist-download/v${{ steps.meta.outputs.version }}/zen-android-arm64-v${{ steps.meta.outputs.version }}.apk
             dist-download/v${{ steps.meta.outputs.version }}/SHA256SUMS
             dist-download/v${{ steps.meta.outputs.version }}/release-manifest.json
+            dist-download/v${{ steps.meta.outputs.version }}/release-manifest.json.sig
           if-no-files-found: error
 
   publish:
@@ -310,6 +314,7 @@ jobs:
             "zen-android-arm64-v${VERSION}.apk"
             SHA256SUMS
             release-manifest.json
+            release-manifest.json.sig
           )
           for f in "${assets[@]}"; do
             if [[ ! -f "$f" ]]; then

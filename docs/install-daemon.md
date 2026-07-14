@@ -31,6 +31,17 @@ install -m 755 zen ~/.local/bin/zen
 zen doctor
 ```
 
+After the first install, Zen can update itself in place:
+
+```bash
+zen update --check
+zen update
+```
+
+`zen update` selects the supported archive for the current OS and architecture, verifies the release's signed manifest and archive checksum, then atomically replaces the current user-owned executable. It never uses `sudo` or restarts Zen. If the daemon is running, stop and start it when convenient to use the new binary.
+
+An interactive daemon startup may print one cached `zen update` hint. The check runs asynchronously, never delays startup, and stays silent in noninteractive output and on network failure.
+
 On macOS, install `tmux` with `brew install tmux`. If macOS blocks the downloaded binary, confirm that it came from the official Zen release before removing the quarantine attribute with `xattr -d com.apple.quarantine ~/.local/bin/zen`.
 
 If `~/.local/bin` is not on your `PATH`, install into another user-owned directory that is, or add it to your shell configuration.
@@ -67,10 +78,12 @@ Full local stage (clean directory each run; **no** GitHub Release):
 #    zen-linux-amd64.tar.gz
 #    zen-linux-arm64.tar.gz
 #    zen-darwin-arm64.tar.gz
-#    SHA256SUMS  release-manifest.json
+#    SHA256SUMS  release-manifest.json  release-manifest.json.sig
 ```
 
 Each archive contains the `zen` binary plus `LICENSE`, `NOTICE`, and `TRADEMARKS.md`. The command prints the exact stage path; tracked release notes remain on the GitHub Release page instead of becoming duplicate download assets.
+
+Release staging requires the Ed25519 manifest key through `ZEN_UPDATE_SIGNING_KEY` (a local PEM path) or `ZEN_UPDATE_SIGNING_KEY_BASE64` (CI). The committed public key is the trust root embedded in the daemon; private key material is never stored in Git.
 
 Verify identity sources and stage checksums:
 
