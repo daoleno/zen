@@ -16,6 +16,7 @@
     "daemon:build": "mkdir -p bin && cd daemon && go build -o ../bin/zen ./cmd/zen",
     "daemon:build:linux": "./scripts/build-daemon-linux.sh",
     "daemon:test": "cd daemon && go test ./...",
+    "installer:test": "./scripts/tests/install_test.sh",
     "release:identity": "./scripts/verify-release-identity.sh",
     "release:stage": "./scripts/stage-release.sh",
     "native:contract": "./scripts/verify-libghostty.sh --contract",

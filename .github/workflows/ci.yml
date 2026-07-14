@@ -10,6 +10,20 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  installer:
+    name: Installer (offline)
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: "1.3.5"
+      - name: Test secure bootstrap installer
+        run: bun run installer:test
+
   daemon:
     name: Daemon (Go)
     runs-on: ubuntu-latest
