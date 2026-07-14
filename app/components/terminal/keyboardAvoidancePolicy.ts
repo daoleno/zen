@@ -1,12 +1,11 @@
-export function shouldAvoidKeyboard(
-  surfaceEnabled: boolean,
-  keyboardVisible: boolean,
-) {
-  return surfaceEnabled && keyboardVisible;
-}
-
-export function keyboardAvoidanceResetStyle(platform: string) {
-  return platform === "android"
-    ? { height: "auto" as const, flex: 1 }
-    : { paddingBottom: 0 };
+/**
+ * Keep one declarative owner for the chat frame throughout a keyboard cycle.
+ * Padding always emits an explicit zero value when the keyboard is closed,
+ * unlike height avoidance, which drops its animated height/flex properties.
+ */
+export function keyboardAvoidancePolicy(surfaceEnabled: boolean) {
+  return {
+    enabled: surfaceEnabled,
+    behavior: "padding" as const,
+  };
 }

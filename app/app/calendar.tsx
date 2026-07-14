@@ -255,15 +255,11 @@ export default function CalendarScreen(props: CalendarScreenProps = {}) {
           />
           <View style={{ flex: 1 }}>
             <Text style={styles.permissionTitle}>
-              Reminder notifications are{" "}
-              {notificationState === "denied" ? "disabled" : "not enabled"}
-            </Text>
-            <Text style={styles.permissionBody}>
               {notificationState === "denied"
-                ? "Enable notifications in system settings; Calendar remains available in Zen."
+                ? "Reminder notifications are disabled"
                 : notificationState === "unavailable"
-                  ? "Notifications are unavailable on this device; Calendar remains available in Zen."
-                  : "Allow reminders on this device when you are ready."}
+                  ? "Reminder notifications are unavailable"
+                  : "Reminder notifications are not enabled"}
             </Text>
           </View>
           {notificationState !== "unavailable" ? (
@@ -286,9 +282,6 @@ export default function CalendarScreen(props: CalendarScreenProps = {}) {
       ) : null}
       {mode === "agenda" ? (
         <ScrollView contentContainerStyle={styles.content}>
-          <Text style={styles.viewerTimezone}>
-            Grouped by your device timezone · {viewerZone}
-          </Text>
           {props.loading ? (
             <View
               accessibilityRole="progressbar"
@@ -297,9 +290,6 @@ export default function CalendarScreen(props: CalendarScreenProps = {}) {
             >
               <Ionicons name="sync-outline" size={34} color={colors.accent} />
               <Text style={styles.emptyTitle}>Loading commitments…</Text>
-              <Text style={styles.emptyBody}>
-                Syncing the daemon’s canonical Calendar state.
-              </Text>
             </View>
           ) : sections.length ? (
             sections.map((section) => (
@@ -738,6 +728,12 @@ function EditorModal({
   const [notes, setNotes] = useState("");
   const [instruction, setInstruction] = useState("");
   const [saving, setSaving] = useState(false);
+  const editorSessionId =
+    value === "new"
+      ? "new"
+      : value
+        ? `${value.serverId}:${value.id}`
+        : null;
   useEffect(() => {
     if (!value) return;
     const initial = existing
@@ -764,10 +760,16 @@ function EditorModal({
     setRecurrence(existing?.recurrence ?? "none");
     setNotes(existing?.notes ?? "");
     setInstruction(existing?.action_instruction ?? "");
-  }, [value]);
+  }, [editorSessionId]);
+  const atResolution = useMemo(
+    () => resolveLocalDateTime(atDate, atTime, timezone),
+    [atDate, atTime, timezone],
+  );
+  const endResolution = useMemo(
+    () => resolveLocalDateTime(endDate, endTime, timezone),
+    [endDate, endTime, timezone],
+  );
   if (!value) return null;
-  const atResolution = resolveLocalDateTime(atDate, atTime, timezone);
-  const endResolution = resolveLocalDateTime(endDate, endTime, timezone);
   const atInstant = chosenInstant(atResolution, atOccurrence);
   const endInstant = chosenInstant(endResolution, endOccurrence);
   const timeValidation =
@@ -825,7 +827,7 @@ function EditorModal({
   return (
     <Modal visible transparent animationType="slide" onRequestClose={onClose}>
       <KeyboardAvoidingView
-        behavior={Platform.OS === "ios" ? "padding" : undefined}
+        behavior={Platform.OS === "ios" ? "padding" : "height"}
         style={styles.modalBackdrop}
       >
         <SafeAreaView edges={["bottom"]} style={styles.editor}>
@@ -845,7 +847,9 @@ function EditorModal({
             </Pressable>
           </View>
           <ScrollView
+            style={styles.editorScroll}
             keyboardShouldPersistTaps="handled"
+            keyboardDismissMode="on-drag"
             contentContainerStyle={styles.form}
           >
             <Field
@@ -1001,10 +1005,6 @@ function EditorModal({
                   Ends {formatResolvedInstant(endInstant, timezone)}
                 </Text>
               ) : null}
-              <Text style={styles.resolvedHint}>
-                Repeats preserve this wall-clock time in{" "}
-                {timezone || "the selected timezone"}.
-              </Text>
             </View>
           </ScrollView>
         </SafeAreaView>
@@ -1012,7 +1012,7 @@ function EditorModal({
     </Modal>
   );
 }
-function Field(
+const Field = React.memo(function Field(
   props: React.ComponentProps<typeof TextInput> & {
     label: string;
     containerStyle?: object;
@@ -1032,7 +1032,7 @@ function Field(
       />
     </View>
   );
-}
+});
 function AmbiguityChoice({
   resolution,
   selected,
@@ -1159,7 +1159,6 @@ function createStyles(colors: any) {
       gap: 10,
     },
     permissionTitle: { ...TypeScale.label, color: colors.textPrimary },
-    permissionBody: { ...TypeScale.caption, color: colors.textTertiary },
     permissionAction: {
       minHeight: 40,
       paddingHorizontal: 12,
@@ -1177,7 +1176,6 @@ function createStyles(colors: any) {
     },
     errorText: { ...TypeScale.compact, color: colors.statusFailed },
     content: { padding: Spacing.lg, paddingBottom: 40, gap: 20 },
-    viewerTimezone: { ...TypeScale.caption, color: colors.textTertiary },
     section: { gap: 4 },
     sectionTitle: {
       ...TypeScale.heading,
@@ -1350,7 +1348,8 @@ function createStyles(colors: any) {
     secondaryText: { ...TypeScale.label, color: colors.textPrimary },
     cancelText: { ...TypeScale.label, color: colors.statusFailed },
     editor: {
-      height: "94%",
+      flex: 1,
+      marginTop: Spacing.xl,
       backgroundColor: colors.bgSurface,
       borderTopLeftRadius: Radii.lg,
       borderTopRightRadius: Radii.lg,
@@ -1373,6 +1372,7 @@ function createStyles(colors: any) {
       justifyContent: "center",
     },
     saveText: { ...TypeScale.label, color: colors.accent },
+    editorScroll: { flex: 1 },
     form: { padding: 16, paddingBottom: 50, gap: 14 },
     field: { gap: 6 },
     dateTimeRow: { flexDirection: "row", gap: 10 },
@@ -1400,7 +1400,6 @@ function createStyles(colors: any) {
       backgroundColor: colors.surfaceSubtle,
     },
     resolvedLabel: { ...TypeScale.label, color: colors.textPrimary },
-    resolvedHint: { ...TypeScale.caption, color: colors.textTertiary },
     chips: { flexDirection: "row", flexWrap: "wrap", gap: 8 },
     chip: {
       minHeight: 40,

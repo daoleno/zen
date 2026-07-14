@@ -245,13 +245,6 @@ export default function BrainScreen() {
   const menuActions = useMemo(
     () => [
       {
-        key: "calendar",
-        label: "Calendar",
-        detail: "Commitments and scheduled Zen actions",
-        icon: "calendar-outline" as const,
-        onPress: openCalendar,
-      },
-      {
         key: "new-chat",
         label: "New chat",
         detail: "Start a fresh Brain thread",
@@ -288,6 +281,13 @@ export default function BrainScreen() {
         icon: "folder-open-outline" as const,
         disabled: !canOpenWorkspace,
         onPress: openWorkspaceViewer,
+      },
+      {
+        key: "calendar",
+        label: "Calendar",
+        detail: "Commitments and scheduled Zen actions",
+        icon: "calendar-outline" as const,
+        onPress: openCalendar,
       },
     ],
     [

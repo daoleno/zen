@@ -1,17 +1,7 @@
 import React from "react";
-import {
-  Platform,
-  StyleSheet,
-  View,
-} from "react-native";
-import {
-  KeyboardAvoidingView,
-  useKeyboardState,
-} from "react-native-keyboard-controller";
-import {
-  keyboardAvoidanceResetStyle,
-  shouldAvoidKeyboard,
-} from "./keyboardAvoidancePolicy";
+import { StyleSheet, View } from "react-native";
+import { KeyboardAvoidingView } from "react-native-keyboard-controller";
+import { keyboardAvoidancePolicy } from "./keyboardAvoidancePolicy";
 
 interface CodexChatKeyboardFrameProps {
   enabled: boolean;
@@ -26,36 +16,13 @@ export function CodexChatKeyboardFrame({
   automaticOffset,
   children,
 }: CodexChatKeyboardFrameProps) {
-  const keyboardFrameRef = React.useRef<View>(null);
-  const keyboardVisible = useKeyboardState((state) => state.isVisible);
-  const avoidanceEnabled = shouldAvoidKeyboard(enabled, keyboardVisible);
-
-  React.useLayoutEffect(() => {
-    if (avoidanceEnabled) {
-      return;
-    }
-
-    const resetAvoidanceLayout = () => {
-      keyboardFrameRef.current?.setNativeProps({
-        style: keyboardAvoidanceResetStyle(Platform.OS),
-      });
-    };
-
-    // The controller's animated style returns an empty object when disabled,
-    // but Reanimated does not unset keys that disappear from an update. Reset
-    // once now and once after the native keyboard end event has been applied.
-    resetAvoidanceLayout();
-    const resetFrame = requestAnimationFrame(resetAvoidanceLayout);
-
-    return () => cancelAnimationFrame(resetFrame);
-  }, [avoidanceEnabled]);
+  const avoidance = keyboardAvoidancePolicy(enabled);
 
   return (
     <KeyboardAvoidingView
-      ref={keyboardFrameRef}
-      behavior={Platform.OS === "android" ? "height" : "padding"}
+      behavior={avoidance.behavior}
       collapsable={false}
-      enabled={avoidanceEnabled}
+      enabled={avoidance.enabled}
       keyboardVerticalOffset={keyboardVerticalOffset}
       automaticOffset={automaticOffset}
       style={styles.chatBody}
