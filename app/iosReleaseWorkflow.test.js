@@ -48,6 +48,8 @@ describe('iOS signed release identity contract', () => {
     expect(workflow).toContain('HD84J3DJ2B');
     expect(workflow).toContain('./scripts/app-store-connect-upload.py');
     expect(workflow).toContain('--app-id "$ZEN_ASC_APP_ID"');
+    expect(workflow).toContain('EXTRA_ARGS=(--beta-group-name "Zen Preview" --submit-beta-review)');
+    expect(workflow).toContain('"${EXTRA_ARGS[@]}"');
     expect(workflow).toContain('zen-asc-individual-key.p8');
     expect(workflow).not.toContain('ZEN_ASC_ISSUER_ID');
     expect(workflow).not.toContain('altool');

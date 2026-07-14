@@ -12,6 +12,7 @@ import subprocess
 import sys
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 from typing import Any, Callable
 
@@ -255,6 +256,108 @@ def upload_build(
         time.sleep(poll_seconds)
 
 
+def prepare_testflight_build(
+    client: AppStoreConnectClient,
+    app_id: str,
+    version: str,
+    build_number: str,
+    beta_group_name: str,
+    submit_beta_review: bool = False,
+    poll_seconds: int = 30,
+    max_wait_seconds: int = 3600,
+) -> dict[str, str]:
+    """Wait for App Store processing, handle compliance, and distribute a build."""
+
+    query = urllib.parse.urlencode(
+        [
+            ("filter[app]", app_id),
+            ("filter[version]", build_number),
+            ("filter[preReleaseVersion.version]", version),
+            ("filter[preReleaseVersion.platform]", "IOS"),
+            ("limit", "10"),
+        ]
+    )
+    deadline = time.monotonic() + max_wait_seconds
+    build: dict[str, Any] | None = None
+    while True:
+        response = client.api_request("GET", f"/builds?{query}")
+        builds = response.get("data", [])
+        if len(builds) > 1:
+            raise RuntimeError(
+                f"App Store Connect returned multiple builds for {version} ({build_number})"
+            )
+        if builds:
+            candidate = builds[0]
+            state = candidate.get("attributes", {}).get("processingState")
+            if state == "VALID":
+                build = candidate
+                break
+            if state in ("FAILED", "INVALID"):
+                raise RuntimeError(f"App Store Connect build processing ended in {state}")
+        if time.monotonic() >= deadline:
+            state = (build or {}).get("attributes", {}).get("processingState", "NOT_FOUND")
+            raise TimeoutError(f"build {version} ({build_number}) is still {state}")
+        time.sleep(poll_seconds)
+
+    build_id = build["id"]
+    client.api_request(
+        "PATCH",
+        f"/builds/{build_id}",
+        {
+            "data": {
+                "type": "builds",
+                "id": build_id,
+                "attributes": {"usesNonExemptEncryption": False},
+            }
+        },
+    )
+
+    group_query = urllib.parse.urlencode(
+        {
+            "limit": "200",
+            "fields[betaGroups]": "name,publicLinkEnabled,publicLink",
+        }
+    )
+    groups = client.api_request("GET", f"/apps/{app_id}/betaGroups?{group_query}").get("data", [])
+    matches = [group for group in groups if group.get("attributes", {}).get("name") == beta_group_name]
+    if len(matches) != 1:
+        raise RuntimeError(
+            f"expected exactly one beta group named {beta_group_name!r}; found {len(matches)}"
+        )
+    group = matches[0]
+    if group.get("attributes", {}).get("publicLinkEnabled") is not True:
+        raise RuntimeError(f"beta group {beta_group_name!r} does not have a public link enabled")
+    group_id = group["id"]
+
+    membership_query = urllib.parse.urlencode({"filter[id]": build_id, "limit": "1"})
+    members = client.api_request(
+        "GET", f"/betaGroups/{group_id}/builds?{membership_query}"
+    ).get("data", [])
+    if not any(item.get("id") == build_id for item in members):
+        client.api_request(
+            "POST",
+            f"/betaGroups/{group_id}/relationships/builds",
+            {"data": [{"type": "builds", "id": build_id}]},
+        )
+
+    result = {"build_id": build_id, "beta_group_id": group_id, "review": "not_requested"}
+    if submit_beta_review:
+        review = client.api_request(
+            "POST",
+            "/betaAppReviewSubmissions",
+            {
+                "data": {
+                    "type": "betaAppReviewSubmissions",
+                    "relationships": {
+                        "build": {"data": {"type": "builds", "id": build_id}}
+                    },
+                }
+            },
+        )
+        result["review"] = review["data"]["id"]
+    return result
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--ipa", required=True, type=pathlib.Path)
@@ -264,6 +367,8 @@ def main() -> int:
     parser.add_argument("--key-id", required=True)
     parser.add_argument("--key-path", required=True, type=pathlib.Path)
     parser.add_argument("--max-wait-seconds", type=int, default=3600)
+    parser.add_argument("--beta-group-name")
+    parser.add_argument("--submit-beta-review", action="store_true")
     args = parser.parse_args()
     if not args.ipa.is_file() or not args.key_path.is_file():
         raise SystemExit("error: --ipa and --key-path must be files")
@@ -276,6 +381,20 @@ def main() -> int:
         max_wait_seconds=args.max_wait_seconds,
     )
     print(f"App Store Connect accepted build upload {upload_id}")
+    if args.beta_group_name:
+        prepared = prepare_testflight_build(
+            AppStoreConnectClient(args.key_id, args.key_path),
+            args.app_id,
+            args.version,
+            args.build_number,
+            args.beta_group_name,
+            submit_beta_review=args.submit_beta_review,
+            max_wait_seconds=args.max_wait_seconds,
+        )
+        print(
+            "TestFlight build is VALID, export compliance is handled, "
+            f"and beta group is attached (build {prepared['build_id']}, review {prepared['review']})"
+        )
     return 0
 
 

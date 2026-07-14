@@ -361,13 +361,18 @@ jobs:
           path.write_bytes(data)
           path.chmod(0o600)
           PY
+          EXTRA_ARGS=()
+          if [[ "$ZEN_IOS_APP_VARIANT" == "preview" ]]; then
+            EXTRA_ARGS=(--beta-group-name "Zen Preview" --submit-beta-review)
+          fi
           ./scripts/app-store-connect-upload.py \
             --ipa "$IOS_IPA" \
             --app-id "$ZEN_ASC_APP_ID" \
             --version "$ZEN_IOS_VERSION" \
             --build-number "$ZEN_IOS_BUILD_NUMBER" \
             --key-id "$ZEN_ASC_KEY_ID" \
-            --key-path "$ASC_KEY_PATH"
+            --key-path "$ASC_KEY_PATH" \
+            "${EXTRA_ARGS[@]}"
 
       - name: Remove temporary signing material
         if: always()

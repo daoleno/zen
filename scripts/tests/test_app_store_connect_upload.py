@@ -148,6 +148,61 @@ class BuildUploadTests(unittest.TestCase):
                 [{"url": "https://upload", "method": "PUT", "offset": 0, "length": 3}], 4
             )
 
+    def test_prepares_valid_build_for_public_group_and_beta_review(self):
+        requests = []
+
+        def open_prepare(request, timeout):
+            requests.append(request)
+            url = request.full_url
+            if "/betaGroups/group-preview/builds?" in url:
+                return Response(b'{"data":[]}')
+            if "/builds?" in url:
+                return Response(
+                    b'{"data":[{"type":"builds","id":"build-5","attributes":{"processingState":"VALID","usesNonExemptEncryption":false}}]}'
+                )
+            if url.endswith("/builds/build-5"):
+                return Response(b'{"data":{"type":"builds","id":"build-5"}}')
+            if "/apps/6790486708/betaGroups?" in url:
+                return Response(
+                    b'{"data":[{"type":"betaGroups","id":"group-preview","attributes":{"name":"Zen Preview","publicLinkEnabled":true,"publicLink":"https://testflight.apple.com/join/rTKCDzMt"}}]}'
+                )
+            if url.endswith("/betaGroups/group-preview/relationships/builds"):
+                return Response()
+            if url.endswith("/betaAppReviewSubmissions"):
+                return Response(b'{"data":{"type":"betaAppReviewSubmissions","id":"review-5"}}')
+            raise AssertionError(url)
+
+        client = asc_upload.AppStoreConnectClient("SYNTHETIC", self.key, opener=open_prepare)
+        result = asc_upload.prepare_testflight_build(
+            client,
+            "6790486708",
+            "0.1.0",
+            "5",
+            "Zen Preview",
+            submit_beta_review=True,
+            poll_seconds=0,
+            max_wait_seconds=1,
+        )
+        self.assertEqual(
+            result,
+            {"build_id": "build-5", "beta_group_id": "group-preview", "review": "review-5"},
+        )
+        patch = next(request for request in requests if request.full_url.endswith("/builds/build-5"))
+        self.assertFalse(json.loads(patch.data)["data"]["attributes"]["usesNonExemptEncryption"])
+        attach = next(
+            request
+            for request in requests
+            if request.full_url.endswith("/betaGroups/group-preview/relationships/builds")
+        )
+        self.assertEqual(json.loads(attach.data)["data"], [{"type": "builds", "id": "build-5"}])
+        review = next(
+            request for request in requests if request.full_url.endswith("/betaAppReviewSubmissions")
+        )
+        self.assertEqual(
+            json.loads(review.data)["data"]["relationships"]["build"]["data"]["id"],
+            "build-5",
+        )
+
 
 if __name__ == "__main__":
     unittest.main()
