@@ -10,6 +10,10 @@ const ciWorkflow = fs.readFileSync(
   path.join(__dirname, '..', '.github', 'workflows', 'ci.yml'),
   'utf8',
 );
+const nativeLibsWorkflow = fs.readFileSync(
+  path.join(__dirname, '..', '.github', 'workflows', 'native-libs.yml'),
+  'utf8',
+);
 
 describe('iOS signed release identity contract', () => {
   it('offers only production and Preview identities and defaults to production', () => {
@@ -67,5 +71,8 @@ describe('iOS unsigned Simulator contract', () => {
     expect(ciWorkflow).toContain('runs-on: macos-26');
     expect(ciWorkflow).toContain("-destination 'generic/platform=iOS Simulator'");
     expect(ciWorkflow).toContain('ARCHS=arm64');
+    expect(nativeLibsWorkflow).toContain('runs-on: macos-26');
+    expect(nativeLibsWorkflow).toContain("-destination 'generic/platform=iOS Simulator'");
+    expect(nativeLibsWorkflow).toContain('ARCHS=arm64');
   });
 });
