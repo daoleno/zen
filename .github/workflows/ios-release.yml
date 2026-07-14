@@ -46,13 +46,9 @@ jobs:
     env:
       ZEN_IOS_APP_VARIANT: ${{ inputs.app_identity }}
       ZEN_IOS_BUILD_NUMBER: ${{ inputs.build_number }}
-      ZEN_APPLE_CERTIFICATE_BASE64: ${{ secrets.ZEN_APPLE_CERTIFICATE_BASE64 }}
-      ZEN_APPLE_CERTIFICATE_PASSWORD: ${{ secrets.ZEN_APPLE_CERTIFICATE_PASSWORD }}
-      ZEN_APPLE_PROVISIONING_PROFILE_BASE64: ${{ secrets.ZEN_APPLE_PROVISIONING_PROFILE_BASE64 }}
-      ZEN_APPLE_TEAM_ID: ${{ secrets.ZEN_APPLE_TEAM_ID }}
-      ZEN_ASC_KEY_ID: ${{ secrets.ZEN_ASC_KEY_ID }}
-      ZEN_ASC_ISSUER_ID: ${{ secrets.ZEN_ASC_ISSUER_ID }}
-      ZEN_ASC_API_KEY_BASE64: ${{ secrets.ZEN_ASC_API_KEY_BASE64 }}
+      # App IDs are public identifiers. Preview is fixed; production is an
+      # environment variable because its App Store Connect record is external.
+      ZEN_ASC_APP_ID: ${{ inputs.app_identity == 'preview' && '6790486708' || vars.ZEN_ASC_APP_ID }}
     steps:
       - name: Checkout explicit ref
         uses: actions/checkout@v4
@@ -61,6 +57,13 @@ jobs:
           fetch-depth: 0
 
       - name: Validate explicit inputs and required signing secrets
+        env:
+          ZEN_APPLE_CERTIFICATE_BASE64: ${{ secrets.ZEN_APPLE_CERTIFICATE_BASE64 }}
+          ZEN_APPLE_CERTIFICATE_PASSWORD: ${{ secrets.ZEN_APPLE_CERTIFICATE_PASSWORD }}
+          ZEN_APPLE_PROVISIONING_PROFILE_BASE64: ${{ secrets.ZEN_APPLE_PROVISIONING_PROFILE_BASE64 }}
+          ZEN_APPLE_TEAM_ID: ${{ secrets.ZEN_APPLE_TEAM_ID }}
+          ZEN_ASC_KEY_ID: ${{ secrets.ZEN_ASC_KEY_ID }}
+          ZEN_ASC_API_KEY_BASE64: ${{ secrets.ZEN_ASC_API_KEY_BASE64 }}
         run: |
           set -euo pipefail
           [[ "$ZEN_IOS_BUILD_NUMBER" =~ ^[1-9][0-9]*$ ]] || {
@@ -78,12 +81,16 @@ jobs:
             fi
           done
           if [[ "${{ inputs.destination }}" == "testflight" ]]; then
-            for name in ZEN_ASC_KEY_ID ZEN_ASC_ISSUER_ID ZEN_ASC_API_KEY_BASE64; do
+            for name in ZEN_ASC_KEY_ID ZEN_ASC_API_KEY_BASE64 ZEN_ASC_APP_ID; do
               if [[ -z "${!name:-}" ]]; then
-                echo "error: destination=testflight requires environment secret $name" >&2
+                echo "error: destination=testflight requires environment configuration $name" >&2
                 exit 1
               fi
             done
+          fi
+          if [[ "$ZEN_IOS_APP_VARIANT" == "preview" && "$ZEN_APPLE_TEAM_ID" != "HD84J3DJ2B" ]]; then
+            echo "error: Preview signing material must belong to Apple team HD84J3DJ2B" >&2
+            exit 1
           fi
 
       - uses: oven-sh/setup-bun@v2
@@ -162,6 +169,10 @@ jobs:
           PROFILE_PATH: ${{ runner.temp }}/zen-app-store.mobileprovision
           PROFILE_PLIST: ${{ runner.temp }}/zen-app-store.plist
           KEYCHAIN_PATH: ${{ runner.temp }}/zen-signing.keychain-db
+          ZEN_APPLE_CERTIFICATE_BASE64: ${{ secrets.ZEN_APPLE_CERTIFICATE_BASE64 }}
+          ZEN_APPLE_CERTIFICATE_PASSWORD: ${{ secrets.ZEN_APPLE_CERTIFICATE_PASSWORD }}
+          ZEN_APPLE_PROVISIONING_PROFILE_BASE64: ${{ secrets.ZEN_APPLE_PROVISIONING_PROFILE_BASE64 }}
+          ZEN_APPLE_TEAM_ID: ${{ secrets.ZEN_APPLE_TEAM_ID }}
         run: |
           set -euo pipefail
           python3 - <<'PY'
@@ -241,6 +252,7 @@ jobs:
           EXPORT_PATH: ${{ runner.temp }}/zen-ios-export
           EXPORT_OPTIONS: ${{ runner.temp }}/ExportOptions.plist
           PROFILE_NAME: ${{ steps.signing.outputs.profile_name }}
+          ZEN_APPLE_TEAM_ID: ${{ secrets.ZEN_APPLE_TEAM_ID }}
         run: |
           set -euo pipefail
           set -o pipefail
@@ -297,6 +309,10 @@ jobs:
           python3 - "$IPA" "$ARTIFACT_DIR/release-manifest.json" <<'PY'
           import hashlib, json, os, pathlib, subprocess, sys
           ipa = pathlib.Path(sys.argv[1])
+          ipa_digest = hashlib.sha256()
+          with ipa.open("rb") as source:
+              for chunk in iter(lambda: source.read(1024 * 1024), b""):
+                  ipa_digest.update(chunk)
           manifest = {
               "schema_version": 1,
               "platform": "ios",
@@ -308,7 +324,7 @@ jobs:
               "build_number": os.environ["ZEN_IOS_BUILD_NUMBER"],
               "git_commit": subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip(),
               "ipa": ipa.name,
-              "ipa_sha256": hashlib.sha256(ipa.read_bytes()).hexdigest(),
+              "ipa_sha256": ipa_digest.hexdigest(),
           }
           pathlib.Path(sys.argv[2]).write_text(json.dumps(manifest, indent=2) + "\n")
           PY
@@ -327,10 +343,12 @@ jobs:
 
       - name: Upload verified IPA to TestFlight
         if: ${{ inputs.destination == 'testflight' }}
+        env:
+          ASC_KEY_PATH: ${{ runner.temp }}/zen-asc-individual-key.p8
+          ZEN_ASC_KEY_ID: ${{ secrets.ZEN_ASC_KEY_ID }}
+          ZEN_ASC_API_KEY_BASE64: ${{ secrets.ZEN_ASC_API_KEY_BASE64 }}
         run: |
           set -euo pipefail
-          ASC_KEY_PATH="$HOME/.appstoreconnect/private_keys/AuthKey_${ZEN_ASC_KEY_ID}.p8"
-          mkdir -p "$(dirname "$ASC_KEY_PATH")"
           python3 - "$ASC_KEY_PATH" <<'PY'
           import base64, os, pathlib, sys
           try:
@@ -343,18 +361,13 @@ jobs:
           path.write_bytes(data)
           path.chmod(0o600)
           PY
-          xcrun altool \
-            --validate-app \
-            --type ios \
-            --file "$IOS_IPA" \
-            --apiKey "$ZEN_ASC_KEY_ID" \
-            --apiIssuer "$ZEN_ASC_ISSUER_ID"
-          xcrun altool \
-            --upload-app \
-            --type ios \
-            --file "$IOS_IPA" \
-            --apiKey "$ZEN_ASC_KEY_ID" \
-            --apiIssuer "$ZEN_ASC_ISSUER_ID"
+          ./scripts/app-store-connect-upload.py \
+            --ipa "$IOS_IPA" \
+            --app-id "$ZEN_ASC_APP_ID" \
+            --version "$ZEN_IOS_VERSION" \
+            --build-number "$ZEN_IOS_BUILD_NUMBER" \
+            --key-id "$ZEN_ASC_KEY_ID" \
+            --key-path "$ASC_KEY_PATH"
 
       - name: Remove temporary signing material
         if: always()
@@ -373,4 +386,4 @@ jobs:
             "${{ runner.temp }}/zen-distribution.p12" \
             "${{ runner.temp }}/zen-app-store.mobileprovision" \
             "${{ runner.temp }}/zen-app-store.plist" \
-            "$HOME"/.appstoreconnect/private_keys/AuthKey_*.p8
+            "${{ runner.temp }}/zen-asc-individual-key.p8"

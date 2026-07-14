@@ -34,4 +34,26 @@ describe('iOS signed release identity contract', () => {
     expect(workflow).not.toContain('"marketing_version": base["version"]');
     expect(workflow).not.toMatch(/expected_bundle\s*=\s*"com\.daoleno\.zen"/);
   });
+
+  it('uploads Preview with an Individual API key and no altool issuer dependency', () => {
+    expect(workflow).toContain("inputs.app_identity == 'preview' && '6790486708'");
+    expect(workflow).toContain('HD84J3DJ2B');
+    expect(workflow).toContain('./scripts/app-store-connect-upload.py');
+    expect(workflow).toContain('--app-id "$ZEN_ASC_APP_ID"');
+    expect(workflow).toContain('zen-asc-individual-key.p8');
+    expect(workflow).not.toContain('ZEN_ASC_ISSUER_ID');
+    expect(workflow).not.toContain('altool');
+    expect(workflow).not.toContain('--apiIssuer');
+    expect(workflow).not.toContain('iTMSTransporter');
+    expect(workflow).not.toContain('ipa.read_bytes()');
+  });
+
+  it('does not expose Apple secrets to the whole archive job', () => {
+    const jobEnv = workflow.match(/jobs:\s*\n\s*archive:[\s\S]*?\n\s{4}env:\s*\n([\s\S]*?)\n\s{4}steps:/)?.[1];
+    expect(jobEnv).toBeDefined();
+    expect(jobEnv).not.toContain('secrets.');
+    expect(workflow).toContain('ZEN_ASC_API_KEY_BASE64: ${{ secrets.ZEN_ASC_API_KEY_BASE64 }}');
+    expect(workflow).toContain('if: always()');
+    expect(workflow).toContain('${{ runner.temp }}/zen-asc-individual-key.p8');
+  });
 });
