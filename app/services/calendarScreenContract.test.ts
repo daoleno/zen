@@ -48,6 +48,23 @@ describe("Calendar screen contract", () => {
     expect(editor).not.toContain('height: "94%"');
     expect(editor).not.toContain("keyboardVisible");
   });
+  test("keeps single-line and multiline field text inside distinct geometry", () => {
+    const field = source.slice(
+      source.indexOf("const Field = React.memo"),
+      source.indexOf("function AmbiguityChoice"),
+    );
+    const styles = source.slice(source.indexOf("function createStyles"));
+
+    expect(field).toContain(
+      "input.multiline ? styles.multiline : styles.singleLine",
+    );
+    expect(styles).toMatch(
+      /singleLine:\s*\{[^}]*height: 48,[^}]*paddingVertical: 0,[^}]*textAlignVertical: "center"/s,
+    );
+    expect(styles).toMatch(
+      /multiline:\s*\{[^}]*minHeight: 92,[^}]*paddingVertical: 10,[^}]*textAlignVertical: "top"/s,
+    );
+  });
   test("keeps Calendar copy concise and action-oriented", () => {
     for (const copy of [
       "Grouped by your device timezone",

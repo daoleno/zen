@@ -1028,7 +1028,10 @@ const Field = React.memo(function Field(
         {...input}
         accessibilityLabel={label}
         placeholderTextColor={colors.textTertiary}
-        style={[styles.input, input.multiline && styles.multiline]}
+        style={[
+          styles.input,
+          input.multiline ? styles.multiline : styles.singleLine,
+        ]}
       />
     </View>
   );
@@ -1382,15 +1385,22 @@ function createStyles(colors: any) {
     input: {
       ...TypeScale.body,
       color: colors.textPrimary,
-      minHeight: 48,
       borderWidth: 1,
       borderColor: colors.borderSubtle,
       borderRadius: Radii.sm,
       paddingHorizontal: 12,
-      paddingVertical: 10,
       backgroundColor: colors.bgPrimary,
     },
-    multiline: { minHeight: 92, textAlignVertical: "top" },
+    singleLine: {
+      height: 48,
+      paddingVertical: 0,
+      textAlignVertical: "center",
+    },
+    multiline: {
+      minHeight: 92,
+      paddingVertical: 10,
+      textAlignVertical: "top",
+    },
     ambiguity: { gap: 8 },
     validationError: { ...TypeScale.compact, color: colors.statusFailed },
     resolvedCard: {
