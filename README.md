@@ -14,7 +14,7 @@
 <p align="center">
   <a href="https://github.com/daoleno/zen/releases"><img alt="GitHub release" src="https://img.shields.io/github/v/release/daoleno/zen?include_prereleases&sort=semver"></a>
   <a href="https://github.com/daoleno/zen/actions/workflows/release-artifacts.yml"><img alt="Release build" src="https://github.com/daoleno/zen/actions/workflows/release-artifacts.yml/badge.svg"></a>
-  <a href="https://testflight.apple.com/join/rTKCDzMt"><img alt="TestFlight Preview: Beta App Review pending" src="https://img.shields.io/badge/TestFlight_Preview-review_pending-555555.svg"></a>
+  <a href="https://testflight.apple.com/join/rTKCDzMt"><img alt="TestFlight Preview" src="https://img.shields.io/badge/TestFlight-Preview-0D96F6.svg"></a>
   <a href="LICENSE"><img alt="License: Apache-2.0" src="https://img.shields.io/badge/license-Apache--2.0-blue.svg"></a>
 </p>
 
@@ -50,9 +50,7 @@
 
 ## Brain keeps work moving
 
-Brain remembers useful context and your preferences. It keeps the active objective, decisions, open threads, and next step together, breaks work into manageable steps, and moves it forward over time.
-
-When action is needed, Brain uses tools or hands focused work to an agent session, reusing that session when helpful. It reviews the results before deciding what comes next. Its workspace persists across chats, devices, and restarts, so you can leave and pick up where you left off.
+Brain keeps objectives, decisions, open threads, and next steps together across chats, devices, and restarts.
 
 ## Quick start
 
@@ -62,7 +60,7 @@ Install the daemon on Linux (`amd64`/`arm64`), WSL, or an Apple Silicon Mac:
 curl -fsSL https://raw.githubusercontent.com/daoleno/zen/main/install.sh | sh
 ```
 
-On every fresh run without `ZEN_VERSION`, the bootstrap dynamically selects the SemVer-highest eligible public Zen release, whether beta or stable. There is no embedded release version to keep synchronized in this README or the script; `ZEN_VERSION` is only an optional exact-version pin. The bootstrap downloads only official [`daoleno/zen` release](https://github.com/daoleno/zen/releases) assets, verifies the selected archive against `SHA256SUMS`, and installs without `sudo`. If Zen is already installed at a safe user-owned path, the script delegates to Zen's signed built-in updater. See [Install the daemon](docs/install-daemon.md) for precise release-selection rules, version pinning, custom install locations, the bootstrap trust boundary, manual checksum verification, and source builds.
+For other install options, see [Install the daemon](docs/install-daemon.md).
 
 Then, on the computer that has `tmux` and an authenticated coding-agent CLI:
 
@@ -71,19 +69,17 @@ zen doctor
 zen --lan
 ```
 
-Zen prints a `zen pair` command for each detected private address. Keep the daemon running, open another terminal, and run the exact **Same Wi-Fi/LAN** command Zen printed.
+Zen prints a `zen pair` command for each detected private address. Keep the daemon running, open another terminal, and run the **Same Wi-Fi/LAN** command Zen printed.
 
-Open the mobile app and **scan or import the pairing code**. For access across networks, use private [Tailscale](https://tailscale.com/docs/install) connectivity or a stable [Cloudflare Tunnel](https://developers.cloudflare.com/cloudflare-one/networks/connectors/cloudflare-tunnel/get-started/create-remote-tunnel/) hostname.
+Get the mobile app from the [Android guide](docs/android.md) or [public TestFlight](https://testflight.apple.com/join/rTKCDzMt), then open it and scan or import the pairing code.
 
-For iOS source builds and the shortest setup for each connection route, see [Install the daemon](docs/install-daemon.md) and [Connect and pair](docs/connect-and-pair.md).
+For Tailscale, Cloudflare Tunnel, and other connection options, see [Connect and pair](docs/connect-and-pair.md).
 
 ## How it works
 
-The Zen daemon runs beside your repositories, authenticated agent CLIs, and tmux sessions on your Linux computer or Apple Silicon Mac. Connect the Android or iOS app over the same trusted private network, or provide an HTTPS endpoint for access away from home. You choose and control that network path; Zen then handles one-time enrollment and signed device requests.
+The Zen daemon runs beside your repositories, authenticated agent CLIs, and tmux sessions on your Linux computer or Apple Silicon Mac. The Android or iOS app connects over a network path you choose and control; Zen handles one-time enrollment and signed device requests.
 
 Read [Security and privacy](docs/security-and-privacy.md) for the trust model and [Architecture](docs/architecture.md) for protocol details.
-
-Get the apps from the [Android guide](docs/android.md) or [public TestFlight](https://testflight.apple.com/join/rTKCDzMt); the [iOS guide](docs/ios.md) also covers source builds.
 
 ## Learn more
 
