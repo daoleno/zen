@@ -43,19 +43,21 @@ var upgrader = websocket.Upgrader{
 
 // Server handles WebSocket connections from the zen mobile app.
 type Server struct {
-	auth              *auth.Manager
-	watcher           *watcher.Watcher
-	terminal          *terminal.Manager
-	pusher            *push.Client
-	stats             *stats.Collector
-	work              *work.Store
-	launcher          *work.Launcher
-	workLog           *work.SessionLogger
-	execs             *work.ExecutorConfig
-	brain             *brain.Service
-	calendar          *calendar.Store
-	calendarScheduler *calendar.Scheduler
-	lifecycle         *delegatedLifecycleManager
+	auth                     *auth.Manager
+	watcher                  *watcher.Watcher
+	terminal                 *terminal.Manager
+	pusher                   *push.Client
+	stats                    *stats.Collector
+	work                     *work.Store
+	launcher                 *work.Launcher
+	workLog                  *work.SessionLogger
+	execs                    *work.ExecutorConfig
+	brain                    *brain.Service
+	calendar                 *calendar.Store
+	calendarScheduler        *calendar.Scheduler
+	lifecycle                *delegatedLifecycleManager
+	structuredTurns          *structuredTurnRegistry
+	structuredSnapshotLoader func(agentID string) (work.CodexConversation, error)
 
 	workSubID     int
 	workSub       <-chan work.Event
@@ -86,21 +88,22 @@ type codexConversationSubscription struct {
 // New creates a WebSocket server.
 func New(authManager *auth.Manager, w *watcher.Watcher, pusher *push.Client, sc *stats.Collector, workStore *work.Store, launcher *work.Launcher, execs *work.ExecutorConfig, brainService *brain.Service) *Server {
 	srv := &Server{
-		auth:      authManager,
-		watcher:   w,
-		terminal:  terminal.NewManager(&terminal.TmuxBackend{}),
-		pusher:    pusher,
-		stats:     sc,
-		work:      workStore,
-		launcher:  launcher,
-		execs:     execs,
-		brain:     brainService,
-		clients:   make(map[*websocket.Conn]bool),
-		active:    make(map[*websocket.Conn]string),
-		writes:    make(map[*websocket.Conn]*sync.Mutex),
-		codexSubs: make(map[*websocket.Conn]map[string]codexConversationSubscription),
-		notified:  make(map[string]struct{}),
-		brainSent: make(map[string]struct{}),
+		auth:            authManager,
+		watcher:         w,
+		terminal:        terminal.NewManager(&terminal.TmuxBackend{}),
+		pusher:          pusher,
+		stats:           sc,
+		work:            workStore,
+		launcher:        launcher,
+		execs:           execs,
+		brain:           brainService,
+		clients:         make(map[*websocket.Conn]bool),
+		active:          make(map[*websocket.Conn]string),
+		writes:          make(map[*websocket.Conn]*sync.Mutex),
+		codexSubs:       make(map[*websocket.Conn]map[string]codexConversationSubscription),
+		notified:        make(map[string]struct{}),
+		brainSent:       make(map[string]struct{}),
+		structuredTurns: newStructuredTurnRegistry(),
 	}
 	srv.lifecycle = newDelegatedLifecycleManager(
 		func(event brain.HeartbeatEvent) (bool, error) {
@@ -162,6 +165,10 @@ type clientMessage struct {
 	CalendarItem         *calendar.Item         `json:"calendar_item"`
 	Revision             int64                  `json:"revision"`
 	ConversationScopeKey string                 `json:"conversation_scope_key"`
+	TurnID               string                 `json:"turn_id"`
+	TurnStartedAt        json.RawMessage        `json:"turn_started_at"`
+	TurnQueued           bool                   `json:"turn_queued"`
+	TurnConversationID   string                 `json:"turn_conversation_identity"`
 }
 
 // Run starts the HTTP server and event broadcaster.
@@ -420,9 +427,31 @@ func (s *Server) handleClientMessage(conn *websocket.Conn, msg []byte) {
 		s.mu.Unlock()
 
 	case "send_input":
-		if err := s.watcher.SendInput(raw.AgentID, raw.Text); err != nil {
+		acceptance, err := s.acceptStructuredInput(
+			raw,
+			func() error { return s.watcher.SendInput(raw.AgentID, raw.Text) },
+		)
+		if err != nil {
 			log.Printf("send_input error: %v", err)
-			s.sendError(conn, "send_input_failed", err.Error())
+			code := "send_input_failed"
+			if errors.Is(err, errStructuredLifecycleSyncing) {
+				code = "structured_lifecycle_syncing"
+			}
+			if raw.RequestID != "" {
+				s.sendErrorWithRequestID(conn, raw.RequestID, code, err.Error())
+			} else {
+				s.sendError(conn, code, err.Error())
+			}
+		} else if raw.RequestID != "" {
+			s.sendJSON(conn, map[string]any{
+				"type":          "input_accepted",
+				"request_id":    raw.RequestID,
+				"agent_id":      raw.AgentID,
+				"turn_id":       acceptance.TurnID,
+				"queued":        acceptance.Queued,
+				"turn_revision": acceptance.Revision,
+				"turn_epoch":    acceptance.Epoch,
+			})
 		}
 
 	case "send_key":
@@ -459,7 +488,7 @@ func (s *Server) handleClientMessage(conn *websocket.Conn, msg []byte) {
 			"agent_id":   agentID,
 		}
 		if agent := s.watcher.GetAgent(agentID); agent != nil {
-			response["agent_session"] = agent
+			response["agent_session"] = s.agentSessionWire(agent)
 		}
 		s.sendJSON(conn, response)
 
@@ -675,22 +704,49 @@ func (s *Server) handleClientMessage(conn *websocket.Conn, msg []byte) {
 		if raw.StateVersion > 0 {
 			agent := s.watcher.GetAgent(raw.AgentID)
 			if agent != nil && agent.StateVersion != raw.StateVersion {
-				s.sendError(conn, "stale_action",
+				s.sendErrorWithRequestID(conn, raw.RequestID, "stale_action",
 					fmt.Sprintf("Agent state changed (version %d → %d). Refresh before acting.", raw.StateVersion, agent.StateVersion))
 				return
 			}
 		}
-		if err := s.watcher.SendAction(raw.AgentID, raw.Action); err != nil {
-			log.Printf("send_action error: %v", err)
-			s.sendError(conn, "send_action_failed", err.Error())
+		var actionAccepted = true
+		var err error
+		if raw.Action == "pause" {
+			actionAccepted, err = s.interruptStructuredTurn(
+				raw,
+				func() error { return s.watcher.SendAction(raw.AgentID, raw.Action) },
+			)
 		} else {
-			s.sendJSON(conn, map[string]any{"type": "action_confirmed", "agent_id": raw.AgentID, "action": raw.Action})
+			err = s.watcher.SendAction(raw.AgentID, raw.Action)
+		}
+		if err != nil {
+			log.Printf("send_action error: %v", err)
+			s.sendErrorWithRequestID(conn, raw.RequestID, "send_action_failed", err.Error())
+		} else if !actionAccepted {
+			s.sendErrorWithRequestID(conn, raw.RequestID, "stale_action", "Turn changed before Stop was accepted. Refresh and try again.")
+		} else {
+			s.sendJSON(conn, map[string]any{
+				"type":       "action_confirmed",
+				"request_id": raw.RequestID,
+				"agent_id":   raw.AgentID,
+				"action":     raw.Action,
+				"turn_id":    raw.TurnID,
+			})
 		}
 
 	case "kill_agent":
 		if err := s.watcher.KillSession(raw.AgentID); err != nil {
 			log.Printf("kill_agent error: %v", err)
 			s.sendError(conn, "kill_failed", err.Error())
+		} else {
+			settledAt := time.Now()
+			if strings.TrimSpace(raw.ConversationScopeKey) != "" {
+				s.turnRegistry().cancelAll(
+					structuredTurnRegistryKey(raw.ConversationScopeKey, raw.AgentID),
+					settledAt,
+				)
+			}
+			s.turnRegistry().cancelAllForAgent(raw.AgentID, settledAt)
 		}
 
 	case "list_dir":
@@ -769,14 +825,16 @@ func (s *Server) handleClientMessage(conn *websocket.Conn, msg []byte) {
 
 func (s *Server) sendAgentSessionList(conn *websocket.Conn) {
 	agentSessions := s.currentVisibleAgentSessions()
-	s.sendJSON(conn, map[string]any{"type": "agent_session_list", "agent_sessions": agentSessions})
+	s.sendJSON(conn, map[string]any{"type": "agent_session_list", "agent_sessions": s.agentSessionsWire(agentSessions)})
 }
 
 type resolvedCodexConversationAgent struct {
-	targetID string
-	agent    classifier.Agent
-	ready    bool
-	reason   string
+	targetID    string
+	agent       classifier.Agent
+	provider    string
+	fromWatcher bool
+	ready       bool
+	reason      string
 }
 
 func (s *Server) resolveCodexConversationAgent(raw clientMessage) resolvedCodexConversationAgent {
@@ -825,10 +883,232 @@ func (s *Server) resolveCodexConversationAgent(raw clientMessage) resolvedCodexC
 		}
 	}
 	return resolvedCodexConversationAgent{
-		targetID: targetID,
-		agent:    agent,
-		ready:    true,
+		targetID:    targetID,
+		agent:       agent,
+		provider:    s.structuredProviderForAgent(&agent),
+		fromWatcher: agentFromWatcher,
+		ready:       true,
 	}
+}
+
+func (s *Server) turnRegistry() *structuredTurnRegistry {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.structuredTurns == nil {
+		s.structuredTurns = newStructuredTurnRegistry()
+	}
+	return s.structuredTurns
+}
+
+// refreshStructuredTurnBaseline reconciles the latest trusted provider facts
+// immediately before a structured Send or Stop. This is deliberately not
+// conditional on the registry being empty: the provider may have settled A
+// and promoted B between subscription polls, in which case Stop(A) must be
+// rejected before any pause reaches the executor. Client hints and terminal
+// panes never establish this baseline.
+func (s *Server) refreshStructuredTurnBaseline(key, agentID string) (string, error) {
+	registry := s.turnRegistry()
+	if key == "" {
+		return "", nil
+	}
+	conversation, err := s.loadStructuredConversationSnapshot(agentID)
+	if err != nil {
+		return "", err
+	}
+	if strings.HasPrefix(key, "agent:") {
+		registry.markWorkAgentPresent(agentID)
+	}
+	registry.projectProviderHistoryWithContext(
+		key,
+		agentID,
+		structuredConversationThreadIdentity(conversation),
+		conversation.ProviderTurns,
+		conversation.Turn,
+	)
+	return structuredConversationThreadIdentity(conversation), nil
+}
+
+func (s *Server) loadStructuredConversationSnapshot(agentID string) (work.CodexConversation, error) {
+	if s.structuredSnapshotLoader != nil {
+		return s.structuredSnapshotLoader(strings.TrimSpace(agentID))
+	}
+	if s.watcher == nil {
+		return work.CodexConversation{}, fmt.Errorf("%w: executor watcher unavailable", errStructuredLifecycleSyncing)
+	}
+	agent := s.watcher.GetAgent(strings.TrimSpace(agentID))
+	if agent == nil {
+		return work.CodexConversation{}, fmt.Errorf("%w: executor unavailable", errStructuredLifecycleSyncing)
+	}
+	provider := s.structuredProviderForAgent(agent)
+	if provider == "" {
+		return work.CodexConversation{}, fmt.Errorf("%w: structured provider unavailable", errStructuredLifecycleSyncing)
+	}
+	conversation, err := work.LoadCodexConversationForProvider(*agent, provider, time.Now())
+	if err != nil {
+		return work.CodexConversation{}, fmt.Errorf("%w: %v", errStructuredLifecycleSyncing, err)
+	}
+	return conversation, nil
+}
+
+func (s *Server) acceptStructuredInput(
+	raw clientMessage,
+	dispatch func() error,
+) (structuredInputAcceptance, error) {
+	key := structuredTurnRegistryKey(raw.ConversationScopeKey, raw.AgentID)
+	conversationIdentity := ""
+	if strings.TrimSpace(raw.TurnID) != "" {
+		var err error
+		conversationIdentity, err = s.refreshStructuredTurnBaseline(key, raw.AgentID)
+		if err != nil {
+			return structuredInputAcceptance{}, err
+		}
+	}
+	threadControl := isStructuredThreadControlInput(raw.Text)
+	baselineConversation := strings.TrimSpace(raw.TurnConversationID)
+	if threadControl && baselineConversation == "" {
+		baselineConversation = firstNonEmptyStructuredIdentity(
+			conversationIdentity,
+			s.currentStructuredConversationIdentity(raw.AgentID),
+		)
+	}
+	return s.turnRegistry().acceptInputWithOptions(
+		key,
+		raw.AgentID,
+		raw.TurnID,
+		clientStructuredTurnStartedAt(raw.TurnStartedAt),
+		raw.TurnQueued,
+		threadControl,
+		baselineConversation,
+		dispatch,
+	)
+}
+
+func (s *Server) interruptStructuredTurn(
+	raw clientMessage,
+	dispatch func() error,
+) (bool, error) {
+	key := structuredTurnRegistryKey(raw.ConversationScopeKey, raw.AgentID)
+	if strings.TrimSpace(raw.TurnID) != "" {
+		if _, err := s.refreshStructuredTurnBaseline(key, raw.AgentID); err != nil {
+			return false, err
+		}
+	}
+	return s.turnRegistry().interruptWithDispatch(
+		key,
+		raw.TurnID,
+		time.Now(),
+		dispatch,
+	)
+}
+
+func (s *Server) projectStructuredConversationTurns(
+	conversationScopeKey string,
+	agentID string,
+	conversation work.CodexConversation,
+) work.CodexConversation {
+	return s.projectStructuredConversationTurnsWithTrust(
+		conversationScopeKey,
+		agentID,
+		conversation,
+		true,
+	)
+}
+
+func (s *Server) projectStructuredConversationTurnsWithTrust(
+	conversationScopeKey string,
+	agentID string,
+	conversation work.CodexConversation,
+	trustedProviderFacts bool,
+) work.CodexConversation {
+	if s.isHistoricalBrainConversationScope(conversationScopeKey) {
+		key := structuredTurnRegistryKey(conversationScopeKey, agentID)
+		s.turnRegistry().cancelAll(key, time.Now())
+		conversation.Turn, conversation.QueuedTurns, conversation.TurnEpoch, conversation.TurnRevision = s.turnRegistry().projectProviderHistoryWithContext(
+			key,
+			"",
+			"",
+			nil,
+			nil,
+		)
+		if conversation.QueuedTurns == nil {
+			conversation.QueuedTurns = []work.CodexConversationTurn{}
+		}
+		active := false
+		conversation.Active = &active
+		return conversation
+	}
+	key := structuredTurnRegistryKey(conversationScopeKey, agentID)
+	projectionAgentID := ""
+	conversationIdentity := ""
+	var providerHistory []work.CodexConversationTurn
+	var providerTurn *work.CodexConversationTurn
+	if trustedProviderFacts {
+		projectionAgentID = agentID
+		conversationIdentity = structuredConversationThreadIdentity(conversation)
+		providerHistory = conversation.ProviderTurns
+		providerTurn = conversation.Turn
+	}
+	conversation.Turn, conversation.QueuedTurns, conversation.TurnEpoch, conversation.TurnRevision = s.turnRegistry().projectProviderHistoryWithContext(
+		key,
+		projectionAgentID,
+		conversationIdentity,
+		providerHistory,
+		providerTurn,
+	)
+	if conversation.QueuedTurns == nil {
+		conversation.QueuedTurns = []work.CodexConversationTurn{}
+	}
+	active := conversation.Turn != nil &&
+		conversation.Turn.Status == work.CodexConversationTurnRunning
+	conversation.Active = &active
+	return conversation
+}
+
+func isStructuredThreadControlInput(text string) bool {
+	fields := strings.Fields(strings.TrimSpace(text))
+	if len(fields) == 0 {
+		return false
+	}
+	switch strings.ToLower(fields[0]) {
+	case "/new", "/clear":
+		return true
+	default:
+		return false
+	}
+}
+
+func (s *Server) currentStructuredConversationIdentity(agentID string) string {
+	if s == nil || s.watcher == nil {
+		return ""
+	}
+	agent := s.watcher.GetAgent(strings.TrimSpace(agentID))
+	if agent == nil {
+		return ""
+	}
+	provider := s.structuredProviderForAgent(agent)
+	if provider == "" {
+		return ""
+	}
+	conversation, err := work.LoadCodexConversationForProvider(*agent, provider, time.Now())
+	if err != nil {
+		return ""
+	}
+	return structuredConversationThreadIdentity(conversation)
+}
+
+func (s *Server) isHistoricalBrainConversationScope(scopeKey string) bool {
+	const prefix = "brain-thread:"
+	scopeKey = strings.TrimSpace(scopeKey)
+	if s.brain == nil || !strings.HasPrefix(scopeKey, prefix) {
+		return false
+	}
+	threadID := strings.TrimSpace(strings.TrimPrefix(scopeKey, prefix))
+	if threadID == "" {
+		return false
+	}
+	currentThreadID, err := s.brain.ChatThreadID()
+	currentThreadID = strings.TrimSpace(currentThreadID)
+	return err == nil && currentThreadID != "" && threadID != currentThreadID
 }
 
 func (s *Server) handleListSessionServices(conn *websocket.Conn, raw clientMessage) {
@@ -952,7 +1232,26 @@ func (s *Server) publishCodexConversationSubscription(
 	}
 	resolved := s.resolveCodexConversationAgent(raw)
 	if !resolved.ready {
-		fingerprint := fmt.Sprintf("sync:%s:%s", resolved.targetID, resolved.reason)
+		if strings.TrimSpace(raw.ConversationScopeKey) == "" {
+			s.turnRegistry().failWorkAgent(resolved.targetID, time.Now())
+		}
+		conversation := s.projectStructuredConversationTurnsWithTrust(
+			raw.ConversationScopeKey,
+			resolved.targetID,
+			work.CodexConversation{
+				Available:   false,
+				Reason:      resolved.reason,
+				Events:      []work.CodexConversationEvent{},
+				QueuedTurns: []work.CodexConversationTurn{},
+			},
+			false,
+		)
+		fingerprint := fmt.Sprintf(
+			"sync:%s:%s:%s",
+			resolved.targetID,
+			resolved.reason,
+			codexConversationSubscriptionFingerprint(conversation),
+		)
 		if (*previous) != nil && (*previous).fingerprint == fingerprint {
 			return
 		}
@@ -968,22 +1267,30 @@ func (s *Server) publishCodexConversationSubscription(
 			"revision":        revision,
 			"state":           "syncing",
 			"reason":          resolved.reason,
+			"active":          conversation.Active,
+			"turn":            conversation.Turn,
+			"turn_revision":   conversation.TurnRevision,
+			"turn_epoch":      conversation.TurnEpoch,
+			"queued_turns":    conversation.QueuedTurns,
 		})
 		*previous = &codexConversationSubscriptionSnapshot{
-			conversation: work.CodexConversation{
-				Available: false,
-				Reason:    resolved.reason,
-				Events:    []work.CodexConversationEvent{},
-			},
-			fingerprint: fingerprint,
-			eventsByID:  map[string]work.CodexConversationEvent{},
-			revision:    revision,
+			conversation: conversation,
+			fingerprint:  fingerprint,
+			eventsByID:   map[string]work.CodexConversationEvent{},
+			revision:     revision,
 		}
 		return
 	}
+	if resolved.fromWatcher {
+		s.turnRegistry().markWorkAgentPresent(resolved.targetID)
+	}
 
 	now := time.Now()
-	conversation, err := work.LoadCodexConversationForAgent(resolved.agent, now)
+	conversation, err := work.LoadCodexConversationForProvider(
+		resolved.agent,
+		resolved.provider,
+		now,
+	)
 	if err != nil {
 		s.sendJSON(conn, map[string]any{
 			"type":       "error",
@@ -992,6 +1299,11 @@ func (s *Server) publishCodexConversationSubscription(
 			"message":    err.Error(),
 		})
 		return
+	}
+	if !resolved.fromWatcher {
+		if strings.TrimSpace(raw.ConversationScopeKey) == "" {
+			s.turnRegistry().failWorkAgent(resolved.targetID, now)
+		}
 	}
 	if work.ShouldUseTerminalSnapshotConversationFallback(resolved.agent, conversation) {
 		if s.watcher == nil {
@@ -1002,6 +1314,12 @@ func (s *Server) publishCodexConversationSubscription(
 			conversation = work.TerminalSnapshotConversationForAgent(resolved.agent, text, now)
 		}
 	}
+	conversation = s.projectStructuredConversationTurnsWithTrust(
+		raw.ConversationScopeKey,
+		resolved.targetID,
+		conversation,
+		resolved.fromWatcher,
+	)
 	conversation = s.brainScopedConversation(raw.ConversationScopeKey, conversation, now)
 	fingerprint := codexConversationSubscriptionFingerprint(conversation)
 	if (*previous) != nil && (*previous).fingerprint == fingerprint {
@@ -1046,6 +1364,10 @@ func (s *Server) publishCodexConversationSubscription(
 		"cwd":             conversation.CWD,
 		"updated_at":      conversation.Updated,
 		"active":          conversation.Active,
+		"turn":            conversation.Turn,
+		"turn_revision":   conversation.TurnRevision,
+		"turn_epoch":      conversation.TurnEpoch,
+		"queued_turns":    conversation.QueuedTurns,
 		"upserts":         upserts,
 		"deletes":         deletes,
 	})
@@ -1061,15 +1383,18 @@ func (s *Server) brainScopedConversation(scopeKey string, conversation work.Code
 	if threadID == "" {
 		return conversation
 	}
-	currentThreadID, _ := s.brain.ChatThreadID()
+	currentThreadID, currentThreadErr := s.brain.ChatThreadID()
 	messages, err := s.brain.ChatMessages(threadID)
 	if err != nil {
 		conversation.Available = false
 		conversation.Reason = "brain_messages_unavailable"
 		return conversation
 	}
-	if threadID != strings.TrimSpace(currentThreadID) {
+	if currentThreadErr == nil && strings.TrimSpace(currentThreadID) != "" &&
+		threadID != strings.TrimSpace(currentThreadID) {
 		conversation.Events = []work.CodexConversationEvent{}
+		conversation.Turn = nil
+		conversation.QueuedTurns = []work.CodexConversationTurn{}
 		active := false
 		conversation.Active = &active
 	}
@@ -1156,6 +1481,16 @@ func codexConversationIdentity(conversation work.CodexConversation) string {
 	return firstNonEmptyString(conversation.SessionID, conversation.Path, conversation.CWD)
 }
 
+func structuredConversationThreadIdentity(conversation work.CodexConversation) string {
+	if sessionID := strings.TrimSpace(conversation.SessionID); sessionID != "" {
+		return "session:" + sessionID
+	}
+	if path := strings.TrimSpace(conversation.Path); path != "" {
+		return "path:" + path
+	}
+	return ""
+}
+
 func firstNonEmptyString(values ...string) string {
 	for _, value := range values {
 		if strings.TrimSpace(value) != "" {
@@ -1173,8 +1508,26 @@ func codexConversationSubscriptionFingerprint(conversation work.CodexConversatio
 	writeFingerprintString(hash, conversation.Source)
 	writeFingerprintString(hash, conversation.CWD)
 	writeFingerprintString(hash, codexConversationActiveValue(conversation.Active))
+	writeFingerprintString(hash, fmt.Sprintf("%d", conversation.TurnRevision))
+	writeFingerprintString(hash, conversation.TurnEpoch)
+	writeCodexConversationTurnFingerprint(hash, conversation.Turn)
+	writeFingerprintInt(hash, len(conversation.QueuedTurns))
+	for index := range conversation.QueuedTurns {
+		writeCodexConversationTurnFingerprint(hash, &conversation.QueuedTurns[index])
+	}
 	writeCodexConversationEventsFingerprint(hash, conversation.Events)
 	return fmt.Sprintf("%016x", hash.Sum64())
+}
+
+func writeCodexConversationTurnFingerprint(w io.Writer, turn *work.CodexConversationTurn) {
+	if turn == nil {
+		writeFingerprintString(w, "")
+		return
+	}
+	writeFingerprintString(w, turn.ID)
+	writeFingerprintString(w, turn.Status)
+	writeFingerprintString(w, turn.StartedAt)
+	writeFingerprintString(w, turn.SettledAt)
 }
 
 func codexConversationActiveValue(active *bool) string {
@@ -1332,6 +1685,14 @@ func clientStartedAt(raw json.RawMessage) time.Time {
 		return parsed.UTC()
 	}
 	return time.Time{}
+}
+
+func clientStructuredTurnStartedAt(raw json.RawMessage) string {
+	startedAt := clientStartedAt(raw)
+	if startedAt.IsZero() {
+		return ""
+	}
+	return startedAt.UTC().Format(time.RFC3339Nano)
 }
 
 func (s *Server) handleCodexSlashCommands(conn *websocket.Conn, raw clientMessage) {
@@ -1912,7 +2273,7 @@ func (s *Server) heartbeat(ctx context.Context) {
 			agentSessions := s.currentVisibleAgentSessions()
 			s.syncWorkLogs(agentSessions, false)
 			s.observeDelegatedLifecycleAgents(agentSessions)
-			data, _ := json.Marshal(map[string]any{"type": "agent_session_list", "agent_sessions": agentSessions})
+			data, _ := json.Marshal(map[string]any{"type": "agent_session_list", "agent_sessions": s.agentSessionsWire(agentSessions)})
 			s.broadcast(data)
 		}
 	}
@@ -1931,26 +2292,31 @@ func (s *Server) handleWatcherEvent(ev watcher.SessionEvent) {
 	switch ev.Type {
 	case "agent_discovered":
 		if ev.Agent != nil {
-			s.broadcastJSON(map[string]any{"type": "agent_session_created", "agent_session": ev.Agent})
+			s.broadcastJSON(map[string]any{"type": "agent_session_created", "agent_session": s.agentSessionWire(ev.Agent)})
 		}
 	case "agent_output":
 		if ev.Agent != nil {
-			s.broadcastJSON(map[string]any{"type": "agent_session_updated", "agent_session": ev.Agent})
+			s.broadcastJSON(map[string]any{"type": "agent_session_updated", "agent_session": s.agentSessionWire(ev.Agent)})
 		}
 	case "agent_state_change":
 		if ev.Agent != nil {
-			s.broadcastJSON(map[string]any{"type": "agent_session_updated", "agent_session": ev.Agent})
+			s.broadcastJSON(map[string]any{"type": "agent_session_updated", "agent_session": s.agentSessionWire(ev.Agent)})
 		}
 		s.maybeNotifyForSessionEvent(ev)
 		brainWoke = s.maybeWakeBrainForSessionEvent(ev)
 	case "agent_metadata_change":
 		if ev.Agent != nil {
-			s.broadcastJSON(map[string]any{"type": "agent_session_updated", "agent_session": ev.Agent})
+			s.broadcastJSON(map[string]any{"type": "agent_session_updated", "agent_session": s.agentSessionWire(ev.Agent)})
 		}
 		brainWoke = s.maybeWakeBrainForSessionEvent(ev)
 	case "agent_removed":
+		// Watcher removal is an authoritative executor termination for an
+		// ordinary Work agent. Brain's durable lifecycle is scope-keyed and is
+		// intentionally not touched because its hidden host may be replaced
+		// while the same delegated turn continues.
+		s.turnRegistry().failWorkAgent(ev.AgentID, time.Now())
 		if ev.Agent != nil {
-			s.broadcastJSON(map[string]any{"type": "agent_session_archived", "agent_session": ev.Agent})
+			s.broadcastJSON(map[string]any{"type": "agent_session_archived", "agent_session": s.agentSessionWire(ev.Agent)})
 		}
 		s.maybeNotifyForSessionEvent(ev)
 		brainWoke = s.maybeWakeBrainForSessionEvent(ev)

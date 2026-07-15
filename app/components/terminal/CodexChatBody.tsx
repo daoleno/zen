@@ -9,6 +9,7 @@ import {
 import type {
   CodexConversation,
   CodexConversationEvent,
+  StructuredTurn,
 } from "../../services/codexConversation";
 import type {
   TerminalThemeChrome,
@@ -39,6 +40,7 @@ export interface CodexChatBodyProps {
   events: CodexConversationEvent[];
   pendingUserMessages: PendingUserMessage[];
   pendingSlashCommands: PendingSlashCommand[];
+  workingTurn?: StructuredTurn;
   loading: boolean;
   localChatState: CodexChatLocalState;
   error?: string | null;
@@ -84,6 +86,7 @@ export interface CodexChatBodyProps {
   onInputFocus(): void;
   onInputBlur(): void;
   onSendPress(): void;
+  onStopPress(): void;
   onTerminalActionKey(key: string): Promise<void> | void;
   composerAccessory?: React.ReactNode;
   skillsSheet?: React.ReactNode;
@@ -98,6 +101,7 @@ export function CodexChatBody({
   events,
   pendingUserMessages,
   pendingSlashCommands,
+  workingTurn,
   loading,
   localChatState,
   error,
@@ -141,6 +145,7 @@ export function CodexChatBody({
   onInputFocus,
   onInputBlur,
   onSendPress,
+  onStopPress,
   onTerminalActionKey,
   composerAccessory,
   skillsSheet,
@@ -162,6 +167,7 @@ export function CodexChatBody({
         events={events}
         pendingUserMessages={pendingUserMessages}
         pendingSlashCommands={pendingSlashCommands}
+        workingTurn={workingTurn}
         loading={loading}
         localChatState={localChatState}
         error={error}
@@ -223,6 +229,7 @@ export function CodexChatBody({
             onInputFocus={onInputFocus}
             onInputBlur={onInputBlur}
             onSendPress={onSendPress}
+            onStopPress={onStopPress}
           />
           {skillsSheet}
         </>

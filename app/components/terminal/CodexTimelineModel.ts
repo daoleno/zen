@@ -1,4 +1,7 @@
-import type { CodexConversationEvent } from "../../services/codexConversation";
+import type {
+  CodexConversationEvent,
+  StructuredTurn,
+} from "../../services/codexConversation";
 import {
   buildExpandedToolDetails,
   isWaitLikeToolName,
@@ -19,7 +22,7 @@ import type {
   PendingUserMessage,
 } from "./CodexChatSession";
 import {
-  comparableUserMessageText,
+  pendingUserMessageMatchesEcho,
   presentPendingUserMessageLifecycle,
   queuedOrdinalByPendingId,
 } from "./pendingUserMessageLifecycle";
@@ -246,134 +249,124 @@ export function mergePendingUserMessagesIntoTimeline(
   const merged = [...timelineItems];
   const claimedTimelineIds = new Set<string>();
   const queuedOrdinals = queuedOrdinalByPendingId(pendingUserMessages);
+  const queuedItems: ZenTimelineItem[] = [];
   for (const message of pendingUserMessages) {
+    let matchedIndex = -1;
     if (message.confirmedEventId) {
-      const confirmedIndex = merged.findIndex(
+      matchedIndex = merged.findIndex(
         (item) => item.id === message.confirmedEventId,
       );
-      if (confirmedIndex >= 0) {
-        const confirmed = merged[confirmedIndex];
-        if (confirmed.type === "message" && confirmed.role === "user") {
-          merged[confirmedIndex] = {
-            ...confirmed,
-            id: message.id,
-          };
-          claimedTimelineIds.add(confirmed.id);
-        }
-      }
-      continue;
     }
-    const matchedIndex = findPendingUserMessageMatch(
-      merged,
-      message,
-      claimedTimelineIds,
-    );
-    if (matchedIndex >= 0) {
-      const matched = merged[matchedIndex];
-      if (matched.type === "message" && matched.role === "user") {
-        merged[matchedIndex] = {
-          ...matched,
-          id: message.id,
-        };
-        claimedTimelineIds.add(matched.id);
-      }
-      continue;
+    if (matchedIndex < 0 && !message.confirmedEventId) {
+      matchedIndex = findPendingUserMessageMatch(
+        merged,
+        message,
+        claimedTimelineIds,
+      );
     }
     const presentation = presentPendingUserMessageLifecycle(
       message,
       queuedOrdinals,
     );
-    const item = {
-      type: "message" as const,
-      id: message.id,
-      role: "user" as const,
-      timestamp: message.createdAt,
-      body: message.body,
-      attachments: message.attachments,
+    const matched = matchedIndex >= 0 ? merged[matchedIndex] : undefined;
+    const canonical = matched?.type === "message" && matched.role === "user"
+      ? matched
+      : undefined;
+    if (canonical) {
+      claimedTimelineIds.add(canonical.id);
+    }
+    const item = canonical
+      ? {
+          ...canonical,
+          id: message.id,
+        }
+      : {
+          type: "message" as const,
+          id: message.id,
+          role: "user" as const,
+          timestamp: message.createdAt,
+          body: message.body,
+          attachments: message.attachments,
+        };
+
+    if (message.lifecycle === "queued") {
+      if (canonical) {
+        merged.splice(matchedIndex, 1);
+      }
+      queuedItems.push({
+        ...item,
+        pending: true,
+        pendingLifecycle: "queued" as const,
+        pendingLifecycleLabel: presentation.label,
+        pendingLifecycleAccessibilityLabel: presentation.accessibilityLabel,
+      });
+      continue;
+    }
+
+    if (message.lifecycle === "settled") {
+      if (canonical) {
+        merged[matchedIndex] = item;
+      } else {
+        insertTimelineItemByTimestamp(merged, item);
+      }
+      continue;
+    }
+
+    if (canonical) {
+      merged[matchedIndex] = item;
+      continue;
+    }
+    const sendingItem = {
+      ...item,
       pending: true,
-      pendingLifecycle: presentation.lifecycle,
+      pendingLifecycle: "sending" as const,
       pendingLifecycleLabel: presentation.label,
       pendingLifecycleAccessibilityLabel: presentation.accessibilityLabel,
     };
-    insertTimelineItemByTimestamp(merged, item);
+    const workingIndex = merged.findIndex(
+      (candidate) => candidate.id === `working-turn:${message.turnId}`,
+    );
+    if (workingIndex >= 0) {
+      const [workingItem] = merged.splice(workingIndex, 1);
+      insertPendingCurrentAtSubmissionBoundary(
+        merged,
+        sendingItem,
+        message,
+      );
+      if (workingItem) {
+        merged.push(workingItem);
+      }
+    } else {
+      insertTimelineItemByTimestamp(merged, sendingItem);
+    }
   }
-  const latestPending = latestPendingUserMessage(pendingUserMessages);
-  const pendingTurnTimestamp = pendingUserMessageAnchorTimestamp(
-    merged,
-    latestPending,
-  );
-  if (
-    shouldShowPendingTurnActivity(
-      merged,
-      pendingUserMessages,
-      pendingTurnTimestamp,
-    )
-  ) {
-    insertTimelineItemByTimestamp(merged, {
-      type: "activity",
-      id: `pending-turn:${latestPending.id}`,
-      timestamp: pendingTurnTimestamp,
-      statusKey: "running",
-      title: "Working",
-      tone: "running",
-      icon: "time-outline",
-      defaultExpanded: false,
-    });
+  if (queuedItems.length > 0) {
+    const workingIndex = merged.findIndex((candidate) =>
+      candidate.id.startsWith("working-turn:")
+    );
+    const insertAt = workingIndex >= 0 ? workingIndex + 1 : merged.length;
+    merged.splice(insertAt, 0, ...queuedItems);
   }
   return merged;
 }
 
-function shouldShowPendingTurnActivity(
+function insertPendingCurrentAtSubmissionBoundary(
   timelineItems: ZenTimelineItem[],
-  pendingUserMessages: PendingUserMessage[],
-  pendingTurnTimestamp?: string,
-) {
-  if (pendingUserMessages.length === 0) {
-    return false;
-  }
-  const latestTimestamp = new Date(pendingTurnTimestamp || "").getTime();
-  const hasLaterAssistantMessage = timelineItems.some((item) => {
-    if (item.type !== "message" || item.role !== "assistant" || !item.timestamp) {
-      return false;
-    }
-    const timestamp = new Date(item.timestamp).getTime();
-    return Number.isFinite(timestamp) && timestamp >= latestTimestamp;
-  });
-  if (hasLaterAssistantMessage) {
-    return false;
-  }
-  return !timelineItems.some(
-    (item) => item.type === "activity" && item.tone === "running",
-  );
-}
-
-function pendingUserMessageAnchorTimestamp(
-  timelineItems: ZenTimelineItem[],
+  item: ZenTimelineItem,
   message: PendingUserMessage,
 ) {
-  const item = timelineItems.find(
-    (candidate) =>
-      candidate.type === "message" &&
-      candidate.role === "user" &&
-      candidate.id === message.id,
-  );
-  return item?.timestamp || message.createdAt;
-}
-
-function latestPendingUserMessage(
-  pendingUserMessages: PendingUserMessage[],
-): PendingUserMessage {
-  return pendingUserMessages.reduce((latest, message) => {
-    const latestTimestamp = new Date(latest.createdAt).getTime();
-    const messageTimestamp = new Date(message.createdAt).getTime();
-    if (!Number.isFinite(latestTimestamp)) {
-      return message;
+  const previousEventIds = new Set(message.createdAfterEventIds ?? []);
+  let lastPreviousIndex = -1;
+  timelineItems.forEach((candidate, index) => {
+    if (previousEventIds.has(candidate.id)) {
+      lastPreviousIndex = index;
     }
-    if (!Number.isFinite(messageTimestamp)) {
-      return latest;
-    }
-    return messageTimestamp > latestTimestamp ? message : latest;
   });
+  if (lastPreviousIndex >= 0) {
+    timelineItems.splice(lastPreviousIndex + 1, 0, item);
+    return;
+  }
+  insertTimelineItemByTimestamp(timelineItems, item);
 }
 
 function findPendingUserMessageMatch(
@@ -381,8 +374,6 @@ function findPendingUserMessageMatch(
   message: PendingUserMessage,
   claimedTimelineIds: Set<string>,
 ) {
-  const sentText = comparableUserMessageText(message.sentText);
-  const body = comparableUserMessageText(message.body);
   const previousEventIds = new Set(message.createdAfterEventIds ?? []);
   for (let index = timelineItems.length - 1; index >= 0; index -= 1) {
     const item = timelineItems[index];
@@ -392,14 +383,10 @@ function findPendingUserMessageMatch(
     if (claimedTimelineIds.has(item.id) || previousEventIds.has(item.id)) {
       continue;
     }
-    const eventText = comparableUserMessageText(item.body || "");
-    if (!eventText) {
-      continue;
-    }
-    if (
-      (sentText && eventText === sentText) ||
-      (body && eventText === body)
-    ) {
+    if (pendingUserMessageMatchesEcho(message, {
+      body: item.body,
+      attachments: item.attachments,
+    })) {
       return index;
     }
   }
@@ -435,33 +422,21 @@ export function mergePendingSlashCommandsIntoTimeline(
   return merged;
 }
 
-export function mergeActiveTurnIntoTimeline(
+export function mergeWorkingTurnIntoTimeline(
   timelineItems: ZenTimelineItem[],
-  active?: boolean,
+  turn?: StructuredTurn,
 ) {
-  if (!active) {
+  if (turn?.status !== "running") {
     return timelineItems;
   }
-  if (
-    timelineItems.some(
-      (item) => item.type === "activity" && item.id === "active-turn:running",
-    )
-  ) {
+  const id = `working-turn:${turn.id}`;
+  if (timelineItems.some((item) => item.id === id)) {
     return timelineItems;
   }
   const merged = [...timelineItems];
-  const hasRunningItem = merged.some(
-    (item) => item.type === "activity" && item.tone === "running",
-  );
-  if (hasRunningItem) {
-    return merged;
-  }
-  if (latestVisibleUserTurnHasAssistantResponse(merged)) {
-    return merged;
-  }
-  insertTimelineItemByTimestamp(merged, {
+  merged.push({
     type: "activity",
-    id: "active-turn:running",
+    id,
     title: "Working",
     tone: "running",
     icon: "time-outline",
@@ -469,72 +444,6 @@ export function mergeActiveTurnIntoTimeline(
     defaultExpanded: false,
   });
   return merged;
-}
-
-function latestVisibleUserTurnHasAssistantResponse(
-  timelineItems: ZenTimelineItem[],
-) {
-  const latestUser = latestTimelineMessagePosition(timelineItems, "user");
-  if (!latestUser) {
-    return false;
-  }
-  return timelineItems.some(
-    (item, index) =>
-      item.type === "message" &&
-      item.role === "assistant" &&
-      isTimelinePositionAfter(item.timestamp, index, latestUser),
-  );
-}
-
-function latestTimelineMessagePosition(
-  timelineItems: ZenTimelineItem[],
-  role: "user" | "assistant",
-) {
-  let latest:
-    | {
-        timestamp: number;
-        index: number;
-      }
-    | null = null;
-  timelineItems.forEach((item, index) => {
-    if (item.type !== "message" || item.role !== role) {
-      return;
-    }
-    const timestamp = new Date(item.timestamp || "").getTime();
-    if (!latest) {
-      latest = {
-        timestamp: Number.isFinite(timestamp) ? timestamp : Number.NaN,
-        index,
-      };
-      return;
-    }
-    if (
-      isTimelinePositionAfter(
-        item.timestamp,
-        index,
-        latest,
-      )
-    ) {
-      latest = {
-        timestamp: Number.isFinite(timestamp) ? timestamp : Number.NaN,
-        index,
-      };
-    }
-  });
-  return latest;
-}
-
-function isTimelinePositionAfter(
-  timestampValue: string | undefined,
-  index: number,
-  anchor: { timestamp: number; index: number },
-) {
-  const timestamp = new Date(timestampValue || "").getTime();
-  if (Number.isFinite(timestamp) && Number.isFinite(anchor.timestamp)) {
-    return timestamp > anchor.timestamp ||
-      (timestamp === anchor.timestamp && index > anchor.index);
-  }
-  return index > anchor.index;
 }
 
 function pendingSlashCommandTone(

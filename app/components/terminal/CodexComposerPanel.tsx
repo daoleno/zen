@@ -12,6 +12,10 @@ import { CodexComposerInput } from "./CodexComposerInput";
 import { CodexComposerPanelFrame } from "./CodexComposerPanelFrame";
 import { ComposerIconButton } from "./ComposerIconButton";
 import { ComposerSendButton } from "./ComposerSendButton";
+import {
+  COMPOSER_ACTION_SLOT_WIDTH,
+  COMPOSER_CHATGPT_DETACHED_ACTION_GAP,
+} from "./composerActionSlot";
 
 interface CodexComposerPanelProps {
   inputRef: React.RefObject<TextInputInstance | null>;
@@ -24,8 +28,11 @@ interface CodexComposerPanelProps {
   sending: boolean;
   sendIcon: React.ComponentProps<typeof ComposerSendButton>["icon"];
   sendLabel: string;
-  sendElapsedStartedAt?: string;
-  running: boolean;
+  showStopButton: boolean;
+  stopEnabled: boolean;
+  stopLabel: string;
+  stopLoading: boolean;
+  workingTurnStartedAt?: string;
   actionMenuExpanded: boolean;
   actionMenuButtonEnabled: boolean;
   showActionMenuButton: boolean;
@@ -38,6 +45,7 @@ interface CodexComposerPanelProps {
   onInputFocus(): void;
   onInputBlur(): void;
   onSendPress(): void;
+  onStopPress(): void;
 }
 
 export function CodexComposerPanel({
@@ -51,8 +59,11 @@ export function CodexComposerPanel({
   sending,
   sendIcon,
   sendLabel,
-  sendElapsedStartedAt,
-  running,
+  showStopButton,
+  stopEnabled,
+  stopLabel,
+  stopLoading,
+  workingTurnStartedAt,
   actionMenuExpanded,
   actionMenuButtonEnabled,
   showActionMenuButton,
@@ -65,7 +76,23 @@ export function CodexComposerPanel({
   onInputFocus,
   onInputBlur,
   onSendPress,
+  onStopPress,
 }: CodexComposerPanelProps) {
+  const actionButton = (
+    <ComposerSendButton
+      accessibilityLabel={showStopButton ? stopLabel : sendLabel}
+      icon={showStopButton ? "square" : sendIcon}
+      chrome={chrome}
+      theme={theme}
+      enabled={showStopButton ? stopEnabled : sendEnabled}
+      loading={showStopButton ? stopLoading : sending}
+      running={showStopButton}
+      elapsedStartedAt={workingTurnStartedAt}
+      fixedWidth={COMPOSER_ACTION_SLOT_WIDTH}
+      onPress={showStopButton ? onStopPress : onSendPress}
+      variant={composerLayout === "chatgpt" ? "chatgpt" : "default"}
+    />
+  );
   if (composerLayout === "chatgpt") {
     return (
       <View style={styles.chatgptRow}>
@@ -102,18 +129,7 @@ export function CodexComposerPanel({
           />
         </CodexComposerPanelFrame>
 
-        <ComposerSendButton
-          accessibilityLabel={sendLabel}
-          icon={sendIcon}
-          chrome={chrome}
-          theme={theme}
-          enabled={sendEnabled}
-          loading={sending}
-          running={running}
-          elapsedStartedAt={sendElapsedStartedAt}
-          onPress={onSendPress}
-          variant="chatgpt"
-        />
+        {actionButton}
       </View>
     );
   }
@@ -158,17 +174,7 @@ export function CodexComposerPanel({
         onInputBlur={onInputBlur}
       />
 
-      <ComposerSendButton
-        accessibilityLabel={sendLabel}
-        icon={sendIcon}
-        chrome={chrome}
-        theme={theme}
-        enabled={sendEnabled}
-        loading={sending}
-        running={running}
-        elapsedStartedAt={sendElapsedStartedAt}
-        onPress={onSendPress}
-      />
+      {actionButton}
     </CodexComposerPanelFrame>
   );
 }
@@ -177,6 +183,6 @@ const styles = StyleSheet.create({
   chatgptRow: {
     flexDirection: "row",
     alignItems: "flex-end",
-    gap: 8,
+    gap: COMPOSER_CHATGPT_DETACHED_ACTION_GAP,
   },
 });

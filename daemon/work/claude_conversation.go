@@ -89,10 +89,6 @@ func loadClaudeConversationForAgent(agent classifier.Agent, now time.Time) (Code
 	if conversation.Events == nil {
 		conversation.Events = []CodexConversationEvent{}
 	}
-	if conversation.Active == nil {
-		active := conversationHasActiveTurn(conversation.Events)
-		conversation.Active = &active
-	}
 	return conversation, nil
 }
 
@@ -418,8 +414,7 @@ type claudeConversationBuilder struct {
 	supportedRecords int
 	events           []CodexConversationEvent
 	eventByCall      map[string]int
-	lifecycleSeen    bool
-	taskActive       bool
+	turnLifecycle    codexConversationTurnLifecycle
 }
 
 func newClaudeConversationBuilder(sourceID string) *claudeConversationBuilder {
@@ -481,16 +476,21 @@ func (b *claudeConversationBuilder) consumeLine(lineNumber int, line []byte) {
 		if envelope.IsMeta {
 			return
 		}
-		b.lifecycleSeen = true
-		b.taskActive = true
-		b.consumeUserContent(lineNumber, recordID, timestamp, envelope.Message.Content)
+		if b.consumeUserContent(lineNumber, recordID, timestamp, envelope.Message.Content) &&
+			!b.turnLifecycle.running() {
+			b.turnLifecycle.start(
+				conversationTurnID(firstNonEmpty(b.sessionID, b.sourceID), recordID, lineNumber),
+				timestamp,
+			)
+		}
 	case "assistant":
-		b.lifecycleSeen = true
 		b.consumeAssistantContent(lineNumber, recordID, timestamp, envelope.Message.Content)
-		b.taskActive = claudeAssistantRecordContinuesTurn(
+		if !claudeAssistantRecordContinuesTurn(
 			envelope.Message.StopReason,
 			envelope.Message.Content,
-		)
+		) {
+			b.turnLifecycle.settle("", CodexConversationTurnCompleted, timestamp)
+		}
 	default:
 		// Skip system/attachment/permission-mode/file-history-snapshot and other
 		// provider-internal records from the shared conversation surface.
@@ -499,7 +499,13 @@ func (b *claudeConversationBuilder) consumeLine(lineNumber int, line []byte) {
 
 func claudeAssistantRecordContinuesTurn(stopReason string, raw json.RawMessage) bool {
 	stopReason = strings.ToLower(strings.TrimSpace(stopReason))
-	if stopReason != "end_turn" && stopReason != "max_tokens" && stopReason != "stop_sequence" {
+	if stopReason == "max_tokens" || stopReason == "stop_sequence" {
+		// Unlike Claude's progressive end_turn projection, these stop reasons are
+		// authoritative terminal facts even when the final record only contains
+		// thinking. Waiting for a later text row would leave Working stale.
+		return false
+	}
+	if stopReason != "end_turn" {
 		return true
 	}
 	var items []claudeContentBlock
@@ -516,27 +522,30 @@ func claudeAssistantRecordContinuesTurn(stopReason string, raw json.RawMessage) 
 	return true
 }
 
-func (b *claudeConversationBuilder) consumeUserContent(lineNumber int, recordID, timestamp string, raw json.RawMessage) {
+func (b *claudeConversationBuilder) consumeUserContent(lineNumber int, recordID, timestamp string, raw json.RawMessage) bool {
 	if len(bytes.TrimSpace(raw)) == 0 {
-		return
+		return false
 	}
 	if raw[0] == '"' {
 		var text string
 		if json.Unmarshal(raw, &text) == nil {
 			b.addMessage(lineNumber, recordID, 0, timestamp, "user", text)
+			return claudeVisibleUserText(text)
 		}
-		return
+		return false
 	}
 	var items []claudeContentBlock
 	if json.Unmarshal(raw, &items) != nil {
-		return
+		return false
 	}
+	hasUserText := false
 	textIndex := 0
 	for index, item := range items {
 		switch strings.ToLower(strings.TrimSpace(item.Type)) {
 		case "text":
 			textIndex++
 			b.addMessage(lineNumber, recordID, textIndex, timestamp, "user", item.Text)
+			hasUserText = hasUserText || claudeVisibleUserText(item.Text)
 		case "tool_result":
 			output := claudeContentText(item.Content)
 			if item.IsError {
@@ -549,6 +558,12 @@ func (b *claudeConversationBuilder) consumeUserContent(lineNumber int, recordID,
 			}
 		}
 	}
+	return hasUserText
+}
+
+func claudeVisibleUserText(text string) bool {
+	text = CleanCodexDisplayText(text)
+	return text != "" && !isTranscriptBoilerplate(text)
 }
 
 func (b *claudeConversationBuilder) consumeAssistantContent(lineNumber int, recordID, timestamp string, raw json.RawMessage) {
@@ -790,21 +805,13 @@ func (b *claudeConversationBuilder) conversation() CodexConversation {
 			b.events[index].Seq = index + 1
 		}
 	}
-	return CodexConversation{
+	return conversationWithTurn(CodexConversation{
 		Available: true,
 		Source:    claudeConversationSource,
 		SessionID: firstNonEmpty(b.sessionID, b.sourceID),
 		CWD:       b.cwd,
-		Active:    claudeConversationActive(b.lifecycleSeen, b.taskActive),
 		Events:    b.events,
-	}
-}
-
-func claudeConversationActive(seen, active bool) *bool {
-	if !seen {
-		return nil
-	}
-	return &active
+	}, &b.turnLifecycle)
 }
 
 func claudeToolInputJSON(raw json.RawMessage) string {

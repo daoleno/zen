@@ -271,7 +271,13 @@ func TestParseClaudeConversation_AppendedThinkingAndTextTrackTurnLifecycle(t *te
 	if userSnapshot.Active == nil || !*userSnapshot.Active || len(userSnapshot.Events) != 1 {
 		t.Fatalf("user snapshot = %#v, want active turn", userSnapshot)
 	}
+	if userSnapshot.Turn == nil || userSnapshot.Turn.Status != CodexConversationTurnRunning ||
+		!strings.Contains(userSnapshot.Turn.ID, "uuid-user") || userSnapshot.Turn.StartedAt != "2026-07-15T01:00:00Z" {
+		t.Fatalf("user lifecycle = %#v", userSnapshot.Turn)
+	}
 	userID := userSnapshot.Events[0].ID
+	turnID := userSnapshot.Turn.ID
+	startedAt := userSnapshot.Turn.StartedAt
 
 	writeJSONL(t, path, user, thinking)
 	thinkingSnapshot, err := parseClaudeConversation(path)
@@ -280,6 +286,10 @@ func TestParseClaudeConversation_AppendedThinkingAndTextTrackTurnLifecycle(t *te
 	}
 	if thinkingSnapshot.Active == nil || !*thinkingSnapshot.Active {
 		t.Fatalf("thinking-only snapshot must stay active while the text record is pending: %#v", thinkingSnapshot.Active)
+	}
+	if thinkingSnapshot.Turn == nil || thinkingSnapshot.Turn.ID != turnID || thinkingSnapshot.Turn.StartedAt != startedAt ||
+		thinkingSnapshot.Turn.Status != CodexConversationTurnRunning {
+		t.Fatalf("thinking lifecycle changed identity/start: %#v", thinkingSnapshot.Turn)
 	}
 	if len(thinkingSnapshot.Events) != 2 || thinkingSnapshot.Events[0].ID != userID {
 		t.Fatalf("thinking snapshot changed existing identity: %#v", thinkingSnapshot.Events)
@@ -297,11 +307,54 @@ func TestParseClaudeConversation_AppendedThinkingAndTextTrackTurnLifecycle(t *te
 	if answerSnapshot.Active == nil || *answerSnapshot.Active {
 		t.Fatalf("terminal text record must finish the turn: %#v", answerSnapshot.Active)
 	}
+	if answerSnapshot.Turn == nil || answerSnapshot.Turn.ID != turnID || answerSnapshot.Turn.StartedAt != startedAt ||
+		answerSnapshot.Turn.Status != CodexConversationTurnCompleted || answerSnapshot.Turn.SettledAt != "2026-07-15T01:00:02Z" {
+		t.Fatalf("terminal lifecycle = %#v", answerSnapshot.Turn)
+	}
 	if len(answerSnapshot.Events) != 3 || answerSnapshot.Events[0].ID != userID || answerSnapshot.Events[1].ID != thinkingID {
 		t.Fatalf("answer snapshot changed appended event identities: %#v", answerSnapshot.Events)
 	}
 	if answerSnapshot.Events[2].Kind != "assistant_message" || answerSnapshot.Events[2].Body != "The structured block is visible." || answerSnapshot.Events[2].Partial {
 		t.Fatalf("answer event = %#v", answerSnapshot.Events[2])
+	}
+}
+
+func TestParseClaudeConversation_ThinkingOnlyLimitStopSettlesTurn(t *testing.T) {
+	for _, stopReason := range []string{"max_tokens", "stop_sequence"} {
+		t.Run(stopReason, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "terminal-thinking.jsonl")
+			writeJSONL(t, path,
+				map[string]any{
+					"type": "user", "sessionId": "terminal-thinking", "uuid": "user",
+					"timestamp": "2026-07-15T02:00:00.000Z",
+					"message":   map[string]any{"role": "user", "content": "think until the limit"},
+				},
+				map[string]any{
+					"type": "assistant", "sessionId": "terminal-thinking", "uuid": "assistant",
+					"timestamp": "2026-07-15T02:00:01.000Z",
+					"message": map[string]any{
+						"role":        "assistant",
+						"stop_reason": stopReason,
+						"content": []map[string]any{
+							{"type": "thinking", "thinking": "The provider stopped before visible text."},
+						},
+					},
+				},
+			)
+
+			got, err := parseClaudeConversation(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got.Turn == nil || got.Turn.Status != CodexConversationTurnCompleted ||
+				got.Turn.StartedAt != "2026-07-15T02:00:00Z" ||
+				got.Turn.SettledAt != "2026-07-15T02:00:01Z" {
+				t.Fatalf("thinking-only %s lifecycle = %#v", stopReason, got.Turn)
+			}
+			if got.Active == nil || *got.Active {
+				t.Fatalf("thinking-only %s active = %#v", stopReason, got.Active)
+			}
+		})
 	}
 }
 

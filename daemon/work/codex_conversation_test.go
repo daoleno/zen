@@ -179,6 +179,67 @@ func TestParseCodexConversation_DedupesUserMessageEchoes(t *testing.T) {
 	assertEvent(t, got.Events[1], "assistant_message", "assistant", "", "I will inspect")
 }
 
+func TestParseCodexConversation_KeepsIdenticalUserMessagesAcrossTurns(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "rollout.jsonl")
+	writeJSONL(t, path,
+		map[string]any{
+			"type":      "session_meta",
+			"timestamp": "2026-05-20T10:00:00Z",
+			"payload": map[string]any{
+				"id":  "codex-identical-turns",
+				"cwd": "/repo",
+			},
+		},
+		map[string]any{
+			"type":      "event_msg",
+			"timestamp": "2026-05-20T10:00:01Z",
+			"payload": map[string]any{
+				"type":    "user_message",
+				"message": "repeat this",
+			},
+		},
+		map[string]any{
+			"type":      "event_msg",
+			"timestamp": "2026-05-20T10:00:02Z",
+			"payload": map[string]any{
+				"type": "turn_complete",
+			},
+		},
+		map[string]any{
+			"type":      "event_msg",
+			"timestamp": "2026-05-20T10:00:03Z",
+			"payload": map[string]any{
+				"type":    "user_message",
+				"message": "repeat this",
+			},
+		},
+		map[string]any{
+			"type":      "event_msg",
+			"timestamp": "2026-05-20T10:00:04Z",
+			"payload": map[string]any{
+				"type": "turn_complete",
+			},
+		},
+	)
+
+	got, err := parseCodexConversation(path)
+	if err != nil {
+		t.Fatalf("parseCodexConversation: %v", err)
+	}
+	var userEvents []CodexConversationEvent
+	for _, event := range got.Events {
+		if event.Kind == "user_message" {
+			userEvents = append(userEvents, event)
+		}
+	}
+	if len(userEvents) != 2 || userEvents[0].Body != "repeat this" || userEvents[1].Body != "repeat this" {
+		t.Fatalf("identical cross-turn user echoes = %#v, want two durable rows", userEvents)
+	}
+	if userEvents[0].ID == userEvents[1].ID {
+		t.Fatalf("identical cross-turn echoes reused identity: %#v", userEvents)
+	}
+}
+
 func TestParseCodexConversation_HidesContextualUserFragments(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "rollout.jsonl")
 	writeJSONL(t, path,
@@ -1173,12 +1234,19 @@ func TestParseCodexConversation_KeepsCodexHistoryEntries(t *testing.T) {
 	if err != nil {
 		t.Fatalf("parseCodexConversation: %v", err)
 	}
-	if len(got.Events) != 1 {
-		t.Fatalf("events len = %d, want 1: %#v", len(got.Events), got.Events)
+	if len(got.Events) != 2 {
+		t.Fatalf("events len = %d, want command echo and native status: %#v", len(got.Events), got.Events)
 	}
-	event := got.Events[0]
+	command := got.Events[0]
+	if command.Kind != "user_message" || command.Body != "/status" {
+		t.Fatalf("command event = %#v, want durable user echo", command)
+	}
+	event := got.Events[1]
 	if event.Kind != "status" || !strings.Contains(event.Body, "Model: gpt-5") {
 		t.Fatalf("history entry event = %#v, want status with native output", event)
+	}
+	if got.Turn == nil || got.Turn.Status != CodexConversationTurnCompleted {
+		t.Fatalf("slash command lifecycle = %#v, want completed", got.Turn)
 	}
 }
 
@@ -1374,6 +1442,13 @@ func TestParseCodexConversation_FinalizesPendingReasoningWhenTurnEnds(t *testing
 			if got.Active == nil || *got.Active {
 				t.Fatalf("active = %#v, want false", got.Active)
 			}
+			wantStatus := CodexConversationTurnCompleted
+			if terminalEvent == "turn_aborted" {
+				wantStatus = CodexConversationTurnInterrupted
+			}
+			if got.Turn == nil || got.Turn.Status != wantStatus || got.Turn.StartedAt != "2026-05-20T10:00:01Z" || got.Turn.SettledAt != "2026-05-20T10:00:03Z" {
+				t.Fatalf("turn = %#v, want stable terminal lifecycle", got.Turn)
+			}
 			if len(got.Events) != 1 {
 				t.Fatalf("events len = %d, want 1: %#v", len(got.Events), got.Events)
 			}
@@ -1393,7 +1468,8 @@ func TestParseCodexConversation_TracksTurnActivityFromLifecycleEvents(t *testing
 		path := filepath.Join(t.TempDir(), "running.jsonl")
 		writeJSONL(t, path,
 			map[string]any{
-				"type": "event_msg",
+				"type":      "event_msg",
+				"timestamp": "2026-05-20T10:00:00Z",
 				"payload": map[string]any{
 					"type":    "task_started",
 					"turn_id": "turn-running",
@@ -1408,13 +1484,18 @@ func TestParseCodexConversation_TracksTurnActivityFromLifecycleEvents(t *testing
 		if got.Active == nil || !*got.Active {
 			t.Fatalf("active = %#v, want true", got.Active)
 		}
+		if got.Turn == nil || got.Turn.Status != CodexConversationTurnRunning ||
+			!strings.Contains(got.Turn.ID, "turn-running") || got.Turn.StartedAt != "2026-05-20T10:00:00Z" {
+			t.Fatalf("turn = %#v, want pre-token running lifecycle", got.Turn)
+		}
 	})
 
-	t.Run("assistant response completes turn when lifecycle end is missing", func(t *testing.T) {
+	t.Run("assistant response cannot complete turn when lifecycle end is missing", func(t *testing.T) {
 		path := filepath.Join(t.TempDir(), "missing-complete.jsonl")
 		writeJSONL(t, path,
 			map[string]any{
-				"type": "event_msg",
+				"type":      "event_msg",
+				"timestamp": "2026-05-20T10:00:00Z",
 				"payload": map[string]any{
 					"type":    "task_started",
 					"turn_id": "turn-missing-complete",
@@ -1445,8 +1526,11 @@ func TestParseCodexConversation_TracksTurnActivityFromLifecycleEvents(t *testing
 		if err != nil {
 			t.Fatalf("parseCodexConversation: %v", err)
 		}
-		if got.Active == nil || *got.Active {
-			t.Fatalf("active = %#v, want false after assistant response", got.Active)
+		if got.Active == nil || !*got.Active {
+			t.Fatalf("active = %#v, want true until authoritative completion", got.Active)
+		}
+		if got.Turn == nil || got.Turn.Status != CodexConversationTurnRunning || got.Turn.SettledAt != "" {
+			t.Fatalf("assistant rendering metadata settled lifecycle: %#v", got.Turn)
 		}
 	})
 
@@ -1455,14 +1539,16 @@ func TestParseCodexConversation_TracksTurnActivityFromLifecycleEvents(t *testing
 			path := filepath.Join(t.TempDir(), terminalEvent+".jsonl")
 			writeJSONL(t, path,
 				map[string]any{
-					"type": "event_msg",
+					"type":      "event_msg",
+					"timestamp": "2026-05-20T10:00:00Z",
 					"payload": map[string]any{
 						"type":    "task_started",
 						"turn_id": "turn-settled",
 					},
 				},
 				map[string]any{
-					"type": "event_msg",
+					"type":      "event_msg",
+					"timestamp": "2026-05-20T10:00:03Z",
 					"payload": map[string]any{
 						"type":    terminalEvent,
 						"turn_id": "turn-settled",
@@ -1477,8 +1563,59 @@ func TestParseCodexConversation_TracksTurnActivityFromLifecycleEvents(t *testing
 			if got.Active == nil || *got.Active {
 				t.Fatalf("active = %#v, want false", got.Active)
 			}
+			wantStatus := CodexConversationTurnCompleted
+			if terminalEvent == "turn_aborted" {
+				wantStatus = CodexConversationTurnInterrupted
+			}
+			if got.Turn == nil || got.Turn.Status != wantStatus || got.Turn.StartedAt != "2026-05-20T10:00:00Z" || got.Turn.SettledAt != "2026-05-20T10:00:03Z" {
+				t.Fatalf("turn = %#v", got.Turn)
+			}
 		})
 	}
+
+	t.Run("provider id arriving after user row preserves fallback identity and settles it", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "late-provider-id.jsonl")
+		writeJSONL(t, path,
+			map[string]any{
+				"type":      "event_msg",
+				"timestamp": "2026-05-20T10:00:00Z",
+				"payload":   map[string]any{"type": "user_message", "message": "go"},
+			},
+		)
+		before, err := parseCodexConversation(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if before.Turn == nil || before.Turn.Status != CodexConversationTurnRunning {
+			t.Fatalf("before = %#v", before.Turn)
+		}
+
+		writeJSONL(t, path,
+			map[string]any{
+				"type":      "event_msg",
+				"timestamp": "2026-05-20T10:00:00Z",
+				"payload":   map[string]any{"type": "user_message", "message": "go"},
+			},
+			map[string]any{
+				"type":      "event_msg",
+				"timestamp": "2026-05-20T10:00:01Z",
+				"payload":   map[string]any{"type": "turn_started", "turn_id": "native-turn"},
+			},
+			map[string]any{
+				"type":      "event_msg",
+				"timestamp": "2026-05-20T10:00:02Z",
+				"payload":   map[string]any{"type": "turn_complete", "turn_id": "native-turn"},
+			},
+		)
+		after, err := parseCodexConversation(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if after.Turn == nil || after.Turn.ID != before.Turn.ID || after.Turn.StartedAt != before.Turn.StartedAt ||
+			after.Turn.Status != CodexConversationTurnCompleted || after.Turn.SettledAt != "2026-05-20T10:00:02Z" {
+			t.Fatalf("late provider correlation changed or failed to settle turn: before=%#v after=%#v", before.Turn, after.Turn)
+		}
+	})
 }
 
 func assertEvent(t *testing.T, event CodexConversationEvent, kind, role, title, bodyPart string) {

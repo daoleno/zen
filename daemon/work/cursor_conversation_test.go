@@ -52,6 +52,9 @@ func TestParseCursorConversation_BuildsMarkdownMessagesAndTools(t *testing.T) {
 	if !got.Available || got.Source != cursorConversationSource || got.SessionID != "cursor-session" {
 		t.Fatalf("conversation = %#v", got)
 	}
+	if got.Turn == nil || got.Turn.Status != CodexConversationTurnRunning || got.Turn.StartedAt == "" {
+		t.Fatalf("turn = %#v, want running provider turn with start time", got.Turn)
+	}
 	if len(got.Events) != 3 {
 		t.Fatalf("events len = %d, want 3: %#v", len(got.Events), got.Events)
 	}
@@ -107,8 +110,9 @@ func TestLoadCursorConversationForAgent_FindsProjectTranscript(t *testing.T) {
 			},
 		},
 		map[string]any{
-			"type":   "turn_ended",
-			"status": "success",
+			"type":      "turn_ended",
+			"status":    "success",
+			"timestamp": "2026-07-04T07:30:00Z",
 		},
 	)
 	now := time.Now().UTC()
@@ -136,6 +140,9 @@ func TestLoadCursorConversationForAgent_FindsProjectTranscript(t *testing.T) {
 	if got.Active == nil || *got.Active {
 		t.Fatalf("active = %#v, want false after turn_ended", got.Active)
 	}
+	if got.Turn == nil || got.Turn.Status != CodexConversationTurnCompleted || got.Turn.StartedAt == "" || got.Turn.SettledAt == "" {
+		t.Fatalf("turn = %#v, want completed lifecycle", got.Turn)
+	}
 	if len(got.Events) != 3 {
 		t.Fatalf("events len = %d, want 3 (user/assistant/turn_ended): %#v", len(got.Events), got.Events)
 	}
@@ -144,7 +151,7 @@ func TestLoadCursorConversationForAgent_FindsProjectTranscript(t *testing.T) {
 	}
 }
 
-func TestCursorConversationHasActiveTurn_IgnoresMidTurnAssistant(t *testing.T) {
+func TestParseCursorConversation_IgnoresMidTurnAssistantForLifecycle(t *testing.T) {
 	activePath := filepath.Join(t.TempDir(), "active.jsonl")
 	writeJSONL(t, activePath,
 		map[string]any{
@@ -167,8 +174,8 @@ func TestCursorConversationHasActiveTurn_IgnoresMidTurnAssistant(t *testing.T) {
 	if err != nil {
 		t.Fatalf("parseCursorConversation: %v", err)
 	}
-	if !cursorConversationHasActiveTurn(got.Events) {
-		t.Fatalf("expected active turn while tools run without turn_ended: %#v", got.Events)
+	if got.Turn == nil || got.Turn.Status != CodexConversationTurnRunning || got.Active == nil || !*got.Active {
+		t.Fatalf("expected running turn while tools run without turn_ended: %#v", got)
 	}
 
 	endedPath := filepath.Join(t.TempDir(), "ended.jsonl")
@@ -185,14 +192,14 @@ func TestCursorConversationHasActiveTurn_IgnoresMidTurnAssistant(t *testing.T) {
 				"content": []map[string]any{{"type": "text", "text": "Yes"}},
 			},
 		},
-		map[string]any{"type": "turn_ended", "status": "success"},
+		map[string]any{"type": "turn_ended", "status": "success", "timestamp": "2026-07-04T07:30:00Z"},
 	)
 	got, err = parseCursorConversation(endedPath)
 	if err != nil {
 		t.Fatalf("parseCursorConversation: %v", err)
 	}
-	if cursorConversationHasActiveTurn(got.Events) {
-		t.Fatalf("expected inactive after turn_ended: %#v", got.Events)
+	if got.Turn == nil || got.Turn.Status != CodexConversationTurnCompleted || got.Active == nil || *got.Active {
+		t.Fatalf("expected completed turn after turn_ended: %#v", got)
 	}
 }
 
@@ -201,7 +208,7 @@ func TestParseCursorConversation_AppendedRowsKeepStableEventIDs(t *testing.T) {
 	user := map[string]any{
 		"role": "user",
 		"message": map[string]any{
-			"content": []map[string]any{{"type": "text", "text": "show native rows"}},
+			"content": []map[string]any{{"type": "text", "text": "<timestamp>2026-07-04T07:29:00Z</timestamp><user_query>show native rows</user_query>"}},
 		},
 	}
 	assistant := map[string]any{
@@ -210,25 +217,30 @@ func TestParseCursorConversation_AppendedRowsKeepStableEventIDs(t *testing.T) {
 			"content": []map[string]any{{"type": "text", "text": "First structured assistant row."}},
 		},
 	}
-	ended := map[string]any{"type": "turn_ended", "status": "success"}
+	ended := map[string]any{"type": "turn_ended", "status": "success", "timestamp": "2026-07-04T07:30:00Z"}
 
 	writeJSONL(t, path, user)
 	first, err := loadCachedCursorConversation(path)
 	if err != nil {
 		t.Fatalf("first cached load: %v", err)
 	}
-	if len(first.Events) != 1 || !cursorConversationHasActiveTurn(first.Events) {
-		t.Fatalf("first snapshot = %#v, want active user row", first.Events)
+	if len(first.Events) != 1 || first.Turn == nil || first.Turn.Status != CodexConversationTurnRunning || first.Turn.StartedAt == "" {
+		t.Fatalf("first snapshot = %#v, want running user turn", first)
 	}
 	userID := first.Events[0].ID
+	turnID := first.Turn.ID
+	startedAt := first.Turn.StartedAt
 
 	writeJSONL(t, path, user, assistant)
 	second, err := loadCachedCursorConversation(path)
 	if err != nil {
 		t.Fatalf("second cached load: %v", err)
 	}
-	if len(second.Events) != 2 || second.Events[0].ID != userID || !cursorConversationHasActiveTurn(second.Events) {
-		t.Fatalf("second snapshot changed row identity or ended early: %#v", second.Events)
+	if len(second.Events) != 2 || second.Events[0].ID != userID || second.Turn == nil || second.Turn.Status != CodexConversationTurnRunning {
+		t.Fatalf("second snapshot changed row identity or ended early: %#v", second)
+	}
+	if second.Turn.ID != turnID || second.Turn.StartedAt != startedAt {
+		t.Fatalf("turn identity/start changed: %#v -> %#v", first.Turn, second.Turn)
 	}
 	assistantID := second.Events[1].ID
 	if second.Events[1].Kind != "assistant_message" || second.Events[1].Partial {
@@ -243,8 +255,8 @@ func TestParseCursorConversation_AppendedRowsKeepStableEventIDs(t *testing.T) {
 	if len(final.Events) != 3 || final.Events[0].ID != userID || final.Events[1].ID != assistantID {
 		t.Fatalf("final snapshot changed existing row identities: %#v", final.Events)
 	}
-	if cursorConversationHasActiveTurn(final.Events) {
-		t.Fatalf("turn_ended must finish the appended row stream: %#v", final.Events)
+	if final.Turn == nil || final.Turn.ID != turnID || final.Turn.StartedAt != startedAt || final.Turn.Status != CodexConversationTurnCompleted || final.Turn.SettledAt == "" {
+		t.Fatalf("turn_ended must settle the same durable turn: %#v", final.Turn)
 	}
 }
 

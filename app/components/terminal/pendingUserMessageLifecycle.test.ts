@@ -1,14 +1,18 @@
 // @ts-nocheck
 import { describe, expect, test } from "bun:test";
 import {
-  classifyPendingUserMessageLifecycle,
+  acknowledgePendingUserMessageWithStructuredTurns,
+  canReconcilePendingAcknowledgementAgainstProjection,
   pendingUserMessageLifecycleLabel,
+  nextPendingUserMessagePruneAt,
   pendingUserMessageMaxAgeMs,
   PENDING_USER_MESSAGE_QUEUED_MAX_AGE_MS,
   PENDING_USER_MESSAGE_SENDING_MAX_AGE_MS,
   presentPendingUserMessageLifecycle,
   queuedOrdinalByPendingId,
   reconcilePendingUserMessagesAgainstEvents,
+  reconcilePendingUserMessagesWithStructuredTurns,
+  retainPendingUserMessages,
   shouldPrunePendingUserMessageByLifecycle,
   type PendingUserMessageLifecycleFields,
 } from "./pendingUserMessageLifecycle";
@@ -21,6 +25,9 @@ function pending(
     Pick<PendingUserMessageLifecycleFields, "id" | "body" | "lifecycle">,
 ): PendingUserMessageLifecycleFields {
   return {
+    turnId: overrides.turnId ?? `turn:${overrides.id}`,
+    turnStartedAt:
+      overrides.turnStartedAt ?? "2026-07-10T10:00:00.000Z",
     sentText: overrides.sentText ?? overrides.body,
     createdAt: overrides.createdAt ?? "2026-07-10T10:00:00.000Z",
     ...overrides,
@@ -32,21 +39,13 @@ function pendingMessage(
     Pick<PendingUserMessage, "id" | "body" | "lifecycle" | "createdAt">,
 ): PendingUserMessage {
   return {
+    turnId: overrides.turnId ?? `turn:${overrides.id}`,
+    turnStartedAt: overrides.turnStartedAt ?? overrides.createdAt,
     sentText: overrides.sentText ?? overrides.body,
     attachments: overrides.attachments ?? [],
     ...overrides,
   };
 }
-
-describe("classifyPendingUserMessageLifecycle", () => {
-  test("idle turn is sending", () => {
-    expect(classifyPendingUserMessageLifecycle(false)).toBe("sending");
-  });
-
-  test("busy turn is queued", () => {
-    expect(classifyPendingUserMessageLifecycle(true)).toBe("queued");
-  });
-});
 
 describe("pendingUserMessageLifecycleLabel", () => {
   test("sending label", () => {
@@ -64,7 +63,7 @@ describe("pendingUserMessageLifecycleLabel", () => {
 });
 
 describe("queued ordinals and presentation", () => {
-  test("assigns ordinals in submission order among queued only", () => {
+  test("assigns ordinals in submission order to every authoritative queued row", () => {
     const messages = [
       pending({ id: "a", body: "one", lifecycle: "sending" }),
       pending({ id: "b", body: "two", lifecycle: "queued" }),
@@ -80,12 +79,13 @@ describe("queued ordinals and presentation", () => {
     expect(ordinals.get("a")).toBeUndefined();
     expect(ordinals.get("b")).toBe(0);
     expect(ordinals.get("c")).toBe(1);
-    expect(ordinals.get("d")).toBeUndefined();
-    expect(presentPendingUserMessageLifecycle(messages[1]!, ordinals).label).toBe(
-      "Queued next",
-    );
+    expect(ordinals.get("d")).toBe(2);
+    expect(presentPendingUserMessageLifecycle(messages[1]!, ordinals)).toMatchObject({
+      label: "Queued 1/3",
+      accessibilityLabel: "Queued, 1 of 3",
+    });
     expect(presentPendingUserMessageLifecycle(messages[2]!, ordinals).label).toBe(
-      "Queued",
+      "Queued 2/3",
     );
   });
 });
@@ -127,10 +127,69 @@ describe("retention", () => {
       ),
     ).toBe(true);
   });
+
+  test("settled-only rows do not schedule an infinite prune timer", () => {
+    const createdAt = "2026-07-10T10:00:00.000Z";
+    const createdMs = Date.parse(createdAt);
+    expect(nextPendingUserMessagePruneAt([
+      { createdAt, lifecycle: "settled" },
+    ], createdMs)).toBeUndefined();
+    expect(nextPendingUserMessagePruneAt([
+      { createdAt, lifecycle: "settled" },
+      { createdAt, lifecycle: "queued" },
+    ], createdMs)).toBe(
+      createdMs + PENDING_USER_MESSAGE_QUEUED_MAX_AGE_MS,
+    );
+  });
+
+  test("finite prune deadlines remain deterministic for expired and invalid rows", () => {
+    const now = Date.parse("2026-07-10T10:05:00.000Z");
+    expect(nextPendingUserMessagePruneAt([], now)).toBeUndefined();
+    expect(nextPendingUserMessagePruneAt([
+      { createdAt: "2026-07-10T10:00:00.000Z", lifecycle: "sending" },
+    ], now)).toBe(
+      Date.parse("2026-07-10T10:00:00.000Z") +
+        PENDING_USER_MESSAGE_SENDING_MAX_AGE_MS,
+    );
+    expect(nextPendingUserMessagePruneAt([
+      { createdAt: "invalid", lifecycle: "sending" },
+    ], now)).toBe(now + PENDING_USER_MESSAGE_SENDING_MAX_AGE_MS);
+  });
+
+  test("authoritative current and queue entries survive age and the orphan cap", () => {
+    const createdAt = "2026-07-10T10:00:00.000Z";
+    const messages = Array.from({ length: 18 }, (_, index) =>
+      pending({
+        id: `p${index}`,
+        turnId: `turn-${index}`,
+        body: `message ${index}`,
+        lifecycle: index === 0 ? "sending" : "queued",
+        createdAt,
+        acceptedAt: createdAt,
+      })
+    );
+    const retained = retainPendingUserMessages(
+      messages,
+      {
+        id: "turn-0",
+        status: "running",
+        started_at: createdAt,
+      },
+      messages.slice(1).map((message) => ({
+        id: message.turnId,
+        status: "queued" as const,
+        started_at: message.createdAt,
+      })),
+      Date.parse(createdAt) + PENDING_USER_MESSAGE_QUEUED_MAX_AGE_MS + 1,
+    );
+    expect(retained.map((message) => message.id)).toEqual(
+      messages.map((message) => message.id),
+    );
+  });
 });
 
 describe("reconcilePendingUserMessagesAgainstEvents", () => {
-  test("removes pending when echo matches without duplicates", () => {
+  test("records echo identities without letting transcript metadata retire queue state", () => {
     const pendingMessages = [
       pending({
         id: "p1",
@@ -156,7 +215,12 @@ describe("reconcilePendingUserMessagesAgainstEvents", () => {
       pendingMessages,
       events,
     );
-    expect(reconciled.map((message) => message.id)).toEqual([]);
+    expect(
+      reconciled.map(({ id, confirmedEventId }) => ({ id, confirmedEventId })),
+    ).toEqual([
+      { id: "p1", confirmedEventId: "echo-1" },
+      { id: "p2", confirmedEventId: "echo-2" },
+    ]);
   });
 
   test("keeps pending when only older matching events exist", () => {
@@ -199,13 +263,126 @@ describe("reconcilePendingUserMessagesAgainstEvents", () => {
       },
     ];
     expect(
-      reconcilePendingUserMessagesAgainstEvents(pendingMessages, events),
-    ).toEqual([]);
+      reconcilePendingUserMessagesAgainstEvents(pendingMessages, events)[0],
+    ).toMatchObject({ id: "p1", confirmedEventId: "echo" });
+  });
+
+  test("reserves successive identical echoes in queue order without duplicate claims", () => {
+    const pendingMessages = [
+      pending({
+        id: "p1",
+        turnId: "turn-1",
+        body: "same follow-up",
+        lifecycle: "queued",
+        createdAfterMaxSeq: 10,
+      }),
+      pending({
+        id: "p2",
+        turnId: "turn-2",
+        body: "same follow-up",
+        lifecycle: "queued",
+        createdAfterMaxSeq: 10,
+      }),
+    ];
+    const afterFirstEcho = reconcilePendingUserMessagesAgainstEvents(
+      pendingMessages,
+      [
+        {
+          id: "echo-1",
+          seq: 11,
+          kind: "user_message",
+          body: "same follow-up",
+        },
+      ],
+    );
+    expect(
+      afterFirstEcho.map(({ id, confirmedEventId }) => ({
+        id,
+        confirmedEventId,
+      })),
+    ).toEqual([
+      { id: "p1", confirmedEventId: "echo-1" },
+      { id: "p2", confirmedEventId: undefined },
+    ]);
+
+    expect(
+      reconcilePendingUserMessagesAgainstEvents(afterFirstEcho, [
+        {
+          id: "echo-1",
+          seq: 11,
+          kind: "user_message",
+          body: "same follow-up",
+        },
+      ]).map(({ id, confirmedEventId }) => ({ id, confirmedEventId })),
+    ).toEqual([
+      { id: "p1", confirmedEventId: "echo-1" },
+      { id: "p2", confirmedEventId: undefined },
+    ]);
+
+    expect(
+      reconcilePendingUserMessagesAgainstEvents(afterFirstEcho, [
+        {
+          id: "echo-1",
+          seq: 11,
+          kind: "user_message",
+          body: "same follow-up",
+        },
+        {
+          id: "echo-2",
+          seq: 12,
+          kind: "user_message",
+          body: "same follow-up",
+        },
+      ]).map(({ id, confirmedEventId }) => ({ id, confirmedEventId })),
+    ).toEqual([
+      { id: "p1", confirmedEventId: "echo-1" },
+      { id: "p2", confirmedEventId: "echo-2" },
+    ]);
+  });
+
+  test("dedupes attachment-only echoes in submission order", () => {
+    const attachmentText =
+      '<zen_attachments>{"files":[{"name":"a.png","path":"/tmp/a.png"}]}</zen_attachments>';
+    const pendingMessages = [
+      pending({
+        id: "p1",
+        body: "",
+        sentText: attachmentText,
+        lifecycle: "queued",
+        createdAfterMaxSeq: 10,
+        attachments: [{ path: "/tmp/a.png" }],
+      }),
+      pending({
+        id: "p2",
+        body: "",
+        sentText: attachmentText,
+        lifecycle: "queued",
+        createdAfterMaxSeq: 10,
+        attachments: [{ path: "/tmp/a.png" }],
+      }),
+    ];
+    const first = reconcilePendingUserMessagesAgainstEvents(
+      pendingMessages,
+      [{ id: "echo-1", seq: 11, kind: "user_message", body: attachmentText }],
+    );
+    expect(first.map(({ id, confirmedEventId }) => ({ id, confirmedEventId }))).toEqual([
+      { id: "p1", confirmedEventId: "echo-1" },
+      { id: "p2", confirmedEventId: undefined },
+    ]);
+    expect(
+      reconcilePendingUserMessagesAgainstEvents(first, [
+        { id: "echo-1", seq: 11, kind: "user_message", body: attachmentText },
+        { id: "echo-2", seq: 12, kind: "user_message", body: attachmentText },
+      ]).map(({ id, confirmedEventId }) => ({ id, confirmedEventId })),
+    ).toEqual([
+      { id: "p1", confirmedEventId: "echo-1" },
+      { id: "p2", confirmedEventId: "echo-2" },
+    ]);
   });
 });
 
 describe("mergePendingUserMessagesIntoTimeline", () => {
-  test("busy queue shows Queued next then Queued in submission order", () => {
+  test("busy queue shows ordered queue positions in submission order", () => {
     const timeline: ZenTimelineItem[] = [
       {
         type: "message",
@@ -252,13 +429,13 @@ describe("mergePendingUserMessagesIntoTimeline", () => {
       id: "pending-a",
       body: "follow up one",
       pendingLifecycle: "queued",
-      pendingLifecycleLabel: "Queued next",
+      pendingLifecycleLabel: "Queued 1/2",
     });
     expect(pendingItems[1]).toMatchObject({
       id: "pending-b",
       body: "follow up two",
       pendingLifecycle: "queued",
-      pendingLifecycleLabel: "Queued",
+      pendingLifecycleLabel: "Queued 2/2",
     });
   });
 
@@ -311,5 +488,343 @@ describe("mergePendingUserMessagesIntoTimeline", () => {
       body: "hello",
     });
     expect((userMessages[0] as { pending?: boolean }).pending).toBeUndefined();
+  });
+
+  test("attachment-only echo claims the optimistic item without duplication", () => {
+    const attachmentText =
+      '<zen_attachments>{"files":[{"name":"a.png","path":"/tmp/a.png"}]}</zen_attachments>';
+    const merged = mergePendingUserMessagesIntoTimeline(
+      [
+        {
+          type: "message",
+          id: "echo-attachment",
+          role: "user",
+          timestamp: "2026-07-10T10:00:01.000Z",
+          body: "",
+          attachments: [{ name: "a.png", path: "/tmp/a.png" }],
+        },
+      ],
+      [
+        pendingMessage({
+          id: "pending-attachment",
+          body: "",
+          sentText: attachmentText,
+          attachments: [{ name: "a.png", path: "/tmp/a.png" }],
+          lifecycle: "queued",
+          createdAt: "2026-07-10T10:00:00.000Z",
+        }),
+      ],
+    );
+    const userMessages = merged.filter(
+      (item) => item.type === "message" && item.role === "user",
+    );
+    expect(userMessages).toHaveLength(1);
+    expect(userMessages[0]).toMatchObject({
+      id: "pending-attachment",
+      attachments: [{ path: "/tmp/a.png" }],
+    });
+    expect(userMessages[0]).toMatchObject({
+      pending: true,
+      pendingLifecycle: "queued",
+      pendingLifecycleLabel: "Queued next",
+    });
+  });
+
+  test("pending rendering never synthesizes a Working placeholder", () => {
+    const merged = mergePendingUserMessagesIntoTimeline(
+      [],
+      [
+        pendingMessage({
+          id: "pending-send",
+          body: "hello",
+          lifecycle: "sending",
+          createdAt: "2026-07-10T10:00:00.000Z",
+        }),
+      ],
+    );
+    expect(merged.some((item) => item.type === "activity" && item.title === "Working")).toBe(false);
+  });
+});
+
+describe("server queue reconciliation", () => {
+  test("ack reconciliation waits for the same daemon epoch at or after its revision", () => {
+    const acknowledgement = {
+      turnEpoch: "daemon-b",
+      turnRevision: 7,
+    };
+    expect(canReconcilePendingAcknowledgementAgainstProjection(
+      acknowledgement,
+      { turn_epoch: "daemon-a", turn_revision: 99 },
+    )).toBe(false);
+    expect(canReconcilePendingAcknowledgementAgainstProjection(
+      acknowledgement,
+      { turn_epoch: "daemon-b", turn_revision: 6 },
+    )).toBe(false);
+    expect(canReconcilePendingAcknowledgementAgainstProjection(
+      acknowledgement,
+      { turn_epoch: "daemon-b", turn_revision: 7 },
+    )).toBe(true);
+  });
+
+  test("uses oldest-first server order and promotes the active item to sending", () => {
+    const messages = [
+      pending({ id: "b", turnId: "turn-b", body: "second", lifecycle: "queued" }),
+      pending({ id: "a", turnId: "turn-a", body: "first", lifecycle: "sending" }),
+      pending({ id: "c", turnId: "turn-c", body: "third", lifecycle: "sending" }),
+    ];
+    const reconciled = reconcilePendingUserMessagesWithStructuredTurns(
+      messages,
+      {
+        id: "turn-a",
+        status: "running",
+        started_at: "2026-07-10T10:00:00.000Z",
+      },
+      [
+        {
+          id: "turn-b",
+          status: "queued",
+          started_at: "2026-07-10T10:00:01.000Z",
+        },
+        {
+          id: "turn-c",
+          status: "queued",
+          started_at: "2026-07-10T10:00:02.000Z",
+        },
+      ],
+    );
+    expect(reconciled.map(({ id, lifecycle }) => ({ id, lifecycle }))).toEqual([
+      { id: "a", lifecycle: "sending" },
+      { id: "b", lifecycle: "queued" },
+      { id: "c", lifecycle: "queued" },
+    ]);
+  });
+
+  test("late queued acknowledgement cannot regress an already promoted turn", () => {
+    const message = pending({
+      id: "b",
+      turnId: "turn-b",
+      body: "next",
+      lifecycle: "sending",
+      authoritativeActiveObserved: true,
+    });
+    const acknowledged = acknowledgePendingUserMessageWithStructuredTurns(
+      message,
+      {
+        turnId: "turn-b",
+        lifecycle: "queued",
+        acceptedAt: "2026-07-10T10:00:02.000Z",
+      },
+      {
+        id: "turn-b",
+        status: "running",
+        started_at: "2026-07-10T10:00:01.000Z",
+      },
+      [],
+    );
+    expect(acknowledged).toMatchObject({
+      lifecycle: "sending",
+      authoritativeActiveObserved: true,
+    });
+  });
+
+  test("queued acknowledgement survives an older snapshot and settles after a fast queue drain", () => {
+    const startedAt = "2026-07-10T10:00:02.000Z";
+    const acknowledged = acknowledgePendingUserMessageWithStructuredTurns(
+      pending({
+        id: "b",
+        turnId: "turn-b",
+        turnStartedAt: startedAt,
+        body: "middle",
+        lifecycle: "sending",
+      }),
+      {
+        turnId: "turn-b",
+        lifecycle: "queued",
+        acceptedAt: startedAt,
+        turnEpoch: "daemon-a",
+        turnRevision: 5,
+      },
+      {
+        id: "turn-a",
+        status: "running",
+        // A future-skewed public clock cannot make this old projection causal.
+        started_at: "2026-07-10T11:00:01.000Z",
+      },
+      [],
+    );
+    expect(acknowledged).toMatchObject({
+      lifecycle: "queued",
+      authoritativeQueueObserved: true,
+      authoritativeLifecycleEpoch: "daemon-a",
+      authoritativeLifecycleRevision: 5,
+    });
+    expect(reconcilePendingUserMessagesWithStructuredTurns(
+      [acknowledged],
+      {
+        id: "turn-a",
+        status: "running",
+        started_at: "2026-07-10T11:00:01.000Z",
+      },
+      [],
+      "daemon-a",
+      5,
+    )).toHaveLength(1);
+    expect(reconcilePendingUserMessagesWithStructuredTurns(
+      [acknowledged],
+      {
+        id: "turn-c",
+        status: "completed",
+        started_at: "2026-07-10T10:00:03.000Z",
+        settled_at: "2026-07-10T10:00:04.000Z",
+      },
+      [],
+      "daemon-a",
+      8,
+    )).toMatchObject([{ id: "b", lifecycle: "settled" }]);
+  });
+
+  test("a new daemon lifecycle epoch settles unconfirmed accepted state without losing its bubble", () => {
+    const acknowledged = acknowledgePendingUserMessageWithStructuredTurns(
+      pending({
+        id: "a",
+        turnId: "turn-a",
+        body: "work",
+        lifecycle: "sending",
+      }),
+      {
+        turnId: "turn-a",
+        lifecycle: "sending",
+        acceptedAt: "2026-07-10T10:00:00.000Z",
+        turnEpoch: "daemon-a",
+        turnRevision: 4,
+      },
+    );
+    expect(reconcilePendingUserMessagesWithStructuredTurns(
+      [acknowledged],
+      undefined,
+      [],
+      "daemon-b",
+      0,
+    )).toMatchObject([{ id: "a", lifecycle: "settled" }]);
+  });
+
+  test("terminal-before-echo preserves identical order and prevents successor echo theft", () => {
+    const first = pending({
+      id: "p1",
+      turnId: "turn-1",
+      body: "same",
+      lifecycle: "sending",
+      acceptedAt: "2026-07-10T10:00:00.000Z",
+      authoritativeActiveObserved: true,
+      authoritativeLifecycleEpoch: "daemon-a",
+      authoritativeLifecycleRevision: 4,
+    });
+    const second = pending({
+      id: "p2",
+      turnId: "turn-2",
+      body: "same",
+      lifecycle: "queued",
+      acceptedAt: "2026-07-10T10:00:01.000Z",
+      authoritativeQueueObserved: true,
+      authoritativeLifecycleEpoch: "daemon-a",
+      authoritativeLifecycleRevision: 5,
+    });
+    const afterTerminal = reconcilePendingUserMessagesWithStructuredTurns(
+      [first, second],
+      {
+        id: "turn-1",
+        status: "completed",
+        started_at: first.turnStartedAt,
+        settled_at: "2026-07-10T10:00:02.000Z",
+      },
+      [{
+        id: "turn-2",
+        status: "queued",
+        started_at: second.turnStartedAt,
+      }],
+      "daemon-a",
+      6,
+    );
+    expect(afterTerminal.map(({ id, lifecycle }) => ({ id, lifecycle }))).toEqual([
+      { id: "p1", lifecycle: "settled" },
+      { id: "p2", lifecycle: "queued" },
+    ]);
+
+    const withDelayedFirstEcho = reconcilePendingUserMessagesAgainstEvents(
+      afterTerminal,
+      [{ id: "echo-1", seq: 11, kind: "user_message", body: "same" }],
+    );
+    expect(withDelayedFirstEcho.map(({ id, confirmedEventId }) => ({
+      id,
+      confirmedEventId,
+    }))).toEqual([
+      { id: "p1", confirmedEventId: "echo-1" },
+      { id: "p2", confirmedEventId: undefined },
+    ]);
+
+    const afterPromotion = reconcilePendingUserMessagesWithStructuredTurns(
+      withDelayedFirstEcho,
+      {
+        id: "turn-2",
+        status: "running",
+        started_at: second.turnStartedAt,
+      },
+      [],
+      "daemon-a",
+      7,
+    );
+    expect(afterPromotion).toHaveLength(1);
+    expect(afterPromotion[0]).toMatchObject({
+      id: "p2",
+      createdAfterEventIds: ["echo-1"],
+    });
+  });
+
+  test("promotion retires a confirmed row and reserves its echo for identical successors", () => {
+    const messages = [
+      pending({
+        id: "p1",
+        turnId: "turn-1",
+        body: "same",
+        lifecycle: "queued",
+        confirmedEventId: "echo-1",
+        authoritativeQueueObserved: true,
+      }),
+      pending({
+        id: "p2",
+        turnId: "turn-2",
+        body: "same",
+        lifecycle: "queued",
+        authoritativeQueueObserved: true,
+      }),
+    ];
+    const promoted = reconcilePendingUserMessagesWithStructuredTurns(
+      messages,
+      {
+        id: "turn-1",
+        status: "running",
+        started_at: "2026-07-10T10:00:00.000Z",
+      },
+      [{
+        id: "turn-2",
+        status: "queued",
+        started_at: "2026-07-10T10:00:01.000Z",
+      }],
+    );
+    expect(promoted).toHaveLength(1);
+    expect(promoted[0]).toMatchObject({
+      id: "p2",
+      createdAfterEventIds: ["echo-1"],
+    });
+    expect(reconcilePendingUserMessagesAgainstEvents(promoted, [{
+      id: "echo-1",
+      seq: 11,
+      kind: "user_message",
+      body: "same",
+    }])[0]?.confirmedEventId).toBeUndefined();
+    expect(reconcilePendingUserMessagesAgainstEvents(promoted, [
+      { id: "echo-1", seq: 11, kind: "user_message", body: "same" },
+      { id: "echo-2", seq: 12, kind: "user_message", body: "same" },
+    ])[0]?.confirmedEventId).toBe("echo-2");
   });
 });

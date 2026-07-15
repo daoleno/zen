@@ -240,6 +240,11 @@ func TestParseGrokConversation_StreamsNativeChunksAndFinalizesSameEvent(t *testi
 	if first.Active == nil || !*first.Active {
 		t.Fatalf("first active = %#v", first.Active)
 	}
+	if first.Turn == nil || first.Turn.Status != CodexConversationTurnRunning || first.Turn.StartedAt == "" {
+		t.Fatalf("first turn = %#v", first.Turn)
+	}
+	turnID := first.Turn.ID
+	startedAt := first.Turn.StartedAt
 	if eventBodyContains(first.Events, "old transient output") {
 		t.Fatalf("completed update history leaked into active tail: %#v", first.Events)
 	}
@@ -265,6 +270,9 @@ func TestParseGrokConversation_StreamsNativeChunksAndFinalizesSameEvent(t *testi
 	if !secondAssistant.Partial {
 		t.Fatalf("second assistant finalized before provider turn completion: %#v", secondAssistant)
 	}
+	if second.Turn == nil || second.Turn.ID != turnID || second.Turn.StartedAt != startedAt || second.Turn.Status != CodexConversationTurnRunning {
+		t.Fatalf("streaming turn identity/start changed: %#v -> %#v", first.Turn, second.Turn)
+	}
 
 	writeJSONL(t, filepath.Join(dir, grokChatHistoryFile),
 		map[string]any{"type": "user", "content": "stream this"},
@@ -287,6 +295,10 @@ func TestParseGrokConversation_StreamsNativeChunksAndFinalizesSameEvent(t *testi
 	if final.Active == nil || *final.Active {
 		t.Fatalf("final active = %#v", final.Active)
 	}
+	if final.Turn == nil || final.Turn.ID != turnID || final.Turn.StartedAt != startedAt ||
+		final.Turn.Status != CodexConversationTurnCompleted || final.Turn.SettledAt == "" {
+		t.Fatalf("final lifecycle = %#v", final.Turn)
+	}
 
 	writeJSONL(t, filepath.Join(dir, grokChatHistoryFile),
 		map[string]any{"type": "user", "content": "stream this"},
@@ -302,6 +314,33 @@ func TestParseGrokConversation_StreamsNativeChunksAndFinalizesSameEvent(t *testi
 		t.Fatalf("streamed final duplicated after later messages: %#v", later.Events)
 	}
 	findGrokEvent(t, later.Events, "assistant_message", "ordinary final")
+}
+
+func TestParseGrokConversation_UserLifecyclePrecedesFirstVisibleToken(t *testing.T) {
+	dir := t.TempDir()
+	sessionID := "grok-pre-token"
+	writeGrokSummary(t, filepath.Join(dir, grokSummaryFile), map[string]any{
+		"info": map[string]any{"id": sessionID, "cwd": "/repo"},
+	})
+	writeJSONL(t, filepath.Join(dir, grokChatHistoryFile),
+		map[string]any{"type": "user", "content": "start silently"},
+	)
+	writeJSONL(t, filepath.Join(dir, grokUpdatesFile),
+		grokUpdateFixture(sessionID, "prompt-pre-token", "user_message_chunk", map[string]any{"type": "text", "text": "start silently"}),
+	)
+
+	got, err := parseGrokConversation(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Turn == nil || got.Turn.Status != CodexConversationTurnRunning || got.Turn.StartedAt == "" || got.Active == nil || !*got.Active {
+		t.Fatalf("pre-token lifecycle = %#v", got)
+	}
+	for _, event := range got.Events {
+		if event.Kind == "assistant_message" || event.Kind == "commentary" {
+			t.Fatalf("pre-token lifecycle fabricated visible response: %#v", got.Events)
+		}
+	}
 }
 
 func TestParseGrokConversation_MatchingActiveHistoryDoesNotDuplicate(t *testing.T) {
@@ -359,6 +398,60 @@ func TestLoadCachedGrokConversationInvalidatesOnNativeUpdates(t *testing.T) {
 		t.Fatal(err)
 	}
 	findGrokEvent(t, second.Events, "assistant_message", "first chunk")
+}
+
+func TestLoadCachedGrokConversation_RetainsEveryTurnCompletedBetweenPolls(t *testing.T) {
+	dir := t.TempDir()
+	sessionID := "grok-missed-turns"
+	updatesPath := filepath.Join(dir, grokUpdatesFile)
+	writeGrokSummary(t, filepath.Join(dir, grokSummaryFile), map[string]any{
+		"info": map[string]any{"id": sessionID, "cwd": "/repo"},
+	})
+	writeJSONL(t, filepath.Join(dir, grokChatHistoryFile),
+		map[string]any{"type": "user", "content": "first"},
+	)
+	writeJSONL(t, updatesPath,
+		grokUpdateFixtureAt(sessionID, "prompt-a", 101, "user_message_chunk", map[string]any{"type": "text", "text": "first"}),
+	)
+	grokConversationCache.Lock()
+	delete(grokConversationCache.byPath, dir)
+	grokConversationCache.Unlock()
+
+	first, err := loadCachedGrokConversation(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.Turn == nil || first.Turn.Status != CodexConversationTurnRunning {
+		t.Fatalf("initial lifecycle = %#v", first.Turn)
+	}
+
+	// Two complete queued turns can start and finish inside one 220ms polling
+	// interval. The daemon-side provider history must retain all three terminal
+	// facts so the public queue registry can drain them in submission order.
+	appendJSONL(t, updatesPath,
+		grokUpdateFixture(sessionID, "prompt-a", "turn_completed", nil),
+		grokUpdateFixtureAt(sessionID, "prompt-b", 102, "user_message_chunk", map[string]any{"type": "text", "text": "second"}),
+		grokUpdateFixture(sessionID, "prompt-b", "turn_completed", nil),
+		grokUpdateFixtureAt(sessionID, "prompt-c", 103, "user_message_chunk", map[string]any{"type": "text", "text": "third"}),
+		grokUpdateFixture(sessionID, "prompt-c", "turn_completed", nil),
+	)
+
+	got, err := loadCachedGrokConversation(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got.ProviderTurns) != 3 {
+		t.Fatalf("provider turn history = %#v, want three terminal turns", got.ProviderTurns)
+	}
+	for index, promptID := range []string{"prompt-a", "prompt-b", "prompt-c"} {
+		turn := got.ProviderTurns[index]
+		if !strings.Contains(turn.ID, promptID) || turn.Status != CodexConversationTurnCompleted || turn.StartedAt == "" || turn.SettledAt == "" {
+			t.Fatalf("provider turn %d = %#v, want completed %s", index, turn, promptID)
+		}
+	}
+	if got.Turn == nil || got.Turn.ID != got.ProviderTurns[2].ID || got.Turn.Status != CodexConversationTurnCompleted {
+		t.Fatalf("latest public turn = %#v, provider history = %#v", got.Turn, got.ProviderTurns)
+	}
 }
 
 func TestParseGrokConversation_GroupsNativeStreamsAcrossInterleavedTools(t *testing.T) {
@@ -704,12 +797,14 @@ func TestParseGrokConversation_TurnCompletionAndFailureSettleEveryProjection(t *
 		name         string
 		terminal     map[string]any
 		toolStatus   string
+		turnStatus   string
 		statusPhrase string
 	}{
 		{
 			name:       "turn completed",
 			terminal:   grokUpdateFixture("grok-settle-turn", "prompt", "turn_completed", nil),
 			toolStatus: "done",
+			turnStatus: CodexConversationTurnCompleted,
 		},
 		{
 			name: "provider failure",
@@ -721,6 +816,7 @@ func TestParseGrokConversation_TurnCompletionAndFailureSettleEveryProjection(t *
 				return record
 			}(),
 			toolStatus:   "failed",
+			turnStatus:   CodexConversationTurnFailed,
 			statusPhrase: "provider request failed",
 		},
 	} {
@@ -762,6 +858,9 @@ func TestParseGrokConversation_TurnCompletionAndFailureSettleEveryProjection(t *
 			}
 			if testCase.statusPhrase != "" {
 				findGrokEvent(t, got.Events, "status", testCase.statusPhrase)
+			}
+			if got.Turn == nil || got.Turn.Status != testCase.turnStatus || got.Turn.StartedAt == "" || got.Turn.SettledAt == "" {
+				t.Fatalf("settled turn = %#v", got.Turn)
 			}
 			assertNoGrokRunningProjection(t, got)
 		})

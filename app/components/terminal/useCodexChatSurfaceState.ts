@@ -39,7 +39,7 @@ import {
   usePinnedTimeline,
   useRelativeTimeLabel,
 } from "./CodexChatSurfaceHooks";
-import { resolveWorkingTurnStartedAt } from "./workingTurnElapsed";
+import { resolveWorkingStructuredTurn } from "./structuredTurnLifecycle";
 
 interface UseCodexChatSurfaceStateInput {
   visible: boolean;
@@ -152,17 +152,14 @@ export function useCodexChatSurfaceState({
     error,
     draft,
     setDraft,
+    restoreDraft,
     attachments,
     setAttachments,
     pendingUserMessages,
     pendingSlashCommands,
     addPendingUserMessage,
+    acknowledgePendingUserMessage,
     removePendingUserMessage,
-    addPendingSlashCommand,
-    settlePendingSlashCommand,
-    removePendingSlashCommand,
-    resetForNewChat,
-    markNewChatReady,
     markNewChatMessageStarted,
   } = session;
   const setObservedDraft = useCallback(
@@ -171,6 +168,13 @@ export function useCodexChatSurfaceState({
       onDraftChange?.(value);
     },
     [onDraftChange, setDraft],
+  );
+  const restoreObservedDraft = useCallback(
+    (value: string) => {
+      restoreDraft(value);
+      onDraftChange?.(value);
+    },
+    [onDraftChange, restoreDraft],
   );
   const renderedComposerAccessory = renderComposerAccessory
     ? renderComposerAccessory({ draft, setDraft: setObservedDraft })
@@ -327,39 +331,45 @@ export function useCodexChatSurfaceState({
     [conversation, pendingSlashCommands, pendingUserMessages],
   );
   const jumpLabel = useRelativeTimeLabel(latestTimelineTimestamp);
+  const resolvedWorkingTurn = useMemo(
+    () => resolveWorkingStructuredTurn(conversation?.turn, pendingUserMessages),
+    [conversation?.turn, pendingUserMessages],
+  );
+  const workingTurn = localChatState === "idle"
+    ? resolvedWorkingTurn
+    : undefined;
+  const requestRunning = isCodexRequestRunning({
+    conversation: null,
+    turn: workingTurn,
+  });
   const timeline = usePinnedTimeline(
-    events.length + pendingUserMessages.length + pendingSlashCommands.length,
+    events.length +
+      pendingUserMessages.length +
+      pendingSlashCommands.length +
+      (workingTurn ? 1 : 0),
     conversationCacheKey,
   );
-  const requestRunning =
-    isCodexRequestRunning({
-      conversation,
-      events,
-      hasPendingUserTurn: pendingUserMessages.length > 0,
-    }) && localChatState === "idle";
   const controller = useCodexChatController({
     serverId,
     agentId,
+    conversationScopeKey,
     agentStatus: agentInfo?.status,
     connectionState,
     connectionIssue,
     conversation,
     events,
     turnBusy: requestRunning,
+    workingTurn,
     draft,
     setDraft: setObservedDraft,
+    restoreDraft: restoreObservedDraft,
     attachments,
     setAttachments,
     slashCommands,
     addPendingUserMessage,
+    acknowledgePendingUserMessage,
     removePendingUserMessage,
-    addPendingSlashCommand,
-    settlePendingSlashCommand,
-    removePendingSlashCommand,
-    resetForNewChat,
-    markNewChatReady,
     markNewChatMessageStarted,
-    scrollToLatest: timeline.scrollToLatest,
     pinToBottomIfNeeded: timeline.pinToBottomIfNeeded,
     focusComposer: composerInput.focus,
     clearComposerNativeText: composerInput.clearNativeText,
@@ -369,14 +379,6 @@ export function useCodexChatSurfaceState({
     onSwitchToTerminal,
   });
 
-  const turnStartedAt = useMemo(
-    () =>
-      resolveWorkingTurnStartedAt({
-        events,
-        pendingUserMessages,
-      }),
-    [events, pendingUserMessages],
-  );
   const composerPresentation = useCodexComposerPresentation({
     draft,
     slashCommands,
@@ -388,7 +390,7 @@ export function useCodexChatSurfaceState({
     startingNewChat: controller.startingNewChat,
     interrupting: controller.interrupting,
     canSend: controller.canSend,
-    elapsedStartedAt: turnStartedAt,
+    elapsedStartedAt: workingTurn?.started_at,
     actionMenuPinned,
     safeAreaBottom: insets.bottom,
     placeholder,
@@ -486,6 +488,7 @@ export function useCodexChatSurfaceState({
     events,
     pendingUserMessages,
     pendingSlashCommands,
+    workingTurn,
     loading,
     localChatState,
     error,

@@ -28,9 +28,23 @@ interface UseCodexSlashCommandRouterInput {
     previousDraft: string,
     previousAttachments: ComposerAttachment[],
   ): void;
-  startNewCodexChat(commandText?: string): void;
-  sendSlashCommandToCodex(text: string, command?: CodexSlashCommand): void;
-  runStatusCommand(text: string, command?: CodexSlashCommand): void;
+  startNewCodexChat(
+    commandText?: string,
+    previousDraft?: string,
+    previousAttachments?: ComposerAttachment[],
+  ): void;
+  sendSlashCommandToCodex(
+    text: string,
+    command?: CodexSlashCommand,
+    previousDraft?: string,
+    previousAttachments?: ComposerAttachment[],
+  ): void;
+  runStatusCommand(
+    text: string,
+    command?: CodexSlashCommand,
+    previousDraft?: string,
+    previousAttachments?: ComposerAttachment[],
+  ): void;
   openSkillsSheet(): void;
   onSwitchToTerminal?: () => void;
 }
@@ -106,12 +120,17 @@ export function useCodexSlashCommandRouter({
         return false;
       }
       if (command.name === "status") {
-        runStatusCommand(rawText, command);
+        runStatusCommand(
+          rawText,
+          command,
+          previousDraft,
+          previousAttachments,
+        );
         return true;
       }
       if (command.execution === "native") {
         if (command.name === "new" || command.name === "clear") {
-          startNewCodexChat(rawText);
+          startNewCodexChat(rawText, previousDraft, previousAttachments);
           return true;
         }
         if (command.name === "skills") {
@@ -124,10 +143,15 @@ export function useCodexSlashCommandRouter({
         return true;
       }
       if (command.name === "new" || command.name === "clear") {
-        startNewCodexChat(rawText);
+        startNewCodexChat(rawText, previousDraft, previousAttachments);
         return true;
       }
-      sendSlashCommandToCodex(rawText, command);
+      sendSlashCommandToCodex(
+        rawText,
+        command,
+        previousDraft,
+        previousAttachments,
+      );
       return true;
     },
     [

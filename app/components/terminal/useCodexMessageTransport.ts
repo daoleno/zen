@@ -7,66 +7,78 @@ import {
 } from "react";
 import { Alert, Keyboard } from "react-native";
 import type { ConnectionState } from "../../store/agents";
+import type { StructuredTurn } from "../../services/codexConversation";
 import type { CodexSlashCommand } from "../../services/websocket";
 import { wsClient } from "../../services/websocket";
 import type {
   ComposerAttachment,
-  PendingSlashCommandInput,
+  PendingUserMessageAcknowledgement,
   PendingUserMessageInput,
 } from "./CodexChatSession";
-import { classifyPendingUserMessageLifecycle } from "./pendingUserMessageLifecycle";
+import { createStructuredTurnIdentity } from "./structuredTurnLifecycle";
+import {
+  restoreFailedAttachments,
+  restoreFailedDraft,
+} from "./messageSendRecovery";
+import { submitProviderCommandAsUserInput } from "./providerCommandSubmission";
+import {
+  beginComposerStop,
+  reconcileComposerStopLatch,
+  releaseComposerStopLatch,
+} from "./composerStopLatch";
 
 interface UseCodexMessageTransportInput {
   serverId: string;
   agentId: string;
+  conversationScopeKey?: string;
+  conversationIdentity?: string;
   connectionState: ConnectionState;
   turnBusy: boolean;
+  workingTurn?: StructuredTurn;
+  draft: string;
+  attachments: ComposerAttachment[];
   setDraft(value: string): void;
+  restoreDraft(value: string): void;
   setAttachments(value: SetStateAction<ComposerAttachment[]>): void;
   clearComposerNativeText(): void;
   addPendingUserMessage(message: PendingUserMessageInput): string;
+  acknowledgePendingUserMessage(
+    id: string,
+    acknowledgement: PendingUserMessageAcknowledgement,
+  ): void;
   removePendingUserMessage(id: string): void;
-  addPendingSlashCommand(command: PendingSlashCommandInput): string;
-  settlePendingSlashCommand(id: string): void;
-  removePendingSlashCommand(id: string): void;
-  resetForNewChat(): void;
-  markNewChatReady(): void;
   markNewChatMessageStarted(): void;
-  scrollToLatest(animated?: boolean, delay?: number): void;
   pinToBottomIfNeeded(animated?: boolean, delay?: number): void;
 }
 
 export function useCodexMessageTransport({
   serverId,
   agentId,
+  conversationScopeKey,
+  conversationIdentity,
   connectionState,
   turnBusy,
+  workingTurn,
+  draft,
+  attachments,
   setDraft,
+  restoreDraft,
   setAttachments,
   clearComposerNativeText,
   addPendingUserMessage,
+  acknowledgePendingUserMessage,
   removePendingUserMessage,
-  addPendingSlashCommand,
-  settlePendingSlashCommand,
-  removePendingSlashCommand,
-  resetForNewChat,
-  markNewChatReady,
   markNewChatMessageStarted,
-  scrollToLatest,
   pinToBottomIfNeeded,
 }: UseCodexMessageTransportInput) {
   const [sending, setSending] = useState(false);
-  const [startingNewChat, setStartingNewChat] = useState(false);
   const [interrupting, setInterrupting] = useState(false);
   const sendLockedRef = useRef(false);
-  const sendingResetTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-
-  const clearTransportTimers = useCallback(() => {
-    if (sendingResetTimerRef.current) {
-      clearTimeout(sendingResetTimerRef.current);
-      sendingResetTimerRef.current = null;
-    }
-  }, []);
+  const interruptTurnIdRef = useRef<string | undefined>(undefined);
+  const currentDraftRef = useRef(draft);
+  const currentAttachmentsRef = useRef(attachments);
+  currentDraftRef.current = draft;
+  currentAttachmentsRef.current = attachments;
 
   const unlockSend = useCallback(() => {
     sendLockedRef.current = false;
@@ -75,11 +87,23 @@ export function useCodexMessageTransport({
 
   useEffect(
     () => () => {
-      clearTransportTimers();
       sendLockedRef.current = false;
+      interruptTurnIdRef.current = undefined;
     },
-    [clearTransportTimers],
+    [],
   );
+
+  useEffect(() => {
+    const reconciled = reconcileComposerStopLatch(
+      interruptTurnIdRef.current,
+      workingTurn?.id,
+    );
+    if (reconciled === interruptTurnIdRef.current) {
+      return;
+    }
+    interruptTurnIdRef.current = reconciled;
+    setInterrupting(false);
+  }, [workingTurn?.id]);
 
   const submitTextToCodex = useCallback(
     (
@@ -92,7 +116,10 @@ export function useCodexMessageTransport({
       }
       sendLockedRef.current = true;
       markNewChatMessageStarted();
+      const turnIdentity = createStructuredTurnIdentity();
       const pendingMessageId = addPendingUserMessage({
+        turnId: turnIdentity.id,
+        turnStartedAt: turnIdentity.startedAt,
         body: previousDraft.trim(),
         sentText: text,
         attachments: previousAttachments.map((attachment) => ({
@@ -101,37 +128,70 @@ export function useCodexMessageTransport({
           localUri: attachment.localUri,
           mimeType: attachment.mimeType,
         })),
-        lifecycle: classifyPendingUserMessageLifecycle(turnBusy),
+        lifecycle: "sending",
       });
       setSending(true);
       setDraft("");
       clearComposerNativeText();
       setAttachments([]);
+      currentDraftRef.current = "";
+      currentAttachmentsRef.current = [];
       pinToBottomIfNeeded(false, 0);
-      try {
-        clearTransportTimers();
-        wsClient.sendInput(serverId, agentId, `${text}\n`);
-        sendingResetTimerRef.current = setTimeout(() => {
-          sendingResetTimerRef.current = null;
+      void (async () => {
+        try {
+          const accepted = await wsClient.sendInput(
+            serverId,
+            agentId,
+            `${text}\n`,
+            {
+              conversationScopeKey,
+              turnId: turnIdentity.id,
+              turnStartedAt: turnIdentity.startedAt,
+              turnQueued: turnBusy,
+              turnConversationIdentity: conversationIdentity,
+            },
+          );
+          acknowledgePendingUserMessage(pendingMessageId, {
+            turnId: accepted.turnId || turnIdentity.id,
+            lifecycle: accepted.queued ? "queued" : "sending",
+            acceptedAt: new Date().toISOString(),
+            turnEpoch: accepted.turnEpoch,
+            turnRevision: accepted.turnRevision,
+          });
           unlockSend();
-        }, 520);
-      } catch (err: any) {
-        clearTransportTimers();
-        sendLockedRef.current = false;
-        removePendingUserMessage(pendingMessageId);
-        setDraft(previousDraft);
-        setAttachments(previousAttachments);
-        setSending(false);
-        Alert.alert("Message not sent", err?.message || "Could not send this message.");
-      }
+        } catch (err: any) {
+          sendLockedRef.current = false;
+          removePendingUserMessage(pendingMessageId);
+          const restoredDraft = restoreFailedDraft(
+            previousDraft,
+            currentDraftRef.current,
+          );
+          const restoredAttachments = restoreFailedAttachments(
+            previousAttachments,
+            currentAttachmentsRef.current,
+          );
+          currentDraftRef.current = restoredDraft;
+          currentAttachmentsRef.current = restoredAttachments;
+          restoreDraft(restoredDraft);
+          setAttachments(restoredAttachments);
+          setSending(false);
+          Alert.alert(
+            "Message not sent",
+            err?.message || "Could not send this message.",
+          );
+        }
+      })();
     },
     [
       agentId,
+      acknowledgePendingUserMessage,
       addPendingUserMessage,
       clearComposerNativeText,
-      clearTransportTimers,
+      conversationScopeKey,
+      conversationIdentity,
       markNewChatMessageStarted,
       removePendingUserMessage,
+      restoreDraft,
       pinToBottomIfNeeded,
       serverId,
       setAttachments,
@@ -141,129 +201,110 @@ export function useCodexMessageTransport({
     ],
   );
 
-  const startNewCodexChat = useCallback((commandText: string = "/new") => {
-    if (sendLockedRef.current) {
-      return;
-    }
+  const startNewCodexChat = useCallback((
+    commandText: string = "/new",
+    previousDraft: string = commandText,
+    previousAttachments: ComposerAttachment[] = [],
+  ) => {
     const submittedText = commandText.trim() || "/new";
-    sendLockedRef.current = true;
-    setSending(true);
-    setStartingNewChat(true);
-    Keyboard.dismiss();
-    setDraft("");
-    clearComposerNativeText();
-    setAttachments([]);
-    try {
-      clearTransportTimers();
-      resetForNewChat();
-      wsClient.sendInput(serverId, agentId, `${submittedText}\n`);
-      scrollToLatest(false, 0);
-      sendingResetTimerRef.current = setTimeout(() => {
-        sendingResetTimerRef.current = null;
-        unlockSend();
-        setStartingNewChat(false);
-        markNewChatReady();
-      }, 180);
-    } catch (err: any) {
-      clearTransportTimers();
-      sendLockedRef.current = false;
-      setSending(false);
-      setStartingNewChat(false);
-      Alert.alert("Command not sent", err?.message || "Could not start a new Codex chat.");
+    if (!turnBusy) {
+      Keyboard.dismiss();
     }
+    submitProviderCommandAsUserInput(
+      submittedText,
+      previousDraft,
+      previousAttachments,
+      submitTextToCodex,
+    );
   }, [
-    agentId,
-    clearComposerNativeText,
-    clearTransportTimers,
-    markNewChatReady,
-    resetForNewChat,
-    scrollToLatest,
-    serverId,
-    setAttachments,
-    setDraft,
-    unlockSend,
+    submitTextToCodex,
+    turnBusy,
   ]);
 
   const sendSlashCommandToCodex = useCallback(
-    (text: string, command?: CodexSlashCommand) => {
-      if (sendLockedRef.current) {
-        return;
-      }
-      sendLockedRef.current = true;
-      setSending(true);
-      Keyboard.dismiss();
-      setDraft("");
-      clearComposerNativeText();
-      setAttachments([]);
-      const commandName = command?.name || slashCommandNameFromText(text);
-      const pendingCommandId = addPendingSlashCommand({
+    (
+      text: string,
+      _command?: CodexSlashCommand,
+      previousDraft?: string,
+      previousAttachments?: ComposerAttachment[],
+    ) => {
+      submitProviderCommandAsUserInput(
         text,
-        name: commandName,
-        title: command?.title,
-        description: command?.description,
-      });
-      pinToBottomIfNeeded(false, 0);
-
-      try {
-        clearTransportTimers();
-        wsClient.sendInput(serverId, agentId, `${text}\n`);
-        sendingResetTimerRef.current = setTimeout(() => {
-          sendingResetTimerRef.current = null;
-          settlePendingSlashCommand(pendingCommandId);
-          unlockSend();
-        }, 420);
-      } catch (err: any) {
-        clearTransportTimers();
-        removePendingSlashCommand(pendingCommandId);
-        unlockSend();
-        Alert.alert("Command not sent", err?.message || "Could not send this command to Codex.");
-      }
+        previousDraft,
+        previousAttachments,
+        submitTextToCodex,
+      );
     },
-    [
-      agentId,
-      addPendingSlashCommand,
-      clearComposerNativeText,
-      clearTransportTimers,
-      removePendingSlashCommand,
-      pinToBottomIfNeeded,
-      serverId,
-      settlePendingSlashCommand,
-      setAttachments,
-      setDraft,
-      unlockSend,
-    ],
+    [submitTextToCodex],
   );
 
   const interruptCodex = useCallback(() => {
-    if (connectionState !== "connected" || sending) {
+    if (connectionState !== "connected") {
       return;
     }
-    setInterrupting(true);
-    setSending(true);
-    try {
-      wsClient.sendAction(serverId, agentId, "pause");
-      setTimeout(() => {
-        setInterrupting(false);
-        setSending(false);
-      }, 600);
-    } catch {
-      setInterrupting(false);
-      setSending(false);
+    const latch = beginComposerStop(
+      interruptTurnIdRef.current,
+      workingTurn?.id,
+    );
+    if (!latch.accepted) {
+      return;
     }
-  }, [agentId, connectionState, sending, serverId]);
+    interruptTurnIdRef.current = latch.latchedTurnId;
+    const claimedTurnId = latch.latchedTurnId;
+    setInterrupting(true);
+    try {
+      const request = wsClient.sendAction(serverId, agentId, "pause", {
+        conversationScopeKey,
+        turnId: workingTurn?.id,
+        turnStartedAt: workingTurn?.started_at,
+      });
+      void request.catch((error: any) => {
+        const previousLatch = interruptTurnIdRef.current;
+        const nextLatch = releaseComposerStopLatch(
+          previousLatch,
+          claimedTurnId,
+        );
+        if (nextLatch === previousLatch) {
+          return;
+        }
+        interruptTurnIdRef.current = nextLatch;
+        setInterrupting(false);
+        Alert.alert(
+          "Response not stopped",
+          error?.message || "Could not stop this response.",
+        );
+      });
+    } catch (error: any) {
+      const previousLatch = interruptTurnIdRef.current;
+      const nextLatch = releaseComposerStopLatch(
+        previousLatch,
+        claimedTurnId,
+      );
+      interruptTurnIdRef.current = nextLatch;
+      if (nextLatch !== previousLatch) {
+        setInterrupting(false);
+        Alert.alert(
+          "Response not stopped",
+          error?.message || "Could not stop this response.",
+        );
+      }
+    }
+  }, [
+    agentId,
+    connectionState,
+    conversationScopeKey,
+    serverId,
+    workingTurn?.id,
+    workingTurn?.started_at,
+  ]);
 
   return {
     sending,
     interrupting,
-    startingNewChat,
+    startingNewChat: false,
     submitTextToCodex,
     startNewCodexChat,
     sendSlashCommandToCodex,
     interruptCodex,
   };
-}
-
-function slashCommandNameFromText(text: string) {
-  const match = /^\/([a-z][a-z0-9-]*)/.exec(text.trimStart());
-  return match?.[1] || "command";
 }

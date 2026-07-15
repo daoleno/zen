@@ -1,8 +1,11 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useState } from "react";
 import { AppState, type AppStateStatus } from "react-native";
-import { workingTurnElapsedLabel } from "./workingTurnElapsed";
+import {
+  elapsedNowForRender,
+  workingTurnElapsedLabels,
+} from "./workingTurnElapsed";
 
-export function useElapsedDurationLabel(
+export function useElapsedDurationLabels(
   startTimestamp?: string,
   active: boolean = false,
 ) {
@@ -32,13 +35,12 @@ export function useElapsedDurationLabel(
     };
   }, [active, startTimestamp]);
 
-  return useMemo(
-    () =>
-      workingTurnElapsedLabel({
-        startedAt: startTimestamp,
-        nowMs: now,
-        active,
-      }),
-    [active, now, startTimestamp],
-  );
+  // The button instance morphs between Send and Stop while this hook keeps the
+  // authoritative turn clock alive. Sampling wall time during render also
+  // prevents a stale elapsed frame if React paints before the effect refreshes.
+  return workingTurnElapsedLabels({
+    startedAt: startTimestamp,
+    nowMs: elapsedNowForRender(now, Date.now(), active),
+    active,
+  });
 }

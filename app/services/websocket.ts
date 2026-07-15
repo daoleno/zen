@@ -15,6 +15,12 @@ import {
   type CodexConversation,
 } from "./codexConversation";
 import type { CalendarItem } from "../store/calendar";
+import {
+  normalizeStructuredInputAccepted,
+  sendWebSocketMessageNow,
+  structuredActionMessage,
+  structuredInputMessage,
+} from "./structuredWebSocketTransport";
 
 type MessageHandler = (data: any) => void;
 
@@ -185,6 +191,10 @@ export interface CodexConversationDeltaPayload {
   cwd?: string;
   updated_at?: string;
   active?: boolean;
+  turn_epoch?: string;
+  turn_revision?: number;
+  turn?: CodexConversation["turn"];
+  queued_turns?: CodexConversation["queued_turns"];
   upserts: CodexConversation["events"];
   deletes: string[];
 }
@@ -196,6 +206,11 @@ export interface CodexConversationSyncStatusPayload {
   revision: number;
   state: "syncing" | "ready" | "unavailable" | string;
   reason?: string;
+  active?: boolean;
+  turn_epoch?: string;
+  turn_revision?: number;
+  turn?: CodexConversation["turn"];
+  queued_turns?: CodexConversation["queued_turns"];
 }
 
 export interface CodexConversationSubscriptionOptions {
@@ -207,6 +222,21 @@ export interface CodexConversationSubscriptionOptions {
   startedAt?: number;
   processId?: number;
   conversationScopeKey?: string;
+}
+
+export interface StructuredTurnCommandOptions {
+  conversationScopeKey?: string;
+  turnId?: string;
+  turnStartedAt?: string;
+  turnQueued?: boolean;
+  turnConversationIdentity?: string;
+}
+
+export interface StructuredInputAccepted {
+  turnId?: string;
+  queued: boolean;
+  turnEpoch?: string;
+  turnRevision?: number;
 }
 
 export interface CodexConversationSubscriptionHandlers {
@@ -271,6 +301,10 @@ class ServerSocket {
       return;
     }
     this.pendingQueue.push(data);
+  }
+
+  sendNow(msg: object) {
+    sendWebSocketMessageNow(this.ws, msg);
   }
 
   get isConnected() {
@@ -1309,16 +1343,123 @@ class MultiServerWebSocketClient {
     this.send(serverId, { type: "terminal_close", session_id: sessionId });
   }
 
-  sendAction(serverId: string, agentId: string, action: string) {
-    this.send(serverId, { type: "send_action", agent_id: agentId, action });
-  }
-
-  sendInput(serverId: string, agentId: string, text: string) {
+  sendAction(
+    serverId: string,
+    agentId: string,
+    action: string,
+    options: StructuredTurnCommandOptions = {},
+  ) {
     const socket = this.connections.get(serverId);
     if (!socket?.isConnected) {
       throw new Error("Daemon is not connected.");
     }
-    socket.send({ type: "send_input", agent_id: agentId, text });
+    const requestId = `${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
+    return new Promise<void>((resolve, reject) => {
+      const cleanup = () => {
+        clearTimeout(timer);
+        this.off("action_confirmed", handleConfirmed);
+        this.off("error", handleError);
+      };
+      const handleConfirmed = (payload: any) => {
+        if (payload.serverId !== serverId || payload.request_id !== requestId) {
+          return;
+        }
+        cleanup();
+        resolve();
+      };
+      const handleError = (payload: any) => {
+        if (payload.serverId !== serverId || payload.request_id !== requestId) {
+          return;
+        }
+        cleanup();
+        reject(new Error(payload.message || "Could not stop this response."));
+      };
+      const timer = setTimeout(() => {
+        cleanup();
+        reject(new Error("Timed out while stopping this response."));
+      }, 10_000);
+
+      this.on("action_confirmed", handleConfirmed);
+      this.on("error", handleError);
+      try {
+        socket.sendNow(structuredActionMessage({
+          requestId,
+          agentId,
+          action,
+          conversationScopeKey: options.conversationScopeKey,
+          turnId: options.turnId,
+          turnStartedAt: options.turnStartedAt,
+        }));
+      } catch (error) {
+        cleanup();
+        reject(
+          error instanceof Error
+            ? error
+            : new Error("Could not stop this response."),
+        );
+      }
+    });
+  }
+
+  sendInput(
+    serverId: string,
+    agentId: string,
+    text: string,
+    options: StructuredTurnCommandOptions = {},
+  ): Promise<StructuredInputAccepted> {
+    const socket = this.connections.get(serverId);
+    if (!socket?.isConnected) {
+      throw new Error("Daemon is not connected.");
+    }
+
+    const requestId = `${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
+    return new Promise<StructuredInputAccepted>((resolve, reject) => {
+      const cleanup = () => {
+        clearTimeout(timer);
+        this.off("input_accepted", handleAccepted);
+        this.off("error", handleError);
+      };
+      const handleAccepted = (payload: any) => {
+        if (payload.serverId !== serverId || payload.request_id !== requestId) {
+          return;
+        }
+        cleanup();
+        resolve(normalizeStructuredInputAccepted(payload, options.turnId));
+      };
+      const handleError = (payload: any) => {
+        if (payload.serverId !== serverId || payload.request_id !== requestId) {
+          return;
+        }
+        cleanup();
+        reject(new Error(payload.message || "Could not send this message."));
+      };
+      const timer = setTimeout(() => {
+        cleanup();
+        reject(new Error("Timed out while sending this message."));
+      }, 10_000);
+
+      this.on("input_accepted", handleAccepted);
+      this.on("error", handleError);
+      try {
+        socket.sendNow(structuredInputMessage({
+          requestId,
+          agentId,
+          text,
+          conversationScopeKey: options.conversationScopeKey,
+          turnId: options.turnId,
+          turnStartedAt: options.turnStartedAt,
+          turnQueued: options.turnQueued,
+          turnConversationIdentity: options.turnConversationIdentity,
+        }));
+      } catch (error) {
+        cleanup();
+        reject(
+          error instanceof Error
+            ? error
+            : new Error("Could not send this message."),
+        );
+      }
+    });
   }
 
   getTerminalSnapshot(serverId: string, targetId: string) {
@@ -2192,10 +2333,15 @@ function normalizeCodexConversationSnapshotPayload(
 function normalizeCodexConversationDeltaPayload(
   payload: any,
 ): CodexConversationDeltaPayload {
-  const normalizedEvents = normalizeCodexConversation({
+  const normalizedDelta = normalizeCodexConversation({
     available: true,
+    updated_at: payload.updated_at,
+    turn_epoch: payload.turn_epoch,
+    turn_revision: payload.turn_revision,
+    turn: payload.turn,
+    queued_turns: payload.queued_turns,
     events: payload.upserts,
-  }).events;
+  });
   return {
     request_id:
       typeof payload.request_id === "string" ? payload.request_id : undefined,
@@ -2220,7 +2366,13 @@ function normalizeCodexConversationDeltaPayload(
     updated_at:
       typeof payload.updated_at === "string" ? payload.updated_at : undefined,
     active: typeof payload.active === "boolean" ? payload.active : undefined,
-    upserts: normalizedEvents,
+    turn_epoch: normalizedDelta.turn_epoch,
+    turn_revision: normalizedDelta.turn_revision,
+    turn: normalizedDelta.turn,
+    queued_turns: Array.isArray(payload.queued_turns)
+      ? normalizedDelta.queued_turns ?? []
+      : undefined,
+    upserts: normalizedDelta.events,
     deletes: Array.isArray(payload.deletes)
       ? payload.deletes.filter(
           (id: unknown): id is string => typeof id === "string",
@@ -2232,6 +2384,14 @@ function normalizeCodexConversationDeltaPayload(
 function normalizeCodexConversationSyncStatusPayload(
   payload: any,
 ): CodexConversationSyncStatusPayload {
+  const normalizedLifecycle = normalizeCodexConversation({
+    available: false,
+    turn_epoch: payload.turn_epoch,
+    turn_revision: payload.turn_revision,
+    turn: payload.turn,
+    queued_turns: payload.queued_turns,
+    events: [],
+  });
   return {
     request_id:
       typeof payload.request_id === "string" ? payload.request_id : undefined,
@@ -2247,6 +2407,13 @@ function normalizeCodexConversationSyncStatusPayload(
         : 0,
     state: typeof payload.state === "string" ? payload.state : "syncing",
     reason: typeof payload.reason === "string" ? payload.reason : undefined,
+    active: typeof payload.active === "boolean" ? payload.active : undefined,
+    turn_epoch: normalizedLifecycle.turn_epoch,
+    turn_revision: normalizedLifecycle.turn_revision,
+    turn: normalizedLifecycle.turn,
+    queued_turns: Array.isArray(payload.queued_turns)
+      ? normalizedLifecycle.queued_turns ?? []
+      : undefined,
   };
 }
 

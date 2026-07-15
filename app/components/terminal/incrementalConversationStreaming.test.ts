@@ -5,7 +5,10 @@ import {
   type CodexConversationEvent,
 } from "../../services/codexConversation";
 import { isCodexRequestRunning } from "./CodexChatControllerModel";
-import { shouldDropProviderChatNoiseEvent } from "./codexConversationVisibility";
+import {
+  shouldDropProviderChatNoiseEvent,
+  shouldDropStructuredChatEvent,
+} from "./codexConversationVisibility";
 import { buildZenTimeline } from "./CodexTimelineModel";
 import {
   reconcileConversationDeltaEvents,
@@ -186,7 +189,7 @@ describe("incremental structured conversation streaming", () => {
     ]);
   });
 
-  test("partial content keeps the composer Working until the same event finalizes", () => {
+  test("partial content is rendering metadata and never owns Working lifecycle", () => {
     const partial = event("assistant:turn", 1, {
       body: "Answering",
       partial: true,
@@ -198,7 +201,7 @@ describe("incremental structured conversation streaming", () => {
         conversation: conversation([partial]),
         events: [partial],
       }),
-    ).toBe(true);
+    ).toBe(false);
     expect(
       isCodexRequestRunning({
         conversation: conversation([finalized]),
@@ -276,6 +279,22 @@ describe("incremental structured conversation streaming", () => {
     });
     expect(shouldDropProviderChatNoiseEvent("grok_session", reasoning.kind)).toBe(false);
     expect(shouldDropProviderChatNoiseEvent("grok_session", plan.kind)).toBe(true);
+  });
+
+  test("accepted provider commands remain canonical user rows for queue dedupe", () => {
+    const command = event("command:/status", 1, {
+      kind: "user_message",
+      role: "user",
+      body: "/status",
+      source: "codex_rollout",
+    });
+    expect(shouldDropStructuredChatEvent("codex_rollout", command)).toBe(false);
+    expect(
+      shouldDropStructuredChatEvent("codex_rollout", {
+        ...command,
+        source: "terminal_snapshot",
+      }),
+    ).toBe(true);
   });
 
   test("stream updates leave specialized Calendar ordering and presentation unchanged", () => {

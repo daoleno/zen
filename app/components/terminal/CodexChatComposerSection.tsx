@@ -34,6 +34,7 @@ interface CodexChatComposerSectionProps {
   onInputFocus(): void;
   onInputBlur(): void;
   onSendPress(): void;
+  onStopPress(): void;
 }
 
 export function CodexChatComposerSection({
@@ -58,6 +59,7 @@ export function CodexChatComposerSection({
   onInputFocus,
   onInputBlur,
   onSendPress,
+  onStopPress,
 }: CodexChatComposerSectionProps) {
   return (
     <CodexChatComposer
@@ -72,8 +74,11 @@ export function CodexChatComposerSection({
       sending={sending}
       sendIcon={presentation.sendIcon}
       sendLabel={presentation.sendLabel}
-      sendElapsedStartedAt={presentation.sendElapsedStartedAt}
-      running={presentation.showStopIndicator}
+      showStopButton={presentation.showStopButton}
+      stopEnabled={presentation.stopEnabled}
+      stopLabel={presentation.stopLabel}
+      stopLoading={presentation.stopLoading}
+      workingTurnStartedAt={presentation.workingTurnStartedAt}
       bottomPadding={presentation.bottomPadding}
       showActionMenuButton={presentation.showActionMenuButton}
       actionMenuIcon={presentation.actionMenuIcon}
@@ -98,6 +103,7 @@ export function CodexChatComposerSection({
       onInputFocus={onInputFocus}
       onInputBlur={onInputBlur}
       onSendPress={onSendPress}
+      onStopPress={onStopPress}
     />
   );
 }

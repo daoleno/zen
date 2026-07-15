@@ -9,9 +9,7 @@ import type {
   TerminalThemePalette,
 } from "../../constants/terminalThemes";
 import { isAmbientChatChrome } from "../../constants/themedSurfaces";
-import {
-  CHAT_CHROME_HORIZONTAL_INSET,
-} from "./chatChromeMetrics";
+import { COMPOSER_OUTER_HORIZONTAL_INSET } from "./composerActionSlot";
 
 interface CodexChatComposerFrameProps {
   bottomPadding: number;
@@ -61,20 +59,20 @@ export function CodexChatComposerFrame({
 
 const styles = StyleSheet.create({
   composer: {
-    paddingHorizontal: 12,
+    paddingHorizontal: COMPOSER_OUTER_HORIZONTAL_INSET.classic,
     paddingTop: 8,
   },
   composerAmbient: {
-    paddingHorizontal: 10,
+    paddingHorizontal: COMPOSER_OUTER_HORIZONTAL_INSET.ambient,
     paddingTop: 6,
     paddingBottom: 2,
   },
   composerChatGpt: {
-    paddingHorizontal: 16,
+    paddingHorizontal: COMPOSER_OUTER_HORIZONTAL_INSET.chatgpt,
     paddingTop: 10,
   },
   composerTelegram: {
-    paddingHorizontal: CHAT_CHROME_HORIZONTAL_INSET,
+    paddingHorizontal: COMPOSER_OUTER_HORIZONTAL_INSET.telegram,
     paddingTop: 6,
   },
 });

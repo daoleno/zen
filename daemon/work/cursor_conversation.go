@@ -77,30 +77,7 @@ func loadCursorConversationForAgent(agent classifier.Agent, now time.Time) (Code
 	if conversation.Events == nil {
 		conversation.Events = []CodexConversationEvent{}
 	}
-	active := cursorConversationHasActiveTurn(conversation.Events)
-	conversation.Active = &active
 	return conversation, nil
-}
-
-// cursorConversationHasActiveTurn uses Cursor's structured turn_ended events.
-// Assistant/tool rows appear mid-turn, so Codex-style "user then assistant =
-// inactive" is wrong for Cursor transcripts.
-func cursorConversationHasActiveTurn(events []CodexConversationEvent) bool {
-	lastUser := -1
-	lastEnded := -1
-	for index, event := range events {
-		switch event.Kind {
-		case "user_message":
-			lastUser = index
-		case "message":
-			if event.Role == "user" {
-				lastUser = index
-			}
-		case "turn_ended":
-			lastEnded = index
-		}
-	}
-	return classifier.TranscriptTurnActive(lastUser, lastEnded)
 }
 
 func loadCachedCursorConversation(path string) (CodexConversation, error) {
@@ -235,8 +212,9 @@ func consumeCursorJSONL(path string, consume func(int, []byte)) error {
 }
 
 type cursorConversationBuilder struct {
-	sourceID string
-	events   []CodexConversationEvent
+	sourceID      string
+	turnLifecycle codexConversationTurnLifecycle
+	events        []CodexConversationEvent
 }
 
 func newCursorConversationBuilder(sourceID string) *cursorConversationBuilder {
@@ -245,10 +223,20 @@ func newCursorConversationBuilder(sourceID string) *cursorConversationBuilder {
 
 func (b *cursorConversationBuilder) consumeLine(lineNumber int, line []byte) {
 	var typed struct {
-		Type   string `json:"type"`
-		Status string `json:"status"`
+		Type      string `json:"type"`
+		Status    string `json:"status"`
+		Timestamp string `json:"timestamp"`
 	}
 	if json.Unmarshal(line, &typed) == nil && strings.EqualFold(strings.TrimSpace(typed.Type), "turn_ended") {
+		turnID := ""
+		if b.turnLifecycle.turn == nil {
+			turnID = conversationTurnID(b.sourceID, "", lineNumber)
+		}
+		b.turnLifecycle.settle(
+			turnID,
+			cursorTurnEndStatus(typed.Status),
+			normalizeCodexTimestamp(typed.Timestamp),
+		)
 		b.addEvent(CodexConversationEvent{
 			ID:     b.eventID(lineNumber, "turn_ended", 0),
 			Seq:    cursorEventSeq(lineNumber, 0),
@@ -275,6 +263,13 @@ func (b *cursorConversationBuilder) consumeLine(lineNumber int, line []byte) {
 	}
 	body := cursorMessageText(record.Message.Content)
 	body = cursorVisibleMessageText(role, body)
+	if role == "user" && body != "" {
+		startedAt := ""
+		if parsed := cursorTimestampFromLine(line); !parsed.IsZero() {
+			startedAt = parsed.UTC().Format(time.RFC3339Nano)
+		}
+		b.turnLifecycle.start(conversationTurnID(b.sourceID, "", lineNumber), startedAt)
+	}
 	if body != "" {
 		kind := "assistant_message"
 		if role == "user" {
@@ -300,6 +295,19 @@ func (b *cursorConversationBuilder) consumeLine(lineNumber int, line []byte) {
 		}
 		toolIndex++
 		b.addCursorToolEvent(lineNumber, toolIndex, block)
+	}
+}
+
+func cursorTurnEndStatus(status string) string {
+	switch strings.ToLower(strings.TrimSpace(status)) {
+	case "failed", "failure", "error":
+		return CodexConversationTurnFailed
+	case "cancelled", "canceled":
+		return CodexConversationTurnCancelled
+	case "interrupted", "aborted":
+		return CodexConversationTurnInterrupted
+	default:
+		return CodexConversationTurnCompleted
 	}
 }
 
@@ -381,12 +389,12 @@ func (b *cursorConversationBuilder) conversation() CodexConversation {
 			b.events[index].Seq = cursorEventSeq(index+1, 0)
 		}
 	}
-	return CodexConversation{
+	return conversationWithTurn(CodexConversation{
 		Available: true,
 		Source:    cursorConversationSource,
 		SessionID: b.sourceID,
 		Events:    b.events,
-	}
+	}, &b.turnLifecycle)
 }
 
 type cursorContentBlock struct {
@@ -635,6 +643,16 @@ func parseCursorTimestamp(value string) time.Time {
 	value = strings.TrimSpace(value)
 	if value == "" {
 		return time.Time{}
+	}
+	if zoneStart := strings.LastIndex(value, " (UTC"); zoneStart >= 0 && strings.HasSuffix(value, ")") {
+		zoneText := strings.TrimSuffix(strings.TrimPrefix(value[zoneStart:], " (UTC"), ")")
+		var offsetHours int
+		if _, err := fmt.Sscanf(zoneText, "%d", &offsetHours); err == nil {
+			location := time.FixedZone("UTC"+zoneText, offsetHours*60*60)
+			if parsed, err := time.ParseInLocation("Monday, Jan 2, 2006, 3:04 PM", value[:zoneStart], location); err == nil {
+				return parsed
+			}
+		}
 	}
 	for _, layout := range []string{
 		"Monday, Jan 2, 2006, 3:04 PM (UTC-7)",

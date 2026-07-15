@@ -2,27 +2,29 @@ import type { ConnectionState } from "../../store/agents";
 import type {
   CodexConversation,
   CodexConversationEvent,
+  StructuredTurn,
 } from "../../services/codexConversation";
+import { isStructuredTurnRunning } from "../../services/codexConversation";
 import type { ConnectionIssue } from "../../services/connectionIssue";
 import type { AgentStatus } from "../../constants/tokens";
 import type { ComposerAttachment } from "./CodexChatSession";
-import { isEventRunning } from "./CodexTimelineModel";
 
-export function buildCodexStatusMeta({
-  connectionState,
-  connectionIssue,
-  conversation,
-  events,
-  agentStatus,
-  sending,
-}: {
+export function buildCodexStatusMeta(input: {
   connectionState: ConnectionState;
   connectionIssue?: ConnectionIssue | null;
   conversation: CodexConversation | null;
   events: CodexConversationEvent[];
   agentStatus?: AgentStatus;
   sending: boolean;
+  requestRunning?: boolean;
 }) {
+  const {
+    connectionState,
+    connectionIssue,
+    conversation,
+    sending,
+    requestRunning,
+  } = input;
   if (connectionIssue) {
     return connectionIssue.title;
   }
@@ -32,15 +34,11 @@ export function buildCodexStatusMeta({
   if (connectionState !== "connected") {
     return "Offline";
   }
-  if (
-    sending ||
-    isCodexRequestRunning({
-      conversation,
-      events,
-      agentStatus,
-    })
-  ) {
+  if (requestRunning ?? isStructuredTurnRunning(conversation?.turn)) {
     return "Working";
+  }
+  if (sending) {
+    return "Sending";
   }
   if (conversation?.updated_at) {
     return `Updated ${formatTime(conversation.updated_at)}`;
@@ -51,26 +49,19 @@ export function buildCodexStatusMeta({
 /**
  * Turn-in-progress for Chat Working/stop controls.
  *
- * Process status is not a turn signal. Only pending/queued user sends,
- * conversation.active, partial events, and running tool/command events count.
+ * Process status and transcript rendering metadata are not turn signals.
+ * Callers may pass the locally accepted pre-snapshot turn as `turn`.
  */
 export function isCodexRequestRunning({
   conversation,
-  events,
-  hasPendingUserTurn = false,
+  turn,
 }: {
   conversation: CodexConversation | null;
-  events: CodexConversationEvent[];
+  events?: CodexConversationEvent[];
+  turn?: StructuredTurn;
   agentStatus?: AgentStatus;
-  hasPendingUserTurn?: boolean;
 }) {
-  if (hasPendingUserTurn) {
-    return true;
-  }
-  if (conversation?.active === true) {
-    return true;
-  }
-  return events.some(isEventRunning);
+  return isStructuredTurnRunning(turn ?? conversation?.turn);
 }
 
 export function buildCodexComposerMessage(

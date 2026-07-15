@@ -82,7 +82,12 @@ describe("structured chat readiness contract", () => {
       conversation: conversation({
         available: true,
         source: "claude_code_transcript",
-        active: true,
+        active: false,
+        turn: {
+          id: "claude-turn-1",
+          status: "running",
+          started_at: "2026-07-15T01:00:00.000Z",
+        },
         events: [],
       }),
       events: [
@@ -110,7 +115,7 @@ describe("structured chat readiness contract", () => {
     ).toBe(true);
   });
 
-  test("pending queued user send is Working and stoppable", () => {
+  test("pending queued user send cannot claim Working lifecycle", () => {
     const requestRunning = isCodexRequestRunning({
       conversation: conversation({
         available: true,
@@ -118,10 +123,9 @@ describe("structured chat readiness contract", () => {
         events: [],
       }),
       events: [],
-      hasPendingUserTurn: true,
       agentStatus: "running",
     });
-    expect(requestRunning).toBe(true);
+    expect(requestRunning).toBe(false);
   });
 
   test("completed or idle turn is not Working", () => {

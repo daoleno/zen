@@ -21,10 +21,13 @@ export interface CodexComposerPresentation {
   composerActionButtonEnabled: boolean;
   showStopButton: boolean;
   showStopIndicator: boolean;
+  stopEnabled: boolean;
+  stopLabel: string;
+  stopLoading: boolean;
+  workingTurnStartedAt?: string;
   sendEnabled: boolean;
   sendIcon: "square" | "arrow-up" | "send";
   sendLabel: string;
-  sendElapsedStartedAt?: string;
   placeholder: string;
   bottomPadding: number;
   keyboardVerticalOffset: number;
@@ -98,6 +101,7 @@ export function buildCodexComposerPresentation({
   const sendAction = resolveComposerSendAction({
     canSend,
     connected: connectionState === "connected",
+    elapsedStartedAt,
     hasComposerContent:
       draft.trim().length > 0 || attachmentCount > 0,
     interrupting,
@@ -120,10 +124,13 @@ export function buildCodexComposerPresentation({
     composerActionButtonEnabled,
     showStopButton,
     showStopIndicator,
+    stopEnabled: sendAction.stopEnabled,
+    stopLabel: sendAction.stopLabel,
+    stopLoading: interrupting,
+    workingTurnStartedAt: sendAction.workingTurnStartedAt,
     sendEnabled: sendAction.sendEnabled,
-    sendIcon: showStopIndicator ? "square" : chatgpt ? "arrow-up" : "arrow-up",
+    sendIcon: chatgpt ? "arrow-up" : "arrow-up",
     sendLabel: sendAction.sendLabel,
-    sendElapsedStartedAt: showStopIndicator ? elapsedStartedAt : undefined,
     placeholder: buildChatComposerPlaceholder({
       agentKind,
       connectionState,

@@ -38,15 +38,199 @@ var codexConversationCache = struct {
 }
 
 type CodexConversation struct {
-	Available bool                     `json:"available"`
-	Reason    string                   `json:"reason,omitempty"`
-	Source    string                   `json:"source,omitempty"`
-	Path      string                   `json:"path,omitempty"`
-	SessionID string                   `json:"session_id,omitempty"`
-	CWD       string                   `json:"cwd,omitempty"`
-	Updated   *time.Time               `json:"updated_at,omitempty"`
-	Active    *bool                    `json:"active,omitempty"`
-	Events    []CodexConversationEvent `json:"events"`
+	Available    bool                    `json:"available"`
+	Reason       string                  `json:"reason,omitempty"`
+	Source       string                  `json:"source,omitempty"`
+	Path         string                  `json:"path,omitempty"`
+	SessionID    string                  `json:"session_id,omitempty"`
+	CWD          string                  `json:"cwd,omitempty"`
+	Updated      *time.Time              `json:"updated_at,omitempty"`
+	TurnRevision int64                   `json:"turn_revision,omitempty"`
+	TurnEpoch    string                  `json:"turn_epoch,omitempty"`
+	Turn         *CodexConversationTurn  `json:"turn,omitempty"`
+	QueuedTurns  []CodexConversationTurn `json:"queued_turns"`
+	// ProviderTurns retains a short ordered lifecycle history for daemon-side
+	// correlation when an executor drains multiple accepted queued turns between
+	// transcript polls. Only Turn and QueuedTurns are part of the public wire
+	// model; clients still receive exactly one authoritative current turn.
+	ProviderTurns []CodexConversationTurn  `json:"-"`
+	Active        *bool                    `json:"active,omitempty"`
+	Events        []CodexConversationEvent `json:"events"`
+}
+
+const (
+	CodexConversationTurnQueued      = "queued"
+	CodexConversationTurnRunning     = "running"
+	CodexConversationTurnCompleted   = "completed"
+	CodexConversationTurnFailed      = "failed"
+	CodexConversationTurnInterrupted = "interrupted"
+	CodexConversationTurnCancelled   = "cancelled"
+)
+
+// CodexConversationTurn is the provider/executor lifecycle fact for the
+// structured conversation. Transcript events describe rendering only; they do
+// not start or settle this turn.
+type CodexConversationTurn struct {
+	ID        string `json:"id"`
+	Status    string `json:"status"`
+	StartedAt string `json:"started_at"`
+	SettledAt string `json:"settled_at,omitempty"`
+}
+
+// codexConversationTurnLifecycle applies the shared transition rules used by
+// every structured provider. A repeated start for the same turn cannot reset
+// its clock or reopen a terminal turn. While a turn is running, a distinct
+// start is queued/ordered input rather than permission to replace the executor
+// lifecycle. Only a distinct start observed after settlement advances it.
+type codexConversationTurnLifecycle struct {
+	turn    *CodexConversationTurn
+	history []CodexConversationTurn
+}
+
+const maxCodexConversationTurnHistory = 64
+
+func (l *codexConversationTurnLifecycle) start(id, startedAt string) {
+	id = strings.TrimSpace(id)
+	startedAt = normalizeCodexTimestamp(startedAt)
+	if id == "" {
+		return
+	}
+	if l.turn != nil {
+		if l.turn.Status == CodexConversationTurnRunning {
+			if l.turn.ID != id {
+				return
+			}
+			if l.turn.StartedAt == "" {
+				l.turn.StartedAt = startedAt
+			}
+			return
+		}
+		if l.turn.ID == id {
+			return
+		}
+		l.archiveCurrent()
+	}
+	l.turn = &CodexConversationTurn{
+		ID:        id,
+		Status:    CodexConversationTurnRunning,
+		StartedAt: startedAt,
+	}
+}
+
+func (l *codexConversationTurnLifecycle) settle(id, status, settledAt string) {
+	id = strings.TrimSpace(id)
+	status = normalizedConversationTurnTerminalStatus(status)
+	settledAt = normalizeCodexTimestamp(settledAt)
+	if status == "" {
+		return
+	}
+	if l.turn == nil {
+		if id == "" {
+			return
+		}
+		l.turn = &CodexConversationTurn{
+			ID:        id,
+			Status:    CodexConversationTurnRunning,
+			StartedAt: settledAt,
+		}
+	}
+	if id != "" && l.turn.ID != id {
+		return
+	}
+	if l.turn.Status != CodexConversationTurnRunning {
+		return
+	}
+	l.turn.Status = status
+	l.turn.SettledAt = settledAt
+}
+
+func (l *codexConversationTurnLifecycle) running() bool {
+	return l != nil && l.turn != nil && l.turn.Status == CodexConversationTurnRunning
+}
+
+func (l *codexConversationTurnLifecycle) snapshot() *CodexConversationTurn {
+	if l == nil || l.turn == nil {
+		return nil
+	}
+	turn := *l.turn
+	return &turn
+}
+
+func (l *codexConversationTurnLifecycle) snapshots() []CodexConversationTurn {
+	if l == nil {
+		return nil
+	}
+	turns := make([]CodexConversationTurn, 0, len(l.history)+1)
+	turns = append(turns, l.history...)
+	if l.turn != nil {
+		turns = append(turns, *l.turn)
+	}
+	if len(turns) > maxCodexConversationTurnHistory {
+		turns = append([]CodexConversationTurn(nil), turns[len(turns)-maxCodexConversationTurnHistory:]...)
+	}
+	return turns
+}
+
+func (l *codexConversationTurnLifecycle) adopt(other *codexConversationTurnLifecycle) {
+	if other == nil {
+		l.turn = nil
+		l.history = nil
+		return
+	}
+	l.history = append([]CodexConversationTurn(nil), other.history...)
+	l.turn = other.snapshot()
+}
+
+func (l *codexConversationTurnLifecycle) archiveCurrent() {
+	if l == nil || l.turn == nil {
+		return
+	}
+	l.history = append(l.history, *l.turn)
+	if len(l.history) > maxCodexConversationTurnHistory-1 {
+		l.history = append(
+			[]CodexConversationTurn(nil),
+			l.history[len(l.history)-(maxCodexConversationTurnHistory-1):]...,
+		)
+	}
+}
+
+func normalizedConversationTurnTerminalStatus(status string) string {
+	switch strings.ToLower(strings.TrimSpace(status)) {
+	case CodexConversationTurnCompleted:
+		return CodexConversationTurnCompleted
+	case CodexConversationTurnFailed:
+		return CodexConversationTurnFailed
+	case CodexConversationTurnInterrupted:
+		return CodexConversationTurnInterrupted
+	case CodexConversationTurnCancelled:
+		return CodexConversationTurnCancelled
+	default:
+		return ""
+	}
+}
+
+func conversationTurnID(sourceID, providerTurnID string, lineNumber int) string {
+	sourceID = firstNonEmpty(strings.TrimSpace(sourceID), "conversation")
+	providerTurnID = strings.TrimSpace(providerTurnID)
+	if providerTurnID != "" {
+		return fmt.Sprintf("%s:turn:%s", sourceID, providerTurnID)
+	}
+	if lineNumber < 1 {
+		lineNumber = 1
+	}
+	return fmt.Sprintf("%s:turn:line-%d", sourceID, lineNumber)
+}
+
+func conversationWithTurn(conversation CodexConversation, lifecycle *codexConversationTurnLifecycle) CodexConversation {
+	conversation.Turn = lifecycle.snapshot()
+	conversation.ProviderTurns = lifecycle.snapshots()
+	if conversation.Turn == nil {
+		conversation.Active = nil
+		return conversation
+	}
+	active := conversation.Turn.Status == CodexConversationTurnRunning
+	conversation.Active = &active
+	return conversation
 }
 
 type CodexConversationEvent struct {
@@ -82,7 +266,23 @@ type CodexPlanStep struct {
 }
 
 func LoadCodexConversationForAgent(agent classifier.Agent, now time.Time) (CodexConversation, error) {
-	switch agentToolName(agent.Command, agent.Name) {
+	return LoadCodexConversationForProvider(
+		agent,
+		agentToolName(agent.Command, agent.Name),
+		now,
+	)
+}
+
+// LoadCodexConversationForProvider loads a known structured adapter selected
+// from configured executor metadata. This supports wrapper commands whose
+// executable name does not itself reveal the provider without claiming that an
+// unknown provider can be parsed generically.
+func LoadCodexConversationForProvider(
+	agent classifier.Agent,
+	provider string,
+	now time.Time,
+) (CodexConversation, error) {
+	switch strings.ToLower(strings.TrimSpace(provider)) {
 	case "cursor":
 		return loadCursorConversationForAgent(agent, now)
 	case "grok":
@@ -205,30 +405,6 @@ func TerminalSnapshotConversationUnavailableForAgent(agent classifier.Agent, rea
 	}
 }
 
-// conversationHasActiveTurn reports whether structured events show an in-flight
-// chat turn. Process liveness alone is not a turn signal.
-func conversationHasActiveTurn(events []CodexConversationEvent) bool {
-	latestUser := -1
-	for index, event := range events {
-		if strings.EqualFold(strings.TrimSpace(event.Status), "running") {
-			return true
-		}
-		if event.Kind == "user_message" || (event.Kind == "message" && event.Role == "user") {
-			latestUser = index
-		}
-	}
-	if latestUser < 0 {
-		return false
-	}
-	for index := latestUser + 1; index < len(events); index++ {
-		event := events[index]
-		if event.Kind == "assistant_message" || (event.Kind == "message" && event.Role == "assistant") {
-			return false
-		}
-	}
-	return true
-}
-
 func loadCachedCodexConversation(path string) (CodexConversation, error) {
 	info, err := os.Stat(path)
 	if err != nil {
@@ -330,8 +506,9 @@ type codexConversationBuilder struct {
 	sourceID             string
 	sessionID            string
 	cwd                  string
-	lifecycleSeen        bool
-	taskActive           bool
+	turnLifecycle        codexConversationTurnLifecycle
+	slashCommandTurn     bool
+	turnProviderID       string
 	events               []CodexConversationEvent
 	commandByCall        map[string]string
 	commandCallBySession map[string]string
@@ -358,6 +535,60 @@ func newCodexConversationBuilder(sourceID string) *codexConversationBuilder {
 		recentMessageByKey:   map[string]recentCodexMessageFingerprint{},
 		seenStatusKeys:       map[string]struct{}{},
 	}
+}
+
+func (b *codexConversationBuilder) startTurn(providerTurnID, timestamp string, lineNumber int) {
+	providerTurnID = strings.TrimSpace(providerTurnID)
+	previousTurnID := ""
+	if b.turnLifecycle.turn != nil {
+		previousTurnID = b.turnLifecycle.turn.ID
+	}
+	id := ""
+	if providerTurnID != "" {
+		if b.turnLifecycle.running() && b.turnProviderID == "" {
+			// Some Codex rollouts write the user row before the provider turn ID.
+			// Correlate that later fact without changing the already-published ID.
+			b.turnProviderID = providerTurnID
+			id = b.turnLifecycle.turn.ID
+		} else {
+			id = conversationTurnID(firstNonEmpty(b.sessionID, b.sourceID), providerTurnID, lineNumber)
+		}
+	} else if b.turnLifecycle.running() {
+		id = b.turnLifecycle.turn.ID
+	} else {
+		id = conversationTurnID(firstNonEmpty(b.sessionID, b.sourceID), "", lineNumber)
+	}
+	b.turnLifecycle.start(id, timestamp)
+	if b.turnLifecycle.turn != nil && b.turnLifecycle.turn.ID != previousTurnID {
+		b.turnProviderID = providerTurnID
+	}
+}
+
+func (b *codexConversationBuilder) settleTurn(providerTurnID, status, timestamp string, lineNumber int) {
+	providerTurnID = strings.TrimSpace(providerTurnID)
+	id := ""
+	if b.turnLifecycle.running() {
+		if providerTurnID != "" && b.turnProviderID != "" && providerTurnID != b.turnProviderID {
+			return
+		}
+		if providerTurnID != "" && b.turnProviderID == "" {
+			b.turnProviderID = providerTurnID
+		}
+		id = b.turnLifecycle.turn.ID
+	} else if providerTurnID != "" {
+		id = conversationTurnID(firstNonEmpty(b.sessionID, b.sourceID), providerTurnID, lineNumber)
+	} else if b.turnLifecycle.turn == nil {
+		id = conversationTurnID(firstNonEmpty(b.sessionID, b.sourceID), "", lineNumber)
+	}
+	b.turnLifecycle.settle(id, status, timestamp)
+}
+
+func codexAbortedTurnStatus(reason string) string {
+	reason = strings.ToLower(strings.TrimSpace(reason))
+	if strings.Contains(reason, "cancel") {
+		return CodexConversationTurnCancelled
+	}
+	return CodexConversationTurnInterrupted
 }
 
 func (b *codexConversationBuilder) consumeLine(lineNumber int, line []byte) {
@@ -415,6 +646,7 @@ func (b *codexConversationBuilder) consumeEvent(lineNumber int, timestamp string
 		Action            json.RawMessage `json:"action"`
 		AdditionalDetails string          `json:"additional_details"`
 		Reason            string          `json:"reason"`
+		TurnID            string          `json:"turn_id"`
 		CodexErrorInfo    json.RawMessage `json:"codex_error_info"`
 		NumTurns          *int            `json:"num_turns"`
 		RateLimits        json.RawMessage `json:"rate_limits"`
@@ -429,22 +661,18 @@ func (b *codexConversationBuilder) consumeEvent(lineNumber int, timestamp string
 
 	switch payload.Type {
 	case "task_started", "turn_started":
-		b.lifecycleSeen = true
-		b.taskActive = true
+		b.startTurn(payload.TurnID, timestamp, lineNumber)
 		b.addStatus(lineNumber, timestamp, "Task started", "")
 	case "task_complete", "turn_complete":
-		b.lifecycleSeen = true
-		b.taskActive = false
+		b.settleTurn(payload.TurnID, CodexConversationTurnCompleted, timestamp, lineNumber)
 	case "turn_aborted":
-		b.lifecycleSeen = true
-		b.taskActive = false
+		b.settleTurn(payload.TurnID, codexAbortedTurnStatus(payload.Reason), timestamp, lineNumber)
 		if reason := cleanConversationText(payload.Reason); reason != "" {
 			b.addStatusWithState(lineNumber, timestamp, "Turn aborted", reason, "failed")
 		}
 	case "error":
 		if codexErrorAffectsTurnStatus(payload.CodexErrorInfo) {
-			b.lifecycleSeen = true
-			b.taskActive = false
+			b.settleTurn(payload.TurnID, CodexConversationTurnFailed, timestamp, lineNumber)
 			b.finishPendingReasoning()
 		}
 		message := cleanConversationText(payload.Message)
@@ -453,8 +681,7 @@ func (b *codexConversationBuilder) consumeEvent(lineNumber int, timestamp string
 		}
 		b.addStatusWithState(lineNumber, timestamp, "Codex error", message, "failed")
 	case "stream_error":
-		b.lifecycleSeen = true
-		b.taskActive = true
+		b.startTurn(payload.TurnID, timestamp, lineNumber)
 		title := cleanConversationText(payload.Message)
 		if title == "" {
 			title = "Stream interrupted"
@@ -481,9 +708,15 @@ func (b *codexConversationBuilder) consumeEvent(lineNumber int, timestamp string
 			b.addStatusWithState(lineNumber, timestamp, title, body, "failed")
 		}
 	case "user_message":
+		b.startTurn("", timestamp, lineNumber)
+		b.slashCommandTurn = isCodexSlashCommandInvocation(payload.Message)
 		b.addMessage(lineNumber, timestamp, "user", payload.Message)
 	case "history_entry":
 		b.addHistoryEntry(lineNumber, timestamp, payload.Message)
+		if b.slashCommandTurn {
+			b.settleTurn("", CodexConversationTurnCompleted, timestamp, lineNumber)
+			b.slashCommandTurn = false
+		}
 	case "agent_message":
 		title := ""
 		if strings.TrimSpace(payload.Phase) != "" {
@@ -551,7 +784,11 @@ func (b *codexConversationBuilder) consumeResponseItem(lineNumber int, timestamp
 		b.finishPendingReasoning()
 		text := codexConversationContentText(payload.Content)
 		switch payload.Role {
-		case "user", "assistant":
+		case "user":
+			b.startTurn("", timestamp, lineNumber)
+			b.slashCommandTurn = isCodexSlashCommandInvocation(text)
+			b.addMessage(lineNumber, timestamp, payload.Role, text)
+		case "assistant":
 			b.addMessage(lineNumber, timestamp, payload.Role, text)
 		}
 	case "web_search_call":
@@ -649,10 +886,13 @@ func (b *codexConversationBuilder) addMessageWithTitle(lineNumber int, timestamp
 	if text == "" || isTranscriptBoilerplate(text) {
 		return
 	}
-	if role == "user" && isCodexSlashCommandInvocation(text) {
-		return
-	}
 	key := role + ":" + text
+	if role == "user" && b.turnLifecycle.turn != nil {
+		// Codex writes event_msg and response_item encodings for one user row.
+		// Those share the parser turn identity. The same text in a later queued
+		// turn is a distinct accepted submission and must retain its own echo.
+		key = role + ":" + b.turnLifecycle.turn.ID + ":" + text
+	}
 	currentTimestamp := parseNormalizedCodexTimestamp(timestamp)
 	if previous, exists := b.recentMessageByKey[key]; exists && shouldDedupeCodexMessage(previous, lineNumber, currentTimestamp) {
 		b.recentMessageByKey[key] = recentCodexMessageFingerprint{
@@ -1395,55 +1635,17 @@ func (b *codexConversationBuilder) conversation() CodexConversation {
 	if b.events == nil {
 		b.events = []CodexConversationEvent{}
 	}
-	if b.lifecycleSeen && b.taskActive && b.latestAssistantMessageCompletesTurn() {
-		b.taskActive = false
-	}
-	if b.lifecycleSeen && !b.taskActive {
+	if b.turnLifecycle.turn != nil && !b.turnLifecycle.running() {
 		b.finishPendingReasoning()
 	}
 	b.reindexEvents()
-	var active *bool
-	if b.lifecycleSeen {
-		current := b.taskActive
-		active = &current
-	}
-	return CodexConversation{
+	return conversationWithTurn(CodexConversation{
 		Available: true,
 		Source:    "codex_rollout",
 		SessionID: b.sessionID,
 		CWD:       b.cwd,
-		Active:    active,
 		Events:    b.events,
-	}
-}
-
-func (b *codexConversationBuilder) latestAssistantMessageCompletesTurn() bool {
-	latestUserIndex := -1
-	for index, event := range b.events {
-		if event.Kind == "user_message" {
-			latestUserIndex = index
-		}
-	}
-	if latestUserIndex < 0 {
-		return false
-	}
-
-	latestAssistantIndex := -1
-	for index := latestUserIndex + 1; index < len(b.events); index++ {
-		if b.events[index].Kind == "assistant_message" {
-			latestAssistantIndex = index
-		}
-	}
-	if latestAssistantIndex < 0 {
-		return false
-	}
-
-	for index := latestAssistantIndex + 1; index < len(b.events); index++ {
-		if b.events[index].Status == "running" {
-			return false
-		}
-	}
-	return true
+	}, &b.turnLifecycle)
 }
 
 func codexConversationContentText(raw json.RawMessage) string {

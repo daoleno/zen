@@ -18,6 +18,18 @@ describe("supportsChatInterface", () => {
     expect(supportsChatInterface("terminal")).toBe(false);
     expect(supportsChatInterface("shell")).toBe(false);
   });
+
+  test("generic provider is eligible through structured-events capability", () => {
+    expect(
+      supportsChatInterface("terminal", { structured_events: true }),
+    ).toBe(true);
+    expect(
+      supportsChatInterface("future-provider", { structured_events: true }),
+    ).toBe(true);
+    expect(
+      supportsChatInterface("future-provider", { structured_events: false }),
+    ).toBe(false);
+  });
 });
 
 describe("defaultCodexRenderModeForKind", () => {
@@ -29,6 +41,14 @@ describe("defaultCodexRenderModeForKind", () => {
 
   test("plain terminal defaults to terminal", () => {
     expect(defaultCodexRenderModeForKind("terminal")).toBe("terminal");
+  });
+
+  test("generic structured capability defaults to chat", () => {
+    expect(
+      defaultCodexRenderModeForKind("future-provider", {
+        structured_events: true,
+      }),
+    ).toBe("chat");
   });
 });
 
@@ -63,6 +83,17 @@ describe("resolveCodexRenderMode", () => {
         storedModes: {},
       }),
     ).toBe("terminal");
+  });
+
+  test("generic structured provider defaults to chat when unset", () => {
+    expect(
+      resolveCodexRenderMode({
+        kind: "terminal",
+        capabilities: { structured_events: true },
+        sessionKey: "server:future-1",
+        storedModes: {},
+      }),
+    ).toBe("chat");
   });
 
   test("persisted terminal override wins over chat default", () => {

@@ -6,6 +6,7 @@ import type { ConnectionState } from "../../store/agents";
 import type {
   CodexConversation,
   CodexConversationEvent,
+  StructuredTurn,
 } from "../../services/codexConversation";
 import type { ConnectionIssue } from "../../services/connectionIssue";
 import type { AgentStatus } from "../../constants/tokens";
@@ -15,7 +16,7 @@ import type {
 } from "../../services/websocket";
 import {
   type ComposerAttachment,
-  type PendingSlashCommandInput,
+  type PendingUserMessageAcknowledgement,
   type PendingUserMessageInput,
 } from "./CodexChatSession";
 import { isCodexRequestRunning } from "./CodexChatControllerModel";
@@ -24,30 +25,32 @@ import { useCodexControllerPresentation } from "./useCodexControllerPresentation
 import { useCodexDraftSubmission } from "./useCodexDraftSubmission";
 import { useCodexMessageTransport } from "./useCodexMessageTransport";
 import { useCodexSlashCommandRouter } from "./useCodexSlashCommandRouter";
+import { structuredConversationClientIdentity } from "./structuredTurnLifecycle";
 
 interface UseCodexChatControllerInput {
   serverId: string;
   agentId: string;
+  conversationScopeKey?: string;
   agentStatus?: AgentStatus;
   connectionState: ConnectionState;
   connectionIssue?: ConnectionIssue | null;
   conversation: CodexConversation | null;
   events: CodexConversationEvent[];
   turnBusy?: boolean;
+  workingTurn?: StructuredTurn;
   draft: string;
   setDraft(value: string): void;
+  restoreDraft(value: string): void;
   attachments: ComposerAttachment[];
   setAttachments(value: SetStateAction<ComposerAttachment[]>): void;
   slashCommands: CodexSlashCommand[];
   addPendingUserMessage(message: PendingUserMessageInput): string;
+  acknowledgePendingUserMessage(
+    id: string,
+    acknowledgement: PendingUserMessageAcknowledgement,
+  ): void;
   removePendingUserMessage(id: string): void;
-  addPendingSlashCommand(command: PendingSlashCommandInput): string;
-  settlePendingSlashCommand(id: string): void;
-  removePendingSlashCommand(id: string): void;
-  resetForNewChat(): void;
-  markNewChatReady(): void;
   markNewChatMessageStarted(): void;
-  scrollToLatest(animated?: boolean, delay?: number): void;
   pinToBottomIfNeeded(animated?: boolean, delay?: number): void;
   focusComposer(): void;
   clearComposerNativeText(): void;
@@ -60,26 +63,24 @@ interface UseCodexChatControllerInput {
 export function useCodexChatController({
   serverId,
   agentId,
+  conversationScopeKey,
   agentStatus,
   connectionState,
   connectionIssue,
   conversation,
   events,
   turnBusy,
+  workingTurn,
   draft,
   setDraft,
+  restoreDraft,
   attachments,
   setAttachments,
   slashCommands,
   addPendingUserMessage,
+  acknowledgePendingUserMessage,
   removePendingUserMessage,
-  addPendingSlashCommand,
-  settlePendingSlashCommand,
-  removePendingSlashCommand,
-  resetForNewChat,
-  markNewChatReady,
   markNewChatMessageStarted,
-  scrollToLatest,
   pinToBottomIfNeeded,
   focusComposer,
   clearComposerNativeText,
@@ -126,20 +127,21 @@ export function useCodexChatController({
   } = useCodexMessageTransport({
     serverId,
     agentId,
+    conversationScopeKey,
+    conversationIdentity: structuredConversationClientIdentity(conversation),
     connectionState,
     turnBusy: requestTurnBusy,
+    workingTurn,
+    draft,
+    attachments,
     setDraft,
+    restoreDraft,
     setAttachments,
     clearComposerNativeText,
     addPendingUserMessage,
+    acknowledgePendingUserMessage,
     removePendingUserMessage,
-    addPendingSlashCommand,
-    settlePendingSlashCommand,
-    removePendingSlashCommand,
-    resetForNewChat,
-    markNewChatReady,
     markNewChatMessageStarted,
-    scrollToLatest,
     pinToBottomIfNeeded,
   });
 
@@ -156,11 +158,22 @@ export function useCodexChatController({
     attachments,
     sending,
     uploading,
+    requestRunning: requestTurnBusy,
   });
 
-  const runStatusCommand = useCallback((text: string, command?: CodexSlashCommand) => {
+  const runStatusCommand = useCallback((
+    text: string,
+    command?: CodexSlashCommand,
+    previousDraft?: string,
+    previousAttachments?: ComposerAttachment[],
+  ) => {
     openStatusSheet();
-    sendSlashCommandToCodex(text, command);
+    sendSlashCommandToCodex(
+      text,
+      command,
+      previousDraft,
+      previousAttachments,
+    );
   }, [openStatusSheet, sendSlashCommandToCodex]);
 
   const {

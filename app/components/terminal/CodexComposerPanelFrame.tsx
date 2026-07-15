@@ -7,6 +7,7 @@ import type { TerminalThemeChrome } from "../../constants/terminalThemes";
 import { isAmbientChatChrome } from "../../constants/themedSurfaces";
 import { shadow } from "../../constants/tokens";
 import { CHAT_COMPOSER_DOCK_RADIUS } from "./chatChromeMetrics";
+import { COMPOSER_PANEL_METRICS } from "./composerActionSlot";
 
 interface CodexComposerPanelFrameProps {
   focused: boolean;
@@ -56,27 +57,27 @@ const styles = StyleSheet.create({
     minHeight: 48,
     borderRadius: 24,
     borderWidth: StyleSheet.hairlineWidth,
-    paddingLeft: 5,
-    paddingRight: 6,
+    paddingLeft: COMPOSER_PANEL_METRICS.classic.left,
+    paddingRight: COMPOSER_PANEL_METRICS.classic.right,
     paddingVertical: 4,
     flexDirection: "row",
     alignItems: "center",
-    gap: 4,
+    gap: COMPOSER_PANEL_METRICS.classic.gap,
   },
   panelAmbient: {
-    paddingLeft: 4,
-    paddingRight: 4,
+    paddingLeft: COMPOSER_PANEL_METRICS.ambient.left,
+    paddingRight: COMPOSER_PANEL_METRICS.ambient.right,
   },
   panelTelegram: {
     minHeight: 48,
     borderRadius: CHAT_COMPOSER_DOCK_RADIUS,
     borderWidth: StyleSheet.hairlineWidth,
-    paddingLeft: 6,
-    paddingRight: 6,
+    paddingLeft: COMPOSER_PANEL_METRICS.telegram.left,
+    paddingRight: COMPOSER_PANEL_METRICS.telegram.right,
     paddingVertical: 5,
     flexDirection: "row",
     alignItems: "flex-end",
-    gap: 2,
+    gap: COMPOSER_PANEL_METRICS.telegram.gap,
   },
   panelChatGpt: {
     flex: 1,
@@ -84,11 +85,11 @@ const styles = StyleSheet.create({
     minHeight: 48,
     borderRadius: 24,
     borderWidth: StyleSheet.hairlineWidth,
-    paddingLeft: 6,
-    paddingRight: 6,
+    paddingLeft: COMPOSER_PANEL_METRICS.chatgpt.left,
+    paddingRight: COMPOSER_PANEL_METRICS.chatgpt.right,
     paddingVertical: 5,
     flexDirection: "row",
     alignItems: "center",
-    gap: 2,
+    gap: COMPOSER_PANEL_METRICS.chatgpt.gap,
   },
 });

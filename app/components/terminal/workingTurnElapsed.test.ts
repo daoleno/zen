@@ -1,60 +1,12 @@
 // @ts-nocheck
 import { describe, expect, test } from "bun:test";
 import {
+  elapsedNowForRender,
   elapsedSecondsSince,
+  formatComposerElapsedDuration,
   formatElapsedDuration,
-  resolveWorkingTurnStartedAt,
   workingTurnElapsedLabel,
 } from "./workingTurnElapsed";
-
-describe("resolveWorkingTurnStartedAt", () => {
-  test("uses latest echoed user_message as stable turn start", () => {
-    expect(
-      resolveWorkingTurnStartedAt({
-        events: [
-          { kind: "user_message", timestamp: "2026-07-10T10:00:00.000Z" },
-          { kind: "command", timestamp: "2026-07-10T10:00:05.000Z" },
-          { kind: "user_message", timestamp: "2026-07-10T10:01:00.000Z" },
-          { kind: "assistant_message", timestamp: "2026-07-10T10:01:30.000Z" },
-        ],
-      }),
-    ).toBe("2026-07-10T10:01:00.000Z");
-  });
-
-  test("ignores later queued pending when an echoed turn exists", () => {
-    expect(
-      resolveWorkingTurnStartedAt({
-        events: [
-          { kind: "user_message", timestamp: "2026-07-10T10:00:00.000Z" },
-        ],
-        pendingUserMessages: [
-          { createdAt: "2026-07-10T10:05:00.000Z" },
-          { createdAt: "2026-07-10T10:06:00.000Z" },
-        ],
-      }),
-    ).toBe("2026-07-10T10:00:00.000Z");
-  });
-
-  test("falls back to earliest pending when nothing is echoed yet", () => {
-    expect(
-      resolveWorkingTurnStartedAt({
-        events: [{ kind: "command", timestamp: "2026-07-10T10:00:00.000Z" }],
-        pendingUserMessages: [
-          { createdAt: "2026-07-10T10:06:00.000Z" },
-          { createdAt: "2026-07-10T10:05:00.000Z" },
-        ],
-      }),
-    ).toBe("2026-07-10T10:05:00.000Z");
-  });
-
-  test("returns undefined without user_message or pending", () => {
-    expect(
-      resolveWorkingTurnStartedAt({
-        events: [{ kind: "assistant_message", timestamp: "2026-07-10T10:00:00.000Z" }],
-      }),
-    ).toBeUndefined();
-  });
-});
 
 describe("elapsed derivation and recovery", () => {
   const startedAt = "2026-07-10T10:00:00.000Z";
@@ -70,6 +22,36 @@ describe("elapsed derivation and recovery", () => {
         active: true,
       }),
     ).toBe("1m 05s");
+  });
+
+  test("the first Stop paint after Send samples current wall time", () => {
+    expect(elapsedNowForRender(startedMs + 12_000, startedMs + 192_000, true))
+      .toBe(startedMs + 192_000);
+    expect(elapsedNowForRender(startedMs + 12_000, startedMs + 192_000, false))
+      .toBe(startedMs + 12_000);
+  });
+
+  test("Composer elapsed labels stay bounded inside one action slot", () => {
+    const labels = [
+      formatComposerElapsedDuration(0),
+      formatComposerElapsedDuration(59),
+      formatComposerElapsedDuration(60),
+      formatComposerElapsedDuration(59 * 60 + 59),
+      formatComposerElapsedDuration(3600),
+      formatComposerElapsedDuration(99 * 3600 + 59 * 60 + 59),
+      formatComposerElapsedDuration(100 * 3600),
+    ];
+    expect(labels).toEqual([
+      "0s",
+      "59s",
+      "1:00",
+      "59:59",
+      "1h00",
+      "99h59",
+      "99h+",
+    ]);
+    expect(Math.max(...labels.map((label) => label.length))).toBe(5);
+    expect(formatElapsedDuration(3600)).toBe("1h 00m 00s");
   });
 
   test("remount/AppState recovery uses current now against same startedAt", () => {

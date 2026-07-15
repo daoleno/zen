@@ -19,6 +19,7 @@ interface UseCodexControllerPresentationInput {
   attachments: ComposerAttachment[];
   sending: boolean;
   uploading: boolean;
+  requestRunning: boolean;
 }
 
 export function useCodexControllerPresentation({
@@ -31,6 +32,7 @@ export function useCodexControllerPresentation({
   attachments,
   sending,
   uploading,
+  requestRunning,
 }: UseCodexControllerPresentationInput) {
   const statusMeta = useMemo(
     () =>
@@ -41,8 +43,17 @@ export function useCodexControllerPresentation({
         events,
         agentStatus,
         sending,
+        requestRunning,
       }),
-    [agentStatus, connectionIssue, connectionState, conversation, events, sending],
+    [
+      agentStatus,
+      connectionIssue,
+      connectionState,
+      conversation,
+      events,
+      requestRunning,
+      sending,
+    ],
   );
 
   const canSend =

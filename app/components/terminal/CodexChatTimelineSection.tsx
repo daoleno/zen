@@ -12,6 +12,7 @@ import type {
 import type {
   CodexConversation,
   CodexConversationEvent,
+  StructuredTurn,
 } from "../../services/codexConversation";
 import { wsClient } from "../../services/websocket";
 import {
@@ -38,6 +39,7 @@ interface CodexChatTimelineSectionProps {
   events: CodexConversationEvent[];
   pendingUserMessages: PendingUserMessage[];
   pendingSlashCommands: PendingSlashCommand[];
+  workingTurn?: StructuredTurn;
   loading: boolean;
   localChatState: CodexChatLocalState;
   error?: string | null;
@@ -71,6 +73,7 @@ export function CodexChatTimelineSection({
   events,
   pendingUserMessages,
   pendingSlashCommands,
+  workingTurn,
   loading,
   localChatState,
   error,
@@ -100,7 +103,7 @@ export function CodexChatTimelineSection({
     events,
     pendingUserMessages,
     pendingSlashCommands,
-    active: conversation?.active,
+    workingTurn,
   });
   const loadAssetPreview = useCallback(
     async (path: string) => {

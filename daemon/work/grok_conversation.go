@@ -34,6 +34,7 @@ type cachedGrokConversation struct {
 type grokUpdateTracker struct {
 	builder           *grokConversationBuilder
 	identities        []CodexConversationEvent
+	providerTurns     []CodexConversationTurn
 	terminalTools     map[string]CodexConversationEvent
 	terminalToolOrder []string
 	offset            int64
@@ -94,13 +95,6 @@ func loadGrokConversationForAgent(agent classifier.Agent, now time.Time) (CodexC
 	conversation.SessionID = firstNonEmpty(conversation.SessionID, candidate.ID)
 	conversation.CWD = firstNonEmpty(conversation.CWD, candidate.CWD)
 	conversation.Updated = &candidate.Updated
-	if candidate.Active {
-		active := true
-		conversation.Active = &active
-	} else if conversation.Active == nil && !candidate.Updated.IsZero() {
-		active := false
-		conversation.Active = &active
-	}
 	if conversation.Events == nil {
 		conversation.Events = []CodexConversationEvent{}
 	}
@@ -448,9 +442,17 @@ func buildGrokConversation(sessionDir string, tracker *grokUpdateTracker) (Codex
 		builder.mergeLiveEvents(tracker.builder.events)
 		builder.lifecycleSeen = tracker.builder.lifecycleSeen
 		builder.taskActive = tracker.builder.taskActive
+		builder.turnLifecycle.adopt(&tracker.builder.turnLifecycle)
 	}
 
-	return builder.conversation(), nil
+	conversation := builder.conversation()
+	if tracker != nil {
+		conversation.ProviderTurns = mergeGrokProviderTurns(
+			tracker.providerTurns,
+			conversation.ProviderTurns,
+		)
+	}
+	return conversation, nil
 }
 
 func consumeGrokJSONL(path string, consume func(int, []byte)) error {
@@ -536,6 +538,7 @@ func (t *grokUpdateTracker) consumeFrom(path string, limit int64) error {
 			if grokSessionUpdateKind(trimmed) == "user_message_chunk" &&
 				t.builder.lifecycleSeen && !t.builder.taskActive {
 				t.rememberIdentities(t.builder.events)
+				t.rememberProviderTurns(t.builder.turnLifecycle.snapshots())
 				sourceID := t.builder.sourceID
 				sessionID := t.builder.sessionID
 				cwd := t.builder.cwd
@@ -568,6 +571,44 @@ func (t *grokUpdateTracker) consumeFrom(path string, limit int64) error {
 			return readErr
 		}
 	}
+}
+
+func (t *grokUpdateTracker) rememberProviderTurns(turns []CodexConversationTurn) {
+	if t == nil || len(turns) == 0 {
+		return
+	}
+	t.providerTurns = mergeGrokProviderTurns(t.providerTurns, turns)
+	if len(t.providerTurns) > maxCodexConversationTurnHistory {
+		t.providerTurns = append(
+			[]CodexConversationTurn(nil),
+			t.providerTurns[len(t.providerTurns)-maxCodexConversationTurnHistory:]...,
+		)
+	}
+}
+
+func mergeGrokProviderTurns(groups ...[]CodexConversationTurn) []CodexConversationTurn {
+	turns := make([]CodexConversationTurn, 0)
+	seen := make(map[string]struct{})
+	for _, group := range groups {
+		for _, turn := range group {
+			key := strings.Join(
+				[]string{turn.ID, turn.Status, turn.StartedAt, turn.SettledAt},
+				"\x00",
+			)
+			if _, exists := seen[key]; exists {
+				continue
+			}
+			seen[key] = struct{}{}
+			turns = append(turns, turn)
+		}
+	}
+	if len(turns) > maxCodexConversationTurnHistory {
+		turns = append(
+			[]CodexConversationTurn(nil),
+			turns[len(turns)-maxCodexConversationTurnHistory:]...,
+		)
+	}
+	return turns
 }
 
 func (t *grokUpdateTracker) rememberIdentities(events []CodexConversationEvent) {
@@ -697,6 +738,7 @@ type grokConversationBuilder struct {
 	taskActive           bool
 	lifecycleSeen        bool
 	turnSettled          bool
+	turnLifecycle        codexConversationTurnLifecycle
 	nextEventID          int
 }
 
@@ -828,8 +870,9 @@ func (b *grokConversationBuilder) consumeUpdatesLine(lineNumber int, line []byte
 		// This is a lifecycle signal only. The canonical user message comes from
 		// chat_history; exposing this record would leak prompt wrappers/echoes.
 		b.lifecycleSeen = true
-		b.taskActive = true
-		b.turnSettled = false
+		b.startTurn(promptID, streamStart, envelope.Params.Meta.StreamStartMS, timestamp, lineNumber)
+		b.taskActive = b.turnLifecycle.running()
+		b.turnSettled = !b.taskActive
 	case "agent_message_chunk":
 		b.upsertStreamText(promptID, streamStart, "assistant", timestamp, grokRawChunkText(update.Content))
 	case "agent_thought_chunk":
@@ -935,9 +978,11 @@ func (b *grokConversationBuilder) consumeUpdatesLine(lineNumber int, line []byte
 			body = cleanConversationText(firstNonEmpty(update.Message, update.Reason))
 			b.taskActive = false
 			b.turnSettled = true
+			b.settleTurn(CodexConversationTurnFailed, timestamp, lineNumber)
 		} else {
-			b.taskActive = true
-			b.turnSettled = false
+			b.startTurn(promptID, streamStart, envelope.Params.Meta.StreamStartMS, timestamp, lineNumber)
+			b.taskActive = b.turnLifecycle.running()
+			b.turnSettled = !b.taskActive
 			if update.Attempt > 0 && update.MaxRetries > 0 {
 				title = fmt.Sprintf("Retrying provider request (%d/%d)", update.Attempt, update.MaxRetries)
 			}
@@ -952,10 +997,32 @@ func (b *grokConversationBuilder) consumeUpdatesLine(lineNumber int, line []byte
 		b.lifecycleSeen = true
 		b.taskActive = false
 		b.turnSettled = true
+		b.settleTurn(CodexConversationTurnCompleted, timestamp, lineNumber)
 		b.finishAllStreams()
 		b.finishTools("done")
 		b.finishStatuses()
 	}
+}
+
+func (b *grokConversationBuilder) startTurn(promptID, streamStart string, streamStartRaw json.RawMessage, timestamp string, lineNumber int) {
+	providerTurnID := strings.Trim(strings.Join([]string{strings.TrimSpace(promptID), strings.TrimSpace(streamStart)}, ":"), ":")
+	id := ""
+	if providerTurnID != "" {
+		id = conversationTurnID(firstNonEmpty(b.sessionID, b.sourceID), providerTurnID, lineNumber)
+	} else if b.turnLifecycle.running() {
+		id = b.turnLifecycle.turn.ID
+	} else {
+		id = conversationTurnID(firstNonEmpty(b.sessionID, b.sourceID), "", lineNumber)
+	}
+	b.turnLifecycle.start(id, grokTurnStartedAt(streamStartRaw, timestamp))
+}
+
+func (b *grokConversationBuilder) settleTurn(status, timestamp string, lineNumber int) {
+	id := ""
+	if b.turnLifecycle.turn == nil {
+		id = conversationTurnID(firstNonEmpty(b.sessionID, b.sourceID), "", lineNumber)
+	}
+	b.turnLifecycle.settle(id, status, timestamp)
 }
 
 func (b *grokConversationBuilder) upsertStatus(key, timestamp, title, body, status string, partial bool) {
@@ -1005,6 +1072,13 @@ func (b *grokConversationBuilder) markCanonicalEvents() {
 }
 
 func (b *grokConversationBuilder) upsertStreamText(promptID, streamStart, streamKind, timestamp, rawChunk string) {
+	if !b.turnSettled && !b.turnLifecycle.running() {
+		providerTurnID := strings.Trim(strings.Join([]string{strings.TrimSpace(promptID), strings.TrimSpace(streamStart)}, ":"), ":")
+		b.turnLifecycle.start(
+			conversationTurnID(firstNonEmpty(b.sessionID, b.sourceID), providerTurnID, 1),
+			timestamp,
+		)
+	}
 	group := firstNonEmpty(promptID, "turn") + ":" + streamKind
 	streamStart = firstNonEmpty(streamStart, "legacy")
 	key := group + ":" + streamStart
@@ -1415,19 +1489,13 @@ func (b *grokConversationBuilder) conversation() CodexConversation {
 		b.events = trimTrailingGrokTools(b.events)
 	}
 	b.reindexEvents()
-	var active *bool
-	if b.lifecycleSeen {
-		current := b.taskActive
-		active = &current
-	}
-	return CodexConversation{
+	return conversationWithTurn(CodexConversation{
 		Available: true,
 		Source:    "grok_session",
 		SessionID: b.sessionID,
 		CWD:       b.cwd,
-		Active:    active,
 		Events:    b.events,
-	}
+	}, &b.turnLifecycle)
 }
 
 func (b *grokConversationBuilder) adoptStreamEventIDs(streamEvents []CodexConversationEvent) {
@@ -1770,6 +1838,30 @@ func grokUpdateTimestamp(raw json.RawMessage) string {
 		return time.Unix(seconds, 0).UTC().Format(time.RFC3339Nano)
 	}
 	return ""
+}
+
+func grokTurnStartedAt(streamStartRaw json.RawMessage, fallback string) string {
+	raw := bytes.TrimSpace(streamStartRaw)
+	if len(raw) == 0 || bytes.Equal(raw, []byte("null")) {
+		return normalizeCodexTimestamp(fallback)
+	}
+	if raw[0] == '"' {
+		value := strings.TrimSpace(jsonString(raw))
+		if parsed := parseNormalizedCodexTimestamp(value); !parsed.IsZero() {
+			return parsed.UTC().Format(time.RFC3339Nano)
+		}
+		raw = []byte(value)
+	}
+	var value float64
+	if json.Unmarshal(raw, &value) == nil {
+		switch {
+		case value >= 1_000_000_000_000:
+			return time.UnixMilli(int64(value)).UTC().Format(time.RFC3339Nano)
+		case value >= 1_000_000_000:
+			return time.Unix(int64(value), 0).UTC().Format(time.RFC3339Nano)
+		}
+	}
+	return normalizeCodexTimestamp(fallback)
 }
 
 func grokStreamStartIdentity(raw json.RawMessage) string {

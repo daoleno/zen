@@ -1,12 +1,15 @@
 import { useMemo, useRef } from "react";
-import type { CodexConversationEvent } from "../../services/codexConversation";
+import type {
+  CodexConversationEvent,
+  StructuredTurn,
+} from "../../services/codexConversation";
 import type {
   PendingSlashCommand,
   PendingUserMessage,
 } from "./CodexChatSession";
 import {
   buildZenTimeline,
-  mergeActiveTurnIntoTimeline,
+  mergeWorkingTurnIntoTimeline,
   mergePendingSlashCommandsIntoTimeline,
   mergePendingUserMessagesIntoTimeline,
 } from "./CodexTimelineModel";
@@ -20,12 +23,12 @@ export function useCodexTimelineItems({
   events,
   pendingUserMessages,
   pendingSlashCommands,
-  active,
+  workingTurn,
 }: {
   events: CodexConversationEvent[];
   pendingUserMessages: PendingUserMessage[];
   pendingSlashCommands: PendingSlashCommand[];
-  active?: boolean;
+  workingTurn?: StructuredTurn;
 }) {
   const previousRef = useRef<{
     byId: Map<string, StableTimelineEntry>;
@@ -37,12 +40,12 @@ export function useCodexTimelineItems({
 
   return useMemo(() => {
     const nextItems = mergePendingSlashCommandsIntoTimeline(
-      mergeActiveTurnIntoTimeline(
-        mergePendingUserMessagesIntoTimeline(
+      mergePendingUserMessagesIntoTimeline(
+        mergeWorkingTurnIntoTimeline(
           buildZenTimeline(events),
-          pendingUserMessages,
+          workingTurn,
         ),
-        active,
+        pendingUserMessages,
       ),
       pendingSlashCommands,
     );
@@ -72,7 +75,7 @@ export function useCodexTimelineItems({
       items: stableItems,
     };
     return stableItems;
-  }, [active, events, pendingSlashCommands, pendingUserMessages]);
+  }, [events, pendingSlashCommands, pendingUserMessages, workingTurn]);
 }
 
 function timelineItemsEqual(left: ZenTimelineItem, right: ZenTimelineItem) {
@@ -89,6 +92,8 @@ function timelineItemsEqual(left: ZenTimelineItem, right: ZenTimelineItem) {
       left.pending === right.pending &&
       left.pendingLifecycle === right.pendingLifecycle &&
       left.pendingLifecycleLabel === right.pendingLifecycleLabel &&
+      left.pendingLifecycleAccessibilityLabel ===
+        right.pendingLifecycleAccessibilityLabel &&
       left.streaming === right.streaming &&
       attachmentsEqual(left.attachments, right.attachments) &&
       left.heartbeatWake === right.heartbeatWake

@@ -3,6 +3,7 @@ import type { ConnectionState } from "../../store/agents";
 import type {
   CodexConversation,
   CodexConversationEvent,
+  StructuredTurn,
 } from "../../services/codexConversation";
 import type {
   TerminalThemeChrome,
@@ -32,6 +33,7 @@ interface UseCodexChatBodyPropsInput {
   events: CodexConversationEvent[];
   pendingUserMessages: PendingUserMessage[];
   pendingSlashCommands: PendingSlashCommand[];
+  workingTurn?: StructuredTurn;
   loading: boolean;
   localChatState: CodexChatLocalState;
   error?: string | null;
@@ -66,6 +68,7 @@ export function useCodexChatBodyProps({
   events,
   pendingUserMessages,
   pendingSlashCommands,
+  workingTurn,
   loading,
   localChatState,
   error,
@@ -99,20 +102,17 @@ export function useCodexChatBodyProps({
   }, [controller.handleUploadAttachment]);
 
   const handleSendPress = useCallback(() => {
-    if (composerPresentation.showStopButton) {
-      controller.interruptCodex();
-      return;
-    }
     if (controller.startingNewChat) {
       return;
     }
     controller.sendDraft();
   }, [
-    composerPresentation.showStopButton,
-    controller.interruptCodex,
     controller.sendDraft,
     controller.startingNewChat,
   ]);
+  const handleStopPress = useCallback(() => {
+    controller.interruptCodex();
+  }, [controller.interruptCodex]);
 
   return useMemo(
     () => ({
@@ -123,6 +123,7 @@ export function useCodexChatBodyProps({
       events,
       pendingUserMessages,
       pendingSlashCommands,
+      workingTurn,
       loading,
       localChatState,
       error,
@@ -168,6 +169,7 @@ export function useCodexChatBodyProps({
       onInputFocus: composerInput.handleFocus,
       onInputBlur: composerInput.handleBlur,
       onSendPress: handleSendPress,
+      onStopPress: handleStopPress,
       onTerminalActionKey,
       composerAccessory,
       skillsSheet,
@@ -197,8 +199,10 @@ export function useCodexChatBodyProps({
       events,
       pendingUserMessages,
       pendingSlashCommands,
+      workingTurn,
       handleComposerHeightChange,
       handleSendPress,
+      handleStopPress,
       handleUploadPress,
       loading,
       localChatState,

@@ -27,6 +27,11 @@ export interface Agent {
   updated_at: number;
   process_id?: number;
   delegated?: boolean;
+  capabilities?: AgentCapabilities;
+}
+
+export interface AgentCapabilities {
+  structured_events?: boolean;
 }
 
 export type ConnectionState = 'offline' | 'connecting' | 'connected';
@@ -59,6 +64,9 @@ type RawAgent = {
   updated_at?: string | number | Date;
   process_id?: number;
   delegated?: boolean;
+  capabilities?: {
+    structured_events?: unknown;
+  };
 };
 
 type Action =
@@ -328,7 +336,9 @@ function agentsEqual(left: Agent, right: Agent): boolean {
       left.started_at === right.started_at &&
       left.updated_at === right.updated_at &&
       left.process_id === right.process_id &&
-      left.delegated === right.delegated
+      left.delegated === right.delegated &&
+      left.capabilities?.structured_events ===
+        right.capabilities?.structured_events
     )
   );
 }
@@ -412,6 +422,21 @@ function normalizeAgent(
       ? agent.process_id
       : undefined,
     delegated: agent.delegated === true,
+    capabilities: normalizeAgentCapabilities(agent.capabilities),
+  };
+}
+
+function normalizeAgentCapabilities(
+  capabilities: RawAgent['capabilities'],
+): AgentCapabilities | undefined {
+  if (!capabilities || typeof capabilities !== 'object') {
+    return undefined;
+  }
+  return {
+    structured_events:
+      typeof capabilities.structured_events === 'boolean'
+        ? capabilities.structured_events
+        : undefined,
   };
 }
 

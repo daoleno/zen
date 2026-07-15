@@ -8,9 +8,23 @@ interface UseCodexSlashCommandPickerInput {
   setDraft(value: string): void;
   dismissActionMenu(): void;
   focusComposer(): void;
-  startNewCodexChat(commandText?: string): void;
-  sendSlashCommandToCodex(text: string, command?: CodexSlashCommand): void;
-  runStatusCommand(text: string, command?: CodexSlashCommand): void;
+  startNewCodexChat(
+    commandText?: string,
+    previousDraft?: string,
+    previousAttachments?: ComposerAttachment[],
+  ): void;
+  sendSlashCommandToCodex(
+    text: string,
+    command?: CodexSlashCommand,
+    previousDraft?: string,
+    previousAttachments?: ComposerAttachment[],
+  ): void;
+  runStatusCommand(
+    text: string,
+    command?: CodexSlashCommand,
+    previousDraft?: string,
+    previousAttachments?: ComposerAttachment[],
+  ): void;
   openSkillsSheet(): void;
   showUnsupportedSlashCommand(command: CodexSlashCommand): void;
   showUnavailableSlashCommand(command: CodexSlashCommand): void;
@@ -52,12 +66,12 @@ export function useCodexSlashCommandPicker({
         return;
       }
       if (command.name === "status") {
-        runStatusCommand(command.value, command);
+        runStatusCommand(command.value, command, command.value, []);
         return;
       }
       if (command.execution === "native") {
         if (command.name === "new" || command.name === "clear") {
-          startNewCodexChat(command.value);
+          startNewCodexChat(command.value, command.value, []);
           return;
         }
         if (command.name === "skills") {
@@ -70,7 +84,7 @@ export function useCodexSlashCommandPicker({
         return;
       }
       if (command.name === "new" || command.name === "clear") {
-        startNewCodexChat(command.value);
+        startNewCodexChat(command.value, command.value, []);
         return;
       }
       if (slashCommandAcceptsArgs(command)) {
@@ -78,7 +92,7 @@ export function useCodexSlashCommandPicker({
         focusComposer();
         return;
       }
-      sendSlashCommandToCodex(command.value, command);
+      sendSlashCommandToCodex(command.value, command, command.value, []);
     },
     [
       attachments,

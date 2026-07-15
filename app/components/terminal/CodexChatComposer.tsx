@@ -30,8 +30,11 @@ interface CodexChatComposerProps {
   sending: boolean;
   sendIcon: React.ComponentProps<typeof CodexComposerPanel>["sendIcon"];
   sendLabel: string;
-  sendElapsedStartedAt?: string;
-  running: boolean;
+  showStopButton: boolean;
+  stopEnabled: boolean;
+  stopLabel: string;
+  stopLoading: boolean;
+  workingTurnStartedAt?: string;
   bottomPadding: number;
   showActionMenuButton: boolean;
   actionMenuIcon: "add" | "happy-outline";
@@ -56,6 +59,7 @@ interface CodexChatComposerProps {
   onInputFocus(): void;
   onInputBlur(): void;
   onSendPress(): void;
+  onStopPress(): void;
 }
 
 export function CodexChatComposer({
@@ -70,8 +74,11 @@ export function CodexChatComposer({
   sending,
   sendIcon,
   sendLabel,
-  sendElapsedStartedAt,
-  running,
+  showStopButton,
+  stopEnabled,
+  stopLabel,
+  stopLoading,
+  workingTurnStartedAt,
   bottomPadding,
   showActionMenuButton,
   actionMenuIcon,
@@ -96,6 +103,7 @@ export function CodexChatComposer({
   onInputFocus,
   onInputBlur,
   onSendPress,
+  onStopPress,
 }: CodexChatComposerProps) {
   return (
     <CodexChatComposerFrame
@@ -148,8 +156,11 @@ export function CodexChatComposer({
         sending={sending}
         sendIcon={sendIcon}
         sendLabel={sendLabel}
-        sendElapsedStartedAt={sendElapsedStartedAt}
-        running={running}
+        showStopButton={showStopButton}
+        stopEnabled={stopEnabled}
+        stopLabel={stopLabel}
+        stopLoading={stopLoading}
+        workingTurnStartedAt={workingTurnStartedAt}
         actionMenuExpanded={showComposerActions}
         actionMenuButtonEnabled={composerActionButtonEnabled}
         showActionMenuButton={showActionMenuButton}
@@ -162,6 +173,7 @@ export function CodexChatComposer({
         onInputFocus={onInputFocus}
         onInputBlur={onInputBlur}
         onSendPress={onSendPress}
+        onStopPress={onStopPress}
       />
     </CodexChatComposerFrame>
   );

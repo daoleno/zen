@@ -9,7 +9,11 @@ import type {
   StoredCodexRenderMode,
   StoredCodexRenderModes,
 } from "../../services/storage";
-import type { Agent, ConnectionState } from "../../store/agents";
+import type {
+  Agent,
+  AgentCapabilities,
+  ConnectionState,
+} from "../../store/agents";
 import type { WorkItem } from "../../store/work";
 import { findLinkedWork } from "./TerminalScreenModel";
 import type { TerminalRouteSessionHint } from "./useTerminalScreenLocalState";
@@ -78,9 +82,13 @@ export function useTerminalRouteModel({
   const hasTerminalRoute = Boolean(sessionKey && serverId && agentId);
   const isCodexAgent = presentedAgent.kind === "codex";
   const isGrokAgent = presentedAgent.kind === "grok";
-  const isStructuredChatAgent = supportsChatInterface(presentedAgent.kind);
+  const isStructuredChatAgent = supportsChatInterface(
+    presentedAgent.kind,
+    agent?.capabilities,
+  );
   const codexRenderMode = resolveCodexRenderMode({
     kind: presentedAgent.kind,
+    capabilities: agent?.capabilities,
     sessionKey,
     storedModes: codexRenderModes,
   });
@@ -105,8 +113,12 @@ export function useTerminalRouteModel({
 }
 
 /** Agents with a structured chat surface (Codex-compatible conversation UI). */
-export function supportsChatInterface(kind: AgentKind | string): boolean {
+export function supportsChatInterface(
+  kind: AgentKind | string,
+  capabilities?: AgentCapabilities,
+): boolean {
   return (
+    capabilities?.structured_events === true ||
     kind === "claude" ||
     kind === "codex" ||
     kind === "cursor" ||
@@ -120,10 +132,12 @@ export function supportsChatInterface(kind: AgentKind | string): boolean {
  */
 export function resolveCodexRenderMode({
   kind,
+  capabilities,
   sessionKey,
   storedModes,
 }: {
   kind: AgentKind | string;
+  capabilities?: AgentCapabilities;
   sessionKey: string | null;
   storedModes: StoredCodexRenderModes;
 }): StoredCodexRenderMode {
@@ -133,13 +147,14 @@ export function resolveCodexRenderMode({
       return persisted;
     }
   }
-  return defaultCodexRenderModeForKind(kind);
+  return defaultCodexRenderModeForKind(kind, capabilities);
 }
 
 export function defaultCodexRenderModeForKind(
   kind: AgentKind | string,
+  capabilities?: AgentCapabilities,
 ): StoredCodexRenderMode {
-  return supportsChatInterface(kind) ? "chat" : "terminal";
+  return supportsChatInterface(kind, capabilities) ? "chat" : "terminal";
 }
 
 function resolveRouteAgent({

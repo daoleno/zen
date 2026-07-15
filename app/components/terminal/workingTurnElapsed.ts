@@ -1,43 +1,3 @@
-export type TurnElapsedEvent = {
-  kind: string;
-  timestamp?: string;
-};
-
-export type TurnElapsedPendingMessage = {
-  createdAt: string;
-};
-
-export function resolveWorkingTurnStartedAt({
-  events,
-  pendingUserMessages = [],
-}: {
-  events: TurnElapsedEvent[];
-  pendingUserMessages?: TurnElapsedPendingMessage[];
-}): string | undefined {
-  for (let index = events.length - 1; index >= 0; index -= 1) {
-    const event = events[index];
-    if (event?.kind !== "user_message" || !event.timestamp) {
-      continue;
-    }
-    const timestamp = new Date(event.timestamp).getTime();
-    if (Number.isFinite(timestamp)) {
-      return event.timestamp;
-    }
-  }
-
-  let earliestMs = Number.POSITIVE_INFINITY;
-  let earliestIso: string | undefined;
-  for (const message of pendingUserMessages) {
-    const timestamp = new Date(message.createdAt).getTime();
-    if (!Number.isFinite(timestamp) || timestamp >= earliestMs) {
-      continue;
-    }
-    earliestMs = timestamp;
-    earliestIso = message.createdAt;
-  }
-  return earliestIso;
-}
-
 export function elapsedSecondsSince(
   startedAt: string | undefined,
   nowMs: number,
@@ -68,6 +28,31 @@ export function formatElapsedDuration(totalSeconds: number): string {
   return `${remainder}s`;
 }
 
+export function formatComposerElapsedDuration(totalSeconds: number): string {
+  const seconds = Math.max(0, Math.floor(totalSeconds));
+  if (seconds < 60) {
+    return `${seconds}s`;
+  }
+  if (seconds < 3600) {
+    const minutes = Math.floor(seconds / 60);
+    return `${minutes}:${(seconds % 60).toString().padStart(2, "0")}`;
+  }
+  const hours = Math.floor(seconds / 3600);
+  if (hours >= 100) {
+    return "99h+";
+  }
+  const minutes = Math.floor((seconds % 3600) / 60);
+  return `${hours}h${minutes.toString().padStart(2, "0")}`;
+}
+
+export function elapsedNowForRender(
+  sampledNow: number,
+  renderNow: number,
+  active: boolean,
+) {
+  return active ? renderNow : sampledNow;
+}
+
 export function workingTurnElapsedLabel({
   startedAt,
   nowMs,
@@ -85,4 +70,20 @@ export function workingTurnElapsedLabel({
     return "";
   }
   return formatElapsedDuration(elapsed);
+}
+
+export function workingTurnElapsedLabels(input: {
+  startedAt?: string;
+  nowMs: number;
+  active: boolean;
+}) {
+  const elapsed = input.active
+    ? elapsedSecondsSince(input.startedAt, input.nowMs)
+    : null;
+  return elapsed === null
+    ? { visual: "", accessibility: "" }
+    : {
+        visual: formatComposerElapsedDuration(elapsed),
+        accessibility: formatElapsedDuration(elapsed),
+      };
 }

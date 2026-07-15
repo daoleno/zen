@@ -400,7 +400,7 @@ export default function BrainScreen() {
         <ChatCanvas chrome={chrome}>
           {canUseStructuredBrainInterface ? (
             <CodexChatSurface
-              key={`brain-chat:${activeServer?.id}:${hostAgent?.id}:${brainChatScopeKey ?? ""}`}
+              key={`brain-chat:${activeServer?.id}:${brainChatScopeKey ?? ""}`}
               visible
               serverId={activeServer?.id ?? ""}
               agentId={hostAgent?.id ?? ""}

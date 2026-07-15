@@ -5,6 +5,7 @@ import { Ionicons } from "@expo/vector-icons";
 import { TouchableOpacity } from "react-native-gesture-handler";
 import type { TerminalThemeChrome } from "../../constants/terminalThemes";
 import { ComposerLoadingDots } from "./ComposerLoadingDots";
+import { COMPOSER_LEADING_ACTION_WIDTH } from "./composerActionSlot";
 
 type IoniconName = React.ComponentProps<typeof Ionicons>["name"];
 
@@ -57,7 +58,7 @@ export function ComposerIconButton({
 
 const styles = StyleSheet.create({
   button: {
-    width: 44,
+    width: COMPOSER_LEADING_ACTION_WIDTH,
     height: 44,
     borderRadius: 22,
     alignItems: "center",

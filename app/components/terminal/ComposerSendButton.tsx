@@ -11,8 +11,9 @@ import type {
   TerminalThemePalette,
 } from "../../constants/terminalThemes";
 import { Typography } from "../../constants/tokens";
-import { useElapsedDurationLabel } from "./useElapsedDurationLabel";
+import { useElapsedDurationLabels } from "./useElapsedDurationLabel";
 import { ComposerLoadingDots } from "./ComposerLoadingDots";
+import { COMPOSER_ACTION_HORIZONTAL_PADDING } from "./composerActionSlot";
 
 type IoniconName = React.ComponentProps<typeof Ionicons>["name"];
 
@@ -26,6 +27,7 @@ interface ComposerSendButtonProps {
   running: boolean;
   elapsedStartedAt?: string;
   variant?: "default" | "chatgpt";
+  fixedWidth?: number;
   onPress(): void;
 }
 
@@ -38,12 +40,14 @@ export function ComposerSendButton({
   running,
   elapsedStartedAt,
   variant = "default",
+  fixedWidth,
   onPress,
 }: ComposerSendButtonProps) {
-  const elapsedLabel = useElapsedDurationLabel(
+  const elapsedLabels = useElapsedDurationLabels(
     elapsedStartedAt,
-    running && Boolean(elapsedStartedAt),
+    Boolean(elapsedStartedAt),
   );
+  const elapsedLabel = running ? elapsedLabels.visual : "";
   const standalone = variant === "chatgpt";
   const animated = loading || running;
   const foreground = running
@@ -69,7 +73,9 @@ export function ComposerSendButton({
   return (
     <TouchableOpacity
       accessibilityLabel={
-        elapsedLabel ? `${accessibilityLabel}, ${elapsedLabel}` : accessibilityLabel
+        running && elapsedLabels.accessibility
+          ? `${accessibilityLabel}, ${elapsedLabels.accessibility}`
+          : accessibilityLabel
       }
       accessibilityRole="button"
       accessibilityState={{ disabled: !enabled, busy: animated }}
@@ -77,6 +83,7 @@ export function ComposerSendButton({
         styles.button,
         standalone ? styles.buttonStandalone : null,
         elapsedLabel ? styles.buttonWithLabel : null,
+        fixedWidth ? { width: fixedWidth, minWidth: fixedWidth, maxWidth: fixedWidth } : null,
         standalone ? { backgroundColor, borderColor } : null,
       ]}
       onPress={onPress}
@@ -89,7 +96,10 @@ export function ComposerSendButton({
         <View style={styles.runningContent}>
           <Ionicons name="square" size={8} color={foreground} />
           {elapsedLabel ? (
-            <Text style={[styles.elapsedLabel, { color: chrome.textMuted }]}>
+            <Text
+              numberOfLines={1}
+              style={[styles.elapsedLabel, { color: chrome.textMuted }]}
+            >
               {elapsedLabel}
             </Text>
           ) : null}
@@ -118,17 +128,19 @@ const styles = StyleSheet.create({
   },
   buttonWithLabel: {
     minWidth: 66,
-    paddingHorizontal: 11,
+    paddingHorizontal: COMPOSER_ACTION_HORIZONTAL_PADDING,
     width: "auto",
   },
   runningContent: {
     alignItems: "center",
     flexDirection: "row",
+    maxWidth: "100%",
   },
   elapsedLabel: {
     fontFamily: Typography.chatMonoFont,
     fontSize: 11,
     lineHeight: 15,
     marginLeft: 6,
+    flexShrink: 1,
   },
 });

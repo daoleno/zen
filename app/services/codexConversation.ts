@@ -12,6 +12,26 @@ export type CodexConversationEventKind =
 export type CodexConversationRole = "user" | "assistant";
 export type CodexPlanStepStatus = "pending" | "in_progress" | "completed";
 
+export type StructuredTurnStatus =
+  | "queued"
+  | "running"
+  | "completed"
+  | "failed"
+  | "interrupted"
+  | "cancelled";
+
+/**
+ * Provider-neutral executor lifecycle. Transcript events are deliberately not
+ * part of this record: partial text and tool rendering cannot open or settle a
+ * turn.
+ */
+export interface StructuredTurn {
+  id: string;
+  status: StructuredTurnStatus;
+  started_at: string;
+  settled_at?: string;
+}
+
 export interface CodexPlanStep {
   step: string;
   status: CodexPlanStepStatus;
@@ -49,6 +69,10 @@ export interface CodexConversation {
   cwd?: string;
   updated_at?: string;
   active?: boolean;
+  turn_epoch?: string;
+  turn_revision?: number;
+  turn?: StructuredTurn;
+  queued_turns?: StructuredTurn[];
   events: CodexConversationEvent[];
 }
 
@@ -74,10 +98,95 @@ export function normalizeCodexConversation(value: any): CodexConversation {
       typeof conversation.active === "boolean"
         ? conversation.active
         : undefined,
+    turn_epoch:
+      typeof conversation.turn_epoch === "string" && conversation.turn_epoch
+        ? conversation.turn_epoch
+        : undefined,
+    turn_revision:
+      typeof conversation.turn_revision === "number" &&
+        Number.isFinite(conversation.turn_revision) &&
+        conversation.turn_revision >= 0
+        ? conversation.turn_revision
+        : undefined,
+    turn: normalizeStructuredTurn(conversation.turn),
+    queued_turns: Array.isArray(conversation.queued_turns)
+      ? conversation.queued_turns
+          .map((turn: unknown) => normalizeStructuredTurn(turn))
+          .filter((turn: StructuredTurn | undefined): turn is StructuredTurn =>
+            Boolean(turn),
+          )
+      : undefined,
     events: Array.isArray(conversation.events)
       ? conversation.events.map(normalizeCodexConversationEvent).filter(Boolean)
       : [],
   };
+}
+
+export function normalizeStructuredTurn(
+  value: unknown,
+): StructuredTurn | undefined {
+  const turn = value && typeof value === "object"
+    ? value as Record<string, unknown>
+    : null;
+  if (
+    !turn ||
+    typeof turn.id !== "string" ||
+    !turn.id.trim() ||
+    typeof turn.started_at !== "string" ||
+    !turn.started_at ||
+    !Number.isFinite(Date.parse(turn.started_at))
+  ) {
+    return undefined;
+  }
+  const status = normalizeStructuredTurnStatus(turn.status);
+  if (!status) {
+    return undefined;
+  }
+  return {
+    id: turn.id.trim(),
+    status,
+    started_at: turn.started_at,
+    settled_at:
+      typeof turn.settled_at === "string" &&
+      turn.settled_at &&
+      Number.isFinite(Date.parse(turn.settled_at))
+        ? turn.settled_at
+        : undefined,
+  };
+}
+
+export function isStructuredTurnRunning(
+  turn?: StructuredTurn | null,
+): turn is StructuredTurn & { status: "running" } {
+  return turn?.status === "running";
+}
+
+export function isStructuredTurnTerminal(
+  turn?: StructuredTurn | null,
+): boolean {
+  return Boolean(
+    turn &&
+      (turn.status === "completed" ||
+        turn.status === "failed" ||
+        turn.status === "interrupted" ||
+        turn.status === "cancelled"),
+  );
+}
+
+function normalizeStructuredTurnStatus(
+  value: unknown,
+): StructuredTurnStatus | undefined {
+  switch (value) {
+    case "queued":
+    case "running":
+    case "completed":
+    case "failed":
+    case "interrupted":
+    case "cancelled":
+      return value;
+    default:
+      return undefined;
+  }
 }
 
 function normalizeCodexConversationEvent(
