@@ -7,8 +7,15 @@ const ATTACHMENT_TAG_RE = /<zen_attachments>\s*([\s\S]*?)\s*<\/zen_attachments>/
 
 export const PENDING_USER_MESSAGE_SENDING_MAX_AGE_MS = 45_000;
 export const PENDING_USER_MESSAGE_QUEUED_MAX_AGE_MS = 30 * 60_000;
+export const PENDING_MESSAGE_RETRY_ACCESSIBILITY_LABEL =
+  "Retry sending message";
 
-export type PendingUserMessageLifecycle = "sending" | "queued" | "settled";
+export type PendingUserMessageLifecycle =
+  | "unconfirmed"
+  | "sending"
+  | "queued"
+  | "failed"
+  | "settled";
 
 export type PendingUserMessageLifecycleFields = {
   id: string;
@@ -18,7 +25,13 @@ export type PendingUserMessageLifecycleFields = {
   sentText: string;
   createdAt: string;
   lifecycle: PendingUserMessageLifecycle;
+  queuedHint?: boolean;
   acceptedAt?: string;
+  dispatchRequestId?: string;
+  lastAttemptAt?: string;
+  failureCode?: string;
+  failureMessage?: string;
+  failedAt?: string;
   attachments?: Array<{ path?: string }>;
   confirmedEventId?: string;
   authoritativeQueueObserved?: boolean;
@@ -100,12 +113,18 @@ export function reconcilePendingUserMessagesWithStructuredTurns<
     const authoritativeLifecycleRevision = active || queued || terminal || advancedBeyondMessage
       ? lifecycleRevision ?? message.authoritativeLifecycleRevision
       : message.authoritativeLifecycleRevision;
+    const failureCode = active || queued ? undefined : message.failureCode;
+    const failureMessage = active || queued ? undefined : message.failureMessage;
+    const failedAt = active || queued ? undefined : message.failedAt;
     if (
       lifecycle === message.lifecycle &&
       authoritativeQueueObserved === message.authoritativeQueueObserved &&
       authoritativeActiveObserved === message.authoritativeActiveObserved &&
       authoritativeLifecycleEpoch === message.authoritativeLifecycleEpoch &&
-      authoritativeLifecycleRevision === message.authoritativeLifecycleRevision
+      authoritativeLifecycleRevision === message.authoritativeLifecycleRevision &&
+      failureCode === message.failureCode &&
+      failureMessage === message.failureMessage &&
+      failedAt === message.failedAt
     ) {
       return [message];
     }
@@ -117,6 +136,9 @@ export function reconcilePendingUserMessagesWithStructuredTurns<
       authoritativeActiveObserved,
       authoritativeLifecycleEpoch,
       authoritativeLifecycleRevision,
+      failureCode,
+      failureMessage,
+      failedAt,
     }];
   });
 
@@ -172,6 +194,7 @@ export function acknowledgePendingUserMessageWithStructuredTurns<
 >(
   message: T,
   acknowledgement: {
+    requestId?: string;
     turnId: string;
     lifecycle: PendingUserMessageLifecycle;
     acceptedAt: string;
@@ -181,6 +204,13 @@ export function acknowledgePendingUserMessageWithStructuredTurns<
   turn?: StructuredTurn,
   queuedTurns?: StructuredTurn[],
 ): T {
+  if (
+    acknowledgement.requestId &&
+    message.dispatchRequestId &&
+    acknowledgement.requestId !== message.dispatchRequestId
+  ) {
+    return message;
+  }
   const remapped = message.turnId !== acknowledgement.turnId;
   const active = isStructuredTurnRunning(turn) &&
     turn.id === acknowledgement.turnId;
@@ -192,6 +222,9 @@ export function acknowledgePendingUserMessageWithStructuredTurns<
     turnId: acknowledgement.turnId,
     lifecycle: active ? "sending" : queued ? "queued" : acknowledgement.lifecycle,
     acceptedAt: acknowledgement.acceptedAt,
+    failureCode: undefined,
+    failureMessage: undefined,
+    failedAt: undefined,
     authoritativeQueueObserved: remapped
       ? queued || acknowledgement.lifecycle === "queued" || undefined
       : queued || acknowledgement.lifecycle === "queued" ||
@@ -204,6 +237,83 @@ export function acknowledgePendingUserMessageWithStructuredTurns<
       (remapped ? undefined : message.authoritativeLifecycleEpoch),
     authoritativeLifecycleRevision: acknowledgement.turnRevision ??
       (remapped ? undefined : message.authoritativeLifecycleRevision),
+  };
+}
+
+export function markPendingUserMessageDispatched<
+  T extends PendingUserMessageLifecycleFields,
+>(
+  message: T,
+  attempt: {
+    requestId: string;
+    attemptedAt: string;
+    queuedHint?: boolean;
+    createdAfterMaxSeq?: number;
+    createdAfterEventIds?: string[];
+  },
+): T {
+  return {
+    ...message,
+    lifecycle: "unconfirmed",
+    dispatchRequestId: attempt.requestId,
+    lastAttemptAt: attempt.attemptedAt,
+    queuedHint: attempt.queuedHint,
+    createdAt: attempt.attemptedAt,
+    acceptedAt: undefined,
+    failureCode: undefined,
+    failureMessage: undefined,
+    failedAt: undefined,
+    authoritativeQueueObserved: undefined,
+    authoritativeActiveObserved: undefined,
+    authoritativeLifecycleEpoch: undefined,
+    authoritativeLifecycleRevision: undefined,
+    createdAfterMaxSeq: attempt.createdAfterMaxSeq,
+    createdAfterEventIds: attempt.createdAfterEventIds,
+  };
+}
+
+export function redispatchPendingUserMessageInSubmissionOrder<
+  T extends PendingUserMessageLifecycleFields,
+>(
+  messages: T[],
+  id: string,
+  attempt: Parameters<typeof markPendingUserMessageDispatched<T>>[1],
+): T[] {
+  const message = messages.find((candidate) => candidate.id === id);
+  if (!message) {
+    return messages;
+  }
+  return [
+    ...messages.filter((candidate) => candidate.id !== id),
+    markPendingUserMessageDispatched(message, attempt),
+  ];
+}
+
+export function rejectPendingUserMessage<
+  T extends PendingUserMessageLifecycleFields,
+>(
+  message: T,
+  rejection: {
+    requestId: string;
+    code: string;
+    message: string;
+    failedAt: string;
+  },
+): T {
+  if (
+    message.dispatchRequestId !== rejection.requestId ||
+    message.acceptedAt ||
+    message.authoritativeQueueObserved ||
+    message.authoritativeActiveObserved
+  ) {
+    return message;
+  }
+  return {
+    ...message,
+    lifecycle: "failed",
+    failureCode: rejection.code,
+    failureMessage: rejection.message,
+    failedAt: rejection.failedAt,
   };
 }
 
@@ -251,6 +361,12 @@ export function pendingUserMessageLifecycleLabel(
   if (lifecycle === "sending") {
     return "Sending";
   }
+  if (lifecycle === "unconfirmed") {
+    return "Sent · unconfirmed";
+  }
+  if (lifecycle === "failed") {
+    return "Not accepted";
+  }
   if (lifecycle === "settled") {
     return "";
   }
@@ -268,6 +384,12 @@ export function pendingUserMessageLifecycleAccessibilityLabel(
   if (lifecycle === "queued" && queuedCount > 1) {
     return `Queued, ${queuedOrdinal + 1} of ${queuedCount}`;
   }
+  if (lifecycle === "unconfirmed") {
+    return "Sent, confirmation pending";
+  }
+  if (lifecycle === "failed") {
+    return "Message not accepted";
+  }
   return pendingUserMessageLifecycleLabel(
     lifecycle,
     queuedOrdinal,
@@ -278,7 +400,11 @@ export function pendingUserMessageLifecycleAccessibilityLabel(
 export function pendingUserMessageMaxAgeMs(
   lifecycle: PendingUserMessageLifecycle = "sending",
 ): number {
-  if (lifecycle === "settled") {
+  if (
+    lifecycle === "settled" ||
+    lifecycle === "unconfirmed" ||
+    lifecycle === "failed"
+  ) {
     return Number.POSITIVE_INFINITY;
   }
   return lifecycle === "queued"
@@ -341,9 +467,16 @@ export function retainPendingUserMessages<
   for (let index = retained.length - 1; index >= 0; index -= 1) {
     const message = retained[index];
     const authoritative = authoritativeTurnIds.has(message.turnId);
-    if (authoritative || message.acceptedAt || orphanBudget > 0) {
+    const durableUnknownDisposition =
+      message.lifecycle === "unconfirmed" || message.lifecycle === "failed";
+    if (
+      authoritative ||
+      message.acceptedAt ||
+      durableUnknownDisposition ||
+      orphanBudget > 0
+    ) {
       keep.add(message.id);
-      if (!authoritative && !message.acceptedAt) {
+      if (!authoritative && !message.acceptedAt && !durableUnknownDisposition) {
         orphanBudget -= 1;
       }
     }

@@ -2,6 +2,7 @@ import React from "react";
 import {
   type LayoutChangeEvent,
   StyleSheet,
+  Text,
   View,
   type TextInput as TextInputInstance,
 } from "react-native";
@@ -28,6 +29,7 @@ interface CodexChatComposerProps {
   uploading: boolean;
   sendEnabled: boolean;
   sending: boolean;
+  operationalError?: string;
   sendIcon: React.ComponentProps<typeof CodexComposerPanel>["sendIcon"];
   sendLabel: string;
   showStopButton: boolean;
@@ -72,6 +74,7 @@ export function CodexChatComposer({
   uploading,
   sendEnabled,
   sending,
+  operationalError,
   sendIcon,
   sendLabel,
   showStopButton,
@@ -145,6 +148,16 @@ export function CodexChatComposer({
         />
       ) : null}
 
+      {operationalError ? (
+        <Text
+          accessibilityLiveRegion="polite"
+          accessibilityRole="alert"
+          style={[styles.operationalError, { color: chrome.danger }]}
+        >
+          {operationalError}
+        </Text>
+      ) : null}
+
       <CodexComposerPanel
         inputRef={inputRef}
         draft={draft}
@@ -183,5 +196,11 @@ const styles = StyleSheet.create({
   menuSlot: {
     marginBottom: 8,
     zIndex: 6,
+  },
+  operationalError: {
+    marginHorizontal: 8,
+    marginBottom: 4,
+    fontSize: 12,
+    lineHeight: 16,
   },
 });

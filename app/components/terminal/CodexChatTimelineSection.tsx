@@ -64,6 +64,7 @@ interface CodexChatTimelineSectionProps {
   onScrollToLatest(animated?: boolean, delay?: number): void;
   onUnavailableAction?: () => void;
   showUnavailableAction?: boolean;
+  onRetryPendingUserMessage(id: string): void;
 }
 
 export function CodexChatTimelineSection({
@@ -98,12 +99,14 @@ export function CodexChatTimelineSection({
   onScrollToLatest,
   onUnavailableAction,
   showUnavailableAction,
+  onRetryPendingUserMessage,
 }: CodexChatTimelineSectionProps) {
   const timelineItems = useCodexTimelineItems({
     events,
     pendingUserMessages,
     pendingSlashCommands,
     workingTurn,
+    onRetryPendingUserMessage,
   });
   const loadAssetPreview = useCallback(
     async (path: string) => {

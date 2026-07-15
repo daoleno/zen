@@ -242,6 +242,7 @@ function attachWaitStatusToLastCommand(
 export function mergePendingUserMessagesIntoTimeline(
   timelineItems: ZenTimelineItem[],
   pendingUserMessages: PendingUserMessage[],
+  onRetryPendingUserMessage?: (id: string) => void,
 ): ZenTimelineItem[] {
   if (pendingUserMessages.length === 0) {
     return timelineItems;
@@ -249,7 +250,7 @@ export function mergePendingUserMessagesIntoTimeline(
   const merged = [...timelineItems];
   const claimedTimelineIds = new Set<string>();
   const queuedOrdinals = queuedOrdinalByPendingId(pendingUserMessages);
-  const queuedItems: ZenTimelineItem[] = [];
+  const trailingItems: ZenTimelineItem[] = [];
   for (const message of pendingUserMessages) {
     let matchedIndex = -1;
     if (message.confirmedEventId) {
@@ -293,7 +294,7 @@ export function mergePendingUserMessagesIntoTimeline(
       if (canonical) {
         merged.splice(matchedIndex, 1);
       }
-      queuedItems.push({
+      trailingItems.push({
         ...item,
         pending: true,
         pendingLifecycle: "queued" as const,
@@ -312,17 +313,36 @@ export function mergePendingUserMessagesIntoTimeline(
       continue;
     }
 
-    if (canonical) {
-      merged[matchedIndex] = item;
-      continue;
-    }
-    const sendingItem = {
+    const pendingItem = {
       ...item,
       pending: true,
-      pendingLifecycle: "sending" as const,
+      pendingLifecycle: message.lifecycle,
       pendingLifecycleLabel: presentation.label,
       pendingLifecycleAccessibilityLabel: presentation.accessibilityLabel,
+      pendingFailureMessage:
+        message.lifecycle === "failed" ? message.failureMessage : undefined,
+      onRetryPending:
+        message.lifecycle === "failed" && onRetryPendingUserMessage
+          ? () => onRetryPendingUserMessage(message.id)
+          : undefined,
     };
+
+    if (
+      message.queuedHint &&
+      (message.lifecycle === "unconfirmed" || message.lifecycle === "failed")
+    ) {
+      if (canonical) {
+        merged.splice(matchedIndex, 1);
+      }
+      trailingItems.push(pendingItem);
+      continue;
+    }
+
+    if (canonical) {
+      merged[matchedIndex] =
+        message.lifecycle === "sending" ? item : pendingItem;
+      continue;
+    }
     const workingIndex = merged.findIndex(
       (candidate) => candidate.id === `working-turn:${message.turnId}`,
     );
@@ -330,22 +350,22 @@ export function mergePendingUserMessagesIntoTimeline(
       const [workingItem] = merged.splice(workingIndex, 1);
       insertPendingCurrentAtSubmissionBoundary(
         merged,
-        sendingItem,
+        pendingItem,
         message,
       );
       if (workingItem) {
         merged.push(workingItem);
       }
     } else {
-      insertTimelineItemByTimestamp(merged, sendingItem);
+      insertTimelineItemByTimestamp(merged, pendingItem);
     }
   }
-  if (queuedItems.length > 0) {
+  if (trailingItems.length > 0) {
     const workingIndex = merged.findIndex((candidate) =>
       candidate.id.startsWith("working-turn:")
     );
     const insertAt = workingIndex >= 0 ? workingIndex + 1 : merged.length;
-    merged.splice(insertAt, 0, ...queuedItems);
+    merged.splice(insertAt, 0, ...trailingItems);
   }
   return merged;
 }

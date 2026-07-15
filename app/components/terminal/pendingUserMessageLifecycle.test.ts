@@ -3,13 +3,17 @@ import { describe, expect, test } from "bun:test";
 import {
   acknowledgePendingUserMessageWithStructuredTurns,
   canReconcilePendingAcknowledgementAgainstProjection,
+  markPendingUserMessageDispatched,
   pendingUserMessageLifecycleLabel,
+  PENDING_MESSAGE_RETRY_ACCESSIBILITY_LABEL,
   nextPendingUserMessagePruneAt,
   pendingUserMessageMaxAgeMs,
   PENDING_USER_MESSAGE_QUEUED_MAX_AGE_MS,
   PENDING_USER_MESSAGE_SENDING_MAX_AGE_MS,
   presentPendingUserMessageLifecycle,
   queuedOrdinalByPendingId,
+  rejectPendingUserMessage,
+  redispatchPendingUserMessageInSubmissionOrder,
   reconcilePendingUserMessagesAgainstEvents,
   reconcilePendingUserMessagesWithStructuredTurns,
   retainPendingUserMessages,
@@ -48,6 +52,11 @@ function pendingMessage(
 }
 
 describe("pendingUserMessageLifecycleLabel", () => {
+  test("failed Retry has a stable accessible action label", () => {
+    expect(PENDING_MESSAGE_RETRY_ACCESSIBILITY_LABEL).toBe(
+      "Retry sending message",
+    );
+  });
   test("sending label", () => {
     expect(pendingUserMessageLifecycleLabel("sending")).toBe("Sending");
   });
@@ -91,6 +100,37 @@ describe("queued ordinals and presentation", () => {
 });
 
 describe("retention", () => {
+  test("unconfirmed and failed rows never age out as unsent", () => {
+    const createdAt = "2026-07-10T10:00:00.000Z";
+    const muchLater = Date.parse(createdAt) + 24 * 60 * 60_000;
+    expect(pendingUserMessageMaxAgeMs("unconfirmed")).toBe(Infinity);
+    expect(pendingUserMessageMaxAgeMs("failed")).toBe(Infinity);
+    expect(shouldPrunePendingUserMessageByLifecycle(
+      { createdAt, lifecycle: "unconfirmed" },
+      muchLater,
+    )).toBe(false);
+    expect(shouldPrunePendingUserMessageByLifecycle(
+      { createdAt, lifecycle: "failed" },
+      muchLater,
+    )).toBe(false);
+    expect(nextPendingUserMessagePruneAt([
+      { createdAt, lifecycle: "unconfirmed" },
+      { createdAt, lifecycle: "failed" },
+    ], muchLater)).toBeUndefined();
+    const many = Array.from({ length: 18 }, (_, index) => pending({
+      id: `unknown-${index}`,
+      body: `message ${index}`,
+      lifecycle: index % 2 === 0 ? "unconfirmed" : "failed",
+      createdAt,
+    }));
+    expect(retainPendingUserMessages(
+      many,
+      undefined,
+      [],
+      muchLater,
+    )).toHaveLength(18);
+  });
+
   test("sending prunes after short max age", () => {
     const createdAt = "2026-07-10T10:00:00.000Z";
     const createdMs = Date.parse(createdAt);
@@ -185,6 +225,171 @@ describe("retention", () => {
     expect(retained.map((message) => message.id)).toEqual(
       messages.map((message) => message.id),
     );
+  });
+});
+
+describe("dispatch acknowledgement and retry precedence", () => {
+  test("correlated rejection is inline failed, but stale rejection cannot regress retry", () => {
+    const initial = pending({
+      id: "p1",
+      body: "run tests",
+      lifecycle: "unconfirmed",
+      dispatchRequestId: "request-1",
+      lastAttemptAt: "2026-07-10T10:00:00.000Z",
+    });
+    const failed = rejectPendingUserMessage(initial, {
+      requestId: "request-1",
+      code: "structured_lifecycle_syncing",
+      message: "Refresh and retry.",
+      failedAt: "2026-07-10T10:00:01.000Z",
+    });
+    expect(failed).toMatchObject({
+      id: "p1",
+      turnId: initial.turnId,
+      turnStartedAt: initial.turnStartedAt,
+      lifecycle: "failed",
+      failureCode: "structured_lifecycle_syncing",
+      failureMessage: "Refresh and retry.",
+    });
+
+    const retried = markPendingUserMessageDispatched(failed, {
+      requestId: "request-2",
+      attemptedAt: "2026-07-10T10:00:03.000Z",
+      queuedHint: true,
+      createdAfterMaxSeq: 12,
+      createdAfterEventIds: ["event-12"],
+    });
+    expect(retried).toMatchObject({
+      id: "p1",
+      turnId: initial.turnId,
+      turnStartedAt: initial.turnStartedAt,
+      sentText: initial.sentText,
+      lifecycle: "unconfirmed",
+      dispatchRequestId: "request-2",
+      queuedHint: true,
+      createdAt: "2026-07-10T10:00:03.000Z",
+      createdAfterMaxSeq: 12,
+      createdAfterEventIds: ["event-12"],
+    });
+    expect(retried.failureMessage).toBeUndefined();
+    expect(rejectPendingUserMessage(retried, {
+      requestId: "request-1",
+      code: "stale",
+      message: "late rejection",
+      failedAt: "2026-07-10T10:00:04.000Z",
+    })).toBe(retried);
+  });
+
+  test("retry keeps one row and durable turn identity but moves to real submission order", () => {
+    const first = pending({
+      id: "rejected-first",
+      turnId: "turn-first",
+      turnStartedAt: "2026-07-10T10:00:00.000Z",
+      body: "first",
+      lifecycle: "failed",
+      dispatchRequestId: "request-1",
+    });
+    const later = pending({
+      id: "accepted-later",
+      turnId: "turn-later",
+      body: "later",
+      lifecycle: "queued",
+    });
+    const retried = redispatchPendingUserMessageInSubmissionOrder(
+      [first, later],
+      first.id,
+      {
+        requestId: "request-2",
+        attemptedAt: "2026-07-10T10:00:05.000Z",
+        queuedHint: true,
+      },
+    );
+    expect(retried.map((message) => message.id)).toEqual([
+      "accepted-later",
+      "rejected-first",
+    ]);
+    expect(retried[1]).toMatchObject({
+      turnId: "turn-first",
+      turnStartedAt: "2026-07-10T10:00:00.000Z",
+      lifecycle: "unconfirmed",
+      dispatchRequestId: "request-2",
+    });
+  });
+
+  test("stale ACK is ignored and authoritative active projection overrides failure", () => {
+    const retried = pending({
+      id: "p1",
+      turnId: "turn-1",
+      body: "work",
+      lifecycle: "unconfirmed",
+      dispatchRequestId: "request-2",
+    });
+    expect(acknowledgePendingUserMessageWithStructuredTurns(retried, {
+      requestId: "request-1",
+      turnId: "turn-1",
+      lifecycle: "sending",
+      acceptedAt: "2026-07-10T10:00:01.000Z",
+    })).toBe(retried);
+
+    const failed = { ...retried, lifecycle: "failed" as const,
+      failureMessage: "not accepted", failureCode: "sync" };
+    expect(reconcilePendingUserMessagesWithStructuredTurns(
+      [failed],
+      {
+        id: "turn-1",
+        status: "running",
+        started_at: failed.turnStartedAt,
+      },
+      [],
+      "daemon-a",
+      5,
+    )).toMatchObject([{
+      lifecycle: "sending",
+      authoritativeActiveObserved: true,
+      failureMessage: undefined,
+      failureCode: undefined,
+    }]);
+  });
+
+  test("failed row renders one accessible inline Retry and echo dedupes it", () => {
+    let retriedId: string | undefined;
+    const message = pendingMessage({
+      id: "pending-failed",
+      turnId: "turn-failed",
+      body: "same",
+      sentText: "same",
+      lifecycle: "failed",
+      createdAt: "2026-07-10T10:00:01.000Z",
+      dispatchRequestId: "request-failed",
+      failureMessage: "Lifecycle is refreshing.",
+      queuedHint: true,
+    });
+    const merged = mergePendingUserMessagesIntoTimeline(
+      [{
+        type: "message",
+        id: "echo-failed",
+        role: "user",
+        body: "same",
+        timestamp: "2026-07-10T10:00:02.000Z",
+        attachments: [],
+      }],
+      [{ ...message, confirmedEventId: "echo-failed" }],
+      (id) => {
+        retriedId = id;
+      },
+    );
+    expect(merged).toHaveLength(1);
+    expect(merged[0]).toMatchObject({
+      id: "pending-failed",
+      pending: true,
+      pendingLifecycle: "failed",
+      pendingLifecycleLabel: "Not accepted",
+      pendingLifecycleAccessibilityLabel: "Message not accepted",
+      pendingFailureMessage: "Lifecycle is refreshing.",
+    });
+    expect(typeof merged[0]?.onRetryPending).toBe("function");
+    merged[0]?.onRetryPending?.();
+    expect(retriedId).toBe("pending-failed");
   });
 });
 

@@ -43,9 +43,11 @@ export interface ZenMessageTimelineItem {
   body: string;
   attachments: DisplayAttachment[];
   pending?: boolean;
-  pendingLifecycle?: "sending" | "queued";
+  pendingLifecycle?: "unconfirmed" | "sending" | "queued" | "failed";
   pendingLifecycleLabel?: string;
   pendingLifecycleAccessibilityLabel?: string;
+  pendingFailureMessage?: string;
+  onRetryPending?: () => void;
   streaming?: boolean;
   heartbeatWake?: HeartbeatWakeEvent;
 }
@@ -109,7 +111,12 @@ export function ZenUserMessage({
           bubbleRadii,
           {
             backgroundColor: sentBubbleColor,
-            borderColor: item.pending ? chrome.borderStrong : "transparent",
+            borderColor:
+              item.pendingLifecycle === "failed"
+                ? chrome.danger
+                : item.pending
+                  ? chrome.borderStrong
+                  : "transparent",
           },
         ]}
       >
@@ -132,6 +139,9 @@ export function ZenUserMessage({
             lifecycleAccessibilityLabel={
               item.pendingLifecycleAccessibilityLabel
             }
+            failureMessage={item.pendingFailureMessage}
+            failureColor={chrome.danger}
+            onRetry={item.onRetryPending}
           />
         ) : null}
       </View>

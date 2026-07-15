@@ -16,6 +16,49 @@ const structuredProviderStartBackdateTolerance = 2 * time.Second
 
 var errStructuredLifecycleSyncing = errors.New("structured turn lifecycle is still syncing; retry after the current turn refreshes")
 
+// structuredInputDeliveryUnconfirmedError means dispatch was invoked and may
+// already have produced executor side effects. It must never be presented as
+// an authoritative rejection or retried automatically.
+type structuredInputDeliveryUnconfirmedError struct {
+	cause error
+}
+
+// structuredInputRejectedError is created only while dispatch is known not to
+// have been invoked. Unknown errors default to delivery-unconfirmed.
+type structuredInputRejectedError struct {
+	cause     error
+	code      string
+	retryable bool
+}
+
+func (e *structuredInputRejectedError) Error() string {
+	if e == nil || e.cause == nil {
+		return "executor input was rejected before dispatch"
+	}
+	return e.cause.Error()
+}
+
+func (e *structuredInputRejectedError) Unwrap() error {
+	if e == nil {
+		return nil
+	}
+	return e.cause
+}
+
+func (e *structuredInputDeliveryUnconfirmedError) Error() string {
+	if e == nil || e.cause == nil {
+		return "executor input delivery could not be confirmed"
+	}
+	return e.cause.Error()
+}
+
+func (e *structuredInputDeliveryUnconfirmedError) Unwrap() error {
+	if e == nil {
+		return nil
+	}
+	return e.cause
+}
+
 // structuredTurnRegistry bridges an accepted mobile submission to the
 // provider lifecycle that appears on a later transcript poll. Its key is the
 // visible conversation scope (Brain thread when supplied, otherwise Work
@@ -44,6 +87,8 @@ type structuredTurnScope struct {
 	seenProviderOrder   []string
 	acceptedIDs         map[string]struct{}
 	acceptedOrder       []string
+	unconfirmedIDs      map[string]struct{}
+	unconfirmedOrder    []string
 }
 
 type trackedStructuredTurn struct {
@@ -118,7 +163,7 @@ func (r *structuredTurnRegistry) acceptInputWithOptions(
 	}
 	if r == nil || key == "" || turnID == "" {
 		if err := dispatch(); err != nil {
-			return structuredInputAcceptance{}, err
+			return structuredInputAcceptance{}, structuredInputUnconfirmed(err)
 		}
 		return structuredInputAcceptance{TurnID: turnID, Queued: queuedHint, Epoch: epoch}, nil
 	}
@@ -133,15 +178,23 @@ func (r *structuredTurnRegistry) acceptInputWithOptions(
 	if queued, ok := scope.acceptedTurnLocked(turnID); ok {
 		return structuredInputAcceptance{TurnID: turnID, Queued: queued, Duplicate: true, Revision: scope.revision, Epoch: r.epoch}, nil
 	}
+	if scope.inputUnconfirmedLocked(turnID) {
+		return structuredInputAcceptance{}, structuredInputUnconfirmed(nil)
+	}
 	if queuedHint && scope.current == nil {
 		// The hint is an assertion about lifecycle the App previously observed,
 		// never a source of daemon state. A queue without an authoritative current
 		// turn cannot be correlated safely after reconnect/restart, so fail before
 		// dispatch and let the Composer restore the submission for retry.
-		return structuredInputAcceptance{}, errStructuredLifecycleSyncing
+		return structuredInputAcceptance{}, &structuredInputRejectedError{
+			cause:     errStructuredLifecycleSyncing,
+			code:      "structured_lifecycle_syncing",
+			retryable: true,
+		}
 	}
 	if err := dispatch(); err != nil {
-		return structuredInputAcceptance{}, err
+		scope.rememberUnconfirmedIDLocked(turnID)
+		return structuredInputAcceptance{}, structuredInputUnconfirmed(err)
 	}
 	scope.executorRemoved = false
 	if scope.agentID == "" {
@@ -179,6 +232,48 @@ func (r *structuredTurnRegistry) acceptInputWithOptions(
 	scope.rememberAcceptedIDLocked(turnID)
 	scope.revision++
 	return structuredInputAcceptance{TurnID: turnID, Queued: queued, Revision: scope.revision, Epoch: r.epoch}, nil
+}
+
+// replayInput returns any previously known disposition without touching
+// provider state. This is the ACK-loss/ambiguous-delivery fast path: a
+// transient snapshot failure must not turn a dispatched input into a false
+// rejection or a second executor dispatch. acceptInputWithOptions keeps the
+// same checks under its dispatch lock to close the concurrent-request race.
+func (r *structuredTurnRegistry) replayInput(
+	key string,
+	turnID string,
+) (structuredInputAcceptance, error, bool) {
+	if r == nil || key == "" || strings.TrimSpace(turnID) == "" {
+		return structuredInputAcceptance{}, nil, false
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	scope := r.byScope[key]
+	if scope == nil {
+		return structuredInputAcceptance{}, nil, false
+	}
+	queued, ok := scope.acceptedTurnLocked(strings.TrimSpace(turnID))
+	if ok {
+		return structuredInputAcceptance{
+			TurnID:    strings.TrimSpace(turnID),
+			Queued:    queued,
+			Duplicate: true,
+			Revision:  scope.revision,
+			Epoch:     r.epoch,
+		}, nil, true
+	}
+	if scope.inputUnconfirmedLocked(strings.TrimSpace(turnID)) {
+		return structuredInputAcceptance{}, structuredInputUnconfirmed(nil), true
+	}
+	return structuredInputAcceptance{}, nil, false
+}
+
+func structuredInputUnconfirmed(err error) *structuredInputDeliveryUnconfirmedError {
+	var unconfirmed *structuredInputDeliveryUnconfirmedError
+	if errors.As(err, &unconfirmed) {
+		return unconfirmed
+	}
+	return &structuredInputDeliveryUnconfirmedError{cause: err}
 }
 
 func (r *structuredTurnRegistry) interrupt(key, turnID string, settledAt time.Time) bool {
@@ -571,6 +666,7 @@ func (r *structuredTurnRegistry) scopeLocked(key string) *structuredTurnScope {
 			providerSettledAt:   make(map[string]string),
 			seenProviderFacts:   make(map[string]struct{}),
 			acceptedIDs:         make(map[string]struct{}),
+			unconfirmedIDs:      make(map[string]struct{}),
 		}
 		r.byScope[key] = scope
 	}
@@ -854,6 +950,25 @@ func (s *structuredTurnScope) rememberAcceptedIDLocked(turnID string) {
 	oldest := s.acceptedOrder[0]
 	s.acceptedOrder = s.acceptedOrder[1:]
 	delete(s.acceptedIDs, oldest)
+}
+
+func (s *structuredTurnScope) inputUnconfirmedLocked(turnID string) bool {
+	_, ok := s.unconfirmedIDs[turnID]
+	return ok
+}
+
+func (s *structuredTurnScope) rememberUnconfirmedIDLocked(turnID string) {
+	if _, ok := s.unconfirmedIDs[turnID]; ok {
+		return
+	}
+	s.unconfirmedIDs[turnID] = struct{}{}
+	s.unconfirmedOrder = append(s.unconfirmedOrder, turnID)
+	if len(s.unconfirmedOrder) <= maxRememberedStructuredTurnIDs {
+		return
+	}
+	oldest := s.unconfirmedOrder[0]
+	s.unconfirmedOrder = s.unconfirmedOrder[1:]
+	delete(s.unconfirmedIDs, oldest)
 }
 
 func (s *structuredTurnScope) rememberProviderFactLocked(fact string) {

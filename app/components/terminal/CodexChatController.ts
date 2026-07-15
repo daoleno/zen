@@ -16,8 +16,11 @@ import type {
 } from "../../services/websocket";
 import {
   type ComposerAttachment,
+  type PendingUserMessage,
   type PendingUserMessageAcknowledgement,
+  type PendingUserMessageDispatchAttempt,
   type PendingUserMessageInput,
+  type PendingUserMessageRejection,
 } from "./CodexChatSession";
 import { isCodexRequestRunning } from "./CodexChatControllerModel";
 import { useCodexComposerAttachments } from "./useCodexComposerAttachments";
@@ -42,6 +45,7 @@ interface UseCodexChatControllerInput {
   setDraft(value: string): void;
   restoreDraft(value: string): void;
   attachments: ComposerAttachment[];
+  pendingUserMessages: PendingUserMessage[];
   setAttachments(value: SetStateAction<ComposerAttachment[]>): void;
   slashCommands: CodexSlashCommand[];
   addPendingUserMessage(message: PendingUserMessageInput): string;
@@ -49,7 +53,14 @@ interface UseCodexChatControllerInput {
     id: string,
     acknowledgement: PendingUserMessageAcknowledgement,
   ): void;
-  removePendingUserMessage(id: string): void;
+  markPendingUserMessageDispatched(
+    id: string,
+    attempt: PendingUserMessageDispatchAttempt,
+  ): void;
+  rejectPendingUserMessage(
+    id: string,
+    rejection: PendingUserMessageRejection,
+  ): void;
   markNewChatMessageStarted(): void;
   pinToBottomIfNeeded(animated?: boolean, delay?: number): void;
   focusComposer(): void;
@@ -75,11 +86,13 @@ export function useCodexChatController({
   setDraft,
   restoreDraft,
   attachments,
+  pendingUserMessages,
   setAttachments,
   slashCommands,
   addPendingUserMessage,
   acknowledgePendingUserMessage,
-  removePendingUserMessage,
+  markPendingUserMessageDispatched,
+  rejectPendingUserMessage,
   markNewChatMessageStarted,
   pinToBottomIfNeeded,
   focusComposer,
@@ -119,6 +132,8 @@ export function useCodexChatController({
   const {
     interruptCodex,
     interrupting,
+    operationalError,
+    retryPendingUserMessage,
     sending,
     startingNewChat,
     startNewCodexChat,
@@ -134,13 +149,15 @@ export function useCodexChatController({
     workingTurn,
     draft,
     attachments,
+    pendingUserMessages,
     setDraft,
     restoreDraft,
     setAttachments,
     clearComposerNativeText,
     addPendingUserMessage,
     acknowledgePendingUserMessage,
-    removePendingUserMessage,
+    markPendingUserMessageDispatched,
+    rejectPendingUserMessage,
     markNewChatMessageStarted,
     pinToBottomIfNeeded,
   });
@@ -209,10 +226,12 @@ export function useCodexChatController({
     startingNewChat,
     uploading,
     statusMeta,
+    operationalError,
     canAttach,
     canSend,
     sendDraft,
     interruptCodex,
+    retryPendingUserMessage,
     pickSlashCommand,
     runStatusCommand,
     handleUploadAttachment,

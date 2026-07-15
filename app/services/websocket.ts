@@ -16,10 +16,12 @@ import {
 } from "./codexConversation";
 import type { CalendarItem } from "../store/calendar";
 import {
+  dispatchStructuredCommand,
   normalizeStructuredInputAccepted,
   sendWebSocketMessageNow,
   structuredActionMessage,
   structuredInputMessage,
+  type StructuredCommandReceipt,
 } from "./structuredWebSocketTransport";
 
 type MessageHandler = (data: any) => void;
@@ -1348,40 +1350,20 @@ class MultiServerWebSocketClient {
     agentId: string,
     action: string,
     options: StructuredTurnCommandOptions = {},
-  ) {
+  ): StructuredCommandReceipt<void> {
     const socket = this.connections.get(serverId);
     if (!socket?.isConnected) {
       throw new Error("Daemon is not connected.");
     }
     const requestId = `${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
-    return new Promise<void>((resolve, reject) => {
-      const cleanup = () => {
-        clearTimeout(timer);
-        this.off("action_confirmed", handleConfirmed);
-        this.off("error", handleError);
-      };
-      const handleConfirmed = (payload: any) => {
-        if (payload.serverId !== serverId || payload.request_id !== requestId) {
-          return;
-        }
-        cleanup();
-        resolve();
-      };
-      const handleError = (payload: any) => {
-        if (payload.serverId !== serverId || payload.request_id !== requestId) {
-          return;
-        }
-        cleanup();
-        reject(new Error(payload.message || "Could not stop this response."));
-      };
-      const timer = setTimeout(() => {
-        cleanup();
-        reject(new Error("Timed out while stopping this response."));
-      }, 10_000);
-
-      this.on("action_confirmed", handleConfirmed);
-      this.on("error", handleError);
-      try {
+    return dispatchStructuredCommand({
+      requestId,
+      eventSource: this,
+      confirmedType: "action_confirmed",
+      matches: (payload) =>
+        payload.serverId === serverId && payload.request_id === requestId,
+      normalizeConfirmed: () => undefined,
+      sendNow: () => {
         socket.sendNow(structuredActionMessage({
           requestId,
           agentId,
@@ -1390,14 +1372,7 @@ class MultiServerWebSocketClient {
           turnId: options.turnId,
           turnStartedAt: options.turnStartedAt,
         }));
-      } catch (error) {
-        cleanup();
-        reject(
-          error instanceof Error
-            ? error
-            : new Error("Could not stop this response."),
-        );
-      }
+      },
     });
   }
 
@@ -1406,41 +1381,23 @@ class MultiServerWebSocketClient {
     agentId: string,
     text: string,
     options: StructuredTurnCommandOptions = {},
-  ): Promise<StructuredInputAccepted> {
+  ): StructuredCommandReceipt<StructuredInputAccepted> {
     const socket = this.connections.get(serverId);
     if (!socket?.isConnected) {
       throw new Error("Daemon is not connected.");
     }
 
     const requestId = `${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
-    return new Promise<StructuredInputAccepted>((resolve, reject) => {
-      const cleanup = () => {
-        clearTimeout(timer);
-        this.off("input_accepted", handleAccepted);
-        this.off("error", handleError);
-      };
-      const handleAccepted = (payload: any) => {
-        if (payload.serverId !== serverId || payload.request_id !== requestId) {
-          return;
-        }
-        cleanup();
-        resolve(normalizeStructuredInputAccepted(payload, options.turnId));
-      };
-      const handleError = (payload: any) => {
-        if (payload.serverId !== serverId || payload.request_id !== requestId) {
-          return;
-        }
-        cleanup();
-        reject(new Error(payload.message || "Could not send this message."));
-      };
-      const timer = setTimeout(() => {
-        cleanup();
-        reject(new Error("Timed out while sending this message."));
-      }, 10_000);
-
-      this.on("input_accepted", handleAccepted);
-      this.on("error", handleError);
-      try {
+    return dispatchStructuredCommand({
+      requestId,
+      eventSource: this,
+      confirmedType: "input_accepted",
+      rejectedType: "input_rejected",
+      matches: (payload) =>
+        payload.serverId === serverId && payload.request_id === requestId,
+      normalizeConfirmed: (payload) =>
+        normalizeStructuredInputAccepted(payload, options.turnId),
+      sendNow: () => {
         socket.sendNow(structuredInputMessage({
           requestId,
           agentId,
@@ -1451,14 +1408,7 @@ class MultiServerWebSocketClient {
           turnQueued: options.turnQueued,
           turnConversationIdentity: options.turnConversationIdentity,
         }));
-      } catch (error) {
-        cleanup();
-        reject(
-          error instanceof Error
-            ? error
-            : new Error("Could not send this message."),
-        );
-      }
+      },
     });
   }
 

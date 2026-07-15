@@ -111,7 +111,7 @@ describe("provider-neutral structured Working", () => {
     ).toEqual(turn());
   });
 
-  test("unacknowledged and accepted queued inputs never claim Working", () => {
+  test("unconfirmed, failed, and accepted queued inputs never claim Working", () => {
     const pending = {
       id: "pending-b",
       turnId: "turn-b",
@@ -120,6 +120,16 @@ describe("provider-neutral structured Working", () => {
       lifecycle: "queued",
     };
     expect(resolveWorkingStructuredTurn(undefined, [pending])).toBeUndefined();
+    expect(resolveWorkingStructuredTurn(undefined, [{
+      ...pending,
+      lifecycle: "unconfirmed",
+      acceptedAt: undefined,
+    }])).toBeUndefined();
+    expect(resolveWorkingStructuredTurn(undefined, [{
+      ...pending,
+      lifecycle: "failed",
+      acceptedAt: undefined,
+    }])).toBeUndefined();
   });
 
   test("silent reasoning/tool gaps keep one stable Working placeholder", () => {

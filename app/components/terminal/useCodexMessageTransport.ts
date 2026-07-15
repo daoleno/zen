@@ -5,15 +5,18 @@ import {
   useState,
   type SetStateAction,
 } from "react";
-import { Alert, Keyboard } from "react-native";
+import { Keyboard } from "react-native";
 import type { ConnectionState } from "../../store/agents";
 import type { StructuredTurn } from "../../services/codexConversation";
 import type { CodexSlashCommand } from "../../services/websocket";
 import { wsClient } from "../../services/websocket";
 import type {
   ComposerAttachment,
+  PendingUserMessage,
   PendingUserMessageAcknowledgement,
+  PendingUserMessageDispatchAttempt,
   PendingUserMessageInput,
+  PendingUserMessageRejection,
 } from "./CodexChatSession";
 import { createStructuredTurnIdentity } from "./structuredTurnLifecycle";
 import {
@@ -37,6 +40,7 @@ interface UseCodexMessageTransportInput {
   workingTurn?: StructuredTurn;
   draft: string;
   attachments: ComposerAttachment[];
+  pendingUserMessages: PendingUserMessage[];
   setDraft(value: string): void;
   restoreDraft(value: string): void;
   setAttachments(value: SetStateAction<ComposerAttachment[]>): void;
@@ -46,7 +50,14 @@ interface UseCodexMessageTransportInput {
     id: string,
     acknowledgement: PendingUserMessageAcknowledgement,
   ): void;
-  removePendingUserMessage(id: string): void;
+  markPendingUserMessageDispatched(
+    id: string,
+    attempt: PendingUserMessageDispatchAttempt,
+  ): void;
+  rejectPendingUserMessage(
+    id: string,
+    rejection: PendingUserMessageRejection,
+  ): void;
   markNewChatMessageStarted(): void;
   pinToBottomIfNeeded(animated?: boolean, delay?: number): void;
 }
@@ -61,24 +72,30 @@ export function useCodexMessageTransport({
   workingTurn,
   draft,
   attachments,
+  pendingUserMessages,
   setDraft,
   restoreDraft,
   setAttachments,
   clearComposerNativeText,
   addPendingUserMessage,
   acknowledgePendingUserMessage,
-  removePendingUserMessage,
+  markPendingUserMessageDispatched,
+  rejectPendingUserMessage,
   markNewChatMessageStarted,
   pinToBottomIfNeeded,
 }: UseCodexMessageTransportInput) {
   const [sending, setSending] = useState(false);
   const [interrupting, setInterrupting] = useState(false);
+  const [operationalError, setOperationalError] = useState<string>();
   const sendLockedRef = useRef(false);
   const interruptTurnIdRef = useRef<string | undefined>(undefined);
+  const retryRequestByPendingIdRef = useRef(new Map<string, string>());
   const currentDraftRef = useRef(draft);
   const currentAttachmentsRef = useRef(attachments);
+  const pendingUserMessagesRef = useRef(pendingUserMessages);
   currentDraftRef.current = draft;
   currentAttachmentsRef.current = attachments;
+  pendingUserMessagesRef.current = pendingUserMessages;
 
   const unlockSend = useCallback(() => {
     sendLockedRef.current = false;
@@ -89,6 +106,7 @@ export function useCodexMessageTransport({
     () => () => {
       sendLockedRef.current = false;
       interruptTurnIdRef.current = undefined;
+      retryRequestByPendingIdRef.current.clear();
     },
     [],
   );
@@ -105,6 +123,55 @@ export function useCodexMessageTransport({
     setInterrupting(false);
   }, [workingTurn?.id]);
 
+  useEffect(() => {
+    const pendingById = new Map(
+      pendingUserMessages.map((message) => [message.id, message]),
+    );
+    for (const [id, requestId] of retryRequestByPendingIdRef.current) {
+      const message = pendingById.get(id);
+      if (
+        !message ||
+        (message.lifecycle === "failed" &&
+          message.dispatchRequestId === requestId)
+      ) {
+        retryRequestByPendingIdRef.current.delete(id);
+      }
+    }
+  }, [pendingUserMessages]);
+
+  useEffect(() => {
+    setOperationalError(undefined);
+  }, [agentId, conversationScopeKey, serverId]);
+
+  const observeInputOutcome = useCallback((
+    pendingMessageId: string,
+    receipt: ReturnType<typeof wsClient.sendInput>,
+    fallbackTurnId: string,
+  ) => {
+    void receipt.outcome.then((outcome) => {
+      if (outcome.kind === "confirmed") {
+        const accepted = outcome.value;
+        acknowledgePendingUserMessage(pendingMessageId, {
+          requestId: receipt.requestId,
+          turnId: accepted.turnId || fallbackTurnId,
+          lifecycle: accepted.queued ? "queued" : "sending",
+          acceptedAt: new Date().toISOString(),
+          turnEpoch: accepted.turnEpoch,
+          turnRevision: accepted.turnRevision,
+        });
+        return;
+      }
+      if (outcome.kind === "rejected") {
+        rejectPendingUserMessage(pendingMessageId, {
+          requestId: outcome.rejection.requestId,
+          code: outcome.rejection.code,
+          message: outcome.rejection.message,
+          failedAt: new Date().toISOString(),
+        });
+      }
+    });
+  }, [acknowledgePendingUserMessage, rejectPendingUserMessage]);
+
   const submitTextToCodex = useCallback(
     (
       text: string,
@@ -115,8 +182,43 @@ export function useCodexMessageTransport({
         return;
       }
       sendLockedRef.current = true;
-      markNewChatMessageStarted();
+      setSending(true);
+      setOperationalError(undefined);
       const turnIdentity = createStructuredTurnIdentity();
+      let receipt: ReturnType<typeof wsClient.sendInput>;
+      try {
+        receipt = wsClient.sendInput(
+          serverId,
+          agentId,
+          `${text}\n`,
+          {
+            conversationScopeKey,
+            turnId: turnIdentity.id,
+            turnStartedAt: turnIdentity.startedAt,
+            turnQueued: turnBusy,
+            turnConversationIdentity: conversationIdentity,
+          },
+        );
+      } catch (error: any) {
+        const restoredDraft = restoreFailedDraft(
+          previousDraft,
+          currentDraftRef.current,
+        );
+        const restoredAttachments = restoreFailedAttachments(
+          previousAttachments,
+          currentAttachmentsRef.current,
+        );
+        currentDraftRef.current = restoredDraft;
+        currentAttachmentsRef.current = restoredAttachments;
+        restoreDraft(restoredDraft);
+        setAttachments(restoredAttachments);
+        setOperationalError(
+          error?.message || "Message was not dispatched. Send to retry.",
+        );
+        unlockSend();
+        return;
+      }
+      markNewChatMessageStarted();
       const pendingMessageId = addPendingUserMessage({
         turnId: turnIdentity.id,
         turnStartedAt: turnIdentity.startedAt,
@@ -128,59 +230,19 @@ export function useCodexMessageTransport({
           localUri: attachment.localUri,
           mimeType: attachment.mimeType,
         })),
-        lifecycle: "sending",
+        lifecycle: "unconfirmed",
+        queuedHint: turnBusy,
+        dispatchRequestId: receipt.requestId,
+        lastAttemptAt: turnIdentity.startedAt,
       });
-      setSending(true);
       setDraft("");
       clearComposerNativeText();
       setAttachments([]);
       currentDraftRef.current = "";
       currentAttachmentsRef.current = [];
       pinToBottomIfNeeded(false, 0);
-      void (async () => {
-        try {
-          const accepted = await wsClient.sendInput(
-            serverId,
-            agentId,
-            `${text}\n`,
-            {
-              conversationScopeKey,
-              turnId: turnIdentity.id,
-              turnStartedAt: turnIdentity.startedAt,
-              turnQueued: turnBusy,
-              turnConversationIdentity: conversationIdentity,
-            },
-          );
-          acknowledgePendingUserMessage(pendingMessageId, {
-            turnId: accepted.turnId || turnIdentity.id,
-            lifecycle: accepted.queued ? "queued" : "sending",
-            acceptedAt: new Date().toISOString(),
-            turnEpoch: accepted.turnEpoch,
-            turnRevision: accepted.turnRevision,
-          });
-          unlockSend();
-        } catch (err: any) {
-          sendLockedRef.current = false;
-          removePendingUserMessage(pendingMessageId);
-          const restoredDraft = restoreFailedDraft(
-            previousDraft,
-            currentDraftRef.current,
-          );
-          const restoredAttachments = restoreFailedAttachments(
-            previousAttachments,
-            currentAttachmentsRef.current,
-          );
-          currentDraftRef.current = restoredDraft;
-          currentAttachmentsRef.current = restoredAttachments;
-          restoreDraft(restoredDraft);
-          setAttachments(restoredAttachments);
-          setSending(false);
-          Alert.alert(
-            "Message not sent",
-            err?.message || "Could not send this message.",
-          );
-        }
-      })();
+      unlockSend();
+      observeInputOutcome(pendingMessageId, receipt, turnIdentity.id);
     },
     [
       agentId,
@@ -190,7 +252,7 @@ export function useCodexMessageTransport({
       conversationScopeKey,
       conversationIdentity,
       markNewChatMessageStarted,
-      removePendingUserMessage,
+      observeInputOutcome,
       restoreDraft,
       pinToBottomIfNeeded,
       serverId,
@@ -200,6 +262,70 @@ export function useCodexMessageTransport({
       unlockSend,
     ],
   );
+
+  const retryPendingUserMessage = useCallback((pendingMessageId: string) => {
+    if (
+      sendLockedRef.current ||
+      retryRequestByPendingIdRef.current.has(pendingMessageId)
+    ) {
+      return;
+    }
+    const message = pendingUserMessagesRef.current.find(
+      (candidate) =>
+        candidate.id === pendingMessageId && candidate.lifecycle === "failed",
+    );
+    if (!message) {
+      return;
+    }
+    sendLockedRef.current = true;
+    retryRequestByPendingIdRef.current.set(pendingMessageId, "dispatching");
+    setSending(true);
+    setOperationalError(undefined);
+    let receipt: ReturnType<typeof wsClient.sendInput>;
+    try {
+      receipt = wsClient.sendInput(
+        serverId,
+        agentId,
+        `${message.sentText}\n`,
+        {
+          conversationScopeKey,
+          turnId: message.turnId,
+          turnStartedAt: message.turnStartedAt,
+          turnQueued: turnBusy,
+          turnConversationIdentity: conversationIdentity,
+        },
+      );
+    } catch (error: any) {
+      retryRequestByPendingIdRef.current.delete(pendingMessageId);
+      setOperationalError(
+        error?.message || "Retry was not dispatched. Try again.",
+      );
+      unlockSend();
+      return;
+    }
+    retryRequestByPendingIdRef.current.set(
+      pendingMessageId,
+      receipt.requestId,
+    );
+    markPendingUserMessageDispatched(pendingMessageId, {
+      requestId: receipt.requestId,
+      attemptedAt: new Date().toISOString(),
+      queuedHint: turnBusy,
+    });
+    pinToBottomIfNeeded(false, 0);
+    unlockSend();
+    observeInputOutcome(pendingMessageId, receipt, message.turnId);
+  }, [
+    agentId,
+    conversationIdentity,
+    conversationScopeKey,
+    markPendingUserMessageDispatched,
+    observeInputOutcome,
+    pinToBottomIfNeeded,
+    serverId,
+    turnBusy,
+    unlockSend,
+  ]);
 
   const startNewCodexChat = useCallback((
     commandText: string = "/new",
@@ -252,27 +378,12 @@ export function useCodexMessageTransport({
     interruptTurnIdRef.current = latch.latchedTurnId;
     const claimedTurnId = latch.latchedTurnId;
     setInterrupting(true);
+    setOperationalError(undefined);
     try {
-      const request = wsClient.sendAction(serverId, agentId, "pause", {
+      wsClient.sendAction(serverId, agentId, "pause", {
         conversationScopeKey,
         turnId: workingTurn?.id,
         turnStartedAt: workingTurn?.started_at,
-      });
-      void request.catch((error: any) => {
-        const previousLatch = interruptTurnIdRef.current;
-        const nextLatch = releaseComposerStopLatch(
-          previousLatch,
-          claimedTurnId,
-        );
-        if (nextLatch === previousLatch) {
-          return;
-        }
-        interruptTurnIdRef.current = nextLatch;
-        setInterrupting(false);
-        Alert.alert(
-          "Response not stopped",
-          error?.message || "Could not stop this response.",
-        );
       });
     } catch (error: any) {
       const previousLatch = interruptTurnIdRef.current;
@@ -283,9 +394,8 @@ export function useCodexMessageTransport({
       interruptTurnIdRef.current = nextLatch;
       if (nextLatch !== previousLatch) {
         setInterrupting(false);
-        Alert.alert(
-          "Response not stopped",
-          error?.message || "Could not stop this response.",
+        setOperationalError(
+          error?.message || "Stop was not dispatched. Try again.",
         );
       }
     }
@@ -302,9 +412,11 @@ export function useCodexMessageTransport({
     sending,
     interrupting,
     startingNewChat: false,
+    operationalError,
     submitTextToCodex,
     startNewCodexChat,
     sendSlashCommandToCodex,
     interruptCodex,
+    retryPendingUserMessage,
   };
 }

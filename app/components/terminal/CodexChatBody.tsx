@@ -72,6 +72,7 @@ export interface CodexChatBodyProps {
   canAttach: boolean;
   uploading: boolean;
   sending: boolean;
+  operationalError?: string;
   attachments: ComposerAttachment[];
   composerPresentation: CodexComposerPresentation;
   terminalActionPrompt?: TerminalActionPrompt | null;
@@ -87,6 +88,7 @@ export interface CodexChatBodyProps {
   onInputBlur(): void;
   onSendPress(): void;
   onStopPress(): void;
+  onRetryPendingUserMessage(id: string): void;
   onTerminalActionKey(key: string): Promise<void> | void;
   composerAccessory?: React.ReactNode;
   skillsSheet?: React.ReactNode;
@@ -131,6 +133,7 @@ export function CodexChatBody({
   canAttach,
   uploading,
   sending,
+  operationalError,
   attachments,
   composerPresentation,
   terminalActionPrompt,
@@ -146,6 +149,7 @@ export function CodexChatBody({
   onInputBlur,
   onSendPress,
   onStopPress,
+  onRetryPendingUserMessage,
   onTerminalActionKey,
   composerAccessory,
   skillsSheet,
@@ -167,6 +171,7 @@ export function CodexChatBody({
         events={events}
         pendingUserMessages={pendingUserMessages}
         pendingSlashCommands={pendingSlashCommands}
+        onRetryPendingUserMessage={onRetryPendingUserMessage}
         workingTurn={workingTurn}
         loading={loading}
         localChatState={localChatState}
@@ -215,6 +220,7 @@ export function CodexChatBody({
             canAttach={canAttach}
             uploading={uploading}
             sending={sending}
+            operationalError={operationalError}
             attachments={attachments}
             presentation={composerPresentation}
             chrome={chrome}

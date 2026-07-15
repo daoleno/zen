@@ -24,11 +24,13 @@ export function useCodexTimelineItems({
   pendingUserMessages,
   pendingSlashCommands,
   workingTurn,
+  onRetryPendingUserMessage,
 }: {
   events: CodexConversationEvent[];
   pendingUserMessages: PendingUserMessage[];
   pendingSlashCommands: PendingSlashCommand[];
   workingTurn?: StructuredTurn;
+  onRetryPendingUserMessage(id: string): void;
 }) {
   const previousRef = useRef<{
     byId: Map<string, StableTimelineEntry>;
@@ -46,6 +48,7 @@ export function useCodexTimelineItems({
           workingTurn,
         ),
         pendingUserMessages,
+        onRetryPendingUserMessage,
       ),
       pendingSlashCommands,
     );
@@ -75,7 +78,13 @@ export function useCodexTimelineItems({
       items: stableItems,
     };
     return stableItems;
-  }, [events, pendingSlashCommands, pendingUserMessages, workingTurn]);
+  }, [
+    events,
+    onRetryPendingUserMessage,
+    pendingSlashCommands,
+    pendingUserMessages,
+    workingTurn,
+  ]);
 }
 
 function timelineItemsEqual(left: ZenTimelineItem, right: ZenTimelineItem) {
@@ -94,6 +103,8 @@ function timelineItemsEqual(left: ZenTimelineItem, right: ZenTimelineItem) {
       left.pendingLifecycleLabel === right.pendingLifecycleLabel &&
       left.pendingLifecycleAccessibilityLabel ===
         right.pendingLifecycleAccessibilityLabel &&
+      left.pendingFailureMessage === right.pendingFailureMessage &&
+      left.onRetryPending === right.onRetryPending &&
       left.streaming === right.streaming &&
       attachmentsEqual(left.attachments, right.attachments) &&
       left.heartbeatWake === right.heartbeatWake

@@ -433,15 +433,7 @@ func (s *Server) handleClientMessage(conn *websocket.Conn, msg []byte) {
 		)
 		if err != nil {
 			log.Printf("send_input error: %v", err)
-			code := "send_input_failed"
-			if errors.Is(err, errStructuredLifecycleSyncing) {
-				code = "structured_lifecycle_syncing"
-			}
-			if raw.RequestID != "" {
-				s.sendErrorWithRequestID(conn, raw.RequestID, code, err.Error())
-			} else {
-				s.sendError(conn, code, err.Error())
-			}
+			s.sendJSON(conn, structuredInputFailureResponse(raw, err))
 		} else if raw.RequestID != "" {
 			s.sendJSON(conn, map[string]any{
 				"type":          "input_accepted",
@@ -823,6 +815,29 @@ func (s *Server) handleClientMessage(conn *websocket.Conn, msg []byte) {
 	}
 }
 
+func structuredInputFailureResponse(raw clientMessage, err error) map[string]any {
+	var rejected *structuredInputRejectedError
+	if errors.As(err, &rejected) {
+		return map[string]any{
+			"type":       "input_rejected",
+			"request_id": raw.RequestID,
+			"agent_id":   raw.AgentID,
+			"turn_id":    raw.TurnID,
+			"code":       rejected.code,
+			"message":    rejected.Error(),
+			"retryable":  rejected.retryable,
+		}
+	}
+	return map[string]any{
+		"type":       "input_unconfirmed",
+		"request_id": raw.RequestID,
+		"agent_id":   raw.AgentID,
+		"turn_id":    raw.TurnID,
+		"code":       "send_input_unconfirmed",
+		"message":    "The daemon could not confirm whether the executor accepted this input.",
+	}
+}
+
 func (s *Server) sendAgentSessionList(conn *websocket.Conn) {
 	agentSessions := s.currentVisibleAgentSessions()
 	s.sendJSON(conn, map[string]any{"type": "agent_session_list", "agent_sessions": s.agentSessionsWire(agentSessions)})
@@ -957,10 +972,17 @@ func (s *Server) acceptStructuredInput(
 	key := structuredTurnRegistryKey(raw.ConversationScopeKey, raw.AgentID)
 	conversationIdentity := ""
 	if strings.TrimSpace(raw.TurnID) != "" {
+		if accepted, err, ok := s.turnRegistry().replayInput(key, raw.TurnID); ok {
+			return accepted, err
+		}
 		var err error
 		conversationIdentity, err = s.refreshStructuredTurnBaseline(key, raw.AgentID)
 		if err != nil {
-			return structuredInputAcceptance{}, err
+			return structuredInputAcceptance{}, &structuredInputRejectedError{
+				cause:     err,
+				code:      "structured_lifecycle_syncing",
+				retryable: true,
+			}
 		}
 	}
 	threadControl := isStructuredThreadControlInput(raw.Text)

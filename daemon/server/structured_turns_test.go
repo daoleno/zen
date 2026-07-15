@@ -3,8 +3,11 @@ package server
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -58,6 +61,83 @@ func TestStructuredTurnRegistryAcceptsBeforeProviderAndDeduplicatesRetry(t *test
 	turn, _ = registry.snapshot(key)
 	if turn.StartedAt != startedAt {
 		t.Fatalf("retry reset start = %q, want %q", turn.StartedAt, startedAt)
+	}
+}
+
+func TestStructuredTurnRegistryConcurrentAcceptedSameIDDispatchesOnce(t *testing.T) {
+	registry := newStructuredTurnRegistry()
+	key := structuredTurnRegistryKey("", "work-agent")
+	var dispatches int32
+	const attempts = 12
+	results := make([]structuredInputAcceptance, attempts)
+	errorsByAttempt := make([]error, attempts)
+	var wait sync.WaitGroup
+	for index := 0; index < attempts; index++ {
+		wait.Add(1)
+		go func(index int) {
+			defer wait.Done()
+			results[index], errorsByAttempt[index] = registry.acceptInput(
+				key,
+				"turn-concurrent",
+				"2026-07-15T12:00:00Z",
+				false,
+				func() error {
+					atomic.AddInt32(&dispatches, 1)
+					return nil
+				},
+			)
+		}(index)
+	}
+	wait.Wait()
+	if dispatches != 1 {
+		t.Fatalf("concurrent accepted dispatches = %d, want 1", dispatches)
+	}
+	firstAcceptances := 0
+	for index, err := range errorsByAttempt {
+		if err != nil {
+			t.Fatalf("attempt %d error = %v", index, err)
+		}
+		if !results[index].Duplicate {
+			firstAcceptances++
+		}
+	}
+	if firstAcceptances != 1 {
+		t.Fatalf("first acceptances = %d, want 1", firstAcceptances)
+	}
+}
+
+func TestStructuredTurnRegistryConcurrentUnconfirmedSameIDDispatchesOnce(t *testing.T) {
+	registry := newStructuredTurnRegistry()
+	key := structuredTurnRegistryKey("", "work-agent")
+	var dispatches int32
+	const attempts = 12
+	errorsByAttempt := make([]error, attempts)
+	var wait sync.WaitGroup
+	for index := 0; index < attempts; index++ {
+		wait.Add(1)
+		go func(index int) {
+			defer wait.Done()
+			_, errorsByAttempt[index] = registry.acceptInput(
+				key,
+				"turn-uncertain",
+				"2026-07-15T12:00:00Z",
+				false,
+				func() error {
+					atomic.AddInt32(&dispatches, 1)
+					return errors.New("executor acknowledgement lost")
+				},
+			)
+		}(index)
+	}
+	wait.Wait()
+	if dispatches != 1 {
+		t.Fatalf("concurrent unconfirmed dispatches = %d, want 1", dispatches)
+	}
+	for index, err := range errorsByAttempt {
+		var unconfirmed *structuredInputDeliveryUnconfirmedError
+		if !errors.As(err, &unconfirmed) {
+			t.Fatalf("attempt %d error = %T %v, want unconfirmed", index, err, err)
+		}
 	}
 }
 
@@ -1330,6 +1410,169 @@ func TestServerStructuredQueuedSendRefreshRejectsMissingPredecessorBeforeDispatc
 	turn, queued := registry.snapshot(structuredTurnRegistryKey("", "work-agent"))
 	if turn != nil || len(queued) != 0 {
 		t.Fatalf("ambiguous queued send mutated lifecycle: turn=%#v queued=%#v", turn, queued)
+	}
+}
+
+func TestServerAcceptedDuplicateSkipsFallibleBaselineRefresh(t *testing.T) {
+	registry := newStructuredTurnRegistry()
+	key := structuredTurnRegistryKey("", "work-agent")
+	accepted, err := registry.acceptInput(
+		key,
+		"turn-accepted",
+		"2026-07-15T12:30:00Z",
+		false,
+		func() error { return nil },
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	loads := 0
+	dispatches := 0
+	srv := &Server{
+		structuredTurns: registry,
+		structuredSnapshotLoader: func(string) (work.CodexConversation, error) {
+			loads++
+			return work.CodexConversation{}, errors.New("snapshot temporarily unavailable")
+		},
+	}
+	replayed, err := srv.acceptStructuredInput(clientMessage{
+		AgentID: "work-agent",
+		TurnID:  "turn-accepted",
+		Text:    "same input\n",
+	}, func() error {
+		dispatches++
+		return nil
+	})
+	if err != nil || !replayed.Duplicate || replayed.TurnID != accepted.TurnID {
+		t.Fatalf("duplicate replay = %#v err %v", replayed, err)
+	}
+	if loads != 0 || dispatches != 0 {
+		t.Fatalf("duplicate replay loaded %d snapshots and dispatched %d times", loads, dispatches)
+	}
+}
+
+func TestServerPredispatchRejectionRetriesSameTurnIDExactlyOnce(t *testing.T) {
+	registry := newStructuredTurnRegistry()
+	loads := 0
+	dispatches := 0
+	srv := &Server{
+		structuredTurns: registry,
+		structuredSnapshotLoader: func(string) (work.CodexConversation, error) {
+			loads++
+			if loads == 1 {
+				return work.CodexConversation{}, errors.New("snapshot temporarily unavailable")
+			}
+			return work.CodexConversation{Available: true}, nil
+		},
+	}
+	raw := clientMessage{
+		AgentID:       "work-agent",
+		TurnID:        "turn-retry",
+		TurnStartedAt: json.RawMessage(`"2026-07-15T12:30:00Z"`),
+		Text:          "retry me\n",
+	}
+	if _, err := srv.acceptStructuredInput(raw, func() error {
+		dispatches++
+		return nil
+	}); err == nil {
+		t.Fatal("first pre-dispatch refresh unexpectedly succeeded")
+	}
+	accepted, err := srv.acceptStructuredInput(raw, func() error {
+		dispatches++
+		return nil
+	})
+	if err != nil || accepted.Duplicate {
+		t.Fatalf("retry acceptance = %#v err %v", accepted, err)
+	}
+	replayed, err := srv.acceptStructuredInput(raw, func() error {
+		dispatches++
+		return nil
+	})
+	if err != nil || !replayed.Duplicate {
+		t.Fatalf("accepted replay = %#v err %v", replayed, err)
+	}
+	if loads != 2 || dispatches != 1 {
+		t.Fatalf("loads = %d dispatches = %d, want two refresh attempts and one delivery", loads, dispatches)
+	}
+}
+
+func TestServerPostDispatchErrorIsDeliveryUnconfirmed(t *testing.T) {
+	registry := newStructuredTurnRegistry()
+	loads := 0
+	srv := &Server{
+		structuredTurns: registry,
+		structuredSnapshotLoader: func(string) (work.CodexConversation, error) {
+			loads++
+			return work.CodexConversation{Available: true}, nil
+		},
+	}
+	dispatches := 0
+	_, err := srv.acceptStructuredInput(clientMessage{
+		AgentID: "work-agent",
+		TurnID:  "turn-ambiguous",
+		Text:    "possibly delivered\n",
+	}, func() error {
+		dispatches++
+		return errors.New("Enter acknowledgement lost")
+	})
+	var unconfirmed *structuredInputDeliveryUnconfirmedError
+	if !errors.As(err, &unconfirmed) || dispatches != 1 {
+		t.Fatalf("post-dispatch result = %T %v, dispatches %d", err, err, dispatches)
+	}
+	turn, queued := registry.snapshot(structuredTurnRegistryKey("", "work-agent"))
+	if turn != nil || len(queued) != 0 {
+		t.Fatalf("unconfirmed dispatch invented accepted lifecycle: turn=%#v queue=%#v", turn, queued)
+	}
+	_, replayErr := srv.acceptStructuredInput(clientMessage{
+		AgentID: "work-agent",
+		TurnID:  "turn-ambiguous",
+		Text:    "possibly delivered\n",
+	}, func() error {
+		dispatches++
+		return nil
+	})
+	if !errors.As(replayErr, &unconfirmed) || loads != 1 || dispatches != 1 {
+		t.Fatalf("unconfirmed replay = %T %v, loads %d dispatches %d", replayErr, replayErr, loads, dispatches)
+	}
+}
+
+func TestStructuredInputFailureResponsesSeparateRejectionFromUncertainty(t *testing.T) {
+	raw := clientMessage{
+		RequestID: "request-1",
+		AgentID:   "work-agent",
+		TurnID:    "turn-1",
+	}
+	rejected := structuredInputFailureResponse(
+		raw,
+		&structuredInputRejectedError{
+			cause:     fmt.Errorf("%w: provider baseline unavailable", errStructuredLifecycleSyncing),
+			code:      "structured_lifecycle_syncing",
+			retryable: true,
+		},
+	)
+	if rejected["type"] != "input_rejected" ||
+		rejected["request_id"] != "request-1" ||
+		rejected["turn_id"] != "turn-1" ||
+		rejected["code"] != "structured_lifecycle_syncing" ||
+		rejected["retryable"] != true {
+		t.Fatalf("pre-dispatch response = %#v", rejected)
+	}
+
+	unconfirmed := structuredInputFailureResponse(raw, &structuredInputDeliveryUnconfirmedError{
+		cause: errors.New("terminal response lost"),
+	})
+	if unconfirmed["type"] != "input_unconfirmed" ||
+		unconfirmed["request_id"] != "request-1" ||
+		unconfirmed["turn_id"] != "turn-1" ||
+		unconfirmed["code"] != "send_input_unconfirmed" {
+		t.Fatalf("post-dispatch response = %#v", unconfirmed)
+	}
+	if _, ok := unconfirmed["retryable"]; ok {
+		t.Fatalf("unconfirmed delivery advertised retry: %#v", unconfirmed)
+	}
+	unknown := structuredInputFailureResponse(raw, errors.New("unexpected internal error"))
+	if unknown["type"] != "input_unconfirmed" {
+		t.Fatalf("unknown error was not conservative: %#v", unknown)
 	}
 }
 

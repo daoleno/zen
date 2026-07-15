@@ -20,6 +20,7 @@ interface CodexChatComposerSectionProps {
   canAttach: boolean;
   uploading: boolean;
   sending: boolean;
+  operationalError?: string;
   attachments: ComposerAttachment[];
   presentation: CodexComposerPresentation;
   chrome: TerminalThemeChrome;
@@ -45,6 +46,7 @@ export function CodexChatComposerSection({
   canAttach,
   uploading,
   sending,
+  operationalError,
   attachments,
   presentation,
   chrome,
@@ -72,6 +74,7 @@ export function CodexChatComposerSection({
       uploading={uploading}
       sendEnabled={presentation.sendEnabled}
       sending={sending}
+      operationalError={operationalError}
       sendIcon={presentation.sendIcon}
       sendLabel={presentation.sendLabel}
       showStopButton={presentation.showStopButton}

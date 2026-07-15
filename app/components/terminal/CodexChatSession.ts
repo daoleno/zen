@@ -21,6 +21,8 @@ import {
   canReconcilePendingAcknowledgementAgainstProjection,
   comparableUserMessageText,
   nextPendingUserMessagePruneAt,
+  rejectPendingUserMessage as rejectPendingUserMessageState,
+  redispatchPendingUserMessageInSubmissionOrder,
   reconcilePendingUserMessagesAgainstEvents,
   reconcilePendingUserMessagesWithStructuredTurns,
   retainPendingUserMessages,
@@ -77,7 +79,13 @@ export type PendingUserMessage = {
   >;
   createdAt: string;
   lifecycle: PendingUserMessageLifecycle;
+  queuedHint?: boolean;
   acceptedAt?: string;
+  dispatchRequestId?: string;
+  lastAttemptAt?: string;
+  failureCode?: string;
+  failureMessage?: string;
+  failedAt?: string;
   confirmedAt?: string;
   confirmedEventId?: string;
   authoritativeQueueObserved?: boolean;
@@ -91,11 +99,25 @@ export type PendingUserMessage = {
 export type PendingUserMessageInput = Omit<PendingUserMessage, "id" | "createdAt">;
 
 export type PendingUserMessageAcknowledgement = {
+  requestId?: string;
   turnId: string;
   lifecycle: PendingUserMessageLifecycle;
   acceptedAt: string;
   turnEpoch?: string;
   turnRevision?: number;
+};
+
+export type PendingUserMessageDispatchAttempt = {
+  requestId: string;
+  attemptedAt: string;
+  queuedHint?: boolean;
+};
+
+export type PendingUserMessageRejection = {
+  requestId: string;
+  code: string;
+  message: string;
+  failedAt: string;
 };
 
 export type PendingSlashCommand = {
@@ -171,11 +193,27 @@ type CodexChatThreadAction =
   | {
       type: "acknowledge_pending_user_message";
       id: string;
+      requestId?: string;
       turnId: string;
       lifecycle: PendingUserMessageLifecycle;
       acceptedAt: string;
       turnEpoch?: string;
       turnRevision?: number;
+    }
+  | {
+      type: "mark_pending_user_message_dispatched";
+      id: string;
+      requestId: string;
+      attemptedAt: string;
+      queuedHint?: boolean;
+    }
+  | {
+      type: "reject_pending_user_message";
+      id: string;
+      requestId: string;
+      code: string;
+      message: string;
+      failedAt: string;
     }
   | { type: "remove_pending_user_message"; id: string }
   | { type: "prune_pending_user_messages"; now: number }
@@ -286,6 +324,42 @@ function codexChatThreadReducer(
             pendingUserMessages,
           }
         : state;
+    }
+    case "mark_pending_user_message_dispatched": {
+      const createdAfterMaxSeq = maxConversationEventSeq(state.conversation);
+      const createdAfterEventIds = Array.from(
+        conversationEventIdSet(state.conversation),
+      );
+      const pendingUserMessages = cachePendingUserMessages(
+        state.cacheKey,
+        redispatchPendingUserMessageInSubmissionOrder(
+          state.pendingUserMessages,
+          action.id,
+          {
+            requestId: action.requestId,
+            attemptedAt: action.attemptedAt,
+            queuedHint: action.queuedHint,
+            createdAfterMaxSeq,
+            createdAfterEventIds,
+          },
+        ),
+      );
+      return pendingUserMessages === state.pendingUserMessages
+        ? state
+        : { ...state, pendingUserMessages };
+    }
+    case "reject_pending_user_message": {
+      const pendingUserMessages = cachePendingUserMessages(
+        state.cacheKey,
+        state.pendingUserMessages.map((message) =>
+          message.id === action.id
+            ? rejectPendingUserMessageState(message, action)
+            : message,
+        ),
+      );
+      return pendingUserMessages === state.pendingUserMessages
+        ? state
+        : { ...state, pendingUserMessages };
     }
     case "remove_pending_user_message": {
       const pendingUserMessages = cachePendingUserMessages(
@@ -994,6 +1068,52 @@ export function useCodexChatSession({
     });
   }, [cacheKey, composerCacheKey, conversation]);
 
+  const markPendingUserMessageDispatched = useCallback((
+    id: string,
+    attempt: PendingUserMessageDispatchAttempt,
+  ) => {
+    const baseConversation = conversationCache.get(cacheKey) ?? conversation;
+    const boundary = {
+      createdAfterMaxSeq: maxConversationEventSeq(baseConversation),
+      createdAfterEventIds: Array.from(conversationEventIdSet(baseConversation)),
+    };
+    cachePendingUserMessages(
+      composerCacheKey,
+      redispatchPendingUserMessageInSubmissionOrder(
+        cachedPendingUserMessages(composerCacheKey),
+        id,
+        {
+          ...attempt,
+          ...boundary,
+        },
+      ),
+    );
+    dispatchThread({
+      type: "mark_pending_user_message_dispatched",
+      id,
+      ...attempt,
+    });
+  }, [cacheKey, composerCacheKey, conversation]);
+
+  const rejectPendingUserMessage = useCallback((
+    id: string,
+    rejection: PendingUserMessageRejection,
+  ) => {
+    cachePendingUserMessages(
+      composerCacheKey,
+      cachedPendingUserMessages(composerCacheKey).map((message) =>
+        message.id === id
+          ? rejectPendingUserMessageState(message, rejection)
+          : message,
+      ),
+    );
+    dispatchThread({
+      type: "reject_pending_user_message",
+      id,
+      ...rejection,
+    });
+  }, [composerCacheKey]);
+
   const removePendingUserMessage = useCallback((id: string) => {
     cachePendingUserMessages(
       composerCacheKey,
@@ -1195,6 +1315,8 @@ export function useCodexChatSession({
     pendingSlashCommands: visiblePendingSlashCommands,
     addPendingUserMessage,
     acknowledgePendingUserMessage,
+    markPendingUserMessageDispatched,
+    rejectPendingUserMessage,
     removePendingUserMessage,
     addPendingSlashCommand,
     settlePendingSlashCommand,
