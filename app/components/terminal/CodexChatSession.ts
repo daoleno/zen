@@ -32,6 +32,7 @@ import {
   reconcileConversationSnapshot,
   type ConversationStreamCursor,
 } from "./codexConversationReconciliation";
+import { shouldDropProviderChatNoiseEvent } from "./codexConversationVisibility";
 
 const PENDING_SLASH_COMMAND_MAX_AGE_MS = 120_000;
 const PENDING_SLASH_COMMAND_SETTLED_MAX_AGE_MS = 45_000;
@@ -495,6 +496,7 @@ function applyCodexConversationDelta(
   const nextEvents = reconcileConversationDeltaEvents(
     baseConversation.events,
     delta.upserts,
+    delta.deletes,
   );
   const nextConversation = {
     ...baseConversation,
@@ -639,6 +641,8 @@ function codexEventsEqual(
       left.call_id === right.call_id &&
       left.exit_code === right.exit_code &&
       left.status === right.status &&
+      left.partial === right.partial &&
+      left.transient === right.transient &&
       left.explanation === right.explanation &&
       left.source === right.source &&
       stringArraysEqual(left.files, right.files) &&
@@ -1208,7 +1212,7 @@ function filterCodexConversationForChat(
   let changed = false;
   const events: CodexConversation["events"] = [];
   for (const event of conversation.events) {
-    if (shouldDropGrokChatNoiseEvent(conversation, event)) {
+    if (shouldDropProviderChatNoiseEvent(conversation.source, event.kind)) {
       changed = true;
       continue;
     }
@@ -1223,16 +1227,6 @@ function filterCodexConversationForChat(
     events.push(cleaned);
   }
   return changed ? { ...conversation, events } : conversation;
-}
-
-function shouldDropGrokChatNoiseEvent(
-  conversation: CodexConversation,
-  event: CodexConversation["events"][number],
-): boolean {
-  if (conversation.source !== "grok_session") {
-    return false;
-  }
-  return event.kind === "plan" || event.kind === "commentary";
 }
 
 function cleanCodexConversationEventForChat(

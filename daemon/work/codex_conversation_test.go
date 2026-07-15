@@ -1273,6 +1273,71 @@ func TestParseCodexConversation_MergesReasoningUpdatesIntoSingleEvent(t *testing
 	}
 }
 
+func TestParseCodexConversation_ProgressiveReasoningKeepsIdentityUntilFinalized(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "rollout.jsonl")
+	firstUpdate := map[string]any{
+		"type":      "event_msg",
+		"timestamp": "2026-05-20T10:00:01Z",
+		"payload": map[string]any{
+			"type": "agent_reasoning",
+			"text": "Inspecting the provider transcript.",
+		},
+	}
+	secondUpdate := map[string]any{
+		"type":      "event_msg",
+		"timestamp": "2026-05-20T10:00:02Z",
+		"payload": map[string]any{
+			"type": "agent_reasoning",
+			"text": "Tracing the structured event path.",
+		},
+	}
+	finalUpdate := map[string]any{
+		"type":      "response_item",
+		"timestamp": "2026-05-20T10:00:03Z",
+		"payload": map[string]any{
+			"type": "reasoning",
+			"summary": []map[string]any{
+				{"type": "summary_text", "text": "Inspecting the provider transcript.\n\nTracing the structured event path.\n\nReady."},
+			},
+		},
+	}
+
+	writeJSONL(t, path, firstUpdate)
+	first, err := parseCodexConversation(path)
+	if err != nil {
+		t.Fatalf("first parse: %v", err)
+	}
+	if len(first.Events) != 1 || !first.Events[0].Partial || first.Events[0].Status != "running" {
+		t.Fatalf("first reasoning update = %#v, want partial running event", first.Events)
+	}
+	stableID := first.Events[0].ID
+
+	writeJSONL(t, path, firstUpdate, secondUpdate)
+	second, err := parseCodexConversation(path)
+	if err != nil {
+		t.Fatalf("second parse: %v", err)
+	}
+	if len(second.Events) != 1 || second.Events[0].ID != stableID || !second.Events[0].Partial || second.Events[0].Status != "running" {
+		t.Fatalf("second reasoning update = %#v, want same partial event identity %q", second.Events, stableID)
+	}
+	if !strings.Contains(second.Events[0].Body, "Inspecting the provider transcript") ||
+		!strings.Contains(second.Events[0].Body, "Tracing the structured event path") {
+		t.Fatalf("second reasoning body = %q", second.Events[0].Body)
+	}
+
+	writeJSONL(t, path, firstUpdate, secondUpdate, finalUpdate)
+	final, err := parseCodexConversation(path)
+	if err != nil {
+		t.Fatalf("final parse: %v", err)
+	}
+	if len(final.Events) != 1 || final.Events[0].ID != stableID || final.Events[0].Partial || final.Events[0].Status != "done" {
+		t.Fatalf("final reasoning update = %#v, want finalized replacement with ID %q", final.Events, stableID)
+	}
+	if !strings.Contains(final.Events[0].Body, "Ready.") {
+		t.Fatalf("final reasoning body = %q", final.Events[0].Body)
+	}
+}
+
 func TestParseCodexConversation_FinalizesPendingReasoningWhenTurnEnds(t *testing.T) {
 	for _, terminalEvent := range []string{"task_complete", "turn_aborted"} {
 		t.Run(terminalEvent, func(t *testing.T) {

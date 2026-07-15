@@ -536,8 +536,8 @@ function BrainInterfaceUnavailableState({
       title="Chat UI not available"
       detail={
         label
-          ? `${label} is connected, but Brain chat requires Codex or Grok.`
-          : "Switch the Brain host executor to Codex or Grok to use this chat surface."
+          ? `${label} is connected, but this executor does not expose structured chat events.`
+          : "Switch the Brain host executor to one with structured chat events."
       }
     />
   );

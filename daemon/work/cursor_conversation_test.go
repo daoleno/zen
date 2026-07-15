@@ -196,6 +196,58 @@ func TestCursorConversationHasActiveTurn_IgnoresMidTurnAssistant(t *testing.T) {
 	}
 }
 
+func TestParseCursorConversation_AppendedRowsKeepStableEventIDs(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "cursor-progressive.jsonl")
+	user := map[string]any{
+		"role": "user",
+		"message": map[string]any{
+			"content": []map[string]any{{"type": "text", "text": "show native rows"}},
+		},
+	}
+	assistant := map[string]any{
+		"role": "assistant",
+		"message": map[string]any{
+			"content": []map[string]any{{"type": "text", "text": "First structured assistant row."}},
+		},
+	}
+	ended := map[string]any{"type": "turn_ended", "status": "success"}
+
+	writeJSONL(t, path, user)
+	first, err := loadCachedCursorConversation(path)
+	if err != nil {
+		t.Fatalf("first cached load: %v", err)
+	}
+	if len(first.Events) != 1 || !cursorConversationHasActiveTurn(first.Events) {
+		t.Fatalf("first snapshot = %#v, want active user row", first.Events)
+	}
+	userID := first.Events[0].ID
+
+	writeJSONL(t, path, user, assistant)
+	second, err := loadCachedCursorConversation(path)
+	if err != nil {
+		t.Fatalf("second cached load: %v", err)
+	}
+	if len(second.Events) != 2 || second.Events[0].ID != userID || !cursorConversationHasActiveTurn(second.Events) {
+		t.Fatalf("second snapshot changed row identity or ended early: %#v", second.Events)
+	}
+	assistantID := second.Events[1].ID
+	if second.Events[1].Kind != "assistant_message" || second.Events[1].Partial {
+		t.Fatalf("Cursor exposes a complete appended row, not a synthetic partial: %#v", second.Events[1])
+	}
+
+	writeJSONL(t, path, user, assistant, ended)
+	final, err := loadCachedCursorConversation(path)
+	if err != nil {
+		t.Fatalf("final cached load: %v", err)
+	}
+	if len(final.Events) != 3 || final.Events[0].ID != userID || final.Events[1].ID != assistantID {
+		t.Fatalf("final snapshot changed existing row identities: %#v", final.Events)
+	}
+	if cursorConversationHasActiveTurn(final.Events) {
+		t.Fatalf("turn_ended must finish the appended row stream: %#v", final.Events)
+	}
+}
+
 func TestTerminalSnapshotConversationForAgent_BuildsTerminalStatusFallback(t *testing.T) {
 	now := time.Date(2026, 7, 4, 12, 0, 0, 0, time.UTC)
 	got := TerminalSnapshotConversationForAgent(classifier.Agent{

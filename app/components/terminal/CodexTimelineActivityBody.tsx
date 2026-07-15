@@ -14,6 +14,7 @@ interface CodexTimelineActivityBodyProps {
   activityKind?: ZenActivityTimelineItem["activityKind"];
   bodyKind?: ZenActivityTimelineItem["bodyKind"];
   tone?: ZenActivityTimelineItem["tone"];
+  streaming?: boolean;
   truncateBody(value: string, limit: number): string;
 }
 
@@ -24,6 +25,7 @@ export function CodexTimelineActivityBody({
   activityKind,
   bodyKind,
   tone,
+  streaming,
   truncateBody,
 }: CodexTimelineActivityBodyProps) {
   const displayBody = truncateBody(body, 1800);
@@ -36,6 +38,7 @@ export function CodexTimelineActivityBody({
         chrome={chrome}
         theme={theme}
         compact
+        streaming={streaming}
       />
     );
   }

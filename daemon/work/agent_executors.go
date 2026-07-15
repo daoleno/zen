@@ -217,6 +217,10 @@ func agentCapabilities(provider, runtime string) AgentCapabilities {
 		// Claude Code exposes structured chat via local JSONL transcripts under
 		// ~/.claude/projects. It does not offer Codex-style native thread APIs.
 		caps.StructuredEvents = true
+	case AgentProviderCursor:
+		// Cursor Agent appends provider-structured message, tool, and turn rows
+		// under agent-transcripts. It does not expose Codex-style native APIs.
+		caps.StructuredEvents = true
 	}
 	return caps
 }

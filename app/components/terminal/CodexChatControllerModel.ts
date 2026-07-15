@@ -52,7 +52,7 @@ export function buildCodexStatusMeta({
  * Turn-in-progress for Chat Working/stop controls.
  *
  * Process status is not a turn signal. Only pending/queued user sends,
- * conversation.active, and running tool/command events count.
+ * conversation.active, partial events, and running tool/command events count.
  */
 export function isCodexRequestRunning({
   conversation,

@@ -26,9 +26,25 @@ const (
 )
 
 type cachedGrokConversation struct {
-	size         int64
-	modTime      time.Time
+	stamp        grokConversationStamp
 	conversation CodexConversation
+	updates      *grokUpdateTracker
+}
+
+type grokUpdateTracker struct {
+	builder           *grokConversationBuilder
+	identities        []CodexConversationEvent
+	terminalTools     map[string]CodexConversationEvent
+	terminalToolOrder []string
+	offset            int64
+	line              int
+}
+
+type grokConversationStamp struct {
+	historySize    int64
+	historyModTime time.Time
+	updatesSize    int64
+	updatesModTime time.Time
 }
 
 var grokConversationCache = struct {
@@ -92,35 +108,56 @@ func loadGrokConversationForAgent(agent classifier.Agent, now time.Time) (CodexC
 }
 
 func loadCachedGrokConversation(sessionDir string) (CodexConversation, error) {
-	historyPath := filepath.Join(sessionDir, grokChatHistoryFile)
-	info, err := os.Stat(historyPath)
+	stamp, err := readGrokConversationStamp(sessionDir)
 	if err != nil {
 		return CodexConversation{}, err
 	}
 
 	grokConversationCache.Lock()
+	defer grokConversationCache.Unlock()
 	if cached, ok := grokConversationCache.byPath[sessionDir]; ok &&
-		cached.size == info.Size() &&
-		cached.modTime.Equal(info.ModTime()) {
-		conversation := cached.conversation
-		grokConversationCache.Unlock()
-		return conversation, nil
+		cached.stamp == stamp {
+		return cached.conversation, nil
 	}
-	grokConversationCache.Unlock()
 
-	conversation, err := parseGrokConversation(sessionDir)
+	cached := grokConversationCache.byPath[sessionDir]
+	tracker := cached.updates
+	if tracker == nil || stamp.updatesSize < tracker.offset {
+		tracker, err = newGrokUpdateTracker(sessionDir)
+	} else if stamp.updatesSize > tracker.offset {
+		err = tracker.consumeFrom(filepath.Join(sessionDir, grokUpdatesFile), stamp.updatesSize)
+	}
+	if err != nil {
+		return CodexConversation{}, err
+	}
+	conversation, err := buildGrokConversation(sessionDir, tracker)
 	if err != nil {
 		return CodexConversation{}, err
 	}
 
-	grokConversationCache.Lock()
 	grokConversationCache.byPath[sessionDir] = cachedGrokConversation{
-		size:         info.Size(),
-		modTime:      info.ModTime(),
+		stamp:        stamp,
 		conversation: conversation,
+		updates:      tracker,
 	}
-	grokConversationCache.Unlock()
 	return conversation, nil
+}
+
+func readGrokConversationStamp(sessionDir string) (grokConversationStamp, error) {
+	var stamp grokConversationStamp
+	history, err := os.Stat(filepath.Join(sessionDir, grokChatHistoryFile))
+	if err != nil {
+		return stamp, err
+	}
+	stamp.historySize = history.Size()
+	stamp.historyModTime = history.ModTime()
+	if updates, err := os.Stat(filepath.Join(sessionDir, grokUpdatesFile)); err == nil {
+		stamp.updatesSize = updates.Size()
+		stamp.updatesModTime = updates.ModTime()
+	} else if !os.IsNotExist(err) {
+		return stamp, err
+	}
+	return stamp, nil
 }
 
 func findGrokSession(agent classifier.Agent, now time.Time) (grokSessionCandidate, bool, error) {
@@ -385,6 +422,14 @@ func parseGrokSummaryTimestamp(value string, sessionDir string, allowFileFallbac
 }
 
 func parseGrokConversation(sessionDir string) (CodexConversation, error) {
+	tracker, err := newGrokUpdateTracker(sessionDir)
+	if err != nil {
+		return CodexConversation{}, err
+	}
+	return buildGrokConversation(sessionDir, tracker)
+}
+
+func buildGrokConversation(sessionDir string, tracker *grokUpdateTracker) (CodexConversation, error) {
 	builder := newGrokConversationBuilder(filepath.Base(sessionDir))
 	if summary, err := readGrokSummary(sessionDir); err == nil {
 		builder.sessionID = strings.TrimSpace(summary.Info.ID)
@@ -395,10 +440,14 @@ func parseGrokConversation(sessionDir string) (CodexConversation, error) {
 	if err := consumeGrokJSONL(historyPath, builder.consumeChatHistoryLine); err != nil && !os.IsNotExist(err) {
 		return CodexConversation{}, err
 	}
-
-	updatesPath := filepath.Join(sessionDir, grokUpdatesFile)
-	if err := consumeGrokJSONL(updatesPath, builder.consumeUpdatesLine); err != nil && !os.IsNotExist(err) {
-		return CodexConversation{}, err
+	builder.markCanonicalEvents()
+	if tracker != nil && tracker.builder != nil {
+		builder.adoptStreamEventIDs(tracker.events())
+		builder.markCanonicalEvents()
+		builder.mergeLiveEvents(tracker.terminalToolEvents())
+		builder.mergeLiveEvents(tracker.builder.events)
+		builder.lifecycleSeen = tracker.builder.lifecycleSeen
+		builder.taskActive = tracker.builder.taskActive
 	}
 
 	return builder.conversation(), nil
@@ -428,24 +477,241 @@ func consumeGrokJSONL(path string, consume func(int, []byte)) error {
 	}
 }
 
+func newGrokUpdateTracker(sessionDir string) (*grokUpdateTracker, error) {
+	builder := newGrokConversationBuilder(filepath.Base(sessionDir))
+	if summary, err := readGrokSummary(sessionDir); err == nil {
+		builder.sessionID = strings.TrimSpace(summary.Info.ID)
+		builder.cwd = strings.TrimSpace(summary.Info.CWD)
+	}
+	tracker := &grokUpdateTracker{
+		builder:       builder,
+		terminalTools: map[string]CodexConversationEvent{},
+	}
+	updatesPath := filepath.Join(sessionDir, grokUpdatesFile)
+	offset, err := findLatestGrokTurnOffset(updatesPath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return tracker, nil
+		}
+		return nil, err
+	}
+	tracker.offset = offset
+	info, err := os.Stat(updatesPath)
+	if err != nil {
+		return nil, err
+	}
+	if err := tracker.consumeFrom(updatesPath, info.Size()); err != nil {
+		return nil, err
+	}
+	return tracker, nil
+}
+
+func (t *grokUpdateTracker) consumeFrom(path string, limit int64) error {
+	file, err := os.Open(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return err
+	}
+	defer file.Close()
+	if _, err := file.Seek(t.offset, io.SeekStart); err != nil {
+		return err
+	}
+	if limit <= t.offset {
+		return nil
+	}
+	reader := bufio.NewReader(io.LimitReader(file, limit-t.offset))
+	for {
+		lineStart := t.offset
+		line, readErr := reader.ReadBytes('\n')
+		trimmed := bytes.TrimSpace(line)
+		if len(trimmed) > 0 {
+			if readErr == io.EOF && !json.Valid(trimmed) {
+				// Do not consume a partially-written JSONL record. The next cache
+				// refresh will retry it after the provider appends the remainder.
+				t.offset = lineStart
+				return nil
+			}
+			if grokSessionUpdateKind(trimmed) == "user_message_chunk" &&
+				t.builder.lifecycleSeen && !t.builder.taskActive {
+				t.rememberIdentities(t.builder.events)
+				sourceID := t.builder.sourceID
+				sessionID := t.builder.sessionID
+				cwd := t.builder.cwd
+				backgroundCallByTask := t.builder.backgroundCallByTask
+				t.builder = newGrokConversationBuilder(sourceID)
+				t.builder.sessionID = sessionID
+				t.builder.cwd = cwd
+				// A Grok background task can complete after a later user turn has
+				// started. Preserve its native task -> tool identity across the
+				// current-turn tracker reset so completion updates the same tool.
+				t.builder.backgroundCallByTask = backgroundCallByTask
+				// Retain only the bounded terminal tool set. This prevents delayed
+				// in_progress projections in a later turn from regressing terminal
+				// status or output while avoiding an unbounded per-builder history.
+				for _, event := range t.terminalTools {
+					if callID := strings.TrimSpace(event.CallID); callID != "" {
+						t.builder.terminalToolCalls[callID] = struct{}{}
+					}
+				}
+				t.line = 0
+			}
+			t.line++
+			t.builder.consumeUpdatesLine(t.line, trimmed)
+		}
+		t.offset += int64(len(line))
+		if readErr != nil {
+			if readErr == io.EOF {
+				return nil
+			}
+			return readErr
+		}
+	}
+}
+
+func (t *grokUpdateTracker) rememberIdentities(events []CodexConversationEvent) {
+	for _, event := range events {
+		if event.Kind == "assistant_message" || event.Kind == "commentary" {
+			t.identities = append(t.identities, event)
+			continue
+		}
+		if event.Kind == "tool" && !event.Partial && event.Status != "running" && event.ID != "" {
+			if t.terminalTools == nil {
+				t.terminalTools = map[string]CodexConversationEvent{}
+			}
+			if _, exists := t.terminalTools[event.ID]; !exists {
+				t.terminalToolOrder = append(t.terminalToolOrder, event.ID)
+			}
+			t.terminalTools[event.ID] = event
+		}
+	}
+	if len(t.identities) > maxGrokConversationEvents*2 {
+		t.identities = append([]CodexConversationEvent(nil), t.identities[len(t.identities)-maxGrokConversationEvents*2:]...)
+	}
+	for len(t.terminalToolOrder) > maxGrokConversationEvents*2 {
+		oldest := t.terminalToolOrder[0]
+		t.terminalToolOrder = t.terminalToolOrder[1:]
+		delete(t.terminalTools, oldest)
+	}
+}
+
+func (t *grokUpdateTracker) events() []CodexConversationEvent {
+	events := make([]CodexConversationEvent, 0, len(t.identities)+len(t.builder.events))
+	events = append(events, t.identities...)
+	events = append(events, t.builder.events...)
+	return events
+}
+
+func (t *grokUpdateTracker) terminalToolEvents() []CodexConversationEvent {
+	events := make([]CodexConversationEvent, 0, len(t.terminalToolOrder))
+	for _, id := range t.terminalToolOrder {
+		if event, exists := t.terminalTools[id]; exists {
+			events = append(events, event)
+		}
+	}
+	return events
+}
+
+func grokSessionUpdateKind(line []byte) string {
+	var envelope struct {
+		Params struct {
+			Update struct {
+				SessionUpdate string `json:"sessionUpdate"`
+			} `json:"update"`
+		} `json:"params"`
+	}
+	if json.Unmarshal(line, &envelope) != nil {
+		return ""
+	}
+	return strings.TrimSpace(envelope.Params.Update.SessionUpdate)
+}
+
+func findLatestGrokTurnOffset(path string) (int64, error) {
+	file, err := os.Open(path)
+	if err != nil {
+		return 0, err
+	}
+	defer file.Close()
+	info, err := file.Stat()
+	if err != nil {
+		return 0, err
+	}
+	const blockSize int64 = 64 * 1024
+	marker := []byte(`"sessionUpdate":"user_message_chunk"`)
+	for end := info.Size(); end > 0; {
+		start := end - blockSize
+		if start < 0 {
+			start = 0
+		}
+		readEnd := end + int64(len(marker))
+		if readEnd > info.Size() {
+			readEnd = info.Size()
+		}
+		buffer := make([]byte, readEnd-start)
+		if _, err := file.ReadAt(buffer, start); err != nil && err != io.EOF {
+			return 0, err
+		}
+		if index := bytes.LastIndex(buffer, marker); index >= 0 && int64(index) < end-start {
+			return findGrokLineStart(file, start+int64(index))
+		}
+		end = start
+	}
+	return 0, nil
+}
+
+func findGrokLineStart(file *os.File, offset int64) (int64, error) {
+	const blockSize int64 = 4096
+	for offset > 0 {
+		start := offset - blockSize
+		if start < 0 {
+			start = 0
+		}
+		buffer := make([]byte, offset-start)
+		if _, err := file.ReadAt(buffer, start); err != nil && err != io.EOF {
+			return 0, err
+		}
+		if index := bytes.LastIndexByte(buffer, '\n'); index >= 0 {
+			return start + int64(index) + 1, nil
+		}
+		offset = start
+	}
+	return 0, nil
+}
+
 type grokConversationBuilder struct {
-	sourceID       string
-	sessionID      string
-	cwd            string
-	events         []CodexConversationEvent
-	eventByCall    map[string]int
-	seenPlanKeys   map[string]struct{}
-	pendingThought string
-	taskActive     bool
-	lifecycleSeen  bool
-	nextEventID    int
+	sourceID             string
+	sessionID            string
+	cwd                  string
+	events               []CodexConversationEvent
+	eventByCall          map[string]int
+	seenPlanKeys         map[string]struct{}
+	pendingThought       string
+	streamByKey          map[string]int
+	streamRaw            map[string]string
+	streamByGroup        map[string]string
+	statusByKey          map[string]int
+	canonicalIDs         map[string]struct{}
+	backgroundCallByTask map[string]string
+	terminalToolCalls    map[string]struct{}
+	taskActive           bool
+	lifecycleSeen        bool
+	turnSettled          bool
+	nextEventID          int
 }
 
 func newGrokConversationBuilder(sourceID string) *grokConversationBuilder {
 	return &grokConversationBuilder{
-		sourceID:     sourceID,
-		eventByCall:  map[string]int{},
-		seenPlanKeys: map[string]struct{}{},
+		sourceID:             sourceID,
+		eventByCall:          map[string]int{},
+		seenPlanKeys:         map[string]struct{}{},
+		streamByKey:          map[string]int{},
+		streamRaw:            map[string]string{},
+		streamByGroup:        map[string]string{},
+		statusByKey:          map[string]int{},
+		canonicalIDs:         map[string]struct{}{},
+		backgroundCallByTask: map[string]string{},
+		terminalToolCalls:    map[string]struct{}{},
 	}
 }
 
@@ -478,13 +744,21 @@ func (b *grokConversationBuilder) consumeChatHistoryLine(lineNumber int, line []
 			b.addMessage(lineNumber, "", "assistant", text)
 		}
 		b.consumeAssistantToolCalls(lineNumber, "", record.ToolCalls)
+	case "reasoning":
+		if text := grokReasoningText(record.Summary); text != "" {
+			b.upsertThought(lineNumber, "", text, true)
+		}
 	case "tool_result":
 		callID := strings.TrimSpace(record.ToolCallID)
 		output := grokMessageText(record.Content)
-		if callID == "" || output == "" {
+		if callID == "" {
 			return
 		}
-		b.updateToolOutput(lineNumber, "", callID, output)
+		if output != "" {
+			b.updateToolOutput(lineNumber, "", callID, output)
+		} else {
+			b.updateToolStatus(callID, "done")
+		}
 	}
 }
 
@@ -493,14 +767,43 @@ func (b *grokConversationBuilder) consumeUpdatesLine(lineNumber int, line []byte
 		Timestamp json.RawMessage `json:"timestamp"`
 		Params    struct {
 			SessionID string `json:"sessionId"`
-			Update    struct {
-				SessionUpdate string          `json:"sessionUpdate"`
-				Content       json.RawMessage `json:"content"`
-				ToolCallID    string          `json:"toolCallId"`
-				Title         string          `json:"title"`
-				RawInput      json.RawMessage `json:"rawInput"`
-				Status        string          `json:"status"`
-				Entries       []struct {
+			Meta      struct {
+				PromptID      string          `json:"promptId"`
+				StreamStartMS json.RawMessage `json:"streamStartMs"`
+				UpdateParams  struct {
+					Status string `json:"status"`
+				} `json:"updateParams"`
+			} `json:"_meta"`
+			Update struct {
+				SessionUpdate    string          `json:"sessionUpdate"`
+				Type             string          `json:"type"`
+				Content          json.RawMessage `json:"content"`
+				ToolCallID       string          `json:"toolCallId"`
+				Title            string          `json:"title"`
+				RawInput         json.RawMessage `json:"rawInput"`
+				RawOutput        json.RawMessage `json:"rawOutput"`
+				Status           string          `json:"status"`
+				Kind             string          `json:"kind"`
+				Attempt          int             `json:"attempt"`
+				MaxRetries       int             `json:"max_retries"`
+				Reason           string          `json:"reason"`
+				Message          string          `json:"message"`
+				LegacyToolCallID string          `json:"tool_call_id"`
+				TaskID           string          `json:"task_id"`
+				Command          string          `json:"command"`
+				Description      string          `json:"description"`
+				TaskSnapshot     struct {
+					TaskID           string          `json:"task_id"`
+					Command          string          `json:"command"`
+					Output           string          `json:"output"`
+					OutputFile       string          `json:"output_file"`
+					ExitCode         *int            `json:"exit_code"`
+					Signal           json.RawMessage `json:"signal"`
+					Completed        bool            `json:"completed"`
+					Kind             string          `json:"kind"`
+					ExplicitlyKilled bool            `json:"explicitly_killed"`
+				} `json:"task_snapshot"`
+				Entries []struct {
 					Content  string `json:"content"`
 					Status   string `json:"status"`
 					Priority string `json:"priority"`
@@ -517,11 +820,305 @@ func (b *grokConversationBuilder) consumeUpdatesLine(lineNumber int, line []byte
 	}
 
 	update := envelope.Params.Update
+	timestamp := grokUpdateTimestamp(envelope.Timestamp)
+	promptID := strings.TrimSpace(envelope.Params.Meta.PromptID)
+	streamStart := grokStreamStartIdentity(envelope.Params.Meta.StreamStartMS)
 	switch update.SessionUpdate {
+	case "user_message_chunk":
+		// This is a lifecycle signal only. The canonical user message comes from
+		// chat_history; exposing this record would leak prompt wrappers/echoes.
+		b.lifecycleSeen = true
+		b.taskActive = true
+		b.turnSettled = false
+	case "agent_message_chunk":
+		b.upsertStreamText(promptID, streamStart, "assistant", timestamp, grokRawChunkText(update.Content))
+	case "agent_thought_chunk":
+		b.upsertStreamText(promptID, streamStart, "reasoning", timestamp, grokRawChunkText(update.Content))
+	case "tool_call", "tool_call_update":
+		b.lifecycleSeen = true
+		// A completed tool is still inside the active turn. Only the provider's
+		// turn_completed marker settles the composer state.
+		if !b.turnSettled {
+			b.taskActive = true
+		}
+		callID := strings.TrimSpace(update.ToolCallID)
+		currentName := ""
+		currentStatus := ""
+		if index, exists := b.eventByCall[callID]; exists && index >= 0 && index < len(b.events) {
+			currentName = b.events[index].ToolName
+			currentStatus = b.events[index].Status
+		}
+		nativeStatus := grokToolStatus(firstNonEmpty(update.Status, envelope.Params.Meta.UpdateParams.Status))
+		if _, terminal := b.terminalToolCalls[callID]; terminal && nativeStatus == "running" {
+			// task_completed/turn_completed is authoritative for the complete
+			// projection. Ignore delayed running title/input/output snapshots,
+			// not merely their status bit.
+			break
+		}
+		status := firstNonEmpty(
+			nativeStatus,
+			currentStatus,
+			"running",
+		)
+		if b.turnSettled && status == "running" {
+			status = firstNonEmpty(grokTerminalToolStatus(currentStatus), "done")
+		}
+		name := firstNonEmpty(cleanConversationText(update.Title), currentName, cleanConversationText(update.Kind), "tool")
+		b.addToolStart(lineNumber, timestamp, callID, name, grokJSONPayloadText(update.RawInput), status)
+		if output := firstNonEmpty(grokToolUpdateOutput(update.Content), grokToolUpdateOutput(update.RawOutput)); output != "" {
+			b.updateToolOutputSnapshot(timestamp, update.ToolCallID, output)
+		}
+		b.updateToolStatus(update.ToolCallID, status)
+		if index, exists := b.eventByCall[callID]; exists && index >= 0 && index < len(b.events) {
+			_, canonical := b.canonicalIDs[b.events[index].ID]
+			b.events[index].Partial = !canonical && !b.turnSettled && b.events[index].Status == "running"
+			b.events[index].Transient = !canonical
+		}
+	case "task_backgrounded":
+		b.lifecycleSeen = true
+		taskID := strings.TrimSpace(update.TaskID)
+		callID := strings.TrimSpace(update.LegacyToolCallID)
+		if taskID != "" && callID != "" {
+			b.backgroundCallByTask[taskID] = callID
+		}
+		if callID == "" {
+			return
+		}
+		delete(b.terminalToolCalls, callID)
+		name := "Background task"
+		if index, exists := b.eventByCall[callID]; exists && index >= 0 && index < len(b.events) {
+			name = firstNonEmpty(b.events[index].ToolName, name)
+		}
+		status := "running"
+		partial := true
+		if b.turnSettled {
+			status = "done"
+			partial = false
+		} else {
+			b.taskActive = true
+		}
+		b.addToolStart(lineNumber, timestamp, callID, name, sanitizeGrokToolOutput(update.Command), status)
+		b.setToolProjection(callID, status, partial, false)
+	case "task_completed":
+		b.lifecycleSeen = true
+		snapshot := update.TaskSnapshot
+		taskID := strings.TrimSpace(snapshot.TaskID)
+		callID := b.backgroundCallByTask[taskID]
+		if callID == "" {
+			callID = grokBackgroundCallID(taskID, snapshot.OutputFile, b.eventByCall)
+		}
+		if callID == "" {
+			return
+		}
+		name := firstNonEmpty(cleanToolName(snapshot.Kind), "Background task")
+		if index, exists := b.eventByCall[callID]; exists && index >= 0 && index < len(b.events) {
+			name = firstNonEmpty(b.events[index].ToolName, name)
+		}
+		status := grokBackgroundTaskStatus(snapshot.ExitCode, snapshot.Signal, snapshot.ExplicitlyKilled)
+		b.addToolStart(lineNumber, timestamp, callID, name, sanitizeGrokToolOutput(snapshot.Command), status)
+		if output := sanitizeGrokToolOutput(snapshot.Output); output != "" {
+			b.updateToolOutputSnapshot(timestamp, callID, output)
+		}
+		b.setToolProjection(callID, status, false, true)
+		delete(b.backgroundCallByTask, taskID)
+	case "plan":
+		b.addPlanUpdate(lineNumber, timestamp, update.Entries)
+	case "retry_state":
+		b.lifecycleSeen = true
+		failed := strings.EqualFold(strings.TrimSpace(update.Type), "failed")
+		status := "running"
+		title := "Retrying provider request"
+		body := cleanConversationText(update.Reason)
+		if failed {
+			status = "failed"
+			title = "Provider request failed"
+			body = cleanConversationText(firstNonEmpty(update.Message, update.Reason))
+			b.taskActive = false
+			b.turnSettled = true
+		} else {
+			b.taskActive = true
+			b.turnSettled = false
+			if update.Attempt > 0 && update.MaxRetries > 0 {
+				title = fmt.Sprintf("Retrying provider request (%d/%d)", update.Attempt, update.MaxRetries)
+			}
+		}
+		b.upsertStatus("retry", timestamp, title, body, status, !failed)
+		if failed {
+			b.finishAllStreams()
+			b.finishTools("failed")
+			b.finishStatuses()
+		}
 	case "turn_completed":
 		b.lifecycleSeen = true
 		b.taskActive = false
-		b.finishPendingThought()
+		b.turnSettled = true
+		b.finishAllStreams()
+		b.finishTools("done")
+		b.finishStatuses()
+	}
+}
+
+func (b *grokConversationBuilder) upsertStatus(key, timestamp, title, body, status string, partial bool) {
+	if index, ok := b.statusByKey[key]; ok && index >= 0 && index < len(b.events) {
+		event := &b.events[index]
+		event.Title = title
+		event.Body = body
+		event.Status = status
+		event.Partial = partial
+		return
+	}
+	event := CodexConversationEvent{
+		ID:        fmt.Sprintf("%s:status:%s", firstNonEmpty(b.sessionID, b.sourceID, "grok"), key),
+		Timestamp: timestamp,
+		Kind:      "status",
+		Title:     title,
+		Body:      body,
+		Status:    status,
+		Partial:   partial,
+		Transient: true,
+		Source:    "grok_session",
+	}
+	if b.addEvent(event) {
+		b.statusByKey[key] = len(b.events) - 1
+	}
+}
+
+func (b *grokConversationBuilder) finishStatuses() {
+	for _, index := range b.statusByKey {
+		if index < 0 || index >= len(b.events) {
+			continue
+		}
+		event := &b.events[index]
+		if event.Status == "running" {
+			event.Status = "done"
+		}
+		event.Partial = false
+	}
+}
+
+func (b *grokConversationBuilder) markCanonicalEvents() {
+	for _, event := range b.events {
+		if event.ID != "" {
+			b.canonicalIDs[event.ID] = struct{}{}
+		}
+	}
+}
+
+func (b *grokConversationBuilder) upsertStreamText(promptID, streamStart, streamKind, timestamp, rawChunk string) {
+	group := firstNonEmpty(promptID, "turn") + ":" + streamKind
+	streamStart = firstNonEmpty(streamStart, "legacy")
+	key := group + ":" + streamStart
+	if previous := b.streamByGroup[group]; previous != "" && previous != key {
+		b.finishStreamKey(previous)
+	}
+	b.streamByGroup[group] = key
+	b.streamRaw[key] += rawChunk
+	body := CleanCodexDisplayText(b.streamRaw[key])
+	if body == "" || isTranscriptBoilerplate(body) {
+		return
+	}
+	b.lifecycleSeen = true
+	partial := !b.turnSettled
+	status := "done"
+	if partial {
+		b.taskActive = true
+		status = "running"
+	}
+	if index, ok := b.streamByKey[key]; ok && index >= 0 && index < len(b.events) {
+		b.events[index].Body = truncateConversationBody(body)
+		b.events[index].Partial = partial
+		b.events[index].Status = status
+		return
+	}
+	kind := "assistant_message"
+	title := ""
+	role := "assistant"
+	if streamKind == "reasoning" {
+		kind = "commentary"
+		title = "Reasoning"
+		role = ""
+	}
+	event := CodexConversationEvent{
+		ID:        fmt.Sprintf("%s:stream:%s:%s:%s", firstNonEmpty(b.sessionID, b.sourceID, "grok"), firstNonEmpty(promptID, "turn"), streamKind, streamStart),
+		Timestamp: timestamp,
+		Kind:      kind,
+		Role:      role,
+		Title:     title,
+		Body:      body,
+		Status:    status,
+		Partial:   partial,
+		Transient: true,
+		Source:    "grok_session",
+	}
+	if b.addEvent(event) {
+		b.streamByKey[key] = len(b.events) - 1
+	}
+}
+
+func grokRawChunkText(raw json.RawMessage) string {
+	if len(raw) == 0 {
+		return ""
+	}
+	var payload struct {
+		Text string `json:"text"`
+	}
+	if json.Unmarshal(raw, &payload) == nil && payload.Text != "" {
+		return payload.Text
+	}
+	return grokChunkText(raw)
+}
+
+func (b *grokConversationBuilder) finishStreamKey(key string) {
+	index, ok := b.streamByKey[key]
+	if !ok || index < 0 || index >= len(b.events) {
+		return
+	}
+	b.events[index].Status = "done"
+	b.events[index].Partial = false
+}
+
+func (b *grokConversationBuilder) finishAllStreams() {
+	for _, key := range b.streamByGroup {
+		b.finishStreamKey(key)
+	}
+	b.streamByGroup = map[string]string{}
+}
+
+func (b *grokConversationBuilder) finishTools(status string) {
+	status = grokToolStatus(status)
+	if status == "" || status == "running" {
+		status = "done"
+	}
+	for callID, index := range b.eventByCall {
+		if index < 0 || index >= len(b.events) {
+			continue
+		}
+		event := &b.events[index]
+		if event.Status == "running" || event.Partial {
+			event.Status = status
+		}
+		event.Partial = false
+		b.terminalToolCalls[callID] = struct{}{}
+	}
+}
+
+func (b *grokConversationBuilder) setToolProjection(callID, status string, partial, terminal bool) {
+	callID = strings.TrimSpace(callID)
+	if callID == "" {
+		return
+	}
+	index, exists := b.eventByCall[callID]
+	if !exists || index < 0 || index >= len(b.events) {
+		return
+	}
+	event := &b.events[index]
+	event.Status = firstNonEmpty(grokToolStatus(status), event.Status, "done")
+	event.Partial = partial
+	if _, canonical := b.canonicalIDs[event.ID]; !canonical {
+		event.Transient = true
+	}
+	if terminal {
+		b.terminalToolCalls[callID] = struct{}{}
 	}
 }
 
@@ -641,6 +1238,12 @@ func (b *grokConversationBuilder) addToolStart(lineNumber int, timestamp, callID
 	if status == "" {
 		status = "running"
 	}
+	if _, terminal := b.terminalToolCalls[callID]; terminal && status == "running" {
+		status = "done"
+		if index, exists := b.eventByCall[callID]; exists && index >= 0 && index < len(b.events) {
+			status = firstNonEmpty(b.events[index].Status, status)
+		}
+	}
 	event := CodexConversationEvent{
 		ID:        b.eventID(lineNumber),
 		Timestamp: timestamp,
@@ -653,13 +1256,16 @@ func (b *grokConversationBuilder) addToolStart(lineNumber int, timestamp, callID
 		Source:    "grok_session",
 	}
 	if callID != "" {
+		event.ID = fmt.Sprintf("%s:tool:%s", firstNonEmpty(b.sessionID, b.sourceID, "grok"), callID)
+	}
+	if callID != "" {
 		if index, exists := b.eventByCall[callID]; exists && index >= 0 && index < len(b.events) {
 			b.events[index].ToolName = event.ToolName
 			if event.Input != "" {
 				b.events[index].Input = event.Input
 			}
 			b.events[index].Status = event.Status
-			if timestamp != "" {
+			if b.events[index].Timestamp == "" && timestamp != "" {
 				b.events[index].Timestamp = timestamp
 			}
 			return
@@ -679,7 +1285,7 @@ func (b *grokConversationBuilder) updateToolOutput(lineNumber int, timestamp, ca
 	if index, exists := b.eventByCall[callID]; exists && index >= 0 && index < len(b.events) {
 		b.events[index].Output = output
 		b.events[index].Status = codexToolOutputStatus(output)
-		if timestamp != "" {
+		if b.events[index].Timestamp == "" && timestamp != "" {
 			b.events[index].Timestamp = timestamp
 		}
 		return
@@ -700,10 +1306,27 @@ func (b *grokConversationBuilder) updateToolOutput(lineNumber int, timestamp, ca
 	})
 }
 
+func (b *grokConversationBuilder) updateToolOutputSnapshot(timestamp, callID, output string) {
+	callID = strings.TrimSpace(callID)
+	output = truncateConversationBody(output)
+	if callID == "" || output == "" {
+		return
+	}
+	if index, exists := b.eventByCall[callID]; exists && index >= 0 && index < len(b.events) {
+		b.events[index].Output = output
+		if b.events[index].Timestamp == "" && timestamp != "" {
+			b.events[index].Timestamp = timestamp
+		}
+	}
+}
+
 func (b *grokConversationBuilder) updateToolStatus(callID, status string) {
 	callID = strings.TrimSpace(callID)
 	status = grokToolStatus(status)
 	if callID == "" || status == "" {
+		return
+	}
+	if _, terminal := b.terminalToolCalls[callID]; terminal && status == "running" {
 		return
 	}
 	if index, exists := b.eventByCall[callID]; exists && index >= 0 && index < len(b.events) {
@@ -787,11 +1410,10 @@ func (b *grokConversationBuilder) conversation() CodexConversation {
 	if b.events == nil {
 		b.events = []CodexConversationEvent{}
 	}
-	if b.lifecycleSeen && b.taskActive {
-		b.taskActive = false
+	b.events = pruneGrokEventsForChat(b.events, maxGrokConversationEvents)
+	if !b.taskActive {
+		b.events = trimTrailingGrokTools(b.events)
 	}
-	b.finishPendingThought()
-	b.events = trimTrailingGrokTools(pruneGrokEventsForChat(b.events, maxGrokConversationEvents))
 	b.reindexEvents()
 	var active *bool
 	if b.lifecycleSeen {
@@ -808,6 +1430,87 @@ func (b *grokConversationBuilder) conversation() CodexConversation {
 	}
 }
 
+func (b *grokConversationBuilder) adoptStreamEventIDs(streamEvents []CodexConversationEvent) {
+	used := make(map[int]struct{})
+	for historyIndex := len(b.events) - 1; historyIndex >= 0; historyIndex-- {
+		history := &b.events[historyIndex]
+		if history.Kind != "assistant_message" && history.Kind != "commentary" {
+			continue
+		}
+		for streamIndex := len(streamEvents) - 1; streamIndex >= 0; streamIndex-- {
+			stream := streamEvents[streamIndex]
+			if _, alreadyUsed := used[streamIndex]; alreadyUsed ||
+				!strings.Contains(stream.ID, ":stream:") ||
+				stream.Kind != history.Kind ||
+				CleanCodexDisplayText(stream.Body) != CleanCodexDisplayText(history.Body) {
+				continue
+			}
+			history.ID = stream.ID
+			history.Partial = false
+			history.Transient = true
+			used[streamIndex] = struct{}{}
+			break
+		}
+	}
+}
+
+func (b *grokConversationBuilder) mergeLiveEvents(liveEvents []CodexConversationEvent) {
+	byID := make(map[string]int, len(b.events))
+	for index, event := range b.events {
+		byID[event.ID] = index
+	}
+	for _, live := range liveEvents {
+		if index, canonical := byID[live.ID]; canonical {
+			current := &b.events[index]
+			switch live.Kind {
+			case "assistant_message", "commentary":
+				current.Body = live.Body
+				current.Status = "done"
+				current.Partial = false
+				current.Transient = live.Transient
+			case "tool":
+				current.Title = firstNonEmpty(live.Title, current.Title)
+				current.ToolName = firstNonEmpty(live.ToolName, current.ToolName)
+				current.Input = firstNonEmpty(live.Input, current.Input)
+				current.Output = firstNonEmpty(live.Output, current.Output)
+				canonicalStatus := grokToolStatus(current.Status)
+				liveStatus := grokToolStatus(live.Status)
+				switch {
+				case liveStatus == "failed":
+					// Native task completion carries the authoritative exit/signal
+					// result and may supersede an earlier canonical launch ack.
+					current.Status = "failed"
+					current.Partial = false
+				case canonicalStatus == "failed":
+					// A delayed done/running projection cannot erase a failure.
+					current.Status = "failed"
+					current.Partial = false
+				case liveStatus == "running" && live.Partial:
+					// task_backgrounded is authoritative over the canonical launch
+					// acknowledgement while the native task is genuinely active.
+					current.Status = "running"
+					current.Partial = true
+				case canonicalStatus == "" || canonicalStatus == "running":
+					current.Status = firstNonEmpty(live.Status, current.Status)
+					current.Partial = live.Partial
+				default:
+					// chat_history is the canonical terminal state. A delayed live
+					// in_progress projection must never reopen the same tool.
+					current.Partial = false
+				}
+			}
+			if live.Kind == "tool" {
+				current.Transient = false
+			}
+			continue
+		}
+		live.Transient = true
+		if b.addEvent(live) {
+			byID[live.ID] = len(b.events) - 1
+		}
+	}
+}
+
 func pruneGrokEventsForChat(events []CodexConversationEvent, max int) []CodexConversationEvent {
 	if len(events) == 0 {
 		return events
@@ -816,7 +1519,9 @@ func pruneGrokEventsForChat(events []CodexConversationEvent, max int) []CodexCon
 	toolIndexes := make([]int, 0, len(events))
 	for _, event := range events {
 		switch event.Kind {
-		case "user_message", "assistant_message":
+		case "user_message", "assistant_message", "status", "command", "patch", "web_search":
+			kept = append(kept, event)
+		case "commentary":
 			kept = append(kept, event)
 		case "tool":
 			if !grokToolEventIsVisible(event) {
@@ -869,7 +1574,13 @@ func trimTrailingGrokTools(events []CodexConversationEvent) []CodexConversationE
 	if lastMessageIndex < 0 {
 		return events
 	}
-	return events[:lastMessageIndex+1]
+	kept := append([]CodexConversationEvent(nil), events[:lastMessageIndex+1]...)
+	for _, event := range events[lastMessageIndex+1:] {
+		if event.Kind != "tool" {
+			kept = append(kept, event)
+		}
+	}
+	return kept
 }
 
 func grokToolEventIsVisible(event CodexConversationEvent) bool {
@@ -944,23 +1655,103 @@ func grokToolUpdateOutput(raw json.RawMessage) string {
 		Type    string          `json:"type"`
 		Content json.RawMessage `json:"content"`
 		Text    string          `json:"text"`
+		Path    string          `json:"path"`
+		OldText string          `json:"oldText"`
+		NewText string          `json:"newText"`
 	}
 	if json.Unmarshal(raw, &blocks) == nil {
 		var parts []string
 		for _, block := range blocks {
-			if text := CleanCodexDisplayText(block.Text); text != "" {
+			if text := sanitizeGrokToolOutput(block.Text); text != "" {
 				parts = append(parts, text)
 				continue
 			}
-			if text := grokMessageText(block.Content); text != "" {
+			if text := grokStructuredContentText(block.Content); text != "" {
 				parts = append(parts, text)
+				continue
+			}
+			if strings.EqualFold(block.Type, "diff") {
+				if text := sanitizeGrokToolOutput(firstNonEmpty(block.NewText, block.OldText)); text != "" {
+					parts = append(parts, firstNonEmpty(cleanConversationText(block.Path), "diff")+"\n"+text)
+				}
 			}
 		}
 		if len(parts) > 0 {
 			return strings.Join(parts, "\n\n")
 		}
 	}
-	return grokMessageText(raw)
+	return grokStructuredContentText(raw)
+}
+
+func grokStructuredContentText(raw json.RawMessage) string {
+	if len(raw) == 0 || bytes.Equal(bytes.TrimSpace(raw), []byte("null")) {
+		return ""
+	}
+	if raw[0] == '"' {
+		return sanitizeGrokToolOutput(jsonString(raw))
+	}
+	var content struct {
+		Type string `json:"type"`
+		Text string `json:"text"`
+	}
+	if json.Unmarshal(raw, &content) == nil && strings.EqualFold(content.Type, "text") {
+		return sanitizeGrokToolOutput(content.Text)
+	}
+	return ""
+}
+
+func sanitizeGrokToolOutput(value string) string {
+	value = stripGrokANSI(value)
+	value = strings.Map(func(r rune) rune {
+		if r == '\n' || r == '\t' || r >= 0x20 {
+			return r
+		}
+		return -1
+	}, value)
+	return CleanCodexDisplayText(value)
+}
+
+func stripGrokANSI(value string) string {
+	var out strings.Builder
+	for index := 0; index < len(value); {
+		if value[index] != 0x1b {
+			out.WriteByte(value[index])
+			index++
+			continue
+		}
+		index++
+		if index >= len(value) {
+			break
+		}
+		switch value[index] {
+		case '[':
+			index++
+			for index < len(value) {
+				final := value[index]
+				index++
+				if final >= 0x40 && final <= 0x7e {
+					break
+				}
+			}
+		case ']':
+			index++
+			for index < len(value) {
+				if value[index] == 0x07 {
+					index++
+					break
+				}
+				if value[index] == 0x1b && index+1 < len(value) && value[index+1] == '\\' {
+					index += 2
+					break
+				}
+				index++
+			}
+		default:
+			// Drop the single-character escape and its introducer.
+			index++
+		}
+	}
+	return out.String()
 }
 
 func grokUpdateTimestamp(raw json.RawMessage) string {
@@ -981,6 +1772,17 @@ func grokUpdateTimestamp(raw json.RawMessage) string {
 	return ""
 }
 
+func grokStreamStartIdentity(raw json.RawMessage) string {
+	raw = bytes.TrimSpace(raw)
+	if len(raw) == 0 || bytes.Equal(raw, []byte("null")) {
+		return ""
+	}
+	if raw[0] == '"' {
+		return strings.TrimSpace(jsonString(raw))
+	}
+	return string(raw)
+}
+
 func grokToolStatus(value string) string {
 	switch strings.ToLower(strings.TrimSpace(value)) {
 	case "failed", "error", "cancelled", "canceled":
@@ -995,6 +1797,46 @@ func grokToolStatus(value string) string {
 		}
 		return "done"
 	}
+}
+
+func grokTerminalToolStatus(value string) string {
+	status := grokToolStatus(value)
+	if status == "done" || status == "failed" {
+		return status
+	}
+	return ""
+}
+
+func grokBackgroundCallID(taskID, outputFile string, eventByCall map[string]int) string {
+	taskID = strings.TrimSpace(taskID)
+	if taskID != "" {
+		if _, exists := eventByCall[taskID]; exists {
+			return taskID
+		}
+	}
+	base := strings.TrimSuffix(filepath.Base(strings.TrimSpace(outputFile)), filepath.Ext(outputFile))
+	if base == "" || base == "." {
+		return ""
+	}
+	if _, exists := eventByCall[base]; exists || strings.HasPrefix(base, "call-") || strings.HasPrefix(base, "call_") {
+		return base
+	}
+	return ""
+}
+
+func grokBackgroundTaskStatus(exitCode *int, signal json.RawMessage, explicitlyKilled bool) string {
+	if explicitlyKilled || (exitCode != nil && *exitCode != 0) || grokTaskSignalPresent(signal) {
+		return "failed"
+	}
+	return "done"
+}
+
+func grokTaskSignalPresent(raw json.RawMessage) bool {
+	raw = bytes.TrimSpace(raw)
+	if len(raw) == 0 || bytes.Equal(raw, []byte("null")) || bytes.Equal(raw, []byte(`""`)) || bytes.Equal(raw, []byte("0")) || bytes.Equal(raw, []byte("false")) {
+		return false
+	}
+	return true
 }
 
 func grokVisibleUserText(text string) string {

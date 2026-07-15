@@ -101,11 +101,11 @@ func TestAgentExecutorInfersProviderRuntimeAndCapabilities(t *testing.T) {
 	if !ok {
 		t.Fatal("agent executor missing")
 	}
-	if cursor.Provider != AgentProviderCursor || !cursor.Capabilities.InteractiveTTY {
+	if cursor.Provider != AgentProviderCursor || !cursor.Capabilities.InteractiveTTY || !cursor.Capabilities.StructuredEvents {
 		t.Fatalf("cursor executor = %+v", cursor)
 	}
-	if cursor.Capabilities.StructuredEvents || cursor.Capabilities.NativeThreads || cursor.Capabilities.NativeSearch {
-		t.Fatalf("cursor should not claim unverified structured/native capabilities: %+v", cursor.Capabilities)
+	if cursor.Capabilities.NativeThreads || cursor.Capabilities.NativeSearch {
+		t.Fatalf("cursor should not claim unsupported native thread/search capabilities: %+v", cursor.Capabilities)
 	}
 
 	other, ok := cfg.AgentExecutor("other")

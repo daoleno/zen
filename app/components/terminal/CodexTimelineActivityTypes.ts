@@ -24,6 +24,7 @@ export interface ZenActivityTimelineItem {
   tone: "neutral" | "running" | "success" | "failed";
   icon: TimelineActivityIconName;
   activityKind?: "reasoning";
+  streaming?: boolean;
   detail?: string;
   body?: string;
   bodyKind?: "terminal" | "diff-stat";

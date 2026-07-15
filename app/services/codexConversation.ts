@@ -32,6 +32,8 @@ export interface CodexConversationEvent {
   call_id?: string;
   exit_code?: number;
   status?: string;
+  partial?: boolean;
+  transient?: boolean;
   files?: string[];
   explanation?: string;
   plan?: CodexPlanStep[];
@@ -112,6 +114,10 @@ function normalizeCodexConversationEvent(
         ? event.exit_code
         : undefined,
     status: typeof event.status === "string" ? event.status : undefined,
+    partial:
+      typeof event.partial === "boolean" ? event.partial : undefined,
+    transient:
+      typeof event.transient === "boolean" ? event.transient : undefined,
     files: Array.isArray(event.files)
       ? event.files.filter((file: unknown): file is string => typeof file === "string")
       : undefined,

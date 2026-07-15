@@ -89,6 +89,7 @@ function timelineItemsEqual(left: ZenTimelineItem, right: ZenTimelineItem) {
       left.pending === right.pending &&
       left.pendingLifecycle === right.pendingLifecycle &&
       left.pendingLifecycleLabel === right.pendingLifecycleLabel &&
+      left.streaming === right.streaming &&
       attachmentsEqual(left.attachments, right.attachments) &&
       left.heartbeatWake === right.heartbeatWake
     );
@@ -110,13 +111,21 @@ function timelineItemsEqual(left: ZenTimelineItem, right: ZenTimelineItem) {
       left.tone === right.tone &&
       left.icon === right.icon &&
       left.activityKind === right.activityKind &&
+      left.streaming === right.streaming &&
       left.detail === right.detail &&
       left.body === right.body &&
       left.bodyKind === right.bodyKind &&
+      left.commandText === right.commandText &&
+      left.queryText === right.queryText &&
+      left.statusLine === right.statusLine &&
       left.previewPath === right.previewPath &&
       left.defaultExpanded === right.defaultExpanded &&
+      left.accessibilityLabel === right.accessibilityLabel &&
+      left.providerToolId === right.providerToolId &&
       stringArraysEqual(left.files, right.files) &&
-      patchSummariesEqual(left.fileSummaries, right.fileSummaries)
+      patchSummariesEqual(left.fileSummaries, right.fileSummaries) &&
+      JSON.stringify(left.developerDetails) === JSON.stringify(right.developerDetails) &&
+      JSON.stringify(left.children) === JSON.stringify(right.children)
     );
   }
   return false;

@@ -46,6 +46,7 @@ export interface ZenMessageTimelineItem {
   pendingLifecycle?: "sending" | "queued";
   pendingLifecycleLabel?: string;
   pendingLifecycleAccessibilityLabel?: string;
+  streaming?: boolean;
   heartbeatWake?: HeartbeatWakeEvent;
 }
 
@@ -346,6 +347,7 @@ export function ZenAssistantMessage({
           value={item.body}
           chrome={assistantChrome}
           theme={theme}
+          streaming={item.streaming}
         />
         {zenTheme.chat.showTimestamps ? (
           <MessageBubbleFooter

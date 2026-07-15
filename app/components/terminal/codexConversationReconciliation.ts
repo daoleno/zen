@@ -69,7 +69,14 @@ export function reconcileConversationSnapshot(
     return incoming;
   }
 
-  const byId = new Map(previous.events.map((event) => [event.id, event]));
+  const incomingIds = new Set(incoming.events.map((event) => event.id));
+  const byId = new Map(
+    previous.events
+      .filter((event) =>
+        (event.partial !== true && event.transient !== true) || incomingIds.has(event.id)
+      )
+      .map((event) => [event.id, event]),
+  );
   incoming.events.forEach((event) => byId.set(event.id, event));
   return {
     ...incoming,
@@ -78,14 +85,21 @@ export function reconcileConversationSnapshot(
 }
 
 /**
- * Same-conversation transcript refreshes are monotonic; transient deletes do
- * not remove history that may currently be the user's visual anchor.
+ * Canonical same-conversation history stays monotonic. Explicit deletes may
+ * only clear provider projections that declared themselves partial/transient.
  */
 export function reconcileConversationDeltaEvents(
   previous: CodexConversation["events"],
   upserts: CodexConversation["events"],
+  deletes: string[] = [],
 ) {
   const byId = new Map(previous.map((event) => [event.id, event]));
+  deletes.forEach((id) => {
+    const event = byId.get(id);
+    if (event?.partial === true || event?.transient === true) {
+      byId.delete(id);
+    }
+  });
   upserts.forEach((event) => byId.set(event.id, event));
   return Array.from(byId.values()).sort(compareConversationEvents);
 }

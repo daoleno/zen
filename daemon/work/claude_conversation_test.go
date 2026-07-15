@@ -224,6 +224,87 @@ func TestParseClaudeConversation_StableRefreshIDs(t *testing.T) {
 	}
 }
 
+func TestParseClaudeConversation_AppendedThinkingAndTextTrackTurnLifecycle(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "progressive.jsonl")
+	user := map[string]any{
+		"type":      "user",
+		"sessionId": "progressive-session",
+		"uuid":      "uuid-user",
+		"timestamp": "2026-07-15T01:00:00.000Z",
+		"message": map[string]any{
+			"role":    "user",
+			"content": "trace the stream",
+		},
+	}
+	thinking := map[string]any{
+		"type":      "assistant",
+		"sessionId": "progressive-session",
+		"uuid":      "uuid-thinking",
+		"timestamp": "2026-07-15T01:00:01.000Z",
+		"message": map[string]any{
+			"role":        "assistant",
+			"stop_reason": "end_turn",
+			"content": []map[string]any{
+				{"type": "thinking", "thinking": "Reading the native transcript."},
+			},
+		},
+	}
+	answer := map[string]any{
+		"type":      "assistant",
+		"sessionId": "progressive-session",
+		"uuid":      "uuid-answer",
+		"timestamp": "2026-07-15T01:00:02.000Z",
+		"message": map[string]any{
+			"role":        "assistant",
+			"stop_reason": "end_turn",
+			"content": []map[string]any{
+				{"type": "text", "text": "The structured block is visible."},
+			},
+		},
+	}
+
+	writeJSONL(t, path, user)
+	userSnapshot, err := parseClaudeConversation(path)
+	if err != nil {
+		t.Fatalf("user snapshot: %v", err)
+	}
+	if userSnapshot.Active == nil || !*userSnapshot.Active || len(userSnapshot.Events) != 1 {
+		t.Fatalf("user snapshot = %#v, want active turn", userSnapshot)
+	}
+	userID := userSnapshot.Events[0].ID
+
+	writeJSONL(t, path, user, thinking)
+	thinkingSnapshot, err := parseClaudeConversation(path)
+	if err != nil {
+		t.Fatalf("thinking snapshot: %v", err)
+	}
+	if thinkingSnapshot.Active == nil || !*thinkingSnapshot.Active {
+		t.Fatalf("thinking-only snapshot must stay active while the text record is pending: %#v", thinkingSnapshot.Active)
+	}
+	if len(thinkingSnapshot.Events) != 2 || thinkingSnapshot.Events[0].ID != userID {
+		t.Fatalf("thinking snapshot changed existing identity: %#v", thinkingSnapshot.Events)
+	}
+	thinkingID := thinkingSnapshot.Events[1].ID
+	if thinkingSnapshot.Events[1].Kind != "commentary" || thinkingSnapshot.Events[1].Partial {
+		t.Fatalf("Claude thinking is a completed appended block, not a synthetic token stream: %#v", thinkingSnapshot.Events[1])
+	}
+
+	writeJSONL(t, path, user, thinking, answer)
+	answerSnapshot, err := parseClaudeConversation(path)
+	if err != nil {
+		t.Fatalf("answer snapshot: %v", err)
+	}
+	if answerSnapshot.Active == nil || *answerSnapshot.Active {
+		t.Fatalf("terminal text record must finish the turn: %#v", answerSnapshot.Active)
+	}
+	if len(answerSnapshot.Events) != 3 || answerSnapshot.Events[0].ID != userID || answerSnapshot.Events[1].ID != thinkingID {
+		t.Fatalf("answer snapshot changed appended event identities: %#v", answerSnapshot.Events)
+	}
+	if answerSnapshot.Events[2].Kind != "assistant_message" || answerSnapshot.Events[2].Body != "The structured block is visible." || answerSnapshot.Events[2].Partial {
+		t.Fatalf("answer event = %#v", answerSnapshot.Events[2])
+	}
+}
+
 func TestParseClaudeConversation_MalformedLinesAreSkipped(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "malformed.jsonl")
 	content := strings.Join([]string{

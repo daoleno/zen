@@ -97,6 +97,7 @@ export function CodexTimelineActivityDetails({
           activityKind={item.activityKind}
           bodyKind={item.bodyKind}
           tone={item.tone}
+          streaming={item.streaming}
           truncateBody={truncateBody}
         />
       ) : null}

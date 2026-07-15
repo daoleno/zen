@@ -126,6 +126,7 @@ export function buildZenTimeline(events: CodexConversationEvent[]): ZenTimelineI
         timestamp: event.timestamp,
         body: heartbeatWake ? "" : extracted.body,
         attachments: extracted.attachments,
+        streaming: event.partial,
         heartbeatWake: heartbeatWake || undefined,
       });
       continue;
@@ -155,6 +156,7 @@ export function buildZenTimeline(events: CodexConversationEvent[]): ZenTimelineI
             timestamp: event.timestamp,
             body,
             attachments: [],
+            streaming: event.partial,
           });
         }
       } else {
@@ -581,7 +583,7 @@ function activityFromEvent(event: CodexConversationEvent): ZenTimelineItem | nul
     case "command": {
       const presentation = commandPresentation(event.command || "");
       const failed = isCommandFailed(event, presentation);
-      const running = event.status === "running";
+      const running = isEventRunning(event);
       const command = event.command || "";
       const status = running ? "running" : failed ? "failed" : event.status || "done";
       const semantic = collapsedToolLabel({
@@ -670,7 +672,7 @@ function activityFromEvent(event: CodexConversationEvent): ZenTimelineItem | nul
         return null;
       }
       const failed = isFailureLikeStatus(event.status) || (event.exit_code ?? 0) !== 0;
-      const running = event.status === "running";
+      const running = isEventRunning(event);
       const status = running ? "running" : failed ? "failed" : event.status || "done";
       const presentation = toolPresentation(event);
       const previewPath = presentation.localImagePath || imagePathFromTool(event);
@@ -757,7 +759,7 @@ function activityFromEvent(event: CodexConversationEvent): ZenTimelineItem | nul
     }
     case "web_search": {
       const failed = isFailureLikeStatus(event.status) || (event.exit_code ?? 0) !== 0;
-      const running = event.status === "running";
+      const running = isEventRunning(event);
       const action = parseToolPayload(event.input);
       const body = webSearchActivityBody(event);
       return {
@@ -778,21 +780,24 @@ function activityFromEvent(event: CodexConversationEvent): ZenTimelineItem | nul
       if (!event.body?.trim()) {
         return null;
       }
+      const running = isEventRunning(event);
       return {
         type: "activity",
         id: event.id || `commentary:${event.seq}`,
         timestamp: event.timestamp,
         title: event.title || "Reasoning",
         statusKey: event.status || "done",
-        tone: event.status === "running" ? "running" : "neutral",
-        icon: event.status === "running" ? "time-outline" : "bulb",
+        tone: running ? "running" : "neutral",
+        icon: running ? "time-outline" : "bulb",
         activityKind: "reasoning",
+        streaming: event.partial,
         body: event.body,
-        defaultExpanded: event.status === "running",
+        defaultExpanded: running,
       };
     }
     case "status": {
       const calendarResult = event.source === "calendar_result";
+      const running = isEventRunning(event);
       const title = cleanDisplayText(event.title || "") || statusActivityTitle(event.status);
       const body = cleanDisplayText(event.body || "");
       if ((!title && !body) || (isLowSignalStatus(title) && !body)) {
@@ -805,14 +810,19 @@ function activityFromEvent(event: CodexConversationEvent): ZenTimelineItem | nul
         timestamp: event.timestamp,
         statusKey: event.status || "done",
         title: title || "Codex status",
-        tone: calendarResult && event.status !== "failed"
+        tone: running
+          ? "running"
+          : calendarResult && event.status !== "failed"
           ? "success"
           : statusActivityTone(event.status),
-        icon: calendarResult ? "calendar-outline" : statusActivityIcon(event.status),
+        icon: calendarResult
+          ? "calendar-outline"
+          : statusActivityIcon(running ? "running" : event.status),
+        streaming: event.partial,
         detail,
         body: body || undefined,
         bodyKind: calendarResult ? undefined : statusActivityBodyKind(event, body),
-        defaultExpanded: event.status === "failed" || event.status === "blocked",
+        defaultExpanded: running || event.status === "failed" || event.status === "blocked",
       };
     }
     default:
@@ -826,7 +836,7 @@ function explorationEntryFromEvent(event: CodexConversationEvent): ExplorationEn
     return null;
   }
   const failed = isCommandFailed(event, presentation);
-  const running = event.status === "running";
+  const running = isEventRunning(event);
   return {
     event,
     presentation,
@@ -1154,7 +1164,7 @@ function isLowSignalToolEvent(name: string, input: string) {
 }
 
 export function isEventRunning(event: CodexConversationEvent) {
-  return event.status === "running";
+  return event.partial === true || event.status === "running";
 }
 
 function imagePathFromTool(event: CodexConversationEvent) {

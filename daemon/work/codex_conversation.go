@@ -50,20 +50,26 @@ type CodexConversation struct {
 }
 
 type CodexConversationEvent struct {
-	ID          string          `json:"id"`
-	Seq         int             `json:"seq"`
-	Timestamp   string          `json:"timestamp,omitempty"`
-	Kind        string          `json:"kind"`
-	Role        string          `json:"role,omitempty"`
-	Title       string          `json:"title,omitempty"`
-	Body        string          `json:"body,omitempty"`
-	Command     string          `json:"command,omitempty"`
-	ToolName    string          `json:"tool_name,omitempty"`
-	Input       string          `json:"input,omitempty"`
-	Output      string          `json:"output,omitempty"`
-	CallID      string          `json:"call_id,omitempty"`
-	ExitCode    *int            `json:"exit_code,omitempty"`
-	Status      string          `json:"status,omitempty"`
+	ID        string `json:"id"`
+	Seq       int    `json:"seq"`
+	Timestamp string `json:"timestamp,omitempty"`
+	Kind      string `json:"kind"`
+	Role      string `json:"role,omitempty"`
+	Title     string `json:"title,omitempty"`
+	Body      string `json:"body,omitempty"`
+	Command   string `json:"command,omitempty"`
+	ToolName  string `json:"tool_name,omitempty"`
+	Input     string `json:"input,omitempty"`
+	Output    string `json:"output,omitempty"`
+	CallID    string `json:"call_id,omitempty"`
+	ExitCode  *int   `json:"exit_code,omitempty"`
+	Status    string `json:"status,omitempty"`
+	// Partial means the provider may update this same logical event ID again.
+	// It does not imply or permit client-side splitting of completed text.
+	Partial bool `json:"partial,omitempty"`
+	// Transient means a provider projection may be absent from a later
+	// canonical snapshot and is therefore safe to delete during reconciliation.
+	Transient   bool            `json:"transient,omitempty"`
 	Files       []string        `json:"files,omitempty"`
 	Explanation string          `json:"explanation,omitempty"`
 	Plan        []CodexPlanStep `json:"plan,omitempty"`
@@ -1216,15 +1222,21 @@ func (b *codexConversationBuilder) upsertReasoning(lineNumber int, timestamp, te
 		event := &b.events[index]
 		if event.Kind == "commentary" {
 			event.Title = "Reasoning"
-			event.Body = text
+			if finalize {
+				event.Body = text
+			} else {
+				event.Body = mergeCodexReasoningText(event.Body, text)
+			}
 			if event.Timestamp == "" {
 				event.Timestamp = timestamp
 			}
 			if finalize {
 				event.Status = "done"
+				event.Partial = false
 				b.pendingReasoningID = ""
 			} else {
 				event.Status = "running"
+				event.Partial = true
 			}
 			return
 		}
@@ -1237,6 +1249,7 @@ func (b *codexConversationBuilder) upsertReasoning(lineNumber int, timestamp, te
 		Title:     "Reasoning",
 		Body:      text,
 		Status:    "running",
+		Partial:   !finalize,
 		Source:    "codex_rollout",
 	}
 	if finalize {
@@ -1250,6 +1263,18 @@ func (b *codexConversationBuilder) upsertReasoning(lineNumber int, timestamp, te
 	}
 }
 
+func mergeCodexReasoningText(current, incoming string) string {
+	current = CleanCodexDisplayText(current)
+	incoming = CleanCodexDisplayText(incoming)
+	if current == "" || strings.HasPrefix(incoming, current) {
+		return incoming
+	}
+	if incoming == "" || strings.HasPrefix(current, incoming) {
+		return current
+	}
+	return current + "\n\n" + incoming
+}
+
 func (b *codexConversationBuilder) finishPendingReasoning() {
 	index := b.pendingReasoningEventIndex()
 	if index < 0 {
@@ -1259,6 +1284,7 @@ func (b *codexConversationBuilder) finishPendingReasoning() {
 	event := &b.events[index]
 	if event.Kind == "commentary" && event.Status == "running" {
 		event.Status = "done"
+		event.Partial = false
 	}
 	b.pendingReasoningID = ""
 }

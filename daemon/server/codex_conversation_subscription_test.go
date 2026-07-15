@@ -37,6 +37,59 @@ func TestBrainScopedConversationIncludesCanonicalCalendarResult(t *testing.T) {
 	}
 }
 
+func TestBrainScopedConversationPreservesPartialProviderEventWithCalendar(t *testing.T) {
+	baseTime := time.Date(2026, 7, 15, 1, 0, 0, 0, time.UTC)
+	store, err := brain.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SetChatState(brain.ChatState{ThreadID: "thread-1", UpdatedAt: baseTime}); err != nil {
+		t.Fatal(err)
+	}
+	service := brain.NewService(store, nil, nil)
+	if _, err := service.DeliverCalendarResult(brain.CalendarResult{
+		ID: "calendar_result:item:run", ThreadID: "thread-1", CalendarItemID: "item",
+		CalendarRunID: "run", Title: "Daily papers", Status: "completed", Body: "Three papers.",
+		ScheduledFor: baseTime, CreatedAt: baseTime.Add(time.Minute),
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	active := true
+	partial := work.CodexConversationEvent{
+		ID:        "grok-session:stream:prompt-1:assistant:1",
+		Seq:       200,
+		Timestamp: baseTime.Add(2 * time.Minute).Format(time.RFC3339Nano),
+		Kind:      "assistant_message",
+		Role:      "assistant",
+		Body:      "A genuine provider chunk",
+		Status:    "running",
+		Partial:   true,
+		Source:    "grok_updates",
+	}
+	srv := &Server{brain: service}
+	got := srv.brainScopedConversation("brain-thread:thread-1", work.CodexConversation{
+		Available: true,
+		SessionID: "grok-session",
+		Active:    &active,
+		Events:    []work.CodexConversationEvent{partial},
+	}, baseTime.Add(3*time.Minute))
+
+	if ids := fmt.Sprint(conversationEventIDs(got.Events)); ids != "[calendar_result:item:run grok-session:stream:prompt-1:assistant:1]" {
+		t.Fatalf("event order = %s", ids)
+	}
+	if got.Active == nil || !*got.Active {
+		t.Fatalf("active = %#v, want provider turn preserved", got.Active)
+	}
+	streamed := got.Events[1]
+	if streamed.ID != partial.ID || streamed.Body != partial.Body || !streamed.Partial || streamed.Status != "running" {
+		t.Fatalf("partial provider event changed during Brain overlay: %#v", streamed)
+	}
+	if got.Events[0].Partial {
+		t.Fatalf("Calendar result must remain finalized: %#v", got.Events[0])
+	}
+}
+
 func TestBrainScopedConversationOrdersCalendarResultBeforeLaterChat(t *testing.T) {
 	baseTime := time.Date(2026, 7, 14, 1, 0, 0, 0, time.UTC)
 	store, err := brain.NewStore(t.TempDir())
@@ -226,5 +279,37 @@ func TestCodexConversationDeltaOnlySendsTrimWindowDifference(t *testing.T) {
 	}
 	if len(deletes) != 1 || deletes[0] != previous[0].ID {
 		t.Fatalf("deletes = %#v, want only the trimmed first event", deletes)
+	}
+}
+
+func TestCodexConversationDeltaFinalizesPartialEventInPlace(t *testing.T) {
+	partial := work.CodexConversationEvent{
+		ID:      "session-1:stream:answer",
+		Seq:     10,
+		Kind:    "assistant_message",
+		Role:    "assistant",
+		Body:    "Complete semantic text",
+		Partial: true,
+	}
+	final := partial
+	final.Partial = false
+
+	if codexConversationEventFingerprint(partial) == codexConversationEventFingerprint(final) {
+		t.Fatal("partial-only finalization must change the event fingerprint")
+	}
+	upserts, deletes := codexConversationDelta(
+		codexConversationEventsByID([]work.CodexConversationEvent{partial}),
+		[]work.CodexConversationEvent{final},
+	)
+	if len(upserts) != 1 || upserts[0].ID != partial.ID || upserts[0].Partial {
+		t.Fatalf("upserts = %#v, want one finalized replacement with the same ID", upserts)
+	}
+	if len(deletes) != 0 {
+		t.Fatalf("deletes = %#v, finalization must not delete and recreate the message", deletes)
+	}
+	transient := final
+	transient.Transient = true
+	if codexConversationEventFingerprint(final) == codexConversationEventFingerprint(transient) {
+		t.Fatal("transient projection changes must participate in the event fingerprint")
 	}
 }

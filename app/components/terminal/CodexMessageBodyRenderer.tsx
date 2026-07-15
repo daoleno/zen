@@ -8,6 +8,7 @@ import type {
 } from "../../constants/terminalThemes";
 import { parseMessageBlocks } from "./CodexMessageBodyModel";
 import { CodexMessageBlock } from "./CodexMessageBlock";
+import { prepareCodexMarkdown } from "./CodexNativeMarkdownBodyModel";
 
 interface MessageBodyProps {
   value: string;
@@ -15,6 +16,7 @@ interface MessageBodyProps {
   theme: TerminalThemePalette;
   compact?: boolean;
   dense?: boolean;
+  streaming?: boolean;
 }
 
 export function MessageBody({
@@ -23,8 +25,13 @@ export function MessageBody({
   theme,
   compact = false,
   dense = false,
+  streaming = false,
 }: MessageBodyProps) {
-  const blocks = useMemo(() => parseMessageBlocks(value), [value]);
+  const displayValue = useMemo(
+    () => streaming ? prepareCodexMarkdown(value, true) : value,
+    [streaming, value],
+  );
+  const blocks = useMemo(() => parseMessageBlocks(displayValue), [displayValue]);
   if (blocks.length === 0) {
     return null;
   }
