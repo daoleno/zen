@@ -1,5 +1,6 @@
-import React from "react";
+import React, { useMemo } from "react";
 import { ScrollView, StyleSheet, Text, View } from "react-native";
+import { Gesture, GestureDetector } from "react-native-gesture-handler";
 import { Typography } from "../../constants/tokens";
 import type {
   TerminalThemeChrome,
@@ -12,6 +13,10 @@ import type {
 } from "./CodexMessageBodyModel";
 import { CodexInlineMessage } from "./CodexInlineMessage";
 import { CodexMessageCodeBlock } from "./CodexMessageCodeBlock";
+import {
+  messageTableRowTone,
+  messageTableSemanticColors,
+} from "./CodexMessageTableModel";
 import { useTimelineSelectableTextProps } from "./TimelineTextSelectableContext";
 
 interface CodexMessageBlockProps {
@@ -32,6 +37,17 @@ export function CodexMessageBlock({
   isLast,
 }: CodexMessageBlockProps) {
   const selectableTextProps = useTimelineSelectableTextProps();
+  const tableColors = messageTableSemanticColors(chrome);
+  const tableHorizontalGesture = useMemo(
+    () =>
+      Gesture.Simultaneous(
+        Gesture.Pan()
+          .activeOffsetX([-6, 6])
+          .failOffsetY([-8, 8]),
+        Gesture.Native(),
+      ),
+    [],
+  );
 
   switch (block.type) {
     case "heading":
@@ -129,12 +145,13 @@ export function CodexMessageBlock({
     case "table":
       return (
         <View style={[styles.messageTableBlock, isLast ? styles.messageBlockLast : null]}>
-          <ScrollView
-            horizontal
-            nestedScrollEnabled
-            showsHorizontalScrollIndicator={false}
-            contentContainerStyle={styles.messageTableScrollContent}
-          >
+          <GestureDetector gesture={tableHorizontalGesture}>
+            <ScrollView
+              horizontal
+              nestedScrollEnabled
+              showsHorizontalScrollIndicator={false}
+              contentContainerStyle={styles.messageTableScrollContent}
+            >
             <View
               style={[
                 styles.messageTable,
@@ -147,7 +164,7 @@ export function CodexMessageBlock({
                   styles.messageTableRow,
                   styles.messageTableHeaderRow,
                   {
-                    backgroundColor: chrome.surfaceMuted,
+                    backgroundColor: tableColors.header,
                     borderBottomColor: chrome.border,
                   },
                 ]}
@@ -185,53 +202,68 @@ export function CodexMessageBlock({
                   </View>
                 ))}
               </View>
-              {block.rows.map((row, rowIndex) => (
-                <View
-                  key={`row:${rowIndex}`}
-                  style={[
-                    styles.messageTableRow,
-                    rowIndex < block.rows.length - 1 ? styles.messageTableBodyRow : null,
-                    {
-                      backgroundColor:
-                        rowIndex % 2 === 0 ? "transparent" : chrome.surfaceMuted,
-                      borderBottomColor: chrome.border,
-                    },
-                  ]}
-                >
-                  {row.map((cell, columnIndex) => (
-                    <View
-                      key={`cell:${rowIndex}:${columnIndex}`}
-                      style={[
-                        styles.messageTableCell,
-                        compact ? styles.messageTableCellCompact : null,
-                        columnIndex === row.length - 1 ? styles.messageTableCellLast : null,
-                        { borderRightColor: chrome.border },
-                      ]}
-                    >
-                      <Text
-                        {...selectableTextProps}
+              {block.rows.map((row, rowIndex) => {
+                const rowTone = messageTableRowTone(row, rowIndex);
+                return (
+                  <View
+                    key={`row:${rowIndex}`}
+                    style={[
+                      styles.messageTableRow,
+                      rowIndex < block.rows.length - 1
+                        ? styles.messageTableBodyRow
+                        : null,
+                      rowTone === "section"
+                        ? styles.messageTableSectionRow
+                        : null,
+                      {
+                        backgroundColor: tableColors[rowTone],
+                        borderBottomColor: chrome.border,
+                        borderTopColor: chrome.borderStrong,
+                      },
+                    ]}
+                  >
+                    {row.map((cell, columnIndex) => (
+                      <View
+                        key={`cell:${rowIndex}:${columnIndex}`}
                         style={[
-                          styles.messageTableText,
-                          compact ? styles.messageTableTextCompact : null,
-                          {
-                            color: chrome.text,
-                            textAlign: tableCellTextAlign(block.alignments[columnIndex]),
-                          },
+                          styles.messageTableCell,
+                          compact ? styles.messageTableCellCompact : null,
+                          columnIndex === row.length - 1
+                            ? styles.messageTableCellLast
+                            : null,
+                          { borderRightColor: chrome.border },
                         ]}
                       >
-                        <CodexInlineMessage
-                          text={cell || " "}
-                          chrome={chrome}
-                          theme={theme}
-                          compact={compact}
-                        />
-                      </Text>
-                    </View>
-                  ))}
-                </View>
-              ))}
-            </View>
-          </ScrollView>
+                        <Text
+                          {...selectableTextProps}
+                          style={[
+                            rowTone === "section"
+                              ? styles.messageTableSectionText
+                              : styles.messageTableText,
+                            compact ? styles.messageTableTextCompact : null,
+                            {
+                              color: chrome.text,
+                              textAlign: tableCellTextAlign(
+                                block.alignments[columnIndex],
+                              ),
+                            },
+                          ]}
+                        >
+                          <CodexInlineMessage
+                            text={cell || " "}
+                            chrome={chrome}
+                            theme={theme}
+                            compact={compact}
+                          />
+                        </Text>
+                      </View>
+                    ))}
+                  </View>
+                );
+              })}
+              </View>
+            </ScrollView>
+          </GestureDetector>
         </View>
       );
     case "code":
@@ -435,6 +467,9 @@ const styles = StyleSheet.create({
   messageTableBodyRow: {
     borderBottomWidth: StyleSheet.hairlineWidth,
   },
+  messageTableSectionRow: {
+    borderTopWidth: StyleSheet.hairlineWidth,
+  },
   messageTableCell: {
     minWidth: 96,
     maxWidth: 220,
@@ -455,6 +490,12 @@ const styles = StyleSheet.create({
     fontSize: 13,
     lineHeight: 19,
     fontFamily: Typography.chatFont,
+    letterSpacing: 0,
+  },
+  messageTableSectionText: {
+    fontSize: 13,
+    lineHeight: 19,
+    fontFamily: Typography.chatFontMedium,
     letterSpacing: 0,
   },
   messageTableHeaderText: {
