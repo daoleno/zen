@@ -41,6 +41,10 @@ Options:
 
 The same settings may be supplied as ZEN_VERSION, ZEN_INSTALL_DIR,
 ZEN_NO_PATH_UPDATE=1, and ZEN_DRY_RUN=1.
+
+Without ZEN_VERSION, each fresh bootstrap dynamically selects the SemVer-highest
+public nondraft GitHub Release with a supported tag, whether stable or beta.
+ZEN_VERSION is optional exact-version pinning; no release version is embedded.
 EOF
 }
 
@@ -168,7 +172,7 @@ safe_existing_zen() {
   return 0
 }
 
-latest_prerelease() {
+latest_release() {
   releases_file=$WORK_DIR/releases.json
   compact_file=$WORK_DIR/releases.compact
   candidates_file=$WORK_DIR/release-tags
@@ -179,8 +183,7 @@ latest_prerelease() {
     /^v/ {
       tag = $0
       sub(/".*/, "", tag)
-      if ($0 ~ /"draft"[[:space:]]*:[[:space:]]*false/ &&
-          $0 ~ /"prerelease"[[:space:]]*:[[:space:]]*true/) {
+      if ($0 ~ /"draft"[[:space:]]*:[[:space:]]*false/) {
         print tag
       }
     }
@@ -235,7 +238,7 @@ latest_prerelease() {
       END { if (best != "") print best }
     '
   )
-  [ -n "$found" ] || die "GitHub returned no public Zen prerelease with a supported vX.Y.Z or vX.Y.Z-beta.N tag"
+  [ -n "$found" ] || die "GitHub returned no public nondraft Zen Release with a supported vX.Y.Z or vX.Y.Z-beta.N tag"
   VERSION=$found
 }
 
@@ -503,7 +506,7 @@ if [ -n "$VERSION" ]; then
 fi
 
 if [ "$DRY_RUN" -eq 1 ]; then
-  requested_version=${VERSION:-latest-public-prerelease}
+  requested_version=${VERSION:-latest-public-release}
   say "Would install $requested_version ($ARCHIVE) from $GITHUB_WEB/releases into $SELECTED_DIR/zen"
   say "No files were changed."
   exit 0
@@ -524,7 +527,7 @@ WORK_DIR=$(mktemp -d "${TMPDIR:-/tmp}/zen-install.XXXXXX") || die "could not cre
 [ -d "$WORK_DIR" ] || die "temporary directory was not created"
 
 if [ -z "$VERSION" ]; then
-  latest_prerelease
+  latest_release
 fi
 valid_version "$VERSION" || die "invalid release version returned by GitHub: $VERSION"
 

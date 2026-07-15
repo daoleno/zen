@@ -59,10 +59,10 @@ When action is needed, Brain uses tools or hands focused work to an agent sessio
 Install the daemon on Linux (`amd64`/`arm64`), WSL, or an Apple Silicon Mac:
 
 ```sh
-curl --proto '=https' --proto-redir '=https' -fsSL https://raw.githubusercontent.com/daoleno/zen/main/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/daoleno/zen/main/install.sh | sh
 ```
 
-The bootstrap downloads only official [`daoleno/zen` release](https://github.com/daoleno/zen/releases) assets, verifies the selected archive against `SHA256SUMS`, and installs without `sudo`. If Zen is already installed at a safe user-owned path, the script delegates to Zen's signed built-in updater. See [Install the daemon](docs/install-daemon.md) for version pinning, custom install locations, the bootstrap trust boundary, manual checksum verification, and source builds.
+On every fresh run without `ZEN_VERSION`, the bootstrap dynamically selects the SemVer-highest eligible public Zen release, whether beta or stable. There is no embedded release version to keep synchronized in this README or the script; `ZEN_VERSION` is only an optional exact-version pin. The bootstrap downloads only official [`daoleno/zen` release](https://github.com/daoleno/zen/releases) assets, verifies the selected archive against `SHA256SUMS`, and installs without `sudo`. If Zen is already installed at a safe user-owned path, the script delegates to Zen's signed built-in updater. See [Install the daemon](docs/install-daemon.md) for precise release-selection rules, version pinning, custom install locations, the bootstrap trust boundary, manual checksum verification, and source builds.
 
 Then, on the computer that has `tmux` and an authenticated coding-agent CLI:
 

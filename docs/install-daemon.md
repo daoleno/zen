@@ -14,24 +14,26 @@ You do not need every executor. One is enough.
 ## Install with one command
 
 ```sh
-curl --proto '=https' --proto-redir '=https' -fsSL https://raw.githubusercontent.com/daoleno/zen/main/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/daoleno/zen/main/install.sh | sh
 ```
 
-The installer detects the supported platform, finds the newest public Zen prerelease, downloads its exact archive and `SHA256SUMS` from the official [`daoleno/zen`](https://github.com/daoleno/zen) release, verifies SHA-256, rejects unexpected archive entries and links, and atomically installs a mode-`0755` executable. It never invokes `sudo`, installs packages, installs AI CLIs, logs in, or sends telemetry.
+On every fresh bootstrap run without `ZEN_VERSION`, the installer queries GitHub at run time and selects the SemVer-highest public nondraft Release whose tag matches supported `vX.Y.Z` or `vX.Y.Z-beta.N` syntax. GitHub's `prerelease` flag does not affect eligibility: strict SemVer ordering makes a stable tag outrank a beta at the same core version, while a beta with a higher core version outranks a stable release with a lower core. The default therefore follows today's beta releases and automatically moves to a future stable release without an embedded version that needs routine README or script updates. `ZEN_VERSION` is optional pinning only.
+
+The installer detects the supported platform, downloads the selected release's exact archive and `SHA256SUMS` from the official [`daoleno/zen`](https://github.com/daoleno/zen) release, verifies SHA-256, rejects unexpected archive entries and links, and atomically installs a mode-`0755` executable. It never invokes `sudo`, installs packages, installs AI CLIs, logs in, or sends telemetry.
 
 If a usable Zen executable already exists at a safe user-owned location, the default command runs its built-in `zen update` instead. That updater verifies the signed schema-v2 release manifest and authenticated archive checksum before replacing the executable. Setting `ZEN_VERSION` or `ZEN_INSTALL_DIR` requests a fresh bootstrap install instead:
 
 ```sh
 # Exact supported tag; no other tag syntax is accepted.
-curl --proto '=https' --proto-redir '=https' -fsSL https://raw.githubusercontent.com/daoleno/zen/main/install.sh | \
+curl -fsSL https://raw.githubusercontent.com/daoleno/zen/main/install.sh | \
   ZEN_VERSION=v0.1.0-beta.5 sh
 
 # Explicit user-owned destination.
-curl --proto '=https' --proto-redir '=https' -fsSL https://raw.githubusercontent.com/daoleno/zen/main/install.sh | \
+curl -fsSL https://raw.githubusercontent.com/daoleno/zen/main/install.sh | \
   ZEN_INSTALL_DIR="$HOME/bin" sh
 
 # Do not edit a shell profile (useful for managed hosts and CI).
-curl --proto '=https' --proto-redir '=https' -fsSL https://raw.githubusercontent.com/daoleno/zen/main/install.sh | \
+curl -fsSL https://raw.githubusercontent.com/daoleno/zen/main/install.sh | \
   ZEN_NO_PATH_UPDATE=1 sh
 ```
 
@@ -48,6 +50,12 @@ After installation, the script runs a safe `--help` execution check followed by 
 ### Bootstrap trust boundary
 
 The first `install.sh`, release archive, and `SHA256SUMS` arrive over GitHub HTTPS. The checksum detects a damaged or mismatched archive, but because the checksum is delivered through the same HTTPS trust boundary, the bootstrap does **not** claim Ed25519 authentication. Review the repository-root [`install.sh`](../install.sh), pin its commit in the raw URL if your policy requires reviewed immutable bootstrap code, or use the manual path below.
+
+As optional transport hardening on curl versions that support these flags, require HTTPS for the initial script request:
+
+```sh
+curl --proto '=https' --proto-redir '=https' -fsSL https://raw.githubusercontent.com/daoleno/zen/main/install.sh | sh
+```
 
 After the first install, `zen update` has a stronger trust path: the installed binary contains Zen's Ed25519 public key and requires the signed schema-v2 manifest before accepting an archive. The bootstrap never downloads remote shell code and pipes it into a second shell.
 

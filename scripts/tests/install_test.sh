@@ -31,6 +31,13 @@ assert_contains() {
   grep -Fq "$text" "$file" || fail "expected '$text' in $file"
 }
 
+assert_not_contains() {
+  local file=$1 text=$2
+  if grep -Fq "$text" "$file"; then
+    fail "did not expect '$text' in $file"
+  fi
+}
+
 assert_not_exists() {
   [[ ! -e "$1" ]] || fail "expected no file at $1"
 }
@@ -188,42 +195,56 @@ test_unsupported_platforms() {
   pass "fails clearly on Intel macOS and native Windows"
 }
 
-test_latest_prerelease_and_urls() {
-  new_case latest-prerelease
+test_unconfigured_version_is_dynamic() {
+  new_case dynamic-version-first-run
   make_archive
   cat > "$RELEASES_JSON" <<'EOF'
 [
  {"tag_name":"not-a-version","draft":false,"prerelease":true},
- {"tag_name":"v9.0.0","draft":false,"prerelease":false},
+ {"tag_name":"v9.0.0","draft":true,"prerelease":false},
  {"tag_name":"v8.0.0-beta.1","draft":true,"prerelease":true},
- {"tag_name":"v2.0.0-beta.9","draft":false,"prerelease":true},
- {"tag_name":"v1.99.99-beta.999","draft":false,"prerelease":true},
- {"tag_name":"v2.0.0-beta.10","draft":false,"prerelease":true}
+ {"tag_name":"v3.4.5","draft":false,"prerelease":false},
+ {"tag_name":"v3.4.5-beta.10","draft":false,"prerelease":true},
+ {"tag_name":"v4.0.0-beta.1","draft":false,"prerelease":true}
 ]
 EOF
   run_installer ZEN_INSTALL_DIR="$HOME_DIR/install"
-  [[ -x "$HOME_DIR/install/zen" ]] || fail "latest prerelease was not installed"
-  assert_contains "$CASE_DIR/output" "Installed Zen v2.0.0-beta.10"
+  [[ -x "$HOME_DIR/install/zen" ]] || fail "latest release was not installed"
+  assert_contains "$CASE_DIR/output" "Installed Zen v4.0.0-beta.1"
   assert_contains "$CASE_DIR/curl.log" "https://api.github.com/repos/daoleno/zen/releases?per_page=100"
-  assert_contains "$CASE_DIR/curl.log" "https://github.com/daoleno/zen/releases/download/v2.0.0-beta.10/zen-linux-amd64.tar.gz"
-  assert_contains "$CASE_DIR/curl.log" "https://github.com/daoleno/zen/releases/download/v2.0.0-beta.10/SHA256SUMS"
-  pass "selects the highest public prerelease independent of API order"
+  assert_contains "$CASE_DIR/curl.log" "https://github.com/daoleno/zen/releases/download/v4.0.0-beta.1/zen-linux-amd64.tar.gz"
+  assert_not_contains "$CASE_DIR/curl.log" "/download/v9.0.0/"
+
+  new_case dynamic-version-later-run
+  make_archive
+  cat > "$RELEASES_JSON" <<'EOF'
+[
+ {"tag_name":"v4.0.0-beta.1","draft":false,"prerelease":true},
+ {"tag_name":"v5.0.0","draft":false,"prerelease":false}
+]
+EOF
+  run_installer ZEN_INSTALL_DIR="$HOME_DIR/install"
+  assert_contains "$CASE_DIR/output" "Installed Zen v5.0.0"
+  assert_contains "$CASE_DIR/curl.log" "https://api.github.com/repos/daoleno/zen/releases?per_page=100"
+  assert_contains "$CASE_DIR/curl.log" "https://github.com/daoleno/zen/releases/download/v5.0.0/zen-linux-amd64.tar.gz"
+  assert_not_contains "$CASE_DIR/curl.log" "/download/v4.0.0-beta.1/"
+  pass "ignores drafts and invalid tags, then dynamically selects the SemVer-highest public release on every unpinned fresh run"
 }
 
-test_stable_tag_prerelease_precedence() {
-  new_case stable-tag-prerelease
+test_stable_release_precedence() {
+  new_case stable-release-precedence
   make_archive
   cat > "$RELEASES_JSON" <<'EOF'
 [
  {"tag_name":"v3.4.5-beta.10","draft":false,"prerelease":true},
- {"tag_name":"v3.4.5","draft":false,"prerelease":true}
+ {"tag_name":"v3.4.5","draft":false,"prerelease":false}
 ]
 EOF
   run_installer ZEN_INSTALL_DIR="$HOME_DIR/install"
   assert_contains "$CASE_DIR/output" "Installed Zen v3.4.5"
   assert_contains "$CASE_DIR/curl.log" "https://github.com/daoleno/zen/releases/download/v3.4.5/zen-linux-amd64.tar.gz"
   assert_contains "$CASE_DIR/curl.log" "https://github.com/daoleno/zen/releases/download/v3.4.5/SHA256SUMS"
-  pass "ranks a stable tag marked prerelease above beta for the same core"
+  pass "includes stable public releases and ranks stable above beta at the same core"
 }
 
 test_fixed_version_and_atomic_replacement() {
@@ -236,6 +257,7 @@ test_fixed_version_and_atomic_replacement() {
   [[ $(stat -c '%a' "$HOME_DIR/install/zen") == 755 ]] || fail "installed mode is not 0755"
   [[ -z $(find "$HOME_DIR/install" -name '.zen-install.*' -print -quit) ]] || fail "atomic temp file remained"
   assert_contains "$CASE_DIR/curl.log" "/download/v3.4.5/zen-linux-amd64.tar.gz"
+  assert_not_contains "$CASE_DIR/curl.log" "https://api.github.com/repos/daoleno/zen/releases?per_page=100"
   pass "pins exact release URLs and atomically replaces the target with mode 0755"
 }
 
@@ -382,8 +404,8 @@ fi
 printf 'TAP version 13\n'
 test_platform_mapping
 test_unsupported_platforms
-test_latest_prerelease_and_urls
-test_stable_tag_prerelease_precedence
+test_unconfigured_version_is_dynamic
+test_stable_release_precedence
 test_fixed_version_and_atomic_replacement
 test_checksum_failures
 test_unsafe_archives
