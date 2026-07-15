@@ -97,10 +97,20 @@ function conversationIdsMatch(left?: string, right?: string) {
   return !left || !right;
 }
 
-function compareConversationEvents(
+export function compareConversationEvents(
   left: CodexConversation["events"][number],
   right: CodexConversation["events"][number],
 ) {
+  const leftTime = Date.parse(left.timestamp || "");
+  const rightTime = Date.parse(right.timestamp || "");
+  const leftHasTime = Number.isFinite(leftTime);
+  const rightHasTime = Number.isFinite(rightTime);
+  if (leftHasTime !== rightHasTime) {
+    return leftHasTime ? 1 : -1;
+  }
+  if (leftHasTime && leftTime !== rightTime) {
+    return leftTime - rightTime;
+  }
   if (left.seq !== right.seq) {
     return left.seq - right.seq;
   }

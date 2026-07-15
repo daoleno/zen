@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -403,6 +404,7 @@ func (s *Store) chatMessagesLocked(threadID string, limit int) ([]ChatMessage, e
 	if err := scanner.Err(); err != nil {
 		return nil, err
 	}
+	sortChatMessages(out)
 	if limit > 0 && len(out) > limit {
 		out = out[len(out)-limit:]
 	}
@@ -451,10 +453,24 @@ func (s *Store) ScheduledResults(limit int) ([]ChatMessage, error) {
 	if err := scanner.Err(); err != nil {
 		return nil, err
 	}
+	sortChatMessages(out)
 	if limit > 0 && len(out) > limit {
 		out = out[len(out)-limit:]
 	}
 	return out, nil
+}
+
+// sortChatMessages makes file append order an implementation detail. Message
+// time is canonical; identity provides a stable order for equal timestamps.
+func sortChatMessages(messages []ChatMessage) {
+	sort.SliceStable(messages, func(left, right int) bool {
+		leftTime := messages[left].CreatedAt
+		rightTime := messages[right].CreatedAt
+		if !leftTime.Equal(rightTime) {
+			return leftTime.Before(rightTime)
+		}
+		return messages[left].ID < messages[right].ID
+	})
 }
 
 type ChatState struct {

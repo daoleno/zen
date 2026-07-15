@@ -78,10 +78,20 @@ export const SCREENSHOT_BRAIN_EVENTS: CodexConversationEvent[] = [
     status: "running",
   },
   {
-    id: "brain-assistant",
+    id: "brain-calendar-result",
     seq: 4,
+    kind: "status",
+    timestamp: "2026-06-18T09:31:00.000Z",
+    title: "Daily Hacker News failed",
+    body: "Linked Work is no longer observable after restart.",
+    status: "failed",
+    source: "calendar_result",
+  },
+  {
+    id: "brain-assistant",
+    seq: 5,
     kind: "assistant_message",
-    timestamp: DEMO_TIMESTAMP,
+    timestamp: "2026-06-18T09:32:00.000Z",
     body: "I’ll keep the workspace and delegated results together here. You can leave this chat and return without rebuilding the context.",
   },
 ];

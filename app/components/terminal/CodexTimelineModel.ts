@@ -32,6 +32,7 @@ import {
 import type { DisplayAttachment } from "./CodexTimelineMessage";
 import type { ZenTimelineItem } from "./CodexTimelineItemView";
 import { slashCommandIcon } from "./codexSlashCommandPresentation";
+import { compareConversationEvents } from "./codexConversationReconciliation";
 
 const ATTACHMENT_TAG_RE = /<zen_attachments>\s*([\s\S]*?)\s*<\/zen_attachments>/i;
 const COMMAND_OUTPUT_PREVIEW_LINES = 7;
@@ -108,7 +109,7 @@ export function buildZenTimeline(events: CodexConversationEvent[]): ZenTimelineI
     explorationEntries = [];
   };
 
-  for (const event of [...events].sort((left, right) => left.seq - right.seq)) {
+  for (const event of [...events].sort(compareConversationEvents)) {
     if (event.kind === "user_message" || event.kind === "assistant_message") {
       flushExploration();
       const extracted = extractDisplayMessage(event.body || "");
@@ -791,6 +792,7 @@ function activityFromEvent(event: CodexConversationEvent): ZenTimelineItem | nul
       };
     }
     case "status": {
+      const calendarResult = event.source === "calendar_result";
       const title = cleanDisplayText(event.title || "") || statusActivityTitle(event.status);
       const body = cleanDisplayText(event.body || "");
       if ((!title && !body) || (isLowSignalStatus(title) && !body)) {
@@ -803,11 +805,13 @@ function activityFromEvent(event: CodexConversationEvent): ZenTimelineItem | nul
         timestamp: event.timestamp,
         statusKey: event.status || "done",
         title: title || "Codex status",
-        tone: statusActivityTone(event.status),
-        icon: statusActivityIcon(event.status),
+        tone: calendarResult && event.status !== "failed"
+          ? "success"
+          : statusActivityTone(event.status),
+        icon: calendarResult ? "calendar-outline" : statusActivityIcon(event.status),
         detail,
         body: body || undefined,
-        bodyKind: statusActivityBodyKind(event, body),
+        bodyKind: calendarResult ? undefined : statusActivityBodyKind(event, body),
         defaultExpanded: event.status === "failed" || event.status === "blocked",
       };
     }

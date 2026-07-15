@@ -63,4 +63,57 @@ describe("brain scheduled result unread state", () => {
     expect(hydrated.cursorsHydrated).toBe(true);
     expect(totalBrainUnread(hydrated)).toBe(0);
   });
+
+  test("normalizes out-of-order and duplicate result snapshots before cursoring", () => {
+    const received = brainReducer(initialBrainState, {
+      type: "BRAIN_SNAPSHOT",
+      serverId: "server-1",
+      serverName: "Zen",
+      serverUrl: "ws://zen",
+      brain: {
+        ...snapshot,
+        scheduled_results: [
+          { ...snapshot.scheduled_results[0], id: "later", created_at: "2026-07-14T01:03:00Z" },
+          { ...snapshot.scheduled_results[0], id: "earlier", created_at: "2026-07-14T01:01:00Z" },
+          { ...snapshot.scheduled_results[0], id: "later", created_at: "2026-07-14T01:03:00Z" },
+        ],
+      },
+    });
+
+    expect(received.byServer["server-1"]?.scheduled_results?.map((item) => item.id)).toEqual([
+      "earlier",
+      "later",
+    ]);
+    expect(received.unreadByThread[brainThreadKey("server-1", "thread-1")]).toBe(2);
+  });
+
+  test("counts an equal-time result after an evicted cursor by deterministic id", () => {
+    const received = brainReducer(
+      {
+        ...initialBrainState,
+        readCursors: {
+          [brainThreadKey("server-1", "thread-1")]:
+            "2026-07-14T01:02:00Z\u0000calendar-a",
+        },
+      },
+      {
+        type: "BRAIN_SNAPSHOT",
+        serverId: "server-1",
+        serverName: "Zen",
+        serverUrl: "ws://zen",
+        brain: {
+          ...snapshot,
+          scheduled_results: [
+            {
+              ...snapshot.scheduled_results[0],
+              id: "calendar-b",
+              created_at: "2026-07-14T01:02:00Z",
+            },
+          ],
+        },
+      },
+    );
+
+    expect(received.unreadByThread[brainThreadKey("server-1", "thread-1")]).toBe(1);
+  });
 });

@@ -140,9 +140,7 @@ function normalizeSnapshot(
         ? raw.chat_thread_id
         : undefined,
     scheduled_results: Array.isArray(raw?.scheduled_results)
-      ? raw.scheduled_results
-          .map(normalizeChatMessage)
-          .filter((message) => message.id && message.thread_id)
+      ? normalizeScheduledResults(raw.scheduled_results)
       : [],
     workspace: typeof raw?.workspace === "string" ? raw.workspace : undefined,
     generated_at:
@@ -171,6 +169,25 @@ function normalizeChatMessage(raw: any): BrainChatMessage {
     scheduled_for:
       typeof raw?.scheduled_for === "string" ? raw.scheduled_for : undefined,
   };
+}
+
+function normalizeScheduledResults(raw: any[]): BrainChatMessage[] {
+  const byId = new Map<string, BrainChatMessage>();
+  raw
+    .map(normalizeChatMessage)
+    .filter((message) => message.id && message.thread_id)
+    .forEach((message) => byId.set(message.id, message));
+  return Array.from(byId.values()).sort((left, right) => {
+    const leftTime = Date.parse(left.created_at);
+    const rightTime = Date.parse(right.created_at);
+    if (Number.isFinite(leftTime) && Number.isFinite(rightTime) && leftTime !== rightTime) {
+      return leftTime - rightTime;
+    }
+    if (Number.isFinite(leftTime) !== Number.isFinite(rightTime)) {
+      return Number.isFinite(leftTime) ? 1 : -1;
+    }
+    return left.id.localeCompare(right.id);
+  });
 }
 
 function normalizeAgentRef(raw: any): BrainAgentRef {
@@ -335,14 +352,29 @@ function calculateUnread(
       const count =
         cursorIndex >= 0
           ? messages.length - cursorIndex - 1
-          : messages.filter(
-              (message) =>
-                Date.parse(message.created_at) > Date.parse(cursorTime),
+          : messages.filter((message) =>
+              isMessageAfterCursor(message, cursorTime, cursorId)
             ).length;
       if (count > 0) unread[key] = count;
     }
   }
   return unread;
+}
+
+function isMessageAfterCursor(
+  message: BrainChatMessage,
+  cursorTime: string,
+  cursorId: string,
+) {
+  const messageTime = Date.parse(message.created_at);
+  const parsedCursorTime = Date.parse(cursorTime);
+  if (Number.isFinite(messageTime) && Number.isFinite(parsedCursorTime)) {
+    if (messageTime !== parsedCursorTime) {
+      return messageTime > parsedCursorTime;
+    }
+    return message.id.localeCompare(cursorId) > 0;
+  }
+  return messageCursor(message).localeCompare(`${cursorTime}\u0000${cursorId}`) > 0;
 }
 
 function shallowRecordEqual(

@@ -254,6 +254,7 @@ function BrainDemo() {
           chrome={chrome}
           theme={theme}
           progressLabel="Mobile QA agent · accessibility checks in progress"
+          includeActivities
         />
         <DemoComposer chrome={chrome} placeholder="Ask Brain" />
       </ChatCanvas>
@@ -322,13 +323,17 @@ function DemoTimeline({
   chrome,
   theme,
   progressLabel,
+  includeActivities = false,
 }: {
   timeline: ZenTimelineItem[];
   chrome: ReturnType<typeof buildChatChrome>["chrome"];
   theme: ReturnType<typeof buildChatChrome>["theme"];
   progressLabel: string;
+  includeActivities?: boolean;
 }) {
-  const stableTimeline = timeline.filter((item) => item.type !== "activity");
+  const stableTimeline = includeActivities
+    ? timeline
+    : timeline.filter((item) => item.type !== "activity");
   return (
     <ScrollView
       style={styles.flex}

@@ -14,6 +14,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -1072,35 +1073,83 @@ func (s *Server) brainScopedConversation(scopeKey string, conversation work.Code
 		active := false
 		conversation.Active = &active
 	}
-	maxSeq := 0
+	eventsByID := make(map[string]int, len(conversation.Events)+len(messages))
+	uniqueEvents := make([]work.CodexConversationEvent, 0, len(conversation.Events)+len(messages))
 	for _, event := range conversation.Events {
-		if event.Seq > maxSeq {
-			maxSeq = event.Seq
+		if id := strings.TrimSpace(event.ID); id != "" {
+			if index, ok := eventsByID[id]; ok {
+				uniqueEvents[index] = event
+				continue
+			}
+			eventsByID[id] = len(uniqueEvents)
 		}
+		uniqueEvents = append(uniqueEvents, event)
 	}
+	conversation.Events = uniqueEvents
 	for _, message := range messages {
 		if message.Kind != "calendar_result" {
 			continue
 		}
-		maxSeq++
-		conversation.Events = append(conversation.Events, work.CodexConversationEvent{
-			ID:        message.ID,
-			Seq:       maxSeq,
-			Timestamp: message.CreatedAt.Format(time.RFC3339Nano),
-			Kind:      "assistant_message",
-			Role:      "assistant",
-			Title:     message.Title,
-			Body:      message.Body,
-			Status:    message.Status,
-			Source:    "calendar_result",
-		})
+		event := calendarResultConversationEvent(message)
+		if index, ok := eventsByID[event.ID]; ok {
+			conversation.Events[index] = event
+			continue
+		}
+		eventsByID[event.ID] = len(conversation.Events)
+		conversation.Events = append(conversation.Events, event)
 	}
+	sort.SliceStable(conversation.Events, func(left, right int) bool {
+		return brainConversationEventLess(conversation.Events[left], conversation.Events[right])
+	})
 	conversation.Available = true
 	conversation.Reason = ""
 	conversation.Source = "brain_chat"
 	conversation.SessionID = prefix + threadID
 	conversation.Updated = &now
 	return conversation
+}
+
+func calendarResultConversationEvent(message brain.ChatMessage) work.CodexConversationEvent {
+	title := strings.TrimSpace(message.Title)
+	status := strings.TrimSpace(message.Status)
+	if title != "" && status != "" {
+		title += " " + status
+	}
+	body := strings.TrimSpace(message.Body)
+	if heading := strings.TrimSpace(message.Title + " " + status); heading != "" {
+		body = strings.TrimSpace(strings.TrimPrefix(body, "**"+heading+"**"))
+	}
+	return work.CodexConversationEvent{
+		ID:        message.ID,
+		Timestamp: message.CreatedAt.Format(time.RFC3339Nano),
+		Kind:      "status",
+		Title:     title,
+		Body:      body,
+		Status:    status,
+		Source:    "calendar_result",
+	}
+}
+
+func brainConversationEventLess(left, right work.CodexConversationEvent) bool {
+	leftTime, leftOK := parseConversationEventTime(left.Timestamp)
+	rightTime, rightOK := parseConversationEventTime(right.Timestamp)
+	if leftOK != rightOK {
+		// Structured events normally carry timestamps. Legacy undated events sort
+		// first so they cannot pin a later scheduled result at the footer.
+		return !leftOK
+	}
+	if leftOK && !leftTime.Equal(rightTime) {
+		return leftTime.Before(rightTime)
+	}
+	if left.Seq != right.Seq {
+		return left.Seq < right.Seq
+	}
+	return left.ID < right.ID
+}
+
+func parseConversationEventTime(value string) (time.Time, bool) {
+	parsed, err := time.Parse(time.RFC3339Nano, strings.TrimSpace(value))
+	return parsed, err == nil
 }
 
 func codexConversationIdentity(conversation work.CodexConversation) string {

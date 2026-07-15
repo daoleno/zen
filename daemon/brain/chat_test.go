@@ -3,6 +3,7 @@ package brain
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"strings"
 	"testing"
@@ -102,6 +103,41 @@ func TestDeliverCalendarResultRejectsUnknownThreadWithoutAppending(t *testing.T)
 	results, readErr := store.ScheduledResults(10)
 	if readErr != nil || len(results) != 0 {
 		t.Fatalf("results = %#v, err = %v", results, readErr)
+	}
+}
+
+func TestChatMessagesOrderByCanonicalTimeAndIdentityBeforeLimiting(t *testing.T) {
+	store, err := NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	baseTime := time.Date(2026, 7, 14, 1, 0, 0, 0, time.UTC)
+	if err := store.SetChatState(ChatState{ThreadID: "thread-1", UpdatedAt: baseTime}); err != nil {
+		t.Fatal(err)
+	}
+	for _, message := range []ChatMessage{
+		{ID: "later", ThreadID: "thread-1", SessionID: "calendar", Role: "assistant", Body: "later", Kind: "calendar_result", CreatedAt: baseTime.Add(time.Minute)},
+		{ID: "same-b", ThreadID: "thread-1", SessionID: "calendar", Role: "assistant", Body: "same b", Kind: "calendar_result", CreatedAt: baseTime},
+		{ID: "same-a", ThreadID: "thread-1", SessionID: "calendar", Role: "assistant", Body: "same a", Kind: "calendar_result", CreatedAt: baseTime},
+	} {
+		if _, err := store.AppendChatMessage(message); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	messages, err := store.ChatMessages("thread-1", 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := []string{messages[0].ID, messages[1].ID}; fmt.Sprint(got) != "[same-b later]" {
+		t.Fatalf("limited messages = %v, want canonical tail", got)
+	}
+	results, err := store.ScheduledResults(3)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := []string{results[0].ID, results[1].ID, results[2].ID}; fmt.Sprint(got) != "[same-a same-b later]" {
+		t.Fatalf("scheduled results = %v, want time then identity", got)
 	}
 }
 

@@ -27,14 +27,101 @@ func TestBrainScopedConversationIncludesCanonicalCalendarResult(t *testing.T) {
 		t.Fatal(err)
 	}
 	srv := &Server{brain: service}
-	base := work.CodexConversation{Available: true, SessionID: "agent-session", Events: []work.CodexConversationEvent{{ID: "agent:1", Seq: 1, Kind: "assistant_message", Body: "Earlier"}}}
+	base := work.CodexConversation{Available: true, SessionID: "agent-session", Events: []work.CodexConversationEvent{{ID: "agent:1", Seq: 1, Timestamp: time.Now().Add(-time.Minute).Format(time.RFC3339Nano), Kind: "assistant_message", Body: "Earlier"}}}
 	got := srv.brainScopedConversation("brain-thread:thread-1", base, time.Now())
 	if got.SessionID != "brain-thread:thread-1" || len(got.Events) != 2 {
 		t.Fatalf("conversation = %#v", got)
 	}
-	if result := got.Events[1]; result.ID != "calendar_result:item:run" || result.Source != "calendar_result" || result.Status != "completed" {
+	if result := got.Events[1]; result.ID != "calendar_result:item:run" || result.Source != "calendar_result" || result.Kind != "status" || result.Status != "completed" {
 		t.Fatalf("result = %#v", result)
 	}
+}
+
+func TestBrainScopedConversationOrdersCalendarResultBeforeLaterChat(t *testing.T) {
+	baseTime := time.Date(2026, 7, 14, 1, 0, 0, 0, time.UTC)
+	store, err := brain.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SetChatState(brain.ChatState{ThreadID: "thread-1", UpdatedAt: baseTime}); err != nil {
+		t.Fatal(err)
+	}
+	service := brain.NewService(store, nil, nil)
+	if _, err := service.DeliverCalendarResult(brain.CalendarResult{
+		ID: "calendar_result:item:run", ThreadID: "thread-1", CalendarItemID: "item",
+		CalendarRunID: "run", Title: "Daily Hacker News", Status: "failed",
+		Body:         "**Daily Hacker News failed**\n\nLinked Work is no longer observable.",
+		ScheduledFor: baseTime, CreatedAt: baseTime.Add(time.Minute),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	srv := &Server{brain: service}
+	active := false
+	base := work.CodexConversation{Available: true, Active: &active, Events: []work.CodexConversationEvent{
+		{ID: "user-before", Seq: 40, Timestamp: baseTime.Format(time.RFC3339Nano), Kind: "user_message", Role: "user", Body: "Before"},
+		{ID: "assistant-after", Seq: 41, Timestamp: baseTime.Add(2 * time.Minute).Format(time.RFC3339Nano), Kind: "assistant_message", Role: "assistant", Body: "Later answer"},
+	}}
+
+	got := srv.brainScopedConversation("brain-thread:thread-1", base, baseTime.Add(3*time.Minute))
+	if ids := conversationEventIDs(got.Events); fmt.Sprint(ids) != "[user-before calendar_result:item:run assistant-after]" {
+		t.Fatalf("event order = %v", ids)
+	}
+	result := got.Events[1]
+	if result.Kind != "status" || result.Title != "Daily Hacker News failed" || result.Body != "Linked Work is no longer observable." || result.Status != "failed" {
+		t.Fatalf("calendar result presentation = %#v", result)
+	}
+	if got.Active == nil || *got.Active {
+		t.Fatalf("terminal failure left active projection: %#v", got.Active)
+	}
+
+	reloaded := srv.brainScopedConversation("brain-thread:thread-1", base, baseTime.Add(4*time.Minute))
+	if fmt.Sprint(conversationEventIDs(reloaded.Events)) != fmt.Sprint(conversationEventIDs(got.Events)) ||
+		codexConversationEventsFingerprint(reloaded.Events) != codexConversationEventsFingerprint(got.Events) {
+		t.Fatalf("reload changed canonical timeline: first=%#v reload=%#v", got.Events, reloaded.Events)
+	}
+}
+
+func TestBrainScopedConversationOrdersAndDeduplicatesCalendarResultsDeterministically(t *testing.T) {
+	baseTime := time.Date(2026, 7, 14, 1, 0, 0, 0, time.UTC)
+	store, err := brain.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SetChatState(brain.ChatState{ThreadID: "thread-1", UpdatedAt: baseTime}); err != nil {
+		t.Fatal(err)
+	}
+	service := brain.NewService(store, nil, nil)
+	for _, result := range []brain.CalendarResult{
+		{ID: "calendar_result:item:run-b", ThreadID: "thread-1", Title: "Second", Status: "completed", Body: "second", ScheduledFor: baseTime, CreatedAt: baseTime.Add(time.Minute)},
+		{ID: "calendar_result:item:run-a", ThreadID: "thread-1", Title: "First", Status: "completed", Body: "first", ScheduledFor: baseTime, CreatedAt: baseTime.Add(time.Minute)},
+		{ID: "calendar_result:item:run-old", ThreadID: "thread-1", Title: "Old", Status: "failed", Body: "old", ScheduledFor: baseTime.Add(-time.Hour), CreatedAt: baseTime.Add(-time.Minute)},
+	} {
+		if _, err := service.DeliverCalendarResult(result); err != nil {
+			t.Fatal(err)
+		}
+	}
+	srv := &Server{brain: service}
+	base := work.CodexConversation{Available: true, Events: []work.CodexConversationEvent{
+		{ID: "calendar_result:item:run-a", Seq: 99, Timestamp: baseTime.Add(10 * time.Minute).Format(time.RFC3339Nano), Kind: "assistant_message", Body: "stale duplicate"},
+		{ID: "normal", Seq: 100, Timestamp: baseTime.Add(2 * time.Minute).Format(time.RFC3339Nano), Kind: "assistant_message", Body: "normal"},
+	}}
+
+	got := srv.brainScopedConversation("brain-thread:thread-1", base, baseTime)
+	want := "[calendar_result:item:run-old calendar_result:item:run-a calendar_result:item:run-b normal]"
+	if ids := conversationEventIDs(got.Events); fmt.Sprint(ids) != want {
+		t.Fatalf("event order = %v, want %s", ids, want)
+	}
+	if got.Events[1].Seq != 0 || got.Events[2].Seq != 0 || got.Events[3].Seq != 100 {
+		t.Fatalf("merge mutated provider sequence identity: %#v", got.Events)
+	}
+}
+
+func conversationEventIDs(events []work.CodexConversationEvent) []string {
+	ids := make([]string, 0, len(events))
+	for _, event := range events {
+		ids = append(ids, event.ID)
+	}
+	return ids
 }
 
 func TestCodexConversationSubscriptionFingerprintIgnoresUpdatedAt(t *testing.T) {

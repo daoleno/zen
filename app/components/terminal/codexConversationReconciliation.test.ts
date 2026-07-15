@@ -132,4 +132,39 @@ describe("conversation stream reconciliation", () => {
     expect(reconciled[0]?.id).toBe("assistant");
     expect(reconciled[0]?.body).toBe("partial response");
   });
+
+  test("a formerly appended Calendar result returns to canonical time after reload", () => {
+    const previous = conversation("thread-a", [
+      { ...event("later-assistant", 2), timestamp: "2026-07-14T01:02:00Z" },
+      { ...event("calendar-result", 3), timestamp: "2026-07-14T01:01:00Z", source: "calendar_result" },
+    ]);
+    const incoming = conversation("thread-a", [
+      { ...event("calendar-result", 1), timestamp: "2026-07-14T01:01:00Z", source: "calendar_result" },
+      { ...event("later-assistant", 2), timestamp: "2026-07-14T01:02:00Z" },
+    ]);
+
+    const reloaded = reconcileConversationSnapshot(previous, incoming, true);
+    expect(reloaded.events.map((item) => item.id)).toEqual([
+      "calendar-result",
+      "later-assistant",
+    ]);
+
+    const reconnected = reconcileConversationDeltaEvents(
+      [previous.events[0]],
+      [incoming.events[0]],
+    );
+    expect(reconnected.map((item) => item.id)).toEqual([
+      "calendar-result",
+      "later-assistant",
+    ]);
+  });
+
+  test("timestamp and identity deterministically order equal-time Calendar results", () => {
+    const reconciled = reconcileConversationDeltaEvents([], [
+      { ...event("calendar-b", 2), timestamp: "2026-07-14T01:01:00Z", source: "calendar_result" },
+      { ...event("calendar-a", 2), timestamp: "2026-07-14T01:01:00Z", source: "calendar_result" },
+    ]);
+
+    expect(reconciled.map((item) => item.id)).toEqual(["calendar-a", "calendar-b"]);
+  });
 });
