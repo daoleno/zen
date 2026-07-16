@@ -1,26 +1,41 @@
-import React, { useEffect, useMemo, useRef } from "react";
+import React, {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import {
+  FlatList,
   ScrollView,
   StyleSheet,
   Text,
+  TextInput,
   View,
 } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 import { useLocalSearchParams, useRouter } from "expo-router";
 import { SafeAreaView, useSafeAreaInsets } from "react-native-safe-area-context";
 import { AgentListRowContainer } from "../components/agents/AgentListRowContainer";
-import { PrimaryDrawerShell } from "../components/navigation/PrimaryDrawerShell";
+import {
+  PrimaryDrawerShell,
+  resolvePrimaryAppBarGeometry,
+} from "../components/navigation/PrimaryDrawerShell";
 import { ChatCanvas } from "../components/terminal/ChatCanvas";
+import { CodexChatComposer } from "../components/terminal/CodexChatComposer";
+import { CodexChatKeyboardFrame } from "../components/terminal/CodexChatKeyboardFrame";
+import { CodexTimelineView } from "../components/terminal/CodexTimelineView";
+import type { ZenTimelineItem } from "../components/terminal/CodexTimelineItemView";
 import {
-  ZenTimelineItemView,
-  type ZenTimelineItem,
-} from "../components/terminal/CodexTimelineItemView";
-import {
-  buildZenTimeline,
   patchDisplayPath,
   truncateRunes,
 } from "../components/terminal/CodexTimelineModel";
+import { useCodexTimelineItems } from "../components/terminal/useCodexTimelineItems";
 import { TerminalTopBar } from "../components/terminal/TerminalTopBar";
+import {
+  CHAT_HEADER_HEIGHT,
+  CHAT_HEADER_OUTER_GAP,
+} from "../components/terminal/chatChromeMetrics";
 import {
   TypeScale,
   UiTextMetrics,
@@ -37,6 +52,7 @@ import {
 import {
   resolveScreenshotDemoState,
   screenshotDemoEnabled,
+  screenshotDemoRouteOptedIn,
 } from "../services/screenshotDemo";
 import {
   StatsScreenshotDemo,
@@ -50,15 +66,22 @@ const loadNoDemoAsset = async () => null;
 
 export default function ScreenshotDemoRoute() {
   const router = useRouter();
-  const params = useLocalSearchParams<{ state?: string | string[] }>();
-  const state = resolveScreenshotDemoState(params.state);
+  const params = useLocalSearchParams<{
+    demo?: string | string[];
+    state?: string | string[];
+  }>();
+  const state = resolveScreenshotDemoState(
+    params.state ?? process.env.EXPO_PUBLIC_ZEN_SCREENSHOT_DEMO_STATE,
+  );
   const enabled = screenshotDemoEnabled();
+  const explicitlyRequested = screenshotDemoRouteOptedIn(params.demo);
+  const available = enabled && explicitlyRequested;
 
   useEffect(() => {
-    if (!enabled) router.replace("/onboarding");
-  }, [enabled, router]);
+    if (!available) router.replace("/");
+  }, [available, router]);
 
-  if (!enabled) return null;
+  if (!available) return null;
 
   switch (state) {
     case "sessions":
@@ -185,78 +208,334 @@ function calendarFixtures(): CalendarItem[] {
 }
 
 function ChatDemo() {
+  const params = useLocalSearchParams<{
+    attachment?: string | string[];
+    draft?: string | string[];
+    long?: string | string[];
+    working?: string | string[];
+  }>();
   const { theme: zenTheme } = useAppTheme();
   const { chrome, theme } = useMemo(
     () => buildChatChrome(zenTheme),
     [zenTheme],
   );
   const menuAnchorRef = useRef<View>(null);
-  const timeline = useMemo(
-    () => buildZenTimeline(SCREENSHOT_CHAT_EVENTS),
-    [],
+  const scrollRef = useRef<FlatList<ZenTimelineItem>>(null);
+  const inputRef = useRef<TextInput>(null);
+  const insets = useSafeAreaInsets();
+  const requestedDraft = Array.isArray(params.draft)
+    ? params.draft[0]
+    : params.draft;
+  const [draft, setDraft] = useState(
+    requestedDraft === "multiline"
+      ? "Queue a careful review of the keyboard overlay.\nPreserve the visible message anchor.\nVerify every narrow width."
+      : requestedDraft === "text"
+        ? "Queue another check"
+        : "",
   );
+  const [focused, setFocused] = useState(false);
+  const [workingTurnStartedAt] = useState(() =>
+    new Date(Date.now() - 43_000).toISOString(),
+  );
+  const initialLatestOffsetHandledRef = useRef(false);
+  const handleLatestOffsetChange = useCallback((offset: number) => {
+    if (initialLatestOffsetHandledRef.current) {
+      return;
+    }
+    initialLatestOffsetHandledRef.current = true;
+    requestAnimationFrame(() => {
+      scrollRef.current?.scrollToOffset({ offset, animated: false });
+    });
+  }, []);
+  const longTimeline = (Array.isArray(params.long) ? params.long[0] : params.long) === "1";
+  const working = (Array.isArray(params.working) ? params.working[0] : params.working) === "1";
+  const showAttachment =
+    (Array.isArray(params.attachment) ? params.attachment[0] : params.attachment) === "1";
+  const timelineEvents = useMemo(() => {
+    const transcriptEvents = SCREENSHOT_CHAT_EVENTS.filter((event) =>
+      event.kind === "user_message" ||
+      event.kind === "assistant_message" ||
+      event.kind === "plan"
+    );
+    if (!longTimeline) {
+      return transcriptEvents;
+    }
+    return Array.from({ length: 4 }, (_, batch) =>
+      transcriptEvents.map((event) => ({
+        ...event,
+        id: `history:${batch}:${event.id}`,
+        seq: batch * 1000 + event.seq,
+      })),
+    ).flat();
+  }, [longTimeline]);
+  const emptyPending = useMemo(() => [], []);
+  const workingTurn = useMemo(
+    () => working
+      ? {
+          id: "demo-working-turn",
+          status: "running" as const,
+          started_at: workingTurnStartedAt,
+        }
+      : undefined,
+    [working, workingTurnStartedAt],
+  );
+  const timeline = useCodexTimelineItems({
+    events: timelineEvents,
+    pendingUserMessages: emptyPending,
+    pendingSlashCommands: emptyPending,
+    workingTurn,
+    onRetryPendingUserMessage: NOOP,
+  });
+  const attachments = showAttachment
+    ? [{
+        id: "demo-attachment",
+        name: "keyboard-geometry-notes.md",
+        path: "/demo/keyboard-geometry-notes.md",
+        mimeType: "text/markdown",
+      }]
+    : [];
+  const hasContent = draft.trim().length > 0 || attachments.length > 0;
+  const topChromeInset = CHAT_HEADER_HEIGHT + CHAT_HEADER_OUTER_GAP * 2;
 
   return (
     <SafeAreaView
       style={[styles.flex, { backgroundColor: chrome.appBackground }]}
       edges={["top", "bottom"]}
     >
-      <TerminalTopBar
-        title="Mobile handoff"
-        subtitle="atlas-notes · Chat"
-        kind="codex"
-        backgroundColor={chrome.appBackground}
-        chrome={chrome}
-        menuAnchorRef={menuAnchorRef}
-        codexRenderMode="chat"
-        gitDiffDisabled={false}
-        gitDiffPresentation={{
-          accessibilityLabel: "Open changes",
-          backgroundColor: chrome.accentSoft,
-          iconColor: chrome.accent,
-          additionsText: "+42",
-          deletionsText: "−9",
-        }}
-        isStructuredChatAgent
-        onBack={NOOP}
-        onOpenPicker={NOOP}
-        onOpenGitDiff={NOOP}
-        onOpenMenu={NOOP}
-        onToggleCodexRenderMode={NOOP}
-      />
-      <DemoTimeline
-        timeline={timeline}
-        chrome={chrome}
-        theme={theme}
-        progressLabel="Focused checks passed · 320 px review in progress"
-      />
-      <DemoComposer chrome={chrome} placeholder="Message the agent" />
+      <View style={styles.flex}>
+        <View pointerEvents="box-none" style={styles.demoHeaderOverlay}>
+          <TerminalTopBar
+            title="Mobile handoff"
+            subtitle="atlas-notes · Chat"
+            kind="codex"
+            backgroundColor={chrome.appBackground}
+            chrome={chrome}
+            menuAnchorRef={menuAnchorRef}
+            codexRenderMode="chat"
+            gitDiffDisabled={false}
+            gitDiffPresentation={{
+              accessibilityLabel: "Open changes",
+              backgroundColor: chrome.accentSoft,
+              iconColor: chrome.accent,
+              additionsText: "+42",
+              deletionsText: "−9",
+            }}
+            isStructuredChatAgent
+            onBack={NOOP}
+            onOpenPicker={NOOP}
+            onOpenGitDiff={NOOP}
+            onOpenMenu={NOOP}
+            onToggleCodexRenderMode={NOOP}
+          />
+        </View>
+        <CodexChatKeyboardFrame
+          enabled
+          keyboardVerticalOffset={0}
+          chrome={chrome}
+          topChromeInset={topChromeInset}
+          composer={(
+            <CodexChatComposer
+              inputRef={inputRef}
+              draft={draft}
+              placeholder="Message the agent"
+              editable
+              focused={focused}
+              canAttach
+              uploading={false}
+              sendEnabled={hasContent}
+              sending={false}
+              sendIcon="arrow-up"
+              sendLabel={working ? "Queue message" : "Send message"}
+              showStopButton={working && !hasContent}
+              stopEnabled={working}
+              stopLabel="Stop current turn"
+              stopLoading={false}
+              workingTurnStartedAt={
+                working ? workingTurnStartedAt : undefined
+              }
+              bottomPadding={Math.max(insets.bottom, 8)}
+              showActionMenuButton
+              actionMenuIcon="add"
+              composerLayout="telegram"
+              showAttachmentRail
+              showCommandMenu={false}
+              showCommandList={false}
+              showComposerActions={false}
+              composerActionButtonEnabled
+              commandQuery=""
+              commands={[]}
+              attachments={attachments}
+              chrome={chrome}
+              theme={theme}
+              onSelectCommand={NOOP}
+              onToggleActionMenu={NOOP}
+              onDismissActionMenu={NOOP}
+              onRemoveAttachment={NOOP}
+              onDraftChange={setDraft}
+              onUploadPress={NOOP}
+              onInputFocus={() => setFocused(true)}
+              onInputBlur={() => setFocused(false)}
+              onSendPress={() => setDraft("")}
+              onStopPress={NOOP}
+            />
+          )}
+          renderTimeline={(extraContentPadding) => (
+            <CodexTimelineView
+              scrollRef={scrollRef}
+              items={timeline}
+              loading={false}
+              localChatState="idle"
+              emptyStateSuppressed={false}
+              unavailable={false}
+              syncing={false}
+              textSelectable={false}
+              extraContentPadding={extraContentPadding}
+              topChromeInset={topChromeInset}
+              chrome={chrome}
+              theme={theme}
+              onLayout={NOOP}
+              onScroll={NOOP}
+              onScrollBeginDrag={NOOP}
+              onScrollEndDrag={NOOP}
+              onMomentumScrollBegin={NOOP}
+              onMomentumScrollEnd={NOOP}
+              onContentSizeChange={NOOP}
+              onLatestOffsetChange={handleLatestOffsetChange}
+              onTextSelectionGestureStart={NOOP}
+              onTextSelectionGestureEnd={NOOP}
+              loadAssetPreview={loadNoDemoAsset}
+              formatPatchPath={patchDisplayPath}
+              truncateBody={truncateRunes}
+            />
+          )}
+        />
+      </View>
     </SafeAreaView>
   );
 }
 
 function BrainDemo() {
   const { theme: zenTheme } = useAppTheme();
+  const insets = useSafeAreaInsets();
   const { chrome, theme } = useMemo(
     () => buildChatChrome(zenTheme),
     [zenTheme],
   );
-  const timeline = useMemo(
-    () => buildZenTimeline(SCREENSHOT_BRAIN_EVENTS),
-    [],
+  const scrollRef = useRef<FlatList<ZenTimelineItem>>(null);
+  const inputRef = useRef<TextInput>(null);
+  const [draft, setDraft] = useState("");
+  const [focused, setFocused] = useState(false);
+  const [workingTurnStartedAt] = useState(() =>
+    new Date(Date.now() - 43_000).toISOString(),
   );
+  const emptyPending = useMemo(() => [], []);
+  const workingTurn = useMemo(() => ({
+    id: "demo-brain-working-turn",
+    status: "running" as const,
+    started_at: workingTurnStartedAt,
+  }), [workingTurnStartedAt]);
+  const timeline = useCodexTimelineItems({
+    events: SCREENSHOT_BRAIN_EVENTS,
+    pendingUserMessages: emptyPending,
+    pendingSlashCommands: emptyPending,
+    workingTurn,
+    onRetryPendingUserMessage: NOOP,
+  });
+  const initialLatestOffsetHandledRef = useRef(false);
+  const handleLatestOffsetChange = useCallback((offset: number) => {
+    if (initialLatestOffsetHandledRef.current) {
+      return;
+    }
+    initialLatestOffsetHandledRef.current = true;
+    requestAnimationFrame(() => {
+      scrollRef.current?.scrollToOffset({ offset, animated: false });
+    });
+  }, []);
+  const hasContent = draft.trim().length > 0;
+  const topChromeInset = resolvePrimaryAppBarGeometry(insets.top).contentInset;
 
   return (
     <PrimaryDrawerShell activePrimaryRoute="brain" onSelectPrimaryRoute={NOOP}>
       <ChatCanvas chrome={chrome}>
-        <DemoTimeline
-          timeline={timeline}
+        <CodexChatKeyboardFrame
+          enabled
+          keyboardVerticalOffset={0}
           chrome={chrome}
-          theme={theme}
-          progressLabel="Mobile QA agent · accessibility checks in progress"
-          includeActivities
+          topChromeInset={topChromeInset}
+          composer={(
+            <CodexChatComposer
+              inputRef={inputRef}
+              draft={draft}
+              placeholder="Ask Brain"
+              editable
+              focused={focused}
+              canAttach
+              uploading={false}
+              sendEnabled={hasContent}
+              sending={false}
+              sendIcon="arrow-up"
+              sendLabel="Queue message"
+              showStopButton={!hasContent}
+              stopEnabled
+              stopLabel="Stop current turn"
+              stopLoading={false}
+              workingTurnStartedAt={workingTurnStartedAt}
+              bottomPadding={Math.max(insets.bottom, 8)}
+              showActionMenuButton
+              actionMenuIcon="add"
+              composerLayout="telegram"
+              showAttachmentRail
+              showCommandMenu={false}
+              showCommandList={false}
+              showComposerActions={false}
+              composerActionButtonEnabled
+              commandQuery=""
+              commands={[]}
+              attachments={[]}
+              chrome={chrome}
+              theme={theme}
+              onSelectCommand={NOOP}
+              onToggleActionMenu={NOOP}
+              onDismissActionMenu={NOOP}
+              onRemoveAttachment={NOOP}
+              onDraftChange={setDraft}
+              onUploadPress={NOOP}
+              onInputFocus={() => setFocused(true)}
+              onInputBlur={() => setFocused(false)}
+              onSendPress={() => setDraft("")}
+              onStopPress={NOOP}
+            />
+          )}
+          renderTimeline={(extraContentPadding) => (
+            <CodexTimelineView
+              scrollRef={scrollRef}
+              items={timeline}
+              loading={false}
+              localChatState="idle"
+              emptyStateSuppressed={false}
+              unavailable={false}
+              syncing={false}
+              textSelectable={false}
+              extraContentPadding={extraContentPadding}
+              topChromeInset={topChromeInset}
+              chrome={chrome}
+              theme={theme}
+              onLayout={NOOP}
+              onScroll={NOOP}
+              onScrollBeginDrag={NOOP}
+              onScrollEndDrag={NOOP}
+              onMomentumScrollBegin={NOOP}
+              onMomentumScrollEnd={NOOP}
+              onContentSizeChange={NOOP}
+              onLatestOffsetChange={handleLatestOffsetChange}
+              onTextSelectionGestureStart={NOOP}
+              onTextSelectionGestureEnd={NOOP}
+              loadAssetPreview={loadNoDemoAsset}
+              formatPatchPath={patchDisplayPath}
+              truncateBody={truncateRunes}
+            />
+          )}
         />
-        <DemoComposer chrome={chrome} placeholder="Ask Brain" />
       </ChatCanvas>
     </PrimaryDrawerShell>
   );
@@ -265,9 +544,15 @@ function BrainDemo() {
 function SessionsDemo() {
   const colors = useAppColors();
   const insets = useSafeAreaInsets();
+  const topChromeInset = resolvePrimaryAppBarGeometry(insets.top).contentInset;
   return (
     <PrimaryDrawerShell activePrimaryRoute="list" onSelectPrimaryRoute={NOOP}>
-      <View style={[styles.flex, { backgroundColor: colors.bgPrimary }]}>
+      <View
+        style={[
+          styles.flex,
+          { backgroundColor: colors.bgPrimary, marginTop: topChromeInset },
+        ]}
+      >
         <View style={styles.sessionsHeader}>
           <View>
             <Text style={[styles.sectionEyebrow, { color: colors.textTertiary }]}>STUDIO MAC</Text>
@@ -318,124 +603,14 @@ function StatsDemo() {
   );
 }
 
-function DemoTimeline({
-  timeline,
-  chrome,
-  theme,
-  progressLabel,
-  includeActivities = false,
-}: {
-  timeline: ZenTimelineItem[];
-  chrome: ReturnType<typeof buildChatChrome>["chrome"];
-  theme: ReturnType<typeof buildChatChrome>["theme"];
-  progressLabel: string;
-  includeActivities?: boolean;
-}) {
-  const stableTimeline = includeActivities
-    ? timeline
-    : timeline.filter((item) => item.type !== "activity");
-  return (
-    <ScrollView
-      style={styles.flex}
-      contentContainerStyle={styles.timelineContent}
-      showsVerticalScrollIndicator={false}
-    >
-      {stableTimeline.map((item, index) => (
-        <React.Fragment key={item.id}>
-          <ZenTimelineItemView
-            item={item}
-            chrome={chrome}
-            theme={theme}
-            loadAssetPreview={loadNoDemoAsset}
-            formatPatchPath={patchDisplayPath}
-            truncateBody={truncateRunes}
-          />
-          {index === stableTimeline.length - 2 ? (
-            <View style={styles.progressRow}>
-              <Ionicons name="sync" size={14} color={chrome.accent} />
-              <Text style={[styles.progressText, { color: chrome.textMuted }]}>
-                {progressLabel}
-              </Text>
-            </View>
-          ) : null}
-        </React.Fragment>
-      ))}
-    </ScrollView>
-  );
-}
-
-function DemoComposer({
-  chrome,
-  placeholder,
-}: {
-  chrome: ReturnType<typeof buildChatChrome>["chrome"];
-  placeholder: string;
-}) {
-  return (
-    <View style={[styles.demoComposerWrap, { backgroundColor: chrome.appBackground }]}>
-      <View
-        style={[
-          styles.demoComposer,
-          { backgroundColor: chrome.composerInput, borderColor: chrome.border },
-        ]}
-      >
-        <Ionicons name="add" size={20} color={chrome.textSubtle} />
-        <Text style={[styles.demoComposerPlaceholder, { color: chrome.textSubtle }]}>
-          {placeholder}
-        </Text>
-        <View style={[styles.demoSend, { backgroundColor: chrome.accentSoft }]}>
-          <Ionicons name="arrow-up" size={16} color={chrome.accent} />
-        </View>
-      </View>
-    </View>
-  );
-}
-
 const styles = StyleSheet.create({
   flex: { flex: 1 },
-  timelineContent: {
-    paddingHorizontal: 14,
-    paddingTop: 12,
-    paddingBottom: 8,
-  },
-  progressRow: {
-    minHeight: 34,
-    marginBottom: 8,
-    paddingHorizontal: 2,
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 7,
-  },
-  progressText: {
-    ...UiTextMetrics,
-    ...TypeScale.caption,
-    flex: 1,
-  },
-  demoComposerWrap: {
-    paddingHorizontal: 12,
-    paddingTop: 8,
-    paddingBottom: 8,
-  },
-  demoComposer: {
-    minHeight: 48,
-    borderRadius: 24,
-    borderWidth: StyleSheet.hairlineWidth,
-    paddingHorizontal: 12,
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 8,
-  },
-  demoComposerPlaceholder: {
-    ...UiTextMetrics,
-    ...TypeScale.body,
-    flex: 1,
-  },
-  demoSend: {
-    width: 32,
-    height: 32,
-    borderRadius: 16,
-    alignItems: "center",
-    justifyContent: "center",
+  demoHeaderOverlay: {
+    position: "absolute",
+    top: 0,
+    right: 0,
+    left: 0,
+    zIndex: 20,
   },
   sessionsHeader: {
     minHeight: 74,

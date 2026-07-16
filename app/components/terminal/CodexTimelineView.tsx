@@ -1,13 +1,16 @@
 import React from "react";
 import {
   FlatList,
+  Platform,
   StyleSheet,
   View,
   type LayoutChangeEvent,
   type ListRenderItemInfo,
   type NativeScrollEvent,
   type NativeSyntheticEvent,
+  type ScrollViewProps,
 } from "react-native";
+import type { SharedValue } from "react-native-reanimated";
 import { useAppTheme } from "../../constants/tokens";
 import type {
   TerminalThemeChrome,
@@ -15,7 +18,6 @@ import type {
 } from "../../constants/terminalThemes";
 
 import { CodexTimelineEmptyContent } from "./CodexTimelineContent";
-import { CodexTimelineJumpButton } from "./CodexTimelineJumpButton";
 import type { CodexChatLocalState } from "./CodexChatSession";
 import {
   TimelineTextSelectableContext,
@@ -34,6 +36,7 @@ import type {
   PatchFileSummary,
 } from "./CodexTimelineActivityTypes";
 import { TIMELINE_LIST_STABILITY_PROPS } from "./timelineScrollPolicy";
+import { StructuredChatInsetScrollView } from "./StructuredChatInsetScrollView";
 
 interface CodexTimelineViewProps {
   scrollRef: React.RefObject<FlatList<ZenTimelineItem> | null>;
@@ -46,9 +49,8 @@ interface CodexTimelineViewProps {
   unavailableReason?: string;
   syncing: boolean;
   textSelectable: boolean;
-  showJumpToLatest: boolean;
-  jumpButtonBottom: number;
-  jumpLabel?: string;
+  extraContentPadding: SharedValue<number>;
+  topChromeInset: number;
   emptyTitle?: string;
   emptyBody?: string;
   agentCwd?: string;
@@ -61,17 +63,15 @@ interface CodexTimelineViewProps {
   onMomentumScrollBegin(): void;
   onMomentumScrollEnd(event: NativeSyntheticEvent<NativeScrollEvent>): void;
   onContentSizeChange(width: number, height: number): void;
+  onLatestOffsetChange(offset: number): void;
   onTextSelectionGestureStart: TimelineTextSelectableContextValue["onTextSelectionGestureStart"];
   onTextSelectionGestureEnd: TimelineTextSelectableContextValue["onTextSelectionGestureEnd"];
-  onJumpToLatest(): void;
   onUnavailableAction?: () => void;
   showUnavailableAction?: boolean;
   loadAssetPreview(path: string): Promise<string | null>;
   formatPatchPath(file: PatchFileSummary): string;
   truncateBody(value: string, limit: number): string;
 }
-
-const TIMELINE_BOTTOM_PADDING = 18;
 
 export function CodexTimelineView({
   scrollRef,
@@ -84,9 +84,8 @@ export function CodexTimelineView({
   unavailableReason,
   syncing,
   textSelectable,
-  showJumpToLatest,
-  jumpButtonBottom,
-  jumpLabel,
+  extraContentPadding,
+  topChromeInset,
   emptyTitle,
   emptyBody,
   agentCwd,
@@ -99,9 +98,9 @@ export function CodexTimelineView({
   onMomentumScrollBegin,
   onMomentumScrollEnd,
   onContentSizeChange,
+  onLatestOffsetChange,
   onTextSelectionGestureStart,
   onTextSelectionGestureEnd,
-  onJumpToLatest,
   onUnavailableAction,
   showUnavailableAction,
   loadAssetPreview,
@@ -153,6 +152,17 @@ export function CodexTimelineView({
       truncateBody,
     ],
   );
+  const renderScrollComponent = React.useCallback(
+    (props: ScrollViewProps) => (
+      <StructuredChatInsetScrollView
+        {...props}
+        clearance={extraContentPadding}
+        inverted
+        onLatestOffsetChange={onLatestOffsetChange}
+      />
+    ),
+    [extraContentPadding, onLatestOffsetChange],
+  );
 
   const emptyContent = React.useMemo(
     () => (
@@ -195,15 +205,23 @@ export function CodexTimelineView({
     <TimelineTextSelectableContext.Provider value={textSelectionContext}>
       <View style={styles.timelineStage}>
         <FlatList<TimelineRenderItem>
+          accessibilityLabel="Conversation timeline"
+          testID="structured-chat-timeline"
           ref={scrollRef as React.RefObject<FlatList<TimelineRenderItem> | null>}
           data={renderItems}
           keyExtractor={(item) => item.id}
           renderItem={renderItem}
           style={styles.timeline}
-          contentContainerStyle={styles.timelineContent}
+          contentContainerStyle={[
+            styles.timelineContent,
+            { paddingBottom: Math.max(12, topChromeInset) },
+          ]}
           inverted
+          renderScrollComponent={renderScrollComponent}
           {...TIMELINE_LIST_STABILITY_PROPS}
-          scrollIndicatorInsets={{ bottom: TIMELINE_BOTTOM_PADDING }}
+          keyboardDismissMode={
+            Platform.OS === "ios" ? "interactive" : "on-drag"
+          }
           keyboardShouldPersistTaps="handled"
           showsVerticalScrollIndicator={false}
           scrollEventThrottle={32}
@@ -226,14 +244,6 @@ export function CodexTimelineView({
           </View>
         ) : null}
 
-        {showJumpToLatest ? (
-          <CodexTimelineJumpButton
-            bottom={jumpButtonBottom}
-            chrome={chrome}
-            label={jumpLabel}
-            onPress={onJumpToLatest}
-          />
-        ) : null}
       </View>
     </TimelineTextSelectableContext.Provider>
   );
@@ -252,7 +262,6 @@ const styles = StyleSheet.create({
   timelineContent: {
     alignItems: "stretch",
     paddingHorizontal: 14,
-    paddingTop: TIMELINE_BOTTOM_PADDING,
     paddingBottom: 12,
     flexGrow: 1,
   },
@@ -264,7 +273,6 @@ const styles = StyleSheet.create({
     left: 0,
     paddingHorizontal: 14,
     paddingTop: 14,
-    paddingBottom: TIMELINE_BOTTOM_PADDING,
     justifyContent: "center",
     pointerEvents: "box-none",
   },

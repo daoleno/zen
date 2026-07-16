@@ -144,6 +144,8 @@ if [[ ! -f "$APK" ]]; then
   exit 1
 fi
 
+"$ROOT/scripts/verify-android-native-symbols.py" --lock \
+  "$ROOT/app/modules/zen-terminal-vt/native.lock.json" --apk "$APK"
 "$ROOT/scripts/verify-apk-notice.sh" "$APK"
 
 OUT_DIR="$ROOT/dist-download/android-native"

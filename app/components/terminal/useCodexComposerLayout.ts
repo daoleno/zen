@@ -1,29 +1,35 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect } from "react";
 import type { LayoutChangeEvent } from "react-native";
+import { useSharedValue } from "react-native-reanimated";
 
-const DEFAULT_COMPOSER_HEIGHT = 76;
+export const DEFAULT_COMPOSER_OVERLAY_HEIGHT = 76;
 const COMPOSER_HEIGHT_UPDATE_THRESHOLD = 1;
 
 export function useCodexComposerLayout({
-  onHeightChange,
+  enabled,
 }: {
-  onHeightChange(height: number): void;
+  enabled: boolean;
 }) {
-  const [composerHeight, setComposerHeight] = useState(DEFAULT_COMPOSER_HEIGHT);
+  const composerHeight = useSharedValue(
+    enabled ? DEFAULT_COMPOSER_OVERLAY_HEIGHT : 0,
+  );
 
   const handleComposerLayout = useCallback((event: LayoutChangeEvent) => {
     const nextHeight = Math.ceil(event.nativeEvent.layout.height);
-    setComposerHeight((previous) => {
-      if (Math.abs(previous - nextHeight) <= COMPOSER_HEIGHT_UPDATE_THRESHOLD) {
-        return previous;
-      }
-      return nextHeight;
-    });
-  }, []);
+    if (
+      Math.abs(composerHeight.value - nextHeight) <=
+      COMPOSER_HEIGHT_UPDATE_THRESHOLD
+    ) {
+      return;
+    }
+    composerHeight.value = nextHeight;
+  }, [composerHeight]);
 
   useEffect(() => {
-    onHeightChange(composerHeight);
-  }, [composerHeight, onHeightChange]);
+    if (!enabled) {
+      composerHeight.value = 0;
+    }
+  }, [composerHeight, enabled]);
 
   return {
     composerHeight,

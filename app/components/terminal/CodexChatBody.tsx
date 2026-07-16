@@ -1,5 +1,7 @@
 import React from "react";
 import {
+  StyleSheet,
+  View,
   type LayoutChangeEvent,
   type NativeScrollEvent,
   type NativeSyntheticEvent,
@@ -29,7 +31,7 @@ import { CodexChatTimelineSection } from "./CodexChatTimelineSection";
 import { TerminalActionPromptCard } from "./TerminalActionPromptCard";
 import type { TerminalActionPrompt } from "./TerminalActionPromptModel";
 import type { ZenTimelineItem } from "./CodexTimelineItemView";
-import { useCodexComposerLayout } from "./useCodexComposerLayout";
+import { CodexTimelineJumpButton } from "./CodexTimelineJumpButton";
 
 export interface CodexChatBodyProps {
   screenFocused: boolean;
@@ -59,10 +61,10 @@ export interface CodexChatBodyProps {
     event: NativeSyntheticEvent<NativeScrollEvent>,
   ): void;
   onTimelineContentSizeChange(width: number, height: number): void;
+  onTimelineLatestOffsetChange(offset: number): void;
   onTimelineTextSelectionGestureStart(): void;
   onTimelineTextSelectionGestureEnd(): void;
   onScrollToLatest(animated?: boolean, delay?: number): void;
-  onComposerHeightChange(height: number): void;
   onUnavailableAction?: () => void;
   showUnavailableAction?: boolean;
   inputRef: React.RefObject<TextInput | null>;
@@ -75,6 +77,7 @@ export interface CodexChatBodyProps {
   operationalError?: string;
   attachments: ComposerAttachment[];
   composerPresentation: CodexComposerPresentation;
+  topChromeInset?: number;
   terminalActionPrompt?: TerminalActionPrompt | null;
   chrome: TerminalThemeChrome;
   theme: TerminalThemePalette;
@@ -120,10 +123,10 @@ export function CodexChatBody({
   onTimelineMomentumScrollBegin,
   onTimelineMomentumScrollEnd,
   onTimelineContentSizeChange,
+  onTimelineLatestOffsetChange,
   onTimelineTextSelectionGestureStart,
   onTimelineTextSelectionGestureEnd,
   onScrollToLatest,
-  onComposerHeightChange,
   onUnavailableAction,
   showUnavailableAction,
   inputRef,
@@ -136,6 +139,7 @@ export function CodexChatBody({
   operationalError,
   attachments,
   composerPresentation,
+  topChromeInset = 0,
   terminalActionPrompt,
   chrome,
   theme,
@@ -154,52 +158,9 @@ export function CodexChatBody({
   composerAccessory,
   skillsSheet,
 }: CodexChatBodyProps) {
-  const { handleComposerLayout } = useCodexComposerLayout({
-    onHeightChange: onComposerHeightChange,
-  });
-
-  return (
-    <CodexChatKeyboardFrame
-      enabled={screenFocused}
-      keyboardVerticalOffset={composerPresentation.keyboardVerticalOffset}
-      automaticOffset={composerPresentation.automaticKeyboardOffset}
-    >
-      <CodexChatTimelineSection
-        serverId={serverId}
-        agentCwd={agentCwd}
-        conversation={conversation}
-        events={events}
-        pendingUserMessages={pendingUserMessages}
-        pendingSlashCommands={pendingSlashCommands}
-        onRetryPendingUserMessage={onRetryPendingUserMessage}
-        workingTurn={workingTurn}
-        loading={loading}
-        localChatState={localChatState}
-        error={error}
-        commandMenuOpen={composerPresentation.showCommandMenu}
-        scrollRef={scrollRef}
-        textSelectable={timelineTextSelectable}
-        showJumpToLatest={showJumpToLatest}
-        jumpLabel={jumpLabel}
-        chrome={chrome}
-        theme={theme}
-        onLayout={onTimelineLayout}
-        onScroll={onTimelineScroll}
-        onScrollBeginDrag={onTimelineScrollBeginDrag}
-        onScrollEndDrag={onTimelineScrollEndDrag}
-        onMomentumScrollBegin={onTimelineMomentumScrollBegin}
-        onMomentumScrollEnd={onTimelineMomentumScrollEnd}
-        onContentSizeChange={onTimelineContentSizeChange}
-        onTextSelectionGestureStart={onTimelineTextSelectionGestureStart}
-        onTextSelectionGestureEnd={onTimelineTextSelectionGestureEnd}
-        onScrollToLatest={onScrollToLatest}
-        onUnavailableAction={onUnavailableAction}
-        showUnavailableAction={showUnavailableAction}
-        emptyTitle={emptyTitle}
-        emptyBody={emptyBody}
-      />
-
-      {!readOnly && terminalActionPrompt ? (
+  const composer = !readOnly ? (
+    <>
+      {terminalActionPrompt ? (
         <TerminalActionPromptCard
           prompt={terminalActionPrompt}
           chrome={chrome}
@@ -208,38 +169,96 @@ export function CodexChatBody({
           onSwitchToTerminal={onUnavailableAction}
         />
       ) : null}
+      {composerAccessory}
+      <CodexChatComposerSection
+        inputRef={inputRef}
+        draft={draft}
+        editable={editable}
+        focused={composerFocused}
+        canAttach={canAttach}
+        uploading={uploading}
+        sending={sending}
+        operationalError={operationalError}
+        attachments={attachments}
+        presentation={composerPresentation}
+        chrome={chrome}
+        theme={theme}
+        onSelectCommand={onSelectCommand}
+        onToggleActionMenu={onToggleActionMenu}
+        onDismissActionMenu={onDismissActionMenu}
+        onRemoveAttachment={onRemoveAttachment}
+        onDraftChange={onDraftChange}
+        onUploadPress={onUploadPress}
+        onInputFocus={onInputFocus}
+        onInputBlur={onInputBlur}
+        onSendPress={onSendPress}
+        onStopPress={onStopPress}
+      />
+    </>
+  ) : undefined;
+  const floatingAction = showJumpToLatest ? (
+    <View style={styles.jumpSlot}>
+      <CodexTimelineJumpButton
+        bottom={0}
+        chrome={chrome}
+        label={jumpLabel}
+        onPress={() => onScrollToLatest(false, 0)}
+      />
+    </View>
+  ) : undefined;
 
-      {!readOnly ? (
-        <>
-          {composerAccessory}
-          <CodexChatComposerSection
-            inputRef={inputRef}
-            draft={draft}
-            editable={editable}
-            focused={composerFocused}
-            canAttach={canAttach}
-            uploading={uploading}
-            sending={sending}
-            operationalError={operationalError}
-            attachments={attachments}
-            presentation={composerPresentation}
-            chrome={chrome}
-            theme={theme}
-            onLayout={handleComposerLayout}
-            onSelectCommand={onSelectCommand}
-            onToggleActionMenu={onToggleActionMenu}
-            onDismissActionMenu={onDismissActionMenu}
-            onRemoveAttachment={onRemoveAttachment}
-            onDraftChange={onDraftChange}
-            onUploadPress={onUploadPress}
-            onInputFocus={onInputFocus}
-            onInputBlur={onInputBlur}
-            onSendPress={onSendPress}
-            onStopPress={onStopPress}
-          />
-          {skillsSheet}
-        </>
-      ) : null}
-    </CodexChatKeyboardFrame>
+  return (
+    <CodexChatKeyboardFrame
+      enabled={screenFocused}
+      keyboardVerticalOffset={composerPresentation.keyboardVerticalOffset}
+      chrome={chrome}
+      topChromeInset={topChromeInset}
+      composer={composer}
+      floatingAction={floatingAction}
+      portal={skillsSheet}
+      renderTimeline={(extraContentPadding) => (
+        <CodexChatTimelineSection
+          serverId={serverId}
+          agentCwd={agentCwd}
+          conversation={conversation}
+          events={events}
+          pendingUserMessages={pendingUserMessages}
+          pendingSlashCommands={pendingSlashCommands}
+          onRetryPendingUserMessage={onRetryPendingUserMessage}
+          workingTurn={workingTurn}
+          loading={loading}
+          localChatState={localChatState}
+          error={error}
+          commandMenuOpen={composerPresentation.showCommandMenu}
+          scrollRef={scrollRef}
+          textSelectable={timelineTextSelectable}
+          extraContentPadding={extraContentPadding}
+          topChromeInset={topChromeInset}
+          chrome={chrome}
+          theme={theme}
+          onLayout={onTimelineLayout}
+          onScroll={onTimelineScroll}
+          onScrollBeginDrag={onTimelineScrollBeginDrag}
+          onScrollEndDrag={onTimelineScrollEndDrag}
+          onMomentumScrollBegin={onTimelineMomentumScrollBegin}
+          onMomentumScrollEnd={onTimelineMomentumScrollEnd}
+          onContentSizeChange={onTimelineContentSizeChange}
+          onLatestOffsetChange={onTimelineLatestOffsetChange}
+          onTextSelectionGestureStart={onTimelineTextSelectionGestureStart}
+          onTextSelectionGestureEnd={onTimelineTextSelectionGestureEnd}
+          onUnavailableAction={onUnavailableAction}
+          showUnavailableAction={showUnavailableAction}
+          emptyTitle={emptyTitle}
+          emptyBody={emptyBody}
+        />
+      )}
+    />
   );
 }
+
+const styles = StyleSheet.create({
+  jumpSlot: {
+    height: 52,
+    position: "relative",
+  },
+});

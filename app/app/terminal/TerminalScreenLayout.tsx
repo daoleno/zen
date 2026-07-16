@@ -1,5 +1,5 @@
 import React from "react";
-import { StyleSheet } from "react-native";
+import { StyleSheet, View } from "react-native";
 import { StatusBar } from "expo-status-bar";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { TerminalTopBar } from "../../components/terminal/TerminalTopBar";
@@ -25,15 +25,23 @@ export function TerminalScreenLayout({
   viewportProps,
   overlayProps,
 }: TerminalScreenLayoutProps) {
+  const floatingChatChrome = viewportProps.showCodexChat;
   return (
     <SafeAreaView
       style={[styles.container, { backgroundColor: chrome.appBackground }]}
       edges={["top"]}
     >
       <StatusBar style={statusBarStyle} />
-      <TerminalTopBar {...topBarProps} />
-
-      <TerminalViewport {...viewportProps} />
+      <View style={styles.stage}>
+        {floatingChatChrome ? (
+          <View pointerEvents="box-none" style={styles.headerOverlay}>
+            <TerminalTopBar {...topBarProps} />
+          </View>
+        ) : (
+          <TerminalTopBar {...topBarProps} />
+        )}
+        <TerminalViewport {...viewportProps} />
+      </View>
 
       <TerminalScreenOverlays {...overlayProps} />
     </SafeAreaView>
@@ -43,5 +51,17 @@ export function TerminalScreenLayout({
 const styles = StyleSheet.create({
   container: {
     flex: 1,
+  },
+  stage: {
+    flex: 1,
+    minHeight: 0,
+    position: "relative",
+  },
+  headerOverlay: {
+    position: "absolute",
+    top: 0,
+    right: 0,
+    left: 0,
+    zIndex: 20,
   },
 });

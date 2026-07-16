@@ -125,7 +125,7 @@ func TestParseCodexConversation_BuildsNativeTimeline(t *testing.T) {
 	}
 }
 
-func TestParseCodexConversation_DedupesUserMessageEchoes(t *testing.T) {
+func TestParseCodexConversation_PairsProviderUserAdmissionAndRenderingEchoByRecordOrder(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "rollout.jsonl")
 	writeJSONL(t, path,
 		map[string]any{

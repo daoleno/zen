@@ -5,6 +5,7 @@ import {
   type NativeScrollEvent,
   type NativeSyntheticEvent,
 } from "react-native";
+import type { SharedValue } from "react-native-reanimated";
 import type {
   TerminalThemeChrome,
   TerminalThemePalette,
@@ -46,8 +47,8 @@ interface CodexChatTimelineSectionProps {
   commandMenuOpen: boolean;
   scrollRef: React.RefObject<FlatList<ZenTimelineItem> | null>;
   textSelectable: boolean;
-  showJumpToLatest: boolean;
-  jumpLabel?: string;
+  extraContentPadding: SharedValue<number>;
+  topChromeInset: number;
   emptyTitle?: string;
   emptyBody?: string;
   chrome: TerminalThemeChrome;
@@ -59,9 +60,9 @@ interface CodexChatTimelineSectionProps {
   onMomentumScrollBegin(): void;
   onMomentumScrollEnd(event: NativeSyntheticEvent<NativeScrollEvent>): void;
   onContentSizeChange(width: number, height: number): void;
+  onLatestOffsetChange(offset: number): void;
   onTextSelectionGestureStart(): void;
   onTextSelectionGestureEnd(): void;
-  onScrollToLatest(animated?: boolean, delay?: number): void;
   onUnavailableAction?: () => void;
   showUnavailableAction?: boolean;
   onRetryPendingUserMessage(id: string): void;
@@ -81,8 +82,8 @@ export function CodexChatTimelineSection({
   commandMenuOpen,
   scrollRef,
   textSelectable,
-  showJumpToLatest,
-  jumpLabel,
+  extraContentPadding,
+  topChromeInset,
   emptyTitle,
   emptyBody,
   chrome,
@@ -94,9 +95,9 @@ export function CodexChatTimelineSection({
   onMomentumScrollBegin,
   onMomentumScrollEnd,
   onContentSizeChange,
+  onLatestOffsetChange,
   onTextSelectionGestureStart,
   onTextSelectionGestureEnd,
-  onScrollToLatest,
   onUnavailableAction,
   showUnavailableAction,
   onRetryPendingUserMessage,
@@ -141,8 +142,8 @@ export function CodexChatTimelineSection({
       unavailableReason={conversationUnavailableReason(conversation?.reason)}
       syncing={syncingConversation && !emptyConversationReady}
       textSelectable={textSelectable}
-      showJumpToLatest={showJumpToLatest}
-      jumpButtonBottom={10}
+      extraContentPadding={extraContentPadding}
+      topChromeInset={topChromeInset}
       chrome={chrome}
       theme={theme}
       agentCwd={agentCwd}
@@ -155,15 +156,14 @@ export function CodexChatTimelineSection({
       onMomentumScrollBegin={onMomentumScrollBegin}
       onMomentumScrollEnd={onMomentumScrollEnd}
       onContentSizeChange={onContentSizeChange}
+      onLatestOffsetChange={onLatestOffsetChange}
       onTextSelectionGestureStart={onTextSelectionGestureStart}
       onTextSelectionGestureEnd={onTextSelectionGestureEnd}
-      onJumpToLatest={() => onScrollToLatest(false, 0)}
       onUnavailableAction={onUnavailableAction}
       showUnavailableAction={showUnavailableAction}
       loadAssetPreview={loadAssetPreview}
       formatPatchPath={patchDisplayPath}
       truncateBody={truncateRunes}
-      jumpLabel={jumpLabel}
     />
   );
 }

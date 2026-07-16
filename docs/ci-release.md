@@ -13,7 +13,7 @@ The separate [`native-libs.yml`](../.github/workflows/native-libs.yml) workflow 
 | Linux amd64/arm64 + macOS arm64 daemon archives | yes | — |
 | Build release-grade `libghostty` arm64 | yes | — |
 | Clean Expo prebuild + signed arm64 APK | yes | — |
-| Verify package / version / ABI / Ghostty notice / cert fingerprint | yes | — |
+| Verify package / version / ABI / Ghostty native imports / notice / cert fingerprint | yes | — |
 | Stage tree + checksums + signed updater manifest | yes | — |
 | Upload workflow artifact | yes | — |
 | Upload/replace assets on **existing** GitHub prerelease | **no** | yes |

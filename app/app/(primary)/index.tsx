@@ -7,13 +7,17 @@ import {
   useLocalSearchParams,
   useRouter,
 } from "expo-router";
-import { SafeAreaView } from "react-native-safe-area-context";
+import {
+  SafeAreaView,
+  useSafeAreaInsets,
+} from "react-native-safe-area-context";
 import { BrainAdapterSheet } from "../../components/brain/BrainAdapterSheet";
 import { BrainExecutorMentionPicker } from "../../components/brain/BrainExecutorMentionPicker";
 import { BrainOverflowMenu } from "../../components/brain/BrainOverflowMenu";
 import { BrainWorkspaceViewer } from "../../components/brain/BrainWorkspaceViewer";
 import { brainProviderLabel } from "../../components/brain/brainPresentation";
 import { usePrimaryPageAction } from "../../components/navigation/PrimaryPageAction";
+import { resolvePrimaryAppBarGeometry } from "../../components/navigation/PrimaryDrawerShell";
 import { ZenLoopSpinner } from "../../components/ui/ZenLoopSpinner";
 import { ChatCanvas } from "../../components/terminal/ChatCanvas";
 import { CHAT_CHROME_HORIZONTAL_INSET } from "../../components/terminal/chatChromeMetrics";
@@ -52,6 +56,8 @@ export default function BrainScreen() {
   const colors = useAppColors();
   const { theme: zenTheme } = useAppTheme();
   const styles = useMemo(() => createStyles(colors), [colors]);
+  const insets = useSafeAreaInsets();
+  const topChromeInset = resolvePrimaryAppBarGeometry(insets.top).contentInset;
   const { chrome, theme } = useMemo(
     () => buildChatChrome(zenTheme),
     [zenTheme],
@@ -377,22 +383,25 @@ export default function BrainScreen() {
       style={[styles.screen, { backgroundColor: chrome.appBackground }]}
       edges={[]}
     >
-      {brainActionError ? (
-        <View style={styles.bannerError}>
-          <Text style={styles.bannerErrorText}>{brainActionError}</Text>
-        </View>
-      ) : null}
-
-      {targetedThreadReadOnly ? (
-        <View style={styles.bannerReadOnly}>
-          <Ionicons
-            name="lock-closed-outline"
-            size={14}
-            color={colors.textSecondary}
-          />
-          <Text style={styles.bannerReadOnlyText}>
-            Historical Brain thread · read-only
-          </Text>
+      {brainActionError || targetedThreadReadOnly ? (
+        <View style={{ paddingTop: topChromeInset }}>
+          {brainActionError ? (
+            <View style={styles.bannerError}>
+              <Text style={styles.bannerErrorText}>{brainActionError}</Text>
+            </View>
+          ) : null}
+          {targetedThreadReadOnly ? (
+            <View style={styles.bannerReadOnly}>
+              <Ionicons
+                name="lock-closed-outline"
+                size={14}
+                color={colors.textSecondary}
+              />
+              <Text style={styles.bannerReadOnlyText}>
+                Historical Brain thread · read-only
+              </Text>
+            </View>
+          ) : null}
         </View>
       ) : null}
 
@@ -415,6 +424,7 @@ export default function BrainScreen() {
               theme={theme}
               chrome={chrome}
               screenFocused={screenFocused}
+              topChromeInset={topChromeInset}
               readOnly={targetedThreadReadOnly}
               onSwitchToTerminal={openBrainTerminal}
               emptyTitle={BRAIN_EMPTY_TITLE}

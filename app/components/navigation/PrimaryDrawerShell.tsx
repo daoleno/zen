@@ -32,8 +32,15 @@ import {
   PrimarySurfaceInteractionProvider,
 } from "./PrimarySurfaceInteraction";
 import { PrimaryTopSwitch } from "./PrimaryTopSwitch";
+import { resolvePrimaryAppBarGeometry } from "./primaryAppBarGeometry";
 import { useDrawerFocusContainment } from "./useDrawerFocusContainment";
 import { usePrimaryDrawerBack } from "./usePrimaryDrawerBack";
+
+export {
+  PRIMARY_APP_BAR_HEIGHT,
+  PRIMARY_APP_BAR_LAYOUT_MODE,
+  resolvePrimaryAppBarGeometry,
+} from "./primaryAppBarGeometry";
 
 interface PrimaryDrawerShellProps {
   activePrimaryRoute: PrimaryRouteName;
@@ -51,6 +58,8 @@ interface PrimaryAppBarProps {
   topInset: number;
 }
 
+const PRIMARY_DRAWER_SWIPE_EDGE_WIDTH = 40;
+
 function PrimaryAppBar({
   activePrimaryRoute,
   drawerVisible,
@@ -61,15 +70,20 @@ function PrimaryAppBar({
   topInset,
 }: PrimaryAppBarProps) {
   const colors = useAppColors();
+  const geometry = resolvePrimaryAppBarGeometry(topInset);
+  const showBrainCanvas = activePrimaryRoute === "brain";
   return (
     <View
       style={[
         styles.appBar,
+        styles.appBarOverlay,
         {
-          paddingTop: topInset,
-          minHeight: topInset + 52,
-          backgroundColor: colors.bgPrimary,
-          borderBottomColor: colors.borderSubtle,
+          paddingTop: geometry.safeAreaTop,
+          minHeight: geometry.contentInset,
+          backgroundColor: showBrainCanvas ? "transparent" : colors.bgPrimary,
+          borderBottomColor: showBrainCanvas
+            ? "transparent"
+            : colors.borderSubtle,
         },
       ]}
     >
@@ -262,7 +276,7 @@ export function PrimaryDrawerShell({
           overlayStyle={{ backgroundColor: colors.modalBackdrop }}
           renderDrawerContent={renderDrawerContent}
           style={[styles.root, { backgroundColor: colors.bgPrimary }]}
-          swipeEdgeWidth={windowWidth}
+          swipeEdgeWidth={PRIMARY_DRAWER_SWIPE_EDGE_WIDTH}
           swipeEnabled={routeFocused && activePrimaryRoute === "brain"}
         >
           <View
@@ -300,6 +314,7 @@ const styles = StyleSheet.create({
   },
   primary: {
     flex: 1,
+    position: "relative",
   },
   content: {
     flex: 1,
@@ -311,6 +326,13 @@ const styles = StyleSheet.create({
     justifyContent: "space-between",
     borderBottomWidth: StyleSheet.hairlineWidth,
     zIndex: 2,
+  },
+  appBarOverlay: {
+    position: "absolute",
+    top: 0,
+    right: 0,
+    left: 0,
+    zIndex: 5,
   },
   menuButton: {
     width: 52,

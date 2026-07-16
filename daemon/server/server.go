@@ -17,6 +17,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/google/uuid"
@@ -24,7 +25,9 @@ import (
 	"github.com/daoleno/zen/daemon/auth"
 	"github.com/daoleno/zen/daemon/brain"
 	"github.com/daoleno/zen/daemon/calendar"
+	"github.com/daoleno/zen/daemon/chatthread"
 	"github.com/daoleno/zen/daemon/classifier"
+	"github.com/daoleno/zen/daemon/codexshadow"
 	"github.com/daoleno/zen/daemon/push"
 	"github.com/daoleno/zen/daemon/stats"
 	"github.com/daoleno/zen/daemon/terminal"
@@ -58,6 +61,9 @@ type Server struct {
 	lifecycle                *delegatedLifecycleManager
 	structuredTurns          *structuredTurnRegistry
 	structuredSnapshotLoader func(agentID string) (work.CodexConversation, error)
+	canonicalCodex           *canonicalCodexProjection
+	codexShadow              codexShadowObserver
+	codexShadowBusy          atomic.Bool
 
 	workSubID     int
 	workSub       <-chan work.Event
@@ -85,6 +91,15 @@ type codexConversationSubscription struct {
 	generation string
 }
 
+// codexShadowObserver is deliberately read-only and narrower than every
+// provider-effect boundary. The server can offer structured records and legacy
+// lifecycle metadata, but the observer cannot dispatch input or alter the wire
+// projection returned to the App.
+type codexShadowObserver interface {
+	Enabled(ownerKey string) bool
+	ObserveRollout(context.Context, codexshadow.Observation) (chatthread.ShadowSnapshot, error)
+}
+
 // New creates a WebSocket server.
 func New(authManager *auth.Manager, w *watcher.Watcher, pusher *push.Client, sc *stats.Collector, workStore *work.Store, launcher *work.Launcher, execs *work.ExecutorConfig, brainService *brain.Service) *Server {
 	srv := &Server{
@@ -104,6 +119,7 @@ func New(authManager *auth.Manager, w *watcher.Watcher, pusher *push.Client, sc 
 		notified:        make(map[string]struct{}),
 		brainSent:       make(map[string]struct{}),
 		structuredTurns: newStructuredTurnRegistry(),
+		canonicalCodex:  newCanonicalCodexProjection(),
 	}
 	srv.lifecycle = newDelegatedLifecycleManager(
 		func(event brain.HeartbeatEvent) (bool, error) {
@@ -122,6 +138,14 @@ func New(authManager *auth.Manager, w *watcher.Watcher, pusher *push.Client, sc 
 	if workStore != nil {
 		srv.workSubID, srv.workSub = workStore.Subscribe()
 		srv.workLog = work.NewSessionLogger(workStore, work.NewAgentCLIDigestProvider(execs))
+	}
+	if authManager != nil {
+		shadow, err := codexshadow.OpenConfigured(authManager.StorageDir(), nil)
+		if err != nil {
+			log.Printf("Codex Chat shadow diagnostics disabled (%s)", codexshadow.ErrorCode(err))
+		} else {
+			srv.codexShadow = shadow
+		}
 	}
 	return srv
 }
@@ -427,22 +451,48 @@ func (s *Server) handleClientMessage(conn *websocket.Conn, msg []byte) {
 		s.mu.Unlock()
 
 	case "send_input":
-		acceptance, err := s.acceptStructuredInput(
-			raw,
-			func() error { return s.watcher.SendInput(raw.AgentID, raw.Text) },
-		)
+		dispatch := func() (structuredInputAcceptance, error) {
+			return s.acceptStructuredInput(
+				raw,
+				func() error { return s.watcher.SendInput(raw.AgentID, raw.Text) },
+			)
+		}
+		var acceptance structuredInputAcceptance
+		var err error
+		if strings.TrimSpace(raw.TurnID) != "" {
+			scope := structuredTurnRegistryKey(raw.ConversationScopeKey, raw.AgentID)
+			// Warm the provider frontier before allocating this Submission. Older
+			// rollout input facts can therefore never bind to a newly accepted row.
+			if baseline, baselineErr := s.loadStructuredConversationSnapshot(raw.AgentID); baselineErr == nil {
+				s.canonicalCodexProjection().project(scope, baseline)
+			}
+			acceptance, err = s.canonicalCodexProjection().acceptWithDispatch(
+				scope,
+				canonicalCodexSubmission{
+					ID:        raw.TurnID,
+					Body:      raw.Text,
+					StartedAt: clientStartedAt(raw.TurnStartedAt),
+					AttemptID: raw.RequestID,
+				},
+				dispatch,
+			)
+		} else {
+			acceptance, err = dispatch()
+		}
 		if err != nil {
 			log.Printf("send_input error: %v", err)
 			s.sendJSON(conn, structuredInputFailureResponse(raw, err))
 		} else if raw.RequestID != "" {
 			s.sendJSON(conn, map[string]any{
-				"type":          "input_accepted",
-				"request_id":    raw.RequestID,
-				"agent_id":      raw.AgentID,
-				"turn_id":       acceptance.TurnID,
-				"queued":        acceptance.Queued,
-				"turn_revision": acceptance.Revision,
-				"turn_epoch":    acceptance.Epoch,
+				"type":                  "input_accepted",
+				"request_id":            raw.RequestID,
+				"agent_id":              raw.AgentID,
+				"turn_id":               acceptance.TurnID,
+				"queued":                acceptance.Queued,
+				"turn_revision":         acceptance.Revision,
+				"turn_epoch":            acceptance.Epoch,
+				"position":              acceptance.Position,
+				"conversation_revision": acceptance.ConversationRevision,
 			})
 		}
 
@@ -915,6 +965,15 @@ func (s *Server) turnRegistry() *structuredTurnRegistry {
 	return s.structuredTurns
 }
 
+func (s *Server) canonicalCodexProjection() *canonicalCodexProjection {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.canonicalCodex == nil {
+		s.canonicalCodex = newCanonicalCodexProjection()
+	}
+	return s.canonicalCodex
+}
+
 // refreshStructuredTurnBaseline reconciles the latest trusted provider facts
 // immediately before a structured Send or Stop. This is deliberately not
 // conditional on the registry being empty: the provider may have settled A
@@ -1233,7 +1292,7 @@ func (s *Server) runCodexConversationSubscription(
 
 	var previous *codexConversationSubscriptionSnapshot
 	for {
-		s.publishCodexConversationSubscription(ctx, conn, raw, subscriptionID, &previous)
+		s.publishCodexConversationSubscription(ctx, conn, raw, subscriptionID, generation, &previous)
 		select {
 		case <-ctx.Done():
 			return
@@ -1247,9 +1306,10 @@ func (s *Server) publishCodexConversationSubscription(
 	conn *websocket.Conn,
 	raw clientMessage,
 	subscriptionID string,
+	generation string,
 	previous **codexConversationSubscriptionSnapshot,
 ) {
-	if ctx.Err() != nil {
+	if ctx.Err() != nil || !s.isCurrentCodexSubscription(conn, subscriptionID, generation) {
 		return
 	}
 	resolved := s.resolveCodexConversationAgent(raw)
@@ -1281,9 +1341,13 @@ func (s *Server) publishCodexConversationSubscription(
 		if (*previous) != nil {
 			revision = (*previous).revision + 1
 		}
+		if !s.isCurrentCodexSubscription(conn, subscriptionID, generation) {
+			return
+		}
 		s.sendJSON(conn, map[string]any{
 			"type":            "codex_conversation_sync_status",
 			"request_id":      subscriptionID,
+			"generation":      generation,
 			"agent_id":        resolved.targetID,
 			"conversation_id": "",
 			"revision":        revision,
@@ -1314,9 +1378,13 @@ func (s *Server) publishCodexConversationSubscription(
 		now,
 	)
 	if err != nil {
+		if !s.isCurrentCodexSubscription(conn, subscriptionID, generation) {
+			return
+		}
 		s.sendJSON(conn, map[string]any{
 			"type":       "error",
 			"request_id": subscriptionID,
+			"generation": generation,
 			"code":       "codex_conversation_subscribe_failed",
 			"message":    err.Error(),
 		})
@@ -1336,13 +1404,48 @@ func (s *Server) publishCodexConversationSubscription(
 			conversation = work.TerminalSnapshotConversationForAgent(resolved.agent, text, now)
 		}
 	}
-	conversation = s.projectStructuredConversationTurnsWithTrust(
+	providerConversation := cloneCodexConversation(conversation)
+	legacyConversation := s.projectStructuredConversationTurnsWithTrust(
 		raw.ConversationScopeKey,
 		resolved.targetID,
-		conversation,
+		cloneCodexConversation(providerConversation),
 		resolved.fromWatcher,
 	)
-	conversation = s.brainScopedConversation(raw.ConversationScopeKey, conversation, now)
+	s.observeCodexConversationShadow(ctx, raw, resolved, legacyConversation)
+
+	visibleSource := s.brainScopedConversation(
+		raw.ConversationScopeKey,
+		cloneCodexConversation(providerConversation),
+		now,
+	)
+	canonicalReplace := false
+	canonicalRevision := uint64(0)
+	if strings.EqualFold(strings.TrimSpace(resolved.provider), "codex") &&
+		strings.TrimSpace(providerConversation.Source) == "codex_rollout" {
+		if visibleSource.Turn != nil && legacyConversation.Turn != nil &&
+			legacyConversation.Turn.Status == work.CodexConversationTurnRunning {
+			visibleSource.Turn.ControlID = legacyConversation.Turn.ID
+		}
+		visibleSource.TurnRevision = 0
+		visibleSource.TurnEpoch = ""
+		visibleSource.QueuedTurns = []work.CodexConversationTurn{}
+		canonical := s.canonicalCodexProjection().project(
+			structuredTurnRegistryKey(raw.ConversationScopeKey, resolved.targetID),
+			visibleSource,
+		)
+		conversation = canonical.Conversation
+		canonicalReplace = canonical.Replace
+		canonicalRevision = canonical.Revision
+	} else {
+		// Provider-safe fallback keeps the legacy adapter for control metadata,
+		// but Working is still owned by the raw provider Activity.
+		conversation = s.brainScopedConversation(raw.ConversationScopeKey, legacyConversation, now)
+		conversation.Activity = cloneCodexConversationTurn(providerConversation.Turn)
+		if conversation.Activity != nil && conversation.Turn != nil &&
+			conversation.Turn.Status == work.CodexConversationTurnRunning {
+			conversation.Activity.ControlID = conversation.Turn.ID
+		}
+	}
 	fingerprint := codexConversationSubscriptionFingerprint(conversation)
 	if (*previous) != nil && (*previous).fingerprint == fingerprint {
 		return
@@ -1354,14 +1457,24 @@ func (s *Server) publishCodexConversationSubscription(
 		eventsByID:   codexConversationEventsByID(conversation.Events),
 		revision:     1,
 	}
+	if canonicalRevision > 0 {
+		next.revision = int64(canonicalRevision)
+	}
 	if (*previous) != nil {
-		next.revision = (*previous).revision + 1
+		if next.revision <= (*previous).revision {
+			next.revision = (*previous).revision + 1
+		}
 	}
 
-	if (*previous) == nil || codexConversationIdentity((*previous).conversation) != codexConversationIdentity(conversation) {
+	if (*previous) == nil || canonicalReplace || !(*previous).conversation.Available ||
+		codexConversationIdentity((*previous).conversation) != codexConversationIdentity(conversation) {
+		if !s.isCurrentCodexSubscription(conn, subscriptionID, generation) {
+			return
+		}
 		s.sendJSON(conn, map[string]any{
 			"type":            "codex_conversation_snapshot",
 			"request_id":      subscriptionID,
+			"generation":      generation,
 			"agent_id":        resolved.targetID,
 			"conversation_id": codexConversationIdentity(conversation),
 			"revision":        next.revision,
@@ -1372,11 +1485,16 @@ func (s *Server) publishCodexConversationSubscription(
 	}
 
 	upserts, deletes := codexConversationDelta((*previous).eventsByID, conversation.Events)
+	if !s.isCurrentCodexSubscription(conn, subscriptionID, generation) {
+		return
+	}
 	s.sendJSON(conn, map[string]any{
 		"type":            "codex_conversation_delta",
 		"request_id":      subscriptionID,
+		"generation":      generation,
 		"agent_id":        resolved.targetID,
 		"conversation_id": codexConversationIdentity(conversation),
+		"base_revision":   (*previous).revision,
 		"revision":        next.revision,
 		"available":       conversation.Available,
 		"reason":          conversation.Reason,
@@ -1386,6 +1504,7 @@ func (s *Server) publishCodexConversationSubscription(
 		"cwd":             conversation.CWD,
 		"updated_at":      conversation.Updated,
 		"active":          conversation.Active,
+		"activity":        conversation.Activity,
 		"turn":            conversation.Turn,
 		"turn_revision":   conversation.TurnRevision,
 		"turn_epoch":      conversation.TurnEpoch,
@@ -1394,6 +1513,75 @@ func (s *Server) publishCodexConversationSubscription(
 		"deletes":         deletes,
 	})
 	*previous = &next
+}
+
+func (s *Server) isCurrentCodexSubscription(conn *websocket.Conn, subscriptionID, generation string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	subscriptions := s.codexSubs[conn]
+	current, ok := subscriptions[subscriptionID]
+	return ok && current.generation == generation
+}
+
+func (s *Server) observeCodexConversationShadow(
+	ctx context.Context,
+	raw clientMessage,
+	resolved resolvedCodexConversationAgent,
+	conversation work.CodexConversation,
+) {
+	if s == nil || s.codexShadow == nil || !resolved.fromWatcher ||
+		strings.ToLower(strings.TrimSpace(resolved.provider)) != "codex" {
+		return
+	}
+	ownerKey := structuredTurnRegistryKey(raw.ConversationScopeKey, resolved.targetID)
+	if !s.codexShadow.Enabled(ownerKey) || strings.TrimSpace(conversation.Path) == "" ||
+		strings.TrimSpace(conversation.SessionID) == "" {
+		return
+	}
+	observation := codexshadow.Observation{
+		OwnerKey:    ownerKey,
+		RolloutPath: conversation.Path,
+		SessionID:   conversation.SessionID,
+		Legacy:      legacyShadowProjection(conversation),
+	}
+	// Diagnostics must never become a latency dependency of the v1 WebSocket
+	// projection. Keep one bounded background read; a busy tick is retried by the
+	// existing subscription poll instead of accumulating goroutines.
+	if !s.codexShadowBusy.CompareAndSwap(false, true) {
+		return
+	}
+	go func() {
+		defer s.codexShadowBusy.Store(false)
+		_, err := s.codexShadow.ObserveRollout(ctx, observation)
+		if err != nil && !errors.Is(err, codexshadow.ErrDisabled) && !errors.Is(err, context.Canceled) {
+			// ErrorCode is a closed sanitized enum. In particular, never log the
+			// rollout path or an underlying parser/storage error here.
+			log.Printf("Codex Chat shadow diagnostics disabled (%s)", codexshadow.ErrorCode(err))
+		}
+	}()
+}
+
+func legacyShadowProjection(conversation work.CodexConversation) chatthread.LegacyShadowProjection {
+	projection := chatthread.LegacyShadowProjection{
+		OrderedTurns: []chatthread.LegacyShadowTurn{},
+		Queued:       []chatthread.LegacyShadowTurn{},
+	}
+	if conversation.Turn != nil {
+		turn := chatthread.LegacyShadowTurn{ID: conversation.Turn.ID, State: conversation.Turn.Status}
+		projection.OrderedTurns = append(projection.OrderedTurns, turn)
+		if conversation.Turn.Status == work.CodexConversationTurnRunning {
+			current := turn
+			projection.Current = &current
+		} else if isStructuredTurnTerminal(conversation.Turn.Status) {
+			projection.TerminalState = conversation.Turn.Status
+		}
+	}
+	for _, queued := range conversation.QueuedTurns {
+		turn := chatthread.LegacyShadowTurn{ID: queued.ID, State: queued.Status}
+		projection.OrderedTurns = append(projection.OrderedTurns, turn)
+		projection.Queued = append(projection.Queued, turn)
+	}
+	return projection
 }
 
 func (s *Server) brainScopedConversation(scopeKey string, conversation work.CodexConversation, now time.Time) work.CodexConversation {
@@ -1416,6 +1604,7 @@ func (s *Server) brainScopedConversation(scopeKey string, conversation work.Code
 		threadID != strings.TrimSpace(currentThreadID) {
 		conversation.Events = []work.CodexConversationEvent{}
 		conversation.Turn = nil
+		conversation.Activity = nil
 		conversation.QueuedTurns = []work.CodexConversationTurn{}
 		active := false
 		conversation.Active = &active
@@ -1533,6 +1722,7 @@ func codexConversationSubscriptionFingerprint(conversation work.CodexConversatio
 	writeFingerprintString(hash, fmt.Sprintf("%d", conversation.TurnRevision))
 	writeFingerprintString(hash, conversation.TurnEpoch)
 	writeCodexConversationTurnFingerprint(hash, conversation.Turn)
+	writeCodexConversationTurnFingerprint(hash, conversation.Activity)
 	writeFingerprintInt(hash, len(conversation.QueuedTurns))
 	for index := range conversation.QueuedTurns {
 		writeCodexConversationTurnFingerprint(hash, &conversation.QueuedTurns[index])
@@ -1550,6 +1740,7 @@ func writeCodexConversationTurnFingerprint(w io.Writer, turn *work.CodexConversa
 	writeFingerprintString(w, turn.Status)
 	writeFingerprintString(w, turn.StartedAt)
 	writeFingerprintString(w, turn.SettledAt)
+	writeFingerprintString(w, turn.ControlID)
 }
 
 func codexConversationActiveValue(active *bool) string {
@@ -1643,6 +1834,11 @@ func writeCodexConversationEventFingerprint(w io.Writer, event work.CodexConvers
 	writeFingerprintString(w, event.Explanation)
 	writeFingerprintPlan(w, event.Plan)
 	writeFingerprintString(w, event.Source)
+	writeFingerprintString(w, fmt.Sprintf("%d", event.Position))
+	writeFingerprintString(w, fmt.Sprintf("%d", event.EventRevision))
+	writeFingerprintString(w, event.ActivityID)
+	writeFingerprintString(w, event.SubmissionID)
+	writeFingerprintString(w, event.SubmissionState)
 }
 
 func writeFingerprintString(w io.Writer, value string) {

@@ -7,8 +7,13 @@ import React, {
   useState,
   type ReactNode,
 } from 'react';
+import {
+  DefaultTheme,
+  ThemeProvider as NavigationThemeProvider,
+} from 'expo-router';
 import { useColorScheme } from 'react-native';
 import { getThemePreference, setThemePreference } from '../services/storage';
+import { navigationThemeFromZenTheme } from './navigation';
 import { resolveTheme } from './resolve';
 import type { ResolvedZenTheme, ThemePreference } from './types';
 
@@ -51,6 +56,10 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
       }),
     [colorScheme, themeId],
   );
+  const navigationTheme = useMemo(
+    () => navigationThemeFromZenTheme(theme, DefaultTheme.fonts),
+    [theme],
+  );
 
   const setPreference = useCallback(async (next: ThemePreference) => {
     setPreferenceState(next);
@@ -71,7 +80,11 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
   }
 
   return (
-    <ThemeContext.Provider value={value}>{children}</ThemeContext.Provider>
+    <ThemeContext.Provider value={value}>
+      <NavigationThemeProvider value={navigationTheme}>
+        {children}
+      </NavigationThemeProvider>
+    </ThemeContext.Provider>
   );
 }
 

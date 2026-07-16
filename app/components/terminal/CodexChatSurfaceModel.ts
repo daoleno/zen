@@ -31,7 +31,6 @@ export interface CodexComposerPresentation {
   placeholder: string;
   bottomPadding: number;
   keyboardVerticalOffset: number;
-  automaticKeyboardOffset: boolean;
   composerLayout: ChatLayout;
 }
 
@@ -140,7 +139,6 @@ export function buildCodexComposerPresentation({
     bottomPadding:
       composerBottomInset ?? Math.max(safeAreaBottom, 8),
     keyboardVerticalOffset: keyboardVerticalOffset ?? 0,
-    automaticKeyboardOffset: true,
     composerLayout,
   };
 }

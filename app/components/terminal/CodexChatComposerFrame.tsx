@@ -3,7 +3,6 @@ import {
   StyleSheet,
   View,
 } from "react-native";
-import type { LayoutChangeEvent } from "react-native";
 import type {
   TerminalThemeChrome,
   TerminalThemePalette,
@@ -17,7 +16,6 @@ interface CodexChatComposerFrameProps {
   theme: TerminalThemePalette;
   composerLayout: "chatgpt" | "telegram" | "classic";
   children: React.ReactNode;
-  onLayout(event: LayoutChangeEvent): void;
 }
 
 export function CodexChatComposerFrame({
@@ -26,7 +24,6 @@ export function CodexChatComposerFrame({
   theme,
   composerLayout,
   children,
-  onLayout,
 }: CodexChatComposerFrameProps) {
   const ambient = isAmbientChatChrome(chrome);
   const chatgptDock = !ambient && composerLayout === "chatgpt";
@@ -34,7 +31,6 @@ export function CodexChatComposerFrame({
 
   return (
     <View
-      onLayout={onLayout}
       style={[
         styles.composer,
         ambient ? styles.composerAmbient : null,

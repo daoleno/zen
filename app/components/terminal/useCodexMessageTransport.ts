@@ -146,18 +146,14 @@ export function useCodexMessageTransport({
   const observeInputOutcome = useCallback((
     pendingMessageId: string,
     receipt: ReturnType<typeof wsClient.sendInput>,
-    fallbackTurnId: string,
   ) => {
     void receipt.outcome.then((outcome) => {
       if (outcome.kind === "confirmed") {
         const accepted = outcome.value;
         acknowledgePendingUserMessage(pendingMessageId, {
           requestId: receipt.requestId,
-          turnId: accepted.turnId || fallbackTurnId,
           lifecycle: accepted.queued ? "queued" : "sending",
           acceptedAt: new Date().toISOString(),
-          turnEpoch: accepted.turnEpoch,
-          turnRevision: accepted.turnRevision,
         });
         return;
       }
@@ -242,7 +238,7 @@ export function useCodexMessageTransport({
       currentAttachmentsRef.current = [];
       pinToBottomIfNeeded(false, 0);
       unlockSend();
-      observeInputOutcome(pendingMessageId, receipt, turnIdentity.id);
+      observeInputOutcome(pendingMessageId, receipt);
     },
     [
       agentId,
@@ -314,7 +310,7 @@ export function useCodexMessageTransport({
     });
     pinToBottomIfNeeded(false, 0);
     unlockSend();
-    observeInputOutcome(pendingMessageId, receipt, message.turnId);
+    observeInputOutcome(pendingMessageId, receipt);
   }, [
     agentId,
     conversationIdentity,
@@ -382,7 +378,7 @@ export function useCodexMessageTransport({
     try {
       wsClient.sendAction(serverId, agentId, "pause", {
         conversationScopeKey,
-        turnId: workingTurn?.id,
+        turnId: workingTurn?.control_id || workingTurn?.id,
         turnStartedAt: workingTurn?.started_at,
       });
     } catch (error: any) {
@@ -405,6 +401,7 @@ export function useCodexMessageTransport({
     conversationScopeKey,
     serverId,
     workingTurn?.id,
+    workingTurn?.control_id,
     workingTurn?.started_at,
   ]);
 

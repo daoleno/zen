@@ -40,3 +40,10 @@ export function timelineMutationDecision(
 export function returnTimelineToBottom(): TimelineScrollState {
   return INITIAL_TIMELINE_SCROLL_STATE;
 }
+
+export function timelineDistanceFromLatest(
+  contentOffset: number,
+  latestOffset: number,
+) {
+  return Math.max(0, contentOffset - latestOffset);
+}

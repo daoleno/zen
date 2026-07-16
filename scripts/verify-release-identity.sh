@@ -180,6 +180,12 @@ if "versionName" not in apk_script or "versionCode" not in apk_script:
 # Local default only; must not force a host path that overrides CI Temurin JAVA_HOME.
 if 'JAVA_HOME="${JAVA_HOME:-' not in apk_script and "JAVA_HOME=\"${JAVA_HOME:-" not in apk_script:
     errors.append("android-release-apk.sh must default JAVA_HOME only when unset")
+if "verify-android-native-symbols.py" not in apk_script:
+    errors.append("android-release-apk.sh must verify packaged Android native symbols")
+
+apk_verifier = (root / "scripts/verify-apk-release.sh").read_text(encoding="utf-8")
+if "verify-android-native-symbols.py" not in apk_verifier:
+    errors.append("verify-apk-release.sh must verify packaged Android native symbols")
 
 app_pkg = json.loads((root / "app/package.json").read_text(encoding="utf-8"))
 build_apk = (app_pkg.get("scripts") or {}).get("build:apk") or ""

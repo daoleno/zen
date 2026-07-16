@@ -30,6 +30,7 @@ export interface StructuredTurn {
   status: StructuredTurnStatus;
   started_at: string;
   settled_at?: string;
+  control_id?: string;
 }
 
 export interface CodexPlanStep {
@@ -58,6 +59,11 @@ export interface CodexConversationEvent {
   explanation?: string;
   plan?: CodexPlanStep[];
   source?: string;
+  position?: number;
+  event_revision?: number;
+  activity_id?: string;
+  submission_id?: string;
+  submission_state?: "accepted" | "queued" | "delivered" | "unconfirmed" | "rejected";
 }
 
 export interface CodexConversation {
@@ -72,6 +78,8 @@ export interface CodexConversation {
   turn_epoch?: string;
   turn_revision?: number;
   turn?: StructuredTurn;
+  /** The sole owner of Working, timer, and Stop. */
+  activity?: StructuredTurn;
   queued_turns?: StructuredTurn[];
   events: CodexConversationEvent[];
 }
@@ -109,13 +117,14 @@ export function normalizeCodexConversation(value: any): CodexConversation {
         ? conversation.turn_revision
         : undefined,
     turn: normalizeStructuredTurn(conversation.turn),
+    activity: normalizeStructuredTurn(conversation.activity),
     queued_turns: Array.isArray(conversation.queued_turns)
       ? conversation.queued_turns
           .map((turn: unknown) => normalizeStructuredTurn(turn))
           .filter((turn: StructuredTurn | undefined): turn is StructuredTurn =>
             Boolean(turn),
           )
-      : undefined,
+      : [],
     events: Array.isArray(conversation.events)
       ? conversation.events.map(normalizeCodexConversationEvent).filter(Boolean)
       : [],
@@ -151,6 +160,10 @@ export function normalizeStructuredTurn(
       turn.settled_at &&
       Number.isFinite(Date.parse(turn.settled_at))
         ? turn.settled_at
+        : undefined,
+    control_id:
+      typeof turn.control_id === "string" && turn.control_id.trim()
+        ? turn.control_id.trim()
         : undefined,
   };
 }
@@ -238,7 +251,39 @@ function normalizeCodexConversationEvent(
           .filter((step: CodexPlanStep | null): step is CodexPlanStep => Boolean(step))
       : undefined,
     source: typeof event.source === "string" ? event.source : undefined,
+    position: normalizeNonnegativeNumber(event.position),
+    event_revision: normalizeNonnegativeNumber(event.event_revision),
+    activity_id:
+      typeof event.activity_id === "string" && event.activity_id
+        ? event.activity_id
+        : undefined,
+    submission_id:
+      typeof event.submission_id === "string" && event.submission_id
+        ? event.submission_id
+        : undefined,
+    submission_state: normalizeSubmissionState(event.submission_state),
   };
+}
+
+function normalizeNonnegativeNumber(value: unknown) {
+  return typeof value === "number" && Number.isFinite(value) && value >= 0
+    ? value
+    : undefined;
+}
+
+function normalizeSubmissionState(
+  value: unknown,
+): CodexConversationEvent["submission_state"] {
+  switch (value) {
+    case "accepted":
+    case "queued":
+    case "delivered":
+    case "unconfirmed":
+    case "rejected":
+      return value;
+    default:
+      return undefined;
+  }
 }
 
 function normalizePlanStep(value: any): CodexPlanStep | null {

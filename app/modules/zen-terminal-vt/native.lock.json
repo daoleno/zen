@@ -35,7 +35,22 @@
   },
   "android": {
     "min_api": 29,
-    "ndk_note": "Verified via ELF .note.android.ident API level 29 (0x1d) on pin-built libghostty_vt.so; file(1) reports 'for Android 29'."
+    "ndk_note": "Verified via ELF .note.android.ident API level 29 (0x1d) on pin-built libghostty_vt.so; file(1) reports 'for Android 29'.",
+    "source_patches": [
+      {
+        "path": "app/modules/zen-terminal-vt/patches/android/adb0d793-avoid-posix-shm.patch",
+        "sha256": "33f99d420f2db16f2e0d77fe3619e87dfa4b06062ed7cedff1d44e3712820cf0",
+        "applies_to_ghostty_commit": "28972454c0c9493b96b42de5d88f88c0bdc277a4",
+        "upstream_repository": "https://github.com/ghostty-org/ghostty.git",
+        "upstream_commit": "adb0d793af755841f3dcea8c5e466ea9b8295e11",
+        "upstream_url": "https://github.com/ghostty-org/ghostty/commit/adb0d793af755841f3dcea8c5e466ea9b8295e11",
+        "subject": "android: Avoid referencing POSIX shared memory functions"
+      }
+    ],
+    "forbidden_undefined_symbols": [
+      "shm_open",
+      "shm_unlink"
+    ]
   },
   "abis": [
     {

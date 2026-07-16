@@ -25,6 +25,7 @@ interface CodexChatSurfaceProps {
   readOnly?: boolean;
   placeholder?: string;
   keyboardVerticalOffset?: number;
+  topChromeInset?: number;
   showUnavailableAction?: boolean;
   emptyTitle?: string;
   emptyBody?: string;
@@ -51,6 +52,7 @@ function CodexChatSurfaceImpl({
   readOnly = false,
   placeholder,
   keyboardVerticalOffset,
+  topChromeInset,
   showUnavailableAction,
   emptyTitle,
   emptyBody,
@@ -72,6 +74,7 @@ function CodexChatSurfaceImpl({
     screenFocused,
     placeholder,
     keyboardVerticalOffset,
+    topChromeInset,
     showUnavailableAction,
     emptyTitle,
     emptyBody,

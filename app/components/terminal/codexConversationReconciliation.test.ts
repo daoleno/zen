@@ -1,4 +1,3 @@
-// @ts-nocheck
 import { describe, expect, test } from "bun:test";
 import type {
   CodexConversation,
@@ -50,6 +49,45 @@ describe("conversation stream reconciliation", () => {
     expect(stale.cursor).toBe(first.cursor);
   });
 
+  test("rejects a delta gap and requests a fresh snapshot", () => {
+    const current = {
+      requestId: "stream-a",
+      conversationId: "thread-a",
+      revision: 4,
+      generation: 7,
+    };
+    const gap = acceptConversationEnvelope(current, {
+      requestId: "stream-a",
+      conversationId: "thread-a",
+      baseRevision: 5,
+      revision: 6,
+      generation: 7,
+      kind: "delta",
+    });
+
+    expect(gap).toMatchObject({ accepted: false, gap: true });
+    expect(gap.cursor).toBe(current);
+  });
+
+  test("rejects an envelope from an obsolete subscription generation", () => {
+    const current = {
+      requestId: "stream-new",
+      conversationId: "thread-a",
+      revision: 2,
+      generation: 9,
+    };
+    const obsolete = acceptConversationEnvelope(current, {
+      requestId: "stream-old",
+      conversationId: "thread-a",
+      revision: 99,
+      generation: 8,
+      kind: "snapshot",
+    });
+
+    expect(obsolete).toMatchObject({ accepted: false, obsolete: true });
+    expect(obsolete.cursor).toBe(current);
+  });
+
   test("accepts a restarted subscription while retaining logical identity", () => {
     const previous = {
       requestId: "stream-a",
@@ -96,7 +134,7 @@ describe("conversation stream reconciliation", () => {
     expect(replacement.sameConversation).toBe(false);
   });
 
-  test("a shorter same-thread snapshot cannot clear or regress history", () => {
+  test("a revisioned same-thread snapshot is an exact replacement", () => {
     const first = event("message-1", 1, "complete");
     const second = event("message-2", 2, "newest");
     const reconciled = reconcileConversationSnapshot(
@@ -105,11 +143,30 @@ describe("conversation stream reconciliation", () => {
       true,
     );
 
-    expect(reconciled.events.map((item) => item.id)).toEqual([
-      "message-1",
-      "message-2",
-    ]);
+    expect(reconciled.events.map((item) => item.id)).toEqual(["message-1"]);
     expect(reconciled.events[0]?.body).toBe("streamed update");
+  });
+
+  test("empty and null snapshots explicitly clear events current Activity and queue", () => {
+    const previous: CodexConversation = {
+      ...conversation("thread-a", [event("history", 1)]),
+      activity: { id: "activity", status: "running", started_at: "2026-07-16T01:00:00Z" },
+      queued_turns: [{ id: "queued", status: "queued", started_at: "2026-07-16T01:00:01Z" }],
+    };
+    const empty = reconcileConversationSnapshot(previous, {
+      available: true,
+      session_id: "thread-a",
+      activity: undefined,
+      queued_turns: [],
+      events: [],
+    }, true);
+    const absent = reconcileConversationSnapshot(empty, null, true);
+
+    expect(empty).toMatchObject({ events: [], queued_turns: [] });
+    expect(empty.activity).toBeUndefined();
+    expect(absent.events).toEqual([]);
+    expect(absent.activity).toBeUndefined();
+    expect(absent.queued_turns).toEqual([]);
   });
 
   test("an actual conversation replacement starts a new logical list", () => {

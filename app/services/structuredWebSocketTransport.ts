@@ -191,5 +191,14 @@ export function normalizeStructuredInputAccepted(
         Number.isFinite(payload.turn_revision)
         ? payload.turn_revision
         : undefined,
+    position:
+      typeof payload?.position === "number" && Number.isFinite(payload.position)
+        ? payload.position
+        : undefined,
+    conversationRevision:
+      typeof payload?.conversation_revision === "number" &&
+        Number.isFinite(payload.conversation_revision)
+        ? payload.conversation_revision
+        : undefined,
   };
 }

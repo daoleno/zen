@@ -11,6 +11,7 @@ import { CodexTimelineActivityDetails } from "./CodexTimelineActivityDetails";
 import {
   CodexTimelineActivityHeader,
 } from "./CodexTimelineActivityHeader";
+import { useTimelineActivityExpansion } from "./CodexTimelineActivityExpansionState";
 import {
   buildCodexTimelineActivityPresentation,
   shouldAutoExpandActivity,
@@ -38,7 +39,11 @@ export function ZenActivityEvent({
   truncateBody,
 }: ZenActivityEventProps) {
   const defaultExpanded = shouldAutoExpandActivity(item);
-  const [expanded, setExpanded] = useState(defaultExpanded);
+  const {
+    detailsExpanded,
+    expanded,
+    toggle,
+  } = useTimelineActivityExpansion(item.id, defaultExpanded);
   const [assetPreviewUri, setAssetPreviewUri] = useState<string | null>(null);
   const [assetPreviewFailed, setAssetPreviewFailed] = useState(false);
   const activityPresentation = buildCodexTimelineActivityPresentation(
@@ -48,14 +53,10 @@ export function ZenActivityEvent({
   );
 
   useEffect(() => {
-    setExpanded(defaultExpanded);
-  }, [defaultExpanded, item.id, item.statusKey]);
-
-  useEffect(() => {
     let cancelled = false;
     setAssetPreviewUri(null);
     setAssetPreviewFailed(false);
-    if (!item.previewPath || !expanded) {
+    if (!item.previewPath || !detailsExpanded) {
       return () => {
         cancelled = true;
       };
@@ -74,7 +75,7 @@ export function ZenActivityEvent({
     return () => {
       cancelled = true;
     };
-  }, [expanded, item.previewPath, loadAssetPreview]);
+  }, [detailsExpanded, item.previewPath, loadAssetPreview]);
 
   return (
     <View style={styles.wrap}>
@@ -91,12 +92,12 @@ export function ZenActivityEvent({
         accessibilityLabel={item.accessibilityLabel}
         onPress={() => {
           if (activityPresentation.canExpand) {
-            setExpanded((value) => !value);
+            toggle();
           }
         }}
       />
 
-      {expanded ? (
+      {detailsExpanded ? (
         <CodexTimelineActivityDetails
           item={item}
           chrome={chrome}

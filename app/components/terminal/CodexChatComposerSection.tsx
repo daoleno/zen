@@ -1,8 +1,5 @@
 import React from "react";
-import type {
-  LayoutChangeEvent,
-  TextInput,
-} from "react-native";
+import type { TextInput } from "react-native";
 import type {
   TerminalThemeChrome,
   TerminalThemePalette,
@@ -25,7 +22,6 @@ interface CodexChatComposerSectionProps {
   presentation: CodexComposerPresentation;
   chrome: TerminalThemeChrome;
   theme: TerminalThemePalette;
-  onLayout(event: LayoutChangeEvent): void;
   onSelectCommand(command: CodexSlashCommand): void;
   onToggleActionMenu(): void;
   onDismissActionMenu(): void;
@@ -51,7 +47,6 @@ export function CodexChatComposerSection({
   presentation,
   chrome,
   theme,
-  onLayout,
   onSelectCommand,
   onToggleActionMenu,
   onDismissActionMenu,
@@ -96,7 +91,6 @@ export function CodexChatComposerSection({
       attachments={attachments}
       chrome={chrome}
       theme={theme}
-      onLayout={onLayout}
       onSelectCommand={onSelectCommand}
       onToggleActionMenu={onToggleActionMenu}
       onDismissActionMenu={onDismissActionMenu}

@@ -38,21 +38,26 @@ var codexConversationCache = struct {
 }
 
 type CodexConversation struct {
-	Available    bool                    `json:"available"`
-	Reason       string                  `json:"reason,omitempty"`
-	Source       string                  `json:"source,omitempty"`
-	Path         string                  `json:"path,omitempty"`
-	SessionID    string                  `json:"session_id,omitempty"`
-	CWD          string                  `json:"cwd,omitempty"`
-	Updated      *time.Time              `json:"updated_at,omitempty"`
-	TurnRevision int64                   `json:"turn_revision,omitempty"`
-	TurnEpoch    string                  `json:"turn_epoch,omitempty"`
-	Turn         *CodexConversationTurn  `json:"turn,omitempty"`
-	QueuedTurns  []CodexConversationTurn `json:"queued_turns"`
+	Available    bool                   `json:"available"`
+	Reason       string                 `json:"reason,omitempty"`
+	Source       string                 `json:"source,omitempty"`
+	Path         string                 `json:"path,omitempty"`
+	SessionID    string                 `json:"session_id,omitempty"`
+	CWD          string                 `json:"cwd,omitempty"`
+	Updated      *time.Time             `json:"updated_at,omitempty"`
+	TurnRevision int64                  `json:"turn_revision,omitempty"`
+	TurnEpoch    string                 `json:"turn_epoch,omitempty"`
+	Turn         *CodexConversationTurn `json:"turn,omitempty"`
+	// Activity is the provider/executor lifecycle owner used by the canonical
+	// Chat reader. Turn remains on the wire only as a dispatch/control
+	// compatibility field; clients must not infer Working from accepted input.
+	Activity    *CodexConversationTurn  `json:"activity,omitempty"`
+	QueuedTurns []CodexConversationTurn `json:"queued_turns"`
 	// ProviderTurns retains a short ordered lifecycle history for daemon-side
 	// correlation when an executor drains multiple accepted queued turns between
-	// transcript polls. Only Turn and QueuedTurns are part of the public wire
-	// model; clients still receive exactly one authoritative current turn.
+	// transcript polls. It is never part of the public wire model; Activity is
+	// the one authoritative visible lifecycle while Turn/QueuedTurns are legacy
+	// control compatibility fields.
 	ProviderTurns []CodexConversationTurn  `json:"-"`
 	Active        *bool                    `json:"active,omitempty"`
 	Events        []CodexConversationEvent `json:"events"`
@@ -75,6 +80,9 @@ type CodexConversationTurn struct {
 	Status    string `json:"status"`
 	StartedAt string `json:"started_at"`
 	SettledAt string `json:"settled_at,omitempty"`
+	// ControlID is the legacy registry ID that Stop must address when it differs
+	// from the provider Activity identity. It never owns visible lifecycle.
+	ControlID string `json:"control_id,omitempty"`
 }
 
 // codexConversationTurnLifecycle applies the shared transition rules used by
@@ -258,6 +266,13 @@ type CodexConversationEvent struct {
 	Explanation string          `json:"explanation,omitempty"`
 	Plan        []CodexPlanStep `json:"plan,omitempty"`
 	Source      string          `json:"source,omitempty"`
+	// Canonical metadata is assigned by the server-side visible projector. Seq
+	// remains provider-local and is never used as App identity.
+	Position        uint64 `json:"position,omitempty"`
+	EventRevision   uint64 `json:"event_revision,omitempty"`
+	ActivityID      string `json:"activity_id,omitempty"`
+	SubmissionID    string `json:"submission_id,omitempty"`
+	SubmissionState string `json:"submission_state,omitempty"`
 }
 
 type CodexPlanStep struct {
@@ -518,6 +533,19 @@ type codexConversationBuilder struct {
 	seenStatusKeys       map[string]struct{}
 	pendingReasoningID   string
 	patchEventSeen       bool
+	pendingUserEcho      *codexPendingUserEcho
+	unpairedAdmissions   int
+	nextAdmissionPaired  bool
+}
+
+// response_item/message/user is a rendering echo in current Codex rollouts;
+// event_msg/user_message is the admission boundary. Defer the response form by
+// one record so an adjacent admission can replace it without body/time dedupe,
+// while response-only legacy rollouts retain a safe fallback row.
+type codexPendingUserEcho struct {
+	lineNumber int
+	timestamp  string
+	text       string
 }
 
 type recentCodexMessageFingerprint struct {
@@ -600,6 +628,16 @@ func (b *codexConversationBuilder) consumeLine(lineNumber int, line []byte) {
 	if json.Unmarshal(line, &envelope) != nil {
 		return
 	}
+	isAdmission := envelope.Type == "event_msg" && codexEventPayloadType(envelope.Payload) == "user_message"
+	b.nextAdmissionPaired = false
+	if b.pendingUserEcho != nil {
+		if isAdmission {
+			b.pendingUserEcho = nil
+			b.nextAdmissionPaired = true
+		} else {
+			b.flushPendingUserEcho()
+		}
+	}
 
 	timestamp := normalizeCodexTimestamp(envelope.Timestamp)
 	switch envelope.Type {
@@ -610,6 +648,27 @@ func (b *codexConversationBuilder) consumeLine(lineNumber int, line []byte) {
 	case "response_item":
 		b.consumeResponseItem(lineNumber, timestamp, envelope.Payload)
 	}
+}
+
+func codexEventPayloadType(raw json.RawMessage) string {
+	var payload struct {
+		Type string `json:"type"`
+	}
+	if json.Unmarshal(raw, &payload) != nil {
+		return ""
+	}
+	return strings.TrimSpace(payload.Type)
+}
+
+func (b *codexConversationBuilder) flushPendingUserEcho() {
+	pending := b.pendingUserEcho
+	if pending == nil {
+		return
+	}
+	b.pendingUserEcho = nil
+	b.startTurn("", pending.timestamp, pending.lineNumber)
+	b.slashCommandTurn = isCodexSlashCommandInvocation(pending.text)
+	b.addMessage(pending.lineNumber, pending.timestamp, "user", pending.text)
 }
 
 func (b *codexConversationBuilder) consumeSessionMeta(raw json.RawMessage) {
@@ -711,6 +770,10 @@ func (b *codexConversationBuilder) consumeEvent(lineNumber int, timestamp string
 		b.startTurn("", timestamp, lineNumber)
 		b.slashCommandTurn = isCodexSlashCommandInvocation(payload.Message)
 		b.addMessage(lineNumber, timestamp, "user", payload.Message)
+		if len(b.events) > 0 && b.events[len(b.events)-1].ID == b.eventID(lineNumber) && !b.nextAdmissionPaired {
+			b.unpairedAdmissions++
+		}
+		b.nextAdmissionPaired = false
 	case "history_entry":
 		b.addHistoryEntry(lineNumber, timestamp, payload.Message)
 		if b.slashCommandTurn {
@@ -785,9 +848,15 @@ func (b *codexConversationBuilder) consumeResponseItem(lineNumber int, timestamp
 		text := codexConversationContentText(payload.Content)
 		switch payload.Role {
 		case "user":
-			b.startTurn("", timestamp, lineNumber)
-			b.slashCommandTurn = isCodexSlashCommandInvocation(text)
-			b.addMessage(lineNumber, timestamp, payload.Role, text)
+			if b.unpairedAdmissions > 0 {
+				b.unpairedAdmissions--
+				return
+			}
+			b.pendingUserEcho = &codexPendingUserEcho{
+				lineNumber: lineNumber,
+				timestamp:  timestamp,
+				text:       text,
+			}
 		case "assistant":
 			b.addMessage(lineNumber, timestamp, payload.Role, text)
 		}
@@ -886,24 +955,20 @@ func (b *codexConversationBuilder) addMessageWithTitle(lineNumber int, timestamp
 	if text == "" || isTranscriptBoilerplate(text) {
 		return
 	}
-	key := role + ":" + text
-	if role == "user" && b.turnLifecycle.turn != nil {
-		// Codex writes event_msg and response_item encodings for one user row.
-		// Those share the parser turn identity. The same text in a later queued
-		// turn is a distinct accepted submission and must retain its own echo.
-		key = role + ":" + b.turnLifecycle.turn.ID + ":" + text
-	}
-	currentTimestamp := parseNormalizedCodexTimestamp(timestamp)
-	if previous, exists := b.recentMessageByKey[key]; exists && shouldDedupeCodexMessage(previous, lineNumber, currentTimestamp) {
+	if role != "user" {
+		key := role + ":" + text
+		currentTimestamp := parseNormalizedCodexTimestamp(timestamp)
+		if previous, exists := b.recentMessageByKey[key]; exists && shouldDedupeCodexMessage(previous, lineNumber, currentTimestamp) {
+			b.recentMessageByKey[key] = recentCodexMessageFingerprint{
+				lineNumber: lineNumber,
+				timestamp:  latestNonZeroTime(previous.timestamp, currentTimestamp),
+			}
+			return
+		}
 		b.recentMessageByKey[key] = recentCodexMessageFingerprint{
 			lineNumber: lineNumber,
-			timestamp:  latestNonZeroTime(previous.timestamp, currentTimestamp),
+			timestamp:  currentTimestamp,
 		}
-		return
-	}
-	b.recentMessageByKey[key] = recentCodexMessageFingerprint{
-		lineNumber: lineNumber,
-		timestamp:  currentTimestamp,
 	}
 
 	kind := "assistant_message"
@@ -1542,6 +1607,9 @@ func (b *codexConversationBuilder) pendingReasoningEventIndex() int {
 }
 
 func (b *codexConversationBuilder) addEvent(event CodexConversationEvent) bool {
+	if event.ActivityID == "" && b.turnLifecycle.turn != nil {
+		event.ActivityID = b.turnLifecycle.turn.ID
+	}
 	event.Body = truncateConversationBody(event.Body)
 	event.Command = truncateRunes(cleanConversationText(event.Command), 800)
 	event.ToolName = truncateRunes(cleanToolName(event.ToolName), 120)
@@ -1632,6 +1700,7 @@ func (b *codexConversationBuilder) eventID(lineNumber int) string {
 }
 
 func (b *codexConversationBuilder) conversation() CodexConversation {
+	b.flushPendingUserEcho()
 	if b.events == nil {
 		b.events = []CodexConversationEvent{}
 	}

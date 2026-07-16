@@ -177,6 +177,7 @@ export interface CodexConversationSnapshotPayload {
   agent_id?: string;
   conversation_id?: string;
   revision: number;
+  server_generation?: string;
   conversation: CodexConversation;
 }
 
@@ -185,6 +186,8 @@ export interface CodexConversationDeltaPayload {
   agent_id?: string;
   conversation_id?: string;
   revision: number;
+  base_revision: number;
+  server_generation?: string;
   available?: boolean;
   reason?: string;
   source?: string;
@@ -196,6 +199,7 @@ export interface CodexConversationDeltaPayload {
   turn_epoch?: string;
   turn_revision?: number;
   turn?: CodexConversation["turn"];
+  activity?: CodexConversation["activity"] | null;
   queued_turns?: CodexConversation["queued_turns"];
   upserts: CodexConversation["events"];
   deletes: string[];
@@ -206,6 +210,7 @@ export interface CodexConversationSyncStatusPayload {
   agent_id?: string;
   conversation_id?: string;
   revision: number;
+  server_generation?: string;
   state: "syncing" | "ready" | "unavailable" | string;
   reason?: string;
   active?: boolean;
@@ -239,6 +244,8 @@ export interface StructuredInputAccepted {
   queued: boolean;
   turnEpoch?: string;
   turnRevision?: number;
+  position?: number;
+  conversationRevision?: number;
 }
 
 export interface CodexConversationSubscriptionHandlers {
@@ -2276,6 +2283,8 @@ function normalizeCodexConversationSnapshotPayload(
       typeof payload.revision === "number" && Number.isFinite(payload.revision)
         ? payload.revision
         : 0,
+    server_generation:
+      typeof payload.generation === "string" ? payload.generation : undefined,
     conversation: normalizeCodexConversation(payload.conversation),
   };
 }
@@ -2289,6 +2298,7 @@ function normalizeCodexConversationDeltaPayload(
     turn_epoch: payload.turn_epoch,
     turn_revision: payload.turn_revision,
     turn: payload.turn,
+    activity: payload.activity,
     queued_turns: payload.queued_turns,
     events: payload.upserts,
   });
@@ -2305,6 +2315,13 @@ function normalizeCodexConversationDeltaPayload(
       typeof payload.revision === "number" && Number.isFinite(payload.revision)
         ? payload.revision
         : 0,
+    base_revision:
+      typeof payload.base_revision === "number" &&
+        Number.isFinite(payload.base_revision)
+        ? payload.base_revision
+        : 0,
+    server_generation:
+      typeof payload.generation === "string" ? payload.generation : undefined,
     available:
       typeof payload.available === "boolean" ? payload.available : undefined,
     reason: typeof payload.reason === "string" ? payload.reason : undefined,
@@ -2319,6 +2336,9 @@ function normalizeCodexConversationDeltaPayload(
     turn_epoch: normalizedDelta.turn_epoch,
     turn_revision: normalizedDelta.turn_revision,
     turn: normalizedDelta.turn,
+    activity: Object.prototype.hasOwnProperty.call(payload, "activity")
+      ? normalizedDelta.activity ?? null
+      : undefined,
     queued_turns: Array.isArray(payload.queued_turns)
       ? normalizedDelta.queued_turns ?? []
       : undefined,
@@ -2355,6 +2375,8 @@ function normalizeCodexConversationSyncStatusPayload(
       typeof payload.revision === "number" && Number.isFinite(payload.revision)
         ? payload.revision
         : 0,
+    server_generation:
+      typeof payload.generation === "string" ? payload.generation : undefined,
     state: typeof payload.state === "string" ? payload.state : "syncing",
     reason: typeof payload.reason === "string" ? payload.reason : undefined,
     active: typeof payload.active === "boolean" ? payload.active : undefined,

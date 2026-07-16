@@ -34,7 +34,7 @@ export function buildCodexStatusMeta(input: {
   if (connectionState !== "connected") {
     return "Offline";
   }
-  if (requestRunning ?? isStructuredTurnRunning(conversation?.turn)) {
+  if (requestRunning ?? isStructuredTurnRunning(visibleActivity(conversation))) {
     return "Working";
   }
   if (sending) {
@@ -49,8 +49,9 @@ export function buildCodexStatusMeta(input: {
 /**
  * Turn-in-progress for Chat Working/stop controls.
  *
- * Process status and transcript rendering metadata are not turn signals.
- * Callers may pass the locally accepted pre-snapshot turn as `turn`.
+ * Process status, transcript rendering metadata, and Codex's legacy dispatch
+ * turn are not Activity signals. Non-Codex providers retain their legacy turn
+ * as a compatibility adapter until they publish the provider-neutral Activity.
  */
 export function isCodexRequestRunning({
   conversation,
@@ -61,7 +62,17 @@ export function isCodexRequestRunning({
   turn?: StructuredTurn;
   agentStatus?: AgentStatus;
 }) {
-  return isStructuredTurnRunning(turn ?? conversation?.turn);
+  return isStructuredTurnRunning(turn ?? visibleActivity(conversation));
+}
+
+function visibleActivity(conversation: CodexConversation | null) {
+  if (!conversation) {
+    return undefined;
+  }
+  if (conversation.activity || conversation.source === "codex_rollout") {
+    return conversation.activity;
+  }
+  return conversation.turn;
 }
 
 export function buildCodexComposerMessage(

@@ -22,6 +22,29 @@ export function screenshotDemoEnabled(
   return environment.dev && environment.enabled === "1";
 }
 
+export function shouldUseScreenshotDemoRuntime({
+  demo,
+  enabled,
+  rootSegment,
+}: {
+  demo: string | string[] | undefined;
+  enabled: boolean;
+  rootSegment: string | undefined;
+}): boolean {
+  return (
+    enabled &&
+    rootSegment === "screenshot-demo" &&
+    screenshotDemoRouteOptedIn(demo)
+  );
+}
+
+export function screenshotDemoRouteOptedIn(
+  value: string | string[] | undefined,
+): boolean {
+  const candidate = Array.isArray(value) ? value[0] : value;
+  return candidate === "1";
+}
+
 export function resolveScreenshotDemoState(
   value: string | string[] | undefined,
 ): ScreenshotDemoState {

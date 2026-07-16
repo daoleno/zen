@@ -1,7 +1,7 @@
-// @ts-nocheck
 import { describe, expect, test } from "bun:test";
 import {
   normalizeCodexConversation,
+  type CodexConversationEvent,
   type StructuredTurn,
 } from "../../services/codexConversation";
 import { isCodexRequestRunning } from "./CodexChatControllerModel";
@@ -12,10 +12,6 @@ import {
 } from "./CodexTimelineModel";
 import {
   reconcileConversationSnapshot,
-  reconcileConversationSyncLifecycle,
-  reconcileStructuredLifecycleProjection,
-  reconcileStructuredTurn,
-  reconcileStructuredTurnQueue,
 } from "./codexConversationReconciliation";
 import {
   codexChatSessionCacheKey,
@@ -44,7 +40,7 @@ function turn(
   };
 }
 
-describe("provider-neutral structured Working", () => {
+describe("provider-neutral structured Activity Working", () => {
   for (const source of [
     "codex_rollout",
     "claude_code_transcript",
@@ -52,11 +48,11 @@ describe("provider-neutral structured Working", () => {
     "grok_session",
     "future_structured_provider",
   ]) {
-    test(`${source} uses the same turn in Brain and Work`, () => {
+    test(`${source} uses the same Activity in Brain and Work`, () => {
       const conversation = normalizeCodexConversation({
         available: true,
         source,
-        turn: turn(),
+        activity: turn(),
         events: [],
       });
       const surfaces = [
@@ -78,10 +74,7 @@ describe("provider-neutral structured Working", () => {
       );
       expect(surfaces[1].cacheKey).toBe("server-a:agent:agent-a");
       for (const surface of surfaces) {
-        const workingTurn = resolveWorkingStructuredTurn(
-          conversation.turn,
-          [],
-        );
+        const workingTurn = resolveWorkingStructuredTurn(conversation.activity);
         expect(surface.name).toBeString();
         expect(surface.cacheKey).toBeString();
         expect(
@@ -96,44 +89,21 @@ describe("provider-neutral structured Working", () => {
     });
   }
 
-  test("accepted non-queued input bridges pre-first-token Working", () => {
-    const pending = {
-      id: "pending-a",
-      turnId: "turn-a",
-      turnStartedAt: START,
-      lifecycle: "sending",
-    };
-    expect(resolveWorkingStructuredTurn(undefined, [pending])).toBeUndefined();
-    expect(
-      resolveWorkingStructuredTurn(undefined, [
-        { ...pending, acceptedAt: LATER },
-      ]),
-    ).toEqual(turn());
+  test("accepted input cannot invent Working before a provider Activity fact", () => {
+    expect(resolveWorkingStructuredTurn(undefined)).toBeUndefined();
   });
 
-  test("unconfirmed, failed, and accepted queued inputs never claim Working", () => {
-    const pending = {
-      id: "pending-b",
-      turnId: "turn-b",
-      turnStartedAt: LATER,
-      acceptedAt: LATER,
-      lifecycle: "queued",
-    };
-    expect(resolveWorkingStructuredTurn(undefined, [pending])).toBeUndefined();
-    expect(resolveWorkingStructuredTurn(undefined, [{
-      ...pending,
-      lifecycle: "unconfirmed",
-      acceptedAt: undefined,
-    }])).toBeUndefined();
-    expect(resolveWorkingStructuredTurn(undefined, [{
-      ...pending,
-      lifecycle: "failed",
-      acceptedAt: undefined,
-    }])).toBeUndefined();
+  test("terminal Activity clears Working even when five accepted Submissions remain", () => {
+    const acceptedSubmissions = Array.from({ length: 5 }, (_, index) => ({
+      id: `submission-${index + 1}`,
+    }));
+
+    expect(acceptedSubmissions).toHaveLength(5);
+    expect(resolveWorkingStructuredTurn(turn("completed", "activity-one"))).toBeUndefined();
   });
 
   test("silent reasoning/tool gaps keep one stable Working placeholder", () => {
-    const events = [
+    const events: CodexConversationEvent[] = [
       {
         id: "assistant-partial",
         seq: 1,
@@ -162,7 +132,7 @@ describe("provider-neutral structured Working", () => {
     expect(twice.at(-1)?.id).toBe("working-turn:turn-a");
   });
 
-  test("Working stays before later queued messages without reordering the queue", () => {
+  test("Working remains a footer while queued metadata leaves Submission order intact", () => {
     const providerTimeline = buildZenTimeline([
       {
         id: "user-a",
@@ -201,13 +171,13 @@ describe("provider-neutral structured Working", () => {
     ]);
     expect(composed.map((item) => item.id)).toEqual([
       "user-a",
-      "working-turn:turn-a",
       "pending-b",
       "pending-c",
+      "working-turn:turn-a",
     ]);
   });
 
-  test("current optimistic input precedes its Working anchor and queued inputs follow it", () => {
+  test("optimistic Submissions retain acceptance order before the Working footer", () => {
     const composed = mergePendingUserMessagesIntoTimeline(
       mergeWorkingTurnIntoTimeline([], turn()),
       [
@@ -237,8 +207,41 @@ describe("provider-neutral structured Working", () => {
     );
     expect(composed.map((item) => item.id)).toEqual([
       "pending-a",
-      "working-turn:turn-a",
       "pending-b",
+      "working-turn:turn-a",
+    ]);
+  });
+
+  test("same-boundary duplicate text Submissions keep creation order", () => {
+    const history = buildZenTimeline([{
+      id: "history",
+      seq: 1,
+      timestamp: START,
+      kind: "assistant_message",
+      role: "assistant",
+      body: "Earlier answer",
+    }]);
+    const repeated = (id: string) => ({
+      id,
+      turnId: id,
+      turnStartedAt: LATER,
+      body: "identical",
+      sentText: "identical",
+      attachments: [],
+      createdAt: LATER,
+      lifecycle: "queued" as const,
+      createdAfterEventIds: ["history"],
+    });
+    const composed = mergePendingUserMessagesIntoTimeline(
+      mergeWorkingTurnIntoTimeline(history, turn()),
+      [repeated("submission-a"), repeated("submission-b"), repeated("submission-c")],
+    );
+    expect(composed.map((item) => item.id)).toEqual([
+      "history",
+      "submission-a",
+      "submission-b",
+      "submission-c",
+      "working-turn:turn-a",
     ]);
   });
 
@@ -285,7 +288,7 @@ describe("provider-neutral structured Working", () => {
     ]);
   });
 
-  test("pre-ack input for a busy turn stays after the current Working anchor", () => {
+  test("pre-ack input is not relocated behind the Working footer", () => {
     const composed = mergePendingUserMessagesIntoTimeline(
       mergeWorkingTurnIntoTimeline([], turn()),
       [{
@@ -300,12 +303,12 @@ describe("provider-neutral structured Working", () => {
       }],
     );
     expect(composed.map((item) => item.id)).toEqual([
-      "working-turn:turn-a",
       "pending-b",
+      "working-turn:turn-a",
     ]);
   });
 
-  test("echoed queued input remains Queued after Working in authoritative order", () => {
+  test("echoed queued input keeps canonical event identity and position", () => {
     const providerTimeline = buildZenTimeline([
       {
         id: "user-a",
@@ -341,10 +344,10 @@ describe("provider-neutral structured Working", () => {
     );
     expect(composed.map((item) => item.id)).toEqual([
       "user-a",
+      "echo-b",
       "working-turn:turn-a",
-      "pending-b",
     ]);
-    expect(composed[2]).toMatchObject({
+    expect(composed[1]).toMatchObject({
       pending: true,
       pendingLifecycle: "queued",
       pendingLifecycleLabel: "Queued next",
@@ -352,7 +355,7 @@ describe("provider-neutral structured Working", () => {
   });
 
   test("partialness remains rendering-only after authoritative settlement", () => {
-    const partial = {
+    const partial: CodexConversationEvent = {
       id: "assistant-partial",
       seq: 1,
       timestamp: LATER,
@@ -375,84 +378,18 @@ describe("provider-neutral structured Working", () => {
   });
 });
 
-describe("durable turn reconciliation", () => {
-  test("fresh sync-status hydration carries a running turn and ordered queue without transcript events", () => {
-    const queue = [
-      turn("queued", "turn-b", LATER),
-      turn("queued", "turn-c", "2026-07-15T01:00:02.000Z"),
-    ];
-    const hydrated = reconcileConversationSyncLifecycle(null, {
-      active: true,
-      turn: turn(),
-      queued_turns: queue,
-      reason: "session_not_ready",
-    });
-    expect(hydrated.events).toEqual([]);
-    expect(hydrated.turn).toEqual(turn());
-    expect(hydrated.queued_turns?.map((item) => item.id)).toEqual([
-      "turn-b",
-      "turn-c",
-    ]);
-    expect(resolveWorkingStructuredTurn(hydrated.turn, [])).toEqual(turn());
-  });
-
-  test("preserves identity/start across snapshot omission and same-ID updates", () => {
-    const previous = normalizeCodexConversation({
-      available: true,
-      session_id: "thread-a",
-      turn: turn(),
-      events: [],
-    });
-    const reconnect = reconcileConversationSnapshot(
-      previous,
-      normalizeCodexConversation({
-        available: true,
-        session_id: "thread-a",
-        events: [],
+describe("canonical Activity snapshots", () => {
+  test("Codex legacy dispatch turn cannot resurrect visible Working", () => {
+    expect(
+      isCodexRequestRunning({
+        conversation: normalizeCodexConversation({
+          available: true,
+          source: "codex_rollout",
+          turn: turn("running"),
+          events: [],
+        }),
       }),
-      true,
-    );
-    expect(reconnect.turn).toBe(previous.turn);
-
-    const changedStart = reconcileStructuredTurn(
-      reconnect.turn,
-      turn("running", "turn-a", LATER),
-    );
-    expect(changedStart?.id).toBe("turn-a");
-    expect(changedStart?.started_at).toBe(START);
-  });
-
-  test("same-ID terminal is sticky while a distinct newer-envelope turn replaces it", () => {
-    const completed = reconcileStructuredTurn(turn(), turn("completed"));
-    expect(completed?.status).toBe("completed");
-    expect(reconcileStructuredTurn(completed, turn())?.status).toBe(
-      "completed",
-    );
-    expect(
-      reconcileStructuredTurn(
-        completed,
-        turn("running", "older-turn", "2026-07-15T00:59:00.000Z"),
-      ),
-    ).toMatchObject({
-      id: "older-turn",
-      status: "running",
-      started_at: "2026-07-15T00:59:00.000Z",
-    });
-    expect(
-      reconcileStructuredTurn(completed, turn("running", "turn-b", LATER)),
-    ).toMatchObject({ id: "turn-b", status: "running", started_at: LATER });
-  });
-
-  test("future-skewed prior terminal cannot suppress a distinct current running turn", () => {
-    const futureTerminal = turn(
-      "completed",
-      "future-terminal",
-      "2026-07-16T01:00:00.000Z",
-    );
-    const currentRunning = turn("running", "real-current", START);
-    expect(
-      reconcileStructuredTurn(futureTerminal, currentRunning),
-    ).toBe(currentRunning);
+    ).toBe(false);
   });
 
   for (const status of [
@@ -462,130 +399,60 @@ describe("durable turn reconciliation", () => {
     "cancelled",
   ] as const) {
     test(`${status} authoritatively settles Working`, () => {
-      expect(resolveWorkingStructuredTurn(turn(status), [])).toBeUndefined();
+      expect(resolveWorkingStructuredTurn(turn(status))).toBeUndefined();
     });
   }
 
-  test("explicit empty queue clears while omission preserves oldest-first order", () => {
-    const queue = [
-      turn("queued", "turn-b", LATER),
-      turn("queued", "turn-c", "2026-07-15T01:00:02.000Z"),
-    ];
-    expect(reconcileStructuredTurnQueue(queue, undefined)).toBe(queue);
-    expect(reconcileStructuredTurnQueue(queue, [])).toEqual([]);
-  });
-
-  test("same-thread snapshot explicitly clears the authoritative queue", () => {
+  test("same-thread snapshot exactly clears Activity queue and events", () => {
     const previous = normalizeCodexConversation({
       available: true,
       session_id: "thread-a",
-      turn: turn(),
+      activity: turn(),
       queued_turns: [turn("queued", "turn-b", LATER)],
-      events: [],
+      events: [{ id: "history", seq: 1, kind: "assistant_message", body: "old" }],
     });
     const snapshot = reconcileConversationSnapshot(
       previous,
       normalizeCodexConversation({
         available: true,
         session_id: "thread-a",
-        turn: turn(),
-        queued_turns: [],
         events: [],
       }),
       true,
     );
     expect(snapshot.queued_turns).toEqual([]);
+    expect(snapshot.activity).toBeUndefined();
+    expect(snapshot.events).toEqual([]);
   });
 
-  test("a new daemon epoch clears stale pre-restart Working across snapshot, delta, and sync", () => {
+  test("snapshot replacement never merges a lower legacy lifecycle revision", () => {
     const previous = normalizeCodexConversation({
       available: true,
       session_id: "thread-a",
-      turn: turn(),
+      activity: turn("running", "activity-current", START),
       queued_turns: [turn("queued", "turn-b", LATER)],
       events: [],
     });
-    const incoming = normalizeCodexConversation({
-      available: true,
-      session_id: "thread-a",
-      turn_epoch: "daemon-b",
-      turn_revision: 0,
-      queued_turns: [],
-      events: [],
-    });
-
-    const snapshot = reconcileConversationSnapshot(previous, incoming, true);
-    expect(snapshot.turn).toBeUndefined();
-    expect(snapshot.queued_turns).toEqual([]);
-
-    const deltaLifecycle = reconcileStructuredLifecycleProjection(previous, {
-      turn_epoch: "daemon-b",
-      turn_revision: 0,
-      queued_turns: [],
-    });
-    expect(deltaLifecycle.turn).toBeUndefined();
-    expect(deltaLifecycle.queued_turns).toEqual([]);
-
-    const sync = reconcileConversationSyncLifecycle(previous, {
-      turn_epoch: "daemon-b",
-      turn_revision: 0,
-      queued_turns: [],
-    });
-    expect(sync.turn).toBeUndefined();
-    expect(sync.queued_turns).toEqual([]);
-  });
-
-  test("same-epoch lower lifecycle revisions cannot regress Working or queue on reconnect", () => {
-    const previous = normalizeCodexConversation({
-      available: true,
-      session_id: "thread-a",
-      turn_epoch: "daemon-a",
-      turn_revision: 10,
-      turn: turn("running", "turn-current", START),
-      queued_turns: [turn("queued", "turn-next", LATER)],
-      events: [],
-    });
-    const stale = normalizeCodexConversation({
+    const replacement = normalizeCodexConversation({
       available: true,
       session_id: "thread-a",
       turn_epoch: "daemon-a",
       turn_revision: 9,
-      turn: turn("completed", "turn-old", "2026-07-15T00:59:00.000Z"),
+      activity: turn("completed", "activity-old", "2026-07-15T00:59:00.000Z"),
       queued_turns: [],
       events: [],
     });
 
-    const snapshot = reconcileConversationSnapshot(previous, stale, true);
-    expect(snapshot.turn).toEqual(previous.turn);
-    expect(snapshot.queued_turns).toEqual(previous.queued_turns);
-    expect(snapshot.turn_revision).toBe(10);
-
-    const deltaLifecycle = reconcileStructuredLifecycleProjection(previous, stale);
-    expect(deltaLifecycle.turn).toEqual(previous.turn);
-    expect(deltaLifecycle.queued_turns).toEqual(previous.queued_turns);
-    expect(deltaLifecycle.turn_revision).toBe(10);
-
-    const sync = reconcileConversationSyncLifecycle(previous, stale);
-    expect(sync.turn).toEqual(previous.turn);
-    expect(sync.queued_turns).toEqual(previous.queued_turns);
-    expect(sync.turn_revision).toBe(10);
+    const snapshot = reconcileConversationSnapshot(previous, replacement, true);
+    expect(snapshot.activity).toEqual(replacement.activity);
+    expect(snapshot.turn_revision).toBe(9);
+    expect(snapshot.queued_turns).toEqual([]);
   });
 
-  test("a settled turn waits for authoritative promotion of the next queue item", () => {
-    const queued = {
-      id: "pending-b",
-      turnId: "turn-b",
-      turnStartedAt: LATER,
-      acceptedAt: LATER,
-      lifecycle: "queued",
-    };
+  test("only a successor provider Activity can reopen Working", () => {
+    expect(resolveWorkingStructuredTurn(turn("completed"))).toBeUndefined();
     expect(
-      resolveWorkingStructuredTurn(turn("completed"), [queued]),
-    ).toBeUndefined();
-    expect(
-      resolveWorkingStructuredTurn(turn("running", "turn-b", LATER), [
-        queued,
-      ]),
+      resolveWorkingStructuredTurn(turn("running", "turn-b", LATER)),
     ).toMatchObject({ id: "turn-b", status: "running", started_at: LATER });
   });
 });

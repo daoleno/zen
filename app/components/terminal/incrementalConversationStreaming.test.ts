@@ -110,7 +110,7 @@ describe("incremental structured conversation streaming", () => {
     });
   });
 
-  test("same-thread snapshots replace present chunks and drop only absent transient partials", () => {
+  test("same-thread snapshots are exact revisioned replacements", () => {
     const historical = event("history", 1, {
       body: "Durable history",
       partial: false,
@@ -139,10 +139,9 @@ describe("incremental structured conversation streaming", () => {
     );
 
     expect(reconnected.events.map((item) => item.id)).toEqual([
-      "history",
       "assistant:active",
     ]);
-    expect(reconnected.events[1]).toMatchObject({
+    expect(reconnected.events[0]).toMatchObject({
       body: "In progress",
       partial: true,
     });
@@ -155,7 +154,7 @@ describe("incremental structured conversation streaming", () => {
     expect(rebuiltWithoutTransient.events).toEqual([historical]);
   });
 
-  test("delta deletes clear partial and finalized transient projections but preserve finalized history", () => {
+  test("delta deletes cannot erase visible history before a replacement snapshot", () => {
     const finalized = event("finalized", 1, {
       body: "Keep me",
       partial: false,
@@ -185,7 +184,9 @@ describe("incremental structured conversation streaming", () => {
 
     expect(reconciled.map((item) => item.id)).toEqual([
       "finalized",
+      "reasoning:active",
       "ordinary:later",
+      "tool:ephemeral",
     ]);
   });
 

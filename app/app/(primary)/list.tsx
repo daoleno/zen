@@ -35,6 +35,7 @@ import {
 import type { ResolvedZenTheme } from '../../theme';
 import { surfacesFromTheme } from '../../constants/themedSurfaces';
 import { usePrimaryPageAction } from '../../components/navigation/PrimaryPageAction';
+import { resolvePrimaryAppBarGeometry } from '../../components/navigation/PrimaryDrawerShell';
 import { AnimatedPressable } from '../../components/ui/AnimatedPressable';
 import { MeditationModal } from '../../components/meditation/MeditationModal';
 import { MeditationPullPreview } from '../../components/meditation/MeditationPullPreview';
@@ -83,6 +84,7 @@ export default function InboxScreen() {
   const { state: workState } = useWork();
   const router = useRouter();
   const insets = useSafeAreaInsets();
+  const topChromeInset = resolvePrimaryAppBarGeometry(insets.top).contentInset;
   const { width: viewportWidth } = useWindowDimensions();
   const colors = useAppColors();
   const { theme } = useAppTheme();
@@ -659,7 +661,10 @@ export default function InboxScreen() {
   ], [insets.bottom, styles]);
   return (
     <GestureDetector gesture={meditationPullGesture}>
-      <SafeAreaView style={styles.container} edges={[]}>
+      <SafeAreaView
+        style={[styles.container, { marginTop: topChromeInset }]}
+        edges={[]}
+      >
         <MeditationPullPreview
           pullDistance={meditationPullDistance}
           threshold={MEDITATION_PULL_THRESHOLD}

@@ -102,11 +102,13 @@ type trackedStructuredTurn struct {
 }
 
 type structuredInputAcceptance struct {
-	TurnID    string
-	Queued    bool
-	Duplicate bool
-	Revision  int64
-	Epoch     string
+	TurnID               string
+	Queued               bool
+	Duplicate            bool
+	Revision             int64
+	Epoch                string
+	Position             uint64
+	ConversationRevision uint64
 }
 
 func newStructuredTurnRegistry() *structuredTurnRegistry {

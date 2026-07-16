@@ -20,6 +20,8 @@ const BEGIN_SIGNING = '// @generated begin zen-android-release-signing';
 const END_SIGNING = '// @generated end zen-android-release-signing';
 const BEGIN_RELEASE_BT = '// @generated begin zen-android-release-buildtype-signing';
 const END_RELEASE_BT = '// @generated end zen-android-release-buildtype-signing';
+const BEGIN_DEBUG_BT = '// @generated begin zen-android-debug-identity';
+const END_DEBUG_BT = '// @generated end zen-android-debug-identity';
 
 function stripGenerated(contents, begin, end) {
   const re = new RegExp(
@@ -31,6 +33,36 @@ function stripGenerated(contents, begin, end) {
 
 function escapeRegExp(s) {
   return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+/**
+ * Pure helper: debug buildType shows as "Zen Debug" with a separate package id
+ * so it can sit alongside the release "Zen" install.
+ */
+function injectDebugIdentityGradle(contents) {
+  let next = stripGenerated(contents, BEGIN_DEBUG_BT, END_DEBUG_BT);
+
+  const debugIdentity = `
+            ${BEGIN_DEBUG_BT}
+            // Side-by-side with release: launcher "Zen Debug", package *.debug
+            applicationIdSuffix ".debug"
+            resValue "string", "app_name", "Zen Debug"
+            ${END_DEBUG_BT}
+`;
+
+  if (next.includes(BEGIN_DEBUG_BT)) {
+    return next;
+  }
+
+  // Insert after `debug {` inside buildTypes (not signingConfigs.debug).
+  const buildTypesDebug = /(buildTypes\s*\{[\s\S]*?\bdebug\s*\{)/;
+  if (!buildTypesDebug.test(next)) {
+    throw new Error(
+      'withZenAndroidRelease: could not locate buildTypes.debug block'
+    );
+  }
+  next = next.replace(buildTypesDebug, `$1\n${debugIdentity}`);
+  return next;
 }
 
 /** Pure helper for tests: inject signing blocks into app/build.gradle text. */
@@ -123,9 +155,9 @@ function withZenNoticeAssets(config) {
 
 function withZenReleaseSigning(config) {
   return withAppBuildGradle(config, (cfg) => {
-    cfg.modResults.contents = injectReleaseSigningGradle(
-      cfg.modResults.contents
-    );
+    let contents = injectReleaseSigningGradle(cfg.modResults.contents);
+    contents = injectDebugIdentityGradle(contents);
+    cfg.modResults.contents = contents;
     return cfg;
   });
 }
@@ -162,6 +194,7 @@ module.exports = createRunOncePlugin(
   pkg.version
 );
 module.exports.injectReleaseSigningGradle = injectReleaseSigningGradle;
+module.exports.injectDebugIdentityGradle = injectDebugIdentityGradle;
 module.exports.enablePrivateNetworkHTTP = enablePrivateNetworkHTTP;
 module.exports.NOTICE_APK_REL = NOTICE_APK_REL;
 module.exports.NOTICE_SRC_REL = NOTICE_SRC_REL;

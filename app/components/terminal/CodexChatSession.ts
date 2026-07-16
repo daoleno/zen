@@ -3,6 +3,7 @@ import {
   useEffect,
   useMemo,
   useReducer,
+  useRef,
   useState,
   type SetStateAction,
 } from "react";
@@ -17,14 +18,11 @@ import {
 } from "../../services/websocket";
 import type { AgentStatus } from "../../constants/tokens";
 import {
-  acknowledgePendingUserMessageWithStructuredTurns,
-  canReconcilePendingAcknowledgementAgainstProjection,
   comparableUserMessageText,
   nextPendingUserMessagePruneAt,
   rejectPendingUserMessage as rejectPendingUserMessageState,
   redispatchPendingUserMessageInSubmissionOrder,
   reconcilePendingUserMessagesAgainstEvents,
-  reconcilePendingUserMessagesWithStructuredTurns,
   retainPendingUserMessages,
   shouldPrunePendingUserMessageByLifecycle,
   type PendingUserMessageLifecycle,
@@ -35,10 +33,6 @@ import {
   conversationIdentity,
   reconcileConversationDeltaEvents,
   reconcileConversationSnapshot,
-  reconcileConversationSyncLifecycle,
-  reconcileStructuredLifecycleProjection,
-  reconcileStructuredTurn,
-  reconcileStructuredTurnQueue,
   structuredTurnQueuesEqual,
   structuredTurnsEqual,
   type ConversationStreamCursor,
@@ -55,12 +49,6 @@ type KeyedState<T> = {
 };
 
 export type CodexChatLocalState = "idle" | "starting-new-chat" | "new-chat-ready";
-
-type NewChatBoundary = {
-  previousEventIds: Set<string>;
-  previousMaxSeq: number;
-  startedAtMs: number;
-};
 
 export type ComposerAttachment = UploadedAttachment & {
   id: string;
@@ -88,10 +76,6 @@ export type PendingUserMessage = {
   failedAt?: string;
   confirmedAt?: string;
   confirmedEventId?: string;
-  authoritativeQueueObserved?: boolean;
-  authoritativeActiveObserved?: boolean;
-  authoritativeLifecycleEpoch?: string;
-  authoritativeLifecycleRevision?: number;
   createdAfterMaxSeq?: number;
   createdAfterEventIds?: string[];
 };
@@ -100,11 +84,8 @@ export type PendingUserMessageInput = Omit<PendingUserMessage, "id" | "createdAt
 
 export type PendingUserMessageAcknowledgement = {
   requestId?: string;
-  turnId: string;
   lifecycle: PendingUserMessageLifecycle;
   acceptedAt: string;
-  turnEpoch?: string;
-  turnRevision?: number;
 };
 
 export type PendingUserMessageDispatchAttempt = {
@@ -167,7 +148,6 @@ const conversationCache = new Map<string, CodexConversation>();
 const draftCache = new Map<string, string>();
 const attachmentCache = new Map<string, ComposerAttachment[]>();
 const localChatStateCache = new Map<string, CodexChatLocalState>();
-const newChatBoundaryCache = new Map<string, NewChatBoundary>();
 const pendingUserMessageCache = new Map<string, PendingUserMessage[]>();
 
 type CodexChatThreadState = {
@@ -179,26 +159,25 @@ type CodexChatThreadState = {
   pendingUserMessages: PendingUserMessage[];
   pendingSlashCommands: PendingSlashCommand[];
   streamCursor: ConversationStreamCursor;
+  awaitingSnapshot: boolean;
+  resyncToken: number;
 };
 
 type CodexChatThreadAction =
   | { type: "cache_key_changed"; cacheKey: string }
-  | { type: "stream_start" }
-  | { type: "snapshot"; payload: CodexConversationSnapshotPayload }
-  | { type: "delta"; delta: CodexConversationDeltaPayload }
-  | { type: "sync_status"; status: CodexConversationSyncStatusPayload }
-  | { type: "stream_error"; error: string }
+  | { type: "stream_start"; generation: number }
+  | { type: "snapshot"; payload: CodexConversationSnapshotPayload; generation: number }
+  | { type: "delta"; delta: CodexConversationDeltaPayload; generation: number }
+  | { type: "sync_status"; status: CodexConversationSyncStatusPayload; generation: number }
+  | { type: "stream_error"; error: string; generation: number }
   | { type: "mark_new_chat_message_started" }
   | { type: "add_pending_user_message"; message: PendingUserMessage }
   | {
       type: "acknowledge_pending_user_message";
       id: string;
       requestId?: string;
-      turnId: string;
       lifecycle: PendingUserMessageLifecycle;
       acceptedAt: string;
-      turnEpoch?: string;
-      turnRevision?: number;
     }
   | {
       type: "mark_pending_user_message_dispatched";
@@ -238,6 +217,8 @@ function initialCodexChatThreadState(cacheKey: string): CodexChatThreadState {
           conversationId: conversationIdentity(cachedConversation),
         }
       : EMPTY_CONVERSATION_STREAM_CURSOR,
+    awaitingSnapshot: false,
+    resyncToken: 0,
   };
 }
 
@@ -252,21 +233,27 @@ function codexChatThreadReducer(
       }
       return initialCodexChatThreadState(action.cacheKey);
     case "stream_start":
-      if (state.error === null && state.loading === !state.conversation?.events.length) {
-        return state;
-      }
       return {
         ...state,
         loading: !state.conversation?.events.length,
         error: null,
+        awaitingSnapshot: true,
+        streamCursor: {
+          conversationId: conversationIdentity(state.conversation),
+          revision: 0,
+          generation: action.generation,
+        },
       };
     case "snapshot":
-      return applyCodexConversationSnapshot(state, action.payload);
+      return applyCodexConversationSnapshot(state, action.payload, action.generation);
     case "delta":
-      return applyCodexConversationDelta(state, action.delta);
+      return applyCodexConversationDelta(state, action.delta, action.generation);
     case "sync_status":
-      return applyCodexConversationSyncStatus(state, action.status);
+      return applyCodexConversationSyncStatus(state, action.status, action.generation);
     case "stream_error":
+      if (action.generation !== state.streamCursor.generation) {
+        return state;
+      }
       return {
         ...state,
         loading: false,
@@ -294,29 +281,32 @@ function codexChatThreadReducer(
     }
     case "acknowledge_pending_user_message": {
       let acknowledged = false;
-      const acknowledgedMessages = state.pendingUserMessages.map((message) => {
+      const pendingUserMessages = cachePendingUserMessages(
+        state.cacheKey,
+        state.pendingUserMessages.map((message) => {
         if (message.id !== action.id) {
           return message;
         }
+        if (
+          action.requestId &&
+          message.dispatchRequestId &&
+          action.requestId !== message.dispatchRequestId
+        ) {
+          return message;
+        }
         acknowledged = true;
-        return acknowledgePendingUserMessageWithStructuredTurns(
-          message,
-          action,
-          state.conversation?.turn,
-          state.conversation?.queued_turns,
-        );
-      });
-      const pendingUserMessages = cachePendingUserMessages(
-        state.cacheKey,
-        canReconcilePendingAcknowledgementAgainstProjection(action, state.conversation)
-          ? reconcilePendingUserMessagesWithStructuredTurns(
-              acknowledgedMessages,
-              state.conversation?.turn,
-              state.conversation?.queued_turns,
-              state.conversation?.turn_epoch,
-              state.conversation?.turn_revision,
-            )
-          : acknowledgedMessages,
+        return {
+          ...message,
+          // ACK decorates the already allocated Submission. It cannot remap
+          // identity, reorder it, or infer executor lifecycle from v1 turns.
+          lifecycle: action.lifecycle,
+          acceptedAt: action.acceptedAt,
+          queuedHint: action.lifecycle === "queued" || message.queuedHint,
+          failureCode: undefined,
+          failureMessage: undefined,
+          failedAt: undefined,
+        };
+      }),
       );
       return acknowledged
         ? {
@@ -443,6 +433,7 @@ function codexChatThreadReducer(
 function applyCodexConversationSnapshot(
   state: CodexChatThreadState,
   payload: CodexConversationSnapshotPayload,
+  generation: number,
 ): CodexChatThreadState {
   const accepted = acceptConversationEnvelope(
     state.streamCursor,
@@ -450,6 +441,8 @@ function applyCodexConversationSnapshot(
       requestId: payload.request_id,
       conversationId: payload.conversation_id,
       revision: payload.revision,
+      generation,
+      kind: "snapshot",
     },
     conversationIdentity(payload.conversation),
   );
@@ -461,7 +454,11 @@ function applyCodexConversationSnapshot(
     payload.conversation,
     accepted.sameConversation,
   );
-  return applyIncomingConversation(state, conversation, accepted.cursor);
+  return applyIncomingConversation(
+    { ...state, awaitingSnapshot: false },
+    conversation,
+    accepted.cursor,
+  );
 }
 
 function applyIncomingConversation(
@@ -469,43 +466,7 @@ function applyIncomingConversation(
   conversation: CodexConversation,
   streamCursor: ConversationStreamCursor = state.streamCursor,
 ): CodexChatThreadState {
-  const boundary = newChatBoundaryCache.get(state.cacheKey);
-  let filteredConversation = conversationForNewChatBoundary(
-    conversation,
-    boundary,
-    state.localChatState === "starting-new-chat" ||
-      state.localChatState === "new-chat-ready",
-  );
-  if (
-    boundary &&
-    state.localChatState === "idle" &&
-    state.pendingUserMessages.length === 0 &&
-    filteredConversation?.events.length === 0
-  ) {
-    const unboundedConversation = filterCodexConversationForChat(conversation);
-    if (unboundedConversation.events.length > 0) {
-      newChatBoundaryCache.delete(state.cacheKey);
-      filteredConversation = unboundedConversation;
-    }
-  }
-  if (!filteredConversation) {
-    return {
-      ...state,
-      loading: false,
-      error: null,
-      streamCursor,
-    };
-  }
-  if (
-    state.conversation?.events.length &&
-    filteredConversation.events.length === 0 &&
-    isTransientEmptyConversation(filteredConversation.reason)
-  ) {
-    filteredConversation = {
-      ...filteredConversation,
-      events: state.conversation.events,
-    };
-  }
+  const filteredConversation = filterCodexConversationForChat(conversation);
   const nextConversation = reuseStableConversationEvents(
     state.conversation,
     filteredConversation,
@@ -552,16 +513,30 @@ function applyIncomingConversation(
 function applyCodexConversationDelta(
   state: CodexChatThreadState,
   delta: CodexConversationDeltaPayload,
+  generation: number,
 ): CodexChatThreadState {
+  if (state.awaitingSnapshot) {
+    return state;
+  }
   const accepted = acceptConversationEnvelope(
     state.streamCursor,
     {
       requestId: delta.request_id,
       conversationId: delta.conversation_id,
       revision: delta.revision,
+      baseRevision: delta.base_revision,
+      generation,
+      kind: "delta",
     },
     conversationIdentity(state.conversation),
   );
+  if (accepted.gap) {
+    return {
+      ...state,
+      awaitingSnapshot: true,
+      resyncToken: state.resyncToken + 1,
+    };
+  }
   if (!accepted.accepted || !accepted.sameConversation) {
     return state;
   }
@@ -577,6 +552,7 @@ function applyCodexConversationDelta(
     turn_epoch: delta.turn_epoch,
     turn_revision: delta.turn_revision,
     turn: delta.turn,
+    activity: delta.activity ?? undefined,
     queued_turns: delta.queued_turns,
     events: [],
   };
@@ -604,10 +580,6 @@ function applyCodexConversationDelta(
     delta.upserts,
     delta.deletes,
   );
-  const lifecycle = reconcileStructuredLifecycleProjection(
-    baseConversation,
-    delta,
-  );
   const nextConversation = {
     ...baseConversation,
     available: delta.available ?? baseConversation.available,
@@ -618,7 +590,13 @@ function applyCodexConversationDelta(
     cwd: delta.cwd ?? baseConversation.cwd,
     updated_at: delta.updated_at ?? baseConversation.updated_at,
     active: delta.active ?? baseConversation.active,
-    ...lifecycle,
+    turn_epoch: delta.turn_epoch ?? baseConversation.turn_epoch,
+    turn_revision: delta.turn_revision ?? baseConversation.turn_revision,
+    turn: delta.turn ?? baseConversation.turn,
+    activity: delta.activity !== undefined
+      ? delta.activity ?? undefined
+      : baseConversation.activity,
+    queued_turns: delta.queued_turns ?? baseConversation.queued_turns ?? [],
     events: nextEvents,
   };
   return applyIncomingConversation(state, nextConversation, accepted.cursor);
@@ -642,17 +620,16 @@ function codexDeltaMetadataChanged(
     (delta.turn_revision !== undefined &&
       delta.turn_revision !== baseConversation.turn_revision) ||
     (delta.turn !== undefined &&
+      !structuredTurnsEqual(baseConversation.turn, delta.turn)) ||
+    (delta.activity !== undefined &&
       !structuredTurnsEqual(
-        baseConversation.turn,
-        reconcileStructuredTurn(baseConversation.turn, delta.turn),
+        baseConversation.activity,
+        delta.activity ?? undefined,
       )) ||
     (delta.queued_turns !== undefined &&
       !structuredTurnQueuesEqual(
         baseConversation.queued_turns,
-        reconcileStructuredTurnQueue(
-          baseConversation.queued_turns,
-          delta.queued_turns,
-        ),
+        delta.queued_turns,
       ))
   );
 }
@@ -660,38 +637,26 @@ function codexDeltaMetadataChanged(
 function applyCodexConversationSyncStatus(
   state: CodexChatThreadState,
   status: CodexConversationSyncStatusPayload,
+  generation: number,
 ): CodexChatThreadState {
   const accepted = acceptConversationEnvelope(state.streamCursor, {
     requestId: status.request_id,
     conversationId: status.conversation_id,
     revision: status.revision,
+    generation,
+    kind: "sync",
   });
   if (!accepted.accepted) {
     return state;
   }
-  const baseConversation = state.conversation ??
-    conversationCache.get(state.cacheKey) ?? {
-      available: false,
-      reason: status.reason,
-      events: [],
-    };
-  const conversation = reconcileConversationSyncLifecycle(
-    baseConversation,
-    status,
-  );
-  const applied = applyIncomingConversation(
-    state,
-    conversation,
-    accepted.cursor,
-  );
-  const loading =
-    status.state === "syncing" && applied.conversation?.events.length === 0;
-  return applied.loading === loading
-    ? applied
-    : {
-        ...applied,
-        loading,
-      };
+  // Sync is transport availability only. It cannot mutate Activity, queue, or
+  // visible history; the next revisioned snapshot owns that replacement.
+  return {
+    ...state,
+    loading: status.state === "syncing" && !state.conversation?.events.length,
+    error: null,
+    streamCursor: accepted.cursor,
+  };
 }
 
 function reuseStableConversationEvents(
@@ -741,6 +706,7 @@ function codexConversationMetadataEqual(
     left.turn_epoch === right.turn_epoch &&
     left.turn_revision === right.turn_revision &&
     structuredTurnsEqual(left.turn, right.turn) &&
+    structuredTurnsEqual(left.activity, right.activity) &&
     structuredTurnQueuesEqual(left.queued_turns, right.queued_turns)
   );
 }
@@ -749,16 +715,19 @@ function reconcilePendingUserMessages(
   pendingUserMessages: PendingUserMessage[],
   conversation: CodexConversation,
 ): PendingUserMessage[] {
-  return reconcilePendingUserMessagesWithStructuredTurns(
-    reconcilePendingUserMessagesAgainstEvents(
-      pendingUserMessages,
-      conversation.events,
-    ),
-    conversation.turn,
-    conversation.queued_turns,
-    conversation.turn_epoch,
-    conversation.turn_revision,
+  const reconciled = reconcilePendingUserMessagesAgainstEvents(
+    pendingUserMessages,
+    conversation.events,
   );
+  const eventsByID = new Map(conversation.events.map((event) => [event.id, event]));
+  return reconciled.filter((message) => {
+    const canonical = message.confirmedEventId
+      ? eventsByID.get(message.confirmedEventId)
+      : eventsByID.get(message.id) ?? eventsByID.get(message.turnId);
+    // A canonical server row now owns rendering. Rejected rows retain their
+    // local retry closure; ACK alone never reaches this branch.
+    return !canonical || canonical.submission_state === "rejected";
+  });
 }
 
 function codexEventsEqual(
@@ -786,6 +755,11 @@ function codexEventsEqual(
       left.transient === right.transient &&
       left.explanation === right.explanation &&
       left.source === right.source &&
+      left.position === right.position &&
+      left.event_revision === right.event_revision &&
+      left.activity_id === right.activity_id &&
+      left.submission_id === right.submission_id &&
+      left.submission_state === right.submission_state &&
       stringArraysEqual(left.files, right.files) &&
       planStepsEqual(left.plan, right.plan)
     )
@@ -843,11 +817,8 @@ function cachePendingUserMessages(
   messages: PendingUserMessage[],
   now: number = Date.now(),
 ): PendingUserMessage[] {
-  const conversation = conversationCache.get(cacheKey);
   let nextMessages = retainPendingUserMessages(
     messages,
-    conversation?.turn,
-    conversation?.queued_turns,
     now,
   );
   if (pendingUserMessagesShallowEqual(messages, nextMessages)) {
@@ -898,6 +869,7 @@ export function useCodexChatSession({
     cacheKey,
     initialCodexChatThreadState,
   );
+  const streamGenerationRef = useRef(0);
   const [draftState, setDraftState] = useState<KeyedState<string>>(
     () => ({
       cacheKey: composerCacheKey,
@@ -936,22 +908,16 @@ export function useCodexChatSession({
   const pendingSlashCommands = threadState.cacheKey === composerCacheKey
     ? threadState.pendingSlashCommands
     : [];
-  const boundary = newChatBoundaryCache.get(composerCacheKey);
+  const resyncToken = threadState.cacheKey === cacheKey
+    ? threadState.resyncToken
+    : 0;
   const visiblePendingUserMessages = useMemo(
-    () =>
-      filterVisiblePendingUserMessages(
-        pendingUserMessages,
-        boundary,
-      ),
-    [boundary, pendingUserMessages],
+    () => pendingUserMessages,
+    [pendingUserMessages],
   );
   const visiblePendingSlashCommands = useMemo(
-    () =>
-      filterVisiblePendingSlashCommands(
-        pendingSlashCommands,
-        boundary,
-      ),
-    [boundary, pendingSlashCommands],
+    () => pendingSlashCommands,
+    [pendingSlashCommands],
   );
   const presentationCacheKey = `${cacheKey}:${
     conversation?.session_id || conversation?.path || ""
@@ -1010,7 +976,7 @@ export function useCodexChatSession({
   );
 
   const addPendingUserMessage = useCallback((message: PendingUserMessageInput) => {
-    const id = `pending-user:${Date.now().toString(36)}:${Math.random().toString(36).slice(2, 8)}`;
+    const id = message.turnId;
     const baseConversation = conversation ?? conversationCache.get(cacheKey) ?? null;
     const pendingMessage = {
       ...message,
@@ -1034,39 +1000,36 @@ export function useCodexChatSession({
     id: string,
     acknowledgement: PendingUserMessageAcknowledgement,
   ) => {
-    const baseConversation = conversationCache.get(cacheKey) ?? conversation;
     const acknowledgedMessages = cachedPendingUserMessages(composerCacheKey).map(
-      (message) =>
-        message.id === id
-          ? acknowledgePendingUserMessageWithStructuredTurns(
-              message,
-              acknowledgement,
-              baseConversation?.turn,
-              baseConversation?.queued_turns,
-            )
-          : message,
+      (message) => {
+        if (message.id !== id) {
+          return message;
+        }
+        if (
+          acknowledgement.requestId &&
+          message.dispatchRequestId &&
+          acknowledgement.requestId !== message.dispatchRequestId
+        ) {
+          return message;
+        }
+        return {
+          ...message,
+          lifecycle: acknowledgement.lifecycle,
+          acceptedAt: acknowledgement.acceptedAt,
+          queuedHint: acknowledgement.lifecycle === "queued" || message.queuedHint,
+          failureCode: undefined,
+          failureMessage: undefined,
+          failedAt: undefined,
+        };
+      },
     );
-    cachePendingUserMessages(
-      composerCacheKey,
-      canReconcilePendingAcknowledgementAgainstProjection(
-        acknowledgement,
-        baseConversation,
-      )
-        ? reconcilePendingUserMessagesWithStructuredTurns(
-            acknowledgedMessages,
-            baseConversation?.turn,
-            baseConversation?.queued_turns,
-            baseConversation?.turn_epoch,
-            baseConversation?.turn_revision,
-          )
-        : acknowledgedMessages,
-    );
+    cachePendingUserMessages(composerCacheKey, acknowledgedMessages);
     dispatchThread({
       type: "acknowledge_pending_user_message",
       id,
       ...acknowledgement,
     });
-  }, [cacheKey, composerCacheKey, conversation]);
+  }, [composerCacheKey]);
 
   const markPendingUserMessageDispatched = useCallback((
     id: string,
@@ -1175,8 +1138,11 @@ export function useCodexChatSession({
     if (!screenFocused || connectionState !== "connected" || !serverId || !agentId) {
       return;
     }
-    dispatchThread({ type: "stream_start" });
-    return wsClient.subscribeCodexConversation(
+    const generation = streamGenerationRef.current + 1;
+    streamGenerationRef.current = generation;
+    dispatchThread({ type: "stream_start", generation });
+    let active = true;
+    const unsubscribe = wsClient.subscribeCodexConversation(
       serverId,
       {
         targetId: agentId,
@@ -1189,31 +1155,43 @@ export function useCodexChatSession({
       },
       {
         onSnapshot: (payload) => {
+          if (!active) return;
           dispatchThread({
             type: "snapshot",
             payload,
+            generation,
           });
         },
         onDelta: (payload) => {
+          if (!active) return;
           dispatchThread({
             type: "delta",
             delta: payload,
+            generation,
           });
         },
         onSyncStatus: (payload) => {
+          if (!active) return;
           dispatchThread({
             type: "sync_status",
             status: payload,
+            generation,
           });
         },
         onError: (nextError) => {
+          if (!active) return;
           dispatchThread({
             type: "stream_error",
             error: nextError.message || "Could not stream Codex conversation.",
+            generation,
           });
         },
       },
     );
+    return () => {
+      active = false;
+      unsubscribe();
+    };
   }, [
     agentId,
     agentInfo?.command,
@@ -1225,6 +1203,7 @@ export function useCodexChatSession({
     connectionState,
     screenFocused,
     serverId,
+    resyncToken,
   ]);
 
   useEffect(() => {
@@ -1325,34 +1304,6 @@ export function useCodexChatSession({
   };
 }
 
-function filterVisiblePendingUserMessages(
-  pendingUserMessages: PendingUserMessage[],
-  boundary?: NewChatBoundary,
-) {
-  if (pendingUserMessages.length === 0) {
-    return pendingUserMessages;
-  }
-  return pendingUserMessages.filter((message) => {
-    if (boundary && isPendingMessageBeforeNewChatBoundary(message.createdAt, boundary)) {
-      return false;
-    }
-    return true;
-  });
-}
-
-function filterVisiblePendingSlashCommands(
-  pendingSlashCommands: PendingSlashCommand[],
-  boundary?: NewChatBoundary,
-) {
-  if (pendingSlashCommands.length === 0) {
-    return pendingSlashCommands;
-  }
-  return pendingSlashCommands.filter(
-    (command) =>
-      !isPendingMessageBeforeNewChatBoundary(command.createdAt, boundary),
-  );
-}
-
 function shouldPrunePendingSlashCommand(
   command: PendingSlashCommand,
   now: number,
@@ -1378,17 +1329,6 @@ function shouldPrunePendingUserMessage(
   now: number,
 ) {
   return shouldPrunePendingUserMessageByLifecycle(message, now);
-}
-
-function isPendingMessageBeforeNewChatBoundary(
-  createdAt: string,
-  boundary?: NewChatBoundary,
-) {
-  if (!boundary) {
-    return false;
-  }
-  const timestamp = new Date(createdAt).getTime();
-  return Number.isFinite(timestamp) && timestamp < boundary.startedAtMs;
 }
 
 function filterCodexConversationForChat(
@@ -1618,40 +1558,6 @@ function isLineStartMarker(value: string, index: number) {
   return true;
 }
 
-function conversationForNewChatBoundary(
-  conversation: CodexConversation,
-  boundary?: NewChatBoundary,
-  hideEmptyBoundary: boolean = false,
-): CodexConversation | null {
-  const filteredConversation = filterCodexConversationForChat(conversation);
-  if (!boundary) {
-    return filteredConversation;
-  }
-
-  const candidateEvents = conversation.events.filter((event) =>
-    isEventAfterNewChatBoundary(event, boundary),
-  );
-  const events = filterCodexConversationForChat({
-    ...conversation,
-    events: candidateEvents,
-  }).events;
-  if (hideEmptyBoundary && events.length === 0) {
-    return null;
-  }
-  return {
-    ...filteredConversation,
-    events,
-  };
-}
-
-function isTransientEmptyConversation(reason?: string) {
-  return (
-    reason === "session_not_ready" ||
-    reason === "transcript_not_found" ||
-    reason === "missing_cwd"
-  );
-}
-
 function conversationEventIdSet(conversation: CodexConversation | null) {
   const ids = new Set<string>();
   conversation?.events.forEach((event) => {
@@ -1670,25 +1576,4 @@ function maxConversationEventSeq(conversation: CodexConversation | null) {
     }
   });
   return maxSeq;
-}
-
-function isEventAfterNewChatBoundary(
-  event: CodexConversation["events"][number],
-  boundary: NewChatBoundary,
-) {
-  if (event.id && boundary.previousEventIds.has(event.id)) {
-    return false;
-  }
-  if (
-    boundary.previousMaxSeq > 0 &&
-    typeof event.seq === "number" &&
-    event.seq > boundary.previousMaxSeq
-  ) {
-    return true;
-  }
-  if (!event.timestamp) {
-    return false;
-  }
-  const timestamp = new Date(event.timestamp).getTime();
-  return Number.isFinite(timestamp) && timestamp >= boundary.startedAtMs;
 }

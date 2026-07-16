@@ -44,6 +44,8 @@ describe('release asset workflow contract', () => {
     expect(appPackage).toContain('--build-cache');
     expect(workflow).toContain('zen-android-native-inputs-');
     expect(workflow).toContain('zen-android-ghostty-output-arm64-');
+    expect(workflow).toContain('app/modules/zen-terminal-vt/patches/android/**');
+    expect(workflow).toContain('scripts/verify-android-native-symbols.py');
     expect(workflow).toContain("steps.ghostty-output-cache.outputs.cache-hit != 'true'");
     expect(workflow).toContain('run: ./scripts/verify-libghostty.sh --release');
     const cacheBlocks = [...workflow.matchAll(/uses: actions\/cache@v4[\s\S]*?(?=\n\s{6}- name:|$)/g)]

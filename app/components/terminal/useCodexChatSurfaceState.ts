@@ -54,6 +54,7 @@ interface UseCodexChatSurfaceStateInput {
   screenFocused: boolean;
   placeholder?: string;
   keyboardVerticalOffset?: number;
+  topChromeInset?: number;
   showUnavailableAction?: boolean;
   emptyTitle?: string;
   emptyBody?: string;
@@ -108,6 +109,7 @@ export function useCodexChatSurfaceState({
   screenFocused,
   placeholder,
   keyboardVerticalOffset,
+  topChromeInset,
   showUnavailableAction,
   emptyTitle,
   emptyBody,
@@ -333,8 +335,8 @@ export function useCodexChatSurfaceState({
   );
   const jumpLabel = useRelativeTimeLabel(latestTimelineTimestamp);
   const resolvedWorkingTurn = useMemo(
-    () => resolveWorkingStructuredTurn(conversation?.turn, pendingUserMessages),
-    [conversation?.turn, pendingUserMessages],
+    () => resolveWorkingStructuredTurn(conversation?.activity),
+    [conversation?.activity],
   );
   const workingTurn = localChatState === "idle"
     ? resolvedWorkingTurn
@@ -498,6 +500,7 @@ export function useCodexChatSurfaceState({
     draft,
     attachments,
     composerPresentation,
+    topChromeInset,
     terminalActionPrompt,
     timeline,
     jumpLabel,

@@ -1,6 +1,5 @@
 import React from "react";
 import {
-  type LayoutChangeEvent,
   StyleSheet,
   Text,
   View,
@@ -51,7 +50,6 @@ interface CodexChatComposerProps {
   attachments: CodexComposerAttachment[];
   chrome: TerminalThemeChrome;
   theme: TerminalThemePalette;
-  onLayout(event: LayoutChangeEvent): void;
   onSelectCommand(command: CodexSlashCommand): void;
   onToggleActionMenu(): void;
   onDismissActionMenu(): void;
@@ -96,7 +94,6 @@ export function CodexChatComposer({
   attachments,
   chrome,
   theme,
-  onLayout,
   onSelectCommand,
   onToggleActionMenu,
   onDismissActionMenu,
@@ -110,7 +107,6 @@ export function CodexChatComposer({
 }: CodexChatComposerProps) {
   return (
     <CodexChatComposerFrame
-      onLayout={onLayout}
       bottomPadding={bottomPadding}
       chrome={chrome}
       theme={theme}

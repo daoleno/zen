@@ -40,6 +40,7 @@ interface UseCodexChatBodyPropsInput {
   draft: string;
   attachments: ComposerAttachment[];
   composerPresentation: CodexComposerPresentation;
+  topChromeInset?: number;
   terminalActionPrompt?: TerminalActionPrompt | null;
   timeline: ReturnType<typeof usePinnedTimeline>;
   jumpLabel?: string;
@@ -75,6 +76,7 @@ export function useCodexChatBodyProps({
   draft,
   attachments,
   composerPresentation,
+  topChromeInset,
   terminalActionPrompt,
   timeline,
   jumpLabel,
@@ -93,10 +95,6 @@ export function useCodexChatBodyProps({
   composerAccessory,
   skillsSheet,
 }: UseCodexChatBodyPropsInput): CodexChatBodyProps {
-  const handleComposerHeightChange = useCallback(() => {
-    timeline.pinToBottomIfNeeded(false);
-  }, [timeline.pinToBottomIfNeeded]);
-
   const handleUploadPress = useCallback(() => {
     void controller.handleUploadAttachment();
   }, [controller.handleUploadAttachment]);
@@ -140,11 +138,11 @@ export function useCodexChatBodyProps({
       onTimelineMomentumScrollBegin: timeline.handleMomentumScrollBegin,
       onTimelineMomentumScrollEnd: timeline.handleMomentumScrollEnd,
       onTimelineContentSizeChange: timeline.handleContentSizeChange,
+      onTimelineLatestOffsetChange: timeline.handleLatestOffsetChange,
       onTimelineTextSelectionGestureStart:
         timeline.handleTextSelectionGestureStart,
       onTimelineTextSelectionGestureEnd: timeline.handleTextSelectionGestureEnd,
       onScrollToLatest: timeline.scrollToLatest,
-      onComposerHeightChange: handleComposerHeightChange,
       onUnavailableAction: onSwitchToTerminal,
       showUnavailableAction:
         Boolean(onSwitchToTerminal) && (showUnavailableAction ?? true),
@@ -158,6 +156,7 @@ export function useCodexChatBodyProps({
       operationalError: controller.operationalError,
       attachments,
       composerPresentation,
+      topChromeInset,
       terminalActionPrompt,
       chrome,
       theme,
@@ -185,6 +184,7 @@ export function useCodexChatBodyProps({
       composerInput.handleFocus,
       composerInput.inputRef,
       composerPresentation,
+      topChromeInset,
       terminalActionPrompt,
       connectionState,
       conversation,
@@ -204,7 +204,6 @@ export function useCodexChatBodyProps({
       pendingUserMessages,
       pendingSlashCommands,
       workingTurn,
-      handleComposerHeightChange,
       handleSendPress,
       handleStopPress,
       handleUploadPress,
@@ -225,6 +224,7 @@ export function useCodexChatBodyProps({
       skillsSheet,
       theme,
       timeline.handleContentSizeChange,
+      timeline.handleLatestOffsetChange,
       timeline.handleLayout,
       timeline.handleScroll,
       timeline.handleScrollBeginDrag,

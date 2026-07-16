@@ -1,12 +1,17 @@
 import { memo, useCallback, useEffect, useRef, useState } from "react";
 import {
-  Alert,
   AppState,
   AppStateStatus,
   Platform,
   Pressable,
 } from "react-native";
-import { Stack, useNavigation, useRouter, useSegments } from "expo-router";
+import {
+  Stack,
+  useGlobalSearchParams,
+  useNavigation,
+  useRouter,
+  useSegments,
+} from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
 import { StatusBar } from "expo-status-bar";
 import { useFonts } from "expo-font";
@@ -43,10 +48,11 @@ import {
   clearNativeTerminalCrashBreadcrumb,
   getNativeTerminalCrashBreadcrumb,
 } from "../services/nativeTerminalDiagnostics";
+import { consumeUnfinishedNativeTerminalBreadcrumb } from "../services/nativeTerminalDiagnosticsObserver";
 import { measureServerLatency } from "../services/serverLatency";
 import {
-  resolveScreenshotDemoState,
   screenshotDemoEnabled,
+  shouldUseScreenshotDemoRuntime,
 } from "../services/screenshotDemo";
 
 Notifications.setNotificationHandler({
@@ -203,7 +209,17 @@ function localNotificationSignalKey(agent: Agent): string | null {
 }
 
 function AppRuntime() {
-  if (screenshotDemoEnabled()) {
+  const segments = useSegments();
+  const params = useGlobalSearchParams<{
+    demo?: string | string[];
+  }>();
+  if (
+    shouldUseScreenshotDemoRuntime({
+      demo: params.demo,
+      enabled: screenshotDemoEnabled(),
+      rootSegment: segments[0],
+    })
+  ) {
     return <ScreenshotDemoRuntime />;
   }
 
@@ -228,54 +244,19 @@ function LiveAppRuntime() {
 }
 
 function ScreenshotDemoRuntime() {
-  const router = useRouter();
-  const segments = useSegments();
-  const requestedState = resolveScreenshotDemoState(
-    process.env.EXPO_PUBLIC_ZEN_SCREENSHOT_DEMO_STATE,
-  );
-
-  useEffect(() => {
-    if (segments[0] !== "screenshot-demo") {
-      router.replace({
-        pathname: "/screenshot-demo",
-        params: { state: requestedState },
-      });
-    }
-  }, [requestedState, router, segments]);
-
   return <AppNavigator bootstrapResolved />;
 }
 
 const NativeTerminalDiagnosticsObserver = memo(
   function NativeTerminalDiagnosticsObserver() {
     useEffect(() => {
-      const breadcrumb = getNativeTerminalCrashBreadcrumb();
-      if (!breadcrumb || breadcrumb.stage !== "before") {
-        return;
-      }
-
-      clearNativeTerminalCrashBreadcrumb();
-
-      const detail = breadcrumb.detail ? `\n${breadcrumb.detail}` : "";
-      const device = [breadcrumb.brand, breadcrumb.model]
-        .filter(Boolean)
-        .join(" ")
-        .trim();
-      const environment = [device, breadcrumb.abi].filter(Boolean).join(" / ");
-      const footer =
-        environment || breadcrumb.sdkInt
-          ? `\n\n${[
-              environment,
-              breadcrumb.sdkInt ? `Android ${breadcrumb.sdkInt}` : "",
-            ]
-              .filter(Boolean)
-              .join(" / ")}`
-          : "";
-
-      Alert.alert(
-        "Native terminal crashed last run",
-        `Last unfinished step: ${breadcrumb.operation}${detail}${footer}`,
-      );
+      consumeUnfinishedNativeTerminalBreadcrumb({
+        breadcrumb: getNativeTerminalCrashBreadcrumb(),
+        clearBreadcrumb: clearNativeTerminalCrashBreadcrumb,
+        log: (message, diagnostic) => {
+          console.log(message, diagnostic);
+        },
+      });
     }, []);
 
     return null;

@@ -22,7 +22,8 @@ import type {
   PendingUserMessage,
 } from "./CodexChatSession";
 import {
-  pendingUserMessageMatchesEcho,
+  pendingUserMessageLifecycleAccessibilityLabel,
+  pendingUserMessageLifecycleLabel,
   presentPendingUserMessageLifecycle,
   queuedOrdinalByPendingId,
 } from "./pendingUserMessageLifecycle";
@@ -103,6 +104,14 @@ type PatchSummary = {
 export function buildZenTimeline(events: CodexConversationEvent[]): ZenTimelineItem[] {
   const items: ZenTimelineItem[] = [];
   let explorationEntries: ExplorationEntry[] = [];
+  const queuedSubmissionIds = events
+    .filter((event) =>
+      event.kind === "user_message" && event.submission_state === "queued"
+    )
+    .map((event) => event.id);
+  const queuedSubmissionOrdinals = new Map(
+    queuedSubmissionIds.map((id, index) => [id, index]),
+  );
 
   const flushExploration = () => {
     if (explorationEntries.length === 0) {
@@ -122,6 +131,8 @@ export function buildZenTimeline(events: CodexConversationEvent[]): ZenTimelineI
       if (!extracted.body && extracted.attachments.length === 0 && !heartbeatWake) {
         continue;
       }
+      const submissionLifecycle = canonicalSubmissionLifecycle(event);
+      const queuedOrdinal = queuedSubmissionOrdinals.get(event.id) ?? 0;
       items.push({
         type: "message",
         id: event.id || `${event.kind}:${event.seq}`,
@@ -131,6 +142,22 @@ export function buildZenTimeline(events: CodexConversationEvent[]): ZenTimelineI
         attachments: extracted.attachments,
         streaming: event.partial,
         heartbeatWake: heartbeatWake || undefined,
+        pending: Boolean(submissionLifecycle),
+        pendingLifecycle: submissionLifecycle,
+        pendingLifecycleLabel: submissionLifecycle
+          ? pendingUserMessageLifecycleLabel(
+              submissionLifecycle,
+              queuedOrdinal,
+              queuedSubmissionIds.length,
+            )
+          : undefined,
+        pendingLifecycleAccessibilityLabel: submissionLifecycle
+          ? pendingUserMessageLifecycleAccessibilityLabel(
+              submissionLifecycle,
+              queuedOrdinal,
+              queuedSubmissionIds.length,
+            )
+          : undefined,
       });
       continue;
     }
@@ -195,6 +222,22 @@ export function buildZenTimeline(events: CodexConversationEvent[]): ZenTimelineI
   return items;
 }
 
+function canonicalSubmissionLifecycle(
+  event: CodexConversationEvent,
+): "unconfirmed" | "queued" | "failed" | undefined {
+  switch (event.submission_state) {
+    case "accepted":
+    case "unconfirmed":
+      return "unconfirmed";
+    case "queued":
+      return "queued";
+    case "rejected":
+      return "failed";
+    default:
+      return undefined;
+  }
+}
+
 function attachWaitStatusToLastCommand(
   items: ZenTimelineItem[],
   explorationEntries: ExplorationEntry[],
@@ -248,38 +291,22 @@ export function mergePendingUserMessagesIntoTimeline(
     return timelineItems;
   }
   const merged = [...timelineItems];
-  const claimedTimelineIds = new Set<string>();
   const queuedOrdinals = queuedOrdinalByPendingId(pendingUserMessages);
-  const trailingItems: ZenTimelineItem[] = [];
+  const placedSubmissionRowIDs = new Set<string>();
   for (const message of pendingUserMessages) {
-    let matchedIndex = -1;
-    if (message.confirmedEventId) {
-      matchedIndex = merged.findIndex(
-        (item) => item.id === message.confirmedEventId,
-      );
-    }
-    if (matchedIndex < 0 && !message.confirmedEventId) {
-      matchedIndex = findPendingUserMessageMatch(
-        merged,
-        message,
-        claimedTimelineIds,
-      );
-    }
-    const presentation = presentPendingUserMessageLifecycle(
-      message,
-      queuedOrdinals,
+    const stableIDs = new Set(
+      [message.confirmedEventId, message.id, message.turnId].filter(
+        (id): id is string => Boolean(id),
+      ),
     );
+    const matchedIndex = merged.findIndex((item) => stableIDs.has(item.id));
     const matched = matchedIndex >= 0 ? merged[matchedIndex] : undefined;
     const canonical = matched?.type === "message" && matched.role === "user"
       ? matched
       : undefined;
-    if (canonical) {
-      claimedTimelineIds.add(canonical.id);
-    }
     const item = canonical
       ? {
           ...canonical,
-          id: message.id,
         }
       : {
           type: "message" as const,
@@ -290,82 +317,55 @@ export function mergePendingUserMessagesIntoTimeline(
           attachments: message.attachments,
         };
 
-    if (message.lifecycle === "queued") {
-      if (canonical) {
-        merged.splice(matchedIndex, 1);
-      }
-      trailingItems.push({
-        ...item,
-        pending: true,
-        pendingLifecycle: "queued" as const,
-        pendingLifecycleLabel: presentation.label,
-        pendingLifecycleAccessibilityLabel: presentation.accessibilityLabel,
-      });
-      continue;
-    }
-
-    if (message.lifecycle === "settled") {
+    // The canonical row is the acceptance/rejection owner. If the correlated
+    // rejection response was lost, its stable-ID upsert must still make the
+    // existing optimistic row retryable instead of leaving it unconfirmed.
+    let effectiveLifecycle: Exclude<PendingUserMessage["lifecycle"], "settled">;
+    if (canonical?.pendingLifecycle === "failed") {
+      effectiveLifecycle = "failed";
+    } else if (message.lifecycle === "settled") {
       if (canonical) {
         merged[matchedIndex] = item;
+        placedSubmissionRowIDs.add(canonical.id);
       } else {
         insertTimelineItemByTimestamp(merged, item);
+        placedSubmissionRowIDs.add(item.id);
       }
       continue;
+    } else {
+      effectiveLifecycle = message.lifecycle;
     }
+    const presentation = presentPendingUserMessageLifecycle(
+      { ...message, lifecycle: effectiveLifecycle },
+      queuedOrdinals,
+    );
 
     const pendingItem = {
       ...item,
       pending: true,
-      pendingLifecycle: message.lifecycle,
+      pendingLifecycle: effectiveLifecycle,
       pendingLifecycleLabel: presentation.label,
       pendingLifecycleAccessibilityLabel: presentation.accessibilityLabel,
       pendingFailureMessage:
-        message.lifecycle === "failed" ? message.failureMessage : undefined,
+        effectiveLifecycle === "failed" ? message.failureMessage : undefined,
       onRetryPending:
-        message.lifecycle === "failed" && onRetryPendingUserMessage
+        effectiveLifecycle === "failed" && onRetryPendingUserMessage
           ? () => onRetryPendingUserMessage(message.id)
           : undefined,
     };
 
-    if (
-      message.queuedHint &&
-      (message.lifecycle === "unconfirmed" || message.lifecycle === "failed")
-    ) {
-      if (canonical) {
-        merged.splice(matchedIndex, 1);
-      }
-      trailingItems.push(pendingItem);
-      continue;
-    }
-
     if (canonical) {
-      merged[matchedIndex] =
-        message.lifecycle === "sending" ? item : pendingItem;
+      merged[matchedIndex] = pendingItem;
+      placedSubmissionRowIDs.add(canonical.id);
       continue;
     }
-    const workingIndex = merged.findIndex(
-      (candidate) => candidate.id === `working-turn:${message.turnId}`,
+    insertPendingCurrentAtSubmissionBoundary(
+      merged,
+      pendingItem,
+      message,
+      placedSubmissionRowIDs,
     );
-    if (workingIndex >= 0) {
-      const [workingItem] = merged.splice(workingIndex, 1);
-      insertPendingCurrentAtSubmissionBoundary(
-        merged,
-        pendingItem,
-        message,
-      );
-      if (workingItem) {
-        merged.push(workingItem);
-      }
-    } else {
-      insertTimelineItemByTimestamp(merged, pendingItem);
-    }
-  }
-  if (trailingItems.length > 0) {
-    const workingIndex = merged.findIndex((candidate) =>
-      candidate.id.startsWith("working-turn:")
-    );
-    const insertAt = workingIndex >= 0 ? workingIndex + 1 : merged.length;
-    merged.splice(insertAt, 0, ...trailingItems);
+    placedSubmissionRowIDs.add(pendingItem.id);
   }
   return merged;
 }
@@ -374,6 +374,7 @@ function insertPendingCurrentAtSubmissionBoundary(
   timelineItems: ZenTimelineItem[],
   item: ZenTimelineItem,
   message: PendingUserMessage,
+  placedSubmissionRowIDs: ReadonlySet<string>,
 ) {
   const previousEventIds = new Set(message.createdAfterEventIds ?? []);
   let lastPreviousIndex = -1;
@@ -383,34 +384,17 @@ function insertPendingCurrentAtSubmissionBoundary(
     }
   });
   if (lastPreviousIndex >= 0) {
-    timelineItems.splice(lastPreviousIndex + 1, 0, item);
+    let insertAt = lastPreviousIndex + 1;
+    while (
+      insertAt < timelineItems.length &&
+      placedSubmissionRowIDs.has(timelineItems[insertAt].id)
+    ) {
+      insertAt += 1;
+    }
+    timelineItems.splice(insertAt, 0, item);
     return;
   }
   insertTimelineItemByTimestamp(timelineItems, item);
-}
-
-function findPendingUserMessageMatch(
-  timelineItems: ZenTimelineItem[],
-  message: PendingUserMessage,
-  claimedTimelineIds: Set<string>,
-) {
-  const previousEventIds = new Set(message.createdAfterEventIds ?? []);
-  for (let index = timelineItems.length - 1; index >= 0; index -= 1) {
-    const item = timelineItems[index];
-    if (item.type !== "message" || item.role !== "user") {
-      continue;
-    }
-    if (claimedTimelineIds.has(item.id) || previousEventIds.has(item.id)) {
-      continue;
-    }
-    if (pendingUserMessageMatchesEcho(message, {
-      body: item.body,
-      attachments: item.attachments,
-    })) {
-      return index;
-    }
-  }
-  return -1;
 }
 
 export function mergePendingSlashCommandsIntoTimeline(
@@ -485,6 +469,9 @@ function insertTimelineItemByTimestamp(
     return;
   }
   const insertAt = timelineItems.findIndex((candidate) => {
+    if (candidate.id.startsWith("working-turn:")) {
+      return true;
+    }
     if (!candidate.timestamp) {
       return false;
     }

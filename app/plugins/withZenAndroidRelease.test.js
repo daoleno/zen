@@ -1,6 +1,7 @@
 import { describe, expect, test } from 'bun:test';
 import {
   injectReleaseSigningGradle,
+  injectDebugIdentityGradle,
   enablePrivateNetworkHTTP,
   NOTICE_APK_REL,
   NOTICE_SRC_REL,
@@ -47,6 +48,25 @@ describe('withZenAndroidRelease signing injection', () => {
   test('exports APK notice path contract', () => {
     expect(NOTICE_SRC_REL).toBe('assets/notices/GHOSTTY-MIT.txt');
     expect(NOTICE_APK_REL).toBe('assets/notices/GHOSTTY-MIT.txt');
+  });
+});
+
+describe('withZenAndroidRelease debug identity injection', () => {
+  test('names debug launcher Zen Debug and suffixes package .debug', () => {
+    const once = injectDebugIdentityGradle(sampleGradle);
+    expect(once).toContain('applicationIdSuffix ".debug"');
+    expect(once).toContain('resValue "string", "app_name", "Zen Debug"');
+    expect(once).toContain('@generated begin zen-android-debug-identity');
+
+    // Only buildTypes.debug — not signingConfigs.debug
+    const buildTypesSlice = once.slice(once.indexOf('buildTypes'));
+    expect(buildTypesSlice).toContain('applicationIdSuffix ".debug"');
+
+    const twice = injectDebugIdentityGradle(once);
+    const beginCount = (
+      twice.match(/@generated begin zen-android-debug-identity/g) || []
+    ).length;
+    expect(beginCount).toBe(1);
   });
 });
 

@@ -12,6 +12,10 @@ import type { ConnectionIssue } from "../../services/connectionIssue";
 import type { Agent, ConnectionState } from "../../store/agents";
 import { CodexChatSurface } from "./CodexChatSurface";
 import type { CodexChatAgentInfo } from "./CodexChatSession";
+import {
+  CHAT_HEADER_HEIGHT,
+  CHAT_HEADER_OUTER_GAP,
+} from "./chatChromeMetrics";
 import { TerminalOutputPane } from "./TerminalOutputPane";
 import type { TerminalSurfaceHandle } from "./TerminalSurface";
 
@@ -165,6 +169,9 @@ function TerminalViewportImpl({
                 theme={theme}
                 chrome={chrome}
                 screenFocused={screenFocused}
+                topChromeInset={
+                  CHAT_HEADER_HEIGHT + CHAT_HEADER_OUTER_GAP * 2
+                }
                 onSwitchToTerminal={onSwitchToTerminal}
               />
             </View>

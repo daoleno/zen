@@ -5,6 +5,7 @@ import {
   TIMELINE_LIST_STABILITY_PROPS,
   reduceTimelineScrollPosition,
   returnTimelineToBottom,
+  timelineDistanceFromLatest,
   timelineMutationDecision,
 } from "./timelineScrollPolicy";
 
@@ -71,6 +72,12 @@ describe("timeline scroll policy", () => {
 
   test("user-initiated return reattaches and clears the affordance", () => {
     expect(returnTimelineToBottom()).toEqual(INITIAL_TIMELINE_SCROLL_STATE);
+  });
+
+  test("measures distance from an inset-aware latest target", () => {
+    expect(timelineDistanceFromLatest(-356, -356)).toBe(0);
+    expect(timelineDistanceFromLatest(0, -356)).toBe(356);
+    expect(timelineDistanceFromLatest(280, 0)).toBe(280);
   });
 
   test("list integration delegates pixel anchoring to native visible-child tracking", () => {

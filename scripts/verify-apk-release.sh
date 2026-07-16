@@ -4,6 +4,7 @@
 # Checks:
 #   - package / versionName / versionCode match app/app.base.json
 #   - only arm64-v8a native libs (no armeabi-v7a / x86 / x86_64)
+#   - packaged libghostty_vt.so has no forbidden Android imports
 #   - Ghostty MIT notice embedded (verify-apk-notice.sh)
 #   - signing cert SHA-256 matches official public fingerprint in release notes /
 #     verify-release-identity expected constant
@@ -54,6 +55,8 @@ fi
 APKSIGNER="$(find_tool apksigner 2>/dev/null || true)"
 
 "$ROOT/scripts/verify-apk-notice.sh" "$APK"
+"$ROOT/scripts/verify-android-native-symbols.py" --lock \
+  "$ROOT/app/modules/zen-terminal-vt/native.lock.json" --apk "$APK"
 
 python3 - "$APK" "$ROOT/app/app.base.json" "$EXPECTED_CERT" "$AAPT" "$APKSIGNER" <<'PY'
 import re

@@ -171,14 +171,14 @@ jobs:
           path: |
             ${{ runner.temp }}/zen-tools
             ${{ runner.temp }}/ghostty
-          key: zen-android-native-inputs-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('app/modules/zen-terminal-vt/native.lock.json', 'scripts/build-libghostty.sh') }}
+          key: zen-android-native-inputs-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('app/modules/zen-terminal-vt/native.lock.json', 'app/modules/zen-terminal-vt/patches/android/**', 'scripts/build-libghostty.sh') }}
 
       - name: Restore verified Android Ghostty output
         id: ghostty-output-cache
         uses: actions/cache@v4
         with:
           path: app/modules/zen-terminal-vt/libs/android
-          key: zen-android-ghostty-output-arm64-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('app/modules/zen-terminal-vt/native.lock.json', 'scripts/build-libghostty.sh', 'scripts/verify-libghostty.sh', 'app/assets/notices/GHOSTTY-MIT.txt') }}
+          key: zen-android-ghostty-output-arm64-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('app/modules/zen-terminal-vt/native.lock.json', 'app/modules/zen-terminal-vt/patches/android/**', 'scripts/build-libghostty.sh', 'scripts/verify-libghostty.sh', 'scripts/verify-android-native-symbols.py', 'app/assets/notices/GHOSTTY-MIT.txt') }}
 
       - name: Install Zig (checksum-pinned from native.lock.json)
         run: |

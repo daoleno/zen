@@ -1,11 +1,13 @@
-import React from "react";
+import React, { useCallback, useEffect, useState } from "react";
 import {
   Platform,
   StyleSheet,
   Text,
   TextInput,
   View,
+  type NativeSyntheticEvent,
   type TextInput as TextInputInstance,
+  type TextInputContentSizeChangeEventData,
 } from "react-native";
 import type { TerminalThemeChrome } from "../../constants/terminalThemes";
 import { Typography } from "../../constants/tokens";
@@ -35,21 +37,43 @@ export function CodexComposerInput({
   onInputFocus,
   onInputBlur,
 }: CodexComposerInputProps) {
+  const [inputHeight, setInputHeight] = useState(MIN_INPUT_HEIGHT);
   const draftEmpty = draft.length === 0;
   const multilineDraft = draft.includes("\n");
-  const centerInputText = draftEmpty || !multilineDraft;
+  const centerInputText = draftEmpty || (
+    !multilineDraft && inputHeight <= MIN_INPUT_HEIGHT
+  );
+  const handleContentSizeChange = useCallback((
+    event: NativeSyntheticEvent<TextInputContentSizeChangeEventData>,
+  ) => {
+    const measuredHeight = Math.ceil(event.nativeEvent.contentSize.height);
+    setInputHeight(Math.max(
+      MIN_INPUT_HEIGHT,
+      Math.min(MAX_INPUT_HEIGHT, measuredHeight),
+    ));
+  }, []);
+
+  useEffect(() => {
+    if (draftEmpty) {
+      setInputHeight(MIN_INPUT_HEIGHT);
+    }
+  }, [draftEmpty]);
 
   return (
-    <View collapsable={false} style={styles.inputWrap}>
+    <View
+      collapsable={false}
+      style={[styles.inputWrap, { height: inputHeight }]}
+    >
       <TextInput
         ref={inputRef}
         style={[
           styles.input,
           centerInputText ? styles.inputCentered : null,
-          { color: chrome.text },
+          { color: chrome.text, height: inputHeight },
         ]}
         value={draft}
         onChangeText={onDraftChange}
+        onContentSizeChange={handleContentSizeChange}
         placeholder=""
         accessibilityLabel={placeholder}
         selectionColor={chrome.accent}
@@ -128,3 +152,6 @@ const styles = StyleSheet.create({
     includeFontPadding: false,
   },
 });
+
+const MIN_INPUT_HEIGHT = 44;
+const MAX_INPUT_HEIGHT = 124;

@@ -1,0 +1,32 @@
+From adb0d793af755841f3dcea8c5e466ea9b8295e11 Mon Sep 17 00:00:00 2001
+From: Fredrik Fornwall <fredrik@fornwall.net>
+Date: Sun, 19 Apr 2026 22:32:41 +0200
+Subject: [PATCH] android: Avoid referencing POSIX shared memory functions
+
+Stop trying to use POSIX shared memory functions such as
+`shm_open` on Android as it's unsupported and the platform libc does not
+have those symbols.
+
+This avoids an error such as the below when trying to use
+`libghostty-vt` on Android:
+
+> dlopen failed: cannot locate symbol "shm_open" referenced by [..]
+---
+ src/terminal/kitty/graphics_image.zig | 3 ++-
+ 1 file changed, 2 insertions(+), 1 deletion(-)
+
+diff --git a/src/terminal/kitty/graphics_image.zig b/src/terminal/kitty/graphics_image.zig
+index bddc5c5b2..1397401ff 100644
+--- a/src/terminal/kitty/graphics_image.zig
++++ b/src/terminal/kitty/graphics_image.zig
+@@ -159,8 +159,9 @@ pub const LoadingImage = struct {
+         t: command.Transmission,
+         path: []const u8,
+     ) !void {
++        // android does not support POSIX shared memory.
+         // windows is currently unsupported, does it support shm?
+-        if (comptime builtin.target.os.tag == .windows) {
++        if (comptime builtin.abi.isAndroid() or builtin.target.os.tag == .windows) {
+             return error.UnsupportedMedium;
+         }
+ 

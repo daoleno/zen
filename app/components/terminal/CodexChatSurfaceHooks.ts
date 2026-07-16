@@ -17,6 +17,7 @@ import {
   INITIAL_TIMELINE_SCROLL_STATE,
   reduceTimelineScrollPosition,
   returnTimelineToBottom,
+  timelineDistanceFromLatest,
   timelineMutationDecision,
   type TimelineScrollState,
 } from "./timelineScrollPolicy";
@@ -104,6 +105,9 @@ export function usePinnedTimeline(itemCount: number, resetKey: string) {
   const userDraggingRef = useRef(false);
   const userMomentumRef = useRef(false);
   const scrollRequestSeqRef = useRef(0);
+  const latestOffsetRef = useRef(0);
+  const latestOffsetInitializedRef = useRef(false);
+  const rawContentOffsetRef = useRef(0);
   const distanceFromLatestRef = useRef(0);
   const textSelectionActiveRef = useRef(false);
   const textSelectionTimerRef = useRef<ReturnType<typeof setTimeout> | null>(
@@ -177,9 +181,10 @@ export function usePinnedTimeline(itemCount: number, resetKey: string) {
           return;
         }
         scrollRef.current.scrollToOffset({
-          offset: 0,
+          offset: latestOffsetRef.current,
           animated: nextAnimated,
         });
+        rawContentOffsetRef.current = latestOffsetRef.current;
         distanceFromLatestRef.current = 0;
       };
       if (delay <= 0) {
@@ -203,13 +208,39 @@ export function usePinnedTimeline(itemCount: number, resetKey: string) {
     [implicitAnchorSuspended, scrollToLatest],
   );
 
+  const handleLatestOffsetChange = useCallback((offset: number) => {
+    if (!Number.isFinite(offset)) {
+      return;
+    }
+    latestOffsetRef.current = offset;
+    distanceFromLatestRef.current = timelineDistanceFromLatest(
+      rawContentOffsetRef.current,
+      offset,
+    );
+    if (latestOffsetInitializedRef.current) {
+      return;
+    }
+    latestOffsetInitializedRef.current = true;
+    if (
+      itemCount === 0 ||
+      implicitAnchorSuspended() ||
+      scrollStateRef.current.mode !== "attached"
+    ) {
+      return;
+    }
+    requestAnimationFrame(() => scrollToLatest(false, 0));
+  }, [implicitAnchorSuspended, itemCount, scrollToLatest]);
+
   const resetForConversation = useCallback(() => {
     resumeImplicitAnchorAfterTextSelection();
     scrollStateRef.current = returnTimelineToBottom();
     userDraggingRef.current = false;
     userMomentumRef.current = false;
     scrollRequestSeqRef.current += 1;
-    distanceFromLatestRef.current = 0;
+    distanceFromLatestRef.current = timelineDistanceFromLatest(
+      rawContentOffsetRef.current,
+      latestOffsetRef.current,
+    );
     setShowJumpToLatest(false);
   }, [resumeImplicitAnchorAfterTextSelection]);
 
@@ -235,7 +266,11 @@ export function usePinnedTimeline(itemCount: number, resetKey: string) {
     const {
       contentOffset,
     } = event.nativeEvent;
-    const distanceFromLatest = Math.max(0, contentOffset.y);
+    rawContentOffsetRef.current = contentOffset.y;
+    const distanceFromLatest = timelineDistanceFromLatest(
+      contentOffset.y,
+      latestOffsetRef.current,
+    );
     distanceFromLatestRef.current = distanceFromLatest;
     if (textSelectionActiveRef.current && !userDriven) {
       updateJumpButton();
@@ -401,6 +436,7 @@ export function usePinnedTimeline(itemCount: number, resetKey: string) {
     handleMomentumScrollBegin,
     handleMomentumScrollEnd,
     handleContentSizeChange,
+    handleLatestOffsetChange,
     handleLayout,
     handleTextSelectionGestureStart,
     handleTextSelectionGestureEnd,
