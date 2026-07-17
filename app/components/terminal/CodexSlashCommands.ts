@@ -162,8 +162,6 @@ const HIDDEN_CHATUI_SLASH_COMMAND_NAMES = new Set([
 
 const CHATUI_SLASH_COMMANDS = buildChatuiSlashCommands();
 
-const slashCommandCache = new Map<string, CodexSlashCommand[]>();
-
 export function useCodexSlashCommands({
   serverId,
   connectionState,
@@ -177,20 +175,15 @@ export function useCodexSlashCommands({
 }) {
   const slashCommandsEnabled = chatAgentSupportsSlashCommands(agentKind);
   const [slashCommands, setSlashCommands] = useState<CodexSlashCommand[]>(
-    () =>
-      slashCommandsEnabled
-        ? chatuiSlashCommandsFromCache(slashCommandCache.get(serverId))
-        : [],
+    () => slashCommandsEnabled ? CHATUI_SLASH_COMMANDS : [],
   );
 
   useEffect(() => {
+    setSlashCommands(slashCommandsEnabled ? CHATUI_SLASH_COMMANDS : []);
+
     if (!slashCommandsEnabled) {
-      setSlashCommands([]);
       return;
     }
-
-    const cachedCommands = slashCommandCache.get(serverId);
-    setSlashCommands(chatuiSlashCommandsFromCache(cachedCommands));
 
     if (!screenFocused || connectionState !== "connected") {
       return;
@@ -203,12 +196,15 @@ export function useCodexSlashCommands({
         if (cancelled) {
           return;
         }
-        const nextCommands = buildChatuiSlashCommands(snapshot.commands);
-        slashCommandCache.set(serverId, nextCommands);
+        const nextCommands = snapshot.commands.length > 0
+          ? buildChatuiSlashCommands(snapshot.commands)
+          : CHATUI_SLASH_COMMANDS;
         setSlashCommands(nextCommands);
       })
       .catch(() => {
-        // Chat commands remain available on older daemons or during discovery failures.
+        if (!cancelled) {
+          setSlashCommands(CHATUI_SLASH_COMMANDS);
+        }
       });
 
     return () => {
@@ -460,10 +456,4 @@ function fallbackSlashCommandCapability(name: string): LocalSlashCommandCapabili
     chat_supported: false,
     terminal_supported: false,
   };
-}
-
-function chatuiSlashCommandsFromCache(cachedCommands?: CodexSlashCommand[]) {
-  return cachedCommands && cachedCommands.length > 0
-    ? buildChatuiSlashCommands(cachedCommands)
-    : CHATUI_SLASH_COMMANDS;
 }

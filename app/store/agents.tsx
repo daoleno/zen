@@ -36,16 +36,15 @@ export interface AgentCapabilities {
 
 export type ConnectionState = 'offline' | 'connecting' | 'connected';
 
-interface State {
+export interface State {
   agents: Agent[];
-  agentCountsByServer: Record<string, number>;
   serverConnections: Record<string, ConnectionState>;
   serverConnectionIssues: Record<string, ConnectionIssue | null>;
   serverLatencyById: Record<string, ServerLatencySample | undefined>;
   hydratedServers: Record<string, boolean>;
 }
 
-type RawAgent = {
+export type RawAgent = {
   id: string;
   name: string;
   status: AgentStatus;
@@ -69,7 +68,7 @@ type RawAgent = {
   };
 };
 
-type Action =
+export type Action =
   | {
       type: 'UPSERT_SERVER_AGENTS';
       serverId: string;
@@ -90,16 +89,15 @@ type Action =
   | { type: 'SET_SERVER_LATENCY'; serverId: string; sample: ServerLatencySample }
   | { type: 'REMOVE_SERVER'; serverId: string };
 
-const initialState: State = {
+export const initialAgentState: State = {
   agents: [],
-  agentCountsByServer: {},
   serverConnections: {},
   serverConnectionIssues: {},
   serverLatencyById: {},
   hydratedServers: {},
 };
 
-function reducer(state: State, action: Action): State {
+export function agentReducer(state: State, action: Action): State {
   switch (action.type) {
     case 'UPSERT_SERVER_AGENTS': {
       const previousServerAgents = state.agents.filter(agent => agent.serverId === action.serverId);
@@ -119,16 +117,10 @@ function reducer(state: State, action: Action): State {
         agentsChanged = true;
       }
       const hydratedServers = markServerHydrated(state.hydratedServers, action.serverId);
-      const agentCountsByServer = setServerAgentCount(
-        state.agentCountsByServer,
-        action.serverId,
-        incomingAgents.length,
-      );
 
       if (
         !agentsChanged &&
-        hydratedServers === state.hydratedServers &&
-        agentCountsByServer === state.agentCountsByServer
+        hydratedServers === state.hydratedServers
       ) {
         return state;
       }
@@ -136,7 +128,6 @@ function reducer(state: State, action: Action): State {
       return {
         ...state,
         agents: nextAgents,
-        agentCountsByServer,
         hydratedServers,
       };
     }
@@ -145,18 +136,10 @@ function reducer(state: State, action: Action): State {
       const existingIndex = state.agents.findIndex(agent => agent.key === nextAgent.key);
       const existing = existingIndex >= 0 ? state.agents[existingIndex] : undefined;
       const hydratedServers = markServerHydrated(state.hydratedServers, action.serverId);
-      const agentCountsByServer = existing
-        ? state.agentCountsByServer
-        : setServerAgentCount(
-            state.agentCountsByServer,
-            action.serverId,
-            (state.agentCountsByServer[action.serverId] ?? 0) + 1,
-          );
       if (
         existing &&
         agentsEqual(existing, nextAgent) &&
-        hydratedServers === state.hydratedServers &&
-        agentCountsByServer === state.agentCountsByServer
+        hydratedServers === state.hydratedServers
       ) {
         return state;
       }
@@ -165,7 +148,6 @@ function reducer(state: State, action: Action): State {
         agents: existing
           ? state.agents.map(agent => (agent.key === nextAgent.key ? nextAgent : agent))
           : [...state.agents, nextAgent],
-        agentCountsByServer,
         hydratedServers,
       };
     }
@@ -177,11 +159,6 @@ function reducer(state: State, action: Action): State {
       return {
         ...state,
         agents: state.agents.filter(agent => agent.key !== targetKey),
-        agentCountsByServer: setServerAgentCount(
-          state.agentCountsByServer,
-          action.serverId,
-          Math.max(0, (state.agentCountsByServer[action.serverId] ?? 0) - 1),
-        ),
       };
     }
     case 'SET_SERVER_CONNECTION_STATE':
@@ -220,7 +197,6 @@ function reducer(state: State, action: Action): State {
     case 'REMOVE_SERVER':
       if (
         !state.agents.some(agent => agent.serverId === action.serverId) &&
-        !(action.serverId in state.agentCountsByServer) &&
         !(action.serverId in state.serverConnections) &&
         !(action.serverId in state.serverConnectionIssues) &&
         !(action.serverId in state.serverLatencyById) &&
@@ -231,9 +207,6 @@ function reducer(state: State, action: Action): State {
       return {
         ...state,
         agents: state.agents.filter(agent => agent.serverId !== action.serverId),
-        agentCountsByServer: Object.fromEntries(
-          Object.entries(state.agentCountsByServer).filter(([serverId]) => serverId !== action.serverId),
-        ),
         serverConnections: Object.fromEntries(
           Object.entries(state.serverConnections).filter(([serverId]) => serverId !== action.serverId),
         ),
@@ -275,27 +248,14 @@ export function reconcileServerAgents(
   return next;
 }
 
-function setServerAgentCount(
-  counts: State['agentCountsByServer'],
-  serverId: string,
-  count: number,
-): State['agentCountsByServer'] {
-  const nextCount = Math.max(0, count);
-  if ((counts[serverId] ?? 0) === nextCount) {
-    return counts;
+export function countAgentsByServer(
+  agents: readonly Pick<Agent, 'serverId'>[],
+): Record<string, number> {
+  const counts: Record<string, number> = {};
+  for (const agent of agents) {
+    counts[agent.serverId] = (counts[agent.serverId] ?? 0) + 1;
   }
-  if (nextCount === 0) {
-    if (!(serverId in counts)) {
-      return counts;
-    }
-    const next = { ...counts };
-    delete next[serverId];
-    return next;
-  }
-  return {
-    ...counts,
-    [serverId]: nextCount,
-  };
+  return counts;
 }
 
 function markServerHydrated(
@@ -464,7 +424,6 @@ const AgentServerConnectionsContext = createContext<
   State['serverConnections'] | null
 >(null);
 const AgentServerSummaryContext = createContext<{
-  agentCountsByServer: State['agentCountsByServer'];
   serverConnections: State['serverConnections'];
   serverConnectionIssues: State['serverConnectionIssues'];
   serverLatencyById: State['serverLatencyById'];
@@ -473,10 +432,9 @@ const AgentServerSummaryContext = createContext<{
 } | null>(null);
 
 export function AgentProvider({ children }: { children: ReactNode }) {
-  const [state, dispatch] = useReducer(reducer, initialState);
+  const [state, dispatch] = useReducer(agentReducer, initialAgentState);
   const serverSummaryValue = React.useMemo(
     () => ({
-      agentCountsByServer: state.agentCountsByServer,
       serverConnections: state.serverConnections,
       serverConnectionIssues: state.serverConnectionIssues,
       serverLatencyById: state.serverLatencyById,
@@ -484,7 +442,6 @@ export function AgentProvider({ children }: { children: ReactNode }) {
       dispatch,
     }),
     [
-      state.agentCountsByServer,
       state.hydratedServers,
       state.serverConnectionIssues,
       state.serverConnections,

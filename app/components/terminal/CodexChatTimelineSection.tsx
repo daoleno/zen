@@ -13,7 +13,7 @@ import type {
 import type {
   CodexConversation,
   CodexConversationEvent,
-  StructuredTurn,
+  ProviderActivity,
 } from "../../services/codexConversation";
 import { wsClient } from "../../services/websocket";
 import {
@@ -21,8 +21,6 @@ import {
   isConversationSyncingReason,
 } from "./CodexChatControllerModel";
 import type {
-  CodexChatLocalState,
-  PendingSlashCommand,
   PendingUserMessage,
 } from "./CodexChatSession";
 import { CodexTimelineView } from "./CodexTimelineView";
@@ -39,10 +37,8 @@ interface CodexChatTimelineSectionProps {
   conversation: CodexConversation | null;
   events: CodexConversationEvent[];
   pendingUserMessages: PendingUserMessage[];
-  pendingSlashCommands: PendingSlashCommand[];
-  workingTurn?: StructuredTurn;
+  runningActivity?: ProviderActivity;
   loading: boolean;
-  localChatState: CodexChatLocalState;
   error?: string | null;
   commandMenuOpen: boolean;
   scrollRef: React.RefObject<FlatList<ZenTimelineItem> | null>;
@@ -74,10 +70,8 @@ export function CodexChatTimelineSection({
   conversation,
   events,
   pendingUserMessages,
-  pendingSlashCommands,
-  workingTurn,
+  runningActivity,
   loading,
-  localChatState,
   error,
   commandMenuOpen,
   scrollRef,
@@ -105,8 +99,7 @@ export function CodexChatTimelineSection({
   const timelineItems = useCodexTimelineItems({
     events,
     pendingUserMessages,
-    pendingSlashCommands,
-    workingTurn,
+    runningActivity,
     onRetryPendingUserMessage,
   });
   const loadAssetPreview = useCallback(
@@ -130,7 +123,6 @@ export function CodexChatTimelineSection({
       scrollRef={scrollRef}
       items={timelineItems}
       loading={loading}
-      localChatState={localChatState}
       error={error}
       emptyStateSuppressed={commandMenuOpen}
       unavailable={

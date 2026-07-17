@@ -1,6 +1,12 @@
 // @ts-nocheck
 import { describe, expect, test } from "bun:test";
-import { reconcileServerAgents, type Agent } from "./agents";
+import {
+  agentReducer,
+  countAgentsByServer,
+  initialAgentState,
+  reconcileServerAgents,
+  type Agent,
+} from "./agents";
 
 function agent(id: string, overrides: Partial<Agent> = {}): Agent {
   return {
@@ -45,5 +51,51 @@ describe("reconcileServerAgents", () => {
       "server:new-2",
       "server:new-1",
     ]);
+  });
+});
+
+describe("authoritative agent counts", () => {
+  test("derives counts through snapshots, upserts, removals, and server cleanup", () => {
+    let state = agentReducer(initialAgentState, {
+      type: "UPSERT_SERVER_AGENTS",
+      serverId: "server",
+      serverName: "Server",
+      serverUrl: "https://server.test",
+      agents: [agent("a"), agent("b")],
+    });
+    expect(countAgentsByServer(state.agents)).toEqual({ server: 2 });
+
+    state = agentReducer(state, {
+      type: "UPSERT_AGENT",
+      serverId: "server",
+      serverName: "Server",
+      serverUrl: "https://server.test",
+      agent: agent("c"),
+    });
+    expect(countAgentsByServer(state.agents)).toEqual({ server: 3 });
+
+    state = agentReducer(state, {
+      type: "REMOVE_AGENT",
+      serverId: "server",
+      agent_id: "b",
+    });
+    expect(countAgentsByServer(state.agents)).toEqual({ server: 2 });
+
+    state = agentReducer(state, {
+      type: "UPSERT_SERVER_AGENTS",
+      serverId: "empty",
+      serverName: "Empty",
+      serverUrl: "https://empty.test",
+      agents: [],
+    });
+    expect(state.hydratedServers.empty).toBe(true);
+    expect(countAgentsByServer(state.agents)).toEqual({ server: 2 });
+
+    state = agentReducer(state, { type: "REMOVE_SERVER", serverId: "server" });
+    expect(countAgentsByServer(state.agents)).toEqual({});
+    expect(state.hydratedServers.empty).toBe(true);
+
+    state = agentReducer(state, { type: "REMOVE_SERVER", serverId: "empty" });
+    expect(state.hydratedServers.empty).toBeUndefined();
   });
 });

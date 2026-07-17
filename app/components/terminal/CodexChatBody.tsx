@@ -11,7 +11,7 @@ import {
 import type {
   CodexConversation,
   CodexConversationEvent,
-  StructuredTurn,
+  ProviderActivity,
 } from "../../services/codexConversation";
 import type {
   TerminalThemeChrome,
@@ -19,9 +19,7 @@ import type {
 } from "../../constants/terminalThemes";
 import type { CodexSlashCommand } from "../../services/websocket";
 import type {
-  CodexChatLocalState,
   ComposerAttachment,
-  PendingSlashCommand,
   PendingUserMessage,
 } from "./CodexChatSession";
 import type { CodexComposerPresentation } from "./CodexChatSurfaceModel";
@@ -41,10 +39,8 @@ export interface CodexChatBodyProps {
   conversation: CodexConversation | null;
   events: CodexConversationEvent[];
   pendingUserMessages: PendingUserMessage[];
-  pendingSlashCommands: PendingSlashCommand[];
-  workingTurn?: StructuredTurn;
+  runningActivity?: ProviderActivity;
   loading: boolean;
-  localChatState: CodexChatLocalState;
   error?: string | null;
   scrollRef: React.RefObject<FlatList<ZenTimelineItem> | null>;
   timelineTextSelectable: boolean;
@@ -105,10 +101,8 @@ export function CodexChatBody({
   conversation,
   events,
   pendingUserMessages,
-  pendingSlashCommands,
-  workingTurn,
+  runningActivity,
   loading,
-  localChatState,
   error,
   scrollRef,
   timelineTextSelectable,
@@ -223,11 +217,9 @@ export function CodexChatBody({
           conversation={conversation}
           events={events}
           pendingUserMessages={pendingUserMessages}
-          pendingSlashCommands={pendingSlashCommands}
           onRetryPendingUserMessage={onRetryPendingUserMessage}
-          workingTurn={workingTurn}
+          runningActivity={runningActivity}
           loading={loading}
-          localChatState={localChatState}
           error={error}
           commandMenuOpen={composerPresentation.showCommandMenu}
           scrollRef={scrollRef}

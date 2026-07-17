@@ -161,12 +161,6 @@ func TestEncodeGrokSessionCWD(t *testing.T) {
 	}
 }
 
-func TestAgentToolNameRecognizesGrok(t *testing.T) {
-	if got := agentToolName("grok --no-alt-screen --permission-mode bypassPermissions", ""); got != "grok" {
-		t.Fatalf("agentToolName = %q, want grok", got)
-	}
-}
-
 func TestParseGrokConversation_AssistantToolCallsUseUniqueEventIDsBeforeChatTrim(t *testing.T) {
 	dir := t.TempDir()
 	writeGrokSummary(t, filepath.Join(dir, grokSummaryFile), map[string]any{
@@ -237,14 +231,11 @@ func TestParseGrokConversation_StreamsNativeChunksAndFinalizesSameEvent(t *testi
 	if !firstAssistant.Partial || firstAssistant.Status != "running" {
 		t.Fatalf("first assistant = %#v", firstAssistant)
 	}
-	if first.Active == nil || !*first.Active {
-		t.Fatalf("first active = %#v", first.Active)
+	if first.Activity == nil || first.Activity.Status != ProviderActivityRunning || first.Activity.StartedAt == "" {
+		t.Fatalf("first turn = %#v", first.Activity)
 	}
-	if first.Turn == nil || first.Turn.Status != CodexConversationTurnRunning || first.Turn.StartedAt == "" {
-		t.Fatalf("first turn = %#v", first.Turn)
-	}
-	turnID := first.Turn.ID
-	startedAt := first.Turn.StartedAt
+	turnID := first.Activity.ID
+	startedAt := first.Activity.StartedAt
 	if eventBodyContains(first.Events, "old transient output") {
 		t.Fatalf("completed update history leaked into active tail: %#v", first.Events)
 	}
@@ -270,8 +261,8 @@ func TestParseGrokConversation_StreamsNativeChunksAndFinalizesSameEvent(t *testi
 	if !secondAssistant.Partial {
 		t.Fatalf("second assistant finalized before provider turn completion: %#v", secondAssistant)
 	}
-	if second.Turn == nil || second.Turn.ID != turnID || second.Turn.StartedAt != startedAt || second.Turn.Status != CodexConversationTurnRunning {
-		t.Fatalf("streaming turn identity/start changed: %#v -> %#v", first.Turn, second.Turn)
+	if second.Activity == nil || second.Activity.ID != turnID || second.Activity.StartedAt != startedAt || second.Activity.Status != ProviderActivityRunning {
+		t.Fatalf("streaming turn identity/start changed: %#v -> %#v", first.Activity, second.Activity)
 	}
 
 	writeJSONL(t, filepath.Join(dir, grokChatHistoryFile),
@@ -292,12 +283,9 @@ func TestParseGrokConversation_StreamsNativeChunksAndFinalizesSameEvent(t *testi
 	if countGrokEvents(final.Events, finalAssistant.ID) != 1 {
 		t.Fatalf("final assistant duplicated: %#v", final.Events)
 	}
-	if final.Active == nil || *final.Active {
-		t.Fatalf("final active = %#v", final.Active)
-	}
-	if final.Turn == nil || final.Turn.ID != turnID || final.Turn.StartedAt != startedAt ||
-		final.Turn.Status != CodexConversationTurnCompleted || final.Turn.SettledAt == "" {
-		t.Fatalf("final lifecycle = %#v", final.Turn)
+	if final.Activity == nil || final.Activity.ID != turnID || final.Activity.StartedAt != startedAt ||
+		final.Activity.Status != ProviderActivityCompleted || final.Activity.SettledAt == "" {
+		t.Fatalf("final lifecycle = %#v", final.Activity)
 	}
 
 	writeJSONL(t, filepath.Join(dir, grokChatHistoryFile),
@@ -333,13 +321,72 @@ func TestParseGrokConversation_UserLifecyclePrecedesFirstVisibleToken(t *testing
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got.Turn == nil || got.Turn.Status != CodexConversationTurnRunning || got.Turn.StartedAt == "" || got.Active == nil || !*got.Active {
+	if got.Activity == nil || got.Activity.Status != ProviderActivityRunning || got.Activity.StartedAt == "" {
 		t.Fatalf("pre-token lifecycle = %#v", got)
 	}
 	for _, event := range got.Events {
 		if event.Kind == "assistant_message" || event.Kind == "commentary" {
 			t.Fatalf("pre-token lifecycle fabricated visible response: %#v", got.Events)
 		}
+	}
+}
+
+func TestParseGrokConversation_InvalidStartTimestampKeepsNativeStreamOpenUntilTerminal(t *testing.T) {
+	dir := t.TempDir()
+	sessionID := "grok-invalid-start"
+	writeGrokSummary(t, filepath.Join(dir, grokSummaryFile), map[string]any{
+		"info": map[string]any{"id": sessionID, "cwd": "/repo"},
+	})
+	writeJSONL(t, filepath.Join(dir, grokChatHistoryFile),
+		map[string]any{"type": "user", "content": "stream without a valid clock"},
+	)
+	start := grokUpdateFixtureAt(
+		sessionID,
+		"prompt-invalid-start",
+		1,
+		"user_message_chunk",
+		map[string]any{"type": "text", "text": "stream without a valid clock"},
+	)
+	chunk := grokUpdateFixtureAt(
+		sessionID,
+		"prompt-invalid-start",
+		1,
+		"agent_message_chunk",
+		map[string]any{"type": "text", "text": "Still streaming"},
+	)
+	for _, record := range []map[string]any{start, chunk} {
+		record["timestamp"] = "not-a-time"
+		params := record["params"].(map[string]any)
+		params["_meta"].(map[string]any)["streamStartMs"] = "not-a-time"
+	}
+	updatesPath := filepath.Join(dir, grokUpdatesFile)
+	writeJSONL(t, updatesPath, start, chunk)
+
+	streaming, err := parseGrokConversation(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if streaming.Activity != nil {
+		t.Fatalf("invalid native start emitted public Activity: %#v", streaming.Activity)
+	}
+	streamingEvent := findGrokEvent(t, streaming.Events, "assistant_message", "Still streaming")
+	if !streamingEvent.Partial || streamingEvent.Status != "running" {
+		t.Fatalf("invalid-clock native stream closed early: %#v", streamingEvent)
+	}
+
+	appendJSONL(t, updatesPath,
+		grokUpdateFixture(sessionID, "prompt-invalid-start", "turn_completed", nil),
+	)
+	settled, err := parseGrokConversation(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if settled.Activity != nil {
+		t.Fatalf("terminal marker fabricated Activity after invalid start: %#v", settled.Activity)
+	}
+	settledEvent := findGrokEvent(t, settled.Events, "assistant_message", "Still streaming")
+	if settledEvent.ID != streamingEvent.ID || settledEvent.Partial || settledEvent.Status != "done" {
+		t.Fatalf("terminal marker did not finalize native stream: before=%#v after=%#v", streamingEvent, settledEvent)
 	}
 }
 
@@ -368,7 +415,7 @@ func TestParseGrokConversation_MatchingActiveHistoryDoesNotDuplicate(t *testing.
 	}
 }
 
-func TestLoadCachedGrokConversationInvalidatesOnNativeUpdates(t *testing.T) {
+func TestProviderConversationReaderGrokInvalidatesOnNativeUpdates(t *testing.T) {
 	dir := t.TempDir()
 	sessionID := "grok-cache-stream"
 	writeGrokSummary(t, filepath.Join(dir, grokSummaryFile), map[string]any{
@@ -378,11 +425,9 @@ func TestLoadCachedGrokConversationInvalidatesOnNativeUpdates(t *testing.T) {
 		map[string]any{"type": "user", "content": "hello"},
 	)
 	writeJSONL(t, filepath.Join(dir, grokUpdatesFile))
-	grokConversationCache.Lock()
-	delete(grokConversationCache.byPath, dir)
-	grokConversationCache.Unlock()
+	reader := NewProviderConversationReader()
 
-	first, err := loadCachedGrokConversation(dir)
+	first, err := reader.loadGrokConversation(dir)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -393,14 +438,179 @@ func TestLoadCachedGrokConversationInvalidatesOnNativeUpdates(t *testing.T) {
 		grokUpdateFixture(sessionID, "live", "user_message_chunk", map[string]any{"type": "text", "text": "hello"}),
 		grokUpdateFixture(sessionID, "live", "agent_message_chunk", map[string]any{"type": "text", "text": "first chunk"}),
 	)
-	second, err := loadCachedGrokConversation(dir)
+	second, err := reader.loadGrokConversation(dir)
 	if err != nil {
 		t.Fatal(err)
 	}
 	findGrokEvent(t, second.Events, "assistant_message", "first chunk")
 }
 
-func TestLoadCachedGrokConversation_RetainsEveryTurnCompletedBetweenPolls(t *testing.T) {
+func TestProviderConversationReaderGrokRebuildsTrackerAfterSameSizeRewrite(t *testing.T) {
+	dir := t.TempDir()
+	sessionID := "grok-same-size-rewrite"
+	updatesPath := filepath.Join(dir, grokUpdatesFile)
+	writeGrokSummary(t, filepath.Join(dir, grokSummaryFile), map[string]any{
+		"info": map[string]any{"id": sessionID, "cwd": "/repo"},
+	})
+	writeJSONL(t, filepath.Join(dir, grokChatHistoryFile),
+		map[string]any{"type": "user", "content": "rewrite the stream"},
+	)
+	writeJSONL(t, updatesPath,
+		grokUpdateFixture(sessionID, "prompt", "user_message_chunk", map[string]any{"type": "text", "text": "rewrite the stream"}),
+		grokUpdateFixture(sessionID, "prompt", "agent_message_chunk", map[string]any{"type": "text", "text": "old reply"}),
+	)
+	reader := NewProviderConversationReader()
+
+	first, err := reader.loadGrokConversation(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	findGrokEvent(t, first.Events, "assistant_message", "old reply")
+	before, err := os.Stat(updatesPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	writeJSONL(t, updatesPath,
+		grokUpdateFixture(sessionID, "prompt", "user_message_chunk", map[string]any{"type": "text", "text": "rewrite the stream"}),
+		grokUpdateFixture(sessionID, "prompt", "agent_message_chunk", map[string]any{"type": "text", "text": "new reply"}),
+	)
+	rewriteTime := before.ModTime().Add(2 * time.Second)
+	if err := os.Chtimes(updatesPath, rewriteTime, rewriteTime); err != nil {
+		t.Fatal(err)
+	}
+	after, err := os.Stat(updatesPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after.Size() != before.Size() {
+		t.Fatalf("rewrite size = %d, want unchanged %d", after.Size(), before.Size())
+	}
+	if after.ModTime().Equal(before.ModTime()) {
+		t.Fatal("rewrite fixture did not change native update stamp")
+	}
+
+	second, err := reader.loadGrokConversation(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if eventBodyContains(second.Events, "old reply") {
+		t.Fatalf("same-size rewrite retained stale tracker events: %#v", second.Events)
+	}
+	findGrokEvent(t, second.Events, "assistant_message", "new reply")
+}
+
+func TestProviderConversationReaderGrokRebuildsTrackerAfterSameStampReplacement(t *testing.T) {
+	dir := t.TempDir()
+	sessionID := "grok-same-stamp-replacement"
+	updatesPath := filepath.Join(dir, grokUpdatesFile)
+	writeGrokSummary(t, filepath.Join(dir, grokSummaryFile), map[string]any{
+		"info": map[string]any{"id": sessionID, "cwd": "/repo"},
+	})
+	writeJSONL(t, filepath.Join(dir, grokChatHistoryFile),
+		map[string]any{"type": "user", "content": "replace the stream"},
+	)
+	writeJSONL(t, updatesPath,
+		grokUpdateFixture(sessionID, "prompt", "user_message_chunk", map[string]any{"type": "text", "text": "replace the stream"}),
+		grokUpdateFixture(sessionID, "prompt", "agent_message_chunk", map[string]any{"type": "text", "text": "old reply"}),
+	)
+	reader := NewProviderConversationReader()
+	first, err := reader.loadGrokConversation(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	findGrokEvent(t, first.Events, "assistant_message", "old reply")
+	before, err := os.Stat(updatesPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	replacementPath := filepath.Join(dir, "updates.replacement.jsonl")
+	writeJSONL(t, replacementPath,
+		grokUpdateFixture(sessionID, "prompt", "user_message_chunk", map[string]any{"type": "text", "text": "replace the stream"}),
+		grokUpdateFixture(sessionID, "prompt", "agent_message_chunk", map[string]any{"type": "text", "text": "new reply"}),
+	)
+	if err := os.Chtimes(replacementPath, before.ModTime(), before.ModTime()); err != nil {
+		t.Fatal(err)
+	}
+	replacementInfo, err := os.Stat(replacementPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if replacementInfo.Size() != before.Size() || !replacementInfo.ModTime().Equal(before.ModTime()) {
+		t.Fatalf("replacement stamp differs: before=(%d,%s) replacement=(%d,%s)", before.Size(), before.ModTime(), replacementInfo.Size(), replacementInfo.ModTime())
+	}
+	if err := os.Rename(replacementPath, updatesPath); err != nil {
+		t.Fatal(err)
+	}
+	after, err := os.Stat(updatesPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if os.SameFile(before, after) {
+		t.Fatal("replacement fixture retained the original native file identity")
+	}
+
+	second, err := reader.loadGrokConversation(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if eventBodyContains(second.Events, "old reply") {
+		t.Fatalf("same-stamp replacement retained stale tracker events: %#v", second.Events)
+	}
+	findGrokEvent(t, second.Events, "assistant_message", "new reply")
+}
+
+func TestProviderConversationReaderGrokRebuildsTrackerAfterTruncate(t *testing.T) {
+	dir := t.TempDir()
+	sessionID := "grok-truncated-updates"
+	updatesPath := filepath.Join(dir, grokUpdatesFile)
+	writeGrokSummary(t, filepath.Join(dir, grokSummaryFile), map[string]any{
+		"info": map[string]any{"id": sessionID, "cwd": "/repo"},
+	})
+	writeJSONL(t, filepath.Join(dir, grokChatHistoryFile),
+		map[string]any{"type": "user", "content": "truncate the stream"},
+	)
+	writeJSONL(t, updatesPath,
+		grokUpdateFixture(sessionID, "prompt", "user_message_chunk", map[string]any{"type": "text", "text": "truncate the stream"}),
+		grokUpdateFixture(sessionID, "prompt", "agent_message_chunk", map[string]any{"type": "text", "text": "old reply with a deliberately longer body"}),
+	)
+	reader := NewProviderConversationReader()
+	first, err := reader.loadGrokConversation(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	findGrokEvent(t, first.Events, "assistant_message", "old reply")
+	before, err := os.Stat(updatesPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	writeJSONL(t, updatesPath,
+		grokUpdateFixture(sessionID, "prompt", "agent_message_chunk", map[string]any{"type": "text", "text": "new"}),
+	)
+	if err := os.Chtimes(updatesPath, before.ModTime().Add(2*time.Second), before.ModTime().Add(2*time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	after, err := os.Stat(updatesPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after.Size() >= before.Size() {
+		t.Fatalf("truncate fixture size = %d, want less than %d", after.Size(), before.Size())
+	}
+
+	second, err := reader.loadGrokConversation(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if eventBodyContains(second.Events, "old reply") {
+		t.Fatalf("truncate retained stale tracker events: %#v", second.Events)
+	}
+	findGrokEvent(t, second.Events, "assistant_message", "new")
+}
+
+func TestProviderConversationReaderGrokPublishesLatestActivityAcrossPollGap(t *testing.T) {
 	dir := t.TempDir()
 	sessionID := "grok-missed-turns"
 	updatesPath := filepath.Join(dir, grokUpdatesFile)
@@ -413,21 +623,18 @@ func TestLoadCachedGrokConversation_RetainsEveryTurnCompletedBetweenPolls(t *tes
 	writeJSONL(t, updatesPath,
 		grokUpdateFixtureAt(sessionID, "prompt-a", 101, "user_message_chunk", map[string]any{"type": "text", "text": "first"}),
 	)
-	grokConversationCache.Lock()
-	delete(grokConversationCache.byPath, dir)
-	grokConversationCache.Unlock()
+	reader := NewProviderConversationReader()
 
-	first, err := loadCachedGrokConversation(dir)
+	first, err := reader.loadGrokConversation(dir)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if first.Turn == nil || first.Turn.Status != CodexConversationTurnRunning {
-		t.Fatalf("initial lifecycle = %#v", first.Turn)
+	if first.Activity == nil || first.Activity.Status != ProviderActivityRunning {
+		t.Fatalf("initial lifecycle = %#v", first.Activity)
 	}
 
-	// Two complete queued turns can start and finish inside one 220ms polling
-	// interval. The daemon-side provider history must retain all three terminal
-	// facts so the public queue registry can drain them in submission order.
+	// Multiple native Activities may start and settle between transcript polls.
+	// The shared model publishes only the provider's latest current Activity.
 	appendJSONL(t, updatesPath,
 		grokUpdateFixture(sessionID, "prompt-a", "turn_completed", nil),
 		grokUpdateFixtureAt(sessionID, "prompt-b", 102, "user_message_chunk", map[string]any{"type": "text", "text": "second"}),
@@ -436,21 +643,13 @@ func TestLoadCachedGrokConversation_RetainsEveryTurnCompletedBetweenPolls(t *tes
 		grokUpdateFixture(sessionID, "prompt-c", "turn_completed", nil),
 	)
 
-	got, err := loadCachedGrokConversation(dir)
+	got, err := reader.loadGrokConversation(dir)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(got.ProviderTurns) != 3 {
-		t.Fatalf("provider turn history = %#v, want three terminal turns", got.ProviderTurns)
-	}
-	for index, promptID := range []string{"prompt-a", "prompt-b", "prompt-c"} {
-		turn := got.ProviderTurns[index]
-		if !strings.Contains(turn.ID, promptID) || turn.Status != CodexConversationTurnCompleted || turn.StartedAt == "" || turn.SettledAt == "" {
-			t.Fatalf("provider turn %d = %#v, want completed %s", index, turn, promptID)
-		}
-	}
-	if got.Turn == nil || got.Turn.ID != got.ProviderTurns[2].ID || got.Turn.Status != CodexConversationTurnCompleted {
-		t.Fatalf("latest public turn = %#v, provider history = %#v", got.Turn, got.ProviderTurns)
+	if got.Activity == nil || !strings.Contains(got.Activity.ID, "prompt-c") ||
+		got.Activity.Status != ProviderActivityCompleted || got.Activity.StartedAt == "" || got.Activity.SettledAt == "" {
+		t.Fatalf("latest provider Activity = %#v, want completed prompt-c", got.Activity)
 	}
 }
 
@@ -491,7 +690,7 @@ func TestParseGrokConversation_GroupsNativeStreamsAcrossInterleavedTools(t *test
 	}
 }
 
-func TestLoadCachedGrokConversation_StreamsSanitizedToolSnapshotsInPlace(t *testing.T) {
+func TestProviderConversationReaderGrokStreamsSanitizedToolSnapshotsInPlace(t *testing.T) {
 	dir := t.TempDir()
 	sessionID := "grok-tool-stream"
 	updatesPath := filepath.Join(dir, grokUpdatesFile)
@@ -507,11 +706,9 @@ func TestLoadCachedGrokConversation_StreamsSanitizedToolSnapshotsInPlace(t *test
 			{"type": "content", "content": map[string]any{"type": "text", "text": "\x1b[31mone\x1b[0m"}},
 		}),
 	)
-	grokConversationCache.Lock()
-	delete(grokConversationCache.byPath, dir)
-	grokConversationCache.Unlock()
+	reader := NewProviderConversationReader()
 
-	first, err := loadCachedGrokConversation(dir)
+	first, err := reader.loadGrokConversation(dir)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -525,7 +722,7 @@ func TestLoadCachedGrokConversation_StreamsSanitizedToolSnapshotsInPlace(t *test
 			{"type": "content", "content": map[string]any{"type": "text", "text": "one two"}},
 		}),
 	)
-	second, err := loadCachedGrokConversation(dir)
+	second, err := reader.loadGrokConversation(dir)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -539,7 +736,7 @@ func TestLoadCachedGrokConversation_StreamsSanitizedToolSnapshotsInPlace(t *test
 			{"type": "content", "content": map[string]any{"type": "text", "text": "one two final"}},
 		}),
 	)
-	completed, err := loadCachedGrokConversation(dir)
+	completed, err := reader.loadGrokConversation(dir)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -555,7 +752,7 @@ func TestLoadCachedGrokConversation_StreamsSanitizedToolSnapshotsInPlace(t *test
 		map[string]any{"type": "assistant", "content": "Done."},
 	)
 	appendJSONL(t, updatesPath, grokUpdateFixture(sessionID, "prompt", "turn_completed", nil))
-	final, err := loadCachedGrokConversation(dir)
+	final, err := reader.loadGrokConversation(dir)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -563,12 +760,12 @@ func TestLoadCachedGrokConversation_StreamsSanitizedToolSnapshotsInPlace(t *test
 	if finalTool.ID != firstTool.ID || finalTool.Status != "done" || finalTool.Partial || finalTool.Transient {
 		t.Fatalf("canonical tool finalization = %#v", finalTool)
 	}
-	if final.Active == nil || *final.Active {
-		t.Fatalf("final active = %#v", final.Active)
+	if final.Activity == nil || final.Activity.Status != ProviderActivityCompleted {
+		t.Fatalf("final Activity = %#v", final.Activity)
 	}
 }
 
-func TestLoadCachedGrokConversation_BackgroundTaskFinalizesSameToolAcrossTurnReset(t *testing.T) {
+func TestProviderConversationReaderGrokBackgroundTaskFinalizesSameToolAcrossTurnReset(t *testing.T) {
 	dir := t.TempDir()
 	sessionID := "grok-background-task"
 	updatesPath := filepath.Join(dir, grokUpdatesFile)
@@ -596,11 +793,9 @@ func TestLoadCachedGrokConversation_BackgroundTaskFinalizesSameToolAcrossTurnRes
 		grokToolUpdateFixture(sessionID, "prompt-a", 350, "tool_call", "call-background", "in_progress", "Shell", nil),
 		backgrounded,
 	)
-	grokConversationCache.Lock()
-	delete(grokConversationCache.byPath, dir)
-	grokConversationCache.Unlock()
+	reader := NewProviderConversationReader()
 
-	first, err := loadCachedGrokConversation(dir)
+	first, err := reader.loadGrokConversation(dir)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -643,7 +838,7 @@ func TestLoadCachedGrokConversation_BackgroundTaskFinalizesSameToolAcrossTurnRes
 		map[string]any{"type": "assistant", "content": "It finished."},
 	)
 
-	final, err := loadCachedGrokConversation(dir)
+	final, err := reader.loadGrokConversation(dir)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -679,7 +874,7 @@ func TestLoadCachedGrokConversation_BackgroundTaskFinalizesSameToolAcrossTurnRes
 		map[string]any{"type": "assistant", "content": "Next turn done."},
 	)
 
-	afterReset, err := loadCachedGrokConversation(dir)
+	afterReset, err := reader.loadGrokConversation(dir)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -693,7 +888,7 @@ func TestLoadCachedGrokConversation_BackgroundTaskFinalizesSameToolAcrossTurnRes
 	assertNoGrokRunningProjection(t, afterReset)
 }
 
-func TestLoadCachedGrokConversation_BackgroundFailureOverridesCanonicalLaunchAckAcrossReset(t *testing.T) {
+func TestProviderConversationReaderGrokBackgroundFailureOverridesCanonicalLaunchAckAcrossReset(t *testing.T) {
 	dir := t.TempDir()
 	sessionID := "grok-background-failure"
 	updatesPath := filepath.Join(dir, grokUpdatesFile)
@@ -726,11 +921,9 @@ func TestLoadCachedGrokConversation_BackgroundFailureOverridesCanonicalLaunchAck
 		grokToolUpdateFixture(sessionID, "prompt-a", 360, "tool_call", "call-failing-background", "in_progress", "Shell", nil),
 		backgrounded,
 	)
-	grokConversationCache.Lock()
-	delete(grokConversationCache.byPath, dir)
-	grokConversationCache.Unlock()
+	reader := NewProviderConversationReader()
 
-	active, err := loadCachedGrokConversation(dir)
+	active, err := reader.loadGrokConversation(dir)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -760,7 +953,7 @@ func TestLoadCachedGrokConversation_BackgroundFailureOverridesCanonicalLaunchAck
 		grokUpdateFixture(sessionID, "prompt-b", "turn_completed", nil),
 	)
 
-	failed, err := loadCachedGrokConversation(dir)
+	failed, err := reader.loadGrokConversation(dir)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -778,7 +971,7 @@ func TestLoadCachedGrokConversation_BackgroundFailureOverridesCanonicalLaunchAck
 		grokUpdateFixtureAt(sessionID, "prompt-c", 362, "agent_message_chunk", map[string]any{"type": "text", "text": "Later turn done."}),
 		grokUpdateFixture(sessionID, "prompt-c", "turn_completed", nil),
 	)
-	afterReset, err := loadCachedGrokConversation(dir)
+	afterReset, err := reader.loadGrokConversation(dir)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -797,14 +990,14 @@ func TestParseGrokConversation_TurnCompletionAndFailureSettleEveryProjection(t *
 		name         string
 		terminal     map[string]any
 		toolStatus   string
-		turnStatus   string
+		turnStatus   ProviderActivityStatus
 		statusPhrase string
 	}{
 		{
 			name:       "turn completed",
 			terminal:   grokUpdateFixture("grok-settle-turn", "prompt", "turn_completed", nil),
 			toolStatus: "done",
-			turnStatus: CodexConversationTurnCompleted,
+			turnStatus: ProviderActivityCompleted,
 		},
 		{
 			name: "provider failure",
@@ -816,7 +1009,7 @@ func TestParseGrokConversation_TurnCompletionAndFailureSettleEveryProjection(t *
 				return record
 			}(),
 			toolStatus:   "failed",
-			turnStatus:   CodexConversationTurnFailed,
+			turnStatus:   ProviderActivityFailed,
 			statusPhrase: "provider request failed",
 		},
 	} {
@@ -859,8 +1052,8 @@ func TestParseGrokConversation_TurnCompletionAndFailureSettleEveryProjection(t *
 			if testCase.statusPhrase != "" {
 				findGrokEvent(t, got.Events, "status", testCase.statusPhrase)
 			}
-			if got.Turn == nil || got.Turn.Status != testCase.turnStatus || got.Turn.StartedAt == "" || got.Turn.SettledAt == "" {
-				t.Fatalf("settled turn = %#v", got.Turn)
+			if got.Activity == nil || got.Activity.Status != testCase.turnStatus || got.Activity.StartedAt == "" || got.Activity.SettledAt == "" {
+				t.Fatalf("settled turn = %#v", got.Activity)
 			}
 			assertNoGrokRunningProjection(t, got)
 		})
@@ -942,8 +1135,8 @@ func TestParseGrokConversation_UpdatesNativeRetryStatusInPlace(t *testing.T) {
 	if failedStatus.ID != status.ID || failedStatus.Status != "failed" || failedStatus.Partial {
 		t.Fatalf("failed retry status = %#v, first = %#v", failedStatus, status)
 	}
-	if failed.Active == nil || *failed.Active {
-		t.Fatalf("failed retry active = %#v", failed.Active)
+	if failed.Activity == nil || failed.Activity.Status != ProviderActivityFailed {
+		t.Fatalf("failed retry Activity = %#v", failed.Activity)
 	}
 }
 
@@ -981,7 +1174,7 @@ func TestGrokBackgroundTaskTerminalMapping(t *testing.T) {
 	}
 }
 
-func TestLoadCachedGrokConversation_UsesNewestIdentityForRepeatedCompactedReply(t *testing.T) {
+func TestProviderConversationReaderGrokUsesNewestIdentityForRepeatedCompactedReply(t *testing.T) {
 	dir := t.TempDir()
 	sessionID := "grok-repeated-reply"
 	updatesPath := filepath.Join(dir, grokUpdatesFile)
@@ -994,10 +1187,8 @@ func TestLoadCachedGrokConversation_UsesNewestIdentityForRepeatedCompactedReply(
 		grokUpdateFixtureAt(sessionID, "prompt-a", 501, "user_message_chunk", map[string]any{"type": "text", "text": "first"}),
 		grokUpdateFixtureAt(sessionID, "prompt-a", 501, "agent_message_chunk", map[string]any{"type": "text", "text": "Done."}),
 	)
-	grokConversationCache.Lock()
-	delete(grokConversationCache.byPath, dir)
-	grokConversationCache.Unlock()
-	first, err := loadCachedGrokConversation(dir)
+	reader := NewProviderConversationReader()
+	first, err := reader.loadGrokConversation(dir)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1015,7 +1206,7 @@ func TestLoadCachedGrokConversation_UsesNewestIdentityForRepeatedCompactedReply(
 		map[string]any{"type": "assistant", "content": "Done."},
 	)
 
-	got, err := loadCachedGrokConversation(dir)
+	got, err := reader.loadGrokConversation(dir)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1157,8 +1348,8 @@ func grokEventsByKind(events []CodexConversationEvent, kind string) []CodexConve
 
 func assertNoGrokRunningProjection(t *testing.T, conversation CodexConversation) {
 	t.Helper()
-	if conversation.Active == nil || *conversation.Active {
-		t.Fatalf("conversation active after terminal event: %#v", conversation.Active)
+	if conversation.Activity != nil && conversation.Activity.Status == ProviderActivityRunning {
+		t.Fatalf("conversation Activity still running after terminal event: %#v", conversation.Activity)
 	}
 	for _, event := range conversation.Events {
 		if event.Partial || event.Status == "running" {
@@ -1276,13 +1467,13 @@ func TestParseGrokConversation_BuildsStructuredTimeline(t *testing.T) {
 	assertEvent(t, got.Events[1], "assistant_message", "assistant", "", "I'll inspect the existing Codex interface first.")
 }
 
-func TestLoadCodexConversationForAgent_GrokUnavailableWithoutSession(t *testing.T) {
-	got, err := LoadCodexConversationForAgent(classifier.Agent{
+func TestProviderConversationReaderGrokUnavailableWithoutSession(t *testing.T) {
+	got, err := NewProviderConversationReader().Load(classifier.Agent{
 		Command: "grok --no-alt-screen",
 		Cwd:     filepath.Join(t.TempDir(), "missing-grok-session"),
-	}, time.Now())
+	}, AgentProviderGrok, time.Now())
 	if err != nil {
-		t.Fatalf("LoadCodexConversationForAgent: %v", err)
+		t.Fatalf("ProviderConversationReader.Load: %v", err)
 	}
 	if got.Available || got.Reason != "session_not_found" {
 		t.Fatalf("conversation = %#v", got)
@@ -1375,7 +1566,7 @@ func TestGrokGoalSessionEventMix(t *testing.T) {
 	}
 }
 
-func TestLoadCodexConversationForAgent_GrokGoalSessionHasUniqueEventIDs(t *testing.T) {
+func TestProviderConversationReaderGrokGoalSessionHasUniqueEventIDs(t *testing.T) {
 	requireGrokRealSessionOptIn(t)
 	sessionDir := filepath.Join(
 		os.Getenv("HOME"),
@@ -1404,18 +1595,18 @@ func TestLoadCodexConversationForAgent_GrokGoalSessionHasUniqueEventIDs(t *testi
 	t.Logf("parsed %d unique grok events from goal session", len(got.Events))
 }
 
-func TestLoadCodexConversationForAgent_GrokRealSessionFixture(t *testing.T) {
+func TestProviderConversationReaderGrokRealSessionFixture(t *testing.T) {
 	sourceDir := findLocalGrokSessionDir(t)
 	fixtureHome, cwd := installGrokSessionFixture(t, sourceDir)
 
 	t.Setenv("HOME", fixtureHome)
-	got, err := LoadCodexConversationForAgent(classifier.Agent{
+	got, err := NewProviderConversationReader().Load(classifier.Agent{
 		Command:   "grok --no-alt-screen --permission-mode bypassPermissions",
 		Cwd:       cwd,
 		StartedAt: time.Now().Add(-time.Hour),
-	}, time.Now())
+	}, AgentProviderGrok, time.Now())
 	if err != nil {
-		t.Fatalf("LoadCodexConversationForAgent: %v", err)
+		t.Fatalf("ProviderConversationReader.Load: %v", err)
 	}
 	if !got.Available {
 		t.Fatalf("conversation unavailable: %#v", got)
@@ -1570,18 +1761,6 @@ func TestAgentExecutorInfersGrokProviderAndCapabilities(t *testing.T) {
 	}
 	if !executor.Capabilities.StructuredEvents || executor.Capabilities.NativeThreads {
 		t.Fatalf("capabilities = %+v", executor.Capabilities)
-	}
-}
-
-func TestIsAgentCommandRecognizesGrok(t *testing.T) {
-	if !IsAgentCommand("grok --no-alt-screen --permission-mode bypassPermissions") {
-		t.Fatal("expected grok command recognition")
-	}
-}
-
-func TestIsNativeAgentSourceIncludesGrok(t *testing.T) {
-	if !IsNativeAgentSource("grok") {
-		t.Fatal("expected grok native source")
 	}
 }
 

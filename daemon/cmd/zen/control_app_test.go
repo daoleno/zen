@@ -848,20 +848,8 @@ func TestControlAppBrainContextReturnsStructuredContext(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(store.WorkspacePath(), "current.md"), []byte("# Current Brain Context\n\n## Active Objective\n\nShip context.\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.AppendChatMessage(brain.ChatMessage{
-		ID:        "msg-user",
-		ThreadID:  "thread-main",
-		SessionID: "host-a",
-		Role:      "user",
-		Body:      "remember context",
-		CreatedAt: time.Date(2026, 6, 2, 10, 0, 0, 0, time.UTC),
-	}); err != nil {
-		t.Fatal(err)
-	}
 	if err := store.SetChatState(brain.ChatState{
-		ThreadID:   "thread-main",
-		SessionIDs: []string{"host-a"},
-		UpdatedAt:  time.Date(2026, 6, 2, 10, 1, 0, 0, time.UTC),
+		ThreadID: "thread-main",
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -886,9 +874,6 @@ func TestControlAppBrainContextReturnsStructuredContext(t *testing.T) {
 	}
 	if context.ThreadID != "thread-main" || !strings.Contains(context.Current, "Ship context.") {
 		t.Fatalf("context = %#v", context)
-	}
-	if len(context.RecentMessages) != 1 || context.RecentMessages[0].Body != "remember context" {
-		t.Fatalf("recent messages = %#v", context.RecentMessages)
 	}
 	if len(context.Playbooks) != 5 {
 		t.Fatalf("playbooks = %#v", context.Playbooks)
@@ -952,11 +937,12 @@ func TestControlAppBrainGCReturnsHousekeepingReport(t *testing.T) {
 	if !ok {
 		t.Fatalf("housekeeping type = %T", resp.Housekeeping)
 	}
-	if !report.BackfilledWorkspace || report.CurrentPath != "current.md" {
+	if report.CurrentPath != "current.md" || len(report.ChangedPaths) != 1 ||
+		report.ChangedPaths[0] != "current.md" {
 		t.Fatalf("housekeeping report = %#v", report)
 	}
 	if _, err := os.Stat(filepath.Join(store.WorkspacePath(), "current.md")); err != nil {
-		t.Fatalf("brain gc did not backfill current.md: %v", err)
+		t.Fatalf("brain gc did not repair current.md: %v", err)
 	}
 }
 

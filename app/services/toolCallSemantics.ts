@@ -470,7 +470,7 @@ function summarizeActions(
   if (allCommandLike && children.length > 1) {
     label = "Run";
   } else if (uniqueKinds.length === 1) {
-    label = pluralLabel(uniqueKinds[0], children.length, status);
+    label = pluralLabel(uniqueKinds[0], children.length);
   } else if (children.length > 1) {
     label = "Use";
   }
@@ -508,7 +508,7 @@ function action(
   status: SemanticActionStatus,
   providerToolId?: string,
 ): SemanticAction {
-  const label = defaultLabel(kind, status);
+  const label = defaultLabel(kind);
   return {
     kind,
     label,
@@ -518,7 +518,7 @@ function action(
   };
 }
 
-function defaultLabel(kind: SemanticActionKind, status: SemanticActionStatus): string {
+function defaultLabel(kind: SemanticActionKind): string {
   switch (kind) {
     case "read_files":
       return "Read";
@@ -544,10 +544,9 @@ function defaultLabel(kind: SemanticActionKind, status: SemanticActionStatus): s
 function pluralLabel(
   kind: SemanticActionKind,
   count: number,
-  status: SemanticActionStatus,
 ): string {
   if (count <= 1) {
-    return defaultLabel(kind, status);
+    return defaultLabel(kind);
   }
   switch (kind) {
     case "run_command":

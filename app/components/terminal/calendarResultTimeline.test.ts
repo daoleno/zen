@@ -1,7 +1,9 @@
 import { describe, expect, test } from "bun:test";
-import type { CodexConversationEvent } from "../../services/codexConversation";
+import {
+  isProviderActivityRunning,
+  type CodexConversationEvent,
+} from "../../services/codexConversation";
 import { buildZenTimeline } from "./CodexTimelineModel";
-import { isCodexRequestRunning } from "./CodexChatControllerModel";
 
 describe("Calendar result timeline", () => {
   const failedResult: CodexConversationEvent = {
@@ -41,15 +43,6 @@ describe("Calendar result timeline", () => {
   });
 
   test("a terminal Calendar result cannot keep the composer in Working state", () => {
-    expect(
-      isCodexRequestRunning({
-        conversation: {
-          available: true,
-          active: false,
-          events: [failedResult],
-        },
-        events: [failedResult],
-      }),
-    ).toBe(false);
+    expect(isProviderActivityRunning(undefined)).toBe(false);
   });
 });

@@ -188,8 +188,8 @@ func runDaemon(args []string, stderr io.Writer) error {
 	}
 
 	pusher := push.New()
-	launcher := work.NewLauncher(&work.WatcherRegistry{W: w}, work.TmuxRunner{}, execs)
-	srv := server.New(authManager, w, pusher, sc, workStore, launcher, execs, brainService)
+	launcher := work.NewLauncher(work.TmuxRunner{}, execs)
+	srv := server.New(authManager, w, pusher, sc, workStore, execs, brainService)
 	calendarScheduler := calendar.NewScheduler(calendarStore, &calendar.WorkRunner{Store: workStore, Launcher: launcher, Watcher: w, Brain: brainService})
 	controlHandler.calendarScheduler = calendarScheduler
 	srv.SetCalendar(calendarStore, calendarScheduler)
@@ -451,7 +451,7 @@ func runCalendarWrite(update bool, args []string, stderr io.Writer) error {
 	fs.StringVar(&notes, "notes", "", "notes")
 	fs.StringVar(&instruction, "instruction", "", "scheduled action instruction")
 	fs.StringVar(&cwd, "cwd", "", "scheduled action working directory")
-	fs.StringVar(&sourceThread, "source-thread", "", "required for scheduled_action: source_thread_id for canonical Brain result delivery")
+	fs.StringVar(&sourceThread, "source-thread", "", "required for scheduled_action: source_thread_id for canonical Calendar result projection")
 	fs.Int64Var(&revision, "revision", 0, "expected revision")
 	if err := fs.Parse(args); err != nil {
 		return err
@@ -535,7 +535,7 @@ func printBrainUsage(w io.Writer) {
 	fmt.Fprintln(w, "  workspace  Print the Brain workspace path")
 	fmt.Fprintln(w, "  context    Print structured Brain context")
 	fmt.Fprintln(w, "  playbooks  Print the Brain playbook catalog")
-	fmt.Fprintln(w, "  gc         Backfill Brain workspace files and print housekeeping status")
+	fmt.Fprintln(w, "  gc         Reconcile product-owned Brain workspace blocks while preserving user content")
 	fmt.Fprintln(w, "  executors  List configured Brain host executors")
 	fmt.Fprintln(w, "  use        Switch the Brain host executor")
 	fmt.Fprintln(w, "")

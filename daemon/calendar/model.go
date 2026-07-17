@@ -40,8 +40,8 @@ var (
 	ErrNotFound = errors.New("calendar item not found")
 	ErrConflict = errors.New("calendar item revision conflict")
 	ErrClaimed  = errors.New("calendar occurrence already claimed")
-	// ErrInvalidDeliveryTarget marks a permanent Brain delivery failure. The
-	// occurrence must be finalized visibly instead of retrying forever.
+	// ErrInvalidDeliveryTarget marks a captured Brain thread that is not present
+	// in the thread registry. Validation happens before Work is launched.
 	ErrInvalidDeliveryTarget = errors.New("invalid Brain delivery target")
 )
 
@@ -75,6 +75,8 @@ type Item struct {
 
 type Run struct {
 	ID             string     `json:"id"`
+	Title          string     `json:"title,omitempty"`
+	SourceThreadID string     `json:"source_thread_id,omitempty"`
 	ScheduledFor   time.Time  `json:"scheduled_for"`
 	StartedAt      time.Time  `json:"started_at"`
 	FinishedAt     *time.Time `json:"finished_at,omitempty"`

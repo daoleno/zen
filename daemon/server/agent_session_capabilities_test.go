@@ -35,7 +35,7 @@ func TestAgentSessionWireUsesConfiguredExecutorCapabilityForGenericCommand(t *te
 	if provider != work.AgentProviderGrok {
 		t.Fatalf("configured provider = %q, want grok", provider)
 	}
-	conversation, err := work.LoadCodexConversationForProvider(*agent, provider, time.Now())
+	conversation, err := work.NewProviderConversationReader().Load(*agent, provider, time.Now())
 	if err != nil {
 		t.Fatal(err)
 	}

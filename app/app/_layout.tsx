@@ -1,7 +1,6 @@
 import { memo, useCallback, useEffect, useRef, useState } from "react";
 import {
   AppState,
-  AppStateStatus,
   Platform,
   Pressable,
 } from "react-native";
@@ -23,20 +22,21 @@ import { GestureHandlerRootView } from "react-native-gesture-handler";
 import { KeyboardProvider } from "react-native-keyboard-controller";
 import { SafeAreaProvider } from "react-native-safe-area-context";
 import {
-  Agent,
   AgentProvider,
   useAgentDispatch,
-  useAgentList,
   useAgentServerConnections,
 } from "../store/agents";
-import { BrainProvider, useBrain, useBrainDispatch } from "../store/brain";
+import { BrainProvider, useBrainDispatch } from "../store/brain";
 import { WorkProvider, useWorkDispatch } from "../store/work";
 import { CalendarProvider, useCalendarDispatch } from "../store/calendar";
 import { syncCalendarNotifications } from "../services/calendarNotifications";
 import { useAppTheme } from "../constants/tokens";
 import { ThemeProvider } from "../theme";
 import { wsClient } from "../services/websocket";
-import { decideDisconnectLifecycle } from "../services/connectionLifecycle";
+import {
+  createConnectedReadRefreshHandler,
+  decideDisconnectLifecycle,
+} from "../services/connectionLifecycle";
 import {
   getDisabledServerIds,
   getServers,
@@ -51,17 +51,16 @@ import {
 import { consumeUnfinishedNativeTerminalBreadcrumb } from "../services/nativeTerminalDiagnosticsObserver";
 import { measureServerLatency } from "../services/serverLatency";
 import {
+  foregroundNotificationPresentation,
+  resolveNotificationDestination,
+} from "../services/notificationRouting";
+import {
   screenshotDemoEnabled,
   shouldUseScreenshotDemoRuntime,
 } from "../services/screenshotDemo";
 
 Notifications.setNotificationHandler({
-  handleNotification: async () => ({
-    shouldPlaySound: true,
-    shouldSetBadge: false,
-    shouldShowBanner: true,
-    shouldShowList: true,
-  }),
+  handleNotification: foregroundNotificationPresentation,
 });
 
 async function registerForPushNotificationsAsync(): Promise<
@@ -107,105 +106,6 @@ async function registerForPushNotificationsAsync(): Promise<
     console.log("Failed to get push token:", e);
     return;
   }
-}
-
-function buildNotificationContent(
-  agent: Agent,
-): Notifications.NotificationContentInput | null {
-  if (!agent.delegated) {
-    return null;
-  }
-
-  const label = formatNotificationAgentLabel(agent);
-  const summary = normalizeNotificationSummary(agent.summary);
-
-  switch (agent.status) {
-    case "blocked":
-      return {
-        title: label ? `${label} needs input` : "Agent needs input",
-        body: summary || "Waiting for your response.",
-        data: {
-          agent_id: agent.id,
-          server_id: agent.serverId,
-          screen: "terminal",
-        },
-        sound: "default",
-      };
-    case "failed":
-      return {
-        title: label ? `${label} failed` : "Agent failed",
-        body: summary || "Check the terminal for details.",
-        data: {
-          agent_id: agent.id,
-          server_id: agent.serverId,
-          screen: "terminal",
-        },
-        sound: "default",
-      };
-    case "done":
-      return {
-        title: label ? `${label} finished` : "Agent finished",
-        body: summary || "Session completed.",
-        data: {
-          agent_id: agent.id,
-          server_id: agent.serverId,
-          screen: "terminal",
-        },
-        sound: "default",
-      };
-    default:
-      return null;
-  }
-}
-
-function formatNotificationAgentLabel(agent: Agent): string {
-  const raw = agent.project?.trim() || agent.name?.trim() || agent.id;
-  if (!raw) {
-    return "";
-  }
-
-  const withoutSessionSuffix = raw.replace(/\s+\([^)]+\)\s*$/, "");
-  const parts = withoutSessionSuffix.split(/[\\/]/).filter(Boolean);
-  return parts[parts.length - 1] || withoutSessionSuffix;
-}
-
-function normalizeNotificationSummary(summary: string | undefined): string {
-  if (!summary) {
-    return "";
-  }
-
-  const collapsed = summary
-    .replace(/^\d{4}[/-]\d{2}[/-]\d{2}[ T]\d{2}:\d{2}:\d{2}\s*/, "")
-    .replace(/\s+/g, " ")
-    .trim();
-
-  if (collapsed.length <= 110) {
-    return collapsed;
-  }
-
-  return `${collapsed.slice(0, 107)}...`;
-}
-
-function shouldNotifyForAgentTransition(
-  previousState: Agent["status"] | undefined,
-  agent: Agent,
-): boolean {
-  if (!previousState || previousState === agent.status || !agent.delegated) {
-    return false;
-  }
-
-  if (agent.status === "blocked" || agent.status === "failed") {
-    return true;
-  }
-
-  return previousState === "running" && agent.status === "done";
-}
-
-function localNotificationSignalKey(agent: Agent): string | null {
-  if (agent.status !== "blocked" && agent.status !== "failed" && agent.status !== "done") {
-    return null;
-  }
-  return `${agent.key}:${agent.status}`;
 }
 
 function AppRuntime() {
@@ -394,11 +294,6 @@ const ConnectionLifecycle = memo(function ConnectionLifecycle({
         serverName: data.serverName,
         serverUrl: data.serverUrl,
         workItems: data.work_items || [],
-        executors: data.executors || [],
-        digestProvider:
-          typeof data.work_digest_provider === "string"
-            ? data.work_digest_provider
-            : undefined,
       });
     const onWorkItemChanged = (data: any) => {
       if (!data.work_item) {
@@ -418,25 +313,6 @@ const ConnectionLifecycle = memo(function ConnectionLifecycle({
         serverId: data.serverId,
         id: data.id,
         path: data.path,
-      });
-    const onExecutors = (data: any) =>
-      workDispatch({
-        type: "EXECUTORS_LOADED",
-        serverId: data.serverId,
-        executors: data.executors || [],
-        digestProvider:
-          typeof data.work_digest_provider === "string"
-            ? data.work_digest_provider
-            : undefined,
-      });
-    const onWorkDigestProvider = (data: any) =>
-      workDispatch({
-        type: "WORK_DIGEST_PROVIDER_SET",
-        serverId: data.serverId,
-        provider:
-          typeof data.work_digest_provider === "string"
-            ? data.work_digest_provider
-            : "",
       });
     const onBrainSnapshot = (data: any) =>
       brainDispatch({
@@ -471,13 +347,7 @@ const ConnectionLifecycle = memo(function ConnectionLifecycle({
       wsClient.listCalendarItems(data.serverId);
       wsClient.requestBrainSnapshot(data.serverId);
     };
-    const onConnectedFetchWork = (data: any) => {
-      wsClient.listWorkItems(data.serverId);
-      wsClient.listExecutors(data.serverId);
-      wsClient.listAgentSessions(data.serverId);
-      wsClient.requestBrainSnapshot(data.serverId);
-      wsClient.listCalendarItems(data.serverId);
-    };
+    const onConnectedFetchWork = createConnectedReadRefreshHandler(wsClient);
 
     wsClient.on("agent_session_list", onAgentSessionList);
     wsClient.on("agent_session_created", onAgentSessionUpsert);
@@ -490,8 +360,6 @@ const ConnectionLifecycle = memo(function ConnectionLifecycle({
     wsClient.on("work_items_snapshot", onWorkItemsSnapshot);
     wsClient.on("work_item_changed", onWorkItemChanged);
     wsClient.on("work_item_deleted", onWorkItemDeleted);
-    wsClient.on("executor_list", onExecutors);
-    wsClient.on("work_digest_provider", onWorkDigestProvider);
     wsClient.on("brain_snapshot", onBrainSnapshot);
     wsClient.on("calendar_items_snapshot", onCalendarSnapshot);
     wsClient.on("calendar_item_changed", onCalendarChanged);
@@ -555,8 +423,6 @@ const ConnectionLifecycle = memo(function ConnectionLifecycle({
       wsClient.off("work_items_snapshot", onWorkItemsSnapshot);
       wsClient.off("work_item_changed", onWorkItemChanged);
       wsClient.off("work_item_deleted", onWorkItemDeleted);
-      wsClient.off("executor_list", onExecutors);
-      wsClient.off("work_digest_provider", onWorkDigestProvider);
       wsClient.off("brain_snapshot", onBrainSnapshot);
       wsClient.off("calendar_items_snapshot", onCalendarSnapshot);
       wsClient.off("calendar_item_changed", onCalendarChanged);
@@ -652,20 +518,12 @@ const LatencySampler = memo(function LatencySampler() {
 
 const NotificationObserver = memo(function NotificationObserver() {
   const router = useRouter();
-  const segments = useSegments();
-  const agents = useAgentList();
-  const { state: brainState } = useBrain();
   const routerRef = useRef(router);
   const notificationListener = useRef<Notifications.EventSubscription | null>(
     null,
   );
   const responseListener = useRef<Notifications.EventSubscription | null>(null);
-  const appStateRef = useRef<AppStateStatus>(AppState.currentState);
-  const notificationsEnabledRef = useRef(false);
-  const previousAgentStatesRef = useRef(new Map<string, Agent["status"]>());
-  const localNotificationSignalsRef = useRef(new Set<string>());
-  const initializedBrainResultServersRef = useRef(new Set<string>());
-  const isTerminalRouteActive = segments[0] === "terminal";
+  const appStateRef = useRef(AppState.currentState);
 
   useEffect(() => {
     routerRef.current = router;
@@ -690,93 +548,6 @@ const NotificationObserver = memo(function NotificationObserver() {
     };
   }, []);
 
-  useEffect(() => {
-    const nextAgentStates = new Map(
-      agents.map((agent) => [agent.key, agent.status]),
-    );
-    const previousAgentStates = previousAgentStatesRef.current;
-
-    if (previousAgentStates.size === 0) {
-      previousAgentStatesRef.current = nextAgentStates;
-      return;
-    }
-
-    if (!notificationsEnabledRef.current || appStateRef.current !== "active") {
-      previousAgentStatesRef.current = nextAgentStates;
-      return;
-    }
-
-    // Suppress all local notifications while user is in any terminal session.
-    if (isTerminalRouteActive) {
-      previousAgentStatesRef.current = nextAgentStates;
-      return;
-    }
-
-    for (const agent of agents) {
-      const previousState = previousAgentStates.get(agent.key);
-      if (!shouldNotifyForAgentTransition(previousState, agent)) {
-        continue;
-      }
-
-      const signalKey = localNotificationSignalKey(agent);
-      if (!signalKey || localNotificationSignalsRef.current.has(signalKey)) {
-        continue;
-      }
-
-      const content = buildNotificationContent(agent);
-      if (!content) {
-        continue;
-      }
-      localNotificationSignalsRef.current.add(signalKey);
-
-      void Notifications.scheduleNotificationAsync({
-        content,
-        trigger: null,
-      });
-    }
-
-    previousAgentStatesRef.current = nextAgentStates;
-  }, [agents, isTerminalRouteActive]);
-
-  useEffect(() => {
-    for (const [serverId, server] of Object.entries(brainState.byServer)) {
-      const results = server.scheduled_results ?? [];
-      if (!initializedBrainResultServersRef.current.has(serverId)) {
-        initializedBrainResultServersRef.current.add(serverId);
-        for (const result of results) {
-          localNotificationSignalsRef.current.add(
-            `brain:${serverId}:${result.id}`,
-          );
-        }
-        continue;
-      }
-      for (const result of results) {
-        const signal = `brain:${serverId}:${result.id}`;
-        if (localNotificationSignalsRef.current.has(signal)) continue;
-        localNotificationSignalsRef.current.add(signal);
-        if (!notificationsEnabledRef.current) continue;
-        const failed = result.status === "failed";
-        void Notifications.scheduleNotificationAsync({
-          content: {
-            title: failed
-              ? `${result.title || "Scheduled Work"} failed`
-              : `${result.title || "Scheduled Work"} is ready`,
-            body: failed
-              ? "Open Brain for the failure outcome."
-              : "Open Brain for the scheduled result.",
-            data: {
-              screen: "brain",
-              server_id: serverId,
-              brain_thread_id: result.thread_id,
-              brain_message_id: result.id,
-            },
-          },
-          trigger: null,
-        }).catch(() => {});
-      }
-    }
-  }, [brainState.byServer]);
-
   // Register permissions and push token.
   useEffect(() => {
     let cancelled = false;
@@ -787,9 +558,6 @@ const NotificationObserver = memo(function NotificationObserver() {
       if (cancelled) {
         return;
       }
-
-      const { status } = await Notifications.getPermissionsAsync();
-      notificationsEnabledRef.current = status === "granted";
 
       if (!token) {
         return;
@@ -826,56 +594,38 @@ const NotificationObserver = memo(function NotificationObserver() {
     responseListener.current =
       Notifications.addNotificationResponseReceivedListener((response) => {
         const data = response.notification.request.content.data;
-        const agentId =
-          typeof data?.agent_id === "string" ? data.agent_id : null;
-        const serverId =
-          typeof data?.server_id === "string" ? data.server_id : null;
-
-        if (agentId && serverId) {
-          routerRef.current.push({
-            pathname: "/terminal/[id]",
-            params: { id: agentId, serverId },
-          });
-          return;
-        }
-        if (data?.screen === "inbox") {
-          routerRef.current.push("/list");
-          return;
-        }
-        if (data?.screen === "calendar") {
-          routerRef.current.push({
-            pathname: "/calendar",
-            params: {
-              id:
-                typeof data.calendar_id === "string"
-                  ? data.calendar_id
-                  : undefined,
-              serverId:
-                typeof data.server_id === "string"
-                  ? data.server_id
-                  : undefined,
-            },
-          });
-          return;
-        }
-        if (data?.screen === "brain") {
-          routerRef.current.push({
-            pathname: "/",
-            params: {
-              brainThreadId:
-                typeof data.brain_thread_id === "string"
-                  ? data.brain_thread_id
-                  : undefined,
-              brainMessageId:
-                typeof data.brain_message_id === "string"
-                  ? data.brain_message_id
-                  : undefined,
-              serverId:
-                typeof data.server_id === "string"
-                  ? data.server_id
-                  : undefined,
-            },
-          });
+        const destination = resolveNotificationDestination(data);
+        switch (destination?.kind) {
+          case "terminal":
+            routerRef.current.push({
+              pathname: "/terminal/[id]",
+              params: {
+                id: destination.agentId,
+                serverId: destination.serverId,
+              },
+            });
+            break;
+          case "inbox":
+            routerRef.current.push("/list");
+            break;
+          case "calendar":
+            routerRef.current.push({
+              pathname: "/calendar",
+              params: {
+                id: destination.calendarId,
+                serverId: destination.serverId,
+              },
+            });
+            break;
+          case "brain":
+            routerRef.current.push({
+              pathname: "/",
+              params: {
+                brainThreadId: destination.brainThreadId,
+                brainMessageId: destination.brainMessageId,
+                serverId: destination.serverId,
+              },
+            });
         }
       });
 
@@ -915,7 +665,6 @@ const AppNavigator = memo(function AppNavigator({
       }}
     >
       <Stack.Screen name="(primary)" options={{ headerShown: false }} />
-      <Stack.Screen name="work" options={{ headerShown: false }} />
       <Stack.Screen
         name="calendar"
         options={{

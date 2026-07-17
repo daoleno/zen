@@ -10,7 +10,6 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/daoleno/zen/daemon/classifier"
@@ -25,16 +24,9 @@ const (
 	grokSummaryFile           = "summary.json"
 )
 
-type cachedGrokConversation struct {
-	stamp        grokConversationStamp
-	conversation CodexConversation
-	updates      *grokUpdateTracker
-}
-
 type grokUpdateTracker struct {
 	builder           *grokConversationBuilder
 	identities        []CodexConversationEvent
-	providerTurns     []CodexConversationTurn
 	terminalTools     map[string]CodexConversationEvent
 	terminalToolOrder []string
 	offset            int64
@@ -48,13 +40,6 @@ type grokConversationStamp struct {
 	updatesModTime time.Time
 }
 
-var grokConversationCache = struct {
-	sync.Mutex
-	byPath map[string]cachedGrokConversation
-}{
-	byPath: map[string]cachedGrokConversation{},
-}
-
 type grokSessionCandidate struct {
 	ID        string
 	CWD       string
@@ -64,8 +49,9 @@ type grokSessionCandidate struct {
 	Active    bool
 }
 
-func loadGrokConversationForAgent(agent classifier.Agent, now time.Time) (CodexConversation, error) {
+func (r *ProviderConversationReader) loadGrokConversationForAgent(agent classifier.Agent, now time.Time) (CodexConversation, error) {
 	if strings.TrimSpace(agent.Cwd) == "" {
+		r.resetSource()
 		return CodexConversation{
 			Available: false,
 			Reason:    "missing_cwd",
@@ -75,9 +61,11 @@ func loadGrokConversationForAgent(agent classifier.Agent, now time.Time) (CodexC
 
 	candidate, ok, err := findGrokSession(agent, now)
 	if err != nil {
+		r.resetSource()
 		return CodexConversation{}, err
 	}
 	if !ok {
+		r.resetSource()
 		return CodexConversation{
 			Available: false,
 			Reason:    "session_not_found",
@@ -85,7 +73,7 @@ func loadGrokConversationForAgent(agent classifier.Agent, now time.Time) (CodexC
 		}, nil
 	}
 
-	conversation, err := loadCachedGrokConversation(candidate.Dir)
+	conversation, err := r.loadGrokConversation(candidate.Dir)
 	if err != nil {
 		return CodexConversation{}, err
 	}
@@ -101,25 +89,39 @@ func loadGrokConversationForAgent(agent classifier.Agent, now time.Time) (CodexC
 	return conversation, nil
 }
 
-func loadCachedGrokConversation(sessionDir string) (CodexConversation, error) {
-	stamp, err := readGrokConversationStamp(sessionDir)
+func (r *ProviderConversationReader) loadGrokConversation(sessionDir string) (CodexConversation, error) {
+	stamp, historyInfo, updatesInfo, err := readGrokConversationStamp(sessionDir)
 	if err != nil {
+		r.resetSource()
 		return CodexConversation{}, err
 	}
 
-	grokConversationCache.Lock()
-	defer grokConversationCache.Unlock()
-	if cached, ok := grokConversationCache.byPath[sessionDir]; ok &&
-		cached.stamp == stamp {
-		return cached.conversation, nil
+	previous := r.source
+	sameSource := previous.provider == AgentProviderGrok &&
+		previous.path == sessionDir &&
+		sameProviderSourceFile(previous.fileInfo, historyInfo)
+	sameUpdatesFile := sameProviderSourceFile(previous.grokUpdatesInfo, updatesInfo)
+	if sameSource && sameUpdatesFile && previous.grokStamp == stamp {
+		return previous.conversation, nil
 	}
 
-	cached := grokConversationCache.byPath[sessionDir]
-	tracker := cached.updates
-	if tracker == nil || stamp.updatesSize < tracker.offset {
-		tracker, err = newGrokUpdateTracker(sessionDir)
-	} else if stamp.updatesSize > tracker.offset {
+	// A source/stamp change cannot expose the previous conversation while the
+	// current native facts are being rebuilt.
+	r.resetSource()
+	tracker := previous.grokUpdates
+	updatesUnchanged := sameSource && sameUpdatesFile &&
+		previous.grokStamp.updatesSize == stamp.updatesSize &&
+		previous.grokStamp.updatesModTime.Equal(stamp.updatesModTime)
+	provenAppend := sameSource && sameUpdatesFile && tracker != nil &&
+		stamp.updatesSize > previous.grokStamp.updatesSize &&
+		tracker.offset <= previous.grokStamp.updatesSize
+	switch {
+	case updatesUnchanged && tracker != nil:
+		// History changed, but the already-parsed update stream did not.
+	case provenAppend:
 		err = tracker.consumeFrom(filepath.Join(sessionDir, grokUpdatesFile), stamp.updatesSize)
+	default:
+		tracker, err = newGrokUpdateTracker(sessionDir)
 	}
 	if err != nil {
 		return CodexConversation{}, err
@@ -129,29 +131,48 @@ func loadCachedGrokConversation(sessionDir string) (CodexConversation, error) {
 		return CodexConversation{}, err
 	}
 
-	grokConversationCache.byPath[sessionDir] = cachedGrokConversation{
-		stamp:        stamp,
-		conversation: conversation,
-		updates:      tracker,
+	afterStamp, afterHistoryInfo, afterUpdatesInfo, err := readGrokConversationStamp(sessionDir)
+	if err != nil {
+		return CodexConversation{}, err
+	}
+	if afterStamp != stamp ||
+		!sameProviderSourceFile(historyInfo, afterHistoryInfo) ||
+		!sameProviderSourceFile(updatesInfo, afterUpdatesInfo) {
+		// As with the file readers, do not retain a value whose source changed
+		// while it was parsed. The next poll rebuilds the selected current state.
+		return conversation, nil
+	}
+	r.source = providerConversationSource{
+		provider:        AgentProviderGrok,
+		path:            sessionDir,
+		size:            afterHistoryInfo.Size(),
+		modTime:         afterHistoryInfo.ModTime(),
+		fileInfo:        afterHistoryInfo,
+		conversation:    conversation,
+		grokStamp:       afterStamp,
+		grokUpdatesInfo: afterUpdatesInfo,
+		grokUpdates:     tracker,
 	}
 	return conversation, nil
 }
 
-func readGrokConversationStamp(sessionDir string) (grokConversationStamp, error) {
+func readGrokConversationStamp(sessionDir string) (grokConversationStamp, os.FileInfo, os.FileInfo, error) {
 	var stamp grokConversationStamp
 	history, err := os.Stat(filepath.Join(sessionDir, grokChatHistoryFile))
 	if err != nil {
-		return stamp, err
+		return stamp, nil, nil, err
 	}
 	stamp.historySize = history.Size()
 	stamp.historyModTime = history.ModTime()
+	var updatesInfo os.FileInfo
 	if updates, err := os.Stat(filepath.Join(sessionDir, grokUpdatesFile)); err == nil {
 		stamp.updatesSize = updates.Size()
 		stamp.updatesModTime = updates.ModTime()
+		updatesInfo = updates
 	} else if !os.IsNotExist(err) {
-		return stamp, err
+		return stamp, nil, nil, err
 	}
-	return stamp, nil
+	return stamp, history, updatesInfo, nil
 }
 
 func findGrokSession(agent classifier.Agent, now time.Time) (grokSessionCandidate, bool, error) {
@@ -440,19 +461,12 @@ func buildGrokConversation(sessionDir string, tracker *grokUpdateTracker) (Codex
 		builder.markCanonicalEvents()
 		builder.mergeLiveEvents(tracker.terminalToolEvents())
 		builder.mergeLiveEvents(tracker.builder.events)
-		builder.lifecycleSeen = tracker.builder.lifecycleSeen
-		builder.taskActive = tracker.builder.taskActive
-		builder.turnLifecycle.adopt(&tracker.builder.turnLifecycle)
+		builder.nativeStreamSeen = tracker.builder.nativeStreamSeen
+		builder.nativeStreamSettled = tracker.builder.nativeStreamSettled
+		builder.activityLifecycle.adopt(&tracker.builder.activityLifecycle)
 	}
 
-	conversation := builder.conversation()
-	if tracker != nil {
-		conversation.ProviderTurns = mergeGrokProviderTurns(
-			tracker.providerTurns,
-			conversation.ProviderTurns,
-		)
-	}
-	return conversation, nil
+	return builder.conversation(), nil
 }
 
 func consumeGrokJSONL(path string, consume func(int, []byte)) error {
@@ -536,9 +550,8 @@ func (t *grokUpdateTracker) consumeFrom(path string, limit int64) error {
 				return nil
 			}
 			if grokSessionUpdateKind(trimmed) == "user_message_chunk" &&
-				t.builder.lifecycleSeen && !t.builder.taskActive {
+				t.builder.nativeStreamSeen && t.builder.nativeStreamSettled {
 				t.rememberIdentities(t.builder.events)
-				t.rememberProviderTurns(t.builder.turnLifecycle.snapshots())
 				sourceID := t.builder.sourceID
 				sessionID := t.builder.sessionID
 				cwd := t.builder.cwd
@@ -571,44 +584,6 @@ func (t *grokUpdateTracker) consumeFrom(path string, limit int64) error {
 			return readErr
 		}
 	}
-}
-
-func (t *grokUpdateTracker) rememberProviderTurns(turns []CodexConversationTurn) {
-	if t == nil || len(turns) == 0 {
-		return
-	}
-	t.providerTurns = mergeGrokProviderTurns(t.providerTurns, turns)
-	if len(t.providerTurns) > maxCodexConversationTurnHistory {
-		t.providerTurns = append(
-			[]CodexConversationTurn(nil),
-			t.providerTurns[len(t.providerTurns)-maxCodexConversationTurnHistory:]...,
-		)
-	}
-}
-
-func mergeGrokProviderTurns(groups ...[]CodexConversationTurn) []CodexConversationTurn {
-	turns := make([]CodexConversationTurn, 0)
-	seen := make(map[string]struct{})
-	for _, group := range groups {
-		for _, turn := range group {
-			key := strings.Join(
-				[]string{turn.ID, turn.Status, turn.StartedAt, turn.SettledAt},
-				"\x00",
-			)
-			if _, exists := seen[key]; exists {
-				continue
-			}
-			seen[key] = struct{}{}
-			turns = append(turns, turn)
-		}
-	}
-	if len(turns) > maxCodexConversationTurnHistory {
-		turns = append(
-			[]CodexConversationTurn(nil),
-			turns[len(turns)-maxCodexConversationTurnHistory:]...,
-		)
-	}
-	return turns
 }
 
 func (t *grokUpdateTracker) rememberIdentities(events []CodexConversationEvent) {
@@ -735,10 +710,9 @@ type grokConversationBuilder struct {
 	canonicalIDs         map[string]struct{}
 	backgroundCallByTask map[string]string
 	terminalToolCalls    map[string]struct{}
-	taskActive           bool
-	lifecycleSeen        bool
-	turnSettled          bool
-	turnLifecycle        codexConversationTurnLifecycle
+	nativeStreamSeen     bool
+	nativeStreamSettled  bool
+	activityLifecycle    providerActivityLifecycle
 	nextEventID          int
 }
 
@@ -869,21 +843,16 @@ func (b *grokConversationBuilder) consumeUpdatesLine(lineNumber int, line []byte
 	case "user_message_chunk":
 		// This is a lifecycle signal only. The canonical user message comes from
 		// chat_history; exposing this record would leak prompt wrappers/echoes.
-		b.lifecycleSeen = true
-		b.startTurn(promptID, streamStart, envelope.Params.Meta.StreamStartMS, timestamp, lineNumber)
-		b.taskActive = b.turnLifecycle.running()
-		b.turnSettled = !b.taskActive
+		b.openNativeStream()
+		b.startActivity(promptID, streamStart, envelope.Params.Meta.StreamStartMS, timestamp, lineNumber)
 	case "agent_message_chunk":
 		b.upsertStreamText(promptID, streamStart, "assistant", timestamp, grokRawChunkText(update.Content))
 	case "agent_thought_chunk":
 		b.upsertStreamText(promptID, streamStart, "reasoning", timestamp, grokRawChunkText(update.Content))
 	case "tool_call", "tool_call_update":
-		b.lifecycleSeen = true
+		b.nativeStreamSeen = true
 		// A completed tool is still inside the active turn. Only the provider's
 		// turn_completed marker settles the composer state.
-		if !b.turnSettled {
-			b.taskActive = true
-		}
 		callID := strings.TrimSpace(update.ToolCallID)
 		currentName := ""
 		currentStatus := ""
@@ -903,7 +872,7 @@ func (b *grokConversationBuilder) consumeUpdatesLine(lineNumber int, line []byte
 			currentStatus,
 			"running",
 		)
-		if b.turnSettled && status == "running" {
+		if !b.nativeStreamOpen() && status == "running" {
 			status = firstNonEmpty(grokTerminalToolStatus(currentStatus), "done")
 		}
 		name := firstNonEmpty(cleanConversationText(update.Title), currentName, cleanConversationText(update.Kind), "tool")
@@ -914,11 +883,11 @@ func (b *grokConversationBuilder) consumeUpdatesLine(lineNumber int, line []byte
 		b.updateToolStatus(update.ToolCallID, status)
 		if index, exists := b.eventByCall[callID]; exists && index >= 0 && index < len(b.events) {
 			_, canonical := b.canonicalIDs[b.events[index].ID]
-			b.events[index].Partial = !canonical && !b.turnSettled && b.events[index].Status == "running"
+			b.events[index].Partial = !canonical && b.nativeStreamOpen() && b.events[index].Status == "running"
 			b.events[index].Transient = !canonical
 		}
 	case "task_backgrounded":
-		b.lifecycleSeen = true
+		b.nativeStreamSeen = true
 		taskID := strings.TrimSpace(update.TaskID)
 		callID := strings.TrimSpace(update.LegacyToolCallID)
 		if taskID != "" && callID != "" {
@@ -934,16 +903,14 @@ func (b *grokConversationBuilder) consumeUpdatesLine(lineNumber int, line []byte
 		}
 		status := "running"
 		partial := true
-		if b.turnSettled {
+		if !b.nativeStreamOpen() {
 			status = "done"
 			partial = false
-		} else {
-			b.taskActive = true
 		}
 		b.addToolStart(lineNumber, timestamp, callID, name, sanitizeGrokToolOutput(update.Command), status)
 		b.setToolProjection(callID, status, partial, false)
 	case "task_completed":
-		b.lifecycleSeen = true
+		b.nativeStreamSeen = true
 		snapshot := update.TaskSnapshot
 		taskID := strings.TrimSpace(snapshot.TaskID)
 		callID := b.backgroundCallByTask[taskID]
@@ -967,7 +934,7 @@ func (b *grokConversationBuilder) consumeUpdatesLine(lineNumber int, line []byte
 	case "plan":
 		b.addPlanUpdate(lineNumber, timestamp, update.Entries)
 	case "retry_state":
-		b.lifecycleSeen = true
+		b.nativeStreamSeen = true
 		failed := strings.EqualFold(strings.TrimSpace(update.Type), "failed")
 		status := "running"
 		title := "Retrying provider request"
@@ -976,13 +943,11 @@ func (b *grokConversationBuilder) consumeUpdatesLine(lineNumber int, line []byte
 			status = "failed"
 			title = "Provider request failed"
 			body = cleanConversationText(firstNonEmpty(update.Message, update.Reason))
-			b.taskActive = false
-			b.turnSettled = true
-			b.settleTurn(CodexConversationTurnFailed, timestamp, lineNumber)
+			b.closeNativeStream()
+			b.settleActivity(ProviderActivityFailed, timestamp)
 		} else {
-			b.startTurn(promptID, streamStart, envelope.Params.Meta.StreamStartMS, timestamp, lineNumber)
-			b.taskActive = b.turnLifecycle.running()
-			b.turnSettled = !b.taskActive
+			b.openNativeStream()
+			b.startActivity(promptID, streamStart, envelope.Params.Meta.StreamStartMS, timestamp, lineNumber)
 			if update.Attempt > 0 && update.MaxRetries > 0 {
 				title = fmt.Sprintf("Retrying provider request (%d/%d)", update.Attempt, update.MaxRetries)
 			}
@@ -994,35 +959,46 @@ func (b *grokConversationBuilder) consumeUpdatesLine(lineNumber int, line []byte
 			b.finishStatuses()
 		}
 	case "turn_completed":
-		b.lifecycleSeen = true
-		b.taskActive = false
-		b.turnSettled = true
-		b.settleTurn(CodexConversationTurnCompleted, timestamp, lineNumber)
+		b.closeNativeStream()
+		b.settleActivity(ProviderActivityCompleted, timestamp)
 		b.finishAllStreams()
 		b.finishTools("done")
 		b.finishStatuses()
 	}
 }
 
-func (b *grokConversationBuilder) startTurn(promptID, streamStart string, streamStartRaw json.RawMessage, timestamp string, lineNumber int) {
-	providerTurnID := strings.Trim(strings.Join([]string{strings.TrimSpace(promptID), strings.TrimSpace(streamStart)}, ":"), ":")
-	id := ""
-	if providerTurnID != "" {
-		id = conversationTurnID(firstNonEmpty(b.sessionID, b.sourceID), providerTurnID, lineNumber)
-	} else if b.turnLifecycle.running() {
-		id = b.turnLifecycle.turn.ID
-	} else {
-		id = conversationTurnID(firstNonEmpty(b.sessionID, b.sourceID), "", lineNumber)
-	}
-	b.turnLifecycle.start(id, grokTurnStartedAt(streamStartRaw, timestamp))
+func (b *grokConversationBuilder) openNativeStream() {
+	b.nativeStreamSeen = true
+	b.nativeStreamSettled = false
 }
 
-func (b *grokConversationBuilder) settleTurn(status, timestamp string, lineNumber int) {
+func (b *grokConversationBuilder) closeNativeStream() {
+	b.nativeStreamSeen = true
+	b.nativeStreamSettled = true
+}
+
+func (b *grokConversationBuilder) nativeStreamOpen() bool {
+	return b.nativeStreamSeen && !b.nativeStreamSettled
+}
+
+func (b *grokConversationBuilder) startActivity(promptID, streamStart string, streamStartRaw json.RawMessage, timestamp string, lineNumber int) {
+	providerID := strings.Trim(strings.Join([]string{strings.TrimSpace(promptID), strings.TrimSpace(streamStart)}, ":"), ":")
 	id := ""
-	if b.turnLifecycle.turn == nil {
-		id = conversationTurnID(firstNonEmpty(b.sessionID, b.sourceID), "", lineNumber)
+	if providerID != "" {
+		id = providerActivityID(firstNonEmpty(b.sessionID, b.sourceID), providerID, lineNumber)
+	} else if b.activityLifecycle.running() {
+		id = b.activityLifecycle.activity.ID
+	} else {
+		id = providerActivityID(firstNonEmpty(b.sessionID, b.sourceID), "", lineNumber)
 	}
-	b.turnLifecycle.settle(id, status, timestamp)
+	b.activityLifecycle.start(id, grokTurnStartedAt(streamStartRaw, timestamp))
+}
+
+func (b *grokConversationBuilder) settleActivity(status ProviderActivityStatus, timestamp string) {
+	if b.activityLifecycle.activity == nil {
+		return
+	}
+	b.activityLifecycle.settle(b.activityLifecycle.activity.ID, status, timestamp)
 }
 
 func (b *grokConversationBuilder) upsertStatus(key, timestamp, title, body, status string, partial bool) {
@@ -1072,13 +1048,7 @@ func (b *grokConversationBuilder) markCanonicalEvents() {
 }
 
 func (b *grokConversationBuilder) upsertStreamText(promptID, streamStart, streamKind, timestamp, rawChunk string) {
-	if !b.turnSettled && !b.turnLifecycle.running() {
-		providerTurnID := strings.Trim(strings.Join([]string{strings.TrimSpace(promptID), strings.TrimSpace(streamStart)}, ":"), ":")
-		b.turnLifecycle.start(
-			conversationTurnID(firstNonEmpty(b.sessionID, b.sourceID), providerTurnID, 1),
-			timestamp,
-		)
-	}
+	b.nativeStreamSeen = true
 	group := firstNonEmpty(promptID, "turn") + ":" + streamKind
 	streamStart = firstNonEmpty(streamStart, "legacy")
 	key := group + ":" + streamStart
@@ -1091,11 +1061,9 @@ func (b *grokConversationBuilder) upsertStreamText(promptID, streamStart, stream
 	if body == "" || isTranscriptBoilerplate(body) {
 		return
 	}
-	b.lifecycleSeen = true
-	partial := !b.turnSettled
+	partial := b.nativeStreamOpen()
 	status := "done"
 	if partial {
-		b.taskActive = true
 		status = "running"
 	}
 	if index, ok := b.streamByKey[key]; ok && index >= 0 && index < len(b.events) {
@@ -1485,17 +1453,17 @@ func (b *grokConversationBuilder) conversation() CodexConversation {
 		b.events = []CodexConversationEvent{}
 	}
 	b.events = pruneGrokEventsForChat(b.events, maxGrokConversationEvents)
-	if !b.taskActive {
+	if !b.nativeStreamOpen() {
 		b.events = trimTrailingGrokTools(b.events)
 	}
 	b.reindexEvents()
-	return conversationWithTurn(CodexConversation{
+	return conversationWithActivity(CodexConversation{
 		Available: true,
 		Source:    "grok_session",
 		SessionID: b.sessionID,
 		CWD:       b.cwd,
 		Events:    b.events,
-	}, &b.turnLifecycle)
+	}, &b.activityLifecycle)
 }
 
 func (b *grokConversationBuilder) adoptStreamEventIDs(streamEvents []CodexConversationEvent) {

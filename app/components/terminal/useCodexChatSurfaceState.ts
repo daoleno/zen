@@ -21,10 +21,8 @@ import type {
 import { wsClient } from "../../services/websocket";
 import type { CodexChatBodyProps } from "./CodexChatBody";
 import { useCodexChatController } from "./CodexChatController";
-import { isCodexRequestRunning } from "./CodexChatControllerModel";
 import {
   type CodexChatAgentInfo,
-  type PendingSlashCommand,
   type PendingUserMessage,
   useCodexChatSession,
 } from "./CodexChatSession";
@@ -39,7 +37,7 @@ import {
   usePinnedTimeline,
   useRelativeTimeLabel,
 } from "./CodexChatSurfaceHooks";
-import { resolveWorkingStructuredTurn } from "./structuredTurnLifecycle";
+import { resolveRunningProviderActivity } from "./providerActivity";
 
 interface UseCodexChatSurfaceStateInput {
   visible: boolean;
@@ -149,7 +147,6 @@ export function useCodexChatSurfaceState({
   const {
     cacheKey: conversationCacheKey,
     conversation,
-    localChatState,
     loading,
     error,
     draft,
@@ -158,12 +155,9 @@ export function useCodexChatSurfaceState({
     attachments,
     setAttachments,
     pendingUserMessages,
-    pendingSlashCommands,
     addPendingUserMessage,
-    acknowledgePendingUserMessage,
-    markPendingUserMessageDispatched,
+    beginPendingUserMessageAttempt,
     rejectPendingUserMessage,
-    markNewChatMessageStarted,
   } = session;
   const setObservedDraft = useCallback(
     (value: string) => {
@@ -325,44 +319,28 @@ export function useCodexChatSurfaceState({
     }
   }, [statusDisplayEvent, statusTimedOut]);
   const latestTimelineTimestamp = useMemo(
-    () =>
-      latestChatTimelineTimestamp(
-        conversation,
-        pendingUserMessages,
-        pendingSlashCommands,
-      ),
-    [conversation, pendingSlashCommands, pendingUserMessages],
+    () => latestChatTimelineTimestamp(conversation, pendingUserMessages),
+    [conversation, pendingUserMessages],
   );
   const jumpLabel = useRelativeTimeLabel(latestTimelineTimestamp);
-  const resolvedWorkingTurn = useMemo(
-    () => resolveWorkingStructuredTurn(conversation?.activity),
+  const runningActivity = useMemo(
+    () => resolveRunningProviderActivity(conversation?.activity),
     [conversation?.activity],
   );
-  const workingTurn = localChatState === "idle"
-    ? resolvedWorkingTurn
-    : undefined;
-  const requestRunning = isCodexRequestRunning({
-    conversation: null,
-    turn: workingTurn,
-  });
   const timeline = usePinnedTimeline(
     events.length +
       pendingUserMessages.length +
-      pendingSlashCommands.length +
-      (workingTurn ? 1 : 0),
+      (runningActivity ? 1 : 0),
     conversationCacheKey,
   );
   const controller = useCodexChatController({
     serverId,
     agentId,
     conversationScopeKey,
-    agentStatus: agentInfo?.status,
     connectionState,
     connectionIssue,
     conversation,
-    events,
-    turnBusy: requestRunning,
-    workingTurn,
+    runningActivity,
     draft,
     setDraft: setObservedDraft,
     restoreDraft: restoreObservedDraft,
@@ -371,10 +349,8 @@ export function useCodexChatSurfaceState({
     setAttachments,
     slashCommands,
     addPendingUserMessage,
-    acknowledgePendingUserMessage,
-    markPendingUserMessageDispatched,
+    beginPendingUserMessageAttempt,
     rejectPendingUserMessage,
-    markNewChatMessageStarted,
     pinToBottomIfNeeded: timeline.pinToBottomIfNeeded,
     focusComposer: composerInput.focus,
     clearComposerNativeText: composerInput.clearNativeText,
@@ -389,13 +365,11 @@ export function useCodexChatSurfaceState({
     slashCommands,
     agentCommand: agentInfo?.command,
     connectionState,
-    requestRunning,
+    runningActivity,
     attachmentCount: attachments.length,
-    sending: controller.sending,
-    startingNewChat: controller.startingNewChat,
     interrupting: controller.interrupting,
     canSend: controller.canSend,
-    elapsedStartedAt: workingTurn?.started_at,
+    elapsedStartedAt: runningActivity?.started_at,
     actionMenuPinned,
     safeAreaBottom: insets.bottom,
     placeholder,
@@ -492,10 +466,8 @@ export function useCodexChatSurfaceState({
     conversation,
     events,
     pendingUserMessages,
-    pendingSlashCommands,
-    workingTurn,
+    runningActivity,
     loading,
-    localChatState,
     error,
     draft,
     attachments,
@@ -527,7 +499,6 @@ export function useCodexChatSurfaceState({
 function latestChatTimelineTimestamp(
   conversation: CodexConversation | null,
   pendingUserMessages: PendingUserMessage[],
-  pendingSlashCommands: PendingSlashCommand[],
 ) {
   let latest = 0;
   conversation?.events.forEach((event: CodexConversationEvent) => {
@@ -538,12 +509,6 @@ function latestChatTimelineTimestamp(
   });
   pendingUserMessages.forEach((message) => {
     const timestamp = new Date(message.createdAt).getTime();
-    if (Number.isFinite(timestamp) && timestamp > latest) {
-      latest = timestamp;
-    }
-  });
-  pendingSlashCommands.forEach((command) => {
-    const timestamp = new Date(command.createdAt).getTime();
     if (Number.isFinite(timestamp) && timestamp > latest) {
       latest = timestamp;
     }

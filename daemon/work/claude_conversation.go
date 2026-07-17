@@ -9,7 +9,6 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/daoleno/zen/daemon/classifier"
@@ -26,19 +25,6 @@ const (
 	maxClaudeConversationAge = 72 * time.Hour
 )
 
-type cachedClaudeConversation struct {
-	size         int64
-	modTime      time.Time
-	conversation CodexConversation
-}
-
-var claudeConversationCache = struct {
-	sync.Mutex
-	byPath map[string]cachedClaudeConversation
-}{
-	byPath: map[string]cachedClaudeConversation{},
-}
-
 type claudeTranscriptCandidate struct {
 	ID        string
 	CWD       string
@@ -47,8 +33,9 @@ type claudeTranscriptCandidate struct {
 	Updated   time.Time
 }
 
-func loadClaudeConversationForAgent(agent classifier.Agent, now time.Time) (CodexConversation, error) {
+func (r *ProviderConversationReader) loadClaudeConversationForAgent(agent classifier.Agent, now time.Time) (CodexConversation, error) {
 	if strings.TrimSpace(agent.Cwd) == "" {
+		r.resetSource()
 		return CodexConversation{
 			Available: false,
 			Reason:    "missing_cwd",
@@ -58,9 +45,11 @@ func loadClaudeConversationForAgent(agent classifier.Agent, now time.Time) (Code
 
 	candidate, ok, err := findClaudeTranscript(agent, now)
 	if err != nil {
+		r.resetSource()
 		return CodexConversation{}, err
 	}
 	if !ok {
+		r.resetSource()
 		return CodexConversation{
 			Available: false,
 			Reason:    "transcript_not_found",
@@ -68,7 +57,7 @@ func loadClaudeConversationForAgent(agent classifier.Agent, now time.Time) (Code
 		}, nil
 	}
 
-	conversation, err := loadCachedClaudeConversation(candidate.Path)
+	conversation, err := r.loadClaudeConversation(candidate.Path)
 	if err != nil {
 		return CodexConversation{
 			Available: false,
@@ -92,35 +81,8 @@ func loadClaudeConversationForAgent(agent classifier.Agent, now time.Time) (Code
 	return conversation, nil
 }
 
-func loadCachedClaudeConversation(path string) (CodexConversation, error) {
-	info, err := os.Stat(path)
-	if err != nil {
-		return CodexConversation{}, err
-	}
-
-	claudeConversationCache.Lock()
-	if cached, ok := claudeConversationCache.byPath[path]; ok &&
-		cached.size == info.Size() &&
-		cached.modTime.Equal(info.ModTime()) {
-		conversation := cached.conversation
-		claudeConversationCache.Unlock()
-		return conversation, nil
-	}
-	claudeConversationCache.Unlock()
-
-	conversation, err := parseClaudeConversation(path)
-	if err != nil {
-		return CodexConversation{}, err
-	}
-
-	claudeConversationCache.Lock()
-	claudeConversationCache.byPath[path] = cachedClaudeConversation{
-		size:         info.Size(),
-		modTime:      info.ModTime(),
-		conversation: conversation,
-	}
-	claudeConversationCache.Unlock()
-	return conversation, nil
+func (r *ProviderConversationReader) loadClaudeConversation(path string) (CodexConversation, error) {
+	return r.loadFileConversation(AgentProviderClaude, path, parseClaudeConversation)
 }
 
 func findClaudeTranscript(agent classifier.Agent, now time.Time) (claudeTranscriptCandidate, bool, error) {
@@ -408,13 +370,13 @@ func consumeClaudeJSONL(path string, consume func(int, []byte)) error {
 }
 
 type claudeConversationBuilder struct {
-	sourceID         string
-	sessionID        string
-	cwd              string
-	supportedRecords int
-	events           []CodexConversationEvent
-	eventByCall      map[string]int
-	turnLifecycle    codexConversationTurnLifecycle
+	sourceID          string
+	sessionID         string
+	cwd               string
+	supportedRecords  int
+	events            []CodexConversationEvent
+	eventByCall       map[string]int
+	activityLifecycle providerActivityLifecycle
 }
 
 func newClaudeConversationBuilder(sourceID string) *claudeConversationBuilder {
@@ -477,9 +439,9 @@ func (b *claudeConversationBuilder) consumeLine(lineNumber int, line []byte) {
 			return
 		}
 		if b.consumeUserContent(lineNumber, recordID, timestamp, envelope.Message.Content) &&
-			!b.turnLifecycle.running() {
-			b.turnLifecycle.start(
-				conversationTurnID(firstNonEmpty(b.sessionID, b.sourceID), recordID, lineNumber),
+			!b.activityLifecycle.running() {
+			b.activityLifecycle.start(
+				providerActivityID(firstNonEmpty(b.sessionID, b.sourceID), recordID, lineNumber),
 				timestamp,
 			)
 		}
@@ -489,7 +451,7 @@ func (b *claudeConversationBuilder) consumeLine(lineNumber int, line []byte) {
 			envelope.Message.StopReason,
 			envelope.Message.Content,
 		) {
-			b.turnLifecycle.settle("", CodexConversationTurnCompleted, timestamp)
+			b.activityLifecycle.settle("", ProviderActivityCompleted, timestamp)
 		}
 	default:
 		// Skip system/attachment/permission-mode/file-history-snapshot and other
@@ -805,13 +767,13 @@ func (b *claudeConversationBuilder) conversation() CodexConversation {
 			b.events[index].Seq = index + 1
 		}
 	}
-	return conversationWithTurn(CodexConversation{
+	return conversationWithActivity(CodexConversation{
 		Available: true,
 		Source:    claudeConversationSource,
 		SessionID: firstNonEmpty(b.sessionID, b.sourceID),
 		CWD:       b.cwd,
 		Events:    b.events,
-	}, &b.turnLifecycle)
+	}, &b.activityLifecycle)
 }
 
 func claudeToolInputJSON(raw json.RawMessage) string {

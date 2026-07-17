@@ -104,7 +104,7 @@ id: a
 created: 2026-04-21T00:00:00Z
 started: 2026-04-21T01:00:00Z
 agent_session: zen-claude-3
-agent_source: claude
+friction: legacy diagnostic
 labels: [keep, me]
 ---
 Body
@@ -120,64 +120,26 @@ Body
 	if iss.Frontmatter.AgentSession != "zen-claude-3" {
 		t.Fatalf("agent_session = %q", iss.Frontmatter.AgentSession)
 	}
-	if iss.Frontmatter.AgentSource != "claude" {
-		t.Fatalf("agent_source = %q", iss.Frontmatter.AgentSource)
+	if got, ok := iss.Frontmatter.Extra["friction"].(string); !ok || got != "legacy diagnostic" {
+		t.Fatalf("extra friction = %#v, want generic preserved value", iss.Frontmatter.Extra["friction"])
 	}
 	if _, ok := iss.Frontmatter.Extra["labels"]; !ok {
 		t.Fatalf("extra = %#v, want labels", iss.Frontmatter.Extra)
 	}
-}
 
-func TestExtractMentions_RoleOnly(t *testing.T) {
-	got := ExtractMentions("Hey @claude please look at this")
-	if len(got) != 1 {
-		t.Fatalf("len = %d, want 1", len(got))
+	out, err := SerializeItem(iss)
+	if err != nil {
+		t.Fatalf("SerializeItem: %v", err)
 	}
-	if got[0].Role != "claude" || got[0].Session != "" {
-		t.Fatalf("mention = %+v", got[0])
+	reparsed, err := ParseFile("/tmp/x.md", out, time.Now())
+	if err != nil {
+		t.Fatalf("ParseFile(reparsed): %v", err)
 	}
-}
-
-func TestExtractMentions_RoleAndSession(t *testing.T) {
-	got := ExtractMentions("Try @claude#zen-claude-3 for this one")
-	if len(got) != 1 {
-		t.Fatalf("len = %d, want 1", len(got))
+	if got, ok := reparsed.Frontmatter.Extra["friction"].(string); !ok || got != "legacy diagnostic" {
+		t.Fatalf("reparsed extra friction = %#v, want generic preserved value", reparsed.Frontmatter.Extra["friction"])
 	}
-	if got[0].Role != "claude" || got[0].Session != "zen-claude-3" {
-		t.Fatalf("mention = %+v", got[0])
-	}
-}
-
-func TestExtractMentions_IgnoresEmail(t *testing.T) {
-	got := ExtractMentions("ping me at user@host.com, but actually @codex handle it")
-	if len(got) != 1 {
-		t.Fatalf("len = %d, want 1", len(got))
-	}
-	if got[0].Role != "codex" {
-		t.Fatalf("mention = %+v", got[0])
-	}
-}
-
-func TestExtractMentions_MultiplePreservesOrder(t *testing.T) {
-	got := ExtractMentions("First @claude then @codex")
-	if len(got) != 2 {
-		t.Fatalf("len = %d, want 2", len(got))
-	}
-	if got[0].Role != "claude" || got[1].Role != "codex" {
-		t.Fatalf("mentions = %+v", got)
-	}
-	if got[0].Index >= got[1].Index {
-		t.Fatalf("indices = %d, %d", got[0].Index, got[1].Index)
-	}
-}
-
-func TestExtractMentions_StartOfLine(t *testing.T) {
-	got := ExtractMentions("@claude fix this")
-	if len(got) != 1 {
-		t.Fatalf("len = %d, want 1", len(got))
-	}
-	if got[0].Role != "claude" || got[0].Index != 0 {
-		t.Fatalf("mention = %+v", got[0])
+	if _, ok := reparsed.Frontmatter.Extra["labels"]; !ok {
+		t.Fatalf("reparsed extra = %#v, want labels", reparsed.Frontmatter.Extra)
 	}
 }
 
@@ -188,7 +150,6 @@ created: 2026-04-21T14:32:15Z
 done: 2026-04-22T00:00:00Z
 started: 2026-04-21T15:00:00Z
 agent_session: zen-claude-3
-agent_source: claude
 ---
 # Hello
 
@@ -215,9 +176,6 @@ Body line.
 	}
 	if reparsed.Frontmatter.AgentSession != iss.Frontmatter.AgentSession {
 		t.Fatalf("agent_session = %q", reparsed.Frontmatter.AgentSession)
-	}
-	if reparsed.Frontmatter.AgentSource != iss.Frontmatter.AgentSource {
-		t.Fatalf("agent_source = %q", reparsed.Frontmatter.AgentSource)
 	}
 	if reparsed.Body != iss.Body {
 		t.Fatalf("body = %q, want %q", reparsed.Body, iss.Body)

@@ -5,36 +5,37 @@ import {
   releaseComposerStopLatch,
 } from "./composerStopLatch";
 
-describe("Composer per-turn Stop latch", () => {
-  test("accepts Stop exactly once for the same authoritative turn", () => {
-    const first = beginComposerStop(undefined, "turn-a");
-    expect(first).toEqual({ accepted: true, latchedTurnId: "turn-a" });
-    expect(beginComposerStop(first.latchedTurnId, "turn-a")).toEqual({
+describe("Composer per-Activity Stop latch", () => {
+  test("accepts Stop exactly once for the same current Activity", () => {
+    const first = beginComposerStop(undefined, "activity-a");
+    expect(first).toEqual({ accepted: true, latchedActivityId: "activity-a" });
+    expect(beginComposerStop(first.latchedActivityId, "activity-a")).toEqual({
       accepted: false,
-      latchedTurnId: "turn-a",
+      latchedActivityId: "activity-a",
     });
-    expect(reconcileComposerStopLatch(first.latchedTurnId, "turn-a"))
-      .toBe("turn-a");
+    expect(reconcileComposerStopLatch(first.latchedActivityId, "activity-a"))
+      .toBe("activity-a");
   });
 
-  test("settlement or successor promotion unlocks the next turn", () => {
-    expect(reconcileComposerStopLatch("turn-a", undefined)).toBeUndefined();
-    const reconciled = reconcileComposerStopLatch("turn-a", "turn-b");
+  test("settlement or successor promotion unlocks the next Activity", () => {
+    expect(reconcileComposerStopLatch("activity-a", undefined)).toBeUndefined();
+    const reconciled = reconcileComposerStopLatch("activity-a", "activity-b");
     expect(reconciled).toBeUndefined();
-    expect(beginComposerStop(reconciled, "turn-b")).toEqual({
+    expect(beginComposerStop(reconciled, "activity-b")).toEqual({
       accepted: true,
-      latchedTurnId: "turn-b",
+      latchedActivityId: "activity-b",
     });
   });
 
-  test("a synchronous transport failure can release the same turn", () => {
-    const first = beginComposerStop(undefined, "turn-a");
-    const released = releaseComposerStopLatch(first.latchedTurnId, "turn-a");
+  test("a synchronous transport failure can release the same Activity", () => {
+    const first = beginComposerStop(undefined, "activity-a");
+    const released = releaseComposerStopLatch(first.latchedActivityId, "activity-a");
     expect(released).toBeUndefined();
-    expect(beginComposerStop(released, "turn-a")).toEqual(first);
+    expect(beginComposerStop(released, "activity-a")).toEqual(first);
   });
 
-  test("a delayed failure for the old turn cannot unlock its successor", () => {
-    expect(releaseComposerStopLatch("turn-b", "turn-a")).toBe("turn-b");
+  test("a delayed failure for the old Activity cannot unlock its successor", () => {
+    expect(releaseComposerStopLatch("activity-b", "activity-a"))
+      .toBe("activity-b");
   });
 });

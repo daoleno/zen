@@ -26,13 +26,12 @@ interface CodexComposerPanelProps {
   uploading: boolean;
   sendEnabled: boolean;
   sending: boolean;
-  sendIcon: React.ComponentProps<typeof ComposerSendButton>["icon"];
   sendLabel: string;
   showStopButton: boolean;
   stopEnabled: boolean;
   stopLabel: string;
   stopLoading: boolean;
-  workingTurnStartedAt?: string;
+  providerActivityStartedAt?: string;
   actionMenuExpanded: boolean;
   actionMenuButtonEnabled: boolean;
   showActionMenuButton: boolean;
@@ -57,13 +56,12 @@ export function CodexComposerPanel({
   uploading,
   sendEnabled,
   sending,
-  sendIcon,
   sendLabel,
   showStopButton,
   stopEnabled,
   stopLabel,
   stopLoading,
-  workingTurnStartedAt,
+  providerActivityStartedAt,
   actionMenuExpanded,
   actionMenuButtonEnabled,
   showActionMenuButton,
@@ -81,13 +79,13 @@ export function CodexComposerPanel({
   const actionButton = (
     <ComposerSendButton
       accessibilityLabel={showStopButton ? stopLabel : sendLabel}
-      icon={showStopButton ? "square" : sendIcon}
+      icon={showStopButton ? "square" : "arrow-up"}
       chrome={chrome}
       theme={theme}
       enabled={showStopButton ? stopEnabled : sendEnabled}
       loading={showStopButton ? stopLoading : sending}
       running={showStopButton}
-      elapsedStartedAt={workingTurnStartedAt}
+      elapsedStartedAt={providerActivityStartedAt}
       fixedWidth={COMPOSER_ACTION_SLOT_WIDTH}
       onPress={showStopButton ? onStopPress : onSendPress}
       variant={composerLayout === "chatgpt" ? "chatgpt" : "default"}

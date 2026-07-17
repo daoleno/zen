@@ -1,6 +1,7 @@
 package brain
 
 import (
+	"crypto/sha256"
 	"errors"
 	"fmt"
 	"log"
@@ -94,29 +95,15 @@ func (s *Service) Snapshot() (Snapshot, error) {
 	snapshot.DelegatedExecutor = &delegatedExecutor
 	snapshot.Executors = s.agentExecutors(hostExecutor.ID, delegatedExecutor.ID)
 	snapshot.ChatThreadID = chatThreadID
-	snapshot.ScheduledResults, err = s.store.ScheduledResults(defaultChatMessageLimit)
-	if err != nil {
-		return Snapshot{}, err
-	}
-	if chatThreadID != "" && host.ID != "" {
-		_ = s.store.TouchChatSession(chatThreadID, host.ID)
-	}
 	snapshot.Agents = s.agentRefs(host.ID)
 	return snapshot, nil
 }
 
-func (s *Service) Context(messageLimit int) (BrainContext, error) {
+func (s *Service) Context() (BrainContext, error) {
 	if s == nil || s.store == nil {
 		return BrainContext{}, fmt.Errorf("brain service is not configured")
 	}
-	if messageLimit <= 0 {
-		messageLimit = 12
-	}
 	snapshot, err := s.Snapshot()
-	if err != nil {
-		return BrainContext{}, err
-	}
-	messages, err := s.store.ChatMessages(snapshot.ChatThreadID, messageLimit)
 	if err != nil {
 		return BrainContext{}, err
 	}
@@ -137,7 +124,6 @@ func (s *Service) Context(messageLimit int) (BrainContext, error) {
 		DelegatedExecutor: snapshot.DelegatedExecutor,
 		Executors:         snapshot.Executors,
 		Agents:            snapshot.Agents,
-		RecentMessages:    messages,
 		GeneratedAt:       s.nowUTC(),
 	}, nil
 }
@@ -146,12 +132,19 @@ func (s *Service) Housekeeping() (HousekeepingReport, error) {
 	if s == nil || s.store == nil {
 		return HousekeepingReport{}, fmt.Errorf("brain service is not configured")
 	}
-	before := workspaceHousekeepingState(s.store)
+	before, err := workspaceContentIdentity(s.store)
+	if err != nil {
+		return HousekeepingReport{}, err
+	}
 	if err := s.store.ensureFiles(); err != nil {
 		return HousekeepingReport{}, err
 	}
-	after := workspaceHousekeepingState(s.store)
-	context, err := s.Context(8)
+	after, err := workspaceContentIdentity(s.store)
+	if err != nil {
+		return HousekeepingReport{}, err
+	}
+	changedPaths := changedWorkspacePaths(before, after)
+	context, err := s.Context()
 	if err != nil {
 		return HousekeepingReport{}, err
 	}
@@ -175,63 +168,48 @@ func (s *Service) Housekeeping() (HousekeepingReport, error) {
 		PlaybookPaths:        seedPlaybookPaths(),
 		WorklogPath:          worklogDirName,
 		OpenDelegatedAgents:  delegated,
-		RecentMessageCount:   len(context.RecentMessages),
-		BackfilledWorkspace:  !before.equal(after),
+		ChangedPaths:         changedPaths,
 		RecommendedNextSteps: steps,
 		GeneratedAt:          s.nowUTC(),
 	}, nil
 }
 
-type workspaceHousekeepingSnapshot struct {
-	current      bool
-	instructions bool
-	policy       map[string]bool
-	playbooks    map[string]bool
-	worklog      bool
+type workspaceFileIdentity struct {
+	exists bool
+	digest [sha256.Size]byte
 }
 
-func workspaceHousekeepingState(store *Store) workspaceHousekeepingSnapshot {
-	state := workspaceHousekeepingSnapshot{
-		current:      brainFileExists(store.currentPath()),
-		instructions: brainWorkspaceInstructionsCurrent(store.workspaceInstructionsPath()),
-		policy:       map[string]bool{},
-		playbooks:    map[string]bool{},
-		worklog:      brainFileExists(store.worklogReadmePath()),
+func workspaceContentIdentity(store *Store) (map[string]workspaceFileIdentity, error) {
+	identities := make(map[string]workspaceFileIdentity)
+	for _, relativePath := range standardWorkspaceRelativePaths() {
+		path := filepath.Join(store.WorkspacePath(), filepath.FromSlash(relativePath))
+		raw, exists, err := readOptionalFile(path)
+		if err != nil {
+			return nil, fmt.Errorf("read Brain workspace identity %s: %w", relativePath, err)
+		}
+		identity := workspaceFileIdentity{exists: exists}
+		if exists {
+			identity.digest = sha256.Sum256(raw)
+		}
+		identities[relativePath] = identity
 	}
-	for _, name := range []string{"delegation.md", "engine.md", "handoff.md"} {
-		state.policy[name] = brainFileExists(store.policyPath(name))
-	}
-	for _, name := range seedPlaybookFilenames() {
-		state.playbooks[name] = brainFileExists(store.playbookPath(name))
-	}
-	return state
+	return identities, nil
 }
 
-func (s workspaceHousekeepingSnapshot) equal(other workspaceHousekeepingSnapshot) bool {
-	if s.current != other.current || s.instructions != other.instructions || s.worklog != other.worklog || len(s.policy) != len(other.policy) || len(s.playbooks) != len(other.playbooks) {
-		return false
-	}
-	for key, value := range s.policy {
-		if other.policy[key] != value {
-			return false
+func changedWorkspacePaths(before, after map[string]workspaceFileIdentity) []string {
+	changed := []string{}
+	for path, afterIdentity := range after {
+		if beforeIdentity, ok := before[path]; !ok || beforeIdentity != afterIdentity {
+			changed = append(changed, path)
 		}
 	}
-	for key, value := range s.playbooks {
-		if other.playbooks[key] != value {
-			return false
+	for path := range before {
+		if _, ok := after[path]; !ok {
+			changed = append(changed, path)
 		}
 	}
-	return true
-}
-
-func brainWorkspaceInstructionsCurrent(path string) bool {
-	raw, err := os.ReadFile(path)
-	return err == nil && workspaceInstructionsCurrent(string(raw))
-}
-
-func brainFileExists(path string) bool {
-	_, err := os.Stat(path)
-	return err == nil
+	sort.Strings(changed)
+	return changed
 }
 
 func (s *Service) WorkspaceTree(paths ...string) (WorkspaceTree, error) {
@@ -274,7 +252,6 @@ func (s *Service) SetHostExecutor(executorID string) (Snapshot, error) {
 		return Snapshot{}, fmt.Errorf("%w: %s", ErrExecutorNotConfigured, executorID)
 	}
 	var previousHost HostSession
-	var previousMessages []ChatMessage
 	var currentContext string
 	chatThreadID, _ := s.store.ChatThreadID()
 	if host, err := s.store.HostSession(); err == nil {
@@ -282,11 +259,6 @@ func (s *Service) SetHostExecutor(executorID string) (Snapshot, error) {
 	}
 	if snapshot, err := s.store.Snapshot(); err == nil {
 		currentContext = snapshot.Current
-	}
-	if strings.TrimSpace(chatThreadID) != "" {
-		if messages, err := s.store.ChatMessages(chatThreadID, 12); err == nil {
-			previousMessages = messages
-		}
 	}
 	if err := s.store.SetHostExecutorID(executor.ID); err != nil {
 		return Snapshot{}, err
@@ -296,7 +268,7 @@ func (s *Service) SetHostExecutor(executorID string) (Snapshot, error) {
 		return Snapshot{}, err
 	}
 	if snapshot.HostAgent != nil && strings.TrimSpace(previousHost.ID) != "" && strings.TrimSpace(snapshot.HostAgent.ID) != "" && snapshot.HostAgent.ID != strings.TrimSpace(previousHost.ID) {
-		_ = s.handoffHostSession(chatThreadID, previousHost.ExecutorID, executor.ID, snapshot.HostAgent.ID, currentContext, previousMessages, snapshot.Agents)
+		_ = s.handoffHostSession(chatThreadID, previousHost.ExecutorID, executor.ID, snapshot.HostAgent.ID, currentContext, snapshot.Agents)
 	}
 	return snapshot, nil
 }
@@ -812,9 +784,9 @@ Agent orchestration rules:
 - For a single larger task, prefer reusing the same delegated agent session across stages. Send follow-up instructions to that session until the task is genuinely complete. Open a separate delegated session only when the work is meaningfully independent, benefits from parallelism, needs a different repository/context, or the current session is blocked or unusable.
 - Use the zen binary to spawn, send to, and inspect delegated agents. When delegating, write a short note with workspace, objective, context, acceptance criteria, safety constraints, and expected report.
 - Zen CLI quick reference:
-  - %s brain context --json returns structured Brain context: current.md, recent visible messages, host executor, and delegated agents.
+  - %s brain context --json returns structured Brain context: current.md, host executor, and delegated agents.
   - %s brain playbooks --json returns the playbook catalog (name, description, path) without full playbook bodies.
-  - %s brain gc --json backfills missing standard Brain workspace files and reports open delegated sessions without rewriting user content.
+  - %s brain gc --json repairs product-owned standard Brain workspace blocks and missing files while preserving user-authored content, then reports open delegated sessions.
   - %s agent list --json lists visible sessions; only sessions with delegated=true are Brain-owned.
   - %s agent spawn -name "<name>" -cwd <workspace> -prompt "<task>" creates a visible delegated agent with Brain's delegated executor routing.
   - %s agent spawn -name "<name>" -executor <executor> -cwd <workspace> -prompt "<task>" creates a visible delegated agent with an explicit user-requested executor override.
@@ -844,7 +816,7 @@ Reference files:
 `, snapshot.Workspace, executor.ID, executor.Provider, executor.Runtime, delegatedExecutor.ID, delegatedExecutor.Provider, delegatedExecutor.Runtime, executorCapabilitiesSummary(executor.Capabilities), zenCLICommand(), zenCLICommand(), zenCLICommand(), zenCLICommand(), zenCLICommand(), zenCLICommand(), zenCLICommand(), zenCLICommand(), zenCLICommand(), zenCLICommand(), zenCLICommand(), strings.TrimSpace(snapshot.Personality)))
 }
 
-func (s *Service) handoffHostSession(threadID, previousExecutorID, nextExecutorID, nextHostID, currentContext string, messages []ChatMessage, agents []AgentRef) error {
+func (s *Service) handoffHostSession(threadID, previousExecutorID, nextExecutorID, nextHostID, currentContext string, agents []AgentRef) error {
 	if s == nil || s.store == nil || s.watcher == nil {
 		return nil
 	}
@@ -854,24 +826,16 @@ func (s *Service) handoffHostSession(threadID, previousExecutorID, nextExecutorI
 		return nil
 	}
 	delegatedExecutor := s.brainDelegatedExecutor()
-	prompt := formatHostHandoffPrompt(threadID, previousExecutorID, nextExecutorID, delegatedExecutor.ID, currentContext, messages, agents)
+	prompt := formatHostHandoffPrompt(threadID, previousExecutorID, nextExecutorID, delegatedExecutor.ID, currentContext, agents)
 	if prompt != "" {
 		if err := s.watcher.SendInputWhenReady(nextHostID, s.hostCommand(s.hostExecutor()), prompt+"\n"); err != nil {
 			return err
 		}
 	}
-	state, err := s.store.ChatState(threadID)
-	if err != nil {
-		return err
-	}
-	state.ThreadID = threadID
-	appendUniqueString(&state.SessionIDs, nextHostID)
-	state.LastTranscript = ""
-	state.UpdatedAt = s.nowUTC()
-	return s.store.SetChatState(state)
+	return nil
 }
 
-func formatHostHandoffPrompt(threadID, previousExecutorID, nextExecutorID, delegatedExecutorID, currentContext string, messages []ChatMessage, agents []AgentRef) string {
+func formatHostHandoffPrompt(threadID, previousExecutorID, nextExecutorID, delegatedExecutorID, currentContext string, agents []AgentRef) string {
 	threadID = strings.TrimSpace(threadID)
 	if threadID == "" {
 		return ""
@@ -912,17 +876,6 @@ func formatHostHandoffPrompt(threadID, previousExecutorID, nextExecutorID, deleg
 		"- Run independent subtasks in parallel when useful; keep coupled design decisions and gnarly single-thread debugging in Brain.",
 		"- Inspect delegated results before integrating them. If a result is off-target, rewrite the brief or send a focused follow-up instead of silently absorbing the mistake.",
 	)
-	if len(messages) > 0 {
-		lines = append(lines, "", "Recent visible Brain messages:")
-		for _, message := range messages {
-			role := strings.TrimSpace(message.Role)
-			body := strings.TrimSpace(message.Body)
-			if role == "" || body == "" {
-				continue
-			}
-			lines = append(lines, chatRoleLabel(role)+": "+body)
-		}
-	}
 	delegated := []string{}
 	for _, agent := range agents {
 		if !agent.Delegated {
@@ -950,14 +903,6 @@ func formatHostHandoffPrompt(threadID, previousExecutorID, nextExecutorID, deleg
 	}
 	lines = append(lines, "", "Wait for the next user message unless a low-risk continuation is clearly already pending.")
 	return strings.TrimSpace(strings.Join(lines, "\n"))
-}
-
-func chatRoleLabel(role string) string {
-	role = strings.TrimSpace(role)
-	if role == "" {
-		return "Message"
-	}
-	return strings.ToUpper(role[:1]) + role[1:]
 }
 
 func zenCLICommand() string {

@@ -1,12 +1,13 @@
-// @ts-nocheck
 import { describe, expect, test } from "bun:test";
 import {
   conversationUnavailableReason,
-  isCodexRequestRunning,
   isConversationSyncingReason,
 } from "./CodexChatControllerModel";
 import { resolveComposerSendAction } from "./composerSendAction";
-import type { CodexConversation } from "../../services/codexConversation";
+import {
+  isProviderActivityRunning,
+  type CodexConversation,
+} from "../../services/codexConversation";
 
 function conversation(
   partial: Partial<CodexConversation> & {
@@ -19,43 +20,31 @@ function conversation(
   };
 }
 
-describe("structured chat readiness contract", () => {
-  test("fresh structured session with no transcript is empty-ready, not Working", () => {
+describe("provider chat readiness contract", () => {
+  test("fresh provider session with no transcript is empty-ready, not Working", () => {
     const missing = conversation({
       available: false,
       reason: "transcript_not_found",
-      active: false,
       events: [],
     });
     expect(isConversationSyncingReason(missing.reason)).toBe(true);
-    expect(
-      isCodexRequestRunning({
-        conversation: missing,
-        events: missing.events,
-        agentStatus: "running",
-      }),
-    ).toBe(false);
+    expect(isProviderActivityRunning(missing.activity)).toBe(false);
 
     const send = resolveComposerSendAction({
       canSend: false,
       connected: true,
       hasComposerContent: false,
       interrupting: false,
-      requestRunning: false,
-      sending: false,
-      startingNewChat: false,
+      activityRunning: false,
     });
     expect(send.showStopButton).toBe(false);
-    expect(send.showStopIndicator).toBe(false);
   });
 
-  test("arbitrary terminal pane text must not become Chat turn state", () => {
-    // Even if a legacy payload still carried terminal_snapshot events, turn
-    // detection ignores process status and done snapshot cards.
+  test("arbitrary terminal pane text must not become Chat Activity", () => {
+    // Transcript rendering and process status are not lifecycle evidence.
     const leaked = conversation({
       available: true,
       source: "terminal_snapshot",
-      active: false,
       events: [
         {
           id: "leak",
@@ -68,103 +57,70 @@ describe("structured chat readiness contract", () => {
         },
       ],
     });
-    expect(
-      isCodexRequestRunning({
-        conversation: leaked,
-        events: leaked.events,
-        agentStatus: "running",
-      }),
-    ).toBe(false);
+    expect(isProviderActivityRunning(leaked.activity)).toBe(false);
   });
 
-  test("genuine in-flight turn is Working and stoppable", () => {
-    const requestRunning = isCodexRequestRunning({
-      conversation: conversation({
-        available: true,
-        source: "claude_code_transcript",
-        active: false,
-        turn: {
-          id: "claude-turn-1",
-          status: "running",
-          started_at: "2026-07-15T01:00:00.000Z",
-        },
-        events: [],
-      }),
-      events: [
-        {
-          id: "tool-1",
-          seq: 2,
-          kind: "command",
-          status: "running",
-          command: "rg login",
-        },
-      ],
-      agentStatus: "running",
+  test("genuine in-flight provider Activity is Working and stoppable", () => {
+    const active = conversation({
+      available: true,
+      source: "claude_code_transcript",
+      activity: {
+        id: "claude-activity-1",
+        status: "running",
+        started_at: "2026-07-15T01:00:00.000Z",
+      },
+      events: [],
     });
-    expect(requestRunning).toBe(true);
+    const activityRunning = isProviderActivityRunning(active.activity);
+    expect(activityRunning).toBe(true);
     expect(
       resolveComposerSendAction({
         canSend: false,
         connected: true,
         hasComposerContent: false,
         interrupting: false,
-        requestRunning,
-        sending: false,
-        startingNewChat: false,
+        activityRunning,
       }).showStopButton,
     ).toBe(true);
   });
 
-  test("pending queued user send cannot claim Working lifecycle", () => {
-    const requestRunning = isCodexRequestRunning({
-      conversation: conversation({
-        available: true,
-        active: false,
-        events: [],
-      }),
+  test("a local pending user row cannot claim Working lifecycle", () => {
+    const idle = conversation({
+      available: true,
       events: [],
-      agentStatus: "running",
     });
-    expect(requestRunning).toBe(false);
+    const activityRunning = isProviderActivityRunning(idle.activity);
+    expect(activityRunning).toBe(false);
   });
 
-  test("completed or idle turn is not Working", () => {
-    expect(
-      isCodexRequestRunning({
-        conversation: conversation({
-          available: true,
-          active: false,
-          events: [
-            {
-              id: "user-1",
-              seq: 1,
-              kind: "user_message",
-              role: "user",
-              body: "done asking",
-            },
-            {
-              id: "assistant-1",
-              seq: 2,
-              kind: "assistant_message",
-              role: "assistant",
-              body: "done answering",
-              status: "done",
-            },
-          ],
-        }),
-        events: [
-          {
-            id: "assistant-1",
-            seq: 2,
-            kind: "assistant_message",
-            role: "assistant",
-            body: "done answering",
-            status: "done",
-          },
-        ],
-        agentStatus: "running",
-      }),
-    ).toBe(false);
+  test("completed or absent Activity is not Working", () => {
+    const completed = conversation({
+      available: true,
+      activity: {
+        id: "claude-activity-1",
+        status: "completed",
+        started_at: "2026-07-15T01:00:00.000Z",
+        settled_at: "2026-07-15T01:00:02.000Z",
+      },
+      events: [
+        {
+          id: "user-1",
+          seq: 1,
+          kind: "user_message",
+          role: "user",
+          body: "done asking",
+        },
+        {
+          id: "assistant-1",
+          seq: 2,
+          kind: "assistant_message",
+          role: "assistant",
+          body: "done answering",
+          status: "done",
+        },
+      ],
+    });
+    expect(isProviderActivityRunning(completed.activity)).toBe(false);
   });
 
   test("malformed transcript is unavailable guidance, not pane dump", () => {

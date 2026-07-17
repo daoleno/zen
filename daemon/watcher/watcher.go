@@ -96,28 +96,12 @@ func (w *Watcher) Agents() []*classifier.Agent {
 	w.mu.RLock()
 	defer w.mu.RUnlock()
 	result := make([]*classifier.Agent, 0, len(w.agents))
-	seen := make(map[string]struct{}, len(w.agentOrder))
 	for _, id := range w.agentOrder {
 		a, ok := w.agents[id]
 		if !ok {
 			continue
 		}
-		seen[id] = struct{}{}
 		copy := *a
-		result = append(result, &copy)
-	}
-	// Keep snapshots complete for legacy/directly seeded watcher state. Normal
-	// discovery always records agentOrder; sorting this exceptional remainder
-	// avoids reintroducing map-order nondeterminism.
-	unordered := make([]string, 0, len(w.agents)-len(seen))
-	for id := range w.agents {
-		if _, ok := seen[id]; !ok {
-			unordered = append(unordered, id)
-		}
-	}
-	sort.Strings(unordered)
-	for _, id := range unordered {
-		copy := *w.agents[id]
 		result = append(result, &copy)
 	}
 	return result
@@ -294,19 +278,13 @@ func (w *Watcher) poll() {
 		}
 		agent.Delegated = (w.delegated[win.target] || win.delegated) && !agent.Hidden
 
-		if contentChanged {
-			agent.StaleCount = 0
-		} else {
-			agent.StaleCount++
-		}
-
 		agent.PaneAlive = obs.alive
 		agent.LastLines = lastN(obs.lines, 120)
 		now := time.Now()
 		agent.UpdatedAt = now
 
 		oldState := agent.State
-		classified, classifiedSummary := classifier.Classify(obs.alive, obs.lines, agent.StaleCount)
+		classified, classifiedSummary := classifier.Classify(obs.alive, obs.lines)
 		if terminalStateInvalidatesProgress(classified) {
 			agent.LastProgressAt = nil
 			agent.ExpectedNextCheckAt = nil
@@ -370,7 +348,7 @@ func (w *Watcher) poll() {
 		activity := r.activity
 		if agent.Cwd != r.agentSnap.Cwd || agent.Command != r.agentSnap.Command {
 			// Identity drifted while unlocked; drop provider signal rather than
-			// applying a mismatched transcript observation.
+			// applying pane/process evidence to the wrong session.
 			activity = classifier.ActivitySignal{}
 		}
 
@@ -383,10 +361,6 @@ func (w *Watcher) poll() {
 		}
 		agent.State = newState
 		agent.Summary = summary
-
-		if r.oldState != newState {
-			agent.StateVersion++
-		}
 
 		if !r.exists {
 			w.events <- SessionEvent{
@@ -435,7 +409,6 @@ func (w *Watcher) poll() {
 			archived := cloneAgent(old)
 			if archived != nil {
 				archived.State = classifier.StateRemoved
-				archived.StateVersion++
 			}
 			w.events <- SessionEvent{
 				Type:     "agent_removed",

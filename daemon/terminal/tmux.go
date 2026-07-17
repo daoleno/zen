@@ -36,18 +36,19 @@ func (b *TmuxBackend) Open(targetID string, opts OpenOptions) (Session, error) {
 	}
 	id := terminalIDCounter.Add(1)
 	return &tmuxSession{
-		id:       fmt.Sprintf("%s#%d", targetID, id),
-		targetID: targetID,
-		size:     size,
-		events:   make(chan Event, 128),
+		id:            fmt.Sprintf("%s#%d", targetID, id),
+		targetID:      targetID,
+		requestedSize: size,
+		events:        make(chan Event, 128),
 	}, nil
 }
 
 type tmuxSession struct {
 	id            string
 	targetID      string
-	linkedSession string // grouped session name, cleaned up on close
-	size          Size
+	linkedSession string // disposable linked view session, cleaned up on close
+	requestedSize Size   // mobile projection metadata returned by Size
+	viewPTYSize   Size   // source-derived geometry reported to the tmux client
 
 	mu                 sync.Mutex
 	events             chan Event
@@ -70,8 +71,6 @@ type tmuxReadResult struct {
 const (
 	tmuxInitialHistoryViewportScreens = 4
 	tmuxInitialHistoryMaxLines        = 240
-	tmuxGroupedWindowSelectAttempts   = 6
-	tmuxGroupedWindowSelectBackoff    = 25 * time.Millisecond
 	tmuxScrollStateDebounce           = 120 * time.Millisecond
 )
 
@@ -79,7 +78,9 @@ func (s *tmuxSession) ID() string { return s.id }
 
 func (s *tmuxSession) Events() <-chan Event { return s.events }
 
-func (s *tmuxSession) Size() Size { return s.size }
+// Size reports the mobile projection dimensions requested through Open or
+// Resize. The tmux-facing PTY deliberately mirrors source-owned geometry.
+func (s *tmuxSession) Size() Size { return s.requestedSize }
 
 func (s *tmuxSession) Start(ctx context.Context) error {
 	s.mu.Lock()
@@ -91,7 +92,7 @@ func (s *tmuxSession) Start(ctx context.Context) error {
 	runCtx, cancel := context.WithCancel(ctx)
 	s.cancel = cancel
 
-	linkedName, cmd, err := tmuxGroupedSession(s.targetID, s.size)
+	linkedName, cmd, viewPTYSize, err := tmuxLinkedViewSession(s.targetID)
 	if err != nil {
 		s.mu.Unlock()
 		cancel()
@@ -101,15 +102,18 @@ func (s *tmuxSession) Start(ctx context.Context) error {
 	cmd.Env = tmuxClientEnv(os.Environ())
 
 	ptmx, err := pty.StartWithSize(cmd, &pty.Winsize{
-		Cols: uint16(s.size.Cols),
-		Rows: uint16(s.size.Rows),
+		Cols: uint16(viewPTYSize.Cols),
+		Rows: uint16(viewPTYSize.Rows),
 	})
 	if err != nil {
+		_ = exec.Command("tmux", "kill-session", "-t", s.linkedSession).Run()
+		s.linkedSession = ""
 		s.mu.Unlock()
 		cancel()
 		return fmt.Errorf("start tmux client pty: %w", err)
 	}
 
+	s.viewPTYSize = viewPTYSize
 	s.cmd = cmd
 	s.pty = ptmx
 	s.mu.Unlock()
@@ -454,16 +458,34 @@ func (s *tmuxSession) Resize(cols, rows int) error {
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.size = Size{Cols: cols, Rows: rows}
+	s.requestedSize = Size{Cols: cols, Rows: rows}
 	if s.pty == nil {
 		return nil
 	}
-	if err := pty.Setsize(s.pty, &pty.Winsize{
-		Cols: uint16(cols),
-		Rows: uint16(rows),
-	}); err != nil {
-		return fmt.Errorf("resize tmux client pty: %w", err)
+	// Keep the mobile dimensions as projection metadata only. tmux still uses
+	// an ignore-size normal client's PTY geometry when initializing later
+	// windows, so the tmux-facing PTY must continue to mirror the source.
+	return s.syncViewPTYToWindowLocked()
+}
+
+func (s *tmuxSession) syncViewPTYToWindowLocked() error {
+	if s.pty == nil {
+		return nil
 	}
+	viewSize, err := tmuxViewPTYSize(s.interactiveTargetLocked())
+	if err != nil {
+		return fmt.Errorf("read source tmux window size: %w", err)
+	}
+	if viewSize == s.viewPTYSize {
+		return nil
+	}
+	if err := pty.Setsize(s.pty, &pty.Winsize{
+		Cols: uint16(viewSize.Cols),
+		Rows: uint16(viewSize.Rows),
+	}); err != nil {
+		return fmt.Errorf("sync tmux view pty to source window: %w", err)
+	}
+	s.viewPTYSize = viewSize
 	return nil
 }
 
@@ -484,7 +506,7 @@ func (s *tmuxSession) Close() error {
 	if s.cmd != nil && s.cmd.Process != nil {
 		_ = s.cmd.Process.Kill()
 	}
-	// Kill the grouped session so it doesn't linger
+	// Kill the disposable view session so it doesn't linger.
 	if s.linkedSession != "" {
 		_ = exec.Command("tmux", "kill-session", "-t", s.linkedSession).Run()
 	}
@@ -613,144 +635,171 @@ func (s *tmuxSession) readScrollStateLocked() ScrollState {
 	return state
 }
 
-// tmuxGroupedSession creates a linked/grouped tmux session that shares the
-// same windows as the target, but with a separate client attachment. This
-// lets us attach a dedicated mobile client without hijacking the user's
-// original desktop client process. tmux stores size strategy on each shared
-// window, not on the session, so we must configure every linked window
-// directly and keep doing that for windows linked later.
-func tmuxGroupedSession(targetID string, size Size) (string, *exec.Cmd, error) {
-	targetID = strings.TrimSpace(targetID)
-	if targetID == "" {
-		return "", nil, fmt.Errorf("empty tmux target")
+// tmuxLinkedViewSession creates an independent disposable session and links
+// only the requested source window into it. It deliberately does not join the
+// source session group: group members share future windows, and a small view
+// session can otherwise seed those new shared windows with its own geometry.
+func tmuxLinkedViewSession(targetID string) (string, *exec.Cmd, Size, error) {
+	sourceTarget, err := tmuxSourceWindowTarget(targetID)
+	if err != nil {
+		return "", nil, Size{}, err
 	}
 
-	sessionName := targetID
-	windowTarget := ""
-	if idx := strings.Index(targetID, ":"); idx > 0 {
-		sessionName = targetID[:idx]
-		windowTarget = targetID
-	}
-
-	// Unique name per open (PID + counter)
+	// Unique name per open (PID + counter).
 	id := sessionCounter.Add(1)
 	linkedName := fmt.Sprintf("zen-%d-%d", os.Getpid(), id)
 
-	// Create grouped session with shared windows. Seed the detached session
-	// with the mobile dimensions so the first mobile attach paints a narrow
-	// layout immediately, then let tmux hand size ownership to the most
-	// recently active attached client.
-	createCmd := exec.Command("tmux", "new-session", "-d",
-		"-t", sessionName,
-		"-s", linkedName,
-		"-x", fmt.Sprintf("%d", size.Cols),
-		"-y", fmt.Sprintf("%d", size.Rows))
-	if err := createCmd.Run(); err != nil {
-		return "", nil, fmt.Errorf("create grouped tmux session: %w", err)
-	}
-
-	if err := tmuxConfigureGroupedSession(linkedName); err != nil {
-		_ = exec.Command("tmux", "kill-session", "-t", linkedName).Run()
-		return "", nil, err
-	}
-
-	// Select the correct window in the linked session before attaching
-	if windowTarget != "" {
-		if err := tmuxSelectGroupedWindow(linkedName, windowTarget); err != nil {
-			if tmuxIsLegacyWindowIndexTarget(windowTarget) {
-				return linkedName, tmuxAttachCommand(linkedName), nil
-			}
-			_ = exec.Command("tmux", "kill-session", "-t", linkedName).Run()
-			return "", nil, fmt.Errorf(
-				"select grouped tmux window for %s in %s: %w",
-				windowTarget,
-				linkedName,
-				err,
-			)
-		}
-	}
-
-	return linkedName, tmuxAttachCommand(linkedName), nil
-}
-
-func tmuxConfigureGroupedSession(sessionName string) error {
-	windowIDs, err := tmuxSessionWindowIDs(sessionName)
+	// Bootstrap an independent session, then atomically replace its private
+	// window with a link to the source window. The bootstrap geometry is never
+	// shared with the source.
+	bootstrapOut, err := tmuxNewViewSessionCommand(linkedName).Output()
 	if err != nil {
-		return fmt.Errorf("list grouped tmux windows: %w", err)
+		return "", nil, Size{}, fmt.Errorf("create tmux view session: %w", err)
+	}
+	cleanup := func() {
+		_ = exec.Command("tmux", "kill-session", "-t", linkedName).Run()
+	}
+	bootstrapTarget := strings.TrimSpace(string(bootstrapOut))
+	if bootstrapTarget == "" {
+		cleanup()
+		return "", nil, Size{}, fmt.Errorf("create tmux view session: empty bootstrap window target")
+	}
+	if err := tmuxLinkViewWindowCommand(sourceTarget, bootstrapTarget).Run(); err != nil {
+		cleanup()
+		return "", nil, Size{}, fmt.Errorf("link source tmux window %s into view: %w", sourceTarget, err)
+	}
+	viewPTYSize, err := tmuxViewPTYSize(linkedName)
+	if err != nil {
+		cleanup()
+		return "", nil, Size{}, fmt.Errorf("read source tmux window size: %w", err)
 	}
 
-	for _, windowID := range windowIDs {
-		if err := tmuxConfigureWindow(windowID); err != nil {
-			return err
-		}
-	}
-
-	if err := exec.Command(
-		"tmux",
-		"set-hook",
-		"-t",
-		sessionName,
-		"window-linked",
-		tmuxWindowLinkedHookCommand(),
-	).Run(); err != nil {
-		return fmt.Errorf("set grouped tmux window-linked hook: %w", err)
-	}
-
-	return nil
+	return linkedName, tmuxAttachCommand(linkedName), viewPTYSize, nil
 }
 
-func tmuxSessionWindowIDs(sessionName string) ([]string, error) {
-	out, err := exec.Command(
+func tmuxNewViewSessionCommand(sessionName string) *exec.Cmd {
+	return exec.Command(
 		"tmux",
-		"list-windows",
-		"-t",
-		sessionName,
+		"new-session",
+		"-d",
+		"-P",
 		"-F",
 		"#{window_id}",
-	).Output()
-	if err != nil {
-		return nil, err
-	}
-
-	lines := strings.Split(strings.TrimSpace(string(out)), "\n")
-	windowIDs := make([]string, 0, len(lines))
-	for _, line := range lines {
-		windowID := strings.TrimSpace(line)
-		if windowID == "" {
-			continue
-		}
-		windowIDs = append(windowIDs, windowID)
-	}
-	if len(windowIDs) == 0 {
-		return nil, fmt.Errorf("session %s has no windows", sessionName)
-	}
-	return windowIDs, nil
+		"-s",
+		sessionName,
+		"sleep 86400",
+	)
 }
 
-func tmuxSelectGroupedWindow(sessionName, targetID string) error {
+func tmuxLinkViewWindowCommand(sourceTarget, bootstrapTarget string) *exec.Cmd {
+	return exec.Command(
+		"tmux",
+		"link-window",
+		"-k",
+		"-s",
+		sourceTarget,
+		"-t",
+		bootstrapTarget,
+	)
+}
+
+func tmuxWindowSize(target string) (Size, error) {
+	out, err := exec.Command(
+		"tmux",
+		"display-message",
+		"-p",
+		"-t",
+		target,
+		"#{window_width}\t#{window_height}",
+	).Output()
+	if err != nil {
+		return Size{}, err
+	}
+	parts := strings.Split(strings.TrimSpace(string(out)), "\t")
+	if len(parts) != 2 {
+		return Size{}, fmt.Errorf("unexpected tmux window size %q", strings.TrimSpace(string(out)))
+	}
+	cols, err := strconv.Atoi(parts[0])
+	if err != nil {
+		return Size{}, fmt.Errorf("parse tmux window width: %w", err)
+	}
+	rows, err := strconv.Atoi(parts[1])
+	if err != nil {
+		return Size{}, fmt.Errorf("parse tmux window height: %w", err)
+	}
+	if cols <= 0 || cols > int(^uint16(0)) || rows <= 0 || rows > int(^uint16(0)) {
+		return Size{}, fmt.Errorf("invalid tmux window size %dx%d", cols, rows)
+	}
+	return Size{Cols: cols, Rows: rows}, nil
+}
+
+func tmuxViewPTYSize(target string) (Size, error) {
+	windowSize, err := tmuxWindowSize(target)
+	if err != nil {
+		return Size{}, err
+	}
+	out, err := exec.Command("tmux", "show-options", "-v", "-t", target, "status").Output()
+	if err != nil {
+		return Size{}, fmt.Errorf("read tmux view status size: %w", err)
+	}
+	statusValue := strings.TrimSpace(string(out))
+	if statusValue == "" {
+		out, err = exec.Command("tmux", "show-options", "-g", "-v", "status").Output()
+		if err != nil {
+			return Size{}, fmt.Errorf("read global tmux view status size: %w", err)
+		}
+		statusValue = strings.TrimSpace(string(out))
+	}
+	statusLines, err := tmuxStatusLines(statusValue)
+	if err != nil {
+		return Size{}, err
+	}
+	if windowSize.Rows > int(^uint16(0))-statusLines {
+		return Size{}, fmt.Errorf(
+			"tmux view size %dx%d with %d status lines exceeds PTY limits",
+			windowSize.Cols,
+			windowSize.Rows,
+			statusLines,
+		)
+	}
+	windowSize.Rows += statusLines
+	return windowSize, nil
+}
+
+func tmuxStatusLines(value string) (int, error) {
+	switch value {
+	case "off", "0":
+		return 0, nil
+	case "on":
+		return 1, nil
+	}
+	lines, err := strconv.Atoi(value)
+	if err != nil || lines < 1 || lines > 5 {
+		return 0, fmt.Errorf("invalid tmux status size %q", value)
+	}
+	return lines, nil
+}
+
+func tmuxSourceWindowTarget(targetID string) (string, error) {
+	targetID = strings.TrimSpace(targetID)
+	if targetID == "" {
+		return "", fmt.Errorf("empty tmux target")
+	}
+
+	sessionName, _, hasWindow := strings.Cut(targetID, ":")
+	sessionName = strings.TrimSpace(sessionName)
+	if sessionName == "" {
+		return "", fmt.Errorf("invalid tmux target %q", targetID)
+	}
+	if !hasWindow {
+		return sessionName, nil
+	}
+
 	windowRef := tmuxWindowRef(targetID)
 	if windowRef == "" {
-		return fmt.Errorf("invalid tmux window target %q", targetID)
+		return "", fmt.Errorf("invalid tmux window target %q", targetID)
 	}
-
-	selectTarget := sessionName + ":" + windowRef
-	var lastErr error
-	for attempt := 0; attempt < tmuxGroupedWindowSelectAttempts; attempt++ {
-		if err := exec.Command("tmux", "select-window", "-t", selectTarget).Run(); err == nil {
-			return nil
-		} else {
-			lastErr = err
-		}
-
-		time.Sleep(time.Duration(attempt+1) * tmuxGroupedWindowSelectBackoff)
-	}
-
-	return fmt.Errorf(
-		"tmux select-window -t %s failed after %d attempts: %w",
-		selectTarget,
-		tmuxGroupedWindowSelectAttempts,
-		lastErr,
-	)
+	return sessionName + ":" + windowRef, nil
 }
 
 func tmuxWindowRef(targetID string) string {
@@ -767,56 +816,14 @@ func tmuxWindowRef(targetID string) string {
 	return strings.TrimSpace(windowRef)
 }
 
-func tmuxIsLegacyWindowIndexTarget(targetID string) bool {
-	windowRef := tmuxWindowRef(targetID)
-	if windowRef == "" || strings.HasPrefix(windowRef, "@") {
-		return false
-	}
-
-	for _, r := range windowRef {
-		if r < '0' || r > '9' {
-			return false
-		}
-	}
-	return true
-}
-
-func tmuxConfigureWindow(windowTarget string) error {
-	if err := exec.Command(
-		"tmux",
-		"set-window-option",
-		"-t",
-		windowTarget,
-		"window-size",
-		"latest",
-	).Run(); err != nil {
-		return fmt.Errorf("set tmux window-size for %s: %w", windowTarget, err)
-	}
-
-	if err := exec.Command(
-		"tmux",
-		"set-window-option",
-		"-t",
-		windowTarget,
-		"aggressive-resize",
-		"on",
-	).Run(); err != nil {
-		return fmt.Errorf("set tmux aggressive-resize for %s: %w", windowTarget, err)
-	}
-
-	return nil
-}
-
-func tmuxWindowLinkedHookCommand() string {
-	return `run-shell "tmux set-window-option -t #{hook_window} window-size latest; tmux set-window-option -t #{hook_window} aggressive-resize on"`
-}
-
 func tmuxAttachCommand(sessionName string) *exec.Cmd {
 	return exec.Command(
 		"tmux",
 		"-T",
 		"RGB,256",
 		"attach-session",
+		"-f",
+		"ignore-size",
 		"-t",
 		sessionName,
 	)

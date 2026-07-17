@@ -6,6 +6,7 @@ import {
 import type { AgentKind } from "../../services/agentPresentation";
 import type { ChatLayout } from "../../theme/types";
 import type { CodexSlashCommand } from "../../services/websocket";
+import type { ProviderActivity } from "../../services/codexConversation";
 import { filterSlashCommands } from "./CodexSlashCommands";
 import { resolveComposerSendAction } from "./composerSendAction";
 
@@ -20,13 +21,11 @@ export interface CodexComposerPresentation {
   showAttachmentRail: boolean;
   composerActionButtonEnabled: boolean;
   showStopButton: boolean;
-  showStopIndicator: boolean;
   stopEnabled: boolean;
   stopLabel: string;
   stopLoading: boolean;
-  workingTurnStartedAt?: string;
+  providerActivityStartedAt?: string;
   sendEnabled: boolean;
-  sendIcon: "square" | "arrow-up" | "send";
   sendLabel: string;
   placeholder: string;
   bottomPadding: number;
@@ -39,10 +38,8 @@ export interface CodexComposerPresentationInput {
   slashCommands: CodexSlashCommand[];
   agentKind: AgentKind;
   connectionState: ConnectionState;
-  requestRunning: boolean;
+  runningActivity?: ProviderActivity;
   attachmentCount: number;
-  sending: boolean;
-  startingNewChat: boolean;
   interrupting: boolean;
   canSend: boolean;
   elapsedStartedAt?: string;
@@ -59,10 +56,8 @@ export function buildCodexComposerPresentation({
   slashCommands,
   agentKind,
   connectionState,
-  requestRunning,
+  runningActivity,
   attachmentCount,
-  sending,
-  startingNewChat,
   interrupting,
   canSend,
   elapsedStartedAt,
@@ -104,12 +99,9 @@ export function buildCodexComposerPresentation({
     hasComposerContent:
       draft.trim().length > 0 || attachmentCount > 0,
     interrupting,
-    requestRunning,
-    sending,
-    startingNewChat,
+    activityRunning: Boolean(runningActivity),
   });
-  const { showStopButton, showStopIndicator } = sendAction;
-  const chatgpt = composerLayout === "chatgpt";
+  const { showStopButton } = sendAction;
 
   return {
     commandQuery,
@@ -122,13 +114,11 @@ export function buildCodexComposerPresentation({
     showAttachmentRail: true,
     composerActionButtonEnabled,
     showStopButton,
-    showStopIndicator,
     stopEnabled: sendAction.stopEnabled,
     stopLabel: sendAction.stopLabel,
     stopLoading: interrupting,
-    workingTurnStartedAt: sendAction.workingTurnStartedAt,
+    providerActivityStartedAt: sendAction.providerActivityStartedAt,
     sendEnabled: sendAction.sendEnabled,
-    sendIcon: chatgpt ? "arrow-up" : "arrow-up",
     sendLabel: sendAction.sendLabel,
     placeholder: buildChatComposerPlaceholder({
       agentKind,

@@ -3,16 +3,14 @@ import type { ConnectionState } from "../../store/agents";
 import type {
   CodexConversation,
   CodexConversationEvent,
-  StructuredTurn,
+  ProviderActivity,
 } from "../../services/codexConversation";
 import type {
   TerminalThemeChrome,
   TerminalThemePalette,
 } from "../../constants/terminalThemes";
 import type {
-  CodexChatLocalState,
   ComposerAttachment,
-  PendingSlashCommand,
   PendingUserMessage,
 } from "./CodexChatSession";
 import type { CodexChatBodyProps } from "./CodexChatBody";
@@ -32,10 +30,8 @@ interface UseCodexChatBodyPropsInput {
   conversation: CodexConversation | null;
   events: CodexConversationEvent[];
   pendingUserMessages: PendingUserMessage[];
-  pendingSlashCommands: PendingSlashCommand[];
-  workingTurn?: StructuredTurn;
+  runningActivity?: ProviderActivity;
   loading: boolean;
-  localChatState: CodexChatLocalState;
   error?: string | null;
   draft: string;
   attachments: ComposerAttachment[];
@@ -68,10 +64,8 @@ export function useCodexChatBodyProps({
   conversation,
   events,
   pendingUserMessages,
-  pendingSlashCommands,
-  workingTurn,
+  runningActivity,
   loading,
-  localChatState,
   error,
   draft,
   attachments,
@@ -100,14 +94,8 @@ export function useCodexChatBodyProps({
   }, [controller.handleUploadAttachment]);
 
   const handleSendPress = useCallback(() => {
-    if (controller.startingNewChat) {
-      return;
-    }
     controller.sendDraft();
-  }, [
-    controller.sendDraft,
-    controller.startingNewChat,
-  ]);
+  }, [controller.sendDraft]);
   const handleStopPress = useCallback(() => {
     controller.interruptCodex();
   }, [controller.interruptCodex]);
@@ -120,10 +108,8 @@ export function useCodexChatBodyProps({
       conversation,
       events,
       pendingUserMessages,
-      pendingSlashCommands,
-      workingTurn,
+      runningActivity,
       loading,
-      localChatState,
       error,
       scrollRef: timeline.scrollRef,
       timelineTextSelectable: timeline.textSelectable,
@@ -152,7 +138,7 @@ export function useCodexChatBodyProps({
       composerFocused: composerInput.focused,
       canAttach: controller.canAttach,
       uploading: controller.uploading,
-      sending: controller.sending || controller.startingNewChat,
+      sending: controller.sending,
       operationalError: controller.operationalError,
       attachments,
       composerPresentation,
@@ -196,19 +182,16 @@ export function useCodexChatBodyProps({
       controller.sendDraft,
       controller.retryPendingUserMessage,
       controller.sending,
-      controller.startingNewChat,
       controller.uploading,
       draft,
       error,
       events,
       pendingUserMessages,
-      pendingSlashCommands,
-      workingTurn,
+      runningActivity,
       handleSendPress,
       handleStopPress,
       handleUploadPress,
       loading,
-      localChatState,
       jumpLabel,
       emptyTitle,
       emptyBody,

@@ -1,7 +1,7 @@
 import {
   normalizeCodexConversation,
   type CodexConversation,
-  type StructuredTurn,
+  type ProviderActivity,
 } from "../../services/codexConversation";
 
 export interface ConversationStreamCursor {
@@ -123,14 +123,13 @@ export function reconcileConversationSnapshot(
   return {
     ...replacement,
     activity: replacement.activity,
-    queued_turns: replacement.queued_turns ?? [],
     events: replacement.events.slice().sort(compareConversationEvents),
   };
 }
 
-export function structuredTurnsEqual(
-  left?: StructuredTurn,
-  right?: StructuredTurn,
+export function providerActivitiesEqual(
+  left?: ProviderActivity,
+  right?: ProviderActivity,
 ) {
   return (
     left === right ||
@@ -140,23 +139,9 @@ export function structuredTurnsEqual(
         left.id === right.id &&
         left.status === right.status &&
         left.started_at === right.started_at &&
-        left.settled_at === right.settled_at &&
-        left.control_id === right.control_id,
+        left.settled_at === right.settled_at,
     )
   );
-}
-
-export function structuredTurnQueuesEqual(
-  left?: StructuredTurn[],
-  right?: StructuredTurn[],
-) {
-  if (left === right) {
-    return true;
-  }
-  if (!left || !right || left.length !== right.length) {
-    return false;
-  }
-  return left.every((turn, index) => structuredTurnsEqual(turn, right[index]));
 }
 
 /** Canonical deltas append or stable-upsert; only snapshots replace. */
@@ -184,11 +169,6 @@ export function compareConversationEvents(
   left: CodexConversation["events"][number],
   right: CodexConversation["events"][number],
 ) {
-  const leftPosition = left.position ?? 0;
-  const rightPosition = right.position ?? 0;
-  if (leftPosition > 0 && rightPosition > 0 && leftPosition !== rightPosition) {
-    return leftPosition - rightPosition;
-  }
   const leftTime = Date.parse(left.timestamp || "");
   const rightTime = Date.parse(right.timestamp || "");
   const leftHasTime = Number.isFinite(leftTime);

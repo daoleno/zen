@@ -1,16 +1,14 @@
 import { useMemo, useRef } from "react";
 import type {
   CodexConversationEvent,
-  StructuredTurn,
+  ProviderActivity,
 } from "../../services/codexConversation";
 import type {
-  PendingSlashCommand,
   PendingUserMessage,
 } from "./CodexChatSession";
 import {
   buildZenTimeline,
-  mergeWorkingTurnIntoTimeline,
-  mergePendingSlashCommandsIntoTimeline,
+  mergeRunningActivityIntoTimeline,
   mergePendingUserMessagesIntoTimeline,
 } from "./CodexTimelineModel";
 import type { ZenTimelineItem } from "./CodexTimelineItemView";
@@ -22,14 +20,12 @@ type StableTimelineEntry = {
 export function useCodexTimelineItems({
   events,
   pendingUserMessages,
-  pendingSlashCommands,
-  workingTurn,
+  runningActivity,
   onRetryPendingUserMessage,
 }: {
   events: CodexConversationEvent[];
   pendingUserMessages: PendingUserMessage[];
-  pendingSlashCommands: PendingSlashCommand[];
-  workingTurn?: StructuredTurn;
+  runningActivity?: ProviderActivity;
   onRetryPendingUserMessage(id: string): void;
 }) {
   const previousRef = useRef<{
@@ -41,16 +37,13 @@ export function useCodexTimelineItems({
   });
 
   return useMemo(() => {
-    const nextItems = mergePendingSlashCommandsIntoTimeline(
-      mergePendingUserMessagesIntoTimeline(
-        mergeWorkingTurnIntoTimeline(
-          buildZenTimeline(events),
-          workingTurn,
-        ),
-        pendingUserMessages,
-        onRetryPendingUserMessage,
+    const nextItems = mergePendingUserMessagesIntoTimeline(
+      mergeRunningActivityIntoTimeline(
+        buildZenTimeline(events),
+        runningActivity,
       ),
-      pendingSlashCommands,
+      pendingUserMessages,
+      onRetryPendingUserMessage,
     );
     const previous = previousRef.current;
     const nextById = new Map<string, StableTimelineEntry>();
@@ -81,9 +74,8 @@ export function useCodexTimelineItems({
   }, [
     events,
     onRetryPendingUserMessage,
-    pendingSlashCommands,
     pendingUserMessages,
-    workingTurn,
+    runningActivity,
   ]);
 }
 

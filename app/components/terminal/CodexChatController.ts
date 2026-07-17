@@ -5,11 +5,9 @@ import {
 import type { ConnectionState } from "../../store/agents";
 import type {
   CodexConversation,
-  CodexConversationEvent,
-  StructuredTurn,
+  ProviderActivity,
 } from "../../services/codexConversation";
 import type { ConnectionIssue } from "../../services/connectionIssue";
-import type { AgentStatus } from "../../constants/tokens";
 import type {
   CodexSkill,
   CodexSlashCommand,
@@ -17,30 +15,24 @@ import type {
 import {
   type ComposerAttachment,
   type PendingUserMessage,
-  type PendingUserMessageAcknowledgement,
-  type PendingUserMessageDispatchAttempt,
+  type PendingUserMessageAttempt,
   type PendingUserMessageInput,
   type PendingUserMessageRejection,
 } from "./CodexChatSession";
-import { isCodexRequestRunning } from "./CodexChatControllerModel";
 import { useCodexComposerAttachments } from "./useCodexComposerAttachments";
 import { useCodexControllerPresentation } from "./useCodexControllerPresentation";
 import { useCodexDraftSubmission } from "./useCodexDraftSubmission";
 import { useCodexMessageTransport } from "./useCodexMessageTransport";
 import { useCodexSlashCommandRouter } from "./useCodexSlashCommandRouter";
-import { structuredConversationClientIdentity } from "./structuredTurnLifecycle";
 
 interface UseCodexChatControllerInput {
   serverId: string;
   agentId: string;
   conversationScopeKey?: string;
-  agentStatus?: AgentStatus;
   connectionState: ConnectionState;
   connectionIssue?: ConnectionIssue | null;
   conversation: CodexConversation | null;
-  events: CodexConversationEvent[];
-  turnBusy?: boolean;
-  workingTurn?: StructuredTurn;
+  runningActivity?: ProviderActivity;
   draft: string;
   setDraft(value: string): void;
   restoreDraft(value: string): void;
@@ -49,19 +41,14 @@ interface UseCodexChatControllerInput {
   setAttachments(value: SetStateAction<ComposerAttachment[]>): void;
   slashCommands: CodexSlashCommand[];
   addPendingUserMessage(message: PendingUserMessageInput): string;
-  acknowledgePendingUserMessage(
+  beginPendingUserMessageAttempt(
     id: string,
-    acknowledgement: PendingUserMessageAcknowledgement,
-  ): void;
-  markPendingUserMessageDispatched(
-    id: string,
-    attempt: PendingUserMessageDispatchAttempt,
+    attempt: PendingUserMessageAttempt,
   ): void;
   rejectPendingUserMessage(
     id: string,
     rejection: PendingUserMessageRejection,
   ): void;
-  markNewChatMessageStarted(): void;
   pinToBottomIfNeeded(animated?: boolean, delay?: number): void;
   focusComposer(): void;
   clearComposerNativeText(): void;
@@ -75,13 +62,10 @@ export function useCodexChatController({
   serverId,
   agentId,
   conversationScopeKey,
-  agentStatus,
   connectionState,
   connectionIssue,
   conversation,
-  events,
-  turnBusy,
-  workingTurn,
+  runningActivity,
   draft,
   setDraft,
   restoreDraft,
@@ -90,10 +74,8 @@ export function useCodexChatController({
   setAttachments,
   slashCommands,
   addPendingUserMessage,
-  acknowledgePendingUserMessage,
-  markPendingUserMessageDispatched,
+  beginPendingUserMessageAttempt,
   rejectPendingUserMessage,
-  markNewChatMessageStarted,
   pinToBottomIfNeeded,
   focusComposer,
   clearComposerNativeText,
@@ -122,20 +104,12 @@ export function useCodexChatController({
     setAttachments,
     focusComposer,
   });
-  const requestTurnBusy =
-    turnBusy ??
-    isCodexRequestRunning({
-      conversation,
-      events,
-      agentStatus,
-    });
   const {
     interruptCodex,
     interrupting,
     operationalError,
     retryPendingUserMessage,
     sending,
-    startingNewChat,
     startNewCodexChat,
     sendSlashCommandToCodex,
     submitTextToCodex,
@@ -143,10 +117,8 @@ export function useCodexChatController({
     serverId,
     agentId,
     conversationScopeKey,
-    conversationIdentity: structuredConversationClientIdentity(conversation),
     connectionState,
-    turnBusy: requestTurnBusy,
-    workingTurn,
+    runningActivity,
     draft,
     attachments,
     pendingUserMessages,
@@ -155,10 +127,8 @@ export function useCodexChatController({
     setAttachments,
     clearComposerNativeText,
     addPendingUserMessage,
-    acknowledgePendingUserMessage,
-    markPendingUserMessageDispatched,
+    beginPendingUserMessageAttempt,
     rejectPendingUserMessage,
-    markNewChatMessageStarted,
     pinToBottomIfNeeded,
   });
 
@@ -169,13 +139,11 @@ export function useCodexChatController({
     connectionState,
     connectionIssue,
     conversation,
-    events,
-    agentStatus,
+    runningActivity,
     draft,
     attachments,
     sending,
     uploading,
-    requestRunning: requestTurnBusy,
   });
 
   const runStatusCommand = useCallback((
@@ -223,7 +191,6 @@ export function useCodexChatController({
   return {
     sending,
     interrupting,
-    startingNewChat,
     uploading,
     statusMeta,
     operationalError,

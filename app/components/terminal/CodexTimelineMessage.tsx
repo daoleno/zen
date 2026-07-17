@@ -43,7 +43,7 @@ export interface ZenMessageTimelineItem {
   body: string;
   attachments: DisplayAttachment[];
   pending?: boolean;
-  pendingLifecycle?: "unconfirmed" | "sending" | "queued" | "failed";
+  pendingLifecycle?: "pending" | "failed";
   pendingLifecycleLabel?: string;
   pendingLifecycleAccessibilityLabel?: string;
   pendingFailureMessage?: string;

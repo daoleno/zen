@@ -39,13 +39,10 @@ type Agent struct {
 	LastLines           []string   `json:"last_output_lines"`
 	StartedAt           time.Time  `json:"started_at,omitempty"`
 	UpdatedAt           time.Time  `json:"updated_at"`
-	StateVersion        int64      `json:"state_version"` // increments on every state change
 	ProcessID           int        `json:"process_id,omitempty"`
 	Hidden              bool       `json:"hidden,omitempty"`
 	Delegated           bool       `json:"delegated,omitempty"`
 	PaneAlive           bool       `json:"-"`
-	LastOutputLen       int        `json:"-"`
-	StaleCount          int        `json:"-"` // consecutive polls with no new output
 }
 
 // blockedPatterns match output that indicates the agent is waiting for user input.
@@ -120,9 +117,7 @@ var timestampedLogLineRe = regexp.MustCompile(`^\d{4}/\d{2}/\d{2} \d{2}:\d{2}:\d
 //	        │no
 //	        ▼
 //	UNKNOWN (idle / no durable activity signal)
-func Classify(paneAlive bool, lines []string, staleCount int) (AgentState, string) {
-	_ = staleCount // retained for API compatibility with the watcher poll loop
-
+func Classify(paneAlive bool, lines []string) (AgentState, string) {
 	if len(lines) == 0 {
 		if !paneAlive {
 			return StateDone, "Session ended (no output)"

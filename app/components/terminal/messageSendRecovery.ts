@@ -18,3 +18,55 @@ export function restoreFailedAttachments<T extends { id: string }>(
     ...current,
   ];
 }
+
+export function beginLiveMessageAttempt<
+  Receipt,
+  PendingMessageID,
+  Attachment extends { id: string },
+>({
+  writeNow,
+  createOptimisticRow,
+  previousDraft,
+  currentDraft,
+  previousAttachments,
+  currentAttachments,
+}: {
+  writeNow(): Receipt;
+  createOptimisticRow(receipt: Receipt): PendingMessageID;
+  previousDraft: string;
+  currentDraft: string;
+  previousAttachments: Attachment[];
+  currentAttachments: Attachment[];
+}):
+  | {
+      kind: "written";
+      receipt: Receipt;
+      pendingMessageId: PendingMessageID;
+    }
+  | {
+      kind: "write_failed";
+      error: unknown;
+      restoredDraft: string;
+      restoredAttachments: Attachment[];
+    } {
+  let receipt: Receipt;
+  try {
+    receipt = writeNow();
+  } catch (error) {
+    return {
+      kind: "write_failed",
+      error,
+      restoredDraft: restoreFailedDraft(previousDraft, currentDraft),
+      restoredAttachments: restoreFailedAttachments(
+        previousAttachments,
+        currentAttachments,
+      ),
+    };
+  }
+
+  return {
+    kind: "written",
+    receipt,
+    pendingMessageId: createOptimisticRow(receipt),
+  };
+}

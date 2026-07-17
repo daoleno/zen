@@ -17,7 +17,6 @@ import (
 	"sort"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	"github.com/google/uuid"
@@ -25,9 +24,7 @@ import (
 	"github.com/daoleno/zen/daemon/auth"
 	"github.com/daoleno/zen/daemon/brain"
 	"github.com/daoleno/zen/daemon/calendar"
-	"github.com/daoleno/zen/daemon/chatthread"
 	"github.com/daoleno/zen/daemon/classifier"
-	"github.com/daoleno/zen/daemon/codexshadow"
 	"github.com/daoleno/zen/daemon/push"
 	"github.com/daoleno/zen/daemon/stats"
 	"github.com/daoleno/zen/daemon/terminal"
@@ -39,31 +36,36 @@ import (
 
 const maxCodexAssetBytes = 6 << 20
 const codexConversationSubscriptionInterval = 220 * time.Millisecond
+const defaultScheduledResultLimit = 120
 
 var upgrader = websocket.Upgrader{
 	CheckOrigin: func(r *http.Request) bool { return true },
 }
 
+type notificationPusher interface {
+	SetRegistration(token, serverRef string)
+	NotifyAgentBlocked(agentID, agentName, summary string) error
+	NotifyAgentFailed(agentID, agentName, summary string) error
+	NotifyAgentDone(agentID, agentName, summary string) error
+	NotifyScheduledResult(title, status, threadID, resultID string) error
+}
+
 // Server handles WebSocket connections from the zen mobile app.
 type Server struct {
-	auth                     *auth.Manager
-	watcher                  *watcher.Watcher
-	terminal                 *terminal.Manager
-	pusher                   *push.Client
-	stats                    *stats.Collector
-	work                     *work.Store
-	launcher                 *work.Launcher
-	workLog                  *work.SessionLogger
-	execs                    *work.ExecutorConfig
-	brain                    *brain.Service
-	calendar                 *calendar.Store
-	calendarScheduler        *calendar.Scheduler
-	lifecycle                *delegatedLifecycleManager
-	structuredTurns          *structuredTurnRegistry
-	structuredSnapshotLoader func(agentID string) (work.CodexConversation, error)
-	canonicalCodex           *canonicalCodexProjection
-	codexShadow              codexShadowObserver
-	codexShadowBusy          atomic.Bool
+	auth                       *auth.Manager
+	watcher                    *watcher.Watcher
+	terminal                   *terminal.Manager
+	pusher                     notificationPusher
+	stats                      *stats.Collector
+	work                       *work.Store
+	execs                      *work.ExecutorConfig
+	brain                      *brain.Service
+	calendar                   *calendar.Store
+	calendarScheduler          *calendar.Scheduler
+	lifecycle                  *delegatedLifecycleManager
+	providerConversationLoader func(reader *work.ProviderConversationReader, agentID string) (work.CodexConversation, error)
+	sendInputOverride          func(agentID, text string) error
+	sendActionOverride         func(agentID, action string) error
 
 	workSubID     int
 	workSub       <-chan work.Event
@@ -74,7 +76,6 @@ type Server struct {
 	active    map[*websocket.Conn]string
 	writes    map[*websocket.Conn]*sync.Mutex
 	codexSubs map[*websocket.Conn]map[string]codexConversationSubscription
-	notified  map[string]struct{}
 	brainSent map[string]struct{}
 	mu        sync.Mutex
 }
@@ -91,35 +92,22 @@ type codexConversationSubscription struct {
 	generation string
 }
 
-// codexShadowObserver is deliberately read-only and narrower than every
-// provider-effect boundary. The server can offer structured records and legacy
-// lifecycle metadata, but the observer cannot dispatch input or alter the wire
-// projection returned to the App.
-type codexShadowObserver interface {
-	Enabled(ownerKey string) bool
-	ObserveRollout(context.Context, codexshadow.Observation) (chatthread.ShadowSnapshot, error)
-}
-
 // New creates a WebSocket server.
-func New(authManager *auth.Manager, w *watcher.Watcher, pusher *push.Client, sc *stats.Collector, workStore *work.Store, launcher *work.Launcher, execs *work.ExecutorConfig, brainService *brain.Service) *Server {
+func New(authManager *auth.Manager, w *watcher.Watcher, pusher *push.Client, sc *stats.Collector, workStore *work.Store, execs *work.ExecutorConfig, brainService *brain.Service) *Server {
 	srv := &Server{
-		auth:            authManager,
-		watcher:         w,
-		terminal:        terminal.NewManager(&terminal.TmuxBackend{}),
-		pusher:          pusher,
-		stats:           sc,
-		work:            workStore,
-		launcher:        launcher,
-		execs:           execs,
-		brain:           brainService,
-		clients:         make(map[*websocket.Conn]bool),
-		active:          make(map[*websocket.Conn]string),
-		writes:          make(map[*websocket.Conn]*sync.Mutex),
-		codexSubs:       make(map[*websocket.Conn]map[string]codexConversationSubscription),
-		notified:        make(map[string]struct{}),
-		brainSent:       make(map[string]struct{}),
-		structuredTurns: newStructuredTurnRegistry(),
-		canonicalCodex:  newCanonicalCodexProjection(),
+		auth:      authManager,
+		watcher:   w,
+		terminal:  terminal.NewManager(&terminal.TmuxBackend{}),
+		pusher:    pusher,
+		stats:     sc,
+		work:      workStore,
+		execs:     execs,
+		brain:     brainService,
+		clients:   make(map[*websocket.Conn]bool),
+		active:    make(map[*websocket.Conn]string),
+		writes:    make(map[*websocket.Conn]*sync.Mutex),
+		codexSubs: make(map[*websocket.Conn]map[string]codexConversationSubscription),
+		brainSent: make(map[string]struct{}),
 	}
 	srv.lifecycle = newDelegatedLifecycleManager(
 		func(event brain.HeartbeatEvent) (bool, error) {
@@ -137,15 +125,6 @@ func New(authManager *auth.Manager, w *watcher.Watcher, pusher *push.Client, sc 
 	)
 	if workStore != nil {
 		srv.workSubID, srv.workSub = workStore.Subscribe()
-		srv.workLog = work.NewSessionLogger(workStore, work.NewAgentCLIDigestProvider(execs))
-	}
-	if authManager != nil {
-		shadow, err := codexshadow.OpenConfigured(authManager.StorageDir(), nil)
-		if err != nil {
-			log.Printf("Codex Chat shadow diagnostics disabled (%s)", codexshadow.ErrorCode(err))
-		} else {
-			srv.codexShadow = shadow
-		}
 	}
 	return srv
 }
@@ -166,7 +145,6 @@ type clientMessage struct {
 	Data                 string                 `json:"data"`
 	Body                 string                 `json:"body"`
 	Action               string                 `json:"action"`
-	StateVersion         int64                  `json:"state_version"`
 	PushToken            string                 `json:"push_token"`
 	ServerRef            string                 `json:"server_ref"`
 	Cols                 int                    `json:"cols"`
@@ -189,10 +167,6 @@ type clientMessage struct {
 	CalendarItem         *calendar.Item         `json:"calendar_item"`
 	Revision             int64                  `json:"revision"`
 	ConversationScopeKey string                 `json:"conversation_scope_key"`
-	TurnID               string                 `json:"turn_id"`
-	TurnStartedAt        json.RawMessage        `json:"turn_started_at"`
-	TurnQueued           bool                   `json:"turn_queued"`
-	TurnConversationID   string                 `json:"turn_conversation_identity"`
 }
 
 // Run starts the HTTP server and event broadcaster.
@@ -271,12 +245,9 @@ func (s *Server) handleWS(w http.ResponseWriter, r *http.Request) {
 	log.Printf("client connected (%d total)", len(s.clients))
 	s.sendAgentSessionList(conn)
 	if s.work != nil {
-		s.syncWorkLogsForAgents(false)
 		s.sendJSON(conn, map[string]any{
-			"type":                 "work_items_snapshot",
-			"work_items":           work.FilterAgentWorkItems(s.work.List()),
-			"executors":            s.executorRoles(),
-			"work_digest_provider": s.workDigestProvider(),
+			"type":       "work_items_snapshot",
+			"work_items": work.FilterCalendarWorkItems(s.work.List()),
 		})
 	}
 	if s.calendar != nil {
@@ -384,17 +355,8 @@ func (s *Server) handleClientMessage(conn *websocket.Conn, msg []byte) {
 	case "list_work_items":
 		s.handleListWorkItems(conn, raw)
 
-	case "get_work_item":
-		s.handleGetWorkItem(conn, raw)
-
 	case "write_work_item":
 		s.handleWriteWorkItem(conn, raw)
-
-	case "start_work_item":
-		s.handleStartWorkItem(conn, raw)
-
-	case "rerun_work_item":
-		s.handleRerunWorkItem(conn, raw)
 
 	case "delete_work_item":
 		s.handleDeleteWorkItem(conn, raw)
@@ -411,12 +373,6 @@ func (s *Server) handleClientMessage(conn *websocket.Conn, msg []byte) {
 		s.handleCancelCalendarItem(conn, raw)
 	case "run_calendar_item":
 		s.handleRunCalendarItem(conn, raw)
-
-	case "list_executors":
-		s.handleListExecutors(conn, raw)
-
-	case "set_work_digest_provider":
-		s.handleSetWorkDigestProvider(conn, raw)
 
 	case "brain_snapshot":
 		s.sendBrainSnapshot(conn, raw.RequestID)
@@ -440,7 +396,7 @@ func (s *Server) handleClientMessage(conn *websocket.Conn, msg []byte) {
 		s.handleBrainWorkspaceFile(conn, raw)
 
 	case "register_push":
-		if raw.PushToken != "" {
+		if raw.PushToken != "" && s.pusher != nil {
 			s.pusher.SetRegistration(raw.PushToken, raw.ServerRef)
 			s.sendJSON(conn, map[string]any{"type": "push_registered", "ok": true})
 		}
@@ -451,48 +407,19 @@ func (s *Server) handleClientMessage(conn *websocket.Conn, msg []byte) {
 		s.mu.Unlock()
 
 	case "send_input":
-		dispatch := func() (structuredInputAcceptance, error) {
-			return s.acceptStructuredInput(
-				raw,
-				func() error { return s.watcher.SendInput(raw.AgentID, raw.Text) },
-			)
-		}
-		var acceptance structuredInputAcceptance
-		var err error
-		if strings.TrimSpace(raw.TurnID) != "" {
-			scope := structuredTurnRegistryKey(raw.ConversationScopeKey, raw.AgentID)
-			// Warm the provider frontier before allocating this Submission. Older
-			// rollout input facts can therefore never bind to a newly accepted row.
-			if baseline, baselineErr := s.loadStructuredConversationSnapshot(raw.AgentID); baselineErr == nil {
-				s.canonicalCodexProjection().project(scope, baseline)
-			}
-			acceptance, err = s.canonicalCodexProjection().acceptWithDispatch(
-				scope,
-				canonicalCodexSubmission{
-					ID:        raw.TurnID,
-					Body:      raw.Text,
-					StartedAt: clientStartedAt(raw.TurnStartedAt),
-					AttemptID: raw.RequestID,
-				},
-				dispatch,
-			)
-		} else {
-			acceptance, err = dispatch()
-		}
+		err := s.sendInput(raw.AgentID, raw.Text)
 		if err != nil {
 			log.Printf("send_input error: %v", err)
-			s.sendJSON(conn, structuredInputFailureResponse(raw, err))
-		} else if raw.RequestID != "" {
 			s.sendJSON(conn, map[string]any{
-				"type":                  "input_accepted",
-				"request_id":            raw.RequestID,
-				"agent_id":              raw.AgentID,
-				"turn_id":               acceptance.TurnID,
-				"queued":                acceptance.Queued,
-				"turn_revision":         acceptance.Revision,
-				"turn_epoch":            acceptance.Epoch,
-				"position":              acceptance.Position,
-				"conversation_revision": acceptance.ConversationRevision,
+				"type":       "input_failed",
+				"request_id": raw.RequestID,
+				"code":       "send_input_failed",
+				"message":    err.Error(),
+			})
+		} else {
+			s.sendJSON(conn, map[string]any{
+				"type":       "input_sent",
+				"request_id": raw.RequestID,
 			})
 		}
 
@@ -742,37 +669,19 @@ func (s *Server) handleClientMessage(conn *websocket.Conn, msg []byte) {
 		}
 
 	case "send_action":
-		// State version safety check: reject stale actions.
-		if raw.StateVersion > 0 {
-			agent := s.watcher.GetAgent(raw.AgentID)
-			if agent != nil && agent.StateVersion != raw.StateVersion {
-				s.sendErrorWithRequestID(conn, raw.RequestID, "stale_action",
-					fmt.Sprintf("Agent state changed (version %d → %d). Refresh before acting.", raw.StateVersion, agent.StateVersion))
-				return
-			}
-		}
-		var actionAccepted = true
-		var err error
-		if raw.Action == "pause" {
-			actionAccepted, err = s.interruptStructuredTurn(
-				raw,
-				func() error { return s.watcher.SendAction(raw.AgentID, raw.Action) },
-			)
-		} else {
-			err = s.watcher.SendAction(raw.AgentID, raw.Action)
-		}
+		err := s.sendAction(raw.AgentID, raw.Action)
 		if err != nil {
 			log.Printf("send_action error: %v", err)
-			s.sendErrorWithRequestID(conn, raw.RequestID, "send_action_failed", err.Error())
-		} else if !actionAccepted {
-			s.sendErrorWithRequestID(conn, raw.RequestID, "stale_action", "Turn changed before Stop was accepted. Refresh and try again.")
+			s.sendJSON(conn, map[string]any{
+				"type":       "action_failed",
+				"request_id": raw.RequestID,
+				"code":       "send_action_failed",
+				"message":    err.Error(),
+			})
 		} else {
 			s.sendJSON(conn, map[string]any{
-				"type":       "action_confirmed",
+				"type":       "action_sent",
 				"request_id": raw.RequestID,
-				"agent_id":   raw.AgentID,
-				"action":     raw.Action,
-				"turn_id":    raw.TurnID,
 			})
 		}
 
@@ -780,15 +689,6 @@ func (s *Server) handleClientMessage(conn *websocket.Conn, msg []byte) {
 		if err := s.watcher.KillSession(raw.AgentID); err != nil {
 			log.Printf("kill_agent error: %v", err)
 			s.sendError(conn, "kill_failed", err.Error())
-		} else {
-			settledAt := time.Now()
-			if strings.TrimSpace(raw.ConversationScopeKey) != "" {
-				s.turnRegistry().cancelAll(
-					structuredTurnRegistryKey(raw.ConversationScopeKey, raw.AgentID),
-					settledAt,
-				)
-			}
-			s.turnRegistry().cancelAllForAgent(raw.AgentID, settledAt)
 		}
 
 	case "list_dir":
@@ -865,29 +765,6 @@ func (s *Server) handleClientMessage(conn *websocket.Conn, msg []byte) {
 	}
 }
 
-func structuredInputFailureResponse(raw clientMessage, err error) map[string]any {
-	var rejected *structuredInputRejectedError
-	if errors.As(err, &rejected) {
-		return map[string]any{
-			"type":       "input_rejected",
-			"request_id": raw.RequestID,
-			"agent_id":   raw.AgentID,
-			"turn_id":    raw.TurnID,
-			"code":       rejected.code,
-			"message":    rejected.Error(),
-			"retryable":  rejected.retryable,
-		}
-	}
-	return map[string]any{
-		"type":       "input_unconfirmed",
-		"request_id": raw.RequestID,
-		"agent_id":   raw.AgentID,
-		"turn_id":    raw.TurnID,
-		"code":       "send_input_unconfirmed",
-		"message":    "The daemon could not confirm whether the executor accepted this input.",
-	}
-}
-
 func (s *Server) sendAgentSessionList(conn *websocket.Conn) {
 	agentSessions := s.currentVisibleAgentSessions()
 	s.sendJSON(conn, map[string]any{"type": "agent_session_list", "agent_sessions": s.agentSessionsWire(agentSessions)})
@@ -956,240 +833,35 @@ func (s *Server) resolveCodexConversationAgent(raw clientMessage) resolvedCodexC
 	}
 }
 
-func (s *Server) turnRegistry() *structuredTurnRegistry {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if s.structuredTurns == nil {
-		s.structuredTurns = newStructuredTurnRegistry()
+func (s *Server) sendInput(agentID, text string) error {
+	if s != nil && s.sendInputOverride != nil {
+		return s.sendInputOverride(strings.TrimSpace(agentID), text)
 	}
-	return s.structuredTurns
-}
-
-func (s *Server) canonicalCodexProjection() *canonicalCodexProjection {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if s.canonicalCodex == nil {
-		s.canonicalCodex = newCanonicalCodexProjection()
-	}
-	return s.canonicalCodex
-}
-
-// refreshStructuredTurnBaseline reconciles the latest trusted provider facts
-// immediately before a structured Send or Stop. This is deliberately not
-// conditional on the registry being empty: the provider may have settled A
-// and promoted B between subscription polls, in which case Stop(A) must be
-// rejected before any pause reaches the executor. Client hints and terminal
-// panes never establish this baseline.
-func (s *Server) refreshStructuredTurnBaseline(key, agentID string) (string, error) {
-	registry := s.turnRegistry()
-	if key == "" {
-		return "", nil
-	}
-	conversation, err := s.loadStructuredConversationSnapshot(agentID)
-	if err != nil {
-		return "", err
-	}
-	if strings.HasPrefix(key, "agent:") {
-		registry.markWorkAgentPresent(agentID)
-	}
-	registry.projectProviderHistoryWithContext(
-		key,
-		agentID,
-		structuredConversationThreadIdentity(conversation),
-		conversation.ProviderTurns,
-		conversation.Turn,
-	)
-	return structuredConversationThreadIdentity(conversation), nil
-}
-
-func (s *Server) loadStructuredConversationSnapshot(agentID string) (work.CodexConversation, error) {
-	if s.structuredSnapshotLoader != nil {
-		return s.structuredSnapshotLoader(strings.TrimSpace(agentID))
-	}
-	if s.watcher == nil {
-		return work.CodexConversation{}, fmt.Errorf("%w: executor watcher unavailable", errStructuredLifecycleSyncing)
-	}
-	agent := s.watcher.GetAgent(strings.TrimSpace(agentID))
-	if agent == nil {
-		return work.CodexConversation{}, fmt.Errorf("%w: executor unavailable", errStructuredLifecycleSyncing)
-	}
-	provider := s.structuredProviderForAgent(agent)
-	if provider == "" {
-		return work.CodexConversation{}, fmt.Errorf("%w: structured provider unavailable", errStructuredLifecycleSyncing)
-	}
-	conversation, err := work.LoadCodexConversationForProvider(*agent, provider, time.Now())
-	if err != nil {
-		return work.CodexConversation{}, fmt.Errorf("%w: %v", errStructuredLifecycleSyncing, err)
-	}
-	return conversation, nil
-}
-
-func (s *Server) acceptStructuredInput(
-	raw clientMessage,
-	dispatch func() error,
-) (structuredInputAcceptance, error) {
-	key := structuredTurnRegistryKey(raw.ConversationScopeKey, raw.AgentID)
-	conversationIdentity := ""
-	if strings.TrimSpace(raw.TurnID) != "" {
-		if accepted, err, ok := s.turnRegistry().replayInput(key, raw.TurnID); ok {
-			return accepted, err
-		}
-		var err error
-		conversationIdentity, err = s.refreshStructuredTurnBaseline(key, raw.AgentID)
-		if err != nil {
-			return structuredInputAcceptance{}, &structuredInputRejectedError{
-				cause:     err,
-				code:      "structured_lifecycle_syncing",
-				retryable: true,
-			}
-		}
-	}
-	threadControl := isStructuredThreadControlInput(raw.Text)
-	baselineConversation := strings.TrimSpace(raw.TurnConversationID)
-	if threadControl && baselineConversation == "" {
-		baselineConversation = firstNonEmptyStructuredIdentity(
-			conversationIdentity,
-			s.currentStructuredConversationIdentity(raw.AgentID),
-		)
-	}
-	return s.turnRegistry().acceptInputWithOptions(
-		key,
-		raw.AgentID,
-		raw.TurnID,
-		clientStructuredTurnStartedAt(raw.TurnStartedAt),
-		raw.TurnQueued,
-		threadControl,
-		baselineConversation,
-		dispatch,
-	)
-}
-
-func (s *Server) interruptStructuredTurn(
-	raw clientMessage,
-	dispatch func() error,
-) (bool, error) {
-	key := structuredTurnRegistryKey(raw.ConversationScopeKey, raw.AgentID)
-	if strings.TrimSpace(raw.TurnID) != "" {
-		if _, err := s.refreshStructuredTurnBaseline(key, raw.AgentID); err != nil {
-			return false, err
-		}
-	}
-	return s.turnRegistry().interruptWithDispatch(
-		key,
-		raw.TurnID,
-		time.Now(),
-		dispatch,
-	)
-}
-
-func (s *Server) projectStructuredConversationTurns(
-	conversationScopeKey string,
-	agentID string,
-	conversation work.CodexConversation,
-) work.CodexConversation {
-	return s.projectStructuredConversationTurnsWithTrust(
-		conversationScopeKey,
-		agentID,
-		conversation,
-		true,
-	)
-}
-
-func (s *Server) projectStructuredConversationTurnsWithTrust(
-	conversationScopeKey string,
-	agentID string,
-	conversation work.CodexConversation,
-	trustedProviderFacts bool,
-) work.CodexConversation {
-	if s.isHistoricalBrainConversationScope(conversationScopeKey) {
-		key := structuredTurnRegistryKey(conversationScopeKey, agentID)
-		s.turnRegistry().cancelAll(key, time.Now())
-		conversation.Turn, conversation.QueuedTurns, conversation.TurnEpoch, conversation.TurnRevision = s.turnRegistry().projectProviderHistoryWithContext(
-			key,
-			"",
-			"",
-			nil,
-			nil,
-		)
-		if conversation.QueuedTurns == nil {
-			conversation.QueuedTurns = []work.CodexConversationTurn{}
-		}
-		active := false
-		conversation.Active = &active
-		return conversation
-	}
-	key := structuredTurnRegistryKey(conversationScopeKey, agentID)
-	projectionAgentID := ""
-	conversationIdentity := ""
-	var providerHistory []work.CodexConversationTurn
-	var providerTurn *work.CodexConversationTurn
-	if trustedProviderFacts {
-		projectionAgentID = agentID
-		conversationIdentity = structuredConversationThreadIdentity(conversation)
-		providerHistory = conversation.ProviderTurns
-		providerTurn = conversation.Turn
-	}
-	conversation.Turn, conversation.QueuedTurns, conversation.TurnEpoch, conversation.TurnRevision = s.turnRegistry().projectProviderHistoryWithContext(
-		key,
-		projectionAgentID,
-		conversationIdentity,
-		providerHistory,
-		providerTurn,
-	)
-	if conversation.QueuedTurns == nil {
-		conversation.QueuedTurns = []work.CodexConversationTurn{}
-	}
-	active := conversation.Turn != nil &&
-		conversation.Turn.Status == work.CodexConversationTurnRunning
-	conversation.Active = &active
-	return conversation
-}
-
-func isStructuredThreadControlInput(text string) bool {
-	fields := strings.Fields(strings.TrimSpace(text))
-	if len(fields) == 0 {
-		return false
-	}
-	switch strings.ToLower(fields[0]) {
-	case "/new", "/clear":
-		return true
-	default:
-		return false
-	}
-}
-
-func (s *Server) currentStructuredConversationIdentity(agentID string) string {
 	if s == nil || s.watcher == nil {
-		return ""
+		return fmt.Errorf("executor watcher unavailable")
 	}
-	agent := s.watcher.GetAgent(strings.TrimSpace(agentID))
-	if agent == nil {
-		return ""
-	}
-	provider := s.structuredProviderForAgent(agent)
-	if provider == "" {
-		return ""
-	}
-	conversation, err := work.LoadCodexConversationForProvider(*agent, provider, time.Now())
-	if err != nil {
-		return ""
-	}
-	return structuredConversationThreadIdentity(conversation)
+	return s.watcher.SendInput(strings.TrimSpace(agentID), text)
 }
 
-func (s *Server) isHistoricalBrainConversationScope(scopeKey string) bool {
-	const prefix = "brain-thread:"
-	scopeKey = strings.TrimSpace(scopeKey)
-	if s.brain == nil || !strings.HasPrefix(scopeKey, prefix) {
-		return false
+func (s *Server) sendAction(agentID, action string) error {
+	if s != nil && s.sendActionOverride != nil {
+		return s.sendActionOverride(strings.TrimSpace(agentID), action)
 	}
-	threadID := strings.TrimSpace(strings.TrimPrefix(scopeKey, prefix))
-	if threadID == "" {
-		return false
+	if s == nil || s.watcher == nil {
+		return fmt.Errorf("executor watcher unavailable")
 	}
-	currentThreadID, err := s.brain.ChatThreadID()
-	currentThreadID = strings.TrimSpace(currentThreadID)
-	return err == nil && currentThreadID != "" && threadID != currentThreadID
+	return s.watcher.SendAction(strings.TrimSpace(agentID), action)
+}
+
+func (s *Server) loadProviderConversationSnapshot(
+	reader *work.ProviderConversationReader,
+	resolved resolvedCodexConversationAgent,
+	now time.Time,
+) (work.CodexConversation, error) {
+	if s.providerConversationLoader != nil {
+		return s.providerConversationLoader(reader, strings.TrimSpace(resolved.targetID))
+	}
+	return reader.Load(resolved.agent, resolved.provider, now)
 }
 
 func (s *Server) handleListSessionServices(conn *websocket.Conn, raw clientMessage) {
@@ -1280,6 +952,7 @@ func (s *Server) runCodexConversationSubscription(
 	subscriptionID string,
 	generation string,
 ) {
+	reader := work.NewProviderConversationReader()
 	ticker := time.NewTicker(codexConversationSubscriptionInterval)
 	defer ticker.Stop()
 	defer func() {
@@ -1292,7 +965,7 @@ func (s *Server) runCodexConversationSubscription(
 
 	var previous *codexConversationSubscriptionSnapshot
 	for {
-		s.publishCodexConversationSubscription(ctx, conn, raw, subscriptionID, generation, &previous)
+		s.publishCodexConversationSubscription(ctx, conn, raw, subscriptionID, generation, reader, &previous)
 		select {
 		case <-ctx.Done():
 			return
@@ -1307,6 +980,7 @@ func (s *Server) publishCodexConversationSubscription(
 	raw clientMessage,
 	subscriptionID string,
 	generation string,
+	reader *work.ProviderConversationReader,
 	previous **codexConversationSubscriptionSnapshot,
 ) {
 	if ctx.Err() != nil || !s.isCurrentCodexSubscription(conn, subscriptionID, generation) {
@@ -1314,20 +988,11 @@ func (s *Server) publishCodexConversationSubscription(
 	}
 	resolved := s.resolveCodexConversationAgent(raw)
 	if !resolved.ready {
-		if strings.TrimSpace(raw.ConversationScopeKey) == "" {
-			s.turnRegistry().failWorkAgent(resolved.targetID, time.Now())
+		conversation := work.CodexConversation{
+			Available: false,
+			Reason:    resolved.reason,
+			Events:    []work.CodexConversationEvent{},
 		}
-		conversation := s.projectStructuredConversationTurnsWithTrust(
-			raw.ConversationScopeKey,
-			resolved.targetID,
-			work.CodexConversation{
-				Available:   false,
-				Reason:      resolved.reason,
-				Events:      []work.CodexConversationEvent{},
-				QueuedTurns: []work.CodexConversationTurn{},
-			},
-			false,
-		)
 		fingerprint := fmt.Sprintf(
 			"sync:%s:%s:%s",
 			resolved.targetID,
@@ -1344,21 +1009,13 @@ func (s *Server) publishCodexConversationSubscription(
 		if !s.isCurrentCodexSubscription(conn, subscriptionID, generation) {
 			return
 		}
-		s.sendJSON(conn, map[string]any{
-			"type":            "codex_conversation_sync_status",
-			"request_id":      subscriptionID,
-			"generation":      generation,
-			"agent_id":        resolved.targetID,
-			"conversation_id": "",
-			"revision":        revision,
-			"state":           "syncing",
-			"reason":          resolved.reason,
-			"active":          conversation.Active,
-			"turn":            conversation.Turn,
-			"turn_revision":   conversation.TurnRevision,
-			"turn_epoch":      conversation.TurnEpoch,
-			"queued_turns":    conversation.QueuedTurns,
-		})
+		s.sendJSON(conn, codexConversationSyncStatusPayload(
+			subscriptionID,
+			generation,
+			resolved.targetID,
+			revision,
+			resolved.reason,
+		))
 		*previous = &codexConversationSubscriptionSnapshot{
 			conversation: conversation,
 			fingerprint:  fingerprint,
@@ -1367,16 +1024,9 @@ func (s *Server) publishCodexConversationSubscription(
 		}
 		return
 	}
-	if resolved.fromWatcher {
-		s.turnRegistry().markWorkAgentPresent(resolved.targetID)
-	}
 
 	now := time.Now()
-	conversation, err := work.LoadCodexConversationForProvider(
-		resolved.agent,
-		resolved.provider,
-		now,
-	)
+	conversation, err := s.loadProviderConversationSnapshot(reader, resolved, now)
 	if err != nil {
 		if !s.isCurrentCodexSubscription(conn, subscriptionID, generation) {
 			return
@@ -1390,96 +1040,35 @@ func (s *Server) publishCodexConversationSubscription(
 		})
 		return
 	}
-	if !resolved.fromWatcher {
-		if strings.TrimSpace(raw.ConversationScopeKey) == "" {
-			s.turnRegistry().failWorkAgent(resolved.targetID, now)
-		}
-	}
-	if work.ShouldUseTerminalSnapshotConversationFallback(resolved.agent, conversation) {
-		if s.watcher == nil {
-			conversation = work.TerminalSnapshotConversationUnavailableForAgent(resolved.agent, "terminal_snapshot_unavailable", now)
-		} else if text, err := s.watcher.CapturePaneContent(resolved.agent.ID); err != nil {
-			conversation = work.TerminalSnapshotConversationUnavailableForAgent(resolved.agent, "terminal_snapshot_unavailable", now)
-		} else {
-			conversation = work.TerminalSnapshotConversationForAgent(resolved.agent, text, now)
-		}
-	}
-	providerConversation := cloneCodexConversation(conversation)
-	legacyConversation := s.projectStructuredConversationTurnsWithTrust(
-		raw.ConversationScopeKey,
-		resolved.targetID,
-		cloneCodexConversation(providerConversation),
-		resolved.fromWatcher,
-	)
-	s.observeCodexConversationShadow(ctx, raw, resolved, legacyConversation)
+	conversation = conversationForProviderAttachment(conversation, resolved.fromWatcher)
+	conversation = s.brainScopedConversation(raw.ConversationScopeKey, conversation, now)
 
-	visibleSource := s.brainScopedConversation(
-		raw.ConversationScopeKey,
-		cloneCodexConversation(providerConversation),
-		now,
-	)
-	canonicalReplace := false
-	canonicalRevision := uint64(0)
-	if strings.EqualFold(strings.TrimSpace(resolved.provider), "codex") &&
-		strings.TrimSpace(providerConversation.Source) == "codex_rollout" {
-		if visibleSource.Turn != nil && legacyConversation.Turn != nil &&
-			legacyConversation.Turn.Status == work.CodexConversationTurnRunning {
-			visibleSource.Turn.ControlID = legacyConversation.Turn.ID
-		}
-		visibleSource.TurnRevision = 0
-		visibleSource.TurnEpoch = ""
-		visibleSource.QueuedTurns = []work.CodexConversationTurn{}
-		canonical := s.canonicalCodexProjection().project(
-			structuredTurnRegistryKey(raw.ConversationScopeKey, resolved.targetID),
-			visibleSource,
-		)
-		conversation = canonical.Conversation
-		canonicalReplace = canonical.Replace
-		canonicalRevision = canonical.Revision
-	} else {
-		// Provider-safe fallback keeps the legacy adapter for control metadata,
-		// but Working is still owned by the raw provider Activity.
-		conversation = s.brainScopedConversation(raw.ConversationScopeKey, legacyConversation, now)
-		conversation.Activity = cloneCodexConversationTurn(providerConversation.Turn)
-		if conversation.Activity != nil && conversation.Turn != nil &&
-			conversation.Turn.Status == work.CodexConversationTurnRunning {
-			conversation.Activity.ControlID = conversation.Turn.ID
-		}
-	}
 	fingerprint := codexConversationSubscriptionFingerprint(conversation)
 	if (*previous) != nil && (*previous).fingerprint == fingerprint {
 		return
 	}
-
 	next := codexConversationSubscriptionSnapshot{
 		conversation: conversation,
 		fingerprint:  fingerprint,
 		eventsByID:   codexConversationEventsByID(conversation.Events),
 		revision:     1,
 	}
-	if canonicalRevision > 0 {
-		next.revision = int64(canonicalRevision)
-	}
 	if (*previous) != nil {
-		if next.revision <= (*previous).revision {
-			next.revision = (*previous).revision + 1
-		}
+		next.revision = (*previous).revision + 1
 	}
 
-	if (*previous) == nil || canonicalReplace || !(*previous).conversation.Available ||
+	if (*previous) == nil || !(*previous).conversation.Available ||
 		codexConversationIdentity((*previous).conversation) != codexConversationIdentity(conversation) {
 		if !s.isCurrentCodexSubscription(conn, subscriptionID, generation) {
 			return
 		}
-		s.sendJSON(conn, map[string]any{
-			"type":            "codex_conversation_snapshot",
-			"request_id":      subscriptionID,
-			"generation":      generation,
-			"agent_id":        resolved.targetID,
-			"conversation_id": codexConversationIdentity(conversation),
-			"revision":        next.revision,
-			"conversation":    conversation,
-		})
+		s.sendJSON(conn, codexConversationSnapshotPayload(
+			subscriptionID,
+			generation,
+			resolved.targetID,
+			next.revision,
+			conversation,
+		))
 		*previous = &next
 		return
 	}
@@ -1488,13 +1077,82 @@ func (s *Server) publishCodexConversationSubscription(
 	if !s.isCurrentCodexSubscription(conn, subscriptionID, generation) {
 		return
 	}
-	s.sendJSON(conn, map[string]any{
+	delta := codexConversationDeltaPayload(
+		subscriptionID,
+		generation,
+		resolved.targetID,
+		**previous,
+		next,
+		upserts,
+		deletes,
+	)
+	s.sendJSON(conn, delta)
+	*previous = &next
+}
+
+func conversationForProviderAttachment(conversation work.CodexConversation, attached bool) work.CodexConversation {
+	if !attached {
+		// Detached transcripts remain valid history but cannot claim a current
+		// executor Activity.
+		conversation.Activity = nil
+	}
+	return conversation
+}
+
+func codexConversationSyncStatusPayload(
+	subscriptionID string,
+	generation string,
+	targetID string,
+	revision int64,
+	reason string,
+) map[string]any {
+	return map[string]any{
+		"type":            "codex_conversation_sync_status",
+		"request_id":      subscriptionID,
+		"generation":      generation,
+		"agent_id":        targetID,
+		"conversation_id": "",
+		"revision":        revision,
+		"state":           "syncing",
+		"reason":          reason,
+	}
+}
+
+func codexConversationSnapshotPayload(
+	subscriptionID string,
+	generation string,
+	targetID string,
+	revision int64,
+	conversation work.CodexConversation,
+) map[string]any {
+	return map[string]any{
+		"type":            "codex_conversation_snapshot",
+		"request_id":      subscriptionID,
+		"generation":      generation,
+		"agent_id":        targetID,
+		"conversation_id": codexConversationIdentity(conversation),
+		"revision":        revision,
+		"conversation":    conversation,
+	}
+}
+
+func codexConversationDeltaPayload(
+	subscriptionID string,
+	generation string,
+	targetID string,
+	previous codexConversationSubscriptionSnapshot,
+	next codexConversationSubscriptionSnapshot,
+	upserts []work.CodexConversationEvent,
+	deletes []string,
+) map[string]any {
+	conversation := next.conversation
+	delta := map[string]any{
 		"type":            "codex_conversation_delta",
 		"request_id":      subscriptionID,
 		"generation":      generation,
-		"agent_id":        resolved.targetID,
+		"agent_id":        targetID,
 		"conversation_id": codexConversationIdentity(conversation),
-		"base_revision":   (*previous).revision,
+		"base_revision":   previous.revision,
 		"revision":        next.revision,
 		"available":       conversation.Available,
 		"reason":          conversation.Reason,
@@ -1503,16 +1161,14 @@ func (s *Server) publishCodexConversationSubscription(
 		"session_id":      conversation.SessionID,
 		"cwd":             conversation.CWD,
 		"updated_at":      conversation.Updated,
-		"active":          conversation.Active,
-		"activity":        conversation.Activity,
-		"turn":            conversation.Turn,
-		"turn_revision":   conversation.TurnRevision,
-		"turn_epoch":      conversation.TurnEpoch,
-		"queued_turns":    conversation.QueuedTurns,
 		"upserts":         upserts,
 		"deletes":         deletes,
-	})
-	*previous = &next
+	}
+	if !providerActivitiesEqual(previous.conversation.Activity, conversation.Activity) {
+		// The key is intentionally present with nil when a prior Activity clears.
+		delta["activity"] = conversation.Activity
+	}
+	return delta
 }
 
 func (s *Server) isCurrentCodexSubscription(conn *websocket.Conn, subscriptionID, generation string) bool {
@@ -1521,67 +1177,6 @@ func (s *Server) isCurrentCodexSubscription(conn *websocket.Conn, subscriptionID
 	subscriptions := s.codexSubs[conn]
 	current, ok := subscriptions[subscriptionID]
 	return ok && current.generation == generation
-}
-
-func (s *Server) observeCodexConversationShadow(
-	ctx context.Context,
-	raw clientMessage,
-	resolved resolvedCodexConversationAgent,
-	conversation work.CodexConversation,
-) {
-	if s == nil || s.codexShadow == nil || !resolved.fromWatcher ||
-		strings.ToLower(strings.TrimSpace(resolved.provider)) != "codex" {
-		return
-	}
-	ownerKey := structuredTurnRegistryKey(raw.ConversationScopeKey, resolved.targetID)
-	if !s.codexShadow.Enabled(ownerKey) || strings.TrimSpace(conversation.Path) == "" ||
-		strings.TrimSpace(conversation.SessionID) == "" {
-		return
-	}
-	observation := codexshadow.Observation{
-		OwnerKey:    ownerKey,
-		RolloutPath: conversation.Path,
-		SessionID:   conversation.SessionID,
-		Legacy:      legacyShadowProjection(conversation),
-	}
-	// Diagnostics must never become a latency dependency of the v1 WebSocket
-	// projection. Keep one bounded background read; a busy tick is retried by the
-	// existing subscription poll instead of accumulating goroutines.
-	if !s.codexShadowBusy.CompareAndSwap(false, true) {
-		return
-	}
-	go func() {
-		defer s.codexShadowBusy.Store(false)
-		_, err := s.codexShadow.ObserveRollout(ctx, observation)
-		if err != nil && !errors.Is(err, codexshadow.ErrDisabled) && !errors.Is(err, context.Canceled) {
-			// ErrorCode is a closed sanitized enum. In particular, never log the
-			// rollout path or an underlying parser/storage error here.
-			log.Printf("Codex Chat shadow diagnostics disabled (%s)", codexshadow.ErrorCode(err))
-		}
-	}()
-}
-
-func legacyShadowProjection(conversation work.CodexConversation) chatthread.LegacyShadowProjection {
-	projection := chatthread.LegacyShadowProjection{
-		OrderedTurns: []chatthread.LegacyShadowTurn{},
-		Queued:       []chatthread.LegacyShadowTurn{},
-	}
-	if conversation.Turn != nil {
-		turn := chatthread.LegacyShadowTurn{ID: conversation.Turn.ID, State: conversation.Turn.Status}
-		projection.OrderedTurns = append(projection.OrderedTurns, turn)
-		if conversation.Turn.Status == work.CodexConversationTurnRunning {
-			current := turn
-			projection.Current = &current
-		} else if isStructuredTurnTerminal(conversation.Turn.Status) {
-			projection.TerminalState = conversation.Turn.Status
-		}
-	}
-	for _, queued := range conversation.QueuedTurns {
-		turn := chatthread.LegacyShadowTurn{ID: queued.ID, State: queued.Status}
-		projection.OrderedTurns = append(projection.OrderedTurns, turn)
-		projection.Queued = append(projection.Queued, turn)
-	}
-	return projection
 }
 
 func (s *Server) brainScopedConversation(scopeKey string, conversation work.CodexConversation, now time.Time) work.CodexConversation {
@@ -1593,24 +1188,36 @@ func (s *Server) brainScopedConversation(scopeKey string, conversation work.Code
 	if threadID == "" {
 		return conversation
 	}
-	currentThreadID, currentThreadErr := s.brain.ChatThreadID()
-	messages, err := s.brain.ChatMessages(threadID)
+	known, err := s.brain.HasChatThread(threadID)
 	if err != nil {
 		conversation.Available = false
-		conversation.Reason = "brain_messages_unavailable"
+		conversation.Reason = "brain_threads_unavailable"
 		return conversation
+	}
+	if !known {
+		conversation.Available = false
+		conversation.Reason = "brain_thread_unknown"
+		conversation.Events = []work.CodexConversationEvent{}
+		conversation.Activity = nil
+		return conversation
+	}
+	currentThreadID, currentThreadErr := s.brain.ChatThreadID()
+	if currentThreadErr != nil {
+		conversation.Available = false
+		conversation.Reason = "brain_threads_unavailable"
+		return conversation
+	}
+	results := []calendar.ScheduledResult{}
+	if s.calendar != nil {
+		results = s.calendar.ScheduledResults(threadID, 0)
 	}
 	if currentThreadErr == nil && strings.TrimSpace(currentThreadID) != "" &&
 		threadID != strings.TrimSpace(currentThreadID) {
 		conversation.Events = []work.CodexConversationEvent{}
-		conversation.Turn = nil
 		conversation.Activity = nil
-		conversation.QueuedTurns = []work.CodexConversationTurn{}
-		active := false
-		conversation.Active = &active
 	}
-	eventsByID := make(map[string]int, len(conversation.Events)+len(messages))
-	uniqueEvents := make([]work.CodexConversationEvent, 0, len(conversation.Events)+len(messages))
+	eventsByID := make(map[string]int, len(conversation.Events)+len(results))
+	uniqueEvents := make([]work.CodexConversationEvent, 0, len(conversation.Events)+len(results))
 	for _, event := range conversation.Events {
 		if id := strings.TrimSpace(event.ID); id != "" {
 			if index, ok := eventsByID[id]; ok {
@@ -1622,11 +1229,8 @@ func (s *Server) brainScopedConversation(scopeKey string, conversation work.Code
 		uniqueEvents = append(uniqueEvents, event)
 	}
 	conversation.Events = uniqueEvents
-	for _, message := range messages {
-		if message.Kind != "calendar_result" {
-			continue
-		}
-		event := calendarResultConversationEvent(message)
+	for _, result := range results {
+		event := calendarResultConversationEvent(result)
 		if index, ok := eventsByID[event.ID]; ok {
 			conversation.Events[index] = event
 			continue
@@ -1645,19 +1249,19 @@ func (s *Server) brainScopedConversation(scopeKey string, conversation work.Code
 	return conversation
 }
 
-func calendarResultConversationEvent(message brain.ChatMessage) work.CodexConversationEvent {
-	title := strings.TrimSpace(message.Title)
-	status := strings.TrimSpace(message.Status)
+func calendarResultConversationEvent(result calendar.ScheduledResult) work.CodexConversationEvent {
+	title := strings.TrimSpace(result.Title)
+	status := strings.TrimSpace(string(result.Status))
 	if title != "" && status != "" {
 		title += " " + status
 	}
-	body := strings.TrimSpace(message.Body)
-	if heading := strings.TrimSpace(message.Title + " " + status); heading != "" {
+	body := strings.TrimSpace(result.Body)
+	if heading := strings.TrimSpace(result.Title + " " + status); heading != "" {
 		body = strings.TrimSpace(strings.TrimPrefix(body, "**"+heading+"**"))
 	}
 	return work.CodexConversationEvent{
-		ID:        message.ID,
-		Timestamp: message.CreatedAt.Format(time.RFC3339Nano),
+		ID:        result.ID,
+		Timestamp: result.CreatedAt.Format(time.RFC3339Nano),
 		Kind:      "status",
 		Title:     title,
 		Body:      body,
@@ -1692,16 +1296,6 @@ func codexConversationIdentity(conversation work.CodexConversation) string {
 	return firstNonEmptyString(conversation.SessionID, conversation.Path, conversation.CWD)
 }
 
-func structuredConversationThreadIdentity(conversation work.CodexConversation) string {
-	if sessionID := strings.TrimSpace(conversation.SessionID); sessionID != "" {
-		return "session:" + sessionID
-	}
-	if path := strings.TrimSpace(conversation.Path); path != "" {
-		return "path:" + path
-	}
-	return ""
-}
-
 func firstNonEmptyString(values ...string) string {
 	for _, value := range values {
 		if strings.TrimSpace(value) != "" {
@@ -1714,43 +1308,34 @@ func firstNonEmptyString(values ...string) string {
 func codexConversationSubscriptionFingerprint(conversation work.CodexConversation) string {
 	hash := fnv.New64a()
 	writeFingerprintString(hash, codexConversationIdentity(conversation))
+	writeFingerprintString(hash, conversation.Path)
+	writeFingerprintString(hash, conversation.SessionID)
 	writeFingerprintBool(hash, conversation.Available)
 	writeFingerprintString(hash, conversation.Reason)
 	writeFingerprintString(hash, conversation.Source)
 	writeFingerprintString(hash, conversation.CWD)
-	writeFingerprintString(hash, codexConversationActiveValue(conversation.Active))
-	writeFingerprintString(hash, fmt.Sprintf("%d", conversation.TurnRevision))
-	writeFingerprintString(hash, conversation.TurnEpoch)
-	writeCodexConversationTurnFingerprint(hash, conversation.Turn)
-	writeCodexConversationTurnFingerprint(hash, conversation.Activity)
-	writeFingerprintInt(hash, len(conversation.QueuedTurns))
-	for index := range conversation.QueuedTurns {
-		writeCodexConversationTurnFingerprint(hash, &conversation.QueuedTurns[index])
-	}
+	writeProviderActivityFingerprint(hash, conversation.Activity)
 	writeCodexConversationEventsFingerprint(hash, conversation.Events)
 	return fmt.Sprintf("%016x", hash.Sum64())
 }
 
-func writeCodexConversationTurnFingerprint(w io.Writer, turn *work.CodexConversationTurn) {
-	if turn == nil {
+func writeProviderActivityFingerprint(w io.Writer, activity *work.ProviderActivity) {
+	if activity == nil {
 		writeFingerprintString(w, "")
 		return
 	}
-	writeFingerprintString(w, turn.ID)
-	writeFingerprintString(w, turn.Status)
-	writeFingerprintString(w, turn.StartedAt)
-	writeFingerprintString(w, turn.SettledAt)
-	writeFingerprintString(w, turn.ControlID)
+	writeFingerprintString(w, activity.ID)
+	writeFingerprintString(w, string(activity.Status))
+	writeFingerprintString(w, activity.StartedAt)
+	writeFingerprintString(w, activity.SettledAt)
 }
 
-func codexConversationActiveValue(active *bool) string {
-	if active == nil {
-		return ""
-	}
-	if *active {
-		return "true"
-	}
-	return "false"
+func providerActivitiesEqual(left, right *work.ProviderActivity) bool {
+	return left == right || left != nil && right != nil &&
+		left.ID == right.ID &&
+		left.Status == right.Status &&
+		left.StartedAt == right.StartedAt &&
+		left.SettledAt == right.SettledAt
 }
 
 func codexConversationEventsFingerprint(events []work.CodexConversationEvent) string {
@@ -1834,11 +1419,6 @@ func writeCodexConversationEventFingerprint(w io.Writer, event work.CodexConvers
 	writeFingerprintString(w, event.Explanation)
 	writeFingerprintPlan(w, event.Plan)
 	writeFingerprintString(w, event.Source)
-	writeFingerprintString(w, fmt.Sprintf("%d", event.Position))
-	writeFingerprintString(w, fmt.Sprintf("%d", event.EventRevision))
-	writeFingerprintString(w, event.ActivityID)
-	writeFingerprintString(w, event.SubmissionID)
-	writeFingerprintString(w, event.SubmissionState)
 }
 
 func writeFingerprintString(w io.Writer, value string) {
@@ -1903,14 +1483,6 @@ func clientStartedAt(raw json.RawMessage) time.Time {
 		return parsed.UTC()
 	}
 	return time.Time{}
-}
-
-func clientStructuredTurnStartedAt(raw json.RawMessage) string {
-	startedAt := clientStartedAt(raw)
-	if startedAt.IsZero() {
-		return ""
-	}
-	return startedAt.UTC().Format(time.RFC3339Nano)
 }
 
 func (s *Server) handleCodexSlashCommands(conn *websocket.Conn, raw clientMessage) {
@@ -2003,78 +1575,16 @@ func codexAssetContentType(path string, data []byte) string {
 	return contentType
 }
 
-func (s *Server) executorRoles() []string {
-	if s.execs == nil {
-		return nil
-	}
-	return s.execs.Roles()
-}
-
-func (s *Server) workDigestProvider() string {
-	if s.workLog != nil {
-		if provider := s.workLog.DigestProvider(); provider != "" {
-			return provider
-		}
-	}
-	return "auto"
-}
-
 func (s *Server) handleListWorkItems(conn *websocket.Conn, raw clientMessage) {
 	if s.work == nil {
 		s.sendErrorWithRequestID(conn, raw.RequestID, "list_work_items_failed", "work store not configured")
 		return
 	}
 	s.sendJSON(conn, map[string]any{
-		"type":                 "work_items_snapshot",
-		"request_id":           raw.RequestID,
-		"work_items":           work.FilterAgentWorkItems(s.work.List()),
-		"executors":            s.executorRoles(),
-		"work_digest_provider": s.workDigestProvider(),
-	})
-}
-
-func (s *Server) handleGetWorkItem(conn *websocket.Conn, raw clientMessage) {
-	if s.work == nil {
-		s.sendErrorWithRequestID(conn, raw.RequestID, "get_work_item_failed", "work store not configured")
-		return
-	}
-	item, ok := s.work.GetByID(strings.TrimSpace(raw.ID))
-	if !ok {
-		s.sendErrorWithRequestID(conn, raw.RequestID, "get_work_item_failed", "work item not found")
-		return
-	}
-	s.sendJSON(conn, map[string]any{
-		"type":       "work_item",
+		"type":       "work_items_snapshot",
 		"request_id": raw.RequestID,
-		"work_item":  item,
+		"work_items": work.FilterCalendarWorkItems(s.work.List()),
 	})
-}
-
-func (s *Server) handleListExecutors(conn *websocket.Conn, raw clientMessage) {
-	s.sendJSON(conn, map[string]any{
-		"type":                 "executor_list",
-		"request_id":           raw.RequestID,
-		"executors":            s.executorRoles(),
-		"work_digest_provider": s.workDigestProvider(),
-	})
-}
-
-func (s *Server) handleSetWorkDigestProvider(conn *websocket.Conn, raw clientMessage) {
-	if s.workLog == nil {
-		s.sendErrorWithRequestID(conn, raw.RequestID, "set_work_digest_provider_failed", "work log not configured")
-		return
-	}
-	provider, ok := s.workLog.SetDigestProvider(raw.Name)
-	if !ok {
-		s.sendErrorWithRequestID(conn, raw.RequestID, "set_work_digest_provider_failed", "unsupported digest provider")
-		return
-	}
-	s.sendJSON(conn, map[string]any{
-		"type":                 "work_digest_provider",
-		"request_id":           raw.RequestID,
-		"work_digest_provider": provider,
-	})
-	go s.syncWorkLogsForAgents(true)
 }
 
 func (s *Server) sendBrainSnapshot(conn *websocket.Conn, requestID string) {
@@ -2086,10 +1596,15 @@ func (s *Server) sendBrainSnapshot(conn *websocket.Conn, requestID string) {
 		s.sendErrorWithRequestID(conn, requestID, "brain_snapshot_failed", err.Error())
 		return
 	}
+	payload, err := s.brainSnapshotWire(snapshot)
+	if err != nil {
+		s.sendErrorWithRequestID(conn, requestID, "brain_snapshot_failed", err.Error())
+		return
+	}
 	s.sendJSON(conn, map[string]any{
 		"type":       "brain_snapshot",
 		"request_id": requestID,
-		"brain":      brainSnapshotWire(snapshot),
+		"brain":      payload,
 	})
 }
 
@@ -2107,10 +1622,15 @@ func (s *Server) handleBrainSetExecutor(conn *websocket.Conn, raw clientMessage)
 		s.sendErrorWithRequestID(conn, raw.RequestID, "brain_set_executor_failed", err.Error())
 		return
 	}
+	payload, err := s.brainSnapshotWire(snapshot)
+	if err != nil {
+		s.sendErrorWithRequestID(conn, raw.RequestID, "brain_snapshot_failed", err.Error())
+		return
+	}
 	s.sendJSON(conn, map[string]any{
 		"type":       "brain_snapshot",
 		"request_id": raw.RequestID,
-		"brain":      brainSnapshotWire(snapshot),
+		"brain":      payload,
 	})
 }
 
@@ -2119,7 +1639,7 @@ func (s *Server) handleBrainContext(conn *websocket.Conn, raw clientMessage) {
 		s.sendErrorWithRequestID(conn, raw.RequestID, "brain_unavailable", "Brain is not configured")
 		return
 	}
-	context, err := s.brain.Context(12)
+	context, err := s.brain.Context()
 	if err != nil {
 		s.sendErrorWithRequestID(conn, raw.RequestID, "brain_context_failed", err.Error())
 		return
@@ -2158,21 +1678,26 @@ func (s *Server) handleBrainChatNew(conn *websocket.Conn, raw clientMessage) {
 		s.sendErrorWithRequestID(conn, raw.RequestID, "brain_chat_new_failed", err.Error())
 		return
 	}
+	payload, err := s.brainSnapshotWire(snapshot)
+	if err != nil {
+		s.sendErrorWithRequestID(conn, raw.RequestID, "brain_snapshot_failed", err.Error())
+		return
+	}
 	s.sendJSON(conn, map[string]any{
 		"type":       "brain_snapshot",
 		"request_id": raw.RequestID,
-		"brain":      brainSnapshotWire(snapshot),
+		"brain":      payload,
 	})
 }
 
-func brainSnapshotWire(snapshot brain.Snapshot) any {
+func (s *Server) brainSnapshotWire(snapshot brain.Snapshot) (any, error) {
 	raw, err := json.Marshal(snapshot)
 	if err != nil {
-		return snapshot
+		return nil, err
 	}
 	var payload map[string]any
 	if err := json.Unmarshal(raw, &payload); err != nil {
-		return snapshot
+		return nil, err
 	}
 	if _, ok := payload["host_adapter"]; !ok && snapshot.HostExecutor != nil {
 		payload["host_adapter"] = snapshot.HostExecutor
@@ -2183,7 +1708,39 @@ func brainSnapshotWire(snapshot brain.Snapshot) any {
 	if _, ok := payload["adapters"]; !ok && snapshot.Executors != nil {
 		payload["adapters"] = snapshot.Executors
 	}
-	return payload
+	results, err := s.scheduledResultsForKnownBrainThreads(defaultScheduledResultLimit)
+	if err != nil {
+		return nil, err
+	}
+	payload["scheduled_results"] = results
+	return payload, nil
+}
+
+func (s *Server) scheduledResultsForKnownBrainThreads(limit int) ([]calendar.ScheduledResult, error) {
+	if s == nil || s.calendar == nil || s.brain == nil {
+		return []calendar.ScheduledResult{}, nil
+	}
+	threadIDs, err := s.brain.ChatThreadIDs()
+	if err != nil {
+		return nil, err
+	}
+	known := make(map[string]struct{}, len(threadIDs))
+	for _, threadID := range threadIDs {
+		if threadID = strings.TrimSpace(threadID); threadID != "" {
+			known[threadID] = struct{}{}
+		}
+	}
+	all := s.calendar.ScheduledResults("", 0)
+	results := make([]calendar.ScheduledResult, 0, len(all))
+	for _, result := range all {
+		if _, ok := known[result.ThreadID]; ok {
+			results = append(results, result)
+		}
+	}
+	if limit > 0 && len(results) > limit {
+		results = results[len(results)-limit:]
+	}
+	return results, nil
 }
 
 func visibleAgentSessions(agents []*classifier.Agent) []*classifier.Agent {
@@ -2201,45 +1758,7 @@ func visibleAgentSessions(agents []*classifier.Agent) []*classifier.Agent {
 }
 
 func (s *Server) currentVisibleAgentSessions() []*classifier.Agent {
-	agentSessions := visibleAgentSessions(s.watcher.Agents())
-	s.enrichCodexAgentSessionTitles(agentSessions)
-	return agentSessions
-}
-
-func (s *Server) enrichCodexAgentSessionTitles(agents []*classifier.Agent) {
-	now := time.Now()
-	for _, agent := range agents {
-		s.enrichCodexAgentSessionTitle(agent, now)
-	}
-}
-
-func (s *Server) enrichCodexAgentSessionTitle(agent *classifier.Agent, now time.Time) {
-	if agent == nil {
-		return
-	}
-	title, ok, err := work.CodexThreadTitleForAgent(*agent, now)
-	if err != nil || !ok {
-		return
-	}
-	if name := agentSessionNameWithTarget(title, agent.ID); name != "" {
-		agent.Name = name
-	}
-}
-
-func agentSessionNameWithTarget(name, target string) string {
-	name = strings.TrimSpace(name)
-	target = strings.TrimSpace(target)
-	if name == "" {
-		return ""
-	}
-	if target == "" {
-		return name
-	}
-	suffix := " (" + target + ")"
-	if strings.HasSuffix(name, suffix) {
-		return name
-	}
-	return name + suffix
+	return visibleAgentSessions(s.watcher.Agents())
 }
 
 func (s *Server) handleWriteWorkItem(conn *websocket.Conn, raw clientMessage) {
@@ -2269,31 +1788,7 @@ func (s *Server) handleWriteWorkItem(conn *websocket.Conn, raw clientMessage) {
 		Created: now,
 	}
 	if existing, ok := s.work.GetByID(id); ok {
-		frontmatter = work.Frontmatter{
-			ID:           existing.Frontmatter.ID,
-			Kind:         existing.Frontmatter.Kind,
-			Created:      existing.Frontmatter.Created,
-			Done:         existing.Frontmatter.Done,
-			Started:      existing.Frontmatter.Started,
-			Status:       existing.Frontmatter.Status,
-			Title:        existing.Frontmatter.Title,
-			Outcome:      existing.Frontmatter.Outcome,
-			Summary:      existing.Frontmatter.Summary,
-			Progress:     existing.Frontmatter.Progress,
-			Friction:     existing.Frontmatter.Friction,
-			Cause:        existing.Frontmatter.Cause,
-			Insight:      existing.Frontmatter.Insight,
-			Next:         existing.Frontmatter.Next,
-			AgentSource:  existing.Frontmatter.AgentSource,
-			AgentSession: existing.Frontmatter.AgentSession,
-			Cwd:          existing.Frontmatter.Cwd,
-			Command:      existing.Frontmatter.Command,
-			AIProvider:   existing.Frontmatter.AIProvider,
-			AIUpdated:    existing.Frontmatter.AIUpdated,
-			AIHash:       existing.Frontmatter.AIHash,
-			AIError:      existing.Frontmatter.AIError,
-			Extra:        existing.Frontmatter.Extra,
-		}
+		frontmatter = existing.Frontmatter
 	}
 	applyFrontmatterOverrides(&frontmatter, raw.Frontmatter)
 
@@ -2330,63 +1825,6 @@ func (s *Server) handleWriteWorkItem(conn *websocket.Conn, raw clientMessage) {
 
 	s.sendJSON(conn, map[string]any{
 		"type":       "work_item_written",
-		"request_id": raw.RequestID,
-		"work_item":  written,
-	})
-}
-
-func (s *Server) handleStartWorkItem(conn *websocket.Conn, raw clientMessage) {
-	s.handleLaunchWorkItem(conn, raw, false)
-}
-
-func (s *Server) handleRerunWorkItem(conn *websocket.Conn, raw clientMessage) {
-	s.handleLaunchWorkItem(conn, raw, true)
-}
-
-func (s *Server) handleLaunchWorkItem(conn *websocket.Conn, raw clientMessage, rerun bool) {
-	failCode := "start_work_item_failed"
-	if rerun {
-		failCode = "rerun_work_item_failed"
-	}
-	if s.work == nil || s.launcher == nil {
-		s.sendErrorWithRequestID(conn, raw.RequestID, failCode, "work launcher not configured")
-		return
-	}
-
-	item, ok := s.work.GetByID(strings.TrimSpace(raw.ID))
-	if !ok {
-		s.sendErrorWithRequestID(conn, raw.RequestID, failCode, "work item not found")
-		return
-	}
-	project, err := work.LoadProject(filepath.Dir(item.Path))
-	if err != nil {
-		s.sendErrorWithRequestID(conn, raw.RequestID, failCode, err.Error())
-		return
-	}
-
-	var updated *work.Item
-	if rerun {
-		updated, err = s.launcher.Rerun(item, project)
-	} else {
-		updated, err = s.launcher.Start(item, project)
-	}
-	if err != nil {
-		s.sendErrorWithRequestID(conn, raw.RequestID, failCode, err.Error())
-		return
-	}
-
-	written, err := s.work.Write(updated, time.Time{})
-	if err != nil {
-		s.sendErrorWithRequestID(conn, raw.RequestID, failCode, err.Error())
-		return
-	}
-
-	msgType := "work_item_started"
-	if rerun {
-		msgType = "work_item_rerun"
-	}
-	s.sendJSON(conn, map[string]any{
-		"type":       msgType,
 		"request_id": raw.RequestID,
 		"work_item":  written,
 	})
@@ -2454,15 +1892,26 @@ func (s *Server) broadcastEvents(ctx context.Context) {
 				calendarSub = nil
 				continue
 			}
-			s.broadcastJSON(map[string]any{"type": "calendar_item_changed", "calendar_item": event.Item})
+			s.handleCalendarEvent(event)
 		}
+	}
+}
+
+func (s *Server) handleCalendarEvent(event calendar.Event) {
+	s.broadcastJSON(map[string]any{"type": "calendar_item_changed", "calendar_item": event.Item})
+	if event.ScheduledResult == nil || s.pusher == nil {
+		return
+	}
+	result := event.ScheduledResult
+	if err := s.pusher.NotifyScheduledResult(result.Title, string(result.Status), result.ThreadID, result.ID); err != nil {
+		log.Printf("scheduled-result push failed: %v", err)
 	}
 }
 
 func (s *Server) handleWorkEvent(ev work.Event) {
 	switch ev.Type {
 	case work.EventChanged:
-		if !work.IsAgentWorkItem(ev.Item) {
+		if !work.IsCalendarWorkItem(ev.Item) {
 			return
 		}
 		s.broadcastJSON(map[string]any{
@@ -2489,7 +1938,6 @@ func (s *Server) heartbeat(ctx context.Context) {
 			return
 		case <-ticker.C:
 			agentSessions := s.currentVisibleAgentSessions()
-			s.syncWorkLogs(agentSessions, false)
 			s.observeDelegatedLifecycleAgents(agentSessions)
 			data, _ := json.Marshal(map[string]any{"type": "agent_session_list", "agent_sessions": s.agentSessionsWire(agentSessions)})
 			s.broadcast(data)
@@ -2501,10 +1949,6 @@ func (s *Server) handleWatcherEvent(ev watcher.SessionEvent) {
 	if ev.Agent != nil && ev.Agent.Hidden {
 		return
 	}
-	if ev.Agent != nil && ev.Type != "agent_output" {
-		s.enrichCodexAgentSessionTitle(ev.Agent, time.Now())
-	}
-	s.recordWorkForSessionEvent(ev)
 	brainWoke := false
 
 	switch ev.Type {
@@ -2528,11 +1972,6 @@ func (s *Server) handleWatcherEvent(ev watcher.SessionEvent) {
 		}
 		brainWoke = s.maybeWakeBrainForSessionEvent(ev)
 	case "agent_removed":
-		// Watcher removal is an authoritative executor termination for an
-		// ordinary Work agent. Brain's durable lifecycle is scope-keyed and is
-		// intentionally not touched because its hidden host may be replaced
-		// while the same delegated turn continues.
-		s.turnRegistry().failWorkAgent(ev.AgentID, time.Now())
 		if ev.Agent != nil {
 			s.broadcastJSON(map[string]any{"type": "agent_session_archived", "agent_session": s.agentSessionWire(ev.Agent)})
 		}
@@ -2540,39 +1979,6 @@ func (s *Server) handleWatcherEvent(ev watcher.SessionEvent) {
 		brainWoke = s.maybeWakeBrainForSessionEvent(ev)
 	}
 	s.observeDelegatedLifecycleEvent(ev, brainWoke)
-}
-
-func (s *Server) recordWorkForSessionEvent(ev watcher.SessionEvent) {
-	if s.workLog == nil || ev.Agent == nil {
-		return
-	}
-	final := ev.Type == "agent_removed" || isFinalAgentState(ev.NewState)
-	force := ev.Type != "agent_output" && ev.Type != "agent_metadata_change"
-	if _, err := s.workLog.RecordAgent(ev.Agent, final, force); err != nil {
-		log.Printf("work log sync failed for %s: %v", ev.AgentID, err)
-	}
-}
-
-func (s *Server) syncWorkLogsForAgents(force bool) {
-	if s.watcher == nil {
-		return
-	}
-	s.syncWorkLogs(visibleAgentSessions(s.watcher.Agents()), force)
-}
-
-func (s *Server) syncWorkLogs(agents []*classifier.Agent, force bool) {
-	if s.workLog == nil {
-		return
-	}
-	for _, agent := range agents {
-		if agent == nil {
-			continue
-		}
-		final := isFinalAgentState(string(agent.State))
-		if _, err := s.workLog.RecordAgent(agent, final, force); err != nil {
-			log.Printf("work log sync failed for %s: %v", agent.ID, err)
-		}
-	}
 }
 
 func (s *Server) observeDelegatedLifecycleEvent(ev watcher.SessionEvent, alreadyWokeBrain bool) {
@@ -2596,10 +2002,6 @@ func (s *Server) observeDelegatedLifecycleAgents(agents []*classifier.Agent) {
 	for _, agent := range agents {
 		s.lifecycle.Observe(agent, false)
 	}
-}
-
-func isFinalAgentState(state string) bool {
-	return state == "done" || state == "failed"
 }
 
 func isActionableBrainHeartbeatState(state string) bool {
@@ -2664,7 +2066,7 @@ func (s *Server) maybeWakeBrainForSessionEvent(ev watcher.SessionEvent) bool {
 }
 
 func (s *Server) maybeNotifyForSessionEvent(ev watcher.SessionEvent) {
-	if s.pusher == nil || s.hasAnyActiveViewer() || ev.Agent == nil || ev.Agent.Hidden || !ev.Agent.Delegated {
+	if s.pusher == nil || ev.Agent == nil || ev.Agent.Hidden || !ev.Agent.Delegated {
 		return
 	}
 	if ev.Type == "agent_removed" {
@@ -2673,29 +2075,25 @@ func (s *Server) maybeNotifyForSessionEvent(ev watcher.SessionEvent) {
 	if ev.Type != "agent_state_change" || ev.OldState == ev.NewState {
 		return
 	}
+	if s.hasActiveViewer(ev.AgentID) {
+		return
+	}
 
 	state := ev.NewState
 	switch state {
 	case "blocked":
-		if s.rememberNotificationSignal(notificationSignalKey(ev.AgentID, state)) {
-			return
+		if err := s.pusher.NotifyAgentBlocked(ev.AgentID, ev.Agent.Name, ev.Agent.Summary); err != nil {
+			log.Printf("blocked-agent push failed: %v", err)
 		}
-		s.pusher.NotifyAgentBlocked(ev.AgentID, ev.Agent.Name, ev.Agent.Summary)
 	case "failed":
-		if s.rememberNotificationSignal(notificationSignalKey(ev.AgentID, state)) {
-			return
+		if err := s.pusher.NotifyAgentFailed(ev.AgentID, ev.Agent.Name, ev.Agent.Summary); err != nil {
+			log.Printf("failed-agent push failed: %v", err)
 		}
-		s.pusher.NotifyAgentFailed(ev.AgentID, ev.Agent.Name, ev.Agent.Summary)
 	case "done":
-		if s.rememberNotificationSignal(notificationSignalKey(ev.AgentID, state)) {
-			return
+		if err := s.pusher.NotifyAgentDone(ev.AgentID, ev.Agent.Name, ev.Agent.Summary); err != nil {
+			log.Printf("done-agent push failed: %v", err)
 		}
-		s.pusher.NotifyAgentDone(ev.AgentID, ev.Agent.Name, ev.Agent.Summary)
 	}
-}
-
-func notificationSignalKey(agentID, state string) string {
-	return strings.TrimSpace(agentID) + "|notification|" + strings.TrimSpace(state)
 }
 
 func brainSignalKey(agentID, reason, status, attention string) string {
@@ -2703,22 +2101,6 @@ func brainSignalKey(agentID, reason, status, attention string) string {
 		return strings.TrimSpace(agentID) + "|brain|" + reason + "|" + strings.TrimSpace(attention)
 	}
 	return strings.TrimSpace(agentID) + "|brain|" + strings.TrimSpace(status)
-}
-
-func (s *Server) rememberNotificationSignal(key string) bool {
-	if key == "" {
-		return false
-	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if s.notified == nil {
-		s.notified = make(map[string]struct{})
-	}
-	if _, ok := s.notified[key]; ok {
-		return true
-	}
-	s.notified[key] = struct{}{}
-	return false
 }
 
 func (s *Server) rememberBrainSignal(key string) bool {
@@ -2898,8 +2280,22 @@ func applyFrontmatterOverrides(fm *work.Frontmatter, raw map[string]interface{})
 		return
 	}
 
-	extra := map[string]interface{}{}
+	extra := make(map[string]interface{}, len(fm.Extra))
+	for key, value := range fm.Extra {
+		extra[key] = value
+	}
+	if value, ok := raw["extra"]; ok {
+		extra = map[string]interface{}{}
+		if nested, ok := value.(map[string]interface{}); ok {
+			for nestedKey, nestedValue := range nested {
+				extra[nestedKey] = nestedValue
+			}
+		}
+	}
 	for key, value := range raw {
+		if key == "extra" {
+			continue
+		}
 		switch key {
 		case "id":
 			if s, ok := value.(string); ok && strings.TrimSpace(s) != "" {
@@ -2933,71 +2329,9 @@ func applyFrontmatterOverrides(fm *work.Frontmatter, raw map[string]interface{})
 			if s, ok := value.(string); ok {
 				fm.Title = strings.TrimSpace(s)
 			}
-		case "summary":
-			if s, ok := value.(string); ok {
-				fm.Summary = strings.TrimSpace(s)
-			}
-		case "progress":
-			fm.Progress = parseStringList(value)
-		case "outcome":
-			if s, ok := value.(string); ok {
-				fm.Outcome = strings.TrimSpace(s)
-			}
-		case "friction":
-			if s, ok := value.(string); ok {
-				fm.Friction = strings.TrimSpace(s)
-			}
-		case "cause":
-			if s, ok := value.(string); ok {
-				fm.Cause = strings.TrimSpace(s)
-			}
-		case "insight":
-			if s, ok := value.(string); ok {
-				fm.Insight = strings.TrimSpace(s)
-			}
-		case "next":
-			if s, ok := value.(string); ok {
-				fm.Next = strings.TrimSpace(s)
-			}
-		case "agent_source":
-			if s, ok := value.(string); ok {
-				fm.AgentSource = strings.TrimSpace(s)
-			}
 		case "agent_session":
 			if s, ok := value.(string); ok {
 				fm.AgentSession = s
-			}
-		case "cwd":
-			if s, ok := value.(string); ok {
-				fm.Cwd = strings.TrimSpace(s)
-			}
-		case "command":
-			if s, ok := value.(string); ok {
-				fm.Command = strings.TrimSpace(s)
-			}
-		case "ai_provider":
-			if s, ok := value.(string); ok {
-				fm.AIProvider = strings.TrimSpace(s)
-			}
-		case "ai_updated":
-			if parsed, ok := parseRFC3339Value(value); ok {
-				fm.AIUpdated = &parsed
-			} else {
-				fm.AIUpdated = nil
-			}
-		case "ai_hash":
-			if s, ok := value.(string); ok {
-				fm.AIHash = strings.TrimSpace(s)
-			}
-		case "ai_error":
-			if s, ok := value.(string); ok {
-				fm.AIError = strings.TrimSpace(s)
-			}
-		case "extra":
-			if nested, ok := value.(map[string]interface{}); ok {
-				for nestedKey, nestedValue := range nested {
-					extra[nestedKey] = nestedValue
-				}
 			}
 		default:
 			extra[key] = value
@@ -3024,23 +2358,6 @@ func parseRFC3339Value(value interface{}) (time.Time, bool) {
 		return time.Time{}, false
 	}
 	return time.Time{}, false
-}
-
-func parseStringList(value interface{}) []string {
-	raw, ok := value.([]interface{})
-	if !ok {
-		if typed, ok := value.([]string); ok {
-			return typed
-		}
-		return nil
-	}
-	out := make([]string, 0, len(raw))
-	for _, item := range raw {
-		if s, ok := item.(string); ok && strings.TrimSpace(s) != "" {
-			out = append(out, strings.TrimSpace(s))
-		}
-	}
-	return out
 }
 
 func buildWorkFilename(now time.Time, body, fallbackID string) string {
@@ -3087,12 +2404,16 @@ func firstLine(value string) string {
 	return value
 }
 
-func (s *Server) hasAnyActiveViewer() bool {
+func (s *Server) hasActiveViewer(agentID string) bool {
+	target := strings.TrimSpace(agentID)
+	if target == "" {
+		return false
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	for _, activeAgentID := range s.active {
-		if activeAgentID != "" {
+		if strings.TrimSpace(activeAgentID) == target {
 			return true
 		}
 	}

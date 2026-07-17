@@ -10,6 +10,28 @@ export type DisconnectLifecycleDecision = {
   clearServerCaches: boolean;
 };
 
+export type ConnectedReadModelClient = {
+  listWorkItems(serverId: string): void;
+  listAgentSessions(serverId: string): void;
+  requestBrainSnapshot(serverId: string): void;
+  listCalendarItems(serverId: string): void;
+};
+
+/**
+ * Reconnect rebuilds read models with fresh requests. Nothing sent while the
+ * socket was unavailable is retained or replayed by the transport.
+ */
+export function createConnectedReadRefreshHandler(
+  client: ConnectedReadModelClient,
+) {
+  return ({ serverId }: { serverId: string }) => {
+    client.listWorkItems(serverId);
+    client.listAgentSessions(serverId);
+    client.requestBrainSnapshot(serverId);
+    client.listCalendarItems(serverId);
+  };
+}
+
 /**
  * App backgrounding and transient socket close are expected mobile lifecycle
  * events. Only an intentional disconnect (user disable/remove, tear-down)

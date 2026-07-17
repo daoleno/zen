@@ -12,8 +12,7 @@ export type CodexConversationEventKind =
 export type CodexConversationRole = "user" | "assistant";
 export type CodexPlanStepStatus = "pending" | "in_progress" | "completed";
 
-export type StructuredTurnStatus =
-  | "queued"
+export type ProviderActivityStatus =
   | "running"
   | "completed"
   | "failed"
@@ -22,15 +21,14 @@ export type StructuredTurnStatus =
 
 /**
  * Provider-neutral executor lifecycle. Transcript events are deliberately not
- * part of this record: partial text and tool rendering cannot open or settle a
- * turn.
+ * part of this record: partial text and tool rendering cannot open or settle
+ * Activity.
  */
-export interface StructuredTurn {
+export interface ProviderActivity {
   id: string;
-  status: StructuredTurnStatus;
+  status: ProviderActivityStatus;
   started_at: string;
   settled_at?: string;
-  control_id?: string;
 }
 
 export interface CodexPlanStep {
@@ -59,11 +57,6 @@ export interface CodexConversationEvent {
   explanation?: string;
   plan?: CodexPlanStep[];
   source?: string;
-  position?: number;
-  event_revision?: number;
-  activity_id?: string;
-  submission_id?: string;
-  submission_state?: "accepted" | "queued" | "delivered" | "unconfirmed" | "rejected";
 }
 
 export interface CodexConversation {
@@ -74,13 +67,8 @@ export interface CodexConversation {
   session_id?: string;
   cwd?: string;
   updated_at?: string;
-  active?: boolean;
-  turn_epoch?: string;
-  turn_revision?: number;
-  turn?: StructuredTurn;
-  /** The sole owner of Working, timer, and Stop. */
-  activity?: StructuredTurn;
-  queued_turns?: StructuredTurn[];
+  /** The provider's sole lifecycle fact for Working, timer, and Stop. */
+  activity?: ProviderActivity;
   events: CodexConversationEvent[];
 }
 
@@ -102,95 +90,68 @@ export function normalizeCodexConversation(value: any): CodexConversation {
       typeof conversation.updated_at === "string"
         ? conversation.updated_at
         : undefined,
-    active:
-      typeof conversation.active === "boolean"
-        ? conversation.active
-        : undefined,
-    turn_epoch:
-      typeof conversation.turn_epoch === "string" && conversation.turn_epoch
-        ? conversation.turn_epoch
-        : undefined,
-    turn_revision:
-      typeof conversation.turn_revision === "number" &&
-        Number.isFinite(conversation.turn_revision) &&
-        conversation.turn_revision >= 0
-        ? conversation.turn_revision
-        : undefined,
-    turn: normalizeStructuredTurn(conversation.turn),
-    activity: normalizeStructuredTurn(conversation.activity),
-    queued_turns: Array.isArray(conversation.queued_turns)
-      ? conversation.queued_turns
-          .map((turn: unknown) => normalizeStructuredTurn(turn))
-          .filter((turn: StructuredTurn | undefined): turn is StructuredTurn =>
-            Boolean(turn),
-          )
-      : [],
+    activity: normalizeProviderActivity(conversation.activity),
     events: Array.isArray(conversation.events)
       ? conversation.events.map(normalizeCodexConversationEvent).filter(Boolean)
       : [],
   };
 }
 
-export function normalizeStructuredTurn(
+export function normalizeProviderActivity(
   value: unknown,
-): StructuredTurn | undefined {
-  const turn = value && typeof value === "object"
+): ProviderActivity | undefined {
+  const activity = value && typeof value === "object"
     ? value as Record<string, unknown>
     : null;
   if (
-    !turn ||
-    typeof turn.id !== "string" ||
-    !turn.id.trim() ||
-    typeof turn.started_at !== "string" ||
-    !turn.started_at ||
-    !Number.isFinite(Date.parse(turn.started_at))
+    !activity ||
+    typeof activity.id !== "string" ||
+    !activity.id.trim() ||
+    typeof activity.started_at !== "string" ||
+    !activity.started_at ||
+    !Number.isFinite(Date.parse(activity.started_at))
   ) {
     return undefined;
   }
-  const status = normalizeStructuredTurnStatus(turn.status);
+  const status = normalizeProviderActivityStatus(activity.status);
   if (!status) {
     return undefined;
   }
   return {
-    id: turn.id.trim(),
+    id: activity.id.trim(),
     status,
-    started_at: turn.started_at,
+    started_at: activity.started_at,
     settled_at:
-      typeof turn.settled_at === "string" &&
-      turn.settled_at &&
-      Number.isFinite(Date.parse(turn.settled_at))
-        ? turn.settled_at
-        : undefined,
-    control_id:
-      typeof turn.control_id === "string" && turn.control_id.trim()
-        ? turn.control_id.trim()
+      typeof activity.settled_at === "string" &&
+      activity.settled_at &&
+      Number.isFinite(Date.parse(activity.settled_at))
+        ? activity.settled_at
         : undefined,
   };
 }
 
-export function isStructuredTurnRunning(
-  turn?: StructuredTurn | null,
-): turn is StructuredTurn & { status: "running" } {
-  return turn?.status === "running";
+export function isProviderActivityRunning(
+  activity?: ProviderActivity | null,
+): activity is ProviderActivity & { status: "running" } {
+  return activity?.status === "running";
 }
 
-export function isStructuredTurnTerminal(
-  turn?: StructuredTurn | null,
+export function isProviderActivityTerminal(
+  activity?: ProviderActivity | null,
 ): boolean {
   return Boolean(
-    turn &&
-      (turn.status === "completed" ||
-        turn.status === "failed" ||
-        turn.status === "interrupted" ||
-        turn.status === "cancelled"),
+    activity &&
+      (activity.status === "completed" ||
+        activity.status === "failed" ||
+        activity.status === "interrupted" ||
+        activity.status === "cancelled"),
   );
 }
 
-function normalizeStructuredTurnStatus(
+function normalizeProviderActivityStatus(
   value: unknown,
-): StructuredTurnStatus | undefined {
+): ProviderActivityStatus | undefined {
   switch (value) {
-    case "queued":
     case "running":
     case "completed":
     case "failed":
@@ -251,39 +212,7 @@ function normalizeCodexConversationEvent(
           .filter((step: CodexPlanStep | null): step is CodexPlanStep => Boolean(step))
       : undefined,
     source: typeof event.source === "string" ? event.source : undefined,
-    position: normalizeNonnegativeNumber(event.position),
-    event_revision: normalizeNonnegativeNumber(event.event_revision),
-    activity_id:
-      typeof event.activity_id === "string" && event.activity_id
-        ? event.activity_id
-        : undefined,
-    submission_id:
-      typeof event.submission_id === "string" && event.submission_id
-        ? event.submission_id
-        : undefined,
-    submission_state: normalizeSubmissionState(event.submission_state),
   };
-}
-
-function normalizeNonnegativeNumber(value: unknown) {
-  return typeof value === "number" && Number.isFinite(value) && value >= 0
-    ? value
-    : undefined;
-}
-
-function normalizeSubmissionState(
-  value: unknown,
-): CodexConversationEvent["submission_state"] {
-  switch (value) {
-    case "accepted":
-    case "queued":
-    case "delivered":
-    case "unconfirmed":
-    case "rejected":
-      return value;
-    default:
-      return undefined;
-  }
 }
 
 function normalizePlanStep(value: any): CodexPlanStep | null {

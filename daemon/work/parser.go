@@ -4,17 +4,13 @@ import (
 	"bytes"
 	"fmt"
 	"path/filepath"
-	"regexp"
 	"strings"
 	"time"
 
 	"gopkg.in/yaml.v3"
 )
 
-var (
-	frontmatterDelim = []byte("---")
-	mentionRe        = regexp.MustCompile(`(?m)(?:^|\s)@([a-z][a-z0-9-]*)(?:#([a-z0-9-]+))?\b`)
-)
+var frontmatterDelim = []byte("---")
 
 // ParseFile parses a Markdown file's bytes into an Item.
 func ParseFile(path string, data []byte, mtime time.Time) (*Item, error) {
@@ -31,7 +27,6 @@ func ParseFile(path string, data []byte, mtime time.Time) (*Item, error) {
 
 	project := projectFromPath(path)
 	title := extractTitle(body)
-	mentions := ExtractMentions(body)
 
 	return &Item{
 		ID:          parsed.ID,
@@ -40,7 +35,6 @@ func ParseFile(path string, data []byte, mtime time.Time) (*Item, error) {
 		Title:       title,
 		Body:        body,
 		Frontmatter: parsed,
-		Mentions:    mentions,
 		Mtime:       mtime,
 	}, nil
 }
@@ -90,21 +84,7 @@ func decodeFrontmatter(fm string) (Frontmatter, map[string]interface{}, error) {
 		"started":       {},
 		"status":        {},
 		"title":         {},
-		"outcome":       {},
-		"summary":       {},
-		"progress":      {},
-		"friction":      {},
-		"cause":         {},
-		"insight":       {},
-		"next":          {},
-		"agent_source":  {},
 		"agent_session": {},
-		"cwd":           {},
-		"command":       {},
-		"ai_provider":   {},
-		"ai_updated":    {},
-		"ai_hash":       {},
-		"ai_error":      {},
 	}
 	for key, value := range raw {
 		if _, ok := known[key]; ok {
@@ -137,26 +117,6 @@ func extractTitle(body string) string {
 	return ""
 }
 
-// ExtractMentions returns all @role / @role#session mentions in document order.
-// Indexes point to the '@' character in the body.
-func ExtractMentions(body string) []Mention {
-	matches := mentionRe.FindAllStringSubmatchIndex(body, -1)
-	out := make([]Mention, 0, len(matches))
-	for _, match := range matches {
-		role := body[match[2]:match[3]]
-		session := ""
-		if len(match) >= 6 && match[4] >= 0 {
-			session = body[match[4]:match[5]]
-		}
-		out = append(out, Mention{
-			Role:    role,
-			Session: session,
-			Index:   match[2] - 1,
-		})
-	}
-	return out
-}
-
 // SerializeItem renders an Item back to Markdown bytes suitable for atomic write.
 // Unknown frontmatter fields from iss.Frontmatter.Extra are preserved.
 func SerializeItem(iss *Item) ([]byte, error) {
@@ -180,50 +140,8 @@ func SerializeItem(iss *Item) ([]byte, error) {
 	if iss.Frontmatter.Title != "" {
 		out["title"] = iss.Frontmatter.Title
 	}
-	if iss.Frontmatter.Outcome != "" {
-		out["outcome"] = iss.Frontmatter.Outcome
-	}
-	if iss.Frontmatter.Summary != "" {
-		out["summary"] = iss.Frontmatter.Summary
-	}
-	if len(iss.Frontmatter.Progress) > 0 {
-		out["progress"] = iss.Frontmatter.Progress
-	}
-	if iss.Frontmatter.Friction != "" {
-		out["friction"] = iss.Frontmatter.Friction
-	}
-	if iss.Frontmatter.Cause != "" {
-		out["cause"] = iss.Frontmatter.Cause
-	}
-	if iss.Frontmatter.Insight != "" {
-		out["insight"] = iss.Frontmatter.Insight
-	}
-	if iss.Frontmatter.Next != "" {
-		out["next"] = iss.Frontmatter.Next
-	}
-	if iss.Frontmatter.AgentSource != "" {
-		out["agent_source"] = iss.Frontmatter.AgentSource
-	}
 	if iss.Frontmatter.AgentSession != "" {
 		out["agent_session"] = iss.Frontmatter.AgentSession
-	}
-	if iss.Frontmatter.Cwd != "" {
-		out["cwd"] = iss.Frontmatter.Cwd
-	}
-	if iss.Frontmatter.Command != "" {
-		out["command"] = iss.Frontmatter.Command
-	}
-	if iss.Frontmatter.AIProvider != "" {
-		out["ai_provider"] = iss.Frontmatter.AIProvider
-	}
-	if iss.Frontmatter.AIUpdated != nil {
-		out["ai_updated"] = iss.Frontmatter.AIUpdated.Format(time.RFC3339)
-	}
-	if iss.Frontmatter.AIHash != "" {
-		out["ai_hash"] = iss.Frontmatter.AIHash
-	}
-	if iss.Frontmatter.AIError != "" {
-		out["ai_error"] = iss.Frontmatter.AIError
 	}
 	for key, value := range iss.Frontmatter.Extra {
 		out[key] = value

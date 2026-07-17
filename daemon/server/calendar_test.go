@@ -29,7 +29,7 @@ func TestAuthenticatedCalendarWebSocketCRUD(t *testing.T) {
 		t.Fatal(err)
 	}
 	store, _ := calendar.NewStore(t.TempDir())
-	srv := New(authManager, watcher.New(time.Second), nil, nil, nil, nil, nil, nil)
+	srv := New(authManager, watcher.New(time.Second), nil, nil, nil, nil, nil)
 	srv.SetCalendar(store, calendar.NewScheduler(store, nil))
 	httpServer := httptest.NewServer(http.HandlerFunc(srv.handleWS))
 	defer httpServer.Close()

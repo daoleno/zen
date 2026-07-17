@@ -5,7 +5,45 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/daoleno/zen/daemon/classifier"
 )
+
+func TestProviderConversationReaderSelectsOnlyExplicitKnownProvider(t *testing.T) {
+	now := time.Date(2026, 7, 16, 12, 0, 0, 0, time.UTC)
+	for _, provider := range []string{
+		AgentProviderCodex,
+		AgentProviderClaude,
+		AgentProviderCursor,
+		AgentProviderGrok,
+	} {
+		t.Run(provider, func(t *testing.T) {
+			got, err := NewProviderConversationReader().Load(classifier.Agent{
+				Name:    "opaque provider",
+				Command: "/opt/bin/provider-wrapper",
+			}, provider, now)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got.Available || got.Reason != "missing_cwd" {
+				t.Fatalf("conversation = %#v", got)
+			}
+		})
+	}
+
+	unknown, err := NewProviderConversationReader().Load(classifier.Agent{
+		Name:    "claude",
+		Command: "claude",
+		Cwd:     "/repo",
+	}, "unknown", now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if unknown.Available || unknown.Reason != "not_structured_agent" {
+		t.Fatalf("unknown provider = %#v", unknown)
+	}
+}
 
 func TestParseCodexConversation_BuildsNativeTimeline(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "rollout.jsonl")
@@ -928,8 +966,8 @@ func TestParseCodexConversation_RendersCodexErrorAndStreamErrorStatuses(t *testi
 	if err != nil {
 		t.Fatalf("parseCodexConversation: %v", err)
 	}
-	if got.Active == nil || *got.Active {
-		t.Fatalf("active = %#v, want false after error", got.Active)
+	if got.Activity != nil && got.Activity.Status == ProviderActivityRunning {
+		t.Fatalf("fatal error left Activity running: %#v", got.Activity)
 	}
 	if len(got.Events) != 2 {
 		t.Fatalf("events len = %d, want 2: %#v", len(got.Events), got.Events)
@@ -991,7 +1029,7 @@ func TestParseCodexConversation_DoesNotEndTurnForNonFatalCodexErrors(t *testing.
 	path := filepath.Join(t.TempDir(), "rollout.jsonl")
 	writeJSONL(t, path,
 		map[string]any{
-			"type": "event_msg",
+			"type": "event_msg", "timestamp": "2026-05-20T10:00:00Z",
 			"payload": map[string]any{
 				"type": "task_started",
 			},
@@ -1014,8 +1052,8 @@ func TestParseCodexConversation_DoesNotEndTurnForNonFatalCodexErrors(t *testing.
 	if err != nil {
 		t.Fatalf("parseCodexConversation: %v", err)
 	}
-	if got.Active == nil || !*got.Active {
-		t.Fatalf("active = %#v, want true for non-turn-fatal error", got.Active)
+	if got.Activity == nil || got.Activity.Status != ProviderActivityRunning {
+		t.Fatalf("Activity = %#v, want running for non-fatal error", got.Activity)
 	}
 	if len(got.Events) != 1 {
 		t.Fatalf("events len = %d, want 1: %#v", len(got.Events), got.Events)
@@ -1245,8 +1283,8 @@ func TestParseCodexConversation_KeepsCodexHistoryEntries(t *testing.T) {
 	if event.Kind != "status" || !strings.Contains(event.Body, "Model: gpt-5") {
 		t.Fatalf("history entry event = %#v, want status with native output", event)
 	}
-	if got.Turn == nil || got.Turn.Status != CodexConversationTurnCompleted {
-		t.Fatalf("slash command lifecycle = %#v, want completed", got.Turn)
+	if got.Activity == nil || got.Activity.Status != ProviderActivityCompleted {
+		t.Fatalf("slash command lifecycle = %#v, want completed", got.Activity)
 	}
 }
 
@@ -1439,15 +1477,12 @@ func TestParseCodexConversation_FinalizesPendingReasoningWhenTurnEnds(t *testing
 			if err != nil {
 				t.Fatalf("parseCodexConversation: %v", err)
 			}
-			if got.Active == nil || *got.Active {
-				t.Fatalf("active = %#v, want false", got.Active)
-			}
-			wantStatus := CodexConversationTurnCompleted
+			wantStatus := ProviderActivityCompleted
 			if terminalEvent == "turn_aborted" {
-				wantStatus = CodexConversationTurnInterrupted
+				wantStatus = ProviderActivityInterrupted
 			}
-			if got.Turn == nil || got.Turn.Status != wantStatus || got.Turn.StartedAt != "2026-05-20T10:00:01Z" || got.Turn.SettledAt != "2026-05-20T10:00:03Z" {
-				t.Fatalf("turn = %#v, want stable terminal lifecycle", got.Turn)
+			if got.Activity == nil || got.Activity.Status != wantStatus || got.Activity.StartedAt != "2026-05-20T10:00:01Z" || got.Activity.SettledAt != "2026-05-20T10:00:03Z" {
+				t.Fatalf("turn = %#v, want stable terminal lifecycle", got.Activity)
 			}
 			if len(got.Events) != 1 {
 				t.Fatalf("events len = %d, want 1: %#v", len(got.Events), got.Events)
@@ -1463,8 +1498,8 @@ func TestParseCodexConversation_FinalizesPendingReasoningWhenTurnEnds(t *testing
 	}
 }
 
-func TestParseCodexConversation_TracksTurnActivityFromLifecycleEvents(t *testing.T) {
-	t.Run("running turn", func(t *testing.T) {
+func TestParseCodexConversation_TracksProviderActivityFromNativeLifecycleEvents(t *testing.T) {
+	t.Run("running Activity", func(t *testing.T) {
 		path := filepath.Join(t.TempDir(), "running.jsonl")
 		writeJSONL(t, path,
 			map[string]any{
@@ -1481,12 +1516,9 @@ func TestParseCodexConversation_TracksTurnActivityFromLifecycleEvents(t *testing
 		if err != nil {
 			t.Fatalf("parseCodexConversation: %v", err)
 		}
-		if got.Active == nil || !*got.Active {
-			t.Fatalf("active = %#v, want true", got.Active)
-		}
-		if got.Turn == nil || got.Turn.Status != CodexConversationTurnRunning ||
-			!strings.Contains(got.Turn.ID, "turn-running") || got.Turn.StartedAt != "2026-05-20T10:00:00Z" {
-			t.Fatalf("turn = %#v, want pre-token running lifecycle", got.Turn)
+		if got.Activity == nil || got.Activity.Status != ProviderActivityRunning ||
+			!strings.Contains(got.Activity.ID, "turn-running") || got.Activity.StartedAt != "2026-05-20T10:00:00Z" {
+			t.Fatalf("turn = %#v, want pre-token running lifecycle", got.Activity)
 		}
 	})
 
@@ -1526,11 +1558,8 @@ func TestParseCodexConversation_TracksTurnActivityFromLifecycleEvents(t *testing
 		if err != nil {
 			t.Fatalf("parseCodexConversation: %v", err)
 		}
-		if got.Active == nil || !*got.Active {
-			t.Fatalf("active = %#v, want true until authoritative completion", got.Active)
-		}
-		if got.Turn == nil || got.Turn.Status != CodexConversationTurnRunning || got.Turn.SettledAt != "" {
-			t.Fatalf("assistant rendering metadata settled lifecycle: %#v", got.Turn)
+		if got.Activity == nil || got.Activity.Status != ProviderActivityRunning || got.Activity.SettledAt != "" {
+			t.Fatalf("assistant rendering metadata settled lifecycle: %#v", got.Activity)
 		}
 	})
 
@@ -1560,15 +1589,12 @@ func TestParseCodexConversation_TracksTurnActivityFromLifecycleEvents(t *testing
 			if err != nil {
 				t.Fatalf("parseCodexConversation: %v", err)
 			}
-			if got.Active == nil || *got.Active {
-				t.Fatalf("active = %#v, want false", got.Active)
-			}
-			wantStatus := CodexConversationTurnCompleted
+			wantStatus := ProviderActivityCompleted
 			if terminalEvent == "turn_aborted" {
-				wantStatus = CodexConversationTurnInterrupted
+				wantStatus = ProviderActivityInterrupted
 			}
-			if got.Turn == nil || got.Turn.Status != wantStatus || got.Turn.StartedAt != "2026-05-20T10:00:00Z" || got.Turn.SettledAt != "2026-05-20T10:00:03Z" {
-				t.Fatalf("turn = %#v", got.Turn)
+			if got.Activity == nil || got.Activity.Status != wantStatus || got.Activity.StartedAt != "2026-05-20T10:00:00Z" || got.Activity.SettledAt != "2026-05-20T10:00:03Z" {
+				t.Fatalf("turn = %#v", got.Activity)
 			}
 		})
 	}
@@ -1586,8 +1612,8 @@ func TestParseCodexConversation_TracksTurnActivityFromLifecycleEvents(t *testing
 		if err != nil {
 			t.Fatal(err)
 		}
-		if before.Turn == nil || before.Turn.Status != CodexConversationTurnRunning {
-			t.Fatalf("before = %#v", before.Turn)
+		if before.Activity == nil || before.Activity.Status != ProviderActivityRunning {
+			t.Fatalf("before = %#v", before.Activity)
 		}
 
 		writeJSONL(t, path,
@@ -1611,9 +1637,9 @@ func TestParseCodexConversation_TracksTurnActivityFromLifecycleEvents(t *testing
 		if err != nil {
 			t.Fatal(err)
 		}
-		if after.Turn == nil || after.Turn.ID != before.Turn.ID || after.Turn.StartedAt != before.Turn.StartedAt ||
-			after.Turn.Status != CodexConversationTurnCompleted || after.Turn.SettledAt != "2026-05-20T10:00:02Z" {
-			t.Fatalf("late provider correlation changed or failed to settle turn: before=%#v after=%#v", before.Turn, after.Turn)
+		if after.Activity == nil || after.Activity.ID != before.Activity.ID || after.Activity.StartedAt != before.Activity.StartedAt ||
+			after.Activity.Status != ProviderActivityCompleted || after.Activity.SettledAt != "2026-05-20T10:00:02Z" {
+			t.Fatalf("late provider correlation changed or failed to settle turn: before=%#v after=%#v", before.Activity, after.Activity)
 		}
 	})
 }

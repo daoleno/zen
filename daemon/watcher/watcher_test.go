@@ -769,41 +769,27 @@ func TestCursorActivitySignal_StopMarker(t *testing.T) {
 	}
 }
 
-func TestActivityProbe_SkipTranscriptWhenPaneDecides(t *testing.T) {
-	probe := &countingTranscriptProbe{}
-	adapter := classifier.NewCursorActivityAdapterWithTranscript(probe)
+func TestActivityProbe_IdleProviderPanesWithoutProcessFactsStayUnknown(t *testing.T) {
 	w := New(time.Second)
-	w.SetActivityProbe(classifier.NewActivityProbe(adapter))
-	agent := classifier.Agent{ID: "a:@1", Command: "cursor-agent", Cwd: "/tmp"}
-	got := w.activitySignal(agent, "Cursor Agent\nctrl+c to stop\n", 0, nil)
-	if got.State != classifier.StateRunning {
-		t.Fatalf("got %#v", got)
-	}
-	if probe.calls != 0 {
-		t.Fatalf("transcript probe calls = %d, want 0 when pane stop marker decides", probe.calls)
-	}
-}
+	w.SetActivityProbe(classifier.DefaultActivityProbe())
 
-func TestActivityProbe_UsesInjectedCursorTranscript(t *testing.T) {
-	active := true
-	probe := &countingTranscriptProbe{active: &active, ok: true}
-	adapter := classifier.NewCursorActivityAdapterWithTranscript(probe)
-	w := New(time.Second)
-	w.SetActivityProbe(classifier.NewActivityProbe(adapter))
-	agent := classifier.Agent{ID: "a:@1", Command: "cursor-agent", Cwd: "/tmp"}
-	got := w.activitySignal(agent, "Cursor Agent\n→ Add a follow-up\n", 0, nil)
-	if got.State != classifier.StateRunning || got.Source != "cursor_transcript_active" {
-		t.Fatalf("got %#v", got)
+	tests := []struct {
+		command string
+		pane    string
+	}{
+		{command: "codex", pane: "OpenAI Codex\n› "},
+		{command: "claude", pane: "Claude Code\n❯ "},
+		{command: "cursor-agent", pane: "Cursor Agent\n→ Add a follow-up"},
+		{command: "grok", pane: "Grok\n❯ "},
 	}
-	if probe.calls != 1 {
-		t.Fatalf("transcript probe calls = %d, want 1", probe.calls)
+	for _, testCase := range tests {
+		agent := classifier.Agent{ID: testCase.command, Command: testCase.command, Cwd: "/tmp", PaneAlive: true, State: classifier.StateUnknown}
+		signal := w.activitySignal(agent, testCase.pane, 0, nil)
+		state, _ := classifier.ResolveSessionStatus(&agent, classifier.StateUnknown, "Session idle", time.Now().UTC(), signal)
+		if state != classifier.StateUnknown {
+			t.Fatalf("%s state = %q from signal %#v, want unknown", testCase.command, state, signal)
+		}
 	}
-}
-
-type countingTranscriptProbe struct {
-	calls  int
-	active *bool
-	ok     bool
 }
 
 func TestAgentsPreserveFirstSeenOrderAcrossMutableUpdates(t *testing.T) {
@@ -829,12 +815,4 @@ func TestAgentsPreserveFirstSeenOrderAcrossMutableUpdates(t *testing.T) {
 	if len(got) != 2 || got[0].ID != "b" || got[1].ID != "c" {
 		t.Fatalf("Agents() after remove/add = %#v, want [b c]", got)
 	}
-}
-
-func (p *countingTranscriptProbe) Active(agent classifier.Agent) (bool, bool) {
-	p.calls++
-	if p.active == nil {
-		return false, p.ok
-	}
-	return *p.active, p.ok
 }

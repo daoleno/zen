@@ -1,12 +1,12 @@
 package brain
 
 import (
+	"bytes"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/daoleno/zen/daemon/classifier"
 	"github.com/daoleno/zen/daemon/watcher"
@@ -178,6 +178,46 @@ func TestServiceSnapshotReusesMatchingHostSession(t *testing.T) {
 	if first.HostAgent == nil || second.HostAgent == nil || first.HostAgent.ID != second.HostAgent.ID {
 		t.Fatalf("host agents = %#v / %#v", first.HostAgent, second.HostAgent)
 	}
+}
+
+func TestServiceSnapshotAndContextDoNotMutateThreadRegistryForHost(t *testing.T) {
+	root := t.TempDir()
+	store, err := NewStore(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fw := &fakeWatcher{}
+	service := NewService(store, fw, &work.ExecutorConfig{
+		ByName: map[string]work.Executor{
+			"codex": {Name: "codex", Command: "codex"},
+		},
+	})
+	first, err := service.Snapshot()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.HostAgent == nil {
+		t.Fatal("initial Snapshot did not create the host fixture")
+	}
+
+	raw := []byte("{\"thread_id\":\"thread-current\",\"thread_ids\":[\"thread-old\",\"thread-current\"]}\n")
+	path, before := writeChatStateFixture(t, root, raw)
+	second, err := service.Snapshot()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if second.HostAgent == nil || second.HostAgent.ID != first.HostAgent.ID {
+		t.Fatalf("host agents = %#v / %#v", first.HostAgent, second.HostAgent)
+	}
+	assertChatStateFixtureUnchanged(t, path, raw, before)
+	context, err := service.Context()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if context.ThreadID != "thread-current" || context.HostAgent == nil || context.HostAgent.ID != first.HostAgent.ID {
+		t.Fatalf("context = %#v", context)
+	}
+	assertChatStateFixtureUnchanged(t, path, raw, before)
 }
 
 // Grok always-approve chrome previously false-positive blocked sessions. Blocked
@@ -617,6 +657,7 @@ func TestServiceBootstrapPromptReferencesMemoryWithoutEmbeddingIt(t *testing.T) 
 	for _, want := range []string{
 		"Treat this bootstrap as a map, not the full context",
 		"read memory.md/profile.md on demand",
+		"repairs product-owned standard Brain workspace blocks",
 		"zen brain context --json",
 		"zen brain playbooks --json",
 		"progressive disclosure",
@@ -771,25 +812,12 @@ func TestServiceSetHostExecutorHandsOffExistingThread(t *testing.T) {
 		t.Fatal(err)
 	}
 	if err := store.SetChatState(ChatState{
-		ThreadID:       "thread-main",
-		SessionIDs:     []string{oldHostID},
-		LastTranscript: "old transcript",
-		UpdatedAt:      time.Date(2026, 6, 2, 10, 0, 0, 0, time.UTC),
+		ThreadID:  "thread-main",
+		ThreadIDs: []string{"thread-history", "thread-main"},
 	}); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(store.currentPath(), []byte("# Current Brain Context\n\n## Active Objective\n\nPreserve handoff objective.\n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := store.AppendChatMessage(ChatMessage{
-		ID:         "user-one",
-		ThreadID:   "thread-main",
-		SessionID:  oldHostID,
-		ExecutorID: "grok",
-		Role:       "user",
-		Body:       "继续刚才的 Brain engine 切换方案",
-		CreatedAt:  time.Date(2026, 6, 2, 10, 1, 0, 0, time.UTC),
-	}); err != nil {
 		t.Fatal(err)
 	}
 	fw := &fakeWatcher{
@@ -811,6 +839,14 @@ func TestServiceSetHostExecutorHandsOffExistingThread(t *testing.T) {
 			"codex": {Name: "codex", Command: "codex", Kind: "codex", Runtime: work.AgentRuntimeTmux},
 		},
 	})
+	registryRaw, err := os.ReadFile(store.ChatStatePath())
+	if err != nil {
+		t.Fatal(err)
+	}
+	registryInfo, err := os.Stat(store.ChatStatePath())
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	snapshot, err := service.SetHostExecutor("codex")
 	if err != nil {
@@ -833,7 +869,6 @@ func TestServiceSetHostExecutorHandsOffExistingThread(t *testing.T) {
 		"Delegated executor: grok",
 		"Read current.md in the Brain workspace before continuing.",
 		"Preserve handoff objective.",
-		"User: 继续刚才的 Brain engine 切换方案",
 		"Host Executor runs Brain chat, planning, delegation, review, and final synthesis.",
 		"Delegated Executor runs delegated agents and ordinary non-Brain sessions unless the user explicitly asks for a different executor for that session.",
 		"Brain keeps decomposition, ordering, judgment, result review, and final synthesis.",
@@ -845,19 +880,18 @@ func TestServiceSetHostExecutorHandsOffExistingThread(t *testing.T) {
 			t.Fatalf("handoff missing %q:\n%s", want, handoff)
 		}
 	}
+	assertChatStateFixtureUnchanged(t, store.ChatStatePath(), registryRaw, registryInfo)
 	state, err := store.ChatState("thread-main")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if state.LastTranscript != "" {
-		t.Fatalf("last transcript = %q", state.LastTranscript)
-	}
-	if !containsString(state.SessionIDs, oldHostID) || !containsString(state.SessionIDs, snapshot.HostAgent.ID) {
-		t.Fatalf("session ids = %#v", state.SessionIDs)
+	if state.ThreadID != "thread-main" || len(state.ThreadIDs) != 2 ||
+		state.ThreadIDs[0] != "thread-history" || state.ThreadIDs[1] != "thread-main" {
+		t.Fatalf("thread registry = %#v", state)
 	}
 }
 
-func TestServiceHousekeepingBackfillsWorkspaceAndReportsDelegatedAgents(t *testing.T) {
+func TestServiceHousekeepingRepairsWorkspaceAndReportsDelegatedAgents(t *testing.T) {
 	root := t.TempDir()
 	store, err := NewStore(root)
 	if err != nil {
@@ -899,8 +933,13 @@ func TestServiceHousekeepingBackfillsWorkspaceAndReportsDelegatedAgents(t *testi
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !report.BackfilledWorkspace {
-		t.Fatalf("expected backfilled workspace report: %+v", report)
+	if len(report.ChangedPaths) == 0 {
+		t.Fatalf("expected repaired workspace report: %+v", report)
+	}
+	for _, want := range []string{"current.md", "policies/delegation.md", "policies/engine.md", "policies/handoff.md"} {
+		if !containsString(report.ChangedPaths, want) {
+			t.Fatalf("changed paths %v missing %q", report.ChangedPaths, want)
+		}
 	}
 	if !pathExists(store.currentPath()) || !pathExists(store.policyPath("engine.md")) {
 		t.Fatalf("housekeeping did not backfill current/policy files")
@@ -931,7 +970,7 @@ func TestServiceHousekeepingBackfillsWorkspaceAndReportsDelegatedAgents(t *testi
 	}
 	for _, want := range []string{
 		"Keep handoff notes.",
-		"## Current Handoff Rules",
+		"## Rules",
 		"Treat a host executor switch as a host replacement, not a new conversation.",
 	} {
 		if !strings.Contains(string(handoff), want) {
@@ -957,24 +996,11 @@ func TestServiceNewChatReplacesHostAndStartsFreshThread(t *testing.T) {
 		t.Fatal(err)
 	}
 	if err := store.SetChatState(ChatState{
-		ThreadID:       oldThreadID,
-		SessionIDs:     []string{oldHostID},
-		LastTranscript: "old transcript",
-		UpdatedAt:      time.Date(2026, 6, 2, 10, 0, 0, 0, time.UTC),
-	}); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := store.AppendChatMessage(ChatMessage{
-		ID:        "old-message",
 		ThreadID:  oldThreadID,
-		SessionID: oldHostID,
-		Role:      "user",
-		Body:      "keep the old chat",
-		CreatedAt: time.Date(2026, 6, 2, 10, 1, 0, 0, time.UTC),
+		ThreadIDs: []string{"thread-history", oldThreadID},
 	}); err != nil {
 		t.Fatal(err)
 	}
-
 	fw := &fakeWatcher{
 		sessions: map[string]*classifier.Agent{
 			oldHostID: {
@@ -1017,26 +1043,25 @@ func TestServiceNewChatReplacesHostAndStartsFreshThread(t *testing.T) {
 	if snapshot.ChatThreadID == "" || snapshot.ChatThreadID == oldThreadID {
 		t.Fatalf("chat thread = %q, old = %q", snapshot.ChatThreadID, oldThreadID)
 	}
+	state, err := store.ChatState("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if state.ThreadID != snapshot.ChatThreadID || len(state.ThreadIDs) != 3 ||
+		state.ThreadIDs[0] != "thread-history" || state.ThreadIDs[1] != oldThreadID ||
+		state.ThreadIDs[2] != snapshot.ChatThreadID {
+		t.Fatalf("new Chat thread registry = %#v", state)
+	}
+	known, err := store.HasChatThread(oldThreadID)
+	if err != nil || !known {
+		t.Fatalf("old thread known = %t, err = %v", known, err)
+	}
 	hostSession, err := store.HostSession()
 	if err != nil {
 		t.Fatal(err)
 	}
 	if hostSession.ID != created.id || hostSession.ExecutorID != "claude" {
 		t.Fatalf("host session = %+v", hostSession)
-	}
-	messages, err := store.ChatMessages(snapshot.ChatThreadID, 10)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(messages) != 0 {
-		t.Fatalf("new thread messages = %#v", messages)
-	}
-	rawMessages, err := os.ReadFile(store.messagesPath())
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !strings.Contains(string(rawMessages), "keep the old chat") {
-		t.Fatalf("old chat message was not preserved:\n%s", rawMessages)
 	}
 	if len(fw.sentCalls) != 1 || fw.sentCalls[0].sessionID != created.id {
 		t.Fatalf("bootstrap sends = %#v", fw.sentCalls)
@@ -1202,8 +1227,8 @@ func TestStoreUsesStateAndWorkspaceDirectories(t *testing.T) {
 	if store.WorkspacePath() != wantWorkspace {
 		t.Fatalf("workspace path = %q, want %q", store.WorkspacePath(), wantWorkspace)
 	}
-	if !pathExists(filepath.Join(root, "state", "messages.jsonl")) {
-		t.Fatalf("missing state messages file")
+	if pathExists(retiredResultLogPath(root)) {
+		t.Fatalf("fresh Brain store created retired result log")
 	}
 	if !pathExists(filepath.Join(root, "state", "reminders.json")) {
 		t.Fatalf("missing state reminders file")
@@ -1275,7 +1300,66 @@ func TestStoreUsesStateAndWorkspaceDirectories(t *testing.T) {
 	}
 }
 
-func TestStoreUpgradesStaleWorkspaceInstructions(t *testing.T) {
+func TestStoreContextAndHousekeepingDoNotCreateOrReadRetiredResultLog(t *testing.T) {
+	for _, existing := range []bool{false, true} {
+		t.Run(fmt.Sprintf("existing=%t", existing), func(t *testing.T) {
+			root := t.TempDir()
+			path := retiredResultLogPath(root)
+			var before os.FileInfo
+			want := []byte("not current Brain state\n")
+			if existing {
+				if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(path, want, 0o640); err != nil {
+					t.Fatal(err)
+				}
+				var err error
+				before, err = os.Stat(path)
+				if err != nil {
+					t.Fatal(err)
+				}
+			}
+
+			store, err := NewStore(root)
+			if err != nil {
+				t.Fatal(err)
+			}
+			service := NewService(store, nil, nil)
+			if _, err := service.Context(); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := service.Housekeeping(); err != nil {
+				t.Fatal(err)
+			}
+
+			if !existing {
+				if pathExists(path) {
+					t.Fatal("Brain context/housekeeping created retired result log")
+				}
+				return
+			}
+			got, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			after, err := os.Stat(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !bytes.Equal(got, want) || after.Mode() != before.Mode() ||
+				!after.ModTime().Equal(before.ModTime()) || !os.SameFile(before, after) {
+				t.Fatalf("retired result log changed: bytes=%q mode=%v mtime=%v", got, after.Mode(), after.ModTime())
+			}
+		})
+	}
+}
+
+func retiredResultLogPath(root string) string {
+	return filepath.Join(root, "state", "messages.jsonl")
+}
+
+func TestStorePreservesUnmarkedWorkspaceInstructionsBeforeCanonicalBlock(t *testing.T) {
 	root := t.TempDir()
 	workspace := filepath.Join(root, "workspace")
 	if err := os.MkdirAll(workspace, 0o700); err != nil {
@@ -1299,20 +1383,24 @@ Custom local note.
 		t.Fatal(err)
 	}
 	instructions := string(raw)
-	if !strings.Contains(instructions, "Custom local note.") {
-		t.Fatalf("workspace instructions lost existing content:\n%s", instructions)
+	if !strings.HasPrefix(instructions, staleInstructions) {
+		t.Fatalf("workspace instructions changed unmarked existing bytes:\n%s", instructions)
 	}
-	if strings.Contains(instructions, "explicitly asks you to delegate real work") {
-		t.Fatalf("workspace instructions still contain stale explicit-only rule:\n%s", instructions)
-	}
-	for _, want := range currentWorkspaceInstructionMarkers {
+	for _, want := range []string{
+		managedStartMarker(brainAgentsManagedID),
+		"## Brain Orchestration Rules",
+		"## Brain Communication Rules",
+		"## Executor Rules",
+		"## Zen CLI",
+		managedEndMarker(brainAgentsManagedID),
+	} {
 		if !strings.Contains(instructions, want) {
 			t.Fatalf("workspace instructions missing %q:\n%s", want, instructions)
 		}
 	}
 }
 
-func TestServiceHousekeepingBackfillsCalendarContractWithoutOverwritingUserContent(t *testing.T) {
+func TestServiceHousekeepingRepairsCalendarContractWithoutOverwritingUserContent(t *testing.T) {
 	store, err := NewStore(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
@@ -1332,8 +1420,8 @@ func TestServiceHousekeepingBackfillsCalendarContractWithoutOverwritingUserConte
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !report.BackfilledWorkspace {
-		t.Fatalf("calendar instruction backfill was not reported: %+v", report)
+	if !containsString(report.ChangedPaths, "AGENTS.md") {
+		t.Fatalf("calendar instruction repair was not reported: %+v", report)
 	}
 	raw, err := os.ReadFile(store.workspaceInstructionsPath())
 	if err != nil {
@@ -1378,4 +1466,13 @@ func assertCalendarPromptContract(t *testing.T, value, noAutoExtractionMarker st
 func pathExists(path string) bool {
 	_, err := os.Stat(path)
 	return err == nil
+}
+
+func containsString(values []string, want string) bool {
+	for _, value := range values {
+		if value == want {
+			return true
+		}
+	}
+	return false
 }

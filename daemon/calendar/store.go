@@ -1,6 +1,7 @@
 package calendar
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -21,7 +22,10 @@ type document struct {
 	Items         []Item `json:"items"`
 }
 
-type Event struct{ Item Item }
+type Event struct {
+	Item            Item
+	ScheduledResult *ScheduledResult
+}
 
 type Store struct {
 	path    string
@@ -47,9 +51,6 @@ func NewStore(root string) (*Store, error) {
 	if err := os.MkdirAll(root, 0o700); err != nil {
 		return nil, err
 	}
-	if err := os.Chmod(root, 0o700); err != nil {
-		return nil, err
-	}
 	s := &Store{path: filepath.Join(root, "calendar.json"), now: time.Now, items: map[string]Item{}, subs: map[int]chan Event{}}
 	if err := s.load(); err != nil {
 		return nil, err
@@ -60,22 +61,17 @@ func NewStore(root string) (*Store, error) {
 func (s *Store) load() error {
 	raw, err := os.ReadFile(s.path)
 	if errors.Is(err, os.ErrNotExist) {
+		if err := os.Chmod(filepath.Dir(s.path), 0o700); err != nil {
+			return err
+		}
 		return s.persistLocked()
 	}
 	if err != nil {
 		return err
 	}
-	var doc document
-	if err := json.Unmarshal(raw, &doc); err != nil {
-		// Pre-v1 development builds used a bare item array. Migrate it once.
-		var legacy []Item
-		if legacyErr := json.Unmarshal(raw, &legacy); legacyErr != nil {
-			return fmt.Errorf("decode calendar store: %w", err)
-		}
-		doc = document{SchemaVersion: SchemaVersion, Items: legacy}
-	}
-	if doc.SchemaVersion > SchemaVersion {
-		return fmt.Errorf("calendar schema %d is newer than supported schema %d", doc.SchemaVersion, SchemaVersion)
+	doc, err := decodeDocument(raw)
+	if err != nil {
+		return fmt.Errorf("decode calendar store: %w", err)
 	}
 	for _, item := range doc.Items {
 		if item.ID == "" {
@@ -83,7 +79,53 @@ func (s *Store) load() error {
 		}
 		s.items[item.ID] = item
 	}
-	return s.persistLocked()
+	return nil
+}
+
+func decodeDocument(raw []byte) (document, error) {
+	trimmed := bytes.TrimSpace(raw)
+	if len(trimmed) == 0 || trimmed[0] != '{' {
+		return document{}, fmt.Errorf("calendar document must be a JSON object")
+	}
+
+	var encoded struct {
+		SchemaVersion json.RawMessage `json:"schema_version"`
+		Items         json.RawMessage `json:"items"`
+	}
+	decoder := json.NewDecoder(bytes.NewReader(trimmed))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&encoded); err != nil {
+		return document{}, err
+	}
+	if trailing := bytes.TrimSpace(trimmed[decoder.InputOffset():]); len(trailing) != 0 {
+		return document{}, fmt.Errorf("calendar document must contain exactly one JSON value")
+	}
+
+	if encoded.SchemaVersion == nil {
+		return document{}, fmt.Errorf("schema_version is required")
+	}
+	if bytes.Equal(bytes.TrimSpace(encoded.SchemaVersion), []byte("null")) {
+		return document{}, fmt.Errorf("schema_version must be a non-null integer")
+	}
+	var schemaVersion int
+	if err := json.Unmarshal(encoded.SchemaVersion, &schemaVersion); err != nil {
+		return document{}, fmt.Errorf("schema_version must be a non-null integer: %w", err)
+	}
+	if schemaVersion != SchemaVersion {
+		return document{}, fmt.Errorf("schema_version must equal %d, got %d", SchemaVersion, schemaVersion)
+	}
+
+	if encoded.Items == nil {
+		return document{}, fmt.Errorf("items is required")
+	}
+	if bytes.Equal(bytes.TrimSpace(encoded.Items), []byte("null")) {
+		return document{}, fmt.Errorf("items must be a non-null JSON array")
+	}
+	var items []Item
+	if err := json.Unmarshal(encoded.Items, &items); err != nil {
+		return document{}, fmt.Errorf("items must be a JSON array: %w", err)
+	}
+	return document{SchemaVersion: schemaVersion, Items: items}, nil
 }
 
 func (s *Store) Path() string { return s.path }
@@ -106,9 +148,18 @@ func (s *Store) Unsubscribe(id int) {
 	}
 }
 func (s *Store) broadcast(item Item) {
+	s.broadcastEvent(Event{Item: item})
+}
+
+func (s *Store) broadcastEvent(event Event) {
+	event.Item = cloneItem(event.Item)
+	if event.ScheduledResult != nil {
+		result := *event.ScheduledResult
+		event.ScheduledResult = &result
+	}
 	for _, ch := range s.subs {
 		select {
-		case ch <- Event{Item: cloneItem(item)}:
+		case ch <- event:
 		default:
 		}
 	}
@@ -281,7 +332,16 @@ func (s *Store) Claim(id string, manual bool) (Item, Run, error) {
 		}
 	}
 	now := s.now().UTC()
-	run := Run{ID: uuid.NewString(), ScheduledFor: scheduledFor, StartedAt: now, Status: StatusRunning, Manual: manual, PreviousStatus: item.Status}
+	run := Run{
+		ID:             uuid.NewString(),
+		Title:          strings.TrimSpace(item.Title),
+		SourceThreadID: strings.TrimSpace(item.SourceThreadID),
+		ScheduledFor:   scheduledFor,
+		StartedAt:      now,
+		Status:         StatusRunning,
+		Manual:         manual,
+		PreviousStatus: item.Status,
+	}
 	item.Runs = append(item.Runs, run)
 	item.Status, item.UpdatedAt, item.FailureReason = StatusRunning, now, ""
 	item.Revision++
@@ -294,7 +354,7 @@ func (s *Store) Claim(id string, manual bool) (Item, Run, error) {
 	return cloneItem(item), run, nil
 }
 
-func (s *Store) RecordLaunch(id, runID, workID, agentSession, result string) (Item, error) {
+func (s *Store) RecordLaunch(id, runID, workID, agentSession string) (Item, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	item, ok := s.items[id]
@@ -318,7 +378,6 @@ func (s *Store) RecordLaunch(id, runID, workID, agentSession, result string) (It
 	}
 	now := s.now().UTC()
 	item.Runs[idx].WorkID, item.Runs[idx].AgentSession = workID, agentSession
-	item.Runs[idx].Result = result
 	item.LinkedWorkID, item.Status, item.FailureReason, item.UpdatedAt = workID, StatusRunning, "", now
 	item.Revision++
 	s.items[id] = item
@@ -331,6 +390,10 @@ func (s *Store) RecordLaunch(id, runID, workID, agentSession, result string) (It
 }
 
 func (s *Store) FinishRun(id, runID, result, failure string) (Item, error) {
+	status, result, failure, err := normalizeTerminalPayload(result, failure)
+	if err != nil {
+		return Item{}, err
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	item, ok := s.items[id]
@@ -353,14 +416,8 @@ func (s *Store) FinishRun(id, runID, result, failure string) (Item, error) {
 		return cloneItem(item), nil
 	}
 	now := s.now().UTC()
-	status := StatusCompleted
-	if strings.TrimSpace(failure) != "" {
-		status = StatusFailed
-	}
 	item.Runs[idx].Status, item.Runs[idx].FinishedAt = status, &now
-	if strings.TrimSpace(result) != "" {
-		item.Runs[idx].Result = result
-	}
+	item.Runs[idx].Result = result
 	item.Runs[idx].FailureReason = failure
 	item.Status, item.FailureReason, item.UpdatedAt = status, failure, now
 	item.Revision++
@@ -386,8 +443,35 @@ func (s *Store) FinishRun(id, runID, result, failure string) (Item, error) {
 		s.items[id] = original
 		return Item{}, err
 	}
-	s.broadcast(item)
+	event := Event{Item: item}
+	if result, ok := scheduledResultFromRun(id, item.Runs[idx]); ok {
+		event.ScheduledResult = &result
+	}
+	s.broadcastEvent(event)
 	return cloneItem(item), nil
+}
+
+func normalizeTerminalPayload(result, failure string) (Status, string, string, error) {
+	hasResult := strings.TrimSpace(result) != ""
+	hasFailure := strings.TrimSpace(failure) != ""
+	if !hasResult && !hasFailure {
+		return "", "", "", fmt.Errorf("scheduled run requires exactly one result or failure")
+	}
+	if hasResult && hasFailure {
+		return "", "", "", fmt.Errorf("scheduled run cannot contain both result and failure")
+	}
+	if hasResult {
+		normalized, err := normalizeScheduledResult(result)
+		if err != nil {
+			return "", "", "", fmt.Errorf("invalid scheduled result: %w", err)
+		}
+		return StatusCompleted, normalized, "", nil
+	}
+	normalized, err := normalizeScheduledFailure(failure)
+	if err != nil {
+		return "", "", "", fmt.Errorf("invalid scheduled failure: %w", err)
+	}
+	return StatusFailed, "", normalized, nil
 }
 
 func (s *Store) persistLocked() error {

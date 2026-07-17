@@ -5,20 +5,82 @@ import (
 	"testing"
 )
 
-func TestTmuxWindowLinkedHookCommandConfiguresWindowSizing(t *testing.T) {
-	got := tmuxWindowLinkedHookCommand()
-	want := `run-shell "tmux set-window-option -t #{hook_window} window-size latest; tmux set-window-option -t #{hook_window} aggressive-resize on"`
-	if got != want {
-		t.Fatalf("tmuxWindowLinkedHookCommand() = %q, want %q", got, want)
+func TestTmuxNewViewSessionCommandCreatesIndependentProjection(t *testing.T) {
+	cmd := tmuxNewViewSessionCommand("zen-view")
+
+	want := []string{
+		"tmux",
+		"new-session",
+		"-d",
+		"-P",
+		"-F",
+		"#{window_id}",
+		"-s",
+		"zen-view",
+		"sleep 86400",
+	}
+	if !reflect.DeepEqual(cmd.Args, want) {
+		t.Fatalf("tmuxNewViewSessionCommand args = %v, want %v", cmd.Args, want)
 	}
 }
 
-func TestTmuxAttachCommandEnablesRGBClientFeatures(t *testing.T) {
+func TestTmuxLinkViewWindowCommandReplacesOnlyBootstrapWindow(t *testing.T) {
+	cmd := tmuxLinkViewWindowCommand("source:@12", "@99")
+
+	want := []string{"tmux", "link-window", "-k", "-s", "source:@12", "-t", "@99"}
+	if !reflect.DeepEqual(cmd.Args, want) {
+		t.Fatalf("tmuxLinkViewWindowCommand args = %v, want %v", cmd.Args, want)
+	}
+}
+
+func TestTmuxAttachCommandIgnoresViewSizeAndKeepsInputEnabled(t *testing.T) {
 	cmd := tmuxAttachCommand("zen-demo")
 
-	want := []string{"tmux", "-T", "RGB,256", "attach-session", "-t", "zen-demo"}
+	want := []string{
+		"tmux",
+		"-T",
+		"RGB,256",
+		"attach-session",
+		"-f",
+		"ignore-size",
+		"-t",
+		"zen-demo",
+	}
 	if !reflect.DeepEqual(cmd.Args, want) {
 		t.Fatalf("tmuxAttachCommand args = %v, want %v", cmd.Args, want)
+	}
+}
+
+func TestTmuxStatusLines(t *testing.T) {
+	tests := []struct {
+		name    string
+		value   string
+		want    int
+		wantErr bool
+	}{
+		{name: "off", value: "off", want: 0},
+		{name: "zero", value: "0", want: 0},
+		{name: "on", value: "on", want: 1},
+		{name: "multiple", value: "3", want: 3},
+		{name: "empty", value: "", wantErr: true},
+		{name: "too large", value: "6", wantErr: true},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			got, err := tmuxStatusLines(test.value)
+			if test.wantErr {
+				if err == nil {
+					t.Fatalf("tmuxStatusLines(%q) = %d, want error", test.value, got)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("tmuxStatusLines(%q): %v", test.value, err)
+			}
+			if got != test.want {
+				t.Fatalf("tmuxStatusLines(%q) = %d, want %d", test.value, got, test.want)
+			}
+		})
 	}
 }
 
@@ -72,12 +134,37 @@ func TestTmuxWindowRefHandlesInvalidTarget(t *testing.T) {
 	}
 }
 
-func TestTmuxIsLegacyWindowIndexTarget(t *testing.T) {
-	if !tmuxIsLegacyWindowIndexTarget("main:12") {
-		t.Fatalf("tmuxIsLegacyWindowIndexTarget() should accept numeric window index targets")
+func TestTmuxSourceWindowTarget(t *testing.T) {
+	tests := []struct {
+		name    string
+		target  string
+		want    string
+		wantErr bool
+	}{
+		{name: "session current window", target: "main", want: "main"},
+		{name: "stable window id", target: "main:@12", want: "main:@12"},
+		{name: "numeric window and pane", target: "main:12.1", want: "main:12"},
+		{name: "empty", target: " ", wantErr: true},
+		{name: "missing session", target: ":12", wantErr: true},
+		{name: "missing window", target: "main:", wantErr: true},
 	}
-	if tmuxIsLegacyWindowIndexTarget("main:@12") {
-		t.Fatalf("tmuxIsLegacyWindowIndexTarget() should reject stable window ids")
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			got, err := tmuxSourceWindowTarget(test.target)
+			if test.wantErr {
+				if err == nil {
+					t.Fatalf("tmuxSourceWindowTarget(%q) = %q, want error", test.target, got)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("tmuxSourceWindowTarget(%q): %v", test.target, err)
+			}
+			if got != test.want {
+				t.Fatalf("tmuxSourceWindowTarget(%q) = %q, want %q", test.target, got, test.want)
+			}
+		})
 	}
 }
 

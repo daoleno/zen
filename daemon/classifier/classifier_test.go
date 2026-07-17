@@ -9,7 +9,6 @@ func TestClassify(t *testing.T) {
 		name       string
 		paneAlive  bool
 		lines      []string
-		staleCount int
 		wantState  AgentState
 		wantSubstr string // substring expected in summary
 	}{
@@ -85,11 +84,10 @@ func TestClassify(t *testing.T) {
 			wantState: StateBlocked,
 		},
 		{
-			name:       "blocked after stale period",
-			paneAlive:  true,
-			lines:      []string{"Shall I apply these changes?"},
-			staleCount: 50,
-			wantState:  StateBlocked,
+			name:      "blocked prompt",
+			paneAlive: true,
+			lines:     []string{"Shall I apply these changes?"},
+			wantState: StateBlocked,
 		},
 		{
 			name:      "codex approval picker with tmux status line",
@@ -159,18 +157,16 @@ func TestClassify(t *testing.T) {
 
 		// === IDLE / UNKNOWN (alive pane without durable activity signal) ===
 		{
-			name:       "active output without progress is idle unknown",
-			paneAlive:  true,
-			lines:      []string{"Reading file src/main.go...", "Analyzing dependencies..."},
-			staleCount: 0,
-			wantState:  StateUnknown,
+			name:      "active output without progress is idle unknown",
+			paneAlive: true,
+			lines:     []string{"Reading file src/main.go...", "Analyzing dependencies..."},
+			wantState: StateUnknown,
 		},
 		{
-			name:       "recent output churn without progress is idle unknown",
-			paneAlive:  true,
-			lines:      []string{"Writing test file..."},
-			staleCount: 10,
-			wantState:  StateUnknown,
+			name:      "recent output churn without progress is idle unknown",
+			paneAlive: true,
+			lines:     []string{"Writing test file..."},
+			wantState: StateUnknown,
 		},
 		{
 			name:      "heartbeat log with failed in agent name is not failure",
@@ -194,18 +190,16 @@ func TestClassify(t *testing.T) {
 
 		// === UNKNOWN states ===
 		{
-			name:       "stale with no recognizable pattern",
-			paneAlive:  true,
-			lines:      []string{"some random output that doesn't match anything"},
-			staleCount: 50,
-			wantState:  StateUnknown,
+			name:      "no recognizable pattern",
+			paneAlive: true,
+			lines:     []string{"some random output that doesn't match anything"},
+			wantState: StateUnknown,
 		},
 		{
-			name:       "ordinary shell prompt stays unknown not running",
-			paneAlive:  true,
-			lines:      []string{"user@host:~$ ls", "README.md", "user@host:~$"},
-			staleCount: 0,
-			wantState:  StateUnknown,
+			name:      "ordinary shell prompt stays unknown not running",
+			paneAlive: true,
+			lines:     []string{"user@host:~$ ls", "README.md", "user@host:~$"},
+			wantState: StateUnknown,
 		},
 		{
 			name:      "daemon transcript lookup warning is nonfatal",
@@ -214,8 +208,7 @@ func TestClassify(t *testing.T) {
 				"2026/06/07 15:33:54 work transcript lookup failed for codex (/home/daoleno/workspace/onlora):",
 				"query codex threads: exit status 5: Error: in prepare, database is locked (5)",
 			},
-			staleCount: 50,
-			wantState:  StateUnknown,
+			wantState: StateUnknown,
 		},
 		{
 			name:      "daemon transcript lookup warning block ends at next timestamped log",
@@ -243,17 +236,16 @@ func TestClassify(t *testing.T) {
 			wantState: StateBlocked,
 		},
 		{
-			name:       "mixed: error then question (last line wins for blocked)",
-			paneAlive:  true,
-			lines:      []string{"error: something went wrong", "Would you like me to fix it?"},
-			staleCount: 0,
-			wantState:  StateBlocked,
+			name:      "mixed: error then question (last line wins for blocked)",
+			paneAlive: true,
+			lines:     []string{"error: something went wrong", "Would you like me to fix it?"},
+			wantState: StateBlocked,
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			gotState, gotSummary := Classify(tt.paneAlive, tt.lines, tt.staleCount)
+			gotState, gotSummary := Classify(tt.paneAlive, tt.lines)
 			if gotState != tt.wantState {
 				t.Errorf("Classify() state = %q, want %q (summary: %q)", gotState, tt.wantState, gotSummary)
 			}

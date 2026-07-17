@@ -1,29 +1,24 @@
 import type { ConnectionState } from "../../store/agents";
 import type {
   CodexConversation,
-  CodexConversationEvent,
-  StructuredTurn,
+  ProviderActivity,
 } from "../../services/codexConversation";
-import { isStructuredTurnRunning } from "../../services/codexConversation";
 import type { ConnectionIssue } from "../../services/connectionIssue";
-import type { AgentStatus } from "../../constants/tokens";
 import type { ComposerAttachment } from "./CodexChatSession";
 
 export function buildCodexStatusMeta(input: {
   connectionState: ConnectionState;
   connectionIssue?: ConnectionIssue | null;
   conversation: CodexConversation | null;
-  events: CodexConversationEvent[];
-  agentStatus?: AgentStatus;
+  runningActivity?: ProviderActivity;
   sending: boolean;
-  requestRunning?: boolean;
 }) {
   const {
     connectionState,
     connectionIssue,
     conversation,
+    runningActivity,
     sending,
-    requestRunning,
   } = input;
   if (connectionIssue) {
     return connectionIssue.title;
@@ -34,7 +29,7 @@ export function buildCodexStatusMeta(input: {
   if (connectionState !== "connected") {
     return "Offline";
   }
-  if (requestRunning ?? isStructuredTurnRunning(visibleActivity(conversation))) {
+  if (runningActivity) {
     return "Working";
   }
   if (sending) {
@@ -44,35 +39,6 @@ export function buildCodexStatusMeta(input: {
     return `Updated ${formatTime(conversation.updated_at)}`;
   }
   return "Live";
-}
-
-/**
- * Turn-in-progress for Chat Working/stop controls.
- *
- * Process status, transcript rendering metadata, and Codex's legacy dispatch
- * turn are not Activity signals. Non-Codex providers retain their legacy turn
- * as a compatibility adapter until they publish the provider-neutral Activity.
- */
-export function isCodexRequestRunning({
-  conversation,
-  turn,
-}: {
-  conversation: CodexConversation | null;
-  events?: CodexConversationEvent[];
-  turn?: StructuredTurn;
-  agentStatus?: AgentStatus;
-}) {
-  return isStructuredTurnRunning(turn ?? visibleActivity(conversation));
-}
-
-function visibleActivity(conversation: CodexConversation | null) {
-  if (!conversation) {
-    return undefined;
-  }
-  if (conversation.activity || conversation.source === "codex_rollout") {
-    return conversation.activity;
-  }
-  return conversation.turn;
 }
 
 export function buildCodexComposerMessage(

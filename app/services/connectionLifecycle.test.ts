@@ -1,6 +1,7 @@
 // @ts-nocheck
 import { describe, expect, test } from "bun:test";
 import {
+  createConnectedReadRefreshHandler,
   decideDisconnectLifecycle,
   resolveBrainActiveServerId,
   shouldShowBrainLoadingState,
@@ -29,6 +30,36 @@ const hydratedBrain = {
   chat_thread_id: "thread-1",
   workspace: "/tmp/brain",
 };
+
+describe("connected read refresh", () => {
+  test("issues one fresh request per read model for every connection event", () => {
+    const calls: Array<[string, string]> = [];
+    const client = {
+      listWorkItems: (serverId: string) => calls.push(["work", serverId]),
+      listAgentSessions: (serverId: string) =>
+        calls.push(["sessions", serverId]),
+      requestBrainSnapshot: (serverId: string) =>
+        calls.push(["brain", serverId]),
+      listCalendarItems: (serverId: string) =>
+        calls.push(["calendar", serverId]),
+    };
+    const onConnected = createConnectedReadRefreshHandler(client);
+
+    onConnected({ serverId: "server-a" });
+    onConnected({ serverId: "server-a" });
+
+    expect(calls).toEqual([
+      ["work", "server-a"],
+      ["sessions", "server-a"],
+      ["brain", "server-a"],
+      ["calendar", "server-a"],
+      ["work", "server-a"],
+      ["sessions", "server-a"],
+      ["brain", "server-a"],
+      ["calendar", "server-a"],
+    ]);
+  });
+});
 
 describe("decideDisconnectLifecycle", () => {
   test("intentional disconnect goes offline and clears caches", () => {
@@ -191,7 +222,6 @@ describe("resume presentation for composer and status", () => {
         connectionState: "connecting",
         connectionIssue: null,
         conversation: null,
-        events: [],
         sending: false,
       }),
     ).toBe("Reconnecting");
@@ -209,7 +239,6 @@ describe("resume presentation for composer and status", () => {
           checkedAt: Date.now(),
         },
         conversation: { events: [] },
-        events: [],
         sending: false,
       }),
     ).toBe("Daemon unreachable");

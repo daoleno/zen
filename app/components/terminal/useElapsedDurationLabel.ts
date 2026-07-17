@@ -2,8 +2,8 @@ import { useEffect, useState } from "react";
 import { AppState, type AppStateStatus } from "react-native";
 import {
   elapsedNowForRender,
-  workingTurnElapsedLabels,
-} from "./workingTurnElapsed";
+  providerActivityElapsedLabels,
+} from "./providerActivityElapsed";
 
 export function useElapsedDurationLabels(
   startTimestamp?: string,
@@ -36,9 +36,9 @@ export function useElapsedDurationLabels(
   }, [active, startTimestamp]);
 
   // The button instance morphs between Send and Stop while this hook keeps the
-  // authoritative turn clock alive. Sampling wall time during render also
+  // provider-owned Activity clock alive. Sampling wall time during render also
   // prevents a stale elapsed frame if React paints before the effect refreshes.
-  return workingTurnElapsedLabels({
+  return providerActivityElapsedLabels({
     startedAt: startTimestamp,
     nowMs: elapsedNowForRender(now, Date.now(), active),
     active,

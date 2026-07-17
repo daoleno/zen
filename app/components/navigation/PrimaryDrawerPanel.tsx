@@ -15,6 +15,7 @@ import {
 import { useFocusEffect, useRouter } from "expo-router";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { Typography, useAppColors } from "../../constants/tokens";
+import { appVersion } from "../../constants/appVersion";
 import { getServers, type StoredServer } from "../../services/storage";
 import { useAgentServerSummary } from "../../store/agents";
 import {
@@ -286,7 +287,7 @@ export function PrimaryDrawerPanel({
           },
         ]}
       >
-        Zen v0.1.0
+        Zen v{appVersion}
       </Text>
     </SafeAreaView>
   );

@@ -1,6 +1,5 @@
 import React from "react";
 import type { TerminalThemeChrome } from "../../constants/terminalThemes";
-import type { CodexChatLocalState } from "./CodexChatSession";
 import { CodexSessionIdleView } from "./CodexSessionIdleView";
 import { CodexTimelineEmptyState } from "./CodexTimelineEmptyState";
 import type { ZenTimelineItem } from "./CodexTimelineItemView";
@@ -8,7 +7,6 @@ import type { ZenTimelineItem } from "./CodexTimelineItemView";
 interface CodexTimelineEmptyContentProps {
   items: ZenTimelineItem[];
   loading: boolean;
-  localChatState: CodexChatLocalState;
   error?: string | null;
   suppressed: boolean;
   unavailable: boolean | null;
@@ -25,7 +23,6 @@ interface CodexTimelineEmptyContentProps {
 export function CodexTimelineEmptyContent({
   items,
   loading,
-  localChatState,
   error,
   suppressed,
   unavailable,
@@ -40,29 +37,6 @@ export function CodexTimelineEmptyContent({
 }: CodexTimelineEmptyContentProps) {
   if (suppressed && items.length === 0) {
     return null;
-  }
-
-  if (
-    items.length === 0 &&
-    (localChatState === "starting-new-chat" || localChatState === "new-chat-ready")
-  ) {
-    if (emptyTitle) {
-      return (
-        <CodexTimelineEmptyState
-          chrome={chrome}
-          title={emptyTitle}
-          body={emptyBody}
-          busy={localChatState === "starting-new-chat"}
-        />
-      );
-    }
-    return (
-      <CodexSessionIdleView
-        chrome={chrome}
-        cwd={agentCwd}
-        busy={localChatState === "starting-new-chat"}
-      />
-    );
   }
 
   if (loading && items.length === 0) {

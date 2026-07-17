@@ -29,13 +29,12 @@ interface CodexChatComposerProps {
   sendEnabled: boolean;
   sending: boolean;
   operationalError?: string;
-  sendIcon: React.ComponentProps<typeof CodexComposerPanel>["sendIcon"];
   sendLabel: string;
   showStopButton: boolean;
   stopEnabled: boolean;
   stopLabel: string;
   stopLoading: boolean;
-  workingTurnStartedAt?: string;
+  providerActivityStartedAt?: string;
   bottomPadding: number;
   showActionMenuButton: boolean;
   actionMenuIcon: "add" | "happy-outline";
@@ -73,13 +72,12 @@ export function CodexChatComposer({
   sendEnabled,
   sending,
   operationalError,
-  sendIcon,
   sendLabel,
   showStopButton,
   stopEnabled,
   stopLabel,
   stopLoading,
-  workingTurnStartedAt,
+  providerActivityStartedAt,
   bottomPadding,
   showActionMenuButton,
   actionMenuIcon,
@@ -163,13 +161,12 @@ export function CodexChatComposer({
         uploading={uploading}
         sendEnabled={sendEnabled}
         sending={sending}
-        sendIcon={sendIcon}
         sendLabel={sendLabel}
         showStopButton={showStopButton}
         stopEnabled={stopEnabled}
         stopLabel={stopLabel}
         stopLoading={stopLoading}
-        workingTurnStartedAt={workingTurnStartedAt}
+        providerActivityStartedAt={providerActivityStartedAt}
         actionMenuExpanded={showComposerActions}
         actionMenuButtonEnabled={composerActionButtonEnabled}
         showActionMenuButton={showActionMenuButton}

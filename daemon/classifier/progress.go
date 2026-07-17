@@ -58,7 +58,6 @@ func ApplyProgress(agent *Agent, progress AgentProgress, now time.Time) {
 	if now.IsZero() {
 		now = time.Now().UTC()
 	}
-	previousState := agent.State
 	agent.State = ProgressState(progress)
 	agent.Phase = progress.Phase
 	agent.Attention = progress.Attention
@@ -77,9 +76,6 @@ func ApplyProgress(agent *Agent, progress AgentProgress, now time.Time) {
 		agent.ExpectedNextCheckAt = nil
 	}
 	agent.UpdatedAt = progressAt
-	if previousState != agent.State {
-		agent.StateVersion++
-	}
 }
 
 func ProgressState(progress AgentProgress) AgentState {

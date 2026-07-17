@@ -10,7 +10,6 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/daoleno/zen/daemon/classifier"
@@ -24,220 +23,149 @@ const (
 	codexMessageDedupeTimeWindow = 15 * time.Second
 )
 
-type cachedCodexConversation struct {
-	size         int64
-	modTime      time.Time
-	conversation CodexConversation
-}
-
-var codexConversationCache = struct {
-	sync.Mutex
-	byPath map[string]cachedCodexConversation
-}{
-	byPath: map[string]cachedCodexConversation{},
-}
-
 type CodexConversation struct {
-	Available    bool                   `json:"available"`
-	Reason       string                 `json:"reason,omitempty"`
-	Source       string                 `json:"source,omitempty"`
-	Path         string                 `json:"path,omitempty"`
-	SessionID    string                 `json:"session_id,omitempty"`
-	CWD          string                 `json:"cwd,omitempty"`
-	Updated      *time.Time             `json:"updated_at,omitempty"`
-	TurnRevision int64                  `json:"turn_revision,omitempty"`
-	TurnEpoch    string                 `json:"turn_epoch,omitempty"`
-	Turn         *CodexConversationTurn `json:"turn,omitempty"`
-	// Activity is the provider/executor lifecycle owner used by the canonical
-	// Chat reader. Turn remains on the wire only as a dispatch/control
-	// compatibility field; clients must not infer Working from accepted input.
-	Activity    *CodexConversationTurn  `json:"activity,omitempty"`
-	QueuedTurns []CodexConversationTurn `json:"queued_turns"`
-	// ProviderTurns retains a short ordered lifecycle history for daemon-side
-	// correlation when an executor drains multiple accepted queued turns between
-	// transcript polls. It is never part of the public wire model; Activity is
-	// the one authoritative visible lifecycle while Turn/QueuedTurns are legacy
-	// control compatibility fields.
-	ProviderTurns []CodexConversationTurn  `json:"-"`
-	Active        *bool                    `json:"active,omitempty"`
-	Events        []CodexConversationEvent `json:"events"`
+	Available bool                     `json:"available"`
+	Reason    string                   `json:"reason,omitempty"`
+	Source    string                   `json:"source,omitempty"`
+	Path      string                   `json:"path,omitempty"`
+	SessionID string                   `json:"session_id,omitempty"`
+	CWD       string                   `json:"cwd,omitempty"`
+	Updated   *time.Time               `json:"updated_at,omitempty"`
+	Activity  *ProviderActivity        `json:"activity,omitempty"`
+	Events    []CodexConversationEvent `json:"events"`
 }
+
+type ProviderActivityStatus string
 
 const (
-	CodexConversationTurnQueued      = "queued"
-	CodexConversationTurnRunning     = "running"
-	CodexConversationTurnCompleted   = "completed"
-	CodexConversationTurnFailed      = "failed"
-	CodexConversationTurnInterrupted = "interrupted"
-	CodexConversationTurnCancelled   = "cancelled"
+	ProviderActivityRunning     ProviderActivityStatus = "running"
+	ProviderActivityCompleted   ProviderActivityStatus = "completed"
+	ProviderActivityFailed      ProviderActivityStatus = "failed"
+	ProviderActivityInterrupted ProviderActivityStatus = "interrupted"
+	ProviderActivityCancelled   ProviderActivityStatus = "cancelled"
 )
 
-// CodexConversationTurn is the provider/executor lifecycle fact for the
-// structured conversation. Transcript events describe rendering only; they do
-// not start or settle this turn.
-type CodexConversationTurn struct {
-	ID        string `json:"id"`
-	Status    string `json:"status"`
-	StartedAt string `json:"started_at"`
-	SettledAt string `json:"settled_at,omitempty"`
-	// ControlID is the legacy registry ID that Stop must address when it differs
-	// from the provider Activity identity. It never owns visible lifecycle.
-	ControlID string `json:"control_id,omitempty"`
+// ProviderActivity is the provider/executor's current lifecycle fact.
+// Transcript rendering and local send acknowledgements cannot create it.
+type ProviderActivity struct {
+	ID        string                 `json:"id"`
+	Status    ProviderActivityStatus `json:"status"`
+	StartedAt string                 `json:"started_at"`
+	SettledAt string                 `json:"settled_at,omitempty"`
 }
 
-// codexConversationTurnLifecycle applies the shared transition rules used by
-// every structured provider. A repeated start for the same turn cannot reset
-// its clock or reopen a terminal turn. While a turn is running, a distinct
-// start is queued/ordered input rather than permission to replace the executor
-// lifecycle. Only a distinct start observed after settlement advances it.
-type codexConversationTurnLifecycle struct {
-	turn    *CodexConversationTurn
-	history []CodexConversationTurn
+// providerActivityLifecycle keeps only the provider's current Activity. A
+// repeated start preserves its clock, a distinct start cannot replace a running
+// Activity, and only a distinct start after settlement advances the lifecycle.
+type providerActivityLifecycle struct {
+	activity *ProviderActivity
 }
 
-const maxCodexConversationTurnHistory = 64
-
-func (l *codexConversationTurnLifecycle) start(id, startedAt string) {
+func (l *providerActivityLifecycle) start(id, startedAt string) {
 	id = strings.TrimSpace(id)
-	startedAt = normalizeCodexTimestamp(startedAt)
-	if id == "" {
+	startedAt = normalizeProviderActivityTimestamp(startedAt)
+	if id == "" || startedAt == "" {
 		return
 	}
-	if l.turn != nil {
-		if l.turn.Status == CodexConversationTurnRunning {
-			if l.turn.ID != id {
-				return
-			}
-			if l.turn.StartedAt == "" {
-				l.turn.StartedAt = startedAt
-			}
+	if l.activity != nil {
+		if l.activity.Status == ProviderActivityRunning {
 			return
 		}
-		if l.turn.ID == id {
+		if l.activity.ID == id {
 			return
 		}
-		l.archiveCurrent()
 	}
-	l.turn = &CodexConversationTurn{
+	l.activity = &ProviderActivity{
 		ID:        id,
-		Status:    CodexConversationTurnRunning,
+		Status:    ProviderActivityRunning,
 		StartedAt: startedAt,
 	}
 }
 
-func (l *codexConversationTurnLifecycle) settle(id, status, settledAt string) {
+func (l *providerActivityLifecycle) settle(id string, status ProviderActivityStatus, settledAt string) {
 	id = strings.TrimSpace(id)
-	status = normalizedConversationTurnTerminalStatus(status)
-	settledAt = normalizeCodexTimestamp(settledAt)
+	status = normalizedProviderActivityTerminalStatus(status)
+	settledAt = normalizeProviderActivityTimestamp(settledAt)
 	if status == "" {
 		return
 	}
-	if l.turn == nil {
-		if id == "" {
+	if l.activity == nil {
+		if id == "" || settledAt == "" {
 			return
 		}
-		l.turn = &CodexConversationTurn{
+		l.activity = &ProviderActivity{
 			ID:        id,
-			Status:    CodexConversationTurnRunning,
+			Status:    ProviderActivityRunning,
 			StartedAt: settledAt,
 		}
 	}
-	if id != "" && l.turn.ID != id {
+	if id != "" && l.activity.ID != id {
 		return
 	}
-	if l.turn.Status != CodexConversationTurnRunning {
+	if l.activity.Status != ProviderActivityRunning {
 		return
 	}
-	l.turn.Status = status
-	l.turn.SettledAt = settledAt
+	l.activity.Status = status
+	l.activity.SettledAt = settledAt
 }
 
-func (l *codexConversationTurnLifecycle) running() bool {
-	return l != nil && l.turn != nil && l.turn.Status == CodexConversationTurnRunning
+func normalizeProviderActivityTimestamp(value string) string {
+	value = normalizeCodexTimestamp(value)
+	if parseNormalizedCodexTimestamp(value).IsZero() {
+		return ""
+	}
+	return value
 }
 
-func (l *codexConversationTurnLifecycle) snapshot() *CodexConversationTurn {
-	if l == nil || l.turn == nil {
+func (l *providerActivityLifecycle) running() bool {
+	return l != nil && l.activity != nil && l.activity.Status == ProviderActivityRunning
+}
+
+func (l *providerActivityLifecycle) snapshot() *ProviderActivity {
+	if l == nil || l.activity == nil {
 		return nil
 	}
-	turn := *l.turn
-	return &turn
+	activity := *l.activity
+	return &activity
 }
 
-func (l *codexConversationTurnLifecycle) snapshots() []CodexConversationTurn {
-	if l == nil {
-		return nil
-	}
-	turns := make([]CodexConversationTurn, 0, len(l.history)+1)
-	turns = append(turns, l.history...)
-	if l.turn != nil {
-		turns = append(turns, *l.turn)
-	}
-	if len(turns) > maxCodexConversationTurnHistory {
-		turns = append([]CodexConversationTurn(nil), turns[len(turns)-maxCodexConversationTurnHistory:]...)
-	}
-	return turns
-}
-
-func (l *codexConversationTurnLifecycle) adopt(other *codexConversationTurnLifecycle) {
+func (l *providerActivityLifecycle) adopt(other *providerActivityLifecycle) {
 	if other == nil {
-		l.turn = nil
-		l.history = nil
+		l.activity = nil
 		return
 	}
-	l.history = append([]CodexConversationTurn(nil), other.history...)
-	l.turn = other.snapshot()
+	l.activity = other.snapshot()
 }
 
-func (l *codexConversationTurnLifecycle) archiveCurrent() {
-	if l == nil || l.turn == nil {
-		return
-	}
-	l.history = append(l.history, *l.turn)
-	if len(l.history) > maxCodexConversationTurnHistory-1 {
-		l.history = append(
-			[]CodexConversationTurn(nil),
-			l.history[len(l.history)-(maxCodexConversationTurnHistory-1):]...,
-		)
-	}
-}
-
-func normalizedConversationTurnTerminalStatus(status string) string {
-	switch strings.ToLower(strings.TrimSpace(status)) {
-	case CodexConversationTurnCompleted:
-		return CodexConversationTurnCompleted
-	case CodexConversationTurnFailed:
-		return CodexConversationTurnFailed
-	case CodexConversationTurnInterrupted:
-		return CodexConversationTurnInterrupted
-	case CodexConversationTurnCancelled:
-		return CodexConversationTurnCancelled
+func normalizedProviderActivityTerminalStatus(status ProviderActivityStatus) ProviderActivityStatus {
+	switch status {
+	case ProviderActivityCompleted:
+		return ProviderActivityCompleted
+	case ProviderActivityFailed:
+		return ProviderActivityFailed
+	case ProviderActivityInterrupted:
+		return ProviderActivityInterrupted
+	case ProviderActivityCancelled:
+		return ProviderActivityCancelled
 	default:
 		return ""
 	}
 }
 
-func conversationTurnID(sourceID, providerTurnID string, lineNumber int) string {
+func providerActivityID(sourceID, providerID string, lineNumber int) string {
 	sourceID = firstNonEmpty(strings.TrimSpace(sourceID), "conversation")
-	providerTurnID = strings.TrimSpace(providerTurnID)
-	if providerTurnID != "" {
-		return fmt.Sprintf("%s:turn:%s", sourceID, providerTurnID)
+	providerID = strings.TrimSpace(providerID)
+	if providerID != "" {
+		return fmt.Sprintf("%s:activity:%s", sourceID, providerID)
 	}
 	if lineNumber < 1 {
 		lineNumber = 1
 	}
-	return fmt.Sprintf("%s:turn:line-%d", sourceID, lineNumber)
+	return fmt.Sprintf("%s:activity:line-%d", sourceID, lineNumber)
 }
 
-func conversationWithTurn(conversation CodexConversation, lifecycle *codexConversationTurnLifecycle) CodexConversation {
-	conversation.Turn = lifecycle.snapshot()
-	conversation.ProviderTurns = lifecycle.snapshots()
-	if conversation.Turn == nil {
-		conversation.Active = nil
-		return conversation
-	}
-	active := conversation.Turn.Status == CodexConversationTurnRunning
-	conversation.Active = &active
+func conversationWithActivity(conversation CodexConversation, lifecycle *providerActivityLifecycle) CodexConversation {
+	conversation.Activity = lifecycle.snapshot()
 	return conversation
 }
 
@@ -259,20 +187,13 @@ type CodexConversationEvent struct {
 	// Partial means the provider may update this same logical event ID again.
 	// It does not imply or permit client-side splitting of completed text.
 	Partial bool `json:"partial,omitempty"`
-	// Transient means a provider projection may be absent from a later
-	// canonical snapshot and is therefore safe to delete during reconciliation.
+	// Transient means a provider projection may be absent from a later provider
+	// snapshot and is therefore safe to delete during reconciliation.
 	Transient   bool            `json:"transient,omitempty"`
 	Files       []string        `json:"files,omitempty"`
 	Explanation string          `json:"explanation,omitempty"`
 	Plan        []CodexPlanStep `json:"plan,omitempty"`
 	Source      string          `json:"source,omitempty"`
-	// Canonical metadata is assigned by the server-side visible projector. Seq
-	// remains provider-local and is never used as App identity.
-	Position        uint64 `json:"position,omitempty"`
-	EventRevision   uint64 `json:"event_revision,omitempty"`
-	ActivityID      string `json:"activity_id,omitempty"`
-	SubmissionID    string `json:"submission_id,omitempty"`
-	SubmissionState string `json:"submission_state,omitempty"`
 }
 
 type CodexPlanStep struct {
@@ -280,40 +201,9 @@ type CodexPlanStep struct {
 	Status string `json:"status"`
 }
 
-func LoadCodexConversationForAgent(agent classifier.Agent, now time.Time) (CodexConversation, error) {
-	return LoadCodexConversationForProvider(
-		agent,
-		agentToolName(agent.Command, agent.Name),
-		now,
-	)
-}
-
-// LoadCodexConversationForProvider loads a known structured adapter selected
-// from configured executor metadata. This supports wrapper commands whose
-// executable name does not itself reveal the provider without claiming that an
-// unknown provider can be parsed generically.
-func LoadCodexConversationForProvider(
-	agent classifier.Agent,
-	provider string,
-	now time.Time,
-) (CodexConversation, error) {
-	switch strings.ToLower(strings.TrimSpace(provider)) {
-	case "cursor":
-		return loadCursorConversationForAgent(agent, now)
-	case "grok":
-		return loadGrokConversationForAgent(agent, now)
-	case "claude":
-		return loadClaudeConversationForAgent(agent, now)
-	case "codex":
-		// continue below
-	default:
-		return CodexConversation{
-			Available: false,
-			Reason:    "not_structured_agent",
-			Events:    []CodexConversationEvent{},
-		}, nil
-	}
+func (r *ProviderConversationReader) loadCodexConversationForAgent(agent classifier.Agent, now time.Time) (CodexConversation, error) {
 	if strings.TrimSpace(agent.Cwd) == "" {
+		r.resetSource()
 		return CodexConversation{
 			Available: false,
 			Reason:    "missing_cwd",
@@ -323,9 +213,11 @@ func LoadCodexConversationForProvider(
 
 	candidate, ok, err := findCodexTranscript(agent, now)
 	if err != nil {
+		r.resetSource()
 		return CodexConversation{}, err
 	}
 	if !ok {
+		r.resetSource()
 		return CodexConversation{
 			Available: false,
 			Reason:    "transcript_not_found",
@@ -333,7 +225,7 @@ func LoadCodexConversationForProvider(
 		}, nil
 	}
 
-	conversation, err := loadCachedCodexConversation(candidate.Path)
+	conversation, err := r.loadCodexConversation(candidate.Path)
 	if err != nil {
 		return CodexConversation{}, err
 	}
@@ -349,106 +241,8 @@ func LoadCodexConversationForProvider(
 	return conversation, nil
 }
 
-// ShouldUseTerminalSnapshotConversationFallback reports whether Chat may adapt
-// tmux pane text into conversation events.
-//
-// Always false: structured chat providers (Claude/Cursor/Codex/Grok) must keep
-// process liveness, transcript availability, turn state, and view mode
-// independent. Missing transcripts stay empty-ready / syncing / unavailable in
-// Chat; raw pane contents remain Terminal-only via Open terminal.
-func ShouldUseTerminalSnapshotConversationFallback(agent classifier.Agent, conversation CodexConversation) bool {
-	_ = agent
-	_ = conversation
-	return false
-}
-
-// TerminalSnapshotConversationForAgent adapts visible terminal output into the
-// conversation shape used by Chat. Structured providers must not call this for
-// Chat subscription; it remains for explicit non-chat capture helpers/tests.
-//
-// Active is always false here: pane text is not a turn-state signal.
-func TerminalSnapshotConversationForAgent(agent classifier.Agent, snapshot string, now time.Time) CodexConversation {
-	active := false
-	conversation := CodexConversation{
-		Available: false,
-		Reason:    "terminal_snapshot_empty",
-		Source:    "terminal_snapshot",
-		SessionID: agent.ID,
-		CWD:       agent.Cwd,
-		Updated:   &now,
-		Active:    &active,
-		Events:    []CodexConversationEvent{},
-	}
-	body := truncateConversationBody(snapshot)
-	if body == "" {
-		return conversation
-	}
-
-	conversation.Available = true
-	conversation.Reason = ""
-	conversation.Events = []CodexConversationEvent{
-		{
-			ID:     firstNonEmpty(agent.ID, agent.Name, "terminal") + ":terminal-snapshot",
-			Seq:    1,
-			Kind:   "status",
-			Title:  "Terminal snapshot",
-			Status: "done",
-			Body:   body,
-			Source: "terminal_snapshot",
-		},
-	}
-	return conversation
-}
-
-// TerminalSnapshotConversationUnavailableForAgent returns a stable unavailable
-// conversation for sessions whose pane cannot be captured.
-func TerminalSnapshotConversationUnavailableForAgent(agent classifier.Agent, reason string, now time.Time) CodexConversation {
-	reason = strings.TrimSpace(reason)
-	if reason == "" {
-		reason = "terminal_snapshot_unavailable"
-	}
-	active := false
-	return CodexConversation{
-		Available: false,
-		Reason:    reason,
-		Source:    "terminal_snapshot",
-		SessionID: agent.ID,
-		CWD:       agent.Cwd,
-		Updated:   &now,
-		Active:    &active,
-		Events:    []CodexConversationEvent{},
-	}
-}
-
-func loadCachedCodexConversation(path string) (CodexConversation, error) {
-	info, err := os.Stat(path)
-	if err != nil {
-		return CodexConversation{}, err
-	}
-
-	codexConversationCache.Lock()
-	if cached, ok := codexConversationCache.byPath[path]; ok &&
-		cached.size == info.Size() &&
-		cached.modTime.Equal(info.ModTime()) {
-		conversation := cached.conversation
-		codexConversationCache.Unlock()
-		return conversation, nil
-	}
-	codexConversationCache.Unlock()
-
-	conversation, err := parseCodexConversation(path)
-	if err != nil {
-		return CodexConversation{}, err
-	}
-
-	codexConversationCache.Lock()
-	codexConversationCache.byPath[path] = cachedCodexConversation{
-		size:         info.Size(),
-		modTime:      info.ModTime(),
-		conversation: conversation,
-	}
-	codexConversationCache.Unlock()
-	return conversation, nil
+func (r *ProviderConversationReader) loadCodexConversation(path string) (CodexConversation, error) {
+	return r.loadFileConversation(AgentProviderCodex, path, parseCodexConversation)
 }
 
 func parseCodexConversation(path string) (CodexConversation, error) {
@@ -521,9 +315,9 @@ type codexConversationBuilder struct {
 	sourceID             string
 	sessionID            string
 	cwd                  string
-	turnLifecycle        codexConversationTurnLifecycle
-	slashCommandTurn     bool
-	turnProviderID       string
+	activityLifecycle    providerActivityLifecycle
+	slashCommandActivity bool
+	activityProviderID   string
 	events               []CodexConversationEvent
 	commandByCall        map[string]string
 	commandCallBySession map[string]string
@@ -565,58 +359,58 @@ func newCodexConversationBuilder(sourceID string) *codexConversationBuilder {
 	}
 }
 
-func (b *codexConversationBuilder) startTurn(providerTurnID, timestamp string, lineNumber int) {
-	providerTurnID = strings.TrimSpace(providerTurnID)
-	previousTurnID := ""
-	if b.turnLifecycle.turn != nil {
-		previousTurnID = b.turnLifecycle.turn.ID
+func (b *codexConversationBuilder) startActivity(providerID, timestamp string, lineNumber int) {
+	providerID = strings.TrimSpace(providerID)
+	previousActivityID := ""
+	if b.activityLifecycle.activity != nil {
+		previousActivityID = b.activityLifecycle.activity.ID
 	}
 	id := ""
-	if providerTurnID != "" {
-		if b.turnLifecycle.running() && b.turnProviderID == "" {
+	if providerID != "" {
+		if b.activityLifecycle.running() && b.activityProviderID == "" {
 			// Some Codex rollouts write the user row before the provider turn ID.
 			// Correlate that later fact without changing the already-published ID.
-			b.turnProviderID = providerTurnID
-			id = b.turnLifecycle.turn.ID
+			b.activityProviderID = providerID
+			id = b.activityLifecycle.activity.ID
 		} else {
-			id = conversationTurnID(firstNonEmpty(b.sessionID, b.sourceID), providerTurnID, lineNumber)
+			id = providerActivityID(firstNonEmpty(b.sessionID, b.sourceID), providerID, lineNumber)
 		}
-	} else if b.turnLifecycle.running() {
-		id = b.turnLifecycle.turn.ID
+	} else if b.activityLifecycle.running() {
+		id = b.activityLifecycle.activity.ID
 	} else {
-		id = conversationTurnID(firstNonEmpty(b.sessionID, b.sourceID), "", lineNumber)
+		id = providerActivityID(firstNonEmpty(b.sessionID, b.sourceID), "", lineNumber)
 	}
-	b.turnLifecycle.start(id, timestamp)
-	if b.turnLifecycle.turn != nil && b.turnLifecycle.turn.ID != previousTurnID {
-		b.turnProviderID = providerTurnID
+	b.activityLifecycle.start(id, timestamp)
+	if b.activityLifecycle.activity != nil && b.activityLifecycle.activity.ID != previousActivityID {
+		b.activityProviderID = providerID
 	}
 }
 
-func (b *codexConversationBuilder) settleTurn(providerTurnID, status, timestamp string, lineNumber int) {
-	providerTurnID = strings.TrimSpace(providerTurnID)
+func (b *codexConversationBuilder) settleActivity(providerID string, status ProviderActivityStatus, timestamp string, lineNumber int) {
+	providerID = strings.TrimSpace(providerID)
 	id := ""
-	if b.turnLifecycle.running() {
-		if providerTurnID != "" && b.turnProviderID != "" && providerTurnID != b.turnProviderID {
+	if b.activityLifecycle.running() {
+		if providerID != "" && b.activityProviderID != "" && providerID != b.activityProviderID {
 			return
 		}
-		if providerTurnID != "" && b.turnProviderID == "" {
-			b.turnProviderID = providerTurnID
+		if providerID != "" && b.activityProviderID == "" {
+			b.activityProviderID = providerID
 		}
-		id = b.turnLifecycle.turn.ID
-	} else if providerTurnID != "" {
-		id = conversationTurnID(firstNonEmpty(b.sessionID, b.sourceID), providerTurnID, lineNumber)
-	} else if b.turnLifecycle.turn == nil {
-		id = conversationTurnID(firstNonEmpty(b.sessionID, b.sourceID), "", lineNumber)
+		id = b.activityLifecycle.activity.ID
+	} else if providerID != "" {
+		id = providerActivityID(firstNonEmpty(b.sessionID, b.sourceID), providerID, lineNumber)
+	} else if b.activityLifecycle.activity == nil {
+		id = providerActivityID(firstNonEmpty(b.sessionID, b.sourceID), "", lineNumber)
 	}
-	b.turnLifecycle.settle(id, status, timestamp)
+	b.activityLifecycle.settle(id, status, timestamp)
 }
 
-func codexAbortedTurnStatus(reason string) string {
+func codexAbortedActivityStatus(reason string) ProviderActivityStatus {
 	reason = strings.ToLower(strings.TrimSpace(reason))
 	if strings.Contains(reason, "cancel") {
-		return CodexConversationTurnCancelled
+		return ProviderActivityCancelled
 	}
-	return CodexConversationTurnInterrupted
+	return ProviderActivityInterrupted
 }
 
 func (b *codexConversationBuilder) consumeLine(lineNumber int, line []byte) {
@@ -666,8 +460,8 @@ func (b *codexConversationBuilder) flushPendingUserEcho() {
 		return
 	}
 	b.pendingUserEcho = nil
-	b.startTurn("", pending.timestamp, pending.lineNumber)
-	b.slashCommandTurn = isCodexSlashCommandInvocation(pending.text)
+	b.startActivity("", pending.timestamp, pending.lineNumber)
+	b.slashCommandActivity = isCodexSlashCommandInvocation(pending.text)
 	b.addMessage(pending.lineNumber, pending.timestamp, "user", pending.text)
 }
 
@@ -720,18 +514,18 @@ func (b *codexConversationBuilder) consumeEvent(lineNumber int, timestamp string
 
 	switch payload.Type {
 	case "task_started", "turn_started":
-		b.startTurn(payload.TurnID, timestamp, lineNumber)
+		b.startActivity(payload.TurnID, timestamp, lineNumber)
 		b.addStatus(lineNumber, timestamp, "Task started", "")
 	case "task_complete", "turn_complete":
-		b.settleTurn(payload.TurnID, CodexConversationTurnCompleted, timestamp, lineNumber)
+		b.settleActivity(payload.TurnID, ProviderActivityCompleted, timestamp, lineNumber)
 	case "turn_aborted":
-		b.settleTurn(payload.TurnID, codexAbortedTurnStatus(payload.Reason), timestamp, lineNumber)
+		b.settleActivity(payload.TurnID, codexAbortedActivityStatus(payload.Reason), timestamp, lineNumber)
 		if reason := cleanConversationText(payload.Reason); reason != "" {
 			b.addStatusWithState(lineNumber, timestamp, "Turn aborted", reason, "failed")
 		}
 	case "error":
 		if codexErrorAffectsTurnStatus(payload.CodexErrorInfo) {
-			b.settleTurn(payload.TurnID, CodexConversationTurnFailed, timestamp, lineNumber)
+			b.settleActivity(payload.TurnID, ProviderActivityFailed, timestamp, lineNumber)
 			b.finishPendingReasoning()
 		}
 		message := cleanConversationText(payload.Message)
@@ -740,7 +534,7 @@ func (b *codexConversationBuilder) consumeEvent(lineNumber int, timestamp string
 		}
 		b.addStatusWithState(lineNumber, timestamp, "Codex error", message, "failed")
 	case "stream_error":
-		b.startTurn(payload.TurnID, timestamp, lineNumber)
+		b.startActivity(payload.TurnID, timestamp, lineNumber)
 		title := cleanConversationText(payload.Message)
 		if title == "" {
 			title = "Stream interrupted"
@@ -767,8 +561,8 @@ func (b *codexConversationBuilder) consumeEvent(lineNumber int, timestamp string
 			b.addStatusWithState(lineNumber, timestamp, title, body, "failed")
 		}
 	case "user_message":
-		b.startTurn("", timestamp, lineNumber)
-		b.slashCommandTurn = isCodexSlashCommandInvocation(payload.Message)
+		b.startActivity("", timestamp, lineNumber)
+		b.slashCommandActivity = isCodexSlashCommandInvocation(payload.Message)
 		b.addMessage(lineNumber, timestamp, "user", payload.Message)
 		if len(b.events) > 0 && b.events[len(b.events)-1].ID == b.eventID(lineNumber) && !b.nextAdmissionPaired {
 			b.unpairedAdmissions++
@@ -776,9 +570,9 @@ func (b *codexConversationBuilder) consumeEvent(lineNumber int, timestamp string
 		b.nextAdmissionPaired = false
 	case "history_entry":
 		b.addHistoryEntry(lineNumber, timestamp, payload.Message)
-		if b.slashCommandTurn {
-			b.settleTurn("", CodexConversationTurnCompleted, timestamp, lineNumber)
-			b.slashCommandTurn = false
+		if b.slashCommandActivity {
+			b.settleActivity("", ProviderActivityCompleted, timestamp, lineNumber)
+			b.slashCommandActivity = false
 		}
 	case "agent_message":
 		title := ""
@@ -1607,9 +1401,6 @@ func (b *codexConversationBuilder) pendingReasoningEventIndex() int {
 }
 
 func (b *codexConversationBuilder) addEvent(event CodexConversationEvent) bool {
-	if event.ActivityID == "" && b.turnLifecycle.turn != nil {
-		event.ActivityID = b.turnLifecycle.turn.ID
-	}
 	event.Body = truncateConversationBody(event.Body)
 	event.Command = truncateRunes(cleanConversationText(event.Command), 800)
 	event.ToolName = truncateRunes(cleanToolName(event.ToolName), 120)
@@ -1704,17 +1495,17 @@ func (b *codexConversationBuilder) conversation() CodexConversation {
 	if b.events == nil {
 		b.events = []CodexConversationEvent{}
 	}
-	if b.turnLifecycle.turn != nil && !b.turnLifecycle.running() {
+	if b.activityLifecycle.activity != nil && !b.activityLifecycle.running() {
 		b.finishPendingReasoning()
 	}
 	b.reindexEvents()
-	return conversationWithTurn(CodexConversation{
+	return conversationWithActivity(CodexConversation{
 		Available: true,
 		Source:    "codex_rollout",
 		SessionID: b.sessionID,
 		CWD:       b.cwd,
 		Events:    b.events,
-	}, &b.turnLifecycle)
+	}, &b.activityLifecycle)
 }
 
 func codexConversationContentText(raw json.RawMessage) string {

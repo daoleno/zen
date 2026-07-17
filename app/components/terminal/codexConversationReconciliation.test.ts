@@ -147,26 +147,23 @@ describe("conversation stream reconciliation", () => {
     expect(reconciled.events[0]?.body).toBe("streamed update");
   });
 
-  test("empty and null snapshots explicitly clear events current Activity and queue", () => {
+  test("empty and null snapshots explicitly clear events and current Activity", () => {
     const previous: CodexConversation = {
       ...conversation("thread-a", [event("history", 1)]),
       activity: { id: "activity", status: "running", started_at: "2026-07-16T01:00:00Z" },
-      queued_turns: [{ id: "queued", status: "queued", started_at: "2026-07-16T01:00:01Z" }],
     };
     const empty = reconcileConversationSnapshot(previous, {
       available: true,
       session_id: "thread-a",
       activity: undefined,
-      queued_turns: [],
       events: [],
     }, true);
     const absent = reconcileConversationSnapshot(empty, null, true);
 
-    expect(empty).toMatchObject({ events: [], queued_turns: [] });
+    expect(empty).toMatchObject({ events: [] });
     expect(empty.activity).toBeUndefined();
     expect(absent.events).toEqual([]);
     expect(absent.activity).toBeUndefined();
-    expect(absent.queued_turns).toEqual([]);
   });
 
   test("an actual conversation replacement starts a new logical list", () => {

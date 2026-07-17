@@ -5,9 +5,9 @@ import (
 	"time"
 )
 
-// ActivitySignal is a provider adapter observation of agent turn activity.
-// It upgrades Unknown after progress/classification merge; it never invents
-// Running from raw pane churn alone.
+// ActivitySignal is a provider adapter observation from visible pane or process
+// evidence. It upgrades Unknown after progress/classification merge; it never
+// reads provider transcripts or invents Running from raw pane churn alone.
 type ActivitySignal struct {
 	State    AgentState
 	Summary  string
@@ -23,7 +23,7 @@ type ActivityInput struct {
 	ToolChildActive bool // optional process-tree hint (non-idle worker child)
 }
 
-// ActivityAdapter is a provider-specific activity detector (Cursor, Codex, …).
+// ActivityAdapter is a provider-specific pane/process activity detector.
 // Adapters must not rely on package init registration.
 type ActivityAdapter interface {
 	// Name returns a stable provider id used in ActivitySignal.Provider.
@@ -56,14 +56,14 @@ func NewActivityProbe(adapters ...ActivityAdapter) *MultiActivityProbe {
 	return &MultiActivityProbe{adapters: out}
 }
 
-// DefaultActivityProbe returns the shipped adapter chain for all known
-// providers. Watcher wires this explicitly via SetActivityProbe.
+// DefaultActivityProbe returns the shipped pane/process adapter chain. A
+// provider with no such evidence has no adapter and stays honestly Unknown.
+// Watcher wires this explicitly via SetActivityProbe.
 func DefaultActivityProbe() *MultiActivityProbe {
 	return NewActivityProbe(
 		NewCursorActivityAdapter(),
 		NewCodexActivityAdapter(),
 		NewClaudeActivityAdapter(),
-		NewGrokActivityAdapter(),
 	)
 }
 
@@ -112,21 +112,6 @@ func MergeActivitySignal(base AgentState, baseSummary string, signal ActivitySig
 func ResolveSessionStatus(agent *Agent, classified AgentState, classifiedSummary string, now time.Time, activity ActivitySignal) (AgentState, string) {
 	state, summary := MergeProgressAndClassification(agent, classified, classifiedSummary, now)
 	return MergeActivitySignal(state, summary, activity)
-}
-
-// TranscriptTurnActive reports whether structured transcript markers show an
-// open turn: the latest user marker is after the latest turn-ended marker (or
-// no end marker exists yet). Mid-turn assistant/tool events do NOT end a turn.
-func TranscriptTurnActive(lastUserIndex, lastTurnEndedIndex int) bool {
-	if lastUserIndex < 0 {
-		return false
-	}
-	return lastUserIndex > lastTurnEndedIndex
-}
-
-// CursorTranscriptTurnActive is kept as an alias for existing Cursor call sites.
-func CursorTranscriptTurnActive(lastUserIndex, lastTurnEndedIndex int) bool {
-	return TranscriptTurnActive(lastUserIndex, lastTurnEndedIndex)
 }
 
 func commandBaseName(command string) string {

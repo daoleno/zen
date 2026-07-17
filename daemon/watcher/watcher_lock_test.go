@@ -44,6 +44,7 @@ func TestAgentsReturnsWhileActivityProbeBlocked(t *testing.T) {
 		Cwd:     "/tmp",
 		State:   classifier.StateUnknown,
 	}
+	w.agentOrder = append(w.agentOrder, "main:@1")
 	w.prevContent["main:@1"] = ""
 	w.mu.Unlock()
 
@@ -106,6 +107,7 @@ func TestPollDoesNotHoldLockDuringProbe(t *testing.T) {
 		PaneAlive: true,
 	}
 	w.agents[agent.ID] = agent
+	w.agentOrder = append(w.agentOrder, agent.ID)
 	w.agentEpoch[agent.ID] = gen
 	snap := *agent
 	w.mu.Unlock()

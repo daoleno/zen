@@ -15,7 +15,7 @@ func TestCalendarCreateHelpAndValidationRequireSourceThread(t *testing.T) {
 	for _, want := range []string{
 		"scheduled_action (requires -source-thread)",
 		"required for scheduled_action: source_thread_id",
-		"canonical Brain result delivery",
+		"canonical Calendar result projection",
 	} {
 		if !strings.Contains(help.String(), want) {
 			t.Fatalf("help missing %q:\n%s", want, help.String())

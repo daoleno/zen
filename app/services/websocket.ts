@@ -17,7 +17,6 @@ import {
 import type { CalendarItem } from "../store/calendar";
 import {
   dispatchStructuredCommand,
-  normalizeStructuredInputAccepted,
   sendWebSocketMessageNow,
   structuredActionMessage,
   structuredInputMessage,
@@ -156,7 +155,6 @@ export interface BrainContextPayload {
   delegated_adapter?: any;
   adapters?: any[];
   agents?: any[];
-  recent_messages?: any[];
   generated_at?: string;
 }
 
@@ -166,8 +164,7 @@ export interface BrainHousekeepingPayload {
   policy_paths?: string[];
   worklog_path?: string;
   open_delegated_agents?: any[];
-  recent_message_count?: number;
-  backfilled_workspace?: boolean;
+  changed_paths?: string[];
   recommended_next_steps?: string[];
   generated_at?: string;
 }
@@ -195,12 +192,7 @@ export interface CodexConversationDeltaPayload {
   session_id?: string;
   cwd?: string;
   updated_at?: string;
-  active?: boolean;
-  turn_epoch?: string;
-  turn_revision?: number;
-  turn?: CodexConversation["turn"];
   activity?: CodexConversation["activity"] | null;
-  queued_turns?: CodexConversation["queued_turns"];
   upserts: CodexConversation["events"];
   deletes: string[];
 }
@@ -213,11 +205,6 @@ export interface CodexConversationSyncStatusPayload {
   server_generation?: string;
   state: "syncing" | "ready" | "unavailable" | string;
   reason?: string;
-  active?: boolean;
-  turn_epoch?: string;
-  turn_revision?: number;
-  turn?: CodexConversation["turn"];
-  queued_turns?: CodexConversation["queued_turns"];
 }
 
 export interface CodexConversationSubscriptionOptions {
@@ -229,23 +216,6 @@ export interface CodexConversationSubscriptionOptions {
   startedAt?: number;
   processId?: number;
   conversationScopeKey?: string;
-}
-
-export interface StructuredTurnCommandOptions {
-  conversationScopeKey?: string;
-  turnId?: string;
-  turnStartedAt?: string;
-  turnQueued?: boolean;
-  turnConversationIdentity?: string;
-}
-
-export interface StructuredInputAccepted {
-  turnId?: string;
-  queued: boolean;
-  turnEpoch?: string;
-  turnRevision?: number;
-  position?: number;
-  conversationRevision?: number;
 }
 
 export interface CodexConversationSubscriptionHandlers {
@@ -267,7 +237,6 @@ class ServerSocket {
   private ws: WebSocket | null = null;
   private reconnectDelay = 1000;
   private readonly maxReconnectDelay = 30000;
-  private readonly pendingQueue: string[] = [];
   private shouldReconnect = true;
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   private attemptSequence = 0;
@@ -303,17 +272,17 @@ class ServerSocket {
     ws?.close();
   }
 
-  send(msg: object) {
-    const data = JSON.stringify(msg);
-    if (this.ws?.readyState === WebSocket.OPEN) {
-      this.ws.send(data);
-      return;
-    }
-    this.pendingQueue.push(data);
-  }
-
   sendNow(msg: object) {
     sendWebSocketMessageNow(this.ws, msg);
+  }
+
+  trySendNow(msg: object) {
+    try {
+      this.sendNow(msg);
+      return true;
+    } catch {
+      return false;
+    }
   }
 
   get isConnected() {
@@ -416,11 +385,6 @@ class ServerSocket {
         this.reconnectDelay = 1000;
         this.emit("connection_issue", { issue: null });
         this.emit("connected", {});
-
-        while (this.pendingQueue.length > 0) {
-          const msg = this.pendingQueue.shift()!;
-          this.ws?.send(msg);
-        }
       };
 
       ws.onmessage = (event: any) => {
@@ -483,7 +447,7 @@ class ServerSocket {
   }
 }
 
-class MultiServerWebSocketClient {
+export class MultiServerWebSocketClient {
   private readonly handlers = new Map<string, MessageHandler[]>();
   private readonly connections = new Map<string, ServerSocket>();
   private readonly serverMeta = new Map<string, ConnectionMeta>();
@@ -533,14 +497,40 @@ class MultiServerWebSocketClient {
 
   off(type: string, handler: MessageHandler) {
     const existing = this.handlers.get(type) || [];
-    this.handlers.set(
-      type,
-      existing.filter((current) => current !== handler),
-    );
+    const remaining = existing.filter((current) => current !== handler);
+    if (remaining.length === 0) {
+      this.handlers.delete(type);
+      return;
+    }
+    this.handlers.set(type, remaining);
   }
 
   send(serverId: string, msg: object) {
-    this.connections.get(serverId)?.send(msg);
+    const socket = this.connections.get(serverId);
+    if (!socket) {
+      throw new Error("Daemon is not connected.");
+    }
+    socket.sendNow(msg);
+  }
+
+  private trySendNow(serverId: string, msg: object) {
+    return this.connections.get(serverId)?.trySendNow(msg) ?? false;
+  }
+
+  private sendRequestNow(
+    serverId: string,
+    msg: object,
+    cleanup: () => void,
+    reject: (reason?: unknown) => void,
+  ) {
+    try {
+      this.send(serverId, msg);
+    } catch (error) {
+      cleanup();
+      reject(
+        error instanceof Error ? error : new Error("Daemon is not connected."),
+      );
+    }
   }
 
   createSession(
@@ -596,14 +586,19 @@ class MultiServerWebSocketClient {
 
       this.on("session_created", handleCreated);
       this.on("error", handleError);
-      this.send(serverId, {
-        type: "create_session",
-        request_id: requestId,
-        target_id: options?.targetId,
-        cwd: options?.cwd,
-        command: options?.command,
-        name: options?.name,
-      });
+      this.sendRequestNow(
+        serverId,
+        {
+          type: "create_session",
+          request_id: requestId,
+          target_id: options?.targetId,
+          cwd: options?.cwd,
+          command: options?.command,
+          name: options?.name,
+        },
+        cleanup,
+        reject,
+      );
     });
   }
 
@@ -641,11 +636,16 @@ class MultiServerWebSocketClient {
 
       this.on("dir_list", handleList);
       this.on("error", handleError);
-      this.send(serverId, {
-        type: "list_dir",
-        request_id: requestId,
-        cwd: path ?? "",
-      });
+      this.sendRequestNow(
+        serverId,
+        {
+          type: "list_dir",
+          request_id: requestId,
+          cwd: path ?? "",
+        },
+        cleanup,
+        reject,
+      );
     });
   }
 
@@ -700,12 +700,17 @@ class MultiServerWebSocketClient {
 
       this.on("git_diff_status", handleStatus);
       this.on("error", handleError);
-      this.send(serverId, {
-        type: "git_diff_status",
-        request_id: requestId,
-        target_id: options?.targetId,
-        cwd: options?.cwd,
-      });
+      this.sendRequestNow(
+        serverId,
+        {
+          type: "git_diff_status",
+          request_id: requestId,
+          target_id: options?.targetId,
+          cwd: options?.cwd,
+        },
+        cleanup,
+        reject,
+      );
     });
   }
 
@@ -749,13 +754,18 @@ class MultiServerWebSocketClient {
 
       this.on("git_diff_patch", handlePatch);
       this.on("error", handleError);
-      this.send(serverId, {
-        type: "git_diff_patch",
-        request_id: requestId,
-        target_id: options.targetId,
-        cwd: options.cwd,
-        path: options.path,
-      });
+      this.sendRequestNow(
+        serverId,
+        {
+          type: "git_diff_patch",
+          request_id: requestId,
+          target_id: options.targetId,
+          cwd: options.cwd,
+          path: options.path,
+        },
+        cleanup,
+        reject,
+      );
     });
   }
 
@@ -801,13 +811,18 @@ class MultiServerWebSocketClient {
 
       this.on("git_diff_file_content", handleContent);
       this.on("error", handleError);
-      this.send(serverId, {
-        type: "git_diff_file_content",
-        request_id: requestId,
-        target_id: options.targetId,
-        cwd: options.cwd,
-        path: options.path,
-      });
+      this.sendRequestNow(
+        serverId,
+        {
+          type: "git_diff_file_content",
+          request_id: requestId,
+          target_id: options.targetId,
+          cwd: options.cwd,
+          path: options.path,
+        },
+        cleanup,
+        reject,
+      );
     });
   }
 
@@ -853,13 +868,18 @@ class MultiServerWebSocketClient {
 
       this.on("git_repo_entries", handleEntries);
       this.on("error", handleError);
-      this.send(serverId, {
-        type: "git_repo_entries",
-        request_id: requestId,
-        target_id: options?.targetId,
-        cwd: options?.cwd,
-        path: options?.path,
-      });
+      this.sendRequestNow(
+        serverId,
+        {
+          type: "git_repo_entries",
+          request_id: requestId,
+          target_id: options?.targetId,
+          cwd: options?.cwd,
+          path: options?.path,
+        },
+        cleanup,
+        reject,
+      );
     });
   }
 
@@ -903,13 +923,18 @@ class MultiServerWebSocketClient {
 
       this.on("git_repo_file_content", handleContent);
       this.on("error", handleError);
-      this.send(serverId, {
-        type: "git_repo_file_content",
-        request_id: requestId,
-        target_id: options.targetId,
-        cwd: options.cwd,
-        path: options.path,
-      });
+      this.sendRequestNow(
+        serverId,
+        {
+          type: "git_repo_file_content",
+          request_id: requestId,
+          target_id: options.targetId,
+          cwd: options.cwd,
+          path: options.path,
+        },
+        cleanup,
+        reject,
+      );
     });
   }
 
@@ -952,29 +977,43 @@ class MultiServerWebSocketClient {
       );
     };
 
-    this.on("codex_conversation_snapshot", handleSnapshot);
-    this.on("codex_conversation_delta", handleDelta);
-    this.on("codex_conversation_sync_status", handleSyncStatus);
-    this.on("error", handleError);
-    this.send(serverId, {
-      type: "codex_conversation_subscribe",
-      request_id: requestId,
-      target_id: options.targetId,
-      agent_id: options.agentId,
-      cwd: options.cwd,
-      command: options.command,
-      name: options.name,
-      started_at: options.startedAt,
-      process_id: options.processId,
-      conversation_scope_key: options.conversationScopeKey,
-    });
-
-    return () => {
+    const removeHandlers = () => {
       this.off("codex_conversation_snapshot", handleSnapshot);
       this.off("codex_conversation_delta", handleDelta);
       this.off("codex_conversation_sync_status", handleSyncStatus);
       this.off("error", handleError);
+    };
+
+    this.on("codex_conversation_snapshot", handleSnapshot);
+    this.on("codex_conversation_delta", handleDelta);
+    this.on("codex_conversation_sync_status", handleSyncStatus);
+    this.on("error", handleError);
+    try {
       this.send(serverId, {
+        type: "codex_conversation_subscribe",
+        request_id: requestId,
+        target_id: options.targetId,
+        agent_id: options.agentId,
+        cwd: options.cwd,
+        command: options.command,
+        name: options.name,
+        started_at: options.startedAt,
+        process_id: options.processId,
+        conversation_scope_key: options.conversationScopeKey,
+      });
+    } catch (error) {
+      removeHandlers();
+      throw error;
+    }
+
+    let subscribed = true;
+    return () => {
+      if (!subscribed) {
+        return;
+      }
+      subscribed = false;
+      removeHandlers();
+      this.trySendNow(serverId, {
         type: "codex_conversation_unsubscribe",
         request_id: requestId,
         target_id: options.targetId,
@@ -1062,10 +1101,15 @@ class MultiServerWebSocketClient {
 
       this.on("codex_slash_commands", handleCommands);
       this.on("error", handleError);
-      this.send(serverId, {
-        type: "codex_slash_commands",
-        request_id: requestId,
-      });
+      this.sendRequestNow(
+        serverId,
+        {
+          type: "codex_slash_commands",
+          request_id: requestId,
+        },
+        cleanup,
+        reject,
+      );
     });
   }
 
@@ -1131,11 +1175,16 @@ class MultiServerWebSocketClient {
 
       this.on("codex_skills", handleSkills);
       this.on("error", handleError);
-      this.send(serverId, {
-        type: "codex_skills",
-        request_id: requestId,
-        cwd: options.cwd,
-      });
+      this.sendRequestNow(
+        serverId,
+        {
+          type: "codex_skills",
+          request_id: requestId,
+          cwd: options.cwd,
+        },
+        cleanup,
+        reject,
+      );
     });
   }
 
@@ -1174,11 +1223,16 @@ class MultiServerWebSocketClient {
 
       this.on("codex_terminal_snapshot", handleSnapshot);
       this.on("error", handleError);
-      this.send(serverId, {
-        type: "codex_terminal_snapshot",
-        request_id: requestId,
-        target_id: targetId,
-      });
+      this.sendRequestNow(
+        serverId,
+        {
+          type: "codex_terminal_snapshot",
+          request_id: requestId,
+          target_id: targetId,
+        },
+        cleanup,
+        reject,
+      );
     });
   }
 
@@ -1229,12 +1283,17 @@ class MultiServerWebSocketClient {
 
       this.on("codex_asset", handleAsset);
       this.on("error", handleError);
-      this.send(serverId, {
-        type: "codex_asset",
-        request_id: requestId,
-        path: options.path,
-        cwd: options.cwd,
-      });
+      this.sendRequestNow(
+        serverId,
+        {
+          type: "codex_asset",
+          request_id: requestId,
+          path: options.path,
+          cwd: options.cwd,
+        },
+        cleanup,
+        reject,
+      );
     });
   }
 
@@ -1340,11 +1399,16 @@ class MultiServerWebSocketClient {
 
       this.on("terminal_copy_buffer", handleBuffer);
       this.on("error", handleError);
-      this.send(serverId, {
-        type: "terminal_copy_buffer",
-        request_id: requestId,
-        session_id: sessionId,
-      });
+      this.sendRequestNow(
+        serverId,
+        {
+          type: "terminal_copy_buffer",
+          request_id: requestId,
+          session_id: sessionId,
+        },
+        cleanup,
+        reject,
+      );
     });
   }
 
@@ -1356,8 +1420,7 @@ class MultiServerWebSocketClient {
     serverId: string,
     agentId: string,
     action: string,
-    options: StructuredTurnCommandOptions = {},
-  ): StructuredCommandReceipt<void> {
+  ): StructuredCommandReceipt {
     const socket = this.connections.get(serverId);
     if (!socket?.isConnected) {
       throw new Error("Daemon is not connected.");
@@ -1366,18 +1429,16 @@ class MultiServerWebSocketClient {
     return dispatchStructuredCommand({
       requestId,
       eventSource: this,
-      confirmedType: "action_confirmed",
+      sentType: "action_sent",
+      failedType: "action_failed",
       matches: (payload) =>
         payload.serverId === serverId && payload.request_id === requestId,
-      normalizeConfirmed: () => undefined,
+      matchesConnection: (payload) => payload.serverId === serverId,
       sendNow: () => {
         socket.sendNow(structuredActionMessage({
           requestId,
           agentId,
           action,
-          conversationScopeKey: options.conversationScopeKey,
-          turnId: options.turnId,
-          turnStartedAt: options.turnStartedAt,
         }));
       },
     });
@@ -1387,8 +1448,7 @@ class MultiServerWebSocketClient {
     serverId: string,
     agentId: string,
     text: string,
-    options: StructuredTurnCommandOptions = {},
-  ): StructuredCommandReceipt<StructuredInputAccepted> {
+  ): StructuredCommandReceipt {
     const socket = this.connections.get(serverId);
     if (!socket?.isConnected) {
       throw new Error("Daemon is not connected.");
@@ -1398,22 +1458,16 @@ class MultiServerWebSocketClient {
     return dispatchStructuredCommand({
       requestId,
       eventSource: this,
-      confirmedType: "input_accepted",
-      rejectedType: "input_rejected",
+      sentType: "input_sent",
+      failedType: "input_failed",
       matches: (payload) =>
         payload.serverId === serverId && payload.request_id === requestId,
-      normalizeConfirmed: (payload) =>
-        normalizeStructuredInputAccepted(payload, options.turnId),
+      matchesConnection: (payload) => payload.serverId === serverId,
       sendNow: () => {
         socket.sendNow(structuredInputMessage({
           requestId,
           agentId,
           text,
-          conversationScopeKey: options.conversationScopeKey,
-          turnId: options.turnId,
-          turnStartedAt: options.turnStartedAt,
-          turnQueued: options.turnQueued,
-          turnConversationIdentity: options.turnConversationIdentity,
         }));
       },
     });
@@ -1467,20 +1521,21 @@ class MultiServerWebSocketClient {
 
         this.on("terminal_snapshot", handleSnapshot);
         this.on("error", handleError);
-        this.send(serverId, {
-          type: "terminal_snapshot",
-          request_id: requestId,
-          target_id: targetId,
-        });
+        this.sendRequestNow(
+          serverId,
+          {
+            type: "terminal_snapshot",
+            request_id: requestId,
+            target_id: targetId,
+          },
+          cleanup,
+          reject,
+        );
       },
     );
   }
 
   sendKey(serverId: string, agentId: string, key: string) {
-    const socket = this.connections.get(serverId);
-    if (!socket?.isConnected) {
-      throw new Error("Daemon is not connected.");
-    }
     const requestId = `${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
 
     return new Promise<void>((resolve, reject) => {
@@ -1513,17 +1568,25 @@ class MultiServerWebSocketClient {
 
       this.on("key_sent", handleSent);
       this.on("error", handleError);
-      socket.send({
-        type: "send_key",
-        request_id: requestId,
-        agent_id: agentId,
-        key,
-      });
+      this.sendRequestNow(
+        serverId,
+        {
+          type: "send_key",
+          request_id: requestId,
+          agent_id: agentId,
+          key,
+        },
+        cleanup,
+        reject,
+      );
     });
   }
 
   setActiveAgent(serverId: string, agentId: string | null) {
-    this.send(serverId, { type: "set_active_agent", agent_id: agentId ?? "" });
+    this.trySendNow(serverId, {
+      type: "set_active_agent",
+      agent_id: agentId ?? "",
+    });
   }
 
   clearActiveAgentsExcept(
@@ -1560,7 +1623,12 @@ class MultiServerWebSocketClient {
       }, 15000);
 
       this.on("stats_data", handleStats);
-      this.send(serverId, { type: "get_stats", request_id: requestId });
+      this.sendRequestNow(
+        serverId,
+        { type: "get_stats", request_id: requestId },
+        cleanup,
+        reject,
+      );
     });
   }
 
@@ -1609,10 +1677,15 @@ class MultiServerWebSocketClient {
 
       this.on("brain_context", handleContext);
       this.on("error", handleError);
-      this.send(serverId, {
-        type: "brain_context",
-        request_id: requestId,
-      });
+      this.sendRequestNow(
+        serverId,
+        {
+          type: "brain_context",
+          request_id: requestId,
+        },
+        cleanup,
+        reject,
+      );
     });
   }
 
@@ -1649,10 +1722,15 @@ class MultiServerWebSocketClient {
 
       this.on("brain_gc", handleGC);
       this.on("error", handleError);
-      this.send(serverId, {
-        type: "brain_gc",
-        request_id: requestId,
-      });
+      this.sendRequestNow(
+        serverId,
+        {
+          type: "brain_gc",
+          request_id: requestId,
+        },
+        cleanup,
+        reject,
+      );
     });
   }
 
@@ -1691,10 +1769,15 @@ class MultiServerWebSocketClient {
 
       this.on("brain_snapshot", handleSnapshot);
       this.on("error", handleError);
-      this.send(serverId, {
-        type: "brain_chat_new",
-        request_id: requestId,
-      });
+      this.sendRequestNow(
+        serverId,
+        {
+          type: "brain_chat_new",
+          request_id: requestId,
+        },
+        cleanup,
+        reject,
+      );
     });
   }
 
@@ -1731,12 +1814,17 @@ class MultiServerWebSocketClient {
 
       this.on("brain_snapshot", handleSnapshot);
       this.on("error", handleError);
-      this.send(serverId, {
-        type: "brain_set_executor",
-        request_id: requestId,
-        executor_id: executorId,
-        adapter_id: executorId,
-      });
+      this.sendRequestNow(
+        serverId,
+        {
+          type: "brain_set_executor",
+          request_id: requestId,
+          executor_id: executorId,
+          adapter_id: executorId,
+        },
+        cleanup,
+        reject,
+      );
     });
   }
 
@@ -1773,11 +1861,16 @@ class MultiServerWebSocketClient {
 
       this.on("brain_workspace_tree", handleTree);
       this.on("error", handleError);
-      this.send(serverId, {
-        type: "brain_workspace_tree",
-        request_id: requestId,
-        path,
-      });
+      this.sendRequestNow(
+        serverId,
+        {
+          type: "brain_workspace_tree",
+          request_id: requestId,
+          path,
+        },
+        cleanup,
+        reject,
+      );
     });
   }
 
@@ -1819,11 +1912,16 @@ class MultiServerWebSocketClient {
 
       this.on("brain_workspace_file", handleFile);
       this.on("error", handleError);
-      this.send(serverId, {
-        type: "brain_workspace_file",
-        request_id: requestId,
-        path,
-      });
+      this.sendRequestNow(
+        serverId,
+        {
+          type: "brain_workspace_file",
+          request_id: requestId,
+          path,
+        },
+        cleanup,
+        reject,
+      );
     });
   }
 
@@ -1870,10 +1968,15 @@ class MultiServerWebSocketClient {
 
       this.on("session_service_list", handleList);
       this.on("error", handleError);
-      this.send(serverId, {
-        type: "list_session_services",
-        request_id: requestId,
-      });
+      this.sendRequestNow(
+        serverId,
+        {
+          type: "list_session_services",
+          request_id: requestId,
+        },
+        cleanup,
+        reject,
+      );
     });
   }
 
@@ -1935,7 +2038,12 @@ class MultiServerWebSocketClient {
       }, 15000);
       this.on(responseType, onResponse);
       this.on("error", onError);
-      this.send(serverId, { type, request_id: requestId, ...payload });
+      this.sendRequestNow(
+        serverId,
+        { type, request_id: requestId, ...payload },
+        cleanup,
+        reject,
+      );
     });
   }
 
@@ -1943,55 +2051,6 @@ class MultiServerWebSocketClient {
 
   listWorkItems(serverId: string) {
     this.send(serverId, { type: "list_work_items" });
-  }
-
-  listExecutors(serverId: string) {
-    this.send(serverId, { type: "list_executors" });
-  }
-
-  setWorkDigestProvider(serverId: string, provider: string): Promise<string> {
-    const requestId = `${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
-
-    return new Promise((resolve, reject) => {
-      const cleanup = () => {
-        if (timer) clearTimeout(timer);
-        this.off("work_digest_provider", handleProvider);
-        this.off("error", handleError);
-      };
-
-      const handleProvider = (payload: any) => {
-        if (payload.serverId !== serverId || payload.request_id !== requestId) {
-          return;
-        }
-        cleanup();
-        const selected =
-          typeof payload.work_digest_provider === "string"
-            ? payload.work_digest_provider
-            : provider;
-        resolve(selected);
-      };
-
-      const handleError = (payload: any) => {
-        if (payload.serverId !== serverId || payload.request_id !== requestId) {
-          return;
-        }
-        cleanup();
-        reject(new Error(payload.message || "Failed to change work analyzer."));
-      };
-
-      const timer = setTimeout(() => {
-        cleanup();
-        reject(new Error("Timed out while changing work analyzer."));
-      }, 15000);
-
-      this.on("work_digest_provider", handleProvider);
-      this.on("error", handleError);
-      this.send(serverId, {
-        type: "set_work_digest_provider",
-        request_id: requestId,
-        name: provider,
-      });
-    });
   }
 
   writeWorkItem(
@@ -2043,37 +2102,22 @@ class MultiServerWebSocketClient {
 
       this.on("work_item_written", handleWritten);
       this.on("error", handleError);
-      this.send(serverId, {
-        type: "write_work_item",
-        request_id: requestId,
-        id: options.id ?? "",
-        project: options.project,
-        path: options.path ?? "",
-        body: options.body,
-        frontmatter: options.frontmatter ?? {},
-        base_mtime: options.baseMtime ?? "",
-      });
+      this.sendRequestNow(
+        serverId,
+        {
+          type: "write_work_item",
+          request_id: requestId,
+          id: options.id ?? "",
+          project: options.project,
+          path: options.path ?? "",
+          body: options.body,
+          frontmatter: options.frontmatter ?? {},
+          base_mtime: options.baseMtime ?? "",
+        },
+        cleanup,
+        reject,
+      );
     });
-  }
-
-  startWorkItem(serverId: string, id: string) {
-    return this.workItemAction(
-      serverId,
-      "start_work_item",
-      "work_item_started",
-      id,
-      "Failed to start work item.",
-    );
-  }
-
-  rerunWorkItem(serverId: string, id: string) {
-    return this.workItemAction(
-      serverId,
-      "rerun_work_item",
-      "work_item_rerun",
-      id,
-      "Failed to run work item again.",
-    );
   }
 
   deleteWorkItem(serverId: string, id: string) {
@@ -2109,11 +2153,16 @@ class MultiServerWebSocketClient {
 
       this.on("work_item_deleted_ack", handleDeleted);
       this.on("error", handleError);
-      this.send(serverId, {
-        type: "delete_work_item",
-        request_id: requestId,
-        id,
-      });
+      this.sendRequestNow(
+        serverId,
+        {
+          type: "delete_work_item",
+          request_id: requestId,
+          id,
+        },
+        cleanup,
+        reject,
+      );
     });
   }
 
@@ -2125,53 +2174,6 @@ class MultiServerWebSocketClient {
     return [...this.connections.keys()].filter((serverId) =>
       this.isConnected(serverId),
     );
-  }
-
-  private workItemAction(
-    serverId: string,
-    requestType: string,
-    responseType: string,
-    id: string,
-    fallbackMessage: string,
-  ) {
-    const requestId = `${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
-
-    return new Promise<any>((resolve, reject) => {
-      const cleanup = () => {
-        if (timer) clearTimeout(timer);
-        this.off(responseType, handleResponse);
-        this.off("error", handleError);
-      };
-
-      const handleResponse = (payload: any) => {
-        if (payload.serverId !== serverId || payload.request_id !== requestId) {
-          return;
-        }
-        cleanup();
-        resolve(payload.work_item);
-      };
-
-      const handleError = (payload: any) => {
-        if (payload.serverId !== serverId || payload.request_id !== requestId) {
-          return;
-        }
-        cleanup();
-        reject(new Error(payload.message || fallbackMessage));
-      };
-
-      const timer = setTimeout(() => {
-        cleanup();
-        reject(new Error("Timed out while waiting for work item action."));
-      }, 15000);
-
-      this.on(responseType, handleResponse);
-      this.on("error", handleError);
-      this.send(serverId, {
-        type: requestType,
-        request_id: requestId,
-        id,
-      });
-    });
   }
 
   private emit(type: string, serverId: string, payload: any) {
@@ -2295,11 +2297,7 @@ function normalizeCodexConversationDeltaPayload(
   const normalizedDelta = normalizeCodexConversation({
     available: true,
     updated_at: payload.updated_at,
-    turn_epoch: payload.turn_epoch,
-    turn_revision: payload.turn_revision,
-    turn: payload.turn,
     activity: payload.activity,
-    queued_turns: payload.queued_turns,
     events: payload.upserts,
   });
   return {
@@ -2332,15 +2330,8 @@ function normalizeCodexConversationDeltaPayload(
     cwd: typeof payload.cwd === "string" ? payload.cwd : undefined,
     updated_at:
       typeof payload.updated_at === "string" ? payload.updated_at : undefined,
-    active: typeof payload.active === "boolean" ? payload.active : undefined,
-    turn_epoch: normalizedDelta.turn_epoch,
-    turn_revision: normalizedDelta.turn_revision,
-    turn: normalizedDelta.turn,
     activity: Object.prototype.hasOwnProperty.call(payload, "activity")
       ? normalizedDelta.activity ?? null
-      : undefined,
-    queued_turns: Array.isArray(payload.queued_turns)
-      ? normalizedDelta.queued_turns ?? []
       : undefined,
     upserts: normalizedDelta.events,
     deletes: Array.isArray(payload.deletes)
@@ -2354,14 +2345,6 @@ function normalizeCodexConversationDeltaPayload(
 function normalizeCodexConversationSyncStatusPayload(
   payload: any,
 ): CodexConversationSyncStatusPayload {
-  const normalizedLifecycle = normalizeCodexConversation({
-    available: false,
-    turn_epoch: payload.turn_epoch,
-    turn_revision: payload.turn_revision,
-    turn: payload.turn,
-    queued_turns: payload.queued_turns,
-    events: [],
-  });
   return {
     request_id:
       typeof payload.request_id === "string" ? payload.request_id : undefined,
@@ -2379,13 +2362,6 @@ function normalizeCodexConversationSyncStatusPayload(
       typeof payload.generation === "string" ? payload.generation : undefined,
     state: typeof payload.state === "string" ? payload.state : "syncing",
     reason: typeof payload.reason === "string" ? payload.reason : undefined,
-    active: typeof payload.active === "boolean" ? payload.active : undefined,
-    turn_epoch: normalizedLifecycle.turn_epoch,
-    turn_revision: normalizedLifecycle.turn_revision,
-    turn: normalizedLifecycle.turn,
-    queued_turns: Array.isArray(payload.queued_turns)
-      ? normalizedLifecycle.queued_turns ?? []
-      : undefined,
   };
 }
 

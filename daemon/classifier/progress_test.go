@@ -69,8 +69,8 @@ func TestApplyProgressUpdatesLifecycleFields(t *testing.T) {
 		LeaseSeconds: 300,
 	}, now)
 
-	if agent.State != StateBlocked || agent.StateVersion != 1 {
-		t.Fatalf("agent state/version = %q/%d", agent.State, agent.StateVersion)
+	if agent.State != StateBlocked {
+		t.Fatalf("agent state = %q", agent.State)
 	}
 	if agent.Phase != "working" || agent.Attention != "user_input" || !agent.NeedsAttention {
 		t.Fatalf("agent progress fields = %#v", agent)

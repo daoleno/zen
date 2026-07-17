@@ -22,6 +22,7 @@ func setTestLocalLocation(t *testing.T, loc *time.Location) {
 }
 
 func TestCollectorSmoke(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
 	c := NewCollector()
 	c.refresh()
 
@@ -38,36 +39,8 @@ func TestCollectorSmoke(t *testing.T) {
 	if all == nil {
 		t.Fatal("missing 'all' range")
 	}
-
-	fmt.Printf("Cost: $%.2f\n", all.Cost)
-	fmt.Printf("Sessions: %d\n", all.Sessions)
-	fmt.Printf("Models: %d\n", len(all.Models))
-	fmt.Printf("Projects: %d\n", len(all.Projects))
-	fmt.Printf("Skills: %d\n", len(all.Skills))
-	fmt.Printf("Tools: %d\n", len(all.Tools))
-	fmt.Printf("InputTokens: %d\n", all.InputTokens)
-	fmt.Printf("OutputTokens: %d\n", all.OutputTokens)
-
-	for _, m := range all.Models {
-		fmt.Printf("  Model: %s cost=$%.2f in=%d out=%d cache_read=%d\n", m.Name, m.Cost, m.InputTokens, m.OutputTokens, m.CacheRead)
-	}
-	for _, p := range all.Projects {
-		fmt.Printf("  Project: %s sessions=%d\n", p.Name, p.Sessions)
-	}
-	for _, sk := range all.Skills {
-		fmt.Printf("  Skill: %s calls=%d projects=%v\n", sk.Name, sk.Calls, sk.Projects)
-	}
-	for i, t := range all.Tools {
-		if i < 10 {
-			fmt.Printf("  Tool: %s calls=%d\n", t.Name, t.Calls)
-		}
-	}
-
-	fmt.Printf("Days (all): %d\n", len(all.Days))
-	for i, d := range all.Days {
-		if i < 5 || i >= len(all.Days)-3 {
-			fmt.Printf("  %s: $%.2f %d sess\n", d.Date, d.Cost, d.Sessions)
-		}
+	if all.Cost != 0 || all.Sessions != 0 || len(all.Models) != 0 || len(all.Projects) != 0 || len(all.Skills) != 0 || len(all.Tools) != 0 || len(all.Days) != 0 {
+		t.Fatalf("empty-home stats contain host data: %#v", all)
 	}
 }
 

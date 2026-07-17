@@ -4,27 +4,22 @@ export function resolveComposerSendAction({
   elapsedStartedAt,
   hasComposerContent,
   interrupting,
-  requestRunning,
-  startingNewChat,
+  activityRunning,
 }: {
   canSend: boolean;
   connected: boolean;
   elapsedStartedAt?: string;
   hasComposerContent: boolean;
   interrupting: boolean;
-  requestRunning: boolean;
-  sending: boolean;
-  startingNewChat: boolean;
+  activityRunning: boolean;
 }) {
-  const showStopButton = requestRunning && !hasComposerContent;
+  const showStopButton = activityRunning && !hasComposerContent;
   return {
-    primaryAction: showStopButton ? "stop" as const : "send" as const,
     showStopButton,
-    showStopIndicator: showStopButton,
-    workingTurnStartedAt: requestRunning ? elapsedStartedAt : undefined,
-    stopEnabled: connected && requestRunning && !interrupting,
+    providerActivityStartedAt: activityRunning ? elapsedStartedAt : undefined,
+    stopEnabled: connected && activityRunning && !interrupting,
     stopLabel: interrupting ? "Stopping response" : "Stop response",
-    sendEnabled: canSend || startingNewChat,
-    sendLabel: startingNewChat ? "Starting new chat" : "Send message",
+    sendEnabled: canSend,
+    sendLabel: "Send message",
   };
 }

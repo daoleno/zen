@@ -9,18 +9,16 @@ import React, {
 
 const brainReadCursorStorageKey = "zen.brain.result_read_cursors.v1";
 
-export type BrainChatMessage = {
+export type BrainScheduledResult = {
   id: string;
   thread_id: string;
-  role: string;
   body: string;
   created_at: string;
-  kind?: string;
-  status?: string;
-  title?: string;
-  calendar_item_id?: string;
-  calendar_run_id?: string;
-  scheduled_for?: string;
+  status: string;
+  title: string;
+  calendar_item_id: string;
+  calendar_run_id: string;
+  scheduled_for: string;
 };
 
 export type BrainAgentRef = {
@@ -57,7 +55,7 @@ export type BrainSnapshot = {
   delegated_adapter?: BrainAdapterRef | null;
   adapters?: BrainAdapterRef[];
   chat_thread_id?: string;
-  scheduled_results?: BrainChatMessage[];
+  scheduled_results?: BrainScheduledResult[];
   workspace?: string;
   generated_at?: string;
 };
@@ -83,7 +81,8 @@ export const initialBrainState: BrainState = {
   cursorsHydrated: false,
 };
 
-type RawBrainSnapshot = Partial<BrainSnapshot> & {
+type RawBrainSnapshot = Omit<Partial<BrainSnapshot>, "scheduled_results"> & {
+  scheduled_results?: unknown[];
   host_executor?: BrainAdapterRef | null;
   delegated_executor?: BrainAdapterRef | null;
   executors?: BrainAdapterRef[];
@@ -148,35 +147,44 @@ function normalizeSnapshot(
   };
 }
 
-function normalizeChatMessage(raw: any): BrainChatMessage {
+function normalizeScheduledResult(raw: any): BrainScheduledResult {
   return {
     id: typeof raw?.id === "string" ? raw.id : "",
     thread_id: typeof raw?.thread_id === "string" ? raw.thread_id : "",
-    role: typeof raw?.role === "string" ? raw.role : "assistant",
     body: typeof raw?.body === "string" ? raw.body : "",
     created_at: typeof raw?.created_at === "string" ? raw.created_at : "",
-    kind: typeof raw?.kind === "string" ? raw.kind : undefined,
-    status: typeof raw?.status === "string" ? raw.status : undefined,
-    title: typeof raw?.title === "string" ? raw.title : undefined,
+    status: typeof raw?.status === "string" ? raw.status : "",
+    title: typeof raw?.title === "string" ? raw.title : "",
     calendar_item_id:
       typeof raw?.calendar_item_id === "string"
         ? raw.calendar_item_id
-        : undefined,
+        : "",
     calendar_run_id:
       typeof raw?.calendar_run_id === "string"
         ? raw.calendar_run_id
-        : undefined,
+        : "",
     scheduled_for:
-      typeof raw?.scheduled_for === "string" ? raw.scheduled_for : undefined,
+      typeof raw?.scheduled_for === "string" ? raw.scheduled_for : "",
   };
 }
 
-function normalizeScheduledResults(raw: any[]): BrainChatMessage[] {
-  const byId = new Map<string, BrainChatMessage>();
+function normalizeScheduledResults(raw: any[]): BrainScheduledResult[] {
+  const byId = new Map<string, BrainScheduledResult>();
   raw
-    .map(normalizeChatMessage)
-    .filter((message) => message.id && message.thread_id)
-    .forEach((message) => byId.set(message.id, message));
+    .map(normalizeScheduledResult)
+    .filter(
+      (result) =>
+        result.id &&
+        result.thread_id &&
+        result.body &&
+        result.created_at &&
+        result.status &&
+        result.title &&
+        result.calendar_item_id &&
+        result.calendar_run_id &&
+        result.scheduled_for,
+    )
+    .forEach((result) => byId.set(result.id, result));
   return Array.from(byId.values()).sort((left, right) => {
     const leftTime = Date.parse(left.created_at);
     const rightTime = Date.parse(right.created_at);
@@ -282,7 +290,7 @@ export function brainReducer(state: BrainState, action: Action): BrainState {
         .reverse()
         .find((message) => message.thread_id === action.threadId);
       if (!latest) return state;
-      const cursor = messageCursor(latest);
+      const cursor = resultCursor(latest);
       if (
         state.readCursors[key] === cursor &&
         state.unreadByThread[key] === 0
@@ -312,8 +320,8 @@ export function totalBrainUnread(state: BrainState): number {
   );
 }
 
-function messageCursor(message: BrainChatMessage) {
-  return `${message.created_at}\u0000${message.id}`;
+function resultCursor(result: BrainScheduledResult) {
+  return `${result.created_at}\u0000${result.id}`;
 }
 
 function normalizeCursors(raw: Record<string, string>) {
@@ -330,30 +338,30 @@ function calculateUnread(
 ) {
   const unread: Record<string, number> = {};
   for (const [serverId, server] of Object.entries(byServer)) {
-    const byThread = new Map<string, BrainChatMessage[]>();
-    for (const message of server.scheduled_results ?? []) {
-      const messages = byThread.get(message.thread_id) ?? [];
-      messages.push(message);
-      byThread.set(message.thread_id, messages);
+    const byThread = new Map<string, BrainScheduledResult[]>();
+    for (const result of server.scheduled_results ?? []) {
+      const results = byThread.get(result.thread_id) ?? [];
+      results.push(result);
+      byThread.set(result.thread_id, results);
     }
-    for (const [threadId, messages] of byThread) {
+    for (const [threadId, results] of byThread) {
       const key = brainThreadKey(serverId, threadId);
       const cursor = cursors[key];
       if (!cursor) {
-        unread[key] = messages.length;
+        unread[key] = results.length;
         continue;
       }
       const separator = cursor.indexOf("\u0000");
       const cursorTime = separator >= 0 ? cursor.slice(0, separator) : "";
       const cursorId = separator >= 0 ? cursor.slice(separator + 1) : "";
-      const cursorIndex = messages.findIndex(
-        (message) => message.id === cursorId,
+      const cursorIndex = results.findIndex(
+        (result) => result.id === cursorId,
       );
       const count =
         cursorIndex >= 0
-          ? messages.length - cursorIndex - 1
-          : messages.filter((message) =>
-              isMessageAfterCursor(message, cursorTime, cursorId)
+          ? results.length - cursorIndex - 1
+          : results.filter((result) =>
+              isResultAfterCursor(result, cursorTime, cursorId)
             ).length;
       if (count > 0) unread[key] = count;
     }
@@ -361,20 +369,20 @@ function calculateUnread(
   return unread;
 }
 
-function isMessageAfterCursor(
-  message: BrainChatMessage,
+function isResultAfterCursor(
+  result: BrainScheduledResult,
   cursorTime: string,
   cursorId: string,
 ) {
-  const messageTime = Date.parse(message.created_at);
+  const resultTime = Date.parse(result.created_at);
   const parsedCursorTime = Date.parse(cursorTime);
-  if (Number.isFinite(messageTime) && Number.isFinite(parsedCursorTime)) {
-    if (messageTime !== parsedCursorTime) {
-      return messageTime > parsedCursorTime;
+  if (Number.isFinite(resultTime) && Number.isFinite(parsedCursorTime)) {
+    if (resultTime !== parsedCursorTime) {
+      return resultTime > parsedCursorTime;
     }
-    return message.id.localeCompare(cursorId) > 0;
+    return result.id.localeCompare(cursorId) > 0;
   }
-  return messageCursor(message).localeCompare(`${cursorTime}\u0000${cursorId}`) > 0;
+  return resultCursor(result).localeCompare(`${cursorTime}\u0000${cursorId}`) > 0;
 }
 
 function shallowRecordEqual(
@@ -410,16 +418,16 @@ function brainServerStatesEqual(
     adapterRefsEqual(left.delegated_adapter, right.delegated_adapter) &&
     agentRefArraysEqual(left.agents ?? [], right.agents ?? []) &&
     adapterRefArraysEqual(left.adapters ?? [], right.adapters ?? []) &&
-    chatMessageArraysEqual(
+    scheduledResultArraysEqual(
       left.scheduled_results ?? [],
       right.scheduled_results ?? [],
     )
   );
 }
 
-function chatMessageArraysEqual(
-  left: BrainChatMessage[],
-  right: BrainChatMessage[],
+function scheduledResultArraysEqual(
+  left: BrainScheduledResult[],
+  right: BrainScheduledResult[],
 ) {
   return (
     left.length === right.length &&

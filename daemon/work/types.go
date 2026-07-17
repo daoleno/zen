@@ -10,7 +10,6 @@ type Item struct {
 	Title       string      `json:"title"`
 	Body        string      `json:"body"`
 	Frontmatter Frontmatter `json:"frontmatter"`
-	Mentions    []Mention   `json:"mentions"`
 	Mtime       time.Time   `json:"mtime"`
 }
 
@@ -25,29 +24,8 @@ type Frontmatter struct {
 	Started      *time.Time             `yaml:"started,omitempty" json:"started,omitempty"`
 	Status       string                 `yaml:"status,omitempty" json:"status,omitempty"`
 	Title        string                 `yaml:"title,omitempty" json:"title,omitempty"`
-	Outcome      string                 `yaml:"outcome,omitempty" json:"outcome,omitempty"`
-	Summary      string                 `yaml:"summary,omitempty" json:"summary,omitempty"`
-	Progress     []string               `yaml:"progress,omitempty" json:"progress,omitempty"`
-	Friction     string                 `yaml:"friction,omitempty" json:"friction,omitempty"`
-	Cause        string                 `yaml:"cause,omitempty" json:"cause,omitempty"`
-	Insight      string                 `yaml:"insight,omitempty" json:"insight,omitempty"`
-	Next         string                 `yaml:"next,omitempty" json:"next,omitempty"`
-	AgentSource  string                 `yaml:"agent_source,omitempty" json:"agent_source,omitempty"`
 	AgentSession string                 `yaml:"agent_session,omitempty" json:"agent_session,omitempty"`
-	Cwd          string                 `yaml:"cwd,omitempty" json:"cwd,omitempty"`
-	Command      string                 `yaml:"command,omitempty" json:"command,omitempty"`
-	AIProvider   string                 `yaml:"ai_provider,omitempty" json:"ai_provider,omitempty"`
-	AIUpdated    *time.Time             `yaml:"ai_updated,omitempty" json:"ai_updated,omitempty"`
-	AIHash       string                 `yaml:"ai_hash,omitempty" json:"ai_hash,omitempty"`
-	AIError      string                 `yaml:"ai_error,omitempty" json:"ai_error,omitempty"`
 	Extra        map[string]interface{} `yaml:"-" json:"extra,omitempty"`
-}
-
-// Mention is one @role or @role#session reference in the body.
-type Mention struct {
-	Role    string `json:"role"`
-	Session string `json:"session,omitempty"`
-	Index   int    `json:"index"`
 }
 
 // Executor is one configured agent kind (claude, codex, custom CLI, ...).
@@ -58,22 +36,12 @@ type Executor struct {
 	Runtime string `json:"runtime,omitempty" toml:"runtime"`
 }
 
-// Project holds the content of one project.toml.
-type Project struct {
-	Name     string `toml:"name" json:"name"`
-	Cwd      string `toml:"cwd" json:"cwd"`
-	Executor string `toml:"executor" json:"executor"`
-}
-
 func cloneItem(iss *Item) *Item {
 	if iss == nil {
 		return nil
 	}
 	cp := *iss
 	cp.Frontmatter = cloneFrontmatter(iss.Frontmatter)
-	if iss.Mentions != nil {
-		cp.Mentions = append([]Mention(nil), iss.Mentions...)
-	}
 	return &cp
 }
 
@@ -86,13 +54,6 @@ func cloneFrontmatter(fm Frontmatter) Frontmatter {
 	if fm.Started != nil {
 		started := *fm.Started
 		cp.Started = &started
-	}
-	if fm.Progress != nil {
-		cp.Progress = append([]string(nil), fm.Progress...)
-	}
-	if fm.AIUpdated != nil {
-		updated := *fm.AIUpdated
-		cp.AIUpdated = &updated
 	}
 	if fm.Extra != nil {
 		cp.Extra = make(map[string]interface{}, len(fm.Extra))

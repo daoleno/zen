@@ -46,12 +46,10 @@ import { NewTerminalSheet } from '../../components/terminal/NewTerminalSheet';
 import { SessionServicesSheet } from '../../components/SessionServicesSheet';
 import {
   getAgentAliases,
-  getRecentAgentOpens,
   getServers,
   markAgentOpened,
   setAgentAlias,
   StoredAgentAliases,
-  StoredRecentAgentOpens,
   StoredServer,
 } from '../../services/storage';
 import { connectionIssueAccent } from '../../services/connectionIssue';
@@ -102,7 +100,6 @@ export default function InboxScreen() {
   }, [workState.byKey]);
   const [headerMenuVisible, setHeaderMenuVisible] = useState(false);
   const [agentAliases, setAgentAliases] = useState<StoredAgentAliases>({});
-  const [recentAgentOpens, setRecentAgentOpens] = useState<StoredRecentAgentOpens>({});
   const [configuredServerCount, setConfiguredServerCount] = useState(0);
   const [servers, setServers] = useState<StoredServer[]>([]);
   const [storageHydrated, setStorageHydrated] = useState(false);
@@ -132,13 +129,11 @@ export default function InboxScreen() {
   useEffect(() => {
     let cancelled = false;
     (async () => {
-      const [storedRecentOpens, storedAliases, storedServers] = await Promise.all([
-        getRecentAgentOpens(),
+      const [storedAliases, storedServers] = await Promise.all([
         getAgentAliases(),
         getServers(),
       ]);
       if (!cancelled) {
-        setRecentAgentOpens(storedRecentOpens);
         setAgentAliases(storedAliases);
         setConfiguredServerCount(storedServers.length);
         setServers(storedServers);
@@ -152,13 +147,11 @@ export default function InboxScreen() {
     React.useCallback(() => {
       let cancelled = false;
       (async () => {
-        const [storedRecentOpens, storedAliases, storedServers] = await Promise.all([
-          getRecentAgentOpens(),
+        const [storedAliases, storedServers] = await Promise.all([
           getAgentAliases(),
           getServers(),
         ]);
         if (!cancelled) {
-          setRecentAgentOpens(storedRecentOpens);
           setAgentAliases(storedAliases);
           setConfiguredServerCount(storedServers.length);
           setServers(storedServers);
@@ -238,10 +231,6 @@ export default function InboxScreen() {
 
   const openAgent = useCallback((agent: Agent) => {
     const openedAt = Date.now();
-    setRecentAgentOpens(previous => ({
-      ...previous,
-      [agent.key]: openedAt,
-    }));
     void markAgentOpened(agent.key, openedAt);
     router.push({
       pathname: '/terminal/[id]',
@@ -286,10 +275,6 @@ export default function InboxScreen() {
     const sessionKey = makeSessionKey(serverId, agentId);
     const openedAt = Date.now();
     void markAgentOpened(sessionKey, openedAt);
-    setRecentAgentOpens(previous => ({
-      ...previous,
-      [sessionKey]: openedAt,
-    }));
     router.push({
       pathname: '/terminal/[id]',
       params: hint

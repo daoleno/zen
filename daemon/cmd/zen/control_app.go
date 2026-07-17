@@ -431,7 +431,7 @@ func (a *controlApp) handleBrainContext() control.Response {
 		return control.ErrorResponse("brain_unavailable", "Brain workspace is not configured.")
 	}
 	service := brain.NewService(a.brainStore, a.watcher, a.execs)
-	context, err := service.Context(12)
+	context, err := service.Context()
 	if err != nil {
 		return control.ErrorResponse("brain_context_failed", err.Error())
 	}

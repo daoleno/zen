@@ -68,18 +68,3 @@ func TestDefaultActivityProbe_IncludesCursor(t *testing.T) {
 		t.Fatalf("got %#v", got)
 	}
 }
-
-func TestTranscriptTurnActive(t *testing.T) {
-	if !TranscriptTurnActive(10, 5) {
-		t.Fatal("user after turn_ended should be active")
-	}
-	if TranscriptTurnActive(5, 10) {
-		t.Fatal("turn_ended after user should be inactive")
-	}
-	if !TranscriptTurnActive(3, -1) {
-		t.Fatal("user with no turn_ended should be active")
-	}
-	if TranscriptTurnActive(-1, 2) {
-		t.Fatal("no user should be inactive")
-	}
-}

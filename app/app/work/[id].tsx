@@ -18,11 +18,6 @@ import {
   WorkEditor,
 } from "../../components/work/WorkEditor";
 import { MarkdownView } from "../../components/work/MarkdownView";
-import {
-  relativeTime,
-  workItemStatus,
-  workItemTitle,
-} from "../../components/work/WorkRow";
 import { wsClient } from "../../services/websocket";
 import { AnimatedPressable } from "../../components/ui/AnimatedPressable";
 import { RisingSheet } from "../../components/ui/RisingSheet";
@@ -179,23 +174,20 @@ export default function WorkDetailScreen() {
   if (!item) {
     return (
       <SafeAreaView style={styles.emptyScreen} edges={["top"]}>
-        <Text style={styles.emptyTitle}>Brain item not found</Text>
+        <Text style={styles.emptyTitle}>Work item not found</Text>
       </SafeAreaView>
     );
   }
 
-  const brainLog = item.frontmatter.kind === "brain_log";
-  const done = !brainLog && !!item.frontmatter.done;
+  const done = !!item.frontmatter.done;
   const draftTitle = workItemTitle(item) || titleFromMarkdown(draftBody) || "Untitled work";
   const status = workStatusInfo(item, colors);
   const updatedLabel = relativeTime(item.mtime || item.frontmatter.created);
   const previewBody = stripLeadingTitle(draftBody);
-  const headerTitle = brainLog ? "Brain" : item.project;
-  const contextLabel = brainLog
-    ? [item.serverName, updatedLabel].filter(Boolean).join(" · ")
-    : `${item.serverName ? `${item.serverName} · ${item.project}` : item.project}${
-        updatedLabel ? ` · ${updatedLabel}` : ""
-      }`;
+  const headerTitle = item.project;
+  const contextLabel = `${item.serverName ? `${item.serverName} · ${item.project}` : item.project}${
+    updatedLabel ? ` · ${updatedLabel}` : ""
+  }`;
 
   return (
     <SafeAreaView style={styles.screen} edges={["top"]}>
@@ -250,13 +242,11 @@ export default function WorkDetailScreen() {
 
         <View style={styles.context}>
           <View style={styles.statusRow}>
-            {brainLog ? null : (
-              <StatusPill
-                icon={status.icon}
-                label={status.label}
-                color={status.color}
-              />
-            )}
+            <StatusPill
+              icon={status.icon}
+              label={status.label}
+              color={status.color}
+            />
             <Text style={styles.contextPath} numberOfLines={1}>
               {contextLabel}
             </Text>
@@ -319,25 +309,23 @@ export default function WorkDetailScreen() {
         <View style={[styles.footer, { paddingBottom: Math.max(insets.bottom, Spacing.md) }]}>
           <SaveState saving={saving} dirty={dirty} />
           <View style={styles.footerActions}>
-            {brainLog ? null : (
-              <AnimatedPressable
-                onPress={() => {
-                  Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-                  void handleToggleDone();
-                }}
-                disabled={saving}
-                preset="press"
-                scale={0.94}
-                style={[styles.secondaryButton, saving && styles.primaryButtonDisabled]}
-              >
-                <Ionicons
-                  name={done ? "return-up-back-outline" : "checkmark"}
-                  size={14}
-                  color={colors.textPrimary}
-                />
-                <Text style={styles.secondaryButtonText}>{done ? "Reopen" : "Done"}</Text>
-              </AnimatedPressable>
-            )}
+            <AnimatedPressable
+              onPress={() => {
+                Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+                void handleToggleDone();
+              }}
+              disabled={saving}
+              preset="press"
+              scale={0.94}
+              style={[styles.secondaryButton, saving && styles.primaryButtonDisabled]}
+            >
+              <Ionicons
+                name={done ? "return-up-back-outline" : "checkmark"}
+                size={14}
+                color={colors.textPrimary}
+              />
+              <Text style={styles.secondaryButtonText}>{done ? "Reopen" : "Done"}</Text>
+            </AnimatedPressable>
           </View>
         </View>
       </KeyboardAvoidingView>
@@ -346,7 +334,7 @@ export default function WorkDetailScreen() {
         visible={menuOpen}
         onClose={() => setMenuOpen(false)}
         done={done}
-        showDone={!brainLog}
+        showDone
         onToggleDone={() => {
           setMenuOpen(false);
           void handleToggleDone();
@@ -393,6 +381,59 @@ function titleFromMarkdown(value: string): string {
 
 function stripLeadingTitle(value: string): string {
   return value.replace(/^\s*#\s+.+?(?:\r?\n){1,2}/, "");
+}
+
+type WorkStatus = "queued" | "running" | "blocked" | "done" | "failed" | "removed" | "unknown";
+
+function workItemStatus(item: WorkItem): WorkStatus {
+  const raw =
+    typeof item.frontmatter.status === "string"
+      ? item.frontmatter.status.trim().toLowerCase()
+      : "";
+  switch (raw) {
+    case "failed":
+    case "blocked":
+    case "done":
+    case "removed":
+    case "running":
+    case "unknown":
+      return raw;
+    default:
+      break;
+  }
+  if (item.frontmatter.done) {
+    return "done";
+  }
+  if (item.frontmatter.started) {
+    return "running";
+  }
+  return "queued";
+}
+
+function relativeTime(iso: string): string {
+  const then = Date.parse(iso);
+  if (Number.isNaN(then)) {
+    return "";
+  }
+  const diff = Math.floor((Date.now() - then) / 1000);
+  if (diff < 60) return "now";
+  if (diff < 3600) return `${Math.floor(diff / 60)}m`;
+  if (diff < 86_400) return `${Math.floor(diff / 3600)}h`;
+  if (diff < 86_400 * 30) return `${Math.floor(diff / 86_400)}d`;
+  return `${Math.floor(diff / (86_400 * 30))}mo`;
+}
+
+function workItemTitle(item: WorkItem): string {
+  return usefulInlineText(item.frontmatter.title?.trim() || item.title);
+}
+
+function usefulInlineText(value?: string): string {
+  return (value || "")
+    .replace(/<!--[\s\S]*?-->/g, "")
+    .replace(/\[([^\]]+)\]\([^)]+\)/g, "$1")
+    .replace(/\*\*([^*]+)\*\*/g, "$1")
+    .replace(/`([^`]+)`/g, "$1")
+    .trim();
 }
 
 function workStatusInfo(item: WorkItem, colors: typeof Colors = Colors): {

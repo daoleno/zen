@@ -57,7 +57,7 @@ func TestCalendarControlToolsCRUDAndResolvedTimeConfirmation(t *testing.T) {
 type calendarControlRunner struct{}
 
 func (calendarControlRunner) RunScheduledAction(context.Context, calendar.Item, calendar.Run) (calendar.ActionResult, error) {
-	return calendar.ActionResult{WorkID: "work-1", AgentSession: "agent-1", Result: "started", Launched: true}, nil
+	return calendar.ActionResult{WorkID: "work-1", AgentSession: "agent-1", Launched: true}, nil
 }
 
 func TestCalendarRunControlConfirmationDescribesLaunchNotCompletion(t *testing.T) {

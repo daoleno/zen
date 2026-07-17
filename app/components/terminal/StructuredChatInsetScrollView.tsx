@@ -62,9 +62,7 @@ export const StructuredChatInsetScrollView = forwardRef<
 ) {
   const scrollRef = useAnimatedRef<Reanimated.ScrollView>();
   const rawScrollOffset = useScrollOffset(scrollRef);
-  const effectiveClearance = useSharedValue(
-    Math.max(0, clearance.value),
-  );
+  const effectiveClearance = useSharedValue(0);
   const setCombinedRef = useCallback(
     (value: Reanimated.ScrollView | null) => {
       scrollRef(value);

@@ -10,7 +10,7 @@ func TestMergeProgressAndClassification_OrdinaryShellStaysUnknown(t *testing.T) 
 		PaneAlive: true,
 		State:     StateUnknown,
 	}
-	classified, summary := Classify(true, []string{"$ echo hi", "hi", "$"}, 0)
+	classified, summary := Classify(true, []string{"$ echo hi", "hi", "$"})
 	got, _ := MergeProgressAndClassification(agent, classified, summary, time.Now().UTC())
 	if got != StateUnknown {
 		t.Fatalf("state = %q, want unknown for ordinary shell", got)
@@ -54,7 +54,7 @@ func TestMergeProgressAndClassification_ExpiredLeaseFallsToUnknown(t *testing.T)
 		LeaseSeconds:        300,
 	}
 	// Fresh pane churn after expiry must not keep Running.
-	classified, summary := Classify(true, []string{"compiling...", "done.", "$"}, 0)
+	classified, summary := Classify(true, []string{"compiling...", "done.", "$"})
 	got, _ := MergeProgressAndClassification(agent, classified, summary, now)
 	if got != StateUnknown {
 		t.Fatalf("state = %q, want unknown after lease expiry", got)
@@ -112,7 +112,7 @@ func TestMergeProgressAndClassification_DelegatedDoneSticksWhileAlive(t *testing
 		Delegated:      true,
 		LastProgressAt: &progressAt,
 	}
-	classified, summary := Classify(true, []string{"$ ", "done output", "$"}, 0)
+	classified, summary := Classify(true, []string{"$ ", "done output", "$"})
 	got, gotSummary := MergeProgressAndClassification(agent, classified, summary, now)
 	if got != StateDone {
 		t.Fatalf("state = %q, want done for completed delegated session", got)
@@ -316,7 +316,7 @@ func TestResolveSessionStatus_GrokAlwaysApproveChromeKeepsRunningLease(t *testin
 		"╰─────────────────────────────────────── Grok 4.5 (high) · always-approve ─╯",
 		"Shift+Tab:mode  │  Ctrl+c:cancel  │  Ctrl+x:shortcuts",
 	}
-	classified, classifiedSummary := Classify(true, lines, 0)
+	classified, classifiedSummary := Classify(true, lines)
 	if classified != StateUnknown {
 		t.Fatalf("classified = %q (%q), want unknown for always-approve chrome", classified, classifiedSummary)
 	}

@@ -37,9 +37,15 @@ import {
 } from "../constants/tokens";
 import { useZenTheme, type ResolvedZenTheme } from "../theme";
 import { ZEN_DARK_APP_COLORS } from "../theme/primitives";
+import { appVersion } from "../constants/appVersion";
 import { importConnection } from "../services/importConnection";
 import { wsClient } from "../services/websocket";
-import { ConnectionState, useAgentServerSummary } from "../store/agents";
+import {
+  ConnectionState,
+  countAgentsByServer,
+  useAgentList,
+  useAgentServerSummary,
+} from "../store/agents";
 import * as Storage from "../services/storage";
 import { connectionIssueAccent } from "../services/connectionIssue";
 import { AnimatedPressable } from "../components/ui/AnimatedPressable";
@@ -57,14 +63,15 @@ const THEME_CHOICES = [
 export default function SettingsScreen() {
   const router = useRouter();
   const insets = useSafeAreaInsets();
+  const agents = useAgentList();
   const {
-    agentCountsByServer,
     dispatch,
     hydratedServers,
     serverConnections,
     serverConnectionIssues,
     serverLatencyById,
   } = useAgentServerSummary();
+  const agentCounts = useMemo(() => countAgentsByServer(agents), [agents]);
   const colors = useAppColors();
   const { preference, setPreference } = useZenTheme();
   const { theme } = useAppTheme();
@@ -405,7 +412,7 @@ export default function SettingsScreen() {
                 const connectionIssue =
                   serverConnectionIssues[server.id] || null;
                 const expanded = expandedServer === server.id;
-                const agentCount = agentCountsByServer[server.id] || 0;
+                const agentCount = agentCounts[server.id] || 0;
                 const hydrated = Boolean(hydratedServers[server.id]);
                 const waitingForAgents =
                   connectionState === "connected" &&
@@ -693,7 +700,7 @@ export default function SettingsScreen() {
                   Mobile-native agent control plane
                 </Text>
               </View>
-              <Text style={styles.version}>Version 0.1.0</Text>
+              <Text style={styles.version}>Version {appVersion}</Text>
             </View>
           </View>
         </View>

@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
+import { resolveNotificationDestination } from "./notificationRouting";
 
 describe("Calendar Brain delivery app contract", () => {
   test("scheduled Work captures its Brain thread and streams that scope", () => {
@@ -14,17 +15,19 @@ describe("Calendar Brain delivery app contract", () => {
     expect(chat).toContain("conversationScopeKey,");
   });
 
-  test("result notifications deep-link to the canonical Brain thread", () => {
-    const layout = readFileSync(join(import.meta.dir, "../app/_layout.tsx"), "utf8");
-    const brain = readFileSync(join(import.meta.dir, "../app/(primary)/index.tsx"), "utf8");
-    const chatBody = readFileSync(join(import.meta.dir, "../components/terminal/CodexChatBody.tsx"), "utf8");
-    expect(layout).toContain('screen: "brain"');
-    expect(layout).toContain("brain_thread_id: result.thread_id");
-    expect(layout).toContain("brainMessageId:");
-    expect(brain).toContain("isTargetedBrainThreadReadOnly(");
-    expect(brain).toContain("readOnly={targetedThreadReadOnly}");
-    expect(brain).toContain("Historical Brain thread · read-only");
-    expect(chatBody).toContain("!readOnly ? (");
-    expect(chatBody).toContain("<CodexChatComposerSection");
+  test("result notifications deep-link to the canonical Brain identity", () => {
+    expect(
+      resolveNotificationDestination({
+        screen: "brain",
+        server_id: "server-1",
+        brain_thread_id: "thread-frozen",
+        brain_message_id: "calendar_result:item:run",
+      }),
+    ).toEqual({
+      kind: "brain",
+      serverId: "server-1",
+      brainThreadId: "thread-frozen",
+      brainMessageId: "calendar_result:item:run",
+    });
   });
 });

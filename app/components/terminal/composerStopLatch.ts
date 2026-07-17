@@ -1,31 +1,31 @@
 export function reconcileComposerStopLatch(
-  latchedTurnId: string | undefined,
-  workingTurnId: string | undefined,
+  latchedActivityId: string | undefined,
+  runningActivityId: string | undefined,
 ) {
-  return latchedTurnId && latchedTurnId === workingTurnId
-    ? latchedTurnId
+  return latchedActivityId && latchedActivityId === runningActivityId
+    ? latchedActivityId
     : undefined;
 }
 
 export function beginComposerStop(
-  latchedTurnId: string | undefined,
-  workingTurnId: string | undefined,
+  latchedActivityId: string | undefined,
+  runningActivityId: string | undefined,
 ) {
-  if (!workingTurnId || latchedTurnId === workingTurnId) {
+  if (!runningActivityId || latchedActivityId === runningActivityId) {
     return {
       accepted: false as const,
-      latchedTurnId,
+      latchedActivityId,
     };
   }
   return {
     accepted: true as const,
-    latchedTurnId: workingTurnId,
+    latchedActivityId: runningActivityId,
   };
 }
 
 export function releaseComposerStopLatch(
-  latchedTurnId: string | undefined,
-  failedTurnId: string,
+  latchedActivityId: string | undefined,
+  failedActivityId: string,
 ) {
-  return latchedTurnId === failedTurnId ? undefined : latchedTurnId;
+  return latchedActivityId === failedActivityId ? undefined : latchedActivityId;
 }

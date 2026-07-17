@@ -8,29 +8,9 @@ export type Frontmatter = {
   started?: string | null;
   status?: string;
   title?: string;
-  outcome?: string;
-  summary?: string;
-  progress?: string[];
-  friction?: string;
-  cause?: string;
-  insight?: string;
-  next?: string;
-  agent_source?: string;
   agent_session?: string;
-  cwd?: string;
-  command?: string;
-  ai_provider?: string;
-  ai_updated?: string | null;
-  ai_hash?: string;
-  ai_error?: string;
   extra?: Record<string, unknown>;
   [key: string]: unknown;
-};
-
-export type Mention = {
-  role: string;
-  session?: string;
-  index: number;
 };
 
 export type WorkItem = {
@@ -44,22 +24,17 @@ export type WorkItem = {
   title: string;
   body: string;
   frontmatter: Frontmatter;
-  mentions: Mention[];
   mtime: string;
 };
 
 export type WorkState = {
   byKey: Record<string, WorkItem>;
   byProject: Record<string, string[]>;
-  executorsByServer: Record<string, string[]>;
-  digestProviderByServer: Record<string, string>;
 };
 
 export const initialWorkState: WorkState = {
   byKey: {},
   byProject: {},
-  executorsByServer: {},
-  digestProviderByServer: {},
 };
 
 type RawWorkItem = {
@@ -69,7 +44,6 @@ type RawWorkItem = {
   title?: string;
   body?: string;
   frontmatter?: Partial<Frontmatter> | null;
-  mentions?: Mention[] | null;
   mtime?: string | number | Date | null;
 };
 
@@ -80,8 +54,6 @@ type Action =
       serverName: string;
       serverUrl: string;
       workItems: RawWorkItem[];
-      executors: string[];
-      digestProvider?: string;
     }
   | {
       type: "WORK_ITEM_CHANGED";
@@ -91,13 +63,6 @@ type Action =
       workItem: RawWorkItem;
     }
   | { type: "WORK_ITEM_DELETED"; serverId: string; id?: string; path?: string }
-  | {
-      type: "EXECUTORS_LOADED";
-      serverId: string;
-      executors: string[];
-      digestProvider?: string;
-    }
-  | { type: "WORK_DIGEST_PROVIDER_SET"; serverId: string; provider: string }
   | { type: "REMOVE_SERVER"; serverId: string };
 
 function makeWorkItemKey(serverId: string, itemId: string) {
@@ -165,65 +130,11 @@ function normalizeWorkItem(
         typeof frontmatter.title === "string"
           ? frontmatter.title.trim()
           : undefined,
-      outcome:
-        typeof frontmatter.outcome === "string"
-          ? frontmatter.outcome.trim()
-          : undefined,
-      summary:
-        typeof frontmatter.summary === "string"
-          ? frontmatter.summary.trim()
-          : undefined,
-      progress: Array.isArray(frontmatter.progress)
-        ? frontmatter.progress.filter((item): item is string => typeof item === "string")
-        : undefined,
-      friction:
-        typeof frontmatter.friction === "string"
-          ? frontmatter.friction.trim()
-          : undefined,
-      cause:
-        typeof frontmatter.cause === "string"
-          ? frontmatter.cause.trim()
-          : undefined,
-      insight:
-        typeof frontmatter.insight === "string"
-          ? frontmatter.insight.trim()
-          : undefined,
-      next:
-        typeof frontmatter.next === "string"
-          ? frontmatter.next.trim()
-          : undefined,
-      agent_source:
-        typeof frontmatter.agent_source === "string"
-          ? frontmatter.agent_source.trim()
-          : undefined,
       agent_session:
         typeof frontmatter.agent_session === "string"
           ? frontmatter.agent_session
           : undefined,
-      cwd:
-        typeof frontmatter.cwd === "string" ? frontmatter.cwd.trim() : undefined,
-      command:
-        typeof frontmatter.command === "string"
-          ? frontmatter.command.trim()
-          : undefined,
-      ai_provider:
-        typeof frontmatter.ai_provider === "string"
-          ? frontmatter.ai_provider.trim()
-          : undefined,
-      ai_updated:
-        typeof frontmatter.ai_updated === "string"
-          ? frontmatter.ai_updated
-          : frontmatter.ai_updated ?? null,
-      ai_hash:
-        typeof frontmatter.ai_hash === "string"
-          ? frontmatter.ai_hash.trim()
-          : undefined,
-      ai_error:
-        typeof frontmatter.ai_error === "string"
-          ? frontmatter.ai_error.trim()
-          : undefined,
     },
-    mentions: Array.isArray(raw.mentions) ? raw.mentions : [],
     mtime: normalizeTimestamp(raw.mtime),
   };
 }
@@ -271,30 +182,12 @@ export function workReducer(state: WorkState, action: Action): WorkState {
           nextByKey[normalized.key] = normalized;
         }
       }
-      const executorsChanged = !stringArraysEqual(
-        state.executorsByServer[action.serverId] ?? [],
-        action.executors,
-      );
-      const digestProviderChanged = Boolean(
-        action.digestProvider &&
-        state.digestProviderByServer[action.serverId] !== action.digestProvider,
-      );
-      if (!itemChanged && !executorsChanged && !digestProviderChanged) {
+      if (!itemChanged) {
         return state;
       }
       return {
-        byKey: itemChanged ? nextByKey : state.byKey,
-        byProject: itemChanged ? groupByProject(nextByKey) : state.byProject,
-        executorsByServer: {
-          ...state.executorsByServer,
-          [action.serverId]: action.executors,
-        },
-        digestProviderByServer: {
-          ...state.digestProviderByServer,
-          ...(action.digestProvider
-            ? { [action.serverId]: action.digestProvider }
-            : {}),
-        },
+        byKey: nextByKey,
+        byProject: groupByProject(nextByKey),
       };
     }
     case "WORK_ITEM_CHANGED": {
@@ -337,49 +230,11 @@ export function workReducer(state: WorkState, action: Action): WorkState {
         byProject: groupByProject(nextByKey),
       };
     }
-    case "EXECUTORS_LOADED":
-      if (
-        stringArraysEqual(state.executorsByServer[action.serverId] ?? [], action.executors) &&
-        (!action.digestProvider || state.digestProviderByServer[action.serverId] === action.digestProvider)
-      ) {
-        return state;
-      }
-      return {
-        ...state,
-        executorsByServer: {
-          ...state.executorsByServer,
-          [action.serverId]: action.executors,
-        },
-        digestProviderByServer: {
-          ...state.digestProviderByServer,
-          ...(action.digestProvider
-            ? { [action.serverId]: action.digestProvider }
-            : {}),
-        },
-      };
-    case "WORK_DIGEST_PROVIDER_SET":
-      if (!action.provider) {
-        return state;
-      }
-      if (state.digestProviderByServer[action.serverId] === action.provider) {
-        return state;
-      }
-      return {
-        ...state,
-        digestProviderByServer: {
-          ...state.digestProviderByServer,
-          [action.serverId]: action.provider,
-        },
-      };
     case "REMOVE_SERVER": {
       const hasServerItems = Object.values(state.byKey).some(
         (value) => value.serverId === action.serverId,
       );
-      if (
-        !hasServerItems &&
-        !(action.serverId in state.executorsByServer) &&
-        !(action.serverId in state.digestProviderByServer)
-      ) {
+      if (!hasServerItems) {
         return state;
       }
       const nextByKey = Object.fromEntries(
@@ -388,12 +243,6 @@ export function workReducer(state: WorkState, action: Action): WorkState {
       return {
         byKey: nextByKey,
         byProject: groupByProject(nextByKey),
-        executorsByServer: Object.fromEntries(
-          Object.entries(state.executorsByServer).filter(([serverId]) => serverId !== action.serverId),
-        ),
-        digestProviderByServer: Object.fromEntries(
-          Object.entries(state.digestProviderByServer).filter(([serverId]) => serverId !== action.serverId),
-        ),
       };
     }
     default:
@@ -415,7 +264,6 @@ function workItemsEqual(left: WorkItem, right: WorkItem): boolean {
       left.title === right.title &&
       left.body === right.body &&
       frontmatterEqual(left.frontmatter, right.frontmatter) &&
-      mentionsEqual(left.mentions, right.mentions) &&
       left.mtime === right.mtime
     )
   );
@@ -432,21 +280,7 @@ function frontmatterEqual(left: Frontmatter, right: Frontmatter): boolean {
       left.started === right.started &&
       left.status === right.status &&
       left.title === right.title &&
-      left.outcome === right.outcome &&
-      left.summary === right.summary &&
-      stringArraysEqual(left.progress ?? [], right.progress ?? []) &&
-      left.friction === right.friction &&
-      left.cause === right.cause &&
-      left.insight === right.insight &&
-      left.next === right.next &&
-      left.agent_source === right.agent_source &&
       left.agent_session === right.agent_session &&
-      left.cwd === right.cwd &&
-      left.command === right.command &&
-      left.ai_provider === right.ai_provider &&
-      left.ai_updated === right.ai_updated &&
-      left.ai_hash === right.ai_hash &&
-      left.ai_error === right.ai_error &&
       left.extra === right.extra &&
       extraFrontmatterFieldsEqual(left, right)
     )
@@ -461,21 +295,7 @@ const knownFrontmatterKeys = new Set([
   "started",
   "status",
   "title",
-  "outcome",
-  "summary",
-  "progress",
-  "friction",
-  "cause",
-  "insight",
-  "next",
-  "agent_source",
   "agent_session",
-  "cwd",
-  "command",
-  "ai_provider",
-  "ai_updated",
-  "ai_hash",
-  "ai_error",
   "extra",
 ]);
 
@@ -490,42 +310,6 @@ function extraFrontmatterFieldsEqual(
   }
   for (const key of leftKeys) {
     if (!Object.prototype.hasOwnProperty.call(right, key) || left[key] !== right[key]) {
-      return false;
-    }
-  }
-  return true;
-}
-
-function mentionsEqual(left: Mention[], right: Mention[]): boolean {
-  if (left === right) {
-    return true;
-  }
-  if (left.length !== right.length) {
-    return false;
-  }
-  for (let index = 0; index < left.length; index += 1) {
-    const leftMention = left[index];
-    const rightMention = right[index];
-    if (
-      leftMention?.role !== rightMention?.role ||
-      leftMention?.session !== rightMention?.session ||
-      leftMention?.index !== rightMention?.index
-    ) {
-      return false;
-    }
-  }
-  return true;
-}
-
-function stringArraysEqual(left: string[], right: string[]): boolean {
-  if (left === right) {
-    return true;
-  }
-  if (left.length !== right.length) {
-    return false;
-  }
-  for (let index = 0; index < left.length; index += 1) {
-    if (left[index] !== right[index]) {
       return false;
     }
   }

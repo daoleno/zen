@@ -151,7 +151,7 @@ description: One question at a time.
 	}
 }
 
-func TestHousekeepingBackfillsMissingPlaybooks(t *testing.T) {
+func TestHousekeepingCreatesMissingPlaybooks(t *testing.T) {
 	store, err := NewStore(t.TempDir())
 	if err != nil {
 		t.Fatalf("NewStore() error = %v", err)
@@ -165,8 +165,13 @@ func TestHousekeepingBackfillsMissingPlaybooks(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Housekeeping() error = %v", err)
 	}
-	if !report.BackfilledWorkspace {
-		t.Fatalf("expected backfilled workspace report: %+v", report)
+	if len(report.ChangedPaths) == 0 {
+		t.Fatalf("expected repaired workspace report: %+v", report)
+	}
+	for _, path := range seedPlaybookPaths() {
+		if !containsString(report.ChangedPaths, path) {
+			t.Fatalf("changed paths %v missing %q", report.ChangedPaths, path)
+		}
 	}
 	if len(report.PlaybookPaths) != 6 {
 		t.Fatalf("playbook paths = %#v", report.PlaybookPaths)

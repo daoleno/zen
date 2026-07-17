@@ -18,7 +18,6 @@ import type {
 } from "../../constants/terminalThemes";
 
 import { CodexTimelineEmptyContent } from "./CodexTimelineContent";
-import type { CodexChatLocalState } from "./CodexChatSession";
 import {
   TimelineTextSelectableContext,
   type TimelineTextSelectableContextValue,
@@ -42,7 +41,6 @@ interface CodexTimelineViewProps {
   scrollRef: React.RefObject<FlatList<ZenTimelineItem> | null>;
   items: ZenTimelineItem[];
   loading: boolean;
-  localChatState: CodexChatLocalState;
   error?: string | null;
   emptyStateSuppressed: boolean;
   unavailable: boolean | null;
@@ -77,7 +75,6 @@ export function CodexTimelineView({
   scrollRef,
   items,
   loading,
-  localChatState,
   error,
   emptyStateSuppressed,
   unavailable,
@@ -169,7 +166,6 @@ export function CodexTimelineView({
       <CodexTimelineEmptyContent
         items={items}
         loading={loading}
-        localChatState={localChatState}
         error={error}
         suppressed={emptyStateSuppressed}
         unavailable={unavailable}
@@ -190,7 +186,6 @@ export function CodexTimelineView({
       emptyStateSuppressed,
       items,
       loading,
-      localChatState,
       onUnavailableAction,
       showUnavailableAction,
       emptyTitle,

@@ -4,64 +4,12 @@ import (
 	"fmt"
 	"math/rand"
 	"os/exec"
-	"path/filepath"
 	"strings"
 	"sync/atomic"
 	"time"
 
-	"github.com/daoleno/zen/daemon/classifier"
 	"github.com/daoleno/zen/daemon/watcher"
 )
-
-// WatcherRegistry adapts watcher.Watcher to SessionRegistry.
-type WatcherRegistry struct {
-	W *watcher.Watcher
-}
-
-// IdleSessions returns sessions that match the requested role and cwd and are
-// currently in the classifier's running state.
-func (r *WatcherRegistry) IdleSessions(role, cwd string) []SessionInfo {
-	if r == nil || r.W == nil {
-		return nil
-	}
-
-	out := []SessionInfo{}
-	for _, agent := range r.W.Agents() {
-		if strings.TrimSpace(agent.Cwd) != strings.TrimSpace(cwd) {
-			continue
-		}
-		if !roleMatches(agent, role) {
-			continue
-		}
-		if agent.State != classifier.StateRunning {
-			continue
-		}
-		out = append(out, SessionInfo{
-			ID:      agent.ID,
-			Project: agent.Project,
-			Cwd:     agent.Cwd,
-			Role:    role,
-		})
-	}
-	return out
-}
-
-func roleMatches(agent *classifier.Agent, role string) bool {
-	if agent == nil {
-		return false
-	}
-	first := filepath.Base(firstWord(strings.TrimSpace(agent.Command)))
-	return first == role
-}
-
-func firstWord(value string) string {
-	for i, r := range value {
-		if r == ' ' || r == '\t' {
-			return value[:i]
-		}
-	}
-	return value
-}
 
 // TmuxRunner adapts tmux CLI commands to SessionRunner.
 type TmuxRunner struct{}
@@ -105,13 +53,17 @@ func (TmuxRunner) Spawn(role, cwd, command string) (string, error) {
 	return name + ":" + windowID, nil
 }
 
-// Send writes text followed by Enter into the session's active pane.
-func (TmuxRunner) Send(agentID, text string) error {
-	return watcher.SendInput(agentID, strings.TrimRight(text, "\r\n")+"\n")
-}
-
 // SendWhenReady waits for a freshly spawned known agent UI before sending the
 // initial prompt.
 func (TmuxRunner) SendWhenReady(agentID, command, text string) error {
 	return watcher.SendInputWhenReady(agentID, command, strings.TrimRight(text, "\r\n")+"\n")
+}
+
+// Abort terminates the one fresh window created for a failed Calendar launch.
+func (TmuxRunner) Abort(agentID string) error {
+	out, err := exec.Command("tmux", "kill-window", "-t", agentID).CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("tmux kill-window: %w: %s", err, strings.TrimSpace(string(out)))
+	}
+	return nil
 }

@@ -1,10 +1,10 @@
 import { describe, expect, test } from "bun:test";
 import {
+  isProviderActivityRunning,
   normalizeCodexConversation,
   type CodexConversation,
   type CodexConversationEvent,
 } from "../../services/codexConversation";
-import { isCodexRequestRunning } from "./CodexChatControllerModel";
 import {
   shouldDropProviderChatNoiseEvent,
   shouldDropStructuredChatEvent,
@@ -38,7 +38,6 @@ function conversation(events: CodexConversationEvent[]): CodexConversation {
     available: true,
     source: "provider_transcript",
     session_id: "thread-a",
-    active: false,
     events,
   };
 }
@@ -197,18 +196,8 @@ describe("incremental structured conversation streaming", () => {
     });
     const finalized = { ...partial, partial: false, status: "done" };
 
-    expect(
-      isCodexRequestRunning({
-        conversation: conversation([partial]),
-        events: [partial],
-      }),
-    ).toBe(false);
-    expect(
-      isCodexRequestRunning({
-        conversation: conversation([finalized]),
-        events: [finalized],
-      }),
-    ).toBe(false);
+    expect(isProviderActivityRunning(conversation([partial]).activity)).toBe(false);
+    expect(isProviderActivityRunning(conversation([finalized]).activity)).toBe(false);
   });
 
   test("assistant and reasoning timeline items retain their live streaming state", () => {
@@ -282,7 +271,7 @@ describe("incremental structured conversation streaming", () => {
     expect(shouldDropProviderChatNoiseEvent("grok_session", plan.kind)).toBe(true);
   });
 
-  test("accepted provider commands remain canonical user rows for queue dedupe", () => {
+  test("provider command transcript events remain visible user rows", () => {
     const command = event("command:/status", 1, {
       kind: "user_message",
       role: "user",

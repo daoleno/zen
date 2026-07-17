@@ -1,6 +1,7 @@
 package brain
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -99,7 +100,7 @@ func TestWorkspaceTreeDoesNotRecursivelyLoadLargeFolders(t *testing.T) {
 	}
 }
 
-func TestNewStoreEnsuresProfileNotesWithVoiceAndAntiSlop(t *testing.T) {
+func TestNewStoreCreatesMinimalUserOwnedProfile(t *testing.T) {
 	root := t.TempDir()
 	store, err := NewStore(root)
 	if err != nil {
@@ -110,15 +111,15 @@ func TestNewStoreEnsuresProfileNotesWithVoiceAndAntiSlop(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read profile.md: %v", err)
 	}
-	content := string(raw)
-	for _, marker := range currentProfileNotesMarkers {
-		if !strings.Contains(content, marker) {
-			t.Fatalf("profile.md missing %q:\n%s", marker, content)
-		}
+	if string(raw) != defaultProfileNotes {
+		t.Fatalf("profile.md = %q, want minimal profile %q", raw, defaultProfileNotes)
+	}
+	if strings.Contains(string(raw), "## Voice") || strings.Contains(string(raw), "## Response Shape") {
+		t.Fatalf("profile.md contains product communication policy:\n%s", raw)
 	}
 }
 
-func TestNewStoreUpgradesExistingProfileNotesWithoutOverwriting(t *testing.T) {
+func TestNewStoreNeverAppendsPolicyToExistingUserProfile(t *testing.T) {
 	root := t.TempDir()
 	workspace := filepath.Join(root, "workspace")
 	if err := os.MkdirAll(workspace, 0o700); err != nil {
@@ -136,14 +137,133 @@ func TestNewStoreUpgradesExistingProfileNotesWithoutOverwriting(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read profile.md: %v", err)
 	}
-	content := string(raw)
-	if !strings.Contains(content, "Keep my custom note.") {
-		t.Fatalf("profile.md lost custom content:\n%s", content)
+	if string(raw) != customProfile {
+		t.Fatalf("profile.md changed user-owned content:\n%s", raw)
 	}
-	for _, marker := range currentProfileNotesMarkers {
-		if !strings.Contains(content, marker) {
-			t.Fatalf("profile.md missing %q:\n%s", marker, content)
+}
+
+func TestNewStoreIgnoresLegacyRootFilesAndInitializesCurrentLayout(t *testing.T) {
+	root := t.TempDir()
+	legacyFiles := []struct {
+		name string
+		data []byte
+		info os.FileInfo
+	}{
+		{name: "memory.md", data: []byte("# Legacy root memory\n")},
+		{name: "reminders.json", data: []byte("[{\"id\":\"legacy-root-reminder\"}]\n")},
+		{name: "profile.json", data: []byte("{\"personality\":\"legacy-root-personality\",\"notes\":\"legacy-root-notes\"}\n")},
+	}
+	for index := range legacyFiles {
+		path := filepath.Join(root, legacyFiles[index].name)
+		if err := os.WriteFile(path, legacyFiles[index].data, 0o600); err != nil {
+			t.Fatalf("write legacy root %s: %v", legacyFiles[index].name, err)
 		}
+		info, err := os.Stat(path)
+		if err != nil {
+			t.Fatalf("stat legacy root %s: %v", legacyFiles[index].name, err)
+		}
+		legacyFiles[index].info = info
+	}
+
+	store, err := NewStore(root)
+	if err != nil {
+		t.Fatalf("NewStore() error = %v", err)
+	}
+
+	for _, legacy := range legacyFiles {
+		path := filepath.Join(root, legacy.name)
+		got, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatalf("read preserved legacy root %s: %v", legacy.name, err)
+		}
+		if string(got) != string(legacy.data) {
+			t.Fatalf("legacy root %s bytes changed: got %q, want %q", legacy.name, got, legacy.data)
+		}
+		after, err := os.Stat(path)
+		if err != nil {
+			t.Fatalf("stat preserved legacy root %s: %v", legacy.name, err)
+		}
+		if after.Mode() != legacy.info.Mode() || !after.ModTime().Equal(legacy.info.ModTime()) {
+			t.Fatalf("legacy root %s metadata changed: mode %v -> %v, mtime %v -> %v", legacy.name, legacy.info.Mode(), after.Mode(), legacy.info.ModTime(), after.ModTime())
+		}
+	}
+
+	for path, want := range map[string][]byte{
+		store.memoryPath():    []byte("# Brain Memory\n\n"),
+		store.remindersPath(): []byte("[]\n"),
+	} {
+		got, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatalf("read current destination %s: %v", path, err)
+		}
+		if string(got) != string(want) {
+			t.Fatalf("current destination %s = %q, want first-version default %q", path, got, want)
+		}
+	}
+
+	stateProfileRaw, err := os.ReadFile(store.profilePath())
+	if err != nil {
+		t.Fatalf("read state profile: %v", err)
+	}
+	var stateProfile map[string]any
+	if err := json.Unmarshal(stateProfileRaw, &stateProfile); err != nil {
+		t.Fatalf("decode state profile: %v", err)
+	}
+	if got := stateProfile["personality"]; got != defaultPersonality {
+		t.Fatalf("state personality = %#v, want %q", got, defaultPersonality)
+	}
+	if _, exists := stateProfile["notes"]; exists {
+		t.Fatalf("new state profile still owns notes: %s", stateProfileRaw)
+	}
+}
+
+func TestNewStoreKeepsStatePersonalityWithoutImportingStateNotes(t *testing.T) {
+	root := t.TempDir()
+	stateDir := filepath.Join(root, "state")
+	if err := os.MkdirAll(stateDir, 0o700); err != nil {
+		t.Fatalf("create state directory: %v", err)
+	}
+	stateProfilePath := filepath.Join(stateDir, "profile.json")
+	stateProfile := []byte("{\n  \"personality\": \"focused and concise\",\n  \"notes\": \"must not become workspace profile\"\n}\n")
+	if err := os.WriteFile(stateProfilePath, stateProfile, 0o600); err != nil {
+		t.Fatalf("write state profile: %v", err)
+	}
+	before, err := os.Stat(stateProfilePath)
+	if err != nil {
+		t.Fatalf("stat state profile: %v", err)
+	}
+
+	store, err := NewStore(root)
+	if err != nil {
+		t.Fatalf("NewStore() error = %v", err)
+	}
+	workspaceProfile, err := os.ReadFile(store.profileNotesPath())
+	if err != nil {
+		t.Fatalf("read workspace profile: %v", err)
+	}
+	if string(workspaceProfile) != defaultProfileNotes {
+		t.Fatalf("workspace profile imported state notes: got %q, want %q", workspaceProfile, defaultProfileNotes)
+	}
+	snapshot, err := store.Snapshot()
+	if err != nil {
+		t.Fatalf("Snapshot() error = %v", err)
+	}
+	if snapshot.Personality != "focused and concise" {
+		t.Fatalf("snapshot personality = %q, want state personality", snapshot.Personality)
+	}
+	if snapshot.Profile != defaultProfileNotes {
+		t.Fatalf("snapshot profile = %q, want workspace profile %q", snapshot.Profile, defaultProfileNotes)
+	}
+	stateProfileAfter, err := os.ReadFile(stateProfilePath)
+	if err != nil {
+		t.Fatalf("read state profile after NewStore: %v", err)
+	}
+	after, err := os.Stat(stateProfilePath)
+	if err != nil {
+		t.Fatalf("stat state profile after NewStore: %v", err)
+	}
+	if string(stateProfileAfter) != string(stateProfile) || after.Mode() != before.Mode() || !after.ModTime().Equal(before.ModTime()) {
+		t.Fatalf("state profile changed: bytes_equal=%t mode=%v->%v mtime=%v->%v", string(stateProfileAfter) == string(stateProfile), before.Mode(), after.Mode(), before.ModTime(), after.ModTime())
 	}
 }
 
@@ -159,6 +279,10 @@ func TestNewStoreEnsuresWorkspaceCommunicationRules(t *testing.T) {
 		t.Fatalf("read AGENTS.md: %v", err)
 	}
 	content := string(raw)
+	if strings.Count(content, managedStartMarker(brainAgentsManagedID)) != 1 ||
+		strings.Count(content, managedEndMarker(brainAgentsManagedID)) != 1 {
+		t.Fatalf("AGENTS.md does not contain one managed block:\n%s", content)
+	}
 	for _, marker := range []string{
 		"## Brain Communication Rules",
 		"Avoid AI slop",
@@ -294,7 +418,7 @@ func TestNewStoreEnsuresWorklogReadme(t *testing.T) {
 	}
 }
 
-func TestNewStoreBackfillsMissingWorklogForExistingWorkspace(t *testing.T) {
+func TestNewStoreCreatesMissingWorklogForExistingWorkspace(t *testing.T) {
 	root := t.TempDir()
 	workspace := filepath.Join(root, "workspace")
 	if err := os.MkdirAll(workspace, 0o700); err != nil {
@@ -389,7 +513,7 @@ func TestNewStorePreservesCurrentAndUpgradesExistingPolicyDocs(t *testing.T) {
 	engineContent := string(readEngine)
 	for _, want := range []string{
 		"Keep this too.",
-		"## Current Executor Rules",
+		"## Rules",
 		"Delegated agents use the configured Delegated Executor unless the user explicitly asks for a different executor for that session.",
 		"Do not switch executors based on private task-type judgment.",
 	} {
@@ -404,7 +528,7 @@ func TestNewStorePreservesCurrentAndUpgradesExistingPolicyDocs(t *testing.T) {
 	handoffContent := string(readHandoff)
 	for _, want := range []string{
 		"Keep this handoff rule.",
-		"## Current Handoff Rules",
+		"## Rules",
 		"Treat a host executor switch as a host replacement, not a new conversation.",
 		"Keep handoff prompts private",
 	} {

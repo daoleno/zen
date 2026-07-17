@@ -70,13 +70,12 @@ export function CodexChatComposerSection({
       sendEnabled={presentation.sendEnabled}
       sending={sending}
       operationalError={operationalError}
-      sendIcon={presentation.sendIcon}
       sendLabel={presentation.sendLabel}
       showStopButton={presentation.showStopButton}
       stopEnabled={presentation.stopEnabled}
       stopLabel={presentation.stopLabel}
       stopLoading={presentation.stopLoading}
-      workingTurnStartedAt={presentation.workingTurnStartedAt}
+      providerActivityStartedAt={presentation.providerActivityStartedAt}
       bottomPadding={presentation.bottomPadding}
       showActionMenuButton={presentation.showActionMenuButton}
       actionMenuIcon={presentation.actionMenuIcon}

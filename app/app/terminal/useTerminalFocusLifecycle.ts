@@ -2,6 +2,10 @@ import { useCallback, type Dispatch, type SetStateAction } from "react";
 import { AppState, type AppStateStatus } from "react-native";
 import { useFocusEffect } from "expo-router";
 import { wsClient } from "../../services/websocket";
+import {
+  createTerminalConnectedPresenceHandler,
+  currentTerminalPresence,
+} from "./terminalPresence";
 
 interface UseTerminalFocusLifecycleInput {
   serverId: string;
@@ -19,18 +23,16 @@ export function useTerminalFocusLifecycle({
   onInactive,
 }: UseTerminalFocusLifecycleInput) {
   const syncActiveTerminal = useCallback(
-    (appState: AppStateStatus = "active") => {
-      if (
-        appState !== "active" ||
-        !sessionKey ||
-        !serverId ||
-        !agentId
-      ) {
-        wsClient.clearActiveAgentsExcept(null);
-        return;
-      }
-
-      wsClient.clearActiveAgentsExcept({ serverId, agentId });
+    (appState: AppStateStatus, focused = true) => {
+      wsClient.clearActiveAgentsExcept(
+        currentTerminalPresence({
+          serverId,
+          agentId,
+          sessionKey,
+          appState,
+          focused,
+        }),
+      );
     },
     [agentId, serverId, sessionKey],
   );
@@ -38,7 +40,13 @@ export function useTerminalFocusLifecycle({
   useFocusEffect(
     useCallback(() => {
       setScreenFocused(true);
-      syncActiveTerminal();
+      syncActiveTerminal(AppState.currentState);
+
+      const onConnected = createTerminalConnectedPresenceHandler(
+        serverId,
+        () => syncActiveTerminal(AppState.currentState),
+      );
+      wsClient.on("connected", onConnected);
 
       const appStateSub = AppState.addEventListener("change", (nextState) => {
         syncActiveTerminal(nextState);
@@ -46,10 +54,11 @@ export function useTerminalFocusLifecycle({
 
       return () => {
         appStateSub.remove();
+        wsClient.off("connected", onConnected);
         setScreenFocused(false);
         onInactive();
-        syncActiveTerminal("background");
+        syncActiveTerminal(AppState.currentState, false);
       };
-    }, [onInactive, setScreenFocused, syncActiveTerminal]),
+    }, [onInactive, serverId, setScreenFocused, syncActiveTerminal]),
   );
 }

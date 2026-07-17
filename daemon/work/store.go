@@ -142,23 +142,6 @@ func (s *Store) GetByID(id string) (*Item, bool) {
 	return cloneItem(iss), ok
 }
 
-// GetByAgentSession returns the work item linked to one agent session id.
-func (s *Store) GetByAgentSession(sessionID string) (*Item, bool) {
-	sessionID = strings.TrimSpace(sessionID)
-	if sessionID == "" {
-		return nil, false
-	}
-
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	for _, item := range s.byPath {
-		if strings.TrimSpace(item.Frontmatter.AgentSession) == sessionID {
-			return cloneItem(item), true
-		}
-	}
-	return nil, false
-}
-
 // Write persists the work item to disk atomically. If baseMtime is non-zero and
 // the current file mtime does not match, ErrConflict is returned.
 func (s *Store) Write(item *Item, baseMtime time.Time) (*Item, error) {

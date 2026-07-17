@@ -2,7 +2,7 @@
 import { describe, expect, test } from "bun:test";
 import { submitProviderCommandAsUserInput } from "./providerCommandSubmission";
 
-describe("provider command queue submission", () => {
+describe("provider command input preparation", () => {
   test("typed commands retain their draft recovery context", () => {
     const calls: unknown[][] = [];
     const attachments = [{ id: "a", name: "a.png", path: "/tmp/a.png" }];
@@ -17,7 +17,7 @@ describe("provider command queue submission", () => {
     ]);
   });
 
-  test("picker commands still create an optimistic user submission", () => {
+  test("picker commands still create a local optimistic user row", () => {
     const calls: unknown[][] = [];
     submitProviderCommandAsUserInput(
       "/status",
@@ -28,7 +28,7 @@ describe("provider command queue submission", () => {
     expect(calls).toEqual([["/status", "/status", []]]);
   });
 
-  test("thread controls use the same optimistic submission and recovery context", () => {
+  test("thread controls use the same local row and recovery context", () => {
     const attachments = [{ id: "queued-file", path: "/tmp/queued.txt" }];
     for (const command of ["/new", "/clear"]) {
       const calls: unknown[][] = [];

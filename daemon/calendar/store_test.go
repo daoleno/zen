@@ -1,6 +1,7 @@
 package calendar
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -59,47 +60,34 @@ func TestStoreCreateUpdateCancelAndRevisionConflict(t *testing.T) {
 	}
 }
 
-func TestStoreMigratesBareArrayAndPreservesRunningClaimForReconciliation(t *testing.T) {
+func TestStoreLoadsCurrentDocumentWithoutWritingAndPreservesRunningClaim(t *testing.T) {
 	root := t.TempDir()
 	at := localTime(t, "America/New_York", 2026, time.July, 14, 9, 30)
 	started := at.Add(-time.Minute)
 	item := Item{ID: "action-1", Title: "Ship it", Kind: KindScheduledAction, Status: StatusRunning, DueAt: &at, NextAt: at, Timezone: "America/New_York", Recurrence: RecurrenceNone, ActionInstruction: "Run tests", CreatedAt: started, UpdatedAt: started, Revision: 1, Runs: []Run{{ID: "run-1", ScheduledFor: at, StartedAt: started, Status: StatusRunning}}}
-	raw, _ := json.Marshal([]Item{item})
-	if err := os.WriteFile(filepath.Join(root, "calendar.json"), raw, 0o600); err != nil {
-		t.Fatal(err)
-	}
-	store, err := NewStore(root)
+	raw, err := json.Marshal(document{SchemaVersion: SchemaVersion, Items: []Item{item}})
 	if err != nil {
 		t.Fatal(err)
 	}
-	recovered, err := store.Get(item.ID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if recovered.Status != StatusRunning || recovered.Runs[0].Status != StatusRunning {
-		t.Fatalf("recovered = %#v", recovered)
-	}
-	persisted, err := os.ReadFile(store.Path())
-	if err != nil {
-		t.Fatal(err)
-	}
-	var doc document
-	if err := json.Unmarshal(persisted, &doc); err != nil {
-		t.Fatal(err)
-	}
-	if doc.SchemaVersion != SchemaVersion {
-		t.Fatalf("schema = %d", doc.SchemaVersion)
-	}
-	info, err := os.Stat(store.Path())
-	if err != nil {
-		t.Fatal(err)
-	}
-	if info.Mode().Perm() != 0o600 {
-		t.Fatalf("mode = %o", info.Mode().Perm())
+	path, before := writeCalendarFixture(t, root, raw)
+
+	for load := 1; load <= 2; load++ {
+		store, err := NewStore(root)
+		if err != nil {
+			t.Fatalf("load %d: %v", load, err)
+		}
+		recovered, err := store.Get(item.ID)
+		if err != nil {
+			t.Fatalf("load %d: %v", load, err)
+		}
+		if recovered.Status != StatusRunning || len(recovered.Runs) != 1 || recovered.Runs[0].Status != StatusRunning {
+			t.Fatalf("load %d recovered = %#v", load, recovered)
+		}
+		assertCalendarFixtureUnchanged(t, path, raw, before)
 	}
 }
 
-func TestStoreEnforcesPrivateDirectoryAndFileModes(t *testing.T) {
+func TestStoreInitializesMissingFileWithCurrentDocumentAndPrivateModes(t *testing.T) {
 	root := filepath.Join(t.TempDir(), "calendar")
 	if err := os.Mkdir(root, 0o755); err != nil {
 		t.Fatal(err)
@@ -118,6 +106,93 @@ func TestStoreEnforcesPrivateDirectoryAndFileModes(t *testing.T) {
 	}
 	if dirInfo.Mode().Perm() != 0o700 || fileInfo.Mode().Perm() != 0o600 {
 		t.Fatalf("modes directory=%o file=%o", dirInfo.Mode().Perm(), fileInfo.Mode().Perm())
+	}
+	raw, err := os.ReadFile(store.Path())
+	if err != nil {
+		t.Fatal(err)
+	}
+	doc, err := decodeDocument(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if doc.SchemaVersion != SchemaVersion || doc.Items == nil || len(doc.Items) != 0 {
+		t.Fatalf("initialized document = %#v", doc)
+	}
+}
+
+func TestStoreRejectsInvalidDocumentWithoutMutation(t *testing.T) {
+	tests := []struct {
+		name    string
+		raw     string
+		wantErr string
+	}{
+		{name: "bare array", raw: `[]`, wantErr: "JSON object"},
+		{name: "empty object", raw: `{}`, wantErr: "schema_version is required"},
+		{name: "missing schema", raw: `{"items":[]}`, wantErr: "schema_version is required"},
+		{name: "zero schema", raw: `{"schema_version":0,"items":[]}`, wantErr: "must equal 1, got 0"},
+		{name: "negative schema", raw: `{"schema_version":-1,"items":[]}`, wantErr: "must equal 1, got -1"},
+		{name: "future schema", raw: `{"schema_version":2,"items":[]}`, wantErr: "must equal 1, got 2"},
+		{name: "null schema", raw: `{"schema_version":null,"items":[]}`, wantErr: "non-null integer"},
+		{name: "string schema", raw: `{"schema_version":"1","items":[]}`, wantErr: "non-null integer"},
+		{name: "fractional schema", raw: `{"schema_version":1.0,"items":[]}`, wantErr: "non-null integer"},
+		{name: "missing items", raw: `{"schema_version":1}`, wantErr: "items is required"},
+		{name: "null items", raw: `{"schema_version":1,"items":null}`, wantErr: "non-null JSON array"},
+		{name: "object items", raw: `{"schema_version":1,"items":{}}`, wantErr: "items must be a JSON array"},
+		{name: "unknown field", raw: `{"schema_version":1,"items":[],"legacy":true}`, wantErr: `unknown field "legacy"`},
+		{name: "malformed", raw: `{"schema_version":1,"items":[}`, wantErr: "invalid character"},
+		{name: "non-object", raw: `null`, wantErr: "JSON object"},
+		{name: "multiple values", raw: `{"schema_version":1,"items":[]} {}`, wantErr: "exactly one JSON value"},
+		{name: "trailing garbage", raw: `{"schema_version":1,"items":[]} trailing`, wantErr: "exactly one JSON value"},
+		{name: "blank", raw: " \n\t", wantErr: "JSON object"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			root := t.TempDir()
+			raw := []byte(tt.raw)
+			path, before := writeCalendarFixture(t, root, raw)
+			if _, err := NewStore(root); err == nil || !strings.Contains(err.Error(), tt.wantErr) {
+				t.Fatalf("NewStore error = %v, want containing %q", err, tt.wantErr)
+			}
+			assertCalendarFixtureUnchanged(t, path, raw, before)
+		})
+	}
+}
+
+func writeCalendarFixture(t *testing.T, root string, raw []byte) (string, os.FileInfo) {
+	t.Helper()
+	path := filepath.Join(root, "calendar.json")
+	if err := os.WriteFile(path, raw, 0o640); err != nil {
+		t.Fatal(err)
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return path, info
+}
+
+func assertCalendarFixtureUnchanged(t *testing.T, path string, want []byte, before os.FileInfo) {
+	t.Helper()
+	got, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(got, want) {
+		t.Fatalf("calendar bytes changed: got %q want %q", got, want)
+	}
+	after, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after.Mode() != before.Mode() {
+		t.Fatalf("calendar mode changed: got %v want %v", after.Mode(), before.Mode())
+	}
+	if !os.SameFile(before, after) {
+		t.Fatal("calendar file was replaced")
+	}
+	if !after.ModTime().Equal(before.ModTime()) {
+		t.Fatalf("calendar mtime changed: got %v want %v", after.ModTime(), before.ModTime())
 	}
 }
 
@@ -232,30 +307,11 @@ type fakeRunner struct {
 	mu            sync.Mutex
 	calls         int
 	block         chan struct{}
+	beforeReturn  func()
 	inspectStatus Status
 	inspectKnown  bool
 	result        ActionResult
 	err           error
-}
-
-type retryingDeliveryRunner struct {
-	deliveries int
-}
-
-func (r *retryingDeliveryRunner) RunScheduledAction(context.Context, Item, Run) (ActionResult, error) {
-	return ActionResult{WorkID: "work-1", AgentSession: "agent-1", Launched: true}, nil
-}
-
-func (r *retryingDeliveryRunner) InspectScheduledAction(context.Context, Item, Run) (Status, string, string, bool) {
-	return StatusCompleted, "durable result", "", true
-}
-
-func (r *retryingDeliveryRunner) DeliverScheduledAction(context.Context, Item, Run, Status, string, string) error {
-	r.deliveries++
-	if r.deliveries == 1 {
-		return errors.New("temporary Brain write failure")
-	}
-	return nil
 }
 
 func (r *fakeRunner) RunScheduledAction(_ context.Context, _ Item, _ Run) (ActionResult, error) {
@@ -265,8 +321,11 @@ func (r *fakeRunner) RunScheduledAction(_ context.Context, _ Item, _ Run) (Actio
 	if r.block != nil {
 		<-r.block
 	}
-	if r.result.WorkID == "" {
-		r.result = ActionResult{WorkID: "work-1", AgentSession: "agent-1", Result: "started", Launched: true}
+	if r.beforeReturn != nil {
+		r.beforeReturn()
+	}
+	if r.result.WorkID == "" && r.err == nil {
+		r.result = ActionResult{WorkID: "work-1", AgentSession: "agent-1", Launched: true}
 	}
 	return r.result, r.err
 }
@@ -327,7 +386,7 @@ func TestPersistenceFailureRollsBackEveryStateTransition(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.RecordLaunch(action.ID, run.ID, "work-1", "agent-1", "started"); err == nil {
+	if _, err := store.RecordLaunch(action.ID, run.ID, "work-1", "agent-1"); err == nil {
 		t.Fatal("expected launch persistence failure")
 	}
 	assertUnchanged(action.ID, claimed)
@@ -337,6 +396,98 @@ func TestPersistenceFailureRollsBackEveryStateTransition(t *testing.T) {
 	assertUnchanged(action.ID, claimed)
 }
 
+func TestFinishRunRejectsInvalidPayloadWithoutMutation(t *testing.T) {
+	store, err := NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := localTime(t, "America/New_York", 2026, time.July, 14, 10, 0)
+	store.now = func() time.Time { return now }
+	due := now.Add(time.Hour)
+	item, err := store.Create(Item{Title: "Strict result", Kind: KindScheduledAction, DueAt: &due, Timezone: "America/New_York", Recurrence: RecurrenceNone, ActionInstruction: "Run it", SourceThreadID: "thread-1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, run, err := store.Claim(item.ID, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	before, err := store.Get(item.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, err := os.ReadFile(store.Path())
+	if err != nil {
+		t.Fatal(err)
+	}
+	info, err := os.Stat(store.Path())
+	if err != nil {
+		t.Fatal(err)
+	}
+	tests := []struct {
+		name, result, failure string
+	}{
+		{name: "empty", result: "", failure: ""},
+		{name: "ambiguous", result: "result", failure: "failure"},
+		{name: "invalid UTF-8", result: string([]byte{0xff}), failure: ""},
+		{name: "oversize", result: strings.Repeat("x", maxScheduledDeliverableBytes+1), failure: ""},
+		{name: "placeholder", result: scheduledDeliverablePlaceholder, failure: ""},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if _, err := store.FinishRun(item.ID, run.ID, test.result, test.failure); err == nil {
+				t.Fatal("invalid terminal payload was accepted")
+			}
+			after, err := store.Get(item.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !reflect.DeepEqual(after, before) {
+				t.Fatalf("invalid terminal payload changed memory\nbefore: %#v\nafter:  %#v", before, after)
+			}
+			assertCalendarFixtureUnchanged(t, store.Path(), raw, info)
+		})
+	}
+}
+
+func TestFinishRunValidTerminalRetryIsAZeroWriteNoOp(t *testing.T) {
+	store, err := NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := localTime(t, "America/New_York", 2026, time.July, 14, 10, 0)
+	store.now = func() time.Time { return now }
+	due := now.Add(time.Hour)
+	item, err := store.Create(Item{Title: "Idempotent result", Kind: KindScheduledAction, DueAt: &due, Timezone: "America/New_York", Recurrence: RecurrenceNone, ActionInstruction: "Run it", SourceThreadID: "thread-1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, run, err := store.Claim(item.ID, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	finished, err := store.FinishRun(item.ID, run.ID, " durable result ", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, err := os.ReadFile(store.Path())
+	if err != nil {
+		t.Fatal(err)
+	}
+	info, err := os.Stat(store.Path())
+	if err != nil {
+		t.Fatal(err)
+	}
+	retried, err := store.FinishRun(item.ID, run.ID, "different but valid result", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(retried, finished) || retried.Runs[0].Result != "durable result" {
+		t.Fatalf("terminal retry changed state\nfirst: %#v\nretry: %#v", finished, retried)
+	}
+	assertCalendarFixtureUnchanged(t, store.Path(), raw, info)
+}
+
 func TestPartialLaunchPersistenceFailureStaysRunningForReconciliation(t *testing.T) {
 	store, _ := NewStore(t.TempDir())
 	now := localTime(t, "America/New_York", 2026, time.July, 14, 10, 0)
@@ -344,7 +495,7 @@ func TestPartialLaunchPersistenceFailureStaysRunningForReconciliation(t *testing
 	due := now.Add(time.Hour)
 	item, _ := store.Create(Item{Title: "Launch", Kind: KindScheduledAction, DueAt: &due, Timezone: "America/New_York", Recurrence: RecurrenceNone, ActionInstruction: "Launch work", SourceThreadID: "thread-1"})
 	runner := &fakeRunner{
-		result: ActionResult{WorkID: "work-1", AgentSession: "agent-1", Result: "agent launched", Launched: true},
+		result: ActionResult{WorkID: "work-1", AgentSession: "agent-1", Launched: true},
 		err:    errors.New("write started Work frontmatter"),
 	}
 	scheduler := NewScheduler(store, runner)
@@ -355,8 +506,11 @@ func TestPartialLaunchPersistenceFailureStaysRunningForReconciliation(t *testing
 	if got.Status != StatusRunning || len(got.Runs) != 1 || got.Runs[0].Status != StatusRunning {
 		t.Fatalf("partial launch was treated as terminal: %#v", got)
 	}
-	if got.Runs[0].WorkID != "work-1" || got.Runs[0].AgentSession != "agent-1" || !strings.Contains(got.Runs[0].Result, "Launch succeeded") {
+	if got.Runs[0].WorkID != "work-1" || got.Runs[0].AgentSession != "agent-1" || got.Runs[0].Result != "" {
 		t.Fatalf("partial launch evidence missing: %#v", got.Runs[0])
+	}
+	if scheduler.isLaunching(item.ID) {
+		t.Fatal("launch guard remained set after partial-launch error recording")
 	}
 }
 
@@ -395,6 +549,22 @@ func TestSchedulerClaimsOnceAndBoundedCatchUp(t *testing.T) {
 		}
 		time.Sleep(time.Millisecond)
 	}
+	for range 3 {
+		scheduler.Tick(context.Background())
+		current, err := store.Get(action.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if current.Status != StatusRunning || len(current.Runs) != 1 || current.Runs[0].Status != StatusRunning || current.Runs[0].WorkID != "" {
+			t.Fatalf("blocked launch was reconciled before RecordLaunch: %#v", current)
+		}
+	}
+	runner.mu.Lock()
+	blockedCalls := runner.calls
+	runner.mu.Unlock()
+	if blockedCalls != 1 {
+		t.Fatalf("blocked launch duplicated %d times", blockedCalls)
+	}
 	close(runner.block)
 	deadline = time.Now().Add(time.Second)
 	for {
@@ -414,6 +584,16 @@ func TestSchedulerClaimsOnceAndBoundedCatchUp(t *testing.T) {
 	if calls != 1 {
 		t.Fatalf("calls = %d", calls)
 	}
+	if scheduler.isLaunching(action.ID) {
+		t.Fatal("launch guard remained set after successful launch recording")
+	}
+	completed, err := store.Get(action.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(completed.Runs) != 1 || completed.Runs[0].WorkID != "work-1" || completed.Runs[0].AgentSession != "agent-1" {
+		t.Fatalf("launch link was not recorded exactly once: %#v", completed)
+	}
 
 	missedDue := now.Add(-DefaultMissedActionWindow - time.Second)
 	missed, err := store.Create(Item{Title: "Old action", Kind: KindScheduledAction, DueAt: &missedDue, Timezone: "America/New_York", Recurrence: RecurrenceNone, ActionInstruction: "Do old work", SourceThreadID: "thread-1"})
@@ -427,6 +607,90 @@ func TestSchedulerClaimsOnceAndBoundedCatchUp(t *testing.T) {
 	}
 }
 
+func TestSchedulerLaunchGuardClearsOnErrorExits(t *testing.T) {
+	t.Run("claim error", func(t *testing.T) {
+		store, err := NewStore(t.TempDir())
+		if err != nil {
+			t.Fatal(err)
+		}
+		scheduler := NewScheduler(store, &fakeRunner{})
+		if _, err := scheduler.RunNow(context.Background(), "missing"); !errors.Is(err, ErrNotFound) {
+			t.Fatalf("RunNow error = %v", err)
+		}
+		if scheduler.isLaunching("missing") {
+			t.Fatal("launch guard remained set after claim error")
+		}
+	})
+
+	t.Run("runner error", func(t *testing.T) {
+		store, item := newManualActionFixture(t)
+		scheduler := NewScheduler(store, &fakeRunner{err: errors.New("executor unavailable")})
+		finished, err := scheduler.RunNow(context.Background(), item.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if finished.Runs[0].Status != StatusFailed || finished.Runs[0].Result != "" || finished.Runs[0].FailureReason != "executor unavailable" {
+			t.Fatalf("failed launch = %#v", finished)
+		}
+		if scheduler.isLaunching(item.ID) {
+			t.Fatal("launch guard remained set after runner error")
+		}
+	})
+
+	t.Run("RecordLaunch persistence error", func(t *testing.T) {
+		root := t.TempDir()
+		store, err := NewStore(filepath.Join(root, "calendar"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		now := localTime(t, "America/New_York", 2026, time.July, 14, 10, 0)
+		store.now = func() time.Time { return now }
+		due := now.Add(time.Hour)
+		item, err := store.Create(Item{Title: "Persist launch", Kind: KindScheduledAction, DueAt: &due, Timezone: "America/New_York", Recurrence: RecurrenceNone, ActionInstruction: "Run it", SourceThreadID: "thread-1"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		calendarPath := store.path
+		runner := &fakeRunner{
+			result: ActionResult{WorkID: "work-1", AgentSession: "agent-1", Launched: true},
+			beforeReturn: func() {
+				store.path = root
+			},
+		}
+		scheduler := NewScheduler(store, runner)
+		if _, err := scheduler.RunNow(context.Background(), item.ID); err == nil {
+			t.Fatal("expected RecordLaunch persistence error")
+		}
+		store.path = calendarPath
+		if scheduler.isLaunching(item.ID) {
+			t.Fatal("launch guard remained set after RecordLaunch error")
+		}
+		current, err := store.Get(item.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if current.Status != StatusRunning || current.Runs[0].WorkID != "" {
+			t.Fatalf("failed RecordLaunch leaked state: %#v", current)
+		}
+	})
+}
+
+func newManualActionFixture(t *testing.T) (*Store, Item) {
+	t.Helper()
+	store, err := NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := localTime(t, "America/New_York", 2026, time.July, 14, 10, 0)
+	store.now = func() time.Time { return now }
+	due := now.Add(time.Hour)
+	item, err := store.Create(Item{Title: "Manual action", Kind: KindScheduledAction, DueAt: &due, Timezone: "America/New_York", Recurrence: RecurrenceNone, ActionInstruction: "Run it", SourceThreadID: "thread-1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return store, item
+}
+
 func TestRestartReconciliationNeverRelaunchesUnknownWork(t *testing.T) {
 	store, _ := NewStore(t.TempDir())
 	now := localTime(t, "America/New_York", 2026, time.July, 14, 10, 0)
@@ -437,7 +701,7 @@ func TestRestartReconciliationNeverRelaunchesUnknownWork(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.RecordLaunch(item.ID, run.ID, "work-1", "agent-gone", "launched"); err != nil {
+	if _, err := store.RecordLaunch(item.ID, run.ID, "work-1", "agent-gone"); err != nil {
 		t.Fatal(err)
 	}
 	runner := &fakeRunner{inspectKnown: false}
@@ -453,29 +717,40 @@ func TestRestartReconciliationNeverRelaunchesUnknownWork(t *testing.T) {
 	}
 }
 
-func TestSchedulerRetriesDeliveryWithoutRelaunchingOccurrence(t *testing.T) {
-	store, _ := NewStore(t.TempDir())
+func TestSchedulerRetriesOneTerminalCommitWithoutRelaunchingOccurrence(t *testing.T) {
+	root := t.TempDir()
+	store, _ := NewStore(root)
 	now := localTime(t, "America/New_York", 2026, time.July, 14, 10, 0)
 	store.now = func() time.Time { return now }
 	due := now.Add(-time.Minute)
-	item, err := store.Create(Item{Title: "Deliver", Kind: KindScheduledAction, DueAt: &due, Timezone: "America/New_York", Recurrence: RecurrenceNone, ActionInstruction: "Deliver", SourceThreadID: "thread-1"})
+	item, err := store.Create(Item{Title: "Persist result", Kind: KindScheduledAction, DueAt: &due, Timezone: "America/New_York", Recurrence: RecurrenceNone, ActionInstruction: "Persist", SourceThreadID: "thread-1"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	runner := &retryingDeliveryRunner{}
-	scheduler := NewScheduler(store, runner)
-	if _, err := scheduler.RunNow(context.Background(), item.ID); err != nil {
+	_, run, err := store.Claim(item.ID, false)
+	if err != nil {
 		t.Fatal(err)
 	}
+	if _, err := store.RecordLaunch(item.ID, run.ID, "work-1", "agent-1"); err != nil {
+		t.Fatal(err)
+	}
+	runner := &fakeRunner{inspectStatus: StatusCompleted, inspectKnown: true}
+	scheduler := NewScheduler(store, runner)
+	calendarPath := store.path
+	store.path = root // rename over a directory fails before the atomic commit.
 	scheduler.Tick(context.Background())
 	first, _ := store.Get(item.ID)
-	if first.Status != StatusRunning || runner.deliveries != 1 {
-		t.Fatalf("first = %#v, deliveries = %d", first, runner.deliveries)
+	if first.Status != StatusRunning || first.Runs[0].Status != StatusRunning || len(store.ScheduledResults("thread-1", 0)) != 0 {
+		t.Fatalf("failed terminal commit leaked state: %#v", first)
 	}
+	store.path = calendarPath
 	scheduler.Tick(context.Background())
 	finished, _ := store.Get(item.ID)
-	if finished.Status != StatusCompleted || runner.deliveries != 2 || len(finished.Runs) != 1 {
-		t.Fatalf("finished = %#v, deliveries = %d", finished, runner.deliveries)
+	if finished.Status != StatusCompleted || len(finished.Runs) != 1 || len(store.ScheduledResults("thread-1", 0)) != 1 {
+		t.Fatalf("finished = %#v", finished)
+	}
+	if runner.calls != 0 {
+		t.Fatalf("reconciliation relaunched linked Work %d times", runner.calls)
 	}
 }
 

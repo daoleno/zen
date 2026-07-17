@@ -37,8 +37,8 @@ There is one primary suppression rule:
 
 Everything else should stay straightforward:
 
-- If the app is foregrounded but the user is looking at another session, a local notification is allowed.
-- If the app is backgrounded or the user left the app, the daemon may send a remote push.
+- If the app is foregrounded but the user is looking at another session, the daemon still attempts a remote push.
+- If the app is backgrounded, suspended, or not running, the daemon uses the same remote-push path.
 - We do not need reminder ladders, digests, or a manager layer in OSS core right now.
 
 ## Notification Copy
@@ -47,23 +47,23 @@ Everything else should stay straightforward:
 
 Use when the agent cannot continue without the user.
 
-- Title: `Input needed · <label>`
-- Body: cleaned summary, or `Open zen to respond.`
+- Title: `<label> needs input`
+- Body: cleaned summary, or `Waiting for your response.`
 - Priority: high
 
 ### Failed
 
 Use when the session ended in a failure state that likely needs inspection.
 
-- Title: `Task failed · <label>`
-- Body: cleaned summary, or `Open zen to inspect the last output.`
+- Title: `<label> failed`
+- Body: cleaned summary, or `Check the terminal for details.`
 - Priority: high
 
 ### Done
 
 Use when the session finished and the user is not currently in that session.
 
-- Title: `Finished · <label>`
+- Title: `<label> finished`
 - Body: cleaned summary, or `Session finished.`
 - Priority: default
 
@@ -105,23 +105,23 @@ Rules:
 - Keep it concise, roughly within 100 to 120 characters.
 - Avoid echoing internal IDs unless that is the only identifier available.
 
-## Implementation Split
+## Runtime ownership
 
 Current OSS-core behavior is intentionally simple:
 
-- The mobile app schedules local notifications for state transitions while the app is active, but only when the selected session is not the one that changed.
-- The daemon sends remote push notifications when a push token is registered and no active viewer is attached to that exact session.
-- Both sides should keep the same title and summary-cleaning conventions.
+- The daemon is the only runtime lifecycle/result OS-alert producer. The app registers its Expo token, presents incoming pushes, and handles deep links; it does not mirror agent or scheduled-result state into local alerts.
+- Ordinary delegated `blocked`, `failed`, and `done` transitions each trigger one best-effort daemon attempt unless that exact agent is actively viewed. Viewing a different agent or a non-Terminal screen does not suppress it.
+- Scheduled actions run in non-delegated sessions and never enter the generic agent-lifecycle alert path. The first successfully persisted Calendar terminal result makes one separate best-effort push attempt for either completion or failure, deep-linking to the frozen Brain thread.
+- Explicit future Calendar reminders remain locally scheduled after sync. They are a separate user commitment, not a runtime lifecycle producer.
 
-This is enough for a good default experience without introducing a control plane or a more complex notification manager.
+Runtime delivery is intentionally at-most-once attempt, not reliable delivery. Missing registration, Expo/HTTP failure, a transient in-process Calendar event drop, or a daemon crash after the terminal commit can produce no OS alert. Zen does not retain an outbox or retry; the durable Calendar result and Brain projection remain available when the user next opens the app.
 
 ## Future Work
 
-If notification noise becomes a real problem later, the next upgrades should be:
+If notification behavior needs to expand later, evaluate it from observed product needs. Plausible independent additions are:
 
-1. de-duplication by `agent_id` + `state_version` + reason
-2. multi-device push registrations
-3. richer classifier reasons for better summaries
-4. optional per-run `notify_on_completion`
+1. multi-device push registrations
+2. richer classifier reasons for better summaries
+3. optional per-run `notify_on_completion`
 
 Those are later improvements, not prerequisites for shipping the OSS core.

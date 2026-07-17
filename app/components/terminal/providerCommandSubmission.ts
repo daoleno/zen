@@ -1,6 +1,6 @@
 import type { ComposerAttachment } from "./CodexChatSession";
 
-/** Provider-dispatched commands use the same accepted input/queue path as text. */
+/** Provider commands use the same live send and local optimistic path as text. */
 export function submitProviderCommandAsUserInput(
   text: string,
   previousDraft: string | undefined,

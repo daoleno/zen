@@ -169,7 +169,7 @@ describe("structured chat keyboard overlay", () => {
     expect(demo).toContain("<CodexTimelineView");
     expect(demo).toContain("<CodexChatComposer");
     expect(demo).toContain("useCodexTimelineItems({");
-    expect(demo).toContain("workingTurn,");
+    expect(demo).toContain("runningActivity,");
     expect(demo).toContain("showAttachmentRail");
     expect(demo).toContain("showStopButton={working && !hasContent}");
     expect(demo).toContain("onLatestOffsetChange={handleLatestOffsetChange}");

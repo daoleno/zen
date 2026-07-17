@@ -1,10 +1,9 @@
 import type {
   CodexConversationEvent,
-  StructuredTurn,
+  ProviderActivity,
 } from "../../services/codexConversation";
 import {
   buildExpandedToolDetails,
-  isWaitLikeToolName,
   isWaitSessionPoll,
 } from "../../services/toolCallDetails";
 import {
@@ -18,15 +17,9 @@ import {
 } from "../../services/toolCallSemantics";
 import { parseHeartbeatWakeMessage } from "./CodexHeartbeatWake";
 import type {
-  PendingSlashCommand,
   PendingUserMessage,
 } from "./CodexChatSession";
-import {
-  pendingUserMessageLifecycleAccessibilityLabel,
-  pendingUserMessageLifecycleLabel,
-  presentPendingUserMessageLifecycle,
-  queuedOrdinalByPendingId,
-} from "./pendingUserMessageLifecycle";
+import { presentPendingUserMessageLifecycle } from "./pendingUserMessageLifecycle";
 import {
   type PatchFileSummary,
   type PatchOperation,
@@ -35,7 +28,6 @@ import {
 } from "./CodexTimelineActivityTypes";
 import type { DisplayAttachment } from "./CodexTimelineMessage";
 import type { ZenTimelineItem } from "./CodexTimelineItemView";
-import { slashCommandIcon } from "./codexSlashCommandPresentation";
 import { compareConversationEvents } from "./codexConversationReconciliation";
 
 const ATTACHMENT_TAG_RE = /<zen_attachments>\s*([\s\S]*?)\s*<\/zen_attachments>/i;
@@ -104,14 +96,6 @@ type PatchSummary = {
 export function buildZenTimeline(events: CodexConversationEvent[]): ZenTimelineItem[] {
   const items: ZenTimelineItem[] = [];
   let explorationEntries: ExplorationEntry[] = [];
-  const queuedSubmissionIds = events
-    .filter((event) =>
-      event.kind === "user_message" && event.submission_state === "queued"
-    )
-    .map((event) => event.id);
-  const queuedSubmissionOrdinals = new Map(
-    queuedSubmissionIds.map((id, index) => [id, index]),
-  );
 
   const flushExploration = () => {
     if (explorationEntries.length === 0) {
@@ -131,8 +115,6 @@ export function buildZenTimeline(events: CodexConversationEvent[]): ZenTimelineI
       if (!extracted.body && extracted.attachments.length === 0 && !heartbeatWake) {
         continue;
       }
-      const submissionLifecycle = canonicalSubmissionLifecycle(event);
-      const queuedOrdinal = queuedSubmissionOrdinals.get(event.id) ?? 0;
       items.push({
         type: "message",
         id: event.id || `${event.kind}:${event.seq}`,
@@ -142,22 +124,6 @@ export function buildZenTimeline(events: CodexConversationEvent[]): ZenTimelineI
         attachments: extracted.attachments,
         streaming: event.partial,
         heartbeatWake: heartbeatWake || undefined,
-        pending: Boolean(submissionLifecycle),
-        pendingLifecycle: submissionLifecycle,
-        pendingLifecycleLabel: submissionLifecycle
-          ? pendingUserMessageLifecycleLabel(
-              submissionLifecycle,
-              queuedOrdinal,
-              queuedSubmissionIds.length,
-            )
-          : undefined,
-        pendingLifecycleAccessibilityLabel: submissionLifecycle
-          ? pendingUserMessageLifecycleAccessibilityLabel(
-              submissionLifecycle,
-              queuedOrdinal,
-              queuedSubmissionIds.length,
-            )
-          : undefined,
       });
       continue;
     }
@@ -210,7 +176,7 @@ export function buildZenTimeline(events: CodexConversationEvent[]): ZenTimelineI
     }
 
     if (event.kind === "tool" && isWaitSessionPoll(event.tool_name || event.title || "", event.input || "")) {
-      attachWaitStatusToLastCommand(items, explorationEntries, event);
+      attachWaitStatusToLastCommand(items, event);
       continue;
     }
     const activity = activityFromEvent(event);
@@ -222,25 +188,8 @@ export function buildZenTimeline(events: CodexConversationEvent[]): ZenTimelineI
   return items;
 }
 
-function canonicalSubmissionLifecycle(
-  event: CodexConversationEvent,
-): "unconfirmed" | "queued" | "failed" | undefined {
-  switch (event.submission_state) {
-    case "accepted":
-    case "unconfirmed":
-      return "unconfirmed";
-    case "queued":
-      return "queued";
-    case "rejected":
-      return "failed";
-    default:
-      return undefined;
-  }
-}
-
 function attachWaitStatusToLastCommand(
   items: ZenTimelineItem[],
-  explorationEntries: ExplorationEntry[],
   event: CodexConversationEvent,
 ) {
   const details = buildExpandedToolDetails({
@@ -271,15 +220,6 @@ function attachWaitStatusToLastCommand(
       return;
     }
   }
-  if (explorationEntries.length > 0) {
-    const last = explorationEntries[explorationEntries.length - 1];
-    if (last) {
-      last.event = {
-        ...last.event,
-        body: last.event.body,
-      };
-    }
-  }
 }
 
 export function mergePendingUserMessagesIntoTimeline(
@@ -291,90 +231,48 @@ export function mergePendingUserMessagesIntoTimeline(
     return timelineItems;
   }
   const merged = [...timelineItems];
-  const queuedOrdinals = queuedOrdinalByPendingId(pendingUserMessages);
-  const placedSubmissionRowIDs = new Set<string>();
+  const placedLocalRowIDs = new Set<string>();
   for (const message of pendingUserMessages) {
-    const stableIDs = new Set(
-      [message.confirmedEventId, message.id, message.turnId].filter(
-        (id): id is string => Boolean(id),
-      ),
-    );
-    const matchedIndex = merged.findIndex((item) => stableIDs.has(item.id));
-    const matched = matchedIndex >= 0 ? merged[matchedIndex] : undefined;
-    const canonical = matched?.type === "message" && matched.role === "user"
-      ? matched
-      : undefined;
-    const item = canonical
-      ? {
-          ...canonical,
-        }
-      : {
-          type: "message" as const,
-          id: message.id,
-          role: "user" as const,
-          timestamp: message.createdAt,
-          body: message.body,
-          attachments: message.attachments,
-        };
-
-    // The canonical row is the acceptance/rejection owner. If the correlated
-    // rejection response was lost, its stable-ID upsert must still make the
-    // existing optimistic row retryable instead of leaving it unconfirmed.
-    let effectiveLifecycle: Exclude<PendingUserMessage["lifecycle"], "settled">;
-    if (canonical?.pendingLifecycle === "failed") {
-      effectiveLifecycle = "failed";
-    } else if (message.lifecycle === "settled") {
-      if (canonical) {
-        merged[matchedIndex] = item;
-        placedSubmissionRowIDs.add(canonical.id);
-      } else {
-        insertTimelineItemByTimestamp(merged, item);
-        placedSubmissionRowIDs.add(item.id);
-      }
-      continue;
-    } else {
-      effectiveLifecycle = message.lifecycle;
-    }
-    const presentation = presentPendingUserMessageLifecycle(
-      { ...message, lifecycle: effectiveLifecycle },
-      queuedOrdinals,
-    );
+    const item = {
+      type: "message" as const,
+      id: message.id,
+      role: "user" as const,
+      timestamp: message.createdAt,
+      body: message.body,
+      attachments: message.attachments,
+    };
+    const presentation = presentPendingUserMessageLifecycle(message);
 
     const pendingItem = {
       ...item,
       pending: true,
-      pendingLifecycle: effectiveLifecycle,
+      pendingLifecycle: message.lifecycle,
       pendingLifecycleLabel: presentation.label,
       pendingLifecycleAccessibilityLabel: presentation.accessibilityLabel,
       pendingFailureMessage:
-        effectiveLifecycle === "failed" ? message.failureMessage : undefined,
+        message.lifecycle === "failed" ? message.failureMessage : undefined,
       onRetryPending:
-        effectiveLifecycle === "failed" && onRetryPendingUserMessage
+        message.lifecycle === "failed" && onRetryPendingUserMessage
           ? () => onRetryPendingUserMessage(message.id)
           : undefined,
     };
 
-    if (canonical) {
-      merged[matchedIndex] = pendingItem;
-      placedSubmissionRowIDs.add(canonical.id);
-      continue;
-    }
-    insertPendingCurrentAtSubmissionBoundary(
+    insertPendingCurrentAtCausalBoundary(
       merged,
       pendingItem,
       message,
-      placedSubmissionRowIDs,
+      placedLocalRowIDs,
     );
-    placedSubmissionRowIDs.add(pendingItem.id);
+    placedLocalRowIDs.add(pendingItem.id);
   }
   return merged;
 }
 
-function insertPendingCurrentAtSubmissionBoundary(
+function insertPendingCurrentAtCausalBoundary(
   timelineItems: ZenTimelineItem[],
   item: ZenTimelineItem,
   message: PendingUserMessage,
-  placedSubmissionRowIDs: ReadonlySet<string>,
+  placedLocalRowIDs: ReadonlySet<string>,
 ) {
   const previousEventIds = new Set(message.createdAfterEventIds ?? []);
   let lastPreviousIndex = -1;
@@ -387,7 +285,7 @@ function insertPendingCurrentAtSubmissionBoundary(
     let insertAt = lastPreviousIndex + 1;
     while (
       insertAt < timelineItems.length &&
-      placedSubmissionRowIDs.has(timelineItems[insertAt].id)
+      placedLocalRowIDs.has(timelineItems[insertAt].id)
     ) {
       insertAt += 1;
     }
@@ -397,43 +295,14 @@ function insertPendingCurrentAtSubmissionBoundary(
   insertTimelineItemByTimestamp(timelineItems, item);
 }
 
-export function mergePendingSlashCommandsIntoTimeline(
+export function mergeRunningActivityIntoTimeline(
   timelineItems: ZenTimelineItem[],
-  pendingSlashCommands: PendingSlashCommand[],
-): ZenTimelineItem[] {
-  if (pendingSlashCommands.length === 0) {
-    return timelineItems;
-  }
-  const merged = [...timelineItems];
-  for (const command of pendingSlashCommands) {
-    const done = command.status !== "running";
-    const tone = pendingSlashCommandTone(command.status);
-    const item = {
-      type: "activity" as const,
-      id: command.id,
-      timestamp: command.createdAt,
-      statusKey: command.status,
-      title: done
-        ? command.completedTitle || "Command submitted"
-        : "Sending command",
-      tone,
-      icon: slashCommandIcon(command.name),
-      detail: command.text.trim() || `/${command.name}`,
-      defaultExpanded: false,
-    };
-    insertTimelineItemByTimestamp(merged, item);
-  }
-  return merged;
-}
-
-export function mergeWorkingTurnIntoTimeline(
-  timelineItems: ZenTimelineItem[],
-  turn?: StructuredTurn,
+  activity?: ProviderActivity,
 ) {
-  if (turn?.status !== "running") {
+  if (activity?.status !== "running") {
     return timelineItems;
   }
-  const id = `working-turn:${turn.id}`;
+  const id = `provider-activity:${activity.id}`;
   if (timelineItems.some((item) => item.id === id)) {
     return timelineItems;
   }
@@ -450,15 +319,6 @@ export function mergeWorkingTurnIntoTimeline(
   return merged;
 }
 
-function pendingSlashCommandTone(
-  status: PendingSlashCommand["status"],
-): ZenActivityTimelineItem["tone"] {
-  if (status === "failed") {
-    return "failed";
-  }
-  return status === "running" ? "running" : "neutral";
-}
-
 function insertTimelineItemByTimestamp(
   timelineItems: ZenTimelineItem[],
   item: ZenTimelineItem,
@@ -469,7 +329,7 @@ function insertTimelineItemByTimestamp(
     return;
   }
   const insertAt = timelineItems.findIndex((candidate) => {
-    if (candidate.id.startsWith("working-turn:")) {
+    if (candidate.id.startsWith("provider-activity:")) {
       return true;
     }
     if (!candidate.timestamp) {

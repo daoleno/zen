@@ -234,7 +234,7 @@ function ChatDemo() {
         : "",
   );
   const [focused, setFocused] = useState(false);
-  const [workingTurnStartedAt] = useState(() =>
+  const [providerActivityStartedAt] = useState(() =>
     new Date(Date.now() - 43_000).toISOString(),
   );
   const initialLatestOffsetHandledRef = useRef(false);
@@ -269,21 +269,20 @@ function ChatDemo() {
     ).flat();
   }, [longTimeline]);
   const emptyPending = useMemo(() => [], []);
-  const workingTurn = useMemo(
+  const runningActivity = useMemo(
     () => working
       ? {
           id: "demo-working-turn",
           status: "running" as const,
-          started_at: workingTurnStartedAt,
+          started_at: providerActivityStartedAt,
         }
       : undefined,
-    [working, workingTurnStartedAt],
+    [working, providerActivityStartedAt],
   );
   const timeline = useCodexTimelineItems({
     events: timelineEvents,
     pendingUserMessages: emptyPending,
-    pendingSlashCommands: emptyPending,
-    workingTurn,
+    runningActivity,
     onRetryPendingUserMessage: NOOP,
   });
   const attachments = showAttachment
@@ -344,14 +343,13 @@ function ChatDemo() {
               uploading={false}
               sendEnabled={hasContent}
               sending={false}
-              sendIcon="arrow-up"
               sendLabel={working ? "Queue message" : "Send message"}
               showStopButton={working && !hasContent}
               stopEnabled={working}
               stopLabel="Stop current turn"
               stopLoading={false}
-              workingTurnStartedAt={
-                working ? workingTurnStartedAt : undefined
+              providerActivityStartedAt={
+                working ? providerActivityStartedAt : undefined
               }
               bottomPadding={Math.max(insets.bottom, 8)}
               showActionMenuButton
@@ -384,7 +382,6 @@ function ChatDemo() {
               scrollRef={scrollRef}
               items={timeline}
               loading={false}
-              localChatState="idle"
               emptyStateSuppressed={false}
               unavailable={false}
               syncing={false}
@@ -425,20 +422,19 @@ function BrainDemo() {
   const inputRef = useRef<TextInput>(null);
   const [draft, setDraft] = useState("");
   const [focused, setFocused] = useState(false);
-  const [workingTurnStartedAt] = useState(() =>
+  const [providerActivityStartedAt] = useState(() =>
     new Date(Date.now() - 43_000).toISOString(),
   );
   const emptyPending = useMemo(() => [], []);
-  const workingTurn = useMemo(() => ({
+  const runningActivity = useMemo(() => ({
     id: "demo-brain-working-turn",
     status: "running" as const,
-    started_at: workingTurnStartedAt,
-  }), [workingTurnStartedAt]);
+    started_at: providerActivityStartedAt,
+  }), [providerActivityStartedAt]);
   const timeline = useCodexTimelineItems({
     events: SCREENSHOT_BRAIN_EVENTS,
     pendingUserMessages: emptyPending,
-    pendingSlashCommands: emptyPending,
-    workingTurn,
+    runningActivity,
     onRetryPendingUserMessage: NOOP,
   });
   const initialLatestOffsetHandledRef = useRef(false);
@@ -473,13 +469,12 @@ function BrainDemo() {
               uploading={false}
               sendEnabled={hasContent}
               sending={false}
-              sendIcon="arrow-up"
               sendLabel="Queue message"
               showStopButton={!hasContent}
               stopEnabled
               stopLabel="Stop current turn"
               stopLoading={false}
-              workingTurnStartedAt={workingTurnStartedAt}
+              providerActivityStartedAt={providerActivityStartedAt}
               bottomPadding={Math.max(insets.bottom, 8)}
               showActionMenuButton
               actionMenuIcon="add"
@@ -511,7 +506,6 @@ function BrainDemo() {
               scrollRef={scrollRef}
               items={timeline}
               loading={false}
-              localChatState="idle"
               emptyStateSuppressed={false}
               unavailable={false}
               syncing={false}

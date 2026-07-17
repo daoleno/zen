@@ -10,7 +10,6 @@ import (
 	"net/url"
 	"os"
 	"os/exec"
-	"os/user"
 	"path/filepath"
 	"sort"
 	"strconv"
@@ -1509,15 +1508,11 @@ func buildDayCells(claudeByDate map[string]*dateAgg, codexModelsByDate map[strin
 }
 
 func homeDir() string {
-	u, err := user.Current()
+	home, err := os.UserHomeDir()
 	if err != nil {
-		h, err := os.UserHomeDir()
-		if err != nil {
-			return ""
-		}
-		return h
+		return ""
 	}
-	return u.HomeDir
+	return home
 }
 
 func ensureDateAgg(byDate map[string]*dateAgg, date string) *dateAgg {

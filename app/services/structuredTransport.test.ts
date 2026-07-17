@@ -1,25 +1,29 @@
-// @ts-nocheck
 import { describe, expect, test } from "bun:test";
 import {
   dispatchStructuredCommand,
-  normalizeStructuredInputAccepted,
   sendWebSocketMessageNow,
   structuredActionMessage,
   structuredInputMessage,
 } from "./structuredWebSocketTransport";
 
-class FakeEventSource {
-  handlers = new Map<string, Array<(payload: any) => void>>();
+type Handler = (payload: any) => void;
 
-  on(type: string, handler: (payload: any) => void) {
+class FakeEventSource {
+  handlers = new Map<string, Handler[]>();
+
+  on(type: string, handler: Handler) {
     this.handlers.set(type, [...(this.handlers.get(type) ?? []), handler]);
   }
 
-  off(type: string, handler: (payload: any) => void) {
-    this.handlers.set(
-      type,
-      (this.handlers.get(type) ?? []).filter((candidate) => candidate !== handler),
+  off(type: string, handler: Handler) {
+    const remaining = (this.handlers.get(type) ?? []).filter(
+      (candidate) => candidate !== handler,
     );
+    if (remaining.length === 0) {
+      this.handlers.delete(type);
+    } else {
+      this.handlers.set(type, remaining);
+    }
   }
 
   emit(type: string, payload: any) {
@@ -36,8 +40,21 @@ class FakeEventSource {
   }
 }
 
+function command(events: FakeEventSource, requestId: string, sendNow = () => {}) {
+  return dispatchStructuredCommand({
+    requestId,
+    eventSource: events,
+    sentType: "input_sent",
+    failedType: "input_failed",
+    matches: (payload) =>
+      payload.serverId === "server-a" && payload.request_id === requestId,
+    matchesConnection: (payload) => payload.serverId === "server-a",
+    sendNow,
+  });
+}
+
 describe("structured provider transport", () => {
-  test("sends immediately on an open socket", () => {
+  test("sends exactly once on an open socket", () => {
     const sent: string[] = [];
     sendWebSocketMessageNow(
       { readyState: 1, send: (value: string) => sent.push(value) },
@@ -48,7 +65,7 @@ describe("structured provider transport", () => {
     ]);
   });
 
-  test("rejects a closing socket without retaining the command for reconnect", () => {
+  test("rejects a closing socket without retaining a command", () => {
     const sent: string[] = [];
     expect(() =>
       sendWebSocketMessageNow(
@@ -59,173 +76,104 @@ describe("structured provider transport", () => {
     expect(sent).toEqual([]);
   });
 
-  test("busy thread controls carry the real queue and conversation identity", () => {
+  test("input and Stop carry only immediate provider-call facts", () => {
     expect(structuredInputMessage({
-      requestId: "request-new",
-      agentId: "host-b",
-      text: "/new\n",
-      conversationScopeKey: "brain-thread:current",
-      turnId: "turn-control",
-      turnStartedAt: "2026-07-15T10:00:00.000Z",
-      turnQueued: true,
-      turnConversationIdentity: "session:old",
-    })).toMatchObject({
+      requestId: "request-input",
+      agentId: "agent-a",
+      text: "hello\n",
+    })).toEqual({
       type: "send_input",
-      request_id: "request-new",
-      conversation_scope_key: "brain-thread:current",
-      turn_id: "turn-control",
-      turn_queued: true,
-      turn_conversation_identity: "session:old",
+      request_id: "request-input",
+      agent_id: "agent-a",
+      text: "hello\n",
     });
-  });
-
-  test("queue acknowledgement retains daemon epoch and causal revision", () => {
-    expect(normalizeStructuredInputAccepted({
-      turn_id: "turn-control",
-      queued: true,
-      turn_epoch: "daemon-a",
-      turn_revision: 7,
-    }, "fallback")).toEqual({
-      turnId: "turn-control",
-      queued: true,
-      turnEpoch: "daemon-a",
-      turnRevision: 7,
-    });
-  });
-
-  test("Stop carries a correlated request and the exact public turn", () => {
     expect(structuredActionMessage({
       requestId: "request-stop",
-      agentId: "host-a",
+      agentId: "agent-a",
       action: "pause",
-      conversationScopeKey: "brain-thread:current",
-      turnId: "turn-a",
-      turnStartedAt: "2026-07-15T10:00:00.000Z",
     })).toEqual({
       type: "send_action",
       request_id: "request-stop",
-      agent_id: "host-a",
+      agent_id: "agent-a",
       action: "pause",
-      conversation_scope_key: "brain-thread:current",
-      turn_id: "turn-a",
-      turn_started_at: "2026-07-15T10:00:00.000Z",
     });
   });
 
-  test("successful send returns immediately and a delayed ACK refines it", async () => {
+  test("a success ACK reports only that the immediate send returned", async () => {
     const events = new FakeEventSource();
-    let sent = false;
-    const receipt = dispatchStructuredCommand({
-      requestId: "request-delayed",
-      eventSource: events,
-      confirmedType: "input_accepted",
-      rejectedType: "input_rejected",
-      matches: (payload) => payload.request_id === "request-delayed",
-      normalizeConfirmed: (payload) => payload.value,
-      sendNow: () => {
-        sent = true;
-      },
-      timeoutMs: 100,
+    let sends = 0;
+    const receipt = command(events, "request-sent", () => {
+      sends += 1;
     });
-    let settled = false;
-    void receipt.outcome.then(() => {
-      settled = true;
+    events.emit("input_sent", {
+      serverId: "server-a",
+      request_id: "other-request",
     });
-    await Promise.resolve();
-    expect(sent).toBe(true);
-    expect(settled).toBe(false);
+    expect(events.listenerCount()).toBe(3);
+    events.emit("input_sent", {
+      serverId: "server-a",
+      request_id: "request-sent",
+    });
+    expect(await receipt.outcome).toEqual({ kind: "sent" });
+    expect(sends).toBe(1);
+    expect(events.listenerCount()).toBe(0);
+  });
 
-    events.emit("input_accepted", {
-      request_id: "request-other",
-      value: "wrong",
+  test("only a correlated explicit failure fails the current attempt", async () => {
+    const events = new FakeEventSource();
+    const receipt = command(events, "request-current");
+    events.emit("input_failed", {
+      serverId: "server-a",
+      request_id: "request-previous",
+      code: "old_failure",
+      message: "old attempt",
     });
-    expect(settled).toBe(false);
-    events.emit("input_accepted", {
-      request_id: "request-delayed",
-      value: "accepted",
+    expect(events.listenerCount()).toBe(3);
+    events.emit("input_failed", {
+      serverId: "server-a",
+      request_id: "request-current",
+      code: "send_input_failed",
+      message: "provider refused input",
     });
     expect(await receipt.outcome).toEqual({
-      kind: "confirmed",
-      value: "accepted",
+      kind: "failed",
+      failure: {
+        requestId: "request-current",
+        code: "send_input_failed",
+        message: "provider refused input",
+      },
     });
     expect(events.listenerCount()).toBe(0);
   });
 
-  test("missing ACK and ambiguous daemon error are unconfirmed, never rejected", async () => {
-    const missingEvents = new FakeEventSource();
-    const missing = dispatchStructuredCommand({
-      requestId: "request-missing",
-      eventSource: missingEvents,
-      confirmedType: "input_accepted",
-      rejectedType: "input_rejected",
-      matches: (payload) => payload.request_id === "request-missing",
-      normalizeConfirmed: (payload) => payload,
-      sendNow: () => {},
-      timeoutMs: 1,
+  test("connection close cleans observers without inventing a disposition", async () => {
+    const events = new FakeEventSource();
+    let sends = 0;
+    const receipt = command(events, "request-uncertain", () => {
+      sends += 1;
     });
-    expect(await missing.outcome).toEqual({ kind: "unconfirmed" });
-
-    const ambiguousEvents = new FakeEventSource();
-    const ambiguous = dispatchStructuredCommand({
-      requestId: "request-ambiguous",
-      eventSource: ambiguousEvents,
-      confirmedType: "input_accepted",
-      rejectedType: "input_rejected",
-      matches: (payload) => payload.request_id === "request-ambiguous",
-      normalizeConfirmed: (payload) => payload,
-      sendNow: () => {},
-      timeoutMs: 100,
+    events.emit("disconnected", {
+      serverId: "server-other",
+      reason: "transport_closed",
     });
-    ambiguousEvents.emit("input_unconfirmed", {
-      request_id: "request-ambiguous",
+    expect(events.listenerCount()).toBe(3);
+    events.emit("disconnected", {
+      serverId: "server-a",
+      reason: "transport_closed",
     });
-    expect(await ambiguous.outcome).toEqual({ kind: "unconfirmed" });
+    expect(await receipt.outcome).toEqual({ kind: "connection_closed" });
+    events.emit("input_sent", {
+      serverId: "server-a",
+      request_id: "request-uncertain",
+    });
+    expect(sends).toBe(1);
+    expect(events.listenerCount()).toBe(0);
   });
 
-  test("only the correlated operation rejection produces a retryable failure", async () => {
+  test("synchronous send failure throws and removes all observers", () => {
     const events = new FakeEventSource();
-    const receipt = dispatchStructuredCommand({
-      requestId: "request-rejected",
-      eventSource: events,
-      confirmedType: "input_accepted",
-      rejectedType: "input_rejected",
-      matches: (payload) => payload.request_id === "request-rejected",
-      normalizeConfirmed: (payload) => payload,
-      sendNow: () => {},
-      timeoutMs: 100,
-    });
-    events.emit("input_rejected", {
-      request_id: "request-other",
-      code: "wrong",
-      message: "wrong request",
-    });
-    events.emit("input_rejected", {
-      request_id: "request-rejected",
-      code: "structured_lifecycle_syncing",
-      message: "Refresh and retry.",
-    });
-    expect(await receipt.outcome).toEqual({
-      kind: "rejected",
-      rejection: {
-        requestId: "request-rejected",
-        code: "structured_lifecycle_syncing",
-        message: "Refresh and retry.",
-      },
-    });
-  });
-
-  test("sendNow failure throws synchronously and removes acknowledgement listeners", () => {
-    const events = new FakeEventSource();
-    expect(() => dispatchStructuredCommand({
-      requestId: "request-local-failure",
-      eventSource: events,
-      confirmedType: "input_accepted",
-      rejectedType: "input_rejected",
-      matches: (payload) => payload.request_id === "request-local-failure",
-      normalizeConfirmed: (payload) => payload,
-      sendNow: () => {
-        throw new Error("socket closed");
-      },
+    expect(() => command(events, "request-local-failure", () => {
+      throw new Error("socket closed");
     })).toThrow("socket closed");
     expect(events.listenerCount()).toBe(0);
   });

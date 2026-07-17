@@ -9,7 +9,6 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/daoleno/zen/daemon/classifier"
@@ -22,19 +21,6 @@ const (
 	cursorTranscriptAge      = 72 * time.Hour
 )
 
-type cachedCursorConversation struct {
-	size         int64
-	modTime      time.Time
-	conversation CodexConversation
-}
-
-var cursorConversationCache = struct {
-	sync.Mutex
-	byPath map[string]cachedCursorConversation
-}{
-	byPath: map[string]cachedCursorConversation{},
-}
-
 type cursorTranscriptCandidate struct {
 	ID        string
 	CWD       string
@@ -43,8 +29,9 @@ type cursorTranscriptCandidate struct {
 	Updated   time.Time
 }
 
-func loadCursorConversationForAgent(agent classifier.Agent, now time.Time) (CodexConversation, error) {
+func (r *ProviderConversationReader) loadCursorConversationForAgent(agent classifier.Agent, now time.Time) (CodexConversation, error) {
 	if strings.TrimSpace(agent.Cwd) == "" {
+		r.resetSource()
 		return CodexConversation{
 			Available: false,
 			Reason:    "missing_cwd",
@@ -54,9 +41,11 @@ func loadCursorConversationForAgent(agent classifier.Agent, now time.Time) (Code
 
 	candidate, ok, err := findCursorTranscript(agent, now)
 	if err != nil {
+		r.resetSource()
 		return CodexConversation{}, err
 	}
 	if !ok {
+		r.resetSource()
 		return CodexConversation{
 			Available: false,
 			Reason:    "transcript_not_found",
@@ -64,7 +53,7 @@ func loadCursorConversationForAgent(agent classifier.Agent, now time.Time) (Code
 		}, nil
 	}
 
-	conversation, err := loadCachedCursorConversation(candidate.Path)
+	conversation, err := r.loadCursorConversation(candidate.Path)
 	if err != nil {
 		return CodexConversation{}, err
 	}
@@ -80,35 +69,8 @@ func loadCursorConversationForAgent(agent classifier.Agent, now time.Time) (Code
 	return conversation, nil
 }
 
-func loadCachedCursorConversation(path string) (CodexConversation, error) {
-	info, err := os.Stat(path)
-	if err != nil {
-		return CodexConversation{}, err
-	}
-
-	cursorConversationCache.Lock()
-	if cached, ok := cursorConversationCache.byPath[path]; ok &&
-		cached.size == info.Size() &&
-		cached.modTime.Equal(info.ModTime()) {
-		conversation := cached.conversation
-		cursorConversationCache.Unlock()
-		return conversation, nil
-	}
-	cursorConversationCache.Unlock()
-
-	conversation, err := parseCursorConversation(path)
-	if err != nil {
-		return CodexConversation{}, err
-	}
-
-	cursorConversationCache.Lock()
-	cursorConversationCache.byPath[path] = cachedCursorConversation{
-		size:         info.Size(),
-		modTime:      info.ModTime(),
-		conversation: conversation,
-	}
-	cursorConversationCache.Unlock()
-	return conversation, nil
+func (r *ProviderConversationReader) loadCursorConversation(path string) (CodexConversation, error) {
+	return r.loadFileConversation(AgentProviderCursor, path, parseCursorConversation)
 }
 
 func findCursorTranscript(agent classifier.Agent, now time.Time) (cursorTranscriptCandidate, bool, error) {
@@ -212,9 +174,9 @@ func consumeCursorJSONL(path string, consume func(int, []byte)) error {
 }
 
 type cursorConversationBuilder struct {
-	sourceID      string
-	turnLifecycle codexConversationTurnLifecycle
-	events        []CodexConversationEvent
+	sourceID          string
+	activityLifecycle providerActivityLifecycle
+	events            []CodexConversationEvent
 }
 
 func newCursorConversationBuilder(sourceID string) *cursorConversationBuilder {
@@ -228,13 +190,13 @@ func (b *cursorConversationBuilder) consumeLine(lineNumber int, line []byte) {
 		Timestamp string `json:"timestamp"`
 	}
 	if json.Unmarshal(line, &typed) == nil && strings.EqualFold(strings.TrimSpace(typed.Type), "turn_ended") {
-		turnID := ""
-		if b.turnLifecycle.turn == nil {
-			turnID = conversationTurnID(b.sourceID, "", lineNumber)
+		activityID := ""
+		if b.activityLifecycle.activity == nil {
+			activityID = providerActivityID(b.sourceID, "", lineNumber)
 		}
-		b.turnLifecycle.settle(
-			turnID,
-			cursorTurnEndStatus(typed.Status),
+		b.activityLifecycle.settle(
+			activityID,
+			cursorActivityEndStatus(typed.Status),
 			normalizeCodexTimestamp(typed.Timestamp),
 		)
 		b.addEvent(CodexConversationEvent{
@@ -268,7 +230,7 @@ func (b *cursorConversationBuilder) consumeLine(lineNumber int, line []byte) {
 		if parsed := cursorTimestampFromLine(line); !parsed.IsZero() {
 			startedAt = parsed.UTC().Format(time.RFC3339Nano)
 		}
-		b.turnLifecycle.start(conversationTurnID(b.sourceID, "", lineNumber), startedAt)
+		b.activityLifecycle.start(providerActivityID(b.sourceID, "", lineNumber), startedAt)
 	}
 	if body != "" {
 		kind := "assistant_message"
@@ -298,16 +260,16 @@ func (b *cursorConversationBuilder) consumeLine(lineNumber int, line []byte) {
 	}
 }
 
-func cursorTurnEndStatus(status string) string {
+func cursorActivityEndStatus(status string) ProviderActivityStatus {
 	switch strings.ToLower(strings.TrimSpace(status)) {
 	case "failed", "failure", "error":
-		return CodexConversationTurnFailed
+		return ProviderActivityFailed
 	case "cancelled", "canceled":
-		return CodexConversationTurnCancelled
+		return ProviderActivityCancelled
 	case "interrupted", "aborted":
-		return CodexConversationTurnInterrupted
+		return ProviderActivityInterrupted
 	default:
-		return CodexConversationTurnCompleted
+		return ProviderActivityCompleted
 	}
 }
 
@@ -389,12 +351,12 @@ func (b *cursorConversationBuilder) conversation() CodexConversation {
 			b.events[index].Seq = cursorEventSeq(index+1, 0)
 		}
 	}
-	return conversationWithTurn(CodexConversation{
+	return conversationWithActivity(CodexConversation{
 		Available: true,
 		Source:    cursorConversationSource,
 		SessionID: b.sourceID,
 		Events:    b.events,
-	}, &b.turnLifecycle)
+	}, &b.activityLifecycle)
 }
 
 type cursorContentBlock struct {

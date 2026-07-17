@@ -224,7 +224,7 @@ func TestParseClaudeConversation_StableRefreshIDs(t *testing.T) {
 	}
 }
 
-func TestParseClaudeConversation_AppendedThinkingAndTextTrackTurnLifecycle(t *testing.T) {
+func TestParseClaudeConversation_AppendedThinkingAndTextTrackProviderActivity(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "progressive.jsonl")
 	user := map[string]any{
 		"type":      "user",
@@ -268,28 +268,25 @@ func TestParseClaudeConversation_AppendedThinkingAndTextTrackTurnLifecycle(t *te
 	if err != nil {
 		t.Fatalf("user snapshot: %v", err)
 	}
-	if userSnapshot.Active == nil || !*userSnapshot.Active || len(userSnapshot.Events) != 1 {
-		t.Fatalf("user snapshot = %#v, want active turn", userSnapshot)
+	if len(userSnapshot.Events) != 1 {
+		t.Fatalf("user snapshot = %#v, want one user event", userSnapshot)
 	}
-	if userSnapshot.Turn == nil || userSnapshot.Turn.Status != CodexConversationTurnRunning ||
-		!strings.Contains(userSnapshot.Turn.ID, "uuid-user") || userSnapshot.Turn.StartedAt != "2026-07-15T01:00:00Z" {
-		t.Fatalf("user lifecycle = %#v", userSnapshot.Turn)
+	if userSnapshot.Activity == nil || userSnapshot.Activity.Status != ProviderActivityRunning ||
+		!strings.Contains(userSnapshot.Activity.ID, "uuid-user") || userSnapshot.Activity.StartedAt != "2026-07-15T01:00:00Z" {
+		t.Fatalf("user lifecycle = %#v", userSnapshot.Activity)
 	}
 	userID := userSnapshot.Events[0].ID
-	turnID := userSnapshot.Turn.ID
-	startedAt := userSnapshot.Turn.StartedAt
+	turnID := userSnapshot.Activity.ID
+	startedAt := userSnapshot.Activity.StartedAt
 
 	writeJSONL(t, path, user, thinking)
 	thinkingSnapshot, err := parseClaudeConversation(path)
 	if err != nil {
 		t.Fatalf("thinking snapshot: %v", err)
 	}
-	if thinkingSnapshot.Active == nil || !*thinkingSnapshot.Active {
-		t.Fatalf("thinking-only snapshot must stay active while the text record is pending: %#v", thinkingSnapshot.Active)
-	}
-	if thinkingSnapshot.Turn == nil || thinkingSnapshot.Turn.ID != turnID || thinkingSnapshot.Turn.StartedAt != startedAt ||
-		thinkingSnapshot.Turn.Status != CodexConversationTurnRunning {
-		t.Fatalf("thinking lifecycle changed identity/start: %#v", thinkingSnapshot.Turn)
+	if thinkingSnapshot.Activity == nil || thinkingSnapshot.Activity.ID != turnID || thinkingSnapshot.Activity.StartedAt != startedAt ||
+		thinkingSnapshot.Activity.Status != ProviderActivityRunning {
+		t.Fatalf("thinking lifecycle changed identity/start: %#v", thinkingSnapshot.Activity)
 	}
 	if len(thinkingSnapshot.Events) != 2 || thinkingSnapshot.Events[0].ID != userID {
 		t.Fatalf("thinking snapshot changed existing identity: %#v", thinkingSnapshot.Events)
@@ -304,12 +301,9 @@ func TestParseClaudeConversation_AppendedThinkingAndTextTrackTurnLifecycle(t *te
 	if err != nil {
 		t.Fatalf("answer snapshot: %v", err)
 	}
-	if answerSnapshot.Active == nil || *answerSnapshot.Active {
-		t.Fatalf("terminal text record must finish the turn: %#v", answerSnapshot.Active)
-	}
-	if answerSnapshot.Turn == nil || answerSnapshot.Turn.ID != turnID || answerSnapshot.Turn.StartedAt != startedAt ||
-		answerSnapshot.Turn.Status != CodexConversationTurnCompleted || answerSnapshot.Turn.SettledAt != "2026-07-15T01:00:02Z" {
-		t.Fatalf("terminal lifecycle = %#v", answerSnapshot.Turn)
+	if answerSnapshot.Activity == nil || answerSnapshot.Activity.ID != turnID || answerSnapshot.Activity.StartedAt != startedAt ||
+		answerSnapshot.Activity.Status != ProviderActivityCompleted || answerSnapshot.Activity.SettledAt != "2026-07-15T01:00:02Z" {
+		t.Fatalf("terminal lifecycle = %#v", answerSnapshot.Activity)
 	}
 	if len(answerSnapshot.Events) != 3 || answerSnapshot.Events[0].ID != userID || answerSnapshot.Events[1].ID != thinkingID {
 		t.Fatalf("answer snapshot changed appended event identities: %#v", answerSnapshot.Events)
@@ -319,7 +313,7 @@ func TestParseClaudeConversation_AppendedThinkingAndTextTrackTurnLifecycle(t *te
 	}
 }
 
-func TestParseClaudeConversation_ThinkingOnlyLimitStopSettlesTurn(t *testing.T) {
+func TestParseClaudeConversation_ThinkingOnlyLimitStopSettlesActivity(t *testing.T) {
 	for _, stopReason := range []string{"max_tokens", "stop_sequence"} {
 		t.Run(stopReason, func(t *testing.T) {
 			path := filepath.Join(t.TempDir(), "terminal-thinking.jsonl")
@@ -346,13 +340,10 @@ func TestParseClaudeConversation_ThinkingOnlyLimitStopSettlesTurn(t *testing.T) 
 			if err != nil {
 				t.Fatal(err)
 			}
-			if got.Turn == nil || got.Turn.Status != CodexConversationTurnCompleted ||
-				got.Turn.StartedAt != "2026-07-15T02:00:00Z" ||
-				got.Turn.SettledAt != "2026-07-15T02:00:01Z" {
-				t.Fatalf("thinking-only %s lifecycle = %#v", stopReason, got.Turn)
-			}
-			if got.Active == nil || *got.Active {
-				t.Fatalf("thinking-only %s active = %#v", stopReason, got.Active)
+			if got.Activity == nil || got.Activity.Status != ProviderActivityCompleted ||
+				got.Activity.StartedAt != "2026-07-15T02:00:00Z" ||
+				got.Activity.SettledAt != "2026-07-15T02:00:01Z" {
+				t.Fatalf("thinking-only %s lifecycle = %#v", stopReason, got.Activity)
 			}
 		})
 	}
@@ -380,7 +371,7 @@ func TestParseClaudeConversation_MalformedLinesAreSkipped(t *testing.T) {
 	assertEvent(t, got.Events[1], "assistant_message", "assistant", "", "ok")
 }
 
-func TestLoadClaudeConversationForAgent_FindsResumeSession(t *testing.T) {
+func TestProviderConversationReaderClaudeFindsResumeSession(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 
@@ -403,7 +394,8 @@ func TestLoadClaudeConversationForAgent_FindsResumeSession(t *testing.T) {
 		map[string]any{"type": "system", "cwd": cwd, "sessionId": "resume-session"},
 		map[string]any{
 			"type": "user", "cwd": cwd, "sessionId": "resume-session", "uuid": "new-u",
-			"message": map[string]any{"role": "user", "content": "resume prompt"},
+			"timestamp": "2026-07-15T01:00:00Z",
+			"message":   map[string]any{"role": "user", "content": "resume prompt"},
 		},
 	)
 	now := time.Now()
@@ -414,15 +406,15 @@ func TestLoadClaudeConversationForAgent_FindsResumeSession(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	got, err := LoadCodexConversationForAgent(classifier.Agent{
+	got, err := NewProviderConversationReader().Load(classifier.Agent{
 		Name:      "claude",
 		Command:   "claude --resume resume-session",
 		Cwd:       cwd,
 		State:     classifier.StateRunning,
 		StartedAt: now.Add(-time.Minute),
-	}, now)
+	}, AgentProviderClaude, now)
 	if err != nil {
-		t.Fatalf("LoadCodexConversationForAgent: %v", err)
+		t.Fatalf("ProviderConversationReader.Load: %v", err)
 	}
 	if !got.Available || got.SessionID != "resume-session" || got.Path != newPath {
 		t.Fatalf("conversation = %#v", got)
@@ -430,48 +422,49 @@ func TestLoadClaudeConversationForAgent_FindsResumeSession(t *testing.T) {
 	if len(got.Events) == 0 || !strings.Contains(got.Events[0].Body, "resume prompt") {
 		t.Fatalf("events = %#v", got.Events)
 	}
-	if got.Active == nil || !*got.Active {
-		t.Fatalf("active = %#v", got.Active)
+	if got.Activity == nil || got.Activity.Status != ProviderActivityRunning {
+		t.Fatalf("Activity = %#v, want running", got.Activity)
 	}
 }
 
-func TestLoadClaudeConversationForAgent_UnavailableWithoutTranscript(t *testing.T) {
+func TestProviderConversationReaderClaudeUnavailableWithoutTranscript(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 
-	got, err := LoadCodexConversationForAgent(classifier.Agent{
+	got, err := NewProviderConversationReader().Load(classifier.Agent{
 		Name:    "claude",
 		Command: "claude",
 		Cwd:     "/repo/missing",
-	}, time.Now())
+	}, AgentProviderClaude, time.Now())
 	if err != nil {
-		t.Fatalf("LoadCodexConversationForAgent: %v", err)
+		t.Fatalf("ProviderConversationReader.Load: %v", err)
 	}
 	if got.Available || got.Reason != "transcript_not_found" {
 		t.Fatalf("conversation = %#v", got)
 	}
 }
 
-func TestLoadClaudeConversationForAgent_ProviderSelection(t *testing.T) {
-	got, err := LoadCodexConversationForAgent(classifier.Agent{
+func TestProviderConversationReaderClaudeExplicitProviderSelection(t *testing.T) {
+	reader := NewProviderConversationReader()
+	got, err := reader.Load(classifier.Agent{
 		Name:    "claude",
 		Command: "claude",
 		Cwd:     "",
-	}, time.Now())
+	}, AgentProviderClaude, time.Now())
 	if err != nil {
-		t.Fatalf("LoadCodexConversationForAgent: %v", err)
+		t.Fatalf("ProviderConversationReader.Load: %v", err)
 	}
 	if got.Available || got.Reason != "missing_cwd" {
 		t.Fatalf("claude missing cwd = %#v", got)
 	}
 
-	other, err := LoadCodexConversationForAgent(classifier.Agent{
-		Name:    "other",
-		Command: "my-agent",
+	other, err := reader.Load(classifier.Agent{
+		Name:    "claude",
+		Command: "claude",
 		Cwd:     "/repo",
-	}, time.Now())
+	}, "unknown", time.Now())
 	if err != nil {
-		t.Fatalf("other LoadCodexConversationForAgent: %v", err)
+		t.Fatalf("unknown ProviderConversationReader.Load: %v", err)
 	}
 	if other.Available || other.Reason != "not_structured_agent" {
 		t.Fatalf("other = %#v", other)
@@ -533,7 +526,7 @@ func TestParseClaudeConversation_FailedToolResult(t *testing.T) {
 	}
 }
 
-func TestLoadClaudeConversationForAgent_AllMalformedUsesTerminalFallback(t *testing.T) {
+func TestProviderConversationReaderClaudeAllMalformedIsUnavailable(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 
@@ -564,19 +557,16 @@ func TestLoadClaudeConversationForAgent_AllMalformedUsesTerminalFallback(t *test
 		State:     classifier.StateRunning,
 		StartedAt: now.Add(-time.Minute),
 	}
-	got, err := LoadCodexConversationForAgent(agent, now)
+	got, err := NewProviderConversationReader().Load(agent, AgentProviderClaude, now)
 	if err != nil {
-		t.Fatalf("LoadCodexConversationForAgent: %v", err)
+		t.Fatalf("ProviderConversationReader.Load: %v", err)
 	}
 	if got.Available || got.Reason != "transcript_malformed" {
 		t.Fatalf("conversation = %#v", got)
 	}
-	if ShouldUseTerminalSnapshotConversationFallback(agent, got) {
-		t.Fatal("structured Claude must not dump terminal contents into Chat on malformed transcript")
-	}
 }
 
-func TestLoadClaudeConversationForAgent_StartedAtSelectsMatchingSession(t *testing.T) {
+func TestProviderConversationReaderClaudeStartedAtSelectsMatchingSession(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 
@@ -620,15 +610,15 @@ func TestLoadClaudeConversationForAgent_StartedAtSelectsMatchingSession(t *testi
 		t.Fatal(err)
 	}
 
-	got, err := LoadCodexConversationForAgent(classifier.Agent{
+	got, err := NewProviderConversationReader().Load(classifier.Agent{
 		Name:      "claude",
 		Command:   "claude",
 		Cwd:       cwd,
 		State:     classifier.StateRunning,
 		StartedAt: startedAt,
-	}, now)
+	}, AgentProviderClaude, now)
 	if err != nil {
-		t.Fatalf("LoadCodexConversationForAgent: %v", err)
+		t.Fatalf("ProviderConversationReader.Load: %v", err)
 	}
 	if !got.Available || got.SessionID != "matched-session" || got.Path != matchedPath {
 		t.Fatalf("conversation = %#v", got)
@@ -638,7 +628,7 @@ func TestLoadClaudeConversationForAgent_StartedAtSelectsMatchingSession(t *testi
 	}
 }
 
-func TestLoadClaudeConversationForAgent_AmbiguousSessionsYieldNotFound(t *testing.T) {
+func TestProviderConversationReaderClaudeAmbiguousSessionsYieldNotFound(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 
@@ -666,20 +656,17 @@ func TestLoadClaudeConversationForAgent_AmbiguousSessionsYieldNotFound(t *testin
 		}
 	}
 
-	got, err := LoadCodexConversationForAgent(classifier.Agent{
+	got, err := NewProviderConversationReader().Load(classifier.Agent{
 		Name:      "claude",
 		Command:   "claude",
 		Cwd:       cwd,
 		StartedAt: time.Time{}, // no start anchor and multiple fresh sessions
-	}, now)
+	}, AgentProviderClaude, now)
 	if err != nil {
-		t.Fatalf("LoadCodexConversationForAgent: %v", err)
+		t.Fatalf("ProviderConversationReader.Load: %v", err)
 	}
 	if got.Available || got.Reason != "transcript_not_found" {
 		t.Fatalf("conversation = %#v", got)
-	}
-	if ShouldUseTerminalSnapshotConversationFallback(classifier.Agent{Command: "claude"}, got) {
-		t.Fatal("structured Claude must not dump terminal contents into Chat when transcript bind is ambiguous")
 	}
 }
 
