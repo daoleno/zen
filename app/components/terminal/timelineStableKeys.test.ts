@@ -14,6 +14,22 @@ function assistant(body: string): CodexConversationEvent {
   };
 }
 
+function tool(
+  body: string,
+  status: "running" | "done",
+): CodexConversationEvent {
+  return {
+    id: "tool-call-7",
+    seq: 7,
+    kind: "tool",
+    tool_name: "Grep",
+    input: `{"pattern":"Tool header","path":"app"}`,
+    body,
+    status,
+    partial: status === "running",
+  };
+}
+
 describe("timeline identity", () => {
   test("streaming content changes retain the daemon event key", () => {
     const partial = buildZenTimeline([assistant("partial")]);
@@ -30,5 +46,23 @@ describe("timeline identity", () => {
     });
 
     expect(rendered.map((item) => item.id)).toEqual(["assistant-message-7"]);
+  });
+
+  test("same-logical-Tool streaming upserts retain the mounted row key", () => {
+    const running = buildZenTimeline([tool("first match", "running")]);
+    const done = buildZenTimeline([
+      tool("first match\nsecond match", "done"),
+    ]);
+    const renderedRunning = buildTimelineRenderItems([...running].reverse(), {
+      showDateDividers: false,
+    });
+    const renderedDone = buildTimelineRenderItems([...done].reverse(), {
+      showDateDividers: false,
+    });
+
+    expect(running[0]?.type).toBe("activity");
+    expect(done[0]?.type).toBe("activity");
+    expect(renderedRunning[0]?.id).toBe("tool-call-7");
+    expect(renderedDone[0]?.id).toBe(renderedRunning[0]?.id);
   });
 });

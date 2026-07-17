@@ -33,8 +33,6 @@ interface NativeTerminalVtModule {
   createTerminal(cols: number, rows: number): number;
   destroyTerminal(handle: number): void;
   writeData(handle: number, data: string): void;
-  scrollViewport?(handle: number, delta: number): void;
-  scrollViewportToBottom?(handle: number): void;
   resize(handle: number, cols: number, rows: number, cellWidth: number, cellHeight: number): void;
   setTheme?(handle: number, foreground: string, background: string, cursor: string, palette: string[]): void;
   encodeMouseEvent?(
@@ -47,7 +45,6 @@ interface NativeTerminalVtModule {
     anyButtonPressed: boolean,
   ): string;
   getRenderSnapshot?: (handle: number) => NativeRenderSnapshot;
-  getVisibleText(handle: number): string;
   getVisibleHtml(handle: number): string;
   getCrashBreadcrumb(): NativeCrashBreadcrumb | null;
   clearCrashBreadcrumb(): void;
@@ -144,28 +141,6 @@ export function writeData(handle: number, data: string): void {
 }
 
 /**
- * Scroll the local viewport by terminal rows. Negative = older content, positive = newer.
- */
-export function scrollViewport(handle: number, delta: number): void {
-  if (typeof ZenTerminalVt.scrollViewport !== 'function' || delta === 0) {
-    return;
-  }
-
-  ZenTerminalVt.scrollViewport(handle, delta);
-}
-
-/**
- * Return the local viewport to the live bottom.
- */
-export function scrollViewportToBottom(handle: number): void {
-  if (typeof ZenTerminalVt.scrollViewportToBottom !== 'function') {
-    return;
-  }
-
-  ZenTerminalVt.scrollViewportToBottom(handle);
-}
-
-/**
  * Resize the terminal grid.
  */
 export function resize(
@@ -257,13 +232,6 @@ export function getRenderSnapshot(handle: number): RenderSnapshot {
       ? snapshot.html
       : ZenTerminalVt.getVisibleHtml(handle),
   };
-}
-
-/**
- * Get the full visible text as a string (for text selection / copy).
- */
-export function getVisibleText(handle: number): string {
-  return ZenTerminalVt.getVisibleText(handle);
 }
 
 /**

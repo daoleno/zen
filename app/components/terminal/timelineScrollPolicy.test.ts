@@ -8,6 +8,47 @@ import {
   timelineDistanceFromLatest,
   timelineMutationDecision,
 } from "./timelineScrollPolicy";
+import {
+  createTimelineActivityExpansionState,
+  reduceTimelineActivityExpansion,
+  resolveTimelineActivityExpansion,
+  type TimelineActivityExpansionState,
+} from "./CodexTimelineActivityExpansionState";
+
+type StreamingTouchOutcome = {
+  feedbackShown: boolean;
+  pressCancelled: boolean;
+  expansionState: TimelineActivityExpansionState;
+};
+
+/**
+ * Replays the native responder ordering behind a Tool-header tap. TouchableOpacity
+ * first accepts the touch and shows onPressIn feedback. If the pinned timeline
+ * then calls scrollToOffset for a streaming content-size mutation, ScrollView's
+ * onScrollShouldSetResponder sees the still-active touch, takes the responder,
+ * and Pressability receives RESPONDER_TERMINATED instead of RESPONDER_RELEASE.
+ */
+function releaseAcceptedToolTouchAfterMutation(
+  expansionState: TimelineActivityExpansionState,
+  decision: ReturnType<typeof timelineMutationDecision>,
+): StreamingTouchOutcome {
+  const outcome: StreamingTouchOutcome = {
+    feedbackShown: true,
+    pressCancelled: false,
+    expansionState,
+  };
+
+  if (decision === "follow-bottom") {
+    outcome.pressCancelled = true;
+  }
+  if (!outcome.pressCancelled) {
+    outcome.expansionState = reduceTimelineActivityExpansion(
+      expansionState,
+      { eventId: expansionState.eventId, defaultExpanded: false },
+    );
+  }
+  return outcome;
+}
 
 describe("timeline scroll policy", () => {
   test("append while detached preserves the visible anchor and exposes new messages", () => {
@@ -32,6 +73,57 @@ describe("timeline scroll policy", () => {
   test("attached-bottom mutations follow the latest content", () => {
     expect(timelineMutationDecision(INITIAL_TIMELINE_SCROLL_STATE)).toBe(
       "follow-bottom",
+    );
+  });
+
+  test("same-event streaming cannot cancel an accepted Tool-header touch", () => {
+    const decision = timelineMutationDecision(
+      INITIAL_TIMELINE_SCROLL_STATE,
+      true,
+    );
+    let expansionState = createTimelineActivityExpansionState("tool-stream");
+
+    const opened = releaseAcceptedToolTouchAfterMutation(
+      expansionState,
+      decision,
+    );
+    expect(opened).toMatchObject({
+      feedbackShown: true,
+      pressCancelled: false,
+    });
+    expect(resolveTimelineActivityExpansion(
+      opened.expansionState,
+      "tool-stream",
+      false,
+    )).toBe(true);
+    expect(decision).toBe("suspend-implicit-anchor");
+
+    expansionState = opened.expansionState;
+    const closed = releaseAcceptedToolTouchAfterMutation(
+      expansionState,
+      decision,
+    );
+    expect(closed.pressCancelled).toBe(false);
+    expect(resolveTimelineActivityExpansion(
+      closed.expansionState,
+      "tool-stream",
+      false,
+    )).toBe(false);
+
+    expect(timelineMutationDecision(
+      INITIAL_TIMELINE_SCROLL_STATE,
+      false,
+    )).toBe("follow-bottom");
+  });
+
+  test("touch suspension preserves detached reader scroll intent", () => {
+    const detached = { mode: "detached" as const };
+
+    expect(timelineMutationDecision(detached, true)).toBe(
+      "suspend-implicit-anchor",
+    );
+    expect(timelineMutationDecision(detached, false)).toBe(
+      "preserve-visible-anchor",
     );
   });
 

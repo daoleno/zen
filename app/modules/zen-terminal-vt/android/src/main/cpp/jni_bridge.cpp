@@ -66,12 +66,11 @@ static jstring newStringFromUtf8Bytes(JNIEnv* env, const uint8_t* bytes, size_t 
 #endif
 
 /**
- * Per-terminal state: owns the terminal, render state, and formatters.
+ * Per-terminal state: owns the terminal, render state, and HTML formatter.
  */
 struct TerminalHandle {
     GhosttyTerminal terminal = nullptr;
     GhosttyRenderState render_state = nullptr;
-    GhosttyFormatter plain_formatter = nullptr;
     GhosttyFormatter html_formatter = nullptr;
     GhosttyMouseEncoder mouse_encoder = nullptr;
     uint16_t cols = 0;
@@ -81,9 +80,8 @@ struct TerminalHandle {
     bool force_full_snapshot = true;
 };
 
-static GhosttyResult createTerminalFormatter(
+static GhosttyResult createHtmlFormatter(
     TerminalHandle* h,
-    GhosttyFormatterFormat format,
     GhosttyFormatter* out)
 {
     if (!h || !out) {
@@ -91,20 +89,17 @@ static GhosttyResult createTerminalFormatter(
     }
 
     GhosttyFormatterTerminalOptions opts = GHOSTTY_INIT_SIZED(GhosttyFormatterTerminalOptions);
-    opts.emit = format;
-    opts.trim = format == GHOSTTY_FORMATTER_FORMAT_PLAIN;
+    opts.emit = GHOSTTY_FORMATTER_FORMAT_HTML;
+    opts.trim = false;
 
     return ghostty_formatter_terminal_new(nullptr, out, h->terminal, opts);
 }
 
-static std::string formatTerminalScreen(
-    TerminalHandle* h,
-    GhosttyFormatterFormat format)
+static std::string formatTerminalScreen(TerminalHandle* h)
 {
     if (!h) return {};
 
-    GhosttyFormatter formatter =
-        format == GHOSTTY_FORMATTER_FORMAT_HTML ? h->html_formatter : h->plain_formatter;
+    GhosttyFormatter formatter = h->html_formatter;
     if (!formatter) {
         return {};
     }
@@ -1088,19 +1083,9 @@ Java_expo_modules_zenterminalvt_ZenTerminalVtModule_nativeCreateTerminal(
         return 0;
     }
 
-    res = createTerminalFormatter(h, GHOSTTY_FORMATTER_FORMAT_PLAIN, &h->plain_formatter);
-    if (res != GHOSTTY_SUCCESS) {
-        LOGE("plain formatter init failed: %d", res);
-        ghostty_render_state_free(h->render_state);
-        ghostty_terminal_free(h->terminal);
-        delete h;
-        return 0;
-    }
-
-    res = createTerminalFormatter(h, GHOSTTY_FORMATTER_FORMAT_HTML, &h->html_formatter);
+    res = createHtmlFormatter(h, &h->html_formatter);
     if (res != GHOSTTY_SUCCESS) {
         LOGE("html formatter init failed: %d", res);
-        ghostty_formatter_free(h->plain_formatter);
         ghostty_render_state_free(h->render_state);
         ghostty_terminal_free(h->terminal);
         delete h;
@@ -1111,7 +1096,6 @@ Java_expo_modules_zenterminalvt_ZenTerminalVtModule_nativeCreateTerminal(
     if (res != GHOSTTY_SUCCESS) {
         LOGE("mouse encoder init failed: %d", res);
         ghostty_formatter_free(h->html_formatter);
-        ghostty_formatter_free(h->plain_formatter);
         ghostty_render_state_free(h->render_state);
         ghostty_terminal_free(h->terminal);
         delete h;
@@ -1138,7 +1122,6 @@ Java_expo_modules_zenterminalvt_ZenTerminalVtModule_nativeDestroyTerminal(
 
     ghostty_mouse_encoder_free(h->mouse_encoder);
     ghostty_formatter_free(h->html_formatter);
-    ghostty_formatter_free(h->plain_formatter);
     ghostty_render_state_free(h->render_state);
     ghostty_terminal_free(h->terminal);
     delete h;
@@ -1162,35 +1145,6 @@ Java_expo_modules_zenterminalvt_ZenTerminalVtModule_nativeWriteData(
         (size_t)len
     );
     env->ReleaseStringUTFChars(data, utf8);
-}
-
-JNIEXPORT void JNICALL
-Java_expo_modules_zenterminalvt_ZenTerminalVtModule_nativeScrollViewport(
-    JNIEnv*, jobject, jlong handle, jint delta)
-{
-    auto* h = getHandle(handle);
-    if (!h || delta == 0) return;
-
-    GhosttyTerminalScrollViewport behavior = {};
-    behavior.tag = GHOSTTY_SCROLL_VIEWPORT_DELTA;
-    behavior.value.delta = static_cast<intptr_t>(delta);
-
-    ghostty_terminal_scroll_viewport(h->terminal, behavior);
-    markFullSnapshot(h);
-}
-
-JNIEXPORT void JNICALL
-Java_expo_modules_zenterminalvt_ZenTerminalVtModule_nativeScrollViewportToBottom(
-    JNIEnv*, jobject, jlong handle)
-{
-    auto* h = getHandle(handle);
-    if (!h) return;
-
-    GhosttyTerminalScrollViewport behavior = {};
-    behavior.tag = GHOSTTY_SCROLL_VIEWPORT_BOTTOM;
-
-    ghostty_terminal_scroll_viewport(h->terminal, behavior);
-    markFullSnapshot(h);
 }
 
 JNIEXPORT void JNICALL
@@ -1392,7 +1346,7 @@ Java_expo_modules_zenterminalvt_ZenTerminalVtModule_nativeGetRenderSnapshot(
     } else {
         putJString(
             "html",
-            newStringFromStdString(env, formatTerminalScreen(h, GHOSTTY_FORMATTER_FORMAT_HTML))
+            newStringFromStdString(env, formatTerminalScreen(h))
         );
     }
 
@@ -1400,14 +1354,6 @@ Java_expo_modules_zenterminalvt_ZenTerminalVtModule_nativeGetRenderSnapshot(
     clearRenderStateDirty(h->render_state);
 
     return map;
-}
-
-JNIEXPORT jstring JNICALL
-Java_expo_modules_zenterminalvt_ZenTerminalVtModule_nativeGetVisibleText(
-    JNIEnv* env, jobject, jlong handle)
-{
-    auto* h = getHandle(handle);
-    return newStringFromStdString(env, formatTerminalScreen(h, GHOSTTY_FORMATTER_FORMAT_PLAIN));
 }
 
 JNIEXPORT jstring JNICALL
@@ -1420,7 +1366,7 @@ Java_expo_modules_zenterminalvt_ZenTerminalVtModule_nativeGetVisibleHtml(
     }
 
     if (ghostty_render_state_update(h->render_state, h->terminal) != GHOSTTY_SUCCESS) {
-        return newStringFromStdString(env, formatTerminalScreen(h, GHOSTTY_FORMATTER_FORMAT_HTML));
+        return newStringFromStdString(env, formatTerminalScreen(h));
     }
 
     uint16_t renderRows = h->rows;
@@ -1431,7 +1377,7 @@ Java_expo_modules_zenterminalvt_ZenTerminalVtModule_nativeGetVisibleHtml(
         return newStringFromStdString(env, visibleHtml);
     }
 
-    return newStringFromStdString(env, formatTerminalScreen(h, GHOSTTY_FORMATTER_FORMAT_HTML));
+    return newStringFromStdString(env, formatTerminalScreen(h));
 }
 
 } // extern "C"

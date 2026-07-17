@@ -7,8 +7,6 @@ NS_ASSUME_NONNULL_BEGIN
 + (unsigned long long)createTerminalWithCols:(NSInteger)cols rows:(NSInteger)rows;
 + (void)destroyTerminal:(unsigned long long)handle;
 + (void)writeData:(NSString *)data toTerminal:(unsigned long long)handle;
-+ (void)scrollTerminal:(unsigned long long)handle byLines:(NSInteger)delta;
-+ (void)scrollTerminalToBottom:(unsigned long long)handle;
 + (void)resizeTerminal:(unsigned long long)handle
                    cols:(NSInteger)cols
                    rows:(NSInteger)rows
@@ -27,7 +25,6 @@ NS_ASSUME_NONNULL_BEGIN
                                  mods:(NSInteger)mods
                      anyButtonPressed:(BOOL)anyButtonPressed;
 + (NSDictionary<NSString *, id> *)renderSnapshotForTerminal:(unsigned long long)handle;
-+ (NSString *)visibleTextForTerminal:(unsigned long long)handle;
 + (NSString *)visibleHTMLForTerminal:(unsigned long long)handle;
 
 @end

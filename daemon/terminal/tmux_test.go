@@ -5,7 +5,7 @@ import (
 	"testing"
 )
 
-func TestTmuxNewViewSessionCommandCreatesIndependentProjection(t *testing.T) {
+func TestTmuxNewViewSessionCommandCreatesIndependentWindowSelector(t *testing.T) {
 	cmd := tmuxNewViewSessionCommand("zen-view")
 
 	want := []string{
@@ -33,7 +33,7 @@ func TestTmuxLinkViewWindowCommandReplacesOnlyBootstrapWindow(t *testing.T) {
 	}
 }
 
-func TestTmuxAttachCommandIgnoresViewSizeAndKeepsInputEnabled(t *testing.T) {
+func TestTmuxAttachCommandIsANormalSizingClient(t *testing.T) {
 	cmd := tmuxAttachCommand("zen-demo")
 
 	want := []string{
@@ -41,8 +41,6 @@ func TestTmuxAttachCommandIgnoresViewSizeAndKeepsInputEnabled(t *testing.T) {
 		"-T",
 		"RGB,256",
 		"attach-session",
-		"-f",
-		"ignore-size",
 		"-t",
 		"zen-demo",
 	}
@@ -51,36 +49,10 @@ func TestTmuxAttachCommandIgnoresViewSizeAndKeepsInputEnabled(t *testing.T) {
 	}
 }
 
-func TestTmuxStatusLines(t *testing.T) {
-	tests := []struct {
-		name    string
-		value   string
-		want    int
-		wantErr bool
-	}{
-		{name: "off", value: "off", want: 0},
-		{name: "zero", value: "0", want: 0},
-		{name: "on", value: "on", want: 1},
-		{name: "multiple", value: "3", want: 3},
-		{name: "empty", value: "", wantErr: true},
-		{name: "too large", value: "6", wantErr: true},
-	}
-	for _, test := range tests {
-		t.Run(test.name, func(t *testing.T) {
-			got, err := tmuxStatusLines(test.value)
-			if test.wantErr {
-				if err == nil {
-					t.Fatalf("tmuxStatusLines(%q) = %d, want error", test.value, got)
-				}
-				return
-			}
-			if err != nil {
-				t.Fatalf("tmuxStatusLines(%q): %v", test.value, err)
-			}
-			if got != test.want {
-				t.Fatalf("tmuxStatusLines(%q) = %d, want %d", test.value, got, test.want)
-			}
-		})
+func TestTmuxSessionSizeIsAlwaysThePhonePTYGrid(t *testing.T) {
+	session := &tmuxSession{size: Size{Cols: 44, Rows: 18}}
+	if got := session.Size(); got != (Size{Cols: 44, Rows: 18}) {
+		t.Fatalf("tmuxSession.Size() = %+v, want phone grid 44x18", got)
 	}
 }
 
@@ -165,33 +137,5 @@ func TestTmuxSourceWindowTarget(t *testing.T) {
 				t.Fatalf("tmuxSourceWindowTarget(%q) = %q, want %q", test.target, got, test.want)
 			}
 		})
-	}
-}
-
-func TestTmuxHistoryCaptureRangeUsesOnlyScrollbackRegion(t *testing.T) {
-	startLine, endLine := tmuxHistoryCaptureRange(10, 21)
-	if startLine != -21 || endLine != -10 {
-		t.Fatalf("history capture range = (%d, %d), want (%d, %d)", startLine, endLine, -21, -10)
-	}
-}
-
-func TestTmuxHistoryCaptureRangeHandlesNoHistory(t *testing.T) {
-	startLine, endLine := tmuxHistoryCaptureRange(10, 0)
-	if startLine != 0 || endLine != -1 {
-		t.Fatalf("history capture range for empty history = (%d, %d), want (%d, %d)", startLine, endLine, 0, -1)
-	}
-}
-
-func TestTmuxHistoryCaptureRangeCapsLargeHistoryToStartupBudget(t *testing.T) {
-	startLine, endLine := tmuxHistoryCaptureRange(36, 5000)
-	if startLine != -144 || endLine != -36 {
-		t.Fatalf("history capture range for large history = (%d, %d), want (%d, %d)", startLine, endLine, -144, -36)
-	}
-}
-
-func TestTmuxHistoryCaptureRangeRespectsMaximumLineBudget(t *testing.T) {
-	startLine, endLine := tmuxHistoryCaptureRange(80, 5000)
-	if startLine != -240 || endLine != -80 {
-		t.Fatalf("history capture range for tall pane = (%d, %d), want (%d, %d)", startLine, endLine, -240, -80)
 	}
 }

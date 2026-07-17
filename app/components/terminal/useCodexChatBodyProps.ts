@@ -123,6 +123,7 @@ export function useCodexChatBodyProps({
       onTimelineScrollEndDrag: timeline.handleScrollEndDrag,
       onTimelineMomentumScrollBegin: timeline.handleMomentumScrollBegin,
       onTimelineMomentumScrollEnd: timeline.handleMomentumScrollEnd,
+      onTimelineTouchActiveChange: timeline.handleTimelineTouchActiveChange,
       onTimelineContentSizeChange: timeline.handleContentSizeChange,
       onTimelineLatestOffsetChange: timeline.handleLatestOffsetChange,
       onTimelineTextSelectionGestureStart:
@@ -214,6 +215,7 @@ export function useCodexChatBodyProps({
       timeline.handleScrollEndDrag,
       timeline.handleMomentumScrollBegin,
       timeline.handleMomentumScrollEnd,
+      timeline.handleTimelineTouchActiveChange,
       timeline.handleTextSelectionGestureEnd,
       timeline.handleTextSelectionGestureStart,
       timeline.textSelectable,

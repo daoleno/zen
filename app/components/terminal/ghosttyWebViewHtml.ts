@@ -1,14 +1,31 @@
-import { Typography } from '../../constants/tokens';
 import type { TerminalThemePalette } from '../../constants/terminalThemes';
+import { TERMINAL_SCROLL_GESTURE_CONTROLLER_SOURCE } from './terminalScrollGesture';
 
-export function buildGhosttyTerminalHtml(theme: TerminalThemePalette, fontUri: string) {
-  const fontFace = `
+export function buildGhosttyTerminalHtml(
+  theme: TerminalThemePalette,
+  fontUri: string | null,
+  fontSize: number,
+  rendererGeneration: number,
+) {
+  const terminalFontSize = Number.isFinite(fontSize) && fontSize > 0
+    ? fontSize
+    : 13;
+  const lineHeight = Math.ceil(terminalFontSize * 1.28);
+  const safeRendererGeneration = Number.isSafeInteger(rendererGeneration) &&
+    rendererGeneration >= 0
+    ? rendererGeneration
+    : 0;
+  const escapedFontUri = fontUri
+    ?.replace(/\\/g, '\\\\')
+    .replace(/'/g, "\\'") ?? null;
+  const fontFace = escapedFontUri ? `
     @font-face {
       font-family: 'ZenTerm';
-      src: url('${fontUri}') format('truetype');
+      src: url('${escapedFontUri}') format('truetype');
       font-display: swap;
     }
-  `;
+  ` : '';
+  const terminalFontFamily = escapedFontUri ? "'ZenTerm', monospace" : 'monospace';
 
   return String.raw`<!DOCTYPE html>
 <html>
@@ -48,9 +65,9 @@ export function buildGhosttyTerminalHtml(theme: TerminalThemePalette, fontUri: s
         box-sizing: border-box;
         background: ${theme.background};
         color: ${theme.foreground};
-        font-family: 'ZenTerm', monospace;
-        font-size: ${Typography.terminalSize}px;
-        line-height: ${Math.ceil(Typography.terminalSize * 1.28)}px;
+        font-family: ${terminalFontFamily};
+        font-size: ${terminalFontSize}px;
+        line-height: ${lineHeight}px;
         white-space: normal;
         tab-size: 8;
         pointer-events: auto;
@@ -68,8 +85,8 @@ export function buildGhosttyTerminalHtml(theme: TerminalThemePalette, fontUri: s
       }
       #terminal-html .terminal-row {
         display: block;
-        height: ${Math.ceil(Typography.terminalSize * 1.28)}px;
-        line-height: ${Math.ceil(Typography.terminalSize * 1.28)}px;
+        height: ${lineHeight}px;
+        line-height: ${lineHeight}px;
         white-space: pre;
       }
       #terminal-html .terminal-row * {
@@ -90,7 +107,7 @@ export function buildGhosttyTerminalHtml(theme: TerminalThemePalette, fontUri: s
         z-index: 10;
         display: none;
         width: 2px;
-        height: ${Math.ceil(Typography.terminalSize * 1.28)}px;
+        height: ${lineHeight}px;
         background: ${theme.cursor};
         pointer-events: none;
       }
@@ -98,9 +115,9 @@ export function buildGhosttyTerminalHtml(theme: TerminalThemePalette, fontUri: s
         position: absolute;
         visibility: hidden;
         white-space: pre;
-        font-family: 'ZenTerm', monospace;
-        font-size: ${Typography.terminalSize}px;
-        line-height: ${Math.ceil(Typography.terminalSize * 1.28)}px;
+        font-family: ${terminalFontFamily};
+        font-size: ${terminalFontSize}px;
+        line-height: ${lineHeight}px;
       }
     </style>
   </head>
@@ -111,26 +128,106 @@ export function buildGhosttyTerminalHtml(theme: TerminalThemePalette, fontUri: s
       <span id="cell-measure">M</span>
     </div>
     <script>
-      const FONT_SIZE = ${Typography.terminalSize};
+      const FONT_SIZE = ${terminalFontSize};
       const LINE_HEIGHT_RATIO = 1.28;
       const CELL_WIDTH_FALLBACK = 0.62;
       const LINE_HEIGHT_PX = Math.ceil(FONT_SIZE * LINE_HEIGHT_RATIO);
+      const HAS_BUNDLED_FONT = ${escapedFontUri !== null};
+      const FONT_READY_TIMEOUT_MS = 1200;
+      const RENDERER_GENERATION = ${safeRendererGeneration};
+
+      let rendererReady = false;
+      const send = (payload) => {
+        try {
+          payload.rendererGeneration = RENDERER_GENERATION;
+          window.ReactNativeWebView.postMessage(JSON.stringify(payload));
+        } catch (_) {}
+      };
+
+      const errorMessage = (value) => {
+        if (value && typeof value.message === 'string' && value.message) {
+          return value.message;
+        }
+        if (typeof value === 'string' && value) {
+          return value;
+        }
+        try {
+          return String(value || 'Unknown WebView script failure');
+        } catch (_) {
+          return 'Unknown WebView script failure';
+        }
+      };
+
+      const reportScriptIssue = (type, value) => {
+        send({ type, message: errorMessage(value) });
+      };
+
+      window.addEventListener('error', (event) => {
+        reportScriptIssue(
+          rendererReady ? 'runtimeError' : 'bootstrapError',
+          event.error || event.message,
+        );
+      });
+      window.addEventListener('unhandledrejection', (event) => {
+        reportScriptIssue(
+          rendererReady ? 'runtimeError' : 'bootstrapError',
+          event.reason,
+        );
+      });
+
+      const waitForBundledFont = async () => {
+        if (!HAS_BUNDLED_FONT) {
+          return;
+        }
+        if (!document.fonts || typeof document.fonts.load !== 'function') {
+          send({
+            type: 'bootstrapWarning',
+            message: 'WebView FontFaceSet is unavailable; using monospace fallback.',
+          });
+          return;
+        }
+
+        let timeoutId = null;
+        const fontAttempt = Promise.resolve()
+          .then(() => document.fonts.load(FONT_SIZE + 'px "ZenTerm"'))
+          .then(() => document.fonts.ready)
+          .then(
+            () => ({ status: 'ready' }),
+            (error) => ({ status: 'failed', error }),
+          );
+        const timeout = new Promise((resolve) => {
+          timeoutId = setTimeout(
+            () => resolve({ status: 'timeout' }),
+            FONT_READY_TIMEOUT_MS,
+          );
+        });
+        const result = await Promise.race([fontAttempt, timeout]);
+        if (timeoutId != null) {
+          clearTimeout(timeoutId);
+        }
+        if (result.status === 'failed') {
+          send({
+            type: 'bootstrapWarning',
+            message: 'Bundled terminal font failed inside WebView; using monospace fallback: ' +
+              errorMessage(result.error),
+          });
+        } else if (result.status === 'timeout') {
+          send({
+            type: 'bootstrapWarning',
+            message: 'Bundled terminal font timed out; continuing with monospace fallback.',
+          });
+        }
+      };
 
       (async () => {
-        if (document.fonts && typeof document.fonts.load === 'function') {
-          try {
-            await document.fonts.load(FONT_SIZE + 'px "ZenTerm"');
-            await document.fonts.ready;
-          } catch (_) {}
-        }
+        await waitForBundledFont();
 
         const root = document.getElementById('root');
         const terminalHtml = document.getElementById('terminal-html');
         const cursor = document.getElementById('terminal-cursor');
         const measure = document.getElementById('cell-measure');
-
         if (!root || !terminalHtml || !cursor || !measure) {
-          return;
+          throw new Error('Terminal WebView bootstrap elements are missing.');
         }
 
         let activeTheme = ${JSON.stringify(theme)};
@@ -151,35 +248,30 @@ export function buildGhosttyTerminalHtml(theme: TerminalThemePalette, fontUri: s
         let lastReportedRows = 0;
         let lastReportedCellWidth = 0;
         let lastReportedCellHeight = 0;
-        let viewportMode = 'live';
         let nativeSelectionActive = false;
         let pendingViewportSyncAfterSelection = false;
         let cursorBlinkVisible = true;
         let drawRAF = null;
-
-        const send = (payload) => {
-          try {
-            window.ReactNativeWebView.postMessage(JSON.stringify(payload));
-          } catch (_) {}
-        };
+        let scrollRAF = null;
+        let scrollSessionId = null;
+        let scrollToken = null;
 
         const scheduleDraw = () => {
-          if (drawRAF != null) {
-            return;
+          if (drawRAF == null) {
+            drawRAF = requestAnimationFrame(draw);
           }
-          drawRAF = requestAnimationFrame(draw);
         };
 
         const focusInput = () => {
-          if (nativeSelectionActive) {
-            return;
+          if (!nativeSelectionActive) {
+            send({ type: 'focusInput', sessionId: scrollSessionId });
           }
-          send({ type: 'focusInput' });
         };
 
         const sendMouse = (action, button, x, y, anyButtonPressed) => {
           send({
             type: 'mouse',
+            sessionId: scrollSessionId,
             action,
             button,
             x,
@@ -204,17 +296,10 @@ export function buildGhosttyTerminalHtml(theme: TerminalThemePalette, fontUri: s
 
         const getViewportSize = () => {
           const rect = root.getBoundingClientRect();
-          const width =
-            rect.width ||
-            root.clientWidth ||
-            document.documentElement.clientWidth ||
-            window.innerWidth;
-          const height =
-            rect.height ||
-            root.clientHeight ||
-            document.documentElement.clientHeight ||
-            window.innerHeight;
-
+          const width = rect.width || root.clientWidth ||
+            document.documentElement.clientWidth || window.innerWidth;
+          const height = rect.height || root.clientHeight ||
+            document.documentElement.clientHeight || window.innerHeight;
           return {
             width: Math.max(1, Math.floor(width || 1)),
             height: Math.max(1, Math.floor(height || 1)),
@@ -232,7 +317,6 @@ export function buildGhosttyTerminalHtml(theme: TerminalThemePalette, fontUri: s
 
         const updateCursor = () => {
           if (
-            viewportMode !== 'live' ||
             nativeSelectionActive ||
             !cursorBlinkVisible ||
             !renderSnapshot.cursorVisible
@@ -247,7 +331,6 @@ export function buildGhosttyTerminalHtml(theme: TerminalThemePalette, fontUri: s
             cursor.style.display = 'none';
             return;
           }
-
           cursor.style.display = 'block';
           cursor.style.width = Math.max(2, Math.round(cellWidth * 0.14)) + 'px';
           cursor.style.height = cellHeight + 'px';
@@ -271,25 +354,20 @@ export function buildGhosttyTerminalHtml(theme: TerminalThemePalette, fontUri: s
           }
 
           const viewport = getViewportSize();
-          const nextWidth = viewport.width;
-          const nextHeight = viewport.height;
           const nextCellWidth = measureCellWidth();
           const nextCellHeight = LINE_HEIGHT_PX;
-          const nextCols = Math.max(1, Math.floor(nextWidth / nextCellWidth));
-          const nextRows = Math.max(1, Math.floor(nextHeight / nextCellHeight));
-
-          viewportWidth = nextWidth;
-          viewportHeight = nextHeight;
+          const nextCols = Math.max(1, Math.floor(viewport.width / nextCellWidth));
+          const nextRows = Math.max(1, Math.floor(viewport.height / nextCellHeight));
+          viewportWidth = viewport.width;
+          viewportHeight = viewport.height;
           cellWidth = nextCellWidth;
           cellHeight = nextCellHeight;
 
-          const shouldReport =
-            force ||
+          const shouldReport = force ||
             nextCols !== lastReportedCols ||
             nextRows !== lastReportedRows ||
             Math.abs(nextCellWidth - lastReportedCellWidth) > 0.25 ||
             nextCellHeight !== lastReportedCellHeight;
-
           if (shouldReport) {
             lastReportedCols = nextCols;
             lastReportedRows = nextRows;
@@ -303,16 +381,7 @@ export function buildGhosttyTerminalHtml(theme: TerminalThemePalette, fontUri: s
               cellHeight: nextCellHeight,
             });
           }
-
           scheduleDraw();
-        };
-
-        const clearSelection = () => {
-          const selection = window.getSelection();
-          if (selection) {
-            selection.removeAllRanges();
-          }
-          syncNativeSelectionState();
         };
 
         const selectionContainsNode = (node) => {
@@ -328,17 +397,13 @@ export function buildGhosttyTerminalHtml(theme: TerminalThemePalette, fontUri: s
           if (!selection || selection.isCollapsed || selection.rangeCount === 0) {
             return false;
           }
-
-          return (
-            selectionContainsNode(selection.anchorNode) ||
-            selectionContainsNode(selection.focusNode)
-          );
+          return selectionContainsNode(selection.anchorNode) ||
+            selectionContainsNode(selection.focusNode);
         };
 
         const clippedTextForRow = (range, row) => {
           const rowRange = document.createRange();
           rowRange.selectNodeContents(row);
-
           const clipped = range.cloneRange();
           if (clipped.compareBoundaryPoints(Range.START_TO_START, rowRange) < 0) {
             clipped.setStart(rowRange.startContainer, rowRange.startOffset);
@@ -346,7 +411,6 @@ export function buildGhosttyTerminalHtml(theme: TerminalThemePalette, fontUri: s
           if (clipped.compareBoundaryPoints(Range.END_TO_END, rowRange) > 0) {
             clipped.setEnd(rowRange.endContainer, rowRange.endOffset);
           }
-
           return clipped.toString();
         };
 
@@ -355,7 +419,10 @@ export function buildGhosttyTerminalHtml(theme: TerminalThemePalette, fontUri: s
           if (!selection || selection.isCollapsed || selection.rangeCount === 0) {
             return null;
           }
-          if (!selectionContainsNode(selection.anchorNode) && !selectionContainsNode(selection.focusNode)) {
+          if (
+            !selectionContainsNode(selection.anchorNode) &&
+            !selectionContainsNode(selection.focusNode)
+          ) {
             return null;
           }
 
@@ -364,19 +431,12 @@ export function buildGhosttyTerminalHtml(theme: TerminalThemePalette, fontUri: s
           if (rows.length === 0) {
             return selection.toString();
           }
-
           const selected = [];
           for (const row of rows) {
-            if (!range.intersectsNode(row)) {
-              continue;
+            if (range.intersectsNode(row)) {
+              selected.push({ row, text: clippedTextForRow(range, row) });
             }
-
-            selected.push({
-              row,
-              text: clippedTextForRow(range, row),
-            });
           }
-
           if (selected.length === 0) {
             return selection.toString();
           }
@@ -394,8 +454,51 @@ export function buildGhosttyTerminalHtml(theme: TerminalThemePalette, fontUri: s
             }
             text += current.text;
           }
-
           return text;
+        };
+
+        const clearSelection = () => {
+          const selection = window.getSelection();
+          if (selection) {
+            selection.removeAllRanges();
+          }
+          syncNativeSelectionState();
+        };
+
+        const scrollGesture = ${TERMINAL_SCROLL_GESTURE_CONTROLLER_SOURCE};
+
+        const stopScrollFrame = () => {
+          if (scrollRAF != null) {
+            cancelAnimationFrame(scrollRAF);
+            scrollRAF = null;
+          }
+        };
+
+        const cancelScrollAnimation = (reason) => {
+          scrollGesture.cancel(reason);
+          stopScrollFrame();
+        };
+
+        const scheduleScrollFrame = () => {
+          if (scrollRAF == null) {
+            scrollRAF = requestAnimationFrame(flushScrollFrame);
+          }
+        };
+
+        const flushScrollFrame = (timestamp) => {
+          scrollRAF = null;
+          const frame = scrollGesture.frame(timestamp);
+          if (frame.lines !== 0) {
+            send({
+              type: 'scroll',
+              sessionId: scrollSessionId,
+              scrollToken,
+              lines: frame.lines,
+            });
+          }
+          if (frame.keepAnimating) {
+            scrollRAF = requestAnimationFrame(flushScrollFrame);
+          }
         };
 
         const syncNativeSelectionState = () => {
@@ -403,8 +506,11 @@ export function buildGhosttyTerminalHtml(theme: TerminalThemePalette, fontUri: s
           if (nativeSelectionActive === nextActive) {
             return nextActive;
           }
-
           nativeSelectionActive = nextActive;
+          if (nextActive) {
+            scrollGesture.cancel('selection');
+            stopScrollFrame();
+          }
           send({ type: 'selectionActive', active: nextActive });
           if (!nextActive && pendingViewportSyncAfterSelection) {
             pendingViewportSyncAfterSelection = false;
@@ -414,72 +520,15 @@ export function buildGhosttyTerminalHtml(theme: TerminalThemePalette, fontUri: s
           return nextActive;
         };
 
-        const VERTICAL_START_THRESHOLD = 4;
-        const VERTICAL_LOCK_RATIO = 0.9;
-
-        let scrolling = false;
-        let startX = 0;
-        let startY = 0;
-        let lastY = 0;
-        let scrollAccum = 0;
-        let pendingLines = 0;
-        let scrollFlushRAF = null;
-        let scrollGestureActive = false;
-
-        const flushScroll = () => {
-          scrollFlushRAF = null;
-          if (pendingLines === 0) {
-            return;
-          }
-          // Match native touch scrolling expectations: dragging downward should
-          // pull older history into view.
-          send({ type: 'scroll', lines: pendingLines });
-          pendingLines = 0;
-        };
-
-        const doScroll = (lines) => {
-          if (lines === 0) {
-            return;
-          }
-          pendingLines += lines;
-          if (scrollFlushRAF == null) {
-            scrollFlushRAF = requestAnimationFrame(flushScroll);
-          }
-        };
-
-        const flushScrollNow = () => {
-          if (scrollFlushRAF != null) {
-            cancelAnimationFrame(scrollFlushRAF);
-            scrollFlushRAF = null;
-          }
-          flushScroll();
-        };
-
-        const beginScrollGesture = () => {
-          if (scrollGestureActive) {
-            return;
-          }
-          scrollGestureActive = true;
-          send({ type: 'scrollStart' });
-        };
-
-        const endScrollGesture = () => {
-          if (!scrollGestureActive) {
-            return;
-          }
-          flushScrollNow();
-          scrollGestureActive = false;
-          send({ type: 'scrollEnd' });
-        };
-
         document.addEventListener('touchstart', (event) => {
-          if (nativeSelectionActive) {
-            return;
-          }
-          scrolling = false;
-          scrollAccum = 0;
-          startX = event.touches[0].clientX;
-          startY = lastY = event.touches[0].clientY;
+          const touch = event.touches[0];
+          cancelScrollAnimation('new-touch');
+          scrollGesture.start(
+            touch.clientX,
+            touch.clientY,
+            event.timeStamp,
+            nativeSelectionActive,
+          );
           scheduleDraw();
         }, { capture: true, passive: true });
 
@@ -487,82 +536,54 @@ export function buildGhosttyTerminalHtml(theme: TerminalThemePalette, fontUri: s
           if (nativeSelectionActive) {
             return;
           }
-
-          const x = event.touches[0].clientX;
-          const y = event.touches[0].clientY;
-          const deltaXFromStart = x - startX;
-          const deltaYFromStart = y - startY;
-          const absDeltaX = Math.abs(deltaXFromStart);
-          const absDeltaY = Math.abs(deltaYFromStart);
-
-          if (!scrolling) {
-            if (absDeltaY <= VERTICAL_START_THRESHOLD || absDeltaY <= absDeltaX * VERTICAL_LOCK_RATIO) {
-              return;
-            }
-            scrolling = true;
-            scrollAccum = 0;
-            beginScrollGesture();
+          const touch = event.touches[0];
+          if (!scrollGesture.move(
+            touch.clientX,
+            touch.clientY,
+            event.timeStamp,
+            cellHeight,
+          )) {
+            return;
           }
-
           if (event.cancelable) {
             event.preventDefault();
           }
           if (typeof event.stopPropagation === 'function') {
             event.stopPropagation();
           }
-
-          const delta = lastY - y;
-          lastY = y;
-
-          scrollAccum += delta;
-          const lines = Math.trunc(scrollAccum / cellHeight);
-          if (lines !== 0) {
-            doScroll(lines);
-            scrollAccum -= lines * cellHeight;
-          }
+          scheduleScrollFrame();
         }, { capture: true, passive: false });
 
         document.addEventListener('touchend', (event) => {
           if (nativeSelectionActive) {
+            cancelScrollAnimation('selection');
             return;
           }
-
           const touch = event.changedTouches && event.changedTouches[0];
-          const endX = touch ? touch.clientX : startX;
-          const endY = touch ? touch.clientY : startY;
-
-          if (!scrolling) {
-            if (syncNativeSelectionState()) {
-              return;
+          const endX = touch ? touch.clientX : 0;
+          const endY = touch ? touch.clientY : 0;
+          const claimed = scrollGesture.end(event.timeStamp);
+          if (!claimed) {
+            stopScrollFrame();
+            if (!syncNativeSelectionState()) {
+              emitTap(endX, endY);
             }
-            emitTap(endX, endY);
             return;
           }
-
-          scrolling = false;
-          endScrollGesture();
-          scrollAccum = 0;
+          scheduleScrollFrame();
         }, { capture: true, passive: false });
 
         document.addEventListener('touchcancel', () => {
-          if (nativeSelectionActive) {
-            return;
-          }
-          scrolling = false;
-          endScrollGesture();
-          scrollAccum = 0;
+          cancelScrollAnimation('touch-cancel');
         }, { capture: true, passive: true });
 
-        document.addEventListener('selectionchange', () => {
-          syncNativeSelectionState();
-        });
+        document.addEventListener('selectionchange', syncNativeSelectionState);
 
         document.addEventListener('copy', (event) => {
           const text = normalizedTerminalSelectionText();
           if (text == null) {
             return;
           }
-
           event.preventDefault();
           if (event.clipboardData) {
             event.clipboardData.setData('text/plain', text);
@@ -581,29 +602,31 @@ export function buildGhosttyTerminalHtml(theme: TerminalThemePalette, fontUri: s
         };
 
         window.__zenTheme = (nextTheme) => {
-          if (!nextTheme) {
-            return;
+          if (nextTheme) {
+            activeTheme = nextTheme;
+            applyTheme();
+            scheduleDraw();
           }
-          activeTheme = nextTheme;
-          applyTheme();
-          scheduleDraw();
         };
 
-        window.__zenViewportMode = (state) => {
-          viewportMode = state && state.mode === 'scrolled' ? 'scrolled' : 'live';
-          if (viewportMode === 'live') {
-            scrollAccum = 0;
-          }
-          scheduleDraw();
+        window.__zenCancelScroll = (reason) => {
+          scrollGesture.cancel(reason);
+          stopScrollFrame();
+        };
+
+        window.__zenSetScrollContext = (sessionId, token, reason) => {
+          cancelScrollAnimation(reason || 'session-change');
+          scrollSessionId = typeof sessionId === 'string' && sessionId
+            ? sessionId
+            : null;
+          scrollToken = typeof token === 'string' && token ? token : null;
         };
 
         window.__zenBlur = () => {
+          cancelScrollAnimation('route-blur');
           clearSelection();
         };
 
-        // Called after route focus / Chat->Terminal restore. Touchstart also
-        // scheduleDraw()'s; without an explicit wake, Android WebView can leave
-        // an already-updated DOM unpainted until the user taps.
         window.__zenWakeRenderer = () => {
           syncViewport(false);
           scheduleDraw();
@@ -615,46 +638,38 @@ export function buildGhosttyTerminalHtml(theme: TerminalThemePalette, fontUri: s
         };
 
         window.__zenResumeInput = () => {
+          cancelScrollAnimation('jump-live');
           clearSelection();
-          viewportMode = 'live';
-          scrollAccum = 0;
-          if (typeof window.__zenWakeRenderer === 'function') {
-            window.__zenWakeRenderer();
-            return;
-          }
-          scheduleDraw();
+          window.__zenWakeRenderer();
         };
 
         window.__zenScrollToBottom = () => {
+          cancelScrollAnimation('jump-live');
           clearSelection();
-          viewportMode = 'live';
-          scrollAccum = 0;
-          if (typeof window.__zenWakeRenderer === 'function') {
-            window.__zenWakeRenderer();
-            return;
-          }
-          scheduleDraw();
+          window.__zenWakeRenderer();
         };
 
-        const handleViewportChange = () => {
-          syncViewport(false);
-        };
-
+        const handleViewportChange = () => syncViewport(false);
         window.addEventListener('resize', handleViewportChange);
         window.addEventListener('orientationchange', handleViewportChange);
-
         if (typeof ResizeObserver === 'function') {
           const observer = new ResizeObserver(handleViewportChange);
           observer.observe(root);
         }
 
         applyTheme();
-
         requestAnimationFrame(() => {
-          syncViewport(true);
-          send({ type: 'ready' });
+          try {
+            syncViewport(true);
+            rendererReady = true;
+            send({ type: 'ready' });
+          } catch (error) {
+            reportScriptIssue('bootstrapError', error);
+          }
         });
-      })();
+      })().catch((error) => {
+        reportScriptIssue('bootstrapError', error);
+      });
     </script>
   </body>
 </html>`;

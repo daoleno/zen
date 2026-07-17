@@ -11,11 +11,14 @@ import (
 type SendFunc func(v any)
 
 type managedSession struct {
-	owner   string
-	target  string
-	session Session
-	cancel  context.CancelFunc
+	owner         string
+	target        string
+	session       Session
+	cancel        context.CancelFunc
+	interactionMu sync.Mutex
 }
+
+const maxTerminalScrollBatchLines = 12
 
 // Manager owns terminal sessions and routes their output to the opening client.
 type Manager struct {
@@ -76,6 +79,15 @@ func (m *Manager) Open(ownerID, backendName, targetID string, opts OpenOptions, 
 	}
 	m.mu.Unlock()
 
+	size := session.Size()
+	send(map[string]any{
+		"type":       "terminal_opened",
+		"session_id": session.ID(),
+		"backend":    backendName,
+		"cols":       size.Cols,
+		"rows":       size.Rows,
+	})
+
 	go m.forward(ownerID, session, send)
 
 	return session, nil
@@ -84,12 +96,6 @@ func (m *Manager) Open(ownerID, backendName, targetID string, opts OpenOptions, 
 func (m *Manager) forward(ownerID string, session Session, send SendFunc) {
 	for ev := range session.Events() {
 		switch ev.Type {
-		case EventHistory:
-			send(map[string]any{
-				"type":       "terminal_history",
-				"session_id": session.ID(),
-				"data":       ev.Data,
-			})
 		case EventOutput:
 			send(map[string]any{
 				"type":       "terminal_output",
@@ -159,32 +165,53 @@ func (m *Manager) Input(ownerID, sessionID, data string) error {
 	if err != nil {
 		return err
 	}
+	ms.interactionMu.Lock()
+	defer ms.interactionMu.Unlock()
+	if scroller, ok := ms.session.(Scroller); ok {
+		if err := scroller.CancelScroll(); err != nil {
+			return err
+		}
+	}
 	return ms.session.Write(data)
 }
 
-// Scroll uses tmux copy-mode to scroll through tmux's own scrollback buffer.
-// Positive lines = scroll down (toward newer), negative = scroll up (toward older).
+// Scroll advances the one serialized tmux copy-mode owner for this attachment.
+// Positive lines move toward live output; negative lines move toward history.
 func (m *Manager) Scroll(ownerID, sessionID string, lines int) error {
 	ms, err := m.withSession(ownerID, sessionID)
 	if err != nil {
 		return err
 	}
-	if scroller, ok := ms.session.(Scroller); ok {
-		return scroller.Scroll(lines)
+	scroller, ok := ms.session.(Scroller)
+	if !ok {
+		return fmt.Errorf("session does not support scrolling")
 	}
-	return fmt.Errorf("session does not support scrolling")
+	if lines > maxTerminalScrollBatchLines {
+		lines = maxTerminalScrollBatchLines
+	} else if lines < -maxTerminalScrollBatchLines {
+		lines = -maxTerminalScrollBatchLines
+	}
+	if lines == 0 {
+		return nil
+	}
+	ms.interactionMu.Lock()
+	defer ms.interactionMu.Unlock()
+	return scroller.Scroll(lines)
 }
 
-// ScrollCancel exits tmux copy-mode and returns to the live view.
+// ScrollCancel is an explicit transition back to the live tmux pane.
 func (m *Manager) ScrollCancel(ownerID, sessionID string) error {
 	ms, err := m.withSession(ownerID, sessionID)
 	if err != nil {
 		return err
 	}
-	if scroller, ok := ms.session.(Scroller); ok {
-		return scroller.CancelScroll()
+	scroller, ok := ms.session.(Scroller)
+	if !ok {
+		return nil
 	}
-	return nil
+	ms.interactionMu.Lock()
+	defer ms.interactionMu.Unlock()
+	return scroller.CancelScroll()
 }
 
 // FocusPane selects the tmux pane that contains the given terminal cell.
@@ -193,22 +220,12 @@ func (m *Manager) FocusPane(ownerID, sessionID string, col, row int) error {
 	if err != nil {
 		return err
 	}
+	ms.interactionMu.Lock()
+	defer ms.interactionMu.Unlock()
 	if focuser, ok := ms.session.(PaneFocuser); ok {
 		return focuser.FocusPane(col, row)
 	}
 	return nil
-}
-
-// CopyBuffer returns a plain-text snapshot for copy-oriented UI flows.
-func (m *Manager) CopyBuffer(ownerID, sessionID string) (string, error) {
-	ms, err := m.withSession(ownerID, sessionID)
-	if err != nil {
-		return "", err
-	}
-	if provider, ok := ms.session.(CopyProvider); ok {
-		return provider.CopyBuffer()
-	}
-	return "", fmt.Errorf("session does not support copy buffer capture")
 }
 
 // Resize updates a terminal session's dimensions.

@@ -169,16 +169,6 @@ class ZenTerminalVtModule : Module() {
             nativeWriteData(getNativeHandle(handleId), data)
         }
 
-        Function("scrollViewport") { handleId: Int, delta: Int ->
-            ensureLoaded()
-            nativeScrollViewport(getNativeHandle(handleId), delta)
-        }
-
-        Function("scrollViewportToBottom") { handleId: Int ->
-            ensureLoaded()
-            nativeScrollViewportToBottom(getNativeHandle(handleId))
-        }
-
         Function("resize") { handleId: Int, cols: Int, rows: Int, cellWidth: Float, cellHeight: Float ->
             runWithPersistentBreadcrumb(
                 "resize",
@@ -219,11 +209,6 @@ class ZenTerminalVtModule : Module() {
 
         Function("getRenderSnapshot") { handleId: Int ->
             readRenderSnapshot(handleId)
-        }
-
-        Function("getVisibleText") { handleId: Int ->
-            ensureLoaded()
-            nativeGetVisibleText(getNativeHandle(handleId))
         }
 
         Function("getVisibleHtml") { handleId: Int ->
@@ -274,12 +259,6 @@ class ZenTerminalVtModule : Module() {
         external fun nativeWriteData(handle: Long, data: String)
 
         @JvmStatic
-        external fun nativeScrollViewport(handle: Long, delta: Int)
-
-        @JvmStatic
-        external fun nativeScrollViewportToBottom(handle: Long)
-
-        @JvmStatic
         external fun nativeResize(handle: Long, cols: Int, rows: Int, cellWidth: Float, cellHeight: Float)
 
         @JvmStatic
@@ -304,9 +283,6 @@ class ZenTerminalVtModule : Module() {
 
         @JvmStatic
         external fun nativeGetRenderSnapshot(handle: Long): Map<String, Any?>
-
-        @JvmStatic
-        external fun nativeGetVisibleText(handle: Long): String
 
         @JvmStatic
         external fun nativeGetVisibleHtml(handle: Long): String

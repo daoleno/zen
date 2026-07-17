@@ -26,7 +26,6 @@ import {
   type PrimaryRouteName,
   type ZenInteractionToken,
 } from "../../services/interactionTrace";
-import { totalBrainUnread, useBrain } from "../../store/brain";
 
 const SWITCH_OPTION_WIDTH = 88;
 const SWITCH_INDICATOR_INSET = 24;
@@ -44,7 +43,6 @@ interface PrimarySwitchOptionProps {
   onLongPress: PressableProps["onLongPress"];
   onPress: PressableProps["onPress"];
   onPressIn(): void;
-  badge?: number;
 }
 
 function PrimarySwitchOption({
@@ -54,7 +52,6 @@ function PrimarySwitchOption({
   onLongPress,
   onPress,
   onPressIn,
-  badge = 0,
 }: PrimarySwitchOptionProps) {
   const colors = useAppColors();
   const webHrefProps = Platform.OS === "web" ? { href } : {};
@@ -85,16 +82,6 @@ function PrimarySwitchOption({
       >
         {label}
       </Text>
-      {badge > 0 ? (
-        <View
-          style={[
-            styles.unreadBadge,
-            { backgroundColor: colors.statusBlocked },
-          ]}
-        >
-          <Text style={styles.unreadBadgeText}>{badge > 99 ? "99+" : badge}</Text>
-        </View>
-      ) : null}
     </Pressable>
   );
 }
@@ -107,8 +94,6 @@ export function PrimaryTopSwitch({
   onSelectRoute(route: PrimaryRouteName): void;
 }) {
   const colors = useAppColors();
-  const { state: brainState } = useBrain();
-  const brainUnread = totalBrainUnread(brainState);
   const reducedMotion = useReducedMotion();
   const brainFocused = activeRoute === "brain";
   const indicatorPosition = useSharedValue(brainFocused ? 0 : 1);
@@ -238,7 +223,6 @@ export function PrimaryTopSwitch({
         href="/"
         isFocused={brainFocused}
         label="Brain"
-        badge={brainUnread}
         onPressIn={() => beginSwitch("brain")}
         onPress={(event) => {
           event.preventDefault?.();
@@ -283,23 +267,6 @@ const styles = StyleSheet.create({
   switchLabel: {
     fontSize: 14,
     lineHeight: 21,
-  },
-  unreadBadge: {
-    position: "absolute",
-    right: 7,
-    top: 10,
-    minWidth: 16,
-    height: 16,
-    borderRadius: 8,
-    paddingHorizontal: 4,
-    alignItems: "center",
-    justifyContent: "center",
-  },
-  unreadBadgeText: {
-    color: "#FFFFFF",
-    fontSize: 10,
-    lineHeight: 12,
-    fontFamily: Typography.uiFontMedium,
   },
   switchIndicator: {
     position: "absolute",

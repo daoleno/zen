@@ -124,6 +124,23 @@ afterAll(() => {
 });
 
 describe("generic WebSocket live boundary", () => {
+  test("one terminal scroll batch sends one current-session mutation", async () => {
+    const client = new MultiServerWebSocketClient();
+    const socket = await connectClient(client);
+    socket.open();
+
+    client.scrollTerminal(server.id, "session-a", -3);
+
+    expect(socket.sent).toEqual([
+      JSON.stringify({
+        type: "terminal_scroll",
+        session_id: "session-a",
+        lines: -3,
+      }),
+    ]);
+    client.disconnectAll();
+  });
+
   test("a disconnected mutation fails and is not sent by a later open", async () => {
     const client = new MultiServerWebSocketClient();
     const socket = await connectClient(client);

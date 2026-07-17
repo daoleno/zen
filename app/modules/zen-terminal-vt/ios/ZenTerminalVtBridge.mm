@@ -63,27 +63,9 @@ static TerminalHandle *TerminalFromHandle(unsigned long long handle) {
         return 0;
     }
 
-    result = createTerminalFormatter(
-        terminal,
-        GHOSTTY_FORMATTER_FORMAT_PLAIN,
-        &terminal->plain_formatter
-    );
-    if (result != GHOSTTY_SUCCESS) {
-        LOGE("plain formatter init failed: %d", result);
-        ghostty_render_state_free(terminal->render_state);
-        ghostty_terminal_free(terminal->terminal);
-        delete terminal;
-        return 0;
-    }
-
-    result = createTerminalFormatter(
-        terminal,
-        GHOSTTY_FORMATTER_FORMAT_HTML,
-        &terminal->html_formatter
-    );
+    result = createHtmlFormatter(terminal, &terminal->html_formatter);
     if (result != GHOSTTY_SUCCESS) {
         LOGE("html formatter init failed: %d", result);
-        ghostty_formatter_free(terminal->plain_formatter);
         ghostty_render_state_free(terminal->render_state);
         ghostty_terminal_free(terminal->terminal);
         delete terminal;
@@ -94,7 +76,6 @@ static TerminalHandle *TerminalFromHandle(unsigned long long handle) {
     if (result != GHOSTTY_SUCCESS) {
         LOGE("mouse encoder init failed: %d", result);
         ghostty_formatter_free(terminal->html_formatter);
-        ghostty_formatter_free(terminal->plain_formatter);
         ghostty_render_state_free(terminal->render_state);
         ghostty_terminal_free(terminal->terminal);
         delete terminal;
@@ -120,7 +101,6 @@ static TerminalHandle *TerminalFromHandle(unsigned long long handle) {
 
     ghostty_mouse_encoder_free(terminal->mouse_encoder);
     ghostty_formatter_free(terminal->html_formatter);
-    ghostty_formatter_free(terminal->plain_formatter);
     ghostty_render_state_free(terminal->render_state);
     ghostty_terminal_free(terminal->terminal);
     delete terminal;
@@ -143,31 +123,6 @@ static TerminalHandle *TerminalFromHandle(unsigned long long handle) {
         static_cast<const uint8_t *>(encoded.bytes),
         encoded.length
     );
-}
-
-+ (void)scrollTerminal:(unsigned long long)handle byLines:(NSInteger)delta {
-    auto *terminal = TerminalFromHandle(handle);
-    if (!terminal || delta == 0) {
-        return;
-    }
-
-    GhosttyTerminalScrollViewport behavior = {};
-    behavior.tag = GHOSTTY_SCROLL_VIEWPORT_DELTA;
-    behavior.value.delta = static_cast<intptr_t>(delta);
-    ghostty_terminal_scroll_viewport(terminal->terminal, behavior);
-    markFullSnapshot(terminal);
-}
-
-+ (void)scrollTerminalToBottom:(unsigned long long)handle {
-    auto *terminal = TerminalFromHandle(handle);
-    if (!terminal) {
-        return;
-    }
-
-    GhosttyTerminalScrollViewport behavior = {};
-    behavior.tag = GHOSTTY_SCROLL_VIEWPORT_BOTTOM;
-    ghostty_terminal_scroll_viewport(terminal->terminal, behavior);
-    markFullSnapshot(terminal);
 }
 
 + (void)resizeTerminal:(unsigned long long)handle
@@ -332,18 +287,13 @@ static TerminalHandle *TerminalFromHandle(unsigned long long handle) {
 
     std::string visibleHTML;
     if (!buildVisibleHtml(terminal->render_state, renderRows, &visibleHTML)) {
-        visibleHTML = formatTerminalScreen(terminal, GHOSTTY_FORMATTER_FORMAT_HTML);
+        visibleHTML = formatTerminalScreen(terminal);
     }
     snapshot[@"html"] = NSStringFromStdString(visibleHTML);
 
     terminal->force_full_snapshot = false;
     clearRenderStateDirty(terminal->render_state);
     return snapshot;
-}
-
-+ (NSString *)visibleTextForTerminal:(unsigned long long)handle {
-    auto *terminal = TerminalFromHandle(handle);
-    return NSStringFromStdString(formatTerminalScreen(terminal, GHOSTTY_FORMATTER_FORMAT_PLAIN));
 }
 
 + (NSString *)visibleHTMLForTerminal:(unsigned long long)handle {
@@ -353,7 +303,7 @@ static TerminalHandle *TerminalFromHandle(unsigned long long handle) {
     }
 
     if (ghostty_render_state_update(terminal->render_state, terminal->terminal) != GHOSTTY_SUCCESS) {
-        return NSStringFromStdString(formatTerminalScreen(terminal, GHOSTTY_FORMATTER_FORMAT_HTML));
+        return NSStringFromStdString(formatTerminalScreen(terminal));
     }
 
     uint16_t renderRows = terminal->rows;
@@ -361,7 +311,7 @@ static TerminalHandle *TerminalFromHandle(unsigned long long handle) {
 
     std::string visibleHTML;
     if (!buildVisibleHtml(terminal->render_state, renderRows, &visibleHTML)) {
-        visibleHTML = formatTerminalScreen(terminal, GHOSTTY_FORMATTER_FORMAT_HTML);
+        visibleHTML = formatTerminalScreen(terminal);
     }
     return NSStringFromStdString(visibleHTML);
 }

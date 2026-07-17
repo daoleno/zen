@@ -519,6 +519,48 @@ func TestCodexInputReadyRejectsMCPStartupEvenWithComposer(t *testing.T) {
 	}
 }
 
+func TestCodexInputReadyWithExplicitCommandAfterLongScrollbackWithoutHeader(t *testing.T) {
+	content := strings.Repeat("completed delegated output line\n", 1100) +
+		"\n› Find and fix a bug in @filename\n\n  gpt-5.6 medium · /tmp\n"
+
+	if !isAgentInputReady("codex", content) {
+		t.Fatal("explicit Codex command should make a headerless idle composer ready")
+	}
+}
+
+func TestCodexInputReadyWithExplicitCommandRejectsHeaderlessUnsafeStates(t *testing.T) {
+	longScrollback := strings.Repeat("completed delegated output line\n", 1100)
+	tests := []struct {
+		name    string
+		content string
+	}{
+		{name: "model loading", content: longScrollback +
+			"\n│ model: loading │\n\n› Find and fix a bug in @filename\n"},
+		{name: "MCP startup", content: longScrollback +
+			"\n• Starting MCP servers (0/3): context7, playwright\n\n› Find and fix a bug in @filename\n"},
+		{name: "startup continue", content: longScrollback +
+			"\nDo you trust the contents of this directory?\n› 1. Yes, continue\n  Press enter to continue\n"},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if isAgentInputReady("codex", test.content) {
+				t.Fatalf("headerless Codex %s state should not be input-ready", test.name)
+			}
+		})
+	}
+}
+
+func TestCodexContentInferenceStillRequiresIdentity(t *testing.T) {
+	headerless := strings.Repeat("arbitrary terminal output\n", 100) + "\n› idle-looking text\n"
+	if needsInputReadinessWait("", headerless) {
+		t.Fatal("headerless arbitrary content should not be inferred as Codex")
+	}
+	if !needsInputReadinessWait("", "│ >_ OpenAI Codex │\n› Find and fix a bug in @filename\n") {
+		t.Fatal("OpenAI Codex pane identity should still enable content-inferred readiness checks")
+	}
+}
+
 func TestCursorAgentInputReadyRequiresComposerPrompt(t *testing.T) {
 	starting := "Cursor Agent\nv2026.07.01-41b2de7\nTip: Use /mcp to connect Cursor to your tools and data sources.\n"
 	if isAgentInputReady("cursor-agent --force --sandbox disabled", starting) {

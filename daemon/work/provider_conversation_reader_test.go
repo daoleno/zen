@@ -168,7 +168,7 @@ func TestProviderConversationReaderSelectsNewSessionAndProviderWithoutPriorState
 	forceReaderFixtureModTime(t, oldCursorPath, now.Add(-time.Minute))
 
 	reader := NewProviderConversationReader()
-	agent := classifier.Agent{ID: "agent", Cwd: cwd, Command: "cursor-agent"}
+	agent := classifier.Agent{ID: "agent", Cwd: cwd, Command: "cursor-agent --resume cursor-old"}
 	oldCursor, err := reader.Load(agent, AgentProviderCursor, now)
 	if err != nil {
 		t.Fatal(err)
@@ -180,6 +180,7 @@ func TestProviderConversationReaderSelectsNewSessionAndProviderWithoutPriorState
 	newCursorPath := cursorReaderTranscriptPath(home, cwd, "cursor-new")
 	writeCursorReaderTranscript(t, newCursorPath, "cursor new session")
 	forceReaderFixtureModTime(t, newCursorPath, now.Add(time.Second))
+	agent.Command = "cursor-agent --resume cursor-new"
 	newCursor, err := reader.Load(agent, AgentProviderCursor, now.Add(2*time.Second))
 	if err != nil {
 		t.Fatal(err)

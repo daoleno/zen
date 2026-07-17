@@ -63,7 +63,7 @@ export default function BrainScreen() {
     [zenTheme],
   );
   const { state: agentState } = useAgents();
-  const { state: brainState, dispatch: brainDispatch } = useBrain();
+  const { state: brainState } = useBrain();
   const screenFocused = useIsFocused();
   const [servers, setServers] = useState<StoredServer[]>([]);
   const [adapterSheetVisible, setAdapterSheetVisible] = useState(false);
@@ -152,22 +152,6 @@ export default function BrainScreen() {
     ? `brain-thread:${displayedThreadId}`
     : undefined;
 
-  useFocusEffect(
-    useCallback(() => {
-      if (activeServer?.id && displayedThreadId) {
-        brainDispatch({
-          type: "BRAIN_THREAD_READ",
-          serverId: activeServer.id,
-          threadId: displayedThreadId,
-        });
-      }
-    }, [
-      activeBrain?.scheduled_results,
-      activeServer?.id,
-      brainDispatch,
-      displayedThreadId,
-    ]),
-  );
   const ready = Boolean(activeServer && activeBrain?.hydrated && hostAgent?.id);
   const showBrainLoading = shouldShowBrainLoadingState({
     hydrated: Boolean(activeBrain?.hydrated),

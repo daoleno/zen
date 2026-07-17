@@ -36,10 +36,10 @@ func (b *TmuxBackend) Open(targetID string, opts OpenOptions) (Session, error) {
 	}
 	id := terminalIDCounter.Add(1)
 	return &tmuxSession{
-		id:            fmt.Sprintf("%s#%d", targetID, id),
-		targetID:      targetID,
-		requestedSize: size,
-		events:        make(chan Event, 128),
+		id:       fmt.Sprintf("%s#%d", targetID, id),
+		targetID: targetID,
+		size:     size,
+		events:   make(chan Event, 128),
 	}, nil
 }
 
@@ -47,19 +47,21 @@ type tmuxSession struct {
 	id            string
 	targetID      string
 	linkedSession string // disposable linked view session, cleaned up on close
-	requestedSize Size   // mobile projection metadata returned by Size
-	viewPTYSize   Size   // source-derived geometry reported to the tmux client
+	size          Size   // exact phone/Ghostty/client PTY grid
 
-	mu                 sync.Mutex
-	events             chan Event
-	cancel             context.CancelFunc
-	cmd                *exec.Cmd
-	pty                *os.File
-	closed             bool
-	closeOnce          sync.Once
-	inCopyMode         bool
-	scrollStateTimer   *time.Timer
-	scrollStateVersion uint64
+	mu                    sync.Mutex
+	events                chan Event
+	cancel                context.CancelFunc
+	cmd                   *exec.Cmd
+	pty                   *os.File
+	closed                bool
+	closeOnce             sync.Once
+	inCopyMode            bool
+	scrollStateVersion    uint64
+	scrollStateTimer      tmuxScrollTimer
+	runTmuxCommand        func(args ...string) error
+	readTmuxCommand       func(args ...string) ([]byte, error)
+	scheduleScrollCommand func(time.Duration, func()) tmuxScrollTimer
 }
 
 type tmuxReadResult struct {
@@ -68,19 +70,21 @@ type tmuxReadResult struct {
 	eof  bool
 }
 
-const (
-	tmuxInitialHistoryViewportScreens = 4
-	tmuxInitialHistoryMaxLines        = 240
-	tmuxScrollStateDebounce           = 120 * time.Millisecond
-)
+const tmuxScrollReconcileDelay = 32 * time.Millisecond
+
+type tmuxScrollTimer interface {
+	Stop() bool
+}
 
 func (s *tmuxSession) ID() string { return s.id }
 
 func (s *tmuxSession) Events() <-chan Event { return s.events }
 
-// Size reports the mobile projection dimensions requested through Open or
-// Resize. The tmux-facing PTY deliberately mirrors source-owned geometry.
-func (s *tmuxSession) Size() Size { return s.requestedSize }
+func (s *tmuxSession) Size() Size {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.size
+}
 
 func (s *tmuxSession) Start(ctx context.Context) error {
 	s.mu.Lock()
@@ -92,7 +96,7 @@ func (s *tmuxSession) Start(ctx context.Context) error {
 	runCtx, cancel := context.WithCancel(ctx)
 	s.cancel = cancel
 
-	linkedName, cmd, viewPTYSize, err := tmuxLinkedViewSession(s.targetID)
+	linkedName, cmd, err := tmuxLinkedViewSession(s.targetID)
 	if err != nil {
 		s.mu.Unlock()
 		cancel()
@@ -102,8 +106,8 @@ func (s *tmuxSession) Start(ctx context.Context) error {
 	cmd.Env = tmuxClientEnv(os.Environ())
 
 	ptmx, err := pty.StartWithSize(cmd, &pty.Winsize{
-		Cols: uint16(viewPTYSize.Cols),
-		Rows: uint16(viewPTYSize.Rows),
+		Cols: uint16(s.size.Cols),
+		Rows: uint16(s.size.Rows),
 	})
 	if err != nil {
 		_ = exec.Command("tmux", "kill-session", "-t", s.linkedSession).Run()
@@ -113,16 +117,16 @@ func (s *tmuxSession) Start(ctx context.Context) error {
 		return fmt.Errorf("start tmux client pty: %w", err)
 	}
 
-	s.viewPTYSize = viewPTYSize
 	s.cmd = cmd
 	s.pty = ptmx
 	s.mu.Unlock()
 
-	s.emitScrollState()
-	s.emitInitialHistory()
-
-	go s.streamLoop(runCtx, ptmx)
-	go s.waitLoop()
+	streamDone := make(chan struct{})
+	go func() {
+		defer close(streamDone)
+		s.streamLoop(runCtx, ptmx)
+	}()
+	go s.waitLoop(streamDone)
 
 	return nil
 }
@@ -161,7 +165,7 @@ func (s *tmuxSession) streamLoop(ctx context.Context, ptmx *os.File) {
 		if pending.Len() == 0 {
 			return
 		}
-		data := sanitizeTmuxOutput(pending.String())
+		data := pending.String()
 		pending.Reset()
 		for len(data) > 0 {
 			chunk, rest := splitUTF8Prefix(data, maxFrameBytes)
@@ -269,7 +273,7 @@ func (s *tmuxSession) readLoop(ctx context.Context, ptmx *os.File, results chan<
 	}
 }
 
-func (s *tmuxSession) waitLoop() {
+func (s *tmuxSession) waitLoop(streamDone <-chan struct{}) {
 	s.mu.Lock()
 	cmd := s.cmd
 	s.mu.Unlock()
@@ -278,6 +282,7 @@ func (s *tmuxSession) waitLoop() {
 	}
 
 	err := cmd.Wait()
+	<-streamDone
 	if err == nil {
 		s.sendEvent(Event{Type: EventExit, ExitCode: 0})
 		s.closeEvents()
@@ -298,97 +303,198 @@ func (s *tmuxSession) Write(data string) error {
 		s.mu.Unlock()
 		return fmt.Errorf("tmux session is not started")
 	}
-	target := s.interactiveTargetLocked()
-	emitScrollState := false
-	// Exit copy-mode before sending user input so the terminal
-	// returns to the live view.
-	if s.inCopyMode {
-		_ = exec.Command("tmux", "send-keys", "-t", target, "-X", "cancel").Run()
-		s.inCopyMode = false
-		emitScrollState = true
-	}
 	_, err := s.pty.Write([]byte(data))
 	s.mu.Unlock()
-	if emitScrollState {
-		s.emitScrollState()
-	}
 	if err != nil {
 		return fmt.Errorf("write tmux client pty: %w", err)
 	}
 	return nil
 }
 
-// Scroll enters tmux copy-mode (if needed) and scrolls through tmux's
-// own scrollback buffer. Negative lines = scroll up (older content),
-// positive = scroll down (newer content).
-// This is the correct approach because tmux renders ALL output via cursor
-// positioning to the client PTY, so xterm.js never accumulates scrollback.
-// tmux's internal scrollback is the only source of history.
+// Scroll drives tmux's own copy-mode. Negative lines move toward older
+// history; positive lines move toward the live bottom. tmux redraws the
+// attached client PTY, so no capture-derived frame is involved.
 func (s *tmuxSession) Scroll(lines int) error {
-	s.mu.Lock()
-	target := s.interactiveTargetLocked()
-
 	if lines == 0 {
-		s.mu.Unlock()
-		s.emitScrollState()
 		return nil
 	}
-
-	if !s.inCopyMode {
-		if lines > 0 {
-			s.mu.Unlock()
-			s.emitScrollState()
-			return nil
-		}
-		if err := exec.Command("tmux", "copy-mode", "-e", "-t", target).Run(); err != nil {
-			s.mu.Unlock()
-			return fmt.Errorf("enter copy-mode: %w", err)
-		}
-		s.inCopyMode = true
-	}
-
 	absLines := lines
 	if absLines < 0 {
 		absLines = -absLines
 	}
 
-	// Use copy-mode scroll commands, not cursor movement commands.
-	// We need to move the viewport through history, not just the copy-mode cursor.
-	cmd := "scroll-up"
-	if lines > 0 {
-		cmd = "scroll-down-and-cancel"
+	s.mu.Lock()
+	if s.closed {
+		s.mu.Unlock()
+		return fmt.Errorf("tmux session is closed")
+	}
+	target := s.interactiveTargetLocked()
+	if target == "" {
+		s.mu.Unlock()
+		return fmt.Errorf("tmux session has no interactive target")
 	}
 
-	if err := exec.Command("tmux", "send-keys", "-t", target,
-		"-X", "-N", fmt.Sprintf("%d", absLines), cmd).Run(); err != nil {
-		s.mu.Unlock()
-		return fmt.Errorf("scroll copy-mode: %w", err)
+	var err error
+	if !s.inCopyMode {
+		if lines > 0 {
+			s.mu.Unlock()
+			s.scheduleScrollReconcile()
+			return nil
+		}
+		// One tmux process enters exit-on-bottom copy-mode and applies the first
+		// incremental scroll batch in order.
+		err = s.runTmuxLocked(
+			"copy-mode", "-e", "-t", target,
+			";",
+			"send-keys", "-t", target, "-X", "-N", strconv.Itoa(absLines), "scroll-up",
+		)
+		if err == nil {
+			s.inCopyMode = true
+		}
+	} else {
+		command := "scroll-up"
+		if lines > 0 {
+			command = "scroll-down-and-cancel"
+		}
+		err = s.runTmuxLocked(
+			"send-keys", "-t", target, "-X", "-N", strconv.Itoa(absLines), command,
+		)
+		if err != nil && lines < 0 {
+			// A fast reversal can arrive after scroll-down-and-cancel has exited
+			// at the bottom but before the idle reconciliation observes it.
+			// Retry by atomically re-entering copy-mode with the same line batch.
+			err = s.runTmuxLocked(
+				"copy-mode", "-e", "-t", target,
+				";",
+				"send-keys", "-t", target, "-X", "-N", strconv.Itoa(absLines), "scroll-up",
+			)
+			if err == nil {
+				s.inCopyMode = true
+			}
+		}
 	}
 	s.mu.Unlock()
-	if lines > 0 {
-		s.emitScrollState()
-		return nil
+	if err != nil {
+		// scroll-down-and-cancel legitimately leaves copy-mode at the bottom;
+		// a following inertial batch can race the deferred reconciliation and
+		// find no copy-mode command table. Treat that downward no-op as bottom,
+		// then let the one idle reconciliation publish the exact state.
+		if lines > 0 {
+			s.scheduleScrollReconcile()
+			return nil
+		}
+		return fmt.Errorf("scroll tmux copy-mode: %w", err)
 	}
-	s.scheduleScrollStateEmit()
+	s.scheduleScrollReconcile()
 	return nil
 }
 
+// CancelScroll is an explicit live transition. Repeated cancellation is a
+// no-op, so a real input can be forwarded exactly once after this returns.
 func (s *tmuxSession) CancelScroll() error {
 	s.mu.Lock()
-	target := s.interactiveTargetLocked()
-	if !s.inCopyMode {
+	s.cancelScheduledScrollReconcileLocked()
+	if s.closed || !s.inCopyMode {
 		s.mu.Unlock()
-		s.emitScrollState()
 		return nil
 	}
-	if err := exec.Command("tmux", "send-keys", "-t", target, "-X", "cancel").Run(); err != nil {
-		s.mu.Unlock()
-		return fmt.Errorf("cancel copy-mode: %w", err)
+	target := s.interactiveTargetLocked()
+	err := s.runTmuxLocked(
+		"if-shell", "-F", "-t", target, "#{pane_in_mode}",
+		"send-keys -t "+target+" -X cancel",
+		"",
+	)
+	if err == nil {
+		s.inCopyMode = false
 	}
-	s.inCopyMode = false
 	s.mu.Unlock()
-	s.emitScrollState()
+	if err != nil {
+		return fmt.Errorf("cancel tmux copy-mode: %w", err)
+	}
+	s.sendEvent(Event{
+		Type: EventScroll,
+		ScrollState: ScrollState{
+			AtBottom: true,
+		},
+	})
 	return nil
+}
+
+func (s *tmuxSession) runTmuxLocked(args ...string) error {
+	if s.runTmuxCommand != nil {
+		return s.runTmuxCommand(args...)
+	}
+	return exec.Command("tmux", args...).Run()
+}
+
+func (s *tmuxSession) readTmuxLocked(args ...string) ([]byte, error) {
+	if s.readTmuxCommand != nil {
+		return s.readTmuxCommand(args...)
+	}
+	return exec.Command("tmux", args...).Output()
+}
+
+func (s *tmuxSession) scheduleScrollReconcile() {
+	s.mu.Lock()
+	if s.closed {
+		s.mu.Unlock()
+		return
+	}
+	s.scrollStateVersion++
+	version := s.scrollStateVersion
+	if s.scrollStateTimer != nil {
+		s.scrollStateTimer.Stop()
+	}
+	schedule := s.scheduleScrollCommand
+	if schedule == nil {
+		schedule = func(delay time.Duration, fn func()) tmuxScrollTimer {
+			return time.AfterFunc(delay, fn)
+		}
+	}
+	s.scrollStateTimer = schedule(tmuxScrollReconcileDelay, func() {
+		s.reconcileScheduledScrollState(version)
+	})
+	s.mu.Unlock()
+}
+
+func (s *tmuxSession) reconcileScheduledScrollState(version uint64) {
+	s.mu.Lock()
+	if s.closed || version != s.scrollStateVersion {
+		s.mu.Unlock()
+		return
+	}
+	s.scrollStateTimer = nil
+	target := s.interactiveTargetLocked()
+	out, err := s.readTmuxLocked(
+		"display-message", "-p", "-t", target,
+		"#{pane_in_mode}:#{scroll_position}",
+	)
+	state := ScrollState{
+		AtBottom:   !s.inCopyMode,
+		InCopyMode: s.inCopyMode,
+	}
+	if err == nil {
+		parts := strings.SplitN(strings.TrimSpace(string(out)), ":", 2)
+		if len(parts) == 2 {
+			position, positionErr := strconv.Atoi(parts[1])
+			if positionErr == nil {
+				state.Position = position
+			}
+			state.InCopyMode = parts[0] == "1"
+			state.AtBottom = !state.InCopyMode || state.Position == 0
+			s.inCopyMode = state.InCopyMode
+		}
+	}
+	s.mu.Unlock()
+	s.sendEvent(Event{Type: EventScroll, ScrollState: state})
+}
+
+func (s *tmuxSession) cancelScheduledScrollReconcileLocked() {
+	s.scrollStateVersion++
+	if s.scrollStateTimer != nil {
+		s.scrollStateTimer.Stop()
+		s.scrollStateTimer = nil
+	}
 }
 
 func (s *tmuxSession) FocusPane(col, row int) error {
@@ -441,51 +547,23 @@ func (s *tmuxSession) FocusPane(col, row int) error {
 	return nil
 }
 
-func (s *tmuxSession) CopyBuffer() (string, error) {
-	s.mu.Lock()
-	target := s.interactiveTargetLocked()
-	s.mu.Unlock()
-	if target == "" {
-		return "", nil
-	}
-	return tmuxCaptureCopyBuffer(target)
-}
-
 func (s *tmuxSession) Resize(cols, rows int) error {
-	if cols <= 0 || rows <= 0 {
+	if cols <= 0 || rows <= 0 || cols > int(^uint16(0)) || rows > int(^uint16(0)) {
 		return nil
 	}
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.requestedSize = Size{Cols: cols, Rows: rows}
+	s.size = Size{Cols: cols, Rows: rows}
 	if s.pty == nil {
-		return nil
-	}
-	// Keep the mobile dimensions as projection metadata only. tmux still uses
-	// an ignore-size normal client's PTY geometry when initializing later
-	// windows, so the tmux-facing PTY must continue to mirror the source.
-	return s.syncViewPTYToWindowLocked()
-}
-
-func (s *tmuxSession) syncViewPTYToWindowLocked() error {
-	if s.pty == nil {
-		return nil
-	}
-	viewSize, err := tmuxViewPTYSize(s.interactiveTargetLocked())
-	if err != nil {
-		return fmt.Errorf("read source tmux window size: %w", err)
-	}
-	if viewSize == s.viewPTYSize {
 		return nil
 	}
 	if err := pty.Setsize(s.pty, &pty.Winsize{
-		Cols: uint16(viewSize.Cols),
-		Rows: uint16(viewSize.Rows),
+		Cols: uint16(cols),
+		Rows: uint16(rows),
 	}); err != nil {
-		return fmt.Errorf("sync tmux view pty to source window: %w", err)
+		return fmt.Errorf("resize tmux client pty: %w", err)
 	}
-	s.viewPTYSize = viewSize
 	return nil
 }
 
@@ -496,7 +574,7 @@ func (s *tmuxSession) Close() error {
 		return nil
 	}
 	s.closed = true
-	s.cancelScheduledScrollStateLocked()
+	s.cancelScheduledScrollReconcileLocked()
 	if s.cancel != nil {
 		s.cancel()
 	}
@@ -533,116 +611,14 @@ func (s *tmuxSession) interactiveTargetLocked() string {
 	return s.targetID
 }
 
-func (s *tmuxSession) scheduleScrollStateEmit() {
-	s.mu.Lock()
-	if s.closed {
-		s.mu.Unlock()
-		return
-	}
-
-	s.scrollStateVersion++
-	version := s.scrollStateVersion
-	if s.scrollStateTimer != nil {
-		s.scrollStateTimer.Stop()
-	}
-	s.scrollStateTimer = time.AfterFunc(tmuxScrollStateDebounce, func() {
-		s.emitScheduledScrollState(version)
-	})
-	s.mu.Unlock()
-}
-
-func (s *tmuxSession) emitScheduledScrollState(version uint64) {
-	s.mu.Lock()
-	if s.closed || version != s.scrollStateVersion {
-		s.mu.Unlock()
-		return
-	}
-	s.scrollStateTimer = nil
-	s.mu.Unlock()
-
-	s.emitScrollState()
-}
-
-func (s *tmuxSession) cancelScheduledScrollStateLocked() {
-	s.scrollStateVersion++
-	if s.scrollStateTimer != nil {
-		s.scrollStateTimer.Stop()
-		s.scrollStateTimer = nil
-	}
-}
-
-func (s *tmuxSession) emitScrollState() {
-	s.mu.Lock()
-	if s.closed {
-		s.mu.Unlock()
-		return
-	}
-	s.cancelScheduledScrollStateLocked()
-	state := s.readScrollStateLocked()
-	s.inCopyMode = state.InCopyMode
-	s.mu.Unlock()
-	s.sendEvent(Event{
-		Type:        EventScroll,
-		ScrollState: state,
-	})
-}
-
-func (s *tmuxSession) emitInitialHistory() {
-	s.mu.Lock()
-	target := s.interactiveTargetLocked()
-	s.mu.Unlock()
-	if target == "" {
-		return
-	}
-
-	history, err := tmuxCaptureHistory(target)
-	if err != nil {
-		return
-	}
-	if history == "" {
-		return
-	}
-
-	s.sendEvent(Event{
-		Type: EventHistory,
-		Data: sanitizeTmuxHistory(history),
-	})
-}
-
-func (s *tmuxSession) readScrollStateLocked() ScrollState {
-	state := ScrollState{
-		AtBottom:   !s.inCopyMode,
-		InCopyMode: s.inCopyMode,
-		Position:   0,
-	}
-
-	out, err := exec.Command("tmux", "display-message", "-p", "-t", s.interactiveTargetLocked(),
-		"#{pane_in_mode}:#{scroll_position}").Output()
-	if err != nil {
-		return state
-	}
-
-	parts := strings.SplitN(strings.TrimSpace(string(out)), ":", 2)
-	if len(parts) > 0 {
-		state.InCopyMode = strings.TrimSpace(parts[0]) != "" && strings.TrimSpace(parts[0]) != "0"
-	}
-	if len(parts) > 1 {
-		if position, err := strconv.Atoi(strings.TrimSpace(parts[1])); err == nil {
-			state.Position = position
-		}
-	}
-	state.AtBottom = !state.InCopyMode
-	return state
-}
-
 // tmuxLinkedViewSession creates an independent disposable session and links
 // only the requested source window into it. It deliberately does not join the
 // source session group: group members share future windows, and a small view
 // session can otherwise seed those new shared windows with its own geometry.
-func tmuxLinkedViewSession(targetID string) (string, *exec.Cmd, Size, error) {
+func tmuxLinkedViewSession(targetID string) (string, *exec.Cmd, error) {
 	sourceTarget, err := tmuxSourceWindowTarget(targetID)
 	if err != nil {
-		return "", nil, Size{}, err
+		return "", nil, err
 	}
 
 	// Unique name per open (PID + counter).
@@ -654,7 +630,7 @@ func tmuxLinkedViewSession(targetID string) (string, *exec.Cmd, Size, error) {
 	// shared with the source.
 	bootstrapOut, err := tmuxNewViewSessionCommand(linkedName).Output()
 	if err != nil {
-		return "", nil, Size{}, fmt.Errorf("create tmux view session: %w", err)
+		return "", nil, fmt.Errorf("create tmux view session: %w", err)
 	}
 	cleanup := func() {
 		_ = exec.Command("tmux", "kill-session", "-t", linkedName).Run()
@@ -662,19 +638,14 @@ func tmuxLinkedViewSession(targetID string) (string, *exec.Cmd, Size, error) {
 	bootstrapTarget := strings.TrimSpace(string(bootstrapOut))
 	if bootstrapTarget == "" {
 		cleanup()
-		return "", nil, Size{}, fmt.Errorf("create tmux view session: empty bootstrap window target")
+		return "", nil, fmt.Errorf("create tmux view session: empty bootstrap window target")
 	}
 	if err := tmuxLinkViewWindowCommand(sourceTarget, bootstrapTarget).Run(); err != nil {
 		cleanup()
-		return "", nil, Size{}, fmt.Errorf("link source tmux window %s into view: %w", sourceTarget, err)
-	}
-	viewPTYSize, err := tmuxViewPTYSize(linkedName)
-	if err != nil {
-		cleanup()
-		return "", nil, Size{}, fmt.Errorf("read source tmux window size: %w", err)
+		return "", nil, fmt.Errorf("link source tmux window %s into view: %w", sourceTarget, err)
 	}
 
-	return linkedName, tmuxAttachCommand(linkedName), viewPTYSize, nil
+	return linkedName, tmuxAttachCommand(linkedName), nil
 }
 
 func tmuxNewViewSessionCommand(sessionName string) *exec.Cmd {
@@ -701,83 +672,6 @@ func tmuxLinkViewWindowCommand(sourceTarget, bootstrapTarget string) *exec.Cmd {
 		"-t",
 		bootstrapTarget,
 	)
-}
-
-func tmuxWindowSize(target string) (Size, error) {
-	out, err := exec.Command(
-		"tmux",
-		"display-message",
-		"-p",
-		"-t",
-		target,
-		"#{window_width}\t#{window_height}",
-	).Output()
-	if err != nil {
-		return Size{}, err
-	}
-	parts := strings.Split(strings.TrimSpace(string(out)), "\t")
-	if len(parts) != 2 {
-		return Size{}, fmt.Errorf("unexpected tmux window size %q", strings.TrimSpace(string(out)))
-	}
-	cols, err := strconv.Atoi(parts[0])
-	if err != nil {
-		return Size{}, fmt.Errorf("parse tmux window width: %w", err)
-	}
-	rows, err := strconv.Atoi(parts[1])
-	if err != nil {
-		return Size{}, fmt.Errorf("parse tmux window height: %w", err)
-	}
-	if cols <= 0 || cols > int(^uint16(0)) || rows <= 0 || rows > int(^uint16(0)) {
-		return Size{}, fmt.Errorf("invalid tmux window size %dx%d", cols, rows)
-	}
-	return Size{Cols: cols, Rows: rows}, nil
-}
-
-func tmuxViewPTYSize(target string) (Size, error) {
-	windowSize, err := tmuxWindowSize(target)
-	if err != nil {
-		return Size{}, err
-	}
-	out, err := exec.Command("tmux", "show-options", "-v", "-t", target, "status").Output()
-	if err != nil {
-		return Size{}, fmt.Errorf("read tmux view status size: %w", err)
-	}
-	statusValue := strings.TrimSpace(string(out))
-	if statusValue == "" {
-		out, err = exec.Command("tmux", "show-options", "-g", "-v", "status").Output()
-		if err != nil {
-			return Size{}, fmt.Errorf("read global tmux view status size: %w", err)
-		}
-		statusValue = strings.TrimSpace(string(out))
-	}
-	statusLines, err := tmuxStatusLines(statusValue)
-	if err != nil {
-		return Size{}, err
-	}
-	if windowSize.Rows > int(^uint16(0))-statusLines {
-		return Size{}, fmt.Errorf(
-			"tmux view size %dx%d with %d status lines exceeds PTY limits",
-			windowSize.Cols,
-			windowSize.Rows,
-			statusLines,
-		)
-	}
-	windowSize.Rows += statusLines
-	return windowSize, nil
-}
-
-func tmuxStatusLines(value string) (int, error) {
-	switch value {
-	case "off", "0":
-		return 0, nil
-	case "on":
-		return 1, nil
-	}
-	lines, err := strconv.Atoi(value)
-	if err != nil || lines < 1 || lines > 5 {
-		return 0, fmt.Errorf("invalid tmux status size %q", value)
-	}
-	return lines, nil
 }
 
 func tmuxSourceWindowTarget(targetID string) (string, error) {
@@ -822,8 +716,6 @@ func tmuxAttachCommand(sessionName string) *exec.Cmd {
 		"-T",
 		"RGB,256",
 		"attach-session",
-		"-f",
-		"ignore-size",
 		"-t",
 		sessionName,
 	)
@@ -867,135 +759,4 @@ func tmuxClientEnv(base []string) []string {
 	}
 
 	return env
-}
-
-func tmuxCaptureHistory(targetID string) (string, error) {
-	targetID = strings.TrimSpace(targetID)
-	if targetID == "" {
-		return "", nil
-	}
-
-	paneHeight, historySize, err := tmuxHistoryBounds(targetID)
-	if err != nil {
-		return "", err
-	}
-	if historySize <= 0 {
-		return "", nil
-	}
-
-	startLine, endLine := tmuxHistoryCaptureRange(paneHeight, historySize)
-	cmd := exec.Command(
-		"tmux",
-		"capture-pane",
-		"-p",
-		"-e",
-		"-S",
-		fmt.Sprintf("%d", startLine),
-		"-E",
-		fmt.Sprintf("%d", endLine),
-		"-t",
-		targetID,
-	)
-	out, err := cmd.Output()
-	if err != nil {
-		return "", fmt.Errorf("capture tmux history: %w", err)
-	}
-	history := string(out)
-	if history == "" {
-		return "", nil
-	}
-	if !strings.HasSuffix(history, "\n") {
-		history += "\n"
-	}
-	return history, nil
-}
-
-func tmuxCaptureCopyBuffer(targetID string) (string, error) {
-	targetID = strings.TrimSpace(targetID)
-	if targetID == "" {
-		return "", nil
-	}
-
-	out, err := exec.Command(
-		"tmux",
-		"capture-pane",
-		"-p",
-		"-S",
-		"-",
-		"-E",
-		"-",
-		"-t",
-		targetID,
-	).Output()
-	if err != nil {
-		return "", fmt.Errorf("capture tmux copy buffer: %w", err)
-	}
-
-	buffer := string(out)
-	if buffer == "" {
-		return "", nil
-	}
-	if !strings.HasSuffix(buffer, "\n") {
-		buffer += "\n"
-	}
-	return buffer, nil
-}
-
-func tmuxHistoryBounds(targetID string) (paneHeight int, historySize int, err error) {
-	out, err := exec.Command(
-		"tmux",
-		"display-message",
-		"-p",
-		"-t",
-		targetID,
-		"#{pane_height}:#{history_size}",
-	).Output()
-	if err != nil {
-		return 0, 0, fmt.Errorf("read tmux history bounds: %w", err)
-	}
-
-	parts := strings.SplitN(strings.TrimSpace(string(out)), ":", 2)
-	if len(parts) != 2 {
-		return 0, 0, fmt.Errorf("unexpected tmux history bounds: %q", strings.TrimSpace(string(out)))
-	}
-
-	paneHeight, err = strconv.Atoi(strings.TrimSpace(parts[0]))
-	if err != nil {
-		return 0, 0, fmt.Errorf("parse tmux pane height: %w", err)
-	}
-	historySize, err = strconv.Atoi(strings.TrimSpace(parts[1]))
-	if err != nil {
-		return 0, 0, fmt.Errorf("parse tmux history size: %w", err)
-	}
-
-	return paneHeight, historySize, nil
-}
-
-func tmuxHistoryCaptureRange(paneHeight int, historySize int) (startLine int, endLine int) {
-	if paneHeight <= 0 || historySize <= 0 {
-		return 0, -1
-	}
-
-	captureLines := paneHeight * tmuxInitialHistoryViewportScreens
-	if captureLines > tmuxInitialHistoryMaxLines {
-		captureLines = tmuxInitialHistoryMaxLines
-	}
-	if captureLines > historySize {
-		captureLines = historySize
-	}
-
-	return -captureLines, -paneHeight
-}
-
-func sanitizeTmuxOutput(data string) string {
-	// libghostty is the terminal emulator now, so tmux output must stay intact.
-	// Stripping alt-screen or other control sequences breaks tmux's own UI
-	// semantics, including pane borders, status areas, and copy-mode redraws.
-	return data
-}
-
-func sanitizeTmuxHistory(data string) string {
-	// Preserve the capture as-is so the emulator receives the same bytes tmux
-	// intended to present, rather than an xterm.js-shaped approximation.
-	return data
 }

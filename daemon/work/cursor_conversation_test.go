@@ -78,6 +78,9 @@ func TestProviderConversationReaderCursorFindsProjectTranscript(t *testing.T) {
 	home := t.TempDir()
 	cwd := "/home/daoleno/workspace/pacagent"
 	sessionID := "f6df18eb-9674-4298-a25c-16df37c937fc"
+	now := time.Now().UTC()
+	startedAt := now.Add(-30 * time.Second)
+	settledAt := now.Add(-5 * time.Second)
 	transcriptPath := filepath.Join(
 		home,
 		cursorProjectDirPrefix,
@@ -96,7 +99,7 @@ func TestProviderConversationReaderCursorFindsProjectTranscript(t *testing.T) {
 				"content": []map[string]any{
 					{
 						"type": "text",
-						"text": "<timestamp>Saturday, Jul 4, 2026, 3:29 PM (UTC+8)</timestamp>\n<user_query>\ncommit and push\n</user_query>",
+						"text": "<timestamp>" + startedAt.Format(time.RFC3339Nano) + "</timestamp>\n<user_query>\ncommit and push\n</user_query>",
 					},
 				},
 			},
@@ -112,10 +115,9 @@ func TestProviderConversationReaderCursorFindsProjectTranscript(t *testing.T) {
 		map[string]any{
 			"type":      "turn_ended",
 			"status":    "success",
-			"timestamp": "2026-07-04T07:30:00Z",
+			"timestamp": settledAt.Format(time.RFC3339Nano),
 		},
 	)
-	now := time.Now().UTC()
 	if err := os.Chtimes(transcriptPath, now, now); err != nil {
 		t.Fatalf("Chtimes: %v", err)
 	}
@@ -140,11 +142,124 @@ func TestProviderConversationReaderCursorFindsProjectTranscript(t *testing.T) {
 	if got.Activity == nil || got.Activity.Status != ProviderActivityCompleted || got.Activity.StartedAt == "" || got.Activity.SettledAt == "" {
 		t.Fatalf("turn = %#v, want completed lifecycle", got.Activity)
 	}
+	if got.Activity.StartedAt != startedAt.Format(time.RFC3339Nano) || got.Activity.SettledAt != settledAt.Format(time.RFC3339Nano) {
+		t.Fatalf("turn chronology = %#v, want start %s before settlement %s", got.Activity, startedAt, settledAt)
+	}
 	if len(got.Events) != 3 {
 		t.Fatalf("events len = %d, want 3 (user/assistant/turn_ended): %#v", len(got.Events), got.Events)
 	}
 	if got.Events[2].Kind != "turn_ended" || got.Events[2].Status != "success" {
 		t.Fatalf("turn_ended event = %#v", got.Events[2])
+	}
+}
+
+func TestProviderConversationReaderFreshCursorDoesNotBorrowAnotherCursorSession(t *testing.T) {
+	home := t.TempDir()
+	cwd := "/home/daoleno/workspace/zen"
+	now := time.Date(2026, 7, 17, 10, 50, 11, 0, time.UTC)
+	oldSessionID := "7822da8a-bd40-4022-98f6-701edd2307c8"
+	oldTranscriptPath := filepath.Join(
+		home,
+		cursorProjectDirPrefix,
+		encodeCursorProjectDir(cwd),
+		cursorTranscriptDir,
+		oldSessionID,
+		oldSessionID+".jsonl",
+	)
+	if err := os.MkdirAll(filepath.Dir(oldTranscriptPath), 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	writeJSONL(t, oldTranscriptPath,
+		map[string]any{
+			"role": "user",
+			"message": map[string]any{
+				"content": []map[string]any{{
+					"type": "text",
+					"text": "<timestamp>Thursday, Jul 16, 2026, 11:31 AM (UTC+8)</timestamp>\n<user_query>old Brain rollout</user_query>",
+				}},
+			},
+		},
+		map[string]any{
+			"role": "assistant",
+			"message": map[string]any{
+				"content": []map[string]any{{
+					"type": "text",
+					"text": "old provider-owned history",
+				}},
+			},
+		},
+	)
+	oldUpdatedAt := now.Add(-31*time.Hour - 16*time.Minute)
+	if err := os.Chtimes(oldTranscriptPath, oldUpdatedAt, oldUpdatedAt); err != nil {
+		t.Fatalf("Chtimes: %v", err)
+	}
+	t.Setenv("HOME", home)
+
+	resumed, err := NewProviderConversationReader().Load(classifier.Agent{
+		ID:        "cursor-window:@old",
+		Command:   "cursor-agent --resume " + oldSessionID,
+		Cwd:       cwd,
+		StartedAt: now,
+		State:     classifier.StateRunning,
+	}, AgentProviderCursor, now)
+	if err != nil {
+		t.Fatalf("resume load: %v", err)
+	}
+	if !resumed.Available || resumed.SessionID != oldSessionID {
+		t.Fatalf("explicit native resume did not select its transcript: %#v", resumed)
+	}
+
+	freshReader := NewProviderConversationReader()
+	freshAgent := classifier.Agent{
+		ID:        "cursor-window:@fresh",
+		Command:   "cursor-agent --force --sandbox disabled",
+		Cwd:       cwd,
+		StartedAt: now,
+		State:     classifier.StateRunning,
+	}
+	fresh, err := freshReader.Load(freshAgent, AgentProviderCursor, now)
+	if err != nil {
+		t.Fatalf("fresh load: %v", err)
+	}
+	if fresh.Available || fresh.Reason != "transcript_not_found" ||
+		fresh.SessionID != "" || fresh.Path != "" || fresh.Activity != nil ||
+		len(fresh.Events) != 0 {
+		t.Fatalf("fresh Cursor borrowed another session: %#v", fresh)
+	}
+
+	newSessionID := "cursor-session-created-for-fresh-agent"
+	newTranscriptPath := filepath.Join(
+		home,
+		cursorProjectDirPrefix,
+		encodeCursorProjectDir(cwd),
+		cursorTranscriptDir,
+		newSessionID,
+		newSessionID+".jsonl",
+	)
+	if err := os.MkdirAll(filepath.Dir(newTranscriptPath), 0o755); err != nil {
+		t.Fatalf("MkdirAll new transcript: %v", err)
+	}
+	writeJSONL(t, newTranscriptPath, map[string]any{
+		"role": "user",
+		"message": map[string]any{
+			"content": []map[string]any{{
+				"type": "text",
+				"text": "<timestamp>" + now.Add(2*time.Second).Format(time.RFC3339Nano) + "</timestamp>\n<user_query>fresh request</user_query>",
+			}},
+		},
+	})
+	newUpdatedAt := now.Add(3 * time.Second)
+	if err := os.Chtimes(newTranscriptPath, newUpdatedAt, newUpdatedAt); err != nil {
+		t.Fatalf("Chtimes new transcript: %v", err)
+	}
+	attached, err := freshReader.Load(freshAgent, AgentProviderCursor, now.Add(4*time.Second))
+	if err != nil {
+		t.Fatalf("fresh transcript load: %v", err)
+	}
+	if !attached.Available || attached.SessionID != newSessionID ||
+		attached.Path != newTranscriptPath || len(attached.Events) != 1 ||
+		strings.Contains(attached.Events[0].Body, "old Brain rollout") {
+		t.Fatalf("fresh Cursor did not bind only its newly-created transcript: %#v", attached)
 	}
 }
 

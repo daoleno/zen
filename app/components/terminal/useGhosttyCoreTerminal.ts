@@ -8,10 +8,7 @@ import {
   destroyTerminal,
   encodeMouseEvent,
   getRenderSnapshot,
-  getVisibleText,
   resize as resizeTerminal,
-  scrollViewport as scrollNativeViewport,
-  scrollViewportToBottom as scrollNativeViewportToBottom,
   setTheme as setNativeTheme,
   writeData,
   type MouseEventPayload,
@@ -35,6 +32,7 @@ export function useGhosttyCoreTerminal() {
   const handleRef = useRef<number>(0);
   const dirtyRef = useRef(false);
   const gridRef = useRef<GhosttyGridSize | null>(null);
+  const modelSessionIdRef = useRef<string | null>(null);
   const themeRef = useRef<TerminalThemePalette | null>(null);
 
   const logNativeError = useCallback((operation: string, error: unknown) => {
@@ -68,53 +66,86 @@ export function useGhosttyCoreTerminal() {
     return applyTheme(handle, theme);
   }, [applyTheme]);
 
-  const ensureTerminal = useCallback((grid: GhosttyGridSize) => {
-    if (grid.cols <= 0 || grid.rows <= 0) {
+  const resetTerminal = useCallback((sessionId: string, grid: GhosttyGridSize) => {
+    const nextSessionId = sessionId.trim();
+    if (
+      !nextSessionId ||
+      !Number.isFinite(grid.cols) ||
+      !Number.isFinite(grid.rows) ||
+      !Number.isFinite(grid.cellWidth) ||
+      !Number.isFinite(grid.cellHeight) ||
+      grid.cols <= 0 ||
+      grid.rows <= 0 ||
+      grid.cellWidth <= 0 ||
+      grid.cellHeight <= 0
+    ) {
       return false;
     }
 
-    if (!handleRef.current) {
-      try {
-        handleRef.current = createTerminal(grid.cols, grid.rows);
-      } catch (error) {
-        logNativeError('createTerminal', error);
-        return false;
-      }
-      if (!handleRef.current) {
-        return false;
-      }
-      const theme = themeRef.current;
-      if (theme) {
-        applyTheme(handleRef.current, theme);
-      }
-      gridRef.current = null;
-      dirtyRef.current = true;
+    if (
+      handleRef.current &&
+      modelSessionIdRef.current === nextSessionId
+    ) {
+      return true;
     }
 
-    const previousGrid = gridRef.current;
-    const shouldResize = !previousGrid ||
-      previousGrid.cols !== grid.cols ||
-      previousGrid.rows !== grid.rows ||
-      previousGrid.cellWidth !== grid.cellWidth ||
-      previousGrid.cellHeight !== grid.cellHeight;
-
-    if (shouldResize) {
+    const previousHandle = handleRef.current;
+    handleRef.current = 0;
+    modelSessionIdRef.current = null;
+    gridRef.current = null;
+    dirtyRef.current = false;
+    if (previousHandle) {
       try {
-        resizeTerminal(handleRef.current, grid.cols, grid.rows, grid.cellWidth, grid.cellHeight);
-        dirtyRef.current = true;
-        gridRef.current = grid;
+        destroyTerminal(previousHandle);
       } catch (error) {
-        logNativeError('resize', error);
+        logNativeError('destroyTerminal', error);
+      }
+    }
+
+    let nextHandle = 0;
+    try {
+      nextHandle = createTerminal(Math.trunc(grid.cols), Math.trunc(grid.rows));
+      if (!nextHandle) {
         return false;
       }
+      resizeTerminal(
+        nextHandle,
+        Math.trunc(grid.cols),
+        Math.trunc(grid.rows),
+        grid.cellWidth,
+        grid.cellHeight,
+      );
+    } catch (error) {
+      logNativeError(nextHandle ? 'resize' : 'createTerminal', error);
+      if (nextHandle) {
+        try {
+          destroyTerminal(nextHandle);
+        } catch (destroyError) {
+          logNativeError('destroyTerminal', destroyError);
+        }
+      }
+      return false;
+    }
+
+    handleRef.current = nextHandle;
+    modelSessionIdRef.current = nextSessionId;
+    gridRef.current = {
+      ...grid,
+      cols: Math.trunc(grid.cols),
+      rows: Math.trunc(grid.rows),
+    };
+    dirtyRef.current = true;
+    const theme = themeRef.current;
+    if (theme) {
+      applyTheme(nextHandle, theme);
     }
 
     return true;
   }, [applyTheme, logNativeError]);
 
-  const writeOutput = useCallback((data: string) => {
+  const writeOutput = useCallback((sessionId: string, data: string) => {
     const handle = handleRef.current;
-    if (!handle || !data) {
+    if (!handle || sessionId !== modelSessionIdRef.current || !data) {
       return false;
     }
 
@@ -128,34 +159,51 @@ export function useGhosttyCoreTerminal() {
     }
   }, [logNativeError]);
 
-  const scrollViewport = useCallback((delta: number) => {
+  const resizeGrid = useCallback((sessionId: string, grid: GhosttyGridSize) => {
     const handle = handleRef.current;
-    if (!handle || delta === 0) {
+    if (
+      !handle ||
+      sessionId !== modelSessionIdRef.current ||
+      !Number.isFinite(grid.cols) ||
+      !Number.isFinite(grid.rows) ||
+      !Number.isFinite(grid.cellWidth) ||
+      !Number.isFinite(grid.cellHeight) ||
+      grid.cols <= 0 ||
+      grid.rows <= 0 ||
+      grid.cellWidth <= 0 ||
+      grid.cellHeight <= 0
+    ) {
       return false;
+    }
+
+    const nextGrid = {
+      ...grid,
+      cols: Math.trunc(grid.cols),
+      rows: Math.trunc(grid.rows),
+    };
+    const previousGrid = gridRef.current;
+    if (
+      previousGrid?.cols === nextGrid.cols &&
+      previousGrid.rows === nextGrid.rows &&
+      previousGrid.cellWidth === nextGrid.cellWidth &&
+      previousGrid.cellHeight === nextGrid.cellHeight
+    ) {
+      return true;
     }
 
     try {
-      scrollNativeViewport(handle, delta);
+      resizeTerminal(
+        handle,
+        nextGrid.cols,
+        nextGrid.rows,
+        nextGrid.cellWidth,
+        nextGrid.cellHeight,
+      );
+      gridRef.current = nextGrid;
       dirtyRef.current = true;
       return true;
     } catch (error) {
-      logNativeError('scrollViewport', error);
-      return false;
-    }
-  }, [logNativeError]);
-
-  const scrollViewportToBottom = useCallback(() => {
-    const handle = handleRef.current;
-    if (!handle) {
-      return false;
-    }
-
-    try {
-      scrollNativeViewportToBottom(handle);
-      dirtyRef.current = true;
-      return true;
-    } catch (error) {
-      logNativeError('scrollViewportToBottom', error);
+      logNativeError('resize', error);
       return false;
     }
   }, [logNativeError]);
@@ -174,40 +222,33 @@ export function useGhosttyCoreTerminal() {
     }
   }, [logNativeError]);
 
-  const consumeRenderSnapshot = useCallback((): RenderSnapshot | null => {
+  const consumeRenderSnapshot = useCallback((): {
+    sessionId: string;
+    snapshot: RenderSnapshot;
+  } | null => {
     const handle = handleRef.current;
-    if (!handle || !dirtyRef.current) {
+    const sessionId = modelSessionIdRef.current;
+    if (!handle || !sessionId || !dirtyRef.current) {
       return null;
     }
     dirtyRef.current = false;
 
     try {
       const snapshot = getRenderSnapshot(handle);
-      return snapshot.dirty === 'none' ? null : snapshot;
+      return snapshot.dirty === 'none' ? null : { sessionId, snapshot };
     } catch (error) {
       logNativeError('getRenderSnapshot', error);
       return null;
     }
   }, [logNativeError]);
 
-  const getVisibleTextSnapshot = useCallback(() => {
-    const handle = handleRef.current;
-    if (!handle) {
-      return '';
-    }
-
-    try {
-      return getVisibleText(handle);
-    } catch (error) {
-      logNativeError('getVisibleText', error);
-      return '';
-    }
-  }, [logNativeError]);
+  const currentGrid = useCallback(() => gridRef.current, []);
 
   useEffect(() => {
     return () => {
       const handle = handleRef.current;
       handleRef.current = 0;
+      modelSessionIdRef.current = null;
       gridRef.current = null;
       themeRef.current = null;
       dirtyRef.current = false;
@@ -223,21 +264,19 @@ export function useGhosttyCoreTerminal() {
   }, [logNativeError]);
 
   return useMemo(() => ({
-    ensureTerminal,
+    resetTerminal,
+    resizeGrid,
     setTheme,
     writeOutput,
-    scrollViewport,
-    scrollViewportToBottom,
     encodePointer,
     consumeRenderSnapshot,
-    getVisibleTextSnapshot,
+    currentGrid,
   }), [
     consumeRenderSnapshot,
+    currentGrid,
     encodePointer,
-    ensureTerminal,
-    getVisibleTextSnapshot,
-    scrollViewport,
-    scrollViewportToBottom,
+    resetTerminal,
+    resizeGrid,
     setTheme,
     writeOutput,
   ]);

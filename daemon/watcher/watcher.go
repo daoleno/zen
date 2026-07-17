@@ -774,11 +774,13 @@ func isAgentInputReady(command, content string) bool {
 	if !needsInputReadinessWait(command, content) {
 		return true
 	}
-	if isCodexCommand(command) || strings.Contains(strings.ToLower(content), "openai codex") {
+	explicitCodex := isCodexCommand(command)
+	if explicitCodex || strings.Contains(strings.ToLower(content), "openai codex") {
 		current := latestCodexPaneContent(content)
-		return strings.Contains(current, "OpenAI Codex") &&
+		return (explicitCodex || strings.Contains(current, "OpenAI Codex")) &&
 			!codexModelLoadingRe.MatchString(current) &&
 			!codexMCPStartingRe.MatchString(current) &&
+			!codexStartupContinueRe.MatchString(current) &&
 			codexInputPromptRe.MatchString(current)
 	}
 	if isCursorAgentCommand(command) || strings.Contains(strings.ToLower(content), "cursor agent") {

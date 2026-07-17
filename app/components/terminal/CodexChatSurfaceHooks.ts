@@ -98,6 +98,7 @@ export function usePinnedTimeline(itemCount: number, resetKey: string) {
   );
   const userDraggingRef = useRef(false);
   const userMomentumRef = useRef(false);
+  const timelineTouchActiveRef = useRef(false);
   const scrollRequestSeqRef = useRef(0);
   const latestOffsetRef = useRef(0);
   const latestOffsetInitializedRef = useRef(false);
@@ -148,8 +149,18 @@ export function usePinnedTimeline(itemCount: number, resetKey: string) {
   const implicitAnchorSuspended = useCallback(() => (
     textSelectionActiveRef.current ||
     userDraggingRef.current ||
-    userMomentumRef.current
+    userMomentumRef.current ||
+    timelineTouchActiveRef.current
   ), []);
+
+  const handleTimelineTouchActiveChange = useCallback((active: boolean) => {
+    timelineTouchActiveRef.current = active;
+    if (active) {
+      // A queued programmatic scroll can make ScrollView terminate a child
+      // press. Root touch observation stays passive and cancels only anchoring.
+      scrollRequestSeqRef.current += 1;
+    }
+  }, []);
 
   const attachToLatest = useCallback(() => {
     scrollStateRef.current = returnTimelineToBottom();
@@ -222,7 +233,11 @@ export function usePinnedTimeline(itemCount: number, resetKey: string) {
     ) {
       return;
     }
-    requestAnimationFrame(() => scrollToLatest(false, 0));
+    requestAnimationFrame(() => {
+      if (!implicitAnchorSuspended()) {
+        scrollToLatest(false, 0);
+      }
+    });
   }, [implicitAnchorSuspended, itemCount, scrollToLatest]);
 
   const resetForConversation = useCallback(() => {
@@ -230,6 +245,7 @@ export function usePinnedTimeline(itemCount: number, resetKey: string) {
     scrollStateRef.current = returnTimelineToBottom();
     userDraggingRef.current = false;
     userMomentumRef.current = false;
+    timelineTouchActiveRef.current = false;
     scrollRequestSeqRef.current += 1;
     distanceFromLatestRef.current = timelineDistanceFromLatest(
       rawContentOffsetRef.current,
@@ -329,12 +345,16 @@ export function usePinnedTimeline(itemCount: number, resetKey: string) {
       attachToLatest();
       return;
     }
-    if (implicitAnchorSuspended()) {
+    const mutationDecision = timelineMutationDecision(
+      scrollStateRef.current,
+      implicitAnchorSuspended(),
+    );
+    if (mutationDecision === "suspend-implicit-anchor") {
       updateJumpButton();
       return;
     }
     if (
-      timelineMutationDecision(scrollStateRef.current) === "follow-bottom" &&
+      mutationDecision === "follow-bottom" &&
       distanceFromLatestRef.current > 1
     ) {
       scrollToLatest(false, 0);
@@ -429,6 +449,7 @@ export function usePinnedTimeline(itemCount: number, resetKey: string) {
     handleScrollEndDrag,
     handleMomentumScrollBegin,
     handleMomentumScrollEnd,
+    handleTimelineTouchActiveChange,
     handleContentSizeChange,
     handleLatestOffsetChange,
     handleLayout,

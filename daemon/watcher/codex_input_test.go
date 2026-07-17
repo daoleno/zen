@@ -76,6 +76,25 @@ func TestSubmitCodexInputWaitsForMCPThenPastesOnceAndConfirms(t *testing.T) {
 	}
 }
 
+func TestSubmitCodexInputAfterLongTurnWithoutHeader(t *testing.T) {
+	body := "follow-up unique marker ZEN_LONG_TURN_24680"
+	ready := strings.Repeat("completed delegated output line\n", 1100) +
+		"\n› Find and fix a bug in @filename\n\n  gpt-5.6 medium · /tmp\n"
+	draft := ready + "\n› " + body + "\n\n  gpt-5.6 medium · /tmp\n"
+	submitted := ready + "\n› " + body + "\n\n• Working (1s • esc to interrupt)\n"
+	io := &fakeCodexInputIO{captures: []string{ready, ready, draft, submitted}}
+
+	if err := submitCodexInput(io, "agent:@1", body, testCodexSubmitConfig()); err != nil {
+		t.Fatalf("submitCodexInput returned error: %v", err)
+	}
+	if len(io.pastes) != 1 || io.pastes[0] != body {
+		t.Fatalf("pastes = %#v, want headerless follow-up body exactly once", io.pastes)
+	}
+	if io.enters != 1 {
+		t.Fatalf("Enter count = %d, want 1", io.enters)
+	}
+}
+
 func TestSubmitCodexInputAdvancesStartupTrustBeforePasting(t *testing.T) {
 	body := "execute unique marker ZEN_TRUST_12345"
 	trust := "│ >_ OpenAI Codex │\nDo you trust the contents of this directory?\n› 1. Yes, continue\n  Press enter to continue\n"

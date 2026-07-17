@@ -8,7 +8,10 @@ export interface TimelineScrollState {
   mode: "attached" | "detached";
 }
 
-export type TimelineMutationDecision = "follow-bottom" | "preserve-visible-anchor";
+export type TimelineMutationDecision =
+  | "follow-bottom"
+  | "preserve-visible-anchor"
+  | "suspend-implicit-anchor";
 
 export const INITIAL_TIMELINE_SCROLL_STATE: TimelineScrollState = {
   mode: "attached",
@@ -31,7 +34,11 @@ export function reduceTimelineScrollPosition(
 
 export function timelineMutationDecision(
   state: TimelineScrollState,
+  implicitAnchorSuspended: boolean = false,
 ): TimelineMutationDecision {
+  if (implicitAnchorSuspended) {
+    return "suspend-implicit-anchor";
+  }
   return state.mode === "attached"
     ? "follow-bottom"
     : "preserve-visible-anchor";

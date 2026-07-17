@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import * as Clipboard from 'expo-clipboard';
 import { WebView, WebViewMessageEvent } from 'react-native-webview';
 import type {
@@ -7,19 +7,38 @@ import type {
   RenderSnapshot,
 } from '../../modules/zen-terminal-vt/src';
 import type { TerminalThemePalette } from '../../constants/terminalThemes';
-import { useGhosttyCoreTerminal, type GhosttyGridSize } from './useGhosttyCoreTerminal';
+import { useGhosttyCoreTerminal } from './useGhosttyCoreTerminal';
 import { useTerminalSession } from './useTerminalSession';
 import type { TerminalInputHandleRef } from './TerminalInputHandler';
+import { TerminalLiveGridOwner } from './terminalLiveGrid';
+import type { TerminalScrollCancelReason } from './terminalScrollGesture';
+import { isCurrentTerminalRendererGeneration } from './terminalSurfaceBootstrap';
+import {
+  notifyTmuxClientFocus,
+  TerminalScrollCorrelation,
+} from './terminalSessionCorrelation';
 
-type BridgeMessage =
+type BridgeMessage = { rendererGeneration: number } & (
   | { type: 'ready' }
-  | { type: 'resize'; cols: number; rows: number; cellWidth: number; cellHeight: number }
-  | { type: 'focusInput' }
+  | { type: 'bootstrapError'; message: string }
+  | { type: 'bootstrapWarning'; message: string }
+  | { type: 'runtimeError'; message: string }
+  | {
+      type: 'resize';
+      cols: number;
+      rows: number;
+      cellWidth: number;
+      cellHeight: number;
+    }
+  | { type: 'focusInput'; sessionId: string | null }
   | { type: 'selectionActive'; active: boolean }
   | { type: 'copyText'; text: string }
-  | { type: 'scrollStart' }
-  | { type: 'scrollEnd' }
-  | { type: 'scroll'; lines: number }
+  | {
+      type: 'scroll';
+      sessionId: string | null;
+      scrollToken: string | null;
+      lines: number;
+    }
   | {
       type: 'mouse';
       action: MouseAction;
@@ -31,115 +50,85 @@ type BridgeMessage =
       alt?: boolean;
       meta?: boolean;
       anyButtonPressed?: boolean;
-    };
+      sessionId: string | null;
+    }
+);
 
-type TerminalViewportMode = 'live' | 'scrolled';
-type RendererCommand = 'blur' | 'wakeRenderer' | 'resumeInput' | 'scrollToBottom';
+type RendererCommand =
+  | 'blur'
+  | 'wakeRenderer'
+  | 'resumeInput'
+  | 'scrollToBottom';
 
 type RendererStateMessage =
   | { type: 'renderSnapshot'; snapshot: RenderSnapshot }
-  | { type: 'theme'; theme: TerminalThemePalette }
-  | { type: 'viewportMode'; mode: TerminalViewportMode };
-
-type PendingTerminalEvent =
-  | { type: 'history' | 'output'; data: string }
-  | { type: 'message'; data: string };
-
-const REPLACEABLE_PENDING_TYPES: readonly RendererStateMessage['type'][] = [
-  'renderSnapshot',
-  'theme',
-  'viewportMode',
-];
-
-const REMOTE_SCROLL_FLUSH_MS = 80;
+  | { type: 'theme'; theme: TerminalThemePalette };
 
 interface UseGhosttyTerminalControllerArgs {
   serverId: string;
   targetId: string;
   backend: string;
   theme: TerminalThemePalette;
+  rendererGeneration: number;
   onCtrlArmedChange?: (next: boolean) => void;
+  onRendererBootstrapFailure?: (message: string, generation: number) => void;
 }
 
 /**
- * Thin-client controller for the mobile terminal surface.
- *
- * tmux owns remote interaction semantics like pane focus and copy-mode scroll.
- * libghostty owns the terminal screen state and mouse encoding.
- * This hook only translates viewport and input events between those layers.
+ * One native terminal path: PTY bytes update Ghostty, and Ghostty updates one
+ * live WebView DOM. tmux copy-mode is the only scrollback model.
  */
 export function useGhosttyTerminalController({
   serverId,
   targetId,
   backend,
   theme,
+  rendererGeneration,
   onCtrlArmedChange,
+  onRendererBootstrapFailure,
 }: UseGhosttyTerminalControllerArgs) {
   const webviewRef = useRef<WebView>(null);
   const inputRef = useRef<TerminalInputHandleRef>(null);
   const webReadyRef = useRef(false);
   const pendingRef = useRef<RendererStateMessage[]>([]);
   const pendingRendererCommandRef = useRef<RendererCommand | null>(null);
-  const pendingTerminalRef = useRef<PendingTerminalEvent[]>([]);
-  const renderFrameRef = useRef<number>(0);
-  const pendingRemoteScrollRef = useRef(0);
-  const remoteScrollTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const remoteScrollGestureActiveRef = useRef(false);
-  const gridRef = useRef<GhosttyGridSize | null>(null);
-  const viewportModeRef = useRef<TerminalViewportMode>('live');
-  const [ready, setReady] = useState(false);
-  const [viewportMode, setViewportModeState] = useState<TerminalViewportMode>('live');
+  const renderFrameRef = useRef(0);
+  const gridOwnerRef = useRef<TerminalLiveGridOwner | null>(null);
+  const scrollCorrelationRef = useRef(new TerminalScrollCorrelation());
+  const rendererGenerationRef = useRef(rendererGeneration);
+  rendererGenerationRef.current = rendererGeneration;
+  const [readyGeneration, setReadyGeneration] = useState<number | null>(null);
+  const [scrolledUp, setScrolledUp] = useState(false);
+  const ready = readyGeneration === rendererGeneration;
 
   const ghostty = useGhosttyCoreTerminal();
 
-  const injectRendererMessage = useCallback((payload: RendererStateMessage) => {
-    let script = '';
-
-    if (payload.type === 'renderSnapshot') {
-      script = `window.__zenRenderSnapshot && window.__zenRenderSnapshot(${JSON.stringify(payload.snapshot)}); true;`;
-    } else if (payload.type === 'theme') {
-      script = `window.__zenTheme && window.__zenTheme(${JSON.stringify(payload.theme)}); true;`;
-    } else if (payload.type === 'viewportMode') {
-      script = `window.__zenViewportMode && window.__zenViewportMode(${JSON.stringify({ mode: payload.mode })}); true;`;
-    }
-
-    if (script) {
-      webviewRef.current?.injectJavaScript(script);
-    }
+  const injectRendererState = useCallback((payload: RendererStateMessage) => {
+    const script = payload.type === 'renderSnapshot'
+      ? `window.__zenRenderSnapshot && window.__zenRenderSnapshot(${JSON.stringify(payload.snapshot)}); true;`
+      : `window.__zenTheme && window.__zenTheme(${JSON.stringify(payload.theme)}); true;`;
+    webviewRef.current?.injectJavaScript(script);
   }, []);
 
   const postToRenderer = useCallback((payload: RendererStateMessage) => {
     if (!webReadyRef.current) {
-      if (REPLACEABLE_PENDING_TYPES.includes(payload.type)) {
-        pendingRef.current = pendingRef.current.filter((pending) => pending.type !== payload.type);
-      }
+      pendingRef.current = pendingRef.current.filter(
+        (pending) => pending.type !== payload.type,
+      );
       pendingRef.current.push(payload);
       return;
     }
-
-    injectRendererMessage(payload);
-  }, [injectRendererMessage]);
-
-  const setViewportMode = useCallback((next: TerminalViewportMode) => {
-    viewportModeRef.current = next;
-    setViewportModeState((current) => (current === next ? current : next));
-  }, []);
+    injectRendererState(payload);
+  }, [injectRendererState]);
 
   const injectRendererCommand = useCallback((command: RendererCommand) => {
-    let script = '';
-    if (command === 'blur') {
-      script = 'window.__zenBlur && window.__zenBlur(); true;';
-    } else if (command === 'wakeRenderer') {
-      script = 'window.__zenWakeRenderer && window.__zenWakeRenderer(); true;';
-    } else if (command === 'resumeInput') {
-      script = 'window.__zenResumeInput && window.__zenResumeInput(); true;';
-    } else if (command === 'scrollToBottom') {
-      script = 'window.__zenScrollToBottom && window.__zenScrollToBottom(); true;';
-    }
-
-    if (script) {
-      webviewRef.current?.injectJavaScript(script);
-    }
+    const scripts: Record<RendererCommand, string> = {
+      blur: 'window.__zenBlur && window.__zenBlur(); true;',
+      wakeRenderer: 'window.__zenWakeRenderer && window.__zenWakeRenderer(); true;',
+      resumeInput: 'window.__zenResumeInput && window.__zenResumeInput(); true;',
+      scrollToBottom: 'window.__zenScrollToBottom && window.__zenScrollToBottom(); true;',
+    };
+    webviewRef.current?.injectJavaScript(scripts[command]);
   }, []);
 
   const runRendererCommand = useCallback((command: RendererCommand) => {
@@ -147,24 +136,37 @@ export function useGhosttyTerminalController({
       pendingRendererCommandRef.current = command;
       return;
     }
-
     injectRendererCommand(command);
   }, [injectRendererCommand]);
 
+  const replaceScrollContext = useCallback((
+    sessionId: string | null,
+    reason: TerminalScrollCancelReason,
+  ) => {
+    const context = scrollCorrelationRef.current.replace(sessionId);
+    if (webReadyRef.current) {
+      webviewRef.current?.injectJavaScript(
+        `window.__zenSetScrollContext && window.__zenSetScrollContext(${JSON.stringify(context.sessionId)}, ${JSON.stringify(context.token)}, ${JSON.stringify(reason)}); true;`,
+      );
+    }
+  }, []);
+
+  const cancelLocalScroll = useCallback((reason: TerminalScrollCancelReason) => {
+    replaceScrollContext(scrollCorrelationRef.current.context.sessionId, reason);
+  }, [replaceScrollContext]);
+
   const flushRenderState = useCallback(() => {
     renderFrameRef.current = 0;
-    const snapshot = ghostty.consumeRenderSnapshot();
-    if (!snapshot) {
-      return;
+    const frame = ghostty.consumeRenderSnapshot();
+    if (frame) {
+      postToRenderer({ type: 'renderSnapshot', snapshot: frame.snapshot });
     }
-    postToRenderer({ type: 'renderSnapshot', snapshot });
   }, [ghostty, postToRenderer]);
 
   const scheduleRenderState = useCallback(() => {
-    if (renderFrameRef.current) {
-      return;
+    if (!renderFrameRef.current) {
+      renderFrameRef.current = requestAnimationFrame(flushRenderState);
     }
-    renderFrameRef.current = requestAnimationFrame(flushRenderState);
   }, [flushRenderState]);
 
   useEffect(() => {
@@ -182,171 +184,121 @@ export function useGhosttyTerminalController({
     scheduleRenderState();
   }, [ghostty, postToRenderer, scheduleRenderState, theme]);
 
-  useEffect(() => {
-    postToRenderer({ type: 'viewportMode', mode: viewportMode });
-  }, [postToRenderer, viewportMode]);
-
   const session = useTerminalSession(serverId, targetId, backend, {
-    onHistory: ({ data }) => {
-      const grid = gridRef.current;
-      if (!grid || !ghostty.ensureTerminal(grid)) {
-        pendingTerminalRef.current.push({ type: 'history', data });
-        return;
-      }
-      ghostty.writeOutput(data);
-      scheduleRenderState();
-    },
-    onOutput: ({ data }) => {
-      const grid = gridRef.current;
-      if (!grid || !ghostty.ensureTerminal(grid)) {
-        pendingTerminalRef.current.push({ type: 'output', data });
-        return;
-      }
-      ghostty.writeOutput(data);
-      scheduleRenderState();
-    },
-    onScrollState: ({ at_bottom }) => {
-      const nextMode: TerminalViewportMode = at_bottom ? 'live' : 'scrolled';
-      setViewportMode(nextMode);
-      if (at_bottom && ghostty.scrollViewportToBottom()) {
+    onOpened: ({ sessionId }) => {
+      replaceScrollContext(sessionId, 'session-change');
+      setScrolledUp(false);
+      const attached = gridOwnerRef.current?.attach(sessionId) ?? false;
+      if (attached) {
         scheduleRenderState();
       }
-      if (!at_bottom) {
-        inputRef.current?.blur();
+      return attached;
+    },
+    onOutput: ({ session_id, data }) => {
+      if (ghostty.writeOutput(session_id, data)) {
+        scheduleRenderState();
       }
     },
-    onExit: ({ exit_code }) => {
-      const grid = gridRef.current;
+    onScrollState: ({ at_bottom }) => {
+      setScrolledUp(!at_bottom);
+    },
+    onSessionInvalidated: (sessionId, reason) => {
+      replaceScrollContext(
+        null,
+        reason === 'disconnect' ? 'disconnect' : 'session-change',
+      );
+      gridOwnerRef.current?.detach(sessionId ?? undefined);
+      setScrolledUp(false);
+      inputRef.current?.clear();
+      inputRef.current?.blur();
+    },
+    onExit: ({ session_id, exit_code }) => {
       const message = `\r\n[Zen] session exited with code ${exit_code}\r\n`;
-      if (!grid || !ghostty.ensureTerminal(grid)) {
-        pendingTerminalRef.current.push({ type: 'message', data: message });
-        return;
+      if (ghostty.writeOutput(session_id, message)) {
+        scheduleRenderState();
       }
-      ghostty.writeOutput(message);
-      scheduleRenderState();
     },
-    onError: ({ message }) => {
-      const grid = gridRef.current;
-      const formatted = `\r\n[Zen] ${message}\r\n`;
-      if (!grid || !ghostty.ensureTerminal(grid)) {
-        pendingTerminalRef.current.push({ type: 'message', data: formatted });
+    onError: ({ session_id, message }) => {
+      if (!session_id) {
         return;
       }
-      ghostty.writeOutput(formatted);
-      scheduleRenderState();
+      if (ghostty.writeOutput(session_id, `\r\n[Zen] ${message}\r\n`)) {
+        scheduleRenderState();
+      }
     },
   });
-  const { cancelScroll, focusPane, resize, scroll, sendInput } = session;
-  const scrollRef = useRef(scroll);
 
-  useEffect(() => {
-    scrollRef.current = scroll;
-  }, [scroll]);
-
-  const clearRemoteScrollTimer = useCallback(() => {
-    if (!remoteScrollTimerRef.current) {
-      return;
-    }
-    clearTimeout(remoteScrollTimerRef.current);
-    remoteScrollTimerRef.current = null;
-  }, []);
-
-  const flushRemoteScroll = useCallback(() => {
-    clearRemoteScrollTimer();
-    const lines = pendingRemoteScrollRef.current;
-    pendingRemoteScrollRef.current = 0;
-    if (lines !== 0) {
-      scrollRef.current(lines);
-    }
-  }, [clearRemoteScrollTimer]);
-
-  const resetRemoteScroll = useCallback(() => {
-    clearRemoteScrollTimer();
-    pendingRemoteScrollRef.current = 0;
-    remoteScrollGestureActiveRef.current = false;
-  }, [clearRemoteScrollTimer]);
-
-  const scheduleRemoteScroll = useCallback((lines: number) => {
-    if (backend !== 'tmux' || lines === 0) {
-      return;
-    }
-    pendingRemoteScrollRef.current += lines;
-    if (remoteScrollTimerRef.current) {
-      return;
-    }
-    // tmux copy-mode repaints the whole pane per scroll command, so coalesce
-    // touch deltas while the gesture is active.
-    const delay = remoteScrollGestureActiveRef.current ? REMOTE_SCROLL_FLUSH_MS : 0;
-    remoteScrollTimerRef.current = setTimeout(flushRemoteScroll, delay);
-  }, [backend, flushRemoteScroll]);
-
-  useEffect(() => {
-    return resetRemoteScroll;
-  }, [backend, resetRemoteScroll, serverId, targetId]);
-
-  const flushPendingTerminal = useCallback((grid: GhosttyGridSize) => {
-    if (!ghostty.ensureTerminal(grid)) {
-      return false;
-    }
-
-    const pending = pendingTerminalRef.current;
-    if (pending.length === 0) {
-      return true;
-    }
-
-    pendingTerminalRef.current = [];
-    for (const event of pending) {
-      if (event.type === 'history') {
-        ghostty.writeOutput(event.data);
-        continue;
+  const gridOwner = useMemo(() => new TerminalLiveGridOwner({
+    requestPtyGrid(cols, rows) {
+      session.resize(cols, rows);
+    },
+    resetGhostty(sessionId, grid) {
+      return ghostty.resetTerminal(sessionId, grid);
+    },
+    resizeGhostty(sessionId, grid) {
+      const resized = ghostty.resizeGrid(sessionId, grid);
+      if (resized) {
+        scheduleRenderState();
       }
-      ghostty.writeOutput(event.data);
-    }
-    scheduleRenderState();
-    return true;
-  }, [ghostty, scheduleRenderState]);
+      return resized;
+    },
+  }), [ghostty, scheduleRenderState, session]);
+  gridOwnerRef.current = gridOwner;
+
+  const canDeliverInput = useCallback(() => session.canSendInput(), [session]);
+
+  const notifyClientFocus = useCallback(() => {
+    return notifyTmuxClientFocus(backend, session.sendInput);
+  }, [backend, session]);
+
+  const deliverInput = useCallback((data: string) => {
+    cancelLocalScroll('input');
+    return session.sendInput(data);
+  }, [cancelLocalScroll, session]);
 
   const focusPaneAtPoint = useCallback((x: number, y: number) => {
     if (backend !== 'tmux') {
       return;
     }
-
-    const grid = gridRef.current;
-    if (!grid || grid.cols <= 0 || grid.rows <= 0 || grid.cellWidth <= 0 || grid.cellHeight <= 0) {
+    const grid = ghostty.currentGrid();
+    if (!grid) {
       return;
     }
-
     const col = Math.max(0, Math.min(grid.cols - 1, Math.floor(x / grid.cellWidth)));
     const row = Math.max(0, Math.min(grid.rows - 1, Math.floor(y / grid.cellHeight)));
-    focusPane(col, row);
-  }, [backend, focusPane]);
-
-  const enterLiveMode = useCallback((command: 'resumeInput' | 'scrollToBottom') => {
-    flushRemoteScroll();
-    if (ghostty.scrollViewportToBottom()) {
-      scheduleRenderState();
-    }
-    cancelScroll();
-    setViewportMode('live');
-    runRendererCommand(command);
-    inputRef.current?.focus();
-  }, [cancelScroll, flushRemoteScroll, ghostty, runRendererCommand, scheduleRenderState, setViewportMode]);
+    session.focusPane(col, row);
+  }, [backend, ghostty, session]);
 
   const focus = useCallback(() => {
-    inputRef.current?.focus();
-  }, []);
+    if (canDeliverInput()) {
+      cancelLocalScroll('input');
+      notifyClientFocus();
+      inputRef.current?.focus();
+    }
+  }, [canDeliverInput, cancelLocalScroll, notifyClientFocus]);
 
   const blur = useCallback(() => {
+    cancelLocalScroll('route-blur');
     inputRef.current?.blur();
     runRendererCommand('blur');
-  }, [runRendererCommand]);
+  }, [cancelLocalScroll, runRendererCommand]);
 
   const wakeRenderer = useCallback(() => {
-    // Re-sync layout and force a draw after focus/overlay changes. Android
-    // WebView often keeps an uncomposited buffer until the next touch otherwise.
     runRendererCommand('wakeRenderer');
     scheduleRenderState();
   }, [runRendererCommand, scheduleRenderState]);
+
+  const enterLiveMode = useCallback((command: 'resumeInput' | 'scrollToBottom') => {
+    cancelLocalScroll('jump-live');
+    if (!notifyClientFocus()) {
+      session.cancelScroll();
+    }
+    setScrolledUp(false);
+    runRendererCommand(command);
+    if (canDeliverInput()) {
+      inputRef.current?.focus();
+    }
+  }, [canDeliverInput, cancelLocalScroll, notifyClientFocus, runRendererCommand, session]);
 
   const resumeInput = useCallback(() => {
     wakeRenderer();
@@ -359,84 +311,112 @@ export function useGhosttyTerminalController({
   }, [enterLiveMode, wakeRenderer]);
 
   const onInput = useCallback((data: string) => {
-    flushRemoteScroll();
-    sendInput(data);
-  }, [flushRemoteScroll, sendInput]);
-
-  const onCtrlConsumed = useCallback(() => {
-    onCtrlArmedChange?.(false);
-  }, [onCtrlArmedChange]);
+    deliverInput(data);
+  }, [deliverInput]);
 
   const clearInputMirror = useCallback(() => {
     inputRef.current?.clear();
   }, []);
 
-  const onRendererLoadStart = useCallback(() => {
+  const onRendererLoadStart = useCallback((generation: number) => {
+    if (!isCurrentTerminalRendererGeneration(
+      rendererGenerationRef.current,
+      generation,
+    )) {
+      return;
+    }
     webReadyRef.current = false;
     pendingRef.current = [];
-    resetRemoteScroll();
-    setReady(false);
-  }, [resetRemoteScroll]);
+    setReadyGeneration(null);
+    // A WebView retry/remount loses its DOM but not the sole Ghostty model.
+    // Reapplying the same theme marks the native render state fully dirty so
+    // the replacement renderer receives a complete current snapshot on ready.
+    ghostty.setTheme(theme);
+  }, [ghostty, theme]);
 
   const onRendererMessage = useCallback((event: WebViewMessageEvent) => {
     try {
       const payload = JSON.parse(event.nativeEvent.data) as BridgeMessage;
+      if (
+        !isCurrentTerminalRendererGeneration(
+          rendererGenerationRef.current,
+          payload.rendererGeneration,
+        )
+      ) {
+        return;
+      }
 
       if (payload.type === 'ready') {
         webReadyRef.current = true;
-        setReady(true);
-
+        setReadyGeneration(payload.rendererGeneration);
         postToRenderer({ type: 'theme', theme });
-        postToRenderer({ type: 'viewportMode', mode: viewportModeRef.current });
-
         const queued = pendingRef.current;
         pendingRef.current = [];
-        for (const message of queued) {
-          injectRendererMessage(message);
-        }
+        queued.forEach(injectRendererState);
         const pendingCommand = pendingRendererCommandRef.current;
         pendingRendererCommandRef.current = null;
         if (pendingCommand) {
           injectRendererCommand(pendingCommand);
         }
+        const scrollContext = scrollCorrelationRef.current.context;
+        webviewRef.current?.injectJavaScript(
+          `window.__zenSetScrollContext && window.__zenSetScrollContext(${JSON.stringify(scrollContext.sessionId)}, ${JSON.stringify(scrollContext.token)}, "session-change"); true;`,
+        );
         scheduleRenderState();
-        // Fresh WebView attach: ensure the first snapshot is composited without
-        // waiting for a user touch to scheduleDraw.
         injectRendererCommand('wakeRenderer');
         return;
       }
 
+      if (payload.type === 'bootstrapWarning') {
+        console.warn('[Terminal WebView] ' + payload.message);
+        return;
+      }
+
+      if (payload.type === 'runtimeError') {
+        console.error('[Terminal WebView] runtime error: ' + payload.message);
+        return;
+      }
+
+      if (payload.type === 'bootstrapError') {
+        webReadyRef.current = false;
+        setReadyGeneration(null);
+        const message = payload.message || 'Terminal WebView bootstrap failed.';
+        console.error('[Terminal WebView] bootstrap error: ' + message);
+        onRendererBootstrapFailure?.(message, payload.rendererGeneration);
+        return;
+      }
+
       if (payload.type === 'resize') {
-        const nextGrid: GhosttyGridSize = {
+        gridOwner.update({
           cols: payload.cols,
           rows: payload.rows,
           cellWidth: payload.cellWidth,
           cellHeight: payload.cellHeight,
-        };
-
-        gridRef.current = nextGrid;
-        if (flushPendingTerminal(nextGrid)) {
-          scheduleRenderState();
-        }
-        resize(payload.cols, payload.rows);
+        });
         return;
       }
 
       if (payload.type === 'focusInput') {
-        if (viewportModeRef.current === 'scrolled') {
-          scrollToBottom();
+        if (!session.acceptInteractionSession(payload.sessionId)) {
           return;
         }
-        inputRef.current?.focus();
+        cancelLocalScroll('input');
+        if (!notifyClientFocus()) {
+          session.cancelScroll();
+        }
+        setScrolledUp(false);
+        if (canDeliverInput()) {
+          inputRef.current?.focus();
+        }
         return;
       }
 
       if (payload.type === 'selectionActive') {
-        if (!payload.active) {
-          return;
+        if (payload.active) {
+          cancelLocalScroll('selection');
+          clearInputMirror();
+          onCtrlArmedChange?.(false);
         }
-        clearInputMirror();
-        onCtrlArmedChange?.(false);
         return;
       }
 
@@ -445,49 +425,38 @@ export function useGhosttyTerminalController({
         return;
       }
 
-      if (payload.type === 'scrollStart') {
-        remoteScrollGestureActiveRef.current = true;
-        clearRemoteScrollTimer();
-        return;
-      }
-
-      if (payload.type === 'scrollEnd') {
-        remoteScrollGestureActiveRef.current = false;
-        flushRemoteScroll();
-        return;
-      }
-
       if (payload.type === 'scroll') {
-        if (backend === 'tmux') {
-          if (payload.lines < 0 || viewportModeRef.current === 'scrolled') {
-            setViewportMode('scrolled');
-            inputRef.current?.blur();
-          }
-          scheduleRemoteScroll(payload.lines);
+        if (
+          !scrollCorrelationRef.current.accept(
+            payload.sessionId,
+            payload.scrollToken,
+          ) ||
+          !session.acceptInteractionSession(payload.sessionId)
+        ) {
           return;
         }
-
-        if (ghostty.scrollViewport(payload.lines)) {
-          if (payload.lines < 0 || viewportModeRef.current === 'scrolled') {
-            setViewportMode('scrolled');
-            inputRef.current?.blur();
-          }
-          scheduleRenderState();
+        if (session.scroll(payload.lines) && payload.lines < 0) {
+          setScrolledUp(true);
+          inputRef.current?.blur();
         }
         return;
       }
 
       if (payload.type === 'mouse') {
-        const shouldInvalidateInput =
-          payload.action === 'press' && payload.button === 'left';
-
-        if (shouldInvalidateInput) {
-          clearInputMirror();
-          focusPaneAtPoint(payload.x, payload.y);
+        if (
+          !session.acceptInteractionSession(payload.sessionId) ||
+          !canDeliverInput()
+        ) {
+          return;
         }
 
-        if (viewportModeRef.current === 'scrolled') {
-          return;
+        const isLeftPress = payload.action === 'press' && payload.button === 'left';
+        if (isLeftPress) {
+          cancelLocalScroll('input');
+          session.cancelScroll();
+          setScrolledUp(false);
+          clearInputMirror();
+          focusPaneAtPoint(payload.x, payload.y);
         }
 
         const encoded = ghostty.encodePointer({
@@ -502,33 +471,32 @@ export function useGhosttyTerminalController({
           anyButtonPressed: payload.anyButtonPressed,
         });
         if (encoded) {
-          if (!shouldInvalidateInput) {
+          if (!isLeftPress) {
             clearInputMirror();
           }
-          sendInput(encoded);
+          deliverInput(encoded);
         }
-        return;
       }
     } catch {
       // Ignore malformed bridge messages.
     }
   }, [
-    ghostty,
-    injectRendererMessage,
-    injectRendererCommand,
-    postToRenderer,
-    resize,
-    flushPendingTerminal,
-    focusPaneAtPoint,
+    canDeliverInput,
+    cancelLocalScroll,
     clearInputMirror,
-    backend,
-    clearRemoteScrollTimer,
-    flushRemoteScroll,
-    scheduleRenderState,
-    scheduleRemoteScroll,
-    scrollToBottom,
-    sendInput,
+    deliverInput,
+    focusPaneAtPoint,
+    ghostty,
+    gridOwner,
+    injectRendererCommand,
+    injectRendererState,
+    notifyClientFocus,
     onCtrlArmedChange,
+    onRendererBootstrapFailure,
+    postToRenderer,
+    replaceScrollContext,
+    scheduleRenderState,
+    session,
     theme,
   ]);
 
@@ -536,16 +504,18 @@ export function useGhosttyTerminalController({
     webviewRef,
     inputRef,
     ready,
-    scrolledUp: viewportMode === 'scrolled',
+    readyGeneration,
+    scrolledUp,
     onInput,
-    onCtrlConsumed,
+    onCtrlConsumed() {
+      onCtrlArmedChange?.(false);
+    },
     onRendererLoadStart,
     onRendererMessage,
     sendInput(data: string, options?: { focus?: boolean }) {
       clearInputMirror();
-      flushRemoteScroll();
-      sendInput(data);
-      if (options?.focus !== false) {
+      const sent = deliverInput(data);
+      if (sent && options?.focus !== false) {
         inputRef.current?.focus();
       }
     },

@@ -4,6 +4,7 @@ import {
   Platform,
   StyleSheet,
   View,
+  type GestureResponderEvent,
   type LayoutChangeEvent,
   type ListRenderItemInfo,
   type NativeScrollEvent,
@@ -60,6 +61,8 @@ interface CodexTimelineViewProps {
   onScrollEndDrag(event: NativeSyntheticEvent<NativeScrollEvent>): void;
   onMomentumScrollBegin(): void;
   onMomentumScrollEnd(event: NativeSyntheticEvent<NativeScrollEvent>): void;
+  /** Passively observes touch lifetime without taking the scroll responder. */
+  onTouchActiveChange?(active: boolean): void;
   onContentSizeChange(width: number, height: number): void;
   onLatestOffsetChange(offset: number): void;
   onTextSelectionGestureStart: TimelineTextSelectableContextValue["onTextSelectionGestureStart"];
@@ -94,6 +97,7 @@ export function CodexTimelineView({
   onScrollEndDrag,
   onMomentumScrollBegin,
   onMomentumScrollEnd,
+  onTouchActiveChange,
   onContentSizeChange,
   onLatestOffsetChange,
   onTextSelectionGestureStart,
@@ -160,6 +164,15 @@ export function CodexTimelineView({
     ),
     [extraContentPadding, onLatestOffsetChange],
   );
+  const handleTouchStart = React.useCallback(() => {
+    onTouchActiveChange?.(true);
+  }, [onTouchActiveChange]);
+  const handleTouchEnd = React.useCallback((event: GestureResponderEvent) => {
+    onTouchActiveChange?.(event.nativeEvent.touches.length > 0);
+  }, [onTouchActiveChange]);
+  const handleTouchCancel = React.useCallback(() => {
+    onTouchActiveChange?.(false);
+  }, [onTouchActiveChange]);
 
   const emptyContent = React.useMemo(
     () => (
@@ -226,6 +239,9 @@ export function CodexTimelineView({
           onScrollEndDrag={onScrollEndDrag}
           onMomentumScrollBegin={onMomentumScrollBegin}
           onMomentumScrollEnd={onMomentumScrollEnd}
+          onTouchStart={handleTouchStart}
+          onTouchEnd={handleTouchEnd}
+          onTouchCancel={handleTouchCancel}
           onContentSizeChange={onContentSizeChange}
           initialNumToRender={8}
           maxToRenderPerBatch={6}

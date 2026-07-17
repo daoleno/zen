@@ -56,6 +56,7 @@ export interface CodexChatBodyProps {
   onTimelineMomentumScrollEnd(
     event: NativeSyntheticEvent<NativeScrollEvent>,
   ): void;
+  onTimelineTouchActiveChange(active: boolean): void;
   onTimelineContentSizeChange(width: number, height: number): void;
   onTimelineLatestOffsetChange(offset: number): void;
   onTimelineTextSelectionGestureStart(): void;
@@ -116,6 +117,7 @@ export function CodexChatBody({
   onTimelineScrollEndDrag,
   onTimelineMomentumScrollBegin,
   onTimelineMomentumScrollEnd,
+  onTimelineTouchActiveChange,
   onTimelineContentSizeChange,
   onTimelineLatestOffsetChange,
   onTimelineTextSelectionGestureStart,
@@ -234,6 +236,7 @@ export function CodexChatBody({
           onScrollEndDrag={onTimelineScrollEndDrag}
           onMomentumScrollBegin={onTimelineMomentumScrollBegin}
           onMomentumScrollEnd={onTimelineMomentumScrollEnd}
+          onTouchActiveChange={onTimelineTouchActiveChange}
           onContentSizeChange={onTimelineContentSizeChange}
           onLatestOffsetChange={onTimelineLatestOffsetChange}
           onTextSelectionGestureStart={onTimelineTextSelectionGestureStart}

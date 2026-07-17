@@ -138,7 +138,7 @@ func findCursorTranscript(agent classifier.Agent, now time.Time) (cursorTranscri
 	if matched, ok := matchCursorTranscriptToActiveSession(freshCandidates, agent.StartedAt); ok {
 		return matched, true, nil
 	}
-	return latestUpdatedCursorTranscript(freshCandidates), true, nil
+	return cursorTranscriptCandidate{}, false, nil
 }
 
 func parseCursorConversation(path string) (CodexConversation, error) {

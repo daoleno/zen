@@ -1,13 +1,9 @@
-import AsyncStorage from "@react-native-async-storage/async-storage";
 import React, {
   createContext,
   useContext,
-  useEffect,
   useReducer,
   type ReactNode,
 } from "react";
-
-const brainReadCursorStorageKey = "zen.brain.result_read_cursors.v1";
 
 export type BrainScheduledResult = {
   id: string;
@@ -69,16 +65,10 @@ export type BrainServerState = BrainSnapshot & {
 
 export type BrainState = {
   byServer: Record<string, BrainServerState>;
-  readCursors: Record<string, string>;
-  unreadByThread: Record<string, number>;
-  cursorsHydrated: boolean;
 };
 
 export const initialBrainState: BrainState = {
   byServer: {},
-  readCursors: {},
-  unreadByThread: {},
-  cursorsHydrated: false,
 };
 
 type RawBrainSnapshot = Omit<Partial<BrainSnapshot>, "scheduled_results"> & {
@@ -96,9 +86,7 @@ type Action =
       serverUrl: string;
       brain: RawBrainSnapshot;
     }
-  | { type: "REMOVE_SERVER"; serverId: string }
-  | { type: "BRAIN_READ_CURSORS_HYDRATED"; cursors: Record<string, string> }
-  | { type: "BRAIN_THREAD_READ"; serverId: string; threadId: string };
+  | { type: "REMOVE_SERVER"; serverId: string };
 
 function normalizeSnapshot(
   raw: RawBrainSnapshot | undefined,
@@ -249,17 +237,12 @@ export function brainReducer(state: BrainState, action: Action): BrainState {
       const byServer = brainServerStatesEqual(state.byServer[action.serverId], next)
         ? state.byServer
         : { ...state.byServer, [action.serverId]: next };
-      const unreadByThread = calculateUnread(byServer, state.readCursors);
-      if (
-        byServer === state.byServer &&
-        shallowRecordEqual(unreadByThread, state.unreadByThread)
-      ) {
+      if (byServer === state.byServer) {
         return state;
       }
       return {
         ...state,
         byServer,
-        unreadByThread,
       };
     }
     case "REMOVE_SERVER": {
@@ -271,129 +254,11 @@ export function brainReducer(state: BrainState, action: Action): BrainState {
       return {
         ...state,
         byServer,
-        unreadByThread: calculateUnread(byServer, state.readCursors),
-      };
-    }
-    case "BRAIN_READ_CURSORS_HYDRATED": {
-      const readCursors = normalizeCursors(action.cursors);
-      return {
-        ...state,
-        readCursors,
-        unreadByThread: calculateUnread(state.byServer, readCursors),
-        cursorsHydrated: true,
-      };
-    }
-    case "BRAIN_THREAD_READ": {
-      const key = brainThreadKey(action.serverId, action.threadId);
-      const results = state.byServer[action.serverId]?.scheduled_results ?? [];
-      const latest = [...results]
-        .reverse()
-        .find((message) => message.thread_id === action.threadId);
-      if (!latest) return state;
-      const cursor = resultCursor(latest);
-      if (
-        state.readCursors[key] === cursor &&
-        state.unreadByThread[key] === 0
-      ) {
-        return state;
-      }
-      const readCursors = { ...state.readCursors, [key]: cursor };
-      return {
-        ...state,
-        readCursors,
-        unreadByThread: calculateUnread(state.byServer, readCursors),
       };
     }
     default:
       return state;
   }
-}
-
-export function brainThreadKey(serverId: string, threadId: string) {
-  return `${serverId}:${threadId}`;
-}
-
-export function totalBrainUnread(state: BrainState): number {
-  return Object.values(state.unreadByThread).reduce(
-    (total, count) => total + count,
-    0,
-  );
-}
-
-function resultCursor(result: BrainScheduledResult) {
-  return `${result.created_at}\u0000${result.id}`;
-}
-
-function normalizeCursors(raw: Record<string, string>) {
-  return Object.fromEntries(
-    Object.entries(raw || {}).filter(
-      ([key, value]) => key && typeof value === "string",
-    ),
-  );
-}
-
-function calculateUnread(
-  byServer: BrainState["byServer"],
-  cursors: Record<string, string>,
-) {
-  const unread: Record<string, number> = {};
-  for (const [serverId, server] of Object.entries(byServer)) {
-    const byThread = new Map<string, BrainScheduledResult[]>();
-    for (const result of server.scheduled_results ?? []) {
-      const results = byThread.get(result.thread_id) ?? [];
-      results.push(result);
-      byThread.set(result.thread_id, results);
-    }
-    for (const [threadId, results] of byThread) {
-      const key = brainThreadKey(serverId, threadId);
-      const cursor = cursors[key];
-      if (!cursor) {
-        unread[key] = results.length;
-        continue;
-      }
-      const separator = cursor.indexOf("\u0000");
-      const cursorTime = separator >= 0 ? cursor.slice(0, separator) : "";
-      const cursorId = separator >= 0 ? cursor.slice(separator + 1) : "";
-      const cursorIndex = results.findIndex(
-        (result) => result.id === cursorId,
-      );
-      const count =
-        cursorIndex >= 0
-          ? results.length - cursorIndex - 1
-          : results.filter((result) =>
-              isResultAfterCursor(result, cursorTime, cursorId)
-            ).length;
-      if (count > 0) unread[key] = count;
-    }
-  }
-  return unread;
-}
-
-function isResultAfterCursor(
-  result: BrainScheduledResult,
-  cursorTime: string,
-  cursorId: string,
-) {
-  const resultTime = Date.parse(result.created_at);
-  const parsedCursorTime = Date.parse(cursorTime);
-  if (Number.isFinite(resultTime) && Number.isFinite(parsedCursorTime)) {
-    if (resultTime !== parsedCursorTime) {
-      return resultTime > parsedCursorTime;
-    }
-    return result.id.localeCompare(cursorId) > 0;
-  }
-  return resultCursor(result).localeCompare(`${cursorTime}\u0000${cursorId}`) > 0;
-}
-
-function shallowRecordEqual(
-  left: Record<string, number>,
-  right: Record<string, number>,
-) {
-  const keys = Object.keys(left);
-  return (
-    keys.length === Object.keys(right).length &&
-    keys.every((key) => left[key] === right[key])
-  );
 }
 
 function brainServerStatesEqual(
@@ -539,27 +404,6 @@ const BrainDispatchContext = createContext<React.Dispatch<Action> | null>(null);
 
 export function BrainProvider({ children }: { children: ReactNode }) {
   const [state, dispatch] = useReducer(brainReducer, initialBrainState);
-  useEffect(() => {
-    let cancelled = false;
-    void AsyncStorage.getItem(brainReadCursorStorageKey).then((value) => {
-      if (cancelled) return;
-      try {
-        dispatch({
-          type: "BRAIN_READ_CURSORS_HYDRATED",
-          cursors: JSON.parse(value || "{}"),
-        });
-      } catch {
-        dispatch({ type: "BRAIN_READ_CURSORS_HYDRATED", cursors: {} });
-      }
-    });
-    return () => {
-      cancelled = true;
-    };
-  }, []);
-  useEffect(() => {
-    if (!state.cursorsHydrated) return;
-    void AsyncStorage.setItem(brainReadCursorStorageKey, JSON.stringify(state.readCursors));
-  }, [state.cursorsHydrated, state.readCursors]);
   return (
     <BrainDispatchContext.Provider value={dispatch}>
       <BrainStateContext.Provider value={state}>

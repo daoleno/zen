@@ -53,18 +53,6 @@ public final class ZenTerminalVtModule: Module {
       }
     }
 
-    Function("scrollViewport") { (handleID: Int, delta: Int) throws in
-      try self.withNativeHandle(handleID) { nativeHandle in
-        ZenTerminalVtBridge.scrollTerminal(nativeHandle, byLines: delta)
-      }
-    }
-
-    Function("scrollViewportToBottom") { (handleID: Int) throws in
-      try self.withNativeHandle(handleID) { nativeHandle in
-        ZenTerminalVtBridge.scrollTerminal(toBottom: nativeHandle)
-      }
-    }
-
     Function("resize") {
       (handleID: Int, cols: Int, rows: Int, cellWidth: Double, cellHeight: Double) throws in
       try self.withPersistentBreadcrumb(
@@ -119,12 +107,6 @@ public final class ZenTerminalVtModule: Module {
     Function("getRenderSnapshot") { (handleID: Int) throws -> [String: Any] in
       try self.withNativeHandle(handleID) { nativeHandle in
         ZenTerminalVtBridge.renderSnapshot(forTerminal: nativeHandle) as [String: Any]
-      }
-    }
-
-    Function("getVisibleText") { (handleID: Int) throws -> String in
-      try self.withNativeHandle(handleID) { nativeHandle in
-        ZenTerminalVtBridge.visibleText(forTerminal: nativeHandle)
       }
     }
 

@@ -572,7 +572,7 @@ func (s *Server) handleClientMessage(conn *websocket.Conn, msg []byte) {
 		if targetID == "" {
 			targetID = raw.AgentID
 		}
-		session, err := s.terminal.Open(clientID(conn), backend, targetID, terminal.OpenOptions{
+		_, err := s.terminal.Open(clientID(conn), backend, targetID, terminal.OpenOptions{
 			Cols: raw.Cols,
 			Rows: raw.Rows,
 		}, func(v any) {
@@ -586,15 +586,6 @@ func (s *Server) handleClientMessage(conn *websocket.Conn, msg []byte) {
 			})
 			return
 		}
-		size := session.Size()
-		s.sendJSON(conn, map[string]any{
-			"type":       "terminal_opened",
-			"session_id": session.ID(),
-			"backend":    backend,
-			"cols":       size.Cols,
-			"rows":       size.Rows,
-		})
-
 	case "terminal_input":
 		if err := s.terminal.Input(clientID(conn), raw.SessionID, raw.Data); err != nil {
 			s.sendJSON(conn, map[string]any{
@@ -644,19 +635,6 @@ func (s *Server) handleClientMessage(conn *websocket.Conn, msg []byte) {
 				"message":    err.Error(),
 			})
 		}
-
-	case "terminal_copy_buffer":
-		buffer, err := s.terminal.CopyBuffer(clientID(conn), raw.SessionID)
-		if err != nil {
-			s.sendErrorWithRequestID(conn, raw.RequestID, "terminal_copy_buffer_failed", err.Error())
-			return
-		}
-		s.sendJSON(conn, map[string]any{
-			"type":       "terminal_copy_buffer",
-			"request_id": raw.RequestID,
-			"session_id": raw.SessionID,
-			"text":       buffer,
-		})
 
 	case "terminal_close":
 		if err := s.terminal.Close(clientID(conn), raw.SessionID); err != nil {

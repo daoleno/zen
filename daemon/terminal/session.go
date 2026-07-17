@@ -6,20 +6,19 @@ import "context"
 type EventType string
 
 const (
-	EventHistory EventType = "history"
-	EventOutput  EventType = "output"
-	EventScroll  EventType = "scroll"
-	EventExit    EventType = "exit"
-	EventError   EventType = "error"
+	EventOutput EventType = "output"
+	EventScroll EventType = "scroll"
+	EventExit   EventType = "exit"
+	EventError  EventType = "error"
 )
 
+// Event is emitted by a terminal session.
 type ScrollState struct {
 	AtBottom   bool
 	InCopyMode bool
 	Position   int
 }
 
-// Event is emitted by a terminal session.
 type Event struct {
 	Type        EventType
 	Data        string
@@ -51,7 +50,8 @@ type Session interface {
 	Size() Size
 }
 
-// Scroller is optionally implemented by sessions that support tmux copy-mode scrolling.
+// Scroller is optionally implemented by sessions that expose native tmux
+// copy-mode scrolling through the attached client's PTY redraw stream.
 type Scroller interface {
 	Scroll(lines int) error
 	CancelScroll() error
@@ -61,12 +61,6 @@ type Scroller interface {
 // from terminal cell coordinates.
 type PaneFocuser interface {
 	FocusPane(col, row int) error
-}
-
-// CopyProvider is optionally implemented by sessions that can expose
-// a plain-text snapshot for dedicated copy UI flows.
-type CopyProvider interface {
-	CopyBuffer() (string, error)
 }
 
 // Backend opens terminal sessions for a given target.

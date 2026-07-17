@@ -55,6 +55,7 @@ interface CodexChatTimelineSectionProps {
   onScrollEndDrag(event: NativeSyntheticEvent<NativeScrollEvent>): void;
   onMomentumScrollBegin(): void;
   onMomentumScrollEnd(event: NativeSyntheticEvent<NativeScrollEvent>): void;
+  onTouchActiveChange(active: boolean): void;
   onContentSizeChange(width: number, height: number): void;
   onLatestOffsetChange(offset: number): void;
   onTextSelectionGestureStart(): void;
@@ -88,6 +89,7 @@ export function CodexChatTimelineSection({
   onScrollEndDrag,
   onMomentumScrollBegin,
   onMomentumScrollEnd,
+  onTouchActiveChange,
   onContentSizeChange,
   onLatestOffsetChange,
   onTextSelectionGestureStart,
@@ -147,6 +149,7 @@ export function CodexChatTimelineSection({
       onScrollEndDrag={onScrollEndDrag}
       onMomentumScrollBegin={onMomentumScrollBegin}
       onMomentumScrollEnd={onMomentumScrollEnd}
+      onTouchActiveChange={onTouchActiveChange}
       onContentSizeChange={onContentSizeChange}
       onLatestOffsetChange={onLatestOffsetChange}
       onTextSelectionGestureStart={onTextSelectionGestureStart}
