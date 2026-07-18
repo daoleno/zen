@@ -29,8 +29,11 @@ Details: [architecture.md](architecture.md).
 | `~/.zen/work/` | File-first work log markdown |
 | `~/.zen/brain/` | Brain workspace state |
 | `~/.zen/executors.toml` | Optional executor overrides |
+| `~/.zen/worktrees/` | Optional durable Git worktrees when concurrent writers genuinely require isolation |
+| `~/.zen/run/agent-resources/` | Delegated-session resource leases |
+| `~/.zen/t/` | Exact-owned delegated-session private temporary directories, removed with the owned session; legacy `~/.zen/tmp/agent-resources/` is cleanup-compatible for older sessions |
+| `<state directory>/uploads/` | Authenticated app uploads (32 MiB/file, 512 MiB aggregate, seven-day retention) |
 | Agent homes (e.g. Codex/Claude/Cursor/Grok dirs) | Transcripts zen may read for Chat |
-| `/tmp/zen-uploads` (typical) | Uploaded files from the app |
 
 Treat `~/.zen` like SSH keys: mode `0700` directory, do not commit it, do not share pairing links publicly.
 

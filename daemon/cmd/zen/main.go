@@ -17,6 +17,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/daoleno/zen/daemon/agentproc"
 	"github.com/daoleno/zen/daemon/auth"
 	"github.com/daoleno/zen/daemon/brain"
 	"github.com/daoleno/zen/daemon/calendar"
@@ -125,6 +126,7 @@ func runDaemon(args []string, stderr io.Writer) error {
 	}
 
 	w := watcher.New(500 * time.Millisecond)
+	w.ConfigureDelegatedResources(authManager.DaemonID())
 	w.SetActivityProbe(classifier.DefaultActivityProbe())
 	go func() {
 		if err := w.Run(ctx); err != nil && ctx.Err() == nil {
@@ -148,6 +150,13 @@ func runDaemon(args []string, stderr io.Writer) error {
 		return fmt.Errorf("start work watcher: %w", err)
 	}
 	defer workStore.Close()
+	worktreeRoot, err := work.DefaultWorktreeRoot()
+	if err != nil {
+		return fmt.Errorf("resolve worktree root: %w", err)
+	}
+	if err := work.EnsureDir(worktreeRoot); err != nil {
+		return fmt.Errorf("initialize worktree root: %w", err)
+	}
 
 	executorsPath, err := work.DefaultExecutorsPath()
 	if err != nil {
@@ -188,7 +197,7 @@ func runDaemon(args []string, stderr io.Writer) error {
 	}
 
 	pusher := push.New()
-	launcher := work.NewLauncher(work.TmuxRunner{}, execs)
+	launcher := work.NewLauncher(work.TmuxRunner{Watcher: w, Env: progressEnvForStateDir(authManager.StorageDir())}, execs)
 	srv := server.New(authManager, w, pusher, sc, workStore, execs, brainService)
 	calendarScheduler := calendar.NewScheduler(calendarStore, &calendar.WorkRunner{Store: workStore, Launcher: launcher, Watcher: w, Brain: brainService})
 	controlHandler.calendarScheduler = calendarScheduler
@@ -328,6 +337,8 @@ func runAgentCommand(args []string, stderr io.Writer) error {
 		return flag.ErrHelp
 	}
 	switch args[0] {
+	case "__supervise":
+		return runAgentSupervisor(args[1:], stderr)
 	case "list":
 		return runAgentList(args[1:], stderr)
 	case "spawn":
@@ -345,6 +356,51 @@ func runAgentCommand(args []string, stderr io.Writer) error {
 	default:
 		return fmt.Errorf("unknown agent command: %s", args[0])
 	}
+}
+
+func runAgentSupervisor(args []string, stderr io.Writer) error {
+	fs := flag.NewFlagSet("zen agent __supervise", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	var resourceID string
+	var leaseDir string
+	var memoryHigh string
+	var memoryMax string
+	var tasksMax int
+	var poolGuard bool
+	fs.StringVar(&resourceID, "resource-id", "", "owned delegated resource id")
+	fs.StringVar(&leaseDir, "lease-dir", "", "durable resource lease directory")
+	fs.StringVar(&memoryHigh, "memory-high", "", "shared soft memory threshold")
+	fs.StringVar(&memoryMax, "memory-max", "", "shared hard memory threshold")
+	fs.IntVar(&tasksMax, "tasks-max", 0, "maximum owned process count")
+	fs.BoolVar(&poolGuard, "pool-guard", false, "elect portable shared-pool memory guard")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	command := fs.Args()
+	if strings.TrimSpace(resourceID) == "" {
+		return fmt.Errorf("resource id is required")
+	}
+	if strings.TrimSpace(leaseDir) == "" {
+		return fmt.Errorf("lease directory is required")
+	}
+	if len(command) == 0 {
+		return fmt.Errorf("supervised command is required after --")
+	}
+	if os.Getenv("ZEN_AGENT_DELEGATED") != "1" || strings.TrimSpace(os.Getenv("ZEN_AGENT_RESOURCE_UNIT")) != strings.TrimSpace(resourceID) {
+		return fmt.Errorf("delegated resource environment does not match resource id")
+	}
+	return agentproc.RunSupervisor(agentproc.SupervisorConfig{
+		ResourceID: resourceID,
+		LeaseDir:   leaseDir,
+		MemoryHigh: memoryHigh,
+		MemoryMax:  memoryMax,
+		TasksMax:   tasksMax,
+		PoolGuard:  poolGuard,
+		Command:    command,
+		Stdin:      os.Stdin,
+		Stdout:     os.Stdout,
+		Stderr:     os.Stderr,
+	})
 }
 
 func runBrainCommand(args []string, stderr io.Writer) error {
@@ -365,6 +421,8 @@ func runBrainCommand(args []string, stderr io.Writer) error {
 		return runBrainExecutors(args[1:], stderr)
 	case "use":
 		return runBrainUse(args[1:], stderr)
+	case "set-delegated":
+		return runBrainSetDelegated(args[1:], stderr)
 	default:
 		return fmt.Errorf("unknown brain command: %s", args[0])
 	}
@@ -529,15 +587,16 @@ func printAgentUsage(w io.Writer) {
 }
 
 func printBrainUsage(w io.Writer) {
-	fmt.Fprintln(w, "Usage: zen brain <workspace|context|playbooks|gc|executors|use> [flags]")
+	fmt.Fprintln(w, "Usage: zen brain <workspace|context|playbooks|gc|executors|use|set-delegated> [flags]")
 	fmt.Fprintln(w, "")
 	fmt.Fprintln(w, "Subcommands:")
-	fmt.Fprintln(w, "  workspace  Print the Brain workspace path")
-	fmt.Fprintln(w, "  context    Print structured Brain context")
-	fmt.Fprintln(w, "  playbooks  Print the Brain playbook catalog")
-	fmt.Fprintln(w, "  gc         Reconcile product-owned Brain workspace blocks while preserving user content")
-	fmt.Fprintln(w, "  executors  List configured Brain host executors")
-	fmt.Fprintln(w, "  use        Switch the Brain host executor")
+	fmt.Fprintln(w, "  workspace      Print the Brain workspace path")
+	fmt.Fprintln(w, "  context        Print structured Brain context")
+	fmt.Fprintln(w, "  playbooks      Print the Brain playbook catalog")
+	fmt.Fprintln(w, "  gc             Reconcile product-owned Brain workspace blocks while preserving user content")
+	fmt.Fprintln(w, "  executors      List configured Brain host and delegated executors")
+	fmt.Fprintln(w, "  use            Switch the Brain host executor")
+	fmt.Fprintln(w, "  set-delegated  Switch the live Delegated Executor (no restart)")
 	fmt.Fprintln(w, "")
 	fmt.Fprintln(w, "Examples:")
 	fmt.Fprintln(w, "  zen brain workspace --json")
@@ -546,6 +605,7 @@ func printBrainUsage(w io.Writer) {
 	fmt.Fprintln(w, "  zen brain gc --json")
 	fmt.Fprintln(w, "  zen brain executors --json")
 	fmt.Fprintln(w, "  zen brain use codex")
+	fmt.Fprintln(w, "  zen brain set-delegated grok")
 }
 
 func runAgentList(args []string, stderr io.Writer) error {
@@ -848,6 +908,36 @@ func runBrainUse(args []string, stderr io.Writer) error {
 	}
 	resp, err := callControl(cfg, control.Request{
 		Type:       "brain_set_executor",
+		ExecutorID: fs.Arg(0),
+	})
+	if err != nil {
+		return err
+	}
+	return writeControlResponse(os.Stdout, resp, cfg.json)
+}
+
+func runBrainSetDelegated(args []string, stderr io.Writer) error {
+	fs := flag.NewFlagSet("zen brain set-delegated", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	cfg := cliConfig{json: true}
+	fs.StringVar(&cfg.stateDir, "state-dir", "", "state directory for daemon identity and control socket")
+	fs.BoolVar(&cfg.json, "json", true, "print JSON output")
+	fs.Usage = func() {
+		fmt.Fprintln(stderr, "Usage: zen brain set-delegated <executor> [flags]")
+		fmt.Fprintln(stderr, "")
+		fmt.Fprintln(stderr, "Switches the live Delegated Executor in the running daemon without restart.")
+		fmt.Fprintln(stderr, "Existing agent sessions keep their original executor.")
+		fmt.Fprintln(stderr, "")
+		fs.PrintDefaults()
+	}
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if fs.NArg() != 1 {
+		return fmt.Errorf("usage: zen brain set-delegated <executor> [flags]")
+	}
+	resp, err := callControl(cfg, control.Request{
+		Type:       "set_delegated_executor",
 		ExecutorID: fs.Arg(0),
 	})
 	if err != nil {

@@ -13,8 +13,9 @@ import (
 //   - Progress Running requires an active lifecycle lease (ExpectedNextCheckAt
 //     still in the future). Provider adapters may still mark Running via
 //     ResolveSessionStatus / MergeActivitySignal when this step leaves Unknown.
-//   - Progress outcomes done/failed/blocked persist while the pane is alive
-//     unless classification reports blocked or failed (which wins).
+//   - Alive pane blocked always overrides progress.
+//   - Alive pane failed overrides progress only when ExplicitProgressProtectsAgainstPaneFailed
+//     is false; dead panes always resolve from classification.
 //   - Alive panes with no durable progress signal resolve to classified state
 //     (usually Unknown) before provider activity merge.
 func MergeProgressAndClassification(agent *Agent, classified AgentState, classifiedSummary string, now time.Time) (AgentState, string) {
@@ -29,8 +30,10 @@ func MergeProgressAndClassification(agent *Agent, classified AgentState, classif
 		return classified, classifiedSummary
 	}
 
-	// Pane-derived attention/failure always overrides sticky progress.
-	if classified == StateBlocked || classified == StateFailed {
+	if classified == StateBlocked {
+		return classified, classifiedSummary
+	}
+	if classified == StateFailed && !ExplicitProgressProtectsAgainstPaneFailed(agent, now) {
 		return classified, classifiedSummary
 	}
 
@@ -51,6 +54,23 @@ func MergeProgressAndClassification(agent *Agent, classified AgentState, classif
 		return classified, classifiedSummary
 	default:
 		return classified, classifiedSummary
+	}
+}
+
+// ExplicitProgressProtectsAgainstPaneFailed reports whether an alive pane's
+// heuristic failed text must yield to current explicit progress: an active
+// running lease, or sticky done/failed/blocked with LastProgressAt.
+func ExplicitProgressProtectsAgainstPaneFailed(agent *Agent, now time.Time) bool {
+	if agent == nil || !agent.PaneAlive || agent.LastProgressAt == nil {
+		return false
+	}
+	switch agent.State {
+	case StateDone, StateFailed, StateBlocked:
+		return true
+	case StateRunning:
+		return ProgressLeaseActive(agent, now)
+	default:
+		return false
 	}
 }
 

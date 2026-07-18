@@ -7,11 +7,13 @@
 #   ./scripts/build-libghostty.sh --abis arm64-v8a
 #   ALLOW_DIRTY_GHOSTTY=1 ./scripts/build-libghostty.sh   # developer only; non-release
 #   ALLOW_UNPROVEN_GHOSTTY=1 ./scripts/build-libghostty.sh  # no .git; non-release
+#   ZEN_BUILD_TMPDIR=/durable/path ./scripts/build-libghostty.sh
 #
 # Requires: zig (version from native.lock.json), git, python3
 # Ghostty source: GHOSTTY_SRC, or a clone under ${ZEN_GHOSTTY_CACHE:-$HOME/.cache/zen/ghostty}
 
 set -euo pipefail
+umask 077
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 LOCK="$ROOT/app/modules/zen-terminal-vt/native.lock.json"
@@ -31,7 +33,30 @@ fi
 # provenance, and packaging consumers before deriving any native output.
 "$ROOT/scripts/verify-libghostty.sh" --contract
 
-LOCK_ENV="$(mktemp "${TMPDIR:-/tmp}/zen-libghostty-lock.XXXXXX")"
+default_build_tmpdir() {
+  if [[ -n "${XDG_CACHE_HOME:-}" ]]; then
+    printf '%s\n' "$XDG_CACHE_HOME/zen/build-tmp"
+  elif [[ "$(uname -s)" == "Darwin" ]]; then
+    printf '%s\n' "$HOME/Library/Caches/zen/build-tmp"
+  else
+    printf '%s\n' "$HOME/.cache/zen/build-tmp"
+  fi
+}
+
+# Large native build worktrees must not fall back to the host's global
+# temporary filesystem. Delegated sessions set ZEN_BUILD_TMPDIR to their
+# private Zen-owned resource directory, so lifecycle teardown reclaims it.
+# Direct developer builds use a durable platform cache and retain the normal
+# EXIT/INT/TERM cleanup below.
+BUILD_TMP_ROOT="${ZEN_BUILD_TMPDIR:-$(default_build_tmpdir)}"
+if [[ "$BUILD_TMP_ROOT" != /* ]]; then
+  echo "error: ZEN_BUILD_TMPDIR must be an absolute path: $BUILD_TMP_ROOT" >&2
+  exit 1
+fi
+mkdir -p "$BUILD_TMP_ROOT"
+chmod 700 "$BUILD_TMP_ROOT"
+
+LOCK_ENV="$(mktemp "$BUILD_TMP_ROOT/zen-libghostty-lock.XXXXXX")"
 BUILD_WORKTREE_PARENT=""
 BUILD_GHOSTTY_SRC=""
 BUILD_WORKTREE_KIND=""
@@ -281,7 +306,7 @@ for ((i = 0; i < LOCK_PATCH_COUNT; i++)); do
   PATCH_PATHS+=("$patch_abs")
 done
 
-BUILD_WORKTREE_PARENT="$(mktemp -d "${TMPDIR:-/tmp}/zen-libghostty-worktree.XXXXXX")"
+BUILD_WORKTREE_PARENT="$(mktemp -d "$BUILD_TMP_ROOT/zen-libghostty-worktree.XXXXXX")"
 BUILD_GHOSTTY_SRC="$BUILD_WORKTREE_PARENT/ghostty"
 if [[ $SOURCE_IS_GIT -eq 1 ]]; then
   BUILD_WORKTREE_KIND="git"

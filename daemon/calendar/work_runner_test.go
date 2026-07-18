@@ -411,13 +411,10 @@ func TestRunScheduledActionPersistsFreshDelegatedLaunch(t *testing.T) {
 		t.Fatal(err)
 	}
 	tmux := &scheduledActionLaunchRunner{}
-	launcher := work.NewLauncher(tmux, &work.ExecutorConfig{
-		DelegatedExecutor: "claude",
-		ByName: map[string]work.Executor{
-			"claude": {Name: "claude", Command: "claude --configured"},
-			"codex":  {Name: "codex", Command: "codex"},
-		},
-	})
+	launcher := work.NewLauncher(tmux, work.NewExecutorConfig("claude", map[string]work.Executor{
+		"claude": {Name: "claude", Command: "claude --configured"},
+		"codex":  {Name: "codex", Command: "codex"},
+	}))
 	runner := &WorkRunner{
 		Store:    store,
 		Launcher: launcher,

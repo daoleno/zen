@@ -3,13 +3,10 @@ import type {
   TerminalThemeChrome,
   TerminalThemePalette,
 } from "../../constants/terminalThemes";
-import type { AgentDirectorySection } from "../../services/serverSelection";
-import type {
-  StoredAgentAliases,
-} from "../../services/storage";
+import type { SessionResourceSnapshot } from "../../services/sessionResourceSnapshot";
 import { GitDiffSheet } from "../../components/terminal/GitDiffSheet";
 import { NewTerminalSheet } from "../../components/terminal/NewTerminalSheet";
-import { TerminalAgentPickerSheet } from "../../components/terminal/TerminalAgentPickerSheet";
+import { SessionResourceSheet } from "../../components/terminal/SessionResourceSheet";
 import { TerminalActionPopover } from "../../components/terminal/TerminalActionPopover";
 import { TerminalRenameModal } from "../../components/terminal/TerminalRenameModal";
 
@@ -19,12 +16,10 @@ type NewTerminalSubmitInput = Parameters<
 >[0];
 
 export interface TerminalScreenOverlaysProps {
-  pickerVisible: boolean;
-  pickerSections: AgentDirectorySection[];
-  pickerAgentCount: number;
-  activeSessionKey: string | null;
-  showPickerServerNames: boolean;
-  agentAliases: StoredAgentAliases;
+  resourceSheetVisible: boolean;
+  resourceSheetLoading: boolean;
+  resourceSheetError?: string | null;
+  resourceSheetSnapshot?: SessionResourceSnapshot | null;
   creatingSession: boolean;
   menuVisible: boolean;
   menuPosition: { left: number; top: number };
@@ -41,8 +36,8 @@ export interface TerminalScreenOverlaysProps {
   renamePlaceholder: string;
   chrome: TerminalThemeChrome;
   theme: TerminalThemePalette;
-  onClosePicker(): void;
-  onOpenAgent(sessionKey: string): void;
+  onCloseResourceSheet(): void;
+  onRetryResourceSheet(): void;
   onNewTerminal(): void;
   onCloseMenu(): void;
   onRename(): void;
@@ -57,12 +52,10 @@ export interface TerminalScreenOverlaysProps {
 }
 
 export function TerminalScreenOverlays({
-  pickerVisible,
-  pickerSections,
-  pickerAgentCount,
-  activeSessionKey,
-  showPickerServerNames,
-  agentAliases,
+  resourceSheetVisible,
+  resourceSheetLoading,
+  resourceSheetError,
+  resourceSheetSnapshot,
   creatingSession,
   menuVisible,
   menuPosition,
@@ -79,8 +72,8 @@ export function TerminalScreenOverlays({
   renamePlaceholder,
   chrome,
   theme,
-  onClosePicker,
-  onOpenAgent,
+  onCloseResourceSheet,
+  onRetryResourceSheet,
   onNewTerminal,
   onCloseMenu,
   onRename,
@@ -95,18 +88,14 @@ export function TerminalScreenOverlays({
 }: TerminalScreenOverlaysProps) {
   return (
     <>
-      <TerminalAgentPickerSheet
-        visible={pickerVisible}
-        sections={pickerSections}
-        agentCount={pickerAgentCount}
-        activeSessionKey={activeSessionKey}
-        showServerNames={showPickerServerNames}
-        agentAliases={agentAliases}
-        creatingSession={creatingSession}
+      <SessionResourceSheet
+        visible={resourceSheetVisible}
+        loading={resourceSheetLoading}
+        error={resourceSheetError}
+        snapshot={resourceSheetSnapshot}
         chrome={chrome}
-        onClose={onClosePicker}
-        onOpenAgent={onOpenAgent}
-        onNewTerminal={onNewTerminal}
+        onClose={onCloseResourceSheet}
+        onRetry={onRetryResourceSheet}
       />
 
       <TerminalActionPopover

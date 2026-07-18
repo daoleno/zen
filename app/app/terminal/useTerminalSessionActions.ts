@@ -33,7 +33,6 @@ interface UseTerminalSessionActionsInput {
   linkedWork?: WorkItem;
   renameDraft: string;
   closeMenu(): void;
-  closePicker(): void;
   setNewTerminalVisible(value: boolean): void;
   setCreatingSession(value: boolean): void;
   setRenameVisible(value: boolean): void;
@@ -53,7 +52,6 @@ export function useTerminalSessionActions({
   linkedWork,
   renameDraft,
   closeMenu,
-  closePicker,
   setNewTerminalVisible,
   setCreatingSession,
   setRenameVisible,
@@ -110,7 +108,6 @@ export function useTerminalSessionActions({
       }
 
       setNewTerminalVisible(false);
-      closePicker();
       closeMenu();
       setCreatingSession(true);
       try {
@@ -151,7 +148,6 @@ export function useTerminalSessionActions({
     [
       agentId,
       closeMenu,
-      closePicker,
       connectionState,
       creatingSession,
       router,

@@ -327,13 +327,14 @@ func TestAgentAndBrainHelpAreDiscoverable(t *testing.T) {
 	}
 	brainHelp := brainOutput.String()
 	for _, want := range []string{
-		"Usage: zen brain <workspace|context|playbooks|gc|executors|use> [flags]",
+		"Usage: zen brain <workspace|context|playbooks|gc|executors|use|set-delegated> [flags]",
 		"Reconcile product-owned Brain workspace blocks while preserving user content",
 		"zen brain workspace --json",
 		"zen brain context --json",
 		"zen brain playbooks --json",
 		"zen brain gc --json",
 		"zen brain executors --json",
+		"zen brain set-delegated grok",
 	} {
 		if !strings.Contains(brainHelp, want) {
 			t.Fatalf("brain help missing %q:\n%s", want, brainHelp)

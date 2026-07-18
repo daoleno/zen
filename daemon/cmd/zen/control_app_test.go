@@ -117,12 +117,9 @@ func TestControlAppAgentSpawnCreatesVisibleDetachedSession(t *testing.T) {
 	fw := newFakeControlWatcher()
 	app := &controlApp{
 		watcher: fw,
-		execs: &work.ExecutorConfig{
-			DelegatedExecutor: "codex",
-			ByName: map[string]work.Executor{
-				"codex": {Name: "codex", Command: "codex --no-alt-screen"},
-			},
-		},
+		execs: work.NewExecutorConfig("codex", map[string]work.Executor{
+			"codex": {Name: "codex", Command: "codex --no-alt-screen"},
+		}),
 		stateDir: "/tmp/zen state",
 	}
 	promptPath := filepath.Join(t.TempDir(), "prompt.md")
@@ -197,6 +194,10 @@ func TestControlAppAgentSpawnCreatesVisibleDetachedSession(t *testing.T) {
 		`"$ZEN_AGENT_PROGRESS_CMD" agent progress --status running --phase planning --attention none --task-class lasting_design --event-kind invariant`,
 		"loop contract",
 		"core invariants",
+		"Respect Zen's resource boundary",
+		"TMPDIR/TMP/TEMP",
+		"$ZEN_BUILD_TMPDIR",
+		"Never hard-code OS-global temp paths",
 		`event-kind "needs_judgment"`,
 		"ZEN_AGENT_ID is already set for this session.",
 		"Valid status values: running, done, failed, blocked.",
@@ -232,14 +233,11 @@ func TestControlAppAgentSpawnFromBrainDefaultsToDelegatedExecutor(t *testing.T) 
 	app := &controlApp{
 		watcher:    fw,
 		brainStore: store,
-		execs: &work.ExecutorConfig{
-			DelegatedExecutor: "grok",
-			ByName: map[string]work.Executor{
-				"claude": {Name: "claude", Command: "claude"},
-				"codex":  {Name: "codex", Command: "codex"},
-				"grok":   {Name: "grok", Command: "grok --no-alt-screen --permission-mode bypassPermissions"},
-			},
-		},
+		execs: work.NewExecutorConfig("grok", map[string]work.Executor{
+			"claude": {Name: "claude", Command: "claude"},
+			"codex":  {Name: "codex", Command: "codex"},
+			"grok":   {Name: "grok", Command: "grok --no-alt-screen --permission-mode bypassPermissions"},
+		}),
 	}
 
 	resp := app.HandleControlRequest(control.Request{
@@ -301,13 +299,10 @@ func TestControlAppAgentSpawnFromBrainUsesDelegatedExecutorNotHost(t *testing.T)
 	app := &controlApp{
 		watcher:    fw,
 		brainStore: store,
-		execs: &work.ExecutorConfig{
-			DelegatedExecutor: "agent",
-			ByName: map[string]work.Executor{
-				"agent": {Name: "agent", Command: "cursor-agent --force --sandbox disabled", Kind: "cursor"},
-				"codex": {Name: "codex", Command: "codex"},
-			},
-		},
+		execs: work.NewExecutorConfig("agent", map[string]work.Executor{
+			"agent": {Name: "agent", Command: "cursor-agent --force --sandbox disabled", Kind: "cursor"},
+			"codex": {Name: "codex", Command: "codex"},
+		}),
 	}
 
 	brainSpawn := app.HandleControlRequest(control.Request{
@@ -351,14 +346,11 @@ func TestControlAppAgentSpawnFromBrainHonorsDelegatedExecutorEnvOverride(t *test
 	app := &controlApp{
 		watcher:    fw,
 		brainStore: store,
-		execs: &work.ExecutorConfig{
-			DelegatedExecutor: "grok",
-			ByName: map[string]work.Executor{
-				"claude": {Name: "claude", Command: "claude"},
-				"codex":  {Name: "codex", Command: "codex"},
-				"grok":   {Name: "grok", Command: "grok --no-alt-screen --permission-mode bypassPermissions"},
-			},
-		},
+		execs: work.NewExecutorConfig("grok", map[string]work.Executor{
+			"claude": {Name: "claude", Command: "claude"},
+			"codex":  {Name: "codex", Command: "codex"},
+			"grok":   {Name: "grok", Command: "grok --no-alt-screen --permission-mode bypassPermissions"},
+		}),
 	}
 
 	resp := app.HandleControlRequest(control.Request{
@@ -384,13 +376,10 @@ func TestControlAppAgentSpawnHardensDelegatedCodexAndPreservesOverrides(t *testi
 	fw := newFakeControlWatcher()
 	app := &controlApp{
 		watcher: fw,
-		execs: &work.ExecutorConfig{
-			DelegatedExecutor: "codex",
-			ByName: map[string]work.Executor{
-				"codex":  {Name: "codex", Command: "codex"},
-				"claude": {Name: "claude", Command: "claude"},
-			},
-		},
+		execs: work.NewExecutorConfig("codex", map[string]work.Executor{
+			"codex":  {Name: "codex", Command: "codex"},
+			"claude": {Name: "claude", Command: "claude"},
+		}),
 	}
 
 	// Delegated Codex spawn is hardened so internal progress commands do not
@@ -586,12 +575,9 @@ func TestControlAppAgentSpawnSubmissionFailureReturnsErrorAndAttention(t *testin
 	fw.sendErr = os.ErrDeadlineExceeded
 	app := &controlApp{
 		watcher: fw,
-		execs: &work.ExecutorConfig{
-			DelegatedExecutor: "codex",
-			ByName: map[string]work.Executor{
-				"codex": {Name: "codex", Command: "codex"},
-			},
-		},
+		execs: work.NewExecutorConfig("codex", map[string]work.Executor{
+			"codex": {Name: "codex", Command: "codex"},
+		}),
 	}
 
 	resp := app.HandleControlRequest(control.Request{
@@ -855,12 +841,9 @@ func TestControlAppBrainContextReturnsStructuredContext(t *testing.T) {
 	}
 	app := &controlApp{
 		brainStore: store,
-		execs: &work.ExecutorConfig{
-			DelegatedExecutor: "codex",
-			ByName: map[string]work.Executor{
-				"codex": {Name: "codex", Command: "codex"},
-			},
-		},
+		execs: work.NewExecutorConfig("codex", map[string]work.Executor{
+			"codex": {Name: "codex", Command: "codex"},
+		}),
 	}
 
 	resp := app.HandleControlRequest(control.Request{Type: "brain_context"})
@@ -920,12 +903,9 @@ func TestControlAppBrainGCReturnsHousekeepingReport(t *testing.T) {
 	}
 	app := &controlApp{
 		brainStore: store,
-		execs: &work.ExecutorConfig{
-			DelegatedExecutor: "codex",
-			ByName: map[string]work.Executor{
-				"codex": {Name: "codex", Command: "codex"},
-			},
-		},
+		execs: work.NewExecutorConfig("codex", map[string]work.Executor{
+			"codex": {Name: "codex", Command: "codex"},
+		}),
 	}
 
 	resp := app.HandleControlRequest(control.Request{Type: "brain_gc"})
@@ -953,13 +933,10 @@ func TestControlAppBrainExecutorsListCodexHostFallback(t *testing.T) {
 	}
 	app := &controlApp{
 		brainStore: store,
-		execs: &work.ExecutorConfig{
-			DelegatedExecutor: "claude",
-			ByName: map[string]work.Executor{
-				"claude": {Name: "claude", Command: "claude"},
-				"codex":  {Name: "codex", Command: "codex"},
-			},
-		},
+		execs: work.NewExecutorConfig("claude", map[string]work.Executor{
+			"claude": {Name: "claude", Command: "claude"},
+			"codex":  {Name: "codex", Command: "codex"},
+		}),
 	}
 
 	resp := app.HandleControlRequest(control.Request{Type: "brain_executors"})
@@ -985,13 +962,10 @@ func TestControlAppBrainExecutorsFallbackToCodexNotGeneralDefault(t *testing.T) 
 	}
 	app := &controlApp{
 		brainStore: store,
-		execs: &work.ExecutorConfig{
-			DelegatedExecutor: "agent",
-			ByName: map[string]work.Executor{
-				"agent": {Name: "agent", Command: "cursor-agent --force --sandbox disabled", Kind: "cursor"},
-				"codex": {Name: "codex", Command: "codex"},
-			},
-		},
+		execs: work.NewExecutorConfig("agent", map[string]work.Executor{
+			"agent": {Name: "agent", Command: "cursor-agent --force --sandbox disabled", Kind: "cursor"},
+			"codex": {Name: "codex", Command: "codex"},
+		}),
 	}
 
 	resp := app.HandleControlRequest(control.Request{Type: "brain_executors"})
@@ -1007,6 +981,63 @@ func TestControlAppBrainExecutorsFallbackToCodexNotGeneralDefault(t *testing.T) 
 	}
 }
 
+func TestControlAppSetDelegatedExecutorSameProcessSwitch(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "executors.toml")
+	if err := os.WriteFile(path, []byte(`
+delegated_executor = "codex"
+
+[[executors]]
+name = "codex"
+command = "codex"
+
+[[executors]]
+name = "grok"
+command = "grok --flag"
+`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	execs, err := work.LoadExecutors(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store, err := brain.NewStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	app := &controlApp{
+		watcher:    newFakeControlWatcher(),
+		brainStore: store,
+		execs:      execs,
+	}
+
+	before := app.HandleControlRequest(control.Request{Type: "brain_executors"})
+	if !before.OK || before.DelegatedExecutor == nil || before.DelegatedExecutor.ID != "codex" {
+		t.Fatalf("before = %#v", before)
+	}
+
+	resp := app.HandleControlRequest(control.Request{Type: "set_delegated_executor", ExecutorID: "grok"})
+	if !resp.OK || resp.DelegatedExecutor == nil || resp.DelegatedExecutor.ID != "grok" {
+		t.Fatalf("set response = %#v", resp)
+	}
+	if execs.GetDelegatedExecutor() != "grok" {
+		t.Fatalf("live owner = %q", execs.GetDelegatedExecutor())
+	}
+
+	spawn := app.HandleControlRequest(control.Request{
+		Type:   "agent_spawn",
+		Cwd:    dir,
+		Name:   "delegated-after-switch",
+		Prompt: "use live delegated selection",
+	})
+	if !spawn.OK || spawn.Agent == nil {
+		t.Fatalf("spawn = %#v", spawn)
+	}
+	if !strings.Contains(spawn.Agent.Command, "grok") {
+		t.Fatalf("spawn command = %q, want grok", spawn.Agent.Command)
+	}
+}
+
 func TestControlAppBrainSetExecutorPersistsConfiguredExecutor(t *testing.T) {
 	store, err := brain.NewStore(t.TempDir())
 	if err != nil {
@@ -1014,13 +1045,10 @@ func TestControlAppBrainSetExecutorPersistsConfiguredExecutor(t *testing.T) {
 	}
 	app := &controlApp{
 		brainStore: store,
-		execs: &work.ExecutorConfig{
-			DelegatedExecutor: "codex",
-			ByName: map[string]work.Executor{
-				"claude": {Name: "claude", Command: "claude"},
-				"codex":  {Name: "codex", Command: "codex"},
-			},
-		},
+		execs: work.NewExecutorConfig("codex", map[string]work.Executor{
+			"claude": {Name: "claude", Command: "claude"},
+			"codex":  {Name: "codex", Command: "codex"},
+		}),
 	}
 
 	resp := app.HandleControlRequest(control.Request{Type: "brain_set_executor", ExecutorID: "claude"})
@@ -1049,13 +1077,10 @@ func TestControlAppBrainSetExecutorStartsSelectedHostWhenWatcherAvailable(t *tes
 	app := &controlApp{
 		watcher:    fw,
 		brainStore: store,
-		execs: &work.ExecutorConfig{
-			DelegatedExecutor: "codex",
-			ByName: map[string]work.Executor{
-				"claude": {Name: "claude", Command: "claude"},
-				"codex":  {Name: "codex", Command: "codex"},
-			},
-		},
+		execs: work.NewExecutorConfig("codex", map[string]work.Executor{
+			"claude": {Name: "claude", Command: "claude"},
+			"codex":  {Name: "codex", Command: "codex"},
+		}),
 	}
 
 	resp := app.HandleControlRequest(control.Request{Type: "brain_set_executor", ExecutorID: "claude"})
@@ -1088,12 +1113,9 @@ func TestControlAppBrainSetExecutorRejectsUnknownExecutor(t *testing.T) {
 	}
 	app := &controlApp{
 		brainStore: store,
-		execs: &work.ExecutorConfig{
-			DelegatedExecutor: "codex",
-			ByName: map[string]work.Executor{
-				"codex": {Name: "codex", Command: "codex"},
-			},
-		},
+		execs: work.NewExecutorConfig("codex", map[string]work.Executor{
+			"codex": {Name: "codex", Command: "codex"},
+		}),
 	}
 
 	resp := app.HandleControlRequest(control.Request{Type: "brain_set_executor", ExecutorID: "claude"})

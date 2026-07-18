@@ -15,10 +15,12 @@ import (
 )
 
 const (
-	cursorConversationSource = "cursor_agent_transcript"
-	cursorProjectDirPrefix   = ".cursor/projects"
-	cursorTranscriptDir      = "agent-transcripts"
-	cursorTranscriptAge      = 72 * time.Hour
+	cursorConversationSource       = "cursor_agent_transcript"
+	cursorProjectDirPrefix         = ".cursor/projects"
+	cursorTranscriptDir            = "agent-transcripts"
+	cursorWorkspaceTrustedMarker   = ".workspace-trusted"
+	cursorWorkspaceTrustedMaxBytes = 4 << 10
+	cursorTranscriptAge            = 72 * time.Hour
 )
 
 type cursorTranscriptCandidate struct {
@@ -39,7 +41,7 @@ func (r *ProviderConversationReader) loadCursorConversationForAgent(agent classi
 		}, nil
 	}
 
-	candidate, ok, err := findCursorTranscript(agent, now)
+	candidate, ok, err := r.findCursorTranscript(agent, now)
 	if err != nil {
 		r.resetSource()
 		return CodexConversation{}, err
@@ -73,7 +75,7 @@ func (r *ProviderConversationReader) loadCursorConversation(path string) (CodexC
 	return r.loadFileConversation(AgentProviderCursor, path, parseCursorConversation)
 }
 
-func findCursorTranscript(agent classifier.Agent, now time.Time) (cursorTranscriptCandidate, bool, error) {
+func (r *ProviderConversationReader) findCursorTranscript(agent classifier.Agent, now time.Time) (cursorTranscriptCandidate, bool, error) {
 	cwd := strings.TrimSpace(agent.Cwd)
 	if cwd == "" {
 		return cursorTranscriptCandidate{}, false, nil
@@ -83,9 +85,15 @@ func findCursorTranscript(agent classifier.Agent, now time.Time) (cursorTranscri
 		return cursorTranscriptCandidate{}, false, err
 	}
 
+	projectRoots, err := r.cursorProjectRootsForCWD(home, cwd)
+	if err != nil {
+		return cursorTranscriptCandidate{}, false, err
+	}
+
 	var candidates []cursorTranscriptCandidate
-	for _, candidateCWD := range transcriptCWDCandidates(cwd) {
-		projectDir := filepath.Join(home, cursorProjectDirPrefix, encodeCursorProjectDir(candidateCWD))
+	for _, root := range projectRoots {
+		projectDir := root.dir
+		candidateCWD := root.cwd
 		transcriptRoot := filepath.Join(projectDir, cursorTranscriptDir)
 		entries, err := os.ReadDir(transcriptRoot)
 		if err != nil {
@@ -139,6 +147,199 @@ func findCursorTranscript(agent classifier.Agent, now time.Time) (cursorTranscri
 		return matched, true, nil
 	}
 	return cursorTranscriptCandidate{}, false, nil
+}
+
+type cursorProjectRoot struct {
+	dir string
+	cwd string
+}
+
+func (r *ProviderConversationReader) cursorProjectRootsForCWD(home, cwd string) ([]cursorProjectRoot, error) {
+	cwd = cleanCursorWorkspacePath(cwd)
+	if cwd == "" {
+		return nil, nil
+	}
+	if r != nil && r.cursorProjectRootsCWD == cwd && len(r.cursorProjectRoots) > 0 {
+		if cursorProjectRootsStillValid(r.cursorProjectRoots, cwd) {
+			return append([]cursorProjectRoot(nil), r.cursorProjectRoots...), nil
+		}
+		// Dead or ownership-shifted roots must not pin a stale source.
+		r.cursorProjectRootsCWD = ""
+		r.cursorProjectRoots = nil
+	}
+
+	roots, err := discoverCursorProjectRoots(home, cwd)
+	if err != nil {
+		return nil, err
+	}
+	if r != nil {
+		// Empty resolution is never cached so late marker/transcript creation retries.
+		r.cursorProjectRootsCWD = ""
+		r.cursorProjectRoots = nil
+		if len(roots) > 0 {
+			r.cursorProjectRootsCWD = cwd
+			r.cursorProjectRoots = append([]cursorProjectRoot(nil), roots...)
+		}
+	}
+	return roots, nil
+}
+
+func cursorProjectRootsStillValid(roots []cursorProjectRoot, cwd string) bool {
+	if len(roots) == 0 {
+		return false
+	}
+	wanted := cursorWorkspacePathSet(transcriptCWDCandidates(cwd))
+	for _, root := range roots {
+		info, err := os.Stat(root.dir)
+		if err != nil || !info.IsDir() {
+			return false
+		}
+		workspacePath, hasMarker := readCursorWorkspaceTrustedPath(filepath.Join(root.dir, cursorWorkspaceTrustedMarker))
+		if hasMarker {
+			if _, ok := wanted[workspacePath]; !ok {
+				return false
+			}
+			continue
+		}
+		// Markerless roots are legacy encode-named dirs only.
+		if filepath.Base(root.dir) != encodeCursorProjectDir(root.cwd) {
+			return false
+		}
+	}
+	return true
+}
+
+func discoverCursorProjectRoots(home, cwd string) ([]cursorProjectRoot, error) {
+	candidateCWDs := transcriptCWDCandidates(cwd)
+	wanted := cursorWorkspacePathSet(candidateCWDs)
+	if len(wanted) == 0 {
+		return nil, nil
+	}
+
+	var roots []cursorProjectRoot
+	seen := map[string]bool{}
+	add := func(dir, matchedCWD string) {
+		dir = cleanCursorWorkspacePath(dir)
+		matchedCWD = cleanCursorWorkspacePath(matchedCWD)
+		if dir == "" || matchedCWD == "" || seen[dir] {
+			return
+		}
+		seen[dir] = true
+		roots = append(roots, cursorProjectRoot{dir: dir, cwd: matchedCWD})
+	}
+
+	// Markerless encode-named dirs stay as legacy candidates. Any valid marker
+	// on a direct dir excludes legacy treatment; ownership is marker-scan only.
+	for _, candidateCWD := range candidateCWDs {
+		encoded := encodeCursorProjectDir(candidateCWD)
+		if encoded == "" {
+			continue
+		}
+		projectDir := filepath.Join(home, cursorProjectDirPrefix, encoded)
+		info, err := os.Stat(projectDir)
+		if err != nil || !info.IsDir() {
+			continue
+		}
+		if _, hasMarker := readCursorWorkspaceTrustedPath(filepath.Join(projectDir, cursorWorkspaceTrustedMarker)); hasMarker {
+			continue
+		}
+		add(projectDir, candidateCWD)
+	}
+
+	markerRoots, err := scanCursorWorkspaceTrustedProjectRoots(home, wanted)
+	if err != nil {
+		return nil, err
+	}
+	for _, root := range markerRoots {
+		add(root.dir, root.cwd)
+	}
+	return roots, nil
+}
+
+func cleanCursorWorkspacePath(path string) string {
+	clean := filepath.Clean(strings.TrimSpace(path))
+	if clean == "" || clean == "." {
+		return ""
+	}
+	return clean
+}
+
+func cursorWorkspacePathSet(candidateCWDs []string) map[string]string {
+	wanted := map[string]string{}
+	for _, candidateCWD := range candidateCWDs {
+		if clean := cleanCursorWorkspacePath(candidateCWD); clean != "" {
+			wanted[clean] = clean
+		}
+	}
+	return wanted
+}
+
+func scanCursorWorkspaceTrustedProjectRoots(home string, wanted map[string]string) ([]cursorProjectRoot, error) {
+	if len(wanted) == 0 {
+		return nil, nil
+	}
+
+	projectsRoot := filepath.Join(home, cursorProjectDirPrefix)
+	entries, err := os.ReadDir(projectsRoot)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, err
+	}
+
+	var roots []cursorProjectRoot
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			continue
+		}
+		projectDir := filepath.Join(projectsRoot, entry.Name())
+		workspacePath, ok := readCursorWorkspaceTrustedPath(filepath.Join(projectDir, cursorWorkspaceTrustedMarker))
+		if !ok {
+			continue
+		}
+		matchedCWD, ok := wanted[workspacePath]
+		if !ok {
+			continue
+		}
+		roots = append(roots, cursorProjectRoot{dir: projectDir, cwd: matchedCWD})
+	}
+	return roots, nil
+}
+
+func readCursorWorkspaceTrustedPath(markerPath string) (string, bool) {
+	info, err := os.Lstat(markerPath)
+	if err != nil || !info.Mode().IsRegular() {
+		return "", false
+	}
+	if info.Size() <= 0 || info.Size() > cursorWorkspaceTrustedMaxBytes {
+		return "", false
+	}
+
+	file, err := os.Open(markerPath)
+	if err != nil {
+		return "", false
+	}
+	defer file.Close()
+
+	limited := io.LimitReader(file, cursorWorkspaceTrustedMaxBytes+1)
+	data, err := io.ReadAll(limited)
+	if err != nil || len(data) == 0 || len(data) > cursorWorkspaceTrustedMaxBytes {
+		return "", false
+	}
+
+	var marker struct {
+		WorkspacePath string `json:"workspacePath"`
+	}
+	if json.Unmarshal(data, &marker) != nil {
+		return "", false
+	}
+	workspacePath := cleanCursorWorkspacePath(marker.WorkspacePath)
+	if workspacePath == "" {
+		return "", false
+	}
+	// Marker paths are compared as cleaned strings only; never used for traversal.
+	return workspacePath, true
 }
 
 func parseCursorConversation(path string) (CodexConversation, error) {
@@ -431,8 +632,8 @@ func cursorToolInputString(raw json.RawMessage, key string) string {
 }
 
 func encodeCursorProjectDir(cwd string) string {
-	cwd = filepath.Clean(strings.TrimSpace(cwd))
-	if cwd == "" || cwd == "." {
+	cwd = cleanCursorWorkspacePath(cwd)
+	if cwd == "" {
 		return ""
 	}
 	return strings.Trim(strings.ReplaceAll(cwd, string(filepath.Separator), "-"), "-")

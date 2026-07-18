@@ -1,8 +1,5 @@
 import { useCallback, useMemo } from "react";
-import type { AgentDirectorySection } from "../../services/serverSelection";
-import type {
-  StoredAgentAliases,
-} from "../../services/storage";
+import type { SessionResourceSnapshot } from "../../services/sessionResourceSnapshot";
 import type {
   TerminalThemeChrome,
   TerminalThemePalette,
@@ -13,12 +10,10 @@ import type { useTerminalSessionActions } from "./useTerminalSessionActions";
 import type { useTerminalNavigationActions } from "./useTerminalNavigationActions";
 
 interface UseTerminalScreenOverlayPropsInput {
-  pickerVisible: boolean;
-  pickerSections: AgentDirectorySection[];
-  sortedAgentCount: number;
-  sessionKey: string | null;
-  showPickerServerNames: boolean;
-  agentAliases: StoredAgentAliases;
+  resourceSheetVisible: boolean;
+  resourceSheetLoading: boolean;
+  resourceSheetError?: string | null;
+  resourceSheetSnapshot?: SessionResourceSnapshot | null;
   creatingSession: boolean;
   menuVisible: boolean;
   menuPosition: { left: number; top: number };
@@ -35,7 +30,8 @@ interface UseTerminalScreenOverlayPropsInput {
   renamePlaceholder: string;
   chrome: TerminalThemeChrome;
   theme: TerminalThemePalette;
-  setPickerVisible(value: boolean): void;
+  onCloseResourceSheet(): void;
+  onRetryResourceSheet(): void;
   setNewTerminalVisible(value: boolean): void;
   setRenameVisible(value: boolean): void;
   setRenameDraft(value: string): void;
@@ -48,12 +44,10 @@ interface UseTerminalScreenOverlayPropsInput {
 }
 
 export function useTerminalScreenOverlayProps({
-  pickerVisible,
-  pickerSections,
-  sortedAgentCount,
-  sessionKey,
-  showPickerServerNames,
-  agentAliases,
+  resourceSheetVisible,
+  resourceSheetLoading,
+  resourceSheetError,
+  resourceSheetSnapshot,
   creatingSession,
   menuVisible,
   menuPosition,
@@ -70,7 +64,8 @@ export function useTerminalScreenOverlayProps({
   renamePlaceholder,
   chrome,
   theme,
-  setPickerVisible,
+  onCloseResourceSheet,
+  onRetryResourceSheet,
   setNewTerminalVisible,
   setRenameVisible,
   setRenameDraft,
@@ -81,10 +76,6 @@ export function useTerminalScreenOverlayProps({
   openRenameModal,
   onToggleRenderMode,
 }: UseTerminalScreenOverlayPropsInput): TerminalScreenOverlaysProps {
-  const handleClosePicker = useCallback(() => {
-    setPickerVisible(false);
-  }, [setPickerVisible]);
-
   const handleCloseNewTerminal = useCallback(() => {
     setNewTerminalVisible(false);
   }, [setNewTerminalVisible]);
@@ -106,12 +97,10 @@ export function useTerminalScreenOverlayProps({
 
   return useMemo(
     () => ({
-      pickerVisible,
-      pickerSections,
-      pickerAgentCount: sortedAgentCount,
-      activeSessionKey: sessionKey,
-      showPickerServerNames,
-      agentAliases,
+      resourceSheetVisible,
+      resourceSheetLoading,
+      resourceSheetError,
+      resourceSheetSnapshot,
       creatingSession,
       menuVisible,
       menuPosition,
@@ -128,8 +117,8 @@ export function useTerminalScreenOverlayProps({
       renamePlaceholder,
       chrome,
       theme,
-      onClosePicker: handleClosePicker,
-      onOpenAgent: navigationActions.openAgentSession,
+      onCloseResourceSheet,
+      onRetryResourceSheet,
       onNewTerminal: openNewTerminal,
       onCloseMenu: closeMenu,
       onRename: openRenameModal,
@@ -143,41 +132,39 @@ export function useTerminalScreenOverlayProps({
       onSaveRename: sessionActions.handleSaveRename,
     }),
     [
-      agentAliases,
       agentCwd,
       chrome,
+      closeMenu,
       connectionConnected,
       creatingSession,
       gitDiff.sheetProps,
       handleCloseNewTerminal,
-      handleClosePicker,
       handleCloseRename,
       handleSubmitNewTerminal,
       hasLinkedWork,
       menuPosition,
       menuVisible,
+      navigationActions.handleTerminateAgent,
       newTerminalVisible,
-      closeMenu,
+      onCloseResourceSheet,
+      onRetryResourceSheet,
       onToggleRenderMode,
       openNewTerminal,
       openRenameModal,
-      showToggleRenderMode,
-      toggleRenderModeLabel,
-      pickerSections,
-      pickerVisible,
       renameDraft,
       renamePlaceholder,
       renameVisible,
+      resourceSheetError,
+      resourceSheetLoading,
+      resourceSheetSnapshot,
+      resourceSheetVisible,
       serverId,
       sessionActions.handleSaveRename,
       sessionActions.openLinkedWork,
-      sessionKey,
       setRenameDraft,
-      showPickerServerNames,
-      sortedAgentCount,
-      navigationActions.handleTerminateAgent,
-      navigationActions.openAgentSession,
+      showToggleRenderMode,
       theme,
+      toggleRenderModeLabel,
     ],
   );
 }

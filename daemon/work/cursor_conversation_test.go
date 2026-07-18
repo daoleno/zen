@@ -1,6 +1,7 @@
 package work
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -313,6 +314,340 @@ func TestParseCursorConversation_AssistantRowsDoNotSettleActivity(t *testing.T) 
 	if got.Activity == nil || got.Activity.Status != ProviderActivityCompleted {
 		t.Fatalf("expected completed turn after turn_ended: %#v", got)
 	}
+}
+
+func TestProviderConversationReaderCursorResolvesHiddenWorkspaceViaTrustedMarker(t *testing.T) {
+	home := t.TempDir()
+	cwd := "/home/daoleno/.zen/worktrees/zen/terminal-native-scroll-perf"
+	encodedName := encodeCursorProjectDir(cwd)
+	actualName := "home-daoleno-zen-worktrees-zen-terminal-native-scroll-perf"
+	if encodedName == actualName {
+		t.Fatalf("fixture requires Cursor private name to differ from encodeCursorProjectDir: %q", encodedName)
+	}
+
+	now := time.Now().UTC()
+	sessionID := "eea683cc-bef4-470d-a11f-473992ff5338"
+	transcriptPath := writeCursorHiddenWorkspaceTranscript(t, home, cwd, actualName, sessionID, "recover interface", now)
+	if _, err := os.Stat(filepath.Join(home, cursorProjectDirPrefix, encodedName)); !os.IsNotExist(err) {
+		t.Fatalf("encoded project dir must be absent before marker fallback: err=%v", err)
+	}
+	t.Setenv("HOME", home)
+
+	got, err := NewProviderConversationReader().Load(classifier.Agent{
+		ID:        "brain-agent-terminal-native-scroll-recovery-3:@14",
+		Command:   "cursor-agent --force --sandbox disabled",
+		Cwd:       cwd,
+		StartedAt: now.Add(-time.Minute),
+		State:     classifier.StateRunning,
+	}, AgentProviderCursor, now)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if !got.Available || got.Reason != "" || got.SessionID != sessionID || got.Path != transcriptPath || got.CWD != cwd {
+		t.Fatalf("hidden workspace did not attach via .workspace-trusted: %#v", got)
+	}
+	if len(got.Events) == 0 {
+		t.Fatalf("attached conversation has no events: %#v", got)
+	}
+}
+
+func TestProviderConversationReaderCursorMarkerFallbackRejectsUnsafeAndForeignSources(t *testing.T) {
+	home := t.TempDir()
+	cwd := "/home/daoleno/.zen/worktrees/zen/git-diff-performance"
+	now := time.Now().UTC()
+	startedAt := now.Add(-time.Minute)
+	t.Setenv("HOME", home)
+
+	ownSession := "6c472972-9e28-4480-9bac-d24573b38ff8"
+	ownPath := writeCursorHiddenWorkspaceTranscript(
+		t, home, cwd, "home-daoleno-zen-worktrees-zen-git-diff-performance", ownSession, "own session", now,
+	)
+
+	writeCursorHiddenWorkspaceTranscript(
+		t, home, "/home/daoleno/.zen/worktrees/zen/other-workspace",
+		"mismatched-marker", "mismatched-session", "foreign workspace", now,
+	)
+
+	writeCursorRejectedMarker(t, home, "malformed-marker", []byte("{not-json"))
+	writeCursorRejectedMarker(t, home, "oversized-marker", []byte(
+		`{"workspacePath":"`+cwd+`","pad":"`+strings.Repeat("x", cursorWorkspaceTrustedMaxBytes)+`"}`,
+	))
+
+	staleSession := "stale-session"
+	stalePath := writeCursorHiddenWorkspaceTranscript(
+		t, home, cwd, "stale-transcript-project", staleSession, "stale transcript",
+		now.Add(-cursorTranscriptAge-time.Hour),
+	)
+
+	otherSession := "other-agent-session"
+	writeCursorHiddenWorkspaceTranscript(
+		t, home, cwd, "other-session-project", otherSession, "different session", now.Add(-2*time.Hour),
+	)
+
+	reader := NewProviderConversationReader()
+	agent := classifier.Agent{
+		ID:        "brain-agent-git-diff-performance-recovery-3:@31",
+		Command:   "cursor-agent --force --sandbox disabled",
+		Cwd:       cwd,
+		StartedAt: startedAt,
+		State:     classifier.StateRunning,
+	}
+	got, err := reader.Load(agent, AgentProviderCursor, now)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if !got.Available || got.SessionID != ownSession || got.Path != ownPath {
+		t.Fatalf("expected exact owned marker transcript, got %#v", got)
+	}
+	if got.SessionID == staleSession || got.Path == stalePath || strings.Contains(conversationBodies(got), "stale transcript") {
+		t.Fatalf("borrowed stale transcript: %#v", got)
+	}
+	if got.SessionID == otherSession || strings.Contains(conversationBodies(got), "different session") {
+		t.Fatalf("borrowed different-session transcript: %#v", got)
+	}
+	if strings.Contains(conversationBodies(got), "foreign workspace") {
+		t.Fatalf("borrowed mismatched marker transcript: %#v", got)
+	}
+}
+
+func TestProviderConversationReaderCursorProjectRootCacheIsSubscriptionLocal(t *testing.T) {
+	home := t.TempDir()
+	cwd := "/home/daoleno/.zen/worktrees/zen/cache-probe"
+	otherCWD := "/home/daoleno/.zen/worktrees/zen/cache-other"
+	now := time.Now().UTC()
+	t.Setenv("HOME", home)
+
+	firstSession := "cache-session-one"
+	firstPath := writeCursorHiddenWorkspaceTranscript(t, home, cwd, "private-cache-probe", firstSession, "first transcript", now)
+	reader := NewProviderConversationReader()
+	agent := classifier.Agent{
+		ID:        "cursor-cache:@1",
+		Command:   "cursor-agent --force --sandbox disabled",
+		Cwd:       cwd,
+		StartedAt: now.Add(-time.Minute),
+		State:     classifier.StateRunning,
+	}
+
+	first, err := reader.Load(agent, AgentProviderCursor, now)
+	if err != nil {
+		t.Fatalf("first Load: %v", err)
+	}
+	if !first.Available || first.SessionID != firstSession || first.Path != firstPath {
+		t.Fatalf("first attach failed: %#v", first)
+	}
+	if reader.cursorProjectRootsCWD != filepath.Clean(cwd) || len(reader.cursorProjectRoots) != 1 {
+		t.Fatalf("expected subscription-local project root cache, got cwd=%q roots=%#v", reader.cursorProjectRootsCWD, reader.cursorProjectRoots)
+	}
+	cachedRoot := reader.cursorProjectRoots[0].dir
+
+	if err := os.RemoveAll(filepath.Dir(firstPath)); err != nil {
+		t.Fatalf("RemoveAll first transcript: %v", err)
+	}
+	secondSession := "cache-session-two"
+	secondPath := filepath.Join(cachedRoot, cursorTranscriptDir, secondSession, secondSession+".jsonl")
+	if err := os.MkdirAll(filepath.Dir(secondPath), 0o755); err != nil {
+		t.Fatalf("MkdirAll second: %v", err)
+	}
+	writeCursorUserTranscript(t, secondPath, "second transcript", now.Add(3*time.Second))
+
+	second, err := reader.Load(agent, AgentProviderCursor, now.Add(4*time.Second))
+	if err != nil {
+		t.Fatalf("second Load: %v", err)
+	}
+	if !second.Available || second.SessionID != secondSession || second.Path != secondPath {
+		t.Fatalf("same-CWD poll did not reselect new transcript: %#v", second)
+	}
+	if reader.cursorProjectRootsCWD != filepath.Clean(cwd) || len(reader.cursorProjectRoots) != 1 || reader.cursorProjectRoots[0].dir != cachedRoot {
+		t.Fatalf("same-CWD poll must reuse project-root cache only: %#v", reader.cursorProjectRoots)
+	}
+
+	otherSession := "cache-session-other"
+	otherPath := writeCursorHiddenWorkspaceTranscript(t, home, otherCWD, "private-cache-other", otherSession, "other cwd", now.Add(5*time.Second))
+	otherAgent := agent
+	otherAgent.Cwd = otherCWD
+	other, err := reader.Load(otherAgent, AgentProviderCursor, now.Add(6*time.Second))
+	if err != nil {
+		t.Fatalf("other CWD Load: %v", err)
+	}
+	if !other.Available || other.SessionID != otherSession || other.Path != otherPath {
+		t.Fatalf("CWD change did not re-resolve project root: %#v", other)
+	}
+	if reader.cursorProjectRootsCWD != filepath.Clean(otherCWD) {
+		t.Fatalf("CWD change must invalidate prior project-root cache: %#v", reader.cursorProjectRoots)
+	}
+	for _, root := range reader.cursorProjectRoots {
+		if root.dir == cachedRoot {
+			t.Fatalf("changed CWD retained prior project root %q", cachedRoot)
+		}
+	}
+}
+
+func TestProviderConversationReaderCursorForeignDirectRootDoesNotHideMarkerOwner(t *testing.T) {
+	home := t.TempDir()
+	cwd := "/home/daoleno/.zen/worktrees/zen/marker-owner"
+	foreignCWD := "/home/daoleno/.zen/worktrees/zen/other-workspace"
+	now := time.Now().UTC()
+	t.Setenv("HOME", home)
+
+	encodedName := encodeCursorProjectDir(cwd)
+	hashedName := "home-daoleno-zen-worktrees-zen-marker-owner"
+	if encodedName == hashedName {
+		t.Fatalf("fixture requires hashed private name to differ from encode: %q", encodedName)
+	}
+
+	// Colliding legacy-encoded directory exists but its marker belongs elsewhere.
+	foreignSession := "foreign-direct-session"
+	foreignPath := writeCursorHiddenWorkspaceTranscript(
+		t, home, foreignCWD, encodedName, foreignSession, "foreign colliding root", now,
+	)
+
+	ownSession := "exact-marker-owner-session"
+	ownPath := writeCursorHiddenWorkspaceTranscript(t, home, cwd, hashedName, ownSession, "exact marker owner", now)
+
+	got, err := NewProviderConversationReader().Load(classifier.Agent{
+		ID:        "cursor-marker-owner:@1",
+		Command:   "cursor-agent --force --sandbox disabled",
+		Cwd:       cwd,
+		StartedAt: now.Add(-time.Minute),
+		State:     classifier.StateRunning,
+	}, AgentProviderCursor, now)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if !got.Available || got.SessionID != ownSession || got.Path != ownPath {
+		t.Fatalf("foreign direct root hid exact marker owner: %#v", got)
+	}
+	if got.SessionID == foreignSession || got.Path == foreignPath || strings.Contains(conversationBodies(got), "foreign colliding root") {
+		t.Fatalf("borrowed foreign-marked direct root: %#v", got)
+	}
+}
+
+func TestProviderConversationReaderCursorProjectRootCacheRetriesAndDropsDeadRoots(t *testing.T) {
+	home := t.TempDir()
+	cwd := "/home/daoleno/.zen/worktrees/zen/root-replace"
+	now := time.Now().UTC()
+	t.Setenv("HOME", home)
+
+	reader := NewProviderConversationReader()
+	agent := classifier.Agent{
+		ID:        "cursor-root-replace:@1",
+		Command:   "cursor-agent --force --sandbox disabled",
+		Cwd:       cwd,
+		StartedAt: now.Add(-time.Minute),
+		State:     classifier.StateRunning,
+	}
+
+	missing, err := reader.Load(agent, AgentProviderCursor, now)
+	if err != nil {
+		t.Fatalf("empty Load: %v", err)
+	}
+	if missing.Available || missing.Reason != "transcript_not_found" {
+		t.Fatalf("expected not_found before marker/transcript: %#v", missing)
+	}
+	if reader.cursorProjectRootsCWD != "" || len(reader.cursorProjectRoots) != 0 {
+		t.Fatalf("empty resolution must not be cached: cwd=%q roots=%#v", reader.cursorProjectRootsCWD, reader.cursorProjectRoots)
+	}
+
+	oldSession := "old-root-session"
+	oldPath := writeCursorHiddenWorkspaceTranscript(t, home, cwd, "private-root-old", oldSession, "old root", now.Add(2*time.Second))
+	first, err := reader.Load(agent, AgentProviderCursor, now.Add(3*time.Second))
+	if err != nil {
+		t.Fatalf("first Load: %v", err)
+	}
+	if !first.Available || first.SessionID != oldSession || first.Path != oldPath {
+		t.Fatalf("retry after marker/transcript failed: %#v", first)
+	}
+	oldRoot := reader.cursorProjectRoots[0].dir
+
+	if err := os.RemoveAll(oldRoot); err != nil {
+		t.Fatalf("RemoveAll old root: %v", err)
+	}
+	newSession := "replacement-root-session"
+	newPath := writeCursorHiddenWorkspaceTranscript(t, home, cwd, "private-root-new", newSession, "replacement root", now.Add(4*time.Second))
+
+	replaced, err := reader.Load(agent, AgentProviderCursor, now.Add(5*time.Second))
+	if err != nil {
+		t.Fatalf("replacement Load: %v", err)
+	}
+	if !replaced.Available || replaced.SessionID != newSession || replaced.Path != newPath {
+		t.Fatalf("dead cached root pinned old source: %#v", replaced)
+	}
+	if len(reader.cursorProjectRoots) != 1 || reader.cursorProjectRoots[0].dir == oldRoot {
+		t.Fatalf("expected re-resolved replacement root, got %#v", reader.cursorProjectRoots)
+	}
+	if strings.Contains(conversationBodies(replaced), "old root") {
+		t.Fatalf("replacement retained old transcript body: %#v", replaced)
+	}
+}
+
+func writeCursorWorkspaceTrusted(t *testing.T, projectDir, workspacePath string) {
+	t.Helper()
+	if err := os.MkdirAll(projectDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll project: %v", err)
+	}
+	payload := []byte(`{"trustedAt":"2026-07-18T00:00:00.000Z","workspacePath":` + mustJSONString(workspacePath) + `}`)
+	if err := os.WriteFile(filepath.Join(projectDir, cursorWorkspaceTrustedMarker), payload, 0o644); err != nil {
+		t.Fatalf("WriteFile .workspace-trusted: %v", err)
+	}
+}
+
+func writeCursorRejectedMarker(t *testing.T, home, projectName string, marker []byte) {
+	t.Helper()
+	projectDir := filepath.Join(home, cursorProjectDirPrefix, projectName)
+	if err := os.MkdirAll(projectDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll rejected marker project: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(projectDir, cursorWorkspaceTrustedMarker), marker, 0o644); err != nil {
+		t.Fatalf("WriteFile rejected marker: %v", err)
+	}
+}
+
+func writeCursorUserTranscript(t *testing.T, path, body string, updated time.Time) {
+	t.Helper()
+	writeJSONL(t, path, map[string]any{
+		"role": "user",
+		"message": map[string]any{
+			"content": []map[string]any{{
+				"type": "text",
+				"text": "<timestamp>" + updated.Add(-time.Second).Format(time.RFC3339Nano) + "</timestamp>\n<user_query>" + body + "</user_query>",
+			}},
+		},
+	})
+	if err := os.Chtimes(path, updated, updated); err != nil {
+		t.Fatalf("Chtimes: %v", err)
+	}
+}
+
+func writeCursorHiddenWorkspaceTranscript(
+	t *testing.T,
+	home, cwd, privateName, sessionID, body string,
+	updated time.Time,
+) string {
+	t.Helper()
+	projectDir := filepath.Join(home, cursorProjectDirPrefix, privateName)
+	path := filepath.Join(projectDir, cursorTranscriptDir, sessionID, sessionID+".jsonl")
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	writeCursorWorkspaceTrusted(t, projectDir, cwd)
+	writeCursorUserTranscript(t, path, body, updated)
+	return path
+}
+
+func mustJSONString(value string) string {
+	encoded, err := json.Marshal(value)
+	if err != nil {
+		panic(err)
+	}
+	return string(encoded)
+}
+
+func conversationBodies(conversation CodexConversation) string {
+	var parts []string
+	for _, event := range conversation.Events {
+		parts = append(parts, event.Body)
+	}
+	return strings.Join(parts, "\n")
 }
 
 func TestProviderConversationReaderCursorAppendedRowsKeepStableEventIDs(t *testing.T) {

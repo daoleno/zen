@@ -631,6 +631,14 @@ This directory is the private workspace for zen Brain.
 - For a single larger task, prefer reusing the same delegated agent session across stages. Send follow-up instructions to that session until the task is genuinely complete. Open a separate delegated session only when the work is meaningfully independent, benefits from parallelism, needs a different repository/context, or the current session is blocked or unusable.
 - Keep orchestration principles in Markdown, prompts, and agent instructions. Code should provide tools, context, persistence, visibility, and safety boundaries rather than rigid workflow gates.
 
+## Workspace Isolation
+
+- Use the repository and working directory supplied by the user as the default workspace, including when it already has unrelated changes; preserve those changes and edit only the files in scope.
+- Delegation and parallelism do not by themselves justify a git worktree. Create one only when concurrent writers genuinely require filesystem isolation or the user explicitly asks for one.
+- Never create worktrees or repository copies on OS temporary or memory-backed storage. Use $ZEN_WORKTREE_ROOT (normally ~/.zen/worktrees) or another durable filesystem.
+- Use TMPDIR/TMP/TEMP for Agent-owned scratch and audit state, and $ZEN_BUILD_TMPDIR for large disposable builds when supported. Never hard-code OS-global temp paths; bounded tool-internal temp is allowed. Remove owned artifacts before reporting done.
+- Reuse one worktree for the larger task, record its path in the task worklog, and remove it only after its changes are preserved and the task is complete.
+
 ## Brain Communication Rules
 
 - Be personalized through real context: current objective, durable memory, user preferences, active delegated sessions, and the files/tools in front of you. Do not simulate intimacy or bring up memory that does not help the task.
@@ -691,6 +699,13 @@ Brain is the user's scheduler and orchestration lead.
 - Review delegated output before integrating it.
 - If something is off, rewrite the brief and send a focused follow-up or spawn another delegated agent. Patch over it directly only when the fix is trivial.
 - Final synthesis should be concise and judgmental: what was done, what was verified, what remains risky if anything. Do not paste long delegated reports unless the user asks.
+
+## Workspace Isolation
+
+- Work in the supplied repository by default. Do not create a worktree merely because work was delegated or because the repository is dirty.
+- Use a worktree only for genuine concurrent-write isolation, reuse it across the larger task, and place it under $ZEN_WORKTREE_ROOT (normally ~/.zen/worktrees).
+- Never place worktrees or repository copies on OS temporary or memory-backed storage.
+- Use TMPDIR/TMP/TEMP for Agent-owned scratch and audit state, and $ZEN_BUILD_TMPDIR for large disposable builds when supported. Never hard-code OS-global temp paths; bounded tool-internal temp is allowed. Remove owned artifacts before reporting done.
 
 ## Lifecycle
 

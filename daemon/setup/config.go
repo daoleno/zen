@@ -152,7 +152,8 @@ func renderExecutorsTOML(file executorFile, profile Profile) ([]byte, error) {
 	} else {
 		b.WriteString("# Safe/manual profile: no bypass flags were injected by setup.\n")
 	}
-	b.WriteString("# Restart zen after editing this file.\n\n")
+	b.WriteString("# Restart zen after changing executor definitions or commands.\n")
+	b.WriteString("# Delegated selection can be switched live: zen brain set-delegated <id>\n\n")
 	b.WriteString("delegated_executor = \"" + escapeTOMLString(file.DelegatedExecutor) + "\"\n\n")
 	for _, executor := range file.Executors {
 		b.WriteString("[[executors]]\n")

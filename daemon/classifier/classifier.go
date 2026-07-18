@@ -81,6 +81,15 @@ var immediateBlockedPatterns = []*regexp.Regexp{
 	regexp.MustCompile(`(?i)Action Required`),
 }
 
+// Grok paints provider-native choice menus only in the live TUI. Canonical
+// conversation sources (updates.jsonl / chat_history.jsonl) do not carry the
+// ordered options, so Interface must treat the current pane lines as the sole
+// live fact. Match structure, not one English billing string.
+// Optional ›/> prefix is Grok's selection caret; plain capture-pane has no reverse-video.
+// Capture-pane may keep bare glyphs or parenthesize them as (○)/(●)/(O).
+var grokChoiceOptionRe = regexp.MustCompile(`(?i)^\s*[›>]?\s*[1-9]\s*(?:[○●◯◉◎]|\([○●◯◉◎Oo\s]*\))\s+\S`)
+var grokChoiceFooterRe = regexp.MustCompile(`(?i)(?:↑\s*/\s*↓|↑|↓).{0,24}navigate|(?i)\bnavigate\b.{0,40}\benter\b|(?i)\benter\s*:\s*submit\b|(?i)\benter\s+confirm\b`)
+
 // failedPatterns match output that indicates the agent has encountered an error.
 var failedPatterns = []*regexp.Regexp{
 	regexp.MustCompile(`(?i)^error:`),
@@ -117,7 +126,11 @@ var timestampedLogLineRe = regexp.MustCompile(`^\d{4}/\d{2}/\d{2} \d{2}:\d{2}:\d
 //	        │no
 //	        ▼
 //	UNKNOWN (idle / no durable activity signal)
-func Classify(paneAlive bool, lines []string) (AgentState, string) {
+//
+// command is the live pane process command line. Grok radio/footer menus are
+// only classified when that command is Grok; the same painted lines under
+// Codex/Claude/Cursor/shell must not phantom-block another provider.
+func Classify(paneAlive bool, lines []string, command string) (AgentState, string) {
 	if len(lines) == 0 {
 		if !paneAlive {
 			return StateDone, "Session ended (no output)"
@@ -142,6 +155,11 @@ func Classify(paneAlive bool, lines []string) (AgentState, string) {
 
 	if line := matchingImmediateBlockedLine(tail); line != "" {
 		return StateBlocked, truncate(line, 100)
+	}
+	if isGrokCommand(command) {
+		if line := matchingGrokChoiceMenu(tail); line != "" {
+			return StateBlocked, truncate(line, 100)
+		}
 	}
 
 	// Pane is alive. Check for blocked state first (highest priority after dead).
@@ -181,6 +199,32 @@ func matchingImmediateBlockedLine(lines []string) string {
 		}
 	}
 	return ""
+}
+
+func matchingGrokChoiceMenu(lines []string) string {
+	optionLine := ""
+	footerLine := ""
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" {
+			continue
+		}
+		if optionLine == "" && grokChoiceOptionRe.MatchString(trimmed) {
+			optionLine = trimmed
+		}
+		if footerLine == "" && grokChoiceFooterRe.MatchString(trimmed) {
+			footerLine = trimmed
+		}
+	}
+	if optionLine == "" || footerLine == "" {
+		return ""
+	}
+	return footerLine
+}
+
+func isGrokCommand(command string) bool {
+	base := commandBaseName(command)
+	return base == "grok" || strings.HasPrefix(base, "grok-")
 }
 
 func matchingFailedLine(lines []string) string {

@@ -289,11 +289,25 @@ func TestNewStoreEnsuresWorkspaceCommunicationRules(t *testing.T) {
 		"Answer first",
 		"Do not be sycophantic",
 		"## Brain Orchestration Rules",
+		"Run independent delegated subtasks in parallel when useful",
+		"## Workspace Isolation",
+		"$ZEN_WORKTREE_ROOT",
+		"TMPDIR/TMP/TEMP",
+		"$ZEN_BUILD_TMPDIR",
+		"Never hard-code OS-global temp paths",
 		"## Executor Rules",
 		"## Zen CLI",
 	} {
 		if !strings.Contains(content, marker) {
 			t.Fatalf("AGENTS.md missing %q:\n%s", marker, content)
+		}
+	}
+	for _, unexpected := range []string{
+		"resource admission is a ceiling",
+		"Resource-Aware Scheduling",
+	} {
+		if strings.Contains(content, unexpected) {
+			t.Fatalf("AGENTS.md should not include %q:\n%s", unexpected, content)
 		}
 	}
 }
@@ -326,6 +340,11 @@ func TestNewStoreEnsuresCurrentAndPolicyDocs(t *testing.T) {
 		marker string
 	}{
 		{store.policyPath("delegation.md"), "Reduce user decision load"},
+		{store.policyPath("delegation.md"), "## Workspace Isolation"},
+		{store.policyPath("delegation.md"), "$ZEN_WORKTREE_ROOT"},
+		{store.policyPath("delegation.md"), "TMPDIR/TMP/TEMP"},
+		{store.policyPath("delegation.md"), "$ZEN_BUILD_TMPDIR"},
+		{store.policyPath("delegation.md"), "Never hard-code OS-global temp paths"},
 		{store.policyPath("delegation.md"), "Final synthesis should be concise and judgmental"},
 		{store.policyPath("engine.md"), "Delegated agents use the configured Delegated Executor unless the user explicitly asks for a different executor for that session."},
 		{store.policyPath("handoff.md"), "Host executor switching preserves the visible Brain chat."},
@@ -369,9 +388,24 @@ func TestNewStoreUpgradesExistingDelegationPolicyWithoutOverwriting(t *testing.T
 		"Do not ask a delegated agent to invent the plan",
 		"Review delegated output before integrating it",
 		"Final synthesis should be concise and judgmental",
+		"## Workspace Isolation",
+		"$ZEN_WORKTREE_ROOT",
+		"TMPDIR/TMP/TEMP",
+		"$ZEN_BUILD_TMPDIR",
+		"Never hard-code OS-global temp paths",
+		"Run independent delegated subtasks in parallel when it reduces elapsed time",
 	} {
 		if !strings.Contains(content, want) {
 			t.Fatalf("delegation policy missing %q:\n%s", want, content)
+		}
+	}
+	for _, unexpected := range []string{
+		"large build roots",
+		"Resource-Aware Scheduling",
+		"resource admission is a ceiling",
+	} {
+		if strings.Contains(content, unexpected) {
+			t.Fatalf("delegation policy should not include %q:\n%s", unexpected, content)
 		}
 	}
 }

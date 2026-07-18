@@ -243,4 +243,4 @@ zen setup
 zen setup --non-interactive --host codex --delegated codex --profile safe
 ```
 
-`zen setup` stops cleanly with install hints when tmux/state-dir block readiness. Restart the daemon after it writes `~/.zen/executors.toml`.
+`zen setup` stops cleanly with install hints when tmux/state-dir block readiness. Restart the daemon after it writes `~/.zen/executors.toml` so new executor definitions load; once running, switch only the Delegated Executor with `zen brain set-delegated <id>` without restart.

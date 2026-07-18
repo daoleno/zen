@@ -88,10 +88,6 @@ export function sortTerminalAgents({
   return [...agents];
 }
 
-export function shouldShowPickerServerNames(agents: Agent[]) {
-  return new Set(agents.map((agent) => agent.serverId)).size > 1;
-}
-
 export function buildMenuPosition(
   anchor: MenuAnchorLayout | null,
   windowWidth: number,

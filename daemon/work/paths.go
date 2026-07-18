@@ -14,6 +14,18 @@ func DefaultRoot() (string, error) {
 	return filepath.Join(home, ".zen", "work"), nil
 }
 
+// DefaultWorktreeRoot returns the durable, Zen-managed location agents should
+// use when concurrent write isolation genuinely requires a git worktree.
+// It intentionally lives under the user's home directory rather than /tmp,
+// which is commonly memory-backed and may be cleared across restarts.
+func DefaultWorktreeRoot() (string, error) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(home, ".zen", "worktrees"), nil
+}
+
 // DefaultExecutorsPath returns ~/.zen/executors.toml.
 func DefaultExecutorsPath() (string, error) {
 	home, err := os.UserHomeDir()

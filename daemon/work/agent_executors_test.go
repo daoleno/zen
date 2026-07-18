@@ -55,15 +55,12 @@ func TestHardenCodexDelegatedCommandDefaultsToCodex(t *testing.T) {
 }
 
 func TestAgentExecutorInfersProviderRuntimeAndCapabilities(t *testing.T) {
-	cfg := &ExecutorConfig{
-		DelegatedExecutor: "claude",
-		ByName: map[string]Executor{
-			"agent":  {Name: "agent", Command: "cursor-agent --force --sandbox disabled", Kind: "cursor"},
-			"claude": {Name: "claude", Command: "claude"},
-			"codex":  {Name: "codex", Command: "/opt/codex --no-alt-screen"},
-			"other":  {Name: "other", Command: "my-agent"},
-		},
-	}
+	cfg := NewExecutorConfig("claude", map[string]Executor{
+		"agent":  {Name: "agent", Command: "cursor-agent --force --sandbox disabled", Kind: "cursor"},
+		"claude": {Name: "claude", Command: "claude"},
+		"codex":  {Name: "codex", Command: "/opt/codex --no-alt-screen"},
+		"other":  {Name: "other", Command: "my-agent"},
+	})
 
 	codex, ok := cfg.AgentExecutor("codex")
 	if !ok {
@@ -133,13 +130,10 @@ func TestInferAgentProviderRecognizesCursorAgent(t *testing.T) {
 }
 
 func TestDelegatedAgentExecutorUsesConfiguredDelegatedExecutor(t *testing.T) {
-	cfg := &ExecutorConfig{
-		DelegatedExecutor: "claude",
-		ByName: map[string]Executor{
-			"claude": {Name: "claude", Command: "claude"},
-			"codex":  {Name: "codex", Command: "codex"},
-		},
-	}
+	cfg := NewExecutorConfig("claude", map[string]Executor{
+		"claude": {Name: "claude", Command: "claude"},
+		"codex":  {Name: "codex", Command: "codex"},
+	})
 
 	got, ok := cfg.DelegatedAgentExecutor()
 	if !ok {

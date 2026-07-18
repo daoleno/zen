@@ -9,11 +9,10 @@ import type {
 import type { Agent, ConnectionState } from "../../store/agents";
 import type { ConnectionIssue } from "../../services/connectionIssue";
 import type {
-  StoredAgentAliases,
   StoredCodexRenderMode,
 } from "../../services/storage";
 import type { PresentedAgent } from "../../services/agentPresentation";
-import type { AgentDirectorySection } from "../../services/serverSelection";
+import type { SessionResourceSnapshot } from "../../services/sessionResourceSnapshot";
 import type { useTerminalScreenChrome } from "./useTerminalScreenChrome";
 import type { useTerminalSessionActions } from "./useTerminalSessionActions";
 import type { useTerminalNavigationActions } from "./useTerminalNavigationActions";
@@ -24,7 +23,6 @@ import { useTerminalViewportProps } from "./useTerminalViewportProps";
 
 interface UseTerminalScreenLayoutPropsInput {
   agent?: Agent;
-  agentAliases: StoredAgentAliases;
   agentId: string;
   accessoryBottomOffset: number;
   chrome: TerminalThemeChrome;
@@ -50,23 +48,22 @@ interface UseTerminalScreenLayoutPropsInput {
   newTerminalVisible: boolean;
   outputBottomInset: number;
   presentedAgent: PresentedAgent;
-  pickerSections: AgentDirectorySection[];
-  pickerVisible: boolean;
   renameDraft: string;
   renamePlaceholder: string;
   renameVisible: boolean;
+  resourceSheetVisible: boolean;
+  resourceSheetLoading: boolean;
+  resourceSheetError?: string | null;
+  resourceSheetSnapshot?: SessionResourceSnapshot | null;
   screenFocused: boolean;
   selectedServerId: string;
   serverId: string;
   serverUrl?: string;
   sessionKey: string | null;
   setNewTerminalVisible(value: boolean): void;
-  setPickerVisible(value: boolean): void;
   setRenameDraft(value: string): void;
   setRenameVisible(value: boolean): void;
   showCodexChat: boolean;
-  showPickerServerNames: boolean;
-  sortedAgentCount: number;
   navigationActions: ReturnType<typeof useTerminalNavigationActions>;
   terminalRef: RefObject<TerminalSurfaceHandle | null>;
   terminalTheme: TerminalThemePalette;
@@ -74,12 +71,14 @@ interface UseTerminalScreenLayoutPropsInput {
   openGitDiff(): void;
   openNewTerminal(): void;
   openRenameModal(): void;
+  openSessionDetails(): void;
+  closeResourceSheet(): void;
+  retryResourceSheet(): void;
   sessionActions: ReturnType<typeof useTerminalSessionActions>;
 }
 
 export function useTerminalScreenLayoutProps({
   agent,
-  agentAliases,
   agentId,
   accessoryBottomOffset,
   chrome,
@@ -105,23 +104,22 @@ export function useTerminalScreenLayoutProps({
   newTerminalVisible,
   outputBottomInset,
   presentedAgent,
-  pickerSections,
-  pickerVisible,
   renameDraft,
   renamePlaceholder,
   renameVisible,
+  resourceSheetVisible,
+  resourceSheetLoading,
+  resourceSheetError,
+  resourceSheetSnapshot,
   screenFocused,
   selectedServerId,
   serverId,
   serverUrl,
   sessionKey,
   setNewTerminalVisible,
-  setPickerVisible,
   setRenameDraft,
   setRenameVisible,
   showCodexChat,
-  showPickerServerNames,
-  sortedAgentCount,
   navigationActions,
   terminalRef,
   terminalTheme,
@@ -129,6 +127,9 @@ export function useTerminalScreenLayoutProps({
   openGitDiff,
   openNewTerminal,
   openRenameModal,
+  openSessionDetails,
+  closeResourceSheet,
+  retryResourceSheet,
   sessionActions,
 }: UseTerminalScreenLayoutPropsInput) {
   const handleToggleCodexRenderMode = useCallback(() => {
@@ -143,11 +144,14 @@ export function useTerminalScreenLayoutProps({
     void sessionActions.applyCodexRenderMode("chat");
   }, [codexRenderMode, sessionActions.applyCodexRenderMode, terminalRef]);
 
+  const headerTitle =
+    displayName || presentedAgent.title || agent?.name || agentId || "Session";
+
   // Header chrome stays on chatChrome in both chat and terminal modes so Brain
   // and Agent screens share one floating header language.
   const topBarProps = useTerminalTopBarProps({
-    title: displayName || presentedAgent.title || agent?.name || agentId || "Terminal",
-    // Keep header compact: paths belong in picker/workspace views, not the chrome.
+    title: headerTitle,
+    // Keep header compact: paths belong in resource details, not the chrome.
     subtitle: undefined,
     kind: presentedAgent.kind,
     terminalFlavor: presentedAgent.terminalFlavor,
@@ -160,7 +164,7 @@ export function useTerminalScreenLayoutProps({
     gitDiffSummary: gitDiff.summary,
     isStructuredChatAgent,
     delegated: agent?.delegated,
-    onOpenPicker: () => setPickerVisible(true),
+    onOpenSessionDetails: openSessionDetails,
     openGitDiff,
     onToggleCodexRenderMode: handleToggleCodexRenderMode,
   });
@@ -189,12 +193,10 @@ export function useTerminalScreenLayoutProps({
     onAccessoryLayout: handleAccessoryLayout,
   });
   const overlayProps = useTerminalScreenOverlayProps({
-    pickerVisible,
-    pickerSections,
-    sortedAgentCount,
-    sessionKey,
-    showPickerServerNames,
-    agentAliases,
+    resourceSheetVisible,
+    resourceSheetLoading,
+    resourceSheetError,
+    resourceSheetSnapshot,
     creatingSession,
     menuVisible,
     menuPosition,
@@ -212,7 +214,8 @@ export function useTerminalScreenLayoutProps({
     renamePlaceholder,
     chrome,
     theme: terminalTheme,
-    setPickerVisible,
+    onCloseResourceSheet: closeResourceSheet,
+    onRetryResourceSheet: retryResourceSheet,
     setNewTerminalVisible,
     setRenameVisible,
     setRenameDraft,

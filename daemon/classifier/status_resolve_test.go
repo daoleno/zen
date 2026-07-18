@@ -10,7 +10,7 @@ func TestMergeProgressAndClassification_OrdinaryShellStaysUnknown(t *testing.T) 
 		PaneAlive: true,
 		State:     StateUnknown,
 	}
-	classified, summary := Classify(true, []string{"$ echo hi", "hi", "$"})
+	classified, summary := Classify(true, []string{"$ echo hi", "hi", "$"}, "")
 	got, _ := MergeProgressAndClassification(agent, classified, summary, time.Now().UTC())
 	if got != StateUnknown {
 		t.Fatalf("state = %q, want unknown for ordinary shell", got)
@@ -54,7 +54,7 @@ func TestMergeProgressAndClassification_ExpiredLeaseFallsToUnknown(t *testing.T)
 		LeaseSeconds:        300,
 	}
 	// Fresh pane churn after expiry must not keep Running.
-	classified, summary := Classify(true, []string{"compiling...", "done.", "$"})
+	classified, summary := Classify(true, []string{"compiling...", "done.", "$"}, "")
 	got, _ := MergeProgressAndClassification(agent, classified, summary, now)
 	if got != StateUnknown {
 		t.Fatalf("state = %q, want unknown after lease expiry", got)
@@ -112,7 +112,7 @@ func TestMergeProgressAndClassification_DelegatedDoneSticksWhileAlive(t *testing
 		Delegated:      true,
 		LastProgressAt: &progressAt,
 	}
-	classified, summary := Classify(true, []string{"$ ", "done output", "$"})
+	classified, summary := Classify(true, []string{"$ ", "done output", "$"}, "")
 	got, gotSummary := MergeProgressAndClassification(agent, classified, summary, now)
 	if got != StateDone {
 		t.Fatalf("state = %q, want done for completed delegated session", got)
@@ -181,7 +181,7 @@ func TestMergeProgressAndClassification_PriorityTable(t *testing.T) {
 			want:       StateBlocked,
 		},
 		{
-			name: "classify failed overrides active running lease",
+			name: "active running lease outranks classify failed",
 			agent: &Agent{
 				PaneAlive:           true,
 				State:               StateRunning,
@@ -190,7 +190,7 @@ func TestMergeProgressAndClassification_PriorityTable(t *testing.T) {
 				ExpectedNextCheckAt: &activeLease,
 			},
 			classified: StateFailed,
-			want:       StateFailed,
+			want:       StateRunning,
 		},
 		{
 			name: "classify blocked overrides sticky done",
@@ -204,7 +204,7 @@ func TestMergeProgressAndClassification_PriorityTable(t *testing.T) {
 			want:       StateBlocked,
 		},
 		{
-			name: "classify failed overrides sticky done",
+			name: "sticky done outranks classify failed",
 			agent: &Agent{
 				PaneAlive:      true,
 				State:          StateDone,
@@ -212,7 +212,7 @@ func TestMergeProgressAndClassification_PriorityTable(t *testing.T) {
 				LastProgressAt: &progressAt,
 			},
 			classified: StateFailed,
-			want:       StateFailed,
+			want:       StateDone,
 		},
 		{
 			name: "classify unknown keeps sticky done",
@@ -316,7 +316,7 @@ func TestResolveSessionStatus_GrokAlwaysApproveChromeKeepsRunningLease(t *testin
 		"╰─────────────────────────────────────── Grok 4.5 (high) · always-approve ─╯",
 		"Shift+Tab:mode  │  Ctrl+c:cancel  │  Ctrl+x:shortcuts",
 	}
-	classified, classifiedSummary := Classify(true, lines)
+	classified, classifiedSummary := Classify(true, lines, agent.Command)
 	if classified != StateUnknown {
 		t.Fatalf("classified = %q (%q), want unknown for always-approve chrome", classified, classifiedSummary)
 	}

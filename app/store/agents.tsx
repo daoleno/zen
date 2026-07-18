@@ -3,6 +3,11 @@ import { AgentStatus } from '../constants/tokens';
 import type { ConnectionIssue } from '../services/connectionIssue';
 import type { ServerLatencySample } from '../services/serverLatency';
 import { makeSessionKey } from '../services/sessionKeys';
+import {
+  bumpServerConnectionGeneration,
+  isAgentSessionListFreshForConnection as isAgentSessionListFreshForConnectionInput,
+  stampAgentSessionListGeneration as stampAgentSessionListGenerationForServer,
+} from '../services/agentSessionListTransport';
 
 export interface Agent {
   key: string;
@@ -42,6 +47,14 @@ export interface State {
   serverConnectionIssues: Record<string, ConnectionIssue | null>;
   serverLatencyById: Record<string, ServerLatencySample | undefined>;
   hydratedServers: Record<string, boolean>;
+  /**
+   * Transport-owned: increments when a server enters `connected`.
+   * Used with agentSessionListGenerationByServer to prove a full
+   * agent_session_list arrived for the current WebSocket generation.
+   */
+  connectionGenerationByServer: Record<string, number>;
+  /** Set to connectionGeneration when UPSERT_SERVER_AGENTS arrives while connected. */
+  agentSessionListGenerationByServer: Record<string, number>;
 }
 
 export type RawAgent = {
@@ -95,6 +108,8 @@ export const initialAgentState: State = {
   serverConnectionIssues: {},
   serverLatencyById: {},
   hydratedServers: {},
+  connectionGenerationByServer: {},
+  agentSessionListGenerationByServer: {},
 };
 
 export function agentReducer(state: State, action: Action): State {
@@ -117,10 +132,15 @@ export function agentReducer(state: State, action: Action): State {
         agentsChanged = true;
       }
       const hydratedServers = markServerHydrated(state.hydratedServers, action.serverId);
+      const agentSessionListGenerationByServer = stampAgentSessionListGeneration(
+        state,
+        action.serverId,
+      );
 
       if (
         !agentsChanged &&
-        hydratedServers === state.hydratedServers
+        hydratedServers === state.hydratedServers &&
+        agentSessionListGenerationByServer === state.agentSessionListGenerationByServer
       ) {
         return state;
       }
@@ -129,6 +149,7 @@ export function agentReducer(state: State, action: Action): State {
         ...state,
         agents: nextAgents,
         hydratedServers,
+        agentSessionListGenerationByServer,
       };
     }
     case 'UPSERT_AGENT': {
@@ -165,13 +186,23 @@ export function agentReducer(state: State, action: Action): State {
       if (state.serverConnections[action.serverId] === action.connectionState) {
         return state;
       }
-      return {
-        ...state,
-        serverConnections: {
-          ...state.serverConnections,
-          [action.serverId]: action.connectionState,
-        },
-      };
+      {
+        const previous = state.serverConnections[action.serverId];
+        const connectionGenerationByServer = bumpServerConnectionGeneration(
+          state.connectionGenerationByServer,
+          action.serverId,
+          previous,
+          action.connectionState,
+        );
+        return {
+          ...state,
+          serverConnections: {
+            ...state.serverConnections,
+            [action.serverId]: action.connectionState,
+          },
+          connectionGenerationByServer,
+        };
+      }
     case 'SET_SERVER_CONNECTION_ISSUE':
       if (connectionIssuesEqual(state.serverConnectionIssues[action.serverId] ?? null, action.issue)) {
         return state;
@@ -200,7 +231,9 @@ export function agentReducer(state: State, action: Action): State {
         !(action.serverId in state.serverConnections) &&
         !(action.serverId in state.serverConnectionIssues) &&
         !(action.serverId in state.serverLatencyById) &&
-        !(action.serverId in state.hydratedServers)
+        !(action.serverId in state.hydratedServers) &&
+        !(action.serverId in state.connectionGenerationByServer) &&
+        !(action.serverId in state.agentSessionListGenerationByServer)
       ) {
         return state;
       }
@@ -218,6 +251,16 @@ export function agentReducer(state: State, action: Action): State {
         ),
         hydratedServers: Object.fromEntries(
           Object.entries(state.hydratedServers).filter(([serverId]) => serverId !== action.serverId),
+        ),
+        connectionGenerationByServer: Object.fromEntries(
+          Object.entries(state.connectionGenerationByServer).filter(
+            ([serverId]) => serverId !== action.serverId,
+          ),
+        ),
+        agentSessionListGenerationByServer: Object.fromEntries(
+          Object.entries(state.agentSessionListGenerationByServer).filter(
+            ([serverId]) => serverId !== action.serverId,
+          ),
         ),
       };
     default:
@@ -269,6 +312,41 @@ function markServerHydrated(
     ...hydratedServers,
     [serverId]: true,
   };
+}
+
+/**
+ * Full agent_session_list is the transport proof that retained agents were
+ * replaced/confirmed for the current WebSocket connection generation.
+ * Incremental UPSERT_AGENT must not stamp this.
+ */
+function stampAgentSessionListGeneration(
+  state: State,
+  serverId: string,
+): State['agentSessionListGenerationByServer'] {
+  return stampAgentSessionListGenerationForServer({
+    connectionState: state.serverConnections[serverId],
+    connectionGeneration: state.connectionGenerationByServer[serverId] ?? 0,
+    agentSessionListGenerationByServer: state.agentSessionListGenerationByServer,
+    serverId,
+  });
+}
+
+/** True when a full agent_session_list arrived for the current connected generation. */
+export function isAgentSessionListFreshForConnection(
+  state: Pick<
+    State,
+    | 'serverConnections'
+    | 'connectionGenerationByServer'
+    | 'agentSessionListGenerationByServer'
+  >,
+  serverId: string,
+): boolean {
+  return isAgentSessionListFreshForConnectionInput({
+    connectionState: state.serverConnections[serverId],
+    connectionGeneration: state.connectionGenerationByServer[serverId] ?? 0,
+    agentSessionListGeneration:
+      state.agentSessionListGenerationByServer[serverId] ?? 0,
+  });
 }
 
 function agentsEqual(left: Agent, right: Agent): boolean {

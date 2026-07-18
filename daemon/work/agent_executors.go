@@ -102,11 +102,12 @@ func (c *ExecutorConfig) AgentExecutor(name string) (AgentExecutor, bool) {
 }
 
 // DelegatedAgentExecutor returns the configured executor for delegated execution.
+// It always reads the live delegated selection owned by ExecutorConfig.
 func (c *ExecutorConfig) DelegatedAgentExecutor() (AgentExecutor, bool) {
 	if c == nil {
 		return AgentExecutor{}, false
 	}
-	if executor, ok := c.AgentExecutor(c.DelegatedExecutor); ok {
+	if executor, ok := c.AgentExecutor(c.GetDelegatedExecutor()); ok {
 		executor.Delegated = true
 		return executor, true
 	}

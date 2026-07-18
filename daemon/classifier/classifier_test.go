@@ -5,9 +5,18 @@ import (
 )
 
 func TestClassify(t *testing.T) {
+	grokChoiceFixture := []string{
+		"◆ Task completed in 2m45s: Wait for dedicated em",
+		"You hit your weekly limit.",
+		"1 (O) Upgrade tier          Upgrade to a higher tier for more usage",
+		"2 (O) Buy more credits      Purchase credits to keep using Grok Build",
+		"↑/↓ navigate · y copy Enter:submit",
+		"Esc:unselect | Tab:scrollback |",
+	}
 	tests := []struct {
 		name       string
 		paneAlive  bool
+		command    string
 		lines      []string
 		wantState  AgentState
 		wantSubstr string // substring expected in summary
@@ -101,6 +110,106 @@ func TestClassify(t *testing.T) {
 				"[zen-81984.] Action Required 23:31 19-6月-26",
 			},
 			wantState: StateBlocked,
+		},
+		{
+			name:       "grok provider-native choice menu is blocked",
+			paneAlive:  true,
+			command:    "grok --no-alt-screen --permission-mode bypassPermissions",
+			lines:      grokChoiceFixture,
+			wantState:  StateBlocked,
+			wantSubstr: "navigate",
+		},
+		{
+			name:      "grok unicode radio choice menu is blocked",
+			paneAlive: true,
+			command:   "grok",
+			lines: []string{
+				"You hit your free usage limit.",
+				"1 ○ Upgrade to SuperGrok",
+				"2 ○ Upgrade to SuperGrok Heavy",
+				"↑/↓ navigate · enter confirm · esc cancel",
+			},
+			wantState: StateBlocked,
+		},
+		{
+			name:      "grok choice menu with selection caret is blocked",
+			paneAlive: true,
+			command:   "/usr/bin/grok --resume abc",
+			lines: []string{
+				"You hit your weekly limit.",
+				"› 1 (O) Upgrade tier          Upgrade to a higher tier for more usage",
+				"  2 (O) Buy more credits      Purchase credits to keep using Grok Build",
+				"↑/↓ navigate · y copy Enter:submit",
+			},
+			wantState:  StateBlocked,
+			wantSubstr: "navigate",
+		},
+		{
+			name:      "grok-shaped fixture under codex is not phantom-blocked",
+			paneAlive: true,
+			command:   "codex --dangerously-bypass-approvals-and-sandbox",
+			lines:     grokChoiceFixture,
+			wantState: StateUnknown,
+		},
+		{
+			name:      "grok-shaped fixture under claude is not phantom-blocked",
+			paneAlive: true,
+			command:   "claude --dangerously-skip-permissions",
+			lines:     grokChoiceFixture,
+			wantState: StateUnknown,
+		},
+		{
+			name:      "grok-shaped fixture under cursor-agent is not phantom-blocked",
+			paneAlive: true,
+			command:   "cursor-agent --force --sandbox disabled",
+			lines:     grokChoiceFixture,
+			wantState: StateUnknown,
+		},
+		{
+			name:      "grok-shaped fixture under shell is not phantom-blocked",
+			paneAlive: true,
+			command:   "zsh",
+			lines:     grokChoiceFixture,
+			wantState: StateUnknown,
+		},
+		{
+			name:      "grok-shaped fixture with unknown command is not phantom-blocked",
+			paneAlive: true,
+			command:   "",
+			lines:     grokChoiceFixture,
+			wantState: StateUnknown,
+		},
+		{
+			name:      "numbered lines without choice footer stay unknown",
+			paneAlive: true,
+			command:   "grok",
+			lines: []string{
+				"1 (O) noted in notes",
+				"2 (O) also noted",
+				"Shift+Tab:mode  │  Ctrl+c:cancel",
+			},
+			wantState: StateUnknown,
+		},
+		{
+			name:      "navigate footer without numbered choices stays unknown",
+			paneAlive: true,
+			command:   "grok",
+			lines: []string{
+				"Resume session",
+				"↑/↓ navigate · enter confirm · esc cancel",
+			},
+			wantState: StateUnknown,
+		},
+		{
+			name:      "resolved grok pane without choice menu is unknown",
+			paneAlive: true,
+			command:   "grok",
+			lines: []string{
+				"│ ❯                                                                        │",
+				"╰─────────────────────────────────────── Grok 4.5 (high) · always-approve ─╯",
+				"Shift+Tab:mode  │  Ctrl+c:cancel  │  Ctrl+g:send to bg  │  Ctrl+x:shortcuts",
+			},
+			wantState: StateUnknown,
 		},
 
 		// === FAILED states ===
@@ -245,7 +354,7 @@ func TestClassify(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			gotState, gotSummary := Classify(tt.paneAlive, tt.lines)
+			gotState, gotSummary := Classify(tt.paneAlive, tt.lines, tt.command)
 			if gotState != tt.wantState {
 				t.Errorf("Classify() state = %q, want %q (summary: %q)", gotState, tt.wantState, gotSummary)
 			}

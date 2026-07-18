@@ -37,7 +37,6 @@ export function useTerminalScreenLocalState() {
     }),
     [params.command, params.cwd, params.name, params.startedAt],
   );
-  const [pickerVisible, setPickerVisible] = useState(false);
   const [renameVisible, setRenameVisible] = useState(false);
   const [renameDraft, setRenameDraft] = useState("");
   const [newTerminalVisible, setNewTerminalVisible] = useState(false);
@@ -56,8 +55,6 @@ export function useTerminalScreenLocalState() {
     sessionKey,
     initialCodexRenderMode,
     routeSessionHint,
-    pickerVisible,
-    setPickerVisible,
     renameVisible,
     setRenameVisible,
     renameDraft,

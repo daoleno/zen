@@ -3,7 +3,6 @@ import { useAgents } from "../../store/agents";
 import { useWork } from "../../store/work";
 import { TerminalScreenLayout } from "./TerminalScreenLayout";
 import { useTerminalAgentIndex } from "./useTerminalAgentIndex";
-import { useTerminalDirectoryModel } from "./useTerminalDirectoryModel";
 import { useTerminalScreenActions } from "./useTerminalScreenActions";
 import { useTerminalScreenAccessory } from "./useTerminalScreenAccessory";
 import { useTerminalScreenChrome } from "./useTerminalScreenChrome";
@@ -13,6 +12,7 @@ import { useTerminalScreenModels } from "./useTerminalScreenModels";
 import { useTerminalScreenStorage } from "./useTerminalScreenStorage";
 import { useTerminalSessionActions } from "./useTerminalSessionActions";
 import { useTerminalNavigationActions } from "./useTerminalNavigationActions";
+import { useSessionResourceSheet } from "./useSessionResourceSheet";
 
 export default function TerminalScreen() {
   const { state } = useAgents();
@@ -23,8 +23,6 @@ export default function TerminalScreen() {
     sessionKey,
     initialCodexRenderMode,
     routeSessionHint,
-    pickerVisible,
-    setPickerVisible,
     renameVisible,
     setRenameVisible,
     renameDraft,
@@ -54,11 +52,9 @@ export default function TerminalScreen() {
     setAgentAliases,
     codexRenderModes,
     setCodexRenderModes,
-    recentAgentOpens,
     setRecentAgentOpens,
     server,
     setServer,
-    servers,
   } = useTerminalScreenStorage({
     serverId,
     sessionKey,
@@ -112,26 +108,12 @@ export default function TerminalScreen() {
   });
 
   const {
-    pickerSections,
-    showPickerServerNames,
-    sortedAgents,
-  } = useTerminalDirectoryModel({
-    agents: state.agents,
-    servers,
-    connectionStates: state.serverConnections,
-    latencyById: state.serverLatencyById,
-    recentAgentOpens,
-  });
-
-  const {
-    closePicker,
     openGitDiff,
     openRenameModal,
   } = useTerminalScreenActions({
     displayName,
     closeMenu,
     openGitDiffSheet: gitDiff.open,
-    setPickerVisible,
     setRenameDraft,
     setRenameVisible,
   });
@@ -140,12 +122,10 @@ export default function TerminalScreen() {
     sessionKey,
     serverId,
     agentId,
-    agentByKey,
     connectionState,
     displayName,
     agentServerName: agent?.serverName,
     closeMenu,
-    closePicker,
   });
 
   const sessionActions = useTerminalSessionActions({
@@ -158,7 +138,6 @@ export default function TerminalScreen() {
     linkedWork,
     renameDraft,
     closeMenu,
-    closePicker,
     setNewTerminalVisible,
     setCreatingSession,
     setRenameVisible,
@@ -170,13 +149,19 @@ export default function TerminalScreen() {
   const {
     openNewTerminal,
   } = sessionActions;
+
+  const resourceSheet = useSessionResourceSheet({
+    serverId,
+    agentId,
+    connectionConnected: connectionState === "connected",
+  });
+
   const {
     overlayProps,
     topBarProps,
     viewportProps,
   } = useTerminalScreenLayoutProps({
     agent,
-    agentAliases,
     agentId,
     accessoryBottomOffset,
     chrome: chromeColors,
@@ -202,23 +187,22 @@ export default function TerminalScreen() {
     newTerminalVisible,
     outputBottomInset,
     presentedAgent,
-    pickerSections,
-    pickerVisible,
     renameDraft,
     renamePlaceholder: agent?.name || agentId,
     renameVisible,
+    resourceSheetVisible: resourceSheet.visible,
+    resourceSheetLoading: resourceSheet.loading,
+    resourceSheetError: resourceSheet.error,
+    resourceSheetSnapshot: resourceSheet.snapshot,
     screenFocused,
     selectedServerId: serverId,
     serverId,
     serverUrl: server?.url,
     sessionKey,
     setNewTerminalVisible,
-    setPickerVisible,
     setRenameDraft,
     setRenameVisible,
     showCodexChat,
-    showPickerServerNames,
-    sortedAgentCount: sortedAgents.length,
     navigationActions,
     terminalRef,
     terminalTheme,
@@ -226,6 +210,9 @@ export default function TerminalScreen() {
     openGitDiff,
     openNewTerminal,
     openRenameModal,
+    openSessionDetails: resourceSheet.open,
+    closeResourceSheet: resourceSheet.close,
+    retryResourceSheet: resourceSheet.retry,
     sessionActions,
   });
 

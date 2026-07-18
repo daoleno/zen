@@ -45,13 +45,10 @@ func (f *fakeRunner) Abort(sessionID string) error {
 
 func TestLauncher_StartDedicatedNeverReusesIdleOrMentionedSession(t *testing.T) {
 	run := &fakeRunner{newID: "claude-scheduled"}
-	execs := &ExecutorConfig{
-		DelegatedExecutor: "claude",
-		ByName: map[string]Executor{
-			"claude": {Name: "claude", Command: "claude"},
-			"codex":  {Name: "codex", Command: "codex"},
-		},
-	}
+	execs := NewExecutorConfig("claude", map[string]Executor{
+		"claude": {Name: "claude", Command: "claude"},
+		"codex":  {Name: "codex", Command: "codex"},
+	})
 	item, err := ParseFile("/tmp/scheduled.md", []byte(`---
 id: scheduled
 created: 2026-07-17T00:00:00Z
@@ -86,12 +83,9 @@ func TestLauncher_StartDedicatedUsesFreshConfiguredExecutor(t *testing.T) {
 	for _, role := range []string{"claude", "codex"} {
 		t.Run(role, func(t *testing.T) {
 			run := &fakeRunner{newID: role + "-scheduled"}
-			execs := &ExecutorConfig{
-				DelegatedExecutor: role,
-				ByName: map[string]Executor{
-					role: {Name: role, Command: role + " --flag"},
-				},
-			}
+			execs := NewExecutorConfig(role, map[string]Executor{
+				role: {Name: role, Command: role + " --flag"},
+			})
 			item := &Item{
 				Path: "/tmp/scheduled.md",
 				Frontmatter: Frontmatter{
@@ -139,7 +133,7 @@ func TestLauncher_StartDedicatedAlreadyStarted(t *testing.T) {
 
 func TestLauncher_StartDedicatedRequiresConfiguredDelegatedExecutor(t *testing.T) {
 	run := &fakeRunner{}
-	execs := &ExecutorConfig{DelegatedExecutor: "missing", ByName: map[string]Executor{}}
+	execs := NewExecutorConfig("missing", map[string]Executor{})
 
 	_, err := NewLauncher(run, execs).StartDedicated(&Item{}, "/calendar")
 	if !errors.Is(err, ErrExecutorNotConfigured) {
@@ -151,12 +145,9 @@ func TestLauncher_StartDedicatedRequiresConfiguredDelegatedExecutor(t *testing.T
 }
 
 func TestLauncher_StartDedicatedReportsSpawnAndReadySendFailures(t *testing.T) {
-	execs := &ExecutorConfig{
-		DelegatedExecutor: "claude",
-		ByName: map[string]Executor{
-			"claude": {Name: "claude", Command: "claude"},
-		},
-	}
+	execs := NewExecutorConfig("claude", map[string]Executor{
+		"claude": {Name: "claude", Command: "claude"},
+	})
 	item := &Item{Path: "/tmp/scheduled.md"}
 
 	t.Run("spawn", func(t *testing.T) {

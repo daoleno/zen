@@ -3,9 +3,11 @@
 # Copy:
 #   cp executors.example.toml ~/.zen/executors.toml
 #
-# Then edit and restart zen. If this file is absent, zen keeps its built-in
-# defaults from daemon/work/executors.go — shipping this example does NOT
-# change those runtime defaults.
+# Edit executor definitions/commands and restart zen so the catalog reloads.
+# Change only the Delegated Executor live with: zen brain set-delegated <id>
+# If this file is absent, zen keeps its built-in defaults from
+# daemon/work/executors.go — shipping this example does NOT change those
+# runtime defaults.
 #
 # One authenticated executor is enough. Delete [[executors]] blocks you do not use.
 #

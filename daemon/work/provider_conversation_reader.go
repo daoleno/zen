@@ -15,6 +15,11 @@ type ProviderConversationReader struct {
 	bound   bool
 	binding providerConversationBinding
 	source  providerConversationSource
+
+	// cursorProjectRoots caches only the CWD→project-root resolution for this
+	// subscription. Transcript files are still enumerated on every poll.
+	cursorProjectRootsCWD string
+	cursorProjectRoots    []cursorProjectRoot
 }
 
 type providerConversationBinding struct {
@@ -88,6 +93,10 @@ func (r *ProviderConversationReader) bind(agent classifier.Agent, provider strin
 	}
 	if r.bound && r.binding.equal(next) {
 		return
+	}
+	if !r.bound || r.binding.cwd != next.cwd {
+		r.cursorProjectRootsCWD = ""
+		r.cursorProjectRoots = nil
 	}
 	r.bound = true
 	r.binding = next

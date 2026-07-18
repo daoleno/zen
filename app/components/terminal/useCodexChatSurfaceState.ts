@@ -11,7 +11,11 @@ import type {
   TerminalThemePalette,
 } from "../../constants/terminalThemes";
 import { useAppTheme } from "../../constants/tokens";
-import type { ConnectionState } from "../../store/agents";
+import {
+  isAgentSessionListFreshForConnection,
+  useAgents,
+  type ConnectionState,
+} from "../../store/agents";
 import { agentKindFromCommand } from "../../services/chatComposerPresentation";
 import type { ConnectionIssue } from "../../services/connectionIssue";
 import type {
@@ -29,6 +33,7 @@ import {
 import { CodexStatusSheet } from "./CodexStatusSheet";
 import { CodexSkillsSheet } from "./CodexSkillsSheet";
 import { buildTerminalActionPrompt } from "./TerminalActionPromptModel";
+import { liveActionPromptScopeKey } from "../../services/agentSessionListTransport";
 import { useCodexSlashCommands } from "./CodexSlashCommands";
 import { useCodexChatBodyProps } from "./useCodexChatBodyProps";
 import {
@@ -118,9 +123,16 @@ export function useCodexChatSurfaceState({
 }: UseCodexChatSurfaceStateInput): CodexChatSurfaceState {
   const insets = useSafeAreaInsets();
   const { theme: zenTheme } = useAppTheme();
+  const { state: agentState } = useAgents();
   const composerLayout = zenTheme.chat.layout;
   const active = visible && screenFocused;
   const chatAgentKind = agentKindFromCommand(agentInfo?.command);
+  const connectionGeneration =
+    agentState.connectionGenerationByServer[serverId] ?? 0;
+  const agentSessionListFresh = isAgentSessionListFreshForConnection(
+    agentState,
+    serverId,
+  );
   const slashCommands = useCodexSlashCommands({
     serverId,
     connectionState,
@@ -376,15 +388,35 @@ export function useCodexChatSurfaceState({
     keyboardVerticalOffset,
     composerLayout,
   });
-  const terminalActionPrompt = useMemo(
-    () =>
-      buildTerminalActionPrompt({
-        status: agentInfo?.status,
-        summary: agentInfo?.summary,
-        lastOutputLines: agentInfo?.lastOutputLines,
+  const terminalActionPrompt = useMemo(() => {
+    // Live pane fact only: require a full agent_session_list for this WebSocket
+    // connection generation so retained pre-disconnect snapshots cannot flash.
+    if (!agentId || !agentSessionListFresh) {
+      return null;
+    }
+    return buildTerminalActionPrompt({
+      status: agentInfo?.status,
+      summary: agentInfo?.summary,
+      lastOutputLines: agentInfo?.lastOutputLines,
+      command: agentInfo?.command,
+      scopeKey: liveActionPromptScopeKey({
+        agentId,
+        processId: agentInfo?.processId,
+        startedAt: agentInfo?.startedAt,
+        connectionGeneration,
       }),
-    [agentInfo?.lastOutputLines, agentInfo?.status, agentInfo?.summary],
-  );
+    });
+  }, [
+    agentId,
+    agentInfo?.command,
+    agentInfo?.lastOutputLines,
+    agentInfo?.processId,
+    agentInfo?.startedAt,
+    agentInfo?.status,
+    agentInfo?.summary,
+    agentSessionListFresh,
+    connectionGeneration,
+  ]);
   const sendTerminalActionKey = useCallback(
     (key: string) => {
       if (connectionState !== "connected" || !serverId || !agentId) {

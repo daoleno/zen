@@ -13,8 +13,10 @@
 #   ./scripts/stage-release.sh --skip-build
 #   ./scripts/stage-release.sh --with-apk
 #   ./scripts/stage-release.sh --apk path/to.apk
+#   ZEN_BUILD_TMPDIR=/durable/path ./scripts/stage-release.sh
 
 set -euo pipefail
+umask 077
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
@@ -76,8 +78,26 @@ mkdir -p "$ROOT/dist-download"
 STAGE_PARENT="$(cd "$ROOT/dist-download" && pwd)"
 EXPECTED_STAGE="$STAGE_PARENT/v${VERSION}"
 
-# Pre-build into a temp dir so we can wipe the stage without losing binaries.
-BUILD_TMP="$(mktemp -d "${TMPDIR:-/tmp}/zen-stage-build.XXXXXX")"
+# Pre-build into a durable cache so a cross-platform release build never
+# consumes the host's global temporary filesystem. Delegated sessions inject
+# ZEN_BUILD_TMPDIR as their private lifecycle-owned resource directory.
+default_build_tmpdir() {
+  if [[ -n "${XDG_CACHE_HOME:-}" ]]; then
+    printf '%s\n' "$XDG_CACHE_HOME/zen/build-tmp"
+  elif [[ "$(uname -s)" == "Darwin" ]]; then
+    printf '%s\n' "$HOME/Library/Caches/zen/build-tmp"
+  else
+    printf '%s\n' "$HOME/.cache/zen/build-tmp"
+  fi
+}
+BUILD_TMP_ROOT="${ZEN_BUILD_TMPDIR:-$(default_build_tmpdir)}"
+if [[ "$BUILD_TMP_ROOT" != /* ]]; then
+  echo "error: ZEN_BUILD_TMPDIR must be an absolute path: $BUILD_TMP_ROOT" >&2
+  exit 1
+fi
+mkdir -p "$BUILD_TMP_ROOT"
+chmod 700 "$BUILD_TMP_ROOT"
+BUILD_TMP="$(mktemp -d "$BUILD_TMP_ROOT/zen-stage-build.XXXXXX")"
 cleanup() { rm -rf "$BUILD_TMP"; }
 trap cleanup EXIT
 

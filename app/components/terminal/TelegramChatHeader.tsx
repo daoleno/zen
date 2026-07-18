@@ -103,7 +103,9 @@ export function TelegramChatHeader({
 
         <AnimatedPressable
           accessibilityRole="button"
-          accessibilityLabel={onPressTitle ? `${title}, open session` : title}
+          accessibilityLabel={
+            onPressTitle ? `${title}, Session details and resource usage` : title
+          }
           disabled={!onPressTitle}
           style={[
             styles.chip,

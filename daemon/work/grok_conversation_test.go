@@ -1746,12 +1746,9 @@ func TestIsGrokBootstrapUserMessage(t *testing.T) {
 }
 
 func TestAgentExecutorInfersGrokProviderAndCapabilities(t *testing.T) {
-	cfg := &ExecutorConfig{
-		DelegatedExecutor: "claude",
-		ByName: map[string]Executor{
-			"grok": {Name: "grok", Command: "grok --no-alt-screen --permission-mode bypassPermissions"},
-		},
-	}
+	cfg := NewExecutorConfig("claude", map[string]Executor{
+		"grok": {Name: "grok", Command: "grok --no-alt-screen --permission-mode bypassPermissions"},
+	})
 	executor, ok := cfg.AgentExecutor("grok")
 	if !ok {
 		t.Fatal("grok executor missing")
@@ -1776,7 +1773,7 @@ func TestLoadExecutorsIncludesGrokDefault(t *testing.T) {
 	if !strings.Contains(executor.Command, "--no-alt-screen") || !strings.Contains(executor.Command, "bypassPermissions") {
 		t.Fatalf("grok command = %q", executor.Command)
 	}
-	if cfg.DelegatedExecutor != "codex" {
-		t.Fatalf("delegated executor changed to %q", cfg.DelegatedExecutor)
+	if cfg.GetDelegatedExecutor() != "codex" {
+		t.Fatalf("delegated executor changed to %q", cfg.GetDelegatedExecutor())
 	}
 }

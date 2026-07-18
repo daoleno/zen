@@ -358,7 +358,7 @@ func (e env) checkExecutors() ExecutorsCheck {
 		check.Summary = "failed to load executors.toml"
 		return check
 	}
-	check.DelegatedExecutor = cfg.DelegatedExecutor
+	check.DelegatedExecutor = cfg.GetDelegatedExecutor()
 
 	for _, name := range cfg.Roles() {
 		executor := cfg.ByName[name]
@@ -389,7 +389,7 @@ func (e env) checkExecutors() ExecutorsCheck {
 		}
 	}
 	check.RecommendedHost = recommendHost(recommendFrom)
-	check.RecommendedDelegated = recommendDelegated(recommendFrom, cfg.DelegatedExecutor, check.RecommendedHost)
+	check.RecommendedDelegated = recommendDelegated(recommendFrom, cfg.GetDelegatedExecutor(), check.RecommendedHost)
 
 	switch {
 	case check.VerifiedCount > 0:

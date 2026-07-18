@@ -32,6 +32,7 @@ export function TerminalActionPromptCard({
   const [sendingOptionId, setSendingOptionId] = useState<string | null>(null);
   const [sentOptionId, setSentOptionId] = useState<string | null>(null);
   const [failedOptionId, setFailedOptionId] = useState<string | null>(null);
+  const actionable = prompt.actionable !== false;
 
   useEffect(() => {
     setSendingOptionId(null);
@@ -40,7 +41,7 @@ export function TerminalActionPromptCard({
   }, [prompt.id]);
 
   const handleOptionPress = (option: TerminalActionPrompt["options"][number]) => {
-    if (sendingOptionId) {
+    if (!actionable || sendingOptionId) {
       return;
     }
     setSendingOptionId(option.id);
@@ -87,7 +88,7 @@ export function TerminalActionPromptCard({
           <Ionicons name="alert-circle" size={15} color={chrome.accent} />
         </View>
         <View style={styles.headerText}>
-          <Text style={[styles.title, { color: chrome.text }]} numberOfLines={1}>
+          <Text style={[styles.title, { color: chrome.text }]} numberOfLines={2}>
             {prompt.title}
           </Text>
           <Text style={[styles.detail, { color: chrome.textMuted }]} numberOfLines={2}>
@@ -118,99 +119,143 @@ export function TerminalActionPromptCard({
       ) : null}
 
       <View style={styles.optionColumn}>
-        {prompt.options.map((option) => (
-          <Pressable
-            key={option.id}
-            accessibilityRole="button"
-            accessibilityLabel={[
-              option.label,
-              option.default ? "Default action" : "",
-              option.description,
-            ].filter(Boolean).join(", ")}
-            accessibilityState={{
-              disabled: Boolean(sendingOptionId),
-              selected: option.id === prompt.defaultOptionId,
-            }}
-            disabled={Boolean(sendingOptionId)}
-            onPress={() => handleOptionPress(option)}
-            style={({ pressed }) => [
-              styles.optionButton,
-              {
-                backgroundColor: option.primary ? chrome.accent : chrome.surfaceMuted,
-                borderColor: option.primary ? chrome.accent : chrome.border,
-              },
-              option.id === sentOptionId ? { borderColor: chrome.accent } : null,
-              option.id === failedOptionId ? { borderColor: chrome.danger } : null,
-              pressed ? { borderColor: chrome.focus } : null,
-            ]}
-          >
-            <View style={styles.optionCopy}>
-              <View style={styles.optionTitleRow}>
-                <Text
-                  style={[
-                    styles.optionText,
-                    {
-                      color: option.primary
-                        ? chrome.textOnAccent
-                        : option.destructive
-                          ? chrome.danger
-                          : chrome.text,
-                    },
-                  ]}
-                  numberOfLines={2}
-                >
-                  {option.label}
-                </Text>
-                {option.default ? (
-                  <View
+        {prompt.options.map((option) => {
+          const optionBody = (
+            <>
+              <View style={styles.optionCopy}>
+                <View style={styles.optionTitleRow}>
+                  <Text
                     style={[
-                      styles.defaultPill,
+                      styles.optionText,
                       {
-                        backgroundColor: option.primary ? "transparent" : chrome.surface,
-                        borderColor: option.primary ? chrome.textOnAccent : chrome.border,
+                        color: option.primary
+                          ? chrome.textOnAccent
+                          : option.destructive
+                            ? chrome.danger
+                            : chrome.text,
                       },
                     ]}
+                    numberOfLines={2}
                   >
-                    <Text
+                    {option.label}
+                  </Text>
+                  {option.default ? (
+                    <View
                       style={[
-                        styles.defaultText,
-                        { color: option.primary ? chrome.textOnAccent : chrome.textMuted },
+                        styles.defaultPill,
+                        {
+                          backgroundColor: option.primary ? "transparent" : chrome.surface,
+                          borderColor: option.primary ? chrome.textOnAccent : chrome.border,
+                        },
                       ]}
                     >
-                      Default
-                    </Text>
-                  </View>
+                      <Text
+                        style={[
+                          styles.defaultText,
+                          { color: option.primary ? chrome.textOnAccent : chrome.textMuted },
+                        ]}
+                      >
+                        {actionable ? "Default" : "Selected"}
+                      </Text>
+                    </View>
+                  ) : null}
+                </View>
+                {option.description ? (
+                  <Text
+                    style={[
+                      styles.optionDescription,
+                      { color: option.primary ? chrome.textOnAccent : chrome.textMuted },
+                    ]}
+                    numberOfLines={2}
+                  >
+                    {option.description}
+                  </Text>
                 ) : null}
               </View>
-              {option.description ? (
-                <Text
-                  style={[
-                    styles.optionDescription,
-                    { color: option.primary ? chrome.textOnAccent : chrome.textMuted },
-                  ]}
-                  numberOfLines={2}
-                >
-                  {option.description}
-                </Text>
+              {sendingOptionId === option.id ? (
+                <ActivityIndicator
+                  size="small"
+                  color={option.primary ? chrome.textOnAccent : chrome.accent}
+                />
+              ) : sentOptionId === option.id ? (
+                <Ionicons
+                  name="checkmark-circle"
+                  size={17}
+                  color={option.primary ? chrome.textOnAccent : chrome.accent}
+                />
+              ) : failedOptionId === option.id ? (
+                <Ionicons name="alert-circle" size={17} color={chrome.danger} />
               ) : null}
-            </View>
-            {sendingOptionId === option.id ? (
-              <ActivityIndicator
-                size="small"
-                color={option.primary ? chrome.textOnAccent : chrome.accent}
-              />
-            ) : sentOptionId === option.id ? (
-              <Ionicons
-                name="checkmark-circle"
-                size={17}
-                color={option.primary ? chrome.textOnAccent : chrome.accent}
-              />
-            ) : failedOptionId === option.id ? (
-              <Ionicons name="alert-circle" size={17} color={chrome.danger} />
-            ) : null}
-          </Pressable>
-        ))}
+            </>
+          );
+          const optionStyle = [
+            styles.optionButton,
+            {
+              backgroundColor: option.primary ? chrome.accent : chrome.surfaceMuted,
+              borderColor: option.primary ? chrome.accent : chrome.border,
+            },
+            option.id === sentOptionId ? { borderColor: chrome.accent } : null,
+            option.id === failedOptionId ? { borderColor: chrome.danger } : null,
+          ];
+
+          if (!actionable) {
+            return (
+              <View
+                key={option.id}
+                accessibilityRole="text"
+                accessibilityLabel={[
+                  option.label,
+                  option.default ? "Currently selected" : "",
+                  option.description,
+                ]
+                  .filter(Boolean)
+                  .join(", ")}
+                style={optionStyle}
+              >
+                {optionBody}
+              </View>
+            );
+          }
+
+          return (
+            <Pressable
+              key={option.id}
+              accessibilityRole="button"
+              accessibilityLabel={[
+                option.label,
+                option.default ? "Default action" : "",
+                option.description,
+              ]
+                .filter(Boolean)
+                .join(", ")}
+              accessibilityState={{
+                disabled: Boolean(sendingOptionId),
+                selected: option.id === prompt.defaultOptionId,
+              }}
+              disabled={Boolean(sendingOptionId)}
+              onPress={() => handleOptionPress(option)}
+              style={({ pressed }) => [
+                ...optionStyle,
+                pressed ? { borderColor: chrome.focus } : null,
+              ]}
+            >
+              {optionBody}
+            </Pressable>
+          );
+        })}
       </View>
+
+      {prompt.inputHints ? (
+        <Text style={[styles.statusText, { color: chrome.textMuted }]} numberOfLines={2}>
+          {prompt.inputHints}
+        </Text>
+      ) : null}
+
+      {!actionable ? (
+        <Text style={[styles.statusText, { color: chrome.textMuted }]} numberOfLines={2}>
+          Display only. Use Terminal to navigate and submit the native selection.
+        </Text>
+      ) : null}
 
       {statusText ? (
         <Text

@@ -1,3 +1,5 @@
+import { isGrokCommand } from "../../services/agentCommands";
+
 export type TerminalActionPromptOption = {
   id: string;
   label: string;
@@ -16,9 +18,18 @@ export type TerminalActionPrompt = {
   requestText?: string;
   defaultOptionId?: string;
   options: TerminalActionPromptOption[];
+  /** False when the live surface proves choices but no fail-fast native input contract. */
+  actionable?: boolean;
+  inputHints?: string;
 };
 
 const NUMBERED_OPTION_RE = /^(?:[›>\s]*)?([1-9])\.\s+(.+?)\s*$/;
+// Capture-pane may keep bare glyphs or parenthesize them as (○)/(●)/(O).
+const GROK_NUMBERED_OPTION_RE =
+  /^(?:[›>\s]*)?([1-9])\s*([○●◯◉◎]|\([○●◯◉◎Oo\s]*\))\s+(.+?)\s*$/;
+const GROK_FILLED_RADIO_RE = /^[●◉◎]$|^\([●◉◎]\)$/;
+const GROK_CHOICE_FOOTER_RE =
+  /(?:↑\s*\/\s*↓|↑|↓).{0,24}navigate|\bnavigate\b.{0,40}\benter\b|\benter\s*:\s*submit\b|\benter\s+confirm\b/i;
 const ANSI_RE = /\x1b\[[0-9;?]*[ -/]*[@-~]/g;
 
 type CleanPromptLine = {
@@ -30,15 +41,24 @@ export function buildTerminalActionPrompt({
   status,
   summary,
   lastOutputLines,
+  command,
+  scopeKey,
 }: {
   status?: string;
   summary?: string;
   lastOutputLines?: string[];
+  /** Live pane command; Grok radio menus are only projected for Grok. */
+  command?: string;
+  /** Live process/session identity so a switched generation cannot reuse card state. */
+  scopeKey?: string;
 }): TerminalActionPrompt | null {
   if (status !== "blocked") {
     return null;
   }
   const lines = cleanTerminalPromptLines(lastOutputLines ?? []);
+  if (isGrokCommand(command) && looksLikeGrokChoiceMenu(lines)) {
+    return scopePrompt(buildGrokChoicePrompt(lines, summary), scopeKey);
+  }
   if (!looksLikeTerminalActionPrompt(lines, summary)) {
     return null;
   }
@@ -47,42 +67,67 @@ export function buildTerminalActionPrompt({
   if (options.length > 0) {
     const request = extractRequest(lines, summary);
     const defaultOption = options.find((option) => option.default) ?? options[0];
-    return {
-      id: promptId(request.text, options),
+    return scopePrompt(
+      {
+        id: promptId(request.text, options),
+        title: "Waiting for confirmation",
+        detail: "Codex needs your decision before it can continue.",
+        requestLabel: request.label,
+        requestText: request.text,
+        defaultOptionId: defaultOption?.id,
+        options,
+        actionable: true,
+      },
+      scopeKey,
+    );
+  }
+
+  const request = extractRequest(lines, summary);
+  return scopePrompt(
+    {
+      id: promptId(request.text, ["enter", "escape"].map((id) => ({ id, label: id, key: id }))),
       title: "Waiting for confirmation",
       detail: "Codex needs your decision before it can continue.",
       requestLabel: request.label,
       requestText: request.text,
-      defaultOptionId: defaultOption?.id,
-      options,
-    };
-  }
+      defaultOptionId: "enter",
+      options: [
+        {
+          id: "enter",
+          label: "Allow once",
+          description: "Confirm this request this time.",
+          key: "Enter",
+          primary: true,
+          default: true,
+        },
+        {
+          id: "escape",
+          label: "Deny / tell agent what to do",
+          description: "Cancel this request and return control to Codex.",
+          key: "Escape",
+          destructive: true,
+        },
+      ],
+      actionable: true,
+    },
+    scopeKey,
+  );
+}
 
-  const request = extractRequest(lines, summary);
+function scopePrompt(
+  prompt: TerminalActionPrompt | null,
+  scopeKey?: string,
+): TerminalActionPrompt | null {
+  if (!prompt) {
+    return null;
+  }
+  const scope = scopeKey?.trim();
+  if (!scope) {
+    return prompt;
+  }
   return {
-    id: promptId(request.text, ["enter", "escape"].map((id) => ({ id, label: id, key: id }))),
-    title: "Waiting for confirmation",
-    detail: "Codex needs your decision before it can continue.",
-    requestLabel: request.label,
-    requestText: request.text,
-    defaultOptionId: "enter",
-    options: [
-      {
-        id: "enter",
-        label: "Allow once",
-        description: "Confirm this request this time.",
-        key: "Enter",
-        primary: true,
-        default: true,
-      },
-      {
-        id: "escape",
-        label: "Deny / tell agent what to do",
-        description: "Cancel this request and return control to Codex.",
-        key: "Escape",
-        destructive: true,
-      },
-    ],
+    ...prompt,
+    id: `${scope}|${prompt.id}`,
   };
 }
 
@@ -111,10 +156,38 @@ function looksLikeTerminalActionPrompt(lines: CleanPromptLine[], summary?: strin
   );
 }
 
+function looksLikeGrokChoiceMenu(lines: CleanPromptLine[]) {
+  const hasOptions = lines.some((line) => GROK_NUMBERED_OPTION_RE.test(line.text));
+  const hasFooter = lines.some((line) => GROK_CHOICE_FOOTER_RE.test(line.text));
+  return hasOptions && hasFooter;
+}
+
+function buildGrokChoicePrompt(
+  lines: CleanPromptLine[],
+  summary?: string,
+): TerminalActionPrompt | null {
+  const options = extractGrokNumberedOptions(lines);
+  if (options.length === 0) {
+    return null;
+  }
+  const title = extractGrokChoiceTitle(lines, summary);
+  const footer = lines.map((line) => line.text).find((text) => GROK_CHOICE_FOOTER_RE.test(text));
+  const selected = options.find((option) => option.default);
+  return {
+    id: promptId(title, options),
+    title: title || "Provider choice required",
+    detail: "Grok is waiting for a selection in the live terminal.",
+    defaultOptionId: selected?.id,
+    options,
+    actionable: false,
+    inputHints: footer ? truncateRunes(footer.replace(/\s+/g, " ").trim(), 120) : undefined,
+  };
+}
+
 function extractNumberedOptions(lines: CleanPromptLine[]) {
   const parsed: Array<TerminalActionPromptOption & { selected?: boolean }> = [];
   const seen = new Set<string>();
-  for (const line of mergeWrappedOptionLines(lines)) {
+  for (const line of mergeWrappedOptionLines(lines, NUMBERED_OPTION_RE)) {
     const match = NUMBERED_OPTION_RE.exec(line.text);
     if (!match) {
       continue;
@@ -152,18 +225,97 @@ function extractNumberedOptions(lines: CleanPromptLine[]) {
   }));
 }
 
-function mergeWrappedOptionLines(lines: CleanPromptLine[]) {
+function extractGrokNumberedOptions(lines: CleanPromptLine[]) {
+  const parsed: Array<TerminalActionPromptOption & { selected?: boolean }> = [];
+  const seen = new Set<string>();
+  for (const line of mergeWrappedOptionLines(lines, GROK_NUMBERED_OPTION_RE)) {
+    const match = GROK_NUMBERED_OPTION_RE.exec(line.text);
+    if (!match) {
+      continue;
+    }
+    const number = match[1];
+    if (seen.has(number)) {
+      continue;
+    }
+    seen.add(number);
+    const marker = match[2];
+    const { label, description } = splitGrokOptionText(match[3].trim());
+    parsed.push({
+      id: number,
+      label: truncateRunes(label, 54),
+      description: description ? truncateRunes(description, 120) : undefined,
+      key: number,
+      // Prove selection from caret prefix or a single filled radio glyph — never invent it.
+      selected: line.selected || GROK_FILLED_RADIO_RE.test(marker),
+    });
+  }
+
+  const options = parsed.slice(0, 6);
+  // Ambiguous multi-selection markers are treated as unproven rather than guessed.
+  const provenSelectedCount = options.filter((option) => option.selected).length;
+  const selectionProven = provenSelectedCount === 1;
+  return options.map((option) => ({
+    id: option.id,
+    label: option.label,
+    description: option.description,
+    key: option.key,
+    primary: selectionProven && Boolean(option.selected),
+    default: selectionProven && Boolean(option.selected),
+  }));
+}
+
+function splitGrokOptionText(text: string) {
+  const parts = text.split(/\s{2,}/).map((part) => part.trim()).filter(Boolean);
+  if (parts.length >= 2) {
+    return {
+      label: parts[0],
+      description: parts.slice(1).join(" "),
+    };
+  }
+  return { label: text, description: undefined };
+}
+
+function extractGrokChoiceTitle(lines: CleanPromptLine[], summary?: string) {
+  const firstOptionIndex = lines.findIndex((line) => GROK_NUMBERED_OPTION_RE.test(line.text));
+  const candidates =
+    firstOptionIndex > 0 ? lines.slice(0, firstOptionIndex) : lines;
+  for (let index = candidates.length - 1; index >= 0; index -= 1) {
+    const text = candidates[index].text.trim();
+    if (!text) {
+      continue;
+    }
+    if (GROK_NUMBERED_OPTION_RE.test(text) || GROK_CHOICE_FOOTER_RE.test(text)) {
+      continue;
+    }
+    if (looksLikeTerminalStatusLine(text) || looksLikePromptInstruction(text)) {
+      continue;
+    }
+    if (/^(esc:|tab:|shift\+tab:)/i.test(text) || looksLikeKeybindingChrome(text)) {
+      continue;
+    }
+    return truncateRunes(text.replace(/\s+/g, " "), 80);
+  }
+  return truncateRunes((summary ?? "").replace(/\s+/g, " ").trim(), 80);
+}
+
+function mergeWrappedOptionLines(lines: CleanPromptLine[], optionRe: RegExp) {
   const merged: CleanPromptLine[] = [];
   for (const line of lines) {
-    if (NUMBERED_OPTION_RE.test(line.text)) {
+    if (optionRe.test(line.text)) {
       merged.push(line);
       continue;
     }
     if (
-      merged.length > 0 &&
-      !looksLikePromptInstruction(line.text) &&
-      !looksLikeTerminalStatusLine(line.text)
+      GROK_CHOICE_FOOTER_RE.test(line.text) ||
+      looksLikePromptInstruction(line.text) ||
+      looksLikeTerminalStatusLine(line.text) ||
+      looksLikeKeybindingChrome(line.text) ||
+      GROK_NUMBERED_OPTION_RE.test(line.text) ||
+      NUMBERED_OPTION_RE.test(line.text)
     ) {
+      continue;
+    }
+    if (merged.length > 0) {
       merged[merged.length - 1] = {
         ...merged[merged.length - 1],
         text: `${merged[merged.length - 1].text} ${line.text}`.replace(/\s+/g, " ").trim(),
@@ -171,6 +323,10 @@ function mergeWrappedOptionLines(lines: CleanPromptLine[]) {
     }
   }
   return merged;
+}
+
+function looksLikeKeybindingChrome(line: string) {
+  return /^(esc:|tab:|shift\+tab:)/i.test(line.trim()) || /\|\s*(esc|tab|ctrl)\b/i.test(line);
 }
 
 function looksLikePromptInstruction(line: string) {
@@ -259,8 +415,10 @@ function extractRequest(lines: CleanPromptLine[], summary?: string) {
   const candidates = lines
     .map((line) => line.text)
     .filter((line) => !NUMBERED_OPTION_RE.test(line))
+    .filter((line) => !GROK_NUMBERED_OPTION_RE.test(line))
     .filter((line) => !looksLikePromptInstruction(line))
     .filter((line) => !looksLikeTerminalStatusLine(line))
+    .filter((line) => !GROK_CHOICE_FOOTER_RE.test(line))
     .filter((line) => !/^action required$/i.test(line.trim()));
 
   for (let index = candidates.length - 1; index >= 0; index -= 1) {

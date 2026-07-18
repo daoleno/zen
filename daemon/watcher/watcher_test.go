@@ -858,3 +858,100 @@ func TestAgentsPreserveFirstSeenOrderAcrossMutableUpdates(t *testing.T) {
 		t.Fatalf("Agents() after remove/add = %#v, want [b c]", got)
 	}
 }
+
+func TestClassifyPaneAndApplyProgressInvalidation(t *testing.T) {
+	now := time.Date(2026, 7, 18, 12, 0, 0, 0, time.UTC)
+	progressAt := now.Add(-30 * time.Second)
+	activeLease := now.Add(270 * time.Second)
+	expiredLease := now.Add(-time.Minute)
+	waitFalsePositive := []string{"waiting for BUILD SUCCESSFUL|BUILD FAILED|FAILURE:", "ctrl+c to stop"}
+	genuineFail := []string{"FAILED: 3 tests failed"}
+
+	tests := []struct {
+		name        string
+		agent       *classifier.Agent
+		alive       bool
+		lines       []string
+		want        classifier.AgentState
+		wantSummary string
+		wantCleared bool
+		checkSticky bool
+	}{
+		{
+			name: "1 wait/search false-positive keeps lease",
+			agent: &classifier.Agent{
+				State: classifier.StateRunning, Summary: "Rebuilding Android APK",
+				LastProgressAt: &progressAt, ExpectedNextCheckAt: &activeLease, LeaseSeconds: 300,
+			},
+			alive: true, lines: waitFalsePositive, want: classifier.StateRunning, wantSummary: "Rebuilding Android APK",
+		},
+		{
+			name:  "2 genuine failed without progress",
+			agent: &classifier.Agent{State: classifier.StateUnknown},
+			alive: true, lines: genuineFail, want: classifier.StateFailed, wantCleared: true,
+		},
+		{
+			name: "3 expired lease clears so failed cannot stick",
+			agent: &classifier.Agent{
+				State: classifier.StateRunning, Summary: "stale",
+				LastProgressAt: &progressAt, ExpectedNextCheckAt: &expiredLease, LeaseSeconds: 300,
+			},
+			alive: true, lines: genuineFail, want: classifier.StateFailed, wantCleared: true, checkSticky: true,
+		},
+		{
+			name:  "4 sticky done retained",
+			agent: &classifier.Agent{State: classifier.StateDone, Summary: "Was done", LastProgressAt: &progressAt},
+			alive: true, lines: genuineFail, want: classifier.StateDone, wantSummary: "Was done",
+		},
+		{
+			name:  "4b sticky failed retained",
+			agent: &classifier.Agent{State: classifier.StateFailed, Summary: "explicit failed", LastProgressAt: &progressAt},
+			alive: true, lines: genuineFail, want: classifier.StateFailed, wantSummary: "explicit failed",
+		},
+		{
+			name:  "4c sticky blocked retained",
+			agent: &classifier.Agent{State: classifier.StateBlocked, Summary: "explicit blocked", LastProgressAt: &progressAt},
+			alive: true, lines: genuineFail, want: classifier.StateBlocked, wantSummary: "explicit blocked",
+		},
+		{
+			name: "5 blocked clears running progress",
+			agent: &classifier.Agent{
+				State: classifier.StateRunning, Summary: "working",
+				LastProgressAt: &progressAt, ExpectedNextCheckAt: &activeLease, LeaseSeconds: 300,
+			},
+			alive: true, lines: []string{"Do you want to proceed? (Y/n)"}, want: classifier.StateBlocked, wantCleared: true,
+		},
+		{
+			name: "6 dead pane failed clears lease",
+			agent: &classifier.Agent{
+				State: classifier.StateRunning, Summary: "claimed",
+				LastProgressAt: &progressAt, ExpectedNextCheckAt: &activeLease, LeaseSeconds: 300,
+			},
+			alive: false, lines: genuineFail, want: classifier.StateFailed, wantCleared: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			classified, summary := classifyPaneAndApplyProgressInvalidation(tt.agent, tt.alive, tt.lines, now)
+			got, gotSummary := classifier.ResolveSessionStatus(tt.agent, classified, summary, now, classifier.ActivitySignal{})
+			if got != tt.want {
+				t.Fatalf("state = %q, want %q (classified=%q)", got, tt.want, classified)
+			}
+			if tt.wantSummary != "" && gotSummary != tt.wantSummary {
+				t.Fatalf("summary = %q, want %q", gotSummary, tt.wantSummary)
+			}
+			if cleared := tt.agent.LastProgressAt == nil; cleared != tt.wantCleared {
+				t.Fatalf("cleared = %v, want %v", cleared, tt.wantCleared)
+			}
+			if tt.checkSticky {
+				tt.agent.State = got
+				nextClassified, nextSummary := classifyPaneAndApplyProgressInvalidation(tt.agent, true, []string{"$"}, now)
+				next, _ := classifier.ResolveSessionStatus(tt.agent, nextClassified, nextSummary, now, classifier.ActivitySignal{})
+				if next != classifier.StateUnknown {
+					t.Fatalf("follow-up = %q, want unknown", next)
+				}
+			}
+		})
+	}
+}

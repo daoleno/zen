@@ -40,7 +40,8 @@ func successLines(result Result) []string {
 		lines = append(lines, "  Brain host: left unconfigured")
 	}
 	if result.RestartRequired {
-		lines = append(lines, "  Restart zen to load executors.toml")
+		lines = append(lines, "  Restart zen to load new or changed executor definitions")
+		lines = append(lines, "  (delegated selection can later switch live: zen brain set-delegated <id>)")
 	}
 	for _, warning := range result.Warnings {
 		lines = append(lines, "  warning: "+warning)

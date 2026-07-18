@@ -158,6 +158,7 @@ export function CodexChatBody({
     <>
       {terminalActionPrompt ? (
         <TerminalActionPromptCard
+          key={terminalActionPrompt.id}
           prompt={terminalActionPrompt}
           chrome={chrome}
           theme={theme}

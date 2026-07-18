@@ -48,7 +48,7 @@ func (l *Launcher) StartDedicated(item *Item, cwd string) (*Item, error) {
 		return nil, fmt.Errorf("executor config required")
 	}
 
-	role := strings.TrimSpace(l.execs.DelegatedExecutor)
+	role := l.execs.GetDelegatedExecutor()
 	executor, ok := l.execs.ByName[role]
 	if !ok {
 		return nil, fmt.Errorf("%w: %s", ErrExecutorNotConfigured, role)

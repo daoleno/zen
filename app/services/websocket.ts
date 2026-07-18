@@ -11,6 +11,10 @@ import type {
 } from "./gitDiff";
 import type { SessionService, SessionServiceSnapshot } from "./sessionServices";
 import {
+  normalizeSessionResourceSnapshot,
+  type SessionResourceSnapshot,
+} from "./sessionResourceSnapshot";
+import {
   normalizeCodexConversation,
   type CodexConversation,
 } from "./codexConversation";
@@ -1578,6 +1582,67 @@ export class MultiServerWebSocketClient {
       this.sendRequestNow(
         serverId,
         { type: "get_stats", request_id: requestId },
+        cleanup,
+        reject,
+      );
+    });
+  }
+
+  getSessionResourceSnapshot(
+    serverId: string,
+    agentId: string,
+  ): Promise<SessionResourceSnapshot> {
+    const requestId = `${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
+    const targetAgentId = agentId.trim();
+
+    return new Promise((resolve, reject) => {
+      const cleanup = () => {
+        if (timer) clearTimeout(timer);
+        this.off("session_resource_snapshot", handleSnapshot);
+        this.off("error", handleError);
+      };
+
+      const handleSnapshot = (payload: any) => {
+        if (payload.serverId !== serverId || payload.request_id !== requestId) {
+          return;
+        }
+        const snapshot = normalizeSessionResourceSnapshot(payload);
+        cleanup();
+        if (!snapshot || snapshot.agent_id !== targetAgentId) {
+          reject(new Error("Invalid session resource snapshot."));
+          return;
+        }
+        resolve(snapshot);
+      };
+
+      const handleError = (payload: any) => {
+        if (payload.serverId !== serverId || payload.request_id !== requestId) {
+          return;
+        }
+        cleanup();
+        reject(
+          new Error(
+            typeof payload.message === "string" && payload.message
+              ? payload.message
+              : "Session resource snapshot failed.",
+          ),
+        );
+      };
+
+      const timer = setTimeout(() => {
+        cleanup();
+        reject(new Error("Session resource snapshot timed out."));
+      }, 15000);
+
+      this.on("session_resource_snapshot", handleSnapshot);
+      this.on("error", handleError);
+      this.sendRequestNow(
+        serverId,
+        {
+          type: "get_session_resource_snapshot",
+          request_id: requestId,
+          agent_id: targetAgentId,
+        },
         cleanup,
         reject,
       );

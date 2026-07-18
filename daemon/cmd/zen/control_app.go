@@ -64,6 +64,8 @@ func (a *controlApp) HandleControlRequest(req control.Request) control.Response 
 		return a.handleBrainGC()
 	case "brain_set_executor":
 		return a.handleBrainSetExecutor(req)
+	case "set_delegated_executor":
+		return a.handleSetDelegatedExecutor(req)
 	case "brain_workspace":
 		if a == nil || a.brainStore == nil {
 			return control.ErrorResponse("brain_unavailable", "Brain workspace is not configured.")
@@ -502,6 +504,28 @@ func (a *controlApp) handleBrainSetExecutor(req control.Request) control.Respons
 	return a.handleBrainExecutors()
 }
 
+// handleSetDelegatedExecutor switches the live Delegated Executor on the shared
+// ExecutorConfig owner. Existing sessions are not migrated.
+func (a *controlApp) handleSetDelegatedExecutor(req control.Request) control.Response {
+	if a == nil || a.execs == nil {
+		return control.ErrorResponse("executors_unavailable", "Executor config is not available.")
+	}
+	executorID := strings.TrimSpace(req.ExecutorID)
+	if executorID == "" {
+		return control.ErrorResponse("missing_executor", "Delegated executor id is required.")
+	}
+	if err := a.execs.SetDelegatedExecutor(executorID); err != nil {
+		if errors.Is(err, work.ErrUnknownExecutor) {
+			return control.ErrorResponse("invalid_executor", err.Error())
+		}
+		if errors.Is(err, work.ErrDelegatedExecutorLocked) {
+			return control.ErrorResponse("delegated_executor_locked_by_env", err.Error())
+		}
+		return control.ErrorResponse("set_delegated_executor_failed", err.Error())
+	}
+	return a.handleBrainExecutors()
+}
+
 func (a *controlApp) brainExecutorSnapshot() (*control.Executor, *control.Executor, []control.Executor, control.Response) {
 	if a == nil || a.brainStore == nil {
 		return nil, nil, nil, control.ErrorResponse("brain_unavailable", "Brain workspace is not configured.")
@@ -628,18 +652,13 @@ func (a *controlApp) brainDelegatedExecutor() (work.AgentExecutor, bool) {
 	if a == nil || a.execs == nil {
 		return work.AgentExecutor{}, false
 	}
-	if preferred := delegatedExecutorOverride(); preferred != "" {
-		return a.execs.AgentExecutor(preferred)
-	}
+	// Effective delegated selection (including startup env lock) lives only on
+	// the shared ExecutorConfig owner — no parallel env readers here.
 	return a.execs.DelegatedAgentExecutor()
 }
 
 func brainHostExecutorOverride() string {
 	return strings.TrimSpace(os.Getenv("ZEN_BRAIN_HOST_EXECUTOR"))
-}
-
-func delegatedExecutorOverride() string {
-	return strings.TrimSpace(os.Getenv("ZEN_DELEGATED_EXECUTOR"))
 }
 
 func visibleControlAgents(agents []*classifier.Agent) []control.Agent {
@@ -722,6 +741,9 @@ func progressEnvForStateDir(stateDir string) map[string]string {
 	env := map[string]string{
 		"ZEN_AGENT_PROGRESS_CMD": watcher.ZenExecutablePath(),
 	}
+	if worktreeRoot, err := work.DefaultWorktreeRoot(); err == nil {
+		env["ZEN_WORKTREE_ROOT"] = worktreeRoot
+	}
 	if stateDir = strings.TrimSpace(stateDir); stateDir != "" {
 		env["ZEN_STATE_DIR"] = stateDir
 	}
@@ -746,6 +768,11 @@ func lifecycleProtocol(profile string) string {
 - Profile: %s.
 - Treat the prompt as a loop contract: preserve the objective, acceptance criteria, safety constraints, verification, and expected report.
 - Start lasting design or implementation work by identifying the core invariants. Prefer making invalid states unrepresentable over adding fallback paths.
+- Work in the supplied cwd by default and preserve unrelated existing changes. Delegation alone is not a reason to create a git worktree.
+- Create a worktree only when the brief genuinely requires concurrent-write isolation. Reuse it for the larger task and place it under $ZEN_WORKTREE_ROOT; never use OS temporary or memory-backed storage for worktrees, repository copies, or large build roots.
+- This session owns its descendants and private temporary directory. Reuse heavyweight persistent resources named in the brief instead of duplicating or detaching them.
+- Respect Zen's resource boundary. If a resource limit blocks the task, report the limit and required next action through progress instead of escaping the owned lifecycle.
+- Use TMPDIR/TMP/TEMP for Agent-owned scratch and audit state, and $ZEN_BUILD_TMPDIR for large disposable builds when supported. Never hard-code OS-global temp paths; bounded tool-internal temp is allowed. Remove owned artifacts before reporting done. Stop any persistent child that the task no longer needs; lifecycle teardown remains the final safety net.
 - Use task classes consistently: exploration for research/scanning, mechanical_change for bounded repeatable edits, lasting_design for product semantics, data models, architecture, and long-lived code.
 - Report progress through the Zen control plane only when your phase changes, when you take a meaningful long-running step, when you need attention, and when you finish.
 - ZEN_AGENT_ID is already set for this session. ZEN_AGENT_PROGRESS_CMD is the absolute path to the currently running zen daemon executable (a single token, no spaces; may be named zen, zen-dev, or similar).

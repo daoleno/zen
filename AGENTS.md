@@ -23,6 +23,8 @@ Use TypeScript for app code and Go for daemon code. Match local style: two-space
 
 Daemon tests use Go’s standard `testing` package and follow `*_test.go` naming. Run `cd daemon && go test ./...` before daemon, protocol, auth, terminal, or work/session changes. The app currently relies on TypeScript checks and Expo diagnostics; run `cd app && bunx tsc --noEmit` after TS/TSX changes and use Expo locally for UI verification.
 
+`app/app/` is the Expo Router runtime route tree. Never place unit-test modules such as `*.test.*` or `*.spec.*` there, and never import `bun:test` from anything under that tree. Put tests in an appropriate non-route location such as `app/services/` or `app/components/`, even when the production hook or module lives under `app/app/`. Before finishing changes that add or move files under `app/app/`, require residual checks for test/spec filenames and `bun:test` imports (`rg --files app/app | rg '\.(test|spec)\.'` and `rg -n 'bun:test' app/app`); when route membership changed, include an Expo Android bundle/export proof.
+
 ## Commit & Pull Request Guidelines
 
 Recent commits use short imperative titles, for example `Polish Brain and Codex chat UI` or `Fix Codex chat thread refresh after /new`. Keep commits scoped and avoid mixing daemon, app, and docs changes unless the behavior requires it. Pull requests should include a concise summary, verification commands run, linked issue or context, and screenshots or recordings for visible mobile UI changes.

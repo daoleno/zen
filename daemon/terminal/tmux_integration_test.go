@@ -245,6 +245,48 @@ func TestTmuxCopyModeRedrawFlowsThroughTheLivePTY(t *testing.T) {
 	waitForTmuxOutputContaining(t, phone.Events(), marker)
 }
 
+func TestIsolatedTmuxCleanupCannotKillAmbientServer(t *testing.T) {
+	requireTmux(t)
+
+	ambientTmpDir, err := os.MkdirTemp("/tmp", "zt-ambient-")
+	if err != nil {
+		t.Fatalf("create ambient tmux tmpdir: %v", err)
+	}
+	ambientEnv := isolatedTmuxEnv(os.Environ(), ambientTmpDir)
+	t.Cleanup(func() {
+		cmd := exec.Command("tmux", "kill-server")
+		cmd.Env = ambientEnv
+		_ = cmd.Run()
+		_ = os.RemoveAll(ambientTmpDir)
+	})
+
+	ambient := exec.Command(
+		"tmux", "-f", "/dev/null", "new-session", "-d", "-s", "ambient", "cat",
+	)
+	ambient.Env = ambientEnv
+	if output, err := ambient.CombinedOutput(); err != nil {
+		t.Fatalf("start ambient tmux server: %v\n%s", err, output)
+	}
+	t.Setenv("TMUX_TMPDIR", ambientTmpDir)
+
+	var isolatedTmpDir string
+	t.Run("isolated", func(t *testing.T) {
+		isolatedTmpDir = isolateTmuxServer(t)
+		runTmuxTestCommand(
+			t, "-f", "/dev/null", "new-session", "-d", "-s", "isolated", "cat",
+		)
+	})
+
+	probe := exec.Command("tmux", "has-session", "-t", "ambient")
+	probe.Env = ambientEnv
+	if output, err := probe.CombinedOutput(); err != nil {
+		t.Fatalf("isolated cleanup killed ambient tmux server: %v\n%s", err, output)
+	}
+	if _, err := os.Stat(isolatedTmpDir); !os.IsNotExist(err) {
+		t.Fatalf("isolated tmux tmpdir still exists after cleanup: %q, stat error %v", isolatedTmpDir, err)
+	}
+}
+
 func requireTmux(t *testing.T) {
 	t.Helper()
 	if _, err := exec.LookPath("tmux"); err != nil {
@@ -266,10 +308,35 @@ func isolateTmuxServer(t *testing.T) string {
 		}
 	})
 
-	tmuxTmpDir := t.TempDir()
+	// Keep the tmux UNIX socket path under sockaddr_un (~108 bytes).
+	// t.TempDir() embeds the full test name and can overflow when TMPDIR is nested.
+	tmuxTmpDir, err := os.MkdirTemp("/tmp", "zt-")
+	if err != nil {
+		t.Fatalf("create isolated tmux tmpdir: %v", err)
+	}
 	t.Setenv("TMUX_TMPDIR", tmuxTmpDir)
-	t.Cleanup(func() { _ = exec.Command("tmux", "kill-server").Run() })
+	cleanupEnv := isolatedTmuxEnv(os.Environ(), tmuxTmpDir)
+	t.Cleanup(func() {
+		// Never use ambient TMUX/TMUX_TMPDIR here. Test cleanup may run after
+		// t.Setenv has restored the parent environment; a bare kill-server would
+		// then kill the user's tmux server and strand the isolated one.
+		cmd := exec.Command("tmux", "kill-server")
+		cmd.Env = cleanupEnv
+		_ = cmd.Run()
+		_ = os.RemoveAll(tmuxTmpDir)
+	})
 	return tmuxTmpDir
+}
+
+func isolatedTmuxEnv(env []string, tmuxTmpDir string) []string {
+	isolated := make([]string, 0, len(env)+1)
+	for _, item := range env {
+		if strings.HasPrefix(item, "TMUX=") || strings.HasPrefix(item, "TMUX_TMPDIR=") {
+			continue
+		}
+		isolated = append(isolated, item)
+	}
+	return append(isolated, "TMUX_TMPDIR="+tmuxTmpDir)
 }
 
 func runTmuxTestCommand(t *testing.T, args ...string) {

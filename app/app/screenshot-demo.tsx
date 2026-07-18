@@ -321,7 +321,7 @@ function ChatDemo() {
             }}
             isStructuredChatAgent
             onBack={NOOP}
-            onOpenPicker={NOOP}
+            onOpenSessionDetails={NOOP}
             onOpenGitDiff={NOOP}
             onOpenMenu={NOOP}
             onToggleCodexRenderMode={NOOP}

@@ -437,6 +437,7 @@ func (s *Service) ensureHostAgent(executor work.AgentExecutor) (AgentRef, error)
 		Detached:    true,
 		Hidden:      true,
 		ProgressEnv: true,
+		Env:         brainSessionEnvironment(),
 	})
 	if err != nil {
 		return AgentRef{}, err
@@ -471,6 +472,14 @@ func (s *Service) ensureHostAgent(executor work.AgentExecutor) (AgentRef, error)
 		Updated: s.now().UTC(),
 		Hidden:  true,
 	}, nil
+}
+
+func brainSessionEnvironment() map[string]string {
+	env := map[string]string{}
+	if root, err := work.DefaultWorktreeRoot(); err == nil {
+		env["ZEN_WORKTREE_ROOT"] = root
+	}
+	return env
 }
 
 // recoverMatchingHost finds a live hidden Brain host that matches the resolved
@@ -558,13 +567,9 @@ func (s *Service) hostExecutor() work.AgentExecutor {
 }
 
 func (s *Service) brainDelegatedExecutor() work.AgentExecutor {
-	preferred := delegatedExecutorOverride()
+	// Effective delegated selection (including startup env lock) is owned only
+	// by ExecutorConfig — no parallel env readers on Brain paths.
 	if s != nil && s.execs != nil {
-		if preferred != "" {
-			if executor, ok := s.execs.AgentExecutor(preferred); ok {
-				return executor
-			}
-		}
 		if executor, ok := s.execs.DelegatedAgentExecutor(); ok {
 			return executor
 		}
@@ -574,10 +579,6 @@ func (s *Service) brainDelegatedExecutor() work.AgentExecutor {
 
 func brainHostExecutorOverride() string {
 	return strings.TrimSpace(os.Getenv("ZEN_BRAIN_HOST_EXECUTOR"))
-}
-
-func delegatedExecutorOverride() string {
-	return strings.TrimSpace(os.Getenv("ZEN_DELEGATED_EXECUTOR"))
 }
 
 func (s *Service) agentExecutors(hostExecutorID, delegatedExecutorID string) []work.AgentExecutor {
@@ -749,12 +750,14 @@ func (s *Service) hostBootstrapPrompt(executor work.AgentExecutor) string {
 		return ""
 	}
 	delegatedExecutor := s.brainDelegatedExecutor()
+	worktreeRoot, _ := work.DefaultWorktreeRoot()
 	return strings.TrimSpace(fmt.Sprintf(`
 You are Brain inside zen, the user's private second brain and agent orchestrator.
 
 Work as a warm, direct, capable chat assistant. Reply in the user's language unless they ask otherwise.
 
 Brain workspace: %s
+Managed worktree root: %s
 Host executor: %s (%s via %s)
 Delegated executor: %s (%s via %s)
 Host executor capabilities: %s
@@ -782,6 +785,9 @@ Agent orchestration rules:
 - Delegated agents should not invent the overall plan. If a delegated result is incomplete or off-target, inspect it, rewrite the brief or send a focused follow-up, and only patch over it directly when the fix is trivial.
 - Review delegated results before integrating them: capture the session, compare the result with the acceptance criteria, run or inspect verification, and then decide whether to merge, follow up, or ask the user.
 - For a single larger task, prefer reusing the same delegated agent session across stages. Send follow-up instructions to that session until the task is genuinely complete. Open a separate delegated session only when the work is meaningfully independent, benefits from parallelism, needs a different repository/context, or the current session is blocked or unusable.
+- Use the repository supplied by the user as the default workspace, even when it is dirty; preserve unrelated changes. Delegation and parallelism do not themselves justify a worktree.
+- Create a worktree only for genuine concurrent-write isolation or when the user explicitly requests one. Reuse it for the larger task and place it under $ZEN_WORKTREE_ROOT (%s), never on OS temporary or memory-backed storage.
+- Use TMPDIR/TMP/TEMP for Agent-owned scratch and audit state, and $ZEN_BUILD_TMPDIR for large disposable builds when supported. Never hard-code OS-global temp paths; bounded tool-internal temp is allowed. Remove owned artifacts before reporting done.
 - Use the zen binary to spawn, send to, and inspect delegated agents. When delegating, write a short note with workspace, objective, context, acceptance criteria, safety constraints, and expected report.
 - Zen CLI quick reference:
   - %s brain context --json returns structured Brain context: current.md, host executor, and delegated agents.
@@ -813,7 +819,7 @@ Reference files:
 - policies/engine.md
 - policies/handoff.md
 - playbooks/ (catalog via zen brain playbooks --json)
-`, snapshot.Workspace, executor.ID, executor.Provider, executor.Runtime, delegatedExecutor.ID, delegatedExecutor.Provider, delegatedExecutor.Runtime, executorCapabilitiesSummary(executor.Capabilities), zenCLICommand(), zenCLICommand(), zenCLICommand(), zenCLICommand(), zenCLICommand(), zenCLICommand(), zenCLICommand(), zenCLICommand(), zenCLICommand(), zenCLICommand(), zenCLICommand(), strings.TrimSpace(snapshot.Personality)))
+`, snapshot.Workspace, worktreeRoot, executor.ID, executor.Provider, executor.Runtime, delegatedExecutor.ID, delegatedExecutor.Provider, delegatedExecutor.Runtime, executorCapabilitiesSummary(executor.Capabilities), worktreeRoot, zenCLICommand(), zenCLICommand(), zenCLICommand(), zenCLICommand(), zenCLICommand(), zenCLICommand(), zenCLICommand(), zenCLICommand(), zenCLICommand(), zenCLICommand(), zenCLICommand(), strings.TrimSpace(snapshot.Personality)))
 }
 
 func (s *Service) handoffHostSession(threadID, previousExecutorID, nextExecutorID, nextHostID, currentContext string, agents []AgentRef) error {

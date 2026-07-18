@@ -37,6 +37,10 @@ import (
 const maxCodexAssetBytes = 6 << 20
 const codexConversationSubscriptionInterval = 220 * time.Millisecond
 const defaultScheduledResultLimit = 120
+const maxUploadFileBytes int64 = 32 << 20
+const maxUploadRequestBytes int64 = maxUploadFileBytes + (1 << 20)
+const maxUploadStoreBytes int64 = 512 << 20
+const uploadRetention = 7 * 24 * time.Hour
 
 var upgrader = websocket.Upgrader{
 	CheckOrigin: func(r *http.Request) bool { return true },
@@ -66,6 +70,8 @@ type Server struct {
 	providerConversationLoader func(reader *work.ProviderConversationReader, agentID string) (work.CodexConversation, error)
 	sendInputOverride          func(agentID, text string) error
 	sendActionOverride         func(agentID, action string) error
+	uploadDir                  string
+	uploadMu                   sync.Mutex
 
 	workSubID     int
 	workSub       <-chan work.Event
@@ -94,6 +100,10 @@ type codexConversationSubscription struct {
 
 // New creates a WebSocket server.
 func New(authManager *auth.Manager, w *watcher.Watcher, pusher *push.Client, sc *stats.Collector, workStore *work.Store, execs *work.ExecutorConfig, brainService *brain.Service) *Server {
+	uploadDir := ""
+	if authManager != nil {
+		uploadDir = filepath.Join(authManager.StorageDir(), "uploads")
+	}
 	srv := &Server{
 		auth:      authManager,
 		watcher:   w,
@@ -103,6 +113,7 @@ func New(authManager *auth.Manager, w *watcher.Watcher, pusher *push.Client, sc 
 		work:      workStore,
 		execs:     execs,
 		brain:     brainService,
+		uploadDir: uploadDir,
 		clients:   make(map[*websocket.Conn]bool),
 		active:    make(map[*websocket.Conn]string),
 		writes:    make(map[*websocket.Conn]*sync.Mutex),
@@ -734,6 +745,9 @@ func (s *Server) handleClientMessage(conn *websocket.Conn, msg []byte) {
 				"ranges":     map[string]any{},
 			})
 		}
+
+	case "get_session_resource_snapshot":
+		s.handleGetSessionResourceSnapshot(conn, raw)
 
 	default:
 		log.Printf("unknown message type: %s", raw.Type)
@@ -2142,38 +2156,136 @@ func (s *Server) handleUpload(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-	if err := r.ParseMultipartForm(32 << 20); err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
-		return
-	}
-	file, header, err := r.FormFile("file")
+	r.Body = http.MaxBytesReader(w, r.Body, maxUploadRequestBytes)
+	reader, err := r.MultipartReader()
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
-	defer file.Close()
+	if strings.TrimSpace(s.uploadDir) == "" {
+		http.Error(w, "upload storage unavailable", http.StatusServiceUnavailable)
+		return
+	}
 
-	dir := "/tmp/zen-uploads"
-	if err := os.MkdirAll(dir, 0755); err != nil {
+	s.uploadMu.Lock()
+	defer s.uploadMu.Unlock()
+	if err := os.MkdirAll(s.uploadDir, 0o700); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	ext := filepath.Ext(header.Filename)
-	name := uuid.New().String() + ext
-	path := filepath.Join(dir, name)
-	dst, err := os.Create(path)
+	storedBytes, err := cleanupUploadStore(s.uploadDir, time.Now())
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	defer dst.Close()
-	if _, err := io.Copy(dst, file); err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+	remainingStore := maxUploadStoreBytes - storedBytes
+	if remainingStore <= 0 {
+		http.Error(w, "upload storage capacity reached; remove old uploads or wait for retention cleanup", http.StatusInsufficientStorage)
 		return
 	}
+	copyLimit := min(maxUploadFileBytes, remainingStore)
 
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]string{"path": path, "name": header.Filename})
+	for {
+		part, partErr := reader.NextPart()
+		if errors.Is(partErr, io.EOF) {
+			http.Error(w, "multipart field file is required", http.StatusBadRequest)
+			return
+		}
+		if partErr != nil {
+			writeUploadReadError(w, partErr)
+			return
+		}
+		if part.FormName() != "file" || part.FileName() == "" {
+			_ = part.Close()
+			continue
+		}
+
+		originalName := part.FileName()
+		name := uuid.New().String() + safeUploadExtension(originalName)
+		path := filepath.Join(s.uploadDir, name)
+		dst, createErr := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+		if createErr != nil {
+			_ = part.Close()
+			http.Error(w, createErr.Error(), http.StatusInternalServerError)
+			return
+		}
+		written, copyErr := io.Copy(dst, io.LimitReader(part, copyLimit+1))
+		closeErr := dst.Close()
+		_ = part.Close()
+		if copyErr != nil {
+			_ = os.Remove(path)
+			writeUploadReadError(w, copyErr)
+			return
+		}
+		if closeErr != nil {
+			_ = os.Remove(path)
+			http.Error(w, closeErr.Error(), http.StatusInternalServerError)
+			return
+		}
+		if written > copyLimit {
+			_ = os.Remove(path)
+			http.Error(w, "upload exceeds the 32 MiB file limit or remaining upload capacity", http.StatusRequestEntityTooLarge)
+			return
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]string{"path": path, "name": originalName})
+		return
+	}
+}
+
+func cleanupUploadStore(dir string, now time.Time) (int64, error) {
+	entries, err := os.ReadDir(dir)
+	if os.IsNotExist(err) {
+		return 0, nil
+	}
+	if err != nil {
+		return 0, fmt.Errorf("inspect upload storage: %w", err)
+	}
+	var total int64
+	for _, entry := range entries {
+		info, infoErr := entry.Info()
+		if infoErr != nil {
+			return 0, fmt.Errorf("inspect upload %s: %w", entry.Name(), infoErr)
+		}
+		if !info.Mode().IsRegular() {
+			continue
+		}
+		path := filepath.Join(dir, entry.Name())
+		if now.Sub(info.ModTime()) >= uploadRetention {
+			if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+				return 0, fmt.Errorf("remove expired upload %s: %w", entry.Name(), err)
+			}
+			continue
+		}
+		if info.Size() > 0 && total > maxUploadStoreBytes-info.Size() {
+			return maxUploadStoreBytes, nil
+		}
+		total += max(info.Size(), 0)
+	}
+	return total, nil
+}
+
+func safeUploadExtension(name string) string {
+	ext := filepath.Ext(filepath.Base(strings.TrimSpace(name)))
+	if len(ext) < 2 || len(ext) > 11 || ext[0] != '.' {
+		return ""
+	}
+	for _, char := range ext[1:] {
+		if (char < 'a' || char > 'z') && (char < 'A' || char > 'Z') && (char < '0' || char > '9') {
+			return ""
+		}
+	}
+	return strings.ToLower(ext)
+}
+
+func writeUploadReadError(w http.ResponseWriter, err error) {
+	var maxBytesError *http.MaxBytesError
+	if errors.As(err, &maxBytesError) {
+		http.Error(w, "upload request exceeds the 33 MiB request limit", http.StatusRequestEntityTooLarge)
+		return
+	}
+	http.Error(w, err.Error(), http.StatusBadRequest)
 }
 
 func (s *Server) authenticateRequest(w http.ResponseWriter, r *http.Request, purpose string) (*auth.TrustedDevice, bool) {

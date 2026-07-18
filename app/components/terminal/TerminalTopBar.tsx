@@ -29,7 +29,7 @@ export interface TerminalTopBarProps {
   isStructuredChatAgent: boolean;
   delegated?: boolean;
   onBack(): void;
-  onOpenPicker(): void;
+  onOpenSessionDetails(): void;
   onOpenGitDiff(): void;
   onOpenMenu(): void;
   onToggleCodexRenderMode(): void;
@@ -46,7 +46,7 @@ export function TerminalTopBar({
   gitDiffPresentation,
   delegated,
   onBack,
-  onOpenPicker,
+  onOpenSessionDetails,
   onOpenGitDiff,
   onOpenMenu,
 }: TerminalTopBarProps) {
@@ -86,7 +86,7 @@ export function TerminalTopBar({
       avatarLabel={title}
       avatarSeed={title}
       onBack={onBack}
-      onPressTitle={onOpenPicker}
+      onPressTitle={onOpenSessionDetails}
       rightActions={rightActions}
       menuAnchorRef={menuAnchorRef}
     />

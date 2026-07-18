@@ -59,6 +59,7 @@ type Watcher struct {
 	agentEpoch     map[string]int64 // per-agent generation for lock-free probe apply
 	mu             sync.RWMutex
 	events         chan SessionEvent
+	resources      delegatedResourceManager
 }
 
 // New creates a Watcher that polls tmux windows at the given interval.
@@ -71,7 +72,55 @@ func New(pollInterval time.Duration) *Watcher {
 		delegated:    make(map[string]bool),
 		agentEpoch:   make(map[string]int64),
 		events:       make(chan SessionEvent, 100),
+		resources:    noopDelegatedResourceManager{},
 	}
+}
+
+// ConfigureDelegatedResources enables the platform resource backend for
+// Brain-owned delegated sessions. owner must be the durable daemon identity;
+// it namespaces every resource unit so one daemon can never stop another
+// daemon's sessions. Call this before Run or CreateSession.
+func (w *Watcher) ConfigureDelegatedResources(owner string) {
+	if w == nil {
+		return
+	}
+	w.mu.Lock()
+	w.resources = newDelegatedResourceManager(owner)
+	w.mu.Unlock()
+}
+
+func (w *Watcher) resourceManager() delegatedResourceManager {
+	if w == nil {
+		return noopDelegatedResourceManager{}
+	}
+	w.mu.RLock()
+	manager := w.resources
+	w.mu.RUnlock()
+	if manager == nil {
+		return noopDelegatedResourceManager{}
+	}
+	return manager
+}
+
+// SessionResourceSnapshot returns one on-demand read-only resource projection
+// for agentID from the daemon-owned shared resource manager.
+func (w *Watcher) SessionResourceSnapshot(agentID string) SessionResourceSnapshot {
+	return w.resourceManager().Snapshot(strings.TrimSpace(agentID))
+}
+
+func (w *Watcher) delegatedSessionCount() int {
+	if w == nil {
+		return 0
+	}
+	w.mu.RLock()
+	defer w.mu.RUnlock()
+	count := 0
+	for _, delegated := range w.delegated {
+		if delegated {
+			count++
+		}
+	}
+	return count
 }
 
 // SetActivityProbe injects the provider-neutral activity probe used after
@@ -194,8 +243,12 @@ func (w *Watcher) Run(ctx context.Context) error {
 func (w *Watcher) poll() {
 	windows, err := listTmuxWindows()
 	if err != nil {
+		if isNoTmuxServerError(err) {
+			w.resourceManager().Reconcile(nil)
+		}
 		return
 	}
+	w.resourceManager().Reconcile(windows)
 	processes := snapshotProcesses()
 	processSnapshotAt := time.Now()
 
@@ -284,12 +337,7 @@ func (w *Watcher) poll() {
 		agent.UpdatedAt = now
 
 		oldState := agent.State
-		classified, classifiedSummary := classifier.Classify(obs.alive, obs.lines)
-		if terminalStateInvalidatesProgress(classified) {
-			agent.LastProgressAt = nil
-			agent.ExpectedNextCheckAt = nil
-			agent.LeaseSeconds = 0
-		}
+		classified, classifiedSummary := classifyPaneAndApplyProgressInvalidation(agent, obs.alive, obs.lines, now)
 
 		w.agentEpoch[win.target] = generation
 		prepared = append(prepared, preparedAgent{
@@ -518,8 +566,19 @@ func unixNanoOrZero(value *time.Time) int64 {
 	return value.UnixNano()
 }
 
-func terminalStateInvalidatesProgress(state classifier.AgentState) bool {
-	return state == classifier.StateBlocked || state == classifier.StateFailed
+// classifyPaneAndApplyProgressInvalidation is the poll classify step: classify
+// pane text, then clear progress metadata only for authoritative terminal
+// outcomes (blocked always; failed unless explicit progress protects).
+func classifyPaneAndApplyProgressInvalidation(agent *classifier.Agent, alive bool, lines []string, now time.Time) (classifier.AgentState, string) {
+	agent.PaneAlive = alive
+	classified, summary := classifier.Classify(alive, lines, agent.Command)
+	if classified == classifier.StateBlocked ||
+		(classified == classifier.StateFailed && !classifier.ExplicitProgressProtectsAgainstPaneFailed(agent, now)) {
+		agent.LastProgressAt = nil
+		agent.ExpectedNextCheckAt = nil
+		agent.LeaseSeconds = 0
+	}
+	return classified, summary
 }
 
 func isBrainHostWindow(target, windowName string) bool {
@@ -532,21 +591,22 @@ func isBrainHostWindow(target, windowName string) bool {
 
 // tmuxWindow represents a single tmux window target.
 type tmuxWindow struct {
-	target    string // "session:window_id" — stable tmux target usable as -t
-	name      string // window name (e.g. "claude", "node")
-	cwd       string // active pane cwd
-	command   string // active pane command
-	panePID   int
-	hidden    bool
-	delegated bool
+	target       string // "session:window_id" — stable tmux target usable as -t
+	name         string // window name (e.g. "claude", "node")
+	cwd          string // active pane cwd
+	command      string // active pane command
+	panePID      int
+	hidden       bool
+	delegated    bool
+	resourceUnit string
 }
 
 // listTmuxWindows returns all windows across all tmux sessions.
 func listTmuxWindows() ([]tmuxWindow, error) {
-	cmd := exec.Command("tmux", "list-windows", "-a", "-F", "#{session_name}:#{window_id}\t#{window_name}\t#{pane_current_path}\t#{pane_current_command}\t#{pane_pid}\t#{@zen_agent_hidden}\t#{@zen_agent_delegated}")
-	out, err := cmd.Output()
+	cmd := exec.Command("tmux", "list-windows", "-a", "-F", "#{session_name}:#{window_id}\t#{window_name}\t#{pane_current_path}\t#{pane_current_command}\t#{pane_pid}\t#{@zen_agent_hidden}\t#{@zen_agent_delegated}\t#{@zen_agent_resource_unit}")
+	out, err := cmd.CombinedOutput()
 	if err != nil {
-		return nil, fmt.Errorf("tmux list-windows: %w", err)
+		return nil, fmt.Errorf("tmux list-windows: %w: %s", err, strings.TrimSpace(string(out)))
 	}
 	var windows []tmuxWindow
 	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
@@ -554,7 +614,7 @@ func listTmuxWindows() ([]tmuxWindow, error) {
 		if line == "" {
 			continue
 		}
-		parts := strings.SplitN(line, "\t", 7)
+		parts := strings.SplitN(line, "\t", 8)
 		target := parts[0]
 		// Skip grouped sessions created by the terminal backend (zen-<pid>-<counter>).
 		sessionName := strings.SplitN(target, ":", 2)[0]
@@ -585,7 +645,11 @@ func listTmuxWindows() ([]tmuxWindow, error) {
 		if len(parts) >= 7 {
 			delegated = tmuxBoolOption(parts[6])
 		}
-		windows = append(windows, tmuxWindow{target: target, name: name, cwd: cwd, command: command, panePID: panePID, hidden: hidden, delegated: delegated})
+		resourceUnit := ""
+		if len(parts) >= 8 {
+			resourceUnit = strings.TrimSpace(parts[7])
+		}
+		windows = append(windows, tmuxWindow{target: target, name: name, cwd: cwd, command: command, panePID: panePID, hidden: hidden, delegated: delegated, resourceUnit: resourceUnit})
 	}
 	return windows, nil
 }
@@ -1116,6 +1180,7 @@ type CreateSessionOptions struct {
 	Env         map[string]string
 	ProgressEnv bool
 	Delegated   bool
+	resource    *delegatedResourceSpec
 }
 
 // CreateSession creates a new tmux window and returns its target id.
@@ -1157,6 +1222,36 @@ func (w *Watcher) CreateSession(preferredTarget string, opts CreateSessionOption
 		}
 	}
 
+	manager := w.resourceManager()
+	resourceCommitted := false
+	if opts.Delegated && !opts.Hidden {
+		if err := validateDelegatedWorkspace(cwd); err != nil {
+			return "", err
+		}
+		opts.Env = cloneEnvironment(opts.Env)
+		opts.Env[delegatedMarkerEnv] = "1"
+		spec, err := manager.Prepare(w.delegatedSessionCount())
+		if err != nil {
+			return "", err
+		}
+		if spec != nil {
+			opts.resource = spec
+			opts.Env[delegatedResourceUnitEnv] = spec.Unit
+			opts.Env[delegatedResourceOwnerEnv] = spec.Owner
+			if strings.TrimSpace(spec.TempDir) != "" {
+				opts.Env["TMPDIR"] = spec.TempDir
+				opts.Env["TMP"] = spec.TempDir
+				opts.Env["TEMP"] = spec.TempDir
+				opts.Env["ZEN_BUILD_TMPDIR"] = spec.TempDir
+			}
+			defer func() {
+				if !resourceCommitted {
+					_ = manager.Release("", spec.Unit)
+				}
+			}()
+		}
+	}
+
 	if shellCommand, err := buildWindowCommand(opts); err != nil {
 		return "", err
 	} else if shellCommand != "" {
@@ -1175,7 +1270,15 @@ func (w *Watcher) CreateSession(preferredTarget string, opts CreateSessionOption
 		if target == "" {
 			return "", fmt.Errorf("tmux returned empty window target")
 		}
+		if err := markCreatedSession(target, opts); err != nil {
+			killOut, killErr := exec.Command("tmux", "kill-window", "-t", target).CombinedOutput()
+			if killErr != nil {
+				return "", fmt.Errorf("mark owned tmux window: %v; remove unmarked window: %w: %s", err, killErr, strings.TrimSpace(string(killOut)))
+			}
+			return "", fmt.Errorf("mark owned tmux window: %w", err)
+		}
 		w.registerCreatedSession(target, cwd, opts, createdAt)
+		resourceCommitted = true
 		return target, nil
 	}
 
@@ -1194,7 +1297,15 @@ func (w *Watcher) CreateSession(preferredTarget string, opts CreateSessionOption
 	if target == "" {
 		return "", fmt.Errorf("tmux returned empty window target")
 	}
+	if err := markCreatedSession(target, opts); err != nil {
+		killOut, killErr := exec.Command("tmux", "kill-window", "-t", target).CombinedOutput()
+		if killErr != nil {
+			return "", fmt.Errorf("mark owned tmux window: %v; remove unmarked window: %w: %s", err, killErr, strings.TrimSpace(string(killOut)))
+		}
+		return "", fmt.Errorf("mark owned tmux window: %w", err)
+	}
 	w.registerCreatedSession(target, cwd, opts, createdAt)
+	resourceCommitted = true
 	return target, nil
 }
 
@@ -1288,7 +1399,9 @@ func (w *Watcher) registerCreatedSession(target, cwd string, opts CreateSessionO
 	if createdAt.IsZero() {
 		createdAt = time.Now().UTC()
 	}
-	markCreatedSession(target, opts)
+	if opts.resource != nil {
+		w.resourceManager().Bind(target, opts.resource.Unit)
+	}
 
 	agent := &classifier.Agent{
 		ID:        target,
@@ -1333,24 +1446,43 @@ func (w *Watcher) registerCreatedSession(target, cwd string, opts CreateSessionO
 	}
 }
 
-func markCreatedSession(target string, opts CreateSessionOptions) {
-	setTmuxWindowUserOption(target, "zen_agent_created", "1")
+func markCreatedSession(target string, opts CreateSessionOptions) error {
+	if err := setTmuxWindowUserOption(target, "zen_agent_created", "1"); err != nil {
+		return err
+	}
 	if opts.Hidden {
-		setTmuxWindowUserOption(target, "zen_agent_hidden", "1")
+		if err := setTmuxWindowUserOption(target, "zen_agent_hidden", "1"); err != nil {
+			return err
+		}
 	}
 	if opts.Delegated && !opts.Hidden {
-		setTmuxWindowUserOption(target, "zen_agent_delegated", "1")
+		if err := setTmuxWindowUserOption(target, "zen_agent_delegated", "1"); err != nil {
+			return err
+		}
+		if opts.resource != nil {
+			if err := setTmuxWindowUserOption(target, "zen_agent_resource_unit", opts.resource.Unit); err != nil {
+				return err
+			}
+			if err := setTmuxWindowUserOption(target, "zen_agent_resource_owner", opts.resource.Owner); err != nil {
+				return err
+			}
+		}
 	}
+	return nil
 }
 
-func setTmuxWindowUserOption(target, key, value string) {
+func setTmuxWindowUserOption(target, key, value string) error {
 	target = strings.TrimSpace(target)
 	key = strings.TrimSpace(key)
 	value = strings.TrimSpace(value)
 	if target == "" || key == "" || value == "" {
-		return
+		return fmt.Errorf("tmux window option target, key, and value are required")
 	}
-	_ = exec.Command("tmux", "set-option", "-w", "-t", target, "@"+key, value).Run()
+	out, err := exec.Command("tmux", "set-option", "-w", "-t", target, "@"+key, value).CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("set @%s on %s: %w: %s", key, target, err, strings.TrimSpace(string(out)))
+	}
+	return nil
 }
 
 func createdSessionName(opts CreateSessionOptions) string {
@@ -1370,7 +1502,8 @@ func buildWindowCommand(opts CreateSessionOptions) (string, error) {
 		return "", err
 	}
 
-	return buildWindowCommandForShellWithOptions(shellPath, strings.TrimSpace(opts.Command), opts.ProgressEnv), nil
+	inner := buildWindowCommandForShellWithOptions(shellPath, strings.TrimSpace(opts.Command), opts.ProgressEnv)
+	return wrapDelegatedResourceCommand(inner, opts.resource), nil
 }
 
 func buildWindowCommandForShell(shellPath, command string) string {
@@ -1522,7 +1655,51 @@ func shellQuote(value string) string {
 // Agent IDs use the form session:window_id, so killing the window
 // exits only that agent instead of the whole tmux session.
 func (w *Watcher) KillSession(sessionID string) error {
-	return exec.Command("tmux", "kill-window", "-t", sessionID).Run()
+	sessionID = strings.TrimSpace(sessionID)
+	manager := w.resourceManager()
+	unit := manager.UnitForTarget(sessionID)
+	delegated := unit != ""
+	if !delegated {
+		delegated, unit = tmuxDelegatedResource(sessionID)
+	}
+	out, killErr := exec.Command("tmux", "kill-window", "-t", sessionID).CombinedOutput()
+	var releaseErr error
+	if delegated {
+		releaseErr = manager.Release(sessionID, unit)
+	}
+	if killErr != nil && releaseErr != nil {
+		return fmt.Errorf("kill tmux window: %w: %s; release delegated resources: %v", killErr, strings.TrimSpace(string(out)), releaseErr)
+	}
+	if killErr != nil {
+		return fmt.Errorf("kill tmux window: %w: %s", killErr, strings.TrimSpace(string(out)))
+	}
+	if releaseErr != nil {
+		return fmt.Errorf("release delegated resources: %w", releaseErr)
+	}
+	return nil
+}
+
+func tmuxDelegatedResource(target string) (bool, string) {
+	target = strings.TrimSpace(target)
+	if target == "" {
+		return false, ""
+	}
+	out, err := exec.Command(
+		"tmux",
+		"display-message",
+		"-p",
+		"-t",
+		target,
+		"#{@zen_agent_delegated}\t#{@zen_agent_resource_unit}",
+	).Output()
+	if err != nil {
+		return false, ""
+	}
+	parts := strings.SplitN(strings.TrimSpace(string(out)), "\t", 2)
+	if len(parts) != 2 || !tmuxBoolOption(parts[0]) {
+		return false, ""
+	}
+	return true, strings.TrimSpace(parts[1])
 }
 
 func listTmuxSessions() ([]string, error) {
