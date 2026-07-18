@@ -1,12 +1,16 @@
-import type { ReactNode } from 'react';
-import { StyleSheet } from 'react-native';
-import TopTabs from 'expo-router/js-top-tabs';
-import { PrimaryDrawerShell } from '../../components/navigation/PrimaryDrawerShell';
+import type { ReactNode } from "react";
+import { Animated, StyleSheet } from "react-native";
+import TopTabs from "expo-router/js-top-tabs";
+import { PrimaryDrawerShell } from "../../components/navigation/PrimaryDrawerShell";
+import {
+  PrimaryPagerPositionBridge,
+  PrimaryPagerPositionProvider,
+} from "../../components/navigation/primaryPagerPosition";
 
 interface PrimaryTabsLayoutProps {
   children: ReactNode;
   navigation: {
-    navigate(route: 'index' | 'list'): void;
+    navigate(route: "index" | "list"): void;
   };
   state: {
     index: number;
@@ -14,25 +18,34 @@ interface PrimaryTabsLayoutProps {
   };
 }
 
+interface PrimaryTabBarProps {
+  position: Animated.AnimatedInterpolation<number>;
+}
+
 const renderPrimaryTabsLayout = ({
   children,
   navigation,
   state,
 }: PrimaryTabsLayoutProps) => {
-  const activeRoute = state.routes[state.index]?.name === 'list'
-    ? 'list'
-    : 'brain';
+  const activeRoute =
+    state.routes[state.index]?.name === "list" ? "list" : "brain";
   return (
-    <PrimaryDrawerShell
-      activePrimaryRoute={activeRoute}
-      onSelectPrimaryRoute={(target) => {
-        navigation.navigate(target === 'brain' ? 'index' : 'list');
-      }}
-    >
-      {children}
-    </PrimaryDrawerShell>
+    <PrimaryPagerPositionProvider>
+      <PrimaryDrawerShell
+        activePrimaryRoute={activeRoute}
+        onSelectPrimaryRoute={(target) => {
+          navigation.navigate(target === "brain" ? "index" : "list");
+        }}
+      >
+        {children}
+      </PrimaryDrawerShell>
+    </PrimaryPagerPositionProvider>
   );
 };
+
+function renderPrimaryTabBar({ position }: PrimaryTabBarProps) {
+  return <PrimaryPagerPositionBridge position={position} />;
+}
 
 export default function PrimaryLayout() {
   return (
@@ -45,17 +58,17 @@ export default function PrimaryLayout() {
         sceneStyle: styles.scene,
         swipeEnabled: true,
       }}
-      tabBar={() => null}
+      tabBar={renderPrimaryTabBar}
     >
-      <TopTabs.Screen name="index" options={{ title: 'Brain' }} />
-      <TopTabs.Screen name="list" options={{ title: 'Sessions' }} />
+      <TopTabs.Screen name="index" options={{ title: "Brain" }} />
+      <TopTabs.Screen name="list" options={{ title: "Sessions" }} />
     </TopTabs>
   );
 }
 
 const styles = StyleSheet.create({
   scene: {
-    backgroundColor: 'transparent',
+    backgroundColor: "transparent",
     flex: 1,
   },
 });
