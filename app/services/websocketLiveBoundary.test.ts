@@ -151,8 +151,9 @@ describe("generic WebSocket live boundary", () => {
     expect(() => client.listWorkItems(server.id)).toThrow(
       "Daemon is not connected.",
     );
-    expect(() => client.sendInput(server.id, "agent-a", "offline"))
-      .toThrow("Daemon is not connected.");
+    expect(() => client.sendInput(server.id, "agent-a", "offline")).toThrow(
+      "Daemon is not connected.",
+    );
     expect(registeredHandlerCount(client)).toBe(0);
     expect(socket.sent).toEqual([]);
 
@@ -167,8 +168,9 @@ describe("generic WebSocket live boundary", () => {
     firstSocket.open();
 
     client.disconnectServer(server.id);
-    expect(() => client.sendTerminalInput(server.id, "terminal-a", "pwd\n"))
-      .toThrow("Daemon is not connected.");
+    expect(() =>
+      client.sendTerminalInput(server.id, "terminal-a", "pwd\n"),
+    ).toThrow("Daemon is not connected.");
 
     const secondSocket = await connectClient(client);
     secondSocket.open();
@@ -511,6 +513,94 @@ describe("generic WebSocket live boundary", () => {
     });
 
     unsubscribe();
+    client.disconnectAll();
+  });
+});
+
+describe("executor switch transport", () => {
+  test("setDelegatedExecutor is request-correlated and returns the brain snapshot", async () => {
+    const client = new MultiServerWebSocketClient();
+    const socket = await connectClient(client);
+    socket.open();
+
+    const pending = client.setDelegatedExecutor(server.id, "grok");
+    const outbound = JSON.parse(socket.sent.at(-1)!);
+    expect(outbound.type).toBe("set_delegated_executor");
+    expect(outbound.executor_id).toBe("grok");
+    expect(outbound.adapter_id).toBe("grok");
+    expect(typeof outbound.request_id).toBe("string");
+
+    socket.receive({
+      type: "brain_snapshot",
+      request_id: outbound.request_id,
+      brain: {
+        delegated_adapter: { id: "grok", name: "Grok", provider: "grok" },
+        host_adapter: { id: "codex", name: "Codex", provider: "codex" },
+      },
+    });
+
+    await expect(pending).resolves.toEqual({
+      delegated_adapter: { id: "grok", name: "Grok", provider: "grok" },
+      host_adapter: { id: "codex", name: "Codex", provider: "codex" },
+    });
+    client.disconnectAll();
+  });
+
+  test("setBrainExecutor and setDelegatedExecutor stay on distinct operations", async () => {
+    const client = new MultiServerWebSocketClient();
+    const socket = await connectClient(client);
+    socket.open();
+
+    const hostPending = client.setBrainExecutor(server.id, "claude");
+    const hostOutbound = JSON.parse(socket.sent.at(-1)!);
+    const delegatedPending = client.setDelegatedExecutor(server.id, "grok");
+    const delegatedOutbound = JSON.parse(socket.sent.at(-1)!);
+
+    expect(hostOutbound.type).toBe("brain_set_executor");
+    expect(delegatedOutbound.type).toBe("set_delegated_executor");
+    expect(hostOutbound.request_id).not.toBe(delegatedOutbound.request_id);
+
+    socket.receive({
+      type: "brain_snapshot",
+      request_id: hostOutbound.request_id,
+      brain: { host_adapter: { id: "claude", name: "Claude" } },
+    });
+    socket.receive({
+      type: "brain_snapshot",
+      request_id: delegatedOutbound.request_id,
+      brain: { delegated_adapter: { id: "grok", name: "Grok" } },
+    });
+
+    await expect(hostPending).resolves.toEqual({
+      host_adapter: { id: "claude", name: "Claude" },
+    });
+    await expect(delegatedPending).resolves.toEqual({
+      delegated_adapter: { id: "grok", name: "Grok" },
+    });
+    client.disconnectAll();
+  });
+
+  test("setDelegatedExecutor rejects only the matching request error", async () => {
+    const client = new MultiServerWebSocketClient();
+    const socket = await connectClient(client);
+    socket.open();
+
+    const pending = client.setDelegatedExecutor(server.id, "missing");
+    const outbound = JSON.parse(socket.sent.at(-1)!);
+
+    socket.receive({
+      type: "error",
+      request_id: "other-request",
+      message: "ignored",
+    });
+    socket.receive({
+      type: "error",
+      request_id: outbound.request_id,
+      code: "invalid_executor",
+      message: "unknown executor: missing",
+    });
+
+    await expect(pending).rejects.toThrow("unknown executor: missing");
     client.disconnectAll();
   });
 });

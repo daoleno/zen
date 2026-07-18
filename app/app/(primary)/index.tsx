@@ -11,11 +11,19 @@ import {
   SafeAreaView,
   useSafeAreaInsets,
 } from "react-native-safe-area-context";
-import { BrainAdapterSheet } from "../../components/brain/BrainAdapterSheet";
+import {
+  BrainAdapterSheet,
+  type ExecutorTarget,
+} from "../../components/brain/BrainAdapterSheet";
+import { BrainAdapterIcon } from "../../components/brain/BrainAdapterIcon";
 import { BrainExecutorMentionPicker } from "../../components/brain/BrainExecutorMentionPicker";
 import { BrainOverflowMenu } from "../../components/brain/BrainOverflowMenu";
 import { BrainWorkspaceViewer } from "../../components/brain/BrainWorkspaceViewer";
-import { brainProviderLabel } from "../../components/brain/brainPresentation";
+import {
+  brainProviderLabel,
+  distinctExecutorAdapters,
+  switchExecutorAccessibilityLabel,
+} from "../../components/brain/brainPresentation";
 import { usePrimaryPageAction } from "../../components/navigation/PrimaryPageAction";
 import { resolvePrimaryAppBarGeometry } from "../../components/navigation/PrimaryDrawerShell";
 import { ZenLoopSpinner } from "../../components/ui/ZenLoopSpinner";
@@ -38,13 +46,11 @@ import {
 } from "../../services/connectionLifecycle";
 import { isTargetedBrainThreadReadOnly } from "../../services/brainThreadRouting";
 import { useAgents, type ConnectionState } from "../../store/agents";
-import {
-  useBrain,
-  type BrainAdapterRef,
-} from "../../store/brain";
+import { useBrain, type BrainAdapterRef } from "../../store/brain";
 
 const BRAIN_EMPTY_TITLE = "Ready when you are";
-const BRAIN_EMPTY_BODY = "Ask Brain to plan, delegate, or inspect the workspace.";
+const BRAIN_EMPTY_BODY =
+  "Ask Brain to plan, delegate, or inspect the workspace.";
 
 export default function BrainScreen() {
   const router = useRouter();
@@ -69,6 +75,9 @@ export default function BrainScreen() {
   const [adapterSheetVisible, setAdapterSheetVisible] = useState(false);
   const [menuVisible, setMenuVisible] = useState(false);
   const [switchingAdapterId, setSwitchingAdapterId] = useState<string | null>(
+    null,
+  );
+  const [switchingTarget, setSwitchingTarget] = useState<ExecutorTarget | null>(
     null,
   );
   const [adapterSwitchError, setAdapterSwitchError] = useState<string | null>(
@@ -102,8 +111,7 @@ export default function BrainScreen() {
 
   const activeServer = useMemo(() => {
     const activeId =
-      params.serverId &&
-      servers.some((server) => server.id === params.serverId)
+      params.serverId && servers.some((server) => server.id === params.serverId)
         ? params.serverId
         : resolveBrainActiveServerId({
             servers,
@@ -143,6 +151,7 @@ export default function BrainScreen() {
     : null;
   const hostAgent = activeBrain?.host_agent ?? null;
   const hostAdapter = activeBrain?.host_adapter ?? null;
+  const delegatedAdapter = activeBrain?.delegated_adapter ?? null;
   const displayedThreadId = params.brainThreadId || activeBrain?.chat_thread_id;
   const targetedThreadReadOnly = isTargetedBrainThreadReadOnly(
     params.brainThreadId,
@@ -229,27 +238,41 @@ export default function BrainScreen() {
     }
   }, [activeBrain?.hydrated, activeServer, newChatLoading]);
 
-  const switchBrainAdapter = useCallback(
-    async (adapter: BrainAdapterRef) => {
+  const switchExecutor = useCallback(
+    async (adapter: BrainAdapterRef, target: ExecutorTarget) => {
       if (!activeServer || !adapter.id || switchingAdapterId) {
         return;
       }
-      if (adapter.id === hostAdapter?.id) {
+      const currentId =
+        target === "brain" ? hostAdapter?.id : delegatedAdapter?.id;
+      if (adapter.id === currentId) {
         closeAdapterSheet();
         return;
       }
+      setSwitchingTarget(target);
       setSwitchingAdapterId(adapter.id);
       setAdapterSwitchError(null);
       try {
-        await wsClient.setBrainExecutor(activeServer.id, adapter.id);
+        if (target === "brain") {
+          await wsClient.setBrainExecutor(activeServer.id, adapter.id);
+        } else {
+          await wsClient.setDelegatedExecutor(activeServer.id, adapter.id);
+        }
         closeAdapterSheet();
       } catch (error: any) {
         setAdapterSwitchError(error?.message || "Failed to switch executor.");
       } finally {
         setSwitchingAdapterId(null);
+        setSwitchingTarget(null);
       }
     },
-    [activeServer, closeAdapterSheet, hostAdapter?.id, switchingAdapterId],
+    [
+      activeServer,
+      closeAdapterSheet,
+      delegatedAdapter?.id,
+      hostAdapter?.id,
+      switchingAdapterId,
+    ],
   );
 
   const canNewChat = Boolean(activeServer && activeBrain?.hydrated);
@@ -275,7 +298,6 @@ export default function BrainScreen() {
       {
         key: "new-chat",
         label: "New chat",
-        detail: "Start a fresh Brain thread",
         icon: newChatLoading
           ? ("hourglass-outline" as const)
           : ("create-outline" as const),
@@ -289,8 +311,21 @@ export default function BrainScreen() {
             {
               key: "executor",
               label: "Switch executor",
-              detail: brainProviderLabel(hostAdapter?.provider),
+              accessibilityLabel: switchExecutorAccessibilityLabel(
+                hostAdapter,
+                delegatedAdapter,
+              ),
               icon: "swap-horizontal-outline" as const,
+              trailing: distinctExecutorAdapters(
+                hostAdapter,
+                delegatedAdapter,
+              ).map((adapter) => (
+                <BrainAdapterIcon
+                  key={adapter.id}
+                  adapter={adapter}
+                  size={14}
+                />
+              )),
               onPress: openAdapterSheet,
             },
           ]
@@ -298,7 +333,6 @@ export default function BrainScreen() {
       {
         key: "terminal",
         label: "Open terminal",
-        detail: "Raw session view",
         icon: "terminal-outline" as const,
         disabled: !canOpenTerminal,
         onPress: openBrainTerminal,
@@ -313,7 +347,6 @@ export default function BrainScreen() {
       {
         key: "calendar",
         label: "Calendar",
-        detail: "Commitments and scheduled Zen actions",
         icon: "calendar-outline" as const,
         onPress: openCalendar,
       },
@@ -323,7 +356,8 @@ export default function BrainScreen() {
       canOpenTerminal,
       canOpenWorkspace,
       canSwitchAdapter,
-      hostAdapter?.provider,
+      delegatedAdapter,
+      hostAdapter,
       newChatLoading,
       openAdapterSheet,
       openCalendar,
@@ -435,11 +469,15 @@ export default function BrainScreen() {
       <BrainAdapterSheet
         visible={adapterSheetVisible}
         adapters={availableAdapters}
-        activeAdapterId={hostAdapter?.id}
+        hostAdapterId={hostAdapter?.id}
+        delegatedAdapterId={delegatedAdapter?.id}
+        hostAdapter={hostAdapter}
+        delegatedAdapter={delegatedAdapter}
         switchingAdapterId={switchingAdapterId}
+        switchingTarget={switchingTarget}
         error={adapterSwitchError}
         onClose={closeAdapterSheet}
-        onSelect={(adapter) => void switchBrainAdapter(adapter)}
+        onSelect={(adapter, target) => void switchExecutor(adapter, target)}
       />
 
       <BrainOverflowMenu

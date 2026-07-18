@@ -1799,6 +1799,29 @@ export class MultiServerWebSocketClient {
   }
 
   setBrainExecutor(serverId: string, executorId: string) {
+    return this.setExecutorByOperation(
+      serverId,
+      executorId,
+      "brain_set_executor",
+      "Brain executor",
+    );
+  }
+
+  setDelegatedExecutor(serverId: string, executorId: string) {
+    return this.setExecutorByOperation(
+      serverId,
+      executorId,
+      "set_delegated_executor",
+      "Agents executor",
+    );
+  }
+
+  private setExecutorByOperation(
+    serverId: string,
+    executorId: string,
+    type: "brain_set_executor" | "set_delegated_executor",
+    failureLabel: string,
+  ) {
     const requestId = `${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
 
     return new Promise<any>((resolve, reject) => {
@@ -1821,12 +1844,14 @@ export class MultiServerWebSocketClient {
           return;
         }
         cleanup();
-        reject(new Error(payload.message || "Failed to switch Brain executor."));
+        reject(
+          new Error(payload.message || `Failed to switch ${failureLabel}.`),
+        );
       };
 
       const timer = setTimeout(() => {
         cleanup();
-        reject(new Error("Timed out while switching Brain executor."));
+        reject(new Error(`Timed out while switching ${failureLabel}.`));
       }, 15000);
 
       this.on("brain_snapshot", handleSnapshot);
@@ -1834,7 +1859,7 @@ export class MultiServerWebSocketClient {
       this.sendRequestNow(
         serverId,
         {
-          type: "brain_set_executor",
+          type,
           request_id: requestId,
           executor_id: executorId,
           adapter_id: executorId,

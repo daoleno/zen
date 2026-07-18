@@ -1,5 +1,7 @@
 import type { BrainAdapterRef } from "../../store/brain";
 
+export type ExecutorTarget = "brain" | "agents";
+
 export function brainProviderLabel(value?: string): string {
   const normalized = value?.trim().toLowerCase();
   switch (normalized) {
@@ -32,12 +34,44 @@ export function brainAdapterLabel(adapter?: BrainAdapterRef | null): string {
   );
 }
 
-export function brainAdapterProviderKey(adapter?: BrainAdapterRef | null): string {
+export function brainAdapterProviderKey(
+  adapter?: BrainAdapterRef | null,
+): string {
   const normalized = adapter?.provider?.trim().toLowerCase();
-  if (normalized === "codex" || normalized === "cursor" || normalized === "grok" || normalized === "claude" || normalized === "tmux") {
+  if (
+    normalized === "codex" ||
+    normalized === "cursor" ||
+    normalized === "grok" ||
+    normalized === "claude" ||
+    normalized === "tmux"
+  ) {
     return normalized;
   }
   return "custom";
+}
+
+/** Current Brain Host and Agents executors for trailing Action icons; same id is not duplicated. */
+export function distinctExecutorAdapters(
+  host?: BrainAdapterRef | null,
+  delegated?: BrainAdapterRef | null,
+): BrainAdapterRef[] {
+  const out: BrainAdapterRef[] = [];
+  if (host?.id) {
+    out.push(host);
+  }
+  if (delegated?.id && delegated.id !== host?.id) {
+    out.push(delegated);
+  }
+  return out;
+}
+
+export function switchExecutorAccessibilityLabel(
+  host?: BrainAdapterRef | null,
+  delegated?: BrainAdapterRef | null,
+): string {
+  const brain = brainAdapterLabel(host) || "unavailable";
+  const agents = brainAdapterLabel(delegated) || "unavailable";
+  return `Switch executor, Brain ${brain}, Agents ${agents}`;
 }
 
 export function brainStatusLine({

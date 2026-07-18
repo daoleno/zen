@@ -4,6 +4,8 @@ import {
   brainWorkspaceEntryAccessibilityLabel,
   brainWorkspaceEntryIconName,
   brainWorkspaceMarkdownPath,
+  distinctExecutorAdapters,
+  switchExecutorAccessibilityLabel,
 } from "./brainPresentation";
 
 describe("brainWorkspaceMarkdownPath", () => {
@@ -29,16 +31,43 @@ describe("brainWorkspaceEntryAccessibilityLabel", () => {
       "Open file AGENTS.md",
     );
     expect(
-      brainWorkspaceEntryAccessibilityLabel("file", "very-long-name-without-extension"),
+      brainWorkspaceEntryAccessibilityLabel(
+        "file",
+        "very-long-name-without-extension",
+      ),
     ).toBe("Open file very-long-name-without-extension");
   });
 });
 
 describe("brainWorkspaceEntryIconName", () => {
   test("uses folder and document icons without restating type labels", () => {
-    expect(brainWorkspaceEntryIconName("directory", "agents")).toBe("folder-outline");
-    expect(brainWorkspaceEntryIconName("directory", ".hidden")).toBe("folder-outline");
-    expect(brainWorkspaceEntryIconName("file", "AGENTS.md")).toBe("document-text-outline");
-    expect(brainWorkspaceEntryIconName("file", "LICENSE")).toBe("document-outline");
+    expect(brainWorkspaceEntryIconName("directory", "agents")).toBe(
+      "folder-outline",
+    );
+    expect(brainWorkspaceEntryIconName("directory", ".hidden")).toBe(
+      "folder-outline",
+    );
+    expect(brainWorkspaceEntryIconName("file", "AGENTS.md")).toBe(
+      "document-text-outline",
+    );
+    expect(brainWorkspaceEntryIconName("file", "LICENSE")).toBe(
+      "document-outline",
+    );
+  });
+});
+
+describe("executor trailing identity helpers", () => {
+  test("distinctExecutorAdapters avoids duplicate identical ids", () => {
+    const shared = { id: "codex", name: "Codex", provider: "codex" };
+    expect(distinctExecutorAdapters(shared, { ...shared })).toEqual([shared]);
+  });
+
+  test("switchExecutorAccessibilityLabel covers both roles", () => {
+    expect(
+      switchExecutorAccessibilityLabel(
+        { id: "claude", name: "Claude Code", provider: "claude" },
+        { id: "codex", name: "Codex", provider: "codex" },
+      ),
+    ).toBe("Switch executor, Brain Claude Code, Agents Codex");
   });
 });

@@ -12,11 +12,12 @@ import {
 } from "../../constants/tokens";
 import type { ResolvedZenTheme } from "../../theme";
 
-type BrainMenuAction = {
+export type BrainMenuAction = {
   key: string;
   label: string;
-  detail?: string;
+  accessibilityLabel?: string;
   icon: React.ComponentProps<typeof Ionicons>["name"];
+  trailing?: React.ReactNode;
   disabled?: boolean;
   onPress: () => void;
 };
@@ -44,12 +45,15 @@ export function BrainOverflowMenu({
           <View key={action.key}>
             {index > 0 ? (
               <View
-                style={[styles.separator, { backgroundColor: colors.borderSubtle }]}
+                style={[
+                  styles.separator,
+                  { backgroundColor: colors.borderSubtle },
+                ]}
               />
             ) : null}
             <AnimatedPressable
               accessibilityRole="button"
-              accessibilityLabel={action.label}
+              accessibilityLabel={action.accessibilityLabel || action.label}
               disabled={action.disabled}
               preset="press"
               scale={0.99}
@@ -70,27 +74,18 @@ export function BrainOverflowMenu({
                   action.disabled ? colors.disabledText : colors.textSecondary
                 }
               />
-              <View style={styles.rowMain}>
-                <Text
-                  style={[
-                    styles.rowTitle,
-                    action.disabled ? { color: colors.disabledText } : null,
-                  ]}
-                >
-                  {action.label}
-                </Text>
-                {action.detail ? (
-                  <Text
-                    style={[
-                      styles.rowDetail,
-                      action.disabled ? { color: colors.disabledText } : null,
-                    ]}
-                    numberOfLines={1}
-                  >
-                    {action.detail}
-                  </Text>
-                ) : null}
-              </View>
+              <Text
+                style={[
+                  styles.rowTitle,
+                  action.disabled ? { color: colors.disabledText } : null,
+                ]}
+                numberOfLines={1}
+              >
+                {action.label}
+              </Text>
+              {action.trailing ? (
+                <View style={styles.trailing}>{action.trailing}</View>
+              ) : null}
             </AnimatedPressable>
           </View>
         ))}
@@ -118,31 +113,27 @@ function createStyles(theme: ResolvedZenTheme) {
       marginLeft: 44,
     },
     row: {
-      minHeight: 54,
+      minHeight: 48,
       paddingHorizontal: 4,
       paddingVertical: 10,
       flexDirection: "row",
       alignItems: "center",
       gap: 14,
     },
-    rowMain: {
-      flex: 1,
-      minWidth: 0,
-      gap: 2,
-    },
     rowTitle: {
       ...UiTextMetrics,
+      flex: 1,
+      minWidth: 0,
       color: colors.textPrimary,
       fontFamily: Typography.uiFontMedium,
       fontSize: 16,
       lineHeight: uiLineHeight(16),
     },
-    rowDetail: {
-      ...UiTextMetrics,
-      color: colors.textTertiary,
-      fontFamily: Typography.uiFont,
-      fontSize: 13,
-      lineHeight: uiLineHeight(13),
+    trailing: {
+      flexDirection: "row",
+      alignItems: "center",
+      gap: 6,
+      marginLeft: 8,
     },
   });
 }

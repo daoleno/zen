@@ -397,6 +397,9 @@ func (s *Server) handleClientMessage(conn *websocket.Conn, msg []byte) {
 	case "brain_set_executor":
 		s.handleBrainSetExecutor(conn, raw)
 
+	case "set_delegated_executor":
+		s.handleSetDelegatedExecutor(conn, raw)
+
 	case "brain_chat_new":
 		s.handleBrainChatNew(conn, raw)
 
@@ -1612,6 +1615,54 @@ func (s *Server) handleBrainSetExecutor(conn *websocket.Conn, raw clientMessage)
 	snapshot, err := s.brain.SetHostExecutor(executorID)
 	if err != nil {
 		s.sendErrorWithRequestID(conn, raw.RequestID, "brain_set_executor_failed", err.Error())
+		return
+	}
+	payload, err := s.brainSnapshotWire(snapshot)
+	if err != nil {
+		s.sendErrorWithRequestID(conn, raw.RequestID, "brain_snapshot_failed", err.Error())
+		return
+	}
+	s.sendJSON(conn, map[string]any{
+		"type":       "brain_snapshot",
+		"request_id": raw.RequestID,
+		"brain":      payload,
+	})
+}
+
+// handleSetDelegatedExecutor switches the live/persisted default Agents executor
+// through ExecutorConfig.SetDelegatedExecutor. Existing sessions are not migrated.
+func (s *Server) handleSetDelegatedExecutor(conn *websocket.Conn, raw clientMessage) {
+	if s.execs == nil {
+		s.sendErrorWithRequestID(conn, raw.RequestID, "executors_unavailable", "Executor config is not available.")
+		return
+	}
+	if s.brain == nil {
+		s.sendErrorWithRequestID(conn, raw.RequestID, "brain_unavailable", "Brain is not configured")
+		return
+	}
+	executorID := strings.TrimSpace(raw.ExecutorID)
+	if executorID == "" {
+		executorID = strings.TrimSpace(raw.AdapterID)
+	}
+	if executorID == "" {
+		s.sendErrorWithRequestID(conn, raw.RequestID, "missing_executor", "Delegated executor id is required.")
+		return
+	}
+	if err := s.execs.SetDelegatedExecutor(executorID); err != nil {
+		if errors.Is(err, work.ErrUnknownExecutor) {
+			s.sendErrorWithRequestID(conn, raw.RequestID, "invalid_executor", err.Error())
+			return
+		}
+		if errors.Is(err, work.ErrDelegatedExecutorLocked) {
+			s.sendErrorWithRequestID(conn, raw.RequestID, "delegated_executor_locked_by_env", err.Error())
+			return
+		}
+		s.sendErrorWithRequestID(conn, raw.RequestID, "set_delegated_executor_failed", err.Error())
+		return
+	}
+	snapshot, err := s.brain.Snapshot()
+	if err != nil {
+		s.sendErrorWithRequestID(conn, raw.RequestID, "brain_snapshot_failed", err.Error())
 		return
 	}
 	payload, err := s.brainSnapshotWire(snapshot)
