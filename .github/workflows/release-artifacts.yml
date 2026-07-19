@@ -282,6 +282,7 @@ jobs:
           ANDROID_HOME: ${{ env.ANDROID_HOME }}
           ANDROID_SDK_ROOT: ${{ env.ANDROID_SDK_ROOT }}
           JAVA_HOME: ${{ env.JAVA_HOME }}
+          GRADLE_OPTS: "-Dorg.gradle.jvmargs=-Xmx6g -XX:MaxMetaspaceSize=1g -Dfile.encoding=UTF-8"
         run: |
           set -euo pipefail
           for v in ZEN_ANDROID_KEYSTORE_PASSWORD ZEN_ANDROID_KEY_ALIAS ZEN_ANDROID_KEY_PASSWORD; do

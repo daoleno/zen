@@ -43,6 +43,7 @@ describe('release asset workflow contract', () => {
     expect(workflow).toContain('publish:');
     expect(workflow).toContain('cache: gradle');
     expect(appPackage).toContain('--build-cache');
+    expect(workflow).toContain('-Dorg.gradle.jvmargs=-Xmx6g');
     expect(workflow).toContain('zen-android-native-inputs-');
     expect(workflow).toContain('zen-android-ghostty-output-arm64-');
     expect(workflow).toContain('app/modules/zen-terminal-vt/patches/android/**');

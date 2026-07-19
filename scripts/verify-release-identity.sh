@@ -275,6 +275,8 @@ if "gh release upload" not in wf:
     errors.append("release-artifacts.yml must upload assets via gh release upload")
 if "materialize-android-keystore" not in wf:
     errors.append("release-artifacts.yml must materialize keystore via helper script")
+if "-Dorg.gradle.jvmargs=-Xmx6g" not in wf:
+    errors.append("release-artifacts.yml must provide enough Gradle heap for release dex merging")
 if "ZEN_UPDATE_SIGNING_KEY_BASE64" not in wf:
     errors.append("release-artifacts.yml must use the updater manifest signing secret")
 for asset in (
