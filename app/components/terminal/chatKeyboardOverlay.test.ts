@@ -7,57 +7,68 @@ const source = (relativePath: string) =>
 
 describe("structured chat keyboard overlay", () => {
   test("keeps the timeline fixed and moves one absolute Composer overlay", () => {
-    const frame = source("CodexChatKeyboardFrame.tsx");
+    const frame = source("InterfaceChatKeyboardFrame.tsx");
 
     expect(frame).not.toContain("KeyboardAvoidingView");
     expect(frame).toContain("styles.timelineCanvas");
     expect(frame).toContain("styles.stickyOverlay");
-    expect(frame).toContain("position: \"absolute\"");
-    expect(frame).toContain("structuredChatOverlayTranslateY(");
+    expect(frame).toContain('position: "absolute"');
+    expect(frame).toContain("structuredChatGatedOverlayTranslateY({");
+    expect(frame).toContain('AppState.addEventListener("change"');
+    expect(frame).toContain("useGenericKeyboardHandler(");
+    expect(frame).not.toMatch(/reanimated\.(height|progress)\.value\s*=/);
     expect(frame).toContain("useStructuredChatWindowMode(enabled)");
   });
 
   test("represents keyboard and overlay obstruction as non-lifting content inset", () => {
-    const timeline = source("CodexTimelineView.tsx");
+    const timeline = source("InterfaceTimelineView.tsx");
     const inset = source("StructuredChatInsetScrollView.tsx");
 
     expect(timeline).not.toContain("KeyboardChatScrollView");
     expect(timeline).toContain("StructuredChatInsetScrollView");
     expect(timeline).toContain("clearance={extraContentPadding}");
+    expect(timeline).toContain("keyboardLifecycleGate={keyboardLifecycleGate}");
     expect(inset).not.toContain("useKeyboardHandler");
     expect(inset).not.toContain("useExtraContentPadding");
     expect(inset).not.toMatch(/\bscrollTo\s*\(/);
     expect(inset).not.toContain("contentOffset:");
-    expect(inset).toContain("structuredChatEffectiveClearance");
-    expect(inset).toContain("onLatestOffsetChange");
+    expect(inset).toContain(
+      "structuredChatEffectiveClearanceForKeyboardLifecycle",
+    );
     expect(timeline).not.toContain("TIMELINE_BOTTOM_PADDING");
     expect(timeline).not.toContain("latestContentPadding=");
     expect(inset).not.toContain("latestContentPadding");
-    expect(inset).toContain("paddingTop: inverted\n      ? effectiveClearance.value");
+    expect(inset).toContain(
+      "paddingTop: inverted ? effectiveClearance.value : undefined",
+    );
     expect(inset).toContain(
       "<Reanimated.View style={[styles.webContent, webContentInsetStyle]}",
     );
     expect(inset).not.toMatch(/height:\s*effectiveClearance\.value/);
-    expect(timeline).toContain('Platform.OS === "ios" ? "interactive" : "on-drag"');
+    expect(timeline).toContain(
+      'Platform.OS === "ios" ? "interactive" : "on-drag"',
+    );
   });
 
   test("measures the complete continuously mounted overlay outside timeline content", () => {
-    const body = source("CodexChatBody.tsx");
-    const frame = source("CodexChatKeyboardFrame.tsx");
+    const body = source("InterfaceChatBody.tsx");
+    const frame = source("InterfaceChatKeyboardFrame.tsx");
 
     expect(body).toContain("<TerminalActionPromptCard");
     expect(body).toContain("{composerAccessory}");
-    expect(body).toContain("<CodexChatComposerSection");
+    expect(body).toContain("<InterfaceChatComposerSection");
     expect(body).toContain("composer={composer}");
     expect(body).toContain("portal={skillsSheet}");
     expect(frame).toContain("onLayout={handleComposerLayout}");
-    expect(frame).toContain("renderTimeline(scrollClearance)");
+    expect(frame).toContain(
+      "renderTimeline(scrollClearance, keyboardLifecycleGate)",
+    );
     expect(frame).toContain("structuredChatScrollClearance(");
   });
 
   test("Composer geometry no longer scrolls or pins the timeline", () => {
-    const bodyProps = source("useCodexChatBodyProps.ts");
-    const body = source("CodexChatBody.tsx");
+    const bodyProps = source("useInterfaceChatBodyProps.ts");
+    const body = source("InterfaceChatBody.tsx");
 
     expect(bodyProps).not.toContain("handleComposerHeightChange");
     expect(body).not.toContain("onComposerHeightChange");
@@ -77,7 +88,7 @@ describe("structured chat keyboard overlay", () => {
   });
 
   test("masks timeline alpha without painting a Composer-side background fade", () => {
-    const frame = source("CodexChatKeyboardFrame.tsx");
+    const frame = source("InterfaceChatKeyboardFrame.tsx");
     const contentFade = source("StructuredChatContentFade.tsx");
     const topFade = frame.indexOf("styles.topFade");
 
@@ -95,9 +106,15 @@ describe("structured chat keyboard overlay", () => {
     expect(contentFade).toContain('pointerEvents="none"');
     expect(contentFade).toContain("maskImage");
     expect(contentFade).toContain("structuredChatContentFadeGeometry(");
+    expect(contentFade).toContain(
+      "structuredChatNativeMaskColors(canvasColor)",
+    );
+    expect(contentFade).toContain("backgroundColor: nativeMask.visible");
+    expect(contentFade).toContain(
+      "colors={[nativeMask.visible, nativeMask.hidden]}",
+    );
     expect(contentFade).not.toContain("TerminalThemeChrome");
     expect(contentFade).not.toContain("appBackground");
-    expect(contentFade).not.toContain("canvasColor");
   });
 
   test("exposes one accessible native action per Composer slot on Web", () => {
@@ -107,27 +124,34 @@ describe("structured chat keyboard overlay", () => {
     expect(source("ComposerSendButton.tsx")).not.toContain(
       'from "react-native-gesture-handler"',
     );
-    expect(source("CodexTimelineActivityHeader.tsx")).not.toContain(
+    expect(source("InterfaceTimelineActivityHeader.tsx")).not.toContain(
       'from "react-native-gesture-handler"',
     );
   });
 
   test("keeps primary and structured Agent Chat headers in overlay layout", () => {
     const primaryShell = source("../navigation/PrimaryDrawerShell.tsx");
-    const terminalLayout = source("../../app/terminal/TerminalScreenLayout.tsx");
+    const terminalLayout = source(
+      "../../app/terminal/TerminalScreenLayout.tsx",
+    );
 
     expect(primaryShell).toContain("styles.appBarOverlay,");
-    expect(primaryShell).not.toContain('floating={activePrimaryRoute === "brain"}');
-    expect(primaryShell).not.toContain("floating ? styles.appBarFloating : null");
-    expect(terminalLayout).toContain(
-      "const floatingChatChrome = viewportProps.showCodexChat",
+    expect(primaryShell).not.toContain(
+      'floating={activePrimaryRoute === "brain"}',
     );
-    expect(terminalLayout.indexOf("<TerminalTopBar {...topBarProps}"))
-      .toBeLessThan(terminalLayout.indexOf("<TerminalViewport"));
+    expect(primaryShell).not.toContain(
+      "floating ? styles.appBarFloating : null",
+    );
+    expect(terminalLayout).toContain(
+      "const floatingChatChrome = viewportProps.showInterfaceChat",
+    );
+    expect(
+      terminalLayout.indexOf("<TerminalTopBar {...topBarProps}"),
+    ).toBeLessThan(terminalLayout.indexOf("<TerminalViewport"));
   });
 
   test("grows the production multiline input from wrapped content", () => {
-    const input = source("CodexComposerInput.tsx");
+    const input = source("InterfaceComposerInput.tsx");
     const demo = source("../../app/screenshot-demo.tsx");
 
     expect(input).toContain("onContentSizeChange={handleContentSizeChange}");
@@ -139,12 +163,16 @@ describe("structured chat keyboard overlay", () => {
   });
 
   test("keeps floating Agent navigation first in accessibility traversal", () => {
-    const terminalLayout = source("../../app/terminal/TerminalScreenLayout.tsx");
+    const terminalLayout = source(
+      "../../app/terminal/TerminalScreenLayout.tsx",
+    );
 
-    expect(terminalLayout.indexOf("styles.headerOverlay"))
-      .toBeLessThan(terminalLayout.indexOf("<TerminalViewport"));
-    expect(terminalLayout.indexOf("<TerminalTopBar {...topBarProps}"))
-      .toBeLessThan(terminalLayout.indexOf("<TerminalViewport"));
+    expect(terminalLayout.indexOf("styles.headerOverlay")).toBeLessThan(
+      terminalLayout.indexOf("<TerminalViewport"),
+    );
+    expect(
+      terminalLayout.indexOf("<TerminalTopBar {...topBarProps}"),
+    ).toBeLessThan(terminalLayout.indexOf("<TerminalViewport"));
   });
 
   test("uses the production fixed canvas for the Brain fixture", () => {
@@ -154,9 +182,9 @@ describe("structured chat keyboard overlay", () => {
       demo.indexOf("function SessionsDemo()"),
     );
 
-    expect(brain).toContain("<CodexChatKeyboardFrame");
-    expect(brain).toContain("<CodexTimelineView");
-    expect(brain).toContain("<CodexChatComposer");
+    expect(brain).toContain("<InterfaceChatKeyboardFrame");
+    expect(brain).toContain("<InterfaceTimelineView");
+    expect(brain).toContain("<InterfaceChatComposer");
     expect(brain).toContain("topChromeInset={topChromeInset}");
     expect(brain).not.toContain("<DemoTimeline");
     expect(brain).not.toContain("<DemoComposer");
@@ -165,13 +193,12 @@ describe("structured chat keyboard overlay", () => {
   test("the isolated Web fixture renders production timeline and Composer primitives", () => {
     const demo = source("../../app/screenshot-demo.tsx");
 
-    expect(demo).toContain("<CodexChatKeyboardFrame");
-    expect(demo).toContain("<CodexTimelineView");
-    expect(demo).toContain("<CodexChatComposer");
-    expect(demo).toContain("useCodexTimelineItems({");
+    expect(demo).toContain("<InterfaceChatKeyboardFrame");
+    expect(demo).toContain("<InterfaceTimelineView");
+    expect(demo).toContain("<InterfaceChatComposer");
+    expect(demo).toContain("useInterfaceTimelineItems({");
     expect(demo).toContain("runningActivity,");
     expect(demo).toContain("showAttachmentRail");
     expect(demo).toContain("showStopButton={working && !hasContent}");
-    expect(demo).toContain("onLatestOffsetChange={handleLatestOffsetChange}");
   });
 });

@@ -9,6 +9,9 @@ EXPECTED_BUNDLE_ID="${ZEN_IOS_BUNDLE_ID:-com.daoleno.zen}"
 EXPECTED_DISPLAY_NAME="${ZEN_IOS_DISPLAY_NAME:-Zen}"
 EXPECTED_BUILD_NUMBER="${ZEN_IOS_BUILD_NUMBER:-}"
 EXPECTED_VERSION="${ZEN_IOS_VERSION:-}"
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+NOTICE_SRC="${ZEN_IOS_NOTICE_SRC:-$ROOT/app/assets/notices/GHOSTTY-MIT.txt}"
+NOTICE_BUNDLE_REL="${ZEN_IOS_NOTICE_BUNDLE_REL:-GHOSTTY-MIT.txt}"
 
 usage() {
   echo "usage: $0 simulator path/to/Zen.app | ipa path/to/Zen.ipa" >&2
@@ -17,6 +20,24 @@ usage() {
 
 [[ "$MODE" == "simulator" || "$MODE" == "ipa" ]] || usage
 [[ -n "$ARTIFACT" ]] || usage
+
+verify_ghostty_notice() {
+  local app="$1"
+  local notice="$app/$NOTICE_BUNDLE_REL"
+  [[ -f "$NOTICE_SRC" ]] || {
+    echo "error: Ghostty MIT notice source missing: $NOTICE_SRC" >&2
+    exit 1
+  }
+  [[ -f "$notice" ]] || {
+    echo "error: app bundle missing Ghostty MIT notice at $NOTICE_BUNDLE_REL" >&2
+    exit 1
+  }
+  if ! cmp -s "$NOTICE_SRC" "$notice"; then
+    echo "error: bundled Ghostty MIT notice differs from $NOTICE_SRC" >&2
+    exit 1
+  fi
+  echo "ok: Ghostty MIT notice present at $NOTICE_BUNDLE_REL"
+}
 
 verify_app() {
   local app="$1"
@@ -55,6 +76,8 @@ verify_app() {
     echo "error: app executable is not Mach-O" >&2
     exit 1
   }
+
+  verify_ghostty_notice "$app"
 
   if [[ "$require_signature" == "yes" ]]; then
     [[ -f "$app/embedded.mobileprovision" ]] || {

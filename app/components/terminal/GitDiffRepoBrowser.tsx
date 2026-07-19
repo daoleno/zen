@@ -19,7 +19,7 @@ import type {
 } from "../../services/gitDiff";
 import { GitDiffRepoFileView } from "./GitDiffRepoFileView";
 import { GitDiffStateCard } from "./GitDiffStateCard";
-import { withAlpha } from "./gitDiffColor";
+import { withAlpha } from "./colorWithAlpha";
 
 interface GitDiffRepoBrowserProps {
   repoTitle: string;
@@ -182,14 +182,22 @@ function RepoBrowserHeader({
           <Ionicons name="arrow-up" size={16} color={chrome.textMuted} />
         </TouchableOpacity>
         <View style={styles.browserPathCopy}>
-          <Text style={[styles.browserRepoTitle, { color: chrome.text }]} numberOfLines={1}>
+          <Text
+            style={[styles.browserRepoTitle, { color: chrome.text }]}
+            numberOfLines={1}
+          >
             {repoTitle}
           </Text>
-          <Text style={[styles.browserPathText, { color: chrome.textMuted }]} numberOfLines={2}>
+          <Text
+            style={[styles.browserPathText, { color: chrome.textMuted }]}
+            numberOfLines={2}
+          >
             {path ? `/${path}` : "/"}
           </Text>
         </View>
-        {loading ? <ActivityIndicator size="small" color={theme.cursor} /> : null}
+        {loading ? (
+          <ActivityIndicator size="small" color={theme.cursor} />
+        ) : null}
       </View>
 
       {error ? (
@@ -239,13 +247,23 @@ function RepoEntryRow({
         color={isDirectory ? theme.yellow : chrome.textSubtle}
       />
       <View style={styles.repoEntryCopy}>
-        <Text style={[styles.repoEntryName, { color: chrome.text }]} numberOfLines={2}>
+        <Text
+          style={[styles.repoEntryName, { color: chrome.text }]}
+          numberOfLines={2}
+        >
           {entry.name}
         </Text>
       </View>
       {changed ? (
-        <View style={[styles.changedPill, { backgroundColor: withAlpha(theme.cursor, 0.12) }]}>
-          <Text style={[styles.changedPillText, { color: theme.cursor }]}>Changed</Text>
+        <View
+          style={[
+            styles.changedPill,
+            { backgroundColor: withAlpha(theme.cursor, 0.12) },
+          ]}
+        >
+          <Text style={[styles.changedPillText, { color: theme.cursor }]}>
+            Changed
+          </Text>
         </View>
       ) : null}
       <Ionicons

@@ -5,6 +5,46 @@ import {
   type SessionResourceSnapshot,
 } from "../../services/sessionResourceSnapshot";
 
+export type SessionResourceHostSupport = {
+  placement: "pool" | "footer";
+  label: string;
+  accessibilityLabel: string;
+};
+
+export type SessionResourceHostPresentation =
+  | { state: "missing" }
+  | { state: "healthy"; support?: SessionResourceHostSupport }
+  | { state: "unavailable"; support: SessionResourceHostSupport }
+  | {
+      state: "pressure";
+      warning: {
+        title: "Limited memory headroom";
+        available?: string;
+        availableExact?: string;
+        note: "Agents may wait for memory headroom";
+        accessibilityLabel: string;
+      };
+    };
+
+export type SessionResourceHostSections = {
+  poolSupport?: SessionResourceHostSupport;
+  footerSupport?: SessionResourceHostSupport;
+  warning?: Extract<
+    SessionResourceHostPresentation,
+    { state: "pressure" }
+  >["warning"];
+};
+
+export function resolveSessionResourceHostSections(
+  host: SessionResourceHostPresentation,
+): SessionResourceHostSections {
+  if (host.state === "pressure") return { warning: host.warning };
+  if (host.state === "missing" || !host.support) return {};
+  return host.support.placement === "pool"
+    ? { poolSupport: host.support }
+    : { footerSupport: host.support };
+}
+
 /** Compact sheet projection: labels + optional clamped bar shares. */
 export type SessionResourcePresentation = {
   memoryLabel: string | null;
@@ -18,6 +58,7 @@ export type SessionResourcePresentation = {
   showSessionHero: boolean;
 
   poolSummary?: string;
+  showPoolCard: boolean;
   skewNote?: string;
   otherLabel?: string;
   /** Omitted without a trustworthy hard max. Shares are geometry-only. */
@@ -30,11 +71,7 @@ export type SessionResourcePresentation = {
     split: boolean;
   };
 
-  hostAvailable?: string;
-  hostAvailableExact?: string;
-  hostStatus?: "ok" | "wait";
-  hostChip?: string;
-  hostNote?: string;
+  host: SessionResourceHostPresentation;
 
   metaLine?: string;
   workspace?: string;
@@ -103,11 +140,6 @@ export function buildSessionResourceViewModel(
     typeof sessionBytes === "number" &&
     typeof poolCurrent === "number";
 
-  const { hostStatus, hostChip, hostNote } = hostCopy(host ?? null);
-  const hostAvailable = formatByteSize(host?.available_bytes) ?? undefined;
-  const hostAvailableExact =
-    formatExactBytesLabel(host?.available_bytes) ?? undefined;
-
   const metaLine = [
     (session.executor || session.command)?.trim() || undefined,
     [session.status, session.phase].filter(Boolean).join(" · ") || undefined,
@@ -119,8 +151,7 @@ export function buildSessionResourceViewModel(
   const unmanagedNote = managed ? undefined : "Not resource-managed by Zen";
   const peakLabel = peak ? `Peak ${peak}` : undefined;
   const showSessionHero =
-    managed &&
-    (memoryLabel != null || peakLabel != null || tasks != null);
+    managed && (memoryLabel != null || peakLabel != null || tasks != null);
   const skewNote =
     showPool && skewed
       ? "Session and pool readings updated separately"
@@ -139,6 +170,8 @@ export function buildSessionResourceViewModel(
     split && otherBytes != null
       ? `Other Agents · ${formatByteSize(otherBytes) ?? "—"}`
       : undefined;
+  const showPoolCard = !!(poolSummary || bar || skewNote);
+  const hostPresentation = buildHostPresentation(host ?? null, showPoolCard);
 
   const accessibilityLabel = [
     unmanagedNote,
@@ -150,10 +183,7 @@ export function buildSessionResourceViewModel(
     qualifier,
     poolSummary ? `Shared pool ${poolSummary}` : null,
     skewNote,
-    hostAvailable
-      ? `Host available ${hostAvailableExact ?? hostAvailable}`
-      : null,
-    hostNote,
+    hostAccessibilityLabel(hostPresentation),
     metaLine || null,
   ]
     .filter(Boolean)
@@ -168,46 +198,86 @@ export function buildSessionResourceViewModel(
     unmanagedNote,
     showSessionHero,
     poolSummary,
+    showPoolCard,
     skewNote,
     otherLabel,
     bar,
-    hostAvailable,
-    hostAvailableExact,
-    hostStatus,
-    hostChip,
-    hostNote,
+    host: hostPresentation,
     metaLine: metaLine || undefined,
     workspace: session.cwd?.trim() || undefined,
     accessibilityLabel,
   };
 }
 
-function hostCopy(host: SessionResourceSnapshot["host"]): {
-  hostStatus?: "ok" | "wait";
-  hostChip?: string;
-  hostNote?: string;
-} {
-  if (!host) return {};
+function buildHostPresentation(
+  host: SessionResourceSnapshot["host"],
+  showPoolCard: boolean,
+): SessionResourceHostPresentation {
+  if (!host) return { state: "missing" };
   const available = formatByteSize(host.available_bytes);
-  if (!available && !host.pressure) return {};
+  const availableExact =
+    formatExactBytesLabel(host.available_bytes) ?? undefined;
+  const placement = showPoolCard ? "pool" : "footer";
+
   if (host.pressure === "ok") {
     return {
-      hostStatus: "ok",
-      hostChip: "Enough memory headroom",
-      // Positive headroom keeps the chip only; no redundant reassurance note.
+      state: "healthy",
+      support: available
+        ? {
+            placement,
+            label: `Host · ${available} available`,
+            accessibilityLabel: `Host available ${availableExact ?? available}`,
+          }
+        : undefined,
     };
   }
   if (host.pressure === "pressure") {
+    const title = "Limited memory headroom";
+    const note = "Agents may wait for memory headroom";
     return {
-      hostStatus: "wait",
-      hostChip: "Limited memory headroom",
-      hostNote: "Agents may wait for memory headroom",
+      state: "pressure",
+      warning: {
+        title,
+        available: available ?? undefined,
+        availableExact,
+        note,
+        accessibilityLabel: [
+          title,
+          available ? `Host available ${availableExact ?? available}` : null,
+          note,
+        ]
+          .filter(Boolean)
+          .join(". "),
+      },
     };
   }
+
+  const unavailableLabel = "Memory headroom state unavailable";
   return {
-    hostChip: "Host headroom",
-    hostNote: "Memory headroom state unavailable",
+    state: "unavailable",
+    support: {
+      placement,
+      label: available
+        ? `Host · ${available} available · Headroom state unavailable`
+        : `Host · ${unavailableLabel}`,
+      accessibilityLabel: [
+        available ? `Host available ${availableExact ?? available}` : null,
+        unavailableLabel,
+      ]
+        .filter(Boolean)
+        .join(". "),
+    },
   };
+}
+
+function hostAccessibilityLabel(
+  host: SessionResourceHostPresentation,
+): string | null {
+  if (host.state === "pressure") return host.warning.accessibilityLabel;
+  if (host.state === "healthy" || host.state === "unavailable") {
+    return host.support?.accessibilityLabel ?? null;
+  }
+  return null;
 }
 
 /** Geometry shares only; never invent a denominator or skew filler. */
@@ -232,7 +302,11 @@ function poolBar(
 
   let session = 0;
   let other = 0;
-  if (split && typeof sessionBytes === "number" && typeof poolCurrent === "number") {
+  if (
+    split &&
+    typeof sessionBytes === "number" &&
+    typeof poolCurrent === "number"
+  ) {
     session = clamp01(sessionBytes / poolMax);
     other = clamp01(Math.max(poolCurrent - sessionBytes, 0) / poolMax);
   } else {

@@ -10,7 +10,7 @@ import { Ionicons } from "@expo/vector-icons";
 import { Typography } from "../../constants/tokens";
 import { buildTerminalChrome } from "../../constants/terminalThemes";
 import type { GitDiffStatusSnapshot } from "../../services/gitDiff";
-import { withAlpha } from "./gitDiffColor";
+import { withAlpha } from "./colorWithAlpha";
 
 export type GitDiffSheetTab = "diff" | "browser";
 
@@ -56,12 +56,22 @@ export function GitDiffSheetTopChrome({
 
         <View style={styles.headerCopy}>
           <View style={styles.titleRow}>
-            <Ionicons name="git-branch-outline" size={15} color={chrome.textMuted} />
-            <Text style={[styles.title, { color: chrome.text }]} numberOfLines={1}>
+            <Ionicons
+              name="git-branch-outline"
+              size={15}
+              color={chrome.textMuted}
+            />
+            <Text
+              style={[styles.title, { color: chrome.text }]}
+              numberOfLines={1}
+            >
               Git Diff
             </Text>
           </View>
-          <Text style={[styles.subtitle, { color: chrome.textMuted }]} numberOfLines={1}>
+          <Text
+            style={[styles.subtitle, { color: chrome.textMuted }]}
+            numberOfLines={1}
+          >
             {buildSubtitle(snapshot)}
           </Text>
         </View>
@@ -99,7 +109,10 @@ export function GitDiffSheetTopChrome({
               />
             </View>
             <View style={styles.modeSummaryWrap}>
-              <Text style={[styles.modeSummary, { color: chrome.textMuted }]} numberOfLines={2}>
+              <Text
+                style={[styles.modeSummary, { color: chrome.textMuted }]}
+                numberOfLines={2}
+              >
                 {buildCompactSummary(snapshot)}
               </Text>
             </View>
@@ -116,7 +129,9 @@ export function GitDiffSheetTopChrome({
                 activeOpacity={0.82}
                 hitSlop={{ top: 6, right: 6, bottom: 6, left: 6 }}
               >
-                <Text style={[styles.collapseAllText, { color: chrome.textMuted }]}>
+                <Text
+                  style={[styles.collapseAllText, { color: chrome.textMuted }]}
+                >
                   {allDiffFilesCollapsed ? "Expand all" : "Collapse all"}
                 </Text>
               </TouchableOpacity>

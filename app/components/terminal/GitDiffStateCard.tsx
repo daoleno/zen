@@ -1,13 +1,8 @@
 import React from "react";
-import {
-  ActivityIndicator,
-  StyleSheet,
-  Text,
-  View,
-} from "react-native";
+import { ActivityIndicator, StyleSheet, Text, View } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 import { Typography } from "../../constants/tokens";
-import { withAlpha } from "./gitDiffColor";
+import { withAlpha } from "./colorWithAlpha";
 
 interface GitDiffStateCardProps {
   icon: keyof typeof Ionicons.glyphMap;
@@ -32,7 +27,10 @@ export function GitDiffStateCard({
     <View
       style={[
         styles.stateCard,
-        { borderColor: withAlpha(accent, 0.24), backgroundColor: withAlpha(accent, 0.08) },
+        {
+          borderColor: withAlpha(accent, 0.24),
+          backgroundColor: withAlpha(accent, 0.08),
+        },
       ]}
     >
       {busy ? (

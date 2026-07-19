@@ -8,7 +8,7 @@ describe("resolveTerminalSurfaceMountPolicy", () => {
       resolveTerminalSurfaceMountPolicy({
         canRenderTerminal: true,
         screenFocused: true,
-        showCodexChat: true,
+        showInterfaceChat: true,
       }),
     ).toEqual({
       shouldMountTerminalSurface: true,
@@ -22,7 +22,7 @@ describe("resolveTerminalSurfaceMountPolicy", () => {
       resolveTerminalSurfaceMountPolicy({
         canRenderTerminal: true,
         screenFocused: true,
-        showCodexChat: false,
+        showInterfaceChat: false,
       }),
     ).toEqual({
       shouldMountTerminalSurface: true,
@@ -36,7 +36,7 @@ describe("resolveTerminalSurfaceMountPolicy", () => {
       resolveTerminalSurfaceMountPolicy({
         canRenderTerminal: true,
         screenFocused: false,
-        showCodexChat: false,
+        showInterfaceChat: false,
       }),
     ).toEqual({
       shouldMountTerminalSurface: false,
@@ -48,7 +48,7 @@ describe("resolveTerminalSurfaceMountPolicy", () => {
       resolveTerminalSurfaceMountPolicy({
         canRenderTerminal: false,
         screenFocused: true,
-        showCodexChat: false,
+        showInterfaceChat: false,
       }),
     ).toEqual({
       shouldMountTerminalSurface: false,

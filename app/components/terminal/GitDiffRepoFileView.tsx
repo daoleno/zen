@@ -1,10 +1,5 @@
 import React from "react";
-import {
-  StyleSheet,
-  Text,
-  TouchableOpacity,
-  View,
-} from "react-native";
+import { StyleSheet, Text, TouchableOpacity, View } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 import { Typography } from "../../constants/tokens";
 import {
@@ -14,7 +9,7 @@ import {
 import type { GitRepoFileContentPayload } from "../../services/gitDiff";
 import { GitDiffCodeSnapshotPanel } from "./GitDiffCodeView";
 import { GitDiffStateCard } from "./GitDiffStateCard";
-import { withAlpha } from "./gitDiffColor";
+import { withAlpha } from "./colorWithAlpha";
 
 interface GitDiffRepoFileViewProps {
   repoTitle: string;
@@ -41,7 +36,9 @@ export function GitDiffRepoFileView({
 }: GitDiffRepoFileViewProps) {
   return (
     <View style={styles.repoFileRoot}>
-      <View style={[styles.repoFileHeader, { borderBottomColor: chrome.border }]}>
+      <View
+        style={[styles.repoFileHeader, { borderBottomColor: chrome.border }]}
+      >
         <TouchableOpacity
           style={[
             styles.repoFileBack,
@@ -56,16 +53,29 @@ export function GitDiffRepoFileView({
           <Ionicons name="chevron-back" size={17} color={chrome.textMuted} />
         </TouchableOpacity>
         <View style={styles.repoFileCopy}>
-          <Text style={[styles.repoFileTitle, { color: chrome.text }]} numberOfLines={2}>
+          <Text
+            style={[styles.repoFileTitle, { color: chrome.text }]}
+            numberOfLines={2}
+          >
             {pathBaseName(path)}
           </Text>
-          <Text style={[styles.repoFilePath, { color: chrome.textMuted }]} numberOfLines={1}>
+          <Text
+            style={[styles.repoFilePath, { color: chrome.textMuted }]}
+            numberOfLines={1}
+          >
             {[repoTitle, pathDirectoryName(path)].filter(Boolean).join(" / ")}
           </Text>
         </View>
         {changed ? (
-          <View style={[styles.changedPill, { backgroundColor: withAlpha(theme.cursor, 0.12) }]}>
-            <Text style={[styles.changedPillText, { color: theme.cursor }]}>Changed</Text>
+          <View
+            style={[
+              styles.changedPill,
+              { backgroundColor: withAlpha(theme.cursor, 0.12) },
+            ]}
+          >
+            <Text style={[styles.changedPillText, { color: theme.cursor }]}>
+              Changed
+            </Text>
           </View>
         ) : null}
       </View>

@@ -1,20 +1,18 @@
 import React from "react";
 import MaskedView from "@react-native-masked-view/masked-view";
 import { LinearGradient } from "expo-linear-gradient";
-import {
-  Platform,
-  StyleSheet,
-  View,
-  type ViewStyle,
-} from "react-native";
+import { Platform, StyleSheet, View, type ViewStyle } from "react-native";
 import Reanimated, {
   useAnimatedStyle,
   type SharedValue,
 } from "react-native-reanimated";
-import { structuredChatContentFadeGeometry } from "./chatKeyboardOverlayPolicy";
+import {
+  structuredChatContentFadeGeometry,
+  structuredChatNativeMaskColors,
+} from "./chatKeyboardOverlayPolicy";
 
-const MASK_VISIBLE = "rgba(255, 255, 255, 1)";
-const MASK_HIDDEN = "rgba(255, 255, 255, 0)";
+const WEB_MASK_VISIBLE = "rgba(255, 255, 255, 1)";
+const WEB_MASK_HIDDEN = "rgba(255, 255, 255, 0)";
 const AnimatedLinearGradient =
   Reanimated.createAnimatedComponent(LinearGradient);
 
@@ -30,6 +28,7 @@ type WebMaskStyle = ViewStyle & {
 };
 
 interface StructuredChatContentFadeProps {
+  canvasColor: string;
   composerHeight: SharedValue<number>;
   overlayTranslateY: SharedValue<number>;
   children: React.ReactNode;
@@ -40,10 +39,12 @@ interface StructuredChatContentFadeProps {
  * the continuous page canvas shows through without drawing a scrim or band.
  */
 export function StructuredChatContentFade({
+  canvasColor,
   composerHeight,
   overlayTranslateY,
   children,
 }: StructuredChatContentFadeProps) {
+  const nativeMask = structuredChatNativeMaskColors(canvasColor);
   const opaqueMaskStyle = useAnimatedStyle(() => {
     const geometry = structuredChatContentFadeGeometry(
       composerHeight.value,
@@ -68,10 +69,10 @@ export function StructuredChatContentFade({
     );
     const maskImage = [
       "linear-gradient(to bottom,",
-      `${MASK_VISIBLE} 0,`,
-      `${MASK_VISIBLE} calc(100% - ${geometry.opaqueBottomInset}px),`,
-      `${MASK_HIDDEN} calc(100% - ${geometry.transparentBottomInset}px),`,
-      `${MASK_HIDDEN} 100%)`,
+      `${WEB_MASK_VISIBLE} 0,`,
+      `${WEB_MASK_VISIBLE} calc(100% - ${geometry.opaqueBottomInset}px),`,
+      `${WEB_MASK_HIDDEN} calc(100% - ${geometry.transparentBottomInset}px),`,
+      `${WEB_MASK_HIDDEN} 100%)`,
     ].join(" ");
 
     return {
@@ -100,10 +101,16 @@ export function StructuredChatContentFade({
       style={styles.container}
       maskElement={
         <View pointerEvents="none" style={styles.maskCanvas}>
-          <Reanimated.View style={[styles.opaqueMask, opaqueMaskStyle]} />
+          <Reanimated.View
+            style={[
+              styles.opaqueMask,
+              opaqueMaskStyle,
+              { backgroundColor: nativeMask.visible },
+            ]}
+          />
           <AnimatedLinearGradient
             pointerEvents="none"
-            colors={[MASK_VISIBLE, MASK_HIDDEN]}
+            colors={[nativeMask.visible, nativeMask.hidden]}
             locations={[0, 1]}
             start={{ x: 0.5, y: 0 }}
             end={{ x: 0.5, y: 1 }}
@@ -130,7 +137,6 @@ const styles = StyleSheet.create({
     top: 0,
     right: 0,
     left: 0,
-    backgroundColor: MASK_VISIBLE,
   },
   fadeMask: {
     position: "absolute",

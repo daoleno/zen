@@ -8,7 +8,7 @@ import {
 } from "./connectionLifecycle";
 import { brainReducer, initialBrainState } from "../store/brain";
 import { buildChatComposerPlaceholder } from "./chatComposerPresentation";
-import { buildCodexStatusMeta } from "../components/terminal/CodexChatControllerModel";
+import { buildInterfaceStatusMeta } from "../components/terminal/InterfaceChatControllerModel";
 
 const hydratedBrain = {
   agents: [{ id: "host-1", name: "Brain", status: "running" }],
@@ -170,10 +170,7 @@ describe("Brain cache across background->foreground resume", () => {
 describe("resolveBrainActiveServerId during resume", () => {
   test("prefers hydrated server while reconnecting (not connected)", () => {
     const id = resolveBrainActiveServerId({
-      servers: [
-        { id: "other" },
-        { id: "brain-host" },
-      ],
+      servers: [{ id: "other" }, { id: "brain-host" }],
       connectedServerIds: [],
       brainHydratedByServer: { "brain-host": true },
       connectionStates: {
@@ -218,7 +215,7 @@ describe("resume presentation for composer and status", () => {
 
   test("status meta shows Reconnecting while resuming", () => {
     expect(
-      buildCodexStatusMeta({
+      buildInterfaceStatusMeta({
         connectionState: "connecting",
         connectionIssue: null,
         conversation: null,
@@ -229,7 +226,7 @@ describe("resume presentation for composer and status", () => {
 
   test("connection issue surfaces genuine failure after resume attempts", () => {
     expect(
-      buildCodexStatusMeta({
+      buildInterfaceStatusMeta({
         connectionState: "connecting",
         connectionIssue: {
           code: "network_unreachable",

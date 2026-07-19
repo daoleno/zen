@@ -2,7 +2,7 @@ import React, { useMemo } from "react";
 import type { TerminalThemeChrome } from "../../constants/terminalThemes";
 import type { AgentKind } from "../../services/agentPresentation";
 import type { TerminalFlavor } from "../../services/terminalFlavor";
-import type { StoredCodexRenderMode } from "../../services/storage";
+import type { StoredInterfaceRenderMode } from "../../services/storage";
 import { TelegramChatHeader } from "./TelegramChatHeader";
 
 export interface TerminalTopBarGitDiffPresentation {
@@ -23,7 +23,7 @@ export interface TerminalTopBarProps {
   backgroundColor: string;
   chrome: TerminalThemeChrome;
   menuAnchorRef: React.RefObject<import("react-native").View | null>;
-  codexRenderMode: StoredCodexRenderMode;
+  interfaceRenderMode: StoredInterfaceRenderMode;
   gitDiffDisabled: boolean;
   gitDiffPresentation: TerminalTopBarGitDiffPresentation;
   isStructuredChatAgent: boolean;
@@ -32,7 +32,7 @@ export interface TerminalTopBarProps {
   onOpenSessionDetails(): void;
   onOpenGitDiff(): void;
   onOpenMenu(): void;
-  onToggleCodexRenderMode(): void;
+  onToggleInterfaceRenderMode(): void;
 }
 
 export function TerminalTopBar({

@@ -75,6 +75,60 @@ func TestParseCursorConversation_BuildsMarkdownMessagesAndTools(t *testing.T) {
 	}
 }
 
+func TestParseCursorConversation_PreservesLongCompletedAssistantMarkdown(t *testing.T) {
+	const suffix = "ZEN_CURSOR_SUFFIX_VERTICAL_SLICE_9f3a"
+	body := longCompletedAssistantMarkdown(suffix)
+	toolPad := strings.Repeat("o", maxCodexConversationBody+200)
+	path := filepath.Join(t.TempDir(), "cursor-long.jsonl")
+	writeJSONL(t, path,
+		map[string]any{
+			"role": "user",
+			"message": map[string]any{
+				"content": []map[string]any{{"type": "text", "text": "<user_query>\nlong answer please\n</user_query>"}},
+			},
+		},
+		map[string]any{
+			"role": "assistant",
+			"message": map[string]any{
+				"content": []map[string]any{
+					{"type": "text", "text": body},
+					{
+						"type": "tool_use",
+						"name": "Read",
+						"input": map[string]any{
+							"path": "/repo/zen/fixtures/long-tool-pad.txt",
+							"pad":  toolPad,
+						},
+					},
+				},
+			},
+		},
+		map[string]any{"type": "turn_ended", "status": "completed"},
+	)
+
+	got, err := parseCursorConversation(path)
+	if err != nil {
+		t.Fatalf("parseCursorConversation: %v", err)
+	}
+	assertUncappedAssistantMarkdown(t, got.Events, suffix)
+	var tool *CodexConversationEvent
+	for i := range got.Events {
+		if got.Events[i].Kind == "tool" {
+			tool = &got.Events[i]
+			break
+		}
+	}
+	if tool == nil {
+		t.Fatalf("missing tool event: %#v", got.Events)
+	}
+	if !strings.HasSuffix(tool.Input, "...") {
+		t.Fatalf("tool input should remain payload-capped with ellipsis: %#v", tool)
+	}
+	if len([]rune(tool.Input)) > maxCodexConversationBody {
+		t.Fatalf("tool input runes = %d, want <= %d", len([]rune(tool.Input)), maxCodexConversationBody)
+	}
+}
+
 func TestProviderConversationReaderCursorFindsProjectTranscript(t *testing.T) {
 	home := t.TempDir()
 	cwd := "/home/daoleno/workspace/pacagent"

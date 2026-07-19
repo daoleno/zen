@@ -640,6 +640,271 @@ func TestGrokCommandNeedsInputReadinessWait(t *testing.T) {
 	}
 }
 
+func TestClaudeInputReadyRequiresAllThreeIndicators(t *testing.T) {
+	const bypassFooter = "  ⏵⏵ bypass permissions on (shift+tab to cycle) · ← for agents"
+	const manualFooter = "⏸ manual mode on · ? for shortcuts · ← for agents"
+	// Exact untouched ready pane from configured-Claude probe @224.
+	readyLive := "" +
+		" ▐▛███▜▌   Claude Code v2.1.214\n" +
+		"▝▜█████▛▘  Haiku 4.5 · API Usage Billing\n" +
+		"  ▘▘ ▝▝    ~/workspace/zen\n" +
+		"\n\n" +
+		"────────────────────────────────────────\n" +
+		"❯\u00a0\n" +
+		"────────────────────────────────────────\n" +
+		bypassFooter
+
+	// Startup screen: has version but not composer or mode footer.
+	startup := "Claude Code v2.1.214\nLoading...\n"
+	if isAgentInputReady("claude", startup) {
+		t.Fatal("Claude startup without composer should not be input-ready")
+	}
+
+	// Safety screen: has version and footer but no empty composer line.
+	safety := "Claude Code v2.1.214\nPermissions request\n" + bypassFooter + "\n"
+	if isAgentInputReady("claude", safety) {
+		t.Fatal("Claude safety screen without empty composer should not be input-ready")
+	}
+
+	// Nonempty draft: has version, composer glyph, and footer but composer is not empty.
+	draft := "Claude Code v2.1.214\nSome text in the composer\n❯ more draft\n" + bypassFooter + "\n"
+	if isAgentInputReady("claude", draft) {
+		t.Fatal("Claude with nonempty draft should not be input-ready")
+	}
+
+	// NBSP after ❯ plus draft text is still a nonempty composer.
+	draftNBSP := "Claude Code v2.1.214\n❯\u00a0typed draft\n" + bypassFooter + "\n"
+	if isAgentInputReady("claude", draftNBSP) {
+		t.Fatal("Claude with NBSP-padded nonempty draft should not be input-ready")
+	}
+
+	// Arbitrary Claude mention with ctrl should not match without all three.
+	arbitrary := "Claude can ctrl+c to exit\nSome content\n"
+	if isAgentInputReady("claude", arbitrary) {
+		t.Fatal("Claude with arbitrary content and ctrl mention should not be input-ready")
+	}
+
+	if !isAgentInputReady("claude", readyLive) {
+		t.Fatal("exact @224 Claude ready pane with NBSP composer should be input-ready")
+	}
+
+	// Ready state: version + empty NBSP composer + mode footer (manual mode).
+	readyManual := "Claude Code v2.1.214\nMessages here\n\n❯\u00a0\n" + manualFooter + "\n"
+	if !isAgentInputReady("claude", readyManual) {
+		t.Fatal("Claude with empty NBSP composer and manual mode footer should be input-ready")
+	}
+
+	// Version number can vary and must not pin major version 2.
+	readyV2150 := "Claude Code v2.1.50\n\n❯\u00a0\n" + manualFooter + "\n"
+	if !isAgentInputReady("claude", readyV2150) {
+		t.Fatal("Claude v2.1.50 with ready state should be input-ready")
+	}
+	readyV3 := "Claude Code v3.0.1\n\n❯\u00a0\n" + bypassFooter + "\n"
+	if !isAgentInputReady("claude", readyV3) {
+		t.Fatal("Claude v3.0.1 with NBSP empty composer should be input-ready")
+	}
+}
+
+func TestClaudeCommandDetection(t *testing.T) {
+	if !needsInputReadinessWait("claude", "") {
+		t.Fatal("Claude command should require readiness wait")
+	}
+	if !isClaudeCommand("claude") {
+		t.Fatal("bare claude should be detected")
+	}
+	if !isClaudeCommand("cc --profile test") {
+		t.Fatal("claude alias cc should be detected")
+	}
+	if !isClaudeCommand("/usr/local/bin/claude --add-dir /tmp") {
+		t.Fatal("absolute path claude should be detected")
+	}
+}
+
+func TestProviderCommandDetectionDirectAndEnvWrapped(t *testing.T) {
+	const zenPathWrap = "env PATH='/opt/zen/bin':$PATH"
+	// Exact Host form from withZenCLIOnPath(shellQuote(dir)): quoted dir may
+	// contain spaces, with :$PATH and other PATH entries appended outside quotes.
+	const zenPathWrapSpaced = "env PATH='/Applications/Zen CLI/bin':$PATH:/home/daoleno/.local/bin:/usr/bin"
+	tests := []struct {
+		name    string
+		command string
+		codex   bool
+		cursor  bool
+		grok    bool
+		claude  bool
+	}{
+		{name: "direct codex", command: "codex", codex: true},
+		{name: "direct codex with flags", command: "codex --dangerously-bypass-approvals-and-sandbox", codex: true},
+		{name: "env-wrapped codex", command: zenPathWrap + " codex --dangerously-bypass-approvals-and-sandbox", codex: true},
+		{name: "env-wrapped absolute codex", command: zenPathWrap + " /usr/local/bin/codex", codex: true},
+		{name: "env-wrapped spaced PATH codex", command: zenPathWrapSpaced + " codex --dangerously-bypass-approvals-and-sandbox", codex: true},
+
+		{name: "direct cursor-agent", command: "cursor-agent --force --sandbox disabled", cursor: true},
+		{name: "env-wrapped cursor-agent", command: zenPathWrap + " cursor-agent --force --sandbox disabled", cursor: true},
+		{name: "env-wrapped absolute cursor-agent", command: zenPathWrap + " /home/me/bin/cursor-agent --force", cursor: true},
+		{name: "env-wrapped spaced PATH cursor-agent", command: zenPathWrapSpaced + " cursor-agent --force --sandbox disabled", cursor: true},
+
+		{name: "direct grok", command: "grok --no-alt-screen", grok: true},
+		{name: "direct grok prefix", command: "grok-cli --yolo", grok: true},
+		{name: "env-wrapped grok", command: zenPathWrap + " grok --no-alt-screen", grok: true},
+		{name: "env-wrapped absolute grok", command: zenPathWrap + " /home/me/bin/grok --yolo", grok: true},
+		{name: "env-wrapped spaced PATH grok", command: zenPathWrapSpaced + " grok --no-alt-screen", grok: true},
+
+		{name: "direct claude", command: "claude --permission-mode bypassPermissions", claude: true},
+		{name: "direct cc alias", command: "cc --profile test", claude: true},
+		{name: "env-wrapped claude", command: zenPathWrap + " claude --permission-mode bypassPermissions", claude: true},
+		{name: "env-wrapped absolute claude", command: zenPathWrap + " /usr/local/bin/claude --add-dir /tmp", claude: true},
+		{name: "env-wrapped spaced PATH claude", command: zenPathWrapSpaced + " claude --permission-mode bypassPermissions", claude: true},
+		{name: "env with dashdash then claude", command: "env PATH='/opt/zen/bin':$PATH -- claude", claude: true},
+		{name: "env with multiple assignments", command: "env FOO=1 PATH='/opt/zen/bin':$PATH claude", claude: true},
+
+		{name: "empty", command: ""},
+		{name: "env without executable", command: "env PATH='/opt/zen/bin':$PATH"},
+		{name: "env spaced PATH without executable", command: zenPathWrapSpaced},
+		{name: "env only", command: "env"},
+		{name: "custom executor", command: "/usr/local/bin/my-agent --flag"},
+		{name: "custom mentions claude later", command: "my-agent --provider claude"},
+		{name: "custom mentions codex later", command: "runner exec codex"},
+		{name: "env-wrapped custom", command: zenPathWrap + " my-agent --flag"},
+		{name: "env-wrapped spaced PATH custom", command: zenPathWrapSpaced + " my-agent --flag"},
+		{name: "shell not provider", command: "zsh -c claude"},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := isCodexCommand(tc.command); got != tc.codex {
+				t.Fatalf("isCodexCommand(%q) = %v, want %v", tc.command, got, tc.codex)
+			}
+			if got := isCursorAgentCommand(tc.command); got != tc.cursor {
+				t.Fatalf("isCursorAgentCommand(%q) = %v, want %v", tc.command, got, tc.cursor)
+			}
+			if got := isGrokCommand(tc.command); got != tc.grok {
+				t.Fatalf("isGrokCommand(%q) = %v, want %v", tc.command, got, tc.grok)
+			}
+			if got := isClaudeCommand(tc.command); got != tc.claude {
+				t.Fatalf("isClaudeCommand(%q) = %v, want %v", tc.command, got, tc.claude)
+			}
+		})
+	}
+}
+
+func TestSendInputWhenReadyClaudeSendsLargeBodyExactlyOnce(t *testing.T) {
+	binDir := t.TempDir()
+	logDir := t.TempDir()
+	readyPath := filepath.Join(logDir, "ready.txt")
+	chunksPath := filepath.Join(logDir, "chunks.bin")
+	literalCountPath := filepath.Join(logDir, "literal-count.txt")
+	entersPath := filepath.Join(logDir, "enters.txt")
+	ready := "" +
+		" ▐▛███▜▌   Claude Code v2.1.214\n" +
+		"▝▜█████▛▘  Haiku 4.5 · API Usage Billing\n" +
+		"  ▘▘ ▝▝    ~/workspace/zen\n" +
+		"\n\n" +
+		"────────────────────────────────────────\n" +
+		"❯\u00a0\n" +
+		"────────────────────────────────────────\n" +
+		"  ⏵⏵ bypass permissions on (shift+tab to cycle) · ← for agents"
+	if err := os.WriteFile(readyPath, []byte(ready), 0o600); err != nil {
+		t.Fatalf("write ready fixture: %v", err)
+	}
+
+	script := fmt.Sprintf(`#!/bin/sh
+ready=%q
+chunks=%q
+literal_count=%q
+enters=%q
+case "$1" in
+  capture-pane)
+    cat "$ready" || exit 1
+    exit 0
+    ;;
+  list-panes)
+    printf '0\n'
+    exit 0
+    ;;
+  send-keys)
+    shift
+    literal=0
+    while [ "$#" -gt 0 ]; do
+      case "$1" in
+        -l)
+          literal=1
+          shift
+          ;;
+        -t)
+          shift
+          [ "$#" -gt 0 ] && shift
+          ;;
+        --)
+          shift
+          if [ "$literal" = 1 ]; then
+            printf '%%s' "$*" >> "$chunks"
+            printf '1\n' >> "$literal_count"
+          fi
+          exit 0
+          ;;
+        Enter)
+          printf 'Enter\n' >> "$enters"
+          exit 0
+          ;;
+        *)
+          shift
+          ;;
+      esac
+    done
+    exit 0
+    ;;
+  *)
+    exit 0
+    ;;
+esac
+`, readyPath, chunksPath, literalCountPath, entersPath)
+	tmuxPath := filepath.Join(binDir, "tmux")
+	if err := os.WriteFile(tmuxPath, []byte(script), 0o755); err != nil {
+		t.Fatalf("write fake tmux: %v", err)
+	}
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	body := strings.Repeat("zen-claude-brief-", 80)
+	if len(body) <= tmuxSendInputChunkBytes {
+		t.Fatalf("test body len=%d, want > %d", len(body), tmuxSendInputChunkBytes)
+	}
+	wantLiteralSends := (len(body) + tmuxSendInputChunkBytes - 1) / tmuxSendInputChunkBytes
+	if wantLiteralSends < 2 {
+		t.Fatalf("expected multi-chunk body, wantLiteralSends=%d", wantLiteralSends)
+	}
+
+	if err := SendInputWhenReady("claude-ready:@1", "env PATH='/Applications/Zen CLI/bin':$PATH:/usr/bin claude --permission-mode bypassPermissions", body+"\n"); err != nil {
+		t.Fatalf("SendInputWhenReady: %v", err)
+	}
+
+	gotChunks, err := os.ReadFile(chunksPath)
+	if err != nil {
+		t.Fatalf("read chunks: %v", err)
+	}
+	if string(gotChunks) != body {
+		t.Fatalf("literal chunks = %q (%d bytes), want body exactly once (%d bytes)", gotChunks, len(gotChunks), len(body))
+	}
+
+	gotLiteralCount, err := os.ReadFile(literalCountPath)
+	if err != nil {
+		t.Fatalf("read literal count: %v", err)
+	}
+	literalSends := len(strings.Split(strings.TrimSpace(string(gotLiteralCount)), "\n"))
+	if literalSends != wantLiteralSends {
+		t.Fatalf("literal send-keys -l count = %d, want %d", literalSends, wantLiteralSends)
+	}
+
+	gotEnters, err := os.ReadFile(entersPath)
+	if err != nil {
+		t.Fatalf("read enters: %v", err)
+	}
+	enterLines := strings.Split(strings.TrimSpace(string(gotEnters)), "\n")
+	if len(enterLines) != 1 || enterLines[0] != "Enter" {
+		t.Fatalf("Enter sends = %q, want exactly one Enter", gotEnters)
+	}
+}
+
 func TestCursorAgentUsesLongerSubmitDelay(t *testing.T) {
 	if got := tmuxSubmitDelay("cursor-agent --force --sandbox disabled"); got < 350*time.Millisecond {
 		t.Fatalf("Cursor Agent submit delay = %s, want at least 350ms", got)
@@ -649,6 +914,9 @@ func TestCursorAgentUsesLongerSubmitDelay(t *testing.T) {
 	}
 	if got := tmuxSubmitDelay("grok"); got < 250*time.Millisecond {
 		t.Fatalf("Grok submit delay = %s, want at least 250ms", got)
+	}
+	if got := tmuxSubmitDelay("claude"); got < 200*time.Millisecond {
+		t.Fatalf("Claude submit delay = %s, want at least 200ms", got)
 	}
 }
 

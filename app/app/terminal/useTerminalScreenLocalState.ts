@@ -1,8 +1,14 @@
-import { useEffect, useMemo, useRef, useState } from "react";
-import { useLocalSearchParams } from "expo-router";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useLocalSearchParams, useRouter } from "expo-router";
 import { makeSessionKey } from "../../services/sessionKeys";
-import type { StoredCodexRenderMode } from "../../services/storage";
+import type { StoredInterfaceRenderMode } from "../../services/storage";
 import type { TerminalSurfaceHandle } from "../../components/terminal/TerminalSurface";
+import {
+  consumeInterfaceComposerInitialFocusGrant,
+  isInterfaceComposerInitialFocusRouteGrant,
+  reconcileInterfaceComposerInitialFocusGrant,
+  type InterfaceComposerInitialFocusGrant,
+} from "../../components/terminal/interfaceComposerInitialFocus";
 
 export interface TerminalRouteSessionHint {
   name?: string;
@@ -12,6 +18,7 @@ export interface TerminalRouteSessionHint {
 }
 
 export function useTerminalScreenLocalState() {
+  const router = useRouter();
   const params = useLocalSearchParams<{
     id?: string;
     serverId?: string;
@@ -19,15 +26,20 @@ export function useTerminalScreenLocalState() {
     cwd?: string;
     command?: string;
     startedAt?: string;
-    initialCodexRenderMode?: string;
+    initialInterfaceRenderMode?: string;
+    initialComposerFocus?: string;
   }>();
   const agentId = paramString(params.id);
   const serverId = paramString(params.serverId);
-  const initialCodexRenderMode = paramCodexRenderMode(
-    params.initialCodexRenderMode,
+  const initialInterfaceRenderMode = paramInterfaceRenderMode(
+    params.initialInterfaceRenderMode,
   );
   const sessionKey =
     agentId && serverId ? makeSessionKey(serverId, agentId) : null;
+  const initialComposerFocusRequested =
+    isInterfaceComposerInitialFocusRouteGrant(
+      paramRawString(params.initialComposerFocus),
+    );
   const routeSessionHint = useMemo<TerminalRouteSessionHint>(
     () => ({
       name: paramString(params.name) || undefined,
@@ -42,7 +54,28 @@ export function useTerminalScreenLocalState() {
   const [newTerminalVisible, setNewTerminalVisible] = useState(false);
   const [creatingSession, setCreatingSession] = useState(false);
   const [screenFocused, setScreenFocused] = useState(false);
+  const [initialComposerFocusGrant, setInitialComposerFocusGrant] =
+    useState<InterfaceComposerInitialFocusGrant>(null);
   const terminalRef = useRef<TerminalSurfaceHandle>(null);
+
+  useEffect(() => {
+    setInitialComposerFocusGrant((current) =>
+      reconcileInterfaceComposerInitialFocusGrant(current, {
+        sessionKey,
+        requested: initialComposerFocusRequested,
+      }),
+    );
+    if (initialComposerFocusRequested) {
+      router.setParams({ initialComposerFocus: "" });
+    }
+  }, [initialComposerFocusRequested, router, sessionKey]);
+
+  const consumeInitialComposerFocus = useCallback(() => {
+    router.setParams({ initialComposerFocus: "" });
+    setInitialComposerFocusGrant((current) =>
+      consumeInterfaceComposerInitialFocusGrant(current, sessionKey),
+    );
+  }, [router, sessionKey]);
 
   useEffect(() => {
     setRenameVisible(false);
@@ -53,7 +86,9 @@ export function useTerminalScreenLocalState() {
     agentId,
     serverId,
     sessionKey,
-    initialCodexRenderMode,
+    initialComposerFocusGrant,
+    consumeInitialComposerFocus,
+    initialInterfaceRenderMode,
     routeSessionHint,
     renameVisible,
     setRenameVisible,
@@ -69,6 +104,10 @@ export function useTerminalScreenLocalState() {
   };
 }
 
+function paramRawString(value: string | string[] | undefined): string {
+  return Array.isArray(value) ? value[0] || "" : value || "";
+}
+
 function paramString(value: string | string[] | undefined): string {
   if (Array.isArray(value)) {
     return value[0]?.trim() || "";
@@ -76,16 +115,18 @@ function paramString(value: string | string[] | undefined): string {
   return value?.trim() || "";
 }
 
-function paramTimestamp(value: string | string[] | undefined): number | undefined {
+function paramTimestamp(
+  value: string | string[] | undefined,
+): number | undefined {
   const raw = paramString(value);
   if (!raw) return undefined;
   const numeric = Number(raw);
   return Number.isFinite(numeric) && numeric > 0 ? numeric : undefined;
 }
 
-function paramCodexRenderMode(
+function paramInterfaceRenderMode(
   value: string | string[] | undefined,
-): StoredCodexRenderMode | undefined {
+): StoredInterfaceRenderMode | undefined {
   const raw = paramString(value);
   return raw === "chat" || raw === "terminal" ? raw : undefined;
 }

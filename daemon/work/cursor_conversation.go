@@ -511,7 +511,7 @@ func (b *cursorConversationBuilder) addCursorToolEvent(lineNumber int, toolIndex
 }
 
 func (b *cursorConversationBuilder) addEvent(event CodexConversationEvent) bool {
-	event.Body = truncateConversationBody(event.Body)
+	event.Body = normalizeConversationEventBody(event.Kind, event.Body)
 	event.ToolName = truncateRunes(cleanToolName(event.ToolName), 120)
 	event.Input = truncateConversationBody(event.Input)
 	event.Output = truncateConversationBody(event.Output)

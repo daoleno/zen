@@ -616,16 +616,25 @@ func (a *controlApp) resolveSpawnCommand(req control.Request) (string, error) {
 		if command == "" {
 			command = executorName
 		}
-		if work.InferAgentProvider(executor.Kind, command, executorName, executor.Name) == work.AgentProviderCodex {
+		provider := work.InferAgentProvider(executor.Kind, command, executorName, executor.Name)
+		if provider == work.AgentProviderCodex {
 			// Brain-delegated Codex sessions must run non-interactively with
 			// the most permissive available authorization mode so internal
 			// progress commands do not block on approval prompts.
 			command = work.HardenCodexDelegatedCommand(command)
+		} else if provider == work.AgentProviderClaude {
+			// Brain-delegated Claude sessions must run non-interactively with
+			// the most permissive authorization mode so internal progress
+			// commands do not block on approval prompts.
+			command = work.HardenClaudeCommand(command)
 		}
 		return command, nil
 	}
-	if work.InferAgentProvider(executorName) == work.AgentProviderCodex {
+	provider := work.InferAgentProvider(executorName)
+	if provider == work.AgentProviderCodex {
 		return work.HardenCodexDelegatedCommand(executorName), nil
+	} else if provider == work.AgentProviderClaude {
+		return work.HardenClaudeCommand(executorName), nil
 	}
 	return executorName, nil
 }

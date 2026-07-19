@@ -1,10 +1,5 @@
 import React from "react";
-import {
-  ScrollView,
-  StyleSheet,
-  Text,
-  View,
-} from "react-native";
+import { ScrollView, StyleSheet, Text, View } from "react-native";
 import type { StyleProp, TextStyle } from "react-native";
 import { Typography } from "../../constants/tokens";
 import {
@@ -17,7 +12,7 @@ import {
   highlightCodeLine,
   type HighlightTokenKind,
 } from "./gitDiffSyntaxHighlight";
-import { withAlpha } from "./gitDiffColor";
+import { withAlpha } from "./colorWithAlpha";
 
 interface CodeSnapshotPanelProps {
   path: string;
@@ -38,7 +33,10 @@ export function GitDiffCodeSnapshotPanel({
         <GitDiffStateCard
           icon="document-text-outline"
           title="File snapshot unavailable"
-          detail={snapshot?.reason || "This file could not be read from the working tree."}
+          detail={
+            snapshot?.reason ||
+            "This file could not be read from the working tree."
+          }
           accent={theme.cursor}
           chromeText={chrome.text}
           chromeMuted={chrome.textMuted}
@@ -81,11 +79,16 @@ export function GitDiffCodeSnapshotPanel({
           ]}
         >
           <Text style={[styles.truncationText, { color: theme.yellow }]}>
-            Showing the first {formatByteCount(snapshot.content.length)} of {formatByteCount(snapshot.byte_count)}.
+            Showing the first {formatByteCount(snapshot.content.length)} of{" "}
+            {formatByteCount(snapshot.byte_count)}.
           </Text>
         </View>
       ) : null}
-      <ScrollView horizontal showsHorizontalScrollIndicator nestedScrollEnabled={false}>
+      <ScrollView
+        horizontal
+        showsHorizontalScrollIndicator
+        nestedScrollEnabled={false}
+      >
         <View
           style={[
             styles.codeFrame,
@@ -97,7 +100,9 @@ export function GitDiffCodeSnapshotPanel({
         >
           {lines.map((line, index) => (
             <View key={index} style={styles.codeRow}>
-              <Text style={[styles.codeLineNumber, { color: chrome.textSubtle }]}>
+              <Text
+                style={[styles.codeLineNumber, { color: chrome.textSubtle }]}
+              >
                 {index + 1}
               </Text>
               <HighlightedCodeLine

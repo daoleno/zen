@@ -54,6 +54,72 @@ func TestHardenCodexDelegatedCommandDefaultsToCodex(t *testing.T) {
 	}
 }
 
+func TestHardenClaudeCommandAppendsFullAuthorization(t *testing.T) {
+	cases := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{
+			name: "plain claude",
+			in:   "claude",
+			want: "claude --permission-mode bypassPermissions",
+		},
+		{
+			name: "claude with profile",
+			in:   "claude --profile my-profile",
+			want: "claude --profile my-profile --permission-mode bypassPermissions",
+		},
+		{
+			name: "already authorized dontAsk",
+			in:   "claude --permission-mode dontAsk",
+			want: "claude --permission-mode dontAsk",
+		},
+		{
+			name: "already authorized bypassPermissions",
+			in:   "claude --permission-mode bypassPermissions",
+			want: "claude --permission-mode bypassPermissions",
+		},
+		{
+			name: "absolute path",
+			in:   "/usr/local/bin/claude --profile test",
+			want: "/usr/local/bin/claude --profile test --permission-mode bypassPermissions",
+		},
+		{
+			name: "dangerously-skip-permissions preserved",
+			in:   "claude --dangerously-skip-permissions",
+			want: "claude --dangerously-skip-permissions",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := HardenClaudeCommand(tc.in)
+			if got != tc.want {
+				t.Fatalf("HardenClaudeCommand(%q) = %q, want %q", tc.in, got, tc.want)
+			}
+			if strings.Contains(tc.want, "--permission-mode") {
+				permissionModeCount := strings.Count(got, "--permission-mode")
+				if permissionModeCount != 1 {
+					t.Fatalf("permission mode flag appears %d times for %q", permissionModeCount, tc.in)
+				}
+			}
+			if strings.Contains(tc.in, "--dangerously-skip-permissions") && strings.Contains(got, "--permission-mode") {
+				t.Fatalf("dangerously-skip-permissions command should not gain --permission-mode: %q", got)
+			}
+		})
+	}
+}
+
+func TestHardenClaudeCommandDefaultsToClaude(t *testing.T) {
+	got := HardenClaudeCommand("")
+	if !strings.HasPrefix(got, "claude ") {
+		t.Fatalf("empty input should default to claude, got %q", got)
+	}
+	if !strings.Contains(got, ClaudeFullAuthorizationFlag) {
+		t.Fatalf("default claude command should be hardened: %q", got)
+	}
+}
+
 func TestAgentExecutorInfersProviderRuntimeAndCapabilities(t *testing.T) {
 	cfg := NewExecutorConfig("claude", map[string]Executor{
 		"agent":  {Name: "agent", Command: "cursor-agent --force --sandbox disabled", Kind: "cursor"},

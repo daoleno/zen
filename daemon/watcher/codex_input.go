@@ -8,11 +8,13 @@ import (
 	"strings"
 	"sync/atomic"
 	"time"
+	"unicode"
 	"unicode/utf8"
 )
 
 // Codex input is a transaction, not a timed paste followed by an optimistic
-// Enter. In particular, a prompt is pasted once; recovery retries Enter only.
+// Enter. A prompt is pasted once and its submission Enter is sent once;
+// ambiguous completion requires attention instead of replaying either action.
 type codexInputIO interface {
 	capture(sessionID string) (string, bool)
 	paste(sessionID, body string) error
@@ -27,7 +29,6 @@ type codexSubmitConfig struct {
 	confirmationWindow time.Duration
 	pollInterval       time.Duration
 	stableReadyPolls   int
-	maxEnterAttempts   int
 }
 
 func defaultCodexSubmitConfig() codexSubmitConfig {
@@ -37,12 +38,12 @@ func defaultCodexSubmitConfig() codexSubmitConfig {
 		confirmationWindow: 8 * time.Second,
 		pollInterval:       150 * time.Millisecond,
 		stableReadyPolls:   2,
-		maxEnterAttempts:   3,
 	}
 }
 
 var codexPastePlaceholderRe = regexp.MustCompile(`(?im)\[pasted content\s+[0-9]+\s+chars\]`)
 var codexTaskActiveRe = regexp.MustCompile(`(?im)^\s*•\s+(starting mcp servers|working|thinking|running|searching|reading|exploring|executing|waiting)\b`)
+var codexNativeQueueRe = regexp.MustCompile(`(?im)^[ \t]*•[ \t]+messages\s+to\s+be\s+submitted\s+after\s+next\s+tool\s+call\b`)
 var codexInputBufferSequence atomic.Uint64
 
 type realCodexInputIO struct{}
@@ -96,26 +97,24 @@ func submitCodexInput(io codexInputIO, sessionID, body string, cfg codexSubmitCo
 	if err != nil {
 		return err
 	}
-	for attempt := 1; attempt <= cfg.maxEnterAttempts; attempt++ {
-		if err := io.sendEnter(sessionID); err != nil {
-			return err
-		}
-		deadline := io.now().Add(cfg.confirmationWindow)
-		for {
-			content, alive := io.capture(sessionID)
-			if !alive {
-				return fmt.Errorf("Codex session exited before prompt submission was confirmed")
-			}
-			if codexSubmissionAdvanced(draft, content, body) {
-				return nil
-			}
-			if !io.now().Before(deadline) {
-				break
-			}
-			io.sleep(cfg.pollInterval)
-		}
+	if err := io.sendEnter(sessionID); err != nil {
+		return err
 	}
-	return fmt.Errorf("Codex prompt was pasted once but submission was not confirmed after %d Enter attempts; the session requires attention", cfg.maxEnterAttempts)
+	deadline := io.now().Add(cfg.confirmationWindow)
+	for {
+		content, alive := io.capture(sessionID)
+		if !alive {
+			return fmt.Errorf("Codex session exited before prompt submission was confirmed")
+		}
+		if codexSubmissionAdvanced(draft, content, body) {
+			return nil
+		}
+		if !io.now().Before(deadline) {
+			break
+		}
+		io.sleep(cfg.pollInterval)
+	}
+	return fmt.Errorf("Codex prompt was pasted once and Enter was sent once, but submission was not confirmed within %s; the session requires attention", cfg.confirmationWindow)
 }
 
 func waitForStableCodexComposer(io codexInputIO, sessionID string, cfg codexSubmitConfig) (string, error) {
@@ -170,53 +169,86 @@ func codexDraftVisible(before, after, body string) bool {
 		len(codexPastePlaceholderRe.FindAllStringIndex(after, -1)) > len(codexPastePlaceholderRe.FindAllStringIndex(before, -1)) {
 		return true
 	}
-	for _, signature := range codexPromptSignatures(body) {
-		if strings.Count(after, signature) > strings.Count(before, signature) {
-			return true
-		}
-	}
-	return false
+	return codexCompleteBodyCount(after, body) > codexCompleteBodyCount(before, body)
 }
 
 func codexSubmissionAdvanced(draft, current, body string) bool {
 	if current == draft {
 		return false
 	}
-	if len(codexPastePlaceholderRe.FindAllStringIndex(draft, -1)) > len(codexPastePlaceholderRe.FindAllStringIndex(current, -1)) && codexTaskActiveRe.MatchString(current) {
+	// The complete draft was observed before Enter. An increased explicit
+	// provider-native queue marker therefore confirms that Codex consumed that
+	// composer. Zen deliberately leaves queue timing and interruption to Codex.
+	if codexNativeQueueAdvanced(draft, current) {
 		return true
 	}
-	lastPrompt := -1
-	for _, signature := range codexPromptSignatures(body) {
-		if index := strings.LastIndex(current, signature); index > lastPrompt {
-			lastPrompt = index + len(signature)
+	draftPlaceholders := len(codexPastePlaceholderRe.FindAllStringIndex(draft, -1))
+	currentPlaceholders := len(codexPastePlaceholderRe.FindAllStringIndex(current, -1))
+	if draftPlaceholders > currentPlaceholders {
+		workingAdvanced := len(codexTaskActiveRe.FindAllStringIndex(current, -1)) >
+			len(codexTaskActiveRe.FindAllStringIndex(draft, -1))
+		composerAdvanced := len(codexInputPromptRe.FindAllStringIndex(current, -1)) >
+			len(codexInputPromptRe.FindAllStringIndex(draft, -1))
+		if workingAdvanced || composerAdvanced {
+			return true
 		}
 	}
-	if lastPrompt < 0 {
+	draftBodyCount := codexCompleteBodyCount(draft, body)
+	currentBodyCount := codexCompleteBodyCount(current, body)
+	if currentBodyCount < draftBodyCount {
 		return false
 	}
-	suffix := current[lastPrompt:]
+	lastBodyEnd := codexLastCompleteBodyEnd(current, body)
+	if lastBodyEnd < 0 {
+		return false
+	}
+	suffix := current[lastBodyEnd:]
 	return codexTaskActiveRe.MatchString(suffix) || codexInputPromptRe.MatchString(suffix)
 }
 
-func codexPromptSignatures(body string) []string {
-	var signatures []string
-	seen := map[string]bool{}
-	for _, line := range strings.Split(strings.ReplaceAll(body, "\r\n", "\n"), "\n") {
-		line = strings.TrimSpace(line)
-		if utf8.RuneCountInString(line) < 8 {
+func codexCompleteBodyCount(content, body string) int {
+	comparableBody := codexComparableText(body)
+	if comparableBody == "" {
+		return 0
+	}
+	return strings.Count(codexComparableText(content), comparableBody)
+}
+
+func codexLastCompleteBodyEnd(content, body string) int {
+	comparableBody := codexComparableText(body)
+	if comparableBody == "" {
+		return -1
+	}
+	comparableContent := codexComparableText(content)
+	start := strings.LastIndex(comparableContent, comparableBody)
+	if start < 0 {
+		return -1
+	}
+	targetEnd := start + len(comparableBody)
+	comparableOffset := 0
+	for rawOffset, r := range content {
+		if unicode.IsSpace(r) {
 			continue
 		}
-		runes := []rune(line)
-		if len(runes) > 36 {
-			line = string(runes[:36])
-		}
-		if !seen[line] {
-			seen[line] = true
-			signatures = append(signatures, line)
-		}
-		if len(signatures) == 8 {
-			break
+		comparableOffset += utf8.RuneLen(r)
+		if comparableOffset >= targetEnd {
+			_, rawSize := utf8.DecodeRuneInString(content[rawOffset:])
+			return rawOffset + rawSize
 		}
 	}
-	return signatures
+	return -1
+}
+
+func codexComparableText(value string) string {
+	return strings.Map(func(r rune) rune {
+		if unicode.IsSpace(r) {
+			return -1
+		}
+		return r
+	}, value)
+}
+
+func codexNativeQueueAdvanced(before, after string) bool {
+	return len(codexNativeQueueRe.FindAllStringIndex(after, -1)) >
+		len(codexNativeQueueRe.FindAllStringIndex(before, -1))
 }

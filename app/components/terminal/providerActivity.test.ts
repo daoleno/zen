@@ -9,15 +9,11 @@ import {
   buildZenTimeline,
   mergePendingUserMessagesIntoTimeline,
   mergeRunningActivityIntoTimeline,
-} from "./CodexTimelineModel";
-import { buildCodexStatusMeta } from "./CodexChatControllerModel";
-import { reconcileConversationSnapshot } from "./codexConversationReconciliation";
-import {
-  codexChatSessionCacheKey,
-} from "./codexChatSessionIdentity";
-import {
-  resolveRunningProviderActivity,
-} from "./providerActivity";
+} from "./InterfaceTimelineModel";
+import { buildInterfaceStatusMeta } from "./InterfaceChatControllerModel";
+import { reconcileConversationSnapshot } from "./interfaceConversationReconciliation";
+import { interfaceChatSessionCacheKey } from "./interfaceChatSessionIdentity";
+import { resolveRunningProviderActivity } from "./providerActivity";
 
 const START = "2026-07-15T01:00:00.000Z";
 const LATER = "2026-07-15T01:00:01.000Z";
@@ -49,10 +45,38 @@ function localPending(id: string, createdAt: string = LATER) {
     createdAt,
     lifecycle: "pending" as const,
     dispatchRequestId: `request:${id}`,
+    dispatchAttemptOrder: 1,
   };
 }
 
 describe("provider-native Activity Working", () => {
+  test("uses provider-neutral fallback titles for status events", () => {
+    const titles = [
+      ["failed", "Agent error"],
+      ["running", "Agent status"],
+      ["warning", "Agent warning"],
+      [undefined, "Agent status"],
+    ].map(([status, expected], index) => {
+      const [item] = buildZenTimeline([
+        {
+          id: `status-${index}`,
+          seq: index,
+          kind: "status",
+          status,
+        },
+      ]);
+      expect(item).toMatchObject({ type: "activity", title: expected });
+      return item.type === "activity" ? item.title : undefined;
+    });
+
+    expect(titles).toEqual([
+      "Agent error",
+      "Agent status",
+      "Agent warning",
+      "Agent status",
+    ]);
+  });
+
   for (const source of [
     "codex_rollout",
     "claude_code_transcript",
@@ -68,29 +92,31 @@ describe("provider-native Activity Working", () => {
         events: [],
       });
       const cacheKeys = [
-        codexChatSessionCacheKey(
+        interfaceChatSessionCacheKey(
           "server-a",
           "host-a",
           "brain-thread:thread-a",
         ),
-        codexChatSessionCacheKey("server-a", "agent-a"),
+        interfaceChatSessionCacheKey("server-a", "agent-a"),
       ];
       expect(cacheKeys).toEqual([
         "server-a:scope:brain-thread:thread-a",
         "server-a:agent:agent-a",
       ]);
       for (const cacheKey of cacheKeys) {
-        const runningActivity = resolveRunningProviderActivity(conversation.activity);
+        const runningActivity = resolveRunningProviderActivity(
+          conversation.activity,
+        );
         expect(cacheKey).toBeString();
+        expect(isProviderActivityRunning(runningActivity)).toBe(true);
         expect(
-          isProviderActivityRunning(runningActivity),
-        ).toBe(true);
-        expect(buildCodexStatusMeta({
-          connectionState: "connected",
-          conversation,
-          runningActivity,
-          sending: false,
-        })).toBe("Working");
+          buildInterfaceStatusMeta({
+            connectionState: "connected",
+            conversation,
+            runningActivity,
+            sending: false,
+          }),
+        ).toBe("Working");
         expect(
           mergeRunningActivityIntoTimeline([], runningActivity).filter(
             (item) => item.type === "activity" && item.title === "Working",
@@ -130,7 +156,10 @@ describe("provider-native Activity Working", () => {
         status: "running",
       },
     ];
-    const once = mergeRunningActivityIntoTimeline(buildZenTimeline(events), activity());
+    const once = mergeRunningActivityIntoTimeline(
+      buildZenTimeline(events),
+      activity(),
+    );
     const twice = mergeRunningActivityIntoTimeline(once, activity());
     expect(
       twice.filter(
@@ -153,14 +182,16 @@ describe("provider-native Activity Working", () => {
   });
 
   test("same-boundary duplicate text rows keep local creation order", () => {
-    const history = buildZenTimeline([{
-      id: "history",
-      seq: 1,
-      timestamp: START,
-      kind: "assistant_message",
-      role: "assistant",
-      body: "Earlier answer",
-    }]);
+    const history = buildZenTimeline([
+      {
+        id: "history",
+        seq: 1,
+        timestamp: START,
+        kind: "assistant_message",
+        role: "assistant",
+        body: "Earlier answer",
+      },
+    ]);
     const repeated = (id: string) => ({
       ...localPending(id),
       body: "identical",
@@ -200,7 +231,12 @@ describe("provider-native Activity Working", () => {
     ]);
     const composed = mergePendingUserMessagesIntoTimeline(
       mergeRunningActivityIntoTimeline(providerTimeline, activity()),
-      [{ ...localPending("pending-a", START), createdAfterEventIds: ["history"] }],
+      [
+        {
+          ...localPending("pending-a", START),
+          createdAfterEventIds: ["history"],
+        },
+      ],
     );
     expect(composed.map((item) => item.id)).toEqual([
       "history",
@@ -262,7 +298,9 @@ describe("authoritative Activity snapshots", () => {
       available: true,
       session_id: "thread-a",
       activity: activity(),
-      events: [{ id: "history", seq: 1, kind: "assistant_message", body: "old" }],
+      events: [
+        { id: "history", seq: 1, kind: "assistant_message", body: "old" },
+      ],
     });
     const snapshot = reconcileConversationSnapshot(
       previous,
@@ -278,7 +316,9 @@ describe("authoritative Activity snapshots", () => {
   });
 
   test("only a successor provider Activity can reopen Working", () => {
-    expect(resolveRunningProviderActivity(activity("completed"))).toBeUndefined();
+    expect(
+      resolveRunningProviderActivity(activity("completed")),
+    ).toBeUndefined();
     expect(
       resolveRunningProviderActivity(activity("running", "activity-b", LATER)),
     ).toMatchObject({ id: "activity-b", status: "running", started_at: LATER });
@@ -288,10 +328,10 @@ describe("authoritative Activity snapshots", () => {
 describe("scope-first hydration identity", () => {
   test("Brain host replacement retains cache while Work stays agent-scoped", () => {
     expect(
-      codexChatSessionCacheKey("server", "host-a", "brain:thread-a"),
-    ).toBe(codexChatSessionCacheKey("server", "host-b", "brain:thread-a"));
-    expect(codexChatSessionCacheKey("server", "work-a")).not.toBe(
-      codexChatSessionCacheKey("server", "work-b"),
+      interfaceChatSessionCacheKey("server", "host-a", "brain:thread-a"),
+    ).toBe(interfaceChatSessionCacheKey("server", "host-b", "brain:thread-a"));
+    expect(interfaceChatSessionCacheKey("server", "work-a")).not.toBe(
+      interfaceChatSessionCacheKey("server", "work-b"),
     );
   });
 

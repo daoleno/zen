@@ -1,16 +1,12 @@
-import React, { useMemo } from 'react';
-import {
-  FlatList,
-  StyleSheet,
-  TouchableOpacity,
-  View,
-} from 'react-native';
-import { Ionicons } from '@expo/vector-icons';
-import { Colors, useAppColors } from '../../constants/tokens';
-import { displayPathSubtitle } from '../../services/pathDisplay';
-import { AppButton, AppText, IconButton, StateView } from '../ui';
+import React, { useMemo } from "react";
+import { FlatList, StyleSheet, TouchableOpacity, View } from "react-native";
+import { Ionicons } from "@expo/vector-icons";
+import { Colors, useAppColors } from "../../constants/tokens";
+import { displayPathSubtitle } from "../../services/pathDisplay";
+import { AppButton, AppText, IconButton, StateView } from "../ui";
+import type { DirectoryPickerEntry } from "./directoryPickerState";
 
-export type DirectoryPickerEntry = { name: string; path: string };
+export type { DirectoryPickerEntry };
 
 interface DirectoryPickerContentProps {
   currentPath: string;
@@ -43,7 +39,12 @@ export function DirectoryPickerContent({
       </View>
 
       <View style={styles.pathRow}>
-        <IconButton icon="arrow-up" size={32} onPress={onGoUp} />
+        <IconButton
+          icon="arrow-up"
+          size={32}
+          onPress={onGoUp}
+          accessibilityLabel="Go up one directory"
+        />
         <AppText
           variant="mono"
           tone="secondary"
@@ -62,19 +63,25 @@ export function DirectoryPickerContent({
       ) : (
         <FlatList
           data={entries}
-          keyExtractor={item => item.path}
+          keyExtractor={(item) => item.path}
           style={styles.list}
           renderItem={({ item }) => (
             <TouchableOpacity
               style={styles.dirRow}
               onPress={() => onOpenDirectory(item.path)}
               activeOpacity={0.7}
+              accessibilityRole="button"
+              accessibilityLabel={`Open directory ${item.name}`}
             >
               <Ionicons name="folder" size={18} color={colors.promptYellow} />
               <AppText variant="body" style={styles.dirName} numberOfLines={1}>
                 {item.name}
               </AppText>
-              <Ionicons name="chevron-forward" size={14} color={colors.textSecondary} />
+              <Ionicons
+                name="chevron-forward"
+                size={14}
+                color={colors.textSecondary}
+              />
             </TouchableOpacity>
           )}
           ListEmptyComponent={<StateView detail="No subdirectories" />}
@@ -100,8 +107,8 @@ function createStyles(colors: typeof Colors) {
       marginBottom: 12,
     },
     pathRow: {
-      flexDirection: 'row',
-      alignItems: 'center',
+      flexDirection: "row",
+      alignItems: "center",
       gap: 8,
       marginBottom: 12,
       paddingHorizontal: 4,
@@ -113,8 +120,8 @@ function createStyles(colors: typeof Colors) {
       maxHeight: 300,
     },
     dirRow: {
-      flexDirection: 'row',
-      alignItems: 'center',
+      flexDirection: "row",
+      alignItems: "center",
       gap: 12,
       paddingVertical: 12,
       paddingHorizontal: 12,

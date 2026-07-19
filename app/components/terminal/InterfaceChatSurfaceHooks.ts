@@ -1,0 +1,760 @@
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  type FlatList,
+  Keyboard,
+  Platform,
+  type LayoutChangeEvent,
+  type NativeScrollEvent,
+  type NativeSyntheticEvent,
+  type TextInput,
+} from "react-native";
+import { useReducedMotion, useSharedValue } from "react-native-reanimated";
+import { agentKindFromCommand } from "../../services/chatComposerPresentation";
+import {
+  buildInterfaceComposerPresentation,
+  type InterfaceComposerPresentationInput,
+} from "./InterfaceChatSurfaceModel";
+import type { ZenTimelineItem } from "./InterfaceTimelineItemView";
+import {
+  INITIAL_TIMELINE_SCROLL_STATE,
+  reduceTimelineScrollPosition,
+  returnTimelineToBottom,
+  timelineDistanceFromLatest,
+  timelineMutationDecision,
+  type TimelineScrollState,
+} from "./timelineScrollPolicy";
+import {
+  createTurnFocusState,
+  reduceTurnFocus,
+  turnFocusOwnsMomentum,
+  turnFocusSuppressesOrdinaryFollow,
+  type TurnFocusCancelReason,
+  type TurnFocusEffect,
+  type TurnFocusEvent,
+  type TurnFocusSpacerRequest,
+} from "./turnFocusState";
+const TEXT_SELECTION_ANCHOR_SETTLE_MS = 30000;
+const TEXT_SELECTION_ANCHOR_MAX_MS = 60000;
+
+type UseInterfaceComposerPresentationInput = Omit<
+  InterfaceComposerPresentationInput,
+  "agentKind"
+> & {
+  agentCommand?: string;
+};
+
+export function useInterfaceComposerPresentation({
+  draft,
+  slashCommands,
+  agentCommand,
+  connectionState,
+  runningActivity,
+  attachmentCount,
+  interrupting,
+  canSend,
+  elapsedStartedAt,
+  actionMenuPinned,
+  safeAreaBottom,
+  placeholder,
+  keyboardVerticalOffset,
+  composerBottomInset,
+  composerLayout,
+}: UseInterfaceComposerPresentationInput) {
+  const agentKind = agentKindFromCommand(agentCommand);
+  return useMemo(
+    () =>
+      buildInterfaceComposerPresentation({
+        draft,
+        slashCommands,
+        agentKind,
+        connectionState,
+        runningActivity,
+        attachmentCount,
+        interrupting,
+        canSend,
+        elapsedStartedAt,
+        actionMenuPinned,
+        safeAreaBottom,
+        placeholder,
+        keyboardVerticalOffset,
+        composerBottomInset,
+        composerLayout,
+      }),
+    [
+      attachmentCount,
+      canSend,
+      elapsedStartedAt,
+      actionMenuPinned,
+      composerLayout,
+      connectionState,
+      draft,
+      interrupting,
+      runningActivity,
+      safeAreaBottom,
+      slashCommands,
+      agentKind,
+      placeholder,
+      keyboardVerticalOffset,
+      composerBottomInset,
+    ],
+  );
+}
+
+export function usePinnedTimeline(
+  itemCount: number,
+  resetKey: string,
+  topChromeInset: number = 0,
+) {
+  const scrollRef = useRef<FlatList<ZenTimelineItem>>(null);
+  const resetKeyRef = useRef(resetKey);
+  const scrollStateRef = useRef<TimelineScrollState>(
+    INITIAL_TIMELINE_SCROLL_STATE,
+  );
+  const userDraggingRef = useRef(false);
+  const userMomentumRef = useRef(false);
+  const timelineTouchActiveRef = useRef(false);
+  const automaticReturnsInFlightRef = useRef(0);
+  const turnFocusIntentSeqRef = useRef(0);
+  const latestOffsetRef = useRef(0);
+  const rawContentOffsetRef = useRef(0);
+  const distanceFromLatestRef = useRef(0);
+  const textSelectionActiveRef = useRef(false);
+  const textSelectionTimerRef = useRef<ReturnType<typeof setTimeout> | null>(
+    null,
+  );
+  const turnFocusStateRef = useRef(createTurnFocusState(resetKey));
+  const turnFocusClearanceRequest = useSharedValue(0);
+  const turnFocusSpacer = useSharedValue<TurnFocusSpacerRequest>({
+    height: 0,
+    requestEpoch: 0,
+  });
+  const reducedMotion = useReducedMotion();
+  const [showJumpToLatest, setShowJumpToLatest] = useState(false);
+  const textSelectable = true;
+  const [turnFocusPendingMessageId, setTurnFocusPendingMessageId] =
+    useState<string>();
+
+  const updateJumpButton = useCallback(() => {
+    setShowJumpToLatest(
+      scrollStateRef.current.mode === "detached" && itemCount > 0,
+    );
+  }, [itemCount]);
+
+  const clearTextSelectionTimer = useCallback(() => {
+    if (!textSelectionTimerRef.current) {
+      return;
+    }
+    clearTimeout(textSelectionTimerRef.current);
+    textSelectionTimerRef.current = null;
+  }, []);
+
+  const resumeImplicitAnchorAfterTextSelection = useCallback(() => {
+    clearTextSelectionTimer();
+    textSelectionActiveRef.current = false;
+    updateJumpButton();
+  }, [clearTextSelectionTimer, updateJumpButton]);
+
+  const scheduleTextSelectionAnchorResume = useCallback(
+    (delay: number) => {
+      clearTextSelectionTimer();
+      textSelectionTimerRef.current = setTimeout(() => {
+        textSelectionTimerRef.current = null;
+        textSelectionActiveRef.current = false;
+        updateJumpButton();
+      }, delay);
+    },
+    [clearTextSelectionTimer, updateJumpButton],
+  );
+
+  const implicitAnchorSuspended = useCallback(
+    () =>
+      textSelectionActiveRef.current ||
+      userDraggingRef.current ||
+      userMomentumRef.current ||
+      timelineTouchActiveRef.current,
+    [],
+  );
+
+  const applyTurnFocusEvent = useCallback(
+    (event: TurnFocusEvent) => {
+      const previous = turnFocusStateRef.current;
+      const transition = reduceTurnFocus(previous, event);
+      const next = transition.state;
+      if (next !== previous) {
+        turnFocusStateRef.current = next;
+        if (next.spacerRequestEpoch !== previous.spacerRequestEpoch) {
+          turnFocusSpacer.value = {
+            height: next.spacerHeight,
+            requestEpoch: next.spacerRequestEpoch,
+          };
+        }
+        const previousClearanceRequest =
+          previous.phase === "idle" ? 0 : (previous.intentToken ?? 0);
+        const nextClearanceRequest =
+          next.phase === "idle" ? 0 : (next.intentToken ?? 0);
+        if (nextClearanceRequest !== previousClearanceRequest) {
+          turnFocusClearanceRequest.value = nextClearanceRequest;
+        }
+        if (next.pendingMessageId !== previous.pendingMessageId) {
+          setTurnFocusPendingMessageId(next.pendingMessageId);
+        }
+      }
+      return transition;
+    },
+    [turnFocusClearanceRequest, turnFocusSpacer],
+  );
+
+  const cancelTurnFocus = useCallback(
+    (reason: TurnFocusCancelReason) => {
+      automaticReturnsInFlightRef.current = 0;
+      applyTurnFocusEvent({ type: "cancel", reason });
+    },
+    [applyTurnFocusEvent],
+  );
+
+  const handleTimelineTouchActiveChange = useCallback((active: boolean) => {
+    // Root touch observation is passive. A stationary press must leave the
+    // mounted row and turn-focus geometry untouched so native text can own
+    // long-press selection; onScrollBeginDrag is the cancellation boundary.
+    timelineTouchActiveRef.current = active;
+  }, []);
+
+  const attachToLatest = useCallback(() => {
+    scrollStateRef.current = returnTimelineToBottom();
+    setShowJumpToLatest(false);
+  }, []);
+
+  const detachFromLatest = useCallback(() => {
+    scrollStateRef.current = { mode: "detached" };
+    updateJumpButton();
+  }, [updateJumpButton]);
+
+  const scrollToLatest = useCallback(
+    (animated: boolean = true, exactLatestOffset?: number) => {
+      resumeImplicitAnchorAfterTextSelection();
+      attachToLatest();
+      if (!scrollRef.current) {
+        return;
+      }
+      const latestOffset = exactLatestOffset ?? latestOffsetRef.current;
+      scrollRef.current.scrollToOffset({
+        offset: latestOffset,
+        animated,
+      });
+      rawContentOffsetRef.current = latestOffset;
+      distanceFromLatestRef.current = 0;
+    },
+    [attachToLatest, resumeImplicitAnchorAfterTextSelection],
+  );
+
+  const performTurnFocusEffect = useCallback(
+    (effect?: TurnFocusEffect) => {
+      if (!effect) {
+        return;
+      }
+      if (implicitAnchorSuspended()) {
+        cancelTurnFocus(textSelectionActiveRef.current ? "selection" : "touch");
+        return;
+      }
+      if (effect.animated) {
+        automaticReturnsInFlightRef.current += 1;
+      }
+      latestOffsetRef.current = effect.latestOffset;
+      scrollToLatest(effect.animated, effect.latestOffset);
+    },
+    [cancelTurnFocus, implicitAnchorSuspended, scrollToLatest],
+  );
+
+  const transitionTurnFocus = useCallback(
+    (event: TurnFocusEvent) => {
+      const transition = applyTurnFocusEvent(event);
+      performTurnFocusEffect(transition.effect);
+      return transition;
+    },
+    [applyTurnFocusEvent, performTurnFocusEffect],
+  );
+
+  const requestTurnFocus = useCallback(
+    (pendingMessageId: string) => {
+      if (Platform.OS === "web" || !pendingMessageId) {
+        return;
+      }
+      turnFocusIntentSeqRef.current += 1;
+      transitionTurnFocus({
+        type: "intent",
+        generation: resetKey,
+        pendingMessageId,
+        intentToken: turnFocusIntentSeqRef.current,
+        reducedMotion,
+      });
+      if (implicitAnchorSuspended()) {
+        cancelTurnFocus(
+          textSelectionActiveRef.current
+            ? "selection"
+            : userDraggingRef.current
+              ? "drag"
+              : userMomentumRef.current
+                ? "momentum"
+                : "touch",
+        );
+        return;
+      }
+      attachToLatest();
+    },
+    [
+      attachToLatest,
+      cancelTurnFocus,
+      implicitAnchorSuspended,
+      reducedMotion,
+      resetKey,
+      transitionTurnFocus,
+    ],
+  );
+
+  const handleTurnFocusRowLayout = useCallback(
+    (pendingMessageId: string, height: number, newestEdgeOffset: number) => {
+      transitionTurnFocus({
+        type: "row_layout",
+        generation: resetKey,
+        pendingMessageId,
+        height,
+        newestEdgeOffset,
+      });
+    },
+    [resetKey, transitionTurnFocus],
+  );
+
+  const handleTurnFocusAnchorAvailable = useCallback(
+    (pendingMessageId: string) => {
+      transitionTurnFocus({
+        type: "anchor_available",
+        generation: resetKey,
+        pendingMessageId,
+        latestOffset: latestOffsetRef.current,
+      });
+    },
+    [resetKey, transitionTurnFocus],
+  );
+
+  const handleTurnFocusSpacerLayout = useCallback(
+    (height: number, requestEpoch: number) => {
+      transitionTurnFocus({
+        type: "spacer_layout",
+        height,
+        requestEpoch,
+      });
+    },
+    [transitionTurnFocus],
+  );
+
+  const updateTurnFocusGeometry = useCallback(
+    (geometry: { viewportHeight?: number; topChromeInset?: number }) => {
+      const current = turnFocusStateRef.current;
+      return transitionTurnFocus({
+        type: "geometry",
+        viewportHeight: geometry.viewportHeight ?? current.viewportHeight,
+        topChromeInset: geometry.topChromeInset ?? current.topChromeInset,
+      });
+    },
+    [transitionTurnFocus],
+  );
+
+  const handleClearanceChange = useCallback(
+    (intentToken: number, clearance: number, latestOffset: number) => {
+      if (!Number.isFinite(latestOffset)) {
+        return;
+      }
+      latestOffsetRef.current = latestOffset;
+      distanceFromLatestRef.current = timelineDistanceFromLatest(
+        rawContentOffsetRef.current,
+        latestOffset,
+      );
+      transitionTurnFocus({
+        type: "clearance_sample",
+        intentToken,
+        clearance,
+        latestOffset,
+      });
+    },
+    [transitionTurnFocus],
+  );
+
+  const clearTurnFocusForLifecycle = useCallback(() => {
+    cancelTurnFocus("lifecycle");
+  }, [cancelTurnFocus]);
+
+  const resetForConversation = useCallback(
+    (generation: string) => {
+      resumeImplicitAnchorAfterTextSelection();
+      scrollStateRef.current = returnTimelineToBottom();
+      userDraggingRef.current = false;
+      userMomentumRef.current = false;
+      timelineTouchActiveRef.current = false;
+      automaticReturnsInFlightRef.current = 0;
+      applyTurnFocusEvent({ type: "reset", generation });
+      distanceFromLatestRef.current = timelineDistanceFromLatest(
+        rawContentOffsetRef.current,
+        latestOffsetRef.current,
+      );
+      setShowJumpToLatest(false);
+    },
+    [applyTurnFocusEvent, resumeImplicitAnchorAfterTextSelection],
+  );
+
+  const handleTextSelectionGestureStart = useCallback(() => {
+    textSelectionActiveRef.current = true;
+    scheduleTextSelectionAnchorResume(TEXT_SELECTION_ANCHOR_MAX_MS);
+  }, [scheduleTextSelectionAnchorResume]);
+
+  const handleTextSelectionGestureEnd = useCallback(() => {
+    if (!textSelectionActiveRef.current) {
+      return;
+    }
+    scheduleTextSelectionAnchorResume(TEXT_SELECTION_ANCHOR_SETTLE_MS);
+  }, [scheduleTextSelectionAnchorResume]);
+
+  const updateScrollPosition = useCallback(
+    (event: NativeSyntheticEvent<NativeScrollEvent>, userDriven: boolean) => {
+      const { contentOffset, contentInset } = event.nativeEvent;
+      latestOffsetRef.current =
+        Platform.OS === "ios" ? -Math.max(0, contentInset.top) : 0;
+      rawContentOffsetRef.current = contentOffset.y;
+      const distanceFromLatest = timelineDistanceFromLatest(
+        contentOffset.y,
+        latestOffsetRef.current,
+      );
+      distanceFromLatestRef.current = distanceFromLatest;
+      if (textSelectionActiveRef.current && !userDriven) {
+        updateJumpButton();
+        return;
+      }
+      const nextScrollState = reduceTimelineScrollPosition(
+        scrollStateRef.current,
+        distanceFromLatest,
+        userDriven,
+      );
+      if (nextScrollState.mode === "attached") {
+        attachToLatest();
+        return;
+      }
+      if (nextScrollState.mode === "detached" && userDriven) {
+        detachFromLatest();
+        return;
+      }
+      updateJumpButton();
+    },
+    [attachToLatest, detachFromLatest, updateJumpButton],
+  );
+
+  const handleScroll = useCallback(
+    (event: NativeSyntheticEvent<NativeScrollEvent>) => {
+      updateScrollPosition(
+        event,
+        userDraggingRef.current || userMomentumRef.current,
+      );
+    },
+    [updateScrollPosition],
+  );
+
+  const handleScrollBeginDrag = useCallback(() => {
+    if (!textSelectionActiveRef.current) {
+      resumeImplicitAnchorAfterTextSelection();
+    }
+    userDraggingRef.current = true;
+    cancelTurnFocus("drag");
+  }, [cancelTurnFocus, resumeImplicitAnchorAfterTextSelection]);
+
+  const handleScrollEndDrag = useCallback(
+    (event: NativeSyntheticEvent<NativeScrollEvent>) => {
+      updateScrollPosition(event, true);
+      userDraggingRef.current = false;
+    },
+    [updateScrollPosition],
+  );
+
+  const handleMomentumScrollBegin = useCallback(() => {
+    if (
+      turnFocusOwnsMomentum(
+        turnFocusStateRef.current.phase,
+        automaticReturnsInFlightRef.current,
+      )
+    ) {
+      return;
+    }
+    userMomentumRef.current = true;
+    cancelTurnFocus("momentum");
+  }, [cancelTurnFocus]);
+
+  const handleMomentumScrollEnd = useCallback(
+    (event: NativeSyntheticEvent<NativeScrollEvent>) => {
+      if (
+        turnFocusOwnsMomentum(
+          turnFocusStateRef.current.phase,
+          automaticReturnsInFlightRef.current,
+        )
+      ) {
+        automaticReturnsInFlightRef.current = Math.max(
+          0,
+          automaticReturnsInFlightRef.current - 1,
+        );
+        updateScrollPosition(event, false);
+        return;
+      }
+      updateScrollPosition(event, true);
+      userMomentumRef.current = false;
+    },
+    [updateScrollPosition],
+  );
+
+  const handleContentSizeChange = useCallback(
+    (_: number, height: number) => {
+      // flexGrow can keep the content-container height constant while the live
+      // response moves the focused turn boundary. Positioned cell layout is the
+      // focus owner's geometry signal; content size remains ordinary follow only.
+      if (turnFocusSuppressesOrdinaryFollow(turnFocusStateRef.current)) {
+        return;
+      }
+      if (itemCount === 0 || height <= 0) {
+        attachToLatest();
+        return;
+      }
+      const mutationDecision = timelineMutationDecision(
+        scrollStateRef.current,
+        implicitAnchorSuspended(),
+      );
+      if (mutationDecision === "suspend-implicit-anchor") {
+        updateJumpButton();
+        return;
+      }
+      if (
+        mutationDecision === "follow-bottom" &&
+        distanceFromLatestRef.current > 1
+      ) {
+        scrollToLatest(false);
+        return;
+      }
+      if (scrollStateRef.current.mode === "detached") {
+        setShowJumpToLatest(true);
+      }
+    },
+    [
+      attachToLatest,
+      implicitAnchorSuspended,
+      itemCount,
+      scrollToLatest,
+      updateJumpButton,
+    ],
+  );
+
+  const handleLayout = useCallback(
+    (event: LayoutChangeEvent) => {
+      const focusWasSuppressing = turnFocusSuppressesOrdinaryFollow(
+        turnFocusStateRef.current,
+      );
+      const focusTransition = updateTurnFocusGeometry({
+        viewportHeight: event.nativeEvent.layout.height,
+        topChromeInset,
+      });
+      if (
+        focusWasSuppressing ||
+        turnFocusSuppressesOrdinaryFollow(focusTransition.state) ||
+        focusTransition.effect
+      ) {
+        return;
+      }
+      if (itemCount === 0) {
+        attachToLatest();
+        return;
+      }
+      if (implicitAnchorSuspended()) {
+        updateJumpButton();
+        return;
+      }
+      if (
+        scrollStateRef.current.mode === "attached" &&
+        distanceFromLatestRef.current > 1
+      ) {
+        scrollToLatest(false);
+        return;
+      }
+      updateJumpButton();
+    },
+    [
+      attachToLatest,
+      implicitAnchorSuspended,
+      itemCount,
+      scrollToLatest,
+      topChromeInset,
+      updateTurnFocusGeometry,
+      updateJumpButton,
+    ],
+  );
+
+  useEffect(
+    () => () => {
+      clearTextSelectionTimer();
+    },
+    [clearTextSelectionTimer],
+  );
+
+  useEffect(() => {
+    if (resetKeyRef.current === resetKey) {
+      return;
+    }
+    resetKeyRef.current = resetKey;
+    resetForConversation(resetKey);
+  }, [resetForConversation, resetKey]);
+
+  useEffect(() => {
+    updateTurnFocusGeometry({ topChromeInset });
+  }, [topChromeInset, updateTurnFocusGeometry]);
+
+  useEffect(() => {
+    if (itemCount === 0) {
+      attachToLatest();
+      return;
+    }
+    if (turnFocusSuppressesOrdinaryFollow(turnFocusStateRef.current)) {
+      return;
+    }
+    if (implicitAnchorSuspended()) {
+      updateJumpButton();
+      return;
+    }
+    if (
+      scrollStateRef.current.mode === "attached" &&
+      distanceFromLatestRef.current > 1
+    ) {
+      scrollToLatest(false);
+      return;
+    }
+    updateJumpButton();
+  }, [
+    attachToLatest,
+    implicitAnchorSuspended,
+    itemCount,
+    resetKey,
+    scrollToLatest,
+    updateJumpButton,
+  ]);
+
+  return {
+    scrollRef,
+    showJumpToLatest,
+    textSelectable,
+    turnFocusClearanceRequest,
+    turnFocusPendingMessageId,
+    turnFocusSpacer,
+    scrollToLatest,
+    requestTurnFocus,
+    clearTurnFocusForLifecycle,
+    resetForConversation,
+    handleScroll,
+    handleScrollBeginDrag,
+    handleScrollEndDrag,
+    handleMomentumScrollBegin,
+    handleMomentumScrollEnd,
+    handleTimelineTouchActiveChange,
+    handleContentSizeChange,
+    handleClearanceChange,
+    handleLayout,
+    handleTurnFocusAnchorAvailable,
+    handleTurnFocusRowLayout,
+    handleTurnFocusSpacerLayout,
+    handleTextSelectionGestureStart,
+    handleTextSelectionGestureEnd,
+  };
+}
+
+export function useRelativeTimeLabel(targetTimestamp?: string) {
+  const [now, setNow] = useState(() => Date.now());
+
+  useEffect(() => {
+    if (!targetTimestamp) {
+      return;
+    }
+    setNow(Date.now());
+    const timer = setInterval(() => {
+      setNow(Date.now());
+    }, 1000);
+    return () => clearInterval(timer);
+  }, [targetTimestamp]);
+
+  return useMemo(() => {
+    if (!targetTimestamp) {
+      return "";
+    }
+    const timestamp = new Date(targetTimestamp).getTime();
+    if (!Number.isFinite(timestamp)) {
+      return "";
+    }
+    const elapsed = Math.max(0, Math.floor((now - timestamp) / 1000));
+    if (elapsed < 60) {
+      return `${Math.max(1, elapsed)}s`;
+    }
+    const minutes = Math.floor(elapsed / 60);
+    if (minutes < 60) {
+      return `${minutes}m`;
+    }
+    const hours = Math.floor(minutes / 60);
+    if (hours < 24) {
+      return `${hours}h`;
+    }
+    const days = Math.floor(hours / 24);
+    return `${days}d`;
+  }, [now, targetTimestamp]);
+}
+
+export function useInterfaceComposerInput({ enabled }: { enabled: boolean }) {
+  const inputRef = useRef<TextInput>(null);
+  const [focused, setFocused] = useState(false);
+
+  const clearNativeText = useCallback(() => {
+    inputRef.current?.clear();
+    inputRef.current?.setNativeProps?.({ text: "" });
+  }, []);
+
+  const focus = useCallback(() => {
+    if (!enabled) {
+      return;
+    }
+    inputRef.current?.focus();
+  }, [enabled]);
+
+  const blur = useCallback(() => {
+    inputRef.current?.blur();
+    Keyboard.dismiss();
+    setFocused(false);
+  }, []);
+
+  const handleFocus = useCallback(() => {
+    setFocused(true);
+  }, []);
+
+  const handleBlur = useCallback(() => {
+    setFocused(false);
+  }, []);
+
+  useEffect(() => {
+    const hideSubscription = Keyboard.addListener("keyboardDidHide", () => {
+      setFocused(false);
+    });
+    return () => hideSubscription.remove();
+  }, []);
+
+  useEffect(() => {
+    if (!enabled) {
+      blur();
+    }
+  }, [blur, enabled]);
+
+  return {
+    inputRef,
+    focused,
+    focus,
+    blur,
+    clearNativeText,
+    handleFocus,
+    handleBlur,
+  };
+}

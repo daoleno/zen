@@ -8,9 +8,7 @@ import type {
 } from "../../constants/terminalThemes";
 import type { Agent, ConnectionState } from "../../store/agents";
 import type { ConnectionIssue } from "../../services/connectionIssue";
-import type {
-  StoredCodexRenderMode,
-} from "../../services/storage";
+import type { StoredInterfaceRenderMode } from "../../services/storage";
 import type { PresentedAgent } from "../../services/agentPresentation";
 import type { SessionResourceSnapshot } from "../../services/sessionResourceSnapshot";
 import type { useTerminalScreenChrome } from "./useTerminalScreenChrome";
@@ -29,7 +27,8 @@ interface UseTerminalScreenLayoutPropsInput {
   chatChrome: TerminalThemeChrome;
   chatTheme: TerminalThemePalette;
   chromeLayout: ReturnType<typeof useTerminalScreenChrome>;
-  codexRenderMode: StoredCodexRenderMode;
+  interfaceRenderMode: StoredInterfaceRenderMode;
+  initialComposerFocusGrant: string | null;
   connectionIssue?: ConnectionIssue | null;
   connectionState: ConnectionState;
   creatingSession: boolean;
@@ -63,7 +62,8 @@ interface UseTerminalScreenLayoutPropsInput {
   setNewTerminalVisible(value: boolean): void;
   setRenameDraft(value: string): void;
   setRenameVisible(value: boolean): void;
-  showCodexChat: boolean;
+  showInterfaceChat: boolean;
+  onConsumeInitialComposerFocus(): void;
   navigationActions: ReturnType<typeof useTerminalNavigationActions>;
   terminalRef: RefObject<TerminalSurfaceHandle | null>;
   terminalTheme: TerminalThemePalette;
@@ -85,7 +85,8 @@ export function useTerminalScreenLayoutProps({
   chatChrome,
   chatTheme,
   chromeLayout,
-  codexRenderMode,
+  interfaceRenderMode,
+  initialComposerFocusGrant,
   connectionIssue,
   connectionState,
   creatingSession,
@@ -119,7 +120,8 @@ export function useTerminalScreenLayoutProps({
   setNewTerminalVisible,
   setRenameDraft,
   setRenameVisible,
-  showCodexChat,
+  showInterfaceChat,
+  onConsumeInitialComposerFocus,
   navigationActions,
   terminalRef,
   terminalTheme,
@@ -132,17 +134,21 @@ export function useTerminalScreenLayoutProps({
   retryResourceSheet,
   sessionActions,
 }: UseTerminalScreenLayoutPropsInput) {
-  const handleToggleCodexRenderMode = useCallback(() => {
-    if (codexRenderMode === "chat") {
-      void sessionActions.applyCodexRenderMode("terminal");
+  const handleToggleInterfaceRenderMode = useCallback(() => {
+    if (interfaceRenderMode === "chat") {
+      void sessionActions.applyInterfaceRenderMode("terminal");
       requestAnimationFrame(() => {
         terminalRef.current?.resumeInput();
       });
       return;
     }
     terminalRef.current?.blur();
-    void sessionActions.applyCodexRenderMode("chat");
-  }, [codexRenderMode, sessionActions.applyCodexRenderMode, terminalRef]);
+    void sessionActions.applyInterfaceRenderMode("chat");
+  }, [
+    interfaceRenderMode,
+    sessionActions.applyInterfaceRenderMode,
+    terminalRef,
+  ]);
 
   const headerTitle =
     displayName || presentedAgent.title || agent?.name || agentId || "Session";
@@ -159,25 +165,26 @@ export function useTerminalScreenLayoutProps({
     chrome: chatChrome,
     chromeLayout,
     navigationActions,
-    codexRenderMode,
+    interfaceRenderMode,
     gitDiffDisabled: gitDiff.actionDisabled,
     gitDiffSummary: gitDiff.summary,
     isStructuredChatAgent,
     delegated: agent?.delegated,
     onOpenSessionDetails: openSessionDetails,
     openGitDiff,
-    onToggleCodexRenderMode: handleToggleCodexRenderMode,
+    onToggleInterfaceRenderMode: handleToggleInterfaceRenderMode,
   });
   const viewportProps = useTerminalViewportProps({
-    showCodexChat,
+    showInterfaceChat,
+    initialComposerFocusGrant,
     sessionKey,
     serverId,
     agentId,
     agent,
     connectionState,
     connectionIssue,
-    theme: showCodexChat ? chatTheme : terminalTheme,
-    chrome: showCodexChat ? chatChrome : chrome,
+    theme: showInterfaceChat ? chatTheme : terminalTheme,
+    chrome: showInterfaceChat ? chatChrome : chrome,
     screenFocused,
     terminalRef,
     ctrlArmed,
@@ -191,6 +198,7 @@ export function useTerminalScreenLayoutProps({
     keyboardVisible,
     sessionActions,
     onAccessoryLayout: handleAccessoryLayout,
+    onConsumeInitialComposerFocus,
   });
   const overlayProps = useTerminalScreenOverlayProps({
     resourceSheetVisible,
@@ -205,7 +213,7 @@ export function useTerminalScreenLayoutProps({
     hasLinkedWork,
     showToggleRenderMode: isStructuredChatAgent,
     toggleRenderModeLabel:
-      codexRenderMode === "chat" ? "Open terminal" : "Open chat",
+      interfaceRenderMode === "chat" ? "Open terminal" : "Open chat",
     newTerminalVisible,
     agentCwd: agent?.cwd,
     serverId: selectedServerId,
@@ -224,7 +232,7 @@ export function useTerminalScreenLayoutProps({
     closeMenu: chromeLayout.closeMenu,
     openNewTerminal,
     openRenameModal,
-    onToggleRenderMode: handleToggleCodexRenderMode,
+    onToggleRenderMode: handleToggleInterfaceRenderMode,
   });
 
   return {

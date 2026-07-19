@@ -45,6 +45,49 @@ func TestProviderConversationReaderSelectsOnlyExplicitKnownProvider(t *testing.T
 	}
 }
 
+func TestParseCodexConversation_PreservesLongCompletedAssistantMarkdown(t *testing.T) {
+	const suffix = "ZEN_CODEX_SUFFIX_VERTICAL_SLICE_4b1c"
+	path := filepath.Join(t.TempDir(), "rollout-long.jsonl")
+	writeJSONL(t, path,
+		map[string]any{
+			"type":      "session_meta",
+			"timestamp": "2026-05-20T10:00:00Z",
+			"payload": map[string]any{
+				"id":  "codex-long",
+				"cwd": "/repo",
+			},
+		},
+		map[string]any{
+			"type":      "response_item",
+			"timestamp": "2026-05-20T10:00:01Z",
+			"payload": map[string]any{
+				"type": "message",
+				"role": "user",
+				"content": []map[string]any{
+					{"type": "input_text", "text": "write a long markdown answer"},
+				},
+			},
+		},
+		map[string]any{
+			"type":      "response_item",
+			"timestamp": "2026-05-20T10:00:02Z",
+			"payload": map[string]any{
+				"type": "message",
+				"role": "assistant",
+				"content": []map[string]any{
+					{"type": "output_text", "text": longCompletedAssistantMarkdown(suffix)},
+				},
+			},
+		},
+	)
+
+	got, err := parseCodexConversation(path)
+	if err != nil {
+		t.Fatalf("parseCodexConversation: %v", err)
+	}
+	assertUncappedAssistantMarkdown(t, got.Events, suffix)
+}
+
 func TestParseCodexConversation_BuildsNativeTimeline(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "rollout.jsonl")
 	writeJSONL(t, path,

@@ -25,14 +25,14 @@ After installation, follow [Connect and pair](connect-and-pair.md): use `zen --l
 
 ## Current scope
 
-| Claim | Status |
-| --- | --- |
-| Pair, reconnect, session list, structured Chat | Intended beta surface |
-| Native terminal (Ghostty VT) | Requires built `libghostty_vt.so` for **arm64-v8a** (devices) and optionally **x86_64** (emulator) |
-| Structured agent interfaces | Codex, Claude Code, Cursor Agent, and Grok share the same React Native Chat/Terminal UI used on iOS |
-| iOS | Separate source-build target; see [ios.md](ios.md) |
-| Expo Go | Can paste/scan pairing links; custom `zen://` deep links need a dev build/APK |
-| Play Store | Not part of this release foundation |
+| Claim                                          | Status                                                                                              |
+| ---------------------------------------------- | --------------------------------------------------------------------------------------------------- |
+| Pair, reconnect, session list, structured Chat | Intended beta surface                                                                               |
+| Native terminal (Ghostty VT)                   | Requires built `libghostty_vt.so` for **arm64-v8a** (devices) and optionally **x86_64** (emulator)  |
+| Structured agent interfaces                    | Codex, Claude Code, Cursor Agent, and Grok share the same React Native Chat/Terminal UI used on iOS |
+| iOS                                            | Separate source-build target; see [ios.md](ios.md)                                                  |
+| Expo Go                                        | Can paste/scan pairing links; custom `zen://` deep links need a dev build/APK                       |
+| Play Store                                     | Not part of this release foundation                                                                 |
 
 ## Architecture / ABI contract
 
@@ -40,10 +40,10 @@ Canonical machine-readable contract:
 
 [`app/modules/zen-terminal-vt/native.lock.json`](../app/modules/zen-terminal-vt/native.lock.json)
 
-| Android ABI | Zig target | Role | Sideload required |
-| --- | --- | --- | --- |
-| `arm64-v8a` | `aarch64-linux-android` | Physical devices / release APK | **Yes** |
-| `x86_64` | `x86_64-linux-android` | Emulator / host-side native debug | No |
+| Android ABI | Zig target              | Role                              | Sideload required |
+| ----------- | ----------------------- | --------------------------------- | ----------------- |
+| `arm64-v8a` | `aarch64-linux-android` | Physical devices / release APK    | **Yes**           |
+| `x86_64`    | `x86_64-linux-android`  | Emulator / host-side native debug | No                |
 
 **Unsupported (invalid for zen terminal):** `armeabi-v7a`, `x86`, and any other ABI.
 
@@ -134,21 +134,21 @@ worktree registry are checked again during cleanup.
 
 Build outputs (all gitignored except the tracked lock/notice):
 
-| Path | Purpose |
-| --- | --- |
-| `libs/android/<abi>/libghostty_vt.so` | Imported by CMake / jniLibs |
-| `libs/android/SHA256SUMS` | Per-ABI digests for release notes |
-| `libs/android/build-manifest.json` | Pin + exact applied patches + provenance + Zig version + digests |
-| `libs/android/GHOSTTY-MIT.txt` | Copy of MIT notice for tarballs |
-| `android/src/main/cpp/ghostty/` | Headers for JNI bridge |
+| Path                                  | Purpose                                                          |
+| ------------------------------------- | ---------------------------------------------------------------- |
+| `libs/android/<abi>/libghostty_vt.so` | Imported by CMake / jniLibs                                      |
+| `libs/android/SHA256SUMS`             | Per-ABI digests for release notes                                |
+| `libs/android/build-manifest.json`    | Pin + exact applied patches + provenance + Zig version + digests |
+| `libs/android/GHOSTTY-MIT.txt`        | Copy of MIT notice for tarballs                                  |
+| `android/src/main/cpp/ghostty/`       | Headers for JNI bridge                                           |
 
 ### Clean-clone expectations
 
-| Path | Bare `git clone` | After `build-libghostty.sh` | Maintainer release artifact |
-| --- | --- | --- | --- |
-| Chat / pairing JS | Works | Works | Works |
-| Native terminal | Unavailable | Works (local) | Works if APK includes arm64 `.so` |
-| CI default (`ci.yml`) | Contract check only | n/a | Optional `native-libs` workflow uploads `.so` + SUMS |
+| Path                  | Bare `git clone`                                                                         | After `build-libghostty.sh` | Maintainer release artifact                                    |
+| --------------------- | ---------------------------------------------------------------------------------------- | --------------------------- | -------------------------------------------------------------- |
+| Chat / pairing JS     | Works                                                                                    | Works                       | Works                                                          |
+| Native terminal       | Unavailable                                                                              | Works (local)               | Works if APK includes arm64 `.so`                              |
+| CI default (`ci.yml`) | Bounded `android-native` job builds arm64 `libghostty_vt.so` and assembles debug AAR/APK | n/a                         | Optional `native-libs` workflow uploads multi-ABI `.so` + SUMS |
 
 There is **no** committed binary. Honest redistributable terminal support requires either:
 
@@ -200,11 +200,11 @@ export ZEN_ANDROID_KEY_PASSWORD='…'
 
 Canonical tracked identity is [`app/app.base.json`](../app/app.base.json) (loaded by [`app/app.config.js`](../app/app.config.js)):
 
-| Field | Value |
-| --- | --- |
-| `expo.version` | Release version |
-| `android.package` | `com.daoleno.zen` |
-| `android.versionCode` | `1` |
+| Field                 | Owner                                                                                                |
+| --------------------- | ---------------------------------------------------------------------------------------------------- |
+| `expo.version`        | [`app/app.base.json`](../app/app.base.json)                                                          |
+| `android.package`     | [`app/app.base.json`](../app/app.base.json) (`com.daoleno.zen`)                                      |
+| `android.versionCode` | [`app/app.base.json`](../app/app.base.json) (read the live integer; do not copy a stale table value) |
 
 Verify with `./scripts/verify-release-identity.sh` (also `bun run release:identity`).
 

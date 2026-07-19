@@ -304,6 +304,79 @@ func TestParseGrokConversation_StreamsNativeChunksAndFinalizesSameEvent(t *testi
 	findGrokEvent(t, later.Events, "assistant_message", "ordinary final")
 }
 
+func TestParseGrokConversation_LongAssistantStreamReplacementKeepsSuffix(t *testing.T) {
+	const suffix = "ZEN_GROK_STREAM_SUFFIX_7c2e"
+	dir := t.TempDir()
+	sessionID := "grok-long-stream"
+	writeGrokSummary(t, filepath.Join(dir, grokSummaryFile), map[string]any{
+		"info": map[string]any{"id": sessionID, "cwd": "/repo"},
+	})
+	writeJSONL(t, filepath.Join(dir, grokChatHistoryFile),
+		map[string]any{"type": "user", "content": "write a long answer"},
+	)
+	updatesPath := filepath.Join(dir, grokUpdatesFile)
+	prefix := strings.Repeat("g", maxCodexConversationBody-12)
+	writeJSONL(t, updatesPath,
+		grokUpdateFixture(sessionID, "live", "user_message_chunk", map[string]any{"type": "text", "text": "write a long answer"}),
+		grokUpdateFixture(sessionID, "live", "agent_message_chunk", map[string]any{"type": "text", "text": prefix}),
+	)
+
+	first, err := parseGrokConversation(dir)
+	if err != nil {
+		t.Fatalf("first parse: %v", err)
+	}
+	firstAssistant := findGrokEvent(t, first.Events, "assistant_message", strings.Repeat("g", 32))
+	if !firstAssistant.Partial || firstAssistant.Status != "running" {
+		t.Fatalf("first assistant = %#v", firstAssistant)
+	}
+
+	appendJSONL(t, updatesPath,
+		grokUpdateFixture(sessionID, "live", "agent_message_chunk", map[string]any{
+			"type": "text",
+			"text": "\n4. **Verdict owner & effect**\n" + suffix,
+		}),
+	)
+	second, err := parseGrokConversation(dir)
+	if err != nil {
+		t.Fatalf("second parse: %v", err)
+	}
+	secondAssistant := findGrokEvent(t, second.Events, "assistant_message", suffix)
+	if secondAssistant.ID != firstAssistant.ID {
+		t.Fatalf("stream id changed: %q -> %q", firstAssistant.ID, secondAssistant.ID)
+	}
+	if strings.HasSuffix(secondAssistant.Body, "...") {
+		t.Fatalf("streamed assistant body ends with silent ellipsis: %q", secondAssistant.Body[max(0, len(secondAssistant.Body)-64):])
+	}
+	if !strings.HasSuffix(secondAssistant.Body, suffix) {
+		t.Fatalf("streamed assistant lost exact suffix; tail=%q", secondAssistant.Body[max(0, len(secondAssistant.Body)-96):])
+	}
+	if len([]rune(secondAssistant.Body)) <= maxCodexConversationBody {
+		t.Fatalf("streamed assistant runes = %d, want > %d", len([]rune(secondAssistant.Body)), maxCodexConversationBody)
+	}
+	if !secondAssistant.Partial {
+		t.Fatalf("assistant finalized before turn_completed: %#v", secondAssistant)
+	}
+
+	writeJSONL(t, filepath.Join(dir, grokChatHistoryFile),
+		map[string]any{"type": "user", "content": "write a long answer"},
+		map[string]any{"type": "assistant", "content": secondAssistant.Body},
+	)
+	appendJSONL(t, updatesPath,
+		grokUpdateFixture(sessionID, "live", "turn_completed", nil),
+	)
+	final, err := parseGrokConversation(dir)
+	if err != nil {
+		t.Fatalf("final parse: %v", err)
+	}
+	finalAssistant := findGrokEvent(t, final.Events, "assistant_message", suffix)
+	if finalAssistant.ID != firstAssistant.ID || finalAssistant.Partial {
+		t.Fatalf("final assistant = %#v, first id %q", finalAssistant, firstAssistant.ID)
+	}
+	if strings.HasSuffix(finalAssistant.Body, "...") || !strings.HasSuffix(finalAssistant.Body, suffix) {
+		t.Fatalf("final assistant lost uncapped suffix: %#v", finalAssistant)
+	}
+}
+
 func TestParseGrokConversation_UserLifecyclePrecedesFirstVisibleToken(t *testing.T) {
 	dir := t.TempDir()
 	sessionID := "grok-pre-token"

@@ -5,7 +5,7 @@ import { buildSessionResourceViewModel } from "./SessionResourceSheetModel";
 const NOW = Date.parse("2026-07-18T13:05:04.000Z");
 
 describe("SessionResourceSheet presentation model", () => {
-  test("Linux split composition with live protection marker", () => {
+  test("managed healthy host is supporting pool metadata, never an alert", () => {
     const model = buildSessionResourceViewModel(
       {
         agent_id: "main:@7",
@@ -27,7 +27,7 @@ describe("SessionResourceSheet presentation model", () => {
           memory_high_bytes: 25 * 1024 ** 3,
           memory_max_bytes: 28 * 1024 ** 3,
         },
-        host: { available_bytes: 10 * 1024 ** 3, pressure: "ok" },
+        host: { available_bytes: 23 * 1024 ** 3, pressure: "ok" },
       },
       NOW,
     );
@@ -41,9 +41,21 @@ describe("SessionResourceSheet presentation model", () => {
     expect(model?.bar?.other).toBeCloseTo(5.6 / 28, 5);
     expect(model?.bar?.protectionAt).toBeCloseTo(25 / 28, 5);
     expect(model?.otherLabel).toContain("Other Agents");
-    expect(model?.hostChip).toBe("Enough memory headroom");
-    expect(model?.hostNote).toBeUndefined();
-    expect(JSON.stringify(model)).not.toMatch(/launch|definitely|looks sufficient/i);
+    expect(model?.showPoolCard).toBe(true);
+    expect(model?.host).toEqual({
+      state: "healthy",
+      support: {
+        placement: "pool",
+        label: "Host · 23.0 GiB available",
+        accessibilityLabel: "Host available 24696061952 bytes",
+      },
+    });
+    expect(JSON.stringify(model)).not.toMatch(
+      /enough memory headroom|launch|definitely|looks sufficient/i,
+    );
+    expect(model?.accessibilityLabel).toContain(
+      "Host available 24696061952 bytes",
+    );
     expect(model?.metaLine).toContain("1h 5m");
   });
 
@@ -99,10 +111,9 @@ describe("SessionResourceSheet presentation model", () => {
     expect(model?.memoryLabel).toBe("12 B");
     expect(model?.poolSummary).toBe("15 B used of 10 B");
     const bar = model?.bar;
-    expect((bar?.session ?? 0) + (bar?.other ?? 0) + (bar?.remaining ?? 0)).toBeCloseTo(
-      1,
-      5,
-    );
+    expect(
+      (bar?.session ?? 0) + (bar?.other ?? 0) + (bar?.remaining ?? 0),
+    ).toBeCloseTo(1, 5);
     expect(bar?.protectionAt).toBeCloseTo(0.8, 5);
   });
 
@@ -124,7 +135,9 @@ describe("SessionResourceSheet presentation model", () => {
     expect(model?.bar?.other).toBe(0);
     expect(model?.bar?.session).toBeCloseTo(5000 / 20000, 5);
     expect(model?.otherLabel).toBeUndefined();
-    expect(model?.skewNote).toBe("Session and pool readings updated separately");
+    expect(model?.skewNote).toBe(
+      "Session and pool readings updated separately",
+    );
   });
 
   test("absent hard max keeps absolute labels without a fake percent bar", () => {
@@ -156,7 +169,7 @@ describe("SessionResourceSheet presentation model", () => {
     expect(model?.accessibilityLabel).toContain("1000 bytes");
   });
 
-  test("unmanaged refuses stale pool and shows compact unmanaged state", () => {
+  test("unmanaged healthy host stays in footer after stale pool is refused", () => {
     const model = buildSessionResourceViewModel({
       agent_id: "main:@8",
       session: {
@@ -180,21 +193,101 @@ describe("SessionResourceSheet presentation model", () => {
     expect(model?.bar).toBeUndefined();
     expect(model?.otherLabel).toBeUndefined();
     expect(model?.skewNote).toBeUndefined();
-    expect(model?.hostChip).toBe("Enough memory headroom");
-    expect(model?.hostAvailable).toContain("GiB");
-    expect(model?.hostNote).toBeUndefined();
+    expect(model?.showPoolCard).toBe(false);
+    expect(model?.host).toEqual({
+      state: "healthy",
+      support: {
+        placement: "footer",
+        label: "Host · 10.0 GiB available",
+        accessibilityLabel: "Host available 10737418240 bytes",
+      },
+    });
+    expect(JSON.stringify(model)).not.toContain("Enough memory headroom");
     expect(model?.metaLine).toContain("running");
     expect(model?.workspace).toBe("/home/daoleno/workspace/zen");
   });
 
-  test("pressure wait copy is memory-headroom limited", () => {
+  test("confirmed pressure is the only standalone host warning", () => {
     const model = buildSessionResourceViewModel({
       agent_id: "main:@7",
-      session: { managed: true, backend: "cgroup_pool", memory_current_bytes: 1 },
-      host: { available_bytes: 1024, pressure: "pressure" },
+      session: {
+        managed: true,
+        backend: "cgroup_pool",
+        memory_current_bytes: 1,
+      },
+      host: { available_bytes: 1025, pressure: "pressure" },
     });
-    expect(model?.hostStatus).toBe("wait");
-    expect(model?.hostNote).toBe("Agents may wait for memory headroom");
-    expect(JSON.stringify(model)).not.toMatch(/kernel pressure|definitely launch/i);
+    expect(model?.host).toEqual({
+      state: "pressure",
+      warning: {
+        title: "Limited memory headroom",
+        available: "1.00 KiB",
+        availableExact: "1025 bytes",
+        note: "Agents may wait for memory headroom",
+        accessibilityLabel:
+          "Limited memory headroom. Host available 1025 bytes. Agents may wait for memory headroom",
+      },
+    });
+    expect(model?.accessibilityLabel).toContain("Host available 1025 bytes");
+    expect(JSON.stringify(model)).not.toMatch(
+      /kernel pressure|definitely launch/i,
+    );
+  });
+
+  test("unavailable pressure is subdued pool support with its qualifier", () => {
+    const model = buildSessionResourceViewModel({
+      agent_id: "main:@7",
+      session: {
+        managed: true,
+        backend: "portable_supervisor",
+        memory_current_bytes: 1024,
+      },
+      pool: {
+        backend: "portable_supervisor",
+        memory_current_bytes: 2048,
+      },
+      host: { available_bytes: 23 * 1024 ** 3 },
+    });
+
+    expect(model?.showPoolCard).toBe(true);
+    expect(model?.host).toEqual({
+      state: "unavailable",
+      support: {
+        placement: "pool",
+        label: "Host · 23.0 GiB available · Headroom state unavailable",
+        accessibilityLabel:
+          "Host available 24696061952 bytes. Memory headroom state unavailable",
+      },
+    });
+    expect(JSON.stringify(model)).not.toMatch(
+      /enough memory headroom|limited memory headroom/i,
+    );
+  });
+
+  test("unavailable pressure without bytes remains subdued footer copy", () => {
+    const model = buildSessionResourceViewModel({
+      agent_id: "main:@7",
+      session: { managed: true },
+      host: { pressure: "unavailable" },
+    });
+
+    expect(model?.host).toEqual({
+      state: "unavailable",
+      support: {
+        placement: "footer",
+        label: "Host · Memory headroom state unavailable",
+        accessibilityLabel: "Memory headroom state unavailable",
+      },
+    });
+  });
+
+  test("missing host data creates no host support or warning", () => {
+    const model = buildSessionResourceViewModel({
+      agent_id: "main:@7",
+      session: { managed: true, memory_current_bytes: 4096 },
+    });
+
+    expect(model?.host).toEqual({ state: "missing" });
+    expect(model?.accessibilityLabel).not.toMatch(/host|headroom/i);
   });
 });

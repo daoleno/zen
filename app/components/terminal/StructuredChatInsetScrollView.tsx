@@ -1,9 +1,5 @@
 import React, { forwardRef, useCallback } from "react";
-import {
-  Platform,
-  StyleSheet,
-  type ScrollViewProps,
-} from "react-native";
+import { Platform, StyleSheet, type ScrollViewProps } from "react-native";
 import { ClippingScrollView } from "react-native-keyboard-controller";
 import Reanimated, {
   runOnJS,
@@ -16,17 +12,14 @@ import Reanimated, {
   type SharedValue,
 } from "react-native-reanimated";
 import {
-  structuredChatEffectiveClearance,
-  structuredChatLatestOffset,
+  structuredChatEffectiveClearanceForKeyboardLifecycle,
+  structuredChatFocusSample,
   type StructuredChatInsetPlatform,
+  type StructuredChatKeyboardLifecycleGate,
 } from "./chatKeyboardOverlayPolicy";
 
 const INSET_PLATFORM: StructuredChatInsetPlatform =
-  Platform.OS === "ios"
-    ? "ios"
-    : Platform.OS === "android"
-      ? "android"
-      : "web";
+  Platform.OS === "ios" ? "ios" : Platform.OS === "android" ? "android" : "web";
 
 const ReanimatedClippingScrollView =
   Platform.OS === "android"
@@ -35,8 +28,14 @@ const ReanimatedClippingScrollView =
 
 interface StructuredChatInsetScrollViewProps extends ScrollViewProps {
   clearance: SharedValue<number>;
+  keyboardLifecycleGate: SharedValue<StructuredChatKeyboardLifecycleGate>;
+  clearanceObservationRequest?: SharedValue<number>;
   inverted?: boolean;
-  onLatestOffsetChange(offset: number): void;
+  onClearanceChange(
+    intentToken: number,
+    clearance: number,
+    latestOffset: number,
+  ): void;
 }
 
 /**
@@ -51,10 +50,12 @@ export const StructuredChatInsetScrollView = forwardRef<
   {
     children,
     clearance,
+    keyboardLifecycleGate,
+    clearanceObservationRequest,
     contentContainerStyle,
     contentInset,
     inverted = false,
-    onLatestOffsetChange,
+    onClearanceChange,
     scrollIndicatorInsets,
     ...rest
   },
@@ -79,33 +80,52 @@ export const StructuredChatInsetScrollView = forwardRef<
   );
 
   useAnimatedReaction(
-    () => ({
-      rawOffset: rawScrollOffset.value,
-      requestedClearance: clearance.value,
-    }),
-    ({ rawOffset, requestedClearance }) => {
-      effectiveClearance.value = structuredChatEffectiveClearance({
-        platform: INSET_PLATFORM,
-        requestedClearance,
-        rawOffset,
-        previousClearance: effectiveClearance.value,
-      });
+    () => {
+      const nextClearance =
+        structuredChatEffectiveClearanceForKeyboardLifecycle({
+          gate: keyboardLifecycleGate.value,
+          platform: INSET_PLATFORM,
+          requestedClearance: clearance.value,
+          rawOffset: rawScrollOffset.value,
+          previousClearance: effectiveClearance.value,
+        });
+      const intentToken = clearanceObservationRequest?.value ?? 0;
+      return {
+        clearance: nextClearance,
+        focusSample:
+          intentToken > 0
+            ? structuredChatFocusSample(
+                intentToken,
+                nextClearance,
+                INSET_PLATFORM,
+              )
+            : null,
+      };
     },
-    [clearance],
-  );
-
-  useAnimatedReaction(
-    () => structuredChatLatestOffset(
-      effectiveClearance.value,
-      INSET_PLATFORM,
-    ),
     (current, previous) => {
-      if (current === previous) {
+      effectiveClearance.value = current.clearance;
+      const currentSample = current.focusSample;
+      const previousSample = previous?.focusSample;
+      if (
+        currentSample == null ||
+        (currentSample.intentToken === previousSample?.intentToken &&
+          currentSample.clearance === previousSample.clearance &&
+          currentSample.latestOffset === previousSample.latestOffset)
+      ) {
         return;
       }
-      runOnJS(onLatestOffsetChange)(current);
+      runOnJS(onClearanceChange)(
+        currentSample.intentToken,
+        currentSample.clearance,
+        currentSample.latestOffset,
+      );
     },
-    [onLatestOffsetChange],
+    [
+      clearance,
+      clearanceObservationRequest,
+      keyboardLifecycleGate,
+      onClearanceChange,
+    ],
   );
 
   const animatedProps = useAnimatedProps(() => {
@@ -138,14 +158,13 @@ export const StructuredChatInsetScrollView = forwardRef<
     scrollIndicatorInsets?.right,
     scrollIndicatorInsets?.top,
   ]);
-  const webContentInsetStyle = useAnimatedStyle(() => ({
-    paddingTop: inverted
-      ? effectiveClearance.value
-      : undefined,
-    paddingBottom: inverted
-      ? undefined
-      : effectiveClearance.value,
-  }), [inverted]);
+  const webContentInsetStyle = useAnimatedStyle(
+    () => ({
+      paddingTop: inverted ? effectiveClearance.value : undefined,
+      paddingBottom: inverted ? undefined : effectiveClearance.value,
+    }),
+    [inverted],
+  );
 
   const scrollView = (
     <Reanimated.ScrollView
@@ -158,7 +177,9 @@ export const StructuredChatInsetScrollView = forwardRef<
         <Reanimated.View style={[styles.webContent, webContentInsetStyle]}>
           {children}
         </Reanimated.View>
-      ) : children}
+      ) : (
+        children
+      )}
     </Reanimated.ScrollView>
   );
 

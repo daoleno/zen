@@ -1,13 +1,10 @@
 import { useMemo } from "react";
-import {
-  type AgentKind,
-  presentAgent,
-} from "../../services/agentPresentation";
+import { type AgentKind, presentAgent } from "../../services/agentPresentation";
 import type { ConnectionIssue } from "../../services/connectionIssue";
 import type {
   StoredAgentAliases,
-  StoredCodexRenderMode,
-  StoredCodexRenderModes,
+  StoredInterfaceRenderMode,
+  StoredInterfaceRenderModes,
 } from "../../services/storage";
 import type {
   Agent,
@@ -28,7 +25,7 @@ interface UseTerminalRouteModelInput {
   agentAliases: StoredAgentAliases;
   serverConnections: Record<string, ConnectionState>;
   serverConnectionIssues: Record<string, ConnectionIssue | null>;
-  codexRenderModes: StoredCodexRenderModes;
+  interfaceRenderModes: StoredInterfaceRenderModes;
 }
 
 export function useTerminalRouteModel({
@@ -41,7 +38,7 @@ export function useTerminalRouteModel({
   agentAliases,
   serverConnections,
   serverConnectionIssues,
-  codexRenderModes,
+  interfaceRenderModes,
 }: UseTerminalRouteModelInput) {
   const storedAgent = sessionKey ? agentByKey.get(sessionKey) : undefined;
   const agent = useMemo(
@@ -86,18 +83,18 @@ export function useTerminalRouteModel({
     presentedAgent.kind,
     agent?.capabilities,
   );
-  const codexRenderMode = resolveCodexRenderMode({
+  const interfaceRenderMode = resolveInterfaceRenderMode({
     kind: presentedAgent.kind,
     capabilities: agent?.capabilities,
     sessionKey,
-    storedModes: codexRenderModes,
+    storedModes: interfaceRenderModes,
   });
-  const showCodexChat =
-    hasTerminalRoute && isStructuredChatAgent && codexRenderMode === "chat";
+  const showInterfaceChat =
+    hasTerminalRoute && isStructuredChatAgent && interfaceRenderMode === "chat";
 
   return {
     agent,
-    codexRenderMode,
+    interfaceRenderMode,
     connectionIssue,
     connectionState,
     displayName,
@@ -108,11 +105,11 @@ export function useTerminalRouteModel({
     isStructuredChatAgent,
     linkedWork,
     presentedAgent,
-    showCodexChat,
+    showInterfaceChat,
   };
 }
 
-/** Agents with a structured chat surface (Codex-compatible conversation UI). */
+/** Agents with a structured chat surface (provider-neutral conversation UI). */
 export function supportsChatInterface(
   kind: AgentKind | string,
   capabilities?: AgentCapabilities,
@@ -130,7 +127,7 @@ export function supportsChatInterface(
  * Resolve render mode from a persisted per-session preference when present;
  * otherwise derive from chat-interface capability (structured → chat, else terminal).
  */
-export function resolveCodexRenderMode({
+export function resolveInterfaceRenderMode({
   kind,
   capabilities,
   sessionKey,
@@ -139,21 +136,21 @@ export function resolveCodexRenderMode({
   kind: AgentKind | string;
   capabilities?: AgentCapabilities;
   sessionKey: string | null;
-  storedModes: StoredCodexRenderModes;
-}): StoredCodexRenderMode {
+  storedModes: StoredInterfaceRenderModes;
+}): StoredInterfaceRenderMode {
   if (sessionKey) {
     const persisted = storedModes[sessionKey];
     if (persisted === "chat" || persisted === "terminal") {
       return persisted;
     }
   }
-  return defaultCodexRenderModeForKind(kind, capabilities);
+  return defaultInterfaceRenderModeForKind(kind, capabilities);
 }
 
-export function defaultCodexRenderModeForKind(
+export function defaultInterfaceRenderModeForKind(
   kind: AgentKind | string,
   capabilities?: AgentCapabilities,
-): StoredCodexRenderMode {
+): StoredInterfaceRenderMode {
   return supportsChatInterface(kind, capabilities) ? "chat" : "terminal";
 }
 
@@ -180,7 +177,12 @@ function resolveRouteAgent({
     };
   }
 
-  if (!sessionKey || !serverId || !agentId || !hasRouteSessionHint(routeSessionHint)) {
+  if (
+    !sessionKey ||
+    !serverId ||
+    !agentId ||
+    !hasRouteSessionHint(routeSessionHint)
+  ) {
     return undefined;
   }
 

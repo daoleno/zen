@@ -19,11 +19,15 @@ This repository is a monorepo for `zen`, a mobile-native agent control plane. Th
 
 Use TypeScript for app code and Go for daemon code. Match local style: two-space indentation in TS/TSX, `gofmt` for Go, PascalCase React components, `use...` React hooks, and camelCase TypeScript variables/functions. Keep terminal/Codex UI code in `app/components/terminal`. Prefer typed service boundaries over ad hoc JSON handling.
 
+## Cross-Platform Product Contract
+
+All product features, fixes, architecture, and shared infrastructure must be designed for Android and iOS by default. Web is outside the required product contract unless explicitly scoped. The first platform to reproduce a bug sets validation priority, not the solution boundary. Prefer the framework/provider’s shared mobile owner and one shared truth owner. Platform-specific code is allowed only when the underlying capability is genuinely platform-exclusive; isolate it behind a shared contract, and give the counterpart mobile platform explicit behavior rather than accidental omission.
+
 ## Testing Guidelines
 
 Daemon tests use Go’s standard `testing` package and follow `*_test.go` naming. Run `cd daemon && go test ./...` before daemon, protocol, auth, terminal, or work/session changes. The app currently relies on TypeScript checks and Expo diagnostics; run `cd app && bunx tsc --noEmit` after TS/TSX changes and use Expo locally for UI verification.
 
-`app/app/` is the Expo Router runtime route tree. Never place unit-test modules such as `*.test.*` or `*.spec.*` there, and never import `bun:test` from anything under that tree. Put tests in an appropriate non-route location such as `app/services/` or `app/components/`, even when the production hook or module lives under `app/app/`. Before finishing changes that add or move files under `app/app/`, require residual checks for test/spec filenames and `bun:test` imports (`rg --files app/app | rg '\.(test|spec)\.'` and `rg -n 'bun:test' app/app`); when route membership changed, include an Expo Android bundle/export proof.
+`app/app/` is the Expo Router runtime route tree. Never place unit-test modules such as `*.test.*` or `*.spec.*` there, and never import `bun:test` from anything under that tree. Put tests in an appropriate non-route location such as `app/services/` or `app/components/`, even when the production hook or module lives under `app/app/`. Before finishing changes that add or move files under `app/app/`, require residual checks for test/spec filenames and `bun:test` imports (`rg --files app/app | rg '\.(test|spec)\.'` and `rg -n 'bun:test' app/app`); when route membership changed, include Expo Android and iOS bundle/export proofs (`bunx expo export --platform android` and `bunx expo export --platform ios`).
 
 ## Commit & Pull Request Guidelines
 

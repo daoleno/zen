@@ -21,7 +21,9 @@ export default function TerminalScreen() {
     agentId,
     serverId,
     sessionKey,
-    initialCodexRenderMode,
+    initialComposerFocusGrant,
+    consumeInitialComposerFocus,
+    initialInterfaceRenderMode,
     routeSessionHint,
     renameVisible,
     setRenameVisible,
@@ -36,29 +38,23 @@ export default function TerminalScreen() {
     terminalRef,
   } = useTerminalScreenLocalState();
   const chromeLayout = useTerminalScreenChrome({ sessionKey });
-  const {
-    closeMenu,
-    menuPosition,
-    menuVisible,
-  } = chromeLayout;
-  const {
-    agentByKey,
-  } = useTerminalAgentIndex({
+  const { closeMenu, menuPosition, menuVisible } = chromeLayout;
+  const { agentByKey } = useTerminalAgentIndex({
     agents: state.agents,
     hydratedServers: state.hydratedServers,
   });
   const {
     agentAliases,
     setAgentAliases,
-    codexRenderModes,
-    setCodexRenderModes,
+    interfaceRenderModes,
+    setInterfaceRenderModes,
     setRecentAgentOpens,
     server,
     setServer,
   } = useTerminalScreenStorage({
     serverId,
     sessionKey,
-    initialCodexRenderMode,
+    initialInterfaceRenderMode,
   });
   const {
     gitDiff,
@@ -76,12 +72,13 @@ export default function TerminalScreen() {
     agentAliases,
     serverConnections: state.serverConnections,
     serverConnectionIssues: state.serverConnectionIssues,
-    codexRenderModes,
+    interfaceRenderModes,
   });
-  const { chromeColors, chatChrome, chatTheme, statusBarStyle, terminalTheme } = theme;
+  const { chromeColors, chatChrome, chatTheme, statusBarStyle, terminalTheme } =
+    theme;
   const {
     agent,
-    codexRenderMode,
+    interfaceRenderMode,
     connectionIssue,
     connectionState,
     displayName,
@@ -89,7 +86,7 @@ export default function TerminalScreen() {
     isStructuredChatAgent,
     linkedWork,
     presentedAgent,
-    showCodexChat,
+    showInterfaceChat,
   } = route;
   const {
     keyboardVisible,
@@ -107,10 +104,7 @@ export default function TerminalScreen() {
     setScreenFocused,
   });
 
-  const {
-    openGitDiff,
-    openRenameModal,
-  } = useTerminalScreenActions({
+  const { openGitDiff, openRenameModal } = useTerminalScreenActions({
     displayName,
     closeMenu,
     openGitDiffSheet: gitDiff.open,
@@ -134,7 +128,7 @@ export default function TerminalScreen() {
     sessionKey,
     connectionState,
     creatingSession,
-    codexRenderMode,
+    interfaceRenderMode,
     linkedWork,
     renameDraft,
     closeMenu,
@@ -142,13 +136,11 @@ export default function TerminalScreen() {
     setCreatingSession,
     setRenameVisible,
     setAgentAliases,
-    setCodexRenderModes,
+    setInterfaceRenderModes,
     setRecentAgentOpens,
     setServer,
   });
-  const {
-    openNewTerminal,
-  } = sessionActions;
+  const { openNewTerminal } = sessionActions;
 
   const resourceSheet = useSessionResourceSheet({
     serverId,
@@ -156,65 +148,64 @@ export default function TerminalScreen() {
     connectionConnected: connectionState === "connected",
   });
 
-  const {
-    overlayProps,
-    topBarProps,
-    viewportProps,
-  } = useTerminalScreenLayoutProps({
-    agent,
-    agentId,
-    accessoryBottomOffset,
-    chrome: chromeColors,
-    chatChrome,
-    chatTheme,
-    chromeLayout,
-    codexRenderMode,
-    connectionIssue,
-    connectionState,
-    creatingSession,
-    ctrlArmed,
-    daemonId: server?.daemonId,
-    displayName,
-    gitDiff,
-    handleAccessoryLayout,
-    handleCtrlArmedChange,
-    hasLinkedWork: Boolean(linkedWork),
-    hasTerminalRoute,
-    isStructuredChatAgent,
-    keyboardVisible,
-    menuPosition,
-    menuVisible,
-    newTerminalVisible,
-    outputBottomInset,
-    presentedAgent,
-    renameDraft,
-    renamePlaceholder: agent?.name || agentId,
-    renameVisible,
-    resourceSheetVisible: resourceSheet.visible,
-    resourceSheetLoading: resourceSheet.loading,
-    resourceSheetError: resourceSheet.error,
-    resourceSheetSnapshot: resourceSheet.snapshot,
-    screenFocused,
-    selectedServerId: serverId,
-    serverId,
-    serverUrl: server?.url,
-    sessionKey,
-    setNewTerminalVisible,
-    setRenameDraft,
-    setRenameVisible,
-    showCodexChat,
-    navigationActions,
-    terminalRef,
-    terminalTheme,
-    viewportModel,
-    openGitDiff,
-    openNewTerminal,
-    openRenameModal,
-    openSessionDetails: resourceSheet.open,
-    closeResourceSheet: resourceSheet.close,
-    retryResourceSheet: resourceSheet.retry,
-    sessionActions,
-  });
+  const { overlayProps, topBarProps, viewportProps } =
+    useTerminalScreenLayoutProps({
+      agent,
+      agentId,
+      accessoryBottomOffset,
+      chrome: chromeColors,
+      chatChrome,
+      chatTheme,
+      chromeLayout,
+      interfaceRenderMode,
+      initialComposerFocusGrant,
+      connectionIssue,
+      connectionState,
+      creatingSession,
+      ctrlArmed,
+      daemonId: server?.daemonId,
+      displayName,
+      gitDiff,
+      handleAccessoryLayout,
+      handleCtrlArmedChange,
+      hasLinkedWork: Boolean(linkedWork),
+      hasTerminalRoute,
+      isStructuredChatAgent,
+      keyboardVisible,
+      menuPosition,
+      menuVisible,
+      newTerminalVisible,
+      outputBottomInset,
+      presentedAgent,
+      renameDraft,
+      renamePlaceholder: agent?.name || agentId,
+      renameVisible,
+      resourceSheetVisible: resourceSheet.visible,
+      resourceSheetLoading: resourceSheet.loading,
+      resourceSheetError: resourceSheet.error,
+      resourceSheetSnapshot: resourceSheet.snapshot,
+      screenFocused,
+      selectedServerId: serverId,
+      serverId,
+      serverUrl: server?.url,
+      sessionKey,
+      setNewTerminalVisible,
+      setRenameDraft,
+      setRenameVisible,
+      showInterfaceChat,
+      onConsumeInitialComposerFocus: consumeInitialComposerFocus,
+      navigationActions,
+      terminalRef,
+      terminalTheme,
+      viewportModel,
+      openGitDiff,
+      openNewTerminal,
+      openRenameModal,
+      openSessionDetails: resourceSheet.open,
+      closeResourceSheet: resourceSheet.close,
+      retryResourceSheet: resourceSheet.retry,
+      sessionActions,
+    });
 
   return (
     <TerminalScreenLayout

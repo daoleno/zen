@@ -43,7 +43,7 @@
     {
       "id": "ios-distribution-artifacts",
       "severity": "blocker",
-      "summary": "iOS source and Simulator builds work, but the Ghostty XCFramework is gitignored and no signed iOS distribution is published",
+      "summary": "iOS source and Simulator builds work; Preview IPA upload is not public installability; Ghostty XCFramework remains gitignored until published distribution",
       "paths": [
         {
           "path": "app/modules/zen-terminal-vt/libs/ios/GhosttyVt.xcframework",
@@ -54,11 +54,19 @@
           "referenced_by_app": true
         },
         {
+          "path": "app/plugins/withZenIOSBuild.js",
+          "referenced_by_app": true
+        },
+        {
           "path": "scripts/build-libghostty-ios.sh",
           "referenced_by_app": false
         },
         {
           "path": "scripts/verify-libghostty-ios.sh",
+          "referenced_by_app": false
+        },
+        {
+          "path": "scripts/verify-ios-artifact.sh",
           "referenced_by_app": false
         },
         {
@@ -74,9 +82,9 @@
           "referenced_by_app": false
         }
       ],
-      "acceptance": "Reproducible CI verifies the XCFramework and Ghostty notice, signs/archives Zen, and publishes an IPA, TestFlight, or App Store installation path",
+      "acceptance": "Reproducible CI verifies the XCFramework and Ghostty notice in the app bundle, signs/archives Zen, and publishes a publicly installable TestFlight/App Store path (Preview IPA upload alone is insufficient)",
       "pipeline_status": "partial",
-      "remaining": "Run the macOS and signed workflows with real Apple credentials, validate a physical device, complete App Store Connect metadata/review gates, and publish a supported TestFlight/App Store delivery channel"
+      "remaining": "Complete Apple Beta App Review / public installability for Preview (or App Store), validate a physical device, and publish the supported delivery channel; do not treat App Store Connect upload as public availability"
     }
   ],
   "resolved": [

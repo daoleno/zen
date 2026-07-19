@@ -21,6 +21,12 @@ const (
 	// never block on approval prompts (e.g. when the Zen control socket lives
 	// outside the Codex sandbox).
 	CodexFullAuthorizationFlag = "--dangerously-bypass-approvals-and-sandbox"
+
+	// ClaudeFullAuthorizationFlag is the Claude CLI flag that bypasses
+	// permission checks, providing the most permissive non-interactive
+	// authorization mode available. Brain-delegated Claude sessions use this so
+	// internal progress commands never block on approval prompts.
+	ClaudeFullAuthorizationFlag = "--permission-mode bypassPermissions"
 )
 
 // HardenCodexDelegatedCommand returns a Codex launch command configured for
@@ -38,6 +44,25 @@ func HardenCodexDelegatedCommand(command string) string {
 		return command
 	}
 	return command + " " + CodexFullAuthorizationFlag
+}
+
+// HardenClaudeCommand returns a Claude launch command configured for
+// non-interactive autonomous execution. When command does not already declare
+// an explicit authorization mode, ClaudeFullAuthorizationFlag is appended so
+// Brain-delegated and Brain-host Claude sessions bypass permission checks for
+// internal shell/progress commands. Commands that already include
+// --permission-mode (any value) or --dangerously-skip-permissions are returned
+// unchanged so explicit user-provided authorization configuration is preserved.
+func HardenClaudeCommand(command string) string {
+	command = strings.TrimSpace(command)
+	if command == "" {
+		command = AgentProviderClaude
+	}
+	if strings.Contains(command, "--permission-mode") ||
+		strings.Contains(command, "--dangerously-skip-permissions") {
+		return command
+	}
+	return command + " " + ClaudeFullAuthorizationFlag
 }
 
 // AgentCapabilities describes capabilities Brain can delegate to an executor.

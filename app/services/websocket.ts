@@ -976,9 +976,7 @@ export class MultiServerWebSocketClient {
       if (payload.serverId !== serverId || payload.request_id !== requestId) {
         return;
       }
-      handlers.onError(
-        new Error(payload.message || "Codex conversation stream failed."),
-      );
+      handlers.onError(new Error(payload.message ?? ""));
     };
 
     const removeHandlers = () => {
@@ -1391,11 +1389,13 @@ export class MultiServerWebSocketClient {
         payload.serverId === serverId && payload.request_id === requestId,
       matchesConnection: (payload) => payload.serverId === serverId,
       sendNow: () => {
-        socket.sendNow(structuredActionMessage({
-          requestId,
-          agentId,
-          action,
-        }));
+        socket.sendNow(
+          structuredActionMessage({
+            requestId,
+            agentId,
+            action,
+          }),
+        );
       },
     });
   }
@@ -1420,11 +1420,13 @@ export class MultiServerWebSocketClient {
         payload.serverId === serverId && payload.request_id === requestId,
       matchesConnection: (payload) => payload.serverId === serverId,
       sendNow: () => {
-        socket.sendNow(structuredInputMessage({
-          requestId,
-          agentId,
-          text,
-        }));
+        socket.sendNow(
+          structuredInputMessage({
+            requestId,
+            agentId,
+            text,
+          }),
+        );
       },
     });
   }
@@ -1729,7 +1731,9 @@ export class MultiServerWebSocketClient {
           return;
         }
         cleanup();
-        reject(new Error(payload.message || "Failed to run Brain housekeeping."));
+        reject(
+          new Error(payload.message || "Failed to run Brain housekeeping."),
+        );
       };
 
       const timer = setTimeout(() => {
@@ -1870,7 +1874,10 @@ export class MultiServerWebSocketClient {
     });
   }
 
-  getBrainWorkspaceTree(serverId: string, path = ""): Promise<BrainWorkspaceTree> {
+  getBrainWorkspaceTree(
+    serverId: string,
+    path = "",
+  ): Promise<BrainWorkspaceTree> {
     const requestId = `${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
 
     return new Promise((resolve, reject) => {
@@ -2029,23 +2036,53 @@ export class MultiServerWebSocketClient {
   }
 
   getCalendarItem(serverId: string, id: string) {
-    return this.calendarAction(serverId, "get_calendar_item", "calendar_item", { id }, "Failed to load calendar item.");
+    return this.calendarAction(
+      serverId,
+      "get_calendar_item",
+      "calendar_item",
+      { id },
+      "Failed to load calendar item.",
+    );
   }
 
   createCalendarItem(serverId: string, item: Partial<CalendarItem>) {
-    return this.calendarAction(serverId, "create_calendar_item", "calendar_item_created", { calendar_item: item }, "Failed to create calendar item.");
+    return this.calendarAction(
+      serverId,
+      "create_calendar_item",
+      "calendar_item_created",
+      { calendar_item: item },
+      "Failed to create calendar item.",
+    );
   }
 
   updateCalendarItem(serverId: string, item: CalendarItem) {
-    return this.calendarAction(serverId, "update_calendar_item", "calendar_item_updated", { calendar_item: item, revision: item.revision }, "Failed to update calendar item.");
+    return this.calendarAction(
+      serverId,
+      "update_calendar_item",
+      "calendar_item_updated",
+      { calendar_item: item, revision: item.revision },
+      "Failed to update calendar item.",
+    );
   }
 
   cancelCalendarItem(serverId: string, id: string, revision: number) {
-    return this.calendarAction(serverId, "cancel_calendar_item", "calendar_item_cancelled", { id, revision }, "Failed to cancel calendar item.");
+    return this.calendarAction(
+      serverId,
+      "cancel_calendar_item",
+      "calendar_item_cancelled",
+      { id, revision },
+      "Failed to cancel calendar item.",
+    );
   }
 
   runCalendarItem(serverId: string, id: string) {
-    return this.calendarAction(serverId, "run_calendar_item", "calendar_item_running", { id }, "Failed to run calendar action.");
+    return this.calendarAction(
+      serverId,
+      "run_calendar_item",
+      "calendar_item_running",
+      { id },
+      "Failed to run calendar action.",
+    );
   }
 
   private calendarAction(
@@ -2357,7 +2394,7 @@ function normalizeCodexConversationDeltaPayload(
         : 0,
     base_revision:
       typeof payload.base_revision === "number" &&
-        Number.isFinite(payload.base_revision)
+      Number.isFinite(payload.base_revision)
         ? payload.base_revision
         : 0,
     server_generation:
@@ -2373,7 +2410,7 @@ function normalizeCodexConversationDeltaPayload(
     updated_at:
       typeof payload.updated_at === "string" ? payload.updated_at : undefined,
     activity: Object.prototype.hasOwnProperty.call(payload, "activity")
-      ? normalizedDelta.activity ?? null
+      ? (normalizedDelta.activity ?? null)
       : undefined,
     upserts: normalizedDelta.events,
     deletes: Array.isArray(payload.deletes)
@@ -2407,7 +2444,10 @@ function normalizeCodexConversationSyncStatusPayload(
   };
 }
 
-function appendAuthorizationQuery(serverUrl: string, authHeader: string): string {
+function appendAuthorizationQuery(
+  serverUrl: string,
+  authHeader: string,
+): string {
   try {
     const parsed = new URL(serverUrl);
     parsed.searchParams.set("auth", base64URL(authHeader));

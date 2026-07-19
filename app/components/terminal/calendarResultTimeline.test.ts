@@ -3,7 +3,7 @@ import {
   isProviderActivityRunning,
   type CodexConversationEvent,
 } from "../../services/codexConversation";
-import { buildZenTimeline } from "./CodexTimelineModel";
+import { buildZenTimeline } from "./InterfaceTimelineModel";
 
 describe("Calendar result timeline", () => {
   const failedResult: CodexConversationEvent = {

@@ -1,10 +1,5 @@
 import React from "react";
-import {
-  ScrollView,
-  StyleSheet,
-  Text,
-  View,
-} from "react-native";
+import { ScrollView, StyleSheet, Text, View } from "react-native";
 import { Typography } from "../../constants/tokens";
 import {
   buildTerminalChrome,
@@ -14,7 +9,7 @@ import {
   highlightCodeLine,
   type HighlightTokenKind,
 } from "./gitDiffSyntaxHighlight";
-import { withAlpha } from "./gitDiffColor";
+import { withAlpha } from "./colorWithAlpha";
 
 export function GitDiffBlock({
   path,
@@ -29,7 +24,11 @@ export function GitDiffBlock({
   const lines = React.useMemo(() => patch.split("\n"), [patch]);
 
   return (
-    <ScrollView horizontal showsHorizontalScrollIndicator nestedScrollEnabled={false}>
+    <ScrollView
+      horizontal
+      showsHorizontalScrollIndicator
+      nestedScrollEnabled={false}
+    >
       <View style={styles.diffBlock}>
         {lines.map((line, index) => {
           const presentation = linePresentation(line, theme, chrome);
@@ -43,10 +42,15 @@ export function GitDiffBlock({
                   : null,
               ]}
             >
-              <Text style={[styles.diffLineNumber, { color: chrome.textSubtle }]}>
+              <Text
+                style={[styles.diffLineNumber, { color: chrome.textSubtle }]}
+              >
                 {index + 1}
               </Text>
-              <Text selectable style={[styles.diffLine, { color: presentation.color }]}>
+              <Text
+                selectable
+                style={[styles.diffLine, { color: presentation.color }]}
+              >
                 {renderDiffLine(line, path, presentation, theme, chrome)}
               </Text>
             </View>
@@ -87,10 +91,10 @@ function linePresentation(
     };
   }
   if (
-    line.startsWith("rename from ")
-    || line.startsWith("rename to ")
-    || line.startsWith("new file mode")
-    || line.startsWith("deleted file mode")
+    line.startsWith("rename from ") ||
+    line.startsWith("rename to ") ||
+    line.startsWith("new file mode") ||
+    line.startsWith("deleted file mode")
   ) {
     return {
       color: theme.blue,

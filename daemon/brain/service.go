@@ -22,7 +22,6 @@ var (
 )
 
 const (
-	claudePermissionBypassFlag = "--permission-mode dontAsk"
 	codexFullAuthorizationFlag = work.CodexFullAuthorizationFlag
 )
 
@@ -667,9 +666,7 @@ func (s *Service) hostCommand(executor work.AgentExecutor) string {
 		}
 		return withZenCLIOnPath(strings.Join(args, " "))
 	case "claude":
-		if !claudeCommandHasPermissionBypass(command) {
-			command = strings.TrimSpace(command + " " + claudePermissionBypassFlag)
-		}
+		command = work.HardenClaudeCommand(command)
 		if workspace != "" && !strings.Contains(command, " --add-dir ") {
 			return withZenCLIOnPath(strings.TrimSpace(command + " --add-dir " + shellQuote(workspace)))
 		}
@@ -722,10 +719,6 @@ func pathContainsDir(pathValue, dir string) bool {
 
 func codexCommandHasFullAuthorization(command string) bool {
 	return strings.Contains(command, codexFullAuthorizationFlag)
-}
-
-func claudeCommandHasPermissionBypass(command string) bool {
-	return strings.Contains(command, claudePermissionBypassFlag)
 }
 
 func shellQuote(value string) string {

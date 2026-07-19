@@ -7,10 +7,10 @@ import {
   getServerById,
   markAgentOpened,
   setAgentAlias,
-  setCodexRenderMode,
+  setInterfaceRenderMode,
   type StoredAgentAliases,
-  type StoredCodexRenderMode,
-  type StoredCodexRenderModes,
+  type StoredInterfaceRenderMode,
+  type StoredInterfaceRenderModes,
   type StoredRecentAgentOpens,
   type StoredServer,
 } from "../../services/storage";
@@ -29,7 +29,7 @@ interface UseTerminalSessionActionsInput {
   sessionKey: string | null;
   connectionState: ConnectionState;
   creatingSession: boolean;
-  codexRenderMode: StoredCodexRenderMode;
+  interfaceRenderMode: StoredInterfaceRenderMode;
   linkedWork?: WorkItem;
   renameDraft: string;
   closeMenu(): void;
@@ -37,7 +37,7 @@ interface UseTerminalSessionActionsInput {
   setCreatingSession(value: boolean): void;
   setRenameVisible(value: boolean): void;
   setAgentAliases(value: StoredAgentAliases): void;
-  setCodexRenderModes: Dispatch<SetStateAction<StoredCodexRenderModes>>;
+  setInterfaceRenderModes: Dispatch<SetStateAction<StoredInterfaceRenderModes>>;
   setRecentAgentOpens: Dispatch<SetStateAction<StoredRecentAgentOpens>>;
   setServer: Dispatch<SetStateAction<StoredServer | null>>;
 }
@@ -48,7 +48,7 @@ export function useTerminalSessionActions({
   sessionKey,
   connectionState,
   creatingSession,
-  codexRenderMode,
+  interfaceRenderMode,
   linkedWork,
   renameDraft,
   closeMenu,
@@ -56,7 +56,7 @@ export function useTerminalSessionActions({
   setCreatingSession,
   setRenameVisible,
   setAgentAliases,
-  setCodexRenderModes,
+  setInterfaceRenderModes,
   setRecentAgentOpens,
   setServer,
 }: UseTerminalSessionActionsInput) {
@@ -69,10 +69,10 @@ export function useTerminalSessionActions({
     setRenameVisible(false);
   }, [renameDraft, sessionKey, setAgentAliases, setRenameVisible]);
 
-  const applyCodexRenderMode = useCallback(
-    (mode: StoredCodexRenderMode) => {
+  const applyInterfaceRenderMode = useCallback(
+    (mode: StoredInterfaceRenderMode) => {
       if (!sessionKey) return;
-      setCodexRenderModes((current) => {
+      setInterfaceRenderModes((current) => {
         if (current[sessionKey] === mode) {
           return current;
         }
@@ -82,18 +82,18 @@ export function useTerminalSessionActions({
         };
       });
       closeMenu();
-      void setCodexRenderMode(sessionKey, mode).catch((error) => {
-        console.log("Failed to persist Codex render mode:", error);
+      void setInterfaceRenderMode(sessionKey, mode).catch((error) => {
+        console.log("Failed to persist Interface render mode:", error);
       });
     },
-    [closeMenu, sessionKey, setCodexRenderModes],
+    [closeMenu, sessionKey, setInterfaceRenderModes],
   );
 
-  const toggleCodexRenderMode = useCallback(() => {
-    void applyCodexRenderMode(
-      codexRenderMode === "chat" ? "terminal" : "chat",
+  const toggleInterfaceRenderMode = useCallback(() => {
+    void applyInterfaceRenderMode(
+      interfaceRenderMode === "chat" ? "terminal" : "chat",
     );
-  }, [applyCodexRenderMode, codexRenderMode]);
+  }, [applyInterfaceRenderMode, interfaceRenderMode]);
 
   const createTerminal = useCallback(
     async (input: CreateTerminalInput) => {
@@ -134,6 +134,7 @@ export function useTerminalSessionActions({
             command: input.command,
             name: input.name,
             startedAt: String(startedAt),
+            initialComposerFocus: "1",
           },
         });
       } catch (error: any) {
@@ -166,8 +167,11 @@ export function useTerminalSessionActions({
       );
       return;
     }
+    // Release TerminalActionPopover before NewTerminalSheet so only one Modal
+    // owns the screen (shared Android+iOS; no dismiss/reopen delay).
+    closeMenu();
     setNewTerminalVisible(true);
-  }, [connectionState, setNewTerminalVisible]);
+  }, [closeMenu, connectionState, setNewTerminalVisible]);
 
   const openLinkedWork = useCallback(() => {
     if (!linkedWork) return;
@@ -188,12 +192,12 @@ export function useTerminalSessionActions({
   }, [serverId, setServer]);
 
   return {
-    applyCodexRenderMode,
+    applyInterfaceRenderMode,
     createTerminal,
     handleSaveRename,
     openLinkedWork,
     openNewTerminal,
     retryServerConnection,
-    toggleCodexRenderMode,
+    toggleInterfaceRenderMode,
   };
 }

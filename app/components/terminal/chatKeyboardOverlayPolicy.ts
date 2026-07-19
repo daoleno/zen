@@ -1,3 +1,5 @@
+import { withAlpha } from "./colorWithAlpha";
+
 export interface StructuredChatOverlayGeometryInput {
   canvasHeight: number;
   composerHeight: number;
@@ -21,6 +23,25 @@ export interface StructuredChatEffectiveClearanceInput {
   previousClearance: number;
 }
 
+export interface StructuredChatKeyboardLifecycleGate {
+  enabled: boolean;
+  appActive: boolean;
+  epoch: number;
+  acceptedNativeSampleEpoch: number;
+}
+
+export type StructuredChatKeyboardLifecycleEvent =
+  | { type: "set_enabled"; enabled: boolean }
+  | { type: "app_state"; active: boolean }
+  | { type: "native_sample"; height: number; progress: number };
+
+export interface StructuredChatGatedOverlayTranslateYInput {
+  gate: StructuredChatKeyboardLifecycleGate;
+  keyboardTranslation: number;
+  keyboardProgress: number;
+  keyboardVerticalOffset: number;
+}
+
 export interface StructuredChatContentFadeGeometry {
   opaqueBottomInset: number;
   transparentBottomInset: number;
@@ -29,6 +50,91 @@ export interface StructuredChatContentFadeGeometry {
 
 const CONTENT_FADE_START = 0.5;
 const CONTENT_FADE_END = 0.9;
+
+/**
+ * Theme colors currently represent transparency as the exact "transparent" string.
+ * Supporting future color representations remains a separate theme-contract P2.
+ */
+export function resolveInterfaceChatCanvasColor(
+  appBackground: string,
+  surface: string,
+) {
+  return appBackground === "transparent" ? surface : appBackground;
+}
+
+export function structuredChatNativeMaskColors(canvasColor: string) {
+  return {
+    visible: withAlpha(canvasColor, 1),
+    hidden: withAlpha(canvasColor, 0),
+  };
+}
+
+export function createStructuredChatKeyboardLifecycleGate({
+  enabled,
+  appActive,
+}: {
+  enabled: boolean;
+  appActive: boolean;
+}): StructuredChatKeyboardLifecycleGate {
+  return {
+    enabled,
+    appActive,
+    epoch: 1,
+    acceptedNativeSampleEpoch: 0,
+  };
+}
+
+export function reduceStructuredChatKeyboardLifecycleGate(
+  gate: StructuredChatKeyboardLifecycleGate,
+  event: StructuredChatKeyboardLifecycleEvent,
+): StructuredChatKeyboardLifecycleGate {
+  "worklet";
+  if (event.type === "native_sample") {
+    if (
+      !gate.enabled ||
+      !gate.appActive ||
+      !Number.isFinite(event.height) ||
+      !Number.isFinite(event.progress) ||
+      Math.abs(event.height) <= 0 ||
+      event.progress <= 0
+    ) {
+      return gate;
+    }
+    if (gate.acceptedNativeSampleEpoch === gate.epoch) {
+      return gate;
+    }
+    return {
+      ...gate,
+      acceptedNativeSampleEpoch: gate.epoch,
+    };
+  }
+
+  const nextEnabled =
+    event.type === "set_enabled" ? event.enabled : gate.enabled;
+  const nextAppActive =
+    event.type === "app_state" ? event.active : gate.appActive;
+  if (nextEnabled === gate.enabled && nextAppActive === gate.appActive) {
+    return gate;
+  }
+
+  return {
+    enabled: nextEnabled,
+    appActive: nextAppActive,
+    epoch: gate.epoch + 1,
+    acceptedNativeSampleEpoch: gate.acceptedNativeSampleEpoch,
+  };
+}
+
+export function structuredChatKeyboardLifecycleGateOpen(
+  gate: StructuredChatKeyboardLifecycleGate,
+) {
+  "worklet";
+  return (
+    gate.enabled &&
+    gate.appActive &&
+    gate.acceptedNativeSampleEpoch === gate.epoch
+  );
+}
 
 export function structuredChatOverlayTranslateY(
   keyboardTranslation: number,
@@ -39,6 +145,23 @@ export function structuredChatOverlayTranslateY(
   return (
     keyboardTranslation +
     Math.max(0, Math.min(1, keyboardProgress)) * keyboardVerticalOffset
+  );
+}
+
+export function structuredChatGatedOverlayTranslateY({
+  gate,
+  keyboardTranslation,
+  keyboardProgress,
+  keyboardVerticalOffset,
+}: StructuredChatGatedOverlayTranslateYInput) {
+  "worklet";
+  if (!structuredChatKeyboardLifecycleGateOpen(gate)) {
+    return 0;
+  }
+  return structuredChatOverlayTranslateY(
+    keyboardTranslation,
+    keyboardProgress,
+    keyboardVerticalOffset,
   );
 }
 
@@ -63,10 +186,8 @@ export function structuredChatContentFadeGeometry(
   "worklet";
   const height = Math.max(0, composerHeight);
   const overlayLift = Math.max(0, -overlayTranslateY);
-  const opaqueBottomInset =
-    overlayLift + height * (1 - CONTENT_FADE_START);
-  const transparentBottomInset =
-    overlayLift + height * (1 - CONTENT_FADE_END);
+  const opaqueBottomInset = overlayLift + height * (1 - CONTENT_FADE_START);
+  const transparentBottomInset = overlayLift + height * (1 - CONTENT_FADE_END);
 
   return {
     opaqueBottomInset,
@@ -81,9 +202,7 @@ export function structuredChatLogicalOffset(
   platform: StructuredChatInsetPlatform,
 ) {
   "worklet";
-  return platform === "android"
-    ? rawOffset - clearance
-    : rawOffset;
+  return platform === "android" ? rawOffset - clearance : rawOffset;
 }
 
 /**
@@ -111,12 +230,41 @@ export function structuredChatEffectiveClearance({
   return Math.max(requested, Math.max(0, -logicalOffset));
 }
 
+export function structuredChatEffectiveClearanceForKeyboardLifecycle(
+  input: StructuredChatEffectiveClearanceInput & {
+    gate: StructuredChatKeyboardLifecycleGate;
+  },
+) {
+  "worklet";
+  // Ordinary contractions preserve the reader's occupied range. A lifecycle
+  // invalidation is different: that occupied range came from an obsolete IME
+  // sample and must contract with the gated Composer/fade translation.
+  if (!structuredChatKeyboardLifecycleGateOpen(input.gate)) {
+    return Math.max(0, input.requestedClearance);
+  }
+  return structuredChatEffectiveClearance(input);
+}
+
 export function structuredChatLatestOffset(
   clearance: number,
   platform: StructuredChatInsetPlatform,
 ) {
   "worklet";
   return platform === "ios" ? -Math.max(0, clearance) : 0;
+}
+
+export function structuredChatFocusSample(
+  intentToken: number,
+  clearance: number,
+  platform: StructuredChatInsetPlatform,
+) {
+  "worklet";
+  const effectiveClearance = Math.max(0, clearance);
+  return {
+    intentToken,
+    clearance: effectiveClearance,
+    latestOffset: structuredChatLatestOffset(effectiveClearance, platform),
+  };
 }
 
 /**
@@ -140,8 +288,7 @@ export function structuredChatOverlayGeometry({
   );
 
   return {
-    composerTop:
-      canvasHeight - effectiveKeyboardHeight - safeComposerHeight,
+    composerTop: canvasHeight - effectiveKeyboardHeight - safeComposerHeight,
     scrollClearance,
     timelineHeight: canvasHeight,
     contentOffsetDelta: 0,

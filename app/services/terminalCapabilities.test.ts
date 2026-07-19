@@ -1,20 +1,27 @@
 // @ts-nocheck
-import { describe, expect, test } from 'bun:test';
-import { getTerminalCapabilityPresentation } from './terminalCapabilities';
+import { describe, expect, test } from "bun:test";
+import { getTerminalCapabilityPresentation } from "./terminalCapabilities";
 
-describe('getTerminalCapabilityPresentation', () => {
-  test('advertises the existing Android implementation', () => {
-    expect(getTerminalCapabilityPresentation('android').supported).toBe(true);
+describe("getTerminalCapabilityPresentation", () => {
+  test("advertises the shared Ghostty terminal on Android and iOS", () => {
+    expect(getTerminalCapabilityPresentation("android")).toEqual({
+      supported: true,
+      title: "Terminal available",
+      detail: "This build uses the native libghostty VT core.",
+      hint: "",
+    });
+    expect(getTerminalCapabilityPresentation("ios")).toEqual({
+      supported: true,
+      title: "Terminal available",
+      detail: "This build uses the native libghostty VT core.",
+      hint: "",
+    });
   });
 
-  test('describes iOS as capability-gated without claiming app-wide failure', () => {
-    const result = getTerminalCapabilityPresentation('ios');
+  test("keeps non-mobile platforms unsupported", () => {
+    const result = getTerminalCapabilityPresentation("web");
     expect(result.supported).toBe(false);
-    expect(result.title).toContain('iOS');
-    expect(result.hint).toContain('Chat');
-  });
-
-  test('keeps web unsupported', () => {
-    expect(getTerminalCapabilityPresentation('web').supported).toBe(false);
+    expect(result.detail).toContain("Android and iOS");
+    expect(result.hint).toContain("Android or iOS");
   });
 });

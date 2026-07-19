@@ -14,6 +14,7 @@ LOCK="$ROOT/app/modules/zen-terminal-vt/native.lock.json"
 NOTICE="$ROOT/app/assets/notices/GHOSTTY-MIT.txt"
 MODULE_NOTICE="$ROOT/app/modules/zen-terminal-vt/NOTICE.Ghostty"
 PLUGIN="$ROOT/app/plugins/withZenAndroidRelease.js"
+IOS_PLUGIN="$ROOT/app/plugins/withZenIOSBuild.js"
 
 MODE="full"
 ONLY_ABIS=()
@@ -46,11 +47,20 @@ bad() { echo "FAIL: $*" >&2; fail=1; }
 [[ -f "$NOTICE" ]] && pass "Ghostty MIT notice source present" || bad "missing $NOTICE"
 [[ -f "$MODULE_NOTICE" ]] && pass "module NOTICE.Ghostty present" || bad "missing $MODULE_NOTICE"
 [[ -f "$PLUGIN" ]] && pass "withZenAndroidRelease plugin present" || bad "missing plugin"
+[[ -f "$IOS_PLUGIN" ]] && pass "withZenIOSBuild plugin present" || bad "missing iOS plugin"
 [[ -x "$ROOT/scripts/build-libghostty.sh" ]] && pass "build-libghostty.sh executable" || bad "build script not executable"
 [[ -x "$ROOT/scripts/verify-libghostty.sh" ]] && pass "verify-libghostty.sh executable" || bad "verify script not executable"
 [[ -x "$ROOT/scripts/verify-android-native-symbols.py" ]] && pass "Android native symbol verifier executable" || bad "Android native symbol verifier not executable"
 [[ -x "$ROOT/scripts/android-release-apk.sh" ]] && pass "android-release-apk.sh executable" || bad "release apk script not executable"
 [[ -x "$ROOT/scripts/verify-apk-notice.sh" ]] && pass "verify-apk-notice.sh executable" || bad "apk notice verifier not executable"
+[[ -x "$ROOT/scripts/verify-ios-artifact.sh" ]] && pass "verify-ios-artifact.sh executable" || bad "iOS artifact verifier not executable"
+if grep -Eq "NOTICE_BUNDLE_REL[[:space:]]*=[[:space:]]*[\"']GHOSTTY-MIT\\.txt[\"']" "$IOS_PLUGIN" &&
+  grep -q 'verify_ghostty_notice' "$ROOT/scripts/verify-ios-artifact.sh" &&
+  grep -q 'NOTICE_BUNDLE_REL' "$ROOT/scripts/verify-ios-artifact.sh"; then
+  pass "iOS Ghostty MIT notice packaging and artifact verification wired"
+else
+  bad "iOS Ghostty MIT notice packaging/verification not wired"
+fi
 for packaged_consumer in scripts/android-release-apk.sh scripts/verify-apk-release.sh; do
   if grep -q 'verify-android-native-symbols.py' "$ROOT/$packaged_consumer"; then
     pass "$packaged_consumer enforces packaged native symbols"

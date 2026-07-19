@@ -1,15 +1,31 @@
-import React, { useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from "react";
+import { Keyboard, StyleSheet } from "react-native";
+import { wsClient } from "../../services/websocket";
+import { DirectoryPickerContent } from "./DirectoryPickerContent";
 import {
-  Keyboard,
-  StyleSheet,
-} from 'react-native';
-import { DirectoryPicker } from './DirectoryPicker';
+  beginDirectoryLoad,
+  completeDirectoryLoad,
+  createIdleDirectoryPickerState,
+  failDirectoryLoad,
+  nextDirectoryListEpoch,
+  parentDirectoryPath,
+  shouldApplyDirectoryListResult,
+  type DirectoryPickerViewState,
+} from "./directoryPickerState";
 import {
   type NewTerminalLaunchPreset,
   type NewTerminalServerOption,
-} from './NewTerminalQuickLaunchSection';
-import { NewTerminalSheetContent } from './NewTerminalSheetContent';
-import { BottomSheetFrame } from '../ui';
+} from "./NewTerminalQuickLaunchSection";
+import { NewTerminalSheetContent } from "./NewTerminalSheetContent";
+import {
+  createNewTerminalSheetFormState,
+  openDirectoryPanel,
+  resolveNewTerminalSheetDismiss,
+  returnToFormPanel,
+  selectDirectoryPath,
+  type NewTerminalSheetFormState,
+} from "./newTerminalSheetModel";
+import { BottomSheetFrame } from "../ui";
 
 interface NewTerminalSheetProps {
   visible: boolean;
@@ -23,16 +39,21 @@ interface NewTerminalSheetProps {
   selectedServerId?: string | null;
   onSelectServer?(serverId: string): void;
   onClose(): void;
-  onSubmit(input: { cwd: string; command: string; name: string; serverId?: string }): void;
+  onSubmit(input: {
+    cwd: string;
+    command: string;
+    name: string;
+    serverId?: string;
+  }): void;
 }
 
 export function NewTerminalSheet({
   visible,
   title,
   subtitle: _subtitle,
-  initialCwd = '',
-  initialCommand = '',
-  initialName = '',
+  initialCwd = "",
+  initialCommand = "",
+  initialName = "",
   submitting = false,
   serverOptions = [],
   selectedServerId,
@@ -40,25 +61,101 @@ export function NewTerminalSheet({
   onClose,
   onSubmit,
 }: NewTerminalSheetProps) {
-  const [cwd, setCwd] = useState(initialCwd);
-  const [command, setCommand] = useState(initialCommand);
-  const [name, setName] = useState(initialName);
-  const [advanced, setAdvanced] = useState(false);
-  const [dirPickerOpen, setDirPickerOpen] = useState(false);
+  const [form, setForm] = useState<NewTerminalSheetFormState>(() =>
+    createNewTerminalSheetFormState({
+      cwd: initialCwd,
+      command: initialCommand,
+      name: initialName,
+    }),
+  );
+  const [directory, setDirectory] = useState<DirectoryPickerViewState>(
+    createIdleDirectoryPickerState,
+  );
+  const listDirEpochRef = useRef(0);
+
+  const invalidateDirectoryRequests = useCallback(() => {
+    listDirEpochRef.current = nextDirectoryListEpoch(listDirEpochRef.current);
+  }, []);
+
+  // Always invalidate on unmount, independent of the visible-reset effect.
+  useEffect(() => {
+    return () => {
+      invalidateDirectoryRequests();
+    };
+  }, [invalidateDirectoryRequests]);
 
   useEffect(() => {
-    if (!visible) return;
+    if (!visible) {
+      invalidateDirectoryRequests();
+      return;
+    }
     Keyboard.dismiss();
-    setCwd(initialCwd);
-    setCommand(initialCommand);
-    setName(initialName);
-    setAdvanced(false);
-    setDirPickerOpen(false);
-  }, [initialCommand, initialCwd, initialName, visible]);
+    setForm(
+      createNewTerminalSheetFormState({
+        cwd: initialCwd,
+        command: initialCommand,
+        name: initialName,
+      }),
+    );
+    setDirectory(createIdleDirectoryPickerState());
+    return () => {
+      invalidateDirectoryRequests();
+    };
+  }, [
+    initialCommand,
+    initialCwd,
+    initialName,
+    invalidateDirectoryRequests,
+    visible,
+  ]);
 
-  const canSubmit = !submitting && (!serverOptions.length || Boolean(selectedServerId));
+  const canSubmit =
+    !submitting && (!serverOptions.length || Boolean(selectedServerId));
 
-  const handleClose = () => {
+  const loadDirectory = useCallback(async (serverId: string, path?: string) => {
+    const epoch = nextDirectoryListEpoch(listDirEpochRef.current);
+    listDirEpochRef.current = epoch;
+    setDirectory((current) => beginDirectoryLoad(current));
+    try {
+      const result = await wsClient.listDir(serverId, path);
+      if (!shouldApplyDirectoryListResult(epoch, listDirEpochRef.current)) {
+        return;
+      }
+      setDirectory((current) => completeDirectoryLoad(current, result));
+    } catch (e: any) {
+      if (!shouldApplyDirectoryListResult(epoch, listDirEpochRef.current)) {
+        return;
+      }
+      setDirectory((current) =>
+        failDirectoryLoad(current, e?.message ?? "Failed to load directory"),
+      );
+    }
+  }, []);
+
+  useEffect(() => {
+    if (!visible || form.panel !== "directory" || !selectedServerId) {
+      return;
+    }
+    // Snapshot cwd when entering the directory panel; browsing updates local
+    // directory state only so form fields stay intact until select/back.
+    void loadDirectory(selectedServerId, form.cwd.trim() || undefined);
+  }, [form.panel, loadDirectory, selectedServerId, visible]);
+
+  const handleCloseSheet = () => {
+    // Invalidate before notifying parent so in-flight listDir cannot win a race
+    // against visible=false / unmount.
+    invalidateDirectoryRequests();
+    Keyboard.dismiss();
+    onClose();
+  };
+
+  const handleSheetDismiss = () => {
+    // Backdrop / system-back: invalidate immediately for either panel outcome.
+    invalidateDirectoryRequests();
+    if (resolveNewTerminalSheetDismiss(form.panel) === "return-to-form") {
+      setForm((current) => returnToFormPanel(current));
+      return;
+    }
     Keyboard.dismiss();
     onClose();
   };
@@ -66,12 +163,12 @@ export function NewTerminalSheet({
   const handlePresetTap = (preset: NewTerminalLaunchPreset) => {
     if (!canSubmit) return;
     Keyboard.dismiss();
-    setCommand(preset.command);
-    if (!advanced) {
+    setForm((current) => ({ ...current, command: preset.command }));
+    if (!form.advanced) {
       onSubmit({
-        cwd: cwd.trim() || initialCwd.trim(),
+        cwd: form.cwd.trim() || initialCwd.trim(),
         command: preset.command,
-        name: '',
+        name: "",
         serverId: selectedServerId ?? undefined,
       });
     }
@@ -81,72 +178,90 @@ export function NewTerminalSheet({
     if (!canSubmit) return;
     Keyboard.dismiss();
     onSubmit({
-      cwd: cwd.trim(),
-      command: command.trim(),
-      name: name.trim(),
+      cwd: form.cwd.trim(),
+      command: form.command.trim(),
+      name: form.name.trim(),
       serverId: selectedServerId ?? undefined,
     });
   };
 
   const handleOpenDirectoryPicker = () => {
+    if (!selectedServerId) return;
     Keyboard.dismiss();
-    setDirPickerOpen(true);
+    setDirectory(createIdleDirectoryPickerState());
+    setForm((current) => openDirectoryPanel(current));
+  };
+
+  const handleReturnToForm = () => {
+    invalidateDirectoryRequests();
+    setForm((current) => returnToFormPanel(current));
+  };
+
+  const handleSelectDirectory = () => {
+    if (!directory.currentPath) return;
+    invalidateDirectoryRequests();
+    setForm((current) => selectDirectoryPath(current, directory.currentPath));
   };
 
   const handleToggleAdvanced = () => {
-    if (advanced) Keyboard.dismiss();
-    setAdvanced(!advanced);
+    if (form.advanced) Keyboard.dismiss();
+    setForm((current) => ({ ...current, advanced: !current.advanced }));
   };
 
-  const sheetContent = (
+  return (
     <BottomSheetFrame
       visible={visible}
-      onClose={handleClose}
+      onClose={handleSheetDismiss}
       maxHeight="68%"
       cardStyle={styles.sheetCard}
       keyboardAvoiding
     >
-      <NewTerminalSheetContent
-        title={title}
-        serverOptions={serverOptions}
-        selectedServerId={selectedServerId}
-        command={command}
-        submitting={submitting}
-        canSubmit={canSubmit}
-        advanced={advanced}
-        cwd={cwd}
-        name={name}
-        canPickDirectory={Boolean(selectedServerId)}
-        onSelectServer={onSelectServer}
-        onPresetPress={handlePresetTap}
-        onToggleAdvanced={handleToggleAdvanced}
-        onCwdChange={setCwd}
-        onCommandChange={setCommand}
-        onNameChange={setName}
-        onPickDirectory={handleOpenDirectoryPicker}
-        onSubmitAdvanced={handleAdvancedSubmit}
-        onCancel={handleClose}
-      />
-    </BottomSheetFrame>
-  );
-
-  return (
-    <>
-      {sheetContent}
-
-      {selectedServerId ? (
-        <DirectoryPicker
-          visible={dirPickerOpen}
-          serverId={selectedServerId}
-          initialPath={cwd.trim() || undefined}
-          onSelect={(path) => {
-            setCwd(path);
-            setDirPickerOpen(false);
+      {form.panel === "directory" ? (
+        <DirectoryPickerContent
+          currentPath={directory.currentPath}
+          entries={directory.entries}
+          loading={directory.loading}
+          error={directory.error}
+          onGoUp={() => {
+            if (!selectedServerId) return;
+            void loadDirectory(
+              selectedServerId,
+              parentDirectoryPath(directory.currentPath),
+            );
           }}
-          onClose={() => setDirPickerOpen(false)}
+          onOpenDirectory={(path) => {
+            if (!selectedServerId) return;
+            void loadDirectory(selectedServerId, path);
+          }}
+          onSelectCurrent={handleSelectDirectory}
+          onClose={handleReturnToForm}
         />
-      ) : null}
-    </>
+      ) : (
+        <NewTerminalSheetContent
+          title={title}
+          serverOptions={serverOptions}
+          selectedServerId={selectedServerId}
+          command={form.command}
+          submitting={submitting}
+          canSubmit={canSubmit}
+          advanced={form.advanced}
+          cwd={form.cwd}
+          name={form.name}
+          canPickDirectory={Boolean(selectedServerId)}
+          onSelectServer={onSelectServer}
+          onPresetPress={handlePresetTap}
+          onToggleAdvanced={handleToggleAdvanced}
+          onCwdChange={(cwd) => setForm((current) => ({ ...current, cwd }))}
+          onCommandChange={(command) =>
+            setForm((current) => ({ ...current, command }))
+          }
+          onNameChange={(name) => setForm((current) => ({ ...current, name }))}
+          onPickDirectory={handleOpenDirectoryPicker}
+          onSubmitAdvanced={handleAdvancedSubmit}
+          onCancel={handleCloseSheet}
+        />
+      )}
+    </BottomSheetFrame>
   );
 }
 

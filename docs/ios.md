@@ -26,7 +26,7 @@ Platform-specific implementation is deliberately limited to native plumbing:
 
 - Android loads `libghostty_vt.so` through JNI.
 - iOS links `GhosttyVt.xcframework` through an Expo module/Objective-C++ bridge.
-- Android has a conservative Markdown fallback in `CodexNativeMarkdownBody.android.tsx`; iOS uses the shared enriched Markdown renderer.
+- Both mobile platforms use the shared enriched Markdown renderer; plain text is only the render/error fallback.
 - Keyboard inset behavior differs by platform, while the accessory keys and terminal controller are shared.
 
 ## Prerequisites
@@ -107,8 +107,9 @@ Important invariants:
 2. `GhosttyVt.xcframework`, checksums, build manifest, and copied license notice are generated and gitignored.
 3. The XCFramework must contain arm64 device and arm64 Simulator slices.
 4. `ZenTerminalVt.podspec` is the CocoaPods/autolinking boundary and must keep the deployment target aligned with the lockfile.
-5. Ghostty's MIT notice must accompany redistributed native binaries or an eventual IPA.
+5. Ghostty's MIT notice is packaged into redistributed iOS app bundles/IPAs by `withZenIOSBuild` at bundle-root `GHOSTTY-MIT.txt` (Xcode flattens ordinary resource files) and enforced by `scripts/verify-ios-artifact.sh`.
 6. `withZenIOSBuild` disables precompiled Expo Swift modules so the app does not mix incompatible Expo binary interfaces.
+7. App Transport Security is intentional: `NSAllowsLocalNetworking=true` for self-hosted LAN/tailnet daemons, and `NSAllowsArbitraryLoads=false` so cleartext internet remains denied.
 
 ## Verification
 

@@ -414,19 +414,35 @@ func TestControlAppAgentSpawnHardensDelegatedCodexAndPreservesOverrides(t *testi
 		t.Fatalf("explicit command override mutated = %q", got)
 	}
 
-	// Non-Codex delegated executors are not mutated.
+	// Claude delegated spawn is also hardened so internal progress commands do not
+	// block on approval prompts.
 	claudeResp := app.HandleControlRequest(control.Request{
 		Type:     "agent_spawn",
 		Executor: "claude",
 		Name:     "Claude Worker",
 		Cwd:      "/repo/zen",
-		Prompt:   "stay claude",
+		Prompt:   "use claude",
 	})
 	if !claudeResp.OK || claudeResp.Agent == nil {
 		t.Fatalf("claude spawn response = %#v", claudeResp)
 	}
-	if got := fw.created[2].Command; got != "claude" {
-		t.Fatalf("non-codex delegated command mutated = %q", got)
+	if got := fw.created[2].Command; got != "claude --permission-mode bypassPermissions" {
+		t.Fatalf("delegated claude command = %q, want hardened", got)
+	}
+
+	// Explicit Claude command override is preserved.
+	claudeOverrideResp := app.HandleControlRequest(control.Request{
+		Type:    "agent_spawn",
+		Command: "claude --permission-mode dontAsk",
+		Name:    "Pinned Claude",
+		Cwd:     "/repo/zen",
+		Prompt:  "manual mode",
+	})
+	if !claudeOverrideResp.OK || claudeOverrideResp.Agent == nil {
+		t.Fatalf("claude override response = %#v", claudeOverrideResp)
+	}
+	if got := fw.created[3].Command; got != "claude --permission-mode dontAsk" {
+		t.Fatalf("explicit claude override mutated = %q", got)
 	}
 }
 
@@ -1103,6 +1119,97 @@ func TestControlAppBrainSetExecutorStartsSelectedHostWhenWatcherAvailable(t *tes
 	}
 	if hostSession.ID == "" || hostSession.ExecutorID != "claude" {
 		t.Fatalf("host session = %+v", hostSession)
+	}
+}
+
+func TestResolveSpawnCommandHardensDefaults(t *testing.T) {
+	tests := []struct {
+		name  string
+		req   control.Request
+		execs *work.ExecutorConfig
+		want  string
+	}{
+		{
+			name: "explicit command unchanged",
+			req: control.Request{
+				Command: "claude --permission-mode dontAsk --profile custom",
+			},
+			want: "claude --permission-mode dontAsk --profile custom",
+		},
+		{
+			name: "bare default Claude gets hardened",
+			req:  control.Request{},
+			execs: work.NewExecutorConfig("claude", map[string]work.Executor{
+				"claude": {Name: "claude", Command: "claude"},
+			}),
+			want: "claude --permission-mode bypassPermissions",
+		},
+		{
+			name: "configured Claude default gets hardened",
+			req:  control.Request{Executor: "claude"},
+			execs: work.NewExecutorConfig("codex", map[string]work.Executor{
+				"claude": {Name: "claude", Command: "claude --profile my-profile"},
+			}),
+			want: "claude --profile my-profile --permission-mode bypassPermissions",
+		},
+		{
+			name: "explicit Claude permission mode preserved",
+			req:  control.Request{Executor: "claude"},
+			execs: work.NewExecutorConfig("codex", map[string]work.Executor{
+				"claude": {Name: "claude", Command: "claude --permission-mode dontAsk"},
+			}),
+			want: "claude --permission-mode dontAsk",
+		},
+		{
+			name: "explicit Claude dangerously-skip-permissions preserved",
+			req:  control.Request{Executor: "claude"},
+			execs: work.NewExecutorConfig("codex", map[string]work.Executor{
+				"claude": {Name: "claude", Command: "claude --dangerously-skip-permissions"},
+			}),
+			want: "claude --dangerously-skip-permissions",
+		},
+		{
+			name: "no-config Claude executor name gets hardened",
+			req:  control.Request{Executor: "claude"},
+			want: "claude --permission-mode bypassPermissions",
+		},
+		{
+			name: "custom executor unchanged",
+			req:  control.Request{Executor: "my-agent"},
+			execs: work.NewExecutorConfig("codex", map[string]work.Executor{
+				"my-agent": {Name: "my-agent", Command: "/usr/local/bin/my-agent --flag"},
+			}),
+			want: "/usr/local/bin/my-agent --flag",
+		},
+		{
+			name: "Codex default hardened unchanged",
+			req:  control.Request{},
+			execs: work.NewExecutorConfig("codex", map[string]work.Executor{
+				"codex": {Name: "codex", Command: "codex"},
+			}),
+			want: "codex --dangerously-bypass-approvals-and-sandbox",
+		},
+		{
+			name: "non-Claude provider unchanged",
+			req:  control.Request{Executor: "grok"},
+			execs: work.NewExecutorConfig("codex", map[string]work.Executor{
+				"grok": {Name: "grok", Command: "grok --no-alt-screen"},
+			}),
+			want: "grok --no-alt-screen",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			app := &controlApp{execs: tc.execs}
+			got, err := app.resolveSpawnCommand(tc.req)
+			if err != nil {
+				t.Fatalf("resolveSpawnCommand() err = %v", err)
+			}
+			if got != tc.want {
+				t.Fatalf("resolveSpawnCommand() = %q, want %q", got, tc.want)
+			}
+		})
 	}
 }
 

@@ -17,7 +17,11 @@
       "supportsTablet": false,
       "infoPlist": {
         "ITSAppUsesNonExemptEncryption": false,
-        "NSLocalNetworkUsageDescription": "Allow Zen to connect to your self-hosted daemon on the local network."
+        "NSLocalNetworkUsageDescription": "Allow Zen to connect to your self-hosted daemon on the local network.",
+        "NSAppTransportSecurity": {
+          "NSAllowsLocalNetworking": true,
+          "NSAllowsArbitraryLoads": false
+        }
       }
     },
     "android": {
@@ -30,12 +34,8 @@
       },
       "package": "com.daoleno.zen",
       "versionCode": 5,
-      "blockedPermissions": [
-        "android.permission.RECORD_AUDIO"
-      ],
-      "permissions": [
-        "android.permission.CAMERA"
-      ]
+      "blockedPermissions": ["android.permission.RECORD_AUDIO"],
+      "permissions": ["android.permission.CAMERA"]
     },
     "plugins": [
       "expo-router",
@@ -45,7 +45,8 @@
         {
           "cameraPermission": "Allow $(PRODUCT_NAME) to access your camera to scan Zen pairing QR codes.",
           "microphonePermission": false,
-          "recordAudioAndroid": false
+          "recordAudioAndroid": false,
+          "barcodeScannerEnabled": true
         }
       ]
     ],

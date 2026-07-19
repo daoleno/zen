@@ -7,8 +7,8 @@ import {
   isWaitLikeToolName,
   isWaitSessionPoll,
 } from "./toolCallDetails.ts";
-import { buildZenTimeline } from "../components/terminal/CodexTimelineModel.ts";
-import { buildCodexTimelineActivityPresentation } from "../components/terminal/CodexTimelineActivityModel.ts";
+import { buildZenTimeline } from "../components/terminal/InterfaceTimelineModel.ts";
+import { buildInterfaceTimelineActivityPresentation } from "../components/terminal/InterfaceTimelineActivityModel.ts";
 
 describe("toolCallDetails", () => {
   test("read details prefer file paths over exec_command", () => {
@@ -38,13 +38,19 @@ describe("toolCallDetails", () => {
   });
 
   test("wait session poll hides card", () => {
-    expect(isWaitSessionPoll(
-      "wait",
-      JSON.stringify({ session_id: 98430, chars: "", yield_time_ms: 30000 }),
-    )).toBe(true);
+    expect(
+      isWaitSessionPoll(
+        "wait",
+        JSON.stringify({ session_id: 98430, chars: "", yield_time_ms: 30000 }),
+      ),
+    ).toBe(true);
     const details = buildExpandedToolDetails({
       toolName: "wait",
-      input: JSON.stringify({ session_id: 98430, chars: "", yield_time_ms: 30000 }),
+      input: JSON.stringify({
+        session_id: 98430,
+        chars: "",
+        yield_time_ms: 30000,
+      }),
       output: JSON.stringify({
         chunk_id: "build-2",
         wall_time: 7.8274,
@@ -74,16 +80,24 @@ describe("toolCallDetails", () => {
   });
 
   test("strips Codex metadata", () => {
-    expect(cleanUserFacingOutput(
-      "Chunk ID: abc\nWall time: 1.0 seconds\nProcess exited with code 0\nOriginal token count: 4\nOutput:\nBUILD SUCCESSFUL",
-    )).toBe("BUILD SUCCESSFUL");
-    expect(isTransportOnlyPayload(JSON.stringify({
-      chunk_id: "x",
-      wall_time: 1,
-      session_id: 1,
-      original_token_count: 0,
-    }))).toBe(true);
-    expect(extractTransportMetadata(undefined, "Wall time: 2.5 seconds\n")).toEqual({
+    expect(
+      cleanUserFacingOutput(
+        "Chunk ID: abc\nWall time: 1.0 seconds\nProcess exited with code 0\nOriginal token count: 4\nOutput:\nBUILD SUCCESSFUL",
+      ),
+    ).toBe("BUILD SUCCESSFUL");
+    expect(
+      isTransportOnlyPayload(
+        JSON.stringify({
+          chunk_id: "x",
+          wall_time: 1,
+          session_id: 1,
+          original_token_count: 0,
+        }),
+      ),
+    ).toBe(true);
+    expect(
+      extractTransportMetadata(undefined, "Wall time: 2.5 seconds\n"),
+    ).toEqual({
       wall_time: "2.5",
     });
     expect(isWaitLikeToolName("write_stdin")).toBe(true);
@@ -115,7 +129,11 @@ describe("timeline wait/read presentation", () => {
         seq: 3,
         kind: "tool",
         tool_name: "wait",
-        input: JSON.stringify({ session_id: 98430, chars: "", yield_time_ms: 30000 }),
+        input: JSON.stringify({
+          session_id: 98430,
+          chars: "",
+          yield_time_ms: 30000,
+        }),
         output: JSON.stringify({
           chunk_id: "build-2",
           wall_time: 7.8274,
@@ -149,7 +167,9 @@ describe("timeline wait/read presentation", () => {
       },
     ];
 
-    const activities = buildZenTimeline(events).filter((item) => item.type === "activity");
+    const activities = buildZenTimeline(events).filter(
+      (item) => item.type === "activity",
+    );
     expect(activities.map((item) => item.title)).toEqual([
       "Read",
       "Run",
@@ -167,7 +187,9 @@ describe("timeline wait/read presentation", () => {
     expect(JSON.stringify(activities[1])).not.toContain("chunk_id");
 
     expect(activities[2].title).toBe("Finished");
-    expect(activities[2].detail || activities[2].statusLine).toContain("Finished");
+    expect(activities[2].detail || activities[2].statusLine).toContain(
+      "Finished",
+    );
     expect(activities[2].body).toBeUndefined();
 
     expect(activities[3].files[0]).toContain("bar.ts");
@@ -180,6 +202,9 @@ describe("timeline wait/read presentation", () => {
       appBackground: "#111",
     };
     const theme = { red: "#f00", yellow: "#ff0", green: "#0f0" };
-    expect(buildCodexTimelineActivityPresentation(activities[0], chrome, theme).canExpand).toBe(true);
+    expect(
+      buildInterfaceTimelineActivityPresentation(activities[0], chrome, theme)
+        .canExpand,
+    ).toBe(true);
   });
 });

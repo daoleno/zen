@@ -12,7 +12,8 @@ import type { useTerminalSessionActions } from "./useTerminalSessionActions";
 import type { useTerminalViewportModel } from "./useTerminalViewportModel";
 
 interface UseTerminalViewportPropsInput {
-  showCodexChat: boolean;
+  showInterfaceChat: boolean;
+  initialComposerFocusGrant: string | null;
   sessionKey: string | null;
   serverId: string;
   agentId: string;
@@ -34,10 +35,12 @@ interface UseTerminalViewportPropsInput {
   keyboardVisible: boolean;
   sessionActions: ReturnType<typeof useTerminalSessionActions>;
   onAccessoryLayout(event: LayoutChangeEvent): void;
+  onConsumeInitialComposerFocus(): void;
 }
 
 export function useTerminalViewportProps({
-  showCodexChat,
+  showInterfaceChat,
+  initialComposerFocusGrant,
   sessionKey,
   serverId,
   agentId,
@@ -59,13 +62,14 @@ export function useTerminalViewportProps({
   keyboardVisible,
   sessionActions,
   onAccessoryLayout,
+  onConsumeInitialComposerFocus,
 }: UseTerminalViewportPropsInput): TerminalViewportProps {
   const handleSwitchToTerminal = useCallback(() => {
-    void sessionActions.applyCodexRenderMode("terminal");
+    void sessionActions.applyInterfaceRenderMode("terminal");
     requestAnimationFrame(() => {
       terminalRef.current?.resumeInput();
     });
-  }, [sessionActions.applyCodexRenderMode, terminalRef]);
+  }, [sessionActions.applyInterfaceRenderMode, terminalRef]);
 
   const handleRetryConnection = useCallback(() => {
     void sessionActions.retryServerConnection();
@@ -73,7 +77,8 @@ export function useTerminalViewportProps({
 
   return useMemo(
     () => ({
-      showCodexChat,
+      showInterfaceChat,
+      initialComposerFocusGrant,
       sessionKey,
       serverId,
       agentId,
@@ -104,6 +109,7 @@ export function useTerminalViewportProps({
       onSwitchToTerminal: handleSwitchToTerminal,
       onRetryConnection: handleRetryConnection,
       onAccessoryLayout,
+      onConsumeInitialComposerFocus,
     }),
     [
       accessoryBottomOffset,
@@ -119,6 +125,7 @@ export function useTerminalViewportProps({
       hasTerminalRoute,
       keyboardVisible,
       onAccessoryLayout,
+      onConsumeInitialComposerFocus,
       onCtrlArmedChange,
       outputBottomInset,
       screenFocused,
@@ -127,7 +134,7 @@ export function useTerminalViewportProps({
       sessionKey,
       terminalRef,
       theme,
-      showCodexChat,
+      showInterfaceChat,
       viewportModel.accessoryVisible,
       viewportModel.canRenderTerminal,
       viewportModel.shouldMountTerminalSurface,

@@ -1,8 +1,13 @@
-import React, { useEffect, useMemo, useState } from "react";
+import React, {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import {
   Alert,
   LayoutAnimation,
-  Modal,
   ScrollView,
   StyleSheet,
   Text,
@@ -39,6 +44,25 @@ import { useZenTheme, type ResolvedZenTheme } from "../theme";
 import { ZEN_DARK_APP_COLORS } from "../theme/primitives";
 import { appVersion } from "../constants/appVersion";
 import { importConnection } from "../services/importConnection";
+import {
+  closePairPresentation,
+  completePairImport,
+  createClosedPairPresentation,
+  lockPairScanner,
+  openPairEditor,
+  openPairScanner,
+  resolvePairPresentationDismiss,
+  returnToPairEditor,
+  unlockPairScanner,
+  type PairPresentationState,
+} from "../services/pairPresentation";
+import {
+  attemptDismissPairScanner,
+  createPairScanClaim,
+  isPairScanClaimHeld,
+  releasePairScan,
+  tryClaimPairScan,
+} from "../services/pairScanClaim";
 import { wsClient } from "../services/websocket";
 import {
   ConnectionState,
@@ -83,9 +107,8 @@ export default function SettingsScreen() {
   }>();
   const [servers, setServers] = useState<Storage.StoredServer[]>([]);
   const [loaded, setLoaded] = useState(false);
-  const [editorVisible, setEditorVisible] = useState(false);
-  const [scannerVisible, setScannerVisible] = useState(false);
-  const [scannerLocked, setScannerLocked] = useState(false);
+  const [pairPresentation, setPairPresentation] =
+    useState<PairPresentationState>(createClosedPairPresentation);
   const [editingServerId, setEditingServerId] = useState<string | null>(null);
   const [draftName, setDraftName] = useState("");
   const [draftEndpoint, setDraftEndpoint] = useState("");
@@ -98,6 +121,21 @@ export default function SettingsScreen() {
     null,
   );
   const [cameraPermission, requestCameraPermission] = useCameraPermissions();
+  const [cameraMountError, setCameraMountError] = useState<string | null>(null);
+  const scanClaimRef = useRef(createPairScanClaim());
+
+  const releaseScanClaim = useCallback(() => {
+    releasePairScan(scanClaimRef.current);
+    setPairPresentation((current) => unlockPairScanner(current));
+  }, []);
+
+  const tryAcquireScanClaim = useCallback(() => {
+    if (!tryClaimPairScan(scanClaimRef.current)) {
+      return false;
+    }
+    setPairPresentation((current) => lockPairScanner(current));
+    return true;
+  }, []);
 
   const connectedCount = useMemo(
     () =>
@@ -165,7 +203,8 @@ export default function SettingsScreen() {
     setDraftName("");
     setDraftEndpoint("");
     setDraftImportValue("");
-    setEditorVisible(true);
+    setCameraMountError(null);
+    setPairPresentation(openPairEditor());
   };
 
   const openEditServer = (server: Storage.StoredServer) => {
@@ -173,25 +212,56 @@ export default function SettingsScreen() {
     setDraftName(server.name);
     setDraftEndpoint(server.url);
     setDraftImportValue("");
-    setEditorVisible(true);
+    setCameraMountError(null);
+    setPairPresentation(openPairEditor());
   };
 
   const closeEditor = () => {
-    setEditorVisible(false);
+    // Never release an in-flight import claim from editor teardown.
+    if (isPairScanClaimHeld(scanClaimRef.current)) {
+      return;
+    }
+    setPairPresentation(closePairPresentation());
     setEditingServerId(null);
     setDraftName("");
     setDraftEndpoint("");
     setDraftImportValue("");
+    setCameraMountError(null);
   };
 
   const openScanner = () => {
-    setScannerLocked(false);
-    setScannerVisible(true);
+    if (isPairScanClaimHeld(scanClaimRef.current)) {
+      return;
+    }
+    releasePairScan(scanClaimRef.current);
+    setCameraMountError(null);
+    setPairPresentation((current) => openPairScanner(current));
   };
 
   const closeScanner = () => {
-    setScannerVisible(false);
-    setScannerLocked(false);
+    // Ref is authority: Done/backdrop/system-back must not dismiss or release
+    // while import claim is held — import finally owns release.
+    if (attemptDismissPairScanner(scanClaimRef.current) === "blocked") {
+      return;
+    }
+    setCameraMountError(null);
+    setPairPresentation((current) => returnToPairEditor(current));
+  };
+
+  const handlePairPresentationDismiss = () => {
+    // Check claim before reading React mode — ref wins over lagging state.
+    if (attemptDismissPairScanner(scanClaimRef.current) === "blocked") {
+      return;
+    }
+    if (
+      resolvePairPresentationDismiss(pairPresentation.mode) ===
+      "return-to-editor"
+    ) {
+      setCameraMountError(null);
+      setPairPresentation((current) => returnToPairEditor(current));
+      return;
+    }
+    closeEditor();
   };
 
   const handleSaveServer = async () => {
@@ -243,10 +313,7 @@ export default function SettingsScreen() {
     }
   };
 
-  const importServer = async (
-    rawValue: string,
-    options?: { closeScanner?: boolean },
-  ) => {
+  const importServer = async (rawValue: string) => {
     try {
       const savedServer = await importConnection(rawValue, {
         onImported: async (importedServer) => {
@@ -263,10 +330,13 @@ export default function SettingsScreen() {
         return false;
       }
 
-      if (options?.closeScanner) {
-        closeScanner();
-      }
-      closeEditor();
+      // Paste, image, and camera share one success path: release the single Modal.
+      setPairPresentation(completePairImport());
+      setEditingServerId(null);
+      setDraftName("");
+      setDraftEndpoint("");
+      setDraftImportValue("");
+      setCameraMountError(null);
       if (params.pairingRequired === "1") {
         router.dismissAll();
         router.replace("/");
@@ -279,7 +349,7 @@ export default function SettingsScreen() {
       );
       return false;
     } finally {
-      setScannerLocked(false);
+      releaseScanClaim();
     }
   };
 
@@ -328,13 +398,15 @@ export default function SettingsScreen() {
   };
 
   const handleScanResult = async ({ data }: BarcodeScanningResult) => {
-    if (scannerLocked) return;
-    setScannerLocked(true);
-    await importServer(data || "", { closeScanner: true });
+    // Sync claim gate: same-frame camera callbacks cannot both enter import.
+    if (!tryAcquireScanClaim()) return;
+    await importServer(data || "");
   };
 
   const handlePickScannerImage = async () => {
-    if (scannerLocked) return;
+    // Claim before DocumentPicker so live onBarcodeScanned is disabled while
+    // the system picker is open (UI lock + atomic ref owner).
+    if (!tryAcquireScanClaim()) return;
 
     try {
       const result = await DocumentPicker.getDocumentAsync({
@@ -350,7 +422,6 @@ export default function SettingsScreen() {
         throw new Error("Selected image is not available.");
       }
 
-      setScannerLocked(true);
       const matches = await scanFromURLAsync(asset.uri, QR_BARCODE_TYPES);
       const qrMatch = matches.find((item) => (item.data || "").trim());
       if (!qrMatch?.data) {
@@ -361,14 +432,14 @@ export default function SettingsScreen() {
         return;
       }
 
-      await importServer(qrMatch.data, { closeScanner: true });
+      await importServer(qrMatch.data);
     } catch (error: any) {
       Alert.alert(
         "Image scan failed",
         error?.message || "Could not read a QR code from that image.",
       );
     } finally {
-      setScannerLocked(false);
+      releaseScanClaim();
     }
   };
 
@@ -706,303 +777,344 @@ export default function SettingsScreen() {
         </View>
       </ScrollView>
 
-      {/* Unified Add/Edit Server modal */}
+      {/* Unified Pair/Edit presentation: one RisingSheet Modal, editor|scanner modes */}
       <RisingSheet
-        visible={editorVisible}
-        onClose={closeEditor}
-        cardStyle={styles.modalCard}
-        avoidKeyboard
+        visible={pairPresentation.mode !== "closed"}
+        onClose={handlePairPresentationDismiss}
+        layout={pairPresentation.mode === "scanner" ? "fullscreen" : "card"}
+        cardStyle={
+          pairPresentation.mode === "scanner"
+            ? styles.scannerSheetCard
+            : styles.modalCard
+        }
+        avoidKeyboard={pairPresentation.mode === "editor"}
       >
-        <ScrollView
-          style={styles.modalScroll}
-          contentContainerStyle={styles.modalScrollContent}
-          keyboardShouldPersistTaps="handled"
-          showsVerticalScrollIndicator={false}
-        >
-          <Text style={styles.modalTitle} accessibilityRole="header">
-            {editingServerId ? "Edit Server" : "Pair Server"}
-          </Text>
-
-          {editingServer ? (
-            <>
-              <Text style={styles.fieldLabel}>Name</Text>
-              <TextInput
-                style={styles.input}
-                value={draftName}
-                onChangeText={setDraftName}
-                accessibilityLabel="Server name"
-                placeholder="workstation"
-                placeholderTextColor={colors.textSecondary}
-                autoCapitalize="none"
-                autoCorrect={false}
-              />
-
-              <Text style={[styles.fieldLabel, { marginTop: 16 }]}>
-                Endpoint
+        {pairPresentation.mode === "scanner" ? (
+          <View
+            style={[
+              styles.scannerScreen,
+              {
+                paddingTop: Math.max(insets.top, 20),
+                paddingBottom: Math.max(insets.bottom, 20),
+              },
+            ]}
+            accessibilityViewIsModal
+          >
+            <View style={styles.scannerHeader}>
+              <Text style={styles.scannerTitle} accessibilityRole="header">
+                Scan Pairing QR
               </Text>
-              <TextInput
-                style={styles.input}
-                value={draftEndpoint}
-                onChangeText={setDraftEndpoint}
-                accessibilityLabel="Server endpoint"
-                placeholder="wss://zen.example.com/ws"
-                placeholderTextColor={colors.textSecondary}
-                autoCapitalize="none"
-                autoCorrect={false}
-              />
-              <Text style={styles.fieldHint}>
-                This is the externally reachable WebSocket endpoint exposed by
-                your tunnel, reverse proxy, or private network.
-              </Text>
-
-              <View style={styles.identityCard}>
-                <Text style={styles.identityLabel}>Trusted Daemon</Text>
-                <Text style={styles.identityCode} numberOfLines={1}>
-                  {editingServer.daemonId}
-                </Text>
-              </View>
-
-              <View style={styles.modalActions}>
-                <AnimatedPressable
-                  style={styles.modalBtn}
-                  preset="press"
-                  scale={0.94}
-                  accessibilityRole="button"
-                  onPress={closeEditor}
-                >
-                  <Text style={styles.modalBtnText}>Cancel</Text>
-                </AnimatedPressable>
-                <AnimatedPressable
-                  style={[styles.modalBtn, styles.modalBtnPrimary]}
-                  preset="press"
-                  scale={0.94}
-                  accessibilityRole="button"
-                  onPress={() => {
-                    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-                    void handleSaveServer();
-                  }}
-                >
-                  <Text
-                    style={[styles.modalBtnText, styles.modalBtnPrimaryText]}
-                  >
-                    Save
-                  </Text>
-                </AnimatedPressable>
-              </View>
-            </>
-          ) : (
-            <>
-              <Text style={styles.importLead}>
-                Paste the pairing link from zen, or scan its QR code.
-              </Text>
-
-              <Text style={styles.fieldLabel}>Pairing Link</Text>
-              <TextInput
-                style={[styles.input, styles.importInput]}
-                value={draftImportValue}
-                onChangeText={setDraftImportValue}
-                accessibilityLabel="Pairing link"
-                placeholder="zen://settings?p=..."
-                placeholderTextColor={colors.textSecondary}
-                autoCapitalize="none"
-                autoCorrect={false}
-                multiline
-                textAlignVertical="top"
-              />
-              <Text style={styles.fieldHint}>
-                You can also import a screenshot or photo of the QR.
-              </Text>
-
-              <View style={styles.modalActions}>
-                <AnimatedPressable
-                  style={styles.modalBtn}
-                  preset="press"
-                  scale={0.94}
-                  accessibilityRole="button"
-                  onPress={closeEditor}
-                >
-                  <Text style={styles.modalBtnText}>Cancel</Text>
-                </AnimatedPressable>
-                <AnimatedPressable
-                  style={[styles.modalBtn, styles.modalBtnPrimary]}
-                  preset="press"
-                  scale={0.94}
-                  accessibilityRole="button"
-                  onPress={() => {
-                    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-                    void handleImportDraft();
-                  }}
-                >
-                  <Text
-                    style={[styles.modalBtnText, styles.modalBtnPrimaryText]}
-                  >
-                    Import
-                  </Text>
-                </AnimatedPressable>
-              </View>
-
               <AnimatedPressable
-                style={styles.scanQrBtn}
                 preset="press"
-                scale={0.98}
+                scale={0.9}
+                style={[
+                  styles.scannerCloseButton,
+                  pairPresentation.scannerLocked && styles.scannerBtnDisabled,
+                ]}
                 accessibilityRole="button"
-                accessibilityLabel="Scan QR code"
+                accessibilityLabel="Close QR scanner"
+                accessibilityState={{
+                  disabled: pairPresentation.scannerLocked,
+                }}
+                disabled={pairPresentation.scannerLocked}
                 onPress={() => {
                   Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-                  openScanner();
+                  closeScanner();
                 }}
               >
                 <Ionicons
-                  name="qr-code-outline"
-                  size={18}
-                  color={colors.accent}
+                  name="close"
+                  size={24}
+                  color={SCANNER_COLORS.textPrimary}
                 />
-                <Text style={styles.scanQrBtnText}>Scan QR Code</Text>
               </AnimatedPressable>
-            </>
-          )}
-        </ScrollView>
-      </RisingSheet>
-      <Modal
-        visible={scannerVisible}
-        animationType="slide"
-        onRequestClose={closeScanner}
-      >
-        <View
-          style={[
-            styles.scannerScreen,
-            {
-              paddingTop: Math.max(insets.top, 20),
-              paddingBottom: Math.max(insets.bottom, 20),
-            },
-          ]}
-          accessibilityViewIsModal
-        >
-          <View style={styles.scannerHeader}>
-            <Text style={styles.scannerTitle} accessibilityRole="header">
-              Scan Pairing QR
-            </Text>
-            <AnimatedPressable
-              preset="press"
-              scale={0.9}
-              style={styles.scannerCloseButton}
-              accessibilityRole="button"
-              accessibilityLabel="Close QR scanner"
-              onPress={() => {
-                Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-                closeScanner();
-              }}
-            >
-              <Ionicons
-                name="close"
-                size={24}
-                color={SCANNER_COLORS.textPrimary}
-              />
-            </AnimatedPressable>
-          </View>
-
-          {!cameraPermission ? (
-            <View style={styles.scannerNoticeCard}>
-              <Text style={styles.scannerNoticeTitle}>Loading camera</Text>
             </View>
-          ) : !cameraPermission.granted ? (
-            <View style={styles.scannerNoticeCard}>
-              <Text style={styles.scannerNoticeTitle}>
-                Camera permission required
-              </Text>
-              <Text style={styles.scannerNoticeText}>
-                Allow camera access to scan a zen pairing QR code.
-              </Text>
+
+            {cameraMountError ? (
+              <View style={styles.scannerNoticeCard}>
+                <Text style={styles.scannerNoticeTitle}>
+                  Camera unavailable
+                </Text>
+                <Text style={styles.scannerNoticeText}>{cameraMountError}</Text>
+              </View>
+            ) : !cameraPermission ? (
+              <View style={styles.scannerNoticeCard}>
+                <Text style={styles.scannerNoticeTitle}>Loading camera</Text>
+              </View>
+            ) : !cameraPermission.granted ? (
+              <View style={styles.scannerNoticeCard}>
+                <Text style={styles.scannerNoticeTitle}>
+                  Camera permission required
+                </Text>
+                <Text style={styles.scannerNoticeText}>
+                  Allow camera access to scan a zen pairing QR code.
+                </Text>
+                <AnimatedPressable
+                  style={[
+                    styles.scannerPrimaryBtn,
+                    styles.scannerPermissionBtn,
+                  ]}
+                  preset="press"
+                  scale={0.96}
+                  accessibilityRole="button"
+                  accessibilityLabel="Grant camera access"
+                  onPress={() => void requestCameraPermission()}
+                >
+                  <Text style={styles.scannerPrimaryBtnText}>
+                    Grant Camera Access
+                  </Text>
+                </AnimatedPressable>
+              </View>
+            ) : (
+              <>
+                <View style={styles.scannerViewport}>
+                  <CameraView
+                    style={styles.scannerCamera}
+                    facing="back"
+                    barcodeScannerSettings={{ barcodeTypes: ["qr"] }}
+                    onBarcodeScanned={
+                      pairPresentation.scannerLocked
+                        ? undefined
+                        : handleScanResult
+                    }
+                    onMountError={(event) => {
+                      const message =
+                        event?.message ||
+                        "The camera could not start. Pick a QR image instead, or paste the pairing link.";
+                      setCameraMountError(message);
+                    }}
+                  />
+                  <View pointerEvents="none" style={styles.scannerOverlay}>
+                    <View style={styles.scannerMaskTop} />
+                    <View style={styles.scannerMaskMiddle}>
+                      <View style={styles.scannerMaskSide} />
+                      <View style={styles.scannerFrame}>
+                        <View style={styles.scannerFrameCornerTopLeft} />
+                        <View style={styles.scannerFrameCornerTopRight} />
+                        <View style={styles.scannerFrameCornerBottomLeft} />
+                        <View style={styles.scannerFrameCornerBottomRight} />
+                      </View>
+                      <View style={styles.scannerMaskSide} />
+                    </View>
+                    <View style={styles.scannerMaskBottom} />
+                  </View>
+                </View>
+
+                <Text style={styles.scannerHelpText}>
+                  Scan the QR, or choose an image from this device.
+                </Text>
+              </>
+            )}
+
+            <View style={styles.scannerActions}>
               <AnimatedPressable
-                style={[styles.scannerPrimaryBtn, styles.scannerPermissionBtn]}
+                style={[
+                  styles.scannerSecondaryBtn,
+                  pairPresentation.scannerLocked && styles.scannerBtnDisabled,
+                ]}
+                preset="press"
+                scale={0.96}
+                disabled={pairPresentation.scannerLocked}
+                accessibilityRole="button"
+                accessibilityLabel={
+                  pairPresentation.scannerLocked
+                    ? "Reading QR image"
+                    : "Pick QR image"
+                }
+                accessibilityState={{
+                  disabled: pairPresentation.scannerLocked,
+                  busy: pairPresentation.scannerLocked,
+                }}
+                onPress={() => void handlePickScannerImage()}
+              >
+                <Text
+                  style={[
+                    styles.scannerSecondaryBtnText,
+                    pairPresentation.scannerLocked &&
+                      styles.scannerDisabledBtnText,
+                  ]}
+                >
+                  {pairPresentation.scannerLocked
+                    ? "Reading Image..."
+                    : "Pick QR Image"}
+                </Text>
+              </AnimatedPressable>
+              <AnimatedPressable
+                style={[
+                  styles.scannerPrimaryBtn,
+                  pairPresentation.scannerLocked && styles.scannerBtnDisabled,
+                ]}
                 preset="press"
                 scale={0.96}
                 accessibilityRole="button"
-                accessibilityLabel="Grant camera access"
-                onPress={() => void requestCameraPermission()}
+                accessibilityLabel="Close QR scanner"
+                accessibilityState={{
+                  disabled: pairPresentation.scannerLocked,
+                }}
+                disabled={pairPresentation.scannerLocked}
+                onPress={() => {
+                  Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+                  closeScanner();
+                }}
               >
-                <Text style={styles.scannerPrimaryBtnText}>
-                  Grant Camera Access
-                </Text>
+                <Text style={styles.scannerPrimaryBtnText}>Done</Text>
               </AnimatedPressable>
             </View>
-          ) : (
-            <>
-              <View style={styles.scannerViewport}>
-                <CameraView
-                  style={styles.scannerCamera}
-                  facing="back"
-                  barcodeScannerSettings={{ barcodeTypes: ["qr"] }}
-                  onBarcodeScanned={
-                    scannerLocked ? undefined : handleScanResult
-                  }
-                />
-                <View pointerEvents="none" style={styles.scannerOverlay}>
-                  <View style={styles.scannerMaskTop} />
-                  <View style={styles.scannerMaskMiddle}>
-                    <View style={styles.scannerMaskSide} />
-                    <View style={styles.scannerFrame}>
-                      <View style={styles.scannerFrameCornerTopLeft} />
-                      <View style={styles.scannerFrameCornerTopRight} />
-                      <View style={styles.scannerFrameCornerBottomLeft} />
-                      <View style={styles.scannerFrameCornerBottomRight} />
-                    </View>
-                    <View style={styles.scannerMaskSide} />
-                  </View>
-                  <View style={styles.scannerMaskBottom} />
-                </View>
-              </View>
-
-              <Text style={styles.scannerHelpText}>
-                Scan the QR, or choose an image from this device.
-              </Text>
-            </>
-          )}
-
-          <View style={styles.scannerActions}>
-            <AnimatedPressable
-              style={[
-                styles.scannerSecondaryBtn,
-                scannerLocked && styles.scannerBtnDisabled,
-              ]}
-              preset="press"
-              scale={0.96}
-              disabled={scannerLocked}
-              accessibilityRole="button"
-              accessibilityLabel={
-                scannerLocked ? "Reading QR image" : "Pick QR image"
-              }
-              accessibilityState={{
-                disabled: scannerLocked,
-                busy: scannerLocked,
-              }}
-              onPress={() => void handlePickScannerImage()}
-            >
-              <Text
-                style={[
-                  styles.scannerSecondaryBtnText,
-                  scannerLocked && styles.scannerDisabledBtnText,
-                ]}
-              >
-                {scannerLocked ? "Reading Image..." : "Pick QR Image"}
-              </Text>
-            </AnimatedPressable>
-            <AnimatedPressable
-              style={styles.scannerPrimaryBtn}
-              preset="press"
-              scale={0.96}
-              accessibilityRole="button"
-              accessibilityLabel="Close QR scanner"
-              onPress={() => {
-                Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-                closeScanner();
-              }}
-            >
-              <Text style={styles.scannerPrimaryBtnText}>Done</Text>
-            </AnimatedPressable>
           </View>
-        </View>
-      </Modal>
+        ) : (
+          <ScrollView
+            style={styles.modalScroll}
+            contentContainerStyle={styles.modalScrollContent}
+            keyboardShouldPersistTaps="handled"
+            showsVerticalScrollIndicator={false}
+          >
+            <Text style={styles.modalTitle} accessibilityRole="header">
+              {editingServerId ? "Edit Server" : "Pair Server"}
+            </Text>
+
+            {editingServer ? (
+              <>
+                <Text style={styles.fieldLabel}>Name</Text>
+                <TextInput
+                  style={styles.input}
+                  value={draftName}
+                  onChangeText={setDraftName}
+                  accessibilityLabel="Server name"
+                  placeholder="workstation"
+                  placeholderTextColor={colors.textSecondary}
+                  autoCapitalize="none"
+                  autoCorrect={false}
+                />
+
+                <Text style={[styles.fieldLabel, { marginTop: 16 }]}>
+                  Endpoint
+                </Text>
+                <TextInput
+                  style={styles.input}
+                  value={draftEndpoint}
+                  onChangeText={setDraftEndpoint}
+                  accessibilityLabel="Server endpoint"
+                  placeholder="wss://zen.example.com/ws"
+                  placeholderTextColor={colors.textSecondary}
+                  autoCapitalize="none"
+                  autoCorrect={false}
+                />
+                <Text style={styles.fieldHint}>
+                  This is the externally reachable WebSocket endpoint exposed by
+                  your tunnel, reverse proxy, or private network.
+                </Text>
+
+                <View style={styles.identityCard}>
+                  <Text style={styles.identityLabel}>Trusted Daemon</Text>
+                  <Text style={styles.identityCode} numberOfLines={1}>
+                    {editingServer.daemonId}
+                  </Text>
+                </View>
+
+                <View style={styles.modalActions}>
+                  <AnimatedPressable
+                    style={styles.modalBtn}
+                    preset="press"
+                    scale={0.94}
+                    accessibilityRole="button"
+                    accessibilityLabel="Cancel"
+                    onPress={closeEditor}
+                  >
+                    <Text style={styles.modalBtnText}>Cancel</Text>
+                  </AnimatedPressable>
+                  <AnimatedPressable
+                    style={[styles.modalBtn, styles.modalBtnPrimary]}
+                    preset="press"
+                    scale={0.94}
+                    accessibilityRole="button"
+                    onPress={() => {
+                      Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+                      void handleSaveServer();
+                    }}
+                  >
+                    <Text
+                      style={[styles.modalBtnText, styles.modalBtnPrimaryText]}
+                    >
+                      Save
+                    </Text>
+                  </AnimatedPressable>
+                </View>
+              </>
+            ) : (
+              <>
+                <Text style={styles.importLead}>
+                  Paste the pairing link from zen, or scan its QR code.
+                </Text>
+
+                <Text style={styles.fieldLabel}>Pairing Link</Text>
+                <TextInput
+                  style={[styles.input, styles.importInput]}
+                  value={draftImportValue}
+                  onChangeText={setDraftImportValue}
+                  accessibilityLabel="Pairing link"
+                  placeholder="zen://settings?p=..."
+                  placeholderTextColor={colors.textSecondary}
+                  autoCapitalize="none"
+                  autoCorrect={false}
+                  multiline
+                  textAlignVertical="top"
+                />
+                <Text style={styles.fieldHint}>
+                  You can also import a screenshot or photo of the QR.
+                </Text>
+
+                <View style={styles.modalActions}>
+                  <AnimatedPressable
+                    style={styles.modalBtn}
+                    preset="press"
+                    scale={0.94}
+                    accessibilityRole="button"
+                    accessibilityLabel="Cancel"
+                    onPress={closeEditor}
+                  >
+                    <Text style={styles.modalBtnText}>Cancel</Text>
+                  </AnimatedPressable>
+                  <AnimatedPressable
+                    style={[styles.modalBtn, styles.modalBtnPrimary]}
+                    preset="press"
+                    scale={0.94}
+                    accessibilityRole="button"
+                    onPress={() => {
+                      Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+                      void handleImportDraft();
+                    }}
+                  >
+                    <Text
+                      style={[styles.modalBtnText, styles.modalBtnPrimaryText]}
+                    >
+                      Import
+                    </Text>
+                  </AnimatedPressable>
+                </View>
+
+                <AnimatedPressable
+                  style={styles.scanQrBtn}
+                  preset="press"
+                  scale={0.98}
+                  accessibilityRole="button"
+                  accessibilityLabel="Scan QR code"
+                  onPress={() => {
+                    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+                    openScanner();
+                  }}
+                >
+                  <Ionicons
+                    name="qr-code-outline"
+                    size={18}
+                    color={colors.accent}
+                  />
+                  <Text style={styles.scanQrBtnText}>Scan QR Code</Text>
+                </AnimatedPressable>
+              </>
+            )}
+          </ScrollView>
+        )}
+      </RisingSheet>
     </SafeAreaView>
   );
 }
@@ -1396,6 +1508,11 @@ function createStyles(theme: ResolvedZenTheme) {
       borderWidth: StyleSheet.hairlineWidth,
       borderColor: colors.border,
       ...shadow("float", colors.shadowColor),
+    },
+    scannerSheetCard: {
+      flex: 1,
+      width: "100%",
+      backgroundColor: SCANNER_COLORS.bgPrimary,
     },
     modalScroll: {
       flexGrow: 0,

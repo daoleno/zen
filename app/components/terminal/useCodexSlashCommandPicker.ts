@@ -1,6 +1,6 @@
 import { useCallback } from "react";
 import type { CodexSlashCommand } from "../../services/websocket";
-import type { ComposerAttachment } from "./CodexChatSession";
+import type { ComposerAttachment } from "./InterfaceChatSession";
 import { slashCommandAcceptsArgs } from "./CodexSlashCommands";
 
 interface UseCodexSlashCommandPickerInput {
@@ -8,12 +8,12 @@ interface UseCodexSlashCommandPickerInput {
   setDraft(value: string): void;
   dismissActionMenu(): void;
   focusComposer(): void;
-  startNewCodexChat(
+  startNewInterfaceChat(
     commandText?: string,
     previousDraft?: string,
     previousAttachments?: ComposerAttachment[],
   ): void;
-  sendSlashCommandToCodex(
+  sendSlashCommandToInterface(
     text: string,
     command?: CodexSlashCommand,
     previousDraft?: string,
@@ -35,8 +35,8 @@ export function useCodexSlashCommandPicker({
   setDraft,
   dismissActionMenu,
   focusComposer,
-  startNewCodexChat,
-  sendSlashCommandToCodex,
+  startNewInterfaceChat,
+  sendSlashCommandToInterface,
   runStatusCommand,
   openSkillsSheet,
   showUnsupportedSlashCommand,
@@ -71,7 +71,7 @@ export function useCodexSlashCommandPicker({
       }
       if (command.execution === "native") {
         if (command.name === "new" || command.name === "clear") {
-          startNewCodexChat(command.value, command.value, []);
+          startNewInterfaceChat(command.value, command.value, []);
           return;
         }
         if (command.name === "skills") {
@@ -84,7 +84,7 @@ export function useCodexSlashCommandPicker({
         return;
       }
       if (command.name === "new" || command.name === "clear") {
-        startNewCodexChat(command.value, command.value, []);
+        startNewInterfaceChat(command.value, command.value, []);
         return;
       }
       if (slashCommandAcceptsArgs(command)) {
@@ -92,7 +92,7 @@ export function useCodexSlashCommandPicker({
         focusComposer();
         return;
       }
-      sendSlashCommandToCodex(command.value, command, command.value, []);
+      sendSlashCommandToInterface(command.value, command, command.value, []);
     },
     [
       attachments,
@@ -100,11 +100,11 @@ export function useCodexSlashCommandPicker({
       focusComposer,
       openSkillsSheet,
       runStatusCommand,
-      sendSlashCommandToCodex,
+      sendSlashCommandToInterface,
       setDraft,
       showUnavailableSlashCommand,
       showUnsupportedSlashCommand,
-      startNewCodexChat,
+      startNewInterfaceChat,
     ],
   );
 }

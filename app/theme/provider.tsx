@@ -6,16 +6,18 @@ import React, {
   useMemo,
   useState,
   type ReactNode,
-} from 'react';
+} from "react";
 import {
   DefaultTheme,
   ThemeProvider as NavigationThemeProvider,
-} from 'expo-router';
-import { useColorScheme } from 'react-native';
-import { getThemePreference, setThemePreference } from '../services/storage';
-import { navigationThemeFromZenTheme } from './navigation';
-import { resolveTheme } from './resolve';
-import type { ResolvedZenTheme, ThemePreference } from './types';
+} from "expo-router";
+import * as SystemUI from "expo-system-ui";
+import { useColorScheme } from "react-native";
+import { getThemePreference, setThemePreference } from "../services/storage";
+import { navigationThemeFromZenTheme } from "./navigation";
+import { resolveTheme } from "./resolve";
+import { syncSystemRootBackground } from "./syncSystemRootBackground";
+import type { ResolvedZenTheme, ThemePreference } from "./types";
 
 type ThemeContextValue = {
   theme: ResolvedZenTheme;
@@ -27,7 +29,7 @@ const ThemeContext = createContext<ThemeContextValue | null>(null);
 
 export function ThemeProvider({ children }: { children: ReactNode }) {
   const systemScheme = useColorScheme();
-  const [preference, setPreferenceState] = useState<ThemePreference>('system');
+  const [preference, setPreferenceState] = useState<ThemePreference>("system");
   const [hydrated, setHydrated] = useState(false);
 
   useEffect(() => {
@@ -45,8 +47,8 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
     };
   }, []);
 
-  const colorScheme = systemScheme === 'light' ? 'light' : 'dark';
-  const themeId = preference === 'system' ? null : preference;
+  const colorScheme = systemScheme === "light" ? "light" : "dark";
+  const themeId = preference === "system" ? null : preference;
 
   const theme = useMemo(
     () =>
@@ -65,6 +67,18 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
     setPreferenceState(next);
     await setThemePreference(next);
   }, []);
+
+  useEffect(() => {
+    if (!hydrated) {
+      return;
+    }
+    // Expo system root follows resolved Zen canvas on Android and iOS.
+    // Best-effort; ThemeProvider remains the sole theme state owner.
+    void syncSystemRootBackground(theme.colors.bgPrimary, {
+      setBackgroundColorAsync: (color) =>
+        SystemUI.setBackgroundColorAsync(color),
+    });
+  }, [hydrated, theme.colors.bgPrimary]);
 
   const value = useMemo(
     () => ({
@@ -91,7 +105,7 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
 export function useZenTheme(): ThemeContextValue {
   const context = useContext(ThemeContext);
   if (!context) {
-    throw new Error('useZenTheme must be used within ThemeProvider');
+    throw new Error("useZenTheme must be used within ThemeProvider");
   }
   return context;
 }

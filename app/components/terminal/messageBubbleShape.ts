@@ -1,6 +1,6 @@
 import type { ViewStyle } from "react-native";
 import type { ChatLayout } from "../../theme/types";
-import type { MessageGroupPosition } from "./CodexTimelineGrouping";
+import type { MessageGroupPosition } from "./InterfaceTimelineGrouping";
 
 const LARGE = 18;
 const SMALL = 6;
@@ -8,7 +8,13 @@ const CHATGPT_RADIUS = 20;
 
 export function userBubbleRadii(
   position: MessageGroupPosition,
-): Pick<ViewStyle, "borderTopLeftRadius" | "borderTopRightRadius" | "borderBottomLeftRadius" | "borderBottomRightRadius"> {
+): Pick<
+  ViewStyle,
+  | "borderTopLeftRadius"
+  | "borderTopRightRadius"
+  | "borderBottomLeftRadius"
+  | "borderBottomRightRadius"
+> {
   switch (position) {
     case "first":
       return {
@@ -43,7 +49,10 @@ export function userBubbleRadii(
 
 export function chatgptUserBubbleRadii(): Pick<
   ViewStyle,
-  "borderTopLeftRadius" | "borderTopRightRadius" | "borderBottomLeftRadius" | "borderBottomRightRadius"
+  | "borderTopLeftRadius"
+  | "borderTopRightRadius"
+  | "borderBottomLeftRadius"
+  | "borderBottomRightRadius"
 > {
   return {
     borderTopLeftRadius: CHATGPT_RADIUS,

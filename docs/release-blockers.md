@@ -17,9 +17,9 @@ These items block calling the tree an honest redistributable public beta until r
 
 ### `ios-distribution-artifacts`
 
-- **Summary:** The iOS source build and Simulator runtime path work, but `GhosttyVt.xcframework` is generated/gitignored and no signed IPA, TestFlight, or App Store build is published.
-- **Acceptance:** Reproducible CI produces and verifies the pinned XCFramework, packages the Ghostty MIT notice, archives/signs the app, and publishes an installation path with checksummed artifacts where applicable.
-- **Pipeline status (partial):** arm64 device + Apple Silicon Simulator build script, Zig/Ghostty pins, checksums, build manifest, CocoaPods bridge, Expo config, macOS unsigned CI, and manual credential-gated archive/IPA/TestFlight automation exist. **Still blocking** for general end-user distribution until those Apple workflows pass with real credentials, physical-device acceptance is recorded, and a supported TestFlight/App Store channel is published.
+- **Summary:** The iOS source build and Simulator runtime path work. `GhosttyVt.xcframework` remains generated/gitignored. A signed Preview IPA can be uploaded to App Store Connect via the protected release workflow, but that is not the same as public TestFlight/App Store installability.
+- **Acceptance:** Reproducible CI produces and verifies the pinned XCFramework, packages the Ghostty MIT notice into the app bundle, archives/signs the app, and publishes a supported installation path with checksummed artifacts where applicable.
+- **Pipeline status (partial):** arm64 device + Apple Silicon Simulator build script, Zig/Ghostty pins, checksums, build manifest, CocoaPods bridge, Expo config (including app-bundle notice packaging), macOS unsigned CI, and credential-gated archive/IPA/TestFlight automation exist. Preview IPA upload and App Store Connect presence do **not** by themselves clear this blocker. **Still blocking** for general end-user distribution until Apple Beta App Review / public TestFlight or App Store delivery is actually installable by intended testers, physical-device acceptance is recorded, and the supported channel is published.
 - **User/CI commands:** `bun run native:build:ios`; `bun run native:verify:ios`; Expo prebuild/Pods; the `CI` macOS job; or a protected manual `iOS signed release` dispatch.
 
 ## Resolved (media provenance)
@@ -41,4 +41,4 @@ These items block calling the tree an honest redistributable public beta until r
 - `mokugyo-hit-jono.m4a`: CC0 Freesound 607215.
 - `meditation-ambient.m4a`: first-party procedural pad under Apache-2.0 (same as Zen source).
 - Mixkit World Window: streamed, not bundled; Mixkit Free License.
-- Ghostty: MIT; only redistribution of built `.so`/APK needs notice packaging.
+- Ghostty: MIT; redistribution of built `.so`/APK and iOS app/IPA needs notice packaging (Android + iOS verifiers).

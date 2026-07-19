@@ -100,6 +100,7 @@ jobs:
           bunx expo prebuild --platform ios --clean --no-install
           cd ios
           pod install
+          ../../scripts/assert-ios-camera-barcode-pod.sh Podfile.lock
       - name: Build unsigned Simulator app
         env:
           DERIVED_DATA: ${{ runner.temp }}/zen-ios-derived
@@ -127,6 +128,133 @@ jobs:
           path: ${{ env.IOS_SIMULATOR_APP }}
           if-no-files-found: error
           retention-days: 7
+
+  android-native:
+    name: Android native (bounded link)
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: "1.3.5"
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+          cache: gradle
+          cache-dependency-path: |
+            bun.lock
+            app/package.json
+            app/app.base.json
+            app/plugins/withZenAndroidRelease.js
+            app/modules/zen-terminal-vt/android/build.gradle
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v3
+      - name: Install Android packages
+        run: |
+          set -euo pipefail
+          sdkmanager --install \
+            "platform-tools" \
+            "platforms;android-35" \
+            "build-tools;35.0.0" \
+            "ndk;27.1.12297006" \
+            "cmake;3.22.1"
+          yes | sdkmanager --licenses >/dev/null || true
+      - name: Install workspace dependencies
+        run: bun install --frozen-lockfile
+      - name: Verify shared native contract
+        run: ./scripts/verify-libghostty.sh --contract
+      - name: Restore pinned Zig and Ghostty source caches
+        uses: actions/cache@v4
+        with:
+          path: |
+            ${{ runner.temp }}/zen-tools
+            ${{ runner.temp }}/ghostty
+          key: zen-android-native-inputs-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('app/modules/zen-terminal-vt/native.lock.json', 'app/modules/zen-terminal-vt/patches/android/**', 'scripts/build-libghostty.sh') }}
+      - name: Restore verified Android Ghostty output
+        id: ghostty-output-cache
+        uses: actions/cache@v4
+        with:
+          path: app/modules/zen-terminal-vt/libs/android
+          key: zen-android-ghostty-output-arm64-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('app/modules/zen-terminal-vt/native.lock.json', 'app/modules/zen-terminal-vt/patches/android/**', 'scripts/build-libghostty.sh', 'scripts/verify-libghostty.sh', 'scripts/verify-android-native-symbols.py', 'app/assets/notices/GHOSTTY-MIT.txt') }}
+      - name: Build arm64 Ghostty when cache misses
+        if: steps.ghostty-output-cache.outputs.cache-hit != 'true'
+        env:
+          ZEN_GHOSTTY_CACHE: ${{ runner.temp }}/ghostty
+          ZEN_TOOL_CACHE: ${{ runner.temp }}/zen-tools
+        run: |
+          set -euo pipefail
+          python3 <<'PY'
+          import hashlib, json, os, platform, subprocess, tarfile, pathlib, sys, urllib.request
+          lock = json.load(open("app/modules/zen-terminal-vt/native.lock.json"))
+          ver = lock["zig"]["version"]
+          machine = platform.machine()
+          if machine in ("x86_64", "amd64"):
+              key = "x86_64-linux"
+          elif machine in ("aarch64", "arm64"):
+              key = "aarch64-linux"
+          else:
+              sys.exit(f"unsupported arch {machine}")
+          d = lock["zig"]["downloads"][key]
+          url = d["tarball"]
+          expect = d["sha256"]
+          archive_root = d["archive_root"]
+          runner_temp = os.environ.get("RUNNER_TEMP")
+          if not runner_temp:
+              sys.exit("RUNNER_TEMP is required for android-native Zig bootstrap")
+          install_root = pathlib.Path(runner_temp) / "zen-tools"
+          install_root.mkdir(parents=True, exist_ok=True)
+          dest = install_root / "zig.tar.xz"
+          if not dest.is_file():
+              print(f"Downloading {url}")
+              urllib.request.urlretrieve(url, dest)
+          h = hashlib.sha256(dest.read_bytes()).hexdigest()
+          if h != expect:
+              sys.exit(f"zig sha256 mismatch: got {h} want {expect}")
+          zig_dir = install_root / archive_root
+          zig = zig_dir / "zig"
+          if not zig.is_file():
+              with tarfile.open(dest, "r:xz") as tar:
+                  tar.extractall(install_root)
+          if not zig.is_file():
+              sys.exit(f"zig binary missing after extract: {zig}")
+          github_path = os.environ.get("GITHUB_PATH")
+          if github_path:
+              with open(github_path, "a", encoding="utf-8") as fh:
+                  fh.write(str(zig_dir.resolve()) + "\n")
+          got = subprocess.check_output([str(zig), "version"], text=True).strip()
+          if not got.startswith(ver):
+              sys.exit(f"zig version mismatch after install: got {got!r} want prefix {ver!r}")
+          print(f"ok: zig {got}")
+          PY
+          ./scripts/build-libghostty.sh --abis arm64-v8a
+          ./scripts/verify-libghostty.sh --release
+      - name: Verify cached or built Android Ghostty output
+        if: steps.ghostty-output-cache.outputs.cache-hit == 'true'
+        run: ./scripts/verify-libghostty.sh --release
+      - name: Generate Android project
+        run: |
+          set -euo pipefail
+          cd app
+          bunx expo prebuild --platform android --clean --no-install
+      - name: Compile Android native terminal module and app debug link
+        run: |
+          set -euo pipefail
+          ./scripts/verify-zen-terminal-abi-gradle.sh
+          cd app/android
+          ./gradlew \
+            :zen-terminal-vt:assembleDebug \
+            :app:assembleDebug \
+            -PreactNativeArchitectures=arm64-v8a \
+            --console=plain
+          NOTICE="app/src/main/assets/notices/GHOSTTY-MIT.txt"
+          [[ -f "$NOTICE" ]] || {
+            echo "error: prebuild did not package Ghostty MIT notice at $NOTICE" >&2
+            exit 1
+          }
 
   native-contract:
     name: Native terminal contract

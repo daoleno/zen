@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import {
   conversationUnavailableReason,
   isConversationSyncingReason,
-} from "./CodexChatControllerModel";
+} from "./InterfaceChatControllerModel";
 import { resolveComposerSendAction } from "./composerSendAction";
 import {
   isProviderActivityRunning,

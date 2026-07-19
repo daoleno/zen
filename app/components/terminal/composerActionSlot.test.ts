@@ -11,23 +11,27 @@ describe("Composer trailing action geometry", () => {
   });
 
   test("the TextInput gets every remaining pixel in every rendered layout", () => {
-    expect([320, 390, 430].map((width) => composerInputWidth(width, "chatgpt")))
-      .toEqual([154, 224, 264]);
-    expect([320, 390, 430].map((width) => composerInputWidth(width, "telegram")))
-      .toEqual([172, 242, 282]);
-    expect([320, 390, 430].map((width) => composerInputWidth(width, "classic")))
-      .toEqual([165, 235, 275]);
-    expect([320, 390, 430].map((width) => composerInputWidth(width, "ambient")))
-      .toEqual([172, 242, 282]);
+    expect(
+      [320, 390, 430].map((width) => composerInputWidth(width, "chatgpt")),
+    ).toEqual([154, 224, 264]);
+    expect(
+      [320, 390, 430].map((width) => composerInputWidth(width, "telegram")),
+    ).toEqual([172, 242, 282]);
+    expect(
+      [320, 390, 430].map((width) => composerInputWidth(width, "classic")),
+    ).toEqual([165, 235, 275]);
+    expect(
+      [320, 390, 430].map((width) => composerInputWidth(width, "ambient")),
+    ).toEqual([172, 242, 282]);
   });
 
   test("rendered panels have one conditional trailing action and a flexible input", () => {
     const panel = readFileSync(
-      new URL("./CodexComposerPanel.tsx", import.meta.url),
+      new URL("./InterfaceComposerPanel.tsx", import.meta.url),
       "utf8",
     );
     const input = readFileSync(
-      new URL("./CodexComposerInput.tsx", import.meta.url),
+      new URL("./InterfaceComposerInput.tsx", import.meta.url),
       "utf8",
     );
     expect((panel.match(/const actionButton =/g) ?? []).length).toBe(1);

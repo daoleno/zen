@@ -243,6 +243,7 @@ jobs:
           bunx expo prebuild --platform ios --clean --no-install
           cd ios
           pod install
+          ../../scripts/assert-ios-camera-barcode-pod.sh Podfile.lock
 
       - name: Import distribution certificate and provisioning profile
         id: signing

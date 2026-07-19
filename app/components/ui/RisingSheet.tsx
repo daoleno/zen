@@ -38,6 +38,11 @@ export interface RisingSheetProps {
   /** Vertical travel in px for the rise. Default 18. */
   rise?: number;
   align?: "center" | "bottom";
+  /**
+   * `card` is the centered/bottom dialog. `fullscreen` fills the same Modal
+   * owner (for in-flow scanner content) without nesting a second Modal.
+   */
+  layout?: "card" | "fullscreen";
   avoidKeyboard?: boolean;
   children?: React.ReactNode;
 }
@@ -48,6 +53,7 @@ export function RisingSheet({
   cardStyle,
   rise = 18,
   align = "center",
+  layout = "card",
   avoidKeyboard = false,
   children,
 }: RisingSheetProps) {
@@ -59,7 +65,10 @@ export function RisingSheet({
       progress.value = 0;
       progress.value = withSpring(1, Spring.rise);
     } else {
-      progress.value = withTiming(0, { duration: 160, easing: Easing.out(Easing.ease) });
+      progress.value = withTiming(0, {
+        duration: 160,
+        easing: Easing.out(Easing.ease),
+      });
     }
   }, [visible, progress]);
 
@@ -72,9 +81,31 @@ export function RisingSheet({
 
   const alignStyle = align === "bottom" ? styles.bottom : styles.center;
 
+  if (layout === "fullscreen") {
+    return (
+      <Modal
+        visible={visible}
+        transparent
+        animationType="none"
+        onRequestClose={onClose}
+      >
+        <Animated.View style={[styles.root, cardAnimStyle, cardStyle]}>
+          {children}
+        </Animated.View>
+      </Modal>
+    );
+  }
+
   const renderInner = () => (
     <View style={styles.root}>
-      <AnimatedPressable style={[styles.backdrop, { backgroundColor: colors.modalBackdrop }, backdropStyle]} onPress={onClose} />
+      <AnimatedPressable
+        style={[
+          styles.backdrop,
+          { backgroundColor: colors.modalBackdrop },
+          backdropStyle,
+        ]}
+        onPress={onClose}
+      />
       <View style={[styles.cardSlot, alignStyle]}>
         <Animated.View style={[cardAnimStyle, cardStyle]}>
           {children}
@@ -84,13 +115,25 @@ export function RisingSheet({
   );
 
   return (
-    <Modal visible={visible} transparent animationType="none" onRequestClose={onClose}>
+    <Modal
+      visible={visible}
+      transparent
+      animationType="none"
+      onRequestClose={onClose}
+    >
       {avoidKeyboard ? (
         <KeyboardAvoidingView
           style={styles.root}
           behavior={Platform.OS === "ios" ? "padding" : "height"}
         >
-          <AnimatedPressable style={[styles.backdrop, { backgroundColor: colors.modalBackdrop }, backdropStyle]} onPress={onClose} />
+          <AnimatedPressable
+            style={[
+              styles.backdrop,
+              { backgroundColor: colors.modalBackdrop },
+              backdropStyle,
+            ]}
+            onPress={onClose}
+          />
           <View style={[styles.cardSlot, alignStyle]}>
             <Animated.View style={[cardAnimStyle, cardStyle]}>
               {children}

@@ -8,7 +8,7 @@ const KEYS = {
   onboarded: "zen:onboarded",
   recentAgentOpens: "zen:recent_agent_opens",
   agentAliases: "zen:agent_aliases",
-  codexRenderModes: "zen:codex_render_modes",
+  interfaceRenderModes: "zen:codex_render_modes",
   themePreference: "zen:theme_preference",
 } as const;
 
@@ -16,8 +16,11 @@ export type StoredThemePreference = "system" | string;
 
 export type StoredRecentAgentOpens = Record<string, number>;
 export type StoredAgentAliases = Record<string, string>;
-export type StoredCodexRenderMode = "chat" | "terminal";
-export type StoredCodexRenderModes = Record<string, StoredCodexRenderMode>;
+export type StoredInterfaceRenderMode = "chat" | "terminal";
+export type StoredInterfaceRenderModes = Record<
+  string,
+  StoredInterfaceRenderMode
+>;
 export interface StoredServer {
   id: string;
   name: string;
@@ -246,13 +249,13 @@ export async function setAgentAlias(
   return next;
 }
 
-export async function getCodexRenderModes(): Promise<StoredCodexRenderModes> {
-  const value = await AsyncStorage.getItem(KEYS.codexRenderModes);
+export async function getInterfaceRenderModes(): Promise<StoredInterfaceRenderModes> {
+  const value = await AsyncStorage.getItem(KEYS.interfaceRenderModes);
   if (!value) return {};
 
   try {
     const parsed = JSON.parse(value) as Record<string, unknown>;
-    const normalized: StoredCodexRenderModes = {};
+    const normalized: StoredInterfaceRenderModes = {};
     for (const [agentId, mode] of Object.entries(parsed)) {
       if (typeof agentId !== "string" || agentId.trim().length === 0) continue;
       if (mode === "chat" || mode === "terminal") {
@@ -265,22 +268,22 @@ export async function getCodexRenderModes(): Promise<StoredCodexRenderModes> {
   }
 }
 
-export async function setCodexRenderMode(
+export async function setInterfaceRenderMode(
   agentId: string,
-  mode: StoredCodexRenderMode,
-): Promise<StoredCodexRenderModes> {
+  mode: StoredInterfaceRenderMode,
+): Promise<StoredInterfaceRenderModes> {
   const trimmed = agentId.trim();
   if (!trimmed) {
-    return getCodexRenderModes();
+    return getInterfaceRenderModes();
   }
 
-  const current = await getCodexRenderModes();
-  const next: StoredCodexRenderModes = {
+  const current = await getInterfaceRenderModes();
+  const next: StoredInterfaceRenderModes = {
     ...current,
     [trimmed]: mode,
   };
 
-  await AsyncStorage.setItem(KEYS.codexRenderModes, JSON.stringify(next));
+  await AsyncStorage.setItem(KEYS.interfaceRenderModes, JSON.stringify(next));
   return next;
 }
 

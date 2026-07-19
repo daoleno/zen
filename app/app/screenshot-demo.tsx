@@ -15,22 +15,25 @@ import {
 } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 import { useLocalSearchParams, useRouter } from "expo-router";
-import { SafeAreaView, useSafeAreaInsets } from "react-native-safe-area-context";
+import {
+  SafeAreaView,
+  useSafeAreaInsets,
+} from "react-native-safe-area-context";
 import { AgentListRowContainer } from "../components/agents/AgentListRowContainer";
 import {
   PrimaryDrawerShell,
   resolvePrimaryAppBarGeometry,
 } from "../components/navigation/PrimaryDrawerShell";
 import { ChatCanvas } from "../components/terminal/ChatCanvas";
-import { CodexChatComposer } from "../components/terminal/CodexChatComposer";
-import { CodexChatKeyboardFrame } from "../components/terminal/CodexChatKeyboardFrame";
-import { CodexTimelineView } from "../components/terminal/CodexTimelineView";
-import type { ZenTimelineItem } from "../components/terminal/CodexTimelineItemView";
+import { InterfaceChatComposer } from "../components/terminal/InterfaceChatComposer";
+import { InterfaceChatKeyboardFrame } from "../components/terminal/InterfaceChatKeyboardFrame";
+import { InterfaceTimelineView } from "../components/terminal/InterfaceTimelineView";
+import type { ZenTimelineItem } from "../components/terminal/InterfaceTimelineItemView";
 import {
   patchDisplayPath,
   truncateRunes,
-} from "../components/terminal/CodexTimelineModel";
-import { useCodexTimelineItems } from "../components/terminal/useCodexTimelineItems";
+} from "../components/terminal/InterfaceTimelineModel";
+import { useInterfaceTimelineItems } from "../components/terminal/useInterfaceTimelineItems";
 import { TerminalTopBar } from "../components/terminal/TerminalTopBar";
 import {
   CHAT_HEADER_HEIGHT,
@@ -54,10 +57,7 @@ import {
   screenshotDemoEnabled,
   screenshotDemoRouteOptedIn,
 } from "../services/screenshotDemo";
-import {
-  StatsScreenshotDemo,
-  type StatsPayload,
-} from "./stats";
+import { StatsScreenshotDemo, type StatsPayload } from "./stats";
 import CalendarScreen from "./calendar";
 import { useCalendarDispatch, type CalendarItem } from "../store/calendar";
 
@@ -237,25 +237,21 @@ function ChatDemo() {
   const [providerActivityStartedAt] = useState(() =>
     new Date(Date.now() - 43_000).toISOString(),
   );
-  const initialLatestOffsetHandledRef = useRef(false);
-  const handleLatestOffsetChange = useCallback((offset: number) => {
-    if (initialLatestOffsetHandledRef.current) {
-      return;
-    }
-    initialLatestOffsetHandledRef.current = true;
-    requestAnimationFrame(() => {
-      scrollRef.current?.scrollToOffset({ offset, animated: false });
-    });
-  }, []);
-  const longTimeline = (Array.isArray(params.long) ? params.long[0] : params.long) === "1";
-  const working = (Array.isArray(params.working) ? params.working[0] : params.working) === "1";
+  const longTimeline =
+    (Array.isArray(params.long) ? params.long[0] : params.long) === "1";
+  const working =
+    (Array.isArray(params.working) ? params.working[0] : params.working) ===
+    "1";
   const showAttachment =
-    (Array.isArray(params.attachment) ? params.attachment[0] : params.attachment) === "1";
+    (Array.isArray(params.attachment)
+      ? params.attachment[0]
+      : params.attachment) === "1";
   const timelineEvents = useMemo(() => {
-    const transcriptEvents = SCREENSHOT_CHAT_EVENTS.filter((event) =>
-      event.kind === "user_message" ||
-      event.kind === "assistant_message" ||
-      event.kind === "plan"
+    const transcriptEvents = SCREENSHOT_CHAT_EVENTS.filter(
+      (event) =>
+        event.kind === "user_message" ||
+        event.kind === "assistant_message" ||
+        event.kind === "plan",
     );
     if (!longTimeline) {
       return transcriptEvents;
@@ -270,28 +266,31 @@ function ChatDemo() {
   }, [longTimeline]);
   const emptyPending = useMemo(() => [], []);
   const runningActivity = useMemo(
-    () => working
-      ? {
-          id: "demo-working-turn",
-          status: "running" as const,
-          started_at: providerActivityStartedAt,
-        }
-      : undefined,
+    () =>
+      working
+        ? {
+            id: "demo-working-turn",
+            status: "running" as const,
+            started_at: providerActivityStartedAt,
+          }
+        : undefined,
     [working, providerActivityStartedAt],
   );
-  const timeline = useCodexTimelineItems({
+  const timeline = useInterfaceTimelineItems({
     events: timelineEvents,
     pendingUserMessages: emptyPending,
     runningActivity,
     onRetryPendingUserMessage: NOOP,
   });
   const attachments = showAttachment
-    ? [{
-        id: "demo-attachment",
-        name: "keyboard-geometry-notes.md",
-        path: "/demo/keyboard-geometry-notes.md",
-        mimeType: "text/markdown",
-      }]
+    ? [
+        {
+          id: "demo-attachment",
+          name: "keyboard-geometry-notes.md",
+          path: "/demo/keyboard-geometry-notes.md",
+          mimeType: "text/markdown",
+        },
+      ]
     : [];
   const hasContent = draft.trim().length > 0 || attachments.length > 0;
   const topChromeInset = CHAT_HEADER_HEIGHT + CHAT_HEADER_OUTER_GAP * 2;
@@ -310,7 +309,7 @@ function ChatDemo() {
             backgroundColor={chrome.appBackground}
             chrome={chrome}
             menuAnchorRef={menuAnchorRef}
-            codexRenderMode="chat"
+            interfaceRenderMode="chat"
             gitDiffDisabled={false}
             gitDiffPresentation={{
               accessibilityLabel: "Open changes",
@@ -324,16 +323,16 @@ function ChatDemo() {
             onOpenSessionDetails={NOOP}
             onOpenGitDiff={NOOP}
             onOpenMenu={NOOP}
-            onToggleCodexRenderMode={NOOP}
+            onToggleInterfaceRenderMode={NOOP}
           />
         </View>
-        <CodexChatKeyboardFrame
+        <InterfaceChatKeyboardFrame
           enabled
           keyboardVerticalOffset={0}
           chrome={chrome}
           topChromeInset={topChromeInset}
-          composer={(
-            <CodexChatComposer
+          composer={
+            <InterfaceChatComposer
               inputRef={inputRef}
               draft={draft}
               placeholder="Message the agent"
@@ -376,9 +375,9 @@ function ChatDemo() {
               onSendPress={() => setDraft("")}
               onStopPress={NOOP}
             />
-          )}
-          renderTimeline={(extraContentPadding) => (
-            <CodexTimelineView
+          }
+          renderTimeline={(extraContentPadding, keyboardLifecycleGate) => (
+            <InterfaceTimelineView
               scrollRef={scrollRef}
               items={timeline}
               loading={false}
@@ -387,6 +386,7 @@ function ChatDemo() {
               syncing={false}
               textSelectable={false}
               extraContentPadding={extraContentPadding}
+              keyboardLifecycleGate={keyboardLifecycleGate}
               topChromeInset={topChromeInset}
               chrome={chrome}
               theme={theme}
@@ -397,7 +397,6 @@ function ChatDemo() {
               onMomentumScrollBegin={NOOP}
               onMomentumScrollEnd={NOOP}
               onContentSizeChange={NOOP}
-              onLatestOffsetChange={handleLatestOffsetChange}
               onTextSelectionGestureStart={NOOP}
               onTextSelectionGestureEnd={NOOP}
               loadAssetPreview={loadNoDemoAsset}
@@ -426,40 +425,33 @@ function BrainDemo() {
     new Date(Date.now() - 43_000).toISOString(),
   );
   const emptyPending = useMemo(() => [], []);
-  const runningActivity = useMemo(() => ({
-    id: "demo-brain-working-turn",
-    status: "running" as const,
-    started_at: providerActivityStartedAt,
-  }), [providerActivityStartedAt]);
-  const timeline = useCodexTimelineItems({
+  const runningActivity = useMemo(
+    () => ({
+      id: "demo-brain-working-turn",
+      status: "running" as const,
+      started_at: providerActivityStartedAt,
+    }),
+    [providerActivityStartedAt],
+  );
+  const timeline = useInterfaceTimelineItems({
     events: SCREENSHOT_BRAIN_EVENTS,
     pendingUserMessages: emptyPending,
     runningActivity,
     onRetryPendingUserMessage: NOOP,
   });
-  const initialLatestOffsetHandledRef = useRef(false);
-  const handleLatestOffsetChange = useCallback((offset: number) => {
-    if (initialLatestOffsetHandledRef.current) {
-      return;
-    }
-    initialLatestOffsetHandledRef.current = true;
-    requestAnimationFrame(() => {
-      scrollRef.current?.scrollToOffset({ offset, animated: false });
-    });
-  }, []);
   const hasContent = draft.trim().length > 0;
   const topChromeInset = resolvePrimaryAppBarGeometry(insets.top).contentInset;
 
   return (
     <PrimaryDrawerShell activePrimaryRoute="brain" onSelectPrimaryRoute={NOOP}>
       <ChatCanvas chrome={chrome}>
-        <CodexChatKeyboardFrame
+        <InterfaceChatKeyboardFrame
           enabled
           keyboardVerticalOffset={0}
           chrome={chrome}
           topChromeInset={topChromeInset}
-          composer={(
-            <CodexChatComposer
+          composer={
+            <InterfaceChatComposer
               inputRef={inputRef}
               draft={draft}
               placeholder="Ask Brain"
@@ -500,9 +492,9 @@ function BrainDemo() {
               onSendPress={() => setDraft("")}
               onStopPress={NOOP}
             />
-          )}
-          renderTimeline={(extraContentPadding) => (
-            <CodexTimelineView
+          }
+          renderTimeline={(extraContentPadding, keyboardLifecycleGate) => (
+            <InterfaceTimelineView
               scrollRef={scrollRef}
               items={timeline}
               loading={false}
@@ -511,6 +503,7 @@ function BrainDemo() {
               syncing={false}
               textSelectable={false}
               extraContentPadding={extraContentPadding}
+              keyboardLifecycleGate={keyboardLifecycleGate}
               topChromeInset={topChromeInset}
               chrome={chrome}
               theme={theme}
@@ -521,7 +514,6 @@ function BrainDemo() {
               onMomentumScrollBegin={NOOP}
               onMomentumScrollEnd={NOOP}
               onContentSizeChange={NOOP}
-              onLatestOffsetChange={handleLatestOffsetChange}
               onTextSelectionGestureStart={NOOP}
               onTextSelectionGestureEnd={NOOP}
               loadAssetPreview={loadNoDemoAsset}
@@ -549,12 +541,29 @@ function SessionsDemo() {
       >
         <View style={styles.sessionsHeader}>
           <View>
-            <Text style={[styles.sectionEyebrow, { color: colors.textTertiary }]}>STUDIO MAC</Text>
-            <Text style={[styles.sectionHeading, { color: colors.textPrimary }]}>Running on your computer</Text>
+            <Text
+              style={[styles.sectionEyebrow, { color: colors.textTertiary }]}
+            >
+              STUDIO MAC
+            </Text>
+            <Text
+              style={[styles.sectionHeading, { color: colors.textPrimary }]}
+            >
+              Running on your computer
+            </Text>
           </View>
-          <View style={[styles.connectedBadge, { backgroundColor: colors.successSoft }]}>
-            <View style={[styles.connectedDot, { backgroundColor: colors.success }]} />
-            <Text style={[styles.connectedText, { color: colors.success }]}>Connected</Text>
+          <View
+            style={[
+              styles.connectedBadge,
+              { backgroundColor: colors.successSoft },
+            ]}
+          >
+            <View
+              style={[styles.connectedDot, { backgroundColor: colors.success }]}
+            />
+            <Text style={[styles.connectedText, { color: colors.success }]}>
+              Connected
+            </Text>
           </View>
         </View>
         <ScrollView
@@ -583,11 +592,17 @@ function StatsDemo() {
       style={[styles.flex, { backgroundColor: colors.bgPrimary }]}
       edges={["top", "bottom"]}
     >
-      <View style={[styles.statsHeader, { borderBottomColor: colors.borderSubtle }]}>
+      <View
+        style={[styles.statsHeader, { borderBottomColor: colors.borderSubtle }]}
+      >
         <Ionicons name="stats-chart" size={20} color={colors.accent} />
         <View style={styles.flex}>
-          <Text style={[styles.statsTitle, { color: colors.textPrimary }]}>Stats</Text>
-          <Text style={[styles.statsSubtitle, { color: colors.textTertiary }]}>All activity · fictional demo</Text>
+          <Text style={[styles.statsTitle, { color: colors.textPrimary }]}>
+            Stats
+          </Text>
+          <Text style={[styles.statsSubtitle, { color: colors.textTertiary }]}>
+            All activity · fictional demo
+          </Text>
         </View>
       </View>
       <StatsScreenshotDemo

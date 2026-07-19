@@ -1067,7 +1067,7 @@ func (b *grokConversationBuilder) upsertStreamText(promptID, streamStart, stream
 		status = "running"
 	}
 	if index, ok := b.streamByKey[key]; ok && index >= 0 && index < len(b.events) {
-		b.events[index].Body = truncateConversationBody(body)
+		b.events[index].Body = normalizeConversationEventBody(b.events[index].Kind, body)
 		b.events[index].Partial = partial
 		b.events[index].Status = status
 		return
@@ -1415,7 +1415,7 @@ func (b *grokConversationBuilder) addPlanUpdate(lineNumber int, timestamp string
 }
 
 func (b *grokConversationBuilder) addEvent(event CodexConversationEvent) bool {
-	event.Body = truncateConversationBody(event.Body)
+	event.Body = normalizeConversationEventBody(event.Kind, event.Body)
 	event.ToolName = truncateRunes(cleanToolName(event.ToolName), 120)
 	event.Input = truncateConversationBody(event.Input)
 	event.Output = truncateConversationBody(event.Output)

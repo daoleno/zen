@@ -11,6 +11,52 @@ import (
 	"github.com/daoleno/zen/daemon/classifier"
 )
 
+func TestParseClaudeConversation_PreservesLongCompletedAssistantMarkdown(t *testing.T) {
+	const suffix = "ZEN_CLAUDE_SUFFIX_VERTICAL_SLICE_8d2e"
+	path := filepath.Join(t.TempDir(), "claude-long.jsonl")
+	writeJSONL(t, path,
+		map[string]any{
+			"type":      "system",
+			"cwd":       "/repo/zen",
+			"sessionId": "claude-long",
+			"uuid":      "sys-long",
+			"timestamp": "2026-07-12T02:00:00.000Z",
+		},
+		map[string]any{
+			"type":      "user",
+			"cwd":       "/repo/zen",
+			"sessionId": "claude-long",
+			"uuid":      "user-long",
+			"timestamp": "2026-07-12T02:00:01.000Z",
+			"message": map[string]any{
+				"role": "user",
+				"content": []map[string]any{
+					{"type": "text", "text": "write a long markdown answer"},
+				},
+			},
+		},
+		map[string]any{
+			"type":      "assistant",
+			"cwd":       "/repo/zen",
+			"sessionId": "claude-long",
+			"uuid":      "asst-long",
+			"timestamp": "2026-07-12T02:00:02.000Z",
+			"message": map[string]any{
+				"role": "assistant",
+				"content": []map[string]any{
+					{"type": "text", "text": longCompletedAssistantMarkdown(suffix)},
+				},
+			},
+		},
+	)
+
+	got, err := parseClaudeConversation(path)
+	if err != nil {
+		t.Fatalf("parseClaudeConversation: %v", err)
+	}
+	assertUncappedAssistantMarkdown(t, got.Events, suffix)
+}
+
 func TestParseClaudeConversation_BuildsMarkdownThinkingAndTools(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "claude-session.jsonl")
 	writeJSONL(t, path,

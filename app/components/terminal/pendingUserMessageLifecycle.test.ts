@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import type { PendingUserMessage } from "./CodexChatSession";
+import type { PendingUserMessage } from "./InterfaceChatSession";
 import {
   beginPendingUserMessageAttempt,
   presentPendingUserMessageLifecycle,
@@ -9,7 +9,7 @@ import {
 import {
   buildZenTimeline,
   mergePendingUserMessagesIntoTimeline,
-} from "./CodexTimelineModel";
+} from "./InterfaceTimelineModel";
 
 function pending(
   overrides: Partial<PendingUserMessage> = {},
@@ -22,6 +22,7 @@ function pending(
     createdAt: "2026-07-17T10:00:00.000Z",
     lifecycle: "pending",
     dispatchRequestId: "request-a",
+    dispatchAttemptOrder: 1,
     createdAfterMaxSeq: 10,
     createdAfterEventIds: ["history"],
     ...overrides,
@@ -35,12 +36,13 @@ describe("pending user message lifecycle", () => {
       label: "Pending",
       accessibilityLabel: "Message pending provider transcript",
     });
-    expect(presentPendingUserMessageLifecycle(pending({ lifecycle: "failed" })))
-      .toEqual({
-        lifecycle: "failed",
-        label: "Send failed",
-        accessibilityLabel: "Message send failed",
-      });
+    expect(
+      presentPendingUserMessageLifecycle(pending({ lifecycle: "failed" })),
+    ).toEqual({
+      lifecycle: "failed",
+      label: "Send failed",
+      accessibilityLabel: "Message send failed",
+    });
   });
 
   test("manual retry keeps one UI row but starts a fresh request attempt", () => {
@@ -51,6 +53,7 @@ describe("pending user message lifecycle", () => {
     });
     const retried = beginPendingUserMessageAttempt(failed, {
       requestId: "request-b",
+      dispatchAttemptOrder: 2,
       createdAfterMaxSeq: 20,
       createdAfterEventIds: ["history", "provider-between"],
     });
@@ -58,6 +61,7 @@ describe("pending user message lifecycle", () => {
       ...failed,
       lifecycle: "pending",
       dispatchRequestId: "request-b",
+      dispatchAttemptOrder: 2,
       failureCode: undefined,
       failureMessage: undefined,
       createdAfterMaxSeq: 20,
@@ -76,11 +80,13 @@ describe("pending user message lifecycle", () => {
     });
     expect(stale).toBe(current);
 
-    expect(rejectPendingUserMessage(current, {
-      requestId: "request-current",
-      code: "send_input_failed",
-      message: "provider refused input",
-    })).toMatchObject({
+    expect(
+      rejectPendingUserMessage(current, {
+        requestId: "request-current",
+        code: "send_input_failed",
+        message: "provider refused input",
+      }),
+    ).toMatchObject({
       id: current.id,
       lifecycle: "failed",
       dispatchRequestId: "request-current",
@@ -91,16 +97,100 @@ describe("pending user message lifecycle", () => {
 });
 
 describe("provider transcript reconciliation", () => {
+  test("retry reconciliation follows dispatch attempts without reordering UI rows", () => {
+    const failedA = pending({
+      id: "pending-a",
+      lifecycle: "failed",
+      dispatchAttemptOrder: 1,
+    });
+    const pendingB = pending({
+      id: "pending-b",
+      dispatchRequestId: "request-b",
+      dispatchAttemptOrder: 2,
+    });
+    const retriedA = beginPendingUserMessageAttempt(failedA, {
+      requestId: "request-a-retry",
+      dispatchAttemptOrder: 3,
+      createdAfterMaxSeq: 10,
+      createdAfterEventIds: ["history"],
+    });
+    const localPresentationOrder = [retriedA, pendingB];
+    expect(localPresentationOrder.map((message) => message.id)).toEqual([
+      "pending-a",
+      "pending-b",
+    ]);
+
+    const providerB = {
+      id: "provider-b",
+      seq: 11,
+      kind: "user_message",
+    };
+    const providerA = {
+      id: "provider-a-retry",
+      seq: 12,
+      kind: "user_message",
+    };
+    const combined = reconcilePendingUserMessagesAgainstEvents(
+      localPresentationOrder,
+      [{ id: "history", seq: 10, kind: "user_message" }, providerB, providerA],
+    );
+    expect(combined.pendingUserMessages).toEqual([]);
+    expect(combined.providerEventAliases).toEqual([
+      { providerEventId: "provider-b", localPendingId: "pending-b" },
+      { providerEventId: "provider-a-retry", localPendingId: "pending-a" },
+    ]);
+
+    const firstEcho = reconcilePendingUserMessagesAgainstEvents(
+      localPresentationOrder,
+      [{ id: "history", seq: 10, kind: "user_message" }, providerB],
+    );
+    expect(firstEcho.pendingUserMessages.map((message) => message.id)).toEqual([
+      "pending-a",
+    ]);
+    expect(firstEcho.providerEventAliases).toEqual([
+      { providerEventId: "provider-b", localPendingId: "pending-b" },
+    ]);
+
+    const secondEcho = reconcilePendingUserMessagesAgainstEvents(
+      firstEcho.pendingUserMessages,
+      [{ id: "history", seq: 10, kind: "user_message" }, providerB, providerA],
+    );
+    expect(secondEcho.pendingUserMessages).toEqual([]);
+    expect(secondEcho.providerEventAliases).toEqual([
+      { providerEventId: "provider-a-retry", localPendingId: "pending-a" },
+    ]);
+  });
+
+  test("causal reconciliation projects provider ids onto local turn anchors", () => {
+    const rows = [
+      pending({ id: "pending-a" }),
+      pending({ id: "pending-b", dispatchRequestId: "request-b" }),
+    ];
+    const reconciled = reconcilePendingUserMessagesAgainstEvents(rows, [
+      { id: "history", seq: 10, kind: "user_message" },
+      { id: "provider-echo-a", seq: 11, kind: "user_message" },
+      { id: "provider-echo-b", seq: 12, kind: "user_message" },
+    ]);
+
+    expect(reconciled.pendingUserMessages).toEqual([]);
+    expect(reconciled.providerEventAliases).toEqual([
+      { providerEventId: "provider-echo-a", localPendingId: "pending-a" },
+      { providerEventId: "provider-echo-b", localPendingId: "pending-b" },
+    ]);
+  });
+
   test("provider user events consume local rows in causal FIFO order", () => {
     const rows = [
       pending({ id: "first" }),
       pending({ id: "second", dispatchRequestId: "request-b" }),
     ];
-    expect(reconcilePendingUserMessagesAgainstEvents(rows, [
-      { id: "history", seq: 10, kind: "user_message" },
-      { id: "provider-echo-a", seq: 11, kind: "user_message" },
-      { id: "provider-echo-b", seq: 12, kind: "user_message" },
-    ])).toEqual([]);
+    expect(
+      reconcilePendingUserMessagesAgainstEvents(rows, [
+        { id: "history", seq: 10, kind: "user_message" },
+        { id: "provider-echo-a", seq: 11, kind: "user_message" },
+        { id: "provider-echo-b", seq: 12, kind: "user_message" },
+      ]).pendingUserMessages,
+    ).toEqual([]);
   });
 
   test("an echo consumed by an earlier row cannot consume the next row later", () => {
@@ -111,22 +201,26 @@ describe("provider transcript reconciliation", () => {
     const afterFirstEcho = reconcilePendingUserMessagesAgainstEvents(rows, [
       { id: "history", seq: 10, kind: "user_message" },
       { id: "provider-echo-a", seq: 11, kind: "user_message" },
-    ]);
+    ]).pendingUserMessages;
     expect(afterFirstEcho).toHaveLength(1);
     expect(afterFirstEcho[0]).toMatchObject({
       id: "second",
       createdAfterEventIds: ["history", "provider-echo-a"],
     });
 
-    expect(reconcilePendingUserMessagesAgainstEvents(afterFirstEcho, [
-      { id: "history", seq: 10, kind: "user_message" },
-      { id: "provider-echo-a", seq: 11, kind: "user_message" },
-    ])).toHaveLength(1);
-    expect(reconcilePendingUserMessagesAgainstEvents(afterFirstEcho, [
-      { id: "history", seq: 10, kind: "user_message" },
-      { id: "provider-echo-a", seq: 11, kind: "user_message" },
-      { id: "provider-echo-b", seq: 12, kind: "user_message" },
-    ])).toEqual([]);
+    expect(
+      reconcilePendingUserMessagesAgainstEvents(afterFirstEcho, [
+        { id: "history", seq: 10, kind: "user_message" },
+        { id: "provider-echo-a", seq: 11, kind: "user_message" },
+      ]).pendingUserMessages,
+    ).toHaveLength(1);
+    expect(
+      reconcilePendingUserMessagesAgainstEvents(afterFirstEcho, [
+        { id: "history", seq: 10, kind: "user_message" },
+        { id: "provider-echo-a", seq: 11, kind: "user_message" },
+        { id: "provider-echo-b", seq: 12, kind: "user_message" },
+      ]).pendingUserMessages,
+    ).toEqual([]);
   });
 
   test("events at or before the send boundary never consume a local row", () => {
@@ -134,10 +228,15 @@ describe("provider transcript reconciliation", () => {
       createdAfterMaxSeq: 20,
       createdAfterEventIds: ["known-by-id"],
     });
-    expect(reconcilePendingUserMessagesAgainstEvents([row], [
-      { id: "known-by-id", seq: 21, kind: "user_message" },
-      { id: "old-by-seq", seq: 20, kind: "user_message" },
-    ])).toEqual([row]);
+    expect(
+      reconcilePendingUserMessagesAgainstEvents(
+        [row],
+        [
+          { id: "known-by-id", seq: 21, kind: "user_message" },
+          { id: "old-by-seq", seq: 20, kind: "user_message" },
+        ],
+      ).pendingUserMessages,
+    ).toEqual([row]);
   });
 
   test("message bodies never participate in provider echo identity", () => {
@@ -148,10 +247,10 @@ describe("provider transcript reconciliation", () => {
       kind: "user_message",
       body: "same body",
     };
-    expect(reconcilePendingUserMessagesAgainstEvents(
-      [row],
-      [oldEventWithSameBody],
-    )).toEqual([row]);
+    expect(
+      reconcilePendingUserMessagesAgainstEvents([row], [oldEventWithSameBody])
+        .pendingUserMessages,
+    ).toEqual([row]);
 
     const futureEventWithDifferentBody = {
       id: "provider-echo",
@@ -159,17 +258,22 @@ describe("provider transcript reconciliation", () => {
       kind: "user_message",
       body: "different body",
     };
-    expect(reconcilePendingUserMessagesAgainstEvents(
-      [row],
-      [futureEventWithDifferentBody],
-    )).toEqual([]);
+    expect(
+      reconcilePendingUserMessagesAgainstEvents(
+        [row],
+        [futureEventWithDifferentBody],
+      ).pendingUserMessages,
+    ).toEqual([]);
   });
 
   test("provider transcript wins even if the matching local attempt was marked failed", () => {
     const row = pending({ lifecycle: "failed" });
-    expect(reconcilePendingUserMessagesAgainstEvents([row], [
-      { id: "provider-echo", seq: 11, kind: "user_message" },
-    ])).toEqual([]);
+    expect(
+      reconcilePendingUserMessagesAgainstEvents(
+        [row],
+        [{ id: "provider-echo", seq: 11, kind: "user_message" }],
+      ).pendingUserMessages,
+    ).toEqual([]);
   });
 });
 
@@ -221,8 +325,9 @@ describe("pending timeline rows", () => {
       ],
       (id) => retried.push(id),
     );
-    expect(merged[0]?.type === "message" && merged[0].onRetryPending)
-      .toBeUndefined();
+    expect(
+      merged[0]?.type === "message" && merged[0].onRetryPending,
+    ).toBeUndefined();
     if (merged[1]?.type !== "message" || !merged[1].onRetryPending) {
       throw new Error("expected failed row retry action");
     }

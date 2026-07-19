@@ -1,6 +1,6 @@
 import { useCallback } from "react";
 import type { CodexSlashCommand } from "../../services/websocket";
-import type { ComposerAttachment } from "./CodexChatSession";
+import type { ComposerAttachment } from "./InterfaceChatSession";
 import {
   requiresSlashCommandArgs,
   slashCommandHasArgs,
@@ -23,17 +23,17 @@ interface UseCodexSlashCommandRouterInput {
   setDraft(value: string): void;
   dismissActionMenu(): void;
   focusComposer(): void;
-  submitTextToCodex(
+  submitTextToInterface(
     text: string,
     previousDraft: string,
     previousAttachments: ComposerAttachment[],
   ): void;
-  startNewCodexChat(
+  startNewInterfaceChat(
     commandText?: string,
     previousDraft?: string,
     previousAttachments?: ComposerAttachment[],
   ): void;
-  sendSlashCommandToCodex(
+  sendSlashCommandToInterface(
     text: string,
     command?: CodexSlashCommand,
     previousDraft?: string,
@@ -55,9 +55,9 @@ export function useCodexSlashCommandRouter({
   setDraft,
   dismissActionMenu,
   focusComposer,
-  submitTextToCodex,
-  startNewCodexChat,
-  sendSlashCommandToCodex,
+  submitTextToInterface,
+  startNewInterfaceChat,
+  sendSlashCommandToInterface,
   runStatusCommand,
   openSkillsSheet,
   onSwitchToTerminal,
@@ -67,7 +67,7 @@ export function useCodexSlashCommandRouter({
     showUnavailableSlashCommand,
     showSlashCommandAttachmentAlert,
   } = useCodexSlashCommandDialogs({
-    submitTextToCodex,
+    submitTextToInterface,
     onSwitchToTerminal,
   });
 
@@ -80,10 +80,7 @@ export function useCodexSlashCommandRouter({
     ) => {
       const { command, rawText, known } = request;
       dismissActionMenu();
-      if (
-        previousAttachments.length > 0 &&
-        command.execution !== "native"
-      ) {
+      if (previousAttachments.length > 0 && command.execution !== "native") {
         showSlashCommandAttachmentAlert(
           command,
           composedText,
@@ -120,17 +117,12 @@ export function useCodexSlashCommandRouter({
         return false;
       }
       if (command.name === "status") {
-        runStatusCommand(
-          rawText,
-          command,
-          previousDraft,
-          previousAttachments,
-        );
+        runStatusCommand(rawText, command, previousDraft, previousAttachments);
         return true;
       }
       if (command.execution === "native") {
         if (command.name === "new" || command.name === "clear") {
-          startNewCodexChat(rawText, previousDraft, previousAttachments);
+          startNewInterfaceChat(rawText, previousDraft, previousAttachments);
           return true;
         }
         if (command.name === "skills") {
@@ -143,10 +135,10 @@ export function useCodexSlashCommandRouter({
         return true;
       }
       if (command.name === "new" || command.name === "clear") {
-        startNewCodexChat(rawText, previousDraft, previousAttachments);
+        startNewInterfaceChat(rawText, previousDraft, previousAttachments);
         return true;
       }
-      sendSlashCommandToCodex(
+      sendSlashCommandToInterface(
         rawText,
         command,
         previousDraft,
@@ -157,12 +149,12 @@ export function useCodexSlashCommandRouter({
     [
       dismissActionMenu,
       focusComposer,
-      sendSlashCommandToCodex,
+      sendSlashCommandToInterface,
       setDraft,
       showSlashCommandAttachmentAlert,
       showUnavailableSlashCommand,
       showUnsupportedSlashCommand,
-      startNewCodexChat,
+      startNewInterfaceChat,
       openSkillsSheet,
       runStatusCommand,
     ],
@@ -195,10 +187,10 @@ export function useCodexSlashCommandRouter({
     setDraft,
     dismissActionMenu,
     focusComposer,
-    startNewCodexChat,
+    startNewInterfaceChat,
     showUnsupportedSlashCommand,
     showUnavailableSlashCommand,
-    sendSlashCommandToCodex,
+    sendSlashCommandToInterface,
     runStatusCommand,
     openSkillsSheet,
   });

@@ -710,7 +710,7 @@ func (b *claudeConversationBuilder) updateToolResult(lineNumber int, recordID st
 }
 
 func (b *claudeConversationBuilder) addEvent(event CodexConversationEvent) bool {
-	event.Body = truncateConversationBody(event.Body)
+	event.Body = normalizeConversationEventBody(event.Kind, event.Body)
 	event.ToolName = truncateRunes(cleanToolName(event.ToolName), 120)
 	event.Input = truncateConversationBody(event.Input)
 	event.Output = truncateConversationBody(event.Output)

@@ -142,6 +142,7 @@ jobs:
           bunx expo prebuild --platform ios --clean --no-install
           cd ios
           pod install
+          ../../scripts/assert-ios-camera-barcode-pod.sh Podfile.lock
 
       - name: Compile and link iOS bridge for Apple Silicon simulator
         run: |

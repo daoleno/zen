@@ -29,7 +29,7 @@ import { resolvePrimaryAppBarGeometry } from "../../components/navigation/Primar
 import { ZenLoopSpinner } from "../../components/ui/ZenLoopSpinner";
 import { ChatCanvas } from "../../components/terminal/ChatCanvas";
 import { CHAT_CHROME_HORIZONTAL_INSET } from "../../components/terminal/chatChromeMetrics";
-import { CodexChatSurface } from "../../components/terminal/CodexChatSurface";
+import { InterfaceChatSurface } from "../../components/terminal/InterfaceChatSurface";
 import type { TerminalThemeChrome } from "../../constants/terminalThemes";
 import { buildChatChrome } from "../../theme";
 import {
@@ -212,7 +212,7 @@ export default function BrainScreen() {
       params: {
         id: hostAgent.id,
         serverId: activeServer.id,
-        initialCodexRenderMode: "terminal",
+        initialInterfaceRenderMode: "terminal",
       },
     });
   }, [activeServer, hostAgent?.id, router]);
@@ -426,7 +426,7 @@ export default function BrainScreen() {
       <View style={styles.surface}>
         <ChatCanvas chrome={chrome}>
           {canUseStructuredBrainInterface ? (
-            <CodexChatSurface
+            <InterfaceChatSurface
               key={`brain-chat:${activeServer?.id}:${brainChatScopeKey ?? ""}`}
               visible
               serverId={activeServer?.id ?? ""}

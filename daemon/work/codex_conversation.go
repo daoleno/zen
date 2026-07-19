@@ -1401,7 +1401,7 @@ func (b *codexConversationBuilder) pendingReasoningEventIndex() int {
 }
 
 func (b *codexConversationBuilder) addEvent(event CodexConversationEvent) bool {
-	event.Body = truncateConversationBody(event.Body)
+	event.Body = normalizeConversationEventBody(event.Kind, event.Body)
 	event.Command = truncateRunes(cleanConversationText(event.Command), 800)
 	event.ToolName = truncateRunes(cleanToolName(event.ToolName), 120)
 	event.Input = truncateConversationBody(event.Input)
@@ -1981,6 +1981,24 @@ func cleanConversationText(value string) string {
 		out = append(out, line)
 	}
 	return strings.TrimSpace(strings.Join(out, "\n"))
+}
+
+func isConversationMessageKind(kind string) bool {
+	switch strings.TrimSpace(kind) {
+	case "user_message", "assistant_message":
+		return true
+	default:
+		return false
+	}
+}
+
+// normalizeConversationEventBody keeps full cleaned user/assistant prose and
+// applies the shared payload bound only to non-message event bodies.
+func normalizeConversationEventBody(kind, body string) string {
+	if isConversationMessageKind(kind) {
+		return cleanConversationText(body)
+	}
+	return truncateConversationBody(body)
 }
 
 func truncateConversationBody(value string) string {

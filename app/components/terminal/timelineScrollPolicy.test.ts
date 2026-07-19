@@ -13,7 +13,7 @@ import {
   reduceTimelineActivityExpansion,
   resolveTimelineActivityExpansion,
   type TimelineActivityExpansionState,
-} from "./CodexTimelineActivityExpansionState";
+} from "./InterfaceTimelineActivityExpansionState";
 
 type StreamingTouchOutcome = {
   feedbackShown: boolean;
@@ -42,10 +42,10 @@ function releaseAcceptedToolTouchAfterMutation(
     outcome.pressCancelled = true;
   }
   if (!outcome.pressCancelled) {
-    outcome.expansionState = reduceTimelineActivityExpansion(
-      expansionState,
-      { eventId: expansionState.eventId, defaultExpanded: false },
-    );
+    outcome.expansionState = reduceTimelineActivityExpansion(expansionState, {
+      eventId: expansionState.eventId,
+      defaultExpanded: false,
+    });
   }
   return outcome;
 }
@@ -91,11 +91,13 @@ describe("timeline scroll policy", () => {
       feedbackShown: true,
       pressCancelled: false,
     });
-    expect(resolveTimelineActivityExpansion(
-      opened.expansionState,
-      "tool-stream",
-      false,
-    )).toBe(true);
+    expect(
+      resolveTimelineActivityExpansion(
+        opened.expansionState,
+        "tool-stream",
+        false,
+      ),
+    ).toBe(true);
     expect(decision).toBe("suspend-implicit-anchor");
 
     expansionState = opened.expansionState;
@@ -104,16 +106,17 @@ describe("timeline scroll policy", () => {
       decision,
     );
     expect(closed.pressCancelled).toBe(false);
-    expect(resolveTimelineActivityExpansion(
-      closed.expansionState,
-      "tool-stream",
-      false,
-    )).toBe(false);
+    expect(
+      resolveTimelineActivityExpansion(
+        closed.expansionState,
+        "tool-stream",
+        false,
+      ),
+    ).toBe(false);
 
-    expect(timelineMutationDecision(
-      INITIAL_TIMELINE_SCROLL_STATE,
-      false,
-    )).toBe("follow-bottom");
+    expect(timelineMutationDecision(INITIAL_TIMELINE_SCROLL_STATE, false)).toBe(
+      "follow-bottom",
+    );
   });
 
   test("touch suspension preserves detached reader scroll intent", () => {
@@ -145,11 +148,7 @@ describe("timeline scroll policy", () => {
 
   test("layout movement cannot detach an attached streaming viewport", () => {
     expect(
-      reduceTimelineScrollPosition(
-        INITIAL_TIMELINE_SCROLL_STATE,
-        320,
-        false,
-      ),
+      reduceTimelineScrollPosition(INITIAL_TIMELINE_SCROLL_STATE, 320, false),
     ).toEqual(INITIAL_TIMELINE_SCROLL_STATE);
   });
 

@@ -5,7 +5,7 @@ import type {
 } from "../../constants/terminalThemes";
 import type { AgentKind } from "../../services/agentPresentation";
 import type { TerminalFlavor } from "../../services/terminalFlavor";
-import type { StoredCodexRenderMode } from "../../services/storage";
+import type { StoredInterfaceRenderMode } from "../../services/storage";
 import type { TerminalTopBarProps } from "../../components/terminal/TerminalTopBar";
 import type { TerminalGitDiffSummary } from "../../components/terminal/useTerminalGitDiff";
 import type { useTerminalChromeLayout } from "./useTerminalChromeLayout";
@@ -26,14 +26,14 @@ interface UseTerminalTopBarPropsInput {
     ReturnType<typeof useTerminalNavigationActions>,
     "goToInbox"
   >;
-  codexRenderMode: StoredCodexRenderMode;
+  interfaceRenderMode: StoredInterfaceRenderMode;
   gitDiffDisabled: boolean;
   gitDiffSummary: TerminalGitDiffSummary | null;
   isStructuredChatAgent: boolean;
   delegated?: boolean;
   onOpenSessionDetails(): void;
   openGitDiff(): void;
-  onToggleCodexRenderMode(): void;
+  onToggleInterfaceRenderMode(): void;
 }
 
 export function useTerminalTopBarProps({
@@ -45,14 +45,14 @@ export function useTerminalTopBarProps({
   chrome,
   chromeLayout,
   navigationActions,
-  codexRenderMode,
+  interfaceRenderMode,
   gitDiffDisabled,
   gitDiffSummary,
   isStructuredChatAgent,
   delegated,
   onOpenSessionDetails,
   openGitDiff,
-  onToggleCodexRenderMode,
+  onToggleInterfaceRenderMode,
 }: UseTerminalTopBarPropsInput): TerminalTopBarProps {
   return useMemo(
     () => ({
@@ -63,7 +63,7 @@ export function useTerminalTopBarProps({
       backgroundColor: terminalTheme.background,
       chrome,
       menuAnchorRef: chromeLayout.menuAnchorRef,
-      codexRenderMode,
+      interfaceRenderMode,
       gitDiffDisabled,
       gitDiffPresentation: buildGitDiffPresentation({
         chrome,
@@ -77,7 +77,7 @@ export function useTerminalTopBarProps({
       onOpenSessionDetails,
       onOpenGitDiff: openGitDiff,
       onOpenMenu: chromeLayout.openMenu,
-      onToggleCodexRenderMode,
+      onToggleInterfaceRenderMode,
     }),
     [
       title,
@@ -87,14 +87,14 @@ export function useTerminalTopBarProps({
       chrome,
       chromeLayout.menuAnchorRef,
       chromeLayout.openMenu,
-      codexRenderMode,
+      interfaceRenderMode,
       gitDiffDisabled,
       gitDiffSummary,
       isStructuredChatAgent,
       delegated,
       onOpenSessionDetails,
       openGitDiff,
-      onToggleCodexRenderMode,
+      onToggleInterfaceRenderMode,
       navigationActions.goToInbox,
       terminalTheme.background,
       terminalTheme.green,
@@ -136,11 +136,9 @@ function buildGitDiffPresentation({
     : "";
 
   return {
-    accessibilityLabel: [
-      "Open Git diff",
-      summary.label,
-      statsLabel,
-    ].filter(Boolean).join(", "),
+    accessibilityLabel: ["Open Git diff", summary.label, statsLabel]
+      .filter(Boolean)
+      .join(", "),
     additionsColor: terminalTheme.green,
     additionsText: summary.showStats
       ? `+${formatGitDelta(summary.additions)}`

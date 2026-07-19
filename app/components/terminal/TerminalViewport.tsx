@@ -1,26 +1,20 @@
 import React from "react";
-import {
-  StyleSheet,
-  View,
-  type LayoutChangeEvent,
-} from "react-native";
+import { StyleSheet, View, type LayoutChangeEvent } from "react-native";
 import type {
   TerminalThemeChrome,
   TerminalThemePalette,
 } from "../../constants/terminalThemes";
 import type { ConnectionIssue } from "../../services/connectionIssue";
 import type { Agent, ConnectionState } from "../../store/agents";
-import { CodexChatSurface } from "./CodexChatSurface";
-import type { CodexChatAgentInfo } from "./CodexChatSession";
-import {
-  CHAT_HEADER_HEIGHT,
-  CHAT_HEADER_OUTER_GAP,
-} from "./chatChromeMetrics";
+import { InterfaceChatSurface } from "./InterfaceChatSurface";
+import type { InterfaceChatAgentInfo } from "./InterfaceChatSession";
+import { CHAT_HEADER_HEIGHT, CHAT_HEADER_OUTER_GAP } from "./chatChromeMetrics";
 import { TerminalOutputPane } from "./TerminalOutputPane";
 import type { TerminalSurfaceHandle } from "./TerminalSurface";
 
 export interface TerminalViewportProps {
-  showCodexChat: boolean;
+  showInterfaceChat: boolean;
+  initialComposerFocusGrant: string | null;
   sessionKey: string | null;
   serverId: string;
   agentId: string;
@@ -51,10 +45,12 @@ export interface TerminalViewportProps {
   onSwitchToTerminal(): void;
   onRetryConnection(): void;
   onAccessoryLayout(event: LayoutChangeEvent): void;
+  onConsumeInitialComposerFocus(): void;
 }
 
 function TerminalViewportImpl({
-  showCodexChat,
+  showInterfaceChat,
+  initialComposerFocusGrant,
   sessionKey,
   serverId,
   agentId,
@@ -85,8 +81,11 @@ function TerminalViewportImpl({
   onSwitchToTerminal,
   onRetryConnection,
   onAccessoryLayout,
+  onConsumeInitialComposerFocus,
 }: TerminalViewportProps) {
-  const codexChatAgentInfo = React.useMemo<CodexChatAgentInfo | undefined>(
+  const interfaceChatAgentInfo = React.useMemo<
+    InterfaceChatAgentInfo | undefined
+  >(
     () =>
       agent
         ? {
@@ -126,7 +125,9 @@ function TerminalViewportImpl({
 
   return (
     <View style={[styles.terminalStage, { backgroundColor: theme.background }]}>
-      <View style={[styles.terminalShell, { backgroundColor: theme.background }]}>
+      <View
+        style={[styles.terminalShell, { backgroundColor: theme.background }]}
+      >
         <View style={styles.terminalContent}>
           <TerminalOutputPane
             sessionKey={sessionKey}
@@ -156,23 +157,23 @@ function TerminalViewportImpl({
             onAccessoryLayout={onAccessoryLayout}
           />
 
-          {showCodexChat && sessionKey && serverId && agentId ? (
+          {showInterfaceChat && sessionKey && serverId && agentId ? (
             <View pointerEvents="auto" style={styles.chatOverlay}>
-              <CodexChatSurface
-                key={`codex-chat:${sessionKey}`}
+              <InterfaceChatSurface
+                key={`interface-chat:${sessionKey}`}
                 visible
                 serverId={serverId}
                 agentId={agentId}
-                agentInfo={codexChatAgentInfo}
+                agentInfo={interfaceChatAgentInfo}
                 connectionState={connectionState}
                 connectionIssue={connectionIssue}
                 theme={theme}
                 chrome={chrome}
                 screenFocused={screenFocused}
-                topChromeInset={
-                  CHAT_HEADER_HEIGHT + CHAT_HEADER_OUTER_GAP * 2
-                }
+                initialComposerFocusGrant={initialComposerFocusGrant}
+                topChromeInset={CHAT_HEADER_HEIGHT + CHAT_HEADER_OUTER_GAP * 2}
                 onSwitchToTerminal={onSwitchToTerminal}
+                onConsumeInitialComposerFocus={onConsumeInitialComposerFocus}
               />
             </View>
           ) : null}

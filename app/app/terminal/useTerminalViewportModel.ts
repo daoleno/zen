@@ -10,7 +10,7 @@ import { useTerminalFallbackState } from "./useTerminalFallbackState";
 
 interface UseTerminalViewportModelInput {
   hasTerminalRoute: boolean;
-  showCodexChat: boolean;
+  showInterfaceChat: boolean;
   screenFocused: boolean;
   connectionState: ConnectionState;
   connectionIssue?: ConnectionIssue | null;
@@ -29,7 +29,7 @@ interface UseTerminalViewportModelInput {
 export function resolveTerminalSurfaceMountPolicy(input: {
   canRenderTerminal: boolean;
   screenFocused: boolean;
-  showCodexChat: boolean;
+  showInterfaceChat: boolean;
 }): {
   shouldMountTerminalSurface: boolean;
   terminalSurfaceActive: boolean;
@@ -38,7 +38,7 @@ export function resolveTerminalSurfaceMountPolicy(input: {
   const shouldMountTerminalSurface =
     input.canRenderTerminal && input.screenFocused;
   const terminalSurfaceActive =
-    shouldMountTerminalSurface && !input.showCodexChat;
+    shouldMountTerminalSurface && !input.showInterfaceChat;
   return {
     shouldMountTerminalSurface,
     terminalSurfaceActive,
@@ -48,7 +48,7 @@ export function resolveTerminalSurfaceMountPolicy(input: {
 
 export function useTerminalViewportModel({
   hasTerminalRoute,
-  showCodexChat,
+  showInterfaceChat,
   screenFocused,
   connectionState,
   connectionIssue,
@@ -64,7 +64,7 @@ export function useTerminalViewportModel({
   const mountPolicy = resolveTerminalSurfaceMountPolicy({
     canRenderTerminal,
     screenFocused,
-    showCodexChat,
+    showInterfaceChat,
   });
   const terminalState = useMemo(
     () =>

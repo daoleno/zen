@@ -1,4 +1,4 @@
-import type { ComposerAttachment } from "./CodexChatSession";
+import type { ComposerAttachment } from "./InterfaceChatSession";
 
 /** Provider commands use the same live send and local optimistic path as text. */
 export function submitProviderCommandAsUserInput(

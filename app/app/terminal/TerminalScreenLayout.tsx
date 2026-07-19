@@ -25,7 +25,7 @@ export function TerminalScreenLayout({
   viewportProps,
   overlayProps,
 }: TerminalScreenLayoutProps) {
-  const floatingChatChrome = viewportProps.showCodexChat;
+  const floatingChatChrome = viewportProps.showInterfaceChat;
   return (
     <SafeAreaView
       style={[styles.container, { backgroundColor: chrome.appBackground }]}

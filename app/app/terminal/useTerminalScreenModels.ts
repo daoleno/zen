@@ -3,7 +3,7 @@ import type { Agent, ConnectionState } from "../../store/agents";
 import type { WorkItem } from "../../store/work";
 import type {
   StoredAgentAliases,
-  StoredCodexRenderModes,
+  StoredInterfaceRenderModes,
 } from "../../services/storage";
 import { useTerminalGitDiff } from "../../components/terminal/useTerminalGitDiff";
 import { useTerminalRouteModel } from "./useTerminalRouteModel";
@@ -22,7 +22,7 @@ interface UseTerminalScreenModelsInput {
   agentAliases: StoredAgentAliases;
   serverConnections: Record<string, ConnectionState>;
   serverConnectionIssues: Record<string, ConnectionIssue | null>;
-  codexRenderModes: StoredCodexRenderModes;
+  interfaceRenderModes: StoredInterfaceRenderModes;
 }
 
 export function useTerminalScreenModels({
@@ -36,7 +36,7 @@ export function useTerminalScreenModels({
   agentAliases,
   serverConnections,
   serverConnectionIssues,
-  codexRenderModes,
+  interfaceRenderModes,
 }: UseTerminalScreenModelsInput) {
   const theme = useTerminalThemeChrome();
   const route = useTerminalRouteModel({
@@ -49,11 +49,11 @@ export function useTerminalScreenModels({
     agentAliases,
     serverConnections,
     serverConnectionIssues,
-    codexRenderModes,
+    interfaceRenderModes,
   });
   const viewport = useTerminalViewportModel({
     hasTerminalRoute: route.hasTerminalRoute,
-    showCodexChat: route.showCodexChat,
+    showInterfaceChat: route.showInterfaceChat,
     screenFocused,
     connectionState: route.connectionState,
     connectionIssue: route.connectionIssue,

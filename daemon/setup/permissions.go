@@ -11,9 +11,9 @@ import (
 // noninteractive/bypass flags when launching Brain host sessions for known
 // providers. Setup must not advertise a fake Safe Brain mode while this is true.
 func BrainHardensHostAtRuntime() bool {
-	// Inspected from daemon/brain/service.go hostCommand(): Codex always gets
-	// --dangerously-bypass-approvals-and-sandbox; Claude always gets
-	// --permission-mode dontAsk when missing.
+	// Inspected from daemon/brain/service.go hostCommand() and resolveSpawnCommand():
+	// bare/default Codex gets --dangerously-bypass-approvals-and-sandbox; bare/default
+	// Claude gets --permission-mode bypassPermissions. Explicit req.Command is unchanged.
 	return true
 }
 

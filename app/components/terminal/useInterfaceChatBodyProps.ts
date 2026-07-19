@@ -1,0 +1,247 @@
+import { useCallback, useMemo, type ReactNode } from "react";
+import type { ConnectionState } from "../../store/agents";
+import type {
+  CodexConversation,
+  CodexConversationEvent,
+  ProviderActivity,
+} from "../../services/codexConversation";
+import type {
+  TerminalThemeChrome,
+  TerminalThemePalette,
+} from "../../constants/terminalThemes";
+import type {
+  ComposerAttachment,
+  PendingUserMessage,
+} from "./InterfaceChatSession";
+import type { InterfaceChatBodyProps } from "./InterfaceChatBody";
+import type { InterfaceComposerPresentation } from "./InterfaceChatSurfaceModel";
+import type { TerminalActionPrompt } from "./TerminalActionPromptModel";
+import type { useInterfaceChatController } from "./InterfaceChatController";
+import type {
+  useInterfaceComposerInput,
+  usePinnedTimeline,
+} from "./InterfaceChatSurfaceHooks";
+
+interface UseInterfaceChatBodyPropsInput {
+  screenFocused: boolean;
+  serverId: string;
+  agentCwd?: string;
+  connectionState: ConnectionState;
+  conversation: CodexConversation | null;
+  events: CodexConversationEvent[];
+  pendingUserMessages: PendingUserMessage[];
+  turnFocusAnchorAliases?: ReadonlyMap<string, string>;
+  runningActivity?: ProviderActivity;
+  loading: boolean;
+  error?: string | null;
+  draft: string;
+  attachments: ComposerAttachment[];
+  composerPresentation: InterfaceComposerPresentation;
+  topChromeInset?: number;
+  terminalActionPrompt?: TerminalActionPrompt | null;
+  timeline: ReturnType<typeof usePinnedTimeline>;
+  jumpLabel?: string;
+  emptyTitle?: string;
+  emptyBody?: string;
+  composerInput: ReturnType<typeof useInterfaceComposerInput>;
+  controller: ReturnType<typeof useInterfaceChatController>;
+  chrome: TerminalThemeChrome;
+  theme: TerminalThemePalette;
+  onSwitchToTerminal?: () => void;
+  setDraft(value: string): void;
+  onToggleActionMenu(): void;
+  onDismissActionMenu(): void;
+  onTerminalActionKey(key: string): Promise<void> | void;
+  onKeyboardLifecycleInvalidate(reason: "route" | "app"): void;
+  showUnavailableAction?: boolean;
+  composerAccessory?: ReactNode;
+  skillsSheet?: ReactNode;
+}
+
+export function useInterfaceChatBodyProps({
+  screenFocused,
+  serverId,
+  agentCwd,
+  connectionState,
+  conversation,
+  events,
+  pendingUserMessages,
+  turnFocusAnchorAliases,
+  runningActivity,
+  loading,
+  error,
+  draft,
+  attachments,
+  composerPresentation,
+  topChromeInset,
+  terminalActionPrompt,
+  timeline,
+  jumpLabel,
+  emptyTitle,
+  emptyBody,
+  composerInput,
+  controller,
+  chrome,
+  theme,
+  onSwitchToTerminal,
+  setDraft,
+  onToggleActionMenu,
+  onDismissActionMenu,
+  onTerminalActionKey,
+  onKeyboardLifecycleInvalidate,
+  showUnavailableAction,
+  composerAccessory,
+  skillsSheet,
+}: UseInterfaceChatBodyPropsInput): InterfaceChatBodyProps {
+  const handleUploadPress = useCallback(() => {
+    void controller.handleUploadAttachment();
+  }, [controller.handleUploadAttachment]);
+
+  const handleSendPress = useCallback(() => {
+    controller.sendDraft();
+  }, [controller.sendDraft]);
+  const handleStopPress = useCallback(() => {
+    controller.interruptInterface();
+  }, [controller.interruptInterface]);
+
+  return useMemo(
+    () => ({
+      screenFocused,
+      serverId,
+      agentCwd,
+      conversation,
+      events,
+      pendingUserMessages,
+      turnFocusAnchorAliases,
+      runningActivity,
+      loading,
+      error,
+      scrollRef: timeline.scrollRef,
+      timelineTextSelectable: timeline.textSelectable,
+      turnFocusClearanceRequest: timeline.turnFocusClearanceRequest,
+      turnFocusSpacer: timeline.turnFocusSpacer,
+      turnFocusPendingMessageId: timeline.turnFocusPendingMessageId,
+      showJumpToLatest: timeline.showJumpToLatest,
+      jumpLabel,
+      emptyTitle,
+      emptyBody,
+      onTimelineLayout: timeline.handleLayout,
+      onTimelineScroll: timeline.handleScroll,
+      onTimelineScrollBeginDrag: timeline.handleScrollBeginDrag,
+      onTimelineScrollEndDrag: timeline.handleScrollEndDrag,
+      onTimelineMomentumScrollBegin: timeline.handleMomentumScrollBegin,
+      onTimelineMomentumScrollEnd: timeline.handleMomentumScrollEnd,
+      onTimelineTouchActiveChange: timeline.handleTimelineTouchActiveChange,
+      onTimelineContentSizeChange: timeline.handleContentSizeChange,
+      onTimelineClearanceChange: timeline.handleClearanceChange,
+      onTurnFocusAnchorAvailable: timeline.handleTurnFocusAnchorAvailable,
+      onTurnFocusRowLayout: timeline.handleTurnFocusRowLayout,
+      onTurnFocusSpacerLayout: timeline.handleTurnFocusSpacerLayout,
+      onTimelineTextSelectionGestureStart:
+        timeline.handleTextSelectionGestureStart,
+      onTimelineTextSelectionGestureEnd: timeline.handleTextSelectionGestureEnd,
+      onKeyboardLifecycleInvalidate,
+      onScrollToLatest: timeline.scrollToLatest,
+      onUnavailableAction: onSwitchToTerminal,
+      showUnavailableAction:
+        Boolean(onSwitchToTerminal) && (showUnavailableAction ?? true),
+      inputRef: composerInput.inputRef,
+      draft,
+      editable: connectionState === "connected",
+      composerFocused: composerInput.focused,
+      canAttach: controller.canAttach,
+      uploading: controller.uploading,
+      sending: controller.sending,
+      operationalError: controller.operationalError,
+      attachments,
+      composerPresentation,
+      topChromeInset,
+      terminalActionPrompt,
+      chrome,
+      theme,
+      onSelectCommand: controller.pickSlashCommand,
+      onToggleActionMenu,
+      onDismissActionMenu,
+      onRemoveAttachment: controller.removeAttachment,
+      onDraftChange: setDraft,
+      onUploadPress: handleUploadPress,
+      onInputFocus: composerInput.handleFocus,
+      onInputBlur: composerInput.handleBlur,
+      onSendPress: handleSendPress,
+      onStopPress: handleStopPress,
+      onRetryPendingUserMessage: controller.retryPendingUserMessage,
+      onTerminalActionKey,
+      composerAccessory,
+      skillsSheet,
+    }),
+    [
+      agentCwd,
+      attachments,
+      chrome,
+      composerInput.focused,
+      composerInput.handleBlur,
+      composerInput.handleFocus,
+      composerInput.inputRef,
+      composerPresentation,
+      topChromeInset,
+      terminalActionPrompt,
+      connectionState,
+      conversation,
+      controller.canAttach,
+      controller.interruptInterface,
+      controller.operationalError,
+      controller.pickSlashCommand,
+      controller.removeAttachment,
+      controller.sendDraft,
+      controller.retryPendingUserMessage,
+      controller.sending,
+      controller.uploading,
+      draft,
+      error,
+      events,
+      pendingUserMessages,
+      turnFocusAnchorAliases,
+      runningActivity,
+      handleSendPress,
+      handleStopPress,
+      handleUploadPress,
+      loading,
+      jumpLabel,
+      emptyTitle,
+      emptyBody,
+      onSwitchToTerminal,
+      onToggleActionMenu,
+      onDismissActionMenu,
+      onTerminalActionKey,
+      onKeyboardLifecycleInvalidate,
+      composerAccessory,
+      screenFocused,
+      showUnavailableAction,
+      serverId,
+      setDraft,
+      skillsSheet,
+      theme,
+      timeline.handleContentSizeChange,
+      timeline.handleClearanceChange,
+      timeline.handleLayout,
+      timeline.handleScroll,
+      timeline.handleScrollBeginDrag,
+      timeline.handleScrollEndDrag,
+      timeline.handleMomentumScrollBegin,
+      timeline.handleMomentumScrollEnd,
+      timeline.handleTimelineTouchActiveChange,
+      timeline.handleTurnFocusAnchorAvailable,
+      timeline.handleTurnFocusRowLayout,
+      timeline.handleTurnFocusSpacerLayout,
+      timeline.handleTextSelectionGestureEnd,
+      timeline.handleTextSelectionGestureStart,
+      timeline.textSelectable,
+      timeline.scrollRef,
+      timeline.scrollToLatest,
+      timeline.showJumpToLatest,
+      timeline.turnFocusPendingMessageId,
+      timeline.turnFocusClearanceRequest,
+      timeline.turnFocusSpacer,
+    ],
+  );
+}

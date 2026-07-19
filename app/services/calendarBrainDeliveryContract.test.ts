@@ -5,13 +5,26 @@ import { resolveNotificationDestination } from "./notificationRouting";
 
 describe("Calendar Brain delivery app contract", () => {
   test("scheduled Work captures its Brain thread and streams that scope", () => {
-    const calendar = readFileSync(join(import.meta.dir, "../app/calendar.tsx"), "utf8");
-    const websocket = readFileSync(join(import.meta.dir, "websocket.ts"), "utf8");
-    const chat = readFileSync(join(import.meta.dir, "../components/terminal/CodexChatSession.ts"), "utf8");
+    const calendar = readFileSync(
+      join(import.meta.dir, "../app/calendar.tsx"),
+      "utf8",
+    );
+    const websocket = readFileSync(
+      join(import.meta.dir, "websocket.ts"),
+      "utf8",
+    );
+    const chat = readFileSync(
+      join(import.meta.dir, "../components/terminal/InterfaceChatSession.ts"),
+      "utf8",
+    );
 
     expect(calendar).toContain("source_thread_id:");
-    expect(calendar).toContain("Scheduled Work requires an active Brain conversation");
-    expect(websocket).toContain("conversation_scope_key: options.conversationScopeKey");
+    expect(calendar).toContain(
+      "Scheduled Work requires an active Brain conversation",
+    );
+    expect(websocket).toContain(
+      "conversation_scope_key: options.conversationScopeKey",
+    );
     expect(chat).toContain("conversationScopeKey,");
   });
 

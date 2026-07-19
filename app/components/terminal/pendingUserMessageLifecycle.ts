@@ -6,6 +6,7 @@ export type PendingUserMessageLifecycle = "pending" | "failed";
 export type PendingUserMessageLifecycleFields = {
   lifecycle: PendingUserMessageLifecycle;
   dispatchRequestId: string;
+  dispatchAttemptOrder: number;
   failureCode?: string;
   failureMessage?: string;
   createdAfterMaxSeq?: number;
@@ -18,6 +19,7 @@ export function beginPendingUserMessageAttempt<
   message: T,
   attempt: {
     requestId: string;
+    dispatchAttemptOrder: number;
     createdAfterMaxSeq?: number;
     createdAfterEventIds?: string[];
   },
@@ -26,6 +28,7 @@ export function beginPendingUserMessageAttempt<
     ...message,
     lifecycle: "pending",
     dispatchRequestId: attempt.requestId,
+    dispatchAttemptOrder: attempt.dispatchAttemptOrder,
     failureCode: undefined,
     failureMessage: undefined,
     createdAfterMaxSeq: attempt.createdAfterMaxSeq,
@@ -83,29 +86,52 @@ export type ReconcileUserEvent = {
   kind: string;
 };
 
+export type ProviderEventTurnFocusAlias = {
+  providerEventId: string;
+  localPendingId: string;
+};
+
+export type PendingUserMessageReconciliation<T> = {
+  pendingUserMessages: T[];
+  providerEventAliases: ProviderEventTurnFocusAlias[];
+};
+
 /**
- * Consumes provider user events against local rows in causal FIFO order. Event
- * IDs and sequence boundaries are the only matching inputs; message bodies are
- * intentionally not identities. IDs consumed by an earlier row are folded
- * into the next remaining row's boundary so a later snapshot cannot consume
- * the same provider event twice.
+ * Consumes provider user events against successful dispatch attempts in their
+ * process-local order. The persistent UI array is never reordered. Event IDs
+ * and sequence boundaries are the only matching inputs; message bodies are
+ * intentionally not identities. IDs consumed by an earlier attempt are folded
+ * into the next remaining attempt's boundary so a later snapshot cannot
+ * consume the same provider event twice.
  */
 export function reconcilePendingUserMessagesAgainstEvents<
-  T extends PendingUserMessageLifecycleFields,
->(pendingUserMessages: T[], events: ReconcileUserEvent[]): T[] {
+  T extends PendingUserMessageLifecycleFields & { id: string },
+>(
+  pendingUserMessages: T[],
+  events: ReconcileUserEvent[],
+): PendingUserMessageReconciliation<T> {
   if (pendingUserMessages.length === 0 || events.length === 0) {
-    return pendingUserMessages;
+    return { pendingUserMessages, providerEventAliases: [] };
   }
   const userEvents = events.filter(
     (event) => event.kind === "user_message" && Boolean(event.id),
   );
   if (userEvents.length === 0) {
-    return pendingUserMessages;
+    return { pendingUserMessages, providerEventAliases: [] };
   }
 
+  const attempts = pendingUserMessages
+    .map((message, presentationIndex) => ({ message, presentationIndex }))
+    .sort((left, right) => {
+      const byAttempt =
+        finiteAttemptOrder(left.message.dispatchAttemptOrder) -
+        finiteAttemptOrder(right.message.dispatchAttemptOrder);
+      return byAttempt || left.presentationIndex - right.presentationIndex;
+    });
   const consumedEventIds = new Set<string>();
-  const remaining: T[] = [];
-  for (const message of pendingUserMessages) {
+  const remainingById = new Map<string, T>();
+  const providerEventAliases: ProviderEventTurnFocusAlias[] = [];
+  for (const { message } of attempts) {
     const priorEventIds = new Set(message.createdAfterEventIds ?? []);
     const providerEvent = userEvents.find((event) => {
       if (priorEventIds.has(event.id) || consumedEventIds.has(event.id)) {
@@ -120,19 +146,33 @@ export function reconcilePendingUserMessagesAgainstEvents<
     });
     if (providerEvent) {
       consumedEventIds.add(providerEvent.id);
+      providerEventAliases.push({
+        providerEventId: providerEvent.id,
+        localPendingId: message.id,
+      });
       continue;
     }
     if (consumedEventIds.size === 0) {
-      remaining.push(message);
+      remainingById.set(message.id, message);
       continue;
     }
     const createdAfterEventIds = Array.from(
       new Set([...priorEventIds, ...consumedEventIds]),
     );
-    remaining.push({
+    remainingById.set(message.id, {
       ...message,
       createdAfterEventIds,
     });
   }
-  return remaining;
+  return {
+    pendingUserMessages: pendingUserMessages.flatMap((message) => {
+      const remaining = remainingById.get(message.id);
+      return remaining ? [remaining] : [];
+    }),
+    providerEventAliases,
+  };
+}
+
+function finiteAttemptOrder(value: number) {
+  return Number.isFinite(value) ? value : Number.MAX_SAFE_INTEGER;
 }

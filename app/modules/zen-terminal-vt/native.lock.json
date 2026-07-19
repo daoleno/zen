@@ -47,10 +47,7 @@
         "subject": "android: Avoid referencing POSIX shared memory functions"
       }
     ],
-    "forbidden_undefined_symbols": [
-      "shm_open",
-      "shm_unlink"
-    ]
+    "forbidden_undefined_symbols": ["shm_open", "shm_unlink"]
   },
   "abis": [
     {
@@ -70,17 +67,16 @@
       "required_for_sideload": false
     }
   ],
-  "unsupported_abis": [
-    "armeabi-v7a",
-    "x86",
-    "arm64-v8a-hwasan"
-  ],
+  "unsupported_abis": ["armeabi-v7a", "x86", "arm64-v8a-hwasan"],
   "ios": {
     "deployment_target": "16.4",
     "device_architecture": "arm64",
     "simulator_architecture": "arm64",
     "xcframework_name": "GhosttyVt.xcframework",
-    "upstream_xcframework_name": "ghostty-vt.xcframework"
+    "upstream_xcframework_name": "ghostty-vt.xcframework",
+    "notice_bundle_path": "GHOSTTY-MIT.txt",
+    "notice_source": "app/assets/notices/GHOSTTY-MIT.txt",
+    "notice_packaging": "Expo plugin withZenIOSBuild copies into the iOS app bundle; verified by scripts/verify-ios-artifact.sh for Simulator .app and IPA"
   },
   "outputs": {
     "lib_dir": "app/modules/zen-terminal-vt/libs/android",
@@ -94,7 +90,7 @@
     "script": "scripts/android-release-apk.sh",
     "notice_apk_path": "assets/notices/GHOSTTY-MIT.txt",
     "notice_source": "app/assets/notices/GHOSTTY-MIT.txt",
-    "note": "Sideload beta ships arm64-v8a only. x86_64 is for emulator/dev builds. Notice is packaged via Expo plugin withZenAndroidRelease into android assets (verified by scripts/verify-apk-notice.sh)."
+    "note": "Sideload beta ships arm64-v8a only. x86_64 is for emulator/dev builds. Notice is packaged via Expo plugin withZenAndroidRelease into android assets (verified by scripts/verify-apk-notice.sh). iOS notice packaging is owned by withZenIOSBuild."
   },
   "signing": {
     "env_vars": [

@@ -1,4 +1,10 @@
-import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import React, {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import {
   ActivityIndicator,
   Pressable,
@@ -12,15 +18,16 @@ import type {
   TerminalThemeChrome,
   TerminalThemePalette,
 } from "../../constants/terminalThemes";
-import {
-  Colors,
-  Typography,
-  useAppColors,
-} from "../../constants/tokens";
+import { Colors, Typography, useAppColors } from "../../constants/tokens";
 import { compactPathLabel } from "../../services/pathDisplay";
-import { wsClient, type BrainWorkspaceEntry, type BrainWorkspaceFile, type BrainWorkspaceTree } from "../../services/websocket";
+import {
+  wsClient,
+  type BrainWorkspaceEntry,
+  type BrainWorkspaceFile,
+  type BrainWorkspaceTree,
+} from "../../services/websocket";
 import { AppText, BottomSheetFrame, IconButton } from "../ui";
-import { CodexNativeMarkdownBody } from "../terminal/CodexNativeMarkdownBody";
+import { InterfaceNativeMarkdownBody } from "../terminal/InterfaceNativeMarkdownBody";
 import { MarkdownFallbackText } from "../markdown/MarkdownFallbackText";
 import {
   brainWorkspaceEntryAccessibilityLabel,
@@ -61,9 +68,13 @@ export function BrainWorkspaceViewer({
   const [treeCacheKey, setTreeCacheKey] = useState("");
   const [treeLoading, setTreeLoading] = useState(false);
   const [treeError, setTreeError] = useState<string | null>(null);
-  const [directoryStack, setDirectoryStack] = useState<BrainWorkspaceEntry[]>([]);
+  const [directoryStack, setDirectoryStack] = useState<BrainWorkspaceEntry[]>(
+    [],
+  );
   const [selectedPath, setSelectedPath] = useState<string | null>(null);
-  const [selectedFile, setSelectedFile] = useState<BrainWorkspaceFile | null>(null);
+  const [selectedFile, setSelectedFile] = useState<BrainWorkspaceFile | null>(
+    null,
+  );
   const [selectedFileCacheKey, setSelectedFileCacheKey] = useState("");
   const [fileLoading, setFileLoading] = useState(false);
   const [fileError, setFileError] = useState<string | null>(null);
@@ -140,14 +151,13 @@ export function BrainWorkspaceViewer({
 
   const currentDirectory = directoryStack.at(-1) ?? null;
   const currentEntries = useMemo(
-    () => [...(currentTree?.entries ?? [])].sort(
-      (left, right) => {
+    () =>
+      [...(currentTree?.entries ?? [])].sort((left, right) => {
         if (left.kind !== right.kind) {
           return left.kind === "directory" ? -1 : 1;
         }
         return left.name.localeCompare(right.name);
-      },
-    ),
+      }),
     [currentTree?.entries],
   );
 
@@ -156,9 +166,10 @@ export function BrainWorkspaceViewer({
       if (!serverId || entry.kind === "directory") {
         return;
       }
-      const cache = cacheRef.current.cacheKey === workspaceCacheKey
-        ? cacheRef.current
-        : null;
+      const cache =
+        cacheRef.current.cacheKey === workspaceCacheKey
+          ? cacheRef.current
+          : null;
       const cachedFile = cache?.files.get(entry.path);
       const request = fileRequestRef.current + 1;
       fileRequestRef.current = request;
@@ -184,7 +195,9 @@ export function BrainWorkspaceViewer({
         }
       } catch (error: any) {
         if (fileRequestRef.current === request) {
-          setFileError(error?.message || "Failed to load Brain workspace file.");
+          setFileError(
+            error?.message || "Failed to load Brain workspace file.",
+          );
         }
       } finally {
         if (fileRequestRef.current === request) {
@@ -200,9 +213,10 @@ export function BrainWorkspaceViewer({
       if (!serverId || entry.kind !== "directory") {
         return;
       }
-      const cachedTree = cacheRef.current.cacheKey === workspaceCacheKey
-        ? cacheRef.current.directories.get(entry.path)
-        : null;
+      const cachedTree =
+        cacheRef.current.cacheKey === workspaceCacheKey
+          ? cacheRef.current.directories.get(entry.path)
+          : null;
       setDirectoryStack((previous) => [...previous, entry]);
       setSelectedPath(null);
       setSelectedFile(null);
@@ -221,7 +235,10 @@ export function BrainWorkspaceViewer({
       setTreeCacheKey(workspaceCacheKey);
       setTreeLoading(true);
       try {
-        const nextTree = await wsClient.getBrainWorkspaceTree(serverId, entry.path);
+        const nextTree = await wsClient.getBrainWorkspaceTree(
+          serverId,
+          entry.path,
+        );
         if (treeRequestRef.current === request) {
           if (cacheRef.current.cacheKey === workspaceCacheKey) {
             cacheRef.current.directories.set(entry.path, nextTree);
@@ -231,7 +248,9 @@ export function BrainWorkspaceViewer({
         }
       } catch (error: any) {
         if (treeRequestRef.current === request) {
-          setTreeError(error?.message || "Failed to load Brain workspace folder.");
+          setTreeError(
+            error?.message || "Failed to load Brain workspace folder.",
+          );
         }
       } finally {
         if (treeRequestRef.current === request) {
@@ -265,21 +284,31 @@ export function BrainWorkspaceViewer({
     treeRequestRef.current += 1;
     const parentStack = directoryStack.slice(0, -1);
     const parentPath = parentStack.at(-1)?.path ?? "";
-    const parentTree = cacheRef.current.cacheKey === workspaceCacheKey
-      ? cacheRef.current.directories.get(parentPath) ?? null
-      : null;
+    const parentTree =
+      cacheRef.current.cacheKey === workspaceCacheKey
+        ? (cacheRef.current.directories.get(parentPath) ?? null)
+        : null;
     setDirectoryStack(parentStack);
     setTree(parentTree);
     setTreeCacheKey(workspaceCacheKey);
     setTreeLoading(false);
     setTreeError(null);
-  }, [currentSelectedFile, directoryStack, fileError, fileLoading, workspaceCacheKey]);
-  const showingFile = Boolean(selectedPath || currentSelectedFile || fileLoading || fileError);
+  }, [
+    currentSelectedFile,
+    directoryStack,
+    fileError,
+    fileLoading,
+    workspaceCacheKey,
+  ]);
+  const showingFile = Boolean(
+    selectedPath || currentSelectedFile || fileLoading || fileError,
+  );
   const canGoBack = showingFile || directoryStack.length > 0;
-  const locationLabel = selectedPath
-    || currentDirectory?.path
-    || currentTree?.workspace
-    || workspace;
+  const locationLabel =
+    selectedPath ||
+    currentDirectory?.path ||
+    currentTree?.workspace ||
+    workspace;
 
   return (
     <BottomSheetFrame
@@ -297,7 +326,9 @@ export function BrainWorkspaceViewer({
             iconSize={19}
             tone="ghost"
             accessibilityRole="button"
-            accessibilityLabel={showingFile ? "Back to folder" : "Back to parent folder"}
+            accessibilityLabel={
+              showingFile ? "Back to folder" : "Back to parent folder"
+            }
             onPress={goBack}
           />
         ) : null}
@@ -335,8 +366,16 @@ export function BrainWorkspaceViewer({
           </View>
         ) : treeError ? (
           <View style={styles.previewState}>
-            <Ionicons name="warning-outline" size={18} color={colors.dangerText} />
-            <AppText variant="caption" tone="danger" style={styles.previewStateText}>
+            <Ionicons
+              name="warning-outline"
+              size={18}
+              color={colors.dangerText}
+            />
+            <AppText
+              variant="caption"
+              tone="danger"
+              style={styles.previewStateText}
+            >
               {treeError}
             </AppText>
           </View>
@@ -349,8 +388,16 @@ export function BrainWorkspaceViewer({
           </View>
         ) : fileError ? (
           <View style={styles.previewState}>
-            <Ionicons name="warning-outline" size={18} color={colors.dangerText} />
-            <AppText variant="caption" tone="danger" style={styles.previewStateText}>
+            <Ionicons
+              name="warning-outline"
+              size={18}
+              color={colors.dangerText}
+            />
+            <AppText
+              variant="caption"
+              tone="danger"
+              style={styles.previewStateText}
+            >
               {fileError}
             </AppText>
           </View>
@@ -363,7 +410,11 @@ export function BrainWorkspaceViewer({
           />
         ) : currentEntries.length === 0 ? (
           <View style={styles.previewState}>
-            <Ionicons name="folder-open-outline" size={20} color={colors.textSecondary} />
+            <Ionicons
+              name="folder-open-outline"
+              size={20}
+              color={colors.textSecondary}
+            />
             <AppText variant="caption" tone="secondary">
               This folder is empty.
             </AppText>
@@ -396,7 +447,11 @@ export function BrainWorkspaceViewer({
                     size={18}
                     color={directory ? colors.accent : colors.textSecondary}
                   />
-                  <Text style={styles.browserName} numberOfLines={1} ellipsizeMode="middle">
+                  <Text
+                    style={styles.browserName}
+                    numberOfLines={1}
+                    ellipsizeMode="middle"
+                  >
                     {entry.name}
                   </Text>
                 </Pressable>
@@ -436,7 +491,7 @@ function BrainWorkspaceFilePreview({
       >
         {content.trim() ? (
           markdown ? (
-            <CodexNativeMarkdownBody
+            <InterfaceNativeMarkdownBody
               value={content}
               chrome={chrome}
               theme={theme}

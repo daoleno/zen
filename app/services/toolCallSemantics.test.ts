@@ -10,13 +10,13 @@ import {
   parseExecWrapperCalls,
   primarySemanticAction,
 } from "./toolCallSemantics";
-import { buildZenTimeline } from "../components/terminal/CodexTimelineModel";
+import { buildZenTimeline } from "../components/terminal/InterfaceTimelineModel";
 import type { CodexConversationEvent } from "./codexConversation";
 import {
   shouldAutoExpandActivity,
-  buildCodexTimelineActivityPresentation,
-} from "../components/terminal/CodexTimelineActivityModel";
-import type { ZenActivityTimelineItem } from "../components/terminal/CodexTimelineActivityTypes";
+  buildInterfaceTimelineActivityPresentation,
+} from "../components/terminal/InterfaceTimelineActivityModel";
+import type { ZenActivityTimelineItem } from "../components/terminal/InterfaceTimelineActivityTypes";
 
 const FIXTURES = {
   codexExecCommand: `const r = await tools.exec_command({"cmd":"rg -n SemanticAction app","workdir":"/repo","yield_time_ms":10000});
@@ -52,7 +52,9 @@ describe("parseExecWrapperCalls", () => {
     const calls = parseExecWrapperCalls(FIXTURES.codexApplyPatch);
     expect(calls).toHaveLength(1);
     expect(calls[0]?.name).toBe("apply_patch");
-    expect(calls[0]?.text).toContain("*** Update File: app/services/toolCallSemantics.ts");
+    expect(calls[0]?.text).toContain(
+      "*** Update File: app/services/toolCallSemantics.ts",
+    );
   });
 
   test("update_plan object literal", () => {
@@ -63,7 +65,9 @@ describe("parseExecWrapperCalls", () => {
   });
 
   test("view_image and multiple calls", () => {
-    expect(parseExecWrapperCalls(FIXTURES.codexViewImage)[0]?.name).toBe("view_image");
+    expect(parseExecWrapperCalls(FIXTURES.codexViewImage)[0]?.name).toBe(
+      "view_image",
+    );
     expect(parseExecWrapperCalls(FIXTURES.codexMulti)).toHaveLength(2);
   });
 
@@ -80,7 +84,7 @@ describe("parseExecWrapperCalls", () => {
       `const r = await tools.exec_command({"cmd":"rg -n tools.apply_patch( app"});`,
       `// tools.view_image({path:"/tmp/x.png"})`,
       `/* tools.update_plan({plan:[]}) */`,
-      "const note = `look at tools.exec_command({\"cmd\":\"echo hi\"})`;",
+      'const note = `look at tools.exec_command({"cmd":"echo hi"})`;',
       `text(r.output);`,
     ].join("\n");
     const calls = parseExecWrapperCalls(input);
@@ -94,35 +98,46 @@ describe("parseExecWrapperCalls", () => {
   tools.exec_command({"cmd":"go test ./work -count=1"}),
   tools.view_image({path:"/tmp/fixture.png"})
 ]);`);
-    expect(calls.map((call) => call.name)).toEqual(["exec_command", "view_image"]);
+    expect(calls.map((call) => call.name)).toEqual([
+      "exec_command",
+      "view_image",
+    ]);
   });
 });
 
 describe("semantic action model", () => {
   test("maps nested Codex wrappers to friendly labels", () => {
-    expect(collapsedToolLabel({
-      toolName: "exec",
-      input: FIXTURES.codexExecCommand,
-      status: "done",
-    }).title).toBe("Search");
+    expect(
+      collapsedToolLabel({
+        toolName: "exec",
+        input: FIXTURES.codexExecCommand,
+        status: "done",
+      }).title,
+    ).toBe("Search");
 
-    expect(collapsedToolLabel({
-      toolName: "exec",
-      input: FIXTURES.codexApplyPatch,
-      status: "done",
-    }).title).toBe("Edit");
+    expect(
+      collapsedToolLabel({
+        toolName: "exec",
+        input: FIXTURES.codexApplyPatch,
+        status: "done",
+      }).title,
+    ).toBe("Edit");
 
-    expect(collapsedToolLabel({
-      toolName: "exec",
-      input: FIXTURES.codexUpdatePlan,
-      status: "done",
-    }).title).toBe("Plan");
+    expect(
+      collapsedToolLabel({
+        toolName: "exec",
+        input: FIXTURES.codexUpdatePlan,
+        status: "done",
+      }).title,
+    ).toBe("Plan");
 
-    expect(collapsedToolLabel({
-      toolName: "exec",
-      input: FIXTURES.codexViewImage,
-      status: "done",
-    }).title).toBe("Open");
+    expect(
+      collapsedToolLabel({
+        toolName: "exec",
+        input: FIXTURES.codexViewImage,
+        status: "done",
+      }).title,
+    ).toBe("Open");
 
     const multi = collapsedToolLabel({
       toolName: "exec",
@@ -140,23 +155,29 @@ describe("semantic action model", () => {
   });
 
   test("keeps direct legacy and provider shapes working", () => {
-    expect(primarySemanticAction({
-      toolName: "view_image",
-      input: `{"path":"/tmp/legacy.png"}`,
-      status: "done",
-    }).label).toBe("Open");
+    expect(
+      primarySemanticAction({
+        toolName: "view_image",
+        input: `{"path":"/tmp/legacy.png"}`,
+        status: "done",
+      }).label,
+    ).toBe("Open");
 
-    expect(primarySemanticAction({
-      toolName: "Grep",
-      input: FIXTURES.grokGrep,
-      status: "done",
-    }).kind).toBe("search_code");
+    expect(
+      primarySemanticAction({
+        toolName: "Grep",
+        input: FIXTURES.grokGrep,
+        status: "done",
+      }).kind,
+    ).toBe("search_code");
 
-    expect(primarySemanticAction({
-      toolName: "Shell",
-      input: FIXTURES.cursorShell,
-      status: "done",
-    }).kind).toBe("test_app");
+    expect(
+      primarySemanticAction({
+        toolName: "Shell",
+        input: FIXTURES.cursorShell,
+        status: "done",
+      }).kind,
+    ).toBe("test_app");
 
     expect(isExecWrapperToolName("functions.exec")).toBe(true);
     expect(isExecWrapperToolName("exec_command")).toBe(false);
@@ -240,7 +261,9 @@ describe("timeline presentation", () => {
     ];
 
     const timeline = buildZenTimeline(events);
-    const activities = timeline.filter((item): item is ZenActivityTimelineItem => item.type === "activity");
+    const activities = timeline.filter(
+      (item): item is ZenActivityTimelineItem => item.type === "activity",
+    );
     expect(activities.map((item) => item.title)).toEqual([
       "Search",
       "Run",
@@ -254,7 +277,9 @@ describe("timeline presentation", () => {
     expect(activities[1]?.detail).toBeUndefined();
     expect(activities[1]?.children?.length).toBe(2);
     expect(activities[1]?.providerToolId).toBe("exec_command");
-    expect(activities[1]?.developerDetails?.providerToolId).toBe("exec_command");
+    expect(activities[1]?.developerDetails?.providerToolId).toBe(
+      "exec_command",
+    );
     expect(activities[4]?.tone).toBe("failed");
     expect(activities[5]?.tone).toBe("running");
     expect(shouldAutoExpandActivity(activities[0]!)).toBe(false);
@@ -263,25 +288,35 @@ describe("timeline presentation", () => {
     expect(activities[5]?.defaultExpanded).toBe(false);
     expect(activities[5]?.icon).toBe("time-outline");
 
-    const presentation = buildCodexTimelineActivityPresentation(
+    const presentation = buildInterfaceTimelineActivityPresentation(
       activities[1]!,
-      { textMuted: "#888", textSubtle: "#666", accent: "#aaa", border: "#333", appBackground: "#111" } as any,
+      {
+        textMuted: "#888",
+        textSubtle: "#666",
+        accent: "#aaa",
+        border: "#333",
+        appBackground: "#111",
+      } as any,
       { red: "#f00", yellow: "#ff0", green: "#0f0" } as any,
     );
     expect(presentation.canExpand).toBe(true);
   });
 
   test("buildSemanticActions covers blocked and running states", () => {
-    expect(buildSemanticActions({
-      toolName: "exec",
-      input: FIXTURES.codexViewImage,
-      status: "running",
-    })[0]?.label).toBe("Open");
-    expect(buildSemanticActions({
-      toolName: "apply_patch",
-      files: ["a.ts", "b.ts"],
-      status: "blocked",
-    })[0]?.status).toBe("blocked");
+    expect(
+      buildSemanticActions({
+        toolName: "exec",
+        input: FIXTURES.codexViewImage,
+        status: "running",
+      })[0]?.label,
+    ).toBe("Open");
+    expect(
+      buildSemanticActions({
+        toolName: "apply_patch",
+        files: ["a.ts", "b.ts"],
+        status: "blocked",
+      })[0]?.status,
+    ).toBe("blocked");
   });
 
   test("blocked/error statuses use failed tone and auto-expand; running stays collapsed", () => {

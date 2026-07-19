@@ -8,12 +8,12 @@ import {
 import {
   shouldDropProviderChatNoiseEvent,
   shouldDropStructuredChatEvent,
-} from "./codexConversationVisibility";
-import { buildZenTimeline } from "./CodexTimelineModel";
+} from "./interfaceConversationVisibility";
+import { buildZenTimeline } from "./InterfaceTimelineModel";
 import {
   reconcileConversationDeltaEvents,
   reconcileConversationSnapshot,
-} from "./codexConversationReconciliation";
+} from "./interfaceConversationReconciliation";
 
 const STREAM_TIME = "2026-07-15T01:00:00Z";
 
@@ -53,7 +53,13 @@ describe("incremental structured conversation streaming", () => {
       ],
     });
 
-    expect(normalized.events.map(({ id, partial, transient }) => ({ id, partial, transient }))).toEqual([
+    expect(
+      normalized.events.map(({ id, partial, transient }) => ({
+        id,
+        partial,
+        transient,
+      })),
+    ).toEqual([
       { id: "streaming", partial: true, transient: true },
       { id: "final", partial: false, transient: false },
       { id: "invalid", partial: undefined, transient: undefined },
@@ -61,9 +67,10 @@ describe("incremental structured conversation streaming", () => {
   });
 
   test("multiple equal-time chunks upsert one logical message and finalization does not duplicate it", () => {
-    let events = reconcileConversationDeltaEvents([], [
-      event("assistant:turn-7", 7, { body: "Hel", partial: true }),
-    ]);
+    let events = reconcileConversationDeltaEvents(
+      [],
+      [event("assistant:turn-7", 7, { body: "Hel", partial: true })],
+    );
     events = reconcileConversationDeltaEvents(events, [
       event("assistant:turn-7", 7, { body: "Hello", partial: true }),
     ]);
@@ -101,7 +108,9 @@ describe("incremental structured conversation streaming", () => {
       "assistant:turn-7",
       "ordinary:later",
     ]);
-    expect(events.filter((item) => item.id === "assistant:turn-7")).toHaveLength(1);
+    expect(
+      events.filter((item) => item.id === "assistant:turn-7"),
+    ).toHaveLength(1);
     expect(events[0]).toMatchObject({
       body: "Hello world!",
       partial: false,
@@ -196,8 +205,12 @@ describe("incremental structured conversation streaming", () => {
     });
     const finalized = { ...partial, partial: false, status: "done" };
 
-    expect(isProviderActivityRunning(conversation([partial]).activity)).toBe(false);
-    expect(isProviderActivityRunning(conversation([finalized]).activity)).toBe(false);
+    expect(isProviderActivityRunning(conversation([partial]).activity)).toBe(
+      false,
+    );
+    expect(isProviderActivityRunning(conversation([finalized]).activity)).toBe(
+      false,
+    );
   });
 
   test("assistant and reasoning timeline items retain their live streaming state", () => {
@@ -267,8 +280,12 @@ describe("incremental structured conversation streaming", () => {
       title: "Updated Plan",
       plan: [{ step: "internal provider plan", status: "in_progress" }],
     });
-    expect(shouldDropProviderChatNoiseEvent("grok_session", reasoning.kind)).toBe(false);
-    expect(shouldDropProviderChatNoiseEvent("grok_session", plan.kind)).toBe(true);
+    expect(
+      shouldDropProviderChatNoiseEvent("grok_session", reasoning.kind),
+    ).toBe(false);
+    expect(shouldDropProviderChatNoiseEvent("grok_session", plan.kind)).toBe(
+      true,
+    );
   });
 
   test("provider command transcript events remain visible user rows", () => {

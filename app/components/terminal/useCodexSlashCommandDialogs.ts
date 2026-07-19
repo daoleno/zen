@@ -1,10 +1,10 @@
 import { useCallback } from "react";
 import { Alert } from "react-native";
 import type { CodexSlashCommand } from "../../services/websocket";
-import type { ComposerAttachment } from "./CodexChatSession";
+import type { ComposerAttachment } from "./InterfaceChatSession";
 
 interface UseCodexSlashCommandDialogsInput {
-  submitTextToCodex(
+  submitTextToInterface(
     text: string,
     previousDraft: string,
     previousAttachments: ComposerAttachment[],
@@ -13,7 +13,7 @@ interface UseCodexSlashCommandDialogsInput {
 }
 
 export function useCodexSlashCommandDialogs({
-  submitTextToCodex,
+  submitTextToInterface,
   onSwitchToTerminal,
 }: UseCodexSlashCommandDialogsInput) {
   const showUnsupportedSlashCommand = useCallback(
@@ -58,7 +58,7 @@ export function useCodexSlashCommandDialogs({
           {
             text: "Send as Message",
             onPress: () =>
-              submitTextToCodex(
+              submitTextToInterface(
                 composedText,
                 previousDraft,
                 previousAttachments,
@@ -67,7 +67,7 @@ export function useCodexSlashCommandDialogs({
         ],
       );
     },
-    [submitTextToCodex],
+    [submitTextToInterface],
   );
 
   return {

@@ -2,11 +2,14 @@ import { describe, expect, test } from "bun:test";
 import {
   structuredChatContentFadeGeometry,
   structuredChatEffectiveClearance,
+  structuredChatFocusSample,
   structuredChatLatestOffset,
   structuredChatLogicalOffset,
+  structuredChatNativeMaskColors,
   structuredChatOverlayGeometry,
   structuredChatOverlayTranslateY,
   structuredChatScrollClearance,
+  resolveInterfaceChatCanvasColor,
 } from "./chatKeyboardOverlayPolicy";
 
 describe("structured chat overlay geometry", () => {
@@ -73,16 +76,21 @@ describe("structured chat overlay geometry", () => {
       keyboardHeight: 300,
     });
 
-    expect([compact, multiline, attachment].map((state) => ({
-      timelineHeight: state.timelineHeight,
-      contentOffsetDelta: state.contentOffsetDelta,
-    }))).toEqual([
+    expect(
+      [compact, multiline, attachment].map((state) => ({
+        timelineHeight: state.timelineHeight,
+        contentOffsetDelta: state.contentOffsetDelta,
+      })),
+    ).toEqual([
       { timelineHeight: 844, contentOffsetDelta: 0 },
       { timelineHeight: 844, contentOffsetDelta: 0 },
       { timelineHeight: 844, contentOffsetDelta: 0 },
     ]);
-    expect([compact.scrollClearance, multiline.scrollClearance, attachment.scrollClearance])
-      .toEqual([376, 424, 488]);
+    expect([
+      compact.scrollClearance,
+      multiline.scrollClearance,
+      attachment.scrollClearance,
+    ]).toEqual([376, 424, 488]);
   });
 
   test.each([320, 390, 430])(
@@ -106,6 +114,50 @@ describe("structured chat overlay geometry", () => {
     expect(fade.fadeHeight).toBeCloseTo(35.2);
   });
 
+  test.each([
+    {
+      name: "dark direct background",
+      appBackground: "#0F0F14",
+      surface: "#25252D",
+      expectedCanvas: "#0F0F14",
+      expectedMask: {
+        visible: "rgba(15, 15, 20, 1)",
+        hidden: "rgba(15, 15, 20, 0)",
+      },
+    },
+    {
+      name: "light direct background",
+      appBackground: "#F7F8F6",
+      surface: "#ECEDEB",
+      expectedCanvas: "#F7F8F6",
+      expectedMask: {
+        visible: "rgba(247, 248, 246, 1)",
+        hidden: "rgba(247, 248, 246, 0)",
+      },
+    },
+    {
+      name: "transparent background surface fallback",
+      appBackground: "transparent",
+      surface: "#25252D",
+      expectedCanvas: "#25252D",
+      expectedMask: {
+        visible: "rgba(37, 37, 45, 1)",
+        hidden: "rgba(37, 37, 45, 0)",
+      },
+    },
+  ])(
+    "resolves $name before deriving native mask alpha endpoints",
+    ({ appBackground, surface, expectedCanvas, expectedMask }) => {
+      const canvasColor = resolveInterfaceChatCanvasColor(
+        appBackground,
+        surface,
+      );
+
+      expect(canvasColor).toBe(expectedCanvas);
+      expect(structuredChatNativeMaskColors(canvasColor)).toEqual(expectedMask);
+    },
+  );
+
   test("adds no fixed clearance beyond measured Composer and keyboard geometry", () => {
     expect(structuredChatScrollClearance(0, 0)).toBe(0);
     expect(structuredChatScrollClearance(76, 0)).toBe(76);
@@ -116,42 +168,52 @@ describe("structured chat overlay geometry", () => {
     const translation = structuredChatOverlayTranslateY(-300, 1, 24);
     expect(translation).toBe(-276);
     expect(structuredChatScrollClearance(88, translation)).toBe(364);
-    expect(structuredChatOverlayGeometry({
-      canvasHeight: 844,
-      composerHeight: 88,
-      keyboardHeight: 300,
-      keyboardVerticalOffset: 24,
-    }).scrollClearance).toBe(364);
+    expect(
+      structuredChatOverlayGeometry({
+        canvasHeight: 844,
+        composerHeight: 88,
+        keyboardHeight: 300,
+        keyboardVerticalOffset: 24,
+      }).scrollClearance,
+    ).toBe(364);
   });
 
   test("does not contract native range beneath the occupied logical offset", () => {
-    expect(structuredChatEffectiveClearance({
-      platform: "ios",
-      requestedClearance: 76,
-      rawOffset: -356,
-      previousClearance: 356,
-    })).toBe(356);
-    expect(structuredChatEffectiveClearance({
-      platform: "android",
-      requestedClearance: 76,
-      rawOffset: 0,
-      previousClearance: 356,
-    })).toBe(356);
+    expect(
+      structuredChatEffectiveClearance({
+        platform: "ios",
+        requestedClearance: 76,
+        rawOffset: -356,
+        previousClearance: 356,
+      }),
+    ).toBe(356);
+    expect(
+      structuredChatEffectiveClearance({
+        platform: "android",
+        requestedClearance: 76,
+        rawOffset: 0,
+        previousClearance: 356,
+      }),
+    ).toBe(356);
   });
 
   test("contracts after the reader returns inside the requested range", () => {
-    expect(structuredChatEffectiveClearance({
-      platform: "ios",
-      requestedClearance: 76,
-      rawOffset: -76,
-      previousClearance: 356,
-    })).toBe(76);
-    expect(structuredChatEffectiveClearance({
-      platform: "android",
-      requestedClearance: 76,
-      rawOffset: 280,
-      previousClearance: 356,
-    })).toBe(76);
+    expect(
+      structuredChatEffectiveClearance({
+        platform: "ios",
+        requestedClearance: 76,
+        rawOffset: -76,
+        previousClearance: 356,
+      }),
+    ).toBe(76);
+    expect(
+      structuredChatEffectiveClearance({
+        platform: "android",
+        requestedClearance: 76,
+        rawOffset: 280,
+        previousClearance: 356,
+      }),
+    ).toBe(76);
   });
 
   test("normalizes Android decorator compensation to one stable anchor", () => {
@@ -164,5 +226,18 @@ describe("structured chat overlay geometry", () => {
     expect(structuredChatLatestOffset(356, "ios")).toBe(-356);
     expect(structuredChatLatestOffset(356, "android")).toBe(0);
     expect(structuredChatLatestOffset(356, "web")).toBe(0);
+  });
+
+  test("samples focus clearance and its platform latest offset atomically", () => {
+    expect(structuredChatFocusSample(7, 356, "ios")).toEqual({
+      intentToken: 7,
+      clearance: 356,
+      latestOffset: -356,
+    });
+    expect(structuredChatFocusSample(7, 356, "android")).toEqual({
+      intentToken: 7,
+      clearance: 356,
+      latestOffset: 0,
+    });
   });
 });

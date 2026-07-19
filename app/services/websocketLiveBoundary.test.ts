@@ -436,6 +436,47 @@ describe("generic WebSocket live boundary", () => {
     client.disconnectAll();
   });
 
+  test("conversation error frames preserve server detail and leave missing display copy to Interface", async () => {
+    const client = new MultiServerWebSocketClient();
+    const socket = await connectClient(client);
+    socket.open();
+    const errors: Error[] = [];
+    const unsubscribe = client.subscribeCodexConversation(
+      server.id,
+      { targetId: "agent-a", agentId: "agent-a" },
+      {
+        onSnapshot: () => {},
+        onDelta: () => {},
+        onSyncStatus: () => {},
+        onError: (error) => errors.push(error),
+      },
+    );
+    const subscription = JSON.parse(socket.sent[0]!);
+
+    socket.receive({
+      type: "error",
+      request_id: subscription.request_id,
+      message: "Provider supplied detail",
+    });
+    socket.receive({
+      type: "error",
+      request_id: subscription.request_id,
+    });
+    socket.receive({
+      type: "error",
+      request_id: subscription.request_id,
+      message: "",
+    });
+
+    expect(errors.map((error) => error.message)).toEqual([
+      "Provider supplied detail",
+      "",
+      "",
+    ]);
+    unsubscribe();
+    client.disconnectAll();
+  });
+
   test("conversation wire normalization carries only current Activity lifecycle", async () => {
     const client = new MultiServerWebSocketClient();
     const socket = await connectClient(client);

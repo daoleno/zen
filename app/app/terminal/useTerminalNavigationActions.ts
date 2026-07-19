@@ -2,6 +2,7 @@ import { useCallback } from "react";
 import { Alert } from "react-native";
 import { useRouter } from "expo-router";
 import type { Agent, ConnectionState } from "../../store/agents";
+import { dismissTerminalToSessions } from "../../services/terminalExitNavigation";
 import { wsClient } from "../../services/websocket";
 
 interface UseTerminalNavigationActionsInput {
@@ -27,14 +28,14 @@ export function useTerminalNavigationActions({
 
   const goToInbox = useCallback(() => {
     closeMenu();
-    router.replace("/list");
+    dismissTerminalToSessions(router);
   }, [closeMenu, router]);
 
   const performTerminateAgent = useCallback(async () => {
     if (!sessionKey || !serverId || !agentId) return;
 
     wsClient.killAgent(serverId, agentId);
-    router.replace("/list");
+    dismissTerminalToSessions(router);
   }, [agentId, router, serverId, sessionKey]);
 
   const handleTerminateAgent = useCallback(() => {

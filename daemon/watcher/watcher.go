@@ -22,6 +22,7 @@ const tmuxSendInputChunkBytes = 1024
 const initialInputReadyTimeout = 8 * time.Second
 const codexInputReadyTimeout = 30 * time.Second
 const cursorInputReadyTimeout = 25 * time.Second
+const claudeInputReadyTimeout = 12 * time.Second
 const grokInputReadyTimeout = 15 * time.Second
 
 var codexInputPromptRe = regexp.MustCompile(`(?m)^›\s`)
@@ -30,6 +31,17 @@ var codexMCPStartingRe = regexp.MustCompile(`(?im)\bstarting\s+mcp\s+servers\b`)
 var codexStartupContinueRe = regexp.MustCompile(`(?im)\bpress\s+enter\s+to\s+continue\b`)
 var cursorInputReadyRe = regexp.MustCompile(`(?im)\b(run\s+everything|composer\s+[0-9][^\n]*\n\s*~?[/\w.-].*)\b`)
 var cursorWorkspaceTrustRe = regexp.MustCompile(`(?im)\bworkspace\s+trust\s+required\b`)
+
+// Claude Code TUI ready (observed on 2.1.214 / probe @224): numeric version
+// header, empty composer line (❯), plus one permission/mode footer.
+// Distinguishes ready state from startup/loading/safety screens. Version
+// matcher is intentionally not pinned to major version 2.
+//
+// Empty composers are often "❯" + U+00A0. Go regexp \s does not match NBSP, so
+// claudeComposerRe lists U+00A0 explicitly and still rejects nonempty drafts.
+var claudeHeaderRe = regexp.MustCompile(`Claude Code v?\d+\.\d+\.\d+`)
+var claudeComposerRe = regexp.MustCompile(`(?m)^[\t \x{00A0}]*❯[\t \x{00A0}]*$`)
+var claudeModeFooterRe = regexp.MustCompile(`(?i)(bypass permissions|manual mode).*(shift\+tab|shortcuts|\?)`)
 
 // Grok TUI ready: model/footer chrome plus the empty/ready composer prompt glyph.
 var grokChromeReadyRe = regexp.MustCompile(`(?im)(\bgrok\s+[0-9]|always-approve|enter\s*:\s*send|shift\+tab:mode)`)
@@ -739,8 +751,8 @@ func (w *Watcher) SendInput(sessionID, text string) error {
 
 // SendInputWhenReady waits for a newly started agent UI to be ready, then sends
 // text. Unknown executors are treated as ready immediately. Known Codex, Cursor,
-// and Grok UIs must reach an input prompt so Zen does not paste a task into a
-// startup screen before the composer can accept Enter-to-send.
+// Claude, and Grok UIs must reach an input prompt so Zen does not paste a task
+// into a startup screen before the composer can accept Enter-to-send.
 func (w *Watcher) SendInputWhenReady(sessionID, command, text string) error {
 	if isCodexCommand(command) {
 		body, submit := splitTmuxInput(text)
@@ -852,6 +864,9 @@ func isAgentInputReady(command, content string) bool {
 		return strings.Contains(strings.ToLower(current), "cursor agent") &&
 			cursorInputReadyRe.MatchString(current)
 	}
+	if isClaudeCommand(command) {
+		return isClaudeInputReady(content)
+	}
 	if isGrokCommand(command) || looksLikeGrokPane(content) {
 		return isGrokInputReady(content)
 	}
@@ -929,6 +944,7 @@ func needsInputReadinessWait(command, content string) bool {
 	lowerContent := strings.ToLower(content)
 	return isCodexCommand(command) ||
 		isCursorAgentCommand(command) ||
+		isClaudeCommand(command) ||
 		isGrokCommand(command) ||
 		strings.Contains(lowerContent, "openai codex") ||
 		strings.Contains(lowerContent, "cursor agent") ||
@@ -936,12 +952,7 @@ func needsInputReadinessWait(command, content string) bool {
 }
 
 func isCodexCommand(command string) bool {
-	fields := strings.Fields(strings.TrimSpace(command))
-	if len(fields) == 0 {
-		return false
-	}
-	base := filepath.Base(fields[0])
-	return base == "codex"
+	return commandExecutableBase(command) == "codex"
 }
 
 // IsCodexCommand reports whether command launches the interactive Codex TUI.
@@ -952,21 +963,120 @@ func IsCodexCommand(command string) bool {
 }
 
 func isCursorAgentCommand(command string) bool {
-	fields := strings.Fields(strings.TrimSpace(command))
-	if len(fields) == 0 {
-		return false
-	}
-	base := filepath.Base(fields[0])
-	return base == "cursor-agent"
+	return commandExecutableBase(command) == "cursor-agent"
 }
 
 func isGrokCommand(command string) bool {
-	fields := strings.Fields(strings.TrimSpace(command))
+	base := commandExecutableBase(command)
+	return base == "grok" || strings.HasPrefix(base, "grok-")
+}
+
+func isClaudeCommand(command string) bool {
+	base := commandExecutableBase(command)
+	return base == "claude" || base == "cc"
+}
+
+// commandExecutableBase returns filepath.Base of the launch executable.
+// Direct commands use field 0. Zen Host PATH wrapping uses the shape:
+//
+//	env [NAME=value...] [--] executable [args...]
+//
+// Only that optional env prefix is recognized. Assignment values may be
+// shell-quoted (as withZenCLIOnPath/shellQuote produce) and can contain
+// spaces. Later arguments are never scanned for provider names, and env
+// without an executable yields "".
+func commandExecutableBase(command string) string {
+	fields := splitZenLaunchFields(command)
 	if len(fields) == 0 {
+		return ""
+	}
+	index := 0
+	if fields[0] == "env" {
+		index = 1
+		for index < len(fields) {
+			if fields[index] == "--" {
+				index++
+				break
+			}
+			if !looksLikeEnvAssignment(fields[index]) {
+				break
+			}
+			index++
+		}
+	}
+	if index >= len(fields) {
+		return ""
+	}
+	return filepath.Base(fields[index])
+}
+
+// splitZenLaunchFields splits a Zen launch command on whitespace while keeping
+// single-quoted spans intact so shellQuote'd PATH values with spaces stay one
+// assignment token. It is not a general shell parser.
+func splitZenLaunchFields(command string) []string {
+	command = strings.TrimSpace(command)
+	if command == "" {
+		return nil
+	}
+	fields := make([]string, 0, 8)
+	var token strings.Builder
+	inSingle := false
+	flush := func() {
+		if token.Len() == 0 {
+			return
+		}
+		fields = append(fields, token.String())
+		token.Reset()
+	}
+	for i := 0; i < len(command); i++ {
+		ch := command[i]
+		if inSingle {
+			token.WriteByte(ch)
+			if ch == '\'' {
+				inSingle = false
+			}
+			continue
+		}
+		switch ch {
+		case '\'':
+			token.WriteByte(ch)
+			inSingle = true
+		case ' ', '\t', '\n', '\r':
+			flush()
+		default:
+			token.WriteByte(ch)
+		}
+	}
+	flush()
+	return fields
+}
+
+func looksLikeEnvAssignment(token string) bool {
+	eq := strings.IndexByte(token, '=')
+	if eq <= 0 {
 		return false
 	}
-	base := filepath.Base(fields[0])
-	return base == "grok" || strings.HasPrefix(base, "grok-")
+	for _, r := range token[:eq] {
+		switch {
+		case r >= 'A' && r <= 'Z', r >= 'a' && r <= 'z', r >= '0' && r <= '9', r == '_':
+		default:
+			return false
+		}
+	}
+	return true
+}
+
+func isClaudeInputReady(content string) bool {
+	if strings.TrimSpace(content) == "" {
+		return false
+	}
+	// Require all three ready indicators to distinguish from startup/loading.
+	// Header: numeric Claude Code version marker
+	// Composer: empty input line with prompt glyph (spaces/tabs/NBSP only)
+	// Footer: mode indication (bypass permissions or manual mode)
+	return claudeHeaderRe.MatchString(content) &&
+		claudeComposerRe.MatchString(content) &&
+		claudeModeFooterRe.MatchString(content)
 }
 
 func (w *Watcher) activitySignal(agent classifier.Agent, paneContent string, panePID int, processes map[int]processInfo) classifier.ActivitySignal {
@@ -1077,6 +1187,10 @@ func tmuxSubmitDelay(command string) time.Duration {
 		// Large spawn briefs need a settle window before Enter or Grok keeps the draft unsent.
 		return 300 * time.Millisecond
 	}
+	if isClaudeCommand(command) {
+		// Claude needs settle time for initial brief to be fully pasted before submit.
+		return 250 * time.Millisecond
+	}
 	return 120 * time.Millisecond
 }
 
@@ -1086,6 +1200,9 @@ func inputReadyTimeout(command string) time.Duration {
 	}
 	if isCursorAgentCommand(command) {
 		return cursorInputReadyTimeout
+	}
+	if isClaudeCommand(command) {
+		return claudeInputReadyTimeout
 	}
 	if isGrokCommand(command) {
 		return grokInputReadyTimeout
