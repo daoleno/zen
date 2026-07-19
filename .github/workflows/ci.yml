@@ -180,10 +180,9 @@ jobs:
         with:
           path: app/modules/zen-terminal-vt/libs/android
           key: zen-android-ghostty-output-arm64-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('app/modules/zen-terminal-vt/native.lock.json', 'app/modules/zen-terminal-vt/patches/android/**', 'scripts/build-libghostty.sh', 'scripts/verify-libghostty.sh', 'scripts/verify-android-native-symbols.py', 'app/assets/notices/GHOSTTY-MIT.txt') }}
-      - name: Build arm64 Ghostty when cache misses
+      - name: Install Zig when Android Ghostty cache misses
         if: steps.ghostty-output-cache.outputs.cache-hit != 'true'
         env:
-          ZEN_GHOSTTY_CACHE: ${{ runner.temp }}/ghostty
           ZEN_TOOL_CACHE: ${{ runner.temp }}/zen-tools
         run: |
           set -euo pipefail
@@ -230,6 +229,15 @@ jobs:
               sys.exit(f"zig version mismatch after install: got {got!r} want prefix {ver!r}")
           print(f"ok: zig {got}")
           PY
+
+      - name: Build arm64 Ghostty when cache misses
+        if: steps.ghostty-output-cache.outputs.cache-hit != 'true'
+        env:
+          ZEN_GHOSTTY_CACHE: ${{ runner.temp }}/ghostty
+        run: |
+          set -euo pipefail
+          command -v zig
+          zig version
           ./scripts/build-libghostty.sh --abis arm64-v8a
           ./scripts/verify-libghostty.sh --release
       - name: Verify cached or built Android Ghostty output

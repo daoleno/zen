@@ -35,6 +35,14 @@ describe("ordinary CI contract", () => {
     expect(workflow).toContain(
       "./scripts/build-libghostty.sh --abis arm64-v8a",
     );
+    const installZigStep = workflow.indexOf(
+      "- name: Install Zig when Android Ghostty cache misses",
+    );
+    const buildGhosttyStep = workflow.indexOf(
+      "- name: Build arm64 Ghostty when cache misses",
+    );
+    expect(installZigStep).toBeGreaterThan(-1);
+    expect(buildGhosttyStep).toBeGreaterThan(installZigStep);
     expect(workflow).toContain("./scripts/verify-zen-terminal-abi-gradle.sh");
     expect(workflow).toContain(":zen-terminal-vt:assembleDebug");
     expect(workflow).toContain(":app:assembleDebug");
