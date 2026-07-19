@@ -31,7 +31,10 @@ describe("ordinary CI contract", () => {
     expect(workflow).toMatch(
       /android-native:\s*[\s\S]*?name: Android native \(bounded link\)/,
     );
-    expect(workflow).toContain("zen-android-ghostty-output-arm64-");
+    expect(workflow).toContain("zen-android-ghostty-output-v2-arm64-");
+    expect(workflow).toContain(
+      "app/modules/zen-terminal-vt/android/src/main/cpp/ghostty",
+    );
     expect(workflow).toContain(
       "./scripts/build-libghostty.sh --abis arm64-v8a",
     );

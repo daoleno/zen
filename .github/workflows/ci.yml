@@ -178,8 +178,10 @@ jobs:
         id: ghostty-output-cache
         uses: actions/cache@v4
         with:
-          path: app/modules/zen-terminal-vt/libs/android
-          key: zen-android-ghostty-output-arm64-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('app/modules/zen-terminal-vt/native.lock.json', 'app/modules/zen-terminal-vt/patches/android/**', 'scripts/build-libghostty.sh', 'scripts/verify-libghostty.sh', 'scripts/verify-android-native-symbols.py', 'app/assets/notices/GHOSTTY-MIT.txt') }}
+          path: |
+            app/modules/zen-terminal-vt/libs/android
+            app/modules/zen-terminal-vt/android/src/main/cpp/ghostty
+          key: zen-android-ghostty-output-v2-arm64-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('app/modules/zen-terminal-vt/native.lock.json', 'app/modules/zen-terminal-vt/patches/android/**', 'scripts/build-libghostty.sh', 'scripts/verify-libghostty.sh', 'scripts/verify-android-native-symbols.py', 'app/assets/notices/GHOSTTY-MIT.txt') }}
       - name: Install Zig when Android Ghostty cache misses
         if: steps.ghostty-output-cache.outputs.cache-hit != 'true'
         env:
