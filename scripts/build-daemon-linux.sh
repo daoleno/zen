@@ -39,6 +39,8 @@ fi
 
 if [[ -z "$OUT_DIR" ]]; then
   OUT_DIR="$ROOT/dist-download/staging/bin"
+elif [[ "$OUT_DIR" != /* ]]; then
+  OUT_DIR="$ROOT/$OUT_DIR"
 fi
 mkdir -p "$OUT_DIR"
 

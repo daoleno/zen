@@ -33,6 +33,7 @@ describe('release asset workflow contract', () => {
     expect(workflow).toContain('needs: [validate, daemon, android]');
     expect(workflow).toContain("grep -Eq 'ELF 64-bit.*(x86-64|x86_64)'");
     expect(workflow).toContain("grep -Eq 'Mach-O 64-bit.*arm64'");
+    expect(workflow).toContain('--out-dir "$GITHUB_WORKSPACE/dist-download/staging/bin"');
     expect(workflow).toContain('./scripts/stage-release.sh --skip-build --apk "$APK"');
     expect(workflow).toContain('SOURCE_DATE_EPOCH');
   });
