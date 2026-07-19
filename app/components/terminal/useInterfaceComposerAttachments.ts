@@ -1,7 +1,19 @@
-import { useCallback, useState, type SetStateAction } from "react";
+import {
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+  type SetStateAction,
+} from "react";
 import { Alert } from "react-native";
 import type { ConnectionState } from "../../store/agents";
-import { uploadDocumentForServer } from "../../services/uploads";
+import { CurrentAttachmentUpload } from "../../services/currentAttachmentUpload";
+import {
+  createAttachmentUploadOperation,
+  pickUploadDocument,
+  resolveServerUploadTarget,
+  type ActiveAttachmentUpload,
+} from "../../services/uploads";
 import type { ComposerAttachment } from "./InterfaceChatSession";
 
 const MAX_COMPOSER_ATTACHMENTS = 8;
@@ -19,19 +31,62 @@ export function useInterfaceComposerAttachments({
   setAttachments,
   focusComposer,
 }: UseInterfaceComposerAttachmentsInput) {
-  const [uploading, setUploading] = useState(false);
+  const uploadOwnerRef = useRef(new CurrentAttachmentUpload());
+  const selectionGenerationRef = useRef(0);
+  const [selecting, setSelecting] = useState(false);
+  const [activeUpload, setActiveUpload] =
+    useState<ActiveAttachmentUpload | null>(null);
+  const uploading = selecting || activeUpload !== null;
   const canAttach = connectionState === "connected" && !uploading;
+
+  useEffect(() => {
+    setSelecting(false);
+    setActiveUpload(null);
+    return () => {
+      selectionGenerationRef.current += 1;
+      uploadOwnerRef.current.cancel();
+    };
+  }, [serverId]);
 
   const handleUploadAttachment = useCallback(async () => {
     if (!canAttach) {
       return;
     }
-    setUploading(true);
+    const selectionGeneration = selectionGenerationRef.current + 1;
+    selectionGenerationRef.current = selectionGeneration;
+    setSelecting(true);
+    let handle: ReturnType<CurrentAttachmentUpload["start"]> | null = null;
     try {
-      const attachment = await uploadDocumentForServer(serverId);
-      if (!attachment) {
+      const asset = await pickUploadDocument();
+      if (selectionGenerationRef.current !== selectionGeneration || !asset) {
         return;
       }
+      const target = await resolveServerUploadTarget(serverId);
+      if (selectionGenerationRef.current !== selectionGeneration) {
+        return;
+      }
+
+      setSelecting(false);
+      setActiveUpload({ name: asset.name || "upload", progress: null });
+      handle = uploadOwnerRef.current.start(
+        (onProgress) =>
+          createAttachmentUploadOperation(
+            asset,
+            target.serverUrl,
+            target.daemonId,
+            { onProgress },
+          ),
+        (progress) => {
+          setActiveUpload((current) =>
+            current ? { ...current, progress } : current,
+          );
+        },
+      );
+      const attachment = await handle.result;
+      if (!uploadOwnerRef.current.finish(handle)) {
+        return;
+      }
+      setActiveUpload(null);
       setAttachments((current) =>
         [
           ...current,
@@ -43,11 +98,27 @@ export function useInterfaceComposerAttachments({
       );
       focusComposer();
     } catch (err: any) {
+      if (handle && !uploadOwnerRef.current.finish(handle)) {
+        return;
+      }
+      setActiveUpload(null);
       Alert.alert("Upload failed", uploadErrorMessage(err));
     } finally {
-      setUploading(false);
+      if (selectionGenerationRef.current === selectionGeneration) {
+        setSelecting(false);
+      }
     }
   }, [canAttach, focusComposer, serverId, setAttachments]);
+
+  const cancelUpload = useCallback(() => {
+    selectionGenerationRef.current += 1;
+    const cancellationError = uploadOwnerRef.current.cancel();
+    setSelecting(false);
+    setActiveUpload(null);
+    if (cancellationError) {
+      Alert.alert("Cancel failed", uploadErrorMessage(cancellationError));
+    }
+  }, []);
 
   const removeAttachment = useCallback(
     (id: string) => {
@@ -59,7 +130,9 @@ export function useInterfaceComposerAttachments({
   );
 
   return {
+    activeUpload,
     canAttach,
+    cancelUpload,
     handleUploadAttachment,
     removeAttachment,
     uploading,
@@ -68,17 +141,5 @@ export function useInterfaceComposerAttachments({
 
 function uploadErrorMessage(err: any) {
   const message = typeof err?.message === "string" ? err.message.trim() : "";
-  if (/Unsupported file part|Unsupported FormDataPart/i.test(message)) {
-    return [
-      "This build is using a file upload API that cannot read the selected file.",
-      "Restart the app after updating. If this is a custom native build, rebuild it so expo-file-system is included.",
-    ].join("\n\n");
-  }
-  if (/Creating blobs from 'ArrayBuffer'|ArrayBufferView/i.test(message)) {
-    return [
-      "This build cannot create upload blobs from file bytes.",
-      "Restart the app after updating. If this is a custom native build, rebuild it so the new upload path is included.",
-    ].join("\n\n");
-  }
   return message || "Could not upload this file.";
 }

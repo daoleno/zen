@@ -28,6 +28,7 @@ export function useTerminalScreenLocalState() {
     startedAt?: string;
     initialInterfaceRenderMode?: string;
     initialComposerFocus?: string;
+    skillsHandoff?: string;
   }>();
   const agentId = paramString(params.id);
   const serverId = paramString(params.serverId);
@@ -36,6 +37,7 @@ export function useTerminalScreenLocalState() {
   );
   const sessionKey =
     agentId && serverId ? makeSessionKey(serverId, agentId) : null;
+  const routeSkillsHandoffToken = paramRawString(params.skillsHandoff);
   const initialComposerFocusRequested =
     isInterfaceComposerInitialFocusRouteGrant(
       paramRawString(params.initialComposerFocus),
@@ -56,6 +58,14 @@ export function useTerminalScreenLocalState() {
   const [screenFocused, setScreenFocused] = useState(false);
   const [initialComposerFocusGrant, setInitialComposerFocusGrant] =
     useState<InterfaceComposerInitialFocusGrant>(null);
+  const [skillsHandoffGrant, setSkillsHandoffGrant] = useState<{
+    sessionKey: string;
+    token: string;
+  } | null>(() =>
+    sessionKey && routeSkillsHandoffToken
+      ? { sessionKey, token: routeSkillsHandoffToken }
+      : null,
+  );
   const terminalRef = useRef<TerminalSurfaceHandle>(null);
 
   useEffect(() => {
@@ -69,6 +79,21 @@ export function useTerminalScreenLocalState() {
       router.setParams({ initialComposerFocus: "" });
     }
   }, [initialComposerFocusRequested, router, sessionKey]);
+
+  useEffect(() => {
+    if (sessionKey && routeSkillsHandoffToken) {
+      setSkillsHandoffGrant({
+        sessionKey,
+        token: routeSkillsHandoffToken,
+      });
+      router.setParams({ skillsHandoff: "" });
+    }
+  }, [routeSkillsHandoffToken, router, sessionKey]);
+
+  const skillsHandoffToken =
+    skillsHandoffGrant?.sessionKey === sessionKey
+      ? skillsHandoffGrant.token
+      : undefined;
 
   const consumeInitialComposerFocus = useCallback(() => {
     router.setParams({ initialComposerFocus: "" });
@@ -101,6 +126,7 @@ export function useTerminalScreenLocalState() {
     screenFocused,
     setScreenFocused,
     terminalRef,
+    skillsHandoffToken,
   };
 }
 

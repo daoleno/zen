@@ -192,6 +192,79 @@ describe("generic WebSocket live boundary", () => {
     client.disconnectAll();
   });
 
+  test("Skills search cancellation is small and generation-correlated", async () => {
+    const client = new MultiServerWebSocketClient();
+    const socket = await connectClient(client);
+    socket.open();
+
+    const pending = client.searchSkillsCatalog(server.id, {
+      query: "react",
+      generation: 7,
+    });
+    const searchFrame = JSON.parse(socket.sent[0]!);
+    expect(client.cancelSkillsCatalogSearch(server.id, { generation: 7 })).toBe(true);
+    expect(JSON.parse(socket.sent[1]!)).toMatchObject({
+      type: "skills_search_cancel",
+      generation: 7,
+    });
+    socket.receive({
+      type: "skills_search_error",
+      request_id: searchFrame.request_id,
+      generation: 7,
+      code: "canceled",
+      message: "The Skills search was canceled.",
+    });
+    await expect(pending).rejects.toThrow("canceled");
+    client.disconnectAll();
+  });
+
+  test("Skills install response rejects a same-name different repository and old unbound daemon", async () => {
+    const client = new MultiServerWebSocketClient();
+    const socket = await connectClient(client);
+    socket.open();
+    const options = {
+      operation: "install" as const,
+      skillId: "acme/skills/useful",
+      source: "acme/skills",
+      skillName: "useful",
+      scope: "global" as const,
+      agents: ["codex" as const],
+    };
+
+    const mismatched = client.buildSkillsCommand(server.id, options);
+    const mismatchedRequest = JSON.parse(socket.sent.at(-1)!);
+    socket.receive({
+      type: "skills_command",
+      request_id: mismatchedRequest.request_id,
+      command: {
+        operation: "install",
+        command: "npx skills add https://github.com/other/skills --skill useful --global --agent codex --yes",
+        catalog_id: "other/skills/useful",
+        source: "other/skills",
+        skill_name: "useful",
+        scope: "global",
+        agents: ["codex"],
+      },
+    });
+    await expect(mismatched).rejects.toThrow("different request");
+
+    const unbound = client.buildSkillsCommand(server.id, options);
+    const unboundRequest = JSON.parse(socket.sent.at(-1)!);
+    socket.receive({
+      type: "skills_command",
+      request_id: unboundRequest.request_id,
+      command: {
+        operation: "install",
+        command: "npx skills add https://github.com/acme/skills --skill useful --global --agent codex --yes",
+        skill_name: "useful",
+        scope: "global",
+        agents: ["codex"],
+      },
+    });
+    await expect(unbound).rejects.toThrow("unbound Skills install command");
+    client.disconnectAll();
+  });
+
   test("structured Chat writes once now with minimal correlated responses", async () => {
     const client = new MultiServerWebSocketClient();
     const socket = await connectClient(client);
@@ -642,6 +715,170 @@ describe("executor switch transport", () => {
     });
 
     await expect(pending).rejects.toThrow("unknown executor: missing");
+    client.disconnectAll();
+  });
+});
+
+describe("Skills management transport", () => {
+  test("inventory is request-correlated and generation-safe", async () => {
+    const client = new MultiServerWebSocketClient();
+    const socket = await connectClient(client);
+    socket.open();
+
+    const pending = client.getSkillsInventory(server.id, {
+      cwd: "/workspace/project",
+      generation: 4,
+    });
+    const outbound = JSON.parse(socket.sent.at(-1)!);
+    expect(outbound).toMatchObject({
+      type: "skills_inventory",
+      cwd: "/workspace/project",
+      generation: 4,
+    });
+    expect(typeof outbound.request_id).toBe("string");
+
+    socket.receive({
+      type: "skills_inventory",
+      request_id: "other-request",
+      generation: 4,
+      inventory: {},
+    });
+    socket.receive({
+      type: "skills_inventory",
+      request_id: outbound.request_id,
+      generation: 4,
+      inventory: {
+        generated_at: "2026-07-19T00:00:00Z",
+        cwd: "/workspace/project",
+        skills: [],
+        agents: [],
+        warnings: [],
+      },
+    });
+
+    await expect(pending).resolves.toEqual({
+      generation: 4,
+      inventory: {
+        generatedAt: "2026-07-19T00:00:00Z",
+        cwd: "/workspace/project",
+        skills: [],
+        agents: [],
+        warnings: [],
+      },
+    });
+    client.disconnectAll();
+  });
+
+  test("a mismatched search generation is rejected without accepting results", async () => {
+    const client = new MultiServerWebSocketClient();
+    const socket = await connectClient(client);
+    socket.open();
+
+    const pending = client.searchSkillsCatalog(server.id, {
+      query: "react native",
+      limit: 20,
+      generation: 8,
+    });
+    const outbound = JSON.parse(socket.sent.at(-1)!);
+    expect(outbound).toMatchObject({
+      type: "skills_search",
+      prompt: "react native",
+      limit: 20,
+      generation: 8,
+    });
+
+    socket.receive({
+      type: "skills_search",
+      request_id: outbound.request_id,
+      generation: 7,
+      result: { query: "react native", skills: [] },
+    });
+
+    await expect(pending).rejects.toThrow("stale Skills search generation");
+    client.disconnectAll();
+  });
+
+  test("command construction sends structured fields and accepts one exact official command", async () => {
+    const client = new MultiServerWebSocketClient();
+    const socket = await connectClient(client);
+    socket.open();
+
+    const pending = client.buildSkillsCommand(server.id, {
+      operation: "install",
+      skillId: "acme/skills/useful",
+      source: "acme/skills",
+      skillName: "useful",
+      scope: "global",
+      agents: ["codex", "cursor"],
+    });
+    const outbound = JSON.parse(socket.sent.at(-1)!);
+    expect(outbound).toMatchObject({
+      type: "skills_command",
+      operation: "install",
+      skill_id: "acme/skills/useful",
+      source: "acme/skills",
+      skill_name: "useful",
+      scope: "global",
+      agents: ["codex", "cursor"],
+    });
+
+    const command =
+      "npx skills add https://github.com/acme/skills --skill useful --global --agent codex --agent cursor --yes";
+    socket.receive({
+      type: "skills_command",
+      request_id: outbound.request_id,
+      command: {
+        operation: "install",
+        command,
+        catalog_id: "acme/skills/useful",
+        source: "acme/skills",
+        skill_name: "useful",
+        scope: "global",
+        agents: ["codex", "cursor"],
+      },
+    });
+
+    await expect(pending).resolves.toEqual({
+      operation: "install",
+      command,
+      catalogId: "acme/skills/useful",
+      source: "acme/skills",
+      skillName: "useful",
+      scope: "global",
+      agents: ["codex", "cursor"],
+    });
+    client.disconnectAll();
+  });
+
+  test("a valid command for different structured targets is rejected", async () => {
+    const client = new MultiServerWebSocketClient();
+    const socket = await connectClient(client);
+    socket.open();
+
+    const pending = client.buildSkillsCommand(server.id, {
+      operation: "remove",
+      skillId: "0123456789abcdef01234567",
+      skillName: "useful",
+      scope: "global",
+      agents: ["codex"],
+    });
+    const outbound = JSON.parse(socket.sent.at(-1)!);
+    socket.receive({
+      type: "skills_command",
+      request_id: outbound.request_id,
+      command: {
+        operation: "remove",
+        command:
+          "npx skills remove other-skill --global --agent codex --yes",
+        skill_name: "other-skill",
+        scope: "global",
+        agents: ["codex"],
+      },
+    });
+
+    await expect(pending).rejects.toThrow(
+      "Skills command for a different request",
+    );
     client.disconnectAll();
   });
 });

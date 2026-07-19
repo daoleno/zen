@@ -5,6 +5,7 @@ import type {
   TerminalThemePalette,
 } from "../../constants/terminalThemes";
 import type { CodexSlashCommand } from "../../services/websocket";
+import type { ActiveAttachmentUpload } from "../../services/uploads";
 import type { ComposerAttachment } from "./InterfaceChatSession";
 import type { InterfaceComposerPresentation } from "./InterfaceChatSurfaceModel";
 import { InterfaceChatComposer } from "./InterfaceChatComposer";
@@ -16,6 +17,7 @@ interface InterfaceChatComposerSectionProps {
   focused: boolean;
   canAttach: boolean;
   uploading: boolean;
+  activeUpload: ActiveAttachmentUpload | null;
   sending: boolean;
   operationalError?: string;
   attachments: ComposerAttachment[];
@@ -28,6 +30,7 @@ interface InterfaceChatComposerSectionProps {
   onRemoveAttachment(id: string): void;
   onDraftChange(value: string): void;
   onUploadPress(): void;
+  onCancelUpload(): void;
   onInputFocus(): void;
   onInputBlur(): void;
   onSendPress(): void;
@@ -41,6 +44,7 @@ export function InterfaceChatComposerSection({
   focused,
   canAttach,
   uploading,
+  activeUpload,
   sending,
   operationalError,
   attachments,
@@ -53,6 +57,7 @@ export function InterfaceChatComposerSection({
   onRemoveAttachment,
   onDraftChange,
   onUploadPress,
+  onCancelUpload,
   onInputFocus,
   onInputBlur,
   onSendPress,
@@ -67,6 +72,7 @@ export function InterfaceChatComposerSection({
       focused={focused}
       canAttach={canAttach}
       uploading={uploading}
+      activeUpload={activeUpload}
       sendEnabled={presentation.sendEnabled}
       sending={sending}
       operationalError={operationalError}
@@ -96,6 +102,7 @@ export function InterfaceChatComposerSection({
       onRemoveAttachment={onRemoveAttachment}
       onDraftChange={onDraftChange}
       onUploadPress={onUploadPress}
+      onCancelUpload={onCancelUpload}
       onInputFocus={onInputFocus}
       onInputBlur={onInputBlur}
       onSendPress={onSendPress}

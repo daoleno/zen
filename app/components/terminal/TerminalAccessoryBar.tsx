@@ -1,20 +1,16 @@
 import React, { useRef } from "react";
-import {
-  Alert,
-  Keyboard,
-  StyleSheet,
-  View,
-} from "react-native";
-import * as DocumentPicker from "expo-document-picker";
+import { Alert, Keyboard, StyleSheet, View } from "react-native";
 import * as Haptics from "expo-haptics";
 import {
   buildTerminalChrome,
   type TerminalThemePalette,
 } from "../../constants/terminalThemes";
+import { CurrentAttachmentUpload } from "../../services/currentAttachmentUpload";
 import {
-  buildUploadFormData,
-  buildUploadHeaders,
   buildUploadUrl,
+  createAttachmentUploadOperation,
+  pickUploadDocument,
+  type ActiveAttachmentUpload,
 } from "../../services/uploads";
 import { TerminalAccessoryControls } from "./TerminalAccessoryControls";
 import type { TerminalSurfaceHandle } from "./TerminalSurface";
@@ -26,6 +22,7 @@ const REPEAT_RATE_MS = 80;
 
 interface TerminalAccessoryBarProps {
   terminalRef: React.RefObject<TerminalSurfaceHandle | null>;
+  uploadOwnerKey: string | null;
   serverUrl: string;
   daemonId: string;
   theme: TerminalThemePalette;
@@ -36,6 +33,7 @@ interface TerminalAccessoryBarProps {
 
 export function TerminalAccessoryBar({
   terminalRef,
+  uploadOwnerKey,
   serverUrl,
   daemonId,
   theme,
@@ -43,14 +41,26 @@ export function TerminalAccessoryBar({
   ctrlArmed,
   onCtrlArmedChange,
 }: TerminalAccessoryBarProps) {
-  const uploadEnabled = !!buildUploadUrl(serverUrl) && !!daemonId.trim();
-  const chrome = React.useMemo(
-    () => buildTerminalChrome(theme),
-    [theme],
-  );
+  const uploadConfigured = !!buildUploadUrl(serverUrl) && !!daemonId.trim();
+  const chrome = React.useMemo(() => buildTerminalChrome(theme), [theme]);
 
   const repeatDelayRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const repeatIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const uploadOwnerRef = useRef(new CurrentAttachmentUpload());
+  const selectionGenerationRef = useRef(0);
+  const [selecting, setSelecting] = React.useState(false);
+  const [activeUpload, setActiveUpload] =
+    React.useState<ActiveAttachmentUpload | null>(null);
+  const uploadEnabled = uploadConfigured && !selecting && !activeUpload;
+
+  React.useEffect(() => {
+    setSelecting(false);
+    setActiveUpload(null);
+    return () => {
+      selectionGenerationRef.current += 1;
+      uploadOwnerRef.current.cancel();
+    };
+  }, [daemonId, serverUrl, uploadOwnerKey]);
 
   const sendInput = (data: string) => {
     terminalRef.current?.sendInput(data);
@@ -100,42 +110,65 @@ export function TerminalAccessoryBar({
   };
 
   const handleFilePick = async () => {
+    if (!uploadEnabled) {
+      return;
+    }
+    const selectionGeneration = selectionGenerationRef.current + 1;
+    selectionGenerationRef.current = selectionGeneration;
+    setSelecting(true);
+    let handle: ReturnType<CurrentAttachmentUpload["start"]> | null = null;
     try {
-      const result = await DocumentPicker.getDocumentAsync({
-        type: ["*/*"],
-        copyToCacheDirectory: true,
-      });
-      if (result.canceled || !result.assets?.length) return;
-
-      const asset = result.assets[0];
-      const uploadUrl = buildUploadUrl(serverUrl);
-      if (!uploadUrl) {
-        throw new Error("Server URL is not configured");
+      const asset = await pickUploadDocument();
+      if (selectionGenerationRef.current !== selectionGeneration || !asset) {
+        return;
       }
 
-      const formData = buildUploadFormData(asset);
-
-      const response = await fetch(uploadUrl, {
-        method: "POST",
-        headers: await buildUploadHeaders(daemonId),
-        body: formData,
-      });
-      if (!response.ok) {
-        const body = await response.text().catch(() => "");
-        throw new Error(body.trim() || `Upload failed (${response.status})`);
+      setSelecting(false);
+      setActiveUpload({ name: asset.name || "upload", progress: null });
+      handle = uploadOwnerRef.current.start(
+        (onProgress) =>
+          createAttachmentUploadOperation(asset, serverUrl, daemonId, {
+            onProgress,
+          }),
+        (progress) => {
+          setActiveUpload((current) =>
+            current ? { ...current, progress } : current,
+          );
+        },
+      );
+      const attachment = await handle.result;
+      if (!uploadOwnerRef.current.finish(handle)) {
+        return;
       }
-
-      const payload = (await response.json()) as { path?: string };
-      if (!payload.path) {
-        throw new Error("Upload response missing file path");
-      }
+      setActiveUpload(null);
 
       onCtrlArmedChange(false);
       terminalRef.current?.resumeInput();
-      sendInput(appendShellPath("", payload.path));
+      sendInput(appendShellPath("", attachment.path));
       await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
     } catch (err: any) {
+      if (handle && !uploadOwnerRef.current.finish(handle)) {
+        return;
+      }
+      setActiveUpload(null);
       Alert.alert("Error", err?.message || "Failed to upload file");
+    } finally {
+      if (selectionGenerationRef.current === selectionGeneration) {
+        setSelecting(false);
+      }
+    }
+  };
+
+  const handleCancelUpload = () => {
+    selectionGenerationRef.current += 1;
+    const cancellationError = uploadOwnerRef.current.cancel();
+    setSelecting(false);
+    setActiveUpload(null);
+    if (cancellationError) {
+      Alert.alert(
+        "Cancel failed",
+        cancellationError.message || "Could not cancel this upload",
+      );
     }
   };
 
@@ -151,10 +184,12 @@ export function TerminalAccessoryBar({
     >
       <TerminalAccessoryControls
         uploadEnabled={uploadEnabled}
+        activeUpload={activeUpload}
         keyboardVisible={keyboardVisible}
         ctrlArmed={ctrlArmed}
         chrome={chrome}
         onUploadPress={() => void handleFilePick()}
+        onCancelUpload={handleCancelUpload}
         onKeyboardToggle={handleKeyboardToggle}
         onCtrlToggle={handleCtrlToggle}
         onHoldPressIn={handleHoldPressIn}

@@ -1,6 +1,7 @@
 import React from "react";
 import { ScrollView, StyleSheet, View } from "react-native";
 import type { TerminalThemeChrome } from "../../constants/terminalThemes";
+import type { ActiveAttachmentUpload } from "../../services/uploads";
 import {
   InterfaceComposerAttachmentChip,
   type InterfaceComposerAttachment,
@@ -11,18 +12,20 @@ export type { InterfaceComposerAttachment } from "./InterfaceComposerAttachmentC
 
 interface InterfaceComposerAttachmentRailProps {
   attachments: InterfaceComposerAttachment[];
-  uploading: boolean;
+  activeUpload: ActiveAttachmentUpload | null;
   chrome: TerminalThemeChrome;
   onRemoveAttachment(id: string): void;
+  onCancelUpload(): void;
 }
 
 export function InterfaceComposerAttachmentRail({
   attachments,
-  uploading,
+  activeUpload,
   chrome,
   onRemoveAttachment,
+  onCancelUpload,
 }: InterfaceComposerAttachmentRailProps) {
-  if (attachments.length === 0 && !uploading) {
+  if (attachments.length === 0 && !activeUpload) {
     return null;
   }
 
@@ -42,7 +45,13 @@ export function InterfaceComposerAttachmentRail({
             onRemove={onRemoveAttachment}
           />
         ))}
-        {uploading ? <InterfaceComposerUploadingChip chrome={chrome} /> : null}
+        {activeUpload ? (
+          <InterfaceComposerUploadingChip
+            upload={activeUpload}
+            chrome={chrome}
+            onCancel={onCancelUpload}
+          />
+        ) : null}
       </ScrollView>
     </View>
   );

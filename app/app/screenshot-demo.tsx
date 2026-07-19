@@ -340,6 +340,7 @@ function ChatDemo() {
               focused={focused}
               canAttach
               uploading={false}
+              activeUpload={null}
               sendEnabled={hasContent}
               sending={false}
               sendLabel={working ? "Queue message" : "Send message"}
@@ -370,6 +371,7 @@ function ChatDemo() {
               onRemoveAttachment={NOOP}
               onDraftChange={setDraft}
               onUploadPress={NOOP}
+              onCancelUpload={NOOP}
               onInputFocus={() => setFocused(true)}
               onInputBlur={() => setFocused(false)}
               onSendPress={() => setDraft("")}
@@ -459,6 +461,7 @@ function BrainDemo() {
               focused={focused}
               canAttach
               uploading={false}
+              activeUpload={null}
               sendEnabled={hasContent}
               sending={false}
               sendLabel="Queue message"
@@ -487,6 +490,7 @@ function BrainDemo() {
               onRemoveAttachment={NOOP}
               onDraftChange={setDraft}
               onUploadPress={NOOP}
+              onCancelUpload={NOOP}
               onInputFocus={() => setFocused(true)}
               onInputBlur={() => setFocused(false)}
               onSendPress={() => setDraft("")}

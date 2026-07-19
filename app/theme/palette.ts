@@ -8,6 +8,8 @@ export interface AppColors {
   accent: string;
   accentSoft: string;
   accentStrong: string;
+  /** Contrast semantic for the mark's light-colored ribbon/detail. */
+  logoDetail: string;
   statusFailed: string;
   statusBlocked: string;
   statusUnknown: string;

@@ -18,6 +18,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/google/uuid"
 
@@ -26,6 +28,7 @@ import (
 	"github.com/daoleno/zen/daemon/calendar"
 	"github.com/daoleno/zen/daemon/classifier"
 	"github.com/daoleno/zen/daemon/push"
+	skillmgmt "github.com/daoleno/zen/daemon/skills"
 	"github.com/daoleno/zen/daemon/stats"
 	"github.com/daoleno/zen/daemon/terminal"
 	"github.com/daoleno/zen/daemon/watcher"
@@ -37,10 +40,26 @@ import (
 const maxCodexAssetBytes = 6 << 20
 const codexConversationSubscriptionInterval = 220 * time.Millisecond
 const defaultScheduledResultLimit = 120
-const maxUploadFileBytes int64 = 32 << 20
-const maxUploadRequestBytes int64 = maxUploadFileBytes + (1 << 20)
-const maxUploadStoreBytes int64 = 512 << 20
+const maxUploadFileBytes int64 = 2 << 30
+const maxUploadStoreBytes int64 = 8 << 30
+const uploadNameHeader = "X-Zen-Upload-Name"
+const maxUploadNameBytes = 1024
+const maxUploadNameHeaderBytes = maxUploadNameBytes * 3
 const uploadRetention = 7 * 24 * time.Hour
+
+type uploadLimits struct {
+	fileBytes  int64
+	storeBytes int64
+	retention  time.Duration
+}
+
+func productionUploadLimits() uploadLimits {
+	return uploadLimits{
+		fileBytes:  maxUploadFileBytes,
+		storeBytes: maxUploadStoreBytes,
+		retention:  uploadRetention,
+	}
+}
 
 var upgrader = websocket.Upgrader{
 	CheckOrigin: func(r *http.Request) bool { return true },
@@ -78,12 +97,15 @@ type Server struct {
 	calendarSubID int
 	calendarSub   <-chan calendar.Event
 
-	clients   map[*websocket.Conn]bool
-	active    map[*websocket.Conn]string
-	writes    map[*websocket.Conn]*sync.Mutex
-	codexSubs map[*websocket.Conn]map[string]codexConversationSubscription
-	brainSent map[string]struct{}
-	mu        sync.Mutex
+	clients           map[*websocket.Conn]bool
+	active            map[*websocket.Conn]string
+	writes            map[*websocket.Conn]*sync.Mutex
+	codexSubs         map[*websocket.Conn]map[string]codexConversationSubscription
+	brainSent         map[string]struct{}
+	skillsSearcher    *skillmgmt.Searcher
+	skillsInventories map[*websocket.Conn]skillsInventoryRequest
+	skillsSearches    map[*websocket.Conn]skillsSearchRequest
+	mu                sync.Mutex
 }
 
 func (s *Server) SetCalendar(store *calendar.Store, scheduler *calendar.Scheduler) {
@@ -105,20 +127,23 @@ func New(authManager *auth.Manager, w *watcher.Watcher, pusher *push.Client, sc 
 		uploadDir = filepath.Join(authManager.StorageDir(), "uploads")
 	}
 	srv := &Server{
-		auth:      authManager,
-		watcher:   w,
-		terminal:  terminal.NewManager(&terminal.TmuxBackend{}),
-		pusher:    pusher,
-		stats:     sc,
-		work:      workStore,
-		execs:     execs,
-		brain:     brainService,
-		uploadDir: uploadDir,
-		clients:   make(map[*websocket.Conn]bool),
-		active:    make(map[*websocket.Conn]string),
-		writes:    make(map[*websocket.Conn]*sync.Mutex),
-		codexSubs: make(map[*websocket.Conn]map[string]codexConversationSubscription),
-		brainSent: make(map[string]struct{}),
+		auth:              authManager,
+		watcher:           w,
+		terminal:          terminal.NewManager(&terminal.TmuxBackend{}),
+		pusher:            pusher,
+		stats:             sc,
+		work:              workStore,
+		execs:             execs,
+		brain:             brainService,
+		uploadDir:         uploadDir,
+		clients:           make(map[*websocket.Conn]bool),
+		active:            make(map[*websocket.Conn]string),
+		writes:            make(map[*websocket.Conn]*sync.Mutex),
+		codexSubs:         make(map[*websocket.Conn]map[string]codexConversationSubscription),
+		brainSent:         make(map[string]struct{}),
+		skillsSearcher:    skillmgmt.NewSearcher(),
+		skillsInventories: make(map[*websocket.Conn]skillsInventoryRequest),
+		skillsSearches:    make(map[*websocket.Conn]skillsSearchRequest),
 	}
 	srv.lifecycle = newDelegatedLifecycleManager(
 		func(event brain.HeartbeatEvent) (bool, error) {
@@ -178,6 +203,14 @@ type clientMessage struct {
 	CalendarItem         *calendar.Item         `json:"calendar_item"`
 	Revision             int64                  `json:"revision"`
 	ConversationScopeKey string                 `json:"conversation_scope_key"`
+	Generation           int64                  `json:"generation"`
+	Limit                int                    `json:"limit"`
+	Operation            string                 `json:"operation"`
+	Scope                string                 `json:"scope"`
+	Agents               []string               `json:"agents"`
+	SkillID              string                 `json:"skill_id"`
+	Source               string                 `json:"source"`
+	SkillName            string                 `json:"skill_name"`
 }
 
 // Run starts the HTTP server and event broadcaster.
@@ -276,12 +309,24 @@ func (s *Server) handleWS(w http.ResponseWriter, r *http.Request) {
 
 	s.mu.Lock()
 	s.cancelCodexSubscriptionsLocked(conn)
+	s.cancelSkillsRequestsLocked(conn)
 	delete(s.clients, conn)
 	delete(s.active, conn)
 	delete(s.writes, conn)
 	delete(s.codexSubs, conn)
 	s.mu.Unlock()
 	log.Printf("client disconnected (%d remaining)", len(s.clients))
+}
+
+func (s *Server) cancelSkillsRequestsLocked(conn *websocket.Conn) {
+	if search, ok := s.skillsSearches[conn]; ok {
+		search.cancel()
+		delete(s.skillsSearches, conn)
+	}
+	if inventory, ok := s.skillsInventories[conn]; ok {
+		inventory.cancel()
+		delete(s.skillsInventories, conn)
+	}
 }
 
 func (s *Server) handlePair(w http.ResponseWriter, r *http.Request) {
@@ -546,6 +591,18 @@ func (s *Server) handleClientMessage(conn *websocket.Conn, msg []byte) {
 
 	case "codex_skills":
 		s.handleCodexSkills(conn, raw)
+
+	case "skills_inventory":
+		s.handleSkillsInventory(conn, raw)
+
+	case "skills_search":
+		s.handleSkillsSearch(conn, raw)
+
+	case "skills_search_cancel":
+		s.handleSkillsSearchCancel(conn, raw)
+
+	case "skills_command":
+		s.handleSkillsCommand(conn, raw)
 
 	case "codex_terminal_snapshot":
 		text, err := s.watcher.CapturePaneContent(raw.TargetID)
@@ -2200,6 +2257,10 @@ func (s *Server) broadcastJSON(v any) {
 }
 
 func (s *Server) handleUpload(w http.ResponseWriter, r *http.Request) {
+	s.handleUploadWithLimits(w, r, productionUploadLimits())
+}
+
+func (s *Server) handleUploadWithLimits(w http.ResponseWriter, r *http.Request, limits uploadLimits) {
 	if _, ok := s.authenticateRequest(w, r, "zen-upload"); !ok {
 		return
 	}
@@ -2207,12 +2268,20 @@ func (s *Server) handleUpload(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-	r.Body = http.MaxBytesReader(w, r.Body, maxUploadRequestBytes)
-	reader, err := r.MultipartReader()
+	originalName, err := decodeUploadNameHeader(r.Header.Values(uploadNameHeader))
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
+	if strings.TrimSpace(r.Header.Get("Content-Type")) == "" {
+		http.Error(w, "Content-Type header is required", http.StatusBadRequest)
+		return
+	}
+	if r.ContentLength > limits.fileBytes {
+		writeUploadTooLarge(w, limits)
+		return
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, limits.fileBytes)
 	if strings.TrimSpace(s.uploadDir) == "" {
 		http.Error(w, "upload storage unavailable", http.StatusServiceUnavailable)
 		return
@@ -2224,68 +2293,72 @@ func (s *Server) handleUpload(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	storedBytes, err := cleanupUploadStore(s.uploadDir, time.Now())
+	storedBytes, err := cleanupUploadStore(s.uploadDir, time.Now(), limits)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	remainingStore := maxUploadStoreBytes - storedBytes
+	remainingStore := limits.storeBytes - storedBytes
 	if remainingStore <= 0 {
 		http.Error(w, "upload storage capacity reached; remove old uploads or wait for retention cleanup", http.StatusInsufficientStorage)
 		return
 	}
-	copyLimit := min(maxUploadFileBytes, remainingStore)
-
-	for {
-		part, partErr := reader.NextPart()
-		if errors.Is(partErr, io.EOF) {
-			http.Error(w, "multipart field file is required", http.StatusBadRequest)
-			return
-		}
-		if partErr != nil {
-			writeUploadReadError(w, partErr)
-			return
-		}
-		if part.FormName() != "file" || part.FileName() == "" {
-			_ = part.Close()
-			continue
-		}
-
-		originalName := part.FileName()
-		name := uuid.New().String() + safeUploadExtension(originalName)
-		path := filepath.Join(s.uploadDir, name)
-		dst, createErr := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
-		if createErr != nil {
-			_ = part.Close()
-			http.Error(w, createErr.Error(), http.StatusInternalServerError)
-			return
-		}
-		written, copyErr := io.Copy(dst, io.LimitReader(part, copyLimit+1))
-		closeErr := dst.Close()
-		_ = part.Close()
-		if copyErr != nil {
-			_ = os.Remove(path)
-			writeUploadReadError(w, copyErr)
-			return
-		}
-		if closeErr != nil {
-			_ = os.Remove(path)
-			http.Error(w, closeErr.Error(), http.StatusInternalServerError)
-			return
-		}
-		if written > copyLimit {
-			_ = os.Remove(path)
-			http.Error(w, "upload exceeds the 32 MiB file limit or remaining upload capacity", http.StatusRequestEntityTooLarge)
-			return
-		}
-
-		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(map[string]string{"path": path, "name": originalName})
+	if r.ContentLength >= 0 && r.ContentLength > remainingStore {
+		http.Error(w, "upload exceeds remaining storage capacity; remove old uploads or wait for retention cleanup", http.StatusInsufficientStorage)
 		return
 	}
+	copyLimit := min(limits.fileBytes, remainingStore)
+	name := uuid.New().String() + safeUploadExtension(originalName)
+	path := filepath.Join(s.uploadDir, name)
+	dst, createErr := os.CreateTemp(s.uploadDir, ".upload-*.partial")
+	if createErr != nil {
+		http.Error(w, createErr.Error(), http.StatusInternalServerError)
+		return
+	}
+	partialPath := dst.Name()
+	keepPartial := true
+	defer func() {
+		if keepPartial {
+			_ = os.Remove(partialPath)
+		}
+	}()
+	written, copyErr := io.Copy(dst, io.LimitReader(r.Body, copyLimit+1))
+	closeErr := dst.Close()
+	if copyErr != nil {
+		writeUploadReadError(w, copyErr, limits)
+		return
+	}
+	if closeErr != nil {
+		http.Error(w, closeErr.Error(), http.StatusInternalServerError)
+		return
+	}
+	if written > copyLimit {
+		if remainingStore < limits.fileBytes {
+			http.Error(w, "upload exceeds remaining storage capacity; remove old uploads or wait for retention cleanup", http.StatusInsufficientStorage)
+			return
+		}
+		writeUploadTooLarge(w, limits)
+		return
+	}
+	if r.ContentLength >= 0 && written != r.ContentLength {
+		http.Error(w, "upload body does not match Content-Length", http.StatusBadRequest)
+		return
+	}
+	if contextErr := r.Context().Err(); contextErr != nil {
+		writeUploadReadError(w, contextErr, limits)
+		return
+	}
+	if renameErr := os.Rename(partialPath, path); renameErr != nil {
+		http.Error(w, renameErr.Error(), http.StatusInternalServerError)
+		return
+	}
+	keepPartial = false
+
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]string{"path": path, "name": originalName})
 }
 
-func cleanupUploadStore(dir string, now time.Time) (int64, error) {
+func cleanupUploadStore(dir string, now time.Time, limits uploadLimits) (int64, error) {
 	entries, err := os.ReadDir(dir)
 	if os.IsNotExist(err) {
 		return 0, nil
@@ -2303,14 +2376,20 @@ func cleanupUploadStore(dir string, now time.Time) (int64, error) {
 			continue
 		}
 		path := filepath.Join(dir, entry.Name())
-		if now.Sub(info.ModTime()) >= uploadRetention {
+		if strings.HasPrefix(entry.Name(), ".upload-") && strings.HasSuffix(entry.Name(), ".partial") {
+			if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+				return 0, fmt.Errorf("remove partial upload %s: %w", entry.Name(), err)
+			}
+			continue
+		}
+		if now.Sub(info.ModTime()) >= limits.retention {
 			if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
 				return 0, fmt.Errorf("remove expired upload %s: %w", entry.Name(), err)
 			}
 			continue
 		}
-		if info.Size() > 0 && total > maxUploadStoreBytes-info.Size() {
-			return maxUploadStoreBytes, nil
+		if info.Size() > 0 && total > limits.storeBytes-info.Size() {
+			return limits.storeBytes, nil
 		}
 		total += max(info.Size(), 0)
 	}
@@ -2330,13 +2409,67 @@ func safeUploadExtension(name string) string {
 	return strings.ToLower(ext)
 }
 
-func writeUploadReadError(w http.ResponseWriter, err error) {
+func decodeUploadNameHeader(values []string) (string, error) {
+	if len(values) == 0 {
+		return "", errors.New("upload filename header is required")
+	}
+	if len(values) != 1 {
+		return "", errors.New("upload filename header must appear once")
+	}
+	encoded := values[0]
+	if len(encoded) > maxUploadNameHeaderBytes {
+		return "", errors.New("upload filename header is too long")
+	}
+	for index := range encoded {
+		if encoded[index] < 0x21 || encoded[index] > 0x7e {
+			return "", errors.New("upload filename header is invalid")
+		}
+	}
+	decoded, err := url.PathUnescape(encoded)
+	if err != nil || !utf8.ValidString(decoded) {
+		return "", errors.New("upload filename header is invalid")
+	}
+	if len(decoded) > maxUploadNameBytes {
+		return "", errors.New("upload filename header is too long")
+	}
+	if strings.TrimSpace(decoded) == "" {
+		return "", errors.New("upload filename header is invalid")
+	}
+	for _, char := range decoded {
+		if unicode.IsControl(char) {
+			return "", errors.New("upload filename header is invalid")
+		}
+	}
+	return decoded, nil
+}
+
+func writeUploadReadError(w http.ResponseWriter, err error, limits uploadLimits) {
 	var maxBytesError *http.MaxBytesError
 	if errors.As(err, &maxBytesError) {
-		http.Error(w, "upload request exceeds the 33 MiB request limit", http.StatusRequestEntityTooLarge)
+		writeUploadTooLarge(w, limits)
 		return
 	}
 	http.Error(w, err.Error(), http.StatusBadRequest)
+}
+
+func writeUploadTooLarge(w http.ResponseWriter, limits uploadLimits) {
+	http.Error(w, fmt.Sprintf("upload exceeds the %s file limit", formatUploadBytes(limits.fileBytes)), http.StatusRequestEntityTooLarge)
+}
+
+func formatUploadBytes(size int64) string {
+	for _, unit := range []struct {
+		bytes int64
+		name  string
+	}{
+		{bytes: 1 << 30, name: "GiB"},
+		{bytes: 1 << 20, name: "MiB"},
+		{bytes: 1 << 10, name: "KiB"},
+	} {
+		if size >= unit.bytes && size%unit.bytes == 0 {
+			return fmt.Sprintf("%d %s", size/unit.bytes, unit.name)
+		}
+	}
+	return fmt.Sprintf("%d bytes", size)
 }
 
 func (s *Server) authenticateRequest(w http.ResponseWriter, r *http.Request, purpose string) (*auth.TrustedDevice, bool) {

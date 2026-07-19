@@ -673,6 +673,13 @@ const AppNavigator = memo(function AppNavigator({
         }}
       />
       <Stack.Screen
+        name="skills"
+        options={{
+          title: "Skills",
+          headerLeft: () => <SecondaryBackButton />,
+        }}
+      />
+      <Stack.Screen
         name="stats"
         options={{
           title: "Stats",

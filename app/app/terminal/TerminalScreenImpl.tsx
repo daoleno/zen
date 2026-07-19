@@ -36,6 +36,7 @@ export default function TerminalScreen() {
     screenFocused,
     setScreenFocused,
     terminalRef,
+    skillsHandoffToken,
   } = useTerminalScreenLocalState();
   const chromeLayout = useTerminalScreenChrome({ sessionKey });
   const { closeMenu, menuPosition, menuVisible } = chromeLayout;
@@ -194,6 +195,7 @@ export default function TerminalScreen() {
       setRenameVisible,
       showInterfaceChat,
       onConsumeInitialComposerFocus: consumeInitialComposerFocus,
+      skillsHandoffToken,
       navigationActions,
       terminalRef,
       terminalTheme,

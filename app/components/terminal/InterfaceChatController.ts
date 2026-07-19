@@ -90,13 +90,19 @@ export function useInterfaceChatController({
     [draft, setDraft],
   );
 
-  const { canAttach, handleUploadAttachment, removeAttachment, uploading } =
-    useInterfaceComposerAttachments({
-      serverId,
-      connectionState,
-      setAttachments,
-      focusComposer,
-    });
+  const {
+    activeUpload,
+    canAttach,
+    cancelUpload,
+    handleUploadAttachment,
+    removeAttachment,
+    uploading,
+  } = useInterfaceComposerAttachments({
+    serverId,
+    connectionState,
+    setAttachments,
+    focusComposer,
+  });
   const {
     interruptInterface,
     interrupting,
@@ -181,6 +187,7 @@ export function useInterfaceChatController({
   });
 
   return {
+    activeUpload,
     sending,
     interrupting,
     uploading,
@@ -194,6 +201,7 @@ export function useInterfaceChatController({
     pickSlashCommand,
     runStatusCommand,
     handleUploadAttachment,
+    cancelUpload,
     removeAttachment,
     insertSkillMention,
   };

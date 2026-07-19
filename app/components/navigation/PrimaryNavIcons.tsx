@@ -97,6 +97,21 @@ export function NavStatsIcon({ color, size }: PrimaryNavIconProps) {
   );
 }
 
+/** Three stacked cards for the Skills catalog and inventory. */
+export function NavSkillsIcon({ color, size }: PrimaryNavIconProps) {
+  const dim = iconSize(size);
+  return (
+    <Svg width={dim} height={dim} viewBox="0 0 24 24" fill="none">
+      <Path d="M7 7.5h10" stroke={color} strokeWidth={STROKE} strokeLinecap="round" />
+      <Path d="M7 12h10" stroke={color} strokeWidth={STROKE} strokeLinecap="round" />
+      <Path d="M7 16.5h10" stroke={color} strokeWidth={STROKE} strokeLinecap="round" />
+      <Circle cx={4.5} cy={7.5} r={0.9} fill={color} />
+      <Circle cx={4.5} cy={12} r={0.9} fill={color} />
+      <Circle cx={4.5} cy={16.5} r={0.9} fill={color} />
+    </Svg>
+  );
+}
+
 /** Outline sliders for Settings — stroke-only, no fill. */
 export function NavSettingsIcon({ color, size }: PrimaryNavIconProps) {
   const dim = iconSize(size);

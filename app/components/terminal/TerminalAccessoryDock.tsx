@@ -1,17 +1,12 @@
 import React from "react";
-import {
-  StyleSheet,
-  View,
-  type LayoutChangeEvent,
-} from "react-native";
+import { StyleSheet, View, type LayoutChangeEvent } from "react-native";
 import type { TerminalThemePalette } from "../../constants/terminalThemes";
-import {
-  TerminalAccessoryBar,
-} from "./TerminalAccessoryBar";
+import { TerminalAccessoryBar } from "./TerminalAccessoryBar";
 import type { TerminalSurfaceHandle } from "./TerminalSurface";
 
 interface TerminalAccessoryDockProps {
   terminalRef: React.RefObject<TerminalSurfaceHandle | null>;
+  uploadOwnerKey: string | null;
   serverUrl: string;
   daemonId: string;
   theme: TerminalThemePalette;
@@ -24,6 +19,7 @@ interface TerminalAccessoryDockProps {
 
 export function TerminalAccessoryDock({
   terminalRef,
+  uploadOwnerKey,
   serverUrl,
   daemonId,
   theme,
@@ -44,6 +40,7 @@ export function TerminalAccessoryDock({
     >
       <TerminalAccessoryBar
         terminalRef={terminalRef}
+        uploadOwnerKey={uploadOwnerKey}
         serverUrl={serverUrl}
         daemonId={daemonId}
         theme={theme}

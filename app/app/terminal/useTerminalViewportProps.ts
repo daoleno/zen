@@ -36,6 +36,7 @@ interface UseTerminalViewportPropsInput {
   sessionActions: ReturnType<typeof useTerminalSessionActions>;
   onAccessoryLayout(event: LayoutChangeEvent): void;
   onConsumeInitialComposerFocus(): void;
+  skillsHandoffToken?: string;
 }
 
 export function useTerminalViewportProps({
@@ -63,6 +64,7 @@ export function useTerminalViewportProps({
   sessionActions,
   onAccessoryLayout,
   onConsumeInitialComposerFocus,
+  skillsHandoffToken,
 }: UseTerminalViewportPropsInput): TerminalViewportProps {
   const handleSwitchToTerminal = useCallback(() => {
     void sessionActions.applyInterfaceRenderMode("terminal");
@@ -110,6 +112,7 @@ export function useTerminalViewportProps({
       onRetryConnection: handleRetryConnection,
       onAccessoryLayout,
       onConsumeInitialComposerFocus,
+      skillsHandoffToken,
     }),
     [
       accessoryBottomOffset,
@@ -135,6 +138,7 @@ export function useTerminalViewportProps({
       terminalRef,
       theme,
       showInterfaceChat,
+      skillsHandoffToken,
       viewportModel.accessoryVisible,
       viewportModel.canRenderTerminal,
       viewportModel.shouldMountTerminalSurface,

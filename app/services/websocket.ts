@@ -20,6 +20,16 @@ import {
 } from "./codexConversation";
 import type { CalendarItem } from "../store/calendar";
 import {
+  normalizeSkillsCatalogResult,
+  normalizeSkillsInventory,
+  normalizeSkillsMutationCommand,
+  type ManagedSkillAgent,
+  type SkillMutationOperation,
+  type SkillsCatalogResult,
+  type SkillsInventory,
+  type SkillsMutationCommand,
+} from "./skillsManagement";
+import {
   dispatchStructuredCommand,
   sendWebSocketMessageNow,
   structuredActionMessage,
@@ -1183,6 +1193,215 @@ export class MultiServerWebSocketClient {
           type: "codex_skills",
           request_id: requestId,
           cwd: options.cwd,
+        },
+        cleanup,
+        reject,
+      );
+    });
+  }
+
+  getSkillsInventory(
+    serverId: string,
+    options: { cwd?: string; generation: number },
+  ) {
+    const requestId = `${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
+    return new Promise<{ generation: number; inventory: SkillsInventory }>(
+      (resolve, reject) => {
+        const cleanup = () => {
+          if (timer) clearTimeout(timer);
+          this.off("skills_inventory", handleInventory);
+          this.off("skills_inventory_error", handleError);
+        };
+        const handleInventory = (payload: any) => {
+          if (payload.serverId !== serverId || payload.request_id !== requestId) {
+            return;
+          }
+          cleanup();
+          if (payload.generation !== options.generation) {
+            reject(new Error("Daemon returned a stale Skills inventory generation."));
+            return;
+          }
+          try {
+            resolve({
+              generation: options.generation,
+              inventory: normalizeSkillsInventory(payload.inventory),
+            });
+          } catch (error) {
+            reject(error);
+          }
+        };
+        const handleError = (payload: any) => {
+          if (payload.serverId !== serverId || payload.request_id !== requestId) {
+            return;
+          }
+          cleanup();
+          reject(new Error(payload.message || "Failed to load installed Skills."));
+        };
+        const timer = setTimeout(() => {
+          cleanup();
+          reject(new Error("Timed out while loading installed Skills."));
+        }, 15000);
+        this.on("skills_inventory", handleInventory);
+        this.on("skills_inventory_error", handleError);
+        this.sendRequestNow(
+          serverId,
+          {
+            type: "skills_inventory",
+            request_id: requestId,
+            generation: options.generation,
+            cwd: options.cwd,
+          },
+          cleanup,
+          reject,
+        );
+      },
+    );
+  }
+
+  searchSkillsCatalog(
+    serverId: string,
+    options: { query: string; limit?: number; generation: number },
+  ) {
+    const requestId = `${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
+    return new Promise<{ generation: number; result: SkillsCatalogResult }>(
+      (resolve, reject) => {
+        const cleanup = () => {
+          if (timer) clearTimeout(timer);
+          this.off("skills_search", handleSearch);
+          this.off("skills_search_error", handleError);
+        };
+        const handleSearch = (payload: any) => {
+          if (payload.serverId !== serverId || payload.request_id !== requestId) {
+            return;
+          }
+          cleanup();
+          if (payload.generation !== options.generation) {
+            reject(new Error("Daemon returned a stale Skills search generation."));
+            return;
+          }
+          try {
+            resolve({
+              generation: options.generation,
+              result: normalizeSkillsCatalogResult(payload.result),
+            });
+          } catch (error) {
+            reject(error);
+          }
+        };
+        const handleError = (payload: any) => {
+          if (payload.serverId !== serverId || payload.request_id !== requestId) {
+            return;
+          }
+          cleanup();
+          reject(new Error(payload.message || "Failed to search skills.sh."));
+        };
+        const timer = setTimeout(() => {
+          cleanup();
+          reject(new Error("Timed out while searching skills.sh."));
+        }, 12000);
+        this.on("skills_search", handleSearch);
+        this.on("skills_search_error", handleError);
+        this.sendRequestNow(
+          serverId,
+          {
+            type: "skills_search",
+            request_id: requestId,
+            generation: options.generation,
+            prompt: options.query,
+            limit: options.limit ?? 20,
+          },
+          cleanup,
+          reject,
+        );
+      },
+    );
+  }
+
+  cancelSkillsCatalogSearch(
+    serverId: string,
+    options: { generation: number },
+  ): boolean {
+    const requestId = `${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
+    return this.trySendNow(serverId, {
+      type: "skills_search_cancel",
+      request_id: requestId,
+      generation: options.generation,
+    });
+  }
+
+  buildSkillsCommand(
+    serverId: string,
+    options: {
+      operation: SkillMutationOperation;
+      cwd?: string;
+      skillId: string;
+      source?: string;
+      skillName?: string;
+      scope: "project" | "global";
+      agents: ManagedSkillAgent[];
+    },
+  ) {
+    const requestId = `${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
+    return new Promise<SkillsMutationCommand>((resolve, reject) => {
+      const cleanup = () => {
+        if (timer) clearTimeout(timer);
+        this.off("skills_command", handleCommand);
+        this.off("skills_command_error", handleError);
+      };
+      const handleCommand = (payload: any) => {
+        if (payload.serverId !== serverId || payload.request_id !== requestId) {
+          return;
+        }
+        cleanup();
+        try {
+          const command = normalizeSkillsMutationCommand(payload.command);
+          if (
+            command.operation !== options.operation ||
+            command.scope !== options.scope ||
+            (options.operation === "install" &&
+              (command.catalogId !== options.skillId ||
+                command.source !== options.source)) ||
+            (options.skillName != null &&
+              command.skillName !== options.skillName) ||
+            command.agents.length !== options.agents.length ||
+            command.agents.some(
+              (agent, index) => agent !== options.agents[index],
+            )
+          ) {
+            throw new Error(
+              "Daemon returned a Skills command for a different request.",
+            );
+          }
+          resolve(command);
+        } catch (error) {
+          reject(error);
+        }
+      };
+      const handleError = (payload: any) => {
+        if (payload.serverId !== serverId || payload.request_id !== requestId) {
+          return;
+        }
+        cleanup();
+        reject(new Error(payload.message || "Skills command was rejected."));
+      };
+      const timer = setTimeout(() => {
+        cleanup();
+        reject(new Error("Timed out while validating the Skills command."));
+      }, 15000);
+      this.on("skills_command", handleCommand);
+      this.on("skills_command_error", handleError);
+      this.sendRequestNow(
+        serverId,
+        {
+          type: "skills_command",
+          request_id: requestId,
+          operation: options.operation,
+          cwd: options.cwd,
+          skill_id: options.skillId,
+          source: options.source,
+          skill_name: options.skillName,
+          scope: options.scope,
+          agents: options.agents,
         },
         cleanup,
         reject,

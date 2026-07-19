@@ -1,6 +1,5 @@
 import React, { useMemo } from "react";
 import {
-  Image,
   Linking,
   ScrollView,
   StyleSheet,
@@ -20,6 +19,7 @@ import {
 } from "../constants/tokens";
 import { AnimatedPressable } from "../components/ui/AnimatedPressable";
 import { Enter } from "../components/ui/Enter";
+import { ZenLogoMark } from "../components/ui/ZenLogoMark";
 
 const CONNECT_GUIDE_URL =
   "https://github.com/daoleno/zen/blob/main/docs/connect-and-pair.md";
@@ -52,10 +52,9 @@ export default function OnboardingScreen() {
         bounces={false}
       >
         <Enter preset="pop">
-          <Image
-            source={require("../assets/branding/zen-logo-mark-transparent.png")}
+          <ZenLogoMark
+            size={52}
             style={styles.logo}
-            resizeMode="contain"
             accessibilityIgnoresInvertColors
           />
         </Enter>
@@ -142,8 +141,6 @@ function createStyles(colors: typeof Colors) {
       paddingBottom: 18,
     },
     logo: {
-      width: 52,
-      height: 52,
       alignSelf: "center",
       marginBottom: 8,
     },

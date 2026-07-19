@@ -10,6 +10,7 @@ import type {
   TerminalThemePalette,
 } from "../../constants/terminalThemes";
 import type { CodexSlashCommand } from "../../services/websocket";
+import type { ActiveAttachmentUpload } from "../../services/uploads";
 import {
   InterfaceComposerAttachmentRail,
   type InterfaceComposerAttachment,
@@ -26,6 +27,7 @@ interface InterfaceChatComposerProps {
   focused: boolean;
   canAttach: boolean;
   uploading: boolean;
+  activeUpload: ActiveAttachmentUpload | null;
   sendEnabled: boolean;
   sending: boolean;
   operationalError?: string;
@@ -55,6 +57,7 @@ interface InterfaceChatComposerProps {
   onRemoveAttachment(id: string): void;
   onDraftChange(value: string): void;
   onUploadPress(): void;
+  onCancelUpload(): void;
   onInputFocus(): void;
   onInputBlur(): void;
   onSendPress(): void;
@@ -69,6 +72,7 @@ export function InterfaceChatComposer({
   focused,
   canAttach,
   uploading,
+  activeUpload,
   sendEnabled,
   sending,
   operationalError,
@@ -98,6 +102,7 @@ export function InterfaceChatComposer({
   onRemoveAttachment,
   onDraftChange,
   onUploadPress,
+  onCancelUpload,
   onInputFocus,
   onInputBlur,
   onSendPress,
@@ -136,9 +141,10 @@ export function InterfaceChatComposer({
       {showAttachmentRail ? (
         <InterfaceComposerAttachmentRail
           attachments={attachments}
-          uploading={uploading}
+          activeUpload={activeUpload}
           chrome={chrome}
           onRemoveAttachment={onRemoveAttachment}
+          onCancelUpload={onCancelUpload}
         />
       ) : null}
 

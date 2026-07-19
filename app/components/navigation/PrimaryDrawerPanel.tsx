@@ -5,7 +5,6 @@ import React, {
   type RefObject,
 } from "react";
 import {
-  Image,
   Pressable,
   StyleSheet,
   Text,
@@ -18,10 +17,12 @@ import { Typography, useAppColors } from "../../constants/tokens";
 import { appVersion } from "../../constants/appVersion";
 import { getServers, type StoredServer } from "../../services/storage";
 import { useAgentServerSummary } from "../../store/agents";
+import { ZenLogoMark } from "../ui/ZenLogoMark";
 import {
   NavChevronIcon,
   NavCloseIcon,
   NavSettingsIcon,
+  NavSkillsIcon,
   NavStatsIcon,
 } from "./PrimaryNavIcons";
 
@@ -33,7 +34,7 @@ interface PrimaryDrawerPanelProps {
   onNavigateAway(): void;
 }
 
-type DrawerRowIcon = "settings" | "stats";
+type DrawerRowIcon = "settings" | "skills" | "stats";
 
 interface DrawerRowProps {
   detail?: string;
@@ -52,6 +53,9 @@ function DrawerRowIconView({
 }) {
   if (icon === "stats") {
     return <NavStatsIcon color={color} size={19} />;
+  }
+  if (icon === "skills") {
+    return <NavSkillsIcon color={color} size={19} />;
   }
   return <NavSettingsIcon color={color} size={19} />;
 }
@@ -161,7 +165,7 @@ export function PrimaryDrawerPanel({
       : `${connectedCount} of ${servers.length} connected`;
 
   const openRoute = useCallback(
-    (pathname: "/stats" | "/settings") => {
+    (pathname: "/skills" | "/stats" | "/settings") => {
       onNavigateAway();
       router.push(pathname);
     },
@@ -171,10 +175,8 @@ export function PrimaryDrawerPanel({
   return (
     <SafeAreaView style={styles.drawerContent} edges={["top", "bottom"]}>
       <View style={styles.drawerIdentity}>
-        <Image
-          source={require("../../assets/branding/zen-logo-mark-transparent.png")}
-          style={styles.drawerLogo}
-          resizeMode="contain"
+        <ZenLogoMark
+          size={42}
           accessible={false}
         />
         <View style={styles.drawerIdentityCopy}>
@@ -265,6 +267,13 @@ export function PrimaryDrawerPanel({
       />
 
       <DrawerRow
+        detail="Installed and discover"
+        drawerVisible={drawerVisible}
+        icon="skills"
+        label="Skills"
+        onPress={() => openRoute("/skills")}
+      />
+      <DrawerRow
         drawerVisible={drawerVisible}
         icon="stats"
         label="Stats"
@@ -304,10 +313,6 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     alignItems: "center",
     gap: 12,
-  },
-  drawerLogo: {
-    width: 42,
-    height: 42,
   },
   drawerIdentityCopy: {
     flex: 1,

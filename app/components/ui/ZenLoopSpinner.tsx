@@ -5,11 +5,15 @@ import {
   StyleSheet,
   View,
 } from "react-native";
+import { useAppColors } from "../../constants/tokens";
+import { resolveZenLogoDetailTint } from "./zenLogoPresentation";
 
 const sageRing = require("../../assets/branding/zen-logo-ring-sage.png");
 const ivoryRing = require("../../assets/branding/zen-logo-ring-ivory.png");
 
 export function ZenLoopSpinner({ size = 24 }: { size?: number }) {
+  const colors = useAppColors();
+  const detailTint = resolveZenLogoDetailTint(colors);
   const orbitProgress = useRef(new Animated.Value(0)).current;
   const sageProgress = useRef(new Animated.Value(0)).current;
   const ivoryProgress = useRef(new Animated.Value(0)).current;
@@ -123,6 +127,7 @@ export function ZenLoopSpinner({ size = 24 }: { size?: number }) {
           resizeMode="contain"
           style={[
             styles.ring,
+            detailTint ? { tintColor: detailTint } : null,
             {
               width: size,
               height: size,

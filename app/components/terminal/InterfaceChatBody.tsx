@@ -19,6 +19,7 @@ import type {
   TerminalThemePalette,
 } from "../../constants/terminalThemes";
 import type { CodexSlashCommand } from "../../services/websocket";
+import type { ActiveAttachmentUpload } from "../../services/uploads";
 import type {
   ComposerAttachment,
   PendingUserMessage,
@@ -88,6 +89,7 @@ export interface InterfaceChatBodyProps {
   composerFocused: boolean;
   canAttach: boolean;
   uploading: boolean;
+  activeUpload: ActiveAttachmentUpload | null;
   sending: boolean;
   operationalError?: string;
   attachments: ComposerAttachment[];
@@ -102,6 +104,7 @@ export interface InterfaceChatBodyProps {
   onRemoveAttachment(id: string): void;
   onDraftChange(value: string): void;
   onUploadPress(): void;
+  onCancelUpload(): void;
   onInputFocus(): void;
   onInputBlur(): void;
   onSendPress(): void;
@@ -157,6 +160,7 @@ export function InterfaceChatBody({
   composerFocused,
   canAttach,
   uploading,
+  activeUpload,
   sending,
   operationalError,
   attachments,
@@ -171,6 +175,7 @@ export function InterfaceChatBody({
   onRemoveAttachment,
   onDraftChange,
   onUploadPress,
+  onCancelUpload,
   onInputFocus,
   onInputBlur,
   onSendPress,
@@ -200,6 +205,7 @@ export function InterfaceChatBody({
         focused={composerFocused}
         canAttach={canAttach}
         uploading={uploading}
+        activeUpload={activeUpload}
         sending={sending}
         operationalError={operationalError}
         attachments={attachments}
@@ -212,6 +218,7 @@ export function InterfaceChatBody({
         onRemoveAttachment={onRemoveAttachment}
         onDraftChange={onDraftChange}
         onUploadPress={onUploadPress}
+        onCancelUpload={onCancelUpload}
         onInputFocus={onInputFocus}
         onInputBlur={onInputBlur}
         onSendPress={onSendPress}
