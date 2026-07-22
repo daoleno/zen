@@ -26,7 +26,7 @@ If a usable Zen executable already exists at a safe user-owned location, the def
 ```sh
 # Exact supported tag; no other tag syntax is accepted.
 curl -fsSL https://raw.githubusercontent.com/daoleno/zen/main/install.sh | \
-  ZEN_VERSION=v0.1.0-beta.6 sh
+  ZEN_VERSION=v0.1.0-beta.7 sh
 
 # Explicit user-owned destination.
 curl -fsSL https://raw.githubusercontent.com/daoleno/zen/main/install.sh | \
