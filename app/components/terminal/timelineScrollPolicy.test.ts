@@ -175,6 +175,11 @@ describe("timeline scroll policy", () => {
     expect(TIMELINE_LIST_STABILITY_PROPS).toEqual({
       maintainVisibleContentPosition: { minIndexForVisible: 0 },
       removeClippedSubviews: false,
+      scrollsChildToFocus: false,
     });
+  });
+
+  test("native child focus cannot become a second timeline scroll owner", () => {
+    expect(TIMELINE_LIST_STABILITY_PROPS.scrollsChildToFocus).toBe(false);
   });
 });

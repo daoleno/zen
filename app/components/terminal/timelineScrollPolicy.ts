@@ -2,6 +2,9 @@ export const TIMELINE_BOTTOM_THRESHOLD = 96;
 export const TIMELINE_LIST_STABILITY_PROPS = {
   maintainVisibleContentPosition: { minIndexForVisible: 0 },
   removeClippedSubviews: false,
+  // Selectable Android text takes native focus. Timeline policy, rather than
+  // descendant focus, owns any viewport movement in this inverted list.
+  scrollsChildToFocus: false,
 } as const;
 
 export interface TimelineScrollState {
@@ -9,9 +12,7 @@ export interface TimelineScrollState {
 }
 
 export type TimelineMutationDecision =
-  | "follow-bottom"
-  | "preserve-visible-anchor"
-  | "suspend-implicit-anchor";
+  "follow-bottom" | "preserve-visible-anchor" | "suspend-implicit-anchor";
 
 export const INITIAL_TIMELINE_SCROLL_STATE: TimelineScrollState = {
   mode: "attached",
