@@ -36,6 +36,31 @@ func TestParseCodexExecWrapper_ApplyPatchViaConst(t *testing.T) {
 	}
 }
 
+func TestPatchFileChanges_LeavesUnreportedDeleteStatsUnknown(t *testing.T) {
+	changes := patchFileChanges("*** Begin Patch\n*** Delete File: src/legacy.ts\n*** End Patch")
+	if len(changes) != 1 {
+		t.Fatalf("changes = %#v", changes)
+	}
+	change := changes[0]
+	if change.Path != "src/legacy.ts" || change.Operation != "delete" {
+		t.Fatalf("change = %#v", change)
+	}
+	if change.Additions != nil || change.Deletions != nil {
+		t.Fatalf("delete stats should be unknown, got %#v", change)
+	}
+}
+
+func TestPatchFileChanges_DoesNotTreatPatchContextAsMetadata(t *testing.T) {
+	changes := patchFileChanges("*** Begin Patch\n*** Update File: src/parser.ts\n@@\n *** Update File: synthetic content\n-old\n+new\n*** End Patch")
+	if len(changes) != 1 || changes[0].Path != "src/parser.ts" {
+		t.Fatalf("changes = %#v, want one real target", changes)
+	}
+	change := changes[0]
+	if change.Additions == nil || *change.Additions != 1 || change.Deletions == nil || *change.Deletions != 1 {
+		t.Fatalf("change stats = %#v, want +1 -1", change)
+	}
+}
+
 func TestParseCodexExecWrapper_UpdatePlan(t *testing.T) {
 	input := `const p = await tools.update_plan({plan:[
   {step:"Trace pipeline",status:"in_progress"},

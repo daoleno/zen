@@ -14,6 +14,8 @@ import type { InterfaceChatAgentInfo } from "./InterfaceChatSession";
 interface InterfaceChatSurfaceProps {
   visible: boolean;
   serverId: string;
+  serverUrl: string;
+  daemonId: string;
   agentId: string;
   conversationScopeKey?: string;
   agentInfo?: InterfaceChatAgentInfo;
@@ -43,6 +45,8 @@ interface InterfaceChatSurfaceProps {
 function InterfaceChatSurfaceImpl({
   visible,
   serverId,
+  serverUrl,
+  daemonId,
   agentId,
   conversationScopeKey,
   agentInfo,
@@ -68,6 +72,8 @@ function InterfaceChatSurfaceImpl({
   const { bodyProps } = useInterfaceChatSurfaceState({
     visible,
     serverId,
+    serverUrl,
+    daemonId,
     agentId,
     conversationScopeKey,
     agentInfo,

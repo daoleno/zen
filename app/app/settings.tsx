@@ -75,6 +75,7 @@ import { connectionIssueAccent } from "../services/connectionIssue";
 import { AnimatedPressable } from "../components/ui/AnimatedPressable";
 import { RisingSheet } from "../components/ui/RisingSheet";
 import { cancelCalendarNotifications } from "../services/calendarNotifications";
+import { useCurrentServer } from "../store/currentServer";
 
 const QR_BARCODE_TYPES: BarcodeType[] = ["qr"];
 const SCANNER_COLORS = ZEN_DARK_APP_COLORS;
@@ -88,6 +89,11 @@ export default function SettingsScreen() {
   const router = useRouter();
   const insets = useSafeAreaInsets();
   const agents = useAgentList();
+  const {
+    currentServerId,
+    refreshServers: refreshCurrentServers,
+    switchCurrentServer,
+  } = useCurrentServer();
   const {
     dispatch,
     hydratedServers,
@@ -137,12 +143,6 @@ export default function SettingsScreen() {
     return true;
   }, []);
 
-  const connectedCount = useMemo(
-    () =>
-      servers.filter((server) => serverConnections[server.id] === "connected")
-        .length,
-    [servers, serverConnections],
-  );
   const editingServer = useMemo(
     () => servers.find((server) => server.id === editingServerId) || null,
     [editingServerId, servers],
@@ -184,12 +184,17 @@ export default function SettingsScreen() {
     setHandledRefreshToken(params.refresh);
   }, [handledRefreshToken, loaded, params.refresh]);
 
-  const refreshServers = async () => {
+  const refreshServers = async (preferredServerId?: string) => {
     setServers(await Storage.getServers());
+    await refreshCurrentServers(preferredServerId);
   };
 
   const connectServer = async (server: Storage.StoredServer) => {
     await Storage.setServerAutoConnect(server.id, true);
+    if (server.id !== currentServerId) {
+      await switchCurrentServer(server.id);
+      return;
+    }
     wsClient.connectServer(server);
   };
 
@@ -317,7 +322,7 @@ export default function SettingsScreen() {
     try {
       const savedServer = await importConnection(rawValue, {
         onImported: async (importedServer) => {
-          await refreshServers();
+          await refreshServers(importedServer.id);
           setExpandedServer(importedServer.id);
         },
       });
@@ -460,11 +465,6 @@ export default function SettingsScreen() {
             <Text style={styles.sectionLabel} accessibilityRole="header">
               Connections
             </Text>
-            {servers.length > 0 ? (
-              <Text style={styles.sectionCount}>
-                {connectedCount} of {servers.length} connected
-              </Text>
-            ) : null}
           </View>
 
           <View style={styles.serverList}>
@@ -477,6 +477,7 @@ export default function SettingsScreen() {
               </View>
             ) : (
               servers.map((server) => {
+                const current = server.id === currentServerId;
                 const connectionState =
                   serverConnections[server.id] || "offline";
                 const latencySample = serverLatencyById[server.id];
@@ -488,8 +489,9 @@ export default function SettingsScreen() {
                 const waitingForAgents =
                   connectionState === "connected" &&
                   (!hydrated || agentCount === 0);
-                const actionLabel =
-                  connectionState === "connected"
+                const actionLabel = !current
+                  ? "Use"
+                  : connectionState === "connected"
                     ? "Disconnect"
                     : connectionState === "connecting" || connectionIssue
                       ? "Retry"
@@ -614,7 +616,7 @@ export default function SettingsScreen() {
                             accessibilityRole="button"
                             accessibilityLabel={`${actionLabel} ${server.name}`}
                             onPress={() => {
-                              void (connectionState === "connected"
+                              void (connectionState === "connected" && current
                                 ? disconnectServer(server.id)
                                 : connectServer(server));
                               void Haptics.impactAsync(
@@ -1230,11 +1232,6 @@ function createStyles(theme: ResolvedZenTheme) {
       ...UiTextMetrics,
       ...TypeScale.label,
       color: colors.textSecondary,
-    },
-    sectionCount: {
-      ...UiTextMetrics,
-      ...TypeScale.caption,
-      color: colors.textTertiary,
     },
 
     serverList: {

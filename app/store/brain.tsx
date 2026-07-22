@@ -24,6 +24,8 @@ export type BrainAgentRef = {
   summary?: string;
   cwd?: string;
   command?: string;
+  started_at?: number;
+  process_id?: number;
   updated_at?: string;
   delegated?: boolean;
 };
@@ -123,9 +125,7 @@ function normalizeSnapshot(
         : undefined,
     adapters: adapters.map(normalizeAdapterRef).filter((adapter) => adapter.id),
     chat_thread_id:
-      typeof raw?.chat_thread_id === "string"
-        ? raw.chat_thread_id
-        : undefined,
+      typeof raw?.chat_thread_id === "string" ? raw.chat_thread_id : undefined,
     scheduled_results: Array.isArray(raw?.scheduled_results)
       ? normalizeScheduledResults(raw.scheduled_results)
       : [],
@@ -144,13 +144,9 @@ function normalizeScheduledResult(raw: any): BrainScheduledResult {
     status: typeof raw?.status === "string" ? raw.status : "",
     title: typeof raw?.title === "string" ? raw.title : "",
     calendar_item_id:
-      typeof raw?.calendar_item_id === "string"
-        ? raw.calendar_item_id
-        : "",
+      typeof raw?.calendar_item_id === "string" ? raw.calendar_item_id : "",
     calendar_run_id:
-      typeof raw?.calendar_run_id === "string"
-        ? raw.calendar_run_id
-        : "",
+      typeof raw?.calendar_run_id === "string" ? raw.calendar_run_id : "",
     scheduled_for:
       typeof raw?.scheduled_for === "string" ? raw.scheduled_for : "",
   };
@@ -176,7 +172,11 @@ function normalizeScheduledResults(raw: any[]): BrainScheduledResult[] {
   return Array.from(byId.values()).sort((left, right) => {
     const leftTime = Date.parse(left.created_at);
     const rightTime = Date.parse(right.created_at);
-    if (Number.isFinite(leftTime) && Number.isFinite(rightTime) && leftTime !== rightTime) {
+    if (
+      Number.isFinite(leftTime) &&
+      Number.isFinite(rightTime) &&
+      leftTime !== rightTime
+    ) {
       return leftTime - rightTime;
     }
     if (Number.isFinite(leftTime) !== Number.isFinite(rightTime)) {
@@ -187,6 +187,19 @@ function normalizeScheduledResults(raw: any[]): BrainScheduledResult[] {
 }
 
 function normalizeAgentRef(raw: any): BrainAgentRef {
+  const parsedStartedAt =
+    typeof raw?.started_at === "string" ||
+    typeof raw?.started_at === "number" ||
+    raw?.started_at instanceof Date
+      ? new Date(raw.started_at).getTime()
+      : Number.NaN;
+  const processID =
+    typeof raw?.process_id === "number" &&
+    Number.isInteger(raw.process_id) &&
+    raw.process_id > 0
+      ? raw.process_id
+      : undefined;
+
   return {
     id: typeof raw?.id === "string" ? raw.id : "",
     name: typeof raw?.name === "string" ? raw.name : "",
@@ -194,6 +207,8 @@ function normalizeAgentRef(raw: any): BrainAgentRef {
     summary: typeof raw?.summary === "string" ? raw.summary : undefined,
     cwd: typeof raw?.cwd === "string" ? raw.cwd : undefined,
     command: typeof raw?.command === "string" ? raw.command : undefined,
+    started_at: Number.isFinite(parsedStartedAt) ? parsedStartedAt : undefined,
+    process_id: processID,
     updated_at:
       typeof raw?.updated_at === "string" ? raw.updated_at : undefined,
     delegated: raw?.delegated === true,
@@ -204,14 +219,12 @@ function normalizeAdapterRef(raw: any): BrainAdapterRef {
   return {
     id: typeof raw?.id === "string" ? raw.id : "",
     name: typeof raw?.name === "string" ? raw.name : "",
-    provider:
-      typeof raw?.provider === "string" ? raw.provider : undefined,
+    provider: typeof raw?.provider === "string" ? raw.provider : undefined,
     command: typeof raw?.command === "string" ? raw.command : undefined,
     runtime: typeof raw?.runtime === "string" ? raw.runtime : undefined,
     capabilities: normalizeAdapterCapabilities(raw?.capabilities),
     host: typeof raw?.host === "boolean" ? raw.host : undefined,
-    delegated:
-      typeof raw?.delegated === "boolean" ? raw.delegated : undefined,
+    delegated: typeof raw?.delegated === "boolean" ? raw.delegated : undefined,
   };
 }
 
@@ -219,9 +232,13 @@ function normalizeAdapterCapabilities(raw: any): BrainAdapterCapabilities {
   const source = raw && typeof raw === "object" ? raw : {};
   return {
     interactive_tty:
-      typeof source.interactive_tty === "boolean" ? source.interactive_tty : undefined,
+      typeof source.interactive_tty === "boolean"
+        ? source.interactive_tty
+        : undefined,
     structured_events:
-      typeof source.structured_events === "boolean" ? source.structured_events : undefined,
+      typeof source.structured_events === "boolean"
+        ? source.structured_events
+        : undefined,
   };
 }
 
@@ -234,7 +251,10 @@ export function brainReducer(state: BrainState, action: Action): BrainState {
         action.serverName,
         action.serverUrl,
       );
-      const byServer = brainServerStatesEqual(state.byServer[action.serverId], next)
+      const byServer = brainServerStatesEqual(
+        state.byServer[action.serverId],
+        next,
+      )
         ? state.byServer
         : { ...state.byServer, [action.serverId]: next };
       if (byServer === state.byServer) {
@@ -338,6 +358,8 @@ function agentRefsEqual(
     left.summary === right.summary &&
     left.cwd === right.cwd &&
     left.command === right.command &&
+    left.started_at === right.started_at &&
+    left.process_id === right.process_id &&
     left.updated_at === right.updated_at &&
     left.delegated === right.delegated
   );

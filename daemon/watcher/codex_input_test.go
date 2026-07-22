@@ -9,6 +9,7 @@ import (
 
 type fakeCodexInputIO struct {
 	captures []string
+	alive    []bool
 	index    int
 	clock    time.Time
 	pastes   []string
@@ -26,7 +27,15 @@ func (f *fakeCodexInputIO) capture(string) (string, bool) {
 		index = len(f.captures) - 1
 	}
 	f.index++
-	return f.captures[index], true
+	alive := true
+	if len(f.alive) > 0 {
+		aliveIndex := index
+		if aliveIndex >= len(f.alive) {
+			aliveIndex = len(f.alive) - 1
+		}
+		alive = f.alive[aliveIndex]
+	}
+	return f.captures[index], alive
 }
 
 func (f *fakeCodexInputIO) paste(_ string, body string) error {
@@ -44,11 +53,11 @@ func (f *fakeCodexInputIO) now() time.Time            { return f.clock }
 
 func testCodexSubmitConfig() codexSubmitConfig {
 	return codexSubmitConfig{
-		readyTimeout:       3 * time.Second,
-		draftTimeout:       time.Second,
-		confirmationWindow: time.Second,
-		pollInterval:       time.Second,
-		stableReadyPolls:   2,
+		startupStallTimeout: 3 * time.Second,
+		draftTimeout:        time.Second,
+		confirmationWindow:  time.Second,
+		pollInterval:        time.Second,
+		stableReadyPolls:    2,
 	}
 }
 
@@ -206,15 +215,16 @@ func TestCodexSubmissionAdvancedRequiresPostDraftTransition(t *testing.T) {
 	})
 }
 
-func TestSubmitCodexInputWaitsForMCPThenPastesOnceAndConfirms(t *testing.T) {
+func TestSubmitCodexInputAcceptsComposerAcrossOptionalMCPThirtySecondBoundary(t *testing.T) {
 	body := "execute unique marker ZEN_INITIAL_12345"
 	starting := codexReadyPane("• Starting MCP servers (0/3): context7, playwright")
-	ready := codexReadyPane("")
-	draft := ready + "\n› " + body + "\n\n  gpt-5.6 medium · /tmp\n"
-	submitted := ready + "\n› " + body + "\n\n• Working (1s • esc to interrupt)\n\n› Find and fix a bug in @filename\n"
-	io := &fakeCodexInputIO{captures: []string{starting, ready, ready, draft, submitted}}
+	draft := starting + "\n› " + body + "\n\n  gpt-5.6 medium · /tmp\n"
+	submitted := starting + "\n› " + body + "\n\n• Working (1s • esc to interrupt)\n\n› Find and fix a bug in @filename\n"
+	io := &fakeCodexInputIO{captures: []string{starting, starting, draft, submitted}}
+	cfg := testCodexSubmitConfig()
+	cfg.startupStallTimeout = 30 * time.Second
 
-	if err := submitCodexInput(io, "agent:@1", body, testCodexSubmitConfig()); err != nil {
+	if err := submitCodexInput(io, "agent:@1", body, cfg); err != nil {
 		t.Fatalf("submitCodexInput returned error: %v", err)
 	}
 	if len(io.pastes) != 1 || io.pastes[0] != body {
@@ -222,6 +232,114 @@ func TestSubmitCodexInputWaitsForMCPThenPastesOnceAndConfirms(t *testing.T) {
 	}
 	if io.enters != 1 {
 		t.Fatalf("Enter count = %d, want 1", io.enters)
+	}
+	if elapsed := io.now().Sub(time.Time{}); elapsed >= 30*time.Second {
+		t.Fatalf("handoff waited %s for optional MCP outcome; composer was already usable", elapsed)
+	}
+}
+
+func TestSubmitCodexInputAcceptsComposerAfterOptionalMCPTerminalFailure(t *testing.T) {
+	body := "execute unique marker ZEN_MCP_FAILED_24680"
+	failed := codexReadyPane("⚠ MCP client for `codex_apps` timed out after 30 seconds.\n⚠ MCP startup incomplete (failed: codex_apps)")
+	draft := failed + "\n› " + body + "\n"
+	submitted := failed + "\n› " + body + "\n\n• Working (1s • esc to interrupt)\n"
+	io := &fakeCodexInputIO{captures: []string{failed, failed, draft, submitted}}
+
+	if err := submitCodexInput(io, "agent:@1", body, testCodexSubmitConfig()); err != nil {
+		t.Fatalf("submitCodexInput returned error: %v", err)
+	}
+	if len(io.pastes) != 1 || io.enters != 1 {
+		t.Fatalf("pastes=%d enters=%d, want one of each after optional MCP failure", len(io.pastes), io.enters)
+	}
+}
+
+func TestSubmitCodexInputAcceptsComposerWhileSlowOptionalMCPLaterSucceeds(t *testing.T) {
+	body := "execute unique marker ZEN_MCP_LATE_SUCCESS_97531"
+	starting := codexReadyPane("• Starting MCP servers (1/2): slow_optional")
+	ready := codexReadyPane("")
+	draft := starting + "\n› " + body + "\n"
+	submittedAfterMCP := ready + "\n› " + body + "\n\n• Working (1s • esc to interrupt)\n"
+	io := &fakeCodexInputIO{captures: []string{starting, starting, draft, submittedAfterMCP}}
+
+	if err := submitCodexInput(io, "agent:@1", body, testCodexSubmitConfig()); err != nil {
+		t.Fatalf("submitCodexInput returned error: %v", err)
+	}
+	if len(io.pastes) != 1 || io.enters != 1 {
+		t.Fatalf("pastes=%d enters=%d, want one handoff while optional MCP later succeeds", len(io.pastes), io.enters)
+	}
+}
+
+func TestSubmitCodexInputExtendsOnlyForFiniteRecognizedStartupProgress(t *testing.T) {
+	body := "execute unique marker ZEN_PROGRESS_13579"
+	splash := "Welcome to Codex\n"
+	trust := "│ >_ OpenAI Codex │\nDo you trust the contents of this directory?\n› 1. Yes, continue\n  Press enter to continue\n"
+	loading := "│ >_ OpenAI Codex │\n│ model: loading │\n› Write tests for @filename\n"
+	ready := codexReadyPane("")
+	draft := ready + "\n› " + body + "\n"
+	submitted := ready + "\n› " + body + "\n\n• Working (1s • esc to interrupt)\n"
+	io := &fakeCodexInputIO{captures: []string{splash, splash, trust, loading, loading, ready, ready, draft, submitted}}
+	cfg := testCodexSubmitConfig()
+	cfg.startupStallTimeout = 2 * time.Second
+
+	if err := submitCodexInput(io, "agent:@1", body, cfg); err != nil {
+		t.Fatalf("submitCodexInput returned error after recognized progress: %v", err)
+	}
+	if elapsed := io.now().Sub(time.Time{}); elapsed <= cfg.startupStallTimeout {
+		t.Fatalf("elapsed = %s, want proof that recognized stage progress extended the initial stall window", elapsed)
+	}
+	if len(io.pastes) != 1 || io.enters != 2 {
+		t.Fatalf("pastes=%d enters=%d, want startup Enter plus exactly one submission Enter", len(io.pastes), io.enters)
+	}
+}
+
+func TestSubmitCodexInputFailsBoundedlyWhenCoreModelStalls(t *testing.T) {
+	loading := "│ >_ OpenAI Codex │\n│ model: loading │\n› Write tests for @filename\n"
+	io := &fakeCodexInputIO{captures: []string{loading}}
+	cfg := testCodexSubmitConfig()
+	cfg.startupStallTimeout = 2 * time.Second
+
+	err := submitCodexInput(io, "agent:@1", "must not be pasted", cfg)
+	if err == nil || !strings.Contains(err.Error(), "composer") {
+		t.Fatalf("error = %v, want bounded composer stall failure", err)
+	}
+	if len(io.pastes) != 0 || io.enters != 0 {
+		t.Fatalf("pastes=%d enters=%d, stalled core model must receive no task input", len(io.pastes), io.enters)
+	}
+	if elapsed := io.now().Sub(time.Time{}); elapsed > 2*cfg.startupStallTimeout {
+		t.Fatalf("core model stall took %s; one recognized model-loading transition must remain bounded", elapsed)
+	}
+}
+
+func TestSubmitCodexInputFailsBoundedlyWhenComposerNeverAppears(t *testing.T) {
+	loadedWithoutComposer := "│ >_ OpenAI Codex │\n│ model: gpt-5.6-sol │\nStarting terminal UI\n"
+	io := &fakeCodexInputIO{captures: []string{loadedWithoutComposer}}
+	cfg := testCodexSubmitConfig()
+	cfg.startupStallTimeout = 2 * time.Second
+
+	err := submitCodexInput(io, "agent:@1", "must not be pasted", cfg)
+	if err == nil || !strings.Contains(err.Error(), "no recognized startup progress") {
+		t.Fatalf("error = %v, want explicit no-progress failure", err)
+	}
+	if len(io.pastes) != 0 || io.enters != 0 {
+		t.Fatalf("pastes=%d enters=%d, missing composer must receive no task input", len(io.pastes), io.enters)
+	}
+	if elapsed := io.now().Sub(time.Time{}); elapsed > 2*cfg.startupStallTimeout {
+		t.Fatalf("missing composer took %s; finite identity progress must remain bounded", elapsed)
+	}
+}
+
+func TestSubmitCodexInputFailsImmediatelyForDeadPane(t *testing.T) {
+	io := &fakeCodexInputIO{
+		captures: []string{"│ >_ OpenAI Codex │\n│ model: loading │\n"},
+		alive:    []bool{false},
+	}
+
+	err := submitCodexInput(io, "agent:@1", "must not be pasted", testCodexSubmitConfig())
+	if err == nil || !strings.Contains(err.Error(), "exited") {
+		t.Fatalf("error = %v, want dead-pane failure", err)
+	}
+	if len(io.pastes) != 0 || io.enters != 0 {
+		t.Fatalf("pastes=%d enters=%d, dead pane must receive no input", len(io.pastes), io.enters)
 	}
 }
 

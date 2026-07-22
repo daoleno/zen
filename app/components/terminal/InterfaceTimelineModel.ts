@@ -81,8 +81,8 @@ type ExplorationEntry = {
 type PatchSummary = {
   title: string;
   files: PatchFileSummary[];
-  totalAdded: number;
-  totalRemoved: number;
+  totalAdded?: number;
+  totalRemoved?: number;
 };
 
 export function buildZenTimeline(
@@ -457,15 +457,14 @@ function activityFromEvent(
         type: "activity",
         id: event.id || `patch:${event.seq}`,
         timestamp: event.timestamp,
-        title: semantic.title,
+        title: summary.title,
         tone: "success",
         icon: "git-compare-outline",
-        detail: safeCollapsedDetail(semantic.detail),
         fileSummaries: summary.files,
         files: summary.files.map((file) => file.path),
         body: summary.files.length > 0 ? undefined : event.body,
         defaultExpanded: false,
-        accessibilityLabel: semantic.accessibilityLabel,
+        accessibilityLabel: summary.title,
         providerToolId: semantic.providerToolId,
         developerDetails: semantic.providerToolId
           ? { providerToolId: semantic.providerToolId }
@@ -888,26 +887,36 @@ function stripProgressSpinnerPrefix(line: string) {
 }
 
 function patchSummaryFromEvent(event: CodexConversationEvent): PatchSummary {
+  const structuredFiles = (event.file_changes ?? []).map((change) => ({
+    path: change.path,
+    movePath: change.move_path,
+    operation: change.operation,
+    added: change.additions,
+    removed: change.deletions,
+  }));
   const parsed = parseApplyPatchSummary(event.body || "");
   const fallbackFiles =
-    parsed.files.length > 0
-      ? parsed.files
-      : (event.files ?? []).map((path) => ({
-          path,
-          operation: "update" as PatchOperation,
-          added: 0,
-          removed: 0,
-        }));
+    structuredFiles.length > 0
+      ? structuredFiles
+      : parsed.files.length > 0
+        ? parsed.files
+        : (event.files ?? []).map((path) => ({
+            path,
+            operation: "update" as PatchOperation,
+          }));
   const files = fallbackFiles.sort((left, right) =>
     left.path.localeCompare(right.path),
   );
-  const totalAdded = files.reduce((sum, file) => sum + file.added, 0);
-  const totalRemoved = files.reduce((sum, file) => sum + file.removed, 0);
+  const { totalAdded, totalRemoved } = knownPatchTotals(files);
   const title = patchSummaryTitle(files, totalAdded, totalRemoved);
   return { title, files, totalAdded, totalRemoved };
 }
 
 function parseApplyPatchSummary(patch: string): PatchSummary {
+  const normalized = patch.replace(/\r\n/g, "\n").replace(/\r/g, "\n");
+  const complete = normalized
+    .split("\n")
+    .some((line) => line.trimEnd() === "*** End Patch");
   const files: PatchFileSummary[] = [];
   let current: PatchFileSummary | null = null;
 
@@ -915,11 +924,15 @@ function parseApplyPatchSummary(patch: string): PatchSummary {
     if (!current) {
       return;
     }
+    if (!complete || current.operation === "delete") {
+      current.added = undefined;
+      current.removed = undefined;
+    }
     files.push(current);
     current = null;
   };
 
-  for (const rawLine of patch.replace(/\r\n/g, "\n").split("\n")) {
+  for (const rawLine of normalized.split("\n")) {
     const line = rawLine.trimEnd();
     const add = /^\*\*\* Add File:\s+(.+)$/.exec(line);
     if (add) {
@@ -963,15 +976,14 @@ function parseApplyPatchSummary(patch: string): PatchSummary {
       continue;
     }
     if (line.startsWith("+")) {
-      current.added += 1;
+      current.added = (current.added ?? 0) + 1;
     } else if (line.startsWith("-")) {
-      current.removed += 1;
+      current.removed = (current.removed ?? 0) + 1;
     }
   }
   finishCurrent();
 
-  const totalAdded = files.reduce((sum, file) => sum + file.added, 0);
-  const totalRemoved = files.reduce((sum, file) => sum + file.removed, 0);
+  const { totalAdded, totalRemoved } = knownPatchTotals(files);
   return {
     title: patchSummaryTitle(files, totalAdded, totalRemoved),
     files,
@@ -982,8 +994,8 @@ function parseApplyPatchSummary(patch: string): PatchSummary {
 
 function patchSummaryTitle(
   files: PatchFileSummary[],
-  totalAdded: number,
-  totalRemoved: number,
+  totalAdded?: number,
+  totalRemoved?: number,
 ) {
   if (files.length === 0) {
     return "Edited files";
@@ -996,17 +1008,78 @@ function patchSummaryTitle(
         : file.operation === "delete"
           ? "Deleted"
           : "Edited";
-    return `${verb} 1 file ${lineCountSummary(file.added, file.removed)}`;
+    const target = safePatchDisplayPath(file) || "1 file";
+    return `${verb} ${target}${lineCountSummary(file.added, file.removed)}`;
   }
-  return `Edited ${files.length} files ${lineCountSummary(totalAdded, totalRemoved)}`;
+
+  let title = `Edited ${files.length} files`;
+  const commonDirectory = commonPatchDirectory(files);
+  if (commonDirectory) {
+    title += ` in ${commonDirectory}`;
+  } else {
+    const firstTarget = files
+      .map(safePatchDisplayPath)
+      .find((path): path is string => Boolean(path));
+    if (firstTarget) {
+      title += ` · ${firstTarget} + ${files.length - 1} more`;
+    }
+  }
+  return title + lineCountSummary(totalAdded, totalRemoved);
 }
 
 export function patchDisplayPath(file: PatchFileSummary) {
   return file.movePath ? `${file.path} -> ${file.movePath}` : file.path;
 }
 
-function lineCountSummary(added: number, removed: number) {
-  return `(+${added} -${removed})`;
+function knownPatchTotals(files: PatchFileSummary[]): {
+  totalAdded?: number;
+  totalRemoved?: number;
+} {
+  if (
+    files.length === 0 ||
+    files.some((file) => file.added == null || file.removed == null)
+  ) {
+    return {};
+  }
+  return {
+    totalAdded: files.reduce((sum, file) => sum + file.added!, 0),
+    totalRemoved: files.reduce((sum, file) => sum + file.removed!, 0),
+  };
+}
+
+function safePatchDisplayPath(file: PatchFileSummary): string | undefined {
+  const path = patchDisplayPath(file);
+  return isUnsafeCollapsedDetail(path) ? undefined : path;
+}
+
+function commonPatchDirectory(files: PatchFileSummary[]): string | undefined {
+  const directories = files.map((file) => {
+    const path = (file.movePath || file.path).replace(/\\/g, "/");
+    const separator = path.lastIndexOf("/");
+    return separator > 0 ? path.slice(0, separator) : "";
+  });
+  if (directories.some((directory) => !directory)) {
+    return undefined;
+  }
+  const segments = directories.map((directory) => directory.split("/"));
+  const common = [...segments[0]];
+  for (const parts of segments.slice(1)) {
+    while (
+      common.length > 0 &&
+      common.some((segment, index) => segment !== parts[index])
+    ) {
+      common.pop();
+    }
+  }
+  const directory = common.join("/");
+  if (!directory || directory === "/" || isUnsafeCollapsedDetail(directory)) {
+    return undefined;
+  }
+  return directory;
+}
+
+function lineCountSummary(added?: number, removed?: number) {
+  return added == null || removed == null ? "" : ` (+${added} -${removed})`;
 }
 
 export function truncateRunes(value: string, limit: number) {

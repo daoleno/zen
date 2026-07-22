@@ -410,6 +410,104 @@ func TestUpdateAgentProgressRejectsUnknownAgent(t *testing.T) {
 	}
 }
 
+func TestSettleAgentInputAcceptedClearsOlderStickyFailure(t *testing.T) {
+	w := New(time.Second)
+	w.registerCreatedSession("brain-agent-worker:@1", "/repo/zen", CreateSessionOptions{
+		Command: "codex",
+		Name:    "Worker",
+	}, time.Date(2026, 6, 8, 8, 0, 0, 0, time.UTC))
+	<-w.Events()
+
+	failed, err := w.UpdateAgentProgress("brain-agent-worker:@1", classifier.AgentProgress{
+		Status:    "failed",
+		Phase:     "starting",
+		Attention: "failed",
+		Summary:   "Initial delegated prompt was not submitted",
+		TaskClass: "lasting_design",
+		EventKind: "risk",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	<-w.Events()
+	if failed.LastProgressAt == nil {
+		t.Fatal("failed progress did not record its timestamp")
+	}
+
+	accepted, err := w.SettleAgentInputAccepted(
+		"brain-agent-worker:@1",
+		failed.LastProgressAt.Add(time.Nanosecond),
+		"working",
+		"Delegated Codex input accepted",
+	)
+	if err != nil {
+		t.Fatalf("SettleAgentInputAccepted returned error: %v", err)
+	}
+	if accepted.State != classifier.StateRunning || accepted.Attention != "none" || accepted.NeedsAttention {
+		t.Fatalf("accepted handoff = %#v", accepted)
+	}
+	if accepted.LastProgressAt != nil || accepted.ExpectedNextCheckAt != nil || accepted.LeaseSeconds != 0 {
+		t.Fatalf("accepted handoff retained sticky lifecycle progress = %#v", accepted)
+	}
+	if accepted.TaskClass != "" || accepted.EventKind != "" || accepted.DetailsJSON != "" {
+		t.Fatalf("accepted handoff retained failure metadata = %#v", accepted)
+	}
+
+	select {
+	case ev := <-w.Events():
+		if ev.Type != "agent_state_change" || ev.OldState != "failed" || ev.NewState != "running" {
+			t.Fatalf("event = %#v", ev)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for accepted handoff event")
+	}
+}
+
+func TestSettleAgentInputAcceptedDoesNotOverwriteNewerLifecycleProgress(t *testing.T) {
+	w := New(time.Second)
+	w.registerCreatedSession("brain-agent-worker:@1", "/repo/zen", CreateSessionOptions{
+		Command: "codex",
+		Name:    "Worker",
+	}, time.Date(2026, 6, 8, 8, 0, 0, 0, time.UTC))
+	<-w.Events()
+	handoffStartedAt := time.Now().UTC()
+
+	progress, err := w.UpdateAgentProgress("brain-agent-worker:@1", classifier.AgentProgress{
+		Status:       "running",
+		Phase:        "verifying",
+		Attention:    "none",
+		Summary:      "Running focused tests",
+		TaskClass:    "lasting_design",
+		EventKind:    "verification",
+		LeaseSeconds: 300,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	<-w.Events()
+	if progress.LastProgressAt == nil || progress.LastProgressAt.Before(handoffStartedAt) {
+		t.Fatalf("test progress timestamp = %#v, handoff start = %s", progress.LastProgressAt, handoffStartedAt)
+	}
+
+	accepted, err := w.SettleAgentInputAccepted(
+		"brain-agent-worker:@1",
+		handoffStartedAt,
+		"starting",
+		"Initial delegated prompt accepted by Codex",
+	)
+	if err != nil {
+		t.Fatalf("SettleAgentInputAccepted returned error: %v", err)
+	}
+	if accepted.Summary != "Running focused tests" || accepted.Phase != "verifying" || accepted.EventKind != "verification" {
+		t.Fatalf("newer lifecycle progress was overwritten: %#v", accepted)
+	}
+	select {
+	case ev := <-w.Events():
+		t.Fatalf("settlement emitted an event after newer progress won: %#v", ev)
+	default:
+	}
+}
+
 func TestSplitTmuxInputTreatsTrailingNewlineAsSubmit(t *testing.T) {
 	body, submit := splitTmuxInput("/status\n")
 	if body != "/status" || !submit {
@@ -511,11 +609,16 @@ func TestCodexInputReadyIgnoresStaleLoadingInScrollback(t *testing.T) {
 	}
 }
 
-func TestCodexInputReadyRejectsMCPStartupEvenWithComposer(t *testing.T) {
-	content := "╭────╮\n│ >_ OpenAI Codex (v0.144.3) │\n│ model: gpt-5.6 medium │\n╰────╯\n" +
-		"• Starting MCP servers (0/3): context7, playwright\n\n› Find and fix a bug in @filename\n"
-	if isAgentInputReady("codex", content) {
-		t.Fatal("Codex composer must not be ready while MCP startup is visibly active")
+func TestCodexInputReadyAcceptsComposerDuringProviderOwnedMCPStartup(t *testing.T) {
+	for _, status := range []string{
+		"• Starting MCP servers (0/3): context7, playwright",
+		"• Booting MCP server: codex_apps (16s • esc to interrupt)",
+	} {
+		content := "╭────╮\n│ >_ OpenAI Codex (v0.144.6) │\n│ model: gpt-5.6-sol medium │\n╰────╯\n" +
+			status + "\n\n› Find and fix a bug in @filename\n"
+		if !isAgentInputReady("codex", content) {
+			t.Fatalf("provider composer should own readiness during optional MCP startup:\n%s", content)
+		}
 	}
 }
 
@@ -536,8 +639,6 @@ func TestCodexInputReadyWithExplicitCommandRejectsHeaderlessUnsafeStates(t *test
 	}{
 		{name: "model loading", content: longScrollback +
 			"\n│ model: loading │\n\n› Find and fix a bug in @filename\n"},
-		{name: "MCP startup", content: longScrollback +
-			"\n• Starting MCP servers (0/3): context7, playwright\n\n› Find and fix a bug in @filename\n"},
 		{name: "startup continue", content: longScrollback +
 			"\nDo you trust the contents of this directory?\n› 1. Yes, continue\n  Press enter to continue\n"},
 	}
@@ -975,6 +1076,33 @@ func TestDetectAgentProcessPrefersCodexChildStartTime(t *testing.T) {
 	command, startedAt, pid := detectAgentProcess("codex", 10, processes, codexStarted.Add(5*time.Second))
 	if command != "codex" || !startedAt.Equal(codexStarted) || pid != 20 {
 		t.Fatalf("detectAgentProcess() = (%q, %s, %d), want codex child start %s pid 20", command, startedAt, pid, codexStarted)
+	}
+}
+
+func TestParseProcessSnapshotUsesStableAbsoluteStartTime(t *testing.T) {
+	location := time.FixedZone("test", 8*60*60)
+	first := parseProcessSnapshot([]byte(
+		"3887666 3887534 Tue Jul 21 00:45:09 2026 codex /opt/codex --sandbox\n",
+	), location)
+	second := parseProcessSnapshot([]byte(
+		"3887666 3887534 Tue Jul 21 00:45:09 2026 codex /opt/codex --sandbox\n",
+	), location)
+
+	wantStartedAt := time.Date(2026, 7, 21, 0, 45, 9, 0, location)
+	for name, snapshot := range map[string]map[int]processInfo{
+		"first":  first,
+		"second": second,
+	} {
+		process, ok := snapshot[3887666]
+		if !ok {
+			t.Fatalf("%s snapshot omitted process", name)
+		}
+		if !process.startedAt.Equal(wantStartedAt) {
+			t.Fatalf("%s start = %s, want %s", name, process.startedAt, wantStartedAt)
+		}
+		if process.ppid != 3887534 || process.comm != "codex" || process.args != "/opt/codex --sandbox" {
+			t.Fatalf("%s process = %#v", name, process)
+		}
 	}
 }
 

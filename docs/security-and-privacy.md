@@ -10,6 +10,8 @@ Zen separates:
 
 Pairing uses a short-lived enrollment token. Normal API traffic uses device signatures bound to the daemon identity you paired with—not a shared password.
 
+An enrolled client that can control a live Session Terminal is trusted with that Session's host-file authority. Session File Preview is read-only and size-bounded, but it is not a workspace sandbox: absolute references resolve to their canonical host files, relative references resolve from the exact live Session CWD, and filesystem aliases or symlinks resolve to the same canonical file. Pair only devices that you trust with the host access already exposed by live Terminal control.
+
 Details: [architecture.md](architecture.md).
 
 ## What to expose
@@ -21,22 +23,21 @@ Details: [architecture.md](architecture.md).
 
 ## Data locations (daemon host)
 
-| Path | Contents |
-| --- | --- |
-| `~/.zen/identity.json` | Daemon private key material |
-| `~/.zen/trusted-devices.json` | Enrolled phones |
-| `~/.zen/pairing-tokens.json` | Short-lived pairing tokens |
-| `~/.zen/work/` | File-first work log markdown |
-| `~/.zen/brain/` | Brain workspace state |
-| `~/.zen/executors.toml` | Optional executor overrides |
-| `~/.zen/worktrees/` | Optional durable Git worktrees when concurrent writers genuinely require isolation |
-| `~/.zen/run/agent-resources/` | Delegated-session resource leases |
-| `~/.zen/t/` | Exact-owned delegated-session private temporary directories, removed with the owned session; legacy `~/.zen/tmp/agent-resources/` is cleanup-compatible for older sessions |
-| `<state directory>/uploads/` | Authenticated app uploads (32 MiB/file, 512 MiB aggregate, seven-day retention) |
-| Agent homes (e.g. Codex/Claude/Cursor/Grok dirs) | Transcripts zen may read for Chat |
+| Path                                             | Contents                                                                                                                                                                   |
+| ------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `~/.zen/identity.json`                           | Daemon private key material                                                                                                                                                |
+| `~/.zen/trusted-devices.json`                    | Enrolled phones                                                                                                                                                            |
+| `~/.zen/pairing-tokens.json`                     | Short-lived pairing tokens                                                                                                                                                 |
+| `~/.zen/work/`                                   | File-first work log markdown                                                                                                                                               |
+| `~/.zen/brain/`                                  | Brain workspace state                                                                                                                                                      |
+| `~/.zen/executors.toml`                          | Optional executor overrides                                                                                                                                                |
+| `~/.zen/worktrees/`                              | Optional durable Git worktrees when concurrent writers genuinely require isolation                                                                                         |
+| `~/.zen/run/agent-resources/`                    | Delegated-session resource leases                                                                                                                                          |
+| `~/.zen/t/`                                      | Exact-owned delegated-session private temporary directories, removed with the owned session; legacy `~/.zen/tmp/agent-resources/` is cleanup-compatible for older sessions |
+| `<state directory>/uploads/`                     | Authenticated app uploads (32 MiB/file, 512 MiB aggregate, seven-day retention)                                                                                            |
+| Agent homes (e.g. Codex/Claude/Cursor/Grok dirs) | Transcripts zen may read for Chat                                                                                                                                          |
 
 Treat `~/.zen` like SSH keys: mode `0700` directory, do not commit it, do not share pairing links publicly.
-
 
 ## Mobile app data
 

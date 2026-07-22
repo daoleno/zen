@@ -10,8 +10,10 @@ export type PatchFileSummary = {
   path: string;
   movePath?: string;
   operation: PatchOperation;
-  added: number;
-  removed: number;
+  /** Omitted when the provider did not report an exact line count. */
+  added?: number;
+  /** Omitted when the provider did not report an exact line count. */
+  removed?: number;
 };
 
 export interface ZenActivityTimelineItem {

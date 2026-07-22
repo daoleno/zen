@@ -639,6 +639,7 @@ function codexEventsEqual(
       left.explanation === right.explanation &&
       left.source === right.source &&
       stringArraysEqual(left.files, right.files) &&
+      fileChangesEqual(left.file_changes, right.file_changes) &&
       planStepsEqual(left.plan, right.plan))
   );
 }
@@ -652,6 +653,32 @@ function stringArraysEqual(left?: string[], right?: string[]) {
   }
   for (let index = 0; index < left.length; index += 1) {
     if (left[index] !== right[index]) {
+      return false;
+    }
+  }
+  return true;
+}
+
+function fileChangesEqual(
+  left?: CodexConversation["events"][number]["file_changes"],
+  right?: CodexConversation["events"][number]["file_changes"],
+) {
+  if (left === right) {
+    return true;
+  }
+  if (!left || !right || left.length !== right.length) {
+    return false;
+  }
+  for (let index = 0; index < left.length; index += 1) {
+    const leftChange = left[index];
+    const rightChange = right[index];
+    if (
+      leftChange?.path !== rightChange?.path ||
+      leftChange?.move_path !== rightChange?.move_path ||
+      leftChange?.operation !== rightChange?.operation ||
+      leftChange?.additions !== rightChange?.additions ||
+      leftChange?.deletions !== rightChange?.deletions
+    ) {
       return false;
     }
   }
@@ -1000,6 +1027,7 @@ function cleanCodexConversationEventForChat(
     !title &&
     !toolName &&
     !event.files?.length &&
+    !event.file_changes?.length &&
     !nextPlan?.length
   ) {
     return null;

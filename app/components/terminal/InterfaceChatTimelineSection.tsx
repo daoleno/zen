@@ -1,4 +1,4 @@
-import React, { useCallback } from "react";
+import React, { useCallback, useMemo, useState } from "react";
 import {
   type FlatList,
   type LayoutChangeEvent,
@@ -27,9 +27,16 @@ import type { ZenTimelineItem } from "./InterfaceTimelineItemView";
 import { useInterfaceTimelineItems } from "./useInterfaceTimelineItems";
 import type { TurnFocusSpacerRequest } from "./turnFocusState";
 import type { StructuredChatKeyboardLifecycleGate } from "./chatKeyboardOverlayPolicy";
+import { SessionFilePreviewContext } from "./SessionFilePreviewContext";
+import { SessionFilePreviewSheet } from "./SessionFilePreviewSheet";
 
 interface InterfaceChatTimelineSectionProps {
   serverId: string;
+  serverUrl: string;
+  daemonId: string;
+  agentId: string;
+  agentProcessId?: number;
+  agentStartedAt?: number;
   agentCwd?: string;
   conversation: CodexConversation | null;
   events: CodexConversationEvent[];
@@ -80,6 +87,11 @@ interface InterfaceChatTimelineSectionProps {
 
 export function InterfaceChatTimelineSection({
   serverId,
+  serverUrl,
+  daemonId,
+  agentId,
+  agentProcessId,
+  agentStartedAt,
   agentCwd,
   conversation,
   events,
@@ -119,6 +131,27 @@ export function InterfaceChatTimelineSection({
   showUnavailableAction,
   onRetryPendingUserMessage,
 }: InterfaceChatTimelineSectionProps) {
+  const [filePreviewReference, setFilePreviewReference] = useState<
+    string | null
+  >(null);
+  const filePreviewContext = useMemo(
+    () => ({
+      open(reference: string) {
+        const normalized = reference.trim();
+        if (
+          !normalized ||
+          normalized.length > 4096 ||
+          normalized.includes("\u0000")
+        ) {
+          return false;
+        }
+        setFilePreviewReference(normalized);
+        return true;
+      },
+    }),
+    [],
+  );
+  const closeFilePreview = useCallback(() => setFilePreviewReference(null), []);
   const timelineItems = useInterfaceTimelineItems({
     events,
     pendingUserMessages,
@@ -143,51 +176,66 @@ export function InterfaceChatTimelineSection({
     syncingConversation && conversation?.reason === "transcript_not_found";
 
   return (
-    <InterfaceTimelineView
-      scrollRef={scrollRef}
-      items={timelineItems}
-      loading={loading}
-      error={error}
-      emptyStateSuppressed={commandMenuOpen}
-      unavailable={
-        conversation &&
-        !conversation.available &&
-        !syncingConversation &&
-        !emptyConversationReady
-      }
-      unavailableReason={conversationUnavailableReason(conversation?.reason)}
-      syncing={syncingConversation && !emptyConversationReady}
-      textSelectable={textSelectable}
-      extraContentPadding={extraContentPadding}
-      keyboardLifecycleGate={keyboardLifecycleGate}
-      turnFocusClearanceRequest={turnFocusClearanceRequest}
-      turnFocusSpacer={turnFocusSpacer}
-      turnFocusPendingMessageId={turnFocusPendingMessageId}
-      topChromeInset={topChromeInset}
-      chrome={chrome}
-      theme={theme}
-      agentCwd={agentCwd}
-      emptyTitle={emptyTitle}
-      emptyBody={emptyBody}
-      onLayout={onLayout}
-      onScroll={onScroll}
-      onScrollBeginDrag={onScrollBeginDrag}
-      onScrollEndDrag={onScrollEndDrag}
-      onMomentumScrollBegin={onMomentumScrollBegin}
-      onMomentumScrollEnd={onMomentumScrollEnd}
-      onTouchActiveChange={onTouchActiveChange}
-      onContentSizeChange={onContentSizeChange}
-      onClearanceChange={onClearanceChange}
-      onTurnFocusAnchorAvailable={onTurnFocusAnchorAvailable}
-      onTurnFocusRowLayout={onTurnFocusRowLayout}
-      onTurnFocusSpacerLayout={onTurnFocusSpacerLayout}
-      onTextSelectionGestureStart={onTextSelectionGestureStart}
-      onTextSelectionGestureEnd={onTextSelectionGestureEnd}
-      onUnavailableAction={onUnavailableAction}
-      showUnavailableAction={showUnavailableAction}
-      loadAssetPreview={loadAssetPreview}
-      formatPatchPath={patchDisplayPath}
-      truncateBody={truncateRunes}
-    />
+    <SessionFilePreviewContext.Provider value={filePreviewContext}>
+      <InterfaceTimelineView
+        scrollRef={scrollRef}
+        items={timelineItems}
+        loading={loading}
+        error={error}
+        emptyStateSuppressed={commandMenuOpen}
+        unavailable={
+          conversation &&
+          !conversation.available &&
+          !syncingConversation &&
+          !emptyConversationReady
+        }
+        unavailableReason={conversationUnavailableReason(conversation?.reason)}
+        syncing={syncingConversation && !emptyConversationReady}
+        textSelectable={textSelectable}
+        extraContentPadding={extraContentPadding}
+        keyboardLifecycleGate={keyboardLifecycleGate}
+        turnFocusClearanceRequest={turnFocusClearanceRequest}
+        turnFocusSpacer={turnFocusSpacer}
+        turnFocusPendingMessageId={turnFocusPendingMessageId}
+        topChromeInset={topChromeInset}
+        chrome={chrome}
+        theme={theme}
+        agentCwd={agentCwd}
+        emptyTitle={emptyTitle}
+        emptyBody={emptyBody}
+        onLayout={onLayout}
+        onScroll={onScroll}
+        onScrollBeginDrag={onScrollBeginDrag}
+        onScrollEndDrag={onScrollEndDrag}
+        onMomentumScrollBegin={onMomentumScrollBegin}
+        onMomentumScrollEnd={onMomentumScrollEnd}
+        onTouchActiveChange={onTouchActiveChange}
+        onContentSizeChange={onContentSizeChange}
+        onClearanceChange={onClearanceChange}
+        onTurnFocusAnchorAvailable={onTurnFocusAnchorAvailable}
+        onTurnFocusRowLayout={onTurnFocusRowLayout}
+        onTurnFocusSpacerLayout={onTurnFocusSpacerLayout}
+        onTextSelectionGestureStart={onTextSelectionGestureStart}
+        onTextSelectionGestureEnd={onTextSelectionGestureEnd}
+        onUnavailableAction={onUnavailableAction}
+        showUnavailableAction={showUnavailableAction}
+        loadAssetPreview={loadAssetPreview}
+        formatPatchPath={patchDisplayPath}
+        truncateBody={truncateRunes}
+      />
+      <SessionFilePreviewSheet
+        reference={filePreviewReference}
+        serverId={serverId}
+        serverUrl={serverUrl}
+        daemonId={daemonId}
+        agentId={agentId}
+        processId={agentProcessId}
+        startedAt={agentStartedAt}
+        cwd={conversation?.cwd || agentCwd}
+        chrome={chrome}
+        theme={theme}
+        onClose={closeFilePreview}
+      />
+    </SessionFilePreviewContext.Provider>
   );
 }

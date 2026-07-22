@@ -1,11 +1,12 @@
 import React from "react";
-import { StyleSheet, Text, View } from "react-native";
+import { Pressable, StyleSheet, Text, View } from "react-native";
 import type {
   TerminalThemeChrome,
   TerminalThemePalette,
 } from "../../constants/terminalThemes";
 import { Typography } from "../../constants/tokens";
 import type { PatchFileSummary } from "./InterfaceTimelineActivityTypes";
+import { useSessionFilePreviewContext } from "./SessionFilePreviewContext";
 
 export function PatchFileSummaryList({
   files,
@@ -18,23 +19,34 @@ export function PatchFileSummaryList({
   theme: TerminalThemePalette;
   formatPatchPath(file: PatchFileSummary): string;
 }) {
+  const filePreview = useSessionFilePreviewContext();
   return (
     <View style={styles.diffFiles}>
       {files.slice(0, 6).map((file) => (
-        <View key={`${file.operation}:${file.path}`} style={styles.diffFileRow}>
+        <Pressable
+          key={`${file.operation}:${file.path}`}
+          accessibilityRole={filePreview ? "link" : undefined}
+          disabled={!filePreview}
+          onPress={() => filePreview?.open(file.movePath || file.path)}
+          style={styles.diffFileRow}
+        >
           <Text
             style={[styles.diffPath, { color: chrome.textMuted }]}
             numberOfLines={2}
           >
             {formatPatchPath(file)}
           </Text>
-          <Text style={[styles.diffAdded, { color: theme.green }]}>
-            +{file.added}
-          </Text>
-          <Text style={[styles.diffRemoved, { color: theme.red }]}>
-            -{file.removed}
-          </Text>
-        </View>
+          {file.added != null ? (
+            <Text style={[styles.diffAdded, { color: theme.green }]}>
+              +{file.added}
+            </Text>
+          ) : null}
+          {file.removed != null ? (
+            <Text style={[styles.diffRemoved, { color: theme.red }]}>
+              -{file.removed}
+            </Text>
+          ) : null}
+        </Pressable>
       ))}
     </View>
   );

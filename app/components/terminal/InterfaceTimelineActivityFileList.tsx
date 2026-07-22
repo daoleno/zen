@@ -1,7 +1,8 @@
 import React from "react";
-import { StyleSheet, Text, View } from "react-native";
+import { Pressable, StyleSheet, Text, View } from "react-native";
 import type { TerminalThemeChrome } from "../../constants/terminalThemes";
 import { Typography } from "../../constants/tokens";
+import { useSessionFilePreviewContext } from "./SessionFilePreviewContext";
 
 export function ActivityFileList({
   files,
@@ -10,18 +11,25 @@ export function ActivityFileList({
   files: string[];
   chrome: TerminalThemeChrome;
 }) {
+  const filePreview = useSessionFilePreviewContext();
   const visible = files.slice(0, 6);
   const remaining = files.length - visible.length;
   return (
     <View style={styles.files}>
       {visible.map((file) => (
-        <Text
+        <Pressable
           key={file}
-          style={[styles.fileText, { color: chrome.textMuted }]}
-          numberOfLines={2}
+          accessibilityRole={filePreview ? "link" : undefined}
+          disabled={!filePreview}
+          onPress={() => filePreview?.open(file)}
         >
-          {file}
-        </Text>
+          <Text
+            style={[styles.fileText, { color: chrome.textMuted }]}
+            numberOfLines={2}
+          >
+            {file}
+          </Text>
+        </Pressable>
       ))}
       {remaining > 0 ? (
         <Text style={[styles.fileText, { color: chrome.textSubtle }]}>

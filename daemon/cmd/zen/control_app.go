@@ -23,6 +23,7 @@ type controlWatcher interface {
 	HasSession(target string) bool
 	CreateSession(preferredTarget string, opts watcher.CreateSessionOptions) (string, error)
 	UpdateAgentProgress(id string, progress classifier.AgentProgress) (*classifier.Agent, error)
+	SettleAgentInputAccepted(id string, handoffStartedAt time.Time, phase, summary string) (*classifier.Agent, error)
 	SendInput(sessionID, text string) error
 	SendInputWhenReady(sessionID, command, text string) error
 	KillSession(sessionID string) error
@@ -239,9 +240,17 @@ func (a *controlApp) handleAgentSpawn(req control.Request) control.Response {
 	}
 
 	if prompt != "" {
-		if err := a.watcher.SendInputWhenReady(agentID, command, ensureTrailingNewline(prompt)); err != nil {
-			a.recordSubmissionFailure(agentID, "Initial delegated prompt was not submitted: "+err.Error())
-			return control.ErrorResponse("send_prompt_failed", err.Error())
+		var sendErr error
+		if watcher.IsCodexCommand(command) {
+			sendErr = a.submitCodexHandoff(agentID, command, ensureTrailingNewline(prompt), true)
+		} else {
+			sendErr = a.watcher.SendInputWhenReady(agentID, command, ensureTrailingNewline(prompt))
+			if sendErr != nil {
+				a.recordSubmissionFailure(agentID, "Initial delegated prompt was not submitted: "+sendErr.Error())
+			}
+		}
+		if sendErr != nil {
+			return control.ErrorResponse("send_prompt_failed", sendErr.Error())
 		}
 	}
 
@@ -287,13 +296,17 @@ func (a *controlApp) handleAgentSend(req control.Request) control.Response {
 		return control.ErrorResponse("agent_session_unavailable", "Agent is listed but the tmux target is no longer available. Refresh the agent list and spawn a new session if needed.")
 	}
 	var sendErr error
+	codexHandoff := false
 	if req.Submit && agent != nil && watcher.IsCodexCommand(agent.Command) {
-		sendErr = a.watcher.SendInputWhenReady(agentID, agent.Command, text)
+		codexHandoff = true
+		sendErr = a.submitCodexHandoff(agentID, agent.Command, text, false)
 	} else {
 		sendErr = a.watcher.SendInput(agentID, text)
 	}
 	if sendErr != nil {
-		a.recordSubmissionFailure(agentID, "Delegated follow-up was not submitted: "+sendErr.Error())
+		if !codexHandoff {
+			a.recordSubmissionFailure(agentID, "Delegated follow-up was not submitted: "+sendErr.Error())
+		}
 		return control.ErrorResponse("send_failed", sendErr.Error())
 	}
 	agent = a.watcher.GetAgent(agentID)
@@ -302,6 +315,38 @@ func (a *controlApp) handleAgentSend(req control.Request) control.Response {
 	}
 	out := controlAgent(agent)
 	return control.Response{OK: true, Agent: &out}
+}
+
+// submitCodexHandoff is the single control-plane owner for both the initial
+// delegated prompt and confirmed Codex follow-ups. The watcher owns the
+// paste-once/Enter-once provider transaction; this owner settles the canonical
+// Agent projection from that same result and never replays an ambiguous send.
+func (a *controlApp) submitCodexHandoff(agentID, command, text string, initial bool) error {
+	handoffStartedAt := time.Now().UTC()
+	err := a.watcher.SendInputWhenReady(agentID, command, text)
+	if err != nil {
+		prefix := "Delegated follow-up was not submitted: "
+		if initial {
+			prefix = "Initial delegated prompt was not submitted: "
+		}
+		a.recordSubmissionFailure(agentID, prefix+err.Error())
+		return err
+	}
+	a.recordCodexHandoffAccepted(agentID, handoffStartedAt, initial)
+	return nil
+}
+
+func (a *controlApp) recordCodexHandoffAccepted(agentID string, handoffStartedAt time.Time, initial bool) {
+	if a == nil || a.watcher == nil {
+		return
+	}
+	phase := "working"
+	summary := "Delegated Codex input accepted"
+	if initial {
+		phase = "starting"
+		summary = "Initial delegated prompt accepted by Codex"
+	}
+	_, _ = a.watcher.SettleAgentInputAccepted(agentID, handoffStartedAt, phase, summary)
 }
 
 func (a *controlApp) recordSubmissionFailure(agentID, summary string) {

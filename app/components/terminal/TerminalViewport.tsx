@@ -166,6 +166,8 @@ function TerminalViewportImpl({
                 key={`interface-chat:${sessionKey}`}
                 visible
                 serverId={serverId}
+                serverUrl={serverUrl}
+                daemonId={daemonId}
                 agentId={agentId}
                 agentInfo={interfaceChatAgentInfo}
                 connectionState={connectionState}

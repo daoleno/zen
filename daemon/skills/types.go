@@ -40,8 +40,14 @@ type AgentSupport struct {
 }
 
 type ManagementCapability struct {
-	CanRemove bool   `json:"can_remove"`
-	Reason    string `json:"reason,omitempty"`
+	CanRemove    bool               `json:"can_remove"`
+	RemovalPlans []AgentRemovalPlan `json:"removal_plans,omitempty"`
+	Reason       string             `json:"reason,omitempty"`
+}
+
+type AgentRemovalPlan struct {
+	Agent          Agent   `json:"agent"`
+	AffectedAgents []Agent `json:"affected_agents"`
 }
 
 type SkillBinding struct {
@@ -86,6 +92,40 @@ type CatalogSkill struct {
 type CatalogResult struct {
 	Query  string         `json:"query"`
 	Skills []CatalogSkill `json:"skills"`
+}
+
+type CatalogView string
+
+const (
+	CatalogViewAllTime  CatalogView = "all-time"
+	CatalogViewTrending CatalogView = "trending"
+	CatalogViewHot      CatalogView = "hot"
+)
+
+type RankedCatalogSkill struct {
+	ID                string `json:"id"`
+	SkillID           string `json:"skill_id"`
+	Name              string `json:"name"`
+	Source            string `json:"source"`
+	Rank              int    `json:"rank"`
+	TotalInstalls     *int64 `json:"total_installs,omitempty"`
+	Installs24h       *int64 `json:"installs_24h,omitempty"`
+	CurrentInstalls   *int64 `json:"current_installs,omitempty"`
+	YesterdayInstalls *int64 `json:"yesterday_installs,omitempty"`
+	Change            *int64 `json:"change,omitempty"`
+	Installable       bool   `json:"installable"`
+}
+
+type CatalogLeaderboard struct {
+	View        CatalogView          `json:"view"`
+	TotalSkills int64                `json:"total_skills"`
+	Skills      []RankedCatalogSkill `json:"skills"`
+}
+
+type CatalogLeaderboards struct {
+	AllTime  CatalogLeaderboard `json:"all_time"`
+	Trending CatalogLeaderboard `json:"trending"`
+	Hot      CatalogLeaderboard `json:"hot"`
 }
 
 type MutationOperation string

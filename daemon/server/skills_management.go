@@ -22,6 +22,12 @@ type skillsInventoryRequest struct {
 	cancel     context.CancelFunc
 }
 
+type skillsCatalogRequest struct {
+	requestID  string
+	generation int64
+	cancel     context.CancelFunc
+}
+
 type skillsInventoryResponse struct {
 	Type       string              `json:"type"`
 	RequestID  string              `json:"request_id"`
@@ -34,6 +40,13 @@ type skillsSearchResponse struct {
 	RequestID  string                  `json:"request_id"`
 	Generation int64                   `json:"generation"`
 	Result     skillmgmt.CatalogResult `json:"result"`
+}
+
+type skillsCatalogResponse struct {
+	Type         string                        `json:"type"`
+	RequestID    string                        `json:"request_id"`
+	Generation   int64                         `json:"generation"`
+	Leaderboards skillmgmt.CatalogLeaderboards `json:"leaderboards"`
 }
 
 type skillsCommandResponse struct {
@@ -107,6 +120,66 @@ func (s *Server) claimSkillsInventory(conn *websocket.Conn, expected skillsInven
 		return false
 	}
 	delete(s.skillsInventories, conn)
+	return true
+}
+
+func (s *Server) handleSkillsCatalog(conn *websocket.Conn, raw clientMessage) {
+	if !validSkillsRequest(raw.RequestID, raw.Generation) || raw.Limit < 0 || raw.Limit > skillmgmt.MaxLeaderboardLimit {
+		s.sendSkillsError(conn, "skills_catalog_error", raw, "invalid_request", "Invalid Skills catalog request.")
+		return
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	next := skillsCatalogRequest{requestID: raw.RequestID, generation: raw.Generation, cancel: cancel}
+	previous, hadPrevious := s.replaceSkillsCatalog(conn, next)
+	if hadPrevious {
+		s.sendJSON(conn, skillsErrorResponse{
+			Type:       "skills_catalog_error",
+			RequestID:  previous.requestID,
+			Generation: previous.generation,
+			Code:       "superseded",
+			Message:    "A newer Skills catalog request replaced this request.",
+		})
+	}
+	go func() {
+		leaderboards, err := s.skillsCatalog.Read(ctx, raw.Limit)
+		if !s.claimSkillsCatalog(conn, next) {
+			return
+		}
+		if err != nil {
+			if errors.Is(err, context.Canceled) {
+				return
+			}
+			s.sendSkillsError(conn, "skills_catalog_error", raw, "catalog_failed", err.Error())
+			return
+		}
+		s.sendJSON(conn, skillsCatalogResponse{
+			Type:         "skills_catalog",
+			RequestID:    raw.RequestID,
+			Generation:   raw.Generation,
+			Leaderboards: leaderboards,
+		})
+	}()
+}
+
+func (s *Server) replaceSkillsCatalog(conn *websocket.Conn, next skillsCatalogRequest) (skillsCatalogRequest, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	previous, ok := s.skillsCatalogs[conn]
+	if ok {
+		previous.cancel()
+	}
+	s.skillsCatalogs[conn] = next
+	return previous, ok
+}
+
+func (s *Server) claimSkillsCatalog(conn *websocket.Conn, expected skillsCatalogRequest) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	current, ok := s.skillsCatalogs[conn]
+	if !ok || current.requestID != expected.requestID || current.generation != expected.generation {
+		return false
+	}
+	delete(s.skillsCatalogs, conn)
 	return true
 }
 

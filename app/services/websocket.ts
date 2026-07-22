@@ -18,15 +18,24 @@ import {
   normalizeCodexConversation,
   type CodexConversation,
 } from "./codexConversation";
+import {
+  normalizeSessionFileMetadata,
+  normalizeSessionFileText,
+  type SessionFileMetadata,
+  type SessionFileRequest,
+  type SessionFileTextPreview,
+} from "./sessionFilePreview";
 import type { CalendarItem } from "../store/calendar";
 import {
   normalizeSkillsCatalogResult,
   normalizeSkillsInventory,
+  normalizeSkillsLeaderboards,
   normalizeSkillsMutationCommand,
   type ManagedSkillAgent,
   type SkillMutationOperation,
   type SkillsCatalogResult,
   type SkillsInventory,
+  type SkillsLeaderboards,
   type SkillsMutationCommand,
 } from "./skillsManagement";
 import {
@@ -1213,12 +1222,17 @@ export class MultiServerWebSocketClient {
           this.off("skills_inventory_error", handleError);
         };
         const handleInventory = (payload: any) => {
-          if (payload.serverId !== serverId || payload.request_id !== requestId) {
+          if (
+            payload.serverId !== serverId ||
+            payload.request_id !== requestId
+          ) {
             return;
           }
           cleanup();
           if (payload.generation !== options.generation) {
-            reject(new Error("Daemon returned a stale Skills inventory generation."));
+            reject(
+              new Error("Daemon returned a stale Skills inventory generation."),
+            );
             return;
           }
           try {
@@ -1231,11 +1245,16 @@ export class MultiServerWebSocketClient {
           }
         };
         const handleError = (payload: any) => {
-          if (payload.serverId !== serverId || payload.request_id !== requestId) {
+          if (
+            payload.serverId !== serverId ||
+            payload.request_id !== requestId
+          ) {
             return;
           }
           cleanup();
-          reject(new Error(payload.message || "Failed to load installed Skills."));
+          reject(
+            new Error(payload.message || "Failed to load installed Skills."),
+          );
         };
         const timer = setTimeout(() => {
           cleanup();
@@ -1258,6 +1277,69 @@ export class MultiServerWebSocketClient {
     );
   }
 
+  getSkillsLeaderboards(
+    serverId: string,
+    options: { generation: number; limit?: number },
+  ) {
+    const requestId = `${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
+    return new Promise<{
+      generation: number;
+      leaderboards: SkillsLeaderboards;
+    }>((resolve, reject) => {
+      const cleanup = () => {
+        if (timer) clearTimeout(timer);
+        this.off("skills_catalog", handleCatalog);
+        this.off("skills_catalog_error", handleError);
+      };
+      const handleCatalog = (payload: any) => {
+        if (payload.serverId !== serverId || payload.request_id !== requestId) {
+          return;
+        }
+        cleanup();
+        if (payload.generation !== options.generation) {
+          reject(
+            new Error("Daemon returned a stale Skills catalog generation."),
+          );
+          return;
+        }
+        try {
+          resolve({
+            generation: options.generation,
+            leaderboards: normalizeSkillsLeaderboards(payload.leaderboards),
+          });
+        } catch (error) {
+          reject(error);
+        }
+      };
+      const handleError = (payload: any) => {
+        if (payload.serverId !== serverId || payload.request_id !== requestId) {
+          return;
+        }
+        cleanup();
+        reject(
+          new Error(payload.message || "Failed to load skills.sh rankings."),
+        );
+      };
+      const timer = setTimeout(() => {
+        cleanup();
+        reject(new Error("Timed out while loading skills.sh rankings."));
+      }, 12000);
+      this.on("skills_catalog", handleCatalog);
+      this.on("skills_catalog_error", handleError);
+      this.sendRequestNow(
+        serverId,
+        {
+          type: "skills_catalog",
+          request_id: requestId,
+          generation: options.generation,
+          limit: options.limit ?? 30,
+        },
+        cleanup,
+        reject,
+      );
+    });
+  }
+
   searchSkillsCatalog(
     serverId: string,
     options: { query: string; limit?: number; generation: number },
@@ -1271,12 +1353,17 @@ export class MultiServerWebSocketClient {
           this.off("skills_search_error", handleError);
         };
         const handleSearch = (payload: any) => {
-          if (payload.serverId !== serverId || payload.request_id !== requestId) {
+          if (
+            payload.serverId !== serverId ||
+            payload.request_id !== requestId
+          ) {
             return;
           }
           cleanup();
           if (payload.generation !== options.generation) {
-            reject(new Error("Daemon returned a stale Skills search generation."));
+            reject(
+              new Error("Daemon returned a stale Skills search generation."),
+            );
             return;
           }
           try {
@@ -1289,7 +1376,10 @@ export class MultiServerWebSocketClient {
           }
         };
         const handleError = (payload: any) => {
-          if (payload.serverId !== serverId || payload.request_id !== requestId) {
+          if (
+            payload.serverId !== serverId ||
+            payload.request_id !== requestId
+          ) {
             return;
           }
           cleanup();
@@ -1511,6 +1601,117 @@ export class MultiServerWebSocketClient {
           request_id: requestId,
           path: options.path,
           cwd: options.cwd,
+        },
+        cleanup,
+        reject,
+      );
+    });
+  }
+
+  getSessionFileMetadata(
+    serverId: string,
+    request: SessionFileRequest,
+  ): Promise<SessionFileMetadata> {
+    const requestId = `${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
+    return new Promise((resolve, reject) => {
+      const cleanup = () => {
+        clearTimeout(timer);
+        this.off("session_file_metadata", handleMetadata);
+        this.off("error", handleError);
+      };
+      const handleMetadata = (payload: any) => {
+        if (payload.serverId !== serverId || payload.request_id !== requestId) {
+          return;
+        }
+        cleanup();
+        try {
+          resolve(normalizeSessionFileMetadata(payload.metadata));
+        } catch (error) {
+          reject(error);
+        }
+      };
+      const handleError = (payload: any) => {
+        if (payload.serverId !== serverId || payload.request_id !== requestId) {
+          return;
+        }
+        cleanup();
+        const error = new Error(
+          payload.message || "Failed to inspect the Session file.",
+        );
+        (error as Error & { code?: string }).code = payload.code;
+        reject(error);
+      };
+      const timer = setTimeout(() => {
+        cleanup();
+        reject(new Error("Timed out while inspecting the Session file."));
+      }, 10000);
+      this.on("session_file_metadata", handleMetadata);
+      this.on("error", handleError);
+      this.sendRequestNow(
+        serverId,
+        {
+          type: "session_file_metadata",
+          request_id: requestId,
+          agent_id: request.agentId,
+          process_id: request.processId,
+          started_at: request.startedAt,
+          path: request.path,
+        },
+        cleanup,
+        reject,
+      );
+    });
+  }
+
+  getSessionFileText(
+    serverId: string,
+    request: SessionFileRequest & { generation: string },
+  ): Promise<SessionFileTextPreview> {
+    const requestId = `${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
+    return new Promise((resolve, reject) => {
+      const cleanup = () => {
+        clearTimeout(timer);
+        this.off("session_file_text", handleText);
+        this.off("error", handleError);
+      };
+      const handleText = (payload: any) => {
+        if (payload.serverId !== serverId || payload.request_id !== requestId) {
+          return;
+        }
+        cleanup();
+        try {
+          resolve(normalizeSessionFileText(payload.text));
+        } catch (error) {
+          reject(error);
+        }
+      };
+      const handleError = (payload: any) => {
+        if (payload.serverId !== serverId || payload.request_id !== requestId) {
+          return;
+        }
+        cleanup();
+        const error = new Error(
+          payload.message || "Failed to read the Session file.",
+        );
+        (error as Error & { code?: string }).code = payload.code;
+        reject(error);
+      };
+      const timer = setTimeout(() => {
+        cleanup();
+        reject(new Error("Timed out while reading the Session file."));
+      }, 10000);
+      this.on("session_file_text", handleText);
+      this.on("error", handleError);
+      this.sendRequestNow(
+        serverId,
+        {
+          type: "session_file_text",
+          request_id: requestId,
+          agent_id: request.agentId,
+          process_id: request.processId,
+          started_at: request.startedAt,
+          path: request.path,
+          file_generation: request.generation,
         },
         cleanup,
         reject,

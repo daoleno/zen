@@ -13,11 +13,7 @@ export type CodexConversationRole = "user" | "assistant";
 export type CodexPlanStepStatus = "pending" | "in_progress" | "completed";
 
 export type ProviderActivityStatus =
-  | "running"
-  | "completed"
-  | "failed"
-  | "interrupted"
-  | "cancelled";
+  "running" | "completed" | "failed" | "interrupted" | "cancelled";
 
 /**
  * Provider-neutral executor lifecycle. Transcript events are deliberately not
@@ -34,6 +30,16 @@ export interface ProviderActivity {
 export interface CodexPlanStep {
   step: string;
   status: CodexPlanStepStatus;
+}
+
+export type CodexConversationFileOperation = "add" | "delete" | "update";
+
+export interface CodexConversationFileChange {
+  path: string;
+  move_path?: string;
+  operation: CodexConversationFileOperation;
+  additions?: number;
+  deletions?: number;
 }
 
 export interface CodexConversationEvent {
@@ -54,6 +60,7 @@ export interface CodexConversationEvent {
   partial?: boolean;
   transient?: boolean;
   files?: string[];
+  file_changes?: CodexConversationFileChange[];
   explanation?: string;
   plan?: CodexPlanStep[];
   source?: string;
@@ -100,9 +107,10 @@ export function normalizeCodexConversation(value: any): CodexConversation {
 export function normalizeProviderActivity(
   value: unknown,
 ): ProviderActivity | undefined {
-  const activity = value && typeof value === "object"
-    ? value as Record<string, unknown>
-    : null;
+  const activity =
+    value && typeof value === "object"
+      ? (value as Record<string, unknown>)
+      : null;
   if (
     !activity ||
     typeof activity.id !== "string" ||
@@ -141,10 +149,10 @@ export function isProviderActivityTerminal(
 ): boolean {
   return Boolean(
     activity &&
-      (activity.status === "completed" ||
-        activity.status === "failed" ||
-        activity.status === "interrupted" ||
-        activity.status === "cancelled"),
+    (activity.status === "completed" ||
+      activity.status === "failed" ||
+      activity.status === "interrupted" ||
+      activity.status === "cancelled"),
   );
 }
 
@@ -171,10 +179,16 @@ function normalizeCodexConversationEvent(
   if (!kind) {
     return null;
   }
-  const id = typeof event.id === "string" && event.id ? event.id : `${kind}:${event.seq ?? ""}`;
+  const id =
+    typeof event.id === "string" && event.id
+      ? event.id
+      : `${kind}:${event.seq ?? ""}`;
   return {
     id,
-    seq: typeof event.seq === "number" && Number.isFinite(event.seq) ? event.seq : 0,
+    seq:
+      typeof event.seq === "number" && Number.isFinite(event.seq)
+        ? event.seq
+        : 0,
     timestamp:
       typeof event.timestamp === "string" ? event.timestamp : undefined,
     kind,
@@ -184,35 +198,92 @@ function normalizeCodexConversationEvent(
         : undefined,
     title: typeof event.title === "string" ? event.title : undefined,
     body: typeof event.body === "string" ? event.body : undefined,
-    command:
-      typeof event.command === "string" ? event.command : undefined,
+    command: typeof event.command === "string" ? event.command : undefined,
     tool_name:
       typeof event.tool_name === "string" ? event.tool_name : undefined,
     input: typeof event.input === "string" ? event.input : undefined,
     output: typeof event.output === "string" ? event.output : undefined,
-    call_id:
-      typeof event.call_id === "string" ? event.call_id : undefined,
+    call_id: typeof event.call_id === "string" ? event.call_id : undefined,
     exit_code:
       typeof event.exit_code === "number" && Number.isFinite(event.exit_code)
         ? event.exit_code
         : undefined,
     status: typeof event.status === "string" ? event.status : undefined,
-    partial:
-      typeof event.partial === "boolean" ? event.partial : undefined,
+    partial: typeof event.partial === "boolean" ? event.partial : undefined,
     transient:
       typeof event.transient === "boolean" ? event.transient : undefined,
     files: Array.isArray(event.files)
-      ? event.files.filter((file: unknown): file is string => typeof file === "string")
+      ? event.files.filter(
+          (file: unknown): file is string => typeof file === "string",
+        )
+      : undefined,
+    file_changes: Array.isArray(event.file_changes)
+      ? event.file_changes
+          .map(normalizeFileChange)
+          .filter(
+            (
+              change: CodexConversationFileChange | null,
+            ): change is CodexConversationFileChange => Boolean(change),
+          )
       : undefined,
     explanation:
       typeof event.explanation === "string" ? event.explanation : undefined,
     plan: Array.isArray(event.plan)
       ? event.plan
           .map(normalizePlanStep)
-          .filter((step: CodexPlanStep | null): step is CodexPlanStep => Boolean(step))
+          .filter((step: CodexPlanStep | null): step is CodexPlanStep =>
+            Boolean(step),
+          )
       : undefined,
     source: typeof event.source === "string" ? event.source : undefined,
   };
+}
+
+function normalizeFileChange(
+  value: unknown,
+): CodexConversationFileChange | null {
+  const change =
+    value && typeof value === "object"
+      ? (value as Record<string, unknown>)
+      : null;
+  if (!change || typeof change.path !== "string" || !change.path.trim()) {
+    return null;
+  }
+  const operation = normalizeFileOperation(change.operation);
+  if (!operation) {
+    return null;
+  }
+  const additions = normalizeLineCount(change.additions);
+  const deletions = normalizeLineCount(change.deletions);
+  return {
+    path: change.path.trim(),
+    move_path:
+      typeof change.move_path === "string" && change.move_path.trim()
+        ? change.move_path.trim()
+        : undefined,
+    operation,
+    additions,
+    deletions,
+  };
+}
+
+function normalizeFileOperation(
+  value: unknown,
+): CodexConversationFileOperation | undefined {
+  switch (value) {
+    case "add":
+    case "delete":
+    case "update":
+      return value;
+    default:
+      return undefined;
+  }
+}
+
+function normalizeLineCount(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isSafeInteger(value) && value >= 0
+    ? value
+    : undefined;
 }
 
 function normalizePlanStep(value: any): CodexPlanStep | null {

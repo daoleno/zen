@@ -170,7 +170,11 @@ export function InterfaceTimelineActivityHeader({
       />
       <View style={styles.copy} pointerEvents="none">
         <Text
-          style={[styles.title, { color: chrome.textMuted }]}
+          style={[
+            styles.title,
+            detail ? null : styles.titleOnly,
+            { color: chrome.textMuted },
+          ]}
           numberOfLines={1}
         >
           {title}
@@ -220,6 +224,11 @@ const styles = StyleSheet.create({
     ...TypeScale.caption,
     flexShrink: 0,
     fontFamily: Typography.uiFontMedium,
+  },
+  titleOnly: {
+    flex: 1,
+    minWidth: 0,
+    flexShrink: 1,
   },
   detail: {
     ...TypeScale.caption,

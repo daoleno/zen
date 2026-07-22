@@ -116,6 +116,35 @@ func TestDiscoverInventoryKeepsUnknownBuiltinAndPluginRowsUnmanaged(t *testing.T
 	}
 }
 
+func TestDiscoverInventoryMarshalsEmptyAgentTargetsAsArrays(t *testing.T) {
+	home := t.TempDir()
+	project := filepath.Join(home, "project")
+	if err := os.MkdirAll(project, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeTestSkill(t, filepath.Join(home, ".agents", "skills", "unbound-skill"), "unbound-skill", "No inferred agent target")
+
+	inventory, err := DiscoverInventory(InventoryOptions{
+		CWD:        project,
+		Home:       home,
+		CodexHome:  filepath.Join(home, ".codex"),
+		ClaudeHome: filepath.Join(home, ".claude"),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(inventory.Skills) != 1 || len(inventory.Skills[0].Bindings) != 1 {
+		t.Fatalf("inventory = %#v, want one Skill with one binding", inventory.Skills)
+	}
+	encoded, err := json.Marshal(inventory)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(encoded), `"agents":null`) {
+		t.Fatalf("inventory agent collections must be JSON arrays: %s", encoded)
+	}
+}
+
 func TestDiscoverInventoryRejectsMalformedLockProvenance(t *testing.T) {
 	home := t.TempDir()
 	project := filepath.Join(home, "project")

@@ -1,12 +1,7 @@
 export type SkillAgent = "codex" | "claude-code" | "cursor" | "grok";
 export type ManagedSkillAgent = Exclude<SkillAgent, "grok">;
 export type SkillScope =
-  | "project"
-  | "global"
-  | "mixed"
-  | "plugin"
-  | "builtin"
-  | "unknown";
+  "project" | "global" | "mixed" | "plugin" | "builtin" | "unknown";
 export type SkillManager = "skills-cli" | "plugin" | "builtin" | "unknown";
 export type SkillMutationOperation = "install" | "remove";
 
@@ -24,6 +19,23 @@ export interface SkillAgentSupport {
   reason?: string;
 }
 
+export interface SkillRemovalPlan {
+  agent: ManagedSkillAgent;
+  affectedAgents: ManagedSkillAgent[];
+}
+
+export type SkillManagementCapability =
+  | {
+      canRemove: true;
+      removalPlans: SkillRemovalPlan[];
+      reason?: undefined;
+    }
+  | {
+      canRemove: false;
+      removalPlans: [];
+      reason?: string;
+    };
+
 export interface InstalledSkill {
   id: string;
   name: string;
@@ -38,10 +50,7 @@ export interface InstalledSkill {
   source?: string;
   sourceType?: string;
   plugin?: string;
-  capability: {
-    canRemove: boolean;
-    reason?: string;
-  };
+  capability: SkillManagementCapability;
 }
 
 export interface SkillsInventory {
@@ -54,14 +63,44 @@ export interface SkillsInventory {
 
 export interface CatalogSkill {
   id: string;
+  skillId: string;
   name: string;
   installs: number;
   source: string;
+  installable: boolean;
 }
 
 export interface SkillsCatalogResult {
   query: string;
   skills: CatalogSkill[];
+}
+
+export type SkillsLeaderboardView = "all-time" | "trending" | "hot";
+
+export interface RankedCatalogSkill {
+  id: string;
+  skillId: string;
+  name: string;
+  source: string;
+  rank: number;
+  totalInstalls?: number;
+  installs24h?: number;
+  currentInstalls?: number;
+  yesterdayInstalls?: number;
+  change?: number;
+  installable: boolean;
+}
+
+export interface SkillsLeaderboard {
+  view: SkillsLeaderboardView;
+  totalSkills: number;
+  skills: RankedCatalogSkill[];
+}
+
+export interface SkillsLeaderboards {
+  allTime: SkillsLeaderboard;
+  trending: SkillsLeaderboard;
+  hot: SkillsLeaderboard;
 }
 
 export interface SkillsMutationCommand {
@@ -76,7 +115,12 @@ export interface SkillsMutationCommand {
 
 export type SkillsRequestState<T> =
   | { status: "idle"; generation: number; data?: undefined; error?: undefined }
-  | { status: "loading"; generation: number; data?: undefined; error?: undefined }
+  | {
+      status: "loading";
+      generation: number;
+      data?: undefined;
+      error?: undefined;
+    }
   | { status: "ready"; generation: number; data: T; error?: undefined }
   | { status: "empty"; generation: number; data: T; error?: undefined }
   | { status: "error"; generation: number; data?: undefined; error: string };
@@ -108,6 +152,9 @@ const REPO_PATTERN = /^[A-Za-z0-9](?:[A-Za-z0-9._-]{0,98}[A-Za-z0-9])?$/;
 const INSTALLED_ID_PATTERN = /^[a-f0-9]{24}$/;
 const MAX_INVENTORY_SKILLS = 600;
 const MAX_CATALOG_SKILLS = 30;
+const MAX_LEADERBOARD_SKILLS = 30;
+const MAX_LEADERBOARD_TOTAL = 10_000_000;
+const MAX_CATALOG_METRIC = 1_000_000_000_000;
 
 export function normalizeSkillsInventory(value: unknown): SkillsInventory {
   const inventory = record(value);
@@ -159,7 +206,9 @@ export function normalizeSkillsInventory(value: unknown): SkillsInventory {
   };
 }
 
-export function normalizeSkillsCatalogResult(value: unknown): SkillsCatalogResult {
+export function normalizeSkillsCatalogResult(
+  value: unknown,
+): SkillsCatalogResult {
   const result = record(value);
   const query = boundedString(result.query, 80).trim();
   const rawSkills = Array.isArray(result.skills) ? result.skills : [];
@@ -185,9 +234,27 @@ export function normalizeSkillsCatalogResult(value: unknown): SkillsCatalogResul
       throw new Error("Daemon returned an invalid catalog identity.");
     }
     identities.add(id);
-    skills.push({ id, name, source, installs });
+    skills.push({
+      id,
+      skillId: name,
+      name,
+      source,
+      installs,
+      installable: true,
+    });
   }
   return { query, skills };
+}
+
+export function normalizeSkillsLeaderboards(
+  value: unknown,
+): SkillsLeaderboards {
+  const raw = exactRecord(value, ["all_time", "trending", "hot"]);
+  return {
+    allTime: normalizeSkillsLeaderboard(raw.all_time, "all-time"),
+    trending: normalizeSkillsLeaderboard(raw.trending, "trending"),
+    hot: normalizeSkillsLeaderboard(raw.hot, "hot"),
+  };
 }
 
 export function normalizeSkillsMutationCommand(
@@ -269,18 +336,22 @@ export function failSkillsRequest<T>(
   };
 }
 
-export function buildSkillsMutationConfirmation(command: SkillsMutationCommand): {
+export function buildSkillsMutationConfirmation(
+  command: SkillsMutationCommand,
+): {
   title: string;
   message: string;
   confirmLabel: string;
 } {
   const verb = command.operation === "install" ? "Install" : "Remove";
+  const agentLabel = command.operation === "install" ? "Target" : "Affected";
+  const agentCardinality = command.agents.length === 1 ? "Agent" : "Agents";
   return {
     title: `${verb} ${command.skillName}?`,
     message: [
       `Skill: ${command.skillName}`,
       `Scope: ${scopeLabel(command.scope)}`,
-      `Targets: ${command.agents.map(skillAgentLabel).join(", ")}`,
+      `${agentLabel} ${agentCardinality}: ${command.agents.map(skillAgentLabel).join(", ")}`,
       "",
       "Command:",
       command.command,
@@ -324,7 +395,9 @@ export function isCatalogIdentity(
   source: string,
   name: string,
 ): boolean {
-  return isRepository(source) && isSkillName(name) && id === `${source}/${name}`;
+  return (
+    isRepository(source) && isSkillName(name) && id === `${source}/${name}`
+  );
 }
 
 export function isSkillName(value: string): boolean {
@@ -338,6 +411,162 @@ export function isRepository(value: string): boolean {
     OWNER_PATTERN.test(parts[0] || "") &&
     REPO_PATTERN.test(parts[1] || "") &&
     !parts[1]?.toLowerCase().endsWith(".git")
+  );
+}
+
+function normalizeSkillsLeaderboard(
+  value: unknown,
+  expectedView: SkillsLeaderboardView,
+): SkillsLeaderboard {
+  const raw = exactRecord(value, ["view", "total_skills", "skills"]);
+  if (raw.view !== expectedView) {
+    throw new Error("Daemon returned a mismatched Skills leaderboard view.");
+  }
+  const totalSkills = raw.total_skills;
+  const rawSkills = raw.skills;
+  if (
+    typeof totalSkills !== "number" ||
+    !Number.isSafeInteger(totalSkills) ||
+    totalSkills < 0 ||
+    totalSkills > MAX_LEADERBOARD_TOTAL ||
+    !Array.isArray(rawSkills) ||
+    rawSkills.length > MAX_LEADERBOARD_SKILLS ||
+    totalSkills < rawSkills.length
+  ) {
+    throw new Error("Daemon returned invalid Skills leaderboard bounds.");
+  }
+
+  const identities = new Set<string>();
+  const skills: RankedCatalogSkill[] = [];
+  let previousMetric = Number.POSITIVE_INFINITY;
+  for (let index = 0; index < rawSkills.length; index += 1) {
+    const candidate = normalizeRankedCatalogSkill(
+      rawSkills[index],
+      expectedView,
+      index + 1,
+    );
+    if (identities.has(candidate.id)) {
+      throw new Error("Daemon returned a duplicate ranked Skill identity.");
+    }
+    identities.add(candidate.id);
+    const metric = leaderboardPrimaryMetric(candidate, expectedView);
+    if (metric > previousMetric) {
+      throw new Error("Daemon returned invalid Skills leaderboard order.");
+    }
+    previousMetric = metric;
+    skills.push(candidate);
+  }
+  return { view: expectedView, totalSkills, skills };
+}
+
+function normalizeRankedCatalogSkill(
+  value: unknown,
+  view: SkillsLeaderboardView,
+  expectedRank: number,
+): RankedCatalogSkill {
+  const metricKeys =
+    view === "all-time"
+      ? ["total_installs"]
+      : view === "trending"
+        ? ["installs_24h"]
+        : ["current_installs", "yesterday_installs", "change"];
+  const raw = exactRecord(value, [
+    "id",
+    "skill_id",
+    "name",
+    "source",
+    "rank",
+    "installable",
+    ...metricKeys,
+  ]);
+  const id = boundedString(raw.id, 272);
+  const skillId = boundedString(raw.skill_id, 128);
+  const name = boundedString(raw.name, 128);
+  const source = boundedString(raw.source, 141);
+  if (
+    raw.rank !== expectedRank ||
+    typeof raw.installable !== "boolean" ||
+    !isLeaderboardSkillID(skillId) ||
+    !isLeaderboardSource(source) ||
+    id !== `${source}/${skillId}` ||
+    !name ||
+    name.trim() !== name ||
+    /[\u0000-\u001f\u007f]/.test(name) ||
+    raw.installable !== isCatalogIdentity(id, source, skillId)
+  ) {
+    throw new Error("Daemon returned an invalid ranked Skill identity.");
+  }
+  const result: RankedCatalogSkill = {
+    id,
+    skillId,
+    name,
+    source,
+    rank: expectedRank,
+    installable: raw.installable,
+  };
+  if (view === "all-time") {
+    result.totalInstalls = catalogMetric(raw.total_installs);
+  } else if (view === "trending") {
+    result.installs24h = catalogMetric(raw.installs_24h);
+  } else {
+    result.currentInstalls = catalogMetric(raw.current_installs);
+    result.yesterdayInstalls = catalogMetric(raw.yesterday_installs);
+    const change = raw.change;
+    if (
+      typeof change !== "number" ||
+      !Number.isSafeInteger(change) ||
+      change < -MAX_CATALOG_METRIC ||
+      change > MAX_CATALOG_METRIC ||
+      change !== result.currentInstalls - result.yesterdayInstalls
+    ) {
+      throw new Error("Daemon returned invalid Hot leaderboard metrics.");
+    }
+    result.change = change;
+  }
+  return result;
+}
+
+function leaderboardPrimaryMetric(
+  skill: RankedCatalogSkill,
+  view: SkillsLeaderboardView,
+): number {
+  if (view === "all-time") return skill.totalInstalls!;
+  if (view === "trending") return skill.installs24h!;
+  return skill.currentInstalls!;
+}
+
+function catalogMetric(value: unknown): number {
+  if (
+    typeof value !== "number" ||
+    !Number.isSafeInteger(value) ||
+    value < 0 ||
+    value > MAX_CATALOG_METRIC
+  ) {
+    throw new Error("Daemon returned an invalid Skills leaderboard metric.");
+  }
+  return value;
+}
+
+function isLeaderboardSource(value: string): boolean {
+  if (isRepository(value)) return true;
+  if (!value || value.length > 141 || value !== value.toLowerCase())
+    return false;
+  const labels = value.split(".");
+  return (
+    labels.length >= 2 &&
+    labels.every(
+      (label) =>
+        label.length <= 63 &&
+        /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/.test(label),
+    )
+  );
+}
+
+function isLeaderboardSkillID(value: string): boolean {
+  return (
+    value !== "." &&
+    value !== ".." &&
+    /^[a-z0-9](?:[a-z0-9._:-]{0,126}[a-z0-9])?$/.test(value)
   );
 }
 
@@ -374,9 +603,13 @@ function normalizeInstalledSkill(value: unknown): InstalledSkill | null {
     return null;
   }
   const validBindings = bindings as SkillBinding[];
-  const bindingPaths = new Set(validBindings.map((binding) => binding.sourcePath));
+  const bindingPaths = new Set(
+    validBindings.map((binding) => binding.sourcePath),
+  );
   const bindingScopes = new Set(validBindings.map((binding) => binding.scope));
-  const bindingAgents = new Set(validBindings.flatMap((binding) => binding.agents));
+  const bindingAgents = new Set(
+    validBindings.flatMap((binding) => binding.agents),
+  );
   if (
     bindingPaths.size !== validBindings.length ||
     !bindingPaths.has(sourcePath) ||
@@ -391,6 +624,13 @@ function normalizeInstalledSkill(value: unknown): InstalledSkill | null {
   const capability = record(raw.capability);
   const cliManaged = manager === "skills-cli" && isSkillName(name);
   const source = boundedString(raw.source, 141);
+  const removable =
+    cliManaged &&
+    (scope === "project" || scope === "global") &&
+    capability.can_remove === true;
+  const removalPlans = removable
+    ? normalizeRemovalPlans(capability.removal_plans, agents)
+    : null;
   return {
     id,
     name,
@@ -405,14 +645,68 @@ function normalizeInstalledSkill(value: unknown): InstalledSkill | null {
     source: source && isRepository(source) ? source : undefined,
     sourceType: boundedString(raw.source_type, 32) || undefined,
     plugin: boundedString(raw.plugin, 128) || undefined,
-    capability: {
-      canRemove:
-        cliManaged &&
-        (scope === "project" || scope === "global") &&
-        capability.can_remove === true,
-      reason: boundedString(capability.reason, 240) || undefined,
-    },
+    capability:
+      removable && removalPlans
+        ? { canRemove: true, removalPlans }
+        : {
+            canRemove: false,
+            removalPlans: [],
+            reason:
+              boundedString(capability.reason, 240) ||
+              (removable
+                ? "No exact Agent removal plan was proven."
+                : undefined),
+          },
   };
+}
+
+function normalizeRemovalPlans(
+  value: unknown,
+  installedAgents: SkillAgent[],
+): SkillRemovalPlan[] | null {
+  const managedInstalled = installedAgents.filter(
+    (agent): agent is ManagedSkillAgent => agent !== "grok",
+  );
+  if (
+    !Array.isArray(value) ||
+    value.length < 1 ||
+    value.length !== managedInstalled.length
+  ) {
+    return null;
+  }
+  const installed = new Set(managedInstalled);
+  const seen = new Set<ManagedSkillAgent>();
+  const plans: SkillRemovalPlan[] = [];
+  for (const candidate of value) {
+    const raw = record(candidate);
+    const agent = raw.agent;
+    if (
+      typeof agent !== "string" ||
+      !MANAGED_AGENTS.has(agent as ManagedSkillAgent) ||
+      !installed.has(agent as ManagedSkillAgent) ||
+      seen.has(agent as ManagedSkillAgent)
+    ) {
+      return null;
+    }
+    let affectedAgents: ManagedSkillAgent[];
+    try {
+      affectedAgents = normalizeManagedAgents(raw.affected_agents);
+    } catch {
+      return null;
+    }
+    if (
+      !affectedAgents.includes(agent as ManagedSkillAgent) ||
+      affectedAgents.some((affected) => !installed.has(affected))
+    ) {
+      return null;
+    }
+    seen.add(agent as ManagedSkillAgent);
+    plans.push({
+      agent: agent as ManagedSkillAgent,
+      affectedAgents,
+    });
+  }
+  return seen.size === installed.size ? plans : null;
 }
 
 function normalizeBinding(value: unknown): SkillBinding | null {
@@ -420,7 +714,12 @@ function normalizeBinding(value: unknown): SkillBinding | null {
   const sourcePath = boundedString(raw.source_path, 4096);
   const scope = raw.scope;
   const agents = normalizeAgents(raw.agents);
-  if (!sourcePath || typeof scope !== "string" || !SCOPES.has(scope as SkillScope) || agents == null) {
+  if (
+    !sourcePath ||
+    typeof scope !== "string" ||
+    !SCOPES.has(scope as SkillScope) ||
+    agents == null
+  ) {
     return null;
   }
   return { sourcePath, scope: scope as SkillScope, agents };
@@ -443,6 +742,11 @@ function normalizeAgentSupport(value: unknown): SkillAgentSupport | null {
 }
 
 function normalizeAgents(value: unknown): SkillAgent[] | null {
+  // Go encodes a nil []Agent as null. It is valid inventory truth: canonical
+  // Skills and bindings can exist without a linked supported agent target.
+  if (value == null) {
+    return [];
+  }
   if (!Array.isArray(value) || value.length > AGENTS.size) {
     return null;
   }
@@ -457,12 +761,19 @@ function normalizeAgents(value: unknown): SkillAgent[] | null {
 }
 
 function normalizeManagedAgents(value: unknown): ManagedSkillAgent[] {
-  if (!Array.isArray(value) || value.length < 1 || value.length > MANAGED_AGENTS.size) {
+  if (
+    !Array.isArray(value) ||
+    value.length < 1 ||
+    value.length > MANAGED_AGENTS.size
+  ) {
     throw new Error("Daemon returned invalid Skill targets.");
   }
   const seen = new Set<ManagedSkillAgent>();
   for (const raw of value) {
-    if (typeof raw !== "string" || !MANAGED_AGENTS.has(raw as ManagedSkillAgent)) {
+    if (
+      typeof raw !== "string" ||
+      !MANAGED_AGENTS.has(raw as ManagedSkillAgent)
+    ) {
       throw new Error("Daemon returned an unsupported Skill target.");
     }
     if (seen.has(raw as ManagedSkillAgent)) {
@@ -527,8 +838,28 @@ function record(value: unknown): Record<string, unknown> {
     : {};
 }
 
+function exactRecord(
+  value: unknown,
+  expectedKeys: readonly string[],
+): Record<string, unknown> {
+  const raw = record(value);
+  const keys = Object.keys(raw).sort();
+  const expected = [...expectedKeys].sort();
+  if (
+    keys.length !== expected.length ||
+    keys.some((key, index) => key !== expected[index])
+  ) {
+    throw new Error("Daemon returned an unexpected Skills catalog shape.");
+  }
+  return raw;
+}
+
 function boundedString(value: unknown, maxLength: number): string {
-  if (typeof value !== "string" || value.length > maxLength || /[\u0000-\u001f\u007f]/.test(value)) {
+  if (
+    typeof value !== "string" ||
+    value.length > maxLength ||
+    /[\u0000-\u001f\u007f]/.test(value)
+  ) {
     return "";
   }
   return value;

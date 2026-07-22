@@ -93,6 +93,28 @@ func (w *fakeControlWatcher) UpdateAgentProgress(id string, progress classifier.
 	return &cp, nil
 }
 
+func (w *fakeControlWatcher) SettleAgentInputAccepted(id string, handoffStartedAt time.Time, phase, summary string) (*classifier.Agent, error) {
+	agent := w.agents[id]
+	if agent == nil {
+		return nil, os.ErrNotExist
+	}
+	if agent.LastProgressAt == nil || agent.LastProgressAt.Before(handoffStartedAt) {
+		agent.State = classifier.StateRunning
+		agent.Summary = summary
+		agent.Phase = phase
+		agent.Attention = "none"
+		agent.NeedsAttention = false
+		agent.TaskClass = ""
+		agent.EventKind = ""
+		agent.DetailsJSON = ""
+		agent.LastProgressAt = nil
+		agent.ExpectedNextCheckAt = nil
+		agent.LeaseSeconds = 0
+	}
+	cp := *agent
+	return &cp, nil
+}
+
 func (w *fakeControlWatcher) SendInput(sessionID, text string) error {
 	w.sent = append(w.sent, fakeControlSend{id: sessionID, text: text})
 	return w.sendErr
@@ -583,6 +605,45 @@ func TestControlAppAgentSendFailureMarksAgentFailedAttention(t *testing.T) {
 	}
 	if len(fw.ready) != 1 {
 		t.Fatalf("ready sends = %#v", fw.ready)
+	}
+}
+
+func TestControlAppConfirmedCodexSendClearsStickyLaunchFailure(t *testing.T) {
+	fw := newFakeControlWatcher()
+	failedAt := time.Date(2026, 6, 8, 8, 59, 0, 0, time.UTC)
+	fw.agents["brain-agent-worker:@1"] = &classifier.Agent{
+		ID:             "brain-agent-worker:@1",
+		Name:           "Franklin",
+		State:          classifier.StateFailed,
+		Summary:        "Initial delegated prompt was not submitted: Codex composer did not become ready within 30s",
+		Phase:          "starting",
+		Attention:      "failed",
+		NeedsAttention: true,
+		LastProgressAt: &failedAt,
+		Command:        "codex --no-alt-screen",
+		Delegated:      true,
+	}
+	app := &controlApp{watcher: fw}
+
+	resp := app.HandleControlRequest(control.Request{
+		Type:    "agent_send",
+		AgentID: "brain-agent-worker:@1",
+		Text:    "the exact initial delegated prompt",
+		Submit:  true,
+	})
+
+	if !resp.OK || resp.Agent == nil {
+		t.Fatalf("response = %#v", resp)
+	}
+	agent := fw.agents["brain-agent-worker:@1"]
+	if agent.State != classifier.StateRunning || agent.Attention != "none" || agent.NeedsAttention {
+		t.Fatalf("agent after confirmed recovery send = %#v", agent)
+	}
+	if strings.Contains(agent.Summary, "not submitted") {
+		t.Fatalf("sticky launch failure survived confirmed provider acceptance: %#v", agent)
+	}
+	if len(fw.ready) != 1 || len(fw.sent) != 1 {
+		t.Fatalf("ready=%#v sent=%#v, want one handoff transaction", fw.ready, fw.sent)
 	}
 }
 

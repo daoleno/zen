@@ -1,9 +1,5 @@
 import { memo, useCallback, useEffect, useRef, useState } from "react";
-import {
-  AppState,
-  Platform,
-  Pressable,
-} from "react-native";
+import { AppState, Platform, Pressable } from "react-native";
 import {
   Stack,
   useGlobalSearchParams,
@@ -29,6 +25,10 @@ import {
 import { BrainProvider, useBrainDispatch } from "../store/brain";
 import { WorkProvider, useWorkDispatch } from "../store/work";
 import { CalendarProvider, useCalendarDispatch } from "../store/calendar";
+import {
+  CurrentServerProvider,
+  useCurrentServer,
+} from "../store/currentServer";
 import { syncCalendarNotifications } from "../services/calendarNotifications";
 import { useAppTheme } from "../constants/tokens";
 import { ThemeProvider } from "../theme";
@@ -136,6 +136,7 @@ function LiveAppRuntime() {
     <>
       <NativeTerminalDiagnosticsObserver />
       <ConnectionLifecycle onBootstrapResolved={handleBootstrapResolved} />
+      <CurrentServerConnectionBinder />
       <LatencySampler />
       <NotificationObserver />
       <AppNavigator bootstrapResolved={bootstrapResolved} />
@@ -176,6 +177,7 @@ const ConnectionLifecycle = memo(function ConnectionLifecycle({
   const brainDispatch = useBrainDispatch();
   const workDispatch = useWorkDispatch();
   const calendarDispatch = useCalendarDispatch();
+  const { refreshServers } = useCurrentServer();
   const routerRef = useRef(router);
   const handledConnectLinksRef = useRef(new Set<string>());
   const rootSegment = segments[0];
@@ -189,36 +191,38 @@ const ConnectionLifecycle = memo(function ConnectionLifecycle({
     routerRef.current = router;
   }, [router]);
 
-  const importConnectLink = useCallback(async (
-    rawValue: string | null | undefined,
-  ): Promise<boolean> => {
-    const trimmed = rawValue?.trim() || "";
-    if (!trimmed || handledConnectLinksRef.current.has(trimmed)) {
-      return false;
-    }
-
-    handledConnectLinksRef.current.add(trimmed);
-
-    try {
-      const savedServer = await importConnection(trimmed, {
-        onImported: () => {
-          routerRef.current.replace({
-            pathname: "/settings",
-            params: { refresh: Date.now().toString() },
-          });
-        },
-      });
-      if (!savedServer) {
-        handledConnectLinksRef.current.delete(trimmed);
+  const importConnectLink = useCallback(
+    async (rawValue: string | null | undefined): Promise<boolean> => {
+      const trimmed = rawValue?.trim() || "";
+      if (!trimmed || handledConnectLinksRef.current.has(trimmed)) {
         return false;
       }
-      return true;
-    } catch (error) {
-      handledConnectLinksRef.current.delete(trimmed);
-      console.log("Failed to import connect link:", error);
-      return false;
-    }
-  }, []);
+
+      handledConnectLinksRef.current.add(trimmed);
+
+      try {
+        const savedServer = await importConnection(trimmed, {
+          onImported: async (importedServer) => {
+            await refreshServers(importedServer.id);
+            routerRef.current.replace({
+              pathname: "/settings",
+              params: { refresh: Date.now().toString() },
+            });
+          },
+        });
+        if (!savedServer) {
+          handledConnectLinksRef.current.delete(trimmed);
+          return false;
+        }
+        return true;
+      } catch (error) {
+        handledConnectLinksRef.current.delete(trimmed);
+        console.log("Failed to import connect link:", error);
+        return false;
+      }
+    },
+    [refreshServers],
+  );
 
   // Auto-connect on app start.
   useEffect(() => {
@@ -270,6 +274,10 @@ const ConnectionLifecycle = memo(function ConnectionLifecycle({
       if (!decision.clearServerCaches) {
         return;
       }
+      dispatch({
+        type: "REMOVE_SERVER",
+        serverId: data.serverId,
+      });
       workDispatch({
         type: "REMOVE_SERVER",
         serverId: data.serverId,
@@ -373,10 +381,9 @@ const ConnectionLifecycle = memo(function ConnectionLifecycle({
           return;
         }
 
-        const [onboarded, servers, disabledServerIds] = await Promise.all([
+        const [onboarded, servers] = await Promise.all([
           isOnboarded(),
           getServers(),
-          getDisabledServerIds(),
         ]);
         if (!onboarded && servers.length === 0) {
           routerRef.current.replace("/onboarding");
@@ -385,20 +392,9 @@ const ConnectionLifecycle = memo(function ConnectionLifecycle({
         if (!onboarded) {
           await markOnboarded();
         }
-        if (
-          servers.length > 0 &&
-          rootSegmentRef.current === "onboarding"
-        ) {
+        if (servers.length > 0 && rootSegmentRef.current === "onboarding") {
           routerRef.current.replace("/");
         }
-
-        const disabledSet = new Set(disabledServerIds);
-        servers.forEach((server) => {
-          if (disabledSet.has(server.id)) {
-            return;
-          }
-          wsClient.connectServer(server);
-        });
       } catch (error) {
         console.log("Failed to bootstrap app:", error);
       } finally {
@@ -434,6 +430,7 @@ const ConnectionLifecycle = memo(function ConnectionLifecycle({
     dispatch,
     importConnectLink,
     onBootstrapResolved,
+    refreshServers,
     workDispatch,
   ]);
 
@@ -449,6 +446,39 @@ const ConnectionLifecycle = memo(function ConnectionLifecycle({
 
   return null;
 });
+
+const CurrentServerConnectionBinder = memo(
+  function CurrentServerConnectionBinder() {
+    const { currentServer, hydrated } = useCurrentServer();
+
+    useEffect(() => {
+      if (!hydrated) {
+        return;
+      }
+      let cancelled = false;
+      // Transport follows the canonical owner. Intentional disconnect events
+      // clear the previous server's presentation stores before the new socket
+      // can publish data.
+      wsClient.disconnectAll();
+      if (!currentServer) {
+        return () => {
+          cancelled = true;
+        };
+      }
+      void getDisabledServerIds().then((disabledServerIds) => {
+        if (cancelled || disabledServerIds.includes(currentServer.id)) {
+          return;
+        }
+        wsClient.connectServer(currentServer);
+      });
+      return () => {
+        cancelled = true;
+      };
+    }, [currentServer?.id, hydrated]);
+
+    return null;
+  },
+);
 
 const LatencySampler = memo(function LatencySampler() {
   const dispatch = useAgentDispatch();
@@ -769,16 +799,18 @@ export default function RootLayout() {
       <ThemeProvider>
         <KeyboardProvider statusBarTranslucent navigationBarTranslucent>
           <AgentProvider>
-            <BrainProvider>
-              <WorkProvider>
-                <CalendarProvider>
-                  <SafeAreaProvider>
-                    <ThemedStatusBar />
-                    <AppRuntime />
-                  </SafeAreaProvider>
-                </CalendarProvider>
-              </WorkProvider>
-            </BrainProvider>
+            <CurrentServerProvider>
+              <BrainProvider>
+                <WorkProvider>
+                  <CalendarProvider>
+                    <SafeAreaProvider>
+                      <ThemedStatusBar />
+                      <AppRuntime />
+                    </SafeAreaProvider>
+                  </CalendarProvider>
+                </WorkProvider>
+              </BrainProvider>
+            </CurrentServerProvider>
           </AgentProvider>
         </KeyboardProvider>
       </ThemeProvider>

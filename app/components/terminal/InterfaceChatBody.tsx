@@ -38,6 +38,11 @@ export interface InterfaceChatBodyProps {
   screenFocused: boolean;
   readOnly?: boolean;
   serverId: string;
+  serverUrl: string;
+  daemonId: string;
+  agentId: string;
+  agentProcessId?: number;
+  agentStartedAt?: number;
   agentCwd?: string;
   conversation: CodexConversation | null;
   events: CodexConversationEvent[];
@@ -119,6 +124,11 @@ export function InterfaceChatBody({
   screenFocused,
   readOnly = false,
   serverId,
+  serverUrl,
+  daemonId,
+  agentId,
+  agentProcessId,
+  agentStartedAt,
   agentCwd,
   conversation,
   events,
@@ -250,6 +260,11 @@ export function InterfaceChatBody({
       renderTimeline={(extraContentPadding, keyboardLifecycleGate) => (
         <InterfaceChatTimelineSection
           serverId={serverId}
+          serverUrl={serverUrl}
+          daemonId={daemonId}
+          agentId={agentId}
+          agentProcessId={agentProcessId}
+          agentStartedAt={agentStartedAt}
           agentCwd={agentCwd}
           conversation={conversation}
           events={events}

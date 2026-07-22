@@ -10,6 +10,34 @@ export interface SkillsTerminalSubmission {
   command: SkillsMutationCommand;
 }
 
+export type SkillsTerminalSessionCreation =
+  { status: "created"; agentId: string } | { status: "stale"; agentId: string };
+
+export async function createOwnedSkillsTerminalSession({
+  serverId,
+  createSession,
+  isCurrent,
+  abortSession,
+}: {
+  serverId: string;
+  createSession(serverId: string): Promise<string>;
+  isCurrent(): boolean;
+  abortSession(serverId: string, agentId: string): void;
+}): Promise<SkillsTerminalSessionCreation> {
+  const agentId = await createSession(serverId);
+  if (isCurrent()) {
+    return { status: "created", agentId };
+  }
+
+  try {
+    abortSession(serverId, agentId);
+  } catch {
+    // The old server may already be disconnected. Preserve the stale outcome;
+    // this cleanup is one live best-effort send and is never queued or retried.
+  }
+  return { status: "stale", agentId };
+}
+
 export class SkillsTerminalHandoffOwner {
   private current: {
     sessionKey: string;
@@ -34,12 +62,19 @@ export class SkillsTerminalHandoffOwner {
     return token;
   }
 
-  claim(sessionKey: string, token: string): {
+  claim(
+    sessionKey: string,
+    token: string,
+  ): {
     input: string;
     command: SkillsMutationCommand;
   } | null {
     const current = this.current;
-    if (!current || current.sessionKey !== sessionKey || current.token !== token) {
+    if (
+      !current ||
+      current.sessionKey !== sessionKey ||
+      current.token !== token
+    ) {
       return null;
     }
     this.current = null;
@@ -47,7 +82,10 @@ export class SkillsTerminalHandoffOwner {
   }
 
   revoke(sessionKey: string, token: string): void {
-    if (this.current?.sessionKey === sessionKey && this.current.token === token) {
+    if (
+      this.current?.sessionKey === sessionKey &&
+      this.current.token === token
+    ) {
       this.current = null;
     }
   }

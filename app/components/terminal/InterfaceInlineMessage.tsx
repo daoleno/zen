@@ -6,7 +6,9 @@ import type {
   TerminalThemePalette,
 } from "../../constants/terminalThemes";
 import { openSafeMarkdownUrl } from "../markdown/markdownLinks";
+import { recognizeSessionFileReference } from "../../services/sessionFilePreview";
 import { tokenizeInlineMessage } from "./InterfaceMessageBodyModel";
+import { useSessionFilePreviewContext } from "./SessionFilePreviewContext";
 
 interface InterfaceInlineMessageProps {
   text: string;
@@ -21,9 +23,17 @@ export function InterfaceInlineMessage({
   theme,
   compact = false,
 }: InterfaceInlineMessageProps) {
-  const handleLinkPress = useCallback((url: string) => {
-    void openSafeMarkdownUrl(url, (safeUrl) => Linking.openURL(safeUrl));
-  }, []);
+  const filePreview = useSessionFilePreviewContext();
+  const handleLinkPress = useCallback(
+    (url: string) => {
+      const reference = recognizeSessionFileReference(url);
+      if (reference && filePreview?.open(reference)) {
+        return;
+      }
+      void openSafeMarkdownUrl(url, (safeUrl) => Linking.openURL(safeUrl));
+    },
+    [filePreview],
+  );
 
   return (
     <>
@@ -65,9 +75,16 @@ export function InterfaceInlineMessage({
           );
         }
         if (part.kind === "code") {
+          const reference = recognizeSessionFileReference(part.text);
           return (
             <Text
               key={index}
+              accessibilityRole={reference ? "link" : undefined}
+              onPress={
+                reference && filePreview
+                  ? () => filePreview.open(reference)
+                  : undefined
+              }
               style={[
                 styles.messageInlineCode,
                 compact ? styles.messageInlineCodeCompact : null,

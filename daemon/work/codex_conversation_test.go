@@ -191,6 +191,15 @@ func TestParseCodexConversation_BuildsNativeTimeline(t *testing.T) {
 	if patch.Kind != "patch" || len(patch.Files) != 1 || patch.Files[0] != "app/app/terminal/TerminalScreenImpl.tsx" {
 		t.Fatalf("patch event = %#v", patch)
 	}
+	if len(patch.FileChanges) != 1 || patch.FileChanges[0].Operation != "update" {
+		t.Fatalf("patch file changes = %#v", patch.FileChanges)
+	}
+	if additions := patch.FileChanges[0].Additions; additions == nil || *additions != 1 {
+		t.Fatalf("patch additions = %#v, want 1", additions)
+	}
+	if deletions := patch.FileChanges[0].Deletions; deletions == nil || *deletions != 0 {
+		t.Fatalf("patch deletions = %#v, want 0", deletions)
+	}
 	previousSeq := 0
 	for index, event := range got.Events {
 		if event.Seq <= previousSeq {
@@ -203,6 +212,55 @@ func TestParseCodexConversation_BuildsNativeTimeline(t *testing.T) {
 		if strings.Contains(event.Body, "goal_context") {
 			t.Fatalf("goal context leaked: %#v", event)
 		}
+	}
+}
+
+func TestParseCodexConversation_PreservesPatchStatsBeforeRawBodyTruncation(t *testing.T) {
+	var patch strings.Builder
+	patch.WriteString("*** Begin Patch\n*** Update File: src/ledger/quote.ts\n@@\n")
+	for index := 0; index < maxCodexConversationBody; index++ {
+		patch.WriteString(" context line\n")
+	}
+	for index := 0; index < 5; index++ {
+		patch.WriteString("-old synthetic line\n")
+	}
+	for index := 0; index < 9; index++ {
+		patch.WriteString("+new synthetic line\n")
+	}
+	patch.WriteString("*** End Patch\n")
+
+	path := filepath.Join(t.TempDir(), "rollout-patch.jsonl")
+	writeJSONL(t, path, map[string]any{
+		"type":      "response_item",
+		"timestamp": "2026-05-20T10:00:00Z",
+		"payload": map[string]any{
+			"type":    "custom_tool_call",
+			"name":    "apply_patch",
+			"call_id": "call-patch-summary",
+			"input":   patch.String(),
+		},
+	})
+
+	got, err := parseCodexConversation(path)
+	if err != nil {
+		t.Fatalf("parseCodexConversation: %v", err)
+	}
+	if len(got.Events) != 1 {
+		t.Fatalf("events = %#v, want one patch", got.Events)
+	}
+	event := got.Events[0]
+	if len(event.FileChanges) != 1 {
+		t.Fatalf("file changes = %#v", event.FileChanges)
+	}
+	change := event.FileChanges[0]
+	if change.Path != "src/ledger/quote.ts" || change.Operation != "update" {
+		t.Fatalf("file change = %#v", change)
+	}
+	if change.Additions == nil || *change.Additions != 9 || change.Deletions == nil || *change.Deletions != 5 {
+		t.Fatalf("file change stats = %#v, want +9 -5", change)
+	}
+	if strings.Contains(event.Body, "*** End Patch") {
+		t.Fatalf("test did not cross raw body truncation boundary: body length %d", len(event.Body))
 	}
 }
 

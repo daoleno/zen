@@ -28,7 +28,8 @@ export interface DaemonAssertionInput {
   signatureHex: string | null | undefined;
 }
 
-export type AuthPurpose = "zen-connect" | "zen-upload" | "zen-probe";
+export type AuthPurpose =
+  "zen-connect" | "zen-upload" | "zen-probe" | "zen-session-file";
 
 export function normalizeDaemonId(rawValue: string | null | undefined): string {
   return normalizeFixedHex(rawValue, 64);

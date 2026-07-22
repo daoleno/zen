@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import type { SkillsMutationCommand } from "./skillsManagement";
 import {
+  createOwnedSkillsTerminalSession,
   SkillsTerminalHandoffOwner,
   submitSkillsTerminalHandoff,
   unconfirmedSkillsTerminalHandoff,
@@ -18,6 +19,62 @@ const installCommand: SkillsMutationCommand = {
 };
 
 describe("Skills Terminal handoff", () => {
+  test("a successful owned Session stays live and is not aborted", async () => {
+    const created: string[] = [];
+    const aborted: Array<[string, string]> = [];
+    const result = await createOwnedSkillsTerminalSession({
+      serverId: "server-a",
+      createSession: async (serverId) => {
+        created.push(serverId);
+        return "session-new";
+      },
+      isCurrent: () => true,
+      abortSession: (serverId, agentId) => aborted.push([serverId, agentId]),
+    });
+
+    expect(result).toEqual({ status: "created", agentId: "session-new" });
+    expect(created).toEqual(["server-a"]);
+    expect(aborted).toEqual([]);
+  });
+
+  test("a pre-create failure preserves its error and aborts nothing", async () => {
+    const failure = new Error("create failed");
+    const aborted: Array<[string, string]> = [];
+    let currentChecks = 0;
+
+    await expect(
+      createOwnedSkillsTerminalSession({
+        serverId: "server-a",
+        createSession: async () => {
+          throw failure;
+        },
+        isCurrent: () => {
+          currentChecks += 1;
+          return false;
+        },
+        abortSession: (serverId, agentId) => aborted.push([serverId, agentId]),
+      }),
+    ).rejects.toBe(failure);
+    expect(currentChecks).toBe(0);
+    expect(aborted).toEqual([]);
+  });
+
+  test("a post-create stale switch aborts only the fresh old-server Session once", async () => {
+    const aborted: Array<[string, string]> = [];
+    const result = await createOwnedSkillsTerminalSession({
+      serverId: "server-old",
+      createSession: async () => "session-fresh",
+      isCurrent: () => false,
+      abortSession: (serverId, agentId) => {
+        aborted.push([serverId, agentId]);
+        throw new Error("old socket already closed");
+      },
+    });
+
+    expect(result).toEqual({ status: "stale", agentId: "session-fresh" });
+    expect(aborted).toEqual([["server-old", "session-fresh"]]);
+  });
+
   test("the exact command can be claimed once only by its created Session", () => {
     const owner = new SkillsTerminalHandoffOwner();
     const token = owner.issue("server-a:session-a", installCommand);
@@ -89,7 +146,9 @@ describe("Skills Terminal handoff", () => {
     expect(submit()).toBeNull();
     expect(submit()).toBeNull();
     expect(sent).toEqual([`${installCommand.command}\r`]);
-    expect(unconfirmedSkillsTerminalHandoff(submission, "wrong-pty")).toBeNull();
+    expect(
+      unconfirmedSkillsTerminalHandoff(submission, "wrong-pty"),
+    ).toBeNull();
     expect(unconfirmedSkillsTerminalHandoff(submission, "pty-a")).toEqual({
       kind: "not-confirmed",
       command: installCommand,

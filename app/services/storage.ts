@@ -4,6 +4,7 @@ import { normalizeServerURL as normalizeConnectionURL } from "./connection";
 
 const KEYS = {
   servers: "zen:v3:servers",
+  currentServer: "zen:v1:current_server_id",
   disabledServers: "zen:v1:disabled_servers",
   onboarded: "zen:onboarded",
   recentAgentOpens: "zen:recent_agent_opens",
@@ -129,6 +130,22 @@ export async function getServerById(
 ): Promise<StoredServer | null> {
   const servers = await getServers();
   return servers.find((server) => server.id === serverId) || null;
+}
+
+export async function getCurrentServerId(): Promise<string | null> {
+  const value = (await AsyncStorage.getItem(KEYS.currentServer))?.trim() || "";
+  return value || null;
+}
+
+export async function setCurrentServerId(
+  serverId: string | null,
+): Promise<void> {
+  const normalizedId = serverId?.trim() || "";
+  if (!normalizedId) {
+    await AsyncStorage.removeItem(KEYS.currentServer);
+    return;
+  }
+  await AsyncStorage.setItem(KEYS.currentServer, normalizedId);
 }
 
 export async function isOnboarded(): Promise<boolean> {

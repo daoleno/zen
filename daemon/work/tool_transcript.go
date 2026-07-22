@@ -532,22 +532,14 @@ func claudeToolSurface(name string, raw json.RawMessage) string {
 }
 
 func patchSurfaces(patch string) []string {
-	if strings.TrimSpace(patch) == "" {
-		return nil
-	}
+	return patchSurfacesFromChanges(patchFileChanges(patch))
+}
+
+func patchSurfacesFromChanges(changes []CodexConversationFileChange) []string {
 	seen := map[string]bool{}
 	var out []string
-	for _, line := range strings.Split(patch, "\n") {
-		line = strings.TrimSpace(line)
-		var path string
-		switch {
-		case strings.HasPrefix(line, "*** Update File: "):
-			path = strings.TrimSpace(strings.TrimPrefix(line, "*** Update File: "))
-		case strings.HasPrefix(line, "*** Add File: "):
-			path = strings.TrimSpace(strings.TrimPrefix(line, "*** Add File: "))
-		case strings.HasPrefix(line, "*** Delete File: "):
-			path = strings.TrimSpace(strings.TrimPrefix(line, "*** Delete File: "))
-		}
+	for _, change := range changes {
+		path := strings.TrimSpace(change.Path)
 		if path == "" || seen[path] {
 			continue
 		}
@@ -558,6 +550,85 @@ func patchSurfaces(patch string) []string {
 		}
 	}
 	return out
+}
+
+func patchFileChanges(patch string) []CodexConversationFileChange {
+	if strings.TrimSpace(patch) == "" {
+		return nil
+	}
+
+	normalized := strings.ReplaceAll(strings.ReplaceAll(patch, "\r\n", "\n"), "\r", "\n")
+	complete := false
+	for _, line := range strings.Split(normalized, "\n") {
+		if strings.TrimRight(line, " \t") == "*** End Patch" {
+			complete = true
+			break
+		}
+	}
+
+	var changes []CodexConversationFileChange
+	var current *CodexConversationFileChange
+	added := 0
+	removed := 0
+	finishCurrent := func() {
+		if current == nil {
+			return
+		}
+		if complete && current.Operation != "delete" {
+			current.Additions = intPointer(added)
+			current.Deletions = intPointer(removed)
+		}
+		changes = append(changes, *current)
+		current = nil
+		added = 0
+		removed = 0
+	}
+
+	for _, rawLine := range strings.Split(normalized, "\n") {
+		line := strings.TrimRight(rawLine, " \t")
+		var operation string
+		var path string
+		switch {
+		case strings.HasPrefix(line, "*** Update File: "):
+			operation = "update"
+			path = strings.TrimSpace(strings.TrimPrefix(line, "*** Update File: "))
+		case strings.HasPrefix(line, "*** Add File: "):
+			operation = "add"
+			path = strings.TrimSpace(strings.TrimPrefix(line, "*** Add File: "))
+		case strings.HasPrefix(line, "*** Delete File: "):
+			operation = "delete"
+			path = strings.TrimSpace(strings.TrimPrefix(line, "*** Delete File: "))
+		}
+		if path != "" {
+			finishCurrent()
+			current = &CodexConversationFileChange{
+				Path:      path,
+				Operation: operation,
+			}
+			continue
+		}
+		if current == nil {
+			continue
+		}
+		if strings.HasPrefix(line, "*** Move to: ") {
+			current.MovePath = strings.TrimSpace(strings.TrimPrefix(line, "*** Move to: "))
+			continue
+		}
+		if strings.HasPrefix(line, "***") || strings.HasPrefix(line, "@@") {
+			continue
+		}
+		if strings.HasPrefix(rawLine, "+") {
+			added++
+		} else if strings.HasPrefix(rawLine, "-") {
+			removed++
+		}
+	}
+	finishCurrent()
+	return changes
+}
+
+func intPointer(value int) *int {
+	return &value
 }
 
 func shellCommandLabel(command []string) string {

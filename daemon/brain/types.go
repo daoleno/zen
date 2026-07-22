@@ -7,15 +7,17 @@ import (
 )
 
 type AgentRef struct {
-	ID        string    `json:"id"`
-	Name      string    `json:"name"`
-	Status    string    `json:"status"`
-	Summary   string    `json:"summary,omitempty"`
-	Cwd       string    `json:"cwd,omitempty"`
-	Command   string    `json:"command,omitempty"`
-	Updated   time.Time `json:"updated_at"`
-	Hidden    bool      `json:"hidden,omitempty"`
-	Delegated bool      `json:"delegated,omitempty"`
+	ID        string     `json:"id"`
+	Name      string     `json:"name"`
+	Status    string     `json:"status"`
+	Summary   string     `json:"summary,omitempty"`
+	Cwd       string     `json:"cwd,omitempty"`
+	Command   string     `json:"command,omitempty"`
+	StartedAt *time.Time `json:"started_at,omitempty"`
+	ProcessID int        `json:"process_id,omitempty"`
+	Updated   time.Time  `json:"updated_at"`
+	Hidden    bool       `json:"hidden,omitempty"`
+	Delegated bool       `json:"delegated,omitempty"`
 }
 
 type Snapshot struct {

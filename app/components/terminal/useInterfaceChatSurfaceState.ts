@@ -55,6 +55,8 @@ import { makeSessionKey } from "../../services/sessionKeys";
 interface UseInterfaceChatSurfaceStateInput {
   visible: boolean;
   serverId: string;
+  serverUrl: string;
+  daemonId: string;
   agentId: string;
   conversationScopeKey?: string;
   agentInfo?: InterfaceChatAgentInfo;
@@ -112,6 +114,8 @@ const CODEX_STATUS_KEYS = new Set([
 export function useInterfaceChatSurfaceState({
   visible,
   serverId,
+  serverUrl,
+  daemonId,
   agentId,
   conversationScopeKey,
   agentInfo,
@@ -571,6 +575,11 @@ export function useInterfaceChatSurfaceState({
   const bodyProps = useInterfaceChatBodyProps({
     screenFocused,
     serverId,
+    serverUrl,
+    daemonId,
+    agentId,
+    agentProcessId: agentInfo?.processId,
+    agentStartedAt: agentInfo?.startedAt,
     agentCwd: agentInfo?.cwd,
     connectionState,
     conversation,

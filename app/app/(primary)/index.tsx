@@ -430,12 +430,16 @@ export default function BrainScreen() {
               key={`brain-chat:${activeServer?.id}:${brainChatScopeKey ?? ""}`}
               visible
               serverId={activeServer?.id ?? ""}
+              serverUrl={activeServer?.url ?? ""}
+              daemonId={activeServer?.daemonId ?? ""}
               agentId={hostAgent?.id ?? ""}
               conversationScopeKey={brainChatScopeKey}
               agentInfo={{
                 cwd: hostAgent?.cwd,
                 command: hostAgent?.command,
                 name: hostAgent?.name,
+                processId: hostAgent?.process_id,
+                startedAt: hostAgent?.started_at,
               }}
               connectionState={connectionState}
               connectionIssue={connectionIssue}

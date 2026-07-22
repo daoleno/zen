@@ -25,6 +25,11 @@ import type {
 interface UseInterfaceChatBodyPropsInput {
   screenFocused: boolean;
   serverId: string;
+  serverUrl: string;
+  daemonId: string;
+  agentId: string;
+  agentProcessId?: number;
+  agentStartedAt?: number;
   agentCwd?: string;
   connectionState: ConnectionState;
   conversation: CodexConversation | null;
@@ -61,6 +66,11 @@ interface UseInterfaceChatBodyPropsInput {
 export function useInterfaceChatBodyProps({
   screenFocused,
   serverId,
+  serverUrl,
+  daemonId,
+  agentId,
+  agentProcessId,
+  agentStartedAt,
   agentCwd,
   connectionState,
   conversation,
@@ -108,6 +118,11 @@ export function useInterfaceChatBodyProps({
     () => ({
       screenFocused,
       serverId,
+      serverUrl,
+      daemonId,
+      agentId,
+      agentProcessId,
+      agentStartedAt,
       agentCwd,
       conversation,
       events,
@@ -177,7 +192,10 @@ export function useInterfaceChatBodyProps({
       skillsSheet,
     }),
     [
+      agentId,
       agentCwd,
+      agentProcessId,
+      agentStartedAt,
       attachments,
       chrome,
       composerInput.focused,
@@ -221,7 +239,9 @@ export function useInterfaceChatBodyProps({
       composerAccessory,
       screenFocused,
       showUnavailableAction,
+      daemonId,
       serverId,
+      serverUrl,
       setDraft,
       skillsSheet,
       theme,

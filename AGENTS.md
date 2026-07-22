@@ -23,6 +23,8 @@ Use TypeScript for app code and Go for daemon code. Match local style: two-space
 
 All product features, fixes, architecture, and shared infrastructure must be designed for Android and iOS by default. Web is outside the required product contract unless explicitly scoped. The first platform to reproduce a bug sets validation priority, not the solution boundary. Prefer the framework/provider’s shared mobile owner and one shared truth owner. Platform-specific code is allowed only when the underlying capability is genuinely platform-exclusive; isolate it behind a shared contract, and give the counterpart mobile platform explicit behavior rather than accidental omission.
 
+Zen may remember multiple server configurations, but exactly one server is current at a time. Sessions, Brain, Terminal, Calendar, Work, Skills, and adjacent presentation must consume the canonical current-server owner and show data only for that server. Feature screens must not enumerate or aggregate servers, invent fallback server selection, or add feature-local server pickers. Switching the current server must rebind or clear visible state so data from the previous server cannot remain on screen.
+
 ## Testing Guidelines
 
 Daemon tests use Go’s standard `testing` package and follow `*_test.go` naming. Run `cd daemon && go test ./...` before daemon, protocol, auth, terminal, or work/session changes. The app currently relies on TypeScript checks and Expo diagnostics; run `cd app && bunx tsc --noEmit` after TS/TSX changes and use Expo locally for UI verification.

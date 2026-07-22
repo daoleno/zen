@@ -726,6 +726,34 @@ func TestCodexConversationSubscriptionFingerprintChangesForEventContent(t *testi
 	}
 }
 
+func TestCodexConversationEventFingerprintTracksFileChangeFacts(t *testing.T) {
+	zero := 0
+	one := 1
+	base := work.CodexConversationEvent{
+		ID:   "session-1:patch",
+		Seq:  10,
+		Kind: "patch",
+		FileChanges: []work.CodexConversationFileChange{
+			{
+				Path:      "src/ledger/quote.ts",
+				Operation: "update",
+				Additions: &zero,
+				Deletions: &zero,
+			},
+		},
+	}
+	next := base
+	next.FileChanges = append([]work.CodexConversationFileChange(nil), base.FileChanges...)
+	next.FileChanges[0].Additions = &one
+
+	if codexConversationEventFingerprint(base) == codexConversationEventFingerprint(next) {
+		t.Fatal("file-change facts must update the existing event in place")
+	}
+	if base.ID != next.ID || base.Seq != next.Seq {
+		t.Fatal("file-change facts must not replace stable event identity")
+	}
+}
+
 func TestCodexConversationSubscriptionFingerprintTracksCurrentActivity(t *testing.T) {
 	base := work.CodexConversation{
 		Available: true,

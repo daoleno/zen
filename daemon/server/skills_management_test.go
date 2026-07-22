@@ -75,6 +75,30 @@ func TestSkillsInventoryClaimReplacesStaleGenerationAndConsumesCurrentOnce(t *te
 	}
 }
 
+func TestSkillsCatalogClaimReplacesStaleGenerationAndConsumesCurrentOnce(t *testing.T) {
+	connection := &websocket.Conn{}
+	previousContext, cancelPrevious := context.WithCancel(context.Background())
+	_, cancelCurrent := context.WithCancel(context.Background())
+	previous := skillsCatalogRequest{requestID: "catalog-previous", generation: 2, cancel: cancelPrevious}
+	current := skillsCatalogRequest{requestID: "catalog-current", generation: 3, cancel: cancelCurrent}
+	server := &Server{skillsCatalogs: map[*websocket.Conn]skillsCatalogRequest{connection: previous}}
+	t.Cleanup(cancelCurrent)
+	if replaced, ok := server.replaceSkillsCatalog(connection, current); !ok || replaced.requestID != previous.requestID {
+		t.Fatalf("replacement = %#v/%v", replaced, ok)
+	}
+	select {
+	case <-previousContext.Done():
+	default:
+		t.Fatal("catalog replacement left the previous reader active")
+	}
+	if server.claimSkillsCatalog(connection, previous) {
+		t.Fatal("stale catalog claimed the current generation")
+	}
+	if !server.claimSkillsCatalog(connection, current) || server.claimSkillsCatalog(connection, current) {
+		t.Fatal("current catalog was not consumed exactly once")
+	}
+}
+
 func TestSkillsSearchCancellationIsGenerationCorrelated(t *testing.T) {
 	connection := &websocket.Conn{}
 	ctx, cancel := context.WithCancel(context.Background())
@@ -98,6 +122,7 @@ func TestSkillsDisconnectCancelsInventoryAndSearchOwners(t *testing.T) {
 	connection := &websocket.Conn{}
 	inventoryContext, cancelInventory := context.WithCancel(context.Background())
 	searchContext, cancelSearch := context.WithCancel(context.Background())
+	catalogContext, cancelCatalog := context.WithCancel(context.Background())
 	server := &Server{
 		skillsInventories: map[*websocket.Conn]skillsInventoryRequest{
 			connection: {requestID: "inventory", generation: 1, cancel: cancelInventory},
@@ -105,18 +130,21 @@ func TestSkillsDisconnectCancelsInventoryAndSearchOwners(t *testing.T) {
 		skillsSearches: map[*websocket.Conn]skillsSearchRequest{
 			connection: {requestID: "search", generation: 1, cancel: cancelSearch},
 		},
+		skillsCatalogs: map[*websocket.Conn]skillsCatalogRequest{
+			connection: {requestID: "catalog", generation: 1, cancel: cancelCatalog},
+		},
 	}
 	server.mu.Lock()
 	server.cancelSkillsRequestsLocked(connection)
 	server.mu.Unlock()
-	for name, ctx := range map[string]context.Context{"inventory": inventoryContext, "search": searchContext} {
+	for name, ctx := range map[string]context.Context{"inventory": inventoryContext, "search": searchContext, "catalog": catalogContext} {
 		select {
 		case <-ctx.Done():
 		default:
 			t.Fatalf("%s context remained active after disconnect", name)
 		}
 	}
-	if len(server.skillsInventories) != 0 || len(server.skillsSearches) != 0 {
+	if len(server.skillsInventories) != 0 || len(server.skillsSearches) != 0 || len(server.skillsCatalogs) != 0 {
 		t.Fatalf("request owners survived disconnect")
 	}
 }

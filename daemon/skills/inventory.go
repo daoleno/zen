@@ -148,6 +148,7 @@ func DiscoverInventory(options InventoryOptions) (Inventory, error) {
 				Reason: "The canonical CLI install has no linked supported agent target.",
 			}
 		}
+		finalizeRemovalPlans(skill)
 		installed = append(installed, *skill)
 	}
 	sort.Slice(installed, func(i, j int) bool {
@@ -451,7 +452,7 @@ func (collector *inventoryCollector) scanRootEntry(root inventoryRoot, entry fs.
 		return
 	}
 	realPath = filepath.Clean(realPath)
-	binding := SkillBinding{SourcePath: filepath.Clean(sourcePath), Scope: root.scope, Agents: append([]Agent(nil), root.agents...)}
+	binding := SkillBinding{SourcePath: filepath.Clean(sourcePath), Scope: root.scope, Agents: append([]Agent{}, root.agents...)}
 	if existing := collector.byReal[realPath]; existing != nil {
 		appendBinding(&existing.Bindings, binding)
 		mergeAgents(&existing.Agents, root.agents)
@@ -469,7 +470,7 @@ func (collector *inventoryCollector) scanRootEntry(root inventoryRoot, entry fs.
 		CanonicalPath: realPath,
 		SourcePath:    filepath.Clean(sourcePath),
 		Scope:         root.scope,
-		Agents:        append([]Agent(nil), root.agents...),
+		Agents:        append([]Agent{}, root.agents...),
 		Bindings:      []SkillBinding{binding},
 		Manager:       root.manager,
 		Provenance:    root.provenance,
@@ -857,6 +858,59 @@ func unmanagedReason(manager Manager) string {
 	default:
 		return "No official skills-cli provenance proves a safe management command."
 	}
+}
+
+// finalizeRemovalPlans makes the CLI's actual binding asymmetry explicit.
+// Codex and Cursor resolve project Skills through the shared .agents/skills
+// canonical store, so targeting either one cannot prove an isolated removal.
+// Claude Code can be detached from an exact project symlink without deleting
+// that shared store. Global partial removal is deliberately not granted because
+// skills-cli removes the one shared global lock entry while bindings remain.
+func finalizeRemovalPlans(skill *InstalledSkill) {
+	skill.Capability.RemovalPlans = nil
+	if !skill.Capability.CanRemove {
+		return
+	}
+	if len(skill.Agents) == 0 {
+		skill.Capability = ManagementCapability{Reason: "The installed Skill has no supported Agent binding."}
+		return
+	}
+
+	allAgents := append([]Agent{}, skill.Agents...)
+	for _, agent := range skill.Agents {
+		affected := append([]Agent{}, allAgents...)
+		if len(allAgents) == 1 || hasDetachableProjectBinding(*skill, agent) {
+			affected = []Agent{agent}
+		}
+		skill.Capability.RemovalPlans = append(skill.Capability.RemovalPlans, AgentRemovalPlan{
+			Agent:          agent,
+			AffectedAgents: affected,
+		})
+	}
+}
+
+func hasDetachableProjectBinding(skill InstalledSkill, agent Agent) bool {
+	if skill.Scope != ScopeProject || agent != AgentClaudeCode {
+		return false
+	}
+	found := false
+	for _, binding := range skill.Bindings {
+		containsAgent := false
+		for _, boundAgent := range binding.Agents {
+			if boundAgent == agent {
+				containsAgent = true
+				break
+			}
+		}
+		if !containsAgent {
+			continue
+		}
+		if binding.Scope != ScopeProject || len(binding.Agents) != 1 || binding.SourcePath == skill.CanonicalPath {
+			return false
+		}
+		found = true
+	}
+	return found
 }
 
 func pluginNameForRoot(root string) string {

@@ -24,20 +24,20 @@ type codexInputIO interface {
 }
 
 type codexSubmitConfig struct {
-	readyTimeout       time.Duration
-	draftTimeout       time.Duration
-	confirmationWindow time.Duration
-	pollInterval       time.Duration
-	stableReadyPolls   int
+	startupStallTimeout time.Duration
+	draftTimeout        time.Duration
+	confirmationWindow  time.Duration
+	pollInterval        time.Duration
+	stableReadyPolls    int
 }
 
 func defaultCodexSubmitConfig() codexSubmitConfig {
 	return codexSubmitConfig{
-		readyTimeout:       codexInputReadyTimeout,
-		draftTimeout:       8 * time.Second,
-		confirmationWindow: 8 * time.Second,
-		pollInterval:       150 * time.Millisecond,
-		stableReadyPolls:   2,
+		startupStallTimeout: codexInputStartupStallTimeout,
+		draftTimeout:        8 * time.Second,
+		confirmationWindow:  8 * time.Second,
+		pollInterval:        150 * time.Millisecond,
+		stableReadyPolls:    2,
 	}
 }
 
@@ -45,6 +45,37 @@ var codexPastePlaceholderRe = regexp.MustCompile(`(?im)\[pasted content\s+[0-9]+
 var codexTaskActiveRe = regexp.MustCompile(`(?im)^\s*•\s+(starting mcp servers|working|thinking|running|searching|reading|exploring|executing|waiting)\b`)
 var codexNativeQueueRe = regexp.MustCompile(`(?im)^[ \t]*•[ \t]+messages\s+to\s+be\s+submitted\s+after\s+next\s+tool\s+call\b`)
 var codexInputBufferSequence atomic.Uint64
+
+type codexStartupProgress uint8
+
+const (
+	codexStartupSawIdentity codexStartupProgress = 1 << iota
+	codexStartupSawModelLoading
+	codexStartupSawComposer
+)
+
+// observe records only the first occurrence of each finite, current-pane Codex
+// startup stage. Timer redraws and arbitrary output churn never extend the
+// wait, so the handoff remains bounded without racing one absolute launch
+// deadline against provider-owned startup work.
+func (progress *codexStartupProgress) observe(content string) bool {
+	current := latestCodexPaneContent(content)
+	var observed codexStartupProgress
+	if strings.Contains(strings.ToLower(current), "openai codex") {
+		observed |= codexStartupSawIdentity
+	}
+	if codexModelLoadingRe.MatchString(current) {
+		observed |= codexStartupSawModelLoading
+	}
+	if codexInputPromptRe.MatchString(current) &&
+		!codexModelLoadingRe.MatchString(current) &&
+		!codexStartupContinueRe.MatchString(current) {
+		observed |= codexStartupSawComposer
+	}
+	advanced := observed &^ *progress
+	*progress |= observed
+	return advanced != 0
+}
 
 type realCodexInputIO struct{}
 
@@ -118,13 +149,17 @@ func submitCodexInput(io codexInputIO, sessionID, body string, cfg codexSubmitCo
 }
 
 func waitForStableCodexComposer(io codexInputIO, sessionID string, cfg codexSubmitConfig) (string, error) {
-	deadline := io.now().Add(cfg.readyTimeout)
+	deadline := io.now().Add(cfg.startupStallTimeout)
 	stable := 0
 	advancedStartupPrompt := false
+	var startupProgress codexStartupProgress
 	for {
 		content, alive := io.capture(sessionID)
 		if !alive {
 			return "", fmt.Errorf("Codex session exited before its composer became ready")
+		}
+		if startupProgress.observe(content) {
+			deadline = io.now().Add(cfg.startupStallTimeout)
 		}
 		if !advancedStartupPrompt && isCodexStartupContinuePrompt("codex", content) {
 			if err := io.sendEnter(sessionID); err != nil {
@@ -132,6 +167,7 @@ func waitForStableCodexComposer(io codexInputIO, sessionID string, cfg codexSubm
 			}
 			advancedStartupPrompt = true
 			stable = 0
+			deadline = io.now().Add(cfg.startupStallTimeout)
 		} else if isAgentInputReady("codex", content) {
 			stable++
 			if stable >= cfg.stableReadyPolls {
@@ -141,7 +177,7 @@ func waitForStableCodexComposer(io codexInputIO, sessionID string, cfg codexSubm
 			stable = 0
 		}
 		if !io.now().Before(deadline) {
-			return "", fmt.Errorf("Codex composer did not become ready within %s", cfg.readyTimeout)
+			return "", fmt.Errorf("Codex composer made no recognized startup progress for %s", cfg.startupStallTimeout)
 		}
 		io.sleep(cfg.pollInterval)
 	}

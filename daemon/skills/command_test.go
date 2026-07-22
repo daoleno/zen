@@ -1,6 +1,7 @@
 package skills
 
 import (
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -71,6 +72,129 @@ func TestBuildRemoveRediscoversExactOfficialCLIProvenance(t *testing.T) {
 	wantRemove := "npx skills remove managed-skill --agent codex --agent cursor --yes"
 	if remove.Command != wantRemove {
 		t.Fatalf("remove = %q, want %q", remove.Command, wantRemove)
+	}
+}
+
+func TestBuildRemoveUsesOnlyDaemonProvenAgentRemovalPlans(t *testing.T) {
+	home := t.TempDir()
+	project := filepath.Join(home, "project")
+	canonical := filepath.Join(project, ".agents", "skills", "shared-skill")
+	writeTestSkill(t, canonical, "shared-skill", "Shared")
+	claudeLink := filepath.Join(project, ".claude", "skills", "shared-skill")
+	if err := os.MkdirAll(filepath.Dir(claudeLink), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(canonical, claudeLink); err != nil {
+		t.Fatal(err)
+	}
+	writeTestLock(t, filepath.Join(project, "skills-lock.json"), 1, map[string]lockEntry{
+		"shared-skill": {Source: "acme/skills", SourceType: "github"},
+	})
+
+	options := InventoryOptions{CWD: project, Home: home}
+	inventory, err := DiscoverInventory(options)
+	if err != nil || len(inventory.Skills) != 1 {
+		t.Fatalf("inventory = %#v, error = %v", inventory, err)
+	}
+	skill := inventory.Skills[0]
+	if len(skill.Capability.RemovalPlans) != 3 {
+		t.Fatalf("removal plans = %#v", skill.Capability.RemovalPlans)
+	}
+
+	claude, err := BuildMutationCommand(options, MutationRequest{
+		Operation: OperationRemove,
+		CWD:       project,
+		SkillID:   skill.ID,
+		Scope:     ScopeProject,
+		Agents:    []Agent{AgentClaudeCode},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := "npx skills remove shared-skill --agent claude-code --yes"; claude.Command != want {
+		t.Fatalf("Claude removal = %q, want %q", claude.Command, want)
+	}
+
+	for _, unsafe := range [][]Agent{{AgentCodex}, {AgentCursor}, {AgentCodex, AgentCursor}} {
+		if _, err := BuildMutationCommand(options, MutationRequest{
+			Operation: OperationRemove,
+			CWD:       project,
+			SkillID:   skill.ID,
+			Scope:     ScopeProject,
+			Agents:    unsafe,
+		}); err == nil || !strings.Contains(err.Error(), "provable removal plan") {
+			t.Fatalf("unsafe target %v error = %v", unsafe, err)
+		}
+	}
+
+	shared, err := BuildMutationCommand(options, MutationRequest{
+		Operation: OperationRemove,
+		CWD:       project,
+		SkillID:   skill.ID,
+		Scope:     ScopeProject,
+		Agents:    []Agent{AgentCodex, AgentClaudeCode, AgentCursor},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := "npx skills remove shared-skill --agent codex --agent claude-code --agent cursor --yes"; shared.Command != want {
+		t.Fatalf("shared removal = %q, want %q", shared.Command, want)
+	}
+}
+
+func TestBuildRemoveKeepsGlobalSharedBindingsInseparable(t *testing.T) {
+	home := t.TempDir()
+	canonical := filepath.Join(home, ".agents", "skills", "shared-skill")
+	writeTestSkill(t, canonical, "shared-skill", "Shared global")
+	for _, link := range []string{
+		filepath.Join(home, ".codex", "skills", "shared-skill"),
+		filepath.Join(home, ".cursor", "skills", "shared-skill"),
+	} {
+		if err := os.MkdirAll(filepath.Dir(link), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Symlink(canonical, link); err != nil {
+			t.Fatal(err)
+		}
+	}
+	writeTestLock(t, filepath.Join(home, ".agents", ".skill-lock.json"), 3, map[string]lockEntry{
+		"shared-skill": {Source: "acme/skills", SourceType: "github"},
+	})
+
+	options := InventoryOptions{Home: home}
+	inventory, err := DiscoverInventory(options)
+	if err != nil || len(inventory.Skills) != 1 {
+		t.Fatalf("inventory = %#v, error = %v", inventory, err)
+	}
+	skill := inventory.Skills[0]
+	if len(skill.Capability.RemovalPlans) != 2 {
+		t.Fatalf("removal plans = %#v", skill.Capability.RemovalPlans)
+	}
+	for _, plan := range skill.Capability.RemovalPlans {
+		if !sameAgentSet(plan.AffectedAgents, []Agent{AgentCodex, AgentCursor}) {
+			t.Fatalf("global plan = %#v, want both bound Agents", plan)
+		}
+	}
+	if _, err := BuildMutationCommand(options, MutationRequest{
+		Operation: OperationRemove,
+		SkillID:   skill.ID,
+		Scope:     ScopeGlobal,
+		Agents:    []Agent{AgentCodex},
+	}); err == nil || !strings.Contains(err.Error(), "provable removal plan") {
+		t.Fatalf("partial global removal error = %v", err)
+	}
+
+	command, err := BuildMutationCommand(options, MutationRequest{
+		Operation: OperationRemove,
+		SkillID:   skill.ID,
+		Scope:     ScopeGlobal,
+		Agents:    []Agent{AgentCodex, AgentCursor},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := "npx skills remove shared-skill --global --agent codex --agent cursor --yes"; command.Command != want {
+		t.Fatalf("global removal = %q, want %q", command.Command, want)
 	}
 }
 

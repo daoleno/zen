@@ -91,6 +91,7 @@ type Server struct {
 	sendActionOverride         func(agentID, action string) error
 	uploadDir                  string
 	uploadMu                   sync.Mutex
+	sessionFileAgentLoader     func(agentID string) *classifier.Agent
 
 	workSubID     int
 	workSub       <-chan work.Event
@@ -103,7 +104,9 @@ type Server struct {
 	codexSubs         map[*websocket.Conn]map[string]codexConversationSubscription
 	brainSent         map[string]struct{}
 	skillsSearcher    *skillmgmt.Searcher
+	skillsCatalog     *skillmgmt.LeaderboardReader
 	skillsInventories map[*websocket.Conn]skillsInventoryRequest
+	skillsCatalogs    map[*websocket.Conn]skillsCatalogRequest
 	skillsSearches    map[*websocket.Conn]skillsSearchRequest
 	mu                sync.Mutex
 }
@@ -142,7 +145,9 @@ func New(authManager *auth.Manager, w *watcher.Watcher, pusher *push.Client, sc 
 		codexSubs:         make(map[*websocket.Conn]map[string]codexConversationSubscription),
 		brainSent:         make(map[string]struct{}),
 		skillsSearcher:    skillmgmt.NewSearcher(),
+		skillsCatalog:     skillmgmt.NewLeaderboardReader(),
 		skillsInventories: make(map[*websocket.Conn]skillsInventoryRequest),
+		skillsCatalogs:    make(map[*websocket.Conn]skillsCatalogRequest),
 		skillsSearches:    make(map[*websocket.Conn]skillsSearchRequest),
 	}
 	srv.lifecycle = newDelegatedLifecycleManager(
@@ -190,6 +195,7 @@ type clientMessage struct {
 	Lines                int                    `json:"lines"`
 	ProcessID            int                    `json:"process_id"`
 	Path                 string                 `json:"path"`
+	FileGeneration       string                 `json:"file_generation"`
 	ID                   string                 `json:"id"`
 	Project              string                 `json:"project"`
 	Frontmatter          map[string]interface{} `json:"frontmatter"`
@@ -226,6 +232,7 @@ func (s *Server) RunWithReady(ctx context.Context, addr string, onReady func()) 
 	mux.HandleFunc("/pair", s.handlePair)
 	mux.HandleFunc("/auth-check", s.handleAuthCheck)
 	mux.HandleFunc("/upload", s.handleUpload)
+	mux.HandleFunc("/session-file", s.handleSessionFileBinary)
 	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
 		s.writeJSONWithAssertion(w, http.StatusOK, "zen-health", map[string]any{
 			"status":            "ok",
@@ -326,6 +333,10 @@ func (s *Server) cancelSkillsRequestsLocked(conn *websocket.Conn) {
 	if inventory, ok := s.skillsInventories[conn]; ok {
 		inventory.cancel()
 		delete(s.skillsInventories, conn)
+	}
+	if catalog, ok := s.skillsCatalogs[conn]; ok {
+		catalog.cancel()
+		delete(s.skillsCatalogs, conn)
 	}
 }
 
@@ -595,6 +606,9 @@ func (s *Server) handleClientMessage(conn *websocket.Conn, msg []byte) {
 	case "skills_inventory":
 		s.handleSkillsInventory(conn, raw)
 
+	case "skills_catalog":
+		s.handleSkillsCatalog(conn, raw)
+
 	case "skills_search":
 		s.handleSkillsSearch(conn, raw)
 
@@ -633,6 +647,12 @@ func (s *Server) handleClientMessage(conn *websocket.Conn, msg []byte) {
 
 	case "codex_asset":
 		s.handleCodexAsset(conn, raw)
+
+	case "session_file_metadata":
+		s.handleSessionFileMetadata(conn, raw)
+
+	case "session_file_text":
+		s.handleSessionFileText(conn, raw)
 
 	case "terminal_open":
 		backend := raw.Backend
@@ -1468,9 +1488,29 @@ func writeCodexConversationEventFingerprint(w io.Writer, event work.CodexConvers
 	writeFingerprintBool(w, event.Partial)
 	writeFingerprintBool(w, event.Transient)
 	writeFingerprintStrings(w, event.Files)
+	writeFingerprintFileChanges(w, event.FileChanges)
 	writeFingerprintString(w, event.Explanation)
 	writeFingerprintPlan(w, event.Plan)
 	writeFingerprintString(w, event.Source)
+}
+
+func writeFingerprintFileChanges(w io.Writer, changes []work.CodexConversationFileChange) {
+	writeFingerprintInt(w, len(changes))
+	for _, change := range changes {
+		writeFingerprintString(w, change.Path)
+		writeFingerprintString(w, change.MovePath)
+		writeFingerprintString(w, change.Operation)
+		if change.Additions == nil {
+			writeFingerprintString(w, "")
+		} else {
+			writeFingerprintInt(w, *change.Additions)
+		}
+		if change.Deletions == nil {
+			writeFingerprintString(w, "")
+		} else {
+			writeFingerprintInt(w, *change.Deletions)
+		}
+	}
 }
 
 func writeFingerprintString(w io.Writer, value string) {

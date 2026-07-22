@@ -954,6 +954,11 @@ func agentRefFromClassifier(agent *classifier.Agent) AgentRef {
 	if agent == nil {
 		return AgentRef{}
 	}
+	var startedAt *time.Time
+	if !agent.StartedAt.IsZero() {
+		value := agent.StartedAt
+		startedAt = &value
+	}
 	return AgentRef{
 		ID:        agent.ID,
 		Name:      agent.Name,
@@ -961,6 +966,8 @@ func agentRefFromClassifier(agent *classifier.Agent) AgentRef {
 		Summary:   agent.Summary,
 		Cwd:       agent.Cwd,
 		Command:   agent.Command,
+		StartedAt: startedAt,
+		ProcessID: agent.ProcessID,
 		Updated:   agent.UpdatedAt,
 		Hidden:    agent.Hidden,
 		Delegated: agent.Delegated,

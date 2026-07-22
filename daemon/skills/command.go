@@ -106,9 +106,6 @@ func buildInstalledCommand(options InventoryOptions, request MutationRequest) (M
 			supportedInstalledAgents = append(supportedInstalledAgents, agent)
 		}
 	}
-	if !sameAgentSet(requestedAgents, supportedInstalledAgents) {
-		return MutationCommand{}, errors.New("target agents do not match the current installed bindings")
-	}
 	if !sameAgentSet(boundAgents, supportedInstalledAgents) {
 		return MutationCommand{}, errors.New("installed Skill bindings do not prove the requested CLI targets")
 	}
@@ -116,11 +113,14 @@ func buildInstalledCommand(options InventoryOptions, request MutationRequest) (M
 	if !installed.Capability.CanRemove {
 		return MutationCommand{}, errors.New("installed Skill cannot be safely removed")
 	}
+	if !matchesRemovalPlan(requestedAgents, installed.Capability.RemovalPlans) {
+		return MutationCommand{}, errors.New("target agents do not match a provable removal plan")
+	}
 	parts := []string{"npx", "skills", "remove", installed.Name}
 	if installed.Scope == ScopeGlobal {
 		parts = append(parts, "--global")
 	}
-	for _, agent := range supportedInstalledAgents {
+	for _, agent := range requestedAgents {
 		parts = append(parts, "--agent", string(agent))
 	}
 	parts = append(parts, "--yes")
@@ -129,8 +129,17 @@ func buildInstalledCommand(options InventoryOptions, request MutationRequest) (M
 		Command:   strings.Join(parts, " "),
 		SkillName: installed.Name,
 		Scope:     installed.Scope,
-		Agents:    supportedInstalledAgents,
+		Agents:    requestedAgents,
 	}, nil
+}
+
+func matchesRemovalPlan(requested []Agent, plans []AgentRemovalPlan) bool {
+	for _, plan := range plans {
+		if sameAgentSet(requested, plan.AffectedAgents) {
+			return true
+		}
+	}
+	return false
 }
 
 func sameAgentSet(left, right []Agent) bool {

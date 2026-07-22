@@ -202,7 +202,9 @@ describe("generic WebSocket live boundary", () => {
       generation: 7,
     });
     const searchFrame = JSON.parse(socket.sent[0]!);
-    expect(client.cancelSkillsCatalogSearch(server.id, { generation: 7 })).toBe(true);
+    expect(client.cancelSkillsCatalogSearch(server.id, { generation: 7 })).toBe(
+      true,
+    );
     expect(JSON.parse(socket.sent[1]!)).toMatchObject({
       type: "skills_search_cancel",
       generation: 7,
@@ -215,6 +217,32 @@ describe("generic WebSocket live boundary", () => {
       message: "The Skills search was canceled.",
     });
     await expect(pending).rejects.toThrow("canceled");
+    client.disconnectAll();
+  });
+
+  test("Skills rankings use one current-server frame and reject a stale generation", async () => {
+    const client = new MultiServerWebSocketClient();
+    const socket = await connectClient(client);
+    socket.open();
+
+    const pending = client.getSkillsLeaderboards(server.id, {
+      generation: 6,
+      limit: 30,
+    });
+    const outbound = JSON.parse(socket.sent.at(-1)!);
+    expect(outbound).toMatchObject({
+      type: "skills_catalog",
+      generation: 6,
+      limit: 30,
+    });
+    socket.receive({
+      type: "skills_catalog",
+      request_id: outbound.request_id,
+      generation: 5,
+      leaderboards: {},
+    });
+
+    await expect(pending).rejects.toThrow("stale Skills catalog generation");
     client.disconnectAll();
   });
 
@@ -238,7 +266,8 @@ describe("generic WebSocket live boundary", () => {
       request_id: mismatchedRequest.request_id,
       command: {
         operation: "install",
-        command: "npx skills add https://github.com/other/skills --skill useful --global --agent codex --yes",
+        command:
+          "npx skills add https://github.com/other/skills --skill useful --global --agent codex --yes",
         catalog_id: "other/skills/useful",
         source: "other/skills",
         skill_name: "useful",
@@ -255,7 +284,8 @@ describe("generic WebSocket live boundary", () => {
       request_id: unboundRequest.request_id,
       command: {
         operation: "install",
-        command: "npx skills add https://github.com/acme/skills --skill useful --global --agent codex --yes",
+        command:
+          "npx skills add https://github.com/acme/skills --skill useful --global --agent codex --yes",
         skill_name: "useful",
         scope: "global",
         agents: ["codex"],
@@ -868,8 +898,7 @@ describe("Skills management transport", () => {
       request_id: outbound.request_id,
       command: {
         operation: "remove",
-        command:
-          "npx skills remove other-skill --global --agent codex --yes",
+        command: "npx skills remove other-skill --global --agent codex --yes",
         skill_name: "other-skill",
         scope: "global",
         agents: ["codex"],

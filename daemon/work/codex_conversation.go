@@ -189,11 +189,23 @@ type CodexConversationEvent struct {
 	Partial bool `json:"partial,omitempty"`
 	// Transient means a provider projection may be absent from a later provider
 	// snapshot and is therefore safe to delete during reconciliation.
-	Transient   bool            `json:"transient,omitempty"`
-	Files       []string        `json:"files,omitempty"`
-	Explanation string          `json:"explanation,omitempty"`
-	Plan        []CodexPlanStep `json:"plan,omitempty"`
-	Source      string          `json:"source,omitempty"`
+	Transient   bool                          `json:"transient,omitempty"`
+	Files       []string                      `json:"files,omitempty"`
+	FileChanges []CodexConversationFileChange `json:"file_changes,omitempty"`
+	Explanation string                        `json:"explanation,omitempty"`
+	Plan        []CodexPlanStep               `json:"plan,omitempty"`
+	Source      string                        `json:"source,omitempty"`
+}
+
+// CodexConversationFileChange is the provider-neutral, display-only summary
+// of one file mutation. Optional line counts distinguish unknown statistics
+// from a known zero without making the raw patch a second state owner.
+type CodexConversationFileChange struct {
+	Path      string `json:"path"`
+	MovePath  string `json:"move_path,omitempty"`
+	Operation string `json:"operation"`
+	Additions *int   `json:"additions,omitempty"`
+	Deletions *int   `json:"deletions,omitempty"`
 }
 
 type CodexPlanStep struct {
@@ -1056,7 +1068,8 @@ func (b *codexConversationBuilder) isDuplicateRecentWebSearch(timestamp, body, i
 
 func (b *codexConversationBuilder) addPatchEvent(lineNumber int, timestamp, callID, input string) {
 	callID = strings.TrimSpace(callID)
-	files := patchSurfaces(input)
+	fileChanges := patchFileChanges(input)
+	files := patchSurfacesFromChanges(fileChanges)
 	title := "Patch"
 	if len(files) > 0 {
 		title = fmt.Sprintf("Patch %d file", len(files))
@@ -1065,14 +1078,15 @@ func (b *codexConversationBuilder) addPatchEvent(lineNumber int, timestamp, call
 		}
 	}
 	event := CodexConversationEvent{
-		ID:        b.eventID(lineNumber),
-		Timestamp: timestamp,
-		Kind:      "patch",
-		Title:     title,
-		Body:      truncateConversationBody(input),
-		Files:     files,
-		CallID:    callID,
-		Source:    "codex_rollout",
+		ID:          b.eventID(lineNumber),
+		Timestamp:   timestamp,
+		Kind:        "patch",
+		Title:       title,
+		Body:        truncateConversationBody(input),
+		Files:       files,
+		FileChanges: fileChanges,
+		CallID:      callID,
+		Source:      "codex_rollout",
 	}
 	if callID != "" {
 		if index, exists := b.eventByCall[callID]; exists && index >= 0 && index < len(b.events) {
@@ -1430,7 +1444,7 @@ func (b *codexConversationBuilder) addEvent(event CodexConversationEvent) bool {
 		event.Plan[index].Status = normalizePlanStepStatus(event.Plan[index].Status)
 	}
 	event.Plan = filterVisibleCodexPlanSteps(event.Plan)
-	if event.Kind == "" || (event.Body == "" && event.Title == "" && event.Command == "" && event.ToolName == "" && event.Input == "" && event.Output == "" && len(event.Files) == 0 && event.Explanation == "" && len(event.Plan) == 0) {
+	if event.Kind == "" || (event.Body == "" && event.Title == "" && event.Command == "" && event.ToolName == "" && event.Input == "" && event.Output == "" && len(event.Files) == 0 && len(event.FileChanges) == 0 && event.Explanation == "" && len(event.Plan) == 0) {
 		return false
 	}
 	if event.ID == "" {

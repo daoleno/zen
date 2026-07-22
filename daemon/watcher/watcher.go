@@ -20,14 +20,13 @@ import (
 const tmuxSendInputChunkBytes = 1024
 
 const initialInputReadyTimeout = 8 * time.Second
-const codexInputReadyTimeout = 30 * time.Second
+const codexInputStartupStallTimeout = 30 * time.Second
 const cursorInputReadyTimeout = 25 * time.Second
 const claudeInputReadyTimeout = 12 * time.Second
 const grokInputReadyTimeout = 15 * time.Second
 
 var codexInputPromptRe = regexp.MustCompile(`(?m)^›\s`)
 var codexModelLoadingRe = regexp.MustCompile(`(?im)\bmodel:\s+loading\b`)
-var codexMCPStartingRe = regexp.MustCompile(`(?im)\bstarting\s+mcp\s+servers\b`)
 var codexStartupContinueRe = regexp.MustCompile(`(?im)\bpress\s+enter\s+to\s+continue\b`)
 var cursorInputReadyRe = regexp.MustCompile(`(?im)\b(run\s+everything|composer\s+[0-9][^\n]*\n\s*~?[/\w.-].*)\b`)
 var cursorWorkspaceTrustRe = regexp.MustCompile(`(?im)\bworkspace\s+trust\s+required\b`)
@@ -204,6 +203,63 @@ func (w *Watcher) UpdateAgentProgress(id string, progress classifier.AgentProgre
 	}
 	oldState := agent.State
 	classifier.ApplyProgress(agent, progress, now)
+	snapshot = cloneAgent(agent)
+	event = SessionEvent{
+		Type:    "agent_metadata_change",
+		AgentID: id,
+		Agent:   snapshot,
+	}
+	if oldState != agent.State {
+		event.Type = "agent_state_change"
+		event.OldState = string(oldState)
+		event.NewState = string(agent.State)
+	}
+	w.mu.Unlock()
+
+	w.events <- event
+	return snapshot, nil
+}
+
+// SettleAgentInputAccepted clears an older terminal handoff projection after
+// the provider has consumed the composer. It updates the canonical Agent in
+// place rather than keeping a parallel launch-status shadow. Lifecycle progress
+// reported after this handoff began wins and is never overwritten.
+func (w *Watcher) SettleAgentInputAccepted(id string, handoffStartedAt time.Time, phase, summary string) (*classifier.Agent, error) {
+	id = strings.TrimSpace(id)
+	if id == "" {
+		return nil, fmt.Errorf("missing agent id")
+	}
+	if handoffStartedAt.IsZero() {
+		return nil, fmt.Errorf("missing handoff start time")
+	}
+
+	var event SessionEvent
+	var snapshot *classifier.Agent
+	w.mu.Lock()
+	agent, ok := w.agents[id]
+	if !ok {
+		w.mu.Unlock()
+		return nil, fmt.Errorf("agent session not found")
+	}
+	if agent.LastProgressAt != nil && !agent.LastProgressAt.Before(handoffStartedAt) {
+		snapshot = cloneAgent(agent)
+		w.mu.Unlock()
+		return snapshot, nil
+	}
+
+	oldState := agent.State
+	agent.State = classifier.StateRunning
+	agent.Summary = strings.TrimSpace(summary)
+	agent.Phase = strings.TrimSpace(phase)
+	agent.Attention = "none"
+	agent.NeedsAttention = false
+	agent.TaskClass = ""
+	agent.EventKind = ""
+	agent.DetailsJSON = ""
+	agent.LastProgressAt = nil
+	agent.ExpectedNextCheckAt = nil
+	agent.LeaseSeconds = 0
+	agent.UpdatedAt = time.Now().UTC()
 	snapshot = cloneAgent(agent)
 	event = SessionEvent{
 		Type:    "agent_metadata_change",
@@ -855,7 +911,6 @@ func isAgentInputReady(command, content string) bool {
 		current := latestCodexPaneContent(content)
 		return (explicitCodex || strings.Contains(current, "OpenAI Codex")) &&
 			!codexModelLoadingRe.MatchString(current) &&
-			!codexMCPStartingRe.MatchString(current) &&
 			!codexStartupContinueRe.MatchString(current) &&
 			codexInputPromptRe.MatchString(current)
 	}
@@ -1196,7 +1251,7 @@ func tmuxSubmitDelay(command string) time.Duration {
 
 func inputReadyTimeout(command string) time.Duration {
 	if isCodexCommand(command) {
-		return codexInputReadyTimeout
+		return codexInputStartupStallTimeout
 	}
 	if isCursorAgentCommand(command) {
 		return cursorInputReadyTimeout
@@ -1878,12 +1933,19 @@ type processInfo struct {
 }
 
 func snapshotProcesses() map[int]processInfo {
-	snapshotAt := time.Now()
-	out, err := exec.Command("ps", "-eo", "pid=,ppid=,etimes=,comm=,args=").Output()
+	command := exec.Command("ps", "-eo", "pid=,ppid=,lstart=,comm=,args=")
+	command.Env = append(command.Environ(), "LC_ALL=C")
+	out, err := command.Output()
 	if err != nil {
 		return nil
 	}
+	return parseProcessSnapshot(out, time.Local)
+}
 
+func parseProcessSnapshot(out []byte, location *time.Location) map[int]processInfo {
+	if location == nil {
+		location = time.Local
+	}
 	processes := make(map[int]processInfo)
 	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
 		line = strings.TrimSpace(line)
@@ -1891,26 +1953,30 @@ func snapshotProcesses() map[int]processInfo {
 			continue
 		}
 		fields := strings.Fields(line)
-		if len(fields) < 4 {
+		if len(fields) < 8 {
 			continue
 		}
 		pid, err1 := strconv.Atoi(fields[0])
 		ppid, err2 := strconv.Atoi(fields[1])
-		elapsedSeconds, err3 := strconv.Atoi(fields[2])
+		startedAt, err3 := time.ParseInLocation(
+			"Mon Jan 2 15:04:05 2006",
+			strings.Join(fields[2:7], " "),
+			location,
+		)
 		if err1 != nil || err2 != nil || err3 != nil {
 			continue
 		}
 
 		args := ""
-		if len(fields) > 4 {
-			args = strings.Join(fields[4:], " ")
+		if len(fields) > 8 {
+			args = strings.Join(fields[8:], " ")
 		}
 
 		processes[pid] = processInfo{
 			pid:       pid,
 			ppid:      ppid,
-			startedAt: snapshotAt.Add(-time.Duration(elapsedSeconds) * time.Second),
-			comm:      fields[3],
+			startedAt: startedAt,
+			comm:      fields[7],
 			args:      args,
 		}
 	}

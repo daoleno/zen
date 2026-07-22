@@ -1,9 +1,4 @@
-import React, {
-  useCallback,
-  useMemo,
-  useState,
-  type RefObject,
-} from "react";
+import React, { useCallback, type RefObject } from "react";
 import {
   Pressable,
   StyleSheet,
@@ -11,12 +6,12 @@ import {
   View,
   type View as ViewInstance,
 } from "react-native";
-import { useFocusEffect, useRouter } from "expo-router";
+import { useRouter } from "expo-router";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { Typography, useAppColors } from "../../constants/tokens";
 import { appVersion } from "../../constants/appVersion";
-import { getServers, type StoredServer } from "../../services/storage";
 import { useAgentServerSummary } from "../../store/agents";
+import { useCurrentServer } from "../../store/currentServer";
 import { ZenLogoMark } from "../ui/ZenLogoMark";
 import {
   NavChevronIcon,
@@ -37,7 +32,6 @@ interface PrimaryDrawerPanelProps {
 type DrawerRowIcon = "settings" | "skills" | "stats";
 
 interface DrawerRowProps {
-  detail?: string;
   drawerVisible: boolean;
   icon: DrawerRowIcon;
   label: string;
@@ -60,19 +54,13 @@ function DrawerRowIconView({
   return <NavSettingsIcon color={color} size={19} />;
 }
 
-function DrawerRow({
-  detail,
-  drawerVisible,
-  icon,
-  label,
-  onPress,
-}: DrawerRowProps) {
+function DrawerRow({ drawerVisible, icon, label, onPress }: DrawerRowProps) {
   const colors = useAppColors();
   return (
     <Pressable
       onPress={onPress}
       accessibilityRole="button"
-      accessibilityLabel={detail ? `${label}, ${detail}` : label}
+      accessibilityLabel={label}
       tabIndex={drawerVisible ? 0 : -1}
       style={({ pressed }) => [
         styles.drawerRow,
@@ -89,29 +77,18 @@ function DrawerRow({
       >
         <DrawerRowIconView color={colors.textSecondary} icon={icon} />
       </View>
-      <View style={styles.drawerRowCopy}>
-        <Text
-          style={[
-            styles.drawerRowLabel,
-            {
-              color: colors.textPrimary,
-              fontFamily: Typography.uiFontMedium,
-            },
-          ]}
-        >
-          {label}
-        </Text>
-        {detail ? (
-          <Text
-            style={[
-              styles.drawerRowDetail,
-              { color: colors.textTertiary },
-            ]}
-          >
-            {detail}
-          </Text>
-        ) : null}
-      </View>
+      <Text
+        numberOfLines={1}
+        style={[
+          styles.drawerRowLabel,
+          {
+            color: colors.textPrimary,
+            fontFamily: Typography.uiFontMedium,
+          },
+        ]}
+      >
+        {label}
+      </Text>
       <NavChevronIcon color={colors.textTertiary} size={17} />
     </Pressable>
   );
@@ -126,43 +103,22 @@ export function PrimaryDrawerPanel({
 }: PrimaryDrawerPanelProps) {
   const router = useRouter();
   const colors = useAppColors();
-  const { serverConnections, serverConnectionIssues } =
-    useAgentServerSummary();
-  const [servers, setServers] = useState<StoredServer[]>([]);
-
-  useFocusEffect(
-    useCallback(() => {
-      let cancelled = false;
-      void getServers().then((storedServers) => {
-        if (!cancelled) {
-          setServers(storedServers);
-        }
-      });
-      return () => {
-        cancelled = true;
-      };
-    }, []),
-  );
-
-  const connectedCount = useMemo(
-    () =>
-      servers.filter(
-        (server) => serverConnections[server.id] === "connected",
-      ).length,
-    [serverConnections, servers],
-  );
-  const primaryIssue = useMemo(
-    () =>
-      servers
-        .map((server) => serverConnectionIssues[server.id])
-        .filter((issue) => issue != null)
-        .sort((left, right) => right.checkedAt - left.checkedAt)[0] ?? null,
-    [serverConnectionIssues, servers],
-  );
-  const connectionSummary =
-    servers.length === 0
-      ? "No servers paired"
-      : `${connectedCount} of ${servers.length} connected`;
+  const { serverConnections, serverConnectionIssues } = useAgentServerSummary();
+  const { currentServer } = useCurrentServer();
+  const currentConnection = currentServer
+    ? serverConnections[currentServer.id] || "offline"
+    : "offline";
+  const currentIssue = currentServer
+    ? serverConnectionIssues[currentServer.id] || null
+    : null;
+  const connectionSummary = currentServer?.name || "No current server";
+  const connectionDetail =
+    currentIssue?.title ??
+    (currentConnection === "connected"
+      ? "Connected"
+      : currentConnection === "connecting"
+        ? "Connecting"
+        : "Offline");
 
   const openRoute = useCallback(
     (pathname: "/skills" | "/stats" | "/settings") => {
@@ -175,10 +131,7 @@ export function PrimaryDrawerPanel({
   return (
     <SafeAreaView style={styles.drawerContent} edges={["top", "bottom"]}>
       <View style={styles.drawerIdentity}>
-        <ZenLogoMark
-          size={42}
-          accessible={false}
-        />
+        <ZenLogoMark size={42} accessible={false} />
         <View style={styles.drawerIdentityCopy}>
           <Text
             style={[
@@ -190,14 +143,6 @@ export function PrimaryDrawerPanel({
             ]}
           >
             Zen
-          </Text>
-          <Text
-            style={[
-              styles.drawerSubtitle,
-              { color: colors.textTertiary },
-            ]}
-          >
-            Agent control plane
           </Text>
         </View>
         <Pressable
@@ -235,29 +180,21 @@ export function PrimaryDrawerPanel({
             styles.connectionDot,
             {
               backgroundColor:
-                connectedCount > 0
+                currentConnection === "connected"
                   ? colors.statusRunning
                   : colors.statusUnknown,
             },
           ]}
         />
         <View style={styles.connectionCopy}>
-          <Text
-            style={[
-              styles.connectionTitle,
-              { color: colors.textPrimary },
-            ]}
-          >
+          <Text style={[styles.connectionTitle, { color: colors.textPrimary }]}>
             {connectionSummary}
           </Text>
           <Text
             numberOfLines={2}
-            style={[
-              styles.connectionDetail,
-              { color: colors.textTertiary },
-            ]}
+            style={[styles.connectionDetail, { color: colors.textTertiary }]}
           >
-            {primaryIssue?.title ?? "Server status"}
+            {connectionDetail}
           </Text>
         </View>
       </View>
@@ -267,7 +204,6 @@ export function PrimaryDrawerPanel({
       />
 
       <DrawerRow
-        detail="Installed and discover"
         drawerVisible={drawerVisible}
         icon="skills"
         label="Skills"
@@ -280,7 +216,6 @@ export function PrimaryDrawerPanel({
         onPress={() => openRoute("/stats")}
       />
       <DrawerRow
-        detail="Servers and connection"
         drawerVisible={drawerVisible}
         icon="settings"
         label="Settings"
@@ -320,12 +255,6 @@ const styles = StyleSheet.create({
   drawerTitle: {
     fontSize: 17,
     lineHeight: 22,
-  },
-  drawerSubtitle: {
-    marginTop: 2,
-    fontSize: 12,
-    lineHeight: 17,
-    fontFamily: Typography.uiFont,
   },
   closeButton: {
     width: 44,
@@ -384,18 +313,10 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "center",
   },
-  drawerRowCopy: {
-    flex: 1,
-  },
   drawerRowLabel: {
+    flex: 1,
     fontSize: 14,
     lineHeight: 21,
-  },
-  drawerRowDetail: {
-    marginTop: 1,
-    fontSize: 12,
-    lineHeight: 17,
-    fontFamily: Typography.uiFont,
   },
   drawerVersion: {
     marginTop: "auto",
