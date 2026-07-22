@@ -277,6 +277,12 @@ if "materialize-android-keystore" not in wf:
     errors.append("release-artifacts.yml must materialize keystore via helper script")
 if "-Dorg.gradle.jvmargs=-Xmx6g" not in wf:
     errors.append("release-artifacts.yml must provide enough Gradle heap for release dex merging")
+for required in (
+    "zen-android-ghostty-output-v2-arm64-",
+    "app/modules/zen-terminal-vt/android/src/main/cpp/ghostty",
+):
+    if required not in wf:
+        errors.append(f"release-artifacts.yml missing complete native cache contract: {required}")
 if "ZEN_UPDATE_SIGNING_KEY_BASE64" not in wf:
     errors.append("release-artifacts.yml must use the updater manifest signing secret")
 for asset in (

@@ -209,7 +209,9 @@ fi
 
 HEADERS_DIR="$ROOT/$(python3 -c "import json;print(json.load(open('$LOCK'))['outputs']['headers_dir'])")"
 HEADERS_SHA="$(python3 -c "import json;print(json.load(open('$LOCK'))['ghostty']['headers_sha256'])")"
-if [[ -f "$HEADERS_DIR/vt.h" ]]; then
+if [[ ! -f "$HEADERS_DIR/vt.h" ]]; then
+  bad "missing pinned header $HEADERS_DIR/vt.h"
+else
   actual_headers_sha="$(sha256sum "$HEADERS_DIR/vt.h" | awk '{print $1}')"
   if [[ "$actual_headers_sha" == "$HEADERS_SHA" ]]; then
     pass "vt.h matches pinned header sha256"

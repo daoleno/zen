@@ -10,6 +10,10 @@ const identityVerifier = fs.readFileSync(
   path.join(__dirname, '..', 'scripts', 'verify-release-identity.sh'),
   'utf8',
 );
+const nativeVerifier = fs.readFileSync(
+  path.join(__dirname, '..', 'scripts', 'verify-libghostty.sh'),
+  'utf8',
+);
 const appPackage = fs.readFileSync(path.join(__dirname, 'package.json'), 'utf8');
 
 describe('release asset workflow contract', () => {
@@ -45,11 +49,13 @@ describe('release asset workflow contract', () => {
     expect(appPackage).toContain('--build-cache');
     expect(workflow).toContain('-Dorg.gradle.jvmargs=-Xmx6g');
     expect(workflow).toContain('zen-android-native-inputs-');
-    expect(workflow).toContain('zen-android-ghostty-output-arm64-');
+    expect(workflow).toContain('zen-android-ghostty-output-v2-arm64-');
+    expect(workflow).toContain('app/modules/zen-terminal-vt/android/src/main/cpp/ghostty');
     expect(workflow).toContain('app/modules/zen-terminal-vt/patches/android/**');
     expect(workflow).toContain('scripts/verify-android-native-symbols.py');
     expect(workflow).toContain("steps.ghostty-output-cache.outputs.cache-hit != 'true'");
     expect(workflow).toContain('run: ./scripts/verify-libghostty.sh --release');
+    expect(nativeVerifier).toContain('bad "missing pinned header $HEADERS_DIR/vt.h"');
     const cacheBlocks = [...workflow.matchAll(/uses: actions\/cache@v4[\s\S]*?(?=\n\s{6}- name:|$)/g)]
       .map((match) => match[0])
       .join('\n');
