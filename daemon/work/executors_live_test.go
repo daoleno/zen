@@ -101,7 +101,7 @@ command = "grok --live"
 	if !ok || delegated.ID != "grok" || delegated.Command != "grok --live" || !delegated.Delegated {
 		t.Fatalf("DelegatedAgentExecutor = %+v ok=%v", delegated, ok)
 	}
-	assertLaunchRole(t, cfg, dir, "grok", "grok --live")
+	assertLaunchRole(t, cfg, dir, "grok", "grok --live --permission-mode bypassPermissions --sandbox off")
 }
 
 func TestSetDelegatedExecutor_PersistsTOMLAndFreshProcessState(t *testing.T) {
@@ -377,7 +377,7 @@ command = "claude"
 	if !ok || delegated.ID != "grok" || delegated.Command != "grok --env" {
 		t.Fatalf("DelegatedAgentExecutor = %+v ok=%v", delegated, ok)
 	}
-	assertLaunchRole(t, cfg, dir, "grok", "grok --env")
+	assertLaunchRole(t, cfg, dir, "grok", "grok --env --permission-mode bypassPermissions --sandbox off")
 
 	beforeInfo, err := os.Stat(path)
 	if err != nil {

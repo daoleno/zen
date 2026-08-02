@@ -438,7 +438,7 @@ func TestRunScheduledActionPersistsFreshDelegatedLaunch(t *testing.T) {
 	if !result.Launched || result.WorkID != run.ID || result.AgentSession != "claude-scheduled" {
 		t.Fatalf("action result = %#v", result)
 	}
-	if len(tmux.spawnRoles) != 1 || tmux.spawnRoles[0] != "claude" || tmux.spawnCwds[0] != "/calendar-cwd" || tmux.spawnCommands[0] != "claude --configured" {
+	if len(tmux.spawnRoles) != 1 || tmux.spawnRoles[0] != "claude" || tmux.spawnCwds[0] != "/calendar-cwd" || tmux.spawnCommands[0] != "claude --configured --permission-mode bypassPermissions" {
 		t.Fatalf("spawn = roles %#v, cwds %#v, commands %#v", tmux.spawnRoles, tmux.spawnCwds, tmux.spawnCommands)
 	}
 	if len(tmux.sendReadyCalls) != 1 {
@@ -450,6 +450,63 @@ func TestRunScheduledActionPersistsFreshDelegatedLaunch(t *testing.T) {
 	written, ok := store.GetByID(run.ID)
 	if !ok || written.Frontmatter.Started == nil || written.Frontmatter.AgentSession != "claude-scheduled" {
 		t.Fatalf("persisted Work = %#v, found = %v", written, ok)
+	}
+}
+
+func TestUnsupportedScheduledExecutorFailsOccurrenceBeforeAnyPromptCanRun(t *testing.T) {
+	now := time.Date(2026, time.July, 25, 9, 0, 0, 0, time.UTC)
+	calendarStore, err := NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	calendarStore.now = func() time.Time { return now }
+	due := now
+	item, err := calendarStore.Create(Item{
+		Title:             "Unsupported unattended run",
+		Kind:              KindScheduledAction,
+		DueAt:             &due,
+		Timezone:          "UTC",
+		Recurrence:        RecurrenceNone,
+		ActionInstruction: "Do not wait for approval.",
+		SourceThreadID:    "thread-1",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	workStore, err := work.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	tmux := &scheduledActionLaunchRunner{}
+	launcher := work.NewLauncher(tmux, work.NewExecutorConfig("my-agent", map[string]work.Executor{
+		"my-agent": {Name: "my-agent", Command: "my-agent --interactive", Kind: "custom"},
+	}))
+	runner := &WorkRunner{
+		Store:    workStore,
+		Launcher: launcher,
+		Brain:    &scheduledActionThreadRegistry{known: true},
+	}
+	scheduler := NewScheduler(calendarStore, runner)
+	scheduler.now = func() time.Time { return now }
+
+	finished, err := scheduler.run(context.Background(), item.ID, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if finished.Status != StatusFailed || len(finished.Runs) != 1 || finished.Runs[0].Status != StatusFailed {
+		t.Fatalf("unsupported scheduled run did not terminate: %#v", finished)
+	}
+	if finished.Runs[0].Result != "" ||
+		!strings.Contains(finished.Runs[0].FailureReason, `executor "my-agent" uses unsupported provider "custom"`) {
+		t.Fatalf("unsupported scheduled failure = %#v", finished.Runs[0])
+	}
+	if finished.SourceThreadID != "thread-1" || scheduler.isLaunching(item.ID) {
+		t.Fatalf("delivery or launch lifecycle changed: item=%#v launching=%v", finished, scheduler.isLaunching(item.ID))
+	}
+	if len(tmux.spawnCommands) != 0 || len(tmux.sendReadyCalls) != 0 || len(tmux.abortCalls) != 0 {
+		t.Fatalf("unsupported executor reached an approval-capable process: spawn=%#v send=%#v abort=%#v",
+			tmux.spawnCommands, tmux.sendReadyCalls, tmux.abortCalls)
 	}
 }
 

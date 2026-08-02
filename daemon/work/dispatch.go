@@ -53,18 +53,22 @@ func (l *Launcher) StartDedicated(item *Item, cwd string) (*Item, error) {
 	if !ok {
 		return nil, fmt.Errorf("%w: %s", ErrExecutorNotConfigured, role)
 	}
+	command, err := ScheduledActionCommand(role, executor)
+	if err != nil {
+		return nil, err
+	}
 
 	cwd = strings.TrimSpace(cwd)
 	if cwd == "" {
 		return nil, fmt.Errorf("work cwd required")
 	}
-	sessionID, err := l.run.Spawn(role, cwd, executor.Command)
+	sessionID, err := l.run.Spawn(role, cwd, command)
 	if err != nil {
 		return nil, fmt.Errorf("%w: %v", ErrSpawnFailed, err)
 	}
 
 	prompt := buildInitialPrompt(item.Path)
-	if err := l.run.SendWhenReady(sessionID, executor.Command, prompt); err != nil {
+	if err := l.run.SendWhenReady(sessionID, command, prompt); err != nil {
 		launchErr := fmt.Errorf("%w: send prompt: %v", ErrSpawnFailed, err)
 		if abortErr := l.run.Abort(sessionID); abortErr != nil {
 			return nil, fmt.Errorf("%w; abort fresh session: %v", launchErr, abortErr)

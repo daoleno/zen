@@ -1,6 +1,7 @@
 package work
 
 import (
+	"errors"
 	"strings"
 	"testing"
 )
@@ -31,14 +32,14 @@ func TestHardenCodexDelegatedCommandAppendsFullAuthorization(t *testing.T) {
 			in:   "/opt/codex --no-alt-screen",
 			want: "/opt/codex --no-alt-screen --dangerously-bypass-approvals-and-sandbox",
 		},
+		{"env value containing flag unchanged", "env NOTE=--dangerously-bypass-approvals-and-sandbox codex", "env NOTE=--dangerously-bypass-approvals-and-sandbox codex"},
+		{"option value containing flag unchanged", "codex --note=--dangerously-bypass-approvals-and-sandbox", "codex --note=--dangerously-bypass-approvals-and-sandbox"},
+		{"equivalent aliases still gain literal flag", "codex -a never -s danger-full-access", "codex -a never -s danger-full-access --dangerously-bypass-approvals-and-sandbox"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			if got := HardenCodexDelegatedCommand(tc.in); got != tc.want {
 				t.Fatalf("HardenCodexDelegatedCommand(%q) = %q, want %q", tc.in, got, tc.want)
-			}
-			if strings.Count(HardenCodexDelegatedCommand(tc.in), CodexFullAuthorizationFlag) != 1 {
-				t.Fatalf("full authorization flag duplicated for %q", tc.in)
 			}
 		})
 	}
@@ -90,21 +91,14 @@ func TestHardenClaudeCommandAppendsFullAuthorization(t *testing.T) {
 			in:   "claude --dangerously-skip-permissions",
 			want: "claude --dangerously-skip-permissions",
 		},
+		{"env value containing option unchanged", "env MODE=--permission-mode VALUE=bypassPermissions claude", "env MODE=--permission-mode VALUE=bypassPermissions claude"},
+		{"quoted equals", `claude "--permission-mode=bypassPermissions"`, `claude "--permission-mode=bypassPermissions"`},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			got := HardenClaudeCommand(tc.in)
 			if got != tc.want {
 				t.Fatalf("HardenClaudeCommand(%q) = %q, want %q", tc.in, got, tc.want)
-			}
-			if strings.Contains(tc.want, "--permission-mode") {
-				permissionModeCount := strings.Count(got, "--permission-mode")
-				if permissionModeCount != 1 {
-					t.Fatalf("permission mode flag appears %d times for %q", permissionModeCount, tc.in)
-				}
-			}
-			if strings.Contains(tc.in, "--dangerously-skip-permissions") && strings.Contains(got, "--permission-mode") {
-				t.Fatalf("dangerously-skip-permissions command should not gain --permission-mode: %q", got)
 			}
 		})
 	}
@@ -117,6 +111,78 @@ func TestHardenClaudeCommandDefaultsToClaude(t *testing.T) {
 	}
 	if !strings.Contains(got, ClaudeFullAuthorizationFlag) {
 		t.Fatalf("default claude command should be hardened: %q", got)
+	}
+}
+
+func TestScheduledActionCommandRecognizesExactUnattendedArgv(t *testing.T) {
+	tests := []struct {
+		name, executorID, command, kind, want string
+	}{
+		{"Codex env spoof", "codex", "env NOTE=--dangerously-bypass-approvals-and-sandbox codex", "", "env NOTE=--dangerously-bypass-approvals-and-sandbox codex --dangerously-bypass-approvals-and-sandbox"},
+		{"Codex aliases", "codex", "codex -a never -s danger-full-access", "", "codex -a never -s danger-full-access"},
+		{"Codex attached aliases", "codex", "codex -anever -sdanger-full-access", "", "codex -anever -sdanger-full-access"},
+		{"Codex attached approval", "codex", "codex -anever", "", "codex -anever --sandbox danger-full-access"},
+		{"Codex attached sandbox", "codex", "codex -sdanger-full-access", "", "codex -sdanger-full-access --ask-for-approval never"},
+		{"Codex quoted equals", "codex", `env NOTE='not an option' -- codex "--ask-for-approval=never" '--sandbox=danger-full-access'`, "", `env NOTE='not an option' -- codex "--ask-for-approval=never" '--sandbox=danger-full-access'`},
+		{"Codex quoted hash", "codex", `codex '# configured-note'`, "", `codex '# configured-note' --dangerously-bypass-approvals-and-sandbox`},
+		{"Codex escaped hash", "codex", `env PROFILE=calendar -- codex \#configured-note`, "", `env PROFILE=calendar -- codex \#configured-note --dangerously-bypass-approvals-and-sandbox`},
+		{"Codex partial approval", "codex", "codex -a=never", "", "codex -a=never --sandbox danger-full-access"},
+		{"Codex partial sandbox", "codex", "codex -s=danger-full-access", "", "codex -s=danger-full-access --ask-for-approval never"},
+		{"Codex before terminator", "codex", `codex -a never -s danger-full-access -- "literal prompt"`, "", `codex -a never -s danger-full-access -- "literal prompt"`},
+		{"Claude quoted equals", "claude", `claude "--permission-mode=bypassPermissions"`, "", `claude "--permission-mode=bypassPermissions"`},
+		{"Cursor substrings", "cursor", "env FORCE=--force cursor-agent --forceful --sandbox=disabled --distrust --approve-mcps-extra", "cursor", "env FORCE=--force cursor-agent --forceful --sandbox=disabled --distrust --approve-mcps-extra --force --trust --approve-mcps"},
+		{"Cursor quoted exact", "cursor", `cursor-agent '--yolo' "--sandbox=disabled" '--trust' "--approve-mcps"`, "cursor", `cursor-agent '--yolo' "--sandbox=disabled" '--trust' "--approve-mcps"`},
+		{"Grok env spoof", "grok", "env APPROVAL=--always-approve grok --sandbox=off", "", "env APPROVAL=--always-approve grok --sandbox=off --permission-mode bypassPermissions"},
+		{"Grok quoted equals", "grok", `grok '--permission-mode=bypassPermissions' "--sandbox=off"`, "", `grok '--permission-mode=bypassPermissions' "--sandbox=off"`},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			executor := Executor{Name: test.executorID, Command: test.command, Kind: test.kind}
+			got, err := ScheduledActionCommand(test.executorID, executor)
+			if err != nil {
+				t.Fatalf("ScheduledActionCommand returned error: %v", err)
+			}
+			if got != test.want {
+				t.Fatalf("ScheduledActionCommand() = %q, want %q", got, test.want)
+			}
+			if executor.Command != test.command {
+				t.Fatalf("ordinary command mutated: got %q, want %q", executor.Command, test.command)
+			}
+		})
+	}
+}
+
+func TestScheduledActionCommandRejectsExplicitNonUnattendedModes(t *testing.T) {
+	tests := []struct {
+		name, executorID, command, kind string
+	}{
+		{"Codex separate approval", "codex", "codex --ask-for-approval on-request", ""},
+		{"Codex alias approval", "codex", "codex -a untrusted", ""},
+		{"Codex attached approval", "codex", "codex -aon-request -sdanger-full-access", ""},
+		{"Codex equals sandbox", "codex", "codex --sandbox=workspace-write", ""},
+		{"Codex attached sandbox", "codex", "codex -anever -sworkspace-write", ""},
+		{"Codex quoted alias sandbox", "codex", `codex "-s" "read-only"`, ""},
+		{"Codex shell chain", "codex", "codex && other --dangerously-bypass-approvals-and-sandbox", ""},
+		{"Codex quoted substitution", "codex", `codex "$(other --dangerously-bypass-approvals-and-sandbox)"`, ""},
+		{"Codex argv terminator", "codex", "codex -- --dangerously-bypass-approvals-and-sandbox", ""},
+		{"Claude permission", "claude", "claude --permission-mode dontAsk", ""},
+		{"Claude quoted equals", "claude", `claude "--permission-mode=dontAsk"`, ""},
+		{"Cursor auto review", "agent", "cursor-agent --auto-review --sandbox disabled", "cursor"},
+		{"Cursor equals plan", "agent", "cursor-agent --mode=plan", "cursor"},
+		{"Cursor quoted ask", "agent", `cursor-agent "--mode" "ask"`, "cursor"},
+		{"Cursor restricted sandbox", "agent", "cursor-agent --sandbox=enabled", "cursor"},
+		{"Grok permission", "grok", "grok --permission-mode default", ""},
+		{"Grok quoted sandbox", "grok", `grok "--sandbox=strict"`, ""},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			_, err := ScheduledActionCommand(test.executorID, Executor{Name: test.executorID, Command: test.command, Kind: test.kind})
+			if !errors.Is(err, ErrScheduledActionUnattended) {
+				t.Fatalf("error = %v, want ErrScheduledActionUnattended", err)
+			}
+		})
 	}
 }
 

@@ -1,6 +1,8 @@
 package work
 
 import (
+	"errors"
+	"fmt"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -28,6 +30,11 @@ const (
 	// internal progress commands never block on approval prompts.
 	ClaudeFullAuthorizationFlag = "--permission-mode bypassPermissions"
 )
+
+// ErrScheduledActionUnattended is returned before spawning when a Calendar
+// scheduled_action cannot be given one proven, conflict-free unattended
+// authorization mode.
+var ErrScheduledActionUnattended = errors.New("scheduled_action executor cannot launch unattended")
 
 // HardenCodexDelegatedCommand returns a Codex launch command configured for
 // non-interactive delegated execution. When command does not already declare
@@ -63,6 +70,313 @@ func HardenClaudeCommand(command string) string {
 		return command
 	}
 	return command + " " + ClaudeFullAuthorizationFlag
+}
+
+// ScheduledActionCommand derives Calendar's unattended command without
+// mutating the configured command used by ordinary launches.
+func ScheduledActionCommand(executorID string, executor Executor) (string, error) {
+	executorID = strings.TrimSpace(executorID)
+	agentExecutor := NewAgentExecutor(executorID, executor)
+	command := strings.TrimSpace(agentExecutor.Command)
+	options, inspectable := inspectLaunchCommandOptions(command)
+	if agentExecutor.Provider != AgentProviderCustom {
+		if !inspectable {
+			return "", fmt.Errorf("%w: executor %q has an unsupported launch command", ErrScheduledActionUnattended, executorID)
+		}
+		if !scheduledProviderExecutable(agentExecutor.Provider, options.executable) {
+			return "", fmt.Errorf(
+				"%w: executor %q provider %q does not match executable %q",
+				ErrScheduledActionUnattended,
+				executorID,
+				agentExecutor.Provider,
+				options.executable,
+			)
+		}
+	}
+	switch agentExecutor.Provider {
+	case AgentProviderCodex:
+		bypassPresent, bypassEnabled := options.option("", CodexFullAuthorizationFlag)
+		approvalPresent, approvalCompatible := options.option("never", "--ask-for-approval", "-a")
+		sandboxPresent, sandboxCompatible := options.option("danger-full-access", "--sandbox", "-s")
+		if bypassPresent && !bypassEnabled {
+			return "", fmt.Errorf("%w: executor %q has an invalid Codex bypass option", ErrScheduledActionUnattended, executorID)
+		}
+		if !approvalCompatible || !sandboxCompatible {
+			return "", fmt.Errorf("%w: executor %q has a non-unattended Codex approval or sandbox mode", ErrScheduledActionUnattended, executorID)
+		}
+		if bypassEnabled || approvalPresent && sandboxPresent {
+			return command, nil
+		}
+		if approvalPresent {
+			return appendScheduledOptions(executorID, command, options, "--sandbox", "danger-full-access")
+		}
+		if sandboxPresent {
+			return appendScheduledOptions(executorID, command, options, "--ask-for-approval", "never")
+		}
+		return appendScheduledOptions(executorID, command, options, CodexFullAuthorizationFlag)
+	case AgentProviderClaude:
+		permissionPresent, permissionCompatible := options.option("bypassPermissions", "--permission-mode")
+		skipPresent, skipEnabled := options.option("", "--dangerously-skip-permissions")
+		if !permissionCompatible || skipPresent && !skipEnabled {
+			return "", fmt.Errorf("%w: executor %q has a non-bypass Claude permission mode", ErrScheduledActionUnattended, executorID)
+		}
+		if permissionPresent || skipEnabled {
+			return command, nil
+		}
+		return appendScheduledOptions(executorID, command, options, "--permission-mode", "bypassPermissions")
+	case AgentProviderCursor:
+		autoReviewPresent, _ := options.option("", "--auto-review")
+		planPresent, _ := options.option("", "--plan")
+		modePresent, _ := options.option("", "--mode")
+		sandboxPresent, sandboxCompatible := options.option("disabled", "--sandbox")
+		if autoReviewPresent || planPresent || modePresent || !sandboxCompatible {
+			return "", fmt.Errorf("%w: executor %q has an interactive or read-only Cursor mode", ErrScheduledActionUnattended, executorID)
+		}
+		forcePresent, forceEnabled := options.option("", "--force")
+		yoloPresent, yoloEnabled := options.option("", "--yolo")
+		trustPresent, trustEnabled := options.option("", "--trust")
+		approveMCPsPresent, approveMCPsEnabled := options.option("", "--approve-mcps")
+		if forcePresent && !forceEnabled || yoloPresent && !yoloEnabled ||
+			trustPresent && !trustEnabled || approveMCPsPresent && !approveMCPsEnabled {
+			return "", fmt.Errorf("%w: executor %q has an invalid Cursor unattended option", ErrScheduledActionUnattended, executorID)
+		}
+		appendArgs := make([]string, 0, 5)
+		if !forceEnabled && !yoloEnabled {
+			appendArgs = append(appendArgs, "--force")
+		}
+		if !sandboxPresent {
+			appendArgs = append(appendArgs, "--sandbox", "disabled")
+		}
+		if !trustEnabled {
+			appendArgs = append(appendArgs, "--trust")
+		}
+		if !approveMCPsEnabled {
+			appendArgs = append(appendArgs, "--approve-mcps")
+		}
+		return appendScheduledOptions(executorID, command, options, appendArgs...)
+	case AgentProviderGrok:
+		permissionPresent, permissionCompatible := options.option("bypassPermissions", "--permission-mode")
+		sandboxPresent, sandboxCompatible := options.option("off", "--sandbox")
+		if !permissionCompatible {
+			return "", fmt.Errorf("%w: executor %q has a non-bypass Grok permission mode", ErrScheduledActionUnattended, executorID)
+		}
+		if !sandboxCompatible {
+			return "", fmt.Errorf("%w: executor %q has a restricted Grok sandbox", ErrScheduledActionUnattended, executorID)
+		}
+		alwaysApprovePresent, alwaysApproveEnabled := options.option("", "--always-approve")
+		yoloPresent, yoloEnabled := options.option("", "--yolo")
+		if alwaysApprovePresent && !alwaysApproveEnabled || yoloPresent && !yoloEnabled {
+			return "", fmt.Errorf("%w: executor %q has an invalid Grok unattended option", ErrScheduledActionUnattended, executorID)
+		}
+		appendArgs := make([]string, 0, 4)
+		if !permissionPresent && !alwaysApproveEnabled && !yoloEnabled {
+			appendArgs = append(appendArgs, "--permission-mode", "bypassPermissions")
+		}
+		if !sandboxPresent {
+			appendArgs = append(appendArgs, "--sandbox", "off")
+		}
+		return appendScheduledOptions(executorID, command, options, appendArgs...)
+	default:
+		return "", fmt.Errorf("%w: executor %q uses unsupported provider %q", ErrScheduledActionUnattended, executorID, agentExecutor.Provider)
+	}
+}
+
+func appendCommandOptions(command string, options ...string) string {
+	command = strings.TrimSpace(command)
+	for _, option := range options {
+		if option != "" {
+			command += " " + option
+		}
+	}
+	return command
+}
+
+type launchCommandOptions struct {
+	executable string
+	argv       []string
+	terminated bool
+}
+
+func inspectLaunchCommandOptions(command string) (launchCommandOptions, bool) {
+	fields, ok := splitSupportedLaunchFields(command)
+	if !ok || len(fields) == 0 {
+		return launchCommandOptions{}, false
+	}
+	executable := 0
+	if filepath.Base(fields[0]) == "env" {
+		executable++
+		for executable < len(fields) && isLaunchEnvAssignment(fields[executable]) {
+			executable++
+		}
+		if executable < len(fields) && fields[executable] == "--" {
+			executable++
+		}
+	}
+	if executable >= len(fields) || strings.HasPrefix(fields[executable], "-") {
+		return launchCommandOptions{}, false
+	}
+	options := launchCommandOptions{
+		executable: filepath.Base(fields[executable]),
+		argv:       fields[executable+1:],
+	}
+	for index, argument := range options.argv {
+		if argument == "--" {
+			options.argv = options.argv[:index]
+			options.terminated = true
+			break
+		}
+	}
+	return options, true
+}
+
+func scheduledProviderExecutable(provider, executable string) bool {
+	switch provider {
+	case AgentProviderCodex:
+		return executable == "codex"
+	case AgentProviderClaude:
+		return executable == "claude" || executable == "cc"
+	case AgentProviderCursor:
+		return executable == "cursor-agent"
+	case AgentProviderGrok:
+		return executable == "grok" || strings.HasPrefix(executable, "grok-")
+	default:
+		return false
+	}
+}
+
+// splitSupportedLaunchFields only recognizes the direct executable and
+// env-assignment launch shapes Zen emits. It handles shell quoting needed to
+// recover argv but deliberately rejects shell comments, command composition,
+// and substitution.
+func splitSupportedLaunchFields(command string) ([]string, bool) {
+	var fields []string
+	var token strings.Builder
+	var quote byte
+	started := false
+	flush := func() {
+		if started {
+			fields = append(fields, token.String())
+			token.Reset()
+			started = false
+		}
+	}
+	for index := 0; index < len(command); index++ {
+		current := command[index]
+		if quote != 0 {
+			if current == quote {
+				quote = 0
+				continue
+			}
+			if quote == '"' && (current == '`' ||
+				current == '$' && index+1 < len(command) && command[index+1] == '(') {
+				return nil, false
+			}
+			if quote == '"' && current == '\\' {
+				index++
+				if index >= len(command) {
+					return nil, false
+				}
+				current = command[index]
+			}
+			token.WriteByte(current)
+			started = true
+			continue
+		}
+		switch current {
+		case '\'', '"':
+			quote = current
+			started = true
+		case '\\':
+			index++
+			if index >= len(command) {
+				return nil, false
+			}
+			token.WriteByte(command[index])
+			started = true
+		case '#', ';', '|', '&', '<', '>', '`', '(', ')', '\n', '\r':
+			return nil, false
+		case ' ', '\t':
+			flush()
+		default:
+			token.WriteByte(current)
+			started = true
+		}
+	}
+	if quote != 0 {
+		return nil, false
+	}
+	flush()
+	return fields, true
+}
+
+func appendScheduledOptions(executorID, command string, options launchCommandOptions, additions ...string) (string, error) {
+	if options.terminated {
+		return "", fmt.Errorf("%w: executor %q places arguments after an option terminator", ErrScheduledActionUnattended, executorID)
+	}
+	return appendCommandOptions(command, additions...), nil
+}
+
+func isLaunchEnvAssignment(value string) bool {
+	equals := strings.IndexByte(value, '=')
+	if equals <= 0 {
+		return false
+	}
+	for _, current := range value[:equals] {
+		if current != '_' &&
+			(current < 'a' || current > 'z') &&
+			(current < 'A' || current > 'Z') &&
+			(current < '0' || current > '9') {
+			return false
+		}
+	}
+	return true
+}
+
+// option reports whether any named option is present and whether every
+// occurrence has the exact requested value. An empty want denotes a boolean
+// flag, for which equals forms are invalid rather than truthy.
+// Codex's -a and -s options additionally accept attached values.
+func (options launchCommandOptions) option(want string, names ...string) (bool, bool) {
+	present := false
+	compatible := true
+	for index, argument := range options.argv {
+		for _, name := range names {
+			if want == "" {
+				if argument == name {
+					present = true
+				} else if strings.HasPrefix(argument, name+"=") {
+					present = true
+					compatible = false
+				}
+				continue
+			}
+			value := ""
+			matched := false
+			if argument == name {
+				present = true
+				if index+1 < len(options.argv) && options.argv[index+1] != "--" {
+					value = options.argv[index+1]
+				}
+				matched = true
+			} else if strings.HasPrefix(argument, name+"=") {
+				present = true
+				value = strings.TrimPrefix(argument, name+"=")
+				matched = true
+			} else if (name == "-a" || name == "-s") &&
+				strings.HasPrefix(argument, name) && len(argument) > len(name) {
+				present = true
+				value = strings.TrimPrefix(argument, name)
+				matched = true
+			}
+			if matched && value != want {
+				compatible = false
+			}
+		}
+	}
+	if want == "" {
+		return present, present && compatible
+	}
+	return present, compatible
 }
 
 // AgentCapabilities describes capabilities Brain can delegate to an executor.
