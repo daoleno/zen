@@ -52,6 +52,7 @@ type tmuxSession struct {
 	mu                    sync.Mutex
 	events                chan Event
 	cancel                context.CancelFunc
+	runContext            context.Context
 	cmd                   *exec.Cmd
 	pty                   *os.File
 	closed                bool
@@ -70,7 +71,10 @@ type tmuxReadResult struct {
 	eof  bool
 }
 
-const tmuxScrollReconcileDelay = 32 * time.Millisecond
+const (
+	tmuxScrollReconcileDelay = 32 * time.Millisecond
+	tmuxCleanupTimeout       = 2 * time.Second
+)
 
 type tmuxScrollTimer interface {
 	Stop() bool
@@ -95,8 +99,9 @@ func (s *tmuxSession) Start(ctx context.Context) error {
 
 	runCtx, cancel := context.WithCancel(ctx)
 	s.cancel = cancel
+	s.runContext = runCtx
 
-	linkedName, cmd, err := tmuxLinkedViewSession(s.targetID)
+	linkedName, cmd, err := tmuxLinkedViewSession(runCtx, s.targetID)
 	if err != nil {
 		s.mu.Unlock()
 		cancel()
@@ -110,7 +115,7 @@ func (s *tmuxSession) Start(ctx context.Context) error {
 		Rows: uint16(s.size.Rows),
 	})
 	if err != nil {
-		_ = exec.Command("tmux", "kill-session", "-t", s.linkedSession).Run()
+		killTmuxSessionBounded(s.linkedSession)
 		s.linkedSession = ""
 		s.mu.Unlock()
 		cancel()
@@ -424,14 +429,22 @@ func (s *tmuxSession) runTmuxLocked(args ...string) error {
 	if s.runTmuxCommand != nil {
 		return s.runTmuxCommand(args...)
 	}
-	return exec.Command("tmux", args...).Run()
+	ctx := s.runContext
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	return exec.CommandContext(ctx, "tmux", args...).Run()
 }
 
 func (s *tmuxSession) readTmuxLocked(args ...string) ([]byte, error) {
 	if s.readTmuxCommand != nil {
 		return s.readTmuxCommand(args...)
 	}
-	return exec.Command("tmux", args...).Output()
+	ctx := s.runContext
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	return exec.CommandContext(ctx, "tmux", args...).Output()
 }
 
 func (s *tmuxSession) scheduleScrollReconcile() {
@@ -586,7 +599,7 @@ func (s *tmuxSession) Close() error {
 	}
 	// Kill the disposable view session so it doesn't linger.
 	if s.linkedSession != "" {
-		_ = exec.Command("tmux", "kill-session", "-t", s.linkedSession).Run()
+		killTmuxSessionBounded(s.linkedSession)
 	}
 	return nil
 }
@@ -615,7 +628,10 @@ func (s *tmuxSession) interactiveTargetLocked() string {
 // only the requested source window into it. It deliberately does not join the
 // source session group: group members share future windows, and a small view
 // session can otherwise seed those new shared windows with its own geometry.
-func tmuxLinkedViewSession(targetID string) (string, *exec.Cmd, error) {
+func tmuxLinkedViewSession(
+	ctx context.Context,
+	targetID string,
+) (string, *exec.Cmd, error) {
 	sourceTarget, err := tmuxSourceWindowTarget(targetID)
 	if err != nil {
 		return "", nil, err
@@ -628,28 +644,54 @@ func tmuxLinkedViewSession(targetID string) (string, *exec.Cmd, error) {
 	// Bootstrap an independent session, then atomically replace its private
 	// window with a link to the source window. The bootstrap geometry is never
 	// shared with the source.
-	bootstrapOut, err := tmuxNewViewSessionCommand(linkedName).Output()
+	bootstrapOut, err := tmuxNewViewSessionCommand(ctx, linkedName).Output()
 	if err != nil {
 		return "", nil, fmt.Errorf("create tmux view session: %w", err)
 	}
 	cleanup := func() {
-		_ = exec.Command("tmux", "kill-session", "-t", linkedName).Run()
+		killTmuxSessionBounded(linkedName)
 	}
 	bootstrapTarget := strings.TrimSpace(string(bootstrapOut))
 	if bootstrapTarget == "" {
 		cleanup()
 		return "", nil, fmt.Errorf("create tmux view session: empty bootstrap window target")
 	}
-	if err := tmuxLinkViewWindowCommand(sourceTarget, bootstrapTarget).Run(); err != nil {
+	if err := tmuxLinkViewWindowCommand(
+		ctx,
+		sourceTarget,
+		bootstrapTarget,
+	).Run(); err != nil {
 		cleanup()
 		return "", nil, fmt.Errorf("link source tmux window %s into view: %w", sourceTarget, err)
 	}
 
-	return linkedName, tmuxAttachCommand(linkedName), nil
+	return linkedName, tmuxAttachCommand(ctx, linkedName), nil
 }
 
-func tmuxNewViewSessionCommand(sessionName string) *exec.Cmd {
-	return exec.Command(
+func killTmuxSessionBounded(sessionName string) {
+	if strings.TrimSpace(sessionName) == "" {
+		return
+	}
+	ctx, cancel := context.WithTimeout(
+		context.Background(),
+		tmuxCleanupTimeout,
+	)
+	defer cancel()
+	_ = exec.CommandContext(
+		ctx,
+		"tmux",
+		"kill-session",
+		"-t",
+		sessionName,
+	).Run()
+}
+
+func tmuxNewViewSessionCommand(
+	ctx context.Context,
+	sessionName string,
+) *exec.Cmd {
+	return exec.CommandContext(
+		ctx,
 		"tmux",
 		"new-session",
 		"-d",
@@ -662,8 +704,13 @@ func tmuxNewViewSessionCommand(sessionName string) *exec.Cmd {
 	)
 }
 
-func tmuxLinkViewWindowCommand(sourceTarget, bootstrapTarget string) *exec.Cmd {
-	return exec.Command(
+func tmuxLinkViewWindowCommand(
+	ctx context.Context,
+	sourceTarget string,
+	bootstrapTarget string,
+) *exec.Cmd {
+	return exec.CommandContext(
+		ctx,
 		"tmux",
 		"link-window",
 		"-k",
@@ -710,8 +757,12 @@ func tmuxWindowRef(targetID string) string {
 	return strings.TrimSpace(windowRef)
 }
 
-func tmuxAttachCommand(sessionName string) *exec.Cmd {
-	return exec.Command(
+func tmuxAttachCommand(
+	ctx context.Context,
+	sessionName string,
+) *exec.Cmd {
+	return exec.CommandContext(
+		ctx,
 		"tmux",
 		"-T",
 		"RGB,256",

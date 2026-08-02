@@ -2,6 +2,7 @@ package control
 
 import (
 	"context"
+	"net"
 	"os"
 	"path/filepath"
 	"sync"
@@ -72,6 +73,45 @@ func TestServerCallRoundTrip(t *testing.T) {
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("timed out waiting for server shutdown")
+	}
+}
+
+func TestServerShutdownClosesAndJoinsAcceptedConnections(t *testing.T) {
+	stateDir := t.TempDir()
+	socketPath, err := DefaultSocketPath(stateDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := &Server{
+		Path:    socketPath,
+		Handler: &testHandler{response: Response{OK: true}},
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() {
+		done <- server.Run(ctx)
+	}()
+	waitForSocketPath(t, socketPath)
+	conn, err := net.Dial("unix", socketPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+
+	cancel()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("server returned before joining accepted connection")
+	}
+	if err := conn.SetReadDeadline(time.Now().Add(time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := conn.Read(make([]byte, 1)); err == nil {
+		t.Fatal("accepted connection remained open after server shutdown")
 	}
 }
 

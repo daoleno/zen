@@ -34,6 +34,18 @@ type privateNetworkAddress struct {
 }
 
 func buildConnectionOffers(endpoint string, authManager *auth.Manager, pairing auth.PairingToken) ([]connectionOffer, error) {
+	return buildConnectionOffersWithPublicKey(
+		endpoint,
+		authManager.PublicKeyHex(),
+		pairing,
+	)
+}
+
+func buildConnectionOffersWithPublicKey(
+	endpoint string,
+	daemonPublicKey string,
+	pairing auth.PairingToken,
+) ([]connectionOffer, error) {
 	if strings.TrimSpace(endpoint) == "" {
 		return nil, nil
 	}
@@ -47,7 +59,11 @@ func buildConnectionOffers(endpoint string, authManager *auth.Manager, pairing a
 		Label: "Server endpoint",
 		URL:   normalizedURL,
 	}
-	offer.ConnectLink = buildConnectLink(offer.URL, authManager, pairing)
+	offer.ConnectLink = buildConnectLinkWithPublicKey(
+		offer.URL,
+		daemonPublicKey,
+		pairing,
+	)
 	return []connectionOffer{offer}, nil
 }
 
@@ -261,7 +277,23 @@ func normalizeEndpoint(rawValue string) (string, error) {
 }
 
 func buildConnectLink(serverURL string, authManager *auth.Manager, pairing auth.PairingToken) string {
-	payload, err := encodeConnectPayload(serverURL, authManager.PublicKeyHex(), pairing.Value)
+	return buildConnectLinkWithPublicKey(
+		serverURL,
+		authManager.PublicKeyHex(),
+		pairing,
+	)
+}
+
+func buildConnectLinkWithPublicKey(
+	serverURL string,
+	daemonPublicKey string,
+	pairing auth.PairingToken,
+) string {
+	payload, err := encodeConnectPayload(
+		serverURL,
+		daemonPublicKey,
+		pairing.Value,
+	)
 	if err != nil {
 		return "zen://settings"
 	}

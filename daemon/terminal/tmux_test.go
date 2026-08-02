@@ -1,12 +1,13 @@
 package terminal
 
 import (
+	"context"
 	"reflect"
 	"testing"
 )
 
 func TestTmuxNewViewSessionCommandCreatesIndependentWindowSelector(t *testing.T) {
-	cmd := tmuxNewViewSessionCommand("zen-view")
+	cmd := tmuxNewViewSessionCommand(context.Background(), "zen-view")
 
 	want := []string{
 		"tmux",
@@ -25,7 +26,11 @@ func TestTmuxNewViewSessionCommandCreatesIndependentWindowSelector(t *testing.T)
 }
 
 func TestTmuxLinkViewWindowCommandReplacesOnlyBootstrapWindow(t *testing.T) {
-	cmd := tmuxLinkViewWindowCommand("source:@12", "@99")
+	cmd := tmuxLinkViewWindowCommand(
+		context.Background(),
+		"source:@12",
+		"@99",
+	)
 
 	want := []string{"tmux", "link-window", "-k", "-s", "source:@12", "-t", "@99"}
 	if !reflect.DeepEqual(cmd.Args, want) {
@@ -34,7 +39,7 @@ func TestTmuxLinkViewWindowCommandReplacesOnlyBootstrapWindow(t *testing.T) {
 }
 
 func TestTmuxAttachCommandIsANormalSizingClient(t *testing.T) {
-	cmd := tmuxAttachCommand("zen-demo")
+	cmd := tmuxAttachCommand(context.Background(), "zen-demo")
 
 	want := []string{
 		"tmux",

@@ -20,6 +20,7 @@ import (
 const (
 	AuthorizationHeaderPrefix = "ZenDevice "
 	DefaultPairingTTL         = 15 * time.Minute
+	DeviceListPurpose         = "zen-device-admin:list:GET:/devices"
 )
 
 var (
@@ -39,9 +40,23 @@ type TrustedDevice struct {
 	LastSeenAt   time.Time `json:"last_seen_at"`
 }
 
+type DeviceInfo struct {
+	ID         string    `json:"id"`
+	Name       string    `json:"name"`
+	AddedAt    time.Time `json:"added_at"`
+	LastSeenAt time.Time `json:"last_seen_at"`
+}
+
 type PairingToken struct {
 	Value     string
 	ExpiresAt time.Time
+}
+
+// PersistenceResult reports whether an atomic replacement crossed its rename
+// commit point and whether the containing directory confirmed that replacement.
+type PersistenceResult struct {
+	Applied bool
+	Durable bool
 }
 
 type ServerAssertion struct {
@@ -49,6 +64,12 @@ type ServerAssertion struct {
 	NonceHex     string
 	SignatureHex string
 }
+
+type atomicFileWriter func(
+	path string,
+	data []byte,
+	perm os.FileMode,
+) (PersistenceResult, error)
 
 type Manager struct {
 	mu           sync.Mutex
@@ -62,6 +83,11 @@ type Manager struct {
 	identityPath string
 	devicesPath  string
 	pairingsPath string
+	writeFile    atomicFileWriter
+
+	revocationMu        sync.Mutex
+	nextRevocationID    uint64
+	revocationListeners map[uint64]func(deviceID string)
 }
 
 type persistedIdentity struct {
@@ -84,14 +110,22 @@ func DefaultStorageDir() (string, error) {
 	return filepath.Join(home, ".zen"), nil
 }
 
-func NewManager(storageDir string) (*Manager, error) {
+func ResolveStorageDir(storageDir string) (string, error) {
 	dir := strings.TrimSpace(storageDir)
 	if dir == "" {
 		var err error
 		dir, err = DefaultStorageDir()
 		if err != nil {
-			return nil, err
+			return "", err
 		}
+	}
+	return dir, nil
+}
+
+func NewManager(storageDir string) (*Manager, error) {
+	dir, err := ResolveStorageDir(storageDir)
+	if err != nil {
+		return nil, err
 	}
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return nil, fmt.Errorf("create auth storage dir: %w", err)
@@ -104,6 +138,7 @@ func NewManager(storageDir string) (*Manager, error) {
 		identityPath: filepath.Join(dir, "identity.json"),
 		devicesPath:  filepath.Join(dir, "trusted-devices.json"),
 		pairingsPath: filepath.Join(dir, "pairing-tokens.json"),
+		writeFile:    writeFileAtomic,
 	}
 
 	if err := m.loadOrCreateIdentity(); err != nil {
@@ -130,6 +165,111 @@ func (m *Manager) PublicKeyHex() string {
 	return hex.EncodeToString(m.publicKey)
 }
 
+func (m *Manager) ListDevices() []DeviceInfo {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	devices := make([]DeviceInfo, 0, len(m.devices))
+	for _, device := range m.devices {
+		if device != nil {
+			devices = append(devices, DeviceInfo{
+				ID:         device.ID,
+				Name:       device.Name,
+				AddedAt:    device.AddedAt,
+				LastSeenAt: device.LastSeenAt,
+			})
+		}
+	}
+	sort.Slice(devices, func(left, right int) bool {
+		return devices[left].ID < devices[right].ID
+	})
+	return devices
+}
+
+// SubscribeRevocations registers a synchronous runtime owner for successful
+// persistent revocations. RevokeDevice does not return until every current
+// listener has observed the revoked device ID.
+func (m *Manager) SubscribeRevocations(
+	listener func(deviceID string),
+) func() {
+	if listener == nil {
+		return func() {}
+	}
+	m.revocationMu.Lock()
+	if m.revocationListeners == nil {
+		m.revocationListeners = make(map[uint64]func(deviceID string))
+	}
+	m.nextRevocationID++
+	id := m.nextRevocationID
+	m.revocationListeners[id] = listener
+	m.revocationMu.Unlock()
+
+	var once sync.Once
+	return func() {
+		once.Do(func() {
+			m.revocationMu.Lock()
+			delete(m.revocationListeners, id)
+			m.revocationMu.Unlock()
+		})
+	}
+}
+
+func (m *Manager) IsDeviceTrusted(deviceID string) bool {
+	normalizedID := strings.TrimSpace(deviceID)
+	if normalizedID == "" {
+		return false
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	_, exists := m.devices[normalizedID]
+	return exists
+}
+
+func (m *Manager) RevokeDevice(
+	deviceID string,
+) (PersistenceResult, error) {
+	normalizedID := strings.TrimSpace(deviceID)
+	if normalizedID == "" {
+		return PersistenceResult{}, ErrUnknownDevice
+	}
+	m.mu.Lock()
+	if _, exists := m.devices[normalizedID]; !exists {
+		m.mu.Unlock()
+		return PersistenceResult{}, ErrUnknownDevice
+	}
+	nextDevices := make(map[string]*TrustedDevice, len(m.devices)-1)
+	for id, device := range m.devices {
+		if id == normalizedID || device == nil {
+			continue
+		}
+		copyDevice := *device
+		nextDevices[id] = &copyDevice
+	}
+	persistence, err := m.saveDevicesSnapshotLocked(nextDevices)
+	if !persistence.Applied {
+		m.mu.Unlock()
+		if err == nil {
+			err = errors.New("trusted-device persistence did not apply")
+		}
+		return persistence, err
+	}
+	m.devices = nextDevices
+	m.mu.Unlock()
+	m.publishRevocation(normalizedID)
+	return persistence, err
+}
+
+func (m *Manager) publishRevocation(deviceID string) {
+	m.revocationMu.Lock()
+	listeners := make([]func(string), 0, len(m.revocationListeners))
+	for _, listener := range m.revocationListeners {
+		listeners = append(listeners, listener)
+	}
+	m.revocationMu.Unlock()
+	for _, listener := range listeners {
+		listener(deviceID)
+	}
+}
+
 func (m *Manager) IssuePairingToken(ttl time.Duration) (PairingToken, error) {
 	if ttl <= 0 {
 		ttl = DefaultPairingTTL
@@ -146,9 +286,6 @@ func (m *Manager) IssuePairingToken(ttl time.Duration) (PairingToken, error) {
 
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if err := m.loadPairingsLocked(); err != nil {
-		return PairingToken{}, err
-	}
 	m.pairings[token] = pairing
 	m.pruneExpiredLocked()
 	if err := m.savePairingsLocked(); err != nil {
@@ -180,9 +317,6 @@ func (m *Manager) EnrollDevice(token, expectedDaemonID, expectedPublicKeyHex, de
 
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if err := m.loadPairingsLocked(); err != nil {
-		return nil, err
-	}
 	pairing, ok := m.pairings[token]
 	if !ok {
 		return nil, ErrInvalidPairingToken
@@ -298,6 +432,12 @@ func BuildSignaturePayload(purpose, daemonID, deviceID, timestamp, nonceHex stri
 	}, "\n"))
 }
 
+func DeviceRevokePurpose(deviceID string) string {
+	target := sha256.Sum256([]byte(strings.TrimSpace(deviceID)))
+	return "zen-device-admin:revoke:DELETE:/devices:sha256=" +
+		hex.EncodeToString(target[:])
+}
+
 func BuildServerAssertionPayload(purpose, daemonID, timestamp, nonceHex string) []byte {
 	return []byte(strings.Join([]string{
 		strings.TrimSpace(purpose),
@@ -360,16 +500,24 @@ func (m *Manager) loadOrCreateIdentity() error {
 	if err != nil {
 		return fmt.Errorf("encode daemon identity: %w", err)
 	}
-	return writeFileAtomic(m.identityPath, payload, 0o600)
+	_, err = m.writeFile(m.identityPath, payload, 0o600)
+	return err
 }
 
 func (m *Manager) loadDevices() error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.loadDevicesLocked()
+}
+
+func (m *Manager) loadDevicesLocked() error {
 	value, err := os.ReadFile(m.devicesPath)
 	if err == nil {
 		var persisted persistedDevices
 		if err := json.Unmarshal(value, &persisted); err != nil {
 			return fmt.Errorf("decode trusted devices: %w", err)
 		}
+		m.devices = make(map[string]*TrustedDevice)
 		for _, device := range persisted.Devices {
 			if device == nil || strings.TrimSpace(device.ID) == "" {
 				continue
@@ -381,22 +529,33 @@ func (m *Manager) loadDevices() error {
 		return nil
 	}
 	if errors.Is(err, os.ErrNotExist) {
+		m.devices = make(map[string]*TrustedDevice)
 		return nil
 	}
 	return fmt.Errorf("read trusted devices: %w", err)
 }
 
 func (m *Manager) saveDevicesLocked() error {
-	devices := make([]*TrustedDevice, 0, len(m.devices))
-	for _, device := range m.devices {
+	_, err := m.saveDevicesSnapshotLocked(m.devices)
+	return err
+}
+
+func (m *Manager) saveDevicesSnapshotLocked(
+	snapshot map[string]*TrustedDevice,
+) (PersistenceResult, error) {
+	devices := make([]*TrustedDevice, 0, len(snapshot))
+	for _, device := range snapshot {
 		copyDevice := *device
 		devices = append(devices, &copyDevice)
 	}
+	sort.Slice(devices, func(left, right int) bool {
+		return devices[left].ID < devices[right].ID
+	})
 	payload, err := json.MarshalIndent(persistedDevices{Devices: devices}, "", "  ")
 	if err != nil {
-		return fmt.Errorf("encode trusted devices: %w", err)
+		return PersistenceResult{}, fmt.Errorf("encode trusted devices: %w", err)
 	}
-	return writeFileAtomic(m.devicesPath, payload, 0o600)
+	return m.writeFile(m.devicesPath, payload, 0o600)
 }
 
 func (m *Manager) loadPairings() error {
@@ -450,7 +609,8 @@ func (m *Manager) savePairingsLocked() error {
 	if err != nil {
 		return fmt.Errorf("encode pairing tokens: %w", err)
 	}
-	return writeFileAtomic(m.pairingsPath, payload, 0o600)
+	_, err = m.writeFile(m.pairingsPath, payload, 0o600)
+	return err
 }
 
 func (m *Manager) pruneExpiredLocked() {
@@ -507,13 +667,92 @@ func decodeFixedHex(value string, wantBytes int) ([]byte, error) {
 	return decoded, nil
 }
 
-func writeFileAtomic(path string, data []byte, perm os.FileMode) error {
-	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
-		return fmt.Errorf("create parent dir: %w", err)
+func writeFileAtomic(
+	path string,
+	data []byte,
+	perm os.FileMode,
+) (PersistenceResult, error) {
+	return writeFileAtomicWithParentSync(
+		path,
+		data,
+		perm,
+		func(parent *os.File) error {
+			return parent.Sync()
+		},
+	)
+}
+
+func writeFileAtomicWithParentSync(
+	path string,
+	data []byte,
+	perm os.FileMode,
+	syncParent func(parent *os.File) error,
+) (PersistenceResult, error) {
+	dir := filepath.Dir(path)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return PersistenceResult{}, fmt.Errorf("create parent dir: %w", err)
 	}
-	tmpPath := path + ".tmp"
-	if err := os.WriteFile(tmpPath, data, perm); err != nil {
-		return err
+	parent, err := os.Open(dir)
+	if err != nil {
+		return PersistenceResult{}, fmt.Errorf("open parent directory: %w", err)
 	}
-	return os.Rename(tmpPath, path)
+	defer parent.Close()
+	if err := syncParent(parent); err != nil {
+		return PersistenceResult{}, fmt.Errorf(
+			"preflight parent directory sync: %w",
+			err,
+		)
+	}
+	tmp, err := os.CreateTemp(dir, "."+filepath.Base(path)+".tmp-*")
+	if err != nil {
+		return PersistenceResult{}, fmt.Errorf("create temporary file: %w", err)
+	}
+	tmpPath := tmp.Name()
+	renamed := false
+	defer func() {
+		if !renamed {
+			_ = os.Remove(tmpPath)
+		}
+	}()
+	if err := tmp.Chmod(perm); err != nil {
+		_ = tmp.Close()
+		return PersistenceResult{}, fmt.Errorf(
+			"set temporary file mode: %w",
+			err,
+		)
+	}
+	if _, err := tmp.Write(data); err != nil {
+		_ = tmp.Close()
+		return PersistenceResult{}, fmt.Errorf(
+			"write temporary file: %w",
+			err,
+		)
+	}
+	if err := tmp.Sync(); err != nil {
+		_ = tmp.Close()
+		return PersistenceResult{}, fmt.Errorf(
+			"sync temporary file: %w",
+			err,
+		)
+	}
+	if err := tmp.Close(); err != nil {
+		return PersistenceResult{}, fmt.Errorf(
+			"close temporary file: %w",
+			err,
+		)
+	}
+	if err := os.Rename(tmpPath, path); err != nil {
+		return PersistenceResult{}, fmt.Errorf(
+			"replace persisted file: %w",
+			err,
+		)
+	}
+	renamed = true
+	if err := syncParent(parent); err != nil {
+		return PersistenceResult{Applied: true}, fmt.Errorf(
+			"sync parent directory after replacement: %w",
+			err,
+		)
+	}
+	return PersistenceResult{Applied: true, Durable: true}, nil
 }

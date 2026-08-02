@@ -17,6 +17,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 	"unicode"
 	"unicode/utf8"
@@ -92,13 +93,16 @@ type Server struct {
 	uploadDir                  string
 	uploadMu                   sync.Mutex
 	sessionFileAgentLoader     func(agentID string) *classifier.Agent
+	authRevocationUnsubscribe  func()
+	runtimeClosing             bool
+	terminalCleanup            terminalCleanupOwner
 
 	workSubID     int
 	workSub       <-chan work.Event
 	calendarSubID int
 	calendarSub   <-chan calendar.Event
 
-	clients           map[*websocket.Conn]bool
+	clients           map[*websocket.Conn]*authenticatedClient
 	active            map[*websocket.Conn]string
 	writes            map[*websocket.Conn]*sync.Mutex
 	codexSubs         map[*websocket.Conn]map[string]codexConversationSubscription
@@ -123,6 +127,83 @@ type codexConversationSubscription struct {
 	generation string
 }
 
+type authenticatedClient struct {
+	deviceID string
+	revoked  atomic.Bool
+}
+
+type terminalCleanupState uint8
+
+const (
+	terminalCleanupOpen terminalCleanupState = iota
+	terminalCleanupDraining
+	terminalCleanupClosed
+)
+
+type terminalCleanupOwner struct {
+	mu      sync.Mutex
+	state   terminalCleanupState
+	running int
+	drained chan struct{}
+	execute func(cleanup func())
+}
+
+func (o *terminalCleanupOwner) Submit(cleanup func()) {
+	if cleanup == nil {
+		return
+	}
+	o.mu.Lock()
+	if o.state != terminalCleanupOpen {
+		o.mu.Unlock()
+		panic("terminal cleanup submitted after draining began")
+	}
+	if o.drained == nil {
+		o.drained = make(chan struct{})
+	}
+	o.running++
+	execute := o.execute
+	o.mu.Unlock()
+	go func() {
+		defer o.finish()
+		if execute != nil {
+			execute(cleanup)
+			return
+		}
+		cleanup()
+	}()
+}
+
+func (o *terminalCleanupOwner) finish() {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	o.running--
+	if o.state == terminalCleanupDraining && o.running == 0 {
+		o.state = terminalCleanupClosed
+		close(o.drained)
+	}
+}
+
+func (o *terminalCleanupOwner) Drain() {
+	o.mu.Lock()
+	if o.drained == nil {
+		o.drained = make(chan struct{})
+	}
+	if o.state == terminalCleanupOpen {
+		o.state = terminalCleanupDraining
+		if o.running == 0 {
+			o.state = terminalCleanupClosed
+			close(o.drained)
+		}
+	}
+	drained := o.drained
+	o.mu.Unlock()
+	<-drained
+}
+
+type clientDetachWork struct {
+	conn *websocket.Conn
+}
+
 // New creates a WebSocket server.
 func New(authManager *auth.Manager, w *watcher.Watcher, pusher *push.Client, sc *stats.Collector, workStore *work.Store, execs *work.ExecutorConfig, brainService *brain.Service) *Server {
 	uploadDir := ""
@@ -139,7 +220,7 @@ func New(authManager *auth.Manager, w *watcher.Watcher, pusher *push.Client, sc 
 		execs:             execs,
 		brain:             brainService,
 		uploadDir:         uploadDir,
-		clients:           make(map[*websocket.Conn]bool),
+		clients:           make(map[*websocket.Conn]*authenticatedClient),
 		active:            make(map[*websocket.Conn]string),
 		writes:            make(map[*websocket.Conn]*sync.Mutex),
 		codexSubs:         make(map[*websocket.Conn]map[string]codexConversationSubscription),
@@ -167,6 +248,12 @@ func New(authManager *auth.Manager, w *watcher.Watcher, pusher *push.Client, sc 
 	if workStore != nil {
 		srv.workSubID, srv.workSub = workStore.Subscribe()
 	}
+	if authManager != nil {
+		srv.authRevocationUnsubscribe = authManager.SubscribeRevocations(
+			srv.revokeAuthenticatedDevice,
+		)
+	}
+	srv.terminal.SetCleanupSubmitter(srv.terminalCleanup.Submit)
 	return srv
 }
 
@@ -224,13 +311,13 @@ func (s *Server) Run(ctx context.Context, addr string) error {
 	return s.RunWithReady(ctx, addr, nil)
 }
 
-// RunWithReady starts the HTTP server and calls onReady only after the TCP
-// listener has been acquired successfully.
-func (s *Server) RunWithReady(ctx context.Context, addr string, onReady func()) error {
+// Handler exposes the complete daemon HTTP and WebSocket origin.
+func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/ws", s.handleWS)
 	mux.HandleFunc("/pair", s.handlePair)
 	mux.HandleFunc("/auth-check", s.handleAuthCheck)
+	mux.HandleFunc("/devices", s.handleDevices)
 	mux.HandleFunc("/upload", s.handleUpload)
 	mux.HandleFunc("/session-file", s.handleSessionFileBinary)
 	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
@@ -240,26 +327,51 @@ func (s *Server) RunWithReady(ctx context.Context, addr string, onReady func()) 
 			"daemon_public_key": s.auth.PublicKeyHex(),
 		})
 	})
+	return withCORS(mux)
+}
 
+// RunWithReady starts the HTTP server and calls onReady only after the TCP
+// listener has been acquired successfully.
+func (s *Server) RunWithReady(ctx context.Context, addr string, onReady func()) error {
 	listener, err := net.Listen("tcp", addr)
 	if err != nil {
+		s.shutdownAuthenticatedClients()
+		s.terminalCleanup.Drain()
 		return err
 	}
-	srv := &http.Server{Handler: withCORS(mux)}
+	runtimeCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	srv := &http.Server{Handler: s.Handler()}
 
-	go s.broadcastEvents(ctx)
-	go s.heartbeat(ctx)
-
+	var runtime sync.WaitGroup
+	runtime.Add(2)
 	go func() {
-		<-ctx.Done()
-		srv.Shutdown(context.Background())
+		defer runtime.Done()
+		s.broadcastEvents(runtimeCtx)
+	}()
+	go func() {
+		defer runtime.Done()
+		s.heartbeat(runtimeCtx)
+	}()
+
+	shutdownDone := make(chan struct{})
+	go func() {
+		defer close(shutdownDone)
+		<-runtimeCtx.Done()
+		s.shutdownAuthenticatedClients()
+		_ = srv.Shutdown(context.Background())
 	}()
 
 	log.Printf("zen listening on %s", listener.Addr())
 	if onReady != nil {
 		onReady()
 	}
-	return srv.Serve(listener)
+	serveErr := srv.Serve(listener)
+	cancel()
+	<-shutdownDone
+	runtime.Wait()
+	s.terminalCleanup.Drain()
+	return serveErr
 }
 
 func (s *Server) handleWS(w http.ResponseWriter, r *http.Request) {
@@ -274,7 +386,8 @@ func (s *Server) handleWS(w http.ResponseWriter, r *http.Request) {
 		})
 		return
 	}
-	if _, ok := s.authenticateRequest(w, r, "zen-connect"); !ok {
+	device, ok := s.authenticateRequest(w, r, "zen-connect")
+	if !ok {
 		return
 	}
 
@@ -283,17 +396,15 @@ func (s *Server) handleWS(w http.ResponseWriter, r *http.Request) {
 		log.Printf("websocket upgrade: %v", err)
 		return
 	}
-	defer conn.Close()
-	defer s.terminal.CloseAll(clientID(conn))
+	owner := &authenticatedClient{deviceID: device.ID}
+	if !s.bindAuthenticatedClient(conn, owner) {
+		_ = conn.Close()
+		return
+	}
+	defer s.terminal.ForgetOwner(clientID(conn))
+	defer s.detachAuthenticatedClient(conn, owner)
 
-	s.mu.Lock()
-	s.clients[conn] = true
-	s.active[conn] = ""
-	s.writes[conn] = &sync.Mutex{}
-	s.codexSubs[conn] = map[string]codexConversationSubscription{}
-	s.mu.Unlock()
-
-	log.Printf("client connected (%d total)", len(s.clients))
+	log.Printf("client connected (%d total)", s.clientCount())
 	s.sendAgentSessionList(conn)
 	if s.work != nil {
 		s.sendJSON(conn, map[string]any{
@@ -311,18 +422,129 @@ func (s *Server) handleWS(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			break
 		}
+		if owner.revoked.Load() ||
+			s.auth == nil ||
+			!s.auth.IsDeviceTrusted(owner.deviceID) {
+			break
+		}
 		s.handleClientMessage(conn, msg)
 	}
 
+	log.Printf("client disconnected (%d remaining)", s.clientCount())
+}
+
+func (s *Server) bindAuthenticatedClient(
+	conn *websocket.Conn,
+	owner *authenticatedClient,
+) bool {
+	if conn == nil || owner == nil || strings.TrimSpace(owner.deviceID) == "" {
+		return false
+	}
 	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.runtimeClosing ||
+		s.auth == nil ||
+		!s.auth.IsDeviceTrusted(owner.deviceID) {
+		owner.revoked.Store(true)
+		return false
+	}
+	s.clients[conn] = owner
+	s.active[conn] = ""
+	s.writes[conn] = &sync.Mutex{}
+	s.codexSubs[conn] = map[string]codexConversationSubscription{}
+	return true
+}
+
+func (s *Server) detachAuthenticatedClient(
+	conn *websocket.Conn,
+	owner *authenticatedClient,
+) {
+	s.mu.Lock()
+	var work clientDetachWork
+	if s.clients[conn] == owner {
+		work = s.removeClientLocked(conn)
+	}
+	s.mu.Unlock()
+	s.completeClientDetach(work)
+}
+
+func (s *Server) revokeAuthenticatedDevice(deviceID string) {
+	normalizedID := strings.TrimSpace(deviceID)
+	if normalizedID == "" {
+		return
+	}
+	var revoked []clientDetachWork
+	s.mu.Lock()
+	for conn, owner := range s.clients {
+		if owner == nil || owner.deviceID != normalizedID {
+			continue
+		}
+		revoked = append(revoked, s.removeClientLocked(conn))
+	}
+	s.mu.Unlock()
+
+	for _, work := range revoked {
+		s.completeClientDetach(work)
+	}
+}
+
+func (s *Server) shutdownAuthenticatedClients() {
+	var closing []clientDetachWork
+	s.mu.Lock()
+	if s.runtimeClosing {
+		s.mu.Unlock()
+		return
+	}
+	s.runtimeClosing = true
+	for conn := range s.clients {
+		closing = append(closing, s.removeClientLocked(conn))
+	}
+	unsubscribe := s.authRevocationUnsubscribe
+	s.authRevocationUnsubscribe = nil
+	s.mu.Unlock()
+
+	for _, work := range closing {
+		s.completeClientDetach(work)
+	}
+	if unsubscribe != nil {
+		unsubscribe()
+	}
+}
+
+func (s *Server) removeClientLocked(
+	conn *websocket.Conn,
+) clientDetachWork {
+	owner, exists := s.clients[conn]
+	if !exists {
+		return clientDetachWork{}
+	}
+	if owner != nil {
+		owner.revoked.Store(true)
+	}
 	s.cancelCodexSubscriptionsLocked(conn)
 	s.cancelSkillsRequestsLocked(conn)
+	terminalCleanup := s.terminal.DetachAll(clientID(conn))
+	s.terminalCleanup.Submit(terminalCleanup)
 	delete(s.clients, conn)
 	delete(s.active, conn)
 	delete(s.writes, conn)
 	delete(s.codexSubs, conn)
-	s.mu.Unlock()
-	log.Printf("client disconnected (%d remaining)", len(s.clients))
+	return clientDetachWork{
+		conn: conn,
+	}
+}
+
+func (s *Server) completeClientDetach(work clientDetachWork) {
+	if work.conn == nil {
+		return
+	}
+	_ = work.conn.Close()
+}
+
+func (s *Server) clientCount() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return len(s.clients)
 }
 
 func (s *Server) cancelSkillsRequestsLocked(conn *websocket.Conn) {
@@ -402,6 +624,95 @@ func (s *Server) handleAuthCheck(w http.ResponseWriter, r *http.Request) {
 		"device_id":         device.ID,
 		"daemon_id":         s.auth.DaemonID(),
 		"daemon_public_key": s.auth.PublicKeyHex(),
+	})
+}
+
+func (s *Server) handleDevices(w http.ResponseWriter, r *http.Request) {
+	switch r.Method {
+	case http.MethodGet:
+		if _, ok := s.authenticateRequest(w, r, auth.DeviceListPurpose); !ok {
+			return
+		}
+		s.writeJSONWithAssertion(w, http.StatusOK, auth.DeviceListPurpose, map[string]any{
+			"devices": s.auth.ListDevices(),
+		})
+	case http.MethodDelete:
+		var raw struct {
+			DeviceID string `json:"device_id"`
+		}
+		decodeErr := json.NewDecoder(
+			io.LimitReader(r.Body, 4<<10),
+		).Decode(&raw)
+		deviceID := strings.TrimSpace(raw.DeviceID)
+		purpose := auth.DeviceRevokePurpose(deviceID)
+		if _, ok := s.authenticateRequest(w, r, purpose); !ok {
+			return
+		}
+		if decodeErr != nil || deviceID == "" {
+			writeDeviceAPIError(
+				w,
+				http.StatusBadRequest,
+				"invalid_device",
+				"A valid device_id is required.",
+			)
+			return
+		}
+		persistence, err := s.auth.RevokeDevice(deviceID)
+		if !persistence.Applied {
+			if errors.Is(err, auth.ErrUnknownDevice) {
+				writeDeviceAPIError(
+					w,
+					http.StatusNotFound,
+					"device_not_found",
+					"The trusted device was not found.",
+				)
+				return
+			}
+			log.Printf("revoke trusted device %q: %v", deviceID, err)
+			writeDeviceAPIError(
+				w,
+				http.StatusInternalServerError,
+				"device_revoke_failed",
+				"The device could not be revoked.",
+			)
+			return
+		}
+		if err != nil {
+			log.Printf(
+				"revoked trusted device %q but directory durability is uncertain: %v",
+				deviceID,
+				err,
+			)
+		}
+		s.writeJSONWithAssertion(w, http.StatusOK, purpose, map[string]any{
+			"ok":                  true,
+			"device_id":           deviceID,
+			"persistence_applied": persistence.Applied,
+			"persistence_durable": persistence.Durable,
+		})
+	default:
+		writeDeviceAPIError(
+			w,
+			http.StatusMethodNotAllowed,
+			"method_not_allowed",
+			"Method not allowed.",
+		)
+	}
+}
+
+func writeDeviceAPIError(
+	w http.ResponseWriter,
+	status int,
+	code string,
+	message string,
+) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	_ = json.NewEncoder(w).Encode(map[string]any{
+		"error": map[string]string{
+			"code":    code,
+			"message": message,
+		},
 	})
 }
 
@@ -2279,11 +2590,9 @@ func (s *Server) broadcast(data []byte) {
 	for _, conn := range conns {
 		if err := s.writeMessage(conn, websocket.TextMessage, data); err != nil {
 			s.mu.Lock()
-			conn.Close()
-			delete(s.clients, conn)
-			delete(s.active, conn)
-			delete(s.writes, conn)
+			work := s.removeClientLocked(conn)
 			s.mu.Unlock()
+			s.completeClientDetach(work)
 		}
 	}
 }
@@ -2543,7 +2852,7 @@ func withCORS(next http.Handler) http.Handler {
 			w.Header().Set("Access-Control-Allow-Origin", origin)
 			w.Header().Add("Vary", "Origin")
 			w.Header().Set("Access-Control-Allow-Headers", "Authorization, Content-Type")
-			w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+			w.Header().Set("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS")
 		}
 		if r.Method == http.MethodOptions {
 			w.WriteHeader(http.StatusNoContent)

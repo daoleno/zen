@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"time"
 
+	"github.com/daoleno/zen/daemon/auth"
 	"github.com/daoleno/zen/daemon/calendar"
 )
 
@@ -38,22 +39,41 @@ type Request struct {
 	CalendarItem *calendar.Item `json:"calendar_item,omitempty"`
 }
 
+type PersistenceOutcome string
+
+const (
+	PersistenceApplied        PersistenceOutcome = "applied"
+	PersistenceVerifiedAbsent PersistenceOutcome = "verified_absent"
+	PersistenceUnknown        PersistenceOutcome = "unknown"
+)
+
+type PairingInfo struct {
+	Token           string    `json:"token"`
+	ExpiresAt       time.Time `json:"expires_at"`
+	DaemonID        string    `json:"daemon_id"`
+	DaemonPublicKey string    `json:"daemon_public_key"`
+}
+
 type Response struct {
-	OK                bool            `json:"ok"`
-	Error             *Error          `json:"error,omitempty"`
-	Agent             *Agent          `json:"agent,omitempty"`
-	Agents            []Agent         `json:"agents,omitempty"`
-	Executor          *Executor       `json:"executor,omitempty"`
-	DelegatedExecutor *Executor       `json:"delegated_executor,omitempty"`
-	Executors         []Executor      `json:"executors,omitempty"`
-	Context           any             `json:"context,omitempty"`
-	Housekeeping      any             `json:"housekeeping,omitempty"`
-	Playbooks         any             `json:"playbooks,omitempty"`
-	Text              string          `json:"text,omitempty"`
-	Workspace         string          `json:"workspace,omitempty"`
-	CalendarItem      *calendar.Item  `json:"calendar_item,omitempty"`
-	CalendarItems     []calendar.Item `json:"calendar_items,omitempty"`
-	Confirmation      string          `json:"confirmation,omitempty"`
+	OK                 bool               `json:"ok"`
+	Error              *Error             `json:"error,omitempty"`
+	Agent              *Agent             `json:"agent,omitempty"`
+	Agents             []Agent            `json:"agents,omitempty"`
+	Executor           *Executor          `json:"executor,omitempty"`
+	DelegatedExecutor  *Executor          `json:"delegated_executor,omitempty"`
+	Executors          []Executor         `json:"executors,omitempty"`
+	Context            any                `json:"context,omitempty"`
+	Housekeeping       any                `json:"housekeeping,omitempty"`
+	Playbooks          any                `json:"playbooks,omitempty"`
+	Text               string             `json:"text,omitempty"`
+	Workspace          string             `json:"workspace,omitempty"`
+	CalendarItem       *calendar.Item     `json:"calendar_item,omitempty"`
+	CalendarItems      []calendar.Item    `json:"calendar_items,omitempty"`
+	Devices            []auth.DeviceInfo  `json:"devices,omitempty"`
+	Pairing            *PairingInfo       `json:"pairing,omitempty"`
+	PersistenceOutcome PersistenceOutcome `json:"persistence_outcome,omitempty"`
+	PersistenceDurable *bool              `json:"persistence_durable,omitempty"`
+	Confirmation       string             `json:"confirmation,omitempty"`
 }
 
 type Error struct {

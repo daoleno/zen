@@ -14,6 +14,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -84,6 +85,8 @@ func run(args []string, stderr io.Writer) error {
 			return runBrainCommand(args[1:], stderr)
 		case "calendar":
 			return runCalendarCommand(args[1:], stderr)
+		case "devices":
+			return runDevicesCommand(args[1:], stderr)
 		}
 	}
 	return runDaemon(args, stderr)
@@ -103,21 +106,18 @@ func runDaemon(args []string, stderr io.Writer) error {
 		return err
 	}
 
-	authManager, err := auth.NewManager(cfg.stateDir)
+	lifecycleLock, authManager, err := acquireDaemonAuthOwner(cfg.stateDir)
 	if err != nil {
-		return fmt.Errorf("initialize auth manager: %w", err)
+		return err
 	}
+	defer lifecycleLock.Close()
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
-	sig := make(chan os.Signal, 1)
-	signal.Notify(sig, syscall.SIGINT, syscall.SIGTERM)
-	go func() {
-		<-sig
-		fmt.Fprintln(stderr, "\nShutting down...")
-		cancel()
-	}()
+	ctx, stopSignals := signal.NotifyContext(
+		context.Background(),
+		syscall.SIGINT,
+		syscall.SIGTERM,
+	)
+	defer stopSignals()
 
 	stateDir := authManager.StorageDir()
 	startUpdateNotice(stderr, stateDir)
@@ -128,15 +128,7 @@ func runDaemon(args []string, stderr io.Writer) error {
 	w := watcher.New(500 * time.Millisecond)
 	w.ConfigureDelegatedResources(authManager.DaemonID())
 	w.SetActivityProbe(classifier.DefaultActivityProbe())
-	go func() {
-		if err := w.Run(ctx); err != nil && ctx.Err() == nil {
-			log.Printf("watcher error: %v", err)
-			cancel()
-		}
-	}()
-
 	sc := stats.NewCollector()
-	go sc.Start(ctx)
 
 	workRoot, err := work.DefaultRoot()
 	if err != nil {
@@ -189,6 +181,7 @@ func runDaemon(args []string, stderr io.Writer) error {
 		return fmt.Errorf("resolve control socket path: %w", err)
 	}
 	controlHandler := &controlApp{
+		auth:          authManager,
 		watcher:       w,
 		execs:         execs,
 		brainStore:    brainStore,
@@ -202,41 +195,119 @@ func runDaemon(args []string, stderr io.Writer) error {
 	calendarScheduler := calendar.NewScheduler(calendarStore, &calendar.WorkRunner{Store: workStore, Launcher: launcher, Watcher: w, Brain: brainService})
 	controlHandler.calendarScheduler = calendarScheduler
 	srv.SetCalendar(calendarStore, calendarScheduler)
-	go calendarScheduler.Run(ctx)
-	controlErr := make(chan error, 1)
-	go func() {
-		controlServer := &control.Server{
-			Path:    controlPath,
-			Handler: controlHandler,
-		}
-		if err := controlServer.Run(ctx); err != nil && ctx.Err() == nil {
-			controlErr <- err
-			cancel()
-		}
-	}()
-	serverErr := make(chan error, 1)
-	go func() {
-		serverErr <- srv.RunWithReady(ctx, cfg.addr, func() {
-			printStartupInfo(stderr, cfg.addr, cfg.stateDir, detectPrivateNetworkAddresses())
-		})
-	}()
+	controlServer := &control.Server{
+		Path:    controlPath,
+		Handler: controlHandler,
+	}
+	return runJoinedRuntime(ctx, []runtimeOwner{
+		{
+			name: "watcher",
+			run:  w.Run,
+		},
+		{
+			name: "stats collector",
+			run: func(ctx context.Context) error {
+				sc.Start(ctx)
+				return nil
+			},
+		},
+		{
+			name: "calendar scheduler",
+			run: func(ctx context.Context) error {
+				calendarScheduler.Run(ctx)
+				return nil
+			},
+		},
+		{
+			name: "control server",
+			run:  controlServer.Run,
+		},
+		{
+			name: "HTTP server",
+			run: func(ctx context.Context) error {
+				return srv.RunWithReady(ctx, cfg.addr, func() {
+					printStartupInfo(
+						stderr,
+						cfg.addr,
+						stateDir,
+						detectPrivateNetworkAddresses(),
+					)
+				})
+			},
+		},
+	})
+}
 
-	select {
-	case err := <-controlErr:
-		return fmt.Errorf("control server error: %w", err)
-	case err := <-serverErr:
-		if err != nil && !errors.Is(err, http.ErrServerClosed) {
-			return fmt.Errorf("server error: %w", err)
-		}
+func acquireDaemonAuthOwner(
+	stateDir string,
+) (*control.LifecycleLock, *auth.Manager, error) {
+	resolvedStateDir, err := auth.ResolveStorageDir(stateDir)
+	if err != nil {
+		return nil, nil, fmt.Errorf("resolve auth storage directory: %w", err)
+	}
+	lifecycleLock, acquired, err := control.TryAcquireLifecycleLock(
+		resolvedStateDir,
+	)
+	if err != nil {
+		return nil, nil, fmt.Errorf("acquire daemon lifecycle owner: %w", err)
+	}
+	if !acquired {
+		return nil, nil, errors.New(
+			"another Zen daemon owns this state directory",
+		)
+	}
+	authManager, err := auth.NewManager(resolvedStateDir)
+	if err != nil {
+		_ = lifecycleLock.Close()
+		return nil, nil, fmt.Errorf("initialize auth manager: %w", err)
+	}
+	return lifecycleLock, authManager, nil
+}
+
+type runtimeOwner struct {
+	name string
+	run  func(context.Context) error
+}
+
+type runtimeResult struct {
+	name string
+	err  error
+}
+
+func runJoinedRuntime(parent context.Context, owners []runtimeOwner) error {
+	if len(owners) == 0 {
+		return nil
+	}
+	ctx, cancel := context.WithCancel(parent)
+	defer cancel()
+	results := make(chan runtimeResult, len(owners))
+	var running sync.WaitGroup
+	for _, owner := range owners {
+		owner := owner
+		running.Add(1)
+		go func() {
+			defer running.Done()
+			results <- runtimeResult{name: owner.name, err: owner.run(ctx)}
+		}()
 	}
 
-	select {
-	case err := <-controlErr:
-		return fmt.Errorf("control server error: %w", err)
-	default:
+	first := <-results
+	cancel()
+	running.Wait()
+	close(results)
+
+	all := make([]runtimeResult, 0, len(owners))
+	all = append(all, first)
+	for result := range results {
+		all = append(all, result)
 	}
-	if err := ctx.Err(); err != nil && !errors.Is(err, context.Canceled) {
-		return err
+	for _, result := range all {
+		if result.err == nil ||
+			errors.Is(result.err, context.Canceled) ||
+			errors.Is(result.err, http.ErrServerClosed) {
+			continue
+		}
+		return fmt.Errorf("%s error: %w", result.name, result.err)
 	}
 	return nil
 }
@@ -1050,19 +1121,46 @@ func runPairCommand(args []string, stderr io.Writer) error {
 	if err != nil {
 		return err
 	}
-	authManager, err := auth.NewManager(cfg.stateDir)
+	retry := time.NewTicker(25 * time.Millisecond)
+	defer retry.Stop()
+	deadline := time.NewTimer(2 * time.Second)
+	defer deadline.Stop()
+	ownerResult, err := withAuthRuntimeOwnerWait(
+		cfg.stateDir,
+		control.Request{Type: "pair"},
+		retry.C,
+		deadline.C,
+		"pairing token outcome is unknown",
+		func(manager *auth.Manager) (control.Response, error) {
+			return issuePairingControlResponse(manager), nil
+		},
+	)
 	if err != nil {
-		return fmt.Errorf("initialize auth manager: %w", err)
+		return err
 	}
-	pairing, err := authManager.IssuePairingToken(auth.DefaultPairingTTL)
-	if err != nil {
-		return fmt.Errorf("issue pairing token: %w", err)
+	response := ownerResult.Response
+	if err := controlResponseError(response); err != nil {
+		return err
 	}
-	offers, err := buildConnectionOffers(cfg.endpoint, authManager, pairing)
+	if response.Pairing == nil ||
+		strings.TrimSpace(response.Pairing.Token) == "" ||
+		strings.TrimSpace(response.Pairing.DaemonID) == "" ||
+		strings.TrimSpace(response.Pairing.DaemonPublicKey) == "" {
+		return errors.New("runtime owner returned incomplete pairing information")
+	}
+	pairing := auth.PairingToken{
+		Value:     response.Pairing.Token,
+		ExpiresAt: response.Pairing.ExpiresAt,
+	}
+	offers, err := buildConnectionOffersWithPublicKey(
+		cfg.endpoint,
+		response.Pairing.DaemonPublicKey,
+		pairing,
+	)
 	if err != nil {
 		return fmt.Errorf("build connection info: %w", err)
 	}
-	printPairCommandInfo(stderr, authManager.DaemonID(), offers)
+	printPairCommandInfo(stderr, response.Pairing.DaemonID, offers)
 	return nil
 }
 
@@ -1087,6 +1185,7 @@ func parseDaemonConfig(args []string, stderr io.Writer) (daemonConfig, error) {
 		fmt.Fprintln(stderr, "  update     Verify and install the latest Zen release")
 		fmt.Fprintln(stderr, "  agent      List, spawn, inspect, message, progress, and close agent sessions")
 		fmt.Fprintln(stderr, "  brain      Inspect Brain workspace and host executor configuration")
+		fmt.Fprintln(stderr, "  devices    List or revoke paired mobile devices")
 	}
 
 	if err := fs.Parse(args); err != nil {
@@ -1130,4 +1229,332 @@ func parsePairConfig(args []string, stderr io.Writer) (pairConfig, error) {
 	}
 	cfg.endpoint = fs.Arg(0)
 	return cfg, nil
+}
+
+func runDevicesCommand(args []string, stderr io.Writer) error {
+	if len(args) == 0 || isHelpArg(args[0]) {
+		fmt.Fprintln(stderr, "Usage: zen devices <list|revoke> [-state-dir DIR] [flags]")
+		return flag.ErrHelp
+	}
+	switch args[0] {
+	case "list":
+		fs := flag.NewFlagSet("zen devices list", flag.ContinueOnError)
+		fs.SetOutput(stderr)
+		var stateDir string
+		var outputJSON bool
+		fs.StringVar(&stateDir, "state-dir", "", "state directory for daemon identity and trusted devices")
+		fs.BoolVar(&outputJSON, "json", false, "print JSON")
+		if err := fs.Parse(args[1:]); err != nil {
+			return err
+		}
+		if fs.NArg() != 0 {
+			return fmt.Errorf("unexpected arguments: %s", strings.Join(fs.Args(), " "))
+		}
+		devices, err := listDevices(stateDir)
+		if err != nil {
+			return err
+		}
+		if outputJSON {
+			return json.NewEncoder(os.Stdout).Encode(map[string]any{"devices": devices})
+		}
+		for _, device := range devices {
+			fmt.Fprintf(
+				os.Stdout,
+				"%s\t%s\t%s\n",
+				device.ID,
+				device.Name,
+				device.LastSeenAt.Format(time.RFC3339),
+			)
+		}
+		return nil
+	case "revoke":
+		fs := flag.NewFlagSet("zen devices revoke", flag.ContinueOnError)
+		fs.SetOutput(stderr)
+		var stateDir string
+		var deviceID string
+		fs.StringVar(&stateDir, "state-dir", "", "state directory for daemon identity and trusted devices")
+		fs.StringVar(&deviceID, "id", "", "paired device id")
+		if err := fs.Parse(args[1:]); err != nil {
+			return err
+		}
+		if fs.NArg() != 0 || strings.TrimSpace(deviceID) == "" {
+			return errors.New("device -id is required")
+		}
+		result, err := revokeDevice(stateDir, deviceID)
+		if err != nil {
+			return err
+		}
+		return writeDeviceRevokeResult(
+			os.Stdout,
+			strings.TrimSpace(deviceID),
+			result,
+		)
+	default:
+		return fmt.Errorf("unknown devices command: %s", args[0])
+	}
+}
+
+func writeDeviceRevokeResult(
+	output io.Writer,
+	deviceID string,
+	result deviceRevokeResult,
+) error {
+	switch result.Outcome {
+	case control.PersistenceApplied:
+		if result.Durable {
+			fmt.Fprintf(
+				output,
+				"Revoked device %s.\n",
+				deviceID,
+			)
+		} else {
+			fmt.Fprintf(
+				output,
+				"Revoked device %s; persistence was applied but directory durability is uncertain.\n",
+				deviceID,
+			)
+		}
+	case control.PersistenceVerifiedAbsent:
+		if result.EarlierRequestMayHaveArrived {
+			if result.Durable {
+				fmt.Fprintf(
+					output,
+					"Device %s is not trusted; an earlier request may have applied the revocation and durable persisted absence was verified.\n",
+					deviceID,
+				)
+			} else {
+				fmt.Fprintf(
+					output,
+					"Device %s is not trusted; an earlier request may have applied the revocation, current absence was verified, and crash durability is uncertain.\n",
+					deviceID,
+				)
+			}
+		} else {
+			if result.Durable {
+				fmt.Fprintf(
+					output,
+					"Device %s is not trusted; durable persisted absence was verified.\n",
+					deviceID,
+				)
+			} else {
+				fmt.Fprintf(
+					output,
+					"Device %s is not trusted; current absence was verified and crash durability is uncertain.\n",
+					deviceID,
+				)
+			}
+		}
+	default:
+		return errors.New("revocation outcome is unknown")
+	}
+	return nil
+}
+
+const deviceControlRequestTimeout = time.Second
+
+func listDevices(stateDir string) ([]auth.DeviceInfo, error) {
+	retry := time.NewTicker(25 * time.Millisecond)
+	defer retry.Stop()
+	deadline := time.NewTimer(2 * time.Second)
+	defer deadline.Stop()
+	ownerResult, err := withAuthRuntimeOwnerWait(
+		stateDir,
+		control.Request{Type: "device_list"},
+		retry.C,
+		deadline.C,
+		"device list was not read",
+		func(manager *auth.Manager) (control.Response, error) {
+			return control.Response{
+				OK:      true,
+				Devices: manager.ListDevices(),
+			}, nil
+		},
+	)
+	if err != nil {
+		return nil, err
+	}
+	response := ownerResult.Response
+	if err := controlResponseError(response); err != nil {
+		return nil, err
+	}
+	return response.Devices, nil
+}
+
+type deviceRevokeResult struct {
+	Outcome                      control.PersistenceOutcome
+	Durable                      bool
+	EarlierRequestMayHaveArrived bool
+}
+
+func revokeDevice(
+	stateDir string,
+	deviceID string,
+) (deviceRevokeResult, error) {
+	retry := time.NewTicker(25 * time.Millisecond)
+	defer retry.Stop()
+	deadline := time.NewTimer(2 * time.Second)
+	defer deadline.Stop()
+	return revokeDeviceWithRuntimeOwnerWait(
+		stateDir,
+		deviceID,
+		retry.C,
+		deadline.C,
+	)
+}
+
+func revokeDeviceWithRuntimeOwnerWait(
+	stateDir string,
+	deviceID string,
+	retry <-chan time.Time,
+	deadline <-chan time.Time,
+) (deviceRevokeResult, error) {
+	normalizedID := strings.TrimSpace(deviceID)
+	ownerResult, err := withAuthRuntimeOwnerWait(
+		stateDir,
+		control.Request{
+			Type: "device_revoke",
+			ID:   normalizedID,
+		},
+		retry,
+		deadline,
+		"revocation outcome is unknown",
+		func(manager *auth.Manager) (control.Response, error) {
+			return revokeDeviceControlResponse(manager, normalizedID), nil
+		},
+	)
+	if err != nil {
+		return deviceRevokeResult{Outcome: control.PersistenceUnknown}, err
+	}
+	response := ownerResult.Response
+	if response.OK {
+		if response.PersistenceOutcome != control.PersistenceApplied ||
+			response.PersistenceDurable == nil {
+			return deviceRevokeResult{
+					Outcome: control.PersistenceUnknown,
+				}, errors.New(
+					"runtime owner returned success without a complete persistence result",
+				)
+		}
+		return deviceRevokeResult{
+			Outcome:                      response.PersistenceOutcome,
+			Durable:                      *response.PersistenceDurable,
+			EarlierRequestMayHaveArrived: ownerResult.EarlierRequestMayHaveArrived,
+		}, nil
+	}
+	if response.Error != nil &&
+		response.Error.Code == "device_not_found" {
+		if response.PersistenceOutcome !=
+			control.PersistenceVerifiedAbsent ||
+			response.PersistenceDurable == nil {
+			return deviceRevokeResult{
+					Outcome: control.PersistenceUnknown,
+				}, errors.New(
+					"runtime owner returned device_not_found without a complete durability result",
+				)
+		}
+		return deviceRevokeResult{
+			Outcome:                      control.PersistenceVerifiedAbsent,
+			Durable:                      *response.PersistenceDurable,
+			EarlierRequestMayHaveArrived: ownerResult.EarlierRequestMayHaveArrived,
+		}, nil
+	}
+	return deviceRevokeResult{
+		Outcome: control.PersistenceUnknown,
+	}, controlResponseError(response)
+}
+
+type authRuntimeOwnerResult struct {
+	Response                     control.Response
+	EarlierRequestMayHaveArrived bool
+}
+
+func withAuthRuntimeOwnerWait(
+	stateDir string,
+	request control.Request,
+	retry <-chan time.Time,
+	deadline <-chan time.Time,
+	unknownOutcome string,
+	offline func(manager *auth.Manager) (control.Response, error),
+) (authRuntimeOwnerResult, error) {
+	resolvedStateDir, err := auth.ResolveStorageDir(stateDir)
+	if err != nil {
+		return authRuntimeOwnerResult{}, err
+	}
+	socketPath, err := control.DefaultSocketPath(resolvedStateDir)
+	if err != nil {
+		return authRuntimeOwnerResult{}, err
+	}
+	var lastCallErr error
+	var earlierRequestMayHaveArrived bool
+	for {
+		callResult, callErr := control.CallWithTimeoutResult(
+			socketPath,
+			request,
+			deviceControlRequestTimeout,
+		)
+		if callErr == nil {
+			return authRuntimeOwnerResult{
+				Response:                     callResult.Response,
+				EarlierRequestMayHaveArrived: earlierRequestMayHaveArrived,
+			}, nil
+		}
+		earlierRequestMayHaveArrived =
+			earlierRequestMayHaveArrived ||
+				callResult.RequestMayHaveArrived
+		lastCallErr = callErr
+
+		lifecycleLock, acquired, lockErr :=
+			control.TryAcquireLifecycleLock(resolvedStateDir)
+		if lockErr != nil {
+			return authRuntimeOwnerResult{
+				EarlierRequestMayHaveArrived: earlierRequestMayHaveArrived,
+			}, lockErr
+		}
+		if acquired {
+			defer lifecycleLock.Close()
+			socketInfo, statErr := os.Lstat(socketPath)
+			if statErr == nil &&
+				socketInfo.Mode()&os.ModeSocket == 0 {
+				return authRuntimeOwnerResult{
+						EarlierRequestMayHaveArrived: earlierRequestMayHaveArrived,
+					}, fmt.Errorf(
+						"daemon control path is not a socket: %s",
+						socketPath,
+					)
+			}
+			if statErr != nil &&
+				!errors.Is(statErr, os.ErrNotExist) {
+				return authRuntimeOwnerResult{
+						EarlierRequestMayHaveArrived: earlierRequestMayHaveArrived,
+					}, fmt.Errorf(
+						"inspect daemon control socket: %w",
+						statErr,
+					)
+			}
+			manager, managerErr := auth.NewManager(resolvedStateDir)
+			if managerErr != nil {
+				return authRuntimeOwnerResult{
+					EarlierRequestMayHaveArrived: earlierRequestMayHaveArrived,
+				}, managerErr
+			}
+			response, offlineErr := offline(manager)
+			return authRuntimeOwnerResult{
+				Response:                     response,
+				EarlierRequestMayHaveArrived: earlierRequestMayHaveArrived,
+			}, offlineErr
+		}
+
+		select {
+		case <-retry:
+			continue
+		case <-deadline:
+			return authRuntimeOwnerResult{
+					EarlierRequestMayHaveArrived: earlierRequestMayHaveArrived,
+				}, fmt.Errorf(
+					"daemon runtime owner is active but its control socket is unavailable; %s: %w",
+					unknownOutcome,
+					lastCallErr,
+				)
+		}
+	}
 }

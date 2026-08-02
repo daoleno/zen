@@ -7,24 +7,53 @@ import (
 	"time"
 )
 
+type CallResult struct {
+	Response              Response
+	RequestMayHaveArrived bool
+}
+
 func Call(socketPath string, req Request) (Response, error) {
+	return CallWithTimeout(socketPath, req, 30*time.Second)
+}
+
+func CallWithTimeout(
+	socketPath string,
+	req Request,
+	timeout time.Duration,
+) (Response, error) {
+	result, err := CallWithTimeoutResult(socketPath, req, timeout)
+	return result.Response, err
+}
+
+func CallWithTimeoutResult(
+	socketPath string,
+	req Request,
+	timeout time.Duration,
+) (CallResult, error) {
 	if socketPath == "" {
-		return Response{}, fmt.Errorf("control socket path required")
+		return CallResult{}, fmt.Errorf("control socket path required")
+	}
+	if timeout <= 0 {
+		return CallResult{}, fmt.Errorf("control request timeout required")
 	}
 	conn, err := net.DialTimeout("unix", socketPath, 2*time.Second)
 	if err != nil {
-		return Response{}, fmt.Errorf("connect to Zen control socket: %w", err)
+		return CallResult{}, fmt.Errorf("connect to Zen control socket: %w", err)
 	}
 	defer conn.Close()
-	_ = conn.SetDeadline(time.Now().Add(30 * time.Second))
+	_ = conn.SetDeadline(time.Now().Add(timeout))
 
 	if err := json.NewEncoder(conn).Encode(req); err != nil {
-		return Response{}, fmt.Errorf("send control request: %w", err)
+		return CallResult{RequestMayHaveArrived: true}, fmt.Errorf(
+			"send control request: %w",
+			err,
+		)
 	}
+	result := CallResult{RequestMayHaveArrived: true}
 	var resp Response
 	if err := json.NewDecoder(conn).Decode(&resp); err != nil {
-		return Response{}, fmt.Errorf("read control response: %w", err)
+		return result, fmt.Errorf("read control response: %w", err)
 	}
-	return resp, nil
+	result.Response = resp
+	return result, nil
 }
-
