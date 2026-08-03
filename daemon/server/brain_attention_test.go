@@ -51,6 +51,10 @@ func (w *brainWakeWatcher) SendInputWhenReady(sessionID, _ string, text string) 
 	return w.SendInput(sessionID, text)
 }
 
+func (w *brainWakeWatcher) SubmitInputWhenReady(sessionID, _ string, payload string) error {
+	return w.SendInput(sessionID, payload)
+}
+
 func (w *brainWakeWatcher) KillSession(string) error {
 	return nil
 }

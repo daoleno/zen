@@ -1,16 +1,23 @@
 package server
 
 import (
+	"bytes"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"os/exec"
+	"path/filepath"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/daoleno/zen/daemon/watcher"
 	"github.com/daoleno/zen/daemon/work"
 	"github.com/gorilla/websocket"
 )
@@ -141,6 +148,235 @@ func TestInboundSendInputFailureReturnsRejectionWithoutAck(t *testing.T) {
 	}
 	if got := providerCalls.Load(); got != 1 {
 		t.Fatalf("provider calls = %d, want 1", got)
+	}
+}
+
+func TestInboundSendInputPropagatesUnresolvedCodexArbiterWithoutAck(t *testing.T) {
+	if _, err := exec.LookPath("tmux"); err != nil {
+		t.Skip("tmux is required for the authoritative untracked-target route test")
+	}
+	helperDir := t.TempDir()
+	codexHelper := filepath.Join(helperDir, "codex")
+	if err := os.WriteFile(codexHelper, []byte("#!/bin/bash\nexec -a codex /bin/cat\n"), 0o700); err != nil {
+		t.Fatalf("write Codex process helper: %v", err)
+	}
+	sessionID := fmt.Sprintf("zen-ws-untracked-codex-%d", time.Now().UnixNano())
+	if out, err := exec.Command("tmux", "new-session", "-d", "-s", sessionID, codexHelper).CombinedOutput(); err != nil {
+		t.Fatalf("create untracked Codex target: %v: %s", err, out)
+	}
+	t.Cleanup(func() {
+		_ = exec.Command("tmux", "kill-session", "-t", sessionID).Run()
+	})
+	deadline := time.Now().Add(3 * time.Second)
+	for {
+		current, currentErr := exec.Command(
+			"tmux",
+			"display-message",
+			"-p",
+			"-t",
+			sessionID,
+			"#{pane_current_command}",
+		).Output()
+		if currentErr == nil && strings.TrimSpace(string(current)) == "codex" {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("untracked Codex process did not become authoritative: %q (%v)", current, currentErr)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	metadata, err := exec.Command(
+		"tmux",
+		"display-message",
+		"-p",
+		"-t",
+		sessionID,
+		"#{pane_dead}\t#{session_id}\t#{session_created}\t#{window_id}\t#{pane_id}\t#{pane_pid}\t#{pane_start_command}",
+	).Output()
+	if err != nil {
+		t.Fatalf("read untracked target identity: %v", err)
+	}
+	fields := strings.Split(strings.TrimSuffix(string(metadata), "\n"), "\t")
+	if len(fields) != 7 || fields[0] == "1" {
+		t.Fatalf("untracked target metadata = %q", metadata)
+	}
+	generationDigest := sha256.Sum256([]byte(strings.Join(fields[1:7], "\x00")))
+	generation := fmt.Sprintf("%x", generationDigest[:])
+
+	stateDir := t.TempDir()
+	inputWatcher := watcher.New(time.Second)
+	if err := inputWatcher.ConfigureCodexInputState(stateDir); err != nil {
+		t.Fatalf("configure durable Codex input: %v", err)
+	}
+	scopeDigest := sha256.Sum256([]byte(sessionID + "\x00" + generation))
+	transactionDir := filepath.Join(stateDir, "codex-input", "transactions")
+	recordPath := filepath.Join(
+		transactionDir,
+		fmt.Sprintf("%x-ws-ambiguous.json", scopeDigest[:16]),
+	)
+	now := time.Now().UTC()
+	record, err := json.MarshalIndent(map[string]any{
+		"schema_version":     1,
+		"transaction_id":     "ws-ambiguous",
+		"session_id":         sessionID,
+		"session_generation": generation,
+		"action":             "submit_codex_input",
+		"phase":              "ambiguous",
+		"payload_sha256":     fmt.Sprintf("%x", sha256.Sum256([]byte("owned"))),
+		"instruction":        "owned",
+		"instruction_sha256": fmt.Sprintf("%x", sha256.Sum256([]byte("owned"))),
+		"created_at":         now,
+		"updated_at":         now,
+	}, "", "  ")
+	if err != nil {
+		t.Fatalf("encode ambiguous transaction: %v", err)
+	}
+	if err := os.WriteFile(recordPath, append(record, '\n'), 0o600); err != nil {
+		t.Fatalf("seed ambiguous transaction: %v", err)
+	}
+	before, err := exec.Command("tmux", "capture-pane", "-p", "-t", sessionID).Output()
+	if err != nil {
+		t.Fatalf("capture untracked target before input: %v", err)
+	}
+
+	srv := &Server{watcher: inputWatcher}
+	conn := openThinProxyTestSocket(t, srv)
+	response := sendThinProxyRequest(t, conn, clientMessage{
+		Type:      "send_input",
+		RequestID: "untracked-codex-ambiguous",
+		AgentID:   sessionID,
+		Text:      "foreign raw input",
+	})
+	if response.Type != "input_failed" ||
+		response.Code != "send_input_failed" ||
+		!strings.Contains(response.Message, "unresolved") ||
+		response.RequestID != "untracked-codex-ambiguous" {
+		t.Fatalf("unresolved arbiter response = %#v", response)
+	}
+	after, err := exec.Command("tmux", "capture-pane", "-p", "-t", sessionID).Output()
+	if err != nil {
+		t.Fatalf("capture untracked target after input: %v", err)
+	}
+	if !bytes.Equal(before, after) {
+		t.Fatalf("WebSocket input bypassed the Codex arbiter\nbefore=%q\nafter=%q", before, after)
+	}
+}
+
+func TestInboundSendInputIgnoresCachedNonCodexHintForCurrentCodex(t *testing.T) {
+	if _, err := exec.LookPath("tmux"); err != nil {
+		t.Skip("tmux is required for the cached-provider WebSocket route test")
+	}
+	stateDir := t.TempDir()
+	inputWatcher := watcher.New(time.Second)
+	if err := inputWatcher.ConfigureCodexInputState(stateDir); err != nil {
+		t.Fatalf("configure durable Codex input: %v", err)
+	}
+	sessionID, err := inputWatcher.CreateSession("", watcher.CreateSessionOptions{
+		Name:    "round5 cached provider",
+		Command: "exec -a codex /bin/sleep 300",
+		Hidden:  true,
+	})
+	if err != nil {
+		t.Fatalf("create cached non-Codex hint target: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = inputWatcher.KillSession(sessionID)
+	})
+	deadline := time.Now().Add(3 * time.Second)
+	for {
+		current, currentErr := exec.Command(
+			"tmux",
+			"display-message",
+			"-p",
+			"-t",
+			sessionID,
+			"#{pane_current_command}",
+		).Output()
+		if currentErr == nil && strings.TrimSpace(string(current)) == "codex" {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("cached Codex process did not become authoritative: %q (%v)", current, currentErr)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	var metadata []byte
+	deadline = time.Now().Add(3 * time.Second)
+	for {
+		metadata, err = exec.Command(
+			"tmux",
+			"display-message",
+			"-p",
+			"-t",
+			sessionID,
+			"#{pane_dead}\t#{session_id}\t#{session_created}\t#{window_id}\t#{pane_id}\t#{pane_pid}\t#{pane_start_command}",
+		).Output()
+		if err == nil {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("read cached target identity: %v", err)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	fields := strings.Split(strings.TrimSuffix(string(metadata), "\n"), "\t")
+	if len(fields) != 7 || fields[0] == "1" {
+		t.Fatalf("cached target metadata = %q", metadata)
+	}
+	generationDigest := sha256.Sum256([]byte(strings.Join(fields[1:7], "\x00")))
+	generation := fmt.Sprintf("%x", generationDigest[:])
+	scopeDigest := sha256.Sum256([]byte(sessionID + "\x00" + generation))
+	recordPath := filepath.Join(
+		stateDir,
+		"codex-input",
+		"transactions",
+		fmt.Sprintf("%x-ws-cached-ambiguous.json", scopeDigest[:16]),
+	)
+	now := time.Now().UTC()
+	record, err := json.MarshalIndent(map[string]any{
+		"schema_version":     1,
+		"transaction_id":     "ws-cached-ambiguous",
+		"session_id":         sessionID,
+		"session_generation": generation,
+		"action":             "submit_codex_input",
+		"phase":              "ambiguous",
+		"payload_sha256":     fmt.Sprintf("%x", sha256.Sum256([]byte("owned"))),
+		"instruction":        "owned",
+		"instruction_sha256": fmt.Sprintf("%x", sha256.Sum256([]byte("owned"))),
+		"created_at":         now,
+		"updated_at":         now,
+	}, "", "  ")
+	if err != nil {
+		t.Fatalf("encode cached ambiguous transaction: %v", err)
+	}
+	if err := os.WriteFile(recordPath, append(record, '\n'), 0o600); err != nil {
+		t.Fatalf("seed cached ambiguous transaction: %v", err)
+	}
+	before, err := exec.Command("tmux", "capture-pane", "-p", "-t", sessionID).Output()
+	if err != nil {
+		t.Fatalf("capture cached target before input: %v", err)
+	}
+
+	srv := &Server{watcher: inputWatcher}
+	conn := openThinProxyTestSocket(t, srv)
+	response := sendThinProxyRequest(t, conn, clientMessage{
+		Type:      "send_input",
+		RequestID: "cached-command-actual-codex",
+		AgentID:   sessionID,
+		Text:      "foreign WebSocket input",
+	})
+	if response.Type != "input_failed" ||
+		response.Code != "send_input_failed" ||
+		!strings.Contains(response.Message, "unresolved") ||
+		response.RequestID != "cached-command-actual-codex" {
+		t.Fatalf("cached-provider arbiter response = %#v", response)
+	}
+	after, err := exec.Command("tmux", "capture-pane", "-p", "-t", sessionID).Output()
+	if err != nil {
+		t.Fatalf("capture cached target after input: %v", err)
+	}
+	if !bytes.Equal(before, after) {
+		t.Fatalf("cached provider hint bypassed Codex arbiter\nbefore=%q\nafter=%q", before, after)
 	}
 }
 

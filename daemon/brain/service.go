@@ -32,6 +32,7 @@ type Watcher interface {
 	CreateSession(preferredTarget string, opts watcher.CreateSessionOptions) (string, error)
 	SendInput(sessionID, text string) error
 	SendInputWhenReady(sessionID, command, text string) error
+	SubmitInputWhenReady(sessionID, command, payload string) error
 	KillSession(sessionID string) error
 }
 
@@ -292,8 +293,15 @@ func (s *Service) Heartbeat(event HeartbeatEvent) (bool, error) {
 	if message == "" {
 		return false, nil
 	}
-	if err := s.watcher.SendInput(hostID, message+"\n"); err != nil {
-		return false, err
+	hostExecutor := s.hostExecutor()
+	var sendErr error
+	if hostExecutor.Provider == work.AgentProviderCodex {
+		sendErr = s.watcher.SubmitInputWhenReady(hostID, s.hostCommand(hostExecutor), message)
+	} else {
+		sendErr = s.watcher.SendInput(hostID, message+"\n")
+	}
+	if sendErr != nil {
+		return false, sendErr
 	}
 	return true, nil
 }

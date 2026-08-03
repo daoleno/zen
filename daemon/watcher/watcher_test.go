@@ -548,6 +548,9 @@ func TestSendInputChunksLongText(t *testing.T) {
 	})
 
 	time.Sleep(100 * time.Millisecond)
+	if resolved, known := resolveTargetProcessCommand(session); !known || isCodexCommand(resolved) {
+		t.Fatalf("authoritative non-Codex target identity = %q, known=%v", resolved, known)
+	}
 	if err := New(time.Second).SendInput(session, text+"\n"); err != nil {
 		t.Fatalf("SendInput returned error: %v", err)
 	}
@@ -965,6 +968,17 @@ esac
 		t.Fatalf("write fake tmux: %v", err)
 	}
 	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	targetCommandResolverMu.Lock()
+	previousResolver := targetCommandResolver
+	targetCommandResolver = func(target string) (string, bool) {
+		return "claude --permission-mode bypassPermissions", target == "claude-ready:@1"
+	}
+	targetCommandResolverMu.Unlock()
+	t.Cleanup(func() {
+		targetCommandResolverMu.Lock()
+		targetCommandResolver = previousResolver
+		targetCommandResolverMu.Unlock()
+	})
 
 	body := strings.Repeat("zen-claude-brief-", 80)
 	if len(body) <= tmuxSendInputChunkBytes {
@@ -1018,6 +1032,80 @@ func TestCursorAgentUsesLongerSubmitDelay(t *testing.T) {
 	}
 	if got := tmuxSubmitDelay("claude"); got < 200*time.Millisecond {
 		t.Fatalf("Claude submit delay = %s, want at least 200ms", got)
+	}
+}
+
+func TestGenericWatcherSendInputKeepsLegacyDelayWhileExplicitReadyKeepsProviderDelay(t *testing.T) {
+	binDir := t.TempDir()
+	tmuxPath := filepath.Join(binDir, "tmux")
+	script := `#!/bin/sh
+case "$1" in
+  capture-pane)
+    printf 'Claude Code v2.1.214\nCursor Agent\nrun everything\nGrok 1\n❯ \nbypass permissions on\nEnter: send\n'
+    ;;
+  list-panes)
+    printf '0\n'
+    ;;
+esac
+exit 0
+`
+	if err := os.WriteFile(tmuxPath, []byte(script), 0o755); err != nil {
+		t.Fatalf("write fake tmux: %v", err)
+	}
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	previousSleep := tmuxSubmitSleep
+	var requested []time.Duration
+	tmuxSubmitSleep = func(delay time.Duration) {
+		requested = append(requested, delay)
+	}
+	targetCommandResolverMu.Lock()
+	previousResolver := targetCommandResolver
+	targetCommandResolverMu.Unlock()
+	t.Cleanup(func() {
+		tmuxSubmitSleep = previousSleep
+		targetCommandResolverMu.Lock()
+		targetCommandResolver = previousResolver
+		targetCommandResolverMu.Unlock()
+	})
+
+	tests := []struct {
+		name          string
+		command       string
+		explicitDelay time.Duration
+	}{
+		{name: "Claude", command: "claude --permission-mode bypassPermissions", explicitDelay: 250 * time.Millisecond},
+		{name: "Cursor", command: "cursor-agent --force", explicitDelay: 400 * time.Millisecond},
+		{name: "Grok", command: "grok --no-alt-screen", explicitDelay: 300 * time.Millisecond},
+		{name: "custom", command: "my-agent --interactive", explicitDelay: 120 * time.Millisecond},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			sessionID := "delay-" + strings.ToLower(tc.name) + ":@1"
+			resolver := func(target string) (string, bool) {
+				return tc.command, target == sessionID
+			}
+			w := New(time.Second)
+			w.targetCommandResolver = resolver
+			requested = nil
+			if err := w.SendInput(sessionID, "heartbeat\n"); err != nil {
+				t.Fatalf("generic SendInput: %v", err)
+			}
+			if !reflect.DeepEqual(requested, []time.Duration{120 * time.Millisecond}) {
+				t.Fatalf("generic requested delays=%v want [120ms]", requested)
+			}
+
+			targetCommandResolverMu.Lock()
+			targetCommandResolver = resolver
+			targetCommandResolverMu.Unlock()
+			requested = nil
+			if err := SendInputWhenReady(sessionID, tc.command, "explicit ready\n"); err != nil {
+				t.Fatalf("explicit-ready SendInput: %v", err)
+			}
+			if !reflect.DeepEqual(requested, []time.Duration{tc.explicitDelay}) {
+				t.Fatalf("explicit-ready requested delays=%v want [%s]", requested, tc.explicitDelay)
+			}
+		})
 	}
 }
 
@@ -1079,13 +1167,239 @@ func TestDetectAgentProcessPrefersCodexChildStartTime(t *testing.T) {
 	}
 }
 
+func TestForegroundCodexAuthorityRejectsHigherScoringBackgroundProvider(t *testing.T) {
+	started := time.Date(2026, 8, 3, 12, 0, 0, 0, time.UTC)
+	processes := map[int]processInfo{
+		10: {pid: 10, ppid: 1, pgid: 10, tpgid: 20, startedAt: started, comm: "zsh", args: "zsh"},
+		20: {pid: 20, ppid: 10, pgid: 20, tpgid: 20, startedAt: started.Add(time.Second), comm: "codex", args: "codex --no-alt-screen"},
+		30: {pid: 30, ppid: 10, pgid: 30, tpgid: 20, startedAt: started.Add(2 * time.Second), comm: "grok", args: "grok --resume background-session"},
+	}
+
+	command, processStarted, pid, ok := foregroundTargetProcess(10, processes)
+	if !ok || command != "codex" || pid != 20 || !processStarted.Equal(processes[20].startedAt) {
+		t.Fatalf(
+			"foreground authority = (%q, %s, %d, %t), want actual foreground Codex pid 20",
+			command,
+			processStarted,
+			pid,
+			ok,
+		)
+	}
+}
+
+func TestForegroundCodexWrapperAuthorityRejectsBackgroundNativeClaude(t *testing.T) {
+	started := time.Date(2026, 8, 3, 12, 30, 0, 0, time.UTC)
+	processes := map[int]processInfo{
+		10: {pid: 10, ppid: 1, pgid: 10, tpgid: 20, startedAt: started, comm: "zsh", args: "zsh"},
+		20: {
+			pid:       20,
+			ppid:      10,
+			pgid:      20,
+			tpgid:     20,
+			startedAt: started.Add(time.Second),
+			comm:      "node",
+			args:      "node /home/user/.local/bin/codex --no-alt-screen",
+		},
+		30: {pid: 30, ppid: 10, pgid: 30, tpgid: 20, startedAt: started.Add(2 * time.Second), comm: "claude", args: "claude --dangerously-skip-permissions"},
+	}
+
+	command, processStarted, pid, ok := foregroundTargetProcess(10, processes)
+	if !ok || command != "codex" || pid != 20 || !processStarted.Equal(processes[20].startedAt) {
+		t.Fatalf(
+			"foreground wrapper authority = (%q, %s, %d, %t), want actual foreground Codex wrapper pid 20",
+			command,
+			processStarted,
+			pid,
+			ok,
+		)
+	}
+}
+
+func TestForegroundProviderAuthorityRequiresPaneLineage(t *testing.T) {
+	started := time.Date(2026, 8, 3, 13, 0, 0, 0, time.UTC)
+	processes := map[int]processInfo{
+		10: {pid: 10, ppid: 1, pgid: 10, tpgid: 40, startedAt: started, comm: "zsh", args: "zsh"},
+		40: {pid: 40, ppid: 1, pgid: 40, tpgid: 40, startedAt: started.Add(time.Second), comm: "codex", args: "codex"},
+	}
+	if command, processStarted, pid, ok := foregroundTargetProcess(10, processes); ok {
+		t.Fatalf(
+			"unrelated foreground process authorized target = (%q, %s, %d)",
+			command,
+			processStarted,
+			pid,
+		)
+	}
+}
+
+func TestForegroundProviderAuthorityFollowsOpaqueForegroundWrapper(t *testing.T) {
+	started := time.Date(2026, 8, 3, 13, 30, 0, 0, time.UTC)
+	processes := map[int]processInfo{
+		10: {pid: 10, ppid: 1, pgid: 10, tpgid: 20, startedAt: started, comm: "zsh", args: "zsh"},
+		20: {
+			pid:       20,
+			ppid:      10,
+			pgid:      20,
+			tpgid:     20,
+			startedAt: started.Add(time.Second),
+			comm:      "bash",
+			args:      "bash /opt/provider-wrapper",
+		},
+		21: {
+			pid:       21,
+			ppid:      20,
+			pgid:      20,
+			tpgid:     20,
+			startedAt: started.Add(2 * time.Second),
+			comm:      "codex",
+			args:      "codex --no-alt-screen",
+		},
+		30: {
+			pid:       30,
+			ppid:      10,
+			pgid:      30,
+			tpgid:     20,
+			startedAt: started.Add(3 * time.Second),
+			comm:      "grok",
+			args:      "grok --resume background-session",
+		},
+	}
+
+	command, processStarted, pid, ok := foregroundTargetProcess(10, processes)
+	if !ok || command != "codex" || pid != 21 || !processStarted.Equal(processes[21].startedAt) {
+		t.Fatalf(
+			"opaque foreground wrapper authority = (%q, %s, %d, %t), want Codex child pid 21",
+			command,
+			processStarted,
+			pid,
+			ok,
+		)
+	}
+	authority, ok := resolveForegroundTargetProcess(10, processes)
+	if !ok ||
+		authority.foreground.pid != 20 ||
+		!authority.foreground.startedAt.Equal(processes[20].startedAt) ||
+		authority.provider.pid != 21 ||
+		!authority.provider.startedAt.Equal(processes[21].startedAt) {
+		t.Fatalf("opaque wrapper bound authority = %#v, ok=%t", authority, ok)
+	}
+}
+
+func TestForegroundProviderAuthorityRejectsConflictingSameGroupProviders(t *testing.T) {
+	started := time.Date(2026, 8, 3, 14, 0, 0, 0, time.UTC)
+	processes := map[int]processInfo{
+		10: {pid: 10, ppid: 1, pgid: 10, tpgid: 20, startedAt: started, comm: "zsh", args: "zsh"},
+		20: {
+			pid:       20,
+			ppid:      10,
+			pgid:      20,
+			tpgid:     20,
+			startedAt: started.Add(time.Second),
+			comm:      "bash",
+			args:      "bash /opt/provider-wrapper",
+		},
+		21: {
+			pid:       21,
+			ppid:      20,
+			pgid:      20,
+			tpgid:     20,
+			startedAt: started.Add(2 * time.Second),
+			comm:      "codex",
+			args:      "codex",
+		},
+		22: {
+			pid:       22,
+			ppid:      20,
+			pgid:      20,
+			tpgid:     20,
+			startedAt: started.Add(3 * time.Second),
+			comm:      "claude",
+			args:      "claude",
+		},
+	}
+	if authority, ok := resolveForegroundTargetProcess(10, processes); ok {
+		t.Fatalf("conflicting same-PGID Providers authorized target: %#v", authority)
+	}
+}
+
+func TestForegroundProviderAuthorityRejectsIndeterminateSameFamilySiblings(t *testing.T) {
+	started := time.Date(2026, 8, 3, 14, 15, 0, 0, time.UTC)
+	processes := map[int]processInfo{
+		10: {pid: 10, ppid: 1, pgid: 10, tpgid: 20, startedAt: started, comm: "zsh", args: "zsh"},
+		20: {
+			pid:       20,
+			ppid:      10,
+			pgid:      20,
+			tpgid:     20,
+			startedAt: started.Add(time.Second),
+			comm:      "bash",
+			args:      "bash /opt/provider-wrapper",
+		},
+		21: {
+			pid:       21,
+			ppid:      20,
+			pgid:      20,
+			tpgid:     20,
+			startedAt: started.Add(2 * time.Second),
+			comm:      "node",
+			args:      "node /opt/codex/bin/codex --no-alt-screen",
+		},
+		22: {
+			pid:       22,
+			ppid:      20,
+			pgid:      20,
+			tpgid:     20,
+			startedAt: started.Add(3 * time.Second),
+			comm:      "codex",
+			args:      "codex --no-alt-screen",
+		},
+	}
+	if authority, ok := resolveForegroundTargetProcess(10, processes); ok {
+		t.Fatalf("indeterminate same-family siblings authorized target: %#v", authority)
+	}
+}
+
+func TestForegroundProviderAuthorityKeepsPlainShellGeneric(t *testing.T) {
+	started := time.Date(2026, 8, 3, 14, 30, 0, 0, time.UTC)
+	processes := map[int]processInfo{
+		10: {pid: 10, ppid: 1, pgid: 10, tpgid: 20, startedAt: started, comm: "zsh", args: "zsh"},
+		20: {
+			pid:       20,
+			ppid:      10,
+			pgid:      20,
+			tpgid:     20,
+			startedAt: started.Add(time.Second),
+			comm:      "bash",
+			args:      "bash",
+		},
+	}
+	authority, ok := resolveForegroundTargetProcess(10, processes)
+	if !ok ||
+		authority.command != "bash" ||
+		authority.foreground.pid != 20 ||
+		authority.provider.pid != 20 {
+		t.Fatalf("plain foreground shell authority = %#v, ok=%t", authority, ok)
+	}
+}
+
+func TestAgentCommandFromProcessRejectsShellLaunchHint(t *testing.T) {
+	process := processInfo{
+		pid:  10,
+		ppid: 1,
+		comm: "zsh",
+		args: "zsh -lc codex --no-alt-screen",
+	}
+	if command := agentCommandFromProcess(process); command != "" {
+		t.Fatalf("shell launch hint was treated as actual provider process: %q", command)
+	}
+}
+
 func TestParseProcessSnapshotUsesStableAbsoluteStartTime(t *testing.T) {
 	location := time.FixedZone("test", 8*60*60)
 	first := parseProcessSnapshot([]byte(
-		"3887666 3887534 Tue Jul 21 00:45:09 2026 codex /opt/codex --sandbox\n",
+		"3887666 3887534 3887666 3887666 Tue Jul 21 00:45:09 2026 codex /opt/codex --sandbox\n",
 	), location)
 	second := parseProcessSnapshot([]byte(
-		"3887666 3887534 Tue Jul 21 00:45:09 2026 codex /opt/codex --sandbox\n",
+		"3887666 3887534 3887666 3887666 Tue Jul 21 00:45:09 2026 codex /opt/codex --sandbox\n",
 	), location)
 
 	wantStartedAt := time.Date(2026, 7, 21, 0, 45, 9, 0, location)
@@ -1100,7 +1414,11 @@ func TestParseProcessSnapshotUsesStableAbsoluteStartTime(t *testing.T) {
 		if !process.startedAt.Equal(wantStartedAt) {
 			t.Fatalf("%s start = %s, want %s", name, process.startedAt, wantStartedAt)
 		}
-		if process.ppid != 3887534 || process.comm != "codex" || process.args != "/opt/codex --sandbox" {
+		if process.ppid != 3887534 ||
+			process.pgid != 3887666 ||
+			process.tpgid != 3887666 ||
+			process.comm != "codex" ||
+			process.args != "/opt/codex --sandbox" {
 			t.Fatalf("%s process = %#v", name, process)
 		}
 	}
