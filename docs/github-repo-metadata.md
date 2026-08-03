@@ -5,7 +5,7 @@ Do **not** apply these with `gh` from automation unless a maintainer asks. This 
 ## Suggested description
 
 ```
-Mobile-native agent control plane: Linux/macOS daemon + Android/iOS app, self-hosted pairing, no hosted relay.
+Mobile-native agent control plane: Linux/macOS daemon, Android/iOS app, optional opaque Zen Link relay.
 ```
 
 ## Suggested topics

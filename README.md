@@ -66,18 +66,31 @@ Then, on the computer that has `tmux` and an authenticated coding-agent CLI:
 
 ```bash
 zen doctor
-zen --lan
+zen
 ```
 
-Zen prints a `zen pair` command for each detected private address. Keep the daemon running, open another terminal, and run the **Same Wi-Fi/LAN** command Zen printed.
+Use the normal self-managed path: `zen --lan` on trusted Wi-Fi/Tailnet and run
+the exact pairing command it prints, or run `zen pair
+https://your-origin.example` for a Cloudflare Tunnel or reverse-proxy origin.
+
+Zen Link is optional source capability for operators who explicitly configure
+`link.json`; only then does bare `zen pair` create a Link pairing code. This
+repository does not configure, start, deploy, or claim a live Link service.
 
 Get the mobile app from the [Android guide](docs/android.md) or [public TestFlight](https://testflight.apple.com/join/rTKCDzMt), then open it and scan or import the pairing code.
 
-For Tailscale, Cloudflare Tunnel, and other connection options, see [Connect and pair](docs/connect-and-pair.md).
+For Link, LAN, Tailscale, Cloudflare Tunnel, and reverse proxy options, see
+[Connect and pair](docs/connect-and-pair.md). Relay operators start with
+[Zen Link Relay operations](docs/zen-link-relay.md).
 
 ## How it works
 
-The Zen daemon runs beside your repositories, authenticated agent CLIs, and tmux sessions on your Linux computer or Apple Silicon Mac. The Android or iOS app connects over a network path you choose and control; Zen handles one-time enrollment and signed device requests.
+The Zen daemon runs beside your repositories, authenticated agent CLIs, and
+tmux sessions on your Linux computer or Apple Silicon Mac. Android and iOS
+normally connect through your self-managed full origin. An explicitly
+configured Zen Link can instead use an opaque relay with daemon-terminated
+pinned TLS. Zen handles one-time enrollment and signed device requests; relay
+infrastructure does not receive application plaintext.
 
 Read [Security and privacy](docs/security-and-privacy.md) for the trust model and [Architecture](docs/architecture.md) for protocol details.
 

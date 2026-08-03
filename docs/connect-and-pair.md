@@ -1,16 +1,56 @@
 # Connect and pair
 
-Zen runs agents on your computer; pairing connects the phone app to that computer. Choose one route below and make the daemon origin reachable from the phone before pairing.
+Zen runs agents on your computer; pairing connects the phone app to that
+computer. LAN, Tailscale, Cloudflare Tunnel, and reverse proxies are the normal
+self-managed paths. **Zen Link** is optional and exists only when an operator
+has explicitly configured relay and daemon infrastructure.
 
-`zen pair <origin>` records that phone-reachable daemon origin in the pairing payload and issues short-lived pairing credentials. It does not create or verify a LAN, tailnet, tunnel, DNS record, or domain. Test reachability through the chosen route separately.
+- `zen pair` uses configured Zen Link and emits Pairing V2.
+- `zen pair <origin>` always keeps the existing Pairing V1 contract for a
+  phone-reachable self-managed full origin.
+
+Zen never invents a production Link endpoint. If `<state>/link.json` is absent,
+the no-argument command reports how to configure Link or use an explicit
+endpoint.
 
 ## Model
 
-1. **Reachability** — your tunnel, Tailnet, or reverse proxy reaches the daemon.
+1. **Reachability** — Link relay or your self-managed network reaches the daemon.
 2. **Daemon identity** — persistent Ed25519 keypair under the state directory (`~/.zen` by default).
 3. **Device enrollment** — the phone presents its device key once with a short-lived pairing token; later traffic is signed.
 
 There is no long-lived shared secret for normal traffic.
+
+## Optional: Zen Link
+
+Zen Link keeps the daemon loopback listener private. A daemon Connector opens
+outbound TLS to one selected regional relay. The relay forwards opaque inner
+TLS streams and cannot read Zen HTTP, WSS, Terminal, Chat, or file content.
+
+An operator first supplies `~/.zen/link.json`; this repository does not
+hard-code or claim a production service. With that config:
+
+```bash
+# Terminal 1
+zen
+
+# Terminal 2
+zen pair
+```
+
+Scan the QR in the Android or iOS app. Pairing V2 dynamically pins the daemon's
+inner TLS transport identity and stores all configured relay candidates on the
+same daemon/server record. Relay, SNI, and certificate details are not user UX.
+Opening the native loopback bridge does not probe the one-time admission. The
+first remote stream is the real `POST /pair`; an empty preflight or wrong path
+cannot consume the admission, while a completed pairing makes replay fail.
+
+If Link says offline, keep `zen` running and inspect the connector/relay health.
+Generating a Link admission requires the daemon Connector to be registered;
+`zen pair` fails clearly instead of printing a link that cannot work.
+
+Operator configuration, Docker invocation, health/metrics, rollback, and local
+E2E are in [Zen Link Relay operations](zen-link-relay.md).
 
 ## 1. Same trusted Wi-Fi
 
@@ -62,7 +102,9 @@ Use this route when the phone needs a stable HTTPS domain and installing Tailsca
    http://127.0.0.1:9876
    ```
 
-   Do not add a path restriction: Zen needs the full origin, including `/ws`, `/health`, `/auth-check`, `/pair`, `/upload`, and `/devices`.
+   Do not add a path restriction: Zen needs the full origin, including `/ws`,
+   `/health`, `/auth-check`, `/pair`, `/upload`,
+   `/session-file-capability`, `/session-file`, and `/devices`.
 
 4. The phone-reachable Zen origin is the exact published hostname with `https`. If the published hostname is `zen.example.com`, the final origin Zen needs is `https://zen.example.com`. Confirm the phone can load `https://zen.example.com/health`, substituting your real hostname, then run:
 
@@ -74,6 +116,14 @@ Cloudflare Tunnel uses outbound connector traffic, so the host does not need a p
 
 ## Generate a pairing link
 
+For configured Zen Link:
+
+```bash
+zen pair
+```
+
+For an explicit LAN/Tailscale/Cloudflare/reverse-proxy origin:
+
 With the daemon already running, pass the origin the phone can actually reach:
 
 ```bash
@@ -81,7 +131,10 @@ zen pair https://zen.example.com
 # Or run the exact private-network command printed by Zen.
 ```
 
-Use the reachable origin (scheme + host). `zen pair` normalizes HTTP(S) to `ws`/`wss` and uses `/ws` for the compact `zen://` payload. The app derives the HTTP routes at the origin root, so path-prefixed proxy origins are not supported; forward every listed route on the same host.
+Use the reachable origin (scheme + host). Explicit endpoint pairing normalizes
+HTTP(S) to `ws`/`wss` and uses `/ws` for the unchanged compact V1 `zen://`
+payload. The app derives HTTP routes at the origin root, so path-prefixed proxy
+origins are not supported.
 
 If you use a custom state directory:
 
@@ -104,7 +157,11 @@ The native app can paste links, scan a QR code, import a QR image, and open `zen
 
 ## Reconnect
 
-After pairing, reconnect uses the stored server URL and device identity. You do not need a new pairing link unless you enroll a new device or clear app/daemon state.
+After pairing, reconnect uses the stored server and device identity. Link
+remeasures candidates and uses the daemon-signed transport pin. Self-managed
+records continue using their explicit URL. You do not need a new pairing link
+unless you enroll a new device, rotate the Link transport identity, or clear
+state.
 
 ## Revoking a device
 

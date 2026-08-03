@@ -1,0 +1,11 @@
+FROM golang:1.25-alpine AS build
+WORKDIR /src
+COPY daemon/go.mod daemon/go.sum ./
+RUN go mod download
+COPY daemon/ ./
+RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/zen-relay ./cmd/zen-relay
+
+FROM gcr.io/distroless/static-debian12:nonroot
+COPY --from=build /out/zen-relay /usr/local/bin/zen-relay
+USER nonroot:nonroot
+ENTRYPOINT ["/usr/local/bin/zen-relay"]

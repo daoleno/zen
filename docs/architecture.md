@@ -1,350 +1,260 @@
 # Architecture
 
-This document defines the current OSS-core architecture for `zen`.
+Zen is a mobile-native control plane for coding agents that continue to run on
+the user's computer. The daemon remains the business-logic and data owner.
+Self-managed Pair/direct connectivity is the normal path. Explicitly configured
+Zen Link adds an optional reachability path; it does not move Sessions,
+Terminal, Brain, Chat, Calendar, Work, files, or credentials into the relay.
 
-It focuses on the transport, pairing, trust, and runtime boundaries between:
+## System shape
 
-- the mobile app
-- the externally reachable network endpoint
-- `zen`
-- the local CLI agent processes observed by the daemon
-
-## System Shape
-
+```text
+                          operator-only HTTPS
+                          /healthz /readyz /metrics
+                                      │
+[Android / iOS app]                   │
+  shared StoredServer owner           │
+  native SPKI-pinned TLS              │
+          │                           │
+          │ inner TLS 1.3 carrying HTTP/1.1 + WSS
+          ▼                           ▼
+┌──────────────── Regional Zen Link Relay ────────────────┐
+│ bounded TLS ClientHello SNI routing only                │
+│ opaque bidirectional L4 streams; no inner TLS keys      │
+│ in-memory route presence and one-time admissions        │
+└───────────────┬─────────────────────────────────────────┘
+                │ outer TLS 1.3, daemon-initiated only
+                │ one control connection + one outbound data
+                │ connection per mobile stream
+                ▼
+        [daemon Link Connector]
+                │ terminates the pinned inner TLS
+                ▼
+        [the existing daemon HTTP handler]
+ /ws /pair /auth-check /upload /session-file-capability /session-file /health /devices
+                │
+                ▼
+ [tmux, agent CLIs, repositories, daemon-local state]
 ```
-[Phone: Expo App (Android / iOS)]
-    ↕ signed HTTP / WebSocket
-[Your Tunnel / Tailnet / Reverse Proxy]
-    ↕
-[zen]
-    ↕ local tmux / watcher integration
-[Claude Code] [Codex] [Cursor Agent] [Grok] [Other CLI Agents]
-```
 
-## Mobile interface boundary
-
-The Android and iOS clients share the same Expo Router, React Native screens, stores, WebSocket protocol, and structured conversation UI. Agent classification is command/provider based rather than platform based:
-
-- Codex
-- Claude Code
-- Cursor Agent
-- Grok
-
-These four kinds default to the structured Chat interface and can be switched per session to the live Terminal interface. The per-session choice is persisted by the app. Provider transcripts, plans, tool calls, prompts, attachments, and Git diff presentation are shared across Android and iOS; Codex-specific slash-command discovery remains a provider capability.
-
-The platform boundary starts below those interfaces. Android connects the terminal controller to Ghostty through JNI and `libghostty_vt.so`; iOS uses an Expo module/Objective-C++ bridge and `GhosttyVt.xcframework`. Both feed the same TypeScript terminal controller and WebView renderer, so agent behavior and daemon protocol do not fork by mobile OS.
-
-`zen` does not provide a hosted relay in OSS core.
-Reachability is delegated to infrastructure the user already trusts, such as:
-
-- Tailscale
-- Tailscale Funnel
-- Cloudflare Tunnel
-- a reverse proxy
-- a private mesh or VPN
-
-That keeps the core product focused on identity, pairing, and agent control, not operating a network.
-
-## Design Goals
-
-The current design optimizes for:
-
-1. No hosted control plane requirement.
-2. Strong daemon identity, even when the network path is user-provided.
-3. One-time pairing, not long-lived shared secrets.
-4. A simple mobile UX: print a link, paste it, or scan a QR.
-5. Compatibility with whatever network setup the user already has.
-
-## Non-Goals
-
-The OSS core intentionally does not try to solve:
-
-- NAT traversal
-- relay routing
-- peer-to-peer hole punching
-- global service discovery
-- centralized device management
-
-Those can exist later, but they are not required for a secure and useful first-principles architecture.
-
-## Trust Boundary
-
-There are three distinct trust layers:
-
-### 1. Reachability layer
-
-This is the external network path that gets the phone to the daemon.
-Examples: Cloudflare Tunnel, Tailscale, a self-managed reverse proxy.
-
-This layer answers:
-
-- how does the phone reach the daemon?
-
-This layer does **not** establish application trust by itself.
-
-### 2. Daemon identity layer
-
-Each `zen` instance has a persistent Ed25519 keypair stored in its state directory.
-
-From that keypair the daemon derives:
-
-- a stable daemon public key
-- a stable daemon ID, currently the SHA-256 fingerprint of the daemon public key
-
-This layer answers:
-
-- which daemon is this?
-
-### 3. Device authorization layer
-
-Each mobile app installation creates and persists its own local device keypair.
-The daemon only accepts signed requests from devices that were previously enrolled.
-
-This layer answers:
-
-- which phone is allowed to talk to this daemon?
-
-## Network Model
-
-The daemon listens locally by default:
-
-- `127.0.0.1:9876`
-
-For a direct trusted Wi-Fi or Tailnet connection, `zen --lan` binds `0.0.0.0:9876` and startup output offers pairing commands for detected private addresses. Otherwise, the user exposes the default loopback origin through an HTTPS ingress.
-The app needs more than just the WebSocket endpoint. The externally reachable origin must forward:
-
-- `/ws`
-- `/health`
-- `/auth-check`
-- `/pair`
-- `/upload`
-
-This is why `zen` treats the external URL as a full daemon origin, not just a single WebSocket path.
-
-## Daemon and Pairing Lifecycle
-
-Starting the daemon and pairing a phone are separate operations.
-
-`zen` starts the daemon with a stable identity and a listening address. It does not need to know the externally reachable endpoint and does not issue a pairing token during startup.
-
-After exposing the daemon through the user's chosen network path, `zen pair <endpoint>` issues a fresh one-time pairing token and prints the pairing link and QR code. The endpoint is supplied at pairing time because it cannot be inferred reliably through NAT, private networks, tunnels, or reverse proxies.
-
-## Pairing Model
-
-Pairing is import-only.
-
-There is no manual shared-secret entry.
-The phone imports a daemon-generated `zen://` link by:
-
-- pasting it
-- scanning a live QR code
-- or scanning a QR from a local image
-
-That link is intentionally self-contained. It contains everything the app needs to:
-
-- know where to connect
-- know which daemon public key to trust
-- present a one-time enrollment token
-
-## Pairing Link Format
-
-The current pairing link format is:
-
-`zen://settings?p=<payload>`
-
-The payload is a compact, versioned binary blob encoded with URL-safe base64.
-It currently contains:
-
-- payload version
-- externally reachable daemon URL
-- daemon public key
-- one-time enrollment token
-
-Important:
-
-- The payload does **not** carry a display name.
-- The payload does **not** carry a shared secret.
-- The payload does **not** redundantly carry `daemon_id`, because that value is derivable from the daemon public key.
-
-This is smaller and cleaner than a large query string with multiple long field names.
-
-## Pairing Flow
-
-The pairing flow is:
-
-1. `zen` issues a one-time enrollment token with a short TTL.
-2. The daemon prints a compact `zen://settings?p=...` link and QR code.
-3. The app imports the link and decodes the payload.
-4. The app creates or loads its own persistent local device identity.
-5. The app calls `POST /pair` with:
-   - the one-time enrollment token
-   - the expected daemon public key
-   - the local device ID
-   - the local device name
-   - the local device public key
-6. The daemon validates:
-   - the token exists
-   - the token is not expired
-   - the token matches the requested daemon
-7. The daemon stores the device as trusted and invalidates the token.
-8. The daemon returns its identity and a daemon-signed assertion.
-9. The app verifies the daemon assertion against the scanned daemon public key.
-10. The app persists the paired server record and starts connecting.
-
-After enrollment, the token is gone. Future requests use device-signed authentication, not the pairing token.
-
-## Request Authentication
-
-After pairing, requests are authenticated by device identity.
-
-The app signs requests using its local device keypair.
-The daemon verifies those signatures against the enrolled public key for that device.
-
-The request auth model is bound to:
-
-- a specific daemon ID
-- a specific request purpose
-- a timestamp
-- a nonce
-
-That gives the daemon:
-
-- request authenticity
-- replay protection
-- daemon binding
-- purpose scoping
-
-Current purpose values include:
-
-- `zen-connect`
-- `zen-probe`
-- `zen-upload`
-
-## Daemon Assertions
-
-Some daemon responses also include daemon-signed assertions.
-
-This matters because the network path is not trusted by default.
-Even if the user points the app at the wrong proxy target, the app can still verify:
-
-- whether the daemon identity matches the daemon public key it paired with
-
-This is used on pairing and health/auth-check style probes.
-
-## Storage Model
-
-### Daemon side
-
-The daemon persists security state under its configured state directory:
-
-- daemon private key
-- trusted devices
-- outstanding pairing tokens
-
-This makes daemon identity stable across restarts and allows the `pair` command to work against an already-running daemon identity.
-
-### App side
-
-The app persists two different classes of state:
-
-- local device identity in `SecureStore`
-- paired server metadata in `AsyncStorage`
-
-The local device identity is private, device-local secret material.
-The paired server metadata includes:
-
-- server record ID
-- display name
-- externally reachable URL
-- daemon ID
-- daemon public key
-
-Current server storage key:
-
-- `zen:v3:servers`
-
-Current local device identity keys intentionally use SecureStore-safe names, for example:
-
-- `zen.device.v3.id`
-- `zen.device.v3.seed`
-
-## UX Surface
-
-The current mobile pairing UX is deliberately narrow:
-
-- `Pair Server` accepts a full `zen://...` link
-- the scanner can read a QR from the camera
-- the scanner can also import a QR from a local image
-
-That keeps the product simple:
-
-- the daemon is the source of truth for trust bootstrap
-- the app never asks the user to manually retype key material
-
-## Why No Shared Secret
-
-A shared secret looked simpler, but it had the wrong properties:
-
-- users have to move or type secret material manually
-- secrets tend to get reused
-- secrets do not identify a daemon instance
-- secrets do not identify the device that is making requests
-
-The current design is better because:
-
-- daemon identity is explicit
-- device identity is explicit
-- pairing is one-time
-- normal traffic uses signatures instead of a bearer secret
-
-## Why External Networking Is the Right Default
-
-This architecture is the right default for OSS core because it composes with existing infrastructure instead of competing with it.
-
-Users already have preferences and constraints:
-
-- some use Tailscale
-- some use Cloudflare Tunnel
-- some already have reverse proxies
-- some cannot accept a VPN requirement on mobile
-
-By keeping `zen` transport-agnostic:
-
-- adoption friction stays low
-- the product does not need to own relay complexity
-- future relay support can still be added without rewriting the trust model
-
-## Operational Rules
-
-To use the system correctly:
-
-1. Expose the full daemon origin, not only `/ws`.
-2. Treat the printed pairing link as short-lived enrollment material.
-3. Re-import a fresh pairing link if you are pairing a new phone.
-4. Keep the daemon state directory stable if you want the same daemon identity after restart.
-
-## Known Tradeoffs
-
-This design is opinionated.
-It gives up a few things on purpose:
-
-- no zero-config global connectivity
-- no built-in NAT traversal
-- no relay fallback
-- no centralized revocation UX yet
-
-Those are acceptable tradeoffs for the current stage because the core experience stays understandable and secure.
-
-## Future Work
-
-The next reasonable expansions, if needed later, are:
-
-1. Optional hosted relay, without changing the pairing and device-auth trust model.
-2. Better device management UI, such as listing and revoking enrolled devices.
-3. Link size improvements beyond the current compact payload, if we ever need a more specialized encoding.
-4. Multi-device push registration and richer operational tooling.
-
-The important constraint is this:
-
-Network transport can evolve.
-Daemon identity and device-signed authorization should stay the foundation.
+LAN, Tailscale, Cloudflare Tunnel, and reverse-proxy origins continue to call
+the exact same daemon HTTP handler without Zen Link. The daemon opens no new
+public listener for Link.
+
+## Durable invariants
+
+1. Exactly one `StoredServer` is current. Link regions and future direct paths
+   are transport candidates of that record, never extra servers and never a
+   feature-local server picker.
+2. The daemon is the sole application endpoint. Relay loss cannot make a
+   self-managed/LAN transport depend on the relay.
+3. The relay has no inner TLS private key and cannot read HTTP paths, headers,
+   device signatures, WebSocket messages, Terminal bytes, prompts, or files.
+4. Existing Ed25519 daemon identity and enrolled device keys remain the
+   application trust anchors. A separate Link TLS key is explicitly signed by
+   the daemon identity in Pairing V2.
+5. Pairing admissions, enrollment tokens, stream tickets, auth nonces, and
+   device signatures are purpose-bound and replay resistant.
+6. Android and iOS consume the same TypeScript transport contract. Only the
+   TLS/SPKI socket bridge is platform native.
+
+## Zen Link relay protocol
+
+The MVP deliberately uses standard, widely implemented primitives:
+
+| Boundary                       | Protocol                                                       | Reason                                                                                        |
+| ------------------------------ | -------------------------------------------------------------- | --------------------------------------------------------------------------------------------- |
+| Phone to daemon, through relay | TLS 1.3 with X.509 Ed25519 certificate and Pairing V2 SPKI pin | True end-to-end confidentiality/authentication; relay has no inner key                        |
+| Inner application stream       | HTTP/1.1, WebSocket Upgrade, Range and streaming bodies        | Preserves every current full-origin route without an application rewrite                      |
+| Connector control/data         | TLS 1.3 TCP, ALPN/frame protocol version 2                     | Length-bounded control, atomic pairing-admission commit, and explicit mixed-version failure   |
+| Relay routing                  | bounded TLS ClientHello SNI inspection                         | Routes before forwarding while preserving the complete inner ClientHello                      |
+| Each client stream             | a fresh daemon-outbound connector data connection              | Natural stream isolation and backpressure; large upload cannot block Terminal in a shared mux |
+
+The relay does not terminate the inner TLS. Its stable SNI label is a random
+128-bit route ID. Pairing uses a separate random 128-bit admission alias that
+expires. A client TLS connection first reserves the alias; an empty TLS
+preflight or a non-`POST /pair` request releases that reservation. The
+Connector commits consumption through a daemon-signed
+route+alias+stream control message only after it receives the actual pairing
+request. The relay performs that commit atomically, so concurrent use and
+post-pair replay still fail without the relay reading inner HTTP. Once routed,
+the relay sends the connector a random stream ID and 256-bit single-use
+attachment ticket.
+
+Connector registration and admission requests carry:
+
+- protocol version
+- random route and nonce
+- daemon ID and public key
+- short timestamp
+- operator-provisioned connector admission token
+- an Ed25519 daemon signature over a domain-separated canonical frame
+
+The operator token is an MVP service-admission control, not application trust.
+It is never sent to the phone and cannot impersonate a daemon or decrypt a
+stream. There is intentionally no user-account database or global control plane
+in this slice.
+
+### Backpressure and isolation
+
+Relay copies use fixed 32 KiB buffers, one shared last-progress clock for both
+directions, socket read/write deadlines, bounded client/route/handshake
+concurrency, and no unbounded stream queue. Only a stream with no progress in
+either direction reaches the idle timeout. A one-sided EOF propagates
+`CloseWrite` and leaves the reverse direction open to drain a delayed response.
+TCP backpressure reaches the sender. Each HTTP or WebSocket connection has its
+own outer connector socket, so a large `/upload` body is independent of a live
+Terminal WebSocket. Existing daemon uploads are HTTP, while Terminal remains on
+`/ws`; Link preserves that separation.
+
+The MVP does not add application-level resume to protocols that do not already
+have it:
+
+- WebSocket reconnect re-authenticates and the app refreshes canonical current
+  server snapshots.
+- HTTP Range lets Session File Preview resume/read bounded byte ranges. The app
+  spends a fresh ordinary nonce once on `/session-file-capability`, then native
+  GET/HEAD/Range and retry use a two-minute daemon-signed capability bound to
+  device, live Session/process/start, path, generation, and HTTP method.
+- Upload retry restarts the request; the server does not claim resumable upload.
+- Terminal latency comes from an independent stream, not priority scheduling in
+  a custom multiplexor.
+
+## Pairing versions
+
+### Pairing V1 — preserved
+
+`zen pair <origin>` remains the existing compact binary V1 payload. It includes
+the full phone-reachable `/ws` URL, daemon public key, and one-time enrollment
+token. HTTP(S) is normalized to WS(S); the app derives the other root routes.
+This is the contract for LAN, Tailscale, Cloudflare Tunnel, and reverse proxies.
+
+### Pairing V2 — Zen Link
+
+When `link.json` exists, `zen pair` with no endpoint requests a short-lived
+relay admission and emits a JSON V2 payload inside URL-safe base64. It includes:
+
+- daemon ID and public key
+- one-time daemon enrollment token and expiration
+- stable unenumerable route ID
+- relay candidate names, one admission URL, and stable URLs
+- Link transport SPKI SHA-256 pin
+- daemon Ed25519 signature over every field above
+
+The app verifies this binding before opening the pinned transport. For the
+admission URL it starts only the loopback listener; it does not open a remote
+TLS preflight. The actual `POST /pair` creates the first admission-bearing
+stream. After enrollment it stores stable relay candidates on the same
+`StoredServer`. Re-importing Link for the same daemon updates/reuses that server
+record instead of creating a region-specific duplicate.
+
+## Request authentication and revocation
+
+After enrollment, HTTP and WebSocket operations keep the current `ZenDevice`
+signature contract. Signatures bind daemon ID, device ID, purpose, timestamp,
+and nonce. `/auth-check` and the following `/ws` probe are distinct requests
+and therefore each build a fresh timestamp, nonce, and signature. Session File
+capability issuance also spends one fresh ordinary nonce; the resulting
+short-lived GET/HEAD signatures are deliberately repeatable for native Range
+recovery and are rejected after expiry, device revocation, or any bound-field
+change. Current purposes cover connection, probe, upload, Session File, and
+device administration. Daemon response assertions still prove the paired
+daemon on Pair, Health, and probes.
+
+`zen devices list` and `zen devices revoke -id <device-id>` provide the minimum
+host owner for revocation. When the daemon is running, revoke goes through its
+mode-0600 local control socket so an in-flight authorization update cannot
+resurrect a stale key; offline revoke updates the same state directly.
+Authenticated `GET /devices` and `DELETE /devices` provide the network protocol
+owner. Revocation removes the key from `trusted-devices.json`; subsequent signed
+requests fail immediately.
+
+## Relay selection and failure
+
+The daemon tries configured candidates, measures completed control TLS plus
+registration RTT, deterministically selects lowest RTT (name/address breaks a
+tie), closes unused registrations, and keeps one primary control connection.
+On loss it performs deterministic bounded exponential reconnect and remeasures.
+A route conflict is explicit and never silently replaces an existing daemon.
+
+The app probes all stable candidates through the same native pin owner, chooses
+the lowest successful RTT deterministically, and caches that selection briefly.
+If the connector has failed over to another configured relay, the next mobile
+selection reaches the new route. Manual candidates are not silently mixed into
+Link failover; the user selects a self-managed record/path explicitly.
+
+Route presence is in memory. A relay restart deliberately disconnects routes;
+connectors re-register. A single-region MVP therefore runs one relay process
+(or one active replica). Horizontal scale requires a later minimal route-owner
+directory or deterministic connection sharding so a client reaches the same
+process as its connector. This repository does not pretend that a load
+balancer alone solves that state placement.
+
+## Region model
+
+The shipped unit is region-neutral. Each candidate declares:
+
+- connector control address and certificate name
+- client wildcard domain and port
+- stable operator name
+
+A production operator can place one active relay in each selected region and
+use GeoDNS/Anycast only to steer a region-specific hostname to that region.
+The candidate hostname remains explicit in Pairing V2, so failover does not
+depend on hidden DNS substitution. Health checks use `/healthz`; traffic
+readiness uses `/readyz`. Connector registrations are not a readiness
+requirement because an empty relay must still accept new routes.
+
+Initial service objectives to validate before any production claim:
+
+- relay process availability: 99.9% monthly per region
+- successful registered-route connection setup: p95 ≤ 1 s in-region, p99 ≤ 3 s
+- relay-added steady-state Terminal RTT: p95 ≤ 25 ms within the selected region
+  (measured against a direct baseline)
+- reconnect after process restart: p95 ≤ 10 s, p99 ≤ 35 s
+- wrong pin, expired/replayed admission, and unknown route acceptance: zero
+- metadata/content leakage in relay logs and metrics: zero
+
+These are acceptance targets, not claims that a production network exists.
+
+## Protocol choices intentionally deferred
+
+| Candidate             | MVP decision                                                                          |
+| --------------------- | ------------------------------------------------------------------------------------- |
+| WebSocket over TLS    | Keep as the inner real-time application protocol                                      |
+| HTTP/2 CONNECT        | Not needed; mobile and daemon already share a full HTTP/WSS origin                    |
+| HTTP/3 / WebTransport | Prototype later only if cellular loss/hand-off data proves benefit                    |
+| custom QUIC mux       | Not in MVP; would duplicate congestion, resume, and mobile work                       |
+| WireGuard / DERP      | Not selected; would turn Link into a device VPN/overlay and expand platform/ACL scope |
+| ICE / STUN / TURN     | Future direct-path optimization only; NAT traversal must not block relay MVP          |
+| P2P hole punching     | Explicitly out of scope for this slice                                                |
+
+## Storage
+
+Daemon state adds:
+
+- `<state>/link.json` — optional operator connector configuration; may name an
+  environment variable instead of embedding its token
+- `<state>/link-identity.json` — stable random route and Link Ed25519 transport
+  private key, mode `0600`
+
+Existing identity, pairing token, trusted-device, upload, Work, Brain, Calendar,
+and agent state remain owned by the daemon. The relay has no database and
+persists none of them.
+
+The app keeps its Ed25519 device seed in secure storage. AsyncStorage keeps one
+server record with daemon trust plus optional Link route, SPKI pin, and
+transport candidates.
+
+## Capacity and cost drivers
+
+Relay capacity is dominated by concurrent TCP/TLS sockets, file-transfer
+egress, kernel buffers, and encryption for the outer connector TLS. Inner
+encryption happens on phone and daemon. Metadata metrics expose only aggregate
+active routes/streams, accepted/rejected connection counts, and total forwarded
+bytes. Route IDs, SNI, daemon IDs, filenames, paths, request headers, tokens,
+and content must never be metric labels or logs.
+
+The current daemon upload policy is **2 GiB per file**, **8 GiB aggregate
+stored uploads**, and seven-day retention. Tests use bounded readers and small
+fixtures; no multi-GiB artifact belongs in the repository.

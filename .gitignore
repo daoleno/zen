@@ -39,6 +39,7 @@ Thumbs.db
 # Android build
 app/android/
 app/ios/
+app/modules/zen-link-transport/android/build/
 
 # Expo
 .expo/
@@ -56,6 +57,7 @@ app/bun.lockb
 
 # Local zen workspace state
 .zen/
+deploy/zen-link/secrets/
 
 # Caches
 .cache/

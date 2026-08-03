@@ -1,0 +1,10 @@
+**
+!daemon/
+!daemon/**
+
+daemon/bin/
+daemon/tmp/
+daemon/zen-daemon
+daemon/.env
+daemon/.env.*
+daemon/**/*.log

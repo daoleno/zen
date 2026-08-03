@@ -61,14 +61,14 @@ After the first install, `zen update` has a stronger trust path: the installed b
 
 ## Supported platforms
 
-| Host | Archive | Status |
-| --- | --- | --- |
-| Linux `amd64` / `x86_64` | `zen-linux-amd64.tar.gz` | Supported |
-| Linux `arm64` / `aarch64` | `zen-linux-arm64.tar.gz` | Supported |
-| WSL2 on either supported Linux architecture | matching Linux archive | Supported |
-| Apple Silicon macOS | `zen-darwin-arm64.tar.gz` | Supported |
-| Intel macOS | — | Unsupported; build from source if you are evaluating an untested host |
-| Native Windows | — | Unsupported; use WSL2 or build from source for development |
+| Host                                        | Archive                   | Status                                                                |
+| ------------------------------------------- | ------------------------- | --------------------------------------------------------------------- |
+| Linux `amd64` / `x86_64`                    | `zen-linux-amd64.tar.gz`  | Supported                                                             |
+| Linux `arm64` / `aarch64`                   | `zen-linux-arm64.tar.gz`  | Supported                                                             |
+| WSL2 on either supported Linux architecture | matching Linux archive    | Supported                                                             |
+| Apple Silicon macOS                         | `zen-darwin-arm64.tar.gz` | Supported                                                             |
+| Intel macOS                                 | —                         | Unsupported; build from source if you are evaluating an untested host |
+| Native Windows                              | —                         | Unsupported; use WSL2 or build from source for development            |
 
 The installer fails on unsupported platforms before downloading an archive. It does not present native Windows or Intel macOS as release-supported hosts.
 
@@ -177,13 +177,14 @@ Do not run the daemon as root merely to keep it alive.
 
 ## Defaults
 
-| Setting | Value |
-| --- | --- |
-| Listen | `127.0.0.1:9876` |
-| State directory | `~/.zen` |
-| Work log | `~/.zen/work` |
-| Executors file | `~/.zen/executors.toml` (optional; built-in defaults apply if missing) |
-| Brain data | `~/.zen/brain` |
+| Setting                  | Value                                                                  |
+| ------------------------ | ---------------------------------------------------------------------- |
+| Listen                   | `127.0.0.1:9876`                                                       |
+| State directory          | `~/.zen`                                                               |
+| Work log                 | `~/.zen/work`                                                          |
+| Executors file           | `~/.zen/executors.toml` (optional; built-in defaults apply if missing) |
+| Brain data               | `~/.zen/brain`                                                         |
+| Optional Zen Link config | `~/.zen/link.json`                                                     |
 
 To keep a custom location:
 
@@ -198,12 +199,23 @@ Use the same `-state-dir` for the daemon and for `zen pair`.
 
 Choose one connectivity route:
 
-1. **Direct private network:** run `zen --lan` on the computer while the phone is on the same trusted Wi-Fi or Tailnet. Zen listens on `0.0.0.0:9876` and prints usable pair commands for detected private addresses. Run one of those commands in another terminal; never pair with `0.0.0.0`.
-2. **HTTPS endpoint:** run bare `zen` on its secure loopback default, forward the full `http://127.0.0.1:9876` origin through an HTTPS ingress, then run `zen pair https://your-zen-host.example` in another terminal.
+1. **Direct private network:** run `zen --lan` on the computer while the phone
+   is on the same trusted Wi-Fi or Tailnet. Zen listens on `0.0.0.0:9876` and
+   prints usable pair commands for detected private addresses. Run one in
+   another terminal; never pair with `0.0.0.0`.
+2. **HTTPS endpoint:** run bare `zen` on its secure loopback default, forward
+   the full `http://127.0.0.1:9876` origin through an HTTPS ingress, then run
+   `zen pair https://your-zen-host.example` in another terminal.
+3. **Optional Zen Link:** after an operator explicitly configures
+   `~/.zen/link.json` and relay infrastructure, run bare `zen`, then run
+   `zen pair` in another terminal. Link keeps the daemon loopback-only and
+   opens outbound connections. This repository does not configure or start it;
+   see [Zen Link Relay operations](zen-link-relay.md).
 
 `-addr` remains available for an advanced explicit bind. It cannot be combined with `--lan`.
 
-There is no `-advertise-url` flag. The externally reachable origin is supplied at pair time.
+There is no `-advertise-url` flag. Pairing V1 receives its external origin at
+pair time; Pairing V2 receives candidates from explicit Link config.
 
 ## Keep it running
 

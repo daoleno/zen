@@ -1,0 +1,33 @@
+services:
+  relay:
+    build:
+      context: ../..
+      dockerfile: daemon/Dockerfile.relay
+    restart: unless-stopped
+    environment:
+      ZEN_LINK_CONNECTOR_TOKEN: ${ZEN_LINK_CONNECTOR_TOKEN:?set a random connector token}
+    command:
+      - -client-addr=:9443
+      - -control-addr=:8443
+      - -operator-addr=:8080
+      - -tls-cert=/run/zen-link/tls.crt
+      - -tls-key=/run/zen-link/tls.key
+      - -max-clients=4096
+      - -max-clients-per-route=32
+      - -max-client-handshakes=8192
+      - -max-connector-handshakes=1024
+    ports:
+      - "443:9443"
+      - "8443:8443"
+    volumes:
+      - ./secrets:/run/zen-link:ro
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "/usr/local/bin/zen-relay",
+          "-check=http://127.0.0.1:8080/healthz",
+        ]
+      interval: 30s
+      timeout: 5s
+      retries: 3

@@ -17,6 +17,7 @@ If something does not work, run `zen doctor` on the host and continue with [Trou
 
 - [Security and privacy](security-and-privacy.md) explains keys, pairing, exposed routes, local data, and executor risk.
 - [Architecture](architecture.md) explains the app, daemon, network, tmux, and provider boundaries.
+- [Optional Zen Link Relay operations](zen-link-relay.md) covers the inert-by-default single-region relay source, explicit connector config, local E2E, limits, upgrade, and rollback. No Link service is deployed by this repository.
 - [Brain orchestration](brain-orchestration.md) explains Work, Event, Session, executor ownership, and the Active work operator surface.
 - [Notifications](notifications.md) explains the current notification model.
 
