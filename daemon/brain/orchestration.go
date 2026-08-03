@@ -802,7 +802,7 @@ func (s *Store) ClaimNextActionableEvent(hostSessionID string) (WorkEvent, bool,
 	index := -1
 	for candidate := range database.BrainWorkEvents {
 		event := database.BrainWorkEvents[candidate]
-		if !event.Actionable || event.ClaimedAt != nil || event.ConsumedAt != nil {
+		if !workEventSchedulerEligible(database, event) || event.ClaimedAt != nil {
 			continue
 		}
 		if index < 0 ||
@@ -832,11 +832,28 @@ func (s *Store) ClaimedActionableEvents() ([]WorkEvent, error) {
 	}
 	out := []WorkEvent{}
 	for _, event := range database.BrainWorkEvents {
-		if event.Actionable && event.ClaimedAt != nil && event.ConsumedAt == nil {
+		if workEventSchedulerEligible(database, event) && event.ClaimedAt != nil {
 			out = append(out, event)
 		}
 	}
 	return out, nil
+}
+
+func workEventSchedulerEligible(database orchestrationDatabase, event WorkEvent) bool {
+	if !event.Actionable || event.ConsumedAt != nil || event.ReadAt != nil {
+		return false
+	}
+	index := workIndex(database.BrainWork, event.WorkID)
+	if index < 0 {
+		return false
+	}
+	item := database.BrainWork[index]
+	if item.Status != WorkDone && item.Status != WorkCancelled {
+		return true
+	}
+	// Strictly earlier Events are historical backlog; equality stays eligible
+	// for serialized terminal update-then-append under coarse clocks.
+	return !event.CreatedAt.Before(item.UpdatedAt)
 }
 
 // ReleaseEventClaim atomically makes the exact identity-bound Event claimable
@@ -886,7 +903,7 @@ func (s *Store) ConsumeClaimedWorkEvent(hostSessionID string) (WorkEvent, Work, 
 	if err == nil {
 		for index := range database.BrainWorkEvents {
 			event := &database.BrainWorkEvents[index]
-			if !event.Actionable || event.ClaimedAt == nil || event.ConsumedAt != nil ||
+			if !workEventSchedulerEligible(database, *event) || event.ClaimedAt == nil ||
 				event.DeliveryHostSessionID != hostSessionID {
 				continue
 			}

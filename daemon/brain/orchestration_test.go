@@ -312,6 +312,243 @@ func TestClaimedEventIsIdentityBoundConsumedOnceWithoutReplay(t *testing.T) {
 	}
 }
 
+func TestWorkEventSchedulerEligibilityFollowsTerminalLifecycleBoundary(t *testing.T) {
+	store, err := NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	hostID := "brain-agent-brain-hidden:@1"
+	base := time.Date(2026, 8, 4, 13, 0, 0, 0, time.UTC)
+	now := base
+	store.now = func() time.Time { return now }
+
+	terminalWorks := []Work{}
+	for _, status := range []WorkStatus{WorkDone, WorkCancelled} {
+		item, err := store.CreateWork(Work{
+			Title:            "Terminal history",
+			Objective:        "Retain an unread historical result without waking Brain.",
+			Status:           WorkWaiting,
+			CompletionPolicy: CompletionBounded,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		now = base.Add(10 * time.Minute)
+		if _, _, err := store.AppendWorkEvent(WorkEvent{
+			WorkID:     item.ID,
+			Kind:       "session.stale",
+			DedupeKey:  "session:terminal:" + string(status),
+			Actionable: true,
+		}); err != nil {
+			t.Fatal(err)
+		}
+		now = base.Add(3*time.Hour + 34*time.Minute)
+		item, err = store.UpdateWork(item.ID, WorkUpdate{Status: &status})
+		if err != nil {
+			t.Fatal(err)
+		}
+		terminalWorks = append(terminalWorks, item)
+		now = base
+	}
+	if event, claimed, err := store.ClaimNextActionableEvent(hostID); err != nil || claimed {
+		t.Fatalf("pre-terminal unclaimed Event was claimable: event=%#v claimed=%v err=%v", event, claimed, err)
+	}
+
+	terminal, err := store.CreateWork(Work{
+		Title:            "Claim before completion",
+		Objective:        "Stop scheduling a claim after its Work becomes terminal.",
+		Status:           WorkWaiting,
+		CompletionPolicy: CompletionBounded,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	now = base.Add(10 * time.Minute)
+	terminalEvent, _, err := store.AppendWorkEvent(WorkEvent{
+		WorkID:     terminal.ID,
+		Kind:       "session.stale",
+		DedupeKey:  "session:claimed-then-terminal",
+		Actionable: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	claimed, ok, err := store.ClaimNextActionableEvent(hostID)
+	if err != nil || !ok || claimed.ID != terminalEvent.ID {
+		t.Fatalf("active Event claim=%#v ok=%v err=%v", claimed, ok, err)
+	}
+	now = base.Add(3*time.Hour + 34*time.Minute)
+	status := WorkDone
+	terminal, err = store.UpdateWork(terminal.ID, WorkUpdate{Status: &status})
+	if err != nil {
+		t.Fatal(err)
+	}
+	terminalWorks = append(terminalWorks, terminal)
+	blockers, err := store.ClaimedActionableEvents()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(blockers) != 0 {
+		t.Fatalf("pre-terminal claimed Event remained a scheduling blocker: %#v", blockers)
+	}
+
+	now = base.Add(4 * time.Hour)
+	active, err := store.CreateWork(Work{
+		Title:            "Later active Work",
+		Objective:        "Deliver the next eligible active Work Event.",
+		Status:           WorkWaiting,
+		CompletionPolicy: CompletionBounded,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	activeEvent, _, err := store.AppendWorkEvent(WorkEvent{
+		WorkID:     active.ID,
+		Kind:       "session.done",
+		DedupeKey:  "session:later-active",
+		Actionable: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	claimed, ok, err = store.ClaimNextActionableEvent(hostID)
+	if err != nil || !ok || claimed.ID != activeEvent.ID {
+		t.Fatalf("later active Event claim=%#v ok=%v err=%v", claimed, ok, err)
+	}
+	consumed, consumedWork, found, err := store.ConsumeClaimedWorkEvent(hostID)
+	if err != nil || !found || consumed.ID != activeEvent.ID || consumedWork.ID != active.ID ||
+		consumed.ConsumedAt == nil {
+		t.Fatalf("consume event=%#v work=%#v found=%v err=%v", consumed, consumedWork, found, err)
+	}
+	if _, _, found, err := store.ConsumeClaimedWorkEvent(hostID); err != nil || found {
+		t.Fatalf("active Event was consumed more than once: found=%v err=%v", found, err)
+	}
+
+	for _, offset := range []time.Duration{0, time.Minute} {
+		now = base.Add(5 * time.Hour)
+		item, err := store.CreateWork(Work{
+			Title:            "Terminal boundary result",
+			Objective:        "Deliver a terminal result created at or after the transition.",
+			Status:           WorkWaiting,
+			CompletionPolicy: CompletionBounded,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		status := WorkDone
+		item, err = store.UpdateWork(item.ID, WorkUpdate{Status: &status})
+		if err != nil {
+			t.Fatal(err)
+		}
+		now = now.Add(offset)
+		event, _, err := store.AppendWorkEvent(WorkEvent{
+			WorkID:     item.ID,
+			Kind:       "calendar.result",
+			DedupeKey:  fmt.Sprintf("terminal-boundary:%s", offset),
+			Actionable: true,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		claimed, ok, err := store.ClaimNextActionableEvent(hostID)
+		if err != nil || !ok || claimed.ID != event.ID {
+			t.Fatalf("terminal result offset=%s claim=%#v ok=%v err=%v", offset, claimed, ok, err)
+		}
+		consumed, consumedWork, found, err := store.ConsumeClaimedWorkEvent(hostID)
+		if err != nil || !found || consumed.ID != event.ID || consumedWork.ID != item.ID {
+			t.Fatalf("terminal result offset=%s consume=%#v work=%#v found=%v err=%v",
+				offset, consumed, consumedWork, found, err)
+		}
+	}
+
+	now = base.Add(6 * time.Hour)
+	readWork, err := store.CreateWork(Work{
+		Title:            "Acknowledged result",
+		Objective:        "Do not schedule an Event after it is marked read.",
+		Status:           WorkWaiting,
+		CompletionPolicy: CompletionBounded,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	readEvent, _, err := store.AppendWorkEvent(WorkEvent{
+		WorkID: readWork.ID, Kind: "session.done", DedupeKey: "read-result", Actionable: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok, err := store.ClaimNextActionableEvent(hostID); err != nil || !ok {
+		t.Fatalf("Event to acknowledge was not claimed: ok=%v err=%v", ok, err)
+	}
+	now = now.Add(time.Minute)
+	if err := store.MarkWorkRead(readWork.ID); err != nil {
+		t.Fatal(err)
+	}
+	if blockers, err := store.ClaimedActionableEvents(); err != nil || len(blockers) != 0 {
+		t.Fatalf("read claimed Event remained a blocker: blockers=%#v err=%v", blockers, err)
+	}
+	if _, _, found, err := store.ConsumeClaimedWorkEvent(hostID); err != nil || found {
+		t.Fatalf("read claimed Event was consumable: found=%v err=%v", found, err)
+	}
+	readEvents, err := store.ListWorkEvents(readWork.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(readEvents) != 1 || readEvents[0].ID != readEvent.ID || readEvents[0].ReadAt == nil {
+		t.Fatalf("read Event acknowledgement was not preserved: %#v", readEvents)
+	}
+	unclaimedReadWork, err := store.CreateWork(Work{
+		Title:            "Acknowledged before claim",
+		Objective:        "Do not claim an Event after it is marked read.",
+		Status:           WorkWaiting,
+		CompletionPolicy: CompletionBounded,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := store.AppendWorkEvent(WorkEvent{
+		WorkID: unclaimedReadWork.ID, Kind: "session.done", DedupeKey: "read-before-claim", Actionable: true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.MarkWorkRead(unclaimedReadWork.ID); err != nil {
+		t.Fatal(err)
+	}
+	if event, claimed, err := store.ClaimNextActionableEvent(hostID); err != nil || claimed {
+		t.Fatalf("read unclaimed Event was claimable: event=%#v claimed=%v err=%v", event, claimed, err)
+	}
+
+	terminalEvents, err := store.ListWorkEvents(terminal.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(terminalEvents) != 1 || terminalEvents[0].ID != terminalEvent.ID ||
+		terminalEvents[0].ClaimedAt == nil || terminalEvents[0].ConsumedAt != nil ||
+		terminalEvents[0].ReadAt != nil {
+		t.Fatalf("terminal Event history changed: %#v", terminalEvents)
+	}
+	projected, err := store.ActiveWork()
+	if err != nil {
+		t.Fatal(err)
+	}
+	projectedByID := map[string]ActiveWork{}
+	for _, item := range projected {
+		projectedByID[item.ID] = item
+	}
+	for _, item := range terminalWorks {
+		events, err := store.ListWorkEvents(item.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(events) != 1 || events[0].ReadAt != nil {
+			t.Fatalf("terminal Work Event was not preserved unread: work=%s events=%#v", item.ID, events)
+		}
+		if !projectedByID[item.ID].UnreadResult {
+			t.Fatalf("terminal Work lost unread projection: work=%s projection=%#v", item.ID, projected)
+		}
+	}
+}
+
 func TestActiveWorkProjectsMultipleItemsAndUnreadResults(t *testing.T) {
 	store, err := NewStore(t.TempDir())
 	if err != nil {
@@ -1350,6 +1587,8 @@ func TestCalendarScheduledActionProjectsIdempotentlyWithoutOwningDelivery(t *tes
 	if err != nil {
 		t.Fatal(err)
 	}
+	now := time.Date(2026, 8, 4, 8, 0, 0, 0, time.UTC)
+	store.now = func() time.Time { return now }
 	hostID := "brain-agent-brain-hidden:@1"
 	if err := store.SetHostSession(hostID, "codex"); err != nil {
 		t.Fatal(err)
@@ -1391,6 +1630,7 @@ func TestCalendarScheduledActionProjectsIdempotentlyWithoutOwningDelivery(t *tes
 			UpdatedAt: scheduledFor.Add(30 * time.Second),
 		},
 	}
+	now = scheduledFor.Add(30 * time.Second)
 	if woke, err := service.RouteSessionEvent(sessionDone); err != nil || woke {
 		t.Fatalf("Calendar-owned raw Session result woke=%v err=%v", woke, err)
 	}
@@ -1409,6 +1649,7 @@ func TestCalendarScheduledActionProjectsIdempotentlyWithoutOwningDelivery(t *tes
 		ScheduledFor:   scheduledFor,
 	}
 	terminal := calendar.Event{Item: item, ScheduledResult: result}
+	now = finished
 	if woke, err := service.RouteCalendarEvent(terminal); err != nil || !woke {
 		t.Fatalf("result projection woke=%v err=%v", woke, err)
 	}
