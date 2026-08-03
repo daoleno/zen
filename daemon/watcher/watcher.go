@@ -247,6 +247,8 @@ type Watcher struct {
 	codexInput            *codexInputCoordinator
 	codexInputIO          codexInputIO
 	codexStateDir         string
+	codexResumeMu         sync.Mutex
+	codexResumes          map[string]struct{}
 	targetProcessResolver func(string) (targetProcessIdentity, bool)
 	targetCommandResolver func(string) (string, bool)
 }
@@ -264,6 +266,7 @@ func New(pollInterval time.Duration) *Watcher {
 		resources:    noopDelegatedResourceManager{},
 		codexInput:   newCodexInputCoordinator(),
 		codexInputIO: realCodexInputIO{},
+		codexResumes: make(map[string]struct{}),
 	}
 }
 
@@ -780,6 +783,16 @@ func (w *Watcher) poll() {
 		results = append(results, probedAgent{preparedAgent: item, activity: activity})
 	}
 
+	// A changed pane can clear a durable ownership wait, while discovery after
+	// daemon restart restores the same receipt's driver. The journal remains
+	// the only queue; this merely resumes its sole prepared owner.
+	for _, result := range results {
+		if (!result.existed || result.contentChanged) &&
+			isCodexCommand(result.agentSnap.Command) {
+			w.startCodexPendingResume(result.id)
+		}
+	}
+
 	w.mu.Lock()
 	defer w.mu.Unlock()
 
@@ -1195,6 +1208,9 @@ func (w *Watcher) SendInputWithReceipt(sessionID, text, receipt string) error {
 				receipt,
 				defaultCodexSubmitConfig(),
 			); err != nil {
+				if IsInputPending(err) {
+					w.startCodexPendingResume(sessionID)
+				}
 				return err
 			}
 			// The transaction record closes the confirmation-to-metadata crash
@@ -1207,6 +1223,67 @@ func (w *Watcher) SendInputWithReceipt(sessionID, text, receipt string) error {
 		return err
 	}
 	return setTmuxWindowUserOption(sessionID, brainInputReceiptOption, receipt)
+}
+
+func (w *Watcher) startCodexPendingResume(sessionID string) {
+	if w == nil {
+		return
+	}
+	identity, known := w.targetForSession(sessionID)
+	if !known || !isCodexCommand(identity.Command) {
+		return
+	}
+	io := bindCodexInputIdentity(w.codexIOOwner(), w.targetForSession, sessionID, identity)
+	current := io.capture(sessionID)
+	if !current.alive || current.generation == "" {
+		return
+	}
+	records, err := w.codexInputOwner().store.Active(sessionID, current.generation)
+	if err != nil || len(records) != 1 || records[0].Phase != codexTransactionPrepared ||
+		strings.TrimSpace(records[0].AcceptanceReceipt) == "" {
+		return
+	}
+	record := records[0]
+	key := sessionID + "\x00" + record.TransactionID
+	w.codexResumeMu.Lock()
+	if w.codexResumes == nil {
+		w.codexResumes = make(map[string]struct{})
+	}
+	if _, running := w.codexResumes[key]; running {
+		w.codexResumeMu.Unlock()
+		return
+	}
+	w.codexResumes[key] = struct{}{}
+	w.codexResumeMu.Unlock()
+
+	go func() {
+		defer func() {
+			w.codexResumeMu.Lock()
+			delete(w.codexResumes, key)
+			w.codexResumeMu.Unlock()
+		}()
+		for {
+			err := w.codexInputOwner().submitWithReceipt(
+				io,
+				sessionID,
+				record.Instruction,
+				record.AcceptanceReceipt,
+				defaultCodexSubmitConfig(),
+			)
+			if err == nil {
+				_ = setTmuxWindowUserOption(
+					sessionID,
+					brainInputReceiptOption,
+					record.AcceptanceReceipt,
+				)
+				return
+			}
+			if !IsInputPending(err) {
+				return
+			}
+			time.Sleep(time.Second)
+		}
+	}()
 }
 
 // HasInputReceipt reads durable receiver-side acceptance from Session metadata.

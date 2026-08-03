@@ -76,26 +76,27 @@ type notificationPusher interface {
 
 // Server handles WebSocket connections from the zen mobile app.
 type Server struct {
-	auth                       *auth.Manager
-	watcher                    *watcher.Watcher
-	terminal                   *terminal.Manager
-	pusher                     notificationPusher
-	stats                      *stats.Collector
-	work                       *work.Store
-	execs                      *work.ExecutorConfig
-	brain                      *brain.Service
-	calendar                   *calendar.Store
-	calendarScheduler          *calendar.Scheduler
-	providerConversationLoader func(reader *work.ProviderConversationReader, agentID string) (work.CodexConversation, error)
-	sendInputOverride          func(agentID, text string) error
-	sendActionOverride         func(agentID, action string) error
-	uploadDir                  string
-	uploadMu                   sync.Mutex
-	sessionFileAgentLoader     func(agentID string) *classifier.Agent
-	sessionFileCapabilityClock func() time.Time
-	authRevocationUnsubscribe  func()
-	runtimeClosing             bool
-	terminalCleanup            terminalCleanupOwner
+	auth                         *auth.Manager
+	watcher                      *watcher.Watcher
+	terminal                     *terminal.Manager
+	pusher                       notificationPusher
+	stats                        *stats.Collector
+	work                         *work.Store
+	execs                        *work.ExecutorConfig
+	brain                        *brain.Service
+	calendar                     *calendar.Store
+	calendarScheduler            *calendar.Scheduler
+	providerConversationLoader   func(reader *work.ProviderConversationReader, agentID string) (work.CodexConversation, error)
+	sendInputOverride            func(agentID, text string) error
+	sendInputWithReceiptOverride func(agentID, text, receipt string) error
+	sendActionOverride           func(agentID, action string) error
+	uploadDir                    string
+	uploadMu                     sync.Mutex
+	sessionFileAgentLoader       func(agentID string) *classifier.Agent
+	sessionFileCapabilityClock   func() time.Time
+	authRevocationUnsubscribe    func()
+	runtimeClosing               bool
+	terminalCleanup              terminalCleanupOwner
 
 	workSubID              int
 	workSub                <-chan work.Event
@@ -785,8 +786,15 @@ func (s *Server) handleClientMessage(conn *websocket.Conn, msg []byte) {
 
 	case "send_input":
 		brainSteering := s.brain != nil && s.brain.NoteUserSteering(raw.AgentID)
-		err := s.sendInput(raw.AgentID, raw.Text)
+		err := s.sendInputWithReceipt(raw.AgentID, raw.Text, raw.RequestID)
 		if err != nil {
+			if watcher.IsInputPending(err) {
+				s.sendJSON(conn, map[string]any{
+					"type":       "input_pending",
+					"request_id": raw.RequestID,
+				})
+				break
+			}
 			if brainSteering {
 				s.brain.CancelUserSteering(raw.AgentID)
 			}
@@ -1224,6 +1232,22 @@ func (s *Server) sendInput(agentID, text string) error {
 		return fmt.Errorf("executor watcher unavailable")
 	}
 	return s.watcher.SendInput(strings.TrimSpace(agentID), text)
+}
+
+func (s *Server) sendInputWithReceipt(agentID, text, receipt string) error {
+	if s != nil && s.sendInputWithReceiptOverride != nil {
+		return s.sendInputWithReceiptOverride(strings.TrimSpace(agentID), text, strings.TrimSpace(receipt))
+	}
+	if s != nil && s.sendInputOverride != nil {
+		return s.sendInputOverride(strings.TrimSpace(agentID), text)
+	}
+	if s == nil || s.watcher == nil {
+		return fmt.Errorf("executor watcher unavailable")
+	}
+	if strings.TrimSpace(receipt) == "" {
+		return s.watcher.SendInput(strings.TrimSpace(agentID), text)
+	}
+	return s.watcher.SendInputWithReceipt(strings.TrimSpace(agentID), text, strings.TrimSpace(receipt))
 }
 
 func (s *Server) sendAction(agentID, action string) error {

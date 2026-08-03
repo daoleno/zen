@@ -146,6 +146,28 @@ describe("structured provider transport", () => {
     expect(events.listenerCount()).toBe(0);
   });
 
+  test("a correlated durable pending acknowledgement is accepted as pending", async () => {
+    const events = new FakeEventSource();
+    const receipt = dispatchStructuredCommand({
+      requestId: "request-pending",
+      eventSource: events,
+      sentType: "input_sent",
+      failedType: "input_failed",
+      pendingType: "input_pending",
+      matches: (payload) =>
+        payload.serverId === "server-a" &&
+        payload.request_id === "request-pending",
+      matchesConnection: (payload) => payload.serverId === "server-a",
+      sendNow: () => {},
+    });
+    events.emit("input_pending", {
+      serverId: "server-a",
+      request_id: "request-pending",
+    });
+    expect(await receipt.outcome).toEqual({ kind: "pending" });
+    expect(events.listenerCount()).toBe(0);
+  });
+
   test("connection close cleans observers without inventing a disposition", async () => {
     const events = new FakeEventSource();
     let sends = 0;

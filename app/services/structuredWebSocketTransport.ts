@@ -8,6 +8,7 @@ export type StructuredCommandFailure = {
 
 export type StructuredCommandOutcome =
   | { kind: "sent" }
+  | { kind: "pending" }
   | { kind: "failed"; failure: StructuredCommandFailure }
   | { kind: "connection_closed" };
 
@@ -31,6 +32,7 @@ export function dispatchStructuredCommand({
   eventSource,
   sentType,
   failedType,
+  pendingType,
   matches,
   matchesConnection,
   sendNow,
@@ -39,6 +41,7 @@ export function dispatchStructuredCommand({
   eventSource: StructuredCommandEventSource;
   sentType: string;
   failedType: string;
+  pendingType?: string;
   matches(payload: any): boolean;
   matchesConnection(payload: any): boolean;
   sendNow(): void;
@@ -51,6 +54,9 @@ export function dispatchStructuredCommand({
   const cleanup = () => {
     eventSource.off(sentType, handleSent);
     eventSource.off(failedType, handleFailed);
+    if (pendingType) {
+      eventSource.off(pendingType, handlePending);
+    }
     eventSource.off("disconnected", handleDisconnected);
   };
   const finish = (next: StructuredCommandOutcome) => {
@@ -85,6 +91,11 @@ export function dispatchStructuredCommand({
       },
     });
   }
+  function handlePending(payload: any) {
+    if (matches(payload)) {
+      finish({ kind: "pending" });
+    }
+  }
   function handleDisconnected(payload: any) {
     if (matchesConnection(payload)) {
       finish({ kind: "connection_closed" });
@@ -93,6 +104,9 @@ export function dispatchStructuredCommand({
 
   eventSource.on(sentType, handleSent);
   eventSource.on(failedType, handleFailed);
+  if (pendingType) {
+    eventSource.on(pendingType, handlePending);
+  }
   eventSource.on("disconnected", handleDisconnected);
   try {
     sendNow();

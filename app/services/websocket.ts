@@ -1849,6 +1849,7 @@ export class MultiServerWebSocketClient {
       eventSource: this,
       sentType: "input_sent",
       failedType: "input_failed",
+      pendingType: "input_pending",
       matches: (payload) =>
         payload.serverId === serverId && payload.request_id === requestId,
       matchesConnection: (payload) => payload.serverId === serverId,

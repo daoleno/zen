@@ -35,6 +35,7 @@ type fakeCodexInputIO struct {
 	suppressPersistence bool
 	persistedMessages   []string
 	persistedByRollout  map[string][]string
+	submitted           chan struct{}
 }
 
 type failCodexStoreAtPhase struct {
@@ -144,6 +145,12 @@ func (f *fakeCodexInputIO) submitIfEmpty(
 			f.persistedByRollout[rollout.Path] = append(f.persistedByRollout[rollout.Path], body)
 		} else {
 			f.persistedMessages = append(f.persistedMessages, body)
+		}
+	}
+	if f.submitted != nil {
+		select {
+		case f.submitted <- struct{}{}:
+		default:
 		}
 	}
 	return nil
@@ -1351,6 +1358,262 @@ func TestSubmitCodexInputKeepsPendingPTYInputQueuedUntilAtomicPreflightIsSafe(t 
 			io.pastes,
 			io.enters,
 		)
+	}
+}
+
+func TestCodexCoordinatorPersistentPTYContentionReturnsPendingThenResumesSameReceipt(t *testing.T) {
+	const (
+		sessionID = "agent:@persistent-pty"
+		body      = "one durable payload behind persistent PTY contention"
+		receipt   = "chat-request-persistent-pty"
+	)
+	ready := codexReadyPane("")
+	io := &fakeCodexInputIO{}
+	io.captureFn = func(*fakeCodexInputIO) codexPaneCapture {
+		return codexPaneCapture{
+			content:    ready,
+			alive:      true,
+			composer:   codexComposerEmpty,
+			generation: "generation-persistent-pty",
+		}
+	}
+	for range 32 {
+		io.submitErrors = append(io.submitErrors, fmt.Errorf(
+			"%w: target application has 3 unconsumed PTY input bytes",
+			errCodexMutationConflict,
+		))
+	}
+	store := newMemoryCodexTransactionStore()
+	coordinator := newCodexInputCoordinatorWithStore(store)
+	cfg := testCodexSubmitConfig()
+
+	err := coordinator.submitWithReceipt(io, sessionID, body, receipt, cfg)
+	if !IsInputPending(err) {
+		t.Fatalf("persistent contention error = %v, want durable pending", err)
+	}
+	active, activeErr := store.Active(sessionID, "generation-persistent-pty")
+	if activeErr != nil {
+		t.Fatalf("read active transaction: %v", activeErr)
+	}
+	if len(active) != 1 || active[0].Phase != codexTransactionPrepared ||
+		active[0].AcceptanceReceipt != receipt {
+		t.Fatalf("active transactions = %#v, want one prepared receipt owner", active)
+	}
+	transactionID := active[0].TransactionID
+	if len(io.pastes) != 0 || io.enters != 0 {
+		t.Fatalf("pending contention mutated provider: pastes=%#v enters=%d", io.pastes, io.enters)
+	}
+
+	io.submitErrors = nil
+	if err := coordinator.submitWithReceipt(io, sessionID, body, receipt, cfg); err != nil {
+		t.Fatalf("resume pending receipt: %v", err)
+	}
+	record, found, recordErr := store.Receipt(sessionID, "generation-persistent-pty", receipt)
+	if recordErr != nil || !found {
+		t.Fatalf("read settled receipt found=%v err=%v", found, recordErr)
+	}
+	if record.TransactionID != transactionID || record.Phase != codexTransactionConfirmed {
+		t.Fatalf("settled record = %#v, want same confirmed transaction %s", record, transactionID)
+	}
+	if len(io.pastes) != 1 || io.pastes[0] != body || io.enters != 1 {
+		t.Fatalf("resumed actions pastes=%#v enters=%d, want one paste and one Enter", io.pastes, io.enters)
+	}
+}
+
+func TestCodexCoordinatorForeignDraftSurvivesRestartAndResumesSameReceipt(t *testing.T) {
+	const (
+		sessionID  = "agent:@foreign-restart"
+		generation = "generation-foreign-restart"
+		body       = "durable input queued behind a known foreign draft"
+		receipt    = "chat-request-foreign-restart"
+	)
+	ready := codexReadyPane("")
+	foreign := ready + "\n› user-owned draft\n"
+	stateDir := t.TempDir()
+	first, err := newPersistentCodexInputCoordinator(stateDir)
+	if err != nil {
+		t.Fatalf("create first persistent coordinator: %v", err)
+	}
+	blockedIO := &fakeCodexInputIO{
+		captures:    []string{foreign},
+		states:      []codexComposerState{codexComposerHasDraft},
+		generations: []string{generation},
+		clock:       time.Now().UTC(),
+	}
+	if err := first.submitWithReceipt(blockedIO, sessionID, body, receipt, testCodexSubmitConfig()); !IsInputPending(err) {
+		t.Fatalf("foreign draft error = %v, want durable pending", err)
+	}
+	if len(blockedIO.pastes) != 0 || blockedIO.enters != 0 {
+		t.Fatalf("foreign draft mutated: pastes=%#v enters=%d", blockedIO.pastes, blockedIO.enters)
+	}
+	before, found, err := first.store.Receipt(sessionID, generation, receipt)
+	if err != nil || !found || before.Phase != codexTransactionPrepared {
+		t.Fatalf("pending record found=%v err=%v record=%#v", found, err, before)
+	}
+
+	restarted, err := newPersistentCodexInputCoordinator(stateDir)
+	if err != nil {
+		t.Fatalf("create restarted coordinator: %v", err)
+	}
+	clearIO := &fakeCodexInputIO{
+		captures:    []string{ready, ready, ready},
+		states:      []codexComposerState{codexComposerEmpty},
+		generations: []string{generation},
+		clock:       blockedIO.clock,
+	}
+	if err := restarted.submitWithReceipt(clearIO, sessionID, body, receipt, testCodexSubmitConfig()); err != nil {
+		t.Fatalf("restart resume: %v", err)
+	}
+	after, found, err := restarted.store.Receipt(sessionID, generation, receipt)
+	if err != nil || !found {
+		t.Fatalf("settled record found=%v err=%v", found, err)
+	}
+	if after.TransactionID != before.TransactionID || after.Phase != codexTransactionConfirmed {
+		t.Fatalf("after restart record=%#v, want same confirmed transaction %s", after, before.TransactionID)
+	}
+	if len(clearIO.pastes) != 1 || clearIO.pastes[0] != body || clearIO.enters != 1 {
+		t.Fatalf("restart actions pastes=%#v enters=%d", clearIO.pastes, clearIO.enters)
+	}
+}
+
+func TestCodexCoordinatorConcurrentResumeOfPendingReceiptSubmitsExactlyOnce(t *testing.T) {
+	const (
+		sessionID  = "agent:@pending-concurrent"
+		generation = "generation-pending-concurrent"
+		body       = "resume this one durable transaction from concurrent callers"
+		receipt    = "chat-request-pending-concurrent"
+	)
+	ready := codexReadyPane("")
+	foreign := ready + "\n› preserve me\n"
+	store := newMemoryCodexTransactionStore()
+	coordinator := newCodexInputCoordinatorWithStore(store)
+	blockedIO := &fakeCodexInputIO{
+		captures:    []string{foreign},
+		states:      []codexComposerState{codexComposerHasDraft},
+		generations: []string{generation},
+	}
+	if err := coordinator.submitWithReceipt(blockedIO, sessionID, body, receipt, testCodexSubmitConfig()); !IsInputPending(err) {
+		t.Fatalf("seed pending transaction: %v", err)
+	}
+	clearIO := &fakeCodexInputIO{}
+	clearIO.captureFn = func(*fakeCodexInputIO) codexPaneCapture {
+		return codexPaneCapture{
+			content:    ready,
+			alive:      true,
+			composer:   codexComposerEmpty,
+			generation: generation,
+		}
+	}
+	start := make(chan struct{})
+	errs := make(chan error, 2)
+	var callers sync.WaitGroup
+	for range 2 {
+		callers.Add(1)
+		go func() {
+			defer callers.Done()
+			<-start
+			errs <- coordinator.submitWithReceipt(
+				clearIO,
+				sessionID,
+				body,
+				receipt,
+				testCodexSubmitConfig(),
+			)
+		}()
+	}
+	close(start)
+	callers.Wait()
+	close(errs)
+	for err := range errs {
+		if err != nil {
+			t.Fatalf("concurrent resume: %v", err)
+		}
+	}
+	if len(clearIO.pastes) != 1 || clearIO.pastes[0] != body || clearIO.enters != 1 {
+		t.Fatalf("concurrent resume pastes=%#v enters=%d", clearIO.pastes, clearIO.enters)
+	}
+}
+
+func TestWatcherPendingDriverResumesSolePreparedReceiptExactlyOnce(t *testing.T) {
+	const (
+		sessionID  = "agent:@pending-driver"
+		generation = "generation-pending-driver"
+		body       = "the durable driver resumes this exact payload"
+		receipt    = "chat-request-pending-driver"
+	)
+	ready := codexReadyPane("")
+	store := newMemoryCodexTransactionStore()
+	record := codexTransactionRecord{
+		SchemaVersion:     codexTransactionSchemaVersion,
+		TransactionID:     "transaction-pending-driver",
+		SessionID:         sessionID,
+		SessionGeneration: generation,
+		AcceptanceReceipt: receipt,
+		Action:            "submit_codex_input",
+		Phase:             codexTransactionPrepared,
+		PayloadSHA256:     codexSHA256(body),
+		Instruction:       body,
+		InstructionSHA256: codexSHA256(body),
+		RolloutPath:       fakeCodexRollout(generation).Path,
+		RolloutSessionID:  fakeCodexRollout(generation).SessionID,
+		CreatedAt:         time.Now().UTC(),
+		UpdatedAt:         time.Now().UTC(),
+	}
+	if err := store.Save(record); err != nil {
+		t.Fatalf("seed pending record: %v", err)
+	}
+	submitted := make(chan struct{}, 1)
+	io := &fakeCodexInputIO{submitted: submitted}
+	io.captureFn = func(*fakeCodexInputIO) codexPaneCapture {
+		return codexPaneCapture{
+			content:    ready,
+			alive:      true,
+			composer:   codexComposerEmpty,
+			generation: generation,
+		}
+	}
+	w := New(time.Second)
+	w.codexInput = newCodexInputCoordinatorWithStore(store)
+	w.codexInputIO = io
+	w.targetCommandResolver = func(target string) (string, bool) {
+		return "codex", target == sessionID
+	}
+
+	w.startCodexPendingResume(sessionID)
+	select {
+	case <-submitted:
+	case <-time.After(2 * time.Second):
+		t.Fatal("durable pending driver did not resume after ownership cleared")
+	}
+	var settled codexTransactionRecord
+	var found bool
+	deadline := time.Now().Add(time.Second)
+	for {
+		var err error
+		settled, found, err = store.Receipt(sessionID, generation, receipt)
+		if err != nil {
+			t.Fatalf("read settled receipt: %v", err)
+		}
+		if found && settled.Phase == codexTransactionConfirmed {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("pending receipt did not settle: found=%v record=%#v", found, settled)
+		}
+		time.Sleep(time.Millisecond)
+	}
+	if settled.TransactionID != record.TransactionID ||
+		settled.Phase != codexTransactionConfirmed {
+		t.Fatalf("settled record=%#v, want same confirmed transaction", settled)
+	}
+	w.startCodexPendingResume(sessionID)
+	select {
+	case <-submitted:
+		t.Fatal("confirmed pending receipt was submitted a second time")
+	case <-time.After(25 * time.Millisecond):
+	}
+	if len(io.pastes) != 1 || io.pastes[0] != body || io.enters != 1 {
+		t.Fatalf("driver actions pastes=%#v enters=%d", io.pastes, io.enters)
 	}
 }
 

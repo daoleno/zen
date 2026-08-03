@@ -124,6 +124,37 @@ type realCodexInputIO struct {
 
 var errCodexMutationConflict = errors.New("Codex composer changed at the conditional mutation point")
 
+// InputPendingError means Zen durably owns the exact input transaction, but
+// provider input ownership is not currently safe. Retrying the same receipt
+// resumes that transaction; it must not be presented as a failed send.
+type InputPendingError struct {
+	TransactionID string
+	cause         error
+}
+
+func (err *InputPendingError) Error() string {
+	if err == nil {
+		return "Codex input is durably pending"
+	}
+	if err.cause == nil {
+		return fmt.Sprintf("Codex transaction %s is durably pending", err.TransactionID)
+	}
+	return fmt.Sprintf("Codex transaction %s is durably pending: %v", err.TransactionID, err.cause)
+}
+
+func (err *InputPendingError) Unwrap() error {
+	if err == nil {
+		return nil
+	}
+	return err.cause
+}
+
+// IsInputPending reports whether err is a durable, non-terminal input wait.
+func IsInputPending(err error) bool {
+	var pending *InputPendingError
+	return errors.As(err, &pending)
+}
+
 type codexTmuxPaneMetadata struct {
 	alive       bool
 	generation  string
@@ -816,7 +847,7 @@ func (coordinator *codexInputCoordinator) submitLocked(
 			}
 		}
 	}
-	resolved, err := coordinator.reconcileActive(
+	resolved, resumed, err := coordinator.reconcileActive(
 		io,
 		sessionID,
 		initial,
@@ -830,33 +861,74 @@ func (coordinator *codexInputCoordinator) submitLocked(
 		return nil
 	}
 
-	baseline, err := waitForStableCodexComposer(io, sessionID, initial, cfg, preSubmitDeadline)
-	if err != nil {
-		return err
-	}
-	if !baseline.rollout.valid() {
-		return fmt.Errorf("Codex target rollout identity could not be proven; input was not changed")
-	}
-	prepared, record, err := coordinator.prepareInput(
-		io,
-		sessionID,
-		baseline,
-		payload,
-		payloadHash,
-		receipt,
-	)
-	if err != nil {
-		return err
-	}
-	if err := coordinator.store.Save(record); err != nil {
-		return err
+	var prepared codexPreparedInput
+	var record codexTransactionRecord
+	baseline := initial
+	if resumed != nil {
+		record = *resumed
+		prepared = preparedCodexInputFromRecord(record)
+		baseline.rollout = prepared.rollout
+		baseline, err = waitForStableCodexComposer(io, sessionID, baseline, cfg, preSubmitDeadline)
+		if err != nil {
+			if baseline.composer == codexComposerHasDraft {
+				record.Detail = "durably pending behind a preserved foreign draft"
+				record.UpdatedAt = io.now()
+				_ = coordinator.store.Save(record)
+				return pendingCodexInput(record, err)
+			}
+			return err
+		}
+		if !baseline.rollout.equal(prepared.rollout) {
+			return fmt.Errorf("Codex target rollout changed while its exact payload was pending; provider input was not changed")
+		}
+	} else {
+		baseline, err = waitForStableCodexComposer(io, sessionID, initial, cfg, preSubmitDeadline)
+		if err != nil {
+			if baseline.composer != codexComposerHasDraft || !baseline.rollout.valid() {
+				return err
+			}
+			pendingCause := err
+			prepared, record, err = coordinator.prepareInput(
+				io,
+				sessionID,
+				baseline,
+				payload,
+				payloadHash,
+				receipt,
+			)
+			if err != nil {
+				return err
+			}
+			record.Detail = "durably pending behind a preserved foreign draft"
+			if err := coordinator.store.Save(record); err != nil {
+				return err
+			}
+			return pendingCodexInput(record, pendingCause)
+		}
+		if !baseline.rollout.valid() {
+			return fmt.Errorf("Codex target rollout identity could not be proven; input was not changed")
+		}
+		prepared, record, err = coordinator.prepareInput(
+			io,
+			sessionID,
+			baseline,
+			payload,
+			payloadHash,
+			receipt,
+		)
+		if err != nil {
+			return err
+		}
+		if err := coordinator.store.Save(record); err != nil {
+			return err
+		}
 	}
 	if !io.now().Before(preSubmitDeadline) {
-		record.Phase = codexTransactionNotSubmitted
-		record.Detail = "bounded transaction deadline elapsed before submission"
+		record.Phase = codexTransactionPrepared
+		record.Detail = "durably pending after the bounded pre-submit wait"
 		record.UpdatedAt = io.now()
 		_ = coordinator.store.Save(record)
-		return fmt.Errorf("Codex transaction deadline elapsed before submission; the composer was not changed")
+		return pendingCodexInput(record, fmt.Errorf("bounded pre-submit wait elapsed"))
 	}
 	for {
 		record.Phase = codexTransactionEnterPending
@@ -889,11 +961,11 @@ func (coordinator *codexInputCoordinator) submitLocked(
 			return fmt.Errorf("persist deferred Codex submission: %w", saveErr)
 		}
 		if !io.now().Before(preSubmitDeadline) {
-			record.Phase = codexTransactionNotSubmitted
-			record.Detail = "bounded transaction deadline elapsed while provider input was pending"
+			record.Phase = codexTransactionPrepared
+			record.Detail = "durably pending while provider input remained occupied"
 			record.UpdatedAt = io.now()
 			_ = coordinator.store.Save(record)
-			return fmt.Errorf("%w; provider input remained pending and the payload was not submitted", err)
+			return pendingCodexInput(record, err)
 		}
 		io.sleep(cfg.pollInterval)
 		current := io.capture(sessionID)
@@ -902,7 +974,13 @@ func (coordinator *codexInputCoordinator) submitLocked(
 		}
 		baseline, err = waitForStableCodexComposer(io, sessionID, current, cfg, preSubmitDeadline)
 		if err != nil {
-			return err
+			record.Phase = codexTransactionPrepared
+			record.Detail = "durably pending while waiting for provider input ownership: " + err.Error()
+			record.UpdatedAt = io.now()
+			if saveErr := coordinator.store.Save(record); saveErr != nil {
+				return fmt.Errorf("persist deferred Codex submission: %w", saveErr)
+			}
+			return pendingCodexInput(record, err)
 		}
 		if !baseline.rollout.equal(prepared.rollout) {
 			return fmt.Errorf("Codex target rollout changed while its exact payload was pending; provider input was not changed")
@@ -938,26 +1016,26 @@ func (coordinator *codexInputCoordinator) reconcileActive(
 	current codexPaneCapture,
 	payloadHash string,
 	receipt string,
-) (bool, error) {
+) (bool, *codexTransactionRecord, error) {
 	records, err := coordinator.store.Active(sessionID, current.generation)
 	if err != nil {
-		return false, err
+		return false, nil, err
 	}
 	if len(records) == 0 {
-		return false, nil
+		return false, nil, nil
 	}
 	if len(records) > 1 {
-		return false, fmt.Errorf("multiple active Codex input transactions exist for this session generation; refusing input")
+		return false, nil, fmt.Errorf("multiple active Codex input transactions exist for this session generation; refusing input")
 	}
 	record := records[0]
 	if record.PayloadSHA256 != payloadHash {
-		return false, fmt.Errorf(
+		return false, nil, fmt.Errorf(
 			"Codex session generation has active transaction %s for different input; refusing to mutate its composer",
 			record.TransactionID,
 		)
 	}
 	if record.AcceptanceReceipt != receipt {
-		return false, fmt.Errorf(
+		return false, nil, fmt.Errorf(
 			"Codex session generation has active transaction %s for a different acceptance receipt; refusing input",
 			record.TransactionID,
 		)
@@ -965,42 +1043,45 @@ func (coordinator *codexInputCoordinator) reconcileActive(
 	rollout := codexRolloutIdentity{Path: record.RolloutPath, SessionID: record.RolloutSessionID}
 	persisted, reconcileErr := io.persistedUserMessage(rollout, record.Instruction, record.CreatedAt)
 	if reconcileErr != nil {
-		return false, fmt.Errorf("reconcile durable Codex transaction %s: %w", record.TransactionID, reconcileErr)
+		return false, nil, fmt.Errorf("reconcile durable Codex transaction %s: %w", record.TransactionID, reconcileErr)
 	}
 	if persisted {
 		record.Phase = codexTransactionConfirmed
 		record.Detail = "reconciled from exact persisted Codex user message"
 		record.UpdatedAt = io.now()
 		if err := coordinator.store.Save(record); err != nil {
-			return false, err
+			return false, nil, err
 		}
-		return true, nil
+		return true, nil, nil
 	}
 	switch record.Phase {
 	case codexTransactionDraftAcknowledged, codexTransactionEnterPending, codexTransactionAmbiguous:
-		return false, durableCodexAmbiguity(
+		return false, nil, durableCodexAmbiguity(
 			record,
 			fmt.Errorf("no exact persisted Codex user message is observable yet"),
 		)
 	case codexTransactionPrepared:
-		switch {
-		case current.composer == codexComposerEmpty && isAgentInputReady("codex", current.content):
-			record.Phase = codexTransactionNotSubmitted
-			record.Detail = "reconciled pre-submit transaction from proven empty composer"
-			record.UpdatedAt = io.now()
-			if err := coordinator.store.Save(record); err != nil {
-				return false, err
-			}
-			return false, nil
-		default:
-			return false, fmt.Errorf(
-				"Codex composer conflicts with durable pre-submit transaction %s; foreign content was preserved",
-				record.TransactionID,
-			)
-		}
+		return false, &record, nil
 	default:
-		return false, nil
+		return false, nil, nil
 	}
+}
+
+func preparedCodexInputFromRecord(record codexTransactionRecord) codexPreparedInput {
+	return codexPreparedInput{
+		transactionID: record.TransactionID,
+		payload:       record.Instruction,
+		envelopePath:  record.EnvelopePath,
+		rollout: codexRolloutIdentity{
+			Path:      record.RolloutPath,
+			SessionID: record.RolloutSessionID,
+		},
+		generation: record.SessionGeneration,
+	}
+}
+
+func pendingCodexInput(record codexTransactionRecord, cause error) error {
+	return &InputPendingError{TransactionID: record.TransactionID, cause: cause}
 }
 
 func (coordinator *codexInputCoordinator) hasAcceptedReceipt(
@@ -1223,7 +1304,7 @@ func waitForStableCodexComposer(
 					return capture, nil
 				}
 			case codexComposerHasDraft:
-				return codexPaneCapture{}, fmt.Errorf("Codex composer is occupied by a foreign draft; it was not cleared, pasted into, or submitted")
+				return capture, fmt.Errorf("Codex composer is occupied by a foreign draft; it was not cleared, pasted into, or submitted")
 			default:
 				return codexPaneCapture{}, fmt.Errorf("Codex composer ownership is unknown; it was not cleared, pasted into, or submitted")
 			}

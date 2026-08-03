@@ -151,6 +151,37 @@ func TestInboundSendInputFailureReturnsRejectionWithoutAck(t *testing.T) {
 	}
 }
 
+func TestInboundSendInputProjectsDurablePendingWithRequestReceipt(t *testing.T) {
+	var calls atomic.Int32
+	var gotReceipt string
+	srv := &Server{
+		sendInputWithReceiptOverride: func(_ string, _ string, receipt string) error {
+			calls.Add(1)
+			gotReceipt = receipt
+			return &watcher.InputPendingError{TransactionID: "pending-transaction"}
+		},
+	}
+	conn := openThinProxyTestSocket(t, srv)
+
+	response := sendThinProxyRequest(t, conn, clientMessage{
+		Type:      "send_input",
+		RequestID: "request-durable-pending",
+		AgentID:   "agent-pending",
+		Text:      "preserve and resume me",
+	})
+	if response.Type != "input_pending" ||
+		response.RequestID != "request-durable-pending" ||
+		response.FieldCount != 2 {
+		t.Fatalf("pending response = %#v", response)
+	}
+	if got := calls.Load(); got != 1 {
+		t.Fatalf("provider calls = %d, want 1", got)
+	}
+	if gotReceipt != "request-durable-pending" {
+		t.Fatalf("receipt = %q, want request ID", gotReceipt)
+	}
+}
+
 func TestInboundSendInputPropagatesUnresolvedCodexArbiterWithoutAck(t *testing.T) {
 	if _, err := exec.LookPath("tmux"); err != nil {
 		t.Skip("tmux is required for the authoritative untracked-target route test")

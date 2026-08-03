@@ -327,9 +327,20 @@ describe("generic WebSocket live boundary", () => {
     });
     expect(await inputReceipt.outcome).toEqual({ kind: "sent" });
 
+    const pendingReceipt = client.sendInput(
+      server.id,
+      "agent-a",
+      "wait behind foreign input",
+    );
+    socket.receive({
+      type: "input_pending",
+      request_id: pendingReceipt.requestId,
+    });
+    expect(await pendingReceipt.outcome).toEqual({ kind: "pending" });
+
     const actionReceipt = client.sendAction(server.id, "agent-a", "pause");
-    expect(socket.sent).toHaveLength(2);
-    expect(JSON.parse(socket.sent[1]!)).toEqual({
+    expect(socket.sent).toHaveLength(3);
+    expect(JSON.parse(socket.sent[2]!)).toEqual({
       type: "send_action",
       request_id: actionReceipt.requestId,
       agent_id: "agent-a",
