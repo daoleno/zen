@@ -49,6 +49,7 @@ export interface InterfaceChatBodyProps {
   pendingUserMessages: PendingUserMessage[];
   turnFocusAnchorAliases?: ReadonlyMap<string, string>;
   runningActivity?: ProviderActivity;
+  supplementaryTimelineItems?: ZenTimelineItem[];
   loading: boolean;
   error?: string | null;
   scrollRef: React.RefObject<FlatList<ZenTimelineItem> | null>;
@@ -135,6 +136,7 @@ export function InterfaceChatBody({
   pendingUserMessages,
   turnFocusAnchorAliases,
   runningActivity,
+  supplementaryTimelineItems,
   loading,
   error,
   scrollRef,
@@ -272,6 +274,7 @@ export function InterfaceChatBody({
           turnFocusAnchorAliases={turnFocusAnchorAliases}
           onRetryPendingUserMessage={onRetryPendingUserMessage}
           runningActivity={runningActivity}
+          supplementaryItems={supplementaryTimelineItems}
           loading={loading}
           error={error}
           commandMenuOpen={composerPresentation.showCommandMenu}

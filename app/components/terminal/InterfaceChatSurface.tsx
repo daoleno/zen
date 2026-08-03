@@ -10,6 +10,7 @@ import type { ConnectionIssue } from "../../services/connectionIssue";
 import { InterfaceChatBody } from "./InterfaceChatBody";
 import { useInterfaceChatSurfaceState } from "./useInterfaceChatSurfaceState";
 import type { InterfaceChatAgentInfo } from "./InterfaceChatSession";
+import type { ZenTimelineItem } from "./InterfaceTimelineItemView";
 
 interface InterfaceChatSurfaceProps {
   visible: boolean;
@@ -32,6 +33,7 @@ interface InterfaceChatSurfaceProps {
   showUnavailableAction?: boolean;
   emptyTitle?: string;
   emptyBody?: string;
+  supplementaryTimelineItems?: ZenTimelineItem[];
   composerAccessory?: React.ReactNode;
   onDraftChange?: (value: string) => void;
   renderComposerAccessory?: (args: {
@@ -63,6 +65,7 @@ function InterfaceChatSurfaceImpl({
   showUnavailableAction,
   emptyTitle,
   emptyBody,
+  supplementaryTimelineItems,
   composerAccessory,
   onDraftChange,
   renderComposerAccessory,
@@ -89,6 +92,7 @@ function InterfaceChatSurfaceImpl({
     showUnavailableAction,
     emptyTitle,
     emptyBody,
+    supplementaryTimelineItems,
     composerAccessory,
     onDraftChange,
     renderComposerAccessory,

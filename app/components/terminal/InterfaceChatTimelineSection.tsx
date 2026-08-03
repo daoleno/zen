@@ -43,6 +43,7 @@ interface InterfaceChatTimelineSectionProps {
   pendingUserMessages: PendingUserMessage[];
   turnFocusAnchorAliases?: ReadonlyMap<string, string>;
   runningActivity?: ProviderActivity;
+  supplementaryItems?: ZenTimelineItem[];
   loading: boolean;
   error?: string | null;
   commandMenuOpen: boolean;
@@ -98,6 +99,7 @@ export function InterfaceChatTimelineSection({
   pendingUserMessages,
   turnFocusAnchorAliases,
   runningActivity,
+  supplementaryItems,
   loading,
   error,
   commandMenuOpen,
@@ -157,6 +159,7 @@ export function InterfaceChatTimelineSection({
     pendingUserMessages,
     turnFocusAnchorAliases,
     runningActivity,
+    supplementaryItems,
     onRetryPendingUserMessage,
   });
   const loadAssetPreview = useCallback(

@@ -67,6 +67,8 @@ type WorkEvent struct {
 	Kind                  string     `json:"kind"`
 	DedupeKey             string     `json:"dedupe_key"`
 	PayloadRef            string     `json:"payload_ref,omitempty"`
+	SourceName            string     `json:"source_name,omitempty"`
+	Summary               string     `json:"summary,omitempty"`
 	Actionable            bool       `json:"actionable"`
 	CreatedAt             time.Time  `json:"created_at"`
 	ClaimedAt             *time.Time `json:"claimed_at,omitempty"`
@@ -96,9 +98,28 @@ type ActiveWork struct {
 	UnreadResult   bool       `json:"unread_result"`
 }
 
+// WorkResultEvent is a bounded, read-only domain projection. The append-only
+// WorkEvent and its Work remain the only durable sources.
+type WorkResultEvent struct {
+	EventID     string    `json:"event_id"`
+	Kind        string    `json:"kind"`
+	WorkID      string    `json:"work_id"`
+	WorkTitle   string    `json:"work_title"`
+	Summary     string    `json:"summary"`
+	SessionID   string    `json:"session_id,omitempty"`
+	SessionName string    `json:"session_name,omitempty"`
+	OccurredAt  time.Time `json:"occurred_at"`
+	Unread      bool      `json:"unread"`
+
+	hasEventSourceName bool
+	hasEventSummary    bool
+}
+
 type WorkChange struct {
 	WorkID string
 }
+
+const workResultSummaryRuneLimit = 360
 
 type orchestrationDatabase struct {
 	SchemaVersion   int                     `json:"schema_version"`
@@ -739,6 +760,8 @@ func (s *Store) AppendWorkEvent(event WorkEvent) (WorkEvent, bool, error) {
 	event.Kind = strings.TrimSpace(event.Kind)
 	event.DedupeKey = strings.TrimSpace(event.DedupeKey)
 	event.PayloadRef = strings.TrimSpace(event.PayloadRef)
+	event.SourceName = strings.TrimSpace(event.SourceName)
+	event.Summary = strings.TrimSpace(event.Summary)
 	event.CreatedAt = s.nowUTC()
 	event.ClaimedAt = nil
 	event.DeliveryHostSessionID = ""
@@ -1043,6 +1066,95 @@ func (s *Store) ActiveWork() ([]ActiveWork, error) {
 		return leftWork.UpdatedAt.After(rightWork.UpdatedAt)
 	})
 	return out, nil
+}
+
+func (s *Store) RecentWorkResultEvents(limit int) ([]WorkResultEvent, error) {
+	if limit <= 0 {
+		return []WorkResultEvent{}, nil
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	database, err := s.loadOrchestrationLocked()
+	if err != nil {
+		return nil, err
+	}
+	workByID := make(map[string]Work, len(database.BrainWork))
+	for _, item := range database.BrainWork {
+		workByID[item.ID] = item
+	}
+	out := make([]WorkResultEvent, 0, min(limit, len(database.BrainWorkEvents)))
+	for _, event := range database.BrainWorkEvents {
+		if !isProjectedWorkResultEvent(event.Kind) {
+			continue
+		}
+		item, ok := workByID[event.WorkID]
+		if !ok {
+			continue
+		}
+		sessionID := strings.TrimSpace(item.OwnerSessionID)
+		if payloadSessionID := strings.TrimPrefix(event.PayloadRef, "session:"); payloadSessionID != event.PayloadRef {
+			sessionID = strings.TrimSpace(payloadSessionID)
+		}
+		eventSummary := strings.TrimSpace(event.Summary)
+		summary := eventSummary
+		if summary == "" {
+			summary = strings.TrimSpace(item.Objective)
+			if nextAction := strings.TrimSpace(item.NextAction); nextAction != "" {
+				summary = nextAction
+			}
+		}
+		summary = compactWorkResultText(summary)
+		eventSourceName := strings.TrimSpace(event.SourceName)
+		out = append(out, WorkResultEvent{
+			EventID:            event.ID,
+			Kind:               event.Kind,
+			WorkID:             item.ID,
+			WorkTitle:          item.Title,
+			Summary:            summary,
+			SessionID:          sessionID,
+			SessionName:        eventSourceName,
+			OccurredAt:         event.CreatedAt,
+			Unread:             event.ReadAt == nil,
+			hasEventSourceName: eventSourceName != "",
+			hasEventSummary:    eventSummary != "",
+		})
+	}
+	sort.Slice(out, func(left, right int) bool {
+		if out[left].OccurredAt.Equal(out[right].OccurredAt) {
+			return out[left].EventID < out[right].EventID
+		}
+		return out[left].OccurredAt.Before(out[right].OccurredAt)
+	})
+	if len(out) > limit {
+		out = append([]WorkResultEvent(nil), out[len(out)-limit:]...)
+	}
+	return out, nil
+}
+
+func compactWorkResultText(value string) string {
+	normalized := strings.ReplaceAll(value, "\r\n", "\n")
+	normalized = strings.ReplaceAll(normalized, "\r", "\n")
+	paragraphs := strings.Split(normalized, "\n\n")
+	selected := ""
+	for _, paragraph := range paragraphs {
+		if selected = strings.Join(strings.Fields(paragraph), " "); selected != "" {
+			break
+		}
+	}
+	runes := []rune(selected)
+	if len(runes) <= workResultSummaryRuneLimit {
+		return selected
+	}
+	return string(runes[:workResultSummaryRuneLimit-1]) + "…"
+}
+
+func isProjectedWorkResultEvent(kind string) bool {
+	switch strings.TrimSpace(kind) {
+	case "session.done", "session.failed", "session.needs_input", "session.stale":
+		return true
+	default:
+		return false
+	}
 }
 
 func isResultEvent(kind string) bool {

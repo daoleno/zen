@@ -14,6 +14,7 @@ import type {
   PendingUserMessage,
 } from "./InterfaceChatSession";
 import type { InterfaceChatBodyProps } from "./InterfaceChatBody";
+import type { ZenTimelineItem } from "./InterfaceTimelineItemView";
 import type { InterfaceComposerPresentation } from "./InterfaceChatSurfaceModel";
 import type { TerminalActionPrompt } from "./TerminalActionPromptModel";
 import type { useInterfaceChatController } from "./InterfaceChatController";
@@ -37,6 +38,7 @@ interface UseInterfaceChatBodyPropsInput {
   pendingUserMessages: PendingUserMessage[];
   turnFocusAnchorAliases?: ReadonlyMap<string, string>;
   runningActivity?: ProviderActivity;
+  supplementaryTimelineItems?: ZenTimelineItem[];
   loading: boolean;
   error?: string | null;
   draft: string;
@@ -78,6 +80,7 @@ export function useInterfaceChatBodyProps({
   pendingUserMessages,
   turnFocusAnchorAliases,
   runningActivity,
+  supplementaryTimelineItems,
   loading,
   error,
   draft,
@@ -129,6 +132,7 @@ export function useInterfaceChatBodyProps({
       pendingUserMessages,
       turnFocusAnchorAliases,
       runningActivity,
+      supplementaryTimelineItems,
       loading,
       error,
       scrollRef: timeline.scrollRef,
@@ -224,6 +228,7 @@ export function useInterfaceChatBodyProps({
       pendingUserMessages,
       turnFocusAnchorAliases,
       runningActivity,
+      supplementaryTimelineItems,
       handleSendPress,
       handleStopPress,
       handleUploadPress,

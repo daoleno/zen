@@ -1,11 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useState } from "react";
-import {
-  Pressable,
-  ScrollView,
-  StyleSheet,
-  Text,
-  View,
-} from "react-native";
+import { StyleSheet, Text, View } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 import {
   useIsFocused,
@@ -24,6 +18,7 @@ import { BrainAdapterIcon } from "../../components/brain/BrainAdapterIcon";
 import { BrainExecutorMentionPicker } from "../../components/brain/BrainExecutorMentionPicker";
 import { BrainOverflowMenu } from "../../components/brain/BrainOverflowMenu";
 import { BrainWorkspaceViewer } from "../../components/brain/BrainWorkspaceViewer";
+import { projectCanonicalBrainWorkResultEvents } from "../../components/brain/brainWorkEventTimeline";
 import {
   brainProviderLabel,
   distinctExecutorAdapters,
@@ -49,8 +44,8 @@ import { isTargetedBrainThreadReadOnly } from "../../services/brainThreadRouting
 import { useAgents, type ConnectionState } from "../../store/agents";
 import {
   useBrain,
-  type BrainActiveWork,
   type BrainAdapterRef,
+  type BrainWorkResultEvent,
 } from "../../store/brain";
 import { useCurrentServer } from "../../store/currentServer";
 
@@ -136,7 +131,6 @@ export default function BrainScreen() {
   const hostAgent = activeBrain?.host_agent ?? null;
   const hostAdapter = activeBrain?.host_adapter ?? null;
   const delegatedAdapter = activeBrain?.delegated_adapter ?? null;
-  const activeWork = activeBrain?.active_work ?? [];
   const routedThreadId = routeServerMatches ? params.brainThreadId : undefined;
   const displayedThreadId = routedThreadId || activeBrain?.chat_thread_id;
   const targetedThreadReadOnly = isTargetedBrainThreadReadOnly(
@@ -382,14 +376,48 @@ export default function BrainScreen() {
     [availableAdapters, chrome, hostAdapter?.id],
   );
 
-  const markWorkRead = useCallback(
-    (workId: string) => {
+  const activateWorkResult = useCallback(
+    (event: BrainWorkResultEvent, canOpenSession: boolean) => {
       if (!activeServer) {
         return;
       }
-      wsClient.markBrainWorkRead(activeServer.id, workId);
+      if (event.unread) {
+        wsClient.markBrainWorkRead(activeServer.id, event.work_id);
+      }
+      if (event.session_id && canOpenSession) {
+        router.push({
+          pathname: "/terminal/[id]",
+          params: {
+            id: event.session_id,
+            serverId: activeServer.id,
+          },
+        });
+      }
     },
-    [activeServer],
+    [activeServer, router],
+  );
+  const openSessionIds = useMemo(
+    () => new Set((activeBrain?.agents ?? []).map((agent) => agent.id)),
+    [activeBrain?.agents],
+  );
+  const workEventTimelineItems = useMemo(
+    () =>
+      projectCanonicalBrainWorkResultEvents({
+        events: activeBrain?.result_events ?? [],
+        displayedThreadId,
+        currentThreadId: activeBrain?.chat_thread_id,
+        readOnly: targetedThreadReadOnly,
+        openSessionIds,
+        onActivate: activateWorkResult,
+      }),
+    [
+      activeBrain?.chat_thread_id,
+      activeBrain?.result_events,
+      activateWorkResult,
+      displayedThreadId,
+      openSessionIds,
+      targetedThreadReadOnly,
+    ],
   );
 
   return (
@@ -419,18 +447,6 @@ export default function BrainScreen() {
         </View>
       ) : null}
 
-      {activeWork.length > 0 ? (
-        <ActiveWorkStrip
-          items={activeWork}
-          agents={activeBrain?.agents ?? []}
-          colors={colors}
-          topInset={
-            brainActionError || targetedThreadReadOnly ? 0 : topChromeInset
-          }
-          onMarkRead={markWorkRead}
-        />
-      ) : null}
-
       <View style={styles.surface}>
         <ChatCanvas chrome={chrome}>
           {canUseStructuredBrainInterface ? (
@@ -454,7 +470,8 @@ export default function BrainScreen() {
               theme={theme}
               chrome={chrome}
               screenFocused={screenFocused}
-              topChromeInset={activeWork.length > 0 ? 8 : topChromeInset}
+              topChromeInset={topChromeInset}
+              supplementaryTimelineItems={workEventTimelineItems}
               readOnly={targetedThreadReadOnly}
               onSwitchToTerminal={openBrainTerminal}
               emptyTitle={BRAIN_EMPTY_TITLE}
@@ -508,77 +525,6 @@ export default function BrainScreen() {
       />
     </SafeAreaView>
   );
-}
-
-function ActiveWorkStrip({
-  items,
-  agents,
-  colors,
-  topInset,
-  onMarkRead,
-}: {
-  items: BrainActiveWork[];
-  agents: Array<{ id: string; name: string }>;
-  colors: typeof Colors;
-  topInset: number;
-  onMarkRead(workId: string): void;
-}) {
-  const styles = useMemo(() => createStyles(colors), [colors]);
-  const agentNames = useMemo(
-    () => new Map(agents.map((agent) => [agent.id, agent.name])),
-    [agents],
-  );
-  return (
-    <View style={[styles.activeWorkWrap, { paddingTop: topInset }]}>
-      <Text style={styles.activeWorkHeading}>Active work</Text>
-      <ScrollView
-        horizontal
-        showsHorizontalScrollIndicator={false}
-        contentContainerStyle={styles.activeWorkItems}
-      >
-        {items.map((item) => {
-          const owner =
-            (item.owner_session_id &&
-              (agentNames.get(item.owner_session_id) ||
-                item.owner_session_id)) ||
-            item.wait_for ||
-            "";
-          return (
-            <Pressable
-              key={item.work_id}
-              accessibilityRole={item.unread_result ? "button" : undefined}
-              accessibilityLabel={`${item.title}, ${workStatusLabel(item.status)}${owner ? `, ${owner}` : ""}${item.unread_result ? ", new result" : ""}`}
-              disabled={!item.unread_result}
-              onPress={() => onMarkRead(item.work_id)}
-              style={({ pressed }) => [
-                styles.activeWorkItem,
-                pressed && item.unread_result
-                  ? styles.activeWorkItemPressed
-                  : null,
-              ]}
-            >
-              <View style={styles.activeWorkTitleRow}>
-                {item.unread_result ? (
-                  <View style={styles.activeWorkUnread} />
-                ) : null}
-                <Text numberOfLines={1} style={styles.activeWorkTitle}>
-                  {item.title}
-                </Text>
-              </View>
-              <Text numberOfLines={1} style={styles.activeWorkDetail}>
-                {workStatusLabel(item.status)}
-                {owner ? ` · ${owner}` : ""}
-              </Text>
-            </Pressable>
-          );
-        })}
-      </ScrollView>
-    </View>
-  );
-}
-
-function workStatusLabel(status: BrainActiveWork["status"]) {
-  return status === "needs_input" ? "needs input" : status;
 }
 
 function BrainStateCard({
@@ -723,55 +669,6 @@ function createStyles(colors: typeof Colors) {
     },
     surface: {
       flex: 1,
-    },
-    activeWorkWrap: {
-      borderBottomWidth: StyleSheet.hairlineWidth,
-      borderBottomColor: colors.border,
-      backgroundColor: colors.bgSurface,
-      paddingBottom: 8,
-    },
-    activeWorkHeading: {
-      ...TypeScale.caption,
-      color: colors.textSecondary,
-      marginHorizontal: CHAT_CHROME_HORIZONTAL_INSET,
-      marginBottom: 6,
-    },
-    activeWorkItems: {
-      gap: 8,
-      paddingHorizontal: CHAT_CHROME_HORIZONTAL_INSET,
-    },
-    activeWorkItem: {
-      width: 184,
-      borderRadius: 12,
-      borderWidth: StyleSheet.hairlineWidth,
-      borderColor: colors.border,
-      backgroundColor: colors.bgElevated,
-      paddingHorizontal: 11,
-      paddingVertical: 8,
-    },
-    activeWorkItemPressed: {
-      opacity: 0.72,
-    },
-    activeWorkTitleRow: {
-      flexDirection: "row",
-      alignItems: "center",
-      gap: 6,
-    },
-    activeWorkUnread: {
-      width: 7,
-      height: 7,
-      borderRadius: 4,
-      backgroundColor: colors.accent,
-    },
-    activeWorkTitle: {
-      ...TypeScale.compact,
-      color: colors.textPrimary,
-      flexShrink: 1,
-    },
-    activeWorkDetail: {
-      ...TypeScale.caption,
-      color: colors.textSecondary,
-      marginTop: 2,
     },
     bannerError: {
       marginHorizontal: CHAT_CHROME_HORIZONTAL_INSET,

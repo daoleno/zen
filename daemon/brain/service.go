@@ -27,6 +27,8 @@ const codexFullAuthorizationFlag = work.CodexFullAuthorizationFlag
 
 const workEventWakeCue = work.WorkEventWakeCue
 
+const recentWorkResultEventLimit = 20
+
 type Watcher interface {
 	Agents() []*classifier.Agent
 	GetAgent(id string) *classifier.Agent
@@ -71,6 +73,10 @@ func (s *Service) Snapshot() (Snapshot, error) {
 	if err != nil {
 		return Snapshot{}, err
 	}
+	resultEvents, err := s.store.RecentWorkResultEvents(recentWorkResultEventLimit)
+	if err != nil {
+		return Snapshot{}, err
+	}
 	chatThreadID, err := s.store.ChatThreadID()
 	if err != nil {
 		return Snapshot{}, err
@@ -97,8 +103,29 @@ func (s *Service) Snapshot() (Snapshot, error) {
 	snapshot.Executors = s.agentExecutors(hostExecutor.ID, delegatedExecutor.ID)
 	snapshot.ChatThreadID = chatThreadID
 	snapshot.Agents = s.agentRefs(host.ID)
+	enrichWorkResultEvents(resultEvents, snapshot.Agents)
 	snapshot.ActiveWork = activeWork
+	snapshot.ResultEvents = resultEvents
 	return snapshot, nil
+}
+
+func enrichWorkResultEvents(events []WorkResultEvent, agents []AgentRef) {
+	agentsByID := make(map[string]AgentRef, len(agents))
+	for _, agent := range agents {
+		agentsByID[agent.ID] = agent
+	}
+	for index := range events {
+		agent, ok := agentsByID[events[index].SessionID]
+		if !ok {
+			continue
+		}
+		if !events[index].hasEventSourceName {
+			events[index].SessionName = strings.TrimSpace(agent.Name)
+		}
+		if summary := strings.TrimSpace(agent.Summary); !events[index].hasEventSummary && summary != "" {
+			events[index].Summary = compactWorkResultText(summary)
+		}
+	}
 }
 
 func (s *Service) Context() (BrainContext, error) {
@@ -325,6 +352,8 @@ func (s *Service) RouteSessionEvent(event watcher.SessionEvent) (bool, error) {
 		Kind:       kind,
 		DedupeKey:  dedupeKey,
 		PayloadRef: "session:" + agent.ID,
+		SourceName: strings.TrimSpace(agent.Name),
+		Summary:    strings.TrimSpace(agent.Summary),
 		Actionable: actionable,
 	})
 	if err != nil || !created || !actionable {

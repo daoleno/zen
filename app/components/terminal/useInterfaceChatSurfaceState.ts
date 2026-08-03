@@ -26,6 +26,7 @@ import type {
 } from "../../services/codexConversation";
 import { wsClient } from "../../services/websocket";
 import type { InterfaceChatBodyProps } from "./InterfaceChatBody";
+import type { ZenTimelineItem } from "./InterfaceTimelineItemView";
 import { useInterfaceChatController } from "./InterfaceChatController";
 import {
   type InterfaceChatAgentInfo,
@@ -72,6 +73,7 @@ interface UseInterfaceChatSurfaceStateInput {
   showUnavailableAction?: boolean;
   emptyTitle?: string;
   emptyBody?: string;
+  supplementaryTimelineItems?: ZenTimelineItem[];
   composerAccessory?: ReactNode;
   onDraftChange?: (value: string) => void;
   renderComposerAccessory?: (args: {
@@ -131,6 +133,7 @@ export function useInterfaceChatSurfaceState({
   showUnavailableAction,
   emptyTitle,
   emptyBody,
+  supplementaryTimelineItems,
   composerAccessory,
   onDraftChange,
   renderComposerAccessory,
@@ -378,8 +381,13 @@ export function useInterfaceChatSurfaceState({
     }
   }, [statusDisplayEvent, statusTimedOut]);
   const latestTimelineTimestamp = useMemo(
-    () => latestChatTimelineTimestamp(conversation, pendingUserMessages),
-    [conversation, pendingUserMessages],
+    () =>
+      latestChatTimelineTimestamp(
+        conversation,
+        pendingUserMessages,
+        supplementaryTimelineItems,
+      ),
+    [conversation, pendingUserMessages, supplementaryTimelineItems],
   );
   const jumpLabel = useRelativeTimeLabel(latestTimelineTimestamp);
   const runningActivity = useMemo(
@@ -387,7 +395,10 @@ export function useInterfaceChatSurfaceState({
     [conversation?.activity],
   );
   const timeline = usePinnedTimeline(
-    events.length + pendingUserMessages.length + (runningActivity ? 1 : 0),
+    events.length +
+      pendingUserMessages.length +
+      (runningActivity ? 1 : 0) +
+      (supplementaryTimelineItems?.length ?? 0),
     conversationCacheKey,
     topChromeInset,
   );
@@ -587,6 +598,7 @@ export function useInterfaceChatSurfaceState({
     pendingUserMessages,
     turnFocusAnchorAliases,
     runningActivity,
+    supplementaryTimelineItems,
     loading,
     error,
     draft,
@@ -620,6 +632,7 @@ export function useInterfaceChatSurfaceState({
 function latestChatTimelineTimestamp(
   conversation: CodexConversation | null,
   pendingUserMessages: PendingUserMessage[],
+  supplementaryTimelineItems?: ZenTimelineItem[],
 ) {
   let latest = 0;
   conversation?.events.forEach((event: CodexConversationEvent) => {
@@ -630,6 +643,12 @@ function latestChatTimelineTimestamp(
   });
   pendingUserMessages.forEach((message) => {
     const timestamp = new Date(message.createdAt).getTime();
+    if (Number.isFinite(timestamp) && timestamp > latest) {
+      latest = timestamp;
+    }
+  });
+  supplementaryTimelineItems?.forEach((item) => {
+    const timestamp = new Date(item.timestamp || "").getTime();
     if (Number.isFinite(timestamp) && timestamp > latest) {
       latest = timestamp;
     }

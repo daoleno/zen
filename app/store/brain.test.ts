@@ -127,3 +127,69 @@ describe("Brain Active work normalization", () => {
     ]);
   });
 });
+
+describe("Brain Work result-event normalization", () => {
+  test("keeps only known result kinds and deduplicates chronologically by event identity", () => {
+    const base = {
+      event_id: "event-b",
+      kind: "session.done",
+      work_id: "work-a",
+      work_title: "Ship Brain cards",
+      summary: "Focused implementation completed.",
+      session_id: "brain-agent-cards:@1",
+      session_name: "Brain cards",
+      occurred_at: "2026-08-04T01:02:00Z",
+      unread: true,
+      claimed_at: "must-not-project",
+      delivery_host_session_id: "must-not-project",
+    };
+    const received = brainReducer(initialBrainState, {
+      type: "BRAIN_SNAPSHOT",
+      serverId: "server-1",
+      serverName: "Zen",
+      serverUrl: "ws://zen",
+      brain: {
+        result_events: [
+          base,
+          {
+            ...base,
+            event_id: "event-a",
+            kind: "session.stale",
+            occurred_at: "2026-08-04T01:01:00Z",
+            session_id: "",
+            session_name: "",
+          },
+          { ...base, summary: "Latest snapshot value.", unread: false },
+          { ...base, event_id: "calendar", kind: "calendar.failure" },
+          { ...base, event_id: "wake", kind: "scheduler.wake" },
+          { ...base, event_id: "malformed", occurred_at: "not-a-date" },
+        ],
+      },
+    });
+
+    expect(received.byServer["server-1"]?.result_events).toEqual([
+      {
+        event_id: "event-a",
+        kind: "session.stale",
+        work_id: "work-a",
+        work_title: "Ship Brain cards",
+        summary: "Focused implementation completed.",
+        session_id: undefined,
+        session_name: undefined,
+        occurred_at: "2026-08-04T01:01:00Z",
+        unread: true,
+      },
+      {
+        event_id: "event-b",
+        kind: "session.done",
+        work_id: "work-a",
+        work_title: "Ship Brain cards",
+        summary: "Latest snapshot value.",
+        session_id: "brain-agent-cards:@1",
+        session_name: "Brain cards",
+        occurred_at: "2026-08-04T01:02:00Z",
+        unread: false,
+      },
+    ]);
+  });
+});

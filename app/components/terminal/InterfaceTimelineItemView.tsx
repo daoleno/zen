@@ -1,4 +1,8 @@
 import React from "react";
+import {
+  BrainWorkEventCard,
+  type BrainWorkEventTimelineItem,
+} from "../brain/BrainWorkEventCard";
 import type {
   TerminalThemeChrome,
   TerminalThemePalette,
@@ -21,7 +25,8 @@ export type ZenTimelineItem =
   | (ZenMessageTimelineItem & { role: "user" })
   | (ZenMessageTimelineItem & { role: "assistant" })
   | ZenActivityTimelineItem
-  | ZenPlanTimelineItem;
+  | ZenPlanTimelineItem
+  | BrainWorkEventTimelineItem;
 
 interface ZenTimelineItemViewProps {
   item: ZenTimelineItem;
@@ -64,6 +69,9 @@ function ZenTimelineItemViewImpl({
   }
   if (item.type === "plan") {
     return <ZenPlanUpdate item={item} chrome={chrome} theme={theme} />;
+  }
+  if (item.type === "brain-work-event") {
+    return <BrainWorkEventCard item={item} chrome={chrome} />;
   }
   return (
     <ZenActivityEvent

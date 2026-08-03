@@ -280,6 +280,25 @@ export function mergePendingUserMessagesIntoTimeline(
   return merged;
 }
 
+export function mergeSupplementaryTimelineItems(
+  timelineItems: ZenTimelineItem[],
+  supplementaryItems: ZenTimelineItem[],
+): ZenTimelineItem[] {
+  if (supplementaryItems.length === 0) {
+    return timelineItems;
+  }
+  const merged = [...timelineItems];
+  const seen = new Set(merged.map((item) => item.id));
+  for (const item of supplementaryItems) {
+    if (seen.has(item.id)) {
+      continue;
+    }
+    seen.add(item.id);
+    insertTimelineItemByTimestamp(merged, item);
+  }
+  return merged;
+}
+
 function insertPendingCurrentAtCausalBoundary(
   timelineItems: ZenTimelineItem[],
   item: ZenTimelineItem,

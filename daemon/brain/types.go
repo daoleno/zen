@@ -26,6 +26,7 @@ type Snapshot struct {
 	Current           string               `json:"current,omitempty"`
 	Personality       string               `json:"personality"`
 	ActiveWork        []ActiveWork         `json:"active_work"`
+	ResultEvents      []WorkResultEvent    `json:"result_events"`
 	Agents            []AgentRef           `json:"agents"`
 	HostAgent         *AgentRef            `json:"host_agent,omitempty"`
 	HostExecutor      *work.AgentExecutor  `json:"host_executor,omitempty"`

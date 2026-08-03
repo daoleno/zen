@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
+	"unicode/utf8"
 
 	"github.com/daoleno/zen/daemon/classifier"
 	"github.com/daoleno/zen/daemon/watcher"
@@ -132,6 +134,93 @@ func (w *fakeWatcher) KillSession(sessionID string) error {
 
 func (w *fakeWatcher) CapturePaneContent(sessionID string) (string, error) {
 	return w.captures[sessionID], nil
+}
+
+func TestEnrichWorkResultEventsUsesLiveSessionWithoutErasingWorkFallback(t *testing.T) {
+	events := []WorkResultEvent{
+		{
+			EventID:   "live-event",
+			SessionID: "brain-agent-live:@1",
+			Summary:   "Review the durable Work result.",
+		},
+		{
+			EventID:   "closed-event",
+			SessionID: "brain-agent-closed:@2",
+			Summary:   "Inspect the durable Work fallback.",
+		},
+	}
+	enrichWorkResultEvents(events, []AgentRef{{
+		ID:      "brain-agent-live:@1",
+		Name:    "Brain card worker",
+		Summary: "Finished the focused implementation and tests.",
+	}})
+
+	if events[0].SessionName != "Brain card worker" ||
+		events[0].Summary != "Finished the focused implementation and tests." {
+		t.Fatalf("live result event = %#v", events[0])
+	}
+	if events[1].SessionName != "" ||
+		events[1].Summary != "Inspect the durable Work fallback." {
+		t.Fatalf("closed result event lost fallback = %#v", events[1])
+	}
+}
+
+func TestEnrichWorkResultEventsCompactsLegacyLiveSummary(t *testing.T) {
+	events := []WorkResultEvent{{
+		EventID:   "legacy-event",
+		SessionID: "brain-agent-live:@1",
+		Summary:   "Work fallback.",
+	}}
+	enrichWorkResultEvents(events, []AgentRef{{
+		ID:      "brain-agent-live:@1",
+		Summary: strings.Repeat("结", 500),
+	}})
+
+	if len(events) != 1 ||
+		utf8.RuneCountInString(events[0].Summary) != workResultSummaryRuneLimit ||
+		!strings.HasSuffix(events[0].Summary, "…") {
+		t.Fatalf("legacy live summary = %#v", events)
+	}
+}
+
+func TestServiceSnapshotExposesWorkResultEvents(t *testing.T) {
+	store, err := NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Date(2026, 8, 4, 4, 0, 0, 0, time.UTC)
+	store.now = func() time.Time { return now }
+	item, err := store.CreateWork(Work{
+		Title:            "Expose the result",
+		Objective:        "Project the durable occurrence in Brain snapshots.",
+		Status:           WorkWaiting,
+		CompletionPolicy: CompletionBounded,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for index := range recentWorkResultEventLimit + 1 {
+		now = now.Add(time.Minute)
+		eventID := fmt.Sprintf("event-%02d", index)
+		if _, _, err := store.AppendWorkEvent(WorkEvent{
+			ID: eventID, WorkID: item.ID, Kind: "session.done",
+			DedupeKey: eventID, Summary: "Snapshot projection completed.",
+			Actionable: true,
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	snapshot, err := NewService(store, nil, nil).Snapshot()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(snapshot.ResultEvents) != recentWorkResultEventLimit ||
+		snapshot.ResultEvents[0].EventID != "event-01" ||
+		snapshot.ResultEvents[len(snapshot.ResultEvents)-1].EventID != "event-20" ||
+		snapshot.ResultEvents[0].Summary != "Snapshot projection completed." {
+		t.Fatalf("snapshot result events = %#v", snapshot.ResultEvents)
+	}
 }
 
 func TestServiceSnapshotCreatesHiddenHostSession(t *testing.T) {

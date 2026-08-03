@@ -12,6 +12,7 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/daoleno/zen/daemon/calendar"
 	"github.com/daoleno/zen/daemon/classifier"
@@ -618,6 +619,220 @@ func TestActiveWorkProjectsMultipleItemsAndUnreadResults(t *testing.T) {
 	}
 }
 
+func TestRecentWorkResultEventsAreBoundedDeterministicAndPersistAfterRead(t *testing.T) {
+	store, err := NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Date(2026, 8, 4, 1, 0, 0, 0, time.UTC)
+	store.now = func() time.Time { return now }
+	item, err := store.CreateWork(Work{
+		Title:            "Ship Brain cards",
+		Objective:        "Project durable results into the Brain timeline.",
+		Status:           WorkRunning,
+		OwnerSessionID:   "brain-agent-cards:@1",
+		CompletionPolicy: CompletionBounded,
+		NextAction:       "Review the delegated result.",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	appendEvent := func(id, kind, payload string, offset time.Duration) {
+		t.Helper()
+		now = now.Add(offset)
+		if _, _, err := store.AppendWorkEvent(WorkEvent{
+			ID: id, WorkID: item.ID, Kind: kind, DedupeKey: id,
+			PayloadRef: payload, Actionable: true,
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	appendEvent("event-progress", "session.progress", "session:brain-agent-cards:@1", time.Minute)
+	appendEvent("event-b", "session.done", "session:brain-agent-closed:@2", time.Minute)
+	appendEvent("event-calendar", "calendar.failure", "calendar-result-id", 0)
+	appendEvent("event-c", "session.failed", "session:brain-agent-cards:@1", time.Minute)
+
+	events, err := store.RecentWorkResultEvents(2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(events) != 2 || events[0].EventID != "event-b" || events[1].EventID != "event-c" {
+		t.Fatalf("bounded result events = %#v", events)
+	}
+	if events[0].SessionID != "brain-agent-closed:@2" ||
+		events[1].SessionID != "brain-agent-cards:@1" ||
+		events[0].Summary != item.NextAction || !events[0].Unread {
+		t.Fatalf("result projection = %#v", events)
+	}
+	wire, err := json.Marshal(events[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, internal := range []string{
+		"dedupe_key", "payload_ref", "actionable", "claimed_at",
+		"delivery_host_session_id", "consumed_at", "read_at",
+	} {
+		if strings.Contains(string(wire), internal) {
+			t.Fatalf("result projection leaked %q: %s", internal, wire)
+		}
+	}
+	if err := store.MarkWorkRead(item.ID); err != nil {
+		t.Fatal(err)
+	}
+	events, err = store.RecentWorkResultEvents(10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(events) != 2 {
+		t.Fatalf("read result events disappeared: %#v", events)
+	}
+	for _, event := range events {
+		if event.Unread {
+			t.Fatalf("read state not projected: %#v", events)
+		}
+	}
+}
+
+func TestRecentWorkResultEventsExcludeCanonicalCalendarPresentations(t *testing.T) {
+	store, err := NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	item, err := store.CreateWork(Work{
+		Title:            "Scheduled review",
+		Objective:        "Keep Calendar results in their canonical conversation projection.",
+		Status:           WorkDone,
+		CompletionPolicy: CompletionBounded,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, kind := range []string{"calendar.result", "calendar.failure"} {
+		if _, _, err := store.AppendWorkEvent(WorkEvent{
+			WorkID: item.ID, Kind: kind, DedupeKey: kind,
+			PayloadRef: "scheduled-result-id", Actionable: true,
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	events, err := store.RecentWorkResultEvents(50)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(events) != 0 {
+		t.Fatalf("calendar results duplicated as supplemental result events: %#v", events)
+	}
+	stored, err := store.ListWorkEvents(item.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(stored) != 2 {
+		t.Fatalf("calendar Work Events were mutated: %#v", stored)
+	}
+}
+
+func TestRecentWorkResultEventsPreserveOccurrenceFactsAcrossWorkMutationAndReload(t *testing.T) {
+	root := t.TempDir()
+	store, err := NewStore(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Date(2026, 8, 4, 2, 0, 0, 0, time.UTC)
+	store.now = func() time.Time { return now }
+	item, err := store.CreateWork(Work{
+		Title:            "Iterate on one Work",
+		Objective:        "Original objective.",
+		Status:           WorkRunning,
+		OwnerSessionID:   "brain-agent-iterations:@1",
+		CompletionPolicy: CompletionBounded,
+		NextAction:       "Original next action.",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for index, fact := range []struct {
+		id      string
+		summary string
+		source  string
+	}{
+		{id: "event-first", summary: "First occurrence completed the daemon contract.", source: "Daemon worker"},
+		{id: "event-second", summary: "Second occurrence completed the App projection.", source: "App worker"},
+	} {
+		now = now.Add(time.Minute)
+		if _, _, err := store.AppendWorkEvent(WorkEvent{
+			ID:         fact.id,
+			WorkID:     item.ID,
+			Kind:       "session.done",
+			DedupeKey:  fmt.Sprintf("done:%d", index),
+			PayloadRef: "session:brain-agent-iterations:@1",
+			SourceName: fact.source,
+			Summary:    fact.summary,
+			Actionable: true,
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	mutatedObjective := "Mutated objective that must not rewrite historical occurrences."
+	mutatedNext := "Mutated next action."
+	if _, err := store.UpdateWork(item.ID, WorkUpdate{
+		Objective:  &mutatedObjective,
+		NextAction: &mutatedNext,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	reloaded, err := NewStore(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	events, err := reloaded.RecentWorkResultEvents(10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(events) != 2 ||
+		events[0].Summary != "First occurrence completed the daemon contract." ||
+		events[0].SessionName != "Daemon worker" ||
+		events[1].Summary != "Second occurrence completed the App projection." ||
+		events[1].SessionName != "App worker" {
+		t.Fatalf("immutable occurrence facts = %#v", events)
+	}
+}
+
+func TestRecentWorkResultEventsCompactLongUnicodeLegacyFallback(t *testing.T) {
+	store, err := NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	longObjective := strings.Repeat("界", 500) +
+		"\n\nLifecycle protocol and raw prompt body must not enter the card."
+	item, err := store.CreateWork(Work{
+		Title:            "Bound the result",
+		Objective:        longObjective,
+		Status:           WorkWaiting,
+		CompletionPolicy: CompletionBounded,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := store.AppendWorkEvent(WorkEvent{
+		ID: "legacy-stale", WorkID: item.ID, Kind: "session.stale",
+		DedupeKey: "legacy-stale", Actionable: true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	events, err := store.RecentWorkResultEvents(10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(events) != 1 ||
+		!utf8.ValidString(events[0].Summary) ||
+		utf8.RuneCountInString(events[0].Summary) != workResultSummaryRuneLimit ||
+		!strings.HasSuffix(events[0].Summary, "…") ||
+		strings.Contains(events[0].Summary, "Lifecycle protocol") {
+		t.Fatalf("compact Unicode fallback = %#v", events)
+	}
+}
+
 func TestOneSessionCannotOwnTwoActiveWorkRecords(t *testing.T) {
 	store, err := NewStore(t.TempDir())
 	if err != nil {
@@ -1135,6 +1350,7 @@ func TestDelegatedSessionTransitionsDedupeToOneTurn(t *testing.T) {
 			agent := &classifier.Agent{
 				ID:        sessionID,
 				Name:      "Worker",
+				Summary:   "Captured at the terminal transition.",
 				State:     state,
 				Delegated: true,
 				UpdatedAt: time.Date(2026, 8, 3, 10, 0, 0, 0, time.UTC),
@@ -1163,7 +1379,9 @@ func TestDelegatedSessionTransitionsDedupeToOneTurn(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if len(events) != 1 || len(fw.sentCalls) != 1 {
+			if len(events) != 1 || len(fw.sentCalls) != 1 ||
+				events[0].SourceName != "Worker" ||
+				events[0].Summary != "Captured at the terminal transition." {
 				t.Fatalf("events=%#v sends=%#v", events, fw.sentCalls)
 			}
 		})

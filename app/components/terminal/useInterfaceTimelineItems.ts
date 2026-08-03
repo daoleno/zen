@@ -8,6 +8,7 @@ import {
   buildZenTimeline,
   mergeRunningActivityIntoTimeline,
   mergePendingUserMessagesIntoTimeline,
+  mergeSupplementaryTimelineItems,
 } from "./InterfaceTimelineModel";
 import type { ZenTimelineItem } from "./InterfaceTimelineItemView";
 
@@ -20,12 +21,14 @@ export function useInterfaceTimelineItems({
   pendingUserMessages,
   turnFocusAnchorAliases,
   runningActivity,
+  supplementaryItems = [],
   onRetryPendingUserMessage,
 }: {
   events: CodexConversationEvent[];
   pendingUserMessages: PendingUserMessage[];
   turnFocusAnchorAliases?: ReadonlyMap<string, string>;
   runningActivity?: ProviderActivity;
+  supplementaryItems?: ZenTimelineItem[];
   onRetryPendingUserMessage(id: string): void;
 }) {
   const previousRef = useRef<{
@@ -65,8 +68,12 @@ export function useInterfaceTimelineItems({
   );
 
   return useMemo(() => {
-    const nextItems = mergePendingUserMessagesIntoTimeline(
+    const timelineWithSupplementaryItems = mergeSupplementaryTimelineItems(
       providerTimelineWithActivity,
+      supplementaryItems,
+    );
+    const nextItems = mergePendingUserMessagesIntoTimeline(
+      timelineWithSupplementaryItems,
       pendingUserMessages,
       onRetryPendingUserMessage,
     );
@@ -99,6 +106,7 @@ export function useInterfaceTimelineItems({
     onRetryPendingUserMessage,
     pendingUserMessages,
     providerTimelineWithActivity,
+    supplementaryItems,
   ]);
 }
 
@@ -164,6 +172,15 @@ function timelineItemsEqual(left: ZenTimelineItem, right: ZenTimelineItem) {
       JSON.stringify(left.developerDetails) ===
         JSON.stringify(right.developerDetails) &&
       JSON.stringify(left.children) === JSON.stringify(right.children)
+    );
+  }
+  if (
+    left.type === "brain-work-event" &&
+    right.type === "brain-work-event"
+  ) {
+    return (
+      JSON.stringify(left.event) === JSON.stringify(right.event) &&
+      left.onPress === right.onPress
     );
   }
   return false;
