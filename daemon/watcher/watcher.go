@@ -2,6 +2,7 @@ package watcher
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -1262,7 +1263,27 @@ func (w *Watcher) startCodexPendingResume(sessionID string) {
 			delete(w.codexResumes, key)
 			w.codexResumeMu.Unlock()
 		}()
+		probeDelay := 250 * time.Millisecond
 		for {
+			probeErr := io.probeSubmissionReadiness(
+				sessionID,
+				record.SessionGeneration,
+				codexRolloutIdentity{
+					Path:      record.RolloutPath,
+					SessionID: record.RolloutSessionID,
+				},
+			)
+			if errors.Is(probeErr, errCodexResumeOnPaneChange) {
+				return
+			}
+			if probeErr != nil {
+				time.Sleep(probeDelay)
+				probeDelay *= 2
+				if probeDelay > 30*time.Second {
+					probeDelay = 30 * time.Second
+				}
+				continue
+			}
 			err := w.codexInputOwner().submitWithReceipt(
 				io,
 				sessionID,
@@ -1281,7 +1302,11 @@ func (w *Watcher) startCodexPendingResume(sessionID string) {
 			if !IsInputPending(err) {
 				return
 			}
-			time.Sleep(time.Second)
+			time.Sleep(probeDelay)
+			probeDelay *= 2
+			if probeDelay > 30*time.Second {
+				probeDelay = 30 * time.Second
+			}
 		}
 	}()
 }

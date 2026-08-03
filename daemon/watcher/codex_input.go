@@ -22,6 +22,7 @@ import (
 // identity stays in Zen's journal and is never added to model-visible input.
 type codexInputIO interface {
 	capture(sessionID string) codexPaneCapture
+	probeSubmissionReadiness(sessionID, generation string, rollout codexRolloutIdentity) error
 	submitIfEmpty(sessionID, generation string, rollout codexRolloutIdentity, transactionID, body string) error
 	advanceStartup(sessionID, generation string) error
 	releaseStaleInputSuppression(sessionID string, suppression codexPaneInputSuppression) error
@@ -123,6 +124,7 @@ type realCodexInputIO struct {
 }
 
 var errCodexMutationConflict = errors.New("Codex composer changed at the conditional mutation point")
+var errCodexResumeOnPaneChange = errors.New("Codex pending input requires a pane change before resumption")
 
 // InputPendingError means Zen durably owns the exact input transaction, but
 // provider input ownership is not currently safe. Retrying the same receipt
@@ -473,6 +475,32 @@ func (io realCodexInputIO) capture(sessionID string) codexPaneCapture {
 		inputOff:    after.inputOff,
 		suppression: after.suppression,
 	}
+}
+
+func (io realCodexInputIO) probeSubmissionReadiness(
+	sessionID string,
+	generation string,
+	rollout codexRolloutIdentity,
+) error {
+	if err := io.checkTarget(); err != nil {
+		return err
+	}
+	current := io.capture(sessionID)
+	if !current.alive || current.generation != generation {
+		return fmt.Errorf("%w: target Codex generation is unavailable", errCodexResumeOnPaneChange)
+	}
+	if !current.rollout.equal(rollout) {
+		return fmt.Errorf("%w: target Codex rollout changed", errCodexResumeOnPaneChange)
+	}
+	if current.inputOff ||
+		current.composer != codexComposerEmpty ||
+		!isAgentInputReady("codex", current.content) {
+		return fmt.Errorf("%w: target Codex composer is not ready and empty", errCodexResumeOnPaneChange)
+	}
+	if err := ensureCodexPaneInputConsumed(readCodexTmuxPaneMetadata(sessionID)); err != nil {
+		return err
+	}
+	return nil
 }
 
 func (io realCodexInputIO) submitIfEmpty(
@@ -871,9 +899,6 @@ func (coordinator *codexInputCoordinator) submitLocked(
 		baseline, err = waitForStableCodexComposer(io, sessionID, baseline, cfg, preSubmitDeadline)
 		if err != nil {
 			if baseline.composer == codexComposerHasDraft {
-				record.Detail = "durably pending behind a preserved foreign draft"
-				record.UpdatedAt = io.now()
-				_ = coordinator.store.Save(record)
 				return pendingCodexInput(record, err)
 			}
 			return err
@@ -930,23 +955,20 @@ func (coordinator *codexInputCoordinator) submitLocked(
 		_ = coordinator.store.Save(record)
 		return pendingCodexInput(record, fmt.Errorf("bounded pre-submit wait elapsed"))
 	}
-	for {
-		record.Phase = codexTransactionEnterPending
-		record.Detail = "atomic paste-and-Enter intent persisted before provider mutation"
-		record.UpdatedAt = io.now()
-		if err := coordinator.store.Save(record); err != nil {
-			return fmt.Errorf("persist Codex submission intent: %w; provider input was not changed", err)
-		}
-		err := io.submitIfEmpty(
-			sessionID,
-			baseline.generation,
-			baseline.rollout,
-			prepared.transactionID,
-			prepared.payload,
-		)
-		if err == nil {
-			break
-		}
+	record.Phase = codexTransactionEnterPending
+	record.Detail = "atomic paste-and-Enter intent persisted before provider mutation"
+	record.UpdatedAt = io.now()
+	if err := coordinator.store.Save(record); err != nil {
+		return fmt.Errorf("persist Codex submission intent: %w; provider input was not changed", err)
+	}
+	err = io.submitIfEmpty(
+		sessionID,
+		baseline.generation,
+		baseline.rollout,
+		prepared.transactionID,
+		prepared.payload,
+	)
+	if err != nil {
 		if !errors.Is(err, errCodexMutationConflict) {
 			record.Phase = codexTransactionAmbiguous
 			record.Detail = err.Error()
@@ -960,31 +982,7 @@ func (coordinator *codexInputCoordinator) submitLocked(
 		if saveErr := coordinator.store.Save(record); saveErr != nil {
 			return fmt.Errorf("persist deferred Codex submission: %w", saveErr)
 		}
-		if !io.now().Before(preSubmitDeadline) {
-			record.Phase = codexTransactionPrepared
-			record.Detail = "durably pending while provider input remained occupied"
-			record.UpdatedAt = io.now()
-			_ = coordinator.store.Save(record)
-			return pendingCodexInput(record, err)
-		}
-		io.sleep(cfg.pollInterval)
-		current := io.capture(sessionID)
-		if !current.alive || current.generation != baseline.generation {
-			return fmt.Errorf("Codex session changed while its exact payload was pending; provider input was not changed")
-		}
-		baseline, err = waitForStableCodexComposer(io, sessionID, current, cfg, preSubmitDeadline)
-		if err != nil {
-			record.Phase = codexTransactionPrepared
-			record.Detail = "durably pending while waiting for provider input ownership: " + err.Error()
-			record.UpdatedAt = io.now()
-			if saveErr := coordinator.store.Save(record); saveErr != nil {
-				return fmt.Errorf("persist deferred Codex submission: %w", saveErr)
-			}
-			return pendingCodexInput(record, err)
-		}
-		if !baseline.rollout.equal(prepared.rollout) {
-			return fmt.Errorf("Codex target rollout changed while its exact payload was pending; provider input was not changed")
-		}
+		return pendingCodexInput(record, err)
 	}
 	record.Phase = codexTransactionAmbiguous
 	record.Detail = "atomic paste and Enter submitted once; awaiting provider confirmation"

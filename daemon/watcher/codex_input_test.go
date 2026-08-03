@@ -11,6 +11,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -30,6 +31,9 @@ type fakeCodexInputIO struct {
 	pasteErr            error
 	submitErrors        []error
 	submitAttempts      int
+	probeErrors         []error
+	probeAttempts       int
+	probeFn             func(*fakeCodexInputIO) error
 	enterErr            error
 	beforeEnter         func(*fakeCodexInputIO)
 	suppressPersistence bool
@@ -42,6 +46,16 @@ type failCodexStoreAtPhase struct {
 	codexTransactionStore
 	phase  codexTransactionPhase
 	failed bool
+}
+
+type countingCodexStore struct {
+	codexTransactionStore
+	saves atomic.Int64
+}
+
+func (store *countingCodexStore) Save(record codexTransactionRecord) error {
+	store.saves.Add(1)
+	return store.codexTransactionStore.Save(record)
 }
 
 func (store *failCodexStoreAtPhase) Save(record codexTransactionRecord) error {
@@ -104,6 +118,31 @@ func (f *fakeCodexInputIO) capture(string) codexPaneCapture {
 	}
 	capture.rollout = fakeCodexRollout(generation)
 	return capture
+}
+
+func (f *fakeCodexInputIO) probeSubmissionReadiness(
+	sessionID string,
+	generation string,
+	rollout codexRolloutIdentity,
+) error {
+	f.probeAttempts++
+	if f.probeFn != nil {
+		return f.probeFn(f)
+	}
+	if len(f.probeErrors) > 0 {
+		err := f.probeErrors[0]
+		f.probeErrors = f.probeErrors[1:]
+		return err
+	}
+	current := f.capture(sessionID)
+	if !current.alive ||
+		current.generation != generation ||
+		!current.rollout.equal(rollout) ||
+		current.composer != codexComposerEmpty ||
+		!isAgentInputReady("codex", current.content) {
+		return fmt.Errorf("%w: target composer is not ready", errCodexResumeOnPaneChange)
+	}
+	return nil
 }
 
 func (f *fakeCodexInputIO) submitIfEmpty(
@@ -1337,7 +1376,7 @@ func TestSubmitCodexInputAcceptsProviderNativeQueuedMessage(t *testing.T) {
 	}
 }
 
-func TestSubmitCodexInputKeepsPendingPTYInputQueuedUntilAtomicPreflightIsSafe(t *testing.T) {
+func TestCodexCoordinatorKeepsPendingPTYInputQueuedUntilAtomicPreflightIsSafe(t *testing.T) {
 	body := "queued behind native input without losing or duplicating either producer"
 	ready := codexReadyPane("")
 	io := &fakeCodexInputIO{
@@ -1347,9 +1386,21 @@ func TestSubmitCodexInputKeepsPendingPTYInputQueuedUntilAtomicPreflightIsSafe(t 
 			nil,
 		},
 	}
+	coordinator := newCodexInputCoordinator()
 
-	if err := submitCodexInput(io, "agent:@pending-pty", body, testCodexSubmitConfig()); err != nil {
-		t.Fatalf("pending input should remain queued until safe preflight: %v", err)
+	if err := coordinator.submit(io, "agent:@pending-pty", body, testCodexSubmitConfig()); !IsInputPending(err) {
+		t.Fatalf("pending input should remain durably queued: %v", err)
+	}
+	if io.submitAttempts != 1 || len(io.pastes) != 0 || io.enters != 0 {
+		t.Fatalf(
+			"contended attempt=%d pastes=%#v enters=%d, want one preflight and no mutation",
+			io.submitAttempts,
+			io.pastes,
+			io.enters,
+		)
+	}
+	if err := coordinator.submit(io, "agent:@pending-pty", body, testCodexSubmitConfig()); err != nil {
+		t.Fatalf("resume after pending input cleared: %v", err)
 	}
 	if io.submitAttempts != 2 || len(io.pastes) != 1 || io.pastes[0] != body || io.enters != 1 {
 		t.Fatalf(
@@ -1473,6 +1524,62 @@ func TestCodexCoordinatorForeignDraftSurvivesRestartAndResumesSameReceipt(t *tes
 	}
 	if len(clearIO.pastes) != 1 || clearIO.pastes[0] != body || clearIO.enters != 1 {
 		t.Fatalf("restart actions pastes=%#v enters=%d", clearIO.pastes, clearIO.enters)
+	}
+}
+
+func TestCodexCoordinatorUnchangedForeignDraftDoesNotRewritePendingState(t *testing.T) {
+	const (
+		sessionID  = "agent:@foreign-unchanged"
+		generation = "generation-foreign-unchanged"
+		body       = "keep this exact durable payload without rewrite churn"
+		receipt    = "chat-request-foreign-unchanged"
+	)
+	ready := codexReadyPane("")
+	foreign := ready + "\n› user-owned draft remains unchanged\n"
+	memory := newMemoryCodexTransactionStore()
+	store := &countingCodexStore{codexTransactionStore: memory}
+	coordinator := newCodexInputCoordinatorWithStore(store)
+	io := &fakeCodexInputIO{
+		captures:    []string{foreign},
+		states:      []codexComposerState{codexComposerHasDraft},
+		generations: []string{generation},
+		clock:       time.Now().UTC(),
+	}
+
+	if err := coordinator.submitWithReceipt(io, sessionID, body, receipt, testCodexSubmitConfig()); !IsInputPending(err) {
+		t.Fatalf("seed foreign-draft pending transaction: %v", err)
+	}
+	initialSaves := store.saves.Load()
+	if initialSaves != 1 {
+		t.Fatalf("initial durable saves = %d, want one prepared owner", initialSaves)
+	}
+	before, found, err := store.Receipt(sessionID, generation, receipt)
+	if err != nil || !found {
+		t.Fatalf("read initial receipt found=%v err=%v", found, err)
+	}
+
+	for range 5 {
+		if err := coordinator.submitWithReceipt(io, sessionID, body, receipt, testCodexSubmitConfig()); !IsInputPending(err) {
+			t.Fatalf("unchanged foreign-draft retry: %v", err)
+		}
+	}
+	after, found, err := store.Receipt(sessionID, generation, receipt)
+	if err != nil || !found {
+		t.Fatalf("read unchanged receipt found=%v err=%v", found, err)
+	}
+	if got := store.saves.Load(); got != initialSaves {
+		t.Fatalf("durable saves under unchanged foreign draft = %d, want unchanged %d", got, initialSaves)
+	}
+	if after != before {
+		t.Fatalf("pending record changed under identical contention:\nbefore=%#v\nafter=%#v", before, after)
+	}
+	if len(io.pastes) != 0 || io.enters != 0 || io.submitAttempts != 0 {
+		t.Fatalf(
+			"foreign draft reached mutation: attempts=%d pastes=%#v enters=%d",
+			io.submitAttempts,
+			io.pastes,
+			io.enters,
+		)
 	}
 }
 
@@ -1614,6 +1721,118 @@ func TestWatcherPendingDriverResumesSolePreparedReceiptExactlyOnce(t *testing.T)
 	}
 	if len(io.pastes) != 1 || io.pastes[0] != body || io.enters != 1 {
 		t.Fatalf("driver actions pastes=%#v enters=%d", io.pastes, io.enters)
+	}
+}
+
+func TestWatcherPendingDriverPermanentPTYContentionUsesOnlyBoundedReadOnlyProbes(t *testing.T) {
+	const (
+		sessionID  = "agent:@pending-driver-pty"
+		generation = "generation-pending-driver-pty"
+		body       = "one transaction waits without durable contention churn"
+		receipt    = "chat-request-pending-driver-pty"
+	)
+	memory := newMemoryCodexTransactionStore()
+	record := codexTransactionRecord{
+		SchemaVersion:     codexTransactionSchemaVersion,
+		TransactionID:     "transaction-pending-driver-pty",
+		SessionID:         sessionID,
+		SessionGeneration: generation,
+		AcceptanceReceipt: receipt,
+		Action:            "submit_codex_input",
+		Phase:             codexTransactionPrepared,
+		PayloadSHA256:     codexSHA256(body),
+		Instruction:       body,
+		InstructionSHA256: codexSHA256(body),
+		RolloutPath:       fakeCodexRollout(generation).Path,
+		RolloutSessionID:  fakeCodexRollout(generation).SessionID,
+		CreatedAt:         time.Now().UTC(),
+		UpdatedAt:         time.Now().UTC(),
+		Detail:            "durably pending while provider input remained occupied",
+	}
+	if err := memory.Save(record); err != nil {
+		t.Fatalf("seed pending record: %v", err)
+	}
+	store := &countingCodexStore{codexTransactionStore: memory}
+	var contended atomic.Bool
+	contended.Store(true)
+	probed := make(chan struct{}, 8)
+	submitted := make(chan struct{}, 1)
+	io := &fakeCodexInputIO{
+		captures:    []string{codexReadyPane("")},
+		states:      []codexComposerState{codexComposerEmpty},
+		generations: []string{generation},
+		submitted:   submitted,
+	}
+	io.probeFn = func(*fakeCodexInputIO) error {
+		probed <- struct{}{}
+		if contended.Load() {
+			return fmt.Errorf(
+				"%w: target application has 3 unconsumed PTY input bytes",
+				errCodexMutationConflict,
+			)
+		}
+		return nil
+	}
+	w := New(time.Second)
+	w.codexInput = newCodexInputCoordinatorWithStore(store)
+	w.codexInputIO = io
+	w.targetCommandResolver = func(target string) (string, bool) {
+		return "codex", target == sessionID
+	}
+
+	w.startCodexPendingResume(sessionID)
+	for range 2 {
+		select {
+		case <-probed:
+		case <-time.After(time.Second):
+			t.Fatal("pending driver did not perform its bounded PTY readiness probes")
+		}
+	}
+	if got := store.saves.Load(); got != 0 {
+		t.Fatalf("durable saves during unchanged PTY contention = %d, want zero", got)
+	}
+	if io.submitAttempts != 0 || len(io.pastes) != 0 || io.enters != 0 {
+		t.Fatalf(
+			"PTY contention reached mutation: attempts=%d pastes=%#v enters=%d",
+			io.submitAttempts,
+			io.pastes,
+			io.enters,
+		)
+	}
+
+	contended.Store(false)
+	select {
+	case <-submitted:
+	case <-time.After(2 * time.Second):
+		t.Fatal("pending driver did not submit after PTY ownership cleared")
+	}
+	deadline := time.Now().Add(time.Second)
+	for {
+		settled, found, err := store.Receipt(sessionID, generation, receipt)
+		if err != nil {
+			t.Fatalf("read settled receipt: %v", err)
+		}
+		if found && settled.Phase == codexTransactionConfirmed {
+			if settled.TransactionID != record.TransactionID {
+				t.Fatalf("settled transaction = %s, want %s", settled.TransactionID, record.TransactionID)
+			}
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("pending receipt did not settle: found=%v record=%#v", found, settled)
+		}
+		time.Sleep(time.Millisecond)
+	}
+	if got := store.saves.Load(); got != 3 {
+		t.Fatalf("durable saves after clearance = %d, want enter intent, ambiguity, confirmation only", got)
+	}
+	if io.submitAttempts != 1 || len(io.pastes) != 1 || io.pastes[0] != body || io.enters != 1 {
+		t.Fatalf(
+			"resumed actions attempts=%d pastes=%#v enters=%d, want one exact submission",
+			io.submitAttempts,
+			io.pastes,
+			io.enters,
+		)
 	}
 }
 
