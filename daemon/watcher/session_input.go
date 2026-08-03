@@ -75,16 +75,10 @@ type sessionInputProvider struct {
 }
 
 func sessionInputProviderForCommand(command string) sessionInputProvider {
-	adapter := sessionInputProvider{submitKey: "Enter"}
-	switch {
-	case isCursorAgentCommand(command):
-		adapter.settle = 400 * time.Millisecond
-	case isGrokCommand(command):
-		adapter.settle = 300 * time.Millisecond
-	case isClaudeCommand(command):
-		adapter.settle = 250 * time.Millisecond
+	return sessionInputProvider{
+		submitKey: "Enter",
+		settle:    tmuxSubmitDelay(command),
 	}
-	return adapter
 }
 
 type sessionInputPane struct {

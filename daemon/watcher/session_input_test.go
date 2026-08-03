@@ -154,15 +154,24 @@ func fixedSessionInputResolver(identity targetProcessIdentity) func(string) (tar
 	return func(string) (targetProcessIdentity, bool) { return identity, true }
 }
 
-func TestSessionInputCodexAndClaudeUseExactCommonSubmit(t *testing.T) {
-	for _, command := range []string{"codex --no-alt-screen", "claude --permission-mode bypassPermissions"} {
-		t.Run(command, func(t *testing.T) {
+func TestSessionInputProviderQueueUsesCanonicalSubmitDelay(t *testing.T) {
+	tests := []struct {
+		command string
+		settle  string
+	}{
+		{command: "codex --no-alt-screen", settle: "sleep 0.120"},
+		{command: "claude --permission-mode bypassPermissions", settle: "sleep 0.250"},
+		{command: "cursor-agent --force", settle: "sleep 0.400"},
+		{command: "grok --no-alt-screen", settle: "sleep 0.300"},
+	}
+	for _, test := range tests {
+		t.Run(test.command, func(t *testing.T) {
 			io := newFakeSessionInputIO()
 			owner := newSessionInputOwner(io)
-			identity := testSessionInputIdentity(command)
-			payload := "你好, Claude/Codex 👋\nline two\n\n"
+			identity := testSessionInputIdentity(test.command)
+			payload := "你好, providers 👋\nline two\n\n"
 
-			result, err := owner.submit("agent:@1", identity, fixedSessionInputResolver(identity), command, payload, "")
+			result, err := owner.submit("agent:@1", identity, fixedSessionInputResolver(identity), test.command, payload, "")
 			if err != nil || result.Outcome != InputAccepted {
 				t.Fatalf("submit = (%+v, %v), want accepted", result, err)
 			}
@@ -172,27 +181,6 @@ func TestSessionInputCodexAndClaudeUseExactCommonSubmit(t *testing.T) {
 			}
 			if len(io.queues) != 1 {
 				t.Fatalf("queues = %d, want one", len(io.queues))
-			}
-			assertSingleSubmitQueue(t, io.queues[0], "Enter")
-		})
-	}
-}
-
-func TestSessionInputCursorAndGrokRouteThroughSharedOwner(t *testing.T) {
-	tests := []struct {
-		command string
-		settle  string
-	}{
-		{command: "cursor-agent --force", settle: "sleep 0.400"},
-		{command: "grok --no-alt-screen", settle: "sleep 0.300"},
-	}
-	for _, test := range tests {
-		t.Run(test.command, func(t *testing.T) {
-			io := newFakeSessionInputIO()
-			owner := newSessionInputOwner(io)
-			identity := testSessionInputIdentity(test.command)
-			if _, err := owner.submit("agent:@1", identity, fixedSessionInputResolver(identity), test.command, "hello", ""); err != nil {
-				t.Fatal(err)
 			}
 			assertSingleSubmitQueue(t, io.queues[0], "Enter")
 			if indexOf(io.queues[0], test.settle) < 0 {
