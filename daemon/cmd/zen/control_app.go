@@ -26,6 +26,7 @@ type controlWatcher interface {
 	SettleAgentInputAccepted(id string, handoffStartedAt time.Time, phase, summary string) (*classifier.Agent, error)
 	SendInput(sessionID, text string) error
 	SendInputWhenReady(sessionID, command, text string) error
+	SubmitInputWhenReady(sessionID, command, payload string) error
 	KillSession(sessionID string) error
 	CapturePaneContent(sessionID string) (string, error)
 }
@@ -242,7 +243,7 @@ func (a *controlApp) handleAgentSpawn(req control.Request) control.Response {
 	if prompt != "" {
 		var sendErr error
 		if watcher.IsCodexCommand(command) {
-			sendErr = a.submitCodexHandoff(agentID, command, ensureTrailingNewline(prompt), true)
+			sendErr = a.submitCodexHandoff(agentID, command, prompt, true)
 		} else {
 			sendErr = a.watcher.SendInputWhenReady(agentID, command, ensureTrailingNewline(prompt))
 			if sendErr != nil {
@@ -285,12 +286,9 @@ func (a *controlApp) handleAgentSend(req control.Request) control.Response {
 	if agent != nil && !agent.Delegated && !agent.Hidden && !req.Force {
 		return control.ErrorResponse("agent_not_delegated", "Refusing to send input to a session that was not created as a Brain delegated agent. Use --force only when you intentionally want to control this external session.")
 	}
-	text := req.Text
-	if strings.TrimSpace(text) == "" && !req.Submit {
+	payload := req.Text
+	if strings.TrimSpace(payload) == "" && !req.Submit {
 		return control.ErrorResponse("missing_text", "Text is required.")
-	}
-	if req.Submit {
-		text = ensureTrailingNewline(text)
 	}
 	if agent != nil && !a.watcher.HasSession(agentID) {
 		return control.ErrorResponse("agent_session_unavailable", "Agent is listed but the tmux target is no longer available. Refresh the agent list and spawn a new session if needed.")
@@ -299,9 +297,12 @@ func (a *controlApp) handleAgentSend(req control.Request) control.Response {
 	codexHandoff := false
 	if req.Submit && agent != nil && watcher.IsCodexCommand(agent.Command) {
 		codexHandoff = true
-		sendErr = a.submitCodexHandoff(agentID, agent.Command, text, false)
+		sendErr = a.submitCodexHandoff(agentID, agent.Command, payload, false)
 	} else {
-		sendErr = a.watcher.SendInput(agentID, text)
+		if req.Submit {
+			payload = ensureTrailingNewline(payload)
+		}
+		sendErr = a.watcher.SendInput(agentID, payload)
 	}
 	if sendErr != nil {
 		if !codexHandoff {
@@ -321,9 +322,9 @@ func (a *controlApp) handleAgentSend(req control.Request) control.Response {
 // delegated prompt and confirmed Codex follow-ups. The watcher owns the
 // paste-once/Enter-once provider transaction; this owner settles the canonical
 // Agent projection from that same result and never replays an ambiguous send.
-func (a *controlApp) submitCodexHandoff(agentID, command, text string, initial bool) error {
+func (a *controlApp) submitCodexHandoff(agentID, command, payload string, initial bool) error {
 	handoffStartedAt := time.Now().UTC()
-	err := a.watcher.SendInputWhenReady(agentID, command, text)
+	err := a.watcher.SubmitInputWhenReady(agentID, command, payload)
 	if err != nil {
 		prefix := "Delegated follow-up was not submitted: "
 		if initial {

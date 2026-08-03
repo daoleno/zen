@@ -126,6 +126,9 @@ func runDaemon(args []string, stderr io.Writer) error {
 	}
 
 	w := watcher.New(500 * time.Millisecond)
+	if err := w.ConfigureCodexInputState(authManager.StorageDir()); err != nil {
+		return fmt.Errorf("initialize durable Codex input: %w", err)
+	}
 	w.ConfigureDelegatedResources(authManager.DaemonID())
 	w.SetActivityProbe(classifier.DefaultActivityProbe())
 	go func() {

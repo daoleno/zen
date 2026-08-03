@@ -14,11 +14,13 @@ import (
 )
 
 type fakeWatcher struct {
-	agents    []*classifier.Agent
-	sessions  map[string]*classifier.Agent
-	created   []createdCall
-	sentCalls []sentCall
-	killed    []string
+	agents      []*classifier.Agent
+	sessions    map[string]*classifier.Agent
+	created     []createdCall
+	sentCalls   []sentCall
+	readyCalls  []sentCall
+	submitCalls []sentCall
+	killed      []string
 }
 
 type createdCall struct {
@@ -89,7 +91,13 @@ func (w *fakeWatcher) SendInput(sessionID, text string) error {
 }
 
 func (w *fakeWatcher) SendInputWhenReady(sessionID, _ string, text string) error {
+	w.readyCalls = append(w.readyCalls, sentCall{sessionID: sessionID, text: text})
 	return w.SendInput(sessionID, text)
+}
+
+func (w *fakeWatcher) SubmitInputWhenReady(sessionID, _ string, payload string) error {
+	w.submitCalls = append(w.submitCalls, sentCall{sessionID: sessionID, text: payload})
+	return w.SendInput(sessionID, payload)
 }
 
 func (w *fakeWatcher) KillSession(sessionID string) error {
@@ -746,6 +754,72 @@ func TestServiceHeartbeatWakesExistingHost(t *testing.T) {
 			t.Fatalf("heartbeat message missing %q:\n%s", want, fw.sentCalls[0].text)
 		}
 	}
+}
+
+func TestServiceHeartbeatUsesReadinessOnlyForCodexHost(t *testing.T) {
+	tests := []struct {
+		provider string
+		command  string
+		ready    bool
+	}{
+		{provider: "codex", command: "codex --no-alt-screen", ready: true},
+		{provider: "claude", command: "claude --permission-mode bypassPermissions"},
+		{provider: "cursor", command: "cursor-agent --force"},
+		{provider: "grok", command: "grok --no-alt-screen"},
+		{provider: "custom", command: "my-agent --interactive"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.provider, func(t *testing.T) {
+			store, err := NewStore(t.TempDir())
+			if err != nil {
+				t.Fatal(err)
+			}
+			hostID := "brain-agent-brain-hidden:@1"
+			if err := store.SetHostSession(hostID, tc.provider); err != nil {
+				t.Fatal(err)
+			}
+			fw := &fakeWatcher{
+				sessions: map[string]*classifier.Agent{
+					hostID: {
+						ID:      hostID,
+						Name:    "Brain",
+						State:   classifier.StateRunning,
+						Hidden:  true,
+						Command: tc.command,
+					},
+				},
+			}
+			service := NewService(store, fw, work.NewExecutorConfig(tc.provider, map[string]work.Executor{
+				tc.provider: {
+					Name:    tc.provider,
+					Command: tc.command,
+					Kind:    tc.provider,
+					Runtime: work.AgentRuntimeTmux,
+				},
+			}))
+
+			woke, err := service.Heartbeat(HeartbeatEvent{Reason: "round3-provider-contract"})
+			if err != nil || !woke {
+				t.Fatalf("heartbeat woke=%v err=%v", woke, err)
+			}
+			if len(fw.sentCalls) != 1 {
+				t.Fatalf("baseline sends = %#v", fw.sentCalls)
+			}
+			if got := len(fw.submitCalls); got != btoi(tc.ready) {
+				t.Fatalf("structured submit calls = %#v, want Codex=%v", fw.submitCalls, tc.ready)
+			}
+			if len(fw.readyCalls) != 0 {
+				t.Fatalf("legacy readiness calls = %#v", fw.readyCalls)
+			}
+		})
+	}
+}
+
+func btoi(value bool) int {
+	if value {
+		return 1
+	}
+	return 0
 }
 
 func TestServiceHeartbeatNoopsWithoutHost(t *testing.T) {

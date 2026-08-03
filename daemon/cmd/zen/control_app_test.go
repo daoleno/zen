@@ -15,14 +15,15 @@ import (
 )
 
 type fakeControlWatcher struct {
-	agents   map[string]*classifier.Agent
-	created  []watcher.CreateSessionOptions
-	sent     []fakeControlSend
-	killed   []string
-	captures map[string]string
-	progress []fakeControlProgress
-	sendErr  error
-	ready    []fakeControlSend
+	agents    map[string]*classifier.Agent
+	created   []watcher.CreateSessionOptions
+	sent      []fakeControlSend
+	killed    []string
+	captures  map[string]string
+	progress  []fakeControlProgress
+	sendErr   error
+	ready     []fakeControlSend
+	submitted []fakeControlSend
 }
 
 type fakeControlSend struct {
@@ -123,6 +124,11 @@ func (w *fakeControlWatcher) SendInput(sessionID, text string) error {
 func (w *fakeControlWatcher) SendInputWhenReady(sessionID, _ string, text string) error {
 	w.ready = append(w.ready, fakeControlSend{id: sessionID, text: text})
 	return w.SendInput(sessionID, text)
+}
+
+func (w *fakeControlWatcher) SubmitInputWhenReady(sessionID, _ string, payload string) error {
+	w.submitted = append(w.submitted, fakeControlSend{id: sessionID, text: payload})
+	return w.SendInput(sessionID, payload)
 }
 
 func (w *fakeControlWatcher) KillSession(sessionID string) error {
@@ -513,11 +519,11 @@ func TestControlAppAgentSendAndCapture(t *testing.T) {
 	if !sendResp.OK {
 		t.Fatalf("send response = %#v", sendResp)
 	}
-	if len(fw.sent) != 1 || fw.sent[0].text != "continue\n" {
+	if len(fw.sent) != 1 || fw.sent[0].text != "continue" {
 		t.Fatalf("sent calls = %#v", fw.sent)
 	}
-	if len(fw.ready) != 1 || fw.ready[0].text != "continue\n" {
-		t.Fatalf("ready sends = %#v", fw.ready)
+	if len(fw.submitted) != 1 || fw.submitted[0].text != "continue" || len(fw.ready) != 0 {
+		t.Fatalf("structured submits = %#v ready sends = %#v", fw.submitted, fw.ready)
 	}
 
 	captureResp := app.HandleControlRequest(control.Request{Type: "agent_capture", AgentID: "brain-agent-worker:@1"})
@@ -603,8 +609,8 @@ func TestControlAppAgentSendFailureMarksAgentFailedAttention(t *testing.T) {
 	if agent.State != classifier.StateFailed || agent.Attention != "failed" || !agent.NeedsAttention {
 		t.Fatalf("agent after failed submission = %#v", agent)
 	}
-	if len(fw.ready) != 1 {
-		t.Fatalf("ready sends = %#v", fw.ready)
+	if len(fw.submitted) != 1 || len(fw.ready) != 0 {
+		t.Fatalf("structured submits = %#v ready sends = %#v", fw.submitted, fw.ready)
 	}
 }
 
@@ -642,8 +648,32 @@ func TestControlAppConfirmedCodexSendClearsStickyLaunchFailure(t *testing.T) {
 	if strings.Contains(agent.Summary, "not submitted") {
 		t.Fatalf("sticky launch failure survived confirmed provider acceptance: %#v", agent)
 	}
-	if len(fw.ready) != 1 || len(fw.sent) != 1 {
-		t.Fatalf("ready=%#v sent=%#v, want one handoff transaction", fw.ready, fw.sent)
+	if len(fw.submitted) != 1 || len(fw.ready) != 0 || len(fw.sent) != 1 {
+		t.Fatalf("submitted=%#v ready=%#v sent=%#v, want one handoff transaction", fw.submitted, fw.ready, fw.sent)
+	}
+}
+
+func TestControlAppStructuredCodexSubmitPreservesFinalLineEnding(t *testing.T) {
+	fw := newFakeControlWatcher()
+	fw.agents["brain-agent-worker:@1"] = &classifier.Agent{
+		ID:        "brain-agent-worker:@1",
+		State:     classifier.StateRunning,
+		Command:   "codex --no-alt-screen",
+		Delegated: true,
+	}
+	app := &controlApp{watcher: fw}
+
+	resp := app.HandleControlRequest(control.Request{
+		Type:    "agent_send",
+		AgentID: "brain-agent-worker:@1",
+		Text:    "alpha\r\nβ\n",
+		Submit:  true,
+	})
+	if !resp.OK {
+		t.Fatalf("response = %#v", resp)
+	}
+	if len(fw.submitted) != 1 || fw.submitted[0].text != "alpha\r\nβ\n" {
+		t.Fatalf("structured payload = %#v", fw.submitted)
 	}
 }
 
