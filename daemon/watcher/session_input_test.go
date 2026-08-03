@@ -21,9 +21,12 @@ type fakeSessionInputIO struct {
 	ledger         sessionInputReceiptLedger
 	ledgerWrites   []sessionInputReceiptLedger
 	writeErrors    map[int]error
+	ledgerReads    int
+	readErrors     map[int]error
 	operations     []string
 	runStarted     bool
 	runErr         error
+	startedQueues  int
 	afterLoad      func()
 	activeQueues   int
 	maxQueues      int
@@ -39,6 +42,7 @@ func newFakeSessionInputIO() *fakeSessionInputIO {
 		buffers:     make(map[string]string),
 		ledger:      emptySessionInputReceiptLedger(),
 		writeErrors: make(map[int]error),
+		readErrors:  make(map[int]error),
 	}
 }
 
@@ -78,6 +82,9 @@ func (io *fakeSessionInputIO) runQueue(args []string) (bool, error) {
 	buffer := queueArgumentAfter(args, "-b")
 	io.submissions = append(io.submissions, io.buffers[buffer])
 	started, err := io.runStarted, io.runErr
+	if err == nil || started {
+		io.startedQueues++
+	}
 	io.activeQueues--
 	io.mu.Unlock()
 	return started, err
@@ -86,6 +93,10 @@ func (io *fakeSessionInputIO) runQueue(args []string) (bool, error) {
 func (io *fakeSessionInputIO) receiptLedger(string) (sessionInputReceiptLedger, error) {
 	io.mu.Lock()
 	defer io.mu.Unlock()
+	io.ledgerReads++
+	if err := io.readErrors[io.ledgerReads]; err != nil {
+		return sessionInputReceiptLedger{}, err
+	}
 	return cloneSessionInputReceiptLedger(io.ledger), nil
 }
 
@@ -463,6 +474,46 @@ func TestSessionInputAcceptanceWriteFailureLeavesDurableAmbiguityAcrossRestart(t
 	if InputOutcomeFromError(retryErr) != InputAmbiguous || len(io.queues) != 1 {
 		t.Fatalf("durable ambiguity replayed after restart: outcome=%s queues=%d err=%v",
 			InputOutcomeFromError(retryErr), len(io.queues), retryErr)
+	}
+}
+
+func TestSessionInputRollbackReadbackFailureRemainsSafeToRetryAfterRestart(t *testing.T) {
+	io := newFakeSessionInputIO()
+	io.runErr = errors.New("tmux queue did not start")
+	io.readErrors[3] = errors.New("rollback readback unavailable")
+	identity := testSessionInputIdentity("claude")
+	resolver := fixedSessionInputResolver(identity)
+
+	_, firstErr := newSessionInputOwner(io).submit(
+		"agent:@1", identity, resolver, identity.Command, "message", "receipt",
+	)
+	if InputOutcomeFromError(firstErr) != InputNotSubmitted {
+		t.Fatalf("first outcome=%s err=%v", InputOutcomeFromError(firstErr), firstErr)
+	}
+	if !strings.Contains(firstErr.Error(), "rollback readback unavailable") {
+		t.Fatalf("first error omitted rollback confirmation failure: %v", firstErr)
+	}
+	if _, found := io.ledger.entry("receipt"); found {
+		t.Fatalf("rollback write did not erase ambiguity marker: ledger=%#v", io.ledger)
+	}
+	if io.startedQueues != 0 {
+		t.Fatalf("provider queues started before retry=%d, want zero", io.startedQueues)
+	}
+
+	io.runErr = nil
+	io.readErrors = map[int]error{}
+	result, retryErr := newSessionInputOwner(io).submit(
+		"agent:@1", identity, resolver, identity.Command, "message", "receipt",
+	)
+	if retryErr != nil || result.Outcome != InputAccepted {
+		t.Fatalf("restart retry = (%+v, %v), want accepted", result, retryErr)
+	}
+	if io.startedQueues != 1 {
+		t.Fatalf("provider queues started across both attempts=%d, want one", io.startedQueues)
+	}
+	entry, found := io.ledger.entry("receipt")
+	if !found || entry.Outcome != InputAccepted {
+		t.Fatalf("retry receipt was not durably accepted: entry=%#v found=%v", entry, found)
 	}
 }
 

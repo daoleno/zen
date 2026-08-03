@@ -551,7 +551,7 @@ func (owner *sessionInputOwner) rollbackReceiptMarker(
 	cause error,
 ) error {
 	if err := owner.writeAndConfirmReceiptLedger(target, original); err != nil {
-		return ambiguousSubmission(
+		return definitelyNotSubmitted(
 			receipt,
 			fmt.Errorf("%v; durable ambiguity rollback could not be confirmed: %w", cause, err),
 		)
