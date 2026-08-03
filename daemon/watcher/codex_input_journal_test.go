@@ -114,7 +114,7 @@ func TestCodexRolloutReconciliationRequiresExactCurrentUserMessage(t *testing.T)
 	if err := os.MkdirAll(sessionDir, 0o700); err != nil {
 		t.Fatalf("create sessions: %v", err)
 	}
-	instruction := "ZEN_TX=exact;PATH_B64URL=L3RtcA;PAYLOAD_SHA256=abc;ACTION=follow"
+	instruction := "exact original user payload"
 	now := time.Now().UTC()
 	rows := []map[string]any{
 		codexJournalSessionMeta(now, "session-reconcile"),
@@ -166,7 +166,7 @@ func TestCodexRolloutReconciliationRejectsMalformedTimestamp(t *testing.T) {
 	if err := os.MkdirAll(sessionDir, 0o700); err != nil {
 		t.Fatalf("create sessions: %v", err)
 	}
-	instruction := "ZEN_TX=malformed-timestamp"
+	instruction := "original payload with malformed transaction timestamp"
 	path := filepath.Join(sessionDir, "rollout-malformed.jsonl")
 	writeCodexJournalTestRows(t, path, []map[string]any{
 		codexJournalSessionMeta(time.Now().UTC(), "session-malformed"),

@@ -5,7 +5,6 @@ import (
 	"bytes"
 	"crypto/rand"
 	"crypto/sha256"
-	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -131,9 +130,7 @@ func (store *memoryCodexTransactionStore) Receipt(
 	return codexTransactionRecord{}, false, nil
 }
 
-func (*memoryCodexTransactionStore) WriteEnvelope(string, []byte) (string, error) {
-	return "", fmt.Errorf("durable Codex envelope storage is not configured")
-}
+func (*memoryCodexTransactionStore) WriteEnvelope(string, []byte) (string, error) { return "", nil }
 
 func (*memoryCodexTransactionStore) Maintain(time.Time) error { return nil }
 
@@ -543,15 +540,6 @@ func newCodexTransactionID() (string, error) {
 func codexSHA256(value string) string {
 	digest := sha256.Sum256([]byte(value))
 	return hex.EncodeToString(digest[:])
-}
-
-func codexEnvelopeInstruction(transactionID, envelopePath, payloadSHA256 string) string {
-	return fmt.Sprintf(
-		"ZEN_TX=%s;PATH_B64URL=%s;PAYLOAD_SHA256=%s;ACTION=decode_PATH_B64URL_then_read_exact_UTF8_verify_PAYLOAD_SHA256_and_follow_task",
-		transactionID,
-		base64.RawURLEncoding.EncodeToString([]byte(envelopePath)),
-		payloadSHA256,
-	)
 }
 
 func codexRolloutContainsExactUserMessage(

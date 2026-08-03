@@ -189,7 +189,7 @@ func (io *targetBoundCodexInputIO) capture(sessionID string) codexPaneCapture {
 	return io.codexInputIO.capture(sessionID)
 }
 
-func (io *targetBoundCodexInputIO) pasteIfEmpty(
+func (io *targetBoundCodexInputIO) submitIfEmpty(
 	sessionID string,
 	generation string,
 	rollout codexRolloutIdentity,
@@ -199,18 +199,7 @@ func (io *targetBoundCodexInputIO) pasteIfEmpty(
 	if err := io.guard(); err != nil {
 		return err
 	}
-	return io.codexInputIO.pasteIfEmpty(sessionID, generation, rollout, transactionID, body)
-}
-
-func (io *targetBoundCodexInputIO) mutateOwned(
-	sessionID string,
-	prepared codexPreparedInput,
-	mutation codexOwnedMutation,
-) error {
-	if err := io.guard(); err != nil {
-		return err
-	}
-	return io.codexInputIO.mutateOwned(sessionID, prepared, mutation)
+	return io.codexInputIO.submitIfEmpty(sessionID, generation, rollout, transactionID, body)
 }
 
 func (io *targetBoundCodexInputIO) advanceStartup(sessionID, generation string) error {

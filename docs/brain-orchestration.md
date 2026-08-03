@@ -40,8 +40,9 @@ Event dedupe keys are unique within one Work. An actionable Event is durably
 claimed for one Brain host Session before input is sent. The Event ID and claim
 token form an idempotency receipt in the receiving Session metadata. The
 Session input boundary checks that durable receipt before enqueueing. For Codex,
-the caller receipt is part of the same generation-bound input transaction that
-stores either the exact short input or its content-addressed long envelope; the
+the caller receipt is part of the same generation-bound input transaction. Zen
+may keep the exact payload in a content-addressed internal spool, but submits
+the original user text—not transaction metadata—to the provider. The
 transaction closes the confirmation-to-Session-metadata crash window. A
 successful send is then durably acknowledged in the Event before consumption.
 After interruption, either acknowledgement or the matching Session or
