@@ -55,6 +55,10 @@ func (w *brainServiceTestWatcher) KillSession(string) error {
 	return nil
 }
 
+func (w *brainServiceTestWatcher) CapturePaneContent(string) (string, error) {
+	return "", nil
+}
+
 // killTrackingWatcher adds CreateSession and KillSession tracking needed for
 // snapshot/live delegated coverage.
 type killTrackingWatcher struct {

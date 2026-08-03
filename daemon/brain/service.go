@@ -25,6 +25,7 @@ var (
 
 const (
 	codexFullAuthorizationFlag = work.CodexFullAuthorizationFlag
+	eventClaimRecoveryDelay    = 2 * time.Minute
 )
 
 type Watcher interface {
@@ -35,6 +36,7 @@ type Watcher interface {
 	SendInput(sessionID, text string) error
 	SendInputWhenReady(sessionID, command, text string) error
 	KillSession(sessionID string) error
+	CapturePaneContent(sessionID string) (string, error)
 }
 
 type Service struct {
@@ -45,6 +47,9 @@ type Service struct {
 
 	dispatchMu      sync.Mutex
 	foregroundInput bool
+
+	reconcileMu                sync.Mutex
+	authoritativeInventorySeen bool
 }
 
 func NewService(store *Store, watcher Watcher, execs *work.ExecutorConfig) *Service {
@@ -494,15 +499,20 @@ func (s *Service) MigrateDelegatedSessionsV1(agents []*classifier.Agent) (bool, 
 	return s.store.MigrateDelegatedSessionsV1(candidates)
 }
 
-// DispatchPendingEvent is the complete automatic scheduler: claim one durable
-// actionable Event, start one Brain turn, then stop. No Event means no turn.
+// DispatchPendingEvent is the complete automatic scheduler: recover any
+// interrupted delivery, claim one durable actionable Event, start one Brain
+// turn, then stop. No Event means no turn.
 func (s *Service) DispatchPendingEvent() (bool, error) {
 	if s == nil || s.store == nil || s.watcher == nil {
 		return false, nil
 	}
 	s.dispatchMu.Lock()
 	defer s.dispatchMu.Unlock()
-	if s.foregroundInput {
+	unresolvedClaim, err := s.recoverInterruptedEventClaims()
+	if err != nil {
+		return false, err
+	}
+	if unresolvedClaim {
 		return false, nil
 	}
 	hostSession, err := s.store.HostSession()
@@ -513,28 +523,92 @@ func (s *Service) DispatchPendingEvent() (bool, error) {
 	if hostID == "" || !s.watcher.HasSession(hostID) {
 		return false, nil
 	}
+	if s.foregroundInput {
+		return false, nil
+	}
 	host := s.watcher.GetAgent(hostID)
 	if host != nil && (host.State == classifier.StateRunning || host.State == classifier.StateBlocked) {
 		return false, nil
 	}
-	event, claimed, err := s.store.ClaimNextActionableEvent()
+	event, claimed, err := s.store.ClaimNextActionableEvent(hostID)
 	if err != nil || !claimed {
 		return false, err
 	}
 	item, err := s.store.Work(event.WorkID)
 	if err != nil {
-		_ = s.store.ReleaseWorkEvent(event.ID, event.ClaimToken)
 		return false, err
 	}
 	message := formatWorkEventWake(item, event)
 	if err := s.watcher.SendInput(hostID, message+"\n"); err != nil {
-		_ = s.store.ReleaseWorkEvent(event.ID, event.ClaimToken)
 		return false, err
 	}
-	if err := s.store.ConsumeWorkEvent(event.ID, event.ClaimToken); err != nil {
+	if err := s.store.AcknowledgeWorkEventDelivery(event.ID, event.ClaimToken, hostID); err != nil {
+		return false, err
+	}
+	if err := s.store.ConsumeAcknowledgedWorkEvent(event.ID, event.ClaimToken, hostID); err != nil {
 		return false, err
 	}
 	return true, nil
+}
+
+func (s *Service) recoverInterruptedEventClaims() (bool, error) {
+	events, err := s.store.ClaimedActionableEvents()
+	if err != nil {
+		return false, err
+	}
+	now := s.nowUTC()
+	unresolved := false
+	for _, event := range events {
+		if event.DeliveryAcknowledgedAt != nil {
+			if _, err := s.store.RecoverWorkEventClaim(
+				event.ID,
+				event.ClaimToken,
+				event.DeliveryHostSessionID,
+				false,
+				false,
+			); err != nil {
+				return false, err
+			}
+			continue
+		}
+		observed := false
+		observationComplete := false
+		if s.watcher.HasSession(event.DeliveryHostSessionID) {
+			content, captureErr := s.watcher.CapturePaneContent(event.DeliveryHostSessionID)
+			if captureErr != nil {
+				return false, fmt.Errorf("observe Brain Event delivery: %w", captureErr)
+			}
+			observed = workEventDeliveryObserved(content, event)
+			observationComplete = true
+		} else {
+			observationComplete = true
+		}
+		expired := observationComplete &&
+			event.ClaimedAt != nil &&
+			!now.Before(event.ClaimedAt.Add(eventClaimRecoveryDelay))
+		changed, err := s.store.RecoverWorkEventClaim(
+			event.ID,
+			event.ClaimToken,
+			event.DeliveryHostSessionID,
+			observed,
+			expired,
+		)
+		if err != nil {
+			return false, err
+		}
+		if !changed {
+			unresolved = true
+		}
+	}
+	return unresolved, nil
+}
+
+func workEventDeliveryObserved(content string, event WorkEvent) bool {
+	return strings.TrimSpace(event.DeliveryHostSessionID) != "" &&
+		strings.TrimSpace(event.ID) != "" &&
+		strings.TrimSpace(event.ClaimToken) != "" &&
+		strings.Contains(content, "event_id: "+event.ID) &&
+		strings.Contains(content, "delivery_token: "+event.ClaimToken)
 }
 
 func formatWorkEventWake(item Work, event WorkEvent) string {
@@ -548,6 +622,7 @@ func formatWorkEventWake(item Work, event WorkEvent) string {
 		"status: " + string(item.Status),
 		"event_kind: " + event.Kind,
 		"event_id: " + event.ID,
+		"delivery_token: " + event.ClaimToken,
 	}
 	appendField := func(label, value string) {
 		value = strings.TrimSpace(value)
@@ -619,13 +694,16 @@ func (s *Service) ObserveHostSessionEvent(event watcher.SessionEvent) (bool, err
 	return false, nil
 }
 
-// ReconcileDelegatedSessions emits one deduplicated actionable Event only when
-// a durable delegated lease has expired. Healthy leases and unleased idle
-// panes remain waiting and do not poll Brain.
+// ReconcileDelegatedSessions handles first-inventory missing owners, expired
+// delegated leases, and interrupted Event delivery. Healthy leases and
+// unleased idle panes remain waiting; no Event means no Brain turn.
 func (s *Service) ReconcileDelegatedSessions(agents []*classifier.Agent) {
 	if s == nil || s.store == nil {
 		return
 	}
+	s.reconcileMu.Lock()
+	defer s.reconcileMu.Unlock()
+	firstAuthoritativeInventory := !s.authoritativeInventorySeen
 	byID := make(map[string]*classifier.Agent, len(agents))
 	for _, agent := range agents {
 		if agent != nil {
@@ -637,13 +715,26 @@ func (s *Service) ReconcileDelegatedSessions(agents []*classifier.Agent) {
 		log.Printf("brain Work reconciliation list failed: %v", err)
 		return
 	}
+	s.authoritativeInventorySeen = true
 	now := s.nowUTC()
 	for _, item := range items {
 		if item.Status == WorkDone || item.Status == WorkCancelled || strings.TrimSpace(item.OwnerSessionID) == "" {
 			continue
 		}
 		agent := byID[item.OwnerSessionID]
-		if agent == nil || !agent.Delegated || agent.Hidden {
+		if agent == nil {
+			if !firstAuthoritativeInventory {
+				continue
+			}
+			_, _, created, reconcileErr := s.store.ReconcileMissingWorkOwner(item.ID, item.OwnerSessionID)
+			if reconcileErr != nil {
+				log.Printf("brain missing Session reconciliation failed for %s: %v", item.OwnerSessionID, reconcileErr)
+			} else if created {
+				_, _ = s.DispatchPendingEvent()
+			}
+			continue
+		}
+		if !agent.Delegated || agent.Hidden {
 			continue
 		}
 		if agent.State == classifier.StateDone || agent.State == classifier.StateFailed || agent.State == classifier.StateRemoved {
@@ -692,6 +783,7 @@ func (s *Service) ReconcileDelegatedSessions(agents []*classifier.Agent) {
 			_, _ = s.DispatchPendingEvent()
 		}
 	}
+	_, _ = s.DispatchPendingEvent()
 }
 
 func (s *Service) SubscribeWork() (int, <-chan WorkChange) {

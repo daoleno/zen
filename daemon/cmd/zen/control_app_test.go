@@ -24,6 +24,7 @@ type fakeControlWatcher struct {
 	progress []fakeControlProgress
 	sendErr  error
 	ready    []fakeControlSend
+	onCreate func(string)
 }
 
 type fakeControlSend struct {
@@ -92,6 +93,9 @@ func (w *fakeControlWatcher) CreateSession(_ string, opts watcher.CreateSessionO
 		Hidden:    opts.Hidden,
 		Delegated: opts.Delegated && !opts.Hidden,
 		UpdatedAt: time.Date(2026, 5, 27, 9, 0, 0, 0, time.UTC),
+	}
+	if w.onCreate != nil {
+		w.onCreate(id)
 	}
 	return id, nil
 }
@@ -251,6 +255,84 @@ func TestControlAppAgentSpawnCreatesVisibleDetachedSession(t *testing.T) {
 	}
 	if strings.Contains(fw.sent[0].text, "[zen:"+"progress]") {
 		t.Fatalf("prompt should not contain stdout marker protocol:\n%s", fw.sent[0].text)
+	}
+}
+
+func TestControlAppAgentSpawnWorkCASPreservesIncumbentAndKillsOnlyLoser(t *testing.T) {
+	store := newControlBrainStore(t)
+	item, err := store.CreateWork(brain.Work{
+		Title:            "Race-owned Work",
+		Objective:        "Preserve the first delegated Session owner.",
+		Status:           brain.WorkOpen,
+		CompletionPolicy: brain.CompletionBounded,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	fw := newFakeControlWatcher()
+	incumbentID := "brain-agent-incumbent:@9"
+	fw.agents[incumbentID] = &classifier.Agent{
+		ID:        incumbentID,
+		State:     classifier.StateRunning,
+		Delegated: true,
+	}
+	fw.onCreate = func(string) {
+		if _, attachErr := store.AttachWorkOwner(item.ID, incumbentID); attachErr != nil {
+			t.Fatalf("attach incumbent: %v", attachErr)
+		}
+	}
+	app := &controlApp{
+		watcher:    fw,
+		brainStore: store,
+		execs: work.NewExecutorConfig("codex", map[string]work.Executor{
+			"codex": {Name: "codex", Command: "codex"},
+		}),
+	}
+
+	resp := app.HandleControlRequest(control.Request{
+		Type:   "agent_spawn",
+		Name:   "Losing worker",
+		Cwd:    "/repo/zen",
+		Prompt: "must lose the owner CAS",
+		WorkID: item.ID,
+	})
+	if resp.OK || resp.Error == nil || resp.Error.Code != "conflict" {
+		t.Fatalf("losing spawn response=%#v", resp)
+	}
+	if len(fw.created) != 1 || len(fw.killed) != 1 {
+		t.Fatalf("created=%#v killed=%#v", fw.created, fw.killed)
+	}
+	loserID := "brain-agent-losing-worker:@1"
+	if fw.killed[0] != loserID {
+		t.Fatalf("killed %q, want only new loser %q", fw.killed[0], loserID)
+	}
+	if fw.GetAgent(incumbentID) == nil {
+		t.Fatal("incumbent Session was terminated")
+	}
+	got, err := store.Work(item.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.OwnerSessionID != incumbentID || got.Status != brain.WorkRunning ||
+		len(fw.sent) != 0 {
+		t.Fatalf("incumbent Work=%#v sent=%#v", got, fw.sent)
+	}
+
+	alreadyOwned := app.HandleControlRequest(control.Request{
+		Type:   "agent_spawn",
+		Name:   "Rejected before creation",
+		Cwd:    "/repo/zen",
+		Prompt: "must not create another Session",
+		WorkID: item.ID,
+	})
+	if alreadyOwned.OK || alreadyOwned.Error == nil || alreadyOwned.Error.Code != "conflict" ||
+		len(fw.created) != 1 || len(fw.killed) != 1 {
+		t.Fatalf(
+			"pre-owned spawn=%#v created=%#v killed=%#v",
+			alreadyOwned,
+			fw.created,
+			fw.killed,
+		)
 	}
 }
 

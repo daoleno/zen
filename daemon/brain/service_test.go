@@ -20,6 +20,7 @@ type fakeWatcher struct {
 	sentCalls []sentCall
 	killed    []string
 	sendErr   error
+	captures  map[string]string
 }
 
 type createdCall struct {
@@ -86,6 +87,12 @@ func (w *fakeWatcher) CreateSession(_ string, opts watcher.CreateSessionOptions)
 
 func (w *fakeWatcher) SendInput(sessionID, text string) error {
 	w.sentCalls = append(w.sentCalls, sentCall{sessionID: sessionID, text: text})
+	if w.sendErr == nil {
+		if w.captures == nil {
+			w.captures = map[string]string{}
+		}
+		w.captures[sessionID] += text
+	}
 	return w.sendErr
 }
 
@@ -106,6 +113,10 @@ func (w *fakeWatcher) KillSession(sessionID string) error {
 	}
 	w.agents = nextAgents
 	return nil
+}
+
+func (w *fakeWatcher) CapturePaneContent(sessionID string) (string, error) {
+	return w.captures[sessionID], nil
 }
 
 func TestServiceSnapshotCreatesHiddenHostSession(t *testing.T) {

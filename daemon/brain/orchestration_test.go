@@ -2,6 +2,9 @@ package brain
 
 import (
 	"bytes"
+	"encoding/json"
+	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"sync"
@@ -52,6 +55,80 @@ func TestOrchestrationSchemaV0MigratesDeterministically(t *testing.T) {
 	}
 	if !bytes.Equal(first, second) {
 		t.Fatalf("second open rewrote deterministic migration:\nfirst:\n%s\nsecond:\n%s", first, second)
+	}
+}
+
+func TestOrchestrationSchemaV1BindsUnresolvedClaimDeterministically(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, "state", "orchestration.json")
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	hostID := "brain-agent-brain-hidden:@1"
+	hostRaw, err := json.Marshal(hostSessionFile{ID: hostID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "state", "host_session.json"), append(hostRaw, '\n'), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	fixed := time.Date(2026, 8, 3, 10, 0, 0, 0, time.UTC)
+	legacy := orchestrationDatabase{
+		SchemaVersion: 1,
+		BrainWork: []Work{{
+			ID:               "work-v1",
+			Title:            "Legacy claim",
+			Objective:        "Preserve the Event while adding delivery evidence.",
+			Status:           WorkWaiting,
+			CompletionPolicy: CompletionBounded,
+			CreatedAt:        fixed,
+			UpdatedAt:        fixed,
+		}},
+		BrainWorkEvents: []WorkEvent{{
+			ID:         "event-v1",
+			WorkID:     "work-v1",
+			Kind:       "session.done",
+			DedupeKey:  "session:legacy:done",
+			Actionable: true,
+			CreatedAt:  fixed,
+			ClaimedAt:  &fixed,
+			ClaimToken: "unbound-v1-token",
+		}},
+	}
+	raw, err := json.Marshal(legacy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, append(raw, '\n'), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	store, err := NewStore(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	events, err := store.ListWorkEvents("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(events) != 1 || events[0].ClaimedAt == nil ||
+		events[0].ClaimToken != "unbound-v1-token" ||
+		events[0].DeliveryHostSessionID != hostID {
+		t.Fatalf("v1 unbound claim migration = %#v", events)
+	}
+	first, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := NewStore(root); err != nil {
+		t.Fatal(err)
+	}
+	second, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(first, second) {
+		t.Fatalf("second open rewrote v1 migration:\nfirst:\n%s\nsecond:\n%s", first, second)
 	}
 }
 
@@ -163,7 +240,7 @@ func TestWorkEventDedupeAndClaimAreAtomic(t *testing.T) {
 		claimWG.Add(1)
 		go func() {
 			defer claimWG.Done()
-			_, ok, claimErr := store.ClaimNextActionableEvent()
+			_, ok, claimErr := store.ClaimNextActionableEvent("brain-agent-host-hidden:@1")
 			if claimErr != nil {
 				claimErrors.Add(1)
 			}
@@ -181,9 +258,146 @@ func TestWorkEventDedupeAndClaimAreAtomic(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, ok, err := reopened.ClaimNextActionableEvent(); err != nil || ok {
+	if _, ok, err := reopened.ClaimNextActionableEvent("brain-agent-host-hidden:@1"); err != nil || ok {
 		t.Fatalf("durable claim replayed after restart: ok=%v err=%v", ok, err)
 	}
+}
+
+func TestInterruptedEventClaimsRecoverWithoutDuplicateOrLoss(t *testing.T) {
+	now := time.Date(2026, 8, 3, 10, 0, 0, 0, time.UTC)
+	newFixture := func(t *testing.T) (*Store, *fakeWatcher, Work, WorkEvent, string) {
+		t.Helper()
+		store, err := NewStore(t.TempDir())
+		if err != nil {
+			t.Fatal(err)
+		}
+		store.now = func() time.Time { return now }
+		hostID := "brain-agent-brain-hidden:@1"
+		if err := store.SetHostSession(hostID, "codex"); err != nil {
+			t.Fatal(err)
+		}
+		item, err := store.CreateWork(Work{
+			Title:            "Crash-safe delivery",
+			Objective:        "Recover one interrupted Event delivery.",
+			Status:           WorkWaiting,
+			CompletionPolicy: CompletionBounded,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		event, _, err := store.AppendWorkEvent(WorkEvent{
+			WorkID:     item.ID,
+			Kind:       "session.done",
+			DedupeKey:  "session:worker:@1:done",
+			Actionable: true,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		fw := &fakeWatcher{sessions: map[string]*classifier.Agent{
+			hostID: {ID: hostID, Hidden: true, State: classifier.StateDone},
+		}}
+		return store, fw, item, event, hostID
+	}
+
+	t.Run("acknowledged_before_crash", func(t *testing.T) {
+		store, fw, _, _, hostID := newFixture(t)
+		claimed, ok, err := store.ClaimNextActionableEvent(hostID)
+		if err != nil || !ok {
+			t.Fatalf("claim ok=%v err=%v", ok, err)
+		}
+		if err := store.AcknowledgeWorkEventDelivery(claimed.ID, claimed.ClaimToken, hostID); err != nil {
+			t.Fatal(err)
+		}
+
+		reopened, err := NewStore(store.Root)
+		if err != nil {
+			t.Fatal(err)
+		}
+		service := NewService(reopened, fw, nil)
+		service.now = func() time.Time { return now.Add(time.Second) }
+		if woke, err := service.DispatchPendingEvent(); err != nil || woke {
+			t.Fatalf("acknowledged delivery replayed: woke=%v err=%v", woke, err)
+		}
+		events, err := reopened.ListWorkEvents("")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(events) != 1 || events[0].DeliveryAcknowledgedAt == nil || events[0].ConsumedAt == nil ||
+			len(fw.sentCalls) != 0 {
+			t.Fatalf("recovered acknowledged Event=%#v sends=%#v", events, fw.sentCalls)
+		}
+	})
+
+	t.Run("observed_after_send_before_ack", func(t *testing.T) {
+		store, fw, item, _, hostID := newFixture(t)
+		claimed, ok, err := store.ClaimNextActionableEvent(hostID)
+		if err != nil || !ok {
+			t.Fatalf("claim ok=%v err=%v", ok, err)
+		}
+		fw.captures = map[string]string{
+			hostID: formatWorkEventWake(item, claimed) + "\n",
+		}
+
+		reopened, err := NewStore(store.Root)
+		if err != nil {
+			t.Fatal(err)
+		}
+		service := NewService(reopened, fw, nil)
+		service.now = func() time.Time { return now.Add(time.Second) }
+		if woke, err := service.DispatchPendingEvent(); err != nil || woke {
+			t.Fatalf("observed delivery replayed: woke=%v err=%v", woke, err)
+		}
+		events, err := reopened.ListWorkEvents("")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(events) != 1 || events[0].DeliveryAcknowledgedAt == nil || events[0].ConsumedAt == nil ||
+			len(fw.sentCalls) != 0 {
+			t.Fatalf("recovered observed Event=%#v sends=%#v", events, fw.sentCalls)
+		}
+	})
+
+	t.Run("expired_without_delivery_retries_once", func(t *testing.T) {
+		store, fw, _, _, hostID := newFixture(t)
+		if _, ok, err := store.ClaimNextActionableEvent(hostID); err != nil || !ok {
+			t.Fatalf("claim ok=%v err=%v", ok, err)
+		}
+		delete(fw.sessions, hostID)
+		reopened, err := NewStore(store.Root)
+		if err != nil {
+			t.Fatal(err)
+		}
+		retryAt := now.Add(eventClaimRecoveryDelay + time.Second)
+		reopened.now = func() time.Time { return retryAt }
+		service := NewService(reopened, fw, nil)
+		service.now = func() time.Time { return retryAt }
+		if woke, err := service.DispatchPendingEvent(); err != nil || woke {
+			t.Fatalf("missing host started a turn: woke=%v err=%v", woke, err)
+		}
+		events, err := reopened.ListWorkEvents("")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(events) != 1 || events[0].ClaimedAt != nil {
+			t.Fatalf("expired claim was not made retryable without a host: %#v", events)
+		}
+		fw.sessions[hostID] = &classifier.Agent{ID: hostID, Hidden: true, State: classifier.StateDone}
+		if woke, err := service.DispatchPendingEvent(); err != nil || !woke {
+			t.Fatalf("expired undelivered Event was lost: woke=%v err=%v", woke, err)
+		}
+		if woke, err := service.DispatchPendingEvent(); err != nil || woke {
+			t.Fatalf("retried Event delivered twice: woke=%v err=%v", woke, err)
+		}
+		events, err = reopened.ListWorkEvents("")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(events) != 1 || events[0].DeliveryAcknowledgedAt == nil || events[0].ConsumedAt == nil ||
+			len(fw.sentCalls) != 1 {
+			t.Fatalf("retried Event=%#v sends=%#v", events, fw.sentCalls)
+		}
+	})
 }
 
 func TestActiveWorkProjectsMultipleItemsAndUnreadResults(t *testing.T) {
@@ -295,6 +509,56 @@ func TestOneSessionCannotOwnTwoActiveWorkRecords(t *testing.T) {
 	}
 }
 
+func TestAttachWorkOwnerCompareAndSetHasOneConcurrentWinner(t *testing.T) {
+	store, err := NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	item, err := store.CreateWork(Work{
+		Title:            "Single owner",
+		Objective:        "Attach exactly one delegated Session.",
+		Status:           WorkOpen,
+		CompletionPolicy: CompletionBounded,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var winners atomic.Int32
+	var winnerMu sync.Mutex
+	winnerID := ""
+	var wg sync.WaitGroup
+	for index := range 32 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			sessionID := fmt.Sprintf("brain-agent-worker:@%d", index+1)
+			attached, attachErr := store.AttachWorkOwner(item.ID, sessionID)
+			if attachErr == nil {
+				winners.Add(1)
+				winnerMu.Lock()
+				winnerID = attached.OwnerSessionID
+				winnerMu.Unlock()
+				return
+			}
+			if !errors.Is(attachErr, ErrWorkOwnerConflict) {
+				t.Errorf("attach error = %v", attachErr)
+			}
+		}()
+	}
+	wg.Wait()
+	if winners.Load() != 1 {
+		t.Fatalf("CAS winners = %d", winners.Load())
+	}
+	got, err := store.Work(item.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.OwnerSessionID != winnerID || got.Status != WorkRunning {
+		t.Fatalf("attached Work=%#v winner=%q", got, winnerID)
+	}
+}
+
 func TestDispatchRequiresActionableEventEvenForUntilDoneWork(t *testing.T) {
 	store, err := NewStore(t.TempDir())
 	if err != nil {
@@ -367,11 +631,13 @@ func TestDispatchRequiresActionableEventEvenForUntilDoneWork(t *testing.T) {
 	}
 }
 
-func TestDispatchReleasesClaimWhenHostSendFails(t *testing.T) {
+func TestDispatchRetriesOnlyExpiredUnacknowledgedSend(t *testing.T) {
 	store, err := NewStore(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
 	}
+	now := time.Date(2026, 8, 3, 10, 0, 0, 0, time.UTC)
+	store.now = func() time.Time { return now }
 	hostID := "brain-agent-brain-hidden:@1"
 	if err := store.SetHostSession(hostID, "codex"); err != nil {
 		t.Fatal(err)
@@ -383,6 +649,7 @@ func TestDispatchReleasesClaimWhenHostSendFails(t *testing.T) {
 		sendErr: os.ErrDeadlineExceeded,
 	}
 	service := NewService(store, fw, nil)
+	service.now = func() time.Time { return now }
 	item, err := store.CreateWork(Work{
 		Title:            "Retry delivery",
 		Objective:        "Do not lose a failed host send.",
@@ -408,12 +675,19 @@ func TestDispatchReleasesClaimWhenHostSendFails(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(events) != 1 || events[0].ClaimedAt != nil || events[0].ConsumedAt != nil {
-		t.Fatalf("failed send retained claim: %#v", events)
+	if len(events) != 1 || events[0].ClaimedAt == nil || events[0].DeliveryAcknowledgedAt != nil ||
+		events[0].ConsumedAt != nil {
+		t.Fatalf("failed send claim = %#v", events)
 	}
 	fw.sendErr = nil
+	if woke, err := service.DispatchPendingEvent(); err != nil || woke {
+		t.Fatalf("unexpired uncertain delivery retried: woke=%v err=%v", woke, err)
+	}
+	retryAt := now.Add(eventClaimRecoveryDelay + time.Second)
+	store.now = func() time.Time { return retryAt }
+	service.now = func() time.Time { return retryAt }
 	if woke, err := service.DispatchPendingEvent(); err != nil || !woke {
-		t.Fatalf("released event was not retryable: woke=%v err=%v", woke, err)
+		t.Fatalf("expired unacknowledged event was not retryable: woke=%v err=%v", woke, err)
 	}
 	events, err = store.ListWorkEvents(item.ID)
 	if err != nil {
@@ -707,6 +981,109 @@ func TestDelegatedSessionReconciliationWaitsForLeaseAndStalesOnce(t *testing.T) 
 	}
 	if len(events) != 1 || events[0].Kind != "session.stale" || len(fw.sentCalls) != 1 {
 		t.Fatalf("stale reconciliation events=%#v sends=%#v", events, fw.sentCalls)
+	}
+}
+
+func TestFirstAuthoritativeInventoryReconcilesMissingOwnerExactlyOnce(t *testing.T) {
+	root := t.TempDir()
+	store, err := NewStore(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Date(2026, 8, 3, 10, 0, 0, 0, time.UTC)
+	store.now = func() time.Time { return now }
+	hostID := "brain-agent-brain-hidden:@1"
+	ownerID := "brain-agent-missing:@2"
+	if err := store.SetHostSession(hostID, "codex"); err != nil {
+		t.Fatal(err)
+	}
+	item, err := store.CreateWork(Work{
+		Title:            "Missing owner",
+		Objective:        "Surface a Session missing after restart.",
+		Status:           WorkRunning,
+		OwnerSessionID:   ownerID,
+		CompletionPolicy: CompletionBounded,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	fw := &fakeWatcher{sessions: map[string]*classifier.Agent{
+		hostID: {ID: hostID, Hidden: true, State: classifier.StateDone},
+	}}
+	service := NewService(store, fw, nil)
+	service.now = func() time.Time { return now }
+	service.ReconcileDelegatedSessions(nil)
+	service.ReconcileDelegatedSessions(nil)
+
+	got, err := store.Work(item.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	events, err := store.ListWorkEvents(item.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.OwnerSessionID != "" || got.Status != WorkWaiting ||
+		len(events) != 1 || events[0].Kind != "session.stale" || !events[0].Actionable ||
+		len(fw.sentCalls) != 1 {
+		t.Fatalf("first reconciliation Work=%#v Events=%#v sends=%#v", got, events, fw.sentCalls)
+	}
+
+	reopened, err := NewStore(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	restarted := NewService(reopened, fw, nil)
+	restarted.now = func() time.Time { return now.Add(time.Minute) }
+	restarted.ReconcileDelegatedSessions(nil)
+	events, err = reopened.ListWorkEvents(item.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(events) != 1 || len(fw.sentCalls) != 1 {
+		t.Fatalf("restart duplicated missing-owner result: Events=%#v sends=%#v", events, fw.sentCalls)
+	}
+}
+
+func TestFirstAuthoritativeInventoryDoesNotManageNonDelegatedOwner(t *testing.T) {
+	for _, hidden := range []bool{false, true} {
+		t.Run(fmt.Sprintf("hidden=%v", hidden), func(t *testing.T) {
+			store, err := NewStore(t.TempDir())
+			if err != nil {
+				t.Fatal(err)
+			}
+			ownerID := "user-session:@2"
+			item, err := store.CreateWork(Work{
+				Title:            "Foreign owner",
+				Objective:        "Do not manage a non-delegated Session.",
+				Status:           WorkRunning,
+				OwnerSessionID:   ownerID,
+				CompletionPolicy: CompletionBounded,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			service := NewService(store, &fakeWatcher{}, nil)
+			service.ReconcileDelegatedSessions([]*classifier.Agent{{
+				ID:        ownerID,
+				State:     classifier.StateRunning,
+				Hidden:    hidden,
+				Delegated: false,
+			}})
+			service.ReconcileDelegatedSessions(nil)
+
+			got, err := store.Work(item.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			events, err := store.ListWorkEvents(item.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got != item || len(events) != 0 {
+				t.Fatalf("non-delegated owner was managed: Work=%#v Events=%#v", got, events)
+			}
+		})
 	}
 }
 

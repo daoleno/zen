@@ -238,7 +238,7 @@ func (a *controlApp) handleAgentSpawn(req control.Request) control.Response {
 	if !req.Hidden {
 		ownedWork, err = a.prepareSpawnWork(req, name, prompt)
 		if err != nil {
-			return control.ErrorResponse("brain_work_failed", err.Error())
+			return brainWorkControlError(err)
 		}
 	}
 
@@ -257,20 +257,10 @@ func (a *controlApp) handleAgentSpawn(req control.Request) control.Response {
 		return control.ErrorResponse("spawn_failed", err.Error())
 	}
 	if ownedWork.ID != "" {
-		status := brain.WorkRunning
-		next := "Wait for the delegated Session."
-		wait := "Session " + agentID
-		owner := agentID
-		ownedWork, err = a.brainStore.UpdateWork(ownedWork.ID, brain.WorkUpdate{
-			Status:         &status,
-			OwnerSessionID: &owner,
-			NextAction:     &next,
-			WaitFor:        &wait,
-		})
+		ownedWork, err = a.brainStore.AttachWorkOwner(ownedWork.ID, agentID)
 		if err != nil {
 			_ = a.watcher.KillSession(agentID)
-			a.recordSpawnWorkFailure(ownedWork, err)
-			return control.ErrorResponse("brain_work_failed", err.Error())
+			return brainWorkControlError(err)
 		}
 	}
 
@@ -328,6 +318,14 @@ func (a *controlApp) prepareSpawnWork(req control.Request, name, prompt string) 
 		}
 		if item.Status == brain.WorkDone || item.Status == brain.WorkCancelled {
 			return brain.Work{}, fmt.Errorf("Brain Work %s is already %s", item.ID, item.Status)
+		}
+		if strings.TrimSpace(item.OwnerSessionID) != "" {
+			return brain.Work{}, fmt.Errorf(
+				"%w: Work %s is owned by %s",
+				brain.ErrWorkOwnerConflict,
+				item.ID,
+				item.OwnerSessionID,
+			)
 		}
 		return item, nil
 	}
@@ -464,6 +462,8 @@ func brainWorkControlError(err error) control.Response {
 	case errors.Is(err, brain.ErrWorkNotFound):
 		code = "brain_work_not_found"
 	case errors.Is(err, brain.ErrWorkConflict):
+		code = "conflict"
+	case errors.Is(err, brain.ErrWorkOwnerConflict):
 		code = "conflict"
 	}
 	return control.ErrorResponse(code, err.Error())

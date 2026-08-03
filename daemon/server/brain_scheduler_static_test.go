@@ -44,7 +44,7 @@ func TestBrainSchedulerHasOneRuntimeOwner(t *testing.T) {
 	for _, required := range []string{
 		"RouteSessionEvent(ev)",
 		"RouteCalendarEvent(event)",
-		"ReconcileDelegatedSessions(agentSessions)",
+		"ReconcileDelegatedSessions(allAgentSessions)",
 		"SanitizeConversationProjection(conversation)",
 	} {
 		if !strings.Contains(string(serverSource), required) {
@@ -53,6 +53,24 @@ func TestBrainSchedulerHasOneRuntimeOwner(t *testing.T) {
 	}
 	if count := strings.Count(string(serverSource), "MigrateDelegatedSessionsV1(agentSessions)"); count != 1 {
 		t.Fatalf("one-way delegated Session migration calls = %d, want 1 source path", count)
+	}
+	brainSource, err := os.ReadFile(filepath.Join("..", "brain", "orchestration.go"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, required := range []string{
+		"DeliveryHostSessionID",
+		"DeliveryAcknowledgedAt",
+		"RecoverWorkEventClaim",
+		"AttachWorkOwner",
+		"ReconcileMissingWorkOwner",
+	} {
+		if !strings.Contains(string(brainSource), required) {
+			t.Fatalf("Brain store is missing bounded correction primitive %q", required)
+		}
+	}
+	if strings.Contains(string(brainSource), "ReleaseWorkEvent") {
+		t.Fatal("Brain store still permits eager unacknowledged claim release")
 	}
 
 	for _, removed := range []string{

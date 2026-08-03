@@ -37,16 +37,29 @@ status, optional owner Session, completion policy, next action, wait condition,
 and a context reference. Long plans and evidence stay in `workspace/worklog/`.
 
 Event dedupe keys are unique within one Work. An actionable Event is durably
-claimed before input is sent to the Brain host, which prevents concurrent or
-restart replay. Sending failure releases the claim; successful sending records
-consumption. There is no second in-memory scheduler truth, direct lifecycle
-wake owner, or dual write to provider Goal state.
+claimed for one Brain host Session before input is sent. The Event ID and claim
+token travel with that input. A successful send is durably acknowledged before
+consumption; after interruption, an acknowledgement or the matching
+host/Event/token marker consumes the existing delivery without replay. Only an
+expired unacknowledged claim with no observed marker becomes retryable. There
+is no second in-memory scheduler truth, direct lifecycle wake owner, or dual
+write to provider Goal state.
+
+Schema 2 adds host-bound delivery evidence to the existing Event record. Its
+one-way schema-1 migration makes an unresolved claim that predates host binding
+retryable; it does not create a table, copy an Event, or add another delivery
+path.
 
 On the first authoritative Watcher inventory after an upgrade, schema migration
 `delegated_sessions_v1` adopts visible `delegated=true` Sessions that predate
 Work. The migration marker is durable and the adoption is one-way. New visible
-delegated Sessions create or attach Work before their Session is launched; no
-runtime fallback adopts later unowned Sessions.
+delegated Sessions create Work before launch and attach through an empty-owner
+compare-and-set after Session creation. A concurrent losing spawn terminates
+only its newly created Session and preserves the incumbent. A persisted owner
+missing from the first authoritative post-restart inventory is atomically
+detached into waiting Work plus one deduplicated actionable stale Event.
+Present `delegated=false` Sessions are not managed, and no runtime fallback
+adopts later unowned Sessions.
 
 ## Event sources
 

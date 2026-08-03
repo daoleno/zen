@@ -2131,7 +2131,8 @@ func (s *Server) heartbeat(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			agentSessions := s.currentVisibleAgentSessions()
+			allAgentSessions := s.watcher.Agents()
+			agentSessions := visibleAgentSessions(allAgentSessions)
 			if s.brain != nil && s.watcher != nil && s.watcher.SnapshotReady() {
 				if !s.brainMigrationComplete {
 					if _, err := s.brain.MigrateDelegatedSessionsV1(agentSessions); err != nil {
@@ -2140,7 +2141,7 @@ func (s *Server) heartbeat(ctx context.Context) {
 						s.brainMigrationComplete = true
 					}
 				}
-				s.brain.ReconcileDelegatedSessions(agentSessions)
+				s.brain.ReconcileDelegatedSessions(allAgentSessions)
 			}
 			data, _ := json.Marshal(map[string]any{"type": "agent_session_list", "agent_sessions": s.agentSessionsWire(agentSessions)})
 			s.broadcast(data)

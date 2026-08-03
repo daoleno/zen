@@ -2,6 +2,7 @@ package brain
 
 import (
 	"bytes"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -13,12 +14,15 @@ import (
 	"github.com/google/uuid"
 )
 
-const orchestrationSchemaVersion = 1
+const orchestrationSchemaVersion = 2
+
+const legacyUnboundDeliveryHost = "legacy-unbound-host"
 
 var (
-	ErrWorkNotFound = errors.New("Brain Work not found")
-	ErrWorkConflict = errors.New("Brain Work already exists")
-	ErrEventClaim   = errors.New("Brain Work event claim is no longer current")
+	ErrWorkNotFound      = errors.New("Brain Work not found")
+	ErrWorkConflict      = errors.New("Brain Work already exists")
+	ErrWorkOwnerConflict = errors.New("Brain Work already has an owner Session")
+	ErrEventClaim        = errors.New("Brain Work event claim is no longer current")
 )
 
 type WorkStatus string
@@ -59,17 +63,19 @@ type Work struct {
 // WorkEvent is an append-only fact. Only Actionable events participate in
 // Brain scheduling, and a durable claim must exist before a wake is sent.
 type WorkEvent struct {
-	ID         string     `json:"event_id"`
-	WorkID     string     `json:"work_id"`
-	Kind       string     `json:"kind"`
-	DedupeKey  string     `json:"dedupe_key"`
-	PayloadRef string     `json:"payload_ref,omitempty"`
-	Actionable bool       `json:"actionable"`
-	CreatedAt  time.Time  `json:"created_at"`
-	ClaimedAt  *time.Time `json:"claimed_at,omitempty"`
-	ClaimToken string     `json:"claim_token,omitempty"`
-	ConsumedAt *time.Time `json:"consumed_at,omitempty"`
-	ReadAt     *time.Time `json:"read_at,omitempty"`
+	ID                     string     `json:"event_id"`
+	WorkID                 string     `json:"work_id"`
+	Kind                   string     `json:"kind"`
+	DedupeKey              string     `json:"dedupe_key"`
+	PayloadRef             string     `json:"payload_ref,omitempty"`
+	Actionable             bool       `json:"actionable"`
+	CreatedAt              time.Time  `json:"created_at"`
+	ClaimedAt              *time.Time `json:"claimed_at,omitempty"`
+	ClaimToken             string     `json:"claim_token,omitempty"`
+	DeliveryHostSessionID  string     `json:"delivery_host_session_id,omitempty"`
+	DeliveryAcknowledgedAt *time.Time `json:"delivery_acknowledged_at,omitempty"`
+	ConsumedAt             *time.Time `json:"consumed_at,omitempty"`
+	ReadAt                 *time.Time `json:"read_at,omitempty"`
 }
 
 type WorkUpdate struct {
@@ -128,7 +134,11 @@ func (s *Store) ensureOrchestrationDatabase() error {
 	if err != nil {
 		return err
 	}
-	database, migrated, err := decodeOrchestrationDatabase(raw)
+	host, hostErr := s.readHostSessionLocked()
+	if hostErr != nil {
+		return hostErr
+	}
+	database, migrated, err := decodeOrchestrationDatabase(raw, host.ID)
 	if err != nil {
 		return fmt.Errorf("decode Brain orchestration database: %w", err)
 	}
@@ -138,7 +148,7 @@ func (s *Store) ensureOrchestrationDatabase() error {
 	return nil
 }
 
-func decodeOrchestrationDatabase(raw []byte) (orchestrationDatabase, bool, error) {
+func decodeOrchestrationDatabase(raw []byte, legacyHostID ...string) (orchestrationDatabase, bool, error) {
 	trimmed := bytes.TrimSpace(raw)
 	if len(trimmed) == 0 || trimmed[0] != '{' {
 		return orchestrationDatabase{}, false, fmt.Errorf("document must be a JSON object")
@@ -169,6 +179,33 @@ func decodeOrchestrationDatabase(raw []byte) (orchestrationDatabase, bool, error
 			BrainWork:       []Work{},
 			BrainWorkEvents: []WorkEvent{},
 		}, true, nil
+	case 1:
+		var database orchestrationDatabase
+		decoder := json.NewDecoder(bytes.NewReader(trimmed))
+		decoder.DisallowUnknownFields()
+		if err := decoder.Decode(&database); err != nil {
+			return orchestrationDatabase{}, false, err
+		}
+		if err := ensureSingleJSONValue(decoder, trimmed); err != nil {
+			return orchestrationDatabase{}, false, err
+		}
+		if database.BrainWork == nil || database.BrainWorkEvents == nil {
+			return orchestrationDatabase{}, false, fmt.Errorf("brain_work and brain_work_events are required arrays")
+		}
+		database.SchemaVersion = orchestrationSchemaVersion
+		for index := range database.BrainWorkEvents {
+			event := &database.BrainWorkEvents[index]
+			if event.ConsumedAt == nil && event.ClaimedAt != nil {
+				event.DeliveryHostSessionID = legacyUnboundDeliveryHost
+				if len(legacyHostID) > 0 && strings.TrimSpace(legacyHostID[0]) != "" {
+					event.DeliveryHostSessionID = strings.TrimSpace(legacyHostID[0])
+				}
+			}
+		}
+		if err := validateOrchestrationDatabase(database); err != nil {
+			return orchestrationDatabase{}, false, err
+		}
+		return database, true, nil
 	case orchestrationSchemaVersion:
 		var database orchestrationDatabase
 		decoder := json.NewDecoder(bytes.NewReader(trimmed))
@@ -294,6 +331,16 @@ func validateWorkEvent(event WorkEvent) error {
 	}
 	if (event.ClaimedAt == nil) != (strings.TrimSpace(event.ClaimToken) == "") {
 		return fmt.Errorf("claimed_at and claim_token must be set together")
+	}
+	if event.ClaimedAt == nil &&
+		(strings.TrimSpace(event.DeliveryHostSessionID) != "" || event.DeliveryAcknowledgedAt != nil) {
+		return fmt.Errorf("delivery evidence requires a claim")
+	}
+	if event.ClaimedAt != nil && event.ConsumedAt == nil && strings.TrimSpace(event.DeliveryHostSessionID) == "" {
+		return fmt.Errorf("unconsumed claim requires delivery_host_session_id")
+	}
+	if event.DeliveryAcknowledgedAt != nil && strings.TrimSpace(event.DeliveryHostSessionID) == "" {
+		return fmt.Errorf("delivery acknowledgement requires delivery_host_session_id")
 	}
 	if event.ConsumedAt != nil && event.ClaimedAt == nil {
 		return fmt.Errorf("consumed event must have a claim")
@@ -501,6 +548,47 @@ func (s *Store) UpdateWork(id string, update WorkUpdate) (Work, error) {
 	return item, nil
 }
 
+// AttachWorkOwner is the only delegated-spawn ownership transition. It
+// atomically changes an active unowned Work record to one running owner; a
+// concurrent incumbent is never replaced.
+func (s *Store) AttachWorkOwner(id, ownerSessionID string) (Work, error) {
+	id = strings.TrimSpace(id)
+	ownerSessionID = strings.TrimSpace(ownerSessionID)
+	if ownerSessionID == "" {
+		return Work{}, fmt.Errorf("owner Session is required")
+	}
+	s.mu.Lock()
+	database, err := s.loadOrchestrationLocked()
+	var item Work
+	if err == nil {
+		index := workIndex(database.BrainWork, id)
+		if index < 0 {
+			err = ErrWorkNotFound
+		} else {
+			item = database.BrainWork[index]
+			if item.Status == WorkDone || item.Status == WorkCancelled {
+				err = fmt.Errorf("%w: Work %s is %s", ErrWorkOwnerConflict, item.ID, item.Status)
+			} else if strings.TrimSpace(item.OwnerSessionID) != "" {
+				err = fmt.Errorf("%w: Work %s is owned by %s", ErrWorkOwnerConflict, item.ID, item.OwnerSessionID)
+			} else {
+				item.OwnerSessionID = ownerSessionID
+				item.Status = WorkRunning
+				item.NextAction = "Wait for the delegated Session."
+				item.WaitFor = "Session " + ownerSessionID
+				item.UpdatedAt = s.nowUTC()
+				database.BrainWork[index] = item
+				err = s.persistOrchestrationLocked(database)
+			}
+		}
+	}
+	s.mu.Unlock()
+	if err != nil {
+		return Work{}, err
+	}
+	s.broadcastWorkChange(item.ID)
+	return item, nil
+}
+
 func applyWorkUpdate(item *Work, update WorkUpdate) {
 	if update.Title != nil {
 		item.Title = strings.TrimSpace(*update.Title)
@@ -636,6 +724,8 @@ func (s *Store) AppendWorkEvent(event WorkEvent) (WorkEvent, bool, error) {
 	event.CreatedAt = s.nowUTC()
 	event.ClaimedAt = nil
 	event.ClaimToken = ""
+	event.DeliveryHostSessionID = ""
+	event.DeliveryAcknowledgedAt = nil
 	event.ConsumedAt = nil
 	event.ReadAt = nil
 	if err := validateWorkEvent(event); err != nil {
@@ -682,7 +772,11 @@ func (s *Store) ListWorkEvents(workID string) ([]WorkEvent, error) {
 	return out, nil
 }
 
-func (s *Store) ClaimNextActionableEvent() (WorkEvent, bool, error) {
+func (s *Store) ClaimNextActionableEvent(hostSessionID string) (WorkEvent, bool, error) {
+	hostSessionID = strings.TrimSpace(hostSessionID)
+	if hostSessionID == "" {
+		return WorkEvent{}, false, fmt.Errorf("delivery host Session is required")
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	database, err := s.loadOrchestrationLocked()
@@ -707,46 +801,52 @@ func (s *Store) ClaimNextActionableEvent() (WorkEvent, bool, error) {
 	now := s.nowUTC()
 	database.BrainWorkEvents[index].ClaimedAt = &now
 	database.BrainWorkEvents[index].ClaimToken = uuid.NewString()
+	database.BrainWorkEvents[index].DeliveryHostSessionID = hostSessionID
+	database.BrainWorkEvents[index].DeliveryAcknowledgedAt = nil
 	if err := s.persistOrchestrationLocked(database); err != nil {
 		return WorkEvent{}, false, err
 	}
 	return database.BrainWorkEvents[index], true, nil
 }
 
-func (s *Store) ConsumeWorkEvent(eventID, claimToken string) error {
-	return s.finishWorkEventClaim(eventID, claimToken, true)
+func (s *Store) ClaimedActionableEvents() ([]WorkEvent, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	database, err := s.loadOrchestrationLocked()
+	if err != nil {
+		return nil, err
+	}
+	out := []WorkEvent{}
+	for _, event := range database.BrainWorkEvents {
+		if event.Actionable && event.ClaimedAt != nil && event.ConsumedAt == nil {
+			out = append(out, event)
+		}
+	}
+	return out, nil
 }
 
-func (s *Store) ReleaseWorkEvent(eventID, claimToken string) error {
-	return s.finishWorkEventClaim(eventID, claimToken, false)
-}
-
-func (s *Store) finishWorkEventClaim(eventID, claimToken string, consume bool) error {
+func (s *Store) AcknowledgeWorkEventDelivery(eventID, claimToken, hostSessionID string) error {
 	eventID = strings.TrimSpace(eventID)
 	claimToken = strings.TrimSpace(claimToken)
+	hostSessionID = strings.TrimSpace(hostSessionID)
 	s.mu.Lock()
 	database, err := s.loadOrchestrationLocked()
 	workID := ""
 	if err == nil {
-		index := -1
-		for candidate := range database.BrainWorkEvents {
-			if database.BrainWorkEvents[candidate].ID == eventID {
-				index = candidate
-				break
-			}
-		}
-		if index < 0 || database.BrainWorkEvents[index].ClaimToken != claimToken || claimToken == "" {
+		index := workEventIndex(database.BrainWorkEvents, eventID)
+		if index < 0 ||
+			claimToken == "" ||
+			database.BrainWorkEvents[index].ClaimToken != claimToken ||
+			database.BrainWorkEvents[index].DeliveryHostSessionID != hostSessionID ||
+			hostSessionID == "" {
 			err = ErrEventClaim
 		} else {
 			workID = database.BrainWorkEvents[index].WorkID
-			if consume {
+			if database.BrainWorkEvents[index].DeliveryAcknowledgedAt == nil {
 				now := s.nowUTC()
-				database.BrainWorkEvents[index].ConsumedAt = &now
-			} else {
-				database.BrainWorkEvents[index].ClaimedAt = nil
-				database.BrainWorkEvents[index].ClaimToken = ""
+				database.BrainWorkEvents[index].DeliveryAcknowledgedAt = &now
+				err = s.persistOrchestrationLocked(database)
 			}
-			err = s.persistOrchestrationLocked(database)
 		}
 	}
 	s.mu.Unlock()
@@ -754,6 +854,164 @@ func (s *Store) finishWorkEventClaim(eventID, claimToken string, consume bool) e
 		s.broadcastWorkChange(workID)
 	}
 	return err
+}
+
+func (s *Store) ConsumeAcknowledgedWorkEvent(eventID, claimToken, hostSessionID string) error {
+	eventID = strings.TrimSpace(eventID)
+	claimToken = strings.TrimSpace(claimToken)
+	hostSessionID = strings.TrimSpace(hostSessionID)
+	s.mu.Lock()
+	database, err := s.loadOrchestrationLocked()
+	workID := ""
+	if err == nil {
+		index := workEventIndex(database.BrainWorkEvents, eventID)
+		if index < 0 ||
+			claimToken == "" ||
+			database.BrainWorkEvents[index].ClaimToken != claimToken ||
+			database.BrainWorkEvents[index].DeliveryHostSessionID != hostSessionID ||
+			hostSessionID == "" ||
+			database.BrainWorkEvents[index].DeliveryAcknowledgedAt == nil {
+			err = ErrEventClaim
+		} else {
+			workID = database.BrainWorkEvents[index].WorkID
+			if database.BrainWorkEvents[index].ConsumedAt == nil {
+				now := s.nowUTC()
+				database.BrainWorkEvents[index].ConsumedAt = &now
+				err = s.persistOrchestrationLocked(database)
+			}
+		}
+	}
+	s.mu.Unlock()
+	if err == nil && workID != "" {
+		s.broadcastWorkChange(workID)
+	}
+	return err
+}
+
+// RecoverWorkEventClaim resolves exactly one interrupted claim. Delivery
+// evidence consumes the existing Event. Only an expired claim with no durable
+// acknowledgement and no observed host marker is released for retry.
+func (s *Store) RecoverWorkEventClaim(
+	eventID, claimToken, hostSessionID string,
+	deliveryObserved bool,
+	expired bool,
+) (bool, error) {
+	eventID = strings.TrimSpace(eventID)
+	claimToken = strings.TrimSpace(claimToken)
+	hostSessionID = strings.TrimSpace(hostSessionID)
+	s.mu.Lock()
+	database, err := s.loadOrchestrationLocked()
+	workID := ""
+	changed := false
+	if err == nil {
+		index := workEventIndex(database.BrainWorkEvents, eventID)
+		if index < 0 ||
+			claimToken == "" ||
+			database.BrainWorkEvents[index].ClaimToken != claimToken ||
+			database.BrainWorkEvents[index].DeliveryHostSessionID != hostSessionID ||
+			hostSessionID == "" {
+			err = ErrEventClaim
+		} else {
+			event := &database.BrainWorkEvents[index]
+			workID = event.WorkID
+			if event.ConsumedAt != nil {
+				s.mu.Unlock()
+				return false, nil
+			}
+			if deliveryObserved && event.DeliveryAcknowledgedAt == nil {
+				now := s.nowUTC()
+				event.DeliveryAcknowledgedAt = &now
+				changed = true
+			}
+			if event.DeliveryAcknowledgedAt != nil {
+				now := s.nowUTC()
+				event.ConsumedAt = &now
+				changed = true
+			} else if expired {
+				event.ClaimedAt = nil
+				event.ClaimToken = ""
+				event.DeliveryHostSessionID = ""
+				changed = true
+			}
+			if changed {
+				err = s.persistOrchestrationLocked(database)
+			}
+		}
+	}
+	s.mu.Unlock()
+	if err == nil && changed && workID != "" {
+		s.broadcastWorkChange(workID)
+	}
+	return changed, err
+}
+
+func workEventIndex(events []WorkEvent, eventID string) int {
+	for index := range events {
+		if events[index].ID == eventID {
+			return index
+		}
+	}
+	return -1
+}
+
+// ReconcileMissingWorkOwner atomically detaches the expected missing owner,
+// makes the Work non-running, and records the single actionable stale fact.
+func (s *Store) ReconcileMissingWorkOwner(workID, ownerSessionID string) (Work, WorkEvent, bool, error) {
+	workID = strings.TrimSpace(workID)
+	ownerSessionID = strings.TrimSpace(ownerSessionID)
+	s.mu.Lock()
+	database, err := s.loadOrchestrationLocked()
+	var item Work
+	var event WorkEvent
+	created := false
+	if err == nil {
+		index := workIndex(database.BrainWork, workID)
+		if index < 0 {
+			err = ErrWorkNotFound
+		} else {
+			item = database.BrainWork[index]
+			if item.Status == WorkDone || item.Status == WorkCancelled || item.OwnerSessionID != ownerSessionID || ownerSessionID == "" {
+				s.mu.Unlock()
+				return item, WorkEvent{}, false, nil
+			}
+			now := s.nowUTC()
+			item.Status = WorkWaiting
+			item.OwnerSessionID = ""
+			item.NextAction = "Reconcile the missing delegated Session."
+			item.WaitFor = ""
+			item.UpdatedAt = now
+			database.BrainWork[index] = item
+
+			dedupeKey := "session:" + ownerSessionID + ":missing"
+			for _, current := range database.BrainWorkEvents {
+				if current.WorkID == item.ID && current.DedupeKey == dedupeKey {
+					event = current
+					break
+				}
+			}
+			if event.ID == "" {
+				digest := sha256.Sum256([]byte(item.ID + "\x00" + dedupeKey))
+				event = WorkEvent{
+					ID:         fmt.Sprintf("missing-%x", digest[:12]),
+					WorkID:     item.ID,
+					Kind:       "session.stale",
+					DedupeKey:  dedupeKey,
+					PayloadRef: "session:" + ownerSessionID,
+					Actionable: true,
+					CreatedAt:  now,
+				}
+				database.BrainWorkEvents = append(database.BrainWorkEvents, event)
+				created = true
+			}
+			err = s.persistOrchestrationLocked(database)
+		}
+	}
+	s.mu.Unlock()
+	if err != nil {
+		return Work{}, WorkEvent{}, false, err
+	}
+	s.broadcastWorkChange(item.ID)
+	return item, event, created, nil
 }
 
 func (s *Store) ActiveWork() ([]ActiveWork, error) {
