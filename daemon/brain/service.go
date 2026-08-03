@@ -329,6 +329,15 @@ func (s *Service) RouteSessionEvent(event watcher.SessionEvent) (bool, error) {
 	if !found {
 		return false, nil
 	}
+	if event.Type == "agent_removed" {
+		completed, err := s.removalFollowsCompletedSession(item.ID, agent.ID)
+		if err != nil {
+			return false, err
+		}
+		if completed {
+			return false, nil
+		}
+	}
 
 	kind, actionable, update, ok := sessionEventProjection(event)
 	if !ok {
@@ -360,6 +369,21 @@ func (s *Service) RouteSessionEvent(event watcher.SessionEvent) (bool, error) {
 		return false, err
 	}
 	return s.DispatchPendingEvent()
+}
+
+func (s *Service) removalFollowsCompletedSession(workID, sessionID string) (bool, error) {
+	events, err := s.store.ListWorkEvents(workID)
+	if err != nil {
+		return false, err
+	}
+	payloadRef := "session:" + strings.TrimSpace(sessionID)
+	lastLifecycleKind := ""
+	for _, event := range events {
+		if event.PayloadRef == payloadRef && isSessionLifecycleKind(event.Kind) {
+			lastLifecycleKind = event.Kind
+		}
+	}
+	return lastLifecycleKind == "session.done", nil
 }
 
 func calendarOwnsTerminalResult(item Work, event watcher.SessionEvent) bool {

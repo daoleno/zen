@@ -1665,6 +1665,66 @@ func TestDelegatedSessionRemovalKeepsSingleTerminalFailureWithoutFollowupStale(t
 	}
 }
 
+func TestDelegatedSessionRemovalAfterDoneDoesNotCreateFalseFailure(t *testing.T) {
+	store, err := NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	hostID := "brain-agent-brain-hidden:@1"
+	sessionID := "brain-agent-completed:@2"
+	if err := store.SetHostSession(hostID, "codex"); err != nil {
+		t.Fatal(err)
+	}
+	fw := &fakeWatcher{sessions: map[string]*classifier.Agent{
+		hostID: {ID: hostID, Hidden: true, State: classifier.StateDone},
+	}}
+	service := NewService(store, fw, nil)
+	item, err := store.CreateWork(Work{
+		Title:            "Completed delegated Session",
+		Objective:        "Keep cleanup distinct from execution failure.",
+		Status:           WorkRunning,
+		OwnerSessionID:   sessionID,
+		CompletionPolicy: CompletionBounded,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	done := &classifier.Agent{
+		ID:        sessionID,
+		State:     classifier.StateDone,
+		Delegated: true,
+		Summary:   "Accepted result",
+	}
+	if woke, err := service.RouteSessionEvent(watcher.SessionEvent{
+		Type:     "agent_state_change",
+		AgentID:  sessionID,
+		Agent:    done,
+		OldState: string(classifier.StateRunning),
+		NewState: string(classifier.StateDone),
+	}); err != nil || !woke {
+		t.Fatalf("done terminal woke=%v err=%v", woke, err)
+	}
+
+	removed := *done
+	removed.State = classifier.StateRemoved
+	if woke, err := service.RouteSessionEvent(watcher.SessionEvent{
+		Type:     "agent_removed",
+		AgentID:  sessionID,
+		Agent:    &removed,
+		NewState: string(classifier.StateRemoved),
+	}); err != nil || woke {
+		t.Fatalf("completed cleanup woke=%v err=%v", woke, err)
+	}
+
+	events, err := store.ListWorkEvents(item.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(events) != 1 || events[0].Kind != "session.done" || len(fw.sentCalls) != 1 {
+		t.Fatalf("completed cleanup Events=%#v sends=%#v", events, fw.sentCalls)
+	}
+}
+
 func TestFirstAuthoritativeInventoryReconcilesMissingOwnerExactlyOnce(t *testing.T) {
 	root := t.TempDir()
 	store, err := NewStore(root)
