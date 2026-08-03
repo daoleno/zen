@@ -147,7 +147,7 @@ export function SessionFilePreviewSheet({
       }
       if (renderer === "image" || renderer === "pdf") {
         const source = await buildSessionFileBinarySource(
-          serverUrl,
+          serverId,
           daemonId,
           generationRequest,
         );

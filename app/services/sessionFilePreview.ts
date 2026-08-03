@@ -1,8 +1,16 @@
 export type SessionFileKind =
-  "markdown" | "text" | "image" | "pdf" | "unsupported";
+  | "markdown"
+  | "text"
+  | "image"
+  | "pdf"
+  | "unsupported";
 
 export type SessionFileRenderer =
-  "markdown" | "text" | "image" | "pdf" | "unsupported";
+  | "markdown"
+  | "text"
+  | "image"
+  | "pdf"
+  | "unsupported";
 
 export interface SessionFileIdentity {
   agentId: string;
@@ -52,6 +60,21 @@ export interface SessionFileTextPreview {
 export interface SessionFileBinarySource {
   uri: string;
   headers: Record<string, string>;
+}
+
+interface SessionFileCapabilityResponse {
+  version?: unknown;
+  device_id?: unknown;
+  expires_at_ms?: unknown;
+  get_signature?: unknown;
+  head_signature?: unknown;
+}
+
+export interface SessionFileReadCapability {
+  deviceId: string;
+  expiresAtMS: number;
+  getSignature: string;
+  headSignature: string;
 }
 
 export interface SessionFilePreviewState {
@@ -283,52 +306,146 @@ export function buildSessionFileBinaryUrl(
   }
 }
 
-export function appendSessionFileAuthorizationQuery(
-  uri: string,
-  authorizationHeader: string,
-): string {
-  try {
-    const url = new URL(uri);
-    const bytes = new TextEncoder().encode(authorizationHeader);
-    let binary = "";
-    for (const byte of bytes) {
-      binary += String.fromCharCode(byte);
-    }
-    url.searchParams.set(
-      "auth",
-      globalThis
-        .btoa(binary)
-        .replace(/\+/g, "-")
-        .replace(/\//g, "_")
-        .replace(/=+$/g, ""),
-    );
-    return url.toString();
-  } catch {
-    return uri;
-  }
-}
-
 export async function buildSessionFileBinarySource(
-  serverUrl: string,
+  serverId: string,
   daemonId: string,
   request: SessionFileBinaryRequest,
 ): Promise<SessionFileBinarySource> {
-  const uri = buildSessionFileBinaryUrl(serverUrl, request);
+  const { resolveCanonicalServerURL } = await import("./pinnedTransport");
+  const { getServerById } = await import("./storage");
+  const server = await getServerById(serverId);
+  if (!server || server.daemonId !== daemonId) {
+    throw new Error(
+      "The current server connection changed. Reopen the Session file and try again.",
+    );
+  }
+  const transportURL = await resolveCanonicalServerURL(server);
+  const uri = buildSessionFileBinaryUrl(transportURL, request);
   if (!uri) {
     throw new Error("Server file stream URL is unavailable.");
+  }
+  const capabilityURL = buildSessionFileCapabilityUrl(uri);
+  if (!capabilityURL) {
+    throw new Error("Server file authorization URL is unavailable.");
   }
   const { buildAuthorizationHeader } = await import("./auth");
   const authorizationHeader = await buildAuthorizationHeader({
     daemonId,
     purpose: "zen-session-file",
   });
-  return {
-    uri: appendSessionFileAuthorizationQuery(uri, authorizationHeader),
+  const response = await fetch(capabilityURL, {
+    method: "POST",
     headers: {
       Authorization: authorizationHeader,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      agent_id: request.agentId,
+      process_id: request.processId,
+      started_at: request.startedAt,
+      path: request.path,
+      generation: request.generation,
+    }),
+  });
+  if (!response.ok) {
+    const error = new Error(
+      sessionFileCapabilityError(response.status),
+    ) as Error & {
+      code?: string;
+    };
+    if (response.status === 409) {
+      error.code = "session_file_changed";
+    }
+    throw error;
+  }
+  let capabilityPayload: SessionFileCapabilityResponse;
+  try {
+    capabilityPayload =
+      (await response.json()) as SessionFileCapabilityResponse;
+  } catch {
+    throw new Error(
+      "The daemon returned an unreadable Session file authorization. Update zen, then refresh.",
+    );
+  }
+  const capability = normalizeSessionFileCapability(capabilityPayload);
+  return {
+    uri: appendSessionFileCapabilityQuery(uri, capability),
+    headers: {
       "Cache-Control": "no-store",
     },
   };
+}
+
+function buildSessionFileCapabilityUrl(uri: string): string | null {
+  try {
+    const url = new URL(uri);
+    url.pathname = "/session-file-capability";
+    url.search = "";
+    url.hash = "";
+    return url.toString();
+  } catch {
+    return null;
+  }
+}
+
+function normalizeSessionFileCapability(
+  value: SessionFileCapabilityResponse,
+): SessionFileReadCapability {
+  const deviceId =
+    typeof value.device_id === "string" ? value.device_id.trim() : "";
+  const expiresAtMS =
+    typeof value.expires_at_ms === "number" &&
+    Number.isSafeInteger(value.expires_at_ms)
+      ? value.expires_at_ms
+      : 0;
+  const getSignature =
+    typeof value.get_signature === "string"
+      ? value.get_signature.toLowerCase()
+      : "";
+  const headSignature =
+    typeof value.head_signature === "string"
+      ? value.head_signature.toLowerCase()
+      : "";
+  if (
+    value.version !== 1 ||
+    !deviceId ||
+    expiresAtMS <= Date.now() ||
+    !/^[0-9a-f]{128}$/.test(getSignature) ||
+    !/^[0-9a-f]{128}$/.test(headSignature)
+  ) {
+    throw new Error(
+      "The daemon returned an invalid Session file authorization. Refresh and try again.",
+    );
+  }
+  return { deviceId, expiresAtMS, getSignature, headSignature };
+}
+
+export function appendSessionFileCapabilityQuery(
+  uri: string,
+  capability: SessionFileReadCapability,
+): string {
+  const url = new URL(uri);
+  url.searchParams.delete("auth");
+  url.searchParams.set("file_cap_device", capability.deviceId);
+  url.searchParams.set("file_cap_expires", String(capability.expiresAtMS));
+  url.searchParams.set("file_cap_get", capability.getSignature);
+  url.searchParams.set("file_cap_head", capability.headSignature);
+  return url.toString();
+}
+
+function sessionFileCapabilityError(status: number): string {
+  switch (status) {
+    case 401:
+      return "Session file authorization was rejected. Refresh the preview to sign a new request.";
+    case 404:
+      return "This zen daemon does not support retry-safe Session file previews. Update zen, then refresh.";
+    case 409:
+      return "The Session or file changed before the preview could be authorized. Refresh and try again.";
+    case 413:
+      return "This file exceeds the daemon's Session preview limit.";
+    default:
+      return `Could not authorize the Session file preview (HTTP ${status}). Refresh and try again.`;
+  }
 }
 
 export function normalizeSessionFileMetadata(

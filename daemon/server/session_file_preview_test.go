@@ -5,6 +5,7 @@ import (
 	"crypto/ed25519"
 	"crypto/rand"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
@@ -324,6 +325,218 @@ func TestSessionFileBinaryHandlerAuthenticatesRangesAndDisablesCache(t *testing.
 	server.handleSessionFileBinary(unauthorized, httptest.NewRequest(http.MethodGet, request.URL.String(), nil))
 	if unauthorized.Code != http.StatusUnauthorized {
 		t.Fatalf("unauthorized status=%d", unauthorized.Code)
+	}
+}
+
+func TestSessionFileReadCapabilitySupportsGETHEADRangeAndRetry(t *testing.T) {
+	workspace := t.TempDir()
+	path := filepath.Join(workspace, "image.png")
+	data := append(
+		[]byte{0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a},
+		bytes.Repeat([]byte{2}, 128)...,
+	)
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	resolved, err := openSessionFile(workspace, "image.png")
+	if err != nil {
+		t.Fatal(err)
+	}
+	generation := resolved.generation
+	_ = resolved.file.Close()
+
+	manager, privateKey, deviceID := sessionFileAuthFixture(t)
+	started := time.Date(2026, 7, 20, 4, 0, 0, 0, time.UTC)
+	agent := &classifier.Agent{
+		ID:        "main:@capability",
+		Cwd:       workspace,
+		ProcessID: 512,
+		StartedAt: started,
+	}
+	server := New(manager, nil, nil, nil, nil, nil, nil)
+	server.sessionFileAgentLoader = func(id string) *classifier.Agent {
+		if id != agent.ID {
+			return nil
+		}
+		copy := *agent
+		return &copy
+	}
+
+	requestBody, err := json.Marshal(map[string]any{
+		"agent_id":   agent.ID,
+		"process_id": agent.ProcessID,
+		"started_at": started.UnixMilli(),
+		"path":       "image.png",
+		"generation": generation,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	issueHeader := sessionFileAuthorizationHeader(
+		t,
+		privateKey,
+		manager.DaemonID(),
+		deviceID,
+	)
+	issue := httptest.NewRequest(
+		http.MethodPost,
+		"/session-file-capability",
+		bytes.NewReader(requestBody),
+	)
+	issue.Header.Set("Authorization", issueHeader)
+	issue.Header.Set("Content-Type", "application/json")
+	issueResponse := httptest.NewRecorder()
+	server.Handler().ServeHTTP(issueResponse, issue)
+	if issueResponse.Code != http.StatusOK {
+		t.Fatalf(
+			"capability issue status=%d body=%q",
+			issueResponse.Code,
+			issueResponse.Body.String(),
+		)
+	}
+	var capability struct {
+		Version       int    `json:"version"`
+		DeviceID      string `json:"device_id"`
+		ExpiresAtMS   int64  `json:"expires_at_ms"`
+		GETSignature  string `json:"get_signature"`
+		HEADSignature string `json:"head_signature"`
+	}
+	if err := json.Unmarshal(issueResponse.Body.Bytes(), &capability); err != nil {
+		t.Fatal(err)
+	}
+	if capability.Version != 1 ||
+		capability.DeviceID != deviceID ||
+		capability.ExpiresAtMS <= time.Now().UnixMilli() ||
+		len(capability.GETSignature) != ed25519.SignatureSize*2 ||
+		len(capability.HEADSignature) != ed25519.SignatureSize*2 {
+		t.Fatalf("invalid capability response: %#v", capability)
+	}
+
+	fileURL := "/session-file"
+	queryRequest := httptest.NewRequest(http.MethodGet, fileURL, nil)
+	query := queryRequest.URL.Query()
+	query.Set("agent_id", agent.ID)
+	query.Set("process_id", strconv.Itoa(agent.ProcessID))
+	query.Set("started_at", strconv.FormatInt(started.UnixMilli(), 10))
+	query.Set("path", "image.png")
+	query.Set("generation", generation)
+	query.Set("file_cap_device", capability.DeviceID)
+	query.Set("file_cap_expires", strconv.FormatInt(capability.ExpiresAtMS, 10))
+	query.Set("file_cap_get", capability.GETSignature)
+	query.Set("file_cap_head", capability.HEADSignature)
+	queryRequest.URL.RawQuery = query.Encode()
+	fileURL = queryRequest.URL.String()
+
+	assertRequest := func(
+		method string,
+		rangeHeader string,
+		wantStatus int,
+		wantBody []byte,
+	) {
+		t.Helper()
+		request := httptest.NewRequest(method, fileURL, nil)
+		if rangeHeader != "" {
+			request.Header.Set("Range", rangeHeader)
+		}
+		response := httptest.NewRecorder()
+		server.Handler().ServeHTTP(response, request)
+		if response.Code != wantStatus {
+			t.Fatalf(
+				"%s %s status=%d body=%q",
+				method,
+				rangeHeader,
+				response.Code,
+				response.Body.String(),
+			)
+		}
+		if !bytes.Equal(response.Body.Bytes(), wantBody) {
+			t.Fatalf(
+				"%s %s body=%v want=%v",
+				method,
+				rangeHeader,
+				response.Body.Bytes(),
+				wantBody,
+			)
+		}
+	}
+
+	assertRequest(http.MethodGet, "", http.StatusOK, data)
+	assertRequest(http.MethodHead, "", http.StatusOK, nil)
+	assertRequest(http.MethodGet, "bytes=8-15", http.StatusPartialContent, data[8:16])
+	// A native loader can retry the identical Range after network recovery.
+	assertRequest(http.MethodGet, "bytes=8-15", http.StatusPartialContent, data[8:16])
+
+	tampered := httptest.NewRequest(http.MethodGet, fileURL, nil)
+	tamperedQuery := tampered.URL.Query()
+	tamperedQuery.Set("path", "other.png")
+	tampered.URL.RawQuery = tamperedQuery.Encode()
+	tamperedResponse := httptest.NewRecorder()
+	server.Handler().ServeHTTP(tamperedResponse, tampered)
+	if tamperedResponse.Code != http.StatusUnauthorized {
+		t.Fatalf(
+			"cross-path capability status=%d body=%q",
+			tamperedResponse.Code,
+			tamperedResponse.Body.String(),
+		)
+	}
+
+	wrongMethod := httptest.NewRequest(http.MethodGet, fileURL, nil)
+	wrongMethodQuery := wrongMethod.URL.Query()
+	wrongMethodQuery.Set("file_cap_get", capability.HEADSignature)
+	wrongMethod.URL.RawQuery = wrongMethodQuery.Encode()
+	wrongMethodResponse := httptest.NewRecorder()
+	server.Handler().ServeHTTP(wrongMethodResponse, wrongMethod)
+	if wrongMethodResponse.Code != http.StatusUnauthorized {
+		t.Fatalf(
+			"cross-method capability status=%d body=%q",
+			wrongMethodResponse.Code,
+			wrongMethodResponse.Body.String(),
+		)
+	}
+
+	replayIssue := httptest.NewRequest(
+		http.MethodPost,
+		"/session-file-capability",
+		bytes.NewReader(requestBody),
+	)
+	replayIssue.Header.Set("Authorization", issueHeader)
+	replayIssueResponse := httptest.NewRecorder()
+	server.Handler().ServeHTTP(replayIssueResponse, replayIssue)
+	if replayIssueResponse.Code != http.StatusUnauthorized {
+		t.Fatalf(
+			"ordinary nonce replay status=%d body=%q",
+			replayIssueResponse.Code,
+			replayIssueResponse.Body.String(),
+		)
+	}
+
+	server.sessionFileCapabilityClock = func() time.Time {
+		return time.UnixMilli(capability.ExpiresAtMS + 1)
+	}
+	expired := httptest.NewRequest(http.MethodGet, fileURL, nil)
+	expiredResponse := httptest.NewRecorder()
+	server.Handler().ServeHTTP(expiredResponse, expired)
+	if expiredResponse.Code != http.StatusUnauthorized {
+		t.Fatalf(
+			"expired capability status=%d body=%q",
+			expiredResponse.Code,
+			expiredResponse.Body.String(),
+		)
+	}
+
+	server.sessionFileCapabilityClock = nil
+	if _, err := manager.RevokeDevice(deviceID); err != nil {
+		t.Fatal(err)
+	}
+	revoked := httptest.NewRequest(http.MethodGet, fileURL, nil)
+	revokedResponse := httptest.NewRecorder()
+	server.Handler().ServeHTTP(revokedResponse, revoked)
+	if revokedResponse.Code != http.StatusUnauthorized {
+		t.Fatalf(
+			"revoked capability status=%d body=%q",
+			revokedResponse.Code,
+			revokedResponse.Body.String(),
+		)
 	}
 }
 

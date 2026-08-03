@@ -7,6 +7,7 @@ import type { TerminalSurfaceHandle } from "./TerminalSurface";
 interface TerminalAccessoryDockProps {
   terminalRef: React.RefObject<TerminalSurfaceHandle | null>;
   uploadOwnerKey: string | null;
+  serverId: string;
   serverUrl: string;
   daemonId: string;
   theme: TerminalThemePalette;
@@ -20,6 +21,7 @@ interface TerminalAccessoryDockProps {
 export function TerminalAccessoryDock({
   terminalRef,
   uploadOwnerKey,
+  serverId,
   serverUrl,
   daemonId,
   theme,
@@ -41,6 +43,7 @@ export function TerminalAccessoryDock({
       <TerminalAccessoryBar
         terminalRef={terminalRef}
         uploadOwnerKey={uploadOwnerKey}
+        serverId={serverId}
         serverUrl={serverUrl}
         daemonId={daemonId}
         theme={theme}

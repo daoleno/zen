@@ -197,6 +197,7 @@ function TerminalOutputPaneImpl({
         <TerminalAccessoryDock
           terminalRef={terminalRef}
           uploadOwnerKey={sessionKey}
+          serverId={serverId}
           serverUrl={serverUrl}
           daemonId={daemonId}
           theme={theme}

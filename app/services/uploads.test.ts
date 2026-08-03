@@ -7,6 +7,16 @@ const selectedAsset = {
   size: 1_532_564_736,
   lastModified: 0,
 };
+const manualServer = {
+  id: "server-a",
+  name: "Self-managed",
+  url: "wss://zen.test/ws?stale=true",
+  daemonId: "daemon-a",
+  daemonPublicKey: "public-key-a",
+  transportKind: "manual" as const,
+};
+let storedServer: Record<string, unknown> = manualServer;
+let nativeTunnelStarts = 0;
 
 let pickerOptions: unknown;
 let authorizationOptions: unknown;
@@ -91,14 +101,30 @@ mock.module("./auth", () => ({
     authorizationOptions = options;
     return "Zen test-authorization";
   },
+  getOrCreateLocalDeviceIdentity: async () => ({
+    deviceId: "test-device",
+    deviceName: "Test device",
+    publicKeyHex: "6".repeat(64),
+    seedHex: "7".repeat(64),
+  }),
+  normalizeDaemonId: (value: string | null | undefined) => value?.trim() || "",
+  normalizePairingToken: (value: string | null | undefined) =>
+    value?.trim() || "",
+  normalizePublicKeyHex: (value: string | null | undefined) =>
+    value?.trim() || "",
+  verifyDaemonAssertion: () => true,
 }));
 
 mock.module("./storage", () => ({
-  getServerById: async () => ({
-    id: "server-a",
-    url: "wss://zen.test/ws?stale=true",
-    daemonId: "daemon-a",
-  }),
+  getServerById: async () => storedServer,
+}));
+
+mock.module("../modules/zen-link-transport/src", () => ({
+  startPinnedTunnel: async () => {
+    nativeTunnelStarts += 1;
+    throw new Error("pinned candidate offline");
+  },
+  stopPinnedTunnel: async () => undefined,
 }));
 
 const originalFetch = globalThis.fetch;
@@ -117,6 +143,7 @@ const {
 
 afterAll(() => {
   Object.assign(globalThis, { fetch: originalFetch });
+  mock.restore();
 });
 
 beforeEach(() => {
@@ -140,9 +167,35 @@ beforeEach(() => {
     }),
     headers: {},
   };
+  storedServer = manualServer;
+  nativeTunnelStarts = 0;
 });
 
 describe("native attachment upload", () => {
+  test("Link upload fails closed before creating a raw native upload task", async () => {
+    storedServer = {
+      ...manualServer,
+      url: "wss://11111111111111111111111111111111.link.test/ws",
+      transportKind: "link",
+      transportPin: "3".repeat(64),
+      linkRouteId: "4".repeat(32),
+      transportCandidates: [
+        {
+          name: "region-a",
+          kind: "link",
+          url: "wss://11111111111111111111111111111111.link.test/ws",
+        },
+      ],
+    };
+
+    await expect(uploadDocumentForServer("server-a")).rejects.toThrow(
+      "Zen Link is offline",
+    );
+    expect(nativeTunnelStarts).toBe(1);
+    expect(uploadCalls).toHaveLength(0);
+    expect(fetchCalls).toBe(0);
+  });
+
   test("uses the selected file URI in an authenticated native binary task", async () => {
     const attachment = await uploadDocumentForServer("server-a");
 
@@ -238,8 +291,7 @@ describe("native attachment upload", () => {
     const snapshots: unknown[] = [];
     const operation = createAttachmentUploadOperation(
       selectedAsset,
-      "wss://zen.test/ws",
-      "daemon-a",
+      manualServer,
       { onProgress: (progress) => snapshots.push(progress) },
     );
     await flushMicrotasks();
@@ -268,8 +320,7 @@ describe("native attachment upload", () => {
     const snapshots: unknown[] = [];
     const operation = createAttachmentUploadOperation(
       selectedAsset,
-      "wss://zen.test/ws",
-      "daemon-a",
+      manualServer,
       { onProgress: (progress) => snapshots.push(progress) },
     );
     await flushMicrotasks();
@@ -299,8 +350,7 @@ describe("native attachment upload", () => {
     nativeCancelError = new Error("native cancellation failed");
     const operation = createAttachmentUploadOperation(
       selectedAsset,
-      "wss://zen.test/ws",
-      "daemon-a",
+      manualServer,
     );
     await flushMicrotasks();
 
@@ -326,7 +376,7 @@ function deferred<T>() {
 }
 
 async function flushMicrotasks() {
-  await Promise.resolve();
-  await Promise.resolve();
-  await Promise.resolve();
+  for (let index = 0; index < 10; index += 1) {
+    await Promise.resolve();
+  }
 }

@@ -20,7 +20,6 @@ import (
 	"github.com/daoleno/zen/daemon/auth"
 )
 
-const formerMaxUploadFileBytes int64 = 32 << 20
 const reportedLargeUploadBytes int64 = 1_532_564_736
 
 func TestUploadPolicyAdmitsReportedLargeFile(t *testing.T) {
@@ -38,12 +37,15 @@ func TestUploadPolicyAdmitsReportedLargeFile(t *testing.T) {
 	}
 }
 
-func TestUploadAcceptsUnknownLengthRawStreamBeyondFormerFileLimit(t *testing.T) {
+func TestUploadAcceptsUnknownLengthRawStreamBeyondSyntheticFormerLimit(t *testing.T) {
 	stateDir := t.TempDir()
 	deviceID := "device-beyond-former-limit"
 	authManager, privateKey := uploadAuthFixture(t, stateDir, deviceID)
 	server := New(authManager, nil, nil, nil, nil, nil, nil)
-	wantSize := formerMaxUploadFileBytes + (1 << 20)
+	// Exercise the streaming boundary with scaled limits. Production-size
+	// policy is asserted above without leaving a multi-GiB fixture.
+	const syntheticFormerLimit = 2 << 20
+	wantSize := int64(syntheticFormerLimit + (1 << 20))
 	reader, writeDone := rawUploadPipe(wantSize)
 
 	request := rawUploadRequest(t, authManager, privateKey, deviceID, reader, "larger-than-before.bin", "application/octet-stream")
@@ -51,7 +53,11 @@ func TestUploadAcceptsUnknownLengthRawStreamBeyondFormerFileLimit(t *testing.T) 
 		t.Fatalf("content length = %d, want unknown", request.ContentLength)
 	}
 	response := httptest.NewRecorder()
-	server.handleUpload(response, request)
+	server.handleUploadWithLimits(response, request, uploadLimits{
+		fileBytes:  4 << 20,
+		storeBytes: 8 << 20,
+		retention:  uploadRetention,
+	})
 	_ = reader.Close()
 	writeErr := <-writeDone
 	if response.Code != http.StatusOK {

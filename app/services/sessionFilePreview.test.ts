@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import {
-  appendSessionFileAuthorizationQuery,
+  appendSessionFileCapabilityQuery,
   bindSessionFileRequestToGeneration,
   buildSessionFileBinaryUrl,
   classifySessionFileRenderer,
@@ -100,18 +100,23 @@ describe("current-Session file renderer contract", () => {
     });
   });
 
-  test("carries the same signed authorization through native binary URL loading", () => {
-    const authorizationHeader =
-      "ZenDevice v1:device:daemon:1784518400123:nonce:signature";
-    const sourceUrl = appendSessionFileAuthorizationQuery(
+  test("carries repeatable method-scoped capabilities without a nonce authorization", () => {
+    const sourceUrl = appendSessionFileCapabilityQuery(
       "https://host.example/session-file?path=docs%2Foverview.webp&generation=token",
-      authorizationHeader,
+      {
+        deviceId: "device-a",
+        expiresAtMS: 1_900_000_000_000,
+        getSignature: "a".repeat(128),
+        headSignature: "b".repeat(128),
+      },
     );
-    const encoded = new URL(sourceUrl).searchParams.get("auth");
+    const query = new URL(sourceUrl).searchParams;
 
-    expect(encoded).not.toBeNull();
-    const padded = `${encoded!.replace(/-/g, "+").replace(/_/g, "/")}${"=".repeat((4 - (encoded!.length % 4)) % 4)}`;
-    expect(globalThis.atob(padded)).toBe(authorizationHeader);
+    expect(query.has("auth")).toBe(false);
+    expect(query.get("file_cap_device")).toBe("device-a");
+    expect(query.get("file_cap_expires")).toBe("1900000000000");
+    expect(query.get("file_cap_get")).toBe("a".repeat(128));
+    expect(query.get("file_cap_head")).toBe("b".repeat(128));
     expect(sourceUrl).toContain("path=docs%2Foverview.webp");
     expect(sourceUrl).toContain("generation=token");
   });

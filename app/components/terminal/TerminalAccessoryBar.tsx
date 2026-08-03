@@ -10,6 +10,7 @@ import {
   buildUploadUrl,
   createAttachmentUploadOperation,
   pickUploadDocument,
+  resolveServerUploadTarget,
   type ActiveAttachmentUpload,
 } from "../../services/uploads";
 import { TerminalAccessoryControls } from "./TerminalAccessoryControls";
@@ -23,6 +24,7 @@ const REPEAT_RATE_MS = 80;
 interface TerminalAccessoryBarProps {
   terminalRef: React.RefObject<TerminalSurfaceHandle | null>;
   uploadOwnerKey: string | null;
+  serverId: string;
   serverUrl: string;
   daemonId: string;
   theme: TerminalThemePalette;
@@ -34,6 +36,7 @@ interface TerminalAccessoryBarProps {
 export function TerminalAccessoryBar({
   terminalRef,
   uploadOwnerKey,
+  serverId,
   serverUrl,
   daemonId,
   theme,
@@ -123,11 +126,15 @@ export function TerminalAccessoryBar({
         return;
       }
 
+      const server = await resolveServerUploadTarget(serverId);
+      if (selectionGenerationRef.current !== selectionGeneration) {
+        return;
+      }
       setSelecting(false);
       setActiveUpload({ name: asset.name || "upload", progress: null });
       handle = uploadOwnerRef.current.start(
         (onProgress) =>
-          createAttachmentUploadOperation(asset, serverUrl, daemonId, {
+          createAttachmentUploadOperation(asset, server, {
             onProgress,
           }),
         (progress) => {

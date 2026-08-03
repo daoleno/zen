@@ -5,7 +5,8 @@ import {
   type UploadProgress as NativeUploadProgress,
 } from "expo-file-system";
 import { buildAuthorizationHeader } from "./auth";
-import { getServerById } from "./storage";
+import { getServerById, type StoredServer } from "./storage";
+import { resolveCanonicalServerURL } from "./pinnedTransport";
 
 export type UploadedAttachment = {
   name: string;
@@ -89,12 +90,10 @@ export function buildUploadUrl(serverUrl: string): string | null {
 
 export function createAttachmentUploadOperation(
   asset: UploadDocumentAsset,
-  serverUrl: string,
-  daemonId: string,
+  server: StoredServer,
   options: AttachmentUploadOperationOptions = {},
 ): AttachmentUploadOperation {
-  const uploadUrl = buildUploadUrl(serverUrl);
-  if (!uploadUrl) {
+  if (!buildUploadUrl(server.url)) {
     throw new Error("Server URL is not configured.");
   }
   if (typeof asset.size === "number" && asset.size > V1_MAX_UPLOAD_FILE_BYTES) {
@@ -113,7 +112,12 @@ export function createAttachmentUploadOperation(
 
   const result = (async (): Promise<UploadedAttachment> => {
     try {
-      const headers = await buildUploadHeaders(daemonId);
+      const headers = await buildUploadHeaders(server.daemonId);
+      const transportURL = await resolveCanonicalServerURL(server);
+      const uploadUrl = buildUploadUrl(transportURL);
+      if (!uploadUrl) {
+        throw new Error("Server URL is not configured.");
+      }
       if (cancelRequested) {
         throw cancelFailure ?? new AttachmentUploadCancelledError();
       }
@@ -201,12 +205,10 @@ export function createAttachmentUploadOperation(
 
 export async function uploadDocumentAsset(
   asset: UploadDocumentAsset,
-  serverUrl: string,
-  daemonId: string,
+  server: StoredServer,
   options: AttachmentUploadOperationOptions = {},
 ): Promise<UploadedAttachment> {
-  return createAttachmentUploadOperation(asset, serverUrl, daemonId, options)
-    .result;
+  return createAttachmentUploadOperation(asset, server, options).result;
 }
 
 export function projectUploadProgress(
@@ -249,12 +251,12 @@ export async function pickUploadDocument(): Promise<UploadDocumentAsset | null> 
 
 export async function resolveServerUploadTarget(
   serverId: string,
-): Promise<{ serverUrl: string; daemonId: string }> {
+): Promise<StoredServer> {
   const server = await getServerById(serverId);
   if (!server) {
     throw new Error("Server not found.");
   }
-  return { serverUrl: server.url, daemonId: server.daemonId };
+  return server;
 }
 
 function encodeUploadName(name: string): string {
@@ -293,7 +295,7 @@ export async function uploadDocumentForServer(
     return null;
   }
   const target = await resolveServerUploadTarget(serverId);
-  return uploadDocumentAsset(asset, target.serverUrl, target.daemonId);
+  return uploadDocumentAsset(asset, target);
 }
 
 function normalizeByteCount(value: number): number | null {

@@ -70,12 +70,7 @@ export function useInterfaceComposerAttachments({
       setActiveUpload({ name: asset.name || "upload", progress: null });
       handle = uploadOwnerRef.current.start(
         (onProgress) =>
-          createAttachmentUploadOperation(
-            asset,
-            target.serverUrl,
-            target.daemonId,
-            { onProgress },
-          ),
+          createAttachmentUploadOperation(asset, target, { onProgress }),
         (progress) => {
           setActiveUpload((current) =>
             current ? { ...current, progress } : current,

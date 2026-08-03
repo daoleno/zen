@@ -3,6 +3,7 @@ package server
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -25,6 +26,8 @@ const (
 	maxSessionFileTextBytes      = 512 << 10
 	maxSessionFileBinaryBytes    = 50 << 20
 	sessionFileAuthPurpose       = "zen-session-file"
+	sessionFileCapabilityTTL     = 2 * time.Minute
+	maxSessionFileCapabilityBody = 16 << 10
 )
 
 var (
@@ -51,6 +54,27 @@ type sessionFileTextPreview struct {
 	BytesRead  int    `json:"bytes_read"`
 	Truncated  bool   `json:"truncated"`
 	Generation string `json:"generation"`
+}
+
+type sessionFileCapabilityRequest struct {
+	AgentID    string `json:"agent_id"`
+	ProcessID  int    `json:"process_id"`
+	StartedAt  int64  `json:"started_at"`
+	Path       string `json:"path"`
+	Generation string `json:"generation"`
+}
+
+type sessionFileCapabilityClaims struct {
+	Version     int    `json:"version"`
+	DaemonID    string `json:"daemon_id"`
+	DeviceID    string `json:"device_id"`
+	Method      string `json:"method"`
+	AgentID     string `json:"agent_id"`
+	ProcessID   int    `json:"process_id"`
+	StartedAt   int64  `json:"started_at"`
+	Path        string `json:"path"`
+	Generation  string `json:"generation"`
+	ExpiresAtMS int64  `json:"expires_at_ms"`
 }
 
 type resolvedSessionFile struct {
@@ -456,33 +480,137 @@ func isStaleSessionFileIdentity(err error) bool {
 	return errors.Is(err, errStaleSessionFileIdentity)
 }
 
+func (s *Server) handleSessionFileCapability(
+	w http.ResponseWriter,
+	r *http.Request,
+) {
+	if r.Method != http.MethodPost {
+		w.Header().Set("Allow", "POST")
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	device, ok := s.authenticateRequest(w, r, sessionFileAuthPurpose)
+	if !ok {
+		return
+	}
+
+	r.Body = http.MaxBytesReader(w, r.Body, maxSessionFileCapabilityBody)
+	decoder := json.NewDecoder(r.Body)
+	decoder.DisallowUnknownFields()
+	var request sessionFileCapabilityRequest
+	if err := decoder.Decode(&request); err != nil {
+		http.Error(w, "invalid Session file capability request", http.StatusBadRequest)
+		return
+	}
+	if err := ensureJSONBodyEnded(decoder); err != nil {
+		http.Error(w, "invalid Session file capability request", http.StatusBadRequest)
+		return
+	}
+
+	raw := clientMessage{
+		AgentID:        request.AgentID,
+		ProcessID:      request.ProcessID,
+		StartedAt:      json.RawMessage(strconv.FormatInt(request.StartedAt, 10)),
+		Path:           request.Path,
+		FileGeneration: request.Generation,
+	}
+	resolved, err := s.resolveCurrentSessionFile(raw)
+	if err != nil {
+		writeSessionFileHTTPError(w, err)
+		return
+	}
+	defer resolved.file.Close()
+	if strings.TrimSpace(raw.FileGeneration) == "" ||
+		raw.FileGeneration != resolved.generation {
+		writeSessionFileHTTPError(
+			w,
+			fmt.Errorf("%w; refresh the preview", errSessionFileChanged),
+		)
+		return
+	}
+	if resolved.kind != "image" && resolved.kind != "pdf" {
+		http.Error(
+			w,
+			"file is not a supported streamed preview",
+			http.StatusUnsupportedMediaType,
+		)
+		return
+	}
+	if err := validateSessionFileBinarySize(resolved); err != nil {
+		writeSessionFileHTTPError(w, err)
+		return
+	}
+
+	expiresAtMS := s.sessionFileCapabilityNow().
+		Add(sessionFileCapabilityTTL).
+		UnixMilli()
+	getSignature, err := s.createSessionFileCapabilitySignature(
+		device.ID,
+		http.MethodGet,
+		raw,
+		expiresAtMS,
+	)
+	if err != nil {
+		http.Error(w, "failed to create Session file capability", http.StatusInternalServerError)
+		return
+	}
+	headSignature, err := s.createSessionFileCapabilitySignature(
+		device.ID,
+		http.MethodHead,
+		raw,
+		expiresAtMS,
+	)
+	if err != nil {
+		http.Error(w, "failed to create Session file capability", http.StatusInternalServerError)
+		return
+	}
+	s.writeJSONWithAssertion(
+		w,
+		http.StatusOK,
+		"zen-session-file-capability",
+		map[string]any{
+			"version":        1,
+			"device_id":      device.ID,
+			"expires_at_ms":  expiresAtMS,
+			"get_signature":  getSignature,
+			"head_signature": headSignature,
+		},
+	)
+}
+
 func (s *Server) handleSessionFileBinary(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet && r.Method != http.MethodHead {
 		w.Header().Set("Allow", "GET, HEAD")
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-	if _, ok := s.authenticateRequest(w, r, sessionFileAuthPurpose); !ok {
+
+	usingCapability := hasSessionFileCapability(r)
+	if !usingCapability {
+		if _, ok := s.authenticateRequest(
+			w,
+			r,
+			sessionFileAuthPurpose,
+		); !ok {
+			return
+		}
+	}
+	raw, err := sessionFileMessageFromRequest(r)
+	if err != nil {
+		if usingCapability {
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
+	}
+	if usingCapability {
+		if err := s.verifySessionFileCapability(r, raw); err != nil {
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
 	}
 
-	processID, err := strconv.Atoi(strings.TrimSpace(r.URL.Query().Get("process_id")))
-	if err != nil || processID <= 0 {
-		http.Error(w, "process_id is invalid", http.StatusBadRequest)
-		return
-	}
-	startedAt := strings.TrimSpace(r.URL.Query().Get("started_at"))
-	if startedAt == "" {
-		http.Error(w, "started_at is required", http.StatusBadRequest)
-		return
-	}
-	raw := clientMessage{
-		AgentID:        r.URL.Query().Get("agent_id"),
-		ProcessID:      processID,
-		StartedAt:      []byte(startedAt),
-		Path:           r.URL.Query().Get("path"),
-		FileGeneration: r.URL.Query().Get("generation"),
-	}
 	resolved, err := s.resolveCurrentSessionFile(raw)
 	if err != nil {
 		writeSessionFileHTTPError(w, err)
@@ -514,6 +642,154 @@ func (s *Server) handleSessionFileBinary(w http.ResponseWriter, r *http.Request)
 		resolved.info.ModTime(),
 		boundedSessionFileBinaryReader(resolved),
 	)
+}
+
+func sessionFileMessageFromRequest(r *http.Request) (clientMessage, error) {
+	processID, err := strconv.Atoi(
+		strings.TrimSpace(r.URL.Query().Get("process_id")),
+	)
+	if err != nil || processID <= 0 {
+		return clientMessage{}, errors.New("process_id is invalid")
+	}
+	startedAt := strings.TrimSpace(r.URL.Query().Get("started_at"))
+	startedAtMS, err := strconv.ParseInt(startedAt, 10, 64)
+	if err != nil || startedAtMS <= 0 {
+		return clientMessage{}, errors.New("started_at is invalid")
+	}
+	return clientMessage{
+		AgentID:        r.URL.Query().Get("agent_id"),
+		ProcessID:      processID,
+		StartedAt:      json.RawMessage(strconv.FormatInt(startedAtMS, 10)),
+		Path:           r.URL.Query().Get("path"),
+		FileGeneration: r.URL.Query().Get("generation"),
+	}, nil
+}
+
+func hasSessionFileCapability(r *http.Request) bool {
+	query := r.URL.Query()
+	for _, key := range []string{
+		"file_cap_device",
+		"file_cap_expires",
+		"file_cap_get",
+		"file_cap_head",
+	} {
+		if strings.TrimSpace(query.Get(key)) != "" {
+			return true
+		}
+	}
+	return false
+}
+
+func (s *Server) createSessionFileCapabilitySignature(
+	deviceID string,
+	method string,
+	raw clientMessage,
+	expiresAtMS int64,
+) (string, error) {
+	payload, err := s.sessionFileCapabilityPayload(
+		deviceID,
+		method,
+		raw,
+		expiresAtMS,
+	)
+	if err != nil {
+		return "", err
+	}
+	return s.auth.CreateSessionFileCapabilitySignature(payload), nil
+}
+
+func (s *Server) verifySessionFileCapability(
+	r *http.Request,
+	raw clientMessage,
+) error {
+	query := r.URL.Query()
+	deviceID := strings.TrimSpace(query.Get("file_cap_device"))
+	expiresAtMS, err := strconv.ParseInt(
+		strings.TrimSpace(query.Get("file_cap_expires")),
+		10,
+		64,
+	)
+	if err != nil || expiresAtMS <= 0 || deviceID == "" {
+		return errors.New("invalid Session file capability")
+	}
+	now := s.sessionFileCapabilityNow()
+	expiresAt := time.UnixMilli(expiresAtMS)
+	if !now.Before(expiresAt) ||
+		expiresAt.After(now.Add(sessionFileCapabilityTTL+time.Second)) {
+		return errors.New("expired Session file capability")
+	}
+
+	var signature string
+	switch r.Method {
+	case http.MethodGet:
+		signature = strings.TrimSpace(query.Get("file_cap_get"))
+	case http.MethodHead:
+		signature = strings.TrimSpace(query.Get("file_cap_head"))
+	default:
+		return errors.New("invalid Session file capability method")
+	}
+	if signature == "" {
+		return errors.New("missing Session file capability signature")
+	}
+	payload, err := s.sessionFileCapabilityPayload(
+		deviceID,
+		r.Method,
+		raw,
+		expiresAtMS,
+	)
+	if err != nil {
+		return err
+	}
+	return s.auth.VerifySessionFileCapabilitySignature(
+		deviceID,
+		payload,
+		signature,
+	)
+}
+
+func (s *Server) sessionFileCapabilityPayload(
+	deviceID string,
+	method string,
+	raw clientMessage,
+	expiresAtMS int64,
+) ([]byte, error) {
+	startedAtMS, err := strconv.ParseInt(
+		strings.TrimSpace(string(raw.StartedAt)),
+		10,
+		64,
+	)
+	if err != nil || startedAtMS <= 0 {
+		return nil, errors.New("started_at is invalid")
+	}
+	return json.Marshal(sessionFileCapabilityClaims{
+		Version:     1,
+		DaemonID:    s.auth.DaemonID(),
+		DeviceID:    strings.TrimSpace(deviceID),
+		Method:      method,
+		AgentID:     raw.AgentID,
+		ProcessID:   raw.ProcessID,
+		StartedAt:   startedAtMS,
+		Path:        raw.Path,
+		Generation:  raw.FileGeneration,
+		ExpiresAtMS: expiresAtMS,
+	})
+}
+
+func (s *Server) sessionFileCapabilityNow() time.Time {
+	if s != nil && s.sessionFileCapabilityClock != nil {
+		return s.sessionFileCapabilityClock().UTC()
+	}
+	return time.Now().UTC()
+}
+
+func ensureJSONBodyEnded(decoder *json.Decoder) error {
+	var trailing any
+	if err := decoder.Decode(&trailing); errors.Is(err, io.EOF) {
+		return nil
+	} else if err != nil {
+		return err
+	}
+	return errors.New("unexpected trailing JSON value")
 }
 
 func boundedSessionFileBinaryReader(resolved *resolvedSessionFile) io.ReadSeeker {

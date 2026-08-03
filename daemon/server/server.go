@@ -92,6 +92,7 @@ type Server struct {
 	uploadDir                  string
 	uploadMu                   sync.Mutex
 	sessionFileAgentLoader     func(agentID string) *classifier.Agent
+	sessionFileCapabilityClock func() time.Time
 	authRevocationUnsubscribe  func()
 	runtimeClosing             bool
 	terminalCleanup            terminalCleanupOwner
@@ -300,7 +301,9 @@ func (s *Server) Run(ctx context.Context, addr string) error {
 	return s.RunWithReady(ctx, addr, nil)
 }
 
-// Handler exposes the complete daemon HTTP and WebSocket origin.
+// Handler exposes the daemon's complete origin as one transport boundary.
+// LAN, tunnels, reverse proxies, and Zen Link all use this same handler so
+// /ws and the HTTP streaming routes cannot drift between transports.
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/ws", s.handleWS)
@@ -308,6 +311,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/auth-check", s.handleAuthCheck)
 	mux.HandleFunc("/devices", s.handleDevices)
 	mux.HandleFunc("/upload", s.handleUpload)
+	mux.HandleFunc("/session-file-capability", s.handleSessionFileCapability)
 	mux.HandleFunc("/session-file", s.handleSessionFileBinary)
 	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
 		s.writeJSONWithAssertion(w, http.StatusOK, "zen-health", map[string]any{
@@ -2817,7 +2821,7 @@ func withCORS(next http.Handler) http.Handler {
 			w.Header().Set("Access-Control-Allow-Origin", origin)
 			w.Header().Add("Vary", "Origin")
 			w.Header().Set("Access-Control-Allow-Headers", "Authorization, Content-Type")
-			w.Header().Set("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS")
+			w.Header().Set("Access-Control-Allow-Methods", "GET, HEAD, POST, DELETE, OPTIONS")
 		}
 		if r.Method == http.MethodOptions {
 			w.WriteHeader(http.StatusNoContent)
