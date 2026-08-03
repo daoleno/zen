@@ -21,7 +21,11 @@ const (
 type Store struct {
 	Root string
 
-	mu sync.Mutex
+	mu      sync.Mutex
+	subMu   sync.Mutex
+	subs    map[int]chan WorkChange
+	nextSub int
+	now     func() time.Time
 }
 
 func DefaultRoot() (string, error) {
@@ -39,7 +43,11 @@ func NewStore(root string) (*Store, error) {
 	if err := os.MkdirAll(root, 0o700); err != nil {
 		return nil, err
 	}
-	store := &Store{Root: root}
+	store := &Store{
+		Root: root,
+		subs: map[int]chan WorkChange{},
+		now:  time.Now,
+	}
 	if err := store.ensureFiles(); err != nil {
 		return nil, err
 	}
@@ -201,6 +209,9 @@ func (s *Store) snapshotLocked(agents []AgentRef) (Snapshot, error) {
 
 func (s *Store) ensureFiles() error {
 	if err := os.MkdirAll(s.statePath(), 0o700); err != nil {
+		return err
+	}
+	if err := s.ensureOrchestrationDatabase(); err != nil {
 		return err
 	}
 	if err := os.MkdirAll(s.WorkspacePath(), 0o700); err != nil {
@@ -598,11 +609,11 @@ None recorded yet.
 
 ## Open Threads
 
-- Keep this file current when a task, plan, or delegated session should survive host executor switching, daemon restarts, or transcript compaction.
+- Summarize only context useful for executor handoff. Durable status, ownership, next action, and wait state live in Brain Work.
 
 ## Next
 
-- Update this file before and after larger delegated work.
+- Refresh this projection when handoff context materially changes; do not duplicate Work/Event state manually.
 `
 
 const defaultWorkspaceInstructions = `# Brain Workspace
@@ -611,7 +622,7 @@ This directory is the private workspace for zen Brain.
 
 - Keep durable user memory in memory.md.
 - Keep personality and preference notes in profile.md.
-- Keep the current active objective, decisions, open threads, and next step in current.md.
+- Keep a human-readable handoff projection in current.md; database Work/Event state is authoritative.
 - Use policies/ for stable Brain orchestration rules; read policies/delegation.md, policies/engine.md, and policies/handoff.md when delegating, switching host executors, or recovering context.
 - Use playbooks/ for provider-neutral operating playbooks; discover them with zen brain playbooks --json and read on demand (progressive disclosure — do not assume full playbook bodies are loaded).
 - Use local files here for plans, reminders, inbox notes, and follow-up state.
@@ -622,6 +633,11 @@ This directory is the private workspace for zen Brain.
 
 - Brain is the user's scheduler: reduce decision load.
 - Stay in Brain for chat, memory, synthesis, reminders, and decisions that fit the current context.
+- Create Work only for a user commitment that must survive the current turn. Ordinary questions and discussion create no Work.
+- Work and its append-only Events are the sole durable Brain scheduler state. current.md and provider state are projections or execution details, not alternate owners.
+- Only an atomically claimed actionable Work Event may start an automatic Brain turn. Active or waiting Work without an Event stays idle.
+- until_done changes when Work may be marked done; it never creates a wake or polling loop.
+- Do not use a provider Goal as Brain scheduler state. Provider Goal support may remain local to an individual executor Session.
 - For concrete work needing repository/tool execution, independent progress, parallelism, or follow-up, proactively create or reuse visible delegated agent sessions.
 - Brain is the orchestrator, not the execution pool: keep decomposition, ordering, judgment, delegated result review, and final synthesis in Brain. Use delegated agents for scoped execution.
 - Brain owns decomposition, ordering, judgment, delegated result review, and final synthesis.
@@ -662,13 +678,14 @@ This directory is the private workspace for zen Brain.
 
 ## Zen CLI
 
-- Use the zen binary to inspect Brain context, perform safe housekeeping, and delegate work. Common command shapes: zen brain context --json; zen brain playbooks --json; zen brain gc --json; zen agent list --json; zen agent spawn -name "<name>" -cwd <workspace> -prompt "<task>"; zen agent spawn -name "<name>" -executor <executor> -cwd <workspace> -prompt "<task>"; zen agent capture -id <agent_id> --json; zen agent send -id <agent_id> -text "<message>" --submit=true; zen agent close -id <agent_id>.
+- Use the zen binary to inspect Brain context, Work, and delegated Sessions. Common command shapes: zen brain context --json; zen brain work list --json; zen brain work create -title "<title>" -objective "<outcome>"; zen brain work update -id <work_id> -status <status>; zen brain playbooks --json; zen brain gc --json; zen agent list --json; zen agent spawn -name "<name>" -cwd <workspace> -prompt "<task>"; zen agent spawn -name "<name>" -executor <executor> -cwd <workspace> -prompt "<task>"; zen agent capture -id <agent_id> --json; zen agent send -id <agent_id> -text "<message>" --submit=true; zen agent close -id <agent_id>.
+- A visible delegated agent spawn creates bounded Work automatically unless -work attaches the Session to existing Work. Use -completion until_done with -done-criteria only when the user explicitly requires verified completion.
 - Use zen calendar list/get/create/update/cancel/run for explicit time intent. event, reminder, and deadline are passive Calendar records; scheduled_action launches delegated execution.
 - Before creating a scheduled_action, obtain the current Brain thread_id from zen brain context --json and pass that exact value as -source-thread (source_thread_id). Never invent, omit, or silently retarget this thread. The canonical full result, or a concise failure, returns idempotently to that captured Brain thread; unread state and notifications are projections. A recurring series continues after a failed occurrence.
 - Calendar creation takes a local YYYY-MM-DD date, HH:MM wall time, and IANA timezone. If the time occurs twice at DST fall-back, ask for first or second; never guess. After create, update, or run, repeat the resolved local date/time/timezone, recurrence/effect, and result destination from the command confirmation. Do not extract Calendar items automatically from unrelated chat.
 - Keep delegated agent lifecycle ownership from spawn through inspection, follow-up, result consolidation, and close. Do not close a delegated session merely because a small stage finished; close it when the larger task is complete or the remaining work has intentionally moved elsewhere.
 - Never close, kill, rename, repurpose, or otherwise manage sessions whose agent list entry does not have delegated=true. Those belong to the user or another tool.
-- Treat Heartbeat wake messages as compact actionable deltas; inspect only what is needed, then act, summarize, or sleep.
+- Treat an Active work event message as one claimed actionable delta; inspect only its referenced change, then act, summarize, or wait.
 - Ask only when critical context is missing, an action is high-risk or irreversible, credentials/permissions are needed, or the choice depends on the user's values.
 `
 
@@ -760,7 +777,7 @@ Suggested filename: ` + "`YYYY-MM-DD-short-title.md`" + `
 
 ## Context
 
-## Goal
+## Objective
 
 ## Todo
 

@@ -27,6 +27,49 @@ func TestCleanCodexDisplayText_KeepsContributorGuideRequests(t *testing.T) {
 	}
 }
 
+func TestCleanCodexDisplayText_HidesTypedGoalInternalContext(t *testing.T) {
+	value := "Visible before\n<codex_internal_context source=\"goal\">\nsecret objective\n</codex_internal_context>\nVisible after"
+	got := CleanCodexDisplayText(value)
+	if got != "Visible before\n\nVisible after" {
+		t.Fatalf("CleanCodexDisplayText() = %q", got)
+	}
+	for _, hidden := range []string{"codex_internal_context", "secret objective"} {
+		if strings.Contains(got, hidden) {
+			t.Fatalf("typed Goal context leaked %q in %q", hidden, got)
+		}
+	}
+
+	if got := CleanCodexDisplayText("<codex_internal_context source='goal' />"); got != "" {
+		t.Fatalf("self-closing typed Goal context = %q", got)
+	}
+}
+
+func TestSanitizeConversationProjectionDropsTypedGoalEventsAndEmbeddedContext(t *testing.T) {
+	conversation := SanitizeConversationProjection(CodexConversation{
+		Available: true,
+		Events: []CodexConversationEvent{
+			{
+				ID:     "internal-goal",
+				Kind:   "status",
+				Source: "goal",
+				Title:  "codex_internal_context",
+				Body:   "secret objective",
+			},
+			{
+				ID:   "visible",
+				Kind: "assistant_message",
+				Body: "Answer\n<codex_internal_context source=\"goal\">secret objective</codex_internal_context>\nDone",
+			},
+		},
+	})
+	if len(conversation.Events) != 1 {
+		t.Fatalf("events = %#v", conversation.Events)
+	}
+	if conversation.Events[0].ID != "visible" || conversation.Events[0].Body != "Answer\n\nDone" {
+		t.Fatalf("visible event = %#v", conversation.Events[0])
+	}
+}
+
 func TestMatchCodexTranscriptToAgentStart_UsesNearestCreatedThread(t *testing.T) {
 	base := time.Date(2026, 5, 21, 8, 0, 0, 0, time.UTC)
 	candidates := []codexTranscriptCandidate{

@@ -34,6 +34,7 @@ type controlApp struct {
 	watcher           controlWatcher
 	execs             *work.ExecutorConfig
 	brainStore        *brain.Store
+	brainService      *brain.Service
 	calendarStore     *calendar.Store
 	calendarScheduler *calendar.Scheduler
 	stateDir          string
@@ -63,6 +64,14 @@ func (a *controlApp) HandleControlRequest(req control.Request) control.Response 
 		return a.handleBrainPlaybooks()
 	case "brain_gc":
 		return a.handleBrainGC()
+	case "brain_work_list":
+		return a.handleBrainWorkList(req)
+	case "brain_work_create":
+		return a.handleBrainWorkCreate(req)
+	case "brain_work_update":
+		return a.handleBrainWorkUpdate(req)
+	case "brain_work_event":
+		return a.handleBrainWorkEvent(req)
 	case "brain_set_executor":
 		return a.handleBrainSetExecutor(req)
 	case "set_delegated_executor":
@@ -225,6 +234,14 @@ func (a *controlApp) handleAgentSpawn(req control.Request) control.Response {
 		return control.ErrorResponse("prompt_failed", err.Error())
 	}
 
+	var ownedWork brain.Work
+	if !req.Hidden {
+		ownedWork, err = a.prepareSpawnWork(req, name, prompt)
+		if err != nil {
+			return control.ErrorResponse("brain_work_failed", err.Error())
+		}
+	}
+
 	agentID, err := a.watcher.CreateSession("", watcher.CreateSessionOptions{
 		Cwd:         cwd,
 		Command:     command,
@@ -236,7 +253,25 @@ func (a *controlApp) handleAgentSpawn(req control.Request) control.Response {
 		Env:         progressEnvForStateDir(a.stateDir),
 	})
 	if err != nil {
+		a.recordSpawnWorkFailure(ownedWork, err)
 		return control.ErrorResponse("spawn_failed", err.Error())
+	}
+	if ownedWork.ID != "" {
+		status := brain.WorkRunning
+		next := "Wait for the delegated Session."
+		wait := "Session " + agentID
+		owner := agentID
+		ownedWork, err = a.brainStore.UpdateWork(ownedWork.ID, brain.WorkUpdate{
+			Status:         &status,
+			OwnerSessionID: &owner,
+			NextAction:     &next,
+			WaitFor:        &wait,
+		})
+		if err != nil {
+			_ = a.watcher.KillSession(agentID)
+			a.recordSpawnWorkFailure(ownedWork, err)
+			return control.ErrorResponse("brain_work_failed", err.Error())
+		}
 	}
 
 	if prompt != "" {
@@ -250,13 +285,14 @@ func (a *controlApp) handleAgentSpawn(req control.Request) control.Response {
 			}
 		}
 		if sendErr != nil {
+			a.recordSpawnWorkFailure(ownedWork, sendErr)
 			return control.ErrorResponse("send_prompt_failed", sendErr.Error())
 		}
 	}
 
 	agent := a.watcher.GetAgent(agentID)
 	if agent == nil {
-		return control.Response{
+		response := control.Response{
 			OK: true,
 			Agent: &control.Agent{
 				ID:        agentID,
@@ -268,9 +304,169 @@ func (a *controlApp) handleAgentSpawn(req control.Request) control.Response {
 				Delegated: !req.Hidden,
 			},
 		}
+		if ownedWork.ID != "" {
+			response.BrainWork = &ownedWork
+		}
+		return response
 	}
 	out := controlAgent(agent)
-	return control.Response{OK: true, Agent: &out}
+	response := control.Response{OK: true, Agent: &out}
+	if ownedWork.ID != "" {
+		response.BrainWork = &ownedWork
+	}
+	return response
+}
+
+func (a *controlApp) prepareSpawnWork(req control.Request, name, prompt string) (brain.Work, error) {
+	if a == nil || a.brainStore == nil {
+		return brain.Work{}, fmt.Errorf("Brain Work store is not configured")
+	}
+	if workID := strings.TrimSpace(req.WorkID); workID != "" {
+		item, err := a.brainStore.Work(workID)
+		if err != nil {
+			return brain.Work{}, err
+		}
+		if item.Status == brain.WorkDone || item.Status == brain.WorkCancelled {
+			return brain.Work{}, fmt.Errorf("Brain Work %s is already %s", item.ID, item.Status)
+		}
+		return item, nil
+	}
+	policy := brain.CompletionBounded
+	doneCriteria := ""
+	contextRef := ""
+	if req.BrainWork != nil {
+		if req.BrainWork.CompletionPolicy != "" {
+			policy = req.BrainWork.CompletionPolicy
+		}
+		doneCriteria = req.BrainWork.DoneCriteriaRef
+		contextRef = req.BrainWork.ContextRef
+	}
+	objective := strings.TrimSpace(prompt)
+	if objective == "" {
+		objective = "Complete " + strings.TrimSpace(name) + "."
+	}
+	return a.brainStore.CreateWork(brain.Work{
+		Title:            name,
+		Objective:        objective,
+		Status:           brain.WorkOpen,
+		CompletionPolicy: policy,
+		DoneCriteriaRef:  doneCriteria,
+		NextAction:       "Start the delegated Session.",
+		ContextRef:       contextRef,
+	})
+}
+
+func (a *controlApp) recordSpawnWorkFailure(item brain.Work, spawnErr error) {
+	if a == nil || a.brainStore == nil || item.ID == "" {
+		return
+	}
+	status := brain.WorkNeedsInput
+	next := "Resolve the delegated Session launch failure."
+	wait := strings.TrimSpace(spawnErr.Error())
+	_, _ = a.brainStore.UpdateWork(item.ID, brain.WorkUpdate{
+		Status:     &status,
+		NextAction: &next,
+		WaitFor:    &wait,
+	})
+}
+
+func (a *controlApp) handleBrainWorkList(req control.Request) control.Response {
+	if a == nil || a.brainStore == nil {
+		return control.ErrorResponse("brain_unavailable", "Brain Work is not configured.")
+	}
+	if workID := strings.TrimSpace(req.WorkID); workID != "" {
+		item, err := a.brainStore.Work(workID)
+		if err != nil {
+			return brainWorkControlError(err)
+		}
+		events, err := a.brainStore.ListWorkEvents(workID)
+		if err != nil {
+			return brainWorkControlError(err)
+		}
+		return control.Response{OK: true, BrainWork: &item, BrainWorkEvents: events}
+	}
+	items, err := a.brainStore.ListWork()
+	if err != nil {
+		return brainWorkControlError(err)
+	}
+	return control.Response{OK: true, BrainWorks: items}
+}
+
+func (a *controlApp) handleBrainWorkCreate(req control.Request) control.Response {
+	if a == nil || a.brainStore == nil || req.BrainWork == nil {
+		return control.ErrorResponse("invalid_brain_work", "Brain Work is required.")
+	}
+	item, err := a.brainStore.CreateWork(*req.BrainWork)
+	if err != nil {
+		return brainWorkControlError(err)
+	}
+	return control.Response{OK: true, BrainWork: &item}
+}
+
+func (a *controlApp) handleBrainWorkUpdate(req control.Request) control.Response {
+	if a == nil || a.brainStore == nil || req.BrainWork == nil {
+		return control.ErrorResponse("invalid_brain_work", "Brain Work update is required.")
+	}
+	source := req.BrainWork
+	update := brain.WorkUpdate{}
+	for _, field := range req.WorkFields {
+		switch strings.TrimSpace(field) {
+		case "title":
+			update.Title = &source.Title
+		case "objective":
+			update.Objective = &source.Objective
+		case "status":
+			update.Status = &source.Status
+		case "owner_session_id":
+			update.OwnerSessionID = &source.OwnerSessionID
+		case "completion_policy":
+			update.CompletionPolicy = &source.CompletionPolicy
+		case "done_criteria_ref":
+			update.DoneCriteriaRef = &source.DoneCriteriaRef
+		case "next_action":
+			update.NextAction = &source.NextAction
+		case "wait_for":
+			update.WaitFor = &source.WaitFor
+		case "context_ref":
+			update.ContextRef = &source.ContextRef
+		default:
+			return control.ErrorResponse("invalid_brain_work", "Unknown Brain Work field: "+field)
+		}
+	}
+	if len(req.WorkFields) == 0 {
+		return control.ErrorResponse("invalid_brain_work", "At least one Brain Work field is required.")
+	}
+	item, err := a.brainStore.UpdateWork(strings.TrimSpace(req.WorkID), update)
+	if err != nil {
+		return brainWorkControlError(err)
+	}
+	return control.Response{OK: true, BrainWork: &item}
+}
+
+func (a *controlApp) handleBrainWorkEvent(req control.Request) control.Response {
+	if a == nil || a.brainService == nil || req.BrainWorkEvent == nil {
+		return control.ErrorResponse("brain_unavailable", "Brain Work event routing is not configured.")
+	}
+	event, created, err := a.brainService.AppendWorkEvent(*req.BrainWorkEvent)
+	if err != nil {
+		return brainWorkControlError(err)
+	}
+	response := control.Response{OK: true, BrainWorkEvent: &event}
+	if !created {
+		response.Confirmation = "Duplicate event already recorded."
+	}
+	return response
+}
+
+func brainWorkControlError(err error) control.Response {
+	code := "brain_work_failed"
+	switch {
+	case errors.Is(err, brain.ErrWorkNotFound):
+		code = "brain_work_not_found"
+	case errors.Is(err, brain.ErrWorkConflict):
+		code = "conflict"
+	}
+	return control.ErrorResponse(code, err.Error())
 }
 
 func (a *controlApp) handleAgentSend(req control.Request) control.Response {
@@ -378,6 +574,7 @@ func (a *controlApp) handleAgentCapture(req control.Request) control.Response {
 	if err != nil {
 		return control.ErrorResponse("capture_failed", err.Error())
 	}
+	text = work.CleanCodexDisplayText(text)
 	agent := a.watcher.GetAgent(agentID)
 	if agent == nil {
 		return control.Response{OK: true, Text: text}

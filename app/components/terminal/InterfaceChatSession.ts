@@ -1122,6 +1122,7 @@ function cleanCodexVisibleText(value: string) {
 
 function stripCodexContextualFragments(value: string) {
   let stripped = value.trim();
+  stripped = stripGoalInternalContext(stripped);
   if (!stripped) {
     return "";
   }
@@ -1145,6 +1146,19 @@ function stripCodexContextualFragments(value: string) {
     }
   }
   return normalizeDisplayText(stripped);
+}
+
+function stripGoalInternalContext(value: string) {
+  return value
+    .replace(
+      /<codex_internal_context\b[^>]*\bsource\s*=\s*["']goal["'][^>]*>[\s\S]*?<\/codex_internal_context\s*>/gi,
+      "\n",
+    )
+    .replace(
+      /<codex_internal_context\b[^>]*\bsource\s*=\s*["']goal["'][^>]*\/\s*>/gi,
+      "\n",
+    )
+    .trim();
 }
 
 function normalizeDisplayText(value: string) {

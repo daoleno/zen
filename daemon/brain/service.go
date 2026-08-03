@@ -9,8 +9,10 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
+	"github.com/daoleno/zen/daemon/calendar"
 	"github.com/daoleno/zen/daemon/classifier"
 	"github.com/daoleno/zen/daemon/watcher"
 	"github.com/daoleno/zen/daemon/work"
@@ -40,19 +42,9 @@ type Service struct {
 	watcher Watcher
 	execs   *work.ExecutorConfig
 	now     func() time.Time
-}
 
-type HeartbeatEvent struct {
-	Reason    string
-	AgentID   string
-	Name      string
-	Status    string
-	Summary   string
-	Cwd       string
-	Phase     string
-	Attention string
-	OldState  string
-	NewState  string
+	dispatchMu      sync.Mutex
+	foregroundInput bool
 }
 
 func NewService(store *Store, watcher Watcher, execs *work.ExecutorConfig) *Service {
@@ -66,6 +58,10 @@ func NewService(store *Store, watcher Watcher, execs *work.ExecutorConfig) *Serv
 
 func (s *Service) Snapshot() (Snapshot, error) {
 	snapshot, err := s.store.Snapshot()
+	if err != nil {
+		return Snapshot{}, err
+	}
+	activeWork, err := s.store.ActiveWork()
 	if err != nil {
 		return Snapshot{}, err
 	}
@@ -95,6 +91,7 @@ func (s *Service) Snapshot() (Snapshot, error) {
 	snapshot.Executors = s.agentExecutors(hostExecutor.ID, delegatedExecutor.ID)
 	snapshot.ChatThreadID = chatThreadID
 	snapshot.Agents = s.agentRefs(host.ID)
+	snapshot.ActiveWork = activeWork
 	return snapshot, nil
 }
 
@@ -117,6 +114,7 @@ func (s *Service) Context() (BrainContext, error) {
 		Memory:            snapshot.Memory,
 		Profile:           snapshot.Profile,
 		Personality:       snapshot.Personality,
+		ActiveWork:        snapshot.ActiveWork,
 		Playbooks:         playbooks.Playbooks,
 		HostAgent:         snapshot.HostAgent,
 		HostExecutor:      snapshot.HostExecutor,
@@ -272,12 +270,239 @@ func (s *Service) SetHostExecutor(executorID string) (Snapshot, error) {
 	return snapshot, nil
 }
 
-func (s *Service) Heartbeat(event HeartbeatEvent) (bool, error) {
+// RouteSessionEvent records the executor fact against its owning Work before
+// attempting a wake. Provider transcript state is never scheduler authority.
+func (s *Service) RouteSessionEvent(event watcher.SessionEvent) (bool, error) {
+	if s == nil || s.store == nil || event.Agent == nil {
+		return false, nil
+	}
+	agent := event.Agent
+	if !agent.Delegated || agent.Hidden || strings.TrimSpace(agent.ID) == "" {
+		return false, nil
+	}
+	item, found, err := s.store.WorkByOwnerSession(agent.ID)
+	if err != nil {
+		return false, err
+	}
+	if !found {
+		return false, nil
+	}
+
+	kind, actionable, update, ok := sessionEventProjection(event)
+	if !ok {
+		return false, nil
+	}
+	if actionable && calendarOwnsTerminalResult(item, event) {
+		actionable = false
+	}
+	if workUpdateChanges(item, update) {
+		item, err = s.store.UpdateWork(item.ID, update)
+		if err != nil {
+			return false, err
+		}
+	}
+	dedupeKey, err := s.sessionEventDedupeKey(item.ID, event, kind)
+	if err != nil {
+		return false, err
+	}
+	_, created, err := s.store.AppendWorkEvent(WorkEvent{
+		WorkID:     item.ID,
+		Kind:       kind,
+		DedupeKey:  dedupeKey,
+		PayloadRef: "session:" + agent.ID,
+		Actionable: actionable,
+	})
+	if err != nil || !created || !actionable {
+		return false, err
+	}
+	return s.DispatchPendingEvent()
+}
+
+func calendarOwnsTerminalResult(item Work, event watcher.SessionEvent) bool {
+	if !strings.HasPrefix(strings.TrimSpace(item.ContextRef), "calendar:") ||
+		event.Agent == nil ||
+		(event.Type != "agent_state_change" && event.Type != "agent_removed") {
+		return false
+	}
+	state := classifier.AgentState(firstNonEmpty(event.NewState, string(event.Agent.State)))
+	return state == classifier.StateDone ||
+		state == classifier.StateFailed ||
+		state == classifier.StateRemoved
+}
+
+func sessionEventProjection(event watcher.SessionEvent) (string, bool, WorkUpdate, bool) {
+	agent := event.Agent
+	if agent == nil {
+		return "", false, WorkUpdate{}, false
+	}
+	sessionWait := "Session " + agent.ID
+	switch event.Type {
+	case "agent_metadata_change":
+		if !agent.NeedsAttention {
+			return "session.progress", false, WorkUpdate{}, true
+		}
+		switch strings.TrimSpace(agent.Attention) {
+		case "user_input", "blocked":
+			status := WorkNeedsInput
+			next := "Resolve the delegated Session request."
+			return "session.needs_input", true, WorkUpdate{
+				Status:     &status,
+				NextAction: &next,
+				WaitFor:    &sessionWait,
+			}, true
+		case "failed":
+			status := WorkWaiting
+			next := "Inspect the delegated Session failure."
+			return "session.failed", true, WorkUpdate{
+				Status:     &status,
+				NextAction: &next,
+				WaitFor:    &sessionWait,
+			}, true
+		default:
+			return "session.progress", false, WorkUpdate{}, true
+		}
+	case "agent_state_change", "agent_removed":
+		state := firstNonEmpty(event.NewState, string(agent.State))
+		switch classifier.AgentState(state) {
+		case classifier.StateRunning:
+			status := WorkRunning
+			next := "Wait for the delegated Session."
+			return "session.running", false, WorkUpdate{
+				Status:     &status,
+				NextAction: &next,
+				WaitFor:    &sessionWait,
+			}, true
+		case classifier.StateUnknown:
+			status := WorkWaiting
+			next := "Wait for a durable Session lifecycle fact."
+			return "session.waiting", false, WorkUpdate{
+				Status:     &status,
+				NextAction: &next,
+				WaitFor:    &sessionWait,
+			}, true
+		case classifier.StateBlocked:
+			status := WorkNeedsInput
+			next := "Resolve the delegated Session blocker."
+			return "session.needs_input", true, WorkUpdate{
+				Status:     &status,
+				NextAction: &next,
+				WaitFor:    &sessionWait,
+			}, true
+		case classifier.StateDone:
+			status := WorkWaiting
+			next := "Review the delegated Session result."
+			empty := ""
+			return "session.done", true, WorkUpdate{
+				Status:     &status,
+				NextAction: &next,
+				WaitFor:    &empty,
+			}, true
+		case classifier.StateFailed, classifier.StateRemoved:
+			status := WorkWaiting
+			next := "Inspect the delegated Session failure."
+			empty := ""
+			return "session.failed", true, WorkUpdate{
+				Status:     &status,
+				NextAction: &next,
+				WaitFor:    &empty,
+			}, true
+		}
+	}
+	return "", false, WorkUpdate{}, false
+}
+
+func (s *Service) sessionEventDedupeKey(workID string, event watcher.SessionEvent, kind string) (string, error) {
+	agent := event.Agent
+	if agent == nil {
+		return "session:" + strings.TrimSpace(event.AgentID) + ":" + kind + ":1", nil
+	}
+	events, err := s.store.ListWorkEvents(workID)
+	if err != nil {
+		return "", err
+	}
+	occurrence := 1
+	lastLifecycleKind := ""
+	lastDedupeKey := ""
+	payloadRef := "session:" + agent.ID
+	for _, current := range events {
+		if current.PayloadRef != payloadRef || !isSessionLifecycleKind(current.Kind) {
+			continue
+		}
+		lastLifecycleKind = current.Kind
+		lastDedupeKey = current.DedupeKey
+		if current.Kind == kind {
+			occurrence++
+		}
+	}
+	if lastLifecycleKind == kind && lastDedupeKey != "" {
+		return lastDedupeKey, nil
+	}
+	return fmt.Sprintf("session:%s:%s:%d", agent.ID, kind, occurrence), nil
+}
+
+func isSessionLifecycleKind(kind string) bool {
+	switch strings.TrimSpace(kind) {
+	case "session.running", "session.waiting", "session.needs_input",
+		"session.done", "session.failed", "session.stale":
+		return true
+	default:
+		return false
+	}
+}
+
+func workUpdateChanges(item Work, update WorkUpdate) bool {
+	return update.Title != nil && strings.TrimSpace(*update.Title) != item.Title ||
+		update.Objective != nil && strings.TrimSpace(*update.Objective) != item.Objective ||
+		update.Status != nil && *update.Status != item.Status ||
+		update.OwnerSessionID != nil && strings.TrimSpace(*update.OwnerSessionID) != item.OwnerSessionID ||
+		update.CompletionPolicy != nil && *update.CompletionPolicy != item.CompletionPolicy ||
+		update.DoneCriteriaRef != nil && strings.TrimSpace(*update.DoneCriteriaRef) != item.DoneCriteriaRef ||
+		update.NextAction != nil && strings.TrimSpace(*update.NextAction) != item.NextAction ||
+		update.WaitFor != nil && strings.TrimSpace(*update.WaitFor) != item.WaitFor ||
+		update.ContextRef != nil && strings.TrimSpace(*update.ContextRef) != item.ContextRef
+}
+
+func legacySessionWorkID(sessionID string) string {
+	digest := sha256.Sum256([]byte(strings.TrimSpace(sessionID)))
+	return fmt.Sprintf("session-%x", digest[:12])
+}
+
+func (s *Service) MigrateDelegatedSessionsV1(agents []*classifier.Agent) (bool, error) {
+	if s == nil || s.store == nil {
+		return false, nil
+	}
+	candidates := []Work{}
+	for _, agent := range agents {
+		if agent == nil || !agent.Delegated || agent.Hidden || strings.TrimSpace(agent.ID) == "" {
+			continue
+		}
+		status := WorkWaiting
+		if agent.State == classifier.StateRunning {
+			status = WorkRunning
+		}
+		candidates = append(candidates, Work{
+			Title:            firstNonEmpty(agent.Name, "Delegated work"),
+			Objective:        firstNonEmpty(agent.Summary, "Complete the delegated Session."),
+			Status:           status,
+			OwnerSessionID:   agent.ID,
+			CompletionPolicy: CompletionBounded,
+			NextAction:       "Wait for the delegated Session.",
+			WaitFor:          "Session " + agent.ID,
+			ContextRef:       "session:" + agent.ID,
+		})
+	}
+	return s.store.MigrateDelegatedSessionsV1(candidates)
+}
+
+// DispatchPendingEvent is the complete automatic scheduler: claim one durable
+// actionable Event, start one Brain turn, then stop. No Event means no turn.
+func (s *Service) DispatchPendingEvent() (bool, error) {
 	if s == nil || s.store == nil || s.watcher == nil {
 		return false, nil
 	}
-	reason := strings.TrimSpace(event.Reason)
-	if reason == "" {
+	s.dispatchMu.Lock()
+	defer s.dispatchMu.Unlock()
+	if s.foregroundInput {
 		return false, nil
 	}
 	hostSession, err := s.store.HostSession()
@@ -288,45 +513,324 @@ func (s *Service) Heartbeat(event HeartbeatEvent) (bool, error) {
 	if hostID == "" || !s.watcher.HasSession(hostID) {
 		return false, nil
 	}
-	message := formatHeartbeatWake(event)
-	if message == "" {
+	host := s.watcher.GetAgent(hostID)
+	if host != nil && (host.State == classifier.StateRunning || host.State == classifier.StateBlocked) {
 		return false, nil
 	}
+	event, claimed, err := s.store.ClaimNextActionableEvent()
+	if err != nil || !claimed {
+		return false, err
+	}
+	item, err := s.store.Work(event.WorkID)
+	if err != nil {
+		_ = s.store.ReleaseWorkEvent(event.ID, event.ClaimToken)
+		return false, err
+	}
+	message := formatWorkEventWake(item, event)
 	if err := s.watcher.SendInput(hostID, message+"\n"); err != nil {
+		_ = s.store.ReleaseWorkEvent(event.ID, event.ClaimToken)
+		return false, err
+	}
+	if err := s.store.ConsumeWorkEvent(event.ID, event.ClaimToken); err != nil {
 		return false, err
 	}
 	return true, nil
 }
 
-func formatHeartbeatWake(event HeartbeatEvent) string {
-	reason := strings.TrimSpace(event.Reason)
-	if reason == "" {
+func formatWorkEventWake(item Work, event WorkEvent) string {
+	if strings.TrimSpace(item.ID) == "" || strings.TrimSpace(event.ID) == "" {
 		return ""
 	}
 	lines := []string{
-		"Heartbeat wake:",
-		"reason: " + reason,
+		"Active work event:",
+		"work_id: " + item.ID,
+		"title: " + item.Title,
+		"status: " + string(item.Status),
+		"event_kind: " + event.Kind,
+		"event_id: " + event.ID,
 	}
-	appendHeartbeatField := func(label, value string) {
+	appendField := func(label, value string) {
 		value = strings.TrimSpace(value)
 		if value != "" {
 			lines = append(lines, label+": "+value)
 		}
 	}
-	appendHeartbeatField("agent_id", event.AgentID)
-	appendHeartbeatField("agent_name", event.Name)
-	appendHeartbeatField("status", event.Status)
-	appendHeartbeatField("phase", event.Phase)
-	appendHeartbeatField("attention", event.Attention)
-	appendHeartbeatField("old_state", event.OldState)
-	appendHeartbeatField("new_state", event.NewState)
-	appendHeartbeatField("workspace", event.Cwd)
-	appendHeartbeatField("summary", event.Summary)
+	appendField("next_action", item.NextAction)
+	appendField("wait_for", item.WaitFor)
+	appendField("context_ref", item.ContextRef)
+	appendField("payload_ref", event.PayloadRef)
 	lines = append(lines,
 		"",
-		"Inspect the changed session if useful. Continue low-risk next steps autonomously; reuse the same delegated session while it still belongs to the larger task, and close it only after the task is complete and its result is recorded or reported; if blocked, consolidate options and a recommendation for the user.",
+		"Inspect only the referenced change, update Work if its durable state changed, and keep any unrelated foreground conversation intact. Do not create a continuation unless immediately useful local work remains.",
 	)
 	return strings.Join(lines, "\n")
+}
+
+func (s *Service) NoteUserSteering(agentID string) bool {
+	if s == nil || s.store == nil {
+		return false
+	}
+	host, err := s.store.HostSession()
+	if err != nil || strings.TrimSpace(host.ID) == "" || strings.TrimSpace(host.ID) != strings.TrimSpace(agentID) {
+		return false
+	}
+	s.dispatchMu.Lock()
+	s.foregroundInput = true
+	s.dispatchMu.Unlock()
+	return true
+}
+
+func (s *Service) CancelUserSteering(agentID string) {
+	if s == nil || s.store == nil {
+		return
+	}
+	host, err := s.store.HostSession()
+	if err != nil || strings.TrimSpace(host.ID) != strings.TrimSpace(agentID) {
+		return
+	}
+	s.dispatchMu.Lock()
+	s.foregroundInput = false
+	s.dispatchMu.Unlock()
+	_, _ = s.DispatchPendingEvent()
+}
+
+// ObserveHostSessionEvent lets foreground user steering finish before a queued
+// internal Event is claimed. The assistant turn ending is not itself persisted
+// as an Event; it only makes the existing Event claimable.
+func (s *Service) ObserveHostSessionEvent(event watcher.SessionEvent) (bool, error) {
+	if s == nil || s.store == nil || event.Agent == nil || !event.Agent.Hidden {
+		return false, nil
+	}
+	host, err := s.store.HostSession()
+	if err != nil || strings.TrimSpace(host.ID) != strings.TrimSpace(event.Agent.ID) {
+		return false, err
+	}
+	state := classifier.AgentState(firstNonEmpty(event.NewState, string(event.Agent.State)))
+	if state == classifier.StateRunning {
+		return false, nil
+	}
+	s.dispatchMu.Lock()
+	wasForeground := s.foregroundInput
+	s.foregroundInput = false
+	s.dispatchMu.Unlock()
+	if wasForeground || state == classifier.StateDone || state == classifier.StateUnknown {
+		return s.DispatchPendingEvent()
+	}
+	return false, nil
+}
+
+// ReconcileDelegatedSessions emits one deduplicated actionable Event only when
+// a durable delegated lease has expired. Healthy leases and unleased idle
+// panes remain waiting and do not poll Brain.
+func (s *Service) ReconcileDelegatedSessions(agents []*classifier.Agent) {
+	if s == nil || s.store == nil {
+		return
+	}
+	byID := make(map[string]*classifier.Agent, len(agents))
+	for _, agent := range agents {
+		if agent != nil {
+			byID[agent.ID] = agent
+		}
+	}
+	items, err := s.store.ListWork()
+	if err != nil {
+		log.Printf("brain Work reconciliation list failed: %v", err)
+		return
+	}
+	now := s.nowUTC()
+	for _, item := range items {
+		if item.Status == WorkDone || item.Status == WorkCancelled || strings.TrimSpace(item.OwnerSessionID) == "" {
+			continue
+		}
+		agent := byID[item.OwnerSessionID]
+		if agent == nil || !agent.Delegated || agent.Hidden {
+			continue
+		}
+		if agent.State == classifier.StateDone || agent.State == classifier.StateFailed || agent.State == classifier.StateRemoved {
+			_, _ = s.RouteSessionEvent(watcher.SessionEvent{
+				Type:     "agent_state_change",
+				AgentID:  agent.ID,
+				Agent:    agent,
+				OldState: string(agent.State),
+				NewState: string(agent.State),
+			})
+			continue
+		}
+		if agent.State != classifier.StateRunning && agent.State != classifier.StateUnknown {
+			continue
+		}
+		if agent.ExpectedNextCheckAt == nil || agent.LastProgressAt == nil {
+			continue
+		}
+		if now.Before(agent.ExpectedNextCheckAt.UTC()) {
+			status := WorkWaiting
+			wait := "Session " + agent.ID
+			next := "Wait for the delegated Session lease."
+			update := WorkUpdate{Status: &status, WaitFor: &wait, NextAction: &next}
+			if workUpdateChanges(item, update) {
+				_, _ = s.store.UpdateWork(item.ID, update)
+			}
+			continue
+		}
+		status := WorkWaiting
+		next := "Reconcile the stale delegated Session."
+		empty := ""
+		update := WorkUpdate{Status: &status, WaitFor: &empty, NextAction: &next}
+		if workUpdateChanges(item, update) {
+			_, _ = s.store.UpdateWork(item.ID, update)
+		}
+		_, created, appendErr := s.store.AppendWorkEvent(WorkEvent{
+			WorkID:     item.ID,
+			Kind:       "session.stale",
+			DedupeKey:  fmt.Sprintf("session:%s:stale:%d", agent.ID, agent.ExpectedNextCheckAt.UTC().UnixNano()),
+			PayloadRef: "session:" + agent.ID,
+			Actionable: true,
+		})
+		if appendErr != nil {
+			log.Printf("brain stale Session reconciliation failed for %s: %v", agent.ID, appendErr)
+		} else if created {
+			_, _ = s.DispatchPendingEvent()
+		}
+	}
+}
+
+func (s *Service) SubscribeWork() (int, <-chan WorkChange) {
+	if s == nil || s.store == nil {
+		ch := make(chan WorkChange)
+		close(ch)
+		return 0, ch
+	}
+	return s.store.SubscribeWork()
+}
+
+func (s *Service) UnsubscribeWork(id int) {
+	if s != nil && s.store != nil {
+		s.store.UnsubscribeWork(id)
+	}
+}
+
+func (s *Service) MarkWorkRead(workID string) error {
+	if s == nil || s.store == nil {
+		return fmt.Errorf("brain service is not configured")
+	}
+	return s.store.MarkWorkRead(workID)
+}
+
+func (s *Service) AppendWorkEvent(event WorkEvent) (WorkEvent, bool, error) {
+	if s == nil || s.store == nil {
+		return WorkEvent{}, false, fmt.Errorf("brain service is not configured")
+	}
+	recorded, created, err := s.store.AppendWorkEvent(event)
+	if err != nil || !created || !recorded.Actionable {
+		return recorded, created, err
+	}
+	_, dispatchErr := s.DispatchPendingEvent()
+	return recorded, created, dispatchErr
+}
+
+// RouteCalendarEvent projects the existing idempotent Calendar occurrence into
+// Work/Event without taking ownership of Calendar execution or result delivery.
+func (s *Service) RouteCalendarEvent(event calendar.Event) (bool, error) {
+	if s == nil || s.store == nil || event.Item.Kind != calendar.KindScheduledAction {
+		return false, nil
+	}
+	run, ok := latestCalendarRun(event.Item)
+	if !ok {
+		return false, nil
+	}
+	contextRef := "calendar:" + event.Item.ID + ":" + run.ID
+	item, _, err := s.store.EnsureWork(Work{
+		ID:               calendarWorkID(event.Item.ID, run.ID),
+		Title:            firstNonEmpty(run.Title, event.Item.Title),
+		Objective:        strings.TrimSpace(event.Item.ActionInstruction),
+		Status:           WorkRunning,
+		OwnerSessionID:   strings.TrimSpace(run.AgentSession),
+		CompletionPolicy: CompletionBounded,
+		NextAction:       "Wait for the scheduled action.",
+		WaitFor:          calendarWaitCondition(run),
+		ContextRef:       contextRef,
+	})
+	if err != nil {
+		return false, err
+	}
+
+	kind := "calendar.due"
+	actionable := false
+	payloadRef := contextRef
+	update := WorkUpdate{}
+	switch run.Status {
+	case calendar.StatusRunning:
+		status := WorkRunning
+		next := "Wait for the scheduled action."
+		wait := calendarWaitCondition(run)
+		owner := strings.TrimSpace(run.AgentSession)
+		update = WorkUpdate{
+			Status:         &status,
+			OwnerSessionID: &owner,
+			NextAction:     &next,
+			WaitFor:        &wait,
+		}
+		if owner != "" {
+			kind = "calendar.launched"
+		}
+	case calendar.StatusCompleted:
+		status := WorkDone
+		empty := ""
+		update = WorkUpdate{Status: &status, NextAction: &empty, WaitFor: &empty}
+		kind = "calendar.result"
+		actionable = true
+		if event.ScheduledResult != nil {
+			payloadRef = event.ScheduledResult.ID
+		}
+	case calendar.StatusFailed:
+		status := WorkNeedsInput
+		next := "Inspect the scheduled action failure."
+		empty := ""
+		update = WorkUpdate{Status: &status, NextAction: &next, WaitFor: &empty}
+		kind = "calendar.failure"
+		actionable = true
+		if event.ScheduledResult != nil {
+			payloadRef = event.ScheduledResult.ID
+		}
+	default:
+		return false, nil
+	}
+	if workUpdateChanges(item, update) {
+		item, err = s.store.UpdateWork(item.ID, update)
+		if err != nil {
+			return false, err
+		}
+	}
+	recorded, created, err := s.store.AppendWorkEvent(WorkEvent{
+		WorkID:     item.ID,
+		Kind:       kind,
+		DedupeKey:  fmt.Sprintf("calendar:%s:%s:%s", event.Item.ID, run.ID, kind),
+		PayloadRef: payloadRef,
+		Actionable: actionable,
+	})
+	if err != nil || !created || !recorded.Actionable {
+		return false, err
+	}
+	return s.DispatchPendingEvent()
+}
+
+func latestCalendarRun(item calendar.Item) (calendar.Run, bool) {
+	if len(item.Runs) == 0 {
+		return calendar.Run{}, false
+	}
+	return item.Runs[len(item.Runs)-1], true
+}
+
+func calendarWaitCondition(run calendar.Run) string {
+	if sessionID := strings.TrimSpace(run.AgentSession); sessionID != "" {
+		return "Session " + sessionID
+	}
+	return "Calendar occurrence " + run.ID
+}
+
+func calendarWorkID(itemID, runID string) string {
+	digest := sha256.Sum256([]byte(strings.TrimSpace(itemID) + "\x00" + strings.TrimSpace(runID)))
+	return fmt.Sprintf("calendar-%x", digest[:12])
 }
 
 // Host replacement reasons are durable audit tags written to host_replacements.jsonl.
@@ -758,7 +1262,7 @@ Host executor capabilities: %s
 Durable state rules:
 - Keep long-term memory in memory.md; read it only when durable memory is relevant to the user's current request.
 - Keep personality, preferences, and profile notes in profile.md; read it when preferences or user background matter.
-- Keep the current active objective, decisions, open threads, and next step in current.md.
+- Keep a human-readable handoff projection in current.md. Work/Event database state is authoritative.
 - Use policies/delegation.md, policies/engine.md, and policies/handoff.md for stable orchestration rules.
 - Use playbooks/ for provider-neutral operating playbooks. Discover them with zen brain playbooks --json; read playbook files on demand (progressive disclosure — do not assume full bodies are in bootstrap).
 - Use files in this workspace for plans, inbox notes, reminders, and follow-up state.
@@ -772,6 +1276,11 @@ Agent orchestration rules:
 - Treat the executor as replaceable; do not make Brain's plans depend on Codex-only or Claude-only behavior unless the user asks for that executor specifically.
 - Host Executor runs Brain chat, planning, delegation, review, and final synthesis. Delegated Executor runs delegated agents and ordinary non-Brain sessions unless the user explicitly asks for a different executor for that session, such as @codex, @grok, or @claude. Do not switch executors based on private task-type judgment.
 - Brain is the user's scheduler: reduce decision load. For concrete work that needs repository/tool execution, independent progress, parallelism, or follow-up, proactively create or reuse a visible delegated agent session; stay in Brain for chat, memory, synthesis, reminders, and decisions that fit the current context.
+- Create Work only for a commitment that must survive the current turn. Ordinary questions and discussion create no Work.
+- Work and append-only Events are the sole durable Brain scheduler state. current.md and provider state are projections or execution details, not alternate owners.
+- Only an atomically claimed actionable Work Event may start an automatic Brain turn. Active or waiting Work without an Event stays idle.
+- until_done changes when Work may be marked done; it never creates a wake or polling loop.
+- Do not use a provider Goal as Brain scheduler state. Provider Goal support may remain local to an individual executor Session.
 - Brain is the orchestrator, not the execution pool: keep decomposition, ordering, judgment, result review, and final synthesis in Brain. Use delegated agents for scoped execution.
 - Delegate a subtask only when it can be named clearly. A delegated-agent brief should contain one concern, the workspace, enough context to avoid re-exploring the whole repo, acceptance criteria, safety constraints, feasible verification, and a short expected report.
 - Run independent delegated subtasks in parallel when that reduces elapsed time. Do not parallelize work that shares fragile state, needs one coherent debugging thread, or depends on unresolved product judgment.
@@ -786,8 +1295,10 @@ Agent orchestration rules:
   - %s brain context --json returns structured Brain context: current.md, host executor, and delegated agents.
   - %s brain playbooks --json returns the playbook catalog (name, description, path) without full playbook bodies.
   - %s brain gc --json repairs product-owned standard Brain workspace blocks and missing files while preserving user-authored content, then reports open delegated sessions.
+  - zen brain work list --json lists durable Work. zen brain work create/update changes only the named commitment.
   - %s agent list --json lists visible sessions; only sessions with delegated=true are Brain-owned.
   - %s agent spawn -name "<name>" -cwd <workspace> -prompt "<task>" creates a visible delegated agent with Brain's delegated executor routing.
+  - A visible delegated spawn creates bounded Work automatically. Use -work to attach an existing Work; use -completion until_done with -done-criteria only for an explicit verified-completion requirement.
   - %s agent spawn -name "<name>" -executor <executor> -cwd <workspace> -prompt "<task>" creates a visible delegated agent with an explicit user-requested executor override.
   - %s agent capture -id <agent_id> --json inspects a delegated agent.
   - %s agent send -id <agent_id> -text "<message>" --submit=true continues a delegated agent.
@@ -798,7 +1309,7 @@ Agent orchestration rules:
 - Delegated agent lifecycle: keep ownership from spawn through inspection, follow-up, result consolidation, and close. Do not close a delegated session merely because a small stage finished; close it when the larger task is complete or you have intentionally moved the remaining work elsewhere.
 - Never close, kill, rename, repurpose, or otherwise manage sessions whose agent list entry does not have delegated=true. Those belong to the user or another tool.
 - Keep orchestration principles in Markdown, prompts, and agent instructions. Product code should provide tools, context, persistence, visibility, and safety boundaries rather than rigid workflow gates.
-- Treat Heartbeat wake messages as compact actionable deltas; inspect only what is needed, then act, summarize, or sleep.
+- Treat an Active work event message as one claimed actionable delta; inspect only its referenced change, then act, summarize, or wait.
 - Continue low-risk next steps autonomously. Ask only when critical context is missing, an action is high-risk or irreversible, credentials/permissions are needed, or the decision depends on the user's values; when blocked, consolidate options and a recommendation.
 
 Current personality:
@@ -900,7 +1411,7 @@ func formatHostHandoffPrompt(threadID, previousExecutorID, nextExecutorID, deleg
 			lines = append(lines, "- "+entry)
 		}
 	}
-	lines = append(lines, "", "Wait for the next user message unless a low-risk continuation is clearly already pending.")
+	lines = append(lines, "", "Wait for the next user message unless an unconsumed actionable Work event is already present.")
 	return strings.TrimSpace(strings.Join(lines, "\n"))
 }
 

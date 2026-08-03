@@ -192,6 +192,7 @@ func runDaemon(args []string, stderr io.Writer) error {
 		watcher:       w,
 		execs:         execs,
 		brainStore:    brainStore,
+		brainService:  brainService,
 		calendarStore: calendarStore,
 		stateDir:      authManager.StorageDir(),
 	}
@@ -417,6 +418,8 @@ func runBrainCommand(args []string, stderr io.Writer) error {
 		return runBrainPlaybooks(args[1:], stderr)
 	case "gc":
 		return runBrainGC(args[1:], stderr)
+	case "work":
+		return runBrainWork(args[1:], stderr)
 	case "executors":
 		return runBrainExecutors(args[1:], stderr)
 	case "use":
@@ -587,13 +590,14 @@ func printAgentUsage(w io.Writer) {
 }
 
 func printBrainUsage(w io.Writer) {
-	fmt.Fprintln(w, "Usage: zen brain <workspace|context|playbooks|gc|executors|use|set-delegated> [flags]")
+	fmt.Fprintln(w, "Usage: zen brain <workspace|context|playbooks|gc|work|executors|use|set-delegated> [flags]")
 	fmt.Fprintln(w, "")
 	fmt.Fprintln(w, "Subcommands:")
 	fmt.Fprintln(w, "  workspace      Print the Brain workspace path")
 	fmt.Fprintln(w, "  context        Print structured Brain context")
 	fmt.Fprintln(w, "  playbooks      Print the Brain playbook catalog")
 	fmt.Fprintln(w, "  gc             Reconcile product-owned Brain workspace blocks while preserving user content")
+	fmt.Fprintln(w, "  work           List, create, update, or append an event to durable Active work")
 	fmt.Fprintln(w, "  executors      List configured Brain host and delegated executors")
 	fmt.Fprintln(w, "  use            Switch the Brain host executor")
 	fmt.Fprintln(w, "  set-delegated  Switch the live Delegated Executor (no restart)")
@@ -603,6 +607,7 @@ func printBrainUsage(w io.Writer) {
 	fmt.Fprintln(w, "  zen brain context --json")
 	fmt.Fprintln(w, "  zen brain playbooks --json")
 	fmt.Fprintln(w, "  zen brain gc --json")
+	fmt.Fprintln(w, "  zen brain work list --json")
 	fmt.Fprintln(w, "  zen brain executors --json")
 	fmt.Fprintln(w, "  zen brain use codex")
 	fmt.Fprintln(w, "  zen brain set-delegated grok")
@@ -634,6 +639,13 @@ func runAgentSpawn(args []string, stderr io.Writer) error {
 	fs.StringVar(&req.Prompt, "prompt", "", "initial prompt text")
 	fs.StringVar(&req.PromptFile, "prompt-file", "", "file containing the initial prompt")
 	fs.StringVar(&req.Profile, "profile", "implementation", "agent lifecycle profile: quick, research, implementation, or long_running")
+	fs.StringVar(&req.WorkID, "work", "", "existing Brain Work id to own this delegated Session")
+	var completionPolicy string
+	var doneCriteriaRef string
+	var contextRef string
+	fs.StringVar(&completionPolicy, "completion", string(brain.CompletionBounded), "Work completion policy: bounded or until_done")
+	fs.StringVar(&doneCriteriaRef, "done-criteria", "", "required done-criteria reference for until_done Work")
+	fs.StringVar(&contextRef, "context", "", "optional worklog/context reference")
 	fs.BoolVar(&req.Hidden, "hidden", false, "create a hidden session")
 	fs.Usage = func() {
 		fmt.Fprintln(stderr, "Usage: zen agent spawn -name Franklin -executor codex -cwd /repo -prompt-file task.md [flags]")
@@ -645,6 +657,11 @@ func runAgentSpawn(args []string, stderr io.Writer) error {
 	}
 	if fs.NArg() > 0 {
 		return fmt.Errorf("unexpected arguments: %s", strings.Join(fs.Args(), " "))
+	}
+	req.BrainWork = &brain.Work{
+		CompletionPolicy: brain.CompletionPolicy(strings.TrimSpace(completionPolicy)),
+		DoneCriteriaRef:  strings.TrimSpace(doneCriteriaRef),
+		ContextRef:       strings.TrimSpace(contextRef),
 	}
 	req.AgentID = currentAgentID()
 	resp, err := callControl(cfg, req)
@@ -877,6 +894,180 @@ func runBrainGC(args []string, stderr io.Writer) error {
 	return writeControlResponse(os.Stdout, resp, cfg.json)
 }
 
+func runBrainWork(args []string, stderr io.Writer) error {
+	if len(args) == 0 || isHelpArg(args[0]) {
+		fmt.Fprintln(stderr, "Usage: zen brain work <list|get|create|update|event> [flags]")
+		return flag.ErrHelp
+	}
+	switch args[0] {
+	case "list", "get":
+		return runBrainWorkList(args[1:], stderr)
+	case "create":
+		return runBrainWorkCreate(args[1:], stderr)
+	case "update":
+		return runBrainWorkUpdate(args[1:], stderr)
+	case "event":
+		return runBrainWorkEvent(args[1:], stderr)
+	default:
+		return fmt.Errorf("unknown brain work command: %s", args[0])
+	}
+}
+
+func runBrainWorkList(args []string, stderr io.Writer) error {
+	fs := flag.NewFlagSet("zen brain work list", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	cfg := cliConfig{json: true}
+	var workID string
+	fs.StringVar(&cfg.stateDir, "state-dir", "", "state directory for daemon identity and control socket")
+	fs.BoolVar(&cfg.json, "json", true, "print JSON output")
+	fs.StringVar(&workID, "id", "", "optional Work id (includes its event history)")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if fs.NArg() > 0 {
+		return fmt.Errorf("unexpected arguments: %s", strings.Join(fs.Args(), " "))
+	}
+	resp, err := callControl(cfg, control.Request{Type: "brain_work_list", WorkID: workID})
+	if err != nil {
+		return err
+	}
+	return writeControlResponse(os.Stdout, resp, cfg.json)
+}
+
+func runBrainWorkCreate(args []string, stderr io.Writer) error {
+	fs := flag.NewFlagSet("zen brain work create", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	cfg := cliConfig{json: true}
+	item := brain.Work{Status: brain.WorkOpen, CompletionPolicy: brain.CompletionBounded}
+	fs.StringVar(&cfg.stateDir, "state-dir", "", "state directory for daemon identity and control socket")
+	fs.BoolVar(&cfg.json, "json", true, "print JSON output")
+	fs.StringVar(&item.ID, "id", "", "optional stable Work id")
+	fs.StringVar(&item.Title, "title", "", "short Active work title")
+	fs.StringVar(&item.Objective, "objective", "", "durable requested outcome")
+	fs.Var(workStatusFlag{value: &item.Status}, "status", "Work status")
+	fs.Var(completionPolicyFlag{value: &item.CompletionPolicy}, "completion", "bounded or until_done")
+	fs.StringVar(&item.DoneCriteriaRef, "done-criteria", "", "done-criteria reference required for until_done")
+	fs.StringVar(&item.NextAction, "next-action", "", "next useful action")
+	fs.StringVar(&item.WaitFor, "wait-for", "", "current wait condition")
+	fs.StringVar(&item.ContextRef, "context", "", "worklog/context reference")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if fs.NArg() > 0 {
+		return fmt.Errorf("unexpected arguments: %s", strings.Join(fs.Args(), " "))
+	}
+	resp, err := callControl(cfg, control.Request{Type: "brain_work_create", BrainWork: &item})
+	if err != nil {
+		return err
+	}
+	return writeControlResponse(os.Stdout, resp, cfg.json)
+}
+
+func runBrainWorkUpdate(args []string, stderr io.Writer) error {
+	fs := flag.NewFlagSet("zen brain work update", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	cfg := cliConfig{json: true}
+	item := brain.Work{}
+	var workID string
+	fs.StringVar(&cfg.stateDir, "state-dir", "", "state directory for daemon identity and control socket")
+	fs.BoolVar(&cfg.json, "json", true, "print JSON output")
+	fs.StringVar(&workID, "id", "", "Work id")
+	fs.StringVar(&item.Title, "title", "", "short Active work title")
+	fs.StringVar(&item.Objective, "objective", "", "durable requested outcome")
+	fs.Var(workStatusFlag{value: &item.Status}, "status", "Work status")
+	fs.StringVar(&item.OwnerSessionID, "owner", "", "owning delegated Session id")
+	fs.Var(completionPolicyFlag{value: &item.CompletionPolicy}, "completion", "bounded or until_done")
+	fs.StringVar(&item.DoneCriteriaRef, "done-criteria", "", "done-criteria reference")
+	fs.StringVar(&item.NextAction, "next-action", "", "next useful action")
+	fs.StringVar(&item.WaitFor, "wait-for", "", "current wait condition")
+	fs.StringVar(&item.ContextRef, "context", "", "worklog/context reference")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if fs.NArg() > 0 {
+		return fmt.Errorf("unexpected arguments: %s", strings.Join(fs.Args(), " "))
+	}
+	if strings.TrimSpace(workID) == "" {
+		return fmt.Errorf("Work id is required")
+	}
+	fields := []string{}
+	fieldNames := map[string]string{
+		"title": "title", "objective": "objective", "status": "status", "owner": "owner_session_id",
+		"completion": "completion_policy", "done-criteria": "done_criteria_ref",
+		"next-action": "next_action", "wait-for": "wait_for", "context": "context_ref",
+	}
+	fs.Visit(func(value *flag.Flag) {
+		if field := fieldNames[value.Name]; field != "" {
+			fields = append(fields, field)
+		}
+	})
+	resp, err := callControl(cfg, control.Request{
+		Type: "brain_work_update", WorkID: workID, BrainWork: &item, WorkFields: fields,
+	})
+	if err != nil {
+		return err
+	}
+	return writeControlResponse(os.Stdout, resp, cfg.json)
+}
+
+func runBrainWorkEvent(args []string, stderr io.Writer) error {
+	fs := flag.NewFlagSet("zen brain work event", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	cfg := cliConfig{json: true}
+	event := brain.WorkEvent{}
+	fs.StringVar(&cfg.stateDir, "state-dir", "", "state directory for daemon identity and control socket")
+	fs.BoolVar(&cfg.json, "json", true, "print JSON output")
+	fs.StringVar(&event.ID, "event-id", "", "optional event id")
+	fs.StringVar(&event.WorkID, "id", "", "Work id")
+	fs.StringVar(&event.Kind, "kind", "", "event kind")
+	fs.StringVar(&event.DedupeKey, "dedupe", "", "stable dedupe key")
+	fs.StringVar(&event.PayloadRef, "payload", "", "optional payload/evidence reference")
+	fs.BoolVar(&event.Actionable, "actionable", false, "allow this event to wake Brain once")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if fs.NArg() > 0 {
+		return fmt.Errorf("unexpected arguments: %s", strings.Join(fs.Args(), " "))
+	}
+	resp, err := callControl(cfg, control.Request{Type: "brain_work_event", BrainWorkEvent: &event})
+	if err != nil {
+		return err
+	}
+	return writeControlResponse(os.Stdout, resp, cfg.json)
+}
+
+type workStatusFlag struct {
+	value *brain.WorkStatus
+}
+
+func (f workStatusFlag) String() string {
+	if f.value == nil {
+		return ""
+	}
+	return string(*f.value)
+}
+
+func (f workStatusFlag) Set(value string) error {
+	*f.value = brain.WorkStatus(strings.TrimSpace(value))
+	return nil
+}
+
+type completionPolicyFlag struct {
+	value *brain.CompletionPolicy
+}
+
+func (f completionPolicyFlag) String() string {
+	if f.value == nil {
+		return ""
+	}
+	return string(*f.value)
+}
+
+func (f completionPolicyFlag) Set(value string) error {
+	*f.value = brain.CompletionPolicy(strings.TrimSpace(value))
+	return nil
+}
+
 func runBrainExecutors(args []string, stderr io.Writer) error {
 	cfg, err := parseCLIConfig("zen brain executors", args, stderr)
 	if err != nil {
@@ -1006,6 +1197,16 @@ func writeControlResponse(w io.Writer, resp control.Response, asJSON bool) error
 	}
 	if resp.Agent != nil {
 		fmt.Fprintf(w, "%s\t%s\t%s\n", resp.Agent.ID, resp.Agent.Status, resp.Agent.Name)
+		return nil
+	}
+	if resp.BrainWork != nil {
+		fmt.Fprintf(w, "%s\t%s\t%s\n", resp.BrainWork.ID, resp.BrainWork.Status, resp.BrainWork.Title)
+		return nil
+	}
+	if len(resp.BrainWorks) > 0 {
+		for _, item := range resp.BrainWorks {
+			fmt.Fprintf(w, "%s\t%s\t%s\n", item.ID, item.Status, item.Title)
+		}
 		return nil
 	}
 	if len(resp.Executors) > 0 {

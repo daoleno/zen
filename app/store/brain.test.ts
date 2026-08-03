@@ -72,3 +72,58 @@ describe("brain scheduled result normalization", () => {
     ]);
   });
 });
+
+describe("Brain Active work normalization", () => {
+  test("keeps multiple minimal Work projections and rejects scheduler internals", () => {
+    const received = brainReducer(initialBrainState, {
+      type: "BRAIN_SNAPSHOT",
+      serverId: "server-1",
+      serverName: "Zen",
+      serverUrl: "ws://zen",
+      brain: {
+        active_work: [
+          {
+            work_id: "work-a",
+            title: "Release Zen",
+            status: "running",
+            owner_session_id: "agent-a",
+            unread_result: false,
+            claim_token: "must-not-project",
+          },
+          {
+            work_id: "work-c",
+            title: "Review sources",
+            status: "waiting",
+            wait_for: "Calendar occurrence",
+            unread_result: true,
+          },
+          {
+            work_id: "invalid",
+            title: "Invalid",
+            status: "workflow_paused",
+            unread_result: true,
+          },
+        ],
+      },
+    });
+
+    expect(received.byServer["server-1"]?.active_work).toEqual([
+      {
+        work_id: "work-a",
+        title: "Release Zen",
+        status: "running",
+        owner_session_id: "agent-a",
+        wait_for: undefined,
+        unread_result: false,
+      },
+      {
+        work_id: "work-c",
+        title: "Review sources",
+        status: "waiting",
+        owner_session_id: undefined,
+        wait_for: "Calendar occurrence",
+        unread_result: true,
+      },
+    ]);
+  });
+});

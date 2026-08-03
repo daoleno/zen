@@ -428,7 +428,7 @@ func TestNewStoreEnsuresWorklogReadme(t *testing.T) {
 		"- Status:",
 		"- Date:",
 		"## Context",
-		"## Goal",
+		"## Objective",
 		"## Todo",
 		"## Progress",
 		"## Verification",

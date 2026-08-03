@@ -1,43 +1,96 @@
 # Brain Orchestration
 
-Zen Brain uses a host/delegation model.
+Zen Brain has three orchestration objects: Work, Event, and the existing
+Session.
 
-Brain is the host and orchestrator. It owns decomposition, ordering, judgment,
-delegated result review, final synthesis, durable memory, and user-facing
-decisions.
+- **Work** is a durable user commitment. It exists only when an outcome must
+  survive the current turn. Ordinary questions and discussion do not create
+  Work.
+- **Event** is an append-only fact about one Work. Only an unconsumed,
+  actionable Event can make Brain run automatically.
+- **Session** is the existing executor resource and remains authoritative for
+  process state, delegation, progress, and leases. Brain manages only Sessions
+  marked `delegated=true`.
 
-The orchestration behavior is expressed as durable natural-language agent
-instructions in Brain bootstrap and workspace policy files, similar to
-`AGENTS.md` or Cursor rules. These files are not the primary end-user
-configuration surface. A normal install should work without editing them; users
-configure executor routing through `executors.toml`, while advanced users can
-still inspect or edit Brain workspace policy files when they want custom
-behavior.
+The complete automatic scheduling rule is:
 
-Delegated agents are scoped execution sessions. They are best for bounded execution:
-reading a constrained area, making a scoped change, running verification,
-reproducing a bug, or comparing alternatives. A delegated agent should receive
-one concern, the workspace, enough context to avoid re-exploring the whole repo,
-acceptance criteria, safety constraints, feasible verification, and a short
-expected report.
+```text
+if an actionable Work Event can be atomically claimed:
+    start one Brain turn and consume that Event
+else:
+    wait
+```
 
-Independent delegated tasks may run in parallel when that reduces elapsed time
-without creating shared-state risk. Brain should keep the work in one coherent
-thread when the hard part is product judgment, ambiguous design, or a gnarly bug
-that cannot be split cleanly.
+Open, running, or waiting Work does not poll Brain. The `until_done` completion
+policy requires an explicit done-criteria reference and changes only when Work
+may be marked done; it does not manufacture continuation turns. Provider Goal
+features may operate inside an individual Session, but they are not Zen
+scheduler state and their internal context is removed from user transcript
+projections.
 
-Delegated output is not automatically accepted. Brain captures and reviews the
-session, compares the result with the acceptance criteria, checks verification,
-and then decides whether to integrate, send a focused follow-up, spawn another
-delegated agent, ask the user, or stop.
+## Persistence and ownership
 
-Executor choice stays provider-neutral. The Host Executor runs the Brain
-orchestrator and falls back to Codex when no Brain host is stored. The Delegated
-Executor runs scoped execution sessions; `delegated_executor` controls both
-Brain delegated agents and ordinary non-Brain session creation. A different
-executor is used for a session only when the user explicitly asks for one, such
-as `@codex`, `@grok`, or `@claude`.
+Brain stores a versioned atomic JSON database at
+`~/.zen/brain/state/orchestration.json`. Its two logical tables are
+`brain_work` and `brain_work_events`. Work carries only title, objective,
+status, optional owner Session, completion policy, next action, wait condition,
+and a context reference. Long plans and evidence stay in `workspace/worklog/`.
 
-Brain only manages sessions that are marked `delegated=true`. User-owned or
-external sessions must not be closed, renamed, repurposed, or controlled unless
-the user explicitly asks for that specific session.
+Event dedupe keys are unique within one Work. An actionable Event is durably
+claimed before input is sent to the Brain host, which prevents concurrent or
+restart replay. Sending failure releases the claim; successful sending records
+consumption. There is no second in-memory scheduler truth, direct lifecycle
+wake owner, or dual write to provider Goal state.
+
+On the first authoritative Watcher inventory after an upgrade, schema migration
+`delegated_sessions_v1` adopts visible `delegated=true` Sessions that predate
+Work. The migration marker is durable and the adoption is one-way. New visible
+delegated Sessions create or attach Work before their Session is launched; no
+runtime fallback adopts later unowned Sessions.
+
+## Event sources
+
+Watcher transitions are projected only when the Session already owns Work.
+Ordinary progress is passive. Done, failed, blocked, needs-input, or expired
+lease facts append deduplicated actionable Events. A healthy lease updates the
+wait condition without polling. User input to the Brain host has foreground
+priority, so an internal Event remains unclaimed until that user turn ends.
+
+Calendar remains authoritative for scheduled-action occurrence claims,
+execution, canonical results, source-thread delivery, and recurrence. Brain
+only projects a scheduled-action run into deterministic Work and deduplicated
+Calendar Events. Due and launch facts are passive; terminal result or failure
+facts are actionable. A raw terminal Session fact for Calendar-owned Work is
+recorded passively so it cannot race the canonical Calendar result into a
+second Brain turn. This projection does not retarget or redeliver Calendar
+results.
+
+## Operator surface
+
+Use the existing CLI for inspection and narrow changes:
+
+```text
+zen brain work list --json
+zen brain work get -id <work_id> --json
+zen brain work create -title "<title>" -objective "<outcome>"
+zen brain work update -id <work_id> -status <status>
+zen brain work event -id <work_id> -kind <kind> -dedupe <key> -actionable
+
+zen agent spawn -name "<name>" -cwd <workspace> -prompt "<task>"
+zen agent spawn -work <work_id> -name "<name>" -cwd <workspace> -prompt "<task>"
+```
+
+A visible delegated spawn creates bounded Work unless `-work` attaches the
+Session to an existing nonterminal Work. Use `-completion until_done` together
+with `-done-criteria` only for an explicit verified-completion commitment.
+Hidden host Sessions do not create Work.
+
+The mobile Brain screen shows the current server's minimal Active work
+projection: title, status, owner or wait condition, and unread-result state.
+Marking an item read changes only the projection; it does not alter Work
+completion or Session lifecycle.
+
+For diagnosis, inspect `orchestration.json`, `zen brain work list --json`, and
+`zen agent list --json`. A waiting item without an actionable unconsumed Event
+is intentionally idle. Do not repair that state by injecting a continuation;
+record the actual external fact as a deduplicated Event.

@@ -5,55 +5,64 @@ import (
 	"path/filepath"
 	"time"
 
+	"github.com/daoleno/zen/daemon/brain"
 	"github.com/daoleno/zen/daemon/calendar"
 )
 
 const SocketName = "zen.sock"
 
 type Request struct {
-	Type         string         `json:"type"`
-	Name         string         `json:"name,omitempty"`
-	Executor     string         `json:"executor,omitempty"`
-	ExecutorID   string         `json:"executor_id,omitempty"`
-	Command      string         `json:"command,omitempty"`
-	Cwd          string         `json:"cwd,omitempty"`
-	Prompt       string         `json:"prompt,omitempty"`
-	PromptFile   string         `json:"prompt_file,omitempty"`
-	Profile      string         `json:"profile,omitempty"`
-	AgentID      string         `json:"agent_id,omitempty"`
-	Status       string         `json:"status,omitempty"`
-	Phase        string         `json:"phase,omitempty"`
-	Attention    string         `json:"attention,omitempty"`
-	Summary      string         `json:"summary,omitempty"`
-	TaskClass    string         `json:"task_class,omitempty"`
-	EventKind    string         `json:"event_kind,omitempty"`
-	DetailsJSON  string         `json:"details_json,omitempty"`
-	LeaseSeconds int            `json:"lease_seconds,omitempty"`
-	Text         string         `json:"text,omitempty"`
-	Submit       bool           `json:"submit,omitempty"`
-	Hidden       bool           `json:"hidden,omitempty"`
-	Force        bool           `json:"force,omitempty"`
-	ID           string         `json:"id,omitempty"`
-	Revision     int64          `json:"revision,omitempty"`
-	CalendarItem *calendar.Item `json:"calendar_item,omitempty"`
+	Type           string           `json:"type"`
+	Name           string           `json:"name,omitempty"`
+	Executor       string           `json:"executor,omitempty"`
+	ExecutorID     string           `json:"executor_id,omitempty"`
+	Command        string           `json:"command,omitempty"`
+	Cwd            string           `json:"cwd,omitempty"`
+	Prompt         string           `json:"prompt,omitempty"`
+	PromptFile     string           `json:"prompt_file,omitempty"`
+	Profile        string           `json:"profile,omitempty"`
+	AgentID        string           `json:"agent_id,omitempty"`
+	Status         string           `json:"status,omitempty"`
+	Phase          string           `json:"phase,omitempty"`
+	Attention      string           `json:"attention,omitempty"`
+	Summary        string           `json:"summary,omitempty"`
+	TaskClass      string           `json:"task_class,omitempty"`
+	EventKind      string           `json:"event_kind,omitempty"`
+	DetailsJSON    string           `json:"details_json,omitempty"`
+	LeaseSeconds   int              `json:"lease_seconds,omitempty"`
+	Text           string           `json:"text,omitempty"`
+	Submit         bool             `json:"submit,omitempty"`
+	Hidden         bool             `json:"hidden,omitempty"`
+	Force          bool             `json:"force,omitempty"`
+	ID             string           `json:"id,omitempty"`
+	Revision       int64            `json:"revision,omitempty"`
+	CalendarItem   *calendar.Item   `json:"calendar_item,omitempty"`
+	BrainWork      *brain.Work      `json:"brain_work,omitempty"`
+	BrainWorkEvent *brain.WorkEvent `json:"brain_work_event,omitempty"`
+	WorkID         string           `json:"work_id,omitempty"`
+	WorkFields     []string         `json:"work_fields,omitempty"`
 }
 
 type Response struct {
-	OK                bool            `json:"ok"`
-	Error             *Error          `json:"error,omitempty"`
-	Agent             *Agent          `json:"agent,omitempty"`
-	Agents            []Agent         `json:"agents,omitempty"`
-	Executor          *Executor       `json:"executor,omitempty"`
-	DelegatedExecutor *Executor       `json:"delegated_executor,omitempty"`
-	Executors         []Executor      `json:"executors,omitempty"`
-	Context           any             `json:"context,omitempty"`
-	Housekeeping      any             `json:"housekeeping,omitempty"`
-	Playbooks         any             `json:"playbooks,omitempty"`
-	Text              string          `json:"text,omitempty"`
-	Workspace         string          `json:"workspace,omitempty"`
-	CalendarItem      *calendar.Item  `json:"calendar_item,omitempty"`
-	CalendarItems     []calendar.Item `json:"calendar_items,omitempty"`
-	Confirmation      string          `json:"confirmation,omitempty"`
+	OK                bool              `json:"ok"`
+	Error             *Error            `json:"error,omitempty"`
+	Agent             *Agent            `json:"agent,omitempty"`
+	Agents            []Agent           `json:"agents,omitempty"`
+	Executor          *Executor         `json:"executor,omitempty"`
+	DelegatedExecutor *Executor         `json:"delegated_executor,omitempty"`
+	Executors         []Executor        `json:"executors,omitempty"`
+	Context           any               `json:"context,omitempty"`
+	Housekeeping      any               `json:"housekeeping,omitempty"`
+	Playbooks         any               `json:"playbooks,omitempty"`
+	Text              string            `json:"text,omitempty"`
+	Workspace         string            `json:"workspace,omitempty"`
+	CalendarItem      *calendar.Item    `json:"calendar_item,omitempty"`
+	CalendarItems     []calendar.Item   `json:"calendar_items,omitempty"`
+	Confirmation      string            `json:"confirmation,omitempty"`
+	BrainWork         *brain.Work       `json:"brain_work,omitempty"`
+	BrainWorks        []brain.Work      `json:"brain_work_items,omitempty"`
+	BrainWorkEvent    *brain.WorkEvent  `json:"brain_work_event,omitempty"`
+	BrainWorkEvents   []brain.WorkEvent `json:"brain_work_events,omitempty"`
 }
 
 type Error struct {

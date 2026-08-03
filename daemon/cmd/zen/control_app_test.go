@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -42,6 +43,15 @@ func newFakeControlWatcher() *fakeControlWatcher {
 	}
 }
 
+func newControlBrainStore(t *testing.T) *brain.Store {
+	t.Helper()
+	store, err := brain.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	return store
+}
+
 func (w *fakeControlWatcher) Agents() []*classifier.Agent {
 	out := make([]*classifier.Agent, 0, len(w.agents))
 	for _, agent := range w.agents {
@@ -66,7 +76,11 @@ func (w *fakeControlWatcher) HasSession(target string) bool {
 }
 
 func (w *fakeControlWatcher) CreateSession(_ string, opts watcher.CreateSessionOptions) (string, error) {
-	id := "brain-agent-" + strings.ToLower(strings.ReplaceAll(opts.Name, " ", "-")) + ":@1"
+	id := fmt.Sprintf(
+		"brain-agent-%s:@%d",
+		strings.ToLower(strings.ReplaceAll(opts.Name, " ", "-")),
+		len(w.created)+1,
+	)
 	w.created = append(w.created, opts)
 	w.agents[id] = &classifier.Agent{
 		ID:        id,
@@ -138,7 +152,8 @@ func (w *fakeControlWatcher) CapturePaneContent(sessionID string) (string, error
 func TestControlAppAgentSpawnCreatesVisibleDetachedSession(t *testing.T) {
 	fw := newFakeControlWatcher()
 	app := &controlApp{
-		watcher: fw,
+		watcher:    fw,
+		brainStore: newControlBrainStore(t),
 		execs: work.NewExecutorConfig("codex", map[string]work.Executor{
 			"codex": {Name: "codex", Command: "codex --no-alt-screen"},
 		}),
@@ -160,6 +175,12 @@ func TestControlAppAgentSpawnCreatesVisibleDetachedSession(t *testing.T) {
 
 	if !resp.OK || resp.Agent == nil {
 		t.Fatalf("spawn response = %#v", resp)
+	}
+	if resp.BrainWork == nil ||
+		resp.BrainWork.OwnerSessionID != resp.Agent.ID ||
+		resp.BrainWork.Status != brain.WorkRunning ||
+		resp.BrainWork.CompletionPolicy != brain.CompletionBounded {
+		t.Fatalf("spawn Work = %#v", resp.BrainWork)
 	}
 	if resp.Agent.Name != "Franklin (brain-agent-franklin:@1)" {
 		t.Fatalf("agent name = %q", resp.Agent.Name)
@@ -240,6 +261,35 @@ func TestControlAppAgentSpawnRequiresExplicitWorkingDirectory(t *testing.T) {
 
 	if resp.OK || resp.Error == nil || resp.Error.Code != "missing_cwd" {
 		t.Fatalf("response = %#v", resp)
+	}
+}
+
+func TestControlAppHiddenSpawnCreatesNoWork(t *testing.T) {
+	store := newControlBrainStore(t)
+	fw := newFakeControlWatcher()
+	app := &controlApp{
+		watcher:    fw,
+		brainStore: store,
+		execs: work.NewExecutorConfig("codex", map[string]work.Executor{
+			"codex": {Name: "codex", Command: "codex"},
+		}),
+	}
+	resp := app.HandleControlRequest(control.Request{
+		Type:   "agent_spawn",
+		Name:   "Hidden host",
+		Cwd:    "/repo/zen",
+		Prompt: "host only",
+		Hidden: true,
+	})
+	if !resp.OK || resp.Agent == nil || !resp.Agent.Hidden || resp.BrainWork != nil {
+		t.Fatalf("hidden spawn response = %#v", resp)
+	}
+	items, err := store.ListWork()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(items) != 0 {
+		t.Fatalf("hidden spawn Work = %#v", items)
 	}
 }
 
@@ -397,7 +447,8 @@ func TestControlAppAgentSpawnFromBrainHonorsDelegatedExecutorEnvOverride(t *test
 func TestControlAppAgentSpawnHardensDelegatedCodexAndPreservesOverrides(t *testing.T) {
 	fw := newFakeControlWatcher()
 	app := &controlApp{
-		watcher: fw,
+		watcher:    fw,
+		brainStore: newControlBrainStore(t),
 		execs: work.NewExecutorConfig("codex", map[string]work.Executor{
 			"codex":  {Name: "codex", Command: "codex"},
 			"claude": {Name: "claude", Command: "claude"},
@@ -501,7 +552,7 @@ func TestControlAppAgentSendAndCapture(t *testing.T) {
 		Command:   "codex --no-alt-screen",
 		Delegated: true,
 	}
-	fw.captures["brain-agent-worker:@1"] = "current pane"
+	fw.captures["brain-agent-worker:@1"] = "current pane\n<codex_internal_context source=\"goal\">hidden objective</codex_internal_context>"
 	app := &controlApp{watcher: fw}
 
 	sendResp := app.HandleControlRequest(control.Request{
@@ -651,7 +702,8 @@ func TestControlAppAgentSpawnSubmissionFailureReturnsErrorAndAttention(t *testin
 	fw := newFakeControlWatcher()
 	fw.sendErr = os.ErrDeadlineExceeded
 	app := &controlApp{
-		watcher: fw,
+		watcher:    fw,
+		brainStore: newControlBrainStore(t),
 		execs: work.NewExecutorConfig("codex", map[string]work.Executor{
 			"codex": {Name: "codex", Command: "codex"},
 		}),
@@ -670,6 +722,14 @@ func TestControlAppAgentSpawnSubmissionFailureReturnsErrorAndAttention(t *testin
 	agent := fw.agents["brain-agent-unsubmitted:@1"]
 	if agent == nil || agent.State != classifier.StateFailed || agent.Attention != "failed" || !agent.NeedsAttention {
 		t.Fatalf("agent after failed initial prompt = %#v", agent)
+	}
+	items, err := app.brainStore.ListWork()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(items) != 1 || items[0].Status != brain.WorkNeedsInput ||
+		!strings.Contains(items[0].WaitFor, os.ErrDeadlineExceeded.Error()) {
+		t.Fatalf("Work after failed initial prompt = %#v", items)
 	}
 }
 
@@ -886,6 +946,64 @@ func TestControlAppAgentCloseRejectsExternalSessionWithoutForce(t *testing.T) {
 	forced := app.HandleControlRequest(control.Request{Type: "agent_close", AgentID: "brain-agent-user-owned:@1", Force: true})
 	if !forced.OK || len(fw.killed) != 1 {
 		t.Fatalf("forced close response = %#v killed=%#v", forced, fw.killed)
+	}
+}
+
+func TestControlAppBrainWorkCRUDAndEventAPI(t *testing.T) {
+	store := newControlBrainStore(t)
+	service := brain.NewService(store, nil, nil)
+	app := &controlApp{brainStore: store, brainService: service}
+
+	created := app.HandleControlRequest(control.Request{
+		Type: "brain_work_create",
+		BrainWork: &brain.Work{
+			Title:            "API Work",
+			Objective:        "Exercise the narrow Work API.",
+			CompletionPolicy: brain.CompletionBounded,
+		},
+	})
+	if !created.OK || created.BrainWork == nil {
+		t.Fatalf("create response = %#v", created)
+	}
+	status := brain.WorkWaiting
+	waitFor := "external result"
+	updated := app.HandleControlRequest(control.Request{
+		Type:       "brain_work_update",
+		WorkID:     created.BrainWork.ID,
+		BrainWork:  &brain.Work{Status: status, WaitFor: waitFor},
+		WorkFields: []string{"status", "wait_for"},
+	})
+	if !updated.OK || updated.BrainWork == nil ||
+		updated.BrainWork.Status != brain.WorkWaiting ||
+		updated.BrainWork.WaitFor != waitFor {
+		t.Fatalf("update response = %#v", updated)
+	}
+	recorded := app.HandleControlRequest(control.Request{
+		Type: "brain_work_event",
+		BrainWorkEvent: &brain.WorkEvent{
+			WorkID:     created.BrainWork.ID,
+			Kind:       "external.changed",
+			DedupeKey:  "external:1",
+			Actionable: true,
+		},
+	})
+	if !recorded.OK || recorded.BrainWorkEvent == nil {
+		t.Fatalf("event response = %#v", recorded)
+	}
+	duplicate := app.HandleControlRequest(control.Request{
+		Type:           "brain_work_event",
+		BrainWorkEvent: recorded.BrainWorkEvent,
+	})
+	if !duplicate.OK || duplicate.Confirmation != "Duplicate event already recorded." {
+		t.Fatalf("duplicate response = %#v", duplicate)
+	}
+	listed := app.HandleControlRequest(control.Request{
+		Type:   "brain_work_list",
+		WorkID: created.BrainWork.ID,
+	})
+	if !listed.OK || listed.BrainWork == nil ||
+		len(listed.BrainWorkEvents) != 1 {
+		t.Fatalf("list response = %#v", listed)
 	}
 }
 

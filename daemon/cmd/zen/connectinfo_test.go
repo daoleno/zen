@@ -327,7 +327,7 @@ func TestAgentAndBrainHelpAreDiscoverable(t *testing.T) {
 	}
 	brainHelp := brainOutput.String()
 	for _, want := range []string{
-		"Usage: zen brain <workspace|context|playbooks|gc|executors|use|set-delegated> [flags]",
+		"Usage: zen brain <workspace|context|playbooks|gc|work|executors|use|set-delegated> [flags]",
 		"Reconcile product-owned Brain workspace blocks while preserving user content",
 		"zen brain workspace --json",
 		"zen brain context --json",

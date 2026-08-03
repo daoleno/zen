@@ -85,7 +85,6 @@ type Server struct {
 	brain                      *brain.Service
 	calendar                   *calendar.Store
 	calendarScheduler          *calendar.Scheduler
-	lifecycle                  *delegatedLifecycleManager
 	providerConversationLoader func(reader *work.ProviderConversationReader, agentID string) (work.CodexConversation, error)
 	sendInputOverride          func(agentID, text string) error
 	sendActionOverride         func(agentID, action string) error
@@ -93,16 +92,18 @@ type Server struct {
 	uploadMu                   sync.Mutex
 	sessionFileAgentLoader     func(agentID string) *classifier.Agent
 
-	workSubID     int
-	workSub       <-chan work.Event
-	calendarSubID int
-	calendarSub   <-chan calendar.Event
+	workSubID              int
+	workSub                <-chan work.Event
+	calendarSubID          int
+	calendarSub            <-chan calendar.Event
+	brainWorkSubID         int
+	brainWorkSub           <-chan brain.WorkChange
+	brainMigrationComplete bool
 
 	clients           map[*websocket.Conn]bool
 	active            map[*websocket.Conn]string
 	writes            map[*websocket.Conn]*sync.Mutex
 	codexSubs         map[*websocket.Conn]map[string]codexConversationSubscription
-	brainSent         map[string]struct{}
 	skillsSearcher    *skillmgmt.Searcher
 	skillsCatalog     *skillmgmt.LeaderboardReader
 	skillsInventories map[*websocket.Conn]skillsInventoryRequest
@@ -143,27 +144,15 @@ func New(authManager *auth.Manager, w *watcher.Watcher, pusher *push.Client, sc 
 		active:            make(map[*websocket.Conn]string),
 		writes:            make(map[*websocket.Conn]*sync.Mutex),
 		codexSubs:         make(map[*websocket.Conn]map[string]codexConversationSubscription),
-		brainSent:         make(map[string]struct{}),
 		skillsSearcher:    skillmgmt.NewSearcher(),
 		skillsCatalog:     skillmgmt.NewLeaderboardReader(),
 		skillsInventories: make(map[*websocket.Conn]skillsInventoryRequest),
 		skillsCatalogs:    make(map[*websocket.Conn]skillsCatalogRequest),
 		skillsSearches:    make(map[*websocket.Conn]skillsSearchRequest),
 	}
-	srv.lifecycle = newDelegatedLifecycleManager(
-		func(event brain.HeartbeatEvent) (bool, error) {
-			if brainService == nil {
-				return false, nil
-			}
-			return brainService.Heartbeat(event)
-		},
-		func(agentID string) error {
-			if w == nil {
-				return nil
-			}
-			return w.KillSession(agentID)
-		},
-	)
+	if brainService != nil {
+		srv.brainWorkSubID, srv.brainWorkSub = brainService.SubscribeWork()
+	}
 	if workStore != nil {
 		srv.workSubID, srv.workSub = workStore.Subscribe()
 	}
@@ -450,6 +439,9 @@ func (s *Server) handleClientMessage(conn *websocket.Conn, msg []byte) {
 	case "brain_gc":
 		s.handleBrainGC(conn, raw)
 
+	case "brain_work_read":
+		s.handleBrainWorkRead(conn, raw)
+
 	case "brain_set_executor":
 		s.handleBrainSetExecutor(conn, raw)
 
@@ -477,8 +469,12 @@ func (s *Server) handleClientMessage(conn *websocket.Conn, msg []byte) {
 		s.mu.Unlock()
 
 	case "send_input":
+		brainSteering := s.brain != nil && s.brain.NoteUserSteering(raw.AgentID)
 		err := s.sendInput(raw.AgentID, raw.Text)
 		if err != nil {
+			if brainSteering {
+				s.brain.CancelUserSteering(raw.AgentID)
+			}
 			log.Printf("send_input error: %v", err)
 			s.sendJSON(conn, map[string]any{
 				"type":       "input_failed",
@@ -930,10 +926,17 @@ func (s *Server) loadProviderConversationSnapshot(
 	resolved resolvedCodexConversationAgent,
 	now time.Time,
 ) (work.CodexConversation, error) {
+	var conversation work.CodexConversation
+	var err error
 	if s.providerConversationLoader != nil {
-		return s.providerConversationLoader(reader, strings.TrimSpace(resolved.targetID))
+		conversation, err = s.providerConversationLoader(reader, strings.TrimSpace(resolved.targetID))
+	} else {
+		conversation, err = reader.Load(resolved.agent, resolved.provider, now)
 	}
-	return reader.Load(resolved.agent, resolved.provider, now)
+	if err != nil {
+		return work.CodexConversation{}, err
+	}
+	return work.SanitizeConversationProjection(conversation), nil
 }
 
 func (s *Server) handleListSessionServices(conn *websocket.Conn, raw clientMessage) {
@@ -1808,6 +1811,22 @@ func (s *Server) handleBrainGC(conn *websocket.Conn, raw clientMessage) {
 	})
 }
 
+func (s *Server) handleBrainWorkRead(conn *websocket.Conn, raw clientMessage) {
+	if s.brain == nil {
+		s.sendErrorWithRequestID(conn, raw.RequestID, "brain_unavailable", "Brain is not configured")
+		return
+	}
+	if err := s.brain.MarkWorkRead(strings.TrimSpace(raw.ID)); err != nil {
+		s.sendErrorWithRequestID(conn, raw.RequestID, "brain_work_read_failed", err.Error())
+		return
+	}
+	s.sendJSON(conn, map[string]any{
+		"type":       "brain_work_read",
+		"request_id": raw.RequestID,
+		"work_id":    strings.TrimSpace(raw.ID),
+	})
+}
+
 func (s *Server) handleBrainChatNew(conn *websocket.Conn, raw clientMessage) {
 	if s.brain == nil {
 		s.sendErrorWithRequestID(conn, raw.RequestID, "brain_unavailable", "Brain is not configured")
@@ -2015,6 +2034,10 @@ func (s *Server) broadcastEvents(ctx context.Context) {
 	if s.calendar != nil && calendarSub != nil {
 		defer s.calendar.Unsubscribe(s.calendarSubID)
 	}
+	brainWorkSub := s.brainWorkSub
+	if s.brain != nil && brainWorkSub != nil {
+		defer s.brain.UnsubscribeWork(s.brainWorkSubID)
+	}
 	for {
 		select {
 		case <-ctx.Done():
@@ -2033,12 +2056,43 @@ func (s *Server) broadcastEvents(ctx context.Context) {
 				continue
 			}
 			s.handleCalendarEvent(event)
+		case _, ok := <-brainWorkSub:
+			if !ok {
+				brainWorkSub = nil
+				continue
+			}
+			s.broadcastBrainSnapshot()
 		}
 	}
 }
 
+func (s *Server) broadcastBrainSnapshot() {
+	if s.brain == nil {
+		return
+	}
+	snapshot, err := s.brain.Snapshot()
+	if err != nil {
+		log.Printf("brain snapshot broadcast failed: %v", err)
+		return
+	}
+	payload, err := s.brainSnapshotWire(snapshot)
+	if err != nil {
+		log.Printf("brain snapshot projection failed: %v", err)
+		return
+	}
+	s.broadcastJSON(map[string]any{
+		"type":  "brain_snapshot",
+		"brain": payload,
+	})
+}
+
 func (s *Server) handleCalendarEvent(event calendar.Event) {
 	s.broadcastJSON(map[string]any{"type": "calendar_item_changed", "calendar_item": event.Item})
+	if s.brain != nil {
+		if _, err := s.brain.RouteCalendarEvent(event); err != nil {
+			log.Printf("calendar Work event routing failed for %s: %v", event.Item.ID, err)
+		}
+	}
 	if event.ScheduledResult == nil || s.pusher == nil {
 		return
 	}
@@ -2078,7 +2132,16 @@ func (s *Server) heartbeat(ctx context.Context) {
 			return
 		case <-ticker.C:
 			agentSessions := s.currentVisibleAgentSessions()
-			s.observeDelegatedLifecycleAgents(agentSessions)
+			if s.brain != nil && s.watcher != nil && s.watcher.SnapshotReady() {
+				if !s.brainMigrationComplete {
+					if _, err := s.brain.MigrateDelegatedSessionsV1(agentSessions); err != nil {
+						log.Printf("brain delegated Session migration failed: %v", err)
+					} else {
+						s.brainMigrationComplete = true
+					}
+				}
+				s.brain.ReconcileDelegatedSessions(agentSessions)
+			}
 			data, _ := json.Marshal(map[string]any{"type": "agent_session_list", "agent_sessions": s.agentSessionsWire(agentSessions)})
 			s.broadcast(data)
 		}
@@ -2087,9 +2150,13 @@ func (s *Server) heartbeat(ctx context.Context) {
 
 func (s *Server) handleWatcherEvent(ev watcher.SessionEvent) {
 	if ev.Agent != nil && ev.Agent.Hidden {
+		if s.brain != nil {
+			if _, err := s.brain.ObserveHostSessionEvent(ev); err != nil {
+				log.Printf("brain host event dispatch failed: %v", err)
+			}
+		}
 		return
 	}
-	brainWoke := false
 
 	switch ev.Type {
 	case "agent_discovered":
@@ -2105,104 +2172,33 @@ func (s *Server) handleWatcherEvent(ev watcher.SessionEvent) {
 			s.broadcastJSON(map[string]any{"type": "agent_session_updated", "agent_session": s.agentSessionWire(ev.Agent)})
 		}
 		s.maybeNotifyForSessionEvent(ev)
-		brainWoke = s.maybeWakeBrainForSessionEvent(ev)
+		s.routeSessionEventToBrain(ev)
 	case "agent_metadata_change":
 		if ev.Agent != nil {
 			s.broadcastJSON(map[string]any{"type": "agent_session_updated", "agent_session": s.agentSessionWire(ev.Agent)})
 		}
-		brainWoke = s.maybeWakeBrainForSessionEvent(ev)
+		s.routeSessionEventToBrain(ev)
 	case "agent_removed":
 		if ev.Agent != nil {
 			s.broadcastJSON(map[string]any{"type": "agent_session_archived", "agent_session": s.agentSessionWire(ev.Agent)})
 		}
 		s.maybeNotifyForSessionEvent(ev)
-		brainWoke = s.maybeWakeBrainForSessionEvent(ev)
+		s.routeSessionEventToBrain(ev)
 	}
-	s.observeDelegatedLifecycleEvent(ev, brainWoke)
 }
 
-func (s *Server) observeDelegatedLifecycleEvent(ev watcher.SessionEvent, alreadyWokeBrain bool) {
-	if s.lifecycle == nil {
+func (s *Server) routeSessionEventToBrain(ev watcher.SessionEvent) {
+	if s.brain == nil {
 		return
 	}
-	if ev.Type == "agent_removed" {
-		s.lifecycle.Forget(ev.AgentID)
-		return
-	}
-	if ev.Agent == nil {
-		return
-	}
-	s.lifecycle.Observe(ev.Agent, alreadyWokeBrain)
-}
-
-func (s *Server) observeDelegatedLifecycleAgents(agents []*classifier.Agent) {
-	if s.lifecycle == nil {
-		return
-	}
-	for _, agent := range agents {
-		s.lifecycle.Observe(agent, false)
-	}
-}
-
-func isActionableBrainHeartbeatState(state string) bool {
-	return state == string(classifier.StateBlocked) ||
-		state == string(classifier.StateDone) ||
-		state == string(classifier.StateFailed)
-}
-
-func isAttentionSignal(attention string) bool {
-	switch strings.TrimSpace(attention) {
-	case "user_input", "blocked", "failed":
-		return true
-	default:
-		return false
-	}
-}
-
-func (s *Server) maybeWakeBrainForSessionEvent(ev watcher.SessionEvent) bool {
-	if s.brain == nil || ev.Agent == nil {
-		return false
-	}
-	if !ev.Agent.Delegated || ev.Agent.Hidden {
-		return false
-	}
-	status := ev.NewState
-	reason := "agent_state_change"
-	if ev.Type == "agent_removed" {
-		return false
-	} else if ev.Type == "agent_metadata_change" && ev.Agent.NeedsAttention && isAttentionSignal(ev.Agent.Attention) {
-		reason = "agent_attention"
-		status = string(ev.Agent.State)
-	} else if ev.Type != "agent_state_change" || ev.OldState == ev.NewState || !isActionableBrainHeartbeatState(status) {
-		return false
-	}
-	signalKey := brainSignalKey(ev.AgentID, reason, status, ev.Agent.Attention)
-	if s.rememberBrainSignal(signalKey) {
-		return false
-	}
-	woke, err := s.brain.Heartbeat(brain.HeartbeatEvent{
-		Reason:    reason,
-		AgentID:   ev.AgentID,
-		Name:      ev.Agent.Name,
-		Status:    status,
-		Summary:   ev.Agent.Summary,
-		Cwd:       ev.Agent.Cwd,
-		Phase:     ev.Agent.Phase,
-		Attention: ev.Agent.Attention,
-		OldState:  ev.OldState,
-		NewState:  ev.NewState,
-	})
+	woke, err := s.brain.RouteSessionEvent(ev)
 	if err != nil {
-		log.Printf("brain heartbeat wake failed for %s: %v", ev.AgentID, err)
-		s.forgetBrainSignal(signalKey)
-		return false
+		log.Printf("brain Work event routing failed for %s: %v", ev.AgentID, err)
+		return
 	}
 	if woke {
-		log.Printf("brain heartbeat wake sent for %s (%s)", ev.AgentID, reason)
-	} else {
-		s.forgetBrainSignal(signalKey)
+		log.Printf("brain Work event dispatched for %s", ev.AgentID)
 	}
-	return woke
 }
 
 func (s *Server) maybeNotifyForSessionEvent(ev watcher.SessionEvent) {
@@ -2234,38 +2230,6 @@ func (s *Server) maybeNotifyForSessionEvent(ev watcher.SessionEvent) {
 			log.Printf("done-agent push failed: %v", err)
 		}
 	}
-}
-
-func brainSignalKey(agentID, reason, status, attention string) string {
-	if reason == "agent_attention" {
-		return strings.TrimSpace(agentID) + "|brain|" + reason + "|" + strings.TrimSpace(attention)
-	}
-	return strings.TrimSpace(agentID) + "|brain|" + strings.TrimSpace(status)
-}
-
-func (s *Server) rememberBrainSignal(key string) bool {
-	if key == "" {
-		return false
-	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if s.brainSent == nil {
-		s.brainSent = make(map[string]struct{})
-	}
-	if _, ok := s.brainSent[key]; ok {
-		return true
-	}
-	s.brainSent[key] = struct{}{}
-	return false
-}
-
-func (s *Server) forgetBrainSignal(key string) {
-	if key == "" {
-		return
-	}
-	s.mu.Lock()
-	delete(s.brainSent, key)
-	s.mu.Unlock()
 }
 
 func (s *Server) broadcast(data []byte) {

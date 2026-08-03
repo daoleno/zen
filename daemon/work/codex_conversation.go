@@ -503,7 +503,6 @@ func (b *codexConversationBuilder) consumeEvent(lineNumber int, timestamp string
 		Status            string          `json:"status"`
 		Command           []string        `json:"command"`
 		AggregatedOutput  string          `json:"aggregated_output"`
-		Goal              json.RawMessage `json:"goal"`
 		Explanation       string          `json:"explanation"`
 		Plan              []CodexPlanStep `json:"plan"`
 		Text              string          `json:"text"`
@@ -621,9 +620,6 @@ func (b *codexConversationBuilder) consumeEvent(lineNumber int, timestamp string
 		} else {
 			b.addStatus(lineNumber, timestamp, "Patch "+status, "")
 		}
-	case "thread_goal_updated":
-		body := codexGoalText(payload.Goal)
-		b.addStatus(lineNumber, timestamp, "Goal updated", body)
 	case "plan_update":
 		b.addPlanUpdate(lineNumber, timestamp, "", payload.Explanation, payload.Plan)
 	}
@@ -729,7 +725,6 @@ func shouldFinishPendingReasoningForEvent(eventType string) bool {
 		"agent_message",
 		"exec_command_end",
 		"patch_apply_end",
-		"thread_goal_updated",
 		"plan_update":
 		return true
 	default:
@@ -1929,23 +1924,6 @@ func cleanToolName(name string) string {
 	return truncateRunes(cleanConversationText(name), 120)
 }
 
-func codexGoalText(raw json.RawMessage) string {
-	if len(raw) == 0 || bytes.Equal(bytes.TrimSpace(raw), []byte("null")) {
-		return ""
-	}
-	if text := codexConversationContentText(raw); text != "" {
-		return text
-	}
-	var payload struct {
-		Objective string `json:"objective"`
-		Status    string `json:"status"`
-	}
-	if json.Unmarshal(raw, &payload) != nil {
-		return ""
-	}
-	return strings.TrimSpace(strings.Join([]string{payload.Status, payload.Objective}, " "))
-}
-
 func normalizeCodexTimestamp(value string) string {
 	value = strings.TrimSpace(value)
 	if value == "" {
@@ -2025,7 +2003,7 @@ func truncateConversationBody(value string) string {
 
 func isLowSignalCodexStatus(title, body string) bool {
 	switch strings.TrimSpace(title) {
-	case "Task started", "Goal updated":
+	case "Task started":
 		return true
 	}
 	return false

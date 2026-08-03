@@ -17,7 +17,7 @@ If something does not work, run `zen doctor` on the host and continue with [Trou
 
 - [Security and privacy](security-and-privacy.md) explains keys, pairing, exposed routes, local data, and executor risk.
 - [Architecture](architecture.md) explains the app, daemon, network, tmux, and provider boundaries.
-- [Brain orchestration](brain-orchestration.md) explains Brain, Host Executor, Delegated Executor, and persistent workspace state.
+- [Brain orchestration](brain-orchestration.md) explains Work, Event, Session, executor ownership, and the Active work operator surface.
 - [Notifications](notifications.md) explains the current notification model.
 
 ## Development and maintenance

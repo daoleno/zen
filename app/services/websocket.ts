@@ -2083,6 +2083,13 @@ export class MultiServerWebSocketClient {
     this.send(serverId, { type: "brain_snapshot" });
   }
 
+  markBrainWorkRead(serverId: string, workId: string) {
+    this.send(serverId, {
+      type: "brain_work_read",
+      id: workId,
+    });
+  }
+
   getBrainContext(serverId: string): Promise<BrainContextPayload> {
     const requestId = `${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
 

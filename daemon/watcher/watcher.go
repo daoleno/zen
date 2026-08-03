@@ -167,6 +167,17 @@ func (w *Watcher) Agents() []*classifier.Agent {
 	return result
 }
 
+// SnapshotReady reports whether Watcher has completed at least one full poll.
+// It gates one-way migration from pre-Work delegated Session ownership.
+func (w *Watcher) SnapshotReady() bool {
+	if w == nil {
+		return false
+	}
+	w.mu.RLock()
+	defer w.mu.RUnlock()
+	return w.pollGeneration > 0
+}
+
 // GetAgent returns a snapshot of a single agent, or nil if not found.
 func (w *Watcher) GetAgent(id string) *classifier.Agent {
 	w.mu.RLock()

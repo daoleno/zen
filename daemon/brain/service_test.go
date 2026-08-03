@@ -19,6 +19,7 @@ type fakeWatcher struct {
 	created   []createdCall
 	sentCalls []sentCall
 	killed    []string
+	sendErr   error
 }
 
 type createdCall struct {
@@ -85,7 +86,7 @@ func (w *fakeWatcher) CreateSession(_ string, opts watcher.CreateSessionOptions)
 
 func (w *fakeWatcher) SendInput(sessionID, text string) error {
 	w.sentCalls = append(w.sentCalls, sentCall{sessionID: sessionID, text: text})
-	return nil
+	return w.sendErr
 }
 
 func (w *fakeWatcher) SendInputWhenReady(sessionID, _ string, text string) error {
@@ -605,7 +606,7 @@ func TestServiceBootstrapPromptDefaultsToAutonomousScheduling(t *testing.T) {
 		"Delegated agent lifecycle",
 		"Never close, kill, rename, repurpose, or otherwise manage sessions whose agent list entry does not have delegated=true",
 		"Keep orchestration principles in Markdown, prompts, and agent instructions",
-		"Treat Heartbeat wake messages as compact actionable deltas",
+		"Treat an Active work event message as one claimed actionable delta",
 		"consolidate options and a recommendation",
 	} {
 		if !strings.Contains(prompt, want) {
@@ -688,87 +689,6 @@ func TestServiceBootstrapPromptReferencesMemoryWithoutEmbeddingIt(t *testing.T) 
 		if strings.Contains(prompt, unexpected) {
 			t.Fatalf("bootstrap prompt should not include %q:\n%s", unexpected, prompt)
 		}
-	}
-}
-
-func TestServiceHeartbeatWakesExistingHost(t *testing.T) {
-	store, err := NewStore(t.TempDir())
-	if err != nil {
-		t.Fatal(err)
-	}
-	hostID := "brain-agent-brain-hidden:@1"
-	if err := store.SetHostSession(hostID, "codex"); err != nil {
-		t.Fatal(err)
-	}
-	fw := &fakeWatcher{
-		sessions: map[string]*classifier.Agent{
-			hostID: {
-				ID:      hostID,
-				Name:    "Brain",
-				State:   classifier.StateRunning,
-				Hidden:  true,
-				Command: "codex",
-			},
-		},
-	}
-	service := NewService(store, fw, nil)
-
-	woke, err := service.Heartbeat(HeartbeatEvent{
-		Reason:   "agent_state_change",
-		AgentID:  "worker:@2",
-		Name:     "Worker (worker:@2)",
-		Status:   "blocked",
-		Summary:  "Needs user input",
-		Cwd:      "/repo",
-		OldState: "running",
-		NewState: "blocked",
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !woke {
-		t.Fatal("heartbeat did not wake existing host")
-	}
-	if len(fw.created) != 0 {
-		t.Fatalf("heartbeat should not create host sessions, got %#v", fw.created)
-	}
-	if len(fw.sentCalls) != 1 || fw.sentCalls[0].sessionID != hostID {
-		t.Fatalf("heartbeat sends = %#v", fw.sentCalls)
-	}
-	for _, want := range []string{
-		"Heartbeat wake:",
-		"reason: agent_state_change",
-		"agent_id: worker:@2",
-		"status: blocked",
-		"Inspect the changed session if useful",
-	} {
-		if !strings.Contains(fw.sentCalls[0].text, want) {
-			t.Fatalf("heartbeat message missing %q:\n%s", want, fw.sentCalls[0].text)
-		}
-	}
-}
-
-func TestServiceHeartbeatNoopsWithoutHost(t *testing.T) {
-	store, err := NewStore(t.TempDir())
-	if err != nil {
-		t.Fatal(err)
-	}
-	fw := &fakeWatcher{}
-	service := NewService(store, fw, nil)
-
-	woke, err := service.Heartbeat(HeartbeatEvent{
-		Reason:  "agent_state_change",
-		AgentID: "worker:@2",
-		Status:  "done",
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if woke {
-		t.Fatal("heartbeat unexpectedly woke without a host")
-	}
-	if len(fw.created) != 0 || len(fw.sentCalls) != 0 {
-		t.Fatalf("heartbeat side effects created=%#v sent=%#v", fw.created, fw.sentCalls)
 	}
 }
 
@@ -1293,7 +1213,7 @@ func TestStoreUsesStateAndWorkspaceDirectories(t *testing.T) {
 		t.Fatal(err)
 	}
 	assertCalendarPromptContract(t, string(instructions), "Do not extract Calendar items automatically from unrelated chat")
-	if !strings.Contains(string(instructions), "Keep the current active objective, decisions, open threads, and next step in current.md") {
+	if !strings.Contains(string(instructions), "Keep a human-readable handoff projection in current.md; database Work/Event state is authoritative") {
 		t.Fatalf("workspace instructions do not describe current.md:\n%s", instructions)
 	}
 	if !strings.Contains(string(instructions), "Use policies/ for stable Brain orchestration rules") {
@@ -1320,8 +1240,8 @@ func TestStoreUsesStateAndWorkspaceDirectories(t *testing.T) {
 	if !strings.Contains(string(instructions), "Keep orchestration principles in Markdown, prompts, and agent instructions") {
 		t.Fatalf("workspace instructions do not describe prompt-first orchestration:\n%s", instructions)
 	}
-	if !strings.Contains(string(instructions), "Treat Heartbeat wake messages as compact actionable deltas") {
-		t.Fatalf("workspace instructions do not describe heartbeat handling:\n%s", instructions)
+	if !strings.Contains(string(instructions), "Treat an Active work event message as one claimed actionable delta") {
+		t.Fatalf("workspace instructions do not describe Work event handling:\n%s", instructions)
 	}
 	for _, want := range []string{"zen brain context --json", "zen brain playbooks --json", "zen agent list --json", "zen agent spawn -name", "zen agent capture -id", "zen agent send -id", "zen agent close -id"} {
 		if !strings.Contains(string(instructions), want) {

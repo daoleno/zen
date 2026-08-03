@@ -17,6 +17,23 @@ export type BrainScheduledResult = {
   scheduled_for: string;
 };
 
+export type BrainWorkStatus =
+  | "open"
+  | "running"
+  | "waiting"
+  | "needs_input"
+  | "done"
+  | "cancelled";
+
+export type BrainActiveWork = {
+  work_id: string;
+  title: string;
+  status: BrainWorkStatus;
+  owner_session_id?: string;
+  wait_for?: string;
+  unread_result: boolean;
+};
+
 export type BrainAgentRef = {
   id: string;
   name: string;
@@ -54,6 +71,7 @@ export type BrainSnapshot = {
   adapters?: BrainAdapterRef[];
   chat_thread_id?: string;
   scheduled_results?: BrainScheduledResult[];
+  active_work?: BrainActiveWork[];
   workspace?: string;
   generated_at?: string;
 };
@@ -73,8 +91,12 @@ export const initialBrainState: BrainState = {
   byServer: {},
 };
 
-type RawBrainSnapshot = Omit<Partial<BrainSnapshot>, "scheduled_results"> & {
+type RawBrainSnapshot = Omit<
+  Partial<BrainSnapshot>,
+  "scheduled_results" | "active_work"
+> & {
   scheduled_results?: unknown[];
+  active_work?: unknown[];
   host_executor?: BrainAdapterRef | null;
   delegated_executor?: BrainAdapterRef | null;
   executors?: BrainAdapterRef[];
@@ -129,10 +151,63 @@ function normalizeSnapshot(
     scheduled_results: Array.isArray(raw?.scheduled_results)
       ? normalizeScheduledResults(raw.scheduled_results)
       : [],
+    active_work: Array.isArray(raw?.active_work)
+      ? normalizeActiveWork(raw.active_work)
+      : [],
     workspace: typeof raw?.workspace === "string" ? raw.workspace : undefined,
     generated_at:
       typeof raw?.generated_at === "string" ? raw.generated_at : undefined,
   };
+}
+
+function normalizeActiveWork(raw: unknown[]): BrainActiveWork[] {
+  const byId = new Map<string, BrainActiveWork>();
+  raw.forEach((value) => {
+    const item =
+      value && typeof value === "object"
+        ? (value as Record<string, unknown>)
+        : null;
+    if (!item) {
+      return;
+    }
+    const workId =
+      typeof item.work_id === "string" ? item.work_id.trim() : "";
+    const title = typeof item.title === "string" ? item.title.trim() : "";
+    const status = normalizeWorkStatus(item.status);
+    if (!workId || !title || !status) {
+      return;
+    }
+    byId.set(workId, {
+      work_id: workId,
+      title,
+      status,
+      owner_session_id:
+        typeof item.owner_session_id === "string" &&
+        item.owner_session_id.trim()
+          ? item.owner_session_id.trim()
+          : undefined,
+      wait_for:
+        typeof item.wait_for === "string" && item.wait_for.trim()
+          ? item.wait_for.trim()
+          : undefined,
+      unread_result: item.unread_result === true,
+    });
+  });
+  return Array.from(byId.values());
+}
+
+function normalizeWorkStatus(value: unknown): BrainWorkStatus | null {
+  switch (value) {
+    case "open":
+    case "running":
+    case "waiting":
+    case "needs_input":
+    case "done":
+    case "cancelled":
+      return value;
+    default:
+      return null;
+  }
 }
 
 function normalizeScheduledResult(raw: any): BrainScheduledResult {
@@ -306,6 +381,19 @@ function brainServerStatesEqual(
     scheduledResultArraysEqual(
       left.scheduled_results ?? [],
       right.scheduled_results ?? [],
+    ) &&
+    activeWorkArraysEqual(left.active_work ?? [], right.active_work ?? [])
+  );
+}
+
+function activeWorkArraysEqual(
+  left: BrainActiveWork[],
+  right: BrainActiveWork[],
+) {
+  return (
+    left.length === right.length &&
+    left.every(
+      (item, index) => JSON.stringify(item) === JSON.stringify(right[index]),
     )
   );
 }

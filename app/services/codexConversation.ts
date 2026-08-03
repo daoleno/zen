@@ -175,6 +175,9 @@ function normalizeCodexConversationEvent(
   value: any,
 ): CodexConversationEvent | null {
   const event = value && typeof value === "object" ? value : {};
+  if (isGoalInternalContextEvent(event)) {
+    return null;
+  }
   const kind = normalizeKind(event.kind);
   if (!kind) {
     return null;
@@ -183,7 +186,7 @@ function normalizeCodexConversationEvent(
     typeof event.id === "string" && event.id
       ? event.id
       : `${kind}:${event.seq ?? ""}`;
-  return {
+  const normalized: CodexConversationEvent = {
     id,
     seq:
       typeof event.seq === "number" && Number.isFinite(event.seq)
@@ -196,13 +199,13 @@ function normalizeCodexConversationEvent(
       event.role === "user" || event.role === "assistant"
         ? event.role
         : undefined,
-    title: typeof event.title === "string" ? event.title : undefined,
-    body: typeof event.body === "string" ? event.body : undefined,
-    command: typeof event.command === "string" ? event.command : undefined,
+    title: sanitizeGoalInternalContext(event.title),
+    body: sanitizeGoalInternalContext(event.body),
+    command: sanitizeGoalInternalContext(event.command),
     tool_name:
       typeof event.tool_name === "string" ? event.tool_name : undefined,
-    input: typeof event.input === "string" ? event.input : undefined,
-    output: typeof event.output === "string" ? event.output : undefined,
+    input: sanitizeGoalInternalContext(event.input),
+    output: sanitizeGoalInternalContext(event.output),
     call_id: typeof event.call_id === "string" ? event.call_id : undefined,
     exit_code:
       typeof event.exit_code === "number" && Number.isFinite(event.exit_code)
@@ -226,8 +229,7 @@ function normalizeCodexConversationEvent(
             ): change is CodexConversationFileChange => Boolean(change),
           )
       : undefined,
-    explanation:
-      typeof event.explanation === "string" ? event.explanation : undefined,
+    explanation: sanitizeGoalInternalContext(event.explanation),
     plan: Array.isArray(event.plan)
       ? event.plan
           .map(normalizePlanStep)
@@ -237,6 +239,46 @@ function normalizeCodexConversationEvent(
       : undefined,
     source: typeof event.source === "string" ? event.source : undefined,
   };
+  if (
+    (normalized.kind === "user_message" ||
+      normalized.kind === "assistant_message") &&
+    !normalized.body
+  ) {
+    return null;
+  }
+  return normalized;
+}
+
+const CODEX_GOAL_INTERNAL_CONTEXT_RE =
+  /<codex_internal_context\b[^>]*\bsource\s*=\s*["']goal["'][^>]*>.*?<\/codex_internal_context\s*>|<codex_internal_context\b[^>]*\bsource\s*=\s*["']goal["'][^>]*\/\s*>/gis;
+
+function sanitizeGoalInternalContext(value: unknown): string | undefined {
+  if (typeof value !== "string") {
+    return undefined;
+  }
+  const sanitized = value
+    .replace(CODEX_GOAL_INTERNAL_CONTEXT_RE, "\n")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+  return sanitized || undefined;
+}
+
+function isGoalInternalContextEvent(event: Record<string, unknown>) {
+  const source =
+    typeof event.source === "string" ? event.source.trim().toLowerCase() : "";
+  const title =
+    typeof event.title === "string" ? event.title.trim().toLowerCase() : "";
+  const toolName =
+    typeof event.tool_name === "string"
+      ? event.tool_name.trim().toLowerCase()
+      : "";
+  return (
+    source === "goal" ||
+    source === "codex_internal_context" ||
+    source === "codex_internal_context:goal" ||
+    title === "codex_internal_context" ||
+    toolName === "codex_internal_context"
+  );
 }
 
 function normalizeFileChange(
@@ -288,7 +330,8 @@ function normalizeLineCount(value: unknown): number | undefined {
 
 function normalizePlanStep(value: any): CodexPlanStep | null {
   const step = value && typeof value === "object" ? value : {};
-  if (typeof step.step !== "string" || !step.step.trim()) {
+  const text = sanitizeGoalInternalContext(step.step);
+  if (!text) {
     return null;
   }
   const status =
@@ -298,7 +341,7 @@ function normalizePlanStep(value: any): CodexPlanStep | null {
       ? step.status
       : "pending";
   return {
-    step: step.step.trim(),
+    step: text,
     status,
   };
 }

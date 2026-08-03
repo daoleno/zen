@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -661,11 +662,26 @@ func isCodexContextualFragment(value string) bool {
 // CleanCodexDisplayText removes Codex-internal context blocks from text before
 // it is shown in user-facing surfaces.
 func CleanCodexDisplayText(value string) string {
+	value = stripCodexGoalInternalContext(value)
 	value = cleanConversationText(stripCodexContextualFragments(value))
 	if isCodexInstructionContextFragment(value) {
 		return ""
 	}
 	return value
+}
+
+var codexGoalInternalContextPattern = regexp.MustCompile(
+	`(?is)<codex_internal_context\b[^>]*\bsource\s*=\s*["']goal["'][^>]*>.*?</codex_internal_context\s*>|<codex_internal_context\b[^>]*\bsource\s*=\s*["']goal["'][^>]*/\s*>`,
+)
+
+func stripCodexGoalInternalContext(value string) string {
+	for {
+		next := codexGoalInternalContextPattern.ReplaceAllString(value, "\n")
+		if next == value {
+			return strings.TrimSpace(next)
+		}
+		value = next
+	}
 }
 
 type codexContextualFragmentMarker struct {

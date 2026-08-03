@@ -16,15 +16,54 @@ import (
 	"github.com/gorilla/websocket"
 )
 
-// killTrackingWakeWatcher reuses brainWakeWatcher and only adds CreateSession
-// + KillSession tracking needed for snapshot/live delegated coverage.
-type killTrackingWakeWatcher struct {
-	brainWakeWatcher
+type brainServiceTestWatcher struct {
+	sessions map[string]*classifier.Agent
+}
+
+func (w *brainServiceTestWatcher) Agents() []*classifier.Agent {
+	return nil
+}
+
+func (w *brainServiceTestWatcher) GetAgent(id string) *classifier.Agent {
+	if w.sessions == nil {
+		return nil
+	}
+	return w.sessions[id]
+}
+
+func (w *brainServiceTestWatcher) HasSession(target string) bool {
+	if w.sessions == nil {
+		return false
+	}
+	_, ok := w.sessions[target]
+	return ok
+}
+
+func (w *brainServiceTestWatcher) CreateSession(string, watcher.CreateSessionOptions) (string, error) {
+	return "", nil
+}
+
+func (w *brainServiceTestWatcher) SendInput(string, string) error {
+	return nil
+}
+
+func (w *brainServiceTestWatcher) SendInputWhenReady(string, string, string) error {
+	return nil
+}
+
+func (w *brainServiceTestWatcher) KillSession(string) error {
+	return nil
+}
+
+// killTrackingWatcher adds CreateSession and KillSession tracking needed for
+// snapshot/live delegated coverage.
+type killTrackingWatcher struct {
+	brainServiceTestWatcher
 	killed  []string
 	created int
 }
 
-func (w *killTrackingWakeWatcher) CreateSession(_ string, opts watcher.CreateSessionOptions) (string, error) {
+func (w *killTrackingWatcher) CreateSession(_ string, opts watcher.CreateSessionOptions) (string, error) {
 	if w.sessions == nil {
 		w.sessions = map[string]*classifier.Agent{}
 	}
@@ -41,7 +80,7 @@ func (w *killTrackingWakeWatcher) CreateSession(_ string, opts watcher.CreateSes
 	return id, nil
 }
 
-func (w *killTrackingWakeWatcher) KillSession(sessionID string) error {
+func (w *killTrackingWatcher) KillSession(sessionID string) error {
 	w.killed = append(w.killed, sessionID)
 	delete(w.sessions, sessionID)
 	return nil
@@ -78,8 +117,8 @@ command = "grok --live"
 			t.Fatal(err)
 		}
 		existingID := "brain-agent-worker:@9"
-		fw := &killTrackingWakeWatcher{
-			brainWakeWatcher: brainWakeWatcher{
+		fw := &killTrackingWatcher{
+			brainServiceTestWatcher: brainServiceTestWatcher{
 				sessions: map[string]*classifier.Agent{
 					existingID: {
 						ID:      existingID,
@@ -172,7 +211,7 @@ command = "grok --live"
 				t.Fatal(err)
 			}
 			srv := &Server{
-				brain: brain.NewService(store, &killTrackingWakeWatcher{}, execs),
+				brain: brain.NewService(store, &killTrackingWatcher{}, execs),
 				execs: execs,
 			}
 			conn := openThinProxyTestSocket(t, srv)

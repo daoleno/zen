@@ -10,6 +10,8 @@ export type HeartbeatWakeEvent = {
   trailingPrompt?: string;
 };
 
+// Historical transcript projection only. Work/Event is the runtime scheduler;
+// current daemon paths never emit this legacy message shape.
 const HEARTBEAT_HEADER_RE = /^Heartbeat wake:\s*$/i;
 const HEARTBEAT_FIELD_RE = /^([A-Za-z_][A-Za-z0-9_-]*):\s*(.*)$/;
 
