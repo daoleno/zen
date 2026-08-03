@@ -60,6 +60,8 @@ func (a *controlApp) HandleControlRequest(req control.Request) control.Response 
 		return a.handleAgentStatus(req)
 	case "agent_progress":
 		return a.handleAgentProgress(req)
+	case "agent_event":
+		return a.handleAgentEvent(req)
 	case "agent_close", "agent_kill":
 		return a.handleAgentClose(req)
 	case "brain_executors":
@@ -565,6 +567,20 @@ func (a *controlApp) handleBrainWorkEvent(req control.Request) control.Response 
 	return response
 }
 
+func (a *controlApp) handleAgentEvent(req control.Request) control.Response {
+	if a == nil || a.brainService == nil {
+		return control.ErrorResponse("brain_unavailable", "Brain Work event routing is not configured.")
+	}
+	event, item, found, err := a.brainService.ConsumeHostWorkEvent(strings.TrimSpace(req.AgentID))
+	if err != nil {
+		return control.ErrorResponse("event_identity_mismatch", err.Error())
+	}
+	if !found {
+		return control.Response{OK: true, Confirmation: "No Work Event is currently assigned."}
+	}
+	return control.Response{OK: true, BrainWork: &item, BrainWorkEvent: &event}
+}
+
 func brainWorkControlError(err error) control.Response {
 	code := "brain_work_failed"
 	switch {
@@ -598,9 +614,7 @@ func (a *controlApp) handleAgentSend(req control.Request) control.Response {
 		return control.ErrorResponse("agent_session_unavailable", "Agent is listed but the tmux target is no longer available. Refresh the agent list and spawn a new session if needed.")
 	}
 	var sendErr error
-	codexHandoff := false
 	if req.Submit && agent != nil && watcher.IsCodexCommand(agent.Command) {
-		codexHandoff = true
 		sendErr = a.submitCodexHandoff(agentID, agent.Command, payload, false)
 	} else {
 		if req.Submit {
@@ -609,9 +623,6 @@ func (a *controlApp) handleAgentSend(req control.Request) control.Response {
 		sendErr = a.watcher.SendInput(agentID, payload)
 	}
 	if sendErr != nil {
-		if !codexHandoff {
-			a.recordSubmissionFailure(agentID, "Delegated follow-up was not submitted: "+sendErr.Error())
-		}
 		return control.ErrorResponse("send_failed", sendErr.Error())
 	}
 	agent = a.watcher.GetAgent(agentID)
@@ -630,11 +641,9 @@ func (a *controlApp) submitCodexHandoff(agentID, command, payload string, initia
 	handoffStartedAt := time.Now().UTC()
 	err := a.watcher.SubmitInputWhenReady(agentID, command, payload)
 	if err != nil {
-		prefix := "Delegated follow-up was not submitted: "
 		if initial {
-			prefix = "Initial delegated prompt was not submitted: "
+			a.recordSubmissionFailure(agentID, "Initial delegated prompt was not submitted: "+err.Error())
 		}
-		a.recordSubmissionFailure(agentID, prefix+err.Error())
 		return err
 	}
 	a.recordCodexHandoffAccepted(agentID, handoffStartedAt, initial)

@@ -70,6 +70,19 @@ func TestSanitizeConversationProjectionDropsTypedGoalEventsAndEmbeddedContext(t 
 	}
 }
 
+func TestSanitizeConversationProjectionDropsFixedWorkEventWakeCue(t *testing.T) {
+	conversation := SanitizeConversationProjection(CodexConversation{
+		Available: true,
+		Events: []CodexConversationEvent{
+			{ID: "control", Kind: "user_message", Body: WorkEventWakeCue},
+			{ID: "user", Kind: "user_message", Body: "A real foreground message"},
+		},
+	})
+	if len(conversation.Events) != 1 || conversation.Events[0].ID != "user" {
+		t.Fatalf("sanitized events = %#v", conversation.Events)
+	}
+}
+
 func TestMatchCodexTranscriptToAgentStart_UsesNearestCreatedThread(t *testing.T) {
 	base := time.Date(2026, 5, 21, 8, 0, 0, 0, time.UTC)
 	candidates := []codexTranscriptCandidate{

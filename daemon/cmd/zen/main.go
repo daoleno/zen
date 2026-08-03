@@ -490,6 +490,8 @@ func runAgentCommand(args []string, stderr io.Writer) error {
 		return runAgentStatus(args[1:], stderr)
 	case "progress":
 		return runAgentProgress(args[1:], stderr)
+	case "event":
+		return runAgentEvent(args[1:], stderr)
 	case "close", "kill":
 		return runAgentClose(args[1:], stderr)
 	default:
@@ -705,7 +707,7 @@ func isHelpArg(value string) bool {
 }
 
 func printAgentUsage(w io.Writer) {
-	fmt.Fprintln(w, "Usage: zen agent <list|spawn|send|capture|status|progress|close|kill> [flags]")
+	fmt.Fprintln(w, "Usage: zen agent <list|spawn|send|capture|status|progress|event|close|kill> [flags]")
 	fmt.Fprintln(w, "")
 	fmt.Fprintln(w, "Subcommands:")
 	fmt.Fprintln(w, "  list       List visible agent sessions")
@@ -714,6 +716,7 @@ func printAgentUsage(w io.Writer) {
 	fmt.Fprintln(w, "  capture    Capture an agent session transcript")
 	fmt.Fprintln(w, "  status     Print compact status for one agent session")
 	fmt.Fprintln(w, "  progress   Report lifecycle progress for the current or selected agent")
+	fmt.Fprintln(w, "  event      Read and consume the Work Event assigned to this Host")
 	fmt.Fprintln(w, "  close      Close an agent session")
 	fmt.Fprintln(w, "  kill       Alias for close")
 	fmt.Fprintln(w, "")
@@ -723,6 +726,7 @@ func printAgentUsage(w io.Writer) {
 	fmt.Fprintln(w, "  zen agent capture -id brain-agent-review-docs:@1 --json")
 	fmt.Fprintln(w, "  zen agent status -id brain-agent-review-docs:@1 --json")
 	fmt.Fprintln(w, "  zen agent progress --status running --phase working --attention none --summary \"Reading files\" --task-class lasting_design --event-kind invariant --lease 300")
+	fmt.Fprintln(w, "  zen agent event")
 	fmt.Fprintln(w, "  zen agent send -id brain-agent-review-docs:@1 -text \"continue\" --submit=true")
 	fmt.Fprintln(w, "  zen agent close -id brain-agent-review-docs:@1 --force")
 }
@@ -938,6 +942,41 @@ func runAgentProgress(args []string, stderr io.Writer) error {
 	fs.IntVar(&req.LeaseSeconds, "lease", 0, "seconds until the next expected progress update")
 	fs.Usage = func() {
 		fmt.Fprintln(stderr, "Usage: zen agent progress --status running --phase working --attention none --summary 'Reading files' --lease 300 [flags]")
+		fmt.Fprintln(stderr, "")
+		fs.PrintDefaults()
+	}
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if fs.NArg() > 0 {
+		return fmt.Errorf("unexpected arguments: %s", strings.Join(fs.Args(), " "))
+	}
+	if strings.TrimSpace(req.AgentID) == "" {
+		return fmt.Errorf("agent id is required; pass -id or set ZEN_AGENT_ID")
+	}
+	resp, err := callControl(cfg, req)
+	if err != nil {
+		return err
+	}
+	return writeControlResponse(os.Stdout, resp, cfg.json)
+}
+
+func runAgentEvent(args []string, stderr io.Writer) error {
+	fs := flag.NewFlagSet("zen agent event", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	cfg := cliConfig{
+		stateDir: strings.TrimSpace(os.Getenv("ZEN_STATE_DIR")),
+		json:     true,
+	}
+	req := control.Request{
+		Type:    "agent_event",
+		AgentID: strings.TrimSpace(os.Getenv("ZEN_AGENT_ID")),
+	}
+	fs.StringVar(&cfg.stateDir, "state-dir", cfg.stateDir, "state directory for daemon identity and control socket")
+	fs.BoolVar(&cfg.json, "json", true, "print JSON output")
+	fs.StringVar(&req.AgentID, "id", req.AgentID, "Host Session id; defaults to ZEN_AGENT_ID")
+	fs.Usage = func() {
+		fmt.Fprintln(stderr, "Usage: zen agent event [flags]")
 		fmt.Fprintln(stderr, "")
 		fs.PrintDefaults()
 	}

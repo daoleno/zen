@@ -22,7 +22,6 @@ type fakeCodexInputIO struct {
 	captureFn           func(*fakeCodexInputIO) codexPaneCapture
 	captures            []string
 	alive               []bool
-	states              []codexComposerState
 	generations         []string
 	index               int
 	clock               time.Time
@@ -90,18 +89,6 @@ func (f *fakeCodexInputIO) capture(string) codexPaneCapture {
 		}
 		alive = f.alive[aliveIndex]
 	}
-	state := codexComposerUnknown
-	if len(f.states) > 0 {
-		stateIndex := index
-		if stateIndex >= len(f.states) {
-			stateIndex = len(f.states) - 1
-		}
-		state = f.states[stateIndex]
-	} else if len(f.pastes) == 0 {
-		state = codexComposerEmpty
-	} else {
-		state = codexComposerHasDraft
-	}
 	generation := "generation-1"
 	if len(f.generations) > 0 {
 		generationIndex := index
@@ -111,9 +98,7 @@ func (f *fakeCodexInputIO) capture(string) codexPaneCapture {
 		generation = f.generations[generationIndex]
 	}
 	capture := codexPaneCapture{
-		content:    f.captures[index],
 		alive:      alive,
-		composer:   state,
 		generation: generation,
 	}
 	capture.rollout = fakeCodexRollout(generation)
@@ -137,15 +122,13 @@ func (f *fakeCodexInputIO) probeSubmissionReadiness(
 	current := f.capture(sessionID)
 	if !current.alive ||
 		current.generation != generation ||
-		!current.rollout.equal(rollout) ||
-		current.composer != codexComposerEmpty ||
-		!isAgentInputReady("codex", current.content) {
-		return fmt.Errorf("%w: target composer is not ready", errCodexResumeOnPaneChange)
+		!current.rollout.equal(rollout) {
+		return fmt.Errorf("%w: target generation is not ready", errCodexResumeOnPaneChange)
 	}
 	return nil
 }
 
-func (f *fakeCodexInputIO) submitIfEmpty(
+func (f *fakeCodexInputIO) submitPrepared(
 	sessionID string,
 	generation string,
 	rollout codexRolloutIdentity,
@@ -158,9 +141,7 @@ func (f *fakeCodexInputIO) submitIfEmpty(
 		current := f.capture(sessionID)
 		if !current.alive ||
 			current.generation != generation ||
-			current.composer != codexComposerEmpty ||
-			!current.rollout.equal(rollout) ||
-			!isAgentInputReady("codex", current.content) {
+			!current.rollout.equal(rollout) {
 			return fmt.Errorf("%w: foreign content was preserved", errCodexMutationConflict)
 		}
 	}
@@ -192,14 +173,6 @@ func (f *fakeCodexInputIO) submitIfEmpty(
 		default:
 		}
 	}
-	return nil
-}
-
-func (f *fakeCodexInputIO) advanceStartup(string, string) error {
-	if f.enterErr != nil {
-		return f.enterErr
-	}
-	f.enters++
 	return nil
 }
 
@@ -323,9 +296,11 @@ func TestCodexPaneInputLockExcludesForeignKeysUntilOwnedMutation(t *testing.T) {
 	}
 }
 
-func TestCodexAtomicSubmitUsesOnePasteEnterCommandQueue(t *testing.T) {
+func TestCodexAtomicSubmitUsesOneClearPasteEnterCommandQueue(t *testing.T) {
 	got := codexAtomicSubmitCommand("zen-buffer", "%42")
 	want := []string{
+		"send-keys", "-t", "%42", "C-u",
+		";",
 		"paste-buffer", "-p", "-b", "zen-buffer", "-t", "%42",
 		";", "send-keys", "-t", "%42", "Enter",
 		";", "delete-buffer", "-b", "zen-buffer",
@@ -335,6 +310,22 @@ func TestCodexAtomicSubmitUsesOnePasteEnterCommandQueue(t *testing.T) {
 	}
 	if strings.Count(strings.Join(got, "\x00"), "Enter") != 1 {
 		t.Fatalf("atomic submit must contain exactly one Enter: %#v", got)
+	}
+	if strings.Count(strings.Join(got, "\x00"), "C-u") != 1 {
+		t.Fatalf("atomic submit must contain exactly one draft clear: %#v", got)
+	}
+}
+
+func TestSubmitCodexInputExplicitlyReplacesManualTerminalDraft(t *testing.T) {
+	body := "Chat is authoritative over this unsent Terminal draft\nUnicode 终"
+	manualDraft := codexReadyPane("") + "\n› manually composed but unsent Terminal text\n"
+	io := &fakeCodexInputIO{captures: []string{manualDraft, manualDraft}}
+
+	if err := submitCodexInput(io, "agent:@manual-draft", body, testCodexSubmitConfig()); err != nil {
+		t.Fatalf("submit authoritative Chat input: %v", err)
+	}
+	if len(io.pastes) != 1 || io.pastes[0] != body || io.enters != 1 {
+		t.Fatalf("manual draft replacement pastes=%#v enters=%d", io.pastes, io.enters)
 	}
 }
 
@@ -458,48 +449,6 @@ func TestCodexPaneInputLockHelperCrashRecoversWithoutReplay(t *testing.T) {
 	final, err := exec.Command("tmux", "capture-pane", "-p", "-t", sessionID).Output()
 	if err != nil || !bytes.Equal(before, final) {
 		t.Fatalf("reconciliation replayed mutation output=%q err=%v", final, err)
-	}
-}
-
-func TestCodexCaptureIncludesEditableRowsBelowCursor(t *testing.T) {
-	const foreignSuffix = "ROUND6_FOREIGN_SUFFIX_BELOW_CURSOR_终_Ω"
-	binDir := t.TempDir()
-	tmuxPath := filepath.Join(binDir, "tmux")
-	script := fmt.Sprintf(`#!/bin/sh
-case "$1" in
-  display-message)
-    printf '0\tround6-deterministic\t1785682000\t@1\t%%%%1\t%d\tcodex\t120\t0\t\t\t\t0\t0\t/dev/null\t36\t1\n'
-    ;;
-  capture-pane)
-    bounded=0
-    for arg in "$@"; do
-      if [ "$arg" = "-E" ]; then
-        bounded=1
-      fi
-    done
-    if [ "$bounded" = "1" ]; then
-      printf '│ >_ OpenAI Codex (round6 deterministic capture) │\n› ROUND6_EXACT_OWNED_INSTRUCTION'
-    else
-      printf '│ >_ OpenAI Codex (round6 deterministic capture) │\n› ROUND6_EXACT_OWNED_INSTRUCTION\n  %s\n\n  \033[38;2;246;226;183mgpt-5.6-sol xhigh\033[2m\033[39m · \033[0m\033[38;2;171;223;167m~/workspace\033[0m\n'
-    fi
-    ;;
-esac
-exit 0
-`, os.Getpid(), foreignSuffix)
-	if err := os.WriteFile(tmuxPath, []byte(script), 0o755); err != nil {
-		t.Fatalf("write deterministic tmux: %v", err)
-	}
-	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
-
-	capture := (realCodexInputIO{}).capture("round6-deterministic:@1")
-	if !capture.alive || capture.generation == "" {
-		t.Fatalf("deterministic capture = %#v", capture)
-	}
-	if !strings.Contains(capture.content, foreignSuffix) {
-		t.Fatalf(
-			"complete editable composer omitted the row below the cursor: %q",
-			capture.content,
-		)
 	}
 }
 
@@ -882,18 +831,13 @@ func TestCodexStructuredSubmitPreservesCallerOwnedFinalLineEnding(t *testing.T) 
 
 func TestWatcherStructuredSubmitPreservesExactFinalLineEndingInJournal(t *testing.T) {
 	payload := "alpha\r\nβ\n"
-	ready := codexReadyPane("")
 	io := &fakeCodexInputIO{}
 	io.captureFn = func(current *fakeCodexInputIO) codexPaneCapture {
 		capture := codexPaneCapture{
-			content:    ready,
 			alive:      true,
-			composer:   codexComposerEmpty,
 			generation: "generation-structured-final-lf",
 		}
 		if len(current.pastes) > 0 {
-			capture.content = ready + "\n› " + current.pastes[0] + "\n"
-			capture.composer = codexComposerHasDraft
 		}
 		return capture
 	}
@@ -944,24 +888,16 @@ func TestCodexCoordinatorSubmitsExactLongUnicodeAndKeepsDurableSpool(t *testing.
 	if len(body) <= codexPayloadSpoolThreshold {
 		t.Fatalf("test payload length=%d must exceed spool threshold=%d", len(body), codexPayloadSpoolThreshold)
 	}
-	ready := codexReadyPane("")
 	io := &fakeCodexInputIO{}
 	io.captureFn = func(current *fakeCodexInputIO) codexPaneCapture {
 		capture := codexPaneCapture{
-			content:    ready,
 			alive:      true,
-			composer:   codexComposerEmpty,
 			generation: "generation-envelope",
 		}
 		if len(current.pastes) == 0 {
 			return capture
 		}
-		draft := ready + "\n› " + current.pastes[0] + "\n"
-		capture.content = draft
-		capture.composer = codexComposerHasDraft
 		if current.enters > 0 {
-			capture.content = draft + "\n• Working (1s • esc to interrupt)\n"
-			capture.composer = codexComposerEmpty
 		}
 		return capture
 	}
@@ -1024,21 +960,14 @@ func TestCodexCoordinatorSubmitsExactLongUnicodeAndKeepsDurableSpool(t *testing.
 
 func TestPersistentCodexCoordinatorUsesDirectPathForObservableShortPrompt(t *testing.T) {
 	body := "short exact Unicode 中文"
-	ready := codexReadyPane("")
 	io := &fakeCodexInputIO{}
 	io.captureFn = func(current *fakeCodexInputIO) codexPaneCapture {
 		capture := codexPaneCapture{
-			content:    ready,
 			alive:      true,
-			composer:   codexComposerEmpty,
 			generation: "generation-short-direct",
 		}
 		if len(current.pastes) > 0 {
-			capture.content = ready + "\n› " + current.pastes[0] + "\n"
-			capture.composer = codexComposerHasDraft
 			if current.enters > 0 {
-				capture.content += "\n• Working (1s • esc to interrupt)\n"
-				capture.composer = codexComposerEmpty
 			}
 		}
 		return capture
@@ -1100,23 +1029,16 @@ esac
 				receipt    = "event-stable-id:claim-stable-token"
 				generation = "generation-receipt"
 			)
-			ready := codexReadyPane("")
 			io := &fakeCodexInputIO{
 				clock: time.Date(2026, 8, 3, 10, 0, 0, 0, time.UTC),
 			}
 			io.captureFn = func(current *fakeCodexInputIO) codexPaneCapture {
 				capture := codexPaneCapture{
-					content:    ready,
 					alive:      true,
-					composer:   codexComposerEmpty,
 					generation: generation,
 				}
 				if len(current.pastes) > 0 {
-					capture.content = ready + "\n› " + current.pastes[0] + "\n"
-					capture.composer = codexComposerHasDraft
 					if current.enters > 0 {
-						capture.content += "\n• Working (1s • esc to interrupt)\n"
-						capture.composer = codexComposerEmpty
 					}
 				}
 				return capture
@@ -1224,23 +1146,16 @@ esac
 		generation = "generation-metadata-crash"
 	)
 	body := "long actionable Work Event\n" + strings.Repeat("receipt-bound-envelope-", 20)
-	ready := codexReadyPane("")
 	io := &fakeCodexInputIO{
 		clock: time.Date(2026, 8, 3, 10, 0, 0, 0, time.UTC),
 	}
 	io.captureFn = func(current *fakeCodexInputIO) codexPaneCapture {
 		capture := codexPaneCapture{
-			content:    ready,
 			alive:      true,
-			composer:   codexComposerEmpty,
 			generation: generation,
 		}
 		if len(current.pastes) > 0 {
-			capture.content = ready + "\n› " + current.pastes[0] + "\n"
-			capture.composer = codexComposerHasDraft
 			if current.enters > 0 {
-				capture.content += "\n• Working (1s • esc to interrupt)\n"
-				capture.composer = codexComposerEmpty
 			}
 		}
 		return capture
@@ -1281,61 +1196,15 @@ esac
 	}
 }
 
-func TestCodexComposerStateUsesProviderStyling(t *testing.T) {
-	empty := "\x1b[1m›\x1b[0m \x1b[2mSummarize recent commits\n"
-	draft := empty +
-		"\x1b[1m›\x1b[0m exact Unicode 中文 first line\n" +
-		"  exact second line\n"
-	coloredDraft := empty +
-		"\x1b[1m›\x1b[0m \x1b[38;2;12;34;56mcolored draft\n"
-
-	if got := codexComposerStateFromStyledPane(empty); got != codexComposerEmpty {
-		t.Fatalf("empty composer state = %v, want empty", got)
-	}
-	if got := codexComposerStateFromStyledPane(draft); got != codexComposerHasDraft {
-		t.Fatalf("draft composer state = %v, want has-draft", got)
-	}
-	if got := codexComposerStateFromStyledPane(coloredDraft); got != codexComposerHasDraft {
-		t.Fatalf("colored draft composer state = %v, want has-draft", got)
-	}
-	if got := stripCodexTerminalEscapes(draft); strings.ContainsRune(got, '\x1b') ||
-		!strings.Contains(got, "exact Unicode 中文 first line") {
-		t.Fatalf("stripped pane = %q", got)
-	}
-}
-
-func TestSubmitCodexInputPreservesForeignDraftAtEntry(t *testing.T) {
-	body := "replacement line one\nreplacement Unicode 第二行"
-	ready := codexReadyPane("")
-	stale := ready + "\n› stale draft that must never be appended\n"
-	io := &fakeCodexInputIO{
-		captures: []string{stale},
-		states:   []codexComposerState{codexComposerHasDraft},
-	}
-
-	err := submitCodexInput(io, "agent:@stale", body, testCodexSubmitConfig())
-	if err == nil || !strings.Contains(err.Error(), "occupied") {
-		t.Fatalf("error = %v, want occupied composer conflict", err)
-	}
-	if len(io.pastes) != 0 || io.enters != 0 {
-		t.Fatalf("foreign draft mutated: pastes=%#v enters=%d", io.pastes, io.enters)
-	}
-}
-
 func TestCodexCoordinatorRequiresDurableSubmitIntentBeforeAtomicMutation(t *testing.T) {
 	body := "journal-before-enter"
-	ready := codexReadyPane("")
 	io := &fakeCodexInputIO{}
 	io.captureFn = func(current *fakeCodexInputIO) codexPaneCapture {
 		capture := codexPaneCapture{
-			content:    ready,
 			alive:      true,
-			composer:   codexComposerEmpty,
 			generation: "generation-enter-intent",
 		}
 		if len(current.pastes) > 0 {
-			capture.content = ready + "\n› " + current.pastes[0] + "\n"
-			capture.composer = codexComposerHasDraft
 		}
 		return capture
 	}
@@ -1418,13 +1287,10 @@ func TestCodexCoordinatorPersistentPTYContentionReturnsPendingThenResumesSameRec
 		body      = "one durable payload behind persistent PTY contention"
 		receipt   = "chat-request-persistent-pty"
 	)
-	ready := codexReadyPane("")
 	io := &fakeCodexInputIO{}
 	io.captureFn = func(*fakeCodexInputIO) codexPaneCapture {
 		return codexPaneCapture{
-			content:    ready,
 			alive:      true,
-			composer:   codexComposerEmpty,
 			generation: "generation-persistent-pty",
 		}
 	}
@@ -1471,118 +1337,6 @@ func TestCodexCoordinatorPersistentPTYContentionReturnsPendingThenResumesSameRec
 	}
 }
 
-func TestCodexCoordinatorForeignDraftSurvivesRestartAndResumesSameReceipt(t *testing.T) {
-	const (
-		sessionID  = "agent:@foreign-restart"
-		generation = "generation-foreign-restart"
-		body       = "durable input queued behind a known foreign draft"
-		receipt    = "chat-request-foreign-restart"
-	)
-	ready := codexReadyPane("")
-	foreign := ready + "\n› user-owned draft\n"
-	stateDir := t.TempDir()
-	first, err := newPersistentCodexInputCoordinator(stateDir)
-	if err != nil {
-		t.Fatalf("create first persistent coordinator: %v", err)
-	}
-	blockedIO := &fakeCodexInputIO{
-		captures:    []string{foreign},
-		states:      []codexComposerState{codexComposerHasDraft},
-		generations: []string{generation},
-		clock:       time.Now().UTC(),
-	}
-	if err := first.submitWithReceipt(blockedIO, sessionID, body, receipt, testCodexSubmitConfig()); !IsInputPending(err) {
-		t.Fatalf("foreign draft error = %v, want durable pending", err)
-	}
-	if len(blockedIO.pastes) != 0 || blockedIO.enters != 0 {
-		t.Fatalf("foreign draft mutated: pastes=%#v enters=%d", blockedIO.pastes, blockedIO.enters)
-	}
-	before, found, err := first.store.Receipt(sessionID, generation, receipt)
-	if err != nil || !found || before.Phase != codexTransactionPrepared {
-		t.Fatalf("pending record found=%v err=%v record=%#v", found, err, before)
-	}
-
-	restarted, err := newPersistentCodexInputCoordinator(stateDir)
-	if err != nil {
-		t.Fatalf("create restarted coordinator: %v", err)
-	}
-	clearIO := &fakeCodexInputIO{
-		captures:    []string{ready, ready, ready},
-		states:      []codexComposerState{codexComposerEmpty},
-		generations: []string{generation},
-		clock:       blockedIO.clock,
-	}
-	if err := restarted.submitWithReceipt(clearIO, sessionID, body, receipt, testCodexSubmitConfig()); err != nil {
-		t.Fatalf("restart resume: %v", err)
-	}
-	after, found, err := restarted.store.Receipt(sessionID, generation, receipt)
-	if err != nil || !found {
-		t.Fatalf("settled record found=%v err=%v", found, err)
-	}
-	if after.TransactionID != before.TransactionID || after.Phase != codexTransactionConfirmed {
-		t.Fatalf("after restart record=%#v, want same confirmed transaction %s", after, before.TransactionID)
-	}
-	if len(clearIO.pastes) != 1 || clearIO.pastes[0] != body || clearIO.enters != 1 {
-		t.Fatalf("restart actions pastes=%#v enters=%d", clearIO.pastes, clearIO.enters)
-	}
-}
-
-func TestCodexCoordinatorUnchangedForeignDraftDoesNotRewritePendingState(t *testing.T) {
-	const (
-		sessionID  = "agent:@foreign-unchanged"
-		generation = "generation-foreign-unchanged"
-		body       = "keep this exact durable payload without rewrite churn"
-		receipt    = "chat-request-foreign-unchanged"
-	)
-	ready := codexReadyPane("")
-	foreign := ready + "\n› user-owned draft remains unchanged\n"
-	memory := newMemoryCodexTransactionStore()
-	store := &countingCodexStore{codexTransactionStore: memory}
-	coordinator := newCodexInputCoordinatorWithStore(store)
-	io := &fakeCodexInputIO{
-		captures:    []string{foreign},
-		states:      []codexComposerState{codexComposerHasDraft},
-		generations: []string{generation},
-		clock:       time.Now().UTC(),
-	}
-
-	if err := coordinator.submitWithReceipt(io, sessionID, body, receipt, testCodexSubmitConfig()); !IsInputPending(err) {
-		t.Fatalf("seed foreign-draft pending transaction: %v", err)
-	}
-	initialSaves := store.saves.Load()
-	if initialSaves != 1 {
-		t.Fatalf("initial durable saves = %d, want one prepared owner", initialSaves)
-	}
-	before, found, err := store.Receipt(sessionID, generation, receipt)
-	if err != nil || !found {
-		t.Fatalf("read initial receipt found=%v err=%v", found, err)
-	}
-
-	for range 5 {
-		if err := coordinator.submitWithReceipt(io, sessionID, body, receipt, testCodexSubmitConfig()); !IsInputPending(err) {
-			t.Fatalf("unchanged foreign-draft retry: %v", err)
-		}
-	}
-	after, found, err := store.Receipt(sessionID, generation, receipt)
-	if err != nil || !found {
-		t.Fatalf("read unchanged receipt found=%v err=%v", found, err)
-	}
-	if got := store.saves.Load(); got != initialSaves {
-		t.Fatalf("durable saves under unchanged foreign draft = %d, want unchanged %d", got, initialSaves)
-	}
-	if after != before {
-		t.Fatalf("pending record changed under identical contention:\nbefore=%#v\nafter=%#v", before, after)
-	}
-	if len(io.pastes) != 0 || io.enters != 0 || io.submitAttempts != 0 {
-		t.Fatalf(
-			"foreign draft reached mutation: attempts=%d pastes=%#v enters=%d",
-			io.submitAttempts,
-			io.pastes,
-			io.enters,
-		)
-	}
-}
-
 func TestCodexCoordinatorConcurrentResumeOfPendingReceiptSubmitsExactlyOnce(t *testing.T) {
 	const (
 		sessionID  = "agent:@pending-concurrent"
@@ -1591,13 +1345,15 @@ func TestCodexCoordinatorConcurrentResumeOfPendingReceiptSubmitsExactlyOnce(t *t
 		receipt    = "chat-request-pending-concurrent"
 	)
 	ready := codexReadyPane("")
-	foreign := ready + "\n› preserve me\n"
 	store := newMemoryCodexTransactionStore()
 	coordinator := newCodexInputCoordinatorWithStore(store)
 	blockedIO := &fakeCodexInputIO{
-		captures:    []string{foreign},
-		states:      []codexComposerState{codexComposerHasDraft},
+		captures:    []string{ready},
 		generations: []string{generation},
+		submitErrors: []error{fmt.Errorf(
+			"%w: target application has unconsumed PTY input",
+			errCodexMutationConflict,
+		)},
 	}
 	if err := coordinator.submitWithReceipt(blockedIO, sessionID, body, receipt, testCodexSubmitConfig()); !IsInputPending(err) {
 		t.Fatalf("seed pending transaction: %v", err)
@@ -1605,9 +1361,7 @@ func TestCodexCoordinatorConcurrentResumeOfPendingReceiptSubmitsExactlyOnce(t *t
 	clearIO := &fakeCodexInputIO{}
 	clearIO.captureFn = func(*fakeCodexInputIO) codexPaneCapture {
 		return codexPaneCapture{
-			content:    ready,
 			alive:      true,
-			composer:   codexComposerEmpty,
 			generation: generation,
 		}
 	}
@@ -1648,7 +1402,6 @@ func TestWatcherPendingDriverResumesSolePreparedReceiptExactlyOnce(t *testing.T)
 		body       = "the durable driver resumes this exact payload"
 		receipt    = "chat-request-pending-driver"
 	)
-	ready := codexReadyPane("")
 	store := newMemoryCodexTransactionStore()
 	record := codexTransactionRecord{
 		SchemaVersion:     codexTransactionSchemaVersion,
@@ -1673,9 +1426,7 @@ func TestWatcherPendingDriverResumesSolePreparedReceiptExactlyOnce(t *testing.T)
 	io := &fakeCodexInputIO{submitted: submitted}
 	io.captureFn = func(*fakeCodexInputIO) codexPaneCapture {
 		return codexPaneCapture{
-			content:    ready,
 			alive:      true,
-			composer:   codexComposerEmpty,
 			generation: generation,
 		}
 	}
@@ -1759,7 +1510,6 @@ func TestWatcherPendingDriverPermanentPTYContentionUsesOnlyBoundedReadOnlyProbes
 	submitted := make(chan struct{}, 1)
 	io := &fakeCodexInputIO{
 		captures:    []string{codexReadyPane("")},
-		states:      []codexComposerState{codexComposerEmpty},
 		generations: []string{generation},
 		submitted:   submitted,
 	}
@@ -1842,13 +1592,10 @@ func TestCodexCoordinatorSerializesConcurrentProducersAndDedupesReceipt(t *testi
 		payload   = "one receipt-bound payload from concurrent Zen producers"
 		receipt   = "event-concurrent:claim-stable"
 	)
-	ready := codexReadyPane("")
 	io := &fakeCodexInputIO{}
 	io.captureFn = func(*fakeCodexInputIO) codexPaneCapture {
 		return codexPaneCapture{
-			content:    ready,
 			alive:      true,
-			composer:   codexComposerEmpty,
 			generation: "generation-concurrent",
 		}
 	}
@@ -1884,13 +1631,10 @@ func TestCodexCoordinatorSerializesDistinctConcurrentPayloadsWithoutInterleaving
 		"first exact concurrent payload\nwith its own trailing line\n",
 		"第二个并发 payload 保持完整 🧭\n\n",
 	}
-	ready := codexReadyPane("• Working (1s • esc to interrupt)")
 	io := &fakeCodexInputIO{}
 	io.captureFn = func(*fakeCodexInputIO) codexPaneCapture {
 		return codexPaneCapture{
-			content:    ready,
 			alive:      true,
-			composer:   codexComposerEmpty,
 			generation: "generation-concurrent-distinct",
 		}
 	}
@@ -2005,85 +1749,6 @@ func TestSubmitCodexInputAcceptsComposerWhileSlowOptionalMCPLaterSucceeds(t *tes
 	}
 }
 
-func TestSubmitCodexInputExtendsOnlyForFiniteRecognizedStartupProgress(t *testing.T) {
-	body := "execute unique marker ZEN_PROGRESS_13579"
-	splash := "Welcome to Codex\n"
-	trust := "│ >_ OpenAI Codex │\nDo you trust the contents of this directory?\n› 1. Yes, continue\n  Press enter to continue\n"
-	loading := "│ >_ OpenAI Codex │\n│ model: loading │\n› Write tests for @filename\n"
-	ready := codexReadyPane("")
-	draft := ready + "\n› " + body + "\n"
-	submitted := ready + "\n› " + body + "\n\n• Working (1s • esc to interrupt)\n"
-	io := &fakeCodexInputIO{captures: []string{splash, splash, trust, loading, loading, ready, ready, draft, draft, submitted}}
-	cfg := testCodexSubmitConfig()
-	cfg.startupStallTimeout = 2 * time.Second
-
-	if err := submitCodexInput(io, "agent:@1", body, cfg); err != nil {
-		t.Fatalf("submitCodexInput returned error after recognized progress: %v", err)
-	}
-	if elapsed := io.now().Sub(time.Time{}); elapsed <= cfg.startupStallTimeout {
-		t.Fatalf("elapsed = %s, want proof that recognized stage progress extended the initial stall window", elapsed)
-	}
-	if len(io.pastes) != 1 || io.enters != 2 {
-		t.Fatalf("pastes=%d enters=%d, want startup Enter plus exactly one submission Enter", len(io.pastes), io.enters)
-	}
-}
-
-func TestSubmitCodexInputFailsBoundedlyWhenCoreModelStalls(t *testing.T) {
-	loading := "│ >_ OpenAI Codex │\n│ model: loading │\n› Write tests for @filename\n"
-	io := &fakeCodexInputIO{captures: []string{loading}}
-	cfg := testCodexSubmitConfig()
-	cfg.startupStallTimeout = 2 * time.Second
-
-	err := submitCodexInput(io, "agent:@1", "must not be pasted", cfg)
-	if err == nil || !strings.Contains(err.Error(), "composer") {
-		t.Fatalf("error = %v, want bounded composer stall failure", err)
-	}
-	if len(io.pastes) != 0 || io.enters != 0 {
-		t.Fatalf("pastes=%d enters=%d, stalled core model must receive no task input", len(io.pastes), io.enters)
-	}
-	if elapsed := io.now().Sub(time.Time{}); elapsed > 2*cfg.startupStallTimeout {
-		t.Fatalf("core model stall took %s; one recognized model-loading transition must remain bounded", elapsed)
-	}
-}
-
-func TestSubmitCodexInputAppliesOneBoundedTotalDeadline(t *testing.T) {
-	loading := "│ >_ OpenAI Codex │\n│ model: loading │\n› Write tests for @filename\n"
-	io := &fakeCodexInputIO{captures: []string{loading}}
-	cfg := testCodexSubmitConfig()
-	cfg.startupStallTimeout = 30 * time.Second
-	cfg.totalTimeout = 5 * time.Second
-	cfg.confirmationReserve = time.Second
-
-	err := submitCodexInput(io, "agent:@total-timeout", "must remain unsent", cfg)
-	if err == nil || !strings.Contains(err.Error(), "composer") {
-		t.Fatalf("error = %v, want bounded composer failure", err)
-	}
-	if elapsed := io.now().Sub(time.Time{}); elapsed > cfg.totalTimeout-cfg.confirmationReserve {
-		t.Fatalf("transaction elapsed = %s, exceeded reserved pre-submit total deadline %s", elapsed, cfg.totalTimeout-cfg.confirmationReserve)
-	}
-	if len(io.pastes) != 0 || io.enters != 0 {
-		t.Fatalf("pastes=%d enters=%d, want no input actions", len(io.pastes), io.enters)
-	}
-}
-
-func TestSubmitCodexInputFailsBoundedlyWhenComposerNeverAppears(t *testing.T) {
-	loadedWithoutComposer := "│ >_ OpenAI Codex │\n│ model: gpt-5.6-sol │\nStarting terminal UI\n"
-	io := &fakeCodexInputIO{captures: []string{loadedWithoutComposer}}
-	cfg := testCodexSubmitConfig()
-	cfg.startupStallTimeout = 2 * time.Second
-
-	err := submitCodexInput(io, "agent:@1", "must not be pasted", cfg)
-	if err == nil || !strings.Contains(err.Error(), "no recognized startup progress") {
-		t.Fatalf("error = %v, want explicit no-progress failure", err)
-	}
-	if len(io.pastes) != 0 || io.enters != 0 {
-		t.Fatalf("pastes=%d enters=%d, missing composer must receive no task input", len(io.pastes), io.enters)
-	}
-	if elapsed := io.now().Sub(time.Time{}); elapsed > 2*cfg.startupStallTimeout {
-		t.Fatalf("missing composer took %s; finite identity progress must remain bounded", elapsed)
-	}
-}
-
 func TestSubmitCodexInputFailsImmediatelyForDeadPane(t *testing.T) {
 	io := &fakeCodexInputIO{
 		captures: []string{"│ >_ OpenAI Codex │\n│ model: loading │\n"},
@@ -2117,22 +1782,6 @@ func TestSubmitCodexInputAfterLongTurnWithoutHeader(t *testing.T) {
 	}
 	if io.enters != 1 {
 		t.Fatalf("Enter count = %d, want 1", io.enters)
-	}
-}
-
-func TestSubmitCodexInputAdvancesStartupTrustBeforePasting(t *testing.T) {
-	body := "execute unique marker ZEN_TRUST_12345"
-	trust := "│ >_ OpenAI Codex │\nDo you trust the contents of this directory?\n› 1. Yes, continue\n  Press enter to continue\n"
-	ready := codexReadyPane("")
-	draft := ready + "\n› " + body + "\n"
-	submitted := ready + "\n› " + body + "\n\n• Working (1s • esc to interrupt)\n"
-	io := &fakeCodexInputIO{captures: []string{trust, ready, ready, draft, draft, submitted}}
-
-	if err := submitCodexInput(io, "agent:@1", body, testCodexSubmitConfig()); err != nil {
-		t.Fatalf("submitCodexInput returned error: %v", err)
-	}
-	if len(io.pastes) != 1 || io.enters != 2 {
-		t.Fatalf("pastes=%d enters=%d, want startup Enter plus submit Enter", len(io.pastes), io.enters)
 	}
 }
 
@@ -2242,21 +1891,16 @@ func TestCodexCoordinatorNeverReplaysAmbiguousEnter(t *testing.T) {
 func TestCodexCoordinatorAmbiguitySurvivesCoordinatorRecreation(t *testing.T) {
 	body := "durable ambiguous payload ZEN_RESTART_75319"
 	receipt := "event-restart:claim-restart"
-	ready := codexReadyPane("")
 	io := &fakeCodexInputIO{
 		suppressPersistence: true,
 		clock:               time.Date(2026, 8, 3, 10, 0, 0, 0, time.UTC),
 	}
 	io.captureFn = func(current *fakeCodexInputIO) codexPaneCapture {
 		capture := codexPaneCapture{
-			content:    ready,
 			alive:      true,
-			composer:   codexComposerEmpty,
 			generation: "generation-restart",
 		}
 		if len(current.pastes) > 0 {
-			capture.content = ready + "\n› " + current.pastes[0] + "\n"
-			capture.composer = codexComposerHasDraft
 		}
 		return capture
 	}
@@ -2310,7 +1954,6 @@ func TestCodexCoordinatorAmbiguitySurvivesCoordinatorRecreation(t *testing.T) {
 
 func TestCodexCoordinatorReconcilesOnlyTargetRollout(t *testing.T) {
 	body := "target-rollout-bound instruction"
-	ready := codexReadyPane("")
 	rolloutA := codexRolloutIdentity{
 		Path:      "/fake/codex/sessions/rollout-A.jsonl",
 		SessionID: "session-A",
@@ -2327,20 +1970,13 @@ func TestCodexCoordinatorReconcilesOnlyTargetRollout(t *testing.T) {
 	}
 	io.captureFn = func(current *fakeCodexInputIO) codexPaneCapture {
 		capture := codexPaneCapture{
-			content:    ready,
 			alive:      true,
-			composer:   codexComposerEmpty,
 			generation: "generation-target-rollout",
 			rollout:    rolloutA,
 		}
 		if len(current.pastes) > 0 {
-			capture.composer = codexComposerHasDraft
 			if current.enters == 0 {
-				capture.content = ready + "\n› " + current.pastes[0] +
-					"\n\n  gpt-5.6 medium · /tmp\n"
 			} else {
-				capture.content = ready + "\n› " + current.pastes[0] +
-					"\n\n• Working (generic progress only)\n"
 			}
 		}
 		return capture
@@ -2458,18 +2094,13 @@ func TestWatcherPublicCodexMutationsRejectAmbiguousOwner(t *testing.T) {
 func TestCodexCoordinatorOldGenerationDoesNotBlockReusedSessionID(t *testing.T) {
 	oldBody := "old generation ambiguous ZEN_OLD_13579"
 	newBody := "new generation independent ZEN_NEW_24680"
-	ready := codexReadyPane("")
 	io := &fakeCodexInputIO{suppressPersistence: true}
 	io.captureFn = func(current *fakeCodexInputIO) codexPaneCapture {
 		capture := codexPaneCapture{
-			content:    ready,
 			alive:      true,
-			composer:   codexComposerEmpty,
 			generation: "generation-old",
 		}
 		if len(current.pastes) > 0 {
-			capture.content = ready + "\n› " + current.pastes[0] + "\n"
-			capture.composer = codexComposerHasDraft
 		}
 		return capture
 	}
@@ -2488,18 +2119,11 @@ func TestCodexCoordinatorOldGenerationDoesNotBlockReusedSessionID(t *testing.T) 
 	io.suppressPersistence = false
 	io.captureFn = func(current *fakeCodexInputIO) codexPaneCapture {
 		capture := codexPaneCapture{
-			content:    ready,
 			alive:      true,
-			composer:   codexComposerEmpty,
 			generation: "generation-new",
 		}
 		if len(current.pastes) > oldPasteCount {
-			draft := ready + "\n› " + current.pastes[len(current.pastes)-1] + "\n"
-			capture.content = draft
-			capture.composer = codexComposerHasDraft
 			if current.enters > 1 {
-				capture.content = draft + "\n• Working (1s • esc to interrupt)\n"
-				capture.composer = codexComposerEmpty
 			}
 		}
 		return capture

@@ -12,19 +12,19 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
-	"unicode"
 	"unicode/utf8"
 )
 
 // Codex input is one generation-bound transaction. The exact user payload is
-// persisted before mutation, then paste and Enter are submitted in one tmux
-// command queue after proving a stable, empty provider composer. Transaction
-// identity stays in Zen's journal and is never added to model-visible input.
+// persisted before mutation, then manual draft replacement, paste and Enter
+// are submitted in one tmux command queue. Authorization rests only on Zen's
+// generation-bound Session owner and PTY write ordering; rendered provider UI
+// is presentation, never part of the send protocol. Transaction identity stays
+// in Zen's journal and is never added to model-visible input.
 type codexInputIO interface {
 	capture(sessionID string) codexPaneCapture
 	probeSubmissionReadiness(sessionID, generation string, rollout codexRolloutIdentity) error
-	submitIfEmpty(sessionID, generation string, rollout codexRolloutIdentity, transactionID, body string) error
-	advanceStartup(sessionID, generation string) error
+	submitPrepared(sessionID, generation string, rollout codexRolloutIdentity, transactionID, body string) error
 	releaseStaleInputSuppression(sessionID string, suppression codexPaneInputSuppression) error
 	persistedUserMessage(rollout codexRolloutIdentity, payload string, notBefore time.Time) (bool, error)
 	sleep(time.Duration)
@@ -55,18 +55,8 @@ var codexInputBufferSequence atomic.Uint64
 
 const codexPayloadSpoolThreshold = 256
 
-type codexComposerState uint8
-
-const (
-	codexComposerUnknown codexComposerState = iota
-	codexComposerEmpty
-	codexComposerHasDraft
-)
-
 type codexPaneCapture struct {
-	content     string
 	alive       bool
-	composer    codexComposerState
 	generation  string
 	rollout     codexRolloutIdentity
 	inputOff    bool
@@ -92,38 +82,11 @@ func (identity codexRolloutIdentity) equal(other codexRolloutIdentity) bool {
 	return filepath.Clean(identity.Path) == filepath.Clean(other.Path)
 }
 
-type codexStartupProgress uint8
-
-const (
-	codexStartupSawIdentity codexStartupProgress = 1 << iota
-	codexStartupSawModelLoading
-	codexStartupSawComposer
-)
-
-func (progress *codexStartupProgress) observe(content string) bool {
-	current := latestCodexPaneContent(content)
-	var observed codexStartupProgress
-	if strings.Contains(strings.ToLower(current), "openai codex") {
-		observed |= codexStartupSawIdentity
-	}
-	if codexModelLoadingRe.MatchString(current) {
-		observed |= codexStartupSawModelLoading
-	}
-	if codexInputPromptRe.MatchString(current) &&
-		!codexModelLoadingRe.MatchString(current) &&
-		!codexStartupContinueRe.MatchString(current) {
-		observed |= codexStartupSawComposer
-	}
-	advanced := observed &^ *progress
-	*progress |= observed
-	return advanced != 0
-}
-
 type realCodexInputIO struct {
 	targetGuard func() error
 }
 
-var errCodexMutationConflict = errors.New("Codex composer changed at the conditional mutation point")
+var errCodexMutationConflict = errors.New("Codex target changed at the conditional mutation point")
 var errCodexResumeOnPaneChange = errors.New("Codex pending input requires a pane change before resumption")
 
 // InputPendingError means Zen durably owns the exact input transaction, but
@@ -447,29 +410,12 @@ func (io realCodexInputIO) capture(sessionID string) codexPaneCapture {
 	if !before.alive || before.generation == "" {
 		return codexPaneCapture{}
 	}
-	out, err := exec.Command(
-		"tmux",
-		"capture-pane",
-		"-e",
-		"-J",
-		"-t",
-		sessionID,
-		"-p",
-		"-S",
-		"-1000",
-	).Output()
-	if err != nil {
-		return codexPaneCapture{}
-	}
 	after := readCodexTmuxPaneMetadata(sessionID)
 	if !after.alive || before.generation != after.generation {
 		return codexPaneCapture{}
 	}
-	styled := string(out)
 	return codexPaneCapture{
-		content:     stripCodexTerminalEscapes(styled),
 		alive:       true,
-		composer:    codexComposerStateFromStyledPane(styled),
 		generation:  before.generation,
 		rollout:     findCodexRolloutIdentity(after.panePID, after.paneID),
 		inputOff:    after.inputOff,
@@ -492,10 +438,8 @@ func (io realCodexInputIO) probeSubmissionReadiness(
 	if !current.rollout.equal(rollout) {
 		return fmt.Errorf("%w: target Codex rollout changed", errCodexResumeOnPaneChange)
 	}
-	if current.inputOff ||
-		current.composer != codexComposerEmpty ||
-		!isAgentInputReady("codex", current.content) {
-		return fmt.Errorf("%w: target Codex composer is not ready and empty", errCodexResumeOnPaneChange)
+	if current.inputOff {
+		return fmt.Errorf("%w: target Codex input is owned by another mutation", errCodexResumeOnPaneChange)
 	}
 	if err := ensureCodexPaneInputConsumed(readCodexTmuxPaneMetadata(sessionID)); err != nil {
 		return err
@@ -503,7 +447,7 @@ func (io realCodexInputIO) probeSubmissionReadiness(
 	return nil
 }
 
-func (io realCodexInputIO) submitIfEmpty(
+func (io realCodexInputIO) submitPrepared(
 	sessionID string,
 	generation string,
 	rollout codexRolloutIdentity,
@@ -538,10 +482,8 @@ func (io realCodexInputIO) submitIfEmpty(
 	current := io.capture(sessionID)
 	if !current.alive ||
 		current.generation != generation ||
-		!current.rollout.equal(rollout) ||
-		current.composer != codexComposerEmpty ||
-		!isAgentInputReady("codex", current.content) {
-		return fmt.Errorf("%w: exact empty target composer was not preserved before paste", errCodexMutationConflict)
+		!current.rollout.equal(rollout) {
+		return fmt.Errorf("%w: exact target generation and rollout were not preserved before paste", errCodexMutationConflict)
 	}
 	if err := ensureCodexPaneInputConsumed(readCodexTmuxPaneMetadata(lock.paneID)); err != nil {
 		return err
@@ -558,6 +500,14 @@ func (io realCodexInputIO) submitIfEmpty(
 
 func codexAtomicSubmitCommand(buffer, paneID string) []string {
 	return []string{
+		// Chat owns this serialized transaction. A simultaneously composed,
+		// unsubmitted Terminal draft is explicitly replaced by the Chat
+		// message; Zen never tries to infer that draft from rendered pixels.
+		"send-keys",
+		"-t",
+		paneID,
+		"C-u",
+		";",
 		"paste-buffer",
 		"-p",
 		"-b",
@@ -574,38 +524,6 @@ func codexAtomicSubmitCommand(buffer, paneID string) []string {
 		"-b",
 		buffer,
 	}
-}
-
-func (io realCodexInputIO) advanceStartup(sessionID, generation string) error {
-	if err := io.checkTarget(); err != nil {
-		return err
-	}
-	lock, err := lockCodexPaneInputOwned(
-		sessionID,
-		generation,
-		codexPaneLockNoTransaction,
-		codexPaneLockOperationStartup,
-	)
-	if err != nil {
-		return err
-	}
-	defer lock.release()
-	current := io.capture(sessionID)
-	if !current.alive ||
-		current.generation != generation ||
-		!isCodexStartupContinuePrompt("codex", current.content) {
-		return fmt.Errorf("%w: Codex startup prompt changed before Enter", errCodexMutationConflict)
-	}
-	if err := ensureCodexPaneInputConsumed(readCodexTmuxPaneMetadata(lock.paneID)); err != nil {
-		return err
-	}
-	if err := io.checkTarget(); err != nil {
-		return err
-	}
-	if err := lock.mutateGuarded(io.targetGuard, "send-keys", "-t", lock.paneID, "Enter"); err != nil {
-		return fmt.Errorf("advance Codex startup prompt: %w", err)
-	}
-	return nil
 }
 
 func (io realCodexInputIO) releaseStaleInputSuppression(
@@ -896,39 +814,17 @@ func (coordinator *codexInputCoordinator) submitLocked(
 		record = *resumed
 		prepared = preparedCodexInputFromRecord(record)
 		baseline.rollout = prepared.rollout
-		baseline, err = waitForStableCodexComposer(io, sessionID, baseline, cfg, preSubmitDeadline)
+		baseline, err = waitForStableCodexTarget(io, sessionID, baseline, cfg, preSubmitDeadline)
 		if err != nil {
-			if baseline.composer == codexComposerHasDraft {
-				return pendingCodexInput(record, err)
-			}
 			return err
 		}
 		if !baseline.rollout.equal(prepared.rollout) {
 			return fmt.Errorf("Codex target rollout changed while its exact payload was pending; provider input was not changed")
 		}
 	} else {
-		baseline, err = waitForStableCodexComposer(io, sessionID, initial, cfg, preSubmitDeadline)
+		baseline, err = waitForStableCodexTarget(io, sessionID, initial, cfg, preSubmitDeadline)
 		if err != nil {
-			if baseline.composer != codexComposerHasDraft || !baseline.rollout.valid() {
-				return err
-			}
-			pendingCause := err
-			prepared, record, err = coordinator.prepareInput(
-				io,
-				sessionID,
-				baseline,
-				payload,
-				payloadHash,
-				receipt,
-			)
-			if err != nil {
-				return err
-			}
-			record.Detail = "durably pending behind a preserved foreign draft"
-			if err := coordinator.store.Save(record); err != nil {
-				return err
-			}
-			return pendingCodexInput(record, pendingCause)
+			return err
 		}
 		if !baseline.rollout.valid() {
 			return fmt.Errorf("Codex target rollout identity could not be proven; input was not changed")
@@ -961,7 +857,7 @@ func (coordinator *codexInputCoordinator) submitLocked(
 	if err := coordinator.store.Save(record); err != nil {
 		return fmt.Errorf("persist Codex submission intent: %w; provider input was not changed", err)
 	}
-	err = io.submitIfEmpty(
+	err = io.submitPrepared(
 		sessionID,
 		baseline.generation,
 		baseline.rollout,
@@ -1264,7 +1160,7 @@ func confirmCodexSubmission(
 	)
 }
 
-func waitForStableCodexComposer(
+func waitForStableCodexTarget(
 	io codexInputIO,
 	sessionID string,
 	initial codexPaneCapture,
@@ -1273,44 +1169,24 @@ func waitForStableCodexComposer(
 ) (codexPaneCapture, error) {
 	deadline := codexEarlierDeadline(io.now().Add(cfg.startupStallTimeout), transactionDeadline)
 	stable := 0
-	advancedStartupPrompt := false
-	var startupProgress codexStartupProgress
 	capture := initial
 	for {
 		if !capture.alive {
-			return codexPaneCapture{}, fmt.Errorf("Codex session exited before its composer became ready")
+			return codexPaneCapture{}, fmt.Errorf("Codex session exited before its rollout became ready")
 		}
 		if capture.generation != initial.generation {
-			return codexPaneCapture{}, fmt.Errorf("Codex session generation changed before its composer became ready")
+			return codexPaneCapture{}, fmt.Errorf("Codex session generation changed before its rollout became ready")
 		}
-		content := capture.content
-		if startupProgress.observe(content) {
-			deadline = codexEarlierDeadline(io.now().Add(cfg.startupStallTimeout), transactionDeadline)
-		}
-		if !advancedStartupPrompt && isCodexStartupContinuePrompt("codex", content) {
-			if err := io.advanceStartup(sessionID, initial.generation); err != nil {
-				return codexPaneCapture{}, fmt.Errorf("advance Codex startup prompt: %w", err)
-			}
-			advancedStartupPrompt = true
-			stable = 0
-			deadline = codexEarlierDeadline(io.now().Add(cfg.startupStallTimeout), transactionDeadline)
-		} else if isAgentInputReady("codex", content) {
-			switch capture.composer {
-			case codexComposerEmpty:
-				stable++
-				if stable >= cfg.stableReadyPolls {
-					return capture, nil
-				}
-			case codexComposerHasDraft:
-				return capture, fmt.Errorf("Codex composer is occupied by a foreign draft; it was not cleared, pasted into, or submitted")
-			default:
-				return codexPaneCapture{}, fmt.Errorf("Codex composer ownership is unknown; it was not cleared, pasted into, or submitted")
+		if capture.rollout.valid() && !capture.inputOff {
+			stable++
+			if stable >= cfg.stableReadyPolls {
+				return capture, nil
 			}
 		} else {
 			stable = 0
 		}
 		if !io.now().Before(deadline) {
-			return codexPaneCapture{}, fmt.Errorf("Codex composer made no recognized startup progress for %s", cfg.startupStallTimeout)
+			return codexPaneCapture{}, fmt.Errorf("Codex rollout identity was not ready within %s", cfg.startupStallTimeout)
 		}
 		io.sleep(cfg.pollInterval)
 		capture = io.capture(sessionID)
@@ -1322,134 +1198,4 @@ func codexEarlierDeadline(left, right time.Time) time.Time {
 		return left
 	}
 	return right
-}
-
-func codexComposerStateFromStyledPane(content string) codexComposerState {
-	state := codexComposerUnknown
-	for _, line := range strings.Split(strings.ReplaceAll(content, "\r\n", "\n"), "\n") {
-		if !strings.HasPrefix(stripCodexTerminalEscapes(line), "›") {
-			continue
-		}
-		promptIndex := strings.Index(line, "›")
-		if promptIndex < 0 {
-			continue
-		}
-		dim, found := codexFirstVisibleRuneStyle(line[promptIndex+len("›"):])
-		if !found {
-			state = codexComposerUnknown
-			continue
-		}
-		if dim {
-			state = codexComposerEmpty
-		} else {
-			state = codexComposerHasDraft
-		}
-	}
-	return state
-}
-
-func codexFirstVisibleRuneStyle(value string) (dim bool, found bool) {
-	for index := 0; index < len(value); {
-		if value[index] == 0x1b {
-			next, params, final := codexEscapeSequence(value, index)
-			if next <= index {
-				index++
-				continue
-			}
-			if final == 'm' {
-				dim = codexApplySGRDim(params, dim)
-			}
-			index = next
-			continue
-		}
-		current, size := utf8.DecodeRuneInString(value[index:])
-		index += size
-		if !unicode.IsSpace(current) {
-			return dim, true
-		}
-	}
-	return false, false
-}
-
-func codexApplySGRDim(params string, dim bool) bool {
-	if params == "" {
-		return false
-	}
-	values := make([]int, 0, strings.Count(params, ";")+1)
-	for _, raw := range strings.Split(params, ";") {
-		value, err := strconv.Atoi(raw)
-		if err == nil {
-			values = append(values, value)
-		}
-	}
-	for index := 0; index < len(values); index++ {
-		switch values[index] {
-		case 0, 22:
-			dim = false
-		case 2:
-			dim = true
-		case 38, 48, 58:
-			if index+1 >= len(values) {
-				continue
-			}
-			switch values[index+1] {
-			case 2:
-				index += min(4, len(values)-index-1)
-			case 5:
-				index += min(2, len(values)-index-1)
-			}
-		}
-	}
-	return dim
-}
-
-func codexEscapeSequence(value string, start int) (next int, params string, final byte) {
-	if start+1 >= len(value) {
-		return len(value), "", 0
-	}
-	switch value[start+1] {
-	case '[':
-		index := start + 2
-		paramsStart := index
-		for index < len(value) {
-			current := value[index]
-			index++
-			if current >= 0x40 && current <= 0x7e {
-				return index, value[paramsStart : index-1], current
-			}
-		}
-		return len(value), "", 0
-	case ']':
-		index := start + 2
-		for index < len(value) {
-			if value[index] == 0x07 {
-				return index + 1, "", 0
-			}
-			if value[index] == 0x1b && index+1 < len(value) && value[index+1] == '\\' {
-				return index + 2, "", 0
-			}
-			index++
-		}
-		return len(value), "", 0
-	default:
-		return start + 2, "", 0
-	}
-}
-
-func stripCodexTerminalEscapes(value string) string {
-	var output strings.Builder
-	for index := 0; index < len(value); {
-		if value[index] != 0x1b {
-			output.WriteByte(value[index])
-			index++
-			continue
-		}
-		next, _, _ := codexEscapeSequence(value, index)
-		if next <= index {
-			index++
-		} else {
-			index = next
-		}
-	}
-	return output.String()
 }

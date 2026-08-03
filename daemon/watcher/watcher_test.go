@@ -577,81 +577,17 @@ func TestSplitStringByMaxBytesKeepsUTF8RunesIntact(t *testing.T) {
 	}
 }
 
-func TestCodexInputReadyRequiresPrompt(t *testing.T) {
-	starting := "╭────╮\n│ >_ OpenAI Codex │\n│ model: loading │\n╰────╯\n"
-	if isAgentInputReady("codex", starting) {
-		t.Fatal("Codex loading screen should not be input-ready")
-	}
-
-	loadingWithPrompt := starting + "\n› Find and fix a bug in @filename\n"
-	if isAgentInputReady("codex", loadingWithPrompt) {
-		t.Fatal("Codex prompt should not be input-ready while model is loading")
-	}
-
-	ready := "╭────╮\n│ >_ OpenAI Codex │\n│ model: gpt-5.5 xhigh │\n╰────╯\n\n› Find and fix a bug in @filename\n"
-	if !isAgentInputReady("codex", ready) {
-		t.Fatal("Codex prompt should be input-ready")
-	}
-}
-
-func TestCodexStartupContinuePromptIsNotInputReady(t *testing.T) {
-	continuePrompt := "╭────╮\n│ >_ OpenAI Codex │\n╰────╯\n\nPress enter to continue\n"
-	if !isCodexStartupContinuePrompt("codex", continuePrompt) {
-		t.Fatal("Codex startup continue prompt should be detected")
-	}
-	if isAgentInputReady("codex", continuePrompt) {
-		t.Fatal("Codex startup continue prompt should not be treated as task input-ready")
-	}
-}
-
-func TestCodexInputReadyIgnoresStaleLoadingInScrollback(t *testing.T) {
-	content := "╭────╮\n│ >_ OpenAI Codex │\n│ model: loading │\n╰────╯\n\n› Improve documentation in @filename\n\n" +
-		"╭────╮\n│ >_ OpenAI Codex │\n│ model: gpt-5.5 medium │\n╰────╯\n\n› Improve documentation in @filename\n"
-	if !isAgentInputReady("codex", content) {
-		t.Fatal("current Codex prompt should be ready even when scrollback contains an older loading screen")
-	}
-}
-
-func TestCodexInputReadyAcceptsComposerDuringProviderOwnedMCPStartup(t *testing.T) {
-	for _, status := range []string{
-		"• Starting MCP servers (0/3): context7, playwright",
-		"• Booting MCP server: codex_apps (16s • esc to interrupt)",
+func TestCodexInputReadinessDoesNotParseRenderedProviderState(t *testing.T) {
+	for _, rendered := range []string{
+		"",
+		"│ model: loading │",
+		"Press enter to continue",
+		"\x1b[2m› placeholder text\x1b[0m",
+		"› unsent manual draft",
 	} {
-		content := "╭────╮\n│ >_ OpenAI Codex (v0.144.6) │\n│ model: gpt-5.6-sol medium │\n╰────╯\n" +
-			status + "\n\n› Find and fix a bug in @filename\n"
-		if !isAgentInputReady("codex", content) {
-			t.Fatalf("provider composer should own readiness during optional MCP startup:\n%s", content)
+		if !isAgentInputReady("codex", rendered) {
+			t.Fatalf("explicit Codex target depended on rendered state %q", rendered)
 		}
-	}
-}
-
-func TestCodexInputReadyWithExplicitCommandAfterLongScrollbackWithoutHeader(t *testing.T) {
-	content := strings.Repeat("completed delegated output line\n", 1100) +
-		"\n› Find and fix a bug in @filename\n\n  gpt-5.6 medium · /tmp\n"
-
-	if !isAgentInputReady("codex", content) {
-		t.Fatal("explicit Codex command should make a headerless idle composer ready")
-	}
-}
-
-func TestCodexInputReadyWithExplicitCommandRejectsHeaderlessUnsafeStates(t *testing.T) {
-	longScrollback := strings.Repeat("completed delegated output line\n", 1100)
-	tests := []struct {
-		name    string
-		content string
-	}{
-		{name: "model loading", content: longScrollback +
-			"\n│ model: loading │\n\n› Find and fix a bug in @filename\n"},
-		{name: "startup continue", content: longScrollback +
-			"\nDo you trust the contents of this directory?\n› 1. Yes, continue\n  Press enter to continue\n"},
-	}
-
-	for _, test := range tests {
-		t.Run(test.name, func(t *testing.T) {
-			if isAgentInputReady("codex", test.content) {
-				t.Fatalf("headerless Codex %s state should not be input-ready", test.name)
-			}
-		})
 	}
 }
 

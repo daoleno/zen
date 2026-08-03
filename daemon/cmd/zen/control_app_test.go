@@ -733,7 +733,7 @@ func TestControlAppAgentSendPreservesNonCodexSubmitPath(t *testing.T) {
 	}
 }
 
-func TestControlAppAgentSendFailureMarksAgentFailedAttention(t *testing.T) {
+func TestControlAppAgentSendFailurePreservesRunningLifecycle(t *testing.T) {
 	fw := newFakeControlWatcher()
 	fw.sendErr = os.ErrDeadlineExceeded
 	fw.agents["brain-agent-worker:@1"] = &classifier.Agent{
@@ -756,11 +756,80 @@ func TestControlAppAgentSendFailureMarksAgentFailedAttention(t *testing.T) {
 		t.Fatalf("response = %#v", resp)
 	}
 	agent := fw.agents["brain-agent-worker:@1"]
-	if agent.State != classifier.StateFailed || agent.Attention != "failed" || !agent.NeedsAttention {
+	if agent.State != classifier.StateRunning || agent.Attention != "" || agent.NeedsAttention {
 		t.Fatalf("agent after failed submission = %#v", agent)
 	}
 	if len(fw.submitted) != 1 || len(fw.ready) != 0 {
 		t.Fatalf("structured submits = %#v ready sends = %#v", fw.submitted, fw.ready)
+	}
+}
+
+func TestAcceptedRunningTurnThenRejectedFollowUpKeepsExecutorLifecycle(t *testing.T) {
+	fw := newFakeControlWatcher()
+	const agentID = "brain-agent-worker:@1"
+	fw.agents[agentID] = &classifier.Agent{
+		ID: agentID, State: classifier.StateRunning, Command: "codex --no-alt-screen", Delegated: true,
+	}
+	app := &controlApp{watcher: fw}
+
+	accepted := app.HandleControlRequest(control.Request{
+		Type: "agent_send", AgentID: agentID, Text: "accepted running turn", Submit: true,
+	})
+	if !accepted.OK || fw.agents[agentID].State != classifier.StateRunning {
+		t.Fatalf("accepted response=%#v agent=%#v", accepted, fw.agents[agentID])
+	}
+	fw.sendErr = os.ErrDeadlineExceeded
+	rejected := app.HandleControlRequest(control.Request{
+		Type: "agent_send", AgentID: agentID, Text: "rejected follow-up", Submit: true,
+	})
+	if rejected.OK || fw.agents[agentID].State != classifier.StateRunning ||
+		fw.agents[agentID].Phase == "starting" || len(fw.progress) != 0 {
+		t.Fatalf("rejected response=%#v agent=%#v progress=%#v", rejected, fw.agents[agentID], fw.progress)
+	}
+
+	// Only the executor lifecycle owner supplies the terminal fact.
+	fw.agents[agentID].State = classifier.StateDone
+	if got := fw.GetAgent(agentID); got == nil || got.State != classifier.StateDone {
+		t.Fatalf("executor terminal state was not authoritative: %#v", got)
+	}
+}
+
+func TestControlAppAgentEventIsHostIdentityBoundAndConsumedOnce(t *testing.T) {
+	store := newControlBrainStore(t)
+	const hostID = "brain-agent-brain-hidden:@1"
+	if err := store.SetHostSession(hostID, "codex"); err != nil {
+		t.Fatal(err)
+	}
+	item, err := store.CreateWork(brain.Work{
+		Title: "Host event", Objective: "Read one assigned Event.", Status: brain.WorkWaiting,
+		CompletionPolicy: brain.CompletionBounded,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	event, _, err := store.AppendWorkEvent(brain.WorkEvent{
+		WorkID: item.ID, Kind: "session.done", DedupeKey: "done:host-read", Actionable: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok, err := store.ClaimNextActionableEvent(hostID); err != nil || !ok {
+		t.Fatalf("claim ok=%v err=%v", ok, err)
+	}
+	app := &controlApp{brainService: brain.NewService(store, newFakeControlWatcher(), nil)}
+
+	foreign := app.HandleControlRequest(control.Request{Type: "agent_event", AgentID: "other:@1"})
+	if foreign.OK || foreign.Error == nil || foreign.Error.Code != "event_identity_mismatch" {
+		t.Fatalf("foreign response = %#v", foreign)
+	}
+	first := app.HandleControlRequest(control.Request{Type: "agent_event", AgentID: hostID})
+	if !first.OK || first.BrainWorkEvent == nil || first.BrainWorkEvent.ID != event.ID ||
+		first.BrainWork == nil || first.BrainWork.ID != item.ID {
+		t.Fatalf("first response = %#v", first)
+	}
+	second := app.HandleControlRequest(control.Request{Type: "agent_event", AgentID: hostID})
+	if !second.OK || second.BrainWorkEvent != nil || second.Confirmation == "" {
+		t.Fatalf("second response = %#v", second)
 	}
 }
 

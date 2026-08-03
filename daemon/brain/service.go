@@ -25,6 +25,8 @@ var (
 
 const codexFullAuthorizationFlag = work.CodexFullAuthorizationFlag
 
+const workEventWakeCue = work.WorkEventWakeCue
+
 type Watcher interface {
 	Agents() []*classifier.Agent
 	GetAgent(id string) *classifier.Agent
@@ -33,7 +35,6 @@ type Watcher interface {
 	SendInput(sessionID, text string) error
 	SendInputWhenReady(sessionID, command, text string) error
 	SendInputWithReceipt(sessionID, text, receipt string) error
-	HasInputReceipt(sessionID, receipt string) (bool, error)
 	KillSession(sessionID string) error
 }
 
@@ -508,20 +509,21 @@ func (s *Service) MigrateDelegatedSessionsV1(agents []*classifier.Agent) (bool, 
 	return s.store.MigrateDelegatedSessionsV1(candidates)
 }
 
-// DispatchPendingEvent is the complete automatic scheduler: recover any
-// interrupted delivery, claim one durable actionable Event, start one Brain
-// turn, then stop. No Event means no turn.
+// DispatchPendingEvent is the complete automatic scheduler: claim one durable
+// actionable Event, send one constant cue, then stop. The Host reads and
+// consumes the identity-bound Event through Zen control. A claimed Event is
+// never replayed after an ambiguous send.
 func (s *Service) DispatchPendingEvent() (bool, error) {
 	if s == nil || s.store == nil || s.watcher == nil {
 		return false, nil
 	}
 	s.dispatchMu.Lock()
 	defer s.dispatchMu.Unlock()
-	unresolvedClaim, err := s.recoverInterruptedEventClaims()
+	claimedEvents, err := s.store.ClaimedActionableEvents()
 	if err != nil {
 		return false, err
 	}
-	if unresolvedClaim {
+	if len(claimedEvents) != 0 {
 		return false, nil
 	}
 	hostSession, err := s.store.HostSession()
@@ -543,104 +545,29 @@ func (s *Service) DispatchPendingEvent() (bool, error) {
 	if err != nil || !claimed {
 		return false, err
 	}
-	item, err := s.store.Work(event.WorkID)
-	if err != nil {
-		return false, err
-	}
-	message := formatWorkEventWake(item, event)
 	if err := s.watcher.SendInputWithReceipt(
 		hostID,
-		message+"\n",
-		workEventDeliveryReceipt(event),
+		workEventWakeCue,
+		event.ID,
 	); err != nil {
-		return false, err
-	}
-	if err := s.store.AcknowledgeWorkEventDelivery(event.ID, event.ClaimToken, hostID); err != nil {
-		return false, err
-	}
-	if err := s.store.ConsumeAcknowledgedWorkEvent(event.ID, event.ClaimToken, hostID); err != nil {
 		return false, err
 	}
 	return true, nil
 }
 
-func (s *Service) recoverInterruptedEventClaims() (bool, error) {
-	events, err := s.store.ClaimedActionableEvents()
+func (s *Service) ConsumeHostWorkEvent(hostSessionID string) (WorkEvent, Work, bool, error) {
+	if s == nil || s.store == nil {
+		return WorkEvent{}, Work{}, false, fmt.Errorf("brain service is not configured")
+	}
+	host, err := s.store.HostSession()
 	if err != nil {
-		return false, err
+		return WorkEvent{}, Work{}, false, err
 	}
-	unresolved := false
-	for _, event := range events {
-		if event.DeliveryAcknowledgedAt != nil {
-			if _, err := s.store.RecoverWorkEventClaim(
-				event.ID,
-				event.ClaimToken,
-				event.DeliveryHostSessionID,
-				false,
-			); err != nil {
-				return false, err
-			}
-			continue
-		}
-		if !s.watcher.HasSession(event.DeliveryHostSessionID) {
-			unresolved = true
-			continue
-		}
-		accepted, receiptErr := s.watcher.HasInputReceipt(
-			event.DeliveryHostSessionID,
-			workEventDeliveryReceipt(event),
-		)
-		if receiptErr != nil {
-			return false, fmt.Errorf("read Brain Event Session receipt: %w", receiptErr)
-		}
-		changed, err := s.store.RecoverWorkEventClaim(
-			event.ID,
-			event.ClaimToken,
-			event.DeliveryHostSessionID,
-			accepted,
-		)
-		if err != nil {
-			return false, err
-		}
-		if !changed {
-			unresolved = true
-		}
+	hostSessionID = strings.TrimSpace(hostSessionID)
+	if hostSessionID == "" || hostSessionID != strings.TrimSpace(host.ID) {
+		return WorkEvent{}, Work{}, false, ErrEventClaim
 	}
-	return unresolved, nil
-}
-
-func workEventDeliveryReceipt(event WorkEvent) string {
-	return strings.TrimSpace(event.ID) + ":" + strings.TrimSpace(event.ClaimToken)
-}
-
-func formatWorkEventWake(item Work, event WorkEvent) string {
-	if strings.TrimSpace(item.ID) == "" || strings.TrimSpace(event.ID) == "" {
-		return ""
-	}
-	lines := []string{
-		"Active work event:",
-		"work_id: " + item.ID,
-		"title: " + item.Title,
-		"status: " + string(item.Status),
-		"event_kind: " + event.Kind,
-		"event_id: " + event.ID,
-		"delivery_token: " + event.ClaimToken,
-	}
-	appendField := func(label, value string) {
-		value = strings.TrimSpace(value)
-		if value != "" {
-			lines = append(lines, label+": "+value)
-		}
-	}
-	appendField("next_action", item.NextAction)
-	appendField("wait_for", item.WaitFor)
-	appendField("context_ref", item.ContextRef)
-	appendField("payload_ref", event.PayloadRef)
-	lines = append(lines,
-		"",
-		"Inspect only the referenced change, update Work if its durable state changed, and keep any unrelated foreground conversation intact. Do not create a continuation unless immediately useful local work remains.",
-	)
-	return strings.Join(lines, "\n")
+	return s.store.ConsumeClaimedWorkEvent(hostSessionID)
 }
 
 func (s *Service) NoteUserSteering(agentID string) bool {

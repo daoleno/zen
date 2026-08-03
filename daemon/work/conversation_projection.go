@@ -2,13 +2,18 @@ package work
 
 import "strings"
 
+const WorkEventWakeCue = "A Zen Work Event is ready. Run \"$ZEN_AGENT_PROGRESS_CMD\" agent event to read it.\n"
+
 // SanitizeConversationProjection is the final user-facing API boundary. It
-// drops typed provider Goal context and cleans every displayable text field,
-// even when a provider adds a new structured envelope around legacy context.
+// drops typed provider Goal context and Zen's fixed Host wake cue, then cleans
+// every displayable text field even when a provider adds a new structured
+// envelope around legacy context.
 func SanitizeConversationProjection(conversation CodexConversation) CodexConversation {
 	events := make([]CodexConversationEvent, 0, len(conversation.Events))
 	for _, event := range conversation.Events {
-		if isGoalInternalContextEvent(event) {
+		if isGoalInternalContextEvent(event) ||
+			event.Kind == "user_message" &&
+				strings.TrimSpace(event.Body) == strings.TrimSpace(WorkEventWakeCue) {
 			continue
 		}
 		event.Title = CleanCodexDisplayText(event.Title)

@@ -26,9 +26,6 @@ const cursorInputReadyTimeout = 25 * time.Second
 const claudeInputReadyTimeout = 12 * time.Second
 const grokInputReadyTimeout = 15 * time.Second
 
-var codexInputPromptRe = regexp.MustCompile(`(?m)^›\s`)
-var codexModelLoadingRe = regexp.MustCompile(`(?im)\bmodel:\s+loading\b`)
-var codexStartupContinueRe = regexp.MustCompile(`(?im)\bpress\s+enter\s+to\s+continue\b`)
 var cursorInputReadyRe = regexp.MustCompile(`(?im)\b(run\s+everything|composer\s+[0-9][^\n]*\n\s*~?[/\w.-].*)\b`)
 var cursorWorkspaceTrustRe = regexp.MustCompile(`(?im)\bworkspace\s+trust\s+required\b`)
 
@@ -190,7 +187,7 @@ func (io *targetBoundCodexInputIO) capture(sessionID string) codexPaneCapture {
 	return io.codexInputIO.capture(sessionID)
 }
 
-func (io *targetBoundCodexInputIO) submitIfEmpty(
+func (io *targetBoundCodexInputIO) submitPrepared(
 	sessionID string,
 	generation string,
 	rollout codexRolloutIdentity,
@@ -200,14 +197,7 @@ func (io *targetBoundCodexInputIO) submitIfEmpty(
 	if err := io.guard(); err != nil {
 		return err
 	}
-	return io.codexInputIO.submitIfEmpty(sessionID, generation, rollout, transactionID, body)
-}
-
-func (io *targetBoundCodexInputIO) advanceStartup(sessionID, generation string) error {
-	if err := io.guard(); err != nil {
-		return err
-	}
-	return io.codexInputIO.advanceStartup(sessionID, generation)
+	return io.codexInputIO.submitPrepared(sessionID, generation, rollout, transactionID, body)
 }
 
 func (io *targetBoundCodexInputIO) releaseStaleInputSuppression(
@@ -1557,7 +1547,6 @@ func waitForInputReadyGuarded(
 		return guard == nil || guard() == nil
 	}
 	deadline := time.Now().Add(timeout)
-	advancedStartupPrompt := false
 	advancedCursorTrustPrompt := false
 	for {
 		if guard != nil && guard() != nil {
@@ -1566,18 +1555,6 @@ func waitForInputReadyGuarded(
 		content, alive := capturePaneContent(sessionID)
 		if !alive {
 			return false
-		}
-		if !advancedStartupPrompt && isCodexStartupContinuePrompt(command, content) {
-			if codexIO == nil {
-				return false
-			}
-			capture := codexIO.capture(sessionID)
-			if !capture.alive || codexIO.advanceStartup(sessionID, capture.generation) != nil {
-				return false
-			}
-			advancedStartupPrompt = true
-			time.Sleep(250 * time.Millisecond)
-			continue
 		}
 		if !advancedCursorTrustPrompt && isCursorWorkspaceTrustPrompt(command, content) {
 			if guard != nil && guard() != nil {
@@ -1603,12 +1580,8 @@ func isAgentInputReady(command, content string) bool {
 		return true
 	}
 	explicitCodex := isCodexCommand(command)
-	if explicitCodex || strings.Contains(strings.ToLower(content), "openai codex") {
-		current := latestCodexPaneContent(content)
-		return (explicitCodex || strings.Contains(current, "OpenAI Codex")) &&
-			!codexModelLoadingRe.MatchString(current) &&
-			!codexStartupContinueRe.MatchString(current) &&
-			codexInputPromptRe.MatchString(current)
+	if explicitCodex {
+		return true
 	}
 	if isCursorAgentCommand(command) || strings.Contains(strings.ToLower(content), "cursor agent") {
 		current := latestCursorPaneContent(content)
@@ -1661,13 +1634,6 @@ func latestGrokPaneContent(content string) string {
 	return normalized
 }
 
-func isCodexStartupContinuePrompt(command, content string) bool {
-	if !isCodexCommand(command) && !strings.Contains(strings.ToLower(content), "openai codex") {
-		return false
-	}
-	return codexStartupContinueRe.MatchString(latestCodexPaneContent(content))
-}
-
 func isCursorWorkspaceTrustPrompt(command, content string) bool {
 	if !isCursorAgentCommand(command) && !strings.Contains(strings.ToLower(content), "cursor agent") {
 		return false
@@ -1676,19 +1642,6 @@ func isCursorWorkspaceTrustPrompt(command, content string) bool {
 	lower := strings.ToLower(normalized)
 	return cursorWorkspaceTrustRe.MatchString(normalized) &&
 		strings.Contains(lower, "trust this workspace")
-}
-
-func latestCodexPaneContent(content string) string {
-	normalized := strings.ReplaceAll(content, "\r\n", "\n")
-	lower := strings.ToLower(normalized)
-	if idx := strings.LastIndex(lower, "openai codex"); idx >= 0 {
-		return normalized[idx:]
-	}
-	lines := strings.Split(normalized, "\n")
-	if len(lines) > 60 {
-		return strings.Join(lines[len(lines)-60:], "\n")
-	}
-	return normalized
 }
 
 func needsInputReadinessWait(command, content string) bool {

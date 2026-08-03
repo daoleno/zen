@@ -59,7 +59,7 @@ func TestOrchestrationSchemaV0MigratesDeterministically(t *testing.T) {
 	}
 }
 
-func TestOrchestrationSchemaV1BindsUnresolvedClaimDeterministically(t *testing.T) {
+func TestOrchestrationSchemaV2DropsDeliveryCeremonyDeterministically(t *testing.T) {
 	root := t.TempDir()
 	path := filepath.Join(root, "state", "orchestration.json")
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
@@ -74,8 +74,8 @@ func TestOrchestrationSchemaV1BindsUnresolvedClaimDeterministically(t *testing.T
 		t.Fatal(err)
 	}
 	fixed := time.Date(2026, 8, 3, 10, 0, 0, 0, time.UTC)
-	legacy := orchestrationDatabase{
-		SchemaVersion: 1,
+	legacy := legacyOrchestrationDatabase{
+		SchemaVersion: 2,
 		BrainWork: []Work{{
 			ID:               "work-v1",
 			Title:            "Legacy claim",
@@ -85,15 +85,16 @@ func TestOrchestrationSchemaV1BindsUnresolvedClaimDeterministically(t *testing.T
 			CreatedAt:        fixed,
 			UpdatedAt:        fixed,
 		}},
-		BrainWorkEvents: []WorkEvent{{
-			ID:         "event-v1",
-			WorkID:     "work-v1",
-			Kind:       "session.done",
-			DedupeKey:  "session:legacy:done",
-			Actionable: true,
-			CreatedAt:  fixed,
-			ClaimedAt:  &fixed,
-			ClaimToken: "unbound-v1-token",
+		BrainWorkEvents: []legacyWorkEvent{{
+			ID:                    "event-v1",
+			WorkID:                "work-v1",
+			Kind:                  "session.done",
+			DedupeKey:             "session:legacy:done",
+			Actionable:            true,
+			CreatedAt:             fixed,
+			ClaimedAt:             &fixed,
+			ClaimToken:            "unbound-v1-token",
+			DeliveryHostSessionID: hostID,
 		}},
 	}
 	raw, err := json.Marshal(legacy)
@@ -113,9 +114,8 @@ func TestOrchestrationSchemaV1BindsUnresolvedClaimDeterministically(t *testing.T
 		t.Fatal(err)
 	}
 	if len(events) != 1 || events[0].ClaimedAt == nil ||
-		events[0].ClaimToken != "unbound-v1-token" ||
 		events[0].DeliveryHostSessionID != hostID {
-		t.Fatalf("v1 unbound claim migration = %#v", events)
+		t.Fatalf("v2 claim migration = %#v", events)
 	}
 	first, err := os.ReadFile(path)
 	if err != nil {
@@ -129,7 +129,11 @@ func TestOrchestrationSchemaV1BindsUnresolvedClaimDeterministically(t *testing.T
 		t.Fatal(err)
 	}
 	if !bytes.Equal(first, second) {
-		t.Fatalf("second open rewrote v1 migration:\nfirst:\n%s\nsecond:\n%s", first, second)
+		t.Fatalf("second open rewrote v2 migration:\nfirst:\n%s\nsecond:\n%s", first, second)
+	}
+	if bytes.Contains(first, []byte("claim_token")) ||
+		bytes.Contains(first, []byte("delivery_acknowledged_at")) {
+		t.Fatalf("v2 delivery ceremony survived forward migration:\n%s", first)
 	}
 }
 
@@ -264,150 +268,48 @@ func TestWorkEventDedupeAndClaimAreAtomic(t *testing.T) {
 	}
 }
 
-func TestInterruptedEventClaimsRecoverWithoutDuplicateOrLoss(t *testing.T) {
-	now := time.Date(2026, 8, 3, 10, 0, 0, 0, time.UTC)
-	newFixture := func(t *testing.T) (*Store, *fakeWatcher, Work, WorkEvent, string) {
-		t.Helper()
-		store, err := NewStore(t.TempDir())
-		if err != nil {
-			t.Fatal(err)
-		}
-		store.now = func() time.Time { return now }
-		hostID := "brain-agent-brain-hidden:@1"
-		if err := store.SetHostSession(hostID, "codex"); err != nil {
-			t.Fatal(err)
-		}
-		item, err := store.CreateWork(Work{
-			Title:            "Crash-safe delivery",
-			Objective:        "Recover one interrupted Event delivery.",
-			Status:           WorkWaiting,
-			CompletionPolicy: CompletionBounded,
-		})
-		if err != nil {
-			t.Fatal(err)
-		}
-		event, _, err := store.AppendWorkEvent(WorkEvent{
-			WorkID:     item.ID,
-			Kind:       "session.done",
-			DedupeKey:  "session:worker:@1:done",
-			Actionable: true,
-		})
-		if err != nil {
-			t.Fatal(err)
-		}
-		fw := &fakeWatcher{sessions: map[string]*classifier.Agent{
-			hostID: {ID: hostID, Hidden: true, State: classifier.StateDone},
-		}}
-		return store, fw, item, event, hostID
+func TestClaimedEventIsIdentityBoundConsumedOnceWithoutReplay(t *testing.T) {
+	store, err := NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
 	}
-
-	t.Run("acknowledged_before_crash", func(t *testing.T) {
-		store, fw, _, _, hostID := newFixture(t)
-		claimed, ok, err := store.ClaimNextActionableEvent(hostID)
-		if err != nil || !ok {
-			t.Fatalf("claim ok=%v err=%v", ok, err)
-		}
-		if err := store.AcknowledgeWorkEventDelivery(claimed.ID, claimed.ClaimToken, hostID); err != nil {
-			t.Fatal(err)
-		}
-
-		reopened, err := NewStore(store.Root)
-		if err != nil {
-			t.Fatal(err)
-		}
-		service := NewService(reopened, fw, nil)
-		service.now = func() time.Time { return now.Add(time.Second) }
-		if woke, err := service.DispatchPendingEvent(); err != nil || woke {
-			t.Fatalf("acknowledged delivery replayed: woke=%v err=%v", woke, err)
-		}
-		events, err := reopened.ListWorkEvents("")
-		if err != nil {
-			t.Fatal(err)
-		}
-		if len(events) != 1 || events[0].DeliveryAcknowledgedAt == nil || events[0].ConsumedAt == nil ||
-			len(fw.sentCalls) != 0 {
-			t.Fatalf("recovered acknowledged Event=%#v sends=%#v", events, fw.sentCalls)
-		}
+	hostID := "brain-agent-brain-hidden:@1"
+	item, err := store.CreateWork(Work{
+		Title:            "Identity-bound delivery",
+		Objective:        "Expose one assigned Event to its Host exactly once.",
+		Status:           WorkWaiting,
+		CompletionPolicy: CompletionBounded,
 	})
-
-	t.Run("durable_receipt_survives_scrolled_pane", func(t *testing.T) {
-		store, fw, item, _, hostID := newFixture(t)
-		claimed, ok, err := store.ClaimNextActionableEvent(hostID)
-		if err != nil || !ok {
-			t.Fatalf("claim ok=%v err=%v", ok, err)
-		}
-		boundedSnapshot := strings.Repeat("later output with no delivery marker\n", 200)
-		fullTranscript := formatWorkEventWake(item, claimed) + "\n" + boundedSnapshot
-		fw.captures = map[string]string{
-			hostID: boundedSnapshot,
-		}
-		fw.receipts = map[string]string{
-			hostID: workEventDeliveryReceipt(claimed),
-		}
-		if !strings.Contains(fullTranscript, claimed.ID) ||
-			!strings.Contains(fullTranscript, claimed.ClaimToken) {
-			t.Fatal("full transcript never contained delivery marker")
-		}
-		if strings.Contains(fw.captures[hostID], claimed.ID) ||
-			strings.Contains(fw.captures[hostID], claimed.ClaimToken) {
-			t.Fatal("bounded pane unexpectedly retained delivery marker")
-		}
-
-		reopened, err := NewStore(store.Root)
-		if err != nil {
-			t.Fatal(err)
-		}
-		service := NewService(reopened, fw, nil)
-		service.now = func() time.Time { return now.Add(time.Second) }
-		if woke, err := service.DispatchPendingEvent(); err != nil || woke {
-			t.Fatalf("observed delivery replayed: woke=%v err=%v", woke, err)
-		}
-		events, err := reopened.ListWorkEvents("")
-		if err != nil {
-			t.Fatal(err)
-		}
-		if len(events) != 1 || events[0].DeliveryAcknowledgedAt == nil || events[0].ConsumedAt == nil ||
-			len(fw.sentCalls) != 0 {
-			t.Fatalf("recovered durable receipt Event=%#v sends=%#v pane=%q", events, fw.sentCalls, fw.captures[hostID])
-		}
+	if err != nil {
+		t.Fatal(err)
+	}
+	event, _, err := store.AppendWorkEvent(WorkEvent{
+		WorkID: item.ID, Kind: "session.done", DedupeKey: "session:worker:@1:done", Actionable: true,
 	})
-
-	t.Run("ambiguous_delivery_fails_closed", func(t *testing.T) {
-		store, fw, _, _, hostID := newFixture(t)
-		if _, ok, err := store.ClaimNextActionableEvent(hostID); err != nil || !ok {
-			t.Fatalf("claim ok=%v err=%v", ok, err)
-		}
-		delete(fw.sessions, hostID)
-		reopened, err := NewStore(store.Root)
-		if err != nil {
-			t.Fatal(err)
-		}
-		retryAt := now.Add(24 * time.Hour)
-		service := NewService(reopened, fw, nil)
-		service.now = func() time.Time { return retryAt }
-		if woke, err := service.DispatchPendingEvent(); err != nil || woke {
-			t.Fatalf("missing host started a turn: woke=%v err=%v", woke, err)
-		}
-		events, err := reopened.ListWorkEvents("")
-		if err != nil {
-			t.Fatal(err)
-		}
-		if len(events) != 1 || events[0].ClaimedAt == nil || events[0].ConsumedAt != nil {
-			t.Fatalf("ambiguous claim did not fail closed: %#v", events)
-		}
-		fw.sessions[hostID] = &classifier.Agent{ID: hostID, Hidden: true, State: classifier.StateDone}
-		if woke, err := service.DispatchPendingEvent(); err != nil || woke {
-			t.Fatalf("ambiguous Event was guessed and resent: woke=%v err=%v", woke, err)
-		}
-		events, err = reopened.ListWorkEvents("")
-		if err != nil {
-			t.Fatal(err)
-		}
-		if len(events) != 1 || events[0].ClaimedAt == nil || events[0].ConsumedAt != nil ||
-			len(fw.sentCalls) != 0 {
-			t.Fatalf("ambiguous Event=%#v sends=%#v", events, fw.sentCalls)
-		}
-	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	claimed, ok, err := store.ClaimNextActionableEvent(hostID)
+	if err != nil || !ok || claimed.ID != event.ID {
+		t.Fatalf("claim=%#v ok=%v err=%v", claimed, ok, err)
+	}
+	if _, _, found, err := store.ConsumeClaimedWorkEvent("different-host:@1"); err != nil || found {
+		t.Fatalf("different Host read assigned Event: found=%v err=%v", found, err)
+	}
+	gotEvent, gotWork, found, err := store.ConsumeClaimedWorkEvent(hostID)
+	if err != nil || !found || gotEvent.ID != event.ID || gotWork.ID != item.ID || gotEvent.ConsumedAt == nil {
+		t.Fatalf("consume event=%#v work=%#v found=%v err=%v", gotEvent, gotWork, found, err)
+	}
+	if _, _, found, err := store.ConsumeClaimedWorkEvent(hostID); err != nil || found {
+		t.Fatalf("consumed Event replayed: found=%v err=%v", found, err)
+	}
+	reopened, err := NewStore(store.Root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok, err := reopened.ClaimNextActionableEvent(hostID); err != nil || ok {
+		t.Fatalf("consumed Event reclaimed after restart: ok=%v err=%v", ok, err)
+	}
 }
 
 func TestActiveWorkProjectsMultipleItemsAndUnreadResults(t *testing.T) {
@@ -621,13 +523,14 @@ func TestDispatchRequiresActionableEventEvenForUntilDoneWork(t *testing.T) {
 		t.Fatalf("idle scheduler sent %#v", fw.sentCalls)
 	}
 
-	if _, _, err := store.AppendWorkEvent(WorkEvent{
+	actionable, _, err := store.AppendWorkEvent(WorkEvent{
 		WorkID:     item.ID,
 		Kind:       "session.done",
 		DedupeKey:  "done:1",
 		PayloadRef: "session:worker:@1",
 		Actionable: true,
-	}); err != nil {
+	})
+	if err != nil {
 		t.Fatal(err)
 	}
 	if woke, err := service.DispatchPendingEvent(); err != nil || !woke {
@@ -638,6 +541,24 @@ func TestDispatchRequiresActionableEventEvenForUntilDoneWork(t *testing.T) {
 	}
 	if len(fw.sentCalls) != 1 {
 		t.Fatalf("sends = %#v", fw.sentCalls)
+	}
+	if fw.sentCalls[0].text != workEventWakeCue || fw.receipts[hostID] != actionable.ID {
+		t.Fatalf("wake = %#v receipt=%q, want constant cue with Event.ID receipt", fw.sentCalls[0], fw.receipts[hostID])
+	}
+	for _, forbidden := range []string{
+		actionable.ID, item.ID, actionable.Kind, actionable.PayloadRef,
+		"delivery_token", "ZEN_TX", "PATH_B64URL", "PAYLOAD_SHA256",
+	} {
+		if forbidden != "" && strings.Contains(fw.sentCalls[0].text, forbidden) {
+			t.Fatalf("constant wake leaked %q: %q", forbidden, fw.sentCalls[0].text)
+		}
+	}
+	consumed, consumedWork, found, err := service.ConsumeHostWorkEvent(hostID)
+	if err != nil || !found || consumed.ID != actionable.ID || consumedWork.ID != item.ID {
+		t.Fatalf("identity read event=%#v work=%#v found=%v err=%v", consumed, consumedWork, found, err)
+	}
+	if _, _, found, err := service.ConsumeHostWorkEvent(hostID); err != nil || found {
+		t.Fatalf("consumed wake replayed: found=%v err=%v", found, err)
 	}
 }
 
@@ -685,8 +606,7 @@ func TestDispatchFailedSendRemainsClosedWithoutDurableReceipt(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(events) != 1 || events[0].ClaimedAt == nil || events[0].DeliveryAcknowledgedAt != nil ||
-		events[0].ConsumedAt != nil {
+	if len(events) != 1 || events[0].ClaimedAt == nil || events[0].ConsumedAt != nil {
 		t.Fatalf("failed send claim = %#v", events)
 	}
 	fw.sendErr = nil
@@ -920,6 +840,9 @@ func TestDelegatedSessionDedupeAllowsANewLifecycleEpisode(t *testing.T) {
 	}
 	if !route(classifier.StateRunning, classifier.StateBlocked, at) {
 		t.Fatal("first blocker did not wake")
+	}
+	if _, _, found, err := service.ConsumeHostWorkEvent(hostID); err != nil || !found {
+		t.Fatalf("first blocker was not consumed: found=%v err=%v", found, err)
 	}
 	if route(classifier.StateBlocked, classifier.StateRunning, at.Add(time.Minute)) {
 		t.Fatal("running progress unexpectedly woke")

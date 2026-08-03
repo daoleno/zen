@@ -362,11 +362,12 @@ func TestAgentAndBrainHelpAreDiscoverable(t *testing.T) {
 	}
 	agentHelp := agentOutput.String()
 	for _, want := range []string{
-		"Usage: zen agent <list|spawn|send|capture|status|progress|close|kill> [flags]",
+		"Usage: zen agent <list|spawn|send|capture|status|progress|event|close|kill> [flags]",
 		"zen agent spawn -name",
 		"zen agent capture -id",
 		"zen agent status -id",
 		"zen agent progress --status running",
+		"zen agent event",
 		"zen agent close -id",
 	} {
 		if !strings.Contains(agentHelp, want) {
