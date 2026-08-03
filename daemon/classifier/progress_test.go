@@ -89,6 +89,47 @@ func TestApplyProgressUpdatesLifecycleFields(t *testing.T) {
 	}
 }
 
+func TestApplyProgressDoesNotShortenActiveLeaseWithinRunningPhase(t *testing.T) {
+	start := time.Date(2026, 8, 3, 10, 0, 0, 0, time.UTC)
+	longDeadline := start.Add(900 * time.Second)
+	agent := &Agent{
+		State:               StateRunning,
+		Phase:               "working",
+		LeaseSeconds:        900,
+		ExpectedNextCheckAt: &longDeadline,
+	}
+
+	ApplyProgress(agent, AgentProgress{
+		Status:       "running",
+		Phase:        "working",
+		Attention:    "none",
+		Summary:      "Routine progress",
+		LeaseSeconds: 300,
+	}, start.Add(time.Minute))
+
+	if agent.ExpectedNextCheckAt == nil || !agent.ExpectedNextCheckAt.Equal(longDeadline) {
+		t.Fatalf("routine progress shortened active lease to %#v, want %s", agent.ExpectedNextCheckAt, longDeadline)
+	}
+	if agent.LeaseSeconds != 900 {
+		t.Fatalf("effective lease seconds = %d, want preserved 900", agent.LeaseSeconds)
+	}
+
+	ApplyProgress(agent, AgentProgress{
+		Status:       "running",
+		Phase:        "verifying",
+		Attention:    "none",
+		Summary:      "Phase changed",
+		LeaseSeconds: 300,
+	}, start.Add(2*time.Minute))
+	wantPhaseDeadline := start.Add(7 * time.Minute)
+	if agent.ExpectedNextCheckAt == nil || !agent.ExpectedNextCheckAt.Equal(wantPhaseDeadline) {
+		t.Fatalf("new phase deadline = %#v, want %s", agent.ExpectedNextCheckAt, wantPhaseDeadline)
+	}
+	if agent.LeaseSeconds != 300 {
+		t.Fatalf("new phase lease seconds = %d, want 300", agent.LeaseSeconds)
+	}
+}
+
 func TestProgressNeedsAttentionIncludesTerminalStatuses(t *testing.T) {
 	for _, progress := range []AgentProgress{
 		{Status: "done", Attention: "none"},

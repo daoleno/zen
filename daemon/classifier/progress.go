@@ -58,6 +58,10 @@ func ApplyProgress(agent *Agent, progress AgentProgress, now time.Time) {
 	if now.IsZero() {
 		now = time.Now().UTC()
 	}
+	previousState := agent.State
+	previousPhase := agent.Phase
+	previousLeaseSeconds := agent.LeaseSeconds
+	previousExpectedNextCheckAt := agent.ExpectedNextCheckAt
 	agent.State = ProgressState(progress)
 	agent.Phase = progress.Phase
 	agent.Attention = progress.Attention
@@ -74,6 +78,16 @@ func ApplyProgress(agent *Agent, progress AgentProgress, now time.Time) {
 		agent.ExpectedNextCheckAt = &expected
 	} else {
 		agent.ExpectedNextCheckAt = nil
+	}
+	if previousState == StateRunning &&
+		agent.State == StateRunning &&
+		previousPhase == agent.Phase &&
+		previousExpectedNextCheckAt != nil &&
+		previousExpectedNextCheckAt.After(progressAt) &&
+		(agent.ExpectedNextCheckAt == nil || previousExpectedNextCheckAt.After(*agent.ExpectedNextCheckAt)) {
+		expected := previousExpectedNextCheckAt.UTC()
+		agent.ExpectedNextCheckAt = &expected
+		agent.LeaseSeconds = previousLeaseSeconds
 	}
 	agent.UpdatedAt = progressAt
 }

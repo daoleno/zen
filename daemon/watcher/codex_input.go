@@ -922,12 +922,24 @@ func (coordinator *codexInputCoordinator) mutateIfUnowned(
 }
 
 func (coordinator *codexInputCoordinator) submit(io codexInputIO, sessionID, body string, cfg codexSubmitConfig) error {
+	return coordinator.submitWithReceipt(io, sessionID, body, "", cfg)
+}
+
+func (coordinator *codexInputCoordinator) submitWithReceipt(
+	io codexInputIO,
+	sessionID, body, receipt string,
+	cfg codexSubmitConfig,
+) error {
 	return coordinator.withSession(sessionID, func() error {
-		return coordinator.submitLocked(io, sessionID, body, cfg)
+		return coordinator.submitLocked(io, sessionID, body, receipt, cfg)
 	})
 }
 
-func (coordinator *codexInputCoordinator) submitLocked(io codexInputIO, sessionID, body string, cfg codexSubmitConfig) error {
+func (coordinator *codexInputCoordinator) submitLocked(
+	io codexInputIO,
+	sessionID, body, receipt string,
+	cfg codexSubmitConfig,
+) error {
 	payload, err := normalizeCodexPayload(body)
 	if err != nil {
 		return err
@@ -946,7 +958,15 @@ func (coordinator *codexInputCoordinator) submitLocked(io codexInputIO, sessionI
 		return err
 	}
 	payloadHash := codexSHA256(payload)
-	resolved, err := coordinator.reconcileActive(io, sessionID, initial, payloadHash, cfg, transactionDeadline)
+	resolved, err := coordinator.reconcileActive(
+		io,
+		sessionID,
+		initial,
+		payloadHash,
+		receipt,
+		cfg,
+		transactionDeadline,
+	)
 	if err != nil {
 		return err
 	}
@@ -961,7 +981,14 @@ func (coordinator *codexInputCoordinator) submitLocked(io codexInputIO, sessionI
 	if !baseline.rollout.valid() {
 		return fmt.Errorf("Codex target rollout identity could not be proven; input was not changed")
 	}
-	prepared, record, err := coordinator.prepareInput(io, sessionID, baseline, payload, payloadHash)
+	prepared, record, err := coordinator.prepareInput(
+		io,
+		sessionID,
+		baseline,
+		payload,
+		payloadHash,
+		receipt,
+	)
 	if err != nil {
 		return err
 	}
@@ -1073,6 +1100,7 @@ func (coordinator *codexInputCoordinator) reconcileActive(
 	sessionID string,
 	current codexPaneCapture,
 	payloadHash string,
+	receipt string,
 	cfg codexSubmitConfig,
 	transactionDeadline time.Time,
 ) (bool, error) {
@@ -1090,6 +1118,12 @@ func (coordinator *codexInputCoordinator) reconcileActive(
 	if record.PayloadSHA256 != payloadHash {
 		return false, fmt.Errorf(
 			"Codex session generation has active transaction %s for different input; refusing to mutate its composer",
+			record.TransactionID,
+		)
+	}
+	if record.AcceptanceReceipt != receipt {
+		return false, fmt.Errorf(
+			"Codex session generation has active transaction %s for a different acceptance receipt; refusing input",
 			record.TransactionID,
 		)
 	}
@@ -1154,12 +1188,54 @@ func (coordinator *codexInputCoordinator) reconcileActive(
 	}
 }
 
+func (coordinator *codexInputCoordinator) hasAcceptedReceipt(
+	io codexInputIO,
+	sessionID, receipt string,
+) (bool, error) {
+	var accepted bool
+	err := coordinator.withSession(sessionID, func() error {
+		current := io.capture(sessionID)
+		if !current.alive || current.generation == "" {
+			return fmt.Errorf("Codex session generation could not be proven")
+		}
+		record, found, err := coordinator.store.Receipt(sessionID, current.generation, receipt)
+		if err != nil || !found {
+			return err
+		}
+		if record.Phase == codexTransactionConfirmed {
+			accepted = true
+			return nil
+		}
+		rollout := codexRolloutIdentity{
+			Path:      record.RolloutPath,
+			SessionID: record.RolloutSessionID,
+		}
+		persisted, err := io.persistedUserMessage(rollout, record.Instruction, record.CreatedAt)
+		if err != nil {
+			return fmt.Errorf("reconcile Codex acceptance receipt: %w", err)
+		}
+		if !persisted {
+			return nil
+		}
+		record.Phase = codexTransactionConfirmed
+		record.Detail = "reconciled acceptance receipt from exact persisted Codex user message"
+		record.UpdatedAt = io.now()
+		if err := coordinator.store.Save(record); err != nil {
+			return err
+		}
+		accepted = true
+		return nil
+	})
+	return accepted, err
+}
+
 func (coordinator *codexInputCoordinator) prepareInput(
 	io codexInputIO,
 	sessionID string,
 	baseline codexPaneCapture,
 	payload string,
 	payloadHash string,
+	receipt string,
 ) (codexPreparedInput, codexTransactionRecord, error) {
 	transactionID, err := newCodexTransactionID()
 	if err != nil {
@@ -1189,6 +1265,7 @@ func (coordinator *codexInputCoordinator) prepareInput(
 		TransactionID:     transactionID,
 		SessionID:         sessionID,
 		SessionGeneration: baseline.generation,
+		AcceptanceReceipt: receipt,
 		Action:            "submit_codex_input",
 		Phase:             codexTransactionPrepared,
 		PayloadSHA256:     payloadHash,

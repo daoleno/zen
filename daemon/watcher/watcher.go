@@ -810,12 +810,6 @@ func (w *Watcher) poll() {
 		}
 
 		newState, summary := classifier.ResolveSessionStatus(agent, r.classified, r.classifiedSummary, r.now, activity)
-		if r.oldState == classifier.StateRunning && newState == classifier.StateUnknown && agent.LastProgressAt != nil {
-			if agent.Attention == "" || agent.Attention == "none" {
-				agent.Attention = "stale"
-			}
-			agent.NeedsAttention = true
-		}
 		agent.State = newState
 		agent.Summary = summary
 
@@ -1196,6 +1190,30 @@ func (w *Watcher) SendInputWithReceipt(sessionID, text, receipt string) error {
 	if accepted {
 		return nil
 	}
+	identity, known := w.targetForSession(sessionID)
+	if !known {
+		return fmt.Errorf("target provider could not be proven; input was not sent")
+	}
+	if isCodexCommand(identity.Command) {
+		body, submit := splitCodexSubmitInput(text)
+		if submit && body != "" {
+			resolver := w.targetForSession
+			io := bindCodexInputIdentity(w.codexIOOwner(), resolver, sessionID, identity)
+			if err := w.codexInputOwner().submitWithReceipt(
+				io,
+				sessionID,
+				body,
+				receipt,
+				defaultCodexSubmitConfig(),
+			); err != nil {
+				return err
+			}
+			// The transaction record closes the confirmation-to-metadata crash
+			// window. The window option remains the long-lived Session receipt
+			// after terminal transaction retention expires.
+			return setTmuxWindowUserOption(sessionID, brainInputReceiptOption, receipt)
+		}
+	}
 	if err := w.SendInput(sessionID, text); err != nil {
 		return err
 	}
@@ -1207,6 +1225,18 @@ func (w *Watcher) HasInputReceipt(sessionID, receipt string) (bool, error) {
 	receipt = strings.TrimSpace(receipt)
 	if receipt == "" {
 		return false, fmt.Errorf("input receipt is required")
+	}
+	identity, known := w.targetForSession(sessionID)
+	if known && isCodexCommand(identity.Command) {
+		resolver := w.targetForSession
+		io := bindCodexInputIdentity(w.codexIOOwner(), resolver, sessionID, identity)
+		accepted, err := w.codexInputOwner().hasAcceptedReceipt(io, sessionID, receipt)
+		if err != nil {
+			return false, err
+		}
+		if accepted {
+			return true, nil
+		}
 	}
 	value, err := tmuxWindowUserOption(sessionID, brainInputReceiptOption)
 	if err != nil {

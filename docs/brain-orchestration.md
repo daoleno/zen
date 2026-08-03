@@ -39,14 +39,17 @@ and a context reference. Long plans and evidence stay in `workspace/worklog/`.
 Event dedupe keys are unique within one Work. An actionable Event is durably
 claimed for one Brain host Session before input is sent. The Event ID and claim
 token form an idempotency receipt in the receiving Session metadata. The
-Session input boundary checks that durable receipt before enqueueing and stores
-it after acceptance. A successful send is then durably acknowledged in the
-Event before consumption. After interruption, either acknowledgement or the
-matching Session receipt consumes the existing delivery without replay. Pane
-history and elapsed time are never proof of non-delivery; an ambiguous claim
-remains closed instead of being guessed and resent. There is no second
-in-memory scheduler truth, direct lifecycle wake owner, or dual write to
-provider Goal state.
+Session input boundary checks that durable receipt before enqueueing. For Codex,
+the caller receipt is part of the same generation-bound input transaction that
+stores either the exact short input or its content-addressed long envelope; the
+transaction closes the confirmation-to-Session-metadata crash window. A
+successful send is then durably acknowledged in the Event before consumption.
+After interruption, either acknowledgement or the matching Session or
+transaction receipt consumes the existing delivery without replay. Pane history
+and elapsed time are never proof of non-delivery; an ambiguous claim remains
+closed instead of being guessed and resent. There is no second in-memory
+scheduler truth, direct lifecycle wake owner, or dual write to provider Goal
+state.
 
 Schema 2 adds host-bound delivery evidence to the existing Event record. Its
 one-way schema-1 migration binds an unresolved claim to the persisted host when
@@ -68,10 +71,16 @@ adopts later unowned Sessions.
 ## Event sources
 
 Watcher transitions are projected only when the Session already owns Work.
-Ordinary progress is passive. Done, failed, blocked, needs-input, or expired
-lease facts append deduplicated actionable Events. A healthy lease updates the
-wait condition without polling. User input to the Brain host has foreground
-priority, so an internal Event remains unclaimed until that user turn ends.
+Ordinary progress is passive. Done, failed, blocked, and needs-input facts append
+deduplicated actionable Events. Lease expiry requests authoritative
+reconciliation; it is not itself a stale fact. A present live delegated Session
+remains non-actionable even when progress is overdue. A missing, dead, or
+irreconcilable delegated Session produces one deduplicated actionable stale
+Event, while present `delegated=false` Sessions remain unmanaged. Within one
+running phase, routine progress cannot move an active lease deadline backward;
+a phase transition may establish a shorter lease. User input to the Brain host
+has foreground priority, so an internal Event remains unclaimed until that user
+turn ends.
 
 Calendar remains authoritative for scheduled-action occurrence claims,
 execution, canonical results, source-thread delivery, and recurrence. Brain

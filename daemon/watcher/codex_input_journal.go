@@ -48,6 +48,7 @@ type codexTransactionRecord struct {
 	TransactionID     string                `json:"transaction_id"`
 	SessionID         string                `json:"session_id"`
 	SessionGeneration string                `json:"session_generation"`
+	AcceptanceReceipt string                `json:"acceptance_receipt,omitempty"`
 	Action            string                `json:"action"`
 	Phase             codexTransactionPhase `json:"phase"`
 	PayloadSHA256     string                `json:"payload_sha256"`
@@ -76,6 +77,7 @@ func (record codexTransactionRecord) active() bool {
 type codexTransactionStore interface {
 	Save(codexTransactionRecord) error
 	Active(sessionID, generation string) ([]codexTransactionRecord, error)
+	Receipt(sessionID, generation, receipt string) (codexTransactionRecord, bool, error)
 	WriteEnvelope(payloadSHA256 string, payload []byte) (string, error)
 	Maintain(time.Time) error
 }
@@ -112,6 +114,21 @@ func (store *memoryCodexTransactionStore) Active(sessionID, generation string) (
 		return records[i].CreatedAt.Before(records[j].CreatedAt)
 	})
 	return records, nil
+}
+
+func (store *memoryCodexTransactionStore) Receipt(
+	sessionID, generation, receipt string,
+) (codexTransactionRecord, bool, error) {
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	for _, record := range store.records {
+		if record.SessionID == sessionID &&
+			record.SessionGeneration == generation &&
+			record.AcceptanceReceipt == receipt {
+			return record, true, nil
+		}
+	}
+	return codexTransactionRecord{}, false, nil
 }
 
 func (*memoryCodexTransactionStore) WriteEnvelope(string, []byte) (string, error) {
@@ -225,6 +242,60 @@ func (store *fileCodexTransactionStore) Active(sessionID, generation string) ([]
 		return records[i].CreatedAt.Before(records[j].CreatedAt)
 	})
 	return records, nil
+}
+
+func (store *fileCodexTransactionStore) Receipt(
+	sessionID, generation, receipt string,
+) (codexTransactionRecord, bool, error) {
+	if store == nil {
+		return codexTransactionRecord{}, false, fmt.Errorf("Codex input transaction store is unavailable")
+	}
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	if err := store.maintainLocked(time.Now().UTC()); err != nil {
+		return codexTransactionRecord{}, false, err
+	}
+	entries, err := os.ReadDir(store.transactionDir)
+	if err != nil {
+		return codexTransactionRecord{}, false, fmt.Errorf("read Codex input transactions: %w", err)
+	}
+	scopePrefix := codexTransactionScope(sessionID, generation) + "-"
+	for _, entry := range entries {
+		if entry.IsDir() ||
+			!strings.HasPrefix(entry.Name(), scopePrefix) ||
+			!strings.HasSuffix(entry.Name(), ".json") {
+			continue
+		}
+		raw, readErr := os.ReadFile(filepath.Join(store.transactionDir, entry.Name()))
+		if readErr != nil {
+			return codexTransactionRecord{}, false, fmt.Errorf(
+				"read Codex input transaction %s: %w",
+				entry.Name(),
+				readErr,
+			)
+		}
+		var record codexTransactionRecord
+		if decodeErr := json.Unmarshal(raw, &record); decodeErr != nil {
+			return codexTransactionRecord{}, false, fmt.Errorf(
+				"decode Codex input transaction %s: %w",
+				entry.Name(),
+				decodeErr,
+			)
+		}
+		if record.SchemaVersion != codexTransactionSchemaVersion {
+			return codexTransactionRecord{}, false, fmt.Errorf(
+				"unsupported Codex input transaction schema %d in %s",
+				record.SchemaVersion,
+				entry.Name(),
+			)
+		}
+		if record.SessionID == sessionID &&
+			record.SessionGeneration == generation &&
+			record.AcceptanceReceipt == receipt {
+			return record, true, nil
+		}
+	}
+	return codexTransactionRecord{}, false, nil
 }
 
 func (store *fileCodexTransactionStore) Maintain(now time.Time) error {

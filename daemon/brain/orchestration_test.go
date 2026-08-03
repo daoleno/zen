@@ -936,7 +936,7 @@ func TestDelegatedSessionDedupeAllowsANewLifecycleEpisode(t *testing.T) {
 	}
 }
 
-func TestDelegatedSessionReconciliationWaitsForLeaseAndStalesOnce(t *testing.T) {
+func TestDelegatedSessionReconciliationKeepsLiveOverdueSessionNonActionable(t *testing.T) {
 	store, err := NewStore(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
@@ -967,6 +967,8 @@ func TestDelegatedSessionReconciliationWaitsForLeaseAndStalesOnce(t *testing.T) 
 		ID:                  sessionID,
 		State:               classifier.StateRunning,
 		Delegated:           true,
+		PaneAlive:           true,
+		ProcessID:           4242,
 		LastProgressAt:      &progressAt,
 		ExpectedNextCheckAt: &nextCheck,
 		UpdatedAt:           progressAt,
@@ -989,8 +991,161 @@ func TestDelegatedSessionReconciliationWaitsForLeaseAndStalesOnce(t *testing.T) 
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(events) != 1 || events[0].Kind != "session.stale" || len(fw.sentCalls) != 1 {
-		t.Fatalf("stale reconciliation events=%#v sends=%#v", events, fw.sentCalls)
+	if len(events) != 0 || len(fw.sentCalls) != 0 {
+		t.Fatalf("healthy overdue Session became actionable: events=%#v sends=%#v", events, fw.sentCalls)
+	}
+	items, err := store.ListWork()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(items) != 1 ||
+		!strings.Contains(items[0].WaitFor, "is live; progress lease overdue") ||
+		items[0].NextAction != "Wait for authoritative delegated Session state." {
+		t.Fatalf("healthy overdue Work = %#v", items)
+	}
+}
+
+func TestDelegatedSessionReconciliationStalesObservedMissingOrDeadExactlyOnce(t *testing.T) {
+	for _, test := range []struct {
+		name      string
+		reconcile func(*Service, *classifier.Agent)
+	}{
+		{
+			name: "missing after healthy inventory",
+			reconcile: func(service *Service, _ *classifier.Agent) {
+				service.ReconcileDelegatedSessions(nil)
+				service.ReconcileDelegatedSessions(nil)
+			},
+		},
+		{
+			name: "dead process and pane",
+			reconcile: func(service *Service, agent *classifier.Agent) {
+				expired := time.Date(2026, 8, 3, 9, 59, 0, 0, time.UTC)
+				dead := *agent
+				dead.State = classifier.StateUnknown
+				dead.PaneAlive = false
+				dead.ProcessID = 0
+				dead.ExpectedNextCheckAt = &expired
+				service.ReconcileDelegatedSessions([]*classifier.Agent{&dead})
+				service.ReconcileDelegatedSessions([]*classifier.Agent{&dead})
+			},
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			store, err := NewStore(t.TempDir())
+			if err != nil {
+				t.Fatal(err)
+			}
+			now := time.Date(2026, 8, 3, 10, 0, 0, 0, time.UTC)
+			hostID := "brain-agent-brain-hidden:@1"
+			sessionID := "brain-agent-worker:@2"
+			if err := store.SetHostSession(hostID, "codex"); err != nil {
+				t.Fatal(err)
+			}
+			fw := &fakeWatcher{sessions: map[string]*classifier.Agent{
+				hostID: {ID: hostID, Hidden: true, State: classifier.StateDone},
+			}}
+			service := NewService(store, fw, nil)
+			service.now = func() time.Time { return now }
+			item, err := store.CreateWork(Work{
+				Title:            "Authoritative liveness",
+				Objective:        "Wake only when the delegated Session is absent or dead.",
+				Status:           WorkRunning,
+				OwnerSessionID:   sessionID,
+				CompletionPolicy: CompletionBounded,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			progressAt := now.Add(-time.Minute)
+			nextCheck := now.Add(time.Minute)
+			agent := &classifier.Agent{
+				ID:                  sessionID,
+				State:               classifier.StateRunning,
+				Delegated:           true,
+				PaneAlive:           true,
+				ProcessID:           4242,
+				LastProgressAt:      &progressAt,
+				ExpectedNextCheckAt: &nextCheck,
+				UpdatedAt:           progressAt,
+			}
+			service.ReconcileDelegatedSessions([]*classifier.Agent{agent})
+			test.reconcile(service, agent)
+
+			got, err := store.Work(item.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			events, err := store.ListWorkEvents(item.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got.OwnerSessionID != "" ||
+				got.Status != WorkWaiting ||
+				len(events) != 1 ||
+				events[0].Kind != "session.stale" ||
+				!events[0].Actionable ||
+				len(fw.sentCalls) != 1 {
+				t.Fatalf("reconciled Work=%#v Events=%#v sends=%#v", got, events, fw.sentCalls)
+			}
+		})
+	}
+}
+
+func TestDelegatedSessionRemovalKeepsSingleTerminalFailureWithoutFollowupStale(t *testing.T) {
+	store, err := NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	hostID := "brain-agent-brain-hidden:@1"
+	sessionID := "brain-agent-removed:@2"
+	if err := store.SetHostSession(hostID, "codex"); err != nil {
+		t.Fatal(err)
+	}
+	fw := &fakeWatcher{sessions: map[string]*classifier.Agent{
+		hostID: {ID: hostID, Hidden: true, State: classifier.StateDone},
+	}}
+	service := NewService(store, fw, nil)
+	item, err := store.CreateWork(Work{
+		Title:            "Removed delegated Session",
+		Objective:        "Preserve the authoritative terminal failure.",
+		Status:           WorkRunning,
+		OwnerSessionID:   sessionID,
+		CompletionPolicy: CompletionBounded,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	live := &classifier.Agent{
+		ID:        sessionID,
+		State:     classifier.StateRunning,
+		Delegated: true,
+		PaneAlive: true,
+		ProcessID: 4242,
+	}
+	service.ReconcileDelegatedSessions([]*classifier.Agent{live})
+	removed := *live
+	removed.State = classifier.StateRemoved
+	removed.PaneAlive = false
+	removed.ProcessID = 0
+	if woke, err := service.RouteSessionEvent(watcher.SessionEvent{
+		Type:     "agent_removed",
+		AgentID:  sessionID,
+		Agent:    &removed,
+		OldState: string(classifier.StateRunning),
+		NewState: string(classifier.StateRemoved),
+	}); err != nil || !woke {
+		t.Fatalf("removed terminal woke=%v err=%v", woke, err)
+	}
+	service.ReconcileDelegatedSessions(nil)
+	service.ReconcileDelegatedSessions(nil)
+
+	events, err := store.ListWorkEvents(item.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(events) != 1 || events[0].Kind != "session.failed" || len(fw.sentCalls) != 1 {
+		t.Fatalf("removed terminal Events=%#v sends=%#v", events, fw.sentCalls)
 	}
 }
 

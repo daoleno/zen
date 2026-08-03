@@ -48,6 +48,8 @@ type Service struct {
 
 	reconcileMu                sync.Mutex
 	authoritativeInventorySeen bool
+	delegatedInventory         map[string]struct{}
+	unmanagedInventory         map[string]struct{}
 }
 
 func NewService(store *Store, watcher Watcher, execs *work.ExecutorConfig) *Service {
@@ -282,6 +284,15 @@ func (s *Service) RouteSessionEvent(event watcher.SessionEvent) (bool, error) {
 	agent := event.Agent
 	if !agent.Delegated || agent.Hidden || strings.TrimSpace(agent.ID) == "" {
 		return false, nil
+	}
+	if event.Type == "agent_removed" {
+		s.reconcileMu.Lock()
+		if s.unmanagedInventory == nil {
+			s.unmanagedInventory = make(map[string]struct{})
+		}
+		s.unmanagedInventory[agent.ID] = struct{}{}
+		delete(s.delegatedInventory, agent.ID)
+		s.reconcileMu.Unlock()
 	}
 	item, found, err := s.store.WorkByOwnerSession(agent.ID)
 	if err != nil {
@@ -696,9 +707,22 @@ func (s *Service) ReconcileDelegatedSessions(agents []*classifier.Agent) {
 	defer s.reconcileMu.Unlock()
 	firstAuthoritativeInventory := !s.authoritativeInventorySeen
 	byID := make(map[string]*classifier.Agent, len(agents))
+	if s.delegatedInventory == nil {
+		s.delegatedInventory = make(map[string]struct{})
+	}
+	if s.unmanagedInventory == nil {
+		s.unmanagedInventory = make(map[string]struct{})
+	}
 	for _, agent := range agents {
 		if agent != nil {
 			byID[agent.ID] = agent
+			if agent.Delegated && !agent.Hidden {
+				s.delegatedInventory[agent.ID] = struct{}{}
+				delete(s.unmanagedInventory, agent.ID)
+			} else {
+				s.unmanagedInventory[agent.ID] = struct{}{}
+				delete(s.delegatedInventory, agent.ID)
+			}
 		}
 	}
 	items, err := s.store.ListWork()
@@ -714,15 +738,14 @@ func (s *Service) ReconcileDelegatedSessions(agents []*classifier.Agent) {
 		}
 		agent := byID[item.OwnerSessionID]
 		if agent == nil {
-			if !firstAuthoritativeInventory {
+			_, knownDelegated := s.delegatedInventory[item.OwnerSessionID]
+			if _, knownUnmanaged := s.unmanagedInventory[item.OwnerSessionID]; knownUnmanaged {
 				continue
 			}
-			_, _, created, reconcileErr := s.store.ReconcileMissingWorkOwner(item.ID, item.OwnerSessionID)
-			if reconcileErr != nil {
-				log.Printf("brain missing Session reconciliation failed for %s: %v", item.OwnerSessionID, reconcileErr)
-			} else if created {
-				_, _ = s.DispatchPendingEvent()
+			if !firstAuthoritativeInventory && !knownDelegated {
+				continue
 			}
+			s.reconcileAbsentDelegatedSession(item)
 			continue
 		}
 		if !agent.Delegated || agent.Hidden {
@@ -741,6 +764,12 @@ func (s *Service) ReconcileDelegatedSessions(agents []*classifier.Agent) {
 		if agent.State != classifier.StateRunning && agent.State != classifier.StateUnknown {
 			continue
 		}
+		leaseActive := agent.ExpectedNextCheckAt != nil &&
+			!now.After(agent.ExpectedNextCheckAt.UTC())
+		if !agent.PaneAlive && agent.ProcessID <= 0 && !leaseActive {
+			s.reconcileAbsentDelegatedSession(item)
+			continue
+		}
 		if agent.ExpectedNextCheckAt == nil || agent.LastProgressAt == nil {
 			continue
 		}
@@ -755,26 +784,23 @@ func (s *Service) ReconcileDelegatedSessions(agents []*classifier.Agent) {
 			continue
 		}
 		status := WorkWaiting
-		next := "Reconcile the stale delegated Session."
-		empty := ""
-		update := WorkUpdate{Status: &status, WaitFor: &empty, NextAction: &next}
+		wait := "Session " + agent.ID + " is live; progress lease overdue."
+		next := "Wait for authoritative delegated Session state."
+		update := WorkUpdate{Status: &status, WaitFor: &wait, NextAction: &next}
 		if workUpdateChanges(item, update) {
 			_, _ = s.store.UpdateWork(item.ID, update)
 		}
-		_, created, appendErr := s.store.AppendWorkEvent(WorkEvent{
-			WorkID:     item.ID,
-			Kind:       "session.stale",
-			DedupeKey:  fmt.Sprintf("session:%s:stale:%d", agent.ID, agent.ExpectedNextCheckAt.UTC().UnixNano()),
-			PayloadRef: "session:" + agent.ID,
-			Actionable: true,
-		})
-		if appendErr != nil {
-			log.Printf("brain stale Session reconciliation failed for %s: %v", agent.ID, appendErr)
-		} else if created {
-			_, _ = s.DispatchPendingEvent()
-		}
 	}
 	_, _ = s.DispatchPendingEvent()
+}
+
+func (s *Service) reconcileAbsentDelegatedSession(item Work) {
+	_, _, created, err := s.store.ReconcileMissingWorkOwner(item.ID, item.OwnerSessionID)
+	if err != nil {
+		log.Printf("brain absent Session reconciliation failed for %s: %v", item.OwnerSessionID, err)
+	} else if created {
+		_, _ = s.DispatchPendingEvent()
+	}
 }
 
 func (s *Service) SubscribeWork() (int, <-chan WorkChange) {

@@ -1632,6 +1632,239 @@ func TestPersistentCodexCoordinatorUsesDirectPathForObservableShortPrompt(t *tes
 	}
 }
 
+func TestWatcherCodexReceiptSurvivesDirectAndEnvelopeTransactionsRestartWithoutReplay(t *testing.T) {
+	binDir := t.TempDir()
+	tmuxMutationPath := filepath.Join(t.TempDir(), "tmux-mutations")
+	tmuxScript := fmt.Sprintf(`#!/bin/sh
+case "$1" in
+  show-options)
+    exit 0
+    ;;
+  set-option)
+    printf 'set-option\n' >> %q
+    exit 0
+    ;;
+  *)
+    exit 1
+    ;;
+esac
+`, tmuxMutationPath)
+	if err := os.WriteFile(filepath.Join(binDir, "tmux"), []byte(tmuxScript), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	tests := []struct {
+		name         string
+		body         string
+		width        int
+		wantEnvelope bool
+	}{
+		{
+			name:  "short direct input",
+			body:  "short receipt-bound input",
+			width: 240,
+		},
+		{
+			name:         "long content-addressed envelope",
+			body:         "caller Work Event payload first line\nUnicode payload 终 Ω\n" + strings.Repeat("exact-long-body-", 20),
+			width:        80,
+			wantEnvelope: true,
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			const (
+				sessionID  = "brain-host:@receipt"
+				receipt    = "event-stable-id:claim-stable-token"
+				generation = "generation-receipt"
+			)
+			ready := codexReadyPane("")
+			io := &fakeCodexInputIO{
+				width: test.width,
+				clock: time.Date(2026, 8, 3, 10, 0, 0, 0, time.UTC),
+			}
+			io.captureFn = func(current *fakeCodexInputIO) codexPaneCapture {
+				capture := codexPaneCapture{
+					content:    ready,
+					alive:      true,
+					composer:   codexComposerEmpty,
+					generation: generation,
+					width:      current.width,
+				}
+				if len(current.pastes) > 0 {
+					capture.content = ready + "\n› " + current.pastes[0] + "\n"
+					capture.composer = codexComposerHasDraft
+					if current.enters > 0 {
+						capture.content += "\n• Working (1s • esc to interrupt)\n"
+						capture.composer = codexComposerEmpty
+					}
+				}
+				return capture
+			}
+			stateDir := t.TempDir()
+			coordinator, err := newPersistentCodexInputCoordinator(stateDir)
+			if err != nil {
+				t.Fatal(err)
+			}
+			newWatcher := func(input *codexInputCoordinator) *Watcher {
+				w := New(time.Second)
+				w.codexInput = input
+				w.codexInputIO = io
+				w.targetCommandResolver = func(target string) (string, bool) {
+					return "codex --no-alt-screen", target == sessionID
+				}
+				return w
+			}
+			first := newWatcher(coordinator)
+			if err := first.SendInputWithReceipt(sessionID, test.body+"\n", receipt); err != nil {
+				t.Fatalf("first receipt-bound send: %v", err)
+			}
+			accepted, err := first.HasInputReceipt(sessionID, receipt)
+			if err != nil || !accepted {
+				t.Fatalf("first accepted=%v err=%v", accepted, err)
+			}
+			if len(io.pastes) != 1 || io.enters != 1 {
+				t.Fatalf("first actions pastes=%#v enters=%d", io.pastes, io.enters)
+			}
+
+			entries, err := os.ReadDir(filepath.Join(stateDir, "codex-input", "transactions"))
+			if err != nil || len(entries) != 1 {
+				t.Fatalf("transactions=%v err=%v", entries, err)
+			}
+			raw, err := os.ReadFile(filepath.Join(stateDir, "codex-input", "transactions", entries[0].Name()))
+			if err != nil {
+				t.Fatal(err)
+			}
+			var record codexTransactionRecord
+			if err := json.Unmarshal(raw, &record); err != nil {
+				t.Fatal(err)
+			}
+			if record.Phase != codexTransactionConfirmed ||
+				record.AcceptanceReceipt != receipt ||
+				record.PayloadSHA256 != codexSHA256(test.body) {
+				t.Fatalf("receipt transaction = %#v", record)
+			}
+			if test.wantEnvelope {
+				if record.EnvelopePath == "" {
+					t.Fatal("long receipt input did not use an envelope")
+				}
+				envelope, err := os.ReadFile(record.EnvelopePath)
+				if err != nil || string(envelope) != test.body {
+					t.Fatalf("envelope exact=%v err=%v", string(envelope) == test.body, err)
+				}
+			} else if record.EnvelopePath != "" || io.pastes[0] != test.body {
+				t.Fatalf("short path record=%#v paste=%q", record, io.pastes[0])
+			}
+
+			restartedCoordinator, err := newPersistentCodexInputCoordinator(stateDir)
+			if err != nil {
+				t.Fatal(err)
+			}
+			restarted := newWatcher(restartedCoordinator)
+			if err := restarted.SendInputWithReceipt(sessionID, test.body+"\n", receipt); err != nil {
+				t.Fatalf("restart receipt recovery: %v", err)
+			}
+			if len(io.pastes) != 1 || io.enters != 1 {
+				t.Fatalf("restart replayed input: pastes=%#v enters=%d", io.pastes, io.enters)
+			}
+		})
+	}
+	raw, err := os.ReadFile(tmuxMutationPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.Count(string(raw), "set-option\n"); got != len(tests) {
+		t.Fatalf("Session receipt metadata writes = %d, want one per accepted transaction", got)
+	}
+}
+
+func TestWatcherCodexReceiptClosesConfirmedEnvelopeMetadataCrashWindow(t *testing.T) {
+	binDir := t.TempDir()
+	tmuxScript := `#!/bin/sh
+case "$1" in
+  show-options)
+    exit 0
+    ;;
+  set-option)
+    exit 1
+    ;;
+  *)
+    exit 1
+    ;;
+esac
+`
+	if err := os.WriteFile(filepath.Join(binDir, "tmux"), []byte(tmuxScript), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	const (
+		sessionID  = "brain-host:@metadata-crash"
+		receipt    = "event-metadata-crash:claim-metadata-crash"
+		generation = "generation-metadata-crash"
+	)
+	body := "long actionable Work Event\n" + strings.Repeat("receipt-bound-envelope-", 20)
+	ready := codexReadyPane("")
+	io := &fakeCodexInputIO{
+		width: 80,
+		clock: time.Date(2026, 8, 3, 10, 0, 0, 0, time.UTC),
+	}
+	io.captureFn = func(current *fakeCodexInputIO) codexPaneCapture {
+		capture := codexPaneCapture{
+			content:    ready,
+			alive:      true,
+			composer:   codexComposerEmpty,
+			generation: generation,
+			width:      current.width,
+		}
+		if len(current.pastes) > 0 {
+			capture.content = ready + "\n› " + current.pastes[0] + "\n"
+			capture.composer = codexComposerHasDraft
+			if current.enters > 0 {
+				capture.content += "\n• Working (1s • esc to interrupt)\n"
+				capture.composer = codexComposerEmpty
+			}
+		}
+		return capture
+	}
+	stateDir := t.TempDir()
+	newWatcher := func() *Watcher {
+		coordinator, err := newPersistentCodexInputCoordinator(stateDir)
+		if err != nil {
+			t.Fatal(err)
+		}
+		w := New(time.Second)
+		w.codexInput = coordinator
+		w.codexInputIO = io
+		w.targetCommandResolver = func(target string) (string, bool) {
+			return "codex --no-alt-screen", target == sessionID
+		}
+		return w
+	}
+
+	first := newWatcher()
+	if err := first.SendInputWithReceipt(sessionID, body+"\n", receipt); err == nil {
+		t.Fatal("injected Session metadata failure was not reported")
+	}
+	if len(io.pastes) != 1 || io.enters != 1 {
+		t.Fatalf("first acceptance actions pastes=%#v enters=%d", io.pastes, io.enters)
+	}
+
+	restarted := newWatcher()
+	accepted, err := restarted.HasInputReceipt(sessionID, receipt)
+	if err != nil || !accepted {
+		t.Fatalf("transactional receipt recovery accepted=%v err=%v", accepted, err)
+	}
+	if err := restarted.SendInputWithReceipt(sessionID, body+"\n", receipt); err != nil {
+		t.Fatalf("restarted dedupe: %v", err)
+	}
+	if len(io.pastes) != 1 || io.enters != 1 {
+		t.Fatalf("restart replayed confirmed envelope: pastes=%#v enters=%d", io.pastes, io.enters)
+	}
+}
+
 func TestCodexEnvelopeComposerIdentityRequiresExactWrappedBytes(t *testing.T) {
 	instruction := codexEnvelopeInstruction(
 		"0123456789abcdef0123",
@@ -2587,8 +2820,13 @@ func TestCodexCoordinatorNeverReplaysAmbiguousEnter(t *testing.T) {
 
 func TestCodexCoordinatorAmbiguitySurvivesCoordinatorRecreation(t *testing.T) {
 	body := "durable ambiguous payload ZEN_RESTART_75319"
+	receipt := "event-restart:claim-restart"
 	ready := codexReadyPane("")
-	io := &fakeCodexInputIO{width: 120, suppressPersistence: true}
+	io := &fakeCodexInputIO{
+		width:               120,
+		suppressPersistence: true,
+		clock:               time.Date(2026, 8, 3, 10, 0, 0, 0, time.UTC),
+	}
 	io.captureFn = func(current *fakeCodexInputIO) codexPaneCapture {
 		capture := codexPaneCapture{
 			content:    ready,
@@ -2610,7 +2848,7 @@ func TestCodexCoordinatorAmbiguitySurvivesCoordinatorRecreation(t *testing.T) {
 	if err != nil {
 		t.Fatalf("first coordinator: %v", err)
 	}
-	err = first.submit(io, "agent:@restart", body, cfg)
+	err = first.submitWithReceipt(io, "agent:@restart", body, receipt, cfg)
 	if err == nil {
 		t.Fatal("first coordinator must report ambiguous Enter")
 	}
@@ -2622,7 +2860,11 @@ func TestCodexCoordinatorAmbiguitySurvivesCoordinatorRecreation(t *testing.T) {
 	if err != nil {
 		t.Fatalf("second coordinator: %v", err)
 	}
-	err = second.submit(io, "agent:@restart", body, cfg)
+	accepted, receiptErr := second.hasAcceptedReceipt(io, "agent:@restart", receipt)
+	if receiptErr != nil || accepted {
+		t.Fatalf("ambiguous receipt accepted=%v err=%v", accepted, receiptErr)
+	}
+	err = second.submitWithReceipt(io, "agent:@restart", body, receipt, cfg)
 	if err == nil || !strings.Contains(err.Error(), "ambiguous") {
 		t.Fatalf("recreated coordinator error = %v, want durable ambiguity", err)
 	}
@@ -2635,8 +2877,12 @@ func TestCodexCoordinatorAmbiguitySurvivesCoordinatorRecreation(t *testing.T) {
 	if err != nil {
 		t.Fatalf("third coordinator: %v", err)
 	}
-	if err := third.submit(io, "agent:@restart", body, cfg); err != nil {
+	if err := third.submitWithReceipt(io, "agent:@restart", body, receipt, cfg); err != nil {
 		t.Fatalf("persisted user-message reconciliation: %v", err)
+	}
+	accepted, receiptErr = third.hasAcceptedReceipt(io, "agent:@restart", receipt)
+	if receiptErr != nil || !accepted {
+		t.Fatalf("reconciled receipt accepted=%v err=%v", accepted, receiptErr)
 	}
 	if len(io.pastes) != 1 || io.enters != 1 {
 		t.Fatalf("reconciliation replayed input: pastes=%#v enters=%d", io.pastes, io.enters)
