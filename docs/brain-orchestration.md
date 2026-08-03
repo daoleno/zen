@@ -38,12 +38,14 @@ and a context reference. Long plans and evidence stay in `workspace/worklog/`.
 
 Event dedupe keys are unique within one Work. An actionable Event is durably
 claimed for one Brain host Session before input is sent. The stable Event ID is
-the optional receipt recorded in receiver-side tmux metadata after the provider
-submit key. Codex, Claude Code, Cursor, Grok, and future interactive providers
-share one per-Session input serializer and one target-bound tmux command queue:
-replace the current unsent draft, paste the exact original UTF-8 payload, send
-the provider adapter's submit key once, record the optional receipt, and delete
-the buffer.
+the optional receipt in a bounded receiver-side tmux ledger. Each retained
+receipt carries the payload hash and an accepted or ambiguous outcome. Zen
+writes and confirms ambiguity before provider mutation, then promotes that same
+entry to accepted only after the submit queue succeeds. Codex, Claude Code,
+Cursor, Grok, and future interactive providers share one per-Session input
+serializer and one target-bound tmux command queue: replace the current unsent
+draft, paste the exact original UTF-8 payload, send the provider adapter's
+submit key once, and delete the buffer.
 
 If target identity or pane generation changes before that queue starts,
 Session Input reports a definite pre-mutation failure and atomically releases

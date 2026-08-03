@@ -1,7 +1,9 @@
 package watcher
 
 import (
+	"crypto/sha256"
 	"errors"
+	"fmt"
 	"reflect"
 	"strings"
 	"sync"
@@ -16,7 +18,10 @@ type fakeSessionInputIO struct {
 	loadedPayloads []string
 	queues         [][]string
 	submissions    []string
-	receiptValue   string
+	ledger         sessionInputReceiptLedger
+	ledgerWrites   []sessionInputReceiptLedger
+	writeErrors    map[int]error
+	operations     []string
 	runStarted     bool
 	runErr         error
 	afterLoad      func()
@@ -31,7 +36,9 @@ func newFakeSessionInputIO() *fakeSessionInputIO {
 			paneID:     "%9",
 			generation: "generation-1",
 		},
-		buffers: make(map[string]string),
+		buffers:     make(map[string]string),
+		ledger:      emptySessionInputReceiptLedger(),
+		writeErrors: make(map[int]error),
 	}
 }
 
@@ -67,21 +74,39 @@ func (io *fakeSessionInputIO) runQueue(args []string) (bool, error) {
 	}
 	copied := append([]string(nil), args...)
 	io.queues = append(io.queues, copied)
+	io.operations = append(io.operations, "provider_queue")
 	buffer := queueArgumentAfter(args, "-b")
 	io.submissions = append(io.submissions, io.buffers[buffer])
-	if optionIndex := indexOf(args, "@"+sessionInputReceiptOption); optionIndex >= 0 && optionIndex+1 < len(args) {
-		io.receiptValue = args[optionIndex+1]
-	}
 	started, err := io.runStarted, io.runErr
 	io.activeQueues--
 	io.mu.Unlock()
 	return started, err
 }
 
-func (io *fakeSessionInputIO) receipt(string) (string, error) {
+func (io *fakeSessionInputIO) receiptLedger(string) (sessionInputReceiptLedger, error) {
 	io.mu.Lock()
 	defer io.mu.Unlock()
-	return io.receiptValue, nil
+	return cloneSessionInputReceiptLedger(io.ledger), nil
+}
+
+func (io *fakeSessionInputIO) writeReceiptLedger(_ string, ledger sessionInputReceiptLedger) error {
+	io.mu.Lock()
+	defer io.mu.Unlock()
+	call := len(io.ledgerWrites) + 1
+	io.ledgerWrites = append(io.ledgerWrites, cloneSessionInputReceiptLedger(ledger))
+	io.operations = append(io.operations, "ledger_write")
+	if err := io.writeErrors[call]; err != nil {
+		return err
+	}
+	io.ledger = cloneSessionInputReceiptLedger(ledger)
+	return nil
+}
+
+func cloneSessionInputReceiptLedger(ledger sessionInputReceiptLedger) sessionInputReceiptLedger {
+	return sessionInputReceiptLedger{
+		SchemaVersion: ledger.SchemaVersion,
+		Entries:       append([]sessionInputReceiptEntry(nil), ledger.Entries...),
+	}
 }
 
 func queueArgumentAfter(args []string, flag string) string {
@@ -276,11 +301,12 @@ func TestSessionInputReceiptDedupeSurvivesOwnerRestart(t *testing.T) {
 	if _, err := first.submit("agent:@1", identity, resolver, identity.Command, "event cue", "event-123"); err != nil {
 		t.Fatal(err)
 	}
-	queue := io.queues[0]
-	submitIndex := indexOf(queue, "Enter")
-	receiptIndex := indexOf(queue, "@"+sessionInputReceiptOption)
-	if submitIndex < 0 || receiptIndex <= submitIndex {
-		t.Fatalf("receipt was not recorded after submit: %q", queue)
+	entry, found := io.ledger.entry("event-123")
+	if !found || entry.Outcome != InputAccepted || len(io.ledgerWrites) != 2 {
+		t.Fatalf("durable ledger=%#v writes=%#v, want ambiguous then accepted", io.ledger, io.ledgerWrites)
+	}
+	if !reflect.DeepEqual(io.operations, []string{"ledger_write", "provider_queue", "ledger_write"}) {
+		t.Fatalf("receipt mutation ordering = %#v", io.operations)
 	}
 	restarted := newSessionInputOwner(io)
 	result, err := restarted.submit("agent:@1", identity, resolver, identity.Command, "event cue", "event-123")
@@ -292,20 +318,90 @@ func TestSessionInputReceiptDedupeSurvivesOwnerRestart(t *testing.T) {
 	}
 }
 
-func TestSessionInputKeepsOnlyLatestAttemptPerSession(t *testing.T) {
-	io := newFakeSessionInputIO()
-	owner := newSessionInputOwner(io)
-	identity := testSessionInputIdentity("codex")
-	resolver := fixedSessionInputResolver(identity)
-	for _, receipt := range []string{"one", "two", "three"} {
-		if _, err := owner.submit("agent:@1", identity, resolver, identity.Command, receipt, receipt); err != nil {
-			t.Fatal(err)
-		}
+func TestSessionInputReceiptLedgerIsBoundedAndNeverEvictsAmbiguity(t *testing.T) {
+	accepted := emptySessionInputReceiptLedger()
+	for index := 0; index < sessionInputReceiptLedgerLimit; index++ {
+		accepted.Entries = append(accepted.Entries, sessionInputReceiptEntry{
+			Receipt:       fmt.Sprintf("accepted-%02d", index),
+			PayloadSHA256: strings.Repeat(fmt.Sprintf("%x", index%16), sha256.Size*2),
+			Outcome:       InputAccepted,
+		})
 	}
-	owner.mu.Lock()
-	defer owner.mu.Unlock()
-	if len(owner.attempts) != 1 || owner.attempts["agent:@1"].receipt != "three" {
-		t.Fatalf("attempt memory = %#v, want one latest receipt", owner.attempts)
+	next, err := accepted.withAmbiguous("new", strings.Repeat("a", sha256.Size*2))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(next.Entries) != sessionInputReceiptLedgerLimit {
+		t.Fatalf("bounded ledger entries=%d", len(next.Entries))
+	}
+	if _, found := next.entry("accepted-00"); found {
+		t.Fatal("oldest accepted receipt was not evicted at the bound")
+	}
+	if entry, found := next.entry("new"); !found || entry.Outcome != InputAmbiguous {
+		t.Fatalf("new ambiguity missing: %#v found=%v", entry, found)
+	}
+
+	ambiguous := emptySessionInputReceiptLedger()
+	for index := 0; index < sessionInputReceiptLedgerLimit; index++ {
+		ambiguous.Entries = append(ambiguous.Entries, sessionInputReceiptEntry{
+			Receipt:       fmt.Sprintf("ambiguous-%02d", index),
+			PayloadSHA256: strings.Repeat(fmt.Sprintf("%x", index%16), sha256.Size*2),
+			Outcome:       InputAmbiguous,
+		})
+	}
+	if _, err := ambiguous.withAmbiguous("must-not-evict", strings.Repeat("b", sha256.Size*2)); err == nil {
+		t.Fatal("ledger full of ambiguity accepted a new receipt")
+	}
+}
+
+func TestSessionInputReceiptLedgerRetainsAcceptedABAInProcessAndAfterRestart(t *testing.T) {
+	for _, restartBeforeRetry := range []bool{false, true} {
+		name := "in process"
+		if restartBeforeRetry {
+			name = "after owner restart"
+		}
+		t.Run(name, func(t *testing.T) {
+			io := newFakeSessionInputIO()
+			identity := testSessionInputIdentity("codex")
+			resolver := fixedSessionInputResolver(identity)
+			owner := newSessionInputOwner(io)
+			if _, err := owner.submit("agent:@1", identity, resolver, identity.Command, "payload A", "receipt-A"); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := owner.submit("agent:@1", identity, resolver, identity.Command, "payload B", "receipt-B"); err != nil {
+				t.Fatal(err)
+			}
+			if restartBeforeRetry {
+				owner = newSessionInputOwner(io)
+			}
+			result, err := owner.submit("agent:@1", identity, resolver, identity.Command, "payload A", "receipt-A")
+			if err != nil || result.Outcome != InputAccepted {
+				t.Fatalf("A/B/A retry = (%+v, %v)", result, err)
+			}
+			if len(io.queues) != 2 || len(io.ledger.Entries) != 2 {
+				t.Fatalf("A/B/A replayed or lost ledger: queues=%d ledger=%#v", len(io.queues), io.ledger)
+			}
+		})
+	}
+}
+
+func TestSessionInputReceiptPayloadMismatchFailsAfterRestart(t *testing.T) {
+	io := newFakeSessionInputIO()
+	identity := testSessionInputIdentity("claude")
+	resolver := fixedSessionInputResolver(identity)
+	if _, err := newSessionInputOwner(io).submit(
+		"agent:@1", identity, resolver, identity.Command, "original", "same-receipt",
+	); err != nil {
+		t.Fatal(err)
+	}
+	restarted := newSessionInputOwner(io)
+	_, err := restarted.submit(
+		"agent:@1", identity, resolver, identity.Command, "different", "same-receipt",
+	)
+	if InputOutcomeFromError(err) != InputNotSubmitted ||
+		!strings.Contains(err.Error(), "different input") ||
+		len(io.queues) != 1 {
+		t.Fatalf("mismatched restart retry: outcome=%s queues=%d err=%v", InputOutcomeFromError(err), len(io.queues), err)
 	}
 }
 
@@ -325,14 +421,16 @@ func TestSessionInputDistinguishesPreMutationAndAmbiguousWithoutReplay(t *testin
 		io := newFakeSessionInputIO()
 		io.runStarted = true
 		io.runErr = errors.New("connection lost after queue start")
-		owner := newSessionInputOwner(io)
 		identity := testSessionInputIdentity("claude")
 		resolver := fixedSessionInputResolver(identity)
-		_, firstErr := owner.submit("agent:@1", identity, resolver, identity.Command, "message", "receipt")
+		_, firstErr := newSessionInputOwner(io).submit(
+			"agent:@1", identity, resolver, identity.Command, "message", "receipt",
+		)
 		if InputOutcomeFromError(firstErr) != InputAmbiguous {
 			t.Fatalf("first outcome=%s err=%v", InputOutcomeFromError(firstErr), firstErr)
 		}
-		_, secondErr := owner.submit("agent:@1", identity, resolver, identity.Command, "message", "receipt")
+		restarted := newSessionInputOwner(io)
+		_, secondErr := restarted.submit("agent:@1", identity, resolver, identity.Command, "message", "receipt")
 		if InputOutcomeFromError(secondErr) != InputAmbiguous {
 			t.Fatalf("second outcome=%s err=%v", InputOutcomeFromError(secondErr), secondErr)
 		}
@@ -340,6 +438,32 @@ func TestSessionInputDistinguishesPreMutationAndAmbiguousWithoutReplay(t *testin
 			t.Fatalf("ambiguous receipt replayed: queues=%d", len(io.queues))
 		}
 	})
+}
+
+func TestSessionInputAcceptanceWriteFailureLeavesDurableAmbiguityAcrossRestart(t *testing.T) {
+	io := newFakeSessionInputIO()
+	io.writeErrors[2] = errors.New("daemon stopped before accepted receipt write")
+	identity := testSessionInputIdentity("grok")
+	resolver := fixedSessionInputResolver(identity)
+	_, firstErr := newSessionInputOwner(io).submit(
+		"agent:@1", identity, resolver, identity.Command, "message", "receipt",
+	)
+	if InputOutcomeFromError(firstErr) != InputAmbiguous {
+		t.Fatalf("first outcome=%s err=%v", InputOutcomeFromError(firstErr), firstErr)
+	}
+	entry, found := io.ledger.entry("receipt")
+	if !found || entry.Outcome != InputAmbiguous || len(io.queues) != 1 {
+		t.Fatalf("pre-acceptance crash state: entry=%#v found=%v queues=%d", entry, found, len(io.queues))
+	}
+	io.writeErrors = map[int]error{}
+	restarted := newSessionInputOwner(io)
+	_, retryErr := restarted.submit(
+		"agent:@1", identity, resolver, identity.Command, "message", "receipt",
+	)
+	if InputOutcomeFromError(retryErr) != InputAmbiguous || len(io.queues) != 1 {
+		t.Fatalf("durable ambiguity replayed after restart: outcome=%s queues=%d err=%v",
+			InputOutcomeFromError(retryErr), len(io.queues), retryErr)
+	}
 }
 
 func TestCodexInitialReadinessIsSeparateFromOrdinarySubmit(t *testing.T) {

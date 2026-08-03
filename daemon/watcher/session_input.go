@@ -2,6 +2,8 @@ package watcher
 
 import (
 	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -96,7 +98,8 @@ type sessionInputIO interface {
 	loadBuffer(buffer, payload string) error
 	deleteBuffer(buffer string)
 	runQueue(args []string) (started bool, err error)
-	receipt(sessionID string) (string, error)
+	receiptLedger(target string) (sessionInputReceiptLedger, error)
+	writeReceiptLedger(target string, ledger sessionInputReceiptLedger) error
 }
 
 type realSessionInputIO struct{}
@@ -149,18 +152,39 @@ func (realSessionInputIO) runQueue(args []string) (bool, error) {
 	return true, nil
 }
 
-func (realSessionInputIO) receipt(sessionID string) (string, error) {
-	return tmuxWindowUserOption(sessionID, sessionInputReceiptOption)
+func (realSessionInputIO) receiptLedger(target string) (sessionInputReceiptLedger, error) {
+	value, err := tmuxWindowUserOption(target, sessionInputReceiptOption)
+	if err != nil {
+		return sessionInputReceiptLedger{}, err
+	}
+	return decodeSessionInputReceiptLedger(value)
+}
+
+func (realSessionInputIO) writeReceiptLedger(target string, ledger sessionInputReceiptLedger) error {
+	if err := validateSessionInputReceiptLedger(ledger); err != nil {
+		return err
+	}
+	raw, err := json.Marshal(ledger)
+	if err != nil {
+		return fmt.Errorf("encode Session input receipt ledger: %w", err)
+	}
+	out, err := exec.Command(
+		"tmux",
+		"set-option",
+		"-w",
+		"-t",
+		target,
+		"@"+sessionInputReceiptOption,
+		string(raw),
+	).CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("write Session input receipt ledger: %w%s", err, commandOutputSuffix(out))
+	}
+	return nil
 }
 
 type sessionInputSession struct {
 	mu sync.Mutex
-}
-
-type sessionInputAttempt struct {
-	receipt     string
-	payloadHash string
-	outcome     InputOutcome
 }
 
 // sessionInputOwner is the sole serialization owner for every terminal
@@ -168,7 +192,6 @@ type sessionInputAttempt struct {
 type sessionInputOwner struct {
 	mu       sync.Mutex
 	sessions map[string]*sessionInputSession
-	attempts map[string]sessionInputAttempt
 	io       sessionInputIO
 }
 
@@ -178,7 +201,6 @@ func newSessionInputOwner(io sessionInputIO) *sessionInputOwner {
 	}
 	return &sessionInputOwner{
 		sessions: make(map[string]*sessionInputSession),
-		attempts: make(map[string]sessionInputAttempt),
 		io:       io,
 	}
 }
@@ -205,7 +227,21 @@ func (owner *sessionInputOwner) serialized(sessionID string, action func() error
 	return action()
 }
 
-const sessionInputReceiptOption = "zen_session_input_receipt"
+const sessionInputReceiptOption = "zen_session_input_receipts"
+const sessionInputReceiptLedgerSchema = 1
+const sessionInputReceiptLedgerLimit = 64
+const sessionInputReceiptMaxBytes = 512
+
+type sessionInputReceiptEntry struct {
+	Receipt       string       `json:"receipt"`
+	PayloadSHA256 string       `json:"payload_sha256"`
+	Outcome       InputOutcome `json:"outcome"`
+}
+
+type sessionInputReceiptLedger struct {
+	SchemaVersion int                        `json:"schema_version"`
+	Entries       []sessionInputReceiptEntry `json:"entries"`
+}
 
 var sessionInputBufferSequence atomic.Uint64
 
@@ -233,25 +269,25 @@ func (owner *sessionInputOwner) submit(
 		if err := validateSessionInputPane(baseline); err != nil {
 			return definitelyNotSubmitted(result.Receipt, err)
 		}
+		ledger := emptySessionInputReceiptLedger()
 		if result.Receipt != "" {
-			if attempt, found := owner.attempt(sessionID, result.Receipt); found {
-				if attempt.payloadHash != payloadDigest {
+			if len(result.Receipt) > sessionInputReceiptMaxBytes || !utf8.ValidString(result.Receipt) {
+				return definitelyNotSubmitted(result.Receipt, fmt.Errorf("input receipt is invalid or exceeds %d bytes", sessionInputReceiptMaxBytes))
+			}
+			var ledgerErr error
+			ledger, ledgerErr = owner.io.receiptLedger(baseline.paneID)
+			if ledgerErr != nil {
+				return definitelyNotSubmitted(result.Receipt, fmt.Errorf("read durable input receipt ledger: %w", ledgerErr))
+			}
+			if entry, found := ledger.entry(result.Receipt); found {
+				if entry.PayloadSHA256 != payloadDigest {
 					return definitelyNotSubmitted(result.Receipt, fmt.Errorf("receipt already belongs to different input"))
 				}
-				result.Outcome = attempt.outcome
-				if attempt.outcome == InputAccepted {
+				result.Outcome = entry.Outcome
+				if entry.Outcome == InputAccepted {
 					return nil
 				}
 				return ambiguousSubmission(result.Receipt, fmt.Errorf("the prior attempt may already have submitted"))
-			}
-			stableReceipt, receiptErr := owner.io.receipt(sessionID)
-			if receiptErr != nil {
-				return definitelyNotSubmitted(result.Receipt, fmt.Errorf("read stable input receipt: %w", receiptErr))
-			}
-			if stableReceipt == result.Receipt {
-				result.Outcome = InputAccepted
-				owner.remember(sessionID, result.Receipt, payloadDigest, InputAccepted)
-				return nil
 			}
 		}
 		buffer := fmt.Sprintf("zen-session-input-%d-%d", os.Getpid(), sessionInputBufferSequence.Add(1))
@@ -271,23 +307,83 @@ func (owner *sessionInputOwner) submit(
 			return definitelyNotSubmitted(result.Receipt, err)
 		}
 
+		originalLedger := ledger
+		markedLedger := ledger
+		if result.Receipt != "" {
+			var markErr error
+			markedLedger, markErr = ledger.withAmbiguous(result.Receipt, payloadDigest)
+			if markErr != nil {
+				return definitelyNotSubmitted(result.Receipt, markErr)
+			}
+			if markErr := owner.persistReceiptLedger(
+				current.paneID,
+				markedLedger,
+				result.Receipt,
+				payloadDigest,
+				InputAmbiguous,
+			); markErr != nil {
+				return owner.rollbackReceiptMarker(
+					current.paneID,
+					originalLedger,
+					result.Receipt,
+					fmt.Errorf("persist pre-mutation ambiguity: %w", markErr),
+				)
+			}
+			if err := guardTargetIdentity(resolver, sessionID, expected); err != nil {
+				return owner.rollbackReceiptMarker(current.paneID, originalLedger, result.Receipt, err)
+			}
+			afterMarker := owner.io.pane(current.paneID)
+			if err := validateSameSessionInputPane(current, afterMarker); err != nil {
+				return owner.rollbackReceiptMarker(current.paneID, originalLedger, result.Receipt, err)
+			}
+		}
+
 		adapter := sessionInputProviderForCommand(command)
 		started, queueErr := owner.io.runQueue(sessionInputSubmitQueue(
 			current.paneID,
 			buffer,
 			adapter,
-			result.Receipt,
 		))
 		if queueErr != nil {
 			if started {
 				result.Outcome = InputAmbiguous
-				owner.remember(sessionID, result.Receipt, payloadDigest, InputAmbiguous)
 				return ambiguousSubmission(result.Receipt, fmt.Errorf("run target-bound tmux command queue: %w", queueErr))
+			}
+			if result.Receipt != "" {
+				return owner.rollbackReceiptMarker(
+					current.paneID,
+					originalLedger,
+					result.Receipt,
+					fmt.Errorf("start target-bound tmux command queue: %w", queueErr),
+				)
 			}
 			return definitelyNotSubmitted(result.Receipt, fmt.Errorf("start target-bound tmux command queue: %w", queueErr))
 		}
+		if result.Receipt != "" {
+			acceptedLedger, acceptErr := markedLedger.withOutcome(
+				result.Receipt,
+				payloadDigest,
+				InputAccepted,
+			)
+			if acceptErr != nil {
+				result.Outcome = InputAmbiguous
+				return ambiguousSubmission(result.Receipt, acceptErr)
+			}
+			if acceptErr := owner.persistReceiptLedger(
+				current.paneID,
+				acceptedLedger,
+				result.Receipt,
+				payloadDigest,
+				InputAccepted,
+			); acceptErr != nil {
+				result.Outcome = InputAmbiguous
+				return ambiguousSubmission(
+					result.Receipt,
+					fmt.Errorf("submit succeeded but acceptance receipt was not confirmed: %w", acceptErr),
+				)
+			}
+		}
 		result.Outcome = InputAccepted
-		owner.remember(sessionID, result.Receipt, payloadDigest, InputAccepted)
 		return nil
 	})
 	if err != nil {
@@ -296,24 +392,183 @@ func (owner *sessionInputOwner) submit(
 	return result, err
 }
 
-func (owner *sessionInputOwner) attempt(sessionID, receipt string) (sessionInputAttempt, bool) {
-	owner.mu.Lock()
-	defer owner.mu.Unlock()
-	attempt, found := owner.attempts[sessionID]
-	return attempt, found && attempt.receipt == receipt
+func emptySessionInputReceiptLedger() sessionInputReceiptLedger {
+	return sessionInputReceiptLedger{
+		SchemaVersion: sessionInputReceiptLedgerSchema,
+		Entries:       []sessionInputReceiptEntry{},
+	}
 }
 
-func (owner *sessionInputOwner) remember(sessionID, receipt, payloadHash string, outcome InputOutcome) {
-	if receipt == "" {
-		return
+func decodeSessionInputReceiptLedger(value string) (sessionInputReceiptLedger, error) {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return emptySessionInputReceiptLedger(), nil
 	}
-	owner.mu.Lock()
-	defer owner.mu.Unlock()
-	owner.attempts[sessionID] = sessionInputAttempt{
-		receipt:     receipt,
-		payloadHash: payloadHash,
-		outcome:     outcome,
+	var ledger sessionInputReceiptLedger
+	if err := json.Unmarshal([]byte(value), &ledger); err != nil {
+		return sessionInputReceiptLedger{}, fmt.Errorf("decode Session input receipt ledger: %w", err)
 	}
+	if err := validateSessionInputReceiptLedger(ledger); err != nil {
+		return sessionInputReceiptLedger{}, err
+	}
+	return ledger, nil
+}
+
+func validateSessionInputReceiptLedger(ledger sessionInputReceiptLedger) error {
+	if ledger.SchemaVersion != sessionInputReceiptLedgerSchema {
+		return fmt.Errorf("unsupported Session input receipt ledger schema %d", ledger.SchemaVersion)
+	}
+	if len(ledger.Entries) > sessionInputReceiptLedgerLimit {
+		return fmt.Errorf("Session input receipt ledger exceeds %d entries", sessionInputReceiptLedgerLimit)
+	}
+	seen := make(map[string]struct{}, len(ledger.Entries))
+	for _, entry := range ledger.Entries {
+		if entry.Receipt == "" ||
+			len(entry.Receipt) > sessionInputReceiptMaxBytes ||
+			!utf8.ValidString(entry.Receipt) {
+			return fmt.Errorf("Session input receipt ledger contains an invalid receipt")
+		}
+		if _, exists := seen[entry.Receipt]; exists {
+			return fmt.Errorf("Session input receipt ledger contains duplicate receipt %q", entry.Receipt)
+		}
+		seen[entry.Receipt] = struct{}{}
+		hash, err := hex.DecodeString(entry.PayloadSHA256)
+		if err != nil || len(hash) != sha256.Size {
+			return fmt.Errorf("Session input receipt %q has an invalid payload hash", entry.Receipt)
+		}
+		if entry.Outcome != InputAccepted && entry.Outcome != InputAmbiguous {
+			return fmt.Errorf("Session input receipt %q has invalid outcome %q", entry.Receipt, entry.Outcome)
+		}
+	}
+	return nil
+}
+
+func (ledger sessionInputReceiptLedger) entry(receipt string) (sessionInputReceiptEntry, bool) {
+	for _, entry := range ledger.Entries {
+		if entry.Receipt == receipt {
+			return entry, true
+		}
+	}
+	return sessionInputReceiptEntry{}, false
+}
+
+func (ledger sessionInputReceiptLedger) withAmbiguous(
+	receipt string,
+	payloadHash string,
+) (sessionInputReceiptLedger, error) {
+	if _, found := ledger.entry(receipt); found {
+		return sessionInputReceiptLedger{}, fmt.Errorf("receipt %q already exists", receipt)
+	}
+	entries := append([]sessionInputReceiptEntry(nil), ledger.Entries...)
+	if len(entries) >= sessionInputReceiptLedgerLimit {
+		evict := -1
+		for index, entry := range entries {
+			if entry.Outcome == InputAccepted {
+				evict = index
+				break
+			}
+		}
+		if evict < 0 {
+			return sessionInputReceiptLedger{}, fmt.Errorf(
+				"Session input receipt ledger is full of unresolved ambiguous entries",
+			)
+		}
+		entries = append(entries[:evict], entries[evict+1:]...)
+	}
+	entries = append(entries, sessionInputReceiptEntry{
+		Receipt:       receipt,
+		PayloadSHA256: payloadHash,
+		Outcome:       InputAmbiguous,
+	})
+	next := sessionInputReceiptLedger{
+		SchemaVersion: sessionInputReceiptLedgerSchema,
+		Entries:       entries,
+	}
+	return next, validateSessionInputReceiptLedger(next)
+}
+
+func (ledger sessionInputReceiptLedger) withOutcome(
+	receipt string,
+	payloadHash string,
+	outcome InputOutcome,
+) (sessionInputReceiptLedger, error) {
+	entries := append([]sessionInputReceiptEntry(nil), ledger.Entries...)
+	for index := range entries {
+		if entries[index].Receipt != receipt {
+			continue
+		}
+		if entries[index].PayloadSHA256 != payloadHash {
+			return sessionInputReceiptLedger{}, fmt.Errorf("receipt %q belongs to different input", receipt)
+		}
+		entries[index].Outcome = outcome
+		next := sessionInputReceiptLedger{
+			SchemaVersion: sessionInputReceiptLedgerSchema,
+			Entries:       entries,
+		}
+		return next, validateSessionInputReceiptLedger(next)
+	}
+	return sessionInputReceiptLedger{}, fmt.Errorf("receipt %q is missing from durable ledger", receipt)
+}
+
+func (owner *sessionInputOwner) writeAndConfirmReceiptLedger(
+	target string,
+	ledger sessionInputReceiptLedger,
+) error {
+	if err := owner.io.writeReceiptLedger(target, ledger); err != nil {
+		return err
+	}
+	confirmed, err := owner.io.receiptLedger(target)
+	if err != nil {
+		return fmt.Errorf("read back Session input receipt ledger: %w", err)
+	}
+	if !sessionInputReceiptLedgersEqual(confirmed, ledger) {
+		return fmt.Errorf("Session input receipt ledger readback did not match the written state")
+	}
+	return nil
+}
+
+func (owner *sessionInputOwner) persistReceiptLedger(
+	target string,
+	ledger sessionInputReceiptLedger,
+	receipt string,
+	payloadHash string,
+	outcome InputOutcome,
+) error {
+	if err := owner.writeAndConfirmReceiptLedger(target, ledger); err != nil {
+		return err
+	}
+	entry, found := ledger.entry(receipt)
+	if !found || entry.PayloadSHA256 != payloadHash || entry.Outcome != outcome {
+		return fmt.Errorf("Session input receipt %q was not confirmed as %s", receipt, outcome)
+	}
+	return nil
+}
+
+func (owner *sessionInputOwner) rollbackReceiptMarker(
+	target string,
+	original sessionInputReceiptLedger,
+	receipt string,
+	cause error,
+) error {
+	if err := owner.writeAndConfirmReceiptLedger(target, original); err != nil {
+		return ambiguousSubmission(
+			receipt,
+			fmt.Errorf("%v; durable ambiguity rollback could not be confirmed: %w", cause, err),
+		)
+	}
+	return definitelyNotSubmitted(receipt, cause)
+}
+
+func sessionInputReceiptLedgersEqual(left, right sessionInputReceiptLedger) bool {
+	if left.SchemaVersion != right.SchemaVersion || len(left.Entries) != len(right.Entries) {
+		return false
+	}
+	for index := range left.Entries {
+		if left.Entries[index] != right.Entries[index] {
+			return false
+		}
+	}
+	return true
 }
 
 func validateSessionInputPane(pane sessionInputPane) error {
@@ -339,7 +594,6 @@ func sessionInputSubmitQueue(
 	paneID string,
 	buffer string,
 	adapter sessionInputProvider,
-	receipt string,
 ) []string {
 	args := []string{
 		// Chat is authoritative over an unsent Terminal draft.
@@ -352,10 +606,6 @@ func sessionInputSubmitQueue(
 		)
 	}
 	args = append(args, ";", "send-keys", "-t", paneID, adapter.submitKey)
-	if receipt != "" {
-		// This queue position is after the single submit key.
-		args = append(args, ";", "set-option", "-w", "-t", paneID, "@"+sessionInputReceiptOption, receipt)
-	}
 	args = append(args, ";", "delete-buffer", "-b", buffer)
 	return args
 }
