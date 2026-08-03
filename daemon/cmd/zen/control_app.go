@@ -25,6 +25,8 @@ type controlWatcher interface {
 	UpdateAgentProgress(id string, progress classifier.AgentProgress) (*classifier.Agent, error)
 	SettleAgentInputAccepted(id string, handoffStartedAt time.Time, phase, summary string) (*classifier.Agent, error)
 	SendInput(sessionID, text string) error
+	SendInputWithReceipt(sessionID, text, receipt string) error
+	HasInputReceipt(sessionID, receipt string) (bool, error)
 	SendInputWhenReady(sessionID, command, text string) error
 	KillSession(sessionID string) error
 	CapturePaneContent(sessionID string) (string, error)

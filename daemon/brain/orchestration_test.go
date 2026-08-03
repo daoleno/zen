@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -329,14 +330,27 @@ func TestInterruptedEventClaimsRecoverWithoutDuplicateOrLoss(t *testing.T) {
 		}
 	})
 
-	t.Run("observed_after_send_before_ack", func(t *testing.T) {
+	t.Run("durable_receipt_survives_scrolled_pane", func(t *testing.T) {
 		store, fw, item, _, hostID := newFixture(t)
 		claimed, ok, err := store.ClaimNextActionableEvent(hostID)
 		if err != nil || !ok {
 			t.Fatalf("claim ok=%v err=%v", ok, err)
 		}
+		boundedSnapshot := strings.Repeat("later output with no delivery marker\n", 200)
+		fullTranscript := formatWorkEventWake(item, claimed) + "\n" + boundedSnapshot
 		fw.captures = map[string]string{
-			hostID: formatWorkEventWake(item, claimed) + "\n",
+			hostID: boundedSnapshot,
+		}
+		fw.receipts = map[string]string{
+			hostID: workEventDeliveryReceipt(claimed),
+		}
+		if !strings.Contains(fullTranscript, claimed.ID) ||
+			!strings.Contains(fullTranscript, claimed.ClaimToken) {
+			t.Fatal("full transcript never contained delivery marker")
+		}
+		if strings.Contains(fw.captures[hostID], claimed.ID) ||
+			strings.Contains(fw.captures[hostID], claimed.ClaimToken) {
+			t.Fatal("bounded pane unexpectedly retained delivery marker")
 		}
 
 		reopened, err := NewStore(store.Root)
@@ -354,11 +368,11 @@ func TestInterruptedEventClaimsRecoverWithoutDuplicateOrLoss(t *testing.T) {
 		}
 		if len(events) != 1 || events[0].DeliveryAcknowledgedAt == nil || events[0].ConsumedAt == nil ||
 			len(fw.sentCalls) != 0 {
-			t.Fatalf("recovered observed Event=%#v sends=%#v", events, fw.sentCalls)
+			t.Fatalf("recovered durable receipt Event=%#v sends=%#v pane=%q", events, fw.sentCalls, fw.captures[hostID])
 		}
 	})
 
-	t.Run("expired_without_delivery_retries_once", func(t *testing.T) {
+	t.Run("ambiguous_delivery_fails_closed", func(t *testing.T) {
 		store, fw, _, _, hostID := newFixture(t)
 		if _, ok, err := store.ClaimNextActionableEvent(hostID); err != nil || !ok {
 			t.Fatalf("claim ok=%v err=%v", ok, err)
@@ -368,8 +382,7 @@ func TestInterruptedEventClaimsRecoverWithoutDuplicateOrLoss(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		retryAt := now.Add(eventClaimRecoveryDelay + time.Second)
-		reopened.now = func() time.Time { return retryAt }
+		retryAt := now.Add(24 * time.Hour)
 		service := NewService(reopened, fw, nil)
 		service.now = func() time.Time { return retryAt }
 		if woke, err := service.DispatchPendingEvent(); err != nil || woke {
@@ -379,23 +392,20 @@ func TestInterruptedEventClaimsRecoverWithoutDuplicateOrLoss(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if len(events) != 1 || events[0].ClaimedAt != nil {
-			t.Fatalf("expired claim was not made retryable without a host: %#v", events)
+		if len(events) != 1 || events[0].ClaimedAt == nil || events[0].ConsumedAt != nil {
+			t.Fatalf("ambiguous claim did not fail closed: %#v", events)
 		}
 		fw.sessions[hostID] = &classifier.Agent{ID: hostID, Hidden: true, State: classifier.StateDone}
-		if woke, err := service.DispatchPendingEvent(); err != nil || !woke {
-			t.Fatalf("expired undelivered Event was lost: woke=%v err=%v", woke, err)
-		}
 		if woke, err := service.DispatchPendingEvent(); err != nil || woke {
-			t.Fatalf("retried Event delivered twice: woke=%v err=%v", woke, err)
+			t.Fatalf("ambiguous Event was guessed and resent: woke=%v err=%v", woke, err)
 		}
 		events, err = reopened.ListWorkEvents("")
 		if err != nil {
 			t.Fatal(err)
 		}
-		if len(events) != 1 || events[0].DeliveryAcknowledgedAt == nil || events[0].ConsumedAt == nil ||
-			len(fw.sentCalls) != 1 {
-			t.Fatalf("retried Event=%#v sends=%#v", events, fw.sentCalls)
+		if len(events) != 1 || events[0].ClaimedAt == nil || events[0].ConsumedAt != nil ||
+			len(fw.sentCalls) != 0 {
+			t.Fatalf("ambiguous Event=%#v sends=%#v", events, fw.sentCalls)
 		}
 	})
 }
@@ -631,7 +641,7 @@ func TestDispatchRequiresActionableEventEvenForUntilDoneWork(t *testing.T) {
 	}
 }
 
-func TestDispatchRetriesOnlyExpiredUnacknowledgedSend(t *testing.T) {
+func TestDispatchFailedSendRemainsClosedWithoutDurableReceipt(t *testing.T) {
 	store, err := NewStore(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
@@ -681,20 +691,20 @@ func TestDispatchRetriesOnlyExpiredUnacknowledgedSend(t *testing.T) {
 	}
 	fw.sendErr = nil
 	if woke, err := service.DispatchPendingEvent(); err != nil || woke {
-		t.Fatalf("unexpired uncertain delivery retried: woke=%v err=%v", woke, err)
+		t.Fatalf("uncertain delivery retried: woke=%v err=%v", woke, err)
 	}
-	retryAt := now.Add(eventClaimRecoveryDelay + time.Second)
+	retryAt := now.Add(24 * time.Hour)
 	store.now = func() time.Time { return retryAt }
 	service.now = func() time.Time { return retryAt }
-	if woke, err := service.DispatchPendingEvent(); err != nil || !woke {
-		t.Fatalf("expired unacknowledged event was not retryable: woke=%v err=%v", woke, err)
+	if woke, err := service.DispatchPendingEvent(); err != nil || woke {
+		t.Fatalf("elapsed time caused an ambiguous retry: woke=%v err=%v", woke, err)
 	}
 	events, err = store.ListWorkEvents(item.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if events[0].ConsumedAt == nil {
-		t.Fatalf("successful retry was not consumed: %#v", events)
+	if events[0].ClaimedAt == nil || events[0].ConsumedAt != nil || len(fw.sentCalls) != 1 {
+		t.Fatalf("ambiguous failed send did not remain closed: events=%#v sends=%#v", events, fw.sentCalls)
 	}
 }
 

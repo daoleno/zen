@@ -72,6 +72,20 @@ func TestBrainSchedulerHasOneRuntimeOwner(t *testing.T) {
 	if strings.Contains(string(brainSource), "ReleaseWorkEvent") {
 		t.Fatal("Brain store still permits eager unacknowledged claim release")
 	}
+	brainServiceSource, err := os.ReadFile(filepath.Join("..", "brain", "service.go"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, required := range []string{"SendInputWithReceipt", "HasInputReceipt"} {
+		if !strings.Contains(string(brainServiceSource), required) {
+			t.Fatalf("Brain delivery is missing durable Session receipt boundary %q", required)
+		}
+	}
+	for _, forbidden := range []string{"CapturePaneContent", "eventClaimRecoveryDelay"} {
+		if strings.Contains(string(brainServiceSource), forbidden) {
+			t.Fatalf("Brain delivery still uses volatile replay authority %q", forbidden)
+		}
+	}
 
 	for _, removed := range []string{
 		"brain_attention_test.go",

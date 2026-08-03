@@ -888,13 +888,11 @@ func (s *Store) ConsumeAcknowledgedWorkEvent(eventID, claimToken, hostSessionID 
 	return err
 }
 
-// RecoverWorkEventClaim resolves exactly one interrupted claim. Delivery
-// evidence consumes the existing Event. Only an expired claim with no durable
-// acknowledgement and no observed host marker is released for retry.
+// RecoverWorkEventClaim resolves exactly one interrupted claim. A durable
+// Session receipt consumes the existing Event; ambiguous claims remain intact.
 func (s *Store) RecoverWorkEventClaim(
 	eventID, claimToken, hostSessionID string,
-	deliveryObserved bool,
-	expired bool,
+	deliveryAccepted bool,
 ) (bool, error) {
 	eventID = strings.TrimSpace(eventID)
 	claimToken = strings.TrimSpace(claimToken)
@@ -918,7 +916,7 @@ func (s *Store) RecoverWorkEventClaim(
 				s.mu.Unlock()
 				return false, nil
 			}
-			if deliveryObserved && event.DeliveryAcknowledgedAt == nil {
+			if deliveryAccepted && event.DeliveryAcknowledgedAt == nil {
 				now := s.nowUTC()
 				event.DeliveryAcknowledgedAt = &now
 				changed = true
@@ -926,11 +924,6 @@ func (s *Store) RecoverWorkEventClaim(
 			if event.DeliveryAcknowledgedAt != nil {
 				now := s.nowUTC()
 				event.ConsumedAt = &now
-				changed = true
-			} else if expired {
-				event.ClaimedAt = nil
-				event.ClaimToken = ""
-				event.DeliveryHostSessionID = ""
 				changed = true
 			}
 			if changed {

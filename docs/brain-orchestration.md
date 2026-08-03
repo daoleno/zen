@@ -38,16 +38,20 @@ and a context reference. Long plans and evidence stay in `workspace/worklog/`.
 
 Event dedupe keys are unique within one Work. An actionable Event is durably
 claimed for one Brain host Session before input is sent. The Event ID and claim
-token travel with that input. A successful send is durably acknowledged before
-consumption; after interruption, an acknowledgement or the matching
-host/Event/token marker consumes the existing delivery without replay. Only an
-expired unacknowledged claim with no observed marker becomes retryable. There
-is no second in-memory scheduler truth, direct lifecycle wake owner, or dual
-write to provider Goal state.
+token form an idempotency receipt in the receiving Session metadata. The
+Session input boundary checks that durable receipt before enqueueing and stores
+it after acceptance. A successful send is then durably acknowledged in the
+Event before consumption. After interruption, either acknowledgement or the
+matching Session receipt consumes the existing delivery without replay. Pane
+history and elapsed time are never proof of non-delivery; an ambiguous claim
+remains closed instead of being guessed and resent. There is no second
+in-memory scheduler truth, direct lifecycle wake owner, or dual write to
+provider Goal state.
 
 Schema 2 adds host-bound delivery evidence to the existing Event record. Its
-one-way schema-1 migration makes an unresolved claim that predates host binding
-retryable; it does not create a table, copy an Event, or add another delivery
+one-way schema-1 migration binds an unresolved claim to the persisted host when
+available. A migrated claim without a durable receiver receipt remains closed;
+the migration does not create a table, copy an Event, or add another delivery
 path.
 
 On the first authoritative Watcher inventory after an upgrade, schema migration

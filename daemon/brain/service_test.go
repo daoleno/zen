@@ -21,6 +21,7 @@ type fakeWatcher struct {
 	killed    []string
 	sendErr   error
 	captures  map[string]string
+	receipts  map[string]string
 }
 
 type createdCall struct {
@@ -98,6 +99,24 @@ func (w *fakeWatcher) SendInput(sessionID, text string) error {
 
 func (w *fakeWatcher) SendInputWhenReady(sessionID, _ string, text string) error {
 	return w.SendInput(sessionID, text)
+}
+
+func (w *fakeWatcher) SendInputWithReceipt(sessionID, text, receipt string) error {
+	if w.receipts != nil && w.receipts[sessionID] == receipt {
+		return nil
+	}
+	if err := w.SendInput(sessionID, text); err != nil {
+		return err
+	}
+	if w.receipts == nil {
+		w.receipts = map[string]string{}
+	}
+	w.receipts[sessionID] = receipt
+	return nil
+}
+
+func (w *fakeWatcher) HasInputReceipt(sessionID, receipt string) (bool, error) {
+	return w.receipts != nil && w.receipts[sessionID] == receipt, nil
 }
 
 func (w *fakeWatcher) KillSession(sessionID string) error {

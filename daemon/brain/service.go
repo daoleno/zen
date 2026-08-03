@@ -23,10 +23,7 @@ var (
 	ErrExecutorLockedByEnv   = errors.New("brain host executor is locked by environment override")
 )
 
-const (
-	codexFullAuthorizationFlag = work.CodexFullAuthorizationFlag
-	eventClaimRecoveryDelay    = 2 * time.Minute
-)
+const codexFullAuthorizationFlag = work.CodexFullAuthorizationFlag
 
 type Watcher interface {
 	Agents() []*classifier.Agent
@@ -35,8 +32,9 @@ type Watcher interface {
 	CreateSession(preferredTarget string, opts watcher.CreateSessionOptions) (string, error)
 	SendInput(sessionID, text string) error
 	SendInputWhenReady(sessionID, command, text string) error
+	SendInputWithReceipt(sessionID, text, receipt string) error
+	HasInputReceipt(sessionID, receipt string) (bool, error)
 	KillSession(sessionID string) error
-	CapturePaneContent(sessionID string) (string, error)
 }
 
 type Service struct {
@@ -539,7 +537,11 @@ func (s *Service) DispatchPendingEvent() (bool, error) {
 		return false, err
 	}
 	message := formatWorkEventWake(item, event)
-	if err := s.watcher.SendInput(hostID, message+"\n"); err != nil {
+	if err := s.watcher.SendInputWithReceipt(
+		hostID,
+		message+"\n",
+		workEventDeliveryReceipt(event),
+	); err != nil {
 		return false, err
 	}
 	if err := s.store.AcknowledgeWorkEventDelivery(event.ID, event.ClaimToken, hostID); err != nil {
@@ -556,7 +558,6 @@ func (s *Service) recoverInterruptedEventClaims() (bool, error) {
 	if err != nil {
 		return false, err
 	}
-	now := s.nowUTC()
 	unresolved := false
 	for _, event := range events {
 		if event.DeliveryAcknowledgedAt != nil {
@@ -565,33 +566,27 @@ func (s *Service) recoverInterruptedEventClaims() (bool, error) {
 				event.ClaimToken,
 				event.DeliveryHostSessionID,
 				false,
-				false,
 			); err != nil {
 				return false, err
 			}
 			continue
 		}
-		observed := false
-		observationComplete := false
-		if s.watcher.HasSession(event.DeliveryHostSessionID) {
-			content, captureErr := s.watcher.CapturePaneContent(event.DeliveryHostSessionID)
-			if captureErr != nil {
-				return false, fmt.Errorf("observe Brain Event delivery: %w", captureErr)
-			}
-			observed = workEventDeliveryObserved(content, event)
-			observationComplete = true
-		} else {
-			observationComplete = true
+		if !s.watcher.HasSession(event.DeliveryHostSessionID) {
+			unresolved = true
+			continue
 		}
-		expired := observationComplete &&
-			event.ClaimedAt != nil &&
-			!now.Before(event.ClaimedAt.Add(eventClaimRecoveryDelay))
+		accepted, receiptErr := s.watcher.HasInputReceipt(
+			event.DeliveryHostSessionID,
+			workEventDeliveryReceipt(event),
+		)
+		if receiptErr != nil {
+			return false, fmt.Errorf("read Brain Event Session receipt: %w", receiptErr)
+		}
 		changed, err := s.store.RecoverWorkEventClaim(
 			event.ID,
 			event.ClaimToken,
 			event.DeliveryHostSessionID,
-			observed,
-			expired,
+			accepted,
 		)
 		if err != nil {
 			return false, err
@@ -603,12 +598,8 @@ func (s *Service) recoverInterruptedEventClaims() (bool, error) {
 	return unresolved, nil
 }
 
-func workEventDeliveryObserved(content string, event WorkEvent) bool {
-	return strings.TrimSpace(event.DeliveryHostSessionID) != "" &&
-		strings.TrimSpace(event.ID) != "" &&
-		strings.TrimSpace(event.ClaimToken) != "" &&
-		strings.Contains(content, "event_id: "+event.ID) &&
-		strings.Contains(content, "delivery_token: "+event.ClaimToken)
+func workEventDeliveryReceipt(event WorkEvent) string {
+	return strings.TrimSpace(event.ID) + ":" + strings.TrimSpace(event.ClaimToken)
 }
 
 func formatWorkEventWake(item Work, event WorkEvent) string {

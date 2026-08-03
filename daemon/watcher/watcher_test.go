@@ -1006,6 +1006,57 @@ esac
 	}
 }
 
+func TestSendInputWithReceiptPersistsSessionAcceptanceAndDedupes(t *testing.T) {
+	binDir := t.TempDir()
+	receiptPath := filepath.Join(t.TempDir(), "receipt")
+	sendLogPath := filepath.Join(t.TempDir(), "sends")
+	script := fmt.Sprintf(`#!/bin/sh
+receipt=%q
+sends=%q
+case "$1" in
+  show-options)
+    [ -f "$receipt" ] && cat "$receipt"
+    exit 0
+    ;;
+  set-option)
+    printf '%%s' "$6" > "$receipt"
+    exit 0
+    ;;
+  send-keys)
+    printf 'send\n' >> "$sends"
+    exit 0
+    ;;
+  *)
+    exit 1
+    ;;
+esac
+`, receiptPath, sendLogPath)
+	tmuxPath := filepath.Join(binDir, "tmux")
+	if err := os.WriteFile(tmuxPath, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	w := New(time.Second)
+	receipt := "event-1:claim-token-1"
+	for range 2 {
+		if err := w.SendInputWithReceipt("brain-host:@1", "one turn\n", receipt); err != nil {
+			t.Fatal(err)
+		}
+	}
+	accepted, err := w.HasInputReceipt("brain-host:@1", receipt)
+	if err != nil || !accepted {
+		t.Fatalf("accepted=%v err=%v", accepted, err)
+	}
+	raw, err := os.ReadFile(sendLogPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.Count(string(raw), "send\n"); got != 2 {
+		t.Fatalf("tmux send commands=%d, want one literal plus one Enter", got)
+	}
+}
+
 func TestCursorAgentUsesLongerSubmitDelay(t *testing.T) {
 	if got := tmuxSubmitDelay("cursor-agent --force --sandbox disabled"); got < 350*time.Millisecond {
 		t.Fatalf("Cursor Agent submit delay = %s, want at least 350ms", got)

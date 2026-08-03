@@ -21,6 +21,7 @@ type fakeControlWatcher struct {
 	sent     []fakeControlSend
 	killed   []string
 	captures map[string]string
+	receipts map[string]string
 	progress []fakeControlProgress
 	sendErr  error
 	ready    []fakeControlSend
@@ -41,6 +42,7 @@ func newFakeControlWatcher() *fakeControlWatcher {
 	return &fakeControlWatcher{
 		agents:   map[string]*classifier.Agent{},
 		captures: map[string]string{},
+		receipts: map[string]string{},
 	}
 }
 
@@ -136,6 +138,21 @@ func (w *fakeControlWatcher) SettleAgentInputAccepted(id string, handoffStartedA
 func (w *fakeControlWatcher) SendInput(sessionID, text string) error {
 	w.sent = append(w.sent, fakeControlSend{id: sessionID, text: text})
 	return w.sendErr
+}
+
+func (w *fakeControlWatcher) SendInputWithReceipt(sessionID, text, receipt string) error {
+	if w.receipts[sessionID] == receipt {
+		return nil
+	}
+	if err := w.SendInput(sessionID, text); err != nil {
+		return err
+	}
+	w.receipts[sessionID] = receipt
+	return nil
+}
+
+func (w *fakeControlWatcher) HasInputReceipt(sessionID, receipt string) (bool, error) {
+	return w.receipts[sessionID] == receipt, nil
 }
 
 func (w *fakeControlWatcher) SendInputWhenReady(sessionID, _ string, text string) error {

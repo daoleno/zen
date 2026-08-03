@@ -816,6 +816,42 @@ func (w *Watcher) SendInput(sessionID, text string) error {
 	return SendInput(sessionID, text)
 }
 
+const brainInputReceiptOption = "zen_brain_input_receipt"
+
+// SendInputWithReceipt makes one Brain input idempotent at the receiving
+// Session boundary. A matching durable Session receipt suppresses re-enqueue;
+// a new receipt is recorded only after tmux accepts the input.
+func (w *Watcher) SendInputWithReceipt(sessionID, text, receipt string) error {
+	receipt = strings.TrimSpace(receipt)
+	if receipt == "" {
+		return fmt.Errorf("input receipt is required")
+	}
+	accepted, err := w.HasInputReceipt(sessionID, receipt)
+	if err != nil {
+		return err
+	}
+	if accepted {
+		return nil
+	}
+	if err := w.SendInput(sessionID, text); err != nil {
+		return err
+	}
+	return setTmuxWindowUserOption(sessionID, brainInputReceiptOption, receipt)
+}
+
+// HasInputReceipt reads durable receiver-side acceptance from Session metadata.
+func (w *Watcher) HasInputReceipt(sessionID, receipt string) (bool, error) {
+	receipt = strings.TrimSpace(receipt)
+	if receipt == "" {
+		return false, fmt.Errorf("input receipt is required")
+	}
+	value, err := tmuxWindowUserOption(sessionID, brainInputReceiptOption)
+	if err != nil {
+		return false, err
+	}
+	return value == receipt, nil
+}
+
 // SendInputWhenReady waits for a newly started agent UI to be ready, then sends
 // text. Unknown executors are treated as ready immediately. Known Codex, Cursor,
 // Claude, and Grok UIs must reach an input prompt so Zen does not paste a task
@@ -1666,6 +1702,27 @@ func setTmuxWindowUserOption(target, key, value string) error {
 		return fmt.Errorf("set @%s on %s: %w: %s", key, target, err, strings.TrimSpace(string(out)))
 	}
 	return nil
+}
+
+func tmuxWindowUserOption(target, key string) (string, error) {
+	target = strings.TrimSpace(target)
+	key = strings.TrimSpace(key)
+	if target == "" || key == "" {
+		return "", fmt.Errorf("tmux window option target and key are required")
+	}
+	out, err := exec.Command(
+		"tmux",
+		"show-options",
+		"-w",
+		"-qv",
+		"-t",
+		target,
+		"@"+key,
+	).CombinedOutput()
+	if err != nil {
+		return "", fmt.Errorf("show @%s on %s: %w: %s", key, target, err, strings.TrimSpace(string(out)))
+	}
+	return strings.TrimSpace(string(out)), nil
 }
 
 func createdSessionName(opts CreateSessionOptions) string {
