@@ -1,4 +1,6 @@
 import { buildHTTPURL, buildSignedRequestHeaders } from "./pairing";
+import { resolveCanonicalServerURL } from "./pinnedTransport";
+import type { StoredServer } from "./storage";
 
 const LATENCY_TIMEOUT_MS = 4000;
 
@@ -8,17 +10,17 @@ export interface ServerLatencySample {
 }
 
 export async function measureServerLatency(input: {
-  serverUrl: string;
-  daemonId: string;
+  server: StoredServer;
 }): Promise<ServerLatencySample | null> {
-  const authCheckURL = buildHTTPURL(input.serverUrl, "/auth-check");
+  const transportURL = await resolveCanonicalServerURL(input.server);
+  const authCheckURL = buildHTTPURL(transportURL, "/auth-check");
   if (!authCheckURL) {
     return null;
   }
 
   const headers = await buildSignedRequestHeaders({
-    serverUrl: input.serverUrl,
-    daemonId: input.daemonId,
+    serverUrl: transportURL,
+    daemonId: input.server.daemonId,
     purpose: "zen-probe",
   });
 

@@ -1,6 +1,18 @@
 import AsyncStorage from "@react-native-async-storage/async-storage";
-import { normalizeDaemonId, normalizePublicKeyHex } from "./auth";
-import { normalizeServerURL as normalizeConnectionURL } from "./connection";
+import {
+  mergeStoredServer,
+  normalizeStoredServers,
+  type ServerTransportKind,
+  type StoredServer,
+  type StoredServerInput,
+  type StoredTransportCandidate,
+} from "./storedServerContract";
+
+export type {
+  ServerTransportKind,
+  StoredServer,
+  StoredTransportCandidate,
+} from "./storedServerContract";
 
 const KEYS = {
   servers: "zen:v3:servers",
@@ -22,100 +34,24 @@ export type StoredInterfaceRenderModes = Record<
   string,
   StoredInterfaceRenderMode
 >;
-export interface StoredServer {
-  id: string;
-  name: string;
-  url: string;
-  daemonId: string;
-  daemonPublicKey: string;
-}
-
 export async function getServers(): Promise<StoredServer[]> {
   const value = await AsyncStorage.getItem(KEYS.servers);
   if (!value) return [];
 
   try {
-    const parsed = JSON.parse(value) as unknown;
-    if (!Array.isArray(parsed)) return [];
-
-    const normalized: StoredServer[] = [];
-    for (const item of parsed) {
-      if (!item || typeof item !== "object") continue;
-      const candidate = item as Record<string, unknown>;
-      const id = typeof candidate.id === "string" ? candidate.id.trim() : "";
-      const rawName =
-        typeof candidate.name === "string" ? candidate.name.trim() : "";
-      const rawURL =
-        typeof candidate.url === "string"
-          ? normalizeConnectionURL(candidate.url)
-          : "";
-      const daemonId =
-        typeof candidate.daemonId === "string"
-          ? normalizeDaemonId(candidate.daemonId)
-          : "";
-      const daemonPublicKey =
-        typeof candidate.daemonPublicKey === "string"
-          ? normalizePublicKeyHex(candidate.daemonPublicKey)
-          : "";
-      if (!id || !rawURL || !daemonId || !daemonPublicKey) continue;
-
-      normalized.push({
-        id,
-        name: rawName || deriveServerName(rawURL),
-        url: rawURL,
-        daemonId,
-        daemonPublicKey,
-      });
-    }
-
-    return dedupeServers(normalized);
+    return normalizeStoredServers(JSON.parse(value) as unknown);
   } catch {
     return [];
   }
 }
 
-export async function saveServer(input: {
-  id?: string;
-  name: string;
-  url: string;
-  daemonId: string;
-  daemonPublicKey: string;
-}): Promise<StoredServer> {
+export async function saveServer(
+  input: StoredServerInput,
+): Promise<StoredServer> {
   const servers = await getServers();
-  const normalizedURL = normalizeConnectionURL(input.url);
-  if (!normalizedURL) {
-    throw new Error("Invalid server URL.");
-  }
-  const normalizedName = input.name.trim() || deriveServerName(normalizedURL);
-  const daemonId = normalizeDaemonId(input.daemonId);
-  const daemonPublicKey = normalizePublicKeyHex(input.daemonPublicKey);
-  if (!daemonId || !daemonPublicKey) {
-    throw new Error("Missing daemon identity.");
-  }
-  const existingMatch = input.id?.trim()
-    ? null
-    : servers.find(
-        (server) =>
-          server.daemonId === daemonId &&
-          server.daemonPublicKey === daemonPublicKey &&
-          server.url === normalizedURL,
-      );
-
-  const nextServer: StoredServer = {
-    id: input.id?.trim() || existingMatch?.id || createServerID(),
-    name: normalizedName,
-    url: normalizedURL,
-    daemonId,
-    daemonPublicKey,
-  };
-
-  const nextServers = dedupeServers([
-    nextServer,
-    ...servers.filter((server) => server.id !== nextServer.id),
-  ]);
-
-  await AsyncStorage.setItem(KEYS.servers, JSON.stringify(nextServers));
-  return nextServer;
+  const next = mergeStoredServer(input, servers, createServerID);
+  await AsyncStorage.setItem(KEYS.servers, JSON.stringify(next.servers));
+  return next.server;
 }
 
 export async function removeServer(serverID: string): Promise<void> {
@@ -322,28 +258,6 @@ function normalizeIdList(value: unknown): string[] {
 
 function createServerID(): string {
   return `server_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
-}
-
-function dedupeServers(servers: StoredServer[]): StoredServer[] {
-  const seen = new Set<string>();
-  const normalized: StoredServer[] = [];
-
-  for (const server of servers) {
-    if (!server.id || !server.url || seen.has(server.id)) continue;
-    seen.add(server.id);
-    normalized.push(server);
-  }
-
-  return normalized;
-}
-
-function deriveServerName(url: string): string {
-  try {
-    const parsed = new URL(url);
-    return parsed.hostname || url;
-  } catch {
-    return url;
-  }
 }
 
 export async function getThemePreference(): Promise<StoredThemePreference | null> {

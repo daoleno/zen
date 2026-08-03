@@ -25,6 +25,7 @@ import (
 	"github.com/daoleno/zen/daemon/classifier"
 	"github.com/daoleno/zen/daemon/control"
 	"github.com/daoleno/zen/daemon/doctor"
+	"github.com/daoleno/zen/daemon/link"
 	"github.com/daoleno/zen/daemon/push"
 	"github.com/daoleno/zen/daemon/selfupdate"
 	"github.com/daoleno/zen/daemon/server"
@@ -36,14 +37,16 @@ import (
 )
 
 type daemonConfig struct {
-	addr     string
-	stateDir string
-	lan      bool
+	addr           string
+	stateDir       string
+	linkConfigPath string
+	lan            bool
 }
 
 type pairConfig struct {
-	endpoint string
-	stateDir string
+	endpoint       string
+	stateDir       string
+	linkConfigPath string
 }
 
 type cliConfig struct {
@@ -203,7 +206,7 @@ func runDaemon(args []string, stderr io.Writer) error {
 		Path:    controlPath,
 		Handler: controlHandler,
 	}
-	return runJoinedRuntime(ctx, []runtimeOwner{
+	runtimeOwners := []runtimeOwner{
 		{
 			name: "watcher",
 			run:  w.Run,
@@ -226,10 +229,70 @@ func runDaemon(args []string, stderr io.Writer) error {
 			name: "control server",
 			run:  controlServer.Run,
 		},
-		{
+	}
+
+	linkConfig, linkConfigPath, linkEnabled, err := loadOptionalLinkConfig(
+		authManager.StorageDir(),
+		cfg.linkConfigPath,
+	)
+	if err != nil {
+		return err
+	}
+	if linkEnabled {
+		linkConfig.StateObserver = func(state link.ConnectorState) {
+			switch {
+			case state.Phase == "connected":
+				log.Printf(
+					"Zen Link connected via %s (registration RTT %s)",
+					state.Relay,
+					state.MeasuredRTT.Round(time.Millisecond),
+				)
+			case state.Phase == "offline" && state.LastError != "":
+				log.Printf(
+					"Zen Link offline: %s; check relay reachability, connector credentials, and route ownership",
+					state.LastError,
+				)
+			}
+		}
+		transportIdentity, identityErr := link.LoadOrCreateTransportIdentity(
+			authManager.StorageDir(),
+			link.RelayDomains(linkConfig),
+		)
+		if identityErr != nil {
+			return fmt.Errorf(
+				"initialize Zen Link transport identity: %w",
+				identityErr,
+			)
+		}
+		connector, connectorErr := link.NewConnector(
+			linkConfig,
+			authManager,
+			transportIdentity,
+			srv.Handler(),
+		)
+		if connectorErr != nil {
+			return fmt.Errorf("initialize Zen Link connector: %w", connectorErr)
+		}
+		runtimeOwners = append(runtimeOwners, runtimeOwner{
+			name: "Zen Link connector",
+			run:  connector.Run,
+		})
+		fmt.Fprintf(
+			stderr,
+			"Zen Link configured from %s; connecting outbound.\n",
+			linkConfigPath,
+		)
+	}
+
+	runtimeOwners = append(runtimeOwners,
+		runtimeOwner{
 			name: "HTTP server",
 			run: func(ctx context.Context) error {
 				return srv.RunWithReady(ctx, cfg.addr, func() {
+					if linkEnabled {
+						printLinkStartupInfo(stderr, cfg.addr, cfg.stateDir)
+						return
+					}
 					printStartupInfo(
 						stderr,
 						cfg.addr,
@@ -239,7 +302,8 @@ func runDaemon(args []string, stderr io.Writer) error {
 				})
 			},
 		},
-	})
+	)
+	return runJoinedRuntime(ctx, runtimeOwners)
 }
 
 func acquireDaemonAuthOwner(
@@ -1356,15 +1420,85 @@ func runPairCommand(args []string, stderr io.Writer) error {
 		Value:     response.Pairing.Token,
 		ExpiresAt: response.Pairing.ExpiresAt,
 	}
-	offers, err := buildConnectionOffersWithPublicKey(
-		cfg.endpoint,
-		response.Pairing.DaemonPublicKey,
-		pairing,
+	if strings.TrimSpace(cfg.endpoint) != "" {
+		offers, offerErr := buildConnectionOffersWithPublicKey(
+			cfg.endpoint,
+			response.Pairing.DaemonPublicKey,
+			pairing,
+		)
+		if offerErr != nil {
+			return fmt.Errorf("build connection info: %w", offerErr)
+		}
+		printPairCommandInfo(stderr, response.Pairing.DaemonID, offers)
+		return nil
+	}
+
+	authManager, err := auth.NewManager(cfg.stateDir)
+	if err != nil {
+		return fmt.Errorf("initialize auth manager: %w", err)
+	}
+	if authManager.DaemonID() != response.Pairing.DaemonID ||
+		authManager.PublicKeyHex() != response.Pairing.DaemonPublicKey {
+		return errors.New("runtime owner pairing identity changed")
+	}
+	linkConfig, linkConfigPath, enabled, err := loadOptionalLinkConfig(
+		authManager.StorageDir(),
+		cfg.linkConfigPath,
 	)
 	if err != nil {
-		return fmt.Errorf("build connection info: %w", err)
+		return err
 	}
-	printPairCommandInfo(stderr, response.Pairing.DaemonID, offers)
+	if !enabled {
+		return fmt.Errorf(
+			"Zen Link is not configured; create %s or run zen pair <endpoint> for an Advanced/Self-managed connection",
+			link.DefaultConfigPath(authManager.StorageDir()),
+		)
+	}
+	identity, err := link.LoadOrCreateTransportIdentity(
+		authManager.StorageDir(),
+		link.RelayDomains(linkConfig),
+	)
+	if err != nil {
+		return fmt.Errorf("initialize Zen Link transport identity: %w", err)
+	}
+	pairContext, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	admissions, err := link.IssueAdmissions(
+		pairContext,
+		linkConfig,
+		authManager,
+		identity,
+		auth.DefaultPairingTTL,
+	)
+	if err != nil {
+		return fmt.Errorf(
+			"request Zen Link pairing admission from %s: %w (make sure zen is running and Link is connected)",
+			linkConfigPath,
+			err,
+		)
+	}
+	connectLink, payload, err := link.BuildPairingLink(
+		authManager,
+		identity,
+		linkConfig,
+		pairing,
+		admissions,
+	)
+	if err != nil {
+		return fmt.Errorf("build Zen Link pairing payload: %w", err)
+	}
+	primaryURL := ""
+	for _, candidate := range payload.Candidates {
+		if candidate.AdmissionURL != "" {
+			primaryURL = candidate.StableURL
+			break
+		}
+	}
+	printPairCommandInfo(stderr, response.Pairing.DaemonID, []connectionOffer{{
+		Label:       "Zen Link",
+		URL:         primaryURL,
+		ConnectLink: connectLink,
+	}})
 	return nil
 }
 
@@ -1376,6 +1510,7 @@ func parseDaemonConfig(args []string, stderr io.Writer) (daemonConfig, error) {
 	fs.StringVar(&cfg.addr, "addr", "127.0.0.1:9876", "listen address")
 	fs.BoolVar(&cfg.lan, "lan", false, "listen on all IPv4 interfaces for trusted private-network access")
 	fs.StringVar(&cfg.stateDir, "state-dir", "", "state directory for daemon identity and trusted devices")
+	fs.StringVar(&cfg.linkConfigPath, "link-config", "", "Zen Link config (default: <state-dir>/link.json when present)")
 	fs.Usage = func() {
 		fmt.Fprintln(stderr, "Usage: zen [flags]")
 		fmt.Fprintln(stderr, "")
@@ -1419,8 +1554,10 @@ func parsePairConfig(args []string, stderr io.Writer) (pairConfig, error) {
 
 	cfg := pairConfig{}
 	fs.StringVar(&cfg.stateDir, "state-dir", "", "state directory for daemon identity and trusted devices")
+	fs.StringVar(&cfg.linkConfigPath, "link-config", "", "Zen Link config (default: <state-dir>/link.json)")
 	fs.Usage = func() {
-		fmt.Fprintln(stderr, "Usage: zen pair [flags] <endpoint>")
+		fmt.Fprintln(stderr, "Usage: zen pair [flags] [endpoint]")
+		fmt.Fprintln(stderr, "Without endpoint, use configured Zen Link. Explicit endpoint keeps Pairing V1.")
 		fmt.Fprintln(stderr, "")
 		fs.PrintDefaults()
 	}
@@ -1428,11 +1565,36 @@ func parsePairConfig(args []string, stderr io.Writer) (pairConfig, error) {
 	if err := fs.Parse(args); err != nil {
 		return cfg, err
 	}
-	if fs.NArg() != 1 {
-		return cfg, fmt.Errorf("pair requires exactly one endpoint")
+	if fs.NArg() > 1 {
+		return cfg, fmt.Errorf("pair accepts at most one endpoint")
 	}
-	cfg.endpoint = fs.Arg(0)
+	if fs.NArg() == 1 {
+		cfg.endpoint = fs.Arg(0)
+	}
 	return cfg, nil
+}
+
+func loadOptionalLinkConfig(
+	stateDir string,
+	explicitPath string,
+) (link.ConnectorConfig, string, bool, error) {
+	path := strings.TrimSpace(explicitPath)
+	explicit := path != ""
+	if path == "" {
+		path = link.DefaultConfigPath(stateDir)
+	}
+	config, err := link.LoadConnectorConfig(path)
+	if err == nil {
+		return config, path, true, nil
+	}
+	if !explicit && errors.Is(err, os.ErrNotExist) {
+		return link.ConnectorConfig{}, path, false, nil
+	}
+	return link.ConnectorConfig{}, path, false, fmt.Errorf(
+		"load Zen Link config %s: %w",
+		path,
+		err,
+	)
 }
 
 func runDevicesCommand(args []string, stderr io.Writer) error {

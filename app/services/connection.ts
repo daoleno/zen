@@ -1,9 +1,21 @@
 import {
   bytesToHex,
-  normalizeDaemonId,
-  normalizePairingToken,
-  normalizePublicKeyHex,
-} from "./auth";
+  normalizeFixedHex,
+  verifyLinkPairingSignature,
+} from "./protocolCrypto";
+
+export interface LinkTransportCandidate {
+  name: string;
+  admissionUrl?: string;
+  url: string;
+}
+
+export interface LinkTransportEnrollment {
+  kind: "link";
+  routeId: string;
+  transportPin: string;
+  candidates: LinkTransportCandidate[];
+}
 
 export interface ConnectionImportPayload {
   url: string;
@@ -11,6 +23,7 @@ export interface ConnectionImportPayload {
   daemonId?: string;
   daemonPublicKey: string;
   enrollmentToken: string;
+  link?: LinkTransportEnrollment;
 }
 
 const CONNECT_PARAM_ALIASES = {
@@ -26,6 +39,15 @@ const CONNECT_PUBLIC_KEY_BYTES = 32;
 const CONNECT_TOKEN_BYTES = 32;
 const CONNECT_PAYLOAD_MIN_LENGTH =
   1 + 2 + CONNECT_PUBLIC_KEY_BYTES + CONNECT_TOKEN_BYTES;
+const MAX_CONNECT_PAYLOAD_CHARACTERS = 64 << 10;
+const MAX_LINK_CANDIDATES = 16;
+
+const normalizeDaemonId = (value: string | null | undefined) =>
+  normalizeFixedHex(value, 64);
+const normalizePairingToken = (value: string | null | undefined) =>
+  normalizeFixedHex(value, 64);
+const normalizePublicKeyHex = (value: string | null | undefined) =>
+  normalizeFixedHex(value, 64);
 
 export function normalizeServerURL(rawValue: string): string {
   const trimmed = rawValue.trim();
@@ -71,8 +93,13 @@ export function parseConnectLink(
       return null;
     }
 
-    const compactPayload = parsed.searchParams.get(CONNECT_PARAM_PAYLOAD)?.trim();
+    const compactPayload = parsed.searchParams
+      .get(CONNECT_PARAM_PAYLOAD)
+      ?.trim();
     if (compactPayload) {
+      if (parsed.searchParams.get("v")?.trim() === "2") {
+        return parseLinkPairingPayload(compactPayload);
+      }
       return parseCompactConnectPayload(compactPayload);
     }
 
@@ -92,10 +119,133 @@ export function parseConnectLink(
         readConnectLinkParam(parsed, "enrollmentToken"),
       ),
     };
-    return payload.daemonPublicKey &&
-      payload.enrollmentToken
-      ? payload
-      : null;
+    return payload.daemonPublicKey && payload.enrollmentToken ? payload : null;
+  } catch {
+    return null;
+  }
+}
+
+interface CompactLinkPairingPayload {
+  v?: unknown;
+  d?: unknown;
+  k?: unknown;
+  e?: unknown;
+  r?: unknown;
+  p?: unknown;
+  c?: unknown;
+  x?: unknown;
+  z?: unknown;
+}
+
+function parseLinkPairingPayload(
+  encodedPayload: string,
+): ConnectionImportPayload | null {
+  try {
+    const decoded = decodeBase64URL(encodedPayload);
+    const raw = JSON.parse(
+      new TextDecoder().decode(decoded),
+    ) as CompactLinkPairingPayload;
+    if (
+      raw.v !== 2 ||
+      typeof raw.d !== "string" ||
+      typeof raw.k !== "string" ||
+      typeof raw.e !== "string" ||
+      typeof raw.r !== "string" ||
+      typeof raw.p !== "string" ||
+      !Array.isArray(raw.c) ||
+      raw.c.length === 0 ||
+      raw.c.length > MAX_LINK_CANDIDATES ||
+      typeof raw.x !== "number" ||
+      typeof raw.z !== "string"
+    ) {
+      return null;
+    }
+
+    const daemonId = normalizeDaemonId(raw.d);
+    const daemonPublicKey = normalizePublicKeyHex(raw.k);
+    const enrollmentToken = normalizePairingToken(raw.e);
+    const routeId = normalizeFixedHex(raw.r, 32);
+    const transportPin = normalizeFixedHex(raw.p, 64);
+    const signature = normalizeFixedHex(raw.z, 128);
+    if (
+      !daemonId ||
+      !daemonPublicKey ||
+      !enrollmentToken ||
+      !routeId ||
+      !transportPin ||
+      !signature ||
+      !Number.isSafeInteger(raw.x) ||
+      raw.x <= Date.now()
+    ) {
+      return null;
+    }
+
+    const candidates: LinkTransportCandidate[] = [];
+    const bindingCandidateValues: string[] = [];
+    for (const value of raw.c) {
+      if (!value || typeof value !== "object") {
+        return null;
+      }
+      const candidate = value as Record<string, unknown>;
+      const name = typeof candidate.n === "string" ? candidate.n.trim() : "";
+      const admissionUrl =
+        typeof candidate.a === "string" ? normalizeServerURL(candidate.a) : "";
+      const url =
+        typeof candidate.s === "string" ? normalizeServerURL(candidate.s) : "";
+      if (!name || !url) {
+        return null;
+      }
+      candidates.push({
+        name,
+        admissionUrl: admissionUrl || undefined,
+        url,
+      });
+      bindingCandidateValues.push(
+        name,
+        typeof candidate.a === "string" ? candidate.a.trim() : "",
+        typeof candidate.s === "string" ? candidate.s.trim() : "",
+      );
+    }
+    const admissionCandidate = candidates.find(
+      (candidate) => candidate.admissionUrl,
+    );
+    if (!admissionCandidate?.admissionUrl) {
+      return null;
+    }
+    const bindingPayload = new TextEncoder().encode(
+      [
+        "2",
+        daemonId,
+        daemonPublicKey,
+        enrollmentToken,
+        routeId,
+        transportPin,
+        raw.x.toString(),
+        ...bindingCandidateValues,
+      ].join("\n"),
+    );
+    if (
+      !verifyLinkPairingSignature({
+        daemonPublicKey,
+        bindingPayload,
+        signatureHex: signature,
+      })
+    ) {
+      return null;
+    }
+
+    return {
+      url: admissionCandidate.admissionUrl,
+      daemonId,
+      daemonPublicKey,
+      enrollmentToken,
+      link: {
+        kind: "link",
+        routeId,
+        transportPin,
+        candidates,
+      },
+    };
   } catch {
     return null;
   }
@@ -114,8 +264,7 @@ function parseCompactConnectPayload(
     }
 
     const urlLength = (payload[1] << 8) | payload[2];
-    const expectedLength =
-      CONNECT_PAYLOAD_MIN_LENGTH + urlLength;
+    const expectedLength = CONNECT_PAYLOAD_MIN_LENGTH + urlLength;
     if (payload.length !== expectedLength) {
       return null;
     }
@@ -151,7 +300,11 @@ function parseCompactConnectPayload(
 
 function decodeBase64URL(value: string): Uint8Array {
   const sanitized = value.trim();
-  if (!sanitized || /[^A-Za-z0-9\-_]/.test(sanitized)) {
+  if (
+    !sanitized ||
+    sanitized.length > MAX_CONNECT_PAYLOAD_CHARACTERS ||
+    /[^A-Za-z0-9\-_]/.test(sanitized)
+  ) {
     throw new Error("Invalid base64url payload.");
   }
 
@@ -176,8 +329,7 @@ function decodeBase64URL(value: string): Uint8Array {
       padded[index + 2] === "=" ? 0 : decodeBase64URLChar(padded[index + 2]);
     const chunk3 =
       padded[index + 3] === "=" ? 0 : decodeBase64URLChar(padded[index + 3]);
-    const combined =
-      (chunk0 << 18) | (chunk1 << 12) | (chunk2 << 6) | chunk3;
+    const combined = (chunk0 << 18) | (chunk1 << 12) | (chunk2 << 6) | chunk3;
 
     output[outputOffset++] = (combined >> 16) & 0xff;
     if (padded[index + 2] !== "=" && outputOffset < output.length) {

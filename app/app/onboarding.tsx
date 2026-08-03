@@ -1,11 +1,5 @@
 import React, { useMemo } from "react";
-import {
-  Linking,
-  ScrollView,
-  StyleSheet,
-  Text,
-  View,
-} from "react-native";
+import { Linking, ScrollView, StyleSheet, Text, View } from "react-native";
 import * as Haptics from "expo-haptics";
 import { useRouter } from "expo-router";
 import { SafeAreaView } from "react-native-safe-area-context";
@@ -60,7 +54,9 @@ export default function OnboardingScreen() {
         </Enter>
 
         <Enter preset="rise" delay={60}>
-          <Text style={styles.title}>Your coding agents, wherever you are.</Text>
+          <Text style={styles.title}>
+            Your coding agents, wherever you are.
+          </Text>
           <Text style={styles.subtitle}>
             Zen keeps agents running on your computer. Continue from this phone
             with Chat, Terminal, Sessions, and Brain—while your code and
@@ -100,7 +96,7 @@ export default function OnboardingScreen() {
             onPress={() => void Linking.openURL(CONNECT_GUIDE_URL)}
           >
             <Text style={styles.remoteLinkText}>
-              Using remote HTTPS? Read the connect guide
+              Using remote HTTPS or optional Zen Link? Read the connect guide
             </Text>
           </AnimatedPressable>
         </Enter>

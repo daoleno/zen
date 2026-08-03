@@ -4,6 +4,13 @@ import * as SecureStore from "expo-secure-store";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { Platform } from "react-native";
 import nacl from "tweetnacl";
+import { bytesToHex, hexToBytes, normalizeFixedHex } from "./protocolCrypto";
+
+export {
+  bytesToHex,
+  hexToBytes,
+  verifyLinkPairingSignature,
+} from "./protocolCrypto";
 
 const DEVICE_ID_KEY = "zen.device.v3.id";
 const DEVICE_NAME_KEY = "zen.device.v3.name";
@@ -29,7 +36,10 @@ export interface DaemonAssertionInput {
 }
 
 export type AuthPurpose =
-  "zen-connect" | "zen-upload" | "zen-probe" | "zen-session-file";
+  | "zen-connect"
+  | "zen-upload"
+  | "zen-probe"
+  | "zen-session-file";
 
 export function normalizeDaemonId(rawValue: string | null | undefined): string {
   return normalizeFixedHex(rawValue, 64);
@@ -175,36 +185,6 @@ export function verifyDaemonAssertion(input: DaemonAssertionInput): boolean {
   } catch {
     return false;
   }
-}
-
-export function bytesToHex(bytes: Uint8Array): string {
-  return Array.from(bytes, (value) => value.toString(16).padStart(2, "0")).join(
-    "",
-  );
-}
-
-export function hexToBytes(value: string): Uint8Array {
-  const normalized = value.trim().toLowerCase();
-  if (!/^[0-9a-f]+$/.test(normalized) || normalized.length % 2 !== 0) {
-    throw new Error("Invalid hex payload.");
-  }
-  const output = new Uint8Array(normalized.length / 2);
-  for (let index = 0; index < normalized.length; index += 2) {
-    output[index / 2] = Number.parseInt(normalized.slice(index, index + 2), 16);
-  }
-  return output;
-}
-
-function normalizeFixedHex(
-  rawValue: string | null | undefined,
-  expectedLength: number,
-): string {
-  const trimmed = rawValue?.trim().toLowerCase() || "";
-  if (!trimmed) return "";
-  if (!new RegExp(`^[0-9a-f]{${expectedLength}}$`).test(trimmed)) {
-    return "";
-  }
-  return trimmed;
 }
 
 function defaultDeviceName(): string {

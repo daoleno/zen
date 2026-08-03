@@ -393,6 +393,9 @@ func (m *Manager) VerifyAuthorization(headerValue, purpose string, maxAge time.D
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.pruneExpiredLocked()
+	if err := m.loadDevicesLocked(); err != nil {
+		return nil, err
+	}
 	nonceKey := deviceID + ":" + nonceHex
 	if _, seen := m.usedNonces[nonceKey]; seen {
 		return nil, ErrReplayDetected
@@ -464,6 +467,117 @@ func (m *Manager) CreateServerAssertion(purpose string) (ServerAssertion, error)
 		NonceHex:     nonceHex,
 		SignatureHex: hex.EncodeToString(signature),
 	}, nil
+}
+
+// CreateLinkSignature signs a domain-separated Zen Link control-plane
+// payload with the daemon identity. The Link transport key is separate; this
+// signature binds route and transport metadata back to the existing daemon
+// trust anchor.
+func (m *Manager) CreateLinkSignature(payload []byte) string {
+	signature := ed25519.Sign(m.privateKey, linkSignaturePayload(payload))
+	return hex.EncodeToString(signature)
+}
+
+func VerifyLinkSignature(publicKeyHex string, payload []byte, signatureHex string) bool {
+	publicKey, err := decodeFixedHex(publicKeyHex, ed25519.PublicKeySize)
+	if err != nil {
+		return false
+	}
+	signature, err := decodeFixedHex(signatureHex, ed25519.SignatureSize)
+	if err != nil {
+		return false
+	}
+	return ed25519.Verify(
+		ed25519.PublicKey(publicKey),
+		linkSignaturePayload(payload),
+		signature,
+	)
+}
+
+func (m *Manager) CreateLinkPairingSignature(payload []byte) string {
+	signature := ed25519.Sign(m.privateKey, linkPairingSignaturePayload(payload))
+	return hex.EncodeToString(signature)
+}
+
+func VerifyLinkPairingSignature(publicKeyHex string, payload []byte, signatureHex string) bool {
+	publicKey, err := decodeFixedHex(publicKeyHex, ed25519.PublicKeySize)
+	if err != nil {
+		return false
+	}
+	signature, err := decodeFixedHex(signatureHex, ed25519.SignatureSize)
+	if err != nil {
+		return false
+	}
+	return ed25519.Verify(
+		ed25519.PublicKey(publicKey),
+		linkPairingSignaturePayload(payload),
+		signature,
+	)
+}
+
+// CreateSessionFileCapabilitySignature signs a narrowly scoped, short-lived
+// Session file read capability with the existing daemon trust anchor.
+func (m *Manager) CreateSessionFileCapabilitySignature(payload []byte) string {
+	signature := ed25519.Sign(
+		m.privateKey,
+		sessionFileCapabilitySignaturePayload(payload),
+	)
+	return hex.EncodeToString(signature)
+}
+
+// VerifySessionFileCapabilitySignature verifies both the daemon signature and
+// that the device to which the capability was issued remains enrolled.
+func (m *Manager) VerifySessionFileCapabilitySignature(
+	deviceID string,
+	payload []byte,
+	signatureHex string,
+) error {
+	signature, err := decodeFixedHex(signatureHex, ed25519.SignatureSize)
+	if err != nil {
+		return ErrUnauthorized
+	}
+
+	normalizedDeviceID := strings.TrimSpace(deviceID)
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if err := m.loadDevicesLocked(); err != nil {
+		return err
+	}
+	if _, exists := m.devices[normalizedDeviceID]; !exists {
+		return ErrUnknownDevice
+	}
+	if !ed25519.Verify(
+		m.publicKey,
+		sessionFileCapabilitySignaturePayload(payload),
+		signature,
+	) {
+		return ErrUnauthorized
+	}
+	return nil
+}
+
+func linkSignaturePayload(payload []byte) []byte {
+	const domain = "zen-link-control-v1\x00"
+	signed := make([]byte, 0, len(domain)+len(payload))
+	signed = append(signed, domain...)
+	signed = append(signed, payload...)
+	return signed
+}
+
+func linkPairingSignaturePayload(payload []byte) []byte {
+	const domain = "zen-link-pairing-v2\x00"
+	signed := make([]byte, 0, len(domain)+len(payload))
+	signed = append(signed, domain...)
+	signed = append(signed, payload...)
+	return signed
+}
+
+func sessionFileCapabilitySignaturePayload(payload []byte) []byte {
+	const domain = "zen-session-file-capability-v1\x00"
+	signed := make([]byte, 0, len(domain)+len(payload))
+	signed = append(signed, domain...)
+	signed = append(signed, payload...)
+	return signed
 }
 
 func (m *Manager) loadOrCreateIdentity() error {

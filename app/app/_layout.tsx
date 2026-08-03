@@ -506,8 +506,7 @@ const LatencySampler = memo(function LatencySampler() {
             return [
               server.id,
               await measureServerLatency({
-                serverUrl: server.url,
-                daemonId: server.daemonId,
+                server,
               }),
             ] as const;
           } catch {

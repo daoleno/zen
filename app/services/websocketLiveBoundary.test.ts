@@ -124,6 +124,19 @@ afterAll(() => {
 });
 
 describe("generic WebSocket live boundary", () => {
+  test("an incomplete Link server fails closed before WebSocket construction", async () => {
+    const client = new MultiServerWebSocketClient();
+    client.connectServer({
+      ...server,
+      url: "wss://raw.link.test/ws",
+      transportKind: "link",
+    });
+    await new Promise((resolve) => setTimeout(resolve, 20));
+
+    expect(FakeWebSocket.instances).toHaveLength(0);
+    client.disconnectAll();
+  });
+
   test("one terminal scroll batch sends one current-session mutation", async () => {
     const client = new MultiServerWebSocketClient();
     const socket = await connectClient(client);

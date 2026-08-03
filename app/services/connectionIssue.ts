@@ -5,6 +5,8 @@ import {
   verifyDaemonAssertion,
 } from "./auth";
 import { Colors, type AppColors } from "../constants/tokens";
+import type { StoredServer } from "./storage";
+import { resolveCanonicalServerURL } from "./pinnedTransport";
 
 export type ConnectionIssueCode =
   | "invalid_url"
@@ -36,15 +38,26 @@ interface TrustedDaemonPayload {
 const PROBE_TIMEOUT_MS = 4000;
 
 export async function diagnoseConnectionIssue(input: {
-  serverUrl: string;
-  daemonId: string;
-  daemonPublicKey: string;
+  server: StoredServer;
 }): Promise<ConnectionIssue> {
-  const daemonId = normalizeDaemonId(input.daemonId);
-  const daemonPublicKey = normalizePublicKeyHex(input.daemonPublicKey);
-  const probeURL = buildProbeURL(input.serverUrl);
-  const healthURL = buildPathURL(input.serverUrl, "/health");
-  const authCheckURL = buildPathURL(input.serverUrl, "/auth-check");
+  const daemonId = normalizeDaemonId(input.server.daemonId);
+  const daemonPublicKey = normalizePublicKeyHex(input.server.daemonPublicKey);
+  let transportURL: string;
+  try {
+    transportURL = await resolveCanonicalServerURL(input.server);
+  } catch (error) {
+    return createIssue(
+      "network_unreachable",
+      "Zen Link is offline",
+      error instanceof Error
+        ? error.message
+        : "The app could not open a pinned Zen Link transport.",
+      "Keep zen running on your computer and check that its Zen Link status is connected. Advanced/Self-managed connections remain independent.",
+    );
+  }
+  const probeURL = buildProbeURL(transportURL);
+  const healthURL = buildPathURL(transportURL, "/health");
+  const authCheckURL = buildPathURL(transportURL, "/auth-check");
 
   if (!probeURL || !healthURL || !authCheckURL) {
     return createIssue(
@@ -86,15 +99,14 @@ export async function diagnoseConnectionIssue(input: {
       );
     }
 
-    const authHeader = await buildAuthorizationHeader({
+    const authCheckHeader = await buildAuthorizationHeader({
       daemonId,
       purpose: "zen-probe",
     });
-    const signedHeaders = { Authorization: authHeader };
 
     const authCheckResponse = await fetchWithTimeout(authCheckURL, {
       method: "GET",
-      headers: signedHeaders,
+      headers: { Authorization: authCheckHeader },
     });
     switch (authCheckResponse.status) {
       case 200:
@@ -129,9 +141,13 @@ export async function diagnoseConnectionIssue(input: {
       );
     }
 
+    const probeHeader = await buildAuthorizationHeader({
+      daemonId,
+      purpose: "zen-probe",
+    });
     const probeResponse = await fetchWithTimeout(probeURL, {
       method: "GET",
-      headers: signedHeaders,
+      headers: { Authorization: probeHeader },
     });
     switch (probeResponse.status) {
       case 200:

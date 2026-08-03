@@ -12,12 +12,14 @@ import (
 	"net"
 	"net/url"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/daoleno/zen/daemon/auth"
 	"github.com/daoleno/zen/daemon/control"
+	"github.com/daoleno/zen/daemon/link"
 )
 
 func TestNormalizeEndpoint(t *testing.T) {
@@ -142,6 +144,25 @@ func TestPrintStartupInfoForLoopback(t *testing.T) {
 	}
 }
 
+func TestPrintLinkStartupInfoUsesNoEndpointAsPrimaryAndKeepsAdvanced(t *testing.T) {
+	var output bytes.Buffer
+	printLinkStartupInfo(&output, "127.0.0.1:9876", "/tmp/zen-state")
+	rendered := output.String()
+	for _, expected := range []string{
+		"Zen Link connecting outbound",
+		"zen pair -state-dir /tmp/zen-state",
+		"Advanced / Self-managed",
+		"zen pair <endpoint>",
+	} {
+		if !strings.Contains(rendered, expected) {
+			t.Fatalf("Link startup missing %q: %q", expected, rendered)
+		}
+	}
+	if strings.Contains(rendered, "your-zen-host") {
+		t.Fatalf("Link startup hard-coded a nonexistent endpoint: %q", rendered)
+	}
+}
+
 func TestPrintStartupInfoForLANUsesDetectedAddresses(t *testing.T) {
 	var output bytes.Buffer
 	printStartupInfo(&output, "0.0.0.0:9876", "", []privateNetworkAddress{
@@ -205,6 +226,57 @@ func TestPairConfigUsesOnePositionalEndpoint(t *testing.T) {
 	}
 	if cfg.stateDir != "/tmp/zen-state" {
 		t.Fatalf("stateDir = %q", cfg.stateDir)
+	}
+}
+
+func TestPairConfigAllowsNoEndpointOnlyForConfiguredLinkPath(t *testing.T) {
+	cfg, err := parsePairConfig([]string{
+		"-state-dir", "/tmp/zen-state",
+		"-link-config", "/tmp/zen-link.json",
+	}, io.Discard)
+	if err != nil {
+		t.Fatalf("parsePairConfig returned error: %v", err)
+	}
+	if cfg.endpoint != "" || cfg.linkConfigPath != "/tmp/zen-link.json" {
+		t.Fatalf("unexpected no-endpoint config: %#v", cfg)
+	}
+}
+
+func TestPairCommandWithoutEndpointOrLinkConfigFailsHonestly(t *testing.T) {
+	stateDir := t.TempDir()
+	var output bytes.Buffer
+	err := runPairCommand([]string{"-state-dir", stateDir}, &output)
+	if err == nil ||
+		!strings.Contains(err.Error(), "Zen Link is not configured") ||
+		!strings.Contains(err.Error(), "zen pair <endpoint>") {
+		t.Fatalf("unexpected no-Link pair error: %v", err)
+	}
+	if strings.Contains(output.String(), "zen://") {
+		t.Fatalf("no-Link command printed an unusable pairing link: %q", output.String())
+	}
+}
+
+func TestOptionalLinkConfigIsInertUntilExplicitlyConfigured(t *testing.T) {
+	stateDir := t.TempDir()
+	config, path, enabled, err := loadOptionalLinkConfig(stateDir, "")
+	if err != nil {
+		t.Fatalf("absent default Link config returned error: %v", err)
+	}
+	if enabled || path != filepath.Join(stateDir, link.DefaultConfigFilename) {
+		t.Fatalf(
+			"absent default Link config = enabled %t path %q config %#v",
+			enabled,
+			path,
+			config,
+		)
+	}
+	if _, err := os.Stat(filepath.Join(stateDir, "link-identity.json")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("default config check created Link identity state: %v", err)
+	}
+
+	explicitPath := filepath.Join(stateDir, "operator-link.json")
+	if _, _, _, err := loadOptionalLinkConfig(stateDir, explicitPath); err == nil {
+		t.Fatal("explicit missing Link config was silently ignored")
 	}
 }
 
@@ -348,7 +420,13 @@ type captureCLIControlHandler struct {
 
 func (h *captureCLIControlHandler) HandleControlRequest(req control.Request) control.Response {
 	h.requests <- req
-	return control.Response{OK: true}
+	response := control.Response{OK: true}
+	if req.Type == "device_revoke" {
+		durable := true
+		response.PersistenceOutcome = control.PersistenceApplied
+		response.PersistenceDurable = &durable
+	}
+	return response
 }
 
 func TestAgentProgressCommandUsesZenAgentIDFallback(t *testing.T) {
@@ -427,6 +505,27 @@ func TestAgentProgressCommandUsesZenStateDirFallback(t *testing.T) {
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("timed out waiting for control request")
+	}
+
+	cancel()
+	waitForCLIControlServerShutdown(t, done)
+}
+
+func TestRevokeDeviceUsesRunningDaemonControlOwner(t *testing.T) {
+	stateDir := t.TempDir()
+	handler, done, cancel := startCLIControlServer(t, stateDir)
+	defer cancel()
+
+	if _, err := revokeDevice(stateDir, "phone-one"); err != nil {
+		t.Fatalf("revokeDevice returned error: %v", err)
+	}
+	select {
+	case request := <-handler.requests:
+		if request.Type != "device_revoke" || request.ID != "phone-one" {
+			t.Fatalf("revoke request=%#v", request)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for device revoke request")
 	}
 
 	cancel()

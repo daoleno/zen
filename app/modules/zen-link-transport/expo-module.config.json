@@ -1,0 +1,13 @@
+{
+  "platforms": ["android", "apple"],
+  "apple": {
+    "modules": ["ZenLinkTransportModule"],
+    "podspecPath": ["ZenLinkTransport.podspec"]
+  },
+  "android": {
+    "modules": ["expo.modules.zenlinktransport.ZenLinkTransportModule"]
+  },
+  "ios": {
+    "modules": ["ZenLinkTransportModule"]
+  }
+}

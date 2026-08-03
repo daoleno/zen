@@ -2,6 +2,10 @@ import type { StoredServer } from "./storage";
 import { Platform } from "react-native";
 import { buildAuthorizationHeader } from "./auth";
 import { diagnoseConnectionIssue } from "./connectionIssue";
+import {
+  invalidateStoredServerTransport,
+  resolveStoredServerURL,
+} from "./pinnedTransport";
 import type {
   GitDiffFileContentPayload,
   GitDiffPatchPayload,
@@ -99,7 +103,11 @@ export type CodexSlashCommandCategory =
   | string;
 
 export type CodexSlashCommandExecution =
-  "terminal-required" | "insert-only" | "native" | "unsupported" | string;
+  | "terminal-required"
+  | "insert-only"
+  | "native"
+  | "unsupported"
+  | string;
 
 export interface CodexSlashCommandInput {
   kind: "none" | "inline-args" | "form" | "picker" | "freeform" | string;
@@ -254,6 +262,7 @@ interface ConnectionMeta {
   serverUrl: string;
   daemonId: string;
   daemonPublicKey: string;
+  server: StoredServer;
 }
 
 class ServerSocket {
@@ -356,9 +365,7 @@ class ServerSocket {
 
   private async reportConnectionIssue(attemptId: number) {
     const issue = await diagnoseConnectionIssue({
-      serverUrl: this.meta.serverUrl,
-      daemonId: this.meta.daemonId,
-      daemonPublicKey: this.meta.daemonPublicKey,
+      server: this.meta.server,
     });
 
     if (attemptId !== this.attemptSequence) {
@@ -387,10 +394,14 @@ class ServerSocket {
       }
 
       const wsOptions = { headers: { Authorization: authHeader } };
+      const transportURL = await resolveStoredServerURL(this.meta.server);
+      if (attemptId !== this.attemptSequence || !this.shouldReconnect) {
+        return;
+      }
       const serverUrl =
         Platform.OS === "web"
-          ? appendAuthorizationQuery(this.meta.serverUrl, authHeader)
-          : this.meta.serverUrl;
+          ? appendAuthorizationQuery(transportURL, authHeader)
+          : transportURL;
       const WebSocketCtor = WebSocket as any;
       const ws =
         Platform.OS === "web"
@@ -440,6 +451,7 @@ class ServerSocket {
         this.emit("disconnected", { reason: "transport_closed" });
         if (this.shouldReconnect) {
           this.emit("connecting", {});
+          void invalidateStoredServerTransport(this.meta.server);
         }
         if (!opened) {
           void this.reportConnectionIssue(attemptId);
@@ -463,6 +475,7 @@ class ServerSocket {
       this.emit("disconnected", { reason: "transport_closed" });
       if (this.shouldReconnect) {
         this.emit("connecting", {});
+        void invalidateStoredServerTransport(this.meta.server);
       }
       void this.reportConnectionIssue(attemptId);
       this.scheduleReconnect();
@@ -2772,6 +2785,7 @@ function toConnectionMeta(server: StoredServer): ConnectionMeta {
     serverUrl: server.url,
     daemonId: server.daemonId,
     daemonPublicKey: server.daemonPublicKey,
+    server,
   };
 }
 

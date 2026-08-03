@@ -104,6 +104,13 @@ func printStartupInfo(w io.Writer, listenAddr, stateDir string, addresses []priv
 	fmt.Fprintln(w, "In another terminal, run zen pair with the private or HTTPS address your phone can reach.")
 }
 
+func printLinkStartupInfo(w io.Writer, listenAddr, stateDir string) {
+	fmt.Fprintf(w, "Zen is ready on %s with Zen Link connecting outbound.\n", listenAddr)
+	fmt.Fprintln(w, "In another terminal, run:")
+	fmt.Fprintf(w, "  %s\n", pairCommand(stateDir, ""))
+	fmt.Fprintln(w, "Advanced / Self-managed connections remain available with zen pair <endpoint>.")
+}
+
 func printPairingInfo(w io.Writer, offers []connectionOffer) {
 	if len(offers) == 0 {
 		return
@@ -135,7 +142,9 @@ func pairCommand(stateDir, endpoint string) string {
 	if strings.TrimSpace(stateDir) != "" {
 		parts = append(parts, "-state-dir", stateDir)
 	}
-	parts = append(parts, endpoint)
+	if strings.TrimSpace(endpoint) != "" {
+		parts = append(parts, endpoint)
+	}
 	return strings.Join(parts, " ")
 }
 

@@ -299,6 +299,10 @@ export default function SettingsScreen() {
         url: normalizedEndpoint,
         daemonId: editingServer.daemonId,
         daemonPublicKey: editingServer.daemonPublicKey,
+        transportKind: editingServer.transportKind,
+        transportPin: editingServer.transportPin,
+        linkRouteId: editingServer.linkRouteId,
+        transportCandidates: editingServer.transportCandidates,
       });
     } catch (error: any) {
       Alert.alert(
@@ -534,7 +538,9 @@ export default function SettingsScreen() {
                             {server.name}
                           </Text>
                           <Text style={styles.serverUrl} numberOfLines={1}>
-                            {server.url}
+                            {server.transportKind === "link"
+                              ? "Zen Link · route selected automatically"
+                              : server.url}
                           </Text>
                           <View style={styles.serverStatus}>
                             <Text
@@ -988,23 +994,35 @@ export default function SettingsScreen() {
                   autoCorrect={false}
                 />
 
-                <Text style={[styles.fieldLabel, { marginTop: 16 }]}>
-                  Endpoint
-                </Text>
-                <TextInput
-                  style={styles.input}
-                  value={draftEndpoint}
-                  onChangeText={setDraftEndpoint}
-                  accessibilityLabel="Server endpoint"
-                  placeholder="wss://zen.example.com/ws"
-                  placeholderTextColor={colors.textSecondary}
-                  autoCapitalize="none"
-                  autoCorrect={false}
-                />
-                <Text style={styles.fieldHint}>
-                  This is the externally reachable WebSocket endpoint exposed by
-                  your tunnel, reverse proxy, or private network.
-                </Text>
+                {editingServer.transportKind === "link" ? (
+                  <View style={styles.identityCard}>
+                    <Text style={styles.identityLabel}>Connection path</Text>
+                    <Text style={styles.fieldHint}>
+                      Zen Link chooses a pinned relay candidate automatically.
+                      The saved daemon remains the same current server.
+                    </Text>
+                  </View>
+                ) : (
+                  <>
+                    <Text style={[styles.fieldLabel, { marginTop: 16 }]}>
+                      Advanced / Self-managed endpoint
+                    </Text>
+                    <TextInput
+                      style={styles.input}
+                      value={draftEndpoint}
+                      onChangeText={setDraftEndpoint}
+                      accessibilityLabel="Server endpoint"
+                      placeholder="wss://zen.example.com/ws"
+                      placeholderTextColor={colors.textSecondary}
+                      autoCapitalize="none"
+                      autoCorrect={false}
+                    />
+                    <Text style={styles.fieldHint}>
+                      Full-origin endpoint from LAN, Tailscale, Cloudflare
+                      Tunnel, or your reverse proxy.
+                    </Text>
+                  </>
+                )}
 
                 <View style={styles.identityCard}>
                   <Text style={styles.identityLabel}>Trusted Daemon</Text>
@@ -1045,7 +1063,7 @@ export default function SettingsScreen() {
             ) : (
               <>
                 <Text style={styles.importLead}>
-                  Paste the pairing link from zen, or scan its QR code.
+                  Scan the one-time QR from zen pair, or paste its pairing link.
                 </Text>
 
                 <Text style={styles.fieldLabel}>Pairing Link</Text>
@@ -1062,7 +1080,9 @@ export default function SettingsScreen() {
                   textAlignVertical="top"
                 />
                 <Text style={styles.fieldHint}>
-                  You can also import a screenshot or photo of the QR.
+                  Advanced / Self-managed: run zen pair &lt;endpoint&gt; and
+                  import the same Pairing V1 QR. Existing LAN, Tailscale,
+                  Cloudflare Tunnel, and reverse proxy paths remain supported.
                 </Text>
 
                 <View style={styles.modalActions}>
