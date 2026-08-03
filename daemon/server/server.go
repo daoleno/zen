@@ -788,7 +788,7 @@ func (s *Server) handleClientMessage(conn *websocket.Conn, msg []byte) {
 		brainSteering := s.brain != nil && s.brain.NoteUserSteering(raw.AgentID)
 		err := s.sendInputWithReceipt(raw.AgentID, raw.Text, raw.RequestID)
 		if err != nil {
-			if watcher.IsInputPending(err) {
+			if watcher.InputOutcomeFromError(err) == watcher.InputAmbiguous {
 				s.sendJSON(conn, map[string]any{
 					"type":       "input_pending",
 					"request_id": raw.RequestID,

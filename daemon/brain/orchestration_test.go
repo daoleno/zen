@@ -562,7 +562,7 @@ func TestDispatchRequiresActionableEventEvenForUntilDoneWork(t *testing.T) {
 	}
 }
 
-func TestDispatchFailedSendRemainsClosedWithoutDurableReceipt(t *testing.T) {
+func TestDispatchAmbiguousSendRetainsExactClaimWithoutReplay(t *testing.T) {
 	store, err := NewStore(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
@@ -577,7 +577,10 @@ func TestDispatchFailedSendRemainsClosedWithoutDurableReceipt(t *testing.T) {
 		sessions: map[string]*classifier.Agent{
 			hostID: {ID: hostID, Hidden: true, State: classifier.StateDone},
 		},
-		sendErr: os.ErrDeadlineExceeded,
+		sendErr: &watcher.InputSubmissionError{
+			Result: watcher.InputResult{Outcome: watcher.InputAmbiguous},
+			Cause:  os.ErrDeadlineExceeded,
+		},
 	}
 	service := NewService(store, fw, nil)
 	service.now = func() time.Time { return now }
@@ -625,6 +628,141 @@ func TestDispatchFailedSendRemainsClosedWithoutDurableReceipt(t *testing.T) {
 	}
 	if events[0].ClaimedAt == nil || events[0].ConsumedAt != nil || len(fw.sentCalls) != 1 {
 		t.Fatalf("ambiguous failed send did not remain closed: events=%#v sends=%#v", events, fw.sentCalls)
+	}
+}
+
+func TestDispatchDefinitePreMutationFailureReleasesSameEventAcrossRestart(t *testing.T) {
+	for _, provider := range []string{"codex", "claude"} {
+		t.Run(provider, func(t *testing.T) {
+			root := t.TempDir()
+			store, err := NewStore(root)
+			if err != nil {
+				t.Fatal(err)
+			}
+			hostID := "brain-agent-brain-hidden:@1"
+			if err := store.SetHostSession(hostID, provider); err != nil {
+				t.Fatal(err)
+			}
+			item, err := store.CreateWork(Work{
+				Title:            "Recover exact control event",
+				Objective:        "Release only a definitely unsent claim.",
+				Status:           WorkWaiting,
+				CompletionPolicy: CompletionBounded,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			event, _, err := store.AppendWorkEvent(WorkEvent{
+				WorkID:     item.ID,
+				Kind:       "session.done",
+				DedupeKey:  provider + ":definite-pre-mutation",
+				Actionable: true,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			failedWatcher := &fakeWatcher{
+				sessions: map[string]*classifier.Agent{
+					hostID: {ID: hostID, Hidden: true, State: classifier.StateDone},
+				},
+				sendErr: &watcher.InputSubmissionError{
+					Result: watcher.InputResult{Outcome: watcher.InputNotSubmitted},
+					Cause:  errors.New("target generation changed before queue start"),
+				},
+			}
+			if woke, dispatchErr := NewService(store, failedWatcher, nil).DispatchPendingEvent(); dispatchErr == nil || woke {
+				t.Fatalf("definite failure woke=%v err=%v", woke, dispatchErr)
+			}
+			events, err := store.ListWorkEvents(item.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(events) != 1 || events[0].ID != event.ID || events[0].ClaimedAt != nil {
+				t.Fatalf("exact Event was not released: %#v", events)
+			}
+
+			restarted, err := NewStore(root)
+			if err != nil {
+				t.Fatal(err)
+			}
+			restartedWatcher := &fakeWatcher{sessions: map[string]*classifier.Agent{
+				hostID: {ID: hostID, Hidden: true, State: classifier.StateDone},
+			}}
+			if woke, dispatchErr := NewService(restarted, restartedWatcher, nil).DispatchPendingEvent(); dispatchErr != nil || !woke {
+				t.Fatalf("restart dispatch woke=%v err=%v", woke, dispatchErr)
+			}
+			if len(restartedWatcher.sentCalls) != 1 ||
+				restartedWatcher.receipts[hostID] != event.ID {
+				t.Fatalf("restart sent %#v receipts=%#v, want same Event.ID %q",
+					restartedWatcher.sentCalls, restartedWatcher.receipts, event.ID)
+			}
+		})
+	}
+}
+
+func TestDispatchAmbiguousClaimNeverReplaysAfterRestartForCodexAndClaude(t *testing.T) {
+	for _, provider := range []string{"codex", "claude"} {
+		t.Run(provider, func(t *testing.T) {
+			root := t.TempDir()
+			store, err := NewStore(root)
+			if err != nil {
+				t.Fatal(err)
+			}
+			hostID := "brain-agent-brain-hidden:@1"
+			if err := store.SetHostSession(hostID, provider); err != nil {
+				t.Fatal(err)
+			}
+			item, err := store.CreateWork(Work{
+				Title:            "Retain ambiguous event",
+				Objective:        "Never create a second provider turn.",
+				Status:           WorkWaiting,
+				CompletionPolicy: CompletionBounded,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			event, _, err := store.AppendWorkEvent(WorkEvent{
+				WorkID:     item.ID,
+				Kind:       "session.done",
+				DedupeKey:  provider + ":ambiguous",
+				Actionable: true,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			failedWatcher := &fakeWatcher{
+				sessions: map[string]*classifier.Agent{
+					hostID: {ID: hostID, Hidden: true, State: classifier.StateDone},
+				},
+				sendErr: &watcher.InputSubmissionError{
+					Result: watcher.InputResult{Outcome: watcher.InputAmbiguous},
+					Cause:  errors.New("tmux queue started before connection loss"),
+				},
+			}
+			if woke, dispatchErr := NewService(store, failedWatcher, nil).DispatchPendingEvent(); dispatchErr == nil || woke {
+				t.Fatalf("ambiguous dispatch woke=%v err=%v", woke, dispatchErr)
+			}
+
+			restarted, err := NewStore(root)
+			if err != nil {
+				t.Fatal(err)
+			}
+			restartedWatcher := &fakeWatcher{sessions: map[string]*classifier.Agent{
+				hostID: {ID: hostID, Hidden: true, State: classifier.StateDone},
+			}}
+			if woke, dispatchErr := NewService(restarted, restartedWatcher, nil).DispatchPendingEvent(); dispatchErr != nil || woke {
+				t.Fatalf("restart replayed ambiguity: woke=%v err=%v", woke, dispatchErr)
+			}
+			events, err := restarted.ListWorkEvents(item.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(events) != 1 || events[0].ID != event.ID || events[0].ClaimedAt == nil ||
+				len(restartedWatcher.sentCalls) != 0 {
+				t.Fatalf("ambiguous Event did not remain singly claimed: events=%#v sends=%#v",
+					events, restartedWatcher.sentCalls)
+			}
+		})
 	}
 }
 

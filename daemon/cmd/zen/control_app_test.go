@@ -141,19 +141,15 @@ func (w *fakeControlWatcher) SendInput(sessionID, text string) error {
 	return w.sendErr
 }
 
-func (w *fakeControlWatcher) SendInputWithReceipt(sessionID, text, receipt string) error {
+func (w *fakeControlWatcher) SendInputWithReceiptResult(sessionID, text, receipt string) (watcher.InputResult, error) {
 	if w.receipts[sessionID] == receipt {
-		return nil
+		return watcher.InputResult{Outcome: watcher.InputAccepted, Receipt: receipt}, nil
 	}
 	if err := w.SendInput(sessionID, text); err != nil {
-		return err
+		return watcher.InputResult{Outcome: watcher.InputOutcomeFromError(err), Receipt: receipt}, err
 	}
 	w.receipts[sessionID] = receipt
-	return nil
-}
-
-func (w *fakeControlWatcher) HasInputReceipt(sessionID, receipt string) (bool, error) {
-	return w.receipts[sessionID] == receipt, nil
+	return watcher.InputResult{Outcome: watcher.InputAccepted, Receipt: receipt}, nil
 }
 
 func (w *fakeControlWatcher) SendInputWhenReady(sessionID, _ string, text string) error {
@@ -162,6 +158,11 @@ func (w *fakeControlWatcher) SendInputWhenReady(sessionID, _ string, text string
 }
 
 func (w *fakeControlWatcher) SubmitInputWhenReady(sessionID, _ string, payload string) error {
+	w.submitted = append(w.submitted, fakeControlSend{id: sessionID, text: payload})
+	return w.SendInput(sessionID, payload)
+}
+
+func (w *fakeControlWatcher) SubmitInput(sessionID, payload string) error {
 	w.submitted = append(w.submitted, fakeControlSend{id: sessionID, text: payload})
 	return w.SendInput(sessionID, payload)
 }
@@ -706,7 +707,7 @@ func TestControlAppAgentSendAllowsSubmitOnlyEnter(t *testing.T) {
 	}
 }
 
-func TestControlAppAgentSendPreservesNonCodexSubmitPath(t *testing.T) {
+func TestControlAppAgentSendUsesStructuredSubmitForEveryProvider(t *testing.T) {
 	for _, command := range []string{"cursor-agent --force", "claude", "grok", "custom-agent --interactive"} {
 		t.Run(command, func(t *testing.T) {
 			fw := newFakeControlWatcher()
@@ -726,8 +727,9 @@ func TestControlAppAgentSendPreservesNonCodexSubmitPath(t *testing.T) {
 			if !resp.OK {
 				t.Fatalf("response = %#v", resp)
 			}
-			if len(fw.sent) != 1 || len(fw.ready) != 0 {
-				t.Fatalf("sent=%#v ready=%#v; non-Codex path changed", fw.sent, fw.ready)
+			if len(fw.submitted) != 1 || fw.submitted[0].text != "provider follow-up" ||
+				len(fw.ready) != 0 {
+				t.Fatalf("submitted=%#v ready=%#v; provider bypassed structured submit", fw.submitted, fw.ready)
 			}
 		})
 	}
@@ -794,7 +796,7 @@ func TestAcceptedRunningTurnThenRejectedFollowUpKeepsExecutorLifecycle(t *testin
 	}
 }
 
-func TestControlAppAgentEventIsHostIdentityBoundAndConsumedOnce(t *testing.T) {
+func TestControlAppBrainEventIsHostIdentityBoundAndConsumedOnce(t *testing.T) {
 	store := newControlBrainStore(t)
 	const hostID = "brain-agent-brain-hidden:@1"
 	if err := store.SetHostSession(hostID, "codex"); err != nil {
@@ -818,29 +820,29 @@ func TestControlAppAgentEventIsHostIdentityBoundAndConsumedOnce(t *testing.T) {
 	}
 	app := &controlApp{brainService: brain.NewService(store, newFakeControlWatcher(), nil)}
 
-	foreign := app.HandleControlRequest(control.Request{Type: "agent_event", AgentID: "other:@1"})
+	foreign := app.HandleControlRequest(control.Request{Type: "brain_event", AgentID: "other:@1"})
 	if foreign.OK || foreign.Error == nil || foreign.Error.Code != "event_identity_mismatch" {
 		t.Fatalf("foreign response = %#v", foreign)
 	}
-	first := app.HandleControlRequest(control.Request{Type: "agent_event", AgentID: hostID})
+	first := app.HandleControlRequest(control.Request{Type: "brain_event", AgentID: hostID})
 	if !first.OK || first.BrainWorkEvent == nil || first.BrainWorkEvent.ID != event.ID ||
 		first.BrainWork == nil || first.BrainWork.ID != item.ID {
 		t.Fatalf("first response = %#v", first)
 	}
-	second := app.HandleControlRequest(control.Request{Type: "agent_event", AgentID: hostID})
+	second := app.HandleControlRequest(control.Request{Type: "brain_event", AgentID: hostID})
 	if !second.OK || second.BrainWorkEvent != nil || second.Confirmation == "" {
 		t.Fatalf("second response = %#v", second)
 	}
 }
 
-func TestControlAppConfirmedCodexSendClearsStickyLaunchFailure(t *testing.T) {
+func TestControlAppConfirmedProviderSendClearsStickyLaunchFailure(t *testing.T) {
 	fw := newFakeControlWatcher()
 	failedAt := time.Date(2026, 6, 8, 8, 59, 0, 0, time.UTC)
 	fw.agents["brain-agent-worker:@1"] = &classifier.Agent{
 		ID:             "brain-agent-worker:@1",
 		Name:           "Franklin",
 		State:          classifier.StateFailed,
-		Summary:        "Initial delegated prompt was not submitted: Codex composer did not become ready within 30s",
+		Summary:        "Initial delegated prompt was not submitted: provider startup did not become ready",
 		Phase:          "starting",
 		Attention:      "failed",
 		NeedsAttention: true,
@@ -872,7 +874,7 @@ func TestControlAppConfirmedCodexSendClearsStickyLaunchFailure(t *testing.T) {
 	}
 }
 
-func TestControlAppStructuredCodexSubmitPreservesFinalLineEnding(t *testing.T) {
+func TestControlAppStructuredSubmitPreservesFinalLineEnding(t *testing.T) {
 	fw := newFakeControlWatcher()
 	fw.agents["brain-agent-worker:@1"] = &classifier.Agent{
 		ID:        "brain-agent-worker:@1",

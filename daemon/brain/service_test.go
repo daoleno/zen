@@ -101,22 +101,18 @@ func (w *fakeWatcher) SendInputWhenReady(sessionID, _ string, text string) error
 	return w.SendInput(sessionID, text)
 }
 
-func (w *fakeWatcher) SendInputWithReceipt(sessionID, text, receipt string) error {
+func (w *fakeWatcher) SendInputWithReceiptResult(sessionID, text, receipt string) (watcher.InputResult, error) {
 	if w.receipts != nil && w.receipts[sessionID] == receipt {
-		return nil
+		return watcher.InputResult{Outcome: watcher.InputAccepted, Receipt: receipt}, nil
 	}
 	if err := w.SendInput(sessionID, text); err != nil {
-		return err
+		return watcher.InputResult{Outcome: watcher.InputOutcomeFromError(err), Receipt: receipt}, err
 	}
 	if w.receipts == nil {
 		w.receipts = map[string]string{}
 	}
 	w.receipts[sessionID] = receipt
-	return nil
-}
-
-func (w *fakeWatcher) HasInputReceipt(sessionID, receipt string) (bool, error) {
-	return w.receipts != nil && w.receipts[sessionID] == receipt, nil
+	return watcher.InputResult{Outcome: watcher.InputAccepted, Receipt: receipt}, nil
 }
 
 func (w *fakeWatcher) KillSession(sessionID string) error {

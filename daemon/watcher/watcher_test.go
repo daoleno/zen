@@ -1,10 +1,7 @@
 package watcher
 
 import (
-	"fmt"
 	"os"
-	"os/exec"
-	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
@@ -438,7 +435,7 @@ func TestSettleAgentInputAcceptedClearsOlderStickyFailure(t *testing.T) {
 		"brain-agent-worker:@1",
 		failed.LastProgressAt.Add(time.Nanosecond),
 		"working",
-		"Delegated Codex input accepted",
+		"Delegated input accepted",
 	)
 	if err != nil {
 		t.Fatalf("SettleAgentInputAccepted returned error: %v", err)
@@ -493,7 +490,7 @@ func TestSettleAgentInputAcceptedDoesNotOverwriteNewerLifecycleProgress(t *testi
 		"brain-agent-worker:@1",
 		handoffStartedAt,
 		"starting",
-		"Initial delegated prompt accepted by Codex",
+		"Initial delegated prompt accepted",
 	)
 	if err != nil {
 		t.Fatalf("SettleAgentInputAccepted returned error: %v", err)
@@ -529,38 +526,6 @@ func TestSplitTmuxInputCanSendTextWithoutSubmit(t *testing.T) {
 	}
 }
 
-func TestSendInputChunksLongText(t *testing.T) {
-	if _, err := exec.LookPath("tmux"); err != nil {
-		t.Skip("tmux unavailable")
-	}
-
-	session := fmt.Sprintf("zen-watcher-send-input-%d-%d", os.Getpid(), time.Now().UnixNano())
-	outputPath := filepath.Join(t.TempDir(), "input.txt")
-	text := strings.Repeat("long input ", 3000)
-	want := text + "\r"
-
-	command := fmt.Sprintf("stty raw -echo; dd of=%q bs=1 count=%d 2>/dev/null", outputPath, len(want))
-	if out, err := exec.Command("tmux", "new-session", "-d", "-s", session, command).CombinedOutput(); err != nil {
-		t.Fatalf("create tmux session: %v%s", err, commandOutputSuffix(out))
-	}
-	t.Cleanup(func() {
-		_ = exec.Command("tmux", "kill-session", "-t", session).Run()
-	})
-
-	time.Sleep(100 * time.Millisecond)
-	if resolved, known := resolveTargetProcessCommand(session); !known || isCodexCommand(resolved) {
-		t.Fatalf("authoritative non-Codex target identity = %q, known=%v", resolved, known)
-	}
-	if err := New(time.Second).SendInput(session, text+"\n"); err != nil {
-		t.Fatalf("SendInput returned error: %v", err)
-	}
-
-	got := readFileWithMinSize(t, outputPath, len(want), 3*time.Second)
-	if got != want {
-		t.Fatalf("tmux input mismatch: got %d bytes, want %d bytes", len(got), len(want))
-	}
-}
-
 func TestSplitStringByMaxBytesKeepsUTF8RunesIntact(t *testing.T) {
 	got := splitStringByMaxBytes("ab你cd好", 4)
 	want := []string{"ab", "你c", "d好"}
@@ -573,20 +538,6 @@ func TestSplitStringByMaxBytesKeepsUTF8RunesIntact(t *testing.T) {
 		}
 		if len(chunk) > 4 {
 			t.Fatalf("chunk %q has %d bytes, want <= 4", chunk, len(chunk))
-		}
-	}
-}
-
-func TestCodexInputReadinessDoesNotParseRenderedProviderState(t *testing.T) {
-	for _, rendered := range []string{
-		"",
-		"│ model: loading │",
-		"Press enter to continue",
-		"\x1b[2m› placeholder text\x1b[0m",
-		"› unsent manual draft",
-	} {
-		if !isAgentInputReady("codex", rendered) {
-			t.Fatalf("explicit Codex target depended on rendered state %q", rendered)
 		}
 	}
 }
@@ -828,188 +779,6 @@ func TestProviderCommandDetectionDirectAndEnvWrapped(t *testing.T) {
 	}
 }
 
-func TestSendInputWhenReadyClaudeSendsLargeBodyExactlyOnce(t *testing.T) {
-	binDir := t.TempDir()
-	logDir := t.TempDir()
-	readyPath := filepath.Join(logDir, "ready.txt")
-	chunksPath := filepath.Join(logDir, "chunks.bin")
-	literalCountPath := filepath.Join(logDir, "literal-count.txt")
-	entersPath := filepath.Join(logDir, "enters.txt")
-	ready := "" +
-		" ▐▛███▜▌   Claude Code v2.1.214\n" +
-		"▝▜█████▛▘  Haiku 4.5 · API Usage Billing\n" +
-		"  ▘▘ ▝▝    ~/workspace/zen\n" +
-		"\n\n" +
-		"────────────────────────────────────────\n" +
-		"❯\u00a0\n" +
-		"────────────────────────────────────────\n" +
-		"  ⏵⏵ bypass permissions on (shift+tab to cycle) · ← for agents"
-	if err := os.WriteFile(readyPath, []byte(ready), 0o600); err != nil {
-		t.Fatalf("write ready fixture: %v", err)
-	}
-
-	script := fmt.Sprintf(`#!/bin/sh
-ready=%q
-chunks=%q
-literal_count=%q
-enters=%q
-case "$1" in
-  capture-pane)
-    cat "$ready" || exit 1
-    exit 0
-    ;;
-  list-panes)
-    printf '0\n'
-    exit 0
-    ;;
-  send-keys)
-    shift
-    literal=0
-    while [ "$#" -gt 0 ]; do
-      case "$1" in
-        -l)
-          literal=1
-          shift
-          ;;
-        -t)
-          shift
-          [ "$#" -gt 0 ] && shift
-          ;;
-        --)
-          shift
-          if [ "$literal" = 1 ]; then
-            printf '%%s' "$*" >> "$chunks"
-            printf '1\n' >> "$literal_count"
-          fi
-          exit 0
-          ;;
-        Enter)
-          printf 'Enter\n' >> "$enters"
-          exit 0
-          ;;
-        *)
-          shift
-          ;;
-      esac
-    done
-    exit 0
-    ;;
-  *)
-    exit 0
-    ;;
-esac
-`, readyPath, chunksPath, literalCountPath, entersPath)
-	tmuxPath := filepath.Join(binDir, "tmux")
-	if err := os.WriteFile(tmuxPath, []byte(script), 0o755); err != nil {
-		t.Fatalf("write fake tmux: %v", err)
-	}
-	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
-	targetCommandResolverMu.Lock()
-	previousResolver := targetCommandResolver
-	targetCommandResolver = func(target string) (string, bool) {
-		return "claude --permission-mode bypassPermissions", target == "claude-ready:@1"
-	}
-	targetCommandResolverMu.Unlock()
-	t.Cleanup(func() {
-		targetCommandResolverMu.Lock()
-		targetCommandResolver = previousResolver
-		targetCommandResolverMu.Unlock()
-	})
-
-	body := strings.Repeat("zen-claude-brief-", 80)
-	if len(body) <= tmuxSendInputChunkBytes {
-		t.Fatalf("test body len=%d, want > %d", len(body), tmuxSendInputChunkBytes)
-	}
-	wantLiteralSends := (len(body) + tmuxSendInputChunkBytes - 1) / tmuxSendInputChunkBytes
-	if wantLiteralSends < 2 {
-		t.Fatalf("expected multi-chunk body, wantLiteralSends=%d", wantLiteralSends)
-	}
-
-	if err := SendInputWhenReady("claude-ready:@1", "env PATH='/Applications/Zen CLI/bin':$PATH:/usr/bin claude --permission-mode bypassPermissions", body+"\n"); err != nil {
-		t.Fatalf("SendInputWhenReady: %v", err)
-	}
-
-	gotChunks, err := os.ReadFile(chunksPath)
-	if err != nil {
-		t.Fatalf("read chunks: %v", err)
-	}
-	if string(gotChunks) != body {
-		t.Fatalf("literal chunks = %q (%d bytes), want body exactly once (%d bytes)", gotChunks, len(gotChunks), len(body))
-	}
-
-	gotLiteralCount, err := os.ReadFile(literalCountPath)
-	if err != nil {
-		t.Fatalf("read literal count: %v", err)
-	}
-	literalSends := len(strings.Split(strings.TrimSpace(string(gotLiteralCount)), "\n"))
-	if literalSends != wantLiteralSends {
-		t.Fatalf("literal send-keys -l count = %d, want %d", literalSends, wantLiteralSends)
-	}
-
-	gotEnters, err := os.ReadFile(entersPath)
-	if err != nil {
-		t.Fatalf("read enters: %v", err)
-	}
-	enterLines := strings.Split(strings.TrimSpace(string(gotEnters)), "\n")
-	if len(enterLines) != 1 || enterLines[0] != "Enter" {
-		t.Fatalf("Enter sends = %q, want exactly one Enter", gotEnters)
-	}
-}
-
-func TestSendInputWithReceiptPersistsSessionAcceptanceAndDedupes(t *testing.T) {
-	binDir := t.TempDir()
-	receiptPath := filepath.Join(t.TempDir(), "receipt")
-	sendLogPath := filepath.Join(t.TempDir(), "sends")
-	script := fmt.Sprintf(`#!/bin/sh
-receipt=%q
-sends=%q
-case "$1" in
-  show-options)
-    [ -f "$receipt" ] && cat "$receipt"
-    exit 0
-    ;;
-  set-option)
-    printf '%%s' "$6" > "$receipt"
-    exit 0
-    ;;
-  send-keys)
-    printf 'send\n' >> "$sends"
-    exit 0
-    ;;
-  *)
-    exit 1
-    ;;
-esac
-`, receiptPath, sendLogPath)
-	tmuxPath := filepath.Join(binDir, "tmux")
-	if err := os.WriteFile(tmuxPath, []byte(script), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
-
-	w := New(time.Second)
-	w.targetCommandResolver = func(target string) (string, bool) {
-		return "custom-agent", target == "brain-host:@1"
-	}
-	receipt := "event-1:claim-token-1"
-	for range 2 {
-		if err := w.SendInputWithReceipt("brain-host:@1", "one turn\n", receipt); err != nil {
-			t.Fatal(err)
-		}
-	}
-	accepted, err := w.HasInputReceipt("brain-host:@1", receipt)
-	if err != nil || !accepted {
-		t.Fatalf("accepted=%v err=%v", accepted, err)
-	}
-	raw, err := os.ReadFile(sendLogPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got := strings.Count(string(raw), "send\n"); got != 2 {
-		t.Fatalf("tmux send commands=%d, want one literal plus one Enter", got)
-	}
-}
-
 func TestCursorAgentUsesLongerSubmitDelay(t *testing.T) {
 	if got := tmuxSubmitDelay("cursor-agent --force --sandbox disabled"); got < 350*time.Millisecond {
 		t.Fatalf("Cursor Agent submit delay = %s, want at least 350ms", got)
@@ -1022,80 +791,6 @@ func TestCursorAgentUsesLongerSubmitDelay(t *testing.T) {
 	}
 	if got := tmuxSubmitDelay("claude"); got < 200*time.Millisecond {
 		t.Fatalf("Claude submit delay = %s, want at least 200ms", got)
-	}
-}
-
-func TestGenericWatcherSendInputKeepsLegacyDelayWhileExplicitReadyKeepsProviderDelay(t *testing.T) {
-	binDir := t.TempDir()
-	tmuxPath := filepath.Join(binDir, "tmux")
-	script := `#!/bin/sh
-case "$1" in
-  capture-pane)
-    printf 'Claude Code v2.1.214\nCursor Agent\nrun everything\nGrok 1\n❯ \nbypass permissions on\nEnter: send\n'
-    ;;
-  list-panes)
-    printf '0\n'
-    ;;
-esac
-exit 0
-`
-	if err := os.WriteFile(tmuxPath, []byte(script), 0o755); err != nil {
-		t.Fatalf("write fake tmux: %v", err)
-	}
-	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
-
-	previousSleep := tmuxSubmitSleep
-	var requested []time.Duration
-	tmuxSubmitSleep = func(delay time.Duration) {
-		requested = append(requested, delay)
-	}
-	targetCommandResolverMu.Lock()
-	previousResolver := targetCommandResolver
-	targetCommandResolverMu.Unlock()
-	t.Cleanup(func() {
-		tmuxSubmitSleep = previousSleep
-		targetCommandResolverMu.Lock()
-		targetCommandResolver = previousResolver
-		targetCommandResolverMu.Unlock()
-	})
-
-	tests := []struct {
-		name          string
-		command       string
-		explicitDelay time.Duration
-	}{
-		{name: "Claude", command: "claude --permission-mode bypassPermissions", explicitDelay: 250 * time.Millisecond},
-		{name: "Cursor", command: "cursor-agent --force", explicitDelay: 400 * time.Millisecond},
-		{name: "Grok", command: "grok --no-alt-screen", explicitDelay: 300 * time.Millisecond},
-		{name: "custom", command: "my-agent --interactive", explicitDelay: 120 * time.Millisecond},
-	}
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			sessionID := "delay-" + strings.ToLower(tc.name) + ":@1"
-			resolver := func(target string) (string, bool) {
-				return tc.command, target == sessionID
-			}
-			w := New(time.Second)
-			w.targetCommandResolver = resolver
-			requested = nil
-			if err := w.SendInput(sessionID, "heartbeat\n"); err != nil {
-				t.Fatalf("generic SendInput: %v", err)
-			}
-			if !reflect.DeepEqual(requested, []time.Duration{120 * time.Millisecond}) {
-				t.Fatalf("generic requested delays=%v want [120ms]", requested)
-			}
-
-			targetCommandResolverMu.Lock()
-			targetCommandResolver = resolver
-			targetCommandResolverMu.Unlock()
-			requested = nil
-			if err := SendInputWhenReady(sessionID, tc.command, "explicit ready\n"); err != nil {
-				t.Fatalf("explicit-ready SendInput: %v", err)
-			}
-			if !reflect.DeepEqual(requested, []time.Duration{tc.explicitDelay}) {
-				t.Fatalf("explicit-ready requested delays=%v want [%s]", requested, tc.explicitDelay)
-			}
-		})
 	}
 }
 

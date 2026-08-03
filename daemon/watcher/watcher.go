@@ -2,7 +2,6 @@ package watcher
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -75,8 +74,6 @@ var targetProcessResolver func(string) (targetProcessIdentity, bool)
 // tests. Production leaves both overrides nil and resolves the live process
 // identity, including PID and process start, on every boundary.
 var targetCommandResolver func(string) (string, bool)
-var packageCodexInputIOMu sync.RWMutex
-var packageCodexInputIO codexInputIO = realCodexInputIO{}
 var tmuxSubmitSleep = time.Sleep
 
 func currentTargetIdentityResolver() func(string) (targetProcessIdentity, bool) {
@@ -91,16 +88,6 @@ func currentTargetIdentityResolver() func(string) (targetProcessIdentity, bool) 
 		return resolveTargetProcessIdentity
 	}
 	return targetIdentityResolverFromCommandResolver(resolver)
-}
-
-func currentPackageCodexInputIO() codexInputIO {
-	packageCodexInputIOMu.RLock()
-	io := packageCodexInputIO
-	packageCodexInputIOMu.RUnlock()
-	if io == nil {
-		return realCodexInputIO{}
-	}
-	return io
 }
 
 func guardTargetIdentity(
@@ -156,60 +143,6 @@ func resolveTargetIdentityWhenReady(
 	}
 }
 
-func bindCodexInputIdentity(
-	io codexInputIO,
-	resolver func(string) (targetProcessIdentity, bool),
-	target string,
-	expected targetProcessIdentity,
-) codexInputIO {
-	guard := func() error {
-		return guardTargetIdentity(resolver, target, expected)
-	}
-	if real, ok := io.(realCodexInputIO); ok {
-		real.targetGuard = guard
-		return real
-	}
-	return &targetBoundCodexInputIO{
-		codexInputIO: io,
-		guard:        guard,
-	}
-}
-
-type targetBoundCodexInputIO struct {
-	codexInputIO
-	guard func() error
-}
-
-func (io *targetBoundCodexInputIO) capture(sessionID string) codexPaneCapture {
-	if io == nil || io.codexInputIO == nil || io.guard == nil || io.guard() != nil {
-		return codexPaneCapture{}
-	}
-	return io.codexInputIO.capture(sessionID)
-}
-
-func (io *targetBoundCodexInputIO) submitPrepared(
-	sessionID string,
-	generation string,
-	rollout codexRolloutIdentity,
-	transactionID string,
-	body string,
-) error {
-	if err := io.guard(); err != nil {
-		return err
-	}
-	return io.codexInputIO.submitPrepared(sessionID, generation, rollout, transactionID, body)
-}
-
-func (io *targetBoundCodexInputIO) releaseStaleInputSuppression(
-	sessionID string,
-	suppression codexPaneInputSuppression,
-) error {
-	if err := io.guard(); err != nil {
-		return err
-	}
-	return io.codexInputIO.releaseStaleInputSuppression(sessionID, suppression)
-}
-
 // SessionEvent represents a state change or output update for an agent.
 type SessionEvent struct {
 	Type     string              `json:"type"`
@@ -235,11 +168,7 @@ type Watcher struct {
 	mu                    sync.RWMutex
 	events                chan SessionEvent
 	resources             delegatedResourceManager
-	codexInput            *codexInputCoordinator
-	codexInputIO          codexInputIO
-	codexStateDir         string
-	codexResumeMu         sync.Mutex
-	codexResumes          map[string]struct{}
+	sessionInput          *sessionInputOwner
 	targetProcessResolver func(string) (targetProcessIdentity, bool)
 	targetCommandResolver func(string) (string, bool)
 }
@@ -255,54 +184,21 @@ func New(pollInterval time.Duration) *Watcher {
 		agentEpoch:   make(map[string]int64),
 		events:       make(chan SessionEvent, 100),
 		resources:    noopDelegatedResourceManager{},
-		codexInput:   newCodexInputCoordinator(),
-		codexInputIO: realCodexInputIO{},
-		codexResumes: make(map[string]struct{}),
+		sessionInput: defaultSessionInputOwner,
 	}
 }
 
-// ConfigureCodexInputState binds Codex submission journals and envelopes to
-// the daemon's durable state directory. Call this before creating sessions or
-// accepting input.
-func (w *Watcher) ConfigureCodexInputState(stateDir string) error {
+func (w *Watcher) sessionInputOwner() *sessionInputOwner {
 	if w == nil {
-		return fmt.Errorf("watcher is required")
-	}
-	coordinator, err := configureDefaultCodexInputCoordinator(stateDir)
-	if err != nil {
-		return err
-	}
-	w.mu.Lock()
-	w.codexInput = coordinator
-	w.codexStateDir = strings.TrimSpace(stateDir)
-	w.mu.Unlock()
-	return nil
-}
-
-func (w *Watcher) codexInputOwner() *codexInputCoordinator {
-	if w == nil {
-		return currentDefaultCodexInputCoordinator()
+		return defaultSessionInputOwner
 	}
 	w.mu.RLock()
-	coordinator := w.codexInput
+	owner := w.sessionInput
 	w.mu.RUnlock()
-	if coordinator == nil {
-		return currentDefaultCodexInputCoordinator()
+	if owner == nil {
+		return defaultSessionInputOwner
 	}
-	return coordinator
-}
-
-func (w *Watcher) codexIOOwner() codexInputIO {
-	if w == nil {
-		return realCodexInputIO{}
-	}
-	w.mu.RLock()
-	io := w.codexInputIO
-	w.mu.RUnlock()
-	if io == nil {
-		return realCodexInputIO{}
-	}
-	return io
+	return owner
 }
 
 func targetIdentityResolverFromCommandResolver(
@@ -774,16 +670,6 @@ func (w *Watcher) poll() {
 		results = append(results, probedAgent{preparedAgent: item, activity: activity})
 	}
 
-	// A changed pane can clear a durable ownership wait, while discovery after
-	// daemon restart restores the same receipt's driver. The journal remains
-	// the only queue; this merely resumes its sole prepared owner.
-	for _, result := range results {
-		if (!result.existed || result.contentChanged) &&
-			isCodexCommand(result.agentSnap.Command) {
-			w.startCodexPendingResume(result.id)
-		}
-	}
-
 	w.mu.Lock()
 	defer w.mu.Unlock()
 
@@ -1118,11 +1004,7 @@ func (w *Watcher) SendKey(sessionID, key string) error {
 		}
 		return exec.Command("tmux", "send-keys", "-t", sessionID, key).Run()
 	}
-	if isCodexCommand(identity.Command) {
-		io := bindCodexInputIdentity(w.codexIOOwner(), resolver, sessionID, identity)
-		return w.codexInputOwner().mutateIfUnowned(io, sessionID, action)
-	}
-	return action()
+	return w.sessionInputOwner().serialized(sessionID, action)
 }
 
 func allowedTmuxKey(key string) bool {
@@ -1147,183 +1029,58 @@ func allowedLiteralKeyByte(key byte) bool {
 func (w *Watcher) SendInput(sessionID, text string) error {
 	identity, known := w.targetForSession(sessionID)
 	if !known {
-		return fmt.Errorf("target provider could not be proven; input was not sent")
+		return definitelyNotSubmitted("", fmt.Errorf("target provider could not be proven"))
 	}
 	resolver := w.targetForSession
-	guard := func() error {
-		return guardTargetIdentity(resolver, sessionID, identity)
-	}
-	if !isCodexCommand(identity.Command) {
-		return sendInputUncoordinated(sessionID, text, 120*time.Millisecond, guard)
-	}
-	io := bindCodexInputIdentity(w.codexIOOwner(), resolver, sessionID, identity)
-	body, submit := splitCodexSubmitInput(text)
+	body, submit := splitSubmitInput(text)
 	if submit && body != "" {
-		return w.codexInputOwner().submit(io, sessionID, body, defaultCodexSubmitConfig())
+		_, err := w.sessionInputOwner().submit(
+			sessionID,
+			identity,
+			resolver,
+			identity.Command,
+			body,
+			"",
+		)
+		return err
 	}
-	return w.codexInputOwner().mutateIfUnowned(io, sessionID, func() error {
-		return sendInputUncoordinated(sessionID, text, 120*time.Millisecond, guard)
+	return w.sessionInputOwner().serialized(sessionID, func() error {
+		if err := guardTargetIdentity(resolver, sessionID, identity); err != nil {
+			return definitelyNotSubmitted("", err)
+		}
+		return sendDraftInputLocked(sessionID, text, tmuxSubmitDelay(identity.Command), nil)
 	})
 }
 
-const brainInputReceiptOption = "zen_brain_input_receipt"
-
-// SendInputWithReceipt makes one Brain input idempotent at the receiving
-// Session boundary. A matching durable Session receipt suppresses re-enqueue;
-// a new receipt is recorded only after tmux accepts the input.
+// SendInputWithReceipt submits through the shared Session Input owner and
+// records the stable receiver receipt after the provider submit key.
 func (w *Watcher) SendInputWithReceipt(sessionID, text, receipt string) error {
+	_, err := w.SendInputWithReceiptResult(sessionID, text, receipt)
+	return err
+}
+
+func (w *Watcher) SendInputWithReceiptResult(sessionID, text, receipt string) (InputResult, error) {
 	receipt = strings.TrimSpace(receipt)
 	if receipt == "" {
-		return fmt.Errorf("input receipt is required")
-	}
-	accepted, err := w.HasInputReceipt(sessionID, receipt)
-	if err != nil {
-		return err
-	}
-	if accepted {
-		return nil
+		return InputResult{Outcome: InputNotSubmitted}, definitelyNotSubmitted("", fmt.Errorf("input receipt is required"))
 	}
 	identity, known := w.targetForSession(sessionID)
 	if !known {
-		return fmt.Errorf("target provider could not be proven; input was not sent")
+		err := definitelyNotSubmitted(receipt, fmt.Errorf("target provider could not be proven"))
+		return InputResult{Outcome: InputNotSubmitted, Receipt: receipt}, err
 	}
-	if isCodexCommand(identity.Command) {
-		body, submit := splitCodexSubmitInput(text)
-		if submit && body != "" {
-			resolver := w.targetForSession
-			io := bindCodexInputIdentity(w.codexIOOwner(), resolver, sessionID, identity)
-			if err := w.codexInputOwner().submitWithReceipt(
-				io,
-				sessionID,
-				body,
-				receipt,
-				defaultCodexSubmitConfig(),
-			); err != nil {
-				if IsInputPending(err) {
-					w.startCodexPendingResume(sessionID)
-				}
-				return err
-			}
-			// The transaction record closes the confirmation-to-metadata crash
-			// window. The window option remains the long-lived Session receipt
-			// after terminal transaction retention expires.
-			return setTmuxWindowUserOption(sessionID, brainInputReceiptOption, receipt)
-		}
+	if text == "" {
+		err := definitelyNotSubmitted(receipt, fmt.Errorf("receipt input payload is empty"))
+		return InputResult{Outcome: InputNotSubmitted, Receipt: receipt}, err
 	}
-	if err := w.SendInput(sessionID, text); err != nil {
-		return err
-	}
-	return setTmuxWindowUserOption(sessionID, brainInputReceiptOption, receipt)
-}
-
-func (w *Watcher) startCodexPendingResume(sessionID string) {
-	if w == nil {
-		return
-	}
-	identity, known := w.targetForSession(sessionID)
-	if !known || !isCodexCommand(identity.Command) {
-		return
-	}
-	io := bindCodexInputIdentity(w.codexIOOwner(), w.targetForSession, sessionID, identity)
-	current := io.capture(sessionID)
-	if !current.alive || current.generation == "" {
-		return
-	}
-	records, err := w.codexInputOwner().store.Active(sessionID, current.generation)
-	if err != nil || len(records) != 1 || records[0].Phase != codexTransactionPrepared ||
-		strings.TrimSpace(records[0].AcceptanceReceipt) == "" {
-		return
-	}
-	record := records[0]
-	key := sessionID + "\x00" + record.TransactionID
-	w.codexResumeMu.Lock()
-	if w.codexResumes == nil {
-		w.codexResumes = make(map[string]struct{})
-	}
-	if _, running := w.codexResumes[key]; running {
-		w.codexResumeMu.Unlock()
-		return
-	}
-	w.codexResumes[key] = struct{}{}
-	w.codexResumeMu.Unlock()
-
-	go func() {
-		defer func() {
-			w.codexResumeMu.Lock()
-			delete(w.codexResumes, key)
-			w.codexResumeMu.Unlock()
-		}()
-		probeDelay := 250 * time.Millisecond
-		for {
-			probeErr := io.probeSubmissionReadiness(
-				sessionID,
-				record.SessionGeneration,
-				codexRolloutIdentity{
-					Path:      record.RolloutPath,
-					SessionID: record.RolloutSessionID,
-				},
-			)
-			if errors.Is(probeErr, errCodexResumeOnPaneChange) {
-				return
-			}
-			if probeErr != nil {
-				time.Sleep(probeDelay)
-				probeDelay *= 2
-				if probeDelay > 30*time.Second {
-					probeDelay = 30 * time.Second
-				}
-				continue
-			}
-			err := w.codexInputOwner().submitWithReceipt(
-				io,
-				sessionID,
-				record.Instruction,
-				record.AcceptanceReceipt,
-				defaultCodexSubmitConfig(),
-			)
-			if err == nil {
-				_ = setTmuxWindowUserOption(
-					sessionID,
-					brainInputReceiptOption,
-					record.AcceptanceReceipt,
-				)
-				return
-			}
-			if !IsInputPending(err) {
-				return
-			}
-			time.Sleep(probeDelay)
-			probeDelay *= 2
-			if probeDelay > 30*time.Second {
-				probeDelay = 30 * time.Second
-			}
-		}
-	}()
-}
-
-// HasInputReceipt reads durable receiver-side acceptance from Session metadata.
-func (w *Watcher) HasInputReceipt(sessionID, receipt string) (bool, error) {
-	receipt = strings.TrimSpace(receipt)
-	if receipt == "" {
-		return false, fmt.Errorf("input receipt is required")
-	}
-	identity, known := w.targetForSession(sessionID)
-	if known && isCodexCommand(identity.Command) {
-		resolver := w.targetForSession
-		io := bindCodexInputIdentity(w.codexIOOwner(), resolver, sessionID, identity)
-		accepted, err := w.codexInputOwner().hasAcceptedReceipt(io, sessionID, receipt)
-		if err != nil {
-			return false, err
-		}
-		if accepted {
-			return true, nil
-		}
-	}
-	value, err := tmuxWindowUserOption(sessionID, brainInputReceiptOption)
-	if err != nil {
-		return false, err
-	}
-	return value == receipt, nil
+	return w.sessionInputOwner().submit(
+		sessionID,
+		identity,
+		w.targetForSession,
+		identity.Command,
+		text,
+		receipt,
+	)
 }
 
 // SendInputWhenReady waits for a newly started agent UI to be ready, then sends
@@ -1334,35 +1091,27 @@ func (w *Watcher) SendInputWhenReady(sessionID, command, text string) error {
 	resolver := w.targetForSession
 	identity, known := resolveTargetIdentityWhenReady(resolver, sessionID, command)
 	if !known {
-		return fmt.Errorf("target provider could not be proven; input was not sent")
+		return definitelyNotSubmitted("", fmt.Errorf("target provider could not be proven"))
 	}
 	command = identity.Command
 	guard := func() error {
 		return guardTargetIdentity(resolver, sessionID, identity)
 	}
-	if isCodexCommand(identity.Command) {
-		io := bindCodexInputIdentity(w.codexIOOwner(), resolver, sessionID, identity)
-		body, submit := splitCodexSubmitInput(text)
-		if submit && body != "" {
-			return w.codexInputOwner().submit(io, sessionID, body, defaultCodexSubmitConfig())
-		}
-		return w.codexInputOwner().mutateIfUnowned(io, sessionID, func() error {
-			if !waitForInputReadyUncoordinated(
-				sessionID,
-				command,
-				inputReadyTimeout(command),
-				io,
-			) {
-				return fmt.Errorf("agent input not ready for %q", command)
-			}
-			return sendInputUncoordinated(sessionID, text, tmuxSubmitDelay(command), guard)
-		})
-	}
-	if !waitForInputReadyGuarded(sessionID, command, inputReadyTimeout(command), nil, guard) &&
+	if !waitForInputReadyGuarded(sessionID, command, inputReadyTimeout(command), guard) &&
 		needsInputReadinessWait(command, "") {
-		return fmt.Errorf("agent input not ready for %q", command)
+		return definitelyNotSubmitted("", fmt.Errorf("agent input not ready for %q", command))
 	}
-	return sendInputUncoordinated(sessionID, text, tmuxSubmitDelay(command), guard)
+	body, submit := splitSubmitInput(text)
+	if submit && body != "" {
+		_, err := w.sessionInputOwner().submit(sessionID, identity, resolver, command, body, "")
+		return err
+	}
+	return w.sessionInputOwner().serialized(sessionID, func() error {
+		if err := guard(); err != nil {
+			return definitelyNotSubmitted("", err)
+		}
+		return sendDraftInputLocked(sessionID, text, tmuxSubmitDelay(command), nil)
+	})
 }
 
 // SubmitInputWhenReady submits payload as a structured action. Unlike the
@@ -1372,13 +1121,33 @@ func (w *Watcher) SubmitInputWhenReady(sessionID, command, payload string) error
 	resolver := w.targetForSession
 	identity, known := resolveTargetIdentityWhenReady(resolver, sessionID, command)
 	if !known {
-		return fmt.Errorf("target provider could not be proven; input was not submitted")
+		return definitelyNotSubmitted("", fmt.Errorf("target provider could not be proven"))
 	}
-	if !isCodexCommand(identity.Command) {
-		return fmt.Errorf("structured submit is only supported for Codex")
+	if !waitForInputReadyGuarded(sessionID, identity.Command, inputReadyTimeout(identity.Command), func() error {
+		return guardTargetIdentity(resolver, sessionID, identity)
+	}) && needsInputReadinessWait(identity.Command, "") {
+		return definitelyNotSubmitted("", fmt.Errorf("agent input not ready for %q", identity.Command))
 	}
-	io := bindCodexInputIdentity(w.codexIOOwner(), resolver, sessionID, identity)
-	return w.codexInputOwner().submit(io, sessionID, payload, defaultCodexSubmitConfig())
+	_, err := w.sessionInputOwner().submit(sessionID, identity, resolver, identity.Command, payload, "")
+	return err
+}
+
+// SubmitInput submits one exact payload without consulting rendered provider
+// state. It is the ordinary Chat/follow-up boundary after initial launch.
+func (w *Watcher) SubmitInput(sessionID, payload string) error {
+	identity, known := w.targetForSession(sessionID)
+	if !known {
+		return definitelyNotSubmitted("", fmt.Errorf("target provider could not be proven"))
+	}
+	_, err := w.sessionInputOwner().submit(
+		sessionID,
+		identity,
+		w.targetForSession,
+		identity.Command,
+		payload,
+		"",
+	)
+	return err
 }
 
 // SendInput sends text to a tmux window and treats trailing newlines as submit.
@@ -1392,30 +1161,23 @@ func SendInputForCommand(sessionID, command, text string) error {
 	resolver := currentTargetIdentityResolver()
 	identity, known := resolver(sessionID)
 	if !known {
-		return fmt.Errorf("target provider could not be proven; input was not sent")
+		return definitelyNotSubmitted("", fmt.Errorf("target provider could not be proven"))
 	}
 	command = identity.Command
-	guard := func() error {
-		return guardTargetIdentity(resolver, sessionID, identity)
+	body, submit := splitSubmitInput(text)
+	if submit && body != "" {
+		_, err := defaultSessionInputOwner.submit(sessionID, identity, resolver, command, body, "")
+		return err
 	}
-	if isCodexCommand(identity.Command) {
-		io := bindCodexInputIdentity(currentPackageCodexInputIO(), resolver, sessionID, identity)
-		body, submit := splitCodexSubmitInput(text)
-		if submit && body != "" {
-			return submitCoordinatedCodexInput(io, sessionID, body, defaultCodexSubmitConfig())
+	return defaultSessionInputOwner.serialized(sessionID, func() error {
+		if err := guardTargetIdentity(resolver, sessionID, identity); err != nil {
+			return definitelyNotSubmitted("", err)
 		}
-		return currentDefaultCodexInputCoordinator().mutateIfUnowned(io, sessionID, func() error {
-			return sendInputUncoordinated(sessionID, text, tmuxSubmitDelay(command), guard)
-		})
-	}
-	return sendInputUncoordinated(sessionID, text, tmuxSubmitDelay(command), guard)
+		return sendDraftInputLocked(sessionID, text, tmuxSubmitDelay(command), nil)
+	})
 }
 
-func sendInputForCommandUncoordinated(sessionID, command, text string) error {
-	return sendInputUncoordinated(sessionID, text, tmuxSubmitDelay(command), nil)
-}
-
-func sendInputUncoordinated(
+func sendDraftInputLocked(
 	sessionID string,
 	text string,
 	submitDelay time.Duration,
@@ -1447,34 +1209,23 @@ func SendInputWhenReady(sessionID, command, text string) error {
 	resolver := currentTargetIdentityResolver()
 	identity, known := resolveTargetIdentityWhenReady(resolver, sessionID, command)
 	if !known {
-		return fmt.Errorf("target provider could not be proven; input was not sent")
+		return definitelyNotSubmitted("", fmt.Errorf("target provider could not be proven"))
 	}
 	command = identity.Command
-	guard := func() error {
-		return guardTargetIdentity(resolver, sessionID, identity)
-	}
-	if isCodexCommand(identity.Command) {
-		io := bindCodexInputIdentity(currentPackageCodexInputIO(), resolver, sessionID, identity)
-		body, submit := splitCodexSubmitInput(text)
-		if submit && body != "" {
-			return submitCoordinatedCodexInput(io, sessionID, body, defaultCodexSubmitConfig())
-		}
-		return currentDefaultCodexInputCoordinator().mutateIfUnowned(io, sessionID, func() error {
-			if !waitForInputReadyUncoordinated(
-				sessionID,
-				command,
-				inputReadyTimeout(command),
-				io,
-			) {
-				return fmt.Errorf("agent input not ready for %q", command)
-			}
-			return sendInputUncoordinated(sessionID, text, tmuxSubmitDelay(command), guard)
-		})
-	}
 	if !WaitForInputReady(sessionID, command, inputReadyTimeout(command)) && needsInputReadinessWait(command, "") {
-		return fmt.Errorf("agent input not ready for %q", command)
+		return definitelyNotSubmitted("", fmt.Errorf("agent input not ready for %q", command))
 	}
-	return sendInputUncoordinated(sessionID, text, tmuxSubmitDelay(command), guard)
+	body, submit := splitSubmitInput(text)
+	if submit && body != "" {
+		_, err := defaultSessionInputOwner.submit(sessionID, identity, resolver, command, body, "")
+		return err
+	}
+	return defaultSessionInputOwner.serialized(sessionID, func() error {
+		if err := guardTargetIdentity(resolver, sessionID, identity); err != nil {
+			return definitelyNotSubmitted("", err)
+		}
+		return sendDraftInputLocked(sessionID, text, tmuxSubmitDelay(command), nil)
+	})
 }
 
 // WaitForInputReady reports whether a known agent UI reached an input prompt.
@@ -1499,48 +1250,19 @@ func WaitForInputReady(sessionID, command string, timeout time.Duration) bool {
 		return false
 	}
 	command = identity.Command
-	if isCodexCommand(identity.Command) {
-		io := bindCodexInputIdentity(currentPackageCodexInputIO(), resolver, sessionID, identity)
-		err := currentDefaultCodexInputCoordinator().mutateIfUnowned(
-			io,
-			sessionID,
-			func() error {
-				if !waitForInputReadyUncoordinated(
-					sessionID,
-					command,
-					remaining,
-					io,
-				) {
-					return fmt.Errorf("Codex input not ready")
-				}
-				return nil
-			},
-		)
-		return err == nil
-	}
 	guard := func() error {
 		return guardTargetIdentity(resolver, sessionID, identity)
 	}
-	if !waitForInputReadyGuarded(sessionID, command, remaining, nil, guard) {
+	if !waitForInputReadyGuarded(sessionID, command, remaining, guard) {
 		return false
 	}
 	return guard() == nil
-}
-
-func waitForInputReadyUncoordinated(
-	sessionID string,
-	command string,
-	timeout time.Duration,
-	codexIO codexInputIO,
-) bool {
-	return waitForInputReadyGuarded(sessionID, command, timeout, codexIO, nil)
 }
 
 func waitForInputReadyGuarded(
 	sessionID string,
 	command string,
 	timeout time.Duration,
-	codexIO codexInputIO,
 	guard func() error,
 ) bool {
 	if !needsInputReadinessWait(command, "") {
@@ -1581,7 +1303,7 @@ func isAgentInputReady(command, content string) bool {
 	}
 	explicitCodex := isCodexCommand(command)
 	if explicitCodex {
-		return true
+		return isCodexStartupReady(content)
 	}
 	if isCursorAgentCommand(command) || strings.Contains(strings.ToLower(content), "cursor agent") {
 		current := latestCursorPaneContent(content)
@@ -1595,6 +1317,32 @@ func isAgentInputReady(command, content string) bool {
 		return isGrokInputReady(content)
 	}
 	return strings.TrimSpace(content) != ""
+}
+
+func isCodexStartupReady(content string) bool {
+	normalized := strings.ReplaceAll(content, "\r\n", "\n")
+	lower := strings.ToLower(normalized)
+	if !strings.Contains(lower, "openai codex") && !strings.Contains(lower, ">_ codex") {
+		return false
+	}
+	for _, blocked := range []string{
+		"select a model",
+		"choose a model",
+		"loading model",
+		"starting codex",
+		"trust this folder",
+		"press enter to continue",
+	} {
+		if strings.Contains(lower, blocked) {
+			return false
+		}
+	}
+	for _, line := range strings.Split(normalized, "\n") {
+		if strings.HasPrefix(strings.TrimSpace(line), "›") {
+			return true
+		}
+	}
+	return false
 }
 
 func isGrokInputReady(content string) bool {
@@ -1657,13 +1405,6 @@ func needsInputReadinessWait(command, content string) bool {
 
 func isCodexCommand(command string) bool {
 	return commandExecutableBase(command) == "codex"
-}
-
-// IsCodexCommand reports whether command launches the interactive Codex TUI.
-// Control-plane callers use this to opt only Codex follow-ups into the
-// confirmed submission transaction without changing other providers.
-func IsCodexCommand(command string) bool {
-	return isCodexCommand(command)
 }
 
 func isCursorAgentCommand(command string) bool {
@@ -1943,10 +1684,9 @@ func splitTmuxInput(text string) (body string, submit bool) {
 	return text, submit
 }
 
-// splitCodexSubmitInput treats exactly one final line ending as the transport
-// submit delimiter. Earlier trailing line endings remain task bytes and are
-// normalized from CRLF/CR to LF by normalizeCodexPayload before hashing.
-func splitCodexSubmitInput(text string) (body string, submit bool) {
+// splitSubmitInput treats exactly one final line ending as the transport
+// submit delimiter. Any earlier trailing line endings remain payload bytes.
+func splitSubmitInput(text string) (body string, submit bool) {
 	switch {
 	case strings.HasSuffix(text, "\r\n"):
 		return strings.TrimSuffix(text, "\r\n"), true
@@ -2025,11 +1765,7 @@ func (w *Watcher) SendAction(sessionID, action string) error {
 		}
 		return exec.Command("tmux", args...).Run()
 	}
-	if isCodexCommand(identity.Command) {
-		io := bindCodexInputIdentity(w.codexIOOwner(), resolver, sessionID, identity)
-		return w.codexInputOwner().mutateIfUnowned(io, sessionID, send)
-	}
-	return send()
+	return w.sessionInputOwner().serialized(sessionID, send)
 }
 
 type CreateSessionOptions struct {
@@ -2082,14 +1818,6 @@ func (w *Watcher) CreateSession(preferredTarget string, opts CreateSessionOption
 			cwd = workingDir
 		}
 	}
-	w.mu.RLock()
-	codexStateDir := w.codexStateDir
-	w.mu.RUnlock()
-	if codexStateDir != "" {
-		opts.Env = cloneEnvironment(opts.Env)
-		opts.Env["ZEN_STATE_DIR"] = codexStateDir
-	}
-
 	manager := w.resourceManager()
 	resourceCommitted := false
 	if opts.Delegated && !opts.Hidden {

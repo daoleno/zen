@@ -129,9 +129,6 @@ func runDaemon(args []string, stderr io.Writer) error {
 	}
 
 	w := watcher.New(500 * time.Millisecond)
-	if err := w.ConfigureCodexInputState(authManager.StorageDir()); err != nil {
-		return fmt.Errorf("initialize durable Codex input: %w", err)
-	}
 	w.ConfigureDelegatedResources(authManager.DaemonID())
 	w.SetActivityProbe(classifier.DefaultActivityProbe())
 	sc := stats.NewCollector()
@@ -490,8 +487,6 @@ func runAgentCommand(args []string, stderr io.Writer) error {
 		return runAgentStatus(args[1:], stderr)
 	case "progress":
 		return runAgentProgress(args[1:], stderr)
-	case "event":
-		return runAgentEvent(args[1:], stderr)
 	case "close", "kill":
 		return runAgentClose(args[1:], stderr)
 	default:
@@ -558,6 +553,8 @@ func runBrainCommand(args []string, stderr io.Writer) error {
 		return runBrainPlaybooks(args[1:], stderr)
 	case "gc":
 		return runBrainGC(args[1:], stderr)
+	case "event":
+		return runBrainEvent(args[1:], stderr)
 	case "work":
 		return runBrainWork(args[1:], stderr)
 	case "executors":
@@ -707,7 +704,7 @@ func isHelpArg(value string) bool {
 }
 
 func printAgentUsage(w io.Writer) {
-	fmt.Fprintln(w, "Usage: zen agent <list|spawn|send|capture|status|progress|event|close|kill> [flags]")
+	fmt.Fprintln(w, "Usage: zen agent <list|spawn|send|capture|status|progress|close|kill> [flags]")
 	fmt.Fprintln(w, "")
 	fmt.Fprintln(w, "Subcommands:")
 	fmt.Fprintln(w, "  list       List visible agent sessions")
@@ -716,7 +713,6 @@ func printAgentUsage(w io.Writer) {
 	fmt.Fprintln(w, "  capture    Capture an agent session transcript")
 	fmt.Fprintln(w, "  status     Print compact status for one agent session")
 	fmt.Fprintln(w, "  progress   Report lifecycle progress for the current or selected agent")
-	fmt.Fprintln(w, "  event      Read and consume the Work Event assigned to this Host")
 	fmt.Fprintln(w, "  close      Close an agent session")
 	fmt.Fprintln(w, "  kill       Alias for close")
 	fmt.Fprintln(w, "")
@@ -726,19 +722,19 @@ func printAgentUsage(w io.Writer) {
 	fmt.Fprintln(w, "  zen agent capture -id brain-agent-review-docs:@1 --json")
 	fmt.Fprintln(w, "  zen agent status -id brain-agent-review-docs:@1 --json")
 	fmt.Fprintln(w, "  zen agent progress --status running --phase working --attention none --summary \"Reading files\" --task-class lasting_design --event-kind invariant --lease 300")
-	fmt.Fprintln(w, "  zen agent event")
 	fmt.Fprintln(w, "  zen agent send -id brain-agent-review-docs:@1 -text \"continue\" --submit=true")
 	fmt.Fprintln(w, "  zen agent close -id brain-agent-review-docs:@1 --force")
 }
 
 func printBrainUsage(w io.Writer) {
-	fmt.Fprintln(w, "Usage: zen brain <workspace|context|playbooks|gc|work|executors|use|set-delegated> [flags]")
+	fmt.Fprintln(w, "Usage: zen brain <workspace|context|playbooks|gc|event|work|executors|use|set-delegated> [flags]")
 	fmt.Fprintln(w, "")
 	fmt.Fprintln(w, "Subcommands:")
 	fmt.Fprintln(w, "  workspace      Print the Brain workspace path")
 	fmt.Fprintln(w, "  context        Print structured Brain context")
 	fmt.Fprintln(w, "  playbooks      Print the Brain playbook catalog")
 	fmt.Fprintln(w, "  gc             Reconcile product-owned Brain workspace blocks while preserving user content")
+	fmt.Fprintln(w, "  event          Read and consume the Work Event assigned to this Host")
 	fmt.Fprintln(w, "  work           List, create, update, or append an event to durable Active work")
 	fmt.Fprintln(w, "  executors      List configured Brain host and delegated executors")
 	fmt.Fprintln(w, "  use            Switch the Brain host executor")
@@ -749,6 +745,7 @@ func printBrainUsage(w io.Writer) {
 	fmt.Fprintln(w, "  zen brain context --json")
 	fmt.Fprintln(w, "  zen brain playbooks --json")
 	fmt.Fprintln(w, "  zen brain gc --json")
+	fmt.Fprintln(w, "  zen brain event --json")
 	fmt.Fprintln(w, "  zen brain work list --json")
 	fmt.Fprintln(w, "  zen brain executors --json")
 	fmt.Fprintln(w, "  zen brain use codex")
@@ -961,22 +958,21 @@ func runAgentProgress(args []string, stderr io.Writer) error {
 	return writeControlResponse(os.Stdout, resp, cfg.json)
 }
 
-func runAgentEvent(args []string, stderr io.Writer) error {
-	fs := flag.NewFlagSet("zen agent event", flag.ContinueOnError)
+func runBrainEvent(args []string, stderr io.Writer) error {
+	fs := flag.NewFlagSet("zen brain event", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	cfg := cliConfig{
 		stateDir: strings.TrimSpace(os.Getenv("ZEN_STATE_DIR")),
 		json:     true,
 	}
 	req := control.Request{
-		Type:    "agent_event",
+		Type:    "brain_event",
 		AgentID: strings.TrimSpace(os.Getenv("ZEN_AGENT_ID")),
 	}
 	fs.StringVar(&cfg.stateDir, "state-dir", cfg.stateDir, "state directory for daemon identity and control socket")
 	fs.BoolVar(&cfg.json, "json", true, "print JSON output")
-	fs.StringVar(&req.AgentID, "id", req.AgentID, "Host Session id; defaults to ZEN_AGENT_ID")
 	fs.Usage = func() {
-		fmt.Fprintln(stderr, "Usage: zen agent event [flags]")
+		fmt.Fprintln(stderr, "Usage: zen brain event [flags]")
 		fmt.Fprintln(stderr, "")
 		fs.PrintDefaults()
 	}
@@ -987,7 +983,7 @@ func runAgentEvent(args []string, stderr io.Writer) error {
 		return fmt.Errorf("unexpected arguments: %s", strings.Join(fs.Args(), " "))
 	}
 	if strings.TrimSpace(req.AgentID) == "" {
-		return fmt.Errorf("agent id is required; pass -id or set ZEN_AGENT_ID")
+		return fmt.Errorf("Host identity is required in ZEN_AGENT_ID")
 	}
 	resp, err := callControl(cfg, req)
 	if err != nil {

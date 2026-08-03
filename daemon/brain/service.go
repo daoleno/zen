@@ -34,7 +34,7 @@ type Watcher interface {
 	CreateSession(preferredTarget string, opts watcher.CreateSessionOptions) (string, error)
 	SendInput(sessionID, text string) error
 	SendInputWhenReady(sessionID, command, text string) error
-	SendInputWithReceipt(sessionID, text, receipt string) error
+	SendInputWithReceiptResult(sessionID, text, receipt string) (watcher.InputResult, error)
 	KillSession(sessionID string) error
 }
 
@@ -545,12 +545,14 @@ func (s *Service) DispatchPendingEvent() (bool, error) {
 	if err != nil || !claimed {
 		return false, err
 	}
-	if err := s.watcher.SendInputWithReceipt(
-		hostID,
-		workEventWakeCue,
-		event.ID,
-	); err != nil {
-		return false, err
+	result, sendErr := s.watcher.SendInputWithReceiptResult(hostID, workEventWakeCue, event.ID)
+	if sendErr != nil {
+		if result.Outcome == watcher.InputNotSubmitted {
+			if releaseErr := s.store.ReleaseEventClaim(event.ID, hostID); releaseErr != nil {
+				return false, fmt.Errorf("release definitely unsent Work Event %s: %w", event.ID, releaseErr)
+			}
+		}
+		return false, sendErr
 	}
 	return true, nil
 }

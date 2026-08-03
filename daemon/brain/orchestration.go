@@ -839,6 +839,36 @@ func (s *Store) ClaimedActionableEvents() ([]WorkEvent, error) {
 	return out, nil
 }
 
+// ReleaseEventClaim atomically makes the exact identity-bound Event claimable
+// again only when Session Input proved that provider mutation never started.
+func (s *Store) ReleaseEventClaim(eventID, hostSessionID string) error {
+	eventID = strings.TrimSpace(eventID)
+	hostSessionID = strings.TrimSpace(hostSessionID)
+	if eventID == "" || hostSessionID == "" {
+		return ErrEventClaim
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	database, err := s.loadOrchestrationLocked()
+	if err != nil {
+		return err
+	}
+	for index := range database.BrainWorkEvents {
+		event := &database.BrainWorkEvents[index]
+		if event.ID != eventID {
+			continue
+		}
+		if !event.Actionable || event.ClaimedAt == nil || event.ConsumedAt != nil ||
+			event.DeliveryHostSessionID != hostSessionID {
+			return ErrEventClaim
+		}
+		event.ClaimedAt = nil
+		event.DeliveryHostSessionID = ""
+		return s.persistOrchestrationLocked(database)
+	}
+	return ErrEventClaim
+}
+
 // ConsumeClaimedWorkEvent returns and consumes the one Event currently assigned
 // to hostSessionID. Host identity is the authorization boundary; Event.ID is
 // the stable receipt, so there is no projected delivery token.

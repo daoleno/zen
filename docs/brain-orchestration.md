@@ -37,26 +37,27 @@ status, optional owner Session, completion policy, next action, wait condition,
 and a context reference. Long plans and evidence stay in `workspace/worklog/`.
 
 Event dedupe keys are unique within one Work. An actionable Event is durably
-claimed for one Brain host Session before input is sent. The Event ID and claim
-token form an idempotency receipt in the receiving Session metadata. The
-Session input boundary checks that durable receipt before enqueueing. For Codex,
-the caller receipt is part of the same generation-bound input transaction. Zen
-may keep the exact payload in a content-addressed internal spool, but submits
-the original user text—not transaction metadata—to the provider. The
-transaction closes the confirmation-to-Session-metadata crash window. A
-successful send is then durably acknowledged in the Event before consumption.
-After interruption, either acknowledgement or the matching Session or
-transaction receipt consumes the existing delivery without replay. Pane history
-and elapsed time are never proof of non-delivery; an ambiguous claim remains
-closed instead of being guessed and resent. There is no second in-memory
-scheduler truth, direct lifecycle wake owner, or dual write to provider Goal
-state.
+claimed for one Brain host Session before input is sent. The stable Event ID is
+the optional receipt recorded in receiver-side tmux metadata after the provider
+submit key. Codex, Claude Code, Cursor, Grok, and future interactive providers
+share one per-Session input serializer and one target-bound tmux command queue:
+replace the current unsent draft, paste the exact original UTF-8 payload, send
+the provider adapter's submit key once, record the optional receipt, and delete
+the buffer.
+
+If target identity or pane generation changes before that queue starts,
+Session Input reports a definite pre-mutation failure and atomically releases
+that exact Event claim. If the queue starts, success or an ambiguous result
+retains the claim and is never automatically replayed. The Host later reads and
+consumes the identity-bound Event with `zen brain event`. Pane history, rendered
+Composer/Footer/ANSI state, pending PTY byte counts, and elapsed time are never
+send authorization. There is no transaction journal, spool, background resume
+loop, second scheduler, replacement Event, or provider Goal delivery path.
 
 Schema 2 adds host-bound delivery evidence to the existing Event record. Its
 one-way schema-1 migration binds an unresolved claim to the persisted host when
-available. A migrated claim without a durable receiver receipt remains closed;
-the migration does not create a table, copy an Event, or add another delivery
-path.
+available. A migrated unresolved claim remains closed; the migration does not
+create a table, copy an Event, or add another delivery path.
 
 On the first authoritative Watcher inventory after an upgrade, schema migration
 `delegated_sessions_v1` adopts visible `delegated=true` Sessions that predate
@@ -102,6 +103,7 @@ zen brain work get -id <work_id> --json
 zen brain work create -title "<title>" -objective "<outcome>"
 zen brain work update -id <work_id> -status <status>
 zen brain work event -id <work_id> -kind <kind> -dedupe <key> -actionable
+zen brain event --json
 
 zen agent spawn -name "<name>" -cwd <workspace> -prompt "<task>"
 zen agent spawn -work <work_id> -name "<name>" -cwd <workspace> -prompt "<task>"

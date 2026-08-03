@@ -362,12 +362,11 @@ func TestAgentAndBrainHelpAreDiscoverable(t *testing.T) {
 	}
 	agentHelp := agentOutput.String()
 	for _, want := range []string{
-		"Usage: zen agent <list|spawn|send|capture|status|progress|event|close|kill> [flags]",
+		"Usage: zen agent <list|spawn|send|capture|status|progress|close|kill> [flags]",
 		"zen agent spawn -name",
 		"zen agent capture -id",
 		"zen agent status -id",
 		"zen agent progress --status running",
-		"zen agent event",
 		"zen agent close -id",
 	} {
 		if !strings.Contains(agentHelp, want) {
@@ -400,7 +399,8 @@ func TestAgentAndBrainHelpAreDiscoverable(t *testing.T) {
 	}
 	brainHelp := brainOutput.String()
 	for _, want := range []string{
-		"Usage: zen brain <workspace|context|playbooks|gc|work|executors|use|set-delegated> [flags]",
+		"Usage: zen brain <workspace|context|playbooks|gc|event|work|executors|use|set-delegated> [flags]",
+		"zen brain event",
 		"Reconcile product-owned Brain workspace blocks while preserving user content",
 		"zen brain workspace --json",
 		"zen brain context --json",

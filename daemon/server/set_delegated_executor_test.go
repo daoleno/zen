@@ -51,12 +51,8 @@ func (w *brainServiceTestWatcher) SendInputWhenReady(string, string, string) err
 	return nil
 }
 
-func (w *brainServiceTestWatcher) SendInputWithReceipt(string, string, string) error {
-	return nil
-}
-
-func (w *brainServiceTestWatcher) HasInputReceipt(string, string) (bool, error) {
-	return false, nil
+func (w *brainServiceTestWatcher) SendInputWithReceiptResult(_, _, receipt string) (watcher.InputResult, error) {
+	return watcher.InputResult{Outcome: watcher.InputAccepted, Receipt: receipt}, nil
 }
 
 func (w *brainServiceTestWatcher) KillSession(string) error {
