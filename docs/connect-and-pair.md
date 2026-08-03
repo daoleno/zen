@@ -62,7 +62,7 @@ Use this route when the phone needs a stable HTTPS domain and installing Tailsca
    http://127.0.0.1:9876
    ```
 
-   Do not add a path restriction: Zen needs the full origin, including `/ws`, `/health`, `/auth-check`, `/pair`, and `/upload`.
+   Do not add a path restriction: Zen needs the full origin, including `/ws`, `/health`, `/auth-check`, `/pair`, `/upload`, and `/devices`.
 
 4. The phone-reachable Zen origin is the exact published hostname with `https`. If the published hostname is `zen.example.com`, the final origin Zen needs is `https://zen.example.com`. Confirm the phone can load `https://zen.example.com/health`, substituting your real hostname, then run:
 
@@ -108,6 +108,13 @@ After pairing, reconnect uses the stored server URL and device identity. You do 
 
 ## Revoking a device
 
-There is currently no first-class “forget device” UI/CLI. Trusted devices live in `~/.zen/trusted-devices.json`. Treat a lost phone as: stop exposing the origin, remove or edit that file carefully, and re-pair remaining devices with a fresh `zen pair` link. A proper revoke command is planned but not shipped.
+List and revoke paired devices from the daemon host without editing state files:
+
+```bash
+zen devices list
+zen devices revoke -id <device-id>
+```
+
+Removing a server in Settings only removes the local app record. Revoking a device removes its trusted key, immediately closes its authenticated live connections, and rejects subsequent signed requests. Every currently trusted device may revoke itself or another trusted device; this capability does not define separate administrator roles.
 
 Optional before pairing: `zen doctor` to confirm tmux/state/port/executors on the host.

@@ -43,6 +43,17 @@ Treat `~/.zen` like SSH keys: mode `0700` directory, do not commit it, do not sh
 
 The app stores server endpoints and device keys in platform secure storage / app storage. Removing a server in Settings is local; it does not revoke the device on the daemon (see [connect-and-pair.md](connect-and-pair.md)).
 
+## Device revocation
+
+On the daemon host:
+
+```bash
+zen devices list
+zen devices revoke -id <device-id>
+```
+
+The authenticated protocol owner is `GET /devices` with the operation-specific `zen-device-admin:list:GET:/devices` purpose and `DELETE /devices` with `zen-device-admin:revoke:DELETE:/devices:sha256=<digest>`, where the digest binds the trimmed target device ID. Every trusted device may revoke itself or another trusted device; there is no separate administrator role. A successful revocation persists the removed trusted key, immediately closes that device's authenticated WebSockets, and rejects its subsequent signed requests. The CLI asks the running daemon to perform listing and revocation through its private local control socket; it constructs a direct state owner only after an exclusive lifecycle lock proves the daemon is offline.
+
 ## Executor risk
 
 Default and Brain-delegated launch flags can disable sandbox / approval prompts. See [executors.md](executors.md) and [executors.example.toml](../executors.example.toml). This is a user-host trust decision, not a remote Zen cloud.
@@ -50,7 +61,3 @@ Default and Brain-delegated launch flags can disable sandbox / approval prompts.
 ## Reporting issues
 
 See [SECURITY.md](../SECURITY.md).
-
-## Planned
-
-Device revoke CLI/UI is not shipped yet. `zen doctor` can diagnose readiness (including executor presence); it is not a full security audit.

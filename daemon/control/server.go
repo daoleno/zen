@@ -8,6 +8,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"sync"
 )
 
 type Server struct {
@@ -39,9 +40,34 @@ func (s *Server) Run(ctx context.Context) error {
 	defer os.Remove(s.Path)
 	_ = os.Chmod(s.Path, 0o600)
 
+	var connectionMu sync.Mutex
+	connections := make(map[net.Conn]struct{})
+	stopped := false
+	var handlers sync.WaitGroup
+	runDone := make(chan struct{})
+	var stopOnce sync.Once
+	stop := func() {
+		stopOnce.Do(func() {
+			connectionMu.Lock()
+			stopped = true
+			_ = listener.Close()
+			for conn := range connections {
+				_ = conn.Close()
+			}
+			connectionMu.Unlock()
+		})
+	}
 	go func() {
-		<-ctx.Done()
-		_ = listener.Close()
+		select {
+		case <-ctx.Done():
+			stop()
+		case <-runDone:
+		}
+	}()
+	defer func() {
+		close(runDone)
+		stop()
+		handlers.Wait()
 	}()
 
 	for {
@@ -52,7 +78,24 @@ func (s *Server) Run(ctx context.Context) error {
 			}
 			return fmt.Errorf("accept control connection: %w", err)
 		}
-		go s.handleConn(conn)
+		connectionMu.Lock()
+		if stopped {
+			connectionMu.Unlock()
+			_ = conn.Close()
+			continue
+		}
+		connections[conn] = struct{}{}
+		handlers.Add(1)
+		connectionMu.Unlock()
+		go func() {
+			defer handlers.Done()
+			defer func() {
+				connectionMu.Lock()
+				delete(connections, conn)
+				connectionMu.Unlock()
+			}()
+			s.handleConn(conn)
+		}()
 	}
 }
 
@@ -88,4 +131,3 @@ func removeStaleSocket(path string) error {
 	}
 	return nil
 }
-

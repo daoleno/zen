@@ -153,7 +153,9 @@ func TestWorkWireKeepsExplicitItemsWithoutDigestControlPlane(t *testing.T) {
 	}
 	server.mu.Lock()
 	for registeredConn := range server.writes {
-		server.clients[registeredConn] = true
+		server.clients[registeredConn] = &authenticatedClient{
+			deviceID: "digest-test-device",
+		}
 	}
 	server.mu.Unlock()
 	server.handleWorkEvent(event)

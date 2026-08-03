@@ -4,11 +4,13 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log"
 	"os"
 	"sort"
 	"strings"
 	"time"
 
+	"github.com/daoleno/zen/daemon/auth"
 	"github.com/daoleno/zen/daemon/brain"
 	"github.com/daoleno/zen/daemon/calendar"
 	"github.com/daoleno/zen/daemon/classifier"
@@ -28,11 +30,13 @@ type controlWatcher interface {
 	SendInputWithReceipt(sessionID, text, receipt string) error
 	HasInputReceipt(sessionID, receipt string) (bool, error)
 	SendInputWhenReady(sessionID, command, text string) error
+	SubmitInputWhenReady(sessionID, command, payload string) error
 	KillSession(sessionID string) error
 	CapturePaneContent(sessionID string) (string, error)
 }
 
 type controlApp struct {
+	auth              *auth.Manager
 	watcher           controlWatcher
 	execs             *work.ExecutorConfig
 	brainStore        *brain.Store
@@ -98,8 +102,111 @@ func (a *controlApp) HandleControlRequest(req control.Request) control.Response 
 		return a.handleCalendarCancel(req)
 	case "calendar_run":
 		return a.handleCalendarRun(req)
+	case "device_list":
+		return a.handleDeviceList()
+	case "device_revoke":
+		return a.handleDeviceRevoke(req)
+	case "pair":
+		return a.handlePair()
 	default:
 		return control.ErrorResponse("unknown_request", fmt.Sprintf("Unknown control request: %s", req.Type))
+	}
+}
+
+func (a *controlApp) handleDeviceList() control.Response {
+	if a == nil || a.auth == nil {
+		return control.ErrorResponse("auth_unavailable", "Device authentication is not configured.")
+	}
+	return control.Response{
+		OK:      true,
+		Devices: a.auth.ListDevices(),
+	}
+}
+
+func (a *controlApp) handleDeviceRevoke(req control.Request) control.Response {
+	if a == nil || a.auth == nil {
+		return control.ErrorResponse("auth_unavailable", "Device authentication is not configured.")
+	}
+	deviceID := strings.TrimSpace(req.ID)
+	if deviceID == "" {
+		return control.ErrorResponse("invalid_device", "A device ID is required.")
+	}
+	return revokeDeviceControlResponse(a.auth, deviceID)
+}
+
+func revokeDeviceControlResponse(
+	manager *auth.Manager,
+	deviceID string,
+) control.Response {
+	persistence, err := manager.RevokeDevice(deviceID)
+	return deviceRevokeControlResponseFromResult(
+		deviceID,
+		persistence,
+		err,
+	)
+}
+
+func deviceRevokeControlResponseFromResult(
+	deviceID string,
+	persistence auth.PersistenceResult,
+	err error,
+) control.Response {
+	if !persistence.Applied {
+		if errors.Is(err, auth.ErrUnknownDevice) {
+			durable := false
+			response := control.ErrorResponse(
+				"device_not_found",
+				"The paired device was not found.",
+			)
+			response.PersistenceOutcome =
+				control.PersistenceVerifiedAbsent
+			response.PersistenceDurable = &durable
+			return response
+		}
+		if err == nil {
+			err = errors.New("trusted-device persistence did not apply")
+		}
+		return control.ErrorResponse("device_revoke_failed", err.Error())
+	}
+	durable := persistence.Durable
+	confirmation := "Revoked device " + deviceID + "."
+	if err != nil {
+		log.Printf(
+			"revoked device %q but directory durability is uncertain: %v",
+			deviceID,
+			err,
+		)
+		confirmation = "Revoked device " + deviceID +
+			"; persistence was applied but directory durability is uncertain."
+	}
+	return control.Response{
+		OK:                 true,
+		PersistenceOutcome: control.PersistenceApplied,
+		PersistenceDurable: &durable,
+		Confirmation:       confirmation,
+	}
+}
+
+func (a *controlApp) handlePair() control.Response {
+	if a == nil || a.auth == nil {
+		return control.ErrorResponse("auth_unavailable", "Device authentication is not configured.")
+	}
+	return issuePairingControlResponse(a.auth)
+}
+
+func issuePairingControlResponse(manager *auth.Manager) control.Response {
+	pairing, err := manager.IssuePairingToken(auth.DefaultPairingTTL)
+	if err != nil {
+		return control.ErrorResponse("pair_failed", err.Error())
+	}
+	return control.Response{
+		OK: true,
+		Pairing: &control.PairingInfo{
+			Token:           pairing.Value,
+			ExpiresAt:       pairing.ExpiresAt,
+			DaemonID:        manager.DaemonID(),
+			DaemonPublicKey: manager.PublicKeyHex(),
+		},
 	}
 }
 
@@ -269,7 +376,7 @@ func (a *controlApp) handleAgentSpawn(req control.Request) control.Response {
 	if prompt != "" {
 		var sendErr error
 		if watcher.IsCodexCommand(command) {
-			sendErr = a.submitCodexHandoff(agentID, command, ensureTrailingNewline(prompt), true)
+			sendErr = a.submitCodexHandoff(agentID, command, prompt, true)
 		} else {
 			sendErr = a.watcher.SendInputWhenReady(agentID, command, ensureTrailingNewline(prompt))
 			if sendErr != nil {
@@ -483,12 +590,9 @@ func (a *controlApp) handleAgentSend(req control.Request) control.Response {
 	if agent != nil && !agent.Delegated && !agent.Hidden && !req.Force {
 		return control.ErrorResponse("agent_not_delegated", "Refusing to send input to a session that was not created as a Brain delegated agent. Use --force only when you intentionally want to control this external session.")
 	}
-	text := req.Text
-	if strings.TrimSpace(text) == "" && !req.Submit {
+	payload := req.Text
+	if strings.TrimSpace(payload) == "" && !req.Submit {
 		return control.ErrorResponse("missing_text", "Text is required.")
-	}
-	if req.Submit {
-		text = ensureTrailingNewline(text)
 	}
 	if agent != nil && !a.watcher.HasSession(agentID) {
 		return control.ErrorResponse("agent_session_unavailable", "Agent is listed but the tmux target is no longer available. Refresh the agent list and spawn a new session if needed.")
@@ -497,9 +601,12 @@ func (a *controlApp) handleAgentSend(req control.Request) control.Response {
 	codexHandoff := false
 	if req.Submit && agent != nil && watcher.IsCodexCommand(agent.Command) {
 		codexHandoff = true
-		sendErr = a.submitCodexHandoff(agentID, agent.Command, text, false)
+		sendErr = a.submitCodexHandoff(agentID, agent.Command, payload, false)
 	} else {
-		sendErr = a.watcher.SendInput(agentID, text)
+		if req.Submit {
+			payload = ensureTrailingNewline(payload)
+		}
+		sendErr = a.watcher.SendInput(agentID, payload)
 	}
 	if sendErr != nil {
 		if !codexHandoff {
@@ -519,9 +626,9 @@ func (a *controlApp) handleAgentSend(req control.Request) control.Response {
 // delegated prompt and confirmed Codex follow-ups. The watcher owns the
 // paste-once/Enter-once provider transaction; this owner settles the canonical
 // Agent projection from that same result and never replays an ambiguous send.
-func (a *controlApp) submitCodexHandoff(agentID, command, text string, initial bool) error {
+func (a *controlApp) submitCodexHandoff(agentID, command, payload string, initial bool) error {
 	handoffStartedAt := time.Now().UTC()
-	err := a.watcher.SendInputWhenReady(agentID, command, text)
+	err := a.watcher.SubmitInputWhenReady(agentID, command, payload)
 	if err != nil {
 		prefix := "Delegated follow-up was not submitted: "
 		if initial {

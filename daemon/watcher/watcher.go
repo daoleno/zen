@@ -46,6 +46,190 @@ var claudeModeFooterRe = regexp.MustCompile(`(?i)(bypass permissions|manual mode
 var grokChromeReadyRe = regexp.MustCompile(`(?im)(\bgrok\s+[0-9]|always-approve|enter\s*:\s*send|shift\+tab:mode)`)
 var grokPromptReadyRe = regexp.MustCompile(`(?m)[│┃]\s*❯|^\s*❯`)
 
+type targetProcessIdentity struct {
+	Command         string
+	PanePID         int
+	PaneStart       int64
+	ForegroundID    int
+	ForegroundStart int64
+	ProcessID       int
+	ProcessStart    int64
+}
+
+func (identity targetProcessIdentity) valid() bool {
+	return strings.TrimSpace(identity.Command) != "" &&
+		identity.PanePID > 0 &&
+		identity.PaneStart > 0 &&
+		identity.ForegroundID > 0 &&
+		identity.ForegroundStart > 0 &&
+		identity.ProcessID > 0 &&
+		identity.ProcessStart > 0
+}
+
+func (identity targetProcessIdentity) equal(other targetProcessIdentity) bool {
+	return identity.valid() && other.valid() && identity == other
+}
+
+var targetCommandResolverMu sync.RWMutex
+var targetProcessResolver func(string) (targetProcessIdentity, bool)
+
+// targetCommandResolver is an in-package compatibility seam for deterministic
+// tests. Production leaves both overrides nil and resolves the live process
+// identity, including PID and process start, on every boundary.
+var targetCommandResolver func(string) (string, bool)
+var packageCodexInputIOMu sync.RWMutex
+var packageCodexInputIO codexInputIO = realCodexInputIO{}
+var tmuxSubmitSleep = time.Sleep
+
+func currentTargetIdentityResolver() func(string) (targetProcessIdentity, bool) {
+	targetCommandResolverMu.RLock()
+	identityResolver := targetProcessResolver
+	resolver := targetCommandResolver
+	targetCommandResolverMu.RUnlock()
+	if identityResolver != nil {
+		return identityResolver
+	}
+	if resolver == nil {
+		return resolveTargetProcessIdentity
+	}
+	return targetIdentityResolverFromCommandResolver(resolver)
+}
+
+func currentPackageCodexInputIO() codexInputIO {
+	packageCodexInputIOMu.RLock()
+	io := packageCodexInputIO
+	packageCodexInputIOMu.RUnlock()
+	if io == nil {
+		return realCodexInputIO{}
+	}
+	return io
+}
+
+func guardTargetIdentity(
+	resolver func(string) (targetProcessIdentity, bool),
+	target string,
+	expected targetProcessIdentity,
+) error {
+	current, ok := resolver(target)
+	if !ok || !current.equal(expected) {
+		return fmt.Errorf("target provider process identity changed; terminal mutation was not sent")
+	}
+	return nil
+}
+
+func resolveTargetIdentityWhenReady(
+	resolver func(string) (targetProcessIdentity, bool),
+	target string,
+	commandHint string,
+) (targetProcessIdentity, bool) {
+	timeout := inputReadyTimeout(strings.TrimSpace(commandHint))
+	deadline := time.Now().Add(timeout)
+	waitForAgentProcess := isAgentCommand(strings.TrimSpace(commandHint))
+	var previous targetProcessIdentity
+	stable := 0
+	for {
+		if identity, ok := resolver(target); ok {
+			if waitForAgentProcess && !isAgentCommand(identity.Command) {
+				previous = targetProcessIdentity{}
+				stable = 0
+				if !time.Now().Before(deadline) {
+					return targetProcessIdentity{}, false
+				}
+				time.Sleep(25 * time.Millisecond)
+				continue
+			}
+			if identity.equal(previous) {
+				stable++
+			} else {
+				previous = identity
+				stable = 1
+			}
+			if stable >= 2 {
+				return identity, true
+			}
+		} else {
+			previous = targetProcessIdentity{}
+			stable = 0
+		}
+		if !time.Now().Before(deadline) {
+			return targetProcessIdentity{}, false
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
+}
+
+func bindCodexInputIdentity(
+	io codexInputIO,
+	resolver func(string) (targetProcessIdentity, bool),
+	target string,
+	expected targetProcessIdentity,
+) codexInputIO {
+	guard := func() error {
+		return guardTargetIdentity(resolver, target, expected)
+	}
+	if real, ok := io.(realCodexInputIO); ok {
+		real.targetGuard = guard
+		return real
+	}
+	return &targetBoundCodexInputIO{
+		codexInputIO: io,
+		guard:        guard,
+	}
+}
+
+type targetBoundCodexInputIO struct {
+	codexInputIO
+	guard func() error
+}
+
+func (io *targetBoundCodexInputIO) capture(sessionID string) codexPaneCapture {
+	if io == nil || io.codexInputIO == nil || io.guard == nil || io.guard() != nil {
+		return codexPaneCapture{}
+	}
+	return io.codexInputIO.capture(sessionID)
+}
+
+func (io *targetBoundCodexInputIO) pasteIfEmpty(
+	sessionID string,
+	generation string,
+	rollout codexRolloutIdentity,
+	transactionID string,
+	body string,
+) error {
+	if err := io.guard(); err != nil {
+		return err
+	}
+	return io.codexInputIO.pasteIfEmpty(sessionID, generation, rollout, transactionID, body)
+}
+
+func (io *targetBoundCodexInputIO) mutateOwned(
+	sessionID string,
+	prepared codexPreparedInput,
+	mutation codexOwnedMutation,
+) error {
+	if err := io.guard(); err != nil {
+		return err
+	}
+	return io.codexInputIO.mutateOwned(sessionID, prepared, mutation)
+}
+
+func (io *targetBoundCodexInputIO) advanceStartup(sessionID, generation string) error {
+	if err := io.guard(); err != nil {
+		return err
+	}
+	return io.codexInputIO.advanceStartup(sessionID, generation)
+}
+
+func (io *targetBoundCodexInputIO) releaseStaleInputSuppression(
+	sessionID string,
+	suppression codexPaneInputSuppression,
+) error {
+	if err := io.guard(); err != nil {
+		return err
+	}
+	return io.codexInputIO.releaseStaleInputSuppression(sessionID, suppression)
+}
+
 // SessionEvent represents a state change or output update for an agent.
 type SessionEvent struct {
 	Type     string              `json:"type"`
@@ -59,18 +243,23 @@ type SessionEvent struct {
 
 // Watcher monitors tmux windows and classifies agent states.
 type Watcher struct {
-	pollInterval   time.Duration
-	agents         map[string]*classifier.Agent
-	agentOrder     []string
-	prevContent    map[string]string
-	hidden         map[string]bool
-	delegated      map[string]bool
-	activityProbe  classifier.ActivityProbe
-	pollGeneration int64
-	agentEpoch     map[string]int64 // per-agent generation for lock-free probe apply
-	mu             sync.RWMutex
-	events         chan SessionEvent
-	resources      delegatedResourceManager
+	pollInterval          time.Duration
+	agents                map[string]*classifier.Agent
+	agentOrder            []string
+	prevContent           map[string]string
+	hidden                map[string]bool
+	delegated             map[string]bool
+	activityProbe         classifier.ActivityProbe
+	pollGeneration        int64
+	agentEpoch            map[string]int64 // per-agent generation for lock-free probe apply
+	mu                    sync.RWMutex
+	events                chan SessionEvent
+	resources             delegatedResourceManager
+	codexInput            *codexInputCoordinator
+	codexInputIO          codexInputIO
+	codexStateDir         string
+	targetProcessResolver func(string) (targetProcessIdentity, bool)
+	targetCommandResolver func(string) (string, bool)
 }
 
 // New creates a Watcher that polls tmux windows at the given interval.
@@ -84,7 +273,148 @@ func New(pollInterval time.Duration) *Watcher {
 		agentEpoch:   make(map[string]int64),
 		events:       make(chan SessionEvent, 100),
 		resources:    noopDelegatedResourceManager{},
+		codexInput:   newCodexInputCoordinator(),
+		codexInputIO: realCodexInputIO{},
 	}
+}
+
+// ConfigureCodexInputState binds Codex submission journals and envelopes to
+// the daemon's durable state directory. Call this before creating sessions or
+// accepting input.
+func (w *Watcher) ConfigureCodexInputState(stateDir string) error {
+	if w == nil {
+		return fmt.Errorf("watcher is required")
+	}
+	coordinator, err := configureDefaultCodexInputCoordinator(stateDir)
+	if err != nil {
+		return err
+	}
+	w.mu.Lock()
+	w.codexInput = coordinator
+	w.codexStateDir = strings.TrimSpace(stateDir)
+	w.mu.Unlock()
+	return nil
+}
+
+func (w *Watcher) codexInputOwner() *codexInputCoordinator {
+	if w == nil {
+		return currentDefaultCodexInputCoordinator()
+	}
+	w.mu.RLock()
+	coordinator := w.codexInput
+	w.mu.RUnlock()
+	if coordinator == nil {
+		return currentDefaultCodexInputCoordinator()
+	}
+	return coordinator
+}
+
+func (w *Watcher) codexIOOwner() codexInputIO {
+	if w == nil {
+		return realCodexInputIO{}
+	}
+	w.mu.RLock()
+	io := w.codexInputIO
+	w.mu.RUnlock()
+	if io == nil {
+		return realCodexInputIO{}
+	}
+	return io
+}
+
+func targetIdentityResolverFromCommandResolver(
+	resolver func(string) (string, bool),
+) func(string) (targetProcessIdentity, bool) {
+	return func(target string) (targetProcessIdentity, bool) {
+		command, ok := resolver(target)
+		command = strings.TrimSpace(command)
+		if !ok || command == "" {
+			return targetProcessIdentity{}, false
+		}
+		// Tests and embedders can replace the authoritative resolver without
+		// requiring a live process table. Production leaves it nil and receives
+		// the real pane/process identity from resolveTargetProcessIdentity.
+		return targetProcessIdentity{
+			Command:         command,
+			PanePID:         1,
+			PaneStart:       1,
+			ForegroundID:    1,
+			ForegroundStart: 1,
+			ProcessID:       1,
+			ProcessStart:    1,
+		}, true
+	}
+}
+
+func (w *Watcher) targetForSession(sessionID string) (targetProcessIdentity, bool) {
+	if w == nil {
+		return targetProcessIdentity{}, false
+	}
+	w.mu.RLock()
+	identityResolver := w.targetProcessResolver
+	resolver := w.targetCommandResolver
+	w.mu.RUnlock()
+	if identityResolver != nil {
+		return identityResolver(sessionID)
+	}
+	if resolver == nil {
+		return currentTargetIdentityResolver()(sessionID)
+	}
+	return targetIdentityResolverFromCommandResolver(resolver)(sessionID)
+}
+
+func resolveTargetProcessCommand(target string) (string, bool) {
+	identity, ok := resolveTargetProcessIdentity(target)
+	return identity.Command, ok
+}
+
+func resolveTargetProcessIdentity(target string) (targetProcessIdentity, bool) {
+	target = strings.TrimSpace(target)
+	if target == "" {
+		return targetProcessIdentity{}, false
+	}
+	out, err := exec.Command(
+		"tmux",
+		"display-message",
+		"-p",
+		"-t",
+		target,
+		"#{pane_dead}\t#{pane_pid}",
+	).Output()
+	if err != nil {
+		return targetProcessIdentity{}, false
+	}
+	fields := strings.Split(strings.TrimSuffix(string(out), "\n"), "\t")
+	if len(fields) != 2 || fields[0] == "1" {
+		return targetProcessIdentity{}, false
+	}
+	panePID, err := strconv.Atoi(strings.TrimSpace(fields[1]))
+	if err != nil || panePID <= 0 {
+		return targetProcessIdentity{}, false
+	}
+	processes := snapshotProcesses()
+	if len(processes) == 0 {
+		return targetProcessIdentity{}, false
+	}
+	paneProcess, ok := processes[panePID]
+	if !ok || paneProcess.startedAt.IsZero() {
+		return targetProcessIdentity{}, false
+	}
+	authority, ok := resolveForegroundTargetProcess(panePID, processes)
+	authority.command = strings.TrimSpace(authority.command)
+	if !ok || authority.command == "" {
+		return targetProcessIdentity{}, false
+	}
+	identity := targetProcessIdentity{
+		Command:         authority.command,
+		PanePID:         panePID,
+		PaneStart:       paneProcess.startedAt.UnixNano(),
+		ForegroundID:    authority.foreground.pid,
+		ForegroundStart: authority.foreground.startedAt.UnixNano(),
+		ProcessID:       authority.provider.pid,
+		ProcessStart:    authority.provider.startedAt.UnixNano(),
+	}
+	return identity, identity.valid()
 }
 
 // ConfigureDelegatedResources enables the platform resource backend for
@@ -790,7 +1120,22 @@ func (w *Watcher) SendKey(sessionID, key string) error {
 	if !allowedTmuxKey(key) {
 		return fmt.Errorf("unsupported key %q", key)
 	}
-	return exec.Command("tmux", "send-keys", "-t", sessionID, key).Run()
+	identity, known := w.targetForSession(sessionID)
+	if !known {
+		return fmt.Errorf("target provider could not be proven; key was not sent")
+	}
+	resolver := w.targetForSession
+	action := func() error {
+		if err := guardTargetIdentity(resolver, sessionID, identity); err != nil {
+			return err
+		}
+		return exec.Command("tmux", "send-keys", "-t", sessionID, key).Run()
+	}
+	if isCodexCommand(identity.Command) {
+		io := bindCodexInputIdentity(w.codexIOOwner(), resolver, sessionID, identity)
+		return w.codexInputOwner().mutateIfUnowned(io, sessionID, action)
+	}
+	return action()
 }
 
 func allowedTmuxKey(key string) bool {
@@ -813,7 +1158,25 @@ func allowedLiteralKeyByte(key byte) bool {
 
 // SendInput sends text to a tmux window and treats trailing newlines as submit.
 func (w *Watcher) SendInput(sessionID, text string) error {
-	return SendInput(sessionID, text)
+	identity, known := w.targetForSession(sessionID)
+	if !known {
+		return fmt.Errorf("target provider could not be proven; input was not sent")
+	}
+	resolver := w.targetForSession
+	guard := func() error {
+		return guardTargetIdentity(resolver, sessionID, identity)
+	}
+	if !isCodexCommand(identity.Command) {
+		return sendInputUncoordinated(sessionID, text, 120*time.Millisecond, guard)
+	}
+	io := bindCodexInputIdentity(w.codexIOOwner(), resolver, sessionID, identity)
+	body, submit := splitCodexSubmitInput(text)
+	if submit && body != "" {
+		return w.codexInputOwner().submit(io, sessionID, body, defaultCodexSubmitConfig())
+	}
+	return w.codexInputOwner().mutateIfUnowned(io, sessionID, func() error {
+		return sendInputUncoordinated(sessionID, text, 120*time.Millisecond, guard)
+	})
 }
 
 const brainInputReceiptOption = "zen_brain_input_receipt"
@@ -857,16 +1220,54 @@ func (w *Watcher) HasInputReceipt(sessionID, receipt string) (bool, error) {
 // Claude, and Grok UIs must reach an input prompt so Zen does not paste a task
 // into a startup screen before the composer can accept Enter-to-send.
 func (w *Watcher) SendInputWhenReady(sessionID, command, text string) error {
-	if isCodexCommand(command) {
-		body, submit := splitTmuxInput(text)
-		if submit && body != "" {
-			return submitCodexInput(realCodexInputIO{}, sessionID, body, defaultCodexSubmitConfig())
-		}
+	resolver := w.targetForSession
+	identity, known := resolveTargetIdentityWhenReady(resolver, sessionID, command)
+	if !known {
+		return fmt.Errorf("target provider could not be proven; input was not sent")
 	}
-	if !WaitForInputReady(sessionID, command, inputReadyTimeout(command)) && needsInputReadinessWait(command, "") {
+	command = identity.Command
+	guard := func() error {
+		return guardTargetIdentity(resolver, sessionID, identity)
+	}
+	if isCodexCommand(identity.Command) {
+		io := bindCodexInputIdentity(w.codexIOOwner(), resolver, sessionID, identity)
+		body, submit := splitCodexSubmitInput(text)
+		if submit && body != "" {
+			return w.codexInputOwner().submit(io, sessionID, body, defaultCodexSubmitConfig())
+		}
+		return w.codexInputOwner().mutateIfUnowned(io, sessionID, func() error {
+			if !waitForInputReadyUncoordinated(
+				sessionID,
+				command,
+				inputReadyTimeout(command),
+				io,
+			) {
+				return fmt.Errorf("agent input not ready for %q", command)
+			}
+			return sendInputUncoordinated(sessionID, text, tmuxSubmitDelay(command), guard)
+		})
+	}
+	if !waitForInputReadyGuarded(sessionID, command, inputReadyTimeout(command), nil, guard) &&
+		needsInputReadinessWait(command, "") {
 		return fmt.Errorf("agent input not ready for %q", command)
 	}
-	return SendInputForCommand(sessionID, command, text)
+	return sendInputUncoordinated(sessionID, text, tmuxSubmitDelay(command), guard)
+}
+
+// SubmitInputWhenReady submits payload as a structured action. Unlike the
+// legacy terminal-text boundary, payload never contains or loses a transport
+// delimiter; caller-owned final line endings remain payload bytes.
+func (w *Watcher) SubmitInputWhenReady(sessionID, command, payload string) error {
+	resolver := w.targetForSession
+	identity, known := resolveTargetIdentityWhenReady(resolver, sessionID, command)
+	if !known {
+		return fmt.Errorf("target provider could not be proven; input was not submitted")
+	}
+	if !isCodexCommand(identity.Command) {
+		return fmt.Errorf("structured submit is only supported for Codex")
+	}
+	io := bindCodexInputIdentity(w.codexIOOwner(), resolver, sessionID, identity)
+	return w.codexInputOwner().submit(io, sessionID, payload, defaultCodexSubmitConfig())
 }
 
 // SendInput sends text to a tmux window and treats trailing newlines as submit.
@@ -877,21 +1278,52 @@ func SendInput(sessionID, text string) error {
 // SendInputForCommand sends text to a tmux window and applies executor-specific
 // submit timing where terminal UIs need a short paste-settle delay.
 func SendInputForCommand(sessionID, command, text string) error {
-	if isCodexCommand(command) {
-		body, submit := splitTmuxInput(text)
-		if submit && body != "" {
-			return submitCodexInput(realCodexInputIO{}, sessionID, body, defaultCodexSubmitConfig())
-		}
+	resolver := currentTargetIdentityResolver()
+	identity, known := resolver(sessionID)
+	if !known {
+		return fmt.Errorf("target provider could not be proven; input was not sent")
 	}
+	command = identity.Command
+	guard := func() error {
+		return guardTargetIdentity(resolver, sessionID, identity)
+	}
+	if isCodexCommand(identity.Command) {
+		io := bindCodexInputIdentity(currentPackageCodexInputIO(), resolver, sessionID, identity)
+		body, submit := splitCodexSubmitInput(text)
+		if submit && body != "" {
+			return submitCoordinatedCodexInput(io, sessionID, body, defaultCodexSubmitConfig())
+		}
+		return currentDefaultCodexInputCoordinator().mutateIfUnowned(io, sessionID, func() error {
+			return sendInputUncoordinated(sessionID, text, tmuxSubmitDelay(command), guard)
+		})
+	}
+	return sendInputUncoordinated(sessionID, text, tmuxSubmitDelay(command), guard)
+}
+
+func sendInputForCommandUncoordinated(sessionID, command, text string) error {
+	return sendInputUncoordinated(sessionID, text, tmuxSubmitDelay(command), nil)
+}
+
+func sendInputUncoordinated(
+	sessionID string,
+	text string,
+	submitDelay time.Duration,
+	guard func() error,
+) error {
 	body, submit := splitTmuxInput(text)
 	if body != "" {
-		if err := sendLiteralTmuxInput(sessionID, body); err != nil {
+		if err := sendLiteralTmuxInputGuarded(sessionID, body, guard); err != nil {
 			return err
 		}
 	}
 	if submit {
 		if body != "" {
-			time.Sleep(tmuxSubmitDelay(command))
+			tmuxSubmitSleep(submitDelay)
+		}
+		if guard != nil {
+			if err := guard(); err != nil {
+				return err
+			}
 		}
 		return exec.Command("tmux", "send-keys", "-t", sessionID, "Enter").Run()
 	}
@@ -901,39 +1333,135 @@ func SendInputForCommand(sessionID, command, text string) error {
 // SendInputWhenReady is the package-level form used by executor shims that do
 // not hold a Watcher instance.
 func SendInputWhenReady(sessionID, command, text string) error {
-	if isCodexCommand(command) {
-		body, submit := splitTmuxInput(text)
+	resolver := currentTargetIdentityResolver()
+	identity, known := resolveTargetIdentityWhenReady(resolver, sessionID, command)
+	if !known {
+		return fmt.Errorf("target provider could not be proven; input was not sent")
+	}
+	command = identity.Command
+	guard := func() error {
+		return guardTargetIdentity(resolver, sessionID, identity)
+	}
+	if isCodexCommand(identity.Command) {
+		io := bindCodexInputIdentity(currentPackageCodexInputIO(), resolver, sessionID, identity)
+		body, submit := splitCodexSubmitInput(text)
 		if submit && body != "" {
-			return submitCodexInput(realCodexInputIO{}, sessionID, body, defaultCodexSubmitConfig())
+			return submitCoordinatedCodexInput(io, sessionID, body, defaultCodexSubmitConfig())
 		}
+		return currentDefaultCodexInputCoordinator().mutateIfUnowned(io, sessionID, func() error {
+			if !waitForInputReadyUncoordinated(
+				sessionID,
+				command,
+				inputReadyTimeout(command),
+				io,
+			) {
+				return fmt.Errorf("agent input not ready for %q", command)
+			}
+			return sendInputUncoordinated(sessionID, text, tmuxSubmitDelay(command), guard)
+		})
 	}
 	if !WaitForInputReady(sessionID, command, inputReadyTimeout(command)) && needsInputReadinessWait(command, "") {
 		return fmt.Errorf("agent input not ready for %q", command)
 	}
-	return SendInputForCommand(sessionID, command, text)
+	return sendInputUncoordinated(sessionID, text, tmuxSubmitDelay(command), guard)
 }
 
 // WaitForInputReady reports whether a known agent UI reached an input prompt.
 // Unknown commands return immediately.
 func WaitForInputReady(sessionID, command string, timeout time.Duration) bool {
+	resolver := currentTargetIdentityResolver()
+	deadline := time.Now().Add(timeout)
+	var identity targetProcessIdentity
+	var known bool
+	for {
+		identity, known = resolver(sessionID)
+		if known || !time.Now().Before(deadline) {
+			break
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
+	if !known {
+		return false
+	}
+	remaining := time.Until(deadline)
+	if remaining <= 0 {
+		return false
+	}
+	command = identity.Command
+	if isCodexCommand(identity.Command) {
+		io := bindCodexInputIdentity(currentPackageCodexInputIO(), resolver, sessionID, identity)
+		err := currentDefaultCodexInputCoordinator().mutateIfUnowned(
+			io,
+			sessionID,
+			func() error {
+				if !waitForInputReadyUncoordinated(
+					sessionID,
+					command,
+					remaining,
+					io,
+				) {
+					return fmt.Errorf("Codex input not ready")
+				}
+				return nil
+			},
+		)
+		return err == nil
+	}
+	guard := func() error {
+		return guardTargetIdentity(resolver, sessionID, identity)
+	}
+	if !waitForInputReadyGuarded(sessionID, command, remaining, nil, guard) {
+		return false
+	}
+	return guard() == nil
+}
+
+func waitForInputReadyUncoordinated(
+	sessionID string,
+	command string,
+	timeout time.Duration,
+	codexIO codexInputIO,
+) bool {
+	return waitForInputReadyGuarded(sessionID, command, timeout, codexIO, nil)
+}
+
+func waitForInputReadyGuarded(
+	sessionID string,
+	command string,
+	timeout time.Duration,
+	codexIO codexInputIO,
+	guard func() error,
+) bool {
 	if !needsInputReadinessWait(command, "") {
-		return true
+		return guard == nil || guard() == nil
 	}
 	deadline := time.Now().Add(timeout)
 	advancedStartupPrompt := false
 	advancedCursorTrustPrompt := false
 	for {
+		if guard != nil && guard() != nil {
+			return false
+		}
 		content, alive := capturePaneContent(sessionID)
 		if !alive {
 			return false
 		}
 		if !advancedStartupPrompt && isCodexStartupContinuePrompt(command, content) {
-			_ = exec.Command("tmux", "send-keys", "-t", sessionID, "Enter").Run()
+			if codexIO == nil {
+				return false
+			}
+			capture := codexIO.capture(sessionID)
+			if !capture.alive || codexIO.advanceStartup(sessionID, capture.generation) != nil {
+				return false
+			}
 			advancedStartupPrompt = true
 			time.Sleep(250 * time.Millisecond)
 			continue
 		}
 		if !advancedCursorTrustPrompt && isCursorWorkspaceTrustPrompt(command, content) {
+			if guard != nil && guard() != nil {
+				return false
+			}
 			_ = exec.Command("tmux", "send-keys", "-t", sessionID, "a").Run()
 			advancedCursorTrustPrompt = true
 			time.Sleep(500 * time.Millisecond)
@@ -1313,9 +1841,18 @@ func inputReadyTimeout(command string) time.Duration {
 }
 
 func sendLiteralTmuxInput(sessionID, body string) error {
+	return sendLiteralTmuxInputGuarded(sessionID, body, nil)
+}
+
+func sendLiteralTmuxInputGuarded(sessionID, body string, guard func() error) error {
 	for _, chunk := range splitStringByMaxBytes(body, tmuxSendInputChunkBytes) {
 		if chunk == "" {
 			continue
+		}
+		if guard != nil {
+			if err := guard(); err != nil {
+				return err
+			}
 		}
 		if out, err := exec.Command("tmux", "send-keys", "-l", "-t", sessionID, "--", chunk).CombinedOutput(); err != nil {
 			return fmt.Errorf("send literal tmux input: %w%s", err, commandOutputSuffix(out))
@@ -1330,6 +1867,22 @@ func splitTmuxInput(text string) (body string, submit bool) {
 		text = strings.TrimRight(text, "\r\n")
 	}
 	return text, submit
+}
+
+// splitCodexSubmitInput treats exactly one final line ending as the transport
+// submit delimiter. Earlier trailing line endings remain task bytes and are
+// normalized from CRLF/CR to LF by normalizeCodexPayload before hashing.
+func splitCodexSubmitInput(text string) (body string, submit bool) {
+	switch {
+	case strings.HasSuffix(text, "\r\n"):
+		return strings.TrimSuffix(text, "\r\n"), true
+	case strings.HasSuffix(text, "\n"):
+		return strings.TrimSuffix(text, "\n"), true
+	case strings.HasSuffix(text, "\r"):
+		return strings.TrimSuffix(text, "\r"), true
+	default:
+		return text, false
+	}
 }
 
 func splitStringByMaxBytes(value string, maxBytes int) []string {
@@ -1387,7 +1940,22 @@ func (w *Watcher) SendAction(sessionID, action string) error {
 	default:
 		return fmt.Errorf("unknown action: %s", action)
 	}
-	return exec.Command("tmux", args...).Run()
+	identity, known := w.targetForSession(sessionID)
+	if !known {
+		return fmt.Errorf("target provider could not be proven; action was not sent")
+	}
+	resolver := w.targetForSession
+	send := func() error {
+		if err := guardTargetIdentity(resolver, sessionID, identity); err != nil {
+			return err
+		}
+		return exec.Command("tmux", args...).Run()
+	}
+	if isCodexCommand(identity.Command) {
+		io := bindCodexInputIdentity(w.codexIOOwner(), resolver, sessionID, identity)
+		return w.codexInputOwner().mutateIfUnowned(io, sessionID, send)
+	}
+	return send()
 }
 
 type CreateSessionOptions struct {
@@ -1439,6 +2007,13 @@ func (w *Watcher) CreateSession(preferredTarget string, opts CreateSessionOption
 		if workingDir, err := os.Getwd(); err == nil {
 			cwd = workingDir
 		}
+	}
+	w.mu.RLock()
+	codexStateDir := w.codexStateDir
+	w.mu.RUnlock()
+	if codexStateDir != "" {
+		opts.Env = cloneEnvironment(opts.Env)
+		opts.Env["ZEN_STATE_DIR"] = codexStateDir
 	}
 
 	manager := w.resourceManager()
@@ -1995,13 +2570,15 @@ func currentPathForTarget(target string) (string, error) {
 type processInfo struct {
 	pid       int
 	ppid      int
+	pgid      int
+	tpgid     int
 	startedAt time.Time
 	comm      string
 	args      string
 }
 
 func snapshotProcesses() map[int]processInfo {
-	command := exec.Command("ps", "-eo", "pid=,ppid=,lstart=,comm=,args=")
+	command := exec.Command("ps", "-eo", "pid=,ppid=,pgid=,tpgid=,lstart=,comm=,args=")
 	command.Env = append(command.Environ(), "LC_ALL=C")
 	out, err := command.Output()
 	if err != nil {
@@ -2021,34 +2598,186 @@ func parseProcessSnapshot(out []byte, location *time.Location) map[int]processIn
 			continue
 		}
 		fields := strings.Fields(line)
-		if len(fields) < 8 {
+		if len(fields) < 10 {
 			continue
 		}
 		pid, err1 := strconv.Atoi(fields[0])
 		ppid, err2 := strconv.Atoi(fields[1])
-		startedAt, err3 := time.ParseInLocation(
+		pgid, err3 := strconv.Atoi(fields[2])
+		tpgid, err4 := strconv.Atoi(fields[3])
+		startedAt, err5 := time.ParseInLocation(
 			"Mon Jan 2 15:04:05 2006",
-			strings.Join(fields[2:7], " "),
+			strings.Join(fields[4:9], " "),
 			location,
 		)
-		if err1 != nil || err2 != nil || err3 != nil {
+		if err1 != nil || err2 != nil || err3 != nil || err4 != nil || err5 != nil {
 			continue
 		}
 
 		args := ""
-		if len(fields) > 8 {
-			args = strings.Join(fields[8:], " ")
+		if len(fields) > 10 {
+			args = strings.Join(fields[10:], " ")
 		}
 
 		processes[pid] = processInfo{
 			pid:       pid,
 			ppid:      ppid,
+			pgid:      pgid,
+			tpgid:     tpgid,
 			startedAt: startedAt,
-			comm:      fields[7],
+			comm:      fields[9],
 			args:      args,
 		}
 	}
 	return processes
+}
+
+type foregroundTargetAuthority struct {
+	command    string
+	foreground processInfo
+	provider   processInfo
+}
+
+// resolveForegroundTargetProcess binds terminal mutation authority to both the
+// kernel's foreground process-group leader and one coherent Provider process
+// in that leader's same-PGID descendant lineage. Other process groups cannot
+// influence the result; conflicting or indeterminate foreground Providers
+// fail closed.
+func resolveForegroundTargetProcess(panePID int, processes map[int]processInfo) (foregroundTargetAuthority, bool) {
+	paneProcess, ok := processes[panePID]
+	if !ok || paneProcess.startedAt.IsZero() || paneProcess.tpgid <= 0 {
+		return foregroundTargetAuthority{}, false
+	}
+	foregroundPID := paneProcess.tpgid
+	foreground, ok := processes[foregroundPID]
+	if !ok ||
+		foreground.pid != foregroundPID ||
+		foreground.pgid != foregroundPID ||
+		foreground.startedAt.IsZero() ||
+		!processDescendsFrom(panePID, foregroundPID, processes) {
+		return foregroundTargetAuthority{}, false
+	}
+
+	providerFamily := ""
+	bestScore := -1
+	bestCommand := ""
+	bestProcess := processInfo{}
+	bestTied := false
+	resumeCommand := ""
+	var providerLineage []processInfo
+	for _, process := range processes {
+		if process.pgid != foregroundPID {
+			continue
+		}
+		detected := agentCommandFromProcess(process)
+		if detected == "" {
+			continue
+		}
+		if process.startedAt.IsZero() ||
+			!processDescendsFrom(foregroundPID, process.pid, processes) {
+			return foregroundTargetAuthority{}, false
+		}
+		family := agentProviderFamily(detected)
+		if family == "" {
+			return foregroundTargetAuthority{}, false
+		}
+		for _, previous := range providerLineage {
+			if !processDescendsFrom(previous.pid, process.pid, processes) &&
+				!processDescendsFrom(process.pid, previous.pid, processes) {
+				return foregroundTargetAuthority{}, false
+			}
+		}
+		providerLineage = append(providerLineage, process)
+		if providerFamily == "" {
+			providerFamily = family
+		} else if providerFamily != family {
+			return foregroundTargetAuthority{}, false
+		}
+		if resume, _ := commandResumeArg(detected); resume {
+			if resumeCommand != "" && resumeCommand != detected {
+				return foregroundTargetAuthority{}, false
+			}
+			resumeCommand = detected
+		}
+		score := agentProcessScore(process, detected)
+		switch {
+		case score > bestScore:
+			bestScore = score
+			bestCommand = detected
+			bestProcess = process
+			bestTied = false
+		case score == bestScore && process.pid != bestProcess.pid:
+			bestTied = true
+		}
+	}
+	if providerFamily != "" {
+		if bestTied || bestCommand == "" || bestProcess.pid <= 0 {
+			return foregroundTargetAuthority{}, false
+		}
+		if resumeCommand != "" && agentProviderFamily(bestCommand) == providerFamily {
+			bestCommand = resumeCommand
+		}
+		return foregroundTargetAuthority{
+			command:    bestCommand,
+			foreground: foreground,
+			provider:   bestProcess,
+		}, true
+	}
+
+	command := normalizeCommand(foreground.comm)
+	if command == "" {
+		return foregroundTargetAuthority{}, false
+	}
+	return foregroundTargetAuthority{
+		command:    command,
+		foreground: foreground,
+		provider:   foreground,
+	}, true
+}
+
+func foregroundTargetProcess(panePID int, processes map[int]processInfo) (string, time.Time, int, bool) {
+	authority, ok := resolveForegroundTargetProcess(panePID, processes)
+	if !ok {
+		return "", time.Time{}, 0, false
+	}
+	return authority.command, authority.provider.startedAt, authority.provider.pid, true
+}
+
+func agentProviderFamily(command string) string {
+	switch agentCommandName(command) {
+	case "claude", "claude-code", "cc":
+		return "claude"
+	case "codex":
+		return "codex"
+	case "cursor-agent":
+		return "cursor-agent"
+	case "grok":
+		return "grok"
+	default:
+		return ""
+	}
+}
+
+func processDescendsFrom(rootPID, processID int, processes map[int]processInfo) bool {
+	if rootPID <= 0 || processID <= 0 {
+		return false
+	}
+	visited := make(map[int]struct{})
+	for current := processID; current > 0; {
+		if current == rootPID {
+			return true
+		}
+		if _, duplicate := visited[current]; duplicate {
+			return false
+		}
+		visited[current] = struct{}{}
+		process, ok := processes[current]
+		if !ok || process.ppid == current {
+			return false
+		}
+		current = process.ppid
+	}
+	return false
 }
 
 func detectAgentProcess(baseCommand string, panePID int, processes map[int]processInfo, fallbackAt time.Time) (string, time.Time, int) {
@@ -2118,6 +2847,12 @@ func detectAgentProcess(baseCommand string, panePID int, processes map[int]proce
 func agentCommandFromProcess(proc processInfo) string {
 	lowerComm := normalizeCommand(proc.comm)
 	lowerArgs := strings.ToLower(proc.args)
+	switch lowerComm {
+	case "sh", "bash", "dash", "zsh", "fish":
+		// A shell command line is launch intent, not proof that the provider
+		// process exists. Bind only the actual child (or an exec-replaced pane).
+		return ""
+	}
 
 	if lowerComm == "claude" || lowerComm == "claude-code" || lowerComm == "cc" {
 		return lowerComm
@@ -2125,7 +2860,7 @@ func agentCommandFromProcess(proc processInfo) string {
 	if strings.Contains(lowerArgs, " claude") || strings.HasPrefix(lowerArgs, "claude ") {
 		return "claude"
 	}
-	if lowerComm == "codex" || strings.Contains(lowerArgs, "/bin/codex") || strings.Contains(lowerArgs, " codex ") || strings.HasPrefix(lowerArgs, "codex ") {
+	if lowerComm == "codex" || lowerArgs == "codex" || strings.Contains(lowerArgs, "/bin/codex") || strings.Contains(lowerArgs, " codex ") || strings.HasPrefix(lowerArgs, "codex ") {
 		if resume, sessionID := commandResumeArg(lowerArgs); resume {
 			if sessionID != "" {
 				return "codex resume " + sessionID
