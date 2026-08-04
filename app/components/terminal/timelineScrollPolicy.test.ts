@@ -2,134 +2,15 @@
 import { describe, expect, test } from "bun:test";
 import {
   INITIAL_TIMELINE_SCROLL_STATE,
-  TIMELINE_LIST_STABILITY_PROPS,
+  TIMELINE_BOTTOM_THRESHOLD,
   reduceTimelineScrollPosition,
   returnTimelineToBottom,
+  timelineDragContinuesWithMomentum,
+  timelineListStabilityProps,
   timelineDistanceFromLatest,
-  timelineMutationDecision,
 } from "./timelineScrollPolicy";
-import {
-  createTimelineActivityExpansionState,
-  reduceTimelineActivityExpansion,
-  resolveTimelineActivityExpansion,
-  type TimelineActivityExpansionState,
-} from "./InterfaceTimelineActivityExpansionState";
-
-type StreamingTouchOutcome = {
-  feedbackShown: boolean;
-  pressCancelled: boolean;
-  expansionState: TimelineActivityExpansionState;
-};
-
-/**
- * Replays the native responder ordering behind a Tool-header tap. TouchableOpacity
- * first accepts the touch and shows onPressIn feedback. If the pinned timeline
- * then calls scrollToOffset for a streaming content-size mutation, ScrollView's
- * onScrollShouldSetResponder sees the still-active touch, takes the responder,
- * and Pressability receives RESPONDER_TERMINATED instead of RESPONDER_RELEASE.
- */
-function releaseAcceptedToolTouchAfterMutation(
-  expansionState: TimelineActivityExpansionState,
-  decision: ReturnType<typeof timelineMutationDecision>,
-): StreamingTouchOutcome {
-  const outcome: StreamingTouchOutcome = {
-    feedbackShown: true,
-    pressCancelled: false,
-    expansionState,
-  };
-
-  if (decision === "follow-bottom") {
-    outcome.pressCancelled = true;
-  }
-  if (!outcome.pressCancelled) {
-    outcome.expansionState = reduceTimelineActivityExpansion(expansionState, {
-      eventId: expansionState.eventId,
-      defaultExpanded: false,
-    });
-  }
-  return outcome;
-}
 
 describe("timeline scroll policy", () => {
-  test("append while detached preserves the visible anchor and exposes new messages", () => {
-    const detached = reduceTimelineScrollPosition(
-      INITIAL_TIMELINE_SCROLL_STATE,
-      320,
-      true,
-    );
-
-    expect(timelineMutationDecision(detached)).toBe("preserve-visible-anchor");
-    expect(detached.mode).toBe("detached");
-  });
-
-  test("an in-place streaming height update while detached preserves the anchor", () => {
-    const detached = {
-      mode: "detached" as const,
-    };
-
-    expect(timelineMutationDecision(detached)).toBe("preserve-visible-anchor");
-  });
-
-  test("attached-bottom mutations follow the latest content", () => {
-    expect(timelineMutationDecision(INITIAL_TIMELINE_SCROLL_STATE)).toBe(
-      "follow-bottom",
-    );
-  });
-
-  test("same-event streaming cannot cancel an accepted Tool-header touch", () => {
-    const decision = timelineMutationDecision(
-      INITIAL_TIMELINE_SCROLL_STATE,
-      true,
-    );
-    let expansionState = createTimelineActivityExpansionState("tool-stream");
-
-    const opened = releaseAcceptedToolTouchAfterMutation(
-      expansionState,
-      decision,
-    );
-    expect(opened).toMatchObject({
-      feedbackShown: true,
-      pressCancelled: false,
-    });
-    expect(
-      resolveTimelineActivityExpansion(
-        opened.expansionState,
-        "tool-stream",
-        false,
-      ),
-    ).toBe(true);
-    expect(decision).toBe("suspend-implicit-anchor");
-
-    expansionState = opened.expansionState;
-    const closed = releaseAcceptedToolTouchAfterMutation(
-      expansionState,
-      decision,
-    );
-    expect(closed.pressCancelled).toBe(false);
-    expect(
-      resolveTimelineActivityExpansion(
-        closed.expansionState,
-        "tool-stream",
-        false,
-      ),
-    ).toBe(false);
-
-    expect(timelineMutationDecision(INITIAL_TIMELINE_SCROLL_STATE, false)).toBe(
-      "follow-bottom",
-    );
-  });
-
-  test("touch suspension preserves detached reader scroll intent", () => {
-    const detached = { mode: "detached" as const };
-
-    expect(timelineMutationDecision(detached, true)).toBe(
-      "suspend-implicit-anchor",
-    );
-    expect(timelineMutationDecision(detached, false)).toBe(
-      "preserve-visible-anchor",
-    );
-  });
-
   test("only user movement beyond the threshold detaches", () => {
     expect(
       reduceTimelineScrollPosition(INITIAL_TIMELINE_SCROLL_STATE, 320, false),
@@ -143,7 +24,6 @@ describe("timeline scroll policy", () => {
     const detached = { mode: "detached" as const };
 
     expect(reduceTimelineScrollPosition(detached, 24, false)).toBe(detached);
-    expect(timelineMutationDecision(detached)).toBe("preserve-visible-anchor");
   });
 
   test("layout movement cannot detach an attached streaming viewport", () => {
@@ -172,14 +52,41 @@ describe("timeline scroll policy", () => {
   });
 
   test("list integration delegates pixel anchoring to native visible-child tracking", () => {
-    expect(TIMELINE_LIST_STABILITY_PROPS).toEqual({
-      maintainVisibleContentPosition: { minIndexForVisible: 0 },
+    expect(timelineListStabilityProps(false)).toEqual({
+      maintainVisibleContentPosition: {
+        minIndexForVisible: 0,
+        autoscrollToTopThreshold: TIMELINE_BOTTOM_THRESHOLD,
+      },
       removeClippedSubviews: false,
       scrollsChildToFocus: false,
     });
   });
 
   test("native child focus cannot become a second timeline scroll owner", () => {
-    expect(TIMELINE_LIST_STABILITY_PROPS.scrollsChildToFocus).toBe(false);
+    expect(timelineListStabilityProps(false).scrollsChildToFocus).toBe(false);
+  });
+
+  test("touch and text selection suspend native follow without disabling native anchoring", () => {
+    expect(timelineListStabilityProps(true)).toMatchObject({
+      maintainVisibleContentPosition: { minIndexForVisible: 0 },
+      removeClippedSubviews: false,
+      scrollsChildToFocus: false,
+    });
+    expect(
+      timelineListStabilityProps(true).maintainVisibleContentPosition,
+    ).not.toHaveProperty("autoscrollToTopThreshold");
+    expect(
+      timelineListStabilityProps(false).maintainVisibleContentPosition,
+    ).toEqual({
+      minIndexForVisible: 0,
+      autoscrollToTopThreshold: TIMELINE_BOTTOM_THRESHOLD,
+    });
+  });
+
+  test("a fling keeps native follow suspended across drag-end to momentum-begin", () => {
+    expect(timelineDragContinuesWithMomentum(1.2)).toBe(true);
+    expect(timelineDragContinuesWithMomentum(-0.4)).toBe(true);
+    expect(timelineDragContinuesWithMomentum(0)).toBe(false);
+    expect(timelineDragContinuesWithMomentum(undefined)).toBe(false);
   });
 });

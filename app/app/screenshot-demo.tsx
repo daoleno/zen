@@ -381,6 +381,7 @@ function ChatDemo() {
           renderTimeline={(extraContentPadding, keyboardLifecycleGate) => (
             <InterfaceTimelineView
               scrollRef={scrollRef}
+              nativeFollowSuspended={false}
               items={timeline}
               loading={false}
               emptyStateSuppressed={false}
@@ -500,6 +501,7 @@ function BrainDemo() {
           renderTimeline={(extraContentPadding, keyboardLifecycleGate) => (
             <InterfaceTimelineView
               scrollRef={scrollRef}
+              nativeFollowSuspended={false}
               items={timeline}
               loading={false}
               emptyStateSuppressed={false}

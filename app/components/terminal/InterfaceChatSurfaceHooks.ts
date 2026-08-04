@@ -19,8 +19,8 @@ import {
   INITIAL_TIMELINE_SCROLL_STATE,
   reduceTimelineScrollPosition,
   returnTimelineToBottom,
+  timelineDragContinuesWithMomentum,
   timelineDistanceFromLatest,
-  timelineMutationDecision,
   type TimelineScrollState,
 } from "./timelineScrollPolicy";
 import {
@@ -130,9 +130,25 @@ export function usePinnedTimeline(
   });
   const reducedMotion = useReducedMotion();
   const [showJumpToLatest, setShowJumpToLatest] = useState(false);
+  const [nativeFollowSuspended, setNativeFollowSuspended] = useState(false);
   const textSelectable = true;
   const [turnFocusPendingMessageId, setTurnFocusPendingMessageId] =
     useState<string>();
+
+  const implicitAnchorSuspended = useCallback(
+    () =>
+      textSelectionActiveRef.current ||
+      userDraggingRef.current ||
+      userMomentumRef.current ||
+      timelineTouchActiveRef.current,
+    [],
+  );
+
+  const syncNativeFollowSuspension = useCallback(() => {
+    setNativeFollowSuspended(
+      implicitAnchorSuspended() || scrollStateRef.current.mode === "detached",
+    );
+  }, [implicitAnchorSuspended]);
 
   const updateJumpButton = useCallback(() => {
     setShowJumpToLatest(
@@ -151,8 +167,13 @@ export function usePinnedTimeline(
   const resumeImplicitAnchorAfterTextSelection = useCallback(() => {
     clearTextSelectionTimer();
     textSelectionActiveRef.current = false;
+    syncNativeFollowSuspension();
     updateJumpButton();
-  }, [clearTextSelectionTimer, updateJumpButton]);
+  }, [
+    clearTextSelectionTimer,
+    syncNativeFollowSuspension,
+    updateJumpButton,
+  ]);
 
   const scheduleTextSelectionAnchorResume = useCallback(
     (delay: number) => {
@@ -160,19 +181,15 @@ export function usePinnedTimeline(
       textSelectionTimerRef.current = setTimeout(() => {
         textSelectionTimerRef.current = null;
         textSelectionActiveRef.current = false;
+        syncNativeFollowSuspension();
         updateJumpButton();
       }, delay);
     },
-    [clearTextSelectionTimer, updateJumpButton],
-  );
-
-  const implicitAnchorSuspended = useCallback(
-    () =>
-      textSelectionActiveRef.current ||
-      userDraggingRef.current ||
-      userMomentumRef.current ||
-      timelineTouchActiveRef.current,
-    [],
+    [
+      clearTextSelectionTimer,
+      syncNativeFollowSuspension,
+      updateJumpButton,
+    ],
   );
 
   const applyTurnFocusEvent = useCallback(
@@ -212,22 +229,34 @@ export function usePinnedTimeline(
     [applyTurnFocusEvent],
   );
 
-  const handleTimelineTouchActiveChange = useCallback((active: boolean) => {
-    // Root touch observation is passive. A stationary press must leave the
-    // mounted row and turn-focus geometry untouched so native text can own
-    // long-press selection; onScrollBeginDrag is the cancellation boundary.
-    timelineTouchActiveRef.current = active;
-  }, []);
+  const handleTimelineTouchActiveChange = useCallback(
+    (active: boolean) => {
+      // Root touch observation is passive. A stationary press must leave the
+      // mounted row and turn-focus geometry untouched so native text can own
+      // long-press selection; onScrollBeginDrag is the cancellation boundary.
+      timelineTouchActiveRef.current = active;
+      syncNativeFollowSuspension();
+    },
+    [syncNativeFollowSuspension],
+  );
 
   const attachToLatest = useCallback(() => {
     scrollStateRef.current = returnTimelineToBottom();
+    setNativeFollowSuspended(implicitAnchorSuspended());
     setShowJumpToLatest(false);
-  }, []);
+  }, [implicitAnchorSuspended]);
 
   const detachFromLatest = useCallback(() => {
     scrollStateRef.current = { mode: "detached" };
+    setNativeFollowSuspended(true);
     updateJumpButton();
   }, [updateJumpButton]);
+
+  const handleTimelineItemsMutated = useCallback(() => {
+    if (implicitAnchorSuspended()) {
+      detachFromLatest();
+    }
+  }, [detachFromLatest, implicitAnchorSuspended]);
 
   const scrollToLatest = useCallback(
     (animated: boolean = true, exactLatestOffset?: number) => {
@@ -390,6 +419,7 @@ export function usePinnedTimeline(
       userDraggingRef.current = false;
       userMomentumRef.current = false;
       timelineTouchActiveRef.current = false;
+      setNativeFollowSuspended(false);
       automaticReturnsInFlightRef.current = 0;
       applyTurnFocusEvent({ type: "reset", generation });
       distanceFromLatestRef.current = timelineDistanceFromLatest(
@@ -403,8 +433,9 @@ export function usePinnedTimeline(
 
   const handleTextSelectionGestureStart = useCallback(() => {
     textSelectionActiveRef.current = true;
+    syncNativeFollowSuspension();
     scheduleTextSelectionAnchorResume(TEXT_SELECTION_ANCHOR_MAX_MS);
-  }, [scheduleTextSelectionAnchorResume]);
+  }, [scheduleTextSelectionAnchorResume, syncNativeFollowSuspension]);
 
   const handleTextSelectionGestureEnd = useCallback(() => {
     if (!textSelectionActiveRef.current) {
@@ -461,15 +492,24 @@ export function usePinnedTimeline(
       resumeImplicitAnchorAfterTextSelection();
     }
     userDraggingRef.current = true;
+    syncNativeFollowSuspension();
     cancelTurnFocus("drag");
-  }, [cancelTurnFocus, resumeImplicitAnchorAfterTextSelection]);
+  }, [
+    cancelTurnFocus,
+    resumeImplicitAnchorAfterTextSelection,
+    syncNativeFollowSuspension,
+  ]);
 
   const handleScrollEndDrag = useCallback(
     (event: NativeSyntheticEvent<NativeScrollEvent>) => {
       updateScrollPosition(event, true);
       userDraggingRef.current = false;
+      userMomentumRef.current = timelineDragContinuesWithMomentum(
+        event.nativeEvent.velocity?.y,
+      );
+      syncNativeFollowSuspension();
     },
-    [updateScrollPosition],
+    [syncNativeFollowSuspension, updateScrollPosition],
   );
 
   const handleMomentumScrollBegin = useCallback(() => {
@@ -482,8 +522,9 @@ export function usePinnedTimeline(
       return;
     }
     userMomentumRef.current = true;
+    syncNativeFollowSuspension();
     cancelTurnFocus("momentum");
-  }, [cancelTurnFocus]);
+  }, [cancelTurnFocus, syncNativeFollowSuspension]);
 
   const handleMomentumScrollEnd = useCallback(
     (event: NativeSyntheticEvent<NativeScrollEvent>) => {
@@ -502,15 +543,19 @@ export function usePinnedTimeline(
       }
       updateScrollPosition(event, true);
       userMomentumRef.current = false;
+      syncNativeFollowSuspension();
     },
-    [updateScrollPosition],
+    [syncNativeFollowSuspension, updateScrollPosition],
   );
 
   const handleContentSizeChange = useCallback(
     (_: number, height: number) => {
       // flexGrow can keep the content-container height constant while the live
       // response moves the focused turn boundary. Positioned cell layout is the
-      // focus owner's geometry signal; content size remains ordinary follow only.
+      // focus owner's geometry signal. For ordinary live mutations, the
+      // FlatList's native visible-child owner atomically preserves history or
+      // follows within its newest-edge threshold; issuing a second JS scroll
+      // here races that adjustment and can move or blank the settled viewport.
       if (turnFocusSuppressesOrdinaryFollow(turnFocusStateRef.current)) {
         return;
       }
@@ -518,30 +563,17 @@ export function usePinnedTimeline(
         attachToLatest();
         return;
       }
-      const mutationDecision = timelineMutationDecision(
-        scrollStateRef.current,
-        implicitAnchorSuspended(),
-      );
-      if (mutationDecision === "suspend-implicit-anchor") {
-        updateJumpButton();
+      if (implicitAnchorSuspended()) {
+        detachFromLatest();
         return;
       }
-      if (
-        mutationDecision === "follow-bottom" &&
-        distanceFromLatestRef.current > 1
-      ) {
-        scrollToLatest(false);
-        return;
-      }
-      if (scrollStateRef.current.mode === "detached") {
-        setShowJumpToLatest(true);
-      }
+      updateJumpButton();
     },
     [
       attachToLatest,
+      detachFromLatest,
       implicitAnchorSuspended,
       itemCount,
-      scrollToLatest,
       updateJumpButton,
     ],
   );
@@ -618,28 +650,25 @@ export function usePinnedTimeline(
       return;
     }
     if (implicitAnchorSuspended()) {
-      updateJumpButton();
+      detachFromLatest();
       return;
     }
-    if (
-      scrollStateRef.current.mode === "attached" &&
-      distanceFromLatestRef.current > 1
-    ) {
-      scrollToLatest(false);
-      return;
-    }
+    // Item-count changes are live list mutations. Native visible-child
+    // tracking owns both detached anchoring and newest-edge follow so this
+    // effect must not race it with an imperative scroll.
     updateJumpButton();
   }, [
     attachToLatest,
+    detachFromLatest,
     implicitAnchorSuspended,
     itemCount,
     resetKey,
-    scrollToLatest,
     updateJumpButton,
   ]);
 
   return {
     scrollRef,
+    nativeFollowSuspended,
     showJumpToLatest,
     textSelectable,
     turnFocusClearanceRequest,
@@ -655,6 +684,7 @@ export function usePinnedTimeline(
     handleMomentumScrollBegin,
     handleMomentumScrollEnd,
     handleTimelineTouchActiveChange,
+    handleTimelineItemsMutated,
     handleContentSizeChange,
     handleClearanceChange,
     handleLayout,

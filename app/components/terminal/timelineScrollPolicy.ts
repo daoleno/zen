@@ -1,18 +1,24 @@
 export const TIMELINE_BOTTOM_THRESHOLD = 96;
-export const TIMELINE_LIST_STABILITY_PROPS = {
-  maintainVisibleContentPosition: { minIndexForVisible: 0 },
-  removeClippedSubviews: false,
-  // Selectable Android text takes native focus. Timeline policy, rather than
-  // descendant focus, owns any viewport movement in this inverted list.
-  scrollsChildToFocus: false,
-} as const;
+const TIMELINE_NATIVE_ANCHOR = { minIndexForVisible: 0 } as const;
+
+export function timelineListStabilityProps(followSuspended: boolean) {
+  return {
+    maintainVisibleContentPosition: followSuspended
+      ? TIMELINE_NATIVE_ANCHOR
+      : {
+          ...TIMELINE_NATIVE_ANCHOR,
+          autoscrollToTopThreshold: TIMELINE_BOTTOM_THRESHOLD,
+        },
+    removeClippedSubviews: false,
+    // Selectable Android text takes native focus. Timeline policy, rather than
+    // descendant focus, owns any viewport movement in this inverted list.
+    scrollsChildToFocus: false,
+  } as const;
+}
 
 export interface TimelineScrollState {
   mode: "attached" | "detached";
 }
-
-export type TimelineMutationDecision =
-  "follow-bottom" | "preserve-visible-anchor" | "suspend-implicit-anchor";
 
 export const INITIAL_TIMELINE_SCROLL_STATE: TimelineScrollState = {
   mode: "attached",
@@ -33,18 +39,6 @@ export function reduceTimelineScrollPosition(
     : { mode: "detached" };
 }
 
-export function timelineMutationDecision(
-  state: TimelineScrollState,
-  implicitAnchorSuspended: boolean = false,
-): TimelineMutationDecision {
-  if (implicitAnchorSuspended) {
-    return "suspend-implicit-anchor";
-  }
-  return state.mode === "attached"
-    ? "follow-bottom"
-    : "preserve-visible-anchor";
-}
-
 export function returnTimelineToBottom(): TimelineScrollState {
   return INITIAL_TIMELINE_SCROLL_STATE;
 }
@@ -54,4 +48,8 @@ export function timelineDistanceFromLatest(
   latestOffset: number,
 ) {
   return Math.max(0, contentOffset - latestOffset);
+}
+
+export function timelineDragContinuesWithMomentum(velocity?: number) {
+  return Number.isFinite(velocity) && Math.abs(velocity ?? 0) > 0.01;
 }

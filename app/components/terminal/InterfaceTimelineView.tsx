@@ -43,7 +43,7 @@ import {
   type TimelineRenderItem,
 } from "./InterfaceTimelineGrouping";
 import type { PatchFileSummary } from "./InterfaceTimelineActivityTypes";
-import { TIMELINE_LIST_STABILITY_PROPS } from "./timelineScrollPolicy";
+import { timelineListStabilityProps } from "./timelineScrollPolicy";
 import { StructuredChatInsetScrollView } from "./StructuredChatInsetScrollView";
 import type { StructuredChatKeyboardLifecycleGate } from "./chatKeyboardOverlayPolicy";
 import {
@@ -73,6 +73,7 @@ const TimelineCellView = View as React.ComponentType<
 
 interface InterfaceTimelineViewProps {
   scrollRef: React.RefObject<FlatList<ZenTimelineItem> | null>;
+  nativeFollowSuspended: boolean;
   items: ZenTimelineItem[];
   loading: boolean;
   error?: string | null;
@@ -100,6 +101,7 @@ interface InterfaceTimelineViewProps {
   onMomentumScrollEnd(event: NativeSyntheticEvent<NativeScrollEvent>): void;
   /** Passively observes touch lifetime without taking the scroll responder. */
   onTouchActiveChange?(active: boolean): void;
+  onItemsMutated?(): void;
   onContentSizeChange(width: number, height: number): void;
   onClearanceChange?(
     intentToken: number,
@@ -124,6 +126,7 @@ interface InterfaceTimelineViewProps {
 
 export function InterfaceTimelineView({
   scrollRef,
+  nativeFollowSuspended,
   items,
   loading,
   error,
@@ -150,6 +153,7 @@ export function InterfaceTimelineView({
   onMomentumScrollBegin,
   onMomentumScrollEnd,
   onTouchActiveChange,
+  onItemsMutated,
   onContentSizeChange,
   onClearanceChange,
   onTurnFocusAnchorAvailable,
@@ -164,10 +168,22 @@ export function InterfaceTimelineView({
   truncateBody,
 }: InterfaceTimelineViewProps) {
   const { theme: zenTheme } = useAppTheme();
+  const listStabilityProps = React.useMemo(
+    () => timelineListStabilityProps(nativeFollowSuspended),
+    [nativeFollowSuspended],
+  );
   const turnFocusCellMeasurementRef = React.useRef<TurnFocusCellMeasurement>(
     {},
   );
   const previousRenderItemsRef = React.useRef<TimelineRenderItem[]>([]);
+  const previousItemsRef = React.useRef(items);
+  React.useEffect(() => {
+    if (previousItemsRef.current === items) {
+      return;
+    }
+    previousItemsRef.current = items;
+    onItemsMutated?.();
+  }, [items, onItemsMutated]);
   const renderItems = React.useMemo(() => {
     const next = buildTimelineRenderItems([...items].reverse(), {
       showDateDividers: zenTheme.chat.showDateDividers,
@@ -336,7 +352,7 @@ export function InterfaceTimelineView({
           ]}
           inverted
           renderScrollComponent={renderScrollComponent}
-          {...TIMELINE_LIST_STABILITY_PROPS}
+          {...listStabilityProps}
           keyboardDismissMode={
             Platform.OS === "ios" ? "interactive" : "on-drag"
           }

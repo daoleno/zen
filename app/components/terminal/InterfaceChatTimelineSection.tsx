@@ -48,6 +48,7 @@ interface InterfaceChatTimelineSectionProps {
   error?: string | null;
   commandMenuOpen: boolean;
   scrollRef: React.RefObject<FlatList<ZenTimelineItem> | null>;
+  nativeFollowSuspended: boolean;
   textSelectable: boolean;
   extraContentPadding: SharedValue<number>;
   keyboardLifecycleGate: SharedValue<StructuredChatKeyboardLifecycleGate>;
@@ -66,6 +67,7 @@ interface InterfaceChatTimelineSectionProps {
   onMomentumScrollBegin(): void;
   onMomentumScrollEnd(event: NativeSyntheticEvent<NativeScrollEvent>): void;
   onTouchActiveChange(active: boolean): void;
+  onItemsMutated(): void;
   onContentSizeChange(width: number, height: number): void;
   onClearanceChange(
     intentToken: number,
@@ -104,6 +106,7 @@ export function InterfaceChatTimelineSection({
   error,
   commandMenuOpen,
   scrollRef,
+  nativeFollowSuspended,
   textSelectable,
   extraContentPadding,
   keyboardLifecycleGate,
@@ -122,6 +125,7 @@ export function InterfaceChatTimelineSection({
   onMomentumScrollBegin,
   onMomentumScrollEnd,
   onTouchActiveChange,
+  onItemsMutated,
   onContentSizeChange,
   onClearanceChange,
   onTurnFocusAnchorAvailable,
@@ -182,6 +186,7 @@ export function InterfaceChatTimelineSection({
     <SessionFilePreviewContext.Provider value={filePreviewContext}>
       <InterfaceTimelineView
         scrollRef={scrollRef}
+        nativeFollowSuspended={nativeFollowSuspended}
         items={timelineItems}
         loading={loading}
         error={error}
@@ -213,6 +218,7 @@ export function InterfaceChatTimelineSection({
         onMomentumScrollBegin={onMomentumScrollBegin}
         onMomentumScrollEnd={onMomentumScrollEnd}
         onTouchActiveChange={onTouchActiveChange}
+        onItemsMutated={onItemsMutated}
         onContentSizeChange={onContentSizeChange}
         onClearanceChange={onClearanceChange}
         onTurnFocusAnchorAvailable={onTurnFocusAnchorAvailable}

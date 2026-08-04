@@ -53,6 +53,7 @@ export interface InterfaceChatBodyProps {
   loading: boolean;
   error?: string | null;
   scrollRef: React.RefObject<FlatList<ZenTimelineItem> | null>;
+  nativeFollowSuspended: boolean;
   timelineTextSelectable: boolean;
   turnFocusClearanceRequest: SharedValue<number>;
   turnFocusSpacer: SharedValue<TurnFocusSpacerRequest>;
@@ -70,6 +71,7 @@ export interface InterfaceChatBodyProps {
     event: NativeSyntheticEvent<NativeScrollEvent>,
   ): void;
   onTimelineTouchActiveChange(active: boolean): void;
+  onTimelineItemsMutated(): void;
   onTimelineContentSizeChange(width: number, height: number): void;
   onTimelineClearanceChange(
     intentToken: number,
@@ -140,6 +142,7 @@ export function InterfaceChatBody({
   loading,
   error,
   scrollRef,
+  nativeFollowSuspended,
   timelineTextSelectable,
   turnFocusClearanceRequest,
   turnFocusSpacer,
@@ -155,6 +158,7 @@ export function InterfaceChatBody({
   onTimelineMomentumScrollBegin,
   onTimelineMomentumScrollEnd,
   onTimelineTouchActiveChange,
+  onTimelineItemsMutated,
   onTimelineContentSizeChange,
   onTimelineClearanceChange,
   onTurnFocusAnchorAvailable,
@@ -279,6 +283,7 @@ export function InterfaceChatBody({
           error={error}
           commandMenuOpen={composerPresentation.showCommandMenu}
           scrollRef={scrollRef}
+          nativeFollowSuspended={nativeFollowSuspended}
           textSelectable={timelineTextSelectable}
           extraContentPadding={extraContentPadding}
           keyboardLifecycleGate={keyboardLifecycleGate}
@@ -295,6 +300,7 @@ export function InterfaceChatBody({
           onMomentumScrollBegin={onTimelineMomentumScrollBegin}
           onMomentumScrollEnd={onTimelineMomentumScrollEnd}
           onTouchActiveChange={onTimelineTouchActiveChange}
+          onItemsMutated={onTimelineItemsMutated}
           onContentSizeChange={onTimelineContentSizeChange}
           onClearanceChange={onTimelineClearanceChange}
           onTurnFocusAnchorAvailable={onTurnFocusAnchorAvailable}
