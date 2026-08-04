@@ -670,9 +670,9 @@ function activityFromEvent(
       const calendarResult = event.source === "calendar_result";
       const running = isEventRunning(event);
       const title =
-        cleanDisplayText(event.title || "") ||
+        cleanTerminalDisplayText(event.title || "") ||
         statusActivityTitle(event.status);
-      const body = cleanDisplayText(event.body || "");
+      const body = cleanTerminalDisplayText(event.body || "");
       if ((!title && !body) || (isLowSignalStatus(title) && !body)) {
         return null;
       }
@@ -749,7 +749,7 @@ function explorationActivityFromEntries(
     ]);
   const body =
     failedOutputs.length > 0
-      ? cleanDisplayText([...commandLines, ...failedOutputs].join("\n"))
+      ? cleanTerminalDisplayText([...commandLines, ...failedOutputs].join("\n"))
       : "";
   const semantic = collapsedToolLabel({
     kind: "command",
@@ -830,13 +830,13 @@ function extractDisplayMessage(value: string): {
   body: string;
   attachments: DisplayAttachment[];
 } {
-  let body = cleanDisplayText(value);
+  let body = cleanStructuredMessageText(value);
   const attachments: DisplayAttachment[] = [];
 
   const tagMatch = ATTACHMENT_TAG_RE.exec(body);
   if (tagMatch) {
     attachments.push(...attachmentsFromTag(tagMatch[1]));
-    body = cleanDisplayText(body.replace(tagMatch[0], ""));
+    body = cleanStructuredMessageText(body.replace(tagMatch[0], ""));
   }
 
   const legacy = stripLegacyUploadedFiles(body);
@@ -896,13 +896,25 @@ function stripLegacyUploadedFiles(value: string): {
   }
 
   return {
-    body: cleanDisplayText(keep.join("\n")),
+    body: cleanStructuredMessageText(keep.join("\n")),
     attachments,
   };
 }
 
-function cleanDisplayText(value: string) {
-  return stripTerminalControlSequences(value)
+function cleanStructuredMessageText(value: string) {
+  return finishDisplayText(stripTerminalControlSequences(value));
+}
+
+function cleanTerminalDisplayText(value: string) {
+  const withoutSpinnerPrefixes = stripTerminalControlSequences(value)
+    .split("\n")
+    .map(stripProgressSpinnerPrefix)
+    .join("\n");
+  return finishDisplayText(withoutSpinnerPrefixes);
+}
+
+function finishDisplayText(value: string) {
+  return value
     .replace(/\n{3,}/g, "\n\n")
     .trim();
 }
@@ -919,14 +931,14 @@ function stripTerminalControlSequences(value: string) {
     )
     .replace(/\[2K\[1G/g, "\n")
     .replace(/\[(?:\?\d+[hl]|\d+(?:;\d+)*[mKGH])/g, "")
-    .replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/g, "")
-    .split("\n")
-    .map(stripProgressSpinnerPrefix)
-    .join("\n");
+    .replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/g, "");
 }
 
 function stripProgressSpinnerPrefix(line: string) {
-  return line.replace(/^[\s⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏◐◓◑◒|\\]+(?=\S)/, "");
+  return line.replace(
+    /^[ \t]*[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏◐◓◑◒]+[ \t]*(?=\S)/,
+    "",
+  );
 }
 
 function patchSummaryFromEvent(event: CodexConversationEvent): PatchSummary {
@@ -1174,7 +1186,7 @@ function imagePathFromTool(event: CodexConversationEvent) {
 }
 
 function commandPresentation(command: string): CommandPresentation {
-  const normalized = cleanDisplayText(command);
+  const normalized = cleanTerminalDisplayText(command);
   const firstLine =
     normalized
       .split("\n")
@@ -1333,7 +1345,7 @@ function toolOutputBodyKind(
 }
 
 function webSearchEventDetail(event: CodexConversationEvent) {
-  const body = cleanDisplayText(event.body || "");
+  const body = cleanTerminalDisplayText(event.body || "");
   if (body) {
     return body;
   }
@@ -1371,11 +1383,11 @@ function webSearchActivityTitle(
 }
 
 function webSearchActivityBody(event: CodexConversationEvent) {
-  const input = cleanDisplayText(event.input || "");
+  const input = cleanTerminalDisplayText(event.input || "");
   if (input) {
     return input;
   }
-  const body = cleanDisplayText(event.body || "");
+  const body = cleanTerminalDisplayText(event.body || "");
   return body || undefined;
 }
 
@@ -1456,7 +1468,7 @@ function statusActivityIcon(status?: string): TimelineIconName {
 }
 
 function statusActivityDetail(body: string) {
-  const clean = cleanDisplayText(body);
+  const clean = cleanTerminalDisplayText(body);
   if (!clean) {
     return undefined;
   }
@@ -1482,7 +1494,7 @@ function statusActivityBodyKind(
 }
 
 function commandSummary(command: string) {
-  command = cleanDisplayText(command);
+  command = cleanTerminalDisplayText(command);
   if (!command) {
     return undefined;
   }
@@ -1669,14 +1681,14 @@ function isCommandFailed(
 }
 
 function cleanToolOutput(value: string) {
-  value = cleanDisplayText(value);
+  value = cleanTerminalDisplayText(value);
   if (!value) {
     return "";
   }
   const lines = value.split("\n");
   const outputLine = lines.findIndex((line) => line.trim() === "Output:");
   const bodyLines = outputLine >= 0 ? lines.slice(outputLine + 1) : lines;
-  return cleanDisplayText(
+  return cleanTerminalDisplayText(
     bodyLines.filter((line) => !isToolMetadataLine(line)).join("\n"),
   );
 }
@@ -1722,7 +1734,7 @@ function truncateOutputChars(value: string, maxChars: number): OutputPreview {
   const tailCount = Math.max(80, maxChars - headCount - 80);
   const hidden = chars.length - headCount - tailCount;
   return {
-    text: cleanDisplayText(
+    text: cleanTerminalDisplayText(
       [
         chars.slice(0, headCount).join(""),
         `... ${hidden} chars hidden. ${FULL_OUTPUT_HINT}`,
@@ -1742,7 +1754,7 @@ function truncateOutputLines(value: string, maxLines: number): OutputPreview {
   const tailCount = Math.max(1, Math.floor(maxLines / 2));
   const hidden = lines.length - headCount - tailCount;
   return {
-    text: cleanDisplayText(
+    text: cleanTerminalDisplayText(
       [
         ...lines.slice(0, headCount),
         `... +${hidden} lines hidden. ${FULL_OUTPUT_HINT}`,
