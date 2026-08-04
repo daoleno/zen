@@ -1,4 +1,5 @@
 import type {
+  CodexConversation,
   CodexConversationEvent,
   ProviderActivity,
 } from "../../services/codexConversation";
@@ -297,6 +298,29 @@ export function mergeSupplementaryTimelineItems(
     insertTimelineItemByTimestamp(merged, item);
   }
   return merged;
+}
+
+export function supplementaryTimelineItemsForConversation({
+  items,
+  conversationScopeKey,
+  conversation,
+  loading,
+}: {
+  items: ZenTimelineItem[];
+  conversationScopeKey?: string;
+  conversation: CodexConversation | null;
+  loading: boolean;
+}): ZenTimelineItem[] {
+  if (!conversationScopeKey || items.length === 0) {
+    return items;
+  }
+  if (loading && !conversation) {
+    return [];
+  }
+  // A matching retained snapshot remains canonical while its subscription
+  // reconnects, even when the session reports loading again. Conversely, an
+  // accepted empty snapshot is ready because it still carries this identity.
+  return conversation?.session_id === conversationScopeKey ? items : [];
 }
 
 function insertPendingCurrentAtCausalBoundary(

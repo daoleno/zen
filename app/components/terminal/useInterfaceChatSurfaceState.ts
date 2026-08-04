@@ -27,6 +27,9 @@ import type {
 import { wsClient } from "../../services/websocket";
 import type { InterfaceChatBodyProps } from "./InterfaceChatBody";
 import type { ZenTimelineItem } from "./InterfaceTimelineItemView";
+import {
+  supplementaryTimelineItemsForConversation,
+} from "./InterfaceTimelineModel";
 import { useInterfaceChatController } from "./InterfaceChatController";
 import {
   type InterfaceChatAgentInfo,
@@ -194,6 +197,21 @@ export function useInterfaceChatSurfaceState({
     beginPendingUserMessageAttempt,
     rejectPendingUserMessage,
   } = session;
+  const readySupplementaryTimelineItems = useMemo(
+    () =>
+      supplementaryTimelineItemsForConversation({
+        items: supplementaryTimelineItems ?? [],
+        conversationScopeKey,
+        conversation,
+        loading,
+      }),
+    [
+      conversation,
+      conversationScopeKey,
+      loading,
+      supplementaryTimelineItems,
+    ],
+  );
   const setObservedDraft = useCallback(
     (value: string) => {
       setDraft(value);
@@ -385,9 +403,9 @@ export function useInterfaceChatSurfaceState({
       latestChatTimelineTimestamp(
         conversation,
         pendingUserMessages,
-        supplementaryTimelineItems,
+        readySupplementaryTimelineItems,
       ),
-    [conversation, pendingUserMessages, supplementaryTimelineItems],
+    [conversation, pendingUserMessages, readySupplementaryTimelineItems],
   );
   const jumpLabel = useRelativeTimeLabel(latestTimelineTimestamp);
   const runningActivity = useMemo(
@@ -398,7 +416,7 @@ export function useInterfaceChatSurfaceState({
     events.length +
       pendingUserMessages.length +
       (runningActivity ? 1 : 0) +
-      (supplementaryTimelineItems?.length ?? 0),
+      readySupplementaryTimelineItems.length,
     conversationCacheKey,
     topChromeInset,
   );
@@ -598,7 +616,7 @@ export function useInterfaceChatSurfaceState({
     pendingUserMessages,
     turnFocusAnchorAliases,
     runningActivity,
-    supplementaryTimelineItems,
+    supplementaryTimelineItems: readySupplementaryTimelineItems,
     loading,
     error,
     draft,
