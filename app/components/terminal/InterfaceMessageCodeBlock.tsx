@@ -1,16 +1,20 @@
-import React, { useMemo } from "react";
+import { Ionicons } from "@expo/vector-icons";
+import * as Clipboard from "expo-clipboard";
+import React, { useCallback, useEffect, useMemo, useState } from "react";
 import { ScrollView, StyleSheet, Text, View } from "react-native";
 import { Typography } from "../../constants/tokens";
 import type {
   TerminalThemeChrome,
   TerminalThemePalette,
 } from "../../constants/terminalThemes";
+import { AnimatedPressable } from "../ui/AnimatedPressable";
 import { withAlpha } from "./colorWithAlpha";
 import {
   highlightCodeLineForLanguage,
   type HighlightTokenKind,
 } from "./gitDiffSyntaxHighlight";
 import { shouldRenderPlainMonospaceCodeBlock } from "./codeBlockPresentation";
+import { createCodeBlockCopyFeedback } from "./InterfaceMessageCodeBlockCopy";
 import { PreformattedCodeWebView } from "./PreformattedCodeWebView";
 import { useTimelineSelectableTextProps } from "./TimelineTextSelectableContext";
 
@@ -31,7 +35,18 @@ export function InterfaceMessageCodeBlock({
   compact,
   isLast,
 }: InterfaceMessageCodeBlockProps) {
+  const [copied, setCopied] = useState(false);
   const selectableTextProps = useTimelineSelectableTextProps();
+  const copyFeedback = useMemo(
+    () =>
+      createCodeBlockCopyFeedback({
+        copyText: Clipboard.setStringAsync,
+        onCopiedChange: setCopied,
+        scheduleReset: setTimeout,
+        cancelReset: clearTimeout,
+      }),
+    [],
+  );
   const prepared = useMemo(
     () => prepareCodeBlockText(text, language),
     [language, text],
@@ -46,6 +61,13 @@ export function InterfaceMessageCodeBlock({
     compact ? styles.codeLineCompact : null,
     { color: baseColor, fontFamily: Typography.chatMonoFont },
   ];
+  const handleCopy = useCallback(() => {
+    void copyFeedback.copy(text);
+  }, [copyFeedback, text]);
+
+  useEffect(() => {
+    return () => copyFeedback.dispose();
+  }, [copyFeedback]);
 
   return (
     <View
@@ -62,24 +84,48 @@ export function InterfaceMessageCodeBlock({
         isLast ? styles.blockLast : null,
       ]}
     >
-      {label ? (
-        <View
-          style={[
-            styles.header,
-            {
-              borderBottomColor: chrome.border,
-              backgroundColor: withAlpha(
-                theme.foreground,
-                compact ? 0.035 : 0.045,
-              ),
-            },
-          ]}
+      <View
+        style={[
+          styles.header,
+          {
+            borderBottomColor: chrome.border,
+            backgroundColor: withAlpha(
+              theme.foreground,
+              compact ? 0.035 : 0.045,
+            ),
+          },
+        ]}
+      >
+        <Text
+          numberOfLines={1}
+          style={[styles.language, { color: chrome.textMuted }]}
         >
-          <Text style={[styles.language, { color: chrome.textMuted }]}>
-            {label}
-          </Text>
-        </View>
-      ) : null}
+          {label}
+        </Text>
+        <AnimatedPressable
+          accessibilityRole="button"
+          accessibilityLabel={copied ? "Code copied" : "Copy code"}
+          accessibilityHint="Copies this code block to the clipboard"
+          accessibilityState={{ selected: copied }}
+          onPress={handleCopy}
+          style={styles.copyButton}
+          scale={0.9}
+        >
+          <Ionicons
+            name={copied ? "checkmark" : "copy-outline"}
+            size={16}
+            color={copied ? chrome.accent : chrome.textMuted}
+          />
+          {copied ? (
+            <Text
+              accessibilityLiveRegion="polite"
+              style={[styles.copiedText, { color: chrome.accent }]}
+            >
+              Copied
+            </Text>
+          ) : null}
+        </AnimatedPressable>
+      </View>
       {prepared.usePlainMonospace ? (
         <PreformattedCodeWebView
           text={prepared.text}
@@ -347,11 +393,29 @@ const styles = StyleSheet.create({
   },
   header: {
     borderBottomWidth: StyleSheet.hairlineWidth,
-    paddingHorizontal: 11,
-    paddingTop: 7,
-    paddingBottom: 6,
+    minHeight: 44,
+    paddingLeft: 11,
+    paddingRight: 2,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
   },
   language: {
+    flex: 1,
+    fontSize: 11,
+    lineHeight: 15,
+    fontFamily: Typography.chatMonoFontBold,
+  },
+  copyButton: {
+    minWidth: 44,
+    height: 44,
+    paddingHorizontal: 10,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 5,
+  },
+  copiedText: {
     fontSize: 11,
     lineHeight: 15,
     fontFamily: Typography.chatMonoFontBold,
