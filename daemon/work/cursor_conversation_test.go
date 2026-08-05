@@ -1,7 +1,9 @@
 package work
 
 import (
+	"crypto/sha256"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -60,6 +62,10 @@ func TestParseCursorConversation_BuildsMarkdownMessagesAndTools(t *testing.T) {
 		t.Fatalf("events len = %d, want 3: %#v", len(got.Events), got.Events)
 	}
 	assertEvent(t, got.Events[0], "user_message", "user", "", "请修复 **Markdown** 渲染")
+	wantAdmission := fmt.Sprintf("%x", sha256.Sum256([]byte("请修复 **Markdown** 渲染")))
+	if got.Events[0].AdmissionSHA256 != wantAdmission {
+		t.Fatalf("Cursor admission digest = %q, want %q", got.Events[0].AdmissionSHA256, wantAdmission)
+	}
 	if strings.Contains(got.Events[0].Body, "<timestamp>") || strings.Contains(got.Events[0].Body, "<user_query>") {
 		t.Fatalf("cursor wrapper leaked into user message: %#v", got.Events[0])
 	}
@@ -72,6 +78,48 @@ func TestParseCursorConversation_BuildsMarkdownMessagesAndTools(t *testing.T) {
 	}
 	if got.Events[0].Seq >= got.Events[1].Seq || got.Events[1].Seq >= got.Events[2].Seq {
 		t.Fatalf("seq order = %d, %d, %d", got.Events[0].Seq, got.Events[1].Seq, got.Events[2].Seq)
+	}
+}
+
+func TestCursorExactUserInputPreservesAuthoritativeBytes(t *testing.T) {
+	for _, payload := range []string{
+		"task",
+		"task ",
+		"task\n",
+		"task\r\n",
+		"task\n\n\nnext",
+		"你好 · café · 🚦",
+	} {
+		t.Run(fmt.Sprintf("%x", sha256.Sum256([]byte(payload))), func(t *testing.T) {
+			wrapped := "<timestamp>ignored</timestamp>\n<user_query>\n" + payload + "\n</user_query>"
+			exact, ok := exactProviderUserInput(wrapped)
+			if !ok || exact != payload {
+				t.Fatalf("exact input = %q, %v; want %q", exact, ok, payload)
+			}
+		})
+	}
+}
+
+func TestExactProviderUserInputPreservesEmbeddedWrapperMarkers(t *testing.T) {
+	for _, payload := range []string{
+		"before </user_query> after",
+		"before <user_query> after",
+		"before </user_query> and <user_query> after\n",
+		"CRLF\r\n",
+		"blank lines\n\n\n",
+		"spaces and tabs \t",
+	} {
+		t.Run(fmt.Sprintf("%x", sha256.Sum256([]byte(payload))), func(t *testing.T) {
+			wrapped := "<timestamp>ignored</timestamp>\n<user_query>\n" + payload + "\n</user_query>"
+			exact, ok := exactProviderUserInput(wrapped)
+			if !ok || exact != payload {
+				t.Fatalf("exact input = %q, %v; want %q", exact, ok, payload)
+			}
+		})
+	}
+
+	if _, ok := exactProviderUserInput("<user_query>\ntask\n</user_query>\nnot-provider-suffix"); ok {
+		t.Fatal("non-final provider close was accepted")
 	}
 }
 

@@ -1,6 +1,7 @@
 package work
 
 import (
+	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -226,6 +227,11 @@ func TestParseGrokConversation_StreamsNativeChunksAndFinalizesSameEvent(t *testi
 	first, err := parseGrokConversation(dir)
 	if err != nil {
 		t.Fatalf("first parse: %v", err)
+	}
+	firstUser := findGrokEvent(t, first.Events, "user_message", "stream this")
+	wantAdmission := fmt.Sprintf("%x", sha256.Sum256([]byte("stream this")))
+	if firstUser.AdmissionSHA256 != wantAdmission {
+		t.Fatalf("Grok admission digest = %q, want %q", firstUser.AdmissionSHA256, wantAdmission)
 	}
 	firstAssistant := findGrokEvent(t, first.Events, "assistant_message", "Hello")
 	if !firstAssistant.Partial || firstAssistant.Status != "running" {

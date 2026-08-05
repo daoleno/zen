@@ -3,6 +3,7 @@ package work
 import (
 	"bufio"
 	"bytes"
+	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -195,6 +196,9 @@ type CodexConversationEvent struct {
 	Explanation string                        `json:"explanation,omitempty"`
 	Plan        []CodexPlanStep               `json:"plan,omitempty"`
 	Source      string                        `json:"source,omitempty"`
+	// AdmissionSHA256 is the exact provider-native user input digest when the
+	// source preserves those bytes separately from its display projection.
+	AdmissionSHA256 string `json:"-"`
 }
 
 // CodexConversationFileChange is the provider-neutral, display-only summary
@@ -575,6 +579,7 @@ func (b *codexConversationBuilder) consumeEvent(lineNumber int, timestamp string
 		b.startActivity("", timestamp, lineNumber)
 		b.slashCommandActivity = isCodexSlashCommandInvocation(payload.Message)
 		b.addMessage(lineNumber, timestamp, "user", payload.Message)
+		b.markAdmissionDigest(lineNumber, payload.Message)
 		if len(b.events) > 0 && b.events[len(b.events)-1].ID == b.eventID(lineNumber) && !b.nextAdmissionPaired {
 			b.unpairedAdmissions++
 		}
@@ -734,6 +739,17 @@ func shouldFinishPendingReasoningForEvent(eventType string) bool {
 
 func (b *codexConversationBuilder) addMessage(lineNumber int, timestamp, role, text string) {
 	b.addMessageWithTitle(lineNumber, timestamp, role, text, "")
+}
+
+func (b *codexConversationBuilder) markAdmissionDigest(lineNumber int, exact string) {
+	id := b.eventID(lineNumber)
+	for index := len(b.events) - 1; index >= 0; index-- {
+		if b.events[index].ID != id || b.events[index].Kind != "user_message" {
+			continue
+		}
+		b.events[index].AdmissionSHA256 = fmt.Sprintf("%x", sha256.Sum256([]byte(exact)))
+		return
+	}
 }
 
 func (b *codexConversationBuilder) addHistoryEntry(lineNumber int, timestamp, text string) {

@@ -17,8 +17,10 @@ import (
 )
 
 // InputOutcome describes what Zen knows at the provider-mutation boundary.
-// Ambiguous means the target-bound tmux queue started and may have submitted;
-// callers must retain ownership and must not automatically replay it.
+// Accepted means a delegated provider turn was observed (or, for direct
+// receipt input, that the existing provider transaction completed). Ambiguous
+// means the target-bound tmux queue started and may have submitted; callers
+// must retain ownership and must not automatically replay it.
 type InputOutcome string
 
 const (
@@ -32,6 +34,28 @@ type InputResult struct {
 	Receipt   string
 	TurnID    string
 	Duplicate bool
+}
+
+type delegatedAdmissionEvidence struct {
+	Stream      string
+	ID          string
+	Cursor      uint64
+	StartedAt   time.Time
+	InputSHA256 string
+}
+
+type delegatedInputConfirmation struct {
+	Outcome          InputOutcome
+	ProviderActivity string
+}
+
+type delegatedInputConfirmer struct {
+	baseline func() (delegatedAdmissionEvidence, error)
+	confirm  func(
+		baseline delegatedAdmissionEvidence,
+		mutationBoundary time.Time,
+		payloadSHA256 string,
+	) (delegatedInputConfirmation, error)
 }
 
 // InputSubmissionError preserves whether provider mutation was impossible or
@@ -73,12 +97,14 @@ func InputOutcomeFromError(err error) InputOutcome {
 
 type sessionInputProvider struct {
 	submitKey string
+	prepare   time.Duration
 	settle    time.Duration
 }
 
 func sessionInputProviderForCommand(command string) sessionInputProvider {
 	return sessionInputProvider{
 		submitKey: "Enter",
+		prepare:   tmuxPrepareDelay(command),
 		settle:    tmuxSubmitDelay(command),
 	}
 }
@@ -298,7 +324,16 @@ func (owner *sessionInputOwner) submit(
 	payload string,
 	receipt string,
 ) (InputResult, error) {
-	return owner.submitWithTurn(sessionID, expected, resolver, command, payload, receipt, nil)
+	return owner.submitWithTurn(
+		sessionID,
+		expected,
+		resolver,
+		command,
+		payload,
+		receipt,
+		nil,
+		delegatedInputConfirmer{},
+	)
 }
 
 func (owner *sessionInputOwner) receiptOutcome(
@@ -350,8 +385,9 @@ func (owner *sessionInputOwner) submitDelegated(
 	command string,
 	payload string,
 	turn delegatedTurnRecord,
+	confirm delegatedInputConfirmer,
 ) (InputResult, error) {
-	return owner.submitWithTurn(sessionID, expected, resolver, command, payload, turn.ID, &turn)
+	return owner.submitWithTurn(sessionID, expected, resolver, command, payload, turn.ID, &turn, confirm)
 }
 
 func (owner *sessionInputOwner) submitWithTurn(
@@ -362,8 +398,10 @@ func (owner *sessionInputOwner) submitWithTurn(
 	payload string,
 	receipt string,
 	turn *delegatedTurnRecord,
+	confirm delegatedInputConfirmer,
 ) (InputResult, error) {
 	result := InputResult{Outcome: InputNotSubmitted, Receipt: strings.TrimSpace(receipt)}
+	requiresConfirmation := turn != nil
 	err := owner.serialized(sessionID, func() error {
 		if !utf8.ValidString(payload) {
 			return definitelyNotSubmitted(result.Receipt, fmt.Errorf("input must be valid UTF-8"))
@@ -412,6 +450,18 @@ func (owner *sessionInputOwner) submitWithTurn(
 						)
 					}
 					return nil
+				}
+				if turn != nil {
+					currentTurn, exists, turnErr := owner.io.delegatedTurn(baseline.paneID)
+					if turnErr != nil {
+						return ambiguousSubmission(
+							result.Receipt,
+							fmt.Errorf("input was already ambiguous and its delegated turn could not be read: %w", turnErr),
+						)
+					}
+					if exists && !delegatedTurnTerminal(currentTurn.Status) {
+						result.TurnID = currentTurn.ID
+					}
 				}
 				return ambiguousSubmission(result.Receipt, fmt.Errorf("the prior attempt may already have submitted"))
 			}
@@ -511,6 +561,64 @@ func (owner *sessionInputOwner) submitWithTurn(
 		}
 
 		adapter := sessionInputProviderForCommand(command)
+		var admissionBaseline delegatedAdmissionEvidence
+		if requiresConfirmation {
+			if confirm.baseline == nil || confirm.confirm == nil {
+				if turn != nil {
+					if rollbackErr := owner.restoreDelegatedTurn(
+						current.paneID,
+						previousTurn,
+						previousTurnExists,
+					); rollbackErr != nil {
+						return definitelyNotSubmitted(
+							result.Receipt,
+							fmt.Errorf("delegated provider admission observer is unavailable; restore delegated turn: %w", rollbackErr),
+						)
+					}
+				}
+				if result.Receipt != "" {
+					return owner.rollbackReceiptMarker(
+						current.paneID,
+						originalLedger,
+						result.Receipt,
+						fmt.Errorf("delegated provider admission observer is unavailable"),
+					)
+				}
+				return definitelyNotSubmitted(
+					result.Receipt,
+					fmt.Errorf("delegated provider admission observer is unavailable"),
+				)
+			}
+			var baselineErr error
+			admissionBaseline, baselineErr = confirm.baseline()
+			if baselineErr != nil {
+				if turn != nil {
+					if rollbackErr := owner.restoreDelegatedTurn(
+						current.paneID,
+						previousTurn,
+						previousTurnExists,
+					); rollbackErr != nil {
+						return definitelyNotSubmitted(
+							result.Receipt,
+							fmt.Errorf("capture provider admission baseline: %v; restore delegated turn: %w", baselineErr, rollbackErr),
+						)
+					}
+				}
+				if result.Receipt != "" {
+					return owner.rollbackReceiptMarker(
+						current.paneID,
+						originalLedger,
+						result.Receipt,
+						fmt.Errorf("capture provider admission baseline: %w", baselineErr),
+					)
+				}
+				return definitelyNotSubmitted(
+					result.Receipt,
+					fmt.Errorf("capture provider admission baseline: %w", baselineErr),
+				)
+			}
+		}
+		mutationBoundary := time.Now().UTC()
 		started, queueErr := owner.io.runQueue(sessionInputSubmitQueue(
 			current.paneID,
 			buffer,
@@ -542,6 +650,28 @@ func (owner *sessionInputOwner) submitWithTurn(
 				)
 			}
 			return definitelyNotSubmitted(result.Receipt, fmt.Errorf("start target-bound tmux command queue: %w", queueErr))
+		}
+		if requiresConfirmation {
+			confirmation, confirmErr := confirm.confirm(
+				admissionBaseline,
+				mutationBoundary,
+				payloadDigest,
+			)
+			if confirmErr != nil {
+				result.Outcome = InputAmbiguous
+				return ambiguousSubmission(result.Receipt, confirmErr)
+			}
+			if confirmation.Outcome != InputAccepted {
+				result.Outcome = InputAmbiguous
+				return ambiguousSubmission(
+					result.Receipt,
+					fmt.Errorf("provider turn start was not authoritatively observed"),
+				)
+			}
+			if turn != nil {
+				turn.Status = delegatedTurnRunning
+				turn.ProviderActivity = strings.TrimSpace(confirmation.ProviderActivity)
+			}
 		}
 		if result.Receipt != "" {
 			acceptedLedger, acceptErr := markedLedger.withOutcome(
@@ -576,7 +706,6 @@ func (owner *sessionInputOwner) submitWithTurn(
 					fmt.Errorf("submit succeeded but post-dispatch pane baseline was not observed: %w", paneErr),
 				)
 			}
-			turn.Status = delegatedTurnDispatched
 			turn.PaneBaseline = delegatedTurnPaneIdentity(paneContent)
 			if err := owner.io.writeDelegatedTurn(current.paneID, *turn); err != nil {
 				result.Outcome = InputAmbiguous
@@ -826,8 +955,17 @@ func sessionInputSubmitQueue(
 	args := []string{
 		// Chat is authoritative over an unsent Terminal draft.
 		"send-keys", "-t", paneID, "C-u",
-		";", "paste-buffer", "-p", "-b", buffer, "-t", paneID,
 	}
+	if adapter.prepare > 0 {
+		args = append(args,
+			";", "run-shell", "sleep "+strconv.FormatFloat(adapter.prepare.Seconds(), 'f', 3, 64),
+		)
+	}
+	args = append(args,
+		// -r is part of the payload contract: without it tmux rewrites every
+		// LF byte as CR, which terminal composers interpret as submit keys.
+		";", "paste-buffer", "-r", "-p", "-b", buffer, "-t", paneID,
+	)
 	if adapter.settle > 0 {
 		args = append(args,
 			";", "run-shell", "sleep "+strconv.FormatFloat(adapter.settle.Seconds(), 'f', 3, 64),

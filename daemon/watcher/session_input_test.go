@@ -9,6 +9,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/daoleno/zen/daemon/classifier"
 )
 
 type fakeSessionInputIO struct {
@@ -34,6 +36,53 @@ type fakeSessionInputIO struct {
 	maxQueues        int
 	paneContentValue string
 }
+
+type transportAdmissionProbe struct {
+	mu        sync.Mutex
+	io        *fakeSessionInputIO
+	inputs    map[int]string
+	missing   map[int]bool
+	staleAt   map[int]time.Time
+	fixedStep *int
+	steps     []int
+}
+
+func (p *transportAdmissionProbe) ObserveProviderActivity(
+	classifier.Agent,
+	time.Time,
+) ProviderActivityObservation {
+	step := 0
+	if p.fixedStep != nil {
+		step = *p.fixedStep
+	} else if p.io != nil {
+		p.io.mu.Lock()
+		step = p.io.startedQueues
+		p.io.mu.Unlock()
+	}
+	p.mu.Lock()
+	p.steps = append(p.steps, step)
+	p.mu.Unlock()
+	input := p.inputs[step]
+	digest := ""
+	if !p.missing[step] {
+		digest = fmt.Sprintf("%x", sha256.Sum256([]byte(input)))
+	}
+	at := time.Now().UTC().Add(time.Minute)
+	if stale := p.staleAt[step]; !stale.IsZero() {
+		at = stale
+	}
+	return ProviderActivityObservation{
+		ID:              fmt.Sprintf("activity-%d", step),
+		AdmissionStream: "cursor-session",
+		AdmissionID:     fmt.Sprintf("cursor-user-%d", step),
+		AdmissionCursor: uint64(step + 1),
+		AdmissionAt:     at,
+		InputSHA256:     digest,
+		Structured:      true,
+	}
+}
+
+func (*transportAdmissionProbe) ForgetProviderActivity(string) {}
 
 func newFakeSessionInputIO() *fakeSessionInputIO {
 	return &fakeSessionInputIO{
@@ -83,7 +132,13 @@ func (io *fakeSessionInputIO) runQueue(args []string) (bool, error) {
 	io.queues = append(io.queues, copied)
 	io.operations = append(io.operations, "provider_queue")
 	buffer := queueArgumentAfter(args, "-b")
-	io.submissions = append(io.submissions, io.buffers[buffer])
+	submission := io.buffers[buffer]
+	if indexOf(args, "-r") < 0 {
+		// tmux paste-buffer replaces LF with CR unless -r is present. In an
+		// interactive composer those bytes are submit keys, not payload bytes.
+		submission = strings.ReplaceAll(submission, "\n", "\r")
+	}
+	io.submissions = append(io.submissions, submission)
 	started, err := io.runStarted, io.runErr
 	if err == nil || started {
 		io.startedQueues++
@@ -187,6 +242,55 @@ func fixedSessionInputResolver(identity targetProcessIdentity) func(string) (tar
 	return func(string) (targetProcessIdentity, bool) { return identity, true }
 }
 
+func scriptedCorrelatedAdmission(payload string) delegatedInputConfirmer {
+	digest := fmt.Sprintf("%x", sha256.Sum256([]byte(payload)))
+	return delegatedInputConfirmer{
+		baseline: func() (delegatedAdmissionEvidence, error) {
+			return delegatedAdmissionEvidence{Stream: "test", ID: "before", Cursor: 1}, nil
+		},
+		confirm: func(
+			_ delegatedAdmissionEvidence,
+			mutationBoundary time.Time,
+			payloadSHA256 string,
+		) (delegatedInputConfirmation, error) {
+			if mutationBoundary.IsZero() || payloadSHA256 != digest {
+				return delegatedInputConfirmation{Outcome: InputAmbiguous},
+					errors.New("test admission was not correlated")
+			}
+			return delegatedInputConfirmation{Outcome: InputAccepted}, nil
+		},
+	}
+}
+
+func scriptedAmbiguousAdmission() delegatedInputConfirmer {
+	return delegatedInputConfirmer{
+		baseline: func() (delegatedAdmissionEvidence, error) {
+			return delegatedAdmissionEvidence{Stream: "test", ID: "before", Cursor: 1}, nil
+		},
+		confirm: func(
+			delegatedAdmissionEvidence,
+			time.Time,
+			string,
+		) (delegatedInputConfirmation, error) {
+			return delegatedInputConfirmation{Outcome: InputAmbiguous},
+				errors.New("provider admission not observed")
+		},
+	}
+}
+
+func watcherWithAdmissionProbe(probe ProviderActivityProbe) *Watcher {
+	w := New(time.Second)
+	w.agents["agent:@1"] = &classifier.Agent{
+		ID:        "agent:@1",
+		Command:   "cursor-agent --force",
+		Cwd:       "/repo/zen",
+		PaneAlive: true,
+	}
+	w.providerActivityProbe = probe
+	w.admissionTimeout = func(string) time.Duration { return 0 }
+	return w
+}
+
 func TestSessionInputProviderQueueUsesCanonicalSubmitDelay(t *testing.T) {
 	tests := []struct {
 		command string
@@ -194,7 +298,7 @@ func TestSessionInputProviderQueueUsesCanonicalSubmitDelay(t *testing.T) {
 	}{
 		{command: "codex --no-alt-screen", settle: "sleep 0.120"},
 		{command: "claude --permission-mode bypassPermissions", settle: "sleep 0.250"},
-		{command: "cursor-agent --force", settle: "sleep 0.400"},
+		{command: "cursor-agent --force", settle: "sleep 2.000"},
 		{command: "grok --no-alt-screen", settle: "sleep 0.300"},
 	}
 	for _, test := range tests {
@@ -218,6 +322,14 @@ func TestSessionInputProviderQueueUsesCanonicalSubmitDelay(t *testing.T) {
 			assertSingleSubmitQueue(t, io.queues[0], "Enter")
 			if indexOf(io.queues[0], test.settle) < 0 {
 				t.Fatalf("queue %q does not contain provider settle %q", io.queues[0], test.settle)
+			}
+			if strings.HasPrefix(test.command, "cursor-agent") {
+				clearIndex := indexOf(io.queues[0], "C-u")
+				prepareIndex := indexOf(io.queues[0], "sleep 0.400")
+				pasteIndex := indexOf(io.queues[0], "paste-buffer")
+				if clearIndex < 0 || prepareIndex <= clearIndex || pasteIndex <= prepareIndex {
+					t.Fatalf("Cursor clear/prepare/paste order = %q", io.queues[0])
+				}
 			}
 		})
 	}
@@ -402,11 +514,12 @@ func TestSessionInputDelegatedTurnAcceptanceAndFollowUpShareDurableBoundary(t *t
 	}
 	result, err := owner.submitDelegated(
 		"agent:@1", identity, resolver, identity.Command, "initial", first,
+		scriptedCorrelatedAdmission("initial"),
 	)
 	if err != nil || result.Outcome != InputAccepted || result.Receipt != first.ID {
 		t.Fatalf("initial delegated submit = (%+v, %v)", result, err)
 	}
-	if !io.hasTurn || io.turn.ID != first.ID || io.turn.Status != delegatedTurnDispatched ||
+	if !io.hasTurn || io.turn.ID != first.ID || io.turn.Status != delegatedTurnRunning ||
 		len(io.submissions) != 1 {
 		t.Fatalf("initial durable turn=%+v submissions=%#v", io.turn, io.submissions)
 	}
@@ -424,13 +537,460 @@ func TestSessionInputDelegatedTurnAcceptanceAndFollowUpShareDurableBoundary(t *t
 	restartedOwner := newSessionInputOwner(io)
 	result, err = restartedOwner.submitDelegated(
 		"agent:@1", identity, resolver, identity.Command, "follow-up", second,
+		scriptedCorrelatedAdmission("follow-up"),
 	)
 	if err != nil || result.Outcome != InputAccepted || result.Receipt != second.ID {
 		t.Fatalf("follow-up delegated submit = (%+v, %v)", result, err)
 	}
-	if io.turn.ID != second.ID || io.turn.Status != delegatedTurnDispatched ||
+	if io.turn.ID != second.ID || io.turn.Status != delegatedTurnRunning ||
 		len(io.submissions) != 2 {
 		t.Fatalf("follow-up durable turn=%+v submissions=%#v", io.turn, io.submissions)
+	}
+}
+
+func TestSessionInputCursorInitialPreservesExactUTF8AndAcceptsAfterProviderStart(t *testing.T) {
+	io := newFakeSessionInputIO()
+	identity := testSessionInputIdentity("cursor-agent --force")
+	payload := "Concrete task prefix 你好\n\nZen lifecycle protocol:\n- preserve the task\n"
+	turn := delegatedTurnRecord{
+		SchemaVersion:   delegatedTurnSchema,
+		ID:              "cursor-initial",
+		Status:          delegatedTurnDispatched,
+		AcceptedAt:      time.Date(2026, 8, 5, 1, 1, 0, 0, time.UTC),
+		ProcessIdentity: delegatedTurnIdentity(identity),
+	}
+
+	result, err := newSessionInputOwner(io).submitDelegated(
+		"agent:@1",
+		identity,
+		fixedSessionInputResolver(identity),
+		identity.Command,
+		payload,
+		turn,
+		scriptedCorrelatedAdmission(payload),
+	)
+	if err != nil || result.Outcome != InputAccepted {
+		t.Fatalf("Cursor initial submit = (%+v, %v)", result, err)
+	}
+	if !reflect.DeepEqual(io.submissions, []string{payload}) {
+		t.Fatalf("Cursor initial payload = %q, want exact %q", io.submissions, payload)
+	}
+	if !io.hasTurn || io.turn.Status != delegatedTurnRunning {
+		t.Fatalf("Cursor initial accepted before provider start: %+v", io.turn)
+	}
+}
+
+func TestWatcherDelegatedAdmissionConfirmsCursorInitialAndActiveSteering(t *testing.T) {
+	io := newFakeSessionInputIO()
+	initialPayload := "initial 你好\n\nexact"
+	followPayload := "active follow-up"
+	probe := &transportAdmissionProbe{
+		io: io,
+		inputs: map[int]string{
+			0: "older input",
+			1: initialPayload,
+			2: followPayload,
+		},
+		missing: map[int]bool{},
+		staleAt: map[int]time.Time{},
+	}
+	w := watcherWithAdmissionProbe(probe)
+	owner := newSessionInputOwner(io)
+	identity := testSessionInputIdentity("cursor-agent --force")
+	initial := delegatedTurnRecord{
+		SchemaVersion:   delegatedTurnSchema,
+		ID:              "initial-turn",
+		Status:          delegatedTurnDispatched,
+		AcceptedAt:      time.Now().UTC(),
+		ProcessIdentity: delegatedTurnIdentity(identity),
+	}
+
+	result, err := owner.submitDelegated(
+		"agent:@1", identity, fixedSessionInputResolver(identity),
+		identity.Command, initialPayload, initial,
+		w.delegatedInputConfirmer("agent:@1", identity.Command),
+	)
+	if err != nil || result.Outcome != InputAccepted ||
+		result.TurnID != initial.ID || io.turn.Status != delegatedTurnRunning {
+		t.Fatalf("production initial admission = (%+v, %v), turn=%+v", result, err, io.turn)
+	}
+
+	steering := delegatedTurnRecord{
+		SchemaVersion:   delegatedTurnSchema,
+		ID:              "steering-receipt",
+		Status:          delegatedTurnDispatched,
+		AcceptedAt:      time.Now().UTC(),
+		ProcessIdentity: delegatedTurnIdentity(identity),
+	}
+	beforeTurn := io.turn
+	result, err = owner.submitDelegated(
+		"agent:@1", identity, fixedSessionInputResolver(identity),
+		identity.Command, followPayload, steering,
+		w.delegatedInputConfirmer("agent:@1", identity.Command),
+	)
+	if err != nil || result.Outcome != InputAccepted ||
+		result.TurnID != initial.ID {
+		t.Fatalf("production steering admission = (%+v, %v)", result, err)
+	}
+	if io.turn != beforeTurn {
+		t.Fatalf("accepted steering created or reset lifecycle turn: before=%+v after=%+v", beforeTurn, io.turn)
+	}
+	if entry, found := io.ledger.entry(steering.ID); !found || entry.Outcome != InputAccepted {
+		t.Fatalf("steering receipt was not accepted independently: entry=%+v found=%v", entry, found)
+	}
+	if !reflect.DeepEqual(probe.steps, []int{0, 1, 1, 2}) {
+		t.Fatalf("admission baselines were not captured inside serialized transactions: %v", probe.steps)
+	}
+}
+
+func TestWatcherDelegatedAdmissionRejectsUncorrelatedCursorEvidence(t *testing.T) {
+	payload := "exact payload\n\nwith blanks "
+	wrongPayloads := []string{
+		"old nonce",
+		"exact payload\n\nwith blanks",
+		"exact payload\nwith blanks ",
+		"exact payload\r\n\r\nwith blanks ",
+	}
+	for _, test := range []struct {
+		name      string
+		after     string
+		missing   bool
+		staleTime bool
+	}{
+		{name: "wrong nonce", after: wrongPayloads[0]},
+		{name: "trailing whitespace differs", after: wrongPayloads[1]},
+		{name: "repeated blank lines differ", after: wrongPayloads[2]},
+		{name: "CRLF differs", after: wrongPayloads[3]},
+		{name: "new activity without user input", after: payload, missing: true},
+		{name: "StartedAt before mutation", after: payload, staleTime: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			io := newFakeSessionInputIO()
+			staleAt := map[int]time.Time{}
+			if test.staleTime {
+				staleAt[1] = time.Unix(1, 0).UTC()
+			}
+			probe := &transportAdmissionProbe{
+				io:      io,
+				inputs:  map[int]string{0: "older", 1: test.after},
+				missing: map[int]bool{1: test.missing},
+				staleAt: staleAt,
+			}
+			w := watcherWithAdmissionProbe(probe)
+			identity := testSessionInputIdentity("cursor-agent --force")
+			turn := delegatedTurnRecord{
+				SchemaVersion:   delegatedTurnSchema,
+				ID:              "receipt-" + test.name,
+				Status:          delegatedTurnDispatched,
+				AcceptedAt:      time.Now().UTC(),
+				ProcessIdentity: delegatedTurnIdentity(identity),
+			}
+			result, err := newSessionInputOwner(io).submitDelegated(
+				"agent:@1", identity, fixedSessionInputResolver(identity),
+				identity.Command, payload, turn,
+				w.delegatedInputConfirmer("agent:@1", identity.Command),
+			)
+			if InputOutcomeFromError(err) != InputAmbiguous ||
+				result.Outcome != InputAmbiguous {
+				t.Fatalf("uncorrelated admission = (%+v, %v)", result, err)
+			}
+			if len(io.queues) != 1 {
+				t.Fatalf("uncorrelated evidence replayed submission: queues=%d", len(io.queues))
+			}
+		})
+	}
+}
+
+func TestCorrelateDelegatedAdmissionRejectsDifferentOrMissingStream(t *testing.T) {
+	payloadDigest := fmt.Sprintf("%x", sha256.Sum256([]byte("payload")))
+	boundary := time.Date(2026, 8, 5, 2, 0, 0, 0, time.UTC)
+	baseline := delegatedAdmissionEvidence{
+		Stream: "provider\x00session\x00path",
+		ID:     "admission-7",
+		Cursor: 7,
+	}
+	for _, test := range []struct {
+		name    string
+		current delegatedAdmissionEvidence
+		want    delegatedAdmissionCorrelation
+	}{
+		{
+			name: "different stream",
+			current: delegatedAdmissionEvidence{
+				Stream: "provider\x00other-session\x00path",
+				ID:     "admission-8", Cursor: 8, InputSHA256: payloadDigest,
+			},
+			want: delegatedAdmissionMissing,
+		},
+		{
+			name: "missing current stream",
+			current: delegatedAdmissionEvidence{
+				ID: "admission-8", Cursor: 8, InputSHA256: payloadDigest,
+			},
+			want: delegatedAdmissionMissing,
+		},
+		{
+			name: "equal cursor",
+			current: delegatedAdmissionEvidence{
+				Stream: baseline.Stream,
+				ID:     "admission-8", Cursor: 7, InputSHA256: payloadDigest,
+			},
+			want: delegatedAdmissionMissing,
+		},
+		{
+			name: "lower cursor",
+			current: delegatedAdmissionEvidence{
+				Stream: baseline.Stream,
+				ID:     "admission-6", Cursor: 6, InputSHA256: payloadDigest,
+			},
+			want: delegatedAdmissionMissing,
+		},
+		{
+			name: "higher cursor",
+			current: delegatedAdmissionEvidence{
+				Stream: baseline.Stream,
+				ID:     "admission-8", Cursor: 8, InputSHA256: payloadDigest,
+			},
+			want: delegatedAdmissionAccepted,
+		},
+		{
+			name: "empty baseline complete first admission",
+			current: delegatedAdmissionEvidence{
+				Stream: "provider\x00new-session\x00path",
+				ID:     "admission-1", Cursor: 1, InputSHA256: payloadDigest,
+			},
+			want: delegatedAdmissionAccepted,
+		},
+		{
+			name: "empty baseline incomplete first admission",
+			current: delegatedAdmissionEvidence{
+				Stream: "provider\x00new-session\x00path",
+				ID:     "admission-1", InputSHA256: payloadDigest,
+			},
+			want: delegatedAdmissionMissing,
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			gotBaseline := baseline
+			if strings.HasPrefix(test.name, "empty baseline") {
+				gotBaseline = delegatedAdmissionEvidence{}
+			}
+			if got := correlateDelegatedAdmission(
+				gotBaseline,
+				test.current,
+				boundary,
+				payloadDigest,
+			); got != test.want {
+				t.Fatalf("correlation = %v, want %v", got, test.want)
+			}
+		})
+	}
+}
+
+func TestDelegatedAdmissionRejectsEmbeddedMarkerPrefixCollision(t *testing.T) {
+	submitted := "before </user_query> after"
+	truncatedPrefix := "before "
+	io := newFakeSessionInputIO()
+	probe := &transportAdmissionProbe{
+		io: io,
+		inputs: map[int]string{
+			0: "older input",
+			1: truncatedPrefix,
+		},
+		missing: map[int]bool{},
+		staleAt: map[int]time.Time{},
+	}
+	w := watcherWithAdmissionProbe(probe)
+	identity := testSessionInputIdentity("cursor-agent --force")
+	turn := delegatedTurnRecord{
+		SchemaVersion:   delegatedTurnSchema,
+		ID:              "embedded-marker-prefix-collision",
+		Status:          delegatedTurnDispatched,
+		AcceptedAt:      time.Now().UTC(),
+		ProcessIdentity: delegatedTurnIdentity(identity),
+	}
+	result, err := newSessionInputOwner(io).submitDelegated(
+		"agent:@1",
+		identity,
+		fixedSessionInputResolver(identity),
+		identity.Command,
+		submitted,
+		turn,
+		w.delegatedInputConfirmer("agent:@1", identity.Command),
+	)
+	if InputOutcomeFromError(err) != InputAmbiguous ||
+		result.Outcome != InputAmbiguous {
+		t.Fatalf("embedded-marker prefix collision = (%+v, %v), want ambiguous", result, err)
+	}
+	if len(io.queues) != 1 {
+		t.Fatalf("embedded-marker prefix collision replayed: queues=%d", len(io.queues))
+	}
+	if entry, found := io.ledger.entry(turn.ID); !found ||
+		entry.Outcome != InputAmbiguous {
+		t.Fatalf("prefix collision receipt = %+v found=%v, want durable ambiguity",
+			entry, found)
+	}
+
+	result, err = newSessionInputOwner(io).submitDelegated(
+		"agent:@1",
+		identity,
+		fixedSessionInputResolver(identity),
+		identity.Command,
+		submitted,
+		turn,
+		scriptedCorrelatedAdmission(submitted),
+	)
+	if InputOutcomeFromError(err) != InputAmbiguous ||
+		result.Outcome != InputAmbiguous || len(io.queues) != 1 {
+		t.Fatalf("prefix collision duplicate replayed = (%+v, %v), queues=%d",
+			result, err, len(io.queues))
+	}
+	if entry, found := io.ledger.entry(turn.ID); !found ||
+		entry.Outcome != InputAmbiguous {
+		t.Fatalf("prefix collision duplicate changed receipt = %+v found=%v",
+			entry, found)
+	}
+}
+
+func TestWatcherDelegatedAdmissionIgnoresStaleActivityAndPaneRunning(t *testing.T) {
+	io := newFakeSessionInputIO()
+	fixed := 0
+	probe := &transportAdmissionProbe{
+		io:        io,
+		inputs:    map[int]string{0: "same old input"},
+		missing:   map[int]bool{},
+		staleAt:   map[int]time.Time{},
+		fixedStep: &fixed,
+	}
+	w := watcherWithAdmissionProbe(probe)
+	w.activityProbe = classifier.NewActivityProbe(classifier.NewCursorActivityAdapter())
+	io.paneContentValue = "Cursor Agent\n→ Add a follow-up\nctrl+c to stop\n"
+	identity := testSessionInputIdentity("cursor-agent --force")
+	turn := delegatedTurnRecord{
+		SchemaVersion:   delegatedTurnSchema,
+		ID:              "ignored-submit",
+		Status:          delegatedTurnDispatched,
+		AcceptedAt:      time.Now().UTC(),
+		ProcessIdentity: delegatedTurnIdentity(identity),
+	}
+	result, err := newSessionInputOwner(io).submitDelegated(
+		"agent:@1", identity, fixedSessionInputResolver(identity),
+		identity.Command, "same old input", turn,
+		w.delegatedInputConfirmer("agent:@1", identity.Command),
+	)
+	if InputOutcomeFromError(err) != InputAmbiguous ||
+		result.Outcome != InputAmbiguous {
+		t.Fatalf("stale activity/pane running was accepted: (%+v, %v)", result, err)
+	}
+}
+
+func TestWatcherDelegatedAdmissionSerializesConcurrentSamePayloadBaselines(t *testing.T) {
+	io := newFakeSessionInputIO()
+	payload := "same payload"
+	probe := &transportAdmissionProbe{
+		io:      io,
+		inputs:  map[int]string{0: "old", 1: payload, 2: payload},
+		missing: map[int]bool{},
+		staleAt: map[int]time.Time{},
+	}
+	w := watcherWithAdmissionProbe(probe)
+	owner := newSessionInputOwner(io)
+	identity := testSessionInputIdentity("cursor-agent --force")
+	results := make(chan InputResult, 2)
+	errs := make(chan error, 2)
+	for _, id := range []string{"concurrent-a", "concurrent-b"} {
+		go func(id string) {
+			result, err := owner.submitDelegated(
+				"agent:@1", identity, fixedSessionInputResolver(identity),
+				identity.Command, payload,
+				delegatedTurnRecord{
+					SchemaVersion:   delegatedTurnSchema,
+					ID:              id,
+					Status:          delegatedTurnDispatched,
+					AcceptedAt:      time.Now().UTC(),
+					ProcessIdentity: delegatedTurnIdentity(identity),
+				},
+				w.delegatedInputConfirmer("agent:@1", identity.Command),
+			)
+			results <- result
+			errs <- err
+		}(id)
+	}
+	for range 2 {
+		if err := <-errs; err != nil {
+			t.Fatal(err)
+		}
+		if result := <-results; result.Outcome != InputAccepted {
+			t.Fatalf("concurrent result = %+v", result)
+		}
+	}
+	if len(io.queues) != 2 {
+		t.Fatalf("concurrent same-payload submissions = %d, want two distinct receipts", len(io.queues))
+	}
+	if !reflect.DeepEqual(probe.steps, []int{0, 1, 1, 2}) {
+		t.Fatalf("concurrent callers shared a pre-lock baseline: %v", probe.steps)
+	}
+}
+
+func TestSessionInputCursorFollowUpIsNotAcceptedWithoutProviderStart(t *testing.T) {
+	io := newFakeSessionInputIO()
+	io.paneContentValue = "Cursor Agent\n→ Add a follow-up\nRun Everything\n"
+	identity := testSessionInputIdentity("cursor-agent --force")
+	turn := delegatedTurnRecord{
+		SchemaVersion:   delegatedTurnSchema,
+		ID:              "cursor-follow-up",
+		Status:          delegatedTurnDispatched,
+		AcceptedAt:      time.Date(2026, 8, 5, 1, 2, 0, 0, time.UTC),
+		ProcessIdentity: delegatedTurnIdentity(identity),
+	}
+
+	result, err := newSessionInputOwner(io).submitDelegated(
+		"agent:@1",
+		identity,
+		fixedSessionInputResolver(identity),
+		identity.Command,
+		"short follow-up",
+		turn,
+		scriptedAmbiguousAdmission(),
+	)
+	if err == nil || result.Outcome == InputAccepted {
+		t.Fatalf("idle composer submit = (%+v, %v), must not be accepted without provider start", result, err)
+	}
+}
+
+func TestSessionInputDefiniteQueueNonStartRollsBackAndIsRetryable(t *testing.T) {
+	io := newFakeSessionInputIO()
+	io.runErr = errors.New("tmux queue did not start")
+	io.runStarted = false
+	identity := testSessionInputIdentity("cursor-agent --force")
+	turn := delegatedTurnRecord{
+		SchemaVersion:   delegatedTurnSchema,
+		ID:              "cursor-retryable",
+		Status:          delegatedTurnDispatched,
+		AcceptedAt:      time.Date(2026, 8, 5, 1, 3, 0, 0, time.UTC),
+		ProcessIdentity: delegatedTurnIdentity(identity),
+	}
+	owner := newSessionInputOwner(io)
+
+	result, err := owner.submitDelegated(
+		"agent:@1", identity, fixedSessionInputResolver(identity),
+		identity.Command, "retry me", turn, scriptedCorrelatedAdmission("retry me"),
+	)
+	if InputOutcomeFromError(err) != InputNotSubmitted ||
+		result.Outcome != InputNotSubmitted {
+		t.Fatalf("definite non-submit = (%+v, %v)", result, err)
+	}
+	if _, found := io.ledger.entry(turn.ID); found || io.hasTurn {
+		t.Fatalf("definite non-submit retained durable ambiguity: ledger=%+v turn=%+v", io.ledger, io.turn)
+	}
+
+	io.runErr = nil
+	result, err = owner.submitDelegated(
+		"agent:@1", identity, fixedSessionInputResolver(identity),
+		identity.Command, "retry me", turn, scriptedCorrelatedAdmission("retry me"),
+	)
+	if err != nil || result.Outcome != InputAccepted || len(io.queues) != 2 {
+		t.Fatalf("retry after definite non-submit = (%+v, %v), queues=%d", result, err, len(io.queues))
 	}
 }
 
@@ -449,12 +1009,14 @@ func TestSessionInputDuplicateNewTurnReceiptReturnsExistingLifecycleIdentity(t *
 	first := newSessionInputOwner(io)
 	if _, err := first.submitDelegated(
 		"agent:@1", identity, resolver, identity.Command, "task", turn,
+		scriptedCorrelatedAdmission("task"),
 	); err != nil {
 		t.Fatal(err)
 	}
 	restarted := newSessionInputOwner(io)
 	result, err := restarted.submitDelegated(
 		"agent:@1", identity, resolver, identity.Command, "task", turn,
+		scriptedCorrelatedAdmission("task"),
 	)
 	if err != nil || result.Outcome != InputAccepted || result.TurnID != turn.ID || !result.Duplicate {
 		t.Fatalf("duplicate new-turn receipt = (%+v, %v)", result, err)
@@ -478,6 +1040,7 @@ func TestSessionInputAcceptedDuplicateWithoutTurnMarkerIsAmbiguousAndNotReplayed
 	first := newSessionInputOwner(io)
 	if _, err := first.submitDelegated(
 		"agent:@1", identity, resolver, identity.Command, "task", turn,
+		scriptedCorrelatedAdmission("task"),
 	); err != nil {
 		t.Fatal(err)
 	}
@@ -487,6 +1050,7 @@ func TestSessionInputAcceptedDuplicateWithoutTurnMarkerIsAmbiguousAndNotReplayed
 	restarted := newSessionInputOwner(io)
 	_, err := restarted.submitDelegated(
 		"agent:@1", identity, resolver, identity.Command, "task", turn,
+		scriptedCorrelatedAdmission("task"),
 	)
 	if InputOutcomeFromError(err) != InputAmbiguous ||
 		!strings.Contains(err.Error(), "turn marker is missing") {
@@ -518,7 +1082,7 @@ func TestSessionInputSteeringWhileRunningRetainsDelegatedTurnIdentity(t *testing
 	}
 	result, err := owner.submitDelegated(
 		"agent:@1", identity, fixedSessionInputResolver(identity),
-		identity.Command, "follow-up", next,
+		identity.Command, "follow-up", next, scriptedCorrelatedAdmission("follow-up"),
 	)
 	if err != nil || result.Outcome != InputAccepted || result.TurnID != "active-turn" {
 		t.Fatalf("running-turn steering = (%+v, %v)", result, err)
@@ -528,6 +1092,57 @@ func TestSessionInputSteeringWhileRunningRetainsDelegatedTurnIdentity(t *testing
 	}
 	if io.turn.ID != "active-turn" || io.turn.Status != delegatedTurnRunning {
 		t.Fatalf("steering replaced lifecycle owner: %+v", io.turn)
+	}
+}
+
+func TestSessionInputActiveSteeringWithoutAdmissionIsAmbiguousAndNeverReplayed(t *testing.T) {
+	io := newFakeSessionInputIO()
+	identity := testSessionInputIdentity("cursor-agent --force")
+	active := delegatedTurnRecord{
+		SchemaVersion:   delegatedTurnSchema,
+		ID:              "active-turn",
+		Status:          delegatedTurnRunning,
+		AcceptedAt:      time.Now().UTC().Add(-time.Minute),
+		ProcessIdentity: delegatedTurnIdentity(identity),
+		PaneBaseline:    delegatedTurnPaneIdentity("active"),
+	}
+	io.hasTurn = true
+	io.turn = active
+	steering := delegatedTurnRecord{
+		SchemaVersion:   delegatedTurnSchema,
+		ID:              "steering-ambiguous",
+		Status:          delegatedTurnDispatched,
+		AcceptedAt:      time.Now().UTC(),
+		ProcessIdentity: delegatedTurnIdentity(identity),
+	}
+
+	first := newSessionInputOwner(io)
+	result, err := first.submitDelegated(
+		"agent:@1", identity, fixedSessionInputResolver(identity),
+		identity.Command, "steer once", steering,
+		scriptedAmbiguousAdmission(),
+	)
+	if InputOutcomeFromError(err) != InputAmbiguous ||
+		result.Outcome != InputAmbiguous || result.TurnID != active.ID {
+		t.Fatalf("ambiguous active steering = (%+v, %v)", result, err)
+	}
+	if io.turn != active || len(io.queues) != 1 {
+		t.Fatalf("ambiguous steering changed lifecycle or queue count: turn=%+v queues=%d", io.turn, len(io.queues))
+	}
+
+	restarted := newSessionInputOwner(io)
+	result, err = restarted.submitDelegated(
+		"agent:@1", identity, fixedSessionInputResolver(identity),
+		identity.Command, "steer once", steering,
+		scriptedCorrelatedAdmission("steer once"),
+	)
+	if InputOutcomeFromError(err) != InputAmbiguous ||
+		result.Outcome != InputAmbiguous || result.TurnID != active.ID ||
+		len(io.queues) != 1 {
+		t.Fatalf("restart replayed ambiguous steering = (%+v, %v), queues=%d", result, err, len(io.queues))
+	}
+	if io.turn != active {
+		t.Fatalf("ambiguous steering duplicate reset lifecycle: %+v", io.turn)
 	}
 }
 
@@ -554,7 +1169,7 @@ func TestSessionInputDuplicateSteeringReceiptRetainsActiveTurn(t *testing.T) {
 	first := newSessionInputOwner(io)
 	result, err := first.submitDelegated(
 		"agent:@1", identity, fixedSessionInputResolver(identity),
-		identity.Command, "steer", steering,
+		identity.Command, "steer", steering, scriptedCorrelatedAdmission("steer"),
 	)
 	if err != nil || result.TurnID != active.ID {
 		t.Fatalf("first steering = (%+v, %v)", result, err)
@@ -562,7 +1177,7 @@ func TestSessionInputDuplicateSteeringReceiptRetainsActiveTurn(t *testing.T) {
 	restarted := newSessionInputOwner(io)
 	result, err = restarted.submitDelegated(
 		"agent:@1", identity, fixedSessionInputResolver(identity),
-		identity.Command, "steer", steering,
+		identity.Command, "steer", steering, scriptedCorrelatedAdmission("steer"),
 	)
 	if err != nil || result.Outcome != InputAccepted || result.TurnID != active.ID || !result.Duplicate {
 		t.Fatalf("duplicate steering receipt = (%+v, %v)", result, err)
@@ -599,7 +1214,7 @@ func TestSessionInputDefinitelyNotSubmittedRestoresPriorDelegatedTurn(t *testing
 	}
 	_, err := owner.submitDelegated(
 		"agent:@1", identity, fixedSessionInputResolver(identity),
-		identity.Command, "next task", next,
+		identity.Command, "next task", next, scriptedCorrelatedAdmission("next task"),
 	)
 	if InputOutcomeFromError(err) != InputNotSubmitted {
 		t.Fatalf("queue start failure outcome = %s, err=%v", InputOutcomeFromError(err), err)
@@ -821,7 +1436,13 @@ func TestCodexInitialReadinessIsSeparateFromOrdinarySubmit(t *testing.T) {
 
 func TestSessionInputProviderAdapterSurfaceStaysThin(t *testing.T) {
 	adapter := sessionInputProviderForCommand("claude")
-	if adapter.submitKey != "Enter" || adapter.settle != 250*time.Millisecond {
+	if adapter.submitKey != "Enter" || adapter.prepare != 0 ||
+		adapter.settle != 250*time.Millisecond {
 		t.Fatalf("Claude adapter = %+v", adapter)
+	}
+	cursor := sessionInputProviderForCommand("cursor-agent --force")
+	if cursor.submitKey != "Enter" || cursor.prepare != 400*time.Millisecond ||
+		cursor.settle != 2*time.Second {
+		t.Fatalf("Cursor adapter = %+v", cursor)
 	}
 }

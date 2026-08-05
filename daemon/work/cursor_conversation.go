@@ -3,6 +3,7 @@ package work
 import (
 	"bufio"
 	"bytes"
+	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -438,14 +439,20 @@ func (b *cursorConversationBuilder) consumeLine(lineNumber int, line []byte) {
 		if role == "user" {
 			kind = "user_message"
 		}
-		b.addEvent(CodexConversationEvent{
+		event := CodexConversationEvent{
 			ID:     b.eventID(lineNumber, "message", 0),
 			Seq:    cursorEventSeq(lineNumber, 0),
 			Kind:   kind,
 			Role:   role,
 			Body:   body,
 			Source: cursorConversationSource,
-		})
+		}
+		if role == "user" {
+			if exact, ok := cursorExactUserInput(record.Message.Content); ok {
+				event.AdmissionSHA256 = fmt.Sprintf("%x", sha256.Sum256([]byte(exact)))
+			}
+		}
+		b.addEvent(event)
 	}
 
 	if role != "assistant" {
@@ -578,6 +585,47 @@ func cursorMessageText(blocks []cursorContentBlock) string {
 		}
 	}
 	return strings.TrimSpace(strings.Join(parts, "\n\n"))
+}
+
+func cursorExactUserInput(blocks []cursorContentBlock) (string, bool) {
+	for _, block := range blocks {
+		if block.Type != "text" {
+			continue
+		}
+		if exact, marked := exactProviderUserInput(block.Text); marked {
+			return exact, true
+		}
+	}
+	return "", false
+}
+
+func exactProviderUserInput(text string) (string, bool) {
+	const open = "<user_query>"
+	const close = "</user_query>"
+	start := strings.Index(text, open)
+	if start < 0 {
+		return text, false
+	}
+	start += len(open)
+	separator := ""
+	if strings.HasPrefix(text[start:], "\r\n") {
+		separator = "\r\n"
+		start += 2
+	} else if strings.HasPrefix(text[start:], "\n") {
+		separator = "\n"
+		start++
+	}
+	end := strings.LastIndex(text, close)
+	if end < start || end+len(close) != len(text) {
+		return "", false
+	}
+	if separator != "" {
+		if !strings.HasSuffix(text[start:end], separator) {
+			return "", false
+		}
+		end -= len(separator)
+	}
+	return text[start:end], true
 }
 
 func cursorVisibleMessageText(role string, text string) string {

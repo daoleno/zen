@@ -1,7 +1,9 @@
 package work
 
 import (
+	"crypto/sha256"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -316,6 +318,10 @@ func TestParseClaudeConversation_AppendedThinkingAndTextTrackProviderActivity(t 
 	}
 	if len(userSnapshot.Events) != 1 {
 		t.Fatalf("user snapshot = %#v, want one user event", userSnapshot)
+	}
+	wantAdmission := fmt.Sprintf("%x", sha256.Sum256([]byte("trace the stream")))
+	if userSnapshot.Events[0].AdmissionSHA256 != wantAdmission {
+		t.Fatalf("Claude admission digest = %q, want %q", userSnapshot.Events[0].AdmissionSHA256, wantAdmission)
 	}
 	if userSnapshot.Activity == nil || userSnapshot.Activity.Status != ProviderActivityRunning ||
 		!strings.Contains(userSnapshot.Activity.ID, "uuid-user") || userSnapshot.Activity.StartedAt != "2026-07-15T01:00:00Z" {

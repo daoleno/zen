@@ -1,6 +1,7 @@
 package work
 
 import (
+	"crypto/sha256"
 	"fmt"
 	"path/filepath"
 	"strings"
@@ -316,6 +317,10 @@ func TestParseCodexConversation_PairsProviderUserAdmissionAndRenderingEchoByReco
 	}
 	assertEvent(t, got.Events[0], "user_message", "user", "", "Why does ChatUI flicker?")
 	assertEvent(t, got.Events[1], "assistant_message", "assistant", "", "I will inspect")
+	wantAdmission := fmt.Sprintf("%x", sha256.Sum256([]byte("Why does ChatUI flicker?")))
+	if got.Events[0].AdmissionSHA256 != wantAdmission {
+		t.Fatalf("Codex admission digest = %q, want %q", got.Events[0].AdmissionSHA256, wantAdmission)
+	}
 }
 
 func TestParseCodexConversation_KeepsIdenticalUserMessagesAcrossTurns(t *testing.T) {

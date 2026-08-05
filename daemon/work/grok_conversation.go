@@ -3,6 +3,7 @@ package work
 import (
 	"bufio"
 	"bytes"
+	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -746,18 +747,19 @@ func (b *grokConversationBuilder) consumeChatHistoryLine(lineNumber int, line []
 
 	switch record.Type {
 	case "user":
+		exact := grokExactMessageText(record.Content)
 		text := grokMessageText(record.Content)
 		text = grokVisibleUserText(text)
 		if text == "" || isGrokBootstrapUserMessage(text) {
 			return
 		}
 		b.finishPendingThought()
-		b.addMessage(lineNumber, "", "user", text)
+		b.addMessage(lineNumber, "", "user", text, exact)
 	case "assistant":
 		text := grokMessageText(record.Content)
 		if text != "" && !isTranscriptBoilerplate(text) {
 			b.finishPendingThought()
-			b.addMessage(lineNumber, "", "assistant", text)
+			b.addMessage(lineNumber, "", "assistant", text, "")
 		}
 		b.consumeAssistantToolCalls(lineNumber, "", record.ToolCalls)
 	case "reasoning":
@@ -1185,7 +1187,7 @@ func (b *grokConversationBuilder) consumeAssistantToolCalls(lineNumber int, time
 	}
 }
 
-func (b *grokConversationBuilder) addMessage(lineNumber int, timestamp, role, text string) {
+func (b *grokConversationBuilder) addMessage(lineNumber int, timestamp, role, text, exact string) {
 	text = CleanCodexDisplayText(text)
 	if text == "" || isTranscriptBoilerplate(text) {
 		return
@@ -1194,14 +1196,45 @@ func (b *grokConversationBuilder) addMessage(lineNumber int, timestamp, role, te
 	if role == "user" {
 		kind = "user_message"
 	}
-	b.addEvent(CodexConversationEvent{
+	event := CodexConversationEvent{
 		ID:        b.eventID(lineNumber),
 		Timestamp: timestamp,
 		Kind:      kind,
 		Role:      role,
 		Body:      text,
 		Source:    "grok_session",
-	})
+	}
+	if role == "user" && exact != "" {
+		// Grok exposes the native structured user field. It is already the
+		// authoritative payload, even when the user types wrapper-like text.
+		event.AdmissionSHA256 = fmt.Sprintf("%x", sha256.Sum256([]byte(exact)))
+	}
+	b.addEvent(event)
+}
+
+func grokExactMessageText(raw json.RawMessage) string {
+	if len(raw) == 0 || bytes.Equal(bytes.TrimSpace(raw), []byte("null")) {
+		return ""
+	}
+	if raw[0] == '"' {
+		var text string
+		_ = json.Unmarshal(raw, &text)
+		return text
+	}
+	var blocks []struct {
+		Type string `json:"type"`
+		Text string `json:"text"`
+	}
+	if json.Unmarshal(raw, &blocks) != nil {
+		return ""
+	}
+	var parts []string
+	for _, block := range blocks {
+		if block.Type == "text" {
+			parts = append(parts, block.Text)
+		}
+	}
+	return strings.Join(parts, "\n\n")
 }
 
 func (b *grokConversationBuilder) upsertThought(lineNumber int, timestamp, text string, finalize bool) {

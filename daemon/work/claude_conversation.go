@@ -3,6 +3,7 @@ package work
 import (
 	"bufio"
 	"bytes"
+	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -574,6 +575,7 @@ type claudeContentBlock struct {
 }
 
 func (b *claudeConversationBuilder) addMessage(lineNumber int, recordID string, index int, timestamp, role, text string) {
+	exact := text
 	text = CleanCodexDisplayText(text)
 	if text == "" || isTranscriptBoilerplate(text) {
 		return
@@ -582,7 +584,7 @@ func (b *claudeConversationBuilder) addMessage(lineNumber int, recordID string, 
 	if role == "user" {
 		kind = "user_message"
 	}
-	b.addEvent(CodexConversationEvent{
+	event := CodexConversationEvent{
 		ID:        b.messageEventID(recordID, role, index),
 		Seq:       claudeEventSeq(lineNumber, index),
 		Timestamp: timestamp,
@@ -590,7 +592,13 @@ func (b *claudeConversationBuilder) addMessage(lineNumber int, recordID string, 
 		Role:      role,
 		Body:      text,
 		Source:    claudeConversationSource,
-	})
+	}
+	if role == "user" {
+		// Claude exposes the native structured user field. It is already the
+		// authoritative payload, even when the user types wrapper-like text.
+		event.AdmissionSHA256 = fmt.Sprintf("%x", sha256.Sum256([]byte(exact)))
+	}
+	b.addEvent(event)
 }
 
 func (b *claudeConversationBuilder) addThinking(lineNumber int, recordID string, index int, timestamp, text string) {

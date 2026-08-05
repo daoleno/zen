@@ -186,6 +186,9 @@ type Watcher struct {
 	sessionInput          *sessionInputOwner
 	targetProcessResolver func(string) (targetProcessIdentity, bool)
 	targetCommandResolver func(string) (string, bool)
+	admissionNow          func() time.Time
+	admissionSleep        func(time.Duration)
+	admissionTimeout      func(string) time.Duration
 }
 
 // New creates a Watcher that polls tmux windows at the given interval.
@@ -502,9 +505,8 @@ func (w *Watcher) UpdateAgentProgress(id string, progress classifier.AgentProgre
 	return snapshot, nil
 }
 
-// RecordAgentInputDispatched clears an older terminal projection only after the
-// target-bound submit queue completed. This is a pending dispatch, not proof
-// that the provider ran; the durable turn marker awaits provider activity.
+// RecordAgentInputDispatched clears an older terminal projection only after
+// the shared Session input owner observed a real provider turn start.
 func (w *Watcher) RecordAgentInputDispatched(id, turnID string, handoffStartedAt time.Time, phase, summary string) (*classifier.Agent, error) {
 	id = strings.TrimSpace(id)
 	if id == "" {
@@ -525,7 +527,7 @@ func (w *Watcher) RecordAgentInputDispatched(id, turnID string, handoffStartedAt
 	w.delegatedTurns[id] = delegatedTurnRecord{
 		SchemaVersion: delegatedTurnSchema,
 		ID:            strings.TrimSpace(turnID),
-		Status:        delegatedTurnDispatched,
+		Status:        delegatedTurnRunning,
 		AcceptedAt:    handoffStartedAt.UTC(),
 	}
 	if agent.LastProgressAt != nil && !agent.LastProgressAt.Before(handoffStartedAt) &&
@@ -1349,6 +1351,10 @@ func (w *Watcher) SubmitDelegatedInputWhenReady(
 			AcceptedAt:      acceptedAt.UTC(),
 			ProcessIdentity: delegatedTurnIdentity(identity),
 		},
+		w.delegatedInputConfirmer(
+			sessionID,
+			identity.Command,
+		),
 	)
 }
 
@@ -1394,7 +1400,153 @@ func (w *Watcher) SubmitDelegatedInput(
 			AcceptedAt:      acceptedAt.UTC(),
 			ProcessIdentity: delegatedTurnIdentity(identity),
 		},
+		w.delegatedInputConfirmer(
+			sessionID,
+			identity.Command,
+		),
 	)
+}
+
+func (w *Watcher) delegatedInputConfirmer(
+	sessionID string,
+	command string,
+) delegatedInputConfirmer {
+	observe := func() (ProviderActivityObservation, error) {
+		agent := w.GetAgent(sessionID)
+		if agent == nil {
+			return ProviderActivityObservation{}, fmt.Errorf("provider Session disappeared")
+		}
+		w.mu.RLock()
+		providerProbe := w.providerActivityProbe
+		w.mu.RUnlock()
+		if providerProbe == nil {
+			return ProviderActivityObservation{}, fmt.Errorf("provider admission probe is unavailable")
+		}
+		return providerProbe.ObserveProviderActivity(*agent, w.admissionNowValue()), nil
+	}
+	return delegatedInputConfirmer{
+		baseline: func() (delegatedAdmissionEvidence, error) {
+			observation, err := observe()
+			if err != nil {
+				return delegatedAdmissionEvidence{}, err
+			}
+			return delegatedAdmissionEvidenceFromObservation(observation), nil
+		},
+		confirm: func(
+			baseline delegatedAdmissionEvidence,
+			mutationBoundary time.Time,
+			payloadSHA256 string,
+		) (delegatedInputConfirmation, error) {
+			deadline := w.admissionNowValue().Add(w.admissionTimeoutValue(command))
+			for {
+				observation, err := observe()
+				if err != nil {
+					return delegatedInputConfirmation{Outcome: InputAmbiguous}, err
+				}
+				evidence := delegatedAdmissionEvidenceFromObservation(observation)
+				switch correlateDelegatedAdmission(
+					baseline,
+					evidence,
+					mutationBoundary,
+					payloadSHA256,
+				) {
+				case delegatedAdmissionAccepted:
+					return delegatedInputConfirmation{
+						Outcome:          InputAccepted,
+						ProviderActivity: firstNonEmptyString(observation.ID, evidence.ID),
+					}, nil
+				case delegatedAdmissionMismatched:
+					return delegatedInputConfirmation{Outcome: InputAmbiguous},
+						fmt.Errorf("provider admitted input bytes that did not match the submitted UTF-8 payload")
+				}
+				if !w.admissionNowValue().Before(deadline) {
+					return delegatedInputConfirmation{Outcome: InputAmbiguous},
+						fmt.Errorf("provider submit may have mutated the composer, but no correlated provider admission was observed")
+				}
+				w.admissionSleepValue(50 * time.Millisecond)
+			}
+		},
+	}
+}
+
+type delegatedAdmissionCorrelation uint8
+
+const (
+	delegatedAdmissionMissing delegatedAdmissionCorrelation = iota
+	delegatedAdmissionMismatched
+	delegatedAdmissionAccepted
+)
+
+func delegatedAdmissionEvidenceFromObservation(
+	observation ProviderActivityObservation,
+) delegatedAdmissionEvidence {
+	return delegatedAdmissionEvidence{
+		Stream:      strings.TrimSpace(observation.AdmissionStream),
+		ID:          strings.TrimSpace(observation.AdmissionID),
+		Cursor:      observation.AdmissionCursor,
+		StartedAt:   observation.AdmissionAt.UTC(),
+		InputSHA256: strings.TrimSpace(observation.InputSHA256),
+	}
+}
+
+func correlateDelegatedAdmission(
+	baseline delegatedAdmissionEvidence,
+	current delegatedAdmissionEvidence,
+	mutationBoundary time.Time,
+	payloadSHA256 string,
+) delegatedAdmissionCorrelation {
+	// A provider admission identity is meaningful only as a complete tuple.
+	// In particular, an event ID or cursor cannot be compared across streams.
+	if current.Stream == "" || current.ID == "" ||
+		current.Cursor == 0 || current.InputSHA256 == "" {
+		return delegatedAdmissionMissing
+	}
+	if baseline.Stream != "" {
+		if current.Stream != baseline.Stream ||
+			current.Cursor <= baseline.Cursor ||
+			(baseline.ID != "" && current.ID == baseline.ID) {
+			return delegatedAdmissionMissing
+		}
+	}
+	if !current.StartedAt.IsZero() &&
+		current.StartedAt.Before(mutationBoundary.UTC()) {
+		return delegatedAdmissionMissing
+	}
+	if current.InputSHA256 != strings.TrimSpace(payloadSHA256) {
+		return delegatedAdmissionMismatched
+	}
+	return delegatedAdmissionAccepted
+}
+
+func (w *Watcher) admissionNowValue() time.Time {
+	if w != nil && w.admissionNow != nil {
+		return w.admissionNow().UTC()
+	}
+	return time.Now().UTC()
+}
+
+func (w *Watcher) admissionSleepValue(duration time.Duration) {
+	if w != nil && w.admissionSleep != nil {
+		w.admissionSleep(duration)
+		return
+	}
+	time.Sleep(duration)
+}
+
+func (w *Watcher) admissionTimeoutValue(command string) time.Duration {
+	if w != nil && w.admissionTimeout != nil {
+		return w.admissionTimeout(command)
+	}
+	return inputReadyTimeout(command)
+}
+
+func firstNonEmptyString(values ...string) string {
+	for _, value := range values {
+		if value = strings.TrimSpace(value); value != "" {
+			return value
+		}
+	}
+	return ""
 }
 
 // SendInput sends text to a tmux window and treats trailing newlines as submit.
@@ -1989,7 +2141,10 @@ func latestCursorPaneContent(content string) string {
 
 func tmuxSubmitDelay(command string) time.Duration {
 	if isCursorAgentCommand(command) {
-		return 400 * time.Millisecond
+		// Large pastes become a composer attachment asynchronously. Enter sent
+		// before that attachment is ready is ignored and leaves bytes sitting
+		// in the composer.
+		return 2 * time.Second
 	}
 	if isGrokCommand(command) {
 		// Large spawn briefs need a settle window before Enter or Grok keeps the draft unsent.
@@ -2000,6 +2155,15 @@ func tmuxSubmitDelay(command string) time.Duration {
 		return 250 * time.Millisecond
 	}
 	return 120 * time.Millisecond
+}
+
+func tmuxPrepareDelay(command string) time.Duration {
+	if isCursorAgentCommand(command) {
+		// Cursor applies composer edits asynchronously. Give its clear action
+		// one render boundary before atomically pasting the new payload.
+		return 400 * time.Millisecond
+	}
+	return 0
 }
 
 func inputReadyTimeout(command string) time.Duration {

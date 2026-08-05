@@ -662,10 +662,10 @@ func (a *controlApp) recordAgentHandoffAccepted(agentID, turnID string, handoffS
 		return
 	}
 	phase := "working"
-	summary := "Delegated input dispatched"
+	summary := "Delegated turn started"
 	if initial {
 		phase = "starting"
-		summary = "Initial delegated prompt dispatched"
+		summary = "Initial delegated turn started"
 	}
 	_, _ = a.watcher.RecordAgentInputDispatched(agentID, turnID, handoffStartedAt, phase, summary)
 }

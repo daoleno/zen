@@ -59,6 +59,11 @@ type ProviderActivityObservation struct {
 	Status          string
 	StartedAt       time.Time
 	SettledAt       time.Time
+	AdmissionStream string
+	AdmissionID     string
+	AdmissionCursor uint64
+	AdmissionAt     time.Time
+	InputSHA256     string
 	Structured      bool
 	FallbackAllowed bool
 }
