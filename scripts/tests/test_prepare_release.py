@@ -389,6 +389,14 @@ class ReleaseWorkflowContractTests(unittest.TestCase):
             workflow.index("Test release preparation and workflow contracts"),
             workflow.index("Prepare deterministic release identity and notes"),
         )
+        self.assertIn(
+            "ZEN_BUILD_TMPDIR: ${{ runner.temp }}/zen-build",
+            workflow,
+        )
+        self.assertLess(
+            workflow.index('run: mkdir -p "$ZEN_BUILD_TMPDIR"'),
+            workflow.index("Test release preparation and workflow contracts"),
+        )
         permissions = workflow.split("permissions:", 1)[1].split("jobs:", 1)[0]
         self.assertEqual(
             {

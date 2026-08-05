@@ -16,6 +16,8 @@ jobs:
     name: Prepare, tag, and dispatch reviewed beta
     runs-on: ubuntu-latest
     timeout-minutes: 20
+    env:
+      ZEN_BUILD_TMPDIR: ${{ runner.temp }}/zen-build
     steps:
       - name: Checkout current main with complete tag history
         uses: actions/checkout@v4
@@ -48,11 +50,13 @@ jobs:
       - name: Install workspace dependencies
         run: bun install --frozen-lockfile
 
+      - name: Create owned build temp
+        run: mkdir -p "$ZEN_BUILD_TMPDIR"
+
       - name: Test release preparation and workflow contracts
         env:
           PYTHONDONTWRITEBYTECODE: "1"
           TMPDIR: ${{ runner.temp }}
-          ZEN_BUILD_TMPDIR: ${{ runner.temp }}/zen-build
         run: python3 -m unittest discover -s scripts/tests -p 'test_prepare_release.py'
 
       - name: Prepare deterministic release identity and notes
