@@ -7,7 +7,7 @@ This guide installs the daemon that owns Zen's state, pairing identity, tmux ses
 - Linux `amd64`/`arm64` or an Apple Silicon Mac
 - `curl`, `tar`, and either `sha256sum` (Linux) or `shasum` (macOS)
 - `tmux` on `PATH`
-- At least one AI CLI on `PATH` and already authenticated (`codex`, `claude`, `cursor-agent`, or `grok`)
+- At least one AI CLI on `PATH` and already authenticated (`codex`, `claude`, `cursor-agent`, `grok`, `pi`, or `opencode`)
 
 You do not need every executor. One is enough.
 

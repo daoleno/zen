@@ -12,6 +12,8 @@ describe("supportsChatInterface", () => {
     expect(supportsChatInterface("codex")).toBe(true);
     expect(supportsChatInterface("cursor")).toBe(true);
     expect(supportsChatInterface("grok")).toBe(true);
+    expect(supportsChatInterface("pi")).toBe(true);
+    expect(supportsChatInterface("opencode")).toBe(true);
   });
 
   test("plain terminal is not a structured chat agent", () => {

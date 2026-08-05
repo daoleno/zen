@@ -142,10 +142,12 @@ func LoadExecutors(path string) (*ExecutorConfig, error) {
 		delegatedExecutor: "codex",
 		envLock:           strings.TrimSpace(os.Getenv("ZEN_DELEGATED_EXECUTOR")),
 		ByName: map[string]Executor{
-			"agent":  {Name: "agent", Command: "cursor-agent --force --sandbox disabled", Kind: "cursor"},
-			"claude": {Name: "claude", Command: "claude"},
-			"codex":  {Name: "codex", Command: "codex"},
-			"grok":   {Name: "grok", Command: "grok --no-alt-screen --permission-mode bypassPermissions"},
+			"agent":    {Name: "agent", Command: "cursor-agent --force --sandbox disabled", Kind: "cursor"},
+			"claude":   {Name: "claude", Command: "claude"},
+			"codex":    {Name: "codex", Command: "codex"},
+			"grok":     {Name: "grok", Command: "grok --no-alt-screen --permission-mode bypassPermissions"},
+			"opencode": {Name: "opencode", Command: "opencode", Kind: "opencode"},
+			"pi":       {Name: "pi", Command: "pi", Kind: "pi"},
 		},
 	}
 

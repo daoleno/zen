@@ -172,6 +172,10 @@ type ExecutorCheck struct {
 	Status                Status                 `json:"status"`
 	Remediation           Remediation            `json:"remediation,omitempty"`
 	Summary               string                 `json:"summary"`
+	// OpenCode-only non-mutating probes. StatusUnknown means the probe was not
+	// run or failed ambiguously; never includes model lists or secrets.
+	ModelsStatus Status `json:"models_status,omitempty"`
+	DBPathStatus Status `json:"db_path_status,omitempty"`
 }
 
 // TmuxInstallHints returns OS-specific install commands. Doctor never runs them.

@@ -5,8 +5,11 @@ export const CODEX_COMMAND = "codex --dangerously-bypass-approvals-and-sandbox";
 export const CURSOR_AGENT_COMMAND = "cursor-agent --force --sandbox disabled";
 export const GROK_COMMAND =
   "grok --no-alt-screen --permission-mode bypassPermissions";
+export const PI_COMMAND = "pi";
+export const OPENCODE_COMMAND = "opencode";
+export const OPENCODE_AUTO_COMMAND = "opencode --auto";
 
-export type SupportedAgentID = "claude" | "codex" | "cursor" | "grok";
+export type SupportedAgentID = "claude" | "codex" | "cursor" | "grok" | "pi" | "opencode";
 
 export interface SupportedAgentTarget {
   id: SupportedAgentID;
@@ -44,6 +47,20 @@ export const SUPPORTED_AGENT_TARGETS: SupportedAgentTarget[] = [
     label: "Grok",
     command: GROK_COMMAND,
     description: "Autonomous Grok run for this work item.",
+  },
+  {
+    id: "pi",
+    handle: "pi",
+    label: "Pi",
+    command: PI_COMMAND,
+    description: "Pi Coding Agent run for this work item.",
+  },
+  {
+    id: "opencode",
+    handle: "opencode",
+    label: "OpenCode",
+    command: OPENCODE_AUTO_COMMAND,
+    description: "Autonomous OpenCode run for this work item.",
   },
 ];
 
@@ -112,6 +129,32 @@ export function isCursorAgentCommand(command?: string) {
     normalized === "cursor-agent" ||
     normalized.startsWith("cursor-agent ") ||
     commandBinary(normalized) === "cursor-agent"
+  );
+}
+
+export function isPiCommand(command?: string) {
+  const normalized = normalizeCommand(command);
+  if (!normalized) {
+    return false;
+  }
+
+  return (
+    normalized === "pi" ||
+    normalized.startsWith("pi ") ||
+    commandBinary(normalized) === "pi"
+  );
+}
+
+export function isOpenCodeCommand(command?: string) {
+  const normalized = normalizeCommand(command);
+  if (!normalized) {
+    return false;
+  }
+
+  return (
+    normalized === "opencode" ||
+    normalized.startsWith("opencode ") ||
+    commandBinary(normalized) === "opencode"
   );
 }
 

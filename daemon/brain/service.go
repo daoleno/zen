@@ -1088,7 +1088,10 @@ func (s *Service) ensureHostAgent(executor work.AgentExecutor) (AgentRef, error)
 	if err != nil {
 		return AgentRef{}, err
 	}
-	command := s.hostCommand(executor)
+	command, err := s.hostCommand(executor)
+	if err != nil {
+		return AgentRef{}, err
+	}
 	id := strings.TrimSpace(hostSession.ID)
 	replaceReason := ""
 	replaceDetail := ""
@@ -1381,7 +1384,7 @@ func firstNonZeroTime(values ...time.Time) time.Time {
 	return time.Time{}
 }
 
-func (s *Service) hostCommand(executor work.AgentExecutor) string {
+func (s *Service) hostCommand(executor work.AgentExecutor) (string, error) {
 	command := strings.TrimSpace(executor.Command)
 	if command == "" {
 		command = strings.TrimSpace(executor.ID)
@@ -1406,15 +1409,27 @@ func (s *Service) hostCommand(executor work.AgentExecutor) string {
 		if workspace != "" && !strings.Contains(command, " -C ") && !strings.Contains(command, " --cd ") {
 			args = append(args, "-C", shellQuote(workspace))
 		}
-		return withZenCLIOnPath(strings.Join(args, " "))
+		return withZenCLIOnPath(strings.Join(args, " ")), nil
 	case "claude":
 		command = work.HardenClaudeCommand(command)
 		if workspace != "" && !strings.Contains(command, " --add-dir ") {
-			return withZenCLIOnPath(strings.TrimSpace(command + " --add-dir " + shellQuote(workspace)))
+			return withZenCLIOnPath(strings.TrimSpace(command + " --add-dir " + shellQuote(workspace))), nil
 		}
-		return withZenCLIOnPath(command)
+		return withZenCLIOnPath(command), nil
+	case work.AgentProviderOpenCode:
+		hardened, err := work.HardenOpenCodeDelegatedCommand(command)
+		if err != nil {
+			return "", err
+		}
+		return withZenCLIOnPath(hardened), nil
+	case work.AgentProviderPi:
+		command, err := work.EnsurePiSessionLaunchCommand(command)
+		if err != nil {
+			return "", err
+		}
+		return withZenCLIOnPath(command), nil
 	default:
-		return withZenCLIOnPath(command)
+		return withZenCLIOnPath(command), nil
 	}
 }
 
@@ -1577,7 +1592,11 @@ func (s *Service) handoffHostSession(threadID, previousExecutorID, nextExecutorI
 	delegatedExecutor := s.brainDelegatedExecutor()
 	prompt := formatHostHandoffPrompt(threadID, previousExecutorID, nextExecutorID, delegatedExecutor.ID, currentContext, agents)
 	if prompt != "" {
-		if err := s.watcher.SendInputWhenReady(nextHostID, s.hostCommand(s.hostExecutor()), prompt+"\n"); err != nil {
+		hostCmd, err := s.hostCommand(s.hostExecutor())
+		if err != nil {
+			return err
+		}
+		if err := s.watcher.SendInputWhenReady(nextHostID, hostCmd, prompt+"\n"); err != nil {
 			return err
 		}
 	}

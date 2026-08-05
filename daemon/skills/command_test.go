@@ -69,7 +69,7 @@ func TestBuildRemoveRediscoversExactOfficialCLIProvenance(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	wantRemove := "npx skills remove managed-skill --agent codex --agent cursor --yes"
+	wantRemove := "npx skills remove managed-skill --agent codex --agent cursor --agent opencode --yes"
 	if remove.Command != wantRemove {
 		t.Fatalf("remove = %q, want %q", remove.Command, wantRemove)
 	}
@@ -97,7 +97,7 @@ func TestBuildRemoveUsesOnlyDaemonProvenAgentRemovalPlans(t *testing.T) {
 		t.Fatalf("inventory = %#v, error = %v", inventory, err)
 	}
 	skill := inventory.Skills[0]
-	if len(skill.Capability.RemovalPlans) != 3 {
+	if len(skill.Capability.RemovalPlans) != 4 {
 		t.Fatalf("removal plans = %#v", skill.Capability.RemovalPlans)
 	}
 
@@ -115,7 +115,7 @@ func TestBuildRemoveUsesOnlyDaemonProvenAgentRemovalPlans(t *testing.T) {
 		t.Fatalf("Claude removal = %q, want %q", claude.Command, want)
 	}
 
-	for _, unsafe := range [][]Agent{{AgentCodex}, {AgentCursor}, {AgentCodex, AgentCursor}} {
+	for _, unsafe := range [][]Agent{{AgentCodex}, {AgentCursor}, {AgentOpenCode}, {AgentCodex, AgentCursor}} {
 		if _, err := BuildMutationCommand(options, MutationRequest{
 			Operation: OperationRemove,
 			CWD:       project,
@@ -132,12 +132,12 @@ func TestBuildRemoveUsesOnlyDaemonProvenAgentRemovalPlans(t *testing.T) {
 		CWD:       project,
 		SkillID:   skill.ID,
 		Scope:     ScopeProject,
-		Agents:    []Agent{AgentCodex, AgentClaudeCode, AgentCursor},
+		Agents:    []Agent{AgentCodex, AgentClaudeCode, AgentCursor, AgentOpenCode},
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if want := "npx skills remove shared-skill --agent codex --agent claude-code --agent cursor --yes"; shared.Command != want {
+	if want := "npx skills remove shared-skill --agent codex --agent claude-code --agent cursor --agent opencode --yes"; shared.Command != want {
 		t.Fatalf("shared removal = %q, want %q", shared.Command, want)
 	}
 }

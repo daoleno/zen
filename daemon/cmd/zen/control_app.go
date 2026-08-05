@@ -994,6 +994,18 @@ func (a *controlApp) resolveSpawnCommand(req control.Request) (string, error) {
 			// the most permissive authorization mode so internal progress
 			// commands do not block on approval prompts.
 			command = work.HardenClaudeCommand(command)
+		} else if provider == work.AgentProviderOpenCode {
+			hardened, hardenErr := work.HardenOpenCodeDelegatedCommand(command)
+			if hardenErr != nil {
+				return "", hardenErr
+			}
+			command = hardened
+		} else if provider == work.AgentProviderPi {
+			var ensureErr error
+			command, ensureErr = work.EnsurePiSessionLaunchCommand(command)
+			if ensureErr != nil {
+				return "", ensureErr
+			}
 		}
 		return command, nil
 	}
@@ -1002,6 +1014,10 @@ func (a *controlApp) resolveSpawnCommand(req control.Request) (string, error) {
 		return work.HardenCodexDelegatedCommand(executorName), nil
 	} else if provider == work.AgentProviderClaude {
 		return work.HardenClaudeCommand(executorName), nil
+	} else if provider == work.AgentProviderOpenCode {
+		return work.HardenOpenCodeDelegatedCommand(executorName)
+	} else if provider == work.AgentProviderPi {
+		return work.EnsurePiSessionLaunchCommand(executorName)
 	}
 	return executorName, nil
 }

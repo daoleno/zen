@@ -173,6 +173,8 @@ describe("Skills screen behavior", () => {
       codex: 2,
       "claude-code": 1,
       cursor: 1,
+      opencode: 0,
+      pi: 0,
     });
     expect(
       skillsAgentProjection(current, "codex").skills.map((skill) => skill.name),
@@ -193,6 +195,8 @@ describe("Skills screen behavior", () => {
     expect(skillsInstallTargets("codex")).toEqual(["codex"]);
     expect(skillsInstallTargets("claude-code")).toEqual(["claude-code"]);
     expect(skillsInstallTargets("cursor")).toEqual(["cursor"]);
+    expect(skillsInstallTargets("opencode")).toEqual(["opencode"]);
+    expect(skillsInstallTargets("pi")).toEqual(["pi"]);
   });
 
   test("removal uses only the selected Agent's daemon-proven affected set", () => {

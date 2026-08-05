@@ -20,6 +20,10 @@ type ProviderConversationReader struct {
 	// subscription. Transcript files are still enumerated on every poll.
 	cursorProjectRootsCWD string
 	cursorProjectRoots    []cursorProjectRoot
+
+	// openCodeOwnedSessionID retains the unambiguously bound OpenCode ses_* for
+	// this subscription so later polls never cross-bind another same-CWD row.
+	openCodeOwnedSessionID string
 }
 
 type providerConversationBinding struct {
@@ -36,6 +40,7 @@ type providerConversationBinding struct {
 type providerConversationSource struct {
 	provider     string
 	path         string
+	sessionID    string
 	size         int64
 	modTime      time.Time
 	fileInfo     os.FileInfo
@@ -70,6 +75,10 @@ func (r *ProviderConversationReader) Load(
 		return r.loadClaudeConversationForAgent(agent, now)
 	case AgentProviderCodex:
 		return r.loadCodexConversationForAgent(agent, now)
+	case AgentProviderPi:
+		return r.loadPiConversationForAgent(agent, now)
+	case AgentProviderOpenCode:
+		return r.loadOpenCodeConversationForAgent(agent, now)
 	default:
 		r.resetSource()
 		return CodexConversation{
@@ -97,6 +106,10 @@ func (r *ProviderConversationReader) bind(agent classifier.Agent, provider strin
 	if !r.bound || r.binding.cwd != next.cwd {
 		r.cursorProjectRootsCWD = ""
 		r.cursorProjectRoots = nil
+	}
+	if !r.bound || r.binding.provider != next.provider || r.binding.agentID != next.agentID ||
+		r.binding.command != next.command || r.binding.cwd != next.cwd {
+		r.openCodeOwnedSessionID = ""
 	}
 	r.bound = true
 	r.binding = next

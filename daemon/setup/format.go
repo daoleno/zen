@@ -143,5 +143,7 @@ func executorInstallSteps(report doctor.Report) []string {
 	add("Claude: install Claude Code, then run: claude auth login")
 	add("Cursor: install cursor-agent, then run: cursor-agent login")
 	add("Grok: install Grok CLI, then run: grok login")
+	add("Pi: install Pi Coding Agent (`pi`), then configure provider auth (no official auth-status command)")
+	add("OpenCode: install OpenCode (`opencode`), then run: opencode auth login")
 	return steps
 }

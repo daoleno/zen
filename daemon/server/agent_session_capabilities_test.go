@@ -12,9 +12,11 @@ import (
 
 func TestAgentSessionWireAdvertisesKnownStructuredProvider(t *testing.T) {
 	srv := &Server{}
-	wire := srv.agentSessionWire(&classifier.Agent{ID: "codex-1", Command: "codex"})
-	if wire == nil || !wire.Capabilities.StructuredEvents {
-		t.Fatalf("known provider capabilities = %#v", wire)
+	for _, command := range []string{"codex", "pi --session /tmp/x.jsonl", "opencode --auto"} {
+		wire := srv.agentSessionWire(&classifier.Agent{ID: command + "-1", Command: command})
+		if wire == nil || !wire.Capabilities.StructuredEvents {
+			t.Fatalf("%s capabilities = %#v", command, wire)
+		}
 	}
 }
 

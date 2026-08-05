@@ -51,7 +51,7 @@ func TestDiscoverInventoryDeduplicatesRealPathsAndAggregatesSupportedAgents(t *t
 	if got.CanonicalPath != shared {
 		t.Fatalf("canonical path = %q, want %q", got.CanonicalPath, shared)
 	}
-	wantAgents := []Agent{AgentCodex, AgentClaudeCode, AgentCursor}
+	wantAgents := []Agent{AgentCodex, AgentClaudeCode, AgentCursor, AgentOpenCode}
 	if !sameAgentSet(got.Agents, wantAgents) {
 		t.Fatalf("agents = %v, want %v", got.Agents, wantAgents)
 	}
@@ -67,7 +67,7 @@ func TestDiscoverInventoryDeduplicatesRealPathsAndAggregatesSupportedAgents(t *t
 	if inventory.GeneratedAt.Unix() != 42 {
 		t.Fatalf("generated_at = %s", inventory.GeneratedAt)
 	}
-	if len(inventory.Agents) != 4 || inventory.Agents[3].Agent != AgentGrok || inventory.Agents[3].Supported {
+	if len(inventory.Agents) != 6 || inventory.Agents[5].Agent != AgentGrok || inventory.Agents[5].Supported {
 		t.Fatalf("agent support = %#v", inventory.Agents)
 	}
 }

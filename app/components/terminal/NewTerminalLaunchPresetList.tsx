@@ -11,6 +11,8 @@ import {
   CODEX_COMMAND,
   CURSOR_AGENT_COMMAND,
   GROK_COMMAND,
+  OPENCODE_COMMAND,
+  PI_COMMAND,
 } from "../../services/agentCommands";
 import { AgentKindIcon } from "./AgentKindIcon";
 import { AppText } from "../ui";
@@ -33,6 +35,8 @@ const LAUNCH_PRESETS: readonly NewTerminalLaunchPreset[] = [
   { key: "codex", kind: "codex", label: "Codex", command: CODEX_COMMAND },
   { key: "cursor", kind: "cursor", label: "Cursor", command: CURSOR_AGENT_COMMAND },
   { key: "grok", kind: "grok", label: "Grok", command: GROK_COMMAND },
+  { key: "pi", kind: "pi", label: "Pi", command: PI_COMMAND },
+  { key: "opencode", kind: "opencode", label: "OpenCode", command: OPENCODE_COMMAND },
 ];
 
 interface NewTerminalLaunchPresetListProps {

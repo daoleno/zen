@@ -29,7 +29,7 @@ After installation, follow [Connect and pair](connect-and-pair.md): use `zen --l
 | ---------------------------------------------- | --------------------------------------------------------------------------------------------------- |
 | Pair, reconnect, session list, structured Chat | Intended beta surface                                                                               |
 | Native terminal (Ghostty VT)                   | Requires built `libghostty_vt.so` for **arm64-v8a** (devices) and optionally **x86_64** (emulator)  |
-| Structured agent interfaces                    | Codex, Claude Code, Cursor Agent, and Grok share the same React Native Chat/Terminal UI used on iOS |
+| Structured agent interfaces                    | Codex, Claude Code, Cursor Agent, Grok, Pi, and OpenCode share the same React Native Chat/Terminal UI used on iOS |
 | iOS                                            | Separate source-build target; see [ios.md](ios.md)                                                  |
 | Expo Go                                        | Can paste/scan pairing links; custom `zen://` deep links need a dev build/APK                       |
 | Play Store                                     | Not part of this release foundation                                                                 |

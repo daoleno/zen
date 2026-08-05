@@ -1,13 +1,13 @@
 import type { Agent } from '../store/agents';
 import { displayPathSubtitle } from './pathDisplay';
-import { isClaudeCommand, isCodexCommand, isCursorAgentCommand, isGrokCommand } from './agentCommands';
+import { isClaudeCommand, isCodexCommand, isCursorAgentCommand, isGrokCommand, isOpenCodeCommand, isPiCommand } from './agentCommands';
 import {
   detectTerminalFlavor,
   terminalFlavorLabel,
   type TerminalFlavor,
 } from './terminalFlavor';
 
-export type AgentKind = 'terminal' | 'claude' | 'codex' | 'cursor' | 'grok';
+export type AgentKind = 'terminal' | 'claude' | 'codex' | 'cursor' | 'grok' | 'pi' | 'opencode';
 export type AgentTitleSource = 'alias' | 'explicit_name' | 'default';
 export type { TerminalFlavor };
 
@@ -68,6 +68,8 @@ function detectAgentKind(agent: Pick<Agent, 'name' | 'project' | 'cwd' | 'comman
   if (isCodexCommand(agent.command)) return 'codex';
   if (isCursorAgentCommand(agent.command)) return 'cursor';
   if (isGrokCommand(agent.command)) return 'grok';
+  if (isPiCommand(agent.command)) return 'pi';
+  if (isOpenCodeCommand(agent.command)) return 'opencode';
   return 'terminal';
 }
 
@@ -84,6 +86,8 @@ function isGenericAgentTitle(name: string, kind: AgentKind): boolean {
   if (kind === 'codex' && (lower === 'codex' || lower === 'openai codex')) return true;
   if (kind === 'cursor' && (lower === 'agent' || lower === 'cursor' || lower === 'cursor agent')) return true;
   if (kind === 'grok' && (lower === 'grok' || lower === 'grok cli' || lower === 'xai grok')) return true;
+  if (kind === 'pi' && (lower === 'pi' || lower === 'pi coding agent')) return true;
+  if (kind === 'opencode' && (lower === 'opencode' || lower === 'open code')) return true;
   if (
     lower === 'zsh' ||
     lower === 'bash' ||
@@ -131,6 +135,10 @@ function defaultTitle(kind: AgentKind): string {
       return 'Cursor Agent';
     case 'grok':
       return 'Grok';
+    case 'pi':
+      return 'Pi';
+    case 'opencode':
+      return 'OpenCode';
     default:
       return 'Shell';
   }
@@ -146,6 +154,10 @@ function shortDefaultTitle(kind: AgentKind): string {
       return 'Cursor';
     case 'grok':
       return 'Grok';
+    case 'pi':
+      return 'Pi';
+    case 'opencode':
+      return 'OpenCode';
     default:
       return 'Shell';
   }
@@ -161,6 +173,10 @@ function typeLabel(kind: AgentKind, terminalFlavor: TerminalFlavor): string {
       return 'Cursor Agent';
     case 'grok':
       return 'Grok';
+    case 'pi':
+      return 'Pi';
+    case 'opencode':
+      return 'OpenCode';
     default:
       return terminalFlavorLabel(terminalFlavor);
   }

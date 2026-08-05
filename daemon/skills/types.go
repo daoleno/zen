@@ -9,6 +9,8 @@ const (
 	AgentClaudeCode Agent = "claude-code"
 	AgentCursor     Agent = "cursor"
 	AgentGrok       Agent = "grok"
+	AgentOpenCode   Agent = "opencode"
+	AgentPi         Agent = "pi"
 )
 
 type Scope string
@@ -160,6 +162,8 @@ func SupportedAgents() []AgentSupport {
 		{Agent: AgentCodex, Name: "Codex", Supported: true, CLIManaged: true},
 		{Agent: AgentClaudeCode, Name: "Claude Code", Supported: true, CLIManaged: true},
 		{Agent: AgentCursor, Name: "Cursor", Supported: true, CLIManaged: true},
+		{Agent: AgentOpenCode, Name: "OpenCode", Supported: true, CLIManaged: true},
+		{Agent: AgentPi, Name: "Pi", Supported: true, CLIManaged: true},
 		{
 			Agent:      AgentGrok,
 			Name:       "Grok",

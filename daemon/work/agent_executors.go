@@ -9,12 +9,14 @@ import (
 )
 
 const (
-	AgentRuntimeTmux    = "tmux"
-	AgentProviderCodex  = "codex"
-	AgentProviderCursor = "cursor"
-	AgentProviderGrok   = "grok"
-	AgentProviderClaude = "claude"
-	AgentProviderCustom = "custom"
+	AgentRuntimeTmux      = "tmux"
+	AgentProviderCodex    = "codex"
+	AgentProviderCursor   = "cursor"
+	AgentProviderGrok     = "grok"
+	AgentProviderClaude   = "claude"
+	AgentProviderPi       = "pi"
+	AgentProviderOpenCode = "opencode"
+	AgentProviderCustom   = "custom"
 
 	// CodexFullAuthorizationFlag is the Codex CLI flag that skips all
 	// confirmation prompts and disables sandbox restrictions, providing the
@@ -29,6 +31,15 @@ const (
 	// authorization mode available. Brain-delegated Claude sessions use this so
 	// internal progress commands never block on approval prompts.
 	ClaudeFullAuthorizationFlag = "--permission-mode bypassPermissions"
+
+	// OpenCodeAutoFlag auto-approves permissions that are not explicitly denied.
+	// Brain-delegated and Calendar OpenCode sessions use this so unattended
+	// turns do not stall on interactive permission prompts.
+	OpenCodeAutoFlag = "--auto"
+
+	// PiNoExtensionsFlag disables extension discovery. Calendar/unattended Pi
+	// launches use this because extensions may add undetectable ui.confirm gates.
+	PiNoExtensionsFlag = "--no-extensions"
 )
 
 // ErrScheduledActionUnattended is returned before spawning when a Calendar
@@ -70,6 +81,51 @@ func HardenClaudeCommand(command string) string {
 		return command
 	}
 	return command + " " + ClaudeFullAuthorizationFlag
+}
+
+// HardenOpenCodeDelegatedCommand returns an OpenCode launch command configured
+// for non-interactive delegated execution by ensuring exact argv `--auto`.
+// Equals forms (`--auto=false`, `--auto=true`, …) are invalid and rejected
+// fail-closed so Brain/delegated launch never treats them as enabled and never
+// leaves contradictory auto flags on the command line.
+func HardenOpenCodeDelegatedCommand(command string) (string, error) {
+	command = strings.TrimSpace(command)
+	if command == "" {
+		command = AgentProviderOpenCode
+	}
+	options, ok := inspectLaunchCommandOptions(command)
+	if !ok {
+		if strings.Contains(command, OpenCodeAutoFlag+"=") {
+			return "", fmt.Errorf("opencode %s equals form is invalid; use exact %s", OpenCodeAutoFlag, OpenCodeAutoFlag)
+		}
+		if openCodeCommandHasExactAuto(command) {
+			return command, nil
+		}
+		return command + " " + OpenCodeAutoFlag, nil
+	}
+	autoPresent, autoEnabled := options.option("", OpenCodeAutoFlag)
+	if autoPresent && !autoEnabled {
+		return "", fmt.Errorf("opencode %s equals form is invalid for delegated launch; use exact %s", OpenCodeAutoFlag, OpenCodeAutoFlag)
+	}
+	if autoEnabled {
+		return command, nil
+	}
+	return command + " " + OpenCodeAutoFlag, nil
+}
+
+// openCodeCommandHasExactAuto reports an exact `--auto` argv token without
+// treating `--auto=…` or `--auto-review` as enabled.
+func openCodeCommandHasExactAuto(command string) bool {
+	fields, ok := splitSupportedLaunchFields(command)
+	if !ok {
+		return false
+	}
+	for _, field := range fields {
+		if field == OpenCodeAutoFlag {
+			return true
+		}
+	}
+	return false
 }
 
 // ScheduledActionCommand derives Calendar's unattended command without
@@ -176,6 +232,50 @@ func ScheduledActionCommand(executorID string, executor Executor) (string, error
 			appendArgs = append(appendArgs, "--sandbox", "off")
 		}
 		return appendScheduledOptions(executorID, command, options, appendArgs...)
+	case AgentProviderPi:
+		continuePresent, _ := options.option("", "--continue", "-c")
+		resumePresent, _ := options.option("", "--resume", "-r")
+		noSessionPresent, _ := options.option("", "--no-session")
+		if continuePresent || resumePresent || noSessionPresent {
+			return "", fmt.Errorf("%w: executor %q uses a non-owned Pi session mode", ErrScheduledActionUnattended, executorID)
+		}
+		sessionPresent, sessionPath := options.optionValue("--session")
+		sessionDirPresent, _ := options.optionValue("--session-dir")
+		if sessionPresent && (sessionPath == "" || !filepath.IsAbs(sessionPath)) {
+			return "", fmt.Errorf("%w: executor %q requires an absolute Pi --session path", ErrScheduledActionUnattended, executorID)
+		}
+		if !sessionPresent && !sessionDirPresent {
+			ownedPath, err := NewPiOwnedSessionPath("")
+			if err != nil {
+				return "", fmt.Errorf("%w: executor %q could not allocate a Pi session path: %v", ErrScheduledActionUnattended, executorID, err)
+			}
+			command, err = appendScheduledOptions(executorID, command, options, "--session", ownedPath)
+			if err != nil {
+				return "", err
+			}
+			options, inspectable = inspectLaunchCommandOptions(command)
+			if !inspectable {
+				return "", fmt.Errorf("%w: executor %q has an unsupported launch command", ErrScheduledActionUnattended, executorID)
+			}
+		}
+		noExtensionsPresent, _ := options.option("", PiNoExtensionsFlag, "-ne")
+		if noExtensionsPresent {
+			return command, nil
+		}
+		return appendScheduledOptions(executorID, command, options, PiNoExtensionsFlag)
+	case AgentProviderOpenCode:
+		continuePresent, _ := options.option("", "--continue", "-c")
+		if continuePresent {
+			return "", fmt.Errorf("%w: executor %q must not use OpenCode --continue", ErrScheduledActionUnattended, executorID)
+		}
+		autoPresent, autoEnabled := options.option("", OpenCodeAutoFlag)
+		if autoPresent && !autoEnabled {
+			return "", fmt.Errorf("%w: executor %q has an invalid OpenCode auto option", ErrScheduledActionUnattended, executorID)
+		}
+		if autoEnabled {
+			return command, nil
+		}
+		return appendScheduledOptions(executorID, command, options, OpenCodeAutoFlag)
 	default:
 		return "", fmt.Errorf("%w: executor %q uses unsupported provider %q", ErrScheduledActionUnattended, executorID, agentExecutor.Provider)
 	}
@@ -239,6 +339,10 @@ func scheduledProviderExecutable(provider, executable string) bool {
 		return executable == "cursor-agent"
 	case AgentProviderGrok:
 		return executable == "grok" || strings.HasPrefix(executable, "grok-")
+	case AgentProviderPi:
+		return executable == "pi"
+	case AgentProviderOpenCode:
+		return executable == "opencode"
 	default:
 		return false
 	}
@@ -377,6 +481,28 @@ func (options launchCommandOptions) option(want string, names ...string) (bool, 
 		return present, present && compatible
 	}
 	return present, compatible
+}
+
+// optionValue reports whether name is present and returns its last value.
+func (options launchCommandOptions) optionValue(name string) (bool, string) {
+	present := false
+	value := ""
+	for index, argument := range options.argv {
+		if argument == name {
+			present = true
+			value = ""
+			if index+1 < len(options.argv) && options.argv[index+1] != "--" &&
+				!strings.HasPrefix(options.argv[index+1], "-") {
+				value = options.argv[index+1]
+			}
+			continue
+		}
+		if strings.HasPrefix(argument, name+"=") {
+			present = true
+			value = strings.TrimPrefix(argument, name+"=")
+		}
+	}
+	return present, value
 }
 
 // AgentCapabilities describes capabilities Brain can delegate to an executor.
@@ -522,6 +648,13 @@ func inferAgentProviderOne(value string) string {
 			return AgentProviderGrok
 		case strings.Contains(base, "claude") || base == "cc":
 			return AgentProviderClaude
+		case base == AgentProviderOpenCode:
+			// Exact basename only: avoid substring false positives
+			// (myopencode, opencodefake, …).
+			return AgentProviderOpenCode
+		case base == AgentProviderPi:
+			// Exact basename only: avoid substring false positives (pip, pixel, …).
+			return AgentProviderPi
 		}
 	}
 	return ""
@@ -561,6 +694,17 @@ func agentCapabilities(provider, runtime string) AgentCapabilities {
 		// Cursor Agent appends provider-structured message, tool, and turn rows
 		// under agent-transcripts. It does not expose Codex-style native APIs.
 		caps.StructuredEvents = true
+	case AgentProviderPi:
+		// Pi exposes structured chat via an owned JSONL session file. Resume is
+		// the same absolute --session path Zen injected at launch.
+		caps.StructuredEvents = true
+		caps.NativeResume = true
+	case AgentProviderOpenCode:
+		// OpenCode exposes structured chat via its local SQLite database.
+		// Resume only an explicitly owned ses_* via -s; never --continue.
+		caps.StructuredEvents = true
+		caps.NativeResume = true
+		caps.NativeFork = true
 	}
 	return caps
 }

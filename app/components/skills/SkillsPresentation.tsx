@@ -815,6 +815,10 @@ function managedAgentKind(agent: ManagedSkillAgent): AgentKind {
       return "claude";
     case "cursor":
       return "cursor";
+    case "opencode":
+      return "opencode";
+    case "pi":
+      return "pi";
   }
 }
 

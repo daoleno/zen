@@ -2,7 +2,7 @@
 
 Zen launches and observes AI CLIs through tmux. Configuration is optional: if `~/.zen/executors.toml` is missing, built-in defaults apply.
 
-**One authenticated executor on `PATH` is enough** for a usable beta. You do not need Codex, Claude, Cursor, and Grok all installed.
+**One authenticated executor on `PATH` is enough** for a usable beta. You do not need Codex, Claude, Cursor, Grok, Pi, and OpenCode all installed.
 
 ## Built-in defaults (current code)
 
@@ -14,6 +14,8 @@ When the file is absent, zen uses approximately:
 | `claude` | `claude` | |
 | `agent` | `cursor-agent --force --sandbox disabled` | Permission / sandbox bypass |
 | `grok` | `grok --no-alt-screen --permission-mode bypassPermissions` | Permission bypass |
+| `pi` | `pi` | Permissive by default; Zen injects absolute `--session` |
+| `opencode` | `opencode` | Interactive safe default; Brain/Calendar may derive `--auto` |
 
 These defaults are **not** changed by shipping [executors.example.toml](../executors.example.toml). The example file documents safer vs autonomous profiles for you to copy.
 
@@ -41,8 +43,11 @@ Flags such as:
 - `cursor-agent --force --sandbox disabled`
 - `grok ... --permission-mode bypassPermissions`
 - Codex `--dangerously-bypass-approvals-and-sandbox` (appended for **Brain-delegated** Codex sessions in current code)
+- OpenCode `--auto` (derived only for autonomous Brain/Calendar OpenCode work)
 
 …mean the agent can run tools and shell actions with little or no interactive approval. That is convenient for unattended mobile control and dangerous on a shared or sensitive host.
+
+Pi has no sandbox/permission CLI flag and is already permissive for ordinary and delegated launches. Calendar may append `--no-extensions` so extension `ui.confirm` gates cannot stall unattended work.
 
 Recommendations:
 
@@ -52,7 +57,7 @@ Recommendations:
 
 ## Credentials
 
-Zen does not store provider API keys. Authenticate each CLI the way that tool normally expects (`codex login`, Claude login, Cursor, Grok, etc.) on the daemon host before expecting sessions to work.
+Zen does not store provider API keys. Authenticate each CLI the way that tool normally expects (`codex login`, Claude login, Cursor, Grok, Pi `/login` or provider API keys, OpenCode `auth`, etc.) on the daemon host before expecting sessions to work.
 
 ## Custom executors
 
@@ -81,6 +86,8 @@ Update granularity is intentionally limited to what each current Zen adapter rec
 - **Genuine text delta — Grok:** `updates.jsonl` exposes native message/reasoning deltas and cumulative tool-output snapshots. Zen follows the native `promptId + streamStartMs + kind` identity and incrementally tails that file; `chat_history.jsonl` supplies canonical final records.
 - **Block-level — Codex:** rollout JSONL exposes semantic `agent_reasoning` records plus tool/status lifecycle events. The current rollout adapter receives the final assistant answer as one completed `agent_message`, not assistant text deltas.
 - **Block-level — Claude Code and Cursor Agent:** Claude project JSONL and Cursor `agent-transcripts` contain completed semantic message/thinking/tool/turn records. Zen publishes newly persisted blocks promptly but does not pretend that a complete block is token streaming.
+- **Block-level — Pi:** Zen owns an absolute `--session` JSONL path per live Session and projects the active parent chain after Pi's late first-assistant flush.
+- **Block-level — OpenCode:** Zen reads the local SQLite database read-only, binds one `ses_*` by exact CWD plus start window, and projects message/part rows.
 
 The CLIs themselves have richer direct protocols that the current tmux/transcript integration does not own: Codex app-server emits item-keyed assistant/reasoning/output deltas, Claude supports `stream-json` with partial message events, and Cursor supports `stream-json --stream-partial-output`. Genuine delta support for those providers requires a daemon-owned structured executor runtime that owns process or app-server I/O, translates native lifecycle notifications into this reducer, persists reconnectable snapshots, and coordinates send/interrupt/terminal attachment. Adding flags to the existing interactive tmux command is not sufficient, and parsing raw NDJSON from terminal chrome would violate the protocol boundary.
 

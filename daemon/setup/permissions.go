@@ -74,6 +74,14 @@ func commandForProfile(provider, id, existingCommand string, profile Profile) (c
 			return "grok --no-alt-screen --permission-mode bypassPermissions", ""
 		}
 		return "grok --no-alt-screen", ""
+	case work.AgentProviderPi:
+		// Pi is already permissive; do not invent bypass flags.
+		return "pi", ""
+	case work.AgentProviderOpenCode:
+		if profile == ProfileAutonomous {
+			return "opencode --auto", ""
+		}
+		return "opencode", ""
 	default:
 		// Preserve custom commands. Never inject bypass flags.
 		if existingCommand != "" {
@@ -95,6 +103,7 @@ func stripBypassFlags(command string) string {
 		"--permission-mode bypassPermissions",
 		"--permission-mode dontAsk",
 		"--yolo",
+		work.OpenCodeAutoFlag,
 	}
 	for _, flag := range replacements {
 		command = strings.ReplaceAll(command, flag, "")

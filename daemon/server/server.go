@@ -826,9 +826,23 @@ func (s *Server) handleClientMessage(conn *websocket.Conn, msg []byte) {
 		}
 
 	case "create_session":
+		command := strings.TrimSpace(raw.Command)
+		if work.InferAgentProvider(command) == work.AgentProviderPi {
+			ensured, err := work.EnsurePiSessionLaunchCommand(command)
+			if err != nil {
+				s.sendJSON(conn, map[string]any{
+					"type":       "error",
+					"code":       "create_session_failed",
+					"message":    err.Error(),
+					"request_id": raw.RequestID,
+				})
+				return
+			}
+			command = ensured
+		}
 		agentID, err := s.watcher.CreateSession(raw.TargetID, watcher.CreateSessionOptions{
 			Cwd:     raw.Cwd,
-			Command: raw.Command,
+			Command: command,
 			Name:    raw.Name,
 		})
 		if err != nil {

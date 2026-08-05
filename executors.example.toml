@@ -39,6 +39,16 @@ kind = "cursor"
 name = "grok"
 command = "grok --no-alt-screen"
 
+[[executors]]
+name = "pi"
+command = "pi"
+kind = "pi"
+
+[[executors]]
+name = "opencode"
+command = "opencode"
+kind = "opencode"
+
 # ---------------------------------------------------------------------------
 # Autonomous profile (high risk) — UNCOMMENT ONLY IF YOU ACCEPT THE RISK
 # ---------------------------------------------------------------------------
@@ -54,6 +64,17 @@ command = "grok --no-alt-screen"
 # name = "grok"
 # command = "grok --no-alt-screen --permission-mode bypassPermissions"
 #
+# [[executors]]
+# name = "opencode"
+# command = "opencode --auto"
+# kind = "opencode"
+#
+# Pi is already permissive by default. Calendar may append --no-extensions so
+# extension ui.confirm gates cannot stall unattended work. Brain/daemon inject
+# an absolute --session path for Zen-owned Pi sessions.
+#
 # Brain-delegated Codex sessions may still append
 # --dangerously-bypass-approvals-and-sandbox in current daemon code even when
 # the base command is plain "codex". Treat Brain delegation as elevated trust.
+# OpenCode --auto is only derived for autonomous Brain/Calendar work; ordinary
+# interactive OpenCode stays plain "opencode".

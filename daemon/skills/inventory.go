@@ -254,14 +254,14 @@ func normalizeInventoryOptions(options InventoryOptions) (InventoryOptions, erro
 }
 
 func inventoryRoots(options InventoryOptions, projectLock, globalLock map[string]lockEntry) []inventoryRoot {
-	roots := make([]inventoryRoot, 0, 9)
+	roots := make([]inventoryRoot, 0, 14)
 	if options.CWD != "" {
 		roots = append(roots,
 			inventoryRoot{
 				path:       filepath.Join(options.CWD, ".agents", "skills"),
 				label:      "shared project Skills directory",
 				scope:      ScopeProject,
-				agents:     []Agent{AgentCodex, AgentCursor},
+				agents:     []Agent{AgentCodex, AgentCursor, AgentOpenCode},
 				manager:    ManagerUnknown,
 				provenance: "shared project Skills directory",
 				lock:       projectLock,
@@ -275,7 +275,29 @@ func inventoryRoots(options InventoryOptions, projectLock, globalLock map[string
 				provenance: "Claude Code project Skills directory",
 				lock:       projectLock,
 			},
+			inventoryRoot{
+				path:       filepath.Join(options.CWD, ".opencode", "skills"),
+				label:      "OpenCode project Skills directory",
+				scope:      ScopeProject,
+				agents:     []Agent{AgentOpenCode},
+				manager:    ManagerUnknown,
+				provenance: "OpenCode project Skills directory",
+				lock:       projectLock,
+			},
+			inventoryRoot{
+				path:       filepath.Join(options.CWD, ".pi", "skills"),
+				label:      "Pi project Skills directory",
+				scope:      ScopeProject,
+				agents:     []Agent{AgentPi},
+				manager:    ManagerUnknown,
+				provenance: "Pi project Skills directory",
+				lock:       projectLock,
+			},
 		)
+	}
+	configHome := filepath.Join(options.Home, ".config")
+	if xdg := strings.TrimSpace(os.Getenv("XDG_CONFIG_HOME")); xdg != "" {
+		configHome = xdg
 	}
 	roots = append(roots,
 		inventoryRoot{
@@ -312,6 +334,24 @@ func inventoryRoots(options InventoryOptions, projectLock, globalLock map[string
 			agents:     []Agent{AgentCursor},
 			manager:    ManagerUnknown,
 			provenance: "Cursor global Skills directory",
+			lock:       globalLock,
+		},
+		inventoryRoot{
+			path:       filepath.Join(configHome, "opencode", "skills"),
+			label:      "OpenCode global Skills directory",
+			scope:      ScopeGlobal,
+			agents:     []Agent{AgentOpenCode},
+			manager:    ManagerUnknown,
+			provenance: "OpenCode global Skills directory",
+			lock:       globalLock,
+		},
+		inventoryRoot{
+			path:       filepath.Join(options.Home, ".pi", "agent", "skills"),
+			label:      "Pi global Skills directory",
+			scope:      ScopeGlobal,
+			agents:     []Agent{AgentPi},
+			manager:    ManagerUnknown,
+			provenance: "Pi global Skills directory",
 			lock:       globalLock,
 		},
 		inventoryRoot{
@@ -828,7 +868,10 @@ func appendBinding(target *[]SkillBinding, binding SkillBinding) {
 }
 
 func sortAgents(agents []Agent) {
-	rank := map[Agent]int{AgentCodex: 0, AgentClaudeCode: 1, AgentCursor: 2, AgentGrok: 3}
+	rank := map[Agent]int{
+		AgentCodex: 0, AgentClaudeCode: 1, AgentCursor: 2,
+		AgentOpenCode: 3, AgentPi: 4, AgentGrok: 5,
+	}
 	sort.Slice(agents, func(i, j int) bool { return rank[agents[i]] < rank[agents[j]] })
 }
 

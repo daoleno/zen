@@ -10,7 +10,7 @@ The [TestFlight Preview public invitation](https://testflight.apple.com/join/rTK
 
 ## Supported mobile interfaces
 
-The agent interface is shared React Native code, not an Android-only feature. Codex, Claude Code, Cursor Agent, and Grok are classified as structured-chat agents by `supportsChatInterface` in `app/app/terminal/useTerminalRouteModel.ts`.
+The agent interface is shared React Native code, not an Android-only feature. Codex, Claude Code, Cursor Agent, Grok, Pi, and OpenCode are classified as structured-chat agents by `supportsChatInterface` in `app/app/terminal/useTerminalRouteModel.ts`.
 
 For all four agent kinds on both Android and iOS:
 
@@ -88,7 +88,7 @@ For Simulator testing on the same Mac, a locally reachable address can be used. 
 An end-to-end terminal check should cover:
 
 1. Pair and reconnect without reusing an expired enrollment token.
-2. Confirm Codex, Claude Code, Cursor Agent, or Grok sessions appear in Sessions.
+2. Confirm Codex, Claude Code, Cursor Agent, Grok, Pi, or OpenCode sessions appear in Sessions.
 3. Open a structured agent session and verify Chat is the default interface.
 4. Toggle to Terminal and attach to its tmux session.
 5. Confirm existing output, cursor, colors, and tmux status are rendered.

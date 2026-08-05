@@ -1,5 +1,5 @@
 import type { ConnectionState } from '../store/agents';
-import { isClaudeCommand, isCodexCommand, isCursorAgentCommand, isGrokCommand } from './agentCommands';
+import { isClaudeCommand, isCodexCommand, isCursorAgentCommand, isGrokCommand, isOpenCodeCommand, isPiCommand } from './agentCommands';
 import type { AgentKind } from './agentPresentation';
 
 export function agentKindFromCommand(command?: string): AgentKind {
@@ -7,6 +7,8 @@ export function agentKindFromCommand(command?: string): AgentKind {
   if (isCodexCommand(command)) return 'codex';
   if (isCursorAgentCommand(command)) return 'cursor';
   if (isGrokCommand(command)) return 'grok';
+  if (isPiCommand(command)) return 'pi';
+  if (isOpenCodeCommand(command)) return 'opencode';
   return 'terminal';
 }
 

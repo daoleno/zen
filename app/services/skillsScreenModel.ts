@@ -33,6 +33,8 @@ export const MANAGED_SKILL_AGENTS: readonly ManagedSkillAgent[] = [
   "codex",
   "claude-code",
   "cursor",
+  "opencode",
+  "pi",
 ];
 
 export type SkillsAgentCounts = Record<ManagedSkillAgent, number>;
@@ -103,6 +105,8 @@ export function skillsAgentCounts(
     codex: 0,
     "claude-code": 0,
     cursor: 0,
+    opencode: 0,
+    pi: 0,
   };
   for (const skill of inventory?.skills ?? []) {
     for (const agent of MANAGED_SKILL_AGENTS) {

@@ -1,4 +1,4 @@
-export type SkillAgent = "codex" | "claude-code" | "cursor" | "grok";
+export type SkillAgent = "codex" | "claude-code" | "cursor" | "opencode" | "pi" | "grok";
 export type ManagedSkillAgent = Exclude<SkillAgent, "grok">;
 export type SkillScope =
   "project" | "global" | "mixed" | "plugin" | "builtin" | "unknown";
@@ -125,11 +125,13 @@ export type SkillsRequestState<T> =
   | { status: "empty"; generation: number; data: T; error?: undefined }
   | { status: "error"; generation: number; data?: undefined; error: string };
 
-const AGENTS = new Set<SkillAgent>(["codex", "claude-code", "cursor", "grok"]);
+const AGENTS = new Set<SkillAgent>(["codex", "claude-code", "cursor", "opencode", "pi", "grok"]);
 const MANAGED_AGENTS = new Set<ManagedSkillAgent>([
   "codex",
   "claude-code",
   "cursor",
+  "opencode",
+  "pi",
 ]);
 const SCOPES = new Set<SkillScope>([
   "project",
@@ -368,6 +370,10 @@ export function skillAgentLabel(agent: SkillAgent): string {
       return "Claude Code";
     case "cursor":
       return "Cursor";
+    case "opencode":
+      return "OpenCode";
+    case "pi":
+      return "Pi";
     case "grok":
       return "Grok";
   }

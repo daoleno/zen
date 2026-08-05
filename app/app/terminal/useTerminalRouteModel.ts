@@ -119,7 +119,9 @@ export function supportsChatInterface(
     kind === "claude" ||
     kind === "codex" ||
     kind === "cursor" ||
-    kind === "grok"
+    kind === "grok" ||
+    kind === "pi" ||
+    kind === "opencode"
   );
 }
 

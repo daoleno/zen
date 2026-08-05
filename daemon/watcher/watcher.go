@@ -24,6 +24,8 @@ const codexInputStartupStallTimeout = 30 * time.Second
 const cursorInputReadyTimeout = 25 * time.Second
 const claudeInputReadyTimeout = 12 * time.Second
 const grokInputReadyTimeout = 15 * time.Second
+const piInputReadyTimeout = 15 * time.Second
+const openCodeInputReadyTimeout = 15 * time.Second
 
 var cursorInputReadyRe = regexp.MustCompile(`(?im)\b(run\s+everything|composer\s+[0-9][^\n]*\n\s*~?[/\w.-].*)\b`)
 var cursorWorkspaceTrustRe = regexp.MustCompile(`(?im)\bworkspace\s+trust\s+required\b`)
@@ -42,6 +44,21 @@ var claudeModeFooterRe = regexp.MustCompile(`(?i)(bypass permissions|manual mode
 // Grok TUI ready: model/footer chrome plus the empty/ready composer prompt glyph.
 var grokChromeReadyRe = regexp.MustCompile(`(?im)(\bgrok\s+[0-9]|always-approve|enter\s*:\s*send|shift\+tab:mode)`)
 var grokPromptReadyRe = regexp.MustCompile(`(?m)[│┃]\s*❯|^\s*❯`)
+
+// Pi TUI ready (captured 0.73.1): version header, paired empty editor rules, and
+// a footer with cwd/usage/model. Overlays and changelog floods are not ready.
+var piVersionRe = regexp.MustCompile(`(?im)\bpi\s+v\d+\.\d+\.\d+\b`)
+var piEditorBorderRe = regexp.MustCompile(`(?m)^─{16,}$`)
+var piChromeRe = regexp.MustCompile(`(?im)(escape interrupt|/ commands|! bash)`)
+
+// OpenCode TUI ready (captured 1.18.13): empty composer placeholder, agent/model
+// line, and footer chrome with cwd/path left and semver right. Model overlays
+// are not ready. Do not treat arbitrary pane semver (tool output, deps) as
+// OpenCode's version footer.
+var openCodeComposerPlaceholderRe = regexp.MustCompile(`(?im)Ask anything\.\.\.`)
+var openCodeAgentLineRe = regexp.MustCompile(`(?im)\b(Build|Plan|Ask)\b[^\n]*[·•]`)
+var openCodeVersionFooterRe = regexp.MustCompile(`(?m)^\s*(?:~/|/|\.{1,2}/|[A-Za-z]:\\)\S*(?:\s+\S+)*?\s{2,}\d+\.\d+\.\d+\s*$`)
+var openCodeBlockedOverlayRe = regexp.MustCompile(`(?im)(connect provider|sign in|permission required|select a model|choose a model|trust this)`)
 
 type targetProcessIdentity struct {
 	Command         string
@@ -1825,6 +1842,12 @@ func isAgentInputReady(command, content string) bool {
 	if isGrokCommand(command) || looksLikeGrokPane(content) {
 		return isGrokInputReady(content)
 	}
+	if isPiCommand(command) {
+		return isPiInputReady(content)
+	}
+	if isOpenCodeCommand(command) || looksLikeOpenCodePane(content) {
+		return isOpenCodeInputReady(content)
+	}
 	return strings.TrimSpace(content) != ""
 }
 
@@ -1913,9 +1936,12 @@ func needsInputReadinessWait(command, content string) bool {
 		isCursorAgentCommand(command) ||
 		isClaudeCommand(command) ||
 		isGrokCommand(command) ||
+		isPiCommand(command) ||
+		isOpenCodeCommand(command) ||
 		strings.Contains(lowerContent, "openai codex") ||
 		strings.Contains(lowerContent, "cursor agent") ||
-		looksLikeGrokPane(content)
+		looksLikeGrokPane(content) ||
+		looksLikeOpenCodePane(content)
 }
 
 func isCodexCommand(command string) bool {
@@ -1934,6 +1960,51 @@ func isGrokCommand(command string) bool {
 func isClaudeCommand(command string) bool {
 	base := commandExecutableBase(command)
 	return base == "claude" || base == "cc"
+}
+
+func isPiCommand(command string) bool {
+	return commandExecutableBase(command) == "pi"
+}
+
+func isOpenCodeCommand(command string) bool {
+	return commandExecutableBase(command) == "opencode"
+}
+
+func isPiInputReady(content string) bool {
+	if strings.TrimSpace(content) == "" {
+		return false
+	}
+	if !piVersionRe.MatchString(content) && !piChromeRe.MatchString(content) {
+		return false
+	}
+	borders := piEditorBorderRe.FindAllStringIndex(content, -1)
+	if len(borders) < 2 {
+		return false
+	}
+	// Empty editor: two horizontal rules with only blank/whitespace between them.
+	between := content[borders[len(borders)-2][1]:borders[len(borders)-1][0]]
+	if strings.TrimSpace(between) != "" {
+		return false
+	}
+	return true
+}
+
+func isOpenCodeInputReady(content string) bool {
+	if strings.TrimSpace(content) == "" {
+		return false
+	}
+	if openCodeBlockedOverlayRe.MatchString(content) {
+		return false
+	}
+	return openCodeComposerPlaceholderRe.MatchString(content) &&
+		openCodeAgentLineRe.MatchString(content) &&
+		openCodeVersionFooterRe.MatchString(content)
+}
+
+func looksLikeOpenCodePane(content string) bool {
+	lower := strings.ToLower(content)
+	return strings.Contains(lower, "ask anything...") ||
+		(strings.Contains(lower, "tab agents") && strings.Contains(lower, "ctrl+p commands"))
 }
 
 // commandExecutableBase returns filepath.Base of the launch executable.
@@ -2178,6 +2249,12 @@ func inputReadyTimeout(command string) time.Duration {
 	}
 	if isGrokCommand(command) {
 		return grokInputReadyTimeout
+	}
+	if isPiCommand(command) {
+		return piInputReadyTimeout
+	}
+	if isOpenCodeCommand(command) {
+		return openCodeInputReadyTimeout
 	}
 	return initialInputReadyTimeout
 }
@@ -3082,6 +3159,10 @@ func agentProviderFamily(command string) string {
 		return "cursor-agent"
 	case "grok":
 		return "grok"
+	case "pi":
+		return "pi"
+	case "opencode":
+		return "opencode"
 	default:
 		return ""
 	}
@@ -3210,6 +3291,32 @@ func agentCommandFromProcess(proc processInfo) string {
 		}
 		return "grok"
 	}
+	// Exact basename only for pi: avoid substring false positives (pip, pixel).
+	if lowerComm == "pi" || processArgsExecutableBase(lowerArgs) == "pi" {
+		return "pi"
+	}
+	if lowerComm == "opencode" || processArgsExecutableBase(lowerArgs) == "opencode" ||
+		strings.Contains(lowerArgs, "/bin/opencode") || strings.Contains(lowerArgs, " opencode ") ||
+		strings.HasPrefix(lowerArgs, "opencode ") {
+		return "opencode"
+	}
+	return ""
+}
+
+// processArgsExecutableBase returns filepath.Base of the first non-shell/env
+// field in a process args string. Unlike substring path checks, this rejects
+// near-misses such as /bin/pip for provider "pi".
+func processArgsExecutableBase(args string) string {
+	fields := strings.Fields(strings.TrimSpace(args))
+	for _, field := range fields {
+		base := normalizeCommand(field)
+		switch base {
+		case "", "env", "node", "nodejs", "bun", "deno", "python", "python3", "sh", "bash", "dash", "zsh", "fish":
+			continue
+		default:
+			return base
+		}
+	}
 	return ""
 }
 
@@ -3217,9 +3324,9 @@ func agentProcessScore(proc processInfo, detected string) int {
 	lowerComm := normalizeCommand(proc.comm)
 	detectedName := agentCommandName(detected)
 	switch {
-	case detectedName == "codex" || detectedName == "grok":
+	case detectedName == "codex" || detectedName == "grok" || detectedName == "pi" || detectedName == "opencode":
 		score := 50
-		if lowerComm == "codex" || lowerComm == "grok" {
+		if lowerComm == "codex" || lowerComm == "grok" || lowerComm == "pi" || lowerComm == "opencode" {
 			score = 100
 		}
 		if resume, _ := commandResumeArg(detected); resume {
@@ -3253,7 +3360,7 @@ func isGrokResumeCommandLine(command string) bool {
 
 func isAgentCommand(command string) bool {
 	name := agentCommandName(command)
-	return name == "claude" || name == "claude-code" || name == "codex" || name == "cursor-agent" || name == "grok" || name == "cc"
+	return name == "claude" || name == "claude-code" || name == "codex" || name == "cursor-agent" || name == "grok" || name == "cc" || name == "pi" || name == "opencode"
 }
 
 func agentCommandName(command string) string {

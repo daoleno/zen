@@ -2,9 +2,11 @@ package work
 
 import (
 	"crypto/sha256"
+	"encoding/json"
 	"fmt"
 	"path/filepath"
 	"testing"
+	"time"
 )
 
 func TestProviderAdmissionDigestPreservesEmbeddedWrapperMarkers(t *testing.T) {
@@ -20,6 +22,8 @@ func TestProviderAdmissionDigestPreservesEmbeddedWrapperMarkers(t *testing.T) {
 		AgentProviderCursor,
 		AgentProviderClaude,
 		AgentProviderGrok,
+		AgentProviderPi,
+		AgentProviderOpenCode,
 	} {
 		for _, payload := range payloads {
 			t.Run(provider+"/"+fmt.Sprintf("%x", sha256.Sum256([]byte(payload))), func(t *testing.T) {
@@ -88,10 +92,51 @@ func providerAdmissionFixtureEvent(
 			t.Fatal(err)
 		}
 		return firstAdmissionFixtureEvent(t, conversation.Events)
+	case AgentProviderPi:
+		path := filepath.Join(t.TempDir(), "pi-admission.jsonl")
+		writeJSONL(t, path,
+			map[string]any{
+				"type": "session", "version": 3, "id": "pi-admission",
+				"timestamp": "2026-08-06T02:00:00.000Z", "cwd": "/repo",
+			},
+			map[string]any{
+				"type": "message", "id": "pi-user", "parentId": nil,
+				"timestamp": "2026-08-06T02:00:01.000Z",
+				"message":   map[string]any{"role": "user", "content": payload},
+			},
+		)
+		conversation, err := parsePiConversation(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return firstAdmissionFixtureEvent(t, conversation.Events)
+	case AgentProviderOpenCode:
+		dbPath := filepath.Join(t.TempDir(), "opencode-admission.db")
+		started := time.Date(2026, 8, 6, 2, 0, 0, 0, time.UTC)
+		createOpenCodeFixtureDB(t, dbPath, []openCodeSessionSeed{
+			{ID: "ses_admit", Directory: "/repo", CreatedMS: started.UnixMilli(), UpdatedMS: started.Add(time.Second).UnixMilli()},
+		}, []openCodeMessageSeed{
+			{ID: "msg_user", SessionID: "ses_admit", CreatedMS: started.UnixMilli(), Data: `{"role":"user"}`},
+		}, []openCodePartSeed{
+			{ID: "p1", MessageID: "msg_user", SessionID: "ses_admit", CreatedMS: started.UnixMilli(), Data: mustOpenCodeTextPart(payload)},
+		})
+		conversation, err := parseOpenCodeConversation(dbPath, "ses_admit")
+		if err != nil {
+			t.Fatal(err)
+		}
+		return firstAdmissionFixtureEvent(t, conversation.Events)
 	default:
 		t.Fatalf("unsupported provider %q", provider)
 		return CodexConversationEvent{}
 	}
+}
+
+func mustOpenCodeTextPart(payload string) string {
+	raw, err := json.Marshal(map[string]any{"type": "text", "text": payload})
+	if err != nil {
+		panic(err)
+	}
+	return string(raw)
 }
 
 func firstAdmissionFixtureEvent(

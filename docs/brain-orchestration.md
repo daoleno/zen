@@ -45,7 +45,7 @@ encoded envelope, or a fetch instruction. The stable Event ID is the optional
 receipt in a bounded receiver-side tmux ledger. Each retained receipt carries
 the payload hash and an accepted or ambiguous outcome. Zen writes and confirms
 ambiguity before provider mutation, then promotes that same entry to accepted
-only after the submit queue succeeds. Codex, Claude Code, Cursor, Grok, and
+only after the submit queue succeeds. Codex, Claude Code, Cursor, Grok, Pi, OpenCode, and
 future interactive providers share one per-Session input serializer and one
 target-bound tmux command queue: replace the current unsent draft, paste the
 exact original UTF-8 payload, send the provider adapter's submit key once, and

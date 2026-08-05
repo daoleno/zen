@@ -60,7 +60,7 @@ func ValidateCatalogIdentity(id, source, name string) error {
 
 func ValidateAgent(agent Agent) error {
 	switch agent {
-	case AgentCodex, AgentClaudeCode, AgentCursor:
+	case AgentCodex, AgentClaudeCode, AgentCursor, AgentOpenCode, AgentPi:
 		return nil
 	case AgentGrok:
 		return errors.New("Grok is not an official skills CLI target")
@@ -94,8 +94,8 @@ func ValidateCWD(value string, required bool) (string, error) {
 }
 
 func validateAgents(values []Agent) ([]Agent, error) {
-	if len(values) == 0 || len(values) > 3 {
-		return nil, errors.New("choose between one and three supported agents")
+	if len(values) == 0 || len(values) > 5 {
+		return nil, errors.New("choose between one and five supported agents")
 	}
 	seen := make(map[Agent]struct{}, len(values))
 	validated := make([]Agent, 0, len(values))

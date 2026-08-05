@@ -114,7 +114,7 @@ export function AgentKindIcon({
     );
   }
 
-  if (kind === 'claude' || kind === 'codex' || kind === 'cursor' || kind === 'grok') {
+  if (kind === 'claude' || kind === 'codex' || kind === 'cursor' || kind === 'grok' || kind === 'pi' || kind === 'opencode') {
     return content;
   }
 
@@ -164,6 +164,28 @@ function renderContent({
       >
         <Grok size={iconSize} color={theme.colors.textPrimary} />
       </View>
+    );
+  }
+
+  if (kind === 'pi') {
+    return (
+      <FlavorLetterBadge
+        letter="π"
+        backgroundColor="#1F6F5F"
+        textColor="#F4FFFB"
+        size={iconSize}
+      />
+    );
+  }
+
+  if (kind === 'opencode') {
+    return (
+      <FlavorLetterBadge
+        letter="O"
+        backgroundColor="#F5A524"
+        textColor="#1A1205"
+        size={iconSize}
+      />
     );
   }
 

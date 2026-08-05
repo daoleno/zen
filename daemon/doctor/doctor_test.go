@@ -9,6 +9,7 @@ import (
 	"io"
 	"net"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -616,6 +617,208 @@ echo "unexpected: $*" >&2
 exit 1
 `
 	writeExec(t, filepath.Join(binDir, name), script)
+}
+
+func TestParseOpenCodeModelsAndDBPathProbes(t *testing.T) {
+	if got := parseOpenCodeModelsProbe([]byte("openai/gpt-5\nopencode/big-pickle\n"), nil); got != StatusOK {
+		t.Fatalf("models ok = %s", got)
+	}
+	if got := parseOpenCodeModelsProbe(nil, errors.New("exit 1")); got != StatusFail {
+		t.Fatalf("models err = %s", got)
+	}
+	if got := parseOpenCodeModelsProbe([]byte("\n\n"), nil); got != StatusUnknown {
+		t.Fatalf("models empty = %s", got)
+	}
+	if got := parseOpenCodeDBPathProbe([]byte("/home/user/.local/share/opencode/opencode.db\n"), nil); got != StatusOK {
+		t.Fatalf("db path ok = %s", got)
+	}
+	if got := parseOpenCodeDBPathProbe(nil, errors.New("exit 1")); got != StatusFail {
+		t.Fatalf("db path err = %s", got)
+	}
+	if got := parseOpenCodeDBPathProbe([]byte("relative.db"), nil); got != StatusUnknown {
+		t.Fatalf("relative db path = %s", got)
+	}
+	if got := parseOpenCodeDBPathProbe([]byte("line1\nline2\n"), nil); got != StatusUnknown {
+		t.Fatalf("multiline db path = %s", got)
+	}
+}
+
+func TestOpenCodeDoctorProbesAreSecretSafeAndNonMutating(t *testing.T) {
+	home := t.TempDir()
+	binDir := t.TempDir()
+	stateDir := filepath.Join(home, ".zen")
+	writeFakeTmux(t, binDir)
+	dbPath := filepath.Join(home, ".local", "share", "opencode", "opencode.db")
+	writeFakeOpenCode(t, binDir, openCodeFakeBehavior{
+		authList: "1 credentials\nopenai oauth\n",
+		models:   "openai/gpt-5\nopencode/big-pickle\n",
+		dbPath:   dbPath,
+	})
+	writeExecutorsTOML(t, home, `
+delegated_executor = "opencode"
+
+[[executors]]
+name = "opencode"
+command = "opencode"
+`)
+
+	var seen []string
+	report, err := Run(Options{
+		Home:          home,
+		StateDir:      stateDir,
+		ExecutorsPath: filepath.Join(home, ".zen", "executors.toml"),
+		Addr:          "127.0.0.1:0",
+		PathEnv:       binDir,
+		Now:           func() time.Time { return time.Date(2026, 8, 6, 10, 0, 0, 0, time.UTC) },
+		Listen: func(network, address string) (io.Closer, error) {
+			return nopCloser{}, nil
+		},
+		HTTPGet: func(ctx context.Context, url string) (int, []byte, error) {
+			return 0, nil, errors.New("refused")
+		},
+		RunCommand: func(ctx context.Context, name string, args ...string) ([]byte, error) {
+			seen = append(seen, strings.Join(append([]string{filepath.Base(name)}, args...), " "))
+			cmd := exec.CommandContext(ctx, name, args...)
+			cmd.Env = append(os.Environ(), "PATH="+binDir)
+			return cmd.CombinedOutput()
+		},
+	})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	item := findExecutor(report, "opencode")
+	if item == nil {
+		t.Fatal("missing opencode executor check")
+	}
+	if item.ModelsStatus != StatusOK || item.DBPathStatus != StatusOK {
+		t.Fatalf("probe status models=%s db=%s summary=%q", item.ModelsStatus, item.DBPathStatus, item.Summary)
+	}
+	joined := strings.Join(seen, " | ")
+	if !strings.Contains(joined, "opencode models") || !strings.Contains(joined, "opencode db path") {
+		t.Fatalf("expected models and db path probes, seen=%v", seen)
+	}
+	for _, call := range seen {
+		if strings.Contains(call, "--refresh") {
+			t.Fatalf("models probe must not refresh: %q", call)
+		}
+	}
+	raw, err := json.Marshal(report)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(raw), "openai/gpt-5") || strings.Contains(string(raw), "oauth") {
+		t.Fatalf("report leaked probe body: %s", raw)
+	}
+	if strings.Contains(item.Summary, "openai/gpt-5") || strings.Contains(item.Summary, dbPath) {
+		t.Fatalf("summary leaked probe body: %q", item.Summary)
+	}
+}
+
+func TestOpenCodeDoctorProbeFailuresStayHonest(t *testing.T) {
+	home := t.TempDir()
+	binDir := t.TempDir()
+	stateDir := filepath.Join(home, ".zen")
+	writeFakeTmux(t, binDir)
+	writeFakeOpenCode(t, binDir, openCodeFakeBehavior{
+		authList:   "",
+		modelsFail: true,
+		dbFail:     true,
+	})
+	writeExecutorsTOML(t, home, `
+[[executors]]
+name = "opencode"
+command = "opencode"
+`)
+	report, err := Run(Options{
+		Home:          home,
+		StateDir:      stateDir,
+		ExecutorsPath: filepath.Join(home, ".zen", "executors.toml"),
+		Addr:          "127.0.0.1:0",
+		PathEnv:       binDir,
+		Now:           func() time.Time { return time.Date(2026, 8, 6, 10, 0, 0, 0, time.UTC) },
+		Listen: func(network, address string) (io.Closer, error) {
+			return nopCloser{}, nil
+		},
+		HTTPGet: func(ctx context.Context, url string) (int, []byte, error) {
+			return 0, nil, errors.New("refused")
+		},
+	})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	item := findExecutor(report, "opencode")
+	if item == nil {
+		t.Fatal("missing opencode executor check")
+	}
+	if item.ModelsStatus != StatusFail || item.DBPathStatus != StatusFail {
+		t.Fatalf("expected failed probes, got models=%s db=%s", item.ModelsStatus, item.DBPathStatus)
+	}
+	if item.Auth != AuthUnknown {
+		t.Fatalf("auth must stay unknown on empty auth list, got %s", item.Auth)
+	}
+	if !strings.Contains(item.Summary, "models probe failed") || !strings.Contains(item.Summary, "db path probe failed") {
+		t.Fatalf("summary = %q", item.Summary)
+	}
+}
+
+type openCodeFakeBehavior struct {
+	authList   string
+	models     string
+	dbPath     string
+	modelsFail bool
+	dbFail     bool
+}
+
+func writeFakeOpenCode(t *testing.T, binDir string, behavior openCodeFakeBehavior) {
+	t.Helper()
+	script := fmt.Sprintf(`#!/bin/sh
+set -e
+if [ "$1" = "--version" ] || [ "$1" = "-v" ]; then
+  echo "1.18.13"
+  exit 0
+fi
+if [ "$1" = "auth" ] && [ "$2" = "list" ]; then
+  printf '%%s' %q
+  exit 0
+fi
+if [ "$1" = "models" ]; then
+  if [ %q = "1" ]; then
+    echo "models failed" >&2
+    exit 1
+  fi
+  for arg in "$@"; do
+    if [ "$arg" = "--refresh" ]; then
+      echo "refresh refused" >&2
+      exit 2
+    fi
+  done
+  printf '%%s' %q
+  exit 0
+fi
+if [ "$1" = "db" ] && [ "$2" = "path" ]; then
+  if [ %q = "1" ]; then
+    echo "db failed" >&2
+    exit 1
+  fi
+  printf '%%s\n' %q
+  exit 0
+fi
+echo "unexpected: $*" >&2
+exit 1
+`, behavior.authList,
+		bool01(behavior.modelsFail),
+		behavior.models,
+		bool01(behavior.dbFail),
+		behavior.dbPath,
+	)
+	writeExec(t, filepath.Join(binDir, "opencode"), script)
+}
+
+func bool01(v bool) string {
+	if v {
+		return "1"
+	}
+	return "0"
 }
 
 func writeExec(t *testing.T, path, body string) {

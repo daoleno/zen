@@ -410,7 +410,7 @@ func (e env) checkExecutors() ExecutorsCheck {
 	default:
 		check.Status = StatusFail
 		check.Remediation = RemediationInstallExecutor
-		check.Summary = "no usable executor found; install and authenticate at least one of Codex, Claude, Cursor, or Grok"
+		check.Summary = "no usable executor found; install and authenticate at least one of Codex, Claude, Cursor, Grok, Pi, or OpenCode"
 		check.RecommendationConfidence = ConfidenceNone
 	}
 	return check
@@ -467,6 +467,9 @@ func (e env) probeExecutor(name string, executor work.Executor) ExecutorCheck {
 	item.BinaryPath = path
 	item.Version = e.probeVersion(path, agent.Provider)
 	item.Auth = e.probeAuth(path, agent.Provider)
+	if agent.Provider == work.AgentProviderOpenCode {
+		e.probeOpenCodeRuntime(path, &item)
+	}
 
 	switch item.Auth {
 	case AuthAuthenticated:
@@ -489,7 +492,92 @@ func (e env) probeExecutor(name string, executor work.Executor) ExecutorCheck {
 		item.Status = StatusWarn
 		item.Summary = fmt.Sprintf("%s runnable (%s); auth state unknown", item.ID, item.Provider)
 	}
+	if agent.Provider == work.AgentProviderOpenCode {
+		item.Summary = appendOpenCodeProbeSummary(item.Summary, item.ModelsStatus, item.DBPathStatus)
+	}
 	return item
+}
+
+// probeOpenCodeRuntime runs secret-safe, non-mutating OpenCode probes required
+// by the product contract: `models` without --refresh, and `db path`. Output
+// bodies are never copied into the report.
+func (e env) probeOpenCodeRuntime(binaryPath string, item *ExecutorCheck) {
+	item.ModelsStatus = StatusUnknown
+	item.DBPathStatus = StatusUnknown
+
+	ctx, cancel := context.WithTimeout(context.Background(), e.opts.ProbeTimeout)
+	defer cancel()
+	modelsOut, modelsErr := e.opts.RunCommand(ctx, binaryPath, "models")
+	item.ModelsStatus = parseOpenCodeModelsProbe(modelsOut, modelsErr)
+
+	ctx2, cancel2 := context.WithTimeout(context.Background(), e.opts.ProbeTimeout)
+	defer cancel2()
+	dbOut, dbErr := e.opts.RunCommand(ctx2, binaryPath, "db", "path")
+	item.DBPathStatus = parseOpenCodeDBPathProbe(dbOut, dbErr)
+}
+
+func parseOpenCodeModelsProbe(out []byte, err error) Status {
+	if err != nil {
+		return StatusFail
+	}
+	lines := 0
+	for _, line := range strings.Split(string(out), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		lower := strings.ToLower(line)
+		if strings.Contains(lower, "refresh") && strings.Contains(lower, "error") {
+			return StatusFail
+		}
+		lines++
+	}
+	if lines == 0 {
+		return StatusUnknown
+	}
+	return StatusOK
+}
+
+func parseOpenCodeDBPathProbe(out []byte, err error) Status {
+	if err != nil {
+		return StatusFail
+	}
+	path := strings.TrimSpace(string(out))
+	if path == "" {
+		return StatusUnknown
+	}
+	// Reject multi-line or clearly non-path payloads without echoing them.
+	if strings.ContainsAny(path, "\n\r\t") {
+		return StatusUnknown
+	}
+	if !filepath.IsAbs(path) {
+		return StatusUnknown
+	}
+	return StatusOK
+}
+
+func appendOpenCodeProbeSummary(summary string, models, dbPath Status) string {
+	parts := make([]string, 0, 2)
+	switch models {
+	case StatusOK:
+		parts = append(parts, "models ok")
+	case StatusFail:
+		parts = append(parts, "models probe failed")
+	case StatusUnknown:
+		parts = append(parts, "models unknown")
+	}
+	switch dbPath {
+	case StatusOK:
+		parts = append(parts, "db path ok")
+	case StatusFail:
+		parts = append(parts, "db path probe failed")
+	case StatusUnknown:
+		parts = append(parts, "db path unknown")
+	}
+	if len(parts) == 0 {
+		return summary
+	}
+	return summary + "; " + strings.Join(parts, ", ")
 }
 
 func (e env) probeVersion(binaryPath, provider string) string {
@@ -523,6 +611,11 @@ func (e env) probeAuth(binaryPath, provider string) AuthState {
 	case work.AgentProviderGrok:
 		// Grok has login but no safe official non-interactive status command.
 		return AuthUnknown
+	case work.AgentProviderOpenCode:
+		out, err := e.opts.RunCommand(ctx, binaryPath, "auth", "list")
+		return parseOpenCodeAuth(out, err)
+	case work.AgentProviderPi:
+		return probePiAuth()
 	default:
 		return AuthUnknown
 	}
@@ -618,11 +711,72 @@ func parseCursorAuth(out []byte, err error) AuthState {
 	return AuthUnknown
 }
 
+func parseOpenCodeAuth(out []byte, err error) AuthState {
+	_ = err
+	text := strings.ToLower(string(out))
+	trimmed := strings.TrimSpace(text)
+	if trimmed == "" {
+		return AuthUnknown
+	}
+	// Never log or return raw output: auth list may include account identifiers.
+	switch {
+	case strings.Contains(trimmed, "0 credentials") &&
+		!strings.Contains(trimmed, "env") &&
+		!strings.Contains(trimmed, "provider"):
+		return AuthUnauthenticated
+	case strings.Contains(trimmed, "logged out") ||
+		strings.Contains(trimmed, "not logged") ||
+		strings.Contains(trimmed, "unauthenticated"):
+		return AuthUnauthenticated
+	case strings.Contains(trimmed, "credential") ||
+		strings.Contains(trimmed, "authenticated") ||
+		strings.Contains(trimmed, "api key") ||
+		strings.Contains(trimmed, "oauth"):
+		// Presence of credential rows is suggestive but formats vary; stay honest.
+		return AuthUnknown
+	default:
+		return AuthUnknown
+	}
+}
+
+func probePiAuth() AuthState {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return AuthUnknown
+	}
+	authPath := filepath.Join(home, ".pi", "agent", "auth.json")
+	info, err := os.Stat(authPath)
+	if err != nil || info.IsDir() || info.Size() == 0 {
+		if hasPiProviderEnv() {
+			return AuthUnknown
+		}
+		return AuthUnknown
+	}
+	// Presence of auth.json is not proof of a usable provider credential.
+	return AuthUnknown
+}
+
+func hasPiProviderEnv() bool {
+	for _, key := range []string{
+		"ANTHROPIC_API_KEY",
+		"OPENAI_API_KEY",
+		"GOOGLE_API_KEY",
+		"GEMINI_API_KEY",
+		"OPENROUTER_API_KEY",
+		"PI_API_KEY",
+	} {
+		if strings.TrimSpace(os.Getenv(key)) != "" {
+			return true
+		}
+	}
+	return false
+}
+
 func recommendHost(usable []ExecutorCheck) string {
 	if len(usable) == 0 {
 		return ""
 	}
-	prefer := []string{"codex", "claude", "agent", "grok"}
+	prefer := []string{"codex", "claude", "agent", "grok", "pi", "opencode"}
 	index := map[string]ExecutorCheck{}
 	for _, item := range usable {
 		index[item.ID] = item
@@ -633,7 +787,14 @@ func recommendHost(usable []ExecutorCheck) string {
 		}
 	}
 	// Prefer by provider if IDs differ.
-	for _, provider := range []string{work.AgentProviderCodex, work.AgentProviderClaude, work.AgentProviderCursor, work.AgentProviderGrok} {
+	for _, provider := range []string{
+		work.AgentProviderCodex,
+		work.AgentProviderClaude,
+		work.AgentProviderCursor,
+		work.AgentProviderGrok,
+		work.AgentProviderPi,
+		work.AgentProviderOpenCode,
+	} {
 		for _, item := range usable {
 			if item.Provider == provider {
 				return item.ID
