@@ -389,13 +389,19 @@ class ReleaseWorkflowContractTests(unittest.TestCase):
             workflow.index("Test release preparation and workflow contracts"),
             workflow.index("Prepare deterministic release identity and notes"),
         )
-        self.assertIn(
-            "ZEN_BUILD_TMPDIR: ${{ runner.temp }}/zen-build",
-            workflow,
+        release_job_header = workflow.split("steps:", 1)[0]
+        self.assertNotIn("runner.temp", release_job_header)
+        self.assertEqual(
+            workflow.count("ZEN_BUILD_TMPDIR: ${{ runner.temp }}/zen-build"),
+            1,
         )
+        test_step = workflow.split(
+            "- name: Test release preparation and workflow contracts",
+            1,
+        )[1].split("- name: Prepare deterministic release identity and notes", 1)[0]
         self.assertLess(
-            workflow.index('run: mkdir -p "$ZEN_BUILD_TMPDIR"'),
-            workflow.index("Test release preparation and workflow contracts"),
+            test_step.index('mkdir -p "$ZEN_BUILD_TMPDIR"'),
+            test_step.index("python3 -m unittest discover"),
         )
         permissions = workflow.split("permissions:", 1)[1].split("jobs:", 1)[0]
         self.assertEqual(
