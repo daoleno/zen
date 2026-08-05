@@ -1494,6 +1494,9 @@ func TestServiceBootstrapPromptDefaultsToAutonomousScheduling(t *testing.T) {
 		"Never close, kill, rename, repurpose, or otherwise manage sessions whose agent list entry does not have delegated=true",
 		"Keep orchestration principles in Markdown, prompts, and agent instructions",
 		"Treat a direct Work Event input as one claimed actionable delta",
+		"Research discoverable environment facts with tools or delegated agents",
+		"every currently independent required decision in one small numbered round with a recommended default",
+		"remaining unknowns have safe defaults and completion is checkable",
 		"consolidate options and a recommendation",
 	} {
 		if !strings.Contains(prompt, want) {
@@ -2129,6 +2132,16 @@ func TestStoreUsesStateAndWorkspaceDirectories(t *testing.T) {
 	}
 	if !strings.Contains(string(instructions), "Treat a direct Work Event input as one claimed actionable delta") {
 		t.Fatalf("workspace instructions do not describe Work event handling:\n%s", instructions)
+	}
+	for _, want := range []string{
+		"Research discoverable environment facts with tools or delegated agents",
+		"every currently independent required decision in one small numbered round",
+		"remaining unknowns have safe defaults",
+		"checkable completion conditions",
+	} {
+		if !strings.Contains(string(instructions), want) {
+			t.Fatalf("workspace instructions missing alignment contract %q:\n%s", want, instructions)
+		}
 	}
 	for _, want := range []string{"zen brain context --json", "zen brain playbooks --json", "zen agent list --json", "zen agent spawn -name", "zen agent capture -id", "zen agent send -id", "zen agent close -id"} {
 		if !strings.Contains(string(instructions), want) {

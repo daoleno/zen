@@ -188,7 +188,7 @@ Use ` + "`zen brain playbooks --json`" + ` for metadata: name, description, path
 ## Seed playbooks
 
 - **brain-flows** — Route situations to the right flow
-- **align** — One-question alignment before delegation
+- **align** — Decision-frontier alignment before delegation
 - **delegate-brief** — Behavioral contract for delegated agents
 - **slice-work** — Tracer-bullet work decomposition
 - **wayfind** — Fog-of-war planning for large objectives
@@ -197,7 +197,7 @@ Progressive disclosure: pick one playbook, read it fully, apply it to the curren
 `
 
 const defaultBrainFlowsPlaybook = `---
-description: Route user situations to the right Brain flow — ask-matt style router.
+description: Route user situations to the smallest Brain flow that can produce an executable brief.
 ---
 
 # Brain Flows
@@ -212,39 +212,44 @@ When intent is unclear or the task spans multiple modes, pick one flow:
 | Objective huge, map unknown | wayfind |
 | Straight execution with clear brief | delegate directly |
 
-Ask one clarifying question only if routing itself is ambiguous. Otherwise recommend a default flow and proceed.
+When routing depends on a material user decision, include it in the next align round. When it does not, choose the smallest matching flow and proceed.
 `
 
 const defaultAlignPlaybook = `---
-description: Pre-delegation alignment — one question at a time until decisions are clear.
+description: Resolve the current decision frontier in small rounds, then execute.
 ---
 
 # Align
 
-Grill before you delegate. Resolve the decision tree one question at a time.
+Resolve only decisions that materially change the outcome, risk, or user values. Keep the round small enough to answer quickly.
 
-## Loop
+## Decision-frontier loop
 
-1. State what you understand about the goal and constraints.
-2. Ask **one** question that unlocks the next decision.
-3. Wait for the answer. Do not stack questions.
-4. Repeat until acceptance criteria, scope, and verification are concrete enough to delegate or execute.
+1. State the understood goal, constraints, and concrete completion conditions.
+2. Research discoverable environment facts with available tools or delegated agents.
+3. Identify the required user decisions that are unblocked now. A decision is required only when its answer materially changes outcome, risk, or values.
+4. Ask all currently independent required decisions in one numbered round. For each decision, give a recommended default and its relevant tradeoff.
+5. Apply the answers, continue any newly unblocked research, and form another small round only when required.
+
+Unresolved research blocks only decisions that depend on it. Continue independent research and ask independent required decisions without waiting for the whole tree.
 
 ## Stop when
 
-- The user says proceed / good enough.
-- Remaining unknowns are safe to handle during execution.
-- You can write a delegate-brief without guessing.
+- The brief is executable with observable completion conditions.
+- Every remaining unknown has a safe default that does not materially change outcome, risk, or values.
 
-## Avoid
+Proceed without a mandatory final confirmation gate. Explicit confirmation remains appropriate only when the action itself is high-risk, irreversible, or permission-gated.
 
-- Multi-part questionnaires.
-- Re-interviewing resolved decisions.
-- Delegating while core product choices remain open (unless explicitly exploring).
+## Completion check
+
+- Discoverable facts were researched instead of sent back as user questions.
+- Each round contained every currently independent required decision and a recommended default.
+- Resolved decisions were not reopened without new evidence.
+- The execution or delegation brief states scope, safety constraints, verification, and expected evidence.
 `
 
 const defaultDelegateBriefPlaybook = `---
-description: Durable behavioral delegated-agent brief — contracts, not file paths.
+description: Write an executable delegated-agent contract with observable completion conditions.
 ---
 
 # Delegate Brief
@@ -266,8 +271,9 @@ Write delegated prompts as behavioral contracts. Prefer how things should work o
 ## Rules
 
 - One concern per delegated session.
-- Do not ask the agent to invent the plan.
-- Include enough context to avoid full-repo exploration.
+- Give the agent a concrete outcome and bounded implementation responsibility.
+- Include the known context and environment facts needed to begin in the named workspace.
+- Make acceptance criteria and verification observable in the agent's report.
 - File paths only when the task is a narrow patch.
 `
 

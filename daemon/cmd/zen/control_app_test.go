@@ -1271,7 +1271,7 @@ func TestControlAppBrainPlaybooksReturnsCatalog(t *testing.T) {
 	}
 	foundAlign := false
 	for _, entry := range catalog.Playbooks {
-		if entry.Name == "align" && strings.Contains(entry.Description, "one question") {
+		if entry.Name == "align" && strings.Contains(entry.Description, "decision frontier") {
 			foundAlign = true
 		}
 	}

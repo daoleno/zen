@@ -1549,7 +1549,7 @@ Agent orchestration rules:
 - Keep orchestration principles in Markdown, prompts, and agent instructions. Product code should provide tools, context, persistence, visibility, and safety boundaries rather than rigid workflow gates.
 - Treat a direct Work Event input as one claimed actionable delta; use its compact facts and inspect only its referenced change, then act, summarize, or wait.
 - After handling an Event, re-anchor to the foreground Work, verify its current status and next action, and take the next useful orchestration step before waiting.
-- Continue low-risk next steps autonomously. Ask only when critical context is missing, an action is high-risk or irreversible, credentials/permissions are needed, or the decision depends on the user's values; when blocked, consolidate options and a recommendation.
+- Continue low-risk next steps autonomously. Research discoverable environment facts with tools or delegated agents. Ask the user only for decisions that materially change outcome, risk, permissions, credentials, or user values; put every currently independent required decision in one small numbered round with a recommended default. Let unresolved research block only dependent decisions, and proceed when remaining unknowns have safe defaults and completion is checkable; when blocked, consolidate options and a recommendation.
 
 Current personality:
 %s

@@ -33,14 +33,45 @@ func TestNewStoreEnsuresSeedPlaybooks(t *testing.T) {
 			t.Fatalf("playbooks README missing %q:\n%s", marker, readme)
 		}
 	}
+	if !strings.Contains(string(readme), "Decision-frontier alignment") {
+		t.Fatalf("playbooks README missing decision-frontier catalog wording:\n%s", readme)
+	}
 
 	align, err := os.ReadFile(store.playbookPath("align.md"))
 	if err != nil {
 		t.Fatalf("read align playbook: %v", err)
 	}
-	for _, marker := range []string{"one question at a time", "Grill before you delegate"} {
+	for _, marker := range []string{
+		"decisions that materially change the outcome, risk, or user values",
+		"Research discoverable environment facts",
+		"all currently independent required decisions in one numbered round",
+		"recommended default",
+		"Unresolved research blocks only decisions that depend on it",
+		"remaining unknown has a safe default",
+		"without a mandatory final confirmation gate",
+		"observable completion conditions",
+	} {
 		if !strings.Contains(string(align), marker) {
 			t.Fatalf("align playbook missing %q:\n%s", marker, align)
+		}
+	}
+	for _, obsolete := range []string{"one question at a time", "Grill before you delegate", "Do not stack questions"} {
+		if strings.Contains(string(align), obsolete) {
+			t.Fatalf("align playbook retained obsolete %q:\n%s", obsolete, align)
+		}
+	}
+
+	delegateBrief, err := os.ReadFile(store.playbookPath("delegate-brief.md"))
+	if err != nil {
+		t.Fatalf("read delegate-brief playbook: %v", err)
+	}
+	for _, marker := range []string{
+		"concrete outcome and bounded implementation responsibility",
+		"known context and environment facts",
+		"acceptance criteria and verification observable",
+	} {
+		if !strings.Contains(string(delegateBrief), marker) {
+			t.Fatalf("delegate-brief playbook missing %q:\n%s", marker, delegateBrief)
 		}
 	}
 }
@@ -104,8 +135,11 @@ func TestPlaybookCatalogListsSeedPlaybooks(t *testing.T) {
 			t.Fatalf("playbook %q missing description", name)
 		}
 	}
-	if !strings.Contains(byName["brain-flows"].Description, "router") {
+	if !strings.Contains(byName["brain-flows"].Description, "smallest Brain flow") {
 		t.Fatalf("brain-flows description = %q", byName["brain-flows"].Description)
+	}
+	if !strings.Contains(byName["align"].Description, "decision frontier") {
+		t.Fatalf("align description = %q", byName["align"].Description)
 	}
 	if !strings.Contains(byName["wayfind"].Description, "Fog-of-war") {
 		t.Fatalf("wayfind description = %q", byName["wayfind"].Description)
@@ -121,12 +155,12 @@ func TestParsePlaybookDescription(t *testing.T) {
 		{
 			name: "frontmatter description",
 			content: `---
-description: One question at a time.
+description: Resolve the current decision frontier.
 ---
 
 # Align
 `,
-			want: "One question at a time.",
+			want: "Resolve the current decision frontier.",
 		},
 		{
 			name: "blockquote fallback",
