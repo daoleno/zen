@@ -122,7 +122,8 @@ private func validate(
 }
 
 private final class PinnedProxy {
-  private struct StartResult {
+  // File-visible so ZenLinkTransportModule can read start(completion:) payload fields.
+  fileprivate struct StartResult {
     let port: Int
     let rttMilliseconds: Int
   }
