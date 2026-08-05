@@ -37,24 +37,33 @@ status, optional owner Session, completion policy, next action, wait condition,
 and a context reference. Long plans and evidence stay in `workspace/worklog/`.
 
 Event dedupe keys are unique within one Work. An actionable Event is durably
-claimed for one Brain host Session before input is sent. The stable Event ID is
-the optional receipt in a bounded receiver-side tmux ledger. Each retained
-receipt carries the payload hash and an accepted or ambiguous outcome. Zen
-writes and confirms ambiguity before provider mutation, then promotes that same
-entry to accepted only after the submit queue succeeds. Codex, Claude Code,
-Cursor, Grok, and future interactive providers share one per-Session input
-serializer and one target-bound tmux command queue: replace the current unsent
-draft, paste the exact original UTF-8 payload, send the provider adapter's
-submit key once, and delete the buffer.
+claimed for one Brain host Session before input is sent. Zen deterministically
+renders one compact direct input containing only the Event ID, Work ID and
+title, kind, source, summary, next action, and context/payload references. It
+never includes the full objective, worklog, history, a delivery token, an
+encoded envelope, or a fetch instruction. The stable Event ID is the optional
+receipt in a bounded receiver-side tmux ledger. Each retained receipt carries
+the payload hash and an accepted or ambiguous outcome. Zen writes and confirms
+ambiguity before provider mutation, then promotes that same entry to accepted
+only after the submit queue succeeds. Codex, Claude Code, Cursor, Grok, and
+future interactive providers share one per-Session input serializer and one
+target-bound tmux command queue: replace the current unsent draft, paste the
+exact original UTF-8 payload, send the provider adapter's submit key once, and
+delete the buffer.
 
 If target identity or pane generation changes before that queue starts,
 Session Input reports a definite pre-mutation failure and atomically releases
-that exact Event claim. If the queue starts, success or an ambiguous result
-retains the claim and is never automatically replayed. The Host later reads and
-consumes the identity-bound Event with `zen brain event`. Pane history, rendered
-Composer/Footer/ANSI state, pending PTY byte counts, and elapsed time are never
-send authorization. There is no transaction journal, spool, background resume
-loop, second scheduler, replacement Event, or provider Goal delivery path.
+that exact Event claim. If the queue starts, an ambiguous result retains the
+claim and is never automatically replayed. Exact input acceptance atomically
+consumes that exact host-bound Event; consumption does not complete its Work.
+If persistence of `consumed_at` fails after acceptance, a later dispatch reads
+that exact receipt from the same Session Input ledger and finalizes consumption
+without reconstructing or resubmitting the payload. An ambiguous or unavailable
+receipt remains claimed and unconsumed.
+Pane history, rendered Composer/Footer/ANSI state, pending PTY byte counts, and
+elapsed time are never send authorization. There is no transaction journal,
+spool, background resume loop, second scheduler, replacement Event, ordinary
+Event pull, or provider Goal delivery path.
 
 Schema 2 adds host-bound delivery evidence to the existing Event record. Its
 one-way schema-1 migration binds an unresolved claim to the persisted host when
@@ -97,9 +106,13 @@ by the existing startup timeout fails once and is never replayed. The reducer
 settles the one Session turn marker; it does not create another Work object,
 Event source, scheduler, transcript parser, or workflow state machine.
 
-After Brain consumes an Event, it re-anchors to foreground Work, checks the
-current status and next action, and takes the next useful orchestration step.
-This is prompt policy, not automatic daemon workflow.
+After Brain receives a direct Event input, it re-anchors to foreground Work,
+checks the current status and next action, and takes the next useful
+orchestration step. This is prompt policy, not automatic daemon workflow. Raw
+direct Event input is removed at the user-facing conversation projection only
+when it exactly matches Zen's canonical typed input. Malformed, partial,
+reordered, padded, or otherwise noncanonical user text remains visible. Durable
+Work result cards continue to derive from Event/Work state.
 
 Calendar remains authoritative for scheduled-action occurrence claims,
 execution, canonical results, source-thread delivery, and recurrence. Brain
@@ -120,7 +133,6 @@ zen brain work get -id <work_id> --json
 zen brain work create -title "<title>" -objective "<outcome>"
 zen brain work update -id <work_id> -status <status>
 zen brain work event -id <work_id> -kind <kind> -dedupe <key> -actionable
-zen brain event --json
 
 zen agent spawn -name "<name>" -cwd <workspace> -prompt "<task>"
 zen agent spawn -work <work_id> -name "<name>" -cwd <workspace> -prompt "<task>"
@@ -137,6 +149,7 @@ Marking an item read changes only the projection; it does not alter Work
 completion or Session lifecycle.
 
 For diagnosis, inspect `orchestration.json`, `zen brain work list --json`, and
-`zen agent list --json`. A waiting item without an actionable unconsumed Event
-is intentionally idle. Do not repair that state by injecting a continuation;
-record the actual external fact as a deduplicated Event.
+`zen agent list --json`. There is no diagnostic command that consumes a claimed
+Event. A waiting item without an actionable unconsumed Event is intentionally
+idle. Do not repair that state by injecting a continuation; record the actual
+external fact as a deduplicated Event.

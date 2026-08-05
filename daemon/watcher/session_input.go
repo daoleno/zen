@@ -301,6 +301,48 @@ func (owner *sessionInputOwner) submit(
 	return owner.submitWithTurn(sessionID, expected, resolver, command, payload, receipt, nil)
 }
 
+func (owner *sessionInputOwner) receiptOutcome(
+	sessionID string,
+	expected targetProcessIdentity,
+	resolver func(string) (targetProcessIdentity, bool),
+	receipt string,
+) (InputResult, bool, error) {
+	result := InputResult{Outcome: InputNotSubmitted, Receipt: strings.TrimSpace(receipt)}
+	found := false
+	err := owner.serialized(sessionID, func() error {
+		if result.Receipt == "" || len(result.Receipt) > sessionInputReceiptMaxBytes ||
+			!utf8.ValidString(result.Receipt) {
+			return fmt.Errorf("input receipt is invalid or exceeds %d bytes", sessionInputReceiptMaxBytes)
+		}
+		if err := guardTargetIdentity(resolver, sessionID, expected); err != nil {
+			return err
+		}
+		baseline := owner.io.pane(sessionID)
+		if err := validateSessionInputPane(baseline); err != nil {
+			return err
+		}
+		ledger, err := owner.io.receiptLedger(baseline.paneID)
+		if err != nil {
+			return fmt.Errorf("read durable input receipt ledger: %w", err)
+		}
+		if err := guardTargetIdentity(resolver, sessionID, expected); err != nil {
+			return err
+		}
+		current := owner.io.pane(sessionID)
+		if err := validateSameSessionInputPane(baseline, current); err != nil {
+			return err
+		}
+		entry, exists := ledger.entry(result.Receipt)
+		if !exists {
+			return nil
+		}
+		found = true
+		result.Outcome = entry.Outcome
+		return nil
+	})
+	return result, found, err
+}
+
 func (owner *sessionInputOwner) submitDelegated(
 	sessionID string,
 	expected targetProcessIdentity,

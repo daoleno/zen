@@ -60,7 +60,7 @@ type Work struct {
 
 // WorkEvent is an append-only fact. Event.ID is also its delivery receipt.
 // Only Actionable events participate in Brain scheduling. A claimed Event is
-// bound to one Host Session and consumed by that Host's identity-bound read.
+// bound to one Host Session and consumed only after its exact input is accepted.
 type WorkEvent struct {
 	ID                    string     `json:"event_id"`
 	WorkID                string     `json:"work_id"`
@@ -432,7 +432,7 @@ func (s *Store) persistOrchestrationLocked(database orchestrationDatabase) error
 	if err := validateOrchestrationDatabase(database); err != nil {
 		return err
 	}
-	return writeJSONFile(s.orchestrationPath(), database)
+	return s.writeOrchestration(s.orchestrationPath(), database)
 }
 
 func (s *Store) nowUTC() time.Time {
@@ -863,7 +863,7 @@ func (s *Store) ClaimedActionableEvents() ([]WorkEvent, error) {
 }
 
 func workEventSchedulerEligible(database orchestrationDatabase, event WorkEvent) bool {
-	if !event.Actionable || event.ConsumedAt != nil || event.ReadAt != nil {
+	if !event.Actionable || event.ConsumedAt != nil {
 		return false
 	}
 	index := workIndex(database.BrainWork, event.WorkID)
@@ -909,26 +909,30 @@ func (s *Store) ReleaseEventClaim(eventID, hostSessionID string) error {
 	return ErrEventClaim
 }
 
-// ConsumeClaimedWorkEvent returns and consumes the one Event currently assigned
-// to hostSessionID. Host identity is the authorization boundary; Event.ID is
-// the stable receipt, so there is no projected delivery token.
-func (s *Store) ConsumeClaimedWorkEvent(hostSessionID string) (WorkEvent, Work, bool, error) {
+// ConsumeClaimedWorkEvent atomically consumes the exact Event assigned to the
+// Host after Session Input accepts that Event.ID receipt. Event and Host
+// identity together are the authorization boundary.
+func (s *Store) ConsumeClaimedWorkEvent(eventID, hostSessionID string) (WorkEvent, Work, error) {
+	eventID = strings.TrimSpace(eventID)
 	hostSessionID = strings.TrimSpace(hostSessionID)
-	if hostSessionID == "" {
-		return WorkEvent{}, Work{}, false, fmt.Errorf("Host Session is required")
+	if eventID == "" || hostSessionID == "" {
+		return WorkEvent{}, Work{}, ErrEventClaim
 	}
 	s.mu.Lock()
 	database, err := s.loadOrchestrationLocked()
 	workID := ""
 	var claimed WorkEvent
 	var item Work
-	found := false
 	if err == nil {
 		for index := range database.BrainWorkEvents {
 			event := &database.BrainWorkEvents[index]
-			if !workEventSchedulerEligible(database, *event) || event.ClaimedAt == nil ||
-				event.DeliveryHostSessionID != hostSessionID {
+			if event.ID != eventID {
 				continue
+			}
+			if !event.Actionable || event.ClaimedAt == nil || event.ConsumedAt != nil ||
+				event.DeliveryHostSessionID != hostSessionID {
+				err = ErrEventClaim
+				break
 			}
 			workID = database.BrainWorkEvents[index].WorkID
 			workIndex := -1
@@ -946,16 +950,18 @@ func (s *Store) ConsumeClaimedWorkEvent(hostSessionID string) (WorkEvent, Work, 
 			event.ConsumedAt = &now
 			claimed = *event
 			item = database.BrainWork[workIndex]
-			found = true
 			err = s.persistOrchestrationLocked(database)
 			break
+		}
+		if workID == "" && err == nil {
+			err = ErrEventClaim
 		}
 	}
 	s.mu.Unlock()
 	if err == nil && workID != "" {
 		s.broadcastWorkChange(workID)
 	}
-	return claimed, item, found, err
+	return claimed, item, err
 }
 
 func workEventIndex(events []WorkEvent, eventID string) int {

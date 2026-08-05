@@ -57,8 +57,8 @@ describe("Brain Work event source presentation", () => {
     expect(
       brainWorkEventSourceLabel(
         resultEvent({
-          work_title: "  Zen Brain Event Cards  ",
-          session_name: `zen brain event cards (${canonicalSessionID})`,
+          work_title: "  Zen Work Result Cards  ",
+          session_name: `zen work result cards (${canonicalSessionID})`,
         }),
       ),
     ).toBeUndefined();

@@ -1249,6 +1249,26 @@ func (w *Watcher) SendInputWithReceiptResult(sessionID, text, receipt string) (I
 	)
 }
 
+// InputReceiptResult reads the existing Session Input receipt ledger without
+// submitting or reconstructing the original payload. A missing receipt is not
+// proof that a prior provider mutation was definitely unsent.
+func (w *Watcher) InputReceiptResult(sessionID, receipt string) (InputResult, bool, error) {
+	receipt = strings.TrimSpace(receipt)
+	if receipt == "" {
+		return InputResult{Outcome: InputNotSubmitted}, false, fmt.Errorf("input receipt is required")
+	}
+	identity, known := w.targetForSession(sessionID)
+	if !known {
+		return InputResult{Outcome: InputNotSubmitted, Receipt: receipt}, false, fmt.Errorf("target provider could not be proven")
+	}
+	return w.sessionInputOwner().receiptOutcome(
+		sessionID,
+		identity,
+		w.targetForSession,
+		receipt,
+	)
+}
+
 // SendInputWhenReady waits for a newly started agent UI to be ready, then sends
 // text. Unknown executors are treated as ready immediately. Known Codex, Cursor,
 // Claude, and Grok UIs must reach an input prompt so Zen does not paste a task

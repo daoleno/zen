@@ -25,8 +25,6 @@ var (
 
 const codexFullAuthorizationFlag = work.CodexFullAuthorizationFlag
 
-const workEventWakeCue = work.WorkEventWakeCue
-
 const recentWorkResultEventLimit = 20
 
 type Watcher interface {
@@ -37,6 +35,7 @@ type Watcher interface {
 	SendInput(sessionID, text string) error
 	SendInputWhenReady(sessionID, command, text string) error
 	SendInputWithReceiptResult(sessionID, text, receipt string) (watcher.InputResult, error)
+	InputReceiptResult(sessionID, receipt string) (watcher.InputResult, bool, error)
 	KillSession(sessionID string) error
 }
 
@@ -347,9 +346,18 @@ func (s *Service) RouteSessionEvent(event watcher.SessionEvent) (bool, error) {
 	if !ok {
 		return false, nil
 	}
-	if terminal, err := s.sessionTurnAlreadyTerminal(item.ID, event, kind); err != nil {
+	if terminalKind, terminal, latest, err := s.sessionTurnTerminalKind(item.ID, event); err != nil {
 		return false, err
 	} else if terminal {
+		if !latest || item.Status == WorkDone || item.Status == WorkCancelled {
+			return false, nil
+		}
+		terminalUpdate := terminalSessionWorkUpdate(terminalKind)
+		if workUpdateChanges(item, terminalUpdate) {
+			if _, err := s.store.UpdateWork(item.ID, terminalUpdate); err != nil {
+				return false, err
+			}
+		}
 		return false, nil
 	}
 	if actionable && calendarOwnsTerminalResult(item, event) {
@@ -466,26 +474,26 @@ func sessionEventProjection(event watcher.SessionEvent) (string, bool, WorkUpdat
 				WaitFor:    &sessionWait,
 			}, true
 		case classifier.StateDone:
-			status := WorkWaiting
-			next := "Review the delegated Session result."
-			empty := ""
-			return "session.done", true, WorkUpdate{
-				Status:     &status,
-				NextAction: &next,
-				WaitFor:    &empty,
-			}, true
+			return "session.done", true, terminalSessionWorkUpdate("session.done"), true
 		case classifier.StateFailed, classifier.StateRemoved:
-			status := WorkWaiting
-			next := "Inspect the delegated Session failure."
-			empty := ""
-			return "session.failed", true, WorkUpdate{
-				Status:     &status,
-				NextAction: &next,
-				WaitFor:    &empty,
-			}, true
+			return "session.failed", true, terminalSessionWorkUpdate("session.failed"), true
 		}
 	}
 	return "", false, WorkUpdate{}, false
+}
+
+func terminalSessionWorkUpdate(kind string) WorkUpdate {
+	status := WorkWaiting
+	next := "Review the delegated Session result."
+	if kind == "session.failed" {
+		next = "Inspect the delegated Session failure."
+	}
+	empty := ""
+	return WorkUpdate{
+		Status:     &status,
+		NextAction: &next,
+		WaitFor:    &empty,
+	}
 }
 
 func (s *Service) sessionEventDedupeKey(workID string, event watcher.SessionEvent, kind string) (string, error) {
@@ -520,64 +528,72 @@ func (s *Service) sessionEventDedupeKey(workID string, event watcher.SessionEven
 	return fmt.Sprintf("session:%s:%s:%d", agent.ID, kind, occurrence), nil
 }
 
-// sessionTurnAlreadyTerminal makes a terminal Session fact immutable before
-// its projection can mutate Work. A later terminal fact is valid only after a
-// new accepted dispatch/progress or running boundary keyed to the new turn.
-func (s *Service) sessionTurnAlreadyTerminal(
+// sessionTurnTerminalKind makes a terminal Session fact immutable before any
+// later fact for that accepted turn can mutate Work. A distinct accepted turn
+// ID remains a new lifecycle boundary and prevents the older terminal turn
+// from repairing over that newer projection.
+func (s *Service) sessionTurnTerminalKind(
 	workID string,
 	event watcher.SessionEvent,
-	kind string,
-) (bool, error) {
-	if kind != "session.done" && kind != "session.failed" || event.Agent == nil {
-		return false, nil
+) (string, bool, bool, error) {
+	if event.Agent == nil {
+		return "", false, false, nil
 	}
 	events, err := s.store.ListWorkEvents(workID)
 	if err != nil {
-		return false, err
+		return "", false, false, err
 	}
 	sessionID := strings.TrimSpace(firstNonEmpty(event.AgentID, event.Agent.ID))
 	payloadRef := "session:" + strings.TrimSpace(event.Agent.ID)
-	lastTerminal := -1
-	lastRunning := -1
 	turnID := strings.TrimSpace(event.TurnID)
-	turnAcceptedBoundary := -1
 	turnDoneKey := ""
 	turnFailedKey := ""
-	turnProgressKey := ""
-	turnRunningKey := ""
+	turnKeyPrefix := ""
 	if turnID != "" {
 		turnDoneKey = sessionTurnEventDedupeKey(sessionID, turnID, "session.done")
 		turnFailedKey = sessionTurnEventDedupeKey(sessionID, turnID, "session.failed")
-		turnProgressKey = sessionTurnEventDedupeKey(sessionID, turnID, "session.progress")
-		turnRunningKey = sessionTurnEventDedupeKey(sessionID, turnID, "session.running")
+		turnKeyPrefix = strings.TrimSuffix(turnDoneKey, "session.done")
 	}
+	lastLifecycleKind := ""
+	terminalKind := ""
+	terminalIndex := -1
 	for index, current := range events {
 		if current.PayloadRef != payloadRef {
 			continue
 		}
-		switch current.Kind {
-		case "session.running":
-			lastRunning = index
-		case "session.done", "session.failed":
-			lastTerminal = index
+		if isSessionLifecycleKind(current.Kind) {
+			lastLifecycleKind = current.Kind
 		}
 		if turnID == "" {
 			continue
 		}
 		switch current.DedupeKey {
-		case turnDoneKey, turnFailedKey:
-			return true, nil
-		case turnProgressKey, turnRunningKey:
-			turnAcceptedBoundary = index
+		case turnDoneKey:
+			terminalKind = "session.done"
+			terminalIndex = index
+		case turnFailedKey:
+			terminalKind = "session.failed"
+			terminalIndex = index
 		}
 	}
-	if lastTerminal < 0 {
-		return false, nil
+	if terminalIndex >= 0 {
+		latest := true
+		for _, current := range events[terminalIndex+1:] {
+			if current.PayloadRef != payloadRef ||
+				strings.HasPrefix(current.DedupeKey, turnKeyPrefix) {
+				continue
+			}
+			if isSessionLifecycleKind(current.Kind) || current.Kind == "session.progress" {
+				latest = false
+				break
+			}
+		}
+		return terminalKind, true, latest, nil
 	}
-	if turnID != "" {
-		return turnAcceptedBoundary <= lastTerminal, nil
+	if turnID == "" && (lastLifecycleKind == "session.done" || lastLifecycleKind == "session.failed") {
+		return lastLifecycleKind, true, true, nil
 	}
-	return lastRunning <= lastTerminal, nil
+	return "", false, false, nil
 }
 
 func sessionTurnEventDedupeKey(sessionID, turnID, kind string) string {
@@ -644,9 +660,9 @@ func (s *Service) MigrateDelegatedSessionsV1(agents []*classifier.Agent) (bool, 
 }
 
 // DispatchPendingEvent is the complete automatic scheduler: claim one durable
-// actionable Event, send one constant cue, then stop. The Host reads and
-// consumes the identity-bound Event through Zen control. A claimed Event is
-// never replayed after an ambiguous send.
+// actionable Event, send its compact complete delta, and consume that exact
+// claim after Session Input accepts it. A claimed Event is never replayed after
+// an ambiguous send.
 func (s *Service) DispatchPendingEvent() (bool, error) {
 	if s == nil || s.store == nil || s.watcher == nil {
 		return false, nil
@@ -658,6 +674,24 @@ func (s *Service) DispatchPendingEvent() (bool, error) {
 		return false, err
 	}
 	if len(claimedEvents) != 0 {
+		claimed := claimedEvents[0]
+		if claimed.DeliveryHostSessionID == "" ||
+			!s.watcher.HasSession(claimed.DeliveryHostSessionID) {
+			return false, nil
+		}
+		result, found, receiptErr := s.watcher.InputReceiptResult(
+			claimed.DeliveryHostSessionID,
+			claimed.ID,
+		)
+		if receiptErr != nil || !found || result.Outcome != watcher.InputAccepted {
+			return false, receiptErr
+		}
+		if _, _, err := s.store.ConsumeClaimedWorkEvent(
+			claimed.ID,
+			claimed.DeliveryHostSessionID,
+		); err != nil {
+			return false, fmt.Errorf("finalize accepted Work Event %s: %w", claimed.ID, err)
+		}
 		return false, nil
 	}
 	hostSession, err := s.store.HostSession()
@@ -679,7 +713,21 @@ func (s *Service) DispatchPendingEvent() (bool, error) {
 	if err != nil || !claimed {
 		return false, err
 	}
-	result, sendErr := s.watcher.SendInputWithReceiptResult(hostID, workEventWakeCue, event.ID)
+	item, err := s.store.Work(event.WorkID)
+	if err != nil {
+		if releaseErr := s.store.ReleaseEventClaim(event.ID, hostID); releaseErr != nil {
+			return false, fmt.Errorf("release undeliverable Work Event %s: %w", event.ID, releaseErr)
+		}
+		return false, err
+	}
+	payload, err := marshalDirectWorkEventInput(event, item)
+	if err != nil {
+		if releaseErr := s.store.ReleaseEventClaim(event.ID, hostID); releaseErr != nil {
+			return false, fmt.Errorf("release invalid Work Event input %s: %w", event.ID, releaseErr)
+		}
+		return false, err
+	}
+	result, sendErr := s.watcher.SendInputWithReceiptResult(hostID, payload, event.ID)
 	if sendErr != nil {
 		if result.Outcome == watcher.InputNotSubmitted {
 			if releaseErr := s.store.ReleaseEventClaim(event.ID, hostID); releaseErr != nil {
@@ -688,22 +736,13 @@ func (s *Service) DispatchPendingEvent() (bool, error) {
 		}
 		return false, sendErr
 	}
+	if result.Outcome != watcher.InputAccepted {
+		return false, fmt.Errorf("Work Event %s Session Input returned non-accepted outcome %q", event.ID, result.Outcome)
+	}
+	if _, _, err := s.store.ConsumeClaimedWorkEvent(event.ID, hostID); err != nil {
+		return false, fmt.Errorf("consume accepted Work Event %s: %w", event.ID, err)
+	}
 	return true, nil
-}
-
-func (s *Service) ConsumeHostWorkEvent(hostSessionID string) (WorkEvent, Work, bool, error) {
-	if s == nil || s.store == nil {
-		return WorkEvent{}, Work{}, false, fmt.Errorf("brain service is not configured")
-	}
-	host, err := s.store.HostSession()
-	if err != nil {
-		return WorkEvent{}, Work{}, false, err
-	}
-	hostSessionID = strings.TrimSpace(hostSessionID)
-	if hostSessionID == "" || hostSessionID != strings.TrimSpace(host.ID) {
-		return WorkEvent{}, Work{}, false, ErrEventClaim
-	}
-	return s.store.ConsumeClaimedWorkEvent(hostSessionID)
 }
 
 func (s *Service) NoteUserSteering(agentID string) bool {
@@ -824,6 +863,12 @@ func (s *Service) ReconcileDelegatedSessions(agents []*classifier.Agent) {
 			})
 			continue
 		}
+		if terminal, err := s.sessionProjectionIsTerminal(item.ID, agent.ID); err != nil {
+			log.Printf("brain Session terminal projection check failed for %s: %v", agent.ID, err)
+			continue
+		} else if terminal {
+			continue
+		}
 		if agent.State != classifier.StateRunning && agent.State != classifier.StateUnknown {
 			continue
 		}
@@ -855,6 +900,27 @@ func (s *Service) ReconcileDelegatedSessions(agents []*classifier.Agent) {
 		}
 	}
 	_, _ = s.DispatchPendingEvent()
+}
+
+func (s *Service) sessionProjectionIsTerminal(workID, sessionID string) (bool, error) {
+	events, err := s.store.ListWorkEvents(workID)
+	if err != nil {
+		return false, err
+	}
+	payloadRef := "session:" + strings.TrimSpace(sessionID)
+	terminal := false
+	for _, event := range events {
+		if event.PayloadRef != payloadRef {
+			continue
+		}
+		switch event.Kind {
+		case "session.running", "session.progress":
+			terminal = false
+		case "session.done", "session.failed":
+			terminal = true
+		}
+	}
+	return terminal, nil
 }
 
 func (s *Service) reconcileAbsentDelegatedSession(item Work) {
@@ -1481,7 +1547,7 @@ Agent orchestration rules:
 - Delegated agent lifecycle: keep ownership from spawn through inspection, follow-up, result consolidation, and close. Do not close a delegated session merely because a small stage finished; close it when the larger task is complete or you have intentionally moved the remaining work elsewhere.
 - Never close, kill, rename, repurpose, or otherwise manage sessions whose agent list entry does not have delegated=true. Those belong to the user or another tool.
 - Keep orchestration principles in Markdown, prompts, and agent instructions. Product code should provide tools, context, persistence, visibility, and safety boundaries rather than rigid workflow gates.
-- Treat an Active work event message as one claimed actionable delta; inspect only its referenced change, then act, summarize, or wait.
+- Treat a direct Work Event input as one claimed actionable delta; use its compact facts and inspect only its referenced change, then act, summarize, or wait.
 - After handling an Event, re-anchor to the foreground Work, verify its current status and next action, and take the next useful orchestration step before waiting.
 - Continue low-risk next steps autonomously. Ask only when critical context is missing, an action is high-risk or irreversible, credentials/permissions are needed, or the decision depends on the user's values; when blocked, consolidate options and a recommendation.
 
@@ -1584,7 +1650,7 @@ func formatHostHandoffPrompt(threadID, previousExecutorID, nextExecutorID, deleg
 			lines = append(lines, "- "+entry)
 		}
 	}
-	lines = append(lines, "", "Wait for the next user message unless an unconsumed actionable Work event is already present.")
+	lines = append(lines, "", "Wait for the next user message or direct Work Event input.")
 	return strings.TrimSpace(strings.Join(lines, "\n"))
 }
 

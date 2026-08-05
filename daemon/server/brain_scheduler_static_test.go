@@ -75,7 +75,12 @@ func TestBrainSchedulerHasOneRuntimeOwner(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, required := range []string{"SendInputWithReceipt", "workEventWakeCue", "ConsumeHostWorkEvent"} {
+	for _, required := range []string{
+		"SendInputWithReceipt",
+		"InputReceiptResult",
+		"marshalDirectWorkEventInput",
+		"ConsumeClaimedWorkEvent",
+	} {
 		if !strings.Contains(string(brainServiceSource), required) {
 			t.Fatalf("Brain delivery is missing durable Session receipt boundary %q", required)
 		}

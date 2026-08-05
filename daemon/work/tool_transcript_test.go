@@ -70,16 +70,38 @@ func TestSanitizeConversationProjectionDropsTypedGoalEventsAndEmbeddedContext(t 
 	}
 }
 
-func TestSanitizeConversationProjectionDropsFixedWorkEventWakeCue(t *testing.T) {
+func TestSanitizeConversationProjectionDropsDirectWorkEventInput(t *testing.T) {
+	canonical := FormatDirectWorkEventInput(DirectWorkEventInput{
+		EventID:    "event-1",
+		WorkID:     "work-1",
+		WorkTitle:  "Canonical Work",
+		Kind:       "session.done",
+		Source:     "Worker",
+		Summary:    "Completed.",
+		NextAction: "Review.",
+		ContextRef: "worklog:canonical.md",
+		PayloadRef: "session:worker:@1",
+	})
 	conversation := SanitizeConversationProjection(CodexConversation{
 		Available: true,
 		Events: []CodexConversationEvent{
-			{ID: "control", Kind: "user_message", Body: WorkEventWakeCue},
+			{ID: "canonical", Kind: "user_message", Body: canonical},
+			{ID: "malformed", Kind: "user_message", Body: "<zen_work_event>\n{not json}\n</zen_work_event>"},
+			{ID: "partial", Kind: "user_message", Body: "<zen_work_event>\n{\"event_id\":\"event-1\",\"work_id\":\"work-1\"}\n</zen_work_event>"},
+			{ID: "unknown", Kind: "user_message", Body: strings.Replace(canonical, `"payload_ref":`, `"unknown":"","payload_ref":`, 1)},
+			{ID: "reordered", Kind: "user_message", Body: strings.Replace(canonical, `{"event_id":"event-1","work_id":"work-1"`, `{"work_id":"work-1","event_id":"event-1"`, 1)},
+			{ID: "spaced", Kind: "user_message", Body: strings.Replace(canonical, `{"event_id"`, `{ "event_id"`, 1)},
+			{ID: "padded", Kind: "user_message", Body: "\n" + canonical + "\n"},
 			{ID: "user", Kind: "user_message", Body: "A real foreground message"},
 		},
 	})
-	if len(conversation.Events) != 1 || conversation.Events[0].ID != "user" {
+	if len(conversation.Events) != 7 {
 		t.Fatalf("sanitized events = %#v", conversation.Events)
+	}
+	for index, id := range []string{"malformed", "partial", "unknown", "reordered", "spaced", "padded", "user"} {
+		if conversation.Events[index].ID != id {
+			t.Fatalf("event[%d] = %#v, want %q", index, conversation.Events[index], id)
+		}
 	}
 }
 

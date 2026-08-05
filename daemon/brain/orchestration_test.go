@@ -294,15 +294,15 @@ func TestClaimedEventIsIdentityBoundConsumedOnceWithoutReplay(t *testing.T) {
 	if err != nil || !ok || claimed.ID != event.ID {
 		t.Fatalf("claim=%#v ok=%v err=%v", claimed, ok, err)
 	}
-	if _, _, found, err := store.ConsumeClaimedWorkEvent("different-host:@1"); err != nil || found {
-		t.Fatalf("different Host read assigned Event: found=%v err=%v", found, err)
+	if _, _, err := store.ConsumeClaimedWorkEvent(event.ID, "different-host:@1"); !errors.Is(err, ErrEventClaim) {
+		t.Fatalf("different Host consumed assigned Event: err=%v", err)
 	}
-	gotEvent, gotWork, found, err := store.ConsumeClaimedWorkEvent(hostID)
-	if err != nil || !found || gotEvent.ID != event.ID || gotWork.ID != item.ID || gotEvent.ConsumedAt == nil {
-		t.Fatalf("consume event=%#v work=%#v found=%v err=%v", gotEvent, gotWork, found, err)
+	gotEvent, gotWork, err := store.ConsumeClaimedWorkEvent(event.ID, hostID)
+	if err != nil || gotEvent.ID != event.ID || gotWork.ID != item.ID || gotEvent.ConsumedAt == nil {
+		t.Fatalf("consume event=%#v work=%#v err=%v", gotEvent, gotWork, err)
 	}
-	if _, _, found, err := store.ConsumeClaimedWorkEvent(hostID); err != nil || found {
-		t.Fatalf("consumed Event replayed: found=%v err=%v", found, err)
+	if _, _, err := store.ConsumeClaimedWorkEvent(event.ID, hostID); !errors.Is(err, ErrEventClaim) {
+		t.Fatalf("consumed Event replayed: err=%v", err)
 	}
 	reopened, err := NewStore(store.Root)
 	if err != nil {
@@ -416,13 +416,13 @@ func TestWorkEventSchedulerEligibilityFollowsTerminalLifecycleBoundary(t *testin
 	if err != nil || !ok || claimed.ID != activeEvent.ID {
 		t.Fatalf("later active Event claim=%#v ok=%v err=%v", claimed, ok, err)
 	}
-	consumed, consumedWork, found, err := store.ConsumeClaimedWorkEvent(hostID)
-	if err != nil || !found || consumed.ID != activeEvent.ID || consumedWork.ID != active.ID ||
+	consumed, consumedWork, err := store.ConsumeClaimedWorkEvent(activeEvent.ID, hostID)
+	if err != nil || consumed.ID != activeEvent.ID || consumedWork.ID != active.ID ||
 		consumed.ConsumedAt == nil {
-		t.Fatalf("consume event=%#v work=%#v found=%v err=%v", consumed, consumedWork, found, err)
+		t.Fatalf("consume event=%#v work=%#v err=%v", consumed, consumedWork, err)
 	}
-	if _, _, found, err := store.ConsumeClaimedWorkEvent(hostID); err != nil || found {
-		t.Fatalf("active Event was consumed more than once: found=%v err=%v", found, err)
+	if _, _, err := store.ConsumeClaimedWorkEvent(activeEvent.ID, hostID); !errors.Is(err, ErrEventClaim) {
+		t.Fatalf("active Event was consumed more than once: err=%v", err)
 	}
 
 	for _, offset := range []time.Duration{0, time.Minute} {
@@ -455,10 +455,10 @@ func TestWorkEventSchedulerEligibilityFollowsTerminalLifecycleBoundary(t *testin
 		if err != nil || !ok || claimed.ID != event.ID {
 			t.Fatalf("terminal result offset=%s claim=%#v ok=%v err=%v", offset, claimed, ok, err)
 		}
-		consumed, consumedWork, found, err := store.ConsumeClaimedWorkEvent(hostID)
-		if err != nil || !found || consumed.ID != event.ID || consumedWork.ID != item.ID {
-			t.Fatalf("terminal result offset=%s consume=%#v work=%#v found=%v err=%v",
-				offset, consumed, consumedWork, found, err)
+		consumed, consumedWork, err := store.ConsumeClaimedWorkEvent(event.ID, hostID)
+		if err != nil || consumed.ID != event.ID || consumedWork.ID != item.ID {
+			t.Fatalf("terminal result offset=%s consume=%#v work=%#v err=%v",
+				offset, consumed, consumedWork, err)
 		}
 	}
 
@@ -485,11 +485,13 @@ func TestWorkEventSchedulerEligibilityFollowsTerminalLifecycleBoundary(t *testin
 	if err := store.MarkWorkRead(readWork.ID); err != nil {
 		t.Fatal(err)
 	}
-	if blockers, err := store.ClaimedActionableEvents(); err != nil || len(blockers) != 0 {
-		t.Fatalf("read claimed Event remained a blocker: blockers=%#v err=%v", blockers, err)
+	if blockers, err := store.ClaimedActionableEvents(); err != nil || len(blockers) != 1 ||
+		blockers[0].ID != readEvent.ID {
+		t.Fatalf("card acknowledgement changed the exact delivery claim: blockers=%#v err=%v", blockers, err)
 	}
-	if _, _, found, err := store.ConsumeClaimedWorkEvent(hostID); err != nil || found {
-		t.Fatalf("read claimed Event was consumable: found=%v err=%v", found, err)
+	consumedRead, _, err := store.ConsumeClaimedWorkEvent(readEvent.ID, hostID)
+	if err != nil || consumedRead.ConsumedAt == nil {
+		t.Fatalf("exact accepted claim was not consumable after card acknowledgement: event=%#v err=%v", consumedRead, err)
 	}
 	readEvents, err := store.ListWorkEvents(readWork.ID)
 	if err != nil {
@@ -500,7 +502,7 @@ func TestWorkEventSchedulerEligibilityFollowsTerminalLifecycleBoundary(t *testin
 	}
 	unclaimedReadWork, err := store.CreateWork(Work{
 		Title:            "Acknowledged before claim",
-		Objective:        "Do not claim an Event after it is marked read.",
+		Objective:        "Keep card acknowledgement separate from Event delivery.",
 		Status:           WorkWaiting,
 		CompletionPolicy: CompletionBounded,
 	})
@@ -515,8 +517,12 @@ func TestWorkEventSchedulerEligibilityFollowsTerminalLifecycleBoundary(t *testin
 	if err := store.MarkWorkRead(unclaimedReadWork.ID); err != nil {
 		t.Fatal(err)
 	}
-	if event, claimed, err := store.ClaimNextActionableEvent(hostID); err != nil || claimed {
-		t.Fatalf("read unclaimed Event was claimable: event=%#v claimed=%v err=%v", event, claimed, err)
+	readBeforeClaim, wasClaimed, err := store.ClaimNextActionableEvent(hostID)
+	if err != nil || !wasClaimed || readBeforeClaim.WorkID != unclaimedReadWork.ID {
+		t.Fatalf("card acknowledgement suppressed Event delivery: event=%#v claimed=%v err=%v", readBeforeClaim, wasClaimed, err)
+	}
+	if _, _, err := store.ConsumeClaimedWorkEvent(readBeforeClaim.ID, hostID); err != nil {
+		t.Fatalf("consume card-acknowledged Event: %v", err)
 	}
 
 	terminalEvents, err := store.ListWorkEvents(terminal.ID)
@@ -980,6 +986,8 @@ func TestDispatchRequiresActionableEventEvenForUntilDoneWork(t *testing.T) {
 		Kind:       "session.done",
 		DedupeKey:  "done:1",
 		PayloadRef: "session:worker:@1",
+		SourceName: "Worker One",
+		Summary:    "Completed the delegated change.",
 		Actionable: true,
 	})
 	if err != nil {
@@ -994,23 +1002,31 @@ func TestDispatchRequiresActionableEventEvenForUntilDoneWork(t *testing.T) {
 	if len(fw.sentCalls) != 1 {
 		t.Fatalf("sends = %#v", fw.sentCalls)
 	}
-	if fw.sentCalls[0].text != workEventWakeCue || fw.receipts[hostID] != actionable.ID {
-		t.Fatalf("wake = %#v receipt=%q, want constant cue with Event.ID receipt", fw.sentCalls[0], fw.receipts[hostID])
+	if fw.receipts[hostID] != actionable.ID {
+		t.Fatalf("delivery = %#v receipt=%q, want Event.ID receipt", fw.sentCalls[0], fw.receipts[hostID])
 	}
-	for _, forbidden := range []string{
-		actionable.ID, item.ID, actionable.Kind, actionable.PayloadRef,
-		"delivery_token", "ZEN_TX", "PATH_B64URL", "PAYLOAD_SHA256",
+	for _, required := range []string{
+		"<zen_work_event>", actionable.ID, item.ID, item.Title, actionable.Kind, actionable.PayloadRef,
 	} {
-		if forbidden != "" && strings.Contains(fw.sentCalls[0].text, forbidden) {
-			t.Fatalf("constant wake leaked %q: %q", forbidden, fw.sentCalls[0].text)
+		if required != "" && !strings.Contains(fw.sentCalls[0].text, required) {
+			t.Fatalf("direct delivery omitted %q: %q", required, fw.sentCalls[0].text)
 		}
 	}
-	consumed, consumedWork, found, err := service.ConsumeHostWorkEvent(hostID)
-	if err != nil || !found || consumed.ID != actionable.ID || consumedWork.ID != item.ID {
-		t.Fatalf("identity read event=%#v work=%#v found=%v err=%v", consumed, consumedWork, found, err)
+	for _, forbidden := range []string{
+		item.Objective, "delivery_token", "ZEN_TX", "PATH_B64URL", "PAYLOAD_SHA256", "zen brain " + "event",
+	} {
+		if forbidden != "" && strings.Contains(fw.sentCalls[0].text, forbidden) {
+			t.Fatalf("direct delivery leaked %q: %q", forbidden, fw.sentCalls[0].text)
+		}
 	}
-	if _, _, found, err := service.ConsumeHostWorkEvent(hostID); err != nil || found {
-		t.Fatalf("consumed wake replayed: found=%v err=%v", found, err)
+	events, err := store.ListWorkEvents(item.ID)
+	if err != nil || len(events) != 2 || events[1].ID != actionable.ID || events[1].ConsumedAt == nil {
+		t.Fatalf("accepted direct Event was not consumed exactly: events=%#v err=%v", events, err)
+	}
+	cards, err := store.RecentWorkResultEvents(10)
+	if err != nil || len(cards) != 1 || cards[0].EventID != actionable.ID ||
+		cards[0].WorkTitle != item.Title || cards[0].Summary != actionable.Summary {
+		t.Fatalf("durable card projection diverged after direct consumption: cards=%#v err=%v", cards, err)
 	}
 }
 
@@ -1080,6 +1096,84 @@ func TestDispatchAmbiguousSendRetainsExactClaimWithoutReplay(t *testing.T) {
 	}
 	if events[0].ClaimedAt == nil || events[0].ConsumedAt != nil || len(fw.sentCalls) != 1 {
 		t.Fatalf("ambiguous failed send did not remain closed: events=%#v sends=%#v", events, fw.sentCalls)
+	}
+}
+
+func TestAcceptedReceiptFinalizesConsumptionAfterPersistenceFailureAndRestart(t *testing.T) {
+	root := t.TempDir()
+	store, err := NewStore(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	hostID := "brain-agent-brain-hidden:@1"
+	if err := store.SetHostSession(hostID, "codex"); err != nil {
+		t.Fatal(err)
+	}
+	item, err := store.CreateWork(Work{
+		Title:            "Recover accepted consumption",
+		Objective:        "Finalize durable Event consumption without a second provider turn.",
+		Status:           WorkWaiting,
+		CompletionPolicy: CompletionBounded,
+		NextAction:       "Review the accepted result.",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	event, _, err := store.AppendWorkEvent(WorkEvent{
+		WorkID:     item.ID,
+		Kind:       "session.done",
+		DedupeKey:  "accepted:persist-failure",
+		SourceName: "Worker",
+		Summary:    "Provider accepted the direct Event.",
+		Actionable: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	fw := &fakeWatcher{sessions: map[string]*classifier.Agent{
+		hostID: {ID: hostID, Hidden: true, State: classifier.StateDone},
+	}}
+	writeOrchestration := store.writeOrchestration
+	writes := 0
+	store.writeOrchestration = func(path string, value any) error {
+		writes++
+		if writes == 2 {
+			return errors.New("injected consumed_at persistence failure")
+		}
+		return writeOrchestration(path, value)
+	}
+
+	if woke, dispatchErr := NewService(store, fw, nil).DispatchPendingEvent(); dispatchErr == nil || woke {
+		t.Fatalf("persistence failure woke=%v err=%v", woke, dispatchErr)
+	}
+	events, err := store.ListWorkEvents(item.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(events) != 1 || events[0].ID != event.ID ||
+		events[0].ClaimedAt == nil || events[0].ConsumedAt != nil ||
+		len(fw.sentCalls) != 1 || fw.outcomes[event.ID] != watcher.InputAccepted {
+		t.Fatalf("accepted persistence boundary events=%#v sends=%#v outcomes=%#v", events, fw.sentCalls, fw.outcomes)
+	}
+
+	restarted, err := NewStore(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if woke, dispatchErr := NewService(restarted, fw, nil).DispatchPendingEvent(); dispatchErr != nil || woke {
+		t.Fatalf("accepted receipt finalization woke=%v err=%v", woke, dispatchErr)
+	}
+	events, err = restarted.ListWorkEvents(item.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(events) != 1 || events[0].ID != event.ID || events[0].ConsumedAt == nil ||
+		len(fw.sentCalls) != 1 {
+		t.Fatalf("restart did not finalize without resend: events=%#v sends=%#v", events, fw.sentCalls)
+	}
+	if woke, dispatchErr := NewService(restarted, fw, nil).DispatchPendingEvent(); dispatchErr != nil || woke ||
+		len(fw.sentCalls) != 1 {
+		t.Fatalf("finalized Event replayed: woke=%v err=%v sends=%#v", woke, dispatchErr, fw.sentCalls)
 	}
 }
 
@@ -1434,9 +1528,6 @@ func TestDelegatedSessionDedupeAllowsANewLifecycleEpisode(t *testing.T) {
 	if !route(classifier.StateRunning, classifier.StateBlocked, at) {
 		t.Fatal("first blocker did not wake")
 	}
-	if _, _, found, err := service.ConsumeHostWorkEvent(hostID); err != nil || !found {
-		t.Fatalf("first blocker was not consumed: found=%v err=%v", found, err)
-	}
 	if route(classifier.StateBlocked, classifier.StateRunning, at.Add(time.Minute)) {
 		t.Fatal("running progress unexpectedly woke")
 	}
@@ -1449,6 +1540,21 @@ func TestDelegatedSessionDedupeAllowsANewLifecycleEpisode(t *testing.T) {
 	}
 	if len(events) != 3 || len(fw.sentCalls) != 2 {
 		t.Fatalf("events=%#v sends=%#v", events, fw.sentCalls)
+	}
+	actionable := []WorkEvent{}
+	for _, event := range events {
+		if event.Actionable {
+			actionable = append(actionable, event)
+		}
+	}
+	if len(actionable) != 2 || actionable[0].ConsumedAt == nil || actionable[1].ConsumedAt == nil {
+		t.Fatalf("turn-keyed Events were not each consumed exactly: %#v", actionable)
+	}
+	firstInput := decodeDirectWorkEventInput(t, fw.sentCalls[0].text)
+	secondInput := decodeDirectWorkEventInput(t, fw.sentCalls[1].text)
+	if firstInput.EventID != actionable[0].ID || secondInput.EventID != actionable[1].ID ||
+		firstInput.EventID == secondInput.EventID {
+		t.Fatalf("turn deliveries=(%#v, %#v), Events=%#v", firstInput, secondInput, actionable)
 	}
 }
 
@@ -2011,6 +2117,13 @@ func TestCalendarScheduledActionProjectsIdempotentlyWithoutOwningDelivery(t *tes
 	}
 	if woke, err := service.RouteCalendarEvent(terminal); err != nil || woke {
 		t.Fatalf("duplicate Calendar result woke=%v err=%v", woke, err)
+	}
+	sessionDone.OldState = string(classifier.StateDone)
+	sessionDone.NewState = string(classifier.StateRunning)
+	sessionDone.Agent.State = classifier.StateRunning
+	sessionDone.Agent.Summary = "Late Session monitoring progress"
+	if woke, err := service.RouteSessionEvent(sessionDone); err != nil || woke {
+		t.Fatalf("late Calendar Session progress woke=%v err=%v", woke, err)
 	}
 
 	items, err := store.ListWork()

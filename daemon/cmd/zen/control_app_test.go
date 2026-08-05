@@ -152,6 +152,15 @@ func (w *fakeControlWatcher) SendInputWithReceiptResult(sessionID, text, receipt
 	return watcher.InputResult{Outcome: watcher.InputAccepted, Receipt: receipt}, nil
 }
 
+func (w *fakeControlWatcher) InputReceiptResult(_ string, receipt string) (watcher.InputResult, bool, error) {
+	for _, current := range w.receipts {
+		if current == receipt {
+			return watcher.InputResult{Outcome: watcher.InputAccepted, Receipt: receipt}, true, nil
+		}
+	}
+	return watcher.InputResult{Outcome: watcher.InputNotSubmitted, Receipt: receipt}, false, nil
+}
+
 func (w *fakeControlWatcher) SendInputWhenReady(sessionID, _ string, text string) error {
 	w.ready = append(w.ready, fakeControlSend{id: sessionID, text: text})
 	return w.SendInput(sessionID, text)
@@ -815,45 +824,6 @@ func TestAcceptedRunningTurnThenRejectedFollowUpKeepsExecutorLifecycle(t *testin
 	fw.agents[agentID].State = classifier.StateDone
 	if got := fw.GetAgent(agentID); got == nil || got.State != classifier.StateDone {
 		t.Fatalf("executor terminal state was not authoritative: %#v", got)
-	}
-}
-
-func TestControlAppBrainEventIsHostIdentityBoundAndConsumedOnce(t *testing.T) {
-	store := newControlBrainStore(t)
-	const hostID = "brain-agent-brain-hidden:@1"
-	if err := store.SetHostSession(hostID, "codex"); err != nil {
-		t.Fatal(err)
-	}
-	item, err := store.CreateWork(brain.Work{
-		Title: "Host event", Objective: "Read one assigned Event.", Status: brain.WorkWaiting,
-		CompletionPolicy: brain.CompletionBounded,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	event, _, err := store.AppendWorkEvent(brain.WorkEvent{
-		WorkID: item.ID, Kind: "session.done", DedupeKey: "done:host-read", Actionable: true,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, ok, err := store.ClaimNextActionableEvent(hostID); err != nil || !ok {
-		t.Fatalf("claim ok=%v err=%v", ok, err)
-	}
-	app := &controlApp{brainService: brain.NewService(store, newFakeControlWatcher(), nil)}
-
-	foreign := app.HandleControlRequest(control.Request{Type: "brain_event", AgentID: "other:@1"})
-	if foreign.OK || foreign.Error == nil || foreign.Error.Code != "event_identity_mismatch" {
-		t.Fatalf("foreign response = %#v", foreign)
-	}
-	first := app.HandleControlRequest(control.Request{Type: "brain_event", AgentID: hostID})
-	if !first.OK || first.BrainWorkEvent == nil || first.BrainWorkEvent.ID != event.ID ||
-		first.BrainWork == nil || first.BrainWork.ID != item.ID {
-		t.Fatalf("first response = %#v", first)
-	}
-	second := app.HandleControlRequest(control.Request{Type: "brain_event", AgentID: hostID})
-	if !second.OK || second.BrainWorkEvent != nil || second.Confirmation == "" {
-		t.Fatalf("second response = %#v", second)
 	}
 }
 

@@ -28,6 +28,7 @@ type controlWatcher interface {
 	RecordAgentInputDispatched(id, turnID string, handoffStartedAt time.Time, phase, summary string) (*classifier.Agent, error)
 	SendInput(sessionID, text string) error
 	SendInputWithReceiptResult(sessionID, text, receipt string) (watcher.InputResult, error)
+	InputReceiptResult(sessionID, receipt string) (watcher.InputResult, bool, error)
 	SendInputWhenReady(sessionID, command, text string) error
 	SubmitInput(sessionID, payload string) error
 	SubmitInputWhenReady(sessionID, command, payload string) error
@@ -62,8 +63,6 @@ func (a *controlApp) HandleControlRequest(req control.Request) control.Response 
 		return a.handleAgentStatus(req)
 	case "agent_progress":
 		return a.handleAgentProgress(req)
-	case "brain_event":
-		return a.handleBrainEvent(req)
 	case "agent_close", "agent_kill":
 		return a.handleAgentClose(req)
 	case "brain_executors":
@@ -560,20 +559,6 @@ func (a *controlApp) handleBrainWorkEvent(req control.Request) control.Response 
 		response.Confirmation = "Duplicate event already recorded."
 	}
 	return response
-}
-
-func (a *controlApp) handleBrainEvent(req control.Request) control.Response {
-	if a == nil || a.brainService == nil {
-		return control.ErrorResponse("brain_unavailable", "Brain Work event routing is not configured.")
-	}
-	event, item, found, err := a.brainService.ConsumeHostWorkEvent(strings.TrimSpace(req.AgentID))
-	if err != nil {
-		return control.ErrorResponse("event_identity_mismatch", err.Error())
-	}
-	if !found {
-		return control.Response{OK: true, Confirmation: "No Work Event is currently assigned."}
-	}
-	return control.Response{OK: true, BrainWork: &item, BrainWorkEvent: &event}
 }
 
 func brainWorkControlError(err error) control.Response {

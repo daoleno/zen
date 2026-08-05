@@ -26,6 +26,8 @@ type Store struct {
 	subs    map[int]chan WorkChange
 	nextSub int
 	now     func() time.Time
+
+	writeOrchestration func(string, any) error
 }
 
 func DefaultRoot() (string, error) {
@@ -44,9 +46,10 @@ func NewStore(root string) (*Store, error) {
 		return nil, err
 	}
 	store := &Store{
-		Root: root,
-		subs: map[int]chan WorkChange{},
-		now:  time.Now,
+		Root:               root,
+		subs:               map[int]chan WorkChange{},
+		now:                time.Now,
+		writeOrchestration: writeJSONFile,
 	}
 	if err := store.ensureFiles(); err != nil {
 		return nil, err
@@ -685,7 +688,7 @@ This directory is the private workspace for zen Brain.
 - Calendar creation takes a local YYYY-MM-DD date, HH:MM wall time, and IANA timezone. If the time occurs twice at DST fall-back, ask for first or second; never guess. After create, update, or run, repeat the resolved local date/time/timezone, recurrence/effect, and result destination from the command confirmation. Do not extract Calendar items automatically from unrelated chat.
 - Keep delegated agent lifecycle ownership from spawn through inspection, follow-up, result consolidation, and close. Do not close a delegated session merely because a small stage finished; close it when the larger task is complete or the remaining work has intentionally moved elsewhere.
 - Never close, kill, rename, repurpose, or otherwise manage sessions whose agent list entry does not have delegated=true. Those belong to the user or another tool.
-- Treat an Active work event message as one claimed actionable delta; inspect only its referenced change, then act, summarize, or wait.
+- Treat a direct Work Event input as one claimed actionable delta; use its compact facts and inspect only its referenced change, then act, summarize, or wait.
 - After handling an Event, re-anchor to the foreground Work, verify its current status and next action, and take the next useful orchestration step before waiting.
 - Ask only when critical context is missing, an action is high-risk or irreversible, credentials/permissions are needed, or the choice depends on the user's values.
 `

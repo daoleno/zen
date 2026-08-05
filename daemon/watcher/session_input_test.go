@@ -350,6 +350,43 @@ func TestSessionInputReceiptDedupeSurvivesOwnerRestart(t *testing.T) {
 	}
 }
 
+func TestSessionInputReceiptOutcomeReadsDurableTruthWithoutSubmission(t *testing.T) {
+	io := newFakeSessionInputIO()
+	identity := testSessionInputIdentity("codex")
+	resolver := fixedSessionInputResolver(identity)
+	owner := newSessionInputOwner(io)
+	if _, err := owner.submit("agent:@1", identity, resolver, identity.Command, "direct event", "event-accepted"); err != nil {
+		t.Fatal(err)
+	}
+
+	restarted := newSessionInputOwner(io)
+	result, found, err := restarted.receiptOutcome("agent:@1", identity, resolver, "event-accepted")
+	if err != nil || !found || result.Outcome != InputAccepted ||
+		result.Receipt != "event-accepted" {
+		t.Fatalf("accepted receipt result=%#v found=%v err=%v", result, found, err)
+	}
+	if len(io.queues) != 1 {
+		t.Fatalf("receipt read submitted another provider queue: %d", len(io.queues))
+	}
+
+	io.ledger.Entries = append(io.ledger.Entries, sessionInputReceiptEntry{
+		Receipt:       "event-ambiguous",
+		PayloadSHA256: fmt.Sprintf("%x", sha256.Sum256([]byte("ambiguous event"))),
+		Outcome:       InputAmbiguous,
+	})
+	result, found, err = restarted.receiptOutcome("agent:@1", identity, resolver, "event-ambiguous")
+	if err != nil || !found || result.Outcome != InputAmbiguous {
+		t.Fatalf("ambiguous receipt result=%#v found=%v err=%v", result, found, err)
+	}
+	result, found, err = restarted.receiptOutcome("agent:@1", identity, resolver, "event-missing")
+	if err != nil || found || result.Outcome != InputNotSubmitted {
+		t.Fatalf("missing receipt result=%#v found=%v err=%v", result, found, err)
+	}
+	if len(io.queues) != 1 {
+		t.Fatalf("receipt inspection changed provider queues: %d", len(io.queues))
+	}
+}
+
 func TestSessionInputDelegatedTurnAcceptanceAndFollowUpShareDurableBoundary(t *testing.T) {
 	io := newFakeSessionInputIO()
 	identity := testSessionInputIdentity("future-agent")
