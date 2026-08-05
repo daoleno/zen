@@ -1,5 +1,6 @@
 const { describe, expect, it } = require("bun:test");
 const createConfig = require("./app.config.js");
+const { buildNumber: trackedIOSBuildNumber } = require("./ios-build.json");
 const {
   resolveIOSBuildNumber,
   resolveIOSIdentity,
@@ -10,12 +11,15 @@ describe("native platform config", () => {
   const config = createConfig();
 
   it("defines a stable iOS application identity", () => {
+    expect(Number.isInteger(trackedIOSBuildNumber)).toBe(true);
+    expect(trackedIOSBuildNumber).toBeGreaterThan(0);
+    const expectedBuildNumber = String(trackedIOSBuildNumber);
     expect(config.name).toBe("Zen");
     expect(config.ios.bundleIdentifier).toBe("com.daoleno.zen");
     expect(config.ios.infoPlist.CFBundleDisplayName).toBe("Zen");
     expect(config.ios.infoPlist.CFBundleShortVersionString).toBe("0.1.0");
-    expect(config.ios.infoPlist.CFBundleVersion).toBe("9");
-    expect(config.ios.buildNumber).toBe("9");
+    expect(config.ios.infoPlist.CFBundleVersion).toBe(expectedBuildNumber);
+    expect(config.ios.buildNumber).toBe(expectedBuildNumber);
   });
 
   it("selects the Preview bundle identity while keeping the installed name Zen", () => {

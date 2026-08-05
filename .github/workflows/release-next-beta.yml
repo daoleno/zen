@@ -1,0 +1,181 @@
+name: Release next beta
+
+on:
+  workflow_dispatch:
+
+concurrency:
+  group: release-next-beta
+  cancel-in-progress: false
+
+permissions:
+  actions: write
+  contents: write
+
+jobs:
+  release:
+    name: Prepare, tag, and dispatch reviewed beta
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout current main with complete tag history
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - name: Capture immutable starting main
+        id: start
+        run: |
+          set -euo pipefail
+          git fetch --no-tags origin \
+            +refs/heads/main:refs/remotes/origin/main
+          START_SHA="$(git rev-parse refs/remotes/origin/main)"
+          [[ "$(git rev-parse HEAD)" == "$START_SHA" ]] || {
+            echo "error: checkout does not match current origin/main" >&2
+            exit 1
+          }
+          echo "sha=$START_SHA" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: daemon/go.mod
+          cache-dependency-path: daemon/go.sum
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: "1.3.5"
+
+      - name: Install workspace dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Test release preparation and workflow contracts
+        env:
+          PYTHONDONTWRITEBYTECODE: "1"
+          TMPDIR: ${{ runner.temp }}
+          ZEN_BUILD_TMPDIR: ${{ runner.temp }}/zen-build
+        run: python3 -m unittest discover -s scripts/tests -p 'test_prepare_release.py'
+
+      - name: Prepare deterministic release identity and notes
+        id: release
+        run: |
+          set -euo pipefail
+          RESULT="$(./scripts/prepare-release.py)"
+          printf '%s\n' "$RESULT"
+          python3 - "$RESULT" "$RUNNER_TEMP/zen-release-paths" >> "$GITHUB_OUTPUT" <<'PY'
+          import json
+          import pathlib
+          import sys
+
+          result = json.loads(sys.argv[1])
+          for key in ("next_version", "next_tag"):
+              value = result.get(key)
+              if not isinstance(value, str) or not value:
+                  raise SystemExit(f"missing preparation output: {key}")
+              print(f"{key}={value}")
+          ios_build_number = result.get("ios_build_number")
+          if (
+              not isinstance(ios_build_number, int)
+              or isinstance(ios_build_number, bool)
+              or ios_build_number < 1
+          ):
+              raise SystemExit("missing preparation output: ios_build_number")
+          print(f"ios_build_number={ios_build_number}")
+          paths = result.get("changed_paths")
+          if not isinstance(paths, list) or not paths or not all(
+              isinstance(path, str) and path for path in paths
+          ):
+              raise SystemExit("missing preparation output: changed_paths")
+          pathlib.Path(sys.argv[2]).write_text(
+              "".join(f"{path}\n" for path in paths),
+              encoding="utf-8",
+          )
+          PY
+
+      - name: Verify prepared release identity
+        run: ./scripts/verify-release-identity.sh
+
+      - name: Test daemon release identity
+        working-directory: daemon
+        run: go test ./cmd/zen
+
+      - name: Test App release contracts
+        working-directory: app
+        run: bun test appConfig.test.js releaseArtifactsWorkflow.test.js iosReleaseWorkflow.test.js
+
+      - name: Commit and annotate exact prepared release
+        env:
+          NEXT_TAG: ${{ steps.release.outputs.next_tag }}
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add --pathspec-from-file="$RUNNER_TEMP/zen-release-paths"
+          git diff --cached --check
+
+          EXPECTED="$(sort "$RUNNER_TEMP/zen-release-paths")"
+          STAGED="$(git diff --cached --name-only | sort)"
+          [[ "$STAGED" == "$EXPECTED" ]] || {
+            echo "error: staged release paths differ from generated paths" >&2
+            diff -u <(printf '%s\n' "$EXPECTED") <(printf '%s\n' "$STAGED") || true
+            exit 1
+          }
+          git diff --quiet || {
+            echo "error: unstaged tracked changes remain" >&2
+            exit 1
+          }
+          [[ -z "$(git ls-files --others --exclude-standard)" ]] || {
+            echo "error: untracked files remain after staging generated paths" >&2
+            exit 1
+          }
+
+          git commit -m "Prepare $NEXT_TAG"
+          git tag -a "$NEXT_TAG" HEAD -m "Zen $NEXT_TAG"
+
+      - name: Atomically push reviewed main and annotated tag
+        env:
+          NEXT_TAG: ${{ steps.release.outputs.next_tag }}
+          START_SHA: ${{ steps.start.outputs.sha }}
+        run: |
+          set -euo pipefail
+          git fetch --no-tags origin \
+            +refs/heads/main:refs/remotes/origin/main
+          [[ "$(git rev-parse refs/remotes/origin/main)" == "$START_SHA" ]] || {
+            echo "error: origin/main changed during release preparation" >&2
+            exit 1
+          }
+          [[ "$(git cat-file -t "refs/tags/$NEXT_TAG")" == "tag" ]] || {
+            echo "error: prepared tag is not annotated" >&2
+            exit 1
+          }
+          [[ "$(git rev-parse "refs/tags/$NEXT_TAG^{commit}")" == "$(git rev-parse HEAD)" ]] || {
+            echo "error: prepared tag does not resolve to the release commit" >&2
+            exit 1
+          }
+          git push --atomic origin \
+            "HEAD:refs/heads/main" \
+            "refs/tags/$NEXT_TAG"
+
+      - name: Dispatch existing build-before-publication workflow
+        env:
+          GH_TOKEN: ${{ github.token }}
+          NEXT_TAG: ${{ steps.release.outputs.next_tag }}
+        run: |
+          set -euo pipefail
+          gh workflow run release-artifacts.yml \
+            --ref "$NEXT_TAG" \
+            -f "ref=$NEXT_TAG" \
+            -f "publish=true"
+
+      - name: Dispatch existing Preview TestFlight workflow
+        env:
+          GH_TOKEN: ${{ github.token }}
+          IOS_BUILD_NUMBER: ${{ steps.release.outputs.ios_build_number }}
+          NEXT_TAG: ${{ steps.release.outputs.next_tag }}
+        run: |
+          set -euo pipefail
+          gh workflow run ios-release.yml \
+            --ref "$NEXT_TAG" \
+            -f "ref=$NEXT_TAG" \
+            -f "build_number=$IOS_BUILD_NUMBER" \
+            -f "app_identity=preview" \
+            -f "destination=testflight"
