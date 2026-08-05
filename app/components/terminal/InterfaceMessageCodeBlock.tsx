@@ -1,20 +1,35 @@
 import { Ionicons } from "@expo/vector-icons";
 import * as Clipboard from "expo-clipboard";
-import React, { useCallback, useEffect, useMemo, useState } from "react";
-import { ScrollView, StyleSheet, Text, View } from "react-native";
+import React, {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
+import {
+  type GestureResponderEvent,
+  ScrollView,
+  StyleSheet,
+  Text,
+  View,
+} from "react-native";
 import { Typography } from "../../constants/tokens";
 import type {
   TerminalThemeChrome,
   TerminalThemePalette,
 } from "../../constants/terminalThemes";
-import { AnimatedPressable } from "../ui/AnimatedPressable";
 import { withAlpha } from "./colorWithAlpha";
 import {
   highlightCodeLineForLanguage,
   type HighlightTokenKind,
 } from "./gitDiffSyntaxHighlight";
 import { shouldRenderPlainMonospaceCodeBlock } from "./codeBlockPresentation";
-import { createCodeBlockCopyFeedback } from "./InterfaceMessageCodeBlockCopy";
+import {
+  codeBlockCopyMovedBeyondSlop,
+  codeBlockCopyShouldCommit,
+  createCodeBlockCopyFeedback,
+} from "./InterfaceMessageCodeBlockCopy";
 import { PreformattedCodeWebView } from "./PreformattedCodeWebView";
 import { useTimelineSelectableTextProps } from "./TimelineTextSelectableContext";
 
@@ -36,6 +51,13 @@ export function InterfaceMessageCodeBlock({
   isLast,
 }: InterfaceMessageCodeBlockProps) {
   const [copied, setCopied] = useState(false);
+  const [copyPressed, setCopyPressed] = useState(false);
+  const copyTouchRef = useRef({
+    startX: 0,
+    startY: 0,
+    moved: false,
+    active: false,
+  });
   const selectableTextProps = useTimelineSelectableTextProps();
   const copyFeedback = useMemo(
     () =>
@@ -61,9 +83,56 @@ export function InterfaceMessageCodeBlock({
     compact ? styles.codeLineCompact : null,
     { color: baseColor, fontFamily: Typography.chatMonoFont },
   ];
-  const handleCopy = useCallback(() => {
+  const copyCode = useCallback(() => {
     void copyFeedback.copy(text);
   }, [copyFeedback, text]);
+  const resetCopyTouch = useCallback(() => {
+    copyTouchRef.current.active = false;
+    copyTouchRef.current.moved = false;
+    setCopyPressed(false);
+  }, []);
+  const handleCopyResponderGrant = useCallback(
+    (event: GestureResponderEvent) => {
+      copyTouchRef.current = {
+        startX: event.nativeEvent.pageX,
+        startY: event.nativeEvent.pageY,
+        moved: false,
+        active: true,
+      };
+      setCopyPressed(true);
+    },
+    [],
+  );
+  const handleCopyResponderMove = useCallback(
+    (event: GestureResponderEvent) => {
+      const touch = copyTouchRef.current;
+      if (
+        !touch.active ||
+        touch.moved ||
+        !codeBlockCopyMovedBeyondSlop(
+          touch.startX,
+          touch.startY,
+          event.nativeEvent.pageX,
+          event.nativeEvent.pageY,
+        )
+      ) {
+        return;
+      }
+      touch.moved = true;
+      setCopyPressed(false);
+    },
+    [],
+  );
+  const handleCopyResponderRelease = useCallback(() => {
+    const shouldCopy = codeBlockCopyShouldCommit({
+      gestureActive: copyTouchRef.current.active,
+      userMovedBeyondSlop: copyTouchRef.current.moved,
+    });
+    resetCopyTouch();
+    if (shouldCopy) {
+      copyCode();
+    }
+  }, [copyCode, resetCopyTouch]);
 
   useEffect(() => {
     return () => copyFeedback.dispose();
@@ -102,29 +171,48 @@ export function InterfaceMessageCodeBlock({
         >
           {label}
         </Text>
-        <AnimatedPressable
+        <View
+          accessible
           accessibilityRole="button"
           accessibilityLabel={copied ? "Code copied" : "Copy code"}
           accessibilityHint="Copies this code block to the clipboard"
           accessibilityState={{ selected: copied }}
-          onPress={handleCopy}
-          style={styles.copyButton}
-          scale={0.9}
+          accessibilityActions={[{ name: "activate" }]}
+          onAccessibilityAction={(event) => {
+            if (event.nativeEvent.actionName === "activate") {
+              copyCode();
+            }
+          }}
+          hitSlop={{ top: 10, bottom: 10, left: 5, right: 3 }}
+          onStartShouldSetResponder={() => true}
+          onMoveShouldSetResponder={() => false}
+          onResponderGrant={handleCopyResponderGrant}
+          onResponderMove={handleCopyResponderMove}
+          onResponderRelease={handleCopyResponderRelease}
+          onResponderTerminate={resetCopyTouch}
+          onResponderTerminationRequest={() => copyTouchRef.current.moved}
+          style={[
+            styles.copyButton,
+            copyPressed ? styles.copyButtonPressed : null,
+          ]}
         >
-          <Ionicons
-            name={copied ? "checkmark" : "copy-outline"}
-            size={16}
-            color={copied ? chrome.accent : chrome.textMuted}
-          />
-          {copied ? (
+          <View pointerEvents="none" style={styles.copyButtonContent}>
+            <Ionicons
+              name={copied ? "checkmark" : "copy-outline"}
+              size={14}
+              color={copied ? chrome.accent : chrome.textMuted}
+            />
             <Text
               accessibilityLiveRegion="polite"
-              style={[styles.copiedText, { color: chrome.accent }]}
+              style={[
+                styles.copyText,
+                { color: copied ? chrome.accent : chrome.textMuted },
+              ]}
             >
-              Copied
+              {copied ? "Copied" : "Copy"}
             </Text>
-          ) : null}
-        </AnimatedPressable>
+          </View>
+        </View>
       </View>
       {prepared.usePlainMonospace ? (
         <PreformattedCodeWebView
@@ -393,9 +481,9 @@ const styles = StyleSheet.create({
   },
   header: {
     borderBottomWidth: StyleSheet.hairlineWidth,
-    minHeight: 44,
-    paddingLeft: 11,
-    paddingRight: 2,
+    minHeight: 34,
+    paddingLeft: 10,
+    paddingRight: 3,
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "space-between",
@@ -407,15 +495,23 @@ const styles = StyleSheet.create({
     fontFamily: Typography.chatMonoFontBold,
   },
   copyButton: {
-    minWidth: 44,
-    height: 44,
-    paddingHorizontal: 10,
+    minWidth: 62,
+    height: 34,
+    paddingHorizontal: 7,
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "center",
-    gap: 5,
   },
-  copiedText: {
+  copyButtonPressed: {
+    opacity: 0.62,
+  },
+  copyButtonContent: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 4,
+  },
+  copyText: {
     fontSize: 11,
     lineHeight: 15,
     fontFamily: Typography.chatMonoFontBold,
