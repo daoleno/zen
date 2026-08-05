@@ -33,7 +33,8 @@ func (a *CodexActivityAdapter) Match(in ActivityInput) bool {
 
 func (a *CodexActivityAdapter) Infer(in ActivityInput) ActivitySignal {
 	pane := latestProviderPaneWindow(in.PaneContent, "openai codex")
-	if codexApprovalPromptRe.MatchString(pane) {
+	approvalPane := strings.Join(linesAfterLastReadyComposer(strings.Split(pane, "\n")), "\n")
+	if codexApprovalPromptRe.MatchString(approvalPane) {
 		return ActivitySignal{
 			State:    StateBlocked,
 			Summary:  "Waiting for Codex approval",

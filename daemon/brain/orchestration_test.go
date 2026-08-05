@@ -1725,6 +1725,84 @@ func TestDelegatedSessionRemovalAfterDoneDoesNotCreateFalseFailure(t *testing.T)
 	}
 }
 
+func TestTerminalLifecycleSuppressesMissingOwnerStaleAcrossReopen(t *testing.T) {
+	for _, test := range []struct {
+		kind       string
+		nextAction string
+	}{
+		{kind: "session.done", nextAction: "Review the delegated Session result."},
+		{kind: "session.failed", nextAction: "Inspect the delegated Session failure."},
+	} {
+		t.Run(test.kind, func(t *testing.T) {
+			root := t.TempDir()
+			store, err := NewStore(root)
+			if err != nil {
+				t.Fatal(err)
+			}
+			hostID := "brain-agent-brain-hidden:@1"
+			ownerID := "brain-agent-terminal:@2"
+			if err := store.SetHostSession(hostID, "codex"); err != nil {
+				t.Fatal(err)
+			}
+			item, err := store.CreateWork(Work{
+				Title:            "Terminal delegated Session",
+				Objective:        "Keep terminal lifecycle monotonic after cleanup.",
+				Status:           WorkWaiting,
+				OwnerSessionID:   ownerID,
+				CompletionPolicy: CompletionBounded,
+				NextAction:       test.nextAction,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, created, err := store.AppendWorkEvent(WorkEvent{
+				WorkID:     item.ID,
+				Kind:       test.kind,
+				DedupeKey:  "session:" + ownerID + ":turn:one:" + test.kind,
+				PayloadRef: "session:" + ownerID,
+				Actionable: true,
+			}); err != nil || !created {
+				t.Fatalf("append terminal Event created=%v err=%v", created, err)
+			}
+
+			reopened, err := NewStore(root)
+			if err != nil {
+				t.Fatal(err)
+			}
+			service := NewService(reopened, &fakeWatcher{sessions: map[string]*classifier.Agent{
+				hostID: {ID: hostID, Hidden: true, State: classifier.StateDone},
+			}}, nil)
+			service.ReconcileDelegatedSessions(nil)
+			service.ReconcileDelegatedSessions(nil)
+
+			got, err := reopened.Work(item.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			events, err := reopened.ListWorkEvents(item.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			stale := 0
+			terminal := 0
+			for _, event := range events {
+				if event.Kind == "session.stale" {
+					stale++
+				}
+				if event.Kind == test.kind {
+					terminal++
+				}
+			}
+			if terminal != 1 || stale != 0 ||
+				got.OwnerSessionID != "" ||
+				got.Status != WorkWaiting ||
+				got.NextAction != test.nextAction {
+				t.Fatalf("reconciled Work=%#v Events=%#v", got, events)
+			}
+		})
+	}
+}
+
 func TestFirstAuthoritativeInventoryReconcilesMissingOwnerExactlyOnce(t *testing.T) {
 	root := t.TempDir()
 	store, err := NewStore(root)

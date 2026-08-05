@@ -131,6 +131,7 @@ func runDaemon(args []string, stderr io.Writer) error {
 	w := watcher.New(500 * time.Millisecond)
 	w.ConfigureDelegatedResources(authManager.DaemonID())
 	w.SetActivityProbe(classifier.DefaultActivityProbe())
+	w.SetProviderActivityProbe(newWorkProviderActivityProbe())
 	sc := stats.NewCollector()
 
 	workRoot, err := work.DefaultRoot()

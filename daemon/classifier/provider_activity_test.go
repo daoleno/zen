@@ -176,6 +176,21 @@ func TestProviderAdapters_RetainPaneAndProcessEvidence(t *testing.T) {
 	}
 }
 
+func TestCodexHistoricalApprovalTextBeforeIdleComposerDoesNotBlock(t *testing.T) {
+	pane := "OpenAI Codex\n• Test output: Press enter to continue\n› \nmodel footer"
+	signal := NewCodexActivityAdapter().Infer(ActivityInput{
+		Agent:       Agent{Command: "codex"},
+		PaneContent: pane,
+	})
+	if signal.State != StateUnknown || signal.Source != "codex_idle" {
+		t.Fatalf("historical approval text produced activity %#v", signal)
+	}
+	state, _ := Classify(true, strings.Split(pane, "\n"), "codex")
+	if state != StateUnknown {
+		t.Fatalf("historical approval text classified as %q, want unknown", state)
+	}
+}
+
 func TestResolveSessionStatus_ProgressAndStickyFactsOutrankPaneEvidence(t *testing.T) {
 	now := time.Date(2026, 7, 12, 12, 0, 0, 0, time.UTC)
 	progressAt := now.Add(-time.Minute)

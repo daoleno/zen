@@ -86,6 +86,21 @@ a phase transition may establish a shorter lease. User input to the Brain host
 has foreground priority, so an internal Event remains unclaimed until that user
 turn ends.
 
+Delegated input carries one durable turn marker on the existing Session input
+receipt boundary. A successful tmux submit queue records only dispatched input;
+it does not prove that a provider started. The existing provider-native
+`ProviderActivity` is the preferred lifecycle fact. When no correlated native
+Activity is usable, the same provider-neutral reducer may use post-dispatch pane
+activity, stable process identity/liveness, and a persisted wall-clock quiet
+boundary. A live dispatch with no observed start
+by the existing startup timeout fails once and is never replayed. The reducer
+settles the one Session turn marker; it does not create another Work object,
+Event source, scheduler, transcript parser, or workflow state machine.
+
+After Brain consumes an Event, it re-anchors to foreground Work, checks the
+current status and next action, and takes the next useful orchestration step.
+This is prompt policy, not automatic daemon workflow.
+
 Calendar remains authoritative for scheduled-action occurrence claims,
 execution, canonical results, source-thread delivery, and recurrence. Brain
 only projects a scheduled-action run into deterministic Work and deduplicated

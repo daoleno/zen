@@ -1,6 +1,7 @@
 package watcher
 
 import (
+	"errors"
 	"os"
 	"reflect"
 	"strings"
@@ -44,6 +45,84 @@ func TestBuildWindowCommandForShellInjectsAgentProgressEnv(t *testing.T) {
 	if strings.Contains(got, `ZEN_AGENT_PROGRESS_CMD="zen agent progress"`) ||
 		strings.Contains(got, "ZEN_AGENT_PROGRESS_CMD=zen agent progress") {
 		t.Fatalf("ZEN_AGENT_PROGRESS_CMD must be a single executable token:\n%s", got)
+	}
+}
+
+func TestResolveTargetIdentityWaitsForUnknownExpectedExecutable(t *testing.T) {
+	shell := targetProcessIdentity{
+		Command:         "zsh",
+		PanePID:         10,
+		PaneStart:       100,
+		ForegroundID:    10,
+		ForegroundStart: 100,
+		ProcessID:       10,
+		ProcessStart:    100,
+	}
+	futureAgent := targetProcessIdentity{
+		Command:         "future-agent",
+		PanePID:         10,
+		PaneStart:       100,
+		ForegroundID:    20,
+		ForegroundStart: 200,
+		ProcessID:       20,
+		ProcessStart:    200,
+	}
+	calls := 0
+	got, ok := resolveTargetIdentityWhenReady(
+		func(string) (targetProcessIdentity, bool) {
+			calls++
+			if calls <= 2 {
+				return shell, true
+			}
+			return futureAgent, true
+		},
+		"session:@1",
+		"future-agent --accept-all",
+	)
+	if !ok || !got.equal(futureAgent) {
+		t.Fatalf("resolved identity = (%+v, %v), want future-agent generation", got, ok)
+	}
+	if calls < 4 {
+		t.Fatalf("resolver calls = %d, accepted transient shell before future-agent stabilized", calls)
+	}
+}
+
+func TestResolveTargetIdentityAcceptsStableUnknownWrapperExecutable(t *testing.T) {
+	shell := targetProcessIdentity{
+		Command:         "zsh",
+		PanePID:         10,
+		PaneStart:       100,
+		ForegroundID:    10,
+		ForegroundStart: 100,
+		ProcessID:       10,
+		ProcessStart:    100,
+	}
+	nodeWrapper := targetProcessIdentity{
+		Command:         "node",
+		PanePID:         10,
+		PaneStart:       100,
+		ForegroundID:    30,
+		ForegroundStart: 300,
+		ProcessID:       30,
+		ProcessStart:    300,
+	}
+	calls := 0
+	got, ok := resolveTargetIdentityWhenReady(
+		func(string) (targetProcessIdentity, bool) {
+			calls++
+			if calls <= 2 {
+				return shell, true
+			}
+			return nodeWrapper, true
+		},
+		"session:@2",
+		"future-agent --accept-all",
+	)
+	if !ok || !got.equal(nodeWrapper) {
+		t.Fatalf("resolved identity = (%+v, %v), want stable non-shell wrapper generation", got, ok)
+	}
+	if calls < 4 {
+		t.Fatalf("resolver calls = %d, accepted transient shell before wrapper stabilized", calls)
 	}
 }
 
@@ -407,7 +486,7 @@ func TestUpdateAgentProgressRejectsUnknownAgent(t *testing.T) {
 	}
 }
 
-func TestSettleAgentInputAcceptedClearsOlderStickyFailure(t *testing.T) {
+func TestRecordAgentInputDispatchedClearsOlderStickyFailure(t *testing.T) {
 	w := New(time.Second)
 	w.registerCreatedSession("brain-agent-worker:@1", "/repo/zen", CreateSessionOptions{
 		Command: "codex",
@@ -431,14 +510,15 @@ func TestSettleAgentInputAcceptedClearsOlderStickyFailure(t *testing.T) {
 		t.Fatal("failed progress did not record its timestamp")
 	}
 
-	accepted, err := w.SettleAgentInputAccepted(
+	accepted, err := w.RecordAgentInputDispatched(
 		"brain-agent-worker:@1",
+		"turn-1",
 		failed.LastProgressAt.Add(time.Nanosecond),
 		"working",
-		"Delegated input accepted",
+		"Delegated input dispatched",
 	)
 	if err != nil {
-		t.Fatalf("SettleAgentInputAccepted returned error: %v", err)
+		t.Fatalf("RecordAgentInputDispatched returned error: %v", err)
 	}
 	if accepted.State != classifier.StateRunning || accepted.Attention != "none" || accepted.NeedsAttention {
 		t.Fatalf("accepted handoff = %#v", accepted)
@@ -460,7 +540,7 @@ func TestSettleAgentInputAcceptedClearsOlderStickyFailure(t *testing.T) {
 	}
 }
 
-func TestSettleAgentInputAcceptedDoesNotOverwriteNewerLifecycleProgress(t *testing.T) {
+func TestRecordAgentInputDispatchedDoesNotOverwriteNewerLifecycleProgress(t *testing.T) {
 	w := New(time.Second)
 	w.registerCreatedSession("brain-agent-worker:@1", "/repo/zen", CreateSessionOptions{
 		Command: "codex",
@@ -486,14 +566,15 @@ func TestSettleAgentInputAcceptedDoesNotOverwriteNewerLifecycleProgress(t *testi
 		t.Fatalf("test progress timestamp = %#v, handoff start = %s", progress.LastProgressAt, handoffStartedAt)
 	}
 
-	accepted, err := w.SettleAgentInputAccepted(
+	accepted, err := w.RecordAgentInputDispatched(
 		"brain-agent-worker:@1",
+		"turn-2",
 		handoffStartedAt,
 		"starting",
-		"Initial delegated prompt accepted",
+		"Initial delegated prompt dispatched",
 	)
 	if err != nil {
-		t.Fatalf("SettleAgentInputAccepted returned error: %v", err)
+		t.Fatalf("RecordAgentInputDispatched returned error: %v", err)
 	}
 	if accepted.Summary != "Running focused tests" || accepted.Phase != "verifying" || accepted.EventKind != "verification" {
 		t.Fatalf("newer lifecycle progress was overwritten: %#v", accepted)
@@ -571,6 +652,105 @@ func TestCursorWorkspaceTrustPromptIsNotInputReady(t *testing.T) {
 	}
 	if isAgentInputReady("cursor-agent --force --sandbox disabled", trust) {
 		t.Fatal("Cursor Agent workspace trust prompt should not be treated as task input-ready")
+	}
+}
+
+func TestCodexWorkspaceTrustPromptMatchesRequestedWorkingDirectory(t *testing.T) {
+	trust := "> You are in /workspace/future\n\n" +
+		"  Do you trust the contents of this directory? Working with untrusted contents\n" +
+		"  comes with higher risk of prompt injection.\n\n" +
+		"› 1. Yes, continue\n  2. No, quit\n\n  Press enter to continue\n"
+	if !isCodexWorkspaceTrustPrompt("codex --dangerously-bypass-approvals-and-sandbox", trust, "/workspace/future") {
+		t.Fatal("unambiguous Codex trust prompt for requested cwd was not detected")
+	}
+	wrapped := strings.Replace(trust, "/workspace/future", "/workspace/fu\n  ture", 1)
+	if !isCodexWorkspaceTrustPrompt("codex", wrapped, "/workspace/future") {
+		t.Fatal("hard-wrapped Codex trust path was not reconstructed exactly")
+	}
+	siblingPrefix := strings.Replace(trust, "/workspace/future", "/workspace/fut", 1)
+	if isCodexWorkspaceTrustPrompt("codex", siblingPrefix, "/workspace/future") {
+		t.Fatal("Codex trust prompt authorized a sibling path by plain prefix")
+	}
+	if isCodexWorkspaceTrustPrompt("codex", trust, "/workspace/other") {
+		t.Fatal("Codex trust prompt for a different cwd was accepted")
+	}
+	if isCodexWorkspaceTrustPrompt("future-agent", trust, "/workspace/future") {
+		t.Fatal("unknown provider inherited Codex-specific trust handling")
+	}
+}
+
+func TestCodexWorkspaceTrustPromptAdvancesOnce(t *testing.T) {
+	trust := "> You are in /workspace/future\n\n" +
+		"  Do you trust the contents of this directory?\n\n" +
+		"› 1. Yes, continue\n  2. No, quit\n\n  Press enter to continue\n"
+	sends := 0
+	send := func(key string) error {
+		sends++
+		if key != "Enter" {
+			t.Fatalf("trust key = %q, want Enter", key)
+		}
+		return nil
+	}
+	advanced, didAdvance, ok := advanceStartupTrustPromptOnce(
+		false,
+		"codex",
+		trust,
+		"/workspace/future",
+		func() error { return nil },
+		send,
+	)
+	if !ok || !advanced || !didAdvance || sends != 1 {
+		t.Fatalf("first advance = (%v, %v, %v), sends=%d", advanced, didAdvance, ok, sends)
+	}
+	advanced, didAdvance, ok = advanceStartupTrustPromptOnce(
+		advanced,
+		"codex",
+		trust,
+		"/workspace/future",
+		func() error { return nil },
+		send,
+	)
+	if !ok || !advanced || didAdvance || sends != 1 {
+		t.Fatalf("duplicate advance = (%v, %v, %v), sends=%d", advanced, didAdvance, ok, sends)
+	}
+}
+
+func TestCodexWorkspaceTrustPromptIdentityChangePreventsAdvance(t *testing.T) {
+	trust := "> You are in /workspace/future\n\n" +
+		"  Do you trust the contents of this directory?\n\n" +
+		"› 1. Yes, continue\n  2. No, quit\n\n  Press enter to continue\n"
+	sends := 0
+	advanced, didAdvance, ok := advanceStartupTrustPromptOnce(
+		false,
+		"codex",
+		trust,
+		"/workspace/future",
+		func() error { return errors.New("provider generation changed") },
+		func(string) error {
+			sends++
+			return nil
+		},
+	)
+	if ok || advanced || didAdvance || sends != 0 {
+		t.Fatalf("identity change advanced trust = (%v, %v, %v), sends=%d", advanced, didAdvance, ok, sends)
+	}
+}
+
+func TestCodexStartupReadyIgnoresConsumedTrustPromptInScrollback(t *testing.T) {
+	content := "> You are in /workspace/future\n\n" +
+		"  Do you trust the contents of this directory?\n\n" +
+		"› 1. Yes, continue\n  2. No, quit\n\n  Press enter to continue\n\n" +
+		"│ >_ OpenAI Codex (v0.146.0) │\n" +
+		"│ model: gpt-5.6-sol │\n\n" +
+		"› Run /review on my current changes\n"
+	if !isCodexStartupReady(content) {
+		t.Fatal("consumed Codex trust prompt in scrollback blocked the current composer")
+	}
+	trustOnly := "> You are in /workspace/future\n\n" +
+		"  Do you trust the contents of this directory?\n\n" +
+		"› 1. Yes, continue\n  2. No, quit\n\n  Press enter to continue\n"
+	if isCodexStartupReady(trustOnly) {
+		t.Fatal("Codex trust prompt without a later ready UI was treated as ready")
 	}
 }
 

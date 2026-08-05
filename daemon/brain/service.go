@@ -330,11 +330,15 @@ func (s *Service) RouteSessionEvent(event watcher.SessionEvent) (bool, error) {
 		return false, nil
 	}
 	if event.Type == "agent_removed" {
-		completed, err := s.removalFollowsCompletedSession(item.ID, agent.ID)
+		terminal, err := s.removalFollowsTerminalSession(item.ID, agent.ID)
 		if err != nil {
 			return false, err
 		}
-		if completed {
+		if terminal {
+			_, _, _, err := s.store.ReconcileMissingWorkOwner(item.ID, agent.ID)
+			if err != nil {
+				return false, err
+			}
 			return false, nil
 		}
 	}
@@ -371,7 +375,7 @@ func (s *Service) RouteSessionEvent(event watcher.SessionEvent) (bool, error) {
 	return s.DispatchPendingEvent()
 }
 
-func (s *Service) removalFollowsCompletedSession(workID, sessionID string) (bool, error) {
+func (s *Service) removalFollowsTerminalSession(workID, sessionID string) (bool, error) {
 	events, err := s.store.ListWorkEvents(workID)
 	if err != nil {
 		return false, err
@@ -383,7 +387,7 @@ func (s *Service) removalFollowsCompletedSession(workID, sessionID string) (bool
 			lastLifecycleKind = event.Kind
 		}
 	}
-	return lastLifecycleKind == "session.done", nil
+	return lastLifecycleKind == "session.done" || lastLifecycleKind == "session.failed", nil
 }
 
 func calendarOwnsTerminalResult(item Work, event watcher.SessionEvent) bool {
@@ -481,6 +485,9 @@ func sessionEventProjection(event watcher.SessionEvent) (string, bool, WorkUpdat
 
 func (s *Service) sessionEventDedupeKey(workID string, event watcher.SessionEvent, kind string) (string, error) {
 	agent := event.Agent
+	if turnID := strings.TrimSpace(event.TurnID); turnID != "" {
+		return fmt.Sprintf("session:%s:turn:%s:%s", strings.TrimSpace(event.AgentID), turnID, kind), nil
+	}
 	if agent == nil {
 		return "session:" + strings.TrimSpace(event.AgentID) + ":" + kind + ":1", nil
 	}
@@ -1401,6 +1408,7 @@ Agent orchestration rules:
 - Never close, kill, rename, repurpose, or otherwise manage sessions whose agent list entry does not have delegated=true. Those belong to the user or another tool.
 - Keep orchestration principles in Markdown, prompts, and agent instructions. Product code should provide tools, context, persistence, visibility, and safety boundaries rather than rigid workflow gates.
 - Treat an Active work event message as one claimed actionable delta; inspect only its referenced change, then act, summarize, or wait.
+- After handling an Event, re-anchor to the foreground Work, verify its current status and next action, and take the next useful orchestration step before waiting.
 - Continue low-risk next steps autonomously. Ask only when critical context is missing, an action is high-risk or irreversible, credentials/permissions are needed, or the decision depends on the user's values; when blocked, consolidate options and a recommendation.
 
 Current personality:

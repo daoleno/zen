@@ -12,24 +12,27 @@ import (
 )
 
 type fakeSessionInputIO struct {
-	mu             sync.Mutex
-	paneValue      sessionInputPane
-	buffers        map[string]string
-	loadedPayloads []string
-	queues         [][]string
-	submissions    []string
-	ledger         sessionInputReceiptLedger
-	ledgerWrites   []sessionInputReceiptLedger
-	writeErrors    map[int]error
-	ledgerReads    int
-	readErrors     map[int]error
-	operations     []string
-	runStarted     bool
-	runErr         error
-	startedQueues  int
-	afterLoad      func()
-	activeQueues   int
-	maxQueues      int
+	mu               sync.Mutex
+	paneValue        sessionInputPane
+	buffers          map[string]string
+	loadedPayloads   []string
+	queues           [][]string
+	submissions      []string
+	ledger           sessionInputReceiptLedger
+	ledgerWrites     []sessionInputReceiptLedger
+	writeErrors      map[int]error
+	ledgerReads      int
+	readErrors       map[int]error
+	operations       []string
+	turn             delegatedTurnRecord
+	hasTurn          bool
+	runStarted       bool
+	runErr           error
+	startedQueues    int
+	afterLoad        func()
+	activeQueues     int
+	maxQueues        int
+	paneContentValue string
 }
 
 func newFakeSessionInputIO() *fakeSessionInputIO {
@@ -111,6 +114,36 @@ func (io *fakeSessionInputIO) writeReceiptLedger(_ string, ledger sessionInputRe
 	}
 	io.ledger = cloneSessionInputReceiptLedger(ledger)
 	return nil
+}
+
+func (io *fakeSessionInputIO) delegatedTurn(string) (delegatedTurnRecord, bool, error) {
+	io.mu.Lock()
+	defer io.mu.Unlock()
+	return io.turn, io.hasTurn, nil
+}
+
+func (io *fakeSessionInputIO) writeDelegatedTurn(_ string, turn delegatedTurnRecord) error {
+	io.mu.Lock()
+	defer io.mu.Unlock()
+	io.turn = turn
+	io.hasTurn = true
+	io.operations = append(io.operations, "turn_write")
+	return nil
+}
+
+func (io *fakeSessionInputIO) clearDelegatedTurn(string) error {
+	io.mu.Lock()
+	defer io.mu.Unlock()
+	io.turn = delegatedTurnRecord{}
+	io.hasTurn = false
+	io.operations = append(io.operations, "turn_clear")
+	return nil
+}
+
+func (io *fakeSessionInputIO) paneContent(string) (string, error) {
+	io.mu.Lock()
+	defer io.mu.Unlock()
+	return io.paneContentValue, nil
 }
 
 func cloneSessionInputReceiptLedger(ledger sessionInputReceiptLedger) sessionInputReceiptLedger {
@@ -314,6 +347,228 @@ func TestSessionInputReceiptDedupeSurvivesOwnerRestart(t *testing.T) {
 	}
 	if len(io.queues) != 1 {
 		t.Fatalf("queues = %d, want one across restart", len(io.queues))
+	}
+}
+
+func TestSessionInputDelegatedTurnAcceptanceAndFollowUpShareDurableBoundary(t *testing.T) {
+	io := newFakeSessionInputIO()
+	identity := testSessionInputIdentity("future-agent")
+	resolver := fixedSessionInputResolver(identity)
+	owner := newSessionInputOwner(io)
+	acceptedAt := time.Date(2026, 8, 5, 1, 0, 0, 0, time.UTC)
+	first := delegatedTurnRecord{
+		SchemaVersion:   delegatedTurnSchema,
+		ID:              "turn-initial",
+		Status:          delegatedTurnDispatched,
+		AcceptedAt:      acceptedAt,
+		ProcessIdentity: delegatedTurnIdentity(identity),
+	}
+	result, err := owner.submitDelegated(
+		"agent:@1", identity, resolver, identity.Command, "initial", first,
+	)
+	if err != nil || result.Outcome != InputAccepted || result.Receipt != first.ID {
+		t.Fatalf("initial delegated submit = (%+v, %v)", result, err)
+	}
+	if !io.hasTurn || io.turn.ID != first.ID || io.turn.Status != delegatedTurnDispatched ||
+		len(io.submissions) != 1 {
+		t.Fatalf("initial durable turn=%+v submissions=%#v", io.turn, io.submissions)
+	}
+
+	settledAt := acceptedAt.Add(time.Minute)
+	io.turn.Status = delegatedTurnDone
+	io.turn.SettledAt = &settledAt
+	second := delegatedTurnRecord{
+		SchemaVersion:   delegatedTurnSchema,
+		ID:              "turn-follow-up",
+		Status:          delegatedTurnDispatched,
+		AcceptedAt:      settledAt.Add(time.Second),
+		ProcessIdentity: delegatedTurnIdentity(identity),
+	}
+	restartedOwner := newSessionInputOwner(io)
+	result, err = restartedOwner.submitDelegated(
+		"agent:@1", identity, resolver, identity.Command, "follow-up", second,
+	)
+	if err != nil || result.Outcome != InputAccepted || result.Receipt != second.ID {
+		t.Fatalf("follow-up delegated submit = (%+v, %v)", result, err)
+	}
+	if io.turn.ID != second.ID || io.turn.Status != delegatedTurnDispatched ||
+		len(io.submissions) != 2 {
+		t.Fatalf("follow-up durable turn=%+v submissions=%#v", io.turn, io.submissions)
+	}
+}
+
+func TestSessionInputDuplicateNewTurnReceiptReturnsExistingLifecycleIdentity(t *testing.T) {
+	io := newFakeSessionInputIO()
+	identity := testSessionInputIdentity("future-agent")
+	resolver := fixedSessionInputResolver(identity)
+	acceptedAt := time.Date(2026, 8, 5, 1, 0, 0, 0, time.UTC)
+	turn := delegatedTurnRecord{
+		SchemaVersion:   delegatedTurnSchema,
+		ID:              "turn-idempotent",
+		Status:          delegatedTurnDispatched,
+		AcceptedAt:      acceptedAt,
+		ProcessIdentity: delegatedTurnIdentity(identity),
+	}
+	first := newSessionInputOwner(io)
+	if _, err := first.submitDelegated(
+		"agent:@1", identity, resolver, identity.Command, "task", turn,
+	); err != nil {
+		t.Fatal(err)
+	}
+	restarted := newSessionInputOwner(io)
+	result, err := restarted.submitDelegated(
+		"agent:@1", identity, resolver, identity.Command, "task", turn,
+	)
+	if err != nil || result.Outcome != InputAccepted || result.TurnID != turn.ID || !result.Duplicate {
+		t.Fatalf("duplicate new-turn receipt = (%+v, %v)", result, err)
+	}
+	if len(io.queues) != 1 || io.turn.ID != turn.ID {
+		t.Fatalf("duplicate new-turn receipt replayed/reset lifecycle: queues=%d turn=%+v", len(io.queues), io.turn)
+	}
+}
+
+func TestSessionInputAcceptedDuplicateWithoutTurnMarkerIsAmbiguousAndNotReplayed(t *testing.T) {
+	io := newFakeSessionInputIO()
+	identity := testSessionInputIdentity("future-agent")
+	resolver := fixedSessionInputResolver(identity)
+	turn := delegatedTurnRecord{
+		SchemaVersion:   delegatedTurnSchema,
+		ID:              "turn-marker-lost",
+		Status:          delegatedTurnDispatched,
+		AcceptedAt:      time.Date(2026, 8, 5, 1, 0, 0, 0, time.UTC),
+		ProcessIdentity: delegatedTurnIdentity(identity),
+	}
+	first := newSessionInputOwner(io)
+	if _, err := first.submitDelegated(
+		"agent:@1", identity, resolver, identity.Command, "task", turn,
+	); err != nil {
+		t.Fatal(err)
+	}
+	io.hasTurn = false
+	io.turn = delegatedTurnRecord{}
+
+	restarted := newSessionInputOwner(io)
+	_, err := restarted.submitDelegated(
+		"agent:@1", identity, resolver, identity.Command, "task", turn,
+	)
+	if InputOutcomeFromError(err) != InputAmbiguous ||
+		!strings.Contains(err.Error(), "turn marker is missing") {
+		t.Fatalf("accepted duplicate without marker = %v", err)
+	}
+	if len(io.queues) != 1 {
+		t.Fatalf("accepted duplicate without marker replayed input: queues=%d", len(io.queues))
+	}
+}
+
+func TestSessionInputSteeringWhileRunningRetainsDelegatedTurnIdentity(t *testing.T) {
+	io := newFakeSessionInputIO()
+	identity := testSessionInputIdentity("future-agent")
+	io.hasTurn = true
+	io.turn = delegatedTurnRecord{
+		SchemaVersion:   delegatedTurnSchema,
+		ID:              "active-turn",
+		Status:          delegatedTurnRunning,
+		AcceptedAt:      time.Date(2026, 8, 5, 1, 0, 0, 0, time.UTC),
+		ProcessIdentity: delegatedTurnIdentity(identity),
+	}
+	owner := newSessionInputOwner(io)
+	next := delegatedTurnRecord{
+		SchemaVersion:   delegatedTurnSchema,
+		ID:              "too-early",
+		Status:          delegatedTurnDispatched,
+		AcceptedAt:      io.turn.AcceptedAt.Add(time.Second),
+		ProcessIdentity: delegatedTurnIdentity(identity),
+	}
+	result, err := owner.submitDelegated(
+		"agent:@1", identity, fixedSessionInputResolver(identity),
+		identity.Command, "follow-up", next,
+	)
+	if err != nil || result.Outcome != InputAccepted || result.TurnID != "active-turn" {
+		t.Fatalf("running-turn steering = (%+v, %v)", result, err)
+	}
+	if len(io.queues) != 1 || len(io.submissions) != 1 || io.submissions[0] != "follow-up" {
+		t.Fatalf("steering submissions=%#v queues=%d", io.submissions, len(io.queues))
+	}
+	if io.turn.ID != "active-turn" || io.turn.Status != delegatedTurnRunning {
+		t.Fatalf("steering replaced lifecycle owner: %+v", io.turn)
+	}
+}
+
+func TestSessionInputDuplicateSteeringReceiptRetainsActiveTurn(t *testing.T) {
+	io := newFakeSessionInputIO()
+	identity := testSessionInputIdentity("future-agent")
+	active := delegatedTurnRecord{
+		SchemaVersion:   delegatedTurnSchema,
+		ID:              "active-turn",
+		Status:          delegatedTurnRunning,
+		AcceptedAt:      time.Date(2026, 8, 5, 1, 0, 0, 0, time.UTC),
+		ProcessIdentity: delegatedTurnIdentity(identity),
+		PaneBaseline:    delegatedTurnPaneIdentity("active"),
+	}
+	io.hasTurn = true
+	io.turn = active
+	steering := delegatedTurnRecord{
+		SchemaVersion:   delegatedTurnSchema,
+		ID:              "steering-delivery",
+		Status:          delegatedTurnDispatched,
+		AcceptedAt:      active.AcceptedAt.Add(time.Second),
+		ProcessIdentity: delegatedTurnIdentity(identity),
+	}
+	first := newSessionInputOwner(io)
+	result, err := first.submitDelegated(
+		"agent:@1", identity, fixedSessionInputResolver(identity),
+		identity.Command, "steer", steering,
+	)
+	if err != nil || result.TurnID != active.ID {
+		t.Fatalf("first steering = (%+v, %v)", result, err)
+	}
+	restarted := newSessionInputOwner(io)
+	result, err = restarted.submitDelegated(
+		"agent:@1", identity, fixedSessionInputResolver(identity),
+		identity.Command, "steer", steering,
+	)
+	if err != nil || result.Outcome != InputAccepted || result.TurnID != active.ID || !result.Duplicate {
+		t.Fatalf("duplicate steering receipt = (%+v, %v)", result, err)
+	}
+	if len(io.queues) != 1 || io.turn != active {
+		t.Fatalf("duplicate steering replayed/reset lifecycle: queues=%d turn=%+v", len(io.queues), io.turn)
+	}
+}
+
+func TestSessionInputDefinitelyNotSubmittedRestoresPriorDelegatedTurn(t *testing.T) {
+	io := newFakeSessionInputIO()
+	identity := testSessionInputIdentity("future-agent")
+	settledAt := time.Date(2026, 8, 5, 1, 1, 0, 0, time.UTC)
+	prior := delegatedTurnRecord{
+		SchemaVersion:   delegatedTurnSchema,
+		ID:              "settled-prior",
+		Status:          delegatedTurnDone,
+		AcceptedAt:      settledAt.Add(-time.Minute),
+		ProcessIdentity: delegatedTurnIdentity(identity),
+		PaneBaseline:    delegatedTurnPaneIdentity("prior"),
+		SettledAt:       &settledAt,
+	}
+	io.hasTurn = true
+	io.turn = prior
+	io.runErr = errors.New("queue did not start")
+	io.runStarted = false
+	owner := newSessionInputOwner(io)
+	next := delegatedTurnRecord{
+		SchemaVersion:   delegatedTurnSchema,
+		ID:              "next",
+		Status:          delegatedTurnDispatched,
+		AcceptedAt:      settledAt.Add(time.Second),
+		ProcessIdentity: delegatedTurnIdentity(identity),
+	}
+	_, err := owner.submitDelegated(
+		"agent:@1", identity, fixedSessionInputResolver(identity),
+		identity.Command, "next task", next,
+	)
+	if InputOutcomeFromError(err) != InputNotSubmitted {
+		t.Fatalf("queue start failure outcome = %s, err=%v", InputOutcomeFromError(err), err)
+	}
+	if !io.hasTurn || io.turn.ID != prior.ID || io.turn.Status != prior.Status {
+		t.Fatalf("definite pre-submit failure did not restore prior turn: %+v", io.turn)
 	}
 }
 

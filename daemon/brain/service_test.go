@@ -36,6 +36,133 @@ type sentCall struct {
 	text      string
 }
 
+func TestDelegatedTurnEventIdentitySettlesExactlyOnceAcrossDuplicateAndRestart(t *testing.T) {
+	root := t.TempDir()
+	store, err := NewStore(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sessionID := "brain-agent-unknown:@1"
+	item, err := store.CreateWork(Work{
+		Title:            "Unknown provider lifecycle",
+		Objective:        "Settle through the provider-neutral Session boundary.",
+		Status:           WorkRunning,
+		OwnerSessionID:   sessionID,
+		CompletionPolicy: CompletionBounded,
+		NextAction:       "Wait for the delegated Session.",
+		WaitFor:          "Session " + sessionID,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	agent := &classifier.Agent{
+		ID:        sessionID,
+		Name:      "Unknown provider",
+		State:     classifier.StateDone,
+		Summary:   "Fallback result",
+		Delegated: true,
+		PaneAlive: true,
+	}
+	event := watcher.SessionEvent{
+		Type:     "agent_state_change",
+		AgentID:  sessionID,
+		Agent:    agent,
+		OldState: string(classifier.StateRunning),
+		NewState: string(classifier.StateDone),
+		TurnID:   "unknown-turn-1",
+	}
+	service := NewService(store, &fakeWatcher{}, nil)
+	if _, err := service.RouteSessionEvent(event); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.RouteSessionEvent(event); err != nil {
+		t.Fatal(err)
+	}
+	events, err := store.ListWorkEvents(item.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	done := 0
+	for _, recorded := range events {
+		if recorded.Kind == "session.done" {
+			done++
+		}
+	}
+	if done != 1 {
+		t.Fatalf("duplicate fallback completion Events = %d, events=%#v", done, events)
+	}
+
+	reopened, err := NewStore(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	restarted := NewService(reopened, &fakeWatcher{}, nil)
+	if _, err := restarted.RouteSessionEvent(event); err != nil {
+		t.Fatal(err)
+	}
+	events, err = reopened.ListWorkEvents(item.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	done = 0
+	for _, recorded := range events {
+		if recorded.Kind == "session.done" {
+			done++
+		}
+	}
+	if done != 1 {
+		t.Fatalf("restart replayed fallback completion: done=%d events=%#v", done, events)
+	}
+}
+
+func TestDelegatedTurnDeadProcessFailureEventIsExactlyOnce(t *testing.T) {
+	store, err := NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	sessionID := "brain-agent-unknown-dead:@1"
+	item, err := store.CreateWork(Work{
+		Title:            "Unknown dead provider",
+		Objective:        "Report provider loss once.",
+		Status:           WorkRunning,
+		OwnerSessionID:   sessionID,
+		CompletionPolicy: CompletionBounded,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	agent := &classifier.Agent{
+		ID: sessionID, Name: "Unknown dead provider",
+		State: classifier.StateFailed, Summary: "Provider process is no longer live",
+		Delegated: true,
+	}
+	event := watcher.SessionEvent{
+		Type: "agent_state_change", AgentID: sessionID, Agent: agent,
+		OldState: string(classifier.StateRunning), NewState: string(classifier.StateFailed),
+		TurnID: "unknown-dead-turn",
+	}
+	service := NewService(store, &fakeWatcher{}, nil)
+	if _, err := service.RouteSessionEvent(event); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.RouteSessionEvent(event); err != nil {
+		t.Fatal(err)
+	}
+	events, err := store.ListWorkEvents(item.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	failed := 0
+	for _, recorded := range events {
+		if recorded.Kind == "session.failed" {
+			failed++
+		}
+	}
+	if failed != 1 {
+		t.Fatalf("dead provider failure Events = %d, events=%#v", failed, events)
+	}
+}
+
 func (w *fakeWatcher) Agents() []*classifier.Agent {
 	out := make([]*classifier.Agent, 0, len(w.agents))
 	for _, agent := range w.agents {

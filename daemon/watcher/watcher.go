@@ -109,12 +109,15 @@ func resolveTargetIdentityWhenReady(
 ) (targetProcessIdentity, bool) {
 	timeout := inputReadyTimeout(strings.TrimSpace(commandHint))
 	deadline := time.Now().Add(timeout)
-	waitForAgentProcess := isAgentCommand(strings.TrimSpace(commandHint))
+	expectedExecutable := commandExecutableBase(strings.TrimSpace(commandHint))
 	var previous targetProcessIdentity
 	stable := 0
 	for {
 		if identity, ok := resolver(target); ok {
-			if waitForAgentProcess && !isAgentCommand(identity.Command) {
+			resolvedExecutable := commandExecutableBase(identity.Command)
+			if expectedExecutable != "" &&
+				resolvedExecutable != expectedExecutable &&
+				isTransientLaunchShell(resolvedExecutable) {
 				previous = targetProcessIdentity{}
 				stable = 0
 				if !time.Now().Before(deadline) {
@@ -143,6 +146,15 @@ func resolveTargetIdentityWhenReady(
 	}
 }
 
+func isTransientLaunchShell(command string) bool {
+	switch normalizeCommand(command) {
+	case "sh", "bash", "dash", "fish", "zsh":
+		return true
+	default:
+		return false
+	}
+}
+
 // SessionEvent represents a state change or output update for an agent.
 type SessionEvent struct {
 	Type     string              `json:"type"`
@@ -152,6 +164,7 @@ type SessionEvent struct {
 	Lines    []string            `json:"lines,omitempty"`
 	OldState string              `json:"old,omitempty"`
 	NewState string              `json:"new,omitempty"`
+	TurnID   string              `json:"-"`
 }
 
 // Watcher monitors tmux windows and classifies agent states.
@@ -163,8 +176,10 @@ type Watcher struct {
 	hidden                map[string]bool
 	delegated             map[string]bool
 	activityProbe         classifier.ActivityProbe
+	providerActivityProbe ProviderActivityProbe
 	pollGeneration        int64
 	agentEpoch            map[string]int64 // per-agent generation for lock-free probe apply
+	delegatedTurns        map[string]delegatedTurnRecord
 	mu                    sync.RWMutex
 	events                chan SessionEvent
 	resources             delegatedResourceManager
@@ -176,15 +191,16 @@ type Watcher struct {
 // New creates a Watcher that polls tmux windows at the given interval.
 func New(pollInterval time.Duration) *Watcher {
 	return &Watcher{
-		pollInterval: pollInterval,
-		agents:       make(map[string]*classifier.Agent),
-		prevContent:  make(map[string]string),
-		hidden:       make(map[string]bool),
-		delegated:    make(map[string]bool),
-		agentEpoch:   make(map[string]int64),
-		events:       make(chan SessionEvent, 100),
-		resources:    noopDelegatedResourceManager{},
-		sessionInput: defaultSessionInputOwner,
+		pollInterval:   pollInterval,
+		agents:         make(map[string]*classifier.Agent),
+		prevContent:    make(map[string]string),
+		hidden:         make(map[string]bool),
+		delegated:      make(map[string]bool),
+		agentEpoch:     make(map[string]int64),
+		delegatedTurns: make(map[string]delegatedTurnRecord),
+		events:         make(chan SessionEvent, 100),
+		resources:      noopDelegatedResourceManager{},
+		sessionInput:   defaultSessionInputOwner,
 	}
 }
 
@@ -355,6 +371,18 @@ func (w *Watcher) SetActivityProbe(probe classifier.ActivityProbe) {
 	w.activityProbe = probe
 }
 
+// SetProviderActivityProbe injects daemon/work's native Activity reader.
+// Watcher correlates those facts to accepted Session input receipts; it does
+// not parse provider lifecycle sources or maintain a second lifecycle truth.
+func (w *Watcher) SetProviderActivityProbe(probe ProviderActivityProbe) {
+	if w == nil {
+		return
+	}
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.providerActivityProbe = probe
+}
+
 // Events returns the channel on which state changes and output updates are sent.
 func (w *Watcher) Events() <-chan SessionEvent {
 	return w.events
@@ -412,6 +440,28 @@ func (w *Watcher) UpdateAgentProgress(id string, progress classifier.AgentProgre
 	}
 
 	now := time.Now().UTC()
+	progressState := classifier.ProgressState(progress)
+	w.mu.RLock()
+	currentTurn, hasCurrentTurn := w.delegatedTurns[id]
+	w.mu.RUnlock()
+	progressSettledTurn := false
+	if hasCurrentTurn && !delegatedTurnTerminal(currentTurn.Status) &&
+		(progressState == classifier.StateDone || progressState == classifier.StateFailed) {
+		next, changed := settleDelegatedTurnFromProgress(
+			currentTurn,
+			progressState,
+			progress.Summary,
+			now,
+		)
+		if changed {
+			confirmed, err := w.sessionInputOwner().settleDelegatedTurnFromProgress(id, currentTurn.ID, next)
+			if err != nil {
+				return nil, err
+			}
+			currentTurn = confirmed
+			progressSettledTurn = true
+		}
+	}
 	var event SessionEvent
 	var snapshot *classifier.Agent
 
@@ -423,11 +473,23 @@ func (w *Watcher) UpdateAgentProgress(id string, progress classifier.AgentProgre
 	}
 	oldState := agent.State
 	classifier.ApplyProgress(agent, progress, now)
+	if hasCurrentTurn && !progressSettledTurn &&
+		(progressState == classifier.StateDone || progressState == classifier.StateFailed) {
+		// Terminal progress is useful metadata, but it cannot settle a newer
+		// accepted turn until provider-native running has correlated that turn.
+		agent.State = classifier.StateRunning
+		agent.Attention = "none"
+		agent.NeedsAttention = false
+	}
+	if progressSettledTurn {
+		w.delegatedTurns[id] = currentTurn
+	}
 	snapshot = cloneAgent(agent)
 	event = SessionEvent{
 		Type:    "agent_metadata_change",
 		AgentID: id,
 		Agent:   snapshot,
+		TurnID:  currentTurn.ID,
 	}
 	if oldState != agent.State {
 		event.Type = "agent_state_change"
@@ -440,11 +502,10 @@ func (w *Watcher) UpdateAgentProgress(id string, progress classifier.AgentProgre
 	return snapshot, nil
 }
 
-// SettleAgentInputAccepted clears an older terminal handoff projection after
-// the provider has consumed the composer. It updates the canonical Agent in
-// place rather than keeping a parallel launch-status shadow. Lifecycle progress
-// reported after this handoff began wins and is never overwritten.
-func (w *Watcher) SettleAgentInputAccepted(id string, handoffStartedAt time.Time, phase, summary string) (*classifier.Agent, error) {
+// RecordAgentInputDispatched clears an older terminal projection only after the
+// target-bound submit queue completed. This is a pending dispatch, not proof
+// that the provider ran; the durable turn marker awaits provider activity.
+func (w *Watcher) RecordAgentInputDispatched(id, turnID string, handoffStartedAt time.Time, phase, summary string) (*classifier.Agent, error) {
 	id = strings.TrimSpace(id)
 	if id == "" {
 		return nil, fmt.Errorf("missing agent id")
@@ -461,7 +522,14 @@ func (w *Watcher) SettleAgentInputAccepted(id string, handoffStartedAt time.Time
 		w.mu.Unlock()
 		return nil, fmt.Errorf("agent session not found")
 	}
-	if agent.LastProgressAt != nil && !agent.LastProgressAt.Before(handoffStartedAt) {
+	w.delegatedTurns[id] = delegatedTurnRecord{
+		SchemaVersion: delegatedTurnSchema,
+		ID:            strings.TrimSpace(turnID),
+		Status:        delegatedTurnDispatched,
+		AcceptedAt:    handoffStartedAt.UTC(),
+	}
+	if agent.LastProgressAt != nil && !agent.LastProgressAt.Before(handoffStartedAt) &&
+		(agent.State == classifier.StateRunning || agent.State == classifier.StateBlocked) {
 		snapshot = cloneAgent(agent)
 		w.mu.Unlock()
 		return snapshot, nil
@@ -485,6 +553,7 @@ func (w *Watcher) SettleAgentInputAccepted(id string, handoffStartedAt time.Time
 		Type:    "agent_metadata_change",
 		AgentID: id,
 		Agent:   snapshot,
+		TurnID:  strings.TrimSpace(turnID),
 	}
 	if oldState != agent.State {
 		event.Type = "agent_state_change"
@@ -573,6 +642,7 @@ func (w *Watcher) poll() {
 		exists            bool
 		prev              string
 		previousMetadata  agentMetadataSnapshot
+		delegatedTurnRaw  string
 		now               time.Time
 	}
 
@@ -580,6 +650,7 @@ func (w *Watcher) poll() {
 	w.pollGeneration++
 	generation := w.pollGeneration
 	probe := w.activityProbe
+	providerProbe := w.providerActivityProbe
 	prepared := make([]preparedAgent, 0, len(observations))
 	seen := make(map[string]bool, len(observations))
 
@@ -644,6 +715,7 @@ func (w *Watcher) poll() {
 			exists:            exists,
 			prev:              prev,
 			previousMetadata:  previousMetadata,
+			delegatedTurnRaw:  win.delegatedTurnRaw,
 			now:               now,
 		})
 	}
@@ -652,6 +724,10 @@ func (w *Watcher) poll() {
 	type probedAgent struct {
 		preparedAgent
 		activity classifier.ActivitySignal
+		provider ProviderActivityObservation
+		turn     delegatedTurnRecord
+		hasTurn  bool
+		turnErr  error
 	}
 	results := make([]probedAgent, 0, len(prepared))
 	for _, item := range prepared {
@@ -667,7 +743,52 @@ func (w *Watcher) poll() {
 				ToolChildActive: toolChild,
 			})
 		}
-		results = append(results, probedAgent{preparedAgent: item, activity: activity})
+		turn, hasTurn, turnErr := decodeDelegatedTurn(item.delegatedTurnRaw)
+		if providerProbe != nil && (turnErr != nil || hasTurn && delegatedTurnTerminal(turn.Status)) {
+			providerProbe.ForgetProviderActivity(item.id)
+		}
+		provider, shouldObserve := providerActivityForDelegatedTurn(
+			item.agentSnap,
+			item.now,
+			turn,
+			hasTurn,
+			turnErr,
+			providerProbe,
+		)
+		if shouldObserve {
+			activity = delegatedTurnFallbackPaneActivity(
+				turn,
+				provider,
+				activity,
+				item.contentChanged && item.existed &&
+					delegatedTurnPaneIdentity(item.content) != turn.PaneBaseline,
+			)
+			turn, hasTurn, turnErr = w.sessionInputOwner().observeDelegatedTurn(
+				item.id,
+				turn.ID,
+				delegatedTurnObservation{
+					Provider:     provider,
+					Pane:         activity,
+					PaneIdentity: delegatedTurnPaneIdentity(item.content),
+					Live:         item.alive,
+					Now:          item.now,
+					StartTimeout: inputReadyTimeout(item.agentSnap.Command),
+				},
+				w.targetForSession,
+			)
+			if turnErr == nil && hasTurn && delegatedTurnTerminal(turn.Status) &&
+				providerProbe != nil {
+				providerProbe.ForgetProviderActivity(item.id)
+			}
+		}
+		results = append(results, probedAgent{
+			preparedAgent: item,
+			activity:      activity,
+			provider:      provider,
+			turn:          turn,
+			hasTurn:       hasTurn,
+			turnErr:       turnErr,
+		})
 	}
 
 	w.mu.Lock()
@@ -689,6 +810,35 @@ func (w *Watcher) poll() {
 		}
 
 		newState, summary := classifier.ResolveSessionStatus(agent, r.classified, r.classifiedSummary, r.now, activity)
+		if r.turnErr != nil {
+			newState = classifier.StateFailed
+			summary = "Delegated turn metadata could not be reconciled: " + r.turnErr.Error()
+		} else if r.hasTurn {
+			w.delegatedTurns[r.id] = r.turn
+			switch r.turn.Status {
+			case delegatedTurnDispatched, delegatedTurnRunning, delegatedTurnIdle:
+				if newState == classifier.StateUnknown || newState == classifier.StateDone {
+					newState = classifier.StateRunning
+					summary = strings.TrimSpace(r.turn.Summary)
+					if summary == "" {
+						summary = "Delegated turn running"
+					}
+				}
+			case delegatedTurnAmbiguous:
+				newState = classifier.StateRunning
+				summary = "Delegated handoff outcome is ambiguous; observing provider activity"
+			case delegatedTurnDone:
+				newState = classifier.StateDone
+				if turnSummary := strings.TrimSpace(r.turn.Summary); turnSummary != "" {
+					summary = turnSummary
+				}
+			case delegatedTurnFailed:
+				newState = classifier.StateFailed
+				if turnSummary := strings.TrimSpace(r.turn.Summary); turnSummary != "" {
+					summary = turnSummary
+				}
+			}
+		}
 		agent.State = newState
 		agent.Summary = summary
 
@@ -716,6 +866,7 @@ func (w *Watcher) poll() {
 				Agent:    cloneAgent(agent),
 				OldState: string(r.oldState),
 				NewState: string(newState),
+				TurnID:   r.turn.ID,
 			}
 		}
 
@@ -731,11 +882,16 @@ func (w *Watcher) poll() {
 	for id := range w.agents {
 		if !seen[id] {
 			old := w.agents[id]
+			turnID := w.delegatedTurns[id].ID
+			if providerProbe != nil {
+				providerProbe.ForgetProviderActivity(id)
+			}
 			delete(w.agents, id)
 			delete(w.prevContent, id)
 			delete(w.hidden, id)
 			delete(w.delegated, id)
 			delete(w.agentEpoch, id)
+			delete(w.delegatedTurns, id)
 			archived := cloneAgent(old)
 			if archived != nil {
 				archived.State = classifier.StateRemoved
@@ -746,6 +902,7 @@ func (w *Watcher) poll() {
 				Agent:    archived,
 				OldState: string(old.State),
 				NewState: string(classifier.StateRemoved),
+				TurnID:   turnID,
 			}
 		}
 	}
@@ -873,19 +1030,20 @@ func isBrainHostWindow(target, windowName string) bool {
 
 // tmuxWindow represents a single tmux window target.
 type tmuxWindow struct {
-	target       string // "session:window_id" — stable tmux target usable as -t
-	name         string // window name (e.g. "claude", "node")
-	cwd          string // active pane cwd
-	command      string // active pane command
-	panePID      int
-	hidden       bool
-	delegated    bool
-	resourceUnit string
+	target           string // "session:window_id" — stable tmux target usable as -t
+	name             string // window name (e.g. "claude", "node")
+	cwd              string // active pane cwd
+	command          string // active pane command
+	panePID          int
+	hidden           bool
+	delegated        bool
+	resourceUnit     string
+	delegatedTurnRaw string
 }
 
 // listTmuxWindows returns all windows across all tmux sessions.
 func listTmuxWindows() ([]tmuxWindow, error) {
-	cmd := exec.Command("tmux", "list-windows", "-a", "-F", "#{session_name}:#{window_id}\t#{window_name}\t#{pane_current_path}\t#{pane_current_command}\t#{pane_pid}\t#{@zen_agent_hidden}\t#{@zen_agent_delegated}\t#{@zen_agent_resource_unit}")
+	cmd := exec.Command("tmux", "list-windows", "-a", "-F", "#{session_name}:#{window_id}\t#{window_name}\t#{pane_current_path}\t#{pane_current_command}\t#{pane_pid}\t#{@zen_agent_hidden}\t#{@zen_agent_delegated}\t#{@zen_agent_resource_unit}\t#{@zen_delegated_turn}")
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		return nil, fmt.Errorf("tmux list-windows: %w: %s", err, strings.TrimSpace(string(out)))
@@ -896,7 +1054,7 @@ func listTmuxWindows() ([]tmuxWindow, error) {
 		if line == "" {
 			continue
 		}
-		parts := strings.SplitN(line, "\t", 8)
+		parts := strings.SplitN(line, "\t", 9)
 		target := parts[0]
 		// Skip grouped sessions created by the terminal backend (zen-<pid>-<counter>).
 		sessionName := strings.SplitN(target, ":", 2)[0]
@@ -931,7 +1089,15 @@ func listTmuxWindows() ([]tmuxWindow, error) {
 		if len(parts) >= 8 {
 			resourceUnit = strings.TrimSpace(parts[7])
 		}
-		windows = append(windows, tmuxWindow{target: target, name: name, cwd: cwd, command: command, panePID: panePID, hidden: hidden, delegated: delegated, resourceUnit: resourceUnit})
+		delegatedTurnRaw := ""
+		if len(parts) >= 9 {
+			delegatedTurnRaw = strings.TrimSpace(parts[8])
+		}
+		windows = append(windows, tmuxWindow{
+			target: target, name: name, cwd: cwd, command: command,
+			panePID: panePID, hidden: hidden, delegated: delegated,
+			resourceUnit: resourceUnit, delegatedTurnRaw: delegatedTurnRaw,
+		})
 	}
 	return windows, nil
 }
@@ -1132,6 +1298,40 @@ func (w *Watcher) SubmitInputWhenReady(sessionID, command, payload string) error
 	return err
 }
 
+// SubmitDelegatedInputWhenReady submits an initial delegated turn and durably
+// binds its identity to the same Session input boundary.
+func (w *Watcher) SubmitDelegatedInputWhenReady(
+	sessionID, command, payload, turnID string,
+	acceptedAt time.Time,
+) (InputResult, error) {
+	resolver := w.targetForSession
+	identity, known := resolveTargetIdentityWhenReady(resolver, sessionID, command)
+	if !known {
+		return InputResult{Outcome: InputNotSubmitted, Receipt: turnID},
+			definitelyNotSubmitted(turnID, fmt.Errorf("target provider could not be proven"))
+	}
+	if !waitForInputReadyGuarded(sessionID, identity.Command, inputReadyTimeout(identity.Command), func() error {
+		return guardTargetIdentity(resolver, sessionID, identity)
+	}) && needsInputReadinessWait(identity.Command, "") {
+		return InputResult{Outcome: InputNotSubmitted, Receipt: turnID},
+			definitelyNotSubmitted(turnID, fmt.Errorf("agent input not ready for %q", identity.Command))
+	}
+	return w.sessionInputOwner().submitDelegated(
+		sessionID,
+		identity,
+		resolver,
+		identity.Command,
+		payload,
+		delegatedTurnRecord{
+			SchemaVersion:   delegatedTurnSchema,
+			ID:              strings.TrimSpace(turnID),
+			Status:          delegatedTurnDispatched,
+			AcceptedAt:      acceptedAt.UTC(),
+			ProcessIdentity: delegatedTurnIdentity(identity),
+		},
+	)
+}
+
 // SubmitInput submits one exact payload without consulting rendered provider
 // state. It is the ordinary Chat/follow-up boundary after initial launch.
 func (w *Watcher) SubmitInput(sessionID, payload string) error {
@@ -1148,6 +1348,33 @@ func (w *Watcher) SubmitInput(sessionID, payload string) error {
 		"",
 	)
 	return err
+}
+
+// SubmitDelegatedInput submits a follow-up delegated turn through the same
+// durable input owner used for the initial handoff.
+func (w *Watcher) SubmitDelegatedInput(
+	sessionID, payload, turnID string,
+	acceptedAt time.Time,
+) (InputResult, error) {
+	identity, known := w.targetForSession(sessionID)
+	if !known {
+		return InputResult{Outcome: InputNotSubmitted, Receipt: turnID},
+			definitelyNotSubmitted(turnID, fmt.Errorf("target provider could not be proven"))
+	}
+	return w.sessionInputOwner().submitDelegated(
+		sessionID,
+		identity,
+		w.targetForSession,
+		identity.Command,
+		payload,
+		delegatedTurnRecord{
+			SchemaVersion:   delegatedTurnSchema,
+			ID:              strings.TrimSpace(turnID),
+			Status:          delegatedTurnDispatched,
+			AcceptedAt:      acceptedAt.UTC(),
+			ProcessIdentity: delegatedTurnIdentity(identity),
+		},
+	)
 }
 
 // SendInput sends text to a tmux window and treats trailing newlines as submit.
@@ -1269,7 +1496,7 @@ func waitForInputReadyGuarded(
 		return guard == nil || guard() == nil
 	}
 	deadline := time.Now().Add(timeout)
-	advancedCursorTrustPrompt := false
+	advancedWorkspaceTrustPrompt := false
 	for {
 		if guard != nil && guard() != nil {
 			return false
@@ -1278,12 +1505,26 @@ func waitForInputReadyGuarded(
 		if !alive {
 			return false
 		}
-		if !advancedCursorTrustPrompt && isCursorWorkspaceTrustPrompt(command, content) {
-			if guard != nil && guard() != nil {
-				return false
-			}
-			_ = exec.Command("tmux", "send-keys", "-t", sessionID, "a").Run()
-			advancedCursorTrustPrompt = true
+		paneCWD := ""
+		if isCodexCommand(command) &&
+			strings.Contains(content, "Do you trust the contents of this directory?") {
+			paneCWD = capturePaneWorkingDirectory(sessionID)
+		}
+		var advanced, ok bool
+		advancedWorkspaceTrustPrompt, advanced, ok = advanceStartupTrustPromptOnce(
+			advancedWorkspaceTrustPrompt,
+			command,
+			content,
+			paneCWD,
+			guard,
+			func(key string) error {
+				return exec.Command("tmux", "send-keys", "-t", sessionID, key).Run()
+			},
+		)
+		if !ok {
+			return false
+		}
+		if advanced {
 			time.Sleep(500 * time.Millisecond)
 			continue
 		}
@@ -1295,6 +1536,102 @@ func waitForInputReadyGuarded(
 		}
 		time.Sleep(150 * time.Millisecond)
 	}
+}
+
+func advanceStartupTrustPromptOnce(
+	alreadyAdvanced bool,
+	command string,
+	content string,
+	paneCWD string,
+	guard func() error,
+	sendKey func(string) error,
+) (bool, bool, bool) {
+	if alreadyAdvanced {
+		return true, false, true
+	}
+	key := ""
+	switch {
+	case isCursorWorkspaceTrustPrompt(command, content):
+		key = "a"
+	case isCodexWorkspaceTrustPrompt(command, content, paneCWD):
+		key = "Enter"
+	default:
+		return false, false, true
+	}
+	if guard != nil && guard() != nil {
+		return false, false, false
+	}
+	if sendKey == nil || sendKey(key) != nil {
+		return false, false, false
+	}
+	return true, true, true
+}
+
+func capturePaneWorkingDirectory(sessionID string) string {
+	output, err := exec.Command(
+		"tmux",
+		"display-message",
+		"-p",
+		"-t",
+		sessionID,
+		"#{pane_current_path}",
+	).Output()
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(output))
+}
+
+func isCodexWorkspaceTrustPrompt(command, content, paneCWD string) bool {
+	if !isCodexCommand(command) || strings.TrimSpace(paneCWD) == "" {
+		return false
+	}
+	normalized := strings.ReplaceAll(content, "\r\n", "\n")
+	lines := strings.Split(normalized, "\n")
+	if len(lines) > 80 {
+		normalized = strings.Join(lines[len(lines)-80:], "\n")
+	}
+	currentPath := filepath.Clean(strings.TrimSpace(paneCWD))
+	pathMatches := false
+	for _, candidate := range codexWorkspaceTrustPathCandidates(normalized) {
+		if filepath.Clean(candidate) == currentPath {
+			pathMatches = true
+			break
+		}
+	}
+	if !pathMatches {
+		return false
+	}
+	return strings.Contains(normalized, "Do you trust the contents of this directory?") &&
+		strings.Contains(normalized, "1. Yes, continue") &&
+		strings.Contains(normalized, "2. No, quit") &&
+		strings.Contains(normalized, "Press enter to continue")
+}
+
+func codexWorkspaceTrustPathCandidates(content string) []string {
+	lines := strings.Split(content, "\n")
+	const prefix = "> You are in "
+	for index, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if !strings.HasPrefix(trimmed, prefix) {
+			continue
+		}
+		parts := []string{strings.TrimSpace(strings.TrimPrefix(trimmed, prefix))}
+		for next := index + 1; next < len(lines); next++ {
+			segment := strings.TrimSpace(lines[next])
+			if segment == "" {
+				break
+			}
+			parts = append(parts, segment)
+		}
+		concatenated := strings.Join(parts, "")
+		spaceJoined := strings.Join(parts, " ")
+		if concatenated == spaceJoined {
+			return []string{concatenated}
+		}
+		return []string{concatenated, spaceJoined}
+	}
+	return nil
 }
 
 func isAgentInputReady(command, content string) bool {
@@ -1322,9 +1659,15 @@ func isAgentInputReady(command, content string) bool {
 func isCodexStartupReady(content string) bool {
 	normalized := strings.ReplaceAll(content, "\r\n", "\n")
 	lower := strings.ToLower(normalized)
-	if !strings.Contains(lower, "openai codex") && !strings.Contains(lower, ">_ codex") {
+	lastHeader := strings.LastIndex(lower, "openai codex")
+	if lastHeader < 0 {
+		lastHeader = strings.LastIndex(lower, ">_ codex")
+	}
+	if lastHeader < 0 {
 		return false
 	}
+	normalized = normalized[lastHeader:]
+	lower = strings.ToLower(normalized)
 	for _, blocked := range []string{
 		"select a model",
 		"choose a model",

@@ -114,7 +114,7 @@ func (w *fakeControlWatcher) UpdateAgentProgress(id string, progress classifier.
 	return &cp, nil
 }
 
-func (w *fakeControlWatcher) SettleAgentInputAccepted(id string, handoffStartedAt time.Time, phase, summary string) (*classifier.Agent, error) {
+func (w *fakeControlWatcher) RecordAgentInputDispatched(id, turnID string, handoffStartedAt time.Time, phase, summary string) (*classifier.Agent, error) {
 	agent := w.agents[id]
 	if agent == nil {
 		return nil, os.ErrNotExist
@@ -165,6 +165,28 @@ func (w *fakeControlWatcher) SubmitInputWhenReady(sessionID, _ string, payload s
 func (w *fakeControlWatcher) SubmitInput(sessionID, payload string) error {
 	w.submitted = append(w.submitted, fakeControlSend{id: sessionID, text: payload})
 	return w.SendInput(sessionID, payload)
+}
+
+func (w *fakeControlWatcher) SubmitDelegatedInput(
+	sessionID, payload, turnID string,
+	_ time.Time,
+) (watcher.InputResult, error) {
+	err := w.SubmitInput(sessionID, payload)
+	return watcher.InputResult{
+		Outcome: watcher.InputOutcomeFromError(err),
+		Receipt: turnID,
+	}, err
+}
+
+func (w *fakeControlWatcher) SubmitDelegatedInputWhenReady(
+	sessionID, _ string, payload, turnID string,
+	_ time.Time,
+) (watcher.InputResult, error) {
+	err := w.SubmitInputWhenReady(sessionID, "", payload)
+	return watcher.InputResult{
+		Outcome: watcher.InputOutcomeFromError(err),
+		Receipt: turnID,
+	}, err
 }
 
 func (w *fakeControlWatcher) KillSession(sessionID string) error {

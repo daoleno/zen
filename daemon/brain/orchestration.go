@@ -987,6 +987,29 @@ func (s *Store) ReconcileMissingWorkOwner(workID, ownerSessionID string) (Work, 
 				s.mu.Unlock()
 				return item, WorkEvent{}, false, nil
 			}
+			payloadRef := "session:" + ownerSessionID
+			lastLifecycleKind := ""
+			for _, current := range database.BrainWorkEvents {
+				if current.WorkID == item.ID &&
+					current.PayloadRef == payloadRef &&
+					isSessionLifecycleKind(current.Kind) {
+					lastLifecycleKind = current.Kind
+				}
+			}
+			if lastLifecycleKind == "session.done" || lastLifecycleKind == "session.failed" {
+				now := s.nowUTC()
+				item.OwnerSessionID = ""
+				item.WaitFor = ""
+				item.UpdatedAt = now
+				database.BrainWork[index] = item
+				if err = s.persistOrchestrationLocked(database); err != nil {
+					s.mu.Unlock()
+					return Work{}, WorkEvent{}, false, err
+				}
+				s.mu.Unlock()
+				s.broadcastWorkChange(item.ID)
+				return item, WorkEvent{}, false, nil
+			}
 			now := s.nowUTC()
 			item.Status = WorkWaiting
 			item.OwnerSessionID = ""

@@ -81,6 +81,8 @@ var immediateBlockedPatterns = []*regexp.Regexp{
 	regexp.MustCompile(`(?i)Action Required`),
 }
 
+var readyComposerLineRe = regexp.MustCompile(`^\s*(?:[›❯]\s*|→\s*Add a follow-up.*)$`)
+
 // Grok paints provider-native choice menus only in the live TUI. Canonical
 // conversation sources (updates.jsonl / chat_history.jsonl) do not carry the
 // ordered options, so Interface must treat the current pane lines as the sole
@@ -140,9 +142,10 @@ func Classify(paneAlive bool, lines []string, command string) (AgentState, strin
 
 	// Get the last few meaningful lines for pattern matching.
 	tail := lastNonEmpty(lines, 10)
+	interactiveTail := linesAfterLastReadyComposer(tail)
 	lastLine := ""
-	if len(tail) > 0 {
-		lastLine = tail[len(tail)-1]
+	if len(interactiveTail) > 0 {
+		lastLine = interactiveTail[len(interactiveTail)-1]
 	}
 
 	if !paneAlive {
@@ -153,7 +156,7 @@ func Classify(paneAlive bool, lines []string, command string) (AgentState, strin
 		return StateDone, summarize(tail)
 	}
 
-	if line := matchingImmediateBlockedLine(tail); line != "" {
+	if line := matchingImmediateBlockedLine(interactiveTail); line != "" {
 		return StateBlocked, truncate(line, 100)
 	}
 	if isGrokCommand(command) {
@@ -176,7 +179,7 @@ func Classify(paneAlive bool, lines []string, command string) (AgentState, strin
 
 	// Broader blocked scan (prompt may not be the final line).
 	for _, p := range blockedPatterns {
-		for _, line := range tail {
+		for _, line := range interactiveTail {
 			if p.MatchString(strings.TrimSpace(line)) {
 				return StateBlocked, truncate(line, 100)
 			}
@@ -187,6 +190,19 @@ func Classify(paneAlive bool, lines []string, command string) (AgentState, strin
 		return StateUnknown, summarize(tail)
 	}
 	return StateUnknown, "Session idle"
+}
+
+func linesAfterLastReadyComposer(lines []string) []string {
+	lastComposer := -1
+	for index, line := range lines {
+		if readyComposerLineRe.MatchString(strings.TrimSpace(line)) {
+			lastComposer = index
+		}
+	}
+	if lastComposer < 0 {
+		return lines
+	}
+	return lines[lastComposer+1:]
 }
 
 func matchingImmediateBlockedLine(lines []string) string {

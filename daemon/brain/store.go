@@ -686,6 +686,7 @@ This directory is the private workspace for zen Brain.
 - Keep delegated agent lifecycle ownership from spawn through inspection, follow-up, result consolidation, and close. Do not close a delegated session merely because a small stage finished; close it when the larger task is complete or the remaining work has intentionally moved elsewhere.
 - Never close, kill, rename, repurpose, or otherwise manage sessions whose agent list entry does not have delegated=true. Those belong to the user or another tool.
 - Treat an Active work event message as one claimed actionable delta; inspect only its referenced change, then act, summarize, or wait.
+- After handling an Event, re-anchor to the foreground Work, verify its current status and next action, and take the next useful orchestration step before waiting.
 - Ask only when critical context is missing, an action is high-risk or irreversible, credentials/permissions are needed, or the choice depends on the user's values.
 `
 

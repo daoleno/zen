@@ -25,12 +25,14 @@ type controlWatcher interface {
 	HasSession(target string) bool
 	CreateSession(preferredTarget string, opts watcher.CreateSessionOptions) (string, error)
 	UpdateAgentProgress(id string, progress classifier.AgentProgress) (*classifier.Agent, error)
-	SettleAgentInputAccepted(id string, handoffStartedAt time.Time, phase, summary string) (*classifier.Agent, error)
+	RecordAgentInputDispatched(id, turnID string, handoffStartedAt time.Time, phase, summary string) (*classifier.Agent, error)
 	SendInput(sessionID, text string) error
 	SendInputWithReceiptResult(sessionID, text, receipt string) (watcher.InputResult, error)
 	SendInputWhenReady(sessionID, command, text string) error
 	SubmitInput(sessionID, payload string) error
 	SubmitInputWhenReady(sessionID, command, payload string) error
+	SubmitDelegatedInput(sessionID, payload, turnID string, acceptedAt time.Time) (watcher.InputResult, error)
+	SubmitDelegatedInputWhenReady(sessionID, command, payload, turnID string, acceptedAt time.Time) (watcher.InputResult, error)
 	KillSession(sessionID string) error
 	CapturePaneContent(sessionID string) (string, error)
 }
@@ -632,11 +634,17 @@ func (a *controlApp) handleAgentSend(req control.Request) control.Response {
 // Agent projection from that same result and never replays an ambiguous send.
 func (a *controlApp) submitAgentHandoff(agentID, command, payload string, initial bool) error {
 	handoffStartedAt := time.Now().UTC()
+	turnID := delegatedTurnID(agentID, handoffStartedAt)
+	var result watcher.InputResult
 	var err error
 	if initial {
-		err = a.watcher.SubmitInputWhenReady(agentID, command, payload)
+		result, err = a.watcher.SubmitDelegatedInputWhenReady(
+			agentID, command, payload, turnID, handoffStartedAt,
+		)
 	} else {
-		err = a.watcher.SubmitInput(agentID, payload)
+		result, err = a.watcher.SubmitDelegatedInput(
+			agentID, payload, turnID, handoffStartedAt,
+		)
 	}
 	if err != nil {
 		if initial {
@@ -644,21 +652,37 @@ func (a *controlApp) submitAgentHandoff(agentID, command, payload string, initia
 		}
 		return err
 	}
-	a.recordAgentHandoffAccepted(agentID, handoffStartedAt, initial)
+	if result.Outcome != watcher.InputAccepted {
+		return fmt.Errorf("delegated input was not authoritatively accepted")
+	}
+	if result.Duplicate {
+		return nil
+	}
+	if !initial && strings.TrimSpace(result.TurnID) != "" &&
+		strings.TrimSpace(result.TurnID) != turnID {
+		// Steering was delivered to the existing nonterminal turn. It does not
+		// reset lifecycle metadata or manufacture a new running Event.
+		return nil
+	}
+	a.recordAgentHandoffAccepted(agentID, turnID, handoffStartedAt, initial)
 	return nil
 }
 
-func (a *controlApp) recordAgentHandoffAccepted(agentID string, handoffStartedAt time.Time, initial bool) {
+func delegatedTurnID(agentID string, acceptedAt time.Time) string {
+	return fmt.Sprintf("%s:turn:%d", strings.TrimSpace(agentID), acceptedAt.UnixNano())
+}
+
+func (a *controlApp) recordAgentHandoffAccepted(agentID, turnID string, handoffStartedAt time.Time, initial bool) {
 	if a == nil || a.watcher == nil {
 		return
 	}
 	phase := "working"
-	summary := "Delegated input accepted"
+	summary := "Delegated input dispatched"
 	if initial {
 		phase = "starting"
-		summary = "Initial delegated prompt accepted"
+		summary = "Initial delegated prompt dispatched"
 	}
-	_, _ = a.watcher.SettleAgentInputAccepted(agentID, handoffStartedAt, phase, summary)
+	_, _ = a.watcher.RecordAgentInputDispatched(agentID, turnID, handoffStartedAt, phase, summary)
 }
 
 func (a *controlApp) recordSubmissionFailure(agentID, summary string) {
