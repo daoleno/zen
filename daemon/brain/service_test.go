@@ -163,6 +163,295 @@ func TestDelegatedTurnDeadProcessFailureEventIsExactlyOnce(t *testing.T) {
 	}
 }
 
+func TestDelegatedTerminalFactSurvivesRestartAndDeadPaneProjection(t *testing.T) {
+	for _, test := range []struct {
+		name          string
+		doneTurnID    string
+		failureTurnID string
+	}{
+		{name: "turn keyed", doneTurnID: "turn-one", failureTurnID: "turn-one"},
+		{name: "restart projection loses turn ID", doneTurnID: "turn-one"},
+		{name: "legacy without turn ID"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			root := t.TempDir()
+			store, err := NewStore(root)
+			if err != nil {
+				t.Fatal(err)
+			}
+			sessionID := "brain-agent-terminal:@1"
+			item, err := store.CreateWork(Work{
+				Title:            "Terminal monotonicity",
+				Objective:        "Keep the accepted terminal fact immutable.",
+				Status:           WorkRunning,
+				OwnerSessionID:   sessionID,
+				CompletionPolicy: CompletionBounded,
+				NextAction:       "Wait for the delegated Session.",
+				WaitFor:          "Session " + sessionID,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			done := watcher.SessionEvent{
+				Type:     "agent_state_change",
+				AgentID:  sessionID,
+				OldState: string(classifier.StateRunning),
+				NewState: string(classifier.StateDone),
+				TurnID:   test.doneTurnID,
+				Agent: &classifier.Agent{
+					ID:        sessionID,
+					State:     classifier.StateDone,
+					Summary:   "Accepted result",
+					Delegated: true,
+				},
+			}
+			if _, err := NewService(store, &fakeWatcher{}, nil).RouteSessionEvent(done); err != nil {
+				t.Fatal(err)
+			}
+
+			reopened, err := NewStore(root)
+			if err != nil {
+				t.Fatal(err)
+			}
+			deadPane := done
+			deadPane.OldState = ""
+			deadPane.NewState = string(classifier.StateFailed)
+			deadPane.TurnID = test.failureTurnID
+			deadPane.Agent = &classifier.Agent{
+				ID:        sessionID,
+				State:     classifier.StateFailed,
+				Summary:   "Delegated provider process or pane is no longer live",
+				Delegated: true,
+			}
+			if _, err := NewService(reopened, &fakeWatcher{}, nil).RouteSessionEvent(deadPane); err != nil {
+				t.Fatal(err)
+			}
+
+			got, err := reopened.Work(item.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			events, err := reopened.ListWorkEvents(item.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			doneCount := 0
+			failedCount := 0
+			for _, event := range events {
+				switch event.Kind {
+				case "session.done":
+					doneCount++
+				case "session.failed":
+					failedCount++
+				}
+			}
+			if doneCount != 1 || failedCount != 0 ||
+				got.Status != WorkWaiting ||
+				got.NextAction != "Review the delegated Session result." {
+				t.Fatalf("Work=%#v Events=%#v", got, events)
+			}
+		})
+	}
+}
+
+func TestDelegatedTerminalFactAllowsLaterAcceptedTurn(t *testing.T) {
+	store, err := NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	sessionID := "brain-agent-terminal:@1"
+	item, err := store.CreateWork(Work{
+		Title:            "Later accepted turn",
+		Objective:        "Allow a new lifecycle after a new running boundary.",
+		Status:           WorkRunning,
+		OwnerSessionID:   sessionID,
+		CompletionPolicy: CompletionBounded,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	service := NewService(store, &fakeWatcher{}, nil)
+	route := func(state classifier.AgentState, turnID, summary string) {
+		t.Helper()
+		if _, routeErr := service.RouteSessionEvent(watcher.SessionEvent{
+			Type:     "agent_state_change",
+			AgentID:  sessionID,
+			NewState: string(state),
+			TurnID:   turnID,
+			Agent: &classifier.Agent{
+				ID:        sessionID,
+				State:     state,
+				Summary:   summary,
+				Delegated: true,
+			},
+		}); routeErr != nil {
+			t.Fatal(routeErr)
+		}
+	}
+	route(classifier.StateDone, "turn-one", "First accepted result")
+	route(classifier.StateRunning, "turn-two", "Second turn observed running")
+	route(classifier.StateFailed, "turn-two", "Second turn failed")
+
+	got, err := store.Work(item.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	events, err := store.ListWorkEvents(item.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	doneCount := 0
+	failedCount := 0
+	for _, event := range events {
+		switch event.Kind {
+		case "session.done":
+			doneCount++
+		case "session.failed":
+			failedCount++
+		}
+	}
+	if doneCount != 1 || failedCount != 1 ||
+		got.Status != WorkWaiting ||
+		got.NextAction != "Inspect the delegated Session failure." {
+		t.Fatalf("Work=%#v Events=%#v", got, events)
+	}
+}
+
+func TestDelegatedTerminalFactAllowsLaterDispatchedTurnToFailWithoutRunning(t *testing.T) {
+	for _, test := range []struct {
+		name        string
+		priorTurnID string
+	}{
+		{name: "keyed prior terminal", priorTurnID: "turn-one"},
+		{name: "legacy prior terminal"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			store, err := NewStore(t.TempDir())
+			if err != nil {
+				t.Fatal(err)
+			}
+			sessionID := "brain-agent-terminal:@1"
+			item, err := store.CreateWork(Work{
+				Title:            "Later dispatched turn",
+				Objective:        "Allow a bounded no-start failure for a new accepted turn.",
+				Status:           WorkRunning,
+				OwnerSessionID:   sessionID,
+				CompletionPolicy: CompletionBounded,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			service := NewService(store, &fakeWatcher{}, nil)
+			route := func(eventType string, state classifier.AgentState, turnID, summary string) {
+				t.Helper()
+				if _, routeErr := service.RouteSessionEvent(watcher.SessionEvent{
+					Type:     eventType,
+					AgentID:  sessionID,
+					NewState: string(state),
+					TurnID:   turnID,
+					Agent: &classifier.Agent{
+						ID:        sessionID,
+						State:     state,
+						Summary:   summary,
+						Delegated: true,
+					},
+				}); routeErr != nil {
+					t.Fatal(routeErr)
+				}
+			}
+			route("agent_state_change", classifier.StateDone, test.priorTurnID, "Prior accepted result")
+			route("agent_metadata_change", classifier.StateUnknown, "turn-two", "New turn dispatched")
+			route("agent_state_change", classifier.StateFailed, "turn-two", "Provider start was not observed")
+
+			got, err := store.Work(item.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			events, err := store.ListWorkEvents(item.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			doneCount := 0
+			progressCount := 0
+			failedCount := 0
+			for _, event := range events {
+				switch event.Kind {
+				case "session.done":
+					doneCount++
+				case "session.progress":
+					progressCount++
+				case "session.failed":
+					failedCount++
+				}
+			}
+			if doneCount != 1 || progressCount != 1 || failedCount != 1 ||
+				got.Status != WorkWaiting ||
+				got.NextAction != "Inspect the delegated Session failure." {
+				t.Fatalf("Work=%#v Events=%#v", got, events)
+			}
+		})
+	}
+}
+
+func TestDelegatedSameTurnProgressBeforeTerminalDoesNotReopenIt(t *testing.T) {
+	store, err := NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	sessionID := "brain-agent-terminal:@1"
+	item, err := store.CreateWork(Work{
+		Title:            "Same turn progress",
+		Objective:        "Keep one turn terminal after its earlier dispatch Event.",
+		Status:           WorkRunning,
+		OwnerSessionID:   sessionID,
+		CompletionPolicy: CompletionBounded,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	service := NewService(store, &fakeWatcher{}, nil)
+	route := func(eventType string, state classifier.AgentState, summary string) {
+		t.Helper()
+		if _, routeErr := service.RouteSessionEvent(watcher.SessionEvent{
+			Type:     eventType,
+			AgentID:  sessionID,
+			NewState: string(state),
+			TurnID:   "turn-one",
+			Agent: &classifier.Agent{
+				ID:        sessionID,
+				State:     state,
+				Summary:   summary,
+				Delegated: true,
+			},
+		}); routeErr != nil {
+			t.Fatal(routeErr)
+		}
+	}
+	route("agent_metadata_change", classifier.StateUnknown, "Turn dispatched")
+	route("agent_state_change", classifier.StateDone, "Accepted result")
+	route("agent_state_change", classifier.StateFailed, "Restart saw a dead pane")
+
+	got, err := store.Work(item.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	events, err := store.ListWorkEvents(item.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	failedCount := 0
+	for _, event := range events {
+		if event.Kind == "session.failed" {
+			failedCount++
+		}
+	}
+	if failedCount != 0 ||
+		got.Status != WorkWaiting ||
+		got.NextAction != "Review the delegated Session result." {
+		t.Fatalf("Work=%#v Events=%#v", got, events)
+	}
+}
+
 func (w *fakeWatcher) Agents() []*classifier.Agent {
 	out := make([]*classifier.Agent, 0, len(w.agents))
 	for _, agent := range w.agents {

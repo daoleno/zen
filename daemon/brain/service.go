@@ -347,6 +347,11 @@ func (s *Service) RouteSessionEvent(event watcher.SessionEvent) (bool, error) {
 	if !ok {
 		return false, nil
 	}
+	if terminal, err := s.sessionTurnAlreadyTerminal(item.ID, event, kind); err != nil {
+		return false, err
+	} else if terminal {
+		return false, nil
+	}
 	if actionable && calendarOwnsTerminalResult(item, event) {
 		actionable = false
 	}
@@ -486,7 +491,7 @@ func sessionEventProjection(event watcher.SessionEvent) (string, bool, WorkUpdat
 func (s *Service) sessionEventDedupeKey(workID string, event watcher.SessionEvent, kind string) (string, error) {
 	agent := event.Agent
 	if turnID := strings.TrimSpace(event.TurnID); turnID != "" {
-		return fmt.Sprintf("session:%s:turn:%s:%s", strings.TrimSpace(event.AgentID), turnID, kind), nil
+		return sessionTurnEventDedupeKey(event.AgentID, turnID, kind), nil
 	}
 	if agent == nil {
 		return "session:" + strings.TrimSpace(event.AgentID) + ":" + kind + ":1", nil
@@ -513,6 +518,75 @@ func (s *Service) sessionEventDedupeKey(workID string, event watcher.SessionEven
 		return lastDedupeKey, nil
 	}
 	return fmt.Sprintf("session:%s:%s:%d", agent.ID, kind, occurrence), nil
+}
+
+// sessionTurnAlreadyTerminal makes a terminal Session fact immutable before
+// its projection can mutate Work. A later terminal fact is valid only after a
+// new accepted dispatch/progress or running boundary keyed to the new turn.
+func (s *Service) sessionTurnAlreadyTerminal(
+	workID string,
+	event watcher.SessionEvent,
+	kind string,
+) (bool, error) {
+	if kind != "session.done" && kind != "session.failed" || event.Agent == nil {
+		return false, nil
+	}
+	events, err := s.store.ListWorkEvents(workID)
+	if err != nil {
+		return false, err
+	}
+	sessionID := strings.TrimSpace(firstNonEmpty(event.AgentID, event.Agent.ID))
+	payloadRef := "session:" + strings.TrimSpace(event.Agent.ID)
+	lastTerminal := -1
+	lastRunning := -1
+	turnID := strings.TrimSpace(event.TurnID)
+	turnAcceptedBoundary := -1
+	turnDoneKey := ""
+	turnFailedKey := ""
+	turnProgressKey := ""
+	turnRunningKey := ""
+	if turnID != "" {
+		turnDoneKey = sessionTurnEventDedupeKey(sessionID, turnID, "session.done")
+		turnFailedKey = sessionTurnEventDedupeKey(sessionID, turnID, "session.failed")
+		turnProgressKey = sessionTurnEventDedupeKey(sessionID, turnID, "session.progress")
+		turnRunningKey = sessionTurnEventDedupeKey(sessionID, turnID, "session.running")
+	}
+	for index, current := range events {
+		if current.PayloadRef != payloadRef {
+			continue
+		}
+		switch current.Kind {
+		case "session.running":
+			lastRunning = index
+		case "session.done", "session.failed":
+			lastTerminal = index
+		}
+		if turnID == "" {
+			continue
+		}
+		switch current.DedupeKey {
+		case turnDoneKey, turnFailedKey:
+			return true, nil
+		case turnProgressKey, turnRunningKey:
+			turnAcceptedBoundary = index
+		}
+	}
+	if lastTerminal < 0 {
+		return false, nil
+	}
+	if turnID != "" {
+		return turnAcceptedBoundary <= lastTerminal, nil
+	}
+	return lastRunning <= lastTerminal, nil
+}
+
+func sessionTurnEventDedupeKey(sessionID, turnID, kind string) string {
+	return fmt.Sprintf(
+		"session:%s:turn:%s:%s",
+		strings.TrimSpace(sessionID),
+		strings.TrimSpace(turnID),
+		strings.TrimSpace(kind),
+	)
 }
 
 func isSessionLifecycleKind(kind string) bool {
