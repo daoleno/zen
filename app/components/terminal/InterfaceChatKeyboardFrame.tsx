@@ -27,6 +27,7 @@ import {
 
 interface InterfaceChatKeyboardFrameProps {
   enabled: boolean;
+  composerFocused?: boolean;
   keyboardVerticalOffset: number;
   chrome: TerminalThemeChrome;
   topChromeInset?: number;
@@ -42,6 +43,7 @@ interface InterfaceChatKeyboardFrameProps {
 
 export function InterfaceChatKeyboardFrame({
   enabled,
+  composerFocused = false,
   keyboardVerticalOffset,
   chrome,
   topChromeInset = 0,
@@ -96,6 +98,26 @@ export function InterfaceChatKeyboardFrame({
     });
     return () => subscription.remove();
   }, [keyboardLifecycleGate, onKeyboardLifecycleInvalidate]);
+
+  // First-mount / re-entry may acquire Composer focus while KeyboardController
+  // already reports open geometry and will not emit another animation sample.
+  // Bind that current geometry only under Composer focus + route/app ownership.
+  useLayoutEffect(() => {
+    if (!enabled || !composerFocused) {
+      return;
+    }
+    bindComposerFocusGeometry(
+      keyboardLifecycleGate,
+      reanimated.height.value,
+      reanimated.progress.value,
+    );
+  }, [
+    composerFocused,
+    enabled,
+    keyboardLifecycleGate,
+    reanimated.height,
+    reanimated.progress,
+  ]);
 
   useGenericKeyboardHandler(
     {
@@ -214,6 +236,21 @@ function acceptNativeKeyboardSample(
     keyboardLifecycleGate.value,
     {
       type: "native_sample",
+      height,
+      progress,
+    },
+  );
+}
+
+function bindComposerFocusGeometry(
+  keyboardLifecycleGate: SharedValue<StructuredChatKeyboardLifecycleGate>,
+  height: number,
+  progress: number,
+) {
+  keyboardLifecycleGate.value = reduceStructuredChatKeyboardLifecycleGate(
+    keyboardLifecycleGate.value,
+    {
+      type: "composer_focus_bind",
       height,
       progress,
     },

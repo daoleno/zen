@@ -16,6 +16,8 @@ describe("structured chat keyboard overlay", () => {
     expect(frame).toContain("structuredChatGatedOverlayTranslateY({");
     expect(frame).toContain('AppState.addEventListener("change"');
     expect(frame).toContain("useGenericKeyboardHandler(");
+    expect(frame).toContain("composer_focus_bind");
+    expect(frame).toContain("composerFocused");
     expect(frame).not.toMatch(/reanimated\.(height|progress)\.value\s*=/);
     expect(frame).toContain("useStructuredChatWindowMode(enabled)");
   });

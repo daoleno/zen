@@ -261,6 +261,7 @@ export function InterfaceChatBody({
   return (
     <InterfaceChatKeyboardFrame
       enabled={screenFocused}
+      composerFocused={composerFocused}
       keyboardVerticalOffset={composerPresentation.keyboardVerticalOffset}
       chrome={chrome}
       topChromeInset={topChromeInset}

@@ -33,7 +33,13 @@ export interface StructuredChatKeyboardLifecycleGate {
 export type StructuredChatKeyboardLifecycleEvent =
   | { type: "set_enabled"; enabled: boolean }
   | { type: "app_state"; active: boolean }
-  | { type: "native_sample"; height: number; progress: number };
+  | { type: "native_sample"; height: number; progress: number }
+  /**
+   * Composer focus under current route/app ownership may bind KeyboardController's
+   * current geometry to this epoch. That is ownership proof for already-open IME
+   * state, not a stale-geometry fallback from a prior route.
+   */
+  | { type: "composer_focus_bind"; height: number; progress: number };
 
 export interface StructuredChatGatedOverlayTranslateYInput {
   gate: StructuredChatKeyboardLifecycleGate;
@@ -84,19 +90,29 @@ export function createStructuredChatKeyboardLifecycleGate({
   };
 }
 
+export function structuredChatKeyboardGeometryIsOpen(
+  height: number,
+  progress: number,
+) {
+  "worklet";
+  return (
+    Number.isFinite(height) &&
+    Number.isFinite(progress) &&
+    Math.abs(height) > 0 &&
+    progress > 0
+  );
+}
+
 export function reduceStructuredChatKeyboardLifecycleGate(
   gate: StructuredChatKeyboardLifecycleGate,
   event: StructuredChatKeyboardLifecycleEvent,
 ): StructuredChatKeyboardLifecycleGate {
   "worklet";
-  if (event.type === "native_sample") {
+  if (event.type === "native_sample" || event.type === "composer_focus_bind") {
     if (
       !gate.enabled ||
       !gate.appActive ||
-      !Number.isFinite(event.height) ||
-      !Number.isFinite(event.progress) ||
-      Math.abs(event.height) <= 0 ||
-      event.progress <= 0
+      !structuredChatKeyboardGeometryIsOpen(event.height, event.progress)
     ) {
       return gate;
     }
