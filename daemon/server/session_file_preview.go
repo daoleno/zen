@@ -528,14 +528,6 @@ func (s *Server) handleSessionFileCapability(
 		)
 		return
 	}
-	if resolved.kind != "image" && resolved.kind != "pdf" {
-		http.Error(
-			w,
-			"file is not a supported streamed preview",
-			http.StatusUnsupportedMediaType,
-		)
-		return
-	}
 	if err := validateSessionFileBinarySize(resolved); err != nil {
 		writeSessionFileHTTPError(w, err)
 		return
@@ -619,10 +611,6 @@ func (s *Server) handleSessionFileBinary(w http.ResponseWriter, r *http.Request)
 	defer resolved.file.Close()
 	if strings.TrimSpace(raw.FileGeneration) == "" || raw.FileGeneration != resolved.generation {
 		writeSessionFileHTTPError(w, fmt.Errorf("%w; refresh the preview", errSessionFileChanged))
-		return
-	}
-	if resolved.kind != "image" && resolved.kind != "pdf" {
-		http.Error(w, "file is not a supported streamed preview", http.StatusUnsupportedMediaType)
 		return
 	}
 	if err := validateSessionFileBinarySize(resolved); err != nil {

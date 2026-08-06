@@ -6,6 +6,7 @@ import React, {
   useMemo,
   useReducer,
   useRef,
+  useState,
 } from "react";
 import {
   ActivityIndicator,
@@ -27,6 +28,10 @@ import type {
 } from "../../constants/terminalThemes";
 import { Typography } from "../../constants/tokens";
 import {
+  createSessionFileCopyLifecycleOwner,
+  SESSION_FILE_COPIED_RESET_MS,
+} from "../../services/sessionFilePreviewCopy";
+import {
   bindSessionFileRequestToGeneration,
   buildSessionFileBinarySource,
   classifySessionFileRenderer,
@@ -40,6 +45,14 @@ import {
   type SessionFileMetadata,
   type SessionFilePreviewState,
 } from "../../services/sessionFilePreview";
+import {
+  exportSessionFileDownload,
+  sessionFileCanDownload,
+  sessionFileDownloadFileName,
+  sessionFileDownloadMimeType,
+  sessionFileDownloadRequest,
+} from "../../services/sessionFilePreviewDownload";
+import { createExpoSessionFileDownloadBackend } from "../../services/sessionFilePreviewDownload.expo";
 import { wsClient } from "../../services/websocket";
 import { BottomSheetFrame } from "../ui";
 import { MessageBody } from "./InterfaceMessageBody";
@@ -198,10 +211,85 @@ export function SessionFilePreviewSheet({
   const markPdfFailure = useCallback((message: string, stale: boolean) => {
     dispatch({ type: "failed", message, stale });
   }, []);
+  const [pathCopied, setPathCopied] = useState(false);
+  const [downloadBusy, setDownloadBusy] = useState(false);
+  const downloadEpochRef = useRef(0);
+  const downloadBackend = useMemo(
+    () => createExpoSessionFileDownloadBackend(),
+    [],
+  );
+  const copyOwner = useMemo(
+    () =>
+      createSessionFileCopyLifecycleOwner({
+        copyText: Clipboard.setStringAsync,
+        onCopiedChange: setPathCopied,
+        scheduleReset: setTimeout,
+        cancelReset: clearTimeout,
+        resetDelayMs: SESSION_FILE_COPIED_RESET_MS,
+      }),
+    [],
+  );
+
+  useEffect(() => {
+    copyOwner.replaceController();
+    downloadEpochRef.current += 1;
+    setDownloadBusy(false);
+  }, [copyOwner, state.reference, state.requestEpoch]);
+
+  useEffect(() => {
+    return () => copyOwner.dispose();
+  }, [copyOwner]);
+
   const copyPath = useCallback(() => {
     const path = state.metadata?.path || state.reference;
-    if (path) void Clipboard.setStringAsync(path);
-  }, [state.metadata?.path, state.reference]);
+    if (path) void copyOwner.copy(path);
+  }, [copyOwner, state.metadata?.path, state.reference]);
+
+  const downloadFile = useCallback(() => {
+    const metadata = state.metadata;
+    if (
+      !metadata ||
+      !sessionFileCanDownload(metadata) ||
+      downloadBusy ||
+      !processId ||
+      !startedAt
+    ) {
+      return;
+    }
+    const fileName = sessionFileDownloadFileName(metadata);
+    const mimeType = sessionFileDownloadMimeType(metadata.contentType);
+    const request = sessionFileDownloadRequest(
+      { agentId, processId, startedAt },
+      metadata,
+    );
+    const downloadEpoch = downloadEpochRef.current + 1;
+    downloadEpochRef.current = downloadEpoch;
+    setDownloadBusy(true);
+    void exportSessionFileDownload({
+      fileName,
+      mimeType,
+      resolveSource: () =>
+        buildSessionFileBinarySource(serverId, daemonId, request),
+      backend: downloadBackend,
+    })
+      .catch(() => {
+        // Keep preview open; download failures stay non-modal like copy.
+      })
+      .finally(() => {
+        if (downloadEpochRef.current === downloadEpoch) {
+          setDownloadBusy(false);
+        }
+      });
+  }, [
+    agentId,
+    daemonId,
+    downloadBackend,
+    downloadBusy,
+    processId,
+    serverId,
+    startedAt,
+    state.metadata,
+  ]);
 
   return (
     <BottomSheetFrame
@@ -215,7 +303,10 @@ export function SessionFilePreviewSheet({
       <SessionFilePreviewHeader
         state={state}
         chrome={chrome}
+        pathCopied={pathCopied}
+        downloadBusy={downloadBusy}
         onCopyPath={copyPath}
+        onDownload={downloadFile}
         onRefresh={retry}
         onClose={close}
       />
@@ -236,13 +327,19 @@ export function SessionFilePreviewSheet({
 function SessionFilePreviewHeader({
   state,
   chrome,
+  pathCopied,
+  downloadBusy,
   onCopyPath,
+  onDownload,
   onRefresh,
   onClose,
 }: {
   state: SessionFilePreviewState;
   chrome: TerminalThemeChrome;
+  pathCopied: boolean;
+  downloadBusy: boolean;
   onCopyPath(): void;
+  onDownload(): void;
   onRefresh(): void;
   onClose(): void;
 }) {
@@ -257,6 +354,7 @@ function SessionFilePreviewHeader({
         .filter(Boolean)
         .join(" · ")
     : state.reference || "Current Session";
+  const canDownload = sessionFileCanDownload(metadata);
   return (
     <View style={[styles.header, { borderBottomColor: chrome.border }]}>
       <View style={styles.headerCopy}>
@@ -283,10 +381,26 @@ function SessionFilePreviewHeader({
         />
       ) : null}
       <HeaderAction
-        label="Copy file path"
-        icon="copy-outline"
+        label={
+          downloadBusy
+            ? "Downloading file"
+            : canDownload
+              ? "Download file"
+              : "Download unavailable"
+        }
+        icon="download-outline"
+        chrome={chrome}
+        onPress={onDownload}
+        disabled={!canDownload || downloadBusy}
+        busy={downloadBusy}
+      />
+      <HeaderAction
+        label={pathCopied ? "File path copied" : "Copy file path"}
+        icon={pathCopied ? "checkmark" : "copy-outline"}
         chrome={chrome}
         onPress={onCopyPath}
+        selected={pathCopied}
+        accent={pathCopied}
       />
       <HeaderAction
         label="Close file preview"
@@ -303,21 +417,39 @@ function HeaderAction({
   icon,
   chrome,
   onPress,
+  disabled = false,
+  busy = false,
+  selected = false,
+  accent = false,
 }: {
   label: string;
   icon: React.ComponentProps<typeof Ionicons>["name"];
   chrome: TerminalThemeChrome;
   onPress(): void;
+  disabled?: boolean;
+  busy?: boolean;
+  selected?: boolean;
+  accent?: boolean;
 }) {
+  const iconColor = accent ? chrome.accent : chrome.textMuted;
   return (
     <TouchableOpacity
       accessibilityLabel={label}
       accessibilityRole="button"
+      accessibilityState={{ disabled, selected, busy }}
       activeOpacity={0.75}
+      disabled={disabled}
       onPress={onPress}
-      style={[styles.headerAction, { backgroundColor: chrome.surfaceMuted }]}
+      style={[
+        styles.headerAction,
+        { backgroundColor: chrome.surfaceMuted, opacity: disabled ? 0.45 : 1 },
+      ]}
     >
-      <Ionicons name={icon} size={18} color={chrome.textMuted} />
+      {busy ? (
+        <ActivityIndicator size="small" color={chrome.textMuted} />
+      ) : (
+        <Ionicons name={icon} size={18} color={iconColor} />
+      )}
     </TouchableOpacity>
   );
 }

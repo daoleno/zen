@@ -653,6 +653,58 @@ func TestSessionFileBinaryReaderCannotGrowPastInspectedSize(t *testing.T) {
 	}
 }
 
+func TestSessionFileBinaryDownloadServesExactTextUnderSizeBound(t *testing.T) {
+	workspace := t.TempDir()
+	path := filepath.Join(workspace, "notes.md")
+	data := []byte("# Notes\nexact download bytes\n")
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	resolved, err := openSessionFile(workspace, "notes.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resolved.kind != "markdown" {
+		t.Fatalf("kind=%q want markdown", resolved.kind)
+	}
+	generation := resolved.generation
+	_ = resolved.file.Close()
+
+	manager, privateKey, deviceID := sessionFileAuthFixture(t)
+	started := time.Date(2026, 8, 6, 4, 0, 0, 0, time.UTC)
+	agent := &classifier.Agent{ID: "main:@download", Cwd: workspace, ProcessID: 713, StartedAt: started}
+	server := New(manager, nil, nil, nil, nil, nil, nil)
+	server.sessionFileAgentLoader = func(id string) *classifier.Agent {
+		if id == agent.ID {
+			copy := *agent
+			return &copy
+		}
+		return nil
+	}
+
+	request := httptest.NewRequest(http.MethodGet, "/session-file", nil)
+	query := request.URL.Query()
+	query.Set("agent_id", agent.ID)
+	query.Set("process_id", "713")
+	query.Set("started_at", string(startedAtRaw(started)))
+	query.Set("path", "notes.md")
+	query.Set("generation", generation)
+	request.URL.RawQuery = query.Encode()
+	request.Header.Set("Authorization", sessionFileAuthorizationHeader(t, privateKey, manager.DaemonID(), deviceID))
+	response := httptest.NewRecorder()
+	server.handleSessionFileBinary(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("text download status=%d body=%s", response.Code, response.Body.String())
+	}
+	if !bytes.Equal(response.Body.Bytes(), data) {
+		t.Fatalf("text download body=%q want=%q", response.Body.Bytes(), data)
+	}
+	if !strings.Contains(response.Header().Get("Content-Type"), "markdown") &&
+		!strings.HasPrefix(response.Header().Get("Content-Type"), "text/") {
+		t.Fatalf("content type=%q", response.Header().Get("Content-Type"))
+	}
+}
+
 func startedAtRaw(value time.Time) []byte {
 	return []byte(strconv.FormatInt(value.UnixMilli(), 10))
 }
