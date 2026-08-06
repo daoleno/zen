@@ -1,6 +1,6 @@
 // @ts-nocheck
 import { describe, expect, test } from "bun:test";
-import { resolveTerminalSurfaceMountPolicy } from "../../app/terminal/useTerminalViewportModel";
+import { resolveTerminalSurfaceMountPolicy } from "./screen/useTerminalViewportModel";
 
 describe("resolveTerminalSurfaceMountPolicy", () => {
   test("keeps the terminal surface mounted under chat while focused", () => {

@@ -1,14 +1,14 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useLocalSearchParams, useRouter } from "expo-router";
-import { makeSessionKey } from "../../services/sessionKeys";
-import type { StoredInterfaceRenderMode } from "../../services/storage";
-import type { TerminalSurfaceHandle } from "../../components/terminal/TerminalSurface";
+import { makeSessionKey } from "../../../services/sessionKeys";
+import type { StoredInterfaceRenderMode } from "../../../services/storage";
+import type { TerminalSurfaceHandle } from "../TerminalSurface";
 import {
   consumeInterfaceComposerInitialFocusGrant,
   isInterfaceComposerInitialFocusRouteGrant,
   reconcileInterfaceComposerInitialFocusGrant,
   type InterfaceComposerInitialFocusGrant,
-} from "../../components/terminal/interfaceComposerInitialFocus";
+} from "../interfaceComposerInitialFocus";
 
 export interface TerminalRouteSessionHint {
   name?: string;

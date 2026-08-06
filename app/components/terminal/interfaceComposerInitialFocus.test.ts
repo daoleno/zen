@@ -211,7 +211,7 @@ describe("Interface Composer initial focus", () => {
     const notificationOpen = source("../../app/_layout.tsx");
     const brainOpen = source("../../app/(primary)/index.tsx");
     const inSessionCreate = source(
-      "../../app/terminal/useTerminalSessionActions.ts",
+      "./screen/useTerminalSessionActions.ts",
     );
 
     expect(existingOpen).not.toContain("initialComposerFocus");
@@ -224,7 +224,7 @@ describe("Interface Composer initial focus", () => {
 
   test("the route grant accepts one exact token and is made inert at the route owner", () => {
     const localState = source(
-      "../../app/terminal/useTerminalScreenLocalState.ts",
+      "./screen/useTerminalScreenLocalState.ts",
     );
     const surfaceState = source("useInterfaceChatSurfaceState.ts");
     const keyboardFrame = source("InterfaceChatKeyboardFrame.tsx");

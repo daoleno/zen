@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { findLinkedWork } from "../app/terminal/TerminalScreenModel";
+import { findLinkedWork } from "../components/terminal/screen/TerminalScreenModel";
 import { initialWorkState, workReducer } from "./work";
 
 describe("current Work projection", () => {

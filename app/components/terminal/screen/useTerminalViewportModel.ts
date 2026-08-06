@@ -2,9 +2,9 @@ import { useMemo } from "react";
 import type {
   TerminalThemeChrome,
   TerminalThemePalette,
-} from "../../constants/terminalThemes";
-import type { ConnectionIssue } from "../../services/connectionIssue";
-import type { ConnectionState } from "../../store/agents";
+} from "../../../constants/terminalThemes";
+import type { ConnectionIssue } from "../../../services/connectionIssue";
+import type { ConnectionState } from "../../../store/agents";
 import { buildTerminalFallbackPresentation } from "./TerminalScreenModel";
 import { useTerminalFallbackState } from "./useTerminalFallbackState";
 

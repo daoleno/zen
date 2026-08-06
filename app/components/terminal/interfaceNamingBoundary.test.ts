@@ -53,7 +53,7 @@ describe("Interface provider-neutral naming boundary", () => {
       "utf8",
     );
     const sessionActions = readFileSync(
-      join(componentDir, "../../app/terminal/useTerminalSessionActions.ts"),
+      join(componentDir, "screen/useTerminalSessionActions.ts"),
       "utf8",
     );
 

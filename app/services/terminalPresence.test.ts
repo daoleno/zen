@@ -3,7 +3,7 @@ import type { AppStateStatus } from "react-native";
 import {
   createTerminalConnectedPresenceHandler,
   currentTerminalPresence,
-} from "../app/terminal/terminalPresence";
+} from "../components/terminal/screen/terminalPresence";
 
 describe("focused Terminal presence", () => {
   test("active ready focus resolves to the exact current agent", () => {

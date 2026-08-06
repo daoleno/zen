@@ -134,7 +134,7 @@ describe("structured chat keyboard overlay", () => {
   test("keeps primary and structured Agent Chat headers in overlay layout", () => {
     const primaryShell = source("../navigation/PrimaryDrawerShell.tsx");
     const terminalLayout = source(
-      "../../app/terminal/TerminalScreenLayout.tsx",
+      "./screen/TerminalScreenLayout.tsx",
     );
 
     expect(primaryShell).toContain("styles.appBarOverlay,");
@@ -166,7 +166,7 @@ describe("structured chat keyboard overlay", () => {
 
   test("keeps floating Agent navigation first in accessibility traversal", () => {
     const terminalLayout = source(
-      "../../app/terminal/TerminalScreenLayout.tsx",
+      "./screen/TerminalScreenLayout.tsx",
     );
 
     expect(terminalLayout.indexOf("styles.headerOverlay")).toBeLessThan(

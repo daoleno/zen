@@ -1,6 +1,6 @@
 import React from "react";
-import { useAgents } from "../../store/agents";
-import { useWork } from "../../store/work";
+import { useAgents } from "../../../store/agents";
+import { useWork } from "../../../store/work";
 import { TerminalScreenLayout } from "./TerminalScreenLayout";
 import { useTerminalAgentIndex } from "./useTerminalAgentIndex";
 import { useTerminalScreenActions } from "./useTerminalScreenActions";

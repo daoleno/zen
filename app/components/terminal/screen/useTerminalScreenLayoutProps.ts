@@ -1,16 +1,16 @@
 import { useCallback, type RefObject } from "react";
 import type { LayoutChangeEvent } from "react-native";
-import type { useTerminalGitDiff } from "../../components/terminal/useTerminalGitDiff";
-import type { TerminalSurfaceHandle } from "../../components/terminal/TerminalSurface";
+import type { useTerminalGitDiff } from "../useTerminalGitDiff";
+import type { TerminalSurfaceHandle } from "../TerminalSurface";
 import type {
   TerminalThemeChrome,
   TerminalThemePalette,
-} from "../../constants/terminalThemes";
-import type { Agent, ConnectionState } from "../../store/agents";
-import type { ConnectionIssue } from "../../services/connectionIssue";
-import type { StoredInterfaceRenderMode } from "../../services/storage";
-import type { PresentedAgent } from "../../services/agentPresentation";
-import type { SessionResourceSnapshot } from "../../services/sessionResourceSnapshot";
+} from "../../../constants/terminalThemes";
+import type { Agent, ConnectionState } from "../../../store/agents";
+import type { ConnectionIssue } from "../../../services/connectionIssue";
+import type { StoredInterfaceRenderMode } from "../../../services/storage";
+import type { PresentedAgent } from "../../../services/agentPresentation";
+import type { SessionResourceSnapshot } from "../../../services/sessionResourceSnapshot";
 import type { useTerminalScreenChrome } from "./useTerminalScreenChrome";
 import type { useTerminalSessionActions } from "./useTerminalSessionActions";
 import type { useTerminalNavigationActions } from "./useTerminalNavigationActions";

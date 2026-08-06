@@ -1,11 +1,11 @@
-import type { ConnectionIssue } from "../../services/connectionIssue";
-import type { Agent, ConnectionState } from "../../store/agents";
-import type { WorkItem } from "../../store/work";
+import type { ConnectionIssue } from "../../../services/connectionIssue";
+import type { Agent, ConnectionState } from "../../../store/agents";
+import type { WorkItem } from "../../../store/work";
 import type {
   StoredAgentAliases,
   StoredInterfaceRenderModes,
-} from "../../services/storage";
-import { useTerminalGitDiff } from "../../components/terminal/useTerminalGitDiff";
+} from "../../../services/storage";
+import { useTerminalGitDiff } from "../useTerminalGitDiff";
 import { useTerminalRouteModel } from "./useTerminalRouteModel";
 import { useTerminalThemeChrome } from "./useTerminalThemeChrome";
 import { useTerminalViewportModel } from "./useTerminalViewportModel";

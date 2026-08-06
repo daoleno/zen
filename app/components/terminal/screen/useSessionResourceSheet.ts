@@ -2,8 +2,8 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import {
   acceptSessionResourceSnapshotResponse,
   type SessionResourceSnapshot,
-} from "../../services/sessionResourceSnapshot";
-import { wsClient } from "../../services/websocket";
+} from "../../../services/sessionResourceSnapshot";
+import { wsClient } from "../../../services/websocket";
 
 interface UseSessionResourceSheetInput {
   serverId: string;

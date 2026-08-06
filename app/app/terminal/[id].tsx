@@ -4,7 +4,7 @@ let TerminalScreenImpl: React.ComponentType | null = null;
 
 function getTerminalScreenImpl(): React.ComponentType {
   if (!TerminalScreenImpl) {
-    TerminalScreenImpl = require('./TerminalScreenImpl').default as React.ComponentType;
+    TerminalScreenImpl = require('../../components/terminal/screen/TerminalScreenImpl').default as React.ComponentType;
   }
   return TerminalScreenImpl;
 }

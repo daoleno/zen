@@ -2,11 +2,11 @@ import React from "react";
 import { StyleSheet, View } from "react-native";
 import { StatusBar } from "expo-status-bar";
 import { SafeAreaView } from "react-native-safe-area-context";
-import { TerminalTopBar } from "../../components/terminal/TerminalTopBar";
-import type { TerminalTopBarProps } from "../../components/terminal/TerminalTopBar";
-import { TerminalViewport } from "../../components/terminal/TerminalViewport";
-import type { TerminalViewportProps } from "../../components/terminal/TerminalViewport";
-import type { TerminalThemeChrome } from "../../constants/terminalThemes";
+import { TerminalTopBar } from "../TerminalTopBar";
+import type { TerminalTopBarProps } from "../TerminalTopBar";
+import { TerminalViewport } from "../TerminalViewport";
+import type { TerminalViewportProps } from "../TerminalViewport";
+import type { TerminalThemeChrome } from "../../../constants/terminalThemes";
 import { TerminalScreenOverlays } from "./TerminalScreenOverlays";
 import type { TerminalScreenOverlaysProps } from "./TerminalScreenOverlays";
 

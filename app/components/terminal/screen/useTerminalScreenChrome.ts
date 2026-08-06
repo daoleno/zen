@@ -1,7 +1,7 @@
 import { useWindowDimensions } from "react-native";
 import {
   TERMINAL_ACTION_POPOVER_WIDTH,
-} from "../../components/terminal/TerminalActionPopover";
+} from "../TerminalActionPopover";
 import { useTerminalChromeLayout } from "./useTerminalChromeLayout";
 
 interface UseTerminalScreenChromeInput {

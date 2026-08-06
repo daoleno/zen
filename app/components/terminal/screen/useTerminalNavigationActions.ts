@@ -1,9 +1,9 @@
 import { useCallback } from "react";
 import { Alert } from "react-native";
 import { useRouter } from "expo-router";
-import type { Agent, ConnectionState } from "../../store/agents";
-import { dismissTerminalToSessions } from "../../services/terminalExitNavigation";
-import { wsClient } from "../../services/websocket";
+import type { Agent, ConnectionState } from "../../../store/agents";
+import { dismissTerminalToSessions } from "../../../services/terminalExitNavigation";
+import { wsClient } from "../../../services/websocket";
 
 interface UseTerminalNavigationActionsInput {
   sessionKey: string | null;

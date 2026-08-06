@@ -1,7 +1,7 @@
 // @ts-nocheck
 import { expect, test } from "bun:test";
 import type { Agent } from "../store/agents";
-import { sortTerminalAgents } from "../app/terminal/TerminalScreenModel";
+import { sortTerminalAgents } from "../components/terminal/screen/TerminalScreenModel";
 
 function agent(id: string, updatedAt: number, status: Agent["status"]): Agent {
   return {

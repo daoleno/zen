@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
-import type { ConnectionState } from "../../store/agents";
-import type { ConnectionIssue } from "../../services/connectionIssue";
+import type { ConnectionState } from "../../../store/agents";
+import type { ConnectionIssue } from "../../../services/connectionIssue";
 
 const RECONNECT_FALLBACK_DELAY_MS = 1500;
 

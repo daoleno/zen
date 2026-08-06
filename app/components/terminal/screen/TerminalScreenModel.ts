@@ -1,11 +1,11 @@
 import type {
   TerminalThemeChrome,
   TerminalThemePalette,
-} from "../../constants/terminalThemes";
-import type { ConnectionIssue } from "../../services/connectionIssue";
-import type { Agent, ConnectionState } from "../../store/agents";
-import type { WorkItem } from "../../store/work";
-import type { StoredRecentAgentOpens } from "../../services/storage";
+} from "../../../constants/terminalThemes";
+import type { ConnectionIssue } from "../../../services/connectionIssue";
+import type { Agent, ConnectionState } from "../../../store/agents";
+import type { WorkItem } from "../../../store/work";
+import type { StoredRecentAgentOpens } from "../../../services/storage";
 
 export interface MenuAnchorLayout {
   x: number;

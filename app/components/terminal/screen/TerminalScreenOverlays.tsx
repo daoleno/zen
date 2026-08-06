@@ -2,13 +2,13 @@ import React from "react";
 import type {
   TerminalThemeChrome,
   TerminalThemePalette,
-} from "../../constants/terminalThemes";
-import type { SessionResourceSnapshot } from "../../services/sessionResourceSnapshot";
-import { GitDiffSheet } from "../../components/terminal/GitDiffSheet";
-import { NewTerminalSheet } from "../../components/terminal/NewTerminalSheet";
-import { SessionResourceSheet } from "../../components/terminal/SessionResourceSheet";
-import { TerminalActionPopover } from "../../components/terminal/TerminalActionPopover";
-import { TerminalRenameModal } from "../../components/terminal/TerminalRenameModal";
+} from "../../../constants/terminalThemes";
+import type { SessionResourceSnapshot } from "../../../services/sessionResourceSnapshot";
+import { GitDiffSheet } from "../GitDiffSheet";
+import { NewTerminalSheet } from "../NewTerminalSheet";
+import { SessionResourceSheet } from "../SessionResourceSheet";
+import { TerminalActionPopover } from "../TerminalActionPopover";
+import { TerminalRenameModal } from "../TerminalRenameModal";
 
 type GitDiffSheetProps = React.ComponentProps<typeof GitDiffSheet>;
 type NewTerminalSubmitInput = Parameters<

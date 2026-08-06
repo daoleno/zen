@@ -4,9 +4,9 @@ import {
   isLightTerminalTheme,
   resolveTerminalTheme,
   resolveTerminalThemeName,
-} from "../../constants/terminalThemes";
-import { useAppTheme } from "../../constants/tokens";
-import { buildChatChrome } from "../../theme";
+} from "../../../constants/terminalThemes";
+import { useAppTheme } from "../../../constants/tokens";
+import { buildChatChrome } from "../../../theme";
 
 export function useTerminalThemeChrome() {
   const { theme: zenTheme } = useAppTheme();

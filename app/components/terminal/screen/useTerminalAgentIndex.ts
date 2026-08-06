@@ -1,5 +1,5 @@
 import { useMemo } from "react";
-import type { Agent } from "../../store/agents";
+import type { Agent } from "../../../store/agents";
 
 interface UseTerminalAgentIndexInput {
   agents: Agent[];

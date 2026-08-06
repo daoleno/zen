@@ -1,7 +1,7 @@
 import { useCallback, type Dispatch, type SetStateAction } from "react";
 import { AppState, type AppStateStatus } from "react-native";
 import { useFocusEffect } from "expo-router";
-import { wsClient } from "../../services/websocket";
+import { wsClient } from "../../../services/websocket";
 import {
   createTerminalConnectedPresenceHandler,
   currentTerminalPresence,

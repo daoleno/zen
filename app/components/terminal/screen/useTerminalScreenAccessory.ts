@@ -1,5 +1,5 @@
 import type { Dispatch, SetStateAction } from "react";
-import { useTerminalAccessoryLayout } from "../../components/terminal/useTerminalAccessoryLayout";
+import { useTerminalAccessoryLayout } from "../useTerminalAccessoryLayout";
 import { useTerminalScreenLifecycle } from "./useTerminalScreenLifecycle";
 
 interface UseTerminalScreenAccessoryInput {

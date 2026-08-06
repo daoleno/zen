@@ -10,7 +10,7 @@ The [TestFlight Preview public invitation](https://testflight.apple.com/join/rTK
 
 ## Supported mobile interfaces
 
-The agent interface is shared React Native code, not an Android-only feature. Codex, Claude Code, Cursor Agent, Grok, Pi, and OpenCode are classified as structured-chat agents by `supportsChatInterface` in `app/app/terminal/useTerminalRouteModel.ts`.
+The agent interface is shared React Native code, not an Android-only feature. Codex, Claude Code, Cursor Agent, Grok, Pi, and OpenCode are classified as structured-chat agents by `supportsChatInterface` in `app/components/terminal/screen/useTerminalRouteModel.ts`.
 
 For all four agent kinds on both Android and iOS:
 

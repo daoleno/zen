@@ -1,10 +1,10 @@
 import { useCallback, useMemo } from "react";
-import type { SessionResourceSnapshot } from "../../services/sessionResourceSnapshot";
+import type { SessionResourceSnapshot } from "../../../services/sessionResourceSnapshot";
 import type {
   TerminalThemeChrome,
   TerminalThemePalette,
-} from "../../constants/terminalThemes";
-import type { useTerminalGitDiff } from "../../components/terminal/useTerminalGitDiff";
+} from "../../../constants/terminalThemes";
+import type { useTerminalGitDiff } from "../useTerminalGitDiff";
 import type { TerminalScreenOverlaysProps } from "./TerminalScreenOverlays";
 import type { useTerminalSessionActions } from "./useTerminalSessionActions";
 import type { useTerminalNavigationActions } from "./useTerminalNavigationActions";

@@ -2,12 +2,12 @@ import { useMemo } from "react";
 import type {
   TerminalThemeChrome,
   TerminalThemePalette,
-} from "../../constants/terminalThemes";
-import type { AgentKind } from "../../services/agentPresentation";
-import type { TerminalFlavor } from "../../services/terminalFlavor";
-import type { StoredInterfaceRenderMode } from "../../services/storage";
-import type { TerminalTopBarProps } from "../../components/terminal/TerminalTopBar";
-import type { TerminalGitDiffSummary } from "../../components/terminal/useTerminalGitDiff";
+} from "../../../constants/terminalThemes";
+import type { AgentKind } from "../../../services/agentPresentation";
+import type { TerminalFlavor } from "../../../services/terminalFlavor";
+import type { StoredInterfaceRenderMode } from "../../../services/storage";
+import type { TerminalTopBarProps } from "../TerminalTopBar";
+import type { TerminalGitDiffSummary } from "../useTerminalGitDiff";
 import type { useTerminalChromeLayout } from "./useTerminalChromeLayout";
 import type { useTerminalNavigationActions } from "./useTerminalNavigationActions";
 

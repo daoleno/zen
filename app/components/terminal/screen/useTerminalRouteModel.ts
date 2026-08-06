@@ -1,17 +1,17 @@
 import { useMemo } from "react";
-import { type AgentKind, presentAgent } from "../../services/agentPresentation";
-import type { ConnectionIssue } from "../../services/connectionIssue";
+import { type AgentKind, presentAgent } from "../../../services/agentPresentation";
+import type { ConnectionIssue } from "../../../services/connectionIssue";
 import type {
   StoredAgentAliases,
   StoredInterfaceRenderMode,
   StoredInterfaceRenderModes,
-} from "../../services/storage";
+} from "../../../services/storage";
 import type {
   Agent,
   AgentCapabilities,
   ConnectionState,
-} from "../../store/agents";
-import type { WorkItem } from "../../store/work";
+} from "../../../store/agents";
+import type { WorkItem } from "../../../store/work";
 import { findLinkedWork } from "./TerminalScreenModel";
 import type { TerminalRouteSessionHint } from "./useTerminalScreenLocalState";
 

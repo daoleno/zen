@@ -1,13 +1,13 @@
 import { useCallback, useMemo } from "react";
 import type { LayoutChangeEvent } from "react-native";
-import type { ConnectionIssue } from "../../services/connectionIssue";
-import type { TerminalSurfaceHandle } from "../../components/terminal/TerminalSurface";
-import type { TerminalViewportProps } from "../../components/terminal/TerminalViewport";
+import type { ConnectionIssue } from "../../../services/connectionIssue";
+import type { TerminalSurfaceHandle } from "../TerminalSurface";
+import type { TerminalViewportProps } from "../TerminalViewport";
 import type {
   TerminalThemeChrome,
   TerminalThemePalette,
-} from "../../constants/terminalThemes";
-import type { Agent, ConnectionState } from "../../store/agents";
+} from "../../../constants/terminalThemes";
+import type { Agent, ConnectionState } from "../../../store/agents";
 import type { useTerminalSessionActions } from "./useTerminalSessionActions";
 import type { useTerminalViewportModel } from "./useTerminalViewportModel";
 

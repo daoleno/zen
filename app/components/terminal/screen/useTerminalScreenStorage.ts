@@ -10,7 +10,7 @@ import {
   type StoredInterfaceRenderModes,
   type StoredRecentAgentOpens,
   type StoredServer,
-} from "../../services/storage";
+} from "../../../services/storage";
 
 interface UseTerminalScreenStorageInput {
   serverId: string;

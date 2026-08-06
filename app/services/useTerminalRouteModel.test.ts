@@ -4,7 +4,7 @@ import {
   defaultInterfaceRenderModeForKind,
   resolveInterfaceRenderMode,
   supportsChatInterface,
-} from "../app/terminal/useTerminalRouteModel";
+} from "../components/terminal/screen/useTerminalRouteModel";
 
 describe("supportsChatInterface", () => {
   test("Claude is eligible for Open Chat / Open terminal like other structured agents", () => {

@@ -1,8 +1,8 @@
 import { useCallback, type Dispatch, type SetStateAction } from "react";
 import { Alert } from "react-native";
 import { useRouter } from "expo-router";
-import type { ConnectionState } from "../../store/agents";
-import type { WorkItem } from "../../store/work";
+import type { ConnectionState } from "../../../store/agents";
+import type { WorkItem } from "../../../store/work";
 import {
   getServerById,
   markAgentOpened,
@@ -13,9 +13,9 @@ import {
   type StoredInterfaceRenderModes,
   type StoredRecentAgentOpens,
   type StoredServer,
-} from "../../services/storage";
-import { makeSessionKey } from "../../services/sessionKeys";
-import { wsClient } from "../../services/websocket";
+} from "../../../services/storage";
+import { makeSessionKey } from "../../../services/sessionKeys";
+import { wsClient } from "../../../services/websocket";
 
 interface CreateTerminalInput {
   cwd: string;
