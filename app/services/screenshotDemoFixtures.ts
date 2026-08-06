@@ -1,11 +1,88 @@
 import type { CodexConversationEvent } from "./codexConversation";
 import type { Agent } from "../store/agents";
+import type { PendingUserMessage } from "../components/terminal/InterfaceChatSession";
 
 export const SCREENSHOT_DEMO_SERVER_ID = "demo-server";
 export const SCREENSHOT_DEMO_SERVER_NAME = "Studio Mac";
 export const SCREENSHOT_DEMO_SERVER_URL = "https://demo.invalid";
 
+export const SCREENSHOT_CHAT_PENDING_FIXTURES = [
+  "none",
+  "pending",
+  "failed",
+  "long",
+] as const;
+
+export type ScreenshotChatPendingFixture =
+  (typeof SCREENSHOT_CHAT_PENDING_FIXTURES)[number];
+
 const DEMO_TIMESTAMP = "2026-06-18T09:30:00.000Z";
+const DEMO_PENDING_CREATED_AT = "2026-06-18T09:30:12.000Z";
+
+/** Deterministic Pending rows for screenshot-demo; never used by live chat. */
+export function screenshotChatPendingUserMessages(
+  fixture: ScreenshotChatPendingFixture,
+): PendingUserMessage[] {
+  if (fixture === "none") {
+    return [];
+  }
+  if (fixture === "failed") {
+    return [
+      {
+        id: "demo-pending-failed",
+        body: "Retry this short send after the transport failure.",
+        sentText: "Retry this short send after the transport failure.",
+        attachments: [],
+        createdAt: DEMO_PENDING_CREATED_AT,
+        lifecycle: "failed",
+        dispatchRequestId: "demo-request-failed",
+        dispatchAttemptOrder: 1,
+        failureCode: "send_input_failed",
+        failureMessage: "Provider unavailable",
+        createdAfterMaxSeq: 3,
+        createdAfterEventIds: ["chat-assistant"],
+      },
+    ];
+  }
+  if (fixture === "long") {
+    return [
+      {
+        id: "demo-pending-long",
+        body: [
+          "Sending a longer pending bubble so wrapping, grouped spacing,",
+          "and the external clock mark stay stable across light and dark.",
+          "The bubble geometry must not change when acknowledgement arrives.",
+        ].join(" "),
+        sentText: [
+          "Sending a longer pending bubble so wrapping, grouped spacing,",
+          "and the external clock mark stay stable across light and dark.",
+          "The bubble geometry must not change when acknowledgement arrives.",
+        ].join(" "),
+        attachments: [],
+        createdAt: DEMO_PENDING_CREATED_AT,
+        lifecycle: "pending",
+        dispatchRequestId: "demo-request-long",
+        dispatchAttemptOrder: 1,
+        createdAfterMaxSeq: 3,
+        createdAfterEventIds: ["chat-assistant"],
+      },
+    ];
+  }
+  return [
+    {
+      id: "demo-pending-short",
+      body: "On my way.",
+      sentText: "On my way.",
+      attachments: [],
+      createdAt: DEMO_PENDING_CREATED_AT,
+      lifecycle: "pending",
+      dispatchRequestId: "demo-request-short",
+      dispatchAttemptOrder: 1,
+      createdAfterMaxSeq: 3,
+      createdAfterEventIds: ["chat-assistant"],
+    },
+  ];
+}
 
 export const SCREENSHOT_CHAT_EVENTS: CodexConversationEvent[] = [
   {
@@ -28,21 +105,47 @@ export const SCREENSHOT_CHAT_EVENTS: CodexConversationEvent[] = [
     ],
   },
   {
-    id: "chat-command",
+    id: "chat-assistant",
     seq: 3,
+    kind: "assistant_message",
+    timestamp: DEMO_TIMESTAMP,
+    body: "The handoff is ready. The agent is still running on your computer, and the focused checks pass. Open **Terminal** anytime for the live process.",
+  },
+];
+
+/**
+ * Collapsed Tool activity headers for screenshot/demo and geometry coverage:
+ * Run + short command, Search with no detail, Run + long ellipsized path.
+ */
+export const SCREENSHOT_ACTIVITY_HEADER_EVENTS: CodexConversationEvent[] = [
+  {
+    id: "activity-run-short",
+    seq: 10,
     kind: "command",
     timestamp: DEMO_TIMESTAMP,
-    command: "bun test onboarding && bunx tsc --noEmit",
-    output: "12 tests passed\nTypeScript check passed",
+    command: "sleep 45",
+    output: "",
     status: "completed",
     exit_code: 0,
   },
   {
-    id: "chat-assistant",
-    seq: 4,
-    kind: "assistant_message",
+    id: "activity-search",
+    seq: 11,
+    kind: "tool",
     timestamp: DEMO_TIMESTAMP,
-    body: "The handoff is ready. The agent is still running on your computer, and the focused checks pass. Open **Terminal** anytime for the live process.",
+    tool_name: "Grep",
+    input: "{}",
+    status: "completed",
+  },
+  {
+    id: "activity-run-long",
+    seq: 12,
+    kind: "command",
+    timestamp: DEMO_TIMESTAMP,
+    command: "/home/daoleno/workspace/zen/daemon/brain/timeline_test.go",
+    output: "",
+    status: "completed",
+    exit_code: 0,
   },
 ];
 
@@ -77,9 +180,14 @@ export const SCREENSHOT_BRAIN_EVENTS: CodexConversationEvent[] = [
     output: "Running accessibility and viewport checks",
     status: "running",
   },
+  ...SCREENSHOT_ACTIVITY_HEADER_EVENTS.map((event, index) => ({
+    ...event,
+    id: `brain-${event.id}`,
+    seq: 4 + index,
+  })),
   {
     id: "brain-calendar-result",
-    seq: 4,
+    seq: 7,
     kind: "status",
     timestamp: "2026-06-18T09:31:00.000Z",
     title: "Daily Hacker News failed",
@@ -89,7 +197,7 @@ export const SCREENSHOT_BRAIN_EVENTS: CodexConversationEvent[] = [
   },
   {
     id: "brain-assistant",
-    seq: 5,
+    seq: 8,
     kind: "assistant_message",
     timestamp: "2026-06-18T09:32:00.000Z",
     body: "I’ll keep the workspace and delegated results together here. You can leave this chat and return without rebuilding the context.",

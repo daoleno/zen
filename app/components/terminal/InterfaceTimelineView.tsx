@@ -51,6 +51,11 @@ import {
   turnFocusRowGeometryFromCell,
   type TurnFocusSpacerRequest,
 } from "./turnFocusState";
+import { INTERFACE_TIMELINE_HORIZONTAL_INSET } from "./interfaceTimelineGeometry";
+import {
+  isTimelineProjectionPerfEnabled,
+  recordTimelineListDataIdentityProbe,
+} from "./timelineProjectionPerf";
 
 type TurnFocusCellMeasurement = {
   pendingMessageId?: string;
@@ -177,8 +182,22 @@ export function InterfaceTimelineView({
   );
   const previousRenderItemsRef = React.useRef<TimelineRenderItem[]>([]);
   const previousItemsRef = React.useRef(items);
+  const previousPerfItemsRef = React.useRef<ZenTimelineItem[] | null>(null);
   React.useEffect(() => {
-    if (previousItemsRef.current === items) {
+    const previousPerfItems = previousPerfItemsRef.current;
+    if (
+      isTimelineProjectionPerfEnabled() &&
+      previousPerfItems !== items
+    ) {
+      recordTimelineListDataIdentityProbe({
+        previousItems: previousPerfItems,
+        nextItems: items,
+      });
+    }
+    previousPerfItemsRef.current = items;
+
+    const previous = previousItemsRef.current;
+    if (previous === items) {
       return;
     }
     previousItemsRef.current = items;
@@ -519,7 +538,7 @@ const styles = StyleSheet.create({
   },
   timelineContent: {
     alignItems: "stretch",
-    paddingHorizontal: 14,
+    paddingHorizontal: INTERFACE_TIMELINE_HORIZONTAL_INSET,
     paddingBottom: 12,
     flexGrow: 1,
   },
@@ -529,7 +548,7 @@ const styles = StyleSheet.create({
     right: 0,
     bottom: 0,
     left: 0,
-    paddingHorizontal: 14,
+    paddingHorizontal: INTERFACE_TIMELINE_HORIZONTAL_INSET,
     paddingTop: 14,
     justifyContent: "center",
     pointerEvents: "box-none",

@@ -1,12 +1,21 @@
+import {
+  SCREENSHOT_CHAT_PENDING_FIXTURES,
+  type ScreenshotChatPendingFixture,
+} from "./screenshotDemoFixtures";
+
 export const SCREENSHOT_DEMO_STATES = [
   "chat",
   "sessions",
   "brain",
   "stats",
   "calendar",
+  "profile",
 ] as const;
 
 export type ScreenshotDemoState = (typeof SCREENSHOT_DEMO_STATES)[number];
+
+export type { ScreenshotChatPendingFixture };
+export { SCREENSHOT_CHAT_PENDING_FIXTURES };
 
 type ScreenshotDemoEnvironment = {
   dev: boolean;
@@ -52,4 +61,19 @@ export function resolveScreenshotDemoState(
   return SCREENSHOT_DEMO_STATES.includes(candidate as ScreenshotDemoState)
     ? (candidate as ScreenshotDemoState)
     : "chat";
+}
+
+/** Opt-in chat fixture for inspecting real Pending send chrome without live IO. */
+export function resolveScreenshotChatPendingFixture(
+  value: string | string[] | undefined,
+): ScreenshotChatPendingFixture {
+  const candidate = Array.isArray(value) ? value[0] : value;
+  if (candidate === "1") {
+    return "pending";
+  }
+  return SCREENSHOT_CHAT_PENDING_FIXTURES.includes(
+    candidate as ScreenshotChatPendingFixture,
+  )
+    ? (candidate as ScreenshotChatPendingFixture)
+    : "none";
 }

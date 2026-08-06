@@ -346,7 +346,7 @@ func (s *Service) RouteSessionEvent(event watcher.SessionEvent) (bool, error) {
 	if err != nil {
 		return false, err
 	}
-	_, created, err := s.store.AppendWorkEvent(WorkEvent{
+	recorded, created, err := s.store.AppendWorkEvent(WorkEvent{
 		WorkID:     item.ID,
 		Kind:       kind,
 		DedupeKey:  dedupeKey,
@@ -355,8 +355,14 @@ func (s *Service) RouteSessionEvent(event watcher.SessionEvent) (bool, error) {
 		Summary:    strings.TrimSpace(agent.Summary),
 		Actionable: actionable,
 	})
-	if err != nil || !created || !actionable {
+	if err != nil {
 		return false, err
+	}
+	if created && isProjectedWorkResultEvent(recorded.Kind) {
+		_, _, _ = s.store.MaterializeWorkCard(item, recorded)
+	}
+	if !created || !actionable {
+		return false, nil
 	}
 	return s.DispatchPendingEvent()
 }
@@ -897,10 +903,15 @@ func (s *Service) sessionProjectionIsTerminal(workID, sessionID string) (bool, e
 }
 
 func (s *Service) reconcileAbsentDelegatedSession(item Work) {
-	_, _, created, err := s.store.ReconcileMissingWorkOwner(item.ID, item.OwnerSessionID)
+	workItem, event, created, err := s.store.ReconcileMissingWorkOwner(item.ID, item.OwnerSessionID)
 	if err != nil {
 		log.Printf("brain absent Session reconciliation failed for %s: %v", item.OwnerSessionID, err)
-	} else if created {
+		return
+	}
+	if created && isProjectedWorkResultEvent(event.Kind) {
+		_, _, _ = s.store.MaterializeWorkCard(workItem, event)
+	}
+	if created {
 		_, _ = s.DispatchPendingEvent()
 	}
 }

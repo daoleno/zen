@@ -5,7 +5,7 @@ import {
   presentPendingUserMessageLifecycle,
   reconcilePendingUserMessagesAgainstEvents,
   rejectPendingUserMessage,
-  resolvePendingUserBubbleBorderColor,
+  showsPendingSendStatusMark,
 } from "./pendingUserMessageLifecycle";
 import {
   buildZenTimeline,
@@ -31,7 +31,7 @@ function pending(
 }
 
 describe("pending user message lifecycle", () => {
-  test("pending presentation is border/a11y only; failed keeps visible status", () => {
+  test("pending presentation is mark/a11y only; failed keeps visible status", () => {
     expect(presentPendingUserMessageLifecycle(pending())).toEqual({
       lifecycle: "pending",
       label: "",
@@ -46,67 +46,78 @@ describe("pending user message lifecycle", () => {
     });
   });
 
-  test("pending border uses full focus/accent, not faint borderStrong", () => {
-    const focus = "#89A28D";
-    const danger = "#C45C5C";
-    const borderStrong = "rgba(137,162,141,0.22)";
+  test("pending send mark is shown only for in-flight transport", () => {
     expect(
-      resolvePendingUserBubbleBorderColor({
-        pending: true,
-        lifecycle: "pending",
-        focusColor: focus,
-        dangerColor: danger,
-      }),
-    ).toBe(focus);
+      showsPendingSendStatusMark({ pending: true, lifecycle: "pending" }),
+    ).toBe(true);
     expect(
-      resolvePendingUserBubbleBorderColor({
-        pending: true,
-        lifecycle: "pending",
-        focusColor: focus,
-        dangerColor: danger,
-      }),
-    ).not.toBe(borderStrong);
-    expect(
-      resolvePendingUserBubbleBorderColor({
-        pending: true,
-        lifecycle: "failed",
-        focusColor: focus,
-        dangerColor: danger,
-      }),
-    ).toBe(danger);
-    expect(
-      resolvePendingUserBubbleBorderColor({
-        pending: false,
-        focusColor: focus,
-        dangerColor: danger,
-      }),
-    ).toBe("transparent");
+      showsPendingSendStatusMark({ pending: true, lifecycle: "failed" }),
+    ).toBe(false);
+    expect(showsPendingSendStatusMark({ pending: false })).toBe(false);
+    expect(showsPendingSendStatusMark({})).toBe(false);
   });
 
-  test("user bubble source wires focus border and busy-only a11y", async () => {
+  test("user bubble drops Pending border and hosts an external send mark", async () => {
     const bubbleSource = await Bun.file(
       new URL("./InterfaceTimelineMessage.tsx", import.meta.url),
     ).text();
     const footerSource = await Bun.file(
       new URL("./MessageBubbleFooter.tsx", import.meta.url),
     ).text();
+    const markSource = await Bun.file(
+      new URL("./PendingSendStatusMark.tsx", import.meta.url),
+    ).text();
+    const listSource = await Bun.file(
+      new URL("./InterfaceTimelineView.tsx", import.meta.url),
+    ).text();
     const zenUser = bubbleSource.slice(
       bubbleSource.indexOf("export function ZenUserMessage"),
       bubbleSource.indexOf("function HeartbeatWakeCard"),
     );
-    const callAt = zenUser.indexOf("resolvePendingUserBubbleBorderColor({");
-    expect(callAt).toBeGreaterThan(-1);
-    const pendingBorderBlock = zenUser.slice(callAt, callAt + 220);
-    expect(pendingBorderBlock).toContain("focusColor: chrome.focus");
-    expect(pendingBorderBlock).not.toContain("borderStrong");
+    expect(zenUser).not.toContain("resolvePendingUserBubbleBorderColor");
+    expect(zenUser).not.toContain("StyleSheet.hairlineWidth");
+    expect(zenUser).not.toContain("borderColor:");
+    expect(zenUser).not.toContain("borderWidth:");
+    expect(zenUser).toContain("showsPendingSendStatusMark({");
+    expect(zenUser).toContain("<PendingSendStatusMark");
+    expect(zenUser).toMatch(
+      /PendingSendStatusMark color=\{zenTheme\.chat\.outboundSentClock\}/,
+    );
+    expect(zenUser).toContain("styles.pendingSendMark");
+    expect(zenUser).not.toContain("userBubbleHost");
+    expect(bubbleSource).not.toContain("userBubbleHost");
+    expect(bubbleSource).toContain(
+      "right: PENDING_SEND_STATUS_OUTSIDE_RIGHT",
+    );
+    expect(bubbleSource).toMatch(/userBubble:[\s\S]*?maxWidth: "86%"/);
+    expect(bubbleSource).toMatch(/userBubbleChatGpt:[\s\S]*?maxWidth: "88%"/);
+    expect(bubbleSource).toMatch(/pendingSendMark:[\s\S]*bottom: 0/);
     expect(zenUser).toContain(
       "accessibilityState={item.pending ? { busy: true } : undefined}",
     );
     expect(zenUser).not.toMatch(/accessibilityLabel\s*=/);
     expect(zenUser).not.toContain("lifecycleAccessibilityLabel");
-    expect(zenUser).not.toContain("pending={item.pending}");
+    expect(zenUser).not.toMatch(/["']Pending["']/);
+    expect(zenUser).not.toMatch(/["']Sending["']/);
     expect(footerSource).not.toContain("pending?:");
     expect(footerSource).not.toContain("lifecycleAccessibilityLabel");
+    expect(markSource).toContain("useReducedMotion");
+    expect(markSource).toContain("withRepeat");
+    expect(markSource).toContain("ReduceMotion.System");
+    expect(markSource).toContain("PENDING_SEND_CLOCK_FAST_HAND_REST_DEG");
+    expect(markSource).toContain("PENDING_SEND_CLOCK_SLOW_HAND_REST_DEG");
+    expect(markSource).toContain("PENDING_SEND_CLOCK_FAST_PERIOD_MS");
+    expect(markSource).toContain("PENDING_SEND_CLOCK_SLOW_PERIOD_MS");
+    expect(markSource).toContain("bottom: center");
+    expect(markSource).toContain("PENDING_SEND_CLOCK_HAND_STROKE / 2");
+    expect(markSource).not.toContain("marginBottom");
+    expect(markSource).not.toContain("setInterval");
+    expect(markSource).not.toContain("setTimeout");
+    expect(markSource).not.toContain("<Line");
+    // Presentation keys stay canonical event ids; turnFocusAnchorId is
+    // turn-focus only and must not become FlatList identity.
+    expect(listSource).toContain("keyExtractor={(item) => item.id}");
+    expect(listSource).not.toContain("turnFocusAnchorId ??");
   });
 
   test("manual retry keeps one UI row but starts a fresh request attempt", () => {

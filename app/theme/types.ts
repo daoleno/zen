@@ -20,6 +20,12 @@ export interface ChatPalette {
   receivedText: string;
   sentTimestamp: string;
   receivedTimestamp: string;
+  /**
+   * Outbound transport-status clock (sending). Paints in the timeline inset
+   * outside the bubble — never as outline chrome. Distinct from timestamps and
+   * any future sent/read marks.
+   */
+  outboundSentClock: string;
   composerBackground: string;
   composerBorder: string;
   composerDock: string;

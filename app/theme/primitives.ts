@@ -189,6 +189,8 @@ export const ZEN_LIGHT_CHAT_PALETTE: ChatPalette = {
   receivedText: ZEN_LIGHT_NEUTRALS.textPrimary,
   sentTimestamp: ZEN_LIGHT_NEUTRALS.textSecondary,
   receivedTimestamp: ZEN_LIGHT_NEUTRALS.textTertiary,
+  // Outside the bubble on chat.background — high-contrast sage, not outline chrome.
+  outboundSentClock: ZEN_SAGE[700],
   composerBackground: ZEN_LIGHT_NEUTRALS.surface,
   composerBorder: ZEN_LIGHT_NEUTRALS.border,
   composerDock: TRANSPARENT,
@@ -208,6 +210,8 @@ export const ZEN_DARK_CHAT_PALETTE: ChatPalette = {
   receivedText: ZEN_DARK_NEUTRALS.textPrimary,
   sentTimestamp: ZEN_SAGE[200],
   receivedTimestamp: ZEN_DARK_NEUTRALS.textTertiary,
+  // Outside the bubble on near-black canvas — bright sage for status readability.
+  outboundSentClock: ZEN_SAGE[200],
   composerBackground: ZEN_DARK_NEUTRALS.subtle,
   composerBorder: ZEN_DARK_NEUTRALS.border,
   composerDock: TRANSPARENT,

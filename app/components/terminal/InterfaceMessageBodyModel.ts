@@ -1,4 +1,8 @@
 import { parseMarkdownLinkToken } from "../markdown/markdownLinks";
+import {
+  isTimelineProjectionPerfEnabled,
+  recordMarkdownParseSample,
+} from "./timelineProjectionPerf";
 
 export type MessageBlock =
   | { type: "heading"; level: number; text: string }
@@ -35,6 +39,27 @@ const MAX_BARE_JSON_LINES = 240;
 const MAX_BARE_JSON_CHARS = 140_000;
 
 export function parseMessageBlocks(value: string): MessageBlock[] {
+  const measure = isTimelineProjectionPerfEnabled();
+  const started = measure ? markdownPerfNowMs() : 0;
+  const blocks = parseMessageBlocksUninstrumented(value);
+  if (measure) {
+    recordMarkdownParseSample({
+      durationMs: markdownPerfNowMs() - started,
+      inputChars: value.length,
+      blockCount: blocks.length,
+    });
+  }
+  return blocks;
+}
+
+function markdownPerfNowMs() {
+  const perf = (
+    globalThis as { performance?: { now(): number } }
+  ).performance;
+  return perf?.now?.() ?? Date.now();
+}
+
+function parseMessageBlocksUninstrumented(value: string): MessageBlock[] {
   const lines = value
     .replace(/<!--[\s\S]*?-->/g, "")
     .replace(/\r\n/g, "\n")

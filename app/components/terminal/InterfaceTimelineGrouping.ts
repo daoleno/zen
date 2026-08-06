@@ -161,13 +161,16 @@ function timelineRenderItemsEquivalent(
   if (previous.type === "date-divider" && next.type === "date-divider") {
     return previous.label === next.label;
   }
-  if (previous.type !== "message" || next.type !== "message") {
-    return false;
+  if (previous.type === "message" && next.type === "message") {
+    return (
+      previous.sourceItem === next.sourceItem &&
+      messagePresentationsEqual(previous.presentation, next.presentation)
+    );
   }
-  return (
-    previous.sourceItem === next.sourceItem &&
-    messagePresentationsEqual(previous.presentation, next.presentation)
-  );
+  // Activity / plan / work-event rows are the timeline items themselves — they
+  // never receive a grouping wrapper. Referential equality is handled above;
+  // a distinct object with the same id means projection allocated a new row.
+  return false;
 }
 
 function messagePresentationsEqual(

@@ -7,6 +7,7 @@ import type {
 import { parseMessageBlocks } from "./InterfaceMessageBodyModel";
 import { InterfaceMessageBlock } from "./InterfaceMessageBlock";
 import { prepareInterfaceMarkdown } from "./InterfaceNativeMarkdownBodyModel";
+import { useStreamingMarkdownPresentation } from "./useStreamingMarkdownPresentation";
 
 interface MessageBodyProps {
   value: string;
@@ -25,9 +26,12 @@ export function MessageBody({
   dense = false,
   streaming = false,
 }: MessageBodyProps) {
+  // Provider value stays lossless in props; only presentation work coalesces.
+  const presentedValue = useStreamingMarkdownPresentation(value, streaming);
   const displayValue = useMemo(
-    () => (streaming ? prepareInterfaceMarkdown(value, true) : value),
-    [streaming, value],
+    () =>
+      streaming ? prepareInterfaceMarkdown(presentedValue, true) : presentedValue,
+    [presentedValue, streaming],
   );
   const blocks = useMemo(
     () => parseMessageBlocks(displayValue),

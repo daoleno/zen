@@ -2,12 +2,19 @@
 import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
+import { buildZenTimeline } from "../components/terminal/InterfaceTimelineModel";
 import {
+  resolveScreenshotChatPendingFixture,
   resolveScreenshotDemoState,
   screenshotDemoEnabled,
   screenshotDemoRouteOptedIn,
   shouldUseScreenshotDemoRuntime,
 } from "./screenshotDemo";
+import {
+  SCREENSHOT_ACTIVITY_HEADER_EVENTS,
+  SCREENSHOT_BRAIN_EVENTS,
+  screenshotChatPendingUserMessages,
+} from "./screenshotDemoFixtures";
 
 const layoutSource = readFileSync(
   join(import.meta.dir, "../app/_layout.tsx"),
@@ -68,8 +75,61 @@ describe("screenshot demo isolation", () => {
     expect(resolveScreenshotDemoState("brain")).toBe("brain");
     expect(resolveScreenshotDemoState("stats")).toBe("stats");
     expect(resolveScreenshotDemoState("calendar")).toBe("calendar");
+    expect(resolveScreenshotDemoState("profile")).toBe("profile");
     expect(resolveScreenshotDemoState("unknown")).toBe("chat");
     expect(resolveScreenshotDemoState(undefined)).toBe("chat");
+  });
+
+  test("profile state opts into the Interface device performance harness", () => {
+    expect(demoRouteSource).toContain('case "profile":');
+    expect(demoRouteSource).toContain("InterfaceDevicePerformanceDemoGate");
+    expect(demoRouteSource).toContain(
+      'from "../components/terminal/InterfaceDevicePerformanceDemo"',
+    );
+  });
+
+  test("chat pending fixtures stay opt-in and use real Pending rows", () => {
+    expect(resolveScreenshotChatPendingFixture(undefined)).toBe("none");
+    expect(resolveScreenshotChatPendingFixture("0")).toBe("none");
+    expect(resolveScreenshotChatPendingFixture("1")).toBe("pending");
+    expect(resolveScreenshotChatPendingFixture("pending")).toBe("pending");
+    expect(resolveScreenshotChatPendingFixture("failed")).toBe("failed");
+    expect(resolveScreenshotChatPendingFixture("long")).toBe("long");
+    expect(screenshotChatPendingUserMessages("none")).toEqual([]);
+    expect(screenshotChatPendingUserMessages("pending")[0]).toMatchObject({
+      lifecycle: "pending",
+      body: "On my way.",
+    });
+    expect(screenshotChatPendingUserMessages("failed")[0]).toMatchObject({
+      lifecycle: "failed",
+      failureMessage: "Provider unavailable",
+    });
+    expect(screenshotChatPendingUserMessages("long")[0]?.body.length).toBeGreaterThan(
+      80,
+    );
+  });
+
+  test("activity header fixtures cover Run/Search with and without detail", () => {
+    const projected = buildZenTimeline(SCREENSHOT_ACTIVITY_HEADER_EVENTS)
+      .filter((item) => item.type === "activity")
+      .map((item) =>
+        item.type === "activity"
+          ? { title: item.title, detail: item.detail ?? null }
+          : null,
+      );
+    expect(projected).toEqual([
+      { title: "Run", detail: "sleep 45" },
+      { title: "Search", detail: null },
+      {
+        title: "Run",
+        detail: "/home/daoleno/workspace/zen/daemon/brain/…",
+      },
+    ]);
+    const brainTitles = buildZenTimeline(SCREENSHOT_BRAIN_EVENTS)
+      .filter((item) => item.type === "activity")
+      .map((item) => (item.type === "activity" ? item.title : null));
+    expect(brainTitles).toContain("Run");
+    expect(brainTitles).toContain("Search");
   });
 
   test("bypasses the live connection lifecycle and imports no live data clients", () => {

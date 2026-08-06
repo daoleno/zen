@@ -21,7 +21,12 @@ import {
 } from "./CodexHeartbeatWake";
 import { MessageBody } from "./InterfaceMessageBody";
 import { InterfaceTimelineAttachmentPreviewList } from "./InterfaceTimelineAttachmentPreviewList";
-import { resolvePendingUserBubbleBorderColor } from "./pendingUserMessageLifecycle";
+import { PendingSendStatusMark } from "./PendingSendStatusMark";
+import {
+  PENDING_SEND_STATUS_MARK_SIZE,
+  PENDING_SEND_STATUS_OUTSIDE_RIGHT,
+} from "./pendingSendStatusGeometry";
+import { showsPendingSendStatusMark } from "./pendingUserMessageLifecycle";
 
 export type DisplayAttachment = {
   name: string;
@@ -98,12 +103,9 @@ export function ZenUserMessage({
   const bubbleRadii = isChatGpt
     ? chatgptUserBubbleRadii()
     : userBubbleRadii(presentation.groupPosition);
-  const reservedBorderWidth = StyleSheet.hairlineWidth;
-  const pendingBorderColor = resolvePendingUserBubbleBorderColor({
+  const showPendingSendMark = showsPendingSendStatusMark({
     pending: item.pending,
     lifecycle: item.pendingLifecycle,
-    focusColor: chrome.focus,
-    dangerColor: chrome.danger,
   });
   const showFooter =
     item.pendingLifecycle === "failed" ||
@@ -119,11 +121,7 @@ export function ZenUserMessage({
         style={[
           isChatGpt ? styles.userBubbleChatGpt : styles.userBubble,
           bubbleRadii,
-          {
-            backgroundColor: sentBubbleColor,
-            borderWidth: reservedBorderWidth,
-            borderColor: pendingBorderColor,
-          },
+          { backgroundColor: sentBubbleColor },
         ]}
       >
         {hasBody ? (
@@ -145,6 +143,11 @@ export function ZenUserMessage({
             failureColor={chrome.danger}
             onRetry={item.onRetryPending}
           />
+        ) : null}
+        {showPendingSendMark ? (
+          <View style={styles.pendingSendMark} pointerEvents="none">
+            <PendingSendStatusMark color={zenTheme.chat.outboundSentClock} />
+          </View>
         ) : null}
       </View>
     </View>
@@ -379,19 +382,31 @@ const styles = StyleSheet.create({
     minWidth: 0,
     flexDirection: "row",
     justifyContent: "flex-end",
+    overflow: "visible",
   },
   userBubble: {
+    position: "relative",
     maxWidth: "86%",
-    borderWidth: StyleSheet.hairlineWidth,
     paddingHorizontal: 13,
     paddingTop: 9,
     paddingBottom: 8,
+    overflow: "visible",
   },
   userBubbleChatGpt: {
+    position: "relative",
     maxWidth: "88%",
-    borderWidth: StyleSheet.hairlineWidth,
     paddingHorizontal: 14,
     paddingVertical: 10,
+    overflow: "visible",
+  },
+  pendingSendMark: {
+    position: "absolute",
+    right: PENDING_SEND_STATUS_OUTSIDE_RIGHT,
+    bottom: 0,
+    width: PENDING_SEND_STATUS_MARK_SIZE,
+    height: PENDING_SEND_STATUS_MARK_SIZE,
+    alignItems: "center",
+    justifyContent: "center",
   },
   assistantRow: {
     alignSelf: "stretch",

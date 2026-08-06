@@ -51,12 +51,15 @@ import {
   SCREENSHOT_CHAT_EVENTS,
   SCREENSHOT_SESSION_AGENTS,
   SCREENSHOT_STATS_FIXTURE,
+  screenshotChatPendingUserMessages,
 } from "../services/screenshotDemoFixtures";
 import {
+  resolveScreenshotChatPendingFixture,
   resolveScreenshotDemoState,
   screenshotDemoEnabled,
   screenshotDemoRouteOptedIn,
 } from "../services/screenshotDemo";
+import { InterfaceDevicePerformanceDemoGate } from "../components/terminal/InterfaceDevicePerformanceDemo";
 import { StatsScreenshotDemo, type StatsPayload } from "./stats";
 import CalendarScreen from "./calendar";
 import { useCalendarDispatch, type CalendarItem } from "../store/calendar";
@@ -92,6 +95,8 @@ export default function ScreenshotDemoRoute() {
       return <StatsDemo />;
     case "calendar":
       return <CalendarDemo />;
+    case "profile":
+      return <InterfaceDevicePerformanceDemoGate />;
     case "chat":
     default:
       return <ChatDemo />;
@@ -212,6 +217,7 @@ function ChatDemo() {
     attachment?: string | string[];
     draft?: string | string[];
     long?: string | string[];
+    pending?: string | string[];
     working?: string | string[];
   }>();
   const { theme: zenTheme } = useAppTheme();
@@ -246,6 +252,7 @@ function ChatDemo() {
     (Array.isArray(params.attachment)
       ? params.attachment[0]
       : params.attachment) === "1";
+  const pendingFixture = resolveScreenshotChatPendingFixture(params.pending);
   const timelineEvents = useMemo(() => {
     const transcriptEvents = SCREENSHOT_CHAT_EVENTS.filter(
       (event) =>
@@ -264,7 +271,10 @@ function ChatDemo() {
       })),
     ).flat();
   }, [longTimeline]);
-  const emptyPending = useMemo(() => [], []);
+  const pendingUserMessages = useMemo(
+    () => screenshotChatPendingUserMessages(pendingFixture),
+    [pendingFixture],
+  );
   const runningActivity = useMemo(
     () =>
       working
@@ -278,7 +288,7 @@ function ChatDemo() {
   );
   const timeline = useInterfaceTimelineItems({
     events: timelineEvents,
-    pendingUserMessages: emptyPending,
+    pendingUserMessages,
     runningActivity,
     onRetryPendingUserMessage: NOOP,
   });

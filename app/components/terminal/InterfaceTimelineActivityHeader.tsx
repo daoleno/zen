@@ -6,7 +6,15 @@ import {
   type GestureResponderEvent,
 } from "react-native";
 import type { TerminalThemeChrome } from "../../constants/terminalThemes";
-import { TypeScale, Typography } from "../../constants/tokens";
+import {
+  ACTIVITY_HEADER_DETAIL_FONT,
+  ACTIVITY_HEADER_DETAIL_GAP,
+  ACTIVITY_HEADER_ROW_MIN_HEIGHT,
+  ACTIVITY_HEADER_ROW_PADDING_VERTICAL,
+  ACTIVITY_HEADER_TITLE_FONT,
+  activityHeaderCopyLineBoxHeight,
+  activityHeaderSharedTextStyle,
+} from "./activityHeaderTextMetrics";
 import type { TimelineActivityIconName } from "./InterfaceTimelineActivityTypes";
 import type { ZenActivityTimelineItem } from "./InterfaceTimelineActivityTypes";
 import { InterfaceTimelineActivityExpandIcon } from "./InterfaceTimelineActivityExpandIcon";
@@ -176,6 +184,7 @@ export function InterfaceTimelineActivityHeader({
             { color: chrome.textMuted },
           ]}
           numberOfLines={1}
+          ellipsizeMode="tail"
         >
           {title}
         </Text>
@@ -183,6 +192,7 @@ export function InterfaceTimelineActivityHeader({
           <Text
             style={[styles.detail, { color: chrome.textSubtle }]}
             numberOfLines={1}
+            ellipsizeMode="tail"
           >
             {detail}
           </Text>
@@ -203,12 +213,12 @@ export function InterfaceTimelineActivityHeader({
 const styles = StyleSheet.create({
   row: {
     alignSelf: "stretch",
-    minHeight: 28,
+    minHeight: ACTIVITY_HEADER_ROW_MIN_HEIGHT,
     width: "100%",
     flexDirection: "row",
     alignItems: "center",
     gap: 6,
-    paddingVertical: 2,
+    paddingVertical: ACTIVITY_HEADER_ROW_PADDING_VERTICAL,
     opacity: 1,
   },
   rowPressed: {
@@ -217,13 +227,15 @@ const styles = StyleSheet.create({
   copy: {
     flex: 1,
     minWidth: 0,
+    height: activityHeaderCopyLineBoxHeight(),
     flexDirection: "row",
     alignItems: "center",
   },
   title: {
-    ...TypeScale.caption,
+    ...activityHeaderSharedTextStyle,
     flexShrink: 0,
-    fontFamily: Typography.uiFontMedium,
+    fontFamily: ACTIVITY_HEADER_TITLE_FONT,
+    fontWeight: "500",
   },
   titleOnly: {
     flex: 1,
@@ -231,11 +243,12 @@ const styles = StyleSheet.create({
     flexShrink: 1,
   },
   detail: {
-    ...TypeScale.caption,
+    ...activityHeaderSharedTextStyle,
     flex: 1,
     flexShrink: 1,
     minWidth: 0,
-    marginLeft: 6,
-    fontFamily: Typography.terminalFont,
+    marginLeft: ACTIVITY_HEADER_DETAIL_GAP,
+    fontFamily: ACTIVITY_HEADER_DETAIL_FONT,
+    fontWeight: "400",
   },
 });

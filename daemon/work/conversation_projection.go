@@ -39,6 +39,13 @@ func isCanonicalDirectWorkEventInput(value string) bool {
 	return canonical
 }
 
+// IsCanonicalDirectWorkEventInput reports whether value is Zen's reserved
+// direct Work Event Session Input envelope. Visible timeline projection must
+// omit these rows; work_card / work_result owns card presentation.
+func IsCanonicalDirectWorkEventInput(value string) bool {
+	return isCanonicalDirectWorkEventInput(value)
+}
+
 func isGoalInternalContextEvent(event CodexConversationEvent) bool {
 	source := strings.ToLower(strings.TrimSpace(event.Source))
 	title := strings.ToLower(strings.TrimSpace(event.Title))

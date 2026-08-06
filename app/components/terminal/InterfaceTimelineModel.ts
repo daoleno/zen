@@ -91,6 +91,20 @@ export function buildZenTimeline(
   events: CodexConversationEvent[],
   turnFocusAnchorAliases?: ReadonlyMap<string, string>,
 ): ZenTimelineItem[] {
+  return buildZenTimelineFromSortedEvents(
+    events.slice().sort(compareConversationEvents),
+    turnFocusAnchorAliases,
+  );
+}
+
+/**
+ * Canonical projection core. Callers must pass events already ordered by
+ * `compareConversationEvents` — this path never sorts.
+ */
+export function buildZenTimelineFromSortedEvents(
+  sortedEvents: CodexConversationEvent[],
+  turnFocusAnchorAliases?: ReadonlyMap<string, string>,
+): ZenTimelineItem[] {
   const items: ZenTimelineItem[] = [];
   let explorationEntries: ExplorationEntry[] = [];
 
@@ -102,7 +116,7 @@ export function buildZenTimeline(
     explorationEntries = [];
   };
 
-  for (const event of [...events].sort(compareConversationEvents)) {
+  for (const event of sortedEvents) {
     if (event.kind === "user_message" || event.kind === "assistant_message") {
       flushExploration();
       const extracted = extractDisplayMessage(event.body || "");
@@ -266,7 +280,7 @@ export function mergePendingUserMessagesIntoTimeline(
       ...item,
       pending: true,
       pendingLifecycle: message.lifecycle,
-      // Empty pending label is border/a11y only — do not pass "" into UI props.
+      // Empty pending label is mark/a11y only — do not pass "" into UI props.
       pendingLifecycleLabel: presentation.label || undefined,
       pendingFailureMessage:
         message.lifecycle === "failed" ? message.failureMessage : undefined,

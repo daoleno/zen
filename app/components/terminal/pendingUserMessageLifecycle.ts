@@ -75,27 +75,19 @@ export function presentPendingUserMessageLifecycle(
   }
   return {
     lifecycle: "pending",
-    // Pending is border-only (focus/accent); bubble keeps busy without a
-    // status-only accessibilityLabel that would replace message content.
+    // Pending is compact status-mark/a11y only (outboundSentClock), never a
+    // bubble outline; bubble keeps busy without a status-only a11y label.
     label: "",
     accessibilityLabel: "Message pending provider transcript",
   };
 }
 
-/** Reserved pending border: full focus/accent, never faint borderStrong. */
-export function resolvePendingUserBubbleBorderColor(args: {
+/** True while transport is in-flight; false once failed or acknowledged. */
+export function showsPendingSendStatusMark(args: {
   pending?: boolean;
   lifecycle?: PendingUserMessageLifecycle;
-  focusColor: string;
-  dangerColor: string;
-}): string {
-  if (args.lifecycle === "failed") {
-    return args.dangerColor;
-  }
-  if (args.pending) {
-    return args.focusColor;
-  }
-  return "transparent";
+}): boolean {
+  return Boolean(args.pending) && args.lifecycle !== "failed";
 }
 
 export type ReconcileUserEvent = {

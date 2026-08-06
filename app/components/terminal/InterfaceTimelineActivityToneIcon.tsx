@@ -1,6 +1,7 @@
 import React from "react";
 import { StyleSheet, View } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
+import { ACTIVITY_HEADER_ICON_SLOT } from "./activityHeaderTextMetrics";
 import type {
   TimelineActivityIconName,
   ZenActivityTimelineItem,
@@ -41,8 +42,8 @@ export function InterfaceTimelineActivityToneIcon({
 
 const styles = StyleSheet.create({
   slot: {
-    width: 18,
-    height: 18,
+    width: ACTIVITY_HEADER_ICON_SLOT,
+    height: ACTIVITY_HEADER_ICON_SLOT,
     alignItems: "center",
     justifyContent: "center",
   },

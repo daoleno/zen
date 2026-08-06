@@ -7,6 +7,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/daoleno/zen/daemon/classifier"
+	"github.com/daoleno/zen/daemon/watcher"
 	"github.com/daoleno/zen/daemon/work"
 )
 
@@ -266,6 +268,222 @@ func TestServiceAppendWorkEventMaterializesCard(t *testing.T) {
 	}
 	if len(items) != 1 || items[0].ID != event.ID || items[0].EventKind != "session.needs_input" {
 		t.Fatalf("service materialize = %#v", items)
+	}
+}
+
+func TestRouteSessionEventMaterializesProjectedWorkCards(t *testing.T) {
+	t.Run("session.done", func(t *testing.T) {
+		assertRouteMaterializesKind(t, "session.done", classifier.StateDone, "agent_state_change", "", "Delegated turn completed")
+	})
+	t.Run("session.failed", func(t *testing.T) {
+		assertRouteMaterializesKind(t, "session.failed", classifier.StateFailed, "agent_state_change", "", "Delegated provider process or pane is no longer live")
+	})
+	t.Run("session.needs_input", func(t *testing.T) {
+		assertRouteMaterializesKind(t, "session.needs_input", classifier.StateBlocked, "agent_metadata_change", "user_input", "Needs a decision")
+	})
+	t.Run("session.stale", func(t *testing.T) {
+		store, err := NewStore(t.TempDir())
+		if err != nil {
+			t.Fatal(err)
+		}
+		threadID := "brain_thread_stale_card"
+		if err := store.SetChatState(ChatState{ThreadID: threadID}); err != nil {
+			t.Fatal(err)
+		}
+		hostID := "brain-agent-brain-hidden:@1"
+		sessionID := "brain-agent-stale-card:@2"
+		if err := store.SetHostSession(hostID, "codex"); err != nil {
+			t.Fatal(err)
+		}
+		fw := &fakeWatcher{sessions: map[string]*classifier.Agent{
+			hostID: {ID: hostID, Hidden: true, State: classifier.StateDone},
+		}}
+		service := NewService(store, fw, nil)
+		item, err := store.CreateWork(Work{
+			Title:            "zen-telegram-performance-publish",
+			Objective:        "Prove stale materializes a card",
+			Status:           WorkRunning,
+			OwnerSessionID:   sessionID,
+			CompletionPolicy: CompletionBounded,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		service.ReconcileDelegatedSessions(nil)
+		service.ReconcileDelegatedSessions(nil)
+		events, err := store.ListWorkEvents(item.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var recorded WorkEvent
+		for _, event := range events {
+			if event.Kind == "session.stale" {
+				recorded = event
+				break
+			}
+		}
+		if recorded.ID == "" {
+			t.Fatalf("missing session.stale in %#v", events)
+		}
+		items, err := store.ThreadTimeline(threadID, 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(items) != 1 || items[0].ID != recorded.ID || items[0].Kind != timelineKindWorkCard || items[0].EventKind != "session.stale" {
+			t.Fatalf("stale materialize = %#v recorded=%#v", items, recorded)
+		}
+	})
+}
+
+func assertRouteMaterializesKind(
+	t *testing.T,
+	kind string,
+	state classifier.AgentState,
+	eventType string,
+	attention string,
+	summary string,
+) {
+	t.Helper()
+	store, err := NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	threadID := "brain_thread_route_card"
+	if err := store.SetChatState(ChatState{ThreadID: threadID}); err != nil {
+		t.Fatal(err)
+	}
+	sessionID := "brain-agent-route-card:@" + kind
+	item, err := store.CreateWork(Work{
+		Title:            "zen-telegram-performance-publish",
+		Objective:        "Prove session lifecycle materializes cards",
+		Status:           WorkRunning,
+		OwnerSessionID:   sessionID,
+		CompletionPolicy: CompletionBounded,
+		NextAction:       "Wait for the delegated Session.",
+		WaitFor:          "Session " + sessionID,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	agent := &classifier.Agent{
+		ID:             sessionID,
+		Name:           "zen-telegram-performance-publish (" + sessionID + ")",
+		State:          state,
+		Summary:        summary,
+		Delegated:      true,
+		PaneAlive:      true,
+		NeedsAttention: attention != "",
+		Attention:      attention,
+	}
+	service := NewService(store, &fakeWatcher{}, nil)
+	if _, err := service.RouteSessionEvent(watcher.SessionEvent{
+		Type:     eventType,
+		AgentID:  sessionID,
+		Agent:    agent,
+		OldState: string(classifier.StateRunning),
+		NewState: string(state),
+		TurnID:   "turn-" + kind,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	events, err := store.ListWorkEvents(item.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var recorded WorkEvent
+	for _, event := range events {
+		if event.Kind == kind {
+			recorded = event
+			break
+		}
+	}
+	if recorded.ID == "" {
+		t.Fatalf("missing %s event in %#v", kind, events)
+	}
+	items, err := store.ThreadTimeline(threadID, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(items) != 1 || items[0].ID != recorded.ID || items[0].Kind != timelineKindWorkCard || items[0].EventKind != kind {
+		t.Fatalf("route materialize %s = %#v recorded=%#v", kind, items, recorded)
+	}
+	conversation := TimelineItemsToConversationEvents(items)
+	if len(conversation) != 1 ||
+		conversation[0].Source != workResultConversationSource ||
+		conversation[0].Status != kind ||
+		conversation[0].WorkID != item.ID {
+		t.Fatalf("conversation projection = %#v", conversation)
+	}
+}
+
+func TestTimelineOmitsCanonicalDirectWorkEventUserRows(t *testing.T) {
+	store, err := NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	threadID := "brain_thread_hide_envelope"
+	if err := store.SetChatState(ChatState{ThreadID: threadID}); err != nil {
+		t.Fatal(err)
+	}
+	envelope := work.FormatDirectWorkEventInput(work.DirectWorkEventInput{
+		EventID:    "1aa90ab5-cf46-4643-9985-f6fd26c9526b",
+		WorkID:     "ae621005-929b-49b5-9d42-fa476d42d3f3",
+		WorkTitle:  "zen-telegram-performance-publish",
+		Kind:       "session.failed",
+		Source:     "zen-telegram-performance-publish (brain-agent-zen-telegram-performance-publish-1786011456826849565:@7730)",
+		Summary:    "Delegated provider process or pane is no longer live",
+		NextAction: "Inspect the delegated Session failure.",
+		ContextRef: "worklog/2026-08-06-zen-telegram-performance-publish.md",
+		PayloadRef: "session:brain-agent-zen-telegram-performance-publish-1786011456826849565:@7730",
+	})
+	if err := store.MaterializeProviderConversation(threadID, work.CodexConversation{
+		Available: true,
+		SessionID: "host",
+		Events: []work.CodexConversationEvent{{
+			ID:        "provider-envelope-1",
+			Timestamp: "2026-08-06T10:19:43.328Z",
+			Kind:      "user_message",
+			Role:      "user",
+			Body:      envelope,
+		}, {
+			ID:        "user-visible",
+			Timestamp: "2026-08-06T10:19:44.000Z",
+			Kind:      "user_message",
+			Role:      "user",
+			Body:      "please continue",
+		}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	items, err := store.ThreadTimeline(threadID, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(items) != 1 || items[0].ID != "user-visible" {
+		t.Fatalf("materialize leaked envelope: %#v", items)
+	}
+	// Historical envelope already on disk must not surface through conversation projection.
+	store.mu.Lock()
+	_, err = store.appendTimelineItemLocked(TimelineItem{
+		ID:        "legacy-envelope",
+		ThreadID:  threadID,
+		SessionID: "host",
+		Role:      "user",
+		Body:      envelope,
+		CreatedAt: time.Date(2026, 8, 6, 10, 19, 43, 0, time.UTC),
+		Kind:      timelineKindUserMessage,
+	})
+	store.mu.Unlock()
+	if err != nil {
+		t.Fatal(err)
+	}
+	items, err = store.ThreadTimeline(threadID, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	conversation := TimelineItemsToConversationEvents(items)
+	if len(conversation) != 1 || conversation[0].ID != "user-visible" || strings.Contains(conversation[0].Body, "zen_work_event") {
+		t.Fatalf("conversation leaked envelope: %#v", conversation)
 	}
 }
 
