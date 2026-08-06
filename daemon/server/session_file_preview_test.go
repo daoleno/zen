@@ -16,6 +16,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/daoleno/zen/daemon/auth"
 	"github.com/daoleno/zen/daemon/classifier"
@@ -156,9 +157,116 @@ func TestSessionFilePreviewClassifiesSupportedAndUnsupportedRenderers(t *testing
 		case ".zip":
 			data = []byte{'P', 'K', 3, 4, 0}
 		}
-		if got, _ := classifySessionFile(name, data); got != want {
+		if got, _ := classifySessionFile(name, data, false); got != want {
 			t.Fatalf("classify %s = %q, want %q", name, got, want)
 		}
+	}
+}
+
+func TestSessionFilePreviewUTF8SniffBoundary(t *testing.T) {
+	// Exact Free Ride shape: 512-byte sniff ends at lead byte e6 of 明 (e6 98 8e).
+	const sniffSize = 512
+	ming := []byte{0xe6, 0x98, 0x8e}
+	prefix := bytes.Repeat([]byte("a"), sniffSize-1)
+	prefix = append(prefix, ming[0])
+	if len(prefix) != sniffSize {
+		t.Fatalf("prefix len=%d, want %d", len(prefix), sniffSize)
+	}
+	if utf8.Valid(prefix) {
+		t.Fatal("expected incomplete UTF-8 at the 512-byte sniff boundary")
+	}
+
+	truncatedFile := append(append([]byte{}, prefix...), ming[1:]...)
+	truncatedFile = append(truncatedFile, []byte(" more markdown\n")...)
+	if got, _ := classifySessionFile("report.md", prefix, true); got != "markdown" {
+		t.Fatalf("truncated boundary classify = %q, want markdown", got)
+	}
+
+	workspace := t.TempDir()
+	path := filepath.Join(workspace, "report.md")
+	if err := os.WriteFile(path, truncatedFile, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	resolved, err := openSessionFile(workspace, "report.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resolved.kind != "markdown" {
+		_ = resolved.file.Close()
+		t.Fatalf("open truncated boundary kind=%q, want markdown", resolved.kind)
+	}
+	preview, err := readSessionFileText(resolved, resolved.generation)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(preview.Content, "明") {
+		t.Fatalf("text preview missing restored rune: %q", preview.Content[len(preview.Content)-32:])
+	}
+
+	if got, _ := classifySessionFile("report.md", prefix, false); got != "unsupported" {
+		t.Fatalf("EOF incomplete classify = %q, want unsupported", got)
+	}
+	eofPath := filepath.Join(workspace, "eof-incomplete.md")
+	if err := os.WriteFile(eofPath, prefix, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	eofResolved, err := openSessionFile(workspace, "eof-incomplete.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer eofResolved.file.Close()
+	if eofResolved.kind != "unsupported" {
+		t.Fatalf("EOF incomplete kind=%q, want unsupported", eofResolved.kind)
+	}
+
+	interior := append([]byte{}, prefix[:sniffSize-2]...)
+	interior = append(interior, 0xff, 'x')
+	if got, _ := classifySessionFile("bad.md", interior, true); got != "unsupported" {
+		t.Fatalf("interior invalid truncated classify = %q, want unsupported", got)
+	}
+	if got, _ := classifySessionFile("bad.md", interior, false); got != "unsupported" {
+		t.Fatalf("interior invalid EOF classify = %q, want unsupported", got)
+	}
+
+	withNUL := append([]byte("hello"), 0)
+	withNUL = append(withNUL, []byte("world")...)
+	if got, _ := classifySessionFile("nul.md", withNUL, true); got != "unsupported" {
+		t.Fatalf("NUL classify = %q, want unsupported", got)
+	}
+
+	for _, tt := range []struct {
+		name      string
+		suffix    []byte
+		truncated bool
+		want      string
+	}{
+		{name: "one-byte partial of 2-byte rune", suffix: []byte{0xc2}, truncated: true, want: "markdown"},
+		{name: "one-byte partial of 2-byte rune at EOF", suffix: []byte{0xc2}, truncated: false, want: "unsupported"},
+		{name: "one-byte partial of 3-byte rune", suffix: []byte{0xe6}, truncated: true, want: "markdown"},
+		{name: "two-byte partial of 3-byte rune", suffix: []byte{0xe6, 0x98}, truncated: true, want: "markdown"},
+		{name: "two-byte partial of 3-byte rune at EOF", suffix: []byte{0xe6, 0x98}, truncated: false, want: "unsupported"},
+		{name: "one-byte partial of 4-byte rune", suffix: []byte{0xf0}, truncated: true, want: "markdown"},
+		{name: "three-byte partial of 4-byte rune", suffix: []byte{0xf0, 0x9f, 0x98}, truncated: true, want: "markdown"},
+		{name: "overlong lead C0", suffix: []byte{0xc0}, truncated: true, want: "unsupported"},
+		{name: "overlong lead C1", suffix: []byte{0xc1}, truncated: true, want: "unsupported"},
+		{name: "out-of-range lead F5", suffix: []byte{0xf5}, truncated: true, want: "unsupported"},
+		{name: "out-of-range lead F6", suffix: []byte{0xf6}, truncated: true, want: "unsupported"},
+		{name: "out-of-range lead F7", suffix: []byte{0xf7}, truncated: true, want: "unsupported"},
+		{name: "stray continuation", suffix: []byte{0x80}, truncated: true, want: "unsupported"},
+		{name: "overlong E0 80", suffix: []byte{0xe0, 0x80}, truncated: true, want: "unsupported"},
+		{name: "surrogate ED A0", suffix: []byte{0xed, 0xa0}, truncated: true, want: "unsupported"},
+		{name: "overlong F0 80", suffix: []byte{0xf0, 0x80}, truncated: true, want: "unsupported"},
+		{name: "out-of-range F4 90", suffix: []byte{0xf4, 0x90}, truncated: true, want: "unsupported"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			sample := append(bytes.Repeat([]byte("c"), sniffSize-len(tt.suffix)), tt.suffix...)
+			if len(sample) != sniffSize {
+				t.Fatalf("sample len=%d, want %d", len(sample), sniffSize)
+			}
+			if got, _ := classifySessionFile("case.md", sample, tt.truncated); got != tt.want {
+				t.Fatalf("classify = %q, want %q (FullRune=%v Valid=%v)", got, tt.want, utf8.FullRune(tt.suffix), utf8.Valid(sample))
+			}
+		})
 	}
 }
 

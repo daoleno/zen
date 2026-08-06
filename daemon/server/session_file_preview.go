@@ -264,7 +264,8 @@ func openSessionFile(cwd, reference string) (*resolvedSessionFile, error) {
 		file.Close()
 		return nil, fmt.Errorf("rewind Session file: %w", err)
 	}
-	kind, contentType := classifySessionFile(canonicalPath, sniff[:n])
+	sampleTruncated := int64(n) < info.Size()
+	kind, contentType := classifySessionFile(canonicalPath, sniff[:n], sampleTruncated)
 	relativePath, err := filepath.Rel(canonicalCWD, canonicalPath)
 	if err != nil {
 		// Different Windows volumes cannot be expressed relatively. The canonical
@@ -283,7 +284,7 @@ func openSessionFile(cwd, reference string) (*resolvedSessionFile, error) {
 	}, nil
 }
 
-func classifySessionFile(path string, sniff []byte) (kind, contentType string) {
+func classifySessionFile(path string, sniff []byte, sampleTruncated bool) (kind, contentType string) {
 	extension := strings.ToLower(filepath.Ext(path))
 	detected := http.DetectContentType(sniff)
 	if len(sniff) == 0 {
@@ -296,7 +297,7 @@ func classifySessionFile(path string, sniff []byte) (kind, contentType string) {
 	if isSupportedSessionImageType(detected) {
 		return "image", detected
 	}
-	if containsBinaryMarker(sniff) || !utf8.Valid(sniff) {
+	if containsBinaryMarker(sniff) || !sessionFileSniffUTF8OK(sniff, sampleTruncated) {
 		return "unsupported", detected
 	}
 	if extension == ".md" || extension == ".markdown" || extension == ".mdx" {
@@ -306,6 +307,29 @@ func classifySessionFile(path string, sniff []byte) (kind, contentType string) {
 		return "text", sessionTextContentType(extension, detected)
 	}
 	return "unsupported", detected
+}
+
+// sessionFileSniffUTF8OK accepts a fixed-size content sample as text-safe UTF-8.
+// When sampleTruncated is true because the regular file has more bytes beyond the
+// sniff, a single incomplete UTF-8 sequence is allowed only at the final boundary.
+// utf8.FullRune treats invalid encodings as complete RuneError values, so overlong,
+// surrogate, and out-of-range partial prefixes stay rejected. NUL handling stays with
+// containsBinaryMarker. Incomplete sequences at actual EOF remain rejected.
+func sessionFileSniffUTF8OK(sniff []byte, sampleTruncated bool) bool {
+	if utf8.Valid(sniff) {
+		return true
+	}
+	complete := 0
+	for complete < len(sniff) {
+		r, size := utf8.DecodeRune(sniff[complete:])
+		if r != utf8.RuneError || size > 1 {
+			complete += size
+			continue
+		}
+		// size == 1 with RuneError: invalid byte or incomplete trailing sequence.
+		return sampleTruncated && !utf8.FullRune(sniff[complete:])
+	}
+	return true
 }
 
 func bytesStartWith(value []byte, prefix string) bool {
